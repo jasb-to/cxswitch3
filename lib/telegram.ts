@@ -1,33 +1,51 @@
 import type { Signal } from "./strategy";
 
+const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
 function fmt(n: number): string {
-  if (n >= 1000) return `$${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
-  return `$${n.toFixed(2)}`;
+  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-export async function sendTelegramAlert(signal: Signal): Promise<void> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
+/**
+ * Send a signal alert. Only called on state change TO EARLY or TO CONFIRMED.
+ */
+export async function sendSignalAlert(signal: Signal): Promise<void> {
+  if (!BOT_TOKEN || !CHAT_ID) return;
 
-  if (!token || !chatId) {
-    console.log("[v0] Telegram not configured, skipping alert");
-    return;
-  }
-
+  const emoji = signal.state === "CONFIRMED" ? "🟢" : "🟡";
   const text =
-    `${signal.symbol}/USD ${signal.direction} ${signal.state} — ` +
-    `Entry ${fmt(signal.entry)}, SL ${fmt(signal.sl)}, TP ${fmt(signal.tp)}, ` +
-    `Confidence ${signal.confidence}%`;
+    `${emoji} ${signal.symbol} ${signal.direction} ${signal.state}\n` +
+    `Entry: $${fmt(signal.entry)}\n` +
+    `SL: $${fmt(signal.sl)}\n` +
+    `TP: $${fmt(signal.tp)}\n` +
+    `Confidence: ${signal.confidence}%`;
 
-  const url = `https://api.telegram.org/bot${token}/sendMessage`;
-  try {
-    await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text }),
-    });
-    console.log("[v0] Telegram alert sent:", text);
-  } catch (err) {
-    console.error("[v0] Telegram send failed:", err);
+  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: CHAT_ID, text }),
+  });
+}
+
+/**
+ * Send a test message to verify the bot is configured correctly.
+ */
+export async function sendTestMessage(): Promise<{ ok: boolean; error?: string }> {
+  if (!BOT_TOKEN || !CHAT_ID) {
+    return { ok: false, error: "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set" };
   }
+
+  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: CHAT_ID,
+      text: "✅ Signal dashboard connected. Telegram alerts are working.",
+    }),
+  });
+
+  const json = await res.json();
+  if (!json.ok) return { ok: false, error: json.description ?? "Unknown error" };
+  return { ok: true };
 }
