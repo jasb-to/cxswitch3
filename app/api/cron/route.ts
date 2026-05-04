@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateSignals, getAllSignals } from "@/lib/strategy";
-import { sendSignalAlert } from "@/lib/telegram";
+import { sendSignalAlert, shouldSendAlert } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
 
-// Track previous states to detect changes for Telegram alerts
-const prevStates = new Map<string, string>();
+// Cron runs every minute via vercel.json
+const CRON_INTERVAL_MS = 60_000;
+let lastCronRun = 0;
 
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
@@ -17,30 +18,38 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  lastCronRun = Date.now();
   const { signals, logs } = await generateSignals();
 
-  // Print all logs to stdout so they appear in Vercel logs
+  // Print all logs to stdout
   for (const line of logs) {
     console.log(line);
   }
 
-  // Send Telegram alerts only on state change TO EARLY or TO CONFIRMED
+  // Telegram: send only if shouldSendAlert approves (no spam)
   for (const signal of signals) {
-    const key = signal.symbol;
-    const prev = prevStates.get(key);
-    if (
-      (signal.state === "EARLY" && prev !== "EARLY") ||
-      (signal.state === "CONFIRMED" && prev !== "CONFIRMED")
-    ) {
+    if (shouldSendAlert(signal.symbol, signal.state)) {
       try {
         await sendSignalAlert(signal);
-        console.log(`[TELEGRAM] Sent ${signal.state} alert for ${signal.symbol}`);
+        console.log(`[TELEGRAM] ✓ Sent ${signal.state} alert for ${signal.symbol} (new state)`);
       } catch {
-        console.log(`[TELEGRAM] Failed to send alert for ${signal.symbol}`);
+        console.log(`[TELEGRAM] ✗ Failed to send alert for ${signal.symbol}`);
       }
+    } else {
+      console.log(`[TELEGRAM] ✗ Skipped — already alerted ${signal.state} for ${signal.symbol}`);
     }
-    prevStates.set(key, signal.state);
   }
 
-  return NextResponse.json({ ok: true, signals: getAllSignals(), logs });
+  const nextInMs = CRON_INTERVAL_MS - (Date.now() - lastCronRun);
+  const nextInSec = Math.max(0, Math.round(nextInMs / 1000));
+  const nextMins = Math.floor(nextInSec / 60);
+  const nextSecs = nextInSec % 60;
+  console.log(`[NEXT CRON] In ${nextMins}m ${nextSecs}s`);
+
+  return NextResponse.json({
+    ok: true,
+    signals: getAllSignals(),
+    logs,
+    lastCronRun,
+  });
 }
