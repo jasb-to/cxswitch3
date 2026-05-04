@@ -1,246 +1,186 @@
-import { fetchCandles } from "./kraken";
-import type { Candle } from "./kraken";
+The Refined Prompt for V0
+I'm using cron-jobs.org (not Vercel cron) hitting https://cxswitch3.vercel.app/api/external-cron?secret=abc123xyz789. I cannot deploy for 24 hours, so this code must be correct before I push.
+CRITICAL FIX: Serverless Statelessness
+Vercel functions are stateless. Every request lands on a random instance with empty memory. The current in-memory signal array means signals exist for one request then vanish.
+Replace ALL in-memory storage with Supabase persistence. I already have a Supabase client configured. Use it.
+Database Schema (create these exact tables):
+sql
+Copy
+-- Active signals
+CREATE TABLE IF NOT EXISTS signals (
+  id SERIAL PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  direction TEXT NOT NULL CHECK (direction IN ('LONG', 'SHORT')),
+  state TEXT NOT NULL CHECK (state IN ('EARLY', 'CONFIRMED', 'END')),
+  entry_price NUMERIC,
+  stop_loss NUMERIC,
+  take_profit NUMERIC,
+  confidence INTEGER CHECK (confidence >= 0 AND confidence <= 100),
+  breakout_level NUMERIC NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(symbol, direction, created_at) -- prevent duplicates
+);
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+-- Cron execution log (for diagnostics)
+CREATE TABLE IF NOT EXISTS cron_runs (
+  id SERIAL PRIMARY KEY,
+  ran_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  signals_found INTEGER DEFAULT 0,
+  duration_ms INTEGER,
+  logs TEXT -- store full log output as text for debugging
+);
+Updated lib/strategy.ts:
+Replace the in-memory activeSignals array with Supabase operations:
+TypeScript
+Copy
+import { supabase } from './supabase-client'; // use existing client
 
-export type Direction = "LONG" | "SHORT";
-export type SignalState = "EARLY" | "CONFIRMED" | "END";
+export async function generateSignals(): Promise<Signal[]> {
+  // ... existing candle fetching and analysis ...
 
-export interface Signal {
-  symbol: string;
-  direction: Direction;
-  state: SignalState;
-  entry: number;
-  sl: number;
-  tp: number;
-  confidence: number;     // 0–100, display only, never gates signal creation
-  createdAt: number;      // ms
-  breakoutLevel: number;
-  candlesSince: number;   // 5M candles elapsed since EARLY
-}
+  // Upsert: if signal exists for this symbol+direction, update it
+  // If not, insert new
+  for (const signal of newSignals) {
+    const { data: existing } = await supabase
+      .from('signals')
+      .select('*')
+      .eq('symbol', signal.symbol)
+      .eq('direction', signal.direction)
+      .neq('state', 'END')
+      .order('created_at', { ascending: false })
+      .limit(1);
 
-// ─── In-memory signal store ───────────────────────────────────────────────────
-// Module-level: survives between requests in the same serverless instance.
-// EARLY/CONFIRMED signals are overwritten each run.
-// END signals persist for 1 hour then drop automatically.
-
-const signalStore = new Map<string, Signal>();
-
-export function getAllSignals(): Signal[] {
-  const now = Date.now();
-  for (const [sym, sig] of signalStore.entries()) {
-    if (sig.state === "END" && now - sig.createdAt > 60 * 60 * 1000) {
-      signalStore.delete(sym);
-    }
-  }
-  return Array.from(signalStore.values());
-}
-
-// ─── Indicators ───────────────────────────────────────────────────────────────
-
-function calcATR(candles: Candle[], period = 14): number {
-  if (candles.length < period + 1) return 0;
-  const trs: number[] = [];
-  for (let i = 1; i < candles.length; i++) {
-    const { high, low } = candles[i];
-    const prev = candles[i - 1].close;
-    trs.push(Math.max(high - low, Math.abs(high - prev), Math.abs(low - prev)));
-  }
-  const slice = trs.slice(-period);
-  return slice.reduce((a, b) => a + b, 0) / slice.length;
-}
-
-function calcStochRsiK(candles: Candle[], rsiPeriod = 14, stochPeriod = 14): number {
-  if (candles.length < rsiPeriod + stochPeriod + 1) return 50;
-  const closes = candles.map((c) => c.close);
-  const rsiValues: number[] = [];
-  for (let i = rsiPeriod; i < closes.length; i++) {
-    let gains = 0, losses = 0;
-    for (let j = i - rsiPeriod + 1; j <= i; j++) {
-      const diff = closes[j] - closes[j - 1];
-      if (diff > 0) gains += diff; else losses -= diff;
-    }
-    const rs = losses === 0 ? 100 : gains / losses;
-    rsiValues.push(100 - 100 / (1 + rs));
-  }
-  if (rsiValues.length < stochPeriod) return 50;
-  const slice = rsiValues.slice(-stochPeriod);
-  const minRsi = Math.min(...slice);
-  const maxRsi = Math.max(...slice);
-  if (maxRsi === minRsi) return 50;
-  return ((rsiValues[rsiValues.length - 1] - minRsi) / (maxRsi - minRsi)) * 100;
-}
-
-function calcMacdHist(candles: Candle[], fast = 12, slow = 26, signalPeriod = 9): number {
-  if (candles.length < slow + signalPeriod) return 0;
-  const closes = candles.map((c) => c.close);
-  function ema(data: number[], period: number): number[] {
-    const k = 2 / (period + 1);
-    const result = [data[0]];
-    for (let i = 1; i < data.length; i++) {
-      result.push(data[i] * k + result[i - 1] * (1 - k));
-    }
-    return result;
-  }
-  const ema12 = ema(closes, fast);
-  const ema26 = ema(closes, slow);
-  const macdLine = ema12.map((v, i) => v - ema26[i]);
-  const sig = ema(macdLine.slice(slow - 1), signalPeriod);
-  const hist = macdLine.slice(slow - 1).map((v, i) => v - sig[i]);
-  return hist[hist.length - 1] ?? 0;
-}
-
-function calcConfidence(candles15m: Candle[], direction: Direction): number {
-  const k = calcStochRsiK(candles15m);
-  const hist = calcMacdHist(candles15m);
-  let score = 50;
-  // StochRSI contribution
-  if (direction === "LONG") {
-    if (k > 70) score += 20; else if (k > 50) score += 10; else score -= 10;
-  } else {
-    if (k < 30) score += 20; else if (k < 50) score += 10; else score -= 10;
-  }
-  // MACD histogram direction
-  if (direction === "LONG" && hist > 0) score += 20;
-  else if (direction === "SHORT" && hist < 0) score += 20;
-  else score -= 10;
-  return Math.max(0, Math.min(100, score));
-}
-
-// ─── Swing highs / lows (Rule 1) ──────────────────────────────────────────────
-
-function getSwingHighs(candles: Candle[], n = 3): number[] {
-  const highs: number[] = [];
-  for (let i = 2; i < candles.length - 1; i++) {
-    if (candles[i].high > candles[i - 1].high && candles[i].high > candles[i + 1].high) {
-      highs.push(candles[i].high);
-    }
-  }
-  return highs.sort((a, b) => b - a).slice(0, n);
-}
-
-function getSwingLows(candles: Candle[], n = 3): number[] {
-  const lows: number[] = [];
-  for (let i = 2; i < candles.length - 1; i++) {
-    if (candles[i].low < candles[i - 1].low && candles[i].low < candles[i + 1].low) {
-      lows.push(candles[i].low);
-    }
-  }
-  return lows.sort((a, b) => a - b).slice(0, n);
-}
-
-// ─── generateSignals — the one function ──────────────────────────────────────
-
-const SYMBOLS = ["BTC/USD", "ETH/USD", "SOL/USD"];
-
-export async function generateSignals(): Promise<{ signals: Signal[]; logs: string[] }> {
-  const logs: string[] = [];
-  const startMs = Date.now();
-  logs.push(`[CRON START] ${new Date().toISOString()}`);
-
-  // Fetch all candles in parallel across all symbols
-  const fetches = SYMBOLS.map((symbol) =>
-    Promise.all([
-      fetchCandles(symbol, 240, 200),
-      fetchCandles(symbol, 15, 100),
-      fetchCandles(symbol, 5, 50),
-    ]).then(([c4h, c15m, c5m]) => ({ symbol, c4h, c15m, c5m }))
-      .catch((err) => ({ symbol, error: err instanceof Error ? err.message : String(err) }))
-  );
-
-  const allFetches = await Promise.all(fetches);
-  const activeSignals: Signal[] = [];
-
-  for (const result of allFetches) {
-    const tag = result.symbol.split("/")[0];
-
-    if ("error" in result) {
-      logs.push(`[ERROR] ${tag}: ${result.error}`);
-      continue;
-    }
-
-    const { symbol, c4h, c15m, c5m } = result;
-
-    const price4h = c4h[c4h.length - 1]?.close ?? 0;
-    const price5m = c5m[c5m.length - 1]?.close ?? price4h;
-
-    logs.push(`[FETCH] ${tag} 4H: ${c4h.length} candles, latest: $${price4h.toLocaleString("en-US", { maximumFractionDigits: 2 })}`);
-    logs.push(`[FETCH] ${tag} 15M: ${c15m.length} candles`);
-    logs.push(`[FETCH] ${tag} 5M: ${c5m.length} candles`);
-
-    // Rule 1: find last 3 swing highs and lows from 4H
-    const swingHighs = getSwingHighs(c4h, 3);
-    const swingLows = getSwingLows(c4h, 3);
-    const highestHigh = swingHighs[0] ?? 0;
-    const lowestLow = swingLows[0] ?? Infinity;
-
-    logs.push(`[SWINGS] ${tag} 4H highs: [${swingHighs.map((h) => h.toFixed(0)).join(", ")}], lows: [${swingLows.map((l) => l.toFixed(0)).join(", ")}]`);
-
-    // Rule 1 continued: breakout direction
-    let direction: Direction | "NONE" = "NONE";
-    if (highestHigh > 0 && price4h > highestHigh) direction = "LONG";
-    else if (lowestLow < Infinity && price4h < lowestLow) direction = "SHORT";
-
-    if (direction === "NONE") {
-      logs.push(`[BREAKOUT] ${tag}: NONE — price $${price4h.toFixed(2)} below high $${highestHigh.toFixed(2)}, above low $${lowestLow.toFixed(2)}`);
-      logs.push(`[SIGNAL] ${tag}: No signal`);
-      // Mark any existing active signal as END
-      const existing = signalStore.get(symbol);
-      if (existing && existing.state !== "END") {
-        signalStore.set(symbol, { ...existing, state: "END" });
-      }
-      continue;
-    }
-
-    logs.push(`[BREAKOUT] ${tag}: ${direction} — price $${price4h.toFixed(2)} ${direction === "LONG" ? "above high" : "below low"} $${(direction === "LONG" ? highestHigh : lowestLow).toFixed(2)}`);
-
-    const atrVal = calcATR(c4h);
-    const existing = signalStore.get(symbol);
-
-    let signal: Signal;
-
-    if (!existing || existing.state === "END") {
-      // Rule 2: brand new EARLY signal
-      const entry = price4h;
-      const sl = direction === "LONG" ? entry - 1.5 * atrVal : entry + 1.5 * atrVal;
-      const tp = direction === "LONG" ? entry + 3 * atrVal : entry - 3 * atrVal;
-      signal = {
-        symbol,
-        direction,
-        state: "EARLY",
-        entry,
-        sl,
-        tp,
-        confidence: calcConfidence(c15m, direction),
-        createdAt: Date.now(),
-        breakoutLevel: direction === "LONG" ? highestHigh : lowestLow,
-        candlesSince: 0,
-      };
+    if (existing && existing.length > 0) {
+      // Update existing signal (preserve entry/SL/TP, update confidence/state)
+      await supabase
+        .from('signals')
+        .update({
+          state: signal.state,
+          confidence: signal.confidence,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', existing[0].id);
     } else {
-      // Update existing signal
-      const candlesSince = existing.candlesSince + 1;
-      const confidence = calcConfidence(c15m, existing.direction); // Rule 3: display only
-      const pctFromLevel = Math.abs(price5m - existing.breakoutLevel) / existing.breakoutLevel;
-      const pulledBack = pctFromLevel <= 0.005; // Rule 4: within 0.5%
-      const expired = candlesSince >= 12;        // Rule 5: 12 × 5M candles
-
-      let state: SignalState = existing.state;
-      if (expired && existing.state !== "CONFIRMED") {
-        state = "END";
-      } else if (pulledBack && existing.state === "EARLY") {
-        state = "CONFIRMED";
-      }
-
-      signal = { ...existing, candlesSince, confidence, state };
+      // Insert new signal
+      await supabase.from('signals').insert(signal);
     }
-
-    signalStore.set(symbol, signal);
-    logs.push(`[SIGNAL] ${tag}: state=${signal.state}, entry=$${signal.entry.toFixed(2)}, SL=$${signal.sl.toFixed(2)}, TP=$${signal.tp.toFixed(2)}, confidence=${signal.confidence}%`);
-    activeSignals.push(signal);
   }
 
-  const duration = Date.now() - startMs;
-  logs.push(`[CRON END] ${duration}ms — signals: ${activeSignals.length}`);
+  // Mark expired signals as END
+  await supabase
+    .from('signals')
+    .update({ state: 'END' })
+    .lt('updated_at', new Date(Date.now() - 12 * 5 * 60 * 1000).toISOString()) // 12 candles * 5 min
+    .neq('state', 'END');
 
-  return { signals: activeSignals, logs };
+  // Return all active signals
+  const { data } = await supabase
+    .from('signals')
+    .select('*')
+    .neq('state', 'END')
+    .order('created_at', { ascending: false });
+
+  return data || [];
 }
+Updated /api/signals/route.ts:
+TypeScript
+Copy
+import { supabase } from '@/lib/supabase-client';
+
+export async function GET() {
+  const { data: signals, error } = await supabase
+    .from('signals')
+    .select('*')
+    .neq('state', 'END')
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    console.error('[DB ERROR]', error);
+    return Response.json({ error: 'Database error' }, { status: 500 });
+  }
+
+  return Response.json({ signals: signals || [] });
+}
+Updated /api/external-cron/route.ts:
+After generating signals, log the cron run to Supabase:
+TypeScript
+Copy
+// At end of cron execution
+await supabase.from('cron_runs').insert({
+  signals_found: signals.length,
+  duration_ms: Date.now() - startTime,
+  logs: logBuffer.join('\n') // capture all console.log output
+});
+UI: Add "Near Breakout" Indicator
+When no signal exists for a symbol, show setup context so I know the system is analyzing:
+TypeScript
+Copy
+// In the card when no signal:
+<div className="text-sm text-gray-400">
+  {nearBreakout ? (
+    <span>
+      {direction} SETUP — price ${price} 
+      ({distance}% {direction === 'LONG' ? 'below' : 'above'} ${level})
+    </span>
+  ) : (
+    <span>NO SETUP — price ${price} (far from levels)</span>
+  )}
+</div>
+Where nearBreakout = price within 3% of a swing high (for LONG) or low (for SHORT).
+UI: Add "Inject Test Signal" Button
+Create /api/test-signal/route.ts (POST, no auth):
+TypeScript
+Copy
+export async function POST() {
+  const testSignal = {
+    symbol: 'BTC/USD',
+    direction: 'LONG',
+    state: 'EARLY',
+    entry_price: 85000,
+    stop_loss: 84000,
+    take_profit: 88000,
+    confidence: 72,
+    breakout_level: 84500
+  };
+
+  const { error } = await supabase.from('signals').insert(testSignal);
+  if (error) return Response.json({ error }, { status: 500 });
+
+  return Response.json({ success: true, signal: testSignal });
+}
+Add a button on the UI: "INJECT TEST SIGNAL" → calls POST /api/test-signal → refreshes page. This lets me verify the dashboard renders correctly without waiting for a real breakout.
+Telegram Anti-Spam
+Keep the existing shouldSendAlert() logic. But add a telegram_alerts table to track what was sent:
+sql
+Copy
+CREATE TABLE IF NOT EXISTS telegram_alerts (
+  id SERIAL PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  state TEXT NOT NULL,
+  sent_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+Query this table in shouldSendAlert() instead of in-memory Map. This survives serverless restarts.
+Explicitly Verify These Before Responding:
+No in-memory arrays for signals — all Supabase
+/api/signals queries Supabase, not a module variable
+/api/external-cron inserts/updates Supabase, not a local array
+The "Scan Now" button calls a route that also uses Supabase
+Test signal button works and renders on UI
+Near-breakout text shows when no signal but close to level
+No new files beyond what's needed. Keep it to:
+lib/strategy.ts (updated)
+lib/telegram.ts (updated)
+app/api/external-cron/route.ts (updated)
+app/api/signals/route.ts (updated)
+app/api/test-signal/route.ts (new)
+app/page.tsx (updated)
+SQL migration (provide as code block, I'll run manually in Supabase)
+What This Solves
+Table
+Problem	Fix
+Dashboard empty after cron	Supabase persistence survives instances
+Can't verify UI works	Test signal button injects fake data
+Don't know if cron is running	cron_runs table logs every execution
+Don't know if analysis is working	Near-breakout indicator shows setup context
+Telegram spam	telegram_alerts table tracks sends persistently
