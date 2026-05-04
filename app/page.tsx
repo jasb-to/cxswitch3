@@ -2,7 +2,7 @@
 
 import useSWR from "swr";
 import { useState, useEffect } from "react";
-import type { Signal } from "@/lib/strategy";
+import type { Signal, MarketContext } from "@/lib/strategy";
 
 const VERSION = "v1.0.0";
 const SYMBOLS = ["BTC/USD", "ETH/USD", "SOL/USD"];
@@ -29,7 +29,7 @@ function Badge({ state }: { state: Signal["state"] | "EXPIRED" }) {
   );
 }
 
-function SignalCard({ symbol, signal }: { symbol: string; signal?: Signal }) {
+function SignalCard({ symbol, signal, market }: { symbol: string; signal?: Signal; market?: MarketContext }) {
   const isEnd = signal?.state === "END";
   const active = signal && !isEnd;
 
@@ -51,6 +51,8 @@ function SignalCard({ symbol, signal }: { symbol: string; signal?: Signal }) {
 
   const confidence = active ? signal.confidence : 0;
   const confColor = active && signal.direction === "LONG" ? "#22c55e" : active ? "#ef4444" : "#333";
+  const price = active ? signal.entry_price : market?.price ?? 0;
+  const displayPrice = price > 0 ? `$${fmt(price)}` : "—";
 
   return (
     <article className={`border ${cardBorder} ${cardBg} flex flex-col overflow-hidden`}>
@@ -68,13 +70,13 @@ function SignalCard({ symbol, signal }: { symbol: string; signal?: Signal }) {
       </div>
 
       <div className="p-5 flex flex-col gap-5">
+        {/* Current Price */}
         <div>
           <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1">PRICE</p>
-          <p className="font-mono text-3xl font-bold text-white tabular-nums">
-            {active ? `$${fmt(signal.entry_price)}` : "—"}
-          </p>
+          <p className="font-mono text-3xl font-bold text-white tabular-nums">{displayPrice}</p>
         </div>
 
+        {/* Signal levels (if active) */}
         {active && (
           <div className="grid grid-cols-3 gap-3 border-t border-[#1e1e1e] pt-4">
             <div>
@@ -92,21 +94,77 @@ function SignalCard({ symbol, signal }: { symbol: string; signal?: Signal }) {
           </div>
         )}
 
-        <div className="border-t border-[#1e1e1e] pt-4">
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-[10px] tracking-[0.2em] text-[#666]">CONFIDENCE</p>
-            <p className="font-mono text-[12px] text-[#888] tabular-nums">{confidence}%</p>
+        {/* Market swing levels (if no signal or for context) */}
+        {!active && market && (market.swingHigh || market.swingLow) && (
+          <div className="border-t border-[#1e1e1e] pt-4">
+            <p className="text-[10px] tracking-[0.2em] text-[#666] mb-2">SWING LEVELS</p>
+            <div className="flex flex-col gap-1.5">
+              {market.swingHigh && (
+                <div className="flex items-center justify-between text-[12px]">
+                  <span className="text-[#888]">High</span>
+                  <span className="font-mono text-white">${fmt(market.swingHigh)}</span>
+                  <span className={`text-[11px] ${market.distanceToHigh && market.distanceToHigh <= 0 ? "text-[#d4a017]" : "text-[#555]"}`}>
+                    {market.distanceToHigh !== null ? `${Math.abs(market.distanceToHigh).toFixed(1)}% away` : "—"}
+                  </span>
+                </div>
+              )}
+              {market.swingLow && (
+                <div className="flex items-center justify-between text-[12px]">
+                  <span className="text-[#888]">Low</span>
+                  <span className="font-mono text-white">${fmt(market.swingLow)}</span>
+                  <span className={`text-[11px] ${market.distanceToLow && market.distanceToLow <= 3 ? "text-[#d4a017]" : "text-[#555]"}`}>
+                    {market.distanceToLow !== null ? `${market.distanceToLow.toFixed(1)}% away` : "—"}
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
-          <div className="h-px bg-[#1e1e1e]">
-            <div
-              className="h-px transition-all duration-700"
-              style={{ width: `${confidence}%`, backgroundColor: confColor }}
-            />
-          </div>
-        </div>
+        )}
 
-        {active ? (
+        {/* Confidence bar (if signal active) */}
+        {active && (
+          <div className="border-t border-[#1e1e1e] pt-4">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] tracking-[0.2em] text-[#666]">CONFIDENCE</p>
+              <p className="font-mono text-[12px] text-[#888] tabular-nums">{confidence}%</p>
+            </div>
+            <div className="h-px bg-[#1e1e1e]">
+              <div
+                className="h-px transition-all duration-700"
+                style={{ width: `${confidence}%`, backgroundColor: confColor }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Setup status (if no signal) */}
+        {!active && market && (
+          <div className="border-t border-[#1e1e1e] pt-4">
+            <p className={`text-[12px] font-mono font-bold ${
+              market.setup === "LONG_SETUP"
+                ? "text-[#22c55e]"
+                : market.setup === "SHORT_SETUP"
+                ? "text-[#ef4444]"
+                : "text-[#555]"
+            }`}>
+              {market.setupText}
+            </p>
+          </div>
+        )}
+
+        {/* Direction (if signal active) */}
+        {active && (
           <div>
+            <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">DIRECTION</p>
+            <p className={`font-mono text-base font-bold tracking-widest ${signal.direction === "LONG" ? "text-[#22c55e]" : "text-[#ef4444]"}`}>
+              {signal.direction}
+            </p>
+          </div>
+        )}
+      </div>
+    </article>
+  );
+}
             <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">DIRECTION</p>
             <p className={`font-mono text-base font-bold tracking-widest ${signal.direction === "LONG" ? "text-[#22c55e]" : "text-[#ef4444]"}`}>
               {signal.direction}
@@ -145,18 +203,20 @@ export default function Dashboard() {
     setCooldownSec(remaining);
   }, [now, scanCooldownEnd]);
 
-  const { data, mutate, isValidating } = useSWR<{ signals: Signal[]; fetchedAt: number }>(
+  const { data, mutate, isValidating } = useSWR<{ signals: Signal[]; markets: MarketContext[]; fetchedAt: number }>(
     "/api/signals",
     fetcher,
     { refreshInterval: 30_000, keepPreviousData: true, revalidateOnFocus: false }
   );
 
   const signals: Signal[] = data?.signals ?? [];
+  const markets: MarketContext[] = data?.markets ?? [];
   const fetchedAt: number = data?.fetchedAt ?? 0;
   const isStale = isHydrated && fetchedAt > 0 && now > 0 && (now - fetchedAt) > STALE_THRESHOLD_MS;
   const lastUpdateTime = isHydrated ? new Date().toLocaleTimeString("en-GB", { hour12: false }) : "—";
 
   const signalMap = new Map<string, Signal>(signals.map((s) => [s.symbol, s]));
+  const marketMap = new Map<string, MarketContext>(markets.map((m) => [m.symbol, m]));
   const activeCount = signals.filter((s) => s.state !== "END").length;
 
   const scanOnCooldown = cooldownSec > 0;
@@ -317,7 +377,8 @@ export default function Dashboard() {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {SYMBOLS.map((sym) => (
-              <SignalCard key={sym} symbol={sym} signal={signalMap.get(sym)} />
+              <SignalCard key={sym} symbol={sym} signal={signalMap.get(sym)} market={marketMap.get(sym)} />
+            ))}
             ))}
           </div>
         </div>

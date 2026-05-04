@@ -1,5 +1,5 @@
 import { supabase } from "./supabase-client";
-import { fetchCandles } from "./kraken";
+import { fetchCandles, type Candle } from "./kraken";
 
 export type SignalDirection = "LONG" | "SHORT";
 export type SignalState = "EARLY" | "CONFIRMED" | "END";
@@ -16,6 +16,17 @@ export interface Signal {
   breakout_level: number;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface MarketContext {
+  symbol: string;
+  price: number;
+  swingHigh: number | null;
+  swingLow: number | null;
+  distanceToHigh: number | null;      // % distance to high
+  distanceToLow: number | null;       // % distance to low
+  setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP";
+  setupText: string;
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -317,4 +328,61 @@ function computeConfidence(candles: Candle[], direction: SignalDirection): numbe
   }
 
   return Math.min(100, Math.max(0, score));
+}
+
+// ────────────────────────────────────────────────────────────────────────────────
+// Market Context: Price + Swing Levels + Setup Status (no signal required)
+// ────────────────────────────────────────────────────────────────────────────────
+
+export async function getMarketContext(symbolBase: string): Promise<MarketContext | null> {
+  try {
+    const symbol = `${symbolBase}/USD`;
+    const candles4h = await fetchCandles(symbolBase, 240, 100);
+
+    if (!candles4h.length) return null;
+
+    const price = candles4h[candles4h.length - 1].close;
+    const highs = swingHighs(candles4h);
+    const lows = swingLows(candles4h);
+
+    const swingHigh = highs.length ? Math.max(...highs) : null;
+    const swingLow = lows.length ? Math.min(...lows) : null;
+
+    // Calculate distance % (negative = below level, positive = above level)
+    let distanceToHigh: number | null = null;
+    let distanceToLow: number | null = null;
+
+    if (swingHigh) {
+      distanceToHigh = ((swingHigh - price) / price) * 100;
+    }
+    if (swingLow) {
+      distanceToLow = ((price - swingLow) / price) * 100;
+    }
+
+    // Determine setup status (within 3% = setup condition)
+    let setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" = "NO_SETUP";
+    let setupText = "NO SETUP — ranging";
+
+    if (distanceToHigh !== null && distanceToHigh >= -3 && distanceToHigh <= 0) {
+      setup = "LONG_SETUP";
+      setupText = `LONG SETUP — ${Math.abs(distanceToHigh).toFixed(1)}% below $${swingHigh.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+    } else if (distanceToLow !== null && distanceToLow >= 0 && distanceToLow <= 3) {
+      setup = "SHORT_SETUP";
+      setupText = `SHORT SETUP — ${distanceToLow.toFixed(1)}% above $${swingLow.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+    }
+
+    return {
+      symbol,
+      price,
+      swingHigh,
+      swingLow,
+      distanceToHigh,
+      distanceToLow,
+      setup,
+      setupText,
+    };
+  } catch (err) {
+    console.error(`[getMarketContext] Error for ${symbolBase}:`, err);
+    return null;
+  }
 }
