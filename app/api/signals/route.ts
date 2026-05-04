@@ -7,21 +7,7 @@ export async function GET() {
   // PRIMARY: Always fetch live market data from Kraken (never skip this)
   const symbols = ["BTC", "ETH", "SOL"];
   const market = await Promise.all(
-    symbols.map((s) =>
-      getMarketContext(s).catch((err) => {
-        console.error(`[MARKET DATA ERROR] ${s}:`, err);
-        return {
-          symbol: `${s}/USD`,
-          price: 0,
-          swingHigh: null,
-          swingLow: null,
-          distanceToHigh: null,
-          distanceToLow: null,
-          setup: "NO_SETUP" as const,
-          setupText: "ERROR — market data unavailable",
-        };
-      })
-    )
+    symbols.map((s) => getMarketContext(s))
   );
 
   // SECONDARY: Try Supabase for persisted signals (optional, won't crash if missing)

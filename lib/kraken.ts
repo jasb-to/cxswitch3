@@ -11,6 +11,10 @@ const KRAKEN_PAIR: Record<string, string> = {
   "BTC/USD": "XBTUSD",
   "ETH/USD": "ETHUSD",
   "SOL/USD": "SOLUSD",
+  // Also accept bare symbols as fallback
+  "BTC": "XBTUSD",
+  "ETH": "ETHUSD",
+  "SOL": "SOLUSD",
 };
 
 /**

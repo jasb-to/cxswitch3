@@ -25,8 +25,9 @@ export interface MarketContext {
   swingLow: number | null;
   distanceToHigh: number | null;
   distanceToLow: number | null;
-  setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP";
+  setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" | "ERROR";
   setupText: string;
+  error?: boolean;
 }
 
 // ─── Kraken candle helpers ───────────────────────────────────────────────────
@@ -137,12 +138,24 @@ export async function getAllSignals(): Promise<Signal[]> {
 
 // ─── Market context with swing levels ────────────────────────────────────────
 
-export async function getMarketContext(symbolBase: string): Promise<MarketContext | null> {
+export async function getMarketContext(symbolBase: string): Promise<MarketContext> {
   try {
     const symbol = `${symbolBase}/USD`;
     const candles4h = await fetchCandles(symbolBase, 240, 100);
 
-    if (!candles4h.length) return null;
+    if (!candles4h.length) {
+      return {
+        symbol,
+        price: 0,
+        swingHigh: null,
+        swingLow: null,
+        distanceToHigh: null,
+        distanceToLow: null,
+        setup: "ERROR",
+        setupText: "No candle data available",
+        error: true,
+      };
+    }
 
     const price = candles4h[candles4h.length - 1].close;
     const highs = swingHighs(candles4h);
@@ -161,7 +174,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       distanceToLow = ((price - swingLow) / price) * 100;
     }
 
-    let setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" = "NO_SETUP";
+    let setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" | "ERROR" = "NO_SETUP";
     let setupText = "NO SETUP — ranging";
 
     if (distanceToHigh !== null && distanceToHigh >= -3 && distanceToHigh <= 0) {
@@ -184,6 +197,16 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     };
   } catch (err) {
     console.error(`[getMarketContext] Error for ${symbolBase}:`, err);
-    return null;
+    return {
+      symbol: `${symbolBase}/USD`,
+      price: 0,
+      swingHigh: null,
+      swingLow: null,
+      distanceToHigh: null,
+      distanceToLow: null,
+      setup: "ERROR",
+      setupText: `Data unavailable: ${err instanceof Error ? err.message : "Unknown error"}`,
+      error: true,
+    };
   }
 }

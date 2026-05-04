@@ -5,7 +5,6 @@ import { useState, useEffect } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 
 const VERSION = "v1.0.0";
-const SYMBOLS = ["BTC/USD", "ETH/USD", "SOL/USD"];
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -95,7 +94,7 @@ function SignalCard({ symbol, signal, market }: { symbol: string; signal?: Signa
         )}
 
         {/* Market swing levels (if no signal or for context) */}
-        {!active && market && (market.swingHigh || market.swingLow) && (
+        {!active && market && !market.error && (market.swingHigh || market.swingLow) && (
           <div className="border-t border-[#1e1e1e] pt-4">
             <p className="text-[10px] tracking-[0.2em] text-[#666] mb-2">SWING LEVELS</p>
             <div className="flex flex-col gap-1.5">
@@ -121,6 +120,13 @@ function SignalCard({ symbol, signal, market }: { symbol: string; signal?: Signa
           </div>
         )}
 
+        {/* Error state */}
+        {market?.error && (
+          <div className="border-t border-[#1e1e1e] pt-4">
+            <p className="text-[12px] text-[#ef4444] font-mono">{market.setupText}</p>
+          </div>
+        )}
+
         {/* Confidence bar (if signal active) */}
         {active && (
           <div className="border-t border-[#1e1e1e] pt-4">
@@ -138,7 +144,7 @@ function SignalCard({ symbol, signal, market }: { symbol: string; signal?: Signa
         )}
 
         {/* Setup status (if no signal) */}
-        {!active && market && (
+        {!active && market && !market.error && (
           <div className="border-t border-[#1e1e1e] pt-4">
             <p className={`text-[12px] font-mono font-bold ${
               market.setup === "LONG_SETUP"
@@ -202,7 +208,6 @@ export default function Dashboard() {
   const lastUpdateTime = isHydrated ? new Date().toLocaleTimeString("en-GB", { hour12: false }) : "—";
 
   const signalMap = new Map<string, Signal>(signals.map((s) => [s.symbol, s]));
-  const marketMap = new Map<string, MarketContext>(market.map((m) => [m.symbol, m]));
   const activeCount = signals.filter((s) => s.state !== "END").length;
 
   const scanOnCooldown = cooldownSec > 0;
@@ -362,9 +367,12 @@ export default function Dashboard() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {SYMBOLS.map((sym) => (
-              <SignalCard key={sym} symbol={sym} signal={signalMap.get(sym)} market={marketMap.get(sym)} />
-            ))}
+            {market.map((m) => {
+              const signal = signalMap.get(m.symbol);
+              return (
+                <SignalCard key={m.symbol} symbol={m.symbol} signal={signal} market={m} />
+              );
+            })}
           </div>
         </div>
 
