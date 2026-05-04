@@ -57,12 +57,21 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
   const logs: string[] = [];
   const signals: Signal[] = [];
 
+  if (!supabase) {
+    logs.push("[SUPABASE] Not connected — skipping signal generation");
+    return { signals, logs };
+  }
+
   try {
-    // Fetch all signals from Supabase for state management
-    const { data: existing } = await supabase
+    const { data: existing, error } = await supabase
       .from("signals")
       .select("*")
       .in("state", ["EARLY", "CONFIRMED"]);
+
+    if (error) {
+      logs.push(`[SUPABASE] Query error: ${error.message}`);
+      return { signals, logs };
+    }
 
     const existingMap = new Map(existing?.map((s: any) => [s.symbol, s]) ?? []);
 
@@ -77,7 +86,6 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
         const highestHigh = highs.length ? Math.max(...highs) : null;
         const lowestLow = lows.length ? Math.min(...lows) : null;
 
-        // Log breakout detection
         if (highestHigh && price > highestHigh * 1.01) {
           logs.push(`[${base}] LONG breakout at $${price.toFixed(2)} above $${highestHigh.toFixed(2)}`);
         } else if (lowestLow && price < lowestLow * 0.99) {
@@ -86,7 +94,6 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           logs.push(`[${base}] Price: $${price.toFixed(2)} — no breakout`);
         }
 
-        // Get existing signal
         const existing = existingMap.get(`${base}/USD`);
         if (existing) {
           signals.push(existing);
@@ -105,11 +112,21 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
 // ─── Get all signals from Supabase ──────────────────────────────────────────
 
 export async function getAllSignals(): Promise<Signal[]> {
+  if (!supabase) {
+    console.warn("[getAllSignals] Supabase not connected");
+    return [];
+  }
+
   try {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("signals")
       .select("*")
       .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("[getAllSignals] Query error:", error);
+      return [];
+    }
 
     return data ?? [];
   } catch (err) {

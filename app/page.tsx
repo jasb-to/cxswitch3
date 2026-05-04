@@ -189,20 +189,20 @@ export default function Dashboard() {
     setCooldownSec(remaining);
   }, [now, scanCooldownEnd]);
 
-  const { data, mutate, isValidating } = useSWR<{ signals: Signal[]; markets: MarketContext[]; fetchedAt: number }>(
+  const { data, mutate, isValidating } = useSWR<{ signals: Signal[]; market: MarketContext[]; fetchedAt: number }>(
     "/api/signals",
     fetcher,
     { refreshInterval: 30_000, keepPreviousData: true, revalidateOnFocus: false }
   );
 
   const signals: Signal[] = data?.signals ?? [];
-  const markets: MarketContext[] = data?.markets ?? [];
+  const market: MarketContext[] = data?.market ?? [];
   const fetchedAt: number = data?.fetchedAt ?? 0;
   const isStale = isHydrated && fetchedAt > 0 && now > 0 && (now - fetchedAt) > STALE_THRESHOLD_MS;
   const lastUpdateTime = isHydrated ? new Date().toLocaleTimeString("en-GB", { hour12: false }) : "—";
 
   const signalMap = new Map<string, Signal>(signals.map((s) => [s.symbol, s]));
-  const marketMap = new Map<string, MarketContext>(markets.map((m) => [m.symbol, m]));
+  const marketMap = new Map<string, MarketContext>(market.map((m) => [m.symbol, m]));
   const activeCount = signals.filter((s) => s.state !== "END").length;
 
   const scanOnCooldown = cooldownSec > 0;

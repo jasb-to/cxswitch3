@@ -4,24 +4,37 @@ import { getAllSignals, getMarketContext, type MarketContext } from "@/lib/strat
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  try {
-    const signals = await getAllSignals();
-    const marketContexts = await Promise.all([
-      getMarketContext("BTC"),
-      getMarketContext("ETH"),
-      getMarketContext("SOL"),
-    ]);
+  // PRIMARY: Always fetch live market data from Kraken (never skip this)
+  const symbols = ["BTC", "ETH", "SOL"];
+  const market = await Promise.all(
+    symbols.map((s) =>
+      getMarketContext(s).catch((err) => {
+        console.error(`[MARKET DATA ERROR] ${s}:`, err);
+        return {
+          symbol: `${s}/USD`,
+          price: 0,
+          swingHigh: null,
+          swingLow: null,
+          distanceToHigh: null,
+          distanceToLow: null,
+          setup: "NO_SETUP" as const,
+          setupText: "ERROR — market data unavailable",
+        };
+      })
+    )
+  );
 
-    return NextResponse.json({
-      signals,
-      markets: marketContexts.filter(Boolean),
-      fetchedAt: Date.now(),
-    });
-  } catch (error) {
-    console.error("[API ERROR]", error);
-    return NextResponse.json(
-      { error: "Failed to fetch signals", signals: [], markets: [] },
-      { status: 500 }
-    );
+  // SECONDARY: Try Supabase for persisted signals (optional, won't crash if missing)
+  let signals = [];
+  try {
+    signals = await getAllSignals();
+  } catch (err) {
+    console.error("[SUPABASE SIGNALS] Fetch failed, returning empty signals:", err);
   }
+
+  return NextResponse.json({
+    signals,
+    market,
+    fetchedAt: Date.now(),
+  });
 }
