@@ -340,7 +340,7 @@ export default function Dashboard() {
             <div className="grid grid-cols-2 gap-6 flex-1 items-start">
               <div>
                 <p className="text-[10px] tracking-[0.22em] text-[#555] mb-3">ASSETS</p>
-                <p className="font-bold text-5xl text-[#22c55e] tabular-nums">{SYMBOLS.length}</p>
+                <p className="font-bold text-5xl text-[#22c55e] tabular-nums">{market.length}</p>
               </div>
               <div>
                 <p className="text-[10px] tracking-[0.22em] text-[#555] mb-3">SIGNALS</p>
