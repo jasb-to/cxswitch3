@@ -1,4 +1,4 @@
-import { supabase } from "./supabase-client";
+import { supabase } from "@/lib/supabase-client";
 import type { Signal } from "./strategy";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
