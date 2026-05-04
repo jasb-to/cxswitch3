@@ -165,20 +165,6 @@ function SignalCard({ symbol, signal, market }: { symbol: string; signal?: Signa
     </article>
   );
 }
-            <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">DIRECTION</p>
-            <p className={`font-mono text-base font-bold tracking-widest ${signal.direction === "LONG" ? "text-[#22c55e]" : "text-[#ef4444]"}`}>
-              {signal.direction}
-            </p>
-          </div>
-        ) : (
-          <p className="text-[11px] tracking-[0.2em] text-[#2a2a2a]">
-            {isEnd ? "SIGNAL EXPIRED" : "AWAITING BREAKOUT"}
-          </p>
-        )}
-      </div>
-    </article>
-  );
-}
 
 export default function Dashboard() {
   const [tg, setTg] = useState<"idle" | "sending" | "ok" | "error">("idle");
@@ -378,7 +364,6 @@ export default function Dashboard() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {SYMBOLS.map((sym) => (
               <SignalCard key={sym} symbol={sym} signal={signalMap.get(sym)} market={marketMap.get(sym)} />
-            ))}
             ))}
           </div>
         </div>
