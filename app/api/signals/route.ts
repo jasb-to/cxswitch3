@@ -4,5 +4,8 @@ import { getAllSignals } from "@/lib/strategy";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json(getAllSignals());
+  return NextResponse.json({
+    signals: getAllSignals(),
+    fetchedAt: Date.now(),
+  });
 }

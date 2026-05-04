@@ -3,6 +3,18 @@ import type { Signal } from "./strategy";
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
+// ── Anti-spam tracker ─────────────────────────────────────────────────────────
+// Persists in the serverless module across warm requests.
+const lastAlertedState = new Map<string, string>(); // symbol -> last alerted state
+
+export function shouldSendAlert(symbol: string, newState: string): boolean {
+  if (newState === "END") return false;           // never alert on expiry
+  const last = lastAlertedState.get(symbol);
+  if (last === newState) return false;            // already sent for this state
+  lastAlertedState.set(symbol, newState);
+  return true;
+}
+
 function fmt(n: number): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
