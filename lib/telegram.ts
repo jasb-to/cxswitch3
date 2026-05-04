@@ -1,18 +1,26 @@
+import { supabase } from "./supabase-client";
 import type { Signal } from "./strategy";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// ── Anti-spam tracker ─────────────────────────────────────────────────────────
-// Persists in the serverless module across warm requests.
-const lastAlertedState = new Map<string, string>(); // symbol -> last alerted state
+/**
+ * Check if we should send an alert using Supabase persistence.
+ * Never alert on END, only once per state transition.
+ */
+export async function shouldSendAlert(symbol: string, newState: string): Promise<boolean> {
+  if (newState === "END") return false;
 
-export function shouldSendAlert(symbol: string, newState: string): boolean {
-  if (newState === "END") return false;           // never alert on expiry
-  const last = lastAlertedState.get(symbol);
-  if (last === newState) return false;            // already sent for this state
-  lastAlertedState.set(symbol, newState);
-  return true;
+  // Check if we've already sent this state for this symbol
+  const { data } = await supabase
+    .from("telegram_alerts")
+    .select("id")
+    .eq("symbol", symbol)
+    .eq("state", newState)
+    .order("sent_at", { ascending: false })
+    .limit(1);
+
+  return !data || data.length === 0;
 }
 
 function fmt(n: number): string {
@@ -20,7 +28,7 @@ function fmt(n: number): string {
 }
 
 /**
- * Send a signal alert. Only called on state change TO EARLY or TO CONFIRMED.
+ * Send a signal alert and track it in Supabase.
  */
 export async function sendSignalAlert(signal: Signal): Promise<void> {
   if (!BOT_TOKEN || !CHAT_ID) return;
@@ -28,15 +36,21 @@ export async function sendSignalAlert(signal: Signal): Promise<void> {
   const emoji = signal.state === "CONFIRMED" ? "🟢" : "🟡";
   const text =
     `${emoji} ${signal.symbol} ${signal.direction} ${signal.state}\n` +
-    `Entry: $${fmt(signal.entry)}\n` +
-    `SL: $${fmt(signal.sl)}\n` +
-    `TP: $${fmt(signal.tp)}\n` +
+    `Entry: $${fmt(signal.entry_price)}\n` +
+    `SL: $${fmt(signal.stop_loss)}\n` +
+    `TP: $${fmt(signal.take_profit)}\n` +
     `Confidence: ${signal.confidence}%`;
 
   await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: CHAT_ID, text }),
+  });
+
+  // Track alert in Supabase
+  await supabase.from("telegram_alerts").insert({
+    symbol: signal.symbol,
+    state: signal.state,
   });
 }
 

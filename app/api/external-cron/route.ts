@@ -26,12 +26,12 @@ export async function GET(req: NextRequest) {
   }
 
   for (const signal of signals) {
-    if (shouldSendAlert(signal.symbol, signal.state)) {
+    if (await shouldSendAlert(signal.symbol, signal.state)) {
       try {
         await sendSignalAlert(signal);
         console.log(`[TELEGRAM] Sent ${signal.state} alert for ${signal.symbol}`);
-      } catch {
-        console.log(`[TELEGRAM] Failed to send alert for ${signal.symbol}`);
+      } catch (err) {
+        console.log(`[TELEGRAM] Failed to send alert for ${signal.symbol}:`, err);
       }
     } else {
       console.log(`[TELEGRAM] Skipped — already alerted ${signal.state} for ${signal.symbol}`);
@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     ok: true,
     runAt,
-    signals: getAllSignals(),
+    signals: await getAllSignals(),
     logs,
   });
 }

@@ -71,7 +71,7 @@ function SignalCard({ symbol, signal }: { symbol: string; signal?: Signal }) {
         <div>
           <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1">PRICE</p>
           <p className="font-mono text-3xl font-bold text-white tabular-nums">
-            {active ? `$${fmt(signal.entry)}` : "—"}
+            {active ? `$${fmt(signal.entry_price)}` : "—"}
           </p>
         </div>
 
@@ -79,15 +79,15 @@ function SignalCard({ symbol, signal }: { symbol: string; signal?: Signal }) {
           <div className="grid grid-cols-3 gap-3 border-t border-[#1e1e1e] pt-4">
             <div>
               <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">ENTRY</p>
-              <p className="font-mono text-[14px] text-white tabular-nums">${fmt(signal.entry)}</p>
+              <p className="font-mono text-[14px] text-white tabular-nums">${fmt(signal.entry_price)}</p>
             </div>
             <div>
               <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">TP1</p>
-              <p className="font-mono text-[14px] text-[#22c55e] tabular-nums">${fmt(signal.tp)}</p>
+              <p className="font-mono text-[14px] text-[#22c55e] tabular-nums">${fmt(signal.take_profit)}</p>
             </div>
             <div>
               <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">SL</p>
-              <p className="font-mono text-[14px] text-[#ef4444] tabular-nums">${fmt(signal.sl)}</p>
+              <p className="font-mono text-[14px] text-[#ef4444] tabular-nums">${fmt(signal.stop_loss)}</p>
             </div>
           </div>
         )}
@@ -130,6 +130,7 @@ export default function Dashboard() {
   const [cooldownSec, setCooldownSec] = useState(0);
   const [now, setNow] = useState(0);
   const [isHydrated, setIsHydrated] = useState(false);
+  const [testSignalLoading, setTestSignalLoading] = useState(false);
 
   useEffect(() => {
     setIsHydrated(true);
@@ -185,6 +186,19 @@ export default function Dashboard() {
       setTgMsg("Network error");
     }
     setTimeout(() => { setTg("idle"); setTgMsg(""); }, 4000);
+  }
+
+  async function injectTestSignal() {
+    setTestSignalLoading(true);
+    try {
+      const res = await fetch("/api/test-signal", { method: "POST" });
+      const json = await res.json();
+      if (json.success) {
+        await mutate();
+      }
+    } finally {
+      setTestSignalLoading(false);
+    }
   }
 
   return (
@@ -258,6 +272,14 @@ export default function Dashboard() {
                   : scanOnCooldown
                   ? `NEXT MANUAL SCAN IN ${cooldownSec}s`
                   : "SCAN NOW"}
+              </button>
+
+              <button
+                onClick={injectTestSignal}
+                disabled={testSignalLoading}
+                className="w-full border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-white text-[11px] tracking-[0.2em] py-3 transition-colors disabled:opacity-40"
+              >
+                {testSignalLoading ? "INJECTING..." : "INJECT TEST SIGNAL"}
               </button>
             </div>
           </div>
