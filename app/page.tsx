@@ -222,6 +222,7 @@ export default function Dashboard() {
   const [now, setNow] = useState(0);
   const [isHydrated, setIsHydrated] = useState(false);
   const [testSignalLoading, setTestSignalLoading] = useState(false);
+  const [clearLoading, setClearLoading] = useState(false);
 
   useEffect(() => {
     setIsHydrated(true);
@@ -290,6 +291,20 @@ export default function Dashboard() {
       }
     } finally {
       setTestSignalLoading(false);
+    }
+  }
+
+  async function clearAllSignals() {
+    if (!confirm("Are you sure you want to clear all signals?")) return;
+    setClearLoading(true);
+    try {
+      const res = await fetch("/api/signals", { method: "DELETE" });
+      const json = await res.json();
+      if (json.cleared) {
+        await mutate();
+      }
+    } finally {
+      setClearLoading(false);
     }
   }
 
@@ -372,6 +387,14 @@ export default function Dashboard() {
                 className="w-full border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-white text-[11px] tracking-[0.2em] py-3 transition-colors disabled:opacity-40"
               >
                 {testSignalLoading ? "INJECTING..." : "INJECT TEST SIGNAL"}
+              </button>
+
+              <button
+                onClick={clearAllSignals}
+                disabled={clearLoading}
+                className="w-full border border-[#7f1d1d] text-[#ef4444] hover:border-[#c41e1e] hover:text-[#ff6b6b] text-[11px] tracking-[0.2em] py-3 transition-colors disabled:opacity-40"
+              >
+                {clearLoading ? "CLEARING..." : "CLEAR ALL SIGNALS"}
               </button>
             </div>
           </div>
