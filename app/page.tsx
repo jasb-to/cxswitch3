@@ -235,7 +235,6 @@ export default function Dashboard() {
   const [endTradeModal, setEndTradeModal] = useState<{ signalId: number; symbol: string; entryPrice: number } | null>(null);
   const [endTradeExitPrice, setEndTradeExitPrice] = useState("");
   const [endTradeLoading, setEndTradeLoading] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
 
   useEffect(() => {
     setIsHydrated(true);
