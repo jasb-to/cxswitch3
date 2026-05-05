@@ -171,19 +171,20 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
         logs.push(`[${base}] $${price.toFixed(2)} — ${setup} — ${market.setupText}`);
 
         // Check if an active signal exists and if it should be expired
-        const existing = activeBySymbol.get(symbol);
+        let existing = activeBySymbol.get(symbol);
         if (existing) {
-          // Calculate retrace distance from breakout level
-          const retracePercent = 
-            existing.direction === "LONG"
-              ? ((existing.breakout_level - price) / price) * 100
-              : ((price - existing.breakout_level) / price) * 100;
+          // For LONG: expire if price drops BELOW the breakout level
+          // For SHORT: expire if price rises ABOVE the breakout level
+          const shouldExpire = 
+            existing.direction === "LONG" 
+              ? price < existing.breakout_level
+              : price > existing.breakout_level;
 
-          // Expire signal if price has retraced >1% through breakout level
-          if (retracePercent > 1) {
+          if (shouldExpire) {
             await updateSignalState(existing.id!, "END", { outcome: "EXPIRED" });
-            logs.push(`[${base}] Expired ${existing.direction} signal — price retraced ${retracePercent.toFixed(2)}% through breakout level`);
-            // Fall through to allow new signal in opposite direction
+            logs.push(`[${base}] Expired ${existing.direction} signal — price ${existing.direction === "LONG" ? "dropped below" : "rose above"} breakout level $${existing.breakout_level.toFixed(2)}`);
+            // Clear the existing signal so we can create a new opposite-direction one
+            existing = undefined;
           } else {
             // Signal still valid, check staleness
             const ageMs = Date.now() - new Date(existing.created_at!).getTime();
@@ -192,6 +193,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             if (isStaleEarly) {
               await updateSignalState(existing.id!, "END", { outcome: "EXPIRED" });
               logs.push(`[${base}] Expired stale EARLY signal (${Math.round(ageMs / 60000)}m old) — allowing new signal`);
+              existing = undefined;
             } else {
               logs.push(`[${base}] Active signal exists (${existing.state}) — skipping creation`);
               signals.push(existing);
@@ -208,6 +210,12 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           const key = cooldownKey(symbol, "LONG", breakoutLevel);
           if (cooldownSet.has(key)) {
             logs.push(`[${base}] LONG on cooldown — fired within last 4h at $${breakoutLevel.toFixed(2)}`);
+            continue;
+          }
+
+          // If there's an active signal in the opposite direction, don't create another
+          if (existing && existing.direction === "SHORT") {
+            logs.push(`[${base}] LONG skipped — active SHORT signal exists`);
             continue;
           }
 
@@ -260,6 +268,12 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           const key = cooldownKey(symbol, "SHORT", breakoutLevel);
           if (cooldownSet.has(key)) {
             logs.push(`[${base}] SHORT on cooldown — fired within last 4h at $${breakoutLevel.toFixed(2)}`);
+            continue;
+          }
+
+          // If there's an active signal in the opposite direction, don't create another
+          if (existing && existing.direction === "LONG") {
+            logs.push(`[${base}] SHORT skipped — active LONG signal exists`);
             continue;
           }
 
