@@ -79,26 +79,80 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
 
     for (const base of ["BTC", "ETH", "SOL"]) {
       try {
-        const candles4h = await fetchCandles(base, 240, 100);
-        if (!candles4h.length) continue;
+        // Get market context with trendlines
+        const market = await getMarketContext(base);
 
-        const price = candles4h[candles4h.length - 1].close;
-        const highs = swingHighs(candles4h);
-        const lows = swingLows(candles4h);
-        const highestHigh = highs.length ? Math.max(...highs) : null;
-        const lowestLow = lows.length ? Math.min(...lows) : null;
-
-        if (highestHigh && price > highestHigh * 1.01) {
-          logs.push(`[${base}] LONG breakout at $${price.toFixed(2)} above $${highestHigh.toFixed(2)}`);
-        } else if (lowestLow && price < lowestLow * 0.99) {
-          logs.push(`[${base}] SHORT breakout at $${price.toFixed(2)} below $${lowestLow.toFixed(2)}`);
-        } else {
-          logs.push(`[${base}] Price: $${price.toFixed(2)} — no breakout`);
+        if (market.error) {
+          logs.push(`[${base}] Error fetching market data`);
+          continue;
         }
 
-        const existing = existingMap.get(`${base}/USD`);
-        if (existing) {
-          signals.push(existing);
+        const price = market.price;
+        const symbol = market.symbol;
+
+        // Check if signal already exists for this symbol
+        let existingSignal = existingMap.get(symbol);
+
+        // LONG SETUP: Price broke resistance (0.5% above)
+        if (market.setup === "LONG_SETUP" && !existingSignal) {
+          const takeProfitPercent = 0.03; // 3% TP
+          const newSignal: Signal = {
+            id: `${symbol}-${Date.now()}`,
+            symbol,
+            state: "EARLY",
+            direction: "LONG",
+            entry_price: price,
+            stop_loss: market.swingLow ?? price * 0.97,
+            take_profit: price * (1 + takeProfitPercent),
+            confidence: 70,
+            created_at: new Date().toISOString(),
+          };
+
+          // Insert new signal into Supabase
+          const { error: insertError } = await supabase
+            .from("signals")
+            .insert([newSignal]);
+
+          if (insertError) {
+            logs.push(`[${base}] Failed to insert LONG signal: ${insertError.message}`);
+          } else {
+            logs.push(`[${base}] ✓ Created LONG EARLY signal at $${price.toFixed(2)}`);
+            signals.push(newSignal);
+            existingSignal = newSignal;
+          }
+        }
+        // SHORT SETUP: Price broke support (0.5% below)
+        else if (market.setup === "SHORT_SETUP" && !existingSignal) {
+          const takeProfitPercent = 0.03; // 3% TP
+          const newSignal: Signal = {
+            id: `${symbol}-${Date.now()}`,
+            symbol,
+            state: "EARLY",
+            direction: "SHORT",
+            entry_price: price,
+            stop_loss: market.swingHigh ?? price * 1.03,
+            take_profit: price * (1 - takeProfitPercent),
+            confidence: 70,
+            created_at: new Date().toISOString(),
+          };
+
+          // Insert new signal into Supabase
+          const { error: insertError } = await supabase
+            .from("signals")
+            .insert([newSignal]);
+
+          if (insertError) {
+            logs.push(`[${base}] Failed to insert SHORT signal: ${insertError.message}`);
+          } else {
+            logs.push(`[${base}] ✓ Created SHORT EARLY signal at $${price.toFixed(2)}`);
+            signals.push(newSignal);
+            existingSignal = newSignal;
+          }
+        } else if (existingSignal) {
+          logs.push(`[${base}] Signal exists: ${existingSignal.state}`);
+          signals.push(existingSignal);
+        } else {
+          logs.push(`[${base}] No setup — ${market.setupText}`);
         }
       } catch (err) {
         logs.push(`[${base}] Error: ${err instanceof Error ? err.message : String(err)}`);
