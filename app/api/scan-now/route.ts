@@ -7,22 +7,30 @@ export const dynamic = "force-dynamic";
 // Server-side proxy: runs the cron logic directly without needing the secret
 // to be exposed to the client. Called by the "Scan Now" button.
 export async function POST() {
-  const { signals, logs } = await generateSignals();
+  try {
+    const { signals, logs } = await generateSignals();
 
-  for (const line of logs) {
-    console.log(line);
-  }
+    for (const line of logs) {
+      console.log(line);
+    }
 
-  for (const signal of signals) {
-    if (await shouldSendAlert(signal.symbol, signal.state)) {
-      try {
-        await sendSignalAlert(signal);
-        console.log(`[TELEGRAM] ✓ Sent ${signal.state} alert for ${signal.symbol} (manual scan)`);
-      } catch {
-        console.log(`[TELEGRAM] ✗ Failed to send alert for ${signal.symbol}`);
+    for (const signal of signals) {
+      if (await shouldSendAlert(signal.symbol, signal.state)) {
+        try {
+          await sendSignalAlert(signal);
+          console.log(`[TELEGRAM] ✓ Sent ${signal.state} alert for ${signal.symbol} (manual scan)`);
+        } catch {
+          console.log(`[TELEGRAM] ✗ Failed to send alert for ${signal.symbol}`);
+        }
       }
     }
-  }
 
-  return NextResponse.json({ ok: true, signals: await getAllSignals(), logs });
+    return NextResponse.json({ ok: true, signals: await getAllSignals(), logs });
+  } catch (error) {
+    console.error('[POST /api/scan-now ERROR]', error);
+    return NextResponse.json(
+      { error: 'Internal error', details: error instanceof Error ? error.message : 'Unknown', ok: false, logs: [] },
+      { status: 500 }
+    );
+  }
 }

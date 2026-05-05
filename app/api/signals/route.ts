@@ -5,33 +5,41 @@ import { supabase } from "@/lib/supabase-client";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  // PRIMARY: Always fetch live market data from Kraken (never skip this)
-  const symbols = ["BTC", "ETH", "SOL"];
-  const market = await Promise.all(
-    symbols.map((s) => getMarketContext(s))
-  );
-
-  // SECONDARY: Try Supabase for persisted signals (optional, won't crash if missing)
-  let signals = [];
   try {
-    signals = await getAllSignals();
-  } catch (err) {
-    console.error("[SUPABASE SIGNALS] Fetch failed, returning empty signals:", err);
-  }
+    // PRIMARY: Always fetch live market data from Kraken (never skip this)
+    const symbols = ["BTC", "ETH", "SOL"];
+    const market = await Promise.all(
+      symbols.map((s) => getMarketContext(s))
+    );
 
-  return NextResponse.json({
-    signals,
-    market,
-    fetchedAt: Date.now(),
-  });
+    // SECONDARY: Try Supabase for persisted signals (optional, won't crash if missing)
+    let signals = [];
+    try {
+      signals = await getAllSignals();
+    } catch (err) {
+      console.error("[SUPABASE SIGNALS] Fetch failed, returning empty signals:", err);
+    }
+
+    return NextResponse.json({
+      signals,
+      market,
+      fetchedAt: Date.now(),
+    });
+  } catch (error) {
+    console.error('[GET /api/signals ERROR]', error);
+    return NextResponse.json(
+      { error: 'Internal error', details: error instanceof Error ? error.message : 'Unknown', signals: [], market: [] },
+      { status: 500 }
+    );
+  }
 }
 
 export async function DELETE() {
-  if (!supabase) {
-    return NextResponse.json({ error: "No DB connection" }, { status: 500 });
-  }
-
   try {
+    if (!supabase) {
+      return NextResponse.json({ error: "No DB connection" }, { status: 500 });
+    }
+
     const { error } = await supabase
       .from("signals")
       .delete()
@@ -44,7 +52,7 @@ export async function DELETE() {
 
     return NextResponse.json({ cleared: true });
   } catch (err) {
-    console.error("[DELETE SIGNALS] Exception:", err);
+    console.error("[DELETE /api/signals ERROR]", err);
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Unknown error" },
       { status: 500 }
