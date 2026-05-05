@@ -28,7 +28,7 @@ function Badge({ state }: { state: Signal["state"] | "EXPIRED" }) {
   );
 }
 
-function SignalCard({ symbol, signal, market }: { symbol: string; signal?: Signal; market?: MarketContext }) {
+function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: string; signal?: Signal; market?: MarketContext; onEndTradeClick?: (signalId: number, symbol: string, entryPrice: number) => void }) {
   const isEnd = signal?.state === "END";
   const active = signal && !isEnd;
 
@@ -207,6 +207,18 @@ function SignalCard({ symbol, signal, market }: { symbol: string; signal?: Signa
             </div>
           </div>
         )}
+
+        {/* End Trade button (if CONFIRMED) */}
+        {signal?.state === "CONFIRMED" && onEndTradeClick && (
+          <div className="border-t border-[#1e1e1e] pt-4">
+            <button
+              onClick={() => onEndTradeClick(signal.id!, symbol, signal.entry_price)}
+              className="w-full border border-[#1e1e1e] hover:border-[#2a2a2a] bg-[#0f0f0f] hover:bg-[#151515] text-[#888] hover:text-[#aaa] text-[11px] tracking-[0.2em] py-2.5 transition-colors"
+            >
+              END TRADE
+            </button>
+          </div>
+        )}
       </div>
     </article>
   );
@@ -220,6 +232,9 @@ export default function Dashboard() {
   const [cooldownSec, setCooldownSec] = useState(0);
   const [now, setNow] = useState(0);
   const [isHydrated, setIsHydrated] = useState(false);
+  const [endTradeModal, setEndTradeModal] = useState<{ signalId: number; symbol: string; entryPrice: number } | null>(null);
+  const [endTradeExitPrice, setEndTradeExitPrice] = useState("");
+  const [endTradeLoading, setEndTradeLoading] = useState(false);
 
   useEffect(() => {
     setIsHydrated(true);
@@ -276,6 +291,35 @@ export default function Dashboard() {
       setTgMsg("Network error");
     }
     setTimeout(() => { setTg("idle"); setTgMsg(""); }, 4000);
+  }
+
+  async function submitEndTrade() {
+    if (!endTradeModal || !endTradeExitPrice) return;
+    setEndTradeLoading(true);
+    try {
+      const exitPrice = parseFloat(endTradeExitPrice);
+      if (isNaN(exitPrice) || exitPrice <= 0) {
+        alert("Invalid exit price");
+        return;
+      }
+      const res = await fetch("/api/signals/end-trade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ signalId: endTradeModal.signalId, exitPrice }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        setEndTradeModal(null);
+        setEndTradeExitPrice("");
+        await mutate();
+      } else {
+        alert(`Failed to end trade: ${json.error}`);
+      }
+    } catch (err) {
+      alert(`Error: ${err}`);
+    } finally {
+      setEndTradeLoading(false);
+    }
   }
 
   return (
@@ -390,7 +434,7 @@ export default function Dashboard() {
             {market.map((m) => {
               const signal = signalMap.get(m.symbol);
               return (
-                <SignalCard key={m.symbol} symbol={m.symbol} signal={signal} market={m} />
+                <SignalCard key={m.symbol} symbol={m.symbol} signal={signal} market={m} onEndTradeClick={(id, sym, entry) => { setEndTradeModal({ signalId: id, symbol: sym, entryPrice: entry }); setEndTradeExitPrice(""); }} />
               );
             })}
           </div>
@@ -402,6 +446,46 @@ export default function Dashboard() {
             4H BREAKOUT &nbsp;·&nbsp; 15M CONFIDENCE &nbsp;·&nbsp; 5M TRIGGER
           </p>
         </footer>
+
+        {/* End Trade Modal */}
+        {endTradeModal && (
+          <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+            <div className="bg-[#111] border border-[#1e1e1e] rounded p-6 max-w-sm w-full mx-4">
+              <h2 className="text-lg font-mono font-bold text-white mb-1">{endTradeModal.symbol}</h2>
+              <p className="text-[12px] text-[#888] mb-4">Entry: ${fmt(endTradeModal.entryPrice)}</p>
+
+              <div className="mb-4">
+                <label className="text-[11px] tracking-[0.15em] text-[#666] block mb-2">EXIT PRICE</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={endTradeExitPrice}
+                  onChange={(e) => setEndTradeExitPrice(e.target.value)}
+                  placeholder="Enter exit price"
+                  className="w-full bg-[#0f0f0f] border border-[#1e1e1e] text-white font-mono px-3 py-2 text-sm focus:outline-none focus:border-[#2a2a2a]"
+                  disabled={endTradeLoading}
+                />
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { setEndTradeModal(null); setEndTradeExitPrice(""); }}
+                  disabled={endTradeLoading}
+                  className="flex-1 border border-[#1e1e1e] text-[#888] hover:border-[#2a2a2a] text-[11px] tracking-[0.15em] py-2 transition-colors disabled:opacity-40"
+                >
+                  CANCEL
+                </button>
+                <button
+                  onClick={submitEndTrade}
+                  disabled={endTradeLoading || !endTradeExitPrice}
+                  className="flex-1 border border-[#22c55e] text-[#22c55e] hover:bg-[#052e16] text-[11px] tracking-[0.15em] py-2 transition-colors disabled:opacity-40"
+                >
+                  {endTradeLoading ? "ENDING..." : "CLOSE TRADE"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </main>
   );
