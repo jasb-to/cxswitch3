@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabase-client";
 import { fetchCandles, type Candle } from "./kraken";
+import { sendTradeCloseAlert } from "./telegram";
 
 export type SignalDirection = "LONG" | "SHORT";
 export type SignalState = "EARLY" | "CONFIRMED" | "END";
@@ -34,9 +35,52 @@ export interface MarketContext {
   setupText: string;
   error?: boolean;
   trendlines?: number;
+  volatility?: number; // recent high-low / low over past candles
+  volatilityThreshold?: number; // dynamic breakout threshold based on volatility
 }
 
-// ─── Kraken candle helpers ───────────────────────────────────────────────────
+// ─── Risk-reward and dynamic threshold helpers ──────────────────────────────
+
+function calculateStopLoss(entry: number, swingLevel: number | null, direction: "LONG" | "SHORT"): number {
+  if (direction === "LONG") {
+    // Stop loss = min(swingLow, entry × 0.985)
+    const cap = entry * 0.985;
+    return swingLevel ? Math.max(swingLevel, cap) : cap;
+  } else {
+    // Stop loss = max(swingHigh, entry × 1.015)
+    const cap = entry * 1.015;
+    return swingLevel ? Math.min(swingHigh, cap) : cap;
+  }
+}
+
+function calculateTakeProfit(entry: number, stopLoss: number, direction: "LONG" | "SHORT"): number {
+  const riskDistance = Math.abs(entry - stopLoss);
+  // RR = 1:2 means TP = entry ± (riskDistance × 2)
+  if (direction === "LONG") {
+    return entry + riskDistance * 2;
+  } else {
+    return entry - riskDistance * 2;
+  }
+}
+
+export function calculateRiskReward(entry: number, tp: number, sl: number, direction: "LONG" | "SHORT"): number {
+  const riskDistance = Math.abs(entry - sl);
+  if (riskDistance === 0) return 0;
+  const rewardDistance = Math.abs(tp - entry);
+  return rewardDistance / riskDistance;
+}
+
+function calculateVolatility(candles: Candle[]): number {
+  if (candles.length < 2) return 0;
+  const recent = candles.slice(-5); // Last 5 candles
+  const ranges = recent.map((c) => c.high - c.low);
+  const avgRange = ranges.reduce((a, b) => a + b) / ranges.length;
+  const avgLow = recent.reduce((a, c) => a + c.low, 0) / recent.length;
+  return avgLow > 0 ? avgRange / avgLow : 0;
+}
+
+// ─── Generate signals with risk-reward filtering ────────────────────────────
+
 
 function swingHighs(candles: Candle[]): number[] {
   const highs: number[] = [];
@@ -116,16 +160,26 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           }
         }
 
-        // LONG: price broke above a 3-touch resistance level by 0.5%
+        // LONG: price broke above a 3-touch resistance level
         if (setup === "LONG_SETUP") {
           const breakoutLevel = swingHigh ?? price;
+          const sl = calculateStopLoss(price, swingLow, "LONG");
+          const tp = calculateTakeProfit(price, sl, "LONG");
+          const rr = calculateRiskReward(price, tp, sl, "LONG");
+
+          // Improvement 5: Filter low-quality trades (RR < 1.5)
+          if (rr < 1.5) {
+            logs.push(`[${base}] LONG skipped — RR ${rr.toFixed(2)} < 1.5 threshold`);
+            continue;
+          }
+
           const newSignal = {
             symbol,
             state: "EARLY" as SignalState,
             direction: "LONG" as SignalDirection,
             entry_price: price,
-            stop_loss: swingLow ?? price * 0.97,
-            take_profit: price * 1.03,
+            stop_loss: sl,
+            take_profit: tp,
             confidence: 70,
             breakout_level: breakoutLevel,
           };
@@ -139,20 +193,30 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           if (insertErr) {
             logs.push(`[${base}] Insert LONG failed: ${insertErr.message}`);
           } else {
-            logs.push(`[${base}] Created LONG EARLY at $${price.toFixed(2)}`);
+            logs.push(`[${base}] Created LONG EARLY at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
           }
 
-        // SHORT: price broke below a 3-touch support level by 0.5%
+        // SHORT: price broke below a 3-touch support level
         } else if (setup === "SHORT_SETUP") {
           const breakoutLevel = swingLow ?? price;
+          const sl = calculateStopLoss(price, swingHigh, "SHORT");
+          const tp = calculateTakeProfit(price, sl, "SHORT");
+          const rr = calculateRiskReward(price, tp, sl, "SHORT");
+
+          // Improvement 5: Filter low-quality trades (RR < 1.5)
+          if (rr < 1.5) {
+            logs.push(`[${base}] SHORT skipped — RR ${rr.toFixed(2)} < 1.5 threshold`);
+            continue;
+          }
+
           const newSignal = {
             symbol,
             state: "EARLY" as SignalState,
             direction: "SHORT" as SignalDirection,
             entry_price: price,
-            stop_loss: swingHigh ?? price * 1.03,
-            take_profit: price * 0.97,
+            stop_loss: sl,
+            take_profit: tp,
             confidence: 70,
             breakout_level: breakoutLevel,
           };
@@ -166,7 +230,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           if (insertErr) {
             logs.push(`[${base}] Insert SHORT failed: ${insertErr.message}`);
           } else {
-            logs.push(`[${base}] Created SHORT EARLY at $${price.toFixed(2)}`);
+            logs.push(`[${base}] Created SHORT EARLY at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
           }
 
@@ -263,37 +327,48 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
         const slHitShort = direction === "SHORT" && latest.high  >= stop_loss;
 
         if (tpHitLong || tpHitShort) {
-          // FIX 1: Direction-aware exit with 0.1% slippage
+          // Direction-aware exit with 0.1% slippage
           const exitPrice = direction === "LONG"
             ? take_profit * (1 - SLIPPAGE)
             : take_profit * (1 + SLIPPAGE);
           const pnl = direction === "LONG"
             ? exitPrice - entry_price
             : entry_price - exitPrice;
+          const closeSignal = { ...signal, outcome: "TP" as SignalOutcome, pnl };
           await updateSignalState(id!, "END", { outcome: "TP", pnl });
+          // Improvement 3: Send TP close alert
+          await sendTradeCloseAlert(closeSignal, exitPrice);
           logs.push(`[${base}] TP HIT — exit $${exitPrice.toFixed(2)} PNL $${pnl.toFixed(2)}`);
           continue;
         }
 
         if (slHitLong || slHitShort) {
-          // FIX 1: Direction-aware exit with 0.1% slippage
+          // Direction-aware exit with 0.1% slippage
           const exitPrice = direction === "LONG"
             ? stop_loss * (1 - SLIPPAGE)
             : stop_loss * (1 + SLIPPAGE);
           const pnl = direction === "LONG"
             ? exitPrice - entry_price
             : entry_price - exitPrice;
+          const closeSignal = { ...signal, outcome: "SL" as SignalOutcome, pnl };
           await updateSignalState(id!, "END", { outcome: "SL", pnl });
+          // Improvement 3: Send SL close alert
+          await sendTradeCloseAlert(closeSignal, exitPrice);
           logs.push(`[${base}] SL HIT — exit $${exitPrice.toFixed(2)} PNL $${pnl.toFixed(2)}`);
           continue;
         }
 
-        // FIX 3: CONFIRMED requires 2 closes holding + moveStrength > 0.2%
+        // Improvement 2: CONFIRMED requires breakout-level validation + momentum
         if (state === "EARLY") {
           const recent = candles.slice(-3);
           const closes = recent.map((c) => c.close);
           const lastClose = closes[closes.length - 1];
           const prevClose = closes[closes.length - 2];
+
+          // Must be above/below breakout level
+          const aboveBreakout = direction === "LONG" && lastClose > signal.breakout_level * 0.999;
+          const belowBreakout = direction === "SHORT" && lastClose < signal.breakout_level * 1.001;
+          const breakoutValid = aboveBreakout || belowBreakout;
 
           const closesHolding =
             direction === "LONG"
@@ -304,17 +379,17 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
           const hasMomentum =
             direction === "LONG" ? lastClose > prevClose : lastClose < prevClose;
 
-          if (closesHolding && hasMomentum && moveStrength > 0.002) {
+          if (breakoutValid && closesHolding && hasMomentum && moveStrength > 0.002) {
             const newConfidence = Math.min(95, signal.confidence + 15);
             await updateSignalState(id!, "CONFIRMED", {
               confidence: newConfidence,
               last_checked_candle: candleTs,
             });
-            logs.push(`[${base}] EARLY → CONFIRMED (confidence: ${newConfidence}%, move: ${(moveStrength * 100).toFixed(2)}%)`);
+            logs.push(`[${base}] EARLY → CONFIRMED (confidence: ${newConfidence}%, breakout valid, move: ${(moveStrength * 100).toFixed(2)}%)`);
             confirmed.push({ ...signal, state: "CONFIRMED", confidence: newConfidence });
           } else {
             await updateSignalState(id!, "EARLY", { last_checked_candle: candleTs });
-            logs.push(`[${base}] EARLY — holding: ${closesHolding}, momentum: ${hasMomentum}, move: ${(moveStrength * 100).toFixed(2)}%`);
+            logs.push(`[${base}] EARLY — breakout: ${breakoutValid}, holding: ${closesHolding}, momentum: ${hasMomentum}, move: ${(moveStrength * 100).toFixed(2)}%`);
           }
         } else {
           // Update last_checked_candle so we don't reprocess
@@ -421,6 +496,10 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
 
     const price = candles4h[candles4h.length - 1].close;
 
+    // Improvement 6: Calculate volatility for dynamic breakout threshold
+    const volatility = calculateVolatility(candles4h);
+    const volatilityThreshold = volatility > 0.02 ? 0.007 : 0.005; // 0.7% if high, 0.5% if low
+
     // Find pivots and group into trendlines
     const { highs, lows } = findPivots(candles4h, 2);
     const resistances = groupTouches(highs, 0.005);
@@ -446,13 +525,13 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     let setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" | "ERROR" = "NO_SETUP";
     let setupText = "NO STRUCTURE — no 3-touch trendlines";
 
-    // Check for breakouts (0.5% above resistance or below support)
-    if (bestResistance && price > bestResistance.level * 1.005) {
+    // Check for breakouts with dynamic volatility-aware threshold
+    if (bestResistance && price > bestResistance.level * (1 + volatilityThreshold)) {
       setup = "LONG_SETUP";
-      setupText = `LONG — broke ${bestResistance.touches}-touch resistance at $${bestResistance.level.toFixed(0)}`;
-    } else if (bestSupport && price < bestSupport.level * 0.995) {
+      setupText = `LONG — broke ${bestResistance.touches}-touch resistance at $${bestResistance.level.toFixed(0)} (threshold ${(volatilityThreshold * 100).toFixed(1)}%)`;
+    } else if (bestSupport && price < bestSupport.level * (1 - volatilityThreshold)) {
       setup = "SHORT_SETUP";
-      setupText = `SHORT — broke ${bestSupport.touches}-touch support at $${bestSupport.level.toFixed(0)}`;
+      setupText = `SHORT — broke ${bestSupport.touches}-touch support at $${bestSupport.level.toFixed(0)} (threshold ${(volatilityThreshold * 100).toFixed(1)}%)`;
     } else if (bestResistance) {
       const dist = ((bestResistance.level - price) / price) * 100;
       setupText = `${bestResistance.touches}-touch resistance at $${bestResistance.level.toFixed(0)} (${dist.toFixed(1)}% away)`;
@@ -473,6 +552,8 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       setup,
       setupText,
       trendlines: trendlineCount,
+      volatility,
+      volatilityThreshold,
     };
   } catch (err) {
     console.error(`[getMarketContext] Error for ${symbolBase}:`, err);

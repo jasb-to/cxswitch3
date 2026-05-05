@@ -1,8 +1,51 @@
 # CXSwitch3 Trading Strategy Documentation
 
+**Current Version:** v1.4.0
+
 ## Overview
 
-CXSwitch3 is an automated crypto trading signal generator that detects trendline breakouts on 4-hour (4H) candlestick charts for BTC/USD, ETH/USD, and SOL/USD. It identifies valid support/resistance levels through multi-touch trendline analysis, fires entry signals on confirmed breakouts, manages live positions, and validates trades through on-chain momentum confirmation.
+CXSwitch3 is an automated crypto trading signal generator that detects trendline breakouts on 4-hour (4H) candlestick charts for BTC/USD, ETH/USD, and SOL/USD. It identifies valid support/resistance levels through multi-touch trendline analysis, fires entry signals on confirmed breakouts with dynamic risk-to-reward ratios, manages live positions, and validates trades through on-chain momentum confirmation.
+
+---
+
+## v1.4.0 Improvements
+
+### 1. Dynamic Risk-to-Reward (RR) Calculation
+- **Before:** Fixed take-profit at `entry × 1.03` (3% TP)
+- **After:** Dynamic RR = 1:2 based on actual stop-loss distance
+  - Formula: `TP = entry ± (entry - SL) × 2`
+  - Ensures all trades align with market structure, not arbitrary percentages
+
+### 2. Improved Stop-Loss Logic
+- **Before:** `SL = swingLow` or `entry × 0.97` (arbitrary fallback)
+- **After:** Capped risk model per direction
+  - LONG: `SL = min(swingLow, entry × 0.985)`
+  - SHORT: `SL = max(swingHigh, entry × 1.015)`
+  - Balances structural protection with risk caps
+
+### 3. Trade Quality Filter (RR ≥ 1.5)
+- Only create signals where `RR ≥ 1.5`
+- Skips low-quality breakouts with poor risk-reward
+- Reduces chop trades and improves system expectancy
+
+### 4. Volatility-Aware Breakout Thresholds
+- **Before:** Fixed 0.5% breakout threshold for all assets
+- **After:** Dynamic per-asset thresholds based on recent volatility
+  - High volatility (`vol > 2%`) → 0.7% threshold
+  - Low volatility → 0.5% threshold
+  - BTC, ETH, SOL adapt independently to market behavior
+
+### 5. Breakout-Level Validation for EARLY→CONFIRMED
+- **Before:** CONFIRMED only required 2 closes holding + momentum
+- **After:** Added requirement that price stay above/below breakout level
+  - LONG: `lastClose > breakout_level × 0.999`
+  - SHORT: `lastClose < breakout_level × 1.001`
+  - Prevents false confirmations on price reversions
+
+### 6. TP/SL Trade Close Alerts
+- Telegram alerts now sent when trades close via TP or SL
+- Message format includes: entry, exit, stop-loss, PNL, and RR ratio
+- Alert tracking prevents duplicate notifications
 
 ---
 
