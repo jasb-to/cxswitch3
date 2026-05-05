@@ -12,8 +12,6 @@ export async function GET() {
       symbols.map((s) => getMarketContext(s))
     );
 
-    console.log("[GET /api/signals] Market context:", market.map(m => ({ symbol: m.symbol, price: m.price, setup: m.setup, setupText: m.setupText })));
-
     // SECONDARY: Try Supabase for persisted signals (optional, won't crash if missing)
     let signals = [];
     try {

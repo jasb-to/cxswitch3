@@ -82,7 +82,7 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
                   : signal.state === "CONFIRMED"
                   ? `${signal.direction} CONFIRMED — execute now`
                   : "ENDED — setup expired"
-                : market.setupText || "SCANNING FOR SETUP"}
+                : "SCANNING FOR SETUP"}
             </p>
           </div>
         )}
