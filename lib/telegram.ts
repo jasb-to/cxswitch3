@@ -7,19 +7,20 @@ const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 /**
  * Check if we should send an alert using Supabase persistence.
- * Never alert on END, only once per state transition.
+ * Never alert on END, only once per signal + state combination.
  */
-export async function shouldSendAlert(symbol: string, newState: string): Promise<boolean> {
+export async function shouldSendAlert(signal_id: number, symbol: string, newState: string): Promise<boolean> {
   if (newState === "END") return false;
 
   // If Supabase is not connected, always allow alert (no persistence)
   if (!supabase) return true;
 
   try {
-    // Check if we've already sent this state for this symbol
+    // Check if we've already sent this state for THIS SPECIFIC SIGNAL
     const { data } = await supabase
       .from("telegram_alerts")
       .select("id")
+      .eq("signal_id", signal_id)
       .eq("symbol", symbol)
       .eq("state", newState)
       .order("sent_at", { ascending: false })
@@ -80,7 +81,7 @@ export async function sendTradeCloseAlert(signal: Signal, exitPrice: number): Pr
 }
 
 /**
- * Send a signal alert and track it in Supabase.
+ * Send a signal alert and track it in Supabase with signal_id for proper deduplication.
  */
 export async function sendSignalAlert(signal: Signal): Promise<void> {
   if (!BOT_TOKEN || !CHAT_ID) return;
@@ -106,10 +107,11 @@ export async function sendSignalAlert(signal: Signal): Promise<void> {
     body: JSON.stringify({ chat_id: CHAT_ID, text }),
   });
 
-  // Track alert in Supabase (optional, won't crash if missing)
+  // Track alert in Supabase with signal_id for proper deduplication (optional, won't crash if missing)
   if (supabase) {
     try {
       await supabase.from("telegram_alerts").insert({
+        signal_id: signal.id,
         symbol: signal.symbol,
         state: signal.state,
       });

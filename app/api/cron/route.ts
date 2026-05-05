@@ -39,15 +39,39 @@ export async function GET(req: NextRequest) {
 
     // Telegram: send only if shouldSendAlert approves (no spam)
     for (const signal of signals) {
-      if (await shouldSendAlert(signal.symbol, signal.state)) {
+      if (await shouldSendAlert(signal.id!, signal.symbol, signal.state)) {
         try {
           await sendSignalAlert(signal);
-          console.log(`[TELEGRAM] ✓ Sent ${signal.state} alert for ${signal.symbol} (new state)`);
+          console.log(`[TELEGRAM] ✓ Sent ${signal.state} alert for ${signal.symbol} (signal ID ${signal.id})`);
         } catch {
           console.log(`[TELEGRAM] ✗ Failed to send alert for ${signal.symbol}`);
         }
       } else {
-        console.log(`[TELEGRAM] ✗ Skipped — already alerted ${signal.state} for ${signal.symbol}`);
+        console.log(`[TELEGRAM] ✗ Skipped — already alerted ${signal.state} for ${signal.symbol} (signal ID ${signal.id})`);
+      }
+    }
+
+    // Clean up alerts for signals that have ended (prevents old alerts from blocking new ones)
+    if (supabase) {
+      try {
+        const { data: endedSignals } = await supabase
+          .from("signals")
+          .select("id")
+          .eq("state", "END")
+          .gte("updated_at", new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString());
+
+        if (endedSignals) {
+          const endedIds = endedSignals.map(s => s.id);
+          if (endedIds.length > 0) {
+            await supabase
+              .from("telegram_alerts")
+              .delete()
+              .in("signal_id", endedIds);
+            console.log(`[TELEGRAM_ALERTS] Cleaned up ${endedIds.length} alerts for ended signals`);
+          }
+        }
+      } catch (err) {
+        console.warn(`[TELEGRAM_ALERTS] Failed to cleanup alerts:`, err);
       }
     }
 
