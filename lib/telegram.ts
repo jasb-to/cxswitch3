@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabase-client";
 import type { Signal } from "./strategy";
+import { calculateRiskReward } from "./strategy";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -45,6 +46,37 @@ function getReason(signal: Signal): string {
   }
 
   return "";
+}
+
+/**
+ * Send a trade closure alert (TP or SL hit).
+ * Only sends if outcome is TP or SL (not EXPIRED).
+ */
+export async function sendTradeCloseAlert(signal: Signal, exitPrice: number): Promise<void> {
+  if (!BOT_TOKEN || !CHAT_ID || !signal.outcome || !["TP", "SL"].includes(signal.outcome)) return;
+
+  const emoji = signal.outcome === "TP" ? "✅" : "❌";
+  const outcomeLabel = signal.outcome === "TP" ? "TAKE PROFIT" : "STOP LOSS";
+  const pnlColor = (signal.pnl ?? 0) >= 0 ? "+" : "";
+  const directionLabel = signal.direction === "LONG" ? "📈 LONG" : "📉 SHORT";
+
+  const text =
+    `${emoji} CLOSED — ${outcomeLabel}\n` +
+    `\n` +
+    `${directionLabel} ${signal.symbol}\n` +
+    `\n` +
+    `Entry:    $${fmt(signal.entry_price)}\n` +
+    `Exit:     $${fmt(exitPrice)}\n` +
+    `Stop:     $${fmt(signal.stop_loss)}\n` +
+    `\n` +
+    `PnL:      ${pnlColor}$${fmt(signal.pnl ?? 0)}\n` +
+    `RR:       ${calculateRiskReward(signal.entry_price, signal.take_profit, signal.stop_loss, signal.direction).toFixed(2)}:1`;
+
+  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: CHAT_ID, text }),
+  });
 }
 
 /**
