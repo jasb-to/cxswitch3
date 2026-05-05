@@ -14,16 +14,15 @@ function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function Badge({ state }: { state: Signal["state"] | "EXPIRED" }) {
+function Badge({ state }: { state: Signal["state"] }) {
   const styles: Record<string, string> = {
     EARLY: "border-[#d4a017] text-[#d4a017]",
     CONFIRMED: "border-[#22c55e] text-[#22c55e]",
     END: "border-[#444] text-[#444]",
-    EXPIRED: "border-[#444] text-[#444]",
   };
   return (
     <span className={`border text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono ${styles[state] ?? styles.END}`}>
-      {state === "END" ? "EXPIRED" : state}
+      {state}
     </span>
   );
 }
@@ -59,8 +58,6 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
         <span className="font-mono font-bold text-white text-lg tracking-wide">{symbol}</span>
         {active ? (
           <Badge state={signal.state} />
-        ) : isEnd ? (
-          <Badge state="END" />
         ) : (
           <span className="border border-[#2a2a2a] text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono text-[#444]">
             NO SIGNAL
@@ -262,7 +259,7 @@ export default function Dashboard() {
   const lastUpdateTime = isHydrated ? new Date().toLocaleTimeString("en-GB", { hour12: false }) : "—";
 
   const signalMap = new Map<string, Signal>(signals.map((s) => [s.symbol, s]));
-  const activeCount = signals.filter((s) => s.state !== "END").length;
+  const activeCount = signals.filter((s) => s.state === "EARLY" || s.state === "CONFIRMED").length;
 
   const scanOnCooldown = cooldownSec > 0;
 
