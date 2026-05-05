@@ -433,39 +433,12 @@ export default function Dashboard() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {market.map((m) => {
               const signal = signalMap.get(m.symbol);
-              // Only show EARLY and CONFIRMED signals in active view
-              if (signal?.state === "END") return null;
               return (
                 <SignalCard key={m.symbol} symbol={m.symbol} signal={signal} market={m} onEndTradeClick={(id, sym, entry) => { setEndTradeModal({ signalId: id, symbol: sym, entryPrice: entry }); setEndTradeExitPrice(""); }} />
               );
             })}
           </div>
         </div>
-
-        {/* Closed Trades History */}
-        {Array.from(signalMap.values()).some(s => s?.state === "END") && (
-          <div>
-            <button
-              onClick={() => setShowHistory(!showHistory)}
-              className="flex items-center justify-between w-full mb-4 text-[10px] tracking-[0.22em] text-[#555] hover:text-[#888] transition-colors"
-            >
-              <span>CLOSED TRADES ({Array.from(signalMap.values()).filter(s => s?.state === "END").length})</span>
-              <span>{showHistory ? "▼" : "▶"}</span>
-            </button>
-
-            {showHistory && (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 opacity-60">
-                {market.map((m) => {
-                  const signal = signalMap.get(m.symbol);
-                  if (signal?.state !== "END") return null;
-                  return (
-                    <SignalCard key={m.symbol} symbol={m.symbol} signal={signal} market={m} />
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
 
         <footer className="border-t border-[#1a1a1a] pt-4 flex items-center justify-between">
           <p className="text-[10px] tracking-[0.2em] text-[#2a2a2a]">SIGNAL DASHBOARD {VERSION}</p>
