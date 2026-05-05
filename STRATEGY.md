@@ -1,10 +1,24 @@
 # CXSwitch3 Trading Strategy Documentation
 
-**Current Version:** v1.6.0
+**Current Version:** v1.7.0
 
 ## Overview
 
 CXSwitch3 is an automated crypto trading signal generator that detects trendline breakouts on 4-hour (4H) candlestick charts for BTC/USD, ETH/USD, and SOL/USD. It identifies valid support/resistance levels through multi-touch trendline analysis, fires entry signals on confirmed breakouts with dynamic risk-to-reward ratios, manages live positions, and validates trades through on-chain momentum confirmation.
+
+---
+
+## v1.7.0 Improvements
+
+### Dynamic Signal Lifecycle & Reversal Management
+- **Price Retrace Expiration**: Signals now expire when price retraces >1% through the breakout level, allowing opposite-direction signals to fire immediately
+- **12-Candle Cleanup**: Cleanup function marks EARLY signals as EXPIRED after 12 candles (~1 hour on 4H) without confirmation
+- **Opposite-Direction Signals**: System can now fire SHORT signals even if LONG was active (and vice versa) once price reverses
+- **End Trade PATCH API**: Fixed /api/signals to properly accept PATCH requests, updating signal state in Supabase and UI in real-time
+- **FORCE SCAN Button**: On-demand scan button bypasses 5-minute cron schedule for immediate signal detection when setups form
+
+### Verification
+After v1.7.0, symbol lifecycle works: LONG EARLY → (price reverses) → END/EXPIRED → SHORT EARLY within same session. No stale signals block new opportunities.
 
 ---
 
