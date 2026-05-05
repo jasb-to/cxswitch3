@@ -506,10 +506,11 @@ export async function getAllSignals(): Promise<Signal[]> {
   }
 
   try {
+    // Explicitly select only active states (EARLY, CONFIRMED) to exclude END signals
     const { data, error } = await supabase
       .from("signals")
       .select("*")
-      .neq("state", "END")
+      .in("state", ["EARLY", "CONFIRMED"])
       .order("created_at", { ascending: false });
 
     if (error) {
@@ -517,7 +518,7 @@ export async function getAllSignals(): Promise<Signal[]> {
       return [];
     }
 
-    console.log("[getAllSignals] Returned signals:", data?.length, "—", data?.map(s => ({ id: s.id, symbol: s.symbol, direction: s.direction, state: s.state })));
+    console.log("[getAllSignals] Returned", data?.length ?? 0, "active signals:", data?.map(s => ({ id: s.id, symbol: s.symbol, direction: s.direction, state: s.state })));
 
     return data ?? [];
   } catch (err) {
