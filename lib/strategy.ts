@@ -14,6 +14,9 @@ export interface Signal {
   take_profit: number;
   confidence: number;
   breakout_level: number;
+  pnl?: number | null;
+  outcome?: "TP" | "SL" | null;
+  alert_sent?: boolean;
   created_at?: string;
   updated_at?: string;
 }
@@ -93,12 +96,22 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
         const { symbol, price, swingHigh, swingLow, setup } = market;
         logs.push(`[${base}] $${price.toFixed(2)} — ${setup} — ${market.setupText}`);
 
-        // If there's already an active signal for this symbol, carry it forward
+        // If there's already an active signal, carry it forward — unless it's a stale EARLY (>1h old)
         const existing = activeBySymbol.get(symbol);
         if (existing) {
-          logs.push(`[${base}] Active signal exists (${existing.state}) — skipping creation`);
-          signals.push(existing);
-          continue;
+          const ageMs = Date.now() - new Date(existing.created_at!).getTime();
+          const isStaleEarly = existing.state === "EARLY" && ageMs > 60 * 60 * 1000;
+
+          if (isStaleEarly) {
+            // Expire the stale signal so a fresh breakout can create a new one
+            await updateSignalState(existing.id!, "END");
+            logs.push(`[${base}] Expired stale EARLY signal (${Math.round(ageMs / 60000)}m old) — allowing new signal`);
+            // Fall through to signal creation below
+          } else {
+            logs.push(`[${base}] Active signal exists (${existing.state}) — skipping creation`);
+            signals.push(existing);
+            continue;
+          }
         }
 
         // LONG: price broke above a 3-touch resistance level by 0.5%
@@ -192,12 +205,13 @@ export async function updateSignalState(
 
 // ─── Manage open positions: check TP/SL, promote EARLY → CONFIRMED, expire ──
 
-export async function managePositions(): Promise<{ logs: string[] }> {
+export async function managePositions(): Promise<{ logs: string[]; confirmed: Signal[] }> {
   const logs: string[] = [];
+  const confirmed: Signal[] = []; // newly CONFIRMED this run — for Telegram alerts
 
   if (!supabase) {
     logs.push("[POSITIONS] Supabase not connected");
-    return { logs };
+    return { logs, confirmed };
   }
 
   try {
@@ -208,64 +222,77 @@ export async function managePositions(): Promise<{ logs: string[] }> {
 
     if (error) {
       logs.push(`[POSITIONS] Query error: ${error.message}`);
-      return { logs };
+      return { logs, confirmed };
     }
 
     if (!openSignals?.length) {
       logs.push("[POSITIONS] No open positions");
-      return { logs };
+      return { logs, confirmed };
     }
 
     for (const signal of openSignals as Signal[]) {
       try {
         const base = signal.symbol.replace("/USD", "");
-        const candles = await fetchCandles(base, 15, 10); // 15m candles for confirmation
+        // Use more candles so we catch TP/SL hits between cron intervals
+        const candles = await fetchCandles(base, 15, 20);
         if (!candles.length) {
           logs.push(`[${base}] No 15m candles`);
           continue;
         }
 
-        const price = candles[candles.length - 1].close;
+        const latest = candles[candles.length - 1];
         const { entry_price, stop_loss, take_profit, direction, state, id } = signal;
 
-        logs.push(`[${base}] ${state} ${direction} — price $${price.toFixed(2)} | entry $${entry_price.toFixed(2)} | SL $${stop_loss.toFixed(2)} | TP $${take_profit.toFixed(2)}`);
+        logs.push(`[${base}] ${state} ${direction} — close $${latest.close.toFixed(2)} H $${latest.high.toFixed(2)} L $${latest.low.toFixed(2)} | TP $${take_profit.toFixed(2)} SL $${stop_loss.toFixed(2)}`);
 
-        // TP hit
-        if (direction === "LONG" && price >= take_profit) {
-          await updateSignalState(id!, "END", { take_profit: price });
-          logs.push(`[${base}] TP HIT — LONG ended at $${price.toFixed(2)}`);
-          continue;
-        }
-        if (direction === "SHORT" && price <= take_profit) {
-          await updateSignalState(id!, "END", { take_profit: price });
-          logs.push(`[${base}] TP HIT — SHORT ended at $${price.toFixed(2)}`);
-          continue;
-        }
+        // FIX 1: Use candle HIGH/LOW — not just close — so we never miss a fill
+        const tpHitLong  = direction === "LONG"  && latest.high  >= take_profit;
+        const tpHitShort = direction === "SHORT" && latest.low   <= take_profit;
+        const slHitLong  = direction === "LONG"  && latest.low   <= stop_loss;
+        const slHitShort = direction === "SHORT" && latest.high  >= stop_loss;
 
-        // SL hit
-        if (direction === "LONG" && price <= stop_loss) {
-          await updateSignalState(id!, "END");
-          logs.push(`[${base}] SL HIT — LONG stopped out at $${price.toFixed(2)}`);
-          continue;
-        }
-        if (direction === "SHORT" && price >= stop_loss) {
-          await updateSignalState(id!, "END");
-          logs.push(`[${base}] SL HIT — SHORT stopped out at $${price.toFixed(2)}`);
+        if (tpHitLong || tpHitShort) {
+          const exitPrice = direction === "LONG" ? take_profit : take_profit;
+          const pnl = direction === "LONG"
+            ? exitPrice - entry_price
+            : entry_price - exitPrice;
+          await updateSignalState(id!, "END", { outcome: "TP", pnl });
+          logs.push(`[${base}] TP HIT — PNL $${pnl.toFixed(2)}`);
           continue;
         }
 
-        // Promote EARLY → CONFIRMED: price held above/below breakout level for 2+ candles
+        if (slHitLong || slHitShort) {
+          const exitPrice = stop_loss;
+          const pnl = direction === "LONG"
+            ? exitPrice - entry_price
+            : entry_price - exitPrice;
+          await updateSignalState(id!, "END", { outcome: "SL", pnl });
+          logs.push(`[${base}] SL HIT — PNL $${pnl.toFixed(2)}`);
+          continue;
+        }
+
+        // FIX 2: Smarter CONFIRMED — 2 closes holding + momentum (last close > prev close)
         if (state === "EARLY") {
-          const recentCloses = candles.slice(-3).map((c) => c.close);
-          const allAbove = direction === "LONG" && recentCloses.every((c) => c > entry_price * 0.999);
-          const allBelow = direction === "SHORT" && recentCloses.every((c) => c < entry_price * 1.001);
+          const recent = candles.slice(-3);
+          const closes = recent.map((c) => c.close);
+          const lastClose = closes[closes.length - 1];
+          const prevClose = closes[closes.length - 2];
 
-          if (allAbove || allBelow) {
+          const closesHolding =
+            direction === "LONG"
+              ? closes.slice(0, -1).filter((c) => c > entry_price * 0.999).length >= 2
+              : closes.slice(0, -1).filter((c) => c < entry_price * 1.001).length >= 2;
+
+          const hasMomentum =
+            direction === "LONG" ? lastClose > prevClose : lastClose < prevClose;
+
+          if (closesHolding && hasMomentum) {
             const newConfidence = Math.min(95, signal.confidence + 15);
             await updateSignalState(id!, "CONFIRMED", { confidence: newConfidence });
             logs.push(`[${base}] EARLY → CONFIRMED (confidence: ${newConfidence}%)`);
+            confirmed.push({ ...signal, state: "CONFIRMED", confidence: newConfidence });
           } else {
-            logs.push(`[${base}] EARLY — awaiting 15m confirmation`);
+            logs.push(`[${base}] EARLY — holding: ${closesHolding}, momentum: ${hasMomentum}`);
           }
         } else {
           logs.push(`[${base}] CONFIRMED — position active`);
@@ -278,7 +305,7 @@ export async function managePositions(): Promise<{ logs: string[] }> {
     logs.push(`[POSITIONS] Outer error: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  return { logs };
+  return { logs, confirmed };
 }
 
 // ─── Get all signals from Supabase ──────────────────────────────────────────
