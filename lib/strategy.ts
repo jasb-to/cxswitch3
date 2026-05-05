@@ -225,11 +225,11 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     let setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" | "ERROR" = "NO_SETUP";
     let setupText = "NO STRUCTURE — no 3-touch trendlines";
 
-    // Check for breakouts
-    if (bestResistance && price > bestResistance.level * 1.002) {
+    // Check for breakouts (0.5% above resistance or below support)
+    if (bestResistance && price > bestResistance.level * 1.005) {
       setup = "LONG_SETUP";
       setupText = `LONG — broke ${bestResistance.touches}-touch resistance at $${bestResistance.level.toFixed(0)}`;
-    } else if (bestSupport && price < bestSupport.level * 0.998) {
+    } else if (bestSupport && price < bestSupport.level * 0.995) {
       setup = "SHORT_SETUP";
       setupText = `SHORT — broke ${bestSupport.touches}-touch support at $${bestSupport.level.toFixed(0)}`;
     } else if (bestResistance) {
