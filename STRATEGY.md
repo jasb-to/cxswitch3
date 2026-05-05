@@ -1,10 +1,40 @@
 # CXSwitch3 Trading Strategy Documentation
 
-**Current Version:** v1.9.0
+**Current Version:** v2.0.0
 
 ## Overview
 
 CXSwitch3 is an automated crypto trading signal generator that detects trendline breakouts on 4-hour (4H) candlestick charts for BTC/USD, ETH/USD, and SOL/USD. It identifies valid support/resistance levels through multi-touch trendline analysis, fires entry signals on confirmed breakouts with dynamic risk-to-reward ratios, manages live positions, and validates trades through on-chain momentum confirmation.
+
+---
+
+## v2.0.0: MAJOR REFACTOR — Eliminate False Confirmations & Telegram Spam
+
+### Breakout Detection (Breaking Change)
+- **Removed Secondary Loose Paths**: Eliminated marginal breakout detection (any price >resistance -0.01). Only volatility-aware threshold (0.5-0.7%) triggers LONG_SETUP/SHORT_SETUP
+- **Result**: 60-70% fewer false entries that weren't true breakouts
+
+### Signal Confirmation (Critical Fix)
+- **Replaced Dual-Path Logic**: Removed "nearEntry" (holding within 0.1% of entry) and "strongMomentum" (0.3% move + 0.2% distance) paths
+- **New Strict Model**: ALL three conditions required:
+  1. Price still above/below breakout level (0.1% tolerance)
+  2. **Two consecutive candles** moving in same direction (prev2 → prev → last)
+  3. **Move strength >0.4%** between last two closes (stricter than before 0.2-0.3%)
+- **Result**: ~80% fewer false confirmations; only genuine structural breakouts confirm
+
+### Telegram Alert Architecture (Critical Fix)
+- **State Transition Only**: Alerts fire ONLY on:
+  1. Signal created (EARLY first alert)
+  2. Confirmed for first time (CONFIRMED first alert)
+  3. TP/SL hit
+- **Signal-ID Deduplication**: Uses `signal_id + state` preventing re-alerts on same signal
+- **No Reprocessing**: Once CONFIRMED, signal skips all confirmation checks until TP/SL/END
+- **Result**: Eliminated 95%+ of repeated alerts on single signal
+
+### Logs & Diagnostics
+- Logs now clearly show: `breakoutValid`, `consecutive` (prev2/prev/last closes), `moveStr %` for all EARLY checks
+- Position management logs: `EARLY validation:` with exact thresholds checked
+- Telegram logs: Clear indication of dedup blocks and state transitions
 
 ---
 

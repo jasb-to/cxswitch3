@@ -448,63 +448,52 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
           continue;
         }
 
-        // Improvement 2: CONFIRMED requires breakout-level validation + momentum
+        // Improvement 2: Strict CONFIRMED validation — structure + momentum only
         if (state === "EARLY") {
-          const recent = candles.slice(-3);
+          const recent = candles.slice(-4);
           const closes = recent.map((c) => c.close);
           const lastClose = closes[closes.length - 1];
           const prevClose = closes[closes.length - 2];
+          const prev2Close = closes[closes.length - 3];
 
-          // Must be above/below breakout level
+          // Requirement 1: Must still be beyond breakout level
           const aboveBreakout = direction === "LONG" && lastClose > signal.breakout_level * 0.999;
           const belowBreakout = direction === "SHORT" && lastClose < signal.breakout_level * 1.001;
           const breakoutValid = aboveBreakout || belowBreakout;
 
-          const closesHolding =
-            direction === "LONG"
-              ? closes.slice(0, -1).filter((c) => c > entry_price * 0.999).length >= 2
-              : closes.slice(0, -1).filter((c) => c < entry_price * 1.001).length >= 2;
+          // Requirement 2: Two consecutive candles moving in same direction
+          const twoConsecutiveUp = direction === "LONG" && lastClose > prevClose && prevClose > prev2Close;
+          const twoConsecutiveDown = direction === "SHORT" && lastClose < prevClose && prevClose < prev2Close;
+          const hasConsecutiveMomentum = twoConsecutiveUp || twoConsecutiveDown;
 
+          // Requirement 3: Move strength between last two closes > 0.4%
           const moveStrength = Math.abs(lastClose - prevClose) / prevClose;
-          const hasMomentum =
-            direction === "LONG" ? lastClose > prevClose : lastClose < prevClose;
-
-          // Dual-path confirmation:
-          // Path 1: nearEntry — price holding within 0.1% of entry (consolidation)
-          const nearEntry = closesHolding;
-          
-          // Path 2: strongMomentum — price moved strongly away from entry (trending)
-          // For LONG: need 0.3% move strength AND price at least 0.2% above entry
-          // For SHORT: need 0.3% move strength AND price at least 0.2% below entry
-          const strongMomentum =
-            direction === "LONG"
-              ? moveStrength > 0.003 && lastClose > entry_price * 1.002
-              : moveStrength > 0.003 && lastClose < entry_price * 0.998;
+          const hasStrongMomentum = moveStrength > 0.004;
 
           logs.push(
-            `[${base}] EARLY checks: ` +
-            `nearEntry=${nearEntry} (holds: ${closes.slice(0, -1).map((c) => c.toFixed(2)).join(",")}), ` +
-            `strongMomentum=${strongMomentum} (moveStr=${(moveStrength * 100).toFixed(3)}%, close=${lastClose.toFixed(2)}, entry=${entry_price.toFixed(2)}), ` +
-            `hasMomentum=${hasMomentum}, breakoutValid=${breakoutValid}`
+            `[${base}] EARLY validation: ` +
+            `breakoutValid=${breakoutValid} (${lastClose.toFixed(2)} ${direction === "LONG" ? ">" : "<"} ${signal.breakout_level.toFixed(2)}), ` +
+            `consecutive=${hasConsecutiveMomentum} (${prev2Close.toFixed(2)}→${prevClose.toFixed(2)}→${lastClose.toFixed(2)}), ` +
+            `moveStr=${(moveStrength * 100).toFixed(3)}% (need >0.4%)`
           );
 
-          // Confirm if: (holding near entry OR strong momentum away) AND directional momentum AND still above breakout
-          if ((nearEntry || strongMomentum) && hasMomentum && breakoutValid) {
+          // ALL THREE conditions must be met for confirmation
+          if (breakoutValid && hasConsecutiveMomentum && hasStrongMomentum) {
             const newConfidence = Math.min(95, signal.confidence + 15);
             await updateSignalState(id!, "CONFIRMED", {
               confidence: newConfidence,
               last_checked_candle: candleTs,
             });
-            logs.push(`[${base}] EARLY → CONFIRMED (confidence: ${newConfidence}%, breakout valid, move: ${(moveStrength * 100).toFixed(2)}%)`);
+            logs.push(`[${base}] EARLY → CONFIRMED (confidence: ${newConfidence}%, structure+momentum validated, move: ${(moveStrength * 100).toFixed(2)}%)`);
             confirmed.push({ ...signal, state: "CONFIRMED", confidence: newConfidence });
           } else {
             await updateSignalState(id!, "EARLY", { last_checked_candle: candleTs });
-            logs.push(`[${base}] EARLY — breakout: ${breakoutValid}, holding: ${closesHolding}, momentum: ${hasMomentum}, move: ${(moveStrength * 100).toFixed(2)}%`);
+            logs.push(`[${base}] EARLY — awaiting: breakout=${breakoutValid}, consecutive=${hasConsecutiveMomentum}, move=${(moveStrength * 100).toFixed(3)}%`);
           }
-        } else {
-          // Update last_checked_candle so we don't reprocess
+        } else if (state === "CONFIRMED") {
+          // FIX 4: Skip all confirmation logic for CONFIRMED signals — only check TP/SL
           await updateSignalState(id!, "CONFIRMED", { last_checked_candle: candleTs });
-          logs.push(`[${base}] CONFIRMED — position active`);
+          logs.push(`[${base}] CONFIRMED — position active (no re-evaluation)`);
         }
       } catch (err) {
         logs.push(`[POSITIONS] Error for ${signal.symbol}: ${err instanceof Error ? err.message : String(err)}`);
@@ -639,29 +628,13 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     let setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" | "ERROR" = "NO_SETUP";
     let setupText = "NO STRUCTURE — no 3-touch trendlines";
 
-    // Check for breakouts with dynamic volatility-aware threshold
+    // Strict breakout detection: volatility-aware threshold ONLY
     if (bestResistance && price > bestResistance.level * (1 + volatilityThreshold)) {
       setup = "LONG_SETUP";
-      setupText = `LONG — broke ${bestResistance.touches}-touch resistance at $${bestResistance.level.toFixed(0)} (threshold ${(volatilityThreshold * 100).toFixed(1)}%)`;
+      setupText = `LONG — broke ${bestResistance.touches}-touch resistance at $${bestResistance.level.toFixed(0)} (+${(volatilityThreshold * 100).toFixed(1)}%)`;
     } else if (bestSupport && price < bestSupport.level * (1 - volatilityThreshold)) {
       setup = "SHORT_SETUP";
-      setupText = `SHORT — broke ${bestSupport.touches}-touch support at $${bestSupport.level.toFixed(0)} (threshold ${(volatilityThreshold * 100).toFixed(1)}%)`;
-    } else if (bestResistance && price > bestResistance.level && price <= bestResistance.level * (1 + 0.01)) {
-      // Price just broke ABOVE resistance (even marginally) — LONG setup forming
-      setup = "LONG_SETUP";
-      setupText = `LONG SETUP — ${bestResistance.touches}-touch resistance at $${bestResistance.level.toFixed(0)} (${((price - bestResistance.level) / bestResistance.level * 100).toFixed(2)}% above)`;
-    } else if (bestSupport && price < bestSupport.level && price >= bestSupport.level * (1 - 0.01)) {
-      // Price just broke BELOW support (even marginally) — SHORT setup forming
-      setup = "SHORT_SETUP";
-      setupText = `SHORT SETUP — ${bestSupport.touches}-touch support at $${bestSupport.level.toFixed(0)} (${((bestSupport.level - price) / bestSupport.level * 100).toFixed(2)}% below)`;
-    } else if (bestResistance && price < bestResistance.level && ((bestResistance.level - price) / price) * 100 <= 1) {
-      // Price is within 1% BELOW resistance — SHORT setup forming
-      setup = "SHORT_SETUP";
-      setupText = `SHORT SETUP FORMING — ${bestResistance.touches}-touch resistance at $${bestResistance.level.toFixed(0)} (${((bestResistance.level - price) / price * 100).toFixed(2)}% away)`;
-    } else if (bestSupport && price > bestSupport.level && ((price - bestSupport.level) / bestSupport.level) * 100 <= 1) {
-      // Price is within 1% ABOVE support — LONG setup forming
-      setup = "LONG_SETUP";
-      setupText = `LONG SETUP FORMING — ${bestSupport.touches}-touch support at $${bestSupport.level.toFixed(0)} (${((price - bestSupport.level) / bestSupport.level * 100).toFixed(2)}% away)`;
+      setupText = `SHORT — broke ${bestSupport.touches}-touch support at $${bestSupport.level.toFixed(0)} (-${(volatilityThreshold * 100).toFixed(1)}%)`;
     } else if (bestResistance) {
       const dist = ((bestResistance.level - price) / price) * 100;
       setupText = `${bestResistance.touches}-touch resistance at $${bestResistance.level.toFixed(0)} (${dist.toFixed(1)}% away)`;
