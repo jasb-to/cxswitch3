@@ -1,10 +1,26 @@
 # CXSwitch3 Trading Strategy Documentation
 
-**Current Version:** v1.7.0
+**Current Version:** v1.8.0
 
 ## Overview
 
 CXSwitch3 is an automated crypto trading signal generator that detects trendline breakouts on 4-hour (4H) candlestick charts for BTC/USD, ETH/USD, and SOL/USD. It identifies valid support/resistance levels through multi-touch trendline analysis, fires entry signals on confirmed breakouts with dynamic risk-to-reward ratios, manages live positions, and validates trades through on-chain momentum confirmation.
+
+---
+
+## v1.8.0 Improvements
+
+### Signal Deduplication & Smart Entry Filtering
+- **4-Hour Cooldown**: After a signal ends (MANUAL or EXPIRED), prevents duplicate signals for same symbol+direction+breakout_level for 4 hours, eliminating spam when price hovers near a level
+- **0.5% Close Requirement**: LONG signals now require price to close at least 0.5% above breakout level; SHORT requires 0.5% below. Prevents whipsaw entries on marginal breakouts
+- **1% Distance Requirement for SHORT**: SHORT signals require price at least 1% below support before firing, preventing false SHORT triggers on minor dips below resistance
+- **Cron Run Logging**: Fixed cron_runs table logging. Every execution now inserts row with run_at, signals_count, and error count, enabling audit trail and system monitoring
+- **Retrace Expiration Fix**: Signals expire cleanly when price retraces through breakout, with proper cooldown preventing immediate refire on bounces
+
+### Key Metrics
+- Signal creation now: reject if on cooldown, reject if insufficient breakout distance, reject if poor RR
+- SHORT bias reduced significantly with 1% minimum distance requirement
+- Cron audit trail active — all executions logged to cron_runs table
 
 ---
 

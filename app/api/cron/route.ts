@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateSignals, getAllSignals, cleanupExpiredSignals } from "@/lib/strategy";
 import { sendSignalAlert, shouldSendAlert } from "@/lib/telegram";
+import { supabase } from "@/lib/supabase-client";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -57,6 +58,25 @@ export async function GET(req: NextRequest) {
     console.log(`[NEXT CRON] In ${nextMins}m ${nextSecs}s`);
 
     const allSignals = await getAllSignals();
+
+    // Log cron run to cron_runs table
+    if (supabase) {
+      const { error: logErr } = await supabase
+        .from("cron_runs")
+        .insert([
+          {
+            run_at: new Date().toISOString(),
+            signals_count: signals.length,
+            errors: logs.filter(l => l.includes("ERROR") || l.includes("error")).length,
+          },
+        ]);
+
+      if (logErr) {
+        console.error("[CRON_RUNS] Failed to log cron run:", logErr.message);
+      } else {
+        console.log("[CRON_RUNS] Logged execution");
+      }
+    }
 
     return NextResponse.json({
       ok: true,
