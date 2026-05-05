@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 
-const VERSION = "v1.1.0";
+const VERSION = "v1.2.0";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -69,13 +69,61 @@ function SignalCard({ symbol, signal, market }: { symbol: string; signal?: Signa
       </div>
 
       <div className="p-5 flex flex-col gap-5">
-        {/* Current Price */}
+        {/* STATE OF PLAY — one line */}
+        {market && !market.error && (
+          <div className="flex flex-col gap-1">
+            <p className={`text-lg font-semibold leading-tight ${
+              active
+                ? signal.direction === "LONG"
+                  ? "text-[#22c55e]"
+                  : "text-[#ef4444]"
+                : "text-white"
+            }`}>
+              {active
+                ? signal.state === "EARLY"
+                  ? `${signal.direction} EARLY — awaiting confirmation`
+                  : signal.state === "CONFIRMED"
+                  ? `${signal.direction} CONFIRMED — execute now`
+                  : "ENDED — setup expired"
+                : market.setupText}
+            </p>
+          </div>
+        )}
+
+        {/* PRICE */}
         <div>
           <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1">PRICE</p>
           <p className="font-mono text-3xl font-bold text-white tabular-nums">{displayPrice}</p>
         </div>
 
-        {/* Signal levels (if active) */}
+        {/* TRENDLINE LEVELS (if market data exists) */}
+        {!active && market && market.trendlines > 0 && !market.error && (
+          <div className="border-t border-[#1e1e1e] pt-4">
+            <p className="text-[10px] tracking-[0.2em] text-[#666] mb-2">TRENDLINES</p>
+            <div className="flex flex-col gap-1.5 text-sm">
+              {market.swingHigh && market.distanceToHigh !== null && (
+                <div className="flex items-center justify-between">
+                  <span className="text-[#888]">Resistance</span>
+                  <span className="font-mono text-white">${fmt(market.swingHigh)}</span>
+                  <span className={`text-[11px] ${Math.abs(market.distanceToHigh) < 3 ? "text-[#d4a017]" : "text-[#555]"}`}>
+                    {Math.abs(market.distanceToHigh).toFixed(1)}% away
+                  </span>
+                </div>
+              )}
+              {market.swingLow && market.distanceToLow !== null && (
+                <div className="flex items-center justify-between">
+                  <span className="text-[#888]">Support</span>
+                  <span className="font-mono text-white">${fmt(market.swingLow)}</span>
+                  <span className={`text-[11px] ${market.distanceToLow < 3 ? "text-[#d4a017]" : "text-[#555]"}`}>
+                    {market.distanceToLow.toFixed(1)}% away
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* SIGNAL DETAILS (if active) */}
         {active && (
           <div className="grid grid-cols-3 gap-3 border-t border-[#1e1e1e] pt-4">
             <div>
@@ -90,32 +138,8 @@ function SignalCard({ symbol, signal, market }: { symbol: string; signal?: Signa
               <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">SL</p>
               <p className="font-mono text-[14px] text-[#ef4444] tabular-nums">${fmt(signal.stop_loss)}</p>
             </div>
-          </div>
-        )}
-
-        {/* Market swing levels (if no signal or for context) */}
-        {!active && market && !market.error && (market.swingHigh || market.swingLow) && (
-          <div className="border-t border-[#1e1e1e] pt-4">
-            <p className="text-[10px] tracking-[0.2em] text-[#666] mb-2">SWING LEVELS</p>
-            <div className="flex flex-col gap-1.5">
-              {market.swingHigh && (
-                <div className="flex items-center justify-between text-[12px]">
-                  <span className="text-[#888]">High</span>
-                  <span className="font-mono text-white">${fmt(market.swingHigh)}</span>
-                  <span className={`text-[11px] ${market.distanceToHigh && market.distanceToHigh <= 0 ? "text-[#d4a017]" : "text-[#555]"}`}>
-                    {market.distanceToHigh !== null ? `${Math.abs(market.distanceToHigh).toFixed(1)}% away` : "—"}
-                  </span>
-                </div>
-              )}
-              {market.swingLow && (
-                <div className="flex items-center justify-between text-[12px]">
-                  <span className="text-[#888]">Low</span>
-                  <span className="font-mono text-white">${fmt(market.swingLow)}</span>
-                  <span className={`text-[11px] ${market.distanceToLow && market.distanceToLow <= 3 ? "text-[#d4a017]" : "text-[#555]"}`}>
-                    {market.distanceToLow !== null ? `${market.distanceToLow.toFixed(1)}% away` : "—"}
-                  </span>
-                </div>
-              )}
+            <div className="col-span-3 text-sm text-[#888]">
+              <span>Confidence: {signal.confidence}%</span>
             </div>
           </div>
         )}
