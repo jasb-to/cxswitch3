@@ -14,7 +14,7 @@ export async function POST() {
   }
 
   for (const signal of signals) {
-    if (shouldSendAlert(signal.symbol, signal.state)) {
+    if (await shouldSendAlert(signal.symbol, signal.state)) {
       try {
         await sendSignalAlert(signal);
         console.log(`[TELEGRAM] ✓ Sent ${signal.state} alert for ${signal.symbol} (manual scan)`);
@@ -24,5 +24,5 @@ export async function POST() {
     }
   }
 
-  return NextResponse.json({ ok: true, signals: getAllSignals(), logs });
+  return NextResponse.json({ ok: true, signals: await getAllSignals(), logs });
 }
