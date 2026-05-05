@@ -611,6 +611,10 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     const bestResistance = resistances[0];
     const bestSupport = supports[0];
 
+    // DEBUG: Log all detected trendlines for this symbol
+    console.log(`[${symbolBase}] Price: $${price.toFixed(2)} | Resistances: ${resistances.map(r => `$${r.level.toFixed(2)}(${r.touches})`).join(", ")} | Supports: ${supports.map(s => `$${s.level.toFixed(2)}(${s.touches})`).join(", ")}`);
+
+
     // Use best resistance/support as swingHigh/swingLow
     const swingHigh = bestResistance?.level ?? null;
     const swingLow = bestSupport?.level ?? null;
