@@ -222,6 +222,7 @@ export default function Dashboard() {
   const [now, setNow] = useState(0);
   const [isHydrated, setIsHydrated] = useState(false);
   const [testSignalLoading, setTestSignalLoading] = useState(false);
+  const [clearLoading, setClearLoading] = useState(false);
 
   useEffect(() => {
     setIsHydrated(true);
@@ -293,6 +294,20 @@ export default function Dashboard() {
     }
   }
 
+  async function clearAllSignals() {
+    if (!confirm("Are you sure you want to clear all signals?")) return;
+    setClearLoading(true);
+    try {
+      const res = await fetch("/api/signals", { method: "DELETE" });
+      const json = await res.json();
+      if (json.cleared) {
+        await mutate();
+      }
+    } finally {
+      setClearLoading(false);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-[#0a0a0a] text-white font-mono">
       <header className="border-b border-[#1a1a1a] px-6 py-3 flex items-center justify-between">
@@ -334,11 +349,11 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div className="flex flex-col gap-2">
+            <div className="grid grid-cols-4 gap-2">
               <button
                 onClick={testTelegram}
                 disabled={tg === "sending"}
-                className={`w-full border text-[11px] tracking-[0.2em] py-3 transition-colors disabled:opacity-40 ${
+                className={`border text-[11px] tracking-[0.2em] py-3 transition-colors disabled:opacity-40 ${
                   tg === "ok"
                     ? "border-[#22c55e] text-[#22c55e]"
                     : tg === "error"
@@ -349,7 +364,7 @@ export default function Dashboard() {
                 {tg === "sending" ? "SENDING..." : tg === "ok" ? "SENT OK" : tg === "error" ? "SEND FAILED" : "TEST TELEGRAM"}
               </button>
               {tgMsg && (
-                <p className={`text-[11px] text-center ${tg === "ok" ? "text-[#22c55e]" : "text-[#ef4444]"}`}>
+                <p className={`col-span-4 text-[11px] text-center ${tg === "ok" ? "text-[#22c55e]" : "text-[#ef4444]"}`}>
                   {tgMsg}
                 </p>
               )}
@@ -357,21 +372,29 @@ export default function Dashboard() {
               <button
                 onClick={scanNow}
                 disabled={scanning || scanOnCooldown}
-                className="w-full border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-white text-[11px] tracking-[0.2em] py-3 transition-colors disabled:opacity-40"
+                className="border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-white text-[11px] tracking-[0.2em] py-3 transition-colors disabled:opacity-40"
               >
                 {scanning
                   ? "SCANNING..."
                   : scanOnCooldown
-                  ? `NEXT MANUAL SCAN IN ${cooldownSec}s`
+                  ? `NEXT IN ${cooldownSec}s`
                   : "SCAN NOW"}
               </button>
 
               <button
                 onClick={injectTestSignal}
                 disabled={testSignalLoading}
-                className="w-full border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-white text-[11px] tracking-[0.2em] py-3 transition-colors disabled:opacity-40"
+                className="border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-white text-[11px] tracking-[0.2em] py-3 transition-colors disabled:opacity-40"
               >
-                {testSignalLoading ? "INJECTING..." : "INJECT TEST SIGNAL"}
+                {testSignalLoading ? "INJECTING..." : "INJECT TEST"}
+              </button>
+
+              <button
+                onClick={clearAllSignals}
+                disabled={clearLoading}
+                className="border border-[#7f1d1d] text-[#ef4444] hover:border-[#c41e1e] hover:text-[#ff6b6b] text-[11px] tracking-[0.2em] py-3 transition-colors disabled:opacity-40"
+              >
+                {clearLoading ? "CLEARING..." : "CLEAR ALL"}
               </button>
             </div>
           </div>

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getAllSignals, getMarketContext, type MarketContext } from "@/lib/strategy";
+import { supabase } from "@/lib/supabase-client";
 
 export const dynamic = "force-dynamic";
 
@@ -23,4 +24,30 @@ export async function GET() {
     market,
     fetchedAt: Date.now(),
   });
+}
+
+export async function DELETE() {
+  if (!supabase) {
+    return NextResponse.json({ error: "No DB connection" }, { status: 500 });
+  }
+
+  try {
+    const { error } = await supabase
+      .from("signals")
+      .delete()
+      .neq("id", 0);
+
+    if (error) {
+      console.error("[DELETE SIGNALS] Error:", error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ cleared: true });
+  } catch (err) {
+    console.error("[DELETE SIGNALS] Exception:", err);
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Unknown error" },
+      { status: 500 }
+    );
+  }
 }
