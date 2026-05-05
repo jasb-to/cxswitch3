@@ -3,6 +3,7 @@ import { fetchCandles, type Candle } from "./kraken";
 
 export type SignalDirection = "LONG" | "SHORT";
 export type SignalState = "EARLY" | "CONFIRMED" | "END";
+export type SignalOutcome = "TP" | "SL" | "EXPIRED";
 
 export interface Signal {
   id?: number;
@@ -15,8 +16,9 @@ export interface Signal {
   confidence: number;
   breakout_level: number;
   pnl?: number | null;
-  outcome?: "TP" | "SL" | null;
+  outcome?: SignalOutcome | null;
   alert_sent?: boolean;
+  last_checked_candle?: number | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -104,7 +106,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
 
           if (isStaleEarly) {
             // Expire the stale signal so a fresh breakout can create a new one
-            await updateSignalState(existing.id!, "END");
+            await updateSignalState(existing.id!, "END", { outcome: "EXPIRED" });
             logs.push(`[${base}] Expired stale EARLY signal (${Math.round(ageMs / 60000)}m old) — allowing new signal`);
             // Fall through to signal creation below
           } else {
@@ -230,10 +232,11 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
       return { logs, confirmed };
     }
 
+    const SLIPPAGE = 0.001; // 0.1% slippage on fills
+
     for (const signal of openSignals as Signal[]) {
       try {
         const base = signal.symbol.replace("/USD", "");
-        // Use more candles so we catch TP/SL hits between cron intervals
         const candles = await fetchCandles(base, 15, 20);
         if (!candles.length) {
           logs.push(`[${base}] No 15m candles`);
@@ -241,37 +244,51 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
         }
 
         const latest = candles[candles.length - 1];
+        const candleTs = latest.time; // Unix seconds — unique per candle, used as dedup key
+
+        // FIX 4: Skip if we already processed this exact candle
+        if (signal.last_checked_candle === candleTs) {
+          logs.push(`[${base}] Candle ${candleTs} already processed — skipping`);
+          continue;
+        }
+
         const { entry_price, stop_loss, take_profit, direction, state, id } = signal;
 
         logs.push(`[${base}] ${state} ${direction} — close $${latest.close.toFixed(2)} H $${latest.high.toFixed(2)} L $${latest.low.toFixed(2)} | TP $${take_profit.toFixed(2)} SL $${stop_loss.toFixed(2)}`);
 
-        // FIX 1: Use candle HIGH/LOW — not just close — so we never miss a fill
+        // Use candle HIGH/LOW so we never miss a fill between cron intervals
         const tpHitLong  = direction === "LONG"  && latest.high  >= take_profit;
         const tpHitShort = direction === "SHORT" && latest.low   <= take_profit;
         const slHitLong  = direction === "LONG"  && latest.low   <= stop_loss;
         const slHitShort = direction === "SHORT" && latest.high  >= stop_loss;
 
         if (tpHitLong || tpHitShort) {
-          const exitPrice = direction === "LONG" ? take_profit : take_profit;
+          // FIX 1: Direction-aware exit with 0.1% slippage
+          const exitPrice = direction === "LONG"
+            ? take_profit * (1 - SLIPPAGE)
+            : take_profit * (1 + SLIPPAGE);
           const pnl = direction === "LONG"
             ? exitPrice - entry_price
             : entry_price - exitPrice;
           await updateSignalState(id!, "END", { outcome: "TP", pnl });
-          logs.push(`[${base}] TP HIT — PNL $${pnl.toFixed(2)}`);
+          logs.push(`[${base}] TP HIT — exit $${exitPrice.toFixed(2)} PNL $${pnl.toFixed(2)}`);
           continue;
         }
 
         if (slHitLong || slHitShort) {
-          const exitPrice = stop_loss;
+          // FIX 1: Direction-aware exit with 0.1% slippage
+          const exitPrice = direction === "LONG"
+            ? stop_loss * (1 - SLIPPAGE)
+            : stop_loss * (1 + SLIPPAGE);
           const pnl = direction === "LONG"
             ? exitPrice - entry_price
             : entry_price - exitPrice;
           await updateSignalState(id!, "END", { outcome: "SL", pnl });
-          logs.push(`[${base}] SL HIT — PNL $${pnl.toFixed(2)}`);
+          logs.push(`[${base}] SL HIT — exit $${exitPrice.toFixed(2)} PNL $${pnl.toFixed(2)}`);
           continue;
         }
 
-        // FIX 2: Smarter CONFIRMED — 2 closes holding + momentum (last close > prev close)
+        // FIX 3: CONFIRMED requires 2 closes holding + moveStrength > 0.2%
         if (state === "EARLY") {
           const recent = candles.slice(-3);
           const closes = recent.map((c) => c.close);
@@ -283,18 +300,25 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
               ? closes.slice(0, -1).filter((c) => c > entry_price * 0.999).length >= 2
               : closes.slice(0, -1).filter((c) => c < entry_price * 1.001).length >= 2;
 
+          const moveStrength = Math.abs(lastClose - prevClose) / prevClose;
           const hasMomentum =
             direction === "LONG" ? lastClose > prevClose : lastClose < prevClose;
 
-          if (closesHolding && hasMomentum) {
+          if (closesHolding && hasMomentum && moveStrength > 0.002) {
             const newConfidence = Math.min(95, signal.confidence + 15);
-            await updateSignalState(id!, "CONFIRMED", { confidence: newConfidence });
-            logs.push(`[${base}] EARLY → CONFIRMED (confidence: ${newConfidence}%)`);
+            await updateSignalState(id!, "CONFIRMED", {
+              confidence: newConfidence,
+              last_checked_candle: candleTs,
+            });
+            logs.push(`[${base}] EARLY → CONFIRMED (confidence: ${newConfidence}%, move: ${(moveStrength * 100).toFixed(2)}%)`);
             confirmed.push({ ...signal, state: "CONFIRMED", confidence: newConfidence });
           } else {
-            logs.push(`[${base}] EARLY — holding: ${closesHolding}, momentum: ${hasMomentum}`);
+            await updateSignalState(id!, "EARLY", { last_checked_candle: candleTs });
+            logs.push(`[${base}] EARLY — holding: ${closesHolding}, momentum: ${hasMomentum}, move: ${(moveStrength * 100).toFixed(2)}%`);
           }
         } else {
+          // Update last_checked_candle so we don't reprocess
+          await updateSignalState(id!, "CONFIRMED", { last_checked_candle: candleTs });
           logs.push(`[${base}] CONFIRMED — position active`);
         }
       } catch (err) {
