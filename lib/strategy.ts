@@ -5,7 +5,7 @@ import { sendTradeCloseAlert } from "./telegram";
 
 export type SignalDirection = "LONG" | "SHORT";
 export type SignalState = "EARLY" | "CONFIRMED" | "END";
-export type SignalOutcome = "TP" | "SL" | "EXPIRED";
+export type SignalOutcome = "TP" | "SL" | "EXPIRED" | "MANUAL";
 
 export interface Signal {
   id?: number;
