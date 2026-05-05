@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { managePositions, getAllSignals, updateSignalState } from "@/lib/strategy";
+import { managePositions, getAllSignals } from "@/lib/strategy";
 import { sendSignalAlert, shouldSendAlert } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
@@ -27,19 +27,18 @@ export async function GET(req: NextRequest) {
       console.log(line);
     }
 
-    // FIX: Only alert on newly CONFIRMED signals this run, guarded by alert_sent flag
+    // FIX: Only alert on newly CONFIRMED signals — strict dedup by signal_id + CONFIRMED state
     for (const signal of confirmed) {
-      if (!signal.alert_sent) {
+      // Check if we've already sent CONFIRMED alert for this exact signal
+      if (await shouldSendAlert(signal.id!, signal.symbol, "CONFIRMED")) {
         try {
           await sendSignalAlert(signal);
-          // Mark alert_sent so subsequent cron runs don't re-alert
-          if (signal.id) {
-            await updateSignalState(signal.id, "CONFIRMED", { alert_sent: true } as any);
-          }
-          console.log(`[TELEGRAM] Sent CONFIRMED alert for ${signal.symbol}`);
-        } catch {
-          console.log(`[TELEGRAM] Failed to send alert for ${signal.symbol}`);
+          console.log(`[TELEGRAM] ✓ Sent CONFIRMED alert for ${signal.symbol} (signal ID ${signal.id})`);
+        } catch (err) {
+          console.log(`[TELEGRAM] ✗ Failed to send CONFIRMED alert for ${signal.symbol}`);
         }
+      } else {
+        console.log(`[TELEGRAM] ✗ Skipped CONFIRMED alert — already sent for signal ID ${signal.id}`);
       }
     }
 

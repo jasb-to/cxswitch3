@@ -37,19 +37,19 @@ export async function GET(req: NextRequest) {
       console.log(line);
     }
 
-    // Telegram: send only if shouldSendAlert approves (no spam)
+    // Telegram: send EARLY alerts when signals are first created
     for (const signal of signals) {
-      if (await shouldSendAlert(signal.id!, signal.symbol, signal.state)) {
+      if (signal.state === "EARLY" && await shouldSendAlert(signal.id!, signal.symbol, "EARLY")) {
         try {
           await sendSignalAlert(signal);
-          console.log(`[TELEGRAM] ✓ Sent ${signal.state} alert for ${signal.symbol} (signal ID ${signal.id})`);
-        } catch {
-          console.log(`[TELEGRAM] ✗ Failed to send alert for ${signal.symbol}`);
+          console.log(`[TELEGRAM] ✓ Sent EARLY alert for ${signal.symbol} (signal ID ${signal.id})`);
+        } catch (err) {
+          console.log(`[TELEGRAM] ✗ Failed to send EARLY alert for ${signal.symbol}`);
         }
-      } else {
-        console.log(`[TELEGRAM] ✗ Skipped — already alerted ${signal.state} for ${signal.symbol} (signal ID ${signal.id})`);
       }
     }
+
+    // Note: CONFIRMED alerts are sent by /api/cron/positions after managePositions() evaluates candidates
 
     // Clean up alerts for signals that have ended (prevents old alerts from blocking new ones)
     if (supabase) {
