@@ -17,18 +17,26 @@ export async function shouldSendAlert(signal_id: number, symbol: string, newStat
 
   try {
     // Check if we've already sent this state for THIS SPECIFIC SIGNAL
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("telegram_alerts")
-      .select("id")
+      .select("id, sent_at")
       .eq("signal_id", signal_id)
       .eq("symbol", symbol)
       .eq("state", newState)
       .order("sent_at", { ascending: false })
       .limit(1);
 
-    return !data || data.length === 0;
+    if (error) {
+      console.error(`[shouldSendAlert] Query error for signal ${signal_id}:`, error.message);
+      return true;
+    }
+
+    const shouldSend = !data || data.length === 0;
+    console.log(`[shouldSendAlert] signal_id=${signal_id} symbol=${symbol} state=${newState} — already_sent=${!shouldSend}`, data?.[0] ? `(last sent: ${data[0].sent_at})` : "");
+    
+    return shouldSend;
   } catch (err) {
-    console.warn(`[shouldSendAlert] Supabase error, allowing alert:`, err);
+    console.error(`[shouldSendAlert] Exception for signal ${signal_id}:`, err);
     return true;
   }
 }
@@ -107,16 +115,25 @@ export async function sendSignalAlert(signal: Signal): Promise<void> {
     body: JSON.stringify({ chat_id: CHAT_ID, text }),
   });
 
-  // Track alert in Supabase with signal_id for proper deduplication (optional, won't crash if missing)
-  if (supabase) {
+  // Track alert in Supabase with signal_id for proper deduplication
+  if (supabase && signal.id) {
     try {
-      await supabase.from("telegram_alerts").insert({
-        signal_id: signal.id,
-        symbol: signal.symbol,
-        state: signal.state,
-      });
+      const { data, error } = await supabase
+        .from("telegram_alerts")
+        .insert({
+          signal_id: signal.id,
+          symbol: signal.symbol,
+          state: signal.state,
+        })
+        .select();
+
+      if (error) {
+        console.error(`[sendSignalAlert] Insert failed for signal ${signal.id}:`, error.message);
+      } else {
+        console.log(`[sendSignalAlert] Tracked alert for signal ${signal.id} in telegram_alerts`);
+      }
     } catch (err) {
-      console.warn(`[sendSignalAlert] Failed to track alert in Supabase:`, err);
+      console.error(`[sendSignalAlert] Exception tracking alert for signal ${signal.id}:`, err);
     }
   }
 }

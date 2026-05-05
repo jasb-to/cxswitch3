@@ -469,6 +469,8 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
           const hasMomentum =
             direction === "LONG" ? lastClose > prevClose : lastClose < prevClose;
 
+          logs.push(`[${base}] EARLY checks: breakoutValid=${breakoutValid}, closesHolding=${closesHolding} (${closes.slice(0, -1).map((c) => c.toFixed(2)).join(",")}), momentum=${hasMomentum}, moveStrength=${(moveStrength * 100).toFixed(3)}%`);
+
           if (breakoutValid && closesHolding && hasMomentum && moveStrength > 0.002) {
             const newConfidence = Math.min(95, signal.confidence + 15);
             await updateSignalState(id!, "CONFIRMED", {
