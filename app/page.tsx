@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 
-const VERSION = "v1.0.0";
+const VERSION = "v1.1.0";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -143,17 +143,27 @@ function SignalCard({ symbol, signal, market }: { symbol: string; signal?: Signa
           </div>
         )}
 
-        {/* Setup status (if no signal) */}
-        {!active && market && !market.error && (
+        {/* Setup status (if no signal) or signal state (if active) */}
+        {market && !market.error && (
           <div className="border-t border-[#1e1e1e] pt-4">
-            <p className={`text-[12px] font-mono font-bold ${
-              market.setup === "LONG_SETUP"
+            <p className={`text-[12px] font-mono font-bold leading-relaxed ${
+              active
+                ? signal.direction === "LONG"
+                  ? "text-[#22c55e]"
+                  : "text-[#ef4444]"
+                : market.setup === "LONG_SETUP"
                 ? "text-[#22c55e]"
                 : market.setup === "SHORT_SETUP"
                 ? "text-[#ef4444]"
-                : "text-[#555]"
+                : "text-[#666]"
             }`}>
-              {market.setupText}
+              {active
+                ? signal.state === "EARLY"
+                  ? `${signal.direction} EARLY — awaiting 15M confirmation (${signal.confidence}%)`
+                  : signal.state === "CONFIRMED"
+                  ? `${signal.direction} CONFIRMED — execute now`
+                  : `ENDED — setup expired`
+                : market.setupText}
             </p>
           </div>
         )}

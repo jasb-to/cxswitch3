@@ -7,8 +7,8 @@ const _geist = Geist({ subsets: ["latin"] });
 const _geistMono = Geist_Mono({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: 'Signal Dashboard',
-  description: 'Crypto breakout signal dashboard — BTC, ETH, SOL',
+  title: 'Switch Dashboard',
+  description: 'Crypto breakout signal dashboard with trendline detection — BTC, ETH, SOL',
   generator: 'v0.app',
 }
 

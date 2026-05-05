@@ -28,6 +28,7 @@ export interface MarketContext {
   setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" | "ERROR";
   setupText: string;
   error?: boolean;
+  trend?: "BULLISH" | "BEARISH" | "NEUTRAL";
 }
 
 // ─── Kraken candle helpers ───────────────────────────────────────────────────
@@ -136,6 +137,20 @@ export async function getAllSignals(): Promise<Signal[]> {
   }
 }
 
+// ─── Calculate trend from recent candles ─────────────────────────────────────
+
+function calculateTrend(candles: Candle[]): "BULLISH" | "BEARISH" | "NEUTRAL" {
+  if (candles.length < 2) return "NEUTRAL";
+  
+  const recentClose = candles[candles.length - 1].close;
+  const olderClose = candles[Math.max(0, candles.length - 20)].close;
+  const changePercent = ((recentClose - olderClose) / olderClose) * 100;
+  
+  if (changePercent > 1) return "BULLISH";
+  if (changePercent < -1) return "BEARISH";
+  return "NEUTRAL";
+}
+
 // ─── Market context with swing levels ────────────────────────────────────────
 
 export async function getMarketContext(symbolBase: string): Promise<MarketContext> {
@@ -154,10 +169,12 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
         setup: "ERROR",
         setupText: "No candle data available",
         error: true,
+        trend: "NEUTRAL",
       };
     }
 
     const price = candles4h[candles4h.length - 1].close;
+    const trend = calculateTrend(candles4h);
     const highs = swingHighs(candles4h);
     const lows = swingLows(candles4h);
 
@@ -175,14 +192,14 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     }
 
     let setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" | "ERROR" = "NO_SETUP";
-    let setupText = "NO SETUP — ranging";
+    let setupText = `${trend} — ranging, awaiting structure`;
 
     if (distanceToHigh !== null && distanceToHigh >= -3 && distanceToHigh <= 0) {
       setup = "LONG_SETUP";
-      setupText = `LONG SETUP — ${Math.abs(distanceToHigh).toFixed(1)}% below $${swingHigh.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+      setupText = `LONG — ${Math.abs(distanceToHigh).toFixed(1)}% below resistance (${swingHigh.toLocaleString("en-US", { maximumFractionDigits: 0 })})`;
     } else if (distanceToLow !== null && distanceToLow >= 0 && distanceToLow <= 3) {
       setup = "SHORT_SETUP";
-      setupText = `SHORT SETUP — ${distanceToLow.toFixed(1)}% above $${swingLow.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+      setupText = `SHORT — ${distanceToLow.toFixed(1)}% above support (${swingLow.toLocaleString("en-US", { maximumFractionDigits: 0 })})`;
     }
 
     return {
@@ -194,6 +211,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       distanceToLow,
       setup,
       setupText,
+      trend,
     };
   } catch (err) {
     console.error(`[getMarketContext] Error for ${symbolBase}:`, err);
@@ -207,6 +225,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       setup: "ERROR",
       setupText: `Data unavailable: ${err instanceof Error ? err.message : "Unknown error"}`,
       error: true,
+      trend: "NEUTRAL",
     };
   }
 }
