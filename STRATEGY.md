@@ -1,10 +1,26 @@
 # CXSwitch3 Trading Strategy Documentation
 
-**Current Version:** v1.8.0
+**Current Version:** v1.9.0
 
 ## Overview
 
 CXSwitch3 is an automated crypto trading signal generator that detects trendline breakouts on 4-hour (4H) candlestick charts for BTC/USD, ETH/USD, and SOL/USD. It identifies valid support/resistance levels through multi-touch trendline analysis, fires entry signals on confirmed breakouts with dynamic risk-to-reward ratios, manages live positions, and validates trades through on-chain momentum confirmation.
+
+---
+
+## v1.9.0 Improvements
+
+### API & Signal Pipeline Debugging
+- **getAllSignals Query Fix**: Properly filters to exclude END signals using `.neq("state", "END")`, preventing stale closed signals from appearing on dashboard
+- **Detailed API Logging**: Added console.log output showing raw API response with signal IDs, symbols, directions, and states for complete pipeline debugging
+- **Dashboard Signal Mapping**: Added debug logging showing signalMap keys and market symbols to detect symbol format mismatches ("ETH/USD" vs other formats)
+- **SOL Breakout Detection**: Fixed marginal breakout logic — SOL at 0.1% above resistance now triggers LONG_SETUP immediately instead of waiting for 0.5% threshold
+- **Marginal Break Handling**: Price that just breaks above/below a trendline (even 0.01%) now shows LONG/SHORT SETUP, catching entries that form at the level transition
+
+### Key Debugging Tools
+- Check browser console for dashboard mapping logs: "signals received:", "market symbols:", "signalMap keys:"
+- Check server logs for API response: "[GET /api/signals] Raw API response"
+- Check Supabase getAllSignals logs: "[getAllSignals] Returned signals:" for query validation
 
 ---
 
