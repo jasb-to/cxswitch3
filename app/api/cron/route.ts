@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateSignals, getAllSignals } from "@/lib/strategy";
+import { generateSignals, getAllSignals, cleanupExpiredSignals } from "@/lib/strategy";
 import { sendSignalAlert, shouldSendAlert } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
@@ -21,6 +21,14 @@ export async function GET(req: NextRequest) {
     }
 
     lastCronRun = Date.now();
+    
+    // First: cleanup expired signals that haven't confirmed
+    const { logs: cleanupLogs } = await cleanupExpiredSignals();
+    for (const line of cleanupLogs) {
+      console.log(line);
+    }
+
+    // Then: generate new signals
     const { signals, logs } = await generateSignals();
 
     // Print all logs to stdout

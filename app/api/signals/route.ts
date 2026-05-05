@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, NextRequest } from "next/server";
 import { getAllSignals, getMarketContext, type MarketContext } from "@/lib/strategy";
 import { supabase } from "@/lib/supabase-client";
 
@@ -55,6 +55,62 @@ export async function DELETE() {
     console.error("[DELETE /api/signals ERROR]", err);
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Unknown error" },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PATCH(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { symbol, state, exitPrice, outcome } = body;
+
+    if (!symbol || !state) {
+      return NextResponse.json({ error: "Missing symbol or state" }, { status: 400 });
+    }
+
+    if (!supabase) {
+      return NextResponse.json({ error: "Supabase not connected" }, { status: 500 });
+    }
+
+    // Find the active signal for this symbol
+    const { data: signal, error: fetchErr } = await supabase
+      .from("signals")
+      .select("*")
+      .eq("symbol", symbol)
+      .in("state", ["EARLY", "CONFIRMED"])
+      .single();
+
+    if (fetchErr || !signal) {
+      return NextResponse.json({ error: "Signal not found or already ended" }, { status: 404 });
+    }
+
+    // Update signal to END state
+    const updateData: Record<string, unknown> = { state };
+    if (outcome) updateData.outcome = outcome;
+    if (exitPrice !== undefined) {
+      const pnl = signal.direction === "LONG"
+        ? exitPrice - signal.entry_price
+        : signal.entry_price - exitPrice;
+      updateData.pnl = pnl;
+    }
+
+    const { error: updateErr } = await supabase
+      .from("signals")
+      .update(updateData)
+      .eq("id", signal.id);
+
+    if (updateErr) {
+      return NextResponse.json({ error: updateErr.message }, { status: 500 });
+    }
+
+    console.log(`[PATCH /api/signals] Ended ${symbol} ${signal.direction} signal`);
+
+    return NextResponse.json({ ok: true, signal: { ...signal, ...updateData } });
+  } catch (error) {
+    console.error("[PATCH /api/signals ERROR]", error);
+    return NextResponse.json(
+      { error: "Internal error", details: error instanceof Error ? error.message : "Unknown" },
       { status: 500 }
     );
   }

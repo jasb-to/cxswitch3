@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 
-const VERSION = "v1.5.0";
+const VERSION = "v1.7.0";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -58,6 +58,10 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
         <span className="font-mono font-bold text-white text-lg tracking-wide">{symbol}</span>
         {active ? (
           <Badge state={signal.state} />
+        ) : market?.setup?.includes("SETUP") ? (
+          <span className="border border-[#d4a017] text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono text-[#d4a017]">
+            SETUP ACTIVE
+          </span>
         ) : (
           <span className="border border-[#2a2a2a] text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono text-[#444]">
             NO SIGNAL
@@ -232,6 +236,7 @@ export default function Dashboard() {
   const [endTradeModal, setEndTradeModal] = useState<{ signalId: number; symbol: string; entryPrice: number } | null>(null);
   const [endTradeExitPrice, setEndTradeExitPrice] = useState("");
   const [endTradeLoading, setEndTradeLoading] = useState(false);
+  const [forceScanLoading, setForceScanLoading] = useState(false);
 
   useEffect(() => {
     setIsHydrated(true);
@@ -290,6 +295,23 @@ export default function Dashboard() {
     setTimeout(() => { setTg("idle"); setTgMsg(""); }, 4000);
   }
 
+  async function forceScan() {
+    setForceScanLoading(true);
+    try {
+      const res = await fetch("/api/cron", { method: "GET" });
+      const json = await res.json();
+      if (json.ok) {
+        await mutate();
+      } else {
+        alert("Scan failed");
+      }
+    } catch (err) {
+      alert(`Error: ${err}`);
+    } finally {
+      setForceScanLoading(false);
+    }
+  }
+
   async function submitEndTrade() {
     if (!endTradeModal || !endTradeExitPrice) return;
     setEndTradeLoading(true);
@@ -299,10 +321,15 @@ export default function Dashboard() {
         alert("Invalid exit price");
         return;
       }
-      const res = await fetch("/api/signals/end-trade", {
-        method: "POST",
+      const res = await fetch("/api/signals", {
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ signalId: endTradeModal.signalId, exitPrice }),
+        body: JSON.stringify({ 
+          symbol: endTradeModal.symbol, 
+          state: "END",
+          outcome: "MANUAL",
+          exitPrice 
+        }),
       });
       const json = await res.json();
       if (json.ok) {
@@ -392,6 +419,13 @@ export default function Dashboard() {
                   : "SCAN NOW"}
               </button>
 
+              <button
+                onClick={forceScan}
+                disabled={forceScanLoading}
+                className="border border-[#1e3a1f] text-[#4ade80] hover:border-[#22c55e] hover:text-[#22c55e] text-[11px] tracking-[0.2em] py-3 transition-colors disabled:opacity-40"
+              >
+                {forceScanLoading ? "FORCING..." : "FORCE SCAN"}
+              </button>
 
             </div>
           </div>

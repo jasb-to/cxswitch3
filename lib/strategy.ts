@@ -40,6 +40,52 @@ export interface MarketContext {
   volatilityThreshold?: number; // dynamic breakout threshold based on volatility
 }
 
+// ─── Cleanup expired signals ─────────────────────────────────────────────────
+
+export async function cleanupExpiredSignals(): Promise<{ expired: number; logs: string[] }> {
+  const logs: string[] = [];
+  let expiredCount = 0;
+
+  if (!supabase) {
+    logs.push("[CLEANUP] Supabase not connected");
+    return { expired: expiredCount, logs };
+  }
+
+  try {
+    // Find EARLY signals that haven't been confirmed in 12 candles (~1 hour on 4H)
+    const { data: earlySignals, error: fetchErr } = await supabase
+      .from("signals")
+      .select("*")
+      .eq("state", "EARLY")
+      .order("created_at", { ascending: false });
+
+    if (fetchErr) {
+      logs.push(`[CLEANUP] Query error: ${fetchErr.message}`);
+      return { expired: expiredCount, logs };
+    }
+
+    for (const signal of earlySignals ?? []) {
+      const ageMs = Date.now() - new Date(signal.created_at).getTime();
+      const ageCandles = Math.floor(ageMs / (4 * 60 * 60 * 1000)); // 4H candles
+
+      // Expire if >12 candles old without confirmation
+      if (ageCandles > 12) {
+        await updateSignalState(signal.id, "END", { outcome: "EXPIRED" });
+        logs.push(`[CLEANUP] Expired ${signal.symbol} ${signal.direction} signal — ${ageCandles} candles old, never confirmed`);
+        expiredCount++;
+      }
+    }
+
+    if (expiredCount > 0) {
+      logs.push(`[CLEANUP] Cleaned up ${expiredCount} expired signals`);
+    }
+  } catch (err) {
+    logs.push(`[CLEANUP] Error: ${err}`);
+  }
+
+  return { expired: expiredCount, logs };
+}
+
 // ─── Generate signals with risk-reward filtering ────────────────────────────
 
 
@@ -103,21 +149,33 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
         const { symbol, price, swingHigh, swingLow, setup } = market;
         logs.push(`[${base}] $${price.toFixed(2)} — ${setup} — ${market.setupText}`);
 
-        // If there's already an active signal, carry it forward — unless it's a stale EARLY (>1h old)
+        // Check if an active signal exists and if it should be expired
         const existing = activeBySymbol.get(symbol);
         if (existing) {
-          const ageMs = Date.now() - new Date(existing.created_at!).getTime();
-          const isStaleEarly = existing.state === "EARLY" && ageMs > 60 * 60 * 1000;
+          // Calculate retrace distance from breakout level
+          const retracePercent = 
+            existing.direction === "LONG"
+              ? ((existing.breakout_level - price) / price) * 100
+              : ((price - existing.breakout_level) / price) * 100;
 
-          if (isStaleEarly) {
-            // Expire the stale signal so a fresh breakout can create a new one
+          // Expire signal if price has retraced >1% through breakout level
+          if (retracePercent > 1) {
             await updateSignalState(existing.id!, "END", { outcome: "EXPIRED" });
-            logs.push(`[${base}] Expired stale EARLY signal (${Math.round(ageMs / 60000)}m old) — allowing new signal`);
-            // Fall through to signal creation below
+            logs.push(`[${base}] Expired ${existing.direction} signal — price retraced ${retracePercent.toFixed(2)}% through breakout level`);
+            // Fall through to allow new signal in opposite direction
           } else {
-            logs.push(`[${base}] Active signal exists (${existing.state}) — skipping creation`);
-            signals.push(existing);
-            continue;
+            // Signal still valid, check staleness
+            const ageMs = Date.now() - new Date(existing.created_at!).getTime();
+            const isStaleEarly = existing.state === "EARLY" && ageMs > 60 * 60 * 1000;
+
+            if (isStaleEarly) {
+              await updateSignalState(existing.id!, "END", { outcome: "EXPIRED" });
+              logs.push(`[${base}] Expired stale EARLY signal (${Math.round(ageMs / 60000)}m old) — allowing new signal`);
+            } else {
+              logs.push(`[${base}] Active signal exists (${existing.state}) — skipping creation`);
+              signals.push(existing);
+              continue;
+            }
           }
         }
 
