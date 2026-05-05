@@ -1,10 +1,20 @@
 # CXSwitch3 Trading Strategy Documentation
 
-**Current Version:** v1.5.0
+**Current Version:** v1.6.0
 
 ## Overview
 
 CXSwitch3 is an automated crypto trading signal generator that detects trendline breakouts on 4-hour (4H) candlestick charts for BTC/USD, ETH/USD, and SOL/USD. It identifies valid support/resistance levels through multi-touch trendline analysis, fires entry signals on confirmed breakouts with dynamic risk-to-reward ratios, manages live positions, and validates trades through on-chain momentum confirmation.
+
+---
+
+## v1.6.0 Improvements
+
+### Enhanced Dashboard Badge Logic
+- Badge now shows three states: **EARLY** (amber), **CONFIRMED** (green), or **NO SIGNAL** (gray)
+- Added **SETUP ACTIVE** state (amber) when market detects a setup pattern but no signal has fired yet
+- Provides clear visibility into setup detection before signal generation
+- Helps distinguish between "waiting for confirmation" vs "no structure detected"
 
 ---
 

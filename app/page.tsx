@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 
-const VERSION = "v1.5.0";
+const VERSION = "v1.6.0";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -58,6 +58,10 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
         <span className="font-mono font-bold text-white text-lg tracking-wide">{symbol}</span>
         {active ? (
           <Badge state={signal.state} />
+        ) : market?.setup?.includes("SETUP") ? (
+          <span className="border border-[#d4a017] text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono text-[#d4a017]">
+            SETUP ACTIVE
+          </span>
         ) : (
           <span className="border border-[#2a2a2a] text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono text-[#444]">
             NO SIGNAL
