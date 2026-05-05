@@ -345,8 +345,6 @@ export default function Dashboard() {
       setEndTradeLoading(false);
     }
   }
-    }
-  }
 
   return (
     <main className="min-h-screen bg-[#0a0a0a] text-white font-mono">
