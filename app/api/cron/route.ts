@@ -10,7 +10,6 @@ const CRON_INTERVAL_MS = 60_000;
 let lastCronRun = 0;
 
 export async function GET(req: NextRequest) {
-  console.log("[v0] CRON ROUTE INVOKED - imports successful");
   try {
     const secret = process.env.CRON_SECRET;
     if (secret) {
@@ -22,9 +21,7 @@ export async function GET(req: NextRequest) {
     }
 
     lastCronRun = Date.now();
-    console.log("[v0] Calling generateSignals()");
     const { signals, logs } = await generateSignals();
-    console.log("[v0] generateSignals() returned successfully");
 
     // Print all logs to stdout
     for (const line of logs) {
@@ -51,9 +48,7 @@ export async function GET(req: NextRequest) {
     const nextSecs = nextInSec % 60;
     console.log(`[NEXT CRON] In ${nextMins}m ${nextSecs}s`);
 
-    console.log("[v0] Calling getAllSignals()");
     const allSignals = await getAllSignals();
-    console.log("[v0] getAllSignals() returned successfully");
 
     return NextResponse.json({
       ok: true,

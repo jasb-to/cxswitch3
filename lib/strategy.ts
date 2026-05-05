@@ -65,94 +65,98 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
   }
 
   try {
-    const { data: existing, error } = await supabase
+    // Fetch all active (non-ended) signals once upfront
+    const { data: activeRows, error: fetchError } = await supabase
       .from("signals")
       .select("*")
       .in("state", ["EARLY", "CONFIRMED"]);
 
-    if (error) {
-      logs.push(`[SUPABASE] Query error: ${error.message}`);
+    if (fetchError) {
+      logs.push(`[SUPABASE] Query error: ${fetchError.message}`);
       return { signals, logs };
     }
 
-    const existingMap = new Map(existing?.map((s: any) => [s.symbol, s]) ?? []);
+    // Safe duplicate check: only block if symbol has an active (non-END) signal
+    const activeBySymbol = new Map<string, Signal>(
+      (activeRows ?? []).map((s: Signal) => [s.symbol, s])
+    );
 
     for (const base of ["BTC", "ETH", "SOL"]) {
       try {
-        // Get market context with trendlines
         const market = await getMarketContext(base);
 
         if (market.error) {
-          logs.push(`[${base}] Error fetching market data`);
+          logs.push(`[${base}] Market data error — skipping`);
           continue;
         }
 
-        const price = market.price;
-        const symbol = market.symbol;
+        const { symbol, price, swingHigh, swingLow, setup } = market;
+        logs.push(`[${base}] $${price.toFixed(2)} — ${setup} — ${market.setupText}`);
 
-        // Check if signal already exists for this symbol
-        let existingSignal = existingMap.get(symbol);
-
-        // LONG SETUP: Price broke resistance (0.5% above)
-        if (market.setup === "LONG_SETUP" && !existingSignal) {
-          const takeProfitPercent = 0.03; // 3% TP
-          const newSignal: Signal = {
-            id: `${symbol}-${Date.now()}`,
-            symbol,
-            state: "EARLY",
-            direction: "LONG",
-            entry_price: price,
-            stop_loss: market.swingLow ?? price * 0.97,
-            take_profit: price * (1 + takeProfitPercent),
-            confidence: 70,
-            created_at: new Date().toISOString(),
-          };
-
-          // Insert new signal into Supabase
-          const { error: insertError } = await supabase
-            .from("signals")
-            .insert([newSignal]);
-
-          if (insertError) {
-            logs.push(`[${base}] Failed to insert LONG signal: ${insertError.message}`);
-          } else {
-            logs.push(`[${base}] ✓ Created LONG EARLY signal at $${price.toFixed(2)}`);
-            signals.push(newSignal);
-            existingSignal = newSignal;
-          }
+        // If there's already an active signal for this symbol, carry it forward
+        const existing = activeBySymbol.get(symbol);
+        if (existing) {
+          logs.push(`[${base}] Active signal exists (${existing.state}) — skipping creation`);
+          signals.push(existing);
+          continue;
         }
-        // SHORT SETUP: Price broke support (0.5% below)
-        else if (market.setup === "SHORT_SETUP" && !existingSignal) {
-          const takeProfitPercent = 0.03; // 3% TP
-          const newSignal: Signal = {
-            id: `${symbol}-${Date.now()}`,
+
+        // LONG: price broke above a 3-touch resistance level by 0.5%
+        if (setup === "LONG_SETUP") {
+          const breakoutLevel = swingHigh ?? price;
+          const newSignal = {
             symbol,
-            state: "EARLY",
-            direction: "SHORT",
+            state: "EARLY" as SignalState,
+            direction: "LONG" as SignalDirection,
             entry_price: price,
-            stop_loss: market.swingHigh ?? price * 1.03,
-            take_profit: price * (1 - takeProfitPercent),
+            stop_loss: swingLow ?? price * 0.97,
+            take_profit: price * 1.03,
             confidence: 70,
-            created_at: new Date().toISOString(),
+            breakout_level: breakoutLevel,
           };
 
-          // Insert new signal into Supabase
-          const { error: insertError } = await supabase
+          const { data: inserted, error: insertErr } = await supabase
             .from("signals")
-            .insert([newSignal]);
+            .insert([newSignal])
+            .select()
+            .single();
 
-          if (insertError) {
-            logs.push(`[${base}] Failed to insert SHORT signal: ${insertError.message}`);
+          if (insertErr) {
+            logs.push(`[${base}] Insert LONG failed: ${insertErr.message}`);
           } else {
-            logs.push(`[${base}] ✓ Created SHORT EARLY signal at $${price.toFixed(2)}`);
-            signals.push(newSignal);
-            existingSignal = newSignal;
+            logs.push(`[${base}] Created LONG EARLY at $${price.toFixed(2)}`);
+            signals.push(inserted);
           }
-        } else if (existingSignal) {
-          logs.push(`[${base}] Signal exists: ${existingSignal.state}`);
-          signals.push(existingSignal);
+
+        // SHORT: price broke below a 3-touch support level by 0.5%
+        } else if (setup === "SHORT_SETUP") {
+          const breakoutLevel = swingLow ?? price;
+          const newSignal = {
+            symbol,
+            state: "EARLY" as SignalState,
+            direction: "SHORT" as SignalDirection,
+            entry_price: price,
+            stop_loss: swingHigh ?? price * 1.03,
+            take_profit: price * 0.97,
+            confidence: 70,
+            breakout_level: breakoutLevel,
+          };
+
+          const { data: inserted, error: insertErr } = await supabase
+            .from("signals")
+            .insert([newSignal])
+            .select()
+            .single();
+
+          if (insertErr) {
+            logs.push(`[${base}] Insert SHORT failed: ${insertErr.message}`);
+          } else {
+            logs.push(`[${base}] Created SHORT EARLY at $${price.toFixed(2)}`);
+            signals.push(inserted);
+          }
+
         } else {
-          logs.push(`[${base}] No setup — ${market.setupText}`);
+          logs.push(`[${base}] No setup — waiting`);
         }
       } catch (err) {
         logs.push(`[${base}] Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -163,6 +167,118 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
   }
 
   return { signals, logs };
+}
+
+// ─── Update signal state in Supabase ────────────────────────────────────────
+
+export async function updateSignalState(
+  id: number,
+  state: SignalState,
+  extra?: Partial<Signal>
+): Promise<boolean> {
+  if (!supabase) return false;
+
+  const { error } = await supabase
+    .from("signals")
+    .update({ state, updated_at: new Date().toISOString(), ...extra })
+    .eq("id", id);
+
+  if (error) {
+    console.error(`[updateSignalState] Failed to update signal ${id}:`, error.message);
+    return false;
+  }
+  return true;
+}
+
+// ─── Manage open positions: check TP/SL, promote EARLY → CONFIRMED, expire ──
+
+export async function managePositions(): Promise<{ logs: string[] }> {
+  const logs: string[] = [];
+
+  if (!supabase) {
+    logs.push("[POSITIONS] Supabase not connected");
+    return { logs };
+  }
+
+  try {
+    const { data: openSignals, error } = await supabase
+      .from("signals")
+      .select("*")
+      .in("state", ["EARLY", "CONFIRMED"]);
+
+    if (error) {
+      logs.push(`[POSITIONS] Query error: ${error.message}`);
+      return { logs };
+    }
+
+    if (!openSignals?.length) {
+      logs.push("[POSITIONS] No open positions");
+      return { logs };
+    }
+
+    for (const signal of openSignals as Signal[]) {
+      try {
+        const base = signal.symbol.replace("/USD", "");
+        const candles = await fetchCandles(base, 15, 10); // 15m candles for confirmation
+        if (!candles.length) {
+          logs.push(`[${base}] No 15m candles`);
+          continue;
+        }
+
+        const price = candles[candles.length - 1].close;
+        const { entry_price, stop_loss, take_profit, direction, state, id } = signal;
+
+        logs.push(`[${base}] ${state} ${direction} — price $${price.toFixed(2)} | entry $${entry_price.toFixed(2)} | SL $${stop_loss.toFixed(2)} | TP $${take_profit.toFixed(2)}`);
+
+        // TP hit
+        if (direction === "LONG" && price >= take_profit) {
+          await updateSignalState(id!, "END", { take_profit: price });
+          logs.push(`[${base}] TP HIT — LONG ended at $${price.toFixed(2)}`);
+          continue;
+        }
+        if (direction === "SHORT" && price <= take_profit) {
+          await updateSignalState(id!, "END", { take_profit: price });
+          logs.push(`[${base}] TP HIT — SHORT ended at $${price.toFixed(2)}`);
+          continue;
+        }
+
+        // SL hit
+        if (direction === "LONG" && price <= stop_loss) {
+          await updateSignalState(id!, "END");
+          logs.push(`[${base}] SL HIT — LONG stopped out at $${price.toFixed(2)}`);
+          continue;
+        }
+        if (direction === "SHORT" && price >= stop_loss) {
+          await updateSignalState(id!, "END");
+          logs.push(`[${base}] SL HIT — SHORT stopped out at $${price.toFixed(2)}`);
+          continue;
+        }
+
+        // Promote EARLY → CONFIRMED: price held above/below breakout level for 2+ candles
+        if (state === "EARLY") {
+          const recentCloses = candles.slice(-3).map((c) => c.close);
+          const allAbove = direction === "LONG" && recentCloses.every((c) => c > entry_price * 0.999);
+          const allBelow = direction === "SHORT" && recentCloses.every((c) => c < entry_price * 1.001);
+
+          if (allAbove || allBelow) {
+            const newConfidence = Math.min(95, signal.confidence + 15);
+            await updateSignalState(id!, "CONFIRMED", { confidence: newConfidence });
+            logs.push(`[${base}] EARLY → CONFIRMED (confidence: ${newConfidence}%)`);
+          } else {
+            logs.push(`[${base}] EARLY — awaiting 15m confirmation`);
+          }
+        } else {
+          logs.push(`[${base}] CONFIRMED — position active`);
+        }
+      } catch (err) {
+        logs.push(`[POSITIONS] Error for ${signal.symbol}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  } catch (err) {
+    logs.push(`[POSITIONS] Outer error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  return { logs };
 }
 
 // ─── Get all signals from Supabase ──────────────────────────────────────────
