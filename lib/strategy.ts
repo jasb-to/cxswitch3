@@ -469,7 +469,27 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
           const hasMomentum =
             direction === "LONG" ? lastClose > prevClose : lastClose < prevClose;
 
-          if (breakoutValid && closesHolding && hasMomentum && moveStrength > 0.002) {
+          // Dual-path confirmation:
+          // Path 1: nearEntry — price holding within 0.1% of entry (consolidation)
+          const nearEntry = closesHolding;
+          
+          // Path 2: strongMomentum — price moved strongly away from entry (trending)
+          // For LONG: need 0.3% move strength AND price at least 0.2% above entry
+          // For SHORT: need 0.3% move strength AND price at least 0.2% below entry
+          const strongMomentum =
+            direction === "LONG"
+              ? moveStrength > 0.003 && lastClose > entry_price * 1.002
+              : moveStrength > 0.003 && lastClose < entry_price * 0.998;
+
+          logs.push(
+            `[${base}] EARLY checks: ` +
+            `nearEntry=${nearEntry} (holds: ${closes.slice(0, -1).map((c) => c.toFixed(2)).join(",")}), ` +
+            `strongMomentum=${strongMomentum} (moveStr=${(moveStrength * 100).toFixed(3)}%, close=${lastClose.toFixed(2)}, entry=${entry_price.toFixed(2)}), ` +
+            `hasMomentum=${hasMomentum}, breakoutValid=${breakoutValid}`
+          );
+
+          // Confirm if: (holding near entry OR strong momentum away) AND directional momentum AND still above breakout
+          if ((nearEntry || strongMomentum) && hasMomentum && breakoutValid) {
             const newConfidence = Math.min(95, signal.confidence + 15);
             await updateSignalState(id!, "CONFIRMED", {
               confidence: newConfidence,
