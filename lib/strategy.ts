@@ -28,7 +28,7 @@ export interface MarketContext {
   setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" | "ERROR";
   setupText: string;
   error?: boolean;
-  trend?: "BULLISH" | "BEARISH" | "NEUTRAL";
+  trendlines?: number;
 }
 
 // ─── Kraken candle helpers ───────────────────────────────────────────────────
@@ -137,21 +137,46 @@ export async function getAllSignals(): Promise<Signal[]> {
   }
 }
 
-// ─── Calculate trend from recent candles ─────────────────────────────────────
+// ─── Find local pivots (highs and lows) ───────────────────────────────────────
 
-function calculateTrend(candles: Candle[]): "BULLISH" | "BEARISH" | "NEUTRAL" {
-  if (candles.length < 2) return "NEUTRAL";
-  
-  const recentClose = candles[candles.length - 1].close;
-  const olderClose = candles[Math.max(0, candles.length - 20)].close;
-  const changePercent = ((recentClose - olderClose) / olderClose) * 100;
-  
-  if (changePercent > 1) return "BULLISH";
-  if (changePercent < -1) return "BEARISH";
-  return "NEUTRAL";
+function findPivots(candles: Candle[], lookback: number = 2): { highs: number[]; lows: number[] } {
+  const highs: number[] = [];
+  const lows: number[] = [];
+
+  for (let i = lookback; i < candles.length - lookback; i++) {
+    const c = candles[i];
+    if (c.high > candles[i - 1].high && c.high > candles[i + 1].high) {
+      highs.push(c.high);
+    }
+    if (c.low < candles[i - 1].low && c.low < candles[i + 1].low) {
+      lows.push(c.low);
+    }
+  }
+  return { highs, lows };
 }
 
-// ─── Market context with swing levels ────────────────────────────────────────
+// ─── Group prices into trendlines by touch count ────────────────────────────────
+
+function groupTouches(prices: number[], tolerance: number = 0.005): { level: number; touches: number }[] {
+  const groups: { level: number; touches: number }[] = [];
+
+  for (const price of prices) {
+    let found = false;
+    for (const group of groups) {
+      if (Math.abs(price - group.level) / group.level < tolerance) {
+        group.level = (group.level * group.touches + price) / (group.touches + 1);
+        group.touches++;
+        found = true;
+        break;
+      }
+    }
+    if (!found) groups.push({ level: price, touches: 1 });
+  }
+
+  return groups.filter((g) => g.touches >= 3).sort((a, b) => b.touches - a.touches);
+}
+
+// ─── Market context with trendlines ───────────────────────────────────────────
 
 export async function getMarketContext(symbolBase: string): Promise<MarketContext> {
   try {
@@ -169,17 +194,23 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
         setup: "ERROR",
         setupText: "No candle data available",
         error: true,
-        trend: "NEUTRAL",
+        trendlines: 0,
       };
     }
 
     const price = candles4h[candles4h.length - 1].close;
-    const trend = calculateTrend(candles4h);
-    const highs = swingHighs(candles4h);
-    const lows = swingLows(candles4h);
 
-    const swingHigh = highs.length ? Math.max(...highs) : null;
-    const swingLow = lows.length ? Math.min(...lows) : null;
+    // Find pivots and group into trendlines
+    const { highs, lows } = findPivots(candles4h, 2);
+    const resistances = groupTouches(highs, 0.005);
+    const supports = groupTouches(lows, 0.005);
+
+    const bestResistance = resistances[0];
+    const bestSupport = supports[0];
+
+    // Use best resistance/support as swingHigh/swingLow
+    const swingHigh = bestResistance?.level ?? null;
+    const swingLow = bestSupport?.level ?? null;
 
     let distanceToHigh: number | null = null;
     let distanceToLow: number | null = null;
@@ -192,15 +223,24 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     }
 
     let setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" | "ERROR" = "NO_SETUP";
-    let setupText = `${trend} — ranging, awaiting structure`;
+    let setupText = "NO STRUCTURE — no 3-touch trendlines";
 
-    if (distanceToHigh !== null && distanceToHigh >= -3 && distanceToHigh <= 0) {
+    // Check for breakouts
+    if (bestResistance && price > bestResistance.level * 1.002) {
       setup = "LONG_SETUP";
-      setupText = `LONG — ${Math.abs(distanceToHigh).toFixed(1)}% below resistance (${swingHigh.toLocaleString("en-US", { maximumFractionDigits: 0 })})`;
-    } else if (distanceToLow !== null && distanceToLow >= 0 && distanceToLow <= 3) {
+      setupText = `LONG — broke ${bestResistance.touches}-touch resistance at $${bestResistance.level.toFixed(0)}`;
+    } else if (bestSupport && price < bestSupport.level * 0.998) {
       setup = "SHORT_SETUP";
-      setupText = `SHORT — ${distanceToLow.toFixed(1)}% above support (${swingLow.toLocaleString("en-US", { maximumFractionDigits: 0 })})`;
+      setupText = `SHORT — broke ${bestSupport.touches}-touch support at $${bestSupport.level.toFixed(0)}`;
+    } else if (bestResistance) {
+      const dist = ((bestResistance.level - price) / price) * 100;
+      setupText = `${bestResistance.touches}-touch resistance at $${bestResistance.level.toFixed(0)} (${dist.toFixed(1)}% away)`;
+    } else if (bestSupport) {
+      const dist = ((price - bestSupport.level) / price) * 100;
+      setupText = `${bestSupport.touches}-touch support at $${bestSupport.level.toFixed(0)} (${dist.toFixed(1)}% away)`;
     }
+
+    const trendlineCount = (bestResistance ? 1 : 0) + (bestSupport ? 1 : 0);
 
     return {
       symbol,
@@ -211,7 +251,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       distanceToLow,
       setup,
       setupText,
-      trend,
+      trendlines: trendlineCount,
     };
   } catch (err) {
     console.error(`[getMarketContext] Error for ${symbolBase}:`, err);
@@ -225,7 +265,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       setup: "ERROR",
       setupText: `Data unavailable: ${err instanceof Error ? err.message : "Unknown error"}`,
       error: true,
-      trend: "NEUTRAL",
+      trendlines: 0,
     };
   }
 }
