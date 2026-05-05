@@ -96,7 +96,28 @@ function SignalCard({ symbol, signal, market }: { symbol: string; signal?: Signa
           <p className="font-mono text-3xl font-bold text-white tabular-nums">{displayPrice}</p>
         </div>
 
-        {/* TRENDLINE LEVELS (if market data exists) */}
+        {/* SIGNAL DETAILS (if active) */}
+        {active && (
+          <div className="grid grid-cols-3 gap-3 border-t border-[#1e1e1e] pt-4">
+            <div>
+              <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">ENTRY</p>
+              <p className="font-mono text-[14px] text-white tabular-nums">${fmt(signal.entry_price)}</p>
+            </div>
+            <div>
+              <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">TP1</p>
+              <p className="font-mono text-[14px] text-[#22c55e] tabular-nums">${fmt(signal.take_profit)}</p>
+            </div>
+            <div>
+              <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">SL</p>
+              <p className="font-mono text-[14px] text-[#ef4444] tabular-nums">${fmt(signal.stop_loss)}</p>
+            </div>
+            <div className="col-span-3 text-sm text-[#888]">
+              <span>Confidence: {signal.confidence}%</span>
+            </div>
+          </div>
+        )}
+
+        {/* TRENDLINE LEVELS (if no signal) */}
         {!active && market && market.trendlines > 0 && !market.error && (
           <div className="border-t border-[#1e1e1e] pt-4">
             <p className="text-[10px] tracking-[0.2em] text-[#666] mb-2">TRENDLINES</p>
@@ -120,85 +141,6 @@ function SignalCard({ symbol, signal, market }: { symbol: string; signal?: Signa
                 </div>
               )}
             </div>
-          </div>
-        )}
-
-        {/* SIGNAL DETAILS (if active) */}
-        {active && (
-          <div className="grid grid-cols-3 gap-3 border-t border-[#1e1e1e] pt-4">
-            <div>
-              <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">ENTRY</p>
-              <p className="font-mono text-[14px] text-white tabular-nums">${fmt(signal.entry_price)}</p>
-            </div>
-            <div>
-              <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">TP1</p>
-              <p className="font-mono text-[14px] text-[#22c55e] tabular-nums">${fmt(signal.take_profit)}</p>
-            </div>
-            <div>
-              <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">SL</p>
-              <p className="font-mono text-[14px] text-[#ef4444] tabular-nums">${fmt(signal.stop_loss)}</p>
-            </div>
-            <div className="col-span-3 text-sm text-[#888]">
-              <span>Confidence: {signal.confidence}%</span>
-            </div>
-          </div>
-        )}
-
-        {/* Error state */}
-        {market?.error && (
-          <div className="border-t border-[#1e1e1e] pt-4">
-            <p className="text-[12px] text-[#ef4444] font-mono">{market.setupText}</p>
-          </div>
-        )}
-
-        {/* Confidence bar (if signal active) */}
-        {active && (
-          <div className="border-t border-[#1e1e1e] pt-4">
-            <div className="flex items-center justify-between mb-2">
-              <p className="text-[10px] tracking-[0.2em] text-[#666]">CONFIDENCE</p>
-              <p className="font-mono text-[12px] text-[#888] tabular-nums">{confidence}%</p>
-            </div>
-            <div className="h-px bg-[#1e1e1e]">
-              <div
-                className="h-px transition-all duration-700"
-                style={{ width: `${confidence}%`, backgroundColor: confColor }}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Setup status (if no signal) or signal state (if active) */}
-        {market && !market.error && (
-          <div className="border-t border-[#1e1e1e] pt-4">
-            <p className={`text-[12px] font-mono font-bold leading-relaxed ${
-              active
-                ? signal.direction === "LONG"
-                  ? "text-[#22c55e]"
-                  : "text-[#ef4444]"
-                : market.setup === "LONG_SETUP"
-                ? "text-[#22c55e]"
-                : market.setup === "SHORT_SETUP"
-                ? "text-[#ef4444]"
-                : "text-[#666]"
-            }`}>
-              {active
-                ? signal.state === "EARLY"
-                  ? `${signal.direction} EARLY — awaiting 15M confirmation (${signal.confidence}%)`
-                  : signal.state === "CONFIRMED"
-                  ? `${signal.direction} CONFIRMED — execute now`
-                  : `ENDED — setup expired`
-                : market.setupText}
-            </p>
-          </div>
-        )}
-
-        {/* Direction (if signal active) */}
-        {active && (
-          <div>
-            <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">DIRECTION</p>
-            <p className={`font-mono text-base font-bold tracking-widest ${signal.direction === "LONG" ? "text-[#22c55e]" : "text-[#ef4444]"}`}>
-              {signal.direction}
-            </p>
           </div>
         )}
 
@@ -239,6 +181,29 @@ function SignalCard({ symbol, signal, market }: { symbol: string; signal?: Signa
                 </span>
                 <span className={active && signal.confidence >= 70 ? "text-[#22c55e]" : "text-[#666]"}>Momentum {active ? `${signal.confidence}%` : "—"}</span>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* Error state */}
+        {market?.error && (
+          <div className="border-t border-[#1e1e1e] pt-4">
+            <p className="text-[12px] text-[#ef4444] font-mono">{market.setupText}</p>
+          </div>
+        )}
+
+        {/* Confidence bar (if signal active) */}
+        {active && (
+          <div className="border-t border-[#1e1e1e] pt-4">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] tracking-[0.2em] text-[#666]">CONFIDENCE</p>
+              <p className="font-mono text-[12px] text-[#888] tabular-nums">{confidence}%</p>
+            </div>
+            <div className="h-px bg-[#1e1e1e]">
+              <div
+                className="h-px transition-all duration-700"
+                style={{ width: `${confidence}%`, backgroundColor: confColor }}
+              />
             </div>
           </div>
         )}
