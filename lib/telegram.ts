@@ -35,6 +35,18 @@ function fmt(n: number): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function getReason(signal: Signal): string {
+  if (signal.state === "EARLY") {
+    return `Breakout with early momentum. Awaiting 15m confirmation.`;
+  }
+
+  if (signal.state === "CONFIRMED") {
+    return `Breakout confirmed with sustained momentum across recent closes.`;
+  }
+
+  return "";
+}
+
 /**
  * Send a signal alert and track it in Supabase.
  */
@@ -42,12 +54,19 @@ export async function sendSignalAlert(signal: Signal): Promise<void> {
   if (!BOT_TOKEN || !CHAT_ID) return;
 
   const emoji = signal.state === "CONFIRMED" ? "🟢" : "🟡";
+  const reason = getReason(signal);
+
   const text =
-    `${emoji} ${signal.symbol} ${signal.direction} ${signal.state}\n` +
-    `Entry: $${fmt(signal.entry_price)}\n` +
-    `SL: $${fmt(signal.stop_loss)}\n` +
-    `TP: $${fmt(signal.take_profit)}\n` +
-    `Confidence: ${signal.confidence}%`;
+    `${emoji} ${signal.symbol} — ${signal.direction} (${signal.state})\n` +
+    `\n` +
+    `Entry:       $${fmt(signal.entry_price)}\n` +
+    `Stop Loss:   $${fmt(signal.stop_loss)}\n` +
+    `Take Profit: $${fmt(signal.take_profit)}\n` +
+    `\n` +
+    `Confidence: ${signal.confidence}%\n` +
+    `\n` +
+    `Reason:\n` +
+    `${reason}`;
 
   await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
     method: "POST",
