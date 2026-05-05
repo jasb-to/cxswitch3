@@ -132,9 +132,30 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
       return { signals, logs };
     }
 
+    // Fetch recently ended signals (last 4 hours) to implement cooldown
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+    const { data: recentEnded, error: recentError } = await supabase
+      .from("signals")
+      .select("*")
+      .eq("state", "END")
+      .gte("updated_at", fourHoursAgo)
+      .in("outcome", ["MANUAL", "EXPIRED"]);
+
+    if (recentError) {
+      logs.push(`[SUPABASE] Error fetching recently ended signals: ${recentError.message}`);
+    }
+
     // Safe duplicate check: only block if symbol has an active (non-END) signal
     const activeBySymbol = new Map<string, Signal>(
       (activeRows ?? []).map((s: Signal) => [s.symbol, s])
+    );
+
+    // Map of symbol+direction+breakout_level combos on cooldown (fired in last 4h)
+    const cooldownKey = (symbol: string, direction: string, level: number) => 
+      `${symbol}:${direction}:${level.toFixed(2)}`;
+    
+    const cooldownSet = new Set<string>(
+      (recentEnded ?? []).map((s: Signal) => cooldownKey(s.symbol, s.direction, s.breakout_level))
     );
 
     for (const base of ["BTC", "ETH", "SOL"]) {
@@ -182,6 +203,21 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
         // LONG: price broke above a 3-touch resistance level
         if (setup === "LONG_SETUP") {
           const breakoutLevel = swingHigh ?? price;
+          
+          // Check cooldown: don't fire same setup twice within 4 hours
+          const key = cooldownKey(symbol, "LONG", breakoutLevel);
+          if (cooldownSet.has(key)) {
+            logs.push(`[${base}] LONG on cooldown — fired within last 4h at $${breakoutLevel.toFixed(2)}`);
+            continue;
+          }
+
+          // Require close at least 0.5% above breakout level to avoid whipsaw
+          const distAboveBreakout = ((price - breakoutLevel) / breakoutLevel) * 100;
+          if (distAboveBreakout < 0.5) {
+            logs.push(`[${base}] LONG skipped — only ${distAboveBreakout.toFixed(2)}% above breakout, need 0.5%`);
+            continue;
+          }
+
           const sl = calculateStopLoss(price, swingLow, "LONG");
           const tp = calculateTakeProfit(price, sl, "LONG");
           const rr = calculateRiskReward(price, tp, sl, "LONG");
@@ -219,6 +255,27 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
         // SHORT: price broke below a 3-touch support level
         } else if (setup === "SHORT_SETUP") {
           const breakoutLevel = swingLow ?? price;
+          
+          // Check cooldown: don't fire same setup twice within 4 hours
+          const key = cooldownKey(symbol, "SHORT", breakoutLevel);
+          if (cooldownSet.has(key)) {
+            logs.push(`[${base}] SHORT on cooldown — fired within last 4h at $${breakoutLevel.toFixed(2)}`);
+            continue;
+          }
+
+          // Require at least 1% below support level before SHORT fires
+          const distBelowBreakout = ((breakoutLevel - price) / breakoutLevel) * 100;
+          if (distBelowBreakout < 1) {
+            logs.push(`[${base}] SHORT skipped — only ${distBelowBreakout.toFixed(2)}% below breakout, need 1%`);
+            continue;
+          }
+
+          // Require close at least 0.5% below breakout level to avoid whipsaw
+          if (distBelowBreakout < 0.5) {
+            logs.push(`[${base}] SHORT skipped — only ${distBelowBreakout.toFixed(2)}% below breakout, need 0.5%`);
+            continue;
+          }
+
           const sl = calculateStopLoss(price, swingHigh, "SHORT");
           const tp = calculateTakeProfit(price, sl, "SHORT");
           const rr = calculateRiskReward(price, tp, sl, "SHORT");
