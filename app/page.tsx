@@ -1,10 +1,10 @@
 "use client";
 
 import useSWR from "swr";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 
-const VERSION = "v2.0.0";
+const VERSION = "v2.0.1";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -263,7 +263,11 @@ export default function Dashboard() {
   const isStale = isHydrated && fetchedAt > 0 && now > 0 && (now - fetchedAt) > STALE_THRESHOLD_MS;
   const lastUpdateTime = isHydrated ? new Date().toLocaleTimeString("en-GB", { hour12: false }) : "—";
 
-  const signalMap = new Map<string, Signal>(signals.map((s) => [s.symbol, s]));
+  // Memoize signalMap to prevent unnecessary re-renders of market cards
+  const signalMap = useMemo(
+    () => new Map<string, Signal>(signals.map((s) => [s.symbol, s])),
+    [signals]
+  );
   const activeCount = signals.filter((s) => s.state === "EARLY" || s.state === "CONFIRMED").length;
 
   const scanOnCooldown = cooldownSec > 0;

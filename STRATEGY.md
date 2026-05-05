@@ -1,10 +1,18 @@
 # CXSwitch3 Trading Strategy Documentation
 
-**Current Version:** v2.0.0
+**Current Version:** v2.0.1
 
 ## Overview
 
 CXSwitch3 is an automated crypto trading signal generator that detects trendline breakouts on 4-hour (4H) candlestick charts for BTC/USD, ETH/USD, and SOL/USD. It identifies valid support/resistance levels through multi-touch trendline analysis, fires entry signals on confirmed breakouts with dynamic risk-to-reward ratios, manages live positions, and validates trades through on-chain momentum confirmation.
+
+---
+
+## v2.0.1: Performance Fix
+
+### Dashboard Rendering Optimization
+- **Fixed Symbol Flickering**: Memoized `signalMap` with `useMemo()` to prevent unnecessary re-renders of market cards on every dashboard update
+- **Result**: Eliminated visual flicker when displaying BTC/ETH/SOL symbols and their state indicators
 
 ---
 
