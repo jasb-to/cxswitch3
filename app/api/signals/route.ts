@@ -16,6 +16,7 @@ export async function GET() {
     let signals = [];
     try {
       signals = await getAllSignals();
+      console.log("[GET /api/signals] Raw API response - signals:", signals.map(s => ({ id: s.id, symbol: s.symbol, direction: s.direction, state: s.state, entry: s.entry_price })));
     } catch (err) {
       console.error("[SUPABASE SIGNALS] Fetch failed, returning empty signals:", err);
     }

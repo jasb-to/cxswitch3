@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 
-const VERSION = "v1.8.0";
+const VERSION = "v1.9.0";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -264,6 +264,7 @@ export default function Dashboard() {
   const lastUpdateTime = isHydrated ? new Date().toLocaleTimeString("en-GB", { hour12: false }) : "—";
 
   const signalMap = new Map<string, Signal>(signals.map((s) => [s.symbol, s]));
+  console.log("[v0] Dashboard: signals received:", signals.map(s => ({ id: s.id, symbol: s.symbol, direction: s.direction, state: s.state })), "market symbols:", market.map(m => m.symbol), "signalMap keys:", Array.from(signalMap.keys()));
   const activeCount = signals.filter((s) => s.state === "EARLY" || s.state === "CONFIRMED").length;
 
   const scanOnCooldown = cooldownSec > 0;
