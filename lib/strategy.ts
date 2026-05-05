@@ -1,5 +1,6 @@
 import { supabase } from "@/lib/supabase-client";
 import { fetchCandles, type Candle } from "./kraken";
+import { calculateStopLoss, calculateTakeProfit, calculateRiskReward, calculateVolatility } from "./risk-utils";
 import { sendTradeCloseAlert } from "./telegram";
 
 export type SignalDirection = "LONG" | "SHORT";
@@ -37,46 +38,6 @@ export interface MarketContext {
   trendlines?: number;
   volatility?: number; // recent high-low / low over past candles
   volatilityThreshold?: number; // dynamic breakout threshold based on volatility
-}
-
-// ─── Risk-reward and dynamic threshold helpers ──────────────────────────────
-
-function calculateStopLoss(entry: number, swingLevel: number | null, direction: "LONG" | "SHORT"): number {
-  if (direction === "LONG") {
-    // Stop loss = min(swingLow, entry × 0.985)
-    const cap = entry * 0.985;
-    return swingLevel ? Math.max(swingLevel, cap) : cap;
-  } else {
-    // Stop loss = max(swingHigh, entry × 1.015)
-    const cap = entry * 1.015;
-    return swingLevel ? Math.min(swingHigh, cap) : cap;
-  }
-}
-
-function calculateTakeProfit(entry: number, stopLoss: number, direction: "LONG" | "SHORT"): number {
-  const riskDistance = Math.abs(entry - stopLoss);
-  // RR = 1:2 means TP = entry ± (riskDistance × 2)
-  if (direction === "LONG") {
-    return entry + riskDistance * 2;
-  } else {
-    return entry - riskDistance * 2;
-  }
-}
-
-export function calculateRiskReward(entry: number, tp: number, sl: number, direction: "LONG" | "SHORT"): number {
-  const riskDistance = Math.abs(entry - sl);
-  if (riskDistance === 0) return 0;
-  const rewardDistance = Math.abs(tp - entry);
-  return rewardDistance / riskDistance;
-}
-
-function calculateVolatility(candles: Candle[]): number {
-  if (candles.length < 2) return 0;
-  const recent = candles.slice(-5); // Last 5 candles
-  const ranges = recent.map((c) => c.high - c.low);
-  const avgRange = ranges.reduce((a, b) => a + b) / ranges.length;
-  const avgLow = recent.reduce((a, c) => a + c.low, 0) / recent.length;
-  return avgLow > 0 ? avgRange / avgLow : 0;
 }
 
 // ─── Generate signals with risk-reward filtering ────────────────────────────
