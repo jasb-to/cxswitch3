@@ -23,12 +23,14 @@ CREATE TABLE IF NOT EXISTS cron_runs (
   logs TEXT
 );
 
--- Create telegram alerts tracking for anti-spam
+-- Create telegram alerts tracking for anti-spam with signal_id deduplication
 CREATE TABLE IF NOT EXISTS telegram_alerts (
   id BIGSERIAL PRIMARY KEY,
+  signal_id BIGINT NOT NULL,
   symbol TEXT NOT NULL,
   state TEXT NOT NULL,
-  sent_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  sent_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(signal_id, symbol, state)
 );
 
 -- Create indexes for performance
@@ -36,4 +38,5 @@ CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
 CREATE INDEX IF NOT EXISTS idx_signals_direction ON signals(direction);
 CREATE INDEX IF NOT EXISTS idx_signals_state ON signals(state);
 CREATE INDEX IF NOT EXISTS idx_signals_updated_at ON signals(updated_at);
+CREATE INDEX IF NOT EXISTS idx_telegram_alerts_signal_id ON telegram_alerts(signal_id);
 CREATE INDEX IF NOT EXISTS idx_telegram_alerts_symbol_state ON telegram_alerts(symbol, state);
