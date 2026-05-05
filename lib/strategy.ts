@@ -622,6 +622,14 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     } else if (bestSupport && price < bestSupport.level * (1 - volatilityThreshold)) {
       setup = "SHORT_SETUP";
       setupText = `SHORT — broke ${bestSupport.touches}-touch support at $${bestSupport.level.toFixed(0)} (threshold ${(volatilityThreshold * 100).toFixed(1)}%)`;
+    } else if (bestResistance && price < bestResistance.level && ((bestResistance.level - price) / price) * 100 <= 1) {
+      // Price is within 1% BELOW resistance — SHORT setup forming
+      setup = "SHORT_SETUP";
+      setupText = `SHORT SETUP FORMING — ${bestResistance.touches}-touch resistance at $${bestResistance.level.toFixed(0)} (${((bestResistance.level - price) / price * 100).toFixed(2)}% above)`;
+    } else if (bestSupport && price > bestSupport.level && ((price - bestSupport.level) / bestSupport.level) * 100 <= 1) {
+      // Price is within 1% ABOVE support — LONG setup forming
+      setup = "LONG_SETUP";
+      setupText = `LONG SETUP FORMING — ${bestSupport.touches}-touch support at $${bestSupport.level.toFixed(0)} (${((price - bestSupport.level) / bestSupport.level * 100).toFixed(2)}% below)`;
     } else if (bestResistance) {
       const dist = ((bestResistance.level - price) / price) * 100;
       setupText = `${bestResistance.touches}-touch resistance at $${bestResistance.level.toFixed(0)} (${dist.toFixed(1)}% away)`;

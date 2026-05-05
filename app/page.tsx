@@ -152,19 +152,19 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2 text-[12px]">
                 <span className={`w-4 h-4 border rounded flex items-center justify-center text-[10px] ${
-                  active ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
+                  active && (signal.state === "EARLY" || signal.state === "CONFIRMED") ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
                 }`}>
-                  {active ? "✓" : "○"}
+                  {active && (signal.state === "EARLY" || signal.state === "CONFIRMED") ? "✓" : "○"}
                 </span>
-                <span className={active ? "text-[#22c55e]" : "text-[#666]"}>4H Trendbreak</span>
+                <span className={active && (signal.state === "EARLY" || signal.state === "CONFIRMED") ? "text-[#22c55e]" : "text-[#666]"}>4H Trendbreak</span>
               </div>
               <div className="flex items-center gap-2 text-[12px]">
                 <span className={`w-4 h-4 border rounded flex items-center justify-center text-[10px] ${
-                  market && market.setup && market.setup !== "NO_SETUP" && market.setup !== "ERROR" ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
+                  active && signal.confidence > 50 ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
                 }`}>
-                  {market && market.setup && market.setup !== "NO_SETUP" && market.setup !== "ERROR" ? "✓" : "○"}
+                  {active && signal.confidence > 50 ? "✓" : "○"}
                 </span>
-                <span className={market && market.setup && market.setup !== "NO_SETUP" && market.setup !== "ERROR" ? "text-[#22c55e]" : "text-[#666]"}>15M Setup</span>
+                <span className={active && signal.confidence > 50 ? "text-[#22c55e]" : "text-[#666]"}>15M Setup</span>
               </div>
               <div className="flex items-center gap-2 text-[12px]">
                 <span className={`w-4 h-4 border rounded flex items-center justify-center text-[10px] ${
@@ -176,11 +176,11 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
               </div>
               <div className="flex items-center gap-2 text-[12px]">
                 <span className={`w-4 h-4 border rounded flex items-center justify-center text-[10px] ${
-                  active && signal.confidence >= 70 ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
+                  active && signal.confidence > 70 ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
                 }`}>
-                  {active && signal.confidence >= 70 ? "✓" : "○"}
+                  {active && signal.confidence > 70 ? "✓" : "○"}
                 </span>
-                <span className={active && signal.confidence >= 70 ? "text-[#22c55e]" : "text-[#666]"}>Momentum {active ? `${signal.confidence}%` : "—"}</span>
+                <span className={active && signal.confidence > 70 ? "text-[#22c55e]" : "text-[#666]"}>Momentum {active ? `${signal.confidence}%` : "—"}</span>
               </div>
             </div>
           </div>
@@ -298,7 +298,7 @@ export default function Dashboard() {
   async function forceScan() {
     setForceScanLoading(true);
     try {
-      const res = await fetch("/api/cron", { method: "GET" });
+      const res = await fetch("/api/scan-now", { method: "POST" });
       const json = await res.json();
       if (json.ok) {
         await mutate();
