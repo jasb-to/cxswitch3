@@ -11,16 +11,24 @@ const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 export async function shouldSendAlert(symbol: string, newState: string): Promise<boolean> {
   if (newState === "END") return false;
 
-  // Check if we've already sent this state for this symbol
-  const { data } = await supabase
-    .from("telegram_alerts")
-    .select("id")
-    .eq("symbol", symbol)
-    .eq("state", newState)
-    .order("sent_at", { ascending: false })
-    .limit(1);
+  // If Supabase is not connected, always allow alert (no persistence)
+  if (!supabase) return true;
 
-  return !data || data.length === 0;
+  try {
+    // Check if we've already sent this state for this symbol
+    const { data } = await supabase
+      .from("telegram_alerts")
+      .select("id")
+      .eq("symbol", symbol)
+      .eq("state", newState)
+      .order("sent_at", { ascending: false })
+      .limit(1);
+
+    return !data || data.length === 0;
+  } catch (err) {
+    console.warn(`[shouldSendAlert] Supabase error, allowing alert:`, err);
+    return true;
+  }
 }
 
 function fmt(n: number): string {
@@ -47,11 +55,17 @@ export async function sendSignalAlert(signal: Signal): Promise<void> {
     body: JSON.stringify({ chat_id: CHAT_ID, text }),
   });
 
-  // Track alert in Supabase
-  await supabase.from("telegram_alerts").insert({
-    symbol: signal.symbol,
-    state: signal.state,
-  });
+  // Track alert in Supabase (optional, won't crash if missing)
+  if (supabase) {
+    try {
+      await supabase.from("telegram_alerts").insert({
+        symbol: signal.symbol,
+        state: signal.state,
+      });
+    } catch (err) {
+      console.warn(`[sendSignalAlert] Failed to track alert in Supabase:`, err);
+    }
+  }
 }
 
 /**

@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
 
   // Telegram: send only if shouldSendAlert approves (no spam)
   for (const signal of signals) {
-    if (shouldSendAlert(signal.symbol, signal.state)) {
+    if (await shouldSendAlert(signal.symbol, signal.state)) {
       try {
         await sendSignalAlert(signal);
         console.log(`[TELEGRAM] ✓ Sent ${signal.state} alert for ${signal.symbol} (new state)`);
@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     ok: true,
-    signals: getAllSignals(),
+    signals: await getAllSignals(),
     logs,
     lastCronRun,
   });
