@@ -466,15 +466,15 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
           const twoConsecutiveDown = direction === "SHORT" && lastClose < prevClose && prevClose < prev2Close;
           const hasConsecutiveMomentum = twoConsecutiveUp || twoConsecutiveDown;
 
-          // Requirement 3: Move strength between last two closes > 0.4%
+          // Requirement 3: Move strength between last two closes > 0.3%
           const moveStrength = Math.abs(lastClose - prevClose) / prevClose;
-          const hasStrongMomentum = moveStrength > 0.004;
+          const hasStrongMomentum = moveStrength > 0.003;
 
           logs.push(
             `[${base}] EARLY validation: ` +
             `breakoutValid=${breakoutValid} (${lastClose.toFixed(2)} ${direction === "LONG" ? ">" : "<"} ${signal.breakout_level.toFixed(2)}), ` +
             `consecutive=${hasConsecutiveMomentum} (${prev2Close.toFixed(2)}→${prevClose.toFixed(2)}→${lastClose.toFixed(2)}), ` +
-            `moveStr=${(moveStrength * 100).toFixed(3)}% (need >0.4%)`
+            `moveStr=${(moveStrength * 100).toFixed(3)}% (need >0.3%)`
           );
 
           // ALL THREE conditions must be met for confirmation
