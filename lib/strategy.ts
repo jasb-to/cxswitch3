@@ -489,40 +489,6 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             signals.push(inserted);
             recentAlertSymbols.add(symbol);
           }
-        }
-
-          // NEW: Filter weak breakouts using ADX (trend strength)
-          // ADX < 20 = ranging/consolidation, likely false breakout
-          if (market.adx !== undefined && market.adx < 20) {
-            logs.push(`[${base}] LONG skipped — ADX ${market.adx.toFixed(1)} < 20 (weak trend, likely false breakout)`);
-            continue;
-          }
-
-          const newSignal = {
-            symbol,
-            state: "EARLY" as SignalState,
-            direction: "LONG" as SignalDirection,
-            entry_price: price,
-            stop_loss: sl,
-            take_profit: tp,
-            confidence: 70,
-            breakout_level: breakoutLevel,
-          };
-
-          const { data: inserted, error: insertErr } = await supabase
-            .from("signals")
-            .insert([newSignal])
-            .select()
-            .single();
-
-          if (insertErr) {
-            logs.push(`[${base}] Insert LONG failed: ${insertErr.message}`);
-          } else {
-            logs.push(`[${base}] ✓ Created LONG EARLY at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
-            signals.push(inserted);
-            recentAlertSymbols.add(symbol); // Mark as just-alerted
-          }
-
         } else {
           logs.push(`[${base}] No setup — waiting`);
         }
