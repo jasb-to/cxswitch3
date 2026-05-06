@@ -314,9 +314,9 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           // MINIMUM EXPANSION CHECK: Require asset-specific minimum move from breakout level
           const breakoutMove = ((currClosed - breakoutLevel) / breakoutLevel);
           const minExpansion = 
-            symbolBase === "BTC" ? 0.0025 :
+            symbolBase === "BTC" ? 0.0035 :
             symbolBase === "ETH" ? 0.003 :
-            symbolBase === "SOL" ? 0.004 :
+            symbolBase === "SOL" ? 0.0045 :
             0.003;
           const minExpansionPercent = minExpansion * 100;
           if (breakoutMove < minExpansion) {
@@ -416,9 +416,9 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           // MINIMUM EXPANSION CHECK: Require asset-specific minimum move from breakout level
           const breakoutMove = ((breakoutLevel - currClosed) / breakoutLevel);
           const minExpansion = 
-            symbolBase === "BTC" ? 0.0025 :
+            symbolBase === "BTC" ? 0.0035 :
             symbolBase === "ETH" ? 0.003 :
-            symbolBase === "SOL" ? 0.004 :
+            symbolBase === "SOL" ? 0.0045 :
             0.003;
           const minExpansionPercent = minExpansion * 100;
           if (breakoutMove < minExpansion) {
