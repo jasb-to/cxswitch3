@@ -1,10 +1,30 @@
 # CXSwitch3 Trading Strategy Documentation
 
-**Current Version:** v3.2.0
+**Current Version:** v3.3.0
 
 ## Overview
 
 CXSwitch3 is an automated crypto trading signal generator that detects trendline breakouts on 4-hour (4H) candlestick charts for BTC/USD, ETH/USD, and SOL/USD. It identifies valid support/resistance levels through multi-touch trendline analysis, fires entry signals on confirmed breakouts with dynamic risk-to-reward ratios, manages live positions, and validates trades through on-chain momentum confirmation.
+
+---
+
+## v3.3.0: ADX Trend Filter — Eliminate Weak Breakout False Signals
+
+### Root Cause of Evening Losses
+- **Problem**: Signals firing repeatedly on weak consolidation breakouts that immediately reverse (e.g., BTC breaking $82,200 then dropping back below within 1H)
+- **Why It Happens**: System detects 3-touch resistance broken by 0.5%, fires EARLY, but market is just consolidating—not trending
+- **Result**: False evening entries that lose money; signals keep re-firing on same level
+
+### ADX (Average Directional Index) Implementation
+- **Trend Strength Filter**: Signals now require ADX > 20 on 4H candles to fire (ADX < 20 = consolidation/ranging)
+- **What ADX Measures**: Combines +DM/-DM directional movement; 0-20 = weak/ranging, 20-40 = strong trending, 40+ = very strong
+- **Applied Before Signal Creation**: Both LONG and SHORT signals check ADX before being created—weak breakouts are suppressed
+
+### Result
+- **No More Weak Breakout Entries**: Evening consolidation breakouts no longer fire signals when ADX < 20
+- **Fewer Evening Losses**: Only strong directional moves trigger alerts, matching chart reality
+- **Clearer Logging**: Each suppressed signal logs "ADX X.X < 20 (weak trend, likely false breakout)"
+- **Better Trade Quality**: Signals now align with actual trend strength, not just price touching a level
 
 ---
 

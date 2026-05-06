@@ -7,6 +7,50 @@ export type SignalDirection = "LONG" | "SHORT";
 export type SignalState = "EARLY" | "CONFIRMED" | "END";
 export type SignalOutcome = "TP" | "SL" | "EXPIRED" | "MANUAL";
 
+/**
+ * Calculate ADX (Average Directional Index) for trend strength.
+ * ADX > 25 = strong trend, ADX < 20 = weak trend/ranging
+ * Returns value 0-100.
+ */
+function calculateADX(candles: Candle[]): number {
+  if (candles.length < 14) return 0; // Need at least 14 candles for ADX
+
+  // Calculate +DM, -DM, TR over last 14 periods
+  let plusDM = 0, minusDM = 0, tr = 0;
+
+  for (let i = 1; i < Math.min(candles.length, 14); i++) {
+    const curr = candles[i];
+    const prev = candles[i - 1];
+
+    // True Range
+    const hl = curr.high - curr.low;
+    const hc = Math.abs(curr.high - prev.close);
+    const lc = Math.abs(curr.low - prev.close);
+    tr += Math.max(hl, hc, lc);
+
+    // Directional Movement
+    const upMove = curr.high - prev.high;
+    const downMove = prev.low - curr.low;
+
+    if (upMove > 0 && upMove > downMove) {
+      plusDM += upMove;
+    } else if (downMove > 0 && downMove > upMove) {
+      minusDM += downMove;
+    }
+  }
+
+  const atr = tr / 14;
+  const plusDI = atr > 0 ? (plusDM / atr) * 100 : 0;
+  const minusDI = atr > 0 ? (minusDM / atr) * 100 : 0;
+
+  const di = Math.abs(plusDI - minusDI) / (plusDI + minusDI || 1);
+  const adx = Math.min(100, di * 100); // Simplified ADX
+
+  return Math.round(adx * 10) / 10;
+}
+
+
+
 export interface Signal {
   id?: number;
   symbol: string;
@@ -40,6 +84,7 @@ export interface MarketContext {
   volatilityThreshold?: number; // dynamic breakout threshold based on volatility
   dataSource?: "KRAKEN" | "COINGECKO" | "CACHE"; // Track which data source was used
   dataSourceTime?: number; // Unix timestamp of when data was fetched
+  adx?: number; // Average Directional Index for trend strength (0-100)
 }
 
 // ─── Cleanup expired signals ─────────────────────────────────────────────────
@@ -256,9 +301,16 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           const tp = calculateTakeProfit(price, sl, "LONG");
           const rr = calculateRiskReward(price, tp, sl, "LONG");
 
-          // Improvement 5: Filter low-quality trades (RR < 1.5)
+          // Filter low-quality trades (RR < 1.5)
           if (rr < 1.5) {
             logs.push(`[${base}] LONG skipped — RR ${rr.toFixed(2)} < 1.5 threshold`);
+            continue;
+          }
+
+          // NEW: Filter weak breakouts using ADX (trend strength)
+          // ADX < 20 = ranging/consolidation, likely false breakout
+          if (market.adx !== undefined && market.adx < 20) {
+            logs.push(`[${base}] LONG skipped — ADX ${market.adx.toFixed(1)} < 20 (weak trend, likely false breakout)`);
             continue;
           }
 
@@ -321,9 +373,16 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           const tp = calculateTakeProfit(price, sl, "SHORT");
           const rr = calculateRiskReward(price, tp, sl, "SHORT");
 
-          // Improvement 5: Filter low-quality trades (RR < 1.5)
+          // Filter low-quality trades (RR < 1.5)
           if (rr < 1.5) {
             logs.push(`[${base}] SHORT skipped — RR ${rr.toFixed(2)} < 1.5 threshold`);
+            continue;
+          }
+
+          // NEW: Filter weak breakouts using ADX (trend strength)
+          // ADX < 20 = ranging/consolidation, likely false breakout
+          if (market.adx !== undefined && market.adx < 20) {
+            logs.push(`[${base}] SHORT skipped — ADX ${market.adx.toFixed(1)} < 20 (weak trend, likely false breakout)`);
             continue;
           }
 
@@ -733,6 +792,9 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     }
 
     const trendlineCount = (bestResistance ? 1 : 0) + (bestSupport ? 1 : 0);
+    
+    // Calculate ADX to filter weak breakouts
+    const adx = calculateADX(candles4h);
 
     return {
       symbol,
@@ -748,6 +810,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       volatilityThreshold,
       dataSource,
       dataSourceTime,
+      adx,
     };
   } catch (err) {
     console.error(`[${symbolBase}] ✗ Unexpected error in getMarketContext:`, err instanceof Error ? err.message : String(err));
