@@ -147,6 +147,17 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
       logs.push(`[SUPABASE] Error fetching recently ended signals: ${recentError.message}`);
     }
 
+    // Fetch recent telegram alerts to prevent spam (last 2 hours)
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const { data: recentAlerts, error: alertError } = await supabase
+      .from("telegram_alerts")
+      .select("signal_id, symbol, state, sent_at")
+      .gte("sent_at", twoHoursAgo);
+
+    if (alertError) {
+      logs.push(`[SUPABASE] Error fetching recent alerts: ${alertError.message}`);
+    }
+
     // Safe duplicate check: only block if symbol has an active (non-END) signal
     const activeBySymbol = new Map<string, Signal>(
       (activeRows ?? []).map((s: Signal) => [s.symbol, s])
@@ -158,6 +169,13 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
     
     const cooldownSet = new Set<string>(
       (recentEnded ?? []).map((s: Signal) => cooldownKey(s.symbol, s.direction, s.breakout_level))
+    );
+
+    // Track symbols with recent alerts to prevent duplicate notifications
+    const recentAlertSymbols = new Set<string>(
+      (recentAlerts ?? [])
+        .filter((a: any) => a.state === "EARLY")
+        .map((a: any) => a.symbol)
     );
 
     for (const base of ["BTC", "ETH", "SOL"]) {
@@ -199,9 +217,15 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             } else {
               logs.push(`[${base}] Active signal exists (${existing.state}) — skipping creation`);
               signals.push(existing);
-              continue;
+              continue; // IMPORTANT: Skip to next symbol
             }
           }
+        }
+
+        // FIX: Check for recent alert spam — don't fire if alert sent in last 2 hours
+        if (recentAlertSymbols.has(symbol)) {
+          logs.push(`[${base}] Alert already sent in last 2h — skipping to prevent spam`);
+          continue;
         }
 
         // LONG: price broke above a 3-touch resistance level
@@ -258,8 +282,9 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           if (insertErr) {
             logs.push(`[${base}] Insert LONG failed: ${insertErr.message}`);
           } else {
-            logs.push(`[${base}] Created LONG EARLY at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
+            logs.push(`[${base}] ✓ Created LONG EARLY at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
+            recentAlertSymbols.add(symbol); // Mark as just-alerted
           }
 
         // SHORT: price broke below a 3-touch support level
@@ -322,8 +347,9 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           if (insertErr) {
             logs.push(`[${base}] Insert SHORT failed: ${insertErr.message}`);
           } else {
-            logs.push(`[${base}] Created SHORT EARLY at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
+            logs.push(`[${base}] ✓ Created SHORT EARLY at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
+            recentAlertSymbols.add(symbol); // Mark as just-alerted
           }
 
         } else {

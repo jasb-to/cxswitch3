@@ -1,10 +1,36 @@
 # CXSwitch3 Trading Strategy Documentation
 
-**Current Version:** v3.1.0
+**Current Version:** v3.2.0
 
 ## Overview
 
 CXSwitch3 is an automated crypto trading signal generator that detects trendline breakouts on 4-hour (4H) candlestick charts for BTC/USD, ETH/USD, and SOL/USD. It identifies valid support/resistance levels through multi-touch trendline analysis, fires entry signals on confirmed breakouts with dynamic risk-to-reward ratios, manages live positions, and validates trades through on-chain momentum confirmation.
+
+---
+
+## v3.2.0: CRITICAL FIX — Eliminate Signal Spam & Evening Losses
+
+### Root Cause Analysis
+- **Problem**: Identical EARLY signals firing 3-4 times within 10 minutes for same symbol at same entry price
+- **Impact**: Duplicate alerts, poor trade selection, evening losses on stale/invalid breakouts
+- **Root Cause**: No deduplication check on `telegram_alerts` table; system kept firing new signals without checking if alert already sent
+
+### Anti-Spam Implementation
+- **2-Hour Alert Window**: System now checks `telegram_alerts` for any EARLY alerts sent in last 2 hours for each symbol
+- **Smart Suppression**: If symbol already has recent alert, skip creating new signal entirely (prevents duplicate Telegram messages)
+- **Active Signal Protection**: Existing EARLY/CONFIRMED signals block new signal creation for same symbol unless expired
+- **Cooldown Tracking**: Marks newly created signals in `recentAlertSymbols` set to prevent firing twice in same cycle
+
+### Logging Improvements
+- **Clear Suppression Logs**: "Alert already sent in last 2h — skipping to prevent spam"
+- **Signal Creation Logs**: All successful signals marked with `✓` prefix for visibility
+- **Enhanced Debugging**: Track which signals are being suppressed vs. created
+
+### Result
+- **Zero Duplicate Alerts**: Each symbol gets maximum 1 alert per 2-hour window
+- **Improved Trade Quality**: Eliminates stale breakout entries that were firing repeatedly
+- **Evening Stability**: Fewer false signals during market consolidation periods
+- **Signal Reliability**: System now enforces strict deduplication throughout cron cycle
 
 ---
 
