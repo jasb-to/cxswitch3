@@ -311,11 +311,16 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             continue;
           }
 
-          // MINIMUM EXPANSION CHECK: Require 0.3% move from breakout level
+          // MINIMUM EXPANSION CHECK: Require asset-specific minimum move from breakout level
           const breakoutMove = ((currClosed - breakoutLevel) / breakoutLevel);
-          const minExpansion = 0.003; // 0.3%
+          const minExpansion = 
+            symbolBase === "BTC" ? 0.0025 :
+            symbolBase === "ETH" ? 0.003 :
+            symbolBase === "SOL" ? 0.004 :
+            0.003;
+          const minExpansionPercent = minExpansion * 100;
           if (breakoutMove < minExpansion) {
-            logs.push(`[${base}] ✗ LONG skipped — breakout too weak (${(breakoutMove * 100).toFixed(2)}%, need 0.30%)`);
+            logs.push(`[${base}] ✗ LONG skipped — breakout too weak (${(breakoutMove * 100).toFixed(2)}%, need ${minExpansionPercent.toFixed(2)}%)`);
             continue;
           }
 
@@ -408,11 +413,16 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             continue;
           }
 
-          // MINIMUM EXPANSION CHECK: Require 0.3% move from breakout level
+          // MINIMUM EXPANSION CHECK: Require asset-specific minimum move from breakout level
           const breakoutMove = ((breakoutLevel - currClosed) / breakoutLevel);
-          const minExpansion = 0.003; // 0.3%
+          const minExpansion = 
+            symbolBase === "BTC" ? 0.0025 :
+            symbolBase === "ETH" ? 0.003 :
+            symbolBase === "SOL" ? 0.004 :
+            0.003;
+          const minExpansionPercent = minExpansion * 100;
           if (breakoutMove < minExpansion) {
-            logs.push(`[${base}] ✗ SHORT skipped — breakout too weak (${(breakoutMove * 100).toFixed(2)}%, need 0.30%)`);
+            logs.push(`[${base}] ✗ SHORT skipped — breakout too weak (${(breakoutMove * 100).toFixed(2)}%, need ${minExpansionPercent.toFixed(2)}%)`);
             continue;
           }
 
