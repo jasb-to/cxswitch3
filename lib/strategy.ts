@@ -490,7 +490,6 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             recentAlertSymbols.add(symbol);
           }
         }
-          }
 
           // NEW: Filter weak breakouts using ADX (trend strength)
           // ADX < 20 = ranging/consolidation, likely false breakout
