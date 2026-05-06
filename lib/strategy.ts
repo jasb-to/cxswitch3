@@ -843,11 +843,11 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     const resistances = groupTouches(highs, 0.005);
     const supports = groupTouches(lows, 0.005);
 
-    // FILTER stale levels: only include nearby, relevant levels
-    // For resistance: only include levels near or above current price (>= price * 0.99)
-    // For support: only include levels near or below current price (<= price * 1.01)
-    const filteredResistances = resistances.filter(r => r.level >= price * 0.99);
-    const filteredSupports = supports.filter(s => s.level <= price * 1.01);
+    // FILTER stale levels: only include tradable breakout zones
+    // Resistance must be ABOVE or very close to price (not already broken)
+    const filteredResistances = resistances.filter(r => r.level >= price * 0.995);
+    // Support must be BELOW or very close to price (not already lost)
+    const filteredSupports = supports.filter(s => s.level <= price * 1.005);
 
     const bestResistance = filteredResistances[0] ?? null;
     const bestSupport = filteredSupports[0] ?? null;
