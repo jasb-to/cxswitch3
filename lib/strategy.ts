@@ -7,6 +7,50 @@ export type SignalDirection = "LONG" | "SHORT";
 export type SignalState = "EARLY" | "CONFIRMED" | "END";
 export type SignalOutcome = "TP" | "SL" | "EXPIRED" | "MANUAL";
 
+/**
+ * Calculate ADX (Average Directional Index) for trend strength.
+ * ADX > 25 = strong trend, ADX < 20 = weak trend/ranging
+ * Returns value 0-100.
+ */
+function calculateADX(candles: Candle[]): number {
+  if (candles.length < 14) return 0; // Need at least 14 candles for ADX
+
+  // Calculate +DM, -DM, TR over last 14 periods
+  let plusDM = 0, minusDM = 0, tr = 0;
+
+  for (let i = 1; i < Math.min(candles.length, 14); i++) {
+    const curr = candles[i];
+    const prev = candles[i - 1];
+
+    // True Range
+    const hl = curr.high - curr.low;
+    const hc = Math.abs(curr.high - prev.close);
+    const lc = Math.abs(curr.low - prev.close);
+    tr += Math.max(hl, hc, lc);
+
+    // Directional Movement
+    const upMove = curr.high - prev.high;
+    const downMove = prev.low - curr.low;
+
+    if (upMove > 0 && upMove > downMove) {
+      plusDM += upMove;
+    } else if (downMove > 0 && downMove > upMove) {
+      minusDM += downMove;
+    }
+  }
+
+  const atr = tr / 14;
+  const plusDI = atr > 0 ? (plusDM / atr) * 100 : 0;
+  const minusDI = atr > 0 ? (minusDM / atr) * 100 : 0;
+
+  const di = Math.abs(plusDI - minusDI) / (plusDI + minusDI || 1);
+  const adx = Math.min(100, di * 100); // Simplified ADX
+
+  return Math.round(adx * 10) / 10;
+}
+
+
+
 export interface Signal {
   id?: number;
   symbol: string;
@@ -17,6 +61,8 @@ export interface Signal {
   take_profit: number;
   confidence: number;
   breakout_level: number;
+  breakout_candle_time?: number; // Unix timestamp of candle when breakout occurred
+  prev_candle_close?: number; // Close price of candle BEFORE breakout (for validation)
   pnl?: number | null;
   outcome?: SignalOutcome | null;
   alert_sent?: boolean;
@@ -40,6 +86,7 @@ export interface MarketContext {
   volatilityThreshold?: number; // dynamic breakout threshold based on volatility
   dataSource?: "KRAKEN" | "COINGECKO" | "CACHE"; // Track which data source was used
   dataSourceTime?: number; // Unix timestamp of when data was fetched
+  adx?: number; // Average Directional Index for trend strength (0-100)
 }
 
 // ─── Cleanup expired signals ─────────────────────────────────────────────────
@@ -147,6 +194,17 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
       logs.push(`[SUPABASE] Error fetching recently ended signals: ${recentError.message}`);
     }
 
+    // Fetch recent telegram alerts to prevent spam (last 2 hours)
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    const { data: recentAlerts, error: alertError } = await supabase
+      .from("telegram_alerts")
+      .select("signal_id, symbol, state, sent_at")
+      .gte("sent_at", twoHoursAgo);
+
+    if (alertError) {
+      logs.push(`[SUPABASE] Error fetching recent alerts: ${alertError.message}`);
+    }
+
     // Safe duplicate check: only block if symbol has an active (non-END) signal
     const activeBySymbol = new Map<string, Signal>(
       (activeRows ?? []).map((s: Signal) => [s.symbol, s])
@@ -158,6 +216,24 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
     
     const cooldownSet = new Set<string>(
       (recentEnded ?? []).map((s: Signal) => cooldownKey(s.symbol, s.direction, s.breakout_level))
+    );
+
+    // Track breakout events to prevent duplicate signals from same breakout
+    // Key: symbol + direction + breakout_level, Value: breakout_candle_time
+    const breakoutEventMap = new Map<string, number>(
+      (activeRows ?? [])
+        .filter((s: Signal) => s.direction && s.breakout_level && s.breakout_candle_time)
+        .map((s: Signal) => [
+          `${s.symbol}:${s.direction}:${s.breakout_level.toFixed(2)}`,
+          s.breakout_candle_time!
+        ])
+    );
+
+    // Track symbols with recent alerts to prevent duplicate notifications
+    const recentAlertSymbols = new Set<string>(
+      (recentAlerts ?? [])
+        .filter((a: any) => a.state === "EARLY")
+        .map((a: any) => a.symbol)
     );
 
     for (const base of ["BTC", "ETH", "SOL"]) {
@@ -199,15 +275,63 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             } else {
               logs.push(`[${base}] Active signal exists (${existing.state}) — skipping creation`);
               signals.push(existing);
-              continue;
+              continue; // IMPORTANT: Skip to next symbol
             }
           }
         }
 
-        // LONG: price broke above a 3-touch resistance level
+        // FIX: Check for recent alert spam — don't fire if alert sent in last 2 hours
+        if (recentAlertSymbols.has(symbol)) {
+          logs.push(`[${base}] Alert already sent in last 2h — skipping to prevent spam`);
+          continue;
+        }
+
+        // LONG: price broke above a 3-touch resistance level (EVENT-BASED)
         if (setup === "LONG_SETUP") {
           const breakoutLevel = swingHigh ?? price;
+          const currentCandle = candles4h[candles4h.length - 1];
+          const prevCandle = candles4h.length > 1 ? candles4h[candles4h.length - 2] : null;
           
+          // EVENT DETECTION: Previous candle was at/below breakout level, current candle closed above
+          const prevClosed = prevCandle?.close ?? 0;
+          const currClosed = currentCandle.close;
+          
+          // Check if this is a fresh breakout event (not stale)
+          const breakoutOccurred = prevClosed <= breakoutLevel && currClosed > breakoutLevel * (1 + volatilityThreshold);
+          
+          if (!breakoutOccurred) {
+            logs.push(`[${base}] LONG skipped — not a fresh breakout event (prev: $${prevClosed.toFixed(2)}, curr: $${currClosed.toFixed(2)}, level: $${breakoutLevel.toFixed(2)})`);
+            continue;
+          }
+
+          // FRESHNESS CHECK: Don't fire if breakout happened too long ago
+          const breakoutCandleAge = candles4h.length - 1;
+          if (breakoutCandleAge > 10) {
+            logs.push(`[${base}] LONG skipped — breakout is stale (${breakoutCandleAge} candles old, max 10)`);
+            continue;
+          }
+
+          // MINIMUM EXPANSION CHECK: Require asset-specific minimum move from breakout level
+          const breakoutMove = ((currClosed - breakoutLevel) / breakoutLevel);
+          const minExpansion = 
+            symbolBase === "BTC" ? 0.0035 :
+            symbolBase === "ETH" ? 0.003 :
+            symbolBase === "SOL" ? 0.0045 :
+            0.003;
+          const minExpansionPercent = minExpansion * 100;
+          if (breakoutMove < minExpansion) {
+            logs.push(`[${base}] ✗ LONG skipped — breakout too weak (${(breakoutMove * 100).toFixed(2)}%, need ${minExpansionPercent.toFixed(2)}%)`);
+            continue;
+          }
+
+          // DUPLICATE PREVENTION: Check if same breakout event already created a signal
+          const eventKey = `${symbol}:LONG:${breakoutLevel.toFixed(2)}`;
+          const existingBreakoutTime = breakoutEventMap.get(eventKey);
+          if (existingBreakoutTime && currentCandle.time === existingBreakoutTime) {
+            logs.push(`[${base}] LONG skipped — signal already exists for this breakout event at candle time ${currentCandle.time}`);
+            continue;
+          }
+
           // Check cooldown: don't fire same setup twice within 4 hours
           const key = cooldownKey(symbol, "LONG", breakoutLevel);
           if (cooldownSet.has(key)) {
@@ -221,20 +345,19 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             continue;
           }
 
-          // Require close at least 0.5% above breakout level to avoid whipsaw
-          const distAboveBreakout = ((price - breakoutLevel) / breakoutLevel) * 100;
-          if (distAboveBreakout < 0.5) {
-            logs.push(`[${base}] LONG skipped — only ${distAboveBreakout.toFixed(2)}% above breakout, need 0.5%`);
-            continue;
-          }
-
           const sl = calculateStopLoss(price, swingLow, "LONG");
           const tp = calculateTakeProfit(price, sl, "LONG");
           const rr = calculateRiskReward(price, tp, sl, "LONG");
 
-          // Improvement 5: Filter low-quality trades (RR < 1.5)
+          // Filter low-quality trades (RR < 1.5)
           if (rr < 1.5) {
             logs.push(`[${base}] LONG skipped — RR ${rr.toFixed(2)} < 1.5 threshold`);
+            continue;
+          }
+
+          // Filter weak breakouts using ADX (trend strength)
+          if (market.adx !== undefined && market.adx < 20) {
+            logs.push(`[${base}] LONG skipped — ADX ${market.adx.toFixed(1)} < 20 (weak trend, likely false breakout)`);
             continue;
           }
 
@@ -247,6 +370,8 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             take_profit: tp,
             confidence: 70,
             breakout_level: breakoutLevel,
+            breakout_candle_time: currentCandle.time,
+            prev_candle_close: prevClosed,
           };
 
           const { data: inserted, error: insertErr } = await supabase
@@ -258,13 +383,56 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           if (insertErr) {
             logs.push(`[${base}] Insert LONG failed: ${insertErr.message}`);
           } else {
-            logs.push(`[${base}] Created LONG EARLY at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
+            logs.push(`[${base}] ✓ Created LONG EARLY (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
+            recentAlertSymbols.add(symbol);
           }
 
-        // SHORT: price broke below a 3-touch support level
+        // SHORT: price broke below a 3-touch support level (EVENT-BASED)
         } else if (setup === "SHORT_SETUP") {
           const breakoutLevel = swingLow ?? price;
+          const currentCandle = candles4h[candles4h.length - 1];
+          const prevCandle = candles4h.length > 1 ? candles4h[candles4h.length - 2] : null;
+          
+          // EVENT DETECTION: Previous candle was at/above breakout level, current candle closed below
+          const prevClosed = prevCandle?.close ?? 0;
+          const currClosed = currentCandle.close;
+          
+          // Check if this is a fresh breakout event (not stale)
+          const breakoutOccurred = prevClosed >= breakoutLevel && currClosed < breakoutLevel * (1 - volatilityThreshold);
+          
+          if (!breakoutOccurred) {
+            logs.push(`[${base}] SHORT skipped — not a fresh breakout event (prev: $${prevClosed.toFixed(2)}, curr: $${currClosed.toFixed(2)}, level: $${breakoutLevel.toFixed(2)})`);
+            continue;
+          }
+
+          // FRESHNESS CHECK: Don't fire if breakout happened too long ago
+          const breakoutCandleAge = candles4h.length - 1;
+          if (breakoutCandleAge > 10) {
+            logs.push(`[${base}] SHORT skipped — breakout is stale (${breakoutCandleAge} candles old, max 10)`);
+            continue;
+          }
+
+          // MINIMUM EXPANSION CHECK: Require asset-specific minimum move from breakout level
+          const breakoutMove = ((breakoutLevel - currClosed) / breakoutLevel);
+          const minExpansion = 
+            symbolBase === "BTC" ? 0.0035 :
+            symbolBase === "ETH" ? 0.003 :
+            symbolBase === "SOL" ? 0.0045 :
+            0.003;
+          const minExpansionPercent = minExpansion * 100;
+          if (breakoutMove < minExpansion) {
+            logs.push(`[${base}] ✗ SHORT skipped — breakout too weak (${(breakoutMove * 100).toFixed(2)}%, need ${minExpansionPercent.toFixed(2)}%)`);
+            continue;
+          }
+
+          // DUPLICATE PREVENTION: Check if same breakout event already created a signal
+          const eventKey = `${symbol}:SHORT:${breakoutLevel.toFixed(2)}`;
+          const existingBreakoutTime = breakoutEventMap.get(eventKey);
+          if (existingBreakoutTime && currentCandle.time === existingBreakoutTime) {
+            logs.push(`[${base}] SHORT skipped — signal already exists for this breakout event at candle time ${currentCandle.time}`);
+            continue;
+          }
           
           // Check cooldown: don't fire same setup twice within 4 hours
           const key = cooldownKey(symbol, "SHORT", breakoutLevel);
@@ -279,26 +447,19 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             continue;
           }
 
-          // Require at least 1% below support level before SHORT fires
-          const distBelowBreakout = ((breakoutLevel - price) / breakoutLevel) * 100;
-          if (distBelowBreakout < 1) {
-            logs.push(`[${base}] SHORT skipped — only ${distBelowBreakout.toFixed(2)}% below breakout, need 1%`);
-            continue;
-          }
-
-          // Require close at least 0.5% below breakout level to avoid whipsaw
-          if (distBelowBreakout < 0.5) {
-            logs.push(`[${base}] SHORT skipped — only ${distBelowBreakout.toFixed(2)}% below breakout, need 0.5%`);
-            continue;
-          }
-
           const sl = calculateStopLoss(price, swingHigh, "SHORT");
           const tp = calculateTakeProfit(price, sl, "SHORT");
           const rr = calculateRiskReward(price, tp, sl, "SHORT");
 
-          // Improvement 5: Filter low-quality trades (RR < 1.5)
+          // Filter low-quality trades (RR < 1.5)
           if (rr < 1.5) {
             logs.push(`[${base}] SHORT skipped — RR ${rr.toFixed(2)} < 1.5 threshold`);
+            continue;
+          }
+
+          // Filter weak breakouts using ADX (trend strength)
+          if (market.adx !== undefined && market.adx < 20) {
+            logs.push(`[${base}] SHORT skipped — ADX ${market.adx.toFixed(1)} < 20 (weak trend, likely false breakout)`);
             continue;
           }
 
@@ -311,6 +472,8 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             take_profit: tp,
             confidence: 70,
             breakout_level: breakoutLevel,
+            breakout_candle_time: currentCandle.time,
+            prev_candle_close: prevClosed,
           };
 
           const { data: inserted, error: insertErr } = await supabase
@@ -322,10 +485,10 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           if (insertErr) {
             logs.push(`[${base}] Insert SHORT failed: ${insertErr.message}`);
           } else {
-            logs.push(`[${base}] Created SHORT EARLY at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
+            logs.push(`[${base}] ✓ Created SHORT EARLY (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
+            recentAlertSymbols.add(symbol);
           }
-
         } else {
           logs.push(`[${base}] No setup — waiting`);
         }
@@ -672,6 +835,10 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
 
     // DEBUG: Log all detected trendlines for this symbol
     console.log(`[${symbolBase}] Price: $${price.toFixed(2)} | Resistances: ${resistances.map(r => `$${r.level.toFixed(2)}(${r.touches})`).join(", ")} | Supports: ${supports.map(s => `$${s.level.toFixed(2)}(${s.touches})`).join(", ")}`);
+    console.log(`[${symbolBase}] Best R: ${bestResistance ? `$${bestResistance.level.toFixed(2)}(${bestResistance.touches})` : "NONE"} | Best S: ${bestSupport ? `$${bestSupport.level.toFixed(2)}(${bestSupport.touches})` : "NONE"}`);
+    console.log(`[${symbolBase}] Volatility: ${(volatility * 100).toFixed(2)}% | Threshold: ${(volatilityThreshold * 100).toFixed(2)}%`);
+    console.log(`[${symbolBase}] LONG check: price($${price.toFixed(2)}) > resistance($${bestResistance?.level.toFixed(2) ?? "N/A"}) * (1+${volatilityThreshold.toFixed(4)})? ${bestResistance ? (price > bestResistance.level * (1 + volatilityThreshold) ? "YES ✓" : "NO") : "NO RESISTANCE"}`);
+    console.log(`[${symbolBase}] SHORT check: price($${price.toFixed(2)}) < support($${bestSupport?.level.toFixed(2) ?? "N/A"}) * (1-${volatilityThreshold.toFixed(4)})? ${bestSupport ? (price < bestSupport.level * (1 - volatilityThreshold) ? "YES ✓" : "NO") : "NO SUPPORT"}`);
 
 
     // Use best resistance/support as swingHigh/swingLow
@@ -707,6 +874,9 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     }
 
     const trendlineCount = (bestResistance ? 1 : 0) + (bestSupport ? 1 : 0);
+    
+    // Calculate ADX to filter weak breakouts
+    const adx = calculateADX(candles4h);
 
     return {
       symbol,
@@ -722,6 +892,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       volatilityThreshold,
       dataSource,
       dataSourceTime,
+      adx,
     };
   } catch (err) {
     console.error(`[${symbolBase}] ✗ Unexpected error in getMarketContext:`, err instanceof Error ? err.message : String(err));

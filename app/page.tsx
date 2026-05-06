@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 
-const VERSION = "v3.1.0";
+const VERSION = "v1.5.2";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -181,6 +181,14 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
                   {active && signal.confidence > 70 ? "✓" : "○"}
                 </span>
                 <span className={active && signal.confidence > 70 ? "text-[#22c55e]" : "text-[#666]"}>Momentum {active ? `${signal.confidence}%` : "—"}</span>
+              </div>
+              <div className="flex items-center gap-2 text-[12px]">
+                <span className={`w-4 h-4 border rounded flex items-center justify-center text-[10px] font-mono text-[9px] ${
+                  market?.adx !== undefined && market.adx >= 20 ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
+                }`}>
+                  {market?.adx !== undefined ? Math.round(market.adx) : "—"}
+                </span>
+                <span className={market?.adx !== undefined && market.adx >= 20 ? "text-[#22c55e]" : "text-[#666]"}>ADX Trend {market?.adx !== undefined ? `${market.adx.toFixed(1)}` : "—"}</span>
               </div>
             </div>
           </div>

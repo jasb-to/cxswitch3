@@ -1,10 +1,99 @@
 # CXSwitch3 Trading Strategy Documentation
 
-**Current Version:** v3.1.0
+**Current Version:** v1.5.0
 
 ## Overview
 
 CXSwitch3 is an automated crypto trading signal generator that detects trendline breakouts on 4-hour (4H) candlestick charts for BTC/USD, ETH/USD, and SOL/USD. It identifies valid support/resistance levels through multi-touch trendline analysis, fires entry signals on confirmed breakouts with dynamic risk-to-reward ratios, manages live positions, and validates trades through on-chain momentum confirmation.
+
+---
+
+## v1.5.0: Event-Based Breakout Detection — Architecture Refactor
+
+### Core Problem Fixed
+- **Previous Condition-Based Logic**: System fired LONG if `price > resistance`, regardless of when/how price got there
+- **Result**: Stale breakouts (price broke above 5 candles ago) kept firing new signals; direction confusion in ranging markets
+- **This Version**: Implements true **event-based detection** — signals only fire on fresh breakout moments
+
+### Event-Based Architecture Changes
+
+**1. Fresh Breakout Detection (Not Stale Levels)**
+- LONG fires only when: `prev_candle.close ≤ resistance` AND `curr_candle.close > resistance × (1 + volatility_threshold)`
+- SHORT fires only when: `prev_candle.close ≥ support` AND `curr_candle.close < support × (1 - volatility_threshold)`
+- Prevents re-firing on already-broken levels
+
+**2. Breakout Freshness Validation**
+- New fields added: `breakout_candle_time` (Unix timestamp), `prev_candle_close` (validation)
+- Signals only created if breakout occurred within last 10 candles (4H = max 40 hours old)
+- Stale breakouts (>10 candles old) are rejected with "breakout is stale" log
+
+**3. Duplicate Prevention by Breakout Event**
+- Tracks breakout events in `breakoutEventMap` using `symbol:direction:level`
+- Two signals cannot be created from the same breakout event (same candle_time)
+- Prevents multiple alerts from identical breakout situations
+
+**4. Level Invalidation on Breakout Failure**
+- If price breaks above resistance then closes back below → signal is automatically expired
+- Triggers on `price < breakout_level` for LONG or `price > breakout_level` for SHORT
+- Immediately generates opposite-direction setup if price structure confirms
+
+### Logging Improvements
+- "FRESH BREAKOUT" logged when event-based condition is met
+- "not a fresh breakout event" logged with prev/curr/level prices when condition fails
+- "breakout is stale (X candles old, max 10)" logged when timing window exceeded
+- Full validation chain visible in logs for debugging
+
+### Result
+- **No More Stale Signal Spam**: Each symbol fires maximum once per fresh breakout event
+- **Directional Accuracy**: Wrong-direction trades eliminated because stale breakouts no longer fire
+- **Fewer Evening Losses**: Consolidation breakouts that immediately reverse no longer create signals
+- **Transparent Debugging**: Logs show exact event timing and why signals were/weren't created
+
+---
+
+## v3.3.0: ADX Trend Filter — Eliminate Weak Breakout False Signals
+
+### Root Cause of Evening Losses
+- **Problem**: Signals firing repeatedly on weak consolidation breakouts that immediately reverse (e.g., BTC breaking $82,200 then dropping back below within 1H)
+- **Why It Happens**: System detects 3-touch resistance broken by 0.5%, fires EARLY, but market is just consolidating—not trending
+- **Result**: False evening entries that lose money; signals keep re-firing on same level
+
+### ADX (Average Directional Index) Implementation
+- **Trend Strength Filter**: Signals now require ADX > 20 on 4H candles to fire (ADX < 20 = consolidation/ranging)
+- **What ADX Measures**: Combines +DM/-DM directional movement; 0-20 = weak/ranging, 20-40 = strong trending, 40+ = very strong
+- **Applied Before Signal Creation**: Both LONG and SHORT signals check ADX before being created—weak breakouts are suppressed
+
+### Result
+- **No More Weak Breakout Entries**: Evening consolidation breakouts no longer fire signals when ADX < 20
+- **Fewer Evening Losses**: Only strong directional moves trigger alerts, matching chart reality
+- **Clearer Logging**: Each suppressed signal logs "ADX X.X < 20 (weak trend, likely false breakout)"
+- **Better Trade Quality**: Signals now align with actual trend strength, not just price touching a level
+
+---
+
+## v3.2.0: CRITICAL FIX — Eliminate Signal Spam & Evening Losses
+
+### Root Cause Analysis
+- **Problem**: Identical EARLY signals firing 3-4 times within 10 minutes for same symbol at same entry price
+- **Impact**: Duplicate alerts, poor trade selection, evening losses on stale/invalid breakouts
+- **Root Cause**: No deduplication check on `telegram_alerts` table; system kept firing new signals without checking if alert already sent
+
+### Anti-Spam Implementation
+- **2-Hour Alert Window**: System now checks `telegram_alerts` for any EARLY alerts sent in last 2 hours for each symbol
+- **Smart Suppression**: If symbol already has recent alert, skip creating new signal entirely (prevents duplicate Telegram messages)
+- **Active Signal Protection**: Existing EARLY/CONFIRMED signals block new signal creation for same symbol unless expired
+- **Cooldown Tracking**: Marks newly created signals in `recentAlertSymbols` set to prevent firing twice in same cycle
+
+### Logging Improvements
+- **Clear Suppression Logs**: "Alert already sent in last 2h — skipping to prevent spam"
+- **Signal Creation Logs**: All successful signals marked with `✓` prefix for visibility
+- **Enhanced Debugging**: Track which signals are being suppressed vs. created
+
+### Result
+- **Zero Duplicate Alerts**: Each symbol gets maximum 1 alert per 2-hour window
+- **Improved Trade Quality**: Eliminates stale breakout entries that were firing repeatedly
+- **Evening Stability**: Fewer false signals during market consolidation periods
+- **Signal Reliability**: System now enforces strict deduplication throughout cron cycle
 
 ---
 
