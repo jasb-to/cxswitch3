@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 
-const VERSION = "v1.5.2";
+const VERSION = "v2.1.0";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -16,7 +16,7 @@ function fmt(n: number) {
 
 function Badge({ state }: { state: Signal["state"] }) {
   const styles: Record<string, string> = {
-    EARLY: "border-[#d4a017] text-[#d4a017]",
+    EARLY_OPEN: "border-[#d4a017] text-[#d4a017]",
     CONFIRMED: "border-[#22c55e] text-[#22c55e]",
     END: "border-[#444] text-[#444]",
   };
@@ -81,10 +81,10 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
                 : "text-white"
             }`}>
               {active
-                ? signal.state === "EARLY"
-                  ? `${signal.direction} EARLY — awaiting confirmation`
+                ? signal.state === "EARLY_OPEN"
+                  ? `${signal.direction} ENTRY OPENED — awaiting scale-in`
                   : signal.state === "CONFIRMED"
-                  ? `${signal.direction} CONFIRMED — execute now`
+                  ? `${signal.direction} CONFIRMED — SCALING POSITION`
                   : "ENDED — setup expired"
                 : "SCANNING FOR SETUP"}
             </p>
@@ -152,11 +152,11 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
             <div className="flex flex-col gap-2">
               <div className="flex items-center gap-2 text-[12px]">
                 <span className={`w-4 h-4 border rounded flex items-center justify-center text-[10px] ${
-                  active && (signal.state === "EARLY" || signal.state === "CONFIRMED") ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
+                  active && (signal.state === "EARLY_OPEN" || signal.state === "CONFIRMED") ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
                 }`}>
-                  {active && (signal.state === "EARLY" || signal.state === "CONFIRMED") ? "✓" : "○"}
+                  {active && (signal.state === "EARLY_OPEN" || signal.state === "CONFIRMED") ? "✓" : "○"}
                 </span>
-                <span className={active && (signal.state === "EARLY" || signal.state === "CONFIRMED") ? "text-[#22c55e]" : "text-[#666]"}>4H Trendbreak</span>
+                <span className={active && (signal.state === "EARLY_OPEN" || signal.state === "CONFIRMED") ? "text-[#22c55e]" : "text-[#666]"}>4H Breakout</span>
               </div>
               <div className="flex items-center gap-2 text-[12px]">
                 <span className={`w-4 h-4 border rounded flex items-center justify-center text-[10px] ${
@@ -287,7 +287,7 @@ export default function Dashboard() {
     () => new Map<string, Signal>(signals.map((s) => [s.symbol, s])),
     [signals]
   );
-  const activeCount = signals.filter((s) => s.state === "EARLY" || s.state === "CONFIRMED").length;
+  const activeCount = signals.filter((s) => s.state === "EARLY_OPEN" || s.state === "CONFIRMED").length;
 
   const scanOnCooldown = cooldownSec > 0;
 

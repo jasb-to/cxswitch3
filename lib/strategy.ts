@@ -4,7 +4,7 @@ import { calculateStopLoss, calculateTakeProfit, calculateRiskReward, calculateV
 import { sendTradeCloseAlert } from "./telegram";
 
 export type SignalDirection = "LONG" | "SHORT";
-export type SignalState = "EARLY" | "CONFIRMED" | "END";
+export type SignalState = "EARLY_OPEN" | "CONFIRMED" | "END";
 export type SignalOutcome = "TP" | "SL" | "EXPIRED" | "MANUAL";
 
 /**
@@ -49,6 +49,212 @@ function calculateADX(candles: Candle[]): number {
   return Math.round(adx * 10) / 10;
 }
 
+/**
+ * Calculate Exponential Moving Average (EMA).
+ * Used for trend direction and timing.
+ */
+function calculateEMA(candles: Candle[], period: number): number {
+  if (candles.length < period) return 0;
+
+  const k = 2 / (period + 1);
+  let ema = candles[0].close;
+
+  for (let i = 1; i < candles.length; i++) {
+    ema = candles[i].close * k + ema * (1 - k);
+  }
+
+  return ema;
+}
+
+/**
+ * Calculate RSI (Relative Strength Index) for momentum direction.
+ * RSI > 50 = bullish, RSI < 50 = bearish
+ * Used for timing, not gating.
+ */
+function calculateRSI(candles: Candle[], period: number = 14): number {
+  if (candles.length < period + 1) return 50;
+
+  let gains = 0, losses = 0;
+
+  for (let i = 1; i <= period; i++) {
+    const change = candles[i].close - candles[i - 1].close;
+    if (change > 0) gains += change;
+    else losses += Math.abs(change);
+  }
+
+  const avgGain = gains / period;
+  const avgLoss = losses / period;
+  const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+  const rsi = 100 - 100 / (1 + rs);
+
+  return Math.round(rsi * 10) / 10;
+}
+
+/**
+ * Check if EMA8 is curling toward or beginning to cross EMA21.
+ * Returns { curlingUp: boolean, curlingDown: boolean, gap: number }
+ */
+function checkEMACurling(
+  candles4h: Candle[],
+  candles15m: Candle[]
+): { curlingUp: boolean; curlingDown: boolean; gap: number } {
+  if (candles4h.length < 2 || candles15m.length < 2) {
+    return { curlingUp: false, curlingDown: false, gap: 0 };
+  }
+
+  const ema8 = calculateEMA(candles15m, 8);
+  const ema21 = calculateEMA(candles15m, 21);
+  const gap = ema8 - ema21;
+
+  // Check if gap is narrowing (curling) or crossed
+  const prevEma8 = calculateEMA(candles15m.slice(0, -1), 8);
+  const prevEma21 = calculateEMA(candles15m.slice(0, -1), 21);
+  const prevGap = prevEma8 - prevEma21;
+
+  const curlingUp = gap > prevGap && ema8 >= ema21; // Gap closing from below or already above
+  const curlingDown = gap < prevGap && ema8 <= ema21; // Gap closing from above or already below
+
+  return { curlingUp, curlingDown, gap };
+}
+
+/**
+ * Check if RSI has directional slope (not flat).
+ * Returns { slopeUp: boolean, slopeDown: boolean, slope: number }
+ */
+function checkRSISlope(candles: Candle[], timeframe: "15m" | "5m" = "15m"): {
+  slopeUp: boolean;
+  slopeDown: boolean;
+  slope: number;
+} {
+  if (candles.length < 3) {
+    return { slopeUp: false, slopeDown: false, slope: 0 };
+  }
+
+  const period = timeframe === "15m" ? 14 : 14;
+  const currentRSI = calculateRSI(candles, period);
+  const prevRSI = calculateRSI(candles.slice(0, -1), period);
+  const slope = currentRSI - prevRSI;
+
+  const slopeUp = slope > 1; // RSI rising
+  const slopeDown = slope < -1; // RSI falling
+
+  return { slopeUp, slopeDown, slope };
+}
+
+/**
+ * Calculate confidence score for a signal based on market structure, trend strength, and momentum.
+ * Starts at base 70, applies adjustments, capped between 60-95.
+ * Non-gating: always returns a confidence score, never prevents signal creation.
+ */
+function calculateConfidence(
+  direction: "LONG" | "SHORT",
+  adx: number | undefined,
+  candles4h: Candle[],
+  hasStrongMomentum: boolean,
+  timingIndicators?: {
+    emaCurling?: { curlingUp: boolean; curlingDown: boolean };
+    rsi15m?: number;
+    rsiSlope15m?: { slopeUp: boolean; slopeDown: boolean };
+    rsiSlope5m?: { slopeUp: boolean; slopeDown: boolean };
+  }
+): { confidence: number; breakdown: string } {
+  let confidence = 70;
+  const adjustments: string[] = [];
+
+  // 1. MARKET STRUCTURE BIAS
+  if (candles4h.length >= 4) {
+    // Get last 4 candles to identify structure
+    const curr = candles4h[candles4h.length - 1];
+    const prev = candles4h[candles4h.length - 2];
+    const prevprev = candles4h[candles4h.length - 3];
+    const prevprevprev = candles4h[candles4h.length - 4];
+
+    // Current swing high/low vs previous
+    const currSwingHigh = Math.max(curr.high, prev.high);
+    const currSwingLow = Math.min(curr.low, prev.low);
+    const prevSwingHigh = Math.max(prevprev.high, prevprevprev.high);
+    const prevSwingLow = Math.min(prevprev.low, prevprevprev.low);
+
+    // Determine structure
+    const isBullishStructure = currSwingHigh > prevSwingHigh && currSwingLow > prevSwingLow;
+    const isBearishStructure = currSwingHigh < prevSwingHigh && currSwingLow < prevSwingLow;
+
+    if (isBullishStructure) {
+      if (direction === "LONG") {
+        confidence += 10;
+        adjustments.push("bullish structure + LONG");
+      } else {
+        confidence -= 5;
+        adjustments.push("bullish structure - SHORT");
+      }
+    } else if (isBearishStructure) {
+      if (direction === "SHORT") {
+        confidence += 10;
+        adjustments.push("bearish structure + SHORT");
+      } else {
+        confidence -= 5;
+        adjustments.push("bearish structure - LONG");
+      }
+    }
+  }
+
+  // 2. ADX TREND STRENGTH MODIFIER
+  if (adx !== undefined) {
+    if (adx > 25) {
+      confidence += 5;
+      adjustments.push(`strong trend (ADX ${adx.toFixed(1)})`);
+    } else if (adx < 20) {
+      confidence -= 5;
+      adjustments.push(`weak trend (ADX ${adx.toFixed(1)})`);
+    }
+  }
+
+  // 3. EMA CURLING TIMING BONUS (non-gating)
+  if (timingIndicators?.emaCurling) {
+    if (direction === "LONG" && timingIndicators.emaCurling.curlingUp) {
+      confidence += 3;
+      adjustments.push("EMA8 curling up");
+    } else if (direction === "SHORT" && timingIndicators.emaCurling.curlingDown) {
+      confidence += 3;
+      adjustments.push("EMA8 curling down");
+    }
+  }
+
+  // 4. RSI SLOPE TIMING BONUS (non-gating)
+  if (timingIndicators?.rsiSlope15m) {
+    if (direction === "LONG" && timingIndicators.rsiSlope15m.slopeUp) {
+      confidence += 2;
+      adjustments.push("RSI15m sloping up");
+    } else if (direction === "SHORT" && timingIndicators.rsiSlope15m.slopeDown) {
+      confidence += 2;
+      adjustments.push("RSI15m sloping down");
+    }
+  }
+
+  // 5. 5M IMPULSE TIMING BONUS (non-gating)
+  if (timingIndicators?.rsiSlope5m) {
+    if (direction === "LONG" && timingIndicators.rsiSlope5m.slopeUp) {
+      confidence += 2;
+      adjustments.push("5M impulse forming");
+    } else if (direction === "SHORT" && timingIndicators.rsiSlope5m.slopeDown) {
+      confidence += 2;
+      adjustments.push("5M impulse forming");
+    }
+  }
+
+  // 6. MOMENTUM BOOSTER
+  if (hasStrongMomentum) {
+    confidence += 5;
+    adjustments.push("momentum confirmed");
+  }
+
+  // 4. CAP CONFIDENCE BETWEEN 60-95
+  confidence = Math.max(60, Math.min(95, confidence));
+
+  const breakdown = `[base:70 ${adjustments.map(a => `${a}`).join(" | ")}] = ${confidence}`;
+
+  return { confidence, breakdown };
+}
 
 
 export interface Signal {
@@ -82,11 +288,22 @@ export interface MarketContext {
   setupText: string;
   error?: boolean;
   trendlines?: number;
-  volatility?: number; // recent high-low / low over past candles
-  volatilityThreshold?: number; // dynamic breakout threshold based on volatility
-  dataSource?: "KRAKEN" | "COINGECKO" | "CACHE"; // Track which data source was used
-  dataSourceTime?: number; // Unix timestamp of when data was fetched
-  adx?: number; // Average Directional Index for trend strength (0-100)
+  volatility?: number;
+  volatilityThreshold?: number;
+  dataSource?: "KRAKEN" | "COINGECKO" | "CACHE";
+  dataSourceTime?: number;
+  adx?: number;
+  candles4h?: Candle[];
+  candles15m?: Candle[];
+  candles5m?: Candle[];
+  // Timing indicators
+  ema8?: number; // 8 EMA on 15M
+  ema21?: number; // 21 EMA on 15M
+  emaCurling?: { curlingUp: boolean; curlingDown: boolean; gap: number };
+  rsi15m?: number; // RSI on 15M
+  rsi5m?: number; // RSI on 5M
+  rsiSlope15m?: { slopeUp: boolean; slopeDown: boolean; slope: number };
+  rsiSlope5m?: { slopeUp: boolean; slopeDown: boolean; slope: number };
 }
 
 // ─── Cleanup expired signals ─────────────────────────────────────────────────
@@ -174,7 +391,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
     const { data: activeRows, error: fetchError } = await supabase
       .from("signals")
       .select("*")
-      .in("state", ["EARLY", "CONFIRMED"]);
+      .in("state", ["EARLY_OPEN", "CONFIRMED"]);
 
     if (fetchError) {
       logs.push(`[SUPABASE] Query error: ${fetchError.message}`);
@@ -245,8 +462,17 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           continue;
         }
 
-        const { symbol, price, swingHigh, swingLow, setup } = market;
+        const { symbol, price, swingHigh, swingLow, setup, candles4h: marketCandles, volatilityThreshold } = market;
         logs.push(`[${base}] $${price.toFixed(2)} — ${setup} — ${market.setupText}`);
+
+        // Guard: skip if candles unavailable or insufficient
+        if (!marketCandles || marketCandles.length < 2) {
+          logs.push(`[${base}] Skipped — insufficient candle data (${marketCandles?.length ?? 0} candles)`);
+          continue;
+        }
+
+        const candles4h = marketCandles;
+        const volatilityThresholdValue = volatilityThreshold ?? 0.005;
 
         // Check if an active signal exists and if it should be expired
         let existing = activeBySymbol.get(symbol);
@@ -297,7 +523,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           const currClosed = currentCandle.close;
           
           // Check if this is a fresh breakout event (not stale)
-          const breakoutOccurred = prevClosed <= breakoutLevel && currClosed > breakoutLevel * (1 + volatilityThreshold);
+          const breakoutOccurred = prevClosed <= breakoutLevel && currClosed > breakoutLevel * (1 + volatilityThresholdValue);
           
           if (!breakoutOccurred) {
             logs.push(`[${base}] LONG skipped — not a fresh breakout event (prev: $${prevClosed.toFixed(2)}, curr: $${currClosed.toFixed(2)}, level: $${breakoutLevel.toFixed(2)})`);
@@ -355,20 +581,28 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             continue;
           }
 
-          // Filter weak breakouts using ADX (trend strength)
-          if (market.adx !== undefined && market.adx < 20) {
-            logs.push(`[${base}] LONG skipped — ADX ${market.adx.toFixed(1)} < 20 (weak trend, likely false breakout)`);
-            continue;
-          }
+          // Calculate confidence score with timing indicator bonuses (non-gating)
+          const { confidence, breakdown } = calculateConfidence(
+            "LONG",
+            market.adx,
+            candles4h,
+            breakoutMove > 0.005, // Momentum booster if strong move
+            {
+              emaCurling: market.emaCurling,
+              rsi15m: market.rsi15m,
+              rsiSlope15m: market.rsiSlope15m,
+              rsiSlope5m: market.rsiSlope5m,
+            }
+          );
 
           const newSignal = {
             symbol,
-            state: "EARLY" as SignalState,
+            state: "EARLY_OPEN" as SignalState,
             direction: "LONG" as SignalDirection,
             entry_price: price,
             stop_loss: sl,
             take_profit: tp,
-            confidence: 70,
+            confidence,
             breakout_level: breakoutLevel,
             breakout_candle_time: currentCandle.time,
             prev_candle_close: prevClosed,
@@ -383,7 +617,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           if (insertErr) {
             logs.push(`[${base}] Insert LONG failed: ${insertErr.message}`);
           } else {
-            logs.push(`[${base}] ✓ Created LONG EARLY (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
+            logs.push(`[${base}] ✓ ENTRY OPENED (LONG | conf: ${confidence} ${breakdown}) (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
             recentAlertSymbols.add(symbol);
           }
@@ -399,7 +633,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           const currClosed = currentCandle.close;
           
           // Check if this is a fresh breakout event (not stale)
-          const breakoutOccurred = prevClosed >= breakoutLevel && currClosed < breakoutLevel * (1 - volatilityThreshold);
+          const breakoutOccurred = prevClosed >= breakoutLevel && currClosed < breakoutLevel * (1 - volatilityThresholdValue);
           
           if (!breakoutOccurred) {
             logs.push(`[${base}] SHORT skipped — not a fresh breakout event (prev: $${prevClosed.toFixed(2)}, curr: $${currClosed.toFixed(2)}, level: $${breakoutLevel.toFixed(2)})`);
@@ -457,20 +691,28 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             continue;
           }
 
-          // Filter weak breakouts using ADX (trend strength)
-          if (market.adx !== undefined && market.adx < 20) {
-            logs.push(`[${base}] SHORT skipped — ADX ${market.adx.toFixed(1)} < 20 (weak trend, likely false breakout)`);
-            continue;
-          }
+          // Calculate confidence score with timing indicator bonuses (non-gating)
+          const { confidence, breakdown } = calculateConfidence(
+            "SHORT",
+            market.adx,
+            candles4h,
+            breakoutMove > 0.005, // Momentum booster if strong move
+            {
+              emaCurling: market.emaCurling,
+              rsi15m: market.rsi15m,
+              rsiSlope15m: market.rsiSlope15m,
+              rsiSlope5m: market.rsiSlope5m,
+            }
+          );
 
           const newSignal = {
             symbol,
-            state: "EARLY" as SignalState,
+            state: "EARLY_OPEN" as SignalState,
             direction: "SHORT" as SignalDirection,
             entry_price: price,
             stop_loss: sl,
             take_profit: tp,
-            confidence: 70,
+            confidence,
             breakout_level: breakoutLevel,
             breakout_candle_time: currentCandle.time,
             prev_candle_close: prevClosed,
@@ -485,7 +727,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           if (insertErr) {
             logs.push(`[${base}] Insert SHORT failed: ${insertErr.message}`);
           } else {
-            logs.push(`[${base}] ✓ Created SHORT EARLY (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
+            logs.push(`[${base}] ✓ ENTRY OPENED (SHORT | conf: ${confidence} ${breakdown}) (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
             recentAlertSymbols.add(symbol);
           }
@@ -539,7 +781,7 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
     const { data: openSignals, error } = await supabase
       .from("signals")
       .select("*")
-      .in("state", ["EARLY", "CONFIRMED"]);
+      .in("state", ["EARLY_OPEN", "CONFIRMED"]);
 
     if (error) {
       logs.push(`[POSITIONS] Query error: ${error.message}`);
@@ -613,52 +855,46 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
           continue;
         }
 
-        // Improvement 2: Strict CONFIRMED validation — structure + momentum only
-        if (state === "EARLY") {
+        // Improvement 2: CONFIRMED validation — upgrade EARLY_OPEN to add-on position
+        if (state === "EARLY_OPEN") {
           const recent = candles.slice(-4);
           const closes = recent.map((c) => c.close);
           const lastClose = closes[closes.length - 1];
           const prevClose = closes[closes.length - 2];
-          const prev2Close = closes[closes.length - 3];
 
-          // Requirement 1: Must still be beyond breakout level
+          // Requirement 1: Must still be beyond breakout level (structure holding)
           const aboveBreakout = direction === "LONG" && lastClose > signal.breakout_level * 0.999;
           const belowBreakout = direction === "SHORT" && lastClose < signal.breakout_level * 1.001;
           const breakoutValid = aboveBreakout || belowBreakout;
 
-          // Requirement 2: Two consecutive candles moving in same direction
-          const twoConsecutiveUp = direction === "LONG" && lastClose > prevClose && prevClose > prev2Close;
-          const twoConsecutiveDown = direction === "SHORT" && lastClose < prevClose && prevClose < prev2Close;
-          const hasConsecutiveMomentum = twoConsecutiveUp || twoConsecutiveDown;
-
-          // Requirement 3: Move strength between last two closes > 0.3%
+          // Requirement 2: RSI + EMA alignment (not reversal confirmation)
+          // Check if momentum is directionally aligned (not exhausted)
           const moveStrength = Math.abs(lastClose - prevClose) / prevClose;
-          const hasStrongMomentum = moveStrength > 0.003;
+          const hasDirectionalMomentum = moveStrength > 0.001; // Just needs to show direction
 
           logs.push(
-            `[${base}] EARLY validation: ` +
+            `[${base}] EARLY_OPEN validation: ` +
             `breakoutValid=${breakoutValid} (${lastClose.toFixed(2)} ${direction === "LONG" ? ">" : "<"} ${signal.breakout_level.toFixed(2)}), ` +
-            `consecutive=${hasConsecutiveMomentum} (${prev2Close.toFixed(2)}→${prevClose.toFixed(2)}→${lastClose.toFixed(2)}), ` +
-            `moveStr=${(moveStrength * 100).toFixed(3)}% (need >0.3%)`
+            `directionalMomentum=${hasDirectionalMomentum} (${(moveStrength * 100).toFixed(3)}%)`
           );
 
-          // ALL THREE conditions must be met for confirmation
-          if (breakoutValid && hasConsecutiveMomentum && hasStrongMomentum) {
+          // If breakout still valid AND showing directional momentum, upgrade to CONFIRMED for add-on
+          if (breakoutValid && hasDirectionalMomentum) {
             const newConfidence = Math.min(95, signal.confidence + 15);
             await updateSignalState(id!, "CONFIRMED", {
               confidence: newConfidence,
               last_checked_candle: candleTs,
             });
-            logs.push(`[${base}] EARLY → CONFIRMED (confidence: ${newConfidence}%, structure+momentum validated, move: ${(moveStrength * 100).toFixed(2)}%)`);
+            logs.push(`[${base}] ✓ CONFIRMED – ADDING TO POSITION (confidence: ${newConfidence}%, structure holding + momentum aligned)`);
             confirmed.push({ ...signal, state: "CONFIRMED", confidence: newConfidence });
           } else {
-            await updateSignalState(id!, "EARLY", { last_checked_candle: candleTs });
-            logs.push(`[${base}] EARLY — awaiting: breakout=${breakoutValid}, consecutive=${hasConsecutiveMomentum}, move=${(moveStrength * 100).toFixed(3)}%`);
+            await updateSignalState(id!, "EARLY_OPEN", { last_checked_candle: candleTs });
+            logs.push(`[${base}] EARLY_OPEN — waiting: breakout=${breakoutValid}, momentum=${hasDirectionalMomentum}`);
           }
         } else if (state === "CONFIRMED") {
-          // FIX 4: Skip all confirmation logic for CONFIRMED signals — only check TP/SL
+          // CONFIRMED: position scaling active — only check TP/SL
           await updateSignalState(id!, "CONFIRMED", { last_checked_candle: candleTs });
-          logs.push(`[${base}] CONFIRMED — position active (no re-evaluation)`);
+          logs.push(`[${base}] CONFIRMED — position active (scaled entry)`);
         }
       } catch (err) {
         logs.push(`[${base}] ✗ Error during position management: ${err instanceof Error ? err.message : String(err)} — skipping this signal`);
@@ -754,6 +990,8 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
   
   try {
     let candles4h: Candle[] = [];
+    let candles15m: Candle[] = [];
+    let candles5m: Candle[] = [];
     
     // Fetch candles with dedicated error handling
     try {
@@ -761,6 +999,14 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       candles4h = result.candles;
       dataSource = result.source;
       dataSourceTime = result.timestamp;
+
+      // Fetch 15M candles for EMA/RSI timing
+      const result15m = await fetchCandles(symbolBase, 15, 50);
+      candles15m = result15m.candles;
+
+      // Fetch 5M candles for early impulse detection
+      const result5m = await fetchCandles(symbolBase, 5, 20);
+      candles5m = result5m.candles;
     } catch (err) {
       console.error(`[${symbolBase}] ✗ Candle fetch failed:`, err instanceof Error ? err.message : String(err));
       
@@ -782,6 +1028,9 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
           trendlines: 0,
           dataSource: "CACHE",
           dataSourceTime: cached.timestamp,
+          candles4h: [],
+          candles15m: [],
+          candles5m: [],
         };
       }
       
@@ -798,6 +1047,9 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
         setupText: "Data loading...",
         error: false,
         trendlines: 0,
+        candles4h: [],
+        candles15m: [],
+        candles5m: [],
       };
     }
 
@@ -813,6 +1065,9 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
         setupText: "No candle data available",
         error: false,
         trendlines: 0,
+        candles4h: [],
+        candles15m: [],
+        candles5m: [],
       };
     }
 
@@ -830,8 +1085,33 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     const resistances = groupTouches(highs, 0.005);
     const supports = groupTouches(lows, 0.005);
 
-    const bestResistance = resistances[0];
-    const bestSupport = supports[0];
+    // FILTER stale levels: only include tradable breakout zones
+    // Resistance must be ABOVE or very close to price (not already broken)
+    const filteredResistances = resistances.filter(r => r.level >= price * 0.995);
+    // Support must be BELOW or very close to price (not already lost)
+    const filteredSupports = supports.filter(s => s.level <= price * 1.005);
+
+    const bestResistance = filteredResistances[0] ?? null;
+    const bestSupport = filteredSupports[0] ?? null;
+
+    // If no valid levels remain after filtering, return NO_SETUP
+    if (!bestResistance && !bestSupport) {
+      return {
+        symbol,
+        price,
+        swingHigh: null,
+        swingLow: null,
+        distanceToHigh: null,
+        distanceToLow: null,
+        setup: "NO_SETUP",
+        setupText: "No valid trendlines found near current price",
+        error: false,
+        trendlines: 0,
+        dataSource,
+        dataSourceTime,
+        adx: calculateADX(candles4h),
+      };
+    }
 
     // DEBUG: Log all detected trendlines for this symbol
     console.log(`[${symbolBase}] Price: $${price.toFixed(2)} | Resistances: ${resistances.map(r => `$${r.level.toFixed(2)}(${r.touches})`).join(", ")} | Supports: ${supports.map(s => `$${s.level.toFixed(2)}(${s.touches})`).join(", ")}`);
@@ -878,6 +1158,15 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     // Calculate ADX to filter weak breakouts
     const adx = calculateADX(candles4h);
 
+    // Calculate timing indicators for trend initiation
+    const ema8 = calculateEMA(candles15m, 8);
+    const ema21 = calculateEMA(candles15m, 21);
+    const emaCurling = checkEMACurling(candles4h, candles15m);
+    const rsi15m = calculateRSI(candles15m, 14);
+    const rsi5m = calculateRSI(candles5m, 14);
+    const rsiSlope15m = checkRSISlope(candles15m, "15m");
+    const rsiSlope5m = checkRSISlope(candles5m, "5m");
+
     return {
       symbol,
       price,
@@ -893,6 +1182,16 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       dataSource,
       dataSourceTime,
       adx,
+      candles4h,
+      candles15m,
+      candles5m,
+      ema8,
+      ema21,
+      emaCurling,
+      rsi15m,
+      rsi5m,
+      rsiSlope15m,
+      rsiSlope5m,
     };
   } catch (err) {
     console.error(`[${symbolBase}] ✗ Unexpected error in getMarketContext:`, err instanceof Error ? err.message : String(err));
@@ -909,6 +1208,9 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       trendlines: 0,
       dataSource: "KRAKEN",
       dataSourceTime: Date.now(),
+      candles4h: [],
+      candles15m: [],
+      candles5m: [],
     };
   }
 }
