@@ -7,6 +7,12 @@ export interface Candle {
   volume: number;
 }
 
+export interface CandleWithSource {
+  candles: Candle[];
+  source: "KRAKEN" | "COINGECKO";
+  timestamp: number;
+}
+
 const KRAKEN_PAIR: Record<string, string> = {
   "BTC/USD": "XBTUSD",
   "ETH/USD": "ETHUSD",
@@ -87,7 +93,7 @@ async function fetchCandlesFromCoinGecko(
   symbol: string,
   intervalMinutes: number,
   count = 200
-): Promise<Candle[]> {
+): Promise<CandleWithSource> {
   const coinId = COINGECKO_ID[symbol];
   if (!coinId) throw new Error(`Unknown symbol for CoinGecko: ${symbol}`);
 
@@ -119,7 +125,11 @@ async function fetchCandlesFromCoinGecko(
     }));
 
     console.log(`[COINGECKO] ✓ Fetched ${candles.length} daily candles for ${symbol} (backup source)`);
-    return candles;
+    return {
+      candles,
+      source: "COINGECKO",
+      timestamp: Date.now(),
+    };
   } catch (err) {
     console.error(
       `[COINGECKO] ✗ Failed to fetch candles for ${symbol}:`,
@@ -138,7 +148,7 @@ export async function fetchCandles(
   symbol: string,
   intervalMinutes: number,
   count = 200
-): Promise<Candle[]> {
+): Promise<CandleWithSource> {
   const pair = KRAKEN_PAIR[symbol];
   if (!pair) throw new Error(`Unknown symbol: ${symbol}`);
 
@@ -169,14 +179,18 @@ export async function fetchCandles(
     const raw: unknown[][] = json.result[resultKey];
     console.log(`[KRAKEN] ✓ Fetched ${raw.length} ${intervalMinutes}m candles for ${pair}`);
 
-    return raw.map((r) => ({
-      time: Number(r[0]),
-      open: parseFloat(r[1] as string),
-      high: parseFloat(r[2] as string),
-      low: parseFloat(r[3] as string),
-      close: parseFloat(r[4] as string),
-      volume: parseFloat(r[6] as string),
-    }));
+    return {
+      candles: raw.map((r) => ({
+        time: Number(r[0]),
+        open: parseFloat(r[1] as string),
+        high: parseFloat(r[2] as string),
+        low: parseFloat(r[3] as string),
+        close: parseFloat(r[4] as string),
+        volume: parseFloat(r[6] as string),
+      })),
+      source: "KRAKEN",
+      timestamp: Date.now(),
+    };
   } catch (krakenErr) {
     console.warn(`[KRAKEN FAILOVER] Kraken failed, attempting CoinGecko backup: ${krakenErr instanceof Error ? krakenErr.message : String(krakenErr)}`);
 

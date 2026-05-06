@@ -38,6 +38,8 @@ export interface MarketContext {
   trendlines?: number;
   volatility?: number; // recent high-low / low over past candles
   volatilityThreshold?: number; // dynamic breakout threshold based on volatility
+  dataSource?: "KRAKEN" | "COINGECKO" | "CACHE"; // Track which data source was used
+  dataSourceTime?: number; // Unix timestamp of when data was fetched
 }
 
 // ─── Cleanup expired signals ─────────────────────────────────────────────────
@@ -584,13 +586,18 @@ const priceCache = new Map<string, { price: number; timestamp: number }>();
 
 export async function getMarketContext(symbolBase: string): Promise<MarketContext> {
   const symbol = `${symbolBase}/USD`;
+  let dataSource: "KRAKEN" | "COINGECKO" | "CACHE" = "KRAKEN";
+  let dataSourceTime = Date.now();
   
   try {
     let candles4h: Candle[] = [];
     
     // Fetch candles with dedicated error handling
     try {
-      candles4h = await fetchCandles(symbolBase, 240, 100);
+      const result = await fetchCandles(symbolBase, 240, 100);
+      candles4h = result.candles;
+      dataSource = result.source;
+      dataSourceTime = result.timestamp;
     } catch (err) {
       console.error(`[${symbolBase}] ✗ Candle fetch failed:`, err instanceof Error ? err.message : String(err));
       
@@ -610,6 +617,8 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
           setupText: "API unavailable — using cached data",
           error: false,
           trendlines: 0,
+          dataSource: "CACHE",
+          dataSourceTime: cached.timestamp,
         };
       }
       
@@ -711,6 +720,8 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       trendlines: trendlineCount,
       volatility,
       volatilityThreshold,
+      dataSource,
+      dataSourceTime,
     };
   } catch (err) {
     console.error(`[${symbolBase}] ✗ Unexpected error in getMarketContext:`, err instanceof Error ? err.message : String(err));
@@ -725,6 +736,8 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       setupText: "Unexpected error — retrying next cycle",
       error: false,
       trendlines: 0,
+      dataSource: "KRAKEN",
+      dataSourceTime: Date.now(),
     };
   }
 }

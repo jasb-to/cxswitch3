@@ -237,6 +237,7 @@ export default function Dashboard() {
   const [endTradeExitPrice, setEndTradeExitPrice] = useState("");
   const [endTradeLoading, setEndTradeLoading] = useState(false);
   const [forceScanLoading, setForceScanLoading] = useState(false);
+  const [dataSourceStatus, setDataSourceStatus] = useState<{ source: "KRAKEN" | "COINGECKO" | "CACHE"; time: number } | null>(null);
 
   useEffect(() => {
     setIsHydrated(true);
@@ -262,6 +263,16 @@ export default function Dashboard() {
   const fetchedAt: number = data?.fetchedAt ?? 0;
   const isStale = isHydrated && fetchedAt > 0 && now > 0 && (now - fetchedAt) > STALE_THRESHOLD_MS;
   const lastUpdateTime = isHydrated ? new Date().toLocaleTimeString("en-GB", { hour12: false }) : "—";
+
+  // Update data source status from market data
+  useMemo(() => {
+    if (market.length > 0 && market[0].dataSource) {
+      setDataSourceStatus({
+        source: market[0].dataSource,
+        time: market[0].dataSourceTime ?? Date.now(),
+      });
+    }
+  }, [market]);
 
   // Memoize signalMap to prevent unnecessary re-renders of market cards
   const signalMap = useMemo(
@@ -388,6 +399,13 @@ export default function Dashboard() {
               <div className="flex items-center justify-between">
                 <span className="text-[13px] text-[#aaa]">Last Update</span>
                 <span className="text-[13px] text-white tabular-nums">{lastUpdateTime}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[13px] text-[#aaa]">Data Source</span>
+                <span className="flex items-center gap-2 text-[12px] font-mono text-[#22c55e]">
+                  <span className="w-2 h-2 rounded-full bg-[#22c55e]" aria-hidden />
+                  {dataSourceStatus ? `${dataSourceStatus.source}` : "—"}
+                </span>
               </div>
             </div>
 
