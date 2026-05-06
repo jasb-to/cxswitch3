@@ -17,6 +17,12 @@ const KRAKEN_PAIR: Record<string, string> = {
   "SOL": "SOLUSD",
 };
 
+const COINGECKO_ID: Record<string, string> = {
+  "BTC": "bitcoin",
+  "ETH": "ethereum",
+  "SOL": "solana",
+};
+
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 500;
 
@@ -72,11 +78,61 @@ async function fetchWithRetry(url: string, retries = 0): Promise<Response> {
 }
 
 /**
- * Fetch OHLCV candles from Kraken public REST API.
- * interval is in minutes: 5, 15, 240
- * count limits how many candles we request (Kraken returns up to 720).
- * Cache TTL = 75% of the interval to avoid stale data while reducing API calls.
- * Includes automatic retry logic for resilience.
+ * Fetch OHLCV data from CoinGecko as backup when Kraken fails.
+ * Returns data in same Candle format for seamless fallback.
+ * CoinGecko free tier: ~10-50 calls/min, no auth required.
+ * Note: CoinGecko data is 5-minute granularity; we return it as-is without interpolation.
+ */
+async function fetchCandlesFromCoinGecko(
+  symbol: string,
+  intervalMinutes: number,
+  count = 200
+): Promise<Candle[]> {
+  const coinId = COINGECKO_ID[symbol];
+  if (!coinId) throw new Error(`Unknown symbol for CoinGecko: ${symbol}`);
+
+  try {
+    // CoinGecko market_chart endpoint: returns hourly data for last 90 days
+    const url = `https://api.coingecko.com/api/v3/coins/${coinId}/market_chart?vs_currency=usd&days=90&interval=daily`;
+    
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`CoinGecko HTTP ${res.status}`);
+    }
+
+    const json = await res.json();
+    const prices = json.prices as [number, number][]; // [timestamp_ms, price]
+    
+    if (!prices?.length) {
+      throw new Error(`No price data from CoinGecko for ${coinId}`);
+    }
+
+    // Convert daily prices to candle format
+    // Since CoinGecko daily data doesn't have OHLH, we use close as all values
+    const candles: Candle[] = prices.slice(-count).map((p) => ({
+      time: Math.floor(p[0] / 1000), // Convert ms to seconds
+      open: p[1],
+      high: p[1],
+      low: p[1],
+      close: p[1],
+      volume: 0, // CoinGecko free tier doesn't provide volume
+    }));
+
+    console.log(`[COINGECKO] ✓ Fetched ${candles.length} daily candles for ${symbol} (backup source)`);
+    return candles;
+  } catch (err) {
+    console.error(
+      `[COINGECKO] ✗ Failed to fetch candles for ${symbol}:`,
+      err instanceof Error ? err.message : String(err)
+    );
+    throw err;
+  }
+}
+
+/**
+ * Fetch OHLCV candles with automatic failover.
+ * PRIMARY: Try Kraken (fast, accurate 15M/4H candles)
+ * FALLBACK: Use CoinGecko if Kraken fails (slower, daily granularity, no volume)
  */
 export async function fetchCandles(
   symbol: string,
@@ -86,10 +142,11 @@ export async function fetchCandles(
   const pair = KRAKEN_PAIR[symbol];
   if (!pair) throw new Error(`Unknown symbol: ${symbol}`);
 
-  const since = Math.floor(Date.now() / 1000) - count * intervalMinutes * 60;
-  const url = `https://api.kraken.com/0/public/OHLC?pair=${pair}&interval=${intervalMinutes}&since=${since}`;
-
+  // PRIMARY: Try Kraken first
   try {
+    const since = Math.floor(Date.now() / 1000) - count * intervalMinutes * 60;
+    const url = `https://api.kraken.com/0/public/OHLC?pair=${pair}&interval=${intervalMinutes}&since=${since}`;
+
     const revalidate = Math.max(30, Math.floor(intervalMinutes * 60 * 0.75));
     const res = await fetchWithRetry(url);
 
@@ -120,11 +177,19 @@ export async function fetchCandles(
       close: parseFloat(r[4] as string),
       volume: parseFloat(r[6] as string),
     }));
-  } catch (err) {
-    console.error(
-      `[KRAKEN] ✗ Failed to fetch ${intervalMinutes}m candles for ${symbol}:`,
-      err instanceof Error ? err.message : String(err)
-    );
-    throw err;
+  } catch (krakenErr) {
+    console.warn(`[KRAKEN FAILOVER] Kraken failed, attempting CoinGecko backup: ${krakenErr instanceof Error ? krakenErr.message : String(krakenErr)}`);
+
+    // FALLBACK: Try CoinGecko
+    try {
+      return await fetchCandlesFromCoinGecko(symbol, intervalMinutes, count);
+    } catch (coinGeckoErr) {
+      console.error(
+        `[FAILOVER] ✗ Both Kraken and CoinGecko failed for ${symbol}:`,
+        `Kraken: ${krakenErr instanceof Error ? krakenErr.message : String(krakenErr)}`,
+        `CoinGecko: ${coinGeckoErr instanceof Error ? coinGeckoErr.message : String(coinGeckoErr)}`
+      );
+      throw new Error(`All data sources failed for ${symbol}`);
+    }
   }
 }
