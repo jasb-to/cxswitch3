@@ -389,8 +389,8 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
     const SLIPPAGE = 0.001; // 0.1% slippage on fills
 
     for (const signal of openSignals as Signal[]) {
+      const base = signal.symbol.replace("/USD", "");
       try {
-        const base = signal.symbol.replace("/USD", "");
         const candles = await fetchCandles(base, 15, 20);
         if (!candles.length) {
           logs.push(`[${base}] No 15m candles`);
@@ -496,7 +496,9 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
           logs.push(`[${base}] CONFIRMED — position active (no re-evaluation)`);
         }
       } catch (err) {
-        logs.push(`[POSITIONS] Error for ${signal.symbol}: ${err instanceof Error ? err.message : String(err)}`);
+        logs.push(`[${base}] ✗ Error during position management: ${err instanceof Error ? err.message : String(err)} — skipping this signal`);
+        // Continue to next signal instead of crashing
+        continue;
       }
     }
   } catch (err) {
@@ -578,9 +580,29 @@ function groupTouches(prices: number[], tolerance: number = 0.005): { level: num
 // ─── Market context with trendlines ───────────────────────────────────────────
 
 export async function getMarketContext(symbolBase: string): Promise<MarketContext> {
+  const symbol = `${symbolBase}/USD`;
+  
   try {
-    const symbol = `${symbolBase}/USD`;
-    const candles4h = await fetchCandles(symbolBase, 240, 100);
+    let candles4h: Candle[] = [];
+    
+    // Fetch candles with dedicated error handling
+    try {
+      candles4h = await fetchCandles(symbolBase, 240, 100);
+    } catch (err) {
+      console.error(`[${symbolBase}] ✗ Candle fetch failed:`, err instanceof Error ? err.message : String(err));
+      return {
+        symbol,
+        price: 0,
+        swingHigh: null,
+        swingLow: null,
+        distanceToHigh: null,
+        distanceToLow: null,
+        setup: "ERROR",
+        setupText: `Candle fetch failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+        error: true,
+        trendlines: 0,
+      };
+    }
 
     if (!candles4h.length) {
       return {
@@ -672,7 +694,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       distanceToHigh: null,
       distanceToLow: null,
       setup: "ERROR",
-      setupText: `Data unavailable: ${err instanceof Error ? err.message : "Unknown error"}`,
+      setupText: `Unexpected error: ${err instanceof Error ? err.message : "Unknown"}`,
       error: true,
       trendlines: 0,
     };

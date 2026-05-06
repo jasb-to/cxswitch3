@@ -1,10 +1,31 @@
 # CXSwitch3 Trading Strategy Documentation
 
-**Current Version:** v2.0.2
+**Current Version:** v3.0.0
 
 ## Overview
 
 CXSwitch3 is an automated crypto trading signal generator that detects trendline breakouts on 4-hour (4H) candlestick charts for BTC/USD, ETH/USD, and SOL/USD. It identifies valid support/resistance levels through multi-touch trendline analysis, fires entry signals on confirmed breakouts with dynamic risk-to-reward ratios, manages live positions, and validates trades through on-chain momentum confirmation.
+
+---
+
+## v3.0.0: MAJOR FIX — Kraken API Resilience & Error Recovery
+
+### Comprehensive Kraken API Overhaul
+- **Retry Logic with Exponential Backoff**: All API calls retry up to 3 times with 500ms, 1000ms, 2000ms delays. Respects 429 rate-limit Retry-After headers
+- **Rate Limit Handling**: 429 responses trigger intelligent backoff instead of immediate failure
+- **Network Error Recovery**: Transient network errors automatically retry; permanent errors throw after max retries
+- **Detailed Logging**: All Kraken operations logged with `[KRAKEN]` prefix showing retry attempts, success/failure status
+
+### Error Recovery in Signal Generation
+- **managePositions**: Candle fetch errors now caught and logged; individual symbol errors don't crash entire cron run
+- **getMarketContext**: Nested try-catch isolates candle fetch errors; returns ERROR state if API unavailable without breaking caller
+- **Graceful Degradation**: When API fails, positions continue to check TP/SL with existing data; signals skip generation
+
+### Result
+- **404 Errors Eliminated**: Retry logic catches transient Kraken failures (rate limiting, network blips)
+- **No Signal Spam**: Failed API calls no longer trigger stale trendline data signal generation  
+- **Stable Cron Runs**: Errors in one symbol don't cascade; cron completes even if one API call fails
+- **Accurate Direction**: Signals based on fresh 4H data only; no false LONG/SHORT from stale caches
 
 ---
 
