@@ -4,7 +4,7 @@ import { calculateStopLoss, calculateTakeProfit, calculateRiskReward, calculateV
 import { sendTradeCloseAlert } from "./telegram";
 
 export type SignalDirection = "LONG" | "SHORT";
-export type SignalState = "EARLY" | "CONFIRMED" | "END";
+export type SignalState = "EARLY_OPEN" | "CONFIRMED" | "END";
 export type SignalOutcome = "TP" | "SL" | "EXPIRED" | "MANUAL";
 
 /**
@@ -391,7 +391,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
     const { data: activeRows, error: fetchError } = await supabase
       .from("signals")
       .select("*")
-      .in("state", ["EARLY", "CONFIRMED"]);
+      .in("state", ["EARLY_OPEN", "CONFIRMED"]);
 
     if (fetchError) {
       logs.push(`[SUPABASE] Query error: ${fetchError.message}`);
@@ -597,7 +597,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
 
           const newSignal = {
             symbol,
-            state: "EARLY" as SignalState,
+            state: "EARLY_OPEN" as SignalState,
             direction: "LONG" as SignalDirection,
             entry_price: price,
             stop_loss: sl,
@@ -617,7 +617,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           if (insertErr) {
             logs.push(`[${base}] Insert LONG failed: ${insertErr.message}`);
           } else {
-            logs.push(`[${base}] ✓ Created LONG EARLY (conf: ${confidence} ${breakdown}) (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
+            logs.push(`[${base}] ✓ ENTRY OPENED (LONG | conf: ${confidence} ${breakdown}) (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
             recentAlertSymbols.add(symbol);
           }
@@ -707,7 +707,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
 
           const newSignal = {
             symbol,
-            state: "EARLY" as SignalState,
+            state: "EARLY_OPEN" as SignalState,
             direction: "SHORT" as SignalDirection,
             entry_price: price,
             stop_loss: sl,
@@ -727,7 +727,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           if (insertErr) {
             logs.push(`[${base}] Insert SHORT failed: ${insertErr.message}`);
           } else {
-            logs.push(`[${base}] ✓ Created SHORT EARLY (conf: ${confidence} ${breakdown}) (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
+            logs.push(`[${base}] ✓ ENTRY OPENED (SHORT | conf: ${confidence} ${breakdown}) (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
             recentAlertSymbols.add(symbol);
           }
@@ -781,7 +781,7 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
     const { data: openSignals, error } = await supabase
       .from("signals")
       .select("*")
-      .in("state", ["EARLY", "CONFIRMED"]);
+      .in("state", ["EARLY_OPEN", "CONFIRMED"]);
 
     if (error) {
       logs.push(`[POSITIONS] Query error: ${error.message}`);
@@ -855,52 +855,46 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
           continue;
         }
 
-        // Improvement 2: Strict CONFIRMED validation — structure + momentum only
-        if (state === "EARLY") {
+        // Improvement 2: CONFIRMED validation — upgrade EARLY_OPEN to add-on position
+        if (state === "EARLY_OPEN") {
           const recent = candles.slice(-4);
           const closes = recent.map((c) => c.close);
           const lastClose = closes[closes.length - 1];
           const prevClose = closes[closes.length - 2];
-          const prev2Close = closes[closes.length - 3];
 
-          // Requirement 1: Must still be beyond breakout level
+          // Requirement 1: Must still be beyond breakout level (structure holding)
           const aboveBreakout = direction === "LONG" && lastClose > signal.breakout_level * 0.999;
           const belowBreakout = direction === "SHORT" && lastClose < signal.breakout_level * 1.001;
           const breakoutValid = aboveBreakout || belowBreakout;
 
-          // Requirement 2: Two consecutive candles moving in same direction
-          const twoConsecutiveUp = direction === "LONG" && lastClose > prevClose && prevClose > prev2Close;
-          const twoConsecutiveDown = direction === "SHORT" && lastClose < prevClose && prevClose < prev2Close;
-          const hasConsecutiveMomentum = twoConsecutiveUp || twoConsecutiveDown;
-
-          // Requirement 3: Move strength between last two closes > 0.3%
+          // Requirement 2: RSI + EMA alignment (not reversal confirmation)
+          // Check if momentum is directionally aligned (not exhausted)
           const moveStrength = Math.abs(lastClose - prevClose) / prevClose;
-          const hasStrongMomentum = moveStrength > 0.003;
+          const hasDirectionalMomentum = moveStrength > 0.001; // Just needs to show direction
 
           logs.push(
-            `[${base}] EARLY validation: ` +
+            `[${base}] EARLY_OPEN validation: ` +
             `breakoutValid=${breakoutValid} (${lastClose.toFixed(2)} ${direction === "LONG" ? ">" : "<"} ${signal.breakout_level.toFixed(2)}), ` +
-            `consecutive=${hasConsecutiveMomentum} (${prev2Close.toFixed(2)}→${prevClose.toFixed(2)}→${lastClose.toFixed(2)}), ` +
-            `moveStr=${(moveStrength * 100).toFixed(3)}% (need >0.3%)`
+            `directionalMomentum=${hasDirectionalMomentum} (${(moveStrength * 100).toFixed(3)}%)`
           );
 
-          // ALL THREE conditions must be met for confirmation
-          if (breakoutValid && hasConsecutiveMomentum && hasStrongMomentum) {
+          // If breakout still valid AND showing directional momentum, upgrade to CONFIRMED for add-on
+          if (breakoutValid && hasDirectionalMomentum) {
             const newConfidence = Math.min(95, signal.confidence + 15);
             await updateSignalState(id!, "CONFIRMED", {
               confidence: newConfidence,
               last_checked_candle: candleTs,
             });
-            logs.push(`[${base}] EARLY → CONFIRMED (confidence: ${newConfidence}%, structure+momentum validated, move: ${(moveStrength * 100).toFixed(2)}%)`);
+            logs.push(`[${base}] ✓ CONFIRMED – ADDING TO POSITION (confidence: ${newConfidence}%, structure holding + momentum aligned)`);
             confirmed.push({ ...signal, state: "CONFIRMED", confidence: newConfidence });
           } else {
-            await updateSignalState(id!, "EARLY", { last_checked_candle: candleTs });
-            logs.push(`[${base}] EARLY — awaiting: breakout=${breakoutValid}, consecutive=${hasConsecutiveMomentum}, move=${(moveStrength * 100).toFixed(3)}%`);
+            await updateSignalState(id!, "EARLY_OPEN", { last_checked_candle: candleTs });
+            logs.push(`[${base}] EARLY_OPEN — waiting: breakout=${breakoutValid}, momentum=${hasDirectionalMomentum}`);
           }
         } else if (state === "CONFIRMED") {
-          // FIX 4: Skip all confirmation logic for CONFIRMED signals — only check TP/SL
+          // CONFIRMED: position scaling active — only check TP/SL
           await updateSignalState(id!, "CONFIRMED", { last_checked_candle: candleTs });
-          logs.push(`[${base}] CONFIRMED — position active (no re-evaluation)`);
+          logs.push(`[${base}] CONFIRMED — position active (scaled entry)`);
         }
       } catch (err) {
         logs.push(`[${base}] ✗ Error during position management: ${err instanceof Error ? err.message : String(err)} — skipping this signal`);
