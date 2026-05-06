@@ -305,10 +305,17 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           }
 
           // FRESHNESS CHECK: Don't fire if breakout happened too long ago
-          // If we're on candle 95 and breakout was on candle 85, it's 10 candles old = stale
-          const breakoutCandleAge = candles4h.length - 1; // Current is last candle (0-indexed)
+          const breakoutCandleAge = candles4h.length - 1;
           if (breakoutCandleAge > 10) {
             logs.push(`[${base}] LONG skipped — breakout is stale (${breakoutCandleAge} candles old, max 10)`);
+            continue;
+          }
+
+          // MINIMUM EXPANSION CHECK: Require 0.3% move from breakout level
+          const breakoutMove = ((currClosed - breakoutLevel) / breakoutLevel);
+          const minExpansion = 0.003; // 0.3%
+          if (breakoutMove < minExpansion) {
+            logs.push(`[${base}] ✗ LONG skipped — breakout too weak (${(breakoutMove * 100).toFixed(2)}%, need 0.30%)`);
             continue;
           }
 
@@ -320,18 +327,10 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             continue;
           }
 
-          // DUPLICATE PREVENTION: Check if same breakout event already created a signal
-          const eventKey = `${symbol}:SHORT:${breakoutLevel.toFixed(2)}`;
-          const existingBreakoutTime = breakoutEventMap.get(eventKey);
-          if (existingBreakoutTime && currentCandle.time === existingBreakoutTime) {
-            logs.push(`[${base}] SHORT skipped — signal already exists for this breakout event at candle time ${currentCandle.time}`);
-            continue;
-          }
-          
           // Check cooldown: don't fire same setup twice within 4 hours
-          const key = cooldownKey(symbol, "SHORT", breakoutLevel);
+          const key = cooldownKey(symbol, "LONG", breakoutLevel);
           if (cooldownSet.has(key)) {
-            logs.push(`[${base}] SHORT on cooldown — fired within last 4h at $${breakoutLevel.toFixed(2)}`);
+            logs.push(`[${base}] LONG on cooldown — fired within last 4h at $${breakoutLevel.toFixed(2)}`);
             continue;
           }
 
@@ -352,7 +351,6 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           }
 
           // Filter weak breakouts using ADX (trend strength)
-          // ADX < 20 = ranging/consolidation, likely false breakout
           if (market.adx !== undefined && market.adx < 20) {
             logs.push(`[${base}] LONG skipped — ADX ${market.adx.toFixed(1)} < 20 (weak trend, likely false breakout)`);
             continue;
@@ -380,9 +378,9 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           if (insertErr) {
             logs.push(`[${base}] Insert LONG failed: ${insertErr.message}`);
           } else {
-            logs.push(`[${base}] ✓ Created LONG EARLY (FRESH BREAKOUT) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
+            logs.push(`[${base}] ✓ Created LONG EARLY (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
-            recentAlertSymbols.add(symbol); // Mark as just-alerted
+            recentAlertSymbols.add(symbol);
           }
 
         // SHORT: price broke below a 3-touch support level (EVENT-BASED)
@@ -407,6 +405,22 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           const breakoutCandleAge = candles4h.length - 1;
           if (breakoutCandleAge > 10) {
             logs.push(`[${base}] SHORT skipped — breakout is stale (${breakoutCandleAge} candles old, max 10)`);
+            continue;
+          }
+
+          // MINIMUM EXPANSION CHECK: Require 0.3% move from breakout level
+          const breakoutMove = ((breakoutLevel - currClosed) / breakoutLevel);
+          const minExpansion = 0.003; // 0.3%
+          if (breakoutMove < minExpansion) {
+            logs.push(`[${base}] ✗ SHORT skipped — breakout too weak (${(breakoutMove * 100).toFixed(2)}%, need 0.30%)`);
+            continue;
+          }
+
+          // DUPLICATE PREVENTION: Check if same breakout event already created a signal
+          const eventKey = `${symbol}:SHORT:${breakoutLevel.toFixed(2)}`;
+          const existingBreakoutTime = breakoutEventMap.get(eventKey);
+          if (existingBreakoutTime && currentCandle.time === existingBreakoutTime) {
+            logs.push(`[${base}] SHORT skipped — signal already exists for this breakout event at candle time ${currentCandle.time}`);
             continue;
           }
           
@@ -461,32 +475,11 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           if (insertErr) {
             logs.push(`[${base}] Insert SHORT failed: ${insertErr.message}`);
           } else {
-            logs.push(`[${base}] ✓ Created SHORT EARLY (FRESH BREAKOUT) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
+            logs.push(`[${base}] ✓ Created SHORT EARLY (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
-            recentAlertSymbols.add(symbol); // Mark as just-alerted
+            recentAlertSymbols.add(symbol);
           }
-
-          // If there's an active signal in the opposite direction, don't create another
-          if (existing && existing.direction === "SHORT") {
-            logs.push(`[${base}] LONG skipped — active SHORT signal exists`);
-            continue;
-          }
-
-          // Require close at least 0.5% above breakout level to avoid whipsaw
-          const distAboveBreakout = ((price - breakoutLevel) / breakoutLevel) * 100;
-          if (distAboveBreakout < 0.5) {
-            logs.push(`[${base}] LONG skipped — only ${distAboveBreakout.toFixed(2)}% above breakout, need 0.5%`);
-            continue;
-          }
-
-          const sl = calculateStopLoss(price, swingLow, "LONG");
-          const tp = calculateTakeProfit(price, sl, "LONG");
-          const rr = calculateRiskReward(price, tp, sl, "LONG");
-
-          // Filter low-quality trades (RR < 1.5)
-          if (rr < 1.5) {
-            logs.push(`[${base}] LONG skipped — RR ${rr.toFixed(2)} < 1.5 threshold`);
-            continue;
+        }
           }
 
           // NEW: Filter weak breakouts using ADX (trend strength)
@@ -517,78 +510,6 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             logs.push(`[${base}] Insert LONG failed: ${insertErr.message}`);
           } else {
             logs.push(`[${base}] ✓ Created LONG EARLY at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
-            signals.push(inserted);
-            recentAlertSymbols.add(symbol); // Mark as just-alerted
-          }
-
-        // SHORT: price broke below a 3-touch support level
-        } else if (setup === "SHORT_SETUP") {
-          const breakoutLevel = swingLow ?? price;
-          
-          // Check cooldown: don't fire same setup twice within 4 hours
-          const key = cooldownKey(symbol, "SHORT", breakoutLevel);
-          if (cooldownSet.has(key)) {
-            logs.push(`[${base}] SHORT on cooldown — fired within last 4h at $${breakoutLevel.toFixed(2)}`);
-            continue;
-          }
-
-          // If there's an active signal in the opposite direction, don't create another
-          if (existing && existing.direction === "LONG") {
-            logs.push(`[${base}] SHORT skipped — active LONG signal exists`);
-            continue;
-          }
-
-          // Require at least 1% below support level before SHORT fires
-          const distBelowBreakout = ((breakoutLevel - price) / breakoutLevel) * 100;
-          if (distBelowBreakout < 1) {
-            logs.push(`[${base}] SHORT skipped — only ${distBelowBreakout.toFixed(2)}% below breakout, need 1%`);
-            continue;
-          }
-
-          // Require close at least 0.5% below breakout level to avoid whipsaw
-          if (distBelowBreakout < 0.5) {
-            logs.push(`[${base}] SHORT skipped — only ${distBelowBreakout.toFixed(2)}% below breakout, need 0.5%`);
-            continue;
-          }
-
-          const sl = calculateStopLoss(price, swingHigh, "SHORT");
-          const tp = calculateTakeProfit(price, sl, "SHORT");
-          const rr = calculateRiskReward(price, tp, sl, "SHORT");
-
-          // Filter low-quality trades (RR < 1.5)
-          if (rr < 1.5) {
-            logs.push(`[${base}] SHORT skipped — RR ${rr.toFixed(2)} < 1.5 threshold`);
-            continue;
-          }
-
-          // NEW: Filter weak breakouts using ADX (trend strength)
-          // ADX < 20 = ranging/consolidation, likely false breakout
-          if (market.adx !== undefined && market.adx < 20) {
-            logs.push(`[${base}] SHORT skipped — ADX ${market.adx.toFixed(1)} < 20 (weak trend, likely false breakout)`);
-            continue;
-          }
-
-          const newSignal = {
-            symbol,
-            state: "EARLY" as SignalState,
-            direction: "SHORT" as SignalDirection,
-            entry_price: price,
-            stop_loss: sl,
-            take_profit: tp,
-            confidence: 70,
-            breakout_level: breakoutLevel,
-          };
-
-          const { data: inserted, error: insertErr } = await supabase
-            .from("signals")
-            .insert([newSignal])
-            .select()
-            .single();
-
-          if (insertErr) {
-            logs.push(`[${base}] Insert SHORT failed: ${insertErr.message}`);
-          } else {
-            logs.push(`[${base}] ✓ Created SHORT EARLY at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
             recentAlertSymbols.add(symbol); // Mark as just-alerted
           }
