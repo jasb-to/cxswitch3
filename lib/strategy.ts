@@ -49,6 +49,81 @@ function calculateADX(candles: Candle[]): number {
   return Math.round(adx * 10) / 10;
 }
 
+/**
+ * Calculate confidence score for a signal based on market structure, trend strength, and momentum.
+ * Starts at base 70, applies adjustments, capped between 60-95.
+ * Non-gating: always returns a confidence score, never prevents signal creation.
+ */
+function calculateConfidence(
+  direction: "LONG" | "SHORT",
+  adx: number | undefined,
+  candles4h: Candle[],
+  hasStrongMomentum: boolean
+): { confidence: number; breakdown: string } {
+  let confidence = 70;
+  const adjustments: string[] = [];
+
+  // 1. MARKET STRUCTURE BIAS
+  if (candles4h.length >= 4) {
+    // Get last 4 candles to identify structure
+    const curr = candles4h[candles4h.length - 1];
+    const prev = candles4h[candles4h.length - 2];
+    const prevprev = candles4h[candles4h.length - 3];
+    const prevprevprev = candles4h[candles4h.length - 4];
+
+    // Current swing high/low vs previous
+    const currSwingHigh = Math.max(curr.high, prev.high);
+    const currSwingLow = Math.min(curr.low, prev.low);
+    const prevSwingHigh = Math.max(prevprev.high, prevprevprev.high);
+    const prevSwingLow = Math.min(prevprev.low, prevprevprev.low);
+
+    // Determine structure
+    const isBullishStructure = currSwingHigh > prevSwingHigh && currSwingLow > prevSwingLow;
+    const isBearishStructure = currSwingHigh < prevSwingHigh && currSwingLow < prevSwingLow;
+
+    if (isBullishStructure) {
+      if (direction === "LONG") {
+        confidence += 10;
+        adjustments.push("bullish structure + LONG");
+      } else {
+        confidence -= 5;
+        adjustments.push("bullish structure - SHORT");
+      }
+    } else if (isBearishStructure) {
+      if (direction === "SHORT") {
+        confidence += 10;
+        adjustments.push("bearish structure + SHORT");
+      } else {
+        confidence -= 5;
+        adjustments.push("bearish structure - LONG");
+      }
+    }
+  }
+
+  // 2. ADX TREND STRENGTH MODIFIER
+  if (adx !== undefined) {
+    if (adx > 25) {
+      confidence += 5;
+      adjustments.push(`strong trend (ADX ${adx.toFixed(1)})`);
+    } else if (adx < 20) {
+      confidence -= 5;
+      adjustments.push(`weak trend (ADX ${adx.toFixed(1)})`);
+    }
+  }
+
+  // 3. MOMENTUM BOOSTER
+  if (hasStrongMomentum) {
+    confidence += 5;
+    adjustments.push("momentum confirmed");
+  }
+
+  // 4. CAP CONFIDENCE BETWEEN 60-95
+  confidence = Math.max(60, Math.min(95, confidence));
+
+  const breakdown = `[base:70 ${adjustments.map(a => `${a}`).join(" | ")}] = ${confidence}`;
+
+  return { confidence, breakdown };
+}
 
 
 export interface Signal {
@@ -365,11 +440,13 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             continue;
           }
 
-          // Filter weak breakouts using ADX (trend strength)
-          if (market.adx !== undefined && market.adx < 20) {
-            logs.push(`[${base}] LONG skipped — ADX ${market.adx.toFixed(1)} < 20 (weak trend, likely false breakout)`);
-            continue;
-          }
+          // Calculate confidence score (non-gating, purely for prioritization)
+          const { confidence, breakdown } = calculateConfidence(
+            "LONG",
+            market.adx,
+            candles4h,
+            breakoutMove > 0.005 // Momentum booster if strong move
+          );
 
           const newSignal = {
             symbol,
@@ -378,7 +455,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             entry_price: price,
             stop_loss: sl,
             take_profit: tp,
-            confidence: 70,
+            confidence,
             breakout_level: breakoutLevel,
             breakout_candle_time: currentCandle.time,
             prev_candle_close: prevClosed,
@@ -393,7 +470,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           if (insertErr) {
             logs.push(`[${base}] Insert LONG failed: ${insertErr.message}`);
           } else {
-            logs.push(`[${base}] ✓ Created LONG EARLY (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
+            logs.push(`[${base}] ✓ Created LONG EARLY (conf: ${confidence} ${breakdown}) (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
             recentAlertSymbols.add(symbol);
           }
@@ -467,11 +544,13 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             continue;
           }
 
-          // Filter weak breakouts using ADX (trend strength)
-          if (market.adx !== undefined && market.adx < 20) {
-            logs.push(`[${base}] SHORT skipped — ADX ${market.adx.toFixed(1)} < 20 (weak trend, likely false breakout)`);
-            continue;
-          }
+          // Calculate confidence score (non-gating, purely for prioritization)
+          const { confidence, breakdown } = calculateConfidence(
+            "SHORT",
+            market.adx,
+            candles4h,
+            breakoutMove > 0.005 // Momentum booster if strong move
+          );
 
           const newSignal = {
             symbol,
@@ -480,7 +559,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             entry_price: price,
             stop_loss: sl,
             take_profit: tp,
-            confidence: 70,
+            confidence,
             breakout_level: breakoutLevel,
             breakout_candle_time: currentCandle.time,
             prev_candle_close: prevClosed,
@@ -495,7 +574,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           if (insertErr) {
             logs.push(`[${base}] Insert SHORT failed: ${insertErr.message}`);
           } else {
-            logs.push(`[${base}] ✓ Created SHORT EARLY (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
+            logs.push(`[${base}] ✓ Created SHORT EARLY (conf: ${confidence} ${breakdown}) (breakout: ${(breakoutMove * 100).toFixed(2)}%) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
             recentAlertSymbols.add(symbol);
           }
