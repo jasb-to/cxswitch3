@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 
-const VERSION = "v2.1.0";
+const VERSION = "v2.2.0";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -82,9 +82,9 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
             }`}>
               {active
                 ? signal.state === "EARLY_OPEN"
-                  ? `${signal.direction} ENTRY OPENED — awaiting scale-in`
+                  ? `${signal.direction} ENTRY OPENED — awaiting retest`
                   : signal.state === "CONFIRMED"
-                  ? `${signal.direction} CONFIRMED — SCALING POSITION`
+                  ? `${signal.direction} CONFIRMED — RETEST ADD-ON`
                   : "ENDED — setup expired"
                 : "SCANNING FOR SETUP"}
             </p>
@@ -172,7 +172,7 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
                 }`}>
                   {signal?.state === "CONFIRMED" ? "✓" : "○"}
                 </span>
-                <span className={signal?.state === "CONFIRMED" ? "text-[#22c55e]" : "text-[#666]"}>5M Entry</span>
+                <span className={signal?.state === "CONFIRMED" ? "text-[#22c55e]" : "text-[#666]"}>Retest Add-On</span>
               </div>
               <div className="flex items-center gap-2 text-[12px]">
                 <span className={`w-4 h-4 border rounded flex items-center justify-center text-[10px] ${

@@ -855,46 +855,72 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
           continue;
         }
 
-        // Improvement 2: CONFIRMED validation — upgrade EARLY_OPEN to add-on position
+        // Improvement 2: CONFIRMED = retest add-on entry (strict retest structure)
         if (state === "EARLY_OPEN") {
-          const recent = candles.slice(-4);
+          const recent = candles.slice(-6);
           const closes = recent.map((c) => c.close);
+          const highs = recent.map((c) => c.high);
+          const lows = recent.map((c) => c.low);
           const lastClose = closes[closes.length - 1];
           const prevClose = closes[closes.length - 2];
+          const prev2Close = closes[closes.length - 3];
 
-          // Requirement 1: Must still be beyond breakout level (structure holding)
-          const aboveBreakout = direction === "LONG" && lastClose > signal.breakout_level * 0.999;
-          const belowBreakout = direction === "SHORT" && lastClose < signal.breakout_level * 1.001;
-          const breakoutValid = aboveBreakout || belowBreakout;
+          // RETEST DETECTION: Did price return toward breakout level after initial impulse?
+          // For LONG: price pulled back to within 0.5% of breakout level, then resumed up
+          // For SHORT: price pulled back to within 0.5% of breakout level, then resumed down
+          const retestTolerance = signal.breakout_level * 0.005; // 0.5% tolerance
 
-          // Requirement 2: RSI + EMA alignment (not reversal confirmation)
-          // Check if momentum is directionally aligned (not exhausted)
-          const moveStrength = Math.abs(lastClose - prevClose) / prevClose;
-          const hasDirectionalMomentum = moveStrength > 0.001; // Just needs to show direction
+          let hasRetestStructure = false;
+          let retestDetails = "";
+
+          if (direction === "LONG") {
+            // Check if price dipped back into retest zone (within 0.5% of breakout) but held
+            const retestZoneMin = signal.breakout_level * 0.995;
+            const retestZoneMax = signal.breakout_level * 1.005;
+            
+            // Look for: previous closes in retest zone, current close resuming higher
+            const prevInRetest = prevClose >= retestZoneMin && prevClose <= retestZoneMax;
+            const currAboveRetest = lastClose > retestZoneMax;
+            const breakoutHeld = Math.min(...lows.slice(-3)) >= signal.breakout_level * 0.99; // No clean reclaim
+
+            hasRetestStructure = prevInRetest && currAboveRetest && breakoutHeld;
+            retestDetails = `retest zone: [${retestZoneMin.toFixed(2)}-${retestZoneMax.toFixed(2)}], prev: ${prevClose.toFixed(2)}, curr: ${lastClose.toFixed(2)}, held: ${breakoutHeld}`;
+          } else if (direction === "SHORT") {
+            // Check if price rallied back into retest zone (within 0.5% of breakout) but held
+            const retestZoneMax = signal.breakout_level * 1.005;
+            const retestZoneMin = signal.breakout_level * 0.995;
+            
+            // Look for: previous closes in retest zone, current close resuming lower
+            const prevInRetest = prevClose <= retestZoneMax && prevClose >= retestZoneMin;
+            const currBelowRetest = lastClose < retestZoneMin;
+            const breakoutHeld = Math.max(...highs.slice(-3)) <= signal.breakout_level * 1.01; // No clean reclaim
+
+            hasRetestStructure = prevInRetest && currBelowRetest && breakoutHeld;
+            retestDetails = `retest zone: [${retestZoneMin.toFixed(2)}-${retestZoneMax.toFixed(2)}], prev: ${prevClose.toFixed(2)}, curr: ${lastClose.toFixed(2)}, held: ${breakoutHeld}`;
+          }
 
           logs.push(
-            `[${base}] EARLY_OPEN validation: ` +
-            `breakoutValid=${breakoutValid} (${lastClose.toFixed(2)} ${direction === "LONG" ? ">" : "<"} ${signal.breakout_level.toFixed(2)}), ` +
-            `directionalMomentum=${hasDirectionalMomentum} (${(moveStrength * 100).toFixed(3)}%)`
+            `[${base}] EARLY_OPEN retest check: ` +
+            `hasRetestStructure=${hasRetestStructure} (${retestDetails})`
           );
 
-          // If breakout still valid AND showing directional momentum, upgrade to CONFIRMED for add-on
-          if (breakoutValid && hasDirectionalMomentum) {
-            const newConfidence = Math.min(95, signal.confidence + 15);
+          // CONFIRMED only on valid retest structure (not immediate continuation)
+          if (hasRetestStructure) {
+            const newConfidence = Math.min(95, signal.confidence + 12);
             await updateSignalState(id!, "CONFIRMED", {
               confidence: newConfidence,
               last_checked_candle: candleTs,
             });
-            logs.push(`[${base}] ✓ CONFIRMED – ADDING TO POSITION (confidence: ${newConfidence}%, structure holding + momentum aligned)`);
+            logs.push(`[${base}] ✓ CONFIRMED – RETEST HELD, ADDING TO POSITION (confidence: ${newConfidence}%)`);
             confirmed.push({ ...signal, state: "CONFIRMED", confidence: newConfidence });
           } else {
             await updateSignalState(id!, "EARLY_OPEN", { last_checked_candle: candleTs });
-            logs.push(`[${base}] EARLY_OPEN — waiting: breakout=${breakoutValid}, momentum=${hasDirectionalMomentum}`);
+            logs.push(`[${base}] EARLY_OPEN — no retest structure yet`);
           }
         } else if (state === "CONFIRMED") {
           // CONFIRMED: position scaling active — only check TP/SL
           await updateSignalState(id!, "CONFIRMED", { last_checked_candle: candleTs });
-          logs.push(`[${base}] CONFIRMED — position active (scaled entry)`);
+          logs.push(`[${base}] CONFIRMED — position active (retest add-on entered)`);
         }
       } catch (err) {
         logs.push(`[${base}] ✗ Error during position management: ${err instanceof Error ? err.message : String(err)} — skipping this signal`);
