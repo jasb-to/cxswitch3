@@ -757,6 +757,10 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
 
     // DEBUG: Log all detected trendlines for this symbol
     console.log(`[${symbolBase}] Price: $${price.toFixed(2)} | Resistances: ${resistances.map(r => `$${r.level.toFixed(2)}(${r.touches})`).join(", ")} | Supports: ${supports.map(s => `$${s.level.toFixed(2)}(${s.touches})`).join(", ")}`);
+    console.log(`[${symbolBase}] Best R: ${bestResistance ? `$${bestResistance.level.toFixed(2)}(${bestResistance.touches})` : "NONE"} | Best S: ${bestSupport ? `$${bestSupport.level.toFixed(2)}(${bestSupport.touches})` : "NONE"}`);
+    console.log(`[${symbolBase}] Volatility: ${(volatility * 100).toFixed(2)}% | Threshold: ${(volatilityThreshold * 100).toFixed(2)}%`);
+    console.log(`[${symbolBase}] LONG check: price($${price.toFixed(2)}) > resistance($${bestResistance?.level.toFixed(2) ?? "N/A"}) * (1+${volatilityThreshold.toFixed(4)})? ${bestResistance ? (price > bestResistance.level * (1 + volatilityThreshold) ? "YES ✓" : "NO") : "NO RESISTANCE"}`);
+    console.log(`[${symbolBase}] SHORT check: price($${price.toFixed(2)}) < support($${bestSupport?.level.toFixed(2) ?? "N/A"}) * (1-${volatilityThreshold.toFixed(4)})? ${bestSupport ? (price < bestSupport.level * (1 - volatilityThreshold) ? "YES ✓" : "NO") : "NO SUPPORT"}`);
 
 
     // Use best resistance/support as swingHigh/swingLow
