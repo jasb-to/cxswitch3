@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 
-const VERSION = "v1.5.2";
+const VERSION = "v1.5.3";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 

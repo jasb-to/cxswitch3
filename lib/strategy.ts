@@ -82,11 +82,12 @@ export interface MarketContext {
   setupText: string;
   error?: boolean;
   trendlines?: number;
-  volatility?: number; // recent high-low / low over past candles
-  volatilityThreshold?: number; // dynamic breakout threshold based on volatility
-  dataSource?: "KRAKEN" | "COINGECKO" | "CACHE"; // Track which data source was used
-  dataSourceTime?: number; // Unix timestamp of when data was fetched
-  adx?: number; // Average Directional Index for trend strength (0-100)
+  volatility?: number;
+  volatilityThreshold?: number;
+  dataSource?: "KRAKEN" | "COINGECKO" | "CACHE";
+  dataSourceTime?: number;
+  adx?: number;
+  candles4h?: Candle[];
 }
 
 // ─── Cleanup expired signals ─────────────────────────────────────────────────
@@ -245,8 +246,17 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           continue;
         }
 
-        const { symbol, price, swingHigh, swingLow, setup } = market;
+        const { symbol, price, swingHigh, swingLow, setup, candles4h: marketCandles, volatilityThreshold } = market;
         logs.push(`[${base}] $${price.toFixed(2)} — ${setup} — ${market.setupText}`);
+
+        // Guard: skip if candles unavailable or insufficient
+        if (!marketCandles || marketCandles.length < 2) {
+          logs.push(`[${base}] Skipped — insufficient candle data (${marketCandles?.length ?? 0} candles)`);
+          continue;
+        }
+
+        const candles4h = marketCandles;
+        const volatilityThresholdValue = volatilityThreshold ?? 0.005;
 
         // Check if an active signal exists and if it should be expired
         let existing = activeBySymbol.get(symbol);
@@ -297,7 +307,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           const currClosed = currentCandle.close;
           
           // Check if this is a fresh breakout event (not stale)
-          const breakoutOccurred = prevClosed <= breakoutLevel && currClosed > breakoutLevel * (1 + volatilityThreshold);
+          const breakoutOccurred = prevClosed <= breakoutLevel && currClosed > breakoutLevel * (1 + volatilityThresholdValue);
           
           if (!breakoutOccurred) {
             logs.push(`[${base}] LONG skipped — not a fresh breakout event (prev: $${prevClosed.toFixed(2)}, curr: $${currClosed.toFixed(2)}, level: $${breakoutLevel.toFixed(2)})`);
@@ -399,7 +409,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           const currClosed = currentCandle.close;
           
           // Check if this is a fresh breakout event (not stale)
-          const breakoutOccurred = prevClosed >= breakoutLevel && currClosed < breakoutLevel * (1 - volatilityThreshold);
+          const breakoutOccurred = prevClosed >= breakoutLevel && currClosed < breakoutLevel * (1 - volatilityThresholdValue);
           
           if (!breakoutOccurred) {
             logs.push(`[${base}] SHORT skipped — not a fresh breakout event (prev: $${prevClosed.toFixed(2)}, curr: $${currClosed.toFixed(2)}, level: $${breakoutLevel.toFixed(2)})`);
@@ -782,6 +792,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
           trendlines: 0,
           dataSource: "CACHE",
           dataSourceTime: cached.timestamp,
+          candles4h: [],
         };
       }
       
@@ -798,6 +809,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
         setupText: "Data loading...",
         error: false,
         trendlines: 0,
+        candles4h: [],
       };
     }
 
@@ -813,6 +825,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
         setupText: "No candle data available",
         error: false,
         trendlines: 0,
+        candles4h: [],
       };
     }
 
@@ -830,8 +843,33 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     const resistances = groupTouches(highs, 0.005);
     const supports = groupTouches(lows, 0.005);
 
-    const bestResistance = resistances[0];
-    const bestSupport = supports[0];
+    // FILTER stale levels: only include nearby, relevant levels
+    // For resistance: only include levels near or above current price (>= price * 0.99)
+    // For support: only include levels near or below current price (<= price * 1.01)
+    const filteredResistances = resistances.filter(r => r.level >= price * 0.99);
+    const filteredSupports = supports.filter(s => s.level <= price * 1.01);
+
+    const bestResistance = filteredResistances[0] ?? null;
+    const bestSupport = filteredSupports[0] ?? null;
+
+    // If no valid levels remain after filtering, return NO_SETUP
+    if (!bestResistance && !bestSupport) {
+      return {
+        symbol,
+        price,
+        swingHigh: null,
+        swingLow: null,
+        distanceToHigh: null,
+        distanceToLow: null,
+        setup: "NO_SETUP",
+        setupText: "No valid trendlines found near current price",
+        error: false,
+        trendlines: 0,
+        dataSource,
+        dataSourceTime,
+        adx: calculateADX(candles4h),
+      };
+    }
 
     // DEBUG: Log all detected trendlines for this symbol
     console.log(`[${symbolBase}] Price: $${price.toFixed(2)} | Resistances: ${resistances.map(r => `$${r.level.toFixed(2)}(${r.touches})`).join(", ")} | Supports: ${supports.map(s => `$${s.level.toFixed(2)}(${s.touches})`).join(", ")}`);
@@ -893,6 +931,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       dataSource,
       dataSourceTime,
       adx,
+      candles4h,
     };
   } catch (err) {
     console.error(`[${symbolBase}] ✗ Unexpected error in getMarketContext:`, err instanceof Error ? err.message : String(err));
@@ -909,6 +948,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       trendlines: 0,
       dataSource: "KRAKEN",
       dataSourceTime: Date.now(),
+      candles4h: [],
     };
   }
 }
