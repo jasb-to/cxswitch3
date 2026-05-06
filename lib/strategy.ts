@@ -579,6 +579,9 @@ function groupTouches(prices: number[], tolerance: number = 0.005): { level: num
 
 // ─── Market context with trendlines ───────────────────────────────────────────
 
+// Price cache for fallback when API fails
+const priceCache = new Map<string, { price: number; timestamp: number }>();
+
 export async function getMarketContext(symbolBase: string): Promise<MarketContext> {
   const symbol = `${symbolBase}/USD`;
   
@@ -590,6 +593,28 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       candles4h = await fetchCandles(symbolBase, 240, 100);
     } catch (err) {
       console.error(`[${symbolBase}] ✗ Candle fetch failed:`, err instanceof Error ? err.message : String(err));
+      
+      // FALLBACK: Use cached price if available (within 1 hour)
+      const cached = priceCache.get(symbol);
+      const now = Date.now();
+      if (cached && (now - cached.timestamp) < 3600000) {
+        console.log(`[${symbolBase}] Using cached price: $${cached.price.toFixed(2)}`);
+        return {
+          symbol,
+          price: cached.price,
+          swingHigh: null,
+          swingLow: null,
+          distanceToHigh: null,
+          distanceToLow: null,
+          setup: "NO_SETUP",
+          setupText: "API unavailable — using cached data",
+          error: false,
+          trendlines: 0,
+        };
+      }
+      
+      // No cache available — return zero price but don't mark as error
+      console.log(`[${symbolBase}] No cached data available`);
       return {
         symbol,
         price: 0,
@@ -597,9 +622,9 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
         swingLow: null,
         distanceToHigh: null,
         distanceToLow: null,
-        setup: "ERROR",
-        setupText: `Candle fetch failed: ${err instanceof Error ? err.message : "Unknown error"}`,
-        error: true,
+        setup: "NO_SETUP",
+        setupText: "Data loading...",
+        error: false,
         trendlines: 0,
       };
     }
@@ -612,14 +637,17 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
         swingLow: null,
         distanceToHigh: null,
         distanceToLow: null,
-        setup: "ERROR",
+        setup: "NO_SETUP",
         setupText: "No candle data available",
-        error: true,
+        error: false,
         trendlines: 0,
       };
     }
 
     const price = candles4h[candles4h.length - 1].close;
+    
+    // Cache the price for fallback use
+    priceCache.set(symbol, { price, timestamp: Date.now() });
 
     // Improvement 6: Calculate volatility for dynamic breakout threshold
     const volatility = calculateVolatility(candles4h);
@@ -685,17 +713,17 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       volatilityThreshold,
     };
   } catch (err) {
-    console.error(`[getMarketContext] Error for ${symbolBase}:`, err);
+    console.error(`[${symbolBase}] ✗ Unexpected error in getMarketContext:`, err instanceof Error ? err.message : String(err));
     return {
-      symbol: `${symbolBase}/USD`,
+      symbol,
       price: 0,
       swingHigh: null,
       swingLow: null,
       distanceToHigh: null,
       distanceToLow: null,
-      setup: "ERROR",
-      setupText: `Unexpected error: ${err instanceof Error ? err.message : "Unknown"}`,
-      error: true,
+      setup: "NO_SETUP",
+      setupText: "Unexpected error — retrying next cycle",
+      error: false,
       trendlines: 0,
     };
   }

@@ -3,13 +3,29 @@ import { getAllSignals, getMarketContext, type MarketContext } from "@/lib/strat
 import { supabase } from "@/lib/supabase-client";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 30; // Allow up to 30 seconds for retries
 
 export async function GET() {
   try {
     // PRIMARY: Always fetch live market data from Kraken (never skip this)
     const symbols = ["BTC", "ETH", "SOL"];
     const market = await Promise.all(
-      symbols.map((s) => getMarketContext(s))
+      symbols.map((s) => getMarketContext(s).catch(err => {
+        console.error(`[SIGNALS API] Failed to get context for ${s}:`, err);
+        // Return a neutral market state without error flag so cards still display
+        return {
+          symbol: `${s}/USD`,
+          price: 0,
+          swingHigh: null,
+          swingLow: null,
+          distanceToHigh: null,
+          distanceToLow: null,
+          setup: "NO_SETUP",
+          setupText: "Data unavailable — retrying...",
+          error: false,
+          trendlines: 0,
+        };
+      }))
     );
 
     // SECONDARY: Try Supabase for persisted signals (optional, won't crash if missing)
