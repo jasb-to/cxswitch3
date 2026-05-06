@@ -1,10 +1,53 @@
 # CXSwitch3 Trading Strategy Documentation
 
-**Current Version:** v3.3.0
+**Current Version:** v1.5.0
 
 ## Overview
 
 CXSwitch3 is an automated crypto trading signal generator that detects trendline breakouts on 4-hour (4H) candlestick charts for BTC/USD, ETH/USD, and SOL/USD. It identifies valid support/resistance levels through multi-touch trendline analysis, fires entry signals on confirmed breakouts with dynamic risk-to-reward ratios, manages live positions, and validates trades through on-chain momentum confirmation.
+
+---
+
+## v1.5.0: Event-Based Breakout Detection — Architecture Refactor
+
+### Core Problem Fixed
+- **Previous Condition-Based Logic**: System fired LONG if `price > resistance`, regardless of when/how price got there
+- **Result**: Stale breakouts (price broke above 5 candles ago) kept firing new signals; direction confusion in ranging markets
+- **This Version**: Implements true **event-based detection** — signals only fire on fresh breakout moments
+
+### Event-Based Architecture Changes
+
+**1. Fresh Breakout Detection (Not Stale Levels)**
+- LONG fires only when: `prev_candle.close ≤ resistance` AND `curr_candle.close > resistance × (1 + volatility_threshold)`
+- SHORT fires only when: `prev_candle.close ≥ support` AND `curr_candle.close < support × (1 - volatility_threshold)`
+- Prevents re-firing on already-broken levels
+
+**2. Breakout Freshness Validation**
+- New fields added: `breakout_candle_time` (Unix timestamp), `prev_candle_close` (validation)
+- Signals only created if breakout occurred within last 10 candles (4H = max 40 hours old)
+- Stale breakouts (>10 candles old) are rejected with "breakout is stale" log
+
+**3. Duplicate Prevention by Breakout Event**
+- Tracks breakout events in `breakoutEventMap` using `symbol:direction:level`
+- Two signals cannot be created from the same breakout event (same candle_time)
+- Prevents multiple alerts from identical breakout situations
+
+**4. Level Invalidation on Breakout Failure**
+- If price breaks above resistance then closes back below → signal is automatically expired
+- Triggers on `price < breakout_level` for LONG or `price > breakout_level` for SHORT
+- Immediately generates opposite-direction setup if price structure confirms
+
+### Logging Improvements
+- "FRESH BREAKOUT" logged when event-based condition is met
+- "not a fresh breakout event" logged with prev/curr/level prices when condition fails
+- "breakout is stale (X candles old, max 10)" logged when timing window exceeded
+- Full validation chain visible in logs for debugging
+
+### Result
+- **No More Stale Signal Spam**: Each symbol fires maximum once per fresh breakout event
+- **Directional Accuracy**: Wrong-direction trades eliminated because stale breakouts no longer fire
+- **Fewer Evening Losses**: Consolidation breakouts that immediately reverse no longer create signals
+- **Transparent Debugging**: Logs show exact event timing and why signals were/weren't created
 
 ---
 
