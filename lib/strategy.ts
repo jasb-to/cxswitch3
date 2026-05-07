@@ -1273,18 +1273,24 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     
     // Fetch candles with dedicated error handling
     try {
+      console.log(`[${symbolBase}] Fetching 4H candles...`);
       const result = await fetchCandles(symbolBase, 240, 100);
       candles4h = result.candles;
       dataSource = result.source;
       dataSourceTime = result.timestamp;
+      console.log(`[${symbolBase}] ✓ Got ${candles4h.length} 4H candles from ${dataSource}`);
 
       // Fetch 15M candles for EMA/RSI timing
+      console.log(`[${symbolBase}] Fetching 15M candles...`);
       const result15m = await fetchCandles(symbolBase, 15, 50);
       candles15m = result15m.candles;
+      console.log(`[${symbolBase}] ✓ Got ${candles15m.length} 15M candles from ${result15m.source}`);
 
-      // Fetch 5M candles for early impulse detection
-      const result5m = await fetchCandles(symbolBase, 5, 20);
+      // Fetch 5M candles for momentum confirmation
+      console.log(`[${symbolBase}] Fetching 5M candles...`);
+      const result5m = await fetchCandles(symbolBase, 5, 50);
       candles5m = result5m.candles;
+      console.log(`[${symbolBase}] ✓ Got ${candles5m.length} 5M candles from ${result5m.source}`);
     } catch (err) {
       console.error(`[${symbolBase}] ✗ Candle fetch failed:`, err instanceof Error ? err.message : String(err));
       console.error(`[${symbolBase}] Error details:`, err);
@@ -1320,6 +1326,33 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
           rsiSlope5m: undefined,
         };
       }
+
+      // No cache available — return zero price but don't mark as error
+      console.log(`[${symbolBase}] No cached data available`);
+      return {
+        symbol,
+        price: 0,
+        swingHigh: null,
+        swingLow: null,
+        distanceToHigh: null,
+        distanceToLow: null,
+        setup: "NO_SETUP",
+        setupText: "Data loading...",
+        error: false,
+        trendlines: 0,
+        candles4h: [],
+        candles15m: [],
+        candles5m: [],
+        adx: undefined,
+        ema8: undefined,
+        ema21: undefined,
+        emaCurling: undefined,
+        rsi15m: undefined,
+        rsi5m: undefined,
+        rsiSlope15m: undefined,
+        rsiSlope5m: undefined,
+      };
+    }
       
       // No cache available — return zero price but don't mark as error
       console.log(`[${symbolBase}] No cached data available`);
@@ -1349,6 +1382,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     }
 
     if (!candles4h.length) {
+      console.error(`[${symbolBase}] ✗ No 4H candle data after fetch attempt`);
       return {
         symbol,
         price: 0,
