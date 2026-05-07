@@ -49,14 +49,14 @@ export async function GET(req: NextRequest) {
       console.log(line);
     }
 
-    // Telegram: send EARLY alerts when signals are first created
+    // Telegram: send EARLY_OPEN alerts when signals are first created
     for (const signal of signals) {
-      if (signal.state === "EARLY" && await shouldSendAlert(signal.id!, signal.symbol, "EARLY")) {
+      if (signal.state === "EARLY_OPEN" && await shouldSendAlert(signal.id!, signal.symbol, "EARLY_OPEN")) {
         try {
           await sendSignalAlert(signal);
-          console.log(`[TELEGRAM] ✓ Sent EARLY alert for ${signal.symbol} (signal ID ${signal.id})`);
+          console.log(`[TELEGRAM] ✓ Sent EARLY_OPEN alert for ${signal.symbol} (signal ID ${signal.id})`);
         } catch (err) {
-          console.log(`[TELEGRAM] ✗ Failed to send EARLY alert for ${signal.symbol}`);
+          console.log(`[TELEGRAM] ✗ Failed to send EARLY_OPEN alert for ${signal.symbol}`);
         }
       }
     }
