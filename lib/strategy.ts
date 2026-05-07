@@ -1115,7 +1115,8 @@ function findPivots(candles: Candle[], lookback: number = 2): { highs: Candle[];
 
 /**
  * Detect market structure progression using pivot sequencing.
- * Returns bullish HH+HL, bearish LL+LH, or NO_STRUCTURE.
+ * Returns directional structure with bias score for mixed pivot sequences.
+ * Mixed pivots (e.g. HH but not HL) produce a weighted bias instead of NO_STRUCTURE.
  */
 function detectStructure(
   pivotHighs: Candle[],
@@ -1127,6 +1128,8 @@ function detectStructure(
   priorHigh: Candle | null;
   priorLow: Candle | null;
   structureText: string;
+  bullishBias: number; // 0-40: structural contribution to LONG score
+  bearishBias: number; // 0-40: structural contribution to SHORT score
 } {
   if (pivotHighs.length < 2 || pivotLows.length < 2) {
     return {
@@ -1136,6 +1139,8 @@ function detectStructure(
       priorHigh: null,
       priorLow: null,
       structureText: "Insufficient pivots for structure detection",
+      bullishBias: 0,
+      bearishBias: 0,
     };
   }
 
@@ -1144,14 +1149,16 @@ function detectStructure(
   const latestLow = pivotLows[pivotLows.length - 1];
   const priorLow = pivotLows[pivotLows.length - 2];
 
-  // Bullish: Higher High + Higher Low
   const hasHigherHigh = latestHigh.high > priorHigh.high;
   const hasHigherLow = latestLow.low > priorLow.low;
-  const isBullish = hasHigherHigh && hasHigherLow;
-
-  // Bearish: Lower High + Lower Low
   const hasLowerHigh = latestHigh.high < priorHigh.high;
   const hasLowerLow = latestLow.low < priorLow.low;
+
+  // Each pivot condition contributes 20 points (full structure = 40)
+  const bullishBias = (hasHigherHigh ? 20 : 0) + (hasHigherLow ? 20 : 0);
+  const bearishBias = (hasLowerHigh ? 20 : 0) + (hasLowerLow ? 20 : 0);
+
+  const isBullish = hasHigherHigh && hasHigherLow;
   const isBearish = hasLowerHigh && hasLowerLow;
 
   if (isBullish) {
@@ -1162,6 +1169,8 @@ function detectStructure(
       priorHigh,
       priorLow,
       structureText: `HH (${latestHigh.high.toFixed(0)} > ${priorHigh.high.toFixed(0)}) + HL (${latestLow.low.toFixed(0)} > ${priorLow.low.toFixed(0)})`,
+      bullishBias: 40,
+      bearishBias: 0,
     };
   } else if (isBearish) {
     return {
@@ -1171,16 +1180,28 @@ function detectStructure(
       priorHigh,
       priorLow,
       structureText: `LL (${latestLow.low.toFixed(0)} < ${priorLow.low.toFixed(0)}) + LH (${latestHigh.high.toFixed(0)} < ${priorHigh.high.toFixed(0)})`,
+      bullishBias: 0,
+      bearishBias: 40,
     };
   }
 
+  // Mixed pivots — return weighted bias instead of hard NO_STRUCTURE
+  const dominantBias = bullishBias > bearishBias ? "BULLISH" : bearishBias > bullishBias ? "BEARISH" : "NO_STRUCTURE";
+  const mixedParts = [];
+  if (hasHigherHigh) mixedParts.push(`HH(+)`);
+  if (hasHigherLow) mixedParts.push(`HL(+)`);
+  if (hasLowerHigh) mixedParts.push(`LH(-)`);
+  if (hasLowerLow) mixedParts.push(`LL(-)`);
+
   return {
-    structure: "NO_STRUCTURE",
+    structure: dominantBias,
     latestHigh,
     latestLow,
     priorHigh,
     priorLow,
-    structureText: "Structure indeterminate (mixed HH/LL or HL/LH)",
+    structureText: `Mixed pivots [${mixedParts.join(", ")}] → ${dominantBias} bias (${Math.max(bullishBias, bearishBias)}/40)`,
+    bullishBias,
+    bearishBias,
   };
 }
 
@@ -1508,11 +1529,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       distanceToLow = ((price - swingLow) / price) * 100;
     }
 
-    let setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" | "ERROR" = "NO_SETUP";
-    let setupText = "Waiting for structural displacement";
-    let earlyOpenReason = ""; // Track why we're triggering early
-
-    // Calculate timing indicators for trend initiation
+    // Calculate timing indicators
     const ema8 = calculateEMA(candles15m, 8);
     const ema21 = calculateEMA(candles15m, 21);
     const emaCurling = checkEMACurling(candles4h, candles15m);
@@ -1521,81 +1538,129 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     const rsiSlope15m = checkRSISlope(candles15m, "15m");
     const rsiSlope5m = checkRSISlope(candles5m, "5m");
 
-    // V2.5.0: MOMENTUM-DRIVEN EARLY_OPEN
-    // Trigger before full displacement when lower timeframes show alignment with structure
-    
-    if (structureAnalysis.structure === "BULLISH") {
-      // LONG momentum conditions (no displacement requirement)
-      const has15mUptrend = ema8 && ema21 && ema8 > ema21;
-      const has15mCurl = emaCurling?.curlingUp;
-      const has15mRsiMomentum = rsiSlope15m?.slopeUp;
-      const has5mContinuation = candles5m.length >= 3 && 
-        candles5m[candles5m.length - 1].close > candles5m[candles5m.length - 2].close &&
-        candles5m[candles5m.length - 2].close > candles5m[candles5m.length - 3].close;
-
-      // PRIMARY: Full displacement detected (preferred entry)
-      if (displacementAnalysis.triggered && displacementAnalysis.direction === "LONG") {
-        setup = "LONG_SETUP";
-        setupText = `${structureAnalysis.structureText} — BREAKOUT at $${displacementAnalysis.pivotBreak.toFixed(0)} (+${(displacementAnalysis.breakExpansion * 100).toFixed(2)}%)`;
-        earlyOpenReason = "full displacement";
-      }
-      // SECONDARY: Structure + momentum alignment (early participation)
-      else if ((has15mUptrend || has15mCurl) && (has15mRsiMomentum || has5mContinuation)) {
-        setup = "LONG_SETUP";
-        const triggers = [];
-        if (has15mUptrend) triggers.push("EMA8>EMA21");
-        if (has15mCurl) triggers.push("EMA curling");
-        if (has15mRsiMomentum) triggers.push("RSI slope+");
-        if (has5mContinuation) triggers.push("5M continuation");
-        setupText = `HH+HL bullish structure — momentum initiation (${triggers.join(", ")})`;
-        earlyOpenReason = "momentum alignment before displacement";
-      } 
-      // FALLBACK: Structure but waiting for momentum
-      else {
-        setupText = `${structureAnalysis.structureText} — ${displacementAnalysis.text}`;
-      }
-    } 
-    else if (structureAnalysis.structure === "BEARISH") {
-      // SHORT momentum conditions (no displacement requirement)
-      const has15mDowntrend = ema8 && ema21 && ema8 < ema21;
-      const has15mCurl = emaCurling?.curlingDown;
-      const has15mRsiMomentum = rsiSlope15m?.slopeDown;
-      const has5mContinuation = candles5m.length >= 3 && 
-        candles5m[candles5m.length - 1].close < candles5m[candles5m.length - 2].close &&
-        candles5m[candles5m.length - 2].close < candles5m[candles5m.length - 3].close;
-
-      // PRIMARY: Full displacement detected (preferred entry)
-      if (displacementAnalysis.triggered && displacementAnalysis.direction === "SHORT") {
-        setup = "SHORT_SETUP";
-        setupText = `${structureAnalysis.structureText} — BREAKOUT at $${displacementAnalysis.pivotBreak.toFixed(0)} (-${(displacementAnalysis.breakExpansion * 100).toFixed(2)}%)`;
-        earlyOpenReason = "full displacement";
-      }
-      // SECONDARY: Structure + momentum alignment (early participation)
-      else if ((has15mDowntrend || has15mCurl) && (has15mRsiMomentum || has5mContinuation)) {
-        setup = "SHORT_SETUP";
-        const triggers = [];
-        if (has15mDowntrend) triggers.push("EMA8<EMA21");
-        if (has15mCurl) triggers.push("EMA curling");
-        if (has15mRsiMomentum) triggers.push("RSI slope-");
-        if (has5mContinuation) triggers.push("5M continuation");
-        setupText = `LL+LH bearish structure — momentum initiation (${triggers.join(", ")})`;
-        earlyOpenReason = "momentum alignment before displacement";
-      }
-      // FALLBACK: Structure but waiting for momentum
-      else {
-        setupText = `${structureAnalysis.structureText} — ${displacementAnalysis.text}`;
-      }
-    }
-
-    // Calculate ADX to filter weak breakouts
+    // Calculate ADX
     const adx = calculateADX(candles4h);
 
-    const trendlineCount = (swingHigh ? 1 : 0) + (swingLow ? 1 : 0);
+    // V2.6.0: WEIGHTED PROBABILITY SCORING MODEL
+    // No hard boolean gates — stack evidence to justify early participation.
+    // Displacement is a confidence bonus only, never a requirement.
 
-    // Log early_open trigger reason if applicable
-    if (earlyOpenReason) {
-      console.log(`[${symbolBase}] EARLY_OPEN — ${setup} via ${earlyOpenReason}`);
+    // --- LONG SCORE ---
+    let longScore = 0;
+    const longBreakdown: string[] = [];
+
+    // Structure bias (0-40pts)
+    if (structureAnalysis.bullishBias > 0) {
+      longScore += structureAnalysis.bullishBias;
+      longBreakdown.push(`Structure: +${structureAnalysis.bullishBias}`);
     }
+
+    // EMA alignment (0-20pts)
+    if (ema8 && ema21 && ema8 > ema21) {
+      longScore += 20;
+      longBreakdown.push("EMA8>EMA21: +20");
+    }
+
+    // EMA curling (0-15pts)
+    if (emaCurling?.curlingUp) {
+      longScore += 15;
+      longBreakdown.push("EMA curl up: +15");
+    }
+
+    // RSI slope (0-15pts)
+    if (rsiSlope15m?.slopeUp) {
+      longScore += 15;
+      longBreakdown.push("RSI slope+: +15");
+    }
+
+    // 5M bullish continuation (0-20pts)
+    const has5mBullish = candles5m.length >= 3 &&
+      candles5m[candles5m.length - 1].close > candles5m[candles5m.length - 2].close &&
+      candles5m[candles5m.length - 2].close > candles5m[candles5m.length - 3].close;
+    if (has5mBullish) {
+      longScore += 20;
+      longBreakdown.push("5M continuation: +20");
+    }
+
+    // Displacement is confidence bonus only — does NOT gate the score
+    const hasLongDisplacement = displacementAnalysis.triggered && displacementAnalysis.direction === "LONG";
+    if (hasLongDisplacement) {
+      longBreakdown.push("Displacement: +20 conf bonus");
+    }
+
+    // --- SHORT SCORE ---
+    let shortScore = 0;
+    const shortBreakdown: string[] = [];
+
+    // Structure bias (0-40pts)
+    if (structureAnalysis.bearishBias > 0) {
+      shortScore += structureAnalysis.bearishBias;
+      shortBreakdown.push(`Structure: +${structureAnalysis.bearishBias}`);
+    }
+
+    // EMA alignment (0-20pts)
+    if (ema8 && ema21 && ema8 < ema21) {
+      shortScore += 20;
+      shortBreakdown.push("EMA8<EMA21: +20");
+    }
+
+    // EMA curling (0-15pts)
+    if (emaCurling?.curlingDown) {
+      shortScore += 15;
+      shortBreakdown.push("EMA curl down: +15");
+    }
+
+    // RSI slope (0-15pts)
+    if (rsiSlope15m?.slopeDown) {
+      shortScore += 15;
+      shortBreakdown.push("RSI slope-: +15");
+    }
+
+    // 5M bearish continuation (0-20pts)
+    const has5mBearish = candles5m.length >= 3 &&
+      candles5m[candles5m.length - 1].close < candles5m[candles5m.length - 2].close &&
+      candles5m[candles5m.length - 2].close < candles5m[candles5m.length - 3].close;
+    if (has5mBearish) {
+      shortScore += 20;
+      shortBreakdown.push("5M continuation: +20");
+    }
+
+    // Displacement is confidence bonus only
+    const hasShortDisplacement = displacementAnalysis.triggered && displacementAnalysis.direction === "SHORT";
+    if (hasShortDisplacement) {
+      shortBreakdown.push("Displacement: +20 conf bonus");
+    }
+
+    console.log(`[${symbolBase}] LONG score: ${longScore} [${longBreakdown.join(", ")}]`);
+    console.log(`[${symbolBase}] SHORT score: ${shortScore} [${shortBreakdown.join(", ")}]`);
+
+    // --- SETUP DECISION: score >= 60 triggers EARLY_OPEN ---
+    const TRIGGER_THRESHOLD = 60;
+
+    let setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" | "ERROR" = "NO_SETUP";
+    let setupText = "";
+
+    if (longScore >= TRIGGER_THRESHOLD && longScore > shortScore) {
+      setup = "LONG_SETUP";
+      const trigger = hasLongDisplacement
+        ? `BREAKOUT at $${displacementAnalysis.pivotBreak?.toFixed(0)} (+${(displacementAnalysis.breakExpansion * 100).toFixed(2)}%)`
+        : `momentum initiation score ${longScore}`;
+      setupText = `${structureAnalysis.structureText} — ${trigger}`;
+      console.log(`[${symbolBase}] TOTAL LONG SCORE: ${longScore} → EARLY_OPEN`);
+    } else if (shortScore >= TRIGGER_THRESHOLD && shortScore > longScore) {
+      setup = "SHORT_SETUP";
+      const trigger = hasShortDisplacement
+        ? `BREAKOUT at $${displacementAnalysis.pivotBreak?.toFixed(0)} (-${(displacementAnalysis.breakExpansion * 100).toFixed(2)}%)`
+        : `momentum initiation score ${shortScore}`;
+      setupText = `${structureAnalysis.structureText} — ${trigger}`;
+      console.log(`[${symbolBase}] TOTAL SHORT SCORE: ${shortScore} → EARLY_OPEN`);
+    } else {
+      const best = longScore > shortScore ? `LONG ${longScore}` : shortScore > longScore ? `SHORT ${shortScore}` : `LONG ${longScore} / SHORT ${shortScore}`;
+      setupText = `${structureAnalysis.structureText} — score below threshold (${best} < ${TRIGGER_THRESHOLD})`;
+      console.log(`[${symbolBase}] Score below threshold — ${best} pts, need ${TRIGGER_THRESHOLD}`);
+    }
+
+    const trendlineCount = (swingHigh ? 1 : 0) + (swingLow ? 1 : 0);
 
     return {
       symbol,
