@@ -46,7 +46,7 @@ function fmt(n: number): string {
 }
 
 function getReason(signal: Signal): string {
-  if (signal.state === "EARLY") {
+  if (signal.state === "EARLY_OPEN") {
     return `Breakout with early momentum. Awaiting 15m confirmation.`;
   }
 

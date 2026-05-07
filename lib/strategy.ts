@@ -530,19 +530,11 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             // Clear the existing signal so we can create a new opposite-direction one
             existing = undefined;
           } else {
-            // Signal still valid, check staleness
-            const ageMs = Date.now() - new Date(existing.created_at!).getTime();
-            const isStaleEarly = existing.state === "EARLY_OPEN" && ageMs > 60 * 60 * 1000;
-
-            if (isStaleEarly) {
-              await updateSignalState(existing.id!, "END", { outcome: "EXPIRED" });
-              logs.push(`[${base}] Expired stale EARLY signal (${Math.round(ageMs / 60000)}m old) — allowing new signal`);
-              existing = undefined;
-            } else {
-              logs.push(`[${base}] Active signal exists (${existing.state}) — skipping creation`);
-              signals.push(existing);
-              continue; // IMPORTANT: Skip to next symbol
-            }
+            // Signal still valid — don't auto-expire EARLY_OPEN
+            // EARLY_OPEN signals persist until explicitly closed via TP/SL/manual END
+            logs.push(`[${base}] Active signal exists (${existing.state}) — skipping creation`);
+            signals.push(existing);
+            continue; // IMPORTANT: Skip to next symbol
           }
         }
 

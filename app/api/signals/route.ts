@@ -95,7 +95,7 @@ export async function PATCH(req: NextRequest) {
       .from("signals")
       .select("*")
       .eq("symbol", symbol)
-      .in("state", ["EARLY", "CONFIRMED"])
+      .in("state", ["EARLY_OPEN", "CONFIRMED"])
       .single();
 
     if (fetchErr || !signal) {
