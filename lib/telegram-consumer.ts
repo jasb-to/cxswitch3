@@ -6,7 +6,7 @@
  */
 
 import { signalEventStream, SignalEvent } from "./signal-event-contract";
-import { sendTradeAlert, sendTradeCloseAlert } from "./telegram";
+import { sendSignalAlert, sendTradeCloseAlert } from "./telegram";
 
 /**
  * Handle SIGNAL_EMITTED events — send entry alert
@@ -14,23 +14,19 @@ import { sendTradeAlert, sendTradeCloseAlert } from "./telegram";
 async function handleSignalEmittedAlert(event: SignalEvent) {
   const { symbol, direction, entry_price, stop_loss, take_profit, confidence } = event.payload;
 
-  const riskAmount = Math.abs(entry_price - stop_loss);
-  const rewardAmount = Math.abs(take_profit - entry_price);
-  const rr = rewardAmount / riskAmount;
-
-  const reason = event.metadata?.reason || "structure + momentum";
-
   console.log(`[TELEGRAM CONSUMER] Sending ENTRY alert for ${symbol} ${direction}`);
 
-  await sendTradeAlert({
+  // Use sendSignalAlert with the signal data
+  await sendSignalAlert({
+    id: undefined,
     symbol,
-    direction,
+    direction: direction as any,
+    state: "EARLY_OPEN",
     entry_price,
     stop_loss,
     take_profit,
     confidence,
-    rr,
-    reason,
+    breakout_level: entry_price,
   });
 }
 
@@ -38,20 +34,21 @@ async function handleSignalEmittedAlert(event: SignalEvent) {
  * Handle SIGNAL_CONFIRMED events — send confirmation alert
  */
 async function handleSignalConfirmedAlert(event: SignalEvent) {
-  const { symbol, direction, entry_price, confidence } = event.payload;
+  const { symbol, direction, entry_price, stop_loss, take_profit, confidence } = event.payload;
 
   console.log(`[TELEGRAM CONSUMER] Sending CONFIRMED alert for ${symbol} ${direction}`);
 
-  await sendTradeAlert({
+  // Send confirmed signal
+  await sendSignalAlert({
+    id: undefined,
     symbol,
-    direction,
+    direction: direction as any,
+    state: "CONFIRMED",
     entry_price,
-    stop_loss: 0, // Not needed for confirmation
-    take_profit: 0,
+    stop_loss,
+    take_profit,
     confidence,
-    rr: 0,
-    reason: "retest confirmed",
-    isConfirmed: true,
+    breakout_level: entry_price,
   });
 }
 
@@ -59,21 +56,26 @@ async function handleSignalConfirmedAlert(event: SignalEvent) {
  * Handle exit events — send close alert
  */
 async function handleSignalExitAlert(event: SignalEvent) {
-  const { symbol, direction, entry_price } = event.payload;
+  const { symbol, direction, entry_price, stop_loss, take_profit } = event.payload;
   const outcome = event.metadata?.outcome || "UNKNOWN";
-  const pnl = event.metadata?.pnl;
 
   console.log(`[TELEGRAM CONSUMER] Sending EXIT alert for ${symbol} ${direction} (${outcome})`);
 
-  const exitPrice = outcome === "TP" ? event.payload.take_profit : event.payload.stop_loss;
+  const exitPrice = outcome === "TP" ? take_profit : stop_loss;
 
+  // Create a Signal object for sendTradeCloseAlert
   await sendTradeCloseAlert({
+    id: undefined,
     symbol,
-    direction,
+    direction: direction as any,
+    state: "END",
     entry_price,
-    exit_price: exitPrice,
-    outcome,
-    pnl,
+    stop_loss,
+    take_profit,
+    confidence: 0,
+    breakout_level: entry_price,
+    outcome: outcome as any,
+    pnl: event.metadata?.pnl,
   });
 }
 
