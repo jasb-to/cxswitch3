@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS signals (
   id BIGSERIAL PRIMARY KEY,
   symbol TEXT NOT NULL,
   direction TEXT NOT NULL CHECK (direction IN ('LONG', 'SHORT')),
-  state TEXT NOT NULL CHECK (state IN ('EARLY', 'CONFIRMED', 'END')),
+  state TEXT NOT NULL CHECK (state IN ('EARLY_OPEN', 'CONFIRMED', 'END')),
   entry_price NUMERIC,
   stop_loss NUMERIC,
   take_profit NUMERIC,
