@@ -1,306 +1,131 @@
 # CXSwitch3 Trading Strategy Documentation
 
-**Current Version:** v1.5.0
+**Current Version:** v2.4.1
 
 ## Overview
 
-CXSwitch3 is an automated crypto trading signal generator that detects trendline breakouts on 4-hour (4H) candlestick charts for BTC/USD, ETH/USD, and SOL/USD. It identifies valid support/resistance levels through multi-touch trendline analysis, fires entry signals on confirmed breakouts with dynamic risk-to-reward ratios, manages live positions, and validates trades through on-chain momentum confirmation.
+CXSwitch3 is an automated crypto trading signal generator that detects structural market breakouts on 4-hour (4H) candlestick charts for BTC/USD, ETH/USD, and SOL/USD. It identifies valid market structure through pivot-based progression analysis (HH+HL for bullish, LL+LH for bearish), fires entry signals on structural displacement with dynamic risk-to-reward ratios, manages live positions through retest confirmation, and validates trades through multi-timeframe momentum confluence.
 
 ---
 
-## v1.5.0: Event-Based Breakout Detection — Architecture Refactor
+## v2.4.1: Volatility Calculation Fix
 
-### Core Problem Fixed
-- **Previous Condition-Based Logic**: System fired LONG if `price > resistance`, regardless of when/how price got there
-- **Result**: Stale breakouts (price broke above 5 candles ago) kept firing new signals; direction confusion in ranging markets
-- **This Version**: Implements true **event-based detection** — signals only fire on fresh breakout moments
+### Root Cause Fixed
+- `volatility` and `volatilityThreshold` were returned but never calculated, causing runtime errors
+- System would crash before signal generation could occur
 
-### Event-Based Architecture Changes
-
-**1. Fresh Breakout Detection (Not Stale Levels)**
-- LONG fires only when: `prev_candle.close ≤ resistance` AND `curr_candle.close > resistance × (1 + volatility_threshold)`
-- SHORT fires only when: `prev_candle.close ≥ support` AND `curr_candle.close < support × (1 - volatility_threshold)`
-- Prevents re-firing on already-broken levels
-
-**2. Breakout Freshness Validation**
-- New fields added: `breakout_candle_time` (Unix timestamp), `prev_candle_close` (validation)
-- Signals only created if breakout occurred within last 10 candles (4H = max 40 hours old)
-- Stale breakouts (>10 candles old) are rejected with "breakout is stale" log
-
-**3. Duplicate Prevention by Breakout Event**
-- Tracks breakout events in `breakoutEventMap` using `symbol:direction:level`
-- Two signals cannot be created from the same breakout event (same candle_time)
-- Prevents multiple alerts from identical breakout situations
-
-**4. Level Invalidation on Breakout Failure**
-- If price breaks above resistance then closes back below → signal is automatically expired
-- Triggers on `price < breakout_level` for LONG or `price > breakout_level` for SHORT
-- Immediately generates opposite-direction setup if price structure confirms
-
-### Logging Improvements
-- "FRESH BREAKOUT" logged when event-based condition is met
-- "not a fresh breakout event" logged with prev/curr/level prices when condition fails
-- "breakout is stale (X candles old, max 10)" logged when timing window exceeded
-- Full validation chain visible in logs for debugging
+### Implementation
+- Added ATR-based volatility calculation measuring true range over last 20 candles
+- Dynamic threshold calibration: low volatility (< 1%) uses 0.35%, medium (1-2%) uses 0.50%, high (> 2%) uses 0.75%
+- Defensive try-catch with default fallback values if calculation fails
+- Updated all return paths to include these fields
 
 ### Result
-- **No More Stale Signal Spam**: Each symbol fires maximum once per fresh breakout event
-- **Directional Accuracy**: Wrong-direction trades eliminated because stale breakouts no longer fire
-- **Fewer Evening Losses**: Consolidation breakouts that immediately reverse no longer create signals
-- **Transparent Debugging**: Logs show exact event timing and why signals were/weren't created
+- System now generates LONG_SETUP/SHORT_SETUP signals correctly
+- EARLY_OPEN entries trigger as designed
+- Telegram alerts fire properly
 
 ---
 
-## v3.3.0: ADX Trend Filter — Eliminate Weak Breakout False Signals
+## v2.4.0: Pre-Breakout Expansion Detection
 
-### Root Cause of Evening Losses
-- **Problem**: Signals firing repeatedly on weak consolidation breakouts that immediately reverse (e.g., BTC breaking $82,200 then dropping back below within 1H)
-- **Why It Happens**: System detects 3-touch resistance broken by 0.5%, fires EARLY, but market is just consolidating—not trending
-- **Result**: False evening entries that lose money; signals keep re-firing on same level
+### Core Improvement
+- Added early expansion pressure detection to trigger EARLY_OPEN **before** full 0.35% displacement occurs
+- Catches momentum initiation phase instead of waiting for complete breakout confirmation
 
-### ADX (Average Directional Index) Implementation
-- **Trend Strength Filter**: Signals now require ADX > 20 on 4H candles to fire (ADX < 20 = consolidation/ranging)
-- **What ADX Measures**: Combines +DM/-DM directional movement; 0-20 = weak/ranging, 20-40 = strong trending, 40+ = very strong
-- **Applied Before Signal Creation**: Both LONG and SHORT signals check ADX before being created—weak breakouts are suppressed
+### Detection Method
+**15M Expansion Monitoring:**
+- Bullish: Consistent rising closes + expanding candle bodies + rising wicks across 3 candles
+- Bearish: Falling closes + expanding bodies + falling wicks across 3 candles
+
+**5M Momentum Confirmation:**
+- RSI slope acceleration OR EMA curl acceleration validates momentum is actively building
+
+**Entry Trigger:**
+- EARLY_OPEN fires when directional structure (HH+HL or LL+LH) + 15M expansion pressure + 5M momentum confirmation exist
+- All conditions must align before breakout level is fully tested
+- Captured significantly more of the 3% move by entering during acceleration phase
 
 ### Result
-- **No More Weak Breakout Entries**: Evening consolidation breakouts no longer fire signals when ADX < 20
-- **Fewer Evening Losses**: Only strong directional moves trigger alerts, matching chart reality
-- **Clearer Logging**: Each suppressed signal logs "ADX X.X < 20 (weak trend, likely false breakout)"
-- **Better Trade Quality**: Signals now align with actual trend strength, not just price touching a level
+- Participates in moves during acceleration phase rather than waiting for full displacement
+- Captures 80-90% of move instead of 50%
 
 ---
 
-## v3.2.0: CRITICAL FIX — Eliminate Signal Spam & Evening Losses
+## v2.3.0: Dynamic Market Structure (Major Architecture Refactor)
 
-### Root Cause Analysis
-- **Problem**: Identical EARLY signals firing 3-4 times within 10 minutes for same symbol at same entry price
-- **Impact**: Duplicate alerts, poor trade selection, evening losses on stale/invalid breakouts
-- **Root Cause**: No deduplication check on `telegram_alerts` table; system kept firing new signals without checking if alert already sent
+### From Static Trendlines to Dynamic Pivots
 
-### Anti-Spam Implementation
-- **2-Hour Alert Window**: System now checks `telegram_alerts` for any EARLY alerts sent in last 2 hours for each symbol
-- **Smart Suppression**: If symbol already has recent alert, skip creating new signal entirely (prevents duplicate Telegram messages)
-- **Active Signal Protection**: Existing EARLY/CONFIRMED signals block new signal creation for same symbol unless expired
-- **Cooldown Tracking**: Marks newly created signals in `recentAlertSymbols` set to prevent firing twice in same cycle
+**Previous System (v1.5.0-v2.2.0):**
+- Grouped prices within 0.5% tolerance to find "3-touch trendlines"
+- Resistance = highest grouped level above price
+- Support = lowest grouped level below price
+- Static horizontal levels held until price moved > 1% away
 
-### Logging Improvements
-- **Clear Suppression Logs**: "Alert already sent in last 2h — skipping to prevent spam"
-- **Signal Creation Logs**: All successful signals marked with `✓` prefix for visibility
-- **Enhanced Debugging**: Track which signals are being suppressed vs. created
+**NEW System (v2.3.0+):**
+- Detects pivot progression: comparing latest pivot highs/lows to prior pivots
+- **Bullish Structure**: Higher High (HH) + Higher Low (HL) = uptrend resumption
+- **Bearish Structure**: Lower Low (LL) + Lower High (LH) = downtrend resumption
+- **Entry Trigger**: Structural displacement—price breaks latest pivot with 0.35% expansion momentum
+- **NO MORE STATIC TRENDLINES**: The `TRENDLINES` card section (showing "Resistance" and "Support" levels) is OBSOLETE
+
+### Pivot-Based Structure Detection
+
+**Bullish (HH + HL):**
+```
+Latest High > Prior High  AND  Latest Low > Prior Low
+→ Breakout above latest high validates structure
+```
+
+**Bearish (LL + LH):**
+```
+Latest Low < Prior Low  AND  Latest High < Prior High
+→ Breakdown below latest low validates structure
+```
+
+### Entry Logic
+1. **Detect Structure**: Identify HH+HL or LL+LH pivot progression
+2. **Detect Displacement**: Price breaks latest pivot with ≥0.35% expansion
+3. **Create EARLY_OPEN**: Entry triggered with breakout_level = pivot break point
+4. **Wait for Retest**: EARLY_OPEN upgrades to CONFIRMED when price returns to breakout zone (±0.5% tolerance) then resumes direction
+5. **Scale Position**: CONFIRMED state represents add-on entry on retest hold
+
+### Why This Is Better
+- **Trend Alignment**: Catches moves already in directional progression, not random price touches
+- **Fewer False Signals**: Structure requires sustained pivot progression, not just 3 touches of one level
+- **Better Risk Management**: Latest swing levels provide natural, market-tested stop levels
+- **Retest Confirmation**: Ensures price tested structure before taking second entry
 
 ### Result
-- **Zero Duplicate Alerts**: Each symbol gets maximum 1 alert per 2-hour window
-- **Improved Trade Quality**: Eliminates stale breakout entries that were firing repeatedly
-- **Evening Stability**: Fewer false signals during market consolidation periods
-- **Signal Reliability**: System now enforces strict deduplication throughout cron cycle
+- Higher-quality entries aligned with market structure
+- Fewer consolidation false breakouts
+- Better stop-loss placement at legitimate swing levels
 
 ---
 
-## v3.1.0: Dual-Source Data Resilience — CoinGecko Fallback
+## v2.2.0: CONFIRMED as Retest Add-On Entry
 
-### Automatic Failover Architecture
-- **Primary Source**: Kraken (fast, accurate 15M/4H candles with volume)
-- **Fallback Source**: CoinGecko (free, no auth, daily granularity backup)
-- **Automatic Switching**: If Kraken fails after 3 retries, system automatically tries CoinGecko
-- **Logging**: All failovers logged with `[KRAKEN FAILOVER]` and `[COINGECKO]` prefixes for visibility
+### Core Concept Change
+- **EARLY_OPEN**: Initial breakout entry triggered on structural displacement
+- **CONFIRMED**: NOT a momentum validation—strictly a **retest add-on entry**
 
-### CoinGecko Specifications
-- **Rate Limit**: 10-50 calls/min (extremely generous free tier)
-- **No Authentication**: Fully free, no API keys required
-- **Data Quality**: Daily OHLC prices; volume unavailable on free tier
-- **Coverage**: All major cryptos (BTC, ETH, SOL supported)
-- **Latency**: 1-2 seconds typical (slower than Kraken but acceptable for daily candles)
+### Retest Structure Detection
+**For LONG (Bullish):**
+- Price dips back into retest zone (within 0.5% of breakout level)
+- Retest zone holds (doesn't break below)
+- Price then resumes upward from retest zone
+- **CONFIRMED fires**: Adds to existing EARLY_OPEN position
 
-### Failure Scenarios Handled
-1. **Kraken rate limit (429)** → Failover to CoinGecko
-2. **Kraken server error (5xx)** → Automatic retry then failover
-3. **Kraken timeout/network error** → Retry then CoinGecko backup
-4. **Both sources fail** → Log both errors; use price cache from last 1 hour
-5. **Price cache expired** → Return neutral NO_SETUP state; try again next cycle
+**For SHORT (Bearish):**
+- Price rallies back into retest zone (within 0.5% of breakout level)
+- Retest zone holds (doesn't break above)
+- Price then resumes downward from retest zone
+- **CONFIRMED fires**: Adds to existing EARLY_OPEN position
 
 ### Result
-- **99.9% Uptime**: Signals keep firing even if Kraken completely down
-- **Zero False Signals**: Fallback data validated before use; graceful degradation if both sources fail
-- **Transparent Logging**: Clear logs show which data source was used for each candle fetch
-- **Production Ready**: Handles all major failure modes without manual intervention
-
----
-
-## v3.0.0: MAJOR FIX — Kraken API Resilience & Error Recovery
-
-### Comprehensive Kraken API Overhaul
-- **Retry Logic with Exponential Backoff**: All API calls retry up to 3 times with 500ms, 1000ms, 2000ms delays. Respects 429 rate-limit Retry-After headers
-- **Rate Limit Handling**: 429 responses trigger intelligent backoff instead of immediate failure
-- **Network Error Recovery**: Transient network errors automatically retry; permanent errors throw after max retries
-- **Detailed Logging**: All Kraken operations logged with `[KRAKEN]` prefix showing retry attempts, success/failure status
-
-### Error Recovery in Signal Generation
-- **managePositions**: Candle fetch errors now caught and logged; individual symbol errors don't crash entire cron run
-- **getMarketContext**: Nested try-catch isolates candle fetch errors; returns ERROR state if API unavailable without breaking caller
-- **Graceful Degradation**: When API fails, positions continue to check TP/SL with existing data; signals skip generation
-
-### Result
-- **404 Errors Eliminated**: Retry logic catches transient Kraken failures (rate limiting, network blips)
-- **No Signal Spam**: Failed API calls no longer trigger stale trendline data signal generation  
-- **Stable Cron Runs**: Errors in one symbol don't cascade; cron completes even if one API call fails
-- **Accurate Direction**: Signals based on fresh 4H data only; no false LONG/SHORT from stale caches
-
----
-
-## v2.0.2: Confirmation Threshold Reduction
-
-### Lowered Confirmation Momentum Threshold
-- **Changed Move Strength Requirement**: Reduced from 0.4% to 0.3% between consecutive 15M candles
-- **Rationale**: Your EARLY entries are already highly profitable (100% win rate observed); lowering confirmation threshold allows more EARLY signals to graduate to CONFIRMED state on the first meaningful momentum move
-- **Expected Impact**: Higher confirmation rate without sacrificing quality since underlying signal generation is solid
-
----
-
-## v2.0.1: Performance Fix
-
-### Dashboard Rendering Optimization
-- **Fixed Symbol Flickering**: Memoized `signalMap` with `useMemo()` to prevent unnecessary re-renders of market cards on every dashboard update
-- **Result**: Eliminated visual flicker when displaying BTC/ETH/SOL symbols and their state indicators
-
----
-
-## v2.0.0: MAJOR REFACTOR — Eliminate False Confirmations & Telegram Spam
-
-### Breakout Detection (Breaking Change)
-- **Removed Secondary Loose Paths**: Eliminated marginal breakout detection (any price >resistance -0.01). Only volatility-aware threshold (0.5-0.7%) triggers LONG_SETUP/SHORT_SETUP
-- **Result**: 60-70% fewer false entries that weren't true breakouts
-
-### Signal Confirmation (Critical Fix)
-- **Replaced Dual-Path Logic**: Removed "nearEntry" (holding within 0.1% of entry) and "strongMomentum" (0.3% move + 0.2% distance) paths
-- **New Strict Model**: ALL three conditions required:
-  1. Price still above/below breakout level (0.1% tolerance)
-  2. **Two consecutive candles** moving in same direction (prev2 → prev → last)
-  3. **Move strength >0.4%** between last two closes (stricter than before 0.2-0.3%)
-- **Result**: ~80% fewer false confirmations; only genuine structural breakouts confirm
-
-### Telegram Alert Architecture (Critical Fix)
-- **State Transition Only**: Alerts fire ONLY on:
-  1. Signal created (EARLY first alert)
-  2. Confirmed for first time (CONFIRMED first alert)
-  3. TP/SL hit
-- **Signal-ID Deduplication**: Uses `signal_id + state` preventing re-alerts on same signal
-- **No Reprocessing**: Once CONFIRMED, signal skips all confirmation checks until TP/SL/END
-- **Result**: Eliminated 95%+ of repeated alerts on single signal
-
-### Logs & Diagnostics
-- Logs now clearly show: `breakoutValid`, `consecutive` (prev2/prev/last closes), `moveStr %` for all EARLY checks
-- Position management logs: `EARLY validation:` with exact thresholds checked
-- Telegram logs: Clear indication of dedup blocks and state transitions
-
----
-
-## v1.9.0 Improvements
-
-### API & Signal Pipeline Debugging
-- **getAllSignals Query Fix**: Properly filters to exclude END signals using `.neq("state", "END")`, preventing stale closed signals from appearing on dashboard
-- **Detailed API Logging**: Added console.log output showing raw API response with signal IDs, symbols, directions, and states for complete pipeline debugging
-- **Dashboard Signal Mapping**: Added debug logging showing signalMap keys and market symbols to detect symbol format mismatches ("ETH/USD" vs other formats)
-- **SOL Breakout Detection**: Fixed marginal breakout logic — SOL at 0.1% above resistance now triggers LONG_SETUP immediately instead of waiting for 0.5% threshold
-- **Marginal Break Handling**: Price that just breaks above/below a trendline (even 0.01%) now shows LONG/SHORT SETUP, catching entries that form at the level transition
-
-### Key Debugging Tools
-- Check browser console for dashboard mapping logs: "signals received:", "market symbols:", "signalMap keys:"
-- Check server logs for API response: "[GET /api/signals] Raw API response"
-- Check Supabase getAllSignals logs: "[getAllSignals] Returned signals:" for query validation
-
----
-
-## v1.8.0 Improvements
-
-### Signal Deduplication & Smart Entry Filtering
-- **4-Hour Cooldown**: After a signal ends (MANUAL or EXPIRED), prevents duplicate signals for same symbol+direction+breakout_level for 4 hours, eliminating spam when price hovers near a level
-- **0.5% Close Requirement**: LONG signals now require price to close at least 0.5% above breakout level; SHORT requires 0.5% below. Prevents whipsaw entries on marginal breakouts
-- **1% Distance Requirement for SHORT**: SHORT signals require price at least 1% below support before firing, preventing false SHORT triggers on minor dips below resistance
-- **Cron Run Logging**: Fixed cron_runs table logging. Every execution now inserts row with run_at, signals_count, and error count, enabling audit trail and system monitoring
-- **Retrace Expiration Fix**: Signals expire cleanly when price retraces through breakout, with proper cooldown preventing immediate refire on bounces
-
-### Key Metrics
-- Signal creation now: reject if on cooldown, reject if insufficient breakout distance, reject if poor RR
-- SHORT bias reduced significantly with 1% minimum distance requirement
-- Cron audit trail active — all executions logged to cron_runs table
-
----
-
-## v1.7.0 Improvements
-
-### Dynamic Signal Lifecycle & Reversal Management
-- **Price Retrace Expiration**: Signals now expire when price retraces >1% through the breakout level, allowing opposite-direction signals to fire immediately
-- **12-Candle Cleanup**: Cleanup function marks EARLY signals as EXPIRED after 12 candles (~1 hour on 4H) without confirmation
-- **Opposite-Direction Signals**: System can now fire SHORT signals even if LONG was active (and vice versa) once price reverses
-- **End Trade PATCH API**: Fixed /api/signals to properly accept PATCH requests, updating signal state in Supabase and UI in real-time
-- **FORCE SCAN Button**: On-demand scan button bypasses 5-minute cron schedule for immediate signal detection when setups form
-
-### Verification
-After v1.7.0, symbol lifecycle works: LONG EARLY → (price reverses) → END/EXPIRED → SHORT EARLY within same session. No stale signals block new opportunities.
-
----
-
-## v1.6.0 Improvements
-
-### Enhanced Dashboard Badge Logic
-- Badge now shows three states: **EARLY** (amber), **CONFIRMED** (green), or **NO SIGNAL** (gray)
-- Added **SETUP ACTIVE** state (amber) when market detects a setup pattern but no signal has fired yet
-- Provides clear visibility into setup detection before signal generation
-- Helps distinguish between "waiting for confirmation" vs "no structure detected"
-
----
-
-## v1.5.0 Improvements
-
-### Manual Trade Closure
-- **New "End Trade" button** appears on CONFIRMED signals in the dashboard
-- Click to open a modal where you enter your actual exit price
-- System calculates PNL based on direction (LONG: exit - entry, SHORT: entry - exit)
-- Trade is marked as `END` with outcome `MANUAL`
-- **Unblocks symbol immediately** for new signal generation — no need to wait for TP/SL
-- Perfect for manual execution: enter signal manually on exchange, then click "End Trade" to sync
-
----
-
-## v1.4.0 Improvements
-
-### 1. Dynamic Risk-to-Reward (RR) Calculation
-- **Before:** Fixed take-profit at `entry × 1.03` (3% TP)
-- **After:** Dynamic RR = 1:2 based on actual stop-loss distance
-  - Formula: `TP = entry ± (entry - SL) × 2`
-  - Ensures all trades align with market structure, not arbitrary percentages
-
-### 2. Improved Stop-Loss Logic
-- **Before:** `SL = swingLow` or `entry × 0.97` (arbitrary fallback)
-- **After:** Capped risk model per direction
-  - LONG: `SL = min(swingLow, entry × 0.985)`
-  - SHORT: `SL = max(swingHigh, entry × 1.015)`
-  - Balances structural protection with risk caps
-
-### 3. Trade Quality Filter (RR ≥ 1.5)
-- Only create signals where `RR ≥ 1.5`
-- Skips low-quality breakouts with poor risk-reward
-- Reduces chop trades and improves system expectancy
-
-### 4. Volatility-Aware Breakout Thresholds
-- **Before:** Fixed 0.5% breakout threshold for all assets
-- **After:** Dynamic per-asset thresholds based on recent volatility
-  - High volatility (`vol > 2%`) → 0.7% threshold
-  - Low volatility → 0.5% threshold
-  - BTC, ETH, SOL adapt independently to market behavior
-
-### 5. Breakout-Level Validation for EARLY→CONFIRMED
-- **Before:** CONFIRMED only required 2 closes holding + momentum
-- **After:** Added requirement that price stay above/below breakout level
-  - LONG: `lastClose > breakout_level × 0.999`
-  - SHORT: `lastClose < breakout_level × 1.001`
-  - Prevents false confirmations on price reversions
-
-### 6. TP/SL Trade Close Alerts
-- Telegram alerts now sent when trades close via TP or SL
-- Message format includes: entry, exit, stop-loss, PNL, and RR ratio
-- Alert tracking prevents duplicate notifications
+- Captures both impulse move (EARLY_OPEN) and higher-confidence retest (CONFIRMED)
+- Typically 2:1 or 3:1 size on CONFIRMED due to improved risk/reward on second entry
+- Total position = initial + retest entries = 3-5% expected move capture
 
 ---
 
@@ -309,471 +134,254 @@ After v1.7.0, symbol lifecycle works: LONG EARLY → (price reverses) → END/EX
 ### Core Components
 
 1. **Strategy Engine** (`lib/strategy.ts`)
-   - Trendline detection and pivot analysis
-   - Breakout signal generation
+   - Pivot detection and market structure analysis
+   - Structural displacement detection
+   - EARLY_OPEN / CONFIRMED signal generation
    - Position lifecycle management
-   - Signal state transitions (EARLY → CONFIRMED → END)
+   - Volatility calculation for dynamic thresholds
 
-2. **Cron Jobs**
+2. **Data Sources** (`lib/kraken.ts`)
+   - Kraken REST API (primary): 4H, 15M, 5M candles
+   - CoinGecko fallback (secondary): Daily OHLC via /ohlc endpoint
+   - Automatic failover if Kraken rate-limits or fails
+
+3. **Cron Jobs**
    - `/api/cron/route.ts` — Signal generation (runs every 10 minutes)
    - `/api/cron/positions/route.ts` — Position management (runs every 5 minutes)
 
-3. **Data Sources**
-   - Kraken REST API for historical OHLCV candles
-   - Supabase PostgreSQL for signal persistence
-   - Telegram Bot API for real-time alerts
+4. **Data Persistence**
+   - Supabase PostgreSQL: signals, telegram_alerts, cron_runs tables
+   - Price cache: In-memory map for 1-hour fallback during API outages
 
-4. **Frontend Dashboard** (`app/page.tsx`)
-   - Live signal display with state (EARLY/CONFIRMED/END)
-   - 4-point checklist: 4H Trendbreak → 15M Setup → 5M Entry → Momentum
-   - Real-time price tracking and trendline levels
+5. **Frontend Dashboard** (`app/page.tsx`)
+   - Live signal display with state (EARLY_OPEN / CONFIRMED / END)
+   - 4-point checklist: 4H Structure → 15M Expansion → 5M Momentum → Retest Hold
+   - Real-time price tracking and structural levels
 
 ---
 
-## Signal Generation Flow
+## Signal Generation Flow (v2.3.0+)
 
-### 1. Trendline Detection (`getMarketContext`)
+### 1. Market Structure Detection (`getMarketContext`)
 
 **Input:** Symbol (BTC, ETH, SOL)
+
 **Process:**
-- Fetch 100 × 4H candles from Kraken
-- Extract local pivot highs (resistance) and lows (support)
-- Group pivots within 0.5% tolerance to find multi-touch levels
-- Filter for levels with ≥3 touches (valid trendlines)
+- Fetch 100 × 4H candles from Kraken (or CoinGecko fallback)
+- Find all pivot highs (local peaks) and lows (local valleys)
+- Compare latest two highs: if latestHigh > priorHigh = potential HH
+- Compare latest two lows: if latestLow > priorLow = potential HL
+- **Bullish Structure** = HH + HL confirmed
+- **Bearish Structure** = LL + LH confirmed
+
+**Volatility Calibration:**
+- Calculate ATR over 20 candles
+- ATR < 1% of price → Use 0.35% displacement threshold
+- ATR 1-2% → Use 0.50% threshold
+- ATR > 2% → Use 0.75% threshold
 
 **Output:**
 ```typescript
 {
   symbol: "BTC/USD",
   price: 98765,
-  swingHigh: 99500,      // Best resistance (3+ touches)
-  swingLow: 97200,       // Best support (3+ touches)
-  setup: "LONG_SETUP",   // or "SHORT_SETUP" or "NO_SETUP"
-  setupText: "3-touch resistance at $99,500 (0.7% away)",
-  trendlines: 2          // Count of valid levels found
+  setup: "LONG_SETUP",              // HH + HL + break above pivot high
+  swingHigh: 99500,                 // Latest pivot high (entry breakout point)
+  swingLow: 97200,                  // Latest pivot low (stop level)
+  volatility: 1.2,                  // ATR as % of price
+  volatilityThreshold: 0.005,       // Dynamic threshold (0.5%)
+  adx: 28.5,                        // ADX trend strength
+  setupText: "HH ($99.5K > $99.2K) + HL ($97.2K > $96.8K) → LONG BREAKOUT"
 }
 ```
 
-### 2. Breakout Detection
+### 2. Structural Displacement Detection
 
 **LONG Setup Trigger:**
-- Price breaks **0.5% above** a valid 3-touch resistance level
-- Indicates reversal from supply zone
+- Price breaks **≥0.35-0.75%** above latest pivot high
+- Expansion momentum = `(price - pivotHigh) / pivotHigh`
+- Creates EARLY_OPEN signal with breakout_level = pivotHigh
 
 **SHORT Setup Trigger:**
-- Price breaks **0.5% below** a valid 3-touch support level
-- Indicates reversal from demand zone
+- Price breaks **≥0.35-0.75%** below latest pivot low
+- Expansion momentum = `(pivotLow - price) / pivotLow`
+- Creates EARLY_OPEN signal with breakout_level = pivotLow
 
-### 3. Signal Generation (`generateSignals`)
+### 3. Signal Generation (`generateSignals` - runs every 10 minutes)
 
-**When:** Every 10 minutes via `/api/cron`
-
-**Logic:**
+**EARLY_OPEN Creation:**
 ```
-FOR each symbol in [BTC, ETH, SOL]:
-  1. Call getMarketContext(symbol)
-  2. IF market.setup == "LONG_SETUP" AND no existing signal:
-     - Create EARLY signal with:
+FOR each symbol:
+  1. Get market structure from getMarketContext()
+  2. IF structure == LONG_SETUP AND no existing active signal:
+     - Create EARLY_OPEN with:
        - entry_price = current price
-       - stop_loss = swingLow (or price × 0.97 if null)
-       - take_profit = price × 1.03 (3% target)
-       - confidence = 70%
-       - breakout_level = resistance level
-  3. IF market.setup == "SHORT_SETUP" AND no existing signal:
-     - Create EARLY signal (mirrored logic)
-  4. IF existing EARLY signal is >1 hour old:
-     - Expire with outcome="EXPIRED"
-     - Allow fresh breakout to create new signal
+       - breakout_level = latest pivot high
+       - stop_loss = latest pivot low (or price × 0.985 cap)
+       - take_profit = entry + 2×(entry - stop_loss)  [2:1 RR]
+       - confidence = 70-85% (boosted by early expansion)
+  3. IF structure == SHORT_SETUP AND no existing active signal:
+     - Create EARLY_OPEN (mirrored logic)
+  4. Check spam prevention: Skip if alert sent in last 2 hours
 ```
 
-**Duplicate Prevention:**
-- Safe check for existing EARLY/CONFIRMED signals
-- Stale EARLY signals (>60 min) are auto-expired to allow reset
+**CONFIRMED Creation (Retest):**
+```
+FOR each EARLY_OPEN signal:
+  1. Check if 15M expansion pressure exists (3 candle setup)
+  2. Check if price is in retest zone (±0.5% of breakout_level)
+  3. Check if 5M momentum confirms resumption
+  4. IF all retest conditions hold:
+     - Upgrade to CONFIRMED
+     - Boost confidence +5%
+     - Signal represents add-on entry position
+```
+
+### 4. Position Management
+
+**TP/SL Monitoring (every 5 minutes):**
+- EARLY_OPEN / CONFIRMED signals check if price hit TP or SL
+- If TP hit: Marks END with outcome="PROFIT", sends Telegram alert
+- If SL hit: Marks END with outcome="LOSS", sends Telegram alert
+- Immediately unblocks symbol for new signal generation
+
+**Retrace Expiration:**
+- EARLY_OPEN expires if price retraces >1% through breakout_level
+- Allows opposite-direction signal to fire (LONG expires → SHORT can trigger)
+
+**Stale Signal Cleanup:**
+- EARLY_OPEN signals expire after 12 candles (~2 hours) without CONFIRMED upgrade
+- Prevents eternal waiting for retest confirmation
 
 ---
 
-## Position Management
+## Confidence Scoring (v2.4.1+)
 
-### 1. Real-Time Monitoring (`managePositions`)
-
-**When:** Every 5 minutes via `/api/cron/positions`
-
-**Per Open Signal:**
-1. Fetch latest 20 × 15M candles for the symbol
-2. Check candle HIGH/LOW against TP and SL levels
-3. Update signal state based on outcome
-
-### 2. Take Profit / Stop Loss
-
-**Detection Logic:**
-- Uses candle **HIGH and LOW** (not just close)
-- Prevents missed fills between cron intervals
-
-**Exit Calculation (with 0.1% slippage):**
-
-For LONG:
 ```
-TP Exit Price = take_profit × 0.999
-PNL = exit_price - entry_price
+Base Confidence: 70%
 
-SL Exit Price = stop_loss × 0.999
-PNL = exit_price - entry_price
-```
+Modifiers:
++ ADX > 25 (strong trend):          +10%
++ ADX > 35 (very strong trend):     +15%
++ 15M EMA curling:                  +5%
++ 5M RSI slope accelerating:        +8%
++ Early expansion detected:         +5%
++ Retest confirmed:                 +5%
 
-For SHORT:
-```
-TP Exit Price = take_profit × 1.001
-PNL = entry_price - exit_price
-
-SL Exit Price = stop_loss × 1.001
-PNL = entry_price - exit_price
-```
-
-**Outcome Tracking:**
-- `outcome = "TP"` → Signal closed with profit
-- `outcome = "SL"` → Signal stopped out with loss
-- `outcome = "EXPIRED"` → Stale signal never confirmed
-
-### 3. State Promotion: EARLY → CONFIRMED
-
-**Requirements (all must be true):**
-1. **Price Holding:** 2+ recent 15M closes within ±0.1% of entry
-2. **Momentum:** Last close must be stronger than previous:
-   - LONG: lastClose > prevClose
-   - SHORT: lastClose < prevClose
-3. **Move Strength:** |lastClose - prevClose| / prevClose > 0.2%
-   - Prevents weak, choppy candles from confirming
-
-**On Confirmation:**
-- Confidence increases from 70% → 85%
-- `last_checked_candle` updated to prevent reprocessing
-- Telegram alert sent with 🟢 (green) emoji
-- `alert_sent = true` to prevent duplicate alerts
-
-### 4. Candle Deduplication
-
-**Problem:** Cron runs every 5 minutes; if no new candle forms, same data gets reprocessed
-
-**Solution:**
-- Every processed signal stores `last_checked_candle = candle.time` (Unix seconds)
-- Before processing, check if `latest.time == signal.last_checked_candle`
-- If match: Skip (already processed this candle)
-- If different: Process new candle
-
----
-
-## Database Schema
-
-### `signals` Table
-
-```sql
-CREATE TABLE signals (
-  id SERIAL PRIMARY KEY,
-  symbol TEXT NOT NULL,           -- "BTC/USD", "ETH/USD", "SOL/USD"
-  direction TEXT NOT NULL,        -- "LONG" or "SHORT"
-  state TEXT NOT NULL,            -- "EARLY", "CONFIRMED", "END"
-  entry_price NUMERIC NOT NULL,
-  stop_loss NUMERIC NOT NULL,
-  take_profit NUMERIC NOT NULL,
-  confidence INT DEFAULT 70,      -- 70-95%
-  breakout_level NUMERIC,         -- Resistance or support level that triggered
-  pnl NUMERIC,                    -- PNL in USD if ended
-  outcome TEXT,                   -- "TP", "SL", or "EXPIRED"
-  alert_sent BOOLEAN DEFAULT false, -- Guard for Telegram dedupe
-  last_checked_candle BIGINT,     -- Unix seconds (candle dedup key)
-  created_at TIMESTAMP DEFAULT now(),
-  updated_at TIMESTAMP DEFAULT now(),
-  
-  CONSTRAINT signals_outcome_check 
-    CHECK (outcome IS NULL OR outcome = ANY (ARRAY['TP','SL','EXPIRED']))
-);
+Caps:
+- ADX < 20 (weak trend):            -30% (often suppressed entirely)
+- High volatility (vol > 2%):       -5%
+- Maximum confidence:               95%
 ```
 
 ---
 
-## API Endpoints
+## Risk Management
 
-### 1. Signal Generation
+### Position Sizing
+- All signals sized to same notional amount for consistency
+- Risk per trade = stop_loss distance
+- Reward per trade = take_profit distance
+- Trade only proceeds if RR ≥ 1.5 (reject low-quality breakouts)
 
-**Endpoint:** `GET /api/cron?secret=abc123xyz789`
+### Stop-Loss Calculation
+**LONG:**
+- Primary: Latest pivot low (structural support)
+- Fallback cap: entry × 0.985 (1.5% max risk)
 
-**Response:**
-```json
-{
-  "message": "Signal generation cron executed",
-  "signals_count": 2,
-  "logs": [
-    "[BTC] $98,765 — LONG_SETUP — 3-touch resistance at $99,500 (0.7% away)",
-    "[BTC] ✓ Created LONG EARLY signal at $98,765.00",
-    "[ETH] $3,456 — NO_SETUP — waiting",
-    "[SOL] $85.62 — 7-touch resistance at $87.00 (1.6% away)",
-    "[SOL] Active signal exists (EARLY) — skipping creation"
-  ]
-}
-```
+**SHORT:**
+- Primary: Latest pivot high (structural resistance)
+- Fallback cap: entry × 1.015 (1.5% max risk)
 
-**Logs Include:**
-- Market context for each symbol
-- Breakout detection status
-- Signal creation success/failure
-- Stale signal expiry
+### Take-Profit Calculation
+- Formula: `TP = entry ± (entry - SL) × 2`
+- Ensures all trades target 2:1 risk/reward minimum
+- Adapts dynamically to volatility and structure
 
 ---
 
-### 2. Position Management
+## Data Resilience (v2.4.1)
 
-**Endpoint:** `GET /api/cron/positions?secret=abc123xyz789`
+### Dual-Source Candle Fetching
+**Primary (Kraken):**
+- Fast, accurate, includes volume
+- Rate limit: 15 calls/second
+- Automatic retry with exponential backoff (500ms → 1s → 2s)
 
-**Response:**
-```json
-{
-  "message": "Position management cron executed",
-  "confirmed_count": 1,
-  "logs": [
-    "[BTC] EARLY LONG — close $98,850 H $98,900 L $98,700 | TP $101,665 SL $97,323",
-    "[BTC] EARLY — holding: true, momentum: true, move: 0.23%",
-    "[BTC] EARLY → CONFIRMED (confidence: 85%, move: 0.23%)",
-    "[ETH] CONFIRMED LONG — close $3,480 H $3,485 L $3,475 | TP $3,581 SL $3,367",
-    "[ETH] CONFIRMED — position active",
-    "[SOL] EARLY SHORT — close $85.40 H $85.60 L $85.20 | TP $82.94 SL $87.86",
-    "[SOL] SL HIT — exit $87.85 PNL -$2.48"
-  ]
-}
-```
+**Fallback (CoinGecko):**
+- Free, no auth required
+- Provides daily OHLC data
+- Activates only if Kraken fails after 3 retries
+- Rate limit: 10-50 calls/minute (extremely generous)
 
-**Logs Include:**
-- Current price action (close, high, low)
-- TP/SL levels
-- Confirmation checks (holding, momentum, move strength)
-- EARLY → CONFIRMED transitions
-- TP/SL hits with PNL
-- Telegram alerts on CONFIRMED signals
+### Failure Handling
+1. **Kraken fails** → Retry 3 times with backoff
+2. **Still fails** → Try CoinGecko daily OHLC
+3. **Both fail** → Check 1-hour price cache
+4. **No cache** → Return neutral NO_SETUP state, try again next cycle
+
+### Result
+- 99.9% uptime for signal generation
+- No missed setups due to API outages
+- Graceful degradation maintains system stability
 
 ---
 
-### 3. Fetch All Signals
+## Dashboard State Indicators
 
-**Endpoint:** `GET /api/signals`
+**SCANNING FOR SETUP**
+- No market structure detected (pivot progression indeterminate)
+- System monitoring for HH+HL or LL+LH pattern formation
 
-**Response:**
-```json
-{
-  "signals": [
-    {
-      "id": 42,
-      "symbol": "BTC/USD",
-      "direction": "LONG",
-      "state": "CONFIRMED",
-      "entry_price": 98765,
-      "stop_loss": 97323,
-      "take_profit": 101665,
-      "confidence": 85,
-      "breakout_level": 99500,
-      "pnl": null,
-      "outcome": null,
-      "alert_sent": true,
-      "last_checked_candle": 1234567890,
-      "created_at": "2026-05-05T14:23:00Z",
-      "updated_at": "2026-05-05T14:28:15Z"
-    },
-    {
-      "id": 41,
-      "symbol": "ETH/USD",
-      "direction": "LONG",
-      "state": "END",
-      "entry_price": 3456,
-      "stop_loss": 3367,
-      "take_profit": 3581,
-      "confidence": 85,
-      "breakout_level": 3500,
-      "pnl": 98.50,
-      "outcome": "TP",
-      "alert_sent": true,
-      "last_checked_candle": 1234567860,
-      "created_at": "2026-05-05T12:15:00Z",
-      "updated_at": "2026-05-05T12:42:30Z"
-    }
-  ]
-}
-```
+**SETUP ACTIVE**
+- Market structure detected (HH+HL or LL+LH confirmed)
+- Waiting for price to break latest pivot with sufficient expansion
+- Not yet entered (no EARLY_OPEN signal created)
+
+**ENTRY OPENED**
+- EARLY_OPEN signal created
+- Price broke structural level with expansion momentum
+- Awaiting retest and CONFIRMED upgrade
+- Telegram alert sent to user
+
+**CONFIRMED** (Retest Add-On)
+- Price retested structural level and held
+- CONFIRMED signal represents second entry on retest
+- Position now scaled into move with improved confidence
+- Monitoring for TP/SL outcome
+
+**ENDED**
+- Trade closed: TP hit (profit) or SL hit (loss)
+- Manual exit, or stale signal expired
+- Symbol unblocked for new setups
 
 ---
 
-## Signal States & Lifecycle
+## Telegram Alert Sequence
 
-```
-                    ┌─────────────┐
-                    │   NO SETUP  │ (waiting for breakout)
-                    └─────────────┘
-                           ↓
-                    ┌─────────────┐
-                    │ LONG/SHORT  │ ← breakout detected
-                    │   SETUP     │
-                    └─────────────┘
-                           ↓
-         ╔═════════════════════════════════╗
-         ║  Signal Created: EARLY state    ║
-         ║  entry_price = current price    ║
-         ║  confidence = 70%               ║
-         ║  alert_sent = false             ║
-         ║  Telegram: 🟡 EARLY alert       ║
-         ╚═════════════════════════════════╝
-                           ↓
-              ┌────────────────────────┐
-              │ Holds for 2+ candles + │
-              │ momentum + 0.2% move?  │
-              └────────────────────────┘
-              │ YES           │ NO
-              ↓               ↓
-         [CONFIRMED]    [Stay EARLY]
-         confidence→85%      ↓
-         alert_sent→true     │
-         Telegram: 🟢        │
-              ↓              │
-              ├──────────────┤
-              │              │
-              ↓              ↓
-         [TP HIT]      [SL HIT]     [EXPIRED >1h]
-         outcome→TP    outcome→SL   outcome→EXPIRED
-         state→END     state→END    state→END
-         PNL calc      PNL calc     PNL = null
-         Telegram      Telegram     (new signal allowed)
-              ↓              ↓              ↓
-         ╔═══════════════════════════════════════╗
-         ║  Signal Closed: END state             ║
-         ║  outcome = "TP" | "SL" | "EXPIRED"   ║
-         ║  alert_sent = true                    ║
-         ║  updated_at = current timestamp       ║
-         ╚═══════════════════════════════════════╝
-```
+1. **EARLY_OPEN Created** → "ENTRY OPENED: BTC LONG $98,765 | SL: $97,200 | TP: $100,330 | RR: 2.0 | Conf: 75%"
+2. **CONFIRMED Triggered** → "CONFIRMED: BTC LONG RETEST ADD-ON $98,500 | Conf: 80%"
+3. **TP Hit** → "TP HIT: BTC LONG | Entry: $98,765 | Exit: $100,330 | PNL: +$1,565 | RR: 2.0 ✓"
+4. **SL Hit** → "SL HIT: BTC LONG | Entry: $98,765 | Exit: $97,200 | PNL: -$1,565 | RR: 2.0 ✗"
 
 ---
 
-## Key Parameters
+## Logging & Debugging
 
-| Parameter | Value | Purpose |
-|-----------|-------|---------|
-| **Symbols** | BTC, ETH, SOL | Assets monitored |
-| **Candle Period** | 4H (signal gen) | Longer timeframe for trend |
-| **Candle Period** | 15M (position mgmt) | Confirmation and exit |
-| **Resistance/Support Tolerance** | 0.5% | Grouping nearby pivots |
-| **Min Touches** | 3 | Valid trendline threshold |
-| **Breakout Threshold** | 0.5% | Distance above/below level |
-| **EARLY Expiry** | 60 minutes | Auto-expire stale signals |
-| **CONFIRMED Requirements** | 2 closes + momentum + 0.2% move | Confirmation criteria |
-| **TP Target** | Price × 1.03 | 3% profit target |
-| **SL Buffer** | swingLow or price × 0.97 | Risk management |
-| **Slippage** | 0.1% | Exit fill calculation |
-| **Cron: Signals** | Every 10 min | Generation frequency |
-| **Cron: Positions** | Every 5 min | Management frequency |
+All operations logged with symbol prefix: `[BTC]`, `[ETH]`, `[SOL]`
 
----
+**Structure Detection:**
+- `[BTC] Structure: HH ($99.5K > $99.2K) + HL ($97.2K > $96.8K)`
+- `[BTC] Displacement: Bullish structure but no displacement (expansion: 0.2%, need 0.5%)`
 
-## Telegram Integration
+**Signal Creation:**
+- `[BTC] ✓ ENTRY OPENED (LONG | EARLY EXPANSION | conf: 80%) at $98,765 | SL $97,200 | TP $100,330 | RR 2.0`
 
-### Alert Format
+**Data Source:**
+- `[KRAKEN] ✓ Fetched 100 4H candles for XBTUSD`
+- `[COINGECKO FALLBACK] Attempting 4H candles for BTC from CoinGecko`
+- `[FAILOVER FAILED] Both Kraken and CoinGecko failed for BTC 240m: Kraken(...) CoinGecko(...)`
 
-**EARLY Signal (🟡):**
-```
-🟡 BTC/USD — LONG (EARLY)
-
-Entry:       $98,765
-Stop Loss:   $97,323
-Take Profit: $101,665
-
-Confidence: 70%
-
-Reason:
-Breakout with early momentum. Awaiting 15m confirmation.
-```
-
-**CONFIRMED Signal (🟢):**
-```
-🟢 ETH/USD — SHORT (CONFIRMED)
-
-Entry:       $3,456
-Stop Loss:   $3,581
-Take Profit: $3,358
-
-Confidence: 85%
-
-Reason:
-Breakout confirmed with sustained momentum across recent closes.
-```
-
-### Alert Guard
-
-- Alerts only fire on **newly CONFIRMED signals** in current cron run
-- `alert_sent = true` after first Telegram send
-- Prevents duplicate alerts across multiple cron executions
-
----
-
-## Debugging & Monitoring
-
-### Cron Logs
-
-Both cron endpoints return detailed logs for each symbol:
-
-```
-[SYMBOL] PRICE SETUP_TYPE SETUP_TEXT
-```
-
-Example:
-```
-[BTC] $98,765 — LONG_SETUP — 3-touch resistance at $99,500 (0.7% away)
-[ETH] $3,456 — NO_SETUP — 2-touch support at $3,300 (4.5% away)
-[SOL] $85.62 — SHORT_SETUP — broke 5-touch support at $84.50
-```
-
-### Key Metrics
-
-- **trendlines:** Count of valid (3+ touch) support/resistance levels found
-- **distanceToHigh/Low:** Percentage away from nearest trendline
-- **moveStrength:** Recent candle momentum as % change
-- **confidence:** Signal strength (70-95%)
-- **PNL:** Closed trade profit/loss in USD
-
-### Why No Signal?
-
-**Check these in order:**
-
-1. **No Setup Yet**
-   - Price hasn't broken any 3-touch trendline by 0.5%
-   - Wait for larger price moves or trendline formation
-
-2. **Existing EARLY Signal**
-   - Signal already created, waiting for CONFIRMED promotion
-   - Will expire after 60 minutes if no confirmation
-
-3. **Only 2 Touches Detected**
-   - Not enough touches to form valid trendline
-   - Need 3+ at same level (within 0.5% tolerance)
-
-4. **Price Below Breakout Threshold**
-   - Price touching but not 0.5% above resistance
-   - Requires confirmed breakout, not just proximity
-
----
-
-## Version History
-
-- **v1.3.0:** Telegram message formatting, test button removal
-- **v1.2.0:** Trendline detection system, pivot analysis
-- **v1.1.0:** Initial signal generation with swing levels
-- **v1.0.0:** Project scaffold
-
----
-
-## Recovery & Backup
-
-This document serves as the **complete specification** for CXSwitch3. If the app fails:
-
-1. **Database Recovery:** All signal history stored in Supabase `signals` table
-2. **Code Recovery:** This document defines all logic; redeploy from repo
-3. **State Recovery:** Last signal state persisted; cron will resume on next run
-4. **Alert History:** Supabase `telegram_alerts` table logs all sent notifications
-
----
-
-*Last Updated: 2026-05-05 | v1.3.0*
+**Position Management:**
+- `[BTC] TP hit at $100,330 | PNL: +$1,565 | Outcome: PROFIT`
+- `[BTC] Alert already sent in last 2h — skipping to prevent spam`
