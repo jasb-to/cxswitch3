@@ -24,6 +24,7 @@ export async function GET() {
           setupText: "Data unavailable — retrying...",
           error: false,
           trendlines: 0,
+          adx: undefined,
         };
       }))
     );
