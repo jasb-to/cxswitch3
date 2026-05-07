@@ -2,8 +2,23 @@ import { supabase } from "@/lib/supabase-client";
 import { fetchCandles, type Candle } from "./kraken";
 import { calculateStopLoss, calculateTakeProfit, calculateRiskReward, calculateVolatility } from "./risk-utils";
 import { sendTradeCloseAlert } from "./telegram";
-import { validateSignalPayload, logPreInsert, logInsertError, type SignalInsert } from "./signal-serializer";
+import {
+  validateSignalPayload,
+  logSignalGenerated,
+  logPayloadSerialized,
+  logValidationPassed,
+  logInsertAttempted,
+  logInsertSuccess,
+  logValidationFailed,
+  logInsertFailed,
+  logDbVerified,
+  type SignalInsert,
+  type ValidationResult,
+} from "./signal-serializer";
+import { ACTIVE_SIGNAL_STATES, TERMINAL_SIGNAL_STATES } from "./signal-states";
+import { logStateTransition } from "./signal-state-transition";
 import { logTrace, createTrace, type SignalTrace } from "./signal-trace";
+import { scanSignalHealth } from "./signal-health";
 
 export type SignalDirection = "LONG" | "SHORT";
 /**
@@ -26,52 +41,88 @@ export type SignalState = "EARLY_OPEN" | "CONFIRMED" | "END";
 export type SignalOutcome = "TP" | "SL" | "EXPIRED" | "MANUAL";
 
 /**
- * Safe signal insert wrapper (v2.7.x)
- * Validates payload, logs insert attempt, and updates trace with result.
+ * Safe signal insert wrapper (v2.7.1)
+ * Full deterministic lifecycle tracing with fail-fast validation and insert confirmation invariants.
+ * NO SILENT FAILURES — all rejection paths are logged and traced.
  */
 async function safeInsertSignal(payload: SignalInsert, trace: SignalTrace) {
   try {
-    // Validate payload against schema
-    if (!validateSignalPayload(payload)) {
+    // Stage 1: Signal generation (already logged in caller)
+    logPayloadSerialized(payload);
+
+    // Stage 2: Strict validation with fail-fast
+    const validation: ValidationResult = validateSignalPayload(payload);
+    if (!validation.valid) {
       trace.decision = "FAILED_INSERT";
-      trace.reasons.push("Payload validation failed");
-      trace.dbResult = { success: false, error: "Schema validation error" };
+      trace.reasons.push(`Validation failed: ${validation.errors.join("; ")}`);
+      trace.dbResult = { success: false, error: `Validation errors: ${validation.errors.join("; ")}` };
+      logValidationFailed(validation.errors.join("; "), payload);
       logTrace(trace);
       return null;
     }
 
-    // Log pre-insert state
-    logPreInsert(payload);
+    logValidationPassed(payload.symbol);
 
-    // Insert into database
+    // Stage 3: Attempt insert
+    logInsertAttempted(payload.symbol);
+
     const { data: inserted, error: insertErr } = await supabase
       .from("signals")
       .insert([payload])
       .select()
       .single();
 
+    // INSERT CONFIRMATION INVARIANT: must return persisted signal
     if (insertErr) {
       trace.decision = "FAILED_INSERT";
-      trace.reasons.push(`DB error: ${insertErr.message}`);
+      trace.reasons.push(`Insert failed: ${insertErr.message}`);
       trace.dbResult = { success: false, error: insertErr.message };
+      logInsertFailed(insertErr.message, payload);
       logTrace(trace);
-      logInsertError(insertErr.message, payload);
-      return null;
+      throw new Error(`[SIGNAL PIPELINE] Insert failed: ${insertErr.message}`);
     }
 
-    // Success
+    if (!inserted || !inserted.id) {
+      trace.decision = "FAILED_INSERT";
+      trace.reasons.push("Insert returned no persisted signal");
+      trace.dbResult = { success: false, error: "No signal returned from database" };
+      logInsertFailed("No signal returned", payload);
+      logTrace(trace);
+      throw new Error("[SIGNAL PIPELINE] Insert succeeded but returned no signal ID");
+    }
+
+    // Stage 4: Log success
+    logInsertSuccess(payload.symbol, inserted.id);
+
+    // Stage 5: DB verification — confirm signal is queryable immediately
+    const { data: verify, error: verifyErr } = await supabase
+      .from("signals")
+      .select("id,state,symbol")
+      .eq("id", inserted.id)
+      .single();
+
+    if (verifyErr || !verify) {
+      console.error("[SIGNAL PIPELINE] DB VERIFICATION FAILED:", verifyErr?.message);
+      throw new Error(`[SIGNAL PIPELINE] Verification failed: signal not readable immediately after insert`);
+    }
+
+    logDbVerified(payload.symbol, inserted.id, verify.state);
+
+    // Success — trace is updated
     trace.decision = "TRIGGERED";
     trace.dbResult = { success: true, signalId: inserted.id };
     logTrace(trace);
+
     return inserted;
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
+    console.error("[SIGNAL PIPELINE CRASH]", reason);
     trace.decision = "FAILED_INSERT";
     trace.reasons.push(`Exception: ${reason}`);
     trace.dbResult = { success: false, error: reason };
     logTrace(trace);
-    logInsertError(reason, payload);
-    return null;
+    // Re-throw for upstream handling (no silent suppression)
+    throw err;
   }
 }
 
@@ -457,7 +508,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
     const { data: activeRows, error: fetchError } = await supabase
       .from("signals")
       .select("*")
-      .in("state", ["EARLY_OPEN", "CONFIRMED"]);
+      .in("state", ACTIVE_SIGNAL_STATES);
 
     if (fetchError) {
       logs.push(`[SUPABASE] Query error: ${fetchError.message}`);
@@ -481,7 +532,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
     const { data: recentEnded, error: recentError } = await supabase
       .from("signals")
       .select("*")
-      .eq("state", "END")
+      .in("state", TERMINAL_SIGNAL_STATES)
       .gte("updated_at", fourHoursAgo)
       .in("outcome", ["MANUAL", "EXPIRED"]);
 
@@ -681,15 +732,20 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
                   breakout_level: breakoutLevel,
                 };
 
-                const inserted = await safeInsertSignal(newSignal);
+                // Create trace for this insertion attempt
+                const earlyExpansionTrace = createTrace(symbol);
+                earlyExpansionTrace.direction = direction as SignalDirection;
+                earlyExpansionTrace.score = { long: 0, short: 0 };
+                earlyExpansionTrace.reasons.push("Early expansion signal ready for insertion");
 
-                if (!inserted) {
-                  logs.push(`[${base}] Insert ${direction} early expansion failed — see structured logs above`);
-                } else {
+                try {
+                  const inserted = await safeInsertSignal(newSignal, earlyExpansionTrace);
                   logs.push(`[${base}] ✓ ENTRY OPENED (${direction} | EARLY EXPANSION | conf: ${boostedConfidence} ${breakdown}) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
                   signals.push(inserted);
                   recentAlertSymbols.add(symbol);
                   continue; // Skip to next symbol since we already created a signal
+                } catch (err) {
+                  logs.push(`[${base}] Insert ${direction} early expansion failed — ${err instanceof Error ? err.message : "unknown error"}`);
                 }
               }
             }
@@ -768,17 +824,16 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           insertTrace.score = market.probabilityScore || { long: 0, short: 0 };
           insertTrace.reasons.push("Signal ready for insertion");
 
-          const inserted = await safeInsertSignal(newSignal, insertTrace);
-
-          if (!inserted) {
-            logs.push(`[${base}] Insert ${direction} failed — see [TRACE] logs`);
-          } else {
+          try {
+            const inserted = await safeInsertSignal(newSignal, insertTrace);
             const scoreStr = market.probabilityScore
               ? `score: ${direction === "LONG" ? market.probabilityScore.longScore : market.probabilityScore.shortScore}`
               : "";
             logs.push(`[${base}] ✓ EARLY_OPEN triggered via probability model (${scoreStr}) | ${direction} | conf: ${confidence} ${breakdown} | $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
             signals.push(inserted);
             recentAlertSymbols.add(symbol);
+          } catch (err) {
+            logs.push(`[${base}] Insert ${direction} failed — ${err instanceof Error ? err.message : "unknown error"}`);
           }
         } else {
           logs.push(`[${base}] Score below trigger threshold — no EARLY_OPEN`);

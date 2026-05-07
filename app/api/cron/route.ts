@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabase-client";
 import { getTraceStats } from "@/lib/signal-trace";
 import { initializeSupabaseConsumer } from "@/lib/supabase-consumer";
 import { initializeTelegramConsumer } from "@/lib/telegram-consumer";
+import { scanSignalHealth } from "@/lib/signal-health";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -27,6 +28,9 @@ export async function GET(req: NextRequest) {
 
     lastCronRun = Date.now();
 
+    // Pipeline version logging (v2.7.2 Active Signal State Integrity & END Transition Guard)
+    console.log("[SIGNAL ENGINE] version=v2.7.2 mode=STRICT_LIFECYCLE");
+
     // Initialize event consumers on first run
     if (!consumersInitialized) {
       initializeSupabaseConsumer();
@@ -34,6 +38,9 @@ export async function GET(req: NextRequest) {
       consumersInitialized = true;
       console.log("[EVENT CONSUMERS] Initialized Supabase and Telegram consumers");
     }
+
+    // First: scan signal health for lifecycle violations
+    const health = await scanSignalHealth();
     
     // First: cleanup expired signals that haven't confirmed
     const { logs: cleanupLogs } = await cleanupExpiredSignals();
