@@ -1179,6 +1179,14 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
           candles4h: [],
           candles15m: [],
           candles5m: [],
+          adx: undefined,
+          ema8: undefined,
+          ema21: undefined,
+          emaCurling: undefined,
+          rsi15m: undefined,
+          rsi5m: undefined,
+          rsiSlope15m: undefined,
+          rsiSlope5m: undefined,
         };
       }
       
@@ -1198,6 +1206,14 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
         candles4h: [],
         candles15m: [],
         candles5m: [],
+        adx: undefined,
+        ema8: undefined,
+        ema21: undefined,
+        emaCurling: undefined,
+        rsi15m: undefined,
+        rsi5m: undefined,
+        rsiSlope15m: undefined,
+        rsiSlope5m: undefined,
       };
     }
 
@@ -1216,6 +1232,14 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
         candles4h: [],
         candles15m: [],
         candles5m: [],
+        adx: undefined,
+        ema8: undefined,
+        ema21: undefined,
+        emaCurling: undefined,
+        rsi15m: undefined,
+        rsi5m: undefined,
+        rsiSlope15m: undefined,
+        rsiSlope5m: undefined,
       };
     }
 
@@ -1241,6 +1265,15 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
 
     // If no structure detected, return NO_SETUP
     if (structureAnalysis.structure === "NO_STRUCTURE") {
+      const adx = calculateADX(candles4h);
+      const ema8 = calculateEMA(candles15m, 8);
+      const ema21 = calculateEMA(candles15m, 21);
+      const emaCurling = checkEMACurling(candles4h, candles15m);
+      const rsi15m = calculateRSI(candles15m, 14);
+      const rsi5m = calculateRSI(candles5m, 14);
+      const rsiSlope15m = checkRSISlope(candles15m, "15m");
+      const rsiSlope5m = checkRSISlope(candles5m, "5m");
+
       return {
         symbol,
         price,
@@ -1254,7 +1287,17 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
         trendlines: 0,
         dataSource,
         dataSourceTime,
-        adx: calculateADX(candles4h),
+        adx,
+        candles4h,
+        candles15m,
+        candles5m,
+        ema8,
+        ema21,
+        emaCurling,
+        rsi15m,
+        rsi5m,
+        rsiSlope15m,
+        rsiSlope5m,
       };
     }
 
@@ -1351,6 +1394,14 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       candles4h: [],
       candles15m: [],
       candles5m: [],
+      adx: undefined,
+      ema8: undefined,
+      ema21: undefined,
+      emaCurling: undefined,
+      rsi15m: undefined,
+      rsi5m: undefined,
+      rsiSlope15m: undefined,
+      rsiSlope5m: undefined,
     };
   }
 }
