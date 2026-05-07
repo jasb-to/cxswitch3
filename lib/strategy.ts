@@ -1574,15 +1574,6 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     console.log(`[${symbolBase}] LONG score: ${longScore} [${longBreakdown.join(", ")}]`);
     console.log(`[${symbolBase}] SHORT score: ${shortScore} [${shortBreakdown.join(", ")}]`);
 
-    // --- CREATE TRACE FOR THIS DECISION ---
-    const trace = createTrace(symbol);
-    trace.score = { long: longScore, short: shortScore };
-    trace.breakdown = {
-      structure: structureAnalysis.structure,
-      longDisplacement: hasLongDisplacement,
-      shortDisplacement: hasShortDisplacement,
-    };
-
     // --- SETUP DECISION: score >= 60 triggers EARLY_OPEN ---
     const TRIGGER_THRESHOLD = 60;
 
@@ -1591,28 +1582,23 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
 
     if (longScore >= TRIGGER_THRESHOLD && longScore > shortScore) {
       setup = "LONG_SETUP";
-      trace.direction = "LONG";
       const trigger = hasLongDisplacement
         ? `BREAKOUT at $${displacementAnalysis.pivotBreak?.toFixed(0)} (+${(displacementAnalysis.breakExpansion * 100).toFixed(2)}%)`
         : `momentum initiation score ${longScore}`;
       setupText = `${structureAnalysis.structureText} — ${trigger}`;
-      trace.reasons.push(`Score ${longScore} >= ${TRIGGER_THRESHOLD}`, "LONG > SHORT");
       console.log(`[${symbolBase}] TOTAL LONG SCORE: ${longScore} → EARLY_OPEN`);
     } else if (shortScore >= TRIGGER_THRESHOLD && shortScore > longScore) {
       setup = "SHORT_SETUP";
-      trace.direction = "SHORT";
       const trigger = hasShortDisplacement
         ? `BREAKOUT at $${displacementAnalysis.pivotBreak?.toFixed(0)} (-${(displacementAnalysis.breakExpansion * 100).toFixed(2)}%)`
         : `momentum initiation score ${shortScore}`;
       setupText = `${structureAnalysis.structureText} — ${trigger}`;
-      trace.reasons.push(`Score ${shortScore} >= ${TRIGGER_THRESHOLD}`, "SHORT > LONG");
       console.log(`[${symbolBase}] TOTAL SHORT SCORE: ${shortScore} → EARLY_OPEN`);
     } else {
-      trace.decision = "NO_SIGNAL";
-      const best = longScore > shortScore ? `LONG ${longScore}` : shortScore > longScore ? `SHORT ${shortScore}` : `LONG ${longScore} / SHORT ${shortScore}`;
-      setupText = `${structureAnalysis.structureText} — score below threshold (${best} < ${TRIGGER_THRESHOLD})`;
-      trace.reasons.push(`Score below threshold (best: ${best}, need: ${TRIGGER_THRESHOLD})`);
-      logTrace(trace);
+      setup = "NO_SETUP";
+      const best = Math.max(longScore, shortScore);
+      setupText = `Scores (L:${longScore} S:${shortScore}) below threshold ${TRIGGER_THRESHOLD}`;
+      console.log(`[${symbolBase}] Score below threshold (best: ${best}, need: ${TRIGGER_THRESHOLD}) — skip`);
       console.log(`[${symbolBase}] Score below threshold — ${best} pts, need ${TRIGGER_THRESHOLD}`);
     }
 

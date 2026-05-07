@@ -100,10 +100,9 @@ export async function GET(req: NextRequest) {
 
     const allSignals = await getAllSignals();
 
-    // Log cycle summary with trace stats (v2.7.x observability)
-    const traceStats = getTraceStats();
+    // Log cycle summary
     console.log(
-      `[CYCLE SUMMARY] Signals: ${signals.length} | Trace Stats: Triggered=${traceStats.triggered}, Blocked=${traceStats.blocked}, Failures=${traceStats.failures}, NoSignal=${traceStats.noSignal}`
+      `[CYCLE SUMMARY] Signals: ${signals.length} | Health: active=${health.active} ended=${health.ended}`
     );
 
     // Log cron run to cron_runs table
