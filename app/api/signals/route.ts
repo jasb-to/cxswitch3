@@ -12,7 +12,7 @@ export async function GET() {
     const market = await Promise.all(
       symbols.map((s) => getMarketContext(s).catch(err => {
         console.error(`[SIGNALS API] Failed to get context for ${s}:`, err);
-        // Return a neutral market state without error flag so cards still display
+        // Return a complete market state with all timing fields
         return {
           symbol: `${s}/USD`,
           price: 0,
@@ -24,7 +24,19 @@ export async function GET() {
           setupText: "Data unavailable — retrying...",
           error: false,
           trendlines: 0,
+          dataSource: undefined,
+          dataSourceTime: Date.now(),
           adx: undefined,
+          candles4h: [],
+          candles15m: [],
+          candles5m: [],
+          ema8: undefined,
+          ema21: undefined,
+          emaCurling: undefined,
+          rsi15m: undefined,
+          rsi5m: undefined,
+          rsiSlope15m: undefined,
+          rsiSlope5m: undefined,
         };
       }))
     );

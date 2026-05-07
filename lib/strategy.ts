@@ -1287,6 +1287,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       candles5m = result5m.candles;
     } catch (err) {
       console.error(`[${symbolBase}] ✗ Candle fetch failed:`, err instanceof Error ? err.message : String(err));
+      console.error(`[${symbolBase}] Error details:`, err);
       
       // FALLBACK: Use cached price if available (within 1 hour)
       const cached = priceCache.get(symbol);
