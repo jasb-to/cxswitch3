@@ -9,7 +9,7 @@ export async function POST() {
     const testSignal: Signal = {
       symbol: "BTC/USD",
       direction: "LONG",
-      state: "EARLY",
+      state: "EARLY_OPEN",
       entry_price: 85000,
       stop_loss: 84000,
       take_profit: 88000,
