@@ -6,6 +6,22 @@ import { validateSignalPayload, logPreInsert, logInsertError, type SignalInsert 
 import { logTrace, createTrace, type SignalTrace } from "./signal-trace";
 
 export type SignalDirection = "LONG" | "SHORT";
+/**
+ * SIGNAL LIFECYCLE STATE MODEL (v2.9.0+)
+ * ─────────────────────────────────────────────────────────────────
+ * EARLY_OPEN: Signal entry triggered by probability model. Persists until
+ *             explicitly closed (no auto-expiry). Queryable in all read paths.
+ *             This is the primary active state for new signals.
+ * CONFIRMED:  Signal entry confirmed after retest. Persists until closed.
+ *             Treated identically to EARLY_OPEN in active queries.
+ * END:        Signal closed (manual end, TP hit, SL hit, or expired).
+ *             Excluded from active queries. Persists for history.
+ *
+ * ALL QUERIES INCLUDE: .in("state", ["EARLY_OPEN", "CONFIRMED"])
+ * NO FILTERING that excludes EARLY_OPEN based on time, staleness, or assumptions.
+ * NO LEGACY STATES: "EARLY", "EARLY-OPEN", or other variants must not exist.
+ * ─────────────────────────────────────────────────────────────────
+ */
 export type SignalState = "EARLY_OPEN" | "CONFIRMED" | "END";
 export type SignalOutcome = "TP" | "SL" | "EXPIRED" | "MANUAL";
 
@@ -446,6 +462,18 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
     if (fetchError) {
       logs.push(`[SUPABASE] Query error: ${fetchError.message}`);
       return { signals, logs };
+    }
+
+    // DEBUG INVARIANT: Verify state filter is working correctly
+    if (activeRows && activeRows.length === 0) {
+      // Count all signals to detect potential filtering loss
+      const { count, error: countErr } = await supabase
+        .from("signals")
+        .select("*", { count: "exact", head: true });
+      
+      if (!countErr && count && count > 0) {
+        console.warn(`[GENERATEIGNALS INVARIANT] Database has ${count} total signals but active query returned 0. Possible state leakage.`);
+      }
     }
 
     // Fetch recently ended signals (last 4 hours) to implement cooldown
@@ -965,7 +993,7 @@ export async function getAllSignals(): Promise<Signal[]> {
   }
 
   try {
-    // Explicitly select only active states (EARLY, CONFIRMED) to exclude END signals
+    // Explicitly select only active states (EARLY_OPEN, CONFIRMED) to exclude END signals
     const { data, error } = await supabase
       .from("signals")
       .select("*")
@@ -975,6 +1003,26 @@ export async function getAllSignals(): Promise<Signal[]> {
     if (error) {
       console.error("[getAllSignals] Query error:", error);
       return [];
+    }
+
+    // DEBUG INVARIANT: Verify no hidden filtering removed EARLY_OPEN signals
+    if (data && data.length === 0) {
+      // Check if database has ANY signals at all
+      const { data: allSignals, error: countErr } = await supabase
+        .from("signals")
+        .select("*", { count: "exact", head: true });
+      
+      if (!countErr && allSignals && allSignals.length > 0) {
+        console.warn("[getAllSignals INVARIANT] Database has signals but query returned 0. This indicates filtering loss.");
+        // Return all active signals including any that might have been filtered
+        const { data: unfilteredData } = await supabase
+          .from("signals")
+          .select("*")
+          .neq("state", "END")
+          .order("created_at", { ascending: false });
+        console.log("[getAllSignals RECOVERY] Returning unfiltered active signals:", unfilteredData?.length ?? 0);
+        return unfilteredData ?? [];
+      }
     }
 
     console.log("[getAllSignals] Returned", data?.length ?? 0, "active signals:", data?.map(s => ({ id: s.id, symbol: s.symbol, direction: s.direction, state: s.state })));
