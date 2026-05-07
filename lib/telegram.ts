@@ -1,6 +1,7 @@
 import { supabase } from "@/lib/supabase-client";
-import type { Signal } from "./strategy";
+import type { Signal, MarketContext } from "./strategy";
 import { calculateRiskReward } from "./risk-utils";
+import { formatSignalForTelegram, generateTelegramMessage } from "./signal-formatter";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -45,18 +46,6 @@ function fmt(n: number): string {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function getReason(signal: Signal): string {
-  if (signal.state === "EARLY_OPEN") {
-    return `Breakout with early momentum. Awaiting 15m confirmation.`;
-  }
-
-  if (signal.state === "CONFIRMED") {
-    return `Breakout confirmed with sustained momentum across recent closes.`;
-  }
-
-  return "";
-}
-
 /**
  * Send a trade closure alert (TP or SL hit).
  * Only sends if outcome is TP or SL (not EXPIRED).
@@ -89,25 +78,14 @@ export async function sendTradeCloseAlert(signal: Signal, exitPrice: number): Pr
 }
 
 /**
- * Send a signal alert and track it in Supabase with signal_id for proper deduplication.
+ * Send a signal alert with decision-grade formatting
+ * Includes score, grade, breakdown, and actionable context
  */
-export async function sendSignalAlert(signal: Signal): Promise<void> {
+export async function sendSignalAlert(signal: Signal, context?: MarketContext): Promise<void> {
   if (!BOT_TOKEN || !CHAT_ID) return;
 
-  const emoji = signal.state === "CONFIRMED" ? "🟢" : "🟡";
-  const reason = getReason(signal);
-
-  const text =
-    `${emoji} ${signal.symbol} — ${signal.direction} (${signal.state})\n` +
-    `\n` +
-    `Entry:       $${fmt(signal.entry_price)}\n` +
-    `Stop Loss:   $${fmt(signal.stop_loss)}\n` +
-    `Take Profit: $${fmt(signal.take_profit)}\n` +
-    `\n` +
-    `Confidence: ${signal.confidence}%\n` +
-    `\n` +
-    `Reason:\n` +
-    `${reason}`;
+  const formatted = formatSignalForTelegram(signal, context);
+  const text = generateTelegramMessage(formatted);
 
   await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
     method: "POST",
