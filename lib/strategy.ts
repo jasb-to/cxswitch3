@@ -1324,6 +1324,8 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
           rsi5m: undefined,
           rsiSlope15m: undefined,
           rsiSlope5m: undefined,
+          volatility: 1.0,
+          volatilityThreshold: 0.005,
         };
       }
 
@@ -1351,6 +1353,8 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
         rsi5m: undefined,
         rsiSlope15m: undefined,
         rsiSlope5m: undefined,
+        volatility: 1.0,
+        volatilityThreshold: 0.005,
       };
     }
       
@@ -1378,6 +1382,8 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
         rsi5m: undefined,
         rsiSlope15m: undefined,
         rsiSlope5m: undefined,
+        volatility: 1.0,
+        volatilityThreshold: 0.005,
       };
     }
 
@@ -1385,6 +1391,49 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     
     // Cache the price for fallback use
     priceCache.set(symbol, { price, timestamp: Date.now() });
+
+    // VOLATILITY CALCULATION: Measure recent price movement to calibrate expansion thresholds
+    let volatility = 1.0; // Baseline default if calculation fails
+    let volatilityThreshold = 0.005; // Default 0.5% threshold
+
+    try {
+      if (candles4h.length >= 20) {
+        // Calculate average true range over last 20 candles
+        const recentCandles = candles4h.slice(-20);
+        const trueRanges = recentCandles.map((c, i) => {
+          if (i === 0) return c.high - c.low;
+          const prevClose = recentCandles[i - 1].close;
+          return Math.max(
+            c.high - c.low,
+            Math.abs(c.high - prevClose),
+            Math.abs(c.low - prevClose)
+          );
+        });
+        
+        const atr = trueRanges.reduce((a, b) => a + b, 0) / trueRanges.length;
+        volatility = (atr / price) * 100; // ATR as % of price
+        
+        // Calibrate threshold based on volatility
+        // Low vol (< 1%): 0.35% threshold
+        // Medium vol (1-2%): 0.50% threshold  
+        // High vol (> 2%): 0.75% threshold
+        if (volatility < 1) {
+          volatilityThreshold = 0.0035;
+        } else if (volatility < 2) {
+          volatilityThreshold = 0.005;
+        } else {
+          volatilityThreshold = 0.0075;
+        }
+        
+        console.log(`[${symbolBase}] Volatility: ${volatility.toFixed(2)}% | Threshold: ${(volatilityThreshold * 100).toFixed(2)}%`);
+      } else {
+        console.log(`[${symbolBase}] Insufficient candles for volatility calc (${candles4h.length} < 20), using defaults`);
+      }
+    } catch (volErr) {
+      console.warn(`[${symbolBase}] Volatility calculation failed, using defaults:`, volErr instanceof Error ? volErr.message : String(volErr));
+      volatility = 1.0;
+      volatilityThreshold = 0.005;
+    }
 
     // NEW: Dynamic market structure analysis using pivots
     const { highs: pivotHighs, lows: pivotLows } = findPivots(candles4h, 2);
@@ -1436,6 +1485,8 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
         rsi5m,
         rsiSlope15m,
         rsiSlope5m,
+        volatility,
+        volatilityThreshold,
       };
     }
 
@@ -1540,6 +1591,8 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       rsi5m: undefined,
       rsiSlope15m: undefined,
       rsiSlope5m: undefined,
+      volatility: 1.0,
+      volatilityThreshold: 0.005,
     };
   }
 }
