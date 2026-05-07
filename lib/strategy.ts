@@ -267,8 +267,6 @@ export interface Signal {
   take_profit: number;
   confidence: number;
   breakout_level: number;
-  breakout_candle_time?: number; // Unix timestamp of candle when breakout occurred
-  prev_candle_close?: number; // Close price of candle BEFORE breakout (for validation)
   pnl?: number | null;
   outcome?: SignalOutcome | null;
   alert_sent?: boolean;
@@ -436,16 +434,6 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
     );
 
     // Track breakout events to prevent duplicate signals from same breakout
-    // Key: symbol + direction + breakout_level, Value: breakout_candle_time
-    const breakoutEventMap = new Map<string, number>(
-      (activeRows ?? [])
-        .filter((s: Signal) => s.direction && s.breakout_level && s.breakout_candle_time)
-        .map((s: Signal) => [
-          `${s.symbol}:${s.direction}:${s.breakout_level.toFixed(2)}`,
-          s.breakout_candle_time!
-        ])
-    );
-
     // Track symbols with recent alerts to prevent duplicate notifications
     const recentAlertSymbols = new Set<string>(
       (recentAlerts ?? [])
@@ -619,8 +607,6 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
                   take_profit: tp,
                   confidence: boostedConfidence,
                   breakout_level: breakoutLevel,
-                  breakout_candle_time: currentCandle.time,
-                  prev_candle_close: prevClosed,
                 };
 
                 const { data: inserted, error: insertErr } = await supabase
@@ -702,8 +688,6 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             take_profit: tp,
             confidence,
             breakout_level: breakoutLevel,
-            breakout_candle_time: currentCandle.time,
-            prev_candle_close: currentCandle.open,
           };
 
           const { data: inserted, error: insertErr } = await supabase
