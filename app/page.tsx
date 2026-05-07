@@ -126,6 +126,12 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
           <p className="font-mono text-3xl font-bold text-white tabular-nums">{displayPrice}</p>
         </div>
 
+        {/* STATE OF PLAY */}
+        <div>
+          <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">STATE OF PLAY</p>
+          <p className="text-sm text-[#aaa]">{getStateSummary(signal, market)}</p>
+        </div>
+
         {/* SIGNAL DETAILS (if active) */}
         {active && (
           <div className="grid grid-cols-3 gap-3 border-t border-[#1e1e1e] pt-4">
