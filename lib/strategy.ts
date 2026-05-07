@@ -1510,25 +1510,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
 
     let setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" | "ERROR" = "NO_SETUP";
     let setupText = "Waiting for structural displacement";
-
-    // LONG_SETUP: Bullish structure + price breaks latest pivot high
-    if (structureAnalysis.structure === "BULLISH" && displacementAnalysis.triggered && displacementAnalysis.direction === "LONG") {
-      setup = "LONG_SETUP";
-      setupText = `${structureAnalysis.structureText} — BREAKOUT at $${displacementAnalysis.pivotBreak.toFixed(0)} (+${(displacementAnalysis.breakExpansion * 100).toFixed(2)}%)`;
-    } 
-    // SHORT_SETUP: Bearish structure + price breaks latest pivot low
-    else if (structureAnalysis.structure === "BEARISH" && displacementAnalysis.triggered && displacementAnalysis.direction === "SHORT") {
-      setup = "SHORT_SETUP";
-      setupText = `${structureAnalysis.structureText} — BREAKOUT at $${displacementAnalysis.pivotBreak.toFixed(0)} (-${(displacementAnalysis.breakExpansion * 100).toFixed(2)}%)`;
-    } else {
-      setupText = `${structureAnalysis.structureText} — ${displacementAnalysis.text}`;
-    }
-
-    const trendlineCount = (swingHigh ? 1 : 0) + (swingLow ? 1 : 0);
-
-    
-    // Calculate ADX to filter weak breakouts
-    const adx = calculateADX(candles4h);
+    let earlyOpenReason = ""; // Track why we're triggering early
 
     // Calculate timing indicators for trend initiation
     const ema8 = calculateEMA(candles15m, 8);
@@ -1538,6 +1520,82 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     const rsi5m = calculateRSI(candles5m, 14);
     const rsiSlope15m = checkRSISlope(candles15m, "15m");
     const rsiSlope5m = checkRSISlope(candles5m, "5m");
+
+    // V2.5.0: MOMENTUM-DRIVEN EARLY_OPEN
+    // Trigger before full displacement when lower timeframes show alignment with structure
+    
+    if (structureAnalysis.structure === "BULLISH") {
+      // LONG momentum conditions (no displacement requirement)
+      const has15mUptrend = ema8 && ema21 && ema8 > ema21;
+      const has15mCurl = emaCurling?.curlingUp;
+      const has15mRsiMomentum = rsiSlope15m?.slopeUp;
+      const has5mContinuation = candles5m.length >= 3 && 
+        candles5m[candles5m.length - 1].close > candles5m[candles5m.length - 2].close &&
+        candles5m[candles5m.length - 2].close > candles5m[candles5m.length - 3].close;
+
+      // PRIMARY: Full displacement detected (preferred entry)
+      if (displacementAnalysis.triggered && displacementAnalysis.direction === "LONG") {
+        setup = "LONG_SETUP";
+        setupText = `${structureAnalysis.structureText} — BREAKOUT at $${displacementAnalysis.pivotBreak.toFixed(0)} (+${(displacementAnalysis.breakExpansion * 100).toFixed(2)}%)`;
+        earlyOpenReason = "full displacement";
+      }
+      // SECONDARY: Structure + momentum alignment (early participation)
+      else if ((has15mUptrend || has15mCurl) && (has15mRsiMomentum || has5mContinuation)) {
+        setup = "LONG_SETUP";
+        const triggers = [];
+        if (has15mUptrend) triggers.push("EMA8>EMA21");
+        if (has15mCurl) triggers.push("EMA curling");
+        if (has15mRsiMomentum) triggers.push("RSI slope+");
+        if (has5mContinuation) triggers.push("5M continuation");
+        setupText = `HH+HL bullish structure — momentum initiation (${triggers.join(", ")})`;
+        earlyOpenReason = "momentum alignment before displacement";
+      } 
+      // FALLBACK: Structure but waiting for momentum
+      else {
+        setupText = `${structureAnalysis.structureText} — ${displacementAnalysis.text}`;
+      }
+    } 
+    else if (structureAnalysis.structure === "BEARISH") {
+      // SHORT momentum conditions (no displacement requirement)
+      const has15mDowntrend = ema8 && ema21 && ema8 < ema21;
+      const has15mCurl = emaCurling?.curlingDown;
+      const has15mRsiMomentum = rsiSlope15m?.slopeDown;
+      const has5mContinuation = candles5m.length >= 3 && 
+        candles5m[candles5m.length - 1].close < candles5m[candles5m.length - 2].close &&
+        candles5m[candles5m.length - 2].close < candles5m[candles5m.length - 3].close;
+
+      // PRIMARY: Full displacement detected (preferred entry)
+      if (displacementAnalysis.triggered && displacementAnalysis.direction === "SHORT") {
+        setup = "SHORT_SETUP";
+        setupText = `${structureAnalysis.structureText} — BREAKOUT at $${displacementAnalysis.pivotBreak.toFixed(0)} (-${(displacementAnalysis.breakExpansion * 100).toFixed(2)}%)`;
+        earlyOpenReason = "full displacement";
+      }
+      // SECONDARY: Structure + momentum alignment (early participation)
+      else if ((has15mDowntrend || has15mCurl) && (has15mRsiMomentum || has5mContinuation)) {
+        setup = "SHORT_SETUP";
+        const triggers = [];
+        if (has15mDowntrend) triggers.push("EMA8<EMA21");
+        if (has15mCurl) triggers.push("EMA curling");
+        if (has15mRsiMomentum) triggers.push("RSI slope-");
+        if (has5mContinuation) triggers.push("5M continuation");
+        setupText = `LL+LH bearish structure — momentum initiation (${triggers.join(", ")})`;
+        earlyOpenReason = "momentum alignment before displacement";
+      }
+      // FALLBACK: Structure but waiting for momentum
+      else {
+        setupText = `${structureAnalysis.structureText} — ${displacementAnalysis.text}`;
+      }
+    }
+
+    // Calculate ADX to filter weak breakouts
+    const adx = calculateADX(candles4h);
+
+    const trendlineCount = (swingHigh ? 1 : 0) + (swingLow ? 1 : 0);
+
+    // Log early_open trigger reason if applicable
+    if (earlyOpenReason) {
+      console.log(`[${symbolBase}] EARLY_OPEN — ${setup} via ${earlyOpenReason}`);
+    }
 
     return {
       symbol,
