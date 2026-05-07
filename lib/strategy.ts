@@ -2,10 +2,45 @@ import { supabase } from "@/lib/supabase-client";
 import { fetchCandles, type Candle } from "./kraken";
 import { calculateStopLoss, calculateTakeProfit, calculateRiskReward, calculateVolatility } from "./risk-utils";
 import { sendTradeCloseAlert } from "./telegram";
+import { validateSignalPayload, logPreInsert, logInsertError, type SignalInsert } from "./signal-serializer";
 
 export type SignalDirection = "LONG" | "SHORT";
 export type SignalState = "EARLY_OPEN" | "CONFIRMED" | "END";
 export type SignalOutcome = "TP" | "SL" | "EXPIRED" | "MANUAL";
+
+/**
+ * Safe signal insert wrapper (v2.7.0)
+ * Validates payload before insert, logs errors gracefully.
+ */
+async function safeInsertSignal(payload: SignalInsert) {
+  try {
+    // Validate payload against schema
+    if (!validateSignalPayload(payload)) {
+      throw new Error("Payload validation failed (this should not happen)");
+    }
+
+    // Log pre-insert state
+    logPreInsert(payload);
+
+    // Insert into database
+    const { data: inserted, error: insertErr } = await supabase
+      .from("signals")
+      .insert([payload])
+      .select()
+      .single();
+
+    if (insertErr) {
+      logInsertError(insertErr.message, payload);
+      return null;
+    }
+
+    return inserted;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    logInsertError(reason, payload);
+    return null;
+  }
+}
 
 /**
  * Calculate ADX (Average Directional Index) for trend strength.
@@ -320,7 +355,7 @@ export async function cleanupExpiredSignals(): Promise<{ expired: number; logs: 
     const { data: earlySignals, error: fetchErr } = await supabase
       .from("signals")
       .select("*")
-      .eq("state", "EARLY")
+      .eq("state", "EARLY_OPEN")
       .order("created_at", { ascending: false });
 
     if (fetchErr) {
@@ -437,7 +472,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
     // Track symbols with recent alerts to prevent duplicate notifications
     const recentAlertSymbols = new Set<string>(
       (recentAlerts ?? [])
-        .filter((a: any) => a.state === "EARLY")
+        .filter((a: any) => a.state === "EARLY_OPEN")
         .map((a: any) => a.symbol)
     );
 
@@ -598,9 +633,9 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
                 );
                 const boostedConfidence = Math.min(95, confidence + 5);
 
-                const newSignal = {
+                const newSignal: SignalInsert = {
                   symbol,
-                  state: "EARLY_OPEN" as SignalState,
+                  state: "EARLY_OPEN",
                   direction: direction as SignalDirection,
                   entry_price: price,
                   stop_loss: sl,
@@ -609,14 +644,10 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
                   breakout_level: breakoutLevel,
                 };
 
-                const { data: inserted, error: insertErr } = await supabase
-                  .from("signals")
-                  .insert([newSignal])
-                  .select()
-                  .single();
+                const inserted = await safeInsertSignal(newSignal);
 
-                if (insertErr) {
-                  logs.push(`[${base}] Insert ${direction} early expansion failed: ${insertErr.message}`);
+                if (!inserted) {
+                  logs.push(`[${base}] Insert ${direction} early expansion failed — see structured logs above`);
                 } else {
                   logs.push(`[${base}] ✓ ENTRY OPENED (${direction} | EARLY EXPANSION | conf: ${boostedConfidence} ${breakdown}) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
                   signals.push(inserted);
@@ -679,9 +710,9 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             }
           );
 
-          const newSignal = {
+          const newSignal: SignalInsert = {
             symbol,
-            state: "EARLY_OPEN" as SignalState,
+            state: "EARLY_OPEN",
             direction: direction as SignalDirection,
             entry_price: price,
             stop_loss: sl,
@@ -690,14 +721,10 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             breakout_level: breakoutLevel,
           };
 
-          const { data: inserted, error: insertErr } = await supabase
-            .from("signals")
-            .insert([newSignal])
-            .select()
-            .single();
+          const inserted = await safeInsertSignal(newSignal);
 
-          if (insertErr) {
-            logs.push(`[${base}] Insert ${direction} failed: ${insertErr.message}`);
+          if (!inserted) {
+            logs.push(`[${base}] Insert ${direction} failed — see structured logs above`);
           } else {
             const scoreStr = market.probabilityScore
               ? `score: ${direction === "LONG" ? market.probabilityScore.longScore : market.probabilityScore.shortScore}`
@@ -923,7 +950,7 @@ export async function getAllSignals(): Promise<Signal[]> {
     const { data, error } = await supabase
       .from("signals")
       .select("*")
-      .in("state", ["EARLY", "CONFIRMED"])
+      .in("state", ["EARLY_OPEN", "CONFIRMED"])
       .order("created_at", { ascending: false });
 
     if (error) {
