@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 
-const VERSION = "v2.4.1";
+const VERSION = "v2.5.0";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -114,33 +114,6 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
             </div>
             <div className="col-span-3 text-sm text-[#888]">
               <span>Confidence: {signal.confidence}%</span>
-            </div>
-          </div>
-        )}
-
-        {/* TRENDLINE LEVELS (if no signal) */}
-        {!active && market && market.trendlines > 0 && !market.error && (
-          <div className="border-t border-[#1e1e1e] pt-4">
-            <p className="text-[10px] tracking-[0.2em] text-[#666] mb-2">TRENDLINES</p>
-            <div className="flex flex-col gap-1.5 text-sm">
-              {market.swingHigh && market.distanceToHigh !== null && (
-                <div className="flex items-center justify-between">
-                  <span className="text-[#888]">Resistance</span>
-                  <span className="font-mono text-white">${fmt(market.swingHigh)}</span>
-                  <span className={`text-[11px] ${Math.abs(market.distanceToHigh) < 3 ? "text-[#d4a017]" : "text-[#555]"}`}>
-                    {Math.abs(market.distanceToHigh).toFixed(1)}% away
-                  </span>
-                </div>
-              )}
-              {market.swingLow && market.distanceToLow !== null && (
-                <div className="flex items-center justify-between">
-                  <span className="text-[#888]">Support</span>
-                  <span className="font-mono text-white">${fmt(market.swingLow)}</span>
-                  <span className={`text-[11px] ${market.distanceToLow < 3 ? "text-[#d4a017]" : "text-[#555]"}`}>
-                    {market.distanceToLow.toFixed(1)}% away
-                  </span>
-                </div>
-              )}
             </div>
           </div>
         )}
