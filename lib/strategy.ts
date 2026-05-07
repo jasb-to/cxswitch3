@@ -41,16 +41,18 @@ export type SignalState = "EARLY_OPEN" | "CONFIRMED" | "END";
 export type SignalOutcome = "TP" | "SL" | "EXPIRED" | "MANUAL";
 
 /**
- * Safe signal insert wrapper (v2.7.1)
- * Full deterministic lifecycle tracing with fail-fast validation and insert confirmation invariants.
- * NO SILENT FAILURES — all rejection paths are logged and traced.
+ * Safe signal insert wrapper (v2.7.3)
+ * Validates, inserts, and returns structured result. No throwing during normal operation.
  */
-async function safeInsertSignal(payload: SignalInsert, trace: SignalTrace) {
-  try {
-    // Stage 1: Signal generation (already logged in caller)
-    logPayloadSerialized(payload);
+export type SignalInsertResult = {
+  success: boolean;
+  signal?: Signal;
+  error?: string;
+};
 
-    // Stage 2: Strict validation with fail-fast
+async function safeInsertSignal(payload: SignalInsert, trace: SignalTrace): Promise<SignalInsertResult> {
+  try {
+    // Validate payload
     const validation: ValidationResult = validateSignalPayload(payload);
     if (!validation.valid) {
       trace.decision = "FAILED_INSERT";
@@ -58,28 +60,26 @@ async function safeInsertSignal(payload: SignalInsert, trace: SignalTrace) {
       trace.dbResult = { success: false, error: `Validation errors: ${validation.errors.join("; ")}` };
       logValidationFailed(validation.errors.join("; "), payload);
       logTrace(trace);
-      return null;
+      return { success: false, error: validation.errors.join("; ") };
     }
 
     logValidationPassed(payload.symbol);
-
-    // Stage 3: Attempt insert
     logInsertAttempted(payload.symbol);
 
+    // Insert into database
     const { data: inserted, error: insertErr } = await supabase
       .from("signals")
       .insert([payload])
       .select()
       .single();
 
-    // INSERT CONFIRMATION INVARIANT: must return persisted signal
     if (insertErr) {
       trace.decision = "FAILED_INSERT";
       trace.reasons.push(`Insert failed: ${insertErr.message}`);
       trace.dbResult = { success: false, error: insertErr.message };
       logInsertFailed(insertErr.message, payload);
       logTrace(trace);
-      throw new Error(`[SIGNAL PIPELINE] Insert failed: ${insertErr.message}`);
+      return { success: false, error: insertErr.message };
     }
 
     if (!inserted || !inserted.id) {
@@ -88,13 +88,12 @@ async function safeInsertSignal(payload: SignalInsert, trace: SignalTrace) {
       trace.dbResult = { success: false, error: "No signal returned from database" };
       logInsertFailed("No signal returned", payload);
       logTrace(trace);
-      throw new Error("[SIGNAL PIPELINE] Insert succeeded but returned no signal ID");
+      return { success: false, error: "No signal returned from database" };
     }
 
-    // Stage 4: Log success
     logInsertSuccess(payload.symbol, inserted.id);
 
-    // Stage 5: DB verification — confirm signal is queryable immediately
+    // Post-insert verification — confirm signal is queryable
     const { data: verify, error: verifyErr } = await supabase
       .from("signals")
       .select("id,state,symbol")
@@ -103,26 +102,25 @@ async function safeInsertSignal(payload: SignalInsert, trace: SignalTrace) {
 
     if (verifyErr || !verify) {
       console.error("[SIGNAL PIPELINE] DB VERIFICATION FAILED:", verifyErr?.message);
-      throw new Error(`[SIGNAL PIPELINE] Verification failed: signal not readable immediately after insert`);
+      return { success: false, error: "Signal inserted but not immediately queryable" };
     }
 
-    logDbVerified(payload.symbol, inserted.id, verify.state);
+    // Log confirmation
+    console.log(`[SIGNAL ACTIVE] ${payload.symbol} ${payload.direction} EARLY_OPEN persisted successfully (id: ${inserted.id})`);
 
-    // Success — trace is updated
     trace.decision = "TRIGGERED";
     trace.dbResult = { success: true, signalId: inserted.id };
     logTrace(trace);
 
-    return inserted;
+    return { success: true, signal: inserted };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    console.error("[SIGNAL PIPELINE CRASH]", reason);
+    console.error("[SIGNAL INSERT ERROR]", reason);
     trace.decision = "FAILED_INSERT";
     trace.reasons.push(`Exception: ${reason}`);
     trace.dbResult = { success: false, error: reason };
     logTrace(trace);
-    // Re-throw for upstream handling (no silent suppression)
-    throw err;
+    return { success: false, error: reason };
   }
 }
 
@@ -515,15 +513,25 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
       return { signals, logs };
     }
 
-    // DEBUG INVARIANT: Verify state filter is working correctly
+    // DEBUG INVARIANT: Only warn if actual violations exist (not just no active signals)
     if (activeRows && activeRows.length === 0) {
-      // Count all signals to detect potential filtering loss
-      const { count, error: countErr } = await supabase
+      // Check if database has ended signals (normal case = all signals are ended)
+      const { data: endedSignals, error: endedErr } = await supabase
         .from("signals")
-        .select("*", { count: "exact", head: true });
+        .select("*", { count: "exact", head: true })
+        .in("state", TERMINAL_SIGNAL_STATES);
       
-      if (!countErr && count && count > 0) {
-        console.warn(`[GENERATEIGNALS INVARIANT] Database has ${count} total signals but active query returned 0. Possible state leakage.`);
+      const { data: invalidSignals, error: invalidErr } = await supabase
+        .from("signals")
+        .select("*")
+        .not("state", "in", `("EARLY_OPEN","CONFIRMED","END")`);
+
+      // Only warn if invalid states actually exist
+      if (!invalidErr && invalidSignals && invalidSignals.length > 0) {
+        console.warn(`[SIGNAL HEALTH] Invalid states detected:`, invalidSignals.map(s => ({ id: s.id, symbol: s.symbol, state: s.state })));
+      } else if (!endedErr && (endedSignals?.length ?? 0) > 0) {
+        // Normal case: all signals are ended
+        console.log(`[SIGNAL HEALTH] No active signals currently open (${endedSignals?.length ?? 0} ended signals in history)`);
       }
     }
 
@@ -739,13 +747,17 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
                 earlyExpansionTrace.reasons.push("Early expansion signal ready for insertion");
 
                 try {
-                  const inserted = await safeInsertSignal(newSignal, earlyExpansionTrace);
-                  logs.push(`[${base}] ✓ ENTRY OPENED (${direction} | EARLY EXPANSION | conf: ${boostedConfidence} ${breakdown}) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
-                  signals.push(inserted);
-                  recentAlertSymbols.add(symbol);
-                  continue; // Skip to next symbol since we already created a signal
+                  const result = await safeInsertSignal(newSignal, earlyExpansionTrace);
+                  if (result.success && result.signal) {
+                    logs.push(`[${base}] ✓ ENTRY OPENED (${direction} | EARLY EXPANSION | conf: ${boostedConfidence} ${breakdown}) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
+                    signals.push(result.signal);
+                    recentAlertSymbols.add(symbol);
+                    continue; // Skip to next symbol since we already created a signal
+                  } else {
+                    logs.push(`[${base}] Insert ${direction} early expansion failed — ${result.error}`);
+                  }
                 } catch (err) {
-                  logs.push(`[${base}] Insert ${direction} early expansion failed — ${err instanceof Error ? err.message : "unknown error"}`);
+                  logs.push(`[${base}] Insert ${direction} early expansion error — ${err instanceof Error ? err.message : "unknown error"}`);
                 }
               }
             }
@@ -825,15 +837,19 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           insertTrace.reasons.push("Signal ready for insertion");
 
           try {
-            const inserted = await safeInsertSignal(newSignal, insertTrace);
-            const scoreStr = market.probabilityScore
-              ? `score: ${direction === "LONG" ? market.probabilityScore.longScore : market.probabilityScore.shortScore}`
-              : "";
-            logs.push(`[${base}] ✓ EARLY_OPEN triggered via probability model (${scoreStr}) | ${direction} | conf: ${confidence} ${breakdown} | $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
-            signals.push(inserted);
-            recentAlertSymbols.add(symbol);
+            const result = await safeInsertSignal(newSignal, insertTrace);
+            if (result.success && result.signal) {
+              const scoreStr = market.probabilityScore
+                ? `score: ${direction === "LONG" ? market.probabilityScore.longScore : market.probabilityScore.shortScore}`
+                : "";
+              logs.push(`[${base}] ✓ EARLY_OPEN triggered via probability model (${scoreStr}) | ${direction} | conf: ${confidence} ${breakdown} | $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
+              signals.push(result.signal);
+              recentAlertSymbols.add(symbol);
+            } else {
+              logs.push(`[${base}] Insert ${direction} failed — ${result.error}`);
+            }
           } catch (err) {
-            logs.push(`[${base}] Insert ${direction} failed — ${err instanceof Error ? err.message : "unknown error"}`);
+            logs.push(`[${base}] Insert ${direction} error — ${err instanceof Error ? err.message : "unknown error"}`);
           }
         } else {
           logs.push(`[${base}] Score below trigger threshold — no EARLY_OPEN`);

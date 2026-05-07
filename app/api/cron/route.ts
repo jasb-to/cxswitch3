@@ -28,18 +28,17 @@ export async function GET(req: NextRequest) {
 
     lastCronRun = Date.now();
 
-    // Pipeline version logging (v2.7.2 Active Signal State Integrity & END Transition Guard)
-    console.log("[SIGNAL ENGINE] version=v2.7.2 mode=STRICT_LIFECYCLE");
+    // Signal engine startup banner
+    console.log("[SIGNAL ENGINE] v2.7.3 operational");
 
     // Initialize event consumers on first run
     if (!consumersInitialized) {
       initializeSupabaseConsumer();
       initializeTelegramConsumer();
       consumersInitialized = true;
-      console.log("[EVENT CONSUMERS] Initialized Supabase and Telegram consumers");
     }
 
-    // First: scan signal health for lifecycle violations
+    // Scan signal health
     const health = await scanSignalHealth();
     
     // First: cleanup expired signals that haven't confirmed
