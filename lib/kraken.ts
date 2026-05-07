@@ -86,8 +86,7 @@ async function fetchWithRetry(url: string, retries = 0): Promise<Response> {
 /**
  * Fetch OHLCV data from CoinGecko as backup when Kraken fails.
  * Returns data in same Candle format for seamless fallback.
- * CoinGecko free tier: ~10-50 calls/min, no auth required.
- * Note: CoinGecko data is 5-minute granularity; we return it as-is without interpolation.
+ * CoinGecko free tier returns daily OHLC data; we aggregate as needed.
  */
 async function fetchCandlesFromCoinGecko(
   symbol: string,
@@ -98,8 +97,10 @@ async function fetchCandlesFromCoinGecko(
   if (!coinId) throw new Error(`Unknown symbol for CoinGecko: ${symbol}`);
 
   try {
-    // CoinGecko market_chart endpoint: returns hourly data for last 90 days
-    const url = `https://api.coingecko.com/api/v3/coins/${coinId}/market_chart?vs_currency=usd&days=90&interval=daily`;
+    // CoinGecko market_chart with ohlc endpoint: returns daily OHLC for last 90 days
+    // This is the only granularity CoinGecko free tier provides
+    const days = Math.min(90, Math.ceil((count * intervalMinutes) / (60 * 24)) + 1);
+    const url = `https://api.coingecko.com/api/v3/coins/${coinId}/ohlc?vs_currency=usd&days=${days}`;
     
     const res = await fetch(url);
     if (!res.ok) {
@@ -107,24 +108,23 @@ async function fetchCandlesFromCoinGecko(
     }
 
     const json = await res.json();
-    const prices = json.prices as [number, number][]; // [timestamp_ms, price]
+    const ohlcData = json as [number, number, number, number, number][]; // [timestamp_ms, open, high, low, close]
     
-    if (!prices?.length) {
-      throw new Error(`No price data from CoinGecko for ${coinId}`);
+    if (!ohlcData?.length) {
+      throw new Error(`No OHLC data from CoinGecko for ${coinId}`);
     }
 
-    // Convert daily prices to candle format
-    // Since CoinGecko daily data doesn't have OHLH, we use close as all values
-    const candles: Candle[] = prices.slice(-count).map((p) => ({
-      time: Math.floor(p[0] / 1000), // Convert ms to seconds
-      open: p[1],
-      high: p[1],
-      low: p[1],
-      close: p[1],
+    // Convert daily OHLC to candle format, take last count candles
+    const candles: Candle[] = ohlcData.slice(-count).map((row) => ({
+      time: Math.floor(row[0] / 1000), // Convert ms to seconds
+      open: row[1],
+      high: row[2],
+      low: row[3],
+      close: row[4],
       volume: 0, // CoinGecko free tier doesn't provide volume
     }));
 
-    console.log(`[COINGECKO] ✓ Fetched ${candles.length} daily candles for ${symbol} (backup source)`);
+    console.log(`[COINGECKO] ✓ Fetched ${candles.length} OHLC candles for ${symbol} (backup source, daily granularity)`);
     return {
       candles,
       source: "COINGECKO",
