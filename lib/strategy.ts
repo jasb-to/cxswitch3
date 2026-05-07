@@ -549,21 +549,22 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
         // Check if an active signal exists and if it should be expired
         let existing = activeBySymbol.get(symbol);
         if (existing) {
-          // For LONG: expire if price drops BELOW the breakout level
-          // For SHORT: expire if price rises ABOVE the breakout level
-          const shouldExpire = 
+          // ONLY expire CONFIRMED signals if they break below/above breakout level
+          // EARLY_OPEN signals get a retest window (1-3 candles) to confirm
+          const shouldExpire = existing.state === "CONFIRMED" && (
             existing.direction === "LONG" 
               ? price < existing.breakout_level
-              : price > existing.breakout_level;
+              : price > existing.breakout_level
+          );
 
           if (shouldExpire) {
             await updateSignalState(existing.id!, "END", { outcome: "EXPIRED" });
-            logs.push(`[${base}] Expired ${existing.direction} signal — price ${existing.direction === "LONG" ? "dropped below" : "rose above"} breakout level $${existing.breakout_level.toFixed(2)}`);
+            logs.push(`[${base}] Expired CONFIRMED ${existing.direction} signal — price ${existing.direction === "LONG" ? "dropped below" : "rose above"} breakout level $${existing.breakout_level.toFixed(2)}`);
             // Clear the existing signal so we can create a new opposite-direction one
             existing = undefined;
           } else {
-            // Signal still valid — don't auto-expire EARLY_OPEN
-            // EARLY_OPEN signals persist until explicitly closed via TP/SL/manual END
+            // Signal still valid — EARLY_OPEN and CONFIRMED both persist
+            // EARLY_OPEN gets retest window, CONFIRMED is actively managed
             logs.push(`[${base}] Active signal exists (${existing.state}) — skipping creation`);
             signals.push(existing);
             continue; // IMPORTANT: Skip to next symbol
