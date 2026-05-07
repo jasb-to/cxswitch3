@@ -3,20 +3,25 @@ import { fetchCandles, type Candle } from "./kraken";
 import { calculateStopLoss, calculateTakeProfit, calculateRiskReward, calculateVolatility } from "./risk-utils";
 import { sendTradeCloseAlert } from "./telegram";
 import { validateSignalPayload, logPreInsert, logInsertError, type SignalInsert } from "./signal-serializer";
+import { logTrace, createTrace, type SignalTrace } from "./signal-trace";
 
 export type SignalDirection = "LONG" | "SHORT";
 export type SignalState = "EARLY_OPEN" | "CONFIRMED" | "END";
 export type SignalOutcome = "TP" | "SL" | "EXPIRED" | "MANUAL";
 
 /**
- * Safe signal insert wrapper (v2.7.0)
- * Validates payload before insert, logs errors gracefully.
+ * Safe signal insert wrapper (v2.7.x)
+ * Validates payload, logs insert attempt, and updates trace with result.
  */
-async function safeInsertSignal(payload: SignalInsert) {
+async function safeInsertSignal(payload: SignalInsert, trace: SignalTrace) {
   try {
     // Validate payload against schema
     if (!validateSignalPayload(payload)) {
-      throw new Error("Payload validation failed (this should not happen)");
+      trace.decision = "FAILED_INSERT";
+      trace.reasons.push("Payload validation failed");
+      trace.dbResult = { success: false, error: "Schema validation error" };
+      logTrace(trace);
+      return null;
     }
 
     // Log pre-insert state
@@ -30,13 +35,25 @@ async function safeInsertSignal(payload: SignalInsert) {
       .single();
 
     if (insertErr) {
+      trace.decision = "FAILED_INSERT";
+      trace.reasons.push(`DB error: ${insertErr.message}`);
+      trace.dbResult = { success: false, error: insertErr.message };
+      logTrace(trace);
       logInsertError(insertErr.message, payload);
       return null;
     }
 
+    // Success
+    trace.decision = "TRIGGERED";
+    trace.dbResult = { success: true, signalId: inserted.id };
+    logTrace(trace);
     return inserted;
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
+    trace.decision = "FAILED_INSERT";
+    trace.reasons.push(`Exception: ${reason}`);
+    trace.dbResult = { success: false, error: reason };
+    logTrace(trace);
     logInsertError(reason, payload);
     return null;
   }
@@ -721,10 +738,20 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             breakout_level: breakoutLevel,
           };
 
-          const inserted = await safeInsertSignal(newSignal);
+          // Create trace for this insertion attempt
+          const insertTrace = createTrace(symbol);
+          insertTrace.direction = direction as SignalDirection;
+          insertTrace.entryPrice = price;
+          insertTrace.stopLoss = sl;
+          insertTrace.takeProfit = tp;
+          insertTrace.riskReward = rr;
+          insertTrace.score = market.probabilityScore || { long: 0, short: 0 };
+          insertTrace.reasons.push("Signal ready for insertion");
+
+          const inserted = await safeInsertSignal(newSignal, insertTrace);
 
           if (!inserted) {
-            logs.push(`[${base}] Insert ${direction} failed — see structured logs above`);
+            logs.push(`[${base}] Insert ${direction} failed — see [TRACE] logs`);
           } else {
             const scoreStr = market.probabilityScore
               ? `score: ${direction === "LONG" ? market.probabilityScore.longScore : market.probabilityScore.shortScore}`
@@ -1506,6 +1533,15 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     console.log(`[${symbolBase}] LONG score: ${longScore} [${longBreakdown.join(", ")}]`);
     console.log(`[${symbolBase}] SHORT score: ${shortScore} [${shortBreakdown.join(", ")}]`);
 
+    // --- CREATE TRACE FOR THIS DECISION ---
+    const trace = createTrace(symbol);
+    trace.score = { long: longScore, short: shortScore };
+    trace.breakdown = {
+      structure: structureAnalysis.structure,
+      longDisplacement: hasLongDisplacement,
+      shortDisplacement: hasShortDisplacement,
+    };
+
     // --- SETUP DECISION: score >= 60 triggers EARLY_OPEN ---
     const TRIGGER_THRESHOLD = 60;
 
@@ -1514,21 +1550,28 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
 
     if (longScore >= TRIGGER_THRESHOLD && longScore > shortScore) {
       setup = "LONG_SETUP";
+      trace.direction = "LONG";
       const trigger = hasLongDisplacement
         ? `BREAKOUT at $${displacementAnalysis.pivotBreak?.toFixed(0)} (+${(displacementAnalysis.breakExpansion * 100).toFixed(2)}%)`
         : `momentum initiation score ${longScore}`;
       setupText = `${structureAnalysis.structureText} — ${trigger}`;
+      trace.reasons.push(`Score ${longScore} >= ${TRIGGER_THRESHOLD}`, "LONG > SHORT");
       console.log(`[${symbolBase}] TOTAL LONG SCORE: ${longScore} → EARLY_OPEN`);
     } else if (shortScore >= TRIGGER_THRESHOLD && shortScore > longScore) {
       setup = "SHORT_SETUP";
+      trace.direction = "SHORT";
       const trigger = hasShortDisplacement
         ? `BREAKOUT at $${displacementAnalysis.pivotBreak?.toFixed(0)} (-${(displacementAnalysis.breakExpansion * 100).toFixed(2)}%)`
         : `momentum initiation score ${shortScore}`;
       setupText = `${structureAnalysis.structureText} — ${trigger}`;
+      trace.reasons.push(`Score ${shortScore} >= ${TRIGGER_THRESHOLD}`, "SHORT > LONG");
       console.log(`[${symbolBase}] TOTAL SHORT SCORE: ${shortScore} → EARLY_OPEN`);
     } else {
+      trace.decision = "NO_SIGNAL";
       const best = longScore > shortScore ? `LONG ${longScore}` : shortScore > longScore ? `SHORT ${shortScore}` : `LONG ${longScore} / SHORT ${shortScore}`;
       setupText = `${structureAnalysis.structureText} — score below threshold (${best} < ${TRIGGER_THRESHOLD})`;
+      trace.reasons.push(`Score below threshold (best: ${best}, need: ${TRIGGER_THRESHOLD})`);
+      logTrace(trace);
       console.log(`[${symbolBase}] Score below threshold — ${best} pts, need ${TRIGGER_THRESHOLD}`);
     }
 
