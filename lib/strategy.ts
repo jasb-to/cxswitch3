@@ -14,9 +14,11 @@ import {
   logDbVerified,
   type SignalInsert,
   type ValidationResult,
-  ACTIVE_SIGNAL_STATES,
 } from "./signal-serializer";
+import { ACTIVE_SIGNAL_STATES, TERMINAL_SIGNAL_STATES } from "./signal-states";
+import { logStateTransition } from "./signal-state-transition";
 import { logTrace, createTrace, type SignalTrace } from "./signal-trace";
+import { scanSignalHealth } from "./signal-health";
 
 export type SignalDirection = "LONG" | "SHORT";
 /**
@@ -506,7 +508,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
     const { data: activeRows, error: fetchError } = await supabase
       .from("signals")
       .select("*")
-      .in("state", ["EARLY_OPEN", "CONFIRMED"]);
+      .in("state", ACTIVE_SIGNAL_STATES);
 
     if (fetchError) {
       logs.push(`[SUPABASE] Query error: ${fetchError.message}`);
@@ -530,7 +532,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
     const { data: recentEnded, error: recentError } = await supabase
       .from("signals")
       .select("*")
-      .eq("state", "END")
+      .in("state", TERMINAL_SIGNAL_STATES)
       .gte("updated_at", fourHoursAgo)
       .in("outcome", ["MANUAL", "EXPIRED"]);
 

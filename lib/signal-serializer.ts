@@ -1,12 +1,12 @@
 /**
- * Signal Payload Serialization & Validation Layer (v2.7.1)
+ * Signal Payload Serialization & Validation Layer (v2.7.2)
  * 
  * Ensures only schema-valid, runtime-sanitized payloads reach Supabase.
  * Full fail-fast validation with explicit error reporting.
+ * Uses canonical signal state constants.
  */
 
-// Active signal states constant — used in all query filters
-export const ACTIVE_SIGNAL_STATES = ["EARLY_OPEN", "CONFIRMED"] as const;
+import { ACTIVE_SIGNAL_STATES, ALL_SIGNAL_STATES } from "./signal-states";
 
 export type SignalInsert = {
   symbol: string;
@@ -19,7 +19,6 @@ export type SignalInsert = {
   breakout_level: number;
 };
 
-const ALLOWED_STATES = ["EARLY_OPEN", "CONFIRMED", "END"] as const;
 const ALLOWED_DIRECTIONS = ["LONG", "SHORT"] as const;
 
 /**
@@ -75,7 +74,7 @@ export function validateSignalPayload(payload: unknown): ValidationResult {
   if (!p.direction || !ALLOWED_DIRECTIONS.includes(p.direction as any)) {
     errors.push(`Invalid 'direction': ${p.direction}. Must be LONG or SHORT`);
   }
-  if (!p.state || !ALLOWED_STATES.includes(p.state as any)) {
+  if (!p.state || !ALL_SIGNAL_STATES.includes(p.state as any)) {
     errors.push(`Invalid 'state': ${p.state}. Must be EARLY_OPEN, CONFIRMED, or END`);
   }
 
