@@ -126,25 +126,6 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
           <p className="font-mono text-3xl font-bold text-white tabular-nums">{displayPrice}</p>
         </div>
 
-        {/* MOMENTUM & ADX — ALWAYS VISIBLE */}
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">MOMENTUM</p>
-            <p className="font-mono text-lg font-semibold text-white tabular-nums">{confidence}</p>
-          </div>
-          <div>
-            <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">ADX TREND</p>
-            <p className="font-mono text-lg font-semibold text-white tabular-nums">{market?.adx !== undefined ? market.adx.toFixed(1) : "—"}</p>
-          </div>
-        </div>
-
-        {/* STATE & DECISION CONTEXT LINE */}
-        <div className="border-t border-[#1e1e1e] pt-3">
-          <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">STATE</p>
-          <p className="font-mono text-[12px] text-white mb-2">{signal?.state || "NO_SETUP"}</p>
-          <p className="text-sm text-[#888] italic">{getStateSummary(signal, market)}</p>
-        </div>
-
         {/* SIGNAL DETAILS (if active) */}
         {active && (
           <div className="grid grid-cols-3 gap-3 border-t border-[#1e1e1e] pt-4">
