@@ -6,6 +6,7 @@ import { getTraceStats } from "@/lib/signal-trace";
 import { initializeSupabaseConsumer } from "@/lib/supabase-consumer";
 import { initializeTelegramConsumer } from "@/lib/telegram-consumer";
 import { scanSignalHealth } from "@/lib/signal-health";
+import { startupSchemaCheck } from "@/lib/schema-validator";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -14,6 +15,7 @@ export const runtime = "nodejs";
 const CRON_INTERVAL_MS = 60_000;
 let lastCronRun = 0;
 let consumersInitialized = false;
+let schemaValidated = false;
 
 export async function GET(req: NextRequest) {
   try {
@@ -28,8 +30,14 @@ export async function GET(req: NextRequest) {
 
     lastCronRun = Date.now();
 
+    // Startup schema validation (first run only)
+    if (!schemaValidated) {
+      await startupSchemaCheck();
+      schemaValidated = true;
+    }
+
     // Signal engine startup banner
-    console.log("[SIGNAL ENGINE] v2.7.3 operational");
+    console.log("[SIGNAL ENGINE] v2.7.4 operational");
 
     // Initialize event consumers on first run
     if (!consumersInitialized) {

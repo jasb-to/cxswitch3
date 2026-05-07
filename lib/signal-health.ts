@@ -1,32 +1,24 @@
 /**
- * Signal Health & Invariant Scanner (v2.7.2)
+ * Signal Health Logger (v2.7.4)
  * 
- * Detects invalid states, orphans, impossible transitions, and lifecycle violations.
- * Runs on every cron cycle to catch corruption early.
+ * Logs trader-readable signal health summary.
+ * Detects only actual corruption (invalid states).
+ * No lifecycle spam or paranoia.
  */
 
 import { supabase } from "@/lib/supabase-client";
-import { ACTIVE_SIGNAL_STATES, TERMINAL_SIGNAL_STATES, isValidState } from "./signal-states";
+import { ACTIVE_SIGNAL_STATES, TERMINAL_SIGNAL_STATES } from "./signal-states";
 
 export type SignalHealthReport = {
   timestamp: number;
   total: number;
   active: number;
   ended: number;
-  latestInserted?: { id: number; symbol: string; createdAt: string };
-  latestEnded?: { id: number; symbol: string; createdAt: string };
-  violations: SignalViolation[];
+  invalid: number;
 };
 
-export type SignalViolation =
-  | { type: "INVALID_STATE"; signalId: number; symbol: string; state: string }
-  | { type: "NULL_STATE"; signalId: number; symbol: string }
-  | { type: "RAPID_END"; signalId: number; symbol: string; ageMs: number; endReason?: string }
-  | { type: "ORPHAN"; signalId: number; symbol: string }
-  | { type: "IMPOSSIBLE_TRANSITION"; signalId: number; symbol: string; from: string; to: string };
-
 /**
- * Scan all signals and detect violations
+ * Quick health scan — trader-readable output only
  */
 export async function scanSignalHealth(): Promise<SignalHealthReport> {
   const report: SignalHealthReport = {
@@ -34,15 +26,14 @@ export async function scanSignalHealth(): Promise<SignalHealthReport> {
     total: 0,
     active: 0,
     ended: 0,
-    violations: [],
+    invalid: 0,
   };
 
   try {
-    // Fetch all signals
+    // Count signals by state
     const { data: allSignals, error: queryErr } = await supabase
       .from("signals")
-      .select("*")
-      .order("created_at", { ascending: false });
+      .select("state", { count: "exact" });
 
     if (queryErr) {
       console.error("[SIGNAL HEALTH] Query failed:", queryErr.message);
@@ -50,111 +41,37 @@ export async function scanSignalHealth(): Promise<SignalHealthReport> {
     }
 
     if (!allSignals || allSignals.length === 0) {
-      console.log("[SIGNAL HEALTH] No signals in database");
+      console.log("[SIGNAL HEALTH] total=0 active=0 ended=0 invalid=0");
       return report;
     }
 
     report.total = allSignals.length;
 
-    // Categorize signals and detect violations
+    // Count by state
     for (const signal of allSignals) {
-      // Check for NULL or invalid state
-      if (!signal.state) {
-        report.violations.push({
-          type: "NULL_STATE",
-          signalId: signal.id,
-          symbol: signal.symbol,
-        });
-        continue;
-      }
-
-      if (!isValidState(signal.state)) {
-        report.violations.push({
-          type: "INVALID_STATE",
-          signalId: signal.id,
-          symbol: signal.symbol,
-          state: signal.state,
-        });
-        continue;
-      }
-
-      // Count active vs ended
       if (ACTIVE_SIGNAL_STATES.includes(signal.state)) {
         report.active++;
-        // Track latest inserted
-        if (!report.latestInserted) {
-          report.latestInserted = {
-            id: signal.id,
-            symbol: signal.symbol,
-            createdAt: signal.created_at,
-          };
-        }
       } else if (TERMINAL_SIGNAL_STATES.includes(signal.state)) {
         report.ended++;
-        // Track latest ended
-        if (!report.latestEnded) {
-          report.latestEnded = {
-            id: signal.id,
-            symbol: signal.symbol,
-            createdAt: signal.created_at,
-          };
-        }
-
-        // Check for rapid END (within 5 minutes of creation)
-        const createdAt = new Date(signal.created_at).getTime();
-        const ageMs = Date.now() - createdAt;
-        if (ageMs < 300_000) {
-          // 5 minutes
-          report.violations.push({
-            type: "RAPID_END",
-            signalId: signal.id,
-            symbol: signal.symbol,
-            ageMs,
-            endReason: signal.outcome,
-          });
-        }
+      } else {
+        // Invalid state
+        report.invalid++;
       }
     }
 
-    // Log health summary
+    // Log trader-readable summary
     console.log(
-      `[SIGNAL HEALTH] total=${report.total} | active=${report.active} | ended=${report.ended} | ` +
-      `violations=${report.violations.length}`
+      `[SIGNAL HEALTH] total=${report.total} active=${report.active} ended=${report.ended} invalid=${report.invalid}`
     );
 
-    if (report.violations.length > 0) {
-      console.warn(`[SIGNAL HEALTH] ${report.violations.length} violations detected:`, report.violations);
+    // Only warn if actual corruption
+    if (report.invalid > 0) {
+      console.warn(`[SIGNAL HEALTH] ⚠ ${report.invalid} signals with invalid state — investigation required`);
     }
 
     return report;
   } catch (err) {
     console.error("[SIGNAL HEALTH] Scan failed:", err);
     return report;
-  }
-}
-
-/**
- * Get current signal counts by state
- */
-export async function getSignalCounts() {
-  try {
-    const { data: active } = await supabase
-      .from("signals")
-      .select("*", { count: "exact", head: true })
-      .in("state", ACTIVE_SIGNAL_STATES);
-
-    const { data: ended } = await supabase
-      .from("signals")
-      .select("*", { count: "exact", head: true })
-      .in("state", TERMINAL_SIGNAL_STATES);
-
-    return {
-      active: active?.length ?? 0,
-      ended: ended?.length ?? 0,
-      total: (active?.length ?? 0) + (ended?.length ?? 0),
-    };
-  } catch (err) {
-    console.error("[SIGNAL COUNTS] Failed:", err);
-    return { active: 0, ended: 0, total: 0 };
   }
 }
