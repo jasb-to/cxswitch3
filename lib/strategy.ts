@@ -4,21 +4,10 @@ import { calculateStopLoss, calculateTakeProfit, calculateRiskReward, calculateV
 import { sendTradeCloseAlert } from "./telegram";
 import {
   validateSignalPayload,
-  logSignalGenerated,
-  logPayloadSerialized,
-  logValidationPassed,
-  logInsertAttempted,
-  logInsertSuccess,
-  logValidationFailed,
-  logInsertFailed,
-  logDbVerified,
   type SignalInsert,
   type ValidationResult,
 } from "./signal-serializer";
 import { ACTIVE_SIGNAL_STATES, TERMINAL_SIGNAL_STATES } from "./signal-states";
-import { logStateTransition } from "./signal-state-transition";
-import { logTrace, createTrace, type SignalTrace } from "./signal-trace";
-import { scanSignalHealth } from "./signal-health";
 
 export type SignalDirection = "LONG" | "SHORT";
 /**
@@ -41,8 +30,8 @@ export type SignalState = "EARLY_OPEN" | "CONFIRMED" | "END";
 export type SignalOutcome = "TP" | "SL" | "EXPIRED" | "MANUAL";
 
 /**
- * Safe signal insert wrapper (v2.7.3)
- * Validates, inserts, and returns structured result. No throwing during normal operation.
+ * Safe signal insert wrapper (v2.7.5)
+ * Simple production code: validate, insert, return result.
  */
 export type SignalInsertResult = {
   success: boolean;
@@ -50,21 +39,13 @@ export type SignalInsertResult = {
   error?: string;
 };
 
-async function safeInsertSignal(payload: SignalInsert, trace: SignalTrace): Promise<SignalInsertResult> {
+async function safeInsertSignal(payload: SignalInsert): Promise<SignalInsertResult> {
   try {
-    // Validate payload
+    // Validate payload fields
     const validation: ValidationResult = validateSignalPayload(payload);
     if (!validation.valid) {
-      trace.decision = "FAILED_INSERT";
-      trace.reasons.push(`Validation failed: ${validation.errors.join("; ")}`);
-      trace.dbResult = { success: false, error: `Validation errors: ${validation.errors.join("; ")}` };
-      logValidationFailed(validation.errors.join("; "), payload);
-      logTrace(trace);
       return { success: false, error: validation.errors.join("; ") };
     }
-
-    logValidationPassed(payload.symbol);
-    logInsertAttempted(payload.symbol);
 
     // Insert into database
     const { data: inserted, error: insertErr } = await supabase
@@ -74,52 +55,16 @@ async function safeInsertSignal(payload: SignalInsert, trace: SignalTrace): Prom
       .single();
 
     if (insertErr) {
-      trace.decision = "FAILED_INSERT";
-      trace.reasons.push(`Insert failed: ${insertErr.message}`);
-      trace.dbResult = { success: false, error: insertErr.message };
-      logInsertFailed(insertErr.message, payload);
-      logTrace(trace);
       return { success: false, error: insertErr.message };
     }
 
     if (!inserted || !inserted.id) {
-      trace.decision = "FAILED_INSERT";
-      trace.reasons.push("Insert returned no persisted signal");
-      trace.dbResult = { success: false, error: "No signal returned from database" };
-      logInsertFailed("No signal returned", payload);
-      logTrace(trace);
       return { success: false, error: "No signal returned from database" };
     }
-
-    logInsertSuccess(payload.symbol, inserted.id);
-
-    // Post-insert verification — confirm signal is queryable
-    const { data: verify, error: verifyErr } = await supabase
-      .from("signals")
-      .select("id,state,symbol")
-      .eq("id", inserted.id)
-      .single();
-
-    if (verifyErr || !verify) {
-      console.error("[SIGNAL PIPELINE] DB VERIFICATION FAILED:", verifyErr?.message);
-      return { success: false, error: "Signal inserted but not immediately queryable" };
-    }
-
-    // Log confirmation
-    console.log(`[SIGNAL ACTIVE] ${payload.symbol} ${payload.direction} EARLY_OPEN persisted successfully (id: ${inserted.id})`);
-
-    trace.decision = "TRIGGERED";
-    trace.dbResult = { success: true, signalId: inserted.id };
-    logTrace(trace);
 
     return { success: true, signal: inserted };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    console.error("[SIGNAL INSERT ERROR]", reason);
-    trace.decision = "FAILED_INSERT";
-    trace.reasons.push(`Exception: ${reason}`);
-    trace.dbResult = { success: false, error: reason };
-    logTrace(trace);
     return { success: false, error: reason };
   }
 }
@@ -741,13 +686,8 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
                 };
 
                 // Create trace for this insertion attempt
-                const earlyExpansionTrace = createTrace(symbol);
-                earlyExpansionTrace.direction = direction as SignalDirection;
-                earlyExpansionTrace.score = { long: 0, short: 0 };
-                earlyExpansionTrace.reasons.push("Early expansion signal ready for insertion");
-
                 try {
-                  const result = await safeInsertSignal(newSignal, earlyExpansionTrace);
+                  const result = await safeInsertSignal(newSignal);
                   if (result.success && result.signal) {
                     logs.push(`[${base}] ✓ ENTRY OPENED (${direction} | EARLY EXPANSION | conf: ${boostedConfidence} ${breakdown}) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
                     signals.push(result.signal);
@@ -797,7 +737,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             continue;
           }
 
-          // Displacement check — confidence bonus only, not a gate
+          // Displacement check ��� confidence bonus only, not a gate
           const hasDisplacement = market.displacementAnalysis?.triggered &&
             market.displacementAnalysis?.direction === direction;
           const breakoutMove = hasDisplacement ? market.displacementAnalysis!.breakExpansion : 0;
@@ -826,18 +766,8 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             breakout_level: breakoutLevel,
           };
 
-          // Create trace for this insertion attempt
-          const insertTrace = createTrace(symbol);
-          insertTrace.direction = direction as SignalDirection;
-          insertTrace.entryPrice = price;
-          insertTrace.stopLoss = sl;
-          insertTrace.takeProfit = tp;
-          insertTrace.riskReward = rr;
-          insertTrace.score = market.probabilityScore || { long: 0, short: 0 };
-          insertTrace.reasons.push("Signal ready for insertion");
-
           try {
-            const result = await safeInsertSignal(newSignal, insertTrace);
+            const result = await safeInsertSignal(newSignal);
             if (result.success && result.signal) {
               const scoreStr = market.probabilityScore
                 ? `score: ${direction === "LONG" ? market.probabilityScore.longScore : market.probabilityScore.shortScore}`
