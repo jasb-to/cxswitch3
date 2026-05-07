@@ -492,7 +492,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           } else {
             // Signal still valid, check staleness
             const ageMs = Date.now() - new Date(existing.created_at!).getTime();
-            const isStaleEarly = existing.state === "EARLY" && ageMs > 60 * 60 * 1000;
+            const isStaleEarly = existing.state === "EARLY_OPEN" && ageMs > 60 * 60 * 1000;
 
             if (isStaleEarly) {
               await updateSignalState(existing.id!, "END", { outcome: "EXPIRED" });
@@ -510,6 +510,136 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
         if (recentAlertSymbols.has(symbol)) {
           logs.push(`[${base}] Alert already sent in last 2h — skipping to prevent spam`);
           continue;
+        }
+
+        // PRE-BREAKOUT EXPANSION DETECTION: Trigger EARLY_OPEN on momentum buildup
+        // This catches entries BEFORE full breakout confirmation occurs
+        const candles15m = market.candles15m ?? [];
+        const candles5m = market.candles5m ?? [];
+        
+        if (candles15m.length >= 3 && candles5m.length >= 3) {
+          // Check for bullish expansion pressure on 15M (approaching resistance, expanding candles)
+          const bullishExpansionPressure = (() => {
+            const recent15m = candles15m.slice(-3);
+            const closes = recent15m.map(c => c.close);
+            const highs = recent15m.map(c => c.high);
+            const opens = recent15m.map(c => c.open);
+            const bodies = recent15m.map((c, i) => Math.abs(c.close - c.open));
+            
+            // Three conditions:
+            // 1. Closes consistently rising or holding elevated
+            // 2. Candle bodies expanding (momentum acceleration)
+            // 3. Wicks showing resistance testing
+            const closesRising = closes[1] >= closes[0] && closes[2] >= closes[1];
+            const bodiesExpanding = bodies[1] > bodies[0] && bodies[2] > bodies[1];
+            const wicksRising = highs[1] > highs[0] && highs[2] > highs[1];
+            
+            return closesRising && bodiesExpanding && wicksRising;
+          })();
+
+          // Check for bearish expansion pressure on 15M (approaching support, expanding candles down)
+          const bearishExpansionPressure = (() => {
+            const recent15m = candles15m.slice(-3);
+            const closes = recent15m.map(c => c.close);
+            const lows = recent15m.map(c => c.low);
+            const opens = recent15m.map(c => c.open);
+            const bodies = recent15m.map((c, i) => Math.abs(c.close - c.open));
+            
+            const closesFalling = closes[1] <= closes[0] && closes[2] <= closes[1];
+            const bodiesExpanding = bodies[1] > bodies[0] && bodies[2] > bodies[1];
+            const wicksFalling = lows[1] < lows[0] && lows[2] < lows[1];
+            
+            return closesFalling && bodiesExpanding && wicksFalling;
+          })();
+
+          // Check 5M momentum confirmation (RSI slope or EMA curl acceleration)
+          const has5mMomentum = (() => {
+            const rsiSlope = market.rsiSlope5m;
+            const emaCurl = market.emaCurling;
+            
+            return (rsiSlope?.slopeUp || emaCurl?.curlingUp) || (rsiSlope?.slopeDown || emaCurl?.curlingDown);
+          })();
+
+          // EARLY_OPEN trigger: Structure + expansion pressure + 5M confirmation
+          const hasDirectionalBias = market.setup === "LONG_SETUP" || market.setup === "SHORT_SETUP";
+          const shouldTriggerEarlyLong = bullishExpansionPressure && has5mMomentum && market.setup === "LONG_SETUP";
+          const shouldTriggerEarlyShort = bearishExpansionPressure && has5mMomentum && market.setup === "SHORT_SETUP";
+
+          if ((shouldTriggerEarlyLong || shouldTriggerEarlyShort) && !existing) {
+            const direction = shouldTriggerEarlyLong ? "LONG" : "SHORT";
+            const breakoutLevel = shouldTriggerEarlyLong ? (market.swingHigh ?? price) : (market.swingLow ?? price);
+            const currentCandle = candles4h[candles4h.length - 1];
+            const prevCandle = candles4h.length > 1 ? candles4h[candles4h.length - 2] : null;
+            const prevClosed = prevCandle?.close ?? 0;
+            
+            // Check expansion minimum
+            const breakoutMove = direction === "LONG" 
+              ? ((price - breakoutLevel) / breakoutLevel)
+              : ((breakoutLevel - price) / breakoutLevel);
+            
+            const minExpansion = 
+              symbolBase === "BTC" ? 0.0025 :
+              symbolBase === "ETH" ? 0.002 :
+              symbolBase === "SOL" ? 0.0035 :
+              0.002;
+
+            if (breakoutMove >= minExpansion) {
+              const sl = direction === "LONG"
+                ? calculateStopLoss(price, market.swingLow, direction)
+                : calculateStopLoss(price, market.swingHigh, direction);
+              const tp = direction === "LONG"
+                ? calculateTakeProfit(price, sl, direction)
+                : calculateTakeProfit(price, sl, direction);
+              const rr = direction === "LONG"
+                ? calculateRiskReward(price, tp, sl, direction)
+                : calculateRiskReward(price, tp, sl, direction);
+
+              if (rr >= 1.5) {
+                // Confidence boosted by early detection
+                const { confidence, breakdown } = calculateConfidence(
+                  direction,
+                  market.adx,
+                  candles4h,
+                  breakoutMove > 0.005,
+                  {
+                    emaCurling: market.emaCurling,
+                    rsi15m: market.rsi15m,
+                    rsiSlope15m: market.rsiSlope15m,
+                    rsiSlope5m: market.rsiSlope5m,
+                  }
+                );
+                const boostedConfidence = Math.min(95, confidence + 5);
+
+                const newSignal = {
+                  symbol,
+                  state: "EARLY_OPEN" as SignalState,
+                  direction: direction as SignalDirection,
+                  entry_price: price,
+                  stop_loss: sl,
+                  take_profit: tp,
+                  confidence: boostedConfidence,
+                  breakout_level: breakoutLevel,
+                  breakout_candle_time: currentCandle.time,
+                  prev_candle_close: prevClosed,
+                };
+
+                const { data: inserted, error: insertErr } = await supabase
+                  .from("signals")
+                  .insert([newSignal])
+                  .select()
+                  .single();
+
+                if (insertErr) {
+                  logs.push(`[${base}] Insert ${direction} early expansion failed: ${insertErr.message}`);
+                } else {
+                  logs.push(`[${base}] ✓ ENTRY OPENED (${direction} | EARLY EXPANSION | conf: ${boostedConfidence} ${breakdown}) at $${price.toFixed(2)} | SL $${sl.toFixed(2)} | TP $${tp.toFixed(2)} | RR ${rr.toFixed(2)}`);
+                  signals.push(inserted);
+                  recentAlertSymbols.add(symbol);
+                  continue; // Skip to next symbol since we already created a signal
+                }
+              }
+            }
+          }
         }
 
         // LONG: price broke above a 3-touch resistance level (EVENT-BASED)
