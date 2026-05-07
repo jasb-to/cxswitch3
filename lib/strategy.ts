@@ -967,44 +967,166 @@ export async function getAllSignals(): Promise<Signal[]> {
 
 // ─── Find local pivots (highs and lows) ───────────────────────────────────────
 
-function findPivots(candles: Candle[], lookback: number = 2): { highs: number[]; lows: number[] } {
-  const highs: number[] = [];
-  const lows: number[] = [];
+function findPivots(candles: Candle[], lookback: number = 2): { highs: Candle[]; lows: Candle[] } {
+  const highs: Candle[] = [];
+  const lows: Candle[] = [];
 
   for (let i = lookback; i < candles.length - lookback; i++) {
     const c = candles[i];
     if (c.high > candles[i - 1].high && c.high > candles[i + 1].high) {
-      highs.push(c.high);
+      highs.push(c);
     }
     if (c.low < candles[i - 1].low && c.low < candles[i + 1].low) {
-      lows.push(c.low);
+      lows.push(c);
     }
   }
   return { highs, lows };
 }
 
-// ─── Group prices into trendlines by touch count ────────────────────────────────
-
-function groupTouches(prices: number[], tolerance: number = 0.005): { level: number; touches: number }[] {
-  const groups: { level: number; touches: number }[] = [];
-
-  for (const price of prices) {
-    let found = false;
-    for (const group of groups) {
-      if (Math.abs(price - group.level) / group.level < tolerance) {
-        group.level = (group.level * group.touches + price) / (group.touches + 1);
-        group.touches++;
-        found = true;
-        break;
-      }
-    }
-    if (!found) groups.push({ level: price, touches: 1 });
+/**
+ * Detect market structure progression using pivot sequencing.
+ * Returns bullish HH+HL, bearish LL+LH, or NO_STRUCTURE.
+ */
+function detectStructure(
+  pivotHighs: Candle[],
+  pivotLows: Candle[]
+): {
+  structure: "BULLISH" | "BEARISH" | "NO_STRUCTURE";
+  latestHigh: Candle | null;
+  latestLow: Candle | null;
+  priorHigh: Candle | null;
+  priorLow: Candle | null;
+  structureText: string;
+} {
+  if (pivotHighs.length < 2 || pivotLows.length < 2) {
+    return {
+      structure: "NO_STRUCTURE",
+      latestHigh: null,
+      latestLow: null,
+      priorHigh: null,
+      priorLow: null,
+      structureText: "Insufficient pivots for structure detection",
+    };
   }
 
-  return groups.filter((g) => g.touches >= 3).sort((a, b) => b.touches - a.touches);
+  const latestHigh = pivotHighs[pivotHighs.length - 1];
+  const priorHigh = pivotHighs[pivotHighs.length - 2];
+  const latestLow = pivotLows[pivotLows.length - 1];
+  const priorLow = pivotLows[pivotLows.length - 2];
+
+  // Bullish: Higher High + Higher Low
+  const hasHigherHigh = latestHigh.high > priorHigh.high;
+  const hasHigherLow = latestLow.low > priorLow.low;
+  const isBullish = hasHigherHigh && hasHigherLow;
+
+  // Bearish: Lower High + Lower Low
+  const hasLowerHigh = latestHigh.high < priorHigh.high;
+  const hasLowerLow = latestLow.low < priorLow.low;
+  const isBearish = hasLowerHigh && hasLowerLow;
+
+  if (isBullish) {
+    return {
+      structure: "BULLISH",
+      latestHigh,
+      latestLow,
+      priorHigh,
+      priorLow,
+      structureText: `HH (${latestHigh.high.toFixed(0)} > ${priorHigh.high.toFixed(0)}) + HL (${latestLow.low.toFixed(0)} > ${priorLow.low.toFixed(0)})`,
+    };
+  } else if (isBearish) {
+    return {
+      structure: "BEARISH",
+      latestHigh,
+      latestLow,
+      priorHigh,
+      priorLow,
+      structureText: `LL (${latestLow.low.toFixed(0)} < ${priorLow.low.toFixed(0)}) + LH (${latestHigh.high.toFixed(0)} < ${priorHigh.high.toFixed(0)})`,
+    };
+  }
+
+  return {
+    structure: "NO_STRUCTURE",
+    latestHigh,
+    latestLow,
+    priorHigh,
+    priorLow,
+    structureText: "Structure indeterminate (mixed HH/LL or HL/LH)",
+  };
 }
 
-// ─── Market context with trendlines ───────────────────────────────────────────
+/**
+ * Detect structural displacement: has price broken latest swing pivot with expansion?
+ */
+function detectDisplacement(
+  price: number,
+  structure: "BULLISH" | "BEARISH" | "NO_STRUCTURE",
+  latestHigh: Candle | null,
+  latestLow: Candle | null,
+  expansionThreshold: number = 0.005 // 0.5% default
+): {
+  triggered: boolean;
+  direction: "LONG" | "SHORT" | null;
+  pivotBreak: number;
+  breakExpansion: number;
+  text: string;
+} {
+  if (structure === "BULLISH" && latestHigh) {
+    // LONG: Price breaks above latest pivot high with expansion
+    const breakAbove = price > latestHigh.high;
+    const expansion = (price - latestHigh.high) / latestHigh.high;
+    const hasExpansion = expansion >= expansionThreshold;
+
+    if (breakAbove && hasExpansion) {
+      return {
+        triggered: true,
+        direction: "LONG",
+        pivotBreak: latestHigh.high,
+        breakExpansion: expansion,
+        text: `Bullish displacement: price ${price.toFixed(2)} broke pivot high ${latestHigh.high.toFixed(2)} (+${(expansion * 100).toFixed(2)}%)`,
+      };
+    }
+    return {
+      triggered: false,
+      direction: null,
+      pivotBreak: latestHigh.high,
+      breakExpansion: expansion,
+      text: `Bullish structure but no displacement (expansion: ${(expansion * 100).toFixed(2)}%, need ${(expansionThreshold * 100).toFixed(2)}%)`,
+    };
+  } else if (structure === "BEARISH" && latestLow) {
+    // SHORT: Price breaks below latest pivot low with expansion
+    const breakBelow = price < latestLow.low;
+    const expansion = (latestLow.low - price) / latestLow.low;
+    const hasExpansion = expansion >= expansionThreshold;
+
+    if (breakBelow && hasExpansion) {
+      return {
+        triggered: true,
+        direction: "SHORT",
+        pivotBreak: latestLow.low,
+        breakExpansion: expansion,
+        text: `Bearish displacement: price ${price.toFixed(2)} broke pivot low ${latestLow.low.toFixed(2)} (-${(expansion * 100).toFixed(2)}%)`,
+      };
+    }
+    return {
+      triggered: false,
+      direction: null,
+      pivotBreak: latestLow.low,
+      breakExpansion: expansion,
+      text: `Bearish structure but no displacement (expansion: ${(expansion * 100).toFixed(2)}%, need ${(expansionThreshold * 100).toFixed(2)}%)`,
+    };
+  }
+
+  return {
+    triggered: false,
+    direction: null,
+    pivotBreak: 0,
+    breakExpansion: 0,
+    text: "No structure detected for displacement",
+  };
+}
+
+// ─── Market context with dynamic market structure ───────────────────────────────
+
 
 // Price cache for fallback when API fails
 const priceCache = new Map<string, { price: number; timestamp: number }>();
@@ -1102,26 +1224,23 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     // Cache the price for fallback use
     priceCache.set(symbol, { price, timestamp: Date.now() });
 
-    // Improvement 6: Calculate volatility for dynamic breakout threshold
-    const volatility = calculateVolatility(candles4h);
-    const volatilityThreshold = volatility > 0.02 ? 0.007 : 0.005; // 0.7% if high, 0.5% if low
+    // NEW: Dynamic market structure analysis using pivots
+    const { highs: pivotHighs, lows: pivotLows } = findPivots(candles4h, 2);
+    
+    // Detect structure progression (HH+HL or LL+LH)
+    const structureAnalysis = detectStructure(pivotHighs, pivotLows);
+    
+    // Detect if price has broken the latest pivot with expansion (structural displacement)
+    const displacementAnalysis = detectDisplacement(
+      price,
+      structureAnalysis.structure,
+      structureAnalysis.latestHigh,
+      structureAnalysis.latestLow,
+      0.0035 // 0.35% expansion threshold
+    );
 
-    // Find pivots and group into trendlines
-    const { highs, lows } = findPivots(candles4h, 2);
-    const resistances = groupTouches(highs, 0.005);
-    const supports = groupTouches(lows, 0.005);
-
-    // FILTER stale levels: only include tradable breakout zones
-    // Resistance must be ABOVE or very close to price (not already broken)
-    const filteredResistances = resistances.filter(r => r.level >= price * 0.995);
-    // Support must be BELOW or very close to price (not already lost)
-    const filteredSupports = supports.filter(s => s.level <= price * 1.005);
-
-    const bestResistance = filteredResistances[0] ?? null;
-    const bestSupport = filteredSupports[0] ?? null;
-
-    // If no valid levels remain after filtering, return NO_SETUP
-    if (!bestResistance && !bestSupport) {
+    // If no structure detected, return NO_SETUP
+    if (structureAnalysis.structure === "NO_STRUCTURE") {
       return {
         symbol,
         price,
@@ -1130,7 +1249,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
         distanceToHigh: null,
         distanceToLow: null,
         setup: "NO_SETUP",
-        setupText: "No valid trendlines found near current price",
+        setupText: structureAnalysis.structureText,
         error: false,
         trendlines: 0,
         dataSource,
@@ -1139,17 +1258,13 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       };
     }
 
-    // DEBUG: Log all detected trendlines for this symbol
-    console.log(`[${symbolBase}] Price: $${price.toFixed(2)} | Resistances: ${resistances.map(r => `$${r.level.toFixed(2)}(${r.touches})`).join(", ")} | Supports: ${supports.map(s => `$${s.level.toFixed(2)}(${s.touches})`).join(", ")}`);
-    console.log(`[${symbolBase}] Best R: ${bestResistance ? `$${bestResistance.level.toFixed(2)}(${bestResistance.touches})` : "NONE"} | Best S: ${bestSupport ? `$${bestSupport.level.toFixed(2)}(${bestSupport.touches})` : "NONE"}`);
-    console.log(`[${symbolBase}] Volatility: ${(volatility * 100).toFixed(2)}% | Threshold: ${(volatilityThreshold * 100).toFixed(2)}%`);
-    console.log(`[${symbolBase}] LONG check: price($${price.toFixed(2)}) > resistance($${bestResistance?.level.toFixed(2) ?? "N/A"}) * (1+${volatilityThreshold.toFixed(4)})? ${bestResistance ? (price > bestResistance.level * (1 + volatilityThreshold) ? "YES ✓" : "NO") : "NO RESISTANCE"}`);
-    console.log(`[${symbolBase}] SHORT check: price($${price.toFixed(2)}) < support($${bestSupport?.level.toFixed(2) ?? "N/A"}) * (1-${volatilityThreshold.toFixed(4)})? ${bestSupport ? (price < bestSupport.level * (1 - volatilityThreshold) ? "YES ✓" : "NO") : "NO SUPPORT"}`);
+    // Log structure analysis
+    console.log(`[${symbolBase}] Structure: ${structureAnalysis.structureText}`);
+    console.log(`[${symbolBase}] Displacement: ${displacementAnalysis.text}`);
 
-
-    // Use best resistance/support as swingHigh/swingLow
-    const swingHigh = bestResistance?.level ?? null;
-    const swingLow = bestSupport?.level ?? null;
+    // Use latest pivot levels as swing reference points
+    const swingHigh = structureAnalysis.latestHigh?.high ?? null;
+    const swingLow = structureAnalysis.latestLow?.low ?? null;
 
     let distanceToHigh: number | null = null;
     let distanceToLow: number | null = null;
@@ -1162,24 +1277,23 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     }
 
     let setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" | "ERROR" = "NO_SETUP";
-    let setupText = "NO STRUCTURE — no 3-touch trendlines";
+    let setupText = "Waiting for structural displacement";
 
-    // Strict breakout detection: volatility-aware threshold ONLY
-    if (bestResistance && price > bestResistance.level * (1 + volatilityThreshold)) {
+    // LONG_SETUP: Bullish structure + price breaks latest pivot high
+    if (structureAnalysis.structure === "BULLISH" && displacementAnalysis.triggered && displacementAnalysis.direction === "LONG") {
       setup = "LONG_SETUP";
-      setupText = `LONG — broke ${bestResistance.touches}-touch resistance at $${bestResistance.level.toFixed(0)} (+${(volatilityThreshold * 100).toFixed(1)}%)`;
-    } else if (bestSupport && price < bestSupport.level * (1 - volatilityThreshold)) {
+      setupText = `${structureAnalysis.structureText} — BREAKOUT at $${displacementAnalysis.pivotBreak.toFixed(0)} (+${(displacementAnalysis.breakExpansion * 100).toFixed(2)}%)`;
+    } 
+    // SHORT_SETUP: Bearish structure + price breaks latest pivot low
+    else if (structureAnalysis.structure === "BEARISH" && displacementAnalysis.triggered && displacementAnalysis.direction === "SHORT") {
       setup = "SHORT_SETUP";
-      setupText = `SHORT — broke ${bestSupport.touches}-touch support at $${bestSupport.level.toFixed(0)} (-${(volatilityThreshold * 100).toFixed(1)}%)`;
-    } else if (bestResistance) {
-      const dist = ((bestResistance.level - price) / price) * 100;
-      setupText = `${bestResistance.touches}-touch resistance at $${bestResistance.level.toFixed(0)} (${dist.toFixed(1)}% away)`;
-    } else if (bestSupport) {
-      const dist = ((price - bestSupport.level) / price) * 100;
-      setupText = `${bestSupport.touches}-touch support at $${bestSupport.level.toFixed(0)} (${dist.toFixed(1)}% away)`;
+      setupText = `${structureAnalysis.structureText} — BREAKOUT at $${displacementAnalysis.pivotBreak.toFixed(0)} (-${(displacementAnalysis.breakExpansion * 100).toFixed(2)}%)`;
+    } else {
+      setupText = `${structureAnalysis.structureText} — ${displacementAnalysis.text}`;
     }
 
-    const trendlineCount = (bestResistance ? 1 : 0) + (bestSupport ? 1 : 0);
+    const trendlineCount = (swingHigh ? 1 : 0) + (swingLow ? 1 : 0);
+
     
     // Calculate ADX to filter weak breakouts
     const adx = calculateADX(candles4h);
