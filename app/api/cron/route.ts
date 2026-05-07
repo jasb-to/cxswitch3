@@ -27,6 +27,9 @@ export async function GET(req: NextRequest) {
 
     lastCronRun = Date.now();
 
+    // Pipeline version logging (v2.7.1 Signal Lifecycle Stabilisation)
+    console.log("[SIGNAL PIPELINE] v2.7.1 — Starting cycle");
+
     // Initialize event consumers on first run
     if (!consumersInitialized) {
       initializeSupabaseConsumer();
