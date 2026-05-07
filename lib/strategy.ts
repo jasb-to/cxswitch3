@@ -1354,33 +1354,6 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       };
     }
       
-      // No cache available — return zero price but don't mark as error
-      console.log(`[${symbolBase}] No cached data available`);
-      return {
-        symbol,
-        price: 0,
-        swingHigh: null,
-        swingLow: null,
-        distanceToHigh: null,
-        distanceToLow: null,
-        setup: "NO_SETUP",
-        setupText: "Data loading...",
-        error: false,
-        trendlines: 0,
-        candles4h: [],
-        candles15m: [],
-        candles5m: [],
-        adx: undefined,
-        ema8: undefined,
-        ema21: undefined,
-        emaCurling: undefined,
-        rsi15m: undefined,
-        rsi5m: undefined,
-        rsiSlope15m: undefined,
-        rsiSlope5m: undefined,
-      };
-    }
-
     if (!candles4h.length) {
       console.error(`[${symbolBase}] ✗ No 4H candle data after fetch attempt`);
       return {
