@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateSignals, getAllSignals, cleanupExpiredSignals } from "@/lib/strategy";
 import { sendSignalAlert, shouldSendAlert } from "@/lib/telegram";
 import { supabase } from "@/lib/supabase-client";
+import { getTraceStats } from "@/lib/signal-trace";
+import { initializeSupabaseConsumer } from "@/lib/supabase-consumer";
+import { initializeTelegramConsumer } from "@/lib/telegram-consumer";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -9,6 +12,7 @@ export const runtime = "nodejs";
 // Cron runs every minute via vercel.json
 const CRON_INTERVAL_MS = 60_000;
 let lastCronRun = 0;
+let consumersInitialized = false;
 
 export async function GET(req: NextRequest) {
   try {
@@ -22,6 +26,14 @@ export async function GET(req: NextRequest) {
     }
 
     lastCronRun = Date.now();
+
+    // Initialize event consumers on first run
+    if (!consumersInitialized) {
+      initializeSupabaseConsumer();
+      initializeTelegramConsumer();
+      consumersInitialized = true;
+      console.log("[EVENT CONSUMERS] Initialized Supabase and Telegram consumers");
+    }
     
     // First: cleanup expired signals that haven't confirmed
     const { logs: cleanupLogs } = await cleanupExpiredSignals();
@@ -82,6 +94,12 @@ export async function GET(req: NextRequest) {
     console.log(`[NEXT CRON] In ${nextMins}m ${nextSecs}s`);
 
     const allSignals = await getAllSignals();
+
+    // Log cycle summary with trace stats (v2.7.x observability)
+    const traceStats = getTraceStats();
+    console.log(
+      `[CYCLE SUMMARY] Signals: ${signals.length} | Trace Stats: Triggered=${traceStats.triggered}, Blocked=${traceStats.blocked}, Failures=${traceStats.failures}, NoSignal=${traceStats.noSignal}`
+    );
 
     // Log cron run to cron_runs table
     if (supabase) {

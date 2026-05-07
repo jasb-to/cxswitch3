@@ -1,0 +1,92 @@
+/**
+ * Signal Event → Telegram Consumer (v3.0.0)
+ * 
+ * Converts SignalEvent to Telegram alerts.
+ * Receives the same event stream as Supabase, eliminating duplicate logic.
+ */
+
+import { signalEventStream, SignalEvent } from "./signal-event-contract";
+import { sendTradeAlert, sendTradeCloseAlert } from "./telegram";
+
+/**
+ * Handle SIGNAL_EMITTED events — send entry alert
+ */
+async function handleSignalEmittedAlert(event: SignalEvent) {
+  const { symbol, direction, entry_price, stop_loss, take_profit, confidence } = event.payload;
+
+  const riskAmount = Math.abs(entry_price - stop_loss);
+  const rewardAmount = Math.abs(take_profit - entry_price);
+  const rr = rewardAmount / riskAmount;
+
+  const reason = event.metadata?.reason || "structure + momentum";
+
+  console.log(`[TELEGRAM CONSUMER] Sending ENTRY alert for ${symbol} ${direction}`);
+
+  await sendTradeAlert({
+    symbol,
+    direction,
+    entry_price,
+    stop_loss,
+    take_profit,
+    confidence,
+    rr,
+    reason,
+  });
+}
+
+/**
+ * Handle SIGNAL_CONFIRMED events — send confirmation alert
+ */
+async function handleSignalConfirmedAlert(event: SignalEvent) {
+  const { symbol, direction, entry_price, confidence } = event.payload;
+
+  console.log(`[TELEGRAM CONSUMER] Sending CONFIRMED alert for ${symbol} ${direction}`);
+
+  await sendTradeAlert({
+    symbol,
+    direction,
+    entry_price,
+    stop_loss: 0, // Not needed for confirmation
+    take_profit: 0,
+    confidence,
+    rr: 0,
+    reason: "retest confirmed",
+    isConfirmed: true,
+  });
+}
+
+/**
+ * Handle exit events — send close alert
+ */
+async function handleSignalExitAlert(event: SignalEvent) {
+  const { symbol, direction, entry_price } = event.payload;
+  const outcome = event.metadata?.outcome || "UNKNOWN";
+  const pnl = event.metadata?.pnl;
+
+  console.log(`[TELEGRAM CONSUMER] Sending EXIT alert for ${symbol} ${direction} (${outcome})`);
+
+  const exitPrice = outcome === "TP" ? event.payload.take_profit : event.payload.stop_loss;
+
+  await sendTradeCloseAlert({
+    symbol,
+    direction,
+    entry_price,
+    exit_price: exitPrice,
+    outcome,
+    pnl,
+  });
+}
+
+/**
+ * Initialize Telegram event consumers
+ */
+export function initializeTelegramConsumer() {
+  signalEventStream.subscribe("SIGNAL_EMITTED", handleSignalEmittedAlert);
+  signalEventStream.subscribe("SIGNAL_CONFIRMED", handleSignalConfirmedAlert);
+  signalEventStream.subscribe("SIGNAL_TP_HIT", handleSignalExitAlert);
+  signalEventStream.subscribe("SIGNAL_SL_HIT", handleSignalExitAlert);
+  signalEventStream.subscribe("SIGNAL_EXPIRED", handleSignalExitAlert);
+  signalEventStream.subscribe("SIGNAL_MANUAL_EXIT", handleSignalExitAlert);
+
+  console.log("[TELEGRAM CONSUMER] Initialized — listening to signal events");
+}
