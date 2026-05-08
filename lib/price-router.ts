@@ -1,21 +1,23 @@
 /**
- * Price Router (v3.2.1)
+ * Price Router (v3.2.2)
  * Primary + Secondary + Safety State Architecture
  * 
  * PRIMARY: Kraken ticker (execution-grade, with retry + backoff + circuit breaker)
  * SECONDARY: CoinGecko (fallback-only, for visual continuity)
  * SAFETY: Hard gates prevent trading on degraded data
  * 
- * STABILITY LAYER:
+ * STABILITY LAYER (v3.2.2 improvements):
  * - Exponential backoff retry (2 retries, 100ms → 500ms)
- * - Circuit breaker (after 5 failures, cooldown 30s)
- * - Last-known-good cache (1-5s TTL for execution safety)
+ * - Differentiated circuit breaker (only escalate on EMPTY_RESPONSE / repeated TIMEOUT)
+ * - Staleness flag in cache (prevent false LIVE from stale prices)
+ * - Last-known-good cache (3s TTL with staleness tracking)
  */
 
 import { resolveSymbol } from "@/lib/symbol-resolver";
 
 export type PriceSource = "kraken" | "coingecko" | "none";
 export type PriceHealth = "LIVE" | "DEGRADED" | "OFFLINE";
+export type KrakenFailureType = "EMPTY_RESPONSE" | "TIMEOUT" | "HTTP_ERROR" | "API_ERROR" | "INVALID_PRICE";
 
 export interface PriceData {
   price: number;
@@ -24,22 +26,36 @@ export interface PriceData {
   bid?: number;
   ask?: number;
   timestamp: number;
+  isStale?: boolean; // NEW: Flag to prevent false LIVE from stale cache
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CIRCUIT BREAKER: Track Kraken feed health
+// CIRCUIT BREAKER: Differentiated failure tracking for Kraken feed
+// Only escalate breaker on real failures (EMPTY_RESPONSE, repeated TIMEOUT)
 // ═══════════════════════════════════════════════════════════════════════════
-const circuitBreaker: Record<string, { failCount: number; lastFailTime: number; isOpen: boolean }> = {};
+const circuitBreaker: Record<string, { 
+  failCount: number; 
+  lastFailTime: number; 
+  isOpen: boolean;
+  recentFailures: KrakenFailureType[];
+}> = {};
+
+function getCircuitBreakerState(symbol: string) {
+  if (!circuitBreaker[symbol]) {
+    circuitBreaker[symbol] = { failCount: 0, lastFailTime: 0, isOpen: false, recentFailures: [] };
+  }
+  return circuitBreaker[symbol];
+}
 
 function isCircuitBreakerOpen(symbol: string): boolean {
-  const state = circuitBreaker[symbol];
-  if (!state) return false;
+  const state = getCircuitBreakerState(symbol);
 
-  // Circuit opens after 5 consecutive failures
+  // Circuit opens after 5 escalating failures
   if (state.failCount >= 5) {
     // Close after 30s cooldown
     if (Date.now() - state.lastFailTime > 30000) {
       state.failCount = 0;
+      state.recentFailures = [];
       state.isOpen = false;
       console.log(`[CIRCUIT_BREAKER] ${symbol}: Recovered after cooldown`);
       return false;
@@ -51,48 +67,98 @@ function isCircuitBreakerOpen(symbol: string): boolean {
   return false;
 }
 
-function recordKrakenFailure(symbol: string) {
-  if (!circuitBreaker[symbol]) {
-    circuitBreaker[symbol] = { failCount: 0, lastFailTime: 0, isOpen: false };
+/**
+ * Record Kraken failure with differentiated type tracking
+ * Only escalate circuit breaker on critical failures (EMPTY_RESPONSE, repeated TIMEOUT)
+ */
+function recordKrakenFailure(symbol: string, failureType: KrakenFailureType) {
+  const state = getCircuitBreakerState(symbol);
+  state.recentFailures.push(failureType);
+
+  // Keep last 5 failures for pattern detection
+  if (state.recentFailures.length > 5) {
+    state.recentFailures.shift();
   }
-  circuitBreaker[symbol].failCount++;
-  circuitBreaker[symbol].lastFailTime = Date.now();
-  console.log(`[CIRCUIT_BREAKER] ${symbol}: Failure ${circuitBreaker[symbol].failCount}/5`);
+
+  // Only escalate breaker on:
+  // 1. EMPTY_RESPONSE (persistent missing data)
+  // 2. Repeated TIMEOUT (3+ in last 5 failures = broken connection)
+  let shouldEscalate = false;
+
+  if (failureType === "EMPTY_RESPONSE") {
+    shouldEscalate = true;
+    console.log(`[CIRCUIT_BREAKER] ${symbol}: EMPTY_RESPONSE — escalating (critical failure)`);
+  } else if (failureType === "TIMEOUT") {
+    const recentTimeouts = state.recentFailures.filter(f => f === "TIMEOUT").length;
+    if (recentTimeouts >= 3) {
+      shouldEscalate = true;
+      console.log(`[CIRCUIT_BREAKER] ${symbol}: Repeated TIMEOUT (${recentTimeouts}/5) — escalating`);
+    } else {
+      console.log(`[CIRCUIT_BREAKER] ${symbol}: TIMEOUT (transient, ${recentTimeouts}/5) — not escalating`);
+    }
+  } else {
+    // HTTP_ERROR, API_ERROR, INVALID_PRICE are transient — don't escalate
+    console.log(`[CIRCUIT_BREAKER] ${symbol}: ${failureType} (transient) — not escalating`);
+  }
+
+  if (shouldEscalate) {
+    state.failCount++;
+    state.lastFailTime = Date.now();
+    console.log(`[CIRCUIT_BREAKER] ${symbol}: Escalated count: ${state.failCount}/5`);
+  }
 }
 
 function recordKrakenSuccess(symbol: string) {
-  if (circuitBreaker[symbol]) {
-    circuitBreaker[symbol].failCount = 0;
-  }
+  const state = getCircuitBreakerState(symbol);
+  state.failCount = 0;
+  state.recentFailures = [];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PRICE CACHE: Last-known-good prices (1-5s TTL for stability)
+// PRICE CACHE: Last-known-good prices with staleness tracking (3s TTL)
+// Downgrade to DEGRADED if price exceeds staleness threshold (1.5s)
 // ═══════════════════════════════════════════════════════════════════════════
-const priceCache: Record<string, { data: PriceData; timestamp: number }> = {};
-const CACHE_TTL_MS = 3000; // 3 second TTL
+const priceCache: Record<string, { data: PriceData; cachedAt: number }> = {};
+const CACHE_TTL_MS = 3000; // 3 second TTL (hard expiration)
+const STALENESS_THRESHOLD_MS = 1500; // 1.5 second staleness (soft threshold)
 
 function getCachedPrice(symbol: string): PriceData | null {
   const cached = priceCache[symbol];
   if (!cached) return null;
 
-  const age = Date.now() - cached.timestamp;
+  const age = Date.now() - cached.cachedAt;
+  
+  // Hard TTL: beyond 3s, discard
   if (age > CACHE_TTL_MS) {
     delete priceCache[symbol];
+    console.log(`[CACHE] ${symbol}: Expired (age: ${age}ms > TTL: ${CACHE_TTL_MS}ms)`);
     return null;
   }
 
-  console.log(`[CACHE] ${symbol}: Hit (age: ${age}ms, TTL: ${CACHE_TTL_MS}ms)`);
-  return cached.data;
+  // Soft staleness: beyond 1.5s, mark as stale (will downgrade to DEGRADED)
+  const isStale = age > STALENESS_THRESHOLD_MS;
+  const data = {
+    ...cached.data,
+    isStale,
+  };
+
+  if (isStale) {
+    console.log(`[CACHE] ${symbol}: Hit but STALE (age: ${age}ms > staleness: ${STALENESS_THRESHOLD_MS}ms)`);
+  } else {
+    console.log(`[CACHE] ${symbol}: Hit (age: ${age}ms, fresh)`);
+  }
+
+  return data;
 }
 
 function setCachedPrice(symbol: string, data: PriceData) {
-  priceCache[symbol] = { data, timestamp: Date.now() };
+  priceCache[symbol] = { data, cachedAt: Date.now() };
+  console.log(`[CACHE] ${symbol}: Set (TTL: ${CACHE_TTL_MS}ms)`);
 }
 
 /**
- * Fetch price from Kraken with retry + backoff + circuit breaker
- * Returns null if circuit is open or all retries exhausted
+ * Fetch price from Kraken with retry + backoff + differentiated circuit breaker
+ * Tracks failure types: EMPTY_RESPONSE, TIMEOUT (escalate), vs transient errors (don't escalate)
  */
 async function getPriceFromKraken(symbol: string): Promise<PriceData | null> {
   try {
@@ -108,16 +174,26 @@ async function getPriceFromKraken(symbol: string): Promise<PriceData | null> {
     // Retry logic with exponential backoff: 2 retries (100ms, 500ms)
     const maxRetries = 2;
     let lastError: Error | null = null;
+    let lastFailureType: KrakenFailureType = "HTTP_ERROR";
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        const response = await fetch(
-          `https://api.kraken.com/0/public/Ticker?pair=${krakenTicker}`,
-          { signal: AbortSignal.timeout(5000) } // 5s timeout
-        );
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+
+        let response;
+        try {
+          response = await fetch(
+            `https://api.kraken.com/0/public/Ticker?pair=${krakenTicker}`,
+            { signal: controller.signal }
+          );
+        } finally {
+          clearTimeout(timeoutId);
+        }
 
         if (!response.ok) {
           lastError = new Error(`HTTP ${response.status}`);
+          lastFailureType = "HTTP_ERROR";
           if (attempt < maxRetries) {
             const backoff = attempt === 0 ? 100 : 500;
             console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
@@ -131,6 +207,7 @@ async function getPriceFromKraken(symbol: string): Promise<PriceData | null> {
 
         if (data.error && data.error.length > 0) {
           lastError = new Error(`API error: ${data.error[0]}`);
+          lastFailureType = "API_ERROR";
           if (attempt < maxRetries) {
             const backoff = attempt === 0 ? 100 : 500;
             console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
@@ -142,7 +219,9 @@ async function getPriceFromKraken(symbol: string): Promise<PriceData | null> {
 
         const tickerData = data.result?.[krakenTicker];
         if (!tickerData) {
+          // CRITICAL: Empty response is pattern indicating persistent missing data
           lastError = new Error("No ticker data returned");
+          lastFailureType = "EMPTY_RESPONSE";
           if (attempt < maxRetries) {
             const backoff = attempt === 0 ? 100 : 500;
             console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
@@ -159,6 +238,7 @@ async function getPriceFromKraken(symbol: string): Promise<PriceData | null> {
 
         if (!price || isNaN(price)) {
           lastError = new Error("Invalid price data");
+          lastFailureType = "INVALID_PRICE";
           if (attempt < maxRetries) {
             const backoff = attempt === 0 ? 100 : 500;
             console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
@@ -176,6 +256,7 @@ async function getPriceFromKraken(symbol: string): Promise<PriceData | null> {
           bid,
           ask,
           timestamp: Math.floor(Date.now() / 1000),
+          isStale: false,
         };
 
         recordKrakenSuccess(base);
@@ -183,17 +264,22 @@ async function getPriceFromKraken(symbol: string): Promise<PriceData | null> {
         console.log(`[KRAKEN] ✓ ${base}: $${price.toFixed(2)} (attempt ${attempt + 1}/${maxRetries + 1})`);
         return priceData;
       } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
+        if (err instanceof Error && err.name === "AbortError") {
+          lastError = new Error("Timeout (5s)");
+          lastFailureType = "TIMEOUT";
+        } else {
+          lastError = err instanceof Error ? err : new Error(String(err));
+        }
         // Continue to next retry or fallback
       }
     }
 
-    // All retries exhausted
-    recordKrakenFailure(symbol);
-    console.warn(`[KRAKEN] All retries exhausted for ${base}: ${lastError?.message}`);
+    // All retries exhausted — record failure with type
+    recordKrakenFailure(symbol, lastFailureType);
+    console.warn(`[KRAKEN] All retries exhausted for ${base}: ${lastError?.message} (type: ${lastFailureType})`);
     return null;
   } catch (err) {
-    recordKrakenFailure(symbol);
+    recordKrakenFailure(symbol, "HTTP_ERROR");
     console.warn(`[KRAKEN] Exception:`, err instanceof Error ? err.message : String(err));
     return null;
   }
@@ -255,6 +341,7 @@ async function getPriceFromCoinGecko(symbol: string): Promise<PriceData | null> 
 
 /**
  * Price Router: Try Kraken first, fallback to CoinGecko, use cache for stability
+ * NEW: Downgrade stale cached prices to DEGRADED instead of returning as LIVE
  * Returns explicit health status for gate enforcement
  */
 export async function getPrice(symbol: string): Promise<PriceData | null> {
@@ -264,7 +351,16 @@ export async function getPrice(symbol: string): Promise<PriceData | null> {
   // Check cache first (for stability during transient failures)
   const cached = getCachedPrice(base);
   if (cached && cached.source === "kraken") {
-    return cached; // Use cached LIVE price if available
+    if (cached.isStale) {
+      // Downgrade stale cache to DEGRADED to prevent false LIVE status
+      console.log(`[PRICE_ROUTER] Using stale Kraken cache for ${base} — downgrading to DEGRADED`);
+      return {
+        ...cached,
+        health: "DEGRADED",
+      };
+    }
+    // Fresh cache, return as LIVE
+    return cached;
   }
 
   // Try primary feed (Kraken)
@@ -273,13 +369,22 @@ export async function getPrice(symbol: string): Promise<PriceData | null> {
     return krakenPrice; // LIVE
   }
 
-  // Kraken failed, check cache before fallback (still execution-grade if recent)
+  // Kraken failed, check cache before fallback
   if (cached && cached.source === "kraken") {
-    console.log(`[PRICE_ROUTER] Kraken failed, using cached price for ${base}`);
-    return cached; // Last-known-good, still LIVE for execution
+    if (cached.isStale) {
+      // Downgrade stale cache to DEGRADED
+      console.log(`[PRICE_ROUTER] Kraken failed, using stale cache for ${base} — downgrading to DEGRADED`);
+      return {
+        ...cached,
+        health: "DEGRADED",
+      };
+    }
+    // Cache is fresh, still OK for execution
+    console.log(`[PRICE_ROUTER] Kraken failed, using fresh cached price for ${base}`);
+    return cached; // LIVE (still fresh)
   }
 
-  console.log(`[PRICE_ROUTER] Kraken failed for ${base}, attempting fallback...`);
+  console.log(`[PRICE_ROUTER] Kraken failed for ${base}, attempting CoinGecko fallback...`);
 
   // Try secondary feed (CoinGecko)
   const coingeckoPrice = await getPriceFromCoinGecko(base);
