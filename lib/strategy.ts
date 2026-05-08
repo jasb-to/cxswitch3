@@ -1241,8 +1241,13 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       dataSource = result.source;
       dataSourceTime = result.timestamp;
       console.log(`[${symbolBase}] ✓ Got ${candles4h.length} 4H candles from ${dataSource}`);
-
-      // Fetch 15M candles for EMA/RSI timing
+      
+      // DEBUG: Log first and last candle timestamps
+      if (candles4h.length > 0) {
+        const first = candles4h[0];
+        const last = candles4h[candles4h.length - 1];
+        console.log(`[${symbolBase}] [DEBUG] 4H candles: first=${new Date(first.time * 1000).toISOString()} close=$${first.close.toFixed(2)}, last=${new Date(last.time * 1000).toISOString()} close=$${last.close.toFixed(2)}`);
+      }
       console.log(`[${symbolBase}] Fetching 15M candles...`);
       const result15m = await fetchCandles(symbolBase, 15, 50);
       candles15m = result15m.candles;
@@ -1253,6 +1258,13 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       const result5m = await fetchCandles(symbolBase, 5, 50);
       candles5m = result5m.candles;
       console.log(`[${symbolBase}] ✓ Got ${candles5m.length} 5M candles from ${result5m.source}`);
+      
+      // DEBUG: Log 5M candle details
+      if (candles5m.length > 0) {
+        const first = candles5m[0];
+        const last = candles5m[candles5m.length - 1];
+        console.log(`[${symbolBase}] [DEBUG] 5M candles: first=${new Date(first.time * 1000).toISOString()} close=$${first.close.toFixed(2)}, last=${new Date(last.time * 1000).toISOString()} close=$${last.close.toFixed(2)}`);
+      }
     } catch (err) {
       console.error(`[${symbolBase}] ✗ Candle fetch failed:`, err instanceof Error ? err.message : String(err));
       console.error(`[${symbolBase}] Error details:`, err);
@@ -1350,6 +1362,36 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     }
 
     const price = candles4h[candles4h.length - 1].close;
+    const latestCandle4h = candles4h[candles4h.length - 1];
+    const latestCandle5m = candles5m.length > 0 ? candles5m[candles5m.length - 1] : null;
+    const latestCandle15m = candles15m.length > 0 ? candles15m[candles15m.length - 1] : null;
+    
+    // ADD STALE DATA PROTECTION
+    const now = Math.floor(Date.now() / 1000);
+    const candle4hAge = now - latestCandle4h.time;
+    const candle5mAge = latestCandle5m ? now - latestCandle5m.time : Infinity;
+    
+    // Warn if latest candle is older than expected (more than 30 seconds past the interval)
+    if (candle4hAge > 240 * 60 + 30) {
+      logs.push(`[${symbolBase}] [STALE_DATA] Latest 4H candle is ${candle4hAge} seconds old`);
+    }
+    
+    // DEBUG LOGS FOR PRICE VALIDATION
+    console.log(`[${symbolBase}] [DEBUG] Latest candle @ ${new Date(latestCandle4h.time * 1000).toISOString()} close=$${price.toFixed(2)}`);
+    if (latestCandle5m) {
+      console.log(`[${symbolBase}] [DEBUG] 5M close=$${latestCandle5m.close.toFixed(2)}`);
+    }
+    if (latestCandle15m) {
+      console.log(`[${symbolBase}] [DEBUG] 15M close=$${latestCandle15m.close.toFixed(2)}`);
+    }
+    
+    // PRICE CONSISTENCY CHECK: Compare 4H close vs 5M close
+    // They should be similar (within 0.5%) if both are recent
+    if (latestCandle5m && Math.abs(price - latestCandle5m.close) / price > 0.0035) {
+      console.warn(`[${symbolBase}] [PRICE_DESYNC] 4H close=$${price.toFixed(2)} vs 5M close=$${latestCandle5m.close.toFixed(2)} deviation=${((Math.abs(price - latestCandle5m.close) / price) * 100).toFixed(2)}%`);
+      logs.push(`[${symbolBase}] [PRICE_DESYNC] 4H and 5M prices diverge — rejecting signal generation`);
+      continue; // Skip signal generation for this symbol
+    }
     
     // Cache the price for fallback use
     priceCache.set(symbol, { price, timestamp: Date.now() });
