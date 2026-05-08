@@ -3,8 +3,9 @@
 import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
+import { getStateOfPlay } from "@/lib/state-of-play";
 
-const VERSION = "v2.9.3";
+const VERSION = "v2.9.4";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -98,23 +99,11 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
       </div>
 
       <div className="p-5 flex flex-col gap-5">
-        {/* STATE OF PLAY — one line */}
-        {market && !market.error && (
+        {/* STATE OF PLAY — dynamic explanation of current cycle */}
+        {(market || active) && (
           <div className="flex flex-col gap-1">
-            <p className={`text-lg font-semibold leading-tight ${
-              active
-                ? signal.direction === "LONG"
-                  ? "text-[#22c55e]"
-                  : "text-[#ef4444]"
-                : "text-white"
-            }`}>
-              {active
-                ? signal.state === "EARLY_OPEN"
-                  ? `${signal.direction} ENTRY OPENED — awaiting retest`
-                  : signal.state === "CONFIRMED"
-                  ? `${signal.direction} CONFIRMED — RETEST ADD-ON`
-                  : "ENDED — setup expired"
-                : "SCANNING FOR SETUP"}
+            <p className="text-sm text-[#aaa] leading-snug italic">
+              {getStateOfPlay(signal, market)}
             </p>
           </div>
         )}
