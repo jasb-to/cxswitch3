@@ -12,6 +12,7 @@ import { getLivePrice, validateMarketDataFreshness } from "./market/live-price";
 import { ALLOWED_SIGNAL_OUTCOMES, isValidOutcome, validateOutcome, type SignalOutcome } from "./signal-outcome-constants";
 import { determinePriceHealth, canGenerateSignals, canExecuteTradeLogic, canValidateStructure, type PriceHealthStatus } from "./price-health";
 import { resolveSymbol, type ResolvedSymbol } from "./symbol-resolver";
+import { getPrice, type PriceHealth } from "./price-router";
 
 export type SignalDirection = "LONG" | "SHORT";
 /**
@@ -344,7 +345,8 @@ export interface Signal {
 export interface MarketContext {
   symbol: string;
   price: number;
-  priceSource: "ticker" | "fallback_candle"; // CRITICAL: Track where price came from
+  priceSource: "kraken" | "coingecko" | "none"; // NEW: Explicit feed source (not just ticker/fallback_candle)
+  priceHealth: "LIVE" | "DEGRADED" | "OFFLINE"; // NEW: Explicit health state for gates
   swingHigh: number | null;
   swingLow: number | null;
   distanceToHigh: number | null;
@@ -449,14 +451,26 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
   // ═══════════════════════════════════════════════════════════��═══════════════
   // HARD GATE: Price health must be LIVE to generate ANY signals
   // NO exceptions, NO degraded-mode trading, NO fallback trading
-  // ═══════════════════════════════════════════════════════════════════════������══
-  const priceHealthStatus = await checkPriceHealthAcrossSymbols(["BTC", "ETH", "SOL"]);
-  if (priceHealthStatus !== "LIVE") {
-    logs.push(`[PRICE_GATE] ❌ HARD BLOCK: Price health is ${priceHealthStatus} — NO signal generation allowed`);
-    logs.push(`[PRICE_GATE] Reason: System only trades on LIVE ticker data. When tickers degrade, ALL signal generation halts.`);
-    return { signals, logs }; // Return empty signals, not degraded mode
+  // ═══════════════════════════════════════════════════════════════════════��������══
+  // ═══════════════════════════════════════════════════════════════════════════
+  // HARD GATE: Price health must be LIVE to generate ANY signals
+  // Check all symbols' price health before proceeding with signal generation
+  // ═══════════════════════════════════════════════════════════════════════════
+  const priceHealths = await Promise.all(
+    ["BTC", "ETH", "SOL"].map(async (base) => {
+      const market = await getMarketContext(base);
+      return market.priceHealth;
+    })
+  );
+  
+  const allLive = priceHealths.every(h => h === "LIVE");
+  if (!allLive) {
+    const degradedSymbols = ["BTC", "ETH", "SOL"].filter((_, i) => priceHealths[i] !== "LIVE");
+    logs.push(`[PRICE_GATE] ❌ HARD BLOCK: Price health degraded for ${degradedSymbols.join(", ")} — NO signal generation allowed`);
+    logs.push(`[PRICE_GATE] Reason: System only trades on LIVE ticker data. When any feed degrades, ALL signal generation halts.`);
+    return { signals, logs }; // Return empty signals
   }
-  logs.push(`[PRICE_GATE] ✓ Price health is LIVE — signal generation enabled`);
+  logs.push(`[PRICE_GATE] ✓ All price feeds LIVE — signal generation enabled`);
 
   if (!supabase) {
     logs.push("[SUPABASE] Not connected — skipping signal generation");
@@ -972,18 +986,10 @@ export async function reconcileSignalStates(): Promise<{ logs: string[]; reconci
         // Get live price from market context
         const market = await getMarketContext(symbolBase);
         
-        // CRITICAL: Only reconcile on LIVE price sources
+        // CRITICAL: Only reconcile on LIVE price health
         // Block reconciliation on DEGRADED/OFFLINE to prevent false TP/SL triggers
-        const priceHealth = determinePriceHealth(market.priceSource);
-        if (!canExecuteTradeLogic(priceHealth)) {
-          logs.push(`[RECONCILE] ${symbolBase}: ⚠ Price health: ${priceHealth} — reconciliation blocked (${market.priceSource})`);
-          continue;
-        }
-        
-        // CRITICAL: Block reconciliation if using fallback candle prices
-        // Only reconcile with LIVE ticker prices to prevent false TP/SL triggers
-        if (market.priceSource !== "ticker") {
-          logs.push(`[RECONCILE] ${symbolBase}: ⚠ Using FALLBACK price source (${market.priceSource}) — blocking reconciliation`);
+        if (market.priceHealth !== "LIVE") {
+          logs.push(`[RECONCILE] ${symbolBase}: ⚠ Price health is ${market.priceHealth} (${market.priceSource}) — reconciliation blocked`);
           continue;
         }
 
@@ -1362,18 +1368,10 @@ export async function validateActiveEarlyOpenSignals(): Promise<{ logs: string[]
         const { base: symbolBase } = resolved;
         const market = await getMarketContext(symbolBase);
         
-        // CRITICAL: Only validate structure on LIVE price sources
+        // CRITICAL: Only validate structure on LIVE price health
         // Block validation on DEGRADED/OFFLINE to prevent false invalidations
-        const priceHealth = determinePriceHealth(market.priceSource);
-        if (!canValidateStructure(priceHealth)) {
-          logs.push(`[EARLY_OPEN VALIDATION] ${symbolBase}: ⚠ Price health: ${priceHealth} — validation blocked (${market.priceSource})`);
-          continue;
-        }
-        
-        // CRITICAL: Skip validation if using fallback candle prices
-        // Only invalidate based on LIVE ticker data to prevent false invalidations
-        if (market.priceSource !== "ticker") {
-          logs.push(`[EARLY_OPEN VALIDATION] ${symbolBase}: ⚠ Using FALLBACK price source (${market.priceSource}) — skipping validation`);
+        if (market.priceHealth !== "LIVE") {
+          logs.push(`[EARLY_OPEN VALIDATION] ${symbolBase}: ⚠ Price health is ${market.priceHealth} (${market.priceSource}) — validation blocked`);
           continue;
         }
 
@@ -1803,23 +1801,47 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     const latestCandle5m = candles5m.length > 0 ? candles5m[candles5m.length - 1] : null;
     const latestCandle15m = candles15m.length > 0 ? candles15m[candles15m.length - 1] : null;
     
-    // FETCH LIVE PRICE FROM TICKER (NOT CANDLE CLOSE)
-    let priceSource: "ticker" | "fallback_candle" = "fallback_candle";
-    let livePrice = price; // Default to candle close
-    
-    const livePriceData = await getLivePrice(symbolBase);
-    if (livePriceData?.livePrice) {
-      livePrice = livePriceData.livePrice;
-      priceSource = "ticker";
-      console.log(`[${symbolBase}] ✓ Live ticker price: $${livePrice.toFixed(2)} (bid=$${livePriceData.bid?.toFixed(2)} ask=$${livePriceData.ask?.toFixed(2)})`);
-    } else {
-      console.error(`[${symbolBase}] ✗ TICKER FAILED — falling back to candle close`);
-      console.log(`[${symbolBase}] ⚠ Using STALE price from 4H candle: $${price.toFixed(2)} (NOT LIVE)`);
-      priceSource = "fallback_candle";
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FETCH PRICE USING ROUTER (PRIMARY: Kraken, FALLBACK: CoinGecko)
+    // Explicit health state for gate enforcement
+    // ═══════════════════════════════════════════════════════════════════════════
+    const priceData = await getPrice(symbolBase);
+    if (!priceData) {
+      console.error(`[${symbolBase}] PRICE_ROUTER: All feeds failed — no price data`);
+      return {
+        symbol,
+        price: price, // Fall back to candle close for display only
+        priceSource: "none",
+        priceHealth: "OFFLINE",
+        swingHigh: null,
+        swingLow: null,
+        distanceToHigh: null,
+        distanceToLow: null,
+        setup: "ERROR",
+        setupText: "Price feeds unavailable",
+        error: true,
+        trendlines: 0,
+        candles4h,
+        candles15m,
+        candles5m,
+        adx: undefined,
+        ema8: undefined,
+        ema21: undefined,
+        emaCurling: undefined,
+        rsi15m: undefined,
+        rsi5m: undefined,
+        rsiSlope15m: undefined,
+        rsiSlope5m: undefined,
+        volatility: 1.0,
+        volatilityThreshold: 0.005,
+      };
     }
+
+    const livePrice = priceData.price;
+    const priceHealth = priceData.health; // LIVE, DEGRADED, or OFFLINE
     
-    // Log price source explicitly
-    console.log(`[PRICE_SOURCE] ${symbolBase}: source=${priceSource} price=$${livePrice.toFixed(2)}`);
+    // Log price source and health explicitly
+    console.log(`[PRICE_ROUTER] ${symbolBase}: source=${priceData.source} health=${priceHealth} price=$${livePrice.toFixed(2)}`);
     
     // [PRICE DEBUG] Log live vs candle prices
     console.log(`[PRICE DEBUG] ${symbolBase}: livePrice=${livePrice.toFixed(2)} candleClose=${price.toFixed(2)} diff=${((livePrice - price) / price * 100).toFixed(2)}%`);
@@ -1828,7 +1850,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     const freshness = validateMarketDataFreshness({
       candle5m: latestCandle5m?.time,
       candle15m: latestCandle15m?.time,
-      ticker: livePriceData?.timestamp,
+      ticker: priceData.timestamp,
     });
     
     if (!freshness.valid) {
@@ -1836,7 +1858,8 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       return {
         symbol,
         price: livePrice,
-        priceSource,
+        priceSource: priceData.source,
+        priceHealth,
         swingHigh: null,
         swingLow: null,
         distanceToHigh: null,
@@ -1861,18 +1884,19 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       };
     }
     
-    // PRICE CONSISTENCY CHECK: Compare live ticker vs latest 5M candle
+    // PRICE CONSISTENCY CHECK: Compare live price vs latest 5M candle
     const priceDrift = Math.abs(livePrice - (latestCandle5m?.close ?? price)) / livePrice;
     
     // DEBUG LOGS FOR PRICE TRACKING
-    console.log(`[${symbolBase}] Live Price: ${livePrice.toFixed(2)} (from ${livePriceData?.source || "candle"})`);
+    console.log(`[${symbolBase}] Live Price: ${livePrice.toFixed(2)} (from ${priceData.source})`);
     console.log(`[${symbolBase}] Last 5M Close: ${latestCandle5m?.close.toFixed(2) ?? "N/A"}`);
     if (priceDrift > 0.005) {
       console.log(`[${symbolBase}] [PRICE_DRIFT] Drift: ${(priceDrift * 100).toFixed(2)}% — rejecting signal`);
       return {
         symbol,
         price: livePrice,
-        priceSource,
+        priceSource: priceData.source,
+        priceHealth,
         swingHigh: null,
         swingLow: null,
         distanceToHigh: null,
@@ -2167,7 +2191,8 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     return {
       symbol,
       price: livePrice,  // Use live ticker price instead of candle close
-      priceSource,
+      priceSource: priceData.source,
+      priceHealth,
       swingHigh,
       swingLow,
       distanceToHigh,
@@ -2198,7 +2223,8 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     return {
       symbol,
       price: 0,
-      priceSource: "fallback_candle",
+      priceSource: "none",
+      priceHealth: "OFFLINE",
       swingHigh: null,
       swingLow: null,
       distanceToHigh: null,
