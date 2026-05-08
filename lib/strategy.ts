@@ -8,6 +8,7 @@ import {
   type ValidationResult,
 } from "./signal-serializer";
 import { ACTIVE_SIGNAL_STATES, TERMINAL_SIGNAL_STATES } from "./signal-states";
+import { getLivePrice, validateMarketDataFreshness } from "./market/live-price";
 
 export type SignalDirection = "LONG" | "SHORT";
 /**
@@ -1241,8 +1242,13 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       dataSource = result.source;
       dataSourceTime = result.timestamp;
       console.log(`[${symbolBase}] ✓ Got ${candles4h.length} 4H candles from ${dataSource}`);
-
-      // Fetch 15M candles for EMA/RSI timing
+      
+      // DEBUG: Log first and last candle timestamps
+      if (candles4h.length > 0) {
+        const first = candles4h[0];
+        const last = candles4h[candles4h.length - 1];
+        console.log(`[${symbolBase}] [DEBUG] 4H candles: first=${new Date(first.time * 1000).toISOString()} close=$${first.close.toFixed(2)}, last=${new Date(last.time * 1000).toISOString()} close=$${last.close.toFixed(2)}`);
+      }
       console.log(`[${symbolBase}] Fetching 15M candles...`);
       const result15m = await fetchCandles(symbolBase, 15, 50);
       candles15m = result15m.candles;
@@ -1253,6 +1259,13 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       const result5m = await fetchCandles(symbolBase, 5, 50);
       candles5m = result5m.candles;
       console.log(`[${symbolBase}] ✓ Got ${candles5m.length} 5M candles from ${result5m.source}`);
+      
+      // DEBUG: Log 5M candle details
+      if (candles5m.length > 0) {
+        const first = candles5m[0];
+        const last = candles5m[candles5m.length - 1];
+        console.log(`[${symbolBase}] [DEBUG] 5M candles: first=${new Date(first.time * 1000).toISOString()} close=$${first.close.toFixed(2)}, last=${new Date(last.time * 1000).toISOString()} close=$${last.close.toFixed(2)}`);
+      }
     } catch (err) {
       console.error(`[${symbolBase}] ✗ Candle fetch failed:`, err instanceof Error ? err.message : String(err));
       console.error(`[${symbolBase}] Error details:`, err);
@@ -1350,8 +1363,86 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     }
 
     const price = candles4h[candles4h.length - 1].close;
+    const latestCandle4h = candles4h[candles4h.length - 1];
+    const latestCandle5m = candles5m.length > 0 ? candles5m[candles5m.length - 1] : null;
+    const latestCandle15m = candles15m.length > 0 ? candles15m[candles15m.length - 1] : null;
     
-    // Cache the price for fallback use
+    // FETCH LIVE PRICE FROM TICKER (NOT CANDLE CLOSE)
+    const livePriceData = await getLivePrice(symbolBase);
+    const livePrice = livePriceData?.livePrice ?? price; // Fallback to candle close if ticker fails
+    
+    // VALIDATE MARKET DATA FRESHNESS
+    const freshness = validateMarketDataFreshness({
+      candle5m: latestCandle5m?.time,
+      candle15m: latestCandle15m?.time,
+      ticker: livePriceData?.timestamp,
+    });
+    
+    if (!freshness.valid) {
+      console.log(`[${symbolBase}] Stale market data — ${freshness.reason} — skipping signal generation`);
+      return {
+        symbol,
+        price: livePrice,
+        swingHigh: null,
+        swingLow: null,
+        distanceToHigh: null,
+        distanceToLow: null,
+        setup: "NO_SETUP",
+        setupText: `Stale market data — ${freshness.reason}`,
+        error: false,
+        trendlines: 0,
+        candles4h,
+        candles15m,
+        candles5m,
+        adx: undefined,
+        ema8: undefined,
+        ema21: undefined,
+        emaCurling: undefined,
+        rsi15m: undefined,
+        rsi5m: undefined,
+        rsiSlope15m: undefined,
+        rsiSlope5m: undefined,
+        volatility: 1.0,
+        volatilityThreshold: 0.005,
+      };
+    }
+    
+    // PRICE CONSISTENCY CHECK: Compare live ticker vs latest 5M candle
+    const priceDrift = Math.abs(livePrice - (latestCandle5m?.close ?? price)) / livePrice;
+    
+    // DEBUG LOGS FOR PRICE TRACKING
+    console.log(`[${symbolBase}] Live Price: ${livePrice.toFixed(2)} (from ${livePriceData?.source || "candle"})`);
+    console.log(`[${symbolBase}] Last 5M Close: ${latestCandle5m?.close.toFixed(2) ?? "N/A"}`);
+    if (priceDrift > 0.005) {
+      console.log(`[${symbolBase}] [PRICE_DRIFT] Drift: ${(priceDrift * 100).toFixed(2)}% — rejecting signal`);
+      return {
+        symbol,
+        price: livePrice,
+        swingHigh: null,
+        swingLow: null,
+        distanceToHigh: null,
+        distanceToLow: null,
+        setup: "NO_SETUP",
+        setupText: "Price data inconsistent — skipping signal generation",
+        error: false,
+        trendlines: 0,
+        candles4h,
+        candles15m,
+        candles5m,
+        adx: undefined,
+        ema8: undefined,
+        ema21: undefined,
+        emaCurling: undefined,
+        rsi15m: undefined,
+        rsi5m: undefined,
+        rsiSlope15m: undefined,
+        rsiSlope5m: undefined,
+        volatility: 1.0,
+        volatilityThreshold: 0.005,
+      };
+    }
+    
+    // Cache the live price for fallback use
     priceCache.set(symbol, { price, timestamp: Date.now() });
 
     // VOLATILITY CALCULATION: Measure recent price movement to calibrate expansion thresholds
@@ -1607,7 +1698,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
 
     return {
       symbol,
-      price,
+      price: livePrice,  // Use live ticker price instead of candle close
       swingHigh,
       swingLow,
       distanceToHigh,
