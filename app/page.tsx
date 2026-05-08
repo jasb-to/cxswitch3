@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 
-const VERSION = "v2.8.4";
+const VERSION = "v2.8.5";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -25,35 +25,6 @@ function Badge({ state }: { state: Signal["state"] }) {
       {state}
     </span>
   );
-}
-
-/**
- * Generate human-readable decision context based on signal state and market conditions
- */
-function getStateSummary(signal: Signal | undefined, market: MarketContext | undefined): string {
-  const state = signal?.state || "NO_SETUP";
-  const adx = market?.adx ?? 0;
-  const confidence = signal?.confidence ?? 0;
-
-  if (state === "CONFIRMED") {
-    return "Confirmed setup — awaiting execution trigger";
-  }
-
-  if (state === "EARLY_OPEN") {
-    if (adx < 15) {
-      return "Early breakout forming — weak trend strength";
-    }
-    if (adx < 25) {
-      return "Early setup — waiting for trend confirmation";
-    }
-    return "Strong early momentum — monitoring for trigger";
-  }
-
-  if (adx < 15) {
-    return "No setup — market in low momentum regime";
-  }
-
-  return "Scanning — no valid structure yet";
 }
 
 function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: string; signal?: Signal; market?: MarketContext; onEndTradeClick?: (signalId: number, symbol: string, entryPrice: number) => void }) {
@@ -124,12 +95,6 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
         <div>
           <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1">PRICE</p>
           <p className="font-mono text-3xl font-bold text-white tabular-nums">{displayPrice}</p>
-        </div>
-
-        {/* STATE OF PLAY */}
-        <div>
-          <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">STATE OF PLAY</p>
-          <p className="text-sm text-[#aaa]">{getStateSummary(signal, market)}</p>
         </div>
 
         {/* SIGNAL DETAILS (if active) */}
