@@ -446,10 +446,10 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
   const logs: string[] = [];
   const signals: Signal[] = [];
 
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════��═══════════════
   // HARD GATE: Price health must be LIVE to generate ANY signals
   // NO exceptions, NO degraded-mode trading, NO fallback trading
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ════════════════════════════════════════════════════════════════════════���══
   const priceHealthStatus = await checkPriceHealthAcrossSymbols(["BTC", "ETH", "SOL"]);
   if (priceHealthStatus !== "LIVE") {
     logs.push(`[PRICE_GATE] ❌ HARD BLOCK: Price health is ${priceHealthStatus} — NO signal generation allowed`);
@@ -545,18 +545,15 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
     for (const base of ["BTC", "ETH", "SOL"]) {
       try {
         // ═══════════════════════════════════════════════════════════════════════════
-        // CANONICAL SYMBOL ENFORCEMENT: All symbols go through resolver
+        // CANONICAL SYMBOL ENFORCEMENT: All symbols go through resolver validation
         // This establishes the system input contract at entry
         // ═══════════════════════════════════════════════════════════════════════════
-        let resolved: ResolvedSymbol;
         try {
-          resolved = resolveSymbol(base);
+          resolveSymbol(base);  // Validate symbol can be resolved (hard fail if not)
         } catch (err) {
           logs.push(`[${base}] HARD FAIL - Symbol resolution failed: ${err instanceof Error ? err.message : String(err)}`);
           continue;
         }
-
-        const { internal: symbol } = resolved;
 
         const market = await getMarketContext(base);
 
