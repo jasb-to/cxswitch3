@@ -10,6 +10,7 @@ import {
 import { ACTIVE_SIGNAL_STATES, TERMINAL_SIGNAL_STATES } from "./signal-states";
 import { getLivePrice, validateMarketDataFreshness } from "./market/live-price";
 import { ALLOWED_SIGNAL_OUTCOMES, isValidOutcome, validateOutcome, type SignalOutcome } from "./signal-outcome-constants";
+import { determinePriceHealth, canGenerateSignals, canExecuteTradeLogic, canValidateStructure, type PriceHealthStatus } from "./price-health";
 
 export type SignalDirection = "LONG" | "SHORT";
 /**
@@ -769,6 +770,15 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
             confidence,
             breakout_level: breakoutLevel,
           };
+          
+          // Check price health before generating EARLY_OPEN entry
+          // DEGRADED price sources (fallback candle) cannot generate entries
+          // Only LIVE ticker data can trigger entries to ensure consistency with execution
+          const priceHealth = determinePriceHealth(market.priceSource);
+          if (!canGenerateSignals(priceHealth)) {
+            logs.push(`[${base}] Price health: ${priceHealth} — blocking entry generation (${market.priceSource})`);
+            continue;
+          }
 
           try {
             const result = await safeInsertSignal(newSignal);
@@ -925,7 +935,14 @@ export async function reconcileSignalStates(): Promise<{ logs: string[]; reconci
         
         // Get live price from market context
         const market = await getMarketContext(signal.symbol);
-        const livePrice = market.price;
+        
+        // CRITICAL: Only reconcile on LIVE price sources
+        // Block reconciliation on DEGRADED/OFFLINE to prevent false TP/SL triggers
+        const priceHealth = determinePriceHealth(market.priceSource);
+        if (!canExecuteTradeLogic(priceHealth)) {
+          logs.push(`[RECONCILE] ${symbolBase}: ⚠ Price health: ${priceHealth} — reconciliation blocked (${market.priceSource})`);
+          continue;
+        }
         
         // CRITICAL: Block reconciliation if using fallback candle prices
         // Only reconcile with LIVE ticker prices to prevent false TP/SL triggers
@@ -933,6 +950,8 @@ export async function reconcileSignalStates(): Promise<{ logs: string[]; reconci
           logs.push(`[RECONCILE] ${symbolBase}: ⚠ Using FALLBACK price source (${market.priceSource}) — blocking reconciliation`);
           continue;
         }
+
+        const livePrice = market.price;
 
         if (!livePrice || livePrice <= 0) {
           logs.push(`[RECONCILE] ${symbolBase}: No live price available — skipping`);
@@ -1264,6 +1283,14 @@ export async function validateActiveEarlyOpenSignals(): Promise<{ logs: string[]
       try {
         const symbol = signal.symbol;
         const market = await getMarketContext(symbol);
+        
+        // CRITICAL: Only validate structure on LIVE price sources
+        // Block validation on DEGRADED/OFFLINE to prevent false invalidations
+        const priceHealth = determinePriceHealth(market.priceSource);
+        if (!canValidateStructure(priceHealth)) {
+          logs.push(`[EARLY_OPEN VALIDATION] ${symbol}: ⚠ Price health: ${priceHealth} — validation blocked (${market.priceSource})`);
+          continue;
+        }
         
         // CRITICAL: Skip validation if using fallback candle prices
         // Only invalidate based on LIVE ticker data to prevent false invalidations
