@@ -2,52 +2,61 @@ import type { Signal } from "./strategy";
 import type { MarketContext } from "./strategy";
 
 /**
- * Generate human-readable state of play explanation for signal cards
- * Describes what's happening in the current cycle for each symbol
+ * Generate contextual cycle explanation for each symbol
+ * Explains market phase without exposing technical scores or gates
+ * 
+ * SNIPER/CONFIRMED strategy cycle:
+ * EARLY_OPEN: Momentum expansion beginning — tight invalidation, small stop
+ * CONFIRMED: Retest holding — continuation phase, dynamic runner extension
+ * NO_SETUP: Structure recognized but not yet triggered
  */
 export function getStateOfPlay(signal: Signal | undefined, market: MarketContext | undefined): string {
-  // Active signal takes priority - describe what the trade is doing
+  // Active signal: describe trade phase
   if (signal) {
     switch (signal.state) {
       case "EARLY_OPEN":
-        return "Breakout detected. Waiting for retest confirmation before continuation.";
+        const direction = signal.direction === "LONG" ? "bullish" : "bearish";
+        return `Momentum expansion beginning from ${direction} structure. Waiting for retest confirmation.`;
 
       case "CONFIRMED":
-        return "Breakout confirmed. Momentum phase active and tracking continuation.";
+        return `Retest holding — continuation phase active. TP1 protected, managing runner with trailed stop.`;
 
       case "END":
         if (signal.outcome === "TP") {
-          return "First target reached. Trade is now in controlled exit / scaling phase.";
+          return "Target hit. Wave expansion captured. Cycle complete.";
         }
         if (signal.outcome === "SL") {
-          return "Invalidation hit. Setup has failed and cycle is complete.";
+          return "Invalidation hit. Structure failed. Cycle reset.";
         }
-        return "Trade completed. Awaiting new structure formation.";
+        if (signal.outcome === "STRUCTURE_INVALIDATED") {
+          return "Structure collapsed. Entry invalidated. New cycle beginning.";
+        }
+        return "Trade ended. New cycle starting.";
 
       default:
-        return "Trade in progress. Monitoring for phase transitions.";
+        return "Trade in progress. Monitoring structure.";
     }
   }
 
-  // No active signal - describe market structure state
+  // No active signal: describe market structure state
   if (market) {
     switch (market.setup) {
       case "SHORT_SETUP":
-        return "Bearish structure forming. Waiting for trigger confirmation.";
+        return "Bearish structure recognized. Waiting for momentum expansion to trigger entry.";
 
       case "LONG_SETUP":
-        return "Bullish structure forming. Monitoring for breakout confirmation.";
+        return "Bullish structure recognized. Waiting for momentum expansion to trigger entry.";
 
       case "NO_SETUP":
-        return "No active structure. Market is in consolidation phase.";
+        return "Market cycling through consolidation. Structure not yet defined.";
 
       case "ERROR":
-        return "Market data unavailable. Check data freshness.";
+        return "Market data unavailable. Check connection status.";
 
       default:
-        return "Scanning for structure formation.";
+        return "Analyzing market structure formation.";
     }
   }
 
-  return "Loading market state...";
+  return "Loading market context...";
 }

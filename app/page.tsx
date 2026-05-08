@@ -5,7 +5,7 @@ import { useState, useEffect, useMemo } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 import { getStateOfPlay } from "@/lib/state-of-play";
 
-const VERSION = "v2.9.4";
+const VERSION = "v2.9.5";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
