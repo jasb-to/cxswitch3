@@ -813,9 +813,8 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           // Check price health before generating EARLY_OPEN entry
           // DEGRADED price sources (fallback candle) cannot generate entries
           // Only LIVE ticker data can trigger entries to ensure consistency with execution
-          const priceHealth = determinePriceHealth(market.priceSource);
-          if (!canGenerateSignals(priceHealth)) {
-            logs.push(`[${base}] Price health: ${priceHealth} — blocking entry generation (${market.priceSource})`);
+          if (!canGenerateSignals(market.priceHealth as PriceHealthStatus)) {
+            logs.push(`[${base}] Price health: ${market.priceHealth} — blocking entry generation (${market.priceSource})`);
             continue;
           }
 
@@ -1081,8 +1080,7 @@ async function checkPriceHealthAcrossSymbols(symbols: string[]): Promise<"LIVE" 
 
   for (const symbol of symbols) {
     const market = await getMarketContext(symbol);
-    const priceHealth = determinePriceHealth(market.priceSource);
-    healthStatuses.push(priceHealth);
+    healthStatuses.push(market.priceHealth);
   }
 
   // If any symbol is OFFLINE, system is OFFLINE
