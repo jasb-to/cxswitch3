@@ -1380,8 +1380,31 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     
     if (!freshness.valid) {
       console.log(`[${symbolBase}] Stale market data — ${freshness.reason} — skipping signal generation`);
-      logs.push(`[${symbolBase}] Stale market data — skipping signal generation`);
-      continue; // Skip this symbol
+      return {
+        symbol,
+        price: livePrice,
+        swingHigh: null,
+        swingLow: null,
+        distanceToHigh: null,
+        distanceToLow: null,
+        setup: "NO_SETUP",
+        setupText: `Stale market data — ${freshness.reason}`,
+        error: false,
+        trendlines: 0,
+        candles4h,
+        candles15m,
+        candles5m,
+        adx: undefined,
+        ema8: undefined,
+        ema21: undefined,
+        emaCurling: undefined,
+        rsi15m: undefined,
+        rsi5m: undefined,
+        rsiSlope15m: undefined,
+        rsiSlope5m: undefined,
+        volatility: 1.0,
+        volatilityThreshold: 0.005,
+      };
     }
     
     // PRICE CONSISTENCY CHECK: Compare live ticker vs latest 5M candle
@@ -1392,8 +1415,31 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     console.log(`[${symbolBase}] Last 5M Close: ${latestCandle5m?.close.toFixed(2) ?? "N/A"}`);
     if (priceDrift > 0.005) {
       console.log(`[${symbolBase}] [PRICE_DRIFT] Drift: ${(priceDrift * 100).toFixed(2)}% — rejecting signal`);
-      logs.push(`[${symbolBase}] [PRICE_DRIFT] Price mismatch detected — skipping signal generation`);
-      continue; // Skip signal generation for this symbol
+      return {
+        symbol,
+        price: livePrice,
+        swingHigh: null,
+        swingLow: null,
+        distanceToHigh: null,
+        distanceToLow: null,
+        setup: "NO_SETUP",
+        setupText: "Price data inconsistent — skipping signal generation",
+        error: false,
+        trendlines: 0,
+        candles4h,
+        candles15m,
+        candles5m,
+        adx: undefined,
+        ema8: undefined,
+        ema21: undefined,
+        emaCurling: undefined,
+        rsi15m: undefined,
+        rsi5m: undefined,
+        rsiSlope15m: undefined,
+        rsiSlope5m: undefined,
+        volatility: 1.0,
+        volatilityThreshold: 0.005,
+      };
     }
     
     // Cache the live price for fallback use
