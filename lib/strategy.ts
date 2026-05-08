@@ -1218,13 +1218,6 @@ function detectDisplacement(
   };
 }
 
-function detectStructure(
-    pivotBreak: 0,
-    breakExpansion: 0,
-    text: "No structure detected for displacement",
-  };
-}
-
 // ─── Market context with dynamic market structure ───────────────────────────────
 
 
