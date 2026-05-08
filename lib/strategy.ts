@@ -13,6 +13,7 @@ import { ALLOWED_SIGNAL_OUTCOMES, isValidOutcome, validateOutcome, type SignalOu
 import { determinePriceHealth, canGenerateSignals, canExecuteTradeLogic, canValidateStructure, type PriceHealthStatus } from "./price-health";
 import { resolveSymbol, type ResolvedSymbol } from "./symbol-resolver";
 import { getPrice, type PriceHealth } from "./price-router";
+import { getMarketData, getAllMarketData, isMarketDataFresh } from "./market-data-layer";
 
 export type SignalDirection = "LONG" | "SHORT";
 /**
@@ -448,29 +449,28 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
   const logs: string[] = [];
   const signals: Signal[] = [];
 
-  // ═══════════════════════════════════════════════════════════��═══════════════
-  // HARD GATE: Price health must be LIVE to generate ANY signals
-  // NO exceptions, NO degraded-mode trading, NO fallback trading
-  // ═════════���═════════════════════════════════════════════════════════════��������══
   // ═══════════════════════════════════════════════════════════════════════════
-  // HARD GATE: Price health must be LIVE to generate ANY signals
-  // Check all symbols' price health before proceeding with signal generation
+  // HARD GATE: Check market data freshness from cache (not fetching)
+  // Market data layer maintains independent refresh — signal engine consumes cache
   // ═══════════════════════════════════════════════════════════════════════════
-  const priceHealths = await Promise.all(
-    ["BTC", "ETH", "SOL"].map(async (base) => {
-      const market = await getMarketContext(base);
-      return market.priceHealth;
-    })
-  );
-  
-  const allLive = priceHealths.every(h => h === "LIVE");
-  if (!allLive) {
-    const degradedSymbols = ["BTC", "ETH", "SOL"].filter((_, i) => priceHealths[i] !== "LIVE");
-    logs.push(`[PRICE_GATE] ❌ HARD BLOCK: Price health degraded for ${degradedSymbols.join(", ")} — NO signal generation allowed`);
-    logs.push(`[PRICE_GATE] Reason: System only trades on LIVE ticker data. When any feed degrades, ALL signal generation halts.`);
-    return { signals, logs }; // Return empty signals
+  const allMarketData = getAllMarketData();
+  const freshnessCheckResults = allMarketData.map(data => ({
+    symbol: data.symbol,
+    fresh: isMarketDataFresh(data.symbol),
+    hasPrice: data.priceData !== null,
+    priceHealth: data.priceData?.health,
+  }));
+
+  const allFresh = freshnessCheckResults.every(r => r.fresh && r.priceHealth === "LIVE");
+  if (!allFresh) {
+    const issues = freshnessCheckResults
+      .filter(r => !r.fresh || r.priceHealth !== "LIVE")
+      .map(r => `${r.symbol}(${!r.fresh ? "stale" : r.priceHealth})`)
+      .join(", ");
+    logs.push(`[PRICE_GATE] ❌ HARD BLOCK: Market data not fresh or degraded for ${issues} — NO signal generation`);
+    return { signals, logs };
   }
-  logs.push(`[PRICE_GATE] ✓ All price feeds LIVE — signal generation enabled`);
+  logs.push(`[PRICE_GATE] ✓ All market data fresh and LIVE — signal generation enabled`);
 
   if (!supabase) {
     logs.push("[SUPABASE] Not connected — skipping signal generation");
