@@ -18,28 +18,36 @@ export interface LivePriceData {
  */
 export async function getLivePrice(symbol: string): Promise<LivePriceData | null> {
   try {
-    // Convert symbol to Kraken format (e.g., BTC -> XBTUSDT)
-    const krakenSymbol = getKrakenSymbol(symbol);
+    // Convert symbol to Kraken format (e.g., BTC -> XBTUSD)
+    let krakenSymbol: string;
+    try {
+      krakenSymbol = getKrakenSymbol(symbol);
+    } catch (err) {
+      console.error(`[getLivePrice] Symbol normalization failed for ${symbol}:`, err instanceof Error ? err.message : String(err));
+      return null;
+    }
+    
+    console.log(`[getLivePrice] Fetching ${symbol} (mapped to ${krakenSymbol}) from Kraken ticker`);
     
     const response = await fetch(
       `https://api.kraken.com/0/public/Ticker?pair=${krakenSymbol}`
     );
 
     if (!response.ok) {
-      console.error(`[getLivePrice] Kraken API error for ${symbol}: ${response.statusText}`);
+      console.error(`[getLivePrice] Kraken HTTP error for ${symbol} (${krakenSymbol}): ${response.status} ${response.statusText}`);
       return null;
     }
 
     const data = await response.json();
 
     if (data.error && data.error.length > 0) {
-      console.error(`[getLivePrice] Kraken error for ${symbol}:`, data.error);
+      console.error(`[getLivePrice] Kraken API error for ${symbol} (${krakenSymbol}):`, data.error);
       return null;
     }
 
     const tickerData = data.result?.[krakenSymbol];
     if (!tickerData) {
-      console.error(`[getLivePrice] No ticker data for ${symbol}`);
+      console.error(`[getLivePrice] No ticker data returned for ${symbol} (${krakenSymbol})`);
       return null;
     }
 
@@ -53,10 +61,12 @@ export async function getLivePrice(symbol: string): Promise<LivePriceData | null
     let livePrice = lastTrade ? parseFloat(lastTrade) : (bid + ask) / 2;
     
     if (!livePrice || isNaN(livePrice)) {
-      console.error(`[getLivePrice] Invalid price for ${symbol}:`, { lastTrade, bid, ask });
+      console.error(`[getLivePrice] Invalid price data for ${symbol} (${krakenSymbol}):`, { lastTrade, bid, ask });
       return null;
     }
 
+    console.log(`[getLivePrice] ✓ ${symbol} (${krakenSymbol}): $${livePrice.toFixed(2)} [bid=$${bid.toFixed(2)} ask=$${ask.toFixed(2)}]`);
+    
     return {
       livePrice,
       source: "ticker",
@@ -65,26 +75,30 @@ export async function getLivePrice(symbol: string): Promise<LivePriceData | null
       ask,
     };
   } catch (err) {
-    console.error(`[getLivePrice] Exception fetching price for ${symbol}:`, err);
+    console.error(`[getLivePrice] Exception for ${symbol}:`, err instanceof Error ? err.message : String(err));
     return null;
   }
 }
 
 /**
- * Convert symbol to Kraken format
+ * Convert internal symbol to Kraken format
+ * Maps: BTC -> XBTUSD, ETH -> ETHUSD, SOL -> SOLUSD
  */
 function getKrakenSymbol(symbol: string): string {
   const mapping: Record<string, string> = {
-    BTC: "XBTUSDT",
-    ETH: "ETHUSDT",
-    SOL: "SOLUSDT",
-    XRP: "XRPUSDT",
-    ADA: "ADAUSDT",
-    DOGE: "DOGEUSDT",
-    // Add more as needed
+    BTC: "XBTUSD",
+    ETH: "ETHUSD",
+    SOL: "SOLUSD",
+    XRP: "XRPUSD",
+    ADA: "ADAUSD",
+    DOGE: "DOGEUSD",
   };
   
-  return mapping[symbol.toUpperCase()] || `${symbol.toUpperCase()}USDT`;
+  const krakenSymbol = mapping[symbol.toUpperCase()];
+  if (!krakenSymbol) {
+    throw new Error(`[getLivePrice] Unknown symbol for Kraken: ${symbol}. Supported: ${Object.keys(mapping).join(", ")}`);
+  }
+  return krakenSymbol;
 }
 
 /**
