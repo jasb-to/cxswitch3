@@ -18,10 +18,13 @@ export interface LivePriceData {
  */
 export async function getLivePrice(symbol: string): Promise<LivePriceData | null> {
   try {
+    // Strip /USD suffix if present (e.g., "BTC/USD" -> "BTC")
+    const baseSymbol = symbol.replace("/USD", "").trim();
+    
     // Convert symbol to Kraken format (e.g., BTC -> XBTUSD)
     let krakenSymbol: string;
     try {
-      krakenSymbol = getKrakenSymbol(symbol);
+      krakenSymbol = getKrakenSymbol(baseSymbol);
     } catch (err) {
       console.error(`[getLivePrice] Symbol normalization failed for ${symbol}:`, err instanceof Error ? err.message : String(err));
       return null;
