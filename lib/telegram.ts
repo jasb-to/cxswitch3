@@ -1,7 +1,6 @@
 import { supabase } from "@/lib/supabase-client";
-import type { Signal, MarketContext } from "./strategy";
+import type { Signal } from "./strategy";
 import { calculateRiskReward } from "./risk-utils";
-import { formatSignalForTelegram, generateTelegramMessage } from "./signal-formatter";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -78,14 +77,27 @@ export async function sendTradeCloseAlert(signal: Signal, exitPrice: number): Pr
 }
 
 /**
- * Send a signal alert with decision-grade formatting
- * Includes score, grade, breakdown, and actionable context
+ * Send a signal alert — simple breakout momentum format
  */
-export async function sendSignalAlert(signal: Signal, context?: MarketContext): Promise<void> {
+export async function sendSignalAlert(signal: Signal): Promise<void> {
   if (!BOT_TOKEN || !CHAT_ID) return;
 
-  const formatted = formatSignalForTelegram(signal, context);
-  const text = generateTelegramMessage(formatted);
+  const emoji = signal.state === "CONFIRMED" ? "🟢" : "🟡";
+  const reason = signal.state === "EARLY_OPEN" 
+    ? "Breakout with early momentum. Awaiting 15m confirmation."
+    : "Breakout confirmed with sustained momentum across recent closes.";
+
+  const text =
+    `${emoji} ${signal.symbol} — ${signal.direction} (${signal.state})\n` +
+    `\n` +
+    `Entry:       $${fmt(signal.entry_price)}\n` +
+    `Stop Loss:   $${fmt(signal.stop_loss)}\n` +
+    `Take Profit: $${fmt(signal.take_profit)}\n` +
+    `\n` +
+    `Confidence: ${signal.confidence}%\n` +
+    `\n` +
+    `Reason:\n` +
+    `${reason}`;
 
   await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
     method: "POST",
