@@ -28,7 +28,7 @@ export type SignalDirection = "LONG" | "SHORT";
  * ─────────────────────────────────────────────────────────────────
  */
 export type SignalState = "EARLY_OPEN" | "CONFIRMED" | "END";
-export type SignalOutcome = "TP" | "SL" | "EXPIRED" | "MANUAL";
+export type SignalOutcome = "TP" | "SL" | "EXPIRED" | "MANUAL" | "STRUCTURE_INVALIDATED";
 
 /**
  * Safe signal insert wrapper (v2.7.5)
@@ -1034,6 +1034,108 @@ export async function getAllSignals(): Promise<Signal[]> {
   } catch (err) {
     console.error("[getAllSignals] Error:", err);
     return [];
+  }
+}
+
+/**
+ * Re-evaluate active EARLY_OPEN signals against current market structure
+ * Ends signals where structure no longer supports the setup
+ * 
+ * This ensures EARLY_OPEN signals stay tightly synchronized to live market structure
+ * and prevents "ghost trades" from persisting after structure invalidates
+ */
+export async function validateActiveEarlyOpenSignals(): Promise<{ logs: string[]; invalidated: number }> {
+  const logs: string[] = [];
+  let invalidatedCount = 0;
+
+  if (!supabase) {
+    logs.push("[EARLY_OPEN VALIDATION] Supabase not connected");
+    return { logs, invalidated: invalidatedCount };
+  }
+
+  try {
+    // Get all EARLY_OPEN signals
+    const { data: earlyOpenSignals, error: fetchErr } = await supabase
+      .from("signals")
+      .select("*")
+      .eq("state", "EARLY_OPEN")
+      .order("created_at", { ascending: false });
+
+    if (fetchErr) {
+      logs.push(`[EARLY_OPEN VALIDATION] Query error: ${fetchErr.message}`);
+      return { logs, invalidated: invalidatedCount };
+    }
+
+    if (!earlyOpenSignals || earlyOpenSignals.length === 0) {
+      logs.push("[EARLY_OPEN VALIDATION] No EARLY_OPEN signals to validate");
+      return { logs, invalidated: invalidatedCount };
+    }
+
+    logs.push(`[EARLY_OPEN VALIDATION] Checking ${earlyOpenSignals.length} EARLY_OPEN signals for structure invalidation`);
+
+    // For each EARLY_OPEN signal, re-evaluate current market structure
+    for (const signal of earlyOpenSignals) {
+      try {
+        const symbol = signal.symbol;
+        const market = await getMarketContext(symbol);
+
+        // Reasons to invalidate EARLY_OPEN signal:
+        // 1. Setup type changed (e.g., was LONG_SETUP, now is SHORT_SETUP or NO_SETUP)
+        // 2. Signal direction doesn't match current structure
+        // 3. Displacement direction is gone
+        // 4. Market structure is ERROR or NO_SETUP
+        
+        const signalExpectsLong = signal.direction === "LONG";
+        const marketSupportsLong = market.setup === "LONG_SETUP";
+        const marketSupportsShort = market.setup === "SHORT_SETUP";
+        
+        let shouldInvalidate = false;
+        let invalidationReason = "";
+
+        // Check 1: Market structure became NO_SETUP or ERROR
+        if (market.setup === "NO_SETUP" || market.setup === "ERROR") {
+          shouldInvalidate = true;
+          invalidationReason = `structure collapsed to ${market.setup}`;
+        }
+        // Check 2: Signal direction no longer matches market structure
+        else if (signalExpectsLong && !marketSupportsLong) {
+          shouldInvalidate = true;
+          invalidationReason = "LONG signal but market now SHORT_SETUP";
+        } else if (!signalExpectsLong && !marketSupportsShort) {
+          shouldInvalidate = true;
+          invalidationReason = "SHORT signal but market now LONG_SETUP";
+        }
+
+        if (shouldInvalidate) {
+          // End the signal with STRUCTURE_INVALIDATED outcome
+          const { error: updateErr } = await supabase
+            .from("signals")
+            .update({
+              state: "END",
+              outcome: "STRUCTURE_INVALIDATED",
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", signal.id);
+
+          if (updateErr) {
+            logs.push(`[EARLY_OPEN VALIDATION] Failed to invalidate ${symbol} signal ${signal.id}: ${updateErr.message}`);
+          } else {
+            logs.push(`[EARLY_OPEN VALIDATION] ✓ Invalidated ${symbol} EARLY_OPEN signal (${signal.direction}): ${invalidationReason}`);
+            invalidatedCount++;
+          }
+        } else {
+          logs.push(`[EARLY_OPEN VALIDATION] ✓ ${symbol} ${signal.direction} EARLY_OPEN signal still valid (${market.setup})`);
+        }
+      } catch (err) {
+        logs.push(`[EARLY_OPEN VALIDATION] Error checking signal for ${signal.symbol}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    logs.push(`[EARLY_OPEN VALIDATION] Complete - invalidated ${invalidatedCount} signals`);
+    return { logs, invalidated: invalidatedCount };
+  } catch (err) {
+    logs.push(`[EARLY_OPEN VALIDATION] Fatal error: ${err instanceof Error ? err.message : String(err)}`);
+    return { logs, invalidated: invalidatedCount };
   }
 }
 
