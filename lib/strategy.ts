@@ -1496,7 +1496,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     
     // Detect if price has broken the latest pivot with expansion (structural displacement)
     const displacementAnalysis = detectDisplacement(
-      price,
+      livePrice,  // Use live ticker price, not stale candle close
       structureAnalysis.structure,
       structureAnalysis.latestHigh,
       structureAnalysis.latestLow,
@@ -1555,10 +1555,10 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     let distanceToLow: number | null = null;
 
     if (swingHigh) {
-      distanceToHigh = ((swingHigh - price) / price) * 100;
+      distanceToHigh = ((swingHigh - livePrice) / livePrice) * 100;
     }
     if (swingLow) {
-      distanceToLow = ((price - swingLow) / price) * 100;
+      distanceToLow = ((livePrice - swingLow) / livePrice) * 100;
     }
 
     // Calculate timing indicators
