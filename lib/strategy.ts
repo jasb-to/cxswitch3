@@ -2000,7 +2000,8 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       return {
         symbol,
         price,
-        priceSource,
+        priceSource: priceData.source,
+        priceHealth,
         swingHigh: null,
         swingLow: null,
         distanceToHigh: null,
