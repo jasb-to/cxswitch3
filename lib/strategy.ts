@@ -1151,11 +1151,11 @@ function detectStructure(
  * Detect structural displacement: has price broken latest swing pivot with expansion?
  */
 function detectDisplacement(
-  price: number,
-  structure: "BULLISH" | "BEARISH" | "NO_STRUCTURE",
-  latestHigh: Candle | null,
-  latestLow: Candle | null,
-  expansionThreshold: number = 0.005 // 0.5% default
+  livePrice: number,  // MUST use live ticker price for direction detection
+  structure: "BULLISH" | "BEARISH" | null,
+  latestHigh: { high: number; time: number } | null,
+  latestLow: { low: number; time: number } | null,
+  expansionThreshold: number
 ): {
   triggered: boolean;
   direction: "LONG" | "SHORT" | null;
@@ -1165,8 +1165,8 @@ function detectDisplacement(
 } {
   if (structure === "BULLISH" && latestHigh) {
     // LONG: Price breaks above latest pivot high with expansion
-    const breakAbove = price > latestHigh.high;
-    const expansion = (price - latestHigh.high) / latestHigh.high;
+    const breakAbove = livePrice > latestHigh.high;
+    const expansion = (livePrice - latestHigh.high) / latestHigh.high;
     const hasExpansion = expansion >= expansionThreshold;
 
     if (breakAbove && hasExpansion) {
@@ -1175,9 +1175,48 @@ function detectDisplacement(
         direction: "LONG",
         pivotBreak: latestHigh.high,
         breakExpansion: expansion,
-        text: `Bullish displacement: price ${price.toFixed(2)} broke pivot high ${latestHigh.high.toFixed(2)} (+${(expansion * 100).toFixed(2)}%)`,
+        text: `Bullish displacement: livePrice ${livePrice.toFixed(2)} broke pivot high ${latestHigh.high.toFixed(2)} (+${(expansion * 100).toFixed(2)}%)`,
       };
     }
+    return {
+      triggered: false,
+      direction: null,
+      pivotBreak: latestHigh.high,
+      breakExpansion: expansion,
+      text: `Bullish structure but no displacement (expansion: ${(expansion * 100).toFixed(2)}%, need ${(expansionThreshold * 100).toFixed(2)}%)`,
+    };
+  } else if (structure === "BEARISH" && latestLow) {
+    // SHORT: Price breaks below latest pivot low with expansion
+    const breakBelow = livePrice < latestLow.low;
+    const expansion = (latestLow.low - livePrice) / latestLow.low;
+    const hasExpansion = expansion >= expansionThreshold;
+
+    if (breakBelow && hasExpansion) {
+      return {
+        triggered: true,
+        direction: "SHORT",
+        pivotBreak: latestLow.low,
+        breakExpansion: expansion,
+        text: `Bearish displacement: livePrice ${livePrice.toFixed(2)} broke pivot low ${latestLow.low.toFixed(2)} (-${(expansion * 100).toFixed(2)}%)`,
+      };
+    }
+    return {
+      triggered: false,
+      direction: null,
+      pivotBreak: latestLow.low,
+      breakExpansion: expansion,
+      text: `Bearish structure but no displacement (expansion: ${(expansion * 100).toFixed(2)}%, need ${(expansionThreshold * 100).toFixed(2)}%)`,
+    };
+  }
+
+  return {
+    triggered: false,
+    direction: null,
+    pivotBreak: 0,
+    breakExpansion: 0,
+    text: "No structure detected for displacement",
+  };
+}
     return {
       triggered: false,
       direction: null,
@@ -1371,6 +1410,9 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     const livePriceData = await getLivePrice(symbolBase);
     const livePrice = livePriceData?.livePrice ?? price; // Fallback to candle close if ticker fails
     
+    // [PRICE DEBUG] Log live vs candle prices
+    console.log(`[PRICE DEBUG] ${symbolBase}: livePrice=${livePrice.toFixed(2)} candleClose=${price.toFixed(2)} diff=${((livePrice - price) / price * 100).toFixed(2)}%`);
+    
     // VALIDATE MARKET DATA FRESHNESS
     const freshness = validateMarketDataFreshness({
       candle5m: latestCandle5m?.time,
@@ -1494,6 +1536,9 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     // Detect structure progression (HH+HL or LL+LH)
     const structureAnalysis = detectStructure(pivotHighs, pivotLows);
     
+    // [STRUCTURE DEBUG] Log structure detection
+    console.log(`[STRUCTURE DEBUG] ${symbolBase}: structure=${structureAnalysis.structure} latestHigh=${structureAnalysis.latestHigh?.high.toFixed(2) ?? "N/A"} latestLow=${structureAnalysis.latestLow?.low.toFixed(2) ?? "N/A"}`);
+    
     // Detect if price has broken the latest pivot with expansion (structural displacement)
     const displacementAnalysis = detectDisplacement(
       livePrice,  // Use live ticker price, not stale candle close
@@ -1502,6 +1547,9 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       structureAnalysis.latestLow,
       0.0035 // 0.35% expansion threshold
     );
+    
+    // [DIRECTION DEBUG] Log displacement and direction
+    console.log(`[DIRECTION DEBUG] ${symbolBase}: triggered=${displacementAnalysis.triggered} direction=${displacementAnalysis.direction} expansion=${(displacementAnalysis.breakExpansion * 100).toFixed(2)}%`);
 
     // If no structure detected, return NO_SETUP
     if (structureAnalysis.structure === "NO_STRUCTURE") {
@@ -1671,6 +1719,9 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
 
     let setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" | "ERROR" = "NO_SETUP";
     let setupText = "";
+
+    // [ENTRY TRIGGER] Log full scoring decision
+    console.log(`[ENTRY TRIGGER] ${symbolBase}: longScore=${longScore} shortScore=${shortScore} threshold=${TRIGGER_THRESHOLD} hasLongDisp=${hasLongDisplacement} hasShortDisp=${hasShortDisplacement}`);
 
     if (longScore >= TRIGGER_THRESHOLD && longScore > shortScore) {
       setup = "LONG_SETUP";
