@@ -4,9 +4,9 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 import { getStateOfPlay } from "@/lib/state-of-play";
-import { getBias, getBiasColor, getBiasBorder } from "@/lib/market-bias";
+import { getBias, getBiasColor, getBiasBorder, getBiasStrength } from "@/lib/market-bias";
 
-const VERSION = "v2.9.9";
+const VERSION = "v2.9.10";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -83,6 +83,10 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
     market?.probabilityScore?.longScore ?? 0,
     market?.probabilityScore?.shortScore ?? 0
   );
+  const strength = getBiasStrength(
+    market?.probabilityScore?.longScore ?? 0,
+    market?.probabilityScore?.shortScore ?? 0
+  );
   const biasColor = getBiasColor(bias);
   const biasBorder = getBiasBorder(bias);
 
@@ -92,7 +96,7 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
         <div className="flex items-center gap-3">
           <span className="font-mono font-bold text-white text-lg tracking-wide">{symbol}</span>
           <span className={`border ${biasBorder} ${biasColor} text-[10px] px-2 py-0.5 tracking-[0.15em] font-mono font-semibold`}>
-            {bias}
+            {bias} ({strength})
           </span>
         </div>
         {active && shouldBeClosed ? (
