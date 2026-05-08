@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateSignals, getAllSignals, cleanupExpiredSignals } from "@/lib/strategy";
+import { generateSignals, getAllSignals, cleanupExpiredSignals, validateActiveEarlyOpenSignals } from "@/lib/strategy";
 import { sendSignalAlert, shouldSendAlert } from "@/lib/telegram";
 import { supabase } from "@/lib/supabase-client";
 import { initializeSupabaseConsumer } from "@/lib/supabase-consumer";
@@ -39,6 +39,13 @@ export async function GET(req: NextRequest) {
 
     // Scan signal health
     const health = await scanSignalHealth();
+    
+    // Re-validate active EARLY_OPEN signals against current market structure
+    // This prevents "ghost trades" from staying active when structure invalidates
+    const { logs: validationLogs } = await validateActiveEarlyOpenSignals();
+    for (const line of validationLogs) {
+      console.log(line);
+    }
     
     // First: cleanup expired signals that haven't confirmed
     const { logs: cleanupLogs } = await cleanupExpiredSignals();
