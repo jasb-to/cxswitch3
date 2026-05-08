@@ -445,6 +445,18 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
   const logs: string[] = [];
   const signals: Signal[] = [];
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // HARD GATE: Price health must be LIVE to generate ANY signals
+  // NO exceptions, NO degraded-mode trading, NO fallback trading
+  // ═══════════════════════════════════════════════════════════════════════════
+  const priceHealthStatus = await checkPriceHealthAcrossSymbols(["BTC", "ETH", "SOL"]);
+  if (priceHealthStatus !== "LIVE") {
+    logs.push(`[PRICE_GATE] ❌ HARD BLOCK: Price health is ${priceHealthStatus} — NO signal generation allowed`);
+    logs.push(`[PRICE_GATE] Reason: System only trades on LIVE ticker data. When tickers degrade, ALL signal generation halts.`);
+    return { signals, logs }; // Return empty signals, not degraded mode
+  }
+  logs.push(`[PRICE_GATE] ✓ Price health is LIVE — signal generation enabled`);
+
   if (!supabase) {
     logs.push("[SUPABASE] Not connected — skipping signal generation");
     return { signals, logs };
@@ -1023,7 +1035,38 @@ export async function reconcileSignalStates(): Promise<{ logs: string[]; reconci
   }
 }
 
-// ─── Manage open positions: check TP/SL, promote EARLY → CONFIRMED, expire ──
+// ═══════════════════════════════════════════════════════════════════════════
+// PRICE HEALTH CHECK (for HARD gate in generateSignals)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Check price health across all trading symbols
+ * Returns:
+ * - "LIVE" if all symbols have live ticker data
+ * - "DEGRADED" if some symbols have fallback candle data
+ * - "OFFLINE" if any symbol has no price data at all
+ */
+async function checkPriceHealthAcrossSymbols(symbols: string[]): Promise<"LIVE" | "DEGRADED" | "OFFLINE"> {
+  const healthStatuses: ("LIVE" | "DEGRADED" | "OFFLINE")[] = [];
+
+  for (const symbol of symbols) {
+    const market = await getMarketContext(symbol);
+    const priceHealth = determinePriceHealth(market.priceSource);
+    healthStatuses.push(priceHealth);
+  }
+
+  // If any symbol is OFFLINE, system is OFFLINE
+  if (healthStatuses.includes("OFFLINE")) return "OFFLINE";
+
+  // If any symbol is DEGRADED, system is DEGRADED
+  if (healthStatuses.includes("DEGRADED")) return "DEGRADED";
+
+  // All LIVE
+  return "LIVE";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 
 export async function managePositions(): Promise<{ logs: string[]; confirmed: Signal[] }> {
   const logs: string[] = [];
