@@ -1217,40 +1217,8 @@ function detectDisplacement(
     text: "No structure detected for displacement",
   };
 }
-    return {
-      triggered: false,
-      direction: null,
-      pivotBreak: latestHigh.high,
-      breakExpansion: expansion,
-      text: `Bullish structure but no displacement (expansion: ${(expansion * 100).toFixed(2)}%, need ${(expansionThreshold * 100).toFixed(2)}%)`,
-    };
-  } else if (structure === "BEARISH" && latestLow) {
-    // SHORT: Price breaks below latest pivot low with expansion
-    const breakBelow = price < latestLow.low;
-    const expansion = (latestLow.low - price) / latestLow.low;
-    const hasExpansion = expansion >= expansionThreshold;
 
-    if (breakBelow && hasExpansion) {
-      return {
-        triggered: true,
-        direction: "SHORT",
-        pivotBreak: latestLow.low,
-        breakExpansion: expansion,
-        text: `Bearish displacement: price ${price.toFixed(2)} broke pivot low ${latestLow.low.toFixed(2)} (-${(expansion * 100).toFixed(2)}%)`,
-      };
-    }
-    return {
-      triggered: false,
-      direction: null,
-      pivotBreak: latestLow.low,
-      breakExpansion: expansion,
-      text: `Bearish structure but no displacement (expansion: ${(expansion * 100).toFixed(2)}%, need ${(expansionThreshold * 100).toFixed(2)}%)`,
-    };
-  }
-
-  return {
-    triggered: false,
-    direction: null,
+function detectStructure(
     pivotBreak: 0,
     breakExpansion: 0,
     text: "No structure detected for displacement",
