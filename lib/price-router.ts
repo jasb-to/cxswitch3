@@ -168,10 +168,10 @@ function setCachedPrice(symbol: string, data: PriceData) {
 
 /**
  * Fetch price from Kraken with retry + backoff + differentiated circuit breaker + throttling
+ * NEW: Retries bypass staggering but respect rate budget (v3.3.1)
  * Uses request coalescing to deduplicate in-flight requests
- * Uses staggering and global budget to prevent rate spikes
  */
-async function getPriceFromKraken(symbol: string): Promise<PriceData | null> {
+async function getPriceFromKraken(symbol: string, isRetry: boolean = false): Promise<PriceData | null> {
   try {
     const resolved = resolveSymbol(symbol);
     const { base } = resolved;
@@ -184,8 +184,8 @@ async function getPriceFromKraken(symbol: string): Promise<PriceData | null> {
       return inFlight;
     }
 
-    // Acquire request budget (throttles if too many requests/second)
-    await acquireRequestBudget();
+    // Acquire request budget with retry flag (retries bypass stagger)
+    await acquireRequestBudget(isRetry);
 
     // Create the fetch promise with staggering and tracking
     const fetchPromise = staggerRequest(base, async () => {
@@ -287,7 +287,7 @@ async function getPriceFromKraken(symbol: string): Promise<PriceData | null> {
 
           recordKrakenSuccess(base);
           setCachedPrice(base, priceData);
-          console.log(`[KRAKEN] ✓ ${base}: $${price.toFixed(2)} (attempt ${attempt + 1}/${maxRetries + 1}, coalesced)`);
+          console.log(`[KRAKEN] ✓ ${base}: $${price.toFixed(2)} (attempt ${attempt + 1}/${maxRetries + 1}${isRetry ? ', retry' : ''}, coalesced)`);
           return priceData;
         } catch (err) {
           if (err instanceof Error && err.name === "AbortError") {
@@ -304,7 +304,7 @@ async function getPriceFromKraken(symbol: string): Promise<PriceData | null> {
       recordKrakenFailure(base, lastFailureType);
       console.warn(`[KRAKEN] All retries exhausted for ${base}: ${lastError?.message} (type: ${lastFailureType})`);
       return null;
-    });
+    }, isRetry); // Pass retry flag to bypass stagger
 
     // Track the fetch promise for coalescing
     return trackRequest(coalesceKey, fetchPromise);

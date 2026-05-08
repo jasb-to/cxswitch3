@@ -1,12 +1,13 @@
 /**
- * Request Throttler (v3.3.0)
- * Traffic control layer for Kraken API
+ * Request Throttler (v3.3.1)
+ * Traffic control layer for Kraken API with retry priority differentiation
  * 
  * Prevents rate limit spikes through:
  * 1. Per-symbol request coalescing (deduplicate in-flight requests)
  * 2. Per-symbol staggered scheduling (BTC: 0ms, ETH: +250ms, SOL: +500ms)
  * 3. Global request budget (max 3 Kraken requests/second)
- * 4. Separate cache TTLs (ticker: 1-2s, candles: 10-60s)
+ * 4. Retry priority differentiation (retries bypass stagger, respect budget)
+ * 5. Separate cache TTLs (ticker: 1-2s, candles: 10-60s)
  */
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -27,6 +28,7 @@ export function getInFlightRequest(key: string): Promise<any> | undefined {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PER-SYMBOL SCHEDULING: Stagger fetch times to avoid rate spikes
+// NEW: Retry priority differentiation — retries bypass stagger delay
 // ═══════════════════════════════════════════════════════════════════════════
 const SYMBOL_STAGGER_MS: Record<string, number> = {
   BTC: 0,
@@ -36,49 +38,61 @@ const SYMBOL_STAGGER_MS: Record<string, number> = {
 
 export async function staggerRequest<T>(
   symbol: string,
-  fn: () => Promise<T>
+  fn: () => Promise<T>,
+  isRetry: boolean = false // NEW: flag to bypass stagger for retries
 ): Promise<T> {
-  const delay = SYMBOL_STAGGER_MS[symbol] ?? 0;
-  if (delay > 0) {
-    await new Promise(resolve => setTimeout(resolve, delay));
+  // Retries bypass staggering to prevent retry storms from cascading delays
+  if (!isRetry) {
+    const delay = SYMBOL_STAGGER_MS[symbol] ?? 0;
+    if (delay > 0) {
+      console.log(`[STAGGER] ${symbol}: Delaying ${delay}ms (fresh request stagger)`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  } else {
+    console.log(`[STAGGER] ${symbol}: Bypass stagger (retry, respects budget only)`);
   }
   return fn();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GLOBAL REQUEST BUDGET: Cap Kraken requests per second
+// Retries still consume budget but don't get delayed queue backlog
 // ═══════════════════════════════════════════════════════════════════════════
 const MAX_REQUESTS_PER_SECOND = 3;
-const requestTimestamps: number[] = [];
+const requestTimestamps: { timestamp: number; isRetry: boolean }[] = [];
 
-export async function acquireRequestBudget(): Promise<void> {
+export async function acquireRequestBudget(isRetry: boolean = false): Promise<void> {
   const now = Date.now();
   const windowStart = now - 1000; // Last 1 second
 
   // Remove old timestamps outside the 1-second window
-  while (requestTimestamps.length > 0 && requestTimestamps[0] < windowStart) {
+  while (requestTimestamps.length > 0 && requestTimestamps[0].timestamp < windowStart) {
     requestTimestamps.shift();
   }
 
   // If we've hit the budget, wait
   if (requestTimestamps.length >= MAX_REQUESTS_PER_SECOND) {
     const oldestRequest = requestTimestamps[0];
-    const waitTime = oldestRequest + 1000 - now + 10; // Small buffer
-    console.log(`[REQUEST_BUDGET] Throttling: ${requestTimestamps.length}/${MAX_REQUESTS_PER_SECOND} requests in last second, waiting ${waitTime}ms`);
+    const waitTime = oldestRequest.timestamp + 1000 - now + 10; // Small buffer
+    const retryLabel = isRetry ? " (retry)" : "";
+    console.log(`[REQUEST_BUDGET] Throttling${retryLabel}: ${requestTimestamps.length}/${MAX_REQUESTS_PER_SECOND} requests in last second, waiting ${waitTime}ms`);
     await new Promise(resolve => setTimeout(resolve, waitTime));
   }
 
-  requestTimestamps.push(Date.now());
+  requestTimestamps.push({ timestamp: Date.now(), isRetry });
+  console.log(`[REQUEST_BUDGET] Acquired: ${requestTimestamps.length}/${MAX_REQUESTS_PER_SECOND} (${isRetry ? 'retry' : 'fresh'})`);
 }
 
-export function getRequestBudgetStatus(): { current: number; max: number; available: boolean } {
+export function getRequestBudgetStatus(): { current: number; max: number; available: boolean; retryCount: number } {
   const now = Date.now();
   const windowStart = now - 1000;
-  const recentRequests = requestTimestamps.filter(t => t >= windowStart).length;
+  const recent = requestTimestamps.filter(t => t.timestamp >= windowStart);
+  const retryCount = recent.filter(t => t.isRetry).length;
   return {
-    current: recentRequests,
+    current: recent.length,
     max: MAX_REQUESTS_PER_SECOND,
-    available: recentRequests < MAX_REQUESTS_PER_SECOND,
+    available: recent.length < MAX_REQUESTS_PER_SECOND,
+    retryCount,
   };
 }
 
