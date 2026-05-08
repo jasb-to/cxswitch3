@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateSignals, getAllSignals, cleanupExpiredSignals, validateActiveEarlyOpenSignals } from "@/lib/strategy";
+import { generateSignals, getAllSignals, cleanupExpiredSignals, validateActiveEarlyOpenSignals, reconcileSignalStates } from "@/lib/strategy";
 import { sendSignalAlert, shouldSendAlert } from "@/lib/telegram";
 import { supabase } from "@/lib/supabase-client";
 import { initializeSupabaseConsumer } from "@/lib/supabase-consumer";
@@ -45,6 +45,16 @@ export async function GET(req: NextRequest) {
     const { logs: validationLogs } = await validateActiveEarlyOpenSignals();
     for (const line of validationLogs) {
       console.log(line);
+    }
+    
+    // State reconciliation: force TP/SL terminal states if live price satisfies conditions
+    // This catches any missed state transitions and ensures DB matches market reality
+    const { logs: reconcileLogs, reconciled } = await reconcileSignalStates();
+    for (const line of reconcileLogs) {
+      console.log(line);
+    }
+    if (reconciled > 0) {
+      console.log(`[CRON] Reconciled ${reconciled} signals with terminal conditions`);
     }
     
     // First: cleanup expired signals that haven't confirmed

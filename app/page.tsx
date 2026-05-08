@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 
-const VERSION = "v2.9.2";
+const VERSION = "v2.9.3";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -59,17 +59,32 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
     console.log(`[UI PRICE] ${symbol} signalPrice=${signal.entry_price.toFixed(2)} livePrice=${market.price.toFixed(2)} diff=${((market.price - signal.entry_price) / signal.entry_price * 100).toFixed(2)}%`);
   }
   
-  // TP/SL hit detection against live price
-  const tpHit = active && livePrice >= signal.take_profit;
-  const slHit = active && livePrice <= signal.stop_loss;
-  const tpStatus = active ? tpHit ? "TP HIT" : `${((signal.take_profit - livePrice) / livePrice * 100).toFixed(1)}% to TP` : "";
-  const slStatus = active ? slHit ? "SL HIT" : `${((livePrice - signal.stop_loss) / signal.stop_loss * 100).toFixed(1)}% above SL` : "";
+  // Direction-aware TP/SL hit detection against live price
+  // LONG: TP hit when price >= TP, SL hit when price <= SL
+  // SHORT: TP hit when price <= TP, SL hit when price >= SL
+  const isLong = active && signal.direction === "LONG";
+  const tpHit = active && (isLong ? livePrice >= signal.take_profit : livePrice <= signal.take_profit);
+  const slHit = active && (isLong ? livePrice <= signal.stop_loss : livePrice >= signal.stop_loss);
+  
+  // Frontend validation: if TP/SL already hit, signal should be considered closed (DB mismatch)
+  const shouldBeClosed = tpHit || slHit;
+  
+  const tpStatus = active ? tpHit ? "TP HIT" : 
+    isLong ? `${((signal.take_profit - livePrice) / livePrice * 100).toFixed(1)}% to TP` :
+    `${((livePrice - signal.take_profit) / livePrice * 100).toFixed(1)}% to TP` : "";
+  const slStatus = active ? slHit ? "SL HIT" : 
+    isLong ? `${((livePrice - signal.stop_loss) / signal.stop_loss * 100).toFixed(1)}% above SL` :
+    `${((signal.stop_loss - livePrice) / signal.stop_loss * 100).toFixed(1)}% below SL` : "";
 
   return (
     <article className={`border ${cardBorder} ${cardBg} flex flex-col overflow-hidden`}>
       <div className={`${headerBg} px-5 py-4 flex items-center justify-between border-b ${cardBorder}`}>
         <span className="font-mono font-bold text-white text-lg tracking-wide">{symbol}</span>
-        {active ? (
+        {active && shouldBeClosed ? (
+          <span className="border border-[#fbbf24] bg-[#fbbf24]/10 text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono text-[#fbbf24]">
+            {tpHit ? "TP HIT" : "SL HIT"} — CLOSING
+          </span>
+        ) : active ? (
           <Badge state={signal.state} />
         ) : market?.setup?.includes("SETUP") ? (
           <span className="border border-[#d4a017] text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono text-[#d4a017]">
