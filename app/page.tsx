@@ -4,8 +4,9 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 import { getStateOfPlay } from "@/lib/state-of-play";
+import { getBias, getBiasColor, getBiasBorder } from "@/lib/market-bias";
 
-const VERSION = "v2.9.8";
+const VERSION = "v2.9.9";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -77,10 +78,23 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
     isLong ? `${((livePrice - signal.stop_loss) / signal.stop_loss * 100).toFixed(1)}% above SL` :
     `${((signal.stop_loss - livePrice) / signal.stop_loss * 100).toFixed(1)}% below SL` : "";
 
+  // Derive market bias from existing probability scores (visual only, no logic gates)
+  const bias = getBias(
+    market?.probabilityScore?.longScore ?? 0,
+    market?.probabilityScore?.shortScore ?? 0
+  );
+  const biasColor = getBiasColor(bias);
+  const biasBorder = getBiasBorder(bias);
+
   return (
     <article className={`border ${cardBorder} ${cardBg} flex flex-col overflow-hidden`}>
       <div className={`${headerBg} px-5 py-4 flex items-center justify-between border-b ${cardBorder}`}>
-        <span className="font-mono font-bold text-white text-lg tracking-wide">{symbol}</span>
+        <div className="flex items-center gap-3">
+          <span className="font-mono font-bold text-white text-lg tracking-wide">{symbol}</span>
+          <span className={`border ${biasBorder} ${biasColor} text-[10px] px-2 py-0.5 tracking-[0.15em] font-mono font-semibold`}>
+            {bias}
+          </span>
+        </div>
         {active && shouldBeClosed ? (
           <span className="border border-[#fbbf24] bg-[#fbbf24]/10 text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono text-[#fbbf24]">
             {tpHit ? "TP HIT" : "SL HIT"} — CLOSING
