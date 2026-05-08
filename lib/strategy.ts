@@ -9,6 +9,7 @@ import {
 } from "./signal-serializer";
 import { ACTIVE_SIGNAL_STATES, TERMINAL_SIGNAL_STATES } from "./signal-states";
 import { getLivePrice, validateMarketDataFreshness } from "./market/live-price";
+import { ALLOWED_SIGNAL_OUTCOMES, isValidOutcome, validateOutcome, type SignalOutcome } from "./signal-outcome-constants";
 
 export type SignalDirection = "LONG" | "SHORT";
 /**
@@ -797,7 +798,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
   return { signals, logs };
 }
 
-// ─── Update signal state in Supabase ──────────────────────────────────��─────
+// ─── Update signal state in Supabase ──────────────────────────────────���─────
 
 /**
  * Atomic state transition with exponential backoff retry
@@ -823,7 +824,16 @@ export async function updateSignalState(
 
       // Only add extra fields if they are defined and valid
       if (extra) {
-        if (extra.outcome !== undefined) payload.outcome = extra.outcome;
+        // Validate outcome against allowed list
+        if (extra.outcome !== undefined) {
+          const validatedOutcome = validateOutcome(extra.outcome);
+          if (validatedOutcome) {
+            payload.outcome = validatedOutcome;
+          } else {
+            console.error(`[updateSignalState] Invalid outcome for signal ${id}: ${extra.outcome}. Allowed: ${ALLOWED_SIGNAL_OUTCOMES.join(", ")}`);
+            return false;  // Reject invalid outcome to prevent DB constraint violation
+          }
+        }
         if (extra.pnl !== undefined && !isNaN(extra.pnl)) payload.pnl = extra.pnl;
         if (extra.last_checked_candle !== undefined) payload.last_checked_candle = extra.last_checked_candle;
       }
@@ -1275,24 +1285,21 @@ export async function validateActiveEarlyOpenSignals(): Promise<{ logs: string[]
         }
 
         if (shouldInvalidate) {
-          // End the signal with STRUCTURE_INVALIDATED outcome
-          const { error: updateErr } = await supabase
-            .from("signals")
-            .update({
-              state: "END",
-              outcome: "STRUCTURE_INVALIDATED",
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", signal.id);
+          // End the signal with STRUCTURE_INVALIDATED outcome using safe updateSignalState
+          console.log(`[INVALIDATION] ${symbol} ${signal.direction} EARLY_OPEN invalidated: ${invalidationReason}`);
+          
+          const success = await updateSignalState(signal.id!, "END", {
+            outcome: "STRUCTURE_INVALIDATED" as SignalOutcome,
+          });
 
-          if (updateErr) {
-            logs.push(`[EARLY_OPEN VALIDATION] Failed to invalidate ${symbol} signal ${signal.id}: ${updateErr.message}`);
+          if (!success) {
+            logs.push(`[INVALIDATION] [DB ERROR] Failed to invalidate ${symbol} signal ${signal.id}: check DB constraint`);
           } else {
-            logs.push(`[EARLY_OPEN VALIDATION] ✓ Invalidated ${symbol} EARLY_OPEN signal (${signal.direction}): ${invalidationReason}`);
+            logs.push(`[INVALIDATION] ✓ ${symbol} ${signal.direction} EARLY_OPEN → END (STRUCTURE_INVALIDATED): ${invalidationReason}`);
             invalidatedCount++;
           }
         } else {
-          logs.push(`[EARLY_OPEN VALIDATION] ✓ ${symbol} ${signal.direction} EARLY_OPEN signal still valid (${market.setup})`);
+          logs.push(`[EARLY_OPEN VALIDATION] ${symbol} ${signal.direction} EARLY_OPEN still valid (${market.setup})`);
         }
       } catch (err) {
         logs.push(`[EARLY_OPEN VALIDATION] Error checking signal for ${signal.symbol}: ${err instanceof Error ? err.message : String(err)}`);
