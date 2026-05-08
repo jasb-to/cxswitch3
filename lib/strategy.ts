@@ -342,6 +342,7 @@ export interface Signal {
 export interface MarketContext {
   symbol: string;
   price: number;
+  priceSource: "ticker" | "fallback_candle"; // CRITICAL: Track where price came from
   swingHigh: number | null;
   swingLow: number | null;
   distanceToHigh: number | null;
@@ -925,6 +926,13 @@ export async function reconcileSignalStates(): Promise<{ logs: string[]; reconci
         // Get live price from market context
         const market = await getMarketContext(signal.symbol);
         const livePrice = market.price;
+        
+        // CRITICAL: Block reconciliation if using fallback candle prices
+        // Only reconcile with LIVE ticker prices to prevent false TP/SL triggers
+        if (market.priceSource !== "ticker") {
+          logs.push(`[RECONCILE] ${symbolBase}: ⚠ Using FALLBACK price source (${market.priceSource}) — blocking reconciliation`);
+          continue;
+        }
 
         if (!livePrice || livePrice <= 0) {
           logs.push(`[RECONCILE] ${symbolBase}: No live price available — skipping`);
@@ -1256,6 +1264,13 @@ export async function validateActiveEarlyOpenSignals(): Promise<{ logs: string[]
       try {
         const symbol = signal.symbol;
         const market = await getMarketContext(symbol);
+        
+        // CRITICAL: Skip validation if using fallback candle prices
+        // Only invalidate based on LIVE ticker data to prevent false invalidations
+        if (market.priceSource !== "ticker") {
+          logs.push(`[EARLY_OPEN VALIDATION] ${symbol}: ⚠ Using FALLBACK price source (${market.priceSource}) — skipping validation`);
+          continue;
+        }
 
         // Reasons to invalidate EARLY_OPEN signal:
         // 1. Setup type changed (e.g., was LONG_SETUP, now is SHORT_SETUP or NO_SETUP)
@@ -1645,8 +1660,22 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     const latestCandle15m = candles15m.length > 0 ? candles15m[candles15m.length - 1] : null;
     
     // FETCH LIVE PRICE FROM TICKER (NOT CANDLE CLOSE)
+    let priceSource: "ticker" | "fallback_candle" = "fallback_candle";
+    let livePrice = price; // Default to candle close
+    
     const livePriceData = await getLivePrice(symbolBase);
-    const livePrice = livePriceData?.livePrice ?? price; // Fallback to candle close if ticker fails
+    if (livePriceData?.livePrice) {
+      livePrice = livePriceData.livePrice;
+      priceSource = "ticker";
+      console.log(`[${symbolBase}] ✓ Live ticker price: $${livePrice.toFixed(2)} (bid=$${livePriceData.bid?.toFixed(2)} ask=$${livePriceData.ask?.toFixed(2)})`);
+    } else {
+      console.error(`[${symbolBase}] ✗ TICKER FAILED — falling back to candle close`);
+      console.log(`[${symbolBase}] ⚠ Using STALE price from 4H candle: $${price.toFixed(2)} (NOT LIVE)`);
+      priceSource = "fallback_candle";
+    }
+    
+    // Log price source explicitly
+    console.log(`[PRICE_SOURCE] ${symbolBase}: source=${priceSource} price=$${livePrice.toFixed(2)}`);
     
     // [PRICE DEBUG] Log live vs candle prices
     console.log(`[PRICE DEBUG] ${symbolBase}: livePrice=${livePrice.toFixed(2)} candleClose=${price.toFixed(2)} diff=${((livePrice - price) / price * 100).toFixed(2)}%`);
@@ -1663,6 +1692,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       return {
         symbol,
         price: livePrice,
+        priceSource,
         swingHigh: null,
         swingLow: null,
         distanceToHigh: null,
@@ -1698,6 +1728,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       return {
         symbol,
         price: livePrice,
+        priceSource,
         swingHigh: null,
         swingLow: null,
         distanceToHigh: null,
@@ -1803,6 +1834,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
       return {
         symbol,
         price,
+        priceSource,
         swingHigh: null,
         swingLow: null,
         distanceToHigh: null,
@@ -1991,6 +2023,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     return {
       symbol,
       price: livePrice,  // Use live ticker price instead of candle close
+      priceSource,
       swingHigh,
       swingLow,
       distanceToHigh,
@@ -2021,6 +2054,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     return {
       symbol,
       price: 0,
+      priceSource: "fallback_candle",
       swingHigh: null,
       swingLow: null,
       distanceToHigh: null,
