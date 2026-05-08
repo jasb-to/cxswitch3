@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 
-const VERSION = "v2.9.0";
+const VERSION = "v2.9.1";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -49,8 +49,21 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
 
   const confidence = active ? signal.confidence : 0;
   const confColor = active && signal.direction === "LONG" ? "#22c55e" : active ? "#ef4444" : "#333";
-  const price = active ? signal.entry_price : market?.price ?? 0;
-  const displayPrice = price > 0 ? `$${fmt(price)}` : "—";
+  
+  // CRITICAL: Always use live market price, never stale signal.entry_price
+  const livePrice = market?.price ?? 0;
+  const displayPrice = livePrice > 0 ? `$${fmt(livePrice)}` : "—";
+  
+  // [UI PRICE] Debug logging for price reconciliation
+  if (active && signal && market?.price) {
+    console.log(`[UI PRICE] ${symbol} signalPrice=${signal.entry_price.toFixed(2)} livePrice=${market.price.toFixed(2)} diff=${((market.price - signal.entry_price) / signal.entry_price * 100).toFixed(2)}%`);
+  }
+  
+  // TP/SL hit detection against live price
+  const tpHit = active && livePrice >= signal.take_profit;
+  const slHit = active && livePrice <= signal.stop_loss;
+  const tpStatus = active ? tpHit ? "TP HIT" : `${((signal.take_profit - livePrice) / livePrice * 100).toFixed(1)}% to TP` : "";
+  const slStatus = active ? slHit ? "SL HIT" : `${((livePrice - signal.stop_loss) / signal.stop_loss * 100).toFixed(1)}% above SL` : "";
 
   return (
     <article className={`border ${cardBorder} ${cardBg} flex flex-col overflow-hidden`}>
@@ -106,14 +119,20 @@ function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: strin
             </div>
             <div>
               <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">TP1</p>
-              <p className="font-mono text-[14px] text-[#22c55e] tabular-nums">${fmt(signal.take_profit)}</p>
+              <p className={`font-mono text-[14px] ${tpHit ? "text-[#fbbf24]" : "text-[#22c55e]"} tabular-nums`}>${fmt(signal.take_profit)}</p>
+              {tpHit && <p className="text-[10px] text-[#fbbf24] mt-1">✓ TP HIT</p>}
             </div>
             <div>
               <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">SL</p>
-              <p className="font-mono text-[14px] text-[#ef4444] tabular-nums">${fmt(signal.stop_loss)}</p>
+              <p className={`font-mono text-[14px] ${slHit ? "text-[#fca5a5]" : "text-[#ef4444]"} tabular-nums`}>${fmt(signal.stop_loss)}</p>
+              {slHit && <p className="text-[10px] text-[#fca5a5] mt-1">✗ SL HIT</p>}
             </div>
-            <div className="col-span-3 text-sm text-[#888]">
-              <span>Confidence: {signal.confidence}%</span>
+            <div className="col-span-3 flex items-center justify-between text-sm">
+              <span className="text-[#888]">Confidence: {signal.confidence}%</span>
+              <div className="flex gap-3 text-[10px]">
+                {tpStatus && <span className="text-[#22c55e]">{tpStatus}</span>}
+                {slStatus && <span className="text-[#ef4444]">{slStatus}</span>}
+              </div>
             </div>
           </div>
         )}
