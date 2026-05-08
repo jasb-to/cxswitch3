@@ -1,12 +1,14 @@
 /**
- * Price Router (v3.2.2)
+ * Price Router (v3.2.3)
  * Primary + Secondary + Safety State Architecture
  * 
  * PRIMARY: Kraken ticker (execution-grade, with retry + backoff + circuit breaker)
  * SECONDARY: CoinGecko (fallback-only, for visual continuity)
  * SAFETY: Hard gates prevent trading on degraded data
  * 
- * STABILITY LAYER (v3.2.2 improvements):
+ * STABILITY LAYER (v3.2.3 improvements):
+ * - Split source into 3 states: "kraken_live" | "kraken_cached" | "coingecko"
+ * - Removes ambiguity: downstream knows if price is live vs cached at a glance
  * - Exponential backoff retry (2 retries, 100ms → 500ms)
  * - Differentiated circuit breaker (only escalate on EMPTY_RESPONSE / repeated TIMEOUT)
  * - Staleness flag in cache (prevent false LIVE from stale prices)
@@ -15,7 +17,7 @@
 
 import { resolveSymbol } from "@/lib/symbol-resolver";
 
-export type PriceSource = "kraken" | "coingecko" | "none";
+export type PriceSource = "kraken_live" | "kraken_cached" | "coingecko" | "none";
 export type PriceHealth = "LIVE" | "DEGRADED" | "OFFLINE";
 export type KrakenFailureType = "EMPTY_RESPONSE" | "TIMEOUT" | "HTTP_ERROR" | "API_ERROR" | "INVALID_PRICE";
 
@@ -251,7 +253,7 @@ async function getPriceFromKraken(symbol: string): Promise<PriceData | null> {
         // Success
         const priceData: PriceData = {
           price,
-          source: "kraken",
+          source: "kraken_live", // Explicit: live execution feed
           health: "LIVE",
           bid,
           ask,
@@ -342,6 +344,7 @@ async function getPriceFromCoinGecko(symbol: string): Promise<PriceData | null> 
 /**
  * Price Router: Try Kraken first, fallback to CoinGecko, use cache for stability
  * NEW: Downgrade stale cached prices to DEGRADED instead of returning as LIVE
+ * NEW: Return kraken_cached when using cache, kraken_live when fetching fresh
  * Returns explicit health status for gate enforcement
  */
 export async function getPrice(symbol: string): Promise<PriceData | null> {
@@ -350,38 +353,46 @@ export async function getPrice(symbol: string): Promise<PriceData | null> {
 
   // Check cache first (for stability during transient failures)
   const cached = getCachedPrice(base);
-  if (cached && cached.source === "kraken") {
+  if (cached && (cached.source === "kraken_live" || cached.source === "kraken_cached")) {
     if (cached.isStale) {
       // Downgrade stale cache to DEGRADED to prevent false LIVE status
       console.log(`[PRICE_ROUTER] Using stale Kraken cache for ${base} — downgrading to DEGRADED`);
       return {
         ...cached,
+        source: "kraken_cached", // Explicit: this is cached, not live
         health: "DEGRADED",
       };
     }
-    // Fresh cache, return as LIVE
-    return cached;
+    // Fresh cache, mark as cached and return as LIVE (but source indicates it's cached)
+    return {
+      ...cached,
+      source: "kraken_cached", // Explicit: this is cached, not live feed
+    };
   }
 
   // Try primary feed (Kraken)
   const krakenPrice = await getPriceFromKraken(base);
   if (krakenPrice) {
-    return krakenPrice; // LIVE
+    return krakenPrice; // LIVE with kraken_live source
   }
 
   // Kraken failed, check cache before fallback
-  if (cached && cached.source === "kraken") {
+  if (cached && (cached.source === "kraken_live" || cached.source === "kraken_cached")) {
     if (cached.isStale) {
       // Downgrade stale cache to DEGRADED
       console.log(`[PRICE_ROUTER] Kraken failed, using stale cache for ${base} — downgrading to DEGRADED`);
       return {
         ...cached,
+        source: "kraken_cached", // Explicit: this is cached fallback
         health: "DEGRADED",
       };
     }
-    // Cache is fresh, still OK for execution
+    // Cache is fresh, still OK for execution but mark as cached
     console.log(`[PRICE_ROUTER] Kraken failed, using fresh cached price for ${base}`);
-    return cached; // LIVE (still fresh)
+    return {
+      ...cached,
+      source: "kraken_cached", // Explicit: this is cached, not live feed
+    };
   }
 
   console.log(`[PRICE_ROUTER] Kraken failed for ${base}, attempting CoinGecko fallback...`);
