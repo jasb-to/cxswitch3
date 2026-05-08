@@ -12,6 +12,12 @@ const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 export async function shouldSendAlert(signal_id: number, symbol: string, newState: string): Promise<boolean> {
   if (newState === "END") return false;
 
+  // Defensive: require all parameters
+  if (!signal_id || !symbol || !newState) {
+    console.log(`[TELEGRAM] Invalid query skipped — signal_id=${signal_id} symbol=${symbol} state=${newState}`);
+    return true;
+  }
+
   // If Supabase is not connected, always allow alert (no persistence)
   if (!supabase) return true;
 
@@ -24,15 +30,18 @@ export async function shouldSendAlert(signal_id: number, symbol: string, newStat
       .eq("symbol", symbol)
       .eq("state", newState)
       .order("sent_at", { ascending: false })
-      .limit(1);
+      .limit(1)
+      .maybeSingle();
 
     if (error) {
       console.error(`[shouldSendAlert] Query error for signal ${signal_id}:`, error.message);
       return true;
     }
 
-    const shouldSend = !data || data.length === 0;
-    console.log(`[shouldSendAlert] signal_id=${signal_id} symbol=${symbol} state=${newState} — already_sent=${!shouldSend}`, data?.[0] ? `(last sent: ${data[0].sent_at})` : "");
+    const shouldSend = !data;
+    if (!shouldSend) {
+      console.log(`[TELEGRAM] Duplicate alert prevented — signal_id=${signal_id} symbol=${symbol} state=${newState} (last sent: ${data.sent_at})`);
+    }
     
     return shouldSend;
   } catch (err) {
@@ -106,7 +115,7 @@ export async function sendSignalAlert(signal: Signal): Promise<void> {
   });
 
   // Track alert in Supabase with signal_id for proper deduplication
-  if (supabase && signal.id) {
+  if (supabase && signal.id && signal.symbol && signal.state) {
     try {
       const { data, error } = await supabase
         .from("telegram_alerts")
@@ -115,11 +124,18 @@ export async function sendSignalAlert(signal: Signal): Promise<void> {
           symbol: signal.symbol,
           state: signal.state,
         })
-        .select();
+        .select()
+        .limit(1)
+        .maybeSingle();
 
       if (error) {
-        console.error(`[sendSignalAlert] Insert failed for signal ${signal.id}:`, error.message);
-      } else {
+        // 409 conflict = duplicate (expected) — treat as INFO not ERROR
+        if (error.code === "23505" || error.message?.includes("duplicate")) {
+          console.log(`[TELEGRAM] Duplicate alert prevented — signal_id=${signal.id}`);
+        } else {
+          console.error(`[sendSignalAlert] Insert failed for signal ${signal.id}:`, error.message);
+        }
+      } else if (data) {
         console.log(`[sendSignalAlert] Tracked alert for signal ${signal.id} in telegram_alerts`);
       }
     } catch (err) {
