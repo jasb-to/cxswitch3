@@ -1,21 +1,29 @@
 /**
- * Price Router (v3.2.3)
- * Primary + Secondary + Safety State Architecture
+ * Price Router (v3.3.0)
+ * Primary + Secondary + Safety State Architecture with Traffic Control
  * 
  * PRIMARY: Kraken ticker (execution-grade, with retry + backoff + circuit breaker)
  * SECONDARY: CoinGecko (fallback-only, for visual continuity)
  * SAFETY: Hard gates prevent trading on degraded data
  * 
- * STABILITY LAYER (v3.2.3 improvements):
+ * STABILITY LAYER (v3.3.0 improvements):
+ * - Request throttler: per-symbol staggering, coalescing, global budget
+ * - Separate cache TTLs: ticker 1.5s, candles 30s (prevent over-fetch)
  * - Split source into 3 states: "kraken_live" | "kraken_cached" | "coingecko"
- * - Removes ambiguity: downstream knows if price is live vs cached at a glance
  * - Exponential backoff retry (2 retries, 100ms → 500ms)
  * - Differentiated circuit breaker (only escalate on EMPTY_RESPONSE / repeated TIMEOUT)
  * - Staleness flag in cache (prevent false LIVE from stale prices)
- * - Last-known-good cache (3s TTL with staleness tracking)
  */
 
 import { resolveSymbol } from "@/lib/symbol-resolver";
+import { 
+  trackRequest, 
+  getInFlightRequest, 
+  staggerRequest, 
+  acquireRequestBudget,
+  TICKER_CACHE_TTL_MS,
+  STALENESS_THRESHOLD_MS,
+} from "@/lib/request-throttler";
 
 export type PriceSource = "kraken_live" | "kraken_cached" | "coingecko" | "none";
 export type PriceHealth = "LIVE" | "DEGRADED" | "OFFLINE";
@@ -117,12 +125,12 @@ function recordKrakenSuccess(symbol: string) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PRICE CACHE: Last-known-good prices with staleness tracking (3s TTL)
-// Downgrade to DEGRADED if price exceeds staleness threshold (1.5s)
+// PRICE CACHE: Last-known-good prices with staleness tracking (1.5s TTL)
+// Downgrade to DEGRADED if price exceeds staleness threshold (0.75s)
 // ═══════════════════════════════════════════════════════════════════════════
 const priceCache: Record<string, { data: PriceData; cachedAt: number }> = {};
-const CACHE_TTL_MS = 3000; // 3 second TTL (hard expiration)
-const STALENESS_THRESHOLD_MS = 1500; // 1.5 second staleness (soft threshold)
+const CACHE_TTL_MS = TICKER_CACHE_TTL_MS; // 1.5 second TTL (prevent over-fetch)
+const STALENESS_THRESHOLD = STALENESS_THRESHOLD_MS; // 0.75 second staleness threshold
 
 function getCachedPrice(symbol: string): PriceData | null {
   const cached = priceCache[symbol];
@@ -130,22 +138,22 @@ function getCachedPrice(symbol: string): PriceData | null {
 
   const age = Date.now() - cached.cachedAt;
   
-  // Hard TTL: beyond 3s, discard
+  // Hard TTL: beyond 1.5s, discard
   if (age > CACHE_TTL_MS) {
     delete priceCache[symbol];
     console.log(`[CACHE] ${symbol}: Expired (age: ${age}ms > TTL: ${CACHE_TTL_MS}ms)`);
     return null;
   }
 
-  // Soft staleness: beyond 1.5s, mark as stale (will downgrade to DEGRADED)
-  const isStale = age > STALENESS_THRESHOLD_MS;
+  // Soft staleness: beyond 0.75s, mark as stale (will downgrade to DEGRADED)
+  const isStale = age > STALENESS_THRESHOLD;
   const data = {
     ...cached.data,
     isStale,
   };
 
   if (isStale) {
-    console.log(`[CACHE] ${symbol}: Hit but STALE (age: ${age}ms > staleness: ${STALENESS_THRESHOLD_MS}ms)`);
+    console.log(`[CACHE] ${symbol}: Hit but STALE (age: ${age}ms > staleness: ${STALENESS_THRESHOLD}ms)`);
   } else {
     console.log(`[CACHE] ${symbol}: Hit (age: ${age}ms, fresh)`);
   }
@@ -159,127 +167,147 @@ function setCachedPrice(symbol: string, data: PriceData) {
 }
 
 /**
- * Fetch price from Kraken with retry + backoff + differentiated circuit breaker
- * Tracks failure types: EMPTY_RESPONSE, TIMEOUT (escalate), vs transient errors (don't escalate)
+ * Fetch price from Kraken with retry + backoff + differentiated circuit breaker + throttling
+ * Uses request coalescing to deduplicate in-flight requests
+ * Uses staggering and global budget to prevent rate spikes
  */
 async function getPriceFromKraken(symbol: string): Promise<PriceData | null> {
   try {
-    // Check circuit breaker
-    if (isCircuitBreakerOpen(symbol)) {
-      console.warn(`[KRAKEN] Circuit breaker OPEN for ${symbol} — skipping attempts`);
-      return null;
-    }
-
     const resolved = resolveSymbol(symbol);
-    const { krakenTicker, base } = resolved;
+    const { base } = resolved;
 
-    // Retry logic with exponential backoff: 2 retries (100ms, 500ms)
-    const maxRetries = 2;
-    let lastError: Error | null = null;
-    let lastFailureType: KrakenFailureType = "HTTP_ERROR";
-
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
-
-        let response;
-        try {
-          response = await fetch(
-            `https://api.kraken.com/0/public/Ticker?pair=${krakenTicker}`,
-            { signal: controller.signal }
-          );
-        } finally {
-          clearTimeout(timeoutId);
-        }
-
-        if (!response.ok) {
-          lastError = new Error(`HTTP ${response.status}`);
-          lastFailureType = "HTTP_ERROR";
-          if (attempt < maxRetries) {
-            const backoff = attempt === 0 ? 100 : 500;
-            console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
-            await new Promise(resolve => setTimeout(resolve, backoff));
-            continue;
-          }
-          throw lastError;
-        }
-
-        const data = await response.json();
-
-        if (data.error && data.error.length > 0) {
-          lastError = new Error(`API error: ${data.error[0]}`);
-          lastFailureType = "API_ERROR";
-          if (attempt < maxRetries) {
-            const backoff = attempt === 0 ? 100 : 500;
-            console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
-            await new Promise(resolve => setTimeout(resolve, backoff));
-            continue;
-          }
-          throw lastError;
-        }
-
-        const tickerData = data.result?.[krakenTicker];
-        if (!tickerData) {
-          // CRITICAL: Empty response is pattern indicating persistent missing data
-          lastError = new Error("No ticker data returned");
-          lastFailureType = "EMPTY_RESPONSE";
-          if (attempt < maxRetries) {
-            const backoff = attempt === 0 ? 100 : 500;
-            console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
-            await new Promise(resolve => setTimeout(resolve, backoff));
-            continue;
-          }
-          throw lastError;
-        }
-
-        const lastTrade = tickerData.c?.[0];
-        const bid = parseFloat(tickerData.b?.[0] ?? 0);
-        const ask = parseFloat(tickerData.a?.[0] ?? 0);
-        const price = lastTrade ? parseFloat(lastTrade) : (bid + ask) / 2;
-
-        if (!price || isNaN(price)) {
-          lastError = new Error("Invalid price data");
-          lastFailureType = "INVALID_PRICE";
-          if (attempt < maxRetries) {
-            const backoff = attempt === 0 ? 100 : 500;
-            console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
-            await new Promise(resolve => setTimeout(resolve, backoff));
-            continue;
-          }
-          throw lastError;
-        }
-
-        // Success
-        const priceData: PriceData = {
-          price,
-          source: "kraken_live", // Explicit: live execution feed
-          health: "LIVE",
-          bid,
-          ask,
-          timestamp: Math.floor(Date.now() / 1000),
-          isStale: false,
-        };
-
-        recordKrakenSuccess(base);
-        setCachedPrice(base, priceData);
-        console.log(`[KRAKEN] ✓ ${base}: $${price.toFixed(2)} (attempt ${attempt + 1}/${maxRetries + 1})`);
-        return priceData;
-      } catch (err) {
-        if (err instanceof Error && err.name === "AbortError") {
-          lastError = new Error("Timeout (5s)");
-          lastFailureType = "TIMEOUT";
-        } else {
-          lastError = err instanceof Error ? err : new Error(String(err));
-        }
-        // Continue to next retry or fallback
-      }
+    // REQUEST COALESCING: If BTC is already being fetched, return that promise
+    const coalesceKey = `kraken_ticker_${base}`;
+    const inFlight = getInFlightRequest(coalesceKey);
+    if (inFlight) {
+      console.log(`[KRAKEN] ${base}: Request in-flight, coalescing...`);
+      return inFlight;
     }
 
-    // All retries exhausted — record failure with type
-    recordKrakenFailure(symbol, lastFailureType);
-    console.warn(`[KRAKEN] All retries exhausted for ${base}: ${lastError?.message} (type: ${lastFailureType})`);
-    return null;
+    // Acquire request budget (throttles if too many requests/second)
+    await acquireRequestBudget();
+
+    // Create the fetch promise with staggering and tracking
+    const fetchPromise = staggerRequest(base, async () => {
+      // Check circuit breaker
+      if (isCircuitBreakerOpen(base)) {
+        console.warn(`[KRAKEN] Circuit breaker OPEN for ${base} — skipping attempts`);
+        return null;
+      }
+
+      const { krakenTicker } = resolved;
+
+      // Retry logic with exponential backoff: 2 retries (100ms, 500ms)
+      const maxRetries = 2;
+      let lastError: Error | null = null;
+      let lastFailureType: KrakenFailureType = "HTTP_ERROR";
+
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+
+          let response;
+          try {
+            response = await fetch(
+              `https://api.kraken.com/0/public/Ticker?pair=${krakenTicker}`,
+              { signal: controller.signal }
+            );
+          } finally {
+            clearTimeout(timeoutId);
+          }
+
+          if (!response.ok) {
+            lastError = new Error(`HTTP ${response.status}`);
+            lastFailureType = "HTTP_ERROR";
+            if (attempt < maxRetries) {
+              const backoff = attempt === 0 ? 100 : 500;
+              console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
+              await new Promise(resolve => setTimeout(resolve, backoff));
+              continue;
+            }
+            throw lastError;
+          }
+
+          const data = await response.json();
+
+          if (data.error && data.error.length > 0) {
+            lastError = new Error(`API error: ${data.error[0]}`);
+            lastFailureType = "API_ERROR";
+            if (attempt < maxRetries) {
+              const backoff = attempt === 0 ? 100 : 500;
+              console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
+              await new Promise(resolve => setTimeout(resolve, backoff));
+              continue;
+            }
+            throw lastError;
+          }
+
+          const tickerData = data.result?.[krakenTicker];
+          if (!tickerData) {
+            // CRITICAL: Empty response is pattern indicating persistent missing data
+            lastError = new Error("No ticker data returned");
+            lastFailureType = "EMPTY_RESPONSE";
+            if (attempt < maxRetries) {
+              const backoff = attempt === 0 ? 100 : 500;
+              console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
+              await new Promise(resolve => setTimeout(resolve, backoff));
+              continue;
+            }
+            throw lastError;
+          }
+
+          const lastTrade = tickerData.c?.[0];
+          const bid = parseFloat(tickerData.b?.[0] ?? 0);
+          const ask = parseFloat(tickerData.a?.[0] ?? 0);
+          const price = lastTrade ? parseFloat(lastTrade) : (bid + ask) / 2;
+
+          if (!price || isNaN(price)) {
+            lastError = new Error("Invalid price data");
+            lastFailureType = "INVALID_PRICE";
+            if (attempt < maxRetries) {
+              const backoff = attempt === 0 ? 100 : 500;
+              console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
+              await new Promise(resolve => setTimeout(resolve, backoff));
+              continue;
+            }
+            throw lastError;
+          }
+
+          // Success
+          const priceData: PriceData = {
+            price,
+            source: "kraken_live", // Explicit: live execution feed
+            health: "LIVE",
+            bid,
+            ask,
+            timestamp: Math.floor(Date.now() / 1000),
+            isStale: false,
+          };
+
+          recordKrakenSuccess(base);
+          setCachedPrice(base, priceData);
+          console.log(`[KRAKEN] ✓ ${base}: $${price.toFixed(2)} (attempt ${attempt + 1}/${maxRetries + 1}, coalesced)`);
+          return priceData;
+        } catch (err) {
+          if (err instanceof Error && err.name === "AbortError") {
+            lastError = new Error("Timeout (5s)");
+            lastFailureType = "TIMEOUT";
+          } else {
+            lastError = err instanceof Error ? err : new Error(String(err));
+          }
+          // Continue to next retry or fallback
+        }
+      }
+
+      // All retries exhausted — record failure with type
+      recordKrakenFailure(base, lastFailureType);
+      console.warn(`[KRAKEN] All retries exhausted for ${base}: ${lastError?.message} (type: ${lastFailureType})`);
+      return null;
+    });
+
+    // Track the fetch promise for coalescing
+    return trackRequest(coalesceKey, fetchPromise);
   } catch (err) {
     recordKrakenFailure(symbol, "HTTP_ERROR");
     console.warn(`[KRAKEN] Exception:`, err instanceof Error ? err.message : String(err));
