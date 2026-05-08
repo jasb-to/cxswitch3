@@ -799,6 +799,10 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
 
 // ─── Update signal state in Supabase ────────────────────────────────────────
 
+/**
+ * Atomic state transition with exponential backoff retry
+ * Ensures TP/SL terminal states are reliably persisted
+ */
 export async function updateSignalState(
   id: number,
   state: SignalState,
@@ -806,16 +810,180 @@ export async function updateSignalState(
 ): Promise<boolean> {
   if (!supabase) return false;
 
-  const { error } = await supabase
-    .from("signals")
-    .update({ state, updated_at: new Date().toISOString(), ...extra })
-    .eq("id", id);
+  const MAX_RETRIES = 3;
+  const BASE_DELAY_MS = 200;
 
-  if (error) {
-    console.error(`[updateSignalState] Failed to update signal ${id}:`, error.message);
-    return false;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      // Build update payload - only include defined values
+      const payload: Record<string, any> = {
+        state,
+        updated_at: new Date().toISOString(),
+      };
+
+      // Only add extra fields if they are defined and valid
+      if (extra) {
+        if (extra.outcome !== undefined) payload.outcome = extra.outcome;
+        if (extra.pnl !== undefined && !isNaN(extra.pnl)) payload.pnl = extra.pnl;
+        if (extra.last_checked_candle !== undefined) payload.last_checked_candle = extra.last_checked_candle;
+      }
+
+      console.log(`[updateSignalState] Attempt ${attempt}/${MAX_RETRIES} for signal ${id}: ${JSON.stringify(payload)}`);
+
+      const { data, error } = await supabase
+        .from("signals")
+        .update(payload)
+        .eq("id", id)
+        .select()
+        .single();
+
+      if (error) {
+        console.error(`[updateSignalState] PATCH failed (attempt ${attempt}/${MAX_RETRIES}):`, {
+          signalId: id,
+          payload,
+          error: error.message,
+          code: error.code,
+          details: error.details,
+        });
+
+        // If not last attempt, retry with exponential backoff
+        if (attempt < MAX_RETRIES) {
+          const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
+          console.log(`[updateSignalState] Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        return false;
+      }
+
+      console.log(`[updateSignalState] ✓ Signal ${id} updated to ${state} (attempt ${attempt})`);
+      return true;
+    } catch (err) {
+      console.error(`[updateSignalState] Exception (attempt ${attempt}/${MAX_RETRIES}):`, err);
+      if (attempt < MAX_RETRIES) {
+        const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      return false;
+    }
   }
-  return true;
+
+  return false;
+}
+
+/**
+ * State Reconciliation Job
+ * 
+ * Forces terminal state transitions when live price satisfies TP/SL conditions.
+ * This ensures no EARLY_OPEN or CONFIRMED signal can persist if TP/SL was already hit.
+ * 
+ * Called every cron cycle to catch any missed state transitions.
+ */
+export async function reconcileSignalStates(): Promise<{ logs: string[]; reconciled: number }> {
+  const logs: string[] = [];
+  let reconciledCount = 0;
+
+  if (!supabase) {
+    logs.push("[RECONCILE] Supabase not connected");
+    return { logs, reconciled: reconciledCount };
+  }
+
+  try {
+    // Get all active signals
+    const { data: activeSignals, error: fetchErr } = await supabase
+      .from("signals")
+      .select("*")
+      .in("state", ["EARLY_OPEN", "CONFIRMED"]);
+
+    if (fetchErr) {
+      logs.push(`[RECONCILE] Query error: ${fetchErr.message}`);
+      return { logs, reconciled: reconciledCount };
+    }
+
+    if (!activeSignals || activeSignals.length === 0) {
+      logs.push("[RECONCILE] No active signals to reconcile");
+      return { logs, reconciled: reconciledCount };
+    }
+
+    logs.push(`[RECONCILE] Checking ${activeSignals.length} active signals for terminal conditions`);
+
+    for (const signal of activeSignals as Signal[]) {
+      try {
+        const symbolBase = signal.symbol.replace("/USD", "");
+        
+        // Get live price from market context
+        const market = await getMarketContext(signal.symbol);
+        const livePrice = market.price;
+
+        if (!livePrice || livePrice <= 0) {
+          logs.push(`[RECONCILE] ${symbolBase}: No live price available — skipping`);
+          continue;
+        }
+
+        const { entry_price, stop_loss, take_profit, direction, id } = signal;
+
+        // Terminal condition checks using LIVE price
+        const tpHitLong = direction === "LONG" && livePrice >= take_profit;
+        const tpHitShort = direction === "SHORT" && livePrice <= take_profit;
+        const slHitLong = direction === "LONG" && livePrice <= stop_loss;
+        const slHitShort = direction === "SHORT" && livePrice >= stop_loss;
+
+        if (tpHitLong || tpHitShort) {
+          const SLIPPAGE = 0.001;
+          const exitPrice = direction === "LONG"
+            ? take_profit * (1 - SLIPPAGE)
+            : take_profit * (1 + SLIPPAGE);
+          const pnl = direction === "LONG"
+            ? exitPrice - entry_price
+            : entry_price - exitPrice;
+
+          logs.push(`[RECONCILE] ${symbolBase}: TP HIT detected (live=$${livePrice.toFixed(2)} >= TP=$${take_profit.toFixed(2)}) — forcing END state`);
+
+          const success = await updateSignalState(id!, "END", { outcome: "TP", pnl });
+          if (success) {
+            reconciledCount++;
+            await sendTradeCloseAlert({ ...signal, outcome: "TP" as SignalOutcome, pnl }, exitPrice);
+          } else {
+            logs.push(`[RECONCILE] ${symbolBase}: Failed to reconcile TP state — will retry next cycle`);
+          }
+          continue;
+        }
+
+        if (slHitLong || slHitShort) {
+          const SLIPPAGE = 0.001;
+          const exitPrice = direction === "LONG"
+            ? stop_loss * (1 - SLIPPAGE)
+            : stop_loss * (1 + SLIPPAGE);
+          const pnl = direction === "LONG"
+            ? exitPrice - entry_price
+            : entry_price - exitPrice;
+
+          logs.push(`[RECONCILE] ${symbolBase}: SL HIT detected (live=$${livePrice.toFixed(2)} <= SL=$${stop_loss.toFixed(2)}) — forcing END state`);
+
+          const success = await updateSignalState(id!, "END", { outcome: "SL", pnl });
+          if (success) {
+            reconciledCount++;
+            await sendTradeCloseAlert({ ...signal, outcome: "SL" as SignalOutcome, pnl }, exitPrice);
+          } else {
+            logs.push(`[RECONCILE] ${symbolBase}: Failed to reconcile SL state — will retry next cycle`);
+          }
+          continue;
+        }
+
+        // Log healthy signals
+        logs.push(`[RECONCILE] ${symbolBase}: ${signal.state} ${direction} — live=$${livePrice.toFixed(2)} within TP/SL range`);
+      } catch (err) {
+        logs.push(`[RECONCILE] Error checking ${signal.symbol}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    logs.push(`[RECONCILE] Complete — reconciled ${reconciledCount} signals`);
+    return { logs, reconciled: reconciledCount };
+  } catch (err) {
+    logs.push(`[RECONCILE] Fatal error: ${err instanceof Error ? err.message : String(err)}`);
+    return { logs, reconciled: reconciledCount };
+  }
 }
 
 // ─── Manage open positions: check TP/SL, promote EARLY → CONFIRMED, expire ──
