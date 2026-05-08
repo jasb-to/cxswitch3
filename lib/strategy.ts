@@ -345,7 +345,7 @@ export interface Signal {
 export interface MarketContext {
   symbol: string;
   price: number;
-  priceSource: "kraken" | "coingecko" | "none"; // NEW: Explicit feed source (not just ticker/fallback_candle)
+  priceSource: "kraken_live" | "kraken_cached" | "coingecko" | "none"; // Explicit: distinguishes live vs cached
   priceHealth: "LIVE" | "DEGRADED" | "OFFLINE"; // NEW: Explicit health state for gates
   swingHigh: number | null;
   swingLow: number | null;
@@ -451,7 +451,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
   // ═══════════════════════════════════════════════════════════��═══════════════
   // HARD GATE: Price health must be LIVE to generate ANY signals
   // NO exceptions, NO degraded-mode trading, NO fallback trading
-  // ═══════════════════════════════════════════════════════════════════════��������══
+  // ═════════���═════════════════════════════════════════════════════════════��������══
   // ═══════════════════════════════════════════════════════════════════════════
   // HARD GATE: Price health must be LIVE to generate ANY signals
   // Check all symbols' price health before proceeding with signal generation
