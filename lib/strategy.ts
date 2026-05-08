@@ -11,6 +11,7 @@ import { ACTIVE_SIGNAL_STATES, TERMINAL_SIGNAL_STATES } from "./signal-states";
 import { getLivePrice, validateMarketDataFreshness } from "./market/live-price";
 import { ALLOWED_SIGNAL_OUTCOMES, isValidOutcome, validateOutcome, type SignalOutcome } from "./signal-outcome-constants";
 import { determinePriceHealth, canGenerateSignals, canExecuteTradeLogic, canValidateStructure, type PriceHealthStatus } from "./price-health";
+import { resolveSymbol, type ResolvedSymbol } from "./symbol-resolver";
 
 export type SignalDirection = "LONG" | "SHORT";
 /**
@@ -445,10 +446,10 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
   const logs: string[] = [];
   const signals: Signal[] = [];
 
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ═══════════════════════════════════════════════════════════��═══════════════
   // HARD GATE: Price health must be LIVE to generate ANY signals
   // NO exceptions, NO degraded-mode trading, NO fallback trading
-  // ═══════════════════════════════════════════════════════════════════════════
+  // ════════════════════════════════════════════════════════════════════════���══
   const priceHealthStatus = await checkPriceHealthAcrossSymbols(["BTC", "ETH", "SOL"]);
   if (priceHealthStatus !== "LIVE") {
     logs.push(`[PRICE_GATE] ❌ HARD BLOCK: Price health is ${priceHealthStatus} — NO signal generation allowed`);
@@ -543,6 +544,17 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
 
     for (const base of ["BTC", "ETH", "SOL"]) {
       try {
+        // ═══════════════════════════════════════════════════════════════════════════
+        // CANONICAL SYMBOL ENFORCEMENT: All symbols go through resolver validation
+        // This establishes the system input contract at entry
+        // ═══════════════════════════════════════════════════════════════════════════
+        try {
+          resolveSymbol(base);  // Validate symbol can be resolved (hard fail if not)
+        } catch (err) {
+          logs.push(`[${base}] HARD FAIL - Symbol resolution failed: ${err instanceof Error ? err.message : String(err)}`);
+          continue;
+        }
+
         const market = await getMarketContext(base);
 
         if (market.error) {
@@ -943,10 +955,21 @@ export async function reconcileSignalStates(): Promise<{ logs: string[]; reconci
 
     for (const signal of activeSignals as Signal[]) {
       try {
-        const symbolBase = signal.symbol.replace("/USD", "");
+        // ═══════════════════════════════════════════════════════════════════════════
+        // CANONICAL SYMBOL ENFORCEMENT: Resolve signal symbol at entry
+        // ═══════════════════════════════════════════════════════════════════════════
+        let resolved: ResolvedSymbol;
+        try {
+          resolved = resolveSymbol(signal.symbol);
+        } catch (err) {
+          logs.push(`[RECONCILE] HARD FAIL - Symbol resolution failed for ${signal.symbol}: ${err instanceof Error ? err.message : String(err)}`);
+          continue;
+        }
+
+        const { base: symbolBase } = resolved;
         
         // Get live price from market context
-        const market = await getMarketContext(signal.symbol);
+        const market = await getMarketContext(symbolBase);
         
         // CRITICAL: Only reconcile on LIVE price sources
         // Block reconciliation on DEGRADED/OFFLINE to prevent false TP/SL triggers
@@ -1324,21 +1347,32 @@ export async function validateActiveEarlyOpenSignals(): Promise<{ logs: string[]
     // For each EARLY_OPEN signal, re-evaluate current market structure
     for (const signal of earlyOpenSignals) {
       try {
-        const symbol = signal.symbol;
-        const market = await getMarketContext(symbol);
+        // ═══════════════════════════════════════════════════════════════════════════
+        // CANONICAL SYMBOL ENFORCEMENT: Resolve signal symbol at entry
+        // ═══════════════════════════════════════════════════════════════════════════
+        let resolved: ResolvedSymbol;
+        try {
+          resolved = resolveSymbol(signal.symbol);
+        } catch (err) {
+          logs.push(`[EARLY_OPEN VALIDATION] HARD FAIL - Symbol resolution failed for ${signal.symbol}: ${err instanceof Error ? err.message : String(err)}`);
+          continue;
+        }
+
+        const { base: symbolBase } = resolved;
+        const market = await getMarketContext(symbolBase);
         
         // CRITICAL: Only validate structure on LIVE price sources
         // Block validation on DEGRADED/OFFLINE to prevent false invalidations
         const priceHealth = determinePriceHealth(market.priceSource);
         if (!canValidateStructure(priceHealth)) {
-          logs.push(`[EARLY_OPEN VALIDATION] ${symbol}: ⚠ Price health: ${priceHealth} — validation blocked (${market.priceSource})`);
+          logs.push(`[EARLY_OPEN VALIDATION] ${symbolBase}: ⚠ Price health: ${priceHealth} — validation blocked (${market.priceSource})`);
           continue;
         }
         
         // CRITICAL: Skip validation if using fallback candle prices
         // Only invalidate based on LIVE ticker data to prevent false invalidations
         if (market.priceSource !== "ticker") {
-          logs.push(`[EARLY_OPEN VALIDATION] ${symbol}: ⚠ Using FALLBACK price source (${market.priceSource}) — skipping validation`);
+          logs.push(`[EARLY_OPEN VALIDATION] ${symbolBase}: ⚠ Using FALLBACK price source (${market.priceSource}) — skipping validation`);
           continue;
         }
 
@@ -1371,20 +1405,20 @@ export async function validateActiveEarlyOpenSignals(): Promise<{ logs: string[]
 
         if (shouldInvalidate) {
           // End the signal with STRUCTURE_INVALIDATED outcome using safe updateSignalState
-          console.log(`[INVALIDATION] ${symbol} ${signal.direction} EARLY_OPEN invalidated: ${invalidationReason}`);
+          console.log(`[INVALIDATION] ${symbolBase} ${signal.direction} EARLY_OPEN invalidated: ${invalidationReason}`);
           
           const success = await updateSignalState(signal.id!, "END", {
             outcome: "STRUCTURE_INVALIDATED" as SignalOutcome,
           });
 
           if (!success) {
-            logs.push(`[INVALIDATION] [DB ERROR] Failed to invalidate ${symbol} signal ${signal.id}: check DB constraint`);
+            logs.push(`[INVALIDATION] [DB ERROR] Failed to invalidate ${symbolBase} signal ${signal.id}: check DB constraint`);
           } else {
-            logs.push(`[INVALIDATION] ✓ ${symbol} ${signal.direction} EARLY_OPEN → END (STRUCTURE_INVALIDATED): ${invalidationReason}`);
+            logs.push(`[INVALIDATION] ✓ ${symbolBase} ${signal.direction} EARLY_OPEN → END (STRUCTURE_INVALIDATED): ${invalidationReason}`);
             invalidatedCount++;
           }
         } else {
-          logs.push(`[EARLY_OPEN VALIDATION] ${symbol} ${signal.direction} EARLY_OPEN still valid (${market.setup})`);
+          logs.push(`[EARLY_OPEN VALIDATION] ${symbolBase} ${signal.direction} EARLY_OPEN still valid (${market.setup})`);
         }
       } catch (err) {
         logs.push(`[EARLY_OPEN VALIDATION] Error checking signal for ${signal.symbol}: ${err instanceof Error ? err.message : String(err)}`);
@@ -1587,7 +1621,46 @@ function detectDisplacement(
 const priceCache = new Map<string, { price: number; timestamp: number }>();
 
 export async function getMarketContext(symbolBase: string): Promise<MarketContext> {
-  const symbol = `${symbolBase}/USD`;
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CANONICAL SYMBOL ENFORCEMENT: Every function MUST normalize at entry
+  // This is the system input contract — NO function accepts raw symbols
+  // ═══════════════════════════════════════════════════════════════════════════
+  let resolved: ResolvedSymbol;
+  try {
+    resolved = resolveSymbol(symbolBase);
+  } catch (err) {
+    console.error(`[getMarketContext] HARD FAIL - Symbol resolution failed for ${symbolBase}:`, err instanceof Error ? err.message : String(err));
+    return {
+      symbol: `${symbolBase}/USD`,
+      price: 0,
+      priceSource: "fallback_candle",
+      swingHigh: null,
+      swingLow: null,
+      distanceToHigh: null,
+      distanceToLow: null,
+      setup: "ERROR",
+      setupText: "Symbol resolution failed",
+      error: true,
+      trendlines: 0,
+      dataSource: "KRAKEN",
+      dataSourceTime: Date.now(),
+      candles4h: [],
+      candles15m: [],
+      candles5m: [],
+      adx: undefined,
+      ema8: undefined,
+      ema21: undefined,
+      emaCurling: undefined,
+      rsi15m: undefined,
+      rsi5m: undefined,
+      rsiSlope15m: undefined,
+      rsiSlope5m: undefined,
+      volatility: 1.0,
+      volatilityThreshold: 0.005,
+    };
+  }
+
+  const { base, internal: symbol, krakenTicker } = resolved;
   let dataSource: "KRAKEN" | "COINGECKO" | "CACHE" = "KRAKEN";
   let dataSourceTime = Date.now();
   
