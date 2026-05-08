@@ -797,7 +797,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
   return { signals, logs };
 }
 
-// ─── Update signal state in Supabase ────────────────────────────────────────
+// ─── Update signal state in Supabase ──────────────────────────────────��─────
 
 /**
  * Atomic state transition with exponential backoff retry
@@ -1945,8 +1945,11 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     console.log(`[${symbolBase}] LONG score: ${longScore} [${longBreakdown.join(", ")}]`);
     console.log(`[${symbolBase}] SHORT score: ${shortScore} [${shortBreakdown.join(", ")}]`);
 
-    // --- SETUP DECISION: score >= 60 triggers EARLY_OPEN ---
-    const TRIGGER_THRESHOLD = 60;
+    // --- SETUP DECISION: SNIPER MODE entry threshold (aggressive momentum detection) ---
+    // Lowered from 60 to 50 to enable faster entry positioning while still respecting quality
+    // The edge comes from early positioning + tight invalidation + asymmetric RR
+    // NOT a weakness — it's intentional fast-entry design with small stops
+    const TRIGGER_THRESHOLD = 50;
 
     let setup: "LONG_SETUP" | "SHORT_SETUP" | "NO_SETUP" | "ERROR" = "NO_SETUP";
     let setupText = "";
