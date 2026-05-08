@@ -449,7 +449,7 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
   // ═══════════════════════════════════════════════════════════��═══════════════
   // HARD GATE: Price health must be LIVE to generate ANY signals
   // NO exceptions, NO degraded-mode trading, NO fallback trading
-  // ════════════════════════════════════════════════════════════════════════���══
+  // ═══════════════════════════════════════════════════════════════════════������══
   const priceHealthStatus = await checkPriceHealthAcrossSymbols(["BTC", "ETH", "SOL"]);
   if (priceHealthStatus !== "LIVE") {
     logs.push(`[PRICE_GATE] ❌ HARD BLOCK: Price health is ${priceHealthStatus} — NO signal generation allowed`);
@@ -562,7 +562,8 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
           continue;
         }
 
-        const { symbol, price, swingHigh, swingLow, setup, candles4h: marketCandles, volatilityThreshold } = market;
+        const { price, swingHigh, swingLow, setup, candles4h: marketCandles, volatilityThreshold } = market;
+        const symbol = market.symbol;  // Use market.symbol as single source of truth
         logs.push(`[${base}] $${price.toFixed(2)} — ${setup} — ${market.setupText}`);
 
         // Guard: skip if candles unavailable or insufficient
