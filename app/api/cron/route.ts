@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateSetups } from "@/lib/strategy-v6";
 import { sendAlert, canSendAlert } from "@/lib/telegram-v6";
 import { refreshMarketData } from "@/lib/market-data-layer";
+import { setSnapshot } from "@/lib/runtime-snapshot";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -33,7 +34,14 @@ export async function GET(req: NextRequest) {
     const { cards, setups } = await generateSetups(market);
     console.log(`[SCAN] Generated ${cards.length} cards, ${setups.length} setups`);
 
-    // STEP 3: Check cooldown and send alerts
+    // STEP 3: Store snapshot as single source of truth
+    setSnapshot({
+      updatedAt: new Date().toISOString(),
+      cards,
+      setups,
+    });
+
+    // STEP 4: Check cooldown and send alerts
     const sent = [];
     for (const setup of setups) {
       if (await canSendAlert(setup.symbol, setup.mode, setup.direction)) {
@@ -49,7 +57,7 @@ export async function GET(req: NextRequest) {
 
     console.log("[CRON] Complete");
 
-    return NextResponse.json({ ok: true, cards, setups, sent });
+    return NextResponse.json({ ok: true });
   } catch (error) {
     console.error('[CRON ERROR]', error);
     return NextResponse.json(

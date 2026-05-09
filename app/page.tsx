@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 
-const VERSION = "v6.2.1";
+const VERSION = "v6.3.0";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
@@ -101,7 +101,7 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, []);
 
-  const { data, mutate, isValidating } = useSWR<{ cards: SymbolCardState[]; setups: any[]; fetchedAt: number }>(
+  const { data, mutate, isValidating } = useSWR<{ updatedAt: string; cards: SymbolCardState[]; setups: any[] }>(
     "/api/signals",
     fetcher,
     { refreshInterval: 30_000, keepPreviousData: true, revalidateOnFocus: false }
@@ -109,9 +109,10 @@ export default function Dashboard() {
 
   const cards = data?.cards ?? [];
   const setups = data?.setups ?? [];
-  const fetchedAt = data?.fetchedAt ?? 0;
-  const isStale = isHydrated && fetchedAt > 0 && now > 0 && (now - fetchedAt) > STALE_THRESHOLD_MS;
-  const lastUpdateTime = isHydrated && fetchedAt > 0 ? new Date(fetchedAt).toLocaleTimeString("en-GB", { hour12: false }) : "—";
+  const updatedAt = data?.updatedAt ?? "";
+  const fetchedAtMs = updatedAt ? new Date(updatedAt).getTime() : 0;
+  const isStale = isHydrated && fetchedAtMs > 0 && now > 0 && (now - fetchedAtMs) > STALE_THRESHOLD_MS;
+  const lastUpdateTime = isHydrated && updatedAt ? new Date(updatedAt).toLocaleTimeString("en-GB", { hour12: false }) : "—";
 
   const assetCount = cards.length;
   const activeCount = setups.length;
