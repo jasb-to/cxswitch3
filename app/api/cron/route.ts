@@ -20,13 +20,19 @@ export async function GET(req: NextRequest) {
 
     console.log("[CRON] Start");
 
-    // STEP 1: Refresh market cache
+    // STEP 1: Refresh market cache and log status
     const market = await refreshMarketData();
+    
+    // Log market status
+    for (const [symbol, priceData] of Object.entries(market)) {
+      const status = priceData.source === "DEGRADED" ? "DEGRADED" : "LIVE";
+      console.log(`[MARKET] ${symbol} ${status}`);
+    }
 
     // STEP 2: Generate setups (PURE engine)
     const setups = await generateSetups(market);
 
-    // STEP 3-5: Check cooldown, send alerts, store alerts
+    // STEP 3: Check cooldown and send alerts
     const sent = [];
     for (const setup of setups) {
       if (await canSendAlert(setup.symbol, setup.mode, setup.direction)) {
