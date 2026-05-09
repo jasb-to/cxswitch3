@@ -5,7 +5,7 @@ import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v7.2.5";
+const VERSION = "v7.2.6";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load - minimal data, no fakes
@@ -135,7 +135,18 @@ function fmt(n: number) {
 
 function SymbolCard({ card }: { card: SymbolCardState }) {
   const isLoading = card.source === "bootstrap";
+  // FIX #1, #2, #3: Use signalState to determine display + TP visibility
+  const isActiveSignal = card.signalState === "ACTIVE_SNIPER" || card.signalState === "ACTIVE_CONFIRMED";
   const hasSignal = card.mode === "SNIPER" || card.mode === "CONFIRMED";
+  
+  // FIX #8: Remove "WATCHING" - use signalState to show meaningful states
+  const statusBadge = isLoading ? "LOADING" : 
+    card.signalState === "ACTIVE_CONFIRMED" ? "CONFIRMED" :
+    card.signalState === "ACTIVE_SNIPER" ? "SNIPER" :
+    card.signalState === "CONFIRMED_READY" ? "CONFIRMED READY" :
+    card.signalState === "SNIPER_READY" ? "SNIPER READY" :
+    card.signalState === "BUILDING" ? "BUILDING" :
+    card.marketReadinessState;
   
   // Direction colors
   const directionColor = card.direction === "LONG" ? "text-green-400" : card.direction === "SHORT" ? "text-red-400" : "text-zinc-400";
@@ -190,7 +201,7 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
         <div className="flex items-center justify-between">
           <h2 className="text-2xl font-bold tracking-tight">{card.symbol}/USD</h2>
           <span className={`text-xs px-3 py-1 rounded border ${directionBg} ${directionBorder} ${directionColor}`}>
-            {isLoading ? "LOADING" : hasSignal ? card.mode : "WATCHING"}
+            {statusBadge}
           </span>
         </div>
         <div className="flex items-center justify-between">
@@ -257,8 +268,8 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
         </p>
       </div>
 
-      {/* CONDITIONAL: Show targets ONLY if signal exists */}
-      {hasSignal && card.targetPrices && (
+      {/* CONDITIONAL: Show targets ONLY if signal is ACTIVE (FIX #3) */}
+      {isActiveSignal && card.targetPrices && (
         <div className="border-t border-zinc-800 pt-4 space-y-2">
           <p className="text-xs text-zinc-500 uppercase tracking-wider">{card.mode} Entry</p>
           <div className="text-sm font-mono space-y-1">
