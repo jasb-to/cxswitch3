@@ -53,10 +53,10 @@ export async function GET(req: NextRequest) {
     });
 
     // STEP 5: Enqueue alerts (FIX #6 - decoupled, non-blocking)
-    // v7.3.0 FIX #1 & #2: Include signalState and targetPrices for execution gate
+    // v7.3.1 FIX #1, #2, #3: Include all HTF data for execution gate and validation
     // Do NOT await - let alerts process independently
     for (const setup of setups) {
-      // Find the corresponding card to get signalState and targetPrices
+      // Find the corresponding card to get signalState, targetPrices, and HTF data
       const card = newCards.find(c => c.symbol === setup.symbol);
       
       enqueueAlert({
@@ -65,8 +65,11 @@ export async function GET(req: NextRequest) {
         direction: setup.direction,
         score: setup.score,
         price: setup.price,
+        source: card?.source, // v7.3.1: validate price source
         signalState: card?.signalState, // v7.3.0 FIX #1: execution gate check
         targetPrices: card?.targetPrices, // v7.3.0 FIX #2: payload validation
+        htf4hTrend: card?.htf4hTrend, // v7.3.1: HTF validation
+        execution15mState: card?.execution15mState, // v7.3.1: 15M execution validation
         queued: Date.now(),
       });
     }
