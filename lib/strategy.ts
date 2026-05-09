@@ -1324,45 +1324,7 @@ export async function reconcileSignalsWithMarketData(signals: Signal[]): Promise
   return reconciled;
 }
 
-    const { symbol } = signal;
-
-    // Check if market data is fresh and LIVE for this symbol
-    const isFresh = isMarketDataFresh(symbol);
-    const marketData = getMarketData(symbol);
-    
-    const isLive = marketData?.health === "LIVE";
-    const isStale = !isFresh; // Older than 3 seconds
-
-    // RULE: Active signals require LIVE market data
-    if (!isLive || isStale) {
-      const reason = !isLive 
-        ? `degraded (${marketData?.health ?? 'offline'})` 
-        : 'stale cache';
-      
-      logs.push(`[RECONCILE] ${symbol} ${signal.state} signal — market data ${reason}, invalidating position`);
-      
-      // Mark signal as SUSPENDED (market data quality issue)
-      if (supabase) {
-        try {
-          await updateSignalState(signal.id!, "END", {
-            outcome: "INVALIDATED",
-            notes: `Auto-closed: market data ${reason}`,
-          });
-          logs.push(`[RECONCILE] ✓ ${symbol} signal ended as INVALIDATED`);
-        } catch (err) {
-          logs.push(`[RECONCILE] ✗ Failed to end ${symbol} signal: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-      
-      // Don't include in reconciled output (already persisted as END)
-      continue;
-    }
-
-    // Signal passed reconciliation — include it
-    reconciled.push(signal);
-  }
-
-  // Log reconciliation results
+// ─── Get all signals from Supabase ──────────────────────────────────────────
   if (logs.length > 0) {
     console.log("[RECONCILE] Market data validation complete:");
     logs.forEach(log => console.log(log));
@@ -1464,7 +1426,7 @@ export async function validateActiveEarlyOpenSignals(): Promise<{ logs: string[]
       try {
         // ═══════════════════════════════════════════════════════════════════════════
         // CANONICAL SYMBOL ENFORCEMENT: Resolve signal symbol at entry
-        // ═══════════════════════════════════════════════════════════════════════════
+        // ══════════════════════════════════════════════════════════���════════════════
         let resolved: ResolvedSymbol;
         try {
           resolved = resolveSymbol(signal.symbol);
