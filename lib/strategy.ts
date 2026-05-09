@@ -1253,6 +1253,75 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
   return { logs, confirmed };
 }
 
+// ─── Signal Reconciliation Guard ───────────────────────────────────────────
+// Validates active signals against current market state
+// Rule: No active position can exist without current LIVE market validation
+
+/**
+ * Reconcile active signals against current market data health
+ * Downgrades or invalidates signals if:
+ * - Market data is not LIVE
+ * - Market data is stale beyond threshold
+ * - Price source fell back to non-primary
+ */
+async function reconcileSignalsWithMarketData(signals: Signal[]): Promise<Signal[]> {
+  const reconciled: Signal[] = [];
+  const logs: string[] = [];
+
+  for (const signal of signals) {
+    // Skip if already in terminal state
+    if (signal.state === "END") {
+      reconciled.push(signal);
+      continue;
+    }
+
+    const { symbol } = signal;
+
+    // Check if market data is fresh and LIVE for this symbol
+    const isFresh = isMarketDataFresh(symbol);
+    const marketData = getMarketData(symbol);
+    
+    const isLive = marketData?.health === "LIVE";
+    const isStale = !isFresh; // Older than 3 seconds
+
+    // RULE: Active signals require LIVE market data
+    if (!isLive || isStale) {
+      const reason = !isLive 
+        ? `degraded (${marketData?.health ?? 'offline'})` 
+        : 'stale cache';
+      
+      logs.push(`[RECONCILE] ${symbol} ${signal.state} signal — market data ${reason}, invalidating position`);
+      
+      // Mark signal as SUSPENDED (market data quality issue)
+      if (supabase) {
+        try {
+          await updateSignalState(signal.id!, "END", {
+            outcome: "INVALIDATED",
+            notes: `Auto-closed: market data ${reason}`,
+          });
+          logs.push(`[RECONCILE] ✓ ${symbol} signal ended as INVALIDATED`);
+        } catch (err) {
+          logs.push(`[RECONCILE] ✗ Failed to end ${symbol} signal: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      
+      // Don't include in reconciled output
+      continue;
+    }
+
+    // Signal passed reconciliation — include it
+    reconciled.push(signal);
+  }
+
+  // Log reconciliation results
+  if (logs.length > 0) {
+    console.log("[RECONCILE] Market data validation complete:");
+    logs.forEach(log => console.log(log));
+  }
+
+  return reconciled;
+}
+
 // ─── Get all signals from Supabase ──────────────────────────────────────────
 
 export async function getAllSignals(): Promise<Signal[]> {
@@ -1290,13 +1359,19 @@ export async function getAllSignals(): Promise<Signal[]> {
           .neq("state", "END")
           .order("created_at", { ascending: false });
         console.log("[getAllSignals RECOVERY] Returning unfiltered active signals:", unfilteredData?.length ?? 0);
-        return unfilteredData ?? [];
+        
+        // Reconcile with current market data before returning
+        return await reconcileSignalsWithMarketData(unfilteredData ?? []);
       }
     }
 
     console.log("[getAllSignals] Returned", data?.length ?? 0, "active signals:", data?.map(s => ({ id: s.id, symbol: s.symbol, direction: s.direction, state: s.state })));
 
-    return data ?? [];
+    // RECONCILIATION GUARD: Validate signals against current market data
+    // Removes positions that don't have LIVE market validation
+    const reconciled = await reconcileSignalsWithMarketData(data ?? []);
+    
+    return reconciled;
   } catch (err) {
     console.error("[getAllSignals] Error:", err);
     return [];
@@ -1789,7 +1864,7 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     const latestCandle5m = candles5m.length > 0 ? candles5m[candles5m.length - 1] : null;
     const latestCandle15m = candles15m.length > 0 ? candles15m[candles15m.length - 1] : null;
     
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════��═══════════════════════════
     // FETCH PRICE USING ROUTER (PRIMARY: Kraken, FALLBACK: CoinGecko)
     // Explicit health state for gate enforcement
     // ═══════════════════════════════════════════════════════════════════════════
