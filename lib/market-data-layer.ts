@@ -29,11 +29,17 @@ export type MarketDataCache = {
 const TRACKED_SYMBOLS = ["BTC", "ETH", "SOL"];
 const marketDataCache: Record<string, MarketDataCache> = {};
 
-// Initialize cache for all symbols
+// Initialize cache for all symbols with bootstrap prices
 for (const symbol of TRACKED_SYMBOLS) {
   marketDataCache[symbol] = {
     symbol,
-    priceData: null,
+    priceData: {
+      symbol,
+      price: symbol === "BTC" ? 45000 : symbol === "ETH" ? 2500 : 150, // Bootstrap prices
+      source: "none",
+      timestamp: 0,
+      health: "OFFLINE",
+    },
     lastUpdate: 0,
   };
 }
@@ -99,15 +105,22 @@ export function getMarketSnapshot(): Record<string, PriceData> {
     const cache = marketDataCache[symbol];
     const priceData = cache?.priceData;
 
-    if (priceData) {
+    if (priceData && priceData.price > 0) {
       snapshot[symbol] = priceData;
     } else {
-      // NEVER return null - use fallback with last known price
+      // Use bootstrap fallback with reasonable prices
+      const bootstrapPrices: Record<string, number> = {
+        BTC: 45000,
+        ETH: 2500,
+        SOL: 150,
+      };
+      
       snapshot[symbol] = {
         symbol,
-        price: cache?.priceData?.price ?? 0,
-        source: "DEGRADED",
+        price: bootstrapPrices[symbol] ?? 0,
+        source: "none",
         timestamp: cache?.lastUpdate ?? 0,
+        health: "OFFLINE",
       } as PriceData;
     }
   }
