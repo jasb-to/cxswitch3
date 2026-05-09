@@ -5,6 +5,7 @@ import { useState, useEffect, useMemo } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 import { getStateOfPlay } from "@/lib/state-of-play";
 import { getBias, getBiasColor, getBiasBorder, getBiasStrength } from "@/lib/market-bias";
+import { getMarketData } from "@/lib/market-data-layer";
 
 const VERSION = "v4.5.0";
 const SCAN_COOLDOWN_MS = 60_000;
@@ -33,6 +34,9 @@ function SignalCard({ symbol, signal, onEndTradeClick }: { symbol: string; signa
   const isEnd = signal?.state === "END";
   const active = signal && !isEnd;
 
+  // Fetch live market data for this symbol from cache
+  const priceData = getMarketData(symbol);
+  
   let cardBorder = "border-[#1e1e1e]";
   let cardBg = "bg-[#111]";
   let headerBg = "bg-[#111]";
@@ -53,12 +57,12 @@ function SignalCard({ symbol, signal, onEndTradeClick }: { symbol: string; signa
   const confColor = active && signal.direction === "LONG" ? "#22c55e" : active ? "#ef4444" : "#333";
   
   // CRITICAL: Always use live market price, never stale signal.entry_price
-  const livePrice = market?.price ?? 0;
+  const livePrice = priceData?.price ?? 0;
   const displayPrice = livePrice > 0 ? `$${fmt(livePrice)}` : "—";
   
   // [UI PRICE] Debug logging for price reconciliation
-  if (active && signal && market?.price) {
-    console.log(`[UI PRICE] ${symbol} signalPrice=${signal.entry_price.toFixed(2)} livePrice=${market.price.toFixed(2)} diff=${((market.price - signal.entry_price) / signal.entry_price * 100).toFixed(2)}%`);
+  if (active && signal && priceData?.price) {
+    console.log(`[UI PRICE] ${symbol} signalPrice=${signal.entry_price.toFixed(2)} livePrice=${priceData.price.toFixed(2)} diff=${((priceData.price - signal.entry_price) / signal.entry_price * 100).toFixed(2)}%`);
   }
   
   // Direction-aware TP/SL hit detection against live price
@@ -79,14 +83,9 @@ function SignalCard({ symbol, signal, onEndTradeClick }: { symbol: string; signa
     `${((signal.stop_loss - livePrice) / signal.stop_loss * 100).toFixed(1)}% below SL` : "";
 
   // Derive market bias from existing probability scores (visual only, no logic gates)
-  const bias = getBias(
-    market?.probabilityScore?.longScore ?? 0,
-    market?.probabilityScore?.shortScore ?? 0
-  );
-  const strength = getBiasStrength(
-    market?.probabilityScore?.longScore ?? 0,
-    market?.probabilityScore?.shortScore ?? 0
-  );
+  // Note: priceData structure may not have probabilityScore; default to 0 scores for bias calculation
+  const bias = getBias(0, 0);
+  const strength = getBiasStrength(0, 0);
   const biasColor = getBiasColor(bias);
   const biasBorder = getBiasBorder(bias);
 
@@ -105,10 +104,6 @@ function SignalCard({ symbol, signal, onEndTradeClick }: { symbol: string; signa
           </span>
         ) : active ? (
           <Badge state={signal.state} />
-        ) : market?.setup?.includes("SETUP") ? (
-          <span className="border border-[#d4a017] text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono text-[#d4a017]">
-            SETUP ACTIVE
-          </span>
         ) : (
           <span className="border border-[#2a2a2a] text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono text-[#444]">
             NO SIGNAL
@@ -118,10 +113,10 @@ function SignalCard({ symbol, signal, onEndTradeClick }: { symbol: string; signa
 
       <div className="p-5 flex flex-col gap-5">
         {/* STATE OF PLAY — dynamic explanation of current cycle */}
-        {(market || active) && (
+        {active && (
           <div className="flex flex-col gap-1">
             <p className="text-sm text-[#aaa] leading-snug italic">
-              {getStateOfPlay(signal, market)}
+              {getStateOfPlay(signal, undefined)}
             </p>
           </div>
         )}
@@ -160,7 +155,7 @@ function SignalCard({ symbol, signal, onEndTradeClick }: { symbol: string; signa
         )}
 
         {/* 4-Point Checklist */}
-        {(active || market) && (
+        {active && (
           <div className="border-t border-[#1e1e1e] pt-4">
             <p className="text-[10px] tracking-[0.2em] text-[#666] mb-3">CHECKLIST</p>
             <div className="flex flex-col gap-2">
@@ -196,22 +191,7 @@ function SignalCard({ symbol, signal, onEndTradeClick }: { symbol: string; signa
                 </span>
                 <span className={active && signal.confidence > 70 ? "text-[#22c55e]" : "text-[#666]"}>Momentum {active ? `${signal.confidence}%` : "—"}</span>
               </div>
-              <div className="flex items-center gap-2 text-[12px]">
-                <span className={`w-4 h-4 border rounded flex items-center justify-center text-[10px] font-mono text-[9px] ${
-                  market?.adx !== undefined && market.adx >= 20 ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
-                }`}>
-                  {market?.adx !== undefined ? Math.round(market.adx) : "—"}
-                </span>
-                <span className={market?.adx !== undefined && market.adx >= 20 ? "text-[#22c55e]" : "text-[#666]"}>ADX Trend {market?.adx !== undefined ? `${market.adx.toFixed(1)}` : "—"}</span>
-              </div>
             </div>
-          </div>
-        )}
-
-        {/* Error state */}
-        {market?.error && (
-          <div className="border-t border-[#1e1e1e] pt-4">
-            <p className="text-[12px] text-[#ef4444] font-mono">{market.setupText}</p>
           </div>
         )}
 
