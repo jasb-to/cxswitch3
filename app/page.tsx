@@ -76,24 +76,47 @@ function StrategyRow({ title, setups, mode }: { title: string; setups: any[]; mo
   return (
     <div className="border border-zinc-800 bg-zinc-950 p-5 rounded-lg">
       <p className="text-[10px] tracking-[0.22em] text-zinc-500 mb-4">{title}</p>
-      <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-4">
         {filtered.map((setup, idx) => {
           const directionColor = setup.direction === "LONG" ? "text-green-400" : setup.direction === "SHORT" ? "text-red-400" : "text-zinc-400";
+          
+          // Strategy condition checklist
+          const conditions = [
+            setup.checklist?.trend4H && "4H Trend",
+            setup.checklist?.breakout15M && "15M Structure",
+            setup.checklist?.trigger5M && "5M Trigger",
+            setup.checklist?.volatility && "Volatility",
+            setup.checklist?.volume && "Volume",
+            setup.structure && `${setup.structure}`,
+          ].filter(Boolean);
+
           return (
-            <div key={idx} className="border border-zinc-700 bg-zinc-900 p-3 rounded flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <span className="font-bold text-[14px] text-white">{setup.symbol}</span>
-                <span className={`text-[11px] tracking-[0.15em] font-semibold ${directionColor}`}>
-                  {setup.direction}
-                </span>
+            <div key={idx} className="border border-zinc-700 bg-zinc-900 p-4 rounded">
+              {/* Header: Symbol, Direction, Price, Score */}
+              <div className="flex items-center justify-between mb-3 pb-3 border-b border-zinc-700">
+                <div className="flex items-center gap-3">
+                  <span className="font-bold text-[14px] text-white">{setup.symbol}</span>
+                  <span className={`text-[11px] tracking-[0.15em] font-semibold ${directionColor}`}>
+                    {setup.direction}
+                  </span>
+                </div>
+                <div className="flex items-center gap-4">
+                  <span className="text-[11px] text-zinc-400">
+                    <span className="text-white font-mono">${fmt(setup.price)}</span>
+                  </span>
+                  <span className="text-[11px] text-zinc-400">
+                    Score: <span className="text-green-400 font-mono">{setup.score}</span>
+                  </span>
+                </div>
               </div>
-              <div className="flex items-center gap-4">
-                <span className="text-[12px] text-zinc-400">
-                  Price: <span className="text-white font-mono">${fmt(setup.price)}</span>
-                </span>
-                <span className="text-[12px] text-zinc-400">
-                  Score: <span className="text-green-400 font-mono">{setup.score}</span>
-                </span>
+
+              {/* Strategy Conditions */}
+              <div className="flex flex-wrap gap-2">
+                {conditions.map((cond, i) => (
+                  <span key={i} className="text-[10px] px-2 py-1 bg-zinc-800 text-zinc-300 rounded border border-zinc-700">
+                    {cond}
+                  </span>
+                ))}
               </div>
             </div>
           );
