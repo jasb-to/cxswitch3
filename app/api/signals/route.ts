@@ -1,51 +1,24 @@
 import { NextResponse, NextRequest } from "next/server";
+import { getAllActiveSignals } from "@/lib/state-layer";
+import { getAllMarketData } from "@/lib/market-data-layer";
 import { supabase } from "@/lib/supabase-client";
-import { getAllMarketData, isMarketDataFresh } from "@/lib/market-data-layer";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
 export async function GET() {
   try {
-    const symbols = ["BTC", "ETH", "SOL"];
-    const allPriceData = getAllMarketData();
-    
-    const freshnessStatus = symbols.map(s => ({
-      symbol: s,
-      fresh: isMarketDataFresh(s),
-      hasData: allPriceData.length > 0,
-    }));
-    
-    const allFresh = freshnessStatus.every(s => s.fresh && s.hasData);
+    // PURE READ: Get all non-END signals from database
+    // NEVER filter, hide, or interpret
+    const signals = await getAllActiveSignals();
 
-    // PURE DB READ: Return ALL non-END signals (ACTIVE + EARLY_OPEN + CONFIRMED)
-    // NEVER filter by market health, cache freshness, or outcome
-    // That's reconciliation's job — API is dumb and always shows symbols
-    let signals = [];
-    if (supabase) {
-      try {
-        const { data, error } = await supabase
-          .from("signals")
-          .select("*")
-          .neq("state", "END")
-          .order("created_at", { ascending: false });
-
-        if (!error && data) {
-          signals = data;
-          console.log(`[API /signals] Returned ${signals.length} active signals (all non-END states)`);
-        } else {
-          console.error("[API /signals] Query error:", error);
-        }
-      } catch (err) {
-        console.error("[API /signals] Fetch failed:", err);
-      }
-    }
+    // Get latest market snapshot (may have stale data, that's OK)
+    const priceData = getAllMarketData();
 
     return NextResponse.json({
       signals,
-      priceData: allPriceData,
+      priceData,
       fetchedAt: Date.now(),
-      cacheStatus: { allFresh, freshness: freshnessStatus },
     });
   } catch (error) {
     console.error('[GET /api/signals ERROR]', error);

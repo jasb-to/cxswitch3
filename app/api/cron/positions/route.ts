@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { managePositions, getAllSignals, reconcileSignalsWithMarketData } from "@/lib/strategy";
+import { managePositions } from "@/lib/strategy";
+import { getAllActiveSignals, reconcileSignalsAgainstMarketHealth } from "@/lib/state-layer";
 import { sendSignalAlert, shouldSendAlert } from "@/lib/telegram";
+import { isMarketDataFresh } from "@/lib/market-data-layer";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -19,59 +21,48 @@ export async function GET(req: NextRequest) {
     }
 
     const runAt = new Date().toISOString();
-    console.log(`[POSITIONS CRON] Run started at ${runAt}`);
+    console.log(`[CRON] Run started at ${runAt}`);
 
-    // FIRST: Reconcile active signals against market data
-    // This validates all active positions and persists state changes immediately
-    console.log("[POSITIONS CRON] Reconciling active signals with market data...");
-    let activeSignals = await getAllSignals();
-    console.log(`[POSITIONS CRON] Fetched ${activeSignals.length} active signals before reconciliation`);
+    // STATE LAYER: Reconcile active signals against market health
+    // This is the ONLY place that writes state changes to database
+    const activeSignals = await getAllActiveSignals();
+    console.log(`[CRON] Fetched ${activeSignals.length} active signals`);
     
-    const reconciled = await reconcileSignalsWithMarketData(activeSignals);
-    console.log(`[POSITIONS CRON] After reconciliation: ${reconciled.length} signals remain valid`);
+    // Check market health for each signal's symbol
+    const marketHealthCheck = (symbol: string) => isMarketDataFresh(symbol);
+    await reconcileSignalsAgainstMarketHealth(activeSignals, marketHealthCheck);
 
-    // THEN: Manage positions for reconciled signals
+    // SIGNAL ENGINE: Manage positions (logic only, no DB writes)
     const { logs, confirmed } = await managePositions();
 
     for (const line of logs) {
       console.log(line);
     }
 
-    // FIX: Only alert on newly CONFIRMED signals — strict dedup by signal_id + CONFIRMED state
+    // TELEGRAM: Alert on newly confirmed signals only
     for (const signal of confirmed) {
-      // Check if we've already sent CONFIRMED alert for this exact signal
       if (await shouldSendAlert(signal.id!, signal.symbol, "CONFIRMED")) {
         try {
           await sendSignalAlert(signal);
-          console.log(`[TELEGRAM] ✓ Sent CONFIRMED alert for ${signal.symbol} (signal ID ${signal.id})`);
+          console.log(`[TELEGRAM] ✓ Sent alert for ${signal.symbol}`);
         } catch (err) {
-          console.log(`[TELEGRAM] ✗ Failed to send CONFIRMED alert for ${signal.symbol}`);
+          console.log(`[TELEGRAM] ✗ Failed to send alert for ${signal.symbol}`);
         }
-      } else {
-        console.log(`[TELEGRAM] ✗ Skipped CONFIRMED alert — already sent for signal ID ${signal.id}`);
       }
     }
-
-    // Fetch updated signals after position management
-    const signals = await getAllSignals();
-
-    console.log(`[POSITIONS CRON] Complete — ${signals.filter(s => s.state !== "END").length} open position(s)`);
 
     return NextResponse.json({
       ok: true,
       runAt,
       logs,
-      openPositions: signals.filter((s) => s.state !== "END").length,
-      signals,
     });
   } catch (error) {
-    console.error("[GET /api/cron/positions ERROR]", error);
+    console.error("[CRON ERROR]", error);
     return NextResponse.json(
       {
         error: "Internal error",
         details: error instanceof Error ? error.message : "Unknown",
         ok: false,
-        logs: [],
       },
       { status: 500 }
     );
