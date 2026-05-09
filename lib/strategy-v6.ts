@@ -10,8 +10,9 @@
 
 import type { PriceData } from "./price-router";
 
-// EMERGENCY DEBUG MODE - Set to true to see raw scores and all candidates
-const DEBUG_MODE = true;
+// LIVE TRADING MODE - Training wheels OFF
+// Recovery mode disabled: Using real multi-timeframe strategy thresholds
+const DEBUG_MODE = false;
 
 export type SymbolCardState = {
   symbol: string;
@@ -68,10 +69,10 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     cards.push(card);
 
     // Score for signal generation
-    // STEP 4: SIGNAL FLOOR - lowered from 35 to 20 minimum
-    // SNIPER: 35+ 
-    // CONFIRMED: 55+
-    // MINIMUM: 20+ generates signal (recovery mode)
+    // LIVE MODE THRESHOLDS (no recovery adjustments)
+    // CONFIRMED: 55+  (strong multi-timeframe alignment)
+    // SNIPER: 35+     (structure + confirmation + trigger)
+    // NO weak signals - 20 floor removed
     const score = calculateScore(card);
     
     if (DEBUG_MODE) {
@@ -115,23 +116,6 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       });
       console.log(`[SCAN] ${symbol} SNIPER ${card.direction} score=${score}`);
     }
-    // STEP 4: SIGNAL FLOOR - Allow weak signals (score >= 20)
-    else if (score >= 20) {
-      card.mode = "SNIPER";
-      card.confidence = Math.min(score, 50);
-      card.notes = `WEAK SIGNAL - score=${score}`;
-      card.direction = "NEUTRAL";
-      
-      setups.push({
-        symbol,
-        mode: "SNIPER",
-        direction: "NEUTRAL",
-        score: card.confidence,
-        reason: `Recovery: weak signal score=${score}`,
-        price: card.price,
-      });
-      console.log(`[SCAN] ${symbol} WEAK SIGNAL score=${score}`);
-    }
     else if (card.mode === "NONE") {
       console.log(`[SCAN] ${symbol} no setup (score=${score})`);
     }
@@ -147,41 +131,33 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 
 /**
  * Calculate raw score for signal evaluation
- * FINAL REBALANCE: All 5 fixes to restore alert firing capability
+ * LIVE MODE: Real multi-timeframe strategy thresholds
+ * No recovery mode adjustments - pure SNIPER/CONFIRMED logic
  */
 function calculateScore(card: SymbolCardState): number {
   let score = 0;
 
-  // STEP 1: BASE MOMENTUM BOOST
-  // Market baseline bias - every symbol starts with foundation
+  // BASE SCORE
+  // Market baseline - every symbol starts with foundation
   score += 15;
 
-  // STEP 3: CONFIDENCE FLOOR
-  // Price validity bonus
+  // PRICE VALIDITY
   if (card.price > 0) score += 10;
 
-  // Base score from checklist (each item = 15 points)
+  // CHECKLIST ITEMS
   if (card.checklist.trend4H) score += 15;
   if (card.checklist.breakout15M) score += 20;
   if (card.checklist.trigger5M) score += 20;
   if (card.checklist.volatility) score += 15;
   if (card.checklist.volume) score += 15;
 
-  // STEP 2: STRUCTURE MUST MATTER MORE
-  // Rebalanced to give structure proper weight
+  // STRUCTURE WEIGHTING
   if (card.structure === "BREAKOUT") score += 15;
   else if (card.structure === "COMPRESSION") score += 20;
   else if (card.structure === "RANGE") score += 5;
-  // NO_STRUCTURE gets 0 bonus but doesn't block signal anymore
 
-  // Direction momentum (if detected)
+  // DIRECTION MOMENTUM
   if (card.direction !== "NEUTRAL") score += 10;
-
-  // STEP 5: FORCE FIRST ALERT RECOVERY MODE
-  // TEMPORARY ONLY: Debug mode threshold adjustment
-  if (DEBUG_MODE) {
-    score -= 10; // Lower threshold in debug mode for alert recovery
-  }
 
   return score;
 }
