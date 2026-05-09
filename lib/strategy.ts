@@ -1325,15 +1325,6 @@ export async function reconcileSignalsWithMarketData(signals: Signal[]): Promise
 }
 
 // ─── Get all signals from Supabase ──────────────────────────────────────────
-  if (logs.length > 0) {
-    console.log("[RECONCILE] Market data validation complete:");
-    logs.forEach(log => console.log(log));
-  }
-
-  return reconciled;
-}
-
-// ─── Get all signals from Supabase ──────────────────────────────────────────
 
 export async function getAllSignals(): Promise<Signal[]> {
   if (!supabase) {
