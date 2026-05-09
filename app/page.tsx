@@ -5,7 +5,7 @@ import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v7.2.2";
+const VERSION = "v7.2.3";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load - minimal data, no fakes
@@ -85,24 +85,48 @@ const fetcher = (url: string) =>
   fetch(url, { cache: "no-store" }).then((r) => r.json());
 
 /**
- * Validate snapshot before accepting (v7.2.2)
- * Ensures all cards have required fields and prices > 0
+ * Validate snapshot and filter valid cards (v7.2.3 HOTFIX)
+ * MINIMAL validation: only check symbol + price > 0
+ * Accept partial hydration - valid cards shown immediately
+ * Optional fields hydrate later
  */
-function validateSnapshot(snapshot: any): boolean {
-  if (!snapshot || !Array.isArray(snapshot.cards) || snapshot.cards.length === 0) {
-    console.log("[SNAPSHOT] Invalid: empty or missing cards");
-    return false;
+function validateSnapshot(snapshot: any): SymbolCardState[] | null {
+  // Reject if no snapshot or no cards array
+  if (!snapshot || !Array.isArray(snapshot.cards)) {
+    console.log("[VALIDATION_FAIL] snapshot.cards missing or not array");
+    return null;
   }
 
+  if (snapshot.cards.length === 0) {
+    console.log("[VALIDATION_FAIL] snapshot.cards empty");
+    return null;
+  }
+
+  // Filter cards: accept if symbol + price > 0
+  const validCards: SymbolCardState[] = [];
+  const rejectedCards: string[] = [];
+
   for (const card of snapshot.cards) {
-    if (!card.symbol || card.price <= 0 || !card.updatedAt || !card.marketReadinessState) {
-      console.log(`[SNAPSHOT] Invalid card: ${card.symbol}`, { price: card.price, updatedAt: card.updatedAt });
-      return false;
+    if (typeof card.symbol === "string" && typeof card.price === "number" && card.price > 0) {
+      validCards.push(card);
+      console.log(`[VALIDATION_PASS] ${card.symbol}: price=${card.price}`);
+    } else {
+      rejectedCards.push(`${card.symbol || "unknown"} (price: ${card.price})`);
+      console.log(`[VALIDATION_FAIL] ${card.symbol}: price invalid (${card.price})`);
     }
   }
 
-  console.log("[SNAPSHOT] Validation PASSED");
-  return true;
+  // If ANY valid cards exist, accept and return
+  if (validCards.length > 0) {
+    console.log(`[LIVE_ACCEPTED] ${validCards.length} valid cards`);
+    return validCards;
+  }
+
+  if (rejectedCards.length > 0) {
+    console.log(`[LIVE_REJECTED] All ${rejectedCards.length} cards invalid:`, rejectedCards);
+  }
+
+  return null;
 }
 
 function fmt(n: number) {
@@ -266,23 +290,24 @@ export default function Dashboard() {
     { refreshInterval: 30_000, keepPreviousData: true, revalidateOnFocus: false }
   );
 
-  // HYDRATION DEBUG LOGGING (v7.2.2)
+  // HYDRATION DEBUG LOGGING (v7.2.3)
+  const validLiveCards = data ? validateSnapshot(data) : null;
+  
   useEffect(() => {
-    if (data) {
-      if (validateSnapshot(data)) {
-        console.log("[HYDRATION] Live snapshot received and validated");
-        console.log("[LIVE_SWAP] Replacing bootstrap with", data.cards.length, "live cards");
-      } else {
-        console.log("[HYDRATION] Snapshot validation FAILED - retaining bootstrap");
-      }
+    if (validLiveCards && validLiveCards.length > 0) {
+      console.log("[HYDRATION] Live snapshot validated");
+      console.log("[LIVE_SWAP] Accepting", validLiveCards.length, "cards from snapshot");
+    } else if (data) {
+      console.log("[HYDRATION] Snapshot validation returned no valid cards");
     } else if (isValidating) {
       console.log("[HYDRATION] Fetch in progress...");
     } else {
       console.log("[BOOTSTRAP] Using skeleton cards - no fetch response");
     }
-  }, [data, isValidating]);
+  }, [validLiveCards, isValidating, data]);
 
-  const cards = data?.cards && data.cards.length > 0 && validateSnapshot(data) ? data.cards : BOOTSTRAP_CARDS;
+  // Card selection: prefer valid live cards, fallback to bootstrap
+  const cards = validLiveCards && validLiveCards.length > 0 ? validLiveCards : BOOTSTRAP_CARDS;
   const setups = data?.setups ?? [];
   const updatedAt = data?.updatedAt ?? "";
   const isBootstrap = !data?.cards || data.cards.length === 0;
