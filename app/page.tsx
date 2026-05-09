@@ -5,14 +5,14 @@ import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v7.2.1";
+const VERSION = "v7.2.2";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load - minimal data, no fakes
 const BOOTSTRAP_CARDS: SymbolCardState[] = [
   {
     symbol: "BTC",
-    price: 45000,
+    price: 0,
     source: "bootstrap",
     degraded: true,
     direction: "NEUTRAL",
@@ -30,12 +30,12 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
     expectedMovePercent: null,
     targetPrices: null,
     riskReward: null,
-    notes: "Loading market snapshot...",
-    updatedAt: new Date().toISOString(),
+    notes: "Waiting for live market feed…",
+    updatedAt: "",
   },
   {
     symbol: "ETH",
-    price: 2500,
+    price: 0,
     source: "bootstrap",
     degraded: true,
     direction: "NEUTRAL",
@@ -53,12 +53,12 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
     expectedMovePercent: null,
     targetPrices: null,
     riskReward: null,
-    notes: "Loading market snapshot...",
-    updatedAt: new Date().toISOString(),
+    notes: "Waiting for live market feed…",
+    updatedAt: "",
   },
   {
     symbol: "SOL",
-    price: 150,
+    price: 0,
     source: "bootstrap",
     degraded: true,
     direction: "NEUTRAL",
@@ -76,13 +76,34 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
     expectedMovePercent: null,
     targetPrices: null,
     riskReward: null,
-    notes: "Loading market snapshot...",
-    updatedAt: new Date().toISOString(),
+    notes: "Waiting for live market feed…",
+    updatedAt: "",
   },
 ];
 
 const fetcher = (url: string) =>
   fetch(url, { cache: "no-store" }).then((r) => r.json());
+
+/**
+ * Validate snapshot before accepting (v7.2.2)
+ * Ensures all cards have required fields and prices > 0
+ */
+function validateSnapshot(snapshot: any): boolean {
+  if (!snapshot || !Array.isArray(snapshot.cards) || snapshot.cards.length === 0) {
+    console.log("[SNAPSHOT] Invalid: empty or missing cards");
+    return false;
+  }
+
+  for (const card of snapshot.cards) {
+    if (!card.symbol || card.price <= 0 || !card.updatedAt || !card.marketReadinessState) {
+      console.log(`[SNAPSHOT] Invalid card: ${card.symbol}`, { price: card.price, updatedAt: card.updatedAt });
+      return false;
+    }
+  }
+
+  console.log("[SNAPSHOT] Validation PASSED");
+  return true;
+}
 
 function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -245,7 +266,23 @@ export default function Dashboard() {
     { refreshInterval: 30_000, keepPreviousData: true, revalidateOnFocus: false }
   );
 
-  const cards = data?.cards && data.cards.length > 0 ? data.cards : BOOTSTRAP_CARDS;
+  // HYDRATION DEBUG LOGGING (v7.2.2)
+  useEffect(() => {
+    if (data) {
+      if (validateSnapshot(data)) {
+        console.log("[HYDRATION] Live snapshot received and validated");
+        console.log("[LIVE_SWAP] Replacing bootstrap with", data.cards.length, "live cards");
+      } else {
+        console.log("[HYDRATION] Snapshot validation FAILED - retaining bootstrap");
+      }
+    } else if (isValidating) {
+      console.log("[HYDRATION] Fetch in progress...");
+    } else {
+      console.log("[BOOTSTRAP] Using skeleton cards - no fetch response");
+    }
+  }, [data, isValidating]);
+
+  const cards = data?.cards && data.cards.length > 0 && validateSnapshot(data) ? data.cards : BOOTSTRAP_CARDS;
   const setups = data?.setups ?? [];
   const updatedAt = data?.updatedAt ?? "";
   const isBootstrap = !data?.cards || data.cards.length === 0;
