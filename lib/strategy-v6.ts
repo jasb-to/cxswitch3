@@ -2,13 +2,38 @@
  * STRATEGY ENGINE v6 - PURE SCANNER
  * 
  * Input: Market snapshot only
- * Output: Array of setups (SNIPER or CONFIRMED mode only)
+ * Output: Array of symbol cards + setups
  * 
  * NO STATE, NO DB ACCESS, NO DECISIONS
- * Pure evaluation engine
+ * Pure evaluation engine - returns UI-ready card state
  */
 
 import type { PriceData } from "./price-router";
+
+export type SymbolCardState = {
+  symbol: string;
+  price: number;
+  source: string;
+  degraded: boolean;
+
+  direction: "LONG" | "SHORT" | "NEUTRAL";
+  mode: "SNIPER" | "CONFIRMED" | "NONE";
+  confidence: number;
+
+  structure: "BREAKOUT" | "RANGE" | "COMPRESSION" | "NO_STRUCTURE";
+
+  checklist: {
+    trend4H: boolean;
+    breakout15M: boolean;
+    trigger5M: boolean;
+    volatility: boolean;
+    volume: boolean;
+  };
+
+  triggerActive: boolean;
+  notes: string;
+  updatedAt: string;
+};
 
 export type Setup = {
   symbol: string;
@@ -20,11 +45,12 @@ export type Setup = {
 };
 
 /**
- * Generate setups from market snapshot
- * PURE FUNCTION - takes market data, returns setups
+ * Generate symbol card states + setups from market snapshot
+ * PURE FUNCTION - takes market data, returns cards + setups
  * No DB access, no state, no side effects
  */
-export async function generateSetups(market: Record<string, PriceData>): Promise<Setup[]> {
+export async function generateSetups(market: Record<string, PriceData>): Promise<{ cards: SymbolCardState[]; setups: Setup[] }> {
+  const cards: SymbolCardState[] = [];
   const setups: Setup[] = [];
 
   for (const [symbol, priceData] of Object.entries(market)) {
@@ -33,57 +59,84 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       continue;
     }
 
+    // Generate card state for this symbol
+    const card = generateCardState(symbol, priceData);
+    cards.push(card);
+
     // Evaluate for SNIPER setup (score >= 55)
-    const sniperSetup = evaluateSniper(symbol, priceData);
-    if (sniperSetup) {
-      setups.push(sniperSetup);
-      console.log(`[SCAN] ${symbol} SNIPER ${sniperSetup.direction} score=${sniperSetup.score}`);
+    if (card.mode === "SNIPER") {
+      setups.push({
+        symbol,
+        mode: "SNIPER",
+        direction: card.direction,
+        score: card.confidence,
+        reason: card.notes,
+        price: card.price,
+      });
+      console.log(`[SCAN] ${symbol} SNIPER ${card.direction} score=${card.confidence}`);
     }
 
     // Evaluate for CONFIRMED setup (score >= 75)
-    const confirmedSetup = evaluateConfirmed(symbol, priceData);
-    if (confirmedSetup) {
-      setups.push(confirmedSetup);
-      console.log(`[SCAN] ${symbol} CONFIRMED ${confirmedSetup.direction} score=${confirmedSetup.score}`);
+    if (card.mode === "CONFIRMED") {
+      setups.push({
+        symbol,
+        mode: "CONFIRMED",
+        direction: card.direction,
+        score: card.confidence,
+        reason: card.notes,
+        price: card.price,
+      });
+      console.log(`[SCAN] ${symbol} CONFIRMED ${card.direction} score=${card.confidence}`);
     }
 
-    if (!sniperSetup && !confirmedSetup) {
+    if (card.mode === "NONE") {
       console.log(`[SCAN] ${symbol} no setup`);
     }
   }
 
-  return setups;
+  return { cards, setups };
 }
 
 /**
- * SNIPER MODE: Catch earliest expansion
- * Threshold: score >= 55
- * Conditions: Structure aligned + EMA aligned + Volume expansion + Momentum expansion
+ * Generate symbol card state from market data
+ * Returns UI-ready object with all checklist items, structure, confidence, etc.
+ * NO DB, NO STATE, PURE EVALUATION
  */
-function evaluateSniper(symbol: string, priceData: PriceData): Setup | null {
-  // Simple placeholder: evaluate based on available data
-  // In real implementation, this would analyze:
-  // - Structure breaks
-  // - EMA alignment
-  // - Volume expansion
-  // - Momentum indicators
+function generateCardState(symbol: string, priceData: PriceData): SymbolCardState {
+  // Placeholder evaluation - in production, this would analyze:
+  // - Structure breaks (BREAKOUT, RANGE, COMPRESSION)
+  // - EMA alignment for trend
+  // - Volume and momentum indicators
+  // - Risk/reward setup
 
-  // For now, return null (no SNIPER setups until properly implemented)
-  return null;
+  const degraded = priceData.source !== "kraken_live";
+
+  // For now, default to NEUTRAL/NONE until analysis is added
+  const card: SymbolCardState = {
+    symbol,
+    price: priceData.price,
+    source: priceData.source,
+    degraded,
+
+    direction: "NEUTRAL",
+    mode: "NONE",
+    confidence: 0,
+
+    structure: "NO_STRUCTURE",
+
+    checklist: {
+      trend4H: false,
+      breakout15M: false,
+      trigger5M: false,
+      volatility: false,
+      volume: false,
+    },
+
+    triggerActive: false,
+    notes: "Waiting for setup",
+    updatedAt: new Date().toISOString(),
+  };
+
+  return card;
 }
 
-/**
- * CONFIRMED MODE: Catch continuation
- * Threshold: score >= 75
- * Conditions: Breakout confirmed + Retest holding + Momentum continuation
- */
-function evaluateConfirmed(symbol: string, priceData: PriceData): Setup | null {
-  // Simple placeholder: evaluate based on available data
-  // In real implementation, this would analyze:
-  // - Confirmed breakout
-  // - Retest patterns
-  // - Continuation momentum
-
-  // For now, return null (no CONFIRMED setups until properly implemented)
-  return null;
-}
