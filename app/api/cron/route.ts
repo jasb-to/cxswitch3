@@ -25,12 +25,13 @@ export async function GET(req: NextRequest) {
     
     // Log market status
     for (const [symbol, priceData] of Object.entries(market)) {
-      const status = priceData.source === "DEGRADED" ? "DEGRADED" : "LIVE";
+      const status = priceData.source === "kraken_live" ? "LIVE" : "CACHED";
       console.log(`[MARKET] ${symbol} ${status}`);
     }
 
-    // STEP 2: Generate setups (PURE engine)
-    const setups = await generateSetups(market);
+    // STEP 2: Generate symbol cards + setups
+    const { cards, setups } = await generateSetups(market);
+    console.log(`[SCAN] Generated ${cards.length} cards, ${setups.length} setups`);
 
     // STEP 3: Check cooldown and send alerts
     const sent = [];
@@ -48,7 +49,7 @@ export async function GET(req: NextRequest) {
 
     console.log("[CRON] Complete");
 
-    return NextResponse.json({ ok: true, setups, sent });
+    return NextResponse.json({ ok: true, cards, setups, sent });
   } catch (error) {
     console.error('[CRON ERROR]', error);
     return NextResponse.json(
