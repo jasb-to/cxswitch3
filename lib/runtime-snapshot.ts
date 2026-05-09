@@ -1,28 +1,34 @@
 /**
- * SINGLE SOURCE OF TRUTH
+ * PERSISTENT RUNTIME SNAPSHOT
  * 
- * Cron generates snapshot once per minute.
- * API returns snapshot directly.
- * Frontend renders snapshot directly.
+ * Uses globalThis singleton to persist across serverless invocations.
+ * This ensures cron and signals route share the same in-container memory.
  * 
- * NO transforms, NO rebuilds, NO fallbacks.
+ * Cron writes once per minute.
+ * Signals reads and returns directly.
+ * Frontend renders snapshot as-is with no transforms.
  */
 
-export type RuntimeSnapshot = {
+type RuntimeSnapshot = {
   updatedAt: string;
   cards: any[];
   setups: any[];
 };
 
-let snapshot: RuntimeSnapshot = {
+declare global {
+  // eslint-disable-next-line no-var
+  var __snapshot__: RuntimeSnapshot | undefined;
+}
+
+const defaultSnapshot: RuntimeSnapshot = {
   updatedAt: "",
   cards: [],
   setups: [],
 };
 
 export function setSnapshot(data: RuntimeSnapshot) {
-  snapshot = data;
-  console.log("[SNAPSHOT] Updated", {
+  globalThis.__snapshot__ = data;
+  console.log("[SNAPSHOT] Persisted to globalThis", {
     updatedAt: data.updatedAt,
     cardCount: data.cards.length,
     setupCount: data.setups.length,
@@ -30,5 +36,5 @@ export function setSnapshot(data: RuntimeSnapshot) {
 }
 
 export function getSnapshot(): RuntimeSnapshot {
-  return snapshot;
+  return globalThis.__snapshot__ || defaultSnapshot;
 }

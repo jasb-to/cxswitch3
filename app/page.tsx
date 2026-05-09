@@ -4,10 +4,57 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 
-const VERSION = "v6.3.0";
+const VERSION = "v6.3.1";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+// Bootstrap cards for initial page load (before first cron run)
+const BOOTSTRAP_CARDS: SymbolCardState[] = [
+  {
+    symbol: "BTC",
+    price: 0,
+    source: "bootstrap",
+    degraded: true,
+    direction: "NEUTRAL",
+    mode: "NONE",
+    confidence: 0,
+    structure: "NO_STRUCTURE",
+    checklist: { trend4H: false, breakout15M: false, trigger5M: false, volatility: false, volume: false },
+    triggerActive: false,
+    notes: "Loading market snapshot...",
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    symbol: "ETH",
+    price: 0,
+    source: "bootstrap",
+    degraded: true,
+    direction: "NEUTRAL",
+    mode: "NONE",
+    confidence: 0,
+    structure: "NO_STRUCTURE",
+    checklist: { trend4H: false, breakout15M: false, trigger5M: false, volatility: false, volume: false },
+    triggerActive: false,
+    notes: "Loading market snapshot...",
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    symbol: "SOL",
+    price: 0,
+    source: "bootstrap",
+    degraded: true,
+    direction: "NEUTRAL",
+    mode: "NONE",
+    confidence: 0,
+    structure: "NO_STRUCTURE",
+    checklist: { trend4H: false, breakout15M: false, trigger5M: false, volatility: false, volume: false },
+    triggerActive: false,
+    notes: "Loading market snapshot...",
+    updatedAt: new Date().toISOString(),
+  },
+];
+
+const fetcher = (url: string) =>
+  fetch(url, { cache: "no-store" }).then((r) => r.json());
 
 function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -107,11 +154,12 @@ export default function Dashboard() {
     { refreshInterval: 30_000, keepPreviousData: true, revalidateOnFocus: false }
   );
 
-  const cards = data?.cards ?? [];
+  const cards = data?.cards && data.cards.length > 0 ? data.cards : BOOTSTRAP_CARDS;
   const setups = data?.setups ?? [];
   const updatedAt = data?.updatedAt ?? "";
+  const isBootstrap = !data?.cards || data.cards.length === 0;
   const fetchedAtMs = updatedAt ? new Date(updatedAt).getTime() : 0;
-  const isStale = isHydrated && fetchedAtMs > 0 && now > 0 && (now - fetchedAtMs) > STALE_THRESHOLD_MS;
+  const isStale = !isBootstrap && isHydrated && fetchedAtMs > 0 && now > 0 && (now - fetchedAtMs) > STALE_THRESHOLD_MS;
   const lastUpdateTime = isHydrated && updatedAt ? new Date(updatedAt).toLocaleTimeString("en-GB", { hour12: false }) : "—";
 
   const assetCount = cards.length;
