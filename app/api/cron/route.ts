@@ -1,15 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateSignals } from "@/lib/strategy";
-import { reconcileAgainstMarketHealth } from "@/lib/state-orchestrator";
-import { sendSignalAlert, shouldSendAlert } from "@/lib/telegram";
-import { refreshMarketData, isMarketDataFresh } from "@/lib/market-data-layer";
-import { getAllActiveSignals } from "@/lib/state-repository";
-import { supabase } from "@/lib/supabase-client";
+import { generateSetups } from "@/lib/strategy-v6";
+import { sendAlert, canSendAlert } from "@/lib/telegram-v6";
+import { refreshMarketData } from "@/lib/market-data-layer";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// Main cron entry point — runs every minute via vercel.json
+// ONLY CRON ENTRY POINT - Scanner runs every minute
 export async function GET(req: NextRequest) {
   try {
     const secret = process.env.CRON_SECRET;
@@ -21,50 +18,35 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const runAt = new Date().toISOString();
-    console.log(`[CRON] Cycle started at ${runAt}`);
+    console.log("[CRON] Start");
 
-    // 1. MARKET: Refresh prices
-    await refreshMarketData();
+    // STEP 1: Refresh market cache
+    const market = await refreshMarketData();
 
-    // 2. ORCHESTRATOR: Reconcile signals against market health
-    const marketHealthCheck = (symbol: string) => isMarketDataFresh(symbol);
-    await reconcileAgainstMarketHealth(marketHealthCheck);
+    // STEP 2: Generate setups (PURE engine)
+    const setups = await generateSetups(market);
 
-    // 3. SIGNAL ENGINE: Generate new signals
-    const { signals, logs } = await generateSignals();
-
-    for (const line of logs) {
-      console.log(line);
-    }
-
-    // 4. TELEGRAM: Alert on new signals
-    for (const signal of signals) {
-      if (await shouldSendAlert(signal.id!, signal.symbol, signal.state)) {
+    // STEP 3-5: Check cooldown, send alerts, store alerts
+    const sent = [];
+    for (const setup of setups) {
+      if (await canSendAlert(setup.symbol, setup.mode, setup.direction)) {
         try {
-          await sendSignalAlert(signal);
-          console.log(`[TELEGRAM] ✓ Sent ${signal.state} alert for ${signal.symbol}`);
+          await sendAlert(setup);
+          sent.push(setup);
+          console.log(`[ALERT] ${setup.symbol} sent`);
         } catch (err) {
-          console.log(`[TELEGRAM] ✗ Failed to send alert for ${signal.symbol}`);
+          console.log(`[ALERT] ${setup.symbol} failed`);
         }
       }
     }
 
-    const allSignals = await getAllActiveSignals();
+    console.log("[CRON] Complete");
 
-    // Log cycle summary
-    console.log(`[CRON CYCLE] Complete — ${allSignals.length} total signals | ${signals.length} new signals generated`);
-
-    return NextResponse.json({
-      ok: true,
-      signals: allSignals,
-      logs,
-      runAt,
-    });
+    return NextResponse.json({ ok: true, setups, sent });
   } catch (error) {
-    console.error('[GET /api/cron ERROR]', error);
+    console.error('[CRON ERROR]', error);
     return NextResponse.json(
-      { error: 'Internal error', details: error instanceof Error ? error.message : 'Unknown', ok: false, logs: [] },
+      { error: error instanceof Error ? error.message : 'Unknown', ok: false },
       { status: 500 }
     );
   }

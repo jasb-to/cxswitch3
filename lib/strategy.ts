@@ -2314,3 +2314,55 @@ export async function getMarketContext(symbolBase: string): Promise<MarketContex
     };
   }
 }
+
+/**
+ * Persist generated signals to database
+ * PURE DB OPERATION - called after signal engine generates signals
+ * Input: Signal objects (no DB access required in engine)
+ * Output: Persisted signals with database IDs
+ */
+export async function persistSignals(signals: Signal[]): Promise<Signal[]> {
+  if (!supabase || signals.length === 0) {
+    return signals;
+  }
+
+  const persisted: Signal[] = [];
+
+  for (const signal of signals) {
+    try {
+      const payload: SignalInsert = {
+        symbol: signal.symbol,
+        direction: signal.direction,
+        state: signal.state || "EARLY_OPEN",
+        entry_price: signal.entry_price,
+        stop_loss: signal.stop_loss,
+        take_profit: signal.take_profit,
+        confidence: signal.confidence,
+        breakout_level: signal.breakout_level,
+      };
+
+      const validation = validateSignalPayload(payload);
+      if (!validation.valid) {
+        console.log(`[PERSIST] Validation failed for ${signal.symbol}: ${validation.errors.join("; ")}`);
+        continue;
+      }
+
+      const { data: inserted, error } = await supabase
+        .from("signals")
+        .insert([payload])
+        .select()
+        .single();
+
+      if (error || !inserted) {
+        console.log(`[PERSIST] Failed to insert ${signal.symbol}: ${error?.message}`);
+        continue;
+      }
+
+      persisted.push(inserted);
+    } catch (err) {
+      console.log(`[PERSIST] Error inserting ${signal.symbol}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return persisted;
+}

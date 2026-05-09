@@ -46,14 +46,15 @@ for (const symbol of TRACKED_SYMBOLS) {
 let isUpdating = false;
 
 /**
- * Refresh all prices from Kraken
- * CALLED BY: cron jobs only
- * RULE: NEVER skip symbols, NEVER decide they're degraded
+ * Refresh all prices and return market snapshot
+ * CALLED BY: cron jobs only  
+ * Returns: market snapshot for strategy engine
+ * RULE: NEVER skip symbols, always return all
  */
-export async function refreshMarketData(): Promise<void> {
+export async function refreshMarketData(): Promise<Record<string, PriceData>> {
   if (isUpdating) {
-    console.log("[MARKET] Refresh already in progress, skipping");
-    return;
+    console.log("[MARKET] Already updating");
+    return getMarketSnapshot();
   }
 
   isUpdating = true;
@@ -69,35 +70,46 @@ export async function refreshMarketData(): Promise<void> {
           cache.priceData = priceData;
           cache.lastUpdate = now;
           delete cache.updateError;
-          console.log(`[MARKET] ${symbol}: $${priceData.price.toFixed(2)}`);
+          console.log(`[MARKET] ${symbol} ${priceData.source}`);
         } else {
-          console.warn(`[MARKET] ${symbol}: Fetch returned null, keeping last value`);
-          // NEVER clear the cache - keep last known price
+          console.log(`[MARKET] ${symbol} DEGRADED`);
         }
       } catch (err) {
         const cache = marketDataCache[symbol];
         cache.updateError = err instanceof Error ? err.message : String(err);
-        console.warn(`[MARKET] ${symbol}: Error (keeping stale price): ${cache.updateError}`);
-        // NEVER clear the cache - keep last known price
+        console.log(`[MARKET] ${symbol} DEGRADED`);
       }
     }
   } finally {
     isUpdating = false;
   }
+
+  return getMarketSnapshot();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CACHE QUERIES: Signal engine reads from cache (never fetches)
-// Always returns best available value
+// CACHE QUERIES: Only strategy engine uses these
+// Always return best available value, NEVER null for tracked symbols
 // ═══════════════════════════════════════════════════════════════════════════
 
-export function getMarketSnapshot(): Record<string, number> {
-  const snapshot: Record<string, number> = {};
+export function getMarketSnapshot(): Record<string, PriceData> {
+  const snapshot: Record<string, PriceData> = {};
 
   for (const symbol of TRACKED_SYMBOLS) {
     const cache = marketDataCache[symbol];
-    const price = cache?.priceData?.price ?? 0;
-    snapshot[symbol] = price;
+    const priceData = cache?.priceData;
+
+    if (priceData) {
+      snapshot[symbol] = priceData;
+    } else {
+      // NEVER return null - use fallback with last known price
+      snapshot[symbol] = {
+        symbol,
+        price: cache?.priceData?.price ?? 0,
+        source: "DEGRADED",
+        timestamp: cache?.lastUpdate ?? 0,
+      } as PriceData;
+    }
   }
 
   return snapshot;
