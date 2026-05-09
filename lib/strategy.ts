@@ -1263,8 +1263,10 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
  * - Market data is not LIVE
  * - Market data is stale beyond threshold
  * - Price source fell back to non-primary
+ * 
+ * PERSISTS STATE CHANGES directly to Supabase
  */
-async function reconcileSignalsWithMarketData(signals: Signal[]): Promise<Signal[]> {
+export async function reconcileSignalsWithMarketData(signals: Signal[]): Promise<Signal[]> {
   const reconciled: Signal[] = [];
   const logs: string[] = [];
 
@@ -1274,6 +1276,53 @@ async function reconcileSignalsWithMarketData(signals: Signal[]): Promise<Signal
       reconciled.push(signal);
       continue;
     }
+
+    const { symbol } = signal;
+
+    // Check if market data is fresh and LIVE for this symbol
+    const isFresh = isMarketDataFresh(symbol);
+    const marketData = getMarketData(symbol);
+    
+    const isLive = marketData?.health === "LIVE";
+    const isStale = !isFresh; // Older than 3 seconds
+
+    // RULE: Active signals require LIVE market data
+    if (!isLive || isStale) {
+      const reason = !isLive 
+        ? `degraded (${marketData?.health ?? 'offline'})` 
+        : 'stale cache';
+      
+      logs.push(`[RECONCILE] ${symbol} ${signal.state} signal — market data ${reason}, invalidating position`);
+      
+      // Mark signal as SUSPENDED (market data quality issue)
+      if (supabase) {
+        try {
+          await updateSignalState(signal.id!, "END", {
+            outcome: "INVALIDATED",
+            notes: `Auto-closed: market data ${reason}`,
+          });
+          logs.push(`[RECONCILE] ✓ ${symbol} signal ended as INVALIDATED`);
+        } catch (err) {
+          logs.push(`[RECONCILE] ✗ Failed to end ${symbol} signal: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      
+      // Don't include in reconciled output (already persisted as END)
+      continue;
+    }
+
+    // Signal passed reconciliation — include it
+    reconciled.push(signal);
+  }
+
+  // Log reconciliation results
+  if (logs.length > 0) {
+    console.log("[RECONCILE] Market data validation complete:");
+    logs.forEach(log => console.log(log));
+  }
+
+  return reconciled;
+}
 
     const { symbol } = signal;
 
@@ -1367,11 +1416,7 @@ export async function getAllSignals(): Promise<Signal[]> {
 
     console.log("[getAllSignals] Returned", data?.length ?? 0, "active signals:", data?.map(s => ({ id: s.id, symbol: s.symbol, direction: s.direction, state: s.state })));
 
-    // RECONCILIATION GUARD: Validate signals against current market data
-    // Removes positions that don't have LIVE market validation
-    const reconciled = await reconcileSignalsWithMarketData(data ?? []);
-    
-    return reconciled;
+    return data ?? [];
   } catch (err) {
     console.error("[getAllSignals] Error:", err);
     return [];

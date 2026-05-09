@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { managePositions, getAllSignals } from "@/lib/strategy";
+import { managePositions, getAllSignals, reconcileSignalsWithMarketData } from "@/lib/strategy";
 import { sendSignalAlert, shouldSendAlert } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
@@ -21,6 +21,16 @@ export async function GET(req: NextRequest) {
     const runAt = new Date().toISOString();
     console.log(`[POSITIONS CRON] Run started at ${runAt}`);
 
+    // FIRST: Reconcile active signals against market data
+    // This validates all active positions and persists state changes immediately
+    console.log("[POSITIONS CRON] Reconciling active signals with market data...");
+    let activeSignals = await getAllSignals();
+    console.log(`[POSITIONS CRON] Fetched ${activeSignals.length} active signals before reconciliation`);
+    
+    const reconciled = await reconcileSignalsWithMarketData(activeSignals);
+    console.log(`[POSITIONS CRON] After reconciliation: ${reconciled.length} signals remain valid`);
+
+    // THEN: Manage positions for reconciled signals
     const { logs, confirmed } = await managePositions();
 
     for (const line of logs) {
