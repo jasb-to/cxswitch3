@@ -7,7 +7,7 @@ import { getStateOfPlay } from "@/lib/state-of-play";
 import { getBias, getBiasColor, getBiasBorder, getBiasStrength } from "@/lib/market-bias";
 import { getMarketData } from "@/lib/market-data-layer";
 
-const VERSION = "v4.5.0";
+const VERSION = "v5.1.0";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -36,13 +36,19 @@ function SignalCard({ symbol, signal, onEndTradeClick }: { symbol: string; signa
 
   // Fetch live market data for this symbol from cache
   const priceData = getMarketData(symbol);
+  const isDegraded = !priceData || priceData.health !== "LIVE";
   
   let cardBorder = "border-[#1e1e1e]";
   let cardBg = "bg-[#111]";
   let headerBg = "bg-[#111]";
 
   if (active) {
-    if (signal.direction === "LONG") {
+    if (isDegraded) {
+      // Degraded market data — amber styling
+      cardBorder = "border-[#b45309]";
+      cardBg = "bg-[#0a0a0a]";
+      headerBg = "bg-[#451a03]";
+    } else if (signal.direction === "LONG") {
       cardBorder = "border-[#166534]";
       cardBg = "bg-[#0a0a0a]";
       headerBg = "bg-[#052e16]";
@@ -101,6 +107,10 @@ function SignalCard({ symbol, signal, onEndTradeClick }: { symbol: string; signa
         {active && shouldBeClosed ? (
           <span className="border border-[#fbbf24] bg-[#fbbf24]/10 text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono text-[#fbbf24]">
             {tpHit ? "TP HIT" : "SL HIT"} — CLOSING
+          </span>
+        ) : active && isDegraded ? (
+          <span className="border border-[#b45309] bg-[#b45309]/10 text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono text-[#b45309]">
+            DEGRADED — NO PRICE
           </span>
         ) : active ? (
           <Badge state={signal.state} />

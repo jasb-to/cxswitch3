@@ -1,15 +1,16 @@
 /**
- * Market Data Layer (v4.1.2)
- * Cron-driven refresh only (serverless architecture)
- * Decouples market data fetching from signal generation
+ * Market Data Layer (v5 - DUMB INPUT ONLY)
  * 
- * ARCHITECTURE:
- * 1. Market refresh triggered ONLY by cron jobs
- * 2. Maintains cached PRICE DATA for all tracked symbols (BTC, ETH, SOL)
- * 3. Global request budget respected (3 req/sec across all symbols)
- * 4. Signal engine consumes cache only, never triggers fetches
- * 5. Zero external API calls during signal route execution
- * 6. No persistent intervals in serverless runtime (prevents duplicate lambdas)
+ * Job:
+ * - Fetch prices
+ * - Cache latest snapshot
+ * - NEVER skip symbols
+ * - NEVER mark degraded
+ * - NEVER make decisions
+ * 
+ * Always returns last known value, even if broken
+ * 
+ * RULE: This layer has ZERO logic
  */
 
 import { getPrice, type PriceData } from "./price-router";
@@ -23,6 +24,7 @@ export type MarketDataCache = {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GLOBAL CACHE: Price data for all tracked symbols
+// Always keeps last value, never clears
 // ═══════════════════════════════════════════════════════════════════════════
 const TRACKED_SYMBOLS = ["BTC", "ETH", "SOL"];
 const marketDataCache: Record<string, MarketDataCache> = {};
@@ -38,7 +40,7 @@ for (const symbol of TRACKED_SYMBOLS) {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // MARKET DATA REFRESH: Cron-triggered only
-// NO background intervals in serverless runtime
+// Dumb job: fetch → cache → return
 // ═══════════════════════════════════════════════════════════════════════════
 
 let isUpdating = false;
@@ -46,11 +48,11 @@ let isUpdating = false;
 /**
  * Refresh all prices from Kraken
  * CALLED BY: cron jobs only
- * This is the ONLY place external market data is fetched
+ * RULE: NEVER skip symbols, NEVER decide they're degraded
  */
 export async function refreshMarketData(): Promise<void> {
   if (isUpdating) {
-    console.log("[MARKET_DATA] Refresh already in progress, skipping");
+    console.log("[MARKET] Refresh already in progress, skipping");
     return;
   }
 
@@ -67,15 +69,16 @@ export async function refreshMarketData(): Promise<void> {
           cache.priceData = priceData;
           cache.lastUpdate = now;
           delete cache.updateError;
-          console.log(`[MARKET_DATA] ✓ ${symbol}: $${priceData.price.toFixed(2)} (${priceData.source})`);
+          console.log(`[MARKET] ${symbol}: $${priceData.price.toFixed(2)}`);
         } else {
-          cache.updateError = "Failed to fetch price";
-          console.warn(`[MARKET_DATA] ✗ ${symbol}: Price fetch failed`);
+          console.warn(`[MARKET] ${symbol}: Fetch returned null, keeping last value`);
+          // NEVER clear the cache - keep last known price
         }
       } catch (err) {
         const cache = marketDataCache[symbol];
         cache.updateError = err instanceof Error ? err.message : String(err);
-        console.error(`[MARKET_DATA] ${symbol}: Price error:`, cache.updateError);
+        console.warn(`[MARKET] ${symbol}: Error (keeping stale price): ${cache.updateError}`);
+        // NEVER clear the cache - keep last known price
       }
     }
   } finally {
@@ -85,7 +88,20 @@ export async function refreshMarketData(): Promise<void> {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CACHE QUERIES: Signal engine reads from cache (never fetches)
+// Always returns best available value
 // ═══════════════════════════════════════════════════════════════════════════
+
+export function getMarketSnapshot(): Record<string, number> {
+  const snapshot: Record<string, number> = {};
+
+  for (const symbol of TRACKED_SYMBOLS) {
+    const cache = marketDataCache[symbol];
+    const price = cache?.priceData?.price ?? 0;
+    snapshot[symbol] = price;
+  }
+
+  return snapshot;
+}
 
 export function getMarketData(symbol: string): PriceData | null {
   const cache = marketDataCache[symbol];
@@ -100,8 +116,8 @@ export function getAllMarketData(): PriceData[] {
 }
 
 /**
- * Check if market data is fresh enough for signal generation
- * Price: within 3 seconds (ticker cache TTL)
+ * Check if market data is fresh (under 3 seconds old)
+ * PURELY informational - signal engine doesn't care, state layer does
  */
 export function isMarketDataFresh(symbol: string): boolean {
   const cache = marketDataCache[symbol];
@@ -115,6 +131,7 @@ export function isMarketDataFresh(symbol: string): boolean {
 
 /**
  * Get cache status for monitoring
+ * NEVER used for decisions, only visibility
  */
 export function getCacheStatus(): {
   refreshing: boolean;
@@ -138,3 +155,4 @@ export function getCacheStatus(): {
     symbols,
   };
 }
+
