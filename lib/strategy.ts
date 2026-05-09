@@ -449,29 +449,6 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
   const logs: string[] = [];
   const signals: Signal[] = [];
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // HARD GATE: Check market data freshness from cache (not fetching)
-  // Market data layer maintains independent refresh — signal engine consumes cache
-  // ═══════════════════════════════════════════════════════════════════════════
-  const allMarketData = getAllMarketData();
-  const freshnessCheckResults = allMarketData.map(data => ({
-    symbol: data.symbol,
-    fresh: isMarketDataFresh(data.symbol),
-    hasPrice: data.priceData !== null,
-    priceHealth: data.priceData?.health,
-  }));
-
-  const allFresh = freshnessCheckResults.every(r => r.fresh && r.priceHealth === "LIVE");
-  if (!allFresh) {
-    const issues = freshnessCheckResults
-      .filter(r => !r.fresh || r.priceHealth !== "LIVE")
-      .map(r => `${r.symbol}(${!r.fresh ? "stale" : r.priceHealth})`)
-      .join(", ");
-    logs.push(`[PRICE_GATE] ❌ HARD BLOCK: Market data not fresh or degraded for ${issues} — NO signal generation`);
-    return { signals, logs };
-  }
-  logs.push(`[PRICE_GATE] ✓ All market data fresh and LIVE — signal generation enabled`);
-
   if (!supabase) {
     logs.push("[SUPABASE] Not connected — skipping signal generation");
     return { signals, logs };
@@ -558,6 +535,19 @@ export async function generateSignals(): Promise<{ signals: Signal[]; logs: stri
 
     for (const base of ["BTC", "ETH", "SOL"]) {
       try {
+        // ═══════════════════════════════════════════════════════════════════════════
+        // PER-SYMBOL PRICE GATE: Check if this symbol's market data is fresh
+        // Only skip THIS symbol if degraded — other symbols continue normally
+        // ═══════════════════════════════════════════════════════════════════════════
+        const isSymbolFresh = isMarketDataFresh(base);
+        const symbolPriceData = getMarketData(base);
+        
+        if (!isSymbolFresh || !symbolPriceData || symbolPriceData.health !== "LIVE") {
+          const reason = !isSymbolFresh ? "stale cache" : symbolPriceData?.health ?? "offline";
+          logs.push(`[${base}] Market data degraded (${reason}) — skipping this symbol only`);
+          continue;
+        }
+
         // ═══════════════════════════════════════════════════════════════════════════
         // CANONICAL SYMBOL ENFORCEMENT: All symbols go through resolver validation
         // This establishes the system input contract at entry
