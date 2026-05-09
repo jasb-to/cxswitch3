@@ -540,6 +540,7 @@ function checkSniperImminent(card: SymbolCardState): boolean {
 
 /**
  * SNIPER CONDITIONS v7.2.8 (FIX #1 & #3): RELAXED COMPRESSION + EARLY IGNITION
+ */
 function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "early" = "strict"): boolean {
   // REQUIREMENT 1: Directional bias exists (not NEUTRAL)
   if (card.direction === "NEUTRAL") {
