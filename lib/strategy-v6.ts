@@ -101,6 +101,9 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
  * Generate symbol card state from market data
  * Returns UI-ready object with all checklist items, structure, confidence, etc.
  * NO DB, NO STATE, PURE EVALUATION
+ * 
+ * RULE: All prices are valid (price > 0), regardless of source.
+ * degraded flag ONLY for UI indication, NOT for signal logic.
  */
 function generateCardState(symbol: string, priceData: PriceData): SymbolCardState {
   // Placeholder evaluation - in production, this would analyze:
@@ -109,6 +112,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   // - Volume and momentum indicators
   // - Risk/reward setup
 
+  // degraded is purely informational - source doesn't affect signal validity
   const degraded = priceData.source !== "kraken_live";
 
   // For now, default to NEUTRAL/NONE until analysis is added
