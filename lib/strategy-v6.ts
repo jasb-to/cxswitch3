@@ -25,10 +25,30 @@ export type SymbolCardState = {
   volatilityLevel: number;
 
   // Higher TimeFrame alignment (v7.1.1)
-  htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL"; // 4H trend direction
-  htf4hMomentum: number; // 4H momentum strength (0-100)
-  htf1hAlignment: boolean; // Does 1H momentum agree with 4H?
-  htf15mCompression: boolean; // Is 15M showing compression?
+  htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL";
+  htf4hMomentum: number;
+  htf1hAlignment: boolean;
+  htf15mCompression: boolean;
+
+  // Market phase detection (v7.2)
+  marketPhase: "COMPRESSION" | "IGNITION" | "EXPANSION" | "EXHAUSTION" | "REVERSAL_RISK" | "NEUTRAL";
+  compressionLevel: number; // 0-100, 15M compression %
+  
+  // Projected move calculations (v7.2)
+  expectedMovePercent: {
+    sniper: { min: number; max: number };
+    confirmed: { min: number; max: number };
+  };
+  targetPrices: {
+    tp1: number;
+    tp2: number;
+    tp3: number;
+    sl: number;
+  };
+  riskReward: number; // R:R ratio
+  
+  // Signal quality meter (v7.2)
+  signalQuality: number; // 0-100 composite score
 
   notes: string;
   updatedAt: string;
@@ -213,6 +233,60 @@ function calculateMomentumScore(card: SymbolCardState): number {
 }
 
 /**
+ * Detect market phase based on volatility and momentum state (v7.2)
+ */
+function detectMarketPhase(
+  volatilityLevel: number,
+  stochRsi: number,
+  emaSlope: number,
+  direction: string
+): "COMPRESSION" | "IGNITION" | "EXPANSION" | "EXHAUSTION" | "REVERSAL_RISK" | "NEUTRAL" {
+  if (volatilityLevel < 30) return "COMPRESSION";
+  if (volatilityLevel < 50 && stochRsi > 30 && stochRsi < 70 && Math.abs(emaSlope) > 0.3) return "IGNITION";
+  if (volatilityLevel > 50 && (stochRsi > 60 || stochRsi < 40)) return "EXPANSION";
+  if (volatilityLevel > 60 && ((stochRsi > 80) || (stochRsi < 20))) return "EXHAUSTION";
+  if (volatilityLevel < 40 && direction === "NEUTRAL") return "REVERSAL_RISK";
+  return "NEUTRAL";
+}
+
+/**
+ * Calculate expected move ranges and target prices (v7.2)
+ */
+function calculateProjectedMoves(price: number, volatilityLevel: number) {
+  const volatilityFactor = volatilityLevel / 100;
+  const sniperMin = 0.8 + volatilityFactor * 0.5;
+  const sniperMax = 1.5 + volatilityFactor * 0.7;
+  const confirmedMin = 2.5 + volatilityFactor * 0.5;
+  const confirmedMax = 4.5 + volatilityFactor * 1.5;
+  
+  const tp1 = price * (1 + sniperMax / 100);
+  const tp2 = price * (1 + confirmedMin / 100);
+  const tp3 = price * (1 + confirmedMax / 100);
+  const sl = price * (1 - sniperMax / 100);
+  const riskReward = confirmedMax / sniperMax;
+  
+  return {
+    expectedMovePercent: { sniper: { min: sniperMin, max: sniperMax }, confirmed: { min: confirmedMin, max: confirmedMax } },
+    targetPrices: { tp1, tp2, tp3, sl },
+    riskReward,
+  };
+}
+
+/**
+ * Calculate composite signal quality score (v7.2)
+ */
+function calculateSignalQuality(htf4hTrend: string, htf1hAlignment: boolean, emaSlope: number, volatilityLevel: number, stochRsi: number, htf15mCompression: boolean): number {
+  let score = 50;
+  if (htf4hTrend === "BULLISH" || htf4hTrend === "BEARISH") score += 10;
+  if (htf1hAlignment) score += 10;
+  if (Math.abs(emaSlope) > 0.5) score += 15;
+  if (volatilityLevel < 30) score += 15;
+  if (stochRsi > 60 || stochRsi < 40) score += 20;
+  if (htf15mCompression) score += 15;
+  return Math.min(score, 100);
+}
+
+/**
  * SNIPER CONDITIONS v7.1.1: HTF ALIGNMENT ENFORCEMENT
  * 
  * SNIPER = HTF directional bias + mid timeframe compression + LTF ignition trigger
@@ -349,7 +423,13 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     htf1hAlignment,
     htf15mCompression,
 
-    notes: direction !== "NEUTRAL" ? `Momentum: ${direction}` : "Waiting for setup",
+    // Market phase and projections (v7.2)
+    marketPhase: detectMarketPhase(volatilityLevel, stochRsi, emaSlope, direction),
+    compressionLevel: Math.max(0, 100 - volatilityLevel), // Inverse of volatility
+    ...calculateProjectedMoves(priceData.price, volatilityLevel),
+    signalQuality: calculateSignalQuality(htf4hTrend, htf1hAlignment, emaSlope, volatilityLevel, stochRsi, htf15mCompression),
+
+    notes: direction !== "NEUTRAL" ? `${detectMarketPhase(volatilityLevel, stochRsi, emaSlope, direction)}` : "Waiting for setup",
     updatedAt: new Date().toISOString(),
   };
 
