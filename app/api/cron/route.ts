@@ -1,20 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateSignals, getAllSignals, cleanupExpiredSignals, validateActiveEarlyOpenSignals, reconcileSignalStates } from "@/lib/strategy";
+import { generateSignals } from "@/lib/strategy";
+import { reconcileAgainstMarketHealth } from "@/lib/state-orchestrator";
 import { sendSignalAlert, shouldSendAlert } from "@/lib/telegram";
+import { refreshMarketData, isMarketDataFresh } from "@/lib/market-data-layer";
+import { getAllActiveSignals } from "@/lib/state-repository";
 import { supabase } from "@/lib/supabase-client";
-import { initializeSupabaseConsumer } from "@/lib/supabase-consumer";
-import { initializeTelegramConsumer } from "@/lib/telegram-consumer";
-import { scanSignalHealth } from "@/lib/signal-health";
-import { refreshMarketData } from "@/lib/market-data-layer";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// Cron runs every minute via vercel.json
-const CRON_INTERVAL_MS = 60_000;
-let lastCronRun = 0;
-let consumersInitialized = false;
-
+// Main cron entry point — runs every minute via vercel.json
 export async function GET(req: NextRequest) {
   try {
     const secret = process.env.CRON_SECRET;
@@ -26,132 +21,45 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    lastCronRun = Date.now();
+    const runAt = new Date().toISOString();
+    console.log(`[CRON] Cycle started at ${runAt}`);
 
-    // Signal engine startup banner
-    console.log("[SIGNAL ENGINE] v4.1.2 production online - cron-driven refresh");
-
-    // FIRST: Refresh market data from Kraken (cron-only, no background intervals)
-    console.log("[CRON] Refreshing market data...");
+    // 1. MARKET: Refresh prices
     await refreshMarketData();
-    console.log("[CRON] Market data refresh complete");
 
-    // Initialize event consumers on first run
-    if (!consumersInitialized) {
-      initializeSupabaseConsumer();
-      initializeTelegramConsumer();
-      consumersInitialized = true;
-    }
+    // 2. ORCHESTRATOR: Reconcile signals against market health
+    const marketHealthCheck = (symbol: string) => isMarketDataFresh(symbol);
+    await reconcileAgainstMarketHealth(marketHealthCheck);
 
-    // Scan signal health
-    const health = await scanSignalHealth();
-    
-    // Re-validate active EARLY_OPEN signals against current market structure
-    // This prevents "ghost trades" from staying active when structure invalidates
-    const { logs: validationLogs } = await validateActiveEarlyOpenSignals();
-    for (const line of validationLogs) {
-      console.log(line);
-    }
-    
-    // State reconciliation: force TP/SL terminal states if live price satisfies conditions
-    // This catches any missed state transitions and ensures DB matches market reality
-    const { logs: reconcileLogs, reconciled } = await reconcileSignalStates();
-    for (const line of reconcileLogs) {
-      console.log(line);
-    }
-    if (reconciled > 0) {
-      console.log(`[CRON] Reconciled ${reconciled} signals with terminal conditions`);
-    }
-    
-    // First: cleanup expired signals that haven't confirmed
-    const { logs: cleanupLogs } = await cleanupExpiredSignals();
-    for (const line of cleanupLogs) {
-      console.log(line);
-    }
-
-    // Then: generate new signals
+    // 3. SIGNAL ENGINE: Generate new signals
     const { signals, logs } = await generateSignals();
 
-    // Print all logs to stdout
     for (const line of logs) {
       console.log(line);
     }
 
-    // Telegram: send EARLY_OPEN alerts when signals are first created
+    // 4. TELEGRAM: Alert on new signals
     for (const signal of signals) {
-      if (signal.state === "EARLY_OPEN" && await shouldSendAlert(signal.id!, signal.symbol, "EARLY_OPEN")) {
+      if (await shouldSendAlert(signal.id!, signal.symbol, signal.state)) {
         try {
           await sendSignalAlert(signal);
-          console.log(`[TELEGRAM] ✓ Sent EARLY_OPEN alert for ${signal.symbol} (signal ID ${signal.id})`);
+          console.log(`[TELEGRAM] ✓ Sent ${signal.state} alert for ${signal.symbol}`);
         } catch (err) {
-          console.log(`[TELEGRAM] ✗ Failed to send EARLY_OPEN alert for ${signal.symbol}`);
+          console.log(`[TELEGRAM] ✗ Failed to send alert for ${signal.symbol}`);
         }
       }
     }
 
-    // Note: CONFIRMED alerts are sent by /api/cron/positions after managePositions() evaluates candidates
-
-    // Clean up alerts for signals that have ended (prevents old alerts from blocking new ones)
-    if (supabase) {
-      try {
-        const { data: endedSignals } = await supabase
-          .from("signals")
-          .select("id")
-          .eq("state", "END")
-          .gte("updated_at", new Date(Date.now() - 1 * 60 * 60 * 1000).toISOString());
-
-        if (endedSignals) {
-          const endedIds = endedSignals.map(s => s.id);
-          if (endedIds.length > 0) {
-            await supabase
-              .from("telegram_alerts")
-              .delete()
-              .in("signal_id", endedIds);
-            console.log(`[TELEGRAM_ALERTS] Cleaned up ${endedIds.length} alerts for ended signals`);
-          }
-        }
-      } catch (err) {
-        console.warn(`[TELEGRAM_ALERTS] Failed to cleanup alerts:`, err);
-      }
-    }
-
-    const nextInMs = CRON_INTERVAL_MS - (Date.now() - lastCronRun);
-    const nextInSec = Math.max(0, Math.round(nextInMs / 1000));
-    const nextMins = Math.floor(nextInSec / 60);
-    const nextSecs = nextInSec % 60;
-    console.log(`[NEXT CRON] In ${nextMins}m ${nextSecs}s`);
-
-    const allSignals = await getAllSignals();
+    const allSignals = await getAllActiveSignals();
 
     // Log cycle summary
-    console.log(
-      `[CYCLE SUMMARY] Signals: ${signals.length} | Health: active=${health.active} ended=${health.ended}`
-    );
-
-    // Log cron run to cron_runs table
-    if (supabase) {
-      const { error: logErr } = await supabase
-        .from("cron_runs")
-        .insert([
-          {
-            run_at: new Date().toISOString(),
-            signals_count: signals.length,
-            errors: logs.filter(l => l.includes("ERROR") || l.includes("error")).length,
-          },
-        ]);
-
-      if (logErr) {
-        console.error("[CRON_RUNS] Failed to log cron run:", logErr.message);
-      } else {
-        console.log("[CRON_RUNS] Logged execution");
-      }
-    }
+    console.log(`[CRON CYCLE] Complete — ${allSignals.length} total signals | ${signals.length} new signals generated`);
 
     return NextResponse.json({
       ok: true,
       signals: allSignals,
       logs,
-      lastCronRun,
+      runAt,
     });
   } catch (error) {
     console.error('[GET /api/cron ERROR]', error);
