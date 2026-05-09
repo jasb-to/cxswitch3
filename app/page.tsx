@@ -5,7 +5,7 @@ import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v7.2.7";
+const VERSION = "v7.2.8";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load - minimal data, no fakes
@@ -139,12 +139,13 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
   const isActiveSignal = card.signalState === "ACTIVE_SNIPER" || card.signalState === "ACTIVE_CONFIRMED";
   const hasSignal = card.mode === "SNIPER" || card.mode === "CONFIRMED";
   
-  // FIX #8: Remove "WATCHING" - use signalState to show meaningful states
+  // FIX #8: Remove "WATCHING" - use signalState to show meaningful states (v7.2.8 adds SNIPER_IMMINENT)
   const statusBadge = isLoading ? "LOADING" : 
     card.signalState === "ACTIVE_CONFIRMED" ? "CONFIRMED" :
     card.signalState === "ACTIVE_SNIPER" ? "SNIPER" :
     card.signalState === "CONFIRMED_READY" ? "CONFIRMED READY" :
     card.signalState === "SNIPER_READY" ? "SNIPER READY" :
+    card.signalState === "SNIPER_IMMINENT" ? "SNIPER IMMINENT" :
     card.signalState === "BUILDING" ? "BUILDING" :
     card.marketReadinessState;
   
