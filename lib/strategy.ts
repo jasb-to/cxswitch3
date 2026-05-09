@@ -1287,21 +1287,22 @@ export async function reconcileSignalsWithMarketData(signals: Signal[]): Promise
     const isStale = !isFresh; // Older than 3 seconds
 
     // RULE: Active signals require LIVE market data
+    // Force immediate transition with no blocking conditions
     if (!isLive || isStale) {
       const reason = !isLive 
         ? `degraded (${marketData?.health ?? 'offline'})` 
         : 'stale cache';
       
-      logs.push(`[RECONCILE] ${symbol} ${signal.state} signal — market data ${reason}, invalidating position`);
+      logs.push(`[RECONCILE] ${symbol} ${signal.state} signal — market data ${reason}, forcing state transition`);
       
-      // Mark signal as SUSPENDED (market data quality issue)
+      // Force transition to END with STRUCTURE_INVALIDATED (no blocking)
       if (supabase) {
         try {
           await updateSignalState(signal.id!, "END", {
-            outcome: "INVALIDATED",
+            outcome: "STRUCTURE_INVALIDATED",
             notes: `Auto-closed: market data ${reason}`,
           });
-          logs.push(`[RECONCILE] ✓ ${symbol} signal ended as INVALIDATED`);
+          logs.push(`[RECONCILE] ✓ ${symbol} signal forced to END/STRUCTURE_INVALIDATED`);
         } catch (err) {
           logs.push(`[RECONCILE] ✗ Failed to end ${symbol} signal: ${err instanceof Error ? err.message : String(err)}`);
         }

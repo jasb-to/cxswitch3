@@ -18,31 +18,21 @@ export async function GET() {
     
     const allFresh = freshnessStatus.every(s => s.fresh && s.hasData);
 
-    // PURE DB READ: Return all non-INVALIDATED signals
-    // NO filtering by freshness, market health, or validation state
-    // Reconciliation happens in cron, not in the API response
+    // PURE DB READ: Return ALL non-END signals (ACTIVE + EARLY_OPEN + CONFIRMED)
+    // NEVER filter by market health, cache freshness, or outcome
+    // That's reconciliation's job — API is dumb and always shows symbols
     let signals = [];
     if (supabase) {
       try {
         const { data, error } = await supabase
           .from("signals")
           .select("*")
-          .neq("state", "INVALIDATED")
+          .neq("state", "END")
           .order("created_at", { ascending: false });
 
         if (!error && data) {
           signals = data;
-          
-          // DEBUG: Log sample signals to see actual symbol format
-          if (signals.length > 0) {
-            console.log(`[API /signals] Sample signals:`, signals.slice(0, 3).map(s => ({ 
-              id: s.id, 
-              symbol: s.symbol, 
-              state: s.state,
-              direction: s.direction 
-            })));
-          }
-          console.log(`[API /signals] Returned ${signals.length} non-invalidated signals`);
+          console.log(`[API /signals] Returned ${signals.length} active signals (all non-END states)`);
         } else {
           console.error("[API /signals] Query error:", error);
         }
