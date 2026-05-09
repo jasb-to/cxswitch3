@@ -38,12 +38,16 @@ export type SymbolCardState = {
   emaSlope: number | null;
   volatilityLevel: number | null;
 
-  // Higher TimeFrame alignment (v7.1.1 - extended for v7.2.9)
+  // Higher TimeFrame alignment (v7.1.1 - SIMPLIFIED FOR v7.2.10)
+  // v7.2.10: Remove 1H dependency, use 15M execution structure instead
   htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL";
   htf4hMomentum: number | null;
-  htf1hTrend: "BULLISH" | "BEARISH" | "FLAT"; // v7.2.9: Always has value, never null (was htf1hAlignment boolean)
-  htf1hAlignment: boolean | null; // Kept for backwards compat but deprecated
+  htf1hAlignment: boolean | null; // Deprecated v7.2.10, kept only for signal logic
   htf15mCompression: boolean | null;
+  
+  // v7.2.10 FIX #1 & #2: 15M EXECUTION STRUCTURE (replaces 1H display)
+  // Shows entry readiness based on 15M structure + volatility state
+  execution15mState: "COMPRESSING" | "BREAKOUT_READY" | "EXPANDING" | "CHOP";
 
   // Market readiness engine (v7.2.1)
   marketReadinessState: string;
@@ -649,19 +653,30 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     htf4hMomentum < 45 ? "BEARISH" :
     "NEUTRAL";
 
-  // 1H TREND (v7.2.9 FIX #2): Derives from EMA slope
-  // BULLISH: EMA slope > 0.2 (rising)
-  // BEARISH: EMA slope < -0.2 (falling)
-  // FLAT: EMA slope between -0.2 and 0.2 (sideways)
-  // NEVER NULL - always has a value for display
-  const htf1hTrend: "BULLISH" | "BEARISH" | "FLAT" = 
-    emaSlope > 0.2 ? "BULLISH" :
-    emaSlope < -0.2 ? "BEARISH" :
-    "FLAT"; // Fallback (no more "—")
+  // v7.2.10 FIX #3: Calculate 15M EXECUTION STATE (replaces 1H trend display)
+  // Shows what entry structure is forming, not a direction
+  // COMPRESSING: volatility falling, range tightening, energy building
+  // BREAKOUT_READY: tight range + momentum present, ready to move
+  // EXPANDING: volatility spike after squeeze, momentum continuing
+  // CHOP: choppy/indecisive, low momentum, no clear structure
+  const execution15mState: "COMPRESSING" | "BREAKOUT_READY" | "EXPANDING" | "CHOP" =
+    // EXPANDING: volatility high after period of compression
+    volatilityLevel > 55 ? "EXPANDING" :
+    // BREAKOUT_READY: volatility middle + momentum active (Stoch not extreme)
+    volatilityLevel > 40 && volatilityLevel <= 55 && stochRsi > 25 && stochRsi < 75 ? "BREAKOUT_READY" :
+    // COMPRESSING: low volatility + energy building
+    volatilityLevel < 35 && Math.abs(emaSlope) <= 0.3 ? "COMPRESSING" :
+    // CHOP: choppy structure, no clear momentum
+    "CHOP";
 
-  // 1H ALIGNMENT (v7.2.9 - deprecated, kept for backwards compat)
-  // Still used in checkConfirmedConditions but no longer primary
-  const htf1hAlignment = htf1hTrend !== "FLAT";
+  // v7.2.10: Remove old 1H trend calculation (deprecated)
+  // htf1hTrend is no longer calculated or displayed
+  
+  // 1H ALIGNMENT (v7.2.10 - kept ONLY for signal logic, never displayed)
+  const htf1hAlignment = 
+    (htf4hTrend === "BULLISH" && emaSlope > 0.2) ||
+    (htf4hTrend === "BEARISH" && emaSlope < -0.2) ||
+    (htf4hTrend === "NEUTRAL" && Math.abs(emaSlope) < 0.3);
 
   // 15M COMPRESSION: Is there energy build-up?
   // Simplified: compression when volatility < 40
@@ -730,9 +745,9 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     // HTF alignment data
     htf4hTrend,
     htf4hMomentum,
-    htf1hTrend, // v7.2.9: New standardized 1H trend field
-    htf1hAlignment, // v7.2.9: Deprecated, kept for backwards compat
+    htf1hAlignment, // v7.2.10: Only for signal logic, not displayed
     htf15mCompression,
+    execution15mState, // v7.2.10: NEW - replaces htf1hTrend display
 
     // Market readiness (v7.2.1)
     // Market readiness (v7.2.4 FIX #4: Use live market state instead of old phases)
