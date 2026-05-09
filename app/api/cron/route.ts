@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateSetups } from "@/lib/strategy-v6";
-import { sendAlert, canSendAlert } from "@/lib/telegram-v6";
+import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
-import { setSnapshot } from "@/lib/runtime-snapshot";
+import { getSnapshot, setSnapshot } from "@/lib/runtime-snapshot";
+import { calculatePatches, applySnapshotPatches } from "@/lib/snapshot-patcher";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// ONLY CRON ENTRY POINT - Scanner runs every minute
+// v7.2.7 FIX #3: CRON optimized for delta updates, not full rebuilds
 export async function GET(req: NextRequest) {
   try {
     const secret = process.env.CRON_SECRET;
@@ -19,51 +20,58 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    console.log("[CRON] Start");
+    console.log("[CRON] Start - v7.2.7 tiered optimization");
+    const cronStart = Date.now();
 
-    // STEP 1: Refresh market cache and log status
+    // STEP 1: Refresh market data (TIER 1 - always fast)
     const market = await refreshMarketData();
+    console.log(`[TIER1] Market refresh: ${Date.now() - cronStart}ms`);
+
+    // STEP 2: Generate new cards (includes tiered caching internally)
+    const { cards: newCards, setups } = await generateSetups(market);
+    console.log(`[TIER2/3] Card generation: ${Date.now() - cronStart}ms - ${newCards.length} cards, ${setups.length} setups`);
+
+    // STEP 3: Apply delta patching (FIX #5)
+    // Instead of replacing entire snapshot, patch only changed cards
+    const existingSnapshot = getSnapshot();
+    const existingCards = existingSnapshot?.cards || [];
     
-    // Log market status
-    for (const [symbol, priceData] of Object.entries(market)) {
-      const status = priceData.source === "kraken_live" ? "LIVE" : "CACHED";
-      console.log(`[MARKET] ${symbol} ${status}`);
-    }
+    const patches = calculatePatches(existingCards, newCards);
+    const patchedCards = applySnapshotPatches(existingCards, patches.map(p => ({
+      symbol: p.symbol,
+      fields: p.fields,
+      timestamp: p.timestamp,
+    })));
+    
+    console.log(`[DELTA] Patches applied: ${patches.length} changed cards out of ${newCards.length}`);
 
-    // STEP 2: Generate symbol cards + setups
-    const { cards, setups } = await generateSetups(market);
-    console.log(`[SCAN] Generated ${cards.length} cards, ${setups.length} setups`);
-
-    // STEP 3: Store snapshot as single source of truth
+    // STEP 4: Update snapshot (only changed parts)
     setSnapshot({
       updatedAt: new Date().toISOString(),
-      cards,
+      cards: patchedCards,
       setups,
     });
 
-    // STEP 4: Check cooldown and send alerts
-    console.log(`[ALERT DEBUG] ${setups.length} setups to process`);
-    
-    const sent = [];
+    // STEP 5: Enqueue alerts (FIX #6 - decoupled, non-blocking)
+    // Do NOT await - let alerts process independently
     for (const setup of setups) {
-      console.log(`[ALERT DEBUG] Checking ${setup.symbol} ${setup.mode}...`);
-      
-      if (await canSendAlert(setup.symbol, setup.mode, setup.direction)) {
-        try {
-          await sendAlert(setup);
-          sent.push(setup);
-          console.log(`[ALERT] ${setup.symbol} sent successfully`);
-        } catch (err) {
-          console.log(`[ALERT] ${setup.symbol} failed:`, err);
-        }
-      } else {
-        console.log(`[ALERT DEBUG] ${setup.symbol} blocked by cooldown`);
-      }
+      enqueueAlert({
+        symbol: setup.symbol,
+        mode: setup.mode,
+        direction: setup.direction,
+        score: setup.score,
+        price: setup.price,
+        queued: Date.now(),
+      });
     }
 
-    console.log(`[CRON] Complete - sent ${sent.length}/${setups.length} alerts`);
+    const totalMs = Date.now() - cronStart;
+    console.log(`[CRON] Complete in ${totalMs}ms - queued ${setups.length} alerts`);
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ 
+      ok: true, 
+      perf: { totalMs, patchesApplied: patches.length, alertsQueued: setups.length }
+    });
   } catch (error) {
     console.error('[CRON ERROR]', error);
     return NextResponse.json(
