@@ -61,6 +61,48 @@ function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function StrategyRow({ title, setups, mode }: { title: string; setups: any[]; mode: string }) {
+  const filtered = setups.filter((s) => s.mode === mode);
+  
+  if (filtered.length === 0) {
+    return (
+      <div className="border border-zinc-800 bg-zinc-950 p-5 rounded-lg">
+        <p className="text-[10px] tracking-[0.22em] text-zinc-500 mb-4">{title}</p>
+        <p className="text-[12px] text-zinc-600">No {mode.toLowerCase()} signals</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="border border-zinc-800 bg-zinc-950 p-5 rounded-lg">
+      <p className="text-[10px] tracking-[0.22em] text-zinc-500 mb-4">{title}</p>
+      <div className="flex flex-col gap-3">
+        {filtered.map((setup, idx) => {
+          const directionColor = setup.direction === "LONG" ? "text-green-400" : setup.direction === "SHORT" ? "text-red-400" : "text-zinc-400";
+          return (
+            <div key={idx} className="border border-zinc-700 bg-zinc-900 p-3 rounded flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="font-bold text-[14px] text-white">{setup.symbol}</span>
+                <span className={`text-[11px] tracking-[0.15em] font-semibold ${directionColor}`}>
+                  {setup.direction}
+                </span>
+              </div>
+              <div className="flex items-center gap-4">
+                <span className="text-[12px] text-zinc-400">
+                  Price: <span className="text-white font-mono">${fmt(setup.price)}</span>
+                </span>
+                <span className="text-[12px] text-zinc-400">
+                  Score: <span className="text-green-400 font-mono">{setup.score}</span>
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function SymbolCard({ card }: { card: SymbolCardState }) {
   // Direction-only coloring
   let directionBorder = "border-[#2a2a2a]";
@@ -305,6 +347,12 @@ export default function Dashboard() {
               <SymbolCard key={card.symbol} card={card} />
             ))}
           </div>
+        </div>
+
+        {/* SNIPER & CONFIRMED STRATEGIES - 1 COLUMN, 2 ROWS */}
+        <div className="flex flex-col gap-4">
+          <StrategyRow title="🚀 SNIPER SIGNALS" setups={setups} mode="SNIPER" />
+          <StrategyRow title="✅ CONFIRMED SIGNALS" setups={setups} mode="CONFIRMED" />
         </div>
 
         <footer className="border-t border-zinc-800 pt-4 flex items-center justify-between">
