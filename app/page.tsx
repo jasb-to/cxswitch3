@@ -75,7 +75,7 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
   }
 
   // Get market status from source
-  const marketStatus = getMarketStatus(card.source);
+  const marketStatus = getMarketStatus(card?.source ?? "unknown");
   
   // Status badge colors
   const statusBgMap = {
@@ -100,8 +100,8 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
   const displayPrice = card.price > 0 ? `$${fmt(card.price)}` : "NO DATA";
 
   // FIX 5: Show clean state labels instead of NO_STRUCTURE
-  let displayStructure = card.structure;
-  let displayMode = card.mode;
+  let displayStructure = card?.structure ?? "MONITORING";
+  let displayMode = card?.mode ?? "WATCHING";
   
   if (displayStructure === "NO_STRUCTURE") {
     displayStructure = "MONITORING";
@@ -115,7 +115,7 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
       {/* HEADER: Symbol + Status Badge + Price */}
       <div className="flex items-start justify-between mb-4">
         <div className="flex items-center gap-3">
-          <h3 className="text-lg font-bold tracking-tight">{card.symbol}/USD</h3>
+          <h3 className="text-lg font-bold tracking-tight">{card?.symbol ?? "—"}/USD</h3>
           <span className={`text-xs px-2.5 py-1 rounded border ${statusBgMap[marketStatus.color]} ${statusBorderMap[marketStatus.color]} ${statusTextMap[marketStatus.color]}`}>
             {marketStatus.label}
           </span>
@@ -129,17 +129,17 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
           {displayStructure} • {displayMode}
         </div>
         <div className="text-sm text-zinc-500">
-          Confidence {card.confidence}%
+          Confidence {card?.confidence ?? 0}%
         </div>
       </div>
 
       {/* CHECKLIST - Monochrome */}
       <div className="space-y-2 mt-4 border-t border-zinc-800 pt-4">
-        <ChecklistItem label="4H Trend" pass={card.checklist.trend4H} />
-        <ChecklistItem label="15M Structure" pass={card.checklist.breakout15M} />
-        <ChecklistItem label="5M Trigger" pass={card.checklist.trigger5M} />
-        <ChecklistItem label="Volatility" pass={card.checklist.volatility} />
-        <ChecklistItem label="Volume" pass={card.checklist.volume} />
+        <ChecklistItem label="4H Trend" pass={card?.checklist?.trend4H ?? false} />
+        <ChecklistItem label="15M Structure" pass={card?.checklist?.breakout15M ?? false} />
+        <ChecklistItem label="5M Trigger" pass={card?.checklist?.trigger5M ?? false} />
+        <ChecklistItem label="Volatility" pass={card?.checklist?.volatility ?? false} />
+        <ChecklistItem label="Volume" pass={card?.checklist?.volume ?? false} />
       </div>
 
       {/* STATUS NOTE - Subtle */}
