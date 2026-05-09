@@ -7,7 +7,7 @@ import { getStateOfPlay } from "@/lib/state-of-play";
 import { getBias, getBiasColor, getBiasBorder, getBiasStrength } from "@/lib/market-bias";
 import { getMarketData } from "@/lib/market-data-layer";
 
-const VERSION = "v5.1.1";
+const VERSION = "v6.0.0";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 

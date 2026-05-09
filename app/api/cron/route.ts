@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateSignals, persistSignals } from "@/lib/strategy";
-import { sendSignalAlert } from "@/lib/telegram";
+import { generateSetups } from "@/lib/strategy-v6";
+import { sendAlert, canSendAlert } from "@/lib/telegram-v6";
 import { refreshMarketData } from "@/lib/market-data-layer";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// ONLY CRON ENTRY POINT - runs 4-step pipeline
+// ONLY CRON ENTRY POINT - Scanner runs every minute
 export async function GET(req: NextRequest) {
   try {
     const secret = process.env.CRON_SECRET;
@@ -18,44 +18,35 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const runAt = new Date().toISOString();
-    console.log(`[CRON] Started ${runAt}`);
+    console.log("[CRON] Start");
 
-    // STEP 1: Refresh market data
-    await refreshMarketData();
-    console.log("[CRON] Market data refreshed");
+    // STEP 1: Refresh market cache
+    const market = await refreshMarketData();
 
-    // STEP 2: Generate signals
-    const { signals, logs } = await generateSignals();
-    for (const line of logs) {
-      console.log(line);
-    }
+    // STEP 2: Generate setups (PURE engine)
+    const setups = await generateSetups(market);
 
-    // STEP 3: Persist signals
-    const persisted = await persistSignals(signals);
-    console.log(`[CRON] Persisted ${persisted.length} signals`);
-
-    // STEP 4: Send Telegram alerts
-    for (const signal of persisted) {
-      try {
-        await sendSignalAlert(signal);
-        console.log(`[TELEGRAM] ✓ Sent alert for ${signal.symbol}`);
-      } catch (err) {
-        console.log(`[TELEGRAM] ✗ Failed for ${signal.symbol}`);
+    // STEP 3-5: Check cooldown, send alerts, store alerts
+    const sent = [];
+    for (const setup of setups) {
+      if (await canSendAlert(setup.symbol, setup.mode, setup.direction)) {
+        try {
+          await sendAlert(setup);
+          sent.push(setup);
+          console.log(`[ALERT] ${setup.symbol} sent`);
+        } catch (err) {
+          console.log(`[ALERT] ${setup.symbol} failed`);
+        }
       }
     }
 
-    console.log(`[CRON] Complete at ${new Date().toISOString()}`);
+    console.log("[CRON] Complete");
 
-    return NextResponse.json({
-      ok: true,
-      signals: persisted,
-      runAt,
-    });
+    return NextResponse.json({ ok: true, setups, sent });
   } catch (error) {
     console.error('[CRON ERROR]', error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Unknown error', ok: false },
+      { error: error instanceof Error ? error.message : 'Unknown', ok: false },
       { status: 500 }
     );
   }
