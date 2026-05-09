@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateSignals, getAllSignals } from "@/lib/strategy";
+import { generateSignals } from "@/lib/strategy";
+import { reconcileAgainstMarketHealth } from "@/lib/state-orchestrator";
 import { sendSignalAlert, shouldSendAlert } from "@/lib/telegram";
+import { isMarketDataFresh, refreshMarketData } from "@/lib/market-data-layer";
+import { getAllActiveSignals } from "@/lib/state-repository";
 
 export const dynamic = "force-dynamic";
 
+// External cron trigger for third-party schedulers (Vercel Cron, EasyCron, etc)
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
@@ -20,31 +24,37 @@ export async function GET(req: NextRequest) {
     const runAt = new Date().toISOString();
     console.log(`[EXTERNAL-CRON] Run started at ${runAt}`);
 
+    // MARKET: Refresh prices from cache
+    await refreshMarketData();
+
+    // ORCHESTRATOR: Reconcile signals against market health
+    const marketHealthCheck = (symbol: string) => isMarketDataFresh(symbol);
+    await reconcileAgainstMarketHealth(marketHealthCheck);
+
+    // SIGNAL ENGINE: Generate new signals
     const { signals, logs } = await generateSignals();
 
     for (const line of logs) {
       console.log(line);
     }
 
+    // TELEGRAM: Alert on new signals
     for (const signal of signals) {
-      if (await shouldSendAlert(signal.symbol, signal.state)) {
+      if (await shouldSendAlert(signal.id!, signal.symbol, signal.state)) {
         try {
           await sendSignalAlert(signal);
-          console.log(`[TELEGRAM] Sent ${signal.state} alert for ${signal.symbol}`);
+          console.log(`[TELEGRAM] ✓ Sent ${signal.state} alert for ${signal.symbol}`);
         } catch (err) {
-          console.log(`[TELEGRAM] Failed to send alert for ${signal.symbol}:`, err);
+          console.log(`[TELEGRAM] ✗ Failed to send alert for ${signal.symbol}`);
         }
-      } else {
-        console.log(`[TELEGRAM] Skipped — already alerted ${signal.state} for ${signal.symbol}`);
       }
     }
 
-    console.log(`[EXTERNAL-CRON] Run complete. ${signals.length} signal(s) evaluated.`);
-
+    const allSignals = await getAllActiveSignals();
     return NextResponse.json({
       ok: true,
       runAt,
-      signals: await getAllSignals(),
+      signals: allSignals,
       logs,
     });
   } catch (error) {

@@ -1,21 +1,31 @@
 import { NextResponse } from "next/server";
-import { generateSignals, getAllSignals } from "@/lib/strategy";
+import { generateSignals } from "@/lib/strategy";
+import { reconcileAgainstMarketHealth } from "@/lib/state-orchestrator";
 import { sendSignalAlert, shouldSendAlert } from "@/lib/telegram";
+import { isMarketDataFresh, refreshMarketData } from "@/lib/market-data-layer";
+import { getAllActiveSignals } from "@/lib/state-repository";
 
 export const dynamic = "force-dynamic";
 
-// Server-side proxy: runs the cron logic directly without needing the secret
-// to be exposed to the client. Called by the "Scan Now" button.
+// Manual scan trigger — runs the full signal generation cycle without needing cron secret
 export async function POST() {
   try {
+    console.log("[SCAN-NOW] Manual signal scan triggered");
+
+    // ORCHESTRATOR: Reconcile signals against market health
+    const marketHealthCheck = (symbol: string) => isMarketDataFresh(symbol);
+    await reconcileAgainstMarketHealth(marketHealthCheck);
+
+    // SIGNAL ENGINE: Generate new signals
     const { signals, logs } = await generateSignals();
 
     for (const line of logs) {
       console.log(line);
     }
 
+    // TELEGRAM: Alert on new signals
     for (const signal of signals) {
-      if (await shouldSendAlert(signal.symbol, signal.state)) {
+      if (await shouldSendAlert(signal.id!, signal.symbol, signal.state)) {
         try {
           await sendSignalAlert(signal);
           console.log(`[TELEGRAM] ✓ Sent ${signal.state} alert for ${signal.symbol} (manual scan)`);
@@ -25,7 +35,8 @@ export async function POST() {
       }
     }
 
-    return NextResponse.json({ ok: true, signals: await getAllSignals(), logs });
+    const allSignals = await getAllActiveSignals();
+    return NextResponse.json({ ok: true, signals: allSignals, logs });
   } catch (error) {
     console.error('[POST /api/scan-now ERROR]', error);
     return NextResponse.json(
