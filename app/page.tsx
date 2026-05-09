@@ -5,7 +5,7 @@ import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v6.8.0";
+const VERSION = "v7.0.0";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load (before first cron run)
@@ -59,71 +59,6 @@ const fetcher = (url: string) =>
 
 function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-function StrategyRow({ title, setups, mode }: { title: string; setups: any[]; mode: string }) {
-  const filtered = setups.filter((s) => s.mode === mode);
-  
-  if (filtered.length === 0) {
-    return (
-      <div className="border border-zinc-800 bg-zinc-950 p-5 rounded-lg">
-        <p className="text-[10px] tracking-[0.22em] text-zinc-500 mb-4">{title}</p>
-        <p className="text-[12px] text-zinc-600">No {mode.toLowerCase()} signals</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="border border-zinc-800 bg-zinc-950 p-5 rounded-lg">
-      <p className="text-[10px] tracking-[0.22em] text-zinc-500 mb-4">{title}</p>
-      <div className="flex flex-col gap-4">
-        {filtered.map((setup, idx) => {
-          const directionColor = setup.direction === "LONG" ? "text-green-400" : setup.direction === "SHORT" ? "text-red-400" : "text-zinc-400";
-          
-          // Strategy condition checklist
-          const conditions = [
-            setup.checklist?.trend4H && "4H Trend",
-            setup.checklist?.breakout15M && "15M Structure",
-            setup.checklist?.trigger5M && "5M Trigger",
-            setup.checklist?.volatility && "Volatility",
-            setup.checklist?.volume && "Volume",
-            setup.structure && `${setup.structure}`,
-          ].filter(Boolean);
-
-          return (
-            <div key={idx} className="border border-zinc-700 bg-zinc-900 p-4 rounded">
-              {/* Header: Symbol, Direction, Price, Score */}
-              <div className="flex items-center justify-between mb-3 pb-3 border-b border-zinc-700">
-                <div className="flex items-center gap-3">
-                  <span className="font-bold text-[14px] text-white">{setup.symbol}</span>
-                  <span className={`text-[11px] tracking-[0.15em] font-semibold ${directionColor}`}>
-                    {setup.direction}
-                  </span>
-                </div>
-                <div className="flex items-center gap-4">
-                  <span className="text-[11px] text-zinc-400">
-                    <span className="text-white font-mono">${fmt(setup.price)}</span>
-                  </span>
-                  <span className="text-[11px] text-zinc-400">
-                    Score: <span className="text-green-400 font-mono">{setup.score}</span>
-                  </span>
-                </div>
-              </div>
-
-              {/* Strategy Conditions */}
-              <div className="flex flex-wrap gap-2">
-                {conditions.map((cond, i) => (
-                  <span key={i} className="text-[10px] px-2 py-1 bg-zinc-800 text-zinc-300 rounded border border-zinc-700">
-                    {cond}
-                  </span>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
 }
 
 function SymbolCard({ card }: { card: SymbolCardState }) {
@@ -372,16 +307,10 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* SNIPER & CONFIRMED STRATEGIES - 1 COLUMN, 2 ROWS */}
-        <div className="flex flex-col gap-4">
-          <StrategyRow title="🚀 SNIPER SIGNALS" setups={setups} mode="SNIPER" />
-          <StrategyRow title="✅ CONFIRMED SIGNALS" setups={setups} mode="CONFIRMED" />
-        </div>
-
         <footer className="border-t border-zinc-800 pt-4 flex items-center justify-between">
-          <p className="text-[10px] tracking-[0.2em] text-zinc-700">{VERSION} SCANNER</p>
+          <p className="text-[10px] tracking-[0.2em] text-zinc-700">{VERSION} MOMENTUM ENGINE</p>
           <p className="text-[10px] tracking-[0.2em] text-zinc-700">
-            4H BREAKOUT &nbsp;·&nbsp; 15M CONFIDENCE &nbsp;·&nbsp; 5M TRIGGER
+            STOCH RSI &nbsp;·&nbsp; EMA STACK &nbsp;·&nbsp; VOLATILITY COMPRESSION
           </p>
         </footer>
       </div>
