@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabase-client";
 import { initializeSupabaseConsumer } from "@/lib/supabase-consumer";
 import { initializeTelegramConsumer } from "@/lib/telegram-consumer";
 import { scanSignalHealth } from "@/lib/signal-health";
+import { refreshMarketData } from "@/lib/market-data-layer";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -28,7 +29,12 @@ export async function GET(req: NextRequest) {
     lastCronRun = Date.now();
 
     // Signal engine startup banner
-    console.log("[SIGNAL ENGINE] v2.7.5 production online");
+    console.log("[SIGNAL ENGINE] v4.1.2 production online - cron-driven refresh");
+
+    // FIRST: Refresh market data from Kraken (cron-only, no background intervals)
+    console.log("[CRON] Refreshing market data...");
+    await refreshMarketData();
+    console.log("[CRON] Market data refresh complete");
 
     // Initialize event consumers on first run
     if (!consumersInitialized) {

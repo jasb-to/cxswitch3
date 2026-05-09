@@ -1,14 +1,15 @@
 /**
- * Market Data Layer (v4.1.0)
- * Independent, always-on data refresh system
+ * Market Data Layer (v4.1.2)
+ * Cron-driven refresh only (serverless architecture)
  * Decouples market data fetching from signal generation
  * 
  * ARCHITECTURE:
- * 1. Maintains cached PRICE DATA for all tracked symbols (BTC, ETH, SOL)
- * 2. Updates on predictable intervals (2 seconds)
+ * 1. Market refresh triggered ONLY by cron jobs
+ * 2. Maintains cached PRICE DATA for all tracked symbols (BTC, ETH, SOL)
  * 3. Global request budget respected (3 req/sec across all symbols)
  * 4. Signal engine consumes cache only, never triggers fetches
  * 5. Zero external API calls during signal route execution
+ * 6. No persistent intervals in serverless runtime (prevents duplicate lambdas)
  */
 
 import { getPrice, type PriceData } from "./price-router";
@@ -36,48 +37,20 @@ for (const symbol of TRACKED_SYMBOLS) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// MARKET DATA REFRESH: Periodic updates on fixed intervals
+// MARKET DATA REFRESH: Cron-triggered only
+// NO background intervals in serverless runtime
 // ═══════════════════════════════════════════════════════════════════════════
-const PRICE_UPDATE_INTERVAL_MS = 2000; // 2 seconds for tickers
 
 let isUpdating = false;
-let updateTimers: { price?: NodeJS.Timeout } = {};
-
-/**
- * Start market data refresh timers
- * Call this once at application startup
- */
-export function startMarketDataRefresh(): void {
-  console.log("[MARKET_DATA] Starting market data refresh layer (v4.1.0 - read-only signal engine)");
-
-  // Price updates every 2 seconds
-  updateTimers.price = setInterval(() => {
-    refreshAllPrices().catch(err => {
-      console.error("[MARKET_DATA] Price refresh error:", err);
-    });
-  }, PRICE_UPDATE_INTERVAL_MS);
-
-  // Initial fetch
-  refreshAllPrices();
-}
-
-/**
- * Stop market data refresh timers
- * Call during shutdown
- */
-export function stopMarketDataRefresh(): void {
-  console.log("[MARKET_DATA] Stopping market data refresh layer");
-  if (updateTimers.price) clearInterval(updateTimers.price);
-}
 
 /**
  * Refresh all prices from Kraken
+ * CALLED BY: cron jobs only
  * This is the ONLY place external market data is fetched
- * Called periodically by timer, never by signal engine
  */
-async function refreshAllPrices(): Promise<void> {
+export async function refreshMarketData(): Promise<void> {
   if (isUpdating) {
-    console.log("[MARKET_DATA] Price refresh already in progress, skipping");
+    console.log("[MARKET_DATA] Refresh already in progress, skipping");
     return;
   }
 
