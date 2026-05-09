@@ -70,46 +70,46 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // ONLY generate setups with directional conviction
     // NO NEUTRAL SIGNALS ALLOWED
 
-    // CONFIRMED THRESHOLD: 75+ (strong multi-timeframe alignment)
-    if (score >= 75 && card.direction !== "NEUTRAL") {
+    // CONFIRMED ALERT: score >= 75 AND confirmed conditions met
+    if (score >= 75 && card.direction !== "NEUTRAL" && checkConfirmedConditions(card)) {
       card.mode = "CONFIRMED";
       card.confidence = Math.min(score, 99);
-      card.notes = `CONFIRMED LONG ${score}` + (card.direction === "LONG" ? "" : " ");
+      card.notes = `CONFIRMED ${card.direction} trend continuation ${score}`;
       
       setups.push({
         symbol,
         mode: "CONFIRMED",
         direction: card.direction,
         score: card.confidence,
-        reason: `CONFIRMED ${card.direction} - momentum + EMA + compression`,
+        reason: `CONFIRMED ${card.direction} - EMA + impulse + HTF alignment`,
         price: card.price,
         momentum: {
           stochRsiSignal: `Stoch RSI: ${card.stochRsi.toFixed(1)}`,
           emaStackSignal: card.direction === "LONG" ? "8 EMA above 21 EMA" : "8 EMA below 21 EMA",
           volatilitySignal: card.volatilityLevel < 30 ? "Compression detected" : "Normal volatility",
-          trend4H: true,
+          trend4H: card.stochRsi > 50,
         },
       });
       console.log(`[ALERT] ${symbol} CONFIRMED ${card.direction} score=${score}`);
     }
-    // SNIPER THRESHOLD: 60+ (wave ignition detected)
-    else if (score >= 60 && card.direction !== "NEUTRAL") {
+    // SNIPER ALERT: score >= 60 AND sniper conditions met (momentum ignition + compression)
+    else if (score >= 60 && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
       card.mode = "SNIPER";
       card.confidence = Math.min(score, 99);
-      card.notes = `SNIPER ${card.direction} ${score}`;
+      card.notes = `SNIPER ${card.direction} ignition ${score}`;
       
       setups.push({
         symbol,
         mode: "SNIPER",
         direction: card.direction,
         score: card.confidence,
-        reason: `SNIPER ${card.direction} - momentum wave entry`,
+        reason: `SNIPER ${card.direction} - momentum ignition event`,
         price: card.price,
         momentum: {
           stochRsiSignal: `Stoch RSI: ${card.stochRsi.toFixed(1)}`,
           emaStackSignal: card.direction === "LONG" ? "8 EMA turning up" : "8 EMA turning down",
-          volatilitySignal: card.volatilityLevel < 30 ? "Compression → expansion" : "Normal",
-          trend4H: true,
+          volatilitySignal: card.volatilityLevel < 30 ? "Compression detected" : "Normal",
+          trend4H: card.stochRsi > 50,
         },
       });
       console.log(`[ALERT] ${symbol} SNIPER ${card.direction} score=${score}`);
@@ -136,49 +136,99 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
  * CONFIRMED: ≥75
  */
 function calculateMomentumScore(card: SymbolCardState): number {
-  let score = 0;
+  // BASE SCORE - foundation for all signals
+  let score = 30;
 
-  // 1. TREND ALIGNMENT (+25)
-  // Simulate 4H trend detection
-  const trend4H = card.stochRsi > 50; // Placeholder: would use actual 4H analysis
-  if (trend4H) {
-    score += 25;
+  // EVENT MULTIPLIERS (not additive)
+  let multiplier = 1.0;
+
+  // EVENT 1: Stoch RSI cross detected
+  // Range: 0-100, active zone: 20-80
+  const stochRsiActive = card.stochRsi > 20 && card.stochRsi < 80;
+  if (stochRsiActive) {
+    multiplier *= 1.25; // Stoch RSI event multiplier
   }
 
-  // 2. EMA STACK ALIGNMENT (+20)
-  // 8 EMA slope relative to 21 EMA
-  const emaAligned = Math.abs(card.emaSlope) > 0.5; // Strong slope
-  if (emaAligned) {
-    score += 20;
+  // EVENT 2: EMA 8/21 flip detected
+  // Strong slope indicates alignment
+  const emaFlipped = Math.abs(card.emaSlope) > 0.5;
+  if (emaFlipped) {
+    multiplier *= 1.35; // EMA flip multiplier (highest impact)
   }
 
-  // 3. STOCHASTIC RSI MOMENTUM (+20)
-  // Detect momentum shift (not just overbought/oversold)
-  const stochMomentum = card.stochRsi > 20 && card.stochRsi < 80; // Active momentum zone
-  if (stochMomentum) {
-    score += 20;
-  }
-
-  // 4. VOLATILITY COMPRESSION (+20)
+  // EVENT 3: Volatility compression present
   // BB squeeze or ATR contraction
-  if (card.volatilityLevel < 30) {
-    score += 20;
+  const volatilityCompression = card.volatilityLevel < 30;
+  if (volatilityCompression) {
+    multiplier *= 1.20; // Compression multiplier
   }
 
-  // 5. IMPULSE CANDLE DETECTED (+15)
-  // Simulate: directional conviction
+  // EVENT 4: Impulse candle (direction conviction)
   if (card.direction !== "NEUTRAL") {
-    score += 15;
+    multiplier *= 1.30; // Impulse multiplier
   }
 
-  return score;
+  // EVENT 5: 4H trend alignment
+  // Trend bias from higher timeframe
+  const trend4HAligned = card.stochRsi > 50; // Simplified: would use actual 4H data
+  if (trend4HAligned) {
+    multiplier *= 1.40; // HTF trend multiplier (critical for CONFIRMED)
+  }
+
+  // Apply multiplier
+  score = Math.round(score * multiplier);
+
+  // SEPARATION BOOST: Prevent score clustering
+  // Strong momentum flips break away from 40-45 cluster
+  if (emaFlipped && stochRsiActive) {
+    score *= 1.2; // Momentum flip detected
+  }
+
+  // Strong squeeze + impulse creates separation
+  if (volatilityCompression && card.direction !== "NEUTRAL") {
+    score *= 1.15; // Volatility squeeze strong
+  }
+
+  return Math.min(score, 99); // Cap at 99
 }
 
 /**
- * Generate symbol card state from market data
- * Simulates momentum indicators: Stoch RSI, EMA slope, Volatility
- * 
- * In production, these would come from actual candle data
+ * SNIPER CONDITIONS: Momentum ignition event + compression context
+ * Early entry detection - NOT full confirmation
+ */
+function checkSniperConditions(card: SymbolCardState): boolean {
+  // SNIPER requires:
+  // (Stoch RSI cross OR EMA slope flip) AND volatility compression
+  
+  const stochRsiActive = card.stochRsi > 20 && card.stochRsi < 80;
+  const emaFlipped = Math.abs(card.emaSlope) > 0.5;
+  const momentumEvent = stochRsiActive || emaFlipped;
+  
+  const volatilityCompression = card.volatilityLevel < 30;
+  
+  return momentumEvent && volatilityCompression;
+}
+
+/**
+ * CONFIRMED CONDITIONS: Established trend + impulse + HTF alignment
+ * Full multi-timeframe setup - trend continuation
+ */
+function checkConfirmedConditions(card: SymbolCardState): boolean {
+  // CONFIRMED requires:
+  // 1. EMA alignment established (8 > 21 or 8 < 21)
+  // 2. Impulse candle already occurred
+  // 3. HTF trend agrees (4H bias)
+  
+  const emaAligned = Math.abs(card.emaSlope) > 0.5; // Established alignment
+  const impulseActive = card.direction !== "NEUTRAL"; // Directional conviction
+  const hftrendAgreed = card.stochRsi > 50; // Simplified 4H trend
+  
+  return emaAligned && impulseActive && hftrendAgreed;
+}
+
+/**
+ * Calculate momentum score using event-driven multiplier model
+ * v7.1 STABILISATION FIX
  */
 function generateCardState(symbol: string, priceData: PriceData): SymbolCardState {
   // Degrade is purely informational
