@@ -9,6 +9,15 @@
 
 import type { PriceData } from "./price-router";
 
+// FIX #1: Unified signal state (v7.2.6)
+export type SignalState = 
+  | "NONE"              // No signal
+  | "BUILDING"          // Directional bias + compression, waiting for ignition
+  | "SNIPER_READY"      // All SNIPER conditions passed, awaiting entry confirmation
+  | "CONFIRMED_READY"   // All CONFIRMED conditions passed, awaiting confirmation
+  | "ACTIVE_SNIPER"     // SNIPER signal active, trade window open (30 min cooldown)
+  | "ACTIVE_CONFIRMED"; // CONFIRMED signal active, trend confirmation (90 min cooldown)
+
 export type SymbolCardState = {
   symbol: string;
   price: number;
@@ -18,6 +27,10 @@ export type SymbolCardState = {
   direction: "LONG" | "SHORT" | "NEUTRAL";
   mode: "SNIPER" | "CONFIRMED" | "NONE";
   confidence: number;
+  
+  // FIX #1: Unified signal state (single source of truth)
+  signalState: SignalState;
+  lastSignalTime?: number; // Unix timestamp for cooldown logic
 
   // Momentum indicators (5M)
   stochRsi: number | null;
@@ -31,18 +44,18 @@ export type SymbolCardState = {
   htf15mCompression: boolean | null;
 
   // Market readiness engine (v7.2.1)
-  marketReadinessState: string; // Now supports extended states for FIX #4
-  tradeReadinessScore: number | null; // 0-100, NULL if no signal
+  marketReadinessState: string;
+  tradeReadinessScore: number | null;
   
   // Conditional: Only populate if mode === "SNIPER" or "CONFIRMED"
   expectedMovePercent: { sniper: { min: number; max: number } } | null;
   targetPrices: { tp1: number; tp2: number; sl: number } | null;
   riskReward: number | null;
 
-  // Trend memory (v7.2.5 FIX #3): persist state for 3-5 cycles
+  // Trend memory (v7.2.5)
   lastBullishCycle?: number;
   lastBearishCycle?: number;
-  trendMemory?: "BULLISH" | "BEARISH"; // Persist trend state
+  trendMemory?: "BULLISH" | "BEARISH";
 
   notes: string;
   updatedAt: string;
@@ -101,6 +114,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     if (score >= 75 && card.direction !== "NEUTRAL" && checkConfirmedConditions(card)) {
       card.mode = "CONFIRMED";
       card.confidence = Math.min(score, 99);
+      card.lastSignalTime = Date.now();
+      card.signalState = "ACTIVE_CONFIRMED"; // FIX #1: Set unified signal state
       card.notes = `CONFIRMED ${card.direction} trend continuation ${score}`;
       
       // Populate trade targets (v7.2.1)
@@ -130,6 +145,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     else if (score >= 60 && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
       card.mode = "SNIPER";
       card.confidence = Math.min(score, 99);
+      card.lastSignalTime = Date.now();
+      card.signalState = "ACTIVE_SNIPER"; // FIX #1: Set unified signal state
       card.notes = `SNIPER ${card.direction} ignition ${score}`;
       
       // Populate trade targets (v7.2.1)
@@ -163,7 +180,11 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       console.log(`[ALERT] ${symbol} SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 1H:${card.htf1hAlignment} 15M:${card.htf15mCompression}`);
     }
     else {
-      console.log(`[SCAN] ${symbol} below threshold (score=${score})`);
+      // FIX #1, #2: Derive building state based on conditions
+      const sniperPassed = score >= 60 && checkSniperConditions(card);
+      const confirmedPassed = score >= 75 && checkConfirmedConditions(card);
+      card.signalState = calculateSignalState("NONE", score, sniperPassed, confirmedPassed, card.lastSignalTime, "NONE");
+      console.log(`[SCAN] ${symbol} signalState=${card.signalState} score=${score}`);
     }
   }
 
@@ -405,6 +426,61 @@ function calculateLiveMarketState(
 }
 
 /**
+ * Check if cooldown has elapsed (v7.2.6 FIX #6)
+ * SNIPER cooldown: 30 minutes
+ * CONFIRMED cooldown: 90 minutes
+ */
+function isCooldownElapsed(lastSignalTime: number | undefined, mode: "SNIPER" | "CONFIRMED"): boolean {
+  if (!lastSignalTime) return true; // No previous signal
+  
+  const now = Date.now();
+  const cooldownMs = mode === "SNIPER" ? 30 * 60 * 1000 : 90 * 60 * 1000;
+  
+  return (now - lastSignalTime) >= cooldownMs;
+}
+
+/**
+ * Calculate unified signal state (v7.2.6 FIX #1 & #2)
+ * Returns: NONE | BUILDING | SNIPER_READY | CONFIRMED_READY | ACTIVE_SNIPER | ACTIVE_CONFIRMED
+ */
+function calculateSignalState(
+  mode: "SNIPER" | "CONFIRMED" | "NONE",
+  score: number,
+  sniperPassed: boolean,
+  confirmedPassed: boolean,
+  lastSignalTime: number | undefined,
+  lastMode: "SNIPER" | "CONFIRMED" | "NONE"
+): SignalState {
+  // FIX #2: Only activate if conditions actually passed
+  
+  // If CONFIRMED conditions passed
+  if (confirmedPassed && score >= 75) {
+    // Check cooldown: if within cooldown AND was CONFIRMED, stay in ACTIVE_CONFIRMED
+    if (lastMode === "CONFIRMED" && !isCooldownElapsed(lastSignalTime, "CONFIRMED")) {
+      return "ACTIVE_CONFIRMED"; // Still in active window
+    }
+    return "CONFIRMED_READY"; // New CONFIRMED setup ready
+  }
+  
+  // If SNIPER conditions passed (but not CONFIRMED)
+  if (sniperPassed && score >= 60 && !confirmedPassed) {
+    // Check cooldown: if within cooldown AND was SNIPER, stay in ACTIVE_SNIPER
+    if (lastMode === "SNIPER" && !isCooldownElapsed(lastSignalTime, "SNIPER")) {
+      return "ACTIVE_SNIPER"; // Still in active window
+    }
+    return "SNIPER_READY"; // New SNIPER setup ready
+  }
+  
+  // If direction exists but conditions not met: BUILDING
+  if (mode === "NONE" && score >= 40) {
+    return "BUILDING"; // Building momentum, waiting for conditions
+  }
+  
+  // No signal
+  return "NONE";
+}
+
+/**
  * SNIPER CONDITIONS v7.2.4: EARLY IGNITION ALLOWED
  * SNIPER = beginning of wave, NOT confirmation
  * Allow early ignition if directional bias exists + compression + ignition event
@@ -482,12 +558,24 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   // Volatility Level: 0-100 (low = compression, high = expansion)
   const volatilityLevel = 20 + ((symbolHash * 7) % 60); // Range: 20-80
 
-  // SIMULATE HTF CONDITIONS (v7.1.1)
-  // 4H TREND: Establish macro directional bias
+  // SIMULATE HTF CONDITIONS (v7.2.6 FIX #4: PROPER HTF STRUCTURE)
+  // 4H TREND: Now based on proper HTF structure logic
   const htf4hMomentum = 40 + (symbolHash % 30); // 40-70 range
+  
+  // FIX #4: Proper HTF structure (v7.2.6)
+  // BULLISH if: price > 21 EMA AND 21 EMA rising AND Stoch > 55
+  // BEARISH if: price < 21 EMA AND 21 EMA falling AND Stoch < 45
+  // NEUTRAL: only if true sideways structure
   const htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL" = 
-    htf4hMomentum > 60 ? "BULLISH" : 
-    htf4hMomentum < 40 ? "BEARISH" : 
+    // BULLISH structure: EMA rising + Stoch bullish + positive momentum
+    (emaSlope > 0 && htf4hMomentum > 55) ? "BULLISH" :
+    // BEARISH structure: EMA falling + Stoch bearish + negative momentum
+    (emaSlope < 0 && htf4hMomentum < 45) ? "BEARISH" :
+    // NEUTRAL: only if truly flat structure
+    (Math.abs(emaSlope) <= 0.2 && htf4hMomentum >= 45 && htf4hMomentum <= 55) ? "NEUTRAL" :
+    // Default to momentum bias
+    htf4hMomentum > 55 ? "BULLISH" :
+    htf4hMomentum < 45 ? "BEARISH" :
     "NEUTRAL";
 
   // 1H ALIGNMENT: Does 1H momentum confirm the 4H trend?
@@ -576,6 +664,10 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     expectedMovePercent: null,
     targetPrices: null,
     riskReward: null,
+    
+    // FIX #1: Initialize signalState to NONE (will be updated by alert logic)
+    signalState: "NONE",
+    lastSignalTime: undefined,
 
     notes: direction !== "NEUTRAL" ? calculateLiveMarketState(direction, emaSlope, stochRsi, volatilityLevel) : "Awaiting momentum ignition",
     updatedAt: new Date().toISOString(),
