@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { managePositions } from "@/lib/strategy";
-import { getAllActiveSignals, reconcileSignalsAgainstMarketHealth } from "@/lib/state-layer";
+import { reconcileAgainstMarketHealth } from "@/lib/state-orchestrator";
 import { sendSignalAlert, shouldSendAlert } from "@/lib/telegram";
 import { isMarketDataFresh } from "@/lib/market-data-layer";
 
@@ -23,23 +23,19 @@ export async function GET(req: NextRequest) {
     const runAt = new Date().toISOString();
     console.log(`[CRON] Run started at ${runAt}`);
 
-    // STATE LAYER: Reconcile active signals against market health
-    // This is the ONLY place that writes state changes to database
-    const activeSignals = await getAllActiveSignals();
-    console.log(`[CRON] Fetched ${activeSignals.length} active signals`);
-    
-    // Check market health for each signal's symbol
+    // ORCHESTRATOR: Reconcile signals against market health
+    // This applies business rules and persists state changes
     const marketHealthCheck = (symbol: string) => isMarketDataFresh(symbol);
-    await reconcileSignalsAgainstMarketHealth(activeSignals, marketHealthCheck);
+    await reconcileAgainstMarketHealth(marketHealthCheck);
 
-    // SIGNAL ENGINE: Manage positions (logic only, no DB writes)
+    // SIGNAL ENGINE: Generate new positions (logic only)
     const { logs, confirmed } = await managePositions();
 
     for (const line of logs) {
       console.log(line);
     }
 
-    // TELEGRAM: Alert on newly confirmed signals only
+    // TELEGRAM: Alert on confirmed signals
     for (const signal of confirmed) {
       if (await shouldSendAlert(signal.id!, signal.symbol, "CONFIRMED")) {
         try {

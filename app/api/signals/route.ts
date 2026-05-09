@@ -1,5 +1,5 @@
 import { NextResponse, NextRequest } from "next/server";
-import { getAllActiveSignals } from "@/lib/state-layer";
+import { getAllActiveSignals } from "@/lib/state-repository";
 import { getAllMarketData } from "@/lib/market-data-layer";
 import { supabase } from "@/lib/supabase-client";
 

@@ -1,15 +1,11 @@
 /**
- * STATE LAYER (v5 architecture)
+ * STATE REPOSITORY (v5.1.1)
  * 
- * ONLY place that writes to Supabase
- * Handles:
- * - Signal persistence
- * - State transitions
- * - Outcome reconciliation
- * - Lifecycle validation
+ * ONLY DB operations
+ * ZERO business logic
  * 
- * Input: Signal decisions from engine
- * Output: Persisted state in database
+ * This is a simple CRUD interface for signals
+ * The only module that touches Supabase
  */
 
 import { supabase } from "./supabase-client";
@@ -19,12 +15,12 @@ const ACTIVE_SIGNAL_STATES = ["EARLY_OPEN", "CONFIRMED"];
 const TERMINAL_SIGNAL_STATES = ["END"];
 
 /**
- * Fetch all non-END signals from database
- * PURE READ: no filtering, no logic, just return what exists
+ * Get all non-END signals from database
+ * Pure read, no logic, no filtering
  */
 export async function getAllActiveSignals(): Promise<Signal[]> {
   if (!supabase) {
-    console.warn("[STATE] Supabase not connected");
+    console.warn("[REPO] Supabase not connected");
     return [];
   }
 
@@ -36,37 +32,36 @@ export async function getAllActiveSignals(): Promise<Signal[]> {
       .order("created_at", { ascending: false });
 
     if (error) {
-      console.error("[STATE] Query error:", error);
+      console.error("[REPO] Query error:", error);
       return [];
     }
 
-    console.log(`[STATE] Fetched ${data?.length ?? 0} active signals from database`);
+    console.log(`[REPO] Fetched ${data?.length ?? 0} active signals`);
     return data ?? [];
   } catch (err) {
-    console.error("[STATE] Fetch failed:", err);
+    console.error("[REPO] Fetch failed:", err);
     return [];
   }
 }
 
 /**
- * Persist signal state change to database
- * This is the ONLY place that calls updateSignalState
+ * Update signal state in database
+ * This is the ONLY place state is written
  */
-export async function persistSignalTransition(
+export async function updateSignalState(
   signalId: number,
-  fromState: string,
-  toState: string,
+  newState: string,
   outcome?: string,
   notes?: string
 ): Promise<boolean> {
   if (!supabase) {
-    console.warn("[STATE] Supabase not connected");
+    console.warn("[REPO] Supabase not connected");
     return false;
   }
 
   try {
     const updateData: any = {
-      state: toState,
+      state: newState,
       updated_at: new Date().toISOString(),
     };
 
@@ -84,20 +79,20 @@ export async function persistSignalTransition(
       .eq("id", signalId);
 
     if (error) {
-      console.error(`[STATE] Failed to transition signal ${signalId} ${fromState} → ${toState}:`, error);
+      console.error(`[REPO] Update failed for signal ${signalId}:`, error);
       return false;
     }
 
-    console.log(`[STATE] ✓ Signal ${signalId}: ${fromState} → ${toState}${outcome ? ` (${outcome})` : ""}`);
+    console.log(`[REPO] ✓ Signal ${signalId} updated to state: ${newState}`);
     return true;
   } catch (err) {
-    console.error(`[STATE] Transition error:`, err);
+    console.error(`[REPO] Update error:`, err);
     return false;
   }
 }
 
 /**
- * Check if a symbol already has an active signal
+ * Check if symbol has active signal
  */
 export async function hasActiveSignal(symbol: string): Promise<boolean> {
   if (!supabase) return false;
@@ -117,7 +112,7 @@ export async function hasActiveSignal(symbol: string): Promise<boolean> {
 }
 
 /**
- * Get recently ended signals (for cooldown logic)
+ * Get signals ended within last N hours
  */
 export async function getRecentlyEndedSignals(hoursAgo: number = 4): Promise<Signal[]> {
   if (!supabase) return [];
@@ -134,32 +129,5 @@ export async function getRecentlyEndedSignals(hoursAgo: number = 4): Promise<Sig
     return data ?? [];
   } catch {
     return [];
-  }
-}
-
-/**
- * Reconcile active signals against market data health
- * Force end signals that don't have LIVE market validation
- */
-export async function reconcileSignalsAgainstMarketHealth(
-  activeSignals: Signal[],
-  marketHealthCheck: (symbol: string) => boolean
-): Promise<void> {
-  for (const signal of activeSignals) {
-    const isHealthy = marketHealthCheck(signal.symbol);
-
-    if (!isHealthy) {
-      const success = await persistSignalTransition(
-        signal.id!,
-        signal.state,
-        "END",
-        "STRUCTURE_INVALIDATED",
-        "Market data degraded"
-      );
-
-      if (!success) {
-        console.error(`[STATE] Failed to invalidate ${signal.symbol} signal due to market degradation`);
-      }
-    }
   }
 }
