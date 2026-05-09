@@ -7,7 +7,7 @@ import { getStateOfPlay } from "@/lib/state-of-play";
 import { getBias, getBiasColor, getBiasBorder, getBiasStrength } from "@/lib/market-bias";
 import { getMarketData } from "@/lib/market-data-layer";
 
-const VERSION = "v6.0.0";
+const VERSION = "v6.1.0";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -36,19 +36,14 @@ function SignalCard({ symbol, signal, onEndTradeClick }: { symbol: string; signa
 
   // Fetch live market data for this symbol from cache
   const priceData = getMarketData(symbol);
-  const isDegraded = !priceData || priceData.health !== "LIVE";
+  const isDegraded = !priceData || priceData.source === "DEGRADED";
   
   let cardBorder = "border-[#1e1e1e]";
   let cardBg = "bg-[#111]";
   let headerBg = "bg-[#111]";
 
-  if (active) {
-    if (isDegraded) {
-      // Degraded market data — amber styling
-      cardBorder = "border-[#b45309]";
-      cardBg = "bg-[#0a0a0a]";
-      headerBg = "bg-[#451a03]";
-    } else if (signal.direction === "LONG") {
+  if (active && !isDegraded) {
+    if (signal.direction === "LONG") {
       cardBorder = "border-[#166534]";
       cardBg = "bg-[#0a0a0a]";
       headerBg = "bg-[#052e16]";
@@ -57,39 +52,19 @@ function SignalCard({ symbol, signal, onEndTradeClick }: { symbol: string; signa
       cardBg = "bg-[#0a0a0a]";
       headerBg = "bg-[#450a0a]";
     }
+  } else if (isDegraded) {
+    cardBorder = "border-[#b45309]";
+    cardBg = "bg-[#0a0a0a]";
+    headerBg = "bg-[#451a03]";
   }
 
   const confidence = active ? signal.confidence : 0;
   const confColor = active && signal.direction === "LONG" ? "#22c55e" : active ? "#ef4444" : "#333";
   
-  // CRITICAL: Always use live market price, never stale signal.entry_price
+  // Always use live market price
   const livePrice = priceData?.price ?? 0;
   const displayPrice = livePrice > 0 ? `$${fmt(livePrice)}` : "—";
   
-  // [UI PRICE] Debug logging for price reconciliation
-  if (active && signal && priceData?.price) {
-    console.log(`[UI PRICE] ${symbol} signalPrice=${signal.entry_price.toFixed(2)} livePrice=${priceData.price.toFixed(2)} diff=${((priceData.price - signal.entry_price) / signal.entry_price * 100).toFixed(2)}%`);
-  }
-  
-  // Direction-aware TP/SL hit detection against live price
-  // LONG: TP hit when price >= TP, SL hit when price <= SL
-  // SHORT: TP hit when price <= TP, SL hit when price >= SL
-  const isLong = active && signal.direction === "LONG";
-  const tpHit = active && (isLong ? livePrice >= signal.take_profit : livePrice <= signal.take_profit);
-  const slHit = active && (isLong ? livePrice <= signal.stop_loss : livePrice >= signal.stop_loss);
-  
-  // Frontend validation: if TP/SL already hit, signal should be considered closed (DB mismatch)
-  const shouldBeClosed = tpHit || slHit;
-  
-  const tpStatus = active ? tpHit ? "TP HIT" : 
-    isLong ? `${((signal.take_profit - livePrice) / livePrice * 100).toFixed(1)}% to TP` :
-    `${((livePrice - signal.take_profit) / livePrice * 100).toFixed(1)}% to TP` : "";
-  const slStatus = active ? slHit ? "SL HIT" : 
-    isLong ? `${((livePrice - signal.stop_loss) / signal.stop_loss * 100).toFixed(1)}% above SL` :
-    `${((signal.stop_loss - livePrice) / signal.stop_loss * 100).toFixed(1)}% below SL` : "";
-
-  // Derive market bias from existing probability scores (visual only, no logic gates)
-  // Note: priceData structure may not have probabilityScore; default to 0 scores for bias calculation
   const bias = getBias(0, 0);
   const strength = getBiasStrength(0, 0);
   const biasColor = getBiasColor(bias);
@@ -99,140 +74,40 @@ function SignalCard({ symbol, signal, onEndTradeClick }: { symbol: string; signa
     <article className={`border ${cardBorder} ${cardBg} flex flex-col overflow-hidden`}>
       <div className={`${headerBg} px-5 py-4 flex items-center justify-between border-b ${cardBorder}`}>
         <div className="flex items-center gap-3">
-          <span className="font-mono font-bold text-white text-lg tracking-wide">{symbol}</span>
-          <span className={`border ${biasBorder} ${biasColor} text-[10px] px-2 py-0.5 tracking-[0.15em] font-mono font-semibold`}>
-            {bias} ({strength})
-          </span>
+          <span className="text-[13px] font-bold tracking-[0.05em]">{symbol}</span>
+          {isDegraded && <span className="border border-[#b45309] text-[#b45309] text-[9px] px-2 py-0.5 tracking-[0.1em]">DEGRADED</span>}
+          {!isDegraded && active && <Badge state={signal.state} />}
         </div>
-        {active && shouldBeClosed ? (
-          <span className="border border-[#fbbf24] bg-[#fbbf24]/10 text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono text-[#fbbf24]">
-            {tpHit ? "TP HIT" : "SL HIT"} — CLOSING
-          </span>
-        ) : active && isDegraded ? (
-          <span className="border border-[#b45309] bg-[#b45309]/10 text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono text-[#b45309]">
-            DEGRADED — NO PRICE
-          </span>
-        ) : active ? (
-          <Badge state={signal.state} />
-        ) : (
-          <span className="border border-[#2a2a2a] text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono text-[#444]">
-            NO SIGNAL
-          </span>
-        )}
+        {isDegraded && <span className="text-[11px] text-[#888]">NO DATA</span>}
+        {!isDegraded && <span className="font-mono text-[13px]">{displayPrice}</span>}
       </div>
 
-      <div className="p-5 flex flex-col gap-5">
-        {/* STATE OF PLAY — dynamic explanation of current cycle */}
-        {active && (
-          <div className="flex flex-col gap-1">
-            <p className="text-sm text-[#aaa] leading-snug italic">
-              {getStateOfPlay(signal, undefined)}
-            </p>
-          </div>
-        )}
-
-        {/* PRICE */}
-        <div>
-          <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1">PRICE</p>
-          <p className="font-mono text-3xl font-bold text-white tabular-nums">{displayPrice}</p>
-        </div>
-
-        {/* SIGNAL DETAILS (if active) */}
-        {active && (
-          <div className="grid grid-cols-3 gap-3 border-t border-[#1e1e1e] pt-4">
-            <div>
-              <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">ENTRY</p>
-              <p className="font-mono text-[14px] text-white tabular-nums">${fmt(signal.entry_price)}</p>
+      {!isDegraded && active && (
+        <div className="px-5 py-4 flex flex-col gap-4 flex-1">
+          {/* TP/SL status */}
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <p className="text-[10px] text-[#666] mb-1">TAKE PROFIT</p>
+              <p className="font-mono text-[12px] text-[#22c55e]">${fmt(signal.take_profit)}</p>
             </div>
-            <div>
-              <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">TP1</p>
-              <p className={`font-mono text-[14px] ${tpHit ? "text-[#fbbf24]" : "text-[#22c55e]"} tabular-nums`}>${fmt(signal.take_profit)}</p>
-              {tpHit && <p className="text-[10px] text-[#fbbf24] mt-1">✓ TP HIT</p>}
-            </div>
-            <div>
-              <p className="text-[10px] tracking-[0.2em] text-[#666] mb-1.5">SL</p>
-              <p className={`font-mono text-[14px] ${slHit ? "text-[#fca5a5]" : "text-[#ef4444]"} tabular-nums`}>${fmt(signal.stop_loss)}</p>
-              {slHit && <p className="text-[10px] text-[#fca5a5] mt-1">✗ SL HIT</p>}
-            </div>
-            <div className="col-span-3 flex items-center justify-between text-sm">
-              <span className="text-[#888]">Confidence: {signal.confidence}%</span>
-              <div className="flex gap-3 text-[10px]">
-                {tpStatus && <span className="text-[#22c55e]">{tpStatus}</span>}
-                {slStatus && <span className="text-[#ef4444]">{slStatus}</span>}
-              </div>
+            <div className="flex-1">
+              <p className="text-[10px] text-[#666] mb-1">STOP LOSS</p>
+              <p className="font-mono text-[12px] text-[#ef4444]">${fmt(signal.stop_loss)}</p>
             </div>
           </div>
-        )}
 
-        {/* 4-Point Checklist */}
-        {active && (
-          <div className="border-t border-[#1e1e1e] pt-4">
-            <p className="text-[10px] tracking-[0.2em] text-[#666] mb-3">CHECKLIST</p>
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-2 text-[12px]">
-                <span className={`w-4 h-4 border rounded flex items-center justify-center text-[10px] ${
-                  active && (signal.state === "EARLY_OPEN" || signal.state === "CONFIRMED") ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
-                }`}>
-                  {active && (signal.state === "EARLY_OPEN" || signal.state === "CONFIRMED") ? "✓" : "○"}
-                </span>
-                <span className={active && (signal.state === "EARLY_OPEN" || signal.state === "CONFIRMED") ? "text-[#22c55e]" : "text-[#666]"}>4H Breakout</span>
-              </div>
-              <div className="flex items-center gap-2 text-[12px]">
-                <span className={`w-4 h-4 border rounded flex items-center justify-center text-[10px] ${
-                  active && signal.confidence > 50 ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
-                }`}>
-                  {active && signal.confidence > 50 ? "✓" : "○"}
-                </span>
-                <span className={active && signal.confidence > 50 ? "text-[#22c55e]" : "text-[#666]"}>15M Setup</span>
-              </div>
-              <div className="flex items-center gap-2 text-[12px]">
-                <span className={`w-4 h-4 border rounded flex items-center justify-center text-[10px] ${
-                  signal?.state === "CONFIRMED" ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
-                }`}>
-                  {signal?.state === "CONFIRMED" ? "✓" : "○"}
-                </span>
-                <span className={signal?.state === "CONFIRMED" ? "text-[#22c55e]" : "text-[#666]"}>Retest Add-On</span>
-              </div>
-              <div className="flex items-center gap-2 text-[12px]">
-                <span className={`w-4 h-4 border rounded flex items-center justify-center text-[10px] ${
-                  active && signal.confidence > 70 ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
-                }`}>
-                  {active && signal.confidence > 70 ? "✓" : "○"}
-                </span>
-                <span className={active && signal.confidence > 70 ? "text-[#22c55e]" : "text-[#666]"}>Momentum {active ? `${signal.confidence}%` : "—"}</span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Confidence bar (if signal active) */}
-        {active && (
-          <div className="border-t border-[#1e1e1e] pt-4">
+          {/* Confidence bar */}
+          <div className="border-t border-[#1e1e1e] pt-3">
             <div className="flex items-center justify-between mb-2">
-              <p className="text-[10px] tracking-[0.2em] text-[#666]">CONFIDENCE</p>
-              <p className="font-mono text-[12px] text-[#888] tabular-nums">{confidence}%</p>
+              <p className="text-[10px] text-[#666]">CONFIDENCE</p>
+              <p className="font-mono text-[11px] text-[#888]">{confidence}%</p>
             </div>
             <div className="h-px bg-[#1e1e1e]">
-              <div
-                className="h-px transition-all duration-700"
-                style={{ width: `${confidence}%`, backgroundColor: confColor }}
-              />
+              <div className="h-px transition-all duration-700" style={{ width: `${confidence}%`, backgroundColor: confColor }} />
             </div>
           </div>
-        )}
-
-        {/* End Trade button (if CONFIRMED) */}
-        {signal?.state === "CONFIRMED" && onEndTradeClick && (
-          <div className="border-t border-[#1e1e1e] pt-4">
-            <button
-              onClick={() => onEndTradeClick(signal.id!, symbol, signal.entry_price)}
-              className="w-full border border-[#1e1e1e] hover:border-[#2a2a2a] bg-[#0f0f0f] hover:bg-[#151515] text-[#888] hover:text-[#aaa] text-[11px] tracking-[0.2em] py-2.5 transition-colors"
-            >
-              END TRADE
-            </button>
-          </div>
-        )}
-      </div>
+        </div>
+      )}
     </article>
   );
 }
@@ -264,34 +139,47 @@ export default function Dashboard() {
     setCooldownSec(remaining);
   }, [now, scanCooldownEnd]);
 
-  const { data, mutate, isValidating } = useSWR<{ signals: Signal[]; market: MarketContext[]; fetchedAt: number }>(
+  const { data, mutate, isValidating } = useSWR<{ market: { symbol: string; price: number; source: string; degraded: boolean }[]; setups: any[]; fetchedAt: number }>(
     "/api/signals",
     fetcher,
     { refreshInterval: 30_000, keepPreviousData: true, revalidateOnFocus: false }
   );
 
-  const signals: Signal[] = data?.signals ?? [];
-  const market: MarketContext[] = []; // No longer provided by API, only priceData
-  const fetchedAt: number = data?.fetchedAt ?? 0;
+  const market = data?.market ?? [];
+  const setups = data?.setups ?? [];
+  const fetchedAt = data?.fetchedAt ?? 0;
   const isStale = isHydrated && fetchedAt > 0 && now > 0 && (now - fetchedAt) > STALE_THRESHOLD_MS;
   const lastUpdateTime = isHydrated ? new Date().toLocaleTimeString("en-GB", { hour12: false }) : "—";
 
-  // Update data source status from market data
+  // Map market data to signals for backward compatibility with card rendering
+  const signals: Signal[] = market.map((m) => ({
+    id: 0,
+    symbol: m.symbol,
+    direction: "LONG" as const,
+    state: "EARLY_OPEN" as const,
+    entry_price: m.price,
+    stop_loss: m.price * 0.98,
+    take_profit: m.price * 1.02,
+    confidence: 0,
+    breakout_level: m.price,
+  }));
+
+  // No longer use dataSourceStatus from old API structure
   useMemo(() => {
-    if (data?.cacheStatus?.symbols && Object.keys(data.cacheStatus.symbols).length > 0) {
+    if (market && market.length > 0) {
       setDataSourceStatus({
-        source: "Kraken",
+        source: market[0].source === "DEGRADED" ? "CACHE" : "KRAKEN",
         time: fetchedAt,
       });
     }
-  }, [data?.cacheStatus, fetchedAt]);
+  }, [market, fetchedAt]);
 
   // Memoize signalMap to prevent unnecessary re-renders of market cards
   const signalMap = useMemo(
     () => new Map<string, Signal>(signals.map((s) => [s.symbol, s])),
     [signals]
   );
-  const activeCount = signals.filter((s) => s.state === "EARLY_OPEN" || s.state === "CONFIRMED").length;
+  const activeCount = setups.length;
 
   const scanOnCooldown = cooldownSec > 0;
 
