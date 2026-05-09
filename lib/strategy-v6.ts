@@ -29,19 +29,20 @@ export type SymbolCardState = {
   mode: "SNIPER" | "CONFIRMED" | "NONE";
   confidence: number;
   
-  // FIX #1: Unified signal state (single source of truth)
+  // FIX #1: Unified signal state (v7.2.6), extended for v7.2.8, standardized for v7.2.9
   signalState: SignalState;
-  lastSignalTime?: number; // Unix timestamp for cooldown logic
+  lastSignalTime?: number;
 
   // Momentum indicators (5M)
   stochRsi: number | null;
   emaSlope: number | null;
   volatilityLevel: number | null;
 
-  // Higher TimeFrame alignment (v7.1.1)
+  // Higher TimeFrame alignment (v7.1.1 - extended for v7.2.9)
   htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL";
   htf4hMomentum: number | null;
-  htf1hAlignment: boolean | null;
+  htf1hTrend: "BULLISH" | "BEARISH" | "FLAT"; // v7.2.9: Always has value, never null (was htf1hAlignment boolean)
+  htf1hAlignment: boolean | null; // Kept for backwards compat but deprecated
   htf15mCompression: boolean | null;
 
   // Market readiness engine (v7.2.1)
@@ -648,12 +649,19 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     htf4hMomentum < 45 ? "BEARISH" :
     "NEUTRAL";
 
-  // 1H ALIGNMENT: Does 1H momentum confirm the 4H trend?
-  // Simplified: 1H aligns if EMA slope matches 4H direction
-  const htf1hAlignment = 
-    (htf4hTrend === "BULLISH" && emaSlope > 0.2) ||
-    (htf4hTrend === "BEARISH" && emaSlope < -0.2) ||
-    (htf4hTrend === "NEUTRAL" && Math.abs(emaSlope) < 0.3);
+  // 1H TREND (v7.2.9 FIX #2): Derives from EMA slope
+  // BULLISH: EMA slope > 0.2 (rising)
+  // BEARISH: EMA slope < -0.2 (falling)
+  // FLAT: EMA slope between -0.2 and 0.2 (sideways)
+  // NEVER NULL - always has a value for display
+  const htf1hTrend: "BULLISH" | "BEARISH" | "FLAT" = 
+    emaSlope > 0.2 ? "BULLISH" :
+    emaSlope < -0.2 ? "BEARISH" :
+    "FLAT"; // Fallback (no more "—")
+
+  // 1H ALIGNMENT (v7.2.9 - deprecated, kept for backwards compat)
+  // Still used in checkConfirmedConditions but no longer primary
+  const htf1hAlignment = htf1hTrend !== "FLAT";
 
   // 15M COMPRESSION: Is there energy build-up?
   // Simplified: compression when volatility < 40
@@ -722,7 +730,8 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     // HTF alignment data
     htf4hTrend,
     htf4hMomentum,
-    htf1hAlignment,
+    htf1hTrend, // v7.2.9: New standardized 1H trend field
+    htf1hAlignment, // v7.2.9: Deprecated, kept for backwards compat
     htf15mCompression,
 
     // Market readiness (v7.2.1)
