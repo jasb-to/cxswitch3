@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 
-const VERSION = "v6.2.0";
+const VERSION = "v6.2.1";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
@@ -13,139 +13,78 @@ function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function ModeBadge({ mode }: { mode: string }) {
-  const styles: Record<string, string> = {
-    SNIPER: "border-[#d4a017] text-[#d4a017]",
-    CONFIRMED: "border-[#22c55e] text-[#22c55e]",
-    NONE: "border-[#444] text-[#444]",
-  };
-  return (
-    <span className={`border text-[11px] px-2.5 py-0.5 tracking-[0.15em] font-mono ${styles[mode] ?? styles.NONE}`}>
-      {mode}
-    </span>
-  );
-}
-
-function DirectionBadge({ direction }: { direction: string }) {
-  const styles: Record<string, string> = {
-    LONG: "border-[#22c55e] text-[#22c55e]",
-    SHORT: "border-[#ef4444] text-[#ef4444]",
-    NEUTRAL: "border-[#666] text-[#666]",
-  };
-  return (
-    <span className={`text-[11px] px-2 py-0.5 tracking-[0.1em] font-mono ${styles[direction] ?? styles.NEUTRAL}`}>
-      {direction}
-    </span>
-  );
-}
-
 function SymbolCard({ card }: { card: SymbolCardState }) {
-  let cardBorder = "border-[#1e1e1e]";
-  let cardBg = "bg-[#111]";
-  let headerBg = "bg-[#111]";
-
-  if (card.degraded) {
-    cardBorder = "border-[#b45309]";
-    cardBg = "bg-[#0a0a0a]";
-    headerBg = "bg-[#451a03]";
-  } else if (card.mode === "SNIPER" || card.mode === "CONFIRMED") {
-    if (card.direction === "LONG") {
-      cardBorder = "border-[#166534]";
-      cardBg = "bg-[#0a0a0a]";
-      headerBg = "bg-[#052e16]";
-    } else if (card.direction === "SHORT") {
-      cardBorder = "border-[#7f1d1d]";
-      cardBg = "bg-[#0a0a0a]";
-      headerBg = "bg-[#450a0a]";
-    }
+  // Direction-only coloring
+  let directionBorder = "border-[#2a2a2a]";
+  let directionText = "text-zinc-400";
+  
+  if (card.direction === "LONG") {
+    directionBorder = "border-green-500";
+    directionText = "text-green-400";
+  } else if (card.direction === "SHORT") {
+    directionBorder = "border-red-500";
+    directionText = "text-red-400";
   }
 
-  const displayPrice = card.price > 0 ? `$${fmt(card.price)}` : "—";
-  const sourceStatus = card.degraded ? "DEGRADED" : "LIVE";
-  const sourceColor = card.degraded ? "text-[#b45309]" : "text-[#22c55e]";
+  // Status badge
+  const statusBg = card.degraded ? "bg-zinc-900" : "bg-zinc-800";
+  const statusBorder = card.degraded ? "border-zinc-800" : "border-zinc-700";
+  const statusText = card.degraded ? "text-zinc-400" : "text-white";
+  const statusLabel = card.degraded ? "FALLBACK" : "LIVE";
+
+  // Price always displays (never null)
+  const displayPrice = card.price > 0 ? `$${fmt(card.price)}` : "NO DATA";
 
   return (
-    <article className={`border ${cardBorder} ${cardBg} flex flex-col overflow-hidden`}>
-      {/* HEADER */}
-      <div className={`${headerBg} px-5 py-4 flex items-center justify-between border-b ${cardBorder}`}>
+    <div className="rounded-xl border border-[#2a2a2a] p-5 bg-[#111111] text-white">
+      {/* HEADER: Symbol + Status Badge + Price */}
+      <div className="flex items-start justify-between mb-4">
         <div className="flex items-center gap-3">
-          <span className="text-[13px] font-bold tracking-[0.05em]">{card.symbol}/USD</span>
-          <span className={`text-[10px] px-2 py-0.5 tracking-[0.1em] border ${sourceColor} ${card.degraded ? "border-[#b45309]" : "border-[#22c55e]"}`}>
-            {sourceStatus}
-          </span>
-        </div>
-        <span className="font-mono text-[13px]">{displayPrice}</span>
-      </div>
-
-      {/* STRUCTURE + MODE + CONFIDENCE */}
-      <div className="px-5 py-3 border-b border-[#1e1e1e] flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] text-[#888]">{card.structure}</span>
-          <span className="text-[11px] text-[#666]">{card.direction}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <ModeBadge mode={card.mode} />
-          <span className="text-[11px] text-[#aaa] font-mono">
-            {card.confidence}%
+          <h3 className="text-lg font-bold tracking-tight">{card.symbol}/USD</h3>
+          <span className={`text-xs px-2.5 py-1 rounded border ${statusBg} ${statusBorder} ${statusText}`}>
+            {statusLabel}
           </span>
         </div>
       </div>
 
-      {/* CHECKLIST */}
-      <div className="px-5 py-4 border-b border-[#1e1e1e] flex flex-col gap-2">
-        <p className="text-[10px] text-[#666] tracking-[0.1em] mb-2">CHECKLIST</p>
-        <div className="grid grid-cols-2 gap-2 text-[11px]">
-          <div className="flex items-center gap-2">
-            <span className={`w-4 h-4 flex items-center justify-center text-[9px] border ${
-              card.checklist.trend4H ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
-            }`}>
-              {card.checklist.trend4H ? "✓" : "○"}
-            </span>
-            <span className={card.checklist.trend4H ? "text-[#aaa]" : "text-[#666]"}>4H Trend</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className={`w-4 h-4 flex items-center justify-center text-[9px] border ${
-              card.checklist.breakout15M ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
-            }`}>
-              {card.checklist.breakout15M ? "✓" : "○"}
-            </span>
-            <span className={card.checklist.breakout15M ? "text-[#aaa]" : "text-[#666]"}>15M Structure</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className={`w-4 h-4 flex items-center justify-center text-[9px] border ${
-              card.checklist.trigger5M ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
-            }`}>
-              {card.checklist.trigger5M ? "✓" : "○"}
-            </span>
-            <span className={card.checklist.trigger5M ? "text-[#aaa]" : "text-[#666]"}>5M Trigger</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className={`w-4 h-4 flex items-center justify-center text-[9px] border ${
-              card.checklist.volatility ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
-            }`}>
-              {card.checklist.volatility ? "✓" : "○"}
-            </span>
-            <span className={card.checklist.volatility ? "text-[#aaa]" : "text-[#666]"}>Volatility</span>
-          </div>
-          <div className="col-span-2 flex items-center gap-2">
-            <span className={`w-4 h-4 flex items-center justify-center text-[9px] border ${
-              card.checklist.volume ? "border-[#22c55e] text-[#22c55e]" : "border-[#444] text-[#444]"
-            }`}>
-              {card.checklist.volume ? "✓" : "○"}
-            </span>
-            <span className={card.checklist.volume ? "text-[#aaa]" : "text-[#666]"}>Volume Confirmation</span>
-          </div>
+      {/* PRICE - Large display */}
+      <div className="mb-4">
+        <div className="text-3xl font-bold text-white">{displayPrice}</div>
+        <div className="mt-2 text-sm text-zinc-400">
+          {card.structure} • {card.mode}
+        </div>
+        <div className="text-sm text-zinc-500">
+          Confidence {card.confidence}%
         </div>
       </div>
 
-      {/* NOTES */}
+      {/* CHECKLIST - Monochrome */}
+      <div className="space-y-2 mt-4 border-t border-zinc-800 pt-4">
+        <ChecklistItem label="4H Trend" pass={card.checklist.trend4H} />
+        <ChecklistItem label="15M Structure" pass={card.checklist.breakout15M} />
+        <ChecklistItem label="5M Trigger" pass={card.checklist.trigger5M} />
+        <ChecklistItem label="Volatility" pass={card.checklist.volatility} />
+        <ChecklistItem label="Volume" pass={card.checklist.volume} />
+      </div>
+
+      {/* STATUS NOTE - Subtle */}
       {card.notes && (
-        <div className="px-5 py-3 flex flex-col gap-1">
-          <p className="text-[10px] text-[#666] tracking-[0.1em]">STATUS</p>
-          <p className="text-[11px] text-[#aaa] italic">{card.notes}</p>
+        <div className="mt-4 text-xs text-zinc-500">
+          {card.notes}
         </div>
       )}
-    </article>
+    </div>
+  );
+}
+
+function ChecklistItem({ label, pass }: { label: string; pass: boolean }) {
+  return (
+    <div className="flex items-center justify-between text-sm">
+      <span className="text-zinc-300">{label}</span>
+      <span className={pass ? "text-green-400" : "text-zinc-600"}>
+        {pass ? "✓" : "•"}
+      </span>
+    </div>
   );
 }
 
@@ -194,41 +133,41 @@ export default function Dashboard() {
 
   return (
     <main className="min-h-screen bg-[#0a0a0a] text-white font-mono">
-      <header className="border-b border-[#1a1a1a] px-6 py-3 flex items-center justify-between">
-        <p className="text-[11px] tracking-[0.22em] text-[#666]">
+      <header className="border-b border-zinc-800 px-6 py-3 flex items-center justify-between">
+        <p className="text-[11px] tracking-[0.22em] text-zinc-500">
           MULTI-TIMEFRAME CRYPTO SIGNAL ANALYZER &nbsp;·&nbsp; REAL-TIME INTELLIGENCE
         </p>
-        <p className="text-[11px] tracking-[0.15em] text-[#333]">{VERSION}</p>
+        <p className="text-[11px] tracking-[0.15em] text-zinc-600">{VERSION}</p>
       </header>
 
       <div className="px-6 py-6 max-w-[1400px] mx-auto flex flex-col gap-6">
         {isStale && (
-          <div className="border border-[#7f6a00] bg-[#1a1400] px-4 py-3 text-[12px] tracking-[0.1em] text-[#d4a017]">
+          <div className="border border-zinc-700 bg-zinc-900 px-4 py-3 text-[12px] tracking-[0.1em] text-zinc-400">
             STALE DATA — WAITING FOR NEXT SCAN
           </div>
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="md:col-span-2 border border-[#1a1a1a] bg-[#0e0e0e] p-5 flex flex-col gap-5">
-            <p className="text-[10px] tracking-[0.22em] text-[#555]">SYSTEM STATUS</p>
+          <div className="md:col-span-2 border border-zinc-800 bg-zinc-950 p-5 flex flex-col gap-5">
+            <p className="text-[10px] tracking-[0.22em] text-zinc-500">SYSTEM STATUS</p>
 
             <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between">
-                <span className="text-[13px] text-[#aaa]">Terminal</span>
-                <span className="flex items-center gap-2 text-[13px] text-[#22c55e]">
-                  <span className="w-2 h-2 rounded-full bg-[#22c55e]" aria-hidden />
+                <span className="text-[13px] text-zinc-400">Terminal</span>
+                <span className="flex items-center gap-2 text-[13px] text-green-400">
+                  <span className="w-2 h-2 rounded-full bg-green-400" aria-hidden />
                   LIVE
                 </span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-[13px] text-[#aaa]">Telegram Bot</span>
-                <span className={`flex items-center gap-2 text-[13px] ${tg === "ok" ? "text-[#22c55e]" : tg === "error" ? "text-[#ef4444]" : "text-[#888]"}`}>
-                  <span className={`w-2 h-2 rounded-full ${tg === "ok" ? "bg-[#22c55e]" : tg === "error" ? "bg-[#ef4444]" : "bg-[#555]"}`} aria-hidden />
+                <span className="text-[13px] text-zinc-400">Telegram Bot</span>
+                <span className={`flex items-center gap-2 text-[13px] ${tg === "ok" ? "text-green-400" : tg === "error" ? "text-red-400" : "text-zinc-500"}`}>
+                  <span className={`w-2 h-2 rounded-full ${tg === "ok" ? "bg-green-400" : tg === "error" ? "bg-red-400" : "bg-zinc-600"}`} aria-hidden />
                   ACTIVE
                 </span>
               </div>
               <div className="flex items-center justify-between">
-                <span className="text-[13px] text-[#aaa]">Last Update</span>
+                <span className="text-[13px] text-zinc-400">Last Update</span>
                 <span className="text-[13px] text-white tabular-nums">{lastUpdateTime}</span>
               </div>
             </div>
@@ -239,42 +178,42 @@ export default function Dashboard() {
                 disabled={tg === "sending"}
                 className={`flex-1 border text-[11px] tracking-[0.2em] py-3 transition-colors disabled:opacity-40 ${
                   tg === "ok"
-                    ? "border-[#22c55e] text-[#22c55e]"
+                    ? "border-green-400 text-green-400"
                     : tg === "error"
-                    ? "border-[#ef4444] text-[#ef4444]"
-                    : "border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-white"
+                    ? "border-red-400 text-red-400"
+                    : "border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
                 }`}
               >
                 {tg === "sending" ? "SENDING..." : tg === "ok" ? "SENT OK" : tg === "error" ? "SEND FAILED" : "TEST TELEGRAM"}
               </button>
               <button
                 onClick={() => mutate()}
-                className="flex-1 border border-[#2a2a2a] text-[#888] hover:border-[#555] hover:text-white text-[11px] tracking-[0.2em] py-3 transition-colors"
+                className="flex-1 border border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300 text-[11px] tracking-[0.2em] py-3 transition-colors"
               >
                 {isValidating ? "REFRESHING..." : "REFRESH"}
               </button>
             </div>
             {tgMsg && (
-              <p className={`text-[11px] text-center ${tg === "ok" ? "text-[#22c55e]" : "text-[#ef4444]"}`}>
+              <p className={`text-[11px] text-center ${tg === "ok" ? "text-green-400" : "text-red-400"}`}>
                 {tgMsg}
               </p>
             )}
           </div>
 
-          <div className="border border-[#1a1a1a] bg-[#0e0e0e] p-5 flex flex-col gap-5">
-            <p className="text-[10px] tracking-[0.22em] text-[#555]">DATA POINTS</p>
+          <div className="border border-zinc-800 bg-zinc-950 p-5 flex flex-col gap-5">
+            <p className="text-[10px] tracking-[0.22em] text-zinc-500">DATA POINTS</p>
             <div className="grid grid-cols-2 gap-6 flex-1 items-start">
               <div>
-                <p className="text-[10px] tracking-[0.22em] text-[#555] mb-3">ASSETS</p>
-                <p className="font-bold text-5xl text-[#22c55e] tabular-nums">{assetCount}</p>
+                <p className="text-[10px] tracking-[0.22em] text-zinc-500 mb-3">ASSETS</p>
+                <p className="font-bold text-5xl text-green-400 tabular-nums">{assetCount}</p>
               </div>
               <div>
-                <p className="text-[10px] tracking-[0.22em] text-[#555] mb-3">SIGNALS</p>
-                <p className="font-bold text-5xl text-[#22c55e] tabular-nums">{activeCount}</p>
+                <p className="text-[10px] tracking-[0.22em] text-zinc-500 mb-3">SIGNALS</p>
+                <p className="font-bold text-5xl text-green-400 tabular-nums">{activeCount}</p>
               </div>
             </div>
-            <div className="border-t border-[#1a1a1a] pt-3">
-              <p className="text-[10px] tracking-[0.18em] text-[#333]">
+            <div className="border-t border-zinc-800 pt-3">
+              <p className="text-[10px] tracking-[0.18em] text-zinc-600">
                 AUTO-REFRESH 30s &nbsp;·&nbsp; KRAKEN API
               </p>
             </div>
@@ -282,7 +221,7 @@ export default function Dashboard() {
         </div>
 
         <div>
-          <p className="text-[10px] tracking-[0.22em] text-[#555] mb-4">SYMBOL CARDS</p>
+          <p className="text-[10px] tracking-[0.22em] text-zinc-500 mb-4">SYMBOL CARDS</p>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {cards.map((card) => (
@@ -291,9 +230,9 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <footer className="border-t border-[#1a1a1a] pt-4 flex items-center justify-between">
-          <p className="text-[10px] tracking-[0.2em] text-[#2a2a2a]">SIGNAL DASHBOARD {VERSION}</p>
-          <p className="text-[10px] tracking-[0.2em] text-[#2a2a2a]">
+        <footer className="border-t border-zinc-800 pt-4 flex items-center justify-between">
+          <p className="text-[10px] tracking-[0.2em] text-zinc-700">{VERSION} SCANNER</p>
+          <p className="text-[10px] tracking-[0.2em] text-zinc-700">
             4H BREAKOUT &nbsp;·&nbsp; 15M CONFIDENCE &nbsp;·&nbsp; 5M TRIGGER
           </p>
         </footer>
