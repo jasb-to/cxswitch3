@@ -46,6 +46,15 @@ export type Setup = {
   score: number;
   reason: string;
   price: number;
+  // Strategy conditions that triggered this setup
+  checklist: {
+    trend4H: boolean;
+    breakout15M: boolean;
+    trigger5M: boolean;
+    volatility: boolean;
+    volume: boolean;
+  };
+  structure: string;
 };
 
 /**
@@ -97,6 +106,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         score: card.confidence,
         reason: card.notes,
         price: card.price,
+        checklist: card.checklist,
+        structure: card.structure,
       });
       console.log(`[SCAN] ${symbol} CONFIRMED ${card.direction} score=${score}`);
     }
@@ -113,6 +124,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         score: card.confidence,
         reason: card.notes,
         price: card.price,
+        checklist: card.checklist,
+        structure: card.structure,
       });
       console.log(`[SCAN] ${symbol} SNIPER ${card.direction} score=${score}`);
     }
