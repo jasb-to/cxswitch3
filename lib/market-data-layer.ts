@@ -116,24 +116,6 @@ async function refreshAllMarketContexts(): Promise<void> {
     isUpdating = false;
   }
 }
-        cache.candles5m = candles5m;
-        cache.candles15m = candles15m;
-        cache.candles4h = candles4h;
-        cache.lastCandlesUpdate = now;
-        delete cache.candlesUpdateError;
-
-        const fetchCount = [candles5m, candles15m, candles4h].filter(c => c !== null).length;
-        console.log(`[MARKET_DATA] ✓ ${symbol}: ${fetchCount}/3 candle timeframes`);
-      } catch (err) {
-        const cache = marketDataCache[symbol];
-        cache.candlesUpdateError = err instanceof Error ? err.message : String(err);
-        console.error(`[MARKET_DATA] ${symbol}: Candle error:`, cache.candlesUpdateError);
-      }
-    }
-  } finally {
-    isUpdating = false;
-  }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CACHE QUERIES: Signal engine reads from cache (never fetches)
@@ -165,61 +147,23 @@ export function isMarketDataFresh(symbol: string): boolean {
   return contextAge < 3000; // 3 seconds
 }
 
-export function getMarketDataFreshness(symbol: string): {
-  symbol: string;
-  priceFresh: boolean;
-  priceAge: number;
-  candlesFresh: boolean;
-  candlesAge: number;
-  overallFresh: boolean;
-} {
-  const cache = marketDataCache[symbol];
-  const now = Date.now();
-
-  if (!cache) {
-    return {
-      symbol,
-      priceFresh: false,
-      priceAge: Infinity,
-      candlesFresh: false,
-      candlesAge: Infinity,
-      overallFresh: false,
-    };
-  }
-
-  const priceAge = now - cache.lastPriceUpdate;
-  const candlesAge = now - cache.lastCandlesUpdate;
-  const priceFresh = priceAge < 3000;
-  const candlesFresh = candlesAge < 15000;
-
-  return {
-    symbol,
-    priceFresh,
-    priceAge,
-    candlesFresh,
-    candlesAge,
-    overallFresh: priceFresh && candlesFresh,
-  };
-}
-
 /**
  * Get cache status for monitoring
  */
 export function getCacheStatus(): {
   refreshing: boolean;
-  symbols: Record<string, { dataAge: number; fresh: boolean; hasPrice: boolean; hasCandles: boolean }>;
+  symbols: Record<string, { dataAge: number; fresh: boolean; context: boolean }>;
 } {
   const now = Date.now();
   const symbols: Record<string, any> = {};
 
   for (const symbol of TRACKED_SYMBOLS) {
     const cache = marketDataCache[symbol];
-    const dataAge = Math.max(now - cache.lastPriceUpdate, now - cache.lastCandlesUpdate);
+    const dataAge = now - cache.lastUpdate;
     symbols[symbol] = {
       dataAge,
       fresh: isMarketDataFresh(symbol),
-      hasPrice: cache.priceData !== null,
-      hasCandles: cache.candles15m !== null && cache.candles4h !== null,
+      context: cache.context !== null,
     };
   }
 
