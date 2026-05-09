@@ -1,30 +1,27 @@
 /**
  * Market Data Layer (v4.1.0)
- * Independent, always-on data refresh system with full context caching
+ * Independent, always-on data refresh system
  * Decouples market data fetching from signal generation
  * 
  * ARCHITECTURE:
- * 1. Maintains FULL MarketContext for all tracked symbols (BTC, ETH, SOL)
- * 2. Updates on predictable intervals (tickers: 2s, candles: 10s)
+ * 1. Maintains cached PRICE DATA for all tracked symbols (BTC, ETH, SOL)
+ * 2. Updates on predictable intervals (2 seconds)
  * 3. Global request budget respected (3 req/sec across all symbols)
  * 4. Signal engine consumes cache only, never triggers fetches
  * 5. Zero external API calls during signal route execution
  */
 
 import { getPrice, type PriceData } from "./price-router";
-import { fetchCandles, type Candle } from "./kraken";
-import { resolveSymbol } from "./symbol-resolver";
-import { analyzeSymbol, type MarketContext } from "./strategy";
 
 export type MarketDataCache = {
   symbol: string;
-  context: MarketContext | null; // FULL context with all analysis
+  priceData: PriceData | null;
   lastUpdate: number;
   updateError?: string;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// GLOBAL CACHE: Full market contexts for all tracked symbols
+// GLOBAL CACHE: Price data for all tracked symbols
 // ═══════════════════════════════════════════════════════════════════════════
 const TRACKED_SYMBOLS = ["BTC", "ETH", "SOL"];
 const marketDataCache: Record<string, MarketDataCache> = {};
@@ -33,7 +30,7 @@ const marketDataCache: Record<string, MarketDataCache> = {};
 for (const symbol of TRACKED_SYMBOLS) {
   marketDataCache[symbol] = {
     symbol,
-    context: null,
+    priceData: null,
     lastUpdate: 0,
   };
 }
@@ -42,11 +39,9 @@ for (const symbol of TRACKED_SYMBOLS) {
 // MARKET DATA REFRESH: Periodic updates on fixed intervals
 // ═══════════════════════════════════════════════════════════════════════════
 const PRICE_UPDATE_INTERVAL_MS = 2000; // 2 seconds for tickers
-const CANDLES_UPDATE_INTERVAL_MS = 10000; // 10 seconds for candles
-const MAX_CONCURRENT_FETCHES = 1; // Serialize to respect rate budget
 
 let isUpdating = false;
-let updateTimers: { price?: NodeJS.Timeout; candles?: NodeJS.Timeout } = {};
+let updateTimers: { price?: NodeJS.Timeout } = {};
 
 /**
  * Start market data refresh timers
@@ -55,15 +50,15 @@ let updateTimers: { price?: NodeJS.Timeout; candles?: NodeJS.Timeout } = {};
 export function startMarketDataRefresh(): void {
   console.log("[MARKET_DATA] Starting market data refresh layer (v4.1.0 - read-only signal engine)");
 
-  // Combined context updates (every 2 seconds for prices, 10s for candles, we'll do both together)
+  // Price updates every 2 seconds
   updateTimers.price = setInterval(() => {
-    refreshAllMarketContexts().catch(err => {
-      console.error("[MARKET_DATA] Context refresh error:", err);
+    refreshAllPrices().catch(err => {
+      console.error("[MARKET_DATA] Price refresh error:", err);
     });
-  }, 2000);
+  }, PRICE_UPDATE_INTERVAL_MS);
 
   // Initial fetch
-  refreshAllMarketContexts();
+  refreshAllPrices();
 }
 
 /**
@@ -73,17 +68,16 @@ export function startMarketDataRefresh(): void {
 export function stopMarketDataRefresh(): void {
   console.log("[MARKET_DATA] Stopping market data refresh layer");
   if (updateTimers.price) clearInterval(updateTimers.price);
-  if (updateTimers.candles) clearInterval(updateTimers.candles);
 }
 
 /**
- * Refresh market data by computing full contexts for all symbols
+ * Refresh all prices from Kraken
  * This is the ONLY place external market data is fetched
- * Called periodically by timers, never by signal engine
+ * Called periodically by timer, never by signal engine
  */
-async function refreshAllMarketContexts(): Promise<void> {
+async function refreshAllPrices(): Promise<void> {
   if (isUpdating) {
-    console.log("[MARKET_DATA] Context refresh already in progress, skipping");
+    console.log("[MARKET_DATA] Price refresh already in progress, skipping");
     return;
   }
 
@@ -93,23 +87,22 @@ async function refreshAllMarketContexts(): Promise<void> {
   try {
     for (const symbol of TRACKED_SYMBOLS) {
       try {
-        // analyzeSymbol computes full context: prices, candles, analysis (ADX, RSI, EMAs, swings)
-        const context = await analyzeSymbol(symbol);
+        const priceData = await getPrice(symbol);
         const cache = marketDataCache[symbol];
 
-        if (context && !context.error) {
-          cache.context = context;
+        if (priceData) {
+          cache.priceData = priceData;
           cache.lastUpdate = now;
           delete cache.updateError;
-          console.log(`[MARKET_DATA] ✓ ${symbol}: Context computed (${context.priceHealth})`);
+          console.log(`[MARKET_DATA] ✓ ${symbol}: $${priceData.price.toFixed(2)} (${priceData.source})`);
         } else {
-          cache.updateError = context?.setupText || "Failed to compute context";
-          console.warn(`[MARKET_DATA] ✗ ${symbol}: Context computation failed - ${cache.updateError}`);
+          cache.updateError = "Failed to fetch price";
+          console.warn(`[MARKET_DATA] ✗ ${symbol}: Price fetch failed`);
         }
       } catch (err) {
         const cache = marketDataCache[symbol];
         cache.updateError = err instanceof Error ? err.message : String(err);
-        console.error(`[MARKET_DATA] ${symbol}: Context error:`, cache.updateError);
+        console.error(`[MARKET_DATA] ${symbol}: Price error:`, cache.updateError);
       }
     }
   } finally {
@@ -121,30 +114,30 @@ async function refreshAllMarketContexts(): Promise<void> {
 // CACHE QUERIES: Signal engine reads from cache (never fetches)
 // ═══════════════════════════════════════════════════════════════════════════
 
-export function getMarketData(symbol: string): MarketContext | null {
+export function getMarketData(symbol: string): PriceData | null {
   const cache = marketDataCache[symbol];
   if (!cache) return null;
-  return cache.context;
+  return cache.priceData;
 }
 
-export function getAllMarketData(): MarketContext[] {
+export function getAllMarketData(): PriceData[] {
   return TRACKED_SYMBOLS
-    .map(symbol => marketDataCache[symbol]?.context)
-    .filter((context): context is MarketContext => context !== null && context !== undefined);
+    .map(symbol => marketDataCache[symbol]?.priceData)
+    .filter((priceData): priceData is PriceData => priceData !== null && priceData !== undefined);
 }
 
 /**
  * Check if market data is fresh enough for signal generation
- * Context: within 3 seconds (aggressive, ensures real-time feel)
+ * Price: within 3 seconds (ticker cache TTL)
  */
 export function isMarketDataFresh(symbol: string): boolean {
   const cache = marketDataCache[symbol];
   if (!cache) return false;
 
   const now = Date.now();
-  const contextAge = now - cache.lastUpdate;
+  const dataAge = now - cache.lastUpdate;
 
-  return contextAge < 3000; // 3 seconds
+  return dataAge < 3000; // 3 seconds
 }
 
 /**
@@ -152,7 +145,7 @@ export function isMarketDataFresh(symbol: string): boolean {
  */
 export function getCacheStatus(): {
   refreshing: boolean;
-  symbols: Record<string, { dataAge: number; fresh: boolean; context: boolean }>;
+  symbols: Record<string, { dataAge: number; fresh: boolean; hasPrice: boolean }>;
 } {
   const now = Date.now();
   const symbols: Record<string, any> = {};
@@ -163,7 +156,7 @@ export function getCacheStatus(): {
     symbols[symbol] = {
       dataAge,
       fresh: isMarketDataFresh(symbol),
-      context: cache.context !== null,
+      hasPrice: cache.priceData !== null,
     };
   }
 
