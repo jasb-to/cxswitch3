@@ -18,9 +18,10 @@ export async function GET() {
     
     const allFresh = freshnessStatus.every(s => s.fresh && s.hasData);
 
-    // PURE DB READ: Return all non-INVALIDATED signals
+    // PURE DB READ: Return all non-INVALIDATED signals for tracked symbols only
     // NO filtering by freshness, market health, or validation state
     // Reconciliation happens in cron, not in the API response
+    const TRACKED_SYMBOLS = ["BTC", "ETH", "SOL"];
     let signals = [];
     if (supabase) {
       try {
@@ -28,11 +29,12 @@ export async function GET() {
           .from("signals")
           .select("*")
           .neq("state", "INVALIDATED")
+          .in("symbol", TRACKED_SYMBOLS)
           .order("created_at", { ascending: false });
 
         if (!error && data) {
           signals = data;
-          console.log(`[API /signals] Returned ${signals.length} non-invalidated signals`);
+          console.log(`[API /signals] Returned ${signals.length} non-invalidated signals for tracked symbols`);
         } else {
           console.error("[API /signals] Query error:", error);
         }
