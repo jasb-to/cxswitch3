@@ -6,7 +6,7 @@ import type { Signal, MarketContext } from "@/lib/strategy";
 import { getStateOfPlay } from "@/lib/state-of-play";
 import { getBias, getBiasColor, getBiasBorder, getBiasStrength } from "@/lib/market-bias";
 
-const VERSION = "v4.2.0";
+const VERSION = "v4.3.0";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
