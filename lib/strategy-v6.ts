@@ -286,9 +286,15 @@ function calculateMarketReadinessState(
 }
 
 /**
- * Calculate trade readiness score (v7.2.1)
- * 0-100 score indicating entry confidence
- * NULL if no signal exists
+ * Calculate trade readiness score (v7.2.4 FIX #7)
+ * NEW FORMULA: 0-100 composite with clear bands
+ * 
+ * Bands:
+ * <40 = dead market
+ * 40-55 = building momentum
+ * 55-70 = ignition watch
+ * 70-85 = sniper ready
+ * 85+ = confirmed trend
  */
 function calculateTradeReadinessScore(
   mode: string,
@@ -298,25 +304,27 @@ function calculateTradeReadinessScore(
   stochRsi: number | null,
   volatilityLevel: number | null
 ): number | null {
-  // Only calculate if signal exists
-  if (mode === "NONE" || stochRsi === null || emaSlope === null || volatilityLevel === null) {
+  // If direction is NEUTRAL, score may still exist if building
+  if (stochRsi === null || emaSlope === null || volatilityLevel === null) {
     return null;
   }
 
-  let score = 50; // Base
+  let score = 0;
 
-  // HTF alignment (20 max)
-  if (htf4hTrend === "BULLISH" || htf4hTrend === "BEARISH") score += 10;
-  if (htf1hAlignment) score += 10;
+  // +25 HTF alignment (v7.2.4)
+  if (htf4hTrend === "BULLISH" || htf4hTrend === "BEARISH") score += 25;
 
-  // EMA expansion (15 max)
-  if (emaSlope && Math.abs(emaSlope) > 0.5) score += 15;
+  // +20 compression (low volatility = energy buildup)
+  if (volatilityLevel < 40) score += 20;
 
-  // Momentum acceleration (20 max)
-  if (stochRsi > 60 || stochRsi < 40) score += 20;
+  // +20 momentum ignition (Stoch in active zone)
+  if ((stochRsi > 30 && stochRsi < 70) || (stochRsi > 20 && stochRsi < 80)) score += 20;
 
-  // Compression severity (15 max)
-  if (volatilityLevel < 40) score += 15;
+  // +20 EMA expansion (established slope)
+  if (emaSlope !== null && Math.abs(emaSlope) > 0.3) score += 20;
+
+  // +15 impulse confirmation (if signal mode exists)
+  if (mode === "SNIPER" || mode === "CONFIRMED") score += 15;
 
   return Math.min(score, 100);
 }
@@ -344,66 +352,95 @@ function calculateTradeTargets(price: number, volatilityLevel: number, direction
 }
 
 /**
- * SNIPER CONDITIONS v7.1.1: HTF ALIGNMENT ENFORCEMENT
- * 
- * SNIPER = HTF directional bias + mid timeframe compression + LTF ignition trigger
- * NOT = 5M trigger by itself
+ * Calculate live dashboard state (v7.2.4 FIX #4)
+ * NEVER show: NEUTRAL, AWAITING DATA, NO TRADE if prices exist
+ * Instead show: BULLISH BUILDING, BEARISH IGNITION, TREND EXPANSION, etc.
+ */
+function calculateLiveMarketState(
+  direction: string,
+  emaSlope: number | null,
+  stochRsi: number | null,
+  volatilityLevel: number | null
+): string {
+  // If real prices exist, NEVER show generic states
+  if (direction === "LONG") {
+    if (volatilityLevel !== null && volatilityLevel < 40) return "BULLISH BUILDING";
+    if (emaSlope !== null && emaSlope > 0.5) return "BULLISH IGNITION";
+    if (volatilityLevel !== null && volatilityLevel > 60) return "BULLISH EXPANSION";
+    if (stochRsi !== null && stochRsi > 80) return "BULLISH OVEREXTENDED";
+    return "BULLISH MOMENTUM";
+  }
+  
+  if (direction === "SHORT") {
+    if (volatilityLevel !== null && volatilityLevel < 40) return "BEARISH BUILDING";
+    if (emaSlope !== null && emaSlope < -0.5) return "BEARISH IGNITION";
+    if (volatilityLevel !== null && volatilityLevel > 60) return "BEARISH EXPANSION";
+    if (stochRsi !== null && stochRsi < 20) return "BEARISH OVEREXTENDED";
+    return "BEARISH MOMENTUM";
+  }
+  
+  // NEUTRAL but show structure if present
+  if (emaSlope !== null && Math.abs(emaSlope) < 0.2) return "CHOPPY";
+  if (volatilityLevel !== null && volatilityLevel < 30) return "BUILDING PRESSURE";
+  if (stochRsi !== null && (stochRsi > 75 || stochRsi < 25)) return "EXTREME READS";
+  
+  return "NEUTRAL";
+}
+
+/**
+ * SNIPER CONDITIONS v7.2.4: EARLY IGNITION ALLOWED
+ * SNIPER = beginning of wave, NOT confirmation
+ * Allow early ignition if directional bias exists + compression + ignition event
  */
 function checkSniperConditions(card: SymbolCardState): boolean {
-  // REQUIREMENT 1: 4H TREND ALIGNED
-  // 4H must establish macro directional bias (NEVER NEUTRAL)
-  const trend4hAligned = card.htf4hTrend !== "NEUTRAL";
-  if (!trend4hAligned) {
-    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No 4H trend alignment`);
+  // REQUIREMENT 1: Directional bias exists (not NEUTRAL)
+  if (card.direction === "NEUTRAL") {
+    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No directional bias`);
     return false;
   }
 
-  // REQUIREMENT 2: 1H MOMENTUM ALIGNED
-  // 1H must confirm directional continuation (must agree with 4H)
-  const alignment1hConfirmed = card.htf1hAlignment;
-  if (!alignment1hConfirmed) {
-    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: 1H momentum disagrees with 4H`);
+  // REQUIREMENT 2: 15M compression exists OR low volatility (energy buildup)
+  if (!card.htf15mCompression && (card.volatilityLevel ?? 50) > 45) {
+    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No compression detected`);
     return false;
   }
 
-  // REQUIREMENT 3: 15M COMPRESSION EXISTS
-  // 15M must show compression (BB squeeze or ATR contraction)
-  const compression15mActive = card.htf15mCompression;
-  if (!compression15mActive) {
-    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No 15M compression detected`);
-    return false;
-  }
-
-  // REQUIREMENT 4: 5M IGNITION TRIGGER
-  // 5M provides entry timing (Stoch cross, EMA flip, or impulse candle)
-  const stochRsiActive = card.stochRsi > 20 && card.stochRsi < 80; // Active zone
-  const emaFlipped = Math.abs(card.emaSlope) > 0.5; // Slope flip
-  const ignitionTrigger = stochRsiActive || emaFlipped;
+  // REQUIREMENT 3: One ignition event (Stoch cross OR EMA flip OR impulse)
+  const stochCross = (card.stochRsi ?? 50) > 25 && (card.stochRsi ?? 50) < 75; // Active zone
+  const emaFlip = card.emaSlope !== null && Math.abs(card.emaSlope) > 0.3; // Slope established
+  const ignitionTrigger = stochCross || emaFlip;
+  
   if (!ignitionTrigger) {
-    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No 5M ignition trigger`);
+    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No ignition trigger`);
     return false;
   }
 
   // ALL CONDITIONS MET: Valid SNIPER setup
-  console.log(`[SNIPER CHECK] ${card.symbol} PASSED: 4H ${card.htf4hTrend} + 1H aligned + 15M compression + 5M trigger`);
+  console.log(`[SNIPER CHECK] ${card.symbol} PASSED: direction=${card.direction} + compression + ignition`);
   return true;
 }
 
 /**
- * CONFIRMED CONDITIONS: Established trend + impulse + HTF alignment
- * Full multi-timeframe setup - trend continuation
+ * CONFIRMED CONDITIONS (v7.2.4 FIX #3): Established trend + impulse
+ * Requires: HTF alignment + EMA expansion + momentum continuation
+ * Strict threshold: 75+
  */
 function checkConfirmedConditions(card: SymbolCardState): boolean {
-  // CONFIRMED requires:
-  // 1. EMA alignment established (8 > 21 or 8 < 21)
-  // 2. Impulse candle already occurred
-  // 3. HTF trend agrees (4H bias)
+  // 1. EMA firmly established (slope > 0.5)
+  const emaEstablished = card.emaSlope !== null && Math.abs(card.emaSlope) > 0.5;
   
-  const emaAligned = Math.abs(card.emaSlope) > 0.5; // Established alignment
-  const impulseActive = card.direction !== "NEUTRAL"; // Directional conviction
-  const hftrendAgreed = card.stochRsi > 50; // Simplified 4H trend
+  // 2. Direction confirmed (not NEUTRAL)
+  const directionConfirmed = card.direction !== "NEUTRAL";
   
-  return emaAligned && impulseActive && hftrendAgreed;
+  // 3. Momentum continuing (Stoch showing strength)
+  const momentumContinuing = 
+    (card.direction === "LONG" && (card.stochRsi ?? 50) > 50) ||
+    (card.direction === "SHORT" && (card.stochRsi ?? 50) < 50);
+  
+  // 4. HTF aligned
+  const htfAligned = card.htf1hAlignment === true;
+
+  return emaEstablished && directionConfirmed && momentumContinuing && htfAligned;
 }
 
 /**
@@ -447,18 +484,32 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   // Simplified: compression when volatility < 40
   const htf15mCompression = volatilityLevel < 40;
 
-  // Determine direction based on momentum signals
+  // Determine direction based on directional confidence hierarchy (v7.2.4)
+  // PRIMARY: 4H trend decides bias
+  // SECONDARY: 1H confirms or weakens
+  // TERTIARY: 5M refines entry timing only
+  
   let direction: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
   
-  // LONG condition: stochRsi rising + EMA slope positive + compression + 4H bullish
-  if (stochRsi > 45 && emaSlope > 0 && volatilityLevel < 40 && htf4hTrend === "BULLISH") {
+  // IF 4H bullish AND EMA slope >= 0 => LONG (v7.2.4 FIX #1)
+  if (htf4hTrend === "BULLISH" && emaSlope >= -0.1) {
     direction = "LONG";
   }
-  // SHORT condition: stochRsi falling + EMA slope negative + compression + 4H bearish
-  else if (stochRsi < 55 && emaSlope < 0 && volatilityLevel < 40 && htf4hTrend === "BEARISH") {
+  // IF 4H bearish AND EMA slope <= 0 => SHORT (v7.2.4 FIX #1)
+  else if (htf4hTrend === "BEARISH" && emaSlope <= 0.1) {
     direction = "SHORT";
   }
-  // Otherwise NEUTRAL - no directional conviction
+  // ONLY NEUTRAL if 4H truly flat AND EMA near zero AND Stoch middle AND no breakout
+  else if (htf4hTrend === "NEUTRAL" && Math.abs(emaSlope) < 0.3 && stochRsi > 45 && stochRsi < 55 && volatilityLevel < 35) {
+    direction = "NEUTRAL";
+  }
+  // Otherwise lean into 4H bias even if weak signals
+  else if (htf4hTrend === "BULLISH") {
+    direction = "LONG";
+  }
+  else if (htf4hTrend === "BEARISH") {
+    direction = "SHORT";
+  }
 
   const card: SymbolCardState = {
     symbol,
@@ -481,7 +532,8 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     htf15mCompression,
 
     // Market readiness (v7.2.1)
-    marketReadinessState: calculateMarketReadinessState(htf4hTrend, htf1hAlignment, emaSlope, stochRsi, volatilityLevel, direction),
+    // Market readiness (v7.2.4 FIX #4: Use live market state instead of old phases)
+    marketReadinessState: calculateLiveMarketState(direction, emaSlope, stochRsi, volatilityLevel) as any,
     tradeReadinessScore: calculateTradeReadinessScore("NONE", htf4hTrend, htf1hAlignment, emaSlope, stochRsi, volatilityLevel),
     
     // Conditional: Only populate if signal exists (SNIPER/CONFIRMED)
@@ -489,7 +541,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     targetPrices: null,
     riskReward: null,
 
-    notes: direction !== "NEUTRAL" ? `${calculateMarketReadinessState(htf4hTrend, htf1hAlignment, emaSlope, stochRsi, volatilityLevel, direction).replace(/_/g, " ")}` : "Awaiting momentum ignition",
+    notes: direction !== "NEUTRAL" ? calculateLiveMarketState(direction, emaSlope, stochRsi, volatilityLevel) : "Awaiting momentum ignition",
     updatedAt: new Date().toISOString(),
   };
 

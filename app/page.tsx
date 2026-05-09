@@ -5,7 +5,7 @@ import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v7.2.3";
+const VERSION = "v7.2.4";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load - minimal data, no fakes
@@ -142,16 +142,25 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
   const directionBg = card.direction === "LONG" ? "bg-green-950" : card.direction === "SHORT" ? "bg-red-950" : "bg-zinc-900";
   const directionBorder = card.direction === "LONG" ? "border-green-700" : card.direction === "SHORT" ? "border-red-700" : "border-zinc-700";
   
-  // Market readiness colors
-  const readinessColor = {
-    "BUILDING_PRESSURE": "text-amber-400",
-    "BULLISH_IGNITION": "text-green-400",
-    "BEARISH_IGNITION": "text-red-400",
-    "TREND_EXPANSION": "text-green-300",
-    "OVEREXTENDED": "text-orange-400",
-    "CHOP_NO_TRADE": "text-zinc-400",
-    "AWAITING_DATA": "text-zinc-500",
-  }[card.marketReadinessState] || "text-zinc-400";
+  // Market readiness colors (v7.2.4: updated with new live market states)
+  const readinessColor: Record<string, string> = {
+    "BULLISH BUILDING": "text-green-400",
+    "BULLISH IGNITION": "text-green-300",
+    "BULLISH EXPANSION": "text-green-200",
+    "BULLISH MOMENTUM": "text-green-400",
+    "BULLISH OVEREXTENDED": "text-orange-400",
+    "BEARISH BUILDING": "text-red-400",
+    "BEARISH IGNITION": "text-red-300",
+    "BEARISH EXPANSION": "text-red-200",
+    "BEARISH MOMENTUM": "text-red-400",
+    "BEARISH OVEREXTENDED": "text-orange-400",
+    "CHOPPY": "text-zinc-400",
+    "BUILDING PRESSURE": "text-amber-400",
+    "EXTREME READS": "text-orange-400",
+    "NEUTRAL": "text-zinc-400",
+  };
+  
+  const currentReadinessColor = readinessColor[card.marketReadinessState] || "text-zinc-400";
 
   // Trade readiness score color bands
   const readinessScoreColor = card.tradeReadinessScore === null 
@@ -193,8 +202,8 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
       {/* MARKET READINESS STATE (Live) */}
       <div className="border-t border-zinc-800 pt-4">
         <p className="text-xs text-zinc-500 mb-2 uppercase tracking-wider">Market State</p>
-        <p className={`text-sm font-semibold ${readinessColor}`}>
-          {card.marketReadinessState.replace(/_/g, " ")}
+        <p className={`text-sm font-semibold ${currentReadinessColor}`}>
+          {card.marketReadinessState}
         </p>
       </div>
 
@@ -256,7 +265,6 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
             <div className="flex justify-between"><span className="text-zinc-400">Entry Zone:</span> <span className="text-cyan-400">${fmt(card.price)}</span></div>
             <div className="flex justify-between"><span className="text-zinc-400">TP1:</span> <span className="text-green-400">${fmt(card.targetPrices.tp1)}</span></div>
             <div className="flex justify-between"><span className="text-zinc-400">TP2:</span> <span className="text-green-400">${fmt(card.targetPrices.tp2)}</span></div>
-            <div className="flex justify-between"><span className="text-zinc-400">TP3:</span> <span className="text-green-400">${fmt(card.targetPrices.tp3)}</span></div>
             <div className="flex justify-between"><span className="text-zinc-400">SL:</span> <span className="text-red-400">${fmt(card.targetPrices.sl)}</span></div>
             <div className="flex justify-between mt-2 pt-2 border-t border-zinc-700"><span className="text-zinc-400">R:R:</span> <span className="text-green-400 font-bold">{card.riskReward?.toFixed(1) ?? "—"}:1</span></div>
           </div>
