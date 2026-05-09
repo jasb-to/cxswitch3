@@ -147,43 +147,55 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       });
       console.log(`[ALERT] ${symbol} CONFIRMED ${card.direction} score=${score}`);
     }
-    // SNIPER ALERT: score >= 60 AND sniper conditions met (HTF alignment + LTF ignition)
-    else if (score >= 60 && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
-      card.mode = "SNIPER";
-      card.confidence = Math.min(score, 99);
-      card.lastSignalTime = Date.now();
-      card.signalState = "ACTIVE_SNIPER"; // FIX #1: Set unified signal state
-      card.notes = `SNIPER ${card.direction} ignition ${score}`;
+    // SNIPER ALERT: score >= 70 AND sniper conditions met (FIX #1 v7.3.1: enforce strict execution validation)
+    else if (score >= 70 && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
+      // v7.3.1 FIX #1: Validate ACTIVE_SNIPER execution requirements
+      const executionValidation = validateActiveSniperExecution(card, score);
       
-      // Populate trade targets (v7.2.1)
-      const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
-      card.expectedMovePercent = targets.expectedMovePercent;
-      card.targetPrices = targets.targetPrices;
-      card.riskReward = targets.riskReward;
-      card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
-      
-      setups.push({
-        symbol,
-        mode: "SNIPER",
-        direction: card.direction,
-        score: card.confidence,
-        reason: `SNIPER ${card.direction} - HTF aligned ignition event`,
-        price: card.price,
-        momentum: {
-          stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
-          emaStackSignal: card.direction === "LONG" ? "8 EMA turning up" : "8 EMA turning down",
-          volatilitySignal: (card.volatilityLevel ?? 40) < 40 ? "Compression active" : "Normal",
-          trend4H: card.htf4hTrend !== "NEUTRAL",
-        },
-        // HTF Breakdown for Telegram alerts
-        htf: {
-          trend4h: card.htf4hTrend as "BULLISH" | "BEARISH",
-          alignment1h: card.htf1hAlignment ?? false,
-          compression15m: card.htf15mCompression ?? false,
-          trigger5m: (card.stochRsi ?? 50) > 20 && (card.stochRsi ?? 50) < 80 ? "Stoch RSI cross" : "EMA flip",
-        },
-      });
-      console.log(`[ALERT] ${symbol} SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 1H:${card.htf1hAlignment} 15M:${card.htf15mCompression}`);
+      if (!executionValidation.valid) {
+        // Execution validation failed - block ACTIVE_SNIPER
+        console.log(`[EXECUTION BLOCKED] ${symbol} ${card.direction}: ${executionValidation.reason}`);
+        // Fall through to non-alert state calculation below
+        const sniperImminentPassed = score >= 60 && checkSniperImminent(card);
+        card.signalState = sniperImminentPassed ? "SNIPER_IMMINENT" : "SNIPER_READY";
+      } else {
+        // Execution validation passed - promote to ACTIVE_SNIPER
+        card.mode = "SNIPER";
+        card.confidence = Math.min(score, 99);
+        card.lastSignalTime = Date.now();
+        card.signalState = "ACTIVE_SNIPER"; // FIX #1: Set unified signal state
+        card.notes = `SNIPER ${card.direction} execution early-entry ${score}`;
+        
+        // Populate trade targets (v7.2.1)
+        const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
+        card.expectedMovePercent = targets.expectedMovePercent;
+        card.targetPrices = targets.targetPrices;
+        card.riskReward = targets.riskReward;
+        card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
+        
+        setups.push({
+          symbol,
+          mode: "SNIPER",
+          direction: card.direction,
+          score: card.confidence,
+          reason: `SNIPER ${card.direction} - HTF:${card.htf4hTrend} + 15M:${card.execution15mState} + 5M trigger`,
+          price: card.price,
+          momentum: {
+            stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
+            emaStackSignal: card.direction === "LONG" ? "8 EMA turning up" : "8 EMA turning down",
+            volatilitySignal: (card.volatilityLevel ?? 40) < 40 ? "Compression active" : "Normal",
+            trend4H: card.htf4hTrend !== "NEUTRAL",
+          },
+          // HTF Breakdown for Telegram alerts (v7.3.1: only populated if execution valid)
+          htf: {
+            trend4h: card.htf4hTrend as "BULLISH" | "BEARISH",
+            alignment1h: card.htf1hAlignment ?? false,
+            compression15m: card.htf15mCompression ?? false,
+            trigger5m: (card.stochRsi ?? 50) > 20 && (card.stochRsi ?? 50) < 80 ? "Stoch RSI cross" : "EMA flip",
+          },
+        });
+        console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
+      }
     }
     else {
       // FIX #2, #4: Derive signal state with proper evaluation order
@@ -515,7 +527,75 @@ function calculateSignalState(
 }
 
 /**
- * Check SNIPER_IMMINENT conditions (v7.2.8 FIX #2)
+ * v7.3.1 FIX #2: STRICT ACTIVE_SNIPER EXECUTION VALIDATION
+ * 
+ * Hard validation before promoting to ACTIVE_SNIPER state.
+ * Returns clear rejection reason if ANY condition fails.
+ * 
+ * Requirements (ALL must be true):
+ * 1. 4H trend = BULLISH or BEARISH (NOT NEUTRAL)
+ * 2. execution15mState = BREAKOUT_READY or EXPANDING (NOT CHOP/COMPRESSING)
+ * 3. Valid 5M ignition trigger
+ * 4. Score >= 70 (not just 60)
+ * 5. Direction matches HTF trend (no divergence)
+ * 
+ * Returns: { valid: boolean, reason?: string }
+ */
+function validateActiveSniperExecution(card: SymbolCardState, score: number): { valid: boolean; reason?: string } {
+  // REQUIREMENT 1: 4H Trend must be directional (NOT NEUTRAL)
+  if (card.htf4hTrend === "NEUTRAL") {
+    return {
+      valid: false,
+      reason: `4H trend NEUTRAL - no directional structure`
+    };
+  }
+
+  // REQUIREMENT 2: 15M Execution state must be valid (NOT CHOP/COMPRESSING)
+  if (card.execution15mState === "CHOP" || card.execution15mState === "COMPRESSING") {
+    return {
+      valid: false,
+      reason: `15M ${card.execution15mState} - not ready for entry`
+    };
+  }
+
+  // REQUIREMENT 3: Must have valid 5M ignition trigger
+  const has5MTrigger = 
+    (card.stochRsi !== null && card.stochRsi > 20 && card.stochRsi < 80) &&
+    card.emaSlope !== null && Math.abs(card.emaSlope) > 0.2;
+  
+  if (!has5MTrigger) {
+    return {
+      valid: false,
+      reason: `5M trigger not formed (Stoch=${card.stochRsi?.toFixed(1) ?? "null"}, EMA slope=${card.emaSlope?.toFixed(3) ?? "null"})`
+    };
+  }
+
+  // REQUIREMENT 4: Score must be execution-grade (>= 70)
+  if (score < 70) {
+    return {
+      valid: false,
+      reason: `Score ${score} below execution threshold (70)`
+    };
+  }
+
+  // REQUIREMENT 5: Direction must match HTF trend (no divergence)
+  const directionMatchesTrend =
+    (card.direction === "LONG" && card.htf4hTrend === "BULLISH") ||
+    (card.direction === "SHORT" && card.htf4hTrend === "BEARISH");
+  
+  if (!directionMatchesTrend) {
+    return {
+      valid: false,
+      reason: `Direction ${card.direction} diverges from 4H ${card.htf4hTrend}`
+    };
+  }
+
+  // ALL REQUIREMENTS MET: Valid ACTIVE_SNIPER execution
+  return { valid: true };
+}
+
+/**
+ * Check SNIPER_IMMINENT conditions (v7.2.8 FIX #2 - v7.3.1 updated)
  * Early detection: score >= 60 + direction + HTF aligned + compression/expansion forming
  * Does NOT require full ignition trigger yet
  */

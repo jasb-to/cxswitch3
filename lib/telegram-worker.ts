@@ -16,8 +16,11 @@ export type TelegramAlertJob = {
   direction: "LONG" | "SHORT";
   score: number;
   price: number;
+  source?: string; // v7.3.1: check price source validity
   signalState?: string; // v7.3.0: track signal state for execution gate
   targetPrices?: { tp1: number; tp2: number; sl: number } | null;
+  htf4hTrend?: "BULLISH" | "BEARISH" | "NEUTRAL"; // v7.3.1: validate HTF structure
+  execution15mState?: "COMPRESSING" | "BREAKOUT_READY" | "EXPANDING" | "CHOP"; // v7.3.1: validate 15M execution
   queued: number; // timestamp
 };
 
@@ -53,7 +56,7 @@ async function processAlertQueueAsync() {
       if (!job) break;
 
       try {
-        // v7.3.0 FIX #1: HARD TELEGRAM EXECUTION GATE
+        // v7.3.1 FIX #1: HARD TELEGRAM EXECUTION GATE
         // ONLY send for ACTIVE_SNIPER or ACTIVE_CONFIRMED
         // Never send for setup phases (SNIPER_IMMINENT, SNIPER_READY, CONFIRMED_READY, BUILDING)
         const isExecutableSignal =
@@ -68,7 +71,33 @@ async function processAlertQueueAsync() {
           continue;
         }
 
-        // v7.3.0 FIX #2: BLOCK INVALID PAYLOADS
+        // v7.3.1 FIX #3: BLOCK TELEGRAM ALERTS IF HTF STRUCTURE INVALID
+        // Additional checks beyond signalState (defense in depth)
+        const htfValidationErrors: string[] = [];
+        
+        // Check 1: 4H trend must not be NEUTRAL (caught in signal state, but double-check)
+        if (!job.htf4hTrend || job.htf4hTrend === "NEUTRAL") {
+          htfValidationErrors.push("4H trend NEUTRAL");
+        }
+        
+        // Check 2: 15M execution state must be valid
+        if (!job.execution15mState || job.execution15mState === "CHOP" || job.execution15mState === "COMPRESSING") {
+          htfValidationErrors.push(`15M ${job.execution15mState || "undefined"}`);
+        }
+        
+        // Check 3: Price source must not be fallback (CoinGecko)
+        if (job.source === "coingecko") {
+          htfValidationErrors.push("fallback price source CoinGecko");
+        }
+        
+        if (htfValidationErrors.length > 0) {
+          console.log(
+            `[ALERT_REJECTED] ${job.symbol}: HTF validation failed - ${htfValidationErrors.join(", ")}`
+          );
+          continue;
+        }
+
+        // v7.3.1 FIX #2: BLOCK INVALID PAYLOADS
         // Validate completeness before Telegram formatting
         if (
           job.score == null ||
