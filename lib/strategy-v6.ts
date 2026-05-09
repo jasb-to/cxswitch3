@@ -67,10 +67,11 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     const card = generateCardState(symbol, priceData);
     cards.push(card);
 
-    // Score for signal generation (TEMPORARY EMERGENCY THRESHOLDS)
-    // SNIPER: 35+ (lowered from 55)
-    // CONFIRMED: 55+ (lowered from 75)
-    // MINIMUM: 30+ generates signal
+    // Score for signal generation
+    // STEP 4: SIGNAL FLOOR - lowered from 35 to 20 minimum
+    // SNIPER: 35+ 
+    // CONFIRMED: 55+
+    // MINIMUM: 20+ generates signal (recovery mode)
     const score = calculateScore(card);
     
     if (DEBUG_MODE) {
@@ -82,24 +83,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       });
     }
 
-    // Evaluate for SNIPER setup (score >= 35)
-    if (score >= 35) {
-      card.mode = "SNIPER";
-      card.confidence = Math.min(score, 99);
-      card.notes = `SNIPER signal score=${score}`;
-      
-      setups.push({
-        symbol,
-        mode: "SNIPER",
-        direction: card.direction,
-        score: card.confidence,
-        reason: card.notes,
-        price: card.price,
-      });
-      console.log(`[SCAN] ${symbol} SNIPER ${card.direction} score=${score}`);
-    }
     // Evaluate for CONFIRMED setup (score >= 55)
-    else if (score >= 55) {
+    if (score >= 55) {
       card.mode = "CONFIRMED";
       card.confidence = Math.min(score, 99);
       card.notes = `CONFIRMED signal score=${score}`;
@@ -114,11 +99,27 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       });
       console.log(`[SCAN] ${symbol} CONFIRMED ${card.direction} score=${score}`);
     }
-    // EMERGENCY: Allow weak signals (score >= 30)
-    else if (score >= 30) {
+    // Evaluate for SNIPER setup (score >= 35)
+    else if (score >= 35) {
+      card.mode = "SNIPER";
+      card.confidence = Math.min(score, 99);
+      card.notes = `SNIPER signal score=${score}`;
+      
+      setups.push({
+        symbol,
+        mode: "SNIPER",
+        direction: card.direction,
+        score: card.confidence,
+        reason: card.notes,
+        price: card.price,
+      });
+      console.log(`[SCAN] ${symbol} SNIPER ${card.direction} score=${score}`);
+    }
+    // STEP 4: SIGNAL FLOOR - Allow weak signals (score >= 20)
+    else if (score >= 20) {
       card.mode = "SNIPER";
       card.confidence = Math.min(score, 50);
-      card.notes = `MONITORING - score=${score}`;
+      card.notes = `WEAK SIGNAL - score=${score}`;
       card.direction = "NEUTRAL";
       
       setups.push({
@@ -126,10 +127,10 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         mode: "SNIPER",
         direction: "NEUTRAL",
         score: card.confidence,
-        reason: `Weak signal score=${score}`,
+        reason: `Recovery: weak signal score=${score}`,
         price: card.price,
       });
-      console.log(`[SCAN] ${symbol} WEAK score=${score}`);
+      console.log(`[SCAN] ${symbol} WEAK SIGNAL score=${score}`);
     }
     else if (card.mode === "NONE") {
       console.log(`[SCAN] ${symbol} no setup (score=${score})`);
@@ -146,10 +147,18 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 
 /**
  * Calculate raw score for signal evaluation
- * EMERGENCY PATCH: Much more lenient scoring
+ * FINAL REBALANCE: All 5 fixes to restore alert firing capability
  */
 function calculateScore(card: SymbolCardState): number {
   let score = 0;
+
+  // STEP 1: BASE MOMENTUM BOOST
+  // Market baseline bias - every symbol starts with foundation
+  score += 15;
+
+  // STEP 3: CONFIDENCE FLOOR
+  // Price validity bonus
+  if (card.price > 0) score += 10;
 
   // Base score from checklist (each item = 15 points)
   if (card.checklist.trend4H) score += 15;
@@ -158,14 +167,21 @@ function calculateScore(card: SymbolCardState): number {
   if (card.checklist.volatility) score += 15;
   if (card.checklist.volume) score += 15;
 
-  // Structure bonus (EMERGENCY: allow weak structure)
-  if (card.structure === "BREAKOUT") score += 20;
-  else if (card.structure === "RANGE") score += 10;
-  else if (card.structure === "COMPRESSION") score += 5;
+  // STEP 2: STRUCTURE MUST MATTER MORE
+  // Rebalanced to give structure proper weight
+  if (card.structure === "BREAKOUT") score += 15;
+  else if (card.structure === "COMPRESSION") score += 20;
+  else if (card.structure === "RANGE") score += 5;
   // NO_STRUCTURE gets 0 bonus but doesn't block signal anymore
 
   // Direction momentum (if detected)
   if (card.direction !== "NEUTRAL") score += 10;
+
+  // STEP 5: FORCE FIRST ALERT RECOVERY MODE
+  // TEMPORARY ONLY: Debug mode threshold adjustment
+  if (DEBUG_MODE) {
+    score -= 10; // Lower threshold in debug mode for alert recovery
+  }
 
   return score;
 }
