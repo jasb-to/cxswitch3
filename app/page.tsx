@@ -5,9 +5,8 @@ import { useState, useEffect, useMemo } from "react";
 import type { Signal, MarketContext } from "@/lib/strategy";
 import { getStateOfPlay } from "@/lib/state-of-play";
 import { getBias, getBiasColor, getBiasBorder, getBiasStrength } from "@/lib/market-bias";
-import { startMarketDataRefresh, stopMarketDataRefresh } from "@/lib/market-data-layer";
 
-const VERSION = "v4.1.0";
+const VERSION = "v4.1.2";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -265,15 +264,8 @@ export default function Dashboard() {
   useEffect(() => {
     setIsHydrated(true);
     setNow(Date.now());
-    
-    // Start market data refresh layer on app initialization
-    startMarketDataRefresh();
-    
     const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => {
-      clearInterval(id);
-      stopMarketDataRefresh();
-    };
+    return () => clearInterval(id);
   }, []);
 
   useEffect(() => {
