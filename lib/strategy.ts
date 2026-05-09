@@ -1354,8 +1354,7 @@ export async function reconcileSignalsWithMarketData(signals: Signal[]): Promise
         }
       }
       
-      // Don't include in reconciled output
-      continue;
+      // Don't include in reconciled output (already persisted as END)
     }
 
     // Signal passed reconciliation — include it
