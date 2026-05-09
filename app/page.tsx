@@ -6,7 +6,7 @@ import type { Signal, MarketContext } from "@/lib/strategy";
 import { getStateOfPlay } from "@/lib/state-of-play";
 import { getBias, getBiasColor, getBiasBorder, getBiasStrength } from "@/lib/market-bias";
 
-const VERSION = "v4.4.0";
+const VERSION = "v4.5.0";
 const SCAN_COOLDOWN_MS = 60_000;
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
@@ -29,7 +29,7 @@ function Badge({ state }: { state: Signal["state"] }) {
   );
 }
 
-function SignalCard({ symbol, signal, market, onEndTradeClick }: { symbol: string; signal?: Signal; market?: MarketContext; onEndTradeClick?: (signalId: number, symbol: string, entryPrice: number) => void }) {
+function SignalCard({ symbol, signal, onEndTradeClick }: { symbol: string; signal?: Signal; onEndTradeClick?: (signalId: number, symbol: string, entryPrice: number) => void }) {
   const isEnd = signal?.state === "END";
   const active = signal && !isEnd;
 
@@ -281,20 +281,20 @@ export default function Dashboard() {
   );
 
   const signals: Signal[] = data?.signals ?? [];
-  const market: MarketContext[] = data?.market ?? [];
+  const market: MarketContext[] = []; // No longer provided by API, only priceData
   const fetchedAt: number = data?.fetchedAt ?? 0;
   const isStale = isHydrated && fetchedAt > 0 && now > 0 && (now - fetchedAt) > STALE_THRESHOLD_MS;
   const lastUpdateTime = isHydrated ? new Date().toLocaleTimeString("en-GB", { hour12: false }) : "—";
 
   // Update data source status from market data
   useMemo(() => {
-    if (market.length > 0 && market[0].dataSource) {
+    if (data?.cacheStatus?.symbols && Object.keys(data.cacheStatus.symbols).length > 0) {
       setDataSourceStatus({
-        source: market[0].dataSource,
-        time: market[0].dataSourceTime ?? Date.now(),
+        source: "Kraken",
+        time: fetchedAt,
       });
     }
-  }, [market]);
+  }, [data?.cacheStatus, fetchedAt]);
 
   // Memoize signalMap to prevent unnecessary re-renders of market cards
   const signalMap = useMemo(
@@ -506,10 +506,10 @@ export default function Dashboard() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {market.map((m) => {
-              const signal = signalMap.get(m.symbol);
+            {["BTC", "ETH", "SOL"].map((symbol) => {
+              const signal = signalMap.get(symbol);
               return (
-                <SignalCard key={m.symbol} symbol={m.symbol} signal={signal} market={m} onEndTradeClick={(id, sym, entry) => { setEndTradeModal({ signalId: id, symbol: sym, entryPrice: entry }); setEndTradeExitPrice(""); }} />
+                <SignalCard key={symbol} symbol={symbol} signal={signal} onEndTradeClick={(id, sym, entry) => { setEndTradeModal({ signalId: id, symbol: sym, entryPrice: entry }); setEndTradeExitPrice(""); }} />
               );
             })}
           </div>

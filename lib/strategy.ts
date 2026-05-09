@@ -1361,9 +1361,7 @@ export async function getAllSignals(): Promise<Signal[]> {
           .neq("state", "END")
           .order("created_at", { ascending: false });
         console.log("[getAllSignals RECOVERY] Returning unfiltered active signals:", unfilteredData?.length ?? 0);
-        
-        // Reconcile with current market data before returning
-        return await reconcileSignalsWithMarketData(unfilteredData ?? []);
+        return unfilteredData ?? [];
       }
     }
 

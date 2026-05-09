@@ -1,5 +1,4 @@
 import { NextResponse, NextRequest } from "next/server";
-import { getAllSignals } from "@/lib/strategy";
 import { supabase } from "@/lib/supabase-client";
 import { getAllMarketData, isMarketDataFresh } from "@/lib/market-data-layer";
 
@@ -19,11 +18,27 @@ export async function GET() {
     
     const allFresh = freshnessStatus.every(s => s.fresh && s.hasData);
 
+    // PURE DB READ: Return all non-INVALIDATED signals
+    // NO filtering by freshness, market health, or validation state
+    // Reconciliation happens in cron, not in the API response
     let signals = [];
-    try {
-      signals = await getAllSignals();
-    } catch (err) {
-      console.error("[SUPABASE SIGNALS] Fetch failed:", err);
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from("signals")
+          .select("*")
+          .neq("state", "INVALIDATED")
+          .order("created_at", { ascending: false });
+
+        if (!error && data) {
+          signals = data;
+          console.log(`[API /signals] Returned ${signals.length} non-invalidated signals`);
+        } else {
+          console.error("[API /signals] Query error:", error);
+        }
+      } catch (err) {
+        console.error("[API /signals] Fetch failed:", err);
+      }
     }
 
     return NextResponse.json({
