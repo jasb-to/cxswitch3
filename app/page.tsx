@@ -3,8 +3,9 @@
 import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
+import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v6.3.1";
+const VERSION = "v6.4.0";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load (before first cron run)
@@ -73,11 +74,27 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
     directionText = "text-red-400";
   }
 
-  // Status badge
-  const statusBg = card.degraded ? "bg-zinc-900" : "bg-zinc-800";
-  const statusBorder = card.degraded ? "border-zinc-800" : "border-zinc-700";
-  const statusText = card.degraded ? "text-zinc-400" : "text-white";
-  const statusLabel = card.degraded ? "FALLBACK" : "LIVE";
+  // Get market status from source
+  const marketStatus = getMarketStatus(card.source);
+  
+  // Status badge colors
+  const statusBgMap = {
+    "green": "bg-emerald-950",
+    "yellow": "bg-amber-950",
+    "gray": "bg-zinc-900",
+  };
+  
+  const statusBorderMap = {
+    "green": "border-emerald-700",
+    "yellow": "border-amber-700",
+    "gray": "border-zinc-700",
+  };
+  
+  const statusTextMap = {
+    "green": "text-emerald-300",
+    "yellow": "text-amber-300",
+    "gray": "text-zinc-400",
+  };
 
   // Price always displays (never null)
   const displayPrice = card.price > 0 ? `$${fmt(card.price)}` : "NO DATA";
@@ -88,8 +105,8 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
       <div className="flex items-start justify-between mb-4">
         <div className="flex items-center gap-3">
           <h3 className="text-lg font-bold tracking-tight">{card.symbol}/USD</h3>
-          <span className={`text-xs px-2.5 py-1 rounded border ${statusBg} ${statusBorder} ${statusText}`}>
-            {statusLabel}
+          <span className={`text-xs px-2.5 py-1 rounded border ${statusBgMap[marketStatus.color]} ${statusBorderMap[marketStatus.color]} ${statusTextMap[marketStatus.color]}`}>
+            {marketStatus.label}
           </span>
         </div>
       </div>
