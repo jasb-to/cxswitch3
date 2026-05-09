@@ -5,7 +5,7 @@ import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v7.2.8";
+const VERSION = "v7.2.9";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load - minimal data, no fakes
@@ -230,8 +230,12 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
         </div>
         <div className="flex items-center justify-between text-sm">
           <span className="text-zinc-400">1H:</span>
-          <span className={card.htf1hAlignment ? "text-green-400" : "text-zinc-400"}>
-            {card.htf1hAlignment ? "ALIGNED" : "—"}
+          <span className={
+            card.htf1hTrend === "BULLISH" ? "text-green-400" : 
+            card.htf1hTrend === "BEARISH" ? "text-red-400" : 
+            "text-zinc-400"
+          }>
+            {card.htf1hTrend}
           </span>
         </div>
         <div className="flex items-center justify-between text-sm">
