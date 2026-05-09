@@ -1263,8 +1263,10 @@ export async function managePositions(): Promise<{ logs: string[]; confirmed: Si
  * - Market data is not LIVE
  * - Market data is stale beyond threshold
  * - Price source fell back to non-primary
+ * 
+ * PERSISTS STATE CHANGES directly to Supabase
  */
-async function reconcileSignalsWithMarketData(signals: Signal[]): Promise<Signal[]> {
+export async function reconcileSignalsWithMarketData(signals: Signal[]): Promise<Signal[]> {
   const reconciled: Signal[] = [];
   const logs: string[] = [];
 
@@ -1305,7 +1307,7 @@ async function reconcileSignalsWithMarketData(signals: Signal[]): Promise<Signal
         }
       }
       
-      // Don't include in reconciled output
+      // Don't include in reconciled output (already persisted as END)
       continue;
     }
 
@@ -1367,11 +1369,7 @@ export async function getAllSignals(): Promise<Signal[]> {
 
     console.log("[getAllSignals] Returned", data?.length ?? 0, "active signals:", data?.map(s => ({ id: s.id, symbol: s.symbol, direction: s.direction, state: s.state })));
 
-    // RECONCILIATION GUARD: Validate signals against current market data
-    // Removes positions that don't have LIVE market validation
-    const reconciled = await reconcileSignalsWithMarketData(data ?? []);
-    
-    return reconciled;
+    return data ?? [];
   } catch (err) {
     console.error("[getAllSignals] Error:", err);
     return [];
@@ -1419,7 +1417,7 @@ export async function validateActiveEarlyOpenSignals(): Promise<{ logs: string[]
       try {
         // ═══════════════════════════════════════════════════════════════════════════
         // CANONICAL SYMBOL ENFORCEMENT: Resolve signal symbol at entry
-        // ═══════════════════════════════════════════════════════════════════════════
+        // ══════════════════════════════════════════════════════════���════════════════
         let resolved: ResolvedSymbol;
         try {
           resolved = resolveSymbol(signal.symbol);
