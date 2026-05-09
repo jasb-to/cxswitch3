@@ -2,7 +2,8 @@
  * Market Status Mapping
  * 
  * Maps data source to display label and styling.
- * CRITICAL: Never treat fallback/cached as "empty"
+ * RULE: price > 0 is ALWAYS valid, regardless of source
+ * Source is only for UI labeling, not validity checking
  */
 
 export type MarketStatusLabel = "LIVE" | "FALLBACK" | "CACHED" | "UNKNOWN";
@@ -27,8 +28,4 @@ export function getMarketStatus(source: string): MarketStatus {
     default:
       return { label: "UNKNOWN", color: "gray" };
   }
-}
-
-export function isDegraded(source: string): boolean {
-  return source !== "kraken_live";
 }
