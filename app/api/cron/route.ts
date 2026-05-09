@@ -42,20 +42,26 @@ export async function GET(req: NextRequest) {
     });
 
     // STEP 4: Check cooldown and send alerts
+    console.log(`[ALERT DEBUG] ${setups.length} setups to process`);
+    
     const sent = [];
     for (const setup of setups) {
+      console.log(`[ALERT DEBUG] Checking ${setup.symbol} ${setup.mode}...`);
+      
       if (await canSendAlert(setup.symbol, setup.mode, setup.direction)) {
         try {
           await sendAlert(setup);
           sent.push(setup);
-          console.log(`[ALERT] ${setup.symbol} sent`);
+          console.log(`[ALERT] ${setup.symbol} sent successfully`);
         } catch (err) {
-          console.log(`[ALERT] ${setup.symbol} failed`);
+          console.log(`[ALERT] ${setup.symbol} failed:`, err);
         }
+      } else {
+        console.log(`[ALERT DEBUG] ${setup.symbol} blocked by cooldown`);
       }
     }
 
-    console.log("[CRON] Complete");
+    console.log(`[CRON] Complete - sent ${sent.length}/${setups.length} alerts`);
 
     return NextResponse.json({ ok: true });
   } catch (error) {

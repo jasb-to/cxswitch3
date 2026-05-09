@@ -5,7 +5,7 @@ import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v6.5.0";
+const VERSION = "v6.6.0";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load (before first cron run)
@@ -99,6 +99,17 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
   // Price always displays (never null)
   const displayPrice = card.price > 0 ? `$${fmt(card.price)}` : "NO DATA";
 
+  // FIX 5: Show clean state labels instead of NO_STRUCTURE
+  let displayStructure = card.structure;
+  let displayMode = card.mode;
+  
+  if (displayStructure === "NO_STRUCTURE") {
+    displayStructure = "MONITORING";
+  }
+  if (displayMode === "NONE") {
+    displayMode = "WATCHING";
+  }
+
   return (
     <div className="rounded-xl border border-[#2a2a2a] p-5 bg-[#111111] text-white">
       {/* HEADER: Symbol + Status Badge + Price */}
@@ -111,11 +122,11 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
         </div>
       </div>
 
-      {/* PRICE - Large display */}
+      {/* PRICE - Large display (ALWAYS shown) */}
       <div className="mb-4">
         <div className="text-3xl font-bold text-white">{displayPrice}</div>
         <div className="mt-2 text-sm text-zinc-400">
-          {card.structure} • {card.mode}
+          {displayStructure} • {displayMode}
         </div>
         <div className="text-sm text-zinc-500">
           Confidence {card.confidence}%
