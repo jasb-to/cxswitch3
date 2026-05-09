@@ -1,9 +1,11 @@
 /**
- * v7.2.7 FIX #6 — TELEGRAM ALERT WORKER
+ * v7.2.7 FIX #6 — TELEGRAM ALERT WORKER (updated for v7.3.0)
  * 
  * Decoupled from cron/UI loop
  * Runs as independent async task
  * Does NOT block dashboard updates
+ * 
+ * v7.3.0 FIX #1 & #2: Hard execution gate + payload validation
  */
 
 import { sendAlert, canSendAlert } from "./telegram-v6";
@@ -14,6 +16,8 @@ export type TelegramAlertJob = {
   direction: "LONG" | "SHORT";
   score: number;
   price: number;
+  signalState?: string; // v7.3.0: track signal state for execution gate
+  targetPrices?: { tp1: number; tp2: number; sl: number } | null;
   queued: number; // timestamp
 };
 
@@ -49,6 +53,38 @@ async function processAlertQueueAsync() {
       if (!job) break;
 
       try {
+        // v7.3.0 FIX #1: HARD TELEGRAM EXECUTION GATE
+        // ONLY send for ACTIVE_SNIPER or ACTIVE_CONFIRMED
+        // Never send for setup phases (SNIPER_IMMINENT, SNIPER_READY, CONFIRMED_READY, BUILDING)
+        const isExecutableSignal =
+          job.signalState === "ACTIVE_SNIPER" ||
+          job.signalState === "ACTIVE_CONFIRMED";
+
+        if (!isExecutableSignal) {
+          console.log(
+            `[TELEGRAM_BLOCKED] ${job.symbol}: ${job.signalState} is UI-only (not executable)`
+          );
+          // Don't requeue - UI-only states are not for Telegram
+          continue;
+        }
+
+        // v7.3.0 FIX #2: BLOCK INVALID PAYLOADS
+        // Validate completeness before Telegram formatting
+        if (
+          job.score == null ||
+          Number.isNaN(job.score) ||
+          !job.price ||
+          !job.targetPrices?.tp1 ||
+          !job.targetPrices?.tp2 ||
+          !job.targetPrices?.sl
+        ) {
+          console.log(
+            `[ALERT_REJECTED] ${job.symbol}: incomplete execution payload (score=${job.score}, price=${job.price}, tp1=${job.targetPrices?.tp1})`
+          );
+          // Don't requeue - malformed payload should not retry
+          continue;
+        }
+
         // Check cooldown
         if (await canSendAlert(job.symbol, job.mode, job.direction)) {
           // Send alert (async, don't await in tight loop)
@@ -56,17 +92,19 @@ async function processAlertQueueAsync() {
             symbol: job.symbol,
             mode: job.mode,
             direction: job.direction,
-            score: job.confidence,
-            reason: `${job.mode} ${job.direction}`,
+            score: job.score,
+            reason: `${job.mode} ${job.direction} - ${job.signalState}`,
             price: job.price,
-            momentum: {},
+            momentum: {
+              targetPrices: job.targetPrices,
+            },
           }).catch(err => {
             console.log(`[ALERT_WORKER] Failed to send ${job.symbol}:`, err);
           });
           
-          console.log(`[ALERT_WORKER] Queued ${job.symbol} ${job.mode}`);
+          console.log(`[ALERT_WORKER] Telegram sent for ${job.symbol} ${job.mode} (${job.signalState})`);
         } else {
-          console.log(`[ALERT_WORKER] Cooldown active for ${job.symbol}`);
+          console.log(`[ALERT_WORKER] Cooldown active for ${job.symbol} - requeuing`);
           // Requeue if cooldown active
           alertQueue.push(job);
           break; // Stop processing, retry later
