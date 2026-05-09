@@ -5,10 +5,10 @@ import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v7.2.0";
+const VERSION = "v7.2.1";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
-// Bootstrap cards for initial page load (before first cron run)
+// Bootstrap cards for initial page load - minimal data, no fakes
 const BOOTSTRAP_CARDS: SymbolCardState[] = [
   {
     symbol: "BTC",
@@ -18,19 +18,18 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
     direction: "NEUTRAL",
     mode: "NONE",
     confidence: 0,
-    stochRsi: 50,
-    emaSlope: 0,
-    volatilityLevel: 50,
+    stochRsi: null,
+    emaSlope: null,
+    volatilityLevel: null,
     htf4hTrend: "NEUTRAL",
-    htf4hMomentum: 50,
-    htf1hAlignment: false,
-    htf15mCompression: false,
-    marketPhase: "NEUTRAL",
-    compressionLevel: 50,
-    expectedMovePercent: { sniper: { min: 0.8, max: 1.5 }, confirmed: { min: 2.5, max: 4.5 } },
-    targetPrices: { tp1: 45675, tp2: 46125, tp3: 46950, sl: 44325 },
-    riskReward: 3,
-    signalQuality: 50,
+    htf4hMomentum: null,
+    htf1hAlignment: null,
+    htf15mCompression: null,
+    marketReadinessState: "AWAITING_DATA",
+    tradeReadinessScore: null,
+    expectedMovePercent: null,
+    targetPrices: null,
+    riskReward: null,
     notes: "Loading market snapshot...",
     updatedAt: new Date().toISOString(),
   },
@@ -42,19 +41,18 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
     direction: "NEUTRAL",
     mode: "NONE",
     confidence: 0,
-    stochRsi: 50,
-    emaSlope: 0,
-    volatilityLevel: 50,
+    stochRsi: null,
+    emaSlope: null,
+    volatilityLevel: null,
     htf4hTrend: "NEUTRAL",
-    htf4hMomentum: 50,
-    htf1hAlignment: false,
-    htf15mCompression: false,
-    marketPhase: "NEUTRAL",
-    compressionLevel: 50,
-    expectedMovePercent: { sniper: { min: 0.8, max: 1.5 }, confirmed: { min: 2.5, max: 4.5 } },
-    targetPrices: { tp1: 2537.5, tp2: 2562.5, tp3: 2612.5, sl: 2462.5 },
-    riskReward: 3,
-    signalQuality: 50,
+    htf4hMomentum: null,
+    htf1hAlignment: null,
+    htf15mCompression: null,
+    marketReadinessState: "AWAITING_DATA",
+    tradeReadinessScore: null,
+    expectedMovePercent: null,
+    targetPrices: null,
+    riskReward: null,
     notes: "Loading market snapshot...",
     updatedAt: new Date().toISOString(),
   },
@@ -66,19 +64,18 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
     direction: "NEUTRAL",
     mode: "NONE",
     confidence: 0,
-    stochRsi: 50,
-    emaSlope: 0,
-    volatilityLevel: 50,
+    stochRsi: null,
+    emaSlope: null,
+    volatilityLevel: null,
     htf4hTrend: "NEUTRAL",
-    htf4hMomentum: 50,
-    htf1hAlignment: false,
-    htf15mCompression: false,
-    marketPhase: "NEUTRAL",
-    compressionLevel: 50,
-    expectedMovePercent: { sniper: { min: 0.8, max: 1.5 }, confirmed: { min: 2.5, max: 4.5 } },
-    targetPrices: { tp1: 152.25, tp2: 153.75, tp3: 156.75, sl: 147.75 },
-    riskReward: 3,
-    signalQuality: 50,
+    htf4hMomentum: null,
+    htf1hAlignment: null,
+    htf15mCompression: null,
+    marketReadinessState: "AWAITING_DATA",
+    tradeReadinessScore: null,
+    expectedMovePercent: null,
+    targetPrices: null,
+    riskReward: null,
     notes: "Loading market snapshot...",
     updatedAt: new Date().toISOString(),
   },
@@ -92,27 +89,54 @@ function fmt(n: number) {
 }
 
 function SymbolCard({ card }: { card: SymbolCardState }) {
+  const isLoading = card.source === "bootstrap";
+  const hasSignal = card.mode === "SNIPER" || card.mode === "CONFIRMED";
+  
+  // Direction colors
   const directionColor = card.direction === "LONG" ? "text-green-400" : card.direction === "SHORT" ? "text-red-400" : "text-zinc-400";
   const directionBg = card.direction === "LONG" ? "bg-green-950" : card.direction === "SHORT" ? "bg-red-950" : "bg-zinc-900";
   const directionBorder = card.direction === "LONG" ? "border-green-700" : card.direction === "SHORT" ? "border-red-700" : "border-zinc-700";
   
-  const phaseColor = {
-    "COMPRESSION": "text-amber-400",
-    "IGNITION": "text-cyan-400",
-    "EXPANSION": "text-green-400",
-    "EXHAUSTION": "text-red-400",
-    "REVERSAL_RISK": "text-orange-400",
-    "NEUTRAL": "text-zinc-400",
-  }[card.marketPhase] || "text-zinc-400";
+  // Market readiness colors
+  const readinessColor = {
+    "BUILDING_PRESSURE": "text-amber-400",
+    "BULLISH_IGNITION": "text-green-400",
+    "BEARISH_IGNITION": "text-red-400",
+    "TREND_EXPANSION": "text-green-300",
+    "OVEREXTENDED": "text-orange-400",
+    "CHOP_NO_TRADE": "text-zinc-400",
+    "AWAITING_DATA": "text-zinc-500",
+  }[card.marketReadinessState] || "text-zinc-400";
+
+  // Trade readiness score color bands
+  const readinessScoreColor = card.tradeReadinessScore === null 
+    ? "text-zinc-500" 
+    : card.tradeReadinessScore < 40 
+    ? "text-red-400" 
+    : card.tradeReadinessScore < 60 
+    ? "text-amber-400" 
+    : card.tradeReadinessScore < 75 
+    ? "text-cyan-400" 
+    : "text-green-400";
+
+  const readinessBgBar = card.tradeReadinessScore === null 
+    ? "bg-zinc-900" 
+    : card.tradeReadinessScore < 40 
+    ? "bg-red-500" 
+    : card.tradeReadinessScore < 60 
+    ? "bg-amber-500" 
+    : card.tradeReadinessScore < 75 
+    ? "bg-cyan-500" 
+    : "bg-green-500";
 
   return (
     <div className={`rounded-lg border ${directionBorder} p-6 bg-[#0f0f0f] text-white space-y-5`}>
-      {/* HEADER: Symbol, Status, Price */}
+      {/* HEADER: Symbol + Status Badge + Price */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-2xl font-bold tracking-tight">{card.symbol}/USD</h2>
           <span className={`text-xs px-3 py-1 rounded border ${directionBg} ${directionBorder} ${directionColor}`}>
-            {card.source === "bootstrap" ? "LOADING" : "LIVE"}
+            {isLoading ? "LOADING" : hasSignal ? card.mode : "WATCHING"}
           </span>
         </div>
         <div className="flex items-center justify-between">
@@ -121,77 +145,82 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
         </div>
       </div>
 
-      {/* MARKET PHASE */}
+      {/* MARKET READINESS STATE (Live) */}
       <div className="border-t border-zinc-800 pt-4">
-        <p className="text-xs text-zinc-500 mb-2 uppercase tracking-wider">Market Phase</p>
-        <p className={`text-sm font-semibold ${phaseColor}`}>{card.marketPhase.replace("_", " ")}</p>
+        <p className="text-xs text-zinc-500 mb-2 uppercase tracking-wider">Market State</p>
+        <p className={`text-sm font-semibold ${readinessColor}`}>
+          {card.marketReadinessState.replace(/_/g, " ")}
+        </p>
       </div>
 
-      {/* HTF BIAS */}
-      <div className="border-t border-zinc-800 pt-4 space-y-2">
-        <p className="text-xs text-zinc-500 uppercase tracking-wider">HTF Bias</p>
+      {/* DIRECTIONAL BIAS PANEL */}
+      <div className="border-t border-zinc-800 pt-4 space-y-2 bg-zinc-900 p-3 rounded border border-zinc-700">
+        <p className="text-xs text-zinc-500 uppercase tracking-wider">Market Bias</p>
         <div className="flex items-center justify-between text-sm">
-          <span className="text-zinc-400">4H Trend:</span>
+          <span className="text-zinc-400">4H:</span>
           <span className={card.htf4hTrend === "BULLISH" ? "text-green-400" : card.htf4hTrend === "BEARISH" ? "text-red-400" : "text-zinc-400"}>
-            {card.htf4hTrend} {card.htf4hTrend === "BULLISH" ? "↑" : card.htf4hTrend === "BEARISH" ? "↓" : "•"}
+            {card.htf4hTrend}
           </span>
         </div>
         <div className="flex items-center justify-between text-sm">
-          <span className="text-zinc-400">1H Momentum:</span>
-          <span className={card.htf1hAlignment ? "text-green-400" : "text-red-400"}>
-            {card.htf1hAlignment ? "ALIGNED ↑" : "DIVERGED ↓"}
+          <span className="text-zinc-400">1H:</span>
+          <span className={card.htf1hAlignment ? "text-green-400" : "text-zinc-400"}>
+            {card.htf1hAlignment ? "ALIGNED" : "—"}
+          </span>
+        </div>
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-zinc-400">Overall:</span>
+          <span className={card.direction === "LONG" ? "text-green-400" : card.direction === "SHORT" ? "text-red-400" : "text-zinc-400"}>
+            {card.direction === "LONG" ? "LONG BIAS" : card.direction === "SHORT" ? "SHORT BIAS" : "NO TRADE"}
           </span>
         </div>
       </div>
 
-      {/* LTF ENTRY ENGINE */}
-      <div className="border-t border-zinc-800 pt-4 space-y-2">
-        <p className="text-xs text-zinc-500 uppercase tracking-wider">LTF Entry Engine</p>
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-zinc-400">15M Compression:</span>
-          <span className="text-cyan-400 font-mono">{Math.round(card.compressionLevel)}%</span>
+      {/* TRADE READINESS SCORE - PRIMARY FOCUS */}
+      <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-zinc-700">
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-xs text-zinc-500 uppercase tracking-wider">Trade Readiness</p>
+          <span className={`text-lg font-mono font-bold ${readinessScoreColor}`}>
+            {card.tradeReadinessScore === null ? "—" : Math.round(card.tradeReadinessScore)}%
+          </span>
         </div>
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-zinc-400">5M Trigger:</span>
-          <span className="text-cyan-400">{card.stochRsi > 60 || card.stochRsi < 40 ? "STOCH CROSS" : "EMA FLIP"}</span>
+        <div className="w-full bg-zinc-800 rounded h-3">
+          <div 
+            className={`${readinessBgBar} h-3 rounded transition-all`} 
+            style={{ width: card.tradeReadinessScore === null ? "0%" : `${card.tradeReadinessScore}%` }} 
+          />
         </div>
+        <p className="text-xs text-zinc-500 mt-2">
+          {card.tradeReadinessScore === null 
+            ? "No signal" 
+            : card.tradeReadinessScore < 40 
+            ? "Dead market" 
+            : card.tradeReadinessScore < 60 
+            ? "Building momentum" 
+            : card.tradeReadinessScore < 75 
+            ? "SNIPER zone" 
+            : "CONFIRMED zone"}
+        </p>
       </div>
 
-      {/* MOMENTUM METRICS */}
-      <div className="border-t border-zinc-800 pt-4 space-y-2">
-        <p className="text-xs text-zinc-500 uppercase tracking-wider">Momentum Metrics</p>
-        <div className="text-sm font-mono space-y-1">
-          <div className="flex justify-between"><span className="text-zinc-400">Stoch RSI:</span> <span className={card.stochRsi > 60 ? "text-green-400" : card.stochRsi < 40 ? "text-red-400" : "text-zinc-400"}>{card.stochRsi.toFixed(1)}</span></div>
-          <div className="flex justify-between"><span className="text-zinc-400">EMA Spread:</span> <span className={Math.abs(card.emaSlope) > 0.5 ? "text-green-400" : "text-zinc-400"}>{card.emaSlope > 0 ? "EXPANDING" : "CONTRACTING"}</span></div>
-          <div className="flex justify-between"><span className="text-zinc-400">Strength:</span> <span className="text-cyan-400">{(card.confidence * 10 / 100).toFixed(1)}/10</span></div>
-        </div>
-      </div>
-
-      {/* PROJECTED MOVE RANGE */}
-      <div className="border-t border-zinc-800 pt-4 space-y-2">
-        <p className="text-xs text-zinc-500 uppercase tracking-wider">Projected Move Range</p>
-        <div className="text-sm space-y-1">
-          <div className="flex justify-between"><span className="text-zinc-400">SNIPER:</span> <span className="text-yellow-400">{card.expectedMovePercent.sniper.min.toFixed(1)}–{card.expectedMovePercent.sniper.max.toFixed(1)}%</span></div>
-          <div className="flex justify-between"><span className="text-zinc-400">CONFIRMED:</span> <span className="text-green-400">{card.expectedMovePercent.confirmed.min.toFixed(1)}–{card.expectedMovePercent.confirmed.max.toFixed(1)}%</span></div>
-          <div className="mt-2 space-y-1 text-xs">
-            <div><span className="text-zinc-500">TP1:</span> <span className="text-cyan-400 font-mono ml-2">${fmt(card.targetPrices.tp1)}</span></div>
-            <div><span className="text-zinc-500">TP2:</span> <span className="text-cyan-400 font-mono ml-2">${fmt(card.targetPrices.tp2)}</span></div>
-            <div><span className="text-zinc-500">TP3:</span> <span className="text-cyan-400 font-mono ml-2">${fmt(card.targetPrices.tp3)}</span></div>
-            <div><span className="text-zinc-500">SL:</span> <span className="text-red-400 font-mono ml-2">${fmt(card.targetPrices.sl)}</span></div>
-            <div><span className="text-zinc-500">R:R:</span> <span className="text-green-400 font-mono ml-2">{card.riskReward.toFixed(1)}</span></div>
+      {/* CONDITIONAL: Show targets ONLY if signal exists */}
+      {hasSignal && card.targetPrices && (
+        <div className="border-t border-zinc-800 pt-4 space-y-2">
+          <p className="text-xs text-zinc-500 uppercase tracking-wider">{card.mode} Entry</p>
+          <div className="text-sm font-mono space-y-1">
+            <div className="flex justify-between"><span className="text-zinc-400">Entry Zone:</span> <span className="text-cyan-400">${fmt(card.price)}</span></div>
+            <div className="flex justify-between"><span className="text-zinc-400">TP1:</span> <span className="text-green-400">${fmt(card.targetPrices.tp1)}</span></div>
+            <div className="flex justify-between"><span className="text-zinc-400">TP2:</span> <span className="text-green-400">${fmt(card.targetPrices.tp2)}</span></div>
+            <div className="flex justify-between"><span className="text-zinc-400">TP3:</span> <span className="text-green-400">${fmt(card.targetPrices.tp3)}</span></div>
+            <div className="flex justify-between"><span className="text-zinc-400">SL:</span> <span className="text-red-400">${fmt(card.targetPrices.sl)}</span></div>
+            <div className="flex justify-between mt-2 pt-2 border-t border-zinc-700"><span className="text-zinc-400">R:R:</span> <span className="text-green-400 font-bold">{card.riskReward?.toFixed(1) ?? "—"}:1</span></div>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* SIGNAL QUALITY METER */}
-      <div className="border-t border-zinc-800 pt-4">
-        <div className="flex items-center justify-between mb-2">
-          <p className="text-xs text-zinc-500 uppercase tracking-wider">Signal Quality</p>
-          <span className="text-sm font-mono text-cyan-400">{Math.round(card.signalQuality)}%</span>
-        </div>
-        <div className="w-full bg-zinc-900 rounded h-2">
-          <div className="bg-cyan-500 h-2 rounded transition-all" style={{ width: `${card.signalQuality}%` }} />
-        </div>
+      {/* Status message */}
+      <div className="text-xs text-zinc-500 text-center pt-2">
+        {isLoading ? "Loading market snapshot..." : card.notes}
       </div>
     </div>
   );

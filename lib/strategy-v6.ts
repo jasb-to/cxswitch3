@@ -20,35 +20,24 @@ export type SymbolCardState = {
   confidence: number;
 
   // Momentum indicators (5M)
-  stochRsi: number;
-  emaSlope: number;
-  volatilityLevel: number;
+  stochRsi: number | null;
+  emaSlope: number | null;
+  volatilityLevel: number | null;
 
   // Higher TimeFrame alignment (v7.1.1)
   htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL";
-  htf4hMomentum: number;
-  htf1hAlignment: boolean;
-  htf15mCompression: boolean;
+  htf4hMomentum: number | null;
+  htf1hAlignment: boolean | null;
+  htf15mCompression: boolean | null;
 
-  // Market phase detection (v7.2)
-  marketPhase: "COMPRESSION" | "IGNITION" | "EXPANSION" | "EXHAUSTION" | "REVERSAL_RISK" | "NEUTRAL";
-  compressionLevel: number; // 0-100, 15M compression %
+  // Market readiness engine (v7.2.1)
+  marketReadinessState: "BUILDING_PRESSURE" | "BULLISH_IGNITION" | "BEARISH_IGNITION" | "TREND_EXPANSION" | "OVEREXTENDED" | "CHOP_NO_TRADE" | "AWAITING_DATA";
+  tradeReadinessScore: number | null; // 0-100, NULL if no signal
   
-  // Projected move calculations (v7.2)
-  expectedMovePercent: {
-    sniper: { min: number; max: number };
-    confirmed: { min: number; max: number };
-  };
-  targetPrices: {
-    tp1: number;
-    tp2: number;
-    tp3: number;
-    sl: number;
-  };
-  riskReward: number; // R:R ratio
-  
-  // Signal quality meter (v7.2)
-  signalQuality: number; // 0-100 composite score
+  // Conditional: Only populate if mode === "SNIPER" or "CONFIRMED"
+  expectedMovePercent: { sniper: { min: number; max: number } } | null;
+  targetPrices: { tp1: number; tp2: number; tp3: number; sl: number } | null;
+  riskReward: number | null;
 
   notes: string;
   updatedAt: string;
@@ -109,6 +98,13 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       card.confidence = Math.min(score, 99);
       card.notes = `CONFIRMED ${card.direction} trend continuation ${score}`;
       
+      // Populate trade targets (v7.2.1)
+      const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
+      card.expectedMovePercent = targets.expectedMovePercent;
+      card.targetPrices = targets.targetPrices;
+      card.riskReward = targets.riskReward;
+      card.tradeReadinessScore = calculateTradeReadinessScore("CONFIRMED", card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
+      
       setups.push({
         symbol,
         mode: "CONFIRMED",
@@ -117,10 +113,10 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         reason: `CONFIRMED ${card.direction} - EMA + impulse + HTF alignment`,
         price: card.price,
         momentum: {
-          stochRsiSignal: `Stoch RSI: ${card.stochRsi.toFixed(1)}`,
+          stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
           emaStackSignal: card.direction === "LONG" ? "8 EMA above 21 EMA" : "8 EMA below 21 EMA",
-          volatilitySignal: card.volatilityLevel < 30 ? "Compression detected" : "Normal volatility",
-          trend4H: card.stochRsi > 50,
+          volatilitySignal: (card.volatilityLevel ?? 50) < 30 ? "Compression detected" : "Normal volatility",
+          trend4H: (card.stochRsi ?? 50) > 50,
         },
       });
       console.log(`[ALERT] ${symbol} CONFIRMED ${card.direction} score=${score}`);
@@ -131,6 +127,13 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       card.confidence = Math.min(score, 99);
       card.notes = `SNIPER ${card.direction} ignition ${score}`;
       
+      // Populate trade targets (v7.2.1)
+      const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
+      card.expectedMovePercent = targets.expectedMovePercent;
+      card.targetPrices = targets.targetPrices;
+      card.riskReward = targets.riskReward;
+      card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
+      
       setups.push({
         symbol,
         mode: "SNIPER",
@@ -139,17 +142,17 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         reason: `SNIPER ${card.direction} - HTF aligned ignition event`,
         price: card.price,
         momentum: {
-          stochRsiSignal: `Stoch RSI: ${card.stochRsi.toFixed(1)}`,
+          stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
           emaStackSignal: card.direction === "LONG" ? "8 EMA turning up" : "8 EMA turning down",
-          volatilitySignal: card.volatilityLevel < 40 ? "Compression active" : "Normal",
+          volatilitySignal: (card.volatilityLevel ?? 40) < 40 ? "Compression active" : "Normal",
           trend4H: card.htf4hTrend !== "NEUTRAL",
         },
         // HTF Breakdown for Telegram alerts
         htf: {
           trend4h: card.htf4hTrend as "BULLISH" | "BEARISH",
-          alignment1h: card.htf1hAlignment,
-          compression15m: card.htf15mCompression,
-          trigger5m: card.stochRsi > 20 && card.stochRsi < 80 ? "Stoch RSI cross" : "EMA flip",
+          alignment1h: card.htf1hAlignment ?? false,
+          compression15m: card.htf15mCompression ?? false,
+          trigger5m: (card.stochRsi ?? 50) > 20 && (card.stochRsi ?? 50) < 80 ? "Stoch RSI cross" : "EMA flip",
         },
       });
       console.log(`[ALERT] ${symbol} SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 1H:${card.htf1hAlignment} 15M:${card.htf15mCompression}`);
@@ -233,57 +236,111 @@ function calculateMomentumScore(card: SymbolCardState): number {
 }
 
 /**
- * Detect market phase based on volatility and momentum state (v7.2)
+ * Calculate live market readiness state (v7.2.1)
+ * Derives from: HTF alignment, EMA slope, Stoch velocity, compression, impulse
  */
-function detectMarketPhase(
-  volatilityLevel: number,
-  stochRsi: number,
-  emaSlope: number,
+function calculateMarketReadinessState(
+  htf4hTrend: string,
+  htf1hAlignment: boolean | null,
+  emaSlope: number | null,
+  stochRsi: number | null,
+  volatilityLevel: number | null,
   direction: string
-): "COMPRESSION" | "IGNITION" | "EXPANSION" | "EXHAUSTION" | "REVERSAL_RISK" | "NEUTRAL" {
-  if (volatilityLevel < 30) return "COMPRESSION";
-  if (volatilityLevel < 50 && stochRsi > 30 && stochRsi < 70 && Math.abs(emaSlope) > 0.3) return "IGNITION";
-  if (volatilityLevel > 50 && (stochRsi > 60 || stochRsi < 40)) return "EXPANSION";
-  if (volatilityLevel > 60 && ((stochRsi > 80) || (stochRsi < 20))) return "EXHAUSTION";
-  if (volatilityLevel < 40 && direction === "NEUTRAL") return "REVERSAL_RISK";
-  return "NEUTRAL";
+): "BUILDING_PRESSURE" | "BULLISH_IGNITION" | "BEARISH_IGNITION" | "TREND_EXPANSION" | "OVEREXTENDED" | "CHOP_NO_TRADE" | "AWAITING_DATA" {
+  // No data = awaiting
+  if (stochRsi === null || emaSlope === null || volatilityLevel === null) {
+    return "AWAITING_DATA";
+  }
+
+  // CHOP_NO_TRADE: No HTF direction + neutral momentum
+  if (htf4hTrend === "NEUTRAL" && stochRsi > 40 && stochRsi < 60) {
+    return "CHOP_NO_TRADE";
+  }
+
+  // BUILDING_PRESSURE: Low volatility + aligned HTF + EMA expansion
+  if (volatilityLevel < 35 && htf4hTrend !== "NEUTRAL" && Math.abs(emaSlope) > 0.2) {
+    return "BUILDING_PRESSURE";
+  }
+
+  // BULLISH_IGNITION: HTF bullish + 1H confirms + Stoch cross up + compression release
+  if (htf4hTrend === "BULLISH" && htf1hAlignment && stochRsi > 45 && stochRsi < 65 && volatilityLevel < 50) {
+    return "BULLISH_IGNITION";
+  }
+
+  // BEARISH_IGNITION: HTF bearish + 1H confirms + Stoch cross down + compression release
+  if (htf4hTrend === "BEARISH" && htf1hAlignment && stochRsi > 35 && stochRsi < 55 && volatilityLevel < 50) {
+    return "BEARISH_IGNITION";
+  }
+
+  // TREND_EXPANSION: High volatility + momentum aligned + HTF agrees
+  if (volatilityLevel > 50 && htf4hTrend !== "NEUTRAL" && (stochRsi > 60 || stochRsi < 40)) {
+    return "TREND_EXPANSION";
+  }
+
+  // OVEREXTENDED: Very high volatility + extreme Stoch + divergence risk
+  if (volatilityLevel > 70 && (stochRsi > 80 || stochRsi < 20)) {
+    return "OVEREXTENDED";
+  }
+
+  return "AWAITING_DATA";
 }
 
 /**
- * Calculate expected move ranges and target prices (v7.2)
+ * Calculate trade readiness score (v7.2.1)
+ * 0-100 score indicating entry confidence
+ * NULL if no signal exists
  */
-function calculateProjectedMoves(price: number, volatilityLevel: number) {
+function calculateTradeReadinessScore(
+  mode: string,
+  htf4hTrend: string,
+  htf1hAlignment: boolean | null,
+  emaSlope: number | null,
+  stochRsi: number | null,
+  volatilityLevel: number | null
+): number | null {
+  // Only calculate if signal exists
+  if (mode === "NONE" || stochRsi === null || emaSlope === null || volatilityLevel === null) {
+    return null;
+  }
+
+  let score = 50; // Base
+
+  // HTF alignment (20 max)
+  if (htf4hTrend === "BULLISH" || htf4hTrend === "BEARISH") score += 10;
+  if (htf1hAlignment) score += 10;
+
+  // EMA expansion (15 max)
+  if (emaSlope && Math.abs(emaSlope) > 0.5) score += 15;
+
+  // Momentum acceleration (20 max)
+  if (stochRsi > 60 || stochRsi < 40) score += 20;
+
+  // Compression severity (15 max)
+  if (volatilityLevel < 40) score += 15;
+
+  return Math.min(score, 100);
+}
+
+/**
+ * Calculate trade targets only when signal fired (v7.2.1)
+ */
+function calculateTradeTargets(price: number, volatilityLevel: number, direction: string) {
   const volatilityFactor = volatilityLevel / 100;
   const sniperMin = 0.8 + volatilityFactor * 0.5;
   const sniperMax = 1.5 + volatilityFactor * 0.7;
-  const confirmedMin = 2.5 + volatilityFactor * 0.5;
-  const confirmedMax = 4.5 + volatilityFactor * 1.5;
   
-  const tp1 = price * (1 + sniperMax / 100);
-  const tp2 = price * (1 + confirmedMin / 100);
-  const tp3 = price * (1 + confirmedMax / 100);
-  const sl = price * (1 - sniperMax / 100);
-  const riskReward = confirmedMax / sniperMax;
+  const isLong = direction === "LONG";
+  const tp1 = price * (1 + (isLong ? sniperMax : -sniperMax) / 100);
+  const tp2 = price * (1 + (isLong ? sniperMax * 1.5 : -sniperMax * 1.5) / 100);
+  const tp3 = price * (1 + (isLong ? sniperMax * 2.2 : -sniperMax * 2.2) / 100);
+  const sl = price * (1 + (isLong ? -sniperMax : sniperMax) / 100);
+  const riskReward = (sniperMax * 2.2) / sniperMax;
   
   return {
-    expectedMovePercent: { sniper: { min: sniperMin, max: sniperMax }, confirmed: { min: confirmedMin, max: confirmedMax } },
+    expectedMovePercent: { sniper: { min: sniperMin, max: sniperMax } },
     targetPrices: { tp1, tp2, tp3, sl },
     riskReward,
   };
-}
-
-/**
- * Calculate composite signal quality score (v7.2)
- */
-function calculateSignalQuality(htf4hTrend: string, htf1hAlignment: boolean, emaSlope: number, volatilityLevel: number, stochRsi: number, htf15mCompression: boolean): number {
-  let score = 50;
-  if (htf4hTrend === "BULLISH" || htf4hTrend === "BEARISH") score += 10;
-  if (htf1hAlignment) score += 10;
-  if (Math.abs(emaSlope) > 0.5) score += 15;
-  if (volatilityLevel < 30) score += 15;
-  if (stochRsi > 60 || stochRsi < 40) score += 20;
-  if (htf15mCompression) score += 15;
-  return Math.min(score, 100);
 }
 
 /**
@@ -423,13 +480,16 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     htf1hAlignment,
     htf15mCompression,
 
-    // Market phase and projections (v7.2)
-    marketPhase: detectMarketPhase(volatilityLevel, stochRsi, emaSlope, direction),
-    compressionLevel: Math.max(0, 100 - volatilityLevel), // Inverse of volatility
-    ...calculateProjectedMoves(priceData.price, volatilityLevel),
-    signalQuality: calculateSignalQuality(htf4hTrend, htf1hAlignment, emaSlope, volatilityLevel, stochRsi, htf15mCompression),
+    // Market readiness (v7.2.1)
+    marketReadinessState: calculateMarketReadinessState(htf4hTrend, htf1hAlignment, emaSlope, stochRsi, volatilityLevel, direction),
+    tradeReadinessScore: calculateTradeReadinessScore("NONE", htf4hTrend, htf1hAlignment, emaSlope, stochRsi, volatilityLevel),
+    
+    // Conditional: Only populate if signal exists (SNIPER/CONFIRMED)
+    expectedMovePercent: null,
+    targetPrices: null,
+    riskReward: null,
 
-    notes: direction !== "NEUTRAL" ? `${detectMarketPhase(volatilityLevel, stochRsi, emaSlope, direction)}` : "Waiting for setup",
+    notes: direction !== "NEUTRAL" ? `${calculateMarketReadinessState(htf4hTrend, htf1hAlignment, emaSlope, stochRsi, volatilityLevel, direction).replace(/_/g, " ")}` : "Awaiting momentum ignition",
     updatedAt: new Date().toISOString(),
   };
 
