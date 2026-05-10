@@ -816,6 +816,25 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
     };
   }
 
+  // v7.5.7 FIX: Structural permission check - prevent false SNIPER in choppy/divergent conditions
+  // If: 4H NEUTRAL + 1H DIVERGENT + 15M EXPANDING = "expansion inside indecision"
+  // Then: Raise SNIPER requirement to ignitionProbability >= 80 (reject low-quality setups)
+  // This is a situational dampener, not a new gate
+  const choppy4H = card.htf4hTrend === "NEUTRAL";
+  const divergent1H = !card.htf1hAlignment; // 1H divergent = alignment = false
+  const expanding15M = card.execution15mState === "EXPANDING";
+  
+  if (choppy4H && divergent1H && expanding15M) {
+    // Low-quality macro environment: raise bar for SNIPER execution
+    if (card.ignitionProbability < 80) {
+      return {
+        valid: false,
+        reason: `Choppy 4H (NEUTRAL) + 1H divergent + 15M expanding: requires ignition >= 80, got ${card.ignitionProbability}`
+      };
+    }
+    console.log(`[STRUCTURAL_FILTER] ${card.symbol} ${card.direction}: choppy regime but strong ignition (${card.ignitionProbability} >= 80), allowing SNIPER`);
+  }
+
   // REQUIREMENT 4: Score must be execution-grade (>= 55 for SNIPER, lower threshold than v7.3.3)
   if (score < 55) {
     return {
