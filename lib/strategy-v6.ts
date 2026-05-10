@@ -9,15 +9,14 @@
 
 import type { PriceData } from "./price-router";
 
-// FIX #1: Unified signal state (v7.2.6), extended for v7.2.8
+// v7.3.2: Simplified signal state - removed SNIPER_READY and SNIPER_IMMINENT
+// Returns: NONE | BUILDING | ACTIVE_SNIPER | ACTIVE_CONFIRMED
+// Direct flow: BUILDING → ACTIVE_SNIPER → ACTIVE_CONFIRMED (no intermediate states)
 export type SignalState = 
   | "NONE"              // No signal
-  | "BUILDING"          // Directional bias + compression, waiting for ignition
-  | "SNIPER_IMMINENT"   // Score >= 60, HTF aligned, compression/expansion pending (FIX #2 v7.2.8)
-  | "SNIPER_READY"      // All SNIPER conditions passed, awaiting entry confirmation
-  | "CONFIRMED_READY"   // All CONFIRMED conditions passed, awaiting confirmation
-  | "ACTIVE_SNIPER"     // SNIPER signal active, trade window open (30 min cooldown)
-  | "ACTIVE_CONFIRMED"; // CONFIRMED signal active, trend confirmation (90 min cooldown)
+  | "BUILDING"          // Setup forming, no executable ignition yet
+  | "ACTIVE_SNIPER"     // Early ignition detected, trade ready (30 min cooldown)
+  | "ACTIVE_CONFIRMED"; // Mature confirmation trend (90 min cooldown)
 
 export type SymbolCardState = {
   symbol: string;
@@ -147,24 +146,23 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       });
       console.log(`[ALERT] ${symbol} CONFIRMED ${card.direction} score=${score}`);
     }
-    // SNIPER ALERT: score >= 70 AND sniper conditions met (FIX #1 v7.3.1: enforce strict execution validation)
+    // SNIPER ALERT: v7.3.2 - Direct to ACTIVE_SNIPER on early ignition (no SNIPER_READY intermediate)
     else if (score >= 70 && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
-      // v7.3.1 FIX #1: Validate ACTIVE_SNIPER execution requirements
+      // v7.3.2 FIX #4: Validate ACTIVE_SNIPER execution requirements
       const executionValidation = validateActiveSniperExecution(card, score);
       
       if (!executionValidation.valid) {
         // Execution validation failed - block ACTIVE_SNIPER
         console.log(`[EXECUTION BLOCKED] ${symbol} ${card.direction}: ${executionValidation.reason}`);
-        // Fall through to non-alert state calculation below
-        const sniperImminentPassed = score >= 60 && checkSniperImminent(card);
-        card.signalState = sniperImminentPassed ? "SNIPER_IMMINENT" : "SNIPER_READY";
+        // Fall through to BUILDING state below
+        card.signalState = "BUILDING";
       } else {
-        // Execution validation passed - promote to ACTIVE_SNIPER
+        // Execution validation passed - promote directly to ACTIVE_SNIPER (no intermediate states)
         card.mode = "SNIPER";
         card.confidence = Math.min(score, 99);
         card.lastSignalTime = Date.now();
-        card.signalState = "ACTIVE_SNIPER"; // FIX #1: Set unified signal state
-        card.notes = `SNIPER ${card.direction} execution early-entry ${score}`;
+        card.signalState = "ACTIVE_SNIPER"; // v7.3.2: Direct transition from BUILDING
+        card.notes = `SNIPER ${card.direction} early ignition ${score}`;
         
         // Populate trade targets (v7.2.1)
         const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
@@ -178,31 +176,26 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
           mode: "SNIPER",
           direction: card.direction,
           score: card.confidence,
-          reason: `SNIPER ${card.direction} - HTF:${card.htf4hTrend} + 15M:${card.execution15mState} + 5M trigger`,
+          reason: `SNIPER ${card.direction} - v7.3.2 early ignition`,
           price: card.price,
           momentum: {
             stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
-            emaStackSignal: card.direction === "LONG" ? "8 EMA turning up" : "8 EMA turning down",
-            volatilitySignal: (card.volatilityLevel ?? 40) < 40 ? "Compression active" : "Normal",
+            emaStackSignal: card.direction === "LONG" ? "8 EMA accelerating up" : "8 EMA accelerating down",
+            volatilitySignal: (card.volatilityLevel ?? 40) > 45 ? "Expansion beginning" : "Structure forming",
             trend4H: card.htf4hTrend !== "NEUTRAL",
           },
-          // HTF Breakdown for Telegram alerts (v7.3.1: only populated if execution valid)
           htf: {
             trend4h: card.htf4hTrend as "BULLISH" | "BEARISH",
             alignment1h: card.htf1hAlignment ?? false,
             compression15m: card.htf15mCompression ?? false,
-            trigger5m: (card.stochRsi ?? 50) > 20 && (card.stochRsi ?? 50) < 80 ? "Stoch RSI cross" : "EMA flip",
+            trigger5m: "Early ignition",
           },
         });
         console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
       }
     }
     else {
-      // FIX #2, #4: Derive signal state with proper evaluation order
-      // Check strict SNIPER conditions for SNIPER_READY
-      const sniperPassed = score >= 60 && checkSniperConditions(card, "strict");
-      // Check imminent conditions for SNIPER_IMMINENT (FIX #2)
-      const sniperImminentPassed = score >= 60 && checkSniperImminent(card);
+      // v7.3.2 FIX #4: Simplified signal state calculation (no intermediate states)
       const confirmedPassed = score >= 75 && checkConfirmedConditions(card);
       
       card.signalState = calculateSignalState(
@@ -210,13 +203,12 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         score, 
         card.direction,
         card.htf4hTrend,
-        sniperPassed, 
-        sniperImminentPassed,
+        false, // sniperPassed (not used in v7.3.2)
         confirmedPassed, 
         card.lastSignalTime, 
         "NONE"
       );
-      console.log(`[SCAN] ${symbol} signalState=${card.signalState} score=${score} (sniper=${sniperPassed}, imminent=${sniperImminentPassed})`);
+      console.log(`[SCAN] ${symbol} signalState=${card.signalState} score=${score}`);
     }
   }
 
@@ -472,15 +464,9 @@ function isCooldownElapsed(lastSignalTime: number | undefined, mode: "SNIPER" | 
 }
 
 /**
- * Calculate unified signal state (v7.2.6 FIX #1, extended for v7.2.8)
- * Returns: NONE | BUILDING | SNIPER_IMMINENT | SNIPER_READY | CONFIRMED_READY | ACTIVE_SNIPER | ACTIVE_CONFIRMED
- * 
- * FIX #4: Proper evaluation order:
- * 1. HTF trend
- * 2. Direction
- * 3. Compression OR expansion
- * 4. Score filter
- * 5. Signal state assignment
+ * v7.3.2: Simplified signal state calculation
+ * Returns: NONE | BUILDING | ACTIVE_SNIPER | ACTIVE_CONFIRMED
+ * Direct flow with no intermediate states
  */
 function calculateSignalState(
   mode: "SNIPER" | "CONFIRMED" | "NONE",
@@ -488,33 +474,24 @@ function calculateSignalState(
   direction: string,
   htf4hTrend: string,
   sniperPassed: boolean,
-  sniperImminentPassed: boolean,
   confirmedPassed: boolean,
   lastSignalTime: number | undefined,
   lastMode: "SNIPER" | "CONFIRMED" | "NONE"
 ): SignalState {
-  // CONFIRMED: Highest priority (v7.2.8)
+  // ACTIVE_CONFIRMED: Highest priority (mature confirmation)
   if (confirmedPassed && score >= 75) {
     if (lastMode === "CONFIRMED" && !isCooldownElapsed(lastSignalTime, "CONFIRMED")) {
       return "ACTIVE_CONFIRMED"; // Still in active window
     }
-    return "CONFIRMED_READY"; // New CONFIRMED setup ready
+    return "ACTIVE_CONFIRMED"; // New CONFIRMED setup ready
   }
   
-  // SNIPER ACTIVE: Within cooldown window (v7.2.8)
-  if (lastMode === "SNIPER" && !isCooldownElapsed(lastSignalTime, "SNIPER")) {
-    return "ACTIVE_SNIPER"; // Still in active window
-  }
-  
-  // SNIPER READY: Full conditions met, no cooldown (v7.2.8)
-  if (sniperPassed && score >= 60 && !confirmedPassed) {
-    return "SNIPER_READY";
-  }
-  
-  // FIX #2: SNIPER_IMMINENT (v7.2.8) - early ignition detection
-  // Trigger when: score >= 60 + direction valid + HTF trend aligned + compression/expansion pending
-  if (sniperImminentPassed && score >= 60 && direction !== "NEUTRAL" && htf4hTrend !== "NEUTRAL") {
-    return "SNIPER_IMMINENT"; // NEW: Early entry preparation
+  // ACTIVE_SNIPER: Early ignition (v7.3.2 FIX #2: direct to ACTIVE, no SNIPER_READY)
+  if (sniperPassed && score >= 70 && !confirmedPassed) {
+    if (lastMode === "SNIPER" && !isCooldownElapsed(lastSignalTime, "SNIPER")) {
+      return "ACTIVE_SNIPER"; // Still in active window
+    }
+    return "ACTIVE_SNIPER"; // v7.3.2: No SNIPER_READY intermediate state
   }
   
   // BUILDING: Has directional bias but not ready for signals
@@ -527,7 +504,61 @@ function calculateSignalState(
 }
 
 /**
- * v7.3.1 FIX #2: STRICT ACTIVE_SNIPER EXECUTION VALIDATION
+ * v7.3.1: STRICT ACTIVE_SNIPER EXECUTION VALIDATION
+ * v7.3.2: Loosen 5M ignition for earlier ACTIVE_SNIPER (early momentum capture)
+ * Allow ANY ignition condition, not just confirmed breakout
+ * 
+ * Earlier ignition means:
+ * - EMA acceleration (not full reversal)
+ * - Stochastic momentum (not hard crossover)
+ * - Volatility expansion beginning
+ * - Directional impulse detected
+ */
+function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "early" = "strict"): boolean {
+  // REQUIREMENT 1: Directional bias exists (not NEUTRAL)
+  if (card.direction === "NEUTRAL") {
+    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No directional bias`);
+    return false;
+  }
+
+  // v7.3.2: LOOSEN IGNITION (early momentum capture)
+  // ANY of these conditions trigger ACTIVE_SNIPER now:
+  // 1. EMA has momentum (slope > 0.15, was > 0.2)
+  // 2. Stochastic active zone (not extreme)
+  // 3. Volatility expanding (vol > 45)
+  
+  const emaAccelerating = (card.emaSlope ?? 0) > 0.15; // Loosen from 0.2
+  const stochActive = (card.stochRsi ?? 50) > 30 && (card.stochRsi ?? 50) < 70; // Loosen from 25-75
+  const volatilityExpanding = (card.volatilityLevel ?? 50) > 45; // Breakout mode
+  
+  const hasEarlyIgnition = emaAccelerating || stochActive || volatilityExpanding;
+  
+  if (!hasEarlyIgnition) {
+    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No early ignition`);
+    return false;
+  }
+
+  // v7.3.2: Keep HTF structure strict
+  // Still require compression OR expansion (not none)
+  const compressionExists = card.htf15mCompression === true;
+  const emaExpanding = Math.abs(card.emaSlope ?? 0) > 0.4;
+  const volatilityBreakout = (card.volatilityLevel ?? 50) > 50;
+  const energyBuilding = (card.volatilityLevel ?? 50) <= 45;
+  
+  const compressionOrExpansion = compressionExists || emaExpanding || volatilityBreakout || energyBuilding;
+  
+  if (!compressionOrExpansion) {
+    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No compression/expansion detected`);
+    return false;
+  }
+
+  // ALL CONDITIONS MET: Valid SNIPER setup (early ignition)
+  console.log(`[SNIPER CHECK] ${card.symbol} PASSED (${checkMode}): direction=${card.direction} + early ignition + execution structure`);
+  return true;
+}
+
+/**
+ * v7.3.1: STRICT ACTIVE_SNIPER EXECUTION VALIDATION
  * 
  * Hard validation before promoting to ACTIVE_SNIPER state.
  * Returns clear rejection reason if ANY condition fails.
@@ -592,81 +623,6 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
 
   // ALL REQUIREMENTS MET: Valid ACTIVE_SNIPER execution
   return { valid: true };
-}
-
-/**
- * Check SNIPER_IMMINENT conditions (v7.2.8 FIX #2 - v7.3.1 updated)
- * Early detection: score >= 60 + direction + HTF aligned + compression/expansion forming
- * Does NOT require full ignition trigger yet
- */
-function checkSniperImminent(card: SymbolCardState): boolean {
-  // Requirements:
-  // 1. Directional bias (not NEUTRAL)
-  // 2. HTF trend aligned (not NEUTRAL)
-  // 3. Compression exists OR volatility normal/building
-  
-  const hasBias = card.direction !== "NEUTRAL";
-  const htfAligned = card.htf4hTrend !== "NEUTRAL";
-  const compressionOrBuilding = card.htf15mCompression === true || (card.volatilityLevel ?? 50) <= 50;
-  
-  const result = hasBias && htfAligned && compressionOrBuilding;
-  
-  if (result) {
-    console.log(`[SNIPER_IMMINENT] ${card.symbol} READY: ${card.direction} + ${card.htf4hTrend} + compression forming`);
-  }
-  
-  return result;
-}
-
-/**
- * SNIPER CONDITIONS v7.2.8 (FIX #1 & #3): RELAXED COMPRESSION + EARLY IGNITION
- */
-function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "early" = "strict"): boolean {
-  // REQUIREMENT 1: Directional bias exists (not NEUTRAL)
-  if (card.direction === "NEUTRAL") {
-    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No directional bias`);
-    return false;
-  }
-
-  // FIX #1: RELAXED COMPRESSION (v7.2.8)
-  // ALLOW SNIPER IF ANY OF:
-  // 1. Bollinger squeeze (compression true)
-  // 2. EMA expansion (EMA slope > 0.4)
-  // 3. Volatility expansion (ATR increase or vol > 50)
-  const compressionExists = card.htf15mCompression === true;
-  const emaExpanding = card.emaSlope !== null && Math.abs(card.emaSlope) > 0.4;
-  const volatilityBreakout = (card.volatilityLevel ?? 50) > 50; // Breakout mode
-  const energyBuilding = (card.volatilityLevel ?? 50) <= 45; // Compression mode
-  
-  const compressionOrExpansion = compressionExists || emaExpanding || volatilityBreakout || energyBuilding;
-  
-  if (!compressionOrExpansion) {
-    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No compression/expansion detected`);
-    return false;
-  }
-
-  // REQUIREMENT 2: One ignition event (Stoch cross OR EMA flip OR impulse)
-  const stochCross = (card.stochRsi ?? 50) > 25 && (card.stochRsi ?? 50) < 75; // Active zone
-  const emaFlip = card.emaSlope !== null && Math.abs(card.emaSlope) > 0.3; // Slope established
-  const ignitionTrigger = stochCross || emaFlip;
-  
-  if (!ignitionTrigger) {
-    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No ignition trigger`);
-    return false;
-  }
-
-  // FIX #3: For ACTIVE_SNIPER, require strict compression OR confirmed breakout
-  if (checkMode === "strict") {
-    const strictCompressionOrBreakout = compressionExists || (emaExpanding && Math.abs(card.emaSlope) > 0.5);
-    if (!strictCompressionOrBreakout) {
-      console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: Strict mode - needs confirmed compression/breakout`);
-      return false;
-    }
-  }
-
-  // ALL CONDITIONS MET: Valid SNIPER setup
-  console.log(`[SNIPER CHECK] ${card.symbol} PASSED (${checkMode}): direction=${card.direction} + compression/expansion + ignition`);
-  return true;
 }
 
 /**
