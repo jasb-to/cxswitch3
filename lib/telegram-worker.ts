@@ -71,21 +71,25 @@ async function processAlertQueueAsync() {
           continue;
         }
 
-        // v7.3.1 FIX #3: BLOCK TELEGRAM ALERTS IF HTF STRUCTURE INVALID
-        // Additional checks beyond signalState (defense in depth)
+        // v7.4.0 FIX #3: DIFFERENTIATE HTF VALIDATION BY SIGNAL TYPE
+        // SNIPER: No 4H requirement (uses 1H only), looser HTF checks
+        // CONFIRMED: Strict 4H requirement (caught by signal state, but double-check)
         const htfValidationErrors: string[] = [];
         
-        // Check 1: 4H trend must not be NEUTRAL (caught in signal state, but double-check)
-        if (!job.htf4hTrend || job.htf4hTrend === "NEUTRAL") {
-          htfValidationErrors.push("4H trend NEUTRAL");
+        if (job.mode === "CONFIRMED") {
+          // CONFIRMED must have valid 4H trend (v7.4.0: strict requirement)
+          if (!job.htf4hTrend || job.htf4hTrend === "NEUTRAL") {
+            htfValidationErrors.push("4H trend NEUTRAL (CONFIRMED requires 4H)");
+          }
         }
+        // v7.4.0: SNIPER no longer checks 4H, only 15M execution state
         
-        // Check 2: 15M execution state must be valid
+        // Check: 15M execution state must be valid (for both SNIPER and CONFIRMED)
         if (!job.execution15mState || job.execution15mState === "CHOP" || job.execution15mState === "COMPRESSING") {
           htfValidationErrors.push(`15M ${job.execution15mState || "undefined"}`);
         }
         
-        // Check 3: Price source must not be fallback (CoinGecko)
+        // Check: Price source must not be fallback (CoinGecko)
         if (job.source === "coingecko") {
           htfValidationErrors.push("fallback price source CoinGecko");
         }
