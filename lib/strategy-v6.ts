@@ -69,6 +69,18 @@ export type SymbolCardState = {
 
   notes: string;
   updatedAt: string;
+
+  // v7.5.1: OBSERVABILITY LAYER - Why signals didn't fire
+  // Single string explaining block reason for non-alert states
+  blockReason?: string;
+  
+  // Score breakdown for transparency
+  scoreBreakdown?: {
+    stochComponent: number;
+    emaComponent: number;
+    volatilityComponent: number;
+    totalIgnition: number;
+  };
 };
 
 export type Setup = {
@@ -200,7 +212,33 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       }
     }
     else {
-      // v7.3.2 FIX #4: Simplified signal state calculation (no intermediate states)
+      // v7.5.1: Add block reason for non-alert states
+      // Determine WHY signal didn't fire
+      let blockReason = "No trade conditions met";
+      
+      if (card.direction === "NEUTRAL") {
+        blockReason = "No directional bias";
+      } else if (score < 40) {
+        blockReason = `Score ${score} too low (< 40)`;
+      } else if (score < 55) {
+        blockReason = `Score ${score} below SNIPER floor (< 55)`;
+      } else if (!card.htf1hAlignment) {
+        blockReason = "1H alignment divergent";
+      } else if (card.execution15mState === "CHOP" || card.execution15mState === "COMPRESSING") {
+        blockReason = `15M ${card.execution15mState} - not ready`;
+      } else if (card.ignitionProbability < 60) {
+        blockReason = `Ignition prob=${card.ignitionProbability} (< 60 SNIPER_READY, < 75 ACTIVE_SNIPER)`;
+      } else if (card.ignitionProbability < 75) {
+        blockReason = `Ignition prob=${card.ignitionProbability} - SNIPER_READY but awaiting 75+ for execution`;
+      } else if (score < 70) {
+        blockReason = `Score ${score} below CONFIRMED floor (< 70)`;
+      } else {
+        blockReason = "Conditions met but mode=NONE";
+      }
+      
+      card.blockReason = blockReason;
+      
+      // v7.3.2 FIX #4: Simplified signal state calculation
       const confirmedPassed = score >= 75 && checkConfirmedConditions(card);
       
       card.signalState = calculateSignalState(
@@ -214,7 +252,9 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         card.lastSignalTime, 
         "NONE"
       );
-      console.log(`[SCAN] ${symbol} signalState=${card.signalState} score=${score}`);
+      // v7.5.1: Log observability data for non-alert states
+      const stateDisplay = card.signalState === "SNIPER_READY" ? `${card.signalState} (prob=${card.ignitionProbability})` : card.signalState;
+      console.log(`[BLOCK] ${symbol} ${stateDisplay} | score=${score} ignition=${card.ignitionProbability} | reason: ${card.blockReason}`);
     }
   }
 
@@ -575,114 +615,149 @@ function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "ear
 /**
  * v7.5.0: PROBABILISTIC 5M IGNITION SCORING
  * 
- * Replace binary "5M trigger" gate with continuous ignition probability (0-100)
+ * Replace binary "5M trigger" gate with continuous probability (0-100)
  * No longer permission gate, now "pressure meter for execution timing"
  * 
- * Components:
- * - Stochastic momentum pressure (0-30 points): proximity to oversold/overbought
- * - EMA acceleration (0-30 points): slope magnitude and direction
- * - Micro volatility expansion (0-25 points): ATR or candle range increase
- * - Volume impulse (0-15 points): rising volume relative to baseline
- * 
- * Returns: 0-100 score
+ * Returns: { probability: 0-100, breakdown: component scores, reason: why }
  */
+interface IgnitionResult {
+  probability: number;
+  breakdown: {
+    stochComponent: number;
+    emaComponent: number;
+    volatilityComponent: number;
+    volumeComponent: number;
+  };
+  reason: string;
+}
+
 function calculateIgnitionProbability(
   stochRsi: number | null,
   emaSlope: number | null,
   volatilityLevel: number | null,
   direction: "LONG" | "SHORT" | "NEUTRAL"
-): number {
-  let probability = 0;
+): IgnitionResult {
+  let stochComponent = 0;
+  let emaComponent = 0;
+  let volatilityComponent = 0;
+  let volumeComponent = 0;
+  const reasons: string[] = [];
 
   // COMPONENT 1: Stochastic momentum pressure (0-30 points)
-  // Proximity to oversold/overbought zones without requiring hard crossover
   if (stochRsi !== null) {
     if (direction === "LONG") {
-      // Long entry: ascending from oversold region (< 30)
       if (stochRsi < 20) {
-        probability += 30; // Deep oversold, high pressure
+        stochComponent = 30;
+        reasons.push("Stoch deep oversold");
       } else if (stochRsi < 35) {
-        probability += 20; // Near oversold, moderate pressure
+        stochComponent = 20;
+        reasons.push("Stoch near oversold");
       } else if (stochRsi < 50) {
-        probability += 10; // Lower half, building
+        stochComponent = 10;
+        reasons.push("Stoch building");
       } else if (stochRsi < 70) {
-        probability += 5; // Upper half, still valid
+        stochComponent = 5;
+        reasons.push("Stoch mid-range");
+      } else {
+        reasons.push("Stoch overbought, fading");
       }
-      // stochRsi >= 70 adds 0 (overbought, momentum fading)
     } else if (direction === "SHORT") {
-      // Short entry: descending from overbought region (> 70)
       if (stochRsi > 80) {
-        probability += 30; // Deep overbought, high pressure
+        stochComponent = 30;
+        reasons.push("Stoch deep overbought");
       } else if (stochRsi > 65) {
-        probability += 20; // Near overbought, moderate pressure
+        stochComponent = 20;
+        reasons.push("Stoch near overbought");
       } else if (stochRsi > 50) {
-        probability += 10; // Upper half, building
+        stochComponent = 10;
+        reasons.push("Stoch building");
       } else if (stochRsi > 30) {
-        probability += 5; // Lower half, still valid
+        stochComponent = 5;
+        reasons.push("Stoch mid-range");
+      } else {
+        reasons.push("Stoch oversold, fading");
       }
-      // stochRsi <= 30 adds 0 (oversold, momentum fading)
     }
   }
 
   // COMPONENT 2: EMA acceleration (0-30 points)
-  // Slope magnitude and direction proportionally
   if (emaSlope !== null) {
     const absMagnitude = Math.abs(emaSlope);
     if (direction === "LONG" && emaSlope > 0) {
-      // Long: positive slope = acceleration upward
       if (absMagnitude > 0.8) {
-        probability += 30; // Strong acceleration
+        emaComponent = 30;
+        reasons.push("EMA strong acceleration up");
       } else if (absMagnitude > 0.5) {
-        probability += 22;
+        emaComponent = 22;
+        reasons.push("EMA good acceleration up");
       } else if (absMagnitude > 0.3) {
-        probability += 15;
+        emaComponent = 15;
+        reasons.push("EMA moderate acceleration up");
       } else if (absMagnitude > 0.15) {
-        probability += 8;
+        emaComponent = 8;
+        reasons.push("EMA slight acceleration up");
       } else if (absMagnitude > 0.05) {
-        probability += 3;
+        emaComponent = 3;
+        reasons.push("EMA subtle acceleration up");
+      } else {
+        reasons.push("EMA flat, no acceleration");
       }
     } else if (direction === "SHORT" && emaSlope < 0) {
-      // Short: negative slope = acceleration downward
       if (absMagnitude > 0.8) {
-        probability += 30; // Strong acceleration
+        emaComponent = 30;
+        reasons.push("EMA strong acceleration down");
       } else if (absMagnitude > 0.5) {
-        probability += 22;
+        emaComponent = 22;
+        reasons.push("EMA good acceleration down");
       } else if (absMagnitude > 0.3) {
-        probability += 15;
+        emaComponent = 15;
+        reasons.push("EMA moderate acceleration down");
       } else if (absMagnitude > 0.15) {
-        probability += 8;
+        emaComponent = 8;
+        reasons.push("EMA slight acceleration down");
       } else if (absMagnitude > 0.05) {
-        probability += 3;
+        emaComponent = 3;
+        reasons.push("EMA subtle acceleration down");
+      } else {
+        reasons.push("EMA flat, no acceleration");
       }
+    } else {
+      reasons.push(`EMA slope diverges from ${direction} direction`);
     }
-    // Divergent slope adds 0 (momentum not aligned)
   }
 
   // COMPONENT 3: Micro volatility expansion (0-25 points)
-  // ATR expansion or candle range increase adds probability weight
   if (volatilityLevel !== null) {
     if (volatilityLevel > 60) {
-      probability += 25; // High expansion
+      volatilityComponent = 25;
+      reasons.push("Volatility high expansion");
     } else if (volatilityLevel > 50) {
-      probability += 18; // Good expansion
+      volatilityComponent = 18;
+      reasons.push("Volatility good expansion");
     } else if (volatilityLevel > 40) {
-      probability += 10; // Moderate expansion
+      volatilityComponent = 10;
+      reasons.push("Volatility moderate expansion");
     } else if (volatilityLevel > 30) {
-      probability += 5; // Slight expansion
+      volatilityComponent = 5;
+      reasons.push("Volatility slight expansion");
+    } else {
+      reasons.push("Volatility compressing, not expanding");
     }
-    // Low volatility (< 30) adds 0 (compression, not expanding)
   }
 
   // COMPONENT 4: Volume impulse (0-15 points)
-  // v7.5.0: Placeholder - volume data not yet integrated
-  // When available, rising volume relative to baseline increases probability
-  // For now: assign fixed 5 points if volatility shows impulse
   if (volatilityLevel !== null && volatilityLevel > 55) {
-    probability += 5; // Impulse-like conditions
+    volumeComponent = 5;
+    reasons.push("Volume impulse-like");
   }
 
-  // Cap at 100
-  return Math.min(probability, 100);
+  const probability = Math.min(stochComponent + emaComponent + volatilityComponent + volumeComponent, 100);
+  
+  return {
+    probability,
+    breakdown: { stochComponent, emaComponent, volatilityComponent, volumeComponent },
+    reason: reasons.length > 0 ? reasons.join(" + ") : "No ignition signals detected"
+  };
 }
 
 /**
@@ -931,8 +1006,25 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     emaSlope,
     volatilityLevel,
     
-    // v7.5.0: Probabilistic 5M ignition score (0-100)
-    ignitionProbability: calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction),
+    // v7.5.1: Probabilistic 5M ignition with observability
+    ignitionProbability: (() => {
+      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction);
+      // Log ignition breakdown for transparency
+      console.log(
+        `[IGNITION] ${symbol} ${direction}: prob=${result.probability} [Stoch:${result.breakdown.stochComponent} EMA:${result.breakdown.emaComponent} Vol:${result.breakdown.volatilityComponent}] | ${result.reason}`
+      );
+      // Store breakdown for debugging
+      if (!this) {
+        // During initialization, store separately - will be assigned after
+      }
+      return result.probability;
+    })(),
+    
+    // v7.5.1: Store breakdown for UI debugging
+    scoreBreakdown: (() => {
+      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction);
+      return result.breakdown;
+    })(),
 
     // HTF alignment data
     htf4hTrend,
