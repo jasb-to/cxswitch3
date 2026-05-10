@@ -672,43 +672,43 @@ function calculateIgnitionProbability(
     }
   }
 
-  // COMPONENT 2: EMA acceleration (0-30 points)
+  // COMPONENT 2: EMA acceleration (0-35 points) v7.5.4: increased from 30 to capture early trend ignition
   if (emaSlope !== null) {
     const absMagnitude = Math.abs(emaSlope);
     if (direction === "LONG" && emaSlope > 0) {
       if (absMagnitude > 0.8) {
-        emaComponent = 30;
+        emaComponent = 35;
         reasons.push("EMA strong acceleration up");
       } else if (absMagnitude > 0.5) {
-        emaComponent = 22;
+        emaComponent = 25;
         reasons.push("EMA good acceleration up");
       } else if (absMagnitude > 0.3) {
-        emaComponent = 15;
+        emaComponent = 17;
         reasons.push("EMA moderate acceleration up");
       } else if (absMagnitude > 0.15) {
-        emaComponent = 8;
+        emaComponent = 10;
         reasons.push("EMA slight acceleration up");
       } else if (absMagnitude > 0.05) {
-        emaComponent = 3;
+        emaComponent = 4;
         reasons.push("EMA subtle acceleration up");
       } else {
         reasons.push("EMA flat, no acceleration");
       }
     } else if (direction === "SHORT" && emaSlope < 0) {
       if (absMagnitude > 0.8) {
-        emaComponent = 30;
+        emaComponent = 35;
         reasons.push("EMA strong acceleration down");
       } else if (absMagnitude > 0.5) {
-        emaComponent = 22;
+        emaComponent = 25;
         reasons.push("EMA good acceleration down");
       } else if (absMagnitude > 0.3) {
-        emaComponent = 15;
+        emaComponent = 17;
         reasons.push("EMA moderate acceleration down");
       } else if (absMagnitude > 0.15) {
-        emaComponent = 8;
+        emaComponent = 10;
         reasons.push("EMA slight acceleration down");
       } else if (absMagnitude > 0.05) {
-        emaComponent = 3;
+        emaComponent = 4;
         reasons.push("EMA subtle acceleration down");
       } else {
         reasons.push("EMA flat, no acceleration");
@@ -718,19 +718,19 @@ function calculateIgnitionProbability(
     }
   }
 
-  // COMPONENT 3: Micro volatility expansion (0-25 points)
+  // COMPONENT 3: Micro volatility expansion (0-35 points) v7.5.4: increased from 25 to capture impulse expansion
   if (volatilityLevel !== null) {
     if (volatilityLevel > 60) {
-      volatilityComponent = 25;
+      volatilityComponent = 35;
       reasons.push("Volatility high expansion");
     } else if (volatilityLevel > 50) {
-      volatilityComponent = 18;
+      volatilityComponent = 25;
       reasons.push("Volatility good expansion");
     } else if (volatilityLevel > 40) {
-      volatilityComponent = 10;
+      volatilityComponent = 15;
       reasons.push("Volatility moderate expansion");
     } else if (volatilityLevel > 30) {
-      volatilityComponent = 5;
+      volatilityComponent = 8;
       reasons.push("Volatility slight expansion");
     } else {
       reasons.push("Volatility compressing, not expanding");
@@ -743,18 +743,18 @@ function calculateIgnitionProbability(
     reasons.push("Volume impulse-like");
   }
 
-  // v7.5.2: Apply 1H alignment modifier (probabilistic, not hard gate)
-  // Aligned: +10 (boosts early entry confidence)
-  // Divergent: -10 (penalizes counter-structure but doesn't block)
+  // v7.5.4: Apply 1H alignment modifier - reduced to allow early entries during impulse expansion
+  // Aligned: +8 (was +10, still boosts early confidence but less heavily)
+  // Divergent: -5 (was -10, penalizes counter-structure but allows early waves)
   let probabilityBase = stochComponent + emaComponent + volatilityComponent + volumeComponent;
   let htfModifier = 0;
   
   if (htf1hAlignment) {
-    htfModifier = 10;
+    htfModifier = 8;
     reasons.push("1H aligned");
   } else {
-    htfModifier = -10;
-    reasons.push("1H divergent (-10)");
+    htfModifier = -5;
+    reasons.push("1H divergent (-5)");
   }
   
   const probability = Math.min(Math.max(probabilityBase + htfModifier, 0), 100); // Clamp 0-100
