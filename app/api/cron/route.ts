@@ -52,8 +52,10 @@ export async function GET(req: NextRequest) {
       setups,
     });
 
-    // STEP 5: Enqueue alerts (v7.5.5: Pass full card for complete formatting)
-    // Do NOT await - let alerts process independently
+    // STEP 5: Enqueue alerts (v7.5.6: Transition-based deduplication)
+    // v7.5.5: Pass full card for complete formatting
+    // v7.5.6: Call enqueueAlert for ALL setups - enqueueAlert handles deduplication
+    // Only alerts with state transitions are actually queued (prevents spam while state persists)
     for (const setup of setups) {
       // Find the corresponding card to pass complete enriched object
       const card = newCards.find(c => c.symbol === setup.symbol);

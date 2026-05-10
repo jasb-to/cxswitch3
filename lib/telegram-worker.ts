@@ -37,10 +37,58 @@ let alertQueue: TelegramAlertJob[] = [];
 let isProcessingAlerts = false;
 
 /**
+ * v7.5.6: Alert state transition tracker
+ * Tracks previous signal state per symbol + direction to detect transitions only
+ * Key: symbol + direction (e.g., "SOL-SHORT")
+ * Value: { prevState, prevIgnition, lastAlertTime }
+ */
+const alertStateMemory: Map<string, { prevState: string; prevIgnition: number; lastAlertTime: number }> = new Map();
+
+/**
+ * Get memory key for alert deduplication
+ */
+function getAlertMemoryKey(symbol: string, direction: string): string {
+  return `${symbol}-${direction}`;
+}
+
+/**
  * Enqueue alert for processing (v7.2.7 FIX #6)
+ * v7.5.6: Only enqueue on state TRANSITIONS, not persistence
  * Non-blocking - returns immediately
  */
 export function enqueueAlert(job: TelegramAlertJob) {
+  // v7.5.6: Check if this is a state transition (not persistence)
+  const memoryKey = getAlertMemoryKey(job.symbol, job.direction);
+  const memory = alertStateMemory.get(memoryKey);
+  
+  // Only enqueue if:
+  // 1. No previous state recorded (first time)
+  // 2. State changed from previous state
+  // 3. Ignition probability band changed (e.g., from BUILDING to ACTIVE_SNIPER)
+  const isStateTransition = !memory || memory.prevState !== job.signalState;
+  
+  if (!isStateTransition) {
+    console.log(`[ALERT_DEDUP] ${job.symbol} ${job.direction}: state persists as ${job.signalState} (ignition ${job.card.ignitionProbability}), skipping duplicate alert`);
+    // Update memory timestamp but don't enqueue
+    alertStateMemory.set(memoryKey, {
+      prevState: job.signalState,
+      prevIgnition: job.card.ignitionProbability,
+      lastAlertTime: memory?.lastAlertTime || 0,
+    });
+    return;
+  }
+  
+  // State transitioned! Log transition and enqueue alert
+  console.log(`[ALERT_TRANSITION] ${job.symbol} ${job.direction}: ${memory?.prevState || "NONE"} → ${job.signalState} (ignition ${job.card.ignitionProbability}), queueing alert`);
+  
+  // Update memory with new state
+  alertStateMemory.set(memoryKey, {
+    prevState: job.signalState,
+    prevIgnition: job.card.ignitionProbability,
+    lastAlertTime: Date.now(),
+  });
+  
+  // Enqueue for processing
   alertQueue.push(job);
   // Fire and forget - don't await
   processAlertQueueAsync();
