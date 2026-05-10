@@ -9,19 +9,24 @@
  */
 
 import { sendAlert, canSendAlert } from "./telegram-v6";
+import type { SymbolCardState } from "./strategy-v6";
 
 export type TelegramAlertJob = {
+  // v7.5.5: Full enriched card object for complete Telegram payloads
+  card: SymbolCardState;
+  
+  // Legacy minimal fields (deprecated, kept for backward compat)
   symbol: string;
   mode: "SNIPER" | "CONFIRMED";
   direction: "LONG" | "SHORT";
   score: number;
   price: number;
-  source?: string; // v7.3.1: check price source validity
-  signalState?: string; // v7.3.0: track signal state for execution gate
+  source?: string;
+  signalState?: string;
   targetPrices?: { tp1: number; tp2: number; sl: number } | null;
-  htf4hTrend?: "BULLISH" | "BEARISH" | "NEUTRAL"; // v7.3.1: validate HTF structure
-  execution15mState?: "COMPRESSING" | "BREAKOUT_READY" | "EXPANDING" | "CHOP"; // v7.3.1: validate 15M execution
-  queued: number; // timestamp
+  htf4hTrend?: "BULLISH" | "BEARISH" | "NEUTRAL";
+  execution15mState?: "COMPRESSING" | "BREAKOUT_READY" | "EXPANDING" | "CHOP";
+  queued: number;
 };
 
 /**
@@ -120,18 +125,8 @@ async function processAlertQueueAsync() {
 
         // Check cooldown
         if (await canSendAlert(job.symbol, job.mode, job.direction)) {
-          // Send alert (async, don't await in tight loop)
-          sendAlert({
-            symbol: job.symbol,
-            mode: job.mode,
-            direction: job.direction,
-            score: job.score,
-            reason: `${job.mode} ${job.direction} - ${job.signalState}`,
-            price: job.price,
-            momentum: {
-              targetPrices: job.targetPrices,
-            },
-          }).catch(err => {
+          // v7.5.5: Pass full card object to sendAlert for complete formatting
+          sendAlert(job.card).catch(err => {
             console.log(`[ALERT_WORKER] Failed to send ${job.symbol}:`, err);
           });
           

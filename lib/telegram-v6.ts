@@ -6,11 +6,19 @@
  */
 
 import { supabase } from "@/lib/supabase-client";
-import type { Setup } from "./strategy-v6";
+import type { SymbolCardState } from "./strategy-v6";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * Format number with consistent decimals
+ */
+function fmt(n: number | null | undefined): string {
+  if (n == null) return "—";
+  return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
 /**
  * Check if we can send alert for this setup
@@ -46,15 +54,46 @@ export async function canSendAlert(symbol: string, mode: "SNIPER" | "CONFIRMED",
 }
 
 /**
- * Send alert to Telegram
+ * v7.5.5: Send full execution alert to Telegram with complete card context
+ * No truncated payloads — includes entry zone, TP/SL, market bias, and execution context
  */
-export async function sendAlert(setup: Setup): Promise<void> {
+export async function sendAlert(card: SymbolCardState): Promise<void> {
   if (!BOT_TOKEN || !CHAT_ID) {
     console.log(`[TELEGRAM] No credentials, skipping alert`);
     return;
   }
 
-  const text = `${setup.mode} ${setup.direction} ${setup.symbol}\nScore: ${setup.score}`;
+  // Emoji for signal type
+  const emoji = card.mode === "CONFIRMED" ? "🟢" : "🟡";
+  const directionEmoji = card.direction === "LONG" ? "📈" : "📉";
+  
+  // Market bias line
+  const bias4H = card.htf4hTrend === "BULLISH" ? "🔵" : card.htf4hTrend === "BEARISH" ? "🔴" : "⚫";
+  const bias15M = card.execution15mState === "EXPANDING" ? "🟢" : card.execution15mState === "BREAKOUT_READY" ? "🟡" : "⚪";
+  
+  // Format prices
+  const entry = fmt(card.price);
+  const tp1 = fmt(card.targetPrices?.tp1);
+  const tp2 = fmt(card.targetPrices?.tp2);
+  const sl = fmt(card.targetPrices?.sl);
+  const rr = card.riskReward ? card.riskReward.toFixed(2) : "—";
+  
+  // Build full message with all context
+  const text =
+    `${emoji} ${card.mode} — ${directionEmoji} ${card.direction} ${card.symbol}\n` +
+    `\n` +
+    `Score: ${card.confidence.toFixed(1)} | Ignition: ${card.ignitionProbability}%\n` +
+    `\n` +
+    `📊 BIAS: ${bias4H} 4H | ${bias15M} 15M (${card.execution15mState})\n` +
+    `\n` +
+    `💰 ENTRY: $${entry}\n` +
+    `🎯 TP1: $${tp1}\n` +
+    `🎯 TP2: $${tp2}\n` +
+    `🛑 SL: $${sl}\n` +
+    `\n` +
+    `📈 R:R: ${rr}:1\n` +
+    `\n` +
+    `State: ${card.signalState}`;
 
   try {
     const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
@@ -70,9 +109,9 @@ export async function sendAlert(setup: Setup): Promise<void> {
     // Store alert in database for cooldown
     if (supabase) {
       await supabase.from("alerts_sent").insert([{
-        symbol: setup.symbol,
-        mode: setup.mode,
-        direction: setup.direction,
+        symbol: card.symbol,
+        mode: card.mode,
+        direction: card.direction,
         timestamp: new Date().toISOString(),
       }]);
     }
