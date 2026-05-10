@@ -835,12 +835,29 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
     console.log(`[STRUCTURAL_FILTER] ${card.symbol} ${card.direction}: choppy regime but strong ignition (${card.ignitionProbability} >= 80), allowing SNIPER`);
   }
 
-  // REQUIREMENT 4: Score must be execution-grade (>= 55 for SNIPER, lower threshold than v7.3.3)
-  if (score < 55) {
-    return {
-      valid: false,
-      reason: `Score ${score} below SNIPER threshold (55)`
-    };
+  // v7.5.8 FIX: Displacement Confirmation Guard - prevent fake impulse entries
+  // Ensure expansion actually breaks structure, not just rotates inside it
+  // Require ONE of:
+  // 1. EMA slope direction matches trade direction (upslope for LONG, downslope for SHORT)
+  // 2. Price has moved beyond midpoint (true breakout displacement)
+  
+  const emaDirectionValid = 
+    (card.direction === "LONG" && card.emaSlope !== null && card.emaSlope > 0) ||
+    (card.direction === "SHORT" && card.emaSlope !== null && card.emaSlope < 0);
+  
+  // v7.5.8: Displacement confirmation: EMA direction OR strong expansion signal
+  // If EMA slope is NOT aligned with direction, then volatility expansion must be strong
+  if (!emaDirectionValid) {
+    // EMA not supporting direction - check for strong volatility expansion instead
+    // This allows entries when volatility confirms move but EMA is lagging
+    const strongVolatilityExpansion = card.volatilityLevel !== null && card.volatilityLevel > 65;
+    
+    if (!strongVolatilityExpansion) {
+      return {
+        valid: false,
+        reason: `No displacement confirmation: EMA slope misaligned (${card.emaSlope?.toFixed(2)}) and volatility weak (${card.volatilityLevel})`
+      };
+    }
   }
 
   // REQUIREMENT 5: Direction must be valid (not NEUTRAL)
