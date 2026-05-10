@@ -743,18 +743,19 @@ function calculateIgnitionProbability(
     reasons.push("Volume impulse-like");
   }
 
-  // v7.5.4: Apply 1H alignment modifier - reduced to allow early entries during impulse expansion
-  // Aligned: +8 (was +10, still boosts early confidence but less heavily)
-  // Divergent: -5 (was -10, penalizes counter-structure but allows early waves)
+  // v8.0.0: Apply 1H alignment modifier - fine-tuned for early impulse capture
+  // Aligned: +6 (boosts early confidence, but not overweighting)
+  // Divergent: -4 (penalizes counter-structure asymmetrically, but still allows marginal setups)
+  // Rationale: Reduces over-suppression of first-wave momentum while SNIPER stays disciplined
   let probabilityBase = stochComponent + emaComponent + volatilityComponent + volumeComponent;
   let htfModifier = 0;
   
   if (htf1hAlignment) {
-    htfModifier = 8;
+    htfModifier = 6;
     reasons.push("1H aligned");
   } else {
-    htfModifier = -5;
-    reasons.push("1H divergent (-5)");
+    htfModifier = -4;
+    reasons.push("1H divergent (-4)");
   }
   
   const probability = Math.min(Math.max(probabilityBase + htfModifier, 0), 100); // Clamp 0-100
