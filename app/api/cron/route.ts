@@ -52,24 +52,29 @@ export async function GET(req: NextRequest) {
       setups,
     });
 
-    // STEP 5: Enqueue alerts (FIX #6 - decoupled, non-blocking)
-    // v7.3.1 FIX #1, #2, #3: Include all HTF data for execution gate and validation
+    // STEP 5: Enqueue alerts (v7.5.5: Pass full card for complete formatting)
     // Do NOT await - let alerts process independently
     for (const setup of setups) {
-      // Find the corresponding card to get signalState, targetPrices, and HTF data
+      // Find the corresponding card to pass complete enriched object
       const card = newCards.find(c => c.symbol === setup.symbol);
       
+      if (!card) continue; // Skip if card not found (shouldn't happen)
+      
       enqueueAlert({
-        symbol: setup.symbol,
+        // v7.5.5: Pass full enriched card object to Telegram formatter
+        card,
+        
+        // Legacy minimal fields (for backward compat, derived from card)
+        symbol: card.symbol,
         mode: setup.mode,
         direction: setup.direction,
         score: setup.score,
-        price: setup.price,
-        source: card?.source, // v7.3.1: validate price source
-        signalState: card?.signalState, // v7.3.0 FIX #1: execution gate check
-        targetPrices: card?.targetPrices, // v7.3.0 FIX #2: payload validation
-        htf4hTrend: card?.htf4hTrend, // v7.3.1: HTF validation
-        execution15mState: card?.execution15mState, // v7.3.1: 15M execution validation
+        price: card.price,
+        source: card.source,
+        signalState: card.signalState,
+        targetPrices: card.targetPrices,
+        htf4hTrend: card.htf4hTrend,
+        execution15mState: card.execution15mState,
         queued: Date.now(),
       });
     }
