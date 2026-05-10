@@ -478,20 +478,25 @@ function calculateSignalState(
   lastSignalTime: number | undefined,
   lastMode: "SNIPER" | "CONFIRMED" | "NONE"
 ): SignalState {
-  // ACTIVE_CONFIRMED: Highest priority (mature confirmation)
-  if (confirmedPassed && score >= 75) {
+  // v7.3.3: Realigned thresholds - eliminate dead zone
+  // ACTIVE_CONFIRMED: score >= 70 (was >= 75, raised SNIPER floor to 55)
+  // ACTIVE_SNIPER: 55-69 (was >= 70, now captures early ignition in lower band)
+  // BUILDING: < 55 (was >= 40)
+  
+  // ACTIVE_CONFIRMED: Highest priority (mature continuation phase)
+  if (confirmedPassed && score >= 70) {
     if (lastMode === "CONFIRMED" && !isCooldownElapsed(lastSignalTime, "CONFIRMED")) {
       return "ACTIVE_CONFIRMED"; // Still in active window
     }
     return "ACTIVE_CONFIRMED"; // New CONFIRMED setup ready
   }
   
-  // ACTIVE_SNIPER: Early ignition (v7.3.2 FIX #2: direct to ACTIVE, no SNIPER_READY)
-  if (sniperPassed && score >= 70 && !confirmedPassed) {
+  // ACTIVE_SNIPER: Early ignition phase (v7.3.3: score >= 55 captures early momentum)
+  if (sniperPassed && score >= 55 && !confirmedPassed) {
     if (lastMode === "SNIPER" && !isCooldownElapsed(lastSignalTime, "SNIPER")) {
       return "ACTIVE_SNIPER"; // Still in active window
     }
-    return "ACTIVE_SNIPER"; // v7.3.2: No SNIPER_READY intermediate state
+    return "ACTIVE_SNIPER"; // v7.3.3: Early ignition entry (no gaps in progression)
   }
   
   // BUILDING: Has directional bias but not ready for signals
