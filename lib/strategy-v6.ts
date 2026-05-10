@@ -635,7 +635,8 @@ function calculateIgnitionProbability(
   stochRsi: number | null,
   emaSlope: number | null,
   volatilityLevel: number | null,
-  direction: "LONG" | "SHORT" | "NEUTRAL"
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  htf1hAlignment: boolean = true // v7.5.2: 1H alignment as probabilistic modifier (default true)
 ): IgnitionResult {
   let stochComponent = 0;
   let emaComponent = 0;
@@ -751,7 +752,21 @@ function calculateIgnitionProbability(
     reasons.push("Volume impulse-like");
   }
 
-  const probability = Math.min(stochComponent + emaComponent + volatilityComponent + volumeComponent, 100);
+  // v7.5.2: Apply 1H alignment modifier (probabilistic, not hard gate)
+  // Aligned: +10 (boosts early entry confidence)
+  // Divergent: -10 (penalizes counter-structure but doesn't block)
+  let probabilityBase = stochComponent + emaComponent + volatilityComponent + volumeComponent;
+  let htfModifier = 0;
+  
+  if (htf1hAlignment) {
+    htfModifier = 10;
+    reasons.push("1H aligned");
+  } else {
+    htfModifier = -10;
+    reasons.push("1H divergent (-10)");
+  }
+  
+  const probability = Math.min(Math.max(probabilityBase + htfModifier, 0), 100); // Clamp 0-100
   
   return {
     probability,
@@ -789,13 +804,9 @@ function calculateIgnitionProbability(
  */
 function validateActiveSniperExecution(card: SymbolCardState, score: number): { valid: boolean; reason?: string } {
   // v7.4.0: SNIPER removed 4H requirement, use 1H alignment only
-  // REQUIREMENT 1: 1H alignment must be true (direction matches 1H momentum)
-  if (!card.htf1hAlignment) {
-    return {
-      valid: false,
-      reason: `1H alignment false - no directional structure for SNIPER`
-    };
-  }
+  // v7.5.2: REMOVED hard 1H alignment gate (now probabilistic modifier in ignitionProbability)
+  // 1H divergence will reduce probability but NOT block execution
+  // Allows early impulse capture during first wave before 1H fully aligns
 
   // REQUIREMENT 2: 15M Execution state must be valid (NOT CHOP/COMPRESSING)
   if (card.execution15mState === "CHOP" || card.execution15mState === "COMPRESSING") {
@@ -1008,7 +1019,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     
     // v7.5.1: Probabilistic 5M ignition with observability
     ignitionProbability: (() => {
-      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction);
+      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf1hAlignment); // v7.5.2: pass 1H alignment
       // Log ignition breakdown for transparency
       console.log(
         `[IGNITION] ${symbol} ${direction}: prob=${result.probability} [Stoch:${result.breakdown.stochComponent} EMA:${result.breakdown.emaComponent} Vol:${result.breakdown.volatilityComponent}] | ${result.reason}`
@@ -1022,7 +1033,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     
     // v7.5.1: Store breakdown for UI debugging
     scoreBreakdown: (() => {
-      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction);
+      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf1hAlignment); // v7.5.2: pass 1H alignment
       return result.breakdown;
     })(),
 
