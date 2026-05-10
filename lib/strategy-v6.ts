@@ -816,48 +816,12 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
     };
   }
 
-  // v7.5.7 FIX: Structural permission check - prevent false SNIPER in choppy/divergent conditions
-  // If: 4H NEUTRAL + 1H DIVERGENT + 15M EXPANDING = "expansion inside indecision"
-  // Then: Raise SNIPER requirement to ignitionProbability >= 80 (reject low-quality setups)
-  // This is a situational dampener, not a new gate
-  const choppy4H = card.htf4hTrend === "NEUTRAL";
-  const divergent1H = !card.htf1hAlignment; // 1H divergent = alignment = false
-  const expanding15M = card.execution15mState === "EXPANDING";
-  
-  if (choppy4H && divergent1H && expanding15M) {
-    // Low-quality macro environment: raise bar for SNIPER execution
-    if (card.ignitionProbability < 80) {
-      return {
-        valid: false,
-        reason: `Choppy 4H (NEUTRAL) + 1H divergent + 15M expanding: requires ignition >= 80, got ${card.ignitionProbability}`
-      };
-    }
-    console.log(`[STRUCTURAL_FILTER] ${card.symbol} ${card.direction}: choppy regime but strong ignition (${card.ignitionProbability} >= 80), allowing SNIPER`);
-  }
-
-  // v7.5.8 FIX: Displacement Confirmation Guard - prevent fake impulse entries
-  // Ensure expansion actually breaks structure, not just rotates inside it
-  // Require ONE of:
-  // 1. EMA slope direction matches trade direction (upslope for LONG, downslope for SHORT)
-  // 2. Price has moved beyond midpoint (true breakout displacement)
-  
-  const emaDirectionValid = 
-    (card.direction === "LONG" && card.emaSlope !== null && card.emaSlope > 0) ||
-    (card.direction === "SHORT" && card.emaSlope !== null && card.emaSlope < 0);
-  
-  // v7.5.8: Displacement confirmation: EMA direction OR strong expansion signal
-  // If EMA slope is NOT aligned with direction, then volatility expansion must be strong
-  if (!emaDirectionValid) {
-    // EMA not supporting direction - check for strong volatility expansion instead
-    // This allows entries when volatility confirms move but EMA is lagging
-    const strongVolatilityExpansion = card.volatilityLevel !== null && card.volatilityLevel > 65;
-    
-    if (!strongVolatilityExpansion) {
-      return {
-        valid: false,
-        reason: `No displacement confirmation: EMA slope misaligned (${card.emaSlope?.toFixed(2)}) and volatility weak (${card.volatilityLevel})`
-      };
-    }
+  // REQUIREMENT 4: Score must be execution-grade (>= 55 for SNIPER)
+  if (score < 55) {
+    return {
+      valid: false,
+      reason: `Score ${score} below SNIPER threshold (55)`
+    };
   }
 
   // REQUIREMENT 5: Direction must be valid (not NEUTRAL)
@@ -868,7 +832,9 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
     };
   }
 
-  // ALL REQUIREMENTS MET: Valid ACTIVE_SNIPER execution (v7.4.0: 1H based, no 4H dependency)
+  // ALL REQUIREMENTS MET: Valid ACTIVE_SNIPER execution
+  // v8.0.0 SIMPLIFIED: SNIPER is early asymmetric entry, not late confirmation
+  // No over-validation on displacement, structure, or regime - that's CONFIRMED's job
   return { valid: true };
 }
 
