@@ -9,13 +9,14 @@
 
 import type { PriceData } from "./price-router";
 
-// v7.3.2: Simplified signal state - removed SNIPER_READY and SNIPER_IMMINENT
-// Returns: NONE | BUILDING | ACTIVE_SNIPER | ACTIVE_CONFIRMED
-// Direct flow: BUILDING → ACTIVE_SNIPER → ACTIVE_CONFIRMED (no intermediate states)
+// v7.5.0: Reintroduced SNIPER_READY for probabilistic ignition states
+// Returns: NONE | BUILDING | SNIPER_READY | ACTIVE_SNIPER | ACTIVE_CONFIRMED
+// Flow: BUILDING → SNIPER_READY (60-75) → ACTIVE_SNIPER (75+) → ACTIVE_CONFIRMED
 export type SignalState = 
   | "NONE"              // No signal
-  | "BUILDING"          // Setup forming, no executable ignition yet
-  | "ACTIVE_SNIPER"     // Early ignition detected, trade ready (30 min cooldown)
+  | "BUILDING"          // Setup forming, ignitionProbability < 60
+  | "SNIPER_READY"      // Early pressure detected, ignitionProbability 60-75, UI only (no alerts)
+  | "ACTIVE_SNIPER"     // Strong pressure, ignitionProbability 75-90, executable (30 min cooldown)
   | "ACTIVE_CONFIRMED"; // Mature confirmation trend (90 min cooldown)
 
 export type SymbolCardState = {
@@ -36,6 +37,10 @@ export type SymbolCardState = {
   stochRsi: number | null;
   emaSlope: number | null;
   volatilityLevel: number | null;
+  
+  // v7.5.0: Probabilistic 5M ignition (replaces binary trigger)
+  // Score 0-100 representing likelihood of imminent execution
+  ignitionProbability: number;
 
   // Higher TimeFrame alignment (v7.1.1 - SIMPLIFIED FOR v7.2.10)
   // v7.2.10: Remove 1H dependency, use 15M execution structure instead
@@ -204,7 +209,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         card.direction,
         card.htf4hTrend,
         false, // sniperPassed (not used in v7.3.2)
-        confirmedPassed, 
+        confirmedPassed,
+        card.ignitionProbability, // v7.5.0: Pass ignition probability for state determination
         card.lastSignalTime, 
         "NONE"
       );
@@ -475,14 +481,11 @@ function calculateSignalState(
   htf4hTrend: string,
   sniperPassed: boolean,
   confirmedPassed: boolean,
+  ignitionProbability: number,
   lastSignalTime: number | undefined,
   lastMode: "SNIPER" | "CONFIRMED" | "NONE"
 ): SignalState {
-  // v7.3.3: Realigned thresholds - eliminate dead zone
-  // ACTIVE_CONFIRMED: score >= 70 (was >= 75, raised SNIPER floor to 55)
-  // ACTIVE_SNIPER: 55-69 (was >= 70, now captures early ignition in lower band)
-  // BUILDING: < 55 (was >= 40)
-  
+  // v7.5.0: Probabilistic 5M ignition replaces binary trigger
   // ACTIVE_CONFIRMED: Highest priority (mature continuation phase)
   if (confirmedPassed && score >= 70) {
     if (lastMode === "CONFIRMED" && !isCooldownElapsed(lastSignalTime, "CONFIRMED")) {
@@ -491,12 +494,19 @@ function calculateSignalState(
     return "ACTIVE_CONFIRMED"; // New CONFIRMED setup ready
   }
   
-  // ACTIVE_SNIPER: Early ignition phase (v7.3.3: score >= 55 captures early momentum)
-  if (sniperPassed && score >= 55 && !confirmedPassed) {
+  // v7.5.0: SNIPER state progression using ignitionProbability
+  // ACTIVE_SNIPER: ignitionProbability >= 75 (strong execution signal)
+  if (sniperPassed && score >= 55 && !confirmedPassed && ignitionProbability >= 75) {
     if (lastMode === "SNIPER" && !isCooldownElapsed(lastSignalTime, "SNIPER")) {
       return "ACTIVE_SNIPER"; // Still in active window
     }
-    return "ACTIVE_SNIPER"; // v7.3.3: Early ignition entry (no gaps in progression)
+    return "ACTIVE_SNIPER"; // Strong ignition pressure detected
+  }
+  
+  // v7.5.0: SNIPER_READY (UI only, no alerts)
+  // ignitionProbability 60-75: pressure building but not yet execution strength
+  if (sniperPassed && score >= 55 && !confirmedPassed && ignitionProbability >= 60) {
+    return "SNIPER_READY"; // Early pressure detected, monitor for entry
   }
   
   // BUILDING: Has directional bias but not ready for signals
@@ -563,6 +573,119 @@ function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "ear
 }
 
 /**
+ * v7.5.0: PROBABILISTIC 5M IGNITION SCORING
+ * 
+ * Replace binary "5M trigger" gate with continuous ignition probability (0-100)
+ * No longer permission gate, now "pressure meter for execution timing"
+ * 
+ * Components:
+ * - Stochastic momentum pressure (0-30 points): proximity to oversold/overbought
+ * - EMA acceleration (0-30 points): slope magnitude and direction
+ * - Micro volatility expansion (0-25 points): ATR or candle range increase
+ * - Volume impulse (0-15 points): rising volume relative to baseline
+ * 
+ * Returns: 0-100 score
+ */
+function calculateIgnitionProbability(
+  stochRsi: number | null,
+  emaSlope: number | null,
+  volatilityLevel: number | null,
+  direction: "LONG" | "SHORT" | "NEUTRAL"
+): number {
+  let probability = 0;
+
+  // COMPONENT 1: Stochastic momentum pressure (0-30 points)
+  // Proximity to oversold/overbought zones without requiring hard crossover
+  if (stochRsi !== null) {
+    if (direction === "LONG") {
+      // Long entry: ascending from oversold region (< 30)
+      if (stochRsi < 20) {
+        probability += 30; // Deep oversold, high pressure
+      } else if (stochRsi < 35) {
+        probability += 20; // Near oversold, moderate pressure
+      } else if (stochRsi < 50) {
+        probability += 10; // Lower half, building
+      } else if (stochRsi < 70) {
+        probability += 5; // Upper half, still valid
+      }
+      // stochRsi >= 70 adds 0 (overbought, momentum fading)
+    } else if (direction === "SHORT") {
+      // Short entry: descending from overbought region (> 70)
+      if (stochRsi > 80) {
+        probability += 30; // Deep overbought, high pressure
+      } else if (stochRsi > 65) {
+        probability += 20; // Near overbought, moderate pressure
+      } else if (stochRsi > 50) {
+        probability += 10; // Upper half, building
+      } else if (stochRsi > 30) {
+        probability += 5; // Lower half, still valid
+      }
+      // stochRsi <= 30 adds 0 (oversold, momentum fading)
+    }
+  }
+
+  // COMPONENT 2: EMA acceleration (0-30 points)
+  // Slope magnitude and direction proportionally
+  if (emaSlope !== null) {
+    const absMagnitude = Math.abs(emaSlope);
+    if (direction === "LONG" && emaSlope > 0) {
+      // Long: positive slope = acceleration upward
+      if (absMagnitude > 0.8) {
+        probability += 30; // Strong acceleration
+      } else if (absMagnitude > 0.5) {
+        probability += 22;
+      } else if (absMagnitude > 0.3) {
+        probability += 15;
+      } else if (absMagnitude > 0.15) {
+        probability += 8;
+      } else if (absMagnitude > 0.05) {
+        probability += 3;
+      }
+    } else if (direction === "SHORT" && emaSlope < 0) {
+      // Short: negative slope = acceleration downward
+      if (absMagnitude > 0.8) {
+        probability += 30; // Strong acceleration
+      } else if (absMagnitude > 0.5) {
+        probability += 22;
+      } else if (absMagnitude > 0.3) {
+        probability += 15;
+      } else if (absMagnitude > 0.15) {
+        probability += 8;
+      } else if (absMagnitude > 0.05) {
+        probability += 3;
+      }
+    }
+    // Divergent slope adds 0 (momentum not aligned)
+  }
+
+  // COMPONENT 3: Micro volatility expansion (0-25 points)
+  // ATR expansion or candle range increase adds probability weight
+  if (volatilityLevel !== null) {
+    if (volatilityLevel > 60) {
+      probability += 25; // High expansion
+    } else if (volatilityLevel > 50) {
+      probability += 18; // Good expansion
+    } else if (volatilityLevel > 40) {
+      probability += 10; // Moderate expansion
+    } else if (volatilityLevel > 30) {
+      probability += 5; // Slight expansion
+    }
+    // Low volatility (< 30) adds 0 (compression, not expanding)
+  }
+
+  // COMPONENT 4: Volume impulse (0-15 points)
+  // v7.5.0: Placeholder - volume data not yet integrated
+  // When available, rising volume relative to baseline increases probability
+  // For now: assign fixed 5 points if volatility shows impulse
+  if (volatilityLevel !== null && volatilityLevel > 55) {
+    probability += 5; // Impulse-like conditions
+  }
+
+  // Cap at 100
+  return Math.min(probability, 100);
+}
+
+/**
  * v7.4.0: SNIPER/CONFIRMED TIMEFRAME RESTRUCTURE
  * 
  * SNIPER: Uses 1H as structural context (no 4H requirement)
@@ -583,7 +706,7 @@ function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "ear
  * Requirements for SNIPER (ALL must be true):
  * 1. 1H alignment = true (direction matches 1H trend, not 4H)
  * 2. execution15mState = BREAKOUT_READY or EXPANDING (NOT CHOP/COMPRESSING)
- * 3. Valid 5M ignition trigger
+ * 3. ignitionProbability >= 60 (soft threshold, not hard gate)
  * 4. Score >= 55 (execution-grade threshold for SNIPER)
  * 5. Direction consistent (no internal divergence)
  * 
@@ -607,15 +730,12 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
     };
   }
 
-  // REQUIREMENT 3: Must have valid 5M ignition trigger
-  const has5MTrigger = 
-    (card.stochRsi !== null && card.stochRsi > 20 && card.stochRsi < 80) &&
-    card.emaSlope !== null && Math.abs(card.emaSlope) > 0.2;
-  
-  if (!has5MTrigger) {
+  // REQUIREMENT 3: v7.5.0 ignitionProbability >= 60 (soft threshold, probabilistic)
+  // Removed: hard binary trigger gate (Stoch cross, EMA flip)
+  if (card.ignitionProbability < 60) {
     return {
       valid: false,
-      reason: `5M trigger not formed (Stoch=${card.stochRsi?.toFixed(1) ?? "null"}, EMA slope=${card.emaSlope?.toFixed(3) ?? "null"})`
+      reason: `Ignition probability ${card.ignitionProbability} below threshold (60)`
     };
   }
 
@@ -810,6 +930,9 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     stochRsi,
     emaSlope,
     volatilityLevel,
+    
+    // v7.5.0: Probabilistic 5M ignition score (0-100)
+    ignitionProbability: calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction),
 
     // HTF alignment data
     htf4hTrend,
