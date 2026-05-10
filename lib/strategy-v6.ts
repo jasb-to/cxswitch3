@@ -9,15 +9,14 @@
 
 import type { PriceData } from "./price-router";
 
-// v7.5.0: Reintroduced SNIPER_READY for probabilistic ignition states
-// Returns: NONE | BUILDING | SNIPER_READY | ACTIVE_SNIPER | ACTIVE_CONFIRMED
-// Flow: BUILDING → SNIPER_READY (60-75) → ACTIVE_SNIPER (75+) → ACTIVE_CONFIRMED
+// v7.5.3: Clean 3-state architecture with continuous progression
+// Returns: NONE | BUILDING | ACTIVE_SNIPER | ACTIVE_CONFIRMED
+// Flow: BUILDING (ignition < 65) → ACTIVE_SNIPER (65-74) → ACTIVE_CONFIRMED (75+)
 export type SignalState = 
   | "NONE"              // No signal
-  | "BUILDING"          // Setup forming, ignitionProbability < 60
-  | "SNIPER_READY"      // Early pressure detected, ignitionProbability 60-75, UI only (no alerts)
-  | "ACTIVE_SNIPER"     // Strong pressure, ignitionProbability 75-90, executable (30 min cooldown)
-  | "ACTIVE_CONFIRMED"; // Mature confirmation trend (90 min cooldown)
+  | "BUILDING"          // Setup forming, ignitionProbability < 65
+  | "ACTIVE_SNIPER"     // Early executable impulse, ignitionProbability 65-74 (30 min cooldown)
+  | "ACTIVE_CONFIRMED"; // Mature continuation phase (90 min cooldown)
 
 export type SymbolCardState = {
   symbol: string;
@@ -212,8 +211,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       }
     }
     else {
-      // v7.5.1: Add block reason for non-alert states
-      // Determine WHY signal didn't fire
+      // v7.5.3: Update block reason for clean 3-state architecture
+      // Determine WHY signal didn't fire with new thresholds
       let blockReason = "No trade conditions met";
       
       if (card.direction === "NEUTRAL") {
@@ -222,14 +221,12 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         blockReason = `Score ${score} too low (< 40)`;
       } else if (score < 55) {
         blockReason = `Score ${score} below SNIPER floor (< 55)`;
-      } else if (!card.htf1hAlignment) {
-        blockReason = "1H alignment divergent";
       } else if (card.execution15mState === "CHOP" || card.execution15mState === "COMPRESSING") {
         blockReason = `15M ${card.execution15mState} - not ready`;
-      } else if (card.ignitionProbability < 60) {
-        blockReason = `Ignition prob=${card.ignitionProbability} (< 60 SNIPER_READY, < 75 ACTIVE_SNIPER)`;
+      } else if (card.ignitionProbability < 65) {
+        blockReason = `Ignition prob=${card.ignitionProbability} (< 65 SNIPER threshold)`;
       } else if (card.ignitionProbability < 75) {
-        blockReason = `Ignition prob=${card.ignitionProbability} - SNIPER_READY but awaiting 75+ for execution`;
+        blockReason = `Ignition prob=${card.ignitionProbability} - ACTIVE_SNIPER ready (65-74) but awaiting 75+ for CONFIRMED`;
       } else if (score < 70) {
         blockReason = `Score ${score} below CONFIRMED floor (< 70)`;
       } else {
@@ -252,9 +249,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         card.lastSignalTime, 
         "NONE"
       );
-      // v7.5.1: Log observability data for non-alert states
-      const stateDisplay = card.signalState === "SNIPER_READY" ? `${card.signalState} (prob=${card.ignitionProbability})` : card.signalState;
-      console.log(`[BLOCK] ${symbol} ${stateDisplay} | score=${score} ignition=${card.ignitionProbability} | reason: ${card.blockReason}`);
+      // v7.5.3: Log observability data with clean 3-state thresholds
+      console.log(`[BLOCK] ${symbol} ${card.signalState} | score=${score} ignition=${card.ignitionProbability} | reason: ${card.blockReason}`);
     }
   }
 
@@ -510,9 +506,9 @@ function isCooldownElapsed(lastSignalTime: number | undefined, mode: "SNIPER" | 
 }
 
 /**
- * v7.3.2: Simplified signal state calculation
+ * v7.5.3: Clean 3-state signal progression
  * Returns: NONE | BUILDING | ACTIVE_SNIPER | ACTIVE_CONFIRMED
- * Direct flow with no intermediate states
+ * Seamless threshold progression with no dead zones or overlaps
  */
 function calculateSignalState(
   mode: "SNIPER" | "CONFIRMED" | "NONE",
@@ -525,8 +521,8 @@ function calculateSignalState(
   lastSignalTime: number | undefined,
   lastMode: "SNIPER" | "CONFIRMED" | "NONE"
 ): SignalState {
-  // v7.5.0: Probabilistic 5M ignition replaces binary trigger
-  // ACTIVE_CONFIRMED: Highest priority (mature continuation phase)
+  // v7.5.3: ACTIVE_CONFIRMED: Highest priority (mature continuation phase)
+  // ignitionProbability >= 75 (exact boundary where SNIPER ends)
   if (confirmedPassed && score >= 70) {
     if (lastMode === "CONFIRMED" && !isCooldownElapsed(lastSignalTime, "CONFIRMED")) {
       return "ACTIVE_CONFIRMED"; // Still in active window
@@ -534,22 +530,17 @@ function calculateSignalState(
     return "ACTIVE_CONFIRMED"; // New CONFIRMED setup ready
   }
   
-  // v7.5.0: SNIPER state progression using ignitionProbability
-  // ACTIVE_SNIPER: ignitionProbability >= 75 (strong execution signal)
-  if (sniperPassed && score >= 55 && !confirmedPassed && ignitionProbability >= 75) {
+  // v7.5.3: ACTIVE_SNIPER: Early executable impulse expansion
+  // ignitionProbability 65-74 (clean band, no SNIPER_READY intermediate)
+  if (sniperPassed && score >= 55 && !confirmedPassed && ignitionProbability >= 65) {
     if (lastMode === "SNIPER" && !isCooldownElapsed(lastSignalTime, "SNIPER")) {
       return "ACTIVE_SNIPER"; // Still in active window
     }
-    return "ACTIVE_SNIPER"; // Strong ignition pressure detected
+    return "ACTIVE_SNIPER"; // Early impulse expansion captured
   }
   
-  // v7.5.0: SNIPER_READY (UI only, no alerts)
-  // ignitionProbability 60-75: pressure building but not yet execution strength
-  if (sniperPassed && score >= 55 && !confirmedPassed && ignitionProbability >= 60) {
-    return "SNIPER_READY"; // Early pressure detected, monitor for entry
-  }
-  
-  // BUILDING: Has directional bias but not ready for signals
+  // BUILDING: Setup forming but not ready for execution
+  // ignitionProbability < 65 (all non-alert momentum states)
   if (direction !== "NEUTRAL" && score >= 40) {
     return "BUILDING";
   }
@@ -816,12 +807,12 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
     };
   }
 
-  // REQUIREMENT 3: v7.5.0 ignitionProbability >= 60 (soft threshold, probabilistic)
+  // REQUIREMENT 3: v7.5.3 ignitionProbability >= 65 (ACTIVE_SNIPER threshold)
   // Removed: hard binary trigger gate (Stoch cross, EMA flip)
-  if (card.ignitionProbability < 60) {
+  if (card.ignitionProbability < 65) {
     return {
       valid: false,
-      reason: `Ignition probability ${card.ignitionProbability} below threshold (60)`
+      reason: `Ignition probability ${card.ignitionProbability} below ACTIVE_SNIPER threshold (65)`
     };
   }
 
