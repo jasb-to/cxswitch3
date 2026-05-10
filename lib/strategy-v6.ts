@@ -563,26 +563,39 @@ function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "ear
 }
 
 /**
- * v7.3.1: STRICT ACTIVE_SNIPER EXECUTION VALIDATION
+ * v7.4.0: SNIPER/CONFIRMED TIMEFRAME RESTRUCTURE
+ * 
+ * SNIPER: Uses 1H as structural context (no 4H requirement)
+ * - 1H alignment provides directional context
+ * - 15M provides execution structure (BREAKOUT_READY or EXPANDING)
+ * - 5M provides ignition confirmation
+ * - Score 55-69 is sufficient on its own
+ * 
+ * CONFIRMED: Still uses 4H as structural foundation (4H directional required)
+ * - 4H trend must be BULLISH or BEARISH (NEUTRAL blocks all CONFIRMED)
+ * - 1H agreement with 4H bias
+ * - 15M continuation structure validated
+ * - Score >= 70 for mature trend phase
  * 
  * Hard validation before promoting to ACTIVE_SNIPER state.
  * Returns clear rejection reason if ANY condition fails.
  * 
- * Requirements (ALL must be true):
- * 1. 4H trend = BULLISH or BEARISH (NOT NEUTRAL)
+ * Requirements for SNIPER (ALL must be true):
+ * 1. 1H alignment = true (direction matches 1H trend, not 4H)
  * 2. execution15mState = BREAKOUT_READY or EXPANDING (NOT CHOP/COMPRESSING)
  * 3. Valid 5M ignition trigger
- * 4. Score >= 70 (not just 60)
- * 5. Direction matches HTF trend (no divergence)
+ * 4. Score >= 55 (execution-grade threshold for SNIPER)
+ * 5. Direction consistent (no internal divergence)
  * 
  * Returns: { valid: boolean, reason?: string }
  */
 function validateActiveSniperExecution(card: SymbolCardState, score: number): { valid: boolean; reason?: string } {
-  // REQUIREMENT 1: 4H Trend must be directional (NOT NEUTRAL)
-  if (card.htf4hTrend === "NEUTRAL") {
+  // v7.4.0: SNIPER removed 4H requirement, use 1H alignment only
+  // REQUIREMENT 1: 1H alignment must be true (direction matches 1H momentum)
+  if (!card.htf1hAlignment) {
     return {
       valid: false,
-      reason: `4H trend NEUTRAL - no directional structure`
+      reason: `1H alignment false - no directional structure for SNIPER`
     };
   }
 
@@ -606,51 +619,65 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
     };
   }
 
-  // REQUIREMENT 4: Score must be execution-grade (>= 70)
-  if (score < 70) {
+  // REQUIREMENT 4: Score must be execution-grade (>= 55 for SNIPER, lower threshold than v7.3.3)
+  if (score < 55) {
     return {
       valid: false,
-      reason: `Score ${score} below execution threshold (70)`
+      reason: `Score ${score} below SNIPER threshold (55)`
     };
   }
 
-  // REQUIREMENT 5: Direction must match HTF trend (no divergence)
-  const directionMatchesTrend =
-    (card.direction === "LONG" && card.htf4hTrend === "BULLISH") ||
-    (card.direction === "SHORT" && card.htf4hTrend === "BEARISH");
-  
-  if (!directionMatchesTrend) {
+  // REQUIREMENT 5: Direction must be valid (not NEUTRAL)
+  if (card.direction === "NEUTRAL") {
     return {
       valid: false,
-      reason: `Direction ${card.direction} diverges from 4H ${card.htf4hTrend}`
+      reason: `Direction NEUTRAL - no trade bias`
     };
   }
 
-  // ALL REQUIREMENTS MET: Valid ACTIVE_SNIPER execution
+  // ALL REQUIREMENTS MET: Valid ACTIVE_SNIPER execution (v7.4.0: 1H based, no 4H dependency)
   return { valid: true };
 }
 
 /**
- * CONFIRMED CONDITIONS (v7.2.4 FIX #3): Established trend + impulse
- * Requires: HTF alignment + EMA expansion + momentum continuation
- * Strict threshold: 75+
+ * CONFIRMED CONDITIONS (v7.4.0): Established trend + 4H validation
+ * Requires: 4H directional trend (BULLISH/BEARISH only, NEUTRAL blocks all)
+ *           1H agreement with 4H bias
+ *           15M continuation structure
+ *           Mature EMA expansion + momentum confirmation
+ * 
+ * v7.4.0 FIX #2: CONFIRMED is strict and 4H-dependent (opposite of SNIPER)
+ * Score threshold: 70+ for high-conviction continuation
  */
 function checkConfirmedConditions(card: SymbolCardState): boolean {
-  // 1. EMA firmly established (slope > 0.5)
+  // v7.4.0 FIX #2: CONFIRMED requires 4H directional trend (NOT NEUTRAL)
+  // This is the ONLY place 4H trend is gating ACTIVE signals
+  const has4HTrend = card.htf4hTrend !== "NEUTRAL" && card.htf4hTrend !== undefined;
+  
+  if (!has4HTrend) {
+    return false; // 4H NEUTRAL or undefined blocks CONFIRMED immediately
+  }
+
+  // 1. EMA firmly established (slope > 0.5) - trend must be mature
   const emaEstablished = card.emaSlope !== null && Math.abs(card.emaSlope) > 0.5;
   
   // 2. Direction confirmed (not NEUTRAL)
   const directionConfirmed = card.direction !== "NEUTRAL";
   
-  // 3. Momentum continuing (Stoch showing strength)
+  // 3. Momentum continuing (Stoch showing strength in direction)
   const momentumContinuing = 
     (card.direction === "LONG" && (card.stochRsi ?? 50) > 50) ||
     (card.direction === "SHORT" && (card.stochRsi ?? 50) < 50);
   
-  // 4. HTF aligned
-  const htfAligned = card.htf1hAlignment === true;
+  // 4. 1H aligned with 4H bias (agreement required)
+  const oneHAligned = card.htf1hAlignment === true;
+  
+  // 5. Direction must match 4H trend (no divergence)
+  const directionMatchesHTF =
+    (card.direction === "LONG" && card.htf4hTrend === "BULLISH") ||
+    (card.direction === "SHORT" && card.htf4hTrend === "BEARISH");
 
-  return emaEstablished && directionConfirmed && momentumContinuing && htfAligned;
+  return emaEstablished && directionConfirmed && momentumContinuing && oneHAligned && directionMatchesHTF;
 }
 
 /**
