@@ -125,6 +125,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 
     // Generate card state for this symbol
     const card = generateCardState(symbol, priceData);
+    console.log(`[DEBUG_CARD_INITIAL] ${symbol}: signalState=${card.signalState}, direction=${card.direction}`);
     cards.push(card);
 
     // Score using NEW momentum-based system
@@ -182,6 +183,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         card.confidence = Math.min(score, 99);
         card.lastSignalTime = Date.now();
         card.signalState = "ACTIVE_SNIPER"; // v7.3.2: Direct transition from BUILDING
+        console.log(`[DEBUG_SNIPER_SET] ${symbol}: signalState now = ${card.signalState}, direction = ${card.direction}`);
         card.notes = `SNIPER ${card.direction} early ignition ${score}`;
         
         // Populate trade targets (v7.2.1)

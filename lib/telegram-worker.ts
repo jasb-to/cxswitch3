@@ -61,6 +61,8 @@ export function enqueueAlert(job: TelegramAlertJob) {
   const memoryKey = getAlertMemoryKey(job.symbol, job.direction);
   const memory = alertStateMemory.get(memoryKey);
   
+  console.log(`[ALERT_ENQUEUE_DEBUG] ${job.symbol} ${job.direction}: signalState=${job.signalState}, mode=${job.mode}, prevState=${memory?.prevState || "none"}, ignition=${job.card.ignitionProbability}`);
+  
   // Only enqueue if:
   // 1. No previous state recorded (first time)
   // 2. State changed from previous state
@@ -115,6 +117,8 @@ async function processAlertQueueAsync() {
         const isExecutableSignal =
           job.signalState === "ACTIVE_SNIPER" ||
           job.signalState === "ACTIVE_CONFIRMED";
+        
+        console.log(`[ALERT_PROCESSING] ${job.symbol} ${job.direction}: signalState=${job.signalState}, mode=${job.mode}, isExecutable=${isExecutableSignal}, card.signalState=${job.card.signalState}`);
 
         if (!isExecutableSignal) {
           console.log(
