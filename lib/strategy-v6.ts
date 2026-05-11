@@ -408,6 +408,7 @@ function calculateIgnitionProbability(
   emaSlope: number | null,
   volatilityLevel: number | null,
   direction: "LONG" | "SHORT" | "NEUTRAL",
+  htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL",
   htf1hAlignment: boolean = true, // v7.5.2: 1H alignment as probabilistic modifier (default true)
   execution15mState: string | null = null // v8.0.2: for displacement quality
 ): IgnitionResult {
@@ -586,7 +587,15 @@ function calculateIgnitionProbability(
     reasons.push("Impulse continuation quality (+3)");
   }
   
-  const probability = Math.min(Math.max(probabilityBase + htfModifier + displacementModifier + impulseContinuationBoost, 0), 100); // Clamp 0-100
+  
+  // v8.4.0 CRITICAL: Apply macro penalty for contra-directional signals
+  // This MUST happen before final probability calculation
+  const macroPenalty = calculateMacroPenalty(direction, htf4hTrend);
+  if (macroPenalty !== 0) {
+    reasons.push(`MACRO PENALTY: ${direction} vs 4H ${htf4hTrend} (${macroPenalty})`);
+  }
+  
+  const probability = Math.min(Math.max(probabilityBase + htfModifier + displacementModifier + impulseContinuationBoost + macroPenalty, 0), 100); // Clamp 0-100
   
   return {
     probability,
@@ -598,7 +607,7 @@ function calculateIgnitionProbability(
       displacementComponent: displacementModifier,
       emaAccelerationDelta,  // v8.1.0: Track reversal acceleration for observability
       impulseContinuationBoost,  // v8.1.0: Track continuation boost for observability
-      macroPenalty: 0  // v8.3.0: Macro penalty applied at validation level, not here
+      macroPenalty  // v8.4.0: Now correctly calculated and tracked
     },
     reason: reasons.length > 0 ? reasons.join(" + ") : "No ignition signals detected"
   };
@@ -744,11 +753,10 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
 
   // Check for structural override eligibility for elite reversals
   // ONLY allow contra-4H SNIPER if ALL conditions are true:
-  const directionAlignedWith4H = (card.direction === "LONG" && card.htf4hTrend === "BULLISH") ||
-                                  (card.direction === "SHORT" && card.htf4hTrend === "BEARISH");
-
+  const isContra = isContraMacroStructure(card.direction, card.htf4hTrend);
+  
   let structuralOverride = false;
-  if (!directionAlignedWith4H) {
+  if (isContra) {
     // Attempting contra-4H reversal - check if it's elite enough
     const eliteReversalConditions = {
       displacementExcellent: card.scoreBreakdown?.displacementComponent >= 6,
@@ -926,10 +934,32 @@ function calculateSignalState(
 }
 
 /**
- * v8.0.3 CRITICAL FIX: Calculate live market state description
- * Returns human-readable market conditions based on technical indicators
- * Called from generateSetups to populate card UI and notes field
+ * v8.4.0 CANONICAL MACRO ALIGNMENT HELPER
+ * Single source of truth for directional vs macro structure checks
+ * Eliminates duplicate/mismatched directional logic throughout codebase
  */
+function isContraMacroStructure(direction: "LONG" | "SHORT" | "NEUTRAL", htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL"): boolean {
+  if (direction === "NEUTRAL" || htf4hTrend === "NEUTRAL") {
+    return false;
+  }
+  
+  return (direction === "LONG" && htf4hTrend === "BEARISH") ||
+         (direction === "SHORT" && htf4hTrend === "BULLISH");
+}
+
+/**
+ * v8.4.0 CALCULATE MACRO PENALTY
+ * Returns penalty amount (-8 for contra, 0 for aligned)
+ * This is the canonical macro penalty calculation
+ */
+function calculateMacroPenalty(direction: "LONG" | "SHORT" | "NEUTRAL", htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL"): number {
+  if (isContraMacroStructure(direction, htf4hTrend)) {
+    return -8; // Penalty for trading against macro structure
+  }
+  return 0; // No penalty for aligned or neutral
+}
+
+
 function calculateLiveMarketState(
   direction: "LONG" | "SHORT" | "NEUTRAL",
   emaSlope: number | null,
@@ -1193,7 +1223,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     
     // v7.5.1: Probabilistic 5M ignition with observability
     ignitionProbability: (() => {
-      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf1hAlignment, execution15mState); // v8.0.2: pass execution15mState for displacement
+      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf4hTrend, htf1hAlignment, execution15mState); // v8.4.0: added htf4hTrend for macro penalty
       // Log ignition breakdown for transparency
       console.log(
         `[IGNITION] ${symbol} ${direction}: prob=${result.probability} [Stoch:${result.breakdown.stochComponent} EMA:${result.breakdown.emaComponent} Vol:${result.breakdown.volatilityComponent} Disp:${result.breakdown.displacementComponent} EMAAccel:${result.breakdown.emaAccelerationDelta} Impulse:+${result.breakdown.impulseContinuationBoost} Macro:${result.breakdown.macroPenalty}] | ${result.reason}`
@@ -1207,7 +1237,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     
     // v7.5.1: Store breakdown for UI debugging
     scoreBreakdown: (() => {
-      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf1hAlignment, execution15mState); // v8.0.2: pass execution15mState
+      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf4hTrend, htf1hAlignment, execution15mState); // v8.4.0: added htf4hTrend
       return result.breakdown;
     })(),
 
