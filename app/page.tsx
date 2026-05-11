@@ -193,96 +193,114 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
     : "bg-green-500";
 
   return (
-    <div className={`rounded-lg border ${directionBorder} p-6 bg-[#0f0f0f] text-white space-y-5`}>
-      {/* HEADER: Symbol + Status Badge + Price */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
+    <div className={`rounded-lg border ${directionBorder} p-6 bg-[#0f0f0f] text-white space-y-4`}>
+      {/* HEADER: Symbol + Price + Status Badge */}
+      <div className="flex items-center justify-between">
+        <div>
           <h2 className="text-2xl font-bold tracking-tight">{card.symbol}/USD</h2>
-          <span className={`text-xs px-3 py-1 rounded border ${directionBg} ${directionBorder} ${directionColor}`}>
-            {statusBadge}
-          </span>
+          <div className="flex items-center gap-3 mt-1">
+            <span className={`text-sm font-semibold ${directionColor}`}>{card.direction}</span>
+            <span className="text-xl font-mono font-bold text-white">${fmt(card.price)}</span>
+          </div>
         </div>
-        <div className="flex items-center justify-between">
-          <span className={`text-sm font-semibold ${directionColor}`}>{card.direction}</span>
-          <span className="text-2xl font-mono font-bold text-white">${fmt(card.price)}</span>
-        </div>
+        <span className={`text-xs px-3 py-1 rounded border ${directionBg} ${directionBorder} ${directionColor}`}>
+          {statusBadge}
+        </span>
       </div>
 
-      {/* MARKET READINESS STATE (Live) */}
+      {/* EXECUTION STACK - Compact vertical view of execution conditions */}
       <div className="border-t border-zinc-800 pt-4">
-        <p className="text-xs text-zinc-500 mb-2 uppercase tracking-wider">Market State</p>
-        <p className={`text-sm font-semibold ${currentReadinessColor}`}>
-          {card.marketReadinessState}
-        </p>
+        <p className="text-xs text-zinc-500 mb-3 uppercase tracking-wider font-semibold">Execution Stack</p>
+        
+        {/* 1. HTF Context Layer */}
+        <div className="space-y-2 mb-3 bg-zinc-900 p-3 rounded border border-zinc-800">
+          <div className="text-xs text-zinc-500 uppercase tracking-wider">HTF Context</div>
+          <div className="grid grid-cols-2 gap-2 text-sm font-mono">
+            <div className="flex justify-between">
+              <span className="text-zinc-400">4H:</span>
+              <span className={card.htf4hTrend === "BULLISH" ? "text-green-400" : card.htf4hTrend === "BEARISH" ? "text-red-400" : "text-zinc-400"}>
+                {card.htf4hTrend}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-zinc-400">1H:</span>
+              <span className={card.htf1hAlignment ? "text-cyan-400" : "text-red-300"}>
+                {card.htf1hAlignment ? "ALIGNED +6" : "DIVERGENT -4"}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* 2. Execution Layer - Core decision inputs */}
+        <div className="space-y-2 mb-3 bg-zinc-900 p-3 rounded border border-zinc-800">
+          <div className="text-xs text-zinc-500 uppercase tracking-wider">Execution Layer</div>
+          <div className="grid grid-cols-2 gap-2 text-sm font-mono">
+            <div className="flex justify-between">
+              <span className="text-zinc-400">15M:</span>
+              <span className={
+                card.execution15mState === "BREAKOUT_READY" ? "text-cyan-400" : 
+                card.execution15mState === "EXPANDING" ? "text-green-400" : 
+                card.execution15mState === "COMPRESSING" ? "text-amber-400" : 
+                "text-zinc-400"
+              }>
+                {card.execution15mState?.replace(/_/g, " ")}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-zinc-400">Ignition:</span>
+              <span className="text-blue-300">{card.ignitionProbability ?? "—"}%</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-zinc-400">Displacement:</span>
+              <span className={card.scoreBreakdown?.displacementComponent ?? 0 > 0 ? "text-green-300" : card.scoreBreakdown?.displacementComponent ?? 0 < 0 ? "text-red-300" : "text-zinc-400"}>
+                {card.scoreBreakdown?.displacementComponent ? (card.scoreBreakdown.displacementComponent > 0 ? "+" : "") + card.scoreBreakdown.displacementComponent : "—"}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-zinc-400">Score:</span>
+              <span className={card.confidence >= 70 ? "text-green-300" : card.confidence >= 55 ? "text-yellow-300" : "text-zinc-400"}>
+                {Math.round(card.confidence)}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* 3. State Logic - What happens next */}
+        <div className="space-y-2 bg-zinc-900 p-3 rounded border border-zinc-800">
+          <div className="text-xs text-zinc-500 uppercase tracking-wider">State</div>
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-mono">{card.signalState}</span>
+            <span className="text-xs text-zinc-400">
+              {card.signalState === "BUILDING" && "< 65"}
+              {card.signalState === "ACTIVE_SNIPER" && `65-74 (${card.ignitionProbability})`}
+              {card.signalState === "ACTIVE_CONFIRMED" && `≥ 75 (${card.ignitionProbability})`}
+            </span>
+          </div>
+        </div>
       </div>
 
-      {/* DIRECTIONAL BIAS PANEL */}
-      <div className="border-t border-zinc-800 pt-4 space-y-2 bg-zinc-900 p-3 rounded border border-zinc-700">
-        <p className="text-xs text-zinc-500 uppercase tracking-wider">Market Bias</p>
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-zinc-400">4H:</span>
-          <span className={card.htf4hTrend === "BULLISH" ? "text-green-400" : card.htf4hTrend === "BEARISH" ? "text-red-400" : "text-zinc-400"}>
-            {card.htf4hTrend}
-          </span>
-        </div>
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-zinc-400">1H:</span>
-          <span className={card.htf1hAlignment ? "text-cyan-400" : "text-zinc-400"}>
-            {card.htf1hAlignment ? "ALIGNED" : "DIVERGENT"}
-          </span>
-        </div>
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-zinc-400">15M:</span>
-          <span className={
-            card.execution15mState === "BREAKOUT_READY" ? "text-cyan-400" : 
-            card.execution15mState === "EXPANDING" ? "text-green-400" : 
-            card.execution15mState === "COMPRESSING" ? "text-amber-400" : 
-            "text-zinc-400"
-          }>
-            {card.execution15mState}
-          </span>
-        </div>
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-zinc-400">Overall:</span>
-          <span className={card.direction === "LONG" ? "text-green-400" : card.direction === "SHORT" ? "text-red-400" : "text-zinc-400"}>
-            {card.direction === "LONG" ? "LONG BIAS" : card.direction === "SHORT" ? "SHORT BIAS" : "NO TRADE"}
-          </span>
-        </div>
-      </div>
-
-      {/* TRADE READINESS SCORE - PRIMARY FOCUS */}
-      <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-zinc-700">
-        <div className="flex items-center justify-between mb-3">
+      {/* TRADE READINESS SCORE - Secondary reference */}
+      <div className="border-t border-zinc-800 pt-4">
+        <div className="flex items-center justify-between mb-2">
           <p className="text-xs text-zinc-500 uppercase tracking-wider">Trade Readiness</p>
           <span className={`text-lg font-mono font-bold ${readinessScoreColor}`}>
             {card.tradeReadinessScore === null ? "—" : Math.round(card.tradeReadinessScore)}%
           </span>
         </div>
-        <div className="w-full bg-zinc-800 rounded h-3">
+        <div className="w-full bg-zinc-800 rounded h-2">
           <div 
-            className={`${readinessBgBar} h-3 rounded transition-all`} 
+            className={`${readinessBgBar} h-2 rounded transition-all`} 
             style={{ width: card.tradeReadinessScore === null ? "0%" : `${card.tradeReadinessScore}%` }} 
           />
         </div>
-        <p className="text-xs text-zinc-500 mt-2">
-          {card.tradeReadinessScore === null 
-            ? "No signal" 
-            : card.tradeReadinessScore < 40 
-            ? "Dead market" 
-            : card.tradeReadinessScore < 60 
-            ? "Building momentum" 
-            : card.tradeReadinessScore < 75 
-            ? "SNIPER zone" 
-            : "CONFIRMED zone"}
-        </p>
       </div>
 
-      {/* CONDITIONAL: Show targets ONLY if signal is ACTIVE (FIX #3) */}
+      {/* CONDITIONAL: Show targets ONLY if signal is ACTIVE */}
       {isActiveSignal && card.targetPrices && (
         <div className="border-t border-zinc-800 pt-4 space-y-2">
           <p className="text-xs text-zinc-500 uppercase tracking-wider">{card.mode} Entry</p>
           <div className="text-sm font-mono space-y-1">
-            <div className="flex justify-between"><span className="text-zinc-400">Entry Zone:</span> <span className="text-cyan-400">${fmt(card.price)}</span></div>
+            <div className="flex justify-between"><span className="text-zinc-400">Entry:</span> <span className="text-cyan-400">${fmt(card.price)}</span></div>
             <div className="flex justify-between"><span className="text-zinc-400">TP1:</span> <span className="text-green-400">${fmt(card.targetPrices.tp1)}</span></div>
             <div className="flex justify-between"><span className="text-zinc-400">TP2:</span> <span className="text-green-400">${fmt(card.targetPrices.tp2)}</span></div>
             <div className="flex justify-between"><span className="text-zinc-400">SL:</span> <span className="text-red-400">${fmt(card.targetPrices.sl)}</span></div>
@@ -293,7 +311,7 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
 
       {/* Status message */}
       <div className="text-xs text-zinc-500 text-center pt-2">
-        {isLoading ? "Loading market snapshot..." : card.notes}
+        {isLoading ? "Loading…" : card.notes}
       </div>
     </div>
   );
