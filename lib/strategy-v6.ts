@@ -586,23 +586,7 @@ function calculateIgnitionProbability(
     reasons.push("Impulse continuation quality (+3)");
   }
   
-  // v8.3.0 CRITICAL: Apply macro penalty for contra-directional SNIPER attempts
-  // This is NOT a hard block (v8.2.0 was too strict)
-  // Instead: penalize but allow elite reversals to override
-  let macroPenalty = 0;
-  let macroPenaltyReason = "";
-  
-  const directionAlignedWith4H = (direction === "LONG" && htf4hTrend === "BULLISH") ||
-                                  (direction === "SHORT" && htf4hTrend === "BEARISH");
-  
-  if (!directionAlignedWith4H && direction !== "NEUTRAL") {
-    // Contra-directional attempt: apply penalty proportional to 4H strength
-    macroPenalty = -8; // Default penalty for trading against macro structure
-    macroPenaltyReason = `4H ${htf4hTrend} contradicts ${direction}`;
-    reasons.push(`MACRO PENALTY: ${macroPenaltyReason} (-8)`);
-  }
-  
-  const probability = Math.min(Math.max(probabilityBase + htfModifier + displacementModifier + impulseContinuationBoost + macroPenalty, 0), 100); // Clamp 0-100
+  const probability = Math.min(Math.max(probabilityBase + htfModifier + displacementModifier + impulseContinuationBoost, 0), 100); // Clamp 0-100
   
   return {
     probability,
@@ -614,7 +598,7 @@ function calculateIgnitionProbability(
       displacementComponent: displacementModifier,
       emaAccelerationDelta,  // v8.1.0: Track reversal acceleration for observability
       impulseContinuationBoost,  // v8.1.0: Track continuation boost for observability
-      macroPenalty  // v8.3.0: Track macro penalty for observability
+      macroPenalty: 0  // v8.3.0: Macro penalty applied at validation level, not here
     },
     reason: reasons.length > 0 ? reasons.join(" + ") : "No ignition signals detected"
   };
