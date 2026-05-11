@@ -23,6 +23,7 @@ function fmt(n: number | null | undefined): string {
 /**
  * Check if we can send alert for this setup
  * Cooldown: 30 minutes per (symbol + mode + direction)
+ * v8.5.0: Graceful handling of missing alerts_sent table
  */
 export async function canSendAlert(symbol: string, mode: "SNIPER" | "CONFIRMED", direction: "LONG" | "SHORT"): Promise<boolean> {
   if (!supabase) return true;
@@ -42,6 +43,11 @@ export async function canSendAlert(symbol: string, mode: "SNIPER" | "CONFIRMED",
       .maybeSingle();
 
     if (error) {
+      // v8.5.0: Check if it's a schema error (table not found)
+      if (error.message.includes("alerts_sent") || error.message.includes("does not exist")) {
+        console.log(`[TELEGRAM] Schema not ready (alerts_sent table pending migration), allowing alert`);
+        return true;
+      }
       console.log(`[TELEGRAM] Cooldown check error: ${error.message}`);
       return true; // Allow if DB is down
     }
