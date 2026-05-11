@@ -125,12 +125,18 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 
     // Generate card state for this symbol
     const card = generateCardState(symbol, priceData);
+    console.log(`[DEBUG_CARD_INITIAL] ${symbol}: signalState=${card.signalState}, direction=${card.direction}`);
     cards.push(card);
 
     // Score using NEW momentum-based system
-    const score = calculateMomentumScore(card);
+    const structureScore = calculateMomentumScore(card);
     
-    console.log(`[SCAN] ${symbol} score=${score} direction=${card.direction} stoch=${card.stochRsi.toFixed(1)} emaSlope=${card.emaSlope.toFixed(2)}`);
+    // v8.5.0 REFINEMENT: Blend structure score with ignition probability
+    // This eliminates psychological confusion (high score + low ignition = confusing)
+    // Display score now represents "actual readiness to trade"
+    const score = calculateExecutionReadinessScore(structureScore, card.ignitionProbability);
+    
+    console.log(`[SCAN] ${symbol} score=${score} (structure=${structureScore} ignition=${card.ignitionProbability}) direction=${card.direction} stoch=${card.stochRsi.toFixed(1)} emaSlope=${card.emaSlope.toFixed(2)}`);
 
     // ONLY generate setups with directional conviction
     // NO NEUTRAL SIGNALS ALLOWED
@@ -182,6 +188,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         card.confidence = Math.min(score, 99);
         card.lastSignalTime = Date.now();
         card.signalState = "ACTIVE_SNIPER"; // v7.3.2: Direct transition from BUILDING
+        console.log(`[DEBUG_SNIPER_SET] ${symbol}: signalState now = ${card.signalState}, direction = ${card.direction}`);
         card.notes = `SNIPER ${card.direction} early ignition ${score}`;
         
         // Populate trade targets (v7.2.1)
@@ -1089,6 +1096,23 @@ function calculateTradeReadinessScore(
   }
   
   return Math.min(Math.max(score, 0), 100);
+}
+
+/**
+ * v8.5.0 REFINEMENT: Calculate display score that reflects execution readiness
+ * Blends structural quality with ignition probability to avoid psychological confusion
+ * 
+ * Problem: High structure score + low ignition = confusing (looks ready but isn't)
+ * Solution: Weight ignition into final score so display matches user expectations
+ * 
+ * Formula: displayScore = (structureScore * 0.6) + (ignitionProbability * 0.4)
+ * - 60% structural quality (EMA, Stoch, HTF alignment, etc.)
+ * - 40% execution probability (ignition signals present)
+ * 
+ * Result: Score now represents "readiness to trade" not just "structural quality"
+ */
+function calculateExecutionReadinessScore(structureScore: number, ignitionProbability: number): number {
+  return Math.round(structureScore * 0.6 + ignitionProbability * 0.4);
 }
 
 /**
