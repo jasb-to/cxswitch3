@@ -78,6 +78,7 @@ export type SymbolCardState = {
     stochComponent: number;
     emaComponent: number;
     volatilityComponent: number;
+    displacementComponent: number; // v8.0.2: directional commitment quality modifier
     totalIgnition: number;
   };
 };
@@ -328,306 +329,84 @@ function calculateMomentumScore(card: SymbolCardState): number {
 }
 
 /**
- * Calculate live market readiness state (v7.2.1)
- * Derives from: HTF alignment, EMA slope, Stoch velocity, compression, impulse
+ * v8.0.2: Calculate displacement quality (soft confidence modifier)
+ * Measures directional commitment strength of current expansion
+ * Returns lightweight modifier (-8 to +8) for ignitionProbability
+ * 
+ * NOT a gate, NOT a blocker, just a quality confidence adjuster
  */
-function calculateMarketReadinessState(
-  htf4hTrend: string,
-  htf1hAlignment: boolean | null,
+function calculateDisplacementQuality(
   emaSlope: number | null,
   stochRsi: number | null,
   volatilityLevel: number | null,
-  direction: string
-): "BUILDING_PRESSURE" | "BULLISH_IGNITION" | "BEARISH_IGNITION" | "TREND_EXPANSION" | "OVEREXTENDED" | "CHOP_NO_TRADE" | "AWAITING_DATA" {
-  // No data = awaiting
-  if (stochRsi === null || emaSlope === null || volatilityLevel === null) {
-    return "AWAITING_DATA";
-  }
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  execution15mState: string | null
+): { displacementModifier: number; displacementReason: string } {
+  let modifier = 0;
+  const reasons: string[] = [];
 
-  // CHOP_NO_TRADE: No HTF direction + neutral momentum
-  if (htf4hTrend === "NEUTRAL" && stochRsi > 40 && stochRsi < 60) {
-    return "CHOP_NO_TRADE";
-  }
-
-  // BUILDING_PRESSURE: Low volatility + aligned HTF + EMA expansion
-  if (volatilityLevel < 35 && htf4hTrend !== "NEUTRAL" && Math.abs(emaSlope) > 0.2) {
-    return "BUILDING_PRESSURE";
-  }
-
-  // BULLISH_IGNITION: HTF bullish + 1H confirms + Stoch cross up + compression release
-  if (htf4hTrend === "BULLISH" && htf1hAlignment && stochRsi > 45 && stochRsi < 65 && volatilityLevel < 50) {
-    return "BULLISH_IGNITION";
-  }
-
-  // BEARISH_IGNITION: HTF bearish + 1H confirms + Stoch cross down + compression release
-  if (htf4hTrend === "BEARISH" && htf1hAlignment && stochRsi > 35 && stochRsi < 55 && volatilityLevel < 50) {
-    return "BEARISH_IGNITION";
-  }
-
-  // TREND_EXPANSION: High volatility + momentum aligned + HTF agrees
-  if (volatilityLevel > 50 && htf4hTrend !== "NEUTRAL" && (stochRsi > 60 || stochRsi < 40)) {
-    return "TREND_EXPANSION";
-  }
-
-  // OVEREXTENDED: Very high volatility + extreme Stoch + divergence risk
-  if (volatilityLevel > 70 && (stochRsi > 80 || stochRsi < 20)) {
-    return "OVEREXTENDED";
-  }
-
-  return "AWAITING_DATA";
-}
-
-/**
- * Calculate trade readiness score (v7.2.5 FIX #5)
- * Readiness MUST follow direction
- * 
- * IF direction bullish AND momentum exists: minimum 45-55
- * IF compression + ignition: 60-75
- * IF HTF aligned + continuation: 75-90
- * NEVER allow: NEUTRAL + 40% readiness (contradictory UX)
- * 
- * Bands:
- * <40 = dead market
- * 40-55 = building momentum
- * 55-70 = ignition watch
- * 70-85 = sniper ready
- * 85+ = confirmed trend
- */
-function calculateTradeReadinessScore(
-  mode: string,
-  direction: string,
-  htf4hTrend: string,
-  htf1hAlignment: boolean | null,
-  emaSlope: number | null,
-  stochRsi: number | null,
-  volatilityLevel: number | null
-): number | null {
-  // If no data available, return null
-  if (stochRsi === null || emaSlope === null || volatilityLevel === null) {
-    return null;
-  }
-
-  // FIX #5: If NEUTRAL direction, score should be NULL or minimal
-  if (direction === "NEUTRAL") {
-    return null; // No readiness if no direction
-  }
-
-  // If direction exists (LONG or SHORT), minimum 45-55 baseline
-  let score = 45;
-
-  // +10 compression (low volatility = energy buildup)
-  if (volatilityLevel < 40) score += 10;
-
-  // +15 momentum in direction (Stoch aligned with direction)
-  if (direction === "LONG" && stochRsi > 50) score += 15;
-  if (direction === "SHORT" && stochRsi < 50) score += 15;
-
-  // +15 EMA expansion (established slope)
-  if (emaSlope !== null && Math.abs(emaSlope) > 0.4) score += 15;
-
-  // +10 HTF alignment
-  if (htf4hTrend !== "NEUTRAL") score += 10;
-
-  // +10 impulse confirmation (if signal mode exists)
-  if (mode === "SNIPER" || mode === "CONFIRMED") score += 10;
-
-  return Math.min(score, 100);
-}
-
-/**
- * Calculate trade targets only when signal fired (v7.2.5: FIX TP3 removal)
- */
-function calculateTradeTargets(price: number, volatilityLevel: number, direction: string) {
-  const volatilityFactor = volatilityLevel / 100;
-  const sniperMin = 0.8 + volatilityFactor * 0.5;
-  const sniperMax = 1.5 + volatilityFactor * 0.7;
+  // POSITIVE DISPLACEMENT: Strong directional commitment
+  // EMA slope aligned + volatility expanding + stoch at extremes = committed move
+  const emaAligned = 
+    (direction === "LONG" && emaSlope !== null && emaSlope > 0.4) ||
+    (direction === "SHORT" && emaSlope !== null && emaSlope < -0.4);
   
-  const isLong = direction === "LONG";
-  const tp1 = price * (1 + (isLong ? sniperMax : -sniperMax) / 100);
-  const tp2 = price * (1 + (isLong ? sniperMax * 1.5 : -sniperMax * 1.5) / 100);
-  const sl = price * (1 + (isLong ? -sniperMax : sniperMax) / 100);
-  const riskReward = (sniperMax * 1.5) / sniperMax;
+  const volStrong = volatilityLevel !== null && volatilityLevel > 60;
+  const stochExtreme = 
+    (direction === "LONG" && stochRsi !== null && stochRsi < 30) ||
+    (direction === "SHORT" && stochRsi !== null && stochRsi > 70);
+  
+  if (emaAligned && volStrong && stochExtreme) {
+    modifier = 8;
+    reasons.push("Strong directional commitment: aligned EMA + vol expansion + stoch extreme");
+  } else if (emaAligned && volStrong) {
+    modifier = 6;
+    reasons.push("Good directional commitment: aligned EMA + vol expansion");
+  } else if (emaAligned && stochExtreme) {
+    modifier = 5;
+    reasons.push("Decent directional commitment: aligned EMA + stoch extreme");
+  } else if (volStrong && execution15mState === "EXPANDING") {
+    modifier = 4;
+    reasons.push("Expansion with volatility commitment");
+  }
+  
+  // NEGATIVE DISPLACEMENT: Choppy/weak commitment
+  // EMA misaligned OR weak vol + high execution chop = weak commitment
+  const emaMisaligned = 
+    (direction === "LONG" && emaSlope !== null && emaSlope <= 0.1) ||
+    (direction === "SHORT" && emaSlope !== null && emaSlope >= -0.1);
+  
+  const volWeak = volatilityLevel !== null && volatilityLevel < 40;
+  const choppy = execution15mState === "CHOP" || execution15mState === "COMPRESSING";
+  
+  if (emaMisaligned && volWeak && choppy) {
+    modifier = -8;
+    reasons.push("Weak displacement: EMA misaligned + weak vol + choppy structure");
+  } else if (emaMisaligned && volWeak) {
+    modifier = -5;
+    reasons.push("Weak displacement: EMA misaligned + weak vol");
+  } else if (choppy && volWeak) {
+    modifier = -4;
+    reasons.push("Choppy displacement: CHOP/COMPRESS + weak vol");
+  }
   
   return {
-    expectedMovePercent: { sniper: { min: sniperMin, max: sniperMax } },
-    targetPrices: { tp1, tp2, sl },
-    riskReward,
+    displacementModifier: modifier,
+    displacementReason: reasons.length > 0 ? reasons.join(" | ") : "Neutral displacement"
   };
 }
 
 /**
- * Calculate live dashboard state (v7.2.4 FIX #4)
- * NEVER show: NEUTRAL, AWAITING DATA, NO TRADE if prices exist
- * Instead show: BULLISH BUILDING, BEARISH IGNITION, TREND EXPANSION, etc.
+ * v7.5.2: Calculate ignition probability (probabilistic 5M signal)
+ * Returns confidence score 0-100 for imminent short-term execution
  */
-function calculateLiveMarketState(
-  direction: string,
-  emaSlope: number | null,
-  stochRsi: number | null,
-  volatilityLevel: number | null
-): string {
-  // If real prices exist, NEVER show generic states
-  if (direction === "LONG") {
-    if (volatilityLevel !== null && volatilityLevel < 40) return "BULLISH BUILDING";
-    if (emaSlope !== null && emaSlope > 0.5) return "BULLISH IGNITION";
-    if (volatilityLevel !== null && volatilityLevel > 60) return "BULLISH EXPANSION";
-    if (stochRsi !== null && stochRsi > 80) return "BULLISH OVEREXTENDED";
-    return "BULLISH MOMENTUM";
-  }
-  
-  if (direction === "SHORT") {
-    if (volatilityLevel !== null && volatilityLevel < 40) return "BEARISH BUILDING";
-    if (emaSlope !== null && emaSlope < -0.5) return "BEARISH IGNITION";
-    if (volatilityLevel !== null && volatilityLevel > 60) return "BEARISH EXPANSION";
-    if (stochRsi !== null && stochRsi < 20) return "BEARISH OVEREXTENDED";
-    return "BEARISH MOMENTUM";
-  }
-  
-  // NEUTRAL but show structure if present
-  if (emaSlope !== null && Math.abs(emaSlope) < 0.2) return "CHOPPY";
-  if (volatilityLevel !== null && volatilityLevel < 30) return "BUILDING PRESSURE";
-  if (stochRsi !== null && (stochRsi > 75 || stochRsi < 25)) return "EXTREME READS";
-  
-  return "NEUTRAL";
-}
-
-/**
- * Check if cooldown has elapsed (v7.2.6 FIX #6)
- * SNIPER cooldown: 30 minutes
- * CONFIRMED cooldown: 90 minutes
- */
-function isCooldownElapsed(lastSignalTime: number | undefined, mode: "SNIPER" | "CONFIRMED"): boolean {
-  if (!lastSignalTime) return true; // No previous signal
-  
-  const now = Date.now();
-  const cooldownMs = mode === "SNIPER" ? 30 * 60 * 1000 : 90 * 60 * 1000;
-  
-  return (now - lastSignalTime) >= cooldownMs;
-}
-
-/**
- * v7.5.3: Clean 3-state signal progression
- * Returns: NONE | BUILDING | ACTIVE_SNIPER | ACTIVE_CONFIRMED
- * Seamless threshold progression with no dead zones or overlaps
- */
-function calculateSignalState(
-  mode: "SNIPER" | "CONFIRMED" | "NONE",
-  score: number,
-  direction: string,
-  htf4hTrend: string,
-  sniperPassed: boolean,
-  confirmedPassed: boolean,
-  ignitionProbability: number,
-  lastSignalTime: number | undefined,
-  lastMode: "SNIPER" | "CONFIRMED" | "NONE"
-): SignalState {
-  // v7.5.3: ACTIVE_CONFIRMED: Highest priority (mature continuation phase)
-  // ignitionProbability >= 75 (exact boundary where SNIPER ends)
-  if (confirmedPassed && score >= 70) {
-    if (lastMode === "CONFIRMED" && !isCooldownElapsed(lastSignalTime, "CONFIRMED")) {
-      return "ACTIVE_CONFIRMED"; // Still in active window
-    }
-    return "ACTIVE_CONFIRMED"; // New CONFIRMED setup ready
-  }
-  
-  // v7.5.3: ACTIVE_SNIPER: Early executable impulse expansion
-  // ignitionProbability 65-74 (clean band, no SNIPER_READY intermediate)
-  if (sniperPassed && score >= 55 && !confirmedPassed && ignitionProbability >= 65) {
-    if (lastMode === "SNIPER" && !isCooldownElapsed(lastSignalTime, "SNIPER")) {
-      return "ACTIVE_SNIPER"; // Still in active window
-    }
-    return "ACTIVE_SNIPER"; // Early impulse expansion captured
-  }
-  
-  // BUILDING: Setup forming but not ready for execution
-  // ignitionProbability < 65 (all non-alert momentum states)
-  if (direction !== "NEUTRAL" && score >= 40) {
-    return "BUILDING";
-  }
-  
-  // No signal
-  return "NONE";
-}
-
-/**
- * v7.3.1: STRICT ACTIVE_SNIPER EXECUTION VALIDATION
- * v7.3.2: Loosen 5M ignition for earlier ACTIVE_SNIPER (early momentum capture)
- * Allow ANY ignition condition, not just confirmed breakout
- * 
- * Earlier ignition means:
- * - EMA acceleration (not full reversal)
- * - Stochastic momentum (not hard crossover)
- * - Volatility expansion beginning
- * - Directional impulse detected
- */
-function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "early" = "strict"): boolean {
-  // REQUIREMENT 1: Directional bias exists (not NEUTRAL)
-  if (card.direction === "NEUTRAL") {
-    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No directional bias`);
-    return false;
-  }
-
-  // v7.3.2: LOOSEN IGNITION (early momentum capture)
-  // ANY of these conditions trigger ACTIVE_SNIPER now:
-  // 1. EMA has momentum (slope > 0.15, was > 0.2)
-  // 2. Stochastic active zone (not extreme)
-  // 3. Volatility expanding (vol > 45)
-  
-  const emaAccelerating = (card.emaSlope ?? 0) > 0.15; // Loosen from 0.2
-  const stochActive = (card.stochRsi ?? 50) > 30 && (card.stochRsi ?? 50) < 70; // Loosen from 25-75
-  const volatilityExpanding = (card.volatilityLevel ?? 50) > 45; // Breakout mode
-  
-  const hasEarlyIgnition = emaAccelerating || stochActive || volatilityExpanding;
-  
-  if (!hasEarlyIgnition) {
-    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No early ignition`);
-    return false;
-  }
-
-  // v7.3.2: Keep HTF structure strict
-  // Still require compression OR expansion (not none)
-  const compressionExists = card.htf15mCompression === true;
-  const emaExpanding = Math.abs(card.emaSlope ?? 0) > 0.4;
-  const volatilityBreakout = (card.volatilityLevel ?? 50) > 50;
-  const energyBuilding = (card.volatilityLevel ?? 50) <= 45;
-  
-  const compressionOrExpansion = compressionExists || emaExpanding || volatilityBreakout || energyBuilding;
-  
-  if (!compressionOrExpansion) {
-    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No compression/expansion detected`);
-    return false;
-  }
-
-  // ALL CONDITIONS MET: Valid SNIPER setup (early ignition)
-  console.log(`[SNIPER CHECK] ${card.symbol} PASSED (${checkMode}): direction=${card.direction} + early ignition + execution structure`);
-  return true;
-}
-
-/**
- * v7.5.0: PROBABILISTIC 5M IGNITION SCORING
- * 
- * Replace binary "5M trigger" gate with continuous probability (0-100)
- * No longer permission gate, now "pressure meter for execution timing"
- * 
- * Returns: { probability: 0-100, breakdown: component scores, reason: why }
- */
-interface IgnitionResult {
-  probability: number;
-  breakdown: {
-    stochComponent: number;
-    emaComponent: number;
-    volatilityComponent: number;
-    volumeComponent: number;
-  };
-  reason: string;
-}
-
 function calculateIgnitionProbability(
   stochRsi: number | null,
   emaSlope: number | null,
   volatilityLevel: number | null,
   direction: "LONG" | "SHORT" | "NEUTRAL",
-  htf1hAlignment: boolean = true // v7.5.2: 1H alignment as probabilistic modifier (default true)
+  htf1hAlignment: boolean = true, // v7.5.2: 1H alignment as probabilistic modifier (default true)
+  execution15mState: string | null = null // v8.0.2: for displacement quality
 ): IgnitionResult {
   let stochComponent = 0;
   let emaComponent = 0;
@@ -758,11 +537,25 @@ function calculateIgnitionProbability(
     reasons.push("1H divergent (-4)");
   }
   
-  const probability = Math.min(Math.max(probabilityBase + htfModifier, 0), 100); // Clamp 0-100
+  // v8.0.2: Apply displacement quality modifier (soft confidence adjuster)
+  // Measures directional commitment strength, -8 to +8
+  const { displacementModifier, displacementReason } = calculateDisplacementQuality(
+    emaSlope,
+    stochRsi,
+    volatilityLevel,
+    direction,
+    execution15mState
+  );
+  
+  if (displacementModifier !== 0) {
+    reasons.push(`Displacement: ${displacementReason}`);
+  }
+  
+  const probability = Math.min(Math.max(probabilityBase + htfModifier + displacementModifier, 0), 100); // Clamp 0-100
   
   return {
     probability,
-    breakdown: { stochComponent, emaComponent, volatilityComponent, volumeComponent },
+    breakdown: { stochComponent, emaComponent, volatilityComponent, volumeComponent, displacementComponent: displacementModifier },
     reason: reasons.length > 0 ? reasons.join(" + ") : "No ignition signals detected"
   };
 }
@@ -1013,10 +806,10 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     
     // v7.5.1: Probabilistic 5M ignition with observability
     ignitionProbability: (() => {
-      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf1hAlignment); // v7.5.2: pass 1H alignment
+      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf1hAlignment, execution15mState); // v8.0.2: pass execution15mState for displacement
       // Log ignition breakdown for transparency
       console.log(
-        `[IGNITION] ${symbol} ${direction}: prob=${result.probability} [Stoch:${result.breakdown.stochComponent} EMA:${result.breakdown.emaComponent} Vol:${result.breakdown.volatilityComponent}] | ${result.reason}`
+        `[IGNITION] ${symbol} ${direction}: prob=${result.probability} [Stoch:${result.breakdown.stochComponent} EMA:${result.breakdown.emaComponent} Vol:${result.breakdown.volatilityComponent} Disp:${result.breakdown.displacementComponent}] | ${result.reason}`
       );
       // Store breakdown for debugging
       if (!this) {
@@ -1027,7 +820,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     
     // v7.5.1: Store breakdown for UI debugging
     scoreBreakdown: (() => {
-      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf1hAlignment); // v7.5.2: pass 1H alignment
+      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf1hAlignment, execution15mState); // v8.0.2: pass execution15mState
       return result.breakdown;
     })(),
 
