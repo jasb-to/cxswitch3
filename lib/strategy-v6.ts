@@ -674,6 +674,180 @@ function checkConfirmedConditions(card: SymbolCardState): boolean {
 }
 
 /**
+ * v8.0.2 HOTFIX: Calculate signal state based on validation results
+ * Determines which of 4 states the signal should be in: NONE, BUILDING, ACTIVE_SNIPER, ACTIVE_CONFIRMED
+ * This is the canonical state determination logic
+ */
+function calculateSignalState(
+  _prevState: string, // unused, kept for compat
+  score: number,
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  _htf4hTrend: string | null, // unused
+  _sniperPassed: boolean, // unused
+  confirmedPassed: boolean,
+  ignitionProbability: number | null,
+  _lastSignalTime: number | undefined, // unused
+  _blockReason: string // unused
+): "NONE" | "BUILDING" | "ACTIVE_SNIPER" | "ACTIVE_CONFIRMED" {
+  // If no direction or very low score, NONE
+  if (direction === "NEUTRAL" || score < 40) {
+    return "NONE";
+  }
+  
+  // CONFIRMED takes priority if all conditions met
+  if (confirmedPassed && (ignitionProbability ?? 0) >= 75) {
+    return "ACTIVE_CONFIRMED";
+  }
+  
+  // SNIPER if ignition >= 65
+  if ((ignitionProbability ?? 0) >= 65) {
+    return "ACTIVE_SNIPER";
+  }
+  
+  // BUILDING if we have direction and score but not quite SNIPER yet
+  if (direction !== "NEUTRAL" && score >= 55) {
+    return "BUILDING";
+  }
+  
+  // Default to NONE
+  return "NONE";
+}
+
+/**
+ * v8.0.1: Calculate trade readiness score (0-100)
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  emaSlope: number | null,
+  stochRsi: number | null,
+  volatilityLevel: number | null
+): string {
+  if (direction === "NEUTRAL") {
+    return "Awaiting directional impulse";
+  }
+
+  // Build state description from components
+  const components: string[] = [];
+  
+  // EMA state
+  if (emaSlope !== null) {
+    if (Math.abs(emaSlope) > 0.7) {
+      components.push("strong trend");
+    } else if (Math.abs(emaSlope) > 0.3) {
+      components.push("trending");
+    } else {
+      components.push("flat");
+    }
+  }
+  
+  // Stoch state
+  if (stochRsi !== null) {
+    if (direction === "LONG" && stochRsi < 30) {
+      components.push("oversold");
+    } else if (direction === "SHORT" && stochRsi > 70) {
+      components.push("overbought");
+    } else if ((direction === "LONG" && stochRsi > 50) || (direction === "SHORT" && stochRsi < 50)) {
+      components.push("momentum");
+    }
+  }
+  
+  // Volatility state
+  if (volatilityLevel !== null) {
+    if (volatilityLevel > 70) {
+      components.push("high volatility");
+    } else if (volatilityLevel < 30) {
+      components.push("low volatility");
+    }
+  }
+  
+  // Compose final state string
+  const stateStr = components.length > 0 ? components.join(", ") : "neutral conditions";
+  return `${direction}: ${stateStr}`;
+}
+
+/**
+ * v8.0.2 HOTFIX: Calculate trade readiness score (0-100)
+ * Composite score for UI progress bar and signal entry timing
+ * FIX #4 (v7.2.4): Uses live market state instead of old phases
+ */
+function calculateTradeReadinessScore(
+  signalState: "NONE" | "BUILDING" | "SNIPER" | "CONFIRMED",
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL" | null,
+  htf1hAlignment: boolean,
+  emaSlope: number | null,
+  stochRsi: number | null,
+  volatilityLevel: number | null
+): number {
+  // Base score for having direction
+  let score = 0;
+  
+  if (direction === "NEUTRAL") {
+    return 0; // No direction = no readiness
+  }
+  
+  // 20 points: Directional confirmation
+  score += 20;
+  
+  // 20 points: EMA establishes trend
+  if (emaSlope !== null) {
+    const absSlope = Math.abs(emaSlope);
+    if (absSlope > 0.7) {
+      score += 20;
+    } else if (absSlope > 0.4) {
+      score += 15;
+    } else if (absSlope > 0.2) {
+      score += 10;
+    }
+  }
+  
+  // 20 points: Stoch momentum
+  if (stochRsi !== null) {
+    if (direction === "LONG" && stochRsi < 30) {
+      score += 20; // Oversold on LONG = high readiness
+    } else if (direction === "SHORT" && stochRsi > 70) {
+      score += 20; // Overbought on SHORT = high readiness
+    } else if ((direction === "LONG" && stochRsi > 50) || (direction === "SHORT" && stochRsi < 50)) {
+      score += 10; // Momentum in direction
+    }
+  }
+  
+  // 20 points: Volatility expansion
+  if (volatilityLevel !== null) {
+    if (volatilityLevel > 60) {
+      score += 20; // Strong expansion
+    } else if (volatilityLevel > 40) {
+      score += 10; // Moderate expansion
+    }
+  }
+  
+  // 20 points: HTF alignment
+  if (htf4hTrend !== "NEUTRAL" && htf4hTrend !== null) {
+    const directionAligned = (direction === "LONG" && htf4hTrend === "BULLISH") ||
+                              (direction === "SHORT" && htf4hTrend === "BEARISH");
+    if (directionAligned) {
+      score += 20; // Full HTF alignment
+    } else {
+      score -= 10; // Divergence penalty
+    }
+  }
+  
+  // Signal state bonus
+  if (signalState === "CONFIRMED") {
+    score = Math.min(score + 20, 100); // Boost confirmed signals
+  } else if (signalState === "SNIPER") {
+    score = Math.min(score + 10, 100); // Small boost for SNIPER
+  }
+  
+  // 1H alignment modifier
+  if (htf1hAlignment) {
+    score = Math.min(score + 5, 100);
+  } else {
+    score = Math.max(score - 5, 0);
+  }
+  
+  return Math.min(Math.max(score, 0), 100);
+}
+
+/**
  * Calculate momentum score using event-driven multiplier model
  * v7.1 STABILISATION FIX
  */
