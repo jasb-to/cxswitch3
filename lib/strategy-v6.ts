@@ -81,6 +81,7 @@ export type SymbolCardState = {
     displacementComponent: number; // v8.0.2: directional commitment quality modifier
     emaAccelerationDelta?: number; // v8.1.0: reversal acceleration transition detection
     impulseContinuationBoost?: number; // v8.1.0: expansion continuation confidence assist
+    macroPenalty?: number; // v8.3.0: penalty for contra-directional signals (-8)
     totalIgnition: number;
   };
 };
@@ -585,7 +586,23 @@ function calculateIgnitionProbability(
     reasons.push("Impulse continuation quality (+3)");
   }
   
-  const probability = Math.min(Math.max(probabilityBase + htfModifier + displacementModifier + impulseContinuationBoost, 0), 100); // Clamp 0-100
+  // v8.3.0 CRITICAL: Apply macro penalty for contra-directional SNIPER attempts
+  // This is NOT a hard block (v8.2.0 was too strict)
+  // Instead: penalize but allow elite reversals to override
+  let macroPenalty = 0;
+  let macroPenaltyReason = "";
+  
+  const directionAlignedWith4H = (direction === "LONG" && htf4hTrend === "BULLISH") ||
+                                  (direction === "SHORT" && htf4hTrend === "BEARISH");
+  
+  if (!directionAlignedWith4H && direction !== "NEUTRAL") {
+    // Contra-directional attempt: apply penalty proportional to 4H strength
+    macroPenalty = -8; // Default penalty for trading against macro structure
+    macroPenaltyReason = `4H ${htf4hTrend} contradicts ${direction}`;
+    reasons.push(`MACRO PENALTY: ${macroPenaltyReason} (-8)`);
+  }
+  
+  const probability = Math.min(Math.max(probabilityBase + htfModifier + displacementModifier + impulseContinuationBoost + macroPenalty, 0), 100); // Clamp 0-100
   
   return {
     probability,
@@ -596,7 +613,8 @@ function calculateIgnitionProbability(
       volumeComponent, 
       displacementComponent: displacementModifier,
       emaAccelerationDelta,  // v8.1.0: Track reversal acceleration for observability
-      impulseContinuationBoost  // v8.1.0: Track continuation boost for observability
+      impulseContinuationBoost,  // v8.1.0: Track continuation boost for observability
+      macroPenalty  // v8.3.0: Track macro penalty for observability
     },
     reason: reasons.length > 0 ? reasons.join(" + ") : "No ignition signals detected"
   };
@@ -711,13 +729,20 @@ function calculateTradeTargets(
  * 
  * Returns: { valid: boolean, reason?: string }
  */
-function validateActiveSniperExecution(card: SymbolCardState, score: number): { valid: boolean; reason?: string } {
-  // v7.4.0: SNIPER removed 4H requirement, use 1H alignment only
-  // v7.5.2: REMOVED hard 1H alignment gate (now probabilistic modifier in ignitionProbability)
-  // 1H divergence will reduce probability but NOT block execution
-  // Allows early impulse capture during first wave before 1H fully aligns
+function validateActiveSniperExecution(card: SymbolCardState, score: number): { valid: boolean; reason?: string; structuralOverride?: boolean } {
+  // v8.3.0 REFACTOR: Weighted macro penalty with structural override for elite reversals
+  // 
+  // Purpose: Allow early reversal capture (SNIPER's original role) while protecting against
+  // naive counter-trend trades during dumps
+  //
+  // Logic:
+  // 1. Apply macro penalty (-8) if contra-directional (already done in ignitionProbability)
+  // 2. Check if signal qualifies as "elite reversal" (structural override)
+  // 3. If elite: allow SNIPER despite macro penalty
+  // 4. If not elite: require ignition >= 65 after penalty (blocks weak reversals)
+  // 5. CONFIRMED always requires 4H alignment (no override)
 
-  // REQUIREMENT 2: 15M Execution state must be valid (NOT CHOP/COMPRESSING)
+  // REQUIREMENT 1: 15M Execution state must be valid (NOT CHOP/COMPRESSING)
   if (card.execution15mState === "CHOP" || card.execution15mState === "COMPRESSING") {
     return {
       valid: false,
@@ -725,8 +750,47 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
     };
   }
 
-  // REQUIREMENT 3: v7.5.3 ignitionProbability >= 65 (ACTIVE_SNIPER threshold)
-  // Removed: hard binary trigger gate (Stoch cross, EMA flip)
+  // REQUIREMENT 2: Direction must be valid (not NEUTRAL)
+  if (card.direction === "NEUTRAL") {
+    return {
+      valid: false,
+      reason: `Direction NEUTRAL - no trade bias`
+    };
+  }
+
+  // Check for structural override eligibility for elite reversals
+  // ONLY allow contra-4H SNIPER if ALL conditions are true:
+  const directionAlignedWith4H = (card.direction === "LONG" && card.htf4hTrend === "BULLISH") ||
+                                  (card.direction === "SHORT" && card.htf4hTrend === "BEARISH");
+
+  let structuralOverride = false;
+  if (!directionAlignedWith4H) {
+    // Attempting contra-4H reversal - check if it's elite enough
+    const eliteReversalConditions = {
+      displacementExcellent: card.scoreBreakdown?.displacementComponent >= 6,
+      volatilityExpanding: card.volatilityLevel !== null && card.volatilityLevel > 60,
+      emaAccelerationStrong: card.scoreBreakdown?.emaAccelerationDelta >= 6,
+      structureTransitioning: card.execution15mState === "EXPANDING" || card.execution15mState === "BREAKOUT_READY",
+      ignitionAfterPenalty: card.ignitionProbability >= 72,
+      scoreGood: score >= 60
+    };
+
+    const conditionsMet = Object.values(eliteReversalConditions).filter(Boolean).length;
+    const allConditionsMet = conditionsMet === Object.values(eliteReversalConditions).length;
+
+    if (allConditionsMet) {
+      structuralOverride = true;
+      console.log(`[STRUCTURAL OVERRIDE] ${card.symbol} ${card.direction}: elite reversal detected (Disp:${card.scoreBreakdown?.displacementComponent} Vol:${card.volatilityLevel} EMAAccel:${card.scoreBreakdown?.emaAccelerationDelta})`);
+    } else {
+      // Weak reversal attempt - block it
+      return {
+        valid: false,
+        reason: `Contra-4H ${card.direction} fails structural override (${conditionsMet}/6 elite conditions met). Macro penalty (-8) insufficient for SNIPER.`
+      };
+    }
+  }
+
+  // REQUIREMENT 3: Ignition probability >= 65 for SNIPER threshold
   if (card.ignitionProbability < 65) {
     return {
       valid: false,
@@ -742,18 +806,8 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
     };
   }
 
-  // REQUIREMENT 5: Direction must be valid (not NEUTRAL)
-  if (card.direction === "NEUTRAL") {
-    return {
-      valid: false,
-      reason: `Direction NEUTRAL - no trade bias`
-    };
-  }
-
   // ALL REQUIREMENTS MET: Valid ACTIVE_SNIPER execution
-  // v8.0.0 SIMPLIFIED: SNIPER is early asymmetric entry, not late confirmation
-  // No over-validation on displacement, structure, or regime - that's CONFIRMED's job
-  return { valid: true };
+  return { valid: true, structuralOverride };
 }
 
 /**
@@ -1095,7 +1149,8 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   const htf15mCompression = volatilityLevel < 40;
 
   // HARD DIRECTIONAL INFERENCE ENGINE (v7.2.5 FIX #1 & #2)
-  // Priority: EMA slope > 4H trend > momentum > volatility > Stoch position
+  // v8.3.0 REFACTOR: Volatility does NOT determine direction, only amplifies confidence
+  // Priority: EMA slope > 4H trend > momentum > displacement > Stoch position
   // NEUTRAL becomes rare - classify ANY directional pressure
   
   let direction: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
@@ -1121,11 +1176,9 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   else if (stochRsi < 45) {
     direction = "SHORT"; // Stoch in bearish zone
   }
-  // RULE 4: Volatility expansion (breakout bias)
-  else if (volatilityLevel > 60) {
-    direction = "LONG"; // Expanding - usually bullish
-  }
-  // RULE 5: ONLY classify as NEUTRAL if truly dead market
+  // v8.3.0 FIX: REMOVED volatility > 60 override that caused LONG during dumps
+  // Volatility amplifies confidence via displacement quality, NOT direction determination
+  // RULE 4: ONLY classify as NEUTRAL if truly dead market
   // EMA flat AND Stoch middle AND low volatility AND no structure
   else if (
     Math.abs(emaSlope) <= 0.1 && 
@@ -1159,7 +1212,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
       const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf1hAlignment, execution15mState); // v8.0.2: pass execution15mState for displacement
       // Log ignition breakdown for transparency
       console.log(
-        `[IGNITION] ${symbol} ${direction}: prob=${result.probability} [Stoch:${result.breakdown.stochComponent} EMA:${result.breakdown.emaComponent} Vol:${result.breakdown.volatilityComponent} Disp:${result.breakdown.displacementComponent} EMAAccel:${result.breakdown.emaAccelerationDelta} Impulse:+${result.breakdown.impulseContinuationBoost}] | ${result.reason}`
+        `[IGNITION] ${symbol} ${direction}: prob=${result.probability} [Stoch:${result.breakdown.stochComponent} EMA:${result.breakdown.emaComponent} Vol:${result.breakdown.volatilityComponent} Disp:${result.breakdown.displacementComponent} EMAAccel:${result.breakdown.emaAccelerationDelta} Impulse:+${result.breakdown.impulseContinuationBoost} Macro:${result.breakdown.macroPenalty}] | ${result.reason}`
       );
       // Store breakdown for debugging
       if (!this) {
