@@ -79,6 +79,8 @@ export type SymbolCardState = {
     emaComponent: number;
     volatilityComponent: number;
     displacementComponent: number; // v8.0.2: directional commitment quality modifier
+    emaAccelerationDelta?: number; // v8.1.0: reversal acceleration transition detection
+    impulseContinuationBoost?: number; // v8.1.0: expansion continuation confidence assist
     totalIgnition: number;
   };
 };
@@ -452,6 +454,8 @@ function calculateIgnitionProbability(
   }
 
   // COMPONENT 2: EMA acceleration (0-35 points) v7.5.4: increased from 30 to capture early trend ignition
+  // v8.1.0 ENHANCEMENT: Early acceleration detection for transitions
+  let emaAccelerationDelta = 0;
   if (emaSlope !== null) {
     const absMagnitude = Math.abs(emaSlope);
     if (direction === "LONG" && emaSlope > 0) {
@@ -493,7 +497,25 @@ function calculateIgnitionProbability(
         reasons.push("EMA flat, no acceleration");
       }
     } else {
-      reasons.push(`EMA slope diverges from ${direction} direction`);
+      // v8.1.0 FIX: Early acceleration detection for REVERSALS
+      // If slope is improving toward direction (even if still opposing), award partial credit
+      const absMagnitude = Math.abs(emaSlope);
+      const isImproving = (direction === "LONG" && emaSlope > -0.2 && emaSlope < 0) ||
+                          (direction === "SHORT" && emaSlope < 0.2 && emaSlope > 0);
+      
+      if (isImproving && absMagnitude < 0.15 && volatilityLevel !== null && volatilityLevel > 50) {
+        // Early acceleration transition: slope improving toward direction + expanding vol
+        emaAccelerationDelta = 8;
+        emaComponent = 8;
+        reasons.push(`EMA early accel transition (${emaSlope.toFixed(2)})`);
+      } else if (isImproving && volatilityLevel !== null && volatilityLevel > 60) {
+        // Very early reversal but strong vol support
+        emaAccelerationDelta = 6;
+        emaComponent = 6;
+        reasons.push(`EMA reversal forming (${emaSlope.toFixed(2)}) + strong vol`);
+      } else {
+        reasons.push(`EMA slope diverges from ${direction} direction`);
+      }
     }
   }
 
@@ -551,11 +573,31 @@ function calculateIgnitionProbability(
     reasons.push(`Displacement: ${displacementReason}`);
   }
   
-  const probability = Math.min(Math.max(probabilityBase + htfModifier + displacementModifier, 0), 100); // Clamp 0-100
+  // v8.1.0 ENHANCEMENT: Impulse continuation boost
+  // Problem: ETH repeatedly stalls at 62-64 despite good displacement + expanding vol
+  // Solution: Award micro boost (+3 max) when expansion has strong quality indicators
+  // This is NOT a new gate - just a confidence assist for genuine impulse continuation
+  let impulseContinuationBoost = 0;
+  if (displacementModifier >= 4 && volatilityLevel !== null && volatilityLevel > 55 && 
+      (execution15mState === "EXPANDING" || execution15mState === "BREAKOUT_READY")) {
+    // Displacement strong + volatility expanding + structure transitioning = genuine impulse
+    impulseContinuationBoost = 3;
+    reasons.push("Impulse continuation quality (+3)");
+  }
+  
+  const probability = Math.min(Math.max(probabilityBase + htfModifier + displacementModifier + impulseContinuationBoost, 0), 100); // Clamp 0-100
   
   return {
     probability,
-    breakdown: { stochComponent, emaComponent, volatilityComponent, volumeComponent, displacementComponent: displacementModifier },
+    breakdown: { 
+      stochComponent, 
+      emaComponent, 
+      volatilityComponent, 
+      volumeComponent, 
+      displacementComponent: displacementModifier,
+      emaAccelerationDelta,  // v8.1.0: Track reversal acceleration for observability
+      impulseContinuationBoost  // v8.1.0: Track continuation boost for observability
+    },
     reason: reasons.length > 0 ? reasons.join(" + ") : "No ignition signals detected"
   };
 }
@@ -1117,7 +1159,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
       const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf1hAlignment, execution15mState); // v8.0.2: pass execution15mState for displacement
       // Log ignition breakdown for transparency
       console.log(
-        `[IGNITION] ${symbol} ${direction}: prob=${result.probability} [Stoch:${result.breakdown.stochComponent} EMA:${result.breakdown.emaComponent} Vol:${result.breakdown.volatilityComponent} Disp:${result.breakdown.displacementComponent}] | ${result.reason}`
+        `[IGNITION] ${symbol} ${direction}: prob=${result.probability} [Stoch:${result.breakdown.stochComponent} EMA:${result.breakdown.emaComponent} Vol:${result.breakdown.volatilityComponent} Disp:${result.breakdown.displacementComponent} EMAAccel:${result.breakdown.emaAccelerationDelta} Impulse:+${result.breakdown.impulseContinuationBoost}] | ${result.reason}`
       );
       // Store breakdown for debugging
       if (!this) {
