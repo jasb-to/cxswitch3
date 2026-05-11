@@ -712,10 +712,20 @@ function calculateTradeTargets(
  * Returns: { valid: boolean, reason?: string }
  */
 function validateActiveSniperExecution(card: SymbolCardState, score: number): { valid: boolean; reason?: string } {
-  // v7.4.0: SNIPER removed 4H requirement, use 1H alignment only
-  // v7.5.2: REMOVED hard 1H alignment gate (now probabilistic modifier in ignitionProbability)
-  // 1H divergence will reduce probability but NOT block execution
-  // Allows early impulse capture during first wave before 1H fully aligns
+  // v8.2.0 CRITICAL FIX: Restore 4H directional alignment as HARD GATE
+  // v7.4.0 removed this, creating "all-or-nothing" behavior where 15M expansion
+  // on bearish 4H triggers LONG - devastating in dumps
+  // SNIPER is early entry but NOT contra-directional to macro structure
+  
+  const directionAlignedWith4H = (card.direction === "LONG" && card.htf4hTrend === "BULLISH") ||
+                                  (card.direction === "SHORT" && card.htf4hTrend === "BEARISH");
+  
+  if (!directionAlignedWith4H) {
+    return {
+      valid: false,
+      reason: `SNIPER blocked: direction ${card.direction} contradicts 4H ${card.htf4hTrend} trend. This is macro-structure violation.`
+    };
+  }
 
   // REQUIREMENT 2: 15M Execution state must be valid (NOT CHOP/COMPRESSING)
   if (card.execution15mState === "CHOP" || card.execution15mState === "COMPRESSING") {
@@ -752,7 +762,8 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
 
   // ALL REQUIREMENTS MET: Valid ACTIVE_SNIPER execution
   // v8.0.0 SIMPLIFIED: SNIPER is early asymmetric entry, not late confirmation
-  // No over-validation on displacement, structure, or regime - that's CONFIRMED's job
+  // v8.2.0 RESTORED: 4H alignment is MANDATORY (prevents macro-contradiction)
+  // Looser than CONFIRMED but still respects structure
   return { valid: true };
 }
 
