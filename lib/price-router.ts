@@ -221,7 +221,7 @@ async function getPriceFromKraken(symbol: string, isRetry: boolean = false): Pro
             lastError = new Error(`HTTP ${response.status}`);
             lastFailureType = "HTTP_ERROR";
             if (attempt < maxRetries) {
-              const backoff = attempt === 0 ? 100 : 500;
+              const backoff = attempt === 0 ? 50 : 150; // v8.0.3: Reduced from 100/500 to 50/150ms for faster fallback
               console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
               await new Promise(resolve => setTimeout(resolve, backoff));
               continue;
@@ -235,7 +235,7 @@ async function getPriceFromKraken(symbol: string, isRetry: boolean = false): Pro
             lastError = new Error(`API error: ${data.error[0]}`);
             lastFailureType = "API_ERROR";
             if (attempt < maxRetries) {
-              const backoff = attempt === 0 ? 100 : 500;
+              const backoff = attempt === 0 ? 50 : 150; // v8.0.3: Reduced from 100/500 to 50/150ms
               console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
               await new Promise(resolve => setTimeout(resolve, backoff));
               continue;
@@ -249,7 +249,7 @@ async function getPriceFromKraken(symbol: string, isRetry: boolean = false): Pro
             lastError = new Error("No ticker data returned");
             lastFailureType = "EMPTY_RESPONSE";
             if (attempt < maxRetries) {
-              const backoff = attempt === 0 ? 100 : 500;
+              const backoff = attempt === 0 ? 50 : 150; // v8.0.3: Reduced from 100/500 to 50/150ms - fail fast on empty responses
               console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
               await new Promise(resolve => setTimeout(resolve, backoff));
               continue;
@@ -266,7 +266,7 @@ async function getPriceFromKraken(symbol: string, isRetry: boolean = false): Pro
             lastError = new Error("Invalid price data");
             lastFailureType = "INVALID_PRICE";
             if (attempt < maxRetries) {
-              const backoff = attempt === 0 ? 100 : 500;
+              const backoff = attempt === 0 ? 50 : 150; // v8.0.3: Reduced from 100/500 to 50/150ms
               console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
               await new Promise(resolve => setTimeout(resolve, backoff));
               continue;

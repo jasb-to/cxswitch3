@@ -764,6 +764,58 @@ function calculateSignalState(
 }
 
 /**
+ * v8.0.3 CRITICAL FIX: Calculate live market state description
+ * Returns human-readable market conditions based on technical indicators
+ * Called from generateSetups to populate card UI and notes field
+ */
+function calculateLiveMarketState(
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  emaSlope: number | null,
+  stochRsi: number | null,
+  volatilityLevel: number | null
+): string {
+  if (direction === "NEUTRAL") {
+    return "Awaiting directional impulse";
+  }
+
+  const components: string[] = [];
+  
+  // EMA state
+  if (emaSlope !== null) {
+    if (Math.abs(emaSlope) > 0.7) {
+      components.push("strong trend");
+    } else if (Math.abs(emaSlope) > 0.3) {
+      components.push("trending");
+    } else {
+      components.push("flat");
+    }
+  }
+  
+  // Stoch state
+  if (stochRsi !== null) {
+    if (direction === "LONG" && stochRsi < 30) {
+      components.push("oversold");
+    } else if (direction === "SHORT" && stochRsi > 70) {
+      components.push("overbought");
+    } else if ((direction === "LONG" && stochRsi > 50) || (direction === "SHORT" && stochRsi < 50)) {
+      components.push("momentum");
+    }
+  }
+  
+  // Volatility state
+  if (volatilityLevel !== null) {
+    if (volatilityLevel > 70) {
+      components.push("high volatility");
+    } else if (volatilityLevel < 30) {
+      components.push("low volatility");
+    }
+  }
+  
+  const stateStr = components.length > 0 ? components.join(", ") : "neutral conditions";
+  return `${direction}: ${stateStr}`;
+}
+
+/**
  * v8.0.2 HOTFIX: Calculate trade readiness score (0-100)
  * Composite score for UI progress bar and signal entry timing
  * FIX #4 (v7.2.4): Uses live market state instead of old phases
