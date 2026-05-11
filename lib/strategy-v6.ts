@@ -567,6 +567,88 @@ function calculateIgnitionProbability(
  * - 1H alignment provides directional context
  * - 15M provides execution structure (BREAKOUT_READY or EXPANDING)
  * - 5M provides ignition confirmation
+}
+
+/**
+ * v8.0.4 CRITICAL FIX: Check SNIPER conditions before execution
+ * Lightweight pre-check to determine if SNIPER conditions are even plausible
+ * Called BEFORE validateActiveSniperExecution for early rejection
+ */
+function checkSniperConditions(card: SymbolCardState): boolean {
+  // Must have direction
+  if (card.direction === "NEUTRAL") {
+    return false;
+  }
+  
+  // Must have ignition probability
+  if (card.ignitionProbability === null || card.ignitionProbability === undefined) {
+    return false;
+  }
+  
+  // Basic ignition threshold check (soft gate)
+  if (card.ignitionProbability < 60) {
+    return false;
+  }
+  
+  // 15M state must not be in chop
+  if (card.execution15mState === "CHOP" || card.execution15mState === "COMPRESSING") {
+    return false;
+  }
+  
+  return true;
+}
+
+/**
+ * v8.0.4 CRITICAL FIX: Calculate trade targets for entry/TP/SL
+ * Used in CONFIRMED and SNIPER signal generation
+ */
+function calculateTradeTargets(
+  price: number,
+  volatilityLevel: number,
+  direction: "LONG" | "SHORT" | "NEUTRAL"
+): {
+  expectedMovePercent: number;
+  targetPrices: { tp1: number; tp2: number; sl: number };
+  riskReward: number;
+} {
+  if (direction === "NEUTRAL" || price <= 0) {
+    return {
+      expectedMovePercent: 0,
+      targetPrices: { tp1: price, tp2: price, sl: price },
+      riskReward: 0
+    };
+  }
+  
+  // Volatility-based move sizing
+  const volatilityFactor = Math.max(0.5, Math.min(2.0, volatilityLevel / 50));
+  const expectedMovePercent = volatilityFactor * 1.0;
+  const moveAmount = price * (expectedMovePercent / 100);
+  
+  if (direction === "LONG") {
+    return {
+      expectedMovePercent,
+      targetPrices: {
+        tp1: price + moveAmount * 1.0,
+        tp2: price + moveAmount * 2.0,
+        sl: price - moveAmount * 0.5
+      },
+      riskReward: 2.0
+    };
+  } else {
+    return {
+      expectedMovePercent,
+      targetPrices: {
+        tp1: price - moveAmount * 1.0,
+        tp2: price - moveAmount * 2.0,
+        sl: price + moveAmount * 0.5
+      },
+      riskReward: 2.0
+    };
+  }
+}
+
+/**
+ * v7.3.2 FIX #3: Validate ACTIVE_SNIPER execution requirements
  * - Score 55-69 is sufficient on its own
  * 
  * CONFIRMED: Still uses 4H as structural foundation (4H directional required)
