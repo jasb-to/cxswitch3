@@ -5,7 +5,7 @@ import { useState, useEffect } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v8.9.0";
+const VERSION = "v9.0.1";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load - minimal data, no fakes
@@ -152,9 +152,6 @@ function fmt(n: number) {
 function biasColor(bias: string): string {
   if (bias === "BULLISH")        return "text-green-400";
   if (bias === "BEARISH")        return "text-red-400";
-  if (bias === "TRANSITIONAL")   return "text-amber-400";
-  if (bias === "WEAKENING")      return "text-orange-400";
-  if (bias === "REVERSAL WATCH") return "text-cyan-400";
   return "text-zinc-400";
 }
 
