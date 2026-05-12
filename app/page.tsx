@@ -279,7 +279,14 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
       {/* CONDITIONAL: Trade targets when signal is ACTIVE */}
       {isActiveSignal && card.targetPrices && (
         <div className="border border-zinc-800 rounded p-3 space-y-1.5">
-          <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">{setupStatus} Entry</p>
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">{setupStatus} Entry</p>
+            <p className={`text-xs font-bold tracking-wider uppercase ${
+              card.direction === "LONG" ? "text-cyan-400" : "text-pink-400"
+            }`}>
+              {card.direction}
+            </p>
+          </div>
           <div className="text-sm font-mono space-y-1">
             <div className="flex justify-between"><span className="text-zinc-400">Entry</span><span className="text-cyan-400">${fmt(card.price)}</span></div>
             <div className="flex justify-between"><span className="text-zinc-400">TP1</span><span className="text-green-400">${fmt(card.targetPrices.tp1)}</span></div>
