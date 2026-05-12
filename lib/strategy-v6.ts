@@ -177,203 +177,98 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       card.execution15mState
     );
     
-    console.log(`[SCAN] ${symbol} score=${score} direction=${card.direction} stoch=${card.stochRsi.toFixed(1)} emaSlope=${card.emaSlope.toFixed(2)} htf=${card.htf4hTrend}`);
+    console.log(`[SCAN] ${symbol} ignition=${card.ignitionProbability} direction=${card.direction} stoch=${card.stochRsi?.toFixed(1)} emaSlope=${card.emaSlope?.toFixed(2)} htf=${card.htf4hTrend}`);
 
-    // ONLY generate setups with directional conviction
-    // NO NEUTRAL SIGNALS ALLOWED
+    // v15.0.0: CANONICAL PIPELINE - NO HIDDEN GATING, NO MACRO PENALTIES, NO SCORE CAPS
+    // Single deterministic path: ignition → executionState → readiness
     
-    // v9.1.0 CRITICAL FIX: Promote signalState FIRST, then generate setups based on it
-    // Old flow: setup gen waits for signalState that's calculated AFTER
-    // New flow: promote → generate → done
+    // Calculate market class first (for logging/UI only, doesn't gate execution)
+    card.marketClass = classifyMarketStructure({
+      direction: card.direction,
+      htf4hTrend: card.htf4hTrend,
+      execution15mState: card.execution15mState,
+      ignitionProbability: card.ignitionProbability,
+      emaSlope: card.emaSlope,
+      volatilityLevel: card.volatilityLevel,
+      emaAccelerationDelta: 0, // TODO: calculate real EMA acceleration
+      displacement: 0, // TODO: calculate real displacement
+    });
+
+    console.log(`[MARKET_CLASS] ${symbol}: ${card.marketClass}`);
     
-    // STEP 1: Determine if this trade should execute
-    // v12.0.0: Calculate cycleId (signal fingerprint for Telegram dedupe ONLY)
-    // Format: symbol-direction-setupVersion
-    const setupVersion = (score >= 80 ? "C" : (score >= 65 ? "S" : "B")); // C=CONFIRMED, S=SNIPER, B=BUILDING
-    const cycleId = `${symbol}-${card.direction}-${setupVersion}`;
-    card.cycleId = cycleId;
+    // v15.0.0: Derive execution state ONLY from ignition probability (no gating logic)
+    card.signalState = deriveExecutionState(card.ignitionProbability);
     
-    // v11.0.0: 3-STATE SYSTEM - BUILDING, SNIPER, CONFIRMED
+    // v15.0.0: Derive readiness per execution state bands
+    const readiness = deriveReadiness(card.signalState, card.ignitionProbability);
+    card.displayScore = readiness;
     
-    const ltfAligned =
-      (card.direction === "LONG" && card.ltfBias === "BULLISH") ||
-      (card.direction === "SHORT" && card.ltfBias === "BEARISH");
+    console.log(`[EXECUTION_STATE] ${symbol}: ${card.signalState} (ignition=${card.ignitionProbability} readiness=${readiness})`);
     
-    const htfAlignedConfirmed =
-      (card.direction === "LONG" && card.htfBias === "BULLISH") ||
-      (card.direction === "SHORT" && card.htfBias === "BEARISH");
-    
-    // v9.1.1: Counter-trend detection (HTF opposes direction)
-    const isContraTrend =
-      (card.htf4hTrend === "BEARISH" && card.direction === "LONG") ||
-      (card.htf4hTrend === "BULLISH" && card.direction === "SHORT");
-    
-    const volumeExpanding = card.execution15mState === "EXPANDING";
-    const notChop = card.execution15mState !== "CHOP";
-    
-    // v9.1.1: SNIPER quality filter - require ignition OR strong EMA momentum
-    const hasQualityMomentum = 
-      (card.ignitionProbability >= 35) || 
-      (Math.abs(card.emaSlope ?? 0) >= 0.25);
-    
-    // STATE PROMOTION LOGIC (v10.0.0)
-    // CONFIRMED: score >= 80 AND HTF aligned AND volume expanding
-    if (score >= 80 && card.direction !== "NEUTRAL" && htfAlignedConfirmed && volumeExpanding) {
-      card.signalState = "CONFIRMED";
-      card.mode = "CONFIRMED";
-      console.log(`[PROMOTION] ${symbol} → CONFIRMED (score=${score} HTF:${card.htfBias} vol:${card.execution15mState})`);
-    }
-    // SNIPER: score >= 65 AND LTF aligned AND not CHOP AND (ignition >= 35 OR strong EMA)
-    else if (
-      score >= 65 && 
-      card.direction !== "NEUTRAL" && 
-      ltfAligned && 
-      notChop &&
-      hasQualityMomentum
-    ) {
-      // v10.0.0: Block contra-trend SNIPER unless score >= 80 + ignition >= 60
-      if (isContraTrend) {
-        if (score >= 80 && card.ignitionProbability >= 60) {
-          card.signalState = "SNIPER";
-          card.mode = "SNIPER";
-          console.log(`[PROMOTION] ${symbol} → SNIPER (score=${score} contra-trend override)`);
-        } else {
-          card.signalState = "BUILDING";
-          card.mode = "NONE";
-          console.log(`[CONTRA_BLOCKED] ${symbol}: contra-trend (HTF:${card.htf4hTrend} dir:${card.direction}) requires score>=80 + ignition>=60 for SNIPER`);
-        }
-      } else {
-        card.signalState = "SNIPER";
+    // Map signalState to mode/setupStatus for UI compatibility
+    switch (card.signalState) {
+      case "ACTIVE_CONFIRMED":
+        card.mode = "CONFIRMED";
+        card.setupStatus = "CONFIRMED";
+        break;
+      case "ACTIVE_SNIPER":
         card.mode = "SNIPER";
-        console.log(`[PROMOTION] ${symbol} → SNIPER (score=${score} LTF:${card.ltfBias} ignition:${card.ignitionProbability})`);
-      }
-    }
-    // BUILDING: score >= 55 AND direction valid (DEFAULT STATE)
-    else if (score >= 55 && card.direction !== "NEUTRAL") {
-      card.signalState = "BUILDING";
-      card.mode = "NONE";
-      console.log(`[BUILDING] ${symbol} score=${score} (waiting for alignment)`);
-    }
-    // NO SETUP (default to BUILDING if score >= 40)
-    else if (score >= 40) {
-      card.signalState = "BUILDING";
-      card.mode = "NONE";
-    }
-    // NO SETUP
-    else {
-      card.signalState = "BUILDING";
-      card.mode = "NONE";
+        card.setupStatus = "SNIPER";
+        break;
+      case "BUILDING":
+        card.mode = "NONE";
+        card.setupStatus = "BUILDING";
+        break;
+      case "NONE":
+      default:
+        card.mode = "NONE";
+        card.setupStatus = "BUILDING";
+        card.signalState = "NONE";
     }
     
-    console.log(`[PROMOTION] ${symbol} score=${score} → signalState=${card.signalState} mode=${card.mode}`);
-
-    // STEP 2: Generate setups for executable trades (SNIPER and CONFIRMED only)
-    // v10.0.0: Simplified from 5 states - only 2 states trigger setups
-    if (card.signalState === "CONFIRMED") {
-      card.confidence = Math.min(score, 99);
-      card.lastSignalTime = Date.now();
-      card.notes = `CONFIRMED ${card.direction} - HTF aligned + volume expanding`;
-      
-      // Populate trade targets (v7.2.1)
-      const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
-      card.expectedMovePercent = targets.expectedMovePercent;
-      card.targetPrices = targets.targetPrices;
-      card.riskReward = targets.riskReward;
-      // v8.7.0: Pass macro-aware parameters to readiness score
-      card.tradeReadinessScore = calculateTradeReadinessScore(
-        "CONFIRMED",
-        card.direction,
-        card.htf4hTrend,
-        card.htf1hAlignment,
-        card.emaPressure,
-        card.stochRsi,
-        card.volatilityLevel,
-        card.execution15mState,
-        card.ignitionProbability
-      );
-      card.displayScore = card.confidence;
-      card.setupStatus = "CONFIRMED";
-      
-      setups.push({
-        symbol,
-        mode: "CONFIRMED",
-        direction: card.direction,
-        score: card.confidence,
-        reason: `CONFIRMED ${card.direction} - HTF aligned + volume expanding`,
-        price: card.price,
-        momentum: {
-          stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
-          emaStackSignal: card.direction === "LONG" ? "8 EMA above 21 EMA" : "8 EMA below 21 EMA",
-          volatilitySignal: (card.volatilityLevel ?? 50) < 30 ? "Compression detected" : "Normal volatility",
-          trend4H: (card.stochRsi ?? 50) > 50,
-        },
-      });
-      console.log(`[EXECUTION_READY] ${symbol} CONFIRMED ${card.direction} | score=${score} HTF:${card.htfBias} vol:${card.execution15mState}`);
-    }
-
-    // SNIPER: Generate setup when signalState is SNIPER
-    else if (card.signalState === "SNIPER") {
-      card.confidence = Math.min(score, 99);
-      card.lastSignalTime = Date.now();
-      card.notes = `SNIPER ${card.direction} - LTF aligned, execution ready`;
-      
-      // Populate trade targets
-      const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
-      card.expectedMovePercent = targets.expectedMovePercent;
-      card.targetPrices = targets.targetPrices;
-      card.riskReward = targets.riskReward;
-      // v8.7.0: Pass macro-aware parameters to readiness score
-      card.tradeReadinessScore = calculateTradeReadinessScore(
-        "SNIPER",
-        card.direction,
-        card.htf4hTrend,
-        card.htf1hAlignment,
-        card.emaPressure,
-        card.stochRsi,
-        card.volatilityLevel,
-        card.execution15mState,
-        card.ignitionProbability
-      );
-      card.displayScore = card.confidence;
-      card.setupStatus = "SNIPER";
-      
-      setups.push({
-        symbol,
-        mode: "SNIPER",
-        direction: card.direction,
-        score: card.confidence,
-        reason: `SNIPER ${card.direction} - LTF aligned, execution ready`,
-        price: card.price,
-        momentum: {
-          stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
-          emaStackSignal: card.direction === "LONG" ? "8 EMA accelerating up" : "8 EMA accelerating down",
-          volatilitySignal: (card.volatilityLevel ?? 40) > 45 ? "Expansion beginning" : "Structure forming",
-          trend4H: card.htf4hTrend !== "NEUTRAL",
-        },
-      });
-      console.log(`[EXECUTION_READY] ${symbol} ACTIVE_SNIPER ${card.direction} | score=${score} LTF:${card.ltfBias} 15M:${card.execution15mState}`);
-    }
-    else {
-      // v9.1.0: No setup generated - but card state still reflects signalState
-      // blockReason helps UI explain why this symbol isn't trading
-      let blockReason = "No trade conditions met";
-      
+    // v15.0.0: Generate setups ONLY for executable states
+    // ACTIVE_CONFIRMED and ACTIVE_SNIPER only
+    if (card.signalState === "ACTIVE_CONFIRMED" || card.signalState === "ACTIVE_SNIPER") {
+      if (card.direction !== "NEUTRAL") {
+        card.confidence = Math.min(readiness, 99);
+        card.lastSignalTime = Date.now();
+        card.notes = `${card.signalState} ${card.direction} - ${card.marketClass}`;
+        
+        // Populate trade targets
+        const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
+        card.expectedMovePercent = targets.expectedMovePercent;
+        card.targetPrices = targets.targetPrices;
+        card.riskReward = targets.riskReward;
+        card.tradeReadinessScore = readiness;
+        
+        setups.push({
+          symbol,
+          mode: card.mode as "SNIPER" | "CONFIRMED",
+          direction: card.direction,
+          score: readiness,
+          reason: `${card.signalState} ${card.direction} - ${card.marketClass}`,
+          price: card.price,
+          momentum: {
+            stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
+            emaStackSignal: card.direction === "LONG" ? "8 EMA accelerating up" : "8 EMA accelerating down",
+            volatilitySignal: (card.volatilityLevel ?? 40) > 45 ? "Expansion" : "Forming",
+            trend4H: card.htf4hTrend !== "NEUTRAL",
+          },
+        });
+        console.log(`[SETUP_GENERATED] ${symbol} ${card.signalState} ${card.direction} | readiness=${readiness} marketClass=${card.marketClass}`);
+      }
+    } else {
+      // No executable setup - explain why
+      let blockReason = "No executable setup";
       if (card.direction === "NEUTRAL") {
         blockReason = "No directional bias";
-      } else if (score < 40) {
-        blockReason = `Score ${score} too low (< 40)`;
-      } else if (score < 55) {
-        blockReason = `Score ${score} below BUILDING floor (< 55)`;
-      } else if (score < 65) {
-        blockReason = `Score ${score} below SNIPER threshold (65) - awaiting LTF alignment`;
       } else if (card.signalState === "BUILDING") {
-        blockReason = `BUILDING - LTF not aligned with direction yet`;
-      } else {
-        blockReason = `${card.signalState} - conditions not met for execution`;
+        blockReason = `BUILDING - ignition ${card.ignitionProbability}% (need 60% for SNIPER)`;
+      } else if (card.signalState === "NONE") {
+        blockReason = `NONE - ignition ${card.ignitionProbability}% (need 20% for BUILDING)`;
       }
-      
       card.blockReason = blockReason;
-      console.log(`[BUILD] ${symbol} ${card.signalState} | score=${score} | reason: ${card.blockReason}`);
+      console.log(`[NO_SETUP] ${symbol} ${card.signalState} | ${blockReason}`);
     }
   }
 
