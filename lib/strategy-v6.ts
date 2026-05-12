@@ -19,6 +19,12 @@ export type SignalState =
   | "SNIPER"            // Entry fully aligned, high-confidence executable
   | "CONFIRMED";        // Trade executed or validated (no re-trigger unless new cycle)
 
+// v8.7.0: Setup classification for macro-aware scoring
+export type SetupClassification = 
+  | "TREND_FOLLOWING"      // Direction aligns with 4H HTF trend
+  | "COUNTER_TREND"        // Direction opposes 4H HTF trend (needs higher bar)
+  | "STRUCTURAL_REVERSAL"; // Counter-trend with elite structural override conditions
+
 export type SymbolCardState = {
   symbol: string;
   price: number;
@@ -31,6 +37,7 @@ export type SymbolCardState = {
   
   // FIX #1: Unified signal state (v7.2.6), extended for v7.2.8, standardized for v7.2.9
   signalState: SignalState;
+  setupClassification: SetupClassification;  // v8.7.0: Macro-aware classification (trend-following vs counter-trend)
   cycleId: string;  // v12.0.0: LEAN cycle fingerprint (for Telegram dedupe ONLY, no re-alerts)
   lastSignalTime?: number;
 
@@ -137,6 +144,16 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // Generate card state for this symbol
     const card = generateCardState(symbol, priceData);
     console.log(`[DEBUG_CARD_INITIAL] ${symbol}: signalState=${card.signalState}, direction=${card.direction}`);
+    
+    // v8.7.0: Assign setup classification (macro-aware)
+    if (isCounterTrend(card.direction, card.htf4hTrend)) {
+      card.setupClassification = "COUNTER_TREND";
+    } else if (card.direction !== "NEUTRAL" && card.htf4hTrend && card.htf4hTrend !== "NEUTRAL") {
+      card.setupClassification = "TREND_FOLLOWING";
+    } else {
+      card.setupClassification = "TREND_FOLLOWING"; // Default
+    }
+    
     cards.push(card);
 
     // Score using NEW momentum-based system
@@ -145,7 +162,17 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // v8.5.0 REFINEMENT: Blend structure score with ignition probability
     // This eliminates psychological confusion (high score + low ignition = confusing)
     // Display score now represents "actual readiness to trade"
-    const score = calculateExecutionReadinessScore(structureScore, card.ignitionProbability);
+    // v8.7.0: Pass macro-aware parameters for counter-trend cap logic
+    const score = calculateExecutionReadinessScore(
+      structureScore,
+      card.ignitionProbability,
+      card.direction,
+      card.htf4hTrend,
+      undefined, // displacement - not calculated yet
+      card.volatilityLevel,
+      undefined, // emaAccelerationDelta - not passed in here
+      card.execution15mState
+    );
     
     console.log(`[SCAN] ${symbol} score=${score} direction=${card.direction} stoch=${card.stochRsi.toFixed(1)} emaSlope=${card.emaSlope.toFixed(2)} htf=${card.htf4hTrend}`);
 
@@ -249,7 +276,18 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       card.expectedMovePercent = targets.expectedMovePercent;
       card.targetPrices = targets.targetPrices;
       card.riskReward = targets.riskReward;
-      card.tradeReadinessScore = calculateTradeReadinessScore("CONFIRMED", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaPressure, card.stochRsi, card.volatilityLevel);
+      // v8.7.0: Pass macro-aware parameters to readiness score
+      card.tradeReadinessScore = calculateTradeReadinessScore(
+        "CONFIRMED",
+        card.direction,
+        card.htf4hTrend,
+        card.htf1hAlignment,
+        card.emaPressure,
+        card.stochRsi,
+        card.volatilityLevel,
+        card.execution15mState,
+        card.ignitionProbability
+      );
       card.displayScore = card.confidence;
       card.setupStatus = "CONFIRMED";
       
@@ -281,7 +319,18 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       card.expectedMovePercent = targets.expectedMovePercent;
       card.targetPrices = targets.targetPrices;
       card.riskReward = targets.riskReward;
-      card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaPressure, card.stochRsi, card.volatilityLevel);
+      // v8.7.0: Pass macro-aware parameters to readiness score
+      card.tradeReadinessScore = calculateTradeReadinessScore(
+        "SNIPER",
+        card.direction,
+        card.htf4hTrend,
+        card.htf1hAlignment,
+        card.emaPressure,
+        card.stochRsi,
+        card.volatilityLevel,
+        card.execution15mState,
+        card.ignitionProbability
+      );
       card.displayScore = card.confidence;
       card.setupStatus = "SNIPER";
       
@@ -1054,6 +1103,46 @@ function calculateLiveMarketState(
  * 
  * Result: BTC (~35-45%), ETH (~45-60%), SOL (~65-80%)
  */
+/**
+ * v8.7.0: Canonical helper to detect counter-trend setups
+ * Returns true when direction opposes 4H HTF macro trend
+ */
+function isCounterTrend(
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL" | null
+): boolean {
+  if (direction === "NEUTRAL" || !htf4hTrend || htf4hTrend === "NEUTRAL") {
+    return false;
+  }
+  return (direction === "LONG" && htf4hTrend === "BEARISH") ||
+         (direction === "SHORT" && htf4hTrend === "BULLISH");
+}
+
+/**
+ * v8.7.0: Check if counter-trend setup qualifies for structural override
+ * ONLY allow higher scores IF ALL conditions met:
+ * - displacement >= 6 (strong move away from macro)
+ * - volatility > 60 (expansion confirming move)
+ * - emaAccelerationDelta >= 6 (momentum building)
+ * - 15M state = EXPANDING or BREAKOUT_READY
+ * - ignitionProbability >= 72 AFTER penalties
+ */
+function qualifiesForStructuralOverride(
+  displacement: number | null,
+  volatilityLevel: number | null,
+  emaAccelerationDelta: number | null,
+  execution15mState: string,
+  ignitionProbability: number
+): boolean {
+  return (
+    (displacement ?? 0) >= 6 &&
+    (volatilityLevel ?? 0) > 60 &&
+    (emaAccelerationDelta ?? 0) >= 6 &&
+    (execution15mState === "EXPANDING" || execution15mState === "BREAKOUT_READY") &&
+    ignitionProbability >= 72
+  );
+}
+
 function calculateTradeReadinessScore(
   signalState: SignalState,
   direction: "LONG" | "SHORT" | "NEUTRAL",
@@ -1061,7 +1150,11 @@ function calculateTradeReadinessScore(
   htf1hAlignment: boolean,
   emaPressure: number,  // v9.2.0: NEW - raw ATR-normalized pressure (no clamping)
   stochRsi: number | null,
-  volatilityLevel: number | null
+  volatilityLevel: number | null,
+  execution15mState?: string,  // v8.7.0: For structural override checks
+  ignitionProbability?: number, // v8.7.0: For structural override checks
+  emaAccelerationDelta?: number,  // v8.7.0: For structural override checks
+  displacement?: number  // v8.7.0: For structural override checks
 ): number {
   // Base score for having direction
   let score = 0;
@@ -1069,6 +1162,16 @@ function calculateTradeReadinessScore(
   if (direction === "NEUTRAL") {
     return 0; // No direction = no readiness
   }
+  
+  // v8.7.0: Check macro structure
+  const counterTrend = isCounterTrend(direction, htf4hTrend);
+  const structuralOverride = counterTrend && qualifiesForStructuralOverride(
+    displacement ?? null,
+    volatilityLevel,
+    emaAccelerationDelta ?? null,
+    execution15mState ?? "CHOP",
+    ignitionProbability ?? 0
+  );
   
   // 40 points: Directional confirmation + setup state
   if (signalState === "CONFIRMED") {
@@ -1107,13 +1210,17 @@ function calculateTradeReadinessScore(
     }
   }
   
-  // 15 points: HTF alignment bonus
+  // 15 points: HTF alignment bonus (v8.7.0: reduced for counter-trend without override)
   if (htf4hTrend !== "NEUTRAL" && htf4hTrend !== null) {
     const directionAligned = (direction === "LONG" && htf4hTrend === "BULLISH") ||
                               (direction === "SHORT" && htf4hTrend === "BEARISH");
     if (directionAligned) {
-      score += 15; // Full HTF alignment
+      score += 15; // Full HTF alignment (trend-following bonus)
+    } else if (counterTrend && structuralOverride) {
+      score += 10; // Partial credit for structural override (reversal unlocked)
+      console.log(`[STRUCTURAL_REVERSAL] Counter-trend setup qualifies for override`);
     }
+    // No bonus for counter-trend without override
   }
   
   // 5 points: 1H alignment bonus (micro)
@@ -1121,10 +1228,17 @@ function calculateTradeReadinessScore(
     score += 5;
   }
   
-  // Ensure minimum variance enforcement
-  // If two assets have inputs that differ, scores should differ by at least 3%
-  // This prevents convergence bug
+  // v8.7.0: Apply macro-aware readiness cap for counter-trend setups
   const rawScore = Math.max(0, Math.min(100, score));
+  
+  if (counterTrend && !structuralOverride) {
+    const cappedScore = Math.min(rawScore, 45); // Counter-trend cap: 45% readiness max
+    if (cappedScore < rawScore) {
+      console.log(`[MACRO_CAP] Counter-trend readiness capped at 45% (was ${rawScore.toFixed(1)}%)`);
+    }
+    return cappedScore;
+  }
+  
   return rawScore;
 }
 
@@ -1144,9 +1258,40 @@ function calculateTradeReadinessScore(
 /**
  * v9.0.1: FINAL SIMPLIFICATION - displayScore = structureScore only
  * Ignition is internal/debug only, never influences execution decisions
+ * v8.7.0: Add macro-aware cap - counter-trend execution capped at 55
  */
-function calculateExecutionReadinessScore(structureScore: number, ignitionProbability: number): number {
-  return structureScore;
+function calculateExecutionReadinessScore(
+  structureScore: number,
+  ignitionProbability: number,
+  direction?: "LONG" | "SHORT" | "NEUTRAL",
+  htf4hTrend?: "BULLISH" | "BEARISH" | "NEUTRAL" | null,
+  displacement?: number | null,
+  volatilityLevel?: number | null,
+  emaAccelerationDelta?: number | null,
+  execution15mState?: string
+): number {
+  let score = structureScore;
+  
+  // v8.7.0: Apply macro-aware execution cap for counter-trend setups
+  if (direction && htf4hTrend && isCounterTrend(direction, htf4hTrend)) {
+    const structuralOverride = qualifiesForStructuralOverride(
+      displacement ?? null,
+      volatilityLevel,
+      emaAccelerationDelta ?? null,
+      execution15mState ?? "CHOP",
+      ignitionProbability
+    );
+    
+    if (!structuralOverride) {
+      const cappedScore = Math.min(score, 55); // Counter-trend execution cap: 55
+      if (cappedScore < score) {
+        console.log(`[MACRO_CAP] Counter-trend execution capped at 55 (was ${score})`);
+      }
+      score = cappedScore;
+    }
+  }
+  
+  return score;
 }
 
 /**
@@ -1461,6 +1606,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     
     // FIX #1: v11.0.0 - Initialize to BUILDING (default state)
     signalState: "BUILDING",
+    setupClassification: "TREND_FOLLOWING",  // v8.7.0: Will be updated in scanSymbols loop
     cycleId: `${symbol}-NEUTRAL-B`,  // v12.0.0: Initial cycleId (will be updated in promotion logic)
     lastSignalTime: undefined,
 
