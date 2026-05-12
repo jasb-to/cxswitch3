@@ -1470,7 +1470,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     // v8.6.0 UX FIELDS — computed after ignition is known
     // displayScore: calculated below after card is built
     displayScore: 0, // placeholder, replaced immediately below
-    setupStatus: "NO SETUP",
+    setupStatus: "BUILDING",  // v13.0.0: Default to BUILDING (was NO SETUP)
     htfBias: deriveHtfBias(htf4hTrend, htf1hAlignment, emaSlope),
     ltfBias: deriveLtfBias(execution15mState, direction),
     marketQuality: degraded ? "FALLBACK" : "LIVE",
