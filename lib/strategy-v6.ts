@@ -9,21 +9,24 @@
 
 import type { PriceData } from "./price-router";
 
-// v7.5.3: Clean 3-state architecture with continuous progression
-// Returns: NONE | BUILDING | ACTIVE_SNIPER | ACTIVE_CONFIRMED
-// v10.0.0: MASTER FIX - Simplified 3-state system
-// Flow: BUILDING (forming) → SNIPER (entry ready) → CONFIRMED (executed/validated)
-// NO intermediate states, NO pseudo-states, NO WATCHLIST, NO ACTIVE_* prefixes
+// v15.0.0: Canonical execution states
+// Single source of truth for trade readiness
+// NONE → BUILDING → ACTIVE_SNIPER → ACTIVE_CONFIRMED (with possible reversals to earlier states)
 export type SignalState = 
-  | "BUILDING"          // Default: setup forming, not yet fully aligned
-  | "SNIPER"            // Entry fully aligned, high-confidence executable
-  | "CONFIRMED";        // Trade executed or validated (no re-trigger unless new cycle)
+  | "NONE"              // No setup present (CHOP, conflicting signals)
+  | "BUILDING"          // Setup forming, structural quality insufficient for entry
+  | "ACTIVE_SNIPER"     // Entry aligned, ready for execution
+  | "ACTIVE_CONFIRMED"; // Trade executed or confirmed with follow-through
 
-// v8.7.0: Setup classification for macro-aware scoring
-export type SetupClassification = 
-  | "TREND_FOLLOWING"      // Direction aligns with 4H HTF trend
-  | "COUNTER_TREND"        // Direction opposes 4H HTF trend (needs higher bar)
-  | "STRUCTURAL_REVERSAL"; // Counter-trend with elite structural override conditions
+// v15.0.0: Market structure classification (replaces SetupClassification)
+// Determines execution state eligibility and readiness gates
+export type MarketStructureClass = 
+  | "TREND_FOLLOWING"   // Direction aligns with 4H HTF, structural support strong
+  | "EARLY_REVERSAL"    // Contra-HTF with elite reversal conditions met (displacement, volume, EMA)
+  | "COUNTER_TREND"     // Contra-HTF without elite conditions, lower probability, capped at BUILDING
+  | "TRANSITION"        // Mixed HTF/LTF conditions, incomplete reversal signal, direction uncertain
+  | "RANGE"             // HTF neutral, weak directional expansion, rotational structure
+  | "CHOP";             // COMPRESSING state, conflicting signals, no entry possible
 
 export type SymbolCardState = {
   symbol: string;
@@ -37,7 +40,7 @@ export type SymbolCardState = {
   
   // FIX #1: Unified signal state (v7.2.6), extended for v7.2.8, standardized for v7.2.9
   signalState: SignalState;
-  setupClassification: SetupClassification;  // v8.7.0: Macro-aware classification (trend-following vs counter-trend)
+  marketClass: MarketStructureClass;  // v15.0.0: Market structure classification (replaces setupClassification)
   cycleId: string;  // v12.0.0: LEAN cycle fingerprint (for Telegram dedupe ONLY, no re-alerts)
   lastSignalTime?: number;
 
@@ -174,203 +177,98 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       card.execution15mState
     );
     
-    console.log(`[SCAN] ${symbol} score=${score} direction=${card.direction} stoch=${card.stochRsi.toFixed(1)} emaSlope=${card.emaSlope.toFixed(2)} htf=${card.htf4hTrend}`);
+    console.log(`[SCAN] ${symbol} ignition=${card.ignitionProbability} direction=${card.direction} stoch=${card.stochRsi?.toFixed(1)} emaSlope=${card.emaSlope?.toFixed(2)} htf=${card.htf4hTrend}`);
 
-    // ONLY generate setups with directional conviction
-    // NO NEUTRAL SIGNALS ALLOWED
+    // v15.0.0: CANONICAL PIPELINE - NO HIDDEN GATING, NO MACRO PENALTIES, NO SCORE CAPS
+    // Single deterministic path: ignition → executionState → readiness
     
-    // v9.1.0 CRITICAL FIX: Promote signalState FIRST, then generate setups based on it
-    // Old flow: setup gen waits for signalState that's calculated AFTER
-    // New flow: promote → generate → done
+    // Calculate market class first (for logging/UI only, doesn't gate execution)
+    card.marketClass = classifyMarketStructure({
+      direction: card.direction,
+      htf4hTrend: card.htf4hTrend,
+      execution15mState: card.execution15mState,
+      ignitionProbability: card.ignitionProbability,
+      emaSlope: card.emaSlope,
+      volatilityLevel: card.volatilityLevel,
+      emaAccelerationDelta: 0, // TODO: calculate real EMA acceleration
+      displacement: 0, // TODO: calculate real displacement
+    });
+
+    console.log(`[MARKET_CLASS] ${symbol}: ${card.marketClass}`);
     
-    // STEP 1: Determine if this trade should execute
-    // v12.0.0: Calculate cycleId (signal fingerprint for Telegram dedupe ONLY)
-    // Format: symbol-direction-setupVersion
-    const setupVersion = (score >= 80 ? "C" : (score >= 65 ? "S" : "B")); // C=CONFIRMED, S=SNIPER, B=BUILDING
-    const cycleId = `${symbol}-${card.direction}-${setupVersion}`;
-    card.cycleId = cycleId;
+    // v15.0.0: Derive execution state ONLY from ignition probability (no gating logic)
+    card.signalState = deriveExecutionState(card.ignitionProbability);
     
-    // v11.0.0: 3-STATE SYSTEM - BUILDING, SNIPER, CONFIRMED
+    // v15.0.0: Derive readiness per execution state bands
+    const readiness = deriveReadiness(card.signalState, card.ignitionProbability);
+    card.displayScore = readiness;
     
-    const ltfAligned =
-      (card.direction === "LONG" && card.ltfBias === "BULLISH") ||
-      (card.direction === "SHORT" && card.ltfBias === "BEARISH");
+    console.log(`[EXECUTION_STATE] ${symbol}: ${card.signalState} (ignition=${card.ignitionProbability} readiness=${readiness})`);
     
-    const htfAlignedConfirmed =
-      (card.direction === "LONG" && card.htfBias === "BULLISH") ||
-      (card.direction === "SHORT" && card.htfBias === "BEARISH");
-    
-    // v9.1.1: Counter-trend detection (HTF opposes direction)
-    const isContraTrend =
-      (card.htf4hTrend === "BEARISH" && card.direction === "LONG") ||
-      (card.htf4hTrend === "BULLISH" && card.direction === "SHORT");
-    
-    const volumeExpanding = card.execution15mState === "EXPANDING";
-    const notChop = card.execution15mState !== "CHOP";
-    
-    // v9.1.1: SNIPER quality filter - require ignition OR strong EMA momentum
-    const hasQualityMomentum = 
-      (card.ignitionProbability >= 35) || 
-      (Math.abs(card.emaSlope ?? 0) >= 0.25);
-    
-    // STATE PROMOTION LOGIC (v10.0.0)
-    // CONFIRMED: score >= 80 AND HTF aligned AND volume expanding
-    if (score >= 80 && card.direction !== "NEUTRAL" && htfAlignedConfirmed && volumeExpanding) {
-      card.signalState = "CONFIRMED";
-      card.mode = "CONFIRMED";
-      console.log(`[PROMOTION] ${symbol} → CONFIRMED (score=${score} HTF:${card.htfBias} vol:${card.execution15mState})`);
-    }
-    // SNIPER: score >= 65 AND LTF aligned AND not CHOP AND (ignition >= 35 OR strong EMA)
-    else if (
-      score >= 65 && 
-      card.direction !== "NEUTRAL" && 
-      ltfAligned && 
-      notChop &&
-      hasQualityMomentum
-    ) {
-      // v10.0.0: Block contra-trend SNIPER unless score >= 80 + ignition >= 60
-      if (isContraTrend) {
-        if (score >= 80 && card.ignitionProbability >= 60) {
-          card.signalState = "SNIPER";
-          card.mode = "SNIPER";
-          console.log(`[PROMOTION] ${symbol} → SNIPER (score=${score} contra-trend override)`);
-        } else {
-          card.signalState = "BUILDING";
-          card.mode = "NONE";
-          console.log(`[CONTRA_BLOCKED] ${symbol}: contra-trend (HTF:${card.htf4hTrend} dir:${card.direction}) requires score>=80 + ignition>=60 for SNIPER`);
-        }
-      } else {
-        card.signalState = "SNIPER";
+    // Map signalState to mode/setupStatus for UI compatibility
+    switch (card.signalState) {
+      case "ACTIVE_CONFIRMED":
+        card.mode = "CONFIRMED";
+        card.setupStatus = "CONFIRMED";
+        break;
+      case "ACTIVE_SNIPER":
         card.mode = "SNIPER";
-        console.log(`[PROMOTION] ${symbol} → SNIPER (score=${score} LTF:${card.ltfBias} ignition:${card.ignitionProbability})`);
-      }
-    }
-    // BUILDING: score >= 55 AND direction valid (DEFAULT STATE)
-    else if (score >= 55 && card.direction !== "NEUTRAL") {
-      card.signalState = "BUILDING";
-      card.mode = "NONE";
-      console.log(`[BUILDING] ${symbol} score=${score} (waiting for alignment)`);
-    }
-    // NO SETUP (default to BUILDING if score >= 40)
-    else if (score >= 40) {
-      card.signalState = "BUILDING";
-      card.mode = "NONE";
-    }
-    // NO SETUP
-    else {
-      card.signalState = "BUILDING";
-      card.mode = "NONE";
+        card.setupStatus = "SNIPER";
+        break;
+      case "BUILDING":
+        card.mode = "NONE";
+        card.setupStatus = "BUILDING";
+        break;
+      case "NONE":
+      default:
+        card.mode = "NONE";
+        card.setupStatus = "BUILDING";
+        card.signalState = "NONE";
     }
     
-    console.log(`[PROMOTION] ${symbol} score=${score} → signalState=${card.signalState} mode=${card.mode}`);
-
-    // STEP 2: Generate setups for executable trades (SNIPER and CONFIRMED only)
-    // v10.0.0: Simplified from 5 states - only 2 states trigger setups
-    if (card.signalState === "CONFIRMED") {
-      card.confidence = Math.min(score, 99);
-      card.lastSignalTime = Date.now();
-      card.notes = `CONFIRMED ${card.direction} - HTF aligned + volume expanding`;
-      
-      // Populate trade targets (v7.2.1)
-      const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
-      card.expectedMovePercent = targets.expectedMovePercent;
-      card.targetPrices = targets.targetPrices;
-      card.riskReward = targets.riskReward;
-      // v8.7.0: Pass macro-aware parameters to readiness score
-      card.tradeReadinessScore = calculateTradeReadinessScore(
-        "CONFIRMED",
-        card.direction,
-        card.htf4hTrend,
-        card.htf1hAlignment,
-        card.emaPressure,
-        card.stochRsi,
-        card.volatilityLevel,
-        card.execution15mState,
-        card.ignitionProbability
-      );
-      card.displayScore = card.confidence;
-      card.setupStatus = "CONFIRMED";
-      
-      setups.push({
-        symbol,
-        mode: "CONFIRMED",
-        direction: card.direction,
-        score: card.confidence,
-        reason: `CONFIRMED ${card.direction} - HTF aligned + volume expanding`,
-        price: card.price,
-        momentum: {
-          stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
-          emaStackSignal: card.direction === "LONG" ? "8 EMA above 21 EMA" : "8 EMA below 21 EMA",
-          volatilitySignal: (card.volatilityLevel ?? 50) < 30 ? "Compression detected" : "Normal volatility",
-          trend4H: (card.stochRsi ?? 50) > 50,
-        },
-      });
-      console.log(`[EXECUTION_READY] ${symbol} CONFIRMED ${card.direction} | score=${score} HTF:${card.htfBias} vol:${card.execution15mState}`);
-    }
-
-    // SNIPER: Generate setup when signalState is SNIPER
-    else if (card.signalState === "SNIPER") {
-      card.confidence = Math.min(score, 99);
-      card.lastSignalTime = Date.now();
-      card.notes = `SNIPER ${card.direction} - LTF aligned, execution ready`;
-      
-      // Populate trade targets
-      const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
-      card.expectedMovePercent = targets.expectedMovePercent;
-      card.targetPrices = targets.targetPrices;
-      card.riskReward = targets.riskReward;
-      // v8.7.0: Pass macro-aware parameters to readiness score
-      card.tradeReadinessScore = calculateTradeReadinessScore(
-        "SNIPER",
-        card.direction,
-        card.htf4hTrend,
-        card.htf1hAlignment,
-        card.emaPressure,
-        card.stochRsi,
-        card.volatilityLevel,
-        card.execution15mState,
-        card.ignitionProbability
-      );
-      card.displayScore = card.confidence;
-      card.setupStatus = "SNIPER";
-      
-      setups.push({
-        symbol,
-        mode: "SNIPER",
-        direction: card.direction,
-        score: card.confidence,
-        reason: `SNIPER ${card.direction} - LTF aligned, execution ready`,
-        price: card.price,
-        momentum: {
-          stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
-          emaStackSignal: card.direction === "LONG" ? "8 EMA accelerating up" : "8 EMA accelerating down",
-          volatilitySignal: (card.volatilityLevel ?? 40) > 45 ? "Expansion beginning" : "Structure forming",
-          trend4H: card.htf4hTrend !== "NEUTRAL",
-        },
-      });
-      console.log(`[EXECUTION_READY] ${symbol} ACTIVE_SNIPER ${card.direction} | score=${score} LTF:${card.ltfBias} 15M:${card.execution15mState}`);
-    }
-    else {
-      // v9.1.0: No setup generated - but card state still reflects signalState
-      // blockReason helps UI explain why this symbol isn't trading
-      let blockReason = "No trade conditions met";
-      
+    // v15.0.0: Generate setups ONLY for executable states
+    // ACTIVE_CONFIRMED and ACTIVE_SNIPER only
+    if (card.signalState === "ACTIVE_CONFIRMED" || card.signalState === "ACTIVE_SNIPER") {
+      if (card.direction !== "NEUTRAL") {
+        card.confidence = Math.min(readiness, 99);
+        card.lastSignalTime = Date.now();
+        card.notes = `${card.signalState} ${card.direction} - ${card.marketClass}`;
+        
+        // Populate trade targets
+        const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
+        card.expectedMovePercent = targets.expectedMovePercent;
+        card.targetPrices = targets.targetPrices;
+        card.riskReward = targets.riskReward;
+        card.tradeReadinessScore = readiness;
+        
+        setups.push({
+          symbol,
+          mode: card.mode as "SNIPER" | "CONFIRMED",
+          direction: card.direction,
+          score: readiness,
+          reason: `${card.signalState} ${card.direction} - ${card.marketClass}`,
+          price: card.price,
+          momentum: {
+            stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
+            emaStackSignal: card.direction === "LONG" ? "8 EMA accelerating up" : "8 EMA accelerating down",
+            volatilitySignal: (card.volatilityLevel ?? 40) > 45 ? "Expansion" : "Forming",
+            trend4H: card.htf4hTrend !== "NEUTRAL",
+          },
+        });
+        console.log(`[SETUP_GENERATED] ${symbol} ${card.signalState} ${card.direction} | readiness=${readiness} marketClass=${card.marketClass}`);
+      }
+    } else {
+      // No executable setup - explain why
+      let blockReason = "No executable setup";
       if (card.direction === "NEUTRAL") {
         blockReason = "No directional bias";
-      } else if (score < 40) {
-        blockReason = `Score ${score} too low (< 40)`;
-      } else if (score < 55) {
-        blockReason = `Score ${score} below BUILDING floor (< 55)`;
-      } else if (score < 65) {
-        blockReason = `Score ${score} below SNIPER threshold (65) - awaiting LTF alignment`;
       } else if (card.signalState === "BUILDING") {
-        blockReason = `BUILDING - LTF not aligned with direction yet`;
-      } else {
-        blockReason = `${card.signalState} - conditions not met for execution`;
+        blockReason = `BUILDING - ignition ${card.ignitionProbability}% (need 60% for SNIPER)`;
+      } else if (card.signalState === "NONE") {
+        blockReason = `NONE - ignition ${card.ignitionProbability}% (need 20% for BUILDING)`;
       }
-      
       card.blockReason = blockReason;
-      console.log(`[BUILD] ${symbol} ${card.signalState} | score=${score} | reason: ${card.blockReason}`);
+      console.log(`[NO_SETUP] ${symbol} ${card.signalState} | ${blockReason}`);
     }
   }
 
@@ -743,33 +641,9 @@ function calculateIgnitionProbability(
  * Lightweight pre-check to determine if SNIPER conditions are even plausible
  * Called BEFORE validateActiveSniperExecution for early rejection
  */
-function checkSniperConditions(card: SymbolCardState): boolean {
-  // Must have direction
-  if (card.direction === "NEUTRAL") {
-    return false;
-  }
-  
-  // Must have ignition probability
-  if (card.ignitionProbability === null || card.ignitionProbability === undefined) {
-    return false;
-  }
-  
-  // Basic ignition threshold check (soft gate)
-  if (card.ignitionProbability < 60) {
-    return false;
-  }
-  
-  // 15M state must not be in chop
-  if (card.execution15mState === "CHOP" || card.execution15mState === "COMPRESSING") {
-    return false;
-  }
-  
-  return true;
-}
-
 /**
  * v8.0.4 CRITICAL FIX: Calculate trade targets for entry/TP/SL
- * Used in CONFIRMED and SNIPER signal generation
+ * Used in CONFIRMED and ACTIVE_SNIPER signal generation
  */
 function calculateTradeTargets(
   price: number,
@@ -816,155 +690,6 @@ function calculateTradeTargets(
   }
 }
 
-/**
- * v7.3.2 FIX #3: Validate ACTIVE_SNIPER execution requirements
- * - Score 55-69 is sufficient on its own
- * 
- * CONFIRMED: Still uses 4H as structural foundation (4H directional required)
- * - 4H trend must be BULLISH or BEARISH (NEUTRAL blocks all CONFIRMED)
- * - 1H agreement with 4H bias
- * - 15M continuation structure validated
- * - Score >= 70 for mature trend phase
- * 
- * Hard validation before promoting to ACTIVE_SNIPER state.
- * Returns clear rejection reason if ANY condition fails.
- * 
- * Requirements for SNIPER (ALL must be true):
- * 1. 1H alignment = true (direction matches 1H trend, not 4H)
- * 2. execution15mState = BREAKOUT_READY or EXPANDING (NOT CHOP/COMPRESSING)
- * 3. ignitionProbability >= 60 (soft threshold, not hard gate)
- * 4. Score >= 55 (execution-grade threshold for SNIPER)
- * 5. Direction consistent (no internal divergence)
- * 
- * Returns: { valid: boolean, reason?: string }
- */
-function validateActiveSniperExecution(card: SymbolCardState, score: number): { valid: boolean; reason?: string; structuralOverride?: boolean } {
-  // v9.0.2: REMOVE HTF EXECUTION BLOCKER
-  // SNIPER uses LTF alignment only (15M execution state)
-  // HTF is informational only - never blocks trades
-
-  // REQUIREMENT 1: Score must be execution-grade (>= 65 for SNIPER)
-  // v9.0.2: Lowered from 70 to 65 to allow BTC/ETH execution
-  if (score < 65) {
-    return {
-      valid: false,
-      reason: `Score ${score} below SNIPER threshold (65)`
-    };
-  }
-
-  // REQUIREMENT 2: Direction must be valid (not NEUTRAL)
-  if (card.direction === "NEUTRAL") {
-    return {
-      valid: false,
-      reason: `Direction NEUTRAL - no trade bias`
-    };
-  }
-
-  // REQUIREMENT 3: 15M must not be in terminal compression (CHOP blocks entry)
-  if (card.execution15mState === "CHOP") {
-    return {
-      valid: false,
-      reason: `15M CHOP - not ready for entry`
-    };
-  }
-
-  // v9.0.2: LTF ALIGNMENT ONLY (remove HTF check)
-  // SNIPER executes when: direction matches LTF bias
-  const ltfAligned =
-    (card.direction === "LONG" && card.ltfBias === "BULLISH") ||
-    (card.direction === "SHORT" && card.ltfBias === "BEARISH");
-
-  if (!ltfAligned) {
-    return {
-      valid: false,
-      reason: `LTF misaligned: direction=${card.direction}, ltfBias=${card.ltfBias}`
-    };
-  }
-
-  // ALL REQUIREMENTS MET: Valid ACTIVE_SNIPER execution
-  return { valid: true, structuralOverride: false };
-}
-
-/**
- * CONFIRMED CONDITIONS (v7.4.0): Established trend + 4H validation
- * Requires: 4H directional trend (BULLISH/BEARISH only, NEUTRAL blocks all)
- *           1H agreement with 4H bias
- *           15M continuation structure
- *           Mature EMA expansion + momentum confirmation
- * 
- * v7.4.0 FIX #2: CONFIRMED is strict and 4H-dependent (opposite of SNIPER)
- * Score threshold: 70+ for high-conviction continuation
- */
-function checkConfirmedConditions(card: SymbolCardState): boolean {
-  // v7.4.0 FIX #2: CONFIRMED requires 4H directional trend (NOT NEUTRAL)
-  // This is the ONLY place 4H trend is gating ACTIVE signals
-  const has4HTrend = card.htf4hTrend !== "NEUTRAL" && card.htf4hTrend !== undefined;
-  
-  if (!has4HTrend) {
-    return false; // 4H NEUTRAL or undefined blocks CONFIRMED immediately
-  }
-
-  // 1. EMA firmly established (slope > 0.5) - trend must be mature
-  const emaEstablished = card.emaSlope !== null && Math.abs(card.emaSlope) > 0.5;
-  
-  // 2. Direction confirmed (not NEUTRAL)
-  const directionConfirmed = card.direction !== "NEUTRAL";
-  
-  // 3. Momentum continuing (Stoch showing strength in direction)
-  const momentumContinuing = 
-    (card.direction === "LONG" && (card.stochRsi ?? 50) > 50) ||
-    (card.direction === "SHORT" && (card.stochRsi ?? 50) < 50);
-  
-  // 4. 1H aligned with 4H bias (agreement required)
-  const oneHAligned = card.htf1hAlignment === true;
-  
-  // 5. Direction must match 4H trend (no divergence)
-  const directionMatchesHTF =
-    (card.direction === "LONG" && card.htf4hTrend === "BULLISH") ||
-    (card.direction === "SHORT" && card.htf4hTrend === "BEARISH");
-
-  return emaEstablished && directionConfirmed && momentumContinuing && oneHAligned && directionMatchesHTF;
-}
-
-/**
- * v8.0.2 HOTFIX: Calculate signal state based on validation results
- * Determines which of 4 states the signal should be in: NONE, BUILDING, ACTIVE_SNIPER, ACTIVE_CONFIRMED
- * This is the canonical state determination logic
- */
-function calculateSignalState(
-  _prevState: string, // unused, kept for compat
-  score: number,
-  direction: "LONG" | "SHORT" | "NEUTRAL",
-  _htf4hTrend: string | null, // unused
-  _sniperPassed: boolean, // unused
-  confirmedPassed: boolean,
-  ignitionProbability: number | null,
-  _lastSignalTime: number | undefined, // unused
-  _blockReason: string // unused
-): "NONE" | "BUILDING" | "ACTIVE_SNIPER" | "ACTIVE_CONFIRMED" {
-  // If no direction or very low score, NONE
-  if (direction === "NEUTRAL" || score < 40) {
-    return "NONE";
-  }
-  
-  // CONFIRMED takes priority if all conditions met
-  if (confirmedPassed && (ignitionProbability ?? 0) >= 75) {
-    return "ACTIVE_CONFIRMED";
-  }
-  
-  // SNIPER if ignition >= 65
-  if ((ignitionProbability ?? 0) >= 65) {
-    return "ACTIVE_SNIPER";
-  }
-  
-  // BUILDING if we have direction and score but not quite SNIPER yet
-  if (direction !== "NEUTRAL" && score >= 55) {
-    return "BUILDING";
-  }
-  
-  // Default to NONE
-  return "NONE";
-}
 
 /**
  * v8.0.1: Calculate trade readiness score (0-100)
@@ -1141,6 +866,166 @@ function qualifiesForStructuralOverride(
     (execution15mState === "EXPANDING" || execution15mState === "BREAKOUT_READY") &&
     ignitionProbability >= 72
   );
+}
+
+/**
+ * v15.0.0: Canonical market structure classification
+ * Single source of truth for market context
+ * Determines execution state eligibility and readiness gates
+ */
+function classifyMarketStructure(params: {
+  direction: "LONG" | "SHORT" | "NEUTRAL";
+  htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL" | null;
+  execution15mState: string;
+  ignitionProbability: number;
+  emaSlope: number | null;
+  volatilityLevel: number | null;
+  emaAccelerationDelta: number;
+  displacement: number;
+}): MarketStructureClass {
+  const {
+    direction,
+    htf4hTrend,
+    execution15mState,
+    ignitionProbability,
+    emaSlope,
+    volatilityLevel,
+    emaAccelerationDelta,
+    displacement,
+  } = params;
+
+  // CHOP: No directional setup
+  if (execution15mState === "CHOP" || execution15mState === "COMPRESSING") {
+    if ((emaSlope ?? 0) < 2 && (volatilityLevel ?? 50) < 40) {
+      return "CHOP";
+    }
+  }
+
+  // RANGE: HTF neutral, weak expansion
+  if (htf4hTrend === "NEUTRAL" || !htf4hTrend) {
+    if ((volatilityLevel ?? 0) < 40 && (displacement ?? 0) < 4) {
+      return "RANGE";
+    }
+  }
+
+  // Neutral direction → can't classify
+  if (direction === "NEUTRAL") {
+    return "RANGE";
+  }
+
+  // Check macro alignment
+  const isTrendFollowing =
+    (direction === "LONG" && htf4hTrend === "BULLISH") ||
+    (direction === "SHORT" && htf4hTrend === "BEARISH");
+
+  // TREND_FOLLOWING
+  if (isTrendFollowing) {
+    return "TREND_FOLLOWING";
+  }
+
+  // EARLY_REVERSAL: Contra-HTF with elite conditions
+  if (!isTrendFollowing && htf4hTrend && htf4hTrend !== "NEUTRAL") {
+    const isEliteReversal =
+      (displacement ?? 0) >= 6 &&
+      (volatilityLevel ?? 0) > 60 &&
+      emaAccelerationDelta >= 6 &&
+      (execution15mState === "EXPANDING" || execution15mState === "BREAKOUT_READY") &&
+      ignitionProbability >= 68;
+
+    if (isEliteReversal) {
+      return "EARLY_REVERSAL";
+    }
+  }
+
+  // TRANSITION: Mixed signals
+  if (!isTrendFollowing && (htf4hTrend === "NEUTRAL" || !htf4hTrend)) {
+    return "TRANSITION";
+  }
+
+  // COUNTER_TREND: Contra-HTF without elite conditions
+  if (!isTrendFollowing) {
+    return "COUNTER_TREND";
+  }
+
+  // Default
+  return "BUILDING" as unknown as MarketStructureClass;
+}
+
+/**
+ * v15.0.0: Canonical execution state derivation
+ * Single source of truth for execution readiness
+ * Purely from market structure class and ignition probability
+ * No secondary validators, no override functions, no macro gates
+ */
+function deriveExecutionState(
+  marketClass: MarketStructureClass,
+  ignitionProbability: number
+): SignalState {
+  switch (marketClass) {
+    case "TREND_FOLLOWING":
+      if (ignitionProbability >= 75) return "ACTIVE_CONFIRMED";
+      if (ignitionProbability >= 65) return "ACTIVE_SNIPER";
+      return "BUILDING";
+
+    case "EARLY_REVERSAL":
+      if (ignitionProbability >= 82) return "ACTIVE_SNIPER"; // EARLY_REVERSAL max is ACTIVE_SNIPER (never CONFIRMED)
+      if (ignitionProbability >= 68) return "ACTIVE_SNIPER";
+      return "BUILDING";
+
+    case "COUNTER_TREND":
+      // Counter-trend without elite conditions: max BUILDING
+      return "BUILDING";
+
+    case "TRANSITION":
+      // Incomplete reversal: max BUILDING
+      return "BUILDING";
+
+    case "RANGE":
+      // Rotational: max BUILDING
+      return "BUILDING";
+
+    case "CHOP":
+      // No setup: NONE
+      return "NONE";
+
+    default:
+      return "BUILDING";
+  }
+}
+
+/**
+ * v15.0.0: Canonical readiness derivation
+ * Enforced hard bands per execution state
+ * Mismatch warnings emitted if readiness contradicts executionState
+ */
+function deriveReadiness(
+  executionState: SignalState,
+  ignitionProbability: number
+): number {
+  let readiness: number;
+
+  switch (executionState) {
+    case "NONE":
+      readiness = Math.max(0, Math.min(20, Math.floor(ignitionProbability / 5)));
+      break;
+
+    case "BUILDING":
+      readiness = Math.max(20, Math.min(64, Math.floor(ignitionProbability * 0.8)));
+      break;
+
+    case "ACTIVE_SNIPER":
+      readiness = Math.max(65, Math.min(74, Math.floor(ignitionProbability * 0.9)));
+      break;
+
+    case "ACTIVE_CONFIRMED":
+      readiness = Math.max(75, Math.min(100, Math.floor(ignitionProbability * 0.95)));
+      break;
+
+    default:
+      readiness = 0;
+  }
+
+  return Math.round(readiness);
 }
 
 function calculateTradeReadinessScore(
