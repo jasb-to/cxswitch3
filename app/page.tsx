@@ -176,7 +176,7 @@ function scoreInterpretation(score: number): { label: string; color: string } {
 function SymbolCard({ card }: { card: SymbolCardState }) {
   const isLoading = card.source === "bootstrap";
   // v10.0.0: Only SNIPER and CONFIRMED show trade targets
-  const isActiveSignal = card.signalState === "SNIPER" || card.signalState === "CONFIRMED";
+  const isActiveSignal = card.signalState === "ACTIVE_SNIPER" || card.signalState === "ACTIVE_CONFIRMED";
 
   // v8.6.0: Use new UX fields - fall back gracefully for bootstrap cards
   const setupStatus = card.setupStatus ?? "NO SETUP";
@@ -289,12 +289,12 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
           </div>
           <div className="text-sm font-mono space-y-1">
             <div className="flex justify-between"><span className="text-zinc-400">Entry</span><span className="text-cyan-400">${fmt(card.price)}</span></div>
-            <div className="flex justify-between"><span className="text-zinc-400">TP1</span><span className="text-green-400">${fmt(card.targetPrices.tp1)}</span></div>
-            <div className="flex justify-between"><span className="text-zinc-400">TP2</span><span className="text-green-400">${fmt(card.targetPrices.tp2)}</span></div>
-            <div className="flex justify-between"><span className="text-zinc-400">SL</span><span className="text-red-400">${fmt(card.targetPrices.sl)}</span></div>
+            <div className="flex justify-between"><span className="text-zinc-400">TP1</span><span className="text-green-400">${fmt(card.targetPrices?.tp1)}</span></div>
+            <div className="flex justify-between"><span className="text-zinc-400">TP2</span><span className="text-green-400">${fmt(card.targetPrices?.tp2)}</span></div>
+            <div className="flex justify-between"><span className="text-zinc-400">SL</span><span className="text-red-400">${fmt(card.targetPrices?.sl)}</span></div>
             <div className="flex justify-between pt-1.5 border-t border-zinc-700">
               <span className="text-zinc-400">R:R</span>
-              <span className="text-green-400 font-bold">{card.riskReward?.toFixed(1) ?? "—"}:1</span>
+              <span className="text-green-400 font-bold">{(card.riskReward ?? 0)?.toFixed(1) ?? "—"}:1</span>
             </div>
           </div>
         </div>
