@@ -22,8 +22,8 @@ export interface CandleWithSource {
 ---------------------------------------- */
 
 const KRAKEN_PAIR: Record<string, string> = {
-  BTC: "XBTUSD",
-  ETH: "ETHUSD",
+  BTC: "XXBTZUSD",  // v8.8.0 FIX: Corrected from XBTUSD to XXBTZUSD (canonical Kraken pair)
+  ETH: "XETHZUSD",  // v8.8.0 FIX: Corrected from ETHUSD to XETHZUSD (canonical Kraken pair)
   SOL: "SOLUSD",
 };
 

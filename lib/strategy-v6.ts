@@ -69,6 +69,14 @@ export type SymbolCardState = {
   notes: string;
   updatedAt: string;
 
+  // v8.6.0 UX FIELDS: Human-readable display layer
+  // Derived from engine internals — never raw jargon on primary UI
+  displayScore: number;           // Blended setup score (structure 60% + ignition 40%), always 0-100
+  setupStatus: "NO SETUP" | "WATCHLIST" | "BUILDING" | "SNIPER" | "CONFIRMED";
+  htfBias: "BULLISH" | "BEARISH" | "NEUTRAL" | "TRANSITIONAL" | "WEAKENING" | "REVERSAL WATCH";
+  ltfBias: "BULLISH" | "BEARISH" | "NEUTRAL" | "TRANSITIONAL" | "WEAKENING" | "REVERSAL WATCH";
+  marketQuality: "LIVE" | "FALLBACK"; // Whether price is from Kraken live or degraded source
+
   // v7.5.1: OBSERVABILITY LAYER - Why signals didn't fire
   // Single string explaining block reason for non-alert states
   blockReason?: string;
@@ -141,8 +149,10 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // ONLY generate setups with directional conviction
     // NO NEUTRAL SIGNALS ALLOWED
 
-    // CONFIRMED ALERT: score >= 75 AND confirmed conditions met
-    if (score >= 75 && card.direction !== "NEUTRAL" && checkConfirmedConditions(card)) {
+    // CONFIRMED ALERT: score >= per-symbol threshold AND confirmed conditions met
+    // v8.8.0: Use symbol-specific CONFIRMED threshold instead of hardcoded 75
+    const confirmedThreshold = CONFIRMED_IGNITION_THRESHOLDS[card.symbol] ?? 75;
+    if (score >= confirmedThreshold && card.direction !== "NEUTRAL" && checkConfirmedConditions(card)) {
       card.mode = "CONFIRMED";
       card.confidence = Math.min(score, 99);
       card.lastSignalTime = Date.now();
@@ -155,6 +165,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       card.targetPrices = targets.targetPrices;
       card.riskReward = targets.riskReward;
       card.tradeReadinessScore = calculateTradeReadinessScore("CONFIRMED", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
+      card.displayScore = card.confidence;
+      card.setupStatus = "CONFIRMED";
       
       setups.push({
         symbol,
@@ -197,6 +209,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         card.targetPrices = targets.targetPrices;
         card.riskReward = targets.riskReward;
         card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
+        card.displayScore = card.confidence;
+        card.setupStatus = "SNIPER";
         
         setups.push({
           symbol,
@@ -247,7 +261,9 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       card.blockReason = blockReason;
       
       // v7.3.2 FIX #4: Simplified signal state calculation
-      const confirmedPassed = score >= 75 && checkConfirmedConditions(card);
+      // v8.8.0: Use symbol-specific CONFIRMED threshold
+      const confirmedThresholdSignal = CONFIRMED_IGNITION_THRESHOLDS[card.symbol] ?? 75;
+      const confirmedPassed = score >= confirmedThresholdSignal && checkConfirmedConditions(card);
       
       card.signalState = calculateSignalState(
         "NONE", 
@@ -759,41 +775,44 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
   }
 
   // Check for structural override eligibility for elite reversals
-  // ONLY allow contra-4H SNIPER if ALL conditions are true:
+  // v8.8.0 PHASE 7: Replace rigid "ALL conditions" logic with weighted confidence scoring
+  // Allows legitimate reversals/continuations while preventing false breakouts
   const isContra = isContraMacroStructure(card.direction, card.htf4hTrend);
   
   let structuralOverride = false;
   if (isContra) {
-    // Attempting contra-4H reversal - check if it's elite enough
-    const eliteReversalConditions = {
-      displacementExcellent: card.scoreBreakdown?.displacementComponent >= 6,
-      volatilityExpanding: card.volatilityLevel !== null && card.volatilityLevel > 60,
-      emaAccelerationStrong: card.scoreBreakdown?.emaAccelerationDelta >= 6,
-      structureTransitioning: card.execution15mState === "EXPANDING" || card.execution15mState === "BREAKOUT_READY",
-      ignitionAfterPenalty: card.ignitionProbability >= 72,
-      scoreGood: score >= 60
+    // v8.8.0: Weighted override model (replaces ALL/NONE logic)
+    // Each component contributes to weighted confidence score
+    const overrideScoring = {
+      emaAcceleration:      (card.scoreBreakdown?.emaAccelerationDelta ?? 0) >= 6 ? 25 : 0,
+      displacement:         (card.scoreBreakdown?.displacementComponent ?? 0) >= 6 ? 20 : 0,
+      volatilityExpanding:  (card.volatilityLevel ?? 0) > 60 ? 20 : 0,
+      volumeImpulse:        card.execution15mState === "EXPANDING" ? 15 : 0,
+      momentumAlignment:    card.ignitionProbability >= 72 ? 10 : 0,
+      htfAlignment:         card.htf1hAlignment === true ? 10 : 0,
     };
 
-    const conditionsMet = Object.values(eliteReversalConditions).filter(Boolean).length;
-    const allConditionsMet = conditionsMet === Object.values(eliteReversalConditions).length;
+    const overrideConfidence = Object.values(overrideScoring).reduce((a, b) => a + b, 0);
 
-    if (allConditionsMet) {
+    if (overrideConfidence >= 70) {
       structuralOverride = true;
-      console.log(`[STRUCTURAL OVERRIDE] ${card.symbol} ${card.direction}: elite reversal detected (Disp:${card.scoreBreakdown?.displacementComponent} Vol:${card.volatilityLevel} EMAAccel:${card.scoreBreakdown?.emaAccelerationDelta})`);
+      console.log(`[STRUCTURAL OVERRIDE] ${card.symbol} ${card.direction}: weighted override active (confidence=${overrideConfidence}/100, EMA:${overrideScoring.emaAcceleration} Disp:${overrideScoring.displacement} Vol:${overrideScoring.volatilityExpanding} Vol:${overrideScoring.volumeImpulse})`);
     } else {
-      // Weak reversal attempt - block it
+      // Insufficient override confidence - block contra move
       return {
         valid: false,
-        reason: `Contra-4H ${card.direction} fails structural override (${conditionsMet}/6 elite conditions met). Macro penalty (-8) insufficient for SNIPER.`
+        reason: `Contra-4H ${card.direction} insufficient override confidence (${overrideConfidence}/100, need 70+)`
       };
     }
   }
 
-  // REQUIREMENT 3: Ignition probability >= 65 for SNIPER threshold
-  if (card.ignitionProbability < 65) {
+  // REQUIREMENT 3: Ignition probability >= per-symbol threshold for SNIPER
+  // v8.6.0: BTC/ETH have lower thresholds as majors move slower than alts
+  const sniperIgnitionThreshold = SNIPER_IGNITION_THRESHOLDS[card.symbol] ?? DEFAULT_SNIPER_THRESHOLD;
+  if (card.ignitionProbability < sniperIgnitionThreshold) {
     return {
       valid: false,
-      reason: `Ignition probability ${card.ignitionProbability} below ACTIVE_SNIPER threshold (65)`
+      reason: `Ignition probability ${card.ignitionProbability} below SNIPER threshold (${sniperIgnitionThreshold} for ${card.symbol})`
     };
   }
 
@@ -1119,6 +1138,95 @@ function calculateExecutionReadinessScore(structureScore: number, ignitionProbab
  * Calculate momentum score using event-driven multiplier model
  * v7.1 STABILISATION FIX
  */
+/**
+ * v8.6.0: Per-symbol SNIPER ignition thresholds
+ * BTC/ETH naturally move slower than alts - lower threshold required
+ */
+const SNIPER_IGNITION_THRESHOLDS: Record<string, number> = {
+  BTC: 55,
+  ETH: 58,
+  SOL: 65,
+};
+
+/**
+ * v8.8.0 PHASE 6: Major Pair Execution Normalization
+ * BTC/ETH need adjusted thresholds and sensitivity multipliers due to slower movement patterns
+ */
+const CONFIRMED_IGNITION_THRESHOLDS: Record<string, number> = {
+  BTC: 62,  // Lower than default (75) for BTC
+  ETH: 66,  // Lower than default (75) for ETH
+  SOL: 75,  // Standard threshold
+};
+
+const EMA_ACCEL_MULTIPLIERS: Record<string, number> = {
+  BTC: 1.35,  // Scale up BTC's sensitivity to EMA acceleration
+  ETH: 1.15,  // Scale up ETH's sensitivity moderately
+  SOL: 1.0,   // Standard
+};
+
+const DISPLACEMENT_MINIMUMS: Record<string, number> = {
+  BTC: 2,     // BTC should not require SOL-style displacement
+  ETH: 3,     // ETH requires slightly higher
+  SOL: 5,     // Standard
+};
+const DEFAULT_SNIPER_THRESHOLD = 65;
+
+/**
+ * v8.6.0: Map engine internals to human-readable HTF bias
+ * "DIVERGENT -4" → "WEAKENING", "EMA conflict" → "TRANSITIONAL", etc.
+ */
+function deriveHtfBias(
+  htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL",
+  htf1hAlignment: boolean | null,
+  emaSlope: number | null
+): SymbolCardState["htfBias"] {
+  const slope = emaSlope ?? 0;
+
+  if (htf4hTrend === "BULLISH") {
+    if (htf1hAlignment === false && slope < 0) return "WEAKENING";
+    if (htf1hAlignment === false) return "TRANSITIONAL";
+    return "BULLISH";
+  }
+  if (htf4hTrend === "BEARISH") {
+    if (htf1hAlignment === false && slope > 0) return "REVERSAL WATCH";
+    if (htf1hAlignment === false) return "TRANSITIONAL";
+    return "BEARISH";
+  }
+  // NEUTRAL 4H
+  if (Math.abs(slope) > 0.3) return "TRANSITIONAL";
+  return "NEUTRAL";
+}
+
+/**
+ * v8.6.0: Map 15M execution state to human-readable LTF bias
+ */
+function deriveLtfBias(
+  execution15mState: SymbolCardState["execution15mState"],
+  direction: "LONG" | "SHORT" | "NEUTRAL"
+): SymbolCardState["ltfBias"] {
+  if (direction === "NEUTRAL") return "NEUTRAL";
+  switch (execution15mState) {
+    case "EXPANDING":    return direction === "LONG" ? "BULLISH" : "BEARISH";
+    case "BREAKOUT_READY": return "TRANSITIONAL";
+    case "COMPRESSING": return "WEAKENING";
+    case "CHOP":        return "NEUTRAL";
+    default:            return "NEUTRAL";
+  }
+}
+
+/**
+ * v8.6.0: Derive clean setup status from display score
+ * Single source of truth for what stage the setup is in
+ */
+function deriveSetupStatus(displayScore: number, signalState: string): SymbolCardState["setupStatus"] {
+  if (signalState === "ACTIVE_CONFIRMED") return "CONFIRMED";
+  if (signalState === "ACTIVE_SNIPER")    return "SNIPER";
+  if (displayScore >= 70) return "SNIPER";
+  if (displayScore >= 55) return "BUILDING";
+  if (displayScore >= 40) return "WATCHLIST";
+  return "NO SETUP";
+}
+
 function generateCardState(symbol: string, priceData: PriceData): SymbolCardState {
   // Degrade is purely informational
   const degraded = priceData.source !== "kraken_live";
@@ -1288,7 +1396,21 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
 
     notes: direction !== "NEUTRAL" ? calculateLiveMarketState(direction, emaSlope, stochRsi, volatilityLevel) : "Awaiting momentum ignition",
     updatedAt: new Date().toISOString(),
+
+    // v8.6.0 UX FIELDS — computed after ignition is known
+    // displayScore: calculated below after card is built
+    displayScore: 0, // placeholder, replaced immediately below
+    setupStatus: "NO SETUP",
+    htfBias: deriveHtfBias(htf4hTrend, htf1hAlignment, emaSlope),
+    ltfBias: deriveLtfBias(execution15mState, direction),
+    marketQuality: degraded ? "FALLBACK" : "LIVE",
   };
+
+  // v8.6.0: Compute displayScore now that ignition is available
+  // Never returns 0 unless engine truly has no data
+  const _structureScore = calculateMomentumScore(card);
+  card.displayScore = calculateExecutionReadinessScore(_structureScore, card.ignitionProbability);
+  card.setupStatus = deriveSetupStatus(card.displayScore, card.signalState);
 
   return card;
 }
