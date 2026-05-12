@@ -149,10 +149,9 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // ONLY generate setups with directional conviction
     // NO NEUTRAL SIGNALS ALLOWED
 
-    // CONFIRMED ALERT: score >= per-symbol threshold AND confirmed conditions met
-    // v8.8.0: Use symbol-specific CONFIRMED threshold instead of hardcoded 75
-    const confirmedThreshold = CONFIRMED_IGNITION_THRESHOLDS[card.symbol] ?? 75;
-    if (score >= confirmedThreshold && card.direction !== "NEUTRAL" && checkConfirmedConditions(card)) {
+    // CONFIRMED ALERT: v8.9.0 simplified - score >= 80 AND established 4H trend
+    // No per-symbol thresholds, no complex conditions
+    if (score >= 80 && card.direction !== "NEUTRAL" && card.htf4hTrend !== "NEUTRAL") {
       card.mode = "CONFIRMED";
       card.confidence = Math.min(score, 99);
       card.lastSignalTime = Date.now();
@@ -746,23 +745,15 @@ function calculateTradeTargets(
  * Returns: { valid: boolean, reason?: string }
  */
 function validateActiveSniperExecution(card: SymbolCardState, score: number): { valid: boolean; reason?: string; structuralOverride?: boolean } {
-  // v8.3.0 REFACTOR: Weighted macro penalty with structural override for elite reversals
-  // 
-  // Purpose: Allow early reversal capture (SNIPER's original role) while protecting against
-  // naive counter-trend trades during dumps
-  //
-  // Logic:
-  // 1. Apply macro penalty (-8) if contra-directional (already done in ignitionProbability)
-  // 2. Check if signal qualifies as "elite reversal" (structural override)
-  // 3. If elite: allow SNIPER despite macro penalty
-  // 4. If not elite: require ignition >= 65 after penalty (blocks weak reversals)
-  // 5. CONFIRMED always requires 4H alignment (no override)
+  // v8.9.0 SIMPLIFICATION: Remove over-engineered gating
+  // Core rule: If score >= 70 AND HTF/LTF aligned → allow SNIPER
+  // No ignition blockers, no displacement minimums, no complex override logic
 
-  // REQUIREMENT 1: 15M Execution state must be valid (NOT CHOP/COMPRESSING)
-  if (card.execution15mState === "CHOP" || card.execution15mState === "COMPRESSING") {
+  // REQUIREMENT 1: Score must be execution-grade (>= 70 for SNIPER)
+  if (score < 70) {
     return {
       valid: false,
-      reason: `15M ${card.execution15mState} - not ready for entry`
+      reason: `Score ${score} below SNIPER threshold (70)`
     };
   }
 
@@ -774,58 +765,31 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
     };
   }
 
-  // Check for structural override eligibility for elite reversals
-  // v8.8.0 PHASE 7: Replace rigid "ALL conditions" logic with weighted confidence scoring
-  // Allows legitimate reversals/continuations while preventing false breakouts
-  const isContra = isContraMacroStructure(card.direction, card.htf4hTrend);
-  
-  let structuralOverride = false;
-  if (isContra) {
-    // v8.8.0: Weighted override model (replaces ALL/NONE logic)
-    // Each component contributes to weighted confidence score
-    const overrideScoring = {
-      emaAcceleration:      (card.scoreBreakdown?.emaAccelerationDelta ?? 0) >= 6 ? 25 : 0,
-      displacement:         (card.scoreBreakdown?.displacementComponent ?? 0) >= 6 ? 20 : 0,
-      volatilityExpanding:  (card.volatilityLevel ?? 0) > 60 ? 20 : 0,
-      volumeImpulse:        card.execution15mState === "EXPANDING" ? 15 : 0,
-      momentumAlignment:    card.ignitionProbability >= 72 ? 10 : 0,
-      htfAlignment:         card.htf1hAlignment === true ? 10 : 0,
-    };
-
-    const overrideConfidence = Object.values(overrideScoring).reduce((a, b) => a + b, 0);
-
-    if (overrideConfidence >= 70) {
-      structuralOverride = true;
-      console.log(`[STRUCTURAL OVERRIDE] ${card.symbol} ${card.direction}: weighted override active (confidence=${overrideConfidence}/100, EMA:${overrideScoring.emaAcceleration} Disp:${overrideScoring.displacement} Vol:${overrideScoring.volatilityExpanding} Vol:${overrideScoring.volumeImpulse})`);
-    } else {
-      // Insufficient override confidence - block contra move
-      return {
-        valid: false,
-        reason: `Contra-4H ${card.direction} insufficient override confidence (${overrideConfidence}/100, need 70+)`
-      };
-    }
-  }
-
-  // REQUIREMENT 3: Ignition probability >= per-symbol threshold for SNIPER
-  // v8.6.0: BTC/ETH have lower thresholds as majors move slower than alts
-  const sniperIgnitionThreshold = SNIPER_IGNITION_THRESHOLDS[card.symbol] ?? DEFAULT_SNIPER_THRESHOLD;
-  if (card.ignitionProbability < sniperIgnitionThreshold) {
+  // REQUIREMENT 3: 15M must not be in terminal compression (CHOP blocks entry)
+  if (card.execution15mState === "CHOP") {
     return {
       valid: false,
-      reason: `Ignition probability ${card.ignitionProbability} below SNIPER threshold (${sniperIgnitionThreshold} for ${card.symbol})`
+      reason: `15M CHOP - not ready for entry`
     };
   }
 
-  // REQUIREMENT 4: Score must be execution-grade (>= 55 for SNIPER)
-  if (score < 55) {
+  // v8.9.0: HTF/LTF alignment check (simplified, no hidden penalties)
+  // Allow: matching trends (bullish/bullish or bearish/bearish)
+  // Block: only if actively misaligned on 4H
+  const htf4hValid = card.htf4hTrend !== "NEUTRAL";
+  const directionMatchesHTF =
+    (card.direction === "LONG" && card.htf4hTrend === "BULLISH") ||
+    (card.direction === "SHORT" && card.htf4hTrend === "BEARISH");
+
+  if (!htf4hValid || !directionMatchesHTF) {
     return {
       valid: false,
-      reason: `Score ${score} below SNIPER threshold (55)`
+      reason: `HTF misaligned: direction=${card.direction}, htf4h=${card.htf4hTrend}`
     };
   }
 
   // ALL REQUIREMENTS MET: Valid ACTIVE_SNIPER execution
-  return { valid: true, structuralOverride };
+  return { valid: true, structuralOverride: false };
 }
 
 /**
@@ -1124,14 +1088,14 @@ function calculateTradeReadinessScore(
  * Problem: High structure score + low ignition = confusing (looks ready but isn't)
  * Solution: Weight ignition into final score so display matches user expectations
  * 
- * Formula: displayScore = (structureScore * 0.6) + (ignitionProbability * 0.4)
- * - 60% structural quality (EMA, Stoch, HTF alignment, etc.)
- * - 40% execution probability (ignition signals present)
+ * v8.9.0 SIMPLIFIED FORMULA: displayScore = (structureScore * 0.8) + (ignitionProbability * 0.2)
+ * - 80% structural quality (this is what matters for BTC/ETH)
+ * - 20% execution probability (informational, not suppressant)
  * 
- * Result: Score now represents "readiness to trade" not just "structural quality"
+ * Rationale: BTC/ETH move slower, structure > ignition. Solves BTC/ETH under-triggering.
  */
 function calculateExecutionReadinessScore(structureScore: number, ignitionProbability: number): number {
-  return Math.round(structureScore * 0.6 + ignitionProbability * 0.4);
+  return Math.round(structureScore * 0.8 + ignitionProbability * 0.2);
 }
 
 /**
@@ -1142,35 +1106,6 @@ function calculateExecutionReadinessScore(structureScore: number, ignitionProbab
  * v8.6.0: Per-symbol SNIPER ignition thresholds
  * BTC/ETH naturally move slower than alts - lower threshold required
  */
-const SNIPER_IGNITION_THRESHOLDS: Record<string, number> = {
-  BTC: 55,
-  ETH: 58,
-  SOL: 65,
-};
-
-/**
- * v8.8.0 PHASE 6: Major Pair Execution Normalization
- * BTC/ETH need adjusted thresholds and sensitivity multipliers due to slower movement patterns
- */
-const CONFIRMED_IGNITION_THRESHOLDS: Record<string, number> = {
-  BTC: 62,  // Lower than default (75) for BTC
-  ETH: 66,  // Lower than default (75) for ETH
-  SOL: 75,  // Standard threshold
-};
-
-const EMA_ACCEL_MULTIPLIERS: Record<string, number> = {
-  BTC: 1.35,  // Scale up BTC's sensitivity to EMA acceleration
-  ETH: 1.15,  // Scale up ETH's sensitivity moderately
-  SOL: 1.0,   // Standard
-};
-
-const DISPLACEMENT_MINIMUMS: Record<string, number> = {
-  BTC: 2,     // BTC should not require SOL-style displacement
-  ETH: 3,     // ETH requires slightly higher
-  SOL: 5,     // Standard
-};
-const DEFAULT_SNIPER_THRESHOLD = 65;
-
 /**
  * v8.6.0: Map engine internals to human-readable HTF bias
  * "DIVERGENT -4" → "WEAKENING", "EMA conflict" → "TRANSITIONAL", etc.
@@ -1218,9 +1153,18 @@ function deriveLtfBias(
  * v8.6.0: Derive clean setup status from display score
  * Single source of truth for what stage the setup is in
  */
+/**
+ * v8.9.0 SIMPLIFIED: Setup status from display score
+ * - 0-39: NO SETUP
+ * - 40-54: WATCHLIST
+ * - 55-69: BUILDING
+ * - 70-84: SNIPER
+ * - 85+: CONFIRMED (or via ACTIVE_CONFIRMED state)
+ */
 function deriveSetupStatus(displayScore: number, signalState: string): SymbolCardState["setupStatus"] {
   if (signalState === "ACTIVE_CONFIRMED") return "CONFIRMED";
   if (signalState === "ACTIVE_SNIPER")    return "SNIPER";
+  if (displayScore >= 85) return "CONFIRMED";
   if (displayScore >= 70) return "SNIPER";
   if (displayScore >= 55) return "BUILDING";
   if (displayScore >= 40) return "WATCHLIST";
