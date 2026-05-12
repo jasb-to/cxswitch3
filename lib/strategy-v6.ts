@@ -131,141 +131,169 @@ export type Setup = {
 };
 
 /**
- * v16.0.0: Unified normalized signal output schema
- * EVERY asset returns complete, deterministic signal object
- * No missing fields, no partial objects, no early returns
+ * v16.1.0: FINAL ARCHITECTURE - Single Canonical Signal Reducer
+ * 
+ * Collapse all parallel field derivations into ONE function.
+ * No multiple truth systems, no cross-field contradictions.
+ * 
+ * INPUT: ignition, marketStructure, htfTrend, ltfBias
+ * OUTPUT: Single authoritative signal object
  */
-export type NormalizedSignal = {
-  symbol: string;
-  
-  // Market structure context
-  marketStructure: {
-    classification: MarketStructureClass;
-    htfTrend: "BULLISH" | "BEARISH" | "NEUTRAL" | null;
-    ltfBias: "BULLISH" | "BEARISH" | "NEUTRAL";
-  };
-  
-  // Ignition probability (raw signal strength)
-  ignition: {
-    raw: number;           // 0-100: Raw ignition before any adjustments
-    adjusted: number;      // 0-100: Adjusted (same as raw in v16.0.0 - no penalties)
-    components: {
-      stochastic: number;
-      emaAcceleration: number;
-      volatilityExpansion: number;
-      volumeConfirmation: number;
-    };
-  };
-  
-  // Execution state (deterministic from ignition only)
-  executionState: SignalState;  // NONE | BUILDING | ACTIVE_SNIPER | ACTIVE_CONFIRMED
-  
-  // Score (always numeric, never null)
-  setupScore: number;         // 0-100: Readiness within execution state band
-  
-  // Trade readiness (0-100, never undefined)
-  tradeReadiness: number;
-  
-  // Trade direction
-  tradeDirection: "LONG" | "SHORT" | "NONE";
-  
-  // Trade type classification
-  tradeType: "TREND" | "COUNTER_TREND" | "REVERSAL";
-  
-  // Trade validity (consistency check)
-  tradeValid: boolean;        // true if direction + executionState are consistent
-  
-  // Reason for current state
-  reason: string;
-  
-  // Price level
-  price: number;
-  
-  // Trade targets (always populated)
-  targets: {
+export type DerivedSignal = {
+  state: SignalState;           // NONE | BUILDING | ACTIVE_SNIPER | ACTIVE_CONFIRMED
+  direction: "LONG" | "SHORT" | "NONE";
+  confidence: number;            // 0-100, clamped to state band
+  type: "TREND" | "REVERSAL" | "NONE";  // NONE when state=BUILDING/NONE
+  targets?: {                    // Only if state=SNIPER+
     entry: number;
     takeProfit: number[];
     stopLoss: number;
     expectedMove: number;
     riskReward: number;
   };
+};
+
+/**
+ * v16.1.0: UNIFIED SIGNAL REDUCER
+ * 
+ * Single function that derives EVERYTHING from inputs.
+ * No side effects, no separate validation, no hidden logic.
+ * 
+ * Returns ONE object that is the absolute authority for signal state.
+ * No other code computes state/direction/confidence independently.
+ */
+function deriveSignal(
+  ignition: number,
+  marketClass: MarketStructureClass,
+  htfTrend: "BULLISH" | "BEARISH" | "NEUTRAL" | null,
+  ltfBias: "BULLISH" | "BEARISH" | "NEUTRAL",
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  price: number,
+  volatilityLevel: number | null
+): DerivedSignal {
+  // Step 1: Derive execution state from ignition ONLY
+  const state = deriveExecutionState(ignition);
+  
+  // Step 2: Determine if this signal is valid for trading
+  // Valid = (state is SNIPER/CONFIRMED) AND (direction is LONG/SHORT)
+  const isExecutable = 
+    (state === "ACTIVE_SNIPER" || state === "ACTIVE_CONFIRMED") &&
+    direction !== "NEUTRAL";
+  
+  // Step 3: If not executable, return NONE signal
+  if (!isExecutable) {
+    return {
+      state: "NONE",
+      direction: "NONE",
+      confidence: 0,
+      type: "NONE",
+    };
+  }
+  
+  // Step 4: Validate CONFIRMED signals must be structurally coherent
+  if (state === "ACTIVE_CONFIRMED") {
+    const structurallyCoherent =
+      // Either HTF trend aligns with direction (trend-following)
+      ((direction === "LONG" && htfTrend === "BULLISH") ||
+       (direction === "SHORT" && htfTrend === "BEARISH")) ||
+      // Or explicitly a reversal class that qualifies for CONFIRMED
+      (marketClass === "EARLY_REVERSAL" && ignition >= 75);
+    
+    // If CONFIRMED but not structurally coherent, downgrade to SNIPER
+    if (!structurallyCoherent) {
+      return {
+        state: "ACTIVE_SNIPER",
+        direction,
+        confidence: deriveReadiness("ACTIVE_SNIPER", ignition),
+        type: marketClass === "EARLY_REVERSAL" ? "REVERSAL" : "TREND",
+        targets: calculateTradeTargets(price, volatilityLevel ?? 50, direction),
+      };
+    }
+  }
+  
+  // Step 5: Determine signal type
+  const signalType: "TREND" | "REVERSAL" =
+    marketClass === "EARLY_REVERSAL" || 
+    marketClass === "COUNTER_TREND" ? "REVERSAL" : "TREND";
+  
+  // Step 6: Calculate final confidence (readiness within state band)
+  const confidence = deriveReadiness(state, ignition);
+  
+  // Step 7: Build signal object (single authority)
+  const signal: DerivedSignal = {
+    state,
+    direction,
+    confidence,
+    type: signalType,
+  };
+  
+  // Step 8: Add targets only for executable states
+  if (state === "ACTIVE_SNIPER" || state === "ACTIVE_CONFIRMED") {
+    signal.targets = calculateTradeTargets(price, volatilityLevel ?? 50, direction);
+  }
+  
+  return signal;
+}
+
+/**
+ * v16.0.0: Unified normalized signal output schema
+ * EVERY asset returns complete, deterministic signal object
+ * No missing fields, no partial objects, no early returns
+ */
+/**
+ * v16.1.0: Unified Signal Output Schema
+ * Uses SINGLE SOURCE OF TRUTH: deriveSignal() output
+ * No parallel field derivations allowed
+ */
+export type NormalizedSignal = {
+  symbol: string;
+  
+  // Market structure context (informational only)
+  marketStructure: {
+    classification: MarketStructureClass;
+    htfTrend: "BULLISH" | "BEARISH" | "NEUTRAL" | null;
+    ltfBias: "BULLISH" | "BEARISH" | "NEUTRAL";
+  };
+  
+  // Raw ignition (informational)
+  ignition: number;  // 0-100
+  
+  // SINGLE AUTHORITATIVE SIGNAL (from deriveSignal reducer)
+  signal: DerivedSignal;
   
   // Timestamp
   timestamp: number;
 };
 
 /**
- * v16.0.0: Normalize signal output to unified schema
- * GUARANTEES every asset returns complete, deterministic signal object
- * No missing fields, no partial objects
- * 
- * This function is the FINAL LAYER - every asset passes through it
+ * v16.1.0: Normalize signal output using single reducer
+ * Guarantees consistent output with no parallel derivations
  */
 function normalizeSignalOutput(card: SymbolCardState): NormalizedSignal {
-  // Ensure we have valid values for all required fields
   const ignitionRaw = Math.max(0, Math.min(100, card.ignitionProbability ?? 0));
-  const executionState = deriveExecutionState(ignitionRaw);
-  const readiness = deriveReadiness(executionState, ignitionRaw);
   
-  // Determine trade validity
-  const tradeValid = 
-    card.direction !== "NEUTRAL" && 
-    (executionState === "ACTIVE_SNIPER" || executionState === "ACTIVE_CONFIRMED");
+  // SINGLE POINT OF TRUTH: deriveSignal reducer
+  const signal = deriveSignal(
+    ignitionRaw,
+    card.marketClass,
+    card.htf4hTrend ?? "NEUTRAL",
+    card.ltfBias ?? "NEUTRAL",
+    card.direction,
+    card.price,
+    card.volatilityLevel
+  );
   
-  // Determine trade type from market class
-  let tradeType: "TREND" | "COUNTER_TREND" | "REVERSAL" = "TREND";
-  if (card.marketClass === "COUNTER_TREND") {
-    tradeType = "COUNTER_TREND";
-  } else if (card.marketClass === "EARLY_REVERSAL") {
-    tradeType = "REVERSAL";
-  }
-  
-  // Always calculate trade targets (never null)
-  const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
-  
-  // Build normalized signal object
-  const signal: NormalizedSignal = {
+  return {
     symbol: card.symbol,
-    
     marketStructure: {
       classification: card.marketClass,
       htfTrend: card.htf4hTrend ?? "NEUTRAL",
       ltfBias: card.ltfBias ?? "NEUTRAL",
     },
-    
-    ignition: {
-      raw: ignitionRaw,
-      adjusted: ignitionRaw,  // v16.0.0: No penalties, so adjusted = raw
-      components: {
-        stochastic: (card.stochRsi ?? 50) / 100,  // Normalize to 0-1
-        emaAcceleration: Math.max(0, Math.min(1, (Math.abs(card.emaSlope ?? 0) / 2))),
-        volatilityExpansion: (card.volatilityLevel ?? 50) / 100,
-        volumeConfirmation: card.execution15mState === "EXPANDING" ? 1 : (card.execution15mState === "BUILDING" ? 0.5 : 0),
-      },
-    },
-    
-    executionState,
-    setupScore: readiness,
-    tradeReadiness: readiness,
-    tradeDirection: card.direction,
-    tradeType,
-    tradeValid,
-    
-    reason: card.notes || `${executionState} ${card.direction} - ${card.marketClass}`,
-    price: card.price,
-    
-    targets: {
-      entry: card.price,
-      takeProfit: targets.targetPrices ?? [card.price],
-      stopLoss: targets.targetPrices?.[0] ?? card.price,
-      expectedMove: targets.expectedMovePercent ?? 0,
-      riskReward: targets.riskReward ?? 0,
-    },
-    
+    ignition: ignitionRaw,
+    signal,
     timestamp: Date.now(),
   };
-  
-  return signal;
 }
 
 /**
