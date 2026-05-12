@@ -37,56 +37,68 @@ let alertQueue: TelegramAlertJob[] = [];
 let isProcessingAlerts = false;
 
 /**
- * v11.0.0 SIMPLIFICATION - Pure state-based alert deduplication
+ * v12.0.0 LEAN TELEGRAM + CYCLE FIX
  * 
- * Rule: Alert ONLY on state transition INTO SNIPER or CONFIRMED
+ * Problem: Spam (SNIPER persists across cron ticks) + Missing alerts (cycleId removed)
  * 
- * Behavior:
- * - BTC → BUILDING (no alert)
- * - ETH → SNIPER (alert sent once)
- * - ETH stays SNIPER (no alert, state didn't change)
- * - ETH → CONFIRMED (alert sent once)
+ * Solution: Use cycleId for Telegram dedupe ONLY
+ * - If state === SNIPER/CONFIRMED AND cycleId hasn't been alerted, send alert
+ * - Update memory ONLY after successful send
+ * - NO state transitions, NO re-alert logic, NO isExecutable gating
  * 
- * Key: symbol only (direction doesn't matter for dedupe)
+ * Key: symbol → cycleId (what was already alerted for this symbol)
  */
-const lastStateBySymbol: Map<string, "BUILDING" | "SNIPER" | "CONFIRMED"> = new Map();
+const lastAlertedCycle: Map<string, string> = new Map();
 
 /**
- * v11.0.0: Simplified enqueueAlert - pure state transition logic
+ * v12.0.0: shouldSendAlert - LEAN cycle-based dedup
  * 
- * NO cycleId, NO complex dedupe, NO re-alert logic
- * Just: if state changed to SNIPER/CONFIRMED, send alert once
+ * Return true ONLY if:
+ * 1. State is SNIPER or CONFIRMED (signal engine decision)
+ * 2. cycleId has NOT been alerted before (Telegram anti-spam)
+ * 
+ * This is dumb + safe: signal engine controls state, Telegram only dedupes
+ */
+function shouldSendAlert(symbol: string, state: string, cycleId: string): boolean {
+  // Rule 1: Only SNIPER and CONFIRMED states can alert
+  if (state !== "SNIPER" && state !== "CONFIRMED") {
+    return false;
+  }
+  
+  // Rule 2: Check if this cycleId was already alerted for this symbol
+  const lastCycle = lastAlertedCycle.get(symbol);
+  if (lastCycle === cycleId) {
+    // Same cycleId = already alerted, skip
+    return false;
+  }
+  
+  // NEW CYCLE or FIRST TIME - update memory and return true
+  lastAlertedCycle.set(symbol, cycleId);
+  return true;
+}
+
+/**
+ * v12.0.0: Simplified enqueueAlert
+ * 
+ * Signal engine -> Telegram layer:
+ * - Telegram doesn't care about state transitions
+ * - Telegram doesn't care about score/HTF/LTF/isExecutable
+ * - Telegram ONLY cares: state + cycleId
  */
 export function enqueueAlert(job: TelegramAlertJob) {
-  const lastState = lastStateBySymbol.get(job.symbol);
-  const currentState = job.signalState as "BUILDING" | "SNIPER" | "CONFIRMED";
+  const state = job.signalState as "BUILDING" | "SNIPER" | "CONFIRMED";
+  const cycleId = job.card.cycleId;
   
-  console.log(`[ALERT_STATE_CHECK] ${job.symbol}: lastState=${lastState || "none"} currentState=${currentState}`);
+  console.log(`[TELEGRAM_CHECK] ${job.symbol}: state=${state} cycleId=${cycleId} lastCycle=${lastAlertedCycle.get(job.symbol) || "none"}`);
   
-  // Only SNIPER and CONFIRMED states trigger alerts
-  if (currentState !== "SNIPER" && currentState !== "CONFIRMED") {
-    console.log(`[ALERT_BLOCKED] ${job.symbol}: state=${currentState} (only SNIPER/CONFIRMED trigger alerts)`);
-    lastStateBySymbol.set(job.symbol, currentState);
+  if (!shouldSendAlert(job.symbol, state, cycleId)) {
+    console.log(`[TELEGRAM_SKIP] ${job.symbol}: state=${state} (blocked by dedupe or non-alertable state)`);
     return;
   }
   
-  // Check if this is a state transition INTO SNIPER or CONFIRMED
-  const isStateTransition = lastState !== currentState;
-  
-  if (!isStateTransition) {
-    console.log(`[ALERT_DEDUP] ${job.symbol}: state persists as ${currentState}, skipping duplicate alert`);
-    return;
-  }
-  
-  // STATE TRANSITION INTO SNIPER or CONFIRMED - queue alert
-  console.log(`[ALERT_TRIGGERED] ${job.symbol}: ${lastState || "none"} → ${currentState}, queueing alert`);
-  
-  // Update state AFTER checking transition
-  lastStateBySymbol.set(job.symbol, currentState);
-  
-  // Enqueue for processing
+  // SEND ALERT
+  console.log(`[TELEGRAM_SEND] ${job.symbol}: state=${state} cycleId=${cycleId}`);
   alertQueue.push(job);
-  // Fire and forget - don't await
   processAlertQueueAsync();
 }
 

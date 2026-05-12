@@ -31,6 +31,7 @@ export type SymbolCardState = {
   
   // FIX #1: Unified signal state (v7.2.6), extended for v7.2.8, standardized for v7.2.9
   signalState: SignalState;
+  cycleId: string;  // v12.0.0: LEAN cycle fingerprint (for Telegram dedupe ONLY, no re-alerts)
   lastSignalTime?: number;
 
   // Momentum indicators (5M)
@@ -156,7 +157,13 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // New flow: promote → generate → done
     
     // STEP 1: Determine if this trade should execute
-    // v11.0.0: Simplified - no cycleId, pure state-based alerts
+    // v12.0.0: Calculate cycleId (signal fingerprint for Telegram dedupe ONLY)
+    // Format: symbol-direction-setupVersion
+    const setupVersion = (score >= 80 ? "C" : (score >= 65 ? "S" : "B")); // C=CONFIRMED, S=SNIPER, B=BUILDING
+    const cycleId = `${symbol}-${card.direction}-${setupVersion}`;
+    card.cycleId = cycleId;
+    
+    // v11.0.0: 3-STATE SYSTEM - BUILDING, SNIPER, CONFIRMED
     
     const ltfAligned =
       (card.direction === "LONG" && card.ltfBias === "BULLISH") ||
@@ -1455,9 +1462,9 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     targetPrices: null,
     riskReward: null,
     
-    // FIX #1: v10.0.0 - Initialize to BUILDING (default state, will be promoted if conditions met)
+    // FIX #1: v11.0.0 - Initialize to BUILDING (default state)
     signalState: "BUILDING",
-    cycleId: `${symbol}-NEUTRAL-B`,  // v10.0.0: Initial cycle ID (will be updated in promotion logic)
+    cycleId: `${symbol}-NEUTRAL-B`,  // v12.0.0: Initial cycleId (will be updated in promotion logic)
     lastSignalTime: undefined,
 
     notes: direction !== "NEUTRAL" ? calculateLiveMarketState(direction, emaSlope, stochRsi, volatilityLevel) : "Awaiting momentum ignition",
