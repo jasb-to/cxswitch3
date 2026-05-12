@@ -5,7 +5,7 @@ import { useState, useEffect } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v9.2.0";
+const VERSION = "v10.0.0";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load - minimal data, no fakes
@@ -161,7 +161,6 @@ function statusPalette(status: string) {
     case "CONFIRMED": return { border: "border-green-500",  badge: "bg-green-950 text-green-300 border-green-700",  dot: "bg-green-400" };
     case "SNIPER":    return { border: "border-cyan-500",   badge: "bg-cyan-950 text-cyan-300 border-cyan-700",     dot: "bg-cyan-400"  };
     case "BUILDING":  return { border: "border-amber-600",  badge: "bg-amber-950 text-amber-300 border-amber-700",  dot: "bg-amber-400" };
-    case "WATCHLIST": return { border: "border-zinc-600",   badge: "bg-zinc-900 text-zinc-300 border-zinc-600",     dot: "bg-zinc-400"  };
     default:          return { border: "border-zinc-800",   badge: "bg-zinc-900 text-zinc-500 border-zinc-700",     dot: "bg-zinc-600"  };
   }
 }
@@ -171,13 +170,13 @@ function scoreInterpretation(score: number): { label: string; color: string } {
   if (score >= 85) return { label: "CONFIRMED",   color: "text-green-400" };
   if (score >= 70) return { label: "SNIPER",      color: "text-cyan-400"  };
   if (score >= 55) return { label: "BUILDING",    color: "text-amber-400" };
-  if (score >= 40) return { label: "WATCHLIST",   color: "text-zinc-400"  };
   return               { label: "LOW QUALITY",  color: "text-zinc-600"  };
 }
 
 function SymbolCard({ card }: { card: SymbolCardState }) {
   const isLoading = card.source === "bootstrap";
-  const isActiveSignal = card.signalState === "ACTIVE_SNIPER" || card.signalState === "ACTIVE_CONFIRMED";
+  // v10.0.0: Only SNIPER and CONFIRMED show trade targets
+  const isActiveSignal = card.signalState === "SNIPER" || card.signalState === "CONFIRMED";
 
   // v8.6.0: Use new UX fields - fall back gracefully for bootstrap cards
   const setupStatus = card.setupStatus ?? "NO SETUP";
@@ -280,7 +279,14 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
       {/* CONDITIONAL: Trade targets when signal is ACTIVE */}
       {isActiveSignal && card.targetPrices && (
         <div className="border border-zinc-800 rounded p-3 space-y-1.5">
-          <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">{setupStatus} Entry</p>
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">{setupStatus} Entry</p>
+            <p className={`text-xs font-bold tracking-wider uppercase ${
+              card.direction === "LONG" ? "text-cyan-400" : "text-pink-400"
+            }`}>
+              {card.direction}
+            </p>
+          </div>
           <div className="text-sm font-mono space-y-1">
             <div className="flex justify-between"><span className="text-zinc-400">Entry</span><span className="text-cyan-400">${fmt(card.price)}</span></div>
             <div className="flex justify-between"><span className="text-zinc-400">TP1</span><span className="text-green-400">${fmt(card.targetPrices.tp1)}</span></div>

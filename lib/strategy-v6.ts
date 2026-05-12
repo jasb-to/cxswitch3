@@ -11,12 +11,13 @@ import type { PriceData } from "./price-router";
 
 // v7.5.3: Clean 3-state architecture with continuous progression
 // Returns: NONE | BUILDING | ACTIVE_SNIPER | ACTIVE_CONFIRMED
-// Flow: BUILDING (ignition < 65) → ACTIVE_SNIPER (65-74) → ACTIVE_CONFIRMED (75+)
+// v10.0.0: MASTER FIX - Simplified 3-state system
+// Flow: BUILDING (forming) → SNIPER (entry ready) → CONFIRMED (executed/validated)
+// NO intermediate states, NO pseudo-states, NO WATCHLIST, NO ACTIVE_* prefixes
 export type SignalState = 
-  | "NONE"              // No signal
-  | "BUILDING"          // Setup forming, ignitionProbability < 65
-  | "ACTIVE_SNIPER"     // Early executable impulse, ignitionProbability 65-74 (30 min cooldown)
-  | "ACTIVE_CONFIRMED"; // Mature continuation phase (90 min cooldown)
+  | "BUILDING"          // Default: setup forming, not yet fully aligned
+  | "SNIPER"            // Entry fully aligned, high-confidence executable
+  | "CONFIRMED";        // Trade executed or validated (no re-trigger unless new cycle)
 
 export type SymbolCardState = {
   symbol: string;
@@ -30,6 +31,7 @@ export type SymbolCardState = {
   
   // FIX #1: Unified signal state (v7.2.6), extended for v7.2.8, standardized for v7.2.9
   signalState: SignalState;
+  cycleId: string;  // v10.0.0: Setup cycle fingerprint for Telegram re-arm logic (hash of symbol + direction + setup attributes)
   lastSignalTime?: number;
 
   // Momentum indicators (5M)
@@ -155,6 +157,17 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // New flow: promote → generate → done
     
     // STEP 1: Determine if this trade should execute
+    // v10.0.0: Calculate cycleId (setup fingerprint for Telegram re-arm logic)
+    // cycleId changes when: symbol, direction, or setup type changes
+    // Format: symbol-direction-setupVersion
+    const setupVersion = (score >= 80 ? "C" : (score >= 65 ? "S" : "B")); // C=CONFIRMED, S=SNIPER, B=BUILDING
+    const cycleId = `${symbol}-${card.direction}-${setupVersion}`;
+    card.cycleId = cycleId;
+    
+    // v10.0.0: SIMPLIFIED 3-STATE SYSTEM
+    // ONLY states: BUILDING, SNIPER, CONFIRMED
+    // NO WATCHLIST, NO ACTIVE_SNIPER, NO ACTIVE_CONFIRMED
+    
     const ltfAligned =
       (card.direction === "LONG" && card.ltfBias === "BULLISH") ||
       (card.direction === "SHORT" && card.ltfBias === "BEARISH");
@@ -176,13 +189,14 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       (card.ignitionProbability >= 35) || 
       (Math.abs(card.emaSlope ?? 0) >= 0.25);
     
+    // STATE PROMOTION LOGIC (v10.0.0)
     // CONFIRMED: score >= 80 AND HTF aligned AND volume expanding
     if (score >= 80 && card.direction !== "NEUTRAL" && htfAlignedConfirmed && volumeExpanding) {
-      card.signalState = "ACTIVE_CONFIRMED";
+      card.signalState = "CONFIRMED";
       card.mode = "CONFIRMED";
+      console.log(`[PROMOTION] ${symbol} → CONFIRMED (score=${score} HTF:${card.htfBias} vol:${card.execution15mState})`);
     }
     // SNIPER: score >= 65 AND LTF aligned AND not CHOP AND (ignition >= 35 OR strong EMA)
-    // v9.1.1: Add lightweight quality filter
     else if (
       score >= 65 && 
       card.direction !== "NEUTRAL" && 
@@ -190,29 +204,32 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       notChop &&
       hasQualityMomentum
     ) {
-      // v9.1.1: Block contra-trend SNIPER unless score >= 80 + ignition >= 60
+      // v10.0.0: Block contra-trend SNIPER unless score >= 80 + ignition >= 60
       if (isContraTrend) {
         if (score >= 80 && card.ignitionProbability >= 60) {
-          card.signalState = "ACTIVE_SNIPER";
+          card.signalState = "SNIPER";
           card.mode = "SNIPER";
+          console.log(`[PROMOTION] ${symbol} → SNIPER (score=${score} contra-trend override)`);
         } else {
           card.signalState = "BUILDING";
           card.mode = "NONE";
           console.log(`[CONTRA_BLOCKED] ${symbol}: contra-trend (HTF:${card.htf4hTrend} dir:${card.direction}) requires score>=80 + ignition>=60 for SNIPER`);
         }
       } else {
-        card.signalState = "ACTIVE_SNIPER";
+        card.signalState = "SNIPER";
         card.mode = "SNIPER";
+        console.log(`[PROMOTION] ${symbol} → SNIPER (score=${score} LTF:${card.ltfBias} ignition:${card.ignitionProbability})`);
       }
     }
-    // BUILDING: score >= 55 AND direction valid
+    // BUILDING: score >= 55 AND direction valid (DEFAULT STATE)
     else if (score >= 55 && card.direction !== "NEUTRAL") {
       card.signalState = "BUILDING";
       card.mode = "NONE";
+      console.log(`[BUILDING] ${symbol} score=${score} (waiting for alignment)`);
     }
-    // WATCHLIST: score >= 40
+    // NO SETUP (default to BUILDING if score >= 40)
     else if (score >= 40) {
-      card.signalState = "WATCHLIST";
+      card.signalState = "BUILDING";
       card.mode = "NONE";
     }
     // NO SETUP
@@ -221,10 +238,11 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       card.mode = "NONE";
     }
     
-    console.log(`[PROMOTION] ${symbol} score=${score} ignition=${card.ignitionProbability} emaSlope=${card.emaSlope?.toFixed(3)} → signalState=${card.signalState} mode=${card.mode}`);
+    console.log(`[PROMOTION] ${symbol} score=${score} → signalState=${card.signalState} mode=${card.mode} cycleId=${card.cycleId}`);
 
-    // STEP 2: Generate setups for executable trades
-    if (card.signalState === "ACTIVE_CONFIRMED") {
+    // STEP 2: Generate setups for executable trades (SNIPER and CONFIRMED only)
+    // v10.0.0: Simplified from 5 states - only 2 states trigger setups
+    if (card.signalState === "CONFIRMED") {
       card.confidence = Math.min(score, 99);
       card.lastSignalTime = Date.now();
       card.notes = `CONFIRMED ${card.direction} - HTF aligned + volume expanding`;
@@ -252,10 +270,11 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
           trend4H: (card.stochRsi ?? 50) > 50,
         },
       });
-      console.log(`[EXECUTION_READY] ${symbol} ACTIVE_CONFIRMED ${card.direction} | score=${score} HTF:${card.htfBias} vol:${card.execution15mState}`);
+      console.log(`[EXECUTION_READY] ${symbol} CONFIRMED ${card.direction} | score=${score} HTF:${card.htfBias} vol:${card.execution15mState}`);
     }
-    // SNIPER ALERT: v9.1.0 - Generate setup when signalState is ACTIVE_SNIPER
-    else if (card.signalState === "ACTIVE_SNIPER") {
+
+    // SNIPER: Generate setup when signalState is SNIPER
+    else if (card.signalState === "SNIPER") {
       card.confidence = Math.min(score, 99);
       card.lastSignalTime = Date.now();
       card.notes = `SNIPER ${card.direction} - LTF aligned, execution ready`;
@@ -1039,7 +1058,7 @@ function calculateLiveMarketState(
  * Result: BTC (~35-45%), ETH (~45-60%), SOL (~65-80%)
  */
 function calculateTradeReadinessScore(
-  signalState: "NONE" | "BUILDING" | "SNIPER" | "CONFIRMED",
+  signalState: SignalState,
   direction: "LONG" | "SHORT" | "NEUTRAL",
   htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL" | null,
   htf1hAlignment: boolean,
@@ -1446,8 +1465,9 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     targetPrices: null,
     riskReward: null,
     
-    // FIX #1: Initialize signalState to NONE (will be updated by alert logic)
-    signalState: "NONE",
+    // FIX #1: v10.0.0 - Initialize to BUILDING (default state, will be promoted if conditions met)
+    signalState: "BUILDING",
+    cycleId: `${symbol}-NEUTRAL-B`,  // v10.0.0: Initial cycle ID (will be updated in promotion logic)
     lastSignalTime: undefined,
 
     notes: direction !== "NEUTRAL" ? calculateLiveMarketState(direction, emaSlope, stochRsi, volatilityLevel) : "Awaiting momentum ignition",
