@@ -69,6 +69,14 @@ export type SymbolCardState = {
   notes: string;
   updatedAt: string;
 
+  // v8.6.0 UX FIELDS: Human-readable display layer
+  // Derived from engine internals — never raw jargon on primary UI
+  displayScore: number;           // Blended setup score (structure 60% + ignition 40%), always 0-100
+  setupStatus: "NO SETUP" | "WATCHLIST" | "BUILDING" | "SNIPER" | "CONFIRMED";
+  htfBias: "BULLISH" | "BEARISH" | "NEUTRAL" | "TRANSITIONAL" | "WEAKENING" | "REVERSAL WATCH";
+  ltfBias: "BULLISH" | "BEARISH" | "NEUTRAL" | "TRANSITIONAL" | "WEAKENING" | "REVERSAL WATCH";
+  marketQuality: "LIVE" | "FALLBACK"; // Whether price is from Kraken live or degraded source
+
   // v7.5.1: OBSERVABILITY LAYER - Why signals didn't fire
   // Single string explaining block reason for non-alert states
   blockReason?: string;
@@ -155,6 +163,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       card.targetPrices = targets.targetPrices;
       card.riskReward = targets.riskReward;
       card.tradeReadinessScore = calculateTradeReadinessScore("CONFIRMED", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
+      card.displayScore = card.confidence;
+      card.setupStatus = "CONFIRMED";
       
       setups.push({
         symbol,
@@ -197,6 +207,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         card.targetPrices = targets.targetPrices;
         card.riskReward = targets.riskReward;
         card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
+        card.displayScore = card.confidence;
+        card.setupStatus = "SNIPER";
         
         setups.push({
           symbol,
@@ -789,11 +801,13 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
     }
   }
 
-  // REQUIREMENT 3: Ignition probability >= 65 for SNIPER threshold
-  if (card.ignitionProbability < 65) {
+  // REQUIREMENT 3: Ignition probability >= per-symbol threshold for SNIPER
+  // v8.6.0: BTC/ETH have lower thresholds as majors move slower than alts
+  const sniperIgnitionThreshold = SNIPER_IGNITION_THRESHOLDS[card.symbol] ?? DEFAULT_SNIPER_THRESHOLD;
+  if (card.ignitionProbability < sniperIgnitionThreshold) {
     return {
       valid: false,
-      reason: `Ignition probability ${card.ignitionProbability} below ACTIVE_SNIPER threshold (65)`
+      reason: `Ignition probability ${card.ignitionProbability} below SNIPER threshold (${sniperIgnitionThreshold} for ${card.symbol})`
     };
   }
 
@@ -1119,6 +1133,73 @@ function calculateExecutionReadinessScore(structureScore: number, ignitionProbab
  * Calculate momentum score using event-driven multiplier model
  * v7.1 STABILISATION FIX
  */
+/**
+ * v8.6.0: Per-symbol SNIPER ignition thresholds
+ * BTC/ETH naturally move slower than alts - lower threshold required
+ */
+const SNIPER_IGNITION_THRESHOLDS: Record<string, number> = {
+  BTC: 55,
+  ETH: 58,
+  SOL: 65,
+};
+const DEFAULT_SNIPER_THRESHOLD = 65;
+
+/**
+ * v8.6.0: Map engine internals to human-readable HTF bias
+ * "DIVERGENT -4" → "WEAKENING", "EMA conflict" → "TRANSITIONAL", etc.
+ */
+function deriveHtfBias(
+  htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL",
+  htf1hAlignment: boolean | null,
+  emaSlope: number | null
+): SymbolCardState["htfBias"] {
+  const slope = emaSlope ?? 0;
+
+  if (htf4hTrend === "BULLISH") {
+    if (htf1hAlignment === false && slope < 0) return "WEAKENING";
+    if (htf1hAlignment === false) return "TRANSITIONAL";
+    return "BULLISH";
+  }
+  if (htf4hTrend === "BEARISH") {
+    if (htf1hAlignment === false && slope > 0) return "REVERSAL WATCH";
+    if (htf1hAlignment === false) return "TRANSITIONAL";
+    return "BEARISH";
+  }
+  // NEUTRAL 4H
+  if (Math.abs(slope) > 0.3) return "TRANSITIONAL";
+  return "NEUTRAL";
+}
+
+/**
+ * v8.6.0: Map 15M execution state to human-readable LTF bias
+ */
+function deriveLtfBias(
+  execution15mState: SymbolCardState["execution15mState"],
+  direction: "LONG" | "SHORT" | "NEUTRAL"
+): SymbolCardState["ltfBias"] {
+  if (direction === "NEUTRAL") return "NEUTRAL";
+  switch (execution15mState) {
+    case "EXPANDING":    return direction === "LONG" ? "BULLISH" : "BEARISH";
+    case "BREAKOUT_READY": return "TRANSITIONAL";
+    case "COMPRESSING": return "WEAKENING";
+    case "CHOP":        return "NEUTRAL";
+    default:            return "NEUTRAL";
+  }
+}
+
+/**
+ * v8.6.0: Derive clean setup status from display score
+ * Single source of truth for what stage the setup is in
+ */
+function deriveSetupStatus(displayScore: number, signalState: string): SymbolCardState["setupStatus"] {
+  if (signalState === "ACTIVE_CONFIRMED") return "CONFIRMED";
+  if (signalState === "ACTIVE_SNIPER")    return "SNIPER";
+  if (displayScore >= 70) return "SNIPER";
+  if (displayScore >= 55) return "BUILDING";
+  if (displayScore >= 40) return "WATCHLIST";
+  return "NO SETUP";
+}
+
 function generateCardState(symbol: string, priceData: PriceData): SymbolCardState {
   // Degrade is purely informational
   const degraded = priceData.source !== "kraken_live";
@@ -1288,7 +1369,21 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
 
     notes: direction !== "NEUTRAL" ? calculateLiveMarketState(direction, emaSlope, stochRsi, volatilityLevel) : "Awaiting momentum ignition",
     updatedAt: new Date().toISOString(),
+
+    // v8.6.0 UX FIELDS — computed after ignition is known
+    // displayScore: calculated below after card is built
+    displayScore: 0, // placeholder, replaced immediately below
+    setupStatus: "NO SETUP",
+    htfBias: deriveHtfBias(htf4hTrend, htf1hAlignment, emaSlope),
+    ltfBias: deriveLtfBias(execution15mState, direction),
+    marketQuality: degraded ? "FALLBACK" : "LIVE",
   };
+
+  // v8.6.0: Compute displayScore now that ignition is available
+  // Never returns 0 unless engine truly has no data
+  const _structureScore = calculateMomentumScore(card);
+  card.displayScore = calculateExecutionReadinessScore(_structureScore, card.ignitionProbability);
+  card.setupStatus = deriveSetupStatus(card.displayScore, card.signalState);
 
   return card;
 }
