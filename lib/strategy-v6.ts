@@ -75,7 +75,7 @@ export type SymbolCardState = {
   // v8.6.0 UX FIELDS: Human-readable display layer
   // Derived from engine internals — never raw jargon on primary UI
   displayScore: number;           // Blended setup score (structure 60% + ignition 40%), always 0-100
-  setupStatus: "NO SETUP" | "WATCHLIST" | "BUILDING" | "SNIPER" | "CONFIRMED";
+  setupStatus: "BUILDING" | "SNIPER" | "CONFIRMED";  // v13.0.0: Removed WATCHLIST and NO SETUP (signalState handles it)
   htfBias: "BULLISH" | "BEARISH" | "NEUTRAL";
   ltfBias: "BULLISH" | "BEARISH" | "NEUTRAL";
   marketQuality: "LIVE" | "FALLBACK"; // Whether price is from Kraken live or degraded source
@@ -1078,7 +1078,7 @@ function calculateTradeReadinessScore(
   } else if (signalState === "BUILDING") {
     score += 20;
   } else {
-    score += 10; // WATCHLIST/NONE
+    score += 10; // BUILDING bonus (v13.0.0: was WATCHLIST, now BUILDING covers low-score range)
   }
   
   // 25 points: EMA pressure (multi-timeframe aggregated)
@@ -1270,21 +1270,18 @@ function deriveLtfBias(
  * Single source of truth for what stage the setup is in
  */
 /**
- * v8.9.0 SIMPLIFIED: Setup status from display score
- * - 0-39: NO SETUP
- * - 40-54: WATCHLIST
- * - 55-69: BUILDING
- * - 70-84: SNIPER
- * - 85+: CONFIRMED (or via ACTIVE_CONFIRMED state)
+ * v13.0.0 FIXED: Setup status from display score (3-state system only)
+ * - 0-64: BUILDING
+ * - 65-84: SNIPER
+ * - 85+: CONFIRMED
+ * 
+ * Removed: NO SETUP, WATCHLIST (signalState handles low-score cases)
  */
 function deriveSetupStatus(displayScore: number, signalState: string): SymbolCardState["setupStatus"] {
-  if (signalState === "ACTIVE_CONFIRMED") return "CONFIRMED";
-  if (signalState === "ACTIVE_SNIPER")    return "SNIPER";
+  // v13.0.0: Only map to 3 states - signalState is source of truth for BUILDING default
   if (displayScore >= 85) return "CONFIRMED";
-  if (displayScore >= 70) return "SNIPER";
-  if (displayScore >= 55) return "BUILDING";
-  if (displayScore >= 40) return "WATCHLIST";
-  return "NO SETUP";
+  if (displayScore >= 65) return "SNIPER";
+  return "BUILDING";  // v13.0.0: Default to BUILDING for all scores < 65 (was WATCHLIST 40-54, NO SETUP < 40)
 }
 
 function generateCardState(symbol: string, priceData: PriceData): SymbolCardState {
@@ -1473,7 +1470,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     // v8.6.0 UX FIELDS — computed after ignition is known
     // displayScore: calculated below after card is built
     displayScore: 0, // placeholder, replaced immediately below
-    setupStatus: "NO SETUP",
+    setupStatus: "BUILDING",  // v13.0.0: Default to BUILDING (was NO SETUP)
     htfBias: deriveHtfBias(htf4hTrend, htf1hAlignment, emaSlope),
     ltfBias: deriveLtfBias(execution15mState, direction),
     marketQuality: degraded ? "FALLBACK" : "LIVE",
