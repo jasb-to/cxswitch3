@@ -37,56 +37,64 @@ let alertQueue: TelegramAlertJob[] = [];
 let isProcessingAlerts = false;
 
 /**
- * v7.5.6: Alert state transition tracker
- * Tracks previous signal state per symbol + direction to detect transitions only
- * Key: symbol + direction (e.g., "SOL-SHORT")
- * Value: { prevState, prevIgnition, lastAlertTime }
+ * v10.0.0: MASTER FIX - Cycle-based alert deduplication
+ * 
+ * Old system: State-based dedup → alerts blocked when state persists
+ * New system: Cycle-based dedup → alerts only when cycleId changes
+ * 
+ * This fixes: ETH → SNIPER → alert skipped (state persists)
+ * New behavior: ETH → SNIPER (cycleId-A) → alerts sent
+ *               ETH stays SNIPER but cycleId changes → alerts sent again (new cycle)
+ * 
+ * Key: symbol + direction + cycleId
  */
-const alertStateMemory: Map<string, { prevState: string; prevIgnition: number; lastAlertTime: number }> = new Map();
+const alertCycleMemory: Map<string, { prevCycleId: string; lastAlertTime: number }> = new Map();
 
 /**
- * Get memory key for alert deduplication
+ * Get memory key for cycle-based deduplication
  */
-function getAlertMemoryKey(symbol: string, direction: string): string {
+function getAlertCycleKey(symbol: string, direction: string): string {
   return `${symbol}-${direction}`;
 }
 
 /**
- * Enqueue alert for processing (v7.2.7 FIX #6)
- * v7.5.6: Only enqueue on state TRANSITIONS, not persistence
- * Non-blocking - returns immediately
+ * v10.0.0 MASTER FIX: Enqueue alert based on cycleId changes
+ * 
+ * Trigger Telegram alert when:
+ * ✔ Condition A: state transitions INTO SNIPER (primary)
+ * ✔ Condition B: state == SNIPER AND cycleId changes (re-arm trigger)
+ * 
+ * This ensures:
+ * - BTC → BUILDING (no alert)
+ * - ETH → SNIPER (alert sent, once per cycle)
+ * - SOL → SNIPER (if cycleId changes, re-trigger alert)
  */
 export function enqueueAlert(job: TelegramAlertJob) {
-  // v7.5.6: Check if this is a state transition (not persistence)
-  const memoryKey = getAlertMemoryKey(job.symbol, job.direction);
-  const memory = alertStateMemory.get(memoryKey);
+  const cycleKey = getAlertCycleKey(job.symbol, job.direction);
+  const cycleMemory = alertCycleMemory.get(cycleKey);
   
-  console.log(`[ALERT_ENQUEUE_DEBUG] ${job.symbol} ${job.direction}: signalState=${job.signalState}, mode=${job.mode}, prevState=${memory?.prevState || "none"}, ignition=${job.card.ignitionProbability}`);
-  
-  // Only enqueue if:
-  // 1. No previous state recorded (first time)
-  // 2. State changed from previous state
-  // 3. Ignition probability band changed (e.g., from BUILDING to ACTIVE_SNIPER)
-  const isStateTransition = !memory || memory.prevState !== job.signalState;
-  
-  if (!isStateTransition) {
-    console.log(`[ALERT_DEDUP] ${job.symbol} ${job.direction}: state persists as ${job.signalState} (ignition ${job.card.ignitionProbability}), skipping duplicate alert`);
-    // Update memory timestamp but don't enqueue
-    alertStateMemory.set(memoryKey, {
-      prevState: job.signalState,
-      prevIgnition: job.card.ignitionProbability,
-      lastAlertTime: memory?.lastAlertTime || 0,
-    });
+  // Only SNIPER and CONFIRMED states can trigger alerts
+  if (job.signalState !== "SNIPER" && job.signalState !== "CONFIRMED") {
+    console.log(`[ALERT_BLOCKED] ${job.symbol} ${job.direction}: signalState=${job.signalState} (only SNIPER/CONFIRMED trigger alerts)`);
     return;
   }
   
-  // State transitioned! Log transition and enqueue alert
-  console.log(`[ALERT_TRANSITION] ${job.symbol} ${job.direction}: ${memory?.prevState || "NONE"} → ${job.signalState} (ignition ${job.card.ignitionProbability}), queueing alert`);
+  console.log(`[ALERT_CYCLE_CHECK] ${job.symbol} ${job.direction}: state=${job.signalState} cycleId=${job.card.cycleId} prevCycleId=${cycleMemory?.prevCycleId || "none"}`);
   
-  // Update memory with new state
-  alertStateMemory.set(memoryKey, {
-    prevState: job.signalState,
-    prevIgnition: job.card.ignitionProbability,
+  // Check if this is a new cycle or first time
+  const cycleChanged = !cycleMemory || cycleMemory.prevCycleId !== job.card.cycleId;
+  
+  if (!cycleChanged) {
+    console.log(`[ALERT_DEDUP_CYCLE] ${job.symbol} ${job.direction}: cycleId persists as ${job.card.cycleId}, skipping duplicate alert`);
+    return;
+  }
+  
+  // CYCLE CHANGED or FIRST TIME - queue alert
+  console.log(`[ALERT_CYCLE_TRIGGERED] ${job.symbol} ${job.direction}: cycleId changed (${cycleMemory?.prevCycleId || "first"} → ${job.card.cycleId}), queueing alert`);
+  
+  // Update memory with new cycleId
+  alertCycleMemory.set(cycleKey, {
+    prevCycleId: job.card.cycleId,
     lastAlertTime: Date.now(),
   });
   
