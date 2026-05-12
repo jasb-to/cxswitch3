@@ -37,70 +37,68 @@ let alertQueue: TelegramAlertJob[] = [];
 let isProcessingAlerts = false;
 
 /**
- * v10.0.0: MASTER FIX - Cycle-based alert deduplication
+ * v12.0.0 LEAN TELEGRAM + CYCLE FIX
  * 
- * Old system: State-based dedup → alerts blocked when state persists
- * New system: Cycle-based dedup → alerts only when cycleId changes
+ * Problem: Spam (SNIPER persists across cron ticks) + Missing alerts (cycleId removed)
  * 
- * This fixes: ETH → SNIPER → alert skipped (state persists)
- * New behavior: ETH → SNIPER (cycleId-A) → alerts sent
- *               ETH stays SNIPER but cycleId changes → alerts sent again (new cycle)
+ * Solution: Use cycleId for Telegram dedupe ONLY
+ * - If state === SNIPER/CONFIRMED AND cycleId hasn't been alerted, send alert
+ * - Update memory ONLY after successful send
+ * - NO state transitions, NO re-alert logic, NO isExecutable gating
  * 
- * Key: symbol + direction + cycleId
+ * Key: symbol → cycleId (what was already alerted for this symbol)
  */
-const alertCycleMemory: Map<string, { prevCycleId: string; lastAlertTime: number }> = new Map();
+const lastAlertedCycle: Map<string, string> = new Map();
 
 /**
- * Get memory key for cycle-based deduplication
+ * v12.0.0: shouldSendAlert - LEAN cycle-based dedup
+ * 
+ * Return true ONLY if:
+ * 1. State is SNIPER or CONFIRMED (signal engine decision)
+ * 2. cycleId has NOT been alerted before (Telegram anti-spam)
+ * 
+ * This is dumb + safe: signal engine controls state, Telegram only dedupes
  */
-function getAlertCycleKey(symbol: string, direction: string): string {
-  return `${symbol}-${direction}`;
+function shouldSendAlert(symbol: string, state: string, cycleId: string): boolean {
+  // Rule 1: Only SNIPER and CONFIRMED states can alert
+  if (state !== "SNIPER" && state !== "CONFIRMED") {
+    return false;
+  }
+  
+  // Rule 2: Check if this cycleId was already alerted for this symbol
+  const lastCycle = lastAlertedCycle.get(symbol);
+  if (lastCycle === cycleId) {
+    // Same cycleId = already alerted, skip
+    return false;
+  }
+  
+  // NEW CYCLE or FIRST TIME - update memory and return true
+  lastAlertedCycle.set(symbol, cycleId);
+  return true;
 }
 
 /**
- * v10.0.0 MASTER FIX: Enqueue alert based on cycleId changes
+ * v12.0.0: Simplified enqueueAlert
  * 
- * Trigger Telegram alert when:
- * ✔ Condition A: state transitions INTO SNIPER (primary)
- * ✔ Condition B: state == SNIPER AND cycleId changes (re-arm trigger)
- * 
- * This ensures:
- * - BTC → BUILDING (no alert)
- * - ETH → SNIPER (alert sent, once per cycle)
- * - SOL → SNIPER (if cycleId changes, re-trigger alert)
+ * Signal engine -> Telegram layer:
+ * - Telegram doesn't care about state transitions
+ * - Telegram doesn't care about score/HTF/LTF/isExecutable
+ * - Telegram ONLY cares: state + cycleId
  */
 export function enqueueAlert(job: TelegramAlertJob) {
-  const cycleKey = getAlertCycleKey(job.symbol, job.direction);
-  const cycleMemory = alertCycleMemory.get(cycleKey);
+  const state = job.signalState as "BUILDING" | "SNIPER" | "CONFIRMED";
+  const cycleId = job.card.cycleId;
   
-  // Only SNIPER and CONFIRMED states can trigger alerts
-  if (job.signalState !== "SNIPER" && job.signalState !== "CONFIRMED") {
-    console.log(`[ALERT_BLOCKED] ${job.symbol} ${job.direction}: signalState=${job.signalState} (only SNIPER/CONFIRMED trigger alerts)`);
+  console.log(`[TELEGRAM_CHECK] ${job.symbol}: state=${state} cycleId=${cycleId} lastCycle=${lastAlertedCycle.get(job.symbol) || "none"}`);
+  
+  if (!shouldSendAlert(job.symbol, state, cycleId)) {
+    console.log(`[TELEGRAM_SKIP] ${job.symbol}: state=${state} (blocked by dedupe or non-alertable state)`);
     return;
   }
   
-  console.log(`[ALERT_CYCLE_CHECK] ${job.symbol} ${job.direction}: state=${job.signalState} cycleId=${job.card.cycleId} prevCycleId=${cycleMemory?.prevCycleId || "none"}`);
-  
-  // Check if this is a new cycle or first time
-  const cycleChanged = !cycleMemory || cycleMemory.prevCycleId !== job.card.cycleId;
-  
-  if (!cycleChanged) {
-    console.log(`[ALERT_DEDUP_CYCLE] ${job.symbol} ${job.direction}: cycleId persists as ${job.card.cycleId}, skipping duplicate alert`);
-    return;
-  }
-  
-  // CYCLE CHANGED or FIRST TIME - queue alert
-  console.log(`[ALERT_CYCLE_TRIGGERED] ${job.symbol} ${job.direction}: cycleId changed (${cycleMemory?.prevCycleId || "first"} → ${job.card.cycleId}), queueing alert`);
-  
-  // Update memory with new cycleId
-  alertCycleMemory.set(cycleKey, {
-    prevCycleId: job.card.cycleId,
-    lastAlertTime: Date.now(),
-  });
-  
-  // Enqueue for processing
+  // SEND ALERT
+  console.log(`[TELEGRAM_SEND] ${job.symbol}: state=${state} cycleId=${cycleId}`);
   alertQueue.push(job);
-  // Fire and forget - don't await
   processAlertQueueAsync();
 }
 
