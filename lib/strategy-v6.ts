@@ -149,9 +149,15 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // ONLY generate setups with directional conviction
     // NO NEUTRAL SIGNALS ALLOWED
 
-    // CONFIRMED ALERT: v8.9.0 simplified - score >= 80 AND established 4H trend
-    // No per-symbol thresholds, no complex conditions
-    if (score >= 80 && card.direction !== "NEUTRAL" && card.htf4hTrend !== "NEUTRAL") {
+    // CONFIRMED ALERT: v9.0.2 - score >= 80 AND HTF aligned AND volume expanding
+    // CONFIRMED requires HTF confirmation (unlike SNIPER which uses LTF only)
+    const htfAlignedConfirmed =
+      (card.direction === "LONG" && card.htfBias === "BULLISH") ||
+      (card.direction === "SHORT" && card.htfBias === "BEARISH");
+    
+    const volumeExpanding = card.execution15mState === "EXPANDING";
+    
+    if (score >= 80 && card.direction !== "NEUTRAL" && htfAlignedConfirmed && volumeExpanding) {
       card.mode = "CONFIRMED";
       card.confidence = Math.min(score, 99);
       card.lastSignalTime = Date.now();
@@ -183,40 +189,33 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       });
       console.log(`[ALERT] ${symbol} CONFIRMED ${card.direction} score=${score}`);
     }
-    // SNIPER ALERT: v7.3.2 - Direct to ACTIVE_SNIPER on early ignition (no SNIPER_READY intermediate)
-    else if (score >= 70 && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
-      // v7.3.2 FIX #4: Validate ACTIVE_SNIPER execution requirements
-      const executionValidation = validateActiveSniperExecution(card, score);
+    // SNIPER ALERT: v9.0.2 - Always generate setup when signalState is ACTIVE_SNIPER
+    // Simplified from: score >= 70 + checkSniperConditions + executeValidation
+    // Now: If validateActiveSniperExecution passes, setup is generated
+    else if (card.signalState === "ACTIVE_SNIPER") {
+      // v9.0.2: signalState already set by promotion logic above
+      // Just generate the setup payload (no additional validation needed)
+      card.mode = "SNIPER";
+      card.confidence = Math.min(score, 99);
+      card.lastSignalTime = Date.now();
+      console.log(`[SNIPER] ${symbol} ${card.direction} score=${score}`);
+      card.notes = `SNIPER ${card.direction} execution ready`;
       
-      if (!executionValidation.valid) {
-        // Execution validation failed - block ACTIVE_SNIPER
-        console.log(`[EXECUTION BLOCKED] ${symbol} ${card.direction}: ${executionValidation.reason}`);
-        // Fall through to BUILDING state below
-        card.signalState = "BUILDING";
-      } else {
-        // Execution validation passed - promote directly to ACTIVE_SNIPER (no intermediate states)
-        card.mode = "SNIPER";
-        card.confidence = Math.min(score, 99);
-        card.lastSignalTime = Date.now();
-        card.signalState = "ACTIVE_SNIPER"; // v7.3.2: Direct transition from BUILDING
-        console.log(`[DEBUG_SNIPER_SET] ${symbol}: signalState now = ${card.signalState}, direction = ${card.direction}`);
-        card.notes = `SNIPER ${card.direction} early ignition ${score}`;
-        
-        // Populate trade targets (v7.2.1)
-        const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
-        card.expectedMovePercent = targets.expectedMovePercent;
-        card.targetPrices = targets.targetPrices;
-        card.riskReward = targets.riskReward;
-        card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
-        card.displayScore = card.confidence;
-        card.setupStatus = "SNIPER";
-        
-        setups.push({
-          symbol,
-          mode: "SNIPER",
-          direction: card.direction,
-          score: card.confidence,
-          reason: `SNIPER ${card.direction} - v7.3.2 early ignition`,
+      // Populate trade targets
+      const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
+      card.expectedMovePercent = targets.expectedMovePercent;
+      card.targetPrices = targets.targetPrices;
+      card.riskReward = targets.riskReward;
+      card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
+      card.displayScore = card.confidence;
+      card.setupStatus = "SNIPER";
+      
+      setups.push({
+        symbol,
+        mode: "SNIPER",
+        direction: card.direction,
+        score: card.confidence,
+          reason: `SNIPER ${card.direction} - execution ready`,
           price: card.price,
           momentum: {
             stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
@@ -224,15 +223,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
             volatilitySignal: (card.volatilityLevel ?? 40) > 45 ? "Expansion beginning" : "Structure forming",
             trend4H: card.htf4hTrend !== "NEUTRAL",
           },
-          htf: {
-            trend4h: card.htf4hTrend as "BULLISH" | "BEARISH",
-            alignment1h: card.htf1hAlignment ?? false,
-            compression15m: card.htf15mCompression ?? false,
-            trigger5m: "Early ignition",
-          },
         });
-        console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
-      }
+        console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | LTF:${card.ltfBias}`);
     }
     else {
       // v7.5.3: Update block reason for clean 3-state architecture
@@ -244,11 +236,9 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       } else if (score < 40) {
         blockReason = `Score ${score} too low (< 40)`;
       } else if (score < 55) {
-        blockReason = `Score ${score} below SNIPER floor (< 55)`;
-      } else if (card.execution15mState === "CHOP" || card.execution15mState === "COMPRESSING") {
-        blockReason = `15M ${card.execution15mState} - not ready`;
-      } else if (score < 70) {
-        blockReason = `Score ${score} below SNIPER threshold (70)`;
+        blockReason = `Score ${score} below SNIPER floor (< 65)`;
+      } else if (score < 65) {
+        blockReason = `Score ${score} below SNIPER threshold (65)`;
       } else {
         blockReason = "Conditions met but mode=NONE";
       }
@@ -739,15 +729,16 @@ function calculateTradeTargets(
  * Returns: { valid: boolean, reason?: string }
  */
 function validateActiveSniperExecution(card: SymbolCardState, score: number): { valid: boolean; reason?: string; structuralOverride?: boolean } {
-  // v8.9.0 SIMPLIFICATION: Remove over-engineered gating
-  // Core rule: If score >= 70 AND HTF/LTF aligned → allow SNIPER
-  // No ignition blockers, no displacement minimums, no complex override logic
+  // v9.0.2: REMOVE HTF EXECUTION BLOCKER
+  // SNIPER uses LTF alignment only (15M execution state)
+  // HTF is informational only - never blocks trades
 
-  // REQUIREMENT 1: Score must be execution-grade (>= 70 for SNIPER)
-  if (score < 70) {
+  // REQUIREMENT 1: Score must be execution-grade (>= 65 for SNIPER)
+  // v9.0.2: Lowered from 70 to 65 to allow BTC/ETH execution
+  if (score < 65) {
     return {
       valid: false,
-      reason: `Score ${score} below SNIPER threshold (70)`
+      reason: `Score ${score} below SNIPER threshold (65)`
     };
   }
 
@@ -767,18 +758,16 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
     };
   }
 
-  // v8.9.0: HTF/LTF alignment check (simplified, no hidden penalties)
-  // Allow: matching trends (bullish/bullish or bearish/bearish)
-  // Block: only if actively misaligned on 4H
-  const htf4hValid = card.htf4hTrend !== "NEUTRAL";
-  const directionMatchesHTF =
-    (card.direction === "LONG" && card.htf4hTrend === "BULLISH") ||
-    (card.direction === "SHORT" && card.htf4hTrend === "BEARISH");
+  // v9.0.2: LTF ALIGNMENT ONLY (remove HTF check)
+  // SNIPER executes when: direction matches LTF bias
+  const ltfAligned =
+    (card.direction === "LONG" && card.ltfBias === "BULLISH") ||
+    (card.direction === "SHORT" && card.ltfBias === "BEARISH");
 
-  if (!htf4hValid || !directionMatchesHTF) {
+  if (!ltfAligned) {
     return {
       valid: false,
-      reason: `HTF misaligned: direction=${card.direction}, htf4h=${card.htf4hTrend}`
+      reason: `LTF misaligned: direction=${card.direction}, ltfBias=${card.ltfBias}`
     };
   }
 
