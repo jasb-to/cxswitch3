@@ -162,18 +162,47 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       (card.direction === "LONG" && card.htfBias === "BULLISH") ||
       (card.direction === "SHORT" && card.htfBias === "BEARISH");
     
+    // v9.1.1: Counter-trend detection (HTF opposes direction)
+    const isContraTrend =
+      (card.htf4hTrend === "BEARISH" && card.direction === "LONG") ||
+      (card.htf4hTrend === "BULLISH" && card.direction === "SHORT");
+    
     const volumeExpanding = card.execution15mState === "EXPANDING";
     const notChop = card.execution15mState !== "CHOP";
+    
+    // v9.1.1: SNIPER quality filter - require ignition OR strong EMA momentum
+    const hasQualityMomentum = 
+      (card.ignitionProbability >= 35) || 
+      (Math.abs(card.emaSlope ?? 0) >= 0.25);
     
     // CONFIRMED: score >= 80 AND HTF aligned AND volume expanding
     if (score >= 80 && card.direction !== "NEUTRAL" && htfAlignedConfirmed && volumeExpanding) {
       card.signalState = "ACTIVE_CONFIRMED";
       card.mode = "CONFIRMED";
     }
-    // SNIPER: score >= 65 AND LTF aligned AND not in CHOP
-    else if (score >= 65 && card.direction !== "NEUTRAL" && ltfAligned && notChop) {
-      card.signalState = "ACTIVE_SNIPER";
-      card.mode = "SNIPER";
+    // SNIPER: score >= 65 AND LTF aligned AND not CHOP AND (ignition >= 35 OR strong EMA)
+    // v9.1.1: Add lightweight quality filter
+    else if (
+      score >= 65 && 
+      card.direction !== "NEUTRAL" && 
+      ltfAligned && 
+      notChop &&
+      hasQualityMomentum
+    ) {
+      // v9.1.1: Block contra-trend SNIPER unless score >= 80 + ignition >= 60
+      if (isContraTrend) {
+        if (score >= 80 && card.ignitionProbability >= 60) {
+          card.signalState = "ACTIVE_SNIPER";
+          card.mode = "SNIPER";
+        } else {
+          card.signalState = "BUILDING";
+          card.mode = "NONE";
+          console.log(`[CONTRA_BLOCKED] ${symbol}: contra-trend (HTF:${card.htf4hTrend} dir:${card.direction}) requires score>=80 + ignition>=60 for SNIPER`);
+        }
+      } else {
+        card.signalState = "ACTIVE_SNIPER";
+        card.mode = "SNIPER";
+      }
     }
     // BUILDING: score >= 55 AND direction valid
     else if (score >= 55 && card.direction !== "NEUTRAL") {
@@ -191,7 +220,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       card.mode = "NONE";
     }
     
-    console.log(`[PROMOTION] ${symbol} score=${score} → signalState=${card.signalState} mode=${card.mode}`);
+    console.log(`[PROMOTION] ${symbol} score=${score} ignition=${card.ignitionProbability} emaSlope=${card.emaSlope?.toFixed(3)} → signalState=${card.signalState} mode=${card.mode}`);
 
     // STEP 2: Generate setups for executable trades
     if (card.signalState === "ACTIVE_CONFIRMED") {

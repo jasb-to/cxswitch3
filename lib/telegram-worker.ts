@@ -104,6 +104,7 @@ async function processAlertQueueAsync() {
   if (isProcessingAlerts || alertQueue.length === 0) return;
   
   isProcessingAlerts = true;
+  console.log(`[TELEGRAM_PROCESSOR_START] Processing ${alertQueue.length} queued alerts`);
   
   try {
     while (alertQueue.length > 0) {
@@ -198,6 +199,7 @@ async function processAlertQueueAsync() {
     }
   } finally {
     isProcessingAlerts = false;
+    console.log(`[TELEGRAM_PROCESSOR_END] Queue processing complete - ${alertQueue.length} alerts remaining`);
   }
 }
 

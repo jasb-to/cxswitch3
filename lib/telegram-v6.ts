@@ -12,6 +12,13 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 
+// v9.1.1: Log credentials status on initialization
+if (!BOT_TOKEN || !CHAT_ID) {
+  console.warn(`[TELEGRAM_INIT] WARNING - Telegram credentials not loaded: BOT_TOKEN=${BOT_TOKEN ? "loaded" : "MISSING"}, CHAT_ID=${CHAT_ID ? "loaded" : "MISSING"}`);
+} else {
+  console.log(`[TELEGRAM_INIT] Credentials loaded - ready to send alerts`);
+}
+
 /**
  * Format number with consistent decimals
  */
@@ -108,9 +115,15 @@ export async function sendAlert(card: SymbolCardState): Promise<void> {
       body: JSON.stringify({ chat_id: CHAT_ID, text }),
     });
 
+    console.log(`[TELEGRAM_DISPATCH] Sending ${card.symbol} ${card.direction} (score=${card.confidence})`);
+
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
+      const errorBody = await response.text();
+      console.error(`[TELEGRAM_ERROR] HTTP ${response.status} - ${errorBody}`);
+      throw new Error(`HTTP ${response.status}: ${errorBody}`);
     }
+
+    console.log(`[TELEGRAM_SENT] ${card.symbol} ${card.direction} successfully sent to Telegram`);
 
     // Store alert in database for cooldown
     if (supabase) {
@@ -122,6 +135,7 @@ export async function sendAlert(card: SymbolCardState): Promise<void> {
       }]);
     }
   } catch (err) {
+    console.error(`[TELEGRAM_ERROR] Failed to send ${card.symbol}: ${err instanceof Error ? err.message : String(err)}`);
     throw new Error(`Failed to send: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
