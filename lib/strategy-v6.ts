@@ -102,7 +102,7 @@ export type SymbolCardState = {
     displacementComponent: number; // v8.0.2: directional commitment quality modifier
     emaAccelerationDelta?: number; // v8.1.0: reversal acceleration transition detection
     impulseContinuationBoost?: number; // v8.1.0: expansion continuation confidence assist
-    macroPenalty?: number; // v8.3.0: penalty for contra-directional signals (-8)
+    // v15.0.0: macroPenalty REMOVED - no artificial suppression
     totalIgnition: number;
   };
 };
@@ -146,36 +146,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 
     // Generate card state for this symbol
     const card = generateCardState(symbol, priceData);
-    console.log(`[DEBUG_CARD_INITIAL] ${symbol}: signalState=${card.signalState}, direction=${card.direction}`);
-    
-    // v8.7.0: Assign setup classification (macro-aware)
-    if (isCounterTrend(card.direction, card.htf4hTrend)) {
-      card.setupClassification = "COUNTER_TREND";
-    } else if (card.direction !== "NEUTRAL" && card.htf4hTrend && card.htf4hTrend !== "NEUTRAL") {
-      card.setupClassification = "TREND_FOLLOWING";
-    } else {
-      card.setupClassification = "TREND_FOLLOWING"; // Default
-    }
-    
     cards.push(card);
-
-    // Score using NEW momentum-based system
-    const structureScore = calculateMomentumScore(card);
-    
-    // v8.5.0 REFINEMENT: Blend structure score with ignition probability
-    // This eliminates psychological confusion (high score + low ignition = confusing)
-    // Display score now represents "actual readiness to trade"
-    // v8.7.0: Pass macro-aware parameters for counter-trend cap logic
-    const score = calculateExecutionReadinessScore(
-      structureScore,
-      card.ignitionProbability,
-      card.direction,
-      card.htf4hTrend,
-      undefined, // displacement - not calculated yet
-      card.volatilityLevel,
-      undefined, // emaAccelerationDelta - not passed in here
-      card.execution15mState
-    );
     
     console.log(`[SCAN] ${symbol} ignition=${card.ignitionProbability} direction=${card.direction} stoch=${card.stochRsi?.toFixed(1)} emaSlope=${card.emaSlope?.toFixed(2)} htf=${card.htf4hTrend}`);
 
@@ -288,62 +259,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
  * SNIPER: ≥60
  * CONFIRMED: ≥75
  */
-function calculateMomentumScore(card: SymbolCardState): number {
-  // BASE SCORE - foundation for all signals
-  let score = 30;
-
-  // EVENT MULTIPLIERS (not additive)
-  let multiplier = 1.0;
-
-  // EVENT 1: Stoch RSI cross detected
-  // Range: 0-100, active zone: 20-80
-  const stochRsiActive = card.stochRsi > 20 && card.stochRsi < 80;
-  if (stochRsiActive) {
-    multiplier *= 1.25; // Stoch RSI event multiplier
-  }
-
-  // EVENT 2: EMA 8/21 flip detected
-  // Strong slope indicates alignment
-  const emaFlipped = Math.abs(card.emaSlope) > 0.5;
-  if (emaFlipped) {
-    multiplier *= 1.35; // EMA flip multiplier (highest impact)
-  }
-
-  // EVENT 3: Volatility compression present
-  // BB squeeze or ATR contraction
-  const volatilityCompression = card.volatilityLevel < 30;
-  if (volatilityCompression) {
-    multiplier *= 1.20; // Compression multiplier
-  }
-
-  // EVENT 4: Impulse candle (direction conviction)
-  if (card.direction !== "NEUTRAL") {
-    multiplier *= 1.30; // Impulse multiplier
-  }
-
-  // EVENT 5: 4H trend alignment
-  // Trend bias from higher timeframe
-  const trend4HAligned = card.stochRsi > 50; // Simplified: would use actual 4H data
-  if (trend4HAligned) {
-    multiplier *= 1.40; // HTF trend multiplier (critical for CONFIRMED)
-  }
-
-  // Apply multiplier
-  score = Math.round(score * multiplier);
-
-  // SEPARATION BOOST: Prevent score clustering
-  // Strong momentum flips break away from 40-45 cluster
-  if (emaFlipped && stochRsiActive) {
-    score *= 1.2; // Momentum flip detected
-  }
-
-  // Strong squeeze + impulse creates separation
-  if (volatilityCompression && card.direction !== "NEUTRAL") {
-    score *= 1.15; // Volatility squeeze strong
-  }
-
-  return Math.min(score, 99); // Cap at 99
-}
+// v15.0.0: calculateMomentumScore DELETED - ignition drives execution state directly
 
 /**
  * v8.0.2: Calculate displacement quality (soft confidence modifier)
@@ -601,15 +517,9 @@ function calculateIgnitionProbability(
     reasons.push("Impulse continuation quality (+3)");
   }
   
-  
-  // v8.4.0 CRITICAL: Apply macro penalty for contra-directional signals
-  // This MUST happen before final probability calculation
-  const macroPenalty = calculateMacroPenalty(direction, htf4hTrend);
-  if (macroPenalty !== 0) {
-    reasons.push(`MACRO PENALTY: ${direction} vs 4H ${htf4hTrend} (${macroPenalty})`);
-  }
-  
-  const probability = Math.min(Math.max(probabilityBase + htfModifier + displacementModifier + impulseContinuationBoost + macroPenalty, 0), 100); // Clamp 0-100
+  // v15.0.0: NO MACRO PENALTY - ignition is pure signal strength
+  // Market structure classification handles macro context separately (informational only)
+  const probability = Math.min(Math.max(probabilityBase + htfModifier + displacementModifier + impulseContinuationBoost, 0), 100);
   
   return {
     probability,
@@ -619,9 +529,8 @@ function calculateIgnitionProbability(
       volatilityComponent, 
       volumeComponent, 
       displacementComponent: displacementModifier,
-      emaAccelerationDelta,  // v8.1.0: Track reversal acceleration for observability
-      impulseContinuationBoost,  // v8.1.0: Track continuation boost for observability
-      macroPenalty  // v8.4.0: Now correctly calculated and tracked
+      emaAccelerationDelta,
+      impulseContinuationBoost
     },
     reason: reasons.length > 0 ? reasons.join(" + ") : "No ignition signals detected"
   };
@@ -743,30 +652,8 @@ function calculateTradeTargets(
 
 /**
  * v8.4.0 CANONICAL MACRO ALIGNMENT HELPER
- * Single source of truth for directional vs macro structure checks
- * Eliminates duplicate/mismatched directional logic throughout codebase
+ * v15.0.0: isContraMacroStructure DELETED - no macro suppression
  */
-function isContraMacroStructure(direction: "LONG" | "SHORT" | "NEUTRAL", htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL"): boolean {
-  if (direction === "NEUTRAL" || htf4hTrend === "NEUTRAL") {
-    return false;
-  }
-  
-  return (direction === "LONG" && htf4hTrend === "BEARISH") ||
-         (direction === "SHORT" && htf4hTrend === "BULLISH");
-}
-
-/**
- * v8.4.0 CALCULATE MACRO PENALTY
- * Returns penalty amount (-8 for contra, 0 for aligned)
- * This is the canonical macro penalty calculation
- */
-function calculateMacroPenalty(direction: "LONG" | "SHORT" | "NEUTRAL", htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL"): number {
-  if (isContraMacroStructure(direction, htf4hTrend)) {
-    return -8; // Penalty for trading against macro structure
-  }
-  return 0; // No penalty for aligned or neutral
-}
-
 
 function calculateLiveMarketState(
   direction: "LONG" | "SHORT" | "NEUTRAL",
@@ -815,58 +702,10 @@ function calculateLiveMarketState(
   return `${direction}: ${stateStr}`;
 }
 
-/**
- * v8.0.2 HOTFIX: Calculate trade readiness score (0-100)
- * Composite score for UI progress bar and signal entry timing
- * FIX #4 (v7.2.4): Uses live market state instead of old phases
- */
-/**
- * v9.2.0: FIXED Trade Readiness Score
- * 
- * Old formula: Simple sum of components (caused equal scores for different assets)
- * New formula: Weighted blend with emaPressure replacing binary EMA check
- * 
- * Result: BTC (~35-45%), ETH (~45-60%), SOL (~65-80%)
- */
-/**
- * v8.7.0: Canonical helper to detect counter-trend setups
- * Returns true when direction opposes 4H HTF macro trend
- */
-function isCounterTrend(
-  direction: "LONG" | "SHORT" | "NEUTRAL",
-  htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL" | null
-): boolean {
-  if (direction === "NEUTRAL" || !htf4hTrend || htf4hTrend === "NEUTRAL") {
-    return false;
-  }
-  return (direction === "LONG" && htf4hTrend === "BEARISH") ||
-         (direction === "SHORT" && htf4hTrend === "BULLISH");
-}
-
-/**
- * v8.7.0: Check if counter-trend setup qualifies for structural override
- * ONLY allow higher scores IF ALL conditions met:
- * - displacement >= 6 (strong move away from macro)
- * - volatility > 60 (expansion confirming move)
- * - emaAccelerationDelta >= 6 (momentum building)
- * - 15M state = EXPANDING or BREAKOUT_READY
- * - ignitionProbability >= 72 AFTER penalties
- */
-function qualifiesForStructuralOverride(
-  displacement: number | null,
-  volatilityLevel: number | null,
-  emaAccelerationDelta: number | null,
-  execution15mState: string,
-  ignitionProbability: number
-): boolean {
-  return (
-    (displacement ?? 0) >= 6 &&
-    (volatilityLevel ?? 0) > 60 &&
-    (emaAccelerationDelta ?? 0) >= 6 &&
-    (execution15mState === "EXPANDING" || execution15mState === "BREAKOUT_READY") &&
-    ignitionProbability >= 72
-  );
-}
+// v15.0.0: ALL GATING HELPERS DELETED
+// - isCounterTrend DELETED
+// - qualifiesForStructuralOverride DELETED
+// Execution state is derived ONLY from ignition probability
 
 /**
  * v15.0.0: Canonical market structure classification
@@ -952,241 +791,68 @@ function classifyMarketStructure(params: {
 }
 
 /**
- * v15.0.0: Canonical execution state derivation
- * Single source of truth for execution readiness
- * Purely from market structure class and ignition probability
- * No secondary validators, no override functions, no macro gates
+ * v15.0.0 / v9.1.0: Canonical execution state derivation
+ * 
+ * PURE IGNITION-DRIVEN - NO GATING, NO EXCEPTIONS
+ * 
+ * Hard bands (NON-NEGOTIABLE):
+ * - NONE:             ignition < 20
+ * - BUILDING:         ignition 20-59
+ * - ACTIVE_SNIPER:    ignition 60-74  <-- SNIPER STARTS AT 60
+ * - ACTIVE_CONFIRMED: ignition >= 75
+ * 
+ * NO marketClass gating
+ * NO counter-trend suppression
+ * NO conditional overrides
+ * NO hidden logic
+ * 
+ * If ignition >= 60 → SNIPER. Period.
+ * If ignition >= 75 → CONFIRMED. Period.
  */
-function deriveExecutionState(
-  marketClass: MarketStructureClass,
-  ignitionProbability: number
-): SignalState {
-  switch (marketClass) {
-    case "TREND_FOLLOWING":
-      if (ignitionProbability >= 75) return "ACTIVE_CONFIRMED";
-      if (ignitionProbability >= 65) return "ACTIVE_SNIPER";
-      return "BUILDING";
-
-    case "EARLY_REVERSAL":
-      if (ignitionProbability >= 82) return "ACTIVE_SNIPER"; // EARLY_REVERSAL max is ACTIVE_SNIPER (never CONFIRMED)
-      if (ignitionProbability >= 68) return "ACTIVE_SNIPER";
-      return "BUILDING";
-
-    case "COUNTER_TREND":
-      // Counter-trend without elite conditions: max BUILDING
-      return "BUILDING";
-
-    case "TRANSITION":
-      // Incomplete reversal: max BUILDING
-      return "BUILDING";
-
-    case "RANGE":
-      // Rotational: max BUILDING
-      return "BUILDING";
-
-    case "CHOP":
-      // No setup: NONE
-      return "NONE";
-
-    default:
-      return "BUILDING";
-  }
+function deriveExecutionState(ignitionProbability: number): SignalState {
+  if (ignitionProbability >= 75) return "ACTIVE_CONFIRMED";
+  if (ignitionProbability >= 60) return "ACTIVE_SNIPER";
+  if (ignitionProbability >= 20) return "BUILDING";
+  return "NONE";
 }
 
 /**
- * v15.0.0: Canonical readiness derivation
- * Enforced hard bands per execution state
- * Mismatch warnings emitted if readiness contradicts executionState
+ * v15.0.0 / v9.1.0: Canonical readiness derivation
+ * 
+ * Hard bands (match execution state thresholds exactly):
+ * - NONE:             0-19
+ * - BUILDING:         20-59
+ * - ACTIVE_SNIPER:    60-74
+ * - ACTIVE_CONFIRMED: 75-100
+ * 
+ * Readiness = ignition clamped to execution state band
+ * No manipulation, no post-processing
  */
 function deriveReadiness(
   executionState: SignalState,
   ignitionProbability: number
 ): number {
-  let readiness: number;
-
+  // Readiness directly reflects ignition within the state's band
   switch (executionState) {
     case "NONE":
-      readiness = Math.max(0, Math.min(20, Math.floor(ignitionProbability / 5)));
-      break;
+      return Math.max(0, Math.min(19, Math.floor(ignitionProbability)));
 
     case "BUILDING":
-      readiness = Math.max(20, Math.min(64, Math.floor(ignitionProbability * 0.8)));
-      break;
+      return Math.max(20, Math.min(59, Math.floor(ignitionProbability)));
 
     case "ACTIVE_SNIPER":
-      readiness = Math.max(65, Math.min(74, Math.floor(ignitionProbability * 0.9)));
-      break;
+      return Math.max(60, Math.min(74, Math.floor(ignitionProbability)));
 
     case "ACTIVE_CONFIRMED":
-      readiness = Math.max(75, Math.min(100, Math.floor(ignitionProbability * 0.95)));
-      break;
+      return Math.max(75, Math.min(100, Math.floor(ignitionProbability)));
 
     default:
-      readiness = 0;
+      return 0;
   }
-
-  return Math.round(readiness);
 }
 
-function calculateTradeReadinessScore(
-  signalState: SignalState,
-  direction: "LONG" | "SHORT" | "NEUTRAL",
-  htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL" | null,
-  htf1hAlignment: boolean,
-  emaPressure: number,  // v9.2.0: NEW - raw ATR-normalized pressure (no clamping)
-  stochRsi: number | null,
-  volatilityLevel: number | null,
-  execution15mState?: string,  // v8.7.0: For structural override checks
-  ignitionProbability?: number, // v8.7.0: For structural override checks
-  emaAccelerationDelta?: number,  // v8.7.0: For structural override checks
-  displacement?: number  // v8.7.0: For structural override checks
-): number {
-  // Base score for having direction
-  let score = 0;
-  
-  if (direction === "NEUTRAL") {
-    return 0; // No direction = no readiness
-  }
-  
-  // v8.7.0: Check macro structure
-  const counterTrend = isCounterTrend(direction, htf4hTrend);
-  const structuralOverride = counterTrend && qualifiesForStructuralOverride(
-    displacement ?? null,
-    volatilityLevel,
-    emaAccelerationDelta ?? null,
-    execution15mState ?? "CHOP",
-    ignitionProbability ?? 0
-  );
-  
-  // 40 points: Directional confirmation + setup state
-  if (signalState === "CONFIRMED") {
-    score += 40;
-  } else if (signalState === "SNIPER") {
-    score += 35;
-  } else if (signalState === "BUILDING") {
-    score += 20;
-  } else {
-    score += 10; // BUILDING bonus (v13.0.0: was WATCHLIST, now BUILDING covers low-score range)
-  }
-  
-  // 25 points: EMA pressure (multi-timeframe aggregated)
-  // v9.2.0: This is where we see the differences between BTC/ETH/SOL
-  // emaPressure is raw, not clamped, not rounded - captures true momentum difference
-  const emaPressureContribution = Math.max(0, Math.min(25, 12.5 + emaPressure * 10));
-  score += emaPressureContribution;
-  
-  // 20 points: Stoch momentum
-  if (stochRsi !== null) {
-    if (direction === "LONG" && stochRsi < 30) {
-      score += 20; // Oversold on LONG = high readiness
-    } else if (direction === "SHORT" && stochRsi > 70) {
-      score += 20; // Overbought on SHORT = high readiness
-    } else if ((direction === "LONG" && stochRsi > 50) || (direction === "SHORT" && stochRsi < 50)) {
-      score += 10; // Momentum in direction
-    }
-  }
-  
-  // 15 points: Volatility expansion
-  if (volatilityLevel !== null) {
-    if (volatilityLevel > 60) {
-      score += 15; // Strong expansion
-    } else if (volatilityLevel > 40) {
-      score += 8; // Moderate expansion
-    }
-  }
-  
-  // 15 points: HTF alignment bonus (v8.7.0: reduced for counter-trend without override)
-  if (htf4hTrend !== "NEUTRAL" && htf4hTrend !== null) {
-    const directionAligned = (direction === "LONG" && htf4hTrend === "BULLISH") ||
-                              (direction === "SHORT" && htf4hTrend === "BEARISH");
-    if (directionAligned) {
-      score += 15; // Full HTF alignment (trend-following bonus)
-    } else if (counterTrend && structuralOverride) {
-      score += 10; // Partial credit for structural override (reversal unlocked)
-      console.log(`[STRUCTURAL_REVERSAL] Counter-trend setup qualifies for override`);
-    }
-    // No bonus for counter-trend without override
-  }
-  
-  // 5 points: 1H alignment bonus (micro)
-  if (htf1hAlignment) {
-    score += 5;
-  }
-  
-  // v8.7.0: Apply macro-aware readiness cap for counter-trend setups
-  const rawScore = Math.max(0, Math.min(100, score));
-  
-  if (counterTrend && !structuralOverride) {
-    const cappedScore = Math.min(rawScore, 45); // Counter-trend cap: 45% readiness max
-    if (cappedScore < rawScore) {
-      console.log(`[MACRO_CAP] Counter-trend readiness capped at 45% (was ${rawScore.toFixed(1)}%)`);
-    }
-    return cappedScore;
-  }
-  
-  return rawScore;
-}
+// v15.0.0: ALL OLD SCORING FUNCTIONS DELETED - use canonical deriveReadiness only
 
-/**
- * v8.5.0 REFINEMENT: Calculate display score that reflects execution readiness
- * Blends structural quality with ignition probability to avoid psychological confusion
- * 
- * Problem: High structure score + low ignition = confusing (looks ready but isn't)
- * Solution: Weight ignition into final score so display matches user expectations
- * 
- * v8.9.0 SIMPLIFIED FORMULA: displayScore = (structureScore * 0.8) + (ignitionProbability * 0.2)
- * - 80% structural quality (this is what matters for BTC/ETH)
- * - 20% execution probability (informational, not suppressant)
- * 
- * Rationale: BTC/ETH move slower, structure > ignition. Solves BTC/ETH under-triggering.
- */
-/**
- * v9.0.1: FINAL SIMPLIFICATION - displayScore = structureScore only
- * Ignition is internal/debug only, never influences execution decisions
- * v8.7.0: Add macro-aware cap - counter-trend execution capped at 55
- */
-function calculateExecutionReadinessScore(
-  structureScore: number,
-  ignitionProbability: number,
-  direction?: "LONG" | "SHORT" | "NEUTRAL",
-  htf4hTrend?: "BULLISH" | "BEARISH" | "NEUTRAL" | null,
-  displacement?: number | null,
-  volatilityLevel?: number | null,
-  emaAccelerationDelta?: number | null,
-  execution15mState?: string
-): number {
-  let score = structureScore;
-  
-  // v8.7.0: Apply macro-aware execution cap for counter-trend setups
-  if (direction && htf4hTrend && isCounterTrend(direction, htf4hTrend)) {
-    const structuralOverride = qualifiesForStructuralOverride(
-      displacement ?? null,
-      volatilityLevel,
-      emaAccelerationDelta ?? null,
-      execution15mState ?? "CHOP",
-      ignitionProbability
-    );
-    
-    if (!structuralOverride) {
-      const cappedScore = Math.min(score, 55); // Counter-trend execution cap: 55
-      if (cappedScore < score) {
-        console.log(`[MACRO_CAP] Counter-trend execution capped at 55 (was ${score})`);
-      }
-      score = cappedScore;
-    }
-  }
-  
-  return score;
-}
-
-/**
- * Calculate momentum score using event-driven multiplier model
- * v7.1 STABILISATION FIX
- */
-/**
- * v8.6.0: Per-symbol SNIPER ignition thresholds
- * BTC/ETH naturally move slower than alts - lower threshold required
- */
 /**
  * v9.2.0: CRITICAL FIX - Multi-timeframe EMA pressure with ATR normalization
  * 
@@ -1455,9 +1121,9 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     // v7.5.1: Probabilistic 5M ignition with observability
     ignitionProbability: (() => {
       const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf4hTrend, htf1hAlignment, execution15mState); // v8.4.0: added htf4hTrend for macro penalty
-      // Log ignition breakdown for transparency
+      // Log ignition breakdown for transparency (v15.0.0: no macro penalty)
       console.log(
-        `[IGNITION] ${symbol} ${direction}: prob=${result.probability} [Stoch:${result.breakdown.stochComponent} EMA:${result.breakdown.emaComponent} Vol:${result.breakdown.volatilityComponent} Disp:${result.breakdown.displacementComponent} EMAAccel:${result.breakdown.emaAccelerationDelta} Impulse:+${result.breakdown.impulseContinuationBoost} Macro:${result.breakdown.macroPenalty}] | ${result.reason}`
+        `[IGNITION] ${symbol} ${direction}: prob=${result.probability} [Stoch:${result.breakdown.stochComponent} EMA:${result.breakdown.emaComponent} Vol:${result.breakdown.volatilityComponent} Disp:${result.breakdown.displacementComponent} EMAAccel:${result.breakdown.emaAccelerationDelta} Impulse:+${result.breakdown.impulseContinuationBoost}] | ${result.reason}`
       );
       // Store breakdown for debugging
       if (!this) {
@@ -1480,19 +1146,18 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     execution15mState, // v7.2.10: NEW - replaces htf1hTrend display
 
     // Market readiness (v7.2.1)
-    // Market readiness (v7.2.4 FIX #4: Use live market state instead of old phases)
     marketReadinessState: calculateLiveMarketState(direction, emaSlope, stochRsi, volatilityLevel) as any,
-    tradeReadinessScore: calculateTradeReadinessScore("NONE", direction, htf4hTrend, htf1hAlignment, emaPressure, stochRsi, volatilityLevel),
+    tradeReadinessScore: null,  // v15.0.0: Set by canonical pipeline in scanSymbols
     
     // Conditional: Only populate if signal exists (SNIPER/CONFIRMED)
     expectedMovePercent: null,
     targetPrices: null,
     riskReward: null,
     
-    // FIX #1: v11.0.0 - Initialize to BUILDING (default state)
+    // v15.0.0: Initialize to BUILDING (default state) - pipeline will derive actual state
     signalState: "BUILDING",
-    setupClassification: "TREND_FOLLOWING",  // v8.7.0: Will be updated in scanSymbols loop
-    cycleId: `${symbol}-NEUTRAL-B`,  // v12.0.0: Initial cycleId (will be updated in promotion logic)
+    marketClass: "TREND_FOLLOWING",  // v15.0.0: Will be set by classifyMarketStructure in scanSymbols
+    cycleId: `${symbol}-NEUTRAL-B`,  // v12.0.0: Initial cycleId
     lastSignalTime: undefined,
 
     notes: direction !== "NEUTRAL" ? calculateLiveMarketState(direction, emaSlope, stochRsi, volatilityLevel) : "Awaiting momentum ignition",
@@ -1507,13 +1172,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     marketQuality: degraded ? "FALLBACK" : "LIVE",
   };
 
-  // v8.6.0: Compute displayScore now that ignition is available
-  // Never returns 0 unless engine truly has no data
-  const _structureScore = calculateMomentumScore(card);
-  card.displayScore = calculateExecutionReadinessScore(_structureScore, card.ignitionProbability);
-  // v13.0.0 FIX: setupStatus MUST match signalState (no separate derivation)
-  // setupStatus is UI field that mirrors signalState - they represent the same 3-state system
-  card.setupStatus = card.signalState as SymbolCardState["setupStatus"];
-
+  // v15.0.0: displayScore and setupStatus are set by canonical pipeline in scanSymbols
+  // No scoring happens here - just return the card with raw indicators
   return card;
 }
