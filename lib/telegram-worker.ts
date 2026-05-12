@@ -37,66 +37,52 @@ let alertQueue: TelegramAlertJob[] = [];
 let isProcessingAlerts = false;
 
 /**
- * v10.0.0: MASTER FIX - Cycle-based alert deduplication
+ * v11.0.0 SIMPLIFICATION - Pure state-based alert deduplication
  * 
- * Old system: State-based dedup → alerts blocked when state persists
- * New system: Cycle-based dedup → alerts only when cycleId changes
+ * Rule: Alert ONLY on state transition INTO SNIPER or CONFIRMED
  * 
- * This fixes: ETH → SNIPER → alert skipped (state persists)
- * New behavior: ETH → SNIPER (cycleId-A) → alerts sent
- *               ETH stays SNIPER but cycleId changes → alerts sent again (new cycle)
- * 
- * Key: symbol + direction + cycleId
- */
-const alertCycleMemory: Map<string, { prevCycleId: string; lastAlertTime: number }> = new Map();
-
-/**
- * Get memory key for cycle-based deduplication
- */
-function getAlertCycleKey(symbol: string, direction: string): string {
-  return `${symbol}-${direction}`;
-}
-
-/**
- * v10.0.0 MASTER FIX: Enqueue alert based on cycleId changes
- * 
- * Trigger Telegram alert when:
- * ✔ Condition A: state transitions INTO SNIPER (primary)
- * ✔ Condition B: state == SNIPER AND cycleId changes (re-arm trigger)
- * 
- * This ensures:
+ * Behavior:
  * - BTC → BUILDING (no alert)
- * - ETH → SNIPER (alert sent, once per cycle)
- * - SOL → SNIPER (if cycleId changes, re-trigger alert)
+ * - ETH → SNIPER (alert sent once)
+ * - ETH stays SNIPER (no alert, state didn't change)
+ * - ETH → CONFIRMED (alert sent once)
+ * 
+ * Key: symbol only (direction doesn't matter for dedupe)
+ */
+const lastStateBySymbol: Map<string, "BUILDING" | "SNIPER" | "CONFIRMED"> = new Map();
+
+/**
+ * v11.0.0: Simplified enqueueAlert - pure state transition logic
+ * 
+ * NO cycleId, NO complex dedupe, NO re-alert logic
+ * Just: if state changed to SNIPER/CONFIRMED, send alert once
  */
 export function enqueueAlert(job: TelegramAlertJob) {
-  const cycleKey = getAlertCycleKey(job.symbol, job.direction);
-  const cycleMemory = alertCycleMemory.get(cycleKey);
+  const lastState = lastStateBySymbol.get(job.symbol);
+  const currentState = job.signalState as "BUILDING" | "SNIPER" | "CONFIRMED";
   
-  // Only SNIPER and CONFIRMED states can trigger alerts
-  if (job.signalState !== "SNIPER" && job.signalState !== "CONFIRMED") {
-    console.log(`[ALERT_BLOCKED] ${job.symbol} ${job.direction}: signalState=${job.signalState} (only SNIPER/CONFIRMED trigger alerts)`);
+  console.log(`[ALERT_STATE_CHECK] ${job.symbol}: lastState=${lastState || "none"} currentState=${currentState}`);
+  
+  // Only SNIPER and CONFIRMED states trigger alerts
+  if (currentState !== "SNIPER" && currentState !== "CONFIRMED") {
+    console.log(`[ALERT_BLOCKED] ${job.symbol}: state=${currentState} (only SNIPER/CONFIRMED trigger alerts)`);
+    lastStateBySymbol.set(job.symbol, currentState);
     return;
   }
   
-  console.log(`[ALERT_CYCLE_CHECK] ${job.symbol} ${job.direction}: state=${job.signalState} cycleId=${job.card.cycleId} prevCycleId=${cycleMemory?.prevCycleId || "none"}`);
+  // Check if this is a state transition INTO SNIPER or CONFIRMED
+  const isStateTransition = lastState !== currentState;
   
-  // Check if this is a new cycle or first time
-  const cycleChanged = !cycleMemory || cycleMemory.prevCycleId !== job.card.cycleId;
-  
-  if (!cycleChanged) {
-    console.log(`[ALERT_DEDUP_CYCLE] ${job.symbol} ${job.direction}: cycleId persists as ${job.card.cycleId}, skipping duplicate alert`);
+  if (!isStateTransition) {
+    console.log(`[ALERT_DEDUP] ${job.symbol}: state persists as ${currentState}, skipping duplicate alert`);
     return;
   }
   
-  // CYCLE CHANGED or FIRST TIME - queue alert
-  console.log(`[ALERT_CYCLE_TRIGGERED] ${job.symbol} ${job.direction}: cycleId changed (${cycleMemory?.prevCycleId || "first"} → ${job.card.cycleId}), queueing alert`);
+  // STATE TRANSITION INTO SNIPER or CONFIRMED - queue alert
+  console.log(`[ALERT_TRIGGERED] ${job.symbol}: ${lastState || "none"} → ${currentState}, queueing alert`);
   
-  // Update memory with new cycleId
-  alertCycleMemory.set(cycleKey, {
-    prevCycleId: job.card.cycleId,
-    lastAlertTime: Date.now(),
-  });
+  // Update state AFTER checking transition
+  lastStateBySymbol.set(job.symbol, currentState);
   
   // Enqueue for processing
   alertQueue.push(job);

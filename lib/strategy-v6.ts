@@ -31,7 +31,6 @@ export type SymbolCardState = {
   
   // FIX #1: Unified signal state (v7.2.6), extended for v7.2.8, standardized for v7.2.9
   signalState: SignalState;
-  cycleId: string;  // v10.0.0: Setup cycle fingerprint for Telegram re-arm logic (hash of symbol + direction + setup attributes)
   lastSignalTime?: number;
 
   // Momentum indicators (5M)
@@ -157,16 +156,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // New flow: promote → generate → done
     
     // STEP 1: Determine if this trade should execute
-    // v10.0.0: Calculate cycleId (setup fingerprint for Telegram re-arm logic)
-    // cycleId changes when: symbol, direction, or setup type changes
-    // Format: symbol-direction-setupVersion
-    const setupVersion = (score >= 80 ? "C" : (score >= 65 ? "S" : "B")); // C=CONFIRMED, S=SNIPER, B=BUILDING
-    const cycleId = `${symbol}-${card.direction}-${setupVersion}`;
-    card.cycleId = cycleId;
-    
-    // v10.0.0: SIMPLIFIED 3-STATE SYSTEM
-    // ONLY states: BUILDING, SNIPER, CONFIRMED
-    // NO WATCHLIST, NO ACTIVE_SNIPER, NO ACTIVE_CONFIRMED
+    // v11.0.0: Simplified - no cycleId, pure state-based alerts
     
     const ltfAligned =
       (card.direction === "LONG" && card.ltfBias === "BULLISH") ||
@@ -234,11 +224,11 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     }
     // NO SETUP
     else {
-      card.signalState = "NONE";
+      card.signalState = "BUILDING";
       card.mode = "NONE";
     }
     
-    console.log(`[PROMOTION] ${symbol} score=${score} → signalState=${card.signalState} mode=${card.mode} cycleId=${card.cycleId}`);
+    console.log(`[PROMOTION] ${symbol} score=${score} → signalState=${card.signalState} mode=${card.mode}`);
 
     // STEP 2: Generate setups for executable trades (SNIPER and CONFIRMED only)
     // v10.0.0: Simplified from 5 states - only 2 states trigger setups
