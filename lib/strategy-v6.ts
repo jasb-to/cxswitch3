@@ -73,8 +73,8 @@ export type SymbolCardState = {
   // Derived from engine internals — never raw jargon on primary UI
   displayScore: number;           // Blended setup score (structure 60% + ignition 40%), always 0-100
   setupStatus: "NO SETUP" | "WATCHLIST" | "BUILDING" | "SNIPER" | "CONFIRMED";
-  htfBias: "BULLISH" | "BEARISH" | "NEUTRAL" | "TRANSITIONAL" | "WEAKENING" | "REVERSAL WATCH";
-  ltfBias: "BULLISH" | "BEARISH" | "NEUTRAL" | "TRANSITIONAL" | "WEAKENING" | "REVERSAL WATCH";
+  htfBias: "BULLISH" | "BEARISH" | "NEUTRAL";
+  ltfBias: "BULLISH" | "BEARISH" | "NEUTRAL";
   marketQuality: "LIVE" | "FALLBACK"; // Whether price is from Kraken live or degraded source
 
   // v7.5.1: OBSERVABILITY LAYER - Why signals didn't fire
@@ -144,7 +144,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // Display score now represents "actual readiness to trade"
     const score = calculateExecutionReadinessScore(structureScore, card.ignitionProbability);
     
-    console.log(`[SCAN] ${symbol} score=${score} (structure=${structureScore} ignition=${card.ignitionProbability}) direction=${card.direction} stoch=${card.stochRsi.toFixed(1)} emaSlope=${card.emaSlope.toFixed(2)}`);
+    console.log(`[SCAN] ${symbol} score=${score} direction=${card.direction} stoch=${card.stochRsi.toFixed(1)} emaSlope=${card.emaSlope.toFixed(2)} htf=${card.htf4hTrend}`);
 
     // ONLY generate setups with directional conviction
     // NO NEUTRAL SIGNALS ALLOWED
@@ -247,22 +247,16 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         blockReason = `Score ${score} below SNIPER floor (< 55)`;
       } else if (card.execution15mState === "CHOP" || card.execution15mState === "COMPRESSING") {
         blockReason = `15M ${card.execution15mState} - not ready`;
-      } else if (card.ignitionProbability < 65) {
-        blockReason = `Ignition prob=${card.ignitionProbability} (< 65 SNIPER threshold)`;
-      } else if (card.ignitionProbability < 75) {
-        blockReason = `Ignition prob=${card.ignitionProbability} - ACTIVE_SNIPER ready (65-74) but awaiting 75+ for CONFIRMED`;
       } else if (score < 70) {
-        blockReason = `Score ${score} below CONFIRMED floor (< 70)`;
+        blockReason = `Score ${score} below SNIPER threshold (70)`;
       } else {
         blockReason = "Conditions met but mode=NONE";
       }
       
       card.blockReason = blockReason;
       
-      // v7.3.2 FIX #4: Simplified signal state calculation
-      // v8.8.0: Use symbol-specific CONFIRMED threshold
-      const confirmedThresholdSignal = CONFIRMED_IGNITION_THRESHOLDS[card.symbol] ?? 75;
-      const confirmedPassed = score >= confirmedThresholdSignal && checkConfirmedConditions(card);
+      // v9.0.1: Simplified CONFIRMED check - score >= 80 + HTF aligned
+      const confirmedPassed = score >= 80 && card.direction !== "NEUTRAL" && card.htf4hTrend !== "NEUTRAL";
       
       card.signalState = calculateSignalState(
         "NONE", 
@@ -1094,8 +1088,12 @@ function calculateTradeReadinessScore(
  * 
  * Rationale: BTC/ETH move slower, structure > ignition. Solves BTC/ETH under-triggering.
  */
+/**
+ * v9.0.1: FINAL SIMPLIFICATION - displayScore = structureScore only
+ * Ignition is internal/debug only, never influences execution decisions
+ */
 function calculateExecutionReadinessScore(structureScore: number, ignitionProbability: number): number {
-  return Math.round(structureScore * 0.8 + ignitionProbability * 0.2);
+  return structureScore;
 }
 
 /**
@@ -1107,29 +1105,16 @@ function calculateExecutionReadinessScore(structureScore: number, ignitionProbab
  * BTC/ETH naturally move slower than alts - lower threshold required
  */
 /**
- * v8.6.0: Map engine internals to human-readable HTF bias
- * "DIVERGENT -4" → "WEAKENING", "EMA conflict" → "TRANSITIONAL", etc.
+ * v9.0.1: Simplified bias derivation - only BULLISH/BEARISH/NEUTRAL
+ * Trader should instantly understand direction without complex state labels
  */
 function deriveHtfBias(
   htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL",
   htf1hAlignment: boolean | null,
   emaSlope: number | null
 ): SymbolCardState["htfBias"] {
-  const slope = emaSlope ?? 0;
-
-  if (htf4hTrend === "BULLISH") {
-    if (htf1hAlignment === false && slope < 0) return "WEAKENING";
-    if (htf1hAlignment === false) return "TRANSITIONAL";
-    return "BULLISH";
-  }
-  if (htf4hTrend === "BEARISH") {
-    if (htf1hAlignment === false && slope > 0) return "REVERSAL WATCH";
-    if (htf1hAlignment === false) return "TRANSITIONAL";
-    return "BEARISH";
-  }
-  // NEUTRAL 4H
-  if (Math.abs(slope) > 0.3) return "TRANSITIONAL";
-  return "NEUTRAL";
+  // Simple: return 4H trend as-is, no intermediate states
+  return htf4hTrend;
 }
 
 /**
@@ -1142,8 +1127,8 @@ function deriveLtfBias(
   if (direction === "NEUTRAL") return "NEUTRAL";
   switch (execution15mState) {
     case "EXPANDING":    return direction === "LONG" ? "BULLISH" : "BEARISH";
-    case "BREAKOUT_READY": return "TRANSITIONAL";
-    case "COMPRESSING": return "WEAKENING";
+    case "BREAKOUT_READY": return direction === "LONG" ? "BULLISH" : "BEARISH";
+    case "COMPRESSING": return "NEUTRAL";
     case "CHOP":        return "NEUTRAL";
     default:            return "NEUTRAL";
   }
