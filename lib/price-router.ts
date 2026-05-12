@@ -243,7 +243,20 @@ async function getPriceFromKraken(symbol: string, isRetry: boolean = false): Pro
             throw lastError;
           }
 
-          const tickerData = data.result?.[krakenTicker];
+          // v8.8.0 PHASE 2 + PHASE 3: Universal parsing with debug logging
+          // Debug: Log raw response keys for diagnosis
+          const resultKeys = Object.keys(data.result || {}).filter(k => k !== "last");
+          console.log(`[KRAKEN_DEBUG] ${base}: requestedPair="${krakenTicker}", returnedKeys=[${resultKeys.join(", ")}]`);
+          
+          // Universal: Try exact match first, then fallback to first key
+          let tickerData = data.result?.[krakenTicker];
+          if (!tickerData && resultKeys.length > 0) {
+            // Fallback to first returned key if exact match fails
+            const actualKey = resultKeys[0];
+            tickerData = data.result[actualKey];
+            console.log(`[KRAKEN_DEBUG] ${base}: Exact match failed, using fallback key "${actualKey}"`);
+          }
+          
           if (!tickerData) {
             // CRITICAL: Empty response is pattern indicating persistent missing data
             lastError = new Error("No ticker data returned");
