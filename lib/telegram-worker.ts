@@ -118,55 +118,34 @@ async function processAlertQueueAsync() {
       if (!job) break;
 
       try {
-        // v7.3.1 FIX #1: HARD TELEGRAM EXECUTION GATE
-        // ONLY send for ACTIVE_SNIPER or ACTIVE_CONFIRMED
-        // Never send for setup phases (SNIPER_IMMINENT, SNIPER_READY, CONFIRMED_READY, BUILDING)
-        const isExecutableSignal =
-          job.signalState === "ACTIVE_SNIPER" ||
-          job.signalState === "ACTIVE_CONFIRMED";
+        // v13.0.0: TELEGRAM EXECUTION FIX - REMOVE EXECUTION GATING
+        // Telegram is ONLY a notification layer
+        // State filtering already done in shouldSendAlert()
+        // Proceed directly to validation
         
-        console.log(`[ALERT_PROCESSING] ${job.symbol} ${job.direction}: signalState=${job.signalState}, mode=${job.mode}, isExecutable=${isExecutableSignal}, card.signalState=${job.card.signalState}`);
-
-        if (!isExecutableSignal) {
-          console.log(
-            `[TELEGRAM_BLOCKED] ${job.symbol}: ${job.signalState} is UI-only (not executable)`
-          );
-          // Don't requeue - UI-only states are not for Telegram
-          continue;
-        }
-
-        // v7.4.0 FIX #3: DIFFERENTIATE HTF VALIDATION BY SIGNAL TYPE
-        // SNIPER: No 4H requirement (uses 1H only), looser HTF checks
-        // CONFIRMED: Strict 4H requirement (caught by signal state, but double-check)
-        const htfValidationErrors: string[] = [];
+        console.log(`[ALERT_PROCESSING] ${job.symbol} ${job.direction}: signalState=${job.signalState} cycleId=${job.card.cycleId}`);
+        // v13.0.0: MINIMAL PAYLOAD VALIDATION (no execution-specific checks)
+        // Just verify we have complete price/target data for formatting
+        const validationErrors: string[] = [];
         
-        if (job.mode === "CONFIRMED") {
-          // CONFIRMED must have valid 4H trend (v7.4.0: strict requirement)
-          if (!job.htf4hTrend || job.htf4hTrend === "NEUTRAL") {
-            htfValidationErrors.push("4H trend NEUTRAL (CONFIRMED requires 4H)");
-          }
-        }
-        // v7.4.0: SNIPER no longer checks 4H, only 15M execution state
-        
-        // Check: 15M execution state must be valid (for both SNIPER and CONFIRMED)
+        // Check: 15M execution state must be valid
         if (!job.execution15mState || job.execution15mState === "CHOP" || job.execution15mState === "COMPRESSING") {
-          htfValidationErrors.push(`15M ${job.execution15mState || "undefined"}`);
+          validationErrors.push(`15M state=${job.execution15mState || "undefined"}`);
         }
         
         // Check: Price source must not be fallback (CoinGecko)
         if (job.source === "coingecko") {
-          htfValidationErrors.push("fallback price source CoinGecko");
+          validationErrors.push("fallback price source (CoinGecko)");
         }
         
-        if (htfValidationErrors.length > 0) {
+        if (validationErrors.length > 0) {
           console.log(
-            `[ALERT_REJECTED] ${job.symbol}: HTF validation failed - ${htfValidationErrors.join(", ")}`
+            `[ALERT_VALIDATION_WARNING] ${job.symbol}: ${validationErrors.join(", ")} (proceeding anyway)`
           );
-          continue;
+          // v13.0.0: Don't block on validation warnings - Telegram is notification-only
         }
 
-        // v7.3.1 FIX #2: BLOCK INVALID PAYLOADS
-        // Validate completeness before Telegram formatting
+        // v13.0.0: CHECK PAYLOAD COMPLETENESS (warn but don't block)
         if (
           job.score == null ||
           Number.isNaN(job.score) ||
@@ -176,10 +155,9 @@ async function processAlertQueueAsync() {
           !job.targetPrices?.sl
         ) {
           console.log(
-            `[ALERT_REJECTED] ${job.symbol}: incomplete execution payload (score=${job.score}, price=${job.price}, tp1=${job.targetPrices?.tp1})`
+            `[ALERT_PAYLOAD_INCOMPLETE] ${job.symbol}: missing data (score=${job.score}, price=${job.price}, tp1=${job.targetPrices?.tp1})`
           );
-          // Don't requeue - malformed payload should not retry
-          continue;
+          // v13.0.0: Telegram proceeds anyway - notification-only layer
         }
 
         // Check cooldown
