@@ -148,21 +148,56 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 
     // ONLY generate setups with directional conviction
     // NO NEUTRAL SIGNALS ALLOWED
-
-    // CONFIRMED ALERT: v9.0.2 - score >= 80 AND HTF aligned AND volume expanding
-    // CONFIRMED requires HTF confirmation (unlike SNIPER which uses LTF only)
+    
+    // v9.1.0 CRITICAL FIX: Promote signalState FIRST, then generate setups based on it
+    // Old flow: setup gen waits for signalState that's calculated AFTER
+    // New flow: promote → generate → done
+    
+    // STEP 1: Determine if this trade should execute
+    const ltfAligned =
+      (card.direction === "LONG" && card.ltfBias === "BULLISH") ||
+      (card.direction === "SHORT" && card.ltfBias === "BEARISH");
+    
     const htfAlignedConfirmed =
       (card.direction === "LONG" && card.htfBias === "BULLISH") ||
       (card.direction === "SHORT" && card.htfBias === "BEARISH");
     
     const volumeExpanding = card.execution15mState === "EXPANDING";
+    const notChop = card.execution15mState !== "CHOP";
     
+    // CONFIRMED: score >= 80 AND HTF aligned AND volume expanding
     if (score >= 80 && card.direction !== "NEUTRAL" && htfAlignedConfirmed && volumeExpanding) {
+      card.signalState = "ACTIVE_CONFIRMED";
       card.mode = "CONFIRMED";
+    }
+    // SNIPER: score >= 65 AND LTF aligned AND not in CHOP
+    else if (score >= 65 && card.direction !== "NEUTRAL" && ltfAligned && notChop) {
+      card.signalState = "ACTIVE_SNIPER";
+      card.mode = "SNIPER";
+    }
+    // BUILDING: score >= 55 AND direction valid
+    else if (score >= 55 && card.direction !== "NEUTRAL") {
+      card.signalState = "BUILDING";
+      card.mode = "NONE";
+    }
+    // WATCHLIST: score >= 40
+    else if (score >= 40) {
+      card.signalState = "WATCHLIST";
+      card.mode = "NONE";
+    }
+    // NO SETUP
+    else {
+      card.signalState = "NONE";
+      card.mode = "NONE";
+    }
+    
+    console.log(`[PROMOTION] ${symbol} score=${score} → signalState=${card.signalState} mode=${card.mode}`);
+
+    // STEP 2: Generate setups for executable trades
+    if (card.signalState === "ACTIVE_CONFIRMED") {
       card.confidence = Math.min(score, 99);
       card.lastSignalTime = Date.now();
-      card.signalState = "ACTIVE_CONFIRMED"; // FIX #1: Set unified signal state
-      card.notes = `CONFIRMED ${card.direction} trend continuation ${score}`;
+      card.notes = `CONFIRMED ${card.direction} - HTF aligned + volume expanding`;
       
       // Populate trade targets (v7.2.1)
       const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
@@ -178,7 +213,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         mode: "CONFIRMED",
         direction: card.direction,
         score: card.confidence,
-        reason: `CONFIRMED ${card.direction} - EMA + impulse + HTF alignment`,
+        reason: `CONFIRMED ${card.direction} - HTF aligned + volume expanding`,
         price: card.price,
         momentum: {
           stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
@@ -187,19 +222,13 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
           trend4H: (card.stochRsi ?? 50) > 50,
         },
       });
-      console.log(`[ALERT] ${symbol} CONFIRMED ${card.direction} score=${score}`);
+      console.log(`[EXECUTION_READY] ${symbol} ACTIVE_CONFIRMED ${card.direction} | score=${score} HTF:${card.htfBias} vol:${card.execution15mState}`);
     }
-    // SNIPER ALERT: v9.0.2 - Always generate setup when signalState is ACTIVE_SNIPER
-    // Simplified from: score >= 70 + checkSniperConditions + executeValidation
-    // Now: If validateActiveSniperExecution passes, setup is generated
+    // SNIPER ALERT: v9.1.0 - Generate setup when signalState is ACTIVE_SNIPER
     else if (card.signalState === "ACTIVE_SNIPER") {
-      // v9.0.2: signalState already set by promotion logic above
-      // Just generate the setup payload (no additional validation needed)
-      card.mode = "SNIPER";
       card.confidence = Math.min(score, 99);
       card.lastSignalTime = Date.now();
-      console.log(`[SNIPER] ${symbol} ${card.direction} score=${score}`);
-      card.notes = `SNIPER ${card.direction} execution ready`;
+      card.notes = `SNIPER ${card.direction} - LTF aligned, execution ready`;
       
       // Populate trade targets
       const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
@@ -215,20 +244,20 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         mode: "SNIPER",
         direction: card.direction,
         score: card.confidence,
-          reason: `SNIPER ${card.direction} - execution ready`,
-          price: card.price,
-          momentum: {
-            stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
-            emaStackSignal: card.direction === "LONG" ? "8 EMA accelerating up" : "8 EMA accelerating down",
-            volatilitySignal: (card.volatilityLevel ?? 40) > 45 ? "Expansion beginning" : "Structure forming",
-            trend4H: card.htf4hTrend !== "NEUTRAL",
-          },
-        });
-        console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | LTF:${card.ltfBias}`);
+        reason: `SNIPER ${card.direction} - LTF aligned, execution ready`,
+        price: card.price,
+        momentum: {
+          stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
+          emaStackSignal: card.direction === "LONG" ? "8 EMA accelerating up" : "8 EMA accelerating down",
+          volatilitySignal: (card.volatilityLevel ?? 40) > 45 ? "Expansion beginning" : "Structure forming",
+          trend4H: card.htf4hTrend !== "NEUTRAL",
+        },
+      });
+      console.log(`[EXECUTION_READY] ${symbol} ACTIVE_SNIPER ${card.direction} | score=${score} LTF:${card.ltfBias} 15M:${card.execution15mState}`);
     }
     else {
-      // v7.5.3: Update block reason for clean 3-state architecture
-      // Determine WHY signal didn't fire with new thresholds
+      // v9.1.0: No setup generated - but card state still reflects signalState
+      // blockReason helps UI explain why this symbol isn't trading
       let blockReason = "No trade conditions met";
       
       if (card.direction === "NEUTRAL") {
@@ -236,31 +265,17 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       } else if (score < 40) {
         blockReason = `Score ${score} too low (< 40)`;
       } else if (score < 55) {
-        blockReason = `Score ${score} below SNIPER floor (< 65)`;
+        blockReason = `Score ${score} below BUILDING floor (< 55)`;
       } else if (score < 65) {
-        blockReason = `Score ${score} below SNIPER threshold (65)`;
+        blockReason = `Score ${score} below SNIPER threshold (65) - awaiting LTF alignment`;
+      } else if (card.signalState === "BUILDING") {
+        blockReason = `BUILDING - LTF not aligned with direction yet`;
       } else {
-        blockReason = "Conditions met but mode=NONE";
+        blockReason = `${card.signalState} - conditions not met for execution`;
       }
       
       card.blockReason = blockReason;
-      
-      // v9.0.1: Simplified CONFIRMED check - score >= 80 + HTF aligned
-      const confirmedPassed = score >= 80 && card.direction !== "NEUTRAL" && card.htf4hTrend !== "NEUTRAL";
-      
-      card.signalState = calculateSignalState(
-        "NONE", 
-        score, 
-        card.direction,
-        card.htf4hTrend,
-        false, // sniperPassed (not used in v7.3.2)
-        confirmedPassed,
-        card.ignitionProbability, // v7.5.0: Pass ignition probability for state determination
-        card.lastSignalTime, 
-        "NONE"
-      );
-      // v7.5.3: Log observability data with clean 3-state thresholds
-      console.log(`[BLOCK] ${symbol} ${card.signalState} | score=${score} ignition=${card.ignitionProbability} | reason: ${card.blockReason}`);
+      console.log(`[BUILD] ${symbol} ${card.signalState} | score=${score} | reason: ${card.blockReason}`);
     }
   }
 
