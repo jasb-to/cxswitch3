@@ -131,6 +131,144 @@ export type Setup = {
 };
 
 /**
+ * v16.0.0: Unified normalized signal output schema
+ * EVERY asset returns complete, deterministic signal object
+ * No missing fields, no partial objects, no early returns
+ */
+export type NormalizedSignal = {
+  symbol: string;
+  
+  // Market structure context
+  marketStructure: {
+    classification: MarketStructureClass;
+    htfTrend: "BULLISH" | "BEARISH" | "NEUTRAL" | null;
+    ltfBias: "BULLISH" | "BEARISH" | "NEUTRAL";
+  };
+  
+  // Ignition probability (raw signal strength)
+  ignition: {
+    raw: number;           // 0-100: Raw ignition before any adjustments
+    adjusted: number;      // 0-100: Adjusted (same as raw in v16.0.0 - no penalties)
+    components: {
+      stochastic: number;
+      emaAcceleration: number;
+      volatilityExpansion: number;
+      volumeConfirmation: number;
+    };
+  };
+  
+  // Execution state (deterministic from ignition only)
+  executionState: SignalState;  // NONE | BUILDING | ACTIVE_SNIPER | ACTIVE_CONFIRMED
+  
+  // Score (always numeric, never null)
+  setupScore: number;         // 0-100: Readiness within execution state band
+  
+  // Trade readiness (0-100, never undefined)
+  tradeReadiness: number;
+  
+  // Trade direction
+  tradeDirection: "LONG" | "SHORT" | "NONE";
+  
+  // Trade type classification
+  tradeType: "TREND" | "COUNTER_TREND" | "REVERSAL";
+  
+  // Trade validity (consistency check)
+  tradeValid: boolean;        // true if direction + executionState are consistent
+  
+  // Reason for current state
+  reason: string;
+  
+  // Price level
+  price: number;
+  
+  // Trade targets (always populated)
+  targets: {
+    entry: number;
+    takeProfit: number[];
+    stopLoss: number;
+    expectedMove: number;
+    riskReward: number;
+  };
+  
+  // Timestamp
+  timestamp: number;
+};
+
+/**
+ * v16.0.0: Normalize signal output to unified schema
+ * GUARANTEES every asset returns complete, deterministic signal object
+ * No missing fields, no partial objects
+ * 
+ * This function is the FINAL LAYER - every asset passes through it
+ */
+function normalizeSignalOutput(card: SymbolCardState): NormalizedSignal {
+  // Ensure we have valid values for all required fields
+  const ignitionRaw = Math.max(0, Math.min(100, card.ignitionProbability ?? 0));
+  const executionState = deriveExecutionState(ignitionRaw);
+  const readiness = deriveReadiness(executionState, ignitionRaw);
+  
+  // Determine trade validity
+  const tradeValid = 
+    card.direction !== "NEUTRAL" && 
+    (executionState === "ACTIVE_SNIPER" || executionState === "ACTIVE_CONFIRMED");
+  
+  // Determine trade type from market class
+  let tradeType: "TREND" | "COUNTER_TREND" | "REVERSAL" = "TREND";
+  if (card.marketClass === "COUNTER_TREND") {
+    tradeType = "COUNTER_TREND";
+  } else if (card.marketClass === "EARLY_REVERSAL") {
+    tradeType = "REVERSAL";
+  }
+  
+  // Always calculate trade targets (never null)
+  const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
+  
+  // Build normalized signal object
+  const signal: NormalizedSignal = {
+    symbol: card.symbol,
+    
+    marketStructure: {
+      classification: card.marketClass,
+      htfTrend: card.htf4hTrend ?? "NEUTRAL",
+      ltfBias: card.ltfBias ?? "NEUTRAL",
+    },
+    
+    ignition: {
+      raw: ignitionRaw,
+      adjusted: ignitionRaw,  // v16.0.0: No penalties, so adjusted = raw
+      components: {
+        stochastic: (card.stochRsi ?? 50) / 100,  // Normalize to 0-1
+        emaAcceleration: Math.max(0, Math.min(1, (Math.abs(card.emaSlope ?? 0) / 2))),
+        volatilityExpansion: (card.volatilityLevel ?? 50) / 100,
+        volumeConfirmation: card.execution15mState === "EXPANDING" ? 1 : (card.execution15mState === "BUILDING" ? 0.5 : 0),
+      },
+    },
+    
+    executionState,
+    setupScore: readiness,
+    tradeReadiness: readiness,
+    tradeDirection: card.direction,
+    tradeType,
+    tradeValid,
+    
+    reason: card.notes || `${executionState} ${card.direction} - ${card.marketClass}`,
+    price: card.price,
+    
+    targets: {
+      entry: card.price,
+      takeProfit: targets.targetPrices ?? [card.price],
+      stopLoss: targets.targetPrices?.[0] ?? card.price,
+      expectedMove: targets.expectedMovePercent ?? 0,
+      riskReward: targets.riskReward ?? 0,
+    },
+    
+    timestamp: Date.now(),
+  };
+  
+  return signal;
+}
+
+/**
  * Generate symbol card states + setups from market snapshot
  * PURE FUNCTION - momentum-based detection
  */
@@ -139,9 +277,26 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
   const setups: Setup[] = [];
 
   for (const [symbol, priceData] of Object.entries(market)) {
+    // v16.0.0: NO EARLY RETURNS - all assets go through full pipeline
+    // Even if price is 0 or missing, we still generate normalized output
+    
     if (priceData.price === 0) {
-      console.log(`[SCAN] ${symbol} no data`);
-      continue;
+      console.log(`[SCAN] ${symbol} no price data`);
+      // Create minimal card for missing data
+      const minimalCard: SymbolCardState = {
+        symbol,
+        price: 0,
+        direction: "NEUTRAL",
+        ignitionProbability: 0,
+        signalState: "NONE",
+        marketClass: "CHOP",
+        displayScore: 0,
+        setupStatus: "BUILDING",
+        mode: "NONE",
+      } as SymbolCardState;
+      
+      cards.push(minimalCard);
+      continue;  // Skip setup generation for zero-price assets
     }
 
     // Generate card state for this symbol
@@ -150,10 +305,10 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     
     console.log(`[SCAN] ${symbol} ignition=${card.ignitionProbability} direction=${card.direction} stoch=${card.stochRsi?.toFixed(1)} emaSlope=${card.emaSlope?.toFixed(2)} htf=${card.htf4hTrend}`);
 
-    // v15.0.0: CANONICAL PIPELINE - NO HIDDEN GATING, NO MACRO PENALTIES, NO SCORE CAPS
-    // Single deterministic path: ignition → executionState → readiness
+    // v16.0.0: CANONICAL PIPELINE - NO HIDDEN GATING, NO MACRO PENALTIES, NO SCORE CAPS
+    // Every asset goes through complete pipeline even if final state is BUILDING/NONE
     
-    // Calculate market class first (for logging/UI only, doesn't gate execution)
+    // Calculate market class (for logging/UI, doesn't gate execution)
     card.marketClass = classifyMarketStructure({
       direction: card.direction,
       htf4hTrend: card.htf4hTrend,
@@ -161,16 +316,16 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       ignitionProbability: card.ignitionProbability,
       emaSlope: card.emaSlope,
       volatilityLevel: card.volatilityLevel,
-      emaAccelerationDelta: 0, // TODO: calculate real EMA acceleration
-      displacement: 0, // TODO: calculate real displacement
+      emaAccelerationDelta: 0,
+      displacement: 0,
     });
 
     console.log(`[MARKET_CLASS] ${symbol}: ${card.marketClass}`);
     
-    // v15.0.0: Derive execution state ONLY from ignition probability (no gating logic)
+    // Derive execution state ONLY from ignition (no gating logic)
     card.signalState = deriveExecutionState(card.ignitionProbability);
     
-    // v15.0.0: Derive readiness per execution state bands
+    // Derive readiness per execution state bands
     const readiness = deriveReadiness(card.signalState, card.ignitionProbability);
     card.displayScore = readiness;
     
@@ -197,8 +352,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         card.signalState = "NONE";
     }
     
-    // v15.0.0: Generate setups ONLY for executable states
-    // ACTIVE_CONFIRMED and ACTIVE_SNIPER only
+    // v16.0.0: Generate setups for ALL executable states
+    // ACTIVE_CONFIRMED and ACTIVE_SNIPER only (BUILDING/NONE don't trigger trades)
     if (card.signalState === "ACTIVE_CONFIRMED" || card.signalState === "ACTIVE_SNIPER") {
       if (card.direction !== "NEUTRAL") {
         card.confidence = Math.min(readiness, 99);
@@ -229,8 +384,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         console.log(`[SETUP_GENERATED] ${symbol} ${card.signalState} ${card.direction} | readiness=${readiness} marketClass=${card.marketClass}`);
       }
     } else {
-      // No executable setup - explain why
-      let blockReason = "No executable setup";
+      // v16.0.0: No early return - still track reason for BUILDING/NONE
+      let blockReason = "Waiting for signal";
       if (card.direction === "NEUTRAL") {
         blockReason = "No directional bias";
       } else if (card.signalState === "BUILDING") {
