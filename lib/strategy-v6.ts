@@ -1480,7 +1480,9 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   // Never returns 0 unless engine truly has no data
   const _structureScore = calculateMomentumScore(card);
   card.displayScore = calculateExecutionReadinessScore(_structureScore, card.ignitionProbability);
-  card.setupStatus = deriveSetupStatus(card.displayScore, card.signalState);
+  // v13.0.0 FIX: setupStatus MUST match signalState (no separate derivation)
+  // setupStatus is UI field that mirrors signalState - they represent the same 3-state system
+  card.setupStatus = card.signalState as SymbolCardState["setupStatus"];
 
   return card;
 }
