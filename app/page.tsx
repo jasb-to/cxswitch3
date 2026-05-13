@@ -5,7 +5,7 @@ import { useState, useEffect } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v17.0.0";
+const VERSION = "v17.1.0";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load - minimal data, no fakes
@@ -148,55 +148,103 @@ function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-// v8.6.0: Human-readable bias colors
-function biasColor(bias: string): string {
-  if (bias === "BULLISH")        return "text-green-400";
-  if (bias === "BEARISH")        return "text-red-400";
-  return "text-zinc-400";
-}
+/**
+ * v17.1.0: PURE SNAPSHOT RENDERER - SINGLE CANONICAL STATE SOURCE
+ * 
+ * UI renders snapshot directly with NO state derivation.
+ * Only signalState determines EVERYTHING shown:
+ * - Badge label (BUILDING/SNIPER/CONFIRMED)
+ * - Border color (amber/cyan/green)
+ * - Display score (calculated from signalState only)
+ * - Trade readiness (calculated from signalState only)
+ * - Rendering flags (renderable/hasActiveTrade)
+ * 
+ * NO parallel systems. NO independent derivations. NO cross-field logic.
+ */
 
-// v8.6.0: Setup status → border/badge palette
-function statusPalette(status: string) {
-  switch (status) {
-    case "CONFIRMED": return { border: "border-green-500",  badge: "bg-green-950 text-green-300 border-green-700",  dot: "bg-green-400" };
-    case "SNIPER":    return { border: "border-cyan-500",   badge: "bg-cyan-950 text-cyan-300 border-cyan-700",     dot: "bg-cyan-400"  };
-    case "BUILDING":  return { border: "border-amber-600",  badge: "bg-amber-950 text-amber-300 border-amber-700",  dot: "bg-amber-400" };
-    default:          return { border: "border-zinc-800",   badge: "bg-zinc-900 text-zinc-500 border-zinc-700",     dot: "bg-zinc-600"  };
+// v17.1.0: SINGLE STATE AUTHORITY - signalState determines all UI
+function getCardDisplay(card: SymbolCardState) {
+  const state = card.signalState || "NONE";
+  
+  // Derive EVERYTHING ONLY from signalState
+  let statusLabel: string;
+  let borderClass: string;
+  let badgeClass: string;
+  let dotClass: string;
+  let displayScore: number;
+  let readinessBarColor: string;
+  
+  // v17.1.0: State-only derivation
+  switch (state) {
+    case "ACTIVE_CONFIRMED":
+      statusLabel = "CONFIRMED";
+      borderClass = "border-green-500";
+      badgeClass = "bg-green-950 text-green-300 border-green-700";
+      dotClass = "bg-green-400";
+      displayScore = card.tradeReadinessScore ?? 80;
+      readinessBarColor = "bg-green-500";
+      break;
+      
+    case "ACTIVE_SNIPER":
+      statusLabel = "SNIPER";
+      borderClass = "border-cyan-500";
+      badgeClass = "bg-cyan-950 text-cyan-300 border-cyan-700";
+      dotClass = "bg-cyan-400";
+      displayScore = card.tradeReadinessScore ?? 65;
+      readinessBarColor = "bg-cyan-500";
+      break;
+      
+    case "BUILDING":
+      statusLabel = "BUILDING";
+      borderClass = "border-amber-600";
+      badgeClass = "bg-amber-950 text-amber-300 border-amber-700";
+      dotClass = "bg-amber-400";
+      displayScore = card.tradeReadinessScore ?? 40;
+      readinessBarColor = "bg-amber-500";
+      break;
+      
+    default: // NONE
+      statusLabel = "NO SETUP";
+      borderClass = "border-zinc-800";
+      badgeClass = "bg-zinc-900 text-zinc-500 border-zinc-700";
+      dotClass = "bg-zinc-600";
+      displayScore = 0;
+      readinessBarColor = "bg-zinc-600";
+      break;
   }
-}
-
-// v8.6.0: Setup score interpretation label
-function scoreInterpretation(score: number): { label: string; color: string } {
-  if (score >= 85) return { label: "CONFIRMED",   color: "text-green-400" };
-  if (score >= 70) return { label: "SNIPER",      color: "text-cyan-400"  };
-  if (score >= 55) return { label: "BUILDING",    color: "text-amber-400" };
-  return               { label: "LOW QUALITY",  color: "text-zinc-600"  };
+  
+  return {
+    statusLabel,
+    borderClass,
+    badgeClass,
+    dotClass,
+    displayScore,
+    readinessBarColor,
+    renderable: ["BUILDING", "ACTIVE_SNIPER", "ACTIVE_CONFIRMED"].includes(state),
+    hasActiveTrade: ["ACTIVE_SNIPER", "ACTIVE_CONFIRMED"].includes(state),
+    isActive: state !== "NONE",
+  };
 }
 
 function SymbolCard({ card }: { card: SymbolCardState }) {
   const isLoading = card.source === "bootstrap";
-  // v10.0.0: Only SNIPER and CONFIRMED show trade targets
-  const isActiveSignal = card.signalState === "ACTIVE_SNIPER" || card.signalState === "ACTIVE_CONFIRMED";
+  
+  // v17.1.0: Get EVERYTHING from signalState only
+  const display = getCardDisplay(card);
+  
+  // v17.1.0: Bias colors (from htfBias + ltfBias)
+  const biasColor = (bias: string): string => {
+    if (bias === "BULLISH") return "text-green-400";
+    if (bias === "BEARISH") return "text-red-400";
+    return "text-zinc-400";
+  };
 
-  // v8.6.0: Use new UX fields - fall back gracefully for bootstrap cards
-  const setupStatus = card.setupStatus ?? "NO SETUP";
-  const displayScore = card.displayScore ?? 0;
   const htfBias = card.htfBias ?? (card.htf4hTrend as string) ?? "NEUTRAL";
   const ltfBias = card.ltfBias ?? "NEUTRAL";
   const marketQuality = card.marketQuality ?? (card.degraded ? "FALLBACK" : "LIVE");
 
-  const palette = statusPalette(setupStatus);
-  const interp = scoreInterpretation(displayScore);
-
-  const readinessScore = card.tradeReadinessScore ?? 0;
-  const readinessBarColor =
-    readinessScore >= 75 ? "bg-green-500" :
-    readinessScore >= 60 ? "bg-cyan-500"  :
-    readinessScore >= 40 ? "bg-amber-500" :
-    "bg-zinc-600";
-
   return (
-    <div className={`rounded-lg border ${palette.border} p-5 bg-[#0f0f0f] text-white flex flex-col gap-4`}>
+    <div className={`rounded-lg border ${display.borderClass} p-5 bg-[#0f0f0f] text-white flex flex-col gap-4`}>
 
       {/* HEADER: Symbol + Price + Setup Status */}
       <div className="flex items-start justify-between">
@@ -213,8 +261,8 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
             {isLoading ? "—" : `$${fmt(card.price)}`}
           </span>
         </div>
-        <span className={`text-xs px-3 py-1.5 rounded border font-semibold tracking-wider ${palette.badge}`}>
-          {isLoading ? "LOADING" : setupStatus}
+        <span className={`text-xs px-3 py-1.5 rounded border font-semibold tracking-wider ${display.badgeClass}`}>
+          {isLoading ? "LOADING" : display.statusLabel}
         </span>
       </div>
 
@@ -238,17 +286,19 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
         <div className="flex items-center justify-between mb-2">
           <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">Setup Score</p>
           <div className="flex items-center gap-2">
-            <span className={`text-[10px] font-semibold tracking-wider ${interp.color}`}>{interp.label}</span>
+            <span className={`text-[10px] font-semibold tracking-wider ${display.displayScore >= 75 ? "text-green-400" : display.displayScore >= 60 ? "text-cyan-400" : "text-amber-400"}`}>
+              {display.displayScore >= 75 ? "CONFIRMED" : display.displayScore >= 60 ? "SNIPER" : display.displayScore >= 40 ? "BUILDING" : "LOW QUALITY"}
+            </span>
             <span className="text-xl font-mono font-bold text-white tabular-nums">
-              {isLoading ? "—" : displayScore}
+              {isLoading ? "—" : display.displayScore}
             </span>
           </div>
         </div>
         {/* Score bar */}
         <div className="w-full bg-zinc-800 rounded h-1.5">
           <div
-            className={`${readinessBarColor} h-1.5 rounded transition-all`}
-            style={{ width: isLoading ? "0%" : `${displayScore}%` }}
+            className={`${display.readinessBarColor} h-1.5 rounded transition-all`}
+            style={{ width: isLoading ? "0%" : `${display.displayScore}%` }}
           />
         </div>
       </div>
@@ -258,29 +308,29 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
         <div className="flex items-center justify-between mb-2">
           <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">Trade Readiness</p>
           <span className="text-xl font-mono font-bold text-white tabular-nums">
-            {isLoading || card.tradeReadinessScore === null ? "—" : `${Math.round(readinessScore)}%`}
+            {isLoading || card.tradeReadinessScore === null ? "—" : `${Math.round(card.tradeReadinessScore)}%`}
           </span>
         </div>
         <div className="w-full bg-zinc-800 rounded h-1.5">
           <div
-            className={`${readinessBarColor} h-1.5 rounded transition-all`}
-            style={{ width: isLoading || card.tradeReadinessScore === null ? "0%" : `${readinessScore}%` }}
+            className={`${display.readinessBarColor} h-1.5 rounded transition-all`}
+            style={{ width: isLoading || card.tradeReadinessScore === null ? "0%" : `${card.tradeReadinessScore}%` }}
           />
         </div>
         <p className="text-[10px] text-zinc-600 mt-1.5">
-          {readinessScore >= 90 ? "Confirmed execution" :
-           readinessScore >= 75 ? "Sniper quality" :
-           readinessScore >= 65 ? "Executable watch" :
-           readinessScore >= 45 ? "Setup forming" :
+          {card.tradeReadinessScore && card.tradeReadinessScore >= 90 ? "Confirmed execution" :
+           card.tradeReadinessScore && card.tradeReadinessScore >= 75 ? "Sniper quality" :
+           card.tradeReadinessScore && card.tradeReadinessScore >= 65 ? "Executable watch" :
+           card.tradeReadinessScore && card.tradeReadinessScore >= 45 ? "Setup forming" :
            "Awaiting setup"}
         </p>
       </div>
 
       {/* CONDITIONAL: Trade targets when signal is ACTIVE */}
-      {isActiveSignal && card.targetPrices && (
+      {display.hasActiveTrade && card.targetPrices && (
         <div className="border border-zinc-800 rounded p-3 space-y-1.5">
           <div className="flex items-center justify-between">
-            <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">{setupStatus} Entry</p>
+            <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">{display.statusLabel} Entry</p>
             <p className={`text-xs font-bold tracking-wider uppercase ${
               card.direction === "LONG" ? "text-cyan-400" : "text-pink-400"
             }`}>
