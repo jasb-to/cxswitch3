@@ -113,6 +113,97 @@ export type Setup = {
     volatilitySignal: string;
     trend4H: boolean;
   };
+  targetPrices?: { tp1: number; tp2: number; sl: number };
+  riskReward?: number;
+};
+
+/**
+ * v17.7.0: ASSET-SPECIFIC NORMALIZATION PROFILES
+ * 
+ * Different assets have different volatility and momentum characteristics.
+ * These profiles normalize signal features per asset WITHOUT changing execution thresholds.
+ * 
+ * Execution thresholds REMAIN:
+ * - SNIPER: 60
+ * - CONFIRMED: 75
+ */
+export type AssetProfile = {
+  displacementATRMultiplier: number;    // Normalize displacement per ATR
+  emaSlopeNormalization: number;        // Normalize EMA acceleration
+  volatilityNormalization: number;      // Normalize volatility expansion
+  continuationBiasWeight: number;       // Weight for trend continuation
+  impulseWeight: number;                // Weight for impulse expansion
+};
+
+// v17.7.0: PROFILE DEFINITIONS
+const ASSET_PROFILES: Record<string, AssetProfile> = {
+  BTC: {
+    displacementATRMultiplier: 0.6,     // BTC moves slower in ATR terms
+    emaSlopeNormalization: 0.7,         // BTC EMA accelerates more gradually
+    volatilityNormalization: 0.65,      // BTC vol expansion is less explosive
+    continuationBiasWeight: 1.35,       // BTC rewards sustained trends
+    impulseWeight: 0.75,                // BTC impulse less rewarded
+  },
+  ETH: {
+    displacementATRMultiplier: 1.0,     // ETH is baseline
+    emaSlopeNormalization: 1.0,         // ETH is baseline
+    volatilityNormalization: 1.0,       // ETH is baseline
+    continuationBiasWeight: 1.0,        // ETH is baseline
+    impulseWeight: 1.0,                 // ETH is baseline
+  },
+  SOL: {
+    displacementATRMultiplier: 1.15,    // SOL moves faster in ATR terms
+    emaSlopeNormalization: 1.2,         // SOL EMA accelerates faster
+    volatilityNormalization: 1.25,      // SOL vol expansion more dramatic
+    continuationBiasWeight: 0.9,        // SOL impulse more rewarded
+    impulseWeight: 1.3,                 // SOL impulse is primary driver
+  },
+};
+
+// v17.7.0: GET ASSET PROFILE
+function getAssetProfile(symbol: string): AssetProfile {
+  const baseSymbol = symbol.split("/")[0].toUpperCase();
+  return ASSET_PROFILES[baseSymbol] || ASSET_PROFILES.ETH; // Default to ETH baseline
+}
+
+// v17.7.0: NORMALIZE EMA SLOPE
+function normalizeEmaSlope(emaSlope: number | null, symbol: string): number | null {
+  if (emaSlope === null) return null;
+  const profile = getAssetProfile(symbol);
+  return emaSlope / profile.emaSlopeNormalization;
+}
+
+// v17.7.0: NORMALIZE VOLATILITY LEVEL
+function normalizeVolatilityLevel(volatilityLevel: number | null, symbol: string): number | null {
+  if (volatilityLevel === null) return null;
+  const profile = getAssetProfile(symbol);
+  return volatilityLevel / profile.volatilityNormalization;
+}
+
+// v17.7.0: NORMALIZE CONTINUATION BIAS
+function applyContinuationBias(continuationScore: number, symbol: string): number {
+  const profile = getAssetProfile(symbol);
+  return continuationScore * profile.continuationBiasWeight;
+}
+
+// v17.7.0: NORMALIZE IMPULSE WEIGHT
+function applyImpulseWeight(impulseScore: number, symbol: string): number {
+  const profile = getAssetProfile(symbol);
+  return impulseScore * profile.impulseWeight;
+}
+
+// IGNITION RESULT TYPE FOR INTERNAL CALCS
+type IgnitionResult = {
+  probability: number;
+  reason: string;
+  breakdown: {
+    stochComponent: number;
+    emaComponent: number;
+    volatilityComponent: number;
+    displacementComponent: number;
+    emaAccelerationDelta: number;
+    impulseContinuationBoost: number;
+  };
   // HTF Alignment breakdown (v7.1.1)
   htf: {
     trend4h: "BULLISH" | "BEARISH";
@@ -523,9 +614,15 @@ function calculateIgnitionProbability(
   volatilityLevel: number | null,
   direction: "LONG" | "SHORT" | "NEUTRAL",
   htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL",
+  symbol: string = "ETH/USD", // v17.7.0: For asset-specific normalization
   htf1hAlignment: boolean = true, // v7.5.2: 1H alignment as probabilistic modifier (default true)
   execution15mState: string | null = null // v8.0.2: for displacement quality
 ): IgnitionResult {
+  // v17.7.0: Apply asset-specific normalization
+  const normalizedEmaSlope = normalizeEmaSlope(emaSlope, symbol);
+  const normalizedVolatilityLevel = normalizeVolatilityLevel(volatilityLevel, symbol);
+  const profile = getAssetProfile(symbol);
+  
   let stochComponent = 0;
   let emaComponent = 0;
   let volatilityComponent = 0;
@@ -571,64 +668,65 @@ function calculateIgnitionProbability(
 
   // COMPONENT 2: EMA acceleration (0-35 points) v7.5.4: increased from 30 to capture early trend ignition
   // v8.1.0 ENHANCEMENT: Early acceleration detection for transitions
+  // v17.7.0: USES NORMALIZED EMA SLOPE FOR ASSET-SPECIFIC CALIBRATION
   let emaAccelerationDelta = 0;
-  if (emaSlope !== null) {
-    const absMagnitude = Math.abs(emaSlope);
-    if (direction === "LONG" && emaSlope > 0) {
+  if (normalizedEmaSlope !== null) {
+    const absMagnitude = Math.abs(normalizedEmaSlope);
+    if (direction === "LONG" && normalizedEmaSlope > 0) {
       if (absMagnitude > 0.8) {
-        emaComponent = 35;
-        reasons.push("EMA strong acceleration up");
+        emaComponent = applyImpulseWeight(35, symbol);
+        reasons.push(`EMA strong acceleration up (norm=${normalizedEmaSlope.toFixed(2)})`);
       } else if (absMagnitude > 0.5) {
-        emaComponent = 25;
-        reasons.push("EMA good acceleration up");
+        emaComponent = applyImpulseWeight(25, symbol);
+        reasons.push(`EMA good acceleration up (norm=${normalizedEmaSlope.toFixed(2)})`);
       } else if (absMagnitude > 0.3) {
-        emaComponent = 17;
-        reasons.push("EMA moderate acceleration up");
+        emaComponent = applyContinuationBias(17, symbol);
+        reasons.push(`EMA moderate acceleration up (norm=${normalizedEmaSlope.toFixed(2)})`);
       } else if (absMagnitude > 0.15) {
-        emaComponent = 10;
-        reasons.push("EMA slight acceleration up");
+        emaComponent = applyContinuationBias(10, symbol);
+        reasons.push(`EMA slight acceleration up (norm=${normalizedEmaSlope.toFixed(2)})`);
       } else if (absMagnitude > 0.05) {
-        emaComponent = 4;
-        reasons.push("EMA subtle acceleration up");
+        emaComponent = applyContinuationBias(4, symbol);
+        reasons.push(`EMA subtle acceleration up (norm=${normalizedEmaSlope.toFixed(2)})`);
       } else {
-        reasons.push("EMA flat, no acceleration");
+        reasons.push(`EMA flat, no acceleration (norm=${normalizedEmaSlope.toFixed(2)})`);
       }
-    } else if (direction === "SHORT" && emaSlope < 0) {
+    } else if (direction === "SHORT" && normalizedEmaSlope < 0) {
       if (absMagnitude > 0.8) {
-        emaComponent = 35;
-        reasons.push("EMA strong acceleration down");
+        emaComponent = applyImpulseWeight(35, symbol);
+        reasons.push(`EMA strong acceleration down (norm=${normalizedEmaSlope.toFixed(2)})`);
       } else if (absMagnitude > 0.5) {
-        emaComponent = 25;
-        reasons.push("EMA good acceleration down");
+        emaComponent = applyImpulseWeight(25, symbol);
+        reasons.push(`EMA good acceleration down (norm=${normalizedEmaSlope.toFixed(2)})`);
       } else if (absMagnitude > 0.3) {
-        emaComponent = 17;
-        reasons.push("EMA moderate acceleration down");
+        emaComponent = applyContinuationBias(17, symbol);
+        reasons.push(`EMA moderate acceleration down (norm=${normalizedEmaSlope.toFixed(2)})`);
       } else if (absMagnitude > 0.15) {
-        emaComponent = 10;
-        reasons.push("EMA slight acceleration down");
+        emaComponent = applyContinuationBias(10, symbol);
+        reasons.push(`EMA slight acceleration down (norm=${normalizedEmaSlope.toFixed(2)})`);
       } else if (absMagnitude > 0.05) {
-        emaComponent = 4;
-        reasons.push("EMA subtle acceleration down");
+        emaComponent = applyContinuationBias(4, symbol);
+        reasons.push(`EMA subtle acceleration down (norm=${normalizedEmaSlope.toFixed(2)})`);
       } else {
-        reasons.push("EMA flat, no acceleration");
+        reasons.push(`EMA flat, no acceleration (norm=${normalizedEmaSlope.toFixed(2)})`);
       }
     } else {
       // v8.1.0 FIX: Early acceleration detection for REVERSALS
       // If slope is improving toward direction (even if still opposing), award partial credit
-      const absMagnitude = Math.abs(emaSlope);
-      const isImproving = (direction === "LONG" && emaSlope > -0.2 && emaSlope < 0) ||
-                          (direction === "SHORT" && emaSlope < 0.2 && emaSlope > 0);
+      const absMagnitude = Math.abs(normalizedEmaSlope);
+      const isImproving = (direction === "LONG" && normalizedEmaSlope > -0.2 && normalizedEmaSlope < 0) ||
+                          (direction === "SHORT" && normalizedEmaSlope < 0.2 && normalizedEmaSlope > 0);
       
-      if (isImproving && absMagnitude < 0.15 && volatilityLevel !== null && volatilityLevel > 50) {
+      if (isImproving && absMagnitude < 0.15 && normalizedVolatilityLevel !== null && normalizedVolatilityLevel > 50) {
         // Early acceleration transition: slope improving toward direction + expanding vol
         emaAccelerationDelta = 8;
-        emaComponent = 8;
-        reasons.push(`EMA early accel transition (${emaSlope.toFixed(2)})`);
-      } else if (isImproving && volatilityLevel !== null && volatilityLevel > 60) {
+        emaComponent = applyContinuationBias(8, symbol);
+        reasons.push(`EMA early accel transition (${normalizedEmaSlope.toFixed(2)})`);
+      } else if (isImproving && normalizedVolatilityLevel !== null && normalizedVolatilityLevel > 60) {
         // Very early reversal but strong vol support
         emaAccelerationDelta = 6;
-        emaComponent = 6;
-        reasons.push(`EMA reversal forming (${emaSlope.toFixed(2)}) + strong vol`);
+        emaComponent = applyContinuationBias(6, symbol);
+        reasons.push(`EMA reversal forming (${normalizedEmaSlope.toFixed(2)}) + strong vol`);
       } else {
         reasons.push(`EMA slope diverges from ${direction} direction`);
       }
@@ -636,28 +734,30 @@ function calculateIgnitionProbability(
   }
 
   // COMPONENT 3: Micro volatility expansion (0-35 points) v7.5.4: increased from 25 to capture impulse expansion
-  if (volatilityLevel !== null) {
-    if (volatilityLevel > 60) {
-      volatilityComponent = 35;
-      reasons.push("Volatility high expansion");
-    } else if (volatilityLevel > 50) {
-      volatilityComponent = 25;
-      reasons.push("Volatility good expansion");
-    } else if (volatilityLevel > 40) {
-      volatilityComponent = 15;
-      reasons.push("Volatility moderate expansion");
-    } else if (volatilityLevel > 30) {
-      volatilityComponent = 8;
-      reasons.push("Volatility slight expansion");
+  // v17.7.0: USES NORMALIZED VOLATILITY LEVEL FOR ASSET-SPECIFIC CALIBRATION
+  if (normalizedVolatilityLevel !== null) {
+    if (normalizedVolatilityLevel > 60) {
+      volatilityComponent = applyImpulseWeight(35, symbol);
+      reasons.push(`Volatility high expansion (norm=${normalizedVolatilityLevel.toFixed(1)})`);
+    } else if (normalizedVolatilityLevel > 50) {
+      volatilityComponent = applyImpulseWeight(25, symbol);
+      reasons.push(`Volatility good expansion (norm=${normalizedVolatilityLevel.toFixed(1)})`);
+    } else if (normalizedVolatilityLevel > 40) {
+      volatilityComponent = applyContinuationBias(15, symbol);
+      reasons.push(`Volatility moderate expansion (norm=${normalizedVolatilityLevel.toFixed(1)})`);
+    } else if (normalizedVolatilityLevel > 30) {
+      volatilityComponent = applyContinuationBias(8, symbol);
+      reasons.push(`Volatility slight expansion (norm=${normalizedVolatilityLevel.toFixed(1)})`);
     } else {
-      reasons.push("Volatility compressing, not expanding");
+      reasons.push(`Volatility compressing, not expanding (norm=${normalizedVolatilityLevel.toFixed(1)})`);
     }
   }
 
   // COMPONENT 4: Volume impulse (0-15 points)
-  if (volatilityLevel !== null && volatilityLevel > 55) {
-    volumeComponent = 5;
-    reasons.push("Volume impulse-like");
+  // v17.7.0: USES NORMALIZED VOLATILITY FOR ASSET-SPECIFIC CALIBRATION
+  if (normalizedVolatilityLevel !== null && normalizedVolatilityLevel > 55) {
+    volumeComponent = applyImpulseWeight(5, symbol);
+    reasons.push(`Volume impulse-like (norm=${normalizedVolatilityLevel.toFixed(1)})`);
   }
 
   // v8.0.0: Apply 1H alignment modifier - fine-tuned for early impulse capture
@@ -1304,8 +1404,15 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     
     // v7.5.1: Probabilistic 5M ignition with observability
     ignitionProbability: (() => {
-      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf4hTrend, htf1hAlignment, execution15mState); // v8.4.0: added htf4hTrend for macro penalty
+      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf4hTrend, symbol, htf1hAlignment, execution15mState); // v17.7.0: added symbol for normalization
       // Log ignition breakdown for transparency (v15.0.0: no macro penalty)
+      // v17.7.0: Add normalized feature logging
+      const profile = getAssetProfile(symbol);
+      const normalizedEma = normalizeEmaSlope(emaSlope, symbol);
+      const normalizedVol = normalizeVolatilityLevel(volatilityLevel, symbol);
+      console.log(
+        `[NORMALIZED] ${symbol}: disp=n/a ema=${normalizedEma?.toFixed(2) ?? "—"} vol=${normalizedVol?.toFixed(2) ?? "—"} cont=${profile.continuationBiasWeight.toFixed(2)} imp=${profile.impulseWeight.toFixed(2)}`
+      );
       console.log(
         `[IGNITION] ${symbol} ${direction}: prob=${result.probability} [Stoch:${result.breakdown.stochComponent} EMA:${result.breakdown.emaComponent} Vol:${result.breakdown.volatilityComponent} Disp:${result.breakdown.displacementComponent} EMAAccel:${result.breakdown.emaAccelerationDelta} Impulse:+${result.breakdown.impulseContinuationBoost}] | ${result.reason}`
       );
@@ -1318,7 +1425,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     
     // v7.5.1: Store breakdown for UI debugging
     scoreBreakdown: (() => {
-      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf4hTrend, htf1hAlignment, execution15mState); // v8.4.0: added htf4hTrend
+      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf4hTrend, symbol, htf1hAlignment, execution15mState); // v17.7.0: added symbol
       return result.breakdown;
     })(),
 

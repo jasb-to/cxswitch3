@@ -5,7 +5,7 @@ import { useState, useEffect } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v17.6.0";
+const VERSION = "v17.7.0";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load - minimal data, no fakes
