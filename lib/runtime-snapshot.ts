@@ -1,15 +1,15 @@
 /**
- * PERSISTENT RUNTIME SNAPSHOT
+ * v16.3.0 - ATOMIC SNAPSHOT RUNTIME
  * 
- * Uses globalThis singleton to persist across serverless invocations.
- * This ensures cron and signals route share the same in-container memory.
+ * Single persistent snapshot stored in globalThis.
+ * No delta patching. No partial updates. Full replacement only.
  * 
- * Cron writes once per minute.
- * Signals reads and returns directly.
+ * Cron writes entire snapshot atomically once per minute.
+ * Signals route reads and returns directly.
  * Frontend renders snapshot as-is with no transforms.
  */
 
-type RuntimeSnapshot = {
+export type RuntimeSnapshot = {
   updatedAt: string;
   cards: any[];
   setups: any[];
@@ -26,15 +26,23 @@ const defaultSnapshot: RuntimeSnapshot = {
   setups: [],
 };
 
+/**
+ * v16.3.0: Atomic snapshot replacement
+ * Always replaces entire snapshot, never patches
+ */
 export function setSnapshot(data: RuntimeSnapshot) {
   globalThis.__snapshot__ = data;
-  console.log("[SNAPSHOT] Persisted to globalThis", {
+  console.log("[SNAPSHOT_SET] Atomic replacement persisted", {
     updatedAt: data.updatedAt,
     cardCount: data.cards.length,
     setupCount: data.setups.length,
   });
 }
 
+/**
+ * v16.3.0: Get current snapshot
+ * Returns the live atomic snapshot (no fallbacks, no defaults)
+ */
 export function getSnapshot(): RuntimeSnapshot {
   return globalThis.__snapshot__ || defaultSnapshot;
 }

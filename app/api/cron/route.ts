@@ -2,13 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateSetups } from "@/lib/strategy-v6";
 import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
-import { getSnapshot, setSnapshot } from "@/lib/runtime-snapshot";
-import { calculatePatches, applySnapshotPatches } from "@/lib/snapshot-patcher";
+import { getSnapshot, setSnapshot, type RuntimeSnapshot } from "@/lib/runtime-snapshot";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// v7.2.7 FIX #3: CRON optimized for delta updates, not full rebuilds
+/**
+ * v16.3.0 - ATOMIC SNAPSHOT RECONCILIATION
+ * 
+ * BREAKING CHANGE: Removes all delta patching.
+ * Every cycle replaces entire snapshot atomically.
+ * Tracks invalidations and state downgrades.
+ */
 export async function GET(req: NextRequest) {
   try {
     const secret = process.env.CRON_SECRET;
@@ -20,53 +25,55 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    console.log("[CRON] Start - v7.2.7 tiered optimization");
+    console.log("[CRON] v16.3.0 START - Atomic snapshot replacement");
     const cronStart = Date.now();
 
-    // STEP 1: Refresh market data (TIER 1 - always fast)
+    // STEP 1: Refresh market data
     const market = await refreshMarketData();
-    console.log(`[TIER1] Market refresh: ${Date.now() - cronStart}ms`);
+    console.log(`[MARKET] Refreshed market data in ${Date.now() - cronStart}ms`);
 
-    // STEP 2: Generate new cards (includes tiered caching internally)
-    const { cards: newCards, setups } = await generateSetups(market);
-    console.log(`[TIER2/3] Card generation: ${Date.now() - cronStart}ms - ${newCards.length} cards, ${setups.length} setups`);
+    // STEP 2: Generate fresh snapshot (EVERYTHING from scratch)
+    const { cards: newCards, setups: newSetups } = await generateSetups(market);
+    console.log(`[GENERATION] Generated ${newCards.length} cards, ${newSetups.length} setups in ${Date.now() - cronStart}ms`);
 
-    // STEP 3: Apply delta patching (FIX #5)
-    // Instead of replacing entire snapshot, patch only changed cards
-    const existingSnapshot = getSnapshot();
-    const existingCards = existingSnapshot?.cards || [];
-    
-    const patches = calculatePatches(existingCards, newCards);
-    const patchedCards = applySnapshotPatches(existingCards, patches.map(p => ({
-      symbol: p.symbol,
-      fields: p.fields,
-      timestamp: p.timestamp,
-    })));
-    
-    console.log(`[DELTA] Patches applied: ${patches.length} changed cards out of ${newCards.length}`);
+    // STEP 3: Get previous snapshot for reconciliation
+    const prevSnapshot = getSnapshot();
+    const prevCards = prevSnapshot?.cards || [];
 
-    // STEP 4: Update snapshot (only changed parts)
-    setSnapshot({
+    // STEP 4: Reconcile state transitions (detect invalidations, downgrades)
+    const invalidations = reconcileStateTransitions(prevCards, newCards);
+    if (invalidations.length > 0) {
+      console.log(`[RECONCILIATION] ${invalidations.length} state transitions detected:`);
+      invalidations.forEach(inv => console.log(`  ${inv}`));
+    }
+
+    // STEP 5: Enforce rendering invariants
+    const invariantViolations = checkRenderingInvariants(newCards);
+    if (invariantViolations.length > 0) {
+      console.error(`[INVARIANT_VIOLATIONS] ${invariantViolations.length} violations detected:`);
+      invariantViolations.forEach(v => console.error(`  ${v}`));
+      // Don't throw - just warn and continue
+    }
+
+    // STEP 6: Validate trade plans (only SNIPER/CONFIRMED can have plans)
+    validateTradePlans(newCards);
+
+    // STEP 7: ATOMIC snapshot replacement (NO MERGING, NO PATCHING)
+    const newSnapshot: RuntimeSnapshot = {
       updatedAt: new Date().toISOString(),
-      cards: patchedCards,
-      setups,
-    });
+      cards: newCards,
+      setups: newSetups,
+    };
+    setSnapshot(newSnapshot);
+    console.log(`[SNAPSHOT_REPLACED] Atomic replacement: ${newCards.length} cards, ${newSetups.length} setups`);
 
-    // STEP 5: Enqueue alerts (v7.5.6: Transition-based deduplication)
-    // v7.5.5: Pass full card for complete formatting
-    // v7.5.6: Call enqueueAlert for ALL setups - enqueueAlert handles deduplication
-    // Only alerts with state transitions are actually queued (prevents spam while state persists)
-    for (const setup of setups) {
-      // Find the corresponding card to pass complete enriched object
+    // STEP 8: Enqueue alerts for executable setups
+    for (const setup of newSetups) {
       const card = newCards.find(c => c.symbol === setup.symbol);
-      
-      if (!card) continue; // Skip if card not found (shouldn't happen)
-      
+      if (!card) continue;
+
       enqueueAlert({
-        // v7.5.5: Pass full enriched card object to Telegram formatter
         card,
-        
-        // Legacy minimal fields (for backward compat, derived from card)
         symbol: card.symbol,
         mode: setup.mode,
         direction: setup.direction,
@@ -80,13 +87,15 @@ export async function GET(req: NextRequest) {
         queued: Date.now(),
       });
     }
+    console.log(`[ALERTS] Queued ${newSetups.length} alerts for executable setups`);
 
     const totalMs = Date.now() - cronStart;
-    console.log(`[CRON] Complete in ${totalMs}ms - queued ${setups.length} alerts`);
+    console.log(`[CRON] v16.3.0 COMPLETE in ${totalMs}ms`);
 
-    return NextResponse.json({ 
-      ok: true, 
-      perf: { totalMs, patchesApplied: patches.length, alertsQueued: setups.length }
+    return NextResponse.json({
+      ok: true,
+      version: "v16.3.0",
+      perf: { totalMs, cardsGenerated: newCards.length, setupsQueued: newSetups.length, invalidations: invalidations.length },
     });
   } catch (error) {
     console.error('[CRON ERROR]', error);
@@ -95,4 +104,111 @@ export async function GET(req: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+/**
+ * Reconcile state transitions between previous and new snapshot
+ * Detect downgrades, invalidiations, and removed setups
+ */
+function reconcileStateTransitions(prevCards: any[], newCards: any[]): string[] {
+  const transitions: string[] = [];
+  const prevMap = new Map(prevCards.map(c => [c.symbol, c]));
+
+  for (const newCard of newCards) {
+    const prevCard = prevMap.get(newCard.symbol);
+    if (!prevCard) continue;
+
+    const prevState = prevCard.signalState || "NONE";
+    const newState = newCard.signalState || "NONE";
+
+    if (prevState !== newState) {
+      transitions.push(`[STATE_TRANSITION] ${newCard.symbol}: ${prevState} → ${newState}`);
+
+      // Downgrade detection
+      if (isDowngrade(prevState, newState)) {
+        transitions.push(`[SIGNAL_DOWNGRADE] ${newCard.symbol}: ${prevState} → ${newState}`);
+        
+        if ((prevState === "ACTIVE_SNIPER" || prevState === "ACTIVE_CONFIRMED") && newState === "BUILDING") {
+          transitions.push(`[SETUP_REMOVED] ${newCard.symbol}: Was executable, now building`);
+        }
+      }
+
+      // Invalidation detection
+      if (isInvalidation(prevState, newState)) {
+        transitions.push(`[SIGNAL_INVALIDATED] ${newCard.symbol}: ${prevState} → ${newState}`);
+      }
+    }
+  }
+
+  return transitions;
+}
+
+/**
+ * Check for impossible state combinations
+ */
+function checkRenderingInvariants(cards: any[]): string[] {
+  const violations: string[] = [];
+
+  for (const card of cards) {
+    const state = card.signalState || "NONE";
+    const confidence = card.tradeReadinessScore ?? 0;
+
+    // SNIPER + BUILDING is impossible
+    if (state === "ACTIVE_SNIPER" && card.setupStatus === "BUILDING") {
+      violations.push(`[STATE_MISMATCH] ${card.symbol}: ACTIVE_SNIPER but setupStatus=BUILDING`);
+    }
+
+    // CONFIRMED + LOW_QUALITY is suspicious
+    if (state === "ACTIVE_CONFIRMED" && confidence < 50) {
+      violations.push(`[STATE_MISMATCH] ${card.symbol}: ACTIVE_CONFIRMED but confidence=${confidence}%`);
+    }
+
+    // BUILDING + executable trade plan is impossible
+    if (state === "BUILDING" && card.targetPrices) {
+      violations.push(`[STATE_MISMATCH] ${card.symbol}: BUILDING state has trade plan (TP/SL present)`);
+    }
+
+    // ACTIVE_SNIPER/CONFIRMED must have direction
+    if ((state === "ACTIVE_SNIPER" || state === "ACTIVE_CONFIRMED") && card.direction === "NEUTRAL") {
+      violations.push(`[STATE_MISMATCH] ${card.symbol}: ${state} with NEUTRAL direction`);
+    }
+  }
+
+  return violations;
+}
+
+/**
+ * Validate trade plan lifecycle
+ * Plans only exist if state >= SNIPER
+ */
+function validateTradePlans(cards: any[]): void {
+  for (const card of cards) {
+    const state = card.signalState || "NONE";
+    const hasTargets = !!card.targetPrices;
+
+    if ((state === "BUILDING" || state === "NONE") && hasTargets) {
+      console.log(`[TRADE_PLAN_VIOLATION] ${card.symbol}: ${state} state has targetPrices, clearing`);
+      card.targetPrices = null;
+      card.riskReward = null;
+    }
+
+    if ((state === "ACTIVE_SNIPER" || state === "ACTIVE_CONFIRMED") && !hasTargets) {
+      console.log(`[TRADE_PLAN_MISSING] ${card.symbol}: ${state} state missing targetPrices`);
+    }
+  }
+}
+
+/**
+ * Detect downgrade transitions
+ */
+function isDowngrade(from: string, to: string): boolean {
+  const stateRank = { "NONE": 0, "BUILDING": 1, "ACTIVE_SNIPER": 2, "ACTIVE_CONFIRMED": 3 };
+  return (stateRank[from as keyof typeof stateRank] || 0) > (stateRank[to as keyof typeof stateRank] || 0);
+}
+
+/**
+ * Detect invalidation transitions
+ */
+function isInvalidation(from: string, to: string): boolean {
+  return (from === "ACTIVE_CONFIRMED" || from === "ACTIVE_SNIPER") && (to === "NONE" || to === "BUILDING");
 }
