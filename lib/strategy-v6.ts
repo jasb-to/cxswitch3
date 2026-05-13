@@ -1362,9 +1362,10 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
 };
 
 /**
- * v17.5.0: DETERMINISTIC TRADE RESOLUTION ENGINE
+ * v17.6.0: DETERMINISTIC TRADE RESOLUTION ENGINE - TP1 FIRST
  * 
- * Resolves active trades when TP/SL conditions are met.
+ * Resolves active trades when TP1/SL conditions are met.
+ * Most real trades close at TP1, not TP2.
  * Completely deterministic - no lifecycle engine, no temporal persistence.
  * 
  * INPUT: card (with targetPrices, riskReward, direction)
@@ -1376,30 +1377,30 @@ export function resolveTradeOutcome(card: SymbolCardState): SymbolCardState {
     return card; // No trade to resolve
   }
 
-  const { tp1, tp2, sl } = card.targetPrices;
+  const { tp1, sl } = card.targetPrices;
   const currentPrice = card.price;
   const direction = card.direction;
   let resolutionOutcome: string | null = null;
 
-  // Check LONG trade resolution
+  // Check LONG trade resolution at TP1 (v17.6.0: TP1-FIRST)
   if (direction === "LONG") {
-    if (currentPrice >= tp2) {
-      resolutionOutcome = "TP2_HIT";
-      console.log(`[TRADE_COMPLETED] ${card.symbol} LONG TP2_HIT at ${currentPrice}`);
+    if (currentPrice >= tp1) {
+      resolutionOutcome = "TP1_HIT";
+      console.log(`[TP1_HIT] ${card.symbol} LONG closed at ${currentPrice}`);
     } else if (currentPrice <= sl) {
       resolutionOutcome = "STOP_LOSS_HIT";
-      console.log(`[SIGNAL_STOPPED] ${card.symbol} LONG STOP_LOSS_HIT at ${currentPrice}`);
+      console.log(`[STOP_LOSS_HIT] ${card.symbol} LONG resolved at ${currentPrice}`);
     }
   }
 
-  // Check SHORT trade resolution
+  // Check SHORT trade resolution at TP1 (v17.6.0: TP1-FIRST)
   if (direction === "SHORT") {
-    if (currentPrice <= tp2) {
-      resolutionOutcome = "TP2_HIT";
-      console.log(`[TRADE_COMPLETED] ${card.symbol} SHORT TP2_HIT at ${currentPrice}`);
+    if (currentPrice <= tp1) {
+      resolutionOutcome = "TP1_HIT";
+      console.log(`[TP1_HIT] ${card.symbol} SHORT closed at ${currentPrice}`);
     } else if (currentPrice >= sl) {
       resolutionOutcome = "STOP_LOSS_HIT";
-      console.log(`[SIGNAL_STOPPED] ${card.symbol} SHORT STOP_LOSS_HIT at ${currentPrice}`);
+      console.log(`[STOP_LOSS_HIT] ${card.symbol} SHORT resolved at ${currentPrice}`);
     }
   }
 
@@ -1411,7 +1412,7 @@ export function resolveTradeOutcome(card: SymbolCardState): SymbolCardState {
       targetPrices: null,
       riskReward: null,
       direction: "NEUTRAL",
-      notes: `Trade resolved: ${resolutionOutcome}`,
+      notes: `Trade closed: ${resolutionOutcome}`,
     };
   }
 
