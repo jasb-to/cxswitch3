@@ -34,64 +34,57 @@ export type SymbolCardState = {
   source: string;
   degraded: boolean;
 
-  direction: "LONG" | "SHORT" | "NEUTRAL";
-  mode: "SNIPER" | "CONFIRMED" | "NONE";
-  confidence: number;
-  
-  // FIX #1: Unified signal state (v7.2.6), extended for v7.2.8, standardized for v7.2.9
+  // v17.2.0: CANONICAL EXECUTION STATE - ONLY SOURCE OF TRUTH
   signalState: SignalState;
-  marketClass: MarketStructureClass;  // v15.0.0: Market structure classification (replaces setupClassification)
-  cycleId: string;  // v12.0.0: LEAN cycle fingerprint (for Telegram dedupe ONLY, no re-alerts)
-  lastSignalTime?: number;
+  
+  // v17.2.0: CANONICAL CONTEXTUAL CLASSIFIER
+  marketClass: MarketStructureClass;
+  
+  // v17.2.0: EXECUTION DIRECTION
+  direction: "LONG" | "SHORT" | "NEUTRAL";
+  
+  // v17.2.0: Trade confidence within state band (0-100)
+  tradeReadinessScore: number | null;
+  
+  // v17.2.0: Ignition probability for state derivation
+  ignitionProbability: number;
 
   // Momentum indicators (5M)
   stochRsi: number | null;
   emaSlope: number | null;
-  emaPressure: number;  // v9.2.0: Multi-timeframe ATR-normalized pressure (replacement for emaSlope in scoring)
+  emaPressure: number;
   volatilityLevel: number | null;
   
-  // v7.5.0: Probabilistic 5M ignition (replaces binary trigger)
-  // Score 0-100 representing likelihood of imminent execution
-  ignitionProbability: number;
-
-  // Higher TimeFrame alignment (v7.1.1 - SIMPLIFIED FOR v7.2.10)
-  // v7.2.10: Remove 1H dependency, use 15M execution structure instead
+  // Higher TimeFrame alignment
   htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL";
   htf4hMomentum: number | null;
-  htf1hAlignment: boolean | null; // Deprecated v7.2.10, kept only for signal logic
+  htf1hAlignment: boolean | null;
   htf15mCompression: boolean | null;
   
-  // v7.2.10 FIX #1 & #2: 15M EXECUTION STRUCTURE (replaces 1H display)
-  // Shows entry readiness based on 15M structure + volatility state
+  // 15M EXECUTION STRUCTURE
   execution15mState: "COMPRESSING" | "BREAKOUT_READY" | "EXPANDING" | "CHOP";
 
-  // Market readiness engine (v7.2.1)
+  // Market readiness
   marketReadinessState: string;
-  tradeReadinessScore: number | null;
   
-  // Conditional: Only populate if mode === "SNIPER" or "CONFIRMED"
+  // Conditional: Only populate if signalState === ACTIVE_SNIPER or ACTIVE_CONFIRMED
   expectedMovePercent: { sniper: { min: number; max: number } } | null;
   targetPrices: { tp1: number; tp2: number; sl: number } | null;
   riskReward: number | null;
 
-  // Trend memory (v7.2.5)
+  // Trend memory
   lastBullishCycle?: number;
   lastBearishCycle?: number;
   trendMemory?: "BULLISH" | "BEARISH";
+  
+  // Cycle tracking
+  cycleId: string;
+  lastSignalTime?: number;
 
   notes: string;
   updatedAt: string;
 
-  // v8.6.0 UX FIELDS: Human-readable display layer
-  // Derived from engine internals — never raw jargon on primary UI
-  displayScore: number;           // Blended setup score (structure 60% + ignition 40%), always 0-100
-  setupStatus: "BUILDING" | "SNIPER" | "CONFIRMED";  // v13.0.0: Removed WATCHLIST and NO SETUP (signalState handles it)
-  htfBias: "BULLISH" | "BEARISH" | "NEUTRAL";
-  ltfBias: "BULLISH" | "BEARISH" | "NEUTRAL";
-  marketQuality: "LIVE" | "FALLBACK"; // Whether price is from Kraken live or degraded source
-
   // v7.5.1: OBSERVABILITY LAYER - Why signals didn't fire
-  // Single string explaining block reason for non-alert states
   blockReason?: string;
   
   // Score breakdown for transparency
@@ -99,10 +92,9 @@ export type SymbolCardState = {
     stochComponent: number;
     emaComponent: number;
     volatilityComponent: number;
-    displacementComponent: number; // v8.0.2: directional commitment quality modifier
-    emaAccelerationDelta?: number; // v8.1.0: reversal acceleration transition detection
-    impulseContinuationBoost?: number; // v8.1.0: expansion continuation confidence assist
-    // v15.0.0: macroPenalty REMOVED - no artificial suppression
+    displacementComponent: number;
+    emaAccelerationDelta?: number;
+    impulseContinuationBoost?: number;
     totalIgnition: number;
   };
 };
