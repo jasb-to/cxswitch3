@@ -356,6 +356,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // Derive readiness per execution state bands
     const readiness = deriveReadiness(card.signalState, card.ignitionProbability);
     card.displayScore = readiness;
+    card.confidence = readiness;  // v16.2.1 FIX: Set confidence for ALL states (BTC BUILDING needs this)
     
     console.log(`[EXECUTION_STATE] ${symbol}: ${card.signalState} (ignition=${card.ignitionProbability} readiness=${readiness})`);
     

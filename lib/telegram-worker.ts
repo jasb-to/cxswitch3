@@ -54,14 +54,15 @@ const lastAlertedCycle: Map<string, string> = new Map();
  * v12.0.0: shouldSendAlert - LEAN cycle-based dedup
  * 
  * Return true ONLY if:
- * 1. State is SNIPER or CONFIRMED (signal engine decision)
+ * 1. State is ACTIVE_SNIPER or ACTIVE_CONFIRMED (signal engine decision)
  * 2. cycleId has NOT been alerted before (Telegram anti-spam)
  * 
  * This is dumb + safe: signal engine controls state, Telegram only dedupes
  */
 function shouldSendAlert(symbol: string, state: string, cycleId: string): boolean {
-  // Rule 1: Only SNIPER and CONFIRMED states can alert
-  if (state !== "SNIPER" && state !== "CONFIRMED") {
+  // Rule 1: Only ACTIVE_SNIPER and ACTIVE_CONFIRMED states can alert
+  // v16.2.1 FIX: State values are "ACTIVE_SNIPER" and "ACTIVE_CONFIRMED", NOT "SNIPER" and "CONFIRMED"
+  if (state !== "ACTIVE_SNIPER" && state !== "ACTIVE_CONFIRMED") {
     return false;
   }
   
@@ -86,7 +87,7 @@ function shouldSendAlert(symbol: string, state: string, cycleId: string): boolea
  * - Telegram ONLY cares: state + cycleId
  */
 export function enqueueAlert(job: TelegramAlertJob) {
-  const state = job.signalState as "BUILDING" | "SNIPER" | "CONFIRMED";
+  const state = job.signalState as "NONE" | "BUILDING" | "ACTIVE_SNIPER" | "ACTIVE_CONFIRMED";
   const cycleId = job.card.cycleId;
   
   console.log(`[TELEGRAM_CHECK] ${job.symbol}: state=${state} cycleId=${cycleId} lastCycle=${lastAlertedCycle.get(job.symbol) || "none"}`);
