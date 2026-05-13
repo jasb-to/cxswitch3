@@ -226,10 +226,10 @@ function getCardDisplay(card: SymbolCardState) {
 function SymbolCard({ card }: { card: SymbolCardState }) {
   const isLoading = card.source === "bootstrap";
   
-  // v17.2.0: Get EVERYTHING from signalState only
+  // v17.3.0: Get minimal display info from signalState only
   const display = getCardDisplay(card);
   
-  // v17.2.0: Bias colors (from htf4hTrend only)
+  // v17.3.0: Bias colors (from htf4hTrend only)
   const biasColor = (bias: string): string => {
     if (bias === "BULLISH") return "text-green-400";
     if (bias === "BEARISH") return "text-red-400";
@@ -242,7 +242,7 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
   return (
     <div className={`rounded-lg border ${display.borderClass} p-5 bg-[#0f0f0f] text-white flex flex-col gap-4`}>
 
-      {/* HEADER: Symbol + Price + Setup Status */}
+      {/* HEADER: Symbol + Price + Badge */}
       <div className="flex items-start justify-between">
         <div>
           <div className="flex items-center gap-2">
@@ -256,13 +256,13 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
           <span className="text-2xl font-mono font-bold text-white tabular-nums mt-0.5 block">
             {isLoading ? "—" : `$${fmt(card.price)}`}
           </span>
-          {/* v17.2.0: Canonical subtitle - signalState, direction, marketClass only */}
+          {/* v17.3.0: Canonical subtitle - signalState, direction, marketClass only */}
           <p className="text-[10px] text-zinc-500 mt-1">
             {isLoading ? "Loading..." : `${card.signalState} ${card.direction} - ${card.marketClass}`}
           </p>
         </div>
         <span className={`text-xs px-3 py-1.5 rounded border font-semibold tracking-wider ${display.badgeClass}`}>
-          {isLoading ? "LOADING" : display.statusLabel}
+          {isLoading ? "LOADING" : display.badgeLabel}
         </span>
       </div>
 
@@ -283,56 +283,33 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
         </div>
       </div>
 
-      {/* SETUP SCORE */}
-      <div className="border border-zinc-800 rounded p-3">
-        <div className="flex items-center justify-between mb-2">
-          <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">Setup Score</p>
-          <div className="flex items-center gap-2">
-            <span className={`text-[10px] font-semibold tracking-wider ${display.displayScore >= 75 ? "text-green-400" : display.displayScore >= 60 ? "text-cyan-400" : "text-amber-400"}`}>
-              {display.displayScore >= 75 ? "CONFIRMED" : display.displayScore >= 60 ? "SNIPER" : display.displayScore >= 40 ? "BUILDING" : "LOW QUALITY"}
-            </span>
-            <span className="text-xl font-mono font-bold text-white tabular-nums">
-              {isLoading ? "—" : display.displayScore}
+      {/* v17.3.0: Trade Readiness (only show if score exists) */}
+      {card.tradeReadinessScore !== null && (
+        <div className="border border-zinc-800 rounded p-3">
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">Readiness</p>
+            <span className="text-lg font-mono font-bold text-white tabular-nums">
+              {Math.round(card.tradeReadinessScore)}%
             </span>
           </div>
+          <div className="w-full bg-zinc-800 rounded h-1 mt-1.5">
+            <div
+              className={`${
+                card.tradeReadinessScore >= 75 ? "bg-green-500" :
+                card.tradeReadinessScore >= 60 ? "bg-cyan-500" :
+                "bg-amber-500"
+              } h-1 rounded transition-all`}
+              style={{ width: `${card.tradeReadinessScore}%` }}
+            />
+          </div>
         </div>
-        {/* Score bar */}
-        <div className="w-full bg-zinc-800 rounded h-1.5">
-          <div
-            className={`${display.readinessBarColor} h-1.5 rounded transition-all`}
-            style={{ width: isLoading ? "0%" : `${display.displayScore}%` }}
-          />
-        </div>
-      </div>
+      )}
 
-      {/* TRADE READINESS */}
-      <div className="border border-zinc-800 rounded p-3">
-        <div className="flex items-center justify-between mb-2">
-          <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">Trade Readiness</p>
-          <span className="text-xl font-mono font-bold text-white tabular-nums">
-            {isLoading || card.tradeReadinessScore === null ? "—" : `${Math.round(card.tradeReadinessScore)}%`}
-          </span>
-        </div>
-        <div className="w-full bg-zinc-800 rounded h-1.5">
-          <div
-            className={`${display.readinessBarColor} h-1.5 rounded transition-all`}
-            style={{ width: isLoading || card.tradeReadinessScore === null ? "0%" : `${card.tradeReadinessScore}%` }}
-          />
-        </div>
-        <p className="text-[10px] text-zinc-600 mt-1.5">
-          {card.tradeReadinessScore && card.tradeReadinessScore >= 90 ? "Confirmed execution" :
-           card.tradeReadinessScore && card.tradeReadinessScore >= 75 ? "Sniper quality" :
-           card.tradeReadinessScore && card.tradeReadinessScore >= 65 ? "Executable watch" :
-           card.tradeReadinessScore && card.tradeReadinessScore >= 45 ? "Setup forming" :
-           "Awaiting setup"}
-        </p>
-      </div>
-
-      {/* CONDITIONAL: Trade targets when signal is ACTIVE */}
-      {display.hasActiveTrade && card.targetPrices && (
+      {/* v17.3.0: CONDITIONAL - Trade plan only when tradePlan !== null */}
+      {card.targetPrices && card.riskReward !== null && (
         <div className="border border-zinc-800 rounded p-3 space-y-1.5">
           <div className="flex items-center justify-between">
-            <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">{display.statusLabel} Entry</p>
+            <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">{display.badgeLabel} Entry</p>
             <p className={`text-xs font-bold tracking-wider uppercase ${
               card.direction === "LONG" ? "text-cyan-400" : "text-pink-400"
             }`}>
@@ -346,7 +323,7 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
             <div className="flex justify-between"><span className="text-zinc-400">SL</span><span className="text-red-400">${fmt(card.targetPrices?.sl)}</span></div>
             <div className="flex justify-between pt-1.5 border-t border-zinc-700">
               <span className="text-zinc-400">R:R</span>
-              <span className="text-green-400 font-bold">{(card.riskReward ?? 0)?.toFixed(1) ?? "—"}:1</span>
+              <span className="text-green-400 font-bold">{card.riskReward.toFixed(1)}:1</span>
             </div>
           </div>
         </div>
