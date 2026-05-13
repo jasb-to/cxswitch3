@@ -138,25 +138,25 @@ export type AssetProfile = {
 // v17.7.0: PROFILE DEFINITIONS
 const ASSET_PROFILES: Record<string, AssetProfile> = {
   BTC: {
-    displacementATRMultiplier: 0.6,     // BTC moves slower in ATR terms
-    emaSlopeNormalization: 0.7,         // BTC EMA accelerates more gradually
-    volatilityNormalization: 0.65,      // BTC vol expansion is less explosive
-    continuationBiasWeight: 1.35,       // BTC rewards sustained trends
-    impulseWeight: 0.75,                // BTC impulse less rewarded
+    displacementATRMultiplier: 0.6,
+    emaSlopeNormalization: 0.7,
+    volatilityNormalization: 0.65,
+    continuationBiasWeight: 1.35,
+    impulseWeight: 0.92,               // v17.9.0: Increased from 0.75 for earlier SNIPER transitions
   },
   ETH: {
     displacementATRMultiplier: 1.0,
     emaSlopeNormalization: 1.0,
     volatilityNormalization: 1.0,
     continuationBiasWeight: 1.0,
-    impulseWeight: 0.88,       // v17.8.0: Reduced from 1.0 to decrease ETH impulse sensitivity
+    impulseWeight: 1.08,               // v17.9.0: Increased from 0.88 for aggressive early ignition
   },
   SOL: {
-    displacementATRMultiplier: 1.15,    // SOL moves faster in ATR terms
-    emaSlopeNormalization: 1.2,         // SOL EMA accelerates faster
-    volatilityNormalization: 1.25,      // SOL vol expansion more dramatic
-    continuationBiasWeight: 0.9,        // SOL impulse more rewarded
-    impulseWeight: 1.3,                 // SOL impulse is primary driver
+    displacementATRMultiplier: 1.15,
+    emaSlopeNormalization: 1.2,
+    volatilityNormalization: 1.25,
+    continuationBiasWeight: 0.9,
+    impulseWeight: 1.45,               // v17.9.0: Increased from 1.3 for fastest momentum transitions
   },
 };
 
@@ -668,9 +668,10 @@ function calculateIgnitionProbability(
                                   (direction === "SHORT" && normalizedEmaSlope < 0);
     
     if (alignedWithDirection) {
+      // v17.9.0: Increased EMA sensitivity for early momentum detection
       // Continuous mapping: 0 → 0, 0.5 → 15, 1.0 → 35 points
-      // Using quadratic curve: score = clamp(absMagnitude^1.3 * 35, 0, 35)
-      emaComponent = Math.min(35, Math.pow(absMagnitude, 1.3) * 35);
+      // Changed from 1.3 to 1.15 exponent for faster early ignition
+      emaComponent = Math.min(35, Math.pow(absMagnitude, 1.15) * 35);
       emaComponent = applyImpulseWeight(emaComponent, symbol);
       reasons.push(`EMA acceleration: ${emaComponent.toFixed(2)} (norm=${normalizedEmaSlope.toFixed(2)})`);
     } else if (absMagnitude < 0.2 && normalizedVolatilityLevel !== null && normalizedVolatilityLevel > 50) {
@@ -738,13 +739,14 @@ function calculateIgnitionProbability(
     reasons.push(`Soft saturation damping (70→${probabilityBase.toFixed(1)})`);
   }
 
-  // v17.8.0: VOLATILITY PERSISTENCE PENALTY
+  // v17.9.0: VOLATILITY PERSISTENCE PENALTY (REDUCED)
   // If volatility expansion persists, gradually reduce incremental contribution
   // This is state-free: based only on current volatilityLevel magnitude, not history
+  // Updated thresholds to avoid suppressing legitimate breakouts
   let volatilityPersistencePenalty = 0;
-  if (normalizedVolatilityLevel !== null && normalizedVolatilityLevel > 70) {
-    // High sustained volatility = reduced bonus
-    volatilityPersistencePenalty = Math.min(6, (normalizedVolatilityLevel - 70) * 0.4);
+  if (normalizedVolatilityLevel !== null && normalizedVolatilityLevel > 75) {
+    // High sustained volatility = reduced bonus (less aggressive than v17.8.0)
+    volatilityPersistencePenalty = Math.min(4, (normalizedVolatilityLevel - 75) * 0.25);
     volatilityComponent -= volatilityPersistencePenalty;
     reasons.push(`High vol persistence penalty: -${volatilityPersistencePenalty.toFixed(2)}`);
   }
@@ -772,14 +774,19 @@ function calculateIgnitionProbability(
     reasons.push(`Displacement: ${displacementReason}`);
   }
 
+  // v17.9.0: INCREASE DISPLACEMENT CONTRIBUTION BY 25%
+  // Rewards directional commitment, breakout expansion, volatility alignment
+  // Keep continuous and floating-point (no discrete bands)
+  const adjustedDisplacementModifier = displacementModifier * 1.25;
+
   // v17.8.0: REDUCED ETH IMPULSE SENSITIVITY
   // ETH profile now uses 0.88 instead of 1.0 for impulse weight
   // This is already applied in applyImpulseWeight() calls above
 
   // Final ignition probability with continuous floating-point precision
-  const probability = Math.max(0, Math.min(100, probabilityBase + htfModifier + displacementModifier));
+  const probability = Math.max(0, Math.min(100, probabilityBase + htfModifier + adjustedDisplacementModifier));
 
-  // v17.8.0: COMPONENT PRECISION LOGGING
+  // v17.9.0: COMPONENT PRECISION LOGGING (updated with adjusted displacement)
   console.log(
     `[IGNITION_COMPONENTS] ${symbol} ${direction}:` +
     ` ema=${emaComponent.toFixed(2)}` +
@@ -788,7 +795,7 @@ function calculateIgnitionProbability(
     ` impulse=${volumeComponent.toFixed(2)}` +
     ` continuation=${continuationComponent.toFixed(2)}` +
     ` htf=${htfModifier}` +
-    ` disp=${displacementModifier}` +
+    ` disp=${adjustedDisplacementModifier.toFixed(2)}` +
     ` → final=${probability.toFixed(2)}`
   );
 
@@ -799,7 +806,7 @@ function calculateIgnitionProbability(
       emaComponent,
       volatilityComponent,
       volumeComponent,
-      displacementComponent: displacementModifier,
+      displacementComponent: adjustedDisplacementModifier,
       emaAccelerationDelta: 0,
       impulseContinuationBoost: 0
     },
