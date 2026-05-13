@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateSetups } from "@/lib/strategy-v6";
+import { generateSetups, deriveSignalLifecycle, checkSignalInvariants, type SignalLifecycle, type DerivedSignal, type MarketStructureClass } from "@/lib/strategy-v6";
 import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
 import { getSnapshot, setSnapshot, type RuntimeSnapshot } from "@/lib/runtime-snapshot";
@@ -8,11 +8,12 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * v16.3.0 - ATOMIC SNAPSHOT RECONCILIATION
+ * v16.4.0 - CANONICAL SIGNAL LIFECYCLE ENGINE
  * 
- * BREAKING CHANGE: Removes all delta patching.
- * Every cycle replaces entire snapshot atomically.
- * Tracks invalidations and state downgrades.
+ * Complete removal of stale persistence and ghost trades.
+ * Every signal processed through deriveSignalLifecycle() canonical reducer.
+ * Explicit expiration and invalidation enforcement.
+ * Full invariant checking before snapshot publication.
  */
 export async function GET(req: NextRequest) {
   try {
@@ -25,59 +26,121 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    console.log("[CRON] v16.3.0 START - Atomic snapshot replacement");
+    console.log("[CRON] v16.4.0 START - Canonical Signal Lifecycle Engine");
     const cronStart = Date.now();
+    const nowMs = cronStart;
 
     // STEP 1: Refresh market data
     const market = await refreshMarketData();
-    console.log(`[MARKET] Refreshed market data in ${Date.now() - cronStart}ms`);
+    console.log(`[MARKET] Refreshed in ${Date.now() - cronStart}ms`);
 
-    // STEP 2: Generate fresh snapshot (EVERYTHING from scratch)
+    // STEP 2: Generate fresh derived signals (all cards from scratch)
     const { cards: newCards, setups: newSetups } = await generateSetups(market);
     console.log(`[GENERATION] Generated ${newCards.length} cards, ${newSetups.length} setups in ${Date.now() - cronStart}ms`);
 
-    // STEP 3: Get previous snapshot for reconciliation
+    // STEP 3: Get previous snapshot and lifecycles
     const prevSnapshot = getSnapshot();
-    const prevCards = prevSnapshot?.cards || [];
+    const prevLifecycles = (prevSnapshot as any)?.lifecycles || [];
+    const prevLifecycleMap = new Map(prevLifecycles.map((lc: SignalLifecycle) => [lc.symbol, lc]));
 
-    // STEP 4: Reconcile state transitions (detect invalidations, downgrades)
-    const invalidations = reconcileStateTransitions(prevCards, newCards);
-    if (invalidations.length > 0) {
-      console.log(`[RECONCILIATION] ${invalidations.length} state transitions detected:`);
-      invalidations.forEach(inv => console.log(`  ${inv}`));
+    // STEP 4: Derive lifecycles for ALL signals using canonical reducer
+    const newLifecycles: SignalLifecycle[] = [];
+    const lifecycleTransitions: string[] = [];
+    
+    for (const card of newCards) {
+      const prevLifecycle = prevLifecycleMap.get(card.symbol);
+      
+      // Build market context for lifecycle derivation
+      const lifecycleMarket = {
+        ignition: card.ignitionProbability ?? 0,
+        marketClass: card.marketClass,
+        direction: card.direction,
+        htfTrend: card.htf4hTrend ?? null,
+        ltfBias: card.ltfBias ?? "NEUTRAL",
+        price: card.price,
+      };
+      
+      // Derive signal using canonical lifecycle reducer
+      const newLifecycle = deriveSignalLifecycle(
+        card.symbol,
+        prevLifecycle,
+        {
+          state: card.signalState,
+          direction: card.direction,
+          confidence: card.tradeReadinessScore ?? 0,
+          type: card.marketClass === "EARLY_REVERSAL" ? "REVERSAL" : "TREND",
+          targets: card.targetPrices ? {
+            entry: card.price,
+            takeProfit: [card.targetPrices.tp1, card.targetPrices.tp2],
+            stopLoss: card.targetPrices.sl,
+            expectedMove: card.expectedMovePercent ?? 0,
+            riskReward: card.riskReward ?? 0,
+          } : undefined,
+        } as DerivedSignal,
+        lifecycleMarket,
+        nowMs
+      );
+      
+      newLifecycles.push(newLifecycle);
+      
+      // Track transitions for logging
+      if (prevLifecycle && prevLifecycle.lifecycleState !== newLifecycle.lifecycleState) {
+        lifecycleTransitions.push(`${card.symbol}: ${prevLifecycle.lifecycleState} → ${newLifecycle.lifecycleState}`);
+      }
+    }
+    
+    if (lifecycleTransitions.length > 0) {
+      console.log(`[LIFECYCLE_TRANSITIONS] ${lifecycleTransitions.length} transitions detected:`);
+      lifecycleTransitions.forEach(t => console.log(`  ${t}`));
     }
 
-    // STEP 5: Enforce rendering invariants
-    const invariantViolations = checkRenderingInvariants(newCards);
+    // STEP 5: Check rendering invariants for all lifecycles
+    const invariantViolations: string[] = [];
+    for (const lifecycle of newLifecycles) {
+      const violations = checkSignalInvariants(lifecycle);
+      invariantViolations.push(...violations);
+    }
+    
     if (invariantViolations.length > 0) {
       console.error(`[INVARIANT_VIOLATIONS] ${invariantViolations.length} violations detected:`);
       invariantViolations.forEach(v => console.error(`  ${v}`));
-      // Don't throw - just warn and continue
     }
 
-    // STEP 6: Validate trade plans (only SNIPER/CONFIRMED can have plans)
-    validateTradePlans(newCards);
+    // STEP 6: Filter renderable signals for UI
+    const renderableLifecycles = newLifecycles.filter(lc => lc.renderable);
+    console.log(`[RENDERING] ${renderableLifecycles.length}/${newLifecycles.length} signals are renderable`);
 
-    // STEP 7: ATOMIC snapshot replacement (NO MERGING, NO PATCHING)
+    // STEP 7: Determine which signals should emit alerts (only on transition)
+    const alertsToEmit = determineAlerts(newLifecycles, prevLifecycleMap);
+    console.log(`[ALERTS] ${alertsToEmit.length} signals should emit alerts (on transition)`);
+
+    // STEP 8: ATOMIC snapshot replacement with lifecycles
     const newSnapshot: RuntimeSnapshot = {
       updatedAt: new Date().toISOString(),
       cards: newCards,
       setups: newSetups,
+      lifecycles: newLifecycles,  // NEW: Include all lifecycle states
+      renderableSymbols: renderableLifecycles.map(lc => lc.symbol),  // For UI efficiency
     };
     setSnapshot(newSnapshot);
-    console.log(`[SNAPSHOT_REPLACED] Atomic replacement: ${newCards.length} cards, ${newSetups.length} setups`);
+    console.log(`[SNAPSHOT_REPLACED] Atomic replacement: ${newCards.length} cards, ${newSetups.length} setups, ${newLifecycles.length} lifecycles`);
 
-    // STEP 8: Enqueue alerts for executable setups
-    for (const setup of newSetups) {
-      const card = newCards.find(c => c.symbol === setup.symbol);
-      if (!card) continue;
+    // STEP 9: Enqueue alerts ONLY for transition-based activations
+    for (const alertSymbol of alertsToEmit) {
+      const lifecycle = newLifecycles.find(lc => lc.symbol === alertSymbol);
+      const card = newCards.find(c => c.symbol === alertSymbol);
+      
+      if (!lifecycle || !card) continue;
+      if (!lifecycle.hasActiveTrade) continue;  // Only alert if has active trade
 
+      console.log(`[ALERT_EMIT] ${alertSymbol}: ${lifecycle.previousState} → ${lifecycle.lifecycleState}`);
+      
       enqueueAlert({
         card,
         symbol: card.symbol,
-        mode: setup.mode,
-        direction: setup.direction,
-        score: setup.score,
+        mode: lifecycle.lifecycleState === "ACTIVE_CONFIRMED" ? "CONFIRMED" : "SNIPER",
+        direction: lifecycle.derivedState.direction,
+        score: lifecycle.derivedState.confidence,
         price: card.price,
         source: card.source,
         signalState: card.signalState,
@@ -87,15 +150,23 @@ export async function GET(req: NextRequest) {
         queued: Date.now(),
       });
     }
-    console.log(`[ALERTS] Queued ${newSetups.length} alerts for executable setups`);
 
     const totalMs = Date.now() - cronStart;
-    console.log(`[CRON] v16.3.0 COMPLETE in ${totalMs}ms`);
+    console.log(`[CRON] v16.4.0 COMPLETE in ${totalMs}ms`);
 
     return NextResponse.json({
       ok: true,
-      version: "v16.3.0",
-      perf: { totalMs, cardsGenerated: newCards.length, setupsQueued: newSetups.length, invalidations: invalidations.length },
+      version: "v16.4.0",
+      perf: {
+        totalMs,
+        cardsGenerated: newCards.length,
+        setupsQueued: newSetups.length,
+        lifecyclesProcessed: newLifecycles.length,
+        lifecycleTransitions: lifecycleTransitions.length,
+        invariantViolations: invariantViolations.length,
+        alertsEmitted: alertsToEmit.length,
+        renderableSignals: renderableLifecycles.length,
+      },
     });
   } catch (error) {
     console.error('[CRON ERROR]', error);
@@ -107,108 +178,33 @@ export async function GET(req: NextRequest) {
 }
 
 /**
- * Reconcile state transitions between previous and new snapshot
- * Detect downgrades, invalidiations, and removed setups
+ * Determine which signals should emit alerts (only on state transitions)
+ * Prevents repeated alerts for persistent states
  */
-function reconcileStateTransitions(prevCards: any[], newCards: any[]): string[] {
-  const transitions: string[] = [];
-  const prevMap = new Map(prevCards.map(c => [c.symbol, c]));
-
-  for (const newCard of newCards) {
-    const prevCard = prevMap.get(newCard.symbol);
-    if (!prevCard) continue;
-
-    const prevState = prevCard.signalState || "NONE";
-    const newState = newCard.signalState || "NONE";
-
-    if (prevState !== newState) {
-      transitions.push(`[STATE_TRANSITION] ${newCard.symbol}: ${prevState} → ${newState}`);
-
-      // Downgrade detection
-      if (isDowngrade(prevState, newState)) {
-        transitions.push(`[SIGNAL_DOWNGRADE] ${newCard.symbol}: ${prevState} → ${newState}`);
-        
-        if ((prevState === "ACTIVE_SNIPER" || prevState === "ACTIVE_CONFIRMED") && newState === "BUILDING") {
-          transitions.push(`[SETUP_REMOVED] ${newCard.symbol}: Was executable, now building`);
-        }
-      }
-
-      // Invalidation detection
-      if (isInvalidation(prevState, newState)) {
-        transitions.push(`[SIGNAL_INVALIDATED] ${newCard.symbol}: ${prevState} → ${newState}`);
-      }
+function determineAlerts(
+  newLifecycles: SignalLifecycle[],
+  prevLifecycleMap: Map<string, SignalLifecycle>
+): string[] {
+  const alertSymbols: string[] = [];
+  
+  for (const newLc of newLifecycles) {
+    const prevLc = prevLifecycleMap.get(newLc.symbol);
+    
+    // Only alert on these transitions (not on persistent states)
+    const alertTransitions = [
+      "NONE→ACTIVE_SNIPER",
+      "NONE→ACTIVE_CONFIRMED",
+      "BUILDING→ACTIVE_SNIPER",
+      "BUILDING→ACTIVE_CONFIRMED",
+      "ACTIVE_SNIPER→ACTIVE_CONFIRMED",
+    ];
+    
+    const transition = `${prevLc?.lifecycleState || "NONE"}→${newLc.lifecycleState}`;
+    
+    if (alertTransitions.includes(transition)) {
+      alertSymbols.push(newLc.symbol);
     }
   }
-
-  return transitions;
-}
-
-/**
- * Check for impossible state combinations
- */
-function checkRenderingInvariants(cards: any[]): string[] {
-  const violations: string[] = [];
-
-  for (const card of cards) {
-    const state = card.signalState || "NONE";
-    const confidence = card.tradeReadinessScore ?? 0;
-
-    // SNIPER + BUILDING is impossible
-    if (state === "ACTIVE_SNIPER" && card.setupStatus === "BUILDING") {
-      violations.push(`[STATE_MISMATCH] ${card.symbol}: ACTIVE_SNIPER but setupStatus=BUILDING`);
-    }
-
-    // CONFIRMED + LOW_QUALITY is suspicious
-    if (state === "ACTIVE_CONFIRMED" && confidence < 50) {
-      violations.push(`[STATE_MISMATCH] ${card.symbol}: ACTIVE_CONFIRMED but confidence=${confidence}%`);
-    }
-
-    // BUILDING + executable trade plan is impossible
-    if (state === "BUILDING" && card.targetPrices) {
-      violations.push(`[STATE_MISMATCH] ${card.symbol}: BUILDING state has trade plan (TP/SL present)`);
-    }
-
-    // ACTIVE_SNIPER/CONFIRMED must have direction
-    if ((state === "ACTIVE_SNIPER" || state === "ACTIVE_CONFIRMED") && card.direction === "NEUTRAL") {
-      violations.push(`[STATE_MISMATCH] ${card.symbol}: ${state} with NEUTRAL direction`);
-    }
-  }
-
-  return violations;
-}
-
-/**
- * Validate trade plan lifecycle
- * Plans only exist if state >= SNIPER
- */
-function validateTradePlans(cards: any[]): void {
-  for (const card of cards) {
-    const state = card.signalState || "NONE";
-    const hasTargets = !!card.targetPrices;
-
-    if ((state === "BUILDING" || state === "NONE") && hasTargets) {
-      console.log(`[TRADE_PLAN_VIOLATION] ${card.symbol}: ${state} state has targetPrices, clearing`);
-      card.targetPrices = null;
-      card.riskReward = null;
-    }
-
-    if ((state === "ACTIVE_SNIPER" || state === "ACTIVE_CONFIRMED") && !hasTargets) {
-      console.log(`[TRADE_PLAN_MISSING] ${card.symbol}: ${state} state missing targetPrices`);
-    }
-  }
-}
-
-/**
- * Detect downgrade transitions
- */
-function isDowngrade(from: string, to: string): boolean {
-  const stateRank = { "NONE": 0, "BUILDING": 1, "ACTIVE_SNIPER": 2, "ACTIVE_CONFIRMED": 3 };
-  return (stateRank[from as keyof typeof stateRank] || 0) > (stateRank[to as keyof typeof stateRank] || 0);
-}
-
-/**
- * Detect invalidation transitions
- */
-function isInvalidation(from: string, to: string): boolean {
-  return (from === "ACTIVE_CONFIRMED" || from === "ACTIVE_SNIPER") && (to === "NONE" || to === "BUILDING");
+  
+  return alertSymbols;
 }
