@@ -5,7 +5,7 @@ import { useState, useEffect } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v17.1.0";
+const VERSION = "v17.2.0";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load - minimal data, no fakes
@@ -16,27 +16,26 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
     source: "bootstrap",
     degraded: true,
     direction: "NEUTRAL",
-    mode: "NONE",
-    confidence: 0,
+    signalState: "NONE",
+    marketClass: "CHOP",
+    ignitionProbability: 0,
+    tradeReadinessScore: null,
     stochRsi: null,
     emaSlope: null,
+    emaPressure: 0,
     volatilityLevel: null,
     htf4hTrend: "NEUTRAL",
     htf4hMomentum: null,
     htf1hAlignment: null,
     htf15mCompression: null,
+    execution15mState: "CHOP",
     marketReadinessState: "AWAITING_DATA",
-    tradeReadinessScore: null,
     expectedMovePercent: null,
     targetPrices: null,
     riskReward: null,
+    cycleId: "",
     notes: "Waiting for live market feed…",
     updatedAt: "",
-    displayScore: 0,
-    setupStatus: "NO SETUP",
-    htfBias: "NEUTRAL",
-    ltfBias: "NEUTRAL",
-    marketQuality: "FALLBACK",
   },
   {
     symbol: "ETH",
@@ -44,27 +43,26 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
     source: "bootstrap",
     degraded: true,
     direction: "NEUTRAL",
-    mode: "NONE",
-    confidence: 0,
+    signalState: "NONE",
+    marketClass: "CHOP",
+    ignitionProbability: 0,
+    tradeReadinessScore: null,
     stochRsi: null,
     emaSlope: null,
+    emaPressure: 0,
     volatilityLevel: null,
     htf4hTrend: "NEUTRAL",
     htf4hMomentum: null,
     htf1hAlignment: null,
     htf15mCompression: null,
+    execution15mState: "CHOP",
     marketReadinessState: "AWAITING_DATA",
-    tradeReadinessScore: null,
     expectedMovePercent: null,
     targetPrices: null,
     riskReward: null,
+    cycleId: "",
     notes: "Waiting for live market feed…",
     updatedAt: "",
-    displayScore: 0,
-    setupStatus: "NO SETUP",
-    htfBias: "NEUTRAL",
-    ltfBias: "NEUTRAL",
-    marketQuality: "FALLBACK",
   },
   {
     symbol: "SOL",
@@ -72,27 +70,26 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
     source: "bootstrap",
     degraded: true,
     direction: "NEUTRAL",
-    mode: "NONE",
-    confidence: 0,
+    signalState: "NONE",
+    marketClass: "CHOP",
+    ignitionProbability: 0,
+    tradeReadinessScore: null,
     stochRsi: null,
     emaSlope: null,
+    emaPressure: 0,
     volatilityLevel: null,
     htf4hTrend: "NEUTRAL",
     htf4hMomentum: null,
     htf1hAlignment: null,
     htf15mCompression: null,
+    execution15mState: "CHOP",
     marketReadinessState: "AWAITING_DATA",
-    tradeReadinessScore: null,
     expectedMovePercent: null,
     targetPrices: null,
     riskReward: null,
+    cycleId: "",
     notes: "Waiting for live market feed…",
     updatedAt: "",
-    displayScore: 0,
-    setupStatus: "NO SETUP",
-    htfBias: "NEUTRAL",
-    ltfBias: "NEUTRAL",
-    marketQuality: "FALLBACK",
   },
 ];
 
@@ -229,19 +226,18 @@ function getCardDisplay(card: SymbolCardState) {
 function SymbolCard({ card }: { card: SymbolCardState }) {
   const isLoading = card.source === "bootstrap";
   
-  // v17.1.0: Get EVERYTHING from signalState only
+  // v17.2.0: Get EVERYTHING from signalState only
   const display = getCardDisplay(card);
   
-  // v17.1.0: Bias colors (from htfBias + ltfBias)
+  // v17.2.0: Bias colors (from htf4hTrend only)
   const biasColor = (bias: string): string => {
     if (bias === "BULLISH") return "text-green-400";
     if (bias === "BEARISH") return "text-red-400";
     return "text-zinc-400";
   };
 
-  const htfBias = card.htfBias ?? (card.htf4hTrend as string) ?? "NEUTRAL";
-  const ltfBias = card.ltfBias ?? "NEUTRAL";
-  const marketQuality = card.marketQuality ?? (card.degraded ? "FALLBACK" : "LIVE");
+  const htfBias = card.htf4hTrend;
+  const isFallback = card.degraded;
 
   return (
     <div className={`rounded-lg border ${display.borderClass} p-5 bg-[#0f0f0f] text-white flex flex-col gap-4`}>
@@ -251,7 +247,7 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-xl font-bold tracking-tight">{card.symbol}/USD</h2>
-            {marketQuality === "FALLBACK" && (
+            {isFallback && (
               <span className="text-[10px] px-2 py-0.5 rounded border border-orange-800 bg-orange-950 text-orange-400 tracking-wider">
                 FALLBACK
               </span>
@@ -260,6 +256,10 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
           <span className="text-2xl font-mono font-bold text-white tabular-nums mt-0.5 block">
             {isLoading ? "—" : `$${fmt(card.price)}`}
           </span>
+          {/* v17.2.0: Canonical subtitle - signalState, direction, marketClass only */}
+          <p className="text-[10px] text-zinc-500 mt-1">
+            {isLoading ? "Loading..." : `${card.signalState} ${card.direction} - ${card.marketClass}`}
+          </p>
         </div>
         <span className={`text-xs px-3 py-1.5 rounded border font-semibold tracking-wider ${display.badgeClass}`}>
           {isLoading ? "LOADING" : display.statusLabel}
@@ -276,7 +276,9 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
           </div>
           <div className="flex items-center justify-between">
             <span className="text-xs text-zinc-500">LTF (15M)</span>
-            <span className={`text-xs font-semibold ${biasColor(ltfBias)}`}>{ltfBias}</span>
+            <span className={`text-xs font-semibold ${biasColor(card.execution15mState === "EXPANDING" ? "BULLISH" : card.execution15mState === "COMPRESSING" ? "BEARISH" : "NEUTRAL")}`}>
+              {card.execution15mState}
+            </span>
           </div>
         </div>
       </div>
