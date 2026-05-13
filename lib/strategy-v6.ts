@@ -145,11 +145,11 @@ const ASSET_PROFILES: Record<string, AssetProfile> = {
     impulseWeight: 0.75,                // BTC impulse less rewarded
   },
   ETH: {
-    displacementATRMultiplier: 1.0,     // ETH is baseline
-    emaSlopeNormalization: 1.0,         // ETH is baseline
-    volatilityNormalization: 1.0,       // ETH is baseline
-    continuationBiasWeight: 1.0,        // ETH is baseline
-    impulseWeight: 1.0,                 // ETH is baseline
+    displacementATRMultiplier: 1.0,
+    emaSlopeNormalization: 1.0,
+    volatilityNormalization: 1.0,
+    continuationBiasWeight: 1.0,
+    impulseWeight: 0.88,       // v17.8.0: Reduced from 1.0 to decrease ETH impulse sensitivity
   },
   SOL: {
     displacementATRMultiplier: 1.15,    // SOL moves faster in ATR terms
@@ -614,9 +614,9 @@ function calculateIgnitionProbability(
   volatilityLevel: number | null,
   direction: "LONG" | "SHORT" | "NEUTRAL",
   htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL",
-  symbol: string = "ETH/USD", // v17.7.0: For asset-specific normalization
-  htf1hAlignment: boolean = true, // v7.5.2: 1H alignment as probabilistic modifier (default true)
-  execution15mState: string | null = null // v8.0.2: for displacement quality
+  symbol: string = "ETH/USD",
+  htf1hAlignment: boolean = true,
+  execution15mState: string | null = null
 ): IgnitionResult {
   // v17.7.0: Apply asset-specific normalization
   const normalizedEmaSlope = normalizeEmaSlope(emaSlope, symbol);
@@ -627,146 +627,130 @@ function calculateIgnitionProbability(
   let emaComponent = 0;
   let volatilityComponent = 0;
   let volumeComponent = 0;
+  let continuationComponent = 0;
   const reasons: string[] = [];
 
-  // COMPONENT 1: Stochastic momentum pressure (0-30 points)
+  // v17.8.0: CONTINUOUS WEIGHTED STOCHASTIC COMPONENT (0-30 points)
+  // Replaces discrete bucketing with smooth sigmoid-like weighting
   if (stochRsi !== null) {
     if (direction === "LONG") {
+      // Oversold = higher score. Map 0-20 → 30 points, 20-50 → 10 points linearly
       if (stochRsi < 20) {
-        stochComponent = 30;
-        reasons.push("Stoch deep oversold");
-      } else if (stochRsi < 35) {
-        stochComponent = 20;
-        reasons.push("Stoch near oversold");
+        stochComponent = 30 * (1 - stochRsi / 20); // 20 -> 30, 0 -> 30
+        reasons.push(`Stoch deep oversold (${stochRsi.toFixed(1)})`);
       } else if (stochRsi < 50) {
-        stochComponent = 10;
-        reasons.push("Stoch building");
-      } else if (stochRsi < 70) {
-        stochComponent = 5;
-        reasons.push("Stoch mid-range");
+        stochComponent = 10 * (1 - (stochRsi - 20) / 30); // 20 -> 10, 50 -> 0
+        reasons.push(`Stoch building (${stochRsi.toFixed(1)})`);
       } else {
-        reasons.push("Stoch overbought, fading");
+        stochComponent = Math.max(0, 5 - (stochRsi - 50) / 10); // Fading above 50
+        reasons.push(`Stoch mid-high (${stochRsi.toFixed(1)})`);
       }
     } else if (direction === "SHORT") {
+      // Overbought = higher score. Map 80-100 → 30 points, 50-80 → 10 points
       if (stochRsi > 80) {
-        stochComponent = 30;
-        reasons.push("Stoch deep overbought");
-      } else if (stochRsi > 65) {
-        stochComponent = 20;
-        reasons.push("Stoch near overbought");
+        stochComponent = 30 * ((stochRsi - 80) / 20); // 80 -> 0, 100 -> 30
+        reasons.push(`Stoch deep overbought (${stochRsi.toFixed(1)})`);
       } else if (stochRsi > 50) {
-        stochComponent = 10;
-        reasons.push("Stoch building");
-      } else if (stochRsi > 30) {
-        stochComponent = 5;
-        reasons.push("Stoch mid-range");
+        stochComponent = 10 * ((stochRsi - 50) / 30); // 50 -> 0, 80 -> 10
+        reasons.push(`Stoch building down (${stochRsi.toFixed(1)})`);
       } else {
-        reasons.push("Stoch oversold, fading");
+        stochComponent = Math.max(0, 5 - (50 - stochRsi) / 10); // Fading below 50
+        reasons.push(`Stoch mid-low (${stochRsi.toFixed(1)})`);
       }
     }
   }
 
-  // COMPONENT 2: EMA acceleration (0-35 points) v7.5.4: increased from 30 to capture early trend ignition
-  // v8.1.0 ENHANCEMENT: Early acceleration detection for transitions
-  // v17.7.0: USES NORMALIZED EMA SLOPE FOR ASSET-SPECIFIC CALIBRATION
-  let emaAccelerationDelta = 0;
+  // v17.8.0: CONTINUOUS WEIGHTED EMA COMPONENT (0-35 points)
+  // Replaces all discrete if/else bands with continuous curve
   if (normalizedEmaSlope !== null) {
     const absMagnitude = Math.abs(normalizedEmaSlope);
-    if (direction === "LONG" && normalizedEmaSlope > 0) {
-      if (absMagnitude > 0.8) {
-        emaComponent = applyImpulseWeight(35, symbol);
-        reasons.push(`EMA strong acceleration up (norm=${normalizedEmaSlope.toFixed(2)})`);
-      } else if (absMagnitude > 0.5) {
-        emaComponent = applyImpulseWeight(25, symbol);
-        reasons.push(`EMA good acceleration up (norm=${normalizedEmaSlope.toFixed(2)})`);
-      } else if (absMagnitude > 0.3) {
-        emaComponent = applyContinuationBias(17, symbol);
-        reasons.push(`EMA moderate acceleration up (norm=${normalizedEmaSlope.toFixed(2)})`);
-      } else if (absMagnitude > 0.15) {
-        emaComponent = applyContinuationBias(10, symbol);
-        reasons.push(`EMA slight acceleration up (norm=${normalizedEmaSlope.toFixed(2)})`);
-      } else if (absMagnitude > 0.05) {
-        emaComponent = applyContinuationBias(4, symbol);
-        reasons.push(`EMA subtle acceleration up (norm=${normalizedEmaSlope.toFixed(2)})`);
-      } else {
-        reasons.push(`EMA flat, no acceleration (norm=${normalizedEmaSlope.toFixed(2)})`);
-      }
-    } else if (direction === "SHORT" && normalizedEmaSlope < 0) {
-      if (absMagnitude > 0.8) {
-        emaComponent = applyImpulseWeight(35, symbol);
-        reasons.push(`EMA strong acceleration down (norm=${normalizedEmaSlope.toFixed(2)})`);
-      } else if (absMagnitude > 0.5) {
-        emaComponent = applyImpulseWeight(25, symbol);
-        reasons.push(`EMA good acceleration down (norm=${normalizedEmaSlope.toFixed(2)})`);
-      } else if (absMagnitude > 0.3) {
-        emaComponent = applyContinuationBias(17, symbol);
-        reasons.push(`EMA moderate acceleration down (norm=${normalizedEmaSlope.toFixed(2)})`);
-      } else if (absMagnitude > 0.15) {
-        emaComponent = applyContinuationBias(10, symbol);
-        reasons.push(`EMA slight acceleration down (norm=${normalizedEmaSlope.toFixed(2)})`);
-      } else if (absMagnitude > 0.05) {
-        emaComponent = applyContinuationBias(4, symbol);
-        reasons.push(`EMA subtle acceleration down (norm=${normalizedEmaSlope.toFixed(2)})`);
-      } else {
-        reasons.push(`EMA flat, no acceleration (norm=${normalizedEmaSlope.toFixed(2)})`);
-      }
+    const alignedWithDirection = (direction === "LONG" && normalizedEmaSlope > 0) ||
+                                  (direction === "SHORT" && normalizedEmaSlope < 0);
+    
+    if (alignedWithDirection) {
+      // Continuous mapping: 0 → 0, 0.5 → 15, 1.0 → 35 points
+      // Using quadratic curve: score = clamp(absMagnitude^1.3 * 35, 0, 35)
+      emaComponent = Math.min(35, Math.pow(absMagnitude, 1.3) * 35);
+      emaComponent = applyImpulseWeight(emaComponent, symbol);
+      reasons.push(`EMA acceleration: ${emaComponent.toFixed(2)} (norm=${normalizedEmaSlope.toFixed(2)})`);
+    } else if (absMagnitude < 0.2 && normalizedVolatilityLevel !== null && normalizedVolatilityLevel > 50) {
+      // Early reversal detection: partial credit for improving slope
+      emaComponent = 5 + (normalizedVolatilityLevel - 50) * 0.2; // 5-10 range
+      emaComponent = applyContinuationBias(emaComponent, symbol);
+      reasons.push(`EMA early transition: ${emaComponent.toFixed(2)} (improving slope)`);
     } else {
-      // v8.1.0 FIX: Early acceleration detection for REVERSALS
-      // If slope is improving toward direction (even if still opposing), award partial credit
-      const absMagnitude = Math.abs(normalizedEmaSlope);
-      const isImproving = (direction === "LONG" && normalizedEmaSlope > -0.2 && normalizedEmaSlope < 0) ||
-                          (direction === "SHORT" && normalizedEmaSlope < 0.2 && normalizedEmaSlope > 0);
-      
-      if (isImproving && absMagnitude < 0.15 && normalizedVolatilityLevel !== null && normalizedVolatilityLevel > 50) {
-        // Early acceleration transition: slope improving toward direction + expanding vol
-        emaAccelerationDelta = 8;
-        emaComponent = applyContinuationBias(8, symbol);
-        reasons.push(`EMA early accel transition (${normalizedEmaSlope.toFixed(2)})`);
-      } else if (isImproving && normalizedVolatilityLevel !== null && normalizedVolatilityLevel > 60) {
-        // Very early reversal but strong vol support
-        emaAccelerationDelta = 6;
-        emaComponent = applyContinuationBias(6, symbol);
-        reasons.push(`EMA reversal forming (${normalizedEmaSlope.toFixed(2)}) + strong vol`);
-      } else {
-        reasons.push(`EMA slope diverges from ${direction} direction`);
-      }
+      reasons.push(`EMA diverges from ${direction} direction (${normalizedEmaSlope.toFixed(2)})`);
     }
   }
 
-  // COMPONENT 3: Micro volatility expansion (0-35 points) v7.5.4: increased from 25 to capture impulse expansion
-  // v17.7.0: USES NORMALIZED VOLATILITY LEVEL FOR ASSET-SPECIFIC CALIBRATION
+  // v17.8.0: CONTINUOUS WEIGHTED VOLATILITY COMPONENT (0-35 points)
+  // Replaces discrete > 60, > 50 thresholds with smooth curve
   if (normalizedVolatilityLevel !== null) {
-    if (normalizedVolatilityLevel > 60) {
-      volatilityComponent = applyImpulseWeight(35, symbol);
-      reasons.push(`Volatility high expansion (norm=${normalizedVolatilityLevel.toFixed(1)})`);
-    } else if (normalizedVolatilityLevel > 50) {
-      volatilityComponent = applyImpulseWeight(25, symbol);
-      reasons.push(`Volatility good expansion (norm=${normalizedVolatilityLevel.toFixed(1)})`);
-    } else if (normalizedVolatilityLevel > 40) {
-      volatilityComponent = applyContinuationBias(15, symbol);
-      reasons.push(`Volatility moderate expansion (norm=${normalizedVolatilityLevel.toFixed(1)})`);
-    } else if (normalizedVolatilityLevel > 30) {
-      volatilityComponent = applyContinuationBias(8, symbol);
-      reasons.push(`Volatility slight expansion (norm=${normalizedVolatilityLevel.toFixed(1)})`);
+    // Continuous mapping: 20 → 0, 50 → 20, 70 → 35 points
+    // Using piecewise continuous function for smoother behavior
+    if (normalizedVolatilityLevel < 20) {
+      volatilityComponent = 0;
+      reasons.push(`Volatility low (${normalizedVolatilityLevel.toFixed(1)})`);
+    } else if (normalizedVolatilityLevel < 50) {
+      // Linear 20-50 → 0-20
+      volatilityComponent = (normalizedVolatilityLevel - 20) * (20 / 30);
+      volatilityComponent = applyContinuationBias(volatilityComponent, symbol);
+      reasons.push(`Volatility moderate: ${volatilityComponent.toFixed(2)}`);
     } else {
-      reasons.push(`Volatility compressing, not expanding (norm=${normalizedVolatilityLevel.toFixed(1)})`);
+      // Quadratic 50-80 → 20-35 (accelerating curve)
+      const expansionFactor = Math.min(1.0, (normalizedVolatilityLevel - 50) / 30);
+      volatilityComponent = 20 + Math.pow(expansionFactor, 1.2) * 15;
+      volatilityComponent = applyImpulseWeight(volatilityComponent, symbol);
+      reasons.push(`Volatility expansion: ${volatilityComponent.toFixed(2)}`);
     }
   }
 
-  // COMPONENT 4: Volume impulse (0-15 points)
-  // v17.7.0: USES NORMALIZED VOLATILITY FOR ASSET-SPECIFIC CALIBRATION
-  if (normalizedVolatilityLevel !== null && normalizedVolatilityLevel > 55) {
-    volumeComponent = applyImpulseWeight(5, symbol);
-    reasons.push(`Volume impulse-like (norm=${normalizedVolatilityLevel.toFixed(1)})`);
+  // v17.8.0: CONTINUOUS VOLUME IMPULSE COMPONENT (0-8 points)
+  // Smooth contribution instead of hard 5-point gate
+  if (normalizedVolatilityLevel !== null) {
+    if (normalizedVolatilityLevel > 55) {
+      // Scale from 0 at vol=55 to 8 at vol=80
+      volumeComponent = Math.min(8, (normalizedVolatilityLevel - 55) * (8 / 25));
+      volumeComponent = applyImpulseWeight(volumeComponent, symbol);
+      reasons.push(`Volume impulse: ${volumeComponent.toFixed(2)}`);
+    }
   }
 
-  // v8.0.0: Apply 1H alignment modifier - fine-tuned for early impulse capture
-  // Aligned: +6 (boosts early confidence, but not overweighting)
-  // Divergent: -4 (penalizes counter-structure asymmetrically, but still allows marginal setups)
-  // Rationale: Reduces over-suppression of first-wave momentum while SNIPER stays disciplined
-  let probabilityBase = stochComponent + emaComponent + volatilityComponent + volumeComponent;
-  let htfModifier = 0;
+  // v17.8.0: CONTINUATION BIAS WEIGHTING
+  // Reward sustained trend direction alignment
+  if (normalizedEmaSlope !== null && emaComponent > 5) {
+    const continuationMultiplier = profile.continuationBiasWeight;
+    continuationComponent = emaComponent * (continuationMultiplier - 1) * 0.2; // Additive, not multiplicative
+    continuationComponent = Math.max(0, Math.min(8, continuationComponent));
+    if (continuationComponent > 0.5) {
+      reasons.push(`Continuation bonus: +${continuationComponent.toFixed(2)}`);
+    }
+  }
+
+  // v17.8.0: SOFT SATURATION DECAY NEAR THRESHOLDS
+  // Prevents sticky CONFIRMED states by gently damping high scores
+  let probabilityBase = stochComponent + emaComponent + volatilityComponent + volumeComponent + continuationComponent;
   
+  // Apply soft saturation: if score > 70, multiply by 0.96 to reduce tendency to lock at CONFIRMED
+  if (probabilityBase > 70) {
+    const saturationDamping = 0.96;
+    probabilityBase = 70 + (probabilityBase - 70) * saturationDamping;
+    reasons.push(`Soft saturation damping (70→${probabilityBase.toFixed(1)})`);
+  }
+
+  // v17.8.0: VOLATILITY PERSISTENCE PENALTY
+  // If volatility expansion persists, gradually reduce incremental contribution
+  // This is state-free: based only on current volatilityLevel magnitude, not history
+  let volatilityPersistencePenalty = 0;
+  if (normalizedVolatilityLevel !== null && normalizedVolatilityLevel > 70) {
+    // High sustained volatility = reduced bonus
+    volatilityPersistencePenalty = Math.min(6, (normalizedVolatilityLevel - 70) * 0.4);
+    volatilityComponent -= volatilityPersistencePenalty;
+    reasons.push(`High vol persistence penalty: -${volatilityPersistencePenalty.toFixed(2)}`);
+  }
+
+  // HTF alignment modifier
+  let htfModifier = 0;
   if (htf1hAlignment) {
     htfModifier = 6;
     reasons.push("1H aligned");
@@ -774,9 +758,8 @@ function calculateIgnitionProbability(
     htfModifier = -4;
     reasons.push("1H divergent (-4)");
   }
-  
-  // v8.0.2: Apply displacement quality modifier (soft confidence adjuster)
-  // Measures directional commitment strength, -8 to +8
+
+  // Displacement quality modifier
   const { displacementModifier, displacementReason } = calculateDisplacementQuality(
     emaSlope,
     stochRsi,
@@ -784,37 +767,41 @@ function calculateIgnitionProbability(
     direction,
     execution15mState
   );
-  
+
   if (displacementModifier !== 0) {
     reasons.push(`Displacement: ${displacementReason}`);
   }
-  
-  // v8.1.0 ENHANCEMENT: Impulse continuation boost
-  // Problem: ETH repeatedly stalls at 62-64 despite good displacement + expanding vol
-  // Solution: Award micro boost (+3 max) when expansion has strong quality indicators
-  // This is NOT a new gate - just a confidence assist for genuine impulse continuation
-  let impulseContinuationBoost = 0;
-  if (displacementModifier >= 4 && volatilityLevel !== null && volatilityLevel > 55 && 
-      (execution15mState === "EXPANDING" || execution15mState === "BREAKOUT_READY")) {
-    // Displacement strong + volatility expanding + structure transitioning = genuine impulse
-    impulseContinuationBoost = 3;
-    reasons.push("Impulse continuation quality (+3)");
-  }
-  
-  // v15.0.0: NO MACRO PENALTY - ignition is pure signal strength
-  // Market structure classification handles macro context separately (informational only)
-  const probability = Math.min(Math.max(probabilityBase + htfModifier + displacementModifier + impulseContinuationBoost, 0), 100);
-  
+
+  // v17.8.0: REDUCED ETH IMPULSE SENSITIVITY
+  // ETH profile now uses 0.88 instead of 1.0 for impulse weight
+  // This is already applied in applyImpulseWeight() calls above
+
+  // Final ignition probability with continuous floating-point precision
+  const probability = Math.max(0, Math.min(100, probabilityBase + htfModifier + displacementModifier));
+
+  // v17.8.0: COMPONENT PRECISION LOGGING
+  console.log(
+    `[IGNITION_COMPONENTS] ${symbol} ${direction}:` +
+    ` ema=${emaComponent.toFixed(2)}` +
+    ` vol=${volatilityComponent.toFixed(2)}` +
+    ` stoch=${stochComponent.toFixed(2)}` +
+    ` impulse=${volumeComponent.toFixed(2)}` +
+    ` continuation=${continuationComponent.toFixed(2)}` +
+    ` htf=${htfModifier}` +
+    ` disp=${displacementModifier}` +
+    ` → final=${probability.toFixed(2)}`
+  );
+
   return {
     probability,
-    breakdown: { 
-      stochComponent, 
-      emaComponent, 
-      volatilityComponent, 
-      volumeComponent, 
+    breakdown: {
+      stochComponent,
+      emaComponent,
+      volatilityComponent,
+      volumeComponent,
       displacementComponent: displacementModifier,
-      emaAccelerationDelta,
-      impulseContinuationBoost
+      emaAccelerationDelta: 0,
+      impulseContinuationBoost: 0
     },
     reason: reasons.length > 0 ? reasons.join(" + ") : "No ignition signals detected"
   };
