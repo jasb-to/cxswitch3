@@ -5,7 +5,7 @@ import { useState, useEffect } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v17.2.0";
+const VERSION = "v17.5.0";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load - minimal data, no fakes
@@ -159,67 +159,45 @@ function fmt(n: number) {
  * NO parallel systems. NO independent derivations. NO cross-field logic.
  */
 
-// v17.1.0: SINGLE STATE AUTHORITY - signalState determines all UI
+// v17.3.0: MINIMAL STATE AUTHORITY - signalState determines badge only
 function getCardDisplay(card: SymbolCardState) {
   const state = card.signalState || "NONE";
   
-  // Derive EVERYTHING ONLY from signalState
-  let statusLabel: string;
+  let badgeLabel: string;
   let borderClass: string;
   let badgeClass: string;
-  let dotClass: string;
-  let displayScore: number;
-  let readinessBarColor: string;
   
-  // v17.1.0: State-only derivation
   switch (state) {
     case "ACTIVE_CONFIRMED":
-      statusLabel = "CONFIRMED";
+      badgeLabel = "CONFIRMED";
       borderClass = "border-green-500";
       badgeClass = "bg-green-950 text-green-300 border-green-700";
-      dotClass = "bg-green-400";
-      displayScore = card.tradeReadinessScore ?? 80;
-      readinessBarColor = "bg-green-500";
       break;
       
     case "ACTIVE_SNIPER":
-      statusLabel = "SNIPER";
+      badgeLabel = "SNIPER";
       borderClass = "border-cyan-500";
       badgeClass = "bg-cyan-950 text-cyan-300 border-cyan-700";
-      dotClass = "bg-cyan-400";
-      displayScore = card.tradeReadinessScore ?? 65;
-      readinessBarColor = "bg-cyan-500";
       break;
       
     case "BUILDING":
-      statusLabel = "BUILDING";
+      badgeLabel = "BUILDING";
       borderClass = "border-amber-600";
       badgeClass = "bg-amber-950 text-amber-300 border-amber-700";
-      dotClass = "bg-amber-400";
-      displayScore = card.tradeReadinessScore ?? 40;
-      readinessBarColor = "bg-amber-500";
       break;
       
     default: // NONE
-      statusLabel = "NO SETUP";
+      badgeLabel = "NO SETUP";
       borderClass = "border-zinc-800";
       badgeClass = "bg-zinc-900 text-zinc-500 border-zinc-700";
-      dotClass = "bg-zinc-600";
-      displayScore = 0;
-      readinessBarColor = "bg-zinc-600";
       break;
   }
   
   return {
-    statusLabel,
+    badgeLabel,
     borderClass,
     badgeClass,
-    dotClass,
-    displayScore,
-    readinessBarColor,
-    renderable: ["BUILDING", "ACTIVE_SNIPER", "ACTIVE_CONFIRMED"].includes(state),
-    hasActiveTrade: ["ACTIVE_SNIPER", "ACTIVE_CONFIRMED"].includes(state),
-    isActive: state !== "NONE",
+    hasTradePlan: card.targetPrices !== null && card.riskReward !== null,
   };
 }
 

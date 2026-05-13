@@ -1359,4 +1359,65 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   // v15.0.0: displayScore and setupStatus are set by canonical pipeline in scanSymbols
   // No scoring happens here - just return the card with raw indicators
   return card;
-}
+};
+
+/**
+ * v17.5.0: DETERMINISTIC TRADE RESOLUTION ENGINE
+ * 
+ * Resolves active trades when TP/SL conditions are met.
+ * Completely deterministic - no lifecycle engine, no temporal persistence.
+ * 
+ * INPUT: card (with targetPrices, riskReward, direction)
+ * OUTPUT: card with updated signalState and tradePlan based on price action
+ */
+export function resolveTradeOutcome(card: SymbolCardState): SymbolCardState {
+  // Only resolve if there's an active trade plan
+  if (!card.targetPrices || !card.riskReward || card.signalState === "NONE" || card.signalState === "BUILDING") {
+    return card; // No trade to resolve
+  }
+
+  const { tp1, tp2, sl } = card.targetPrices;
+  const currentPrice = card.price;
+  const direction = card.direction;
+  let resolutionOutcome: string | null = null;
+
+  // Check LONG trade resolution
+  if (direction === "LONG") {
+    if (currentPrice >= tp2) {
+      resolutionOutcome = "TP2_HIT";
+      console.log(`[TRADE_COMPLETED] ${card.symbol} LONG TP2_HIT at ${currentPrice}`);
+    } else if (currentPrice <= sl) {
+      resolutionOutcome = "STOP_LOSS_HIT";
+      console.log(`[SIGNAL_STOPPED] ${card.symbol} LONG STOP_LOSS_HIT at ${currentPrice}`);
+    }
+  }
+
+  // Check SHORT trade resolution
+  if (direction === "SHORT") {
+    if (currentPrice <= tp2) {
+      resolutionOutcome = "TP2_HIT";
+      console.log(`[TRADE_COMPLETED] ${card.symbol} SHORT TP2_HIT at ${currentPrice}`);
+    } else if (currentPrice >= sl) {
+      resolutionOutcome = "STOP_LOSS_HIT";
+      console.log(`[SIGNAL_STOPPED] ${card.symbol} SHORT STOP_LOSS_HIT at ${currentPrice}`);
+    }
+  }
+
+  // If trade resolved, clear it completely
+  if (resolutionOutcome) {
+    return {
+      ...card,
+      signalState: "NONE",
+      targetPrices: null,
+      riskReward: null,
+      direction: "NEUTRAL",
+      notes: `Trade resolved: ${resolutionOutcome}`,
+    };
+  }
+
+  // If direction changed from the active trade, invalidate it
+  // (This prevents stale trades from persisting across signal reversals)
+  // For now, we keep the trade active since direction came from derivedSignal
+  
+  return card; // No resolution needed
+};
