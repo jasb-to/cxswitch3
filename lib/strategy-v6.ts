@@ -357,6 +357,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     const readiness = deriveReadiness(card.signalState, card.ignitionProbability);
     card.displayScore = readiness;
     card.confidence = readiness;  // v16.2.1 FIX: Set confidence for ALL states (BTC BUILDING needs this)
+    card.tradeReadinessScore = readiness;  // v16.2.2 FIX: Set for ALL states, not just SNIPER/CONFIRMED (UI checks this)
     
     console.log(`[EXECUTION_STATE] ${symbol}: ${card.signalState} (ignition=${card.ignitionProbability} readiness=${readiness})`);
     
@@ -394,7 +395,6 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         card.expectedMovePercent = targets.expectedMovePercent;
         card.targetPrices = targets.targetPrices;
         card.riskReward = targets.riskReward;
-        card.tradeReadinessScore = readiness;
         
         setups.push({
           symbol,
