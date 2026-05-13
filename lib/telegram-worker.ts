@@ -129,36 +129,22 @@ async function processAlertQueueAsync() {
         // Just verify we have complete price/target data for formatting
         const validationErrors: string[] = [];
         
-        // Check: 15M execution state must be valid
-        if (!job.execution15mState || job.execution15mState === "CHOP" || job.execution15mState === "COMPRESSING") {
-          validationErrors.push(`15M state=${job.execution15mState || "undefined"}`);
+        // Check: Price must be valid
+        if (!job.price || job.price <= 0) {
+          validationErrors.push(`invalid price=${job.price}`);
         }
         
-        // Check: Price source must not be fallback (CoinGecko)
-        if (job.source === "coingecko") {
-          validationErrors.push("fallback price source (CoinGecko)");
+        // Check: Must have target prices
+        if (!job.targetPrices?.tp1 || !job.targetPrices?.sl) {
+          validationErrors.push(`missing TP1 or SL`);
         }
         
         if (validationErrors.length > 0) {
           console.log(
-            `[ALERT_VALIDATION_WARNING] ${job.symbol}: ${validationErrors.join(", ")} (proceeding anyway)`
+            `[ALERT_VALIDATION_ERROR] ${job.symbol}: ${validationErrors.join(", ")} - skipping alert`
           );
-          // v13.0.0: Don't block on validation warnings - Telegram is notification-only
-        }
-
-        // v13.0.0: CHECK PAYLOAD COMPLETENESS (warn but don't block)
-        if (
-          job.score == null ||
-          Number.isNaN(job.score) ||
-          !job.price ||
-          !job.targetPrices?.tp1 ||
-          !job.targetPrices?.tp2 ||
-          !job.targetPrices?.sl
-        ) {
-          console.log(
-            `[ALERT_PAYLOAD_INCOMPLETE] ${job.symbol}: missing data (score=${job.score}, price=${job.price}, tp1=${job.targetPrices?.tp1})`
-          );
-          // v13.0.0: Telegram proceeds anyway - notification-only layer
+          // v17.6.0: Skip only if critical price/target data is missing
+          continue;
         }
 
         // Check cooldown
