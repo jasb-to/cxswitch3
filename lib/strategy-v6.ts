@@ -139,24 +139,24 @@ export type AssetProfile = {
 const ASSET_PROFILES: Record<string, AssetProfile> = {
   BTC: {
     displacementATRMultiplier: 0.6,
-    emaSlopeNormalization: 0.7,
+    emaSlopeNormalization: 0.82,         // v18.0.0: Increased from 0.70 to allow BTC trend participation
     volatilityNormalization: 0.65,
-    continuationBiasWeight: 1.35,
-    impulseWeight: 0.92,               // v17.9.0: Increased from 0.75 for earlier SNIPER transitions
+    continuationBiasWeight: 1.15,        // v18.0.0: Reduced from 1.35 to increase expansion responsiveness
+    impulseWeight: 1.05,                 // v18.0.0: Increased from 0.92 for earlier trend transitions
   },
   ETH: {
     displacementATRMultiplier: 1.0,
     emaSlopeNormalization: 1.0,
     volatilityNormalization: 1.0,
     continuationBiasWeight: 1.0,
-    impulseWeight: 1.08,               // v17.9.0: Increased from 0.88 for aggressive early ignition
+    impulseWeight: 1.08,
   },
   SOL: {
     displacementATRMultiplier: 1.15,
-    emaSlopeNormalization: 1.2,
+    emaSlopeNormalization: 1.00,         // v18.0.0: Reduced from 1.20 to allow earlier participation
     volatilityNormalization: 1.25,
     continuationBiasWeight: 0.9,
-    impulseWeight: 1.45,               // v17.9.0: Increased from 1.3 for fastest momentum transitions
+    impulseWeight: 1.45,
   },
 };
 
@@ -472,11 +472,84 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         card.setupStatus = "BUILDING";
         card.signalState = "NONE";
     }
+  }
+
+  // v18.0.0: CROSS-ASSET EXPANSION SYNCHRONIZATION BONUS
+  // If 2+ assets have volatilityComponent > 28 AND aligned directions, add +4 bonus to each
+  const expansionAssets = cards.filter(c => 
+    c.volatilityLevel !== null && 
+    c.volatilityLevel > 28 &&
+    c.direction !== "NEUTRAL"
+  );
+  
+  const longExpanding = expansionAssets.filter(c => c.direction === "LONG");
+  const shortExpanding = expansionAssets.filter(c => c.direction === "SHORT");
+  
+  let expansionBonus = 0;
+  if (longExpanding.length >= 2) {
+    expansionBonus = 4;
+    console.log(`[EXPANSION_SYNC] LONG: ${longExpanding.map(c => c.symbol).join("/")} expanding together - +4 bonus`);
+    longExpanding.forEach(card => {
+      card.ignitionProbability = Math.min(100, card.ignitionProbability + expansionBonus);
+    });
+  }
+  
+  if (shortExpanding.length >= 2) {
+    expansionBonus = 4;
+    console.log(`[EXPANSION_SYNC] SHORT: ${shortExpanding.map(c => c.symbol).join("/")} expanding together - +4 bonus`);
+    shortExpanding.forEach(card => {
+      card.ignitionProbability = Math.min(100, card.ignitionProbability + expansionBonus);
+    });
+  }
+
+  // v18.0.0: RE-DERIVE EXECUTION STATES AFTER EXPANSION BONUS
+  for (const card of cards) {
+    if (card.ignitionProbability === 0) continue; // Skip minimal cards
     
-    // v16.0.0: Generate setups for ALL executable states
-    // ACTIVE_CONFIRMED and ACTIVE_SNIPER only (BUILDING/NONE don't trigger trades)
+    // Check if ignition changed due to expansion bonus
+    const newSignalState = deriveExecutionState(card.ignitionProbability);
+    const oldSignalState = card.signalState;
+    
+    if (newSignalState !== oldSignalState) {
+      console.log(`[STATE_UPGRADE] ${card.symbol}: ${oldSignalState} → ${newSignalState} (ignition=${card.ignitionProbability} after expansion bonus)`);
+      card.signalState = newSignalState;
+      
+      // Re-derive readiness with new state
+      const readiness = deriveReadiness(card.signalState, card.ignitionProbability);
+      card.displayScore = readiness;
+      card.confidence = readiness;
+      card.tradeReadinessScore = readiness;
+      
+      // Update mode/setupStatus
+      switch (card.signalState) {
+        case "ACTIVE_CONFIRMED":
+          card.mode = "CONFIRMED";
+          card.setupStatus = "CONFIRMED";
+          break;
+        case "ACTIVE_SNIPER":
+          card.mode = "SNIPER";
+          card.setupStatus = "SNIPER";
+          break;
+        case "BUILDING":
+          card.mode = "NONE";
+          card.setupStatus = "BUILDING";
+          break;
+        case "NONE":
+        default:
+          card.mode = "NONE";
+          card.setupStatus = "BUILDING";
+          break;
+      }
+    }
+  }
+
+  // Generate setups after expansion bonus applied
+  for (const card of cards) {
+    if (card.ignitionProbability === 0) continue; // Skip minimal cards
+    
     if (card.signalState === "ACTIVE_CONFIRMED" || card.signalState === "ACTIVE_SNIPER") {
       if (card.direction !== "NEUTRAL") {
+        const readiness = deriveReadiness(card.signalState, card.ignitionProbability);
         card.confidence = Math.min(readiness, 99);
         card.lastSignalTime = Date.now();
         card.notes = `${card.signalState} ${card.direction} - ${card.marketClass}`;
@@ -488,7 +561,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         card.riskReward = targets.riskReward;
         
         setups.push({
-          symbol,
+          symbol: card.symbol,
           mode: card.mode as "SNIPER" | "CONFIRMED",
           direction: card.direction,
           score: readiness,
@@ -501,7 +574,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
             trend4H: card.htf4hTrend !== "NEUTRAL",
           },
         });
-        console.log(`[SETUP_GENERATED] ${symbol} ${card.signalState} ${card.direction} | readiness=${readiness} marketClass=${card.marketClass}`);
+        console.log(`[SETUP_GENERATED] ${card.symbol} ${card.signalState} ${card.direction} | readiness=${readiness} marketClass=${card.marketClass}`);
       }
     } else {
       // v16.0.0: No early return - still track reason for BUILDING/NONE
@@ -514,7 +587,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         blockReason = `NONE - ignition ${card.ignitionProbability}% (need 20% for BUILDING)`;
       }
       card.blockReason = blockReason;
-      console.log(`[NO_SETUP] ${symbol} ${card.signalState} | ${blockReason}`);
+      console.log(`[NO_SETUP] ${card.symbol} ${card.signalState} | ${blockReason}`);
     }
   }
 
