@@ -824,17 +824,13 @@ function calculateIgnitionProbability(
     reasons.push(`High vol persistence penalty: -${volatilityPersistencePenalty.toFixed(2)}`);
   }
 
-  // v18.1.0: HTF BIAS SCALAR CONVERSION
-  // HTF is NO LONGER a gate - it's a continuous bias modifier
-  // Converts HTF directional alignment into a multiplicative confidence scalar
-  // 
-  // HTF BEARISH  → -4 raw score → -0.20 bias scalar
-  // HTF NEUTRAL  →  0 raw score →  0.00 bias scalar  
-  // HTF BULLISH  → +4 raw score → +0.20 bias scalar
-  //
-  // Applied AFTER base ignition, NOT as additive suppression
+  // v18.2.0: HTF BIAS SCALAR - ASSET ROLE BASED
+  // Different assets interpret HTF differently:
+  // - ETH (ANCHOR): No HTF influence at all (pure momentum)
+  // - BTC (MACRO_PARTICIPANT): HTF ±20% bias
+  // - SOL (MOMENTUM_AMPLIFIER): HTF ±25% bias
   
-  // Step 1: Calculate HTF raw alignment score (same as before: ±4 or 0)
+  // Step 1: Calculate HTF raw alignment score (same for all: ±4 or 0)
   let htfRawScore = 0;
   if (htf1hAlignment) {
     htfRawScore = 4;
@@ -844,17 +840,13 @@ function calculateIgnitionProbability(
     reasons.push("1H divergent");
   }
   
-  // Step 2: Convert HTF raw score to bias scalar
-  // Raw score of ±4 → ±0.20 bias (5% multiplier per point)
-  // This allows up to 20% boost/reduction while keeping multiplier close to 1.0
-  const htfBiasScalar = (htfRawScore * 0.05); // Range: -0.20 to +0.20
-  
-  // Step 3: Clamp to safe bounds to prevent extreme multiplication
-  const clampedHtfBias = Math.max(-0.20, Math.min(0.20, htfBiasScalar));
+  // Step 2: Apply asset-role-specific HTF bias
+  const roleBasedHtfBias = applyAssetRoleHTFBias(symbol, htfRawScore);
+  const assetRole = getRoleDescription(symbol);
   
   console.log(
-    `[HTF_BIAS] ${symbol} ${direction}: raw=${htfRawScore} → scalar=${clampedHtfBias.toFixed(3)} ` +
-    `(before: ${probabilityBase.toFixed(1)}, multiplier: ${(1 + clampedHtfBias).toFixed(3)})`
+    `[HTF_BIAS_v18.2.0] ${symbol} (${assetRole}): raw=${htfRawScore} → scalar=${roleBasedHtfBias.toFixed(3)} ` +
+    `(before: ${probabilityBase.toFixed(1)}, multiplier: ${(1 + roleBasedHtfBias).toFixed(3)})`
   );
 
   // Displacement quality modifier
@@ -875,33 +867,31 @@ function calculateIgnitionProbability(
   // Keep continuous and floating-point (no discrete bands)
   const adjustedDisplacementModifier = displacementModifier * 1.25;
 
-  // v18.1.0: APPLY HTF BIAS AS MULTIPLICATIVE SCALAR
-  // Formula: finalScore = baseScore * (1 + htfBias)
-  // This allows HTF to modulate confidence without gating execution
+  // v18.2.0: APPLY ASSET ROLE-BASED HTF BIAS AS MULTIPLICATIVE SCALAR
+  // Formula: finalScore = baseScore * (1 + roleBasedHtfBias)
   // 
-  // Examples:
-  // baseScore=54, HTF bias=-0.20 → 54 * 0.80 = 43.2 (less confidence)
-  // baseScore=54, HTF bias=+0.20 → 54 * 1.20 = 64.8 (more confidence)
-  // baseScore=54, HTF bias=0.00 → 54 * 1.00 = 54.0 (neutral)
+  // ETH (ANCHOR): No multiplication (roleBasedHtfBias = 0, multiplier = 1.0)
+  // BTC (MACRO_PARTICIPANT): Up to ±20% (roleBasedHtfBias = ±0.20, multiplier = 0.80-1.20)
+  // SOL (MOMENTUM_AMPLIFIER): Up to ±25% (roleBasedHtfBias = ±0.25, multiplier = 0.75-1.25)
   
-  const htfAdjustedBase = probabilityBase * (1 + clampedHtfBias);
+  const htfAdjustedBase = probabilityBase * (1 + roleBasedHtfBias);
   
   // v17.9.0: Displacement contribution (already adjusted)
-  // v18.1.0: NO HTF ADDITIVE MODIFIER - removed + htfModifier
+  // v18.1.0: NO HTF ADDITIVE MODIFIER - removed
 
   // Final ignition probability with continuous floating-point precision
-  // HTF NO LONGER blocks SNIPER or forces COUNTER_TREND classification
+  // All assets: momentum-driven SNIPER/CONFIRMED (no role-based gating)
   const probability = Math.max(0, Math.min(100, htfAdjustedBase + adjustedDisplacementModifier));
 
-  // v18.1.0: LOGGING UPDATED - Shows bias scalar application
+  // v18.2.0: LOGGING UPDATED - Shows asset role and role-specific HTF bias
   console.log(
-    `[IGNITION_COMPONENTS] ${symbol} ${direction}:` +
+    `[IGNITION_COMPONENTS] ${symbol} (${assetRole}) ${direction}:` +
     ` ema=${emaComponent.toFixed(2)}` +
     ` vol=${volatilityComponent.toFixed(2)}` +
     ` stoch=${stochComponent.toFixed(2)}` +
     ` impulse=${volumeComponent.toFixed(2)}` +
     ` continuation=${continuationComponent.toFixed(2)}` +
-    ` htf_bias=${clampedHtfBias.toFixed(3)}x` +
+    ` htf_bias=${roleBasedHtfBias.toFixed(3)}x` +
     ` disp=${adjustedDisplacementModifier.toFixed(2)}` +
     ` → final=${probability.toFixed(2)}`
   );
@@ -922,13 +912,75 @@ function calculateIgnitionProbability(
 }
 
 /**
- * v7.4.0: SNIPER/CONFIRMED TIMEFRAME RESTRUCTURE
+ * v18.2.0: Asset Role System
  * 
- * SNIPER: Uses 1H as structural context (no 4H requirement)
- * - 1H alignment provides directional context
- * - 15M provides execution structure (BREAKOUT_READY or EXPANDING)
- * - 5M provides ignition confirmation
+ * One engine, three behavioral interpretations
+ * ETH = Anchor (no HTF influence)
+ * BTC = Macro Participant (±20% HTF bias)
+ * SOL = Momentum Amplifier (±25% HTF bias)
+ */
+function getAssetRole(symbol: string): "ANCHOR" | "MACRO_PARTICIPANT" | "MOMENTUM_AMPLIFIER" {
+  switch (symbol.split("/")[0]) {
+    case "ETH":
+      return "ANCHOR";
+    case "BTC":
+      return "MACRO_PARTICIPANT";
+    case "SOL":
+      return "MOMENTUM_AMPLIFIER";
+    default:
+      return "ANCHOR"; // Default to ETH-like behavior
+  }
 }
+
+/**
+ * v18.2.0: Calculate HTF bias scalar based on asset role
+ * 
+ * ANCHOR (ETH): No HTF influence whatsoever
+ * MACRO_PARTICIPANT (BTC): ±20% bias (0.05 multiplier per point, clamped to ±0.20)
+ * MOMENTUM_AMPLIFIER (SOL): ±25% bias (0.06 multiplier per point, clamped to ±0.25)
+ */
+function applyAssetRoleHTFBias(symbol: string, htfRawScore: number): number {
+  const role = getAssetRole(symbol);
+  
+  switch (role) {
+    case "ANCHOR":
+      // ETH: No HTF influence - purely momentum-driven
+      return 0;
+    
+    case "MACRO_PARTICIPANT":
+      // BTC: Respects macro structure with ±20% bias range
+      // Raw score of ±4 → ±0.20 bias (5% per point)
+      const btcBias = htfRawScore * 0.05;
+      return Math.max(-0.20, Math.min(0.20, btcBias));
+    
+    case "MOMENTUM_AMPLIFIER":
+      // SOL: More responsive to macro with ±25% bias range
+      // Raw score of ±4 → ±0.25 bias (6% per point)
+      const solBias = htfRawScore * 0.06;
+      return Math.max(-0.25, Math.min(0.25, solBias));
+    
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Get human-readable asset role name for logging
+ */
+function getRoleDescription(symbol: string): string {
+  const role = getAssetRole(symbol);
+  switch (role) {
+    case "ANCHOR":
+      return "ANCHOR (momentum-only)";
+    case "MACRO_PARTICIPANT":
+      return "MACRO_PARTICIPANT (HTF ±20%)";
+    case "MOMENTUM_AMPLIFIER":
+      return "MOMENTUM_AMPLIFIER (HTF ±25%)";
+    default:
+      return "UNKNOWN";
+  }
+}
+
 
 /**
  * v8.0.4 CRITICAL FIX: Check SNIPER conditions before execution
