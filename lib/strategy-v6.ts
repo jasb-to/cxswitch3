@@ -824,15 +824,38 @@ function calculateIgnitionProbability(
     reasons.push(`High vol persistence penalty: -${volatilityPersistencePenalty.toFixed(2)}`);
   }
 
-  // HTF alignment modifier
-  let htfModifier = 0;
+  // v18.1.0: HTF BIAS SCALAR CONVERSION
+  // HTF is NO LONGER a gate - it's a continuous bias modifier
+  // Converts HTF directional alignment into a multiplicative confidence scalar
+  // 
+  // HTF BEARISH  → -4 raw score → -0.20 bias scalar
+  // HTF NEUTRAL  →  0 raw score →  0.00 bias scalar  
+  // HTF BULLISH  → +4 raw score → +0.20 bias scalar
+  //
+  // Applied AFTER base ignition, NOT as additive suppression
+  
+  // Step 1: Calculate HTF raw alignment score (same as before: ±4 or 0)
+  let htfRawScore = 0;
   if (htf1hAlignment) {
-    htfModifier = 6;
+    htfRawScore = 4;
     reasons.push("1H aligned");
   } else {
-    htfModifier = -4;
-    reasons.push("1H divergent (-4)");
+    htfRawScore = -4;
+    reasons.push("1H divergent");
   }
+  
+  // Step 2: Convert HTF raw score to bias scalar
+  // Raw score of ±4 → ±0.20 bias (5% multiplier per point)
+  // This allows up to 20% boost/reduction while keeping multiplier close to 1.0
+  const htfBiasScalar = (htfRawScore * 0.05); // Range: -0.20 to +0.20
+  
+  // Step 3: Clamp to safe bounds to prevent extreme multiplication
+  const clampedHtfBias = Math.max(-0.20, Math.min(0.20, htfBiasScalar));
+  
+  console.log(
+    `[HTF_BIAS] ${symbol} ${direction}: raw=${htfRawScore} → scalar=${clampedHtfBias.toFixed(3)} ` +
+    `(before: ${probabilityBase.toFixed(1)}, multiplier: ${(1 + clampedHtfBias).toFixed(3)})`
+  );
 
   // Displacement quality modifier
   const { displacementModifier, displacementReason } = calculateDisplacementQuality(
@@ -852,14 +875,25 @@ function calculateIgnitionProbability(
   // Keep continuous and floating-point (no discrete bands)
   const adjustedDisplacementModifier = displacementModifier * 1.25;
 
-  // v17.8.0: REDUCED ETH IMPULSE SENSITIVITY
-  // ETH profile now uses 0.88 instead of 1.0 for impulse weight
-  // This is already applied in applyImpulseWeight() calls above
+  // v18.1.0: APPLY HTF BIAS AS MULTIPLICATIVE SCALAR
+  // Formula: finalScore = baseScore * (1 + htfBias)
+  // This allows HTF to modulate confidence without gating execution
+  // 
+  // Examples:
+  // baseScore=54, HTF bias=-0.20 → 54 * 0.80 = 43.2 (less confidence)
+  // baseScore=54, HTF bias=+0.20 → 54 * 1.20 = 64.8 (more confidence)
+  // baseScore=54, HTF bias=0.00 → 54 * 1.00 = 54.0 (neutral)
+  
+  const htfAdjustedBase = probabilityBase * (1 + clampedHtfBias);
+  
+  // v17.9.0: Displacement contribution (already adjusted)
+  // v18.1.0: NO HTF ADDITIVE MODIFIER - removed + htfModifier
 
   // Final ignition probability with continuous floating-point precision
-  const probability = Math.max(0, Math.min(100, probabilityBase + htfModifier + adjustedDisplacementModifier));
+  // HTF NO LONGER blocks SNIPER or forces COUNTER_TREND classification
+  const probability = Math.max(0, Math.min(100, htfAdjustedBase + adjustedDisplacementModifier));
 
-  // v17.9.0: COMPONENT PRECISION LOGGING (updated with adjusted displacement)
+  // v18.1.0: LOGGING UPDATED - Shows bias scalar application
   console.log(
     `[IGNITION_COMPONENTS] ${symbol} ${direction}:` +
     ` ema=${emaComponent.toFixed(2)}` +
@@ -867,7 +901,7 @@ function calculateIgnitionProbability(
     ` stoch=${stochComponent.toFixed(2)}` +
     ` impulse=${volumeComponent.toFixed(2)}` +
     ` continuation=${continuationComponent.toFixed(2)}` +
-    ` htf=${htfModifier}` +
+    ` htf_bias=${clampedHtfBias.toFixed(3)}x` +
     ` disp=${adjustedDisplacementModifier.toFixed(2)}` +
     ` → final=${probability.toFixed(2)}`
   );
@@ -1084,6 +1118,14 @@ function classifyMarketStructure(params: {
     displacement,
   } = params;
 
+  // v18.1.0: MARKET STRUCTURE CLASSIFICATION - INFORMATIONAL ONLY
+  // 
+  // Classification is now PURELY CONTEXTUAL and does NOT gate execution.
+  // All execution decisions are driven by ignition probability and direction (from momentum).
+  // HTF is converted to a bias scalar - it never blocks SNIPER or forces COUNTER_TREND classification.
+  //
+  // Classification only provides market context for analysis/UI.
+
   // CHOP: No directional setup
   if (execution15mState === "CHOP" || execution15mState === "COMPRESSING") {
     if ((emaSlope ?? 0) < 2 && (volatilityLevel ?? 50) < 40) {
@@ -1098,22 +1140,24 @@ function classifyMarketStructure(params: {
     }
   }
 
-  // Neutral direction → can't classify
+  // Neutral direction → can't classify (informational only)
   if (direction === "NEUTRAL") {
     return "RANGE";
   }
 
-  // Check macro alignment
+  // Check macro alignment (for classification context only, NOT gating)
   const isTrendFollowing =
     (direction === "LONG" && htf4hTrend === "BULLISH") ||
     (direction === "SHORT" && htf4hTrend === "BEARISH");
 
-  // TREND_FOLLOWING
+  // TREND_FOLLOWING: Momentum aligned with HTF
   if (isTrendFollowing) {
     return "TREND_FOLLOWING";
   }
 
   // EARLY_REVERSAL: Contra-HTF with elite conditions
+  // v18.1.0: These are classifications, not gates
+  // An EARLY_REVERSAL doesn't generate SNIPER - ignition generates SNIPER
   if (!isTrendFollowing && htf4hTrend && htf4hTrend !== "NEUTRAL") {
     const isEliteReversal =
       (displacement ?? 0) >= 6 &&
@@ -1127,12 +1171,15 @@ function classifyMarketStructure(params: {
     }
   }
 
-  // TRANSITION: Mixed signals
+  // TRANSITION: Mixed signals (not a gate, just context)
   if (!isTrendFollowing && (htf4hTrend === "NEUTRAL" || !htf4hTrend)) {
     return "TRANSITION";
   }
 
-  // COUNTER_TREND: Contra-HTF without elite conditions
+  // v18.1.0: COUNTER_TREND IS NOW INFORMATIONAL ONLY
+  // It does NOT force BUILDING or suppress SNIPER/CONFIRMED
+  // Execution decisions are determined ONLY by ignition probability and direction
+  // HTF bias is already applied as a multiplicative scalar in calculateIgnitionProbability
   if (!isTrendFollowing) {
     return "COUNTER_TREND";
   }
