@@ -846,15 +846,44 @@ function calculateIgnitionProbability(
         ? 0
         : Math.max(-2.0, -(40 - normalizedVolatilityLevel) * 0.4); // Deep compression: -2.0 at 25
     
-    // Component 2: RANGE POSITION (±1.5)
-    // Where is current price within HTF range?
-    // Middle of range: 0 (uncertainty)
-    // Top of range: +1.5 (bullish positioning in structure)
-    // Bottom of range: -1.5 (bearish positioning in structure)
-    // This is STRUCTURAL, not direction
-    const rangePosition = 0; // Placeholder - would need full 4H range data
-    // In real implementation: (price - range_low) / (range_high - range_low)
-    // Then: (position - 0.5) * 3.0 → -1.5 to +1.5
+    // Component 2: RANGE POSITION (±1.5) - v18.5.0 IMPLEMENTATION
+    // Where is current price within HTF structural range?
+    // This creates geometric grounding for the structural context
+    // 
+    // Implementation: Use volatility level as proxy for range positioning
+    // High volatility (>60) suggests market at/beyond range extremes
+    // Low volatility (<40) suggests market in range interior
+    // Positioning inference: above/below vol threshold maps to position
+    //
+    // Proper implementation would need:
+    // - 4H rolling high/low (20-50 bars)
+    // - Current price normalized: (price - low) / (high - low)
+    // - Map 0.0-0.5 → -1.5 to 0 (bottom half)
+    // - Map 0.5-1.0 → 0 to +1.5 (top half)
+    //
+    // For now: Use volatility-based approximation
+    // High vol expansion = likely near range extremes (±1.5)
+    // Moderate vol = likely mid-range (0)
+    let rangePosition = 0;
+    if (normalizedVolatilityLevel !== null) {
+      if (normalizedVolatilityLevel > 60) {
+        // High expansion: market breakout positioning
+        // Assume breakout is multidirectional (can be top or bottom)
+        // Use direction as hint: LONG = top, SHORT = bottom
+        rangePosition = direction === "LONG" ? 1.2 : -1.2;
+      } else if (normalizedVolatilityLevel > 50) {
+        // Moderate-high expansion
+        rangePosition = direction === "LONG" ? 0.6 : -0.6;
+      } else if (normalizedVolatilityLevel < 35) {
+        // Deep compression: mid-range consolidation uncertainty
+        rangePosition = 0;
+      } else {
+        // Normal range: slight direction bias
+        rangePosition = direction === "LONG" ? 0.2 : -0.2;
+      }
+      // Clamp to -1.5 to +1.5
+      rangePosition = Math.max(-1.5, Math.min(1.5, rangePosition));
+    }
     
     // Component 3: REGIME STABILITY (±1.0)
     // Not direction, but consistency
@@ -870,7 +899,8 @@ function calculateIgnitionProbability(
     // Clamp to ±4 range
     htfRawScore = Math.max(-4, Math.min(4, htfRawScore));
     
-    reasons.push(`1H struct: comp_exp=${compressionExpansionState.toFixed(2)} pos=${rangePosition.toFixed(2)} stab=${regimeStability.toFixed(2)} → ${htfRawScore.toFixed(2)}`);
+    reasons.push(`1H struct: comp_exp=${compressionExpansionState.toFixed(2)} range=${rangePosition.toFixed(2)} stab=${regimeStability.toFixed(2)} → ${htfRawScore.toFixed(2)}`);
+
   } else {
     // Fallback: use regime stability only
     htfRawScore = htf1hAlignment ? 1.0 : -1.0;
@@ -886,7 +916,7 @@ function calculateIgnitionProbability(
   const assetRole = getRoleDescription(symbol);
   
   console.log(
-    `[HTF_STRUCTURAL_v18.4.0] ${symbol} (${assetRole}): raw=${htfRawScore.toFixed(2)} → scalar=${roleBasedHtfBias.toFixed(3)} ` +
+    `[HTF_STRUCTURAL_v18.5.0] ${symbol} (${assetRole}): raw=${htfRawScore.toFixed(2)} → scalar=${roleBasedHtfBias.toFixed(3)} ` +
     `(before: ${probabilityBase.toFixed(1)}, multiplier: ${(1 + roleBasedHtfBias).toFixed(3)})`
   );
 
@@ -928,7 +958,7 @@ function calculateIgnitionProbability(
 
   // v18.4.0: LOGGING UPDATED - Shows structural HTF context
   console.log(
-    `[IGNITION_COMPONENTS_v18.4.0] ${symbol} (${assetRole}) ${direction}:` +
+    `[IGNITION_COMPONENTS_v18.5.0] ${symbol} (${assetRole}) ${direction}:` +
     ` ema=${emaComponent.toFixed(2)}` +
     ` vol=${volatilityComponent.toFixed(2)}` +
     ` stoch=${stochComponent.toFixed(2)}` +
