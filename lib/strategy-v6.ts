@@ -678,6 +678,53 @@ function calculateDisplacementQuality(
 }
 
 /**
+ * v18.2.0: Get asset role for HTF bias interpretation
+ * Returns: ANCHOR | MACRO_PARTICIPANT | MOMENTUM_AMPLIFIER
+ */
+function getAssetRole(symbol: string): "ANCHOR" | "MACRO_PARTICIPANT" | "MOMENTUM_AMPLIFIER" {
+  if (symbol === "ETH" || symbol === "ETH/USD") return "ANCHOR";
+  if (symbol === "BTC" || symbol === "BTC/USD") return "MACRO_PARTICIPANT";
+  if (symbol === "SOL" || symbol === "SOL/USD") return "MOMENTUM_AMPLIFIER";
+  return "MACRO_PARTICIPANT"; // Default for unknown assets
+}
+
+/**
+ * v18.2.0: Get human-readable role description
+ */
+function getRoleDescription(symbol: string): string {
+  const role = getAssetRole(symbol);
+  if (role === "ANCHOR") return "ANCHOR (momentum-only)";
+  if (role === "MACRO_PARTICIPANT") return "MACRO_PARTICIPANT (HTF ±20%)";
+  if (role === "MOMENTUM_AMPLIFIER") return "MOMENTUM_AMPLIFIER (HTF ±25%)";
+  return role;
+}
+
+/**
+ * v18.2.0: Apply asset role-specific HTF bias to raw HTF score
+ * Returns scalar bias to multiply final ignition score
+ */
+function applyAssetRoleHTFBias(symbol: string, htfRawScore: number): number {
+  const role = getAssetRole(symbol);
+  
+  if (role === "ANCHOR") {
+    // ETH: No HTF influence, returns 0 bias
+    return 0;
+  } else if (role === "MACRO_PARTICIPANT") {
+    // BTC: ±20% bias range (scalar: ±0.20)
+    // Formula: clamp(htfScore * 0.05, -0.20, +0.20)
+    const bias = htfRawScore * 0.05;
+    return Math.max(-0.20, Math.min(0.20, bias));
+  } else if (role === "MOMENTUM_AMPLIFIER") {
+    // SOL: ±25% bias range (scalar: ±0.25)
+    // Formula: clamp(htfScore * 0.06, -0.25, +0.25)
+    const bias = htfRawScore * 0.06;
+    return Math.max(-0.25, Math.min(0.25, bias));
+  }
+  
+  return 0; // Safe default
+}
+
+/**
  * v7.5.2: Calculate ignition probability (probabilistic 5M signal)
  * Returns confidence score 0-100 for imminent short-term execution
  */
