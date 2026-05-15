@@ -456,22 +456,6 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     
     console.log(`[EXECUTION_STATE] ${symbol}: ${card.signalState} (ignition=${card.ignitionProbability} readiness=${readiness})`);
     
-    // v20.3.0: POST-SNIPER CLASSIFIER (Stage B - Trade type classification)
-    // Classifies SNIPER events without blocking or suppressing them
-    if (card.ignitionProbability >= 20) {
-      // Only classify when BUILDING/SNIPER state (impulse detected)
-      card.sniperTradeType = classifySniperTradeType(
-        impulseStrengthScore,
-        emaComponent,
-        stochComponent,
-        volatilityComponent,
-        card.direction,
-        card.htf4hTrend,
-        card.emaSlope
-      );
-      console.log(`[SNIPER_CLASSIFICATION_v20.3.0] ${symbol}: ${card.sniperTradeType}`);
-    }
-    
     // Map signalState to mode/setupStatus for UI compatibility
     switch (card.signalState) {
       case "ACTIVE_CONFIRMED":
@@ -1837,31 +1821,45 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     emaPressure,  // v9.2.0: Multi-timeframe ATR-normalized pressure
     volatilityLevel,
     
-    // v7.5.1: Probabilistic 5M ignition with observability
-    ignitionProbability: (() => {
-      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf4hTrend, symbol, htf1hAlignment, execution15mState); // v17.7.0: added symbol for normalization
-      // Log ignition breakdown for transparency (v15.0.0: no macro penalty)
-      // v17.7.0: Add normalized feature logging
+  // v7.5.1: Probabilistic 5M ignition with observability
+  // v20.3.0: Extract once and use for both probability and classifier
+  ...(() => {
+      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf4hTrend, symbol, htf1hAlignment, execution15mState);
+      
+      // v20.3.0: POST-SNIPER CLASSIFIER (Stage B - Trade type classification)
+      // Classifies SNIPER events without blocking or suppressing them
+      const sniperTradeType = result.probability >= 20 
+        ? classifySniperTradeType(
+            result.breakdown.stochComponent +
+            result.breakdown.emaComponent +
+            result.breakdown.volatilityComponent +
+            result.breakdown.impulseContinuationBoost,
+            result.breakdown.emaComponent,
+            result.breakdown.stochComponent,
+            result.breakdown.volatilityComponent,
+            direction,
+            htf4hTrend,
+            emaSlope
+          )
+        : null;
+      
+      // Log ignition breakdown for transparency
       const profile = getAssetProfile(symbol);
       const normalizedEma = normalizeEmaSlope(emaSlope, symbol);
       const normalizedVol = normalizeVolatilityLevel(volatilityLevel, symbol);
       console.log(
         `[NORMALIZED] ${symbol}: disp=n/a ema=${normalizedEma?.toFixed(2) ?? "—"} vol=${normalizedVol?.toFixed(2) ?? "—"} cont=${profile.continuationBiasWeight.toFixed(2)} imp=${profile.impulseWeight.toFixed(2)}`
       );
-      console.log(
-        `[IGNITION] ${symbol} ${direction}: prob=${result.probability} [Stoch:${result.breakdown.stochComponent} EMA:${result.breakdown.emaComponent} Vol:${result.breakdown.volatilityComponent} Disp:${result.breakdown.displacementComponent} EMAAccel:${result.breakdown.emaAccelerationDelta} Impulse:+${result.breakdown.impulseContinuationBoost}] | ${result.reason}`
-      );
-      // Store breakdown for debugging
-      if (!this) {
-        // During initialization, store separately - will be assigned after
+      
+      if (sniperTradeType) {
+        console.log(`[SNIPER_CLASSIFICATION_v20.3.0] ${symbol}: ${sniperTradeType}`);
       }
-      return result.probability;
-    })(),
-    
-    // v7.5.1: Store breakdown for UI debugging
-    scoreBreakdown: (() => {
-      const result = calculateIgnitionProbability(stochRsi, emaSlope, volatilityLevel, direction, htf4hTrend, symbol, htf1hAlignment, execution15mState); // v17.7.0: added symbol
-      return result.breakdown;
+      
+      return {
+        ignitionProbability: result.probability,
+        scoreBreakdown: result.breakdown,
+        sniperTradeType
+      };
     })(),
 
     // HTF alignment data
