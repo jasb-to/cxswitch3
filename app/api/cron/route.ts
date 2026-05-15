@@ -110,6 +110,19 @@ export async function GET(req: NextRequest) {
         stateTransitions: alertSymbols.length,
         alertsEmitted: alertSymbols.filter(s => newCards.find(c => c.symbol === s && (c.signalState === "ACTIVE_SNIPER" || c.signalState === "ACTIVE_CONFIRMED"))).length,
       },
+      // v20.4.0: Include card details for diagnostic verification
+      cards: newCards.map(card => ({
+        symbol: card.symbol,
+        price: card.price,
+        direction: card.direction,
+        signalState: card.signalState,
+        ignitionProbability: card.ignitionProbability,
+        sniperTradeType: card.sniperTradeType,
+        tradeReadinessScore: card.tradeReadinessScore,
+        scoreBreakdown: card.scoreBreakdown,
+        htf4hTrend: card.htf4hTrend,
+        emaSlope: card.emaSlope,
+      })),
     });
   } catch (error) {
     console.error('[CRON ERROR]', error);
