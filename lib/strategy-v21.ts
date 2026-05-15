@@ -124,6 +124,9 @@ export type Setup = {
   score: number;
   reason: string;
   price: number;
+  entry: number;  // GUARANTEED: last candle close
+  tp: number;     // GUARANTEED: entry ± volatility%
+  sl: number;     // GUARANTEED: entry ∓ volatility%
   momentum: {
     stochRsiSignal: string;
     emaStackSignal: string;
@@ -451,13 +454,26 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
           continue;
         }
         
+        // v21.2.1: GUARANTEED ENTRY/TP/SL - Fallback calculation if missing
+        const entry = priceData.price;
+        const volFactor = (volatilityLevel || 30) / 100; // Default 30% volatility if null
+        const tp = direction === "LONG" 
+          ? entry * (1 + volFactor)
+          : entry * (1 - volFactor);
+        const sl = direction === "LONG"
+          ? entry * (1 - volFactor)
+          : entry * (1 + volFactor);
+        
         setups.push({
           symbol,
           mode: "SNIPER",
           direction: direction as "LONG" | "SHORT",
           score: Math.min(85, 100),
           reason: `${signalState} ${direction} - impulse=${ignitionProbability.toFixed(0)}`,
-          price: priceData.price,
+          price: entry,
+          entry, // GUARANTEED: last candle close
+          tp,    // GUARANTEED: entry ± volatility%
+          sl,    // GUARANTEED: entry ∓ volatility%
           momentum: {
             stochRsiSignal: `Stoch RSI: ${stochRsi?.toFixed(1) ?? "—"}`,
             emaStackSignal: direction === "LONG" ? "8 EMA accelerating up" : "8 EMA accelerating down",
@@ -470,6 +486,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 
         console.log(
           `[STATE] SETUP_GENERATED ${symbol} ACTIVE_SNIPER ${direction} | ` +
+          `entry=${entry.toFixed(2)} tp=${tp.toFixed(2)} sl=${sl.toFixed(2)} | ` +
           `impulse=${ignitionProbability.toFixed(1)}`
         );
       } else {
