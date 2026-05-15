@@ -206,26 +206,6 @@ function computeVolumeComponent(priceData: PriceData): number {
   return Math.min(10, Math.max(0, (volumeRatio - 1) * 10));
 }
 
-function computeEmaSlope(
-  current8Ema: number | null,
-  prior8Ema: number | null
-): number | null {
-  if (current8Ema === null || prior8Ema === null) return null;
-  return current8Ema - prior8Ema;
-}
-
-function computeVolatilityLevel(priceData: PriceData): number | null {
-  if (!priceData.atr) return null;
-  const percentVol = (priceData.atr / priceData.price) * 100;
-  return Math.min(percentVol * 10, 100);
-}
-
-function computeVolumeComponent(priceData: PriceData): number {
-  if (!priceData.volume || !priceData.volumeAvg) return 0;
-  const volumeRatio = priceData.volume / priceData.volumeAvg;
-  return Math.min(volumeRatio * 15, 40);
-}
-
 // ============================================================================
 // v21.2.0: PHASE 2 - DIRECTION INFERENCE (NO HTF AUTHORITY)
 // ============================================================================
