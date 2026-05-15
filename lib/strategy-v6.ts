@@ -1634,50 +1634,36 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   // Simplified: compression when volatility < 40
   const htf15mCompression = volatilityLevel < 40;
 
-  // HARD DIRECTIONAL INFERENCE ENGINE (v7.2.5 FIX #1 & #2)
-  // v8.3.0 REFACTOR: Volatility does NOT determine direction, only amplifies confidence
-  // Priority: EMA slope > 4H trend > momentum > displacement > Stoch position
-  // NEUTRAL becomes rare - classify ANY directional pressure
+  // v19.3.0: SINGLE SOURCE OF DIRECTION TRUTH
+  // 
+  // CRITICAL PRINCIPLE: Direction = HTF ONLY
+  // EMA, Stoch, Volatility = TIMING ONLY (not direction)
+  // 
+  // This is the final 10% problem fix:
+  // v19.2.0 fixed state corruption (event-driven SNIPER)
+  // v19.3.0 fixes direction authority (unified to HTF)
+  // 
+  // Result: ETH no longer sustains false direction
+  // when HTF contradicts momentum
   
   let direction: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
   
-  // RULE 1: Strong EMA slope overrides 4H trend (primary signal)
-  if (emaSlope > 0.25) {
-    direction = "LONG"; // EMA expanding bullish
+  // v19.3.0: DIRECTION = HTF ONLY (SINGLE SOURCE OF TRUTH)
+  // HTF 4H trend is the ONLY source for directional authority
+  // This removes all ambiguity and multi-source conflicts
+  
+  if (htf4hTrend === "BULLISH") {
+    direction = "LONG";   // HTF authority: LONG
+  } else if (htf4hTrend === "BEARISH") {
+    direction = "SHORT";  // HTF authority: SHORT
+  } else if (htf4hTrend === "NEUTRAL") {
+    direction = "NEUTRAL"; // HTF authority: NEUTRAL (no directional pressure)
   }
-  else if (emaSlope < -0.25) {
-    direction = "SHORT"; // EMA expanding bearish
-  }
-  // RULE 2: 4H trend decides if EMA weak
-  else if (htf4hTrend === "BULLISH") {
-    direction = "LONG";
-  }
-  else if (htf4hTrend === "BEARISH") {
-    direction = "SHORT";
-  }
-  // RULE 3: Stoch position if 4H neutral (momentum bias)
-  else if (stochRsi > 55) {
-    direction = "LONG"; // Stoch in bullish zone
-  }
-  else if (stochRsi < 45) {
-    direction = "SHORT"; // Stoch in bearish zone
-  }
-  // v8.3.0 FIX: REMOVED volatility > 60 override that caused LONG during dumps
-  // Volatility amplifies confidence via displacement quality, NOT direction determination
-  // RULE 4: ONLY classify as NEUTRAL if truly dead market
-  // EMA flat AND Stoch middle AND low volatility AND no structure
-  else if (
-    Math.abs(emaSlope) <= 0.1 && 
-    stochRsi >= 48 && 
-    stochRsi <= 52 && 
-    volatilityLevel < 35
-  ) {
-    direction = "NEUTRAL"; // Dead market - no pressure
-  }
-  // Default to bullish bias if any ambiguity (risk-on)
-  else {
-    direction = "LONG";
-  }
+  
+  // v19.3.0: Log directional authority derivation
+  console.log(
+    `[DIRECTION_AUTHORITY_v19.3.0] ${symbol}: HTF=${htf4hTrend} → direction=${direction} (EMA, Stoch, Vol = TIMING ONLY)`
+  );
 
   const card: SymbolCardState = {
     symbol,
