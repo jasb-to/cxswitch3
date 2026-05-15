@@ -8,18 +8,16 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * v20.4.0 - SNIPER IMPULSE DETECTION ENGINE
+ * v17.0.0 - PURE DETERMINISTIC STATELESS SIGNAL ENGINE
  * 
  * Every cron cycle:
  * 1. Fetch live market data
- * 2. Derive SNIPER impulse signals from current market conditions only
- * 3. Apply HTF expectancy scaler (±3% minimal influence)
- * 4. Replace snapshot atomically
- * 5. Emit alerts only on state transitions (NONE↔BUILDING↔SNIPER/CONFIRMED)
+ * 2. Derive all signals from current market conditions only
+ * 3. Replace snapshot atomically
+ * 4. Emit alerts only on state transitions (NONE↔BUILDING↔ACTIVE_*)
  * 
- * Pure impulse-driven with early-entry sensitivity (threshold 27).
- * SNIPER fires unconditionally on structural impulse emergence.
- * HTF provides context only, never suppression.
+ * No lifecycle persistence. No temporal logic. No hidden invalidation.
+ * State = current market conditions, nothing else.
  */
 export async function GET(req: NextRequest) {
   try {
@@ -32,7 +30,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    console.log("[CRON] v20.4.0 START - SNIPER Impulse Detection Engine");
+    console.log("[CRON] v17.0.0 START - Pure Deterministic Signal Engine");
     const cronStart = Date.now();
 
     // STEP 1: Fetch live market data
@@ -98,11 +96,11 @@ export async function GET(req: NextRequest) {
     }
 
     const totalMs = Date.now() - cronStart;
-    console.log(`[CRON] v20.4.0 COMPLETE in ${totalMs}ms`);
+    console.log(`[CRON] v17.0.0 COMPLETE in ${totalMs}ms`);
 
     return NextResponse.json({
       ok: true,
-      version: "v20.4.0",
+      version: "v17.0.0",
       perf: {
         totalMs,
         cardsGenerated: newCards.length,
@@ -110,19 +108,6 @@ export async function GET(req: NextRequest) {
         stateTransitions: alertSymbols.length,
         alertsEmitted: alertSymbols.filter(s => newCards.find(c => c.symbol === s && (c.signalState === "ACTIVE_SNIPER" || c.signalState === "ACTIVE_CONFIRMED"))).length,
       },
-      // v20.4.0: Include card details for diagnostic verification
-      cards: newCards.map(card => ({
-        symbol: card.symbol,
-        price: card.price,
-        direction: card.direction,
-        signalState: card.signalState,
-        ignitionProbability: card.ignitionProbability,
-        sniperTradeType: card.sniperTradeType,
-        tradeReadinessScore: card.tradeReadinessScore,
-        scoreBreakdown: card.scoreBreakdown,
-        htf4hTrend: card.htf4hTrend,
-        emaSlope: card.emaSlope,
-      })),
     });
   } catch (error) {
     console.error('[CRON ERROR]', error);

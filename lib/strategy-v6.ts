@@ -797,6 +797,24 @@ function applyAssetRoleHTFBias(symbol: string, htfRawScore: number): number {
 }
 
 /**
+ * v20.3.1: CANONICAL IMPULSE STRENGTH CALCULATION
+ * 
+ * Single source of truth for impulse scoring.
+ * Eliminates scattered calculations and mixed-version execution.
+ * Used by: SNIPER detection, classifier, and all scoring components.
+ */
+function computeImpulseStrength(
+  stochComponent: number,
+  emaComponent: number,
+  volatilityComponent: number,
+  volumeComponent: number
+): number {
+  const score = stochComponent + emaComponent + volatilityComponent + volumeComponent;
+  console.log(`[IMPULSE_PIPELINE] unified=v20.3.1 score=${score.toFixed(2)}`);
+  return score;
+}
+
+/**
  * v20.3.0: POST-SNIPER CLASSIFIER (Stage B - Quality Classification)
  * 
  * Classifies SNIPER event type after impulse detection fires
@@ -1128,14 +1146,23 @@ function calculateIgnitionProbability(
   // HTF is LOGGED but NEVER modifies impulse scoring
   // Pure quality filter: impulse strength >= threshold to trigger event
   
-  const impulseStrengthScore = stochComponent + emaComponent + volatilityComponent + volumeComponent;
+  // v20.3.1: Use canonical impulse strength calculation (unified pipeline)
+  const impulseStrengthScore = computeImpulseStrength(stochComponent, emaComponent, volatilityComponent, volumeComponent);
   
-  // v20.4.0: RESTORED EARLY-ENTRY IMPULSE THRESHOLD
-  // Lower from 35 → 27 to prioritize speed of detection over cleanliness
-  // Filters volatility wick noise (<20 vol)
-  // Rejects non-committal price movement (weak EMA <0.1)
-  // But allows faster SNIPER trigger for legitimate impulses
-  const IMPULSE_QUALITY_THRESHOLD = 27;
+  // v20.1.0: IMPULSE QUALITY THRESHOLD (noise-filtered)
+  // Threshold = 35 minimum to filter out:
+  // - Volatility wick noise (<20 vol)
+  // - Non-committal price movement (weak EMA <0.1)
+  // - Stochastic chop without structure (low stoch signal)
+  // 
+  // Only meaningful structural expansions pass this filter
+  const IMPULSE_QUALITY_THRESHOLD = 35;
+  // v20.3.1: FAIL-SAFE - Prevent undefined impulse scores from propagating
+  if (impulseStrengthScore === undefined || !Number.isFinite(impulseStrengthScore)) {
+    console.error("[IMPULSE_PIPELINE_UNINITIALISED] ERROR: impulseStrengthScore is undefined/invalid");
+    return { probability: 0, breakdown: { stochComponent, emaComponent, volatilityComponent, volumeComponent, impulseContinuationBoost: 0 } };
+  }
+
   const impulseQualityPass = impulseStrengthScore >= IMPULSE_QUALITY_THRESHOLD;
   
   reasons.push(`v20.1.0 Impulse Quality: ${impulseStrengthScore.toFixed(2)} ${impulseQualityPass ? "PASS" : "FAIL"} (threshold=${IMPULSE_QUALITY_THRESHOLD})`);
@@ -1155,16 +1182,14 @@ function calculateIgnitionProbability(
   const htfAlignment = (htf4hTrend === "BULLISH" && direction === "LONG") ||
                        (htf4hTrend === "BEARISH" && direction === "SHORT");
   
-  // v20.4.0: MINIMIZED HTF INFLUENCE (expectancy scaler only)
-  // HTF provides context only - minimal impact on probability
-  // Aligned: +3% boost (reduced from +5%)
-  // Counter-trend: -3% penalty (reduced from -10%)
+  // v20.2.0: Expectancy scaler based on HTF alignment
+  // Aligned: +0.05 boost (5% expectancy increase)
+  // Counter-trend: -0.10 penalty (10% expectancy decrease)
   // Neutral: 0.00 (no adjustment)
-  // HTF must NOT dampen SNIPER triggers
   let expectancyScaler = 0;
   if (htf4hTrend !== "NEUTRAL") {
-    expectancyScaler = htfAlignment ? 0.03 : -0.03;
-    reasons.push(`HTF expectancy scaler: ${htfAlignment ? "+3%" : "-3%"} (${htfAlignment ? "aligned" : "counter-trend"} - minimal suppression)`);
+    expectancyScaler = htfAlignment ? 0.05 : -0.10;
+    reasons.push(`HTF expectancy scaler: ${htfAlignment ? "+5%" : "-10%"} (${htfAlignment ? "aligned" : "counter-trend"})`);
   }
   
   // v17.9.0: Displacement contribution (already adjusted)
@@ -1186,6 +1211,14 @@ function calculateIgnitionProbability(
     `[SNIPER_IMPULSE_v20.2.0] ${symbol}: impulse=${impulseStrengthScore.toFixed(2)} pass=${impulseQualityPass} ` +
     `(stoch=${stochComponent.toFixed(2)} + ema=${emaComponent.toFixed(2)} + vol=${volatilityComponent.toFixed(2)} + vol_impulse=${volumeComponent.toFixed(2)}) ` +
     `→ raw=${rawProbability.toFixed(2)} × expectancy(${(1 + expectancyScaler).toFixed(3)}) = final=${probability.toFixed(2)}`
+  );
+
+  // v20.3.1: Add diagnostic output for unified pipeline
+  console.log(
+    `[SNIPER_DECISION] ${symbol}: ` +
+    `pass=${impulseQualityPass} ` +
+    `probability=${probability.toFixed(2)} ` +
+    `direction=${direction}`
   );
 
   // v18.4.0: LOGGING UPDATED - Shows structural HTF context (informational)
@@ -1222,7 +1255,7 @@ function calculateIgnitionProbability(
  * - 1H alignment provides directional context
  * - 15M provides execution structure (BREAKOUT_READY or EXPANDING)
  * - 5M provides ignition confirmation
- */
+}
 
 /**
  * v8.0.4 CRITICAL FIX: Check SNIPER conditions before execution
@@ -1828,12 +1861,15 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
       
       // v20.3.0: POST-SNIPER CLASSIFIER (Stage B - Trade type classification)
       // Classifies SNIPER events without blocking or suppressing them
+      // v20.3.1: Use canonical impulse strength (already computed in result)
       const sniperTradeType = result.probability >= 20 
         ? classifySniperTradeType(
-            result.breakdown.stochComponent +
-            result.breakdown.emaComponent +
-            result.breakdown.volatilityComponent +
-            result.breakdown.impulseContinuationBoost,
+            computeImpulseStrength(
+              result.breakdown.stochComponent,
+              result.breakdown.emaComponent,
+              result.breakdown.volatilityComponent,
+              result.breakdown.volumeComponent || 0
+            ),
             result.breakdown.emaComponent,
             result.breakdown.stochComponent,
             result.breakdown.volatilityComponent,
