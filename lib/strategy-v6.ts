@@ -1130,14 +1130,12 @@ function calculateIgnitionProbability(
   
   const impulseStrengthScore = stochComponent + emaComponent + volatilityComponent + volumeComponent;
   
-  // v20.1.0: IMPULSE QUALITY THRESHOLD (noise-filtered)
-  // Threshold = 35 minimum to filter out:
-  // - Volatility wick noise (<20 vol)
-  // - Non-committal price movement (weak EMA <0.1)
-  // - Stochastic chop without structure (low stoch signal)
-  // 
-  // Only meaningful structural expansions pass this filter
-  const IMPULSE_QUALITY_THRESHOLD = 35;
+  // v20.4.0: RESTORED EARLY-ENTRY IMPULSE THRESHOLD
+  // Lower from 35 → 27 to prioritize speed of detection over cleanliness
+  // Filters volatility wick noise (<20 vol)
+  // Rejects non-committal price movement (weak EMA <0.1)
+  // But allows faster SNIPER trigger for legitimate impulses
+  const IMPULSE_QUALITY_THRESHOLD = 27;
   const impulseQualityPass = impulseStrengthScore >= IMPULSE_QUALITY_THRESHOLD;
   
   reasons.push(`v20.1.0 Impulse Quality: ${impulseStrengthScore.toFixed(2)} ${impulseQualityPass ? "PASS" : "FAIL"} (threshold=${IMPULSE_QUALITY_THRESHOLD})`);
@@ -1157,14 +1155,16 @@ function calculateIgnitionProbability(
   const htfAlignment = (htf4hTrend === "BULLISH" && direction === "LONG") ||
                        (htf4hTrend === "BEARISH" && direction === "SHORT");
   
-  // v20.2.0: Expectancy scaler based on HTF alignment
-  // Aligned: +0.05 boost (5% expectancy increase)
-  // Counter-trend: -0.10 penalty (10% expectancy decrease)
+  // v20.4.0: MINIMIZED HTF INFLUENCE (expectancy scaler only)
+  // HTF provides context only - minimal impact on probability
+  // Aligned: +3% boost (reduced from +5%)
+  // Counter-trend: -3% penalty (reduced from -10%)
   // Neutral: 0.00 (no adjustment)
+  // HTF must NOT dampen SNIPER triggers
   let expectancyScaler = 0;
   if (htf4hTrend !== "NEUTRAL") {
-    expectancyScaler = htfAlignment ? 0.05 : -0.10;
-    reasons.push(`HTF expectancy scaler: ${htfAlignment ? "+5%" : "-10%"} (${htfAlignment ? "aligned" : "counter-trend"})`);
+    expectancyScaler = htfAlignment ? 0.03 : -0.03;
+    reasons.push(`HTF expectancy scaler: ${htfAlignment ? "+3%" : "-3%"} (${htfAlignment ? "aligned" : "counter-trend"} - minimal suppression)`);
   }
   
   // v17.9.0: Displacement contribution (already adjusted)
