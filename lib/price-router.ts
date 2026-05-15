@@ -29,6 +29,15 @@ export type PriceSource = "kraken_live" | "kraken_cached" | "coingecko" | "none"
 export type PriceHealth = "LIVE" | "DEGRADED" | "OFFLINE";
 export type KrakenFailureType = "EMPTY_RESPONSE" | "TIMEOUT" | "HTTP_ERROR" | "API_ERROR" | "INVALID_PRICE";
 
+export interface Candle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
 export interface PriceData {
   price: number;
   source: PriceSource;
@@ -36,7 +45,8 @@ export interface PriceData {
   bid?: number;
   ask?: number;
   timestamp: number;
-  isStale?: boolean; // NEW: Flag to prevent false LIVE from stale cache
+  isStale?: boolean;
+  candles?: Candle[]; // NEW: Include candle history for indicator computation
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
