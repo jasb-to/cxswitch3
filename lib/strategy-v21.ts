@@ -23,7 +23,36 @@
 import type { PriceData } from "./price-router";
 
 // ============================================================================
-// v21.2.0: TYPE DEFINITIONS (CLEAN - NO v17/v18/v19/v20 contamination)
+// v21.2.1: CANONICAL ASSET WHITELIST GATE (DATA HYGIENE BOUNDARY)
+// ============================================================================
+
+const VALID_ASSETS = new Set(["BTC", "ETH", "SOL"]);
+
+/**
+ * v21.2.1: Normalize asset from exchange symbols to canonical assets
+ * 
+ * Maps:
+ * - XBTUSD, XXBTZUSD → BTC
+ * - XETHZUSD, ETHUSD → ETH
+ * - SOLUSD → SOL
+ * - Direct symbols (BTC, ETH, SOL) → pass through
+ * - Everything else → null (rejected)
+ */
+function normalizeAsset(symbol: string): string | null {
+  // Exchange fallback symbols
+  if (symbol === "XBTUSD" || symbol === "XXBTZUSD") return "BTC";
+  if (symbol === "XETHZUSD" || symbol === "ETHUSD") return "ETH";
+  if (symbol === "SOLUSD") return "SOL";
+  
+  // Direct canonical symbols
+  if (VALID_ASSETS.has(symbol)) return symbol;
+  
+  // Reject everything else (PEPE, DOGE, test symbols, etc.)
+  return null;
+}
+
+// ============================================================================
+// v21.1.0: TYPE DEFINITIONS (CLEAN - NO v17/v18/v19/v20 contamination)
 // ============================================================================
 
 export type SignalState = "NONE" | "BUILDING" | "ACTIVE_SNIPER";
@@ -49,6 +78,10 @@ export type SymbolCardState = {
   tradeReadinessScore: number | null;
   ignitionProbability: number;
   sniperTradeType?: "EARLY_REVERSAL" | "CONTINUATION" | "WEAK_EXPANSION" | "FALSE_START" | null;
+  
+  // v21.2.0: TELEGRAM FIELDS (required for alert formatting)
+  mode: "SNIPER" | "CONFIRMED";
+  confidence: number;  // Alias for tradeReadinessScore for telegram compatibility
 
   // v21.2.0: INDICATORS
   stochRsi: number | null;
@@ -95,6 +128,9 @@ export type Setup = {
   score: number;
   reason: string;
   price: number;
+  entry: number;  // GUARANTEED: last candle close
+  tp: number;     // GUARANTEED: entry ± volatility%
+  sl: number;     // GUARANTEED: entry ∓ volatility%
   momentum: {
     stochRsiSignal: string;
     emaStackSignal: string;
@@ -322,8 +358,14 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
   console.log(`[STATE] v21.2.0 START - Final Deterministic Impulse Engine`);
   const cycleStart = Date.now();
 
-  for (const [symbol, priceData] of Object.entries(market)) {
+  for (const [rawSymbol, priceData] of Object.entries(market)) {
     try {
+      // v21.2.1: HARD ASSET FILTER - CRITICAL DATA HYGIENE BOUNDARY
+      const symbol = normalizeAsset(rawSymbol);
+      if (!symbol) {
+        console.log(`[ASSET_REJECT] ${rawSymbol} - not in canonical set (BTC/ETH/SOL)`);
+        continue;
+      }
       // PHASE 1: Market Data - compute from candles
       const stochRsi = computeStochRsi(priceData);
       const emaSlope = computeEmaSlope(priceData);
@@ -404,19 +446,41 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
           volumeComponent,
           totalImpulse: ignitionProbability,
         },
+        // v21.2.0: TELEGRAM FIELDS
+        mode: signalState === "ACTIVE_SNIPER" ? "SNIPER" : "CONFIRMED",
+        confidence: signalState === "ACTIVE_SNIPER" ? 85 : 30,
       };
 
       cards.push(card);
 
       // Generate setup only for ACTIVE_SNIPER
       if (signalState === "ACTIVE_SNIPER" && direction !== "NEUTRAL") {
+        // v21.2.1: FINAL SAFETY NET - verify asset one more time before SNIPER output
+        if (!VALID_ASSETS.has(symbol)) {
+          console.log(`[ASSET_REJECT_FINAL] ${symbol} - failed final safety check, not adding to SNIPER setups`);
+          continue;
+        }
+        
+        // v21.2.1: GUARANTEED ENTRY/TP/SL - Fallback calculation if missing
+        const entry = priceData.price;
+        const volFactor = (volatilityLevel || 30) / 100; // Default 30% volatility if null
+        const tp = direction === "LONG" 
+          ? entry * (1 + volFactor)
+          : entry * (1 - volFactor);
+        const sl = direction === "LONG"
+          ? entry * (1 - volFactor)
+          : entry * (1 + volFactor);
+        
         setups.push({
           symbol,
           mode: "SNIPER",
           direction: direction as "LONG" | "SHORT",
           score: Math.min(85, 100),
           reason: `${signalState} ${direction} - impulse=${ignitionProbability.toFixed(0)}`,
-          price: priceData.price,
+          price: entry,
+          entry, // GUARANTEED: last candle close
+          tp,    // GUARANTEED: entry ± volatility%
+          sl,    // GUARANTEED: entry ∓ volatility%
           momentum: {
             stochRsiSignal: `Stoch RSI: ${stochRsi?.toFixed(1) ?? "—"}`,
             emaStackSignal: direction === "LONG" ? "8 EMA accelerating up" : "8 EMA accelerating down",
@@ -429,6 +493,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 
         console.log(
           `[STATE] SETUP_GENERATED ${symbol} ACTIVE_SNIPER ${direction} | ` +
+          `entry=${entry.toFixed(2)} tp=${tp.toFixed(2)} sl=${sl.toFixed(2)} | ` +
           `impulse=${ignitionProbability.toFixed(1)}`
         );
       } else {

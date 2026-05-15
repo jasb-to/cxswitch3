@@ -74,16 +74,31 @@ export async function GET(req: NextRequest) {
     // STEP 6: Enqueue alerts for symbols with state transitions
     for (const symbol of alertSymbols) {
       const card = newCards.find(c => c.symbol === symbol);
-      if (!card) continue;
+      if (!card) {
+        console.log(`[ALERT_ENQUEUE_ERROR] ${symbol}: Card not found in newCards array`);
+        continue;
+      }
 
       // Only alert if now in ACTIVE_SNIPER (CONFIRMED state removed in v21.0.0)
       if (card.signalState === "ACTIVE_SNIPER") {
-        console.log(`[ALERT_QUEUE] ${symbol}: ${card.signalState}`);
+        console.log(`[ALERT_ENQUEUE_START] ${symbol}: state=${card.signalState} price=${card.price} targetPrices=${JSON.stringify(card.targetPrices)}`);
+        
+        // Validate card has necessary fields before enqueuing
+        const missingFields: string[] = [];
+        if (!card.targetPrices) missingFields.push("targetPrices");
+        if (!card.mode) missingFields.push("mode");
+        if (!card.confidence) missingFields.push("confidence");
+        if (!card.cycleId) missingFields.push("cycleId");
+        
+        if (missingFields.length > 0) {
+          console.log(`[ALERT_ENQUEUE_ERROR] ${symbol}: Missing required fields: ${missingFields.join(", ")}`);
+          continue;
+        }
         
         enqueueAlert({
           card,
           symbol: card.symbol,
-          mode: "SNIPER" as const,
+          mode: card.mode,
           direction: card.direction,
           score: card.tradeReadinessScore ?? 0,
           price: card.price,
@@ -94,6 +109,10 @@ export async function GET(req: NextRequest) {
           execution15mState: card.execution15mState,
           queued: Date.now(),
         });
+        
+        console.log(`[ALERT_ENQUEUE_SUCCESS] ${symbol}: Queued for telegram`);
+      } else {
+        console.log(`[ALERT_ENQUEUE_SKIP] ${symbol}: state=${card.signalState} is not ACTIVE_SNIPER`);
       }
     }
 
