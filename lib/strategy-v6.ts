@@ -1064,12 +1064,28 @@ function calculateIgnitionProbability(
   
   const htfAdjustedBase = probabilityBase * (1 + roleBasedHtfBias);
   
+  // v19.4.0: MACRO PENALTY FOR COUNTER-TREND SIGNALS
+  // Penalty applied when direction conflicts with HTF (but still allows early reversals)
+  // This preserves SNIPER edge while preventing chaotic false signals
+  
+  let macroPenalty = 0;
+  const counterTrendSignal = (htf4hTrend === "BEARISH" && direction === "LONG") ||
+                              (htf4hTrend === "BULLISH" && direction === "SHORT");
+  
+  if (counterTrendSignal && htf4hTrend !== "NEUTRAL") {
+    // Counter-trend penalty: -5 to -10 based on confidence in momentum
+    // Weak EMA = worse penalty, strong EMA/displacement = lighter penalty
+    const emaStrength = emaSlope !== null ? Math.abs(emaSlope) : 0;
+    macroPenalty = Math.max(-10, -5 - (0.5 * Math.max(0, 0.5 - emaStrength)));
+    reasons.push(`Counter-trend macro penalty: ${macroPenalty.toFixed(2)} (HTF=${htf4hTrend} vs DIR=${direction})`);
+  }
+  
   // v17.9.0: Displacement contribution (already adjusted)
   // v18.1.0: NO HTF ADDITIVE MODIFIER - removed
 
-  // Final ignition probability with continuous floating-point precision
+  // Final ignition probability with v19.4.0 macro penalties
   // HTF is now structural context only, independent from momentum
-  const probability = Math.max(0, Math.min(100, htfAdjustedBase + adjustedDisplacementModifier));
+  const probability = Math.max(0, Math.min(100, htfAdjustedBase + adjustedDisplacementModifier + macroPenalty));
 
   // v18.4.0: LOGGING UPDATED - Shows structural HTF context
   console.log(
@@ -1634,35 +1650,60 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   // Simplified: compression when volatility < 40
   const htf15mCompression = volatilityLevel < 40;
 
-  // v19.3.0: SINGLE SOURCE OF DIRECTION TRUTH
+  // v19.4.0: RESTORE PROBABILISTIC DIRECTIONAL INFERENCE
   // 
-  // CRITICAL PRINCIPLE: Direction = HTF ONLY
-  // EMA, Stoch, Volatility = TIMING ONLY (not direction)
+  // CRITICAL CORRECTION: v19.3.0 over-corrected by making HTF the only direction source
+  // This killed the original SNIPER philosophy of early impulse detection
   // 
-  // This is the final 10% problem fix:
-  // v19.2.0 fixed state corruption (event-driven SNIPER)
-  // v19.3.0 fixes direction authority (unified to HTF)
+  // v19.4.0 restores:
+  // - EMA acceleration as primary directional signal
+  // - Displacement direction inference
+  // - Stochastic position weighting
+  // - Probabilistic directional consensus (not hard gates)
   // 
-  // Result: ETH no longer sustains false direction
-  // when HTF contradicts momentum
+  // HTF becomes macro weighting/penalty, NOT directional authority
+  // SNIPER recovers original edge: early impulse detection BEFORE HTF confirmation
   
   let direction: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
   
-  // v19.3.0: DIRECTION = HTF ONLY (SINGLE SOURCE OF TRUTH)
-  // HTF 4H trend is the ONLY source for directional authority
-  // This removes all ambiguity and multi-source conflicts
+  // v19.4.0: PROBABILISTIC DIRECTIONAL INFERENCE (multi-source consensus)
+  // Direction emerges from weighted agreement, not HTF dictatorship
   
-  if (htf4hTrend === "BULLISH") {
-    direction = "LONG";   // HTF authority: LONG
-  } else if (htf4hTrend === "BEARISH") {
-    direction = "SHORT";  // HTF authority: SHORT
-  } else if (htf4hTrend === "NEUTRAL") {
-    direction = "NEUTRAL"; // HTF authority: NEUTRAL (no directional pressure)
+  const emaDirection = emaSlope !== null && Math.abs(emaSlope) > 0.1
+    ? (emaSlope > 0 ? "LONG" : "SHORT")
+    : "NEUTRAL";
+  
+  const stochDirection = stochRsi !== null
+    ? (stochRsi > 55 ? "LONG" : stochRsi < 45 ? "SHORT" : "NEUTRAL")
+    : "NEUTRAL";
+  
+  // v19.4.0: Directional consensus from EMA + Stoch
+  // If both agree or EMA strong, take that direction
+  // If HTF present but conflicting, weight down but allow (macro penalty applied in ignition)
+  
+  if (emaDirection !== "NEUTRAL") {
+    // EMA has directional signal
+    if (stochDirection === "NEUTRAL" || stochDirection === emaDirection) {
+      // Confirmed by stoch or stoch neutral = take EMA direction
+      direction = emaDirection;
+    } else {
+      // Stoch conflicts with EMA - take EMA but will get macro penalty
+      direction = emaDirection;
+    }
+  } else if (stochDirection !== "NEUTRAL") {
+    // EMA flat but Stoch has signal
+    direction = stochDirection;
+  } else if (htf4hTrend !== "NEUTRAL") {
+    // All LTF signals flat, but HTF has direction
+    direction = htf4hTrend === "BULLISH" ? "LONG" : "SHORT";
+  } else {
+    // Everything neutral
+    direction = "NEUTRAL";
   }
   
-  // v19.3.0: Log directional authority derivation
+  // v19.4.0: Log directional inference (for transparency, not as hard gate)
   console.log(
-    `[DIRECTION_AUTHORITY_v19.3.0] ${symbol}: HTF=${htf4hTrend} → direction=${direction} (EMA, Stoch, Vol = TIMING ONLY)`
+    `[DIRECTIONAL_INFERENCE_v19.4.0] ${symbol}: EMA=${emaDirection} Stoch=${stochDirection} HTF=${htf4hTrend} → direction=${direction} (macro penalties applied in ignition)`
   );
 
   const card: SymbolCardState = {
