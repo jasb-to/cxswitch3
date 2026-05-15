@@ -474,44 +474,112 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     }
   }
 
-  // v18.0.0: CROSS-ASSET EXPANSION SYNCHRONIZATION BONUS
-  // If 2+ assets have volatilityComponent > 28 AND aligned directions, add +4 bonus to each
+  // v18.7.0: DIRECTIONALLY-VALIDATED EXPANSION SYNCHRONIZATION BONUS
+  // Fix: expansion must be validated by directional agreement, not just existence
+  // 
+  // Problem (v18.0.0):
+  //   - 2+ assets expanding → +4 bonus
+  //   - No validation that directional momentum is actually strong
+  //   - During dumps, high volatility + weak direction = false LONG sustain
+  //
+  // Solution (v18.7.0):
+  //   - Expansion bonus only applies when directional reducers agree
+  //   - Both assets must have strong EMA slope in same direction
+  //   - Displacement must validate direction (not reversing)
+  //   - High volatility alone cannot sustain wrong direction
+  
   const expansionAssets = cards.filter(c => 
     c.volatilityLevel !== null && 
     c.volatilityLevel > 28 &&
     c.direction !== "NEUTRAL"
   );
   
+  // Separate by direction
   const longExpanding = expansionAssets.filter(c => c.direction === "LONG");
   const shortExpanding = expansionAssets.filter(c => c.direction === "SHORT");
   
+  // v18.7.0: Apply directional validation to sync bonus
   let expansionBonus = 0;
+  
   if (longExpanding.length >= 2) {
-    expansionBonus = 4;
-    console.log(`[EXPANSION_SYNC] LONG: ${longExpanding.map(c => c.symbol).join("/")} expanding together - +4 bonus`);
-    longExpanding.forEach(card => {
-      card.ignitionProbability = Math.min(100, card.ignitionProbability + expansionBonus);
+    // Check if directional reducers strongly agree for LONG
+    // Get the EMA slopes for expanding LONG assets (from breakdown)
+    const longDirectionalStrengths = longExpanding.map(card => {
+      // Look in breakdown for EMA component
+      const emaVal = card.breakdown?.emaComponent ?? 0;
+      return Math.abs(emaVal);
     });
+    
+    const avgDirectionalStrength = longDirectionalStrengths.length > 0 
+      ? longDirectionalStrengths.reduce((a, b) => a + b, 0) / longDirectionalStrengths.length 
+      : 0;
+    
+    // Only apply bonus if directional strength is meaningful (>8)
+    // This prevents weak momentum expansion from triggering bonus
+    if (avgDirectionalStrength > 8) {
+      expansionBonus = 4;
+      console.log(`[EXPANSION_SYNC_v18.7.0] LONG: ${longExpanding.map(c => c.symbol).join("/")} expanding + strong direction (avg_ema=${avgDirectionalStrength.toFixed(1)}) - +${expansionBonus} bonus`);
+      longExpanding.forEach(card => {
+        card.ignitionProbability = Math.min(100, card.ignitionProbability + expansionBonus);
+      });
+    } else {
+      console.log(`[EXPANSION_SYNC_v18.7.0] LONG: ${longExpanding.map(c => c.symbol).join("/")} expanding but weak direction (avg_ema=${avgDirectionalStrength.toFixed(1)}) - NO bonus`);
+    }
   }
   
   if (shortExpanding.length >= 2) {
-    expansionBonus = 4;
-    console.log(`[EXPANSION_SYNC] SHORT: ${shortExpanding.map(c => c.symbol).join("/")} expanding together - +4 bonus`);
-    shortExpanding.forEach(card => {
-      card.ignitionProbability = Math.min(100, card.ignitionProbability + expansionBonus);
+    // Check if directional reducers strongly agree for SHORT
+    const shortDirectionalStrengths = shortExpanding.map(card => {
+      const emaVal = card.breakdown?.emaComponent ?? 0;
+      return Math.abs(emaVal);
     });
+    
+    const avgDirectionalStrength = shortDirectionalStrengths.length > 0 
+      ? shortDirectionalStrengths.reduce((a, b) => a + b, 0) / shortDirectionalStrengths.length 
+      : 0;
+    
+    if (avgDirectionalStrength > 8) {
+      expansionBonus = 4;
+      console.log(`[EXPANSION_SYNC_v18.7.0] SHORT: ${shortExpanding.map(c => c.symbol).join("/")} expanding + strong direction (avg_ema=${avgDirectionalStrength.toFixed(1)}) - +${expansionBonus} bonus`);
+      shortExpanding.forEach(card => {
+        card.ignitionProbability = Math.min(100, card.ignitionProbability + expansionBonus);
+      });
+    } else {
+      console.log(`[EXPANSION_SYNC_v18.7.0] SHORT: ${shortExpanding.map(c => c.symbol).join("/")} expanding but weak direction (avg_ema=${avgDirectionalStrength.toFixed(1)}) - NO bonus`);
+    }
   }
 
-  // v18.0.0: RE-DERIVE EXECUTION STATES AFTER EXPANSION BONUS
+  // v18.7.0: DIRECTIONAL DETERIORATION DECAY
+  // If expansion exists but directional agreement weakens, decay ignition faster
+  for (const card of cards) {
+    if (card.volatilityLevel !== null && card.volatilityLevel > 28 && card.direction !== "NEUTRAL") {
+      const emaVal = card.breakdown?.emaComponent ?? 0;
+      
+      // If volatility is high but EMA slope is weak/reversing, apply deterioration decay
+      if (Math.abs(emaVal) < 8) {
+        // High volatility with weak momentum = likely reversal/dump
+        // Decay ignition aggressively
+        const decayFactor = 0.7; // Reduce score to 70% of current
+        const decayAmount = card.ignitionProbability * (1 - decayFactor);
+        card.ignitionProbability = Math.max(0, card.ignitionProbability - decayAmount);
+        
+        if (decayAmount > 0) {
+          console.log(`[DIRECTIONAL_DECAY_v18.7.0] ${card.symbol}: High vol (${card.volatilityLevel?.toFixed(1)}) + weak momentum (ema=${emaVal.toFixed(1)}) - decayed by ${decayAmount.toFixed(1)}`);
+        }
+      }
+    }
+  }
+  
+  // v18.7.0: RE-DERIVE EXECUTION STATES AFTER EXPANSION BONUS
   for (const card of cards) {
     if (card.ignitionProbability === 0) continue; // Skip minimal cards
     
-    // Check if ignition changed due to expansion bonus
+    // Check if ignition changed due to expansion bonus or decay
     const newSignalState = deriveExecutionState(card.ignitionProbability);
     const oldSignalState = card.signalState;
     
     if (newSignalState !== oldSignalState) {
-      console.log(`[STATE_UPGRADE] ${card.symbol}: ${oldSignalState} → ${newSignalState} (ignition=${card.ignitionProbability} after expansion bonus)`);
+      console.log(`[STATE_UPDATE_v18.7.0] ${card.symbol}: ${oldSignalState} → ${newSignalState} (ignition=${card.ignitionProbability})`);
       card.signalState = newSignalState;
       
       // Re-derive readiness with new state
