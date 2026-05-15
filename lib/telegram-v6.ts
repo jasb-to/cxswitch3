@@ -6,7 +6,7 @@
  */
 
 import { supabase } from "@/lib/supabase-client";
-import type { SymbolCardState } from "./strategy-v6";
+import type { SymbolCardState } from "./strategy-v21";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;

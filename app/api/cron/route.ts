@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateSetups } from "@/lib/strategy-v6";
+import { generateSetups } from "@/lib/strategy-v21";
 import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
 import { getSnapshot, setSnapshot, type RuntimeSnapshot } from "@/lib/runtime-snapshot";
