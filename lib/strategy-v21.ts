@@ -1,12 +1,12 @@
 /**
- * v21.1.0 - FINAL DETERMINISTIC IMPULSE ENGINE
+ * v21.2.0 - FINAL DETERMINISTIC IMPULSE ENGINE + INPUT GUARANTEE LAYER
  * 
  * COMPLETE REWRITE - NO LEGACY CODE
  * 
  * 6-Phase Pipeline Architecture:
  * 1. PHASE_MARKET_DATA: Fetch, compute, normalize
  * 2. PHASE_DIRECTION: EMA/displacement/stoch inference (NO HTF authority)
- * 3. PHASE_IMPULSE: Canonical computeImpulseStrength
+ * 3. PHASE_IMPULSE: Canonical computeImpulseStrength (with input sanitiser)
  * 4. PHASE_QUALITY: Threshold filter (27 → ACTIVE_SNIPER TERMINAL)
  * 5. PHASE_CLASSIFY: Metadata only (never mutates state)
  * 6. PHASE_OUTPUT: Persist atomically (no post-processing)
@@ -17,12 +17,13 @@
  * - Same market data = same state always
  * - No state mutations after state derivation
  * - Only 4 log namespaces: [DIRECTION], [IMPULSE_PIPELINE], [SNIPER_DECISION], [STATE]
+ * - INPUT GUARANTEE: No NaN can enter pipeline (safeNumber sanitiser)
  */
 
 import type { PriceData } from "./price-router";
 
 // ============================================================================
-// v21.1.0: TYPE DEFINITIONS (CLEAN - NO v17/v18/v19/v20 contamination)
+// v21.2.0: TYPE DEFINITIONS (CLEAN - NO v17/v18/v19/v20 contamination)
 // ============================================================================
 
 export type SignalState = "NONE" | "BUILDING" | "ACTIVE_SNIPER";
@@ -41,7 +42,7 @@ export type SymbolCardState = {
   source: string;
   degraded: boolean;
 
-  // v21.1.0: EXECUTION STATE (TERMINAL, UNREVOKABLE)
+  // v21.2.0: EXECUTION STATE (TERMINAL, UNREVOKABLE)
   signalState: SignalState;
   marketClass: MarketStructureClass;
   direction: "LONG" | "SHORT" | "NEUTRAL";
@@ -49,35 +50,35 @@ export type SymbolCardState = {
   ignitionProbability: number;
   sniperTradeType?: "EARLY_REVERSAL" | "CONTINUATION" | "WEAK_EXPANSION" | "FALSE_START" | null;
 
-  // v21.1.0: INDICATORS
+  // v21.2.0: INDICATORS
   stochRsi: number | null;
   emaSlope: number | null;
   emaPressure: number;
   volatilityLevel: number | null;
 
-  // v21.1.0: HTF CONTEXT (READ-ONLY, NEVER MUTATES STATE)
+  // v21.2.0: HTF CONTEXT (READ-ONLY, NEVER MUTATES STATE)
   htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL";
   htf4hMomentum: number | null;
   htf1hAlignment: boolean | null;
   htf15mCompression: boolean | null;
 
-  // v21.1.0: STRUCTURE
+  // v21.2.0: STRUCTURE
   execution15mState: "COMPRESSING" | "BREAKOUT_READY" | "EXPANDING" | "CHOP";
   marketReadinessState: string;
 
-  // v21.1.0: CONDITIONAL TARGETS
+  // v21.2.0: CONDITIONAL TARGETS
   expectedMovePercent: { sniper: { min: number; max: number } } | null;
   targetPrices: { tp1: number; tp2: number; sl: number } | null;
   riskReward: number | null;
 
-  // v21.1.0: METADATA
+  // v21.2.0: METADATA
   cycleId: string;
   lastSignalTime?: number;
   notes: string;
   updatedAt: string;
   blockReason?: string;
 
-  // v21.1.0: TRANSPARENCY BREAKDOWN
+  // v21.2.0: TRANSPARENCY BREAKDOWN
   scoreBreakdown?: {
     stochComponent: number;
     emaComponent: number;
@@ -105,7 +106,7 @@ export type Setup = {
 };
 
 // ============================================================================
-// v21.1.0: PHASE 1 - MARKET DATA COMPUTATION
+// v21.2.0: PHASE 1 - MARKET DATA COMPUTATION
 // ============================================================================
 
 function computeStochRsi(priceData: PriceData): number | null {
@@ -134,7 +135,7 @@ function computeVolumeComponent(priceData: PriceData): number {
 }
 
 // ============================================================================
-// v21.1.0: PHASE 2 - DIRECTION INFERENCE (NO HTF AUTHORITY)
+// v21.2.0: PHASE 2 - DIRECTION INFERENCE (NO HTF AUTHORITY)
 // ============================================================================
 
 function inferDirection(
@@ -153,7 +154,25 @@ function inferDirection(
 }
 
 // ============================================================================
-// v21.1.0: PHASE 3 - CANONICAL IMPULSE CALCULATION (SINGLE SOURCE OF TRUTH)
+// v21.2.0: INPUT GUARANTEE LAYER - HARD SANITISER (PREVENTS NaN PROPAGATION)
+// ============================================================================
+
+/**
+ * v21.2.0: HARD INPUT SANITISER
+ * 
+ * No NaN can ever enter the pipeline.
+ * Every indicator must pass through this checkpoint.
+ * Fallback: 0 (neutral, safe default)
+ */
+function safeNumber(value: any, fallback = 0): number {
+  if (value === null || value === undefined) return fallback;
+  if (Number.isNaN(value)) return fallback;
+  if (!Number.isFinite(value)) return fallback;
+  return value;
+}
+
+// ============================================================================
+// v21.2.0: PHASE 3 - CANONICAL IMPULSE CALCULATION (SINGLE SOURCE OF TRUTH)
 // ============================================================================
 
 function computeImpulseStrength(
@@ -162,17 +181,23 @@ function computeImpulseStrength(
   volatilityComponent: number,
   volumeComponent: number
 ): number {
-  const impulse = stochComponent + emaComponent + volatilityComponent + volumeComponent;
+  // v21.2.0: HARD INPUT SANITISER - prevent NaN from entering pipeline
+  const stoch = safeNumber(stochComponent, 0);
+  const ema = safeNumber(emaComponent, 0);
+  const vol = safeNumber(volatilityComponent, 0);
+  const volume = safeNumber(volumeComponent, 0);
+  
+  const impulse = stoch + ema + vol + volume;
   console.log(
-    `[IMPULSE_PIPELINE] v21.1.0 unified score=${impulse.toFixed(2)} ` +
-    `(stoch=${stochComponent.toFixed(2)} + ema=${emaComponent.toFixed(2)} + ` +
-    `vol=${volatilityComponent.toFixed(2)} + volume=${volumeComponent.toFixed(2)})`
+    `[IMPULSE_PIPELINE] v21.2.0 unified score=${impulse.toFixed(2)} ` +
+    `(stoch=${stoch.toFixed(2)} + ema=${ema.toFixed(2)} + ` +
+    `vol=${vol.toFixed(2)} + volume=${volume.toFixed(2)})`
   );
   return impulse;
 }
 
 // ============================================================================
-// v21.1.0: PHASE 4 - QUALITY FILTER (THRESHOLD → TERMINAL STATE)
+// v21.2.0: PHASE 4 - QUALITY FILTER (THRESHOLD → TERMINAL STATE)
 // ============================================================================
 
 const IMPULSE_QUALITY_THRESHOLD = 27;
@@ -184,7 +209,7 @@ function deriveExecutionState(ignitionProbability: number): SignalState {
 }
 
 // ============================================================================
-// v21.1.0: PHASE 5 - CLASSIFICATION (METADATA ONLY - NEVER MUTATES STATE)
+// v21.2.0: PHASE 5 - CLASSIFICATION (METADATA ONLY - NEVER MUTATES STATE)
 // ============================================================================
 
 function classifyTradeType(
@@ -212,7 +237,7 @@ function classifyTradeType(
 }
 
 // ============================================================================
-// v21.1.0: PHASE 6 - ATOMIC SNAPSHOT OUTPUT (NO POST-PROCESSING)
+// v21.2.0: PHASE 6 - ATOMIC SNAPSHOT OUTPUT (NO POST-PROCESSING)
 // ============================================================================
 
 export async function generateSetups(market: Record<string, PriceData>): Promise<{
@@ -222,7 +247,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
   const cards: SymbolCardState[] = [];
   const setups: Setup[] = [];
 
-  console.log(`[STATE] v21.1.0 START - Final Deterministic Impulse Engine`);
+  console.log(`[STATE] v21.2.0 START - Final Deterministic Impulse Engine`);
   const cycleStart = Date.now();
 
   for (const [symbol, priceData] of Object.entries(market)) {
@@ -276,7 +301,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       const card: SymbolCardState = {
         symbol,
         price: priceData.price,
-        source: "v21.1.0",
+        source: "v21.2.0",
         degraded: false,
         signalState,
         marketClass: "TREND_FOLLOWING",
@@ -349,7 +374,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       cards.push({
         symbol,
         price: priceData.price,
-        source: "v21.1.0-error",
+        source: "v21.2.0-error",
         degraded: true,
         signalState: "NONE",
         marketClass: "CHOP",
@@ -378,7 +403,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 
   const totalMs = Date.now() - cycleStart;
   console.log(
-    `[STATE] v21.1.0 COMPLETE in ${totalMs}ms | ` +
+    `[STATE] v21.2.0 COMPLETE in ${totalMs}ms | ` +
     `cards=${cards.length} | ` +
     `setups=${setups.length}`
   );
@@ -387,7 +412,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 }
 
 // ============================================================================
-// v21.1.0: HELPER FUNCTIONS
+// v21.2.0: HELPER FUNCTIONS
 // ============================================================================
 
 function computeTargets(
