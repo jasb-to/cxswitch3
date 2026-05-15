@@ -1064,28 +1064,23 @@ function calculateIgnitionProbability(
   
   const htfAdjustedBase = probabilityBase * (1 + roleBasedHtfBias);
   
-  // v19.4.0: MACRO PENALTY FOR COUNTER-TREND SIGNALS
-  // Penalty applied when direction conflicts with HTF (but still allows early reversals)
-  // This preserves SNIPER edge while preventing chaotic false signals
-  
-  let macroPenalty = 0;
-  const counterTrendSignal = (htf4hTrend === "BEARISH" && direction === "LONG") ||
-                              (htf4hTrend === "BULLISH" && direction === "SHORT");
-  
-  if (counterTrendSignal && htf4hTrend !== "NEUTRAL") {
-    // Counter-trend penalty: -5 to -10 based on confidence in momentum
-    // Weak EMA = worse penalty, strong EMA/displacement = lighter penalty
-    const emaStrength = emaSlope !== null ? Math.abs(emaSlope) : 0;
-    macroPenalty = Math.max(-10, -5 - (0.5 * Math.max(0, 0.5 - emaStrength)));
-    reasons.push(`Counter-trend macro penalty: ${macroPenalty.toFixed(2)} (HTF=${htf4hTrend} vs DIR=${direction})`);
-  }
+  // v20.0.0: REMOVED MACRO PENALTIES - SNIPER MUST FIRE UNCONDITIONALLY
+  // HTF is CONTEXT ONLY, never gates or penalizes SNIPER impulse detection
+  // If impulse conditions met → SNIPER fires regardless of HTF agreement
   
   // v17.9.0: Displacement contribution (already adjusted)
   // v18.1.0: NO HTF ADDITIVE MODIFIER - removed
 
-  // Final ignition probability with v19.4.0 macro penalties
-  // HTF is now structural context only, independent from momentum
-  const probability = Math.max(0, Math.min(100, htfAdjustedBase + adjustedDisplacementModifier + macroPenalty));
+  // Final ignition probability WITHOUT gating logic
+  // Pure impulse-driven, HTF logged but never enforced
+  const probability = Math.max(0, Math.min(100, htfAdjustedBase + adjustedDisplacementModifier));
+  
+  // v20.0.0: Log HTF context for transparency (informational only, not enforcement)
+  if (htf4hTrend !== "NEUTRAL") {
+    const htfAlignment = (htf4hTrend === "BULLISH" && direction === "LONG") ||
+                         (htf4hTrend === "BEARISH" && direction === "SHORT");
+    reasons.push(`HTF context: ${htf4hTrend} (${htfAlignment ? "aligned" : "counter-trend"} - logged, not enforced)`);
+  }
 
   // v18.4.0: LOGGING UPDATED - Shows structural HTF context
   console.log(
