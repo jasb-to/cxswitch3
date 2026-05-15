@@ -78,6 +78,10 @@ export type SymbolCardState = {
   tradeReadinessScore: number | null;
   ignitionProbability: number;
   sniperTradeType?: "EARLY_REVERSAL" | "CONTINUATION" | "WEAK_EXPANSION" | "FALSE_START" | null;
+  
+  // v21.2.0: TELEGRAM FIELDS (required for alert formatting)
+  mode: "SNIPER" | "CONFIRMED";
+  confidence: number;  // Alias for tradeReadinessScore for telegram compatibility
 
   // v21.2.0: INDICATORS
   stochRsi: number | null;
@@ -442,6 +446,9 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
           volumeComponent,
           totalImpulse: ignitionProbability,
         },
+        // v21.2.0: TELEGRAM FIELDS
+        mode: signalState === "ACTIVE_SNIPER" ? "SNIPER" : "CONFIRMED",
+        confidence: signalState === "ACTIVE_SNIPER" ? 85 : 30,
       };
 
       cards.push(card);

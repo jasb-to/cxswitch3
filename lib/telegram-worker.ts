@@ -63,6 +63,7 @@ function shouldSendAlert(symbol: string, state: string, cycleId: string): boolea
   // Rule 1: Only ACTIVE_SNIPER and ACTIVE_CONFIRMED states can alert
   // v16.2.1 FIX: State values are "ACTIVE_SNIPER" and "ACTIVE_CONFIRMED", NOT "SNIPER" and "CONFIRMED"
   if (state !== "ACTIVE_SNIPER" && state !== "ACTIVE_CONFIRMED") {
+    console.log(`[TELEGRAM_CHECK_DETAIL] ${symbol}: state="${state}" is not alertable (only ACTIVE_SNIPER/ACTIVE_CONFIRMED)`);
     return false;
   }
   
@@ -70,11 +71,13 @@ function shouldSendAlert(symbol: string, state: string, cycleId: string): boolea
   const lastCycle = lastAlertedCycle.get(symbol);
   if (lastCycle === cycleId) {
     // Same cycleId = already alerted, skip
+    console.log(`[TELEGRAM_CHECK_DETAIL] ${symbol}: cycleId="${cycleId}" already alerted in previous cycle`);
     return false;
   }
   
   // NEW CYCLE or FIRST TIME - update memory and return true
   lastAlertedCycle.set(symbol, cycleId);
+  console.log(`[TELEGRAM_CHECK_DETAIL] ${symbol}: NEW cycleId="${cycleId}" - will alert`);
   return true;
 }
 
@@ -134,14 +137,19 @@ async function processAlertQueueAsync() {
           validationErrors.push(`invalid price=${job.price}`);
         }
         
-        // Check: Must have target prices
-        if (!job.targetPrices?.tp1 || !job.targetPrices?.sl) {
-          validationErrors.push(`missing TP1 or SL`);
+        // Check: Must have target prices for ACTIVE_SNIPER
+        if (job.signalState === "ACTIVE_SNIPER" || job.signalState === "ACTIVE_CONFIRMED") {
+          if (!job.targetPrices) {
+            validationErrors.push(`missing targetPrices object (entire object null)`);
+          } else {
+            if (!job.targetPrices.tp1) validationErrors.push(`missing TP1=${job.targetPrices.tp1}`);
+            if (!job.targetPrices.sl) validationErrors.push(`missing SL=${job.targetPrices.sl}`);
+          }
         }
         
         if (validationErrors.length > 0) {
           console.log(
-            `[ALERT_VALIDATION_ERROR] ${job.symbol}: ${validationErrors.join(", ")} - skipping alert`
+            `[ALERT_VALIDATION_ERROR] ${job.symbol}: ${validationErrors.join(" | ")} - skipping alert`
           );
           // v17.6.0: Skip only if critical price/target data is missing
           continue;
@@ -150,11 +158,12 @@ async function processAlertQueueAsync() {
         // Check cooldown
         if (await canSendAlert(job.symbol, job.mode, job.direction)) {
           // v7.5.5: Pass full card object to sendAlert for complete formatting
-          sendAlert(job.card).catch(err => {
-            console.log(`[ALERT_WORKER] Failed to send ${job.symbol}:`, err);
-          });
-          
-          console.log(`[ALERT_WORKER] Telegram sent for ${job.symbol} ${job.mode} (${job.signalState})`);
+          try {
+            await sendAlert(job.card);
+            console.log(`[ALERT_WORKER] Telegram sent for ${job.symbol} ${job.mode} (${job.signalState})`);
+          } catch (sendErr) {
+            console.error(`[ALERT_WORKER] Failed to send ${job.symbol}:`, sendErr);
+          }
         } else {
           console.log(`[ALERT_WORKER] Cooldown active for ${job.symbol} - requeuing`);
           // Requeue if cooldown active
