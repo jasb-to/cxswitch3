@@ -1634,50 +1634,95 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   // Simplified: compression when volatility < 40
   const htf15mCompression = volatilityLevel < 40;
 
-  // HARD DIRECTIONAL INFERENCE ENGINE (v7.2.5 FIX #1 & #2)
-  // v8.3.0 REFACTOR: Volatility does NOT determine direction, only amplifies confidence
-  // Priority: EMA slope > 4H trend > momentum > displacement > Stoch position
-  // NEUTRAL becomes rare - classify ANY directional pressure
+  // v18.8.0: DIRECTIONAL INTEGRITY REFACTOR (Snapshot-Based Real-Time Validation)
+  // CRITICAL FIX: Direction now represents "What is momentum doing NOW?" not stale historical bias
+  //
+  // Problem (v18.7.0):
+  //   - EMA > 0.25 anchors LONG for hours even during dumps
+  //   - HTF lag preserves LONG after deterioration
+  //   - DEFAULT TO LONG means direction almost never flips to SHORT
+  //   - Result: "BUILDING LONG - COUNTER_TREND" for 2+ hours
+  //
+  // Solution (v18.8.0):
+  //   1. Strengthen EMA threshold: 0.25 → 0.40 (require MEDIUM strength)
+  //   2. Remove DEFAULT TO LONG fallback (line 1679)
+  //   3. Require explicit bearish evidence for SHORT during weak conditions
+  //   4. Add deterioration gate: weak readiness + weak EMA block LONG
+  //
+  // Principles Preserved:
+  //   ✓ Pure snapshot-based (no temporal memory)
+  //   ✓ Deterministic (no hysteresis or cooldowns)
+  //   ✓ Real-time responsive (respects CURRENT conditions)
   
   let direction: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
   
-  // RULE 1: Strong EMA slope overrides 4H trend (primary signal)
-  if (emaSlope > 0.25) {
-    direction = "LONG"; // EMA expanding bullish
+  // v18.8.0: RULE 1 - STRENGTHENED EMA THRESHOLD (0.25 → 0.40)
+  // Require MEDIUM-strength slope to anchor direction, not just any positive slope
+  if (emaSlope > 0.40) {
+    direction = "LONG"; // MEDIUM-strength EMA expanding bullish
   }
-  else if (emaSlope < -0.25) {
-    direction = "SHORT"; // EMA expanding bearish
+  else if (emaSlope < -0.40) {
+    direction = "SHORT"; // MEDIUM-strength EMA expanding bearish
   }
-  // RULE 2: 4H trend decides if EMA weak
-  else if (htf4hTrend === "BULLISH") {
-    direction = "LONG";
+  // v18.8.0: RULE 2 - Weak positive EMA can be overridden by bearish HTF
+  else if (emaSlope > 0.1 && emaSlope <= 0.40) {
+    // Weak positive EMA: validate against HTF
+    if (htf4hTrend === "BEARISH" || htf4hTrend === "DETERIORATING") {
+      direction = "SHORT"; // Bearish HTF overrides weak positive EMA
+    } else if (htf4hTrend === "BULLISH") {
+      direction = "LONG"; // Bullish HTF confirms weak positive EMA
+    } else {
+      // HTF neutral: weak EMA alone cannot sustain LONG
+      // Check if deterioration is ongoing (stoch weak too)
+      if (stochRsi < 50) {
+        direction = "SHORT"; // Deterioration
+      } else {
+        direction = "NEUTRAL"; // Ambiguous
+      }
+    }
   }
-  else if (htf4hTrend === "BEARISH") {
-    direction = "SHORT";
+  // v18.8.0: RULE 3 - Weak negative EMA can be overridden by bullish HTF
+  else if (emaSlope < -0.1 && emaSlope >= -0.40) {
+    // Weak negative EMA: validate against HTF
+    if (htf4hTrend === "BULLISH") {
+      direction = "LONG"; // Bullish HTF overrides weak negative EMA
+    } else if (htf4hTrend === "BEARISH" || htf4hTrend === "DETERIORATING") {
+      direction = "SHORT"; // Bearish HTF confirms weak negative EMA
+    } else {
+      // HTF neutral: weak negative EMA + weak stoch = SHORT
+      if (stochRsi < 50) {
+        direction = "SHORT"; // Confirmed deterioration
+      } else {
+        direction = "NEUTRAL"; // Ambiguous
+      }
+    }
   }
-  // RULE 3: Stoch position if 4H neutral (momentum bias)
-  else if (stochRsi > 55) {
-    direction = "LONG"; // Stoch in bullish zone
+  // v18.8.0: RULE 4 - HTF decides when EMA is flat
+  else if (Math.abs(emaSlope) <= 0.1) {
+    if (htf4hTrend === "BULLISH") {
+      direction = "LONG";
+    } else if (htf4hTrend === "BEARISH" || htf4hTrend === "DETERIORATING") {
+      direction = "SHORT";
+    } else {
+      // HTF also neutral: use stochastic
+      if (stochRsi > 55) {
+        direction = "LONG";
+      } else if (stochRsi < 45) {
+        direction = "SHORT";
+      } else {
+        direction = "NEUTRAL"; // Truly dead market
+      }
+    }
   }
-  else if (stochRsi < 45) {
-    direction = "SHORT"; // Stoch in bearish zone
-  }
-  // v8.3.0 FIX: REMOVED volatility > 60 override that caused LONG during dumps
-  // Volatility amplifies confidence via displacement quality, NOT direction determination
-  // RULE 4: ONLY classify as NEUTRAL if truly dead market
-  // EMA flat AND Stoch middle AND low volatility AND no structure
-  else if (
-    Math.abs(emaSlope) <= 0.1 && 
-    stochRsi >= 48 && 
-    stochRsi <= 52 && 
-    volatilityLevel < 35
-  ) {
-    direction = "NEUTRAL"; // Dead market - no pressure
-  }
-  // Default to bullish bias if any ambiguity (risk-on)
-  else {
-    direction = "LONG";
-  }
+  
+  // v18.8.0: REMOVED DEFAULT TO LONG FALLBACK
+  // No direction = no direction. NEUTRAL is valid and responsive.
+  // This prevents stale LONG bias from persisting during ambiguous deterioration.
+  
+  // v18.8.0: Log directional decision for transparency
+  console.log(
+    `[DIRECTIONAL_INTEGRITY_v18.8.0] ${symbol}: EMA=${emaSlope.toFixed(2)} HTF=${htf4hTrend} Stoch=${stochRsi.toFixed(0)} → direction=${direction}`
+  );
 
   const card: SymbolCardState = {
     symbol,
