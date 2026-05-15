@@ -23,51 +23,114 @@
 import type { PriceData } from "./price-router";
 
 // ============================================================================
-// v21.2.1: SNIPER LOCK MAP - PERSISTENT ACTIVE SIGNAL REGISTRY
+// v21.3.0: SNIPER EVENT LIFECYCLE STATE MACHINE (UNIFIED ARCHITECTURE)
 // ============================================================================
 
 /**
- * v21.2.1 FIX: SNIPER_EVENT persistence
+ * v21.3.0: SNIPER_EVENT = Immutable trade event
  * 
- * Separates DETECTION (ephemeral) from LOCKING (persistent)
+ * Single rule: Once created, NEVER mutate entry/tp/sl/direction
+ * Lifecycle: ACTIVE → CLOSED (only on exit conditions)
  * 
- * Detection happens every cycle (impulse calculation)
- * Locking happens once (when impulse crosses threshold)
- * 
- * Once locked, signal is immutable until exit conditions met:
- * - TP hit
- * - SL hit  
- * - Timeout expiry (4H window default)
+ * This eliminates:
+ * - Signal flickering (event is immutable)
+ * - Queue corruption (no shared mutable state)
+ * - Missing alerts (alert fired at creation)
+ * - Duplicate signals (registry blocks re-fire)
  */
-interface SniperEvent {
+export interface SniperEvent {
   symbol: string;
+  direction: "LONG" | "SHORT";
   entry: number;
   tp: number;
   sl: number;
-  direction: "LONG" | "SHORT";
+  impulse: number; // impulse value when fired
+  createdAt: number; // timestamp (ms)
+  status: "ACTIVE" | "CLOSED";
+  closureReason?: "TP_HIT" | "SL_HIT" | "EXPIRY" | "INVALIDATION";
   cycleId: string;
-  firedAt: number; // timestamp when SNIPER_EVENT was created
-  originalImpulse: number; // impulse value when fired
 }
 
-const activeSnipers = new Map<string, SniperEvent>();
+/**
+ * v21.3.0: EVENT REGISTRY
+ * Per-symbol active event storage
+ * Single source of truth for SNIPER state
+ */
+const activeEvents = new Map<string, SniperEvent>();
 
 /**
- * v21.2.1: Check if symbol already has active SNIPER event
- * If yes, return locked event (don't re-evaluate)
- * If no, return null (allow fresh detection)
+ * v21.3.0: ENTRY RULE
+ * Fire event if: impulse >= 27 AND no active event exists
  */
-function getActiveSniper(symbol: string): SniperEvent | null {
-  const event = activeSnipers.get(symbol);
+function shouldFireSniperEvent(symbol: string, impulse: number): boolean {
+  // Check if already active
+  if (activeEvents.has(symbol)) {
+    return false; // Already fired, don't re-fire
+  }
+  
+  // Check threshold
+  if (impulse < 27) {
+    return false; // Below threshold
+  }
+  
+  return true; // Should fire
+}
+
+/**
+ * v21.3.0: CREATE EVENT (IMMUTABLE)
+ * Only called when shouldFireSniperEvent() returns true
+ */
+function createSniperEvent(
+  symbol: string,
+  direction: "LONG" | "SHORT",
+  entry: number,
+  volatilityLevel: number | null,
+  impulse: number,
+  cycleId: string
+): SniperEvent {
+  const volFactor = (volatilityLevel || 30) / 100;
+  
+  const event: SniperEvent = {
+    symbol,
+    direction,
+    entry,
+    tp: direction === "LONG" 
+      ? entry * (1 + volFactor)
+      : entry * (1 - volFactor),
+    sl: direction === "LONG"
+      ? entry * (1 - volFactor)
+      : entry * (1 + volFactor),
+    impulse,
+    createdAt: Date.now(),
+    status: "ACTIVE",
+    cycleId,
+  };
+  
+  // Store in registry (immutable from this point)
+  activeEvents.set(symbol, event);
+  
+  console.log(
+    `[SNIPER_EVENT_CREATED] ${symbol} ${direction} entry=${entry.toFixed(2)} ` +
+    `tp=${event.tp.toFixed(2)} sl=${event.sl.toFixed(2)} impulse=${impulse.toFixed(1)}`
+  );
+  
+  return event;
+}
+
+/**
+ * v21.3.0: GET ACTIVE EVENT
+ * Returns immutable event if active, null otherwise
+ */
+function getActiveEvent(symbol: string): SniperEvent | null {
+  const event = activeEvents.get(symbol);
   if (!event) return null;
   
-  // Check timeout: 4-hour window (14400000ms)
-  const age = Date.now() - event.firedAt;
-  const timeoutMs = 4 * 60 * 60 * 1000;
+  // Check expiry (4H = 14400000ms)
+  const age = Date.now() - event.createdAt;
+  const EXPIRY_MS = 4 * 60 * 60 * 1000;
   
-  if (age > timeoutMs) {
-    console.log(`[SNIPER_UNLOCK] ${symbol}: Event expired after ${(age / 1000 / 60 / 60).toFixed(1)}H`);
-    activeSnipers.delete(symbol);
+  if (age > EXPIRY_MS && event.status === "ACTIVE") {
+    closeEvent(symbol, "EXPIRY");
     return null;
   }
   
@@ -75,61 +138,17 @@ function getActiveSniper(symbol: string): SniperEvent | null {
 }
 
 /**
- * v21.2.1: Lock a new SNIPER event (only if not already active)
+ * v21.3.0: CLOSE EVENT (EXIT CONDITIONS)
  */
-function lockSniperEvent(
-  symbol: string,
-  entry: number,
-  tp: number,
-  sl: number,
-  direction: "LONG" | "SHORT",
-  cycleId: string,
-  impulse: number
-): SniperEvent {
-  const event: SniperEvent = {
-    symbol,
-    entry,
-    tp,
-    sl,
-    direction,
-    cycleId,
-    firedAt: Date.now(),
-    originalImpulse: impulse,
-  };
+function closeEvent(symbol: string, reason: SniperEvent["closureReason"]): void {
+  const event = activeEvents.get(symbol);
+  if (!event) return;
   
-  activeSnipers.set(symbol, event);
-  console.log(`[SNIPER_LOCK] ${symbol}: LOCKED ${direction} entry=${entry.toFixed(2)} tp=${tp.toFixed(2)} sl=${sl.toFixed(2)} impulse=${impulse.toFixed(1)}`);
+  event.status = "CLOSED";
+  event.closureReason = reason;
   
-  return event;
-}
-
-// ============================================================================
-// v21.2.1: CANONICAL ASSET WHITELIST GATE (DATA HYGIENE BOUNDARY)
-// ============================================================================
-
-const VALID_ASSETS = new Set(["BTC", "ETH", "SOL"]);
-
-/**
- * v21.2.1: Normalize asset from exchange symbols to canonical assets
- * 
- * Maps:
- * - XBTUSD, XXBTZUSD → BTC
- * - XETHZUSD, ETHUSD → ETH
- * - SOLUSD → SOL
- * - Direct symbols (BTC, ETH, SOL) → pass through
- * - Everything else → null (rejected)
- */
-function normalizeAsset(symbol: string): string | null {
-  // Exchange fallback symbols
-  if (symbol === "XBTUSD" || symbol === "XXBTZUSD") return "BTC";
-  if (symbol === "XETHZUSD" || symbol === "ETHUSD") return "ETH";
-  if (symbol === "SOLUSD") return "SOL";
-  
-  // Direct canonical symbols
-  if (VALID_ASSETS.has(symbol)) return symbol;
-  
-  // Reject everything else (PEPE, DOGE, test symbols, etc.)
-  return null;
+  const ageMin = ((Date.now() - event.createdAt) / 1000 / 60).toFixed(1);
+  console.log(`[SNIPER_EVENT_CLOSED] ${symbol}: ${reason} (age=${ageMin}min)`);
 }
 
 // ============================================================================
@@ -469,46 +488,44 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         volumeComponent
       );
 
-      // PHASE 4: Quality Filter → Terminal State + SNIPER LOCKING
-      // v21.2.1: CHECK FOR ACTIVE SNIPER LOCK FIRST
-      const activeSniper = getActiveSniper(symbol);
+      // PHASE 4: Quality Filter → Terminal State + EVENT LIFECYCLE
+      // v21.3.0: CHECK FOR ACTIVE EVENT FIRST
+      const activeEvent = getActiveEvent(symbol);
       let signalState: SignalState;
       let lockedEntry: number | null = null;
       let lockedTp: number | null = null;
       let lockedSl: number | null = null;
+      let newEventFired: SniperEvent | null = null;
       
-      if (activeSniper) {
-        // SNIPER_EVENT already locked - maintain ACTIVE_SNIPER state
+      if (activeEvent) {
+        // EVENT ALREADY ACTIVE - MAINTAIN STATE (IMMUTABLE)
         signalState = "ACTIVE_SNIPER";
-        lockedEntry = activeSniper.entry;
-        lockedTp = activeSniper.tp;
-        lockedSl = activeSniper.sl;
+        lockedEntry = activeEvent.entry;
+        lockedTp = activeEvent.tp;
+        lockedSl = activeEvent.sl;
         console.log(
-          `[SNIPER_LOCKED] ${symbol}: Maintaining lock from cycle ${activeSniper.cycleId} ` +
-          `age=${((Date.now() - activeSniper.firedAt) / 1000 / 60).toFixed(0)}min`
+          `[SNIPER_EVENT_MAINTAINED] ${symbol}: ` +
+          `age=${((Date.now() - activeEvent.createdAt) / 1000 / 60).toFixed(0)}min ` +
+          `entry=${activeEvent.entry.toFixed(2)}`
         );
       } else {
-        // No active lock - evaluate fresh
+        // NO ACTIVE EVENT - EVALUATE FRESH
         signalState = deriveExecutionState(ignitionProbability);
         
-        // If fresh ACTIVE_SNIPER detected, lock it immediately
-        if (signalState === "ACTIVE_SNIPER") {
+        // v21.3.0: ENTRY RULE - Fire event if conditions met
+        if (signalState === "ACTIVE_SNIPER" && shouldFireSniperEvent(symbol, ignitionProbability)) {
           const entry = priceData.price;
-          const targets = computeTargets(entry, direction);
-          if (targets) {
-            lockSniperEvent(
-              symbol,
-              entry,
-              targets.tp1,
-              targets.sl,
-              direction,
-              `${Date.now()}-${symbol}`,
-              ignitionProbability
-            );
-            lockedEntry = entry;
-            lockedTp = targets.tp1;
-            lockedSl = targets.sl;
-          }
+          newEventFired = createSniperEvent(
+            symbol,
+            direction,
+            entry,
+            volatilityLevel,
+            ignitionProbability,
+            `${Date.now()}-${symbol}`
+          );
+          lockedEntry = entry;
+          lockedTp = newEventFired.tp;
+          lockedSl = newEventFired.sl;
         }
       }
 
@@ -536,7 +553,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       const card: SymbolCardState = {
         symbol,
         price: priceData.price,
-        source: "v21.2.0",
+        source: "v21.3.0",
         degraded: false,
         signalState,
         marketClass: "TREND_FOLLOWING",
@@ -555,7 +572,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         execution15mState: "EXPANDING",
         marketReadinessState: signalState,
         expectedMovePercent: signalState === "ACTIVE_SNIPER" ? { sniper: { min: 0.5, max: 2 } } : null,
-        targetPrices: signalState === "ACTIVE_SNIPER" ? (lockedTp && lockedSl ? { tp1: lockedTp, tp2: lockedTp * 1.5, sl: lockedSl } : computeTargets(priceData.price, direction)) : null,
+        targetPrices: signalState === "ACTIVE_SNIPER" && lockedTp && lockedSl ? { tp1: lockedTp, tp2: lockedTp * 1.5, sl: lockedSl } : null,
         riskReward: signalState === "ACTIVE_SNIPER" ? 2 : null,
         cycleId: `${Date.now()}-${symbol}`,
         notes: `${signalState} ${direction}`,
@@ -570,6 +587,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         // v21.2.0: TELEGRAM FIELDS
         mode: signalState === "ACTIVE_SNIPER" ? "SNIPER" : "CONFIRMED",
         confidence: signalState === "ACTIVE_SNIPER" ? 85 : 30,
+        // v21.3.0: EVENT MARKER FOR ALERT SYSTEM
+        ...(newEventFired && { "_newEventFired": newEventFired }),
       };
 
       cards.push(card);
