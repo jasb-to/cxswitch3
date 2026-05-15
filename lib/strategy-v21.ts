@@ -23,7 +23,36 @@
 import type { PriceData } from "./price-router";
 
 // ============================================================================
-// v21.2.0: TYPE DEFINITIONS (CLEAN - NO v17/v18/v19/v20 contamination)
+// v21.2.1: CANONICAL ASSET WHITELIST GATE (DATA HYGIENE BOUNDARY)
+// ============================================================================
+
+const VALID_ASSETS = new Set(["BTC", "ETH", "SOL"]);
+
+/**
+ * v21.2.1: Normalize asset from exchange symbols to canonical assets
+ * 
+ * Maps:
+ * - XBTUSD, XXBTZUSD → BTC
+ * - XETHZUSD, ETHUSD → ETH
+ * - SOLUSD → SOL
+ * - Direct symbols (BTC, ETH, SOL) → pass through
+ * - Everything else → null (rejected)
+ */
+function normalizeAsset(symbol: string): string | null {
+  // Exchange fallback symbols
+  if (symbol === "XBTUSD" || symbol === "XXBTZUSD") return "BTC";
+  if (symbol === "XETHZUSD" || symbol === "ETHUSD") return "ETH";
+  if (symbol === "SOLUSD") return "SOL";
+  
+  // Direct canonical symbols
+  if (VALID_ASSETS.has(symbol)) return symbol;
+  
+  // Reject everything else (PEPE, DOGE, test symbols, etc.)
+  return null;
+}
+
+// ============================================================================
+// v21.1.0: TYPE DEFINITIONS (CLEAN - NO v17/v18/v19/v20 contamination)
 // ============================================================================
 
 export type SignalState = "NONE" | "BUILDING" | "ACTIVE_SNIPER";
@@ -322,8 +351,14 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
   console.log(`[STATE] v21.2.0 START - Final Deterministic Impulse Engine`);
   const cycleStart = Date.now();
 
-  for (const [symbol, priceData] of Object.entries(market)) {
+  for (const [rawSymbol, priceData] of Object.entries(market)) {
     try {
+      // v21.2.1: HARD ASSET FILTER - CRITICAL DATA HYGIENE BOUNDARY
+      const symbol = normalizeAsset(rawSymbol);
+      if (!symbol) {
+        console.log(`[ASSET_REJECT] ${rawSymbol} - not in canonical set (BTC/ETH/SOL)`);
+        continue;
+      }
       // PHASE 1: Market Data - compute from candles
       const stochRsi = computeStochRsi(priceData);
       const emaSlope = computeEmaSlope(priceData);
@@ -410,6 +445,12 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 
       // Generate setup only for ACTIVE_SNIPER
       if (signalState === "ACTIVE_SNIPER" && direction !== "NEUTRAL") {
+        // v21.2.1: FINAL SAFETY NET - verify asset one more time before SNIPER output
+        if (!VALID_ASSETS.has(symbol)) {
+          console.log(`[ASSET_REJECT_FINAL] ${symbol} - failed final safety check, not adding to SNIPER setups`);
+          continue;
+        }
+        
         setups.push({
           symbol,
           mode: "SNIPER",
