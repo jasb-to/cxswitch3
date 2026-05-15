@@ -11,12 +11,19 @@ import type { PriceData } from "./price-router";
 
 // v15.0.0: Canonical execution states
 // Single source of truth for trade readiness
-// NONE → BUILDING → ACTIVE_SNIPER → ACTIVE_CONFIRMED (with possible reversals to earlier states)
+// NONE → BUILDING → ACTIVE_SNIPER → ACTIVE_CONTINUATION → ACTIVE_CONFIRMED (with possible reversals to earlier states)
+// 
+// v19.0.0: EXECUTION ROLE ARCHITECTURE
+// - BUILDING: early formation detection (no filtering, no gating)
+// - ACTIVE_SNIPER: pure early entry trigger (unblocked, no delays, immediate on momentum impulse)
+// - ACTIVE_CONTINUATION: trend-riding phase (hold/scale logic, NOT entry trigger)
+// - ACTIVE_CONFIRMED: secondary validation layer (for sizing/confidence, NOT entry timing)
 export type SignalState = 
-  | "NONE"              // No setup present (CHOP, conflicting signals)
-  | "BUILDING"          // Setup forming, structural quality insufficient for entry
-  | "ACTIVE_SNIPER"     // Entry aligned, ready for execution
-  | "ACTIVE_CONFIRMED"; // Trade executed or confirmed with follow-through
+  | "NONE"                  // No setup present (CHOP, conflicting signals)
+  | "BUILDING"              // Setup forming, structural quality insufficient for entry
+  | "ACTIVE_SNIPER"         // Pure early entry trigger - fires immediately on momentum impulse
+  | "ACTIVE_CONTINUATION"   // Trend-riding phase - for holding, scaling, position management
+  | "ACTIVE_CONFIRMED";     // Secondary validation layer - for sizing and confidence
 
 // v15.0.0: Market structure classification (replaces SetupClassification)
 // Determines execution state eligibility and readiness gates
@@ -450,21 +457,25 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     card.confidence = readiness;  // v16.2.1 FIX: Set confidence for ALL states (BTC BUILDING needs this)
     card.tradeReadinessScore = readiness;  // v16.2.2 FIX: Set for ALL states, not just SNIPER/CONFIRMED (UI checks this)
     
-    console.log(`[EXECUTION_STATE] ${symbol}: ${card.signalState} (ignition=${card.ignitionProbability} readiness=${readiness})`);
+    console.log(`[EXECUTION_STATE_v19.0.0] ${symbol}: ${card.signalState} (ignition=${card.ignitionProbability} readiness=${readiness})`);
     
-    // Map signalState to mode/setupStatus for UI compatibility
+    // Map signalState to mode/setupStatus for UI compatibility (v19.0.0: Role Architecture)
     switch (card.signalState) {
       case "ACTIVE_CONFIRMED":
         card.mode = "CONFIRMED";
-        card.setupStatus = "CONFIRMED";
+        card.setupStatus = "CONFIRMED"; // Secondary validation (sizing/confidence)
+        break;
+      case "ACTIVE_CONTINUATION":
+        card.mode = "SNIPER"; // Trend-riding uses SNIPER mode for position management
+        card.setupStatus = "CONTINUATION"; // Explicit trend phase indicator
         break;
       case "ACTIVE_SNIPER":
         card.mode = "SNIPER";
-        card.setupStatus = "SNIPER";
+        card.setupStatus = "SNIPER"; // Pure entry trigger (unblocked, immediate)
         break;
       case "BUILDING":
         card.mode = "NONE";
-        card.setupStatus = "BUILDING";
+        card.setupStatus = "BUILDING"; // Early formation detection
         break;
       case "NONE":
       default:
@@ -588,19 +599,23 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       card.confidence = readiness;
       card.tradeReadinessScore = readiness;
       
-      // Update mode/setupStatus
+      // Update mode/setupStatus (v19.0.0: Role Architecture)
       switch (card.signalState) {
         case "ACTIVE_CONFIRMED":
           card.mode = "CONFIRMED";
-          card.setupStatus = "CONFIRMED";
+          card.setupStatus = "CONFIRMED"; // Secondary validation (sizing/confidence)
+          break;
+        case "ACTIVE_CONTINUATION":
+          card.mode = "SNIPER"; // Trend-riding uses SNIPER mode for position management
+          card.setupStatus = "CONTINUATION"; // Explicit trend phase indicator
           break;
         case "ACTIVE_SNIPER":
           card.mode = "SNIPER";
-          card.setupStatus = "SNIPER";
+          card.setupStatus = "SNIPER"; // Pure entry trigger (unblocked, immediate)
           break;
         case "BUILDING":
           card.mode = "NONE";
-          card.setupStatus = "BUILDING";
+          card.setupStatus = "BUILDING"; // Early formation detection
           break;
         case "NONE":
         default:
@@ -1386,20 +1401,22 @@ function classifyMarketStructure(params: {
  * If ignition >= 75 → CONFIRMED. Period.
  */
 function deriveExecutionState(ignitionProbability: number): SignalState {
-  if (ignitionProbability >= 75) return "ACTIVE_CONFIRMED";
-  if (ignitionProbability >= 60) return "ACTIVE_SNIPER";
-  if (ignitionProbability >= 20) return "BUILDING";
+  if (ignitionProbability >= 85) return "ACTIVE_CONFIRMED";  // Secondary validation layer (sizing/confidence)
+  if (ignitionProbability >= 75) return "ACTIVE_CONTINUATION"; // Trend-riding phase (hold/scale)
+  if (ignitionProbability >= 60) return "ACTIVE_SNIPER";     // Pure entry trigger (unblocked, immediate)
+  if (ignitionProbability >= 20) return "BUILDING";          // Formation detection (no gating)
   return "NONE";
 }
 
 /**
- * v15.0.0 / v9.1.0: Canonical readiness derivation
+ * v19.0.0: Canonical readiness derivation with CONTINUATION
  * 
  * Hard bands (match execution state thresholds exactly):
- * - NONE:             0-19
- * - BUILDING:         20-59
- * - ACTIVE_SNIPER:    60-74
- * - ACTIVE_CONFIRMED: 75-100
+ * - NONE:                0-19
+ * - BUILDING:            20-59
+ * - ACTIVE_SNIPER:       60-74 (pure entry trigger, unblocked)
+ * - ACTIVE_CONTINUATION: 75-84 (trend-riding phase, hold/scale)
+ * - ACTIVE_CONFIRMED:    85-100 (secondary validation layer, sizing/confidence)
  * 
  * Readiness = ignition clamped to execution state band
  * No manipulation, no post-processing
@@ -1419,8 +1436,11 @@ function deriveReadiness(
     case "ACTIVE_SNIPER":
       return Math.max(60, Math.min(74, Math.floor(ignitionProbability)));
 
+    case "ACTIVE_CONTINUATION":
+      return Math.max(75, Math.min(84, Math.floor(ignitionProbability)));
+
     case "ACTIVE_CONFIRMED":
-      return Math.max(75, Math.min(100, Math.floor(ignitionProbability)));
+      return Math.max(85, Math.min(100, Math.floor(ignitionProbability)));
 
     default:
       return 0;
