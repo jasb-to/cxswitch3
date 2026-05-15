@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * v21.0.0 - FINAL DETERMINISTIC IMPULSE ENGINE
+ * v21.2.0 - FINAL DETERMINISTIC IMPULSE ENGINE + INPUT GUARANTEE LAYER
  * 
  * Every cron cycle:
  * 1. Fetch live market data
@@ -16,7 +16,8 @@ export const runtime = "nodejs";
  * 3. Replace snapshot atomically
  * 4. Emit alerts only on state transitions (NONE↔BUILDING↔ACTIVE_SNIPER)
  * 
- * Pure impulse-driven execution. No state decay, no upgrades/downgrades.
+ * Pure impulse-driven execution with hard input sanitiser.
+ * No NaN can enter pipeline. No state decay, no upgrades/downgrades.
  * BUILDING persists as long as directional emergence exists.
  * ACTIVE_SNIPER fires and never revokes once impulse >= 27.
  */
@@ -31,7 +32,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    console.log("[CRON] v21.0.0 START - Final Deterministic Impulse Engine");
+    console.log("[CRON] v21.2.0 START - Final Deterministic Impulse Engine + Input Guarantee Layer");
     const cronStart = Date.now();
 
     // STEP 1: Fetch live market data
@@ -97,7 +98,7 @@ export async function GET(req: NextRequest) {
     }
 
     const totalMs = Date.now() - cronStart;
-    console.log(`[CRON] v21.0.0 COMPLETE in ${totalMs}ms`);
+    console.log(`[CRON] v21.2.0 COMPLETE in ${totalMs}ms`);
 
     return NextResponse.json({
       ok: true,
