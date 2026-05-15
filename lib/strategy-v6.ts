@@ -48,6 +48,10 @@ export type SymbolCardState = {
   
   // v17.2.0: Ignition probability for state derivation
   ignitionProbability: number;
+  
+  // v20.3.0: POST-SNIPER CLASSIFIER - Trade type after impulse detection
+  // Stage B: quality classification (EARLY_REVERSAL, CONTINUATION, WEAK_EXPANSION, FALSE_START)
+  sniperTradeType?: "EARLY_REVERSAL" | "CONTINUATION" | "WEAK_EXPANSION" | "FALSE_START" | null;
 
   // Momentum indicators (5M)
   stochRsi: number | null;
@@ -452,6 +456,22 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     
     console.log(`[EXECUTION_STATE] ${symbol}: ${card.signalState} (ignition=${card.ignitionProbability} readiness=${readiness})`);
     
+    // v20.3.0: POST-SNIPER CLASSIFIER (Stage B - Trade type classification)
+    // Classifies SNIPER events without blocking or suppressing them
+    if (card.ignitionProbability >= 20) {
+      // Only classify when BUILDING/SNIPER state (impulse detected)
+      card.sniperTradeType = classifySniperTradeType(
+        impulseStrengthScore,
+        emaComponent,
+        stochComponent,
+        volatilityComponent,
+        card.direction,
+        card.htf4hTrend,
+        card.emaSlope
+      );
+      console.log(`[SNIPER_CLASSIFICATION_v20.3.0] ${symbol}: ${card.sniperTradeType}`);
+    }
+    
     // Map signalState to mode/setupStatus for UI compatibility
     switch (card.signalState) {
       case "ACTIVE_CONFIRMED":
@@ -790,6 +810,64 @@ function applyAssetRoleHTFBias(symbol: string, htfRawScore: number): number {
   }
   
   return 0; // Safe default
+}
+
+/**
+ * v20.3.0: POST-SNIPER CLASSIFIER (Stage B - Quality Classification)
+ * 
+ * Classifies SNIPER event type after impulse detection fires
+ * Does NOT block or suppress SNIPER events
+ * Provides semantic meaning to impulse emergence
+ * 
+ * Labels:
+ * - EARLY_REVERSAL: Strong directional impulse counter to HTF (high edge, high variance)
+ * - CONTINUATION: Strong directional impulse aligned to HTF (standard edge)
+ * - WEAK_EXPANSION: Moderate impulse with weak EMA (low conviction, noise-prone)
+ * - FALSE_START: Impulse with diverging quality signals (likely fizzle)
+ */
+function classifySniperTradeType(
+  impulseStrengthScore: number,
+  emaComponent: number,
+  stochComponent: number,
+  volatilityComponent: number,
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL",
+  emaSlope: number | null
+): "EARLY_REVERSAL" | "CONTINUATION" | "WEAK_EXPANSION" | "FALSE_START" {
+  
+  // v20.3.0: Check HTF alignment for reversal classification
+  const htfAligned = (htf4hTrend === "BULLISH" && direction === "LONG") ||
+                     (htf4hTrend === "BEARISH" && direction === "SHORT");
+  
+  // v20.3.0: Analyze component quality distribution
+  const totalComponentScore = emaComponent + stochComponent + volatilityComponent;
+  const emaQualityRatio = totalComponentScore > 0 ? emaComponent / totalComponentScore : 0;
+  
+  // v20.3.0: Classification logic
+  if (!htfAligned && htf4hTrend !== "NEUTRAL") {
+    // Counter-trend impulse with strong EMA = early reversal (high edge, high variance)
+    if (emaComponent > 20) {
+      return "EARLY_REVERSAL";
+    }
+  }
+  
+  // Aligned impulse with strong EMA = continuation (standard edge)
+  if (htfAligned && emaComponent > 20) {
+    return "CONTINUATION";
+  }
+  
+  // Weak EMA but strong other components = weak expansion (noise-prone)
+  if (emaComponent < 10 && volatilityComponent > 15) {
+    return "WEAK_EXPANSION";
+  }
+  
+  // Diverging signals (high impulse but weak EMA confirmation) = false start
+  if (impulseStrengthScore >= 35 && emaQualityRatio < 0.3 && stochComponent < 10) {
+    return "FALSE_START";
+  }
+  
+  // Default: treat as continuation (most common case)
+  return "CONTINUATION";
 }
 
 /**
