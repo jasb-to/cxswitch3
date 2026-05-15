@@ -8,18 +8,16 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * v21.2.0 - FINAL DETERMINISTIC IMPULSE ENGINE + INPUT GUARANTEE LAYER
+ * v21.3.0 - SNIPER EVENT LIFECYCLE STATE MACHINE
  * 
  * Every cron cycle:
  * 1. Fetch live market data
  * 2. Derive all signals from current market conditions only
  * 3. Replace snapshot atomically
- * 4. Emit alerts only on state transitions (NONE↔BUILDING↔ACTIVE_SNIPER)
+ * 4. Emit alerts ONLY on NEW EVENT CREATION (not state changes)
  * 
- * Pure impulse-driven execution with hard input sanitiser.
- * No NaN can enter pipeline. No state decay, no upgrades/downgrades.
- * BUILDING persists as long as directional emergence exists.
- * ACTIVE_SNIPER fires and never revokes once impulse >= 27.
+ * Pure event-driven execution. No more signal recalculation.
+ * Once SNIPER_EVENT fires, it stays ACTIVE until exit conditions met.
  */
 export async function GET(req: NextRequest) {
   try {
@@ -48,17 +46,17 @@ export async function GET(req: NextRequest) {
     const prevCards = prevSnapshot?.cards || [];
     const prevCardMap = new Map(prevCards.map(c => [c.symbol, c]));
 
-    // STEP 4: Determine alerts based on state transitions only
-    const alertSymbols: string[] = [];
+    // STEP 4: Determine alerts based on NEW EVENT CREATION ONLY (v21.3.0)
+    const alertCards: typeof newCards = [];
     for (const newCard of newCards) {
-      const prevCard = prevCardMap.get(newCard.symbol);
-      const prevState = prevCard?.signalState || "NONE";
-      const newState = newCard.signalState || "NONE";
-
-      // Alert only if state changed
-      if (prevState !== newState) {
-        console.log(`[STATE_TRANSITION] ${newCard.symbol}: ${prevState} → ${newState}`);
-        alertSymbols.push(newCard.symbol);
+      // v21.3.0: Alert only if new event was just created
+      const newEventMarker = (newCard as any)._newEventFired;
+      if (newEventMarker) {
+        alertCards.push(newCard);
+        console.log(
+          `[EVENT_ALERT_TRIGGER] ${newCard.symbol}: NEW SNIPER_EVENT fired ` +
+          `entry=${newEventMarker.entry.toFixed(2)} impulse=${newEventMarker.impulse.toFixed(1)}`
+        );
       }
     }
 
@@ -71,63 +69,53 @@ export async function GET(req: NextRequest) {
     setSnapshot(newSnapshot);
     console.log(`[SNAPSHOT_REPLACED] Atomic replacement: ${newCards.length} cards, ${newSetups.length} setups`);
 
-    // STEP 6: Enqueue alerts for symbols with state transitions
-    for (const symbol of alertSymbols) {
-      const card = newCards.find(c => c.symbol === symbol);
-      if (!card) {
-        console.log(`[ALERT_ENQUEUE_ERROR] ${symbol}: Card not found in newCards array`);
+    // STEP 6: Enqueue alerts for NEW SNIPER_EVENTS ONLY (v21.3.0)
+    for (const card of alertCards) {
+      // v21.3.0: Event just fired - send alert immediately
+      console.log(`[ALERT_ENQUEUE_START] ${card.symbol}: NEW EVENT entry=${card.price} tp=${card.targetPrices?.tp1}`);
+      
+      // Validate card has necessary fields before enqueuing
+      const missingFields: string[] = [];
+      if (!card.targetPrices) missingFields.push("targetPrices");
+      if (!card.mode) missingFields.push("mode");
+      if (!card.confidence) missingFields.push("confidence");
+      if (!card.cycleId) missingFields.push("cycleId");
+      
+      if (missingFields.length > 0) {
+        console.log(`[ALERT_ENQUEUE_ERROR] ${card.symbol}: Missing required fields: ${missingFields.join(", ")}`);
         continue;
       }
-
-      // Only alert if now in ACTIVE_SNIPER (CONFIRMED state removed in v21.0.0)
-      if (card.signalState === "ACTIVE_SNIPER") {
-        console.log(`[ALERT_ENQUEUE_START] ${symbol}: state=${card.signalState} price=${card.price} targetPrices=${JSON.stringify(card.targetPrices)}`);
-        
-        // Validate card has necessary fields before enqueuing
-        const missingFields: string[] = [];
-        if (!card.targetPrices) missingFields.push("targetPrices");
-        if (!card.mode) missingFields.push("mode");
-        if (!card.confidence) missingFields.push("confidence");
-        if (!card.cycleId) missingFields.push("cycleId");
-        
-        if (missingFields.length > 0) {
-          console.log(`[ALERT_ENQUEUE_ERROR] ${symbol}: Missing required fields: ${missingFields.join(", ")}`);
-          continue;
-        }
-        
-        enqueueAlert({
-          card,
-          symbol: card.symbol,
-          mode: card.mode,
-          direction: card.direction,
-          score: card.tradeReadinessScore ?? 0,
-          price: card.price,
-          source: card.source,
-          signalState: card.signalState,
-          targetPrices: card.targetPrices,
-          htf4hTrend: card.htf4hTrend,
-          execution15mState: card.execution15mState,
-          queued: Date.now(),
-        });
-        
-        console.log(`[ALERT_ENQUEUE_SUCCESS] ${symbol}: Queued for telegram`);
-      } else {
-        console.log(`[ALERT_ENQUEUE_SKIP] ${symbol}: state=${card.signalState} is not ACTIVE_SNIPER`);
-      }
+      
+      enqueueAlert({
+        card,
+        symbol: card.symbol,
+        mode: card.mode,
+        direction: card.direction,
+        score: card.tradeReadinessScore ?? 0,
+        price: card.price,
+        source: card.source,
+        signalState: card.signalState,
+        targetPrices: card.targetPrices,
+        htf4hTrend: card.htf4hTrend,
+        execution15mState: card.execution15mState,
+        queued: Date.now(),
+      });
+      
+      console.log(`[ALERT_ENQUEUE_SUCCESS] ${card.symbol}: Telegram alert queued for NEW EVENT`);
     }
 
     const totalMs = Date.now() - cronStart;
-    console.log(`[CRON] v21.2.0 COMPLETE in ${totalMs}ms`);
+    console.log(`[CRON] v21.3.0 COMPLETE in ${totalMs}ms - Event lifecycle completed`);
 
     return NextResponse.json({
       ok: true,
-      version: "v21.0.0",
+      version: "v21.3.0",
       perf: {
         totalMs,
         cardsGenerated: newCards.length,
         setupsQueued: newSetups.length,
-        stateTransitions: alertSymbols.length,
-        alertsEmitted: alertSymbols.filter(s => newCards.find(c => c.symbol === s && c.signalState === "ACTIVE_SNIPER")).length,
+        newEventsCreated: alertCards.length,
+        alertsEmitted: alertCards.length,
       },
     });
   } catch (error) {
