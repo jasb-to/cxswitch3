@@ -5,7 +5,7 @@
  * Preserves existing card state and updates only delta fields
  */
 
-import type { SymbolCardState } from "./strategy-v6";
+import type { SymbolCardState } from "./strategy-v21";
 
 export type SnapshotPatch = {
   symbol: string;

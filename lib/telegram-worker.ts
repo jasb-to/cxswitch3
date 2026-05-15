@@ -9,7 +9,7 @@
  */
 
 import { sendAlert, canSendAlert } from "./telegram-v6";
-import type { SymbolCardState } from "./strategy-v6";
+import type { SymbolCardState } from "./strategy-v21";
 
 export type TelegramAlertJob = {
   // v7.5.5: Full enriched card object for complete Telegram payloads
