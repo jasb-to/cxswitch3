@@ -11,6 +11,20 @@
 import { sendAlert, canSendAlert } from "./telegram-v6";
 import type { SymbolCardState } from "./strategy-v21";
 
+/**
+ * v21.2.1 FIX: Guarantee setup builder
+ * Creates fallback setup when optional setup is missing
+ * NEVER allows alerts to be queued without setup object
+ */
+function guaranteedSetup(price: number, volatilityLevel: number | null) {
+  const volFactor = (volatilityLevel || 30) / 100;
+  return {
+    tp1: price * (1 + volFactor),
+    tp2: price * (1 + volFactor * 2),
+    sl: price * (1 - volFactor),
+  };
+}
+
 export type TelegramAlertJob = {
   // v7.5.5: Full enriched card object for complete Telegram payloads
   card: SymbolCardState;
@@ -89,34 +103,49 @@ function shouldSendAlert(symbol: string, state: string, cycleId: string): boolea
  * - Telegram doesn't care about score/HTF/LTF/isExecutable
  * - Telegram ONLY cares: state + cycleId
  * 
- * v21.2.1 FIX: Validate setup completeness before enqueuing
+ * v21.2.1 FIX: ALWAYS guarantee setup object before queueing
+ * - Never queue alerts without setup
+ * - If setup missing, build fallback from price + volatility
+ * - Add [ALERT_GATE] debug log showing decision
  */
 export function enqueueAlert(job: TelegramAlertJob) {
   const state = job.signalState as "NONE" | "BUILDING" | "ACTIVE_SNIPER" | "ACTIVE_CONFIRMED";
   const cycleId = job.card.cycleId;
   
-  console.log(`[TELEGRAM_GATE] ${job.symbol}: state=${state} cycleId=${cycleId} lastCycle=${lastAlertedCycle.get(job.symbol) || "none"}`);
+  // v21.2.1 FIX: GUARANTEE SETUP OBJECT
+  // If targetPrices missing, build from price + volatility
+  const setup = job.targetPrices || guaranteedSetup(job.price, job.card.volatilityLevel || null);
   
-  // v21.2.1 FIX: Verify setup has required fields BEFORE dedup check
+  // v21.2.1 FIX: Per-symbol field validation BEFORE dedup check
   const gateErrors: string[] = [];
   if (!job.card.mode) gateErrors.push("missing mode");
   if (!job.card.confidence) gateErrors.push("missing confidence");
-  if (!job.targetPrices) gateErrors.push("missing targetPrices");
+  if (!setup) gateErrors.push("missing setup (unable to build fallback)");
   if (!job.price || job.price <= 0) gateErrors.push(`invalid price=${job.price}`);
   
+  // v21.2.1 FIX: [ALERT_GATE] debug log with full context
+  const setupExists = !!setup && (setup.tp1 > 0 && setup.sl > 0);
+  console.log(`[ALERT_GATE] symbol=${job.symbol} state=${state} setup=${setupExists ? "EXISTS" : "MISSING"} cycleId=${cycleId} queued=${gateErrors.length === 0}`);
+  
   if (gateErrors.length > 0) {
-    console.log(`[TELEGRAM_GATE_REJECTED] ${job.symbol}: ${gateErrors.join(" | ")} - NOT enqueued`);
+    console.log(`[ALERT_GATE_REJECTED] ${job.symbol}: ${gateErrors.join(" | ")} - NOT enqueued`);
     return;
   }
   
   if (!shouldSendAlert(job.symbol, state, cycleId)) {
-    console.log(`[TELEGRAM_GATE_SKIP] ${job.symbol}: state=${state} (blocked by dedupe or non-alertable state)`);
+    console.log(`[ALERT_GATE_SKIP] ${job.symbol}: state=${state} (blocked by dedupe or non-alertable state)`);
     return;
   }
   
+  // v21.2.1 FIX: ALWAYS attach guaranteed setup before queueing
+  const jobWithSetup: TelegramAlertJob = {
+    ...job,
+    targetPrices: setup,
+  };
+  
   // GATE PASSED - ENQUEUE
-  console.log(`[TELEGRAM_GATE_PASS] ${job.symbol}: state=${state} cycleId=${cycleId} - ENQUEUED for telegram send`);
-  alertQueue.push(job);
+  console.log(`[ALERT_GATE_PASS] ${job.symbol}: state=${state} cycleId=${cycleId} setup.tp1=${setup.tp1.toFixed(2)} setup.sl=${setup.sl.toFixed(2)} - ENQUEUED`);
+  alertQueue.push(jobWithSetup);
   processAlertQueueAsync();
 }
 
