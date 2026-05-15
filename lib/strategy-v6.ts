@@ -9,27 +9,14 @@
 
 import type { PriceData } from "./price-router";
 
-// v19.2.0: EXECUTION ARCHITECTURE REFACTOR - EVENT-DRIVEN SNIPER
-// 
-// CRITICAL FIX: SNIPER must be EVENT ONLY, not a persistent state
-// 
-// State hierarchy (v19.2.0):
-// NONE → BUILDING (only persistent state)
-// + SNIPER EVENT (fires once, no state mutation, alert only)
-// + CONFIRMED OVERLAY (flag on BUILDING, not separate state)
-// 
-// v19.0.0 PROBLEM:
-//   SNIPER was persistent state → caused state mixing, oscillation
-//   Counter-trend SNIPER signals persisted as BUILDING LONG
-//   CONFIRMED inherited directional authority from SNIPER
-// 
-// v19.2.0 SOLUTION:
-//   SNIPER = EVENT ONLY (impulse detection, alert, no state)
-//   BUILDING = ONLY persistent state (represents incomplete formation)
-//   CONFIRMED = OVERLAY FLAG (BUILDING + sustained alignment, for sizing)
+// v15.0.0: Canonical execution states
+// Single source of truth for trade readiness
+// NONE → BUILDING → ACTIVE_SNIPER → ACTIVE_CONFIRMED (with possible reversals to earlier states)
 export type SignalState = 
-  | "NONE"                  // No setup present (conflicting signals, CHOP)
-  | "BUILDING";             // Setup forming, persistent state only
+  | "NONE"              // No setup present (CHOP, conflicting signals)
+  | "BUILDING"          // Setup forming, structural quality insufficient for entry
+  | "ACTIVE_SNIPER"     // Entry aligned, ready for execution
+  | "ACTIVE_CONFIRMED"; // Trade executed or confirmed with follow-through
 
 // v15.0.0: Market structure classification (replaces SetupClassification)
 // Determines execution state eligibility and readiness gates
@@ -55,21 +42,6 @@ export type SymbolCardState = {
   
   // v17.2.0: EXECUTION DIRECTION
   direction: "LONG" | "SHORT" | "NEUTRAL";
-  
-  // v19.2.0: EXECUTION ARCHITECTURE REFACTOR
-  // SNIPER is EVENT ONLY, not a persistent state
-  // This field indicates if SNIPER event fired this snapshot
-  sniperEvent?: {
-    fired: boolean;           // Did SNIPER event trigger?
-    direction: "LONG" | "SHORT"; // Event direction
-    reason: string;           // Why SNIPER event triggered
-    ignitionAtTrigger: number; // ignition score at trigger time
-  };
-  
-  // v19.2.0: CONFIRMED is OVERLAY FLAG, not a state
-  // Indicates BUILDING + sustained alignment conditions
-  // Used for sizing/confidence decisions, NOT state mutation
-  isConfirmed?: boolean;
   
   // v17.2.0: Trade confidence within state band (0-100)
   tradeReadinessScore: number | null;
@@ -472,56 +444,28 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // Derive execution state ONLY from ignition (no gating logic)
     card.signalState = deriveExecutionState(card.ignitionProbability);
     
-    // v19.2.0: Detect SNIPER event (event-driven, not persisted as state)
-    const sniperEvent = detectSniperEvent(
-      card.ignitionProbability,
-      card.direction,
-      card.emaSlope,
-      card.stochRsi,
-      card.htf4hTrend
-    );
-    card.sniperEvent = {
-      fired: sniperEvent.fired,
-      direction: card.direction as "LONG" | "SHORT",
-      reason: sniperEvent.reason,
-      ignitionAtTrigger: card.ignitionProbability
-    };
-    
-    // v19.2.0: Determine if CONFIRMED overlay applies
-    // CONFIRMED = BUILDING + sustained alignment (ignition >= 75)
-    card.isConfirmed = card.signalState === "BUILDING" && card.ignitionProbability >= 75;
-    
     // Derive readiness per execution state bands
     const readiness = deriveReadiness(card.signalState, card.ignitionProbability);
     card.displayScore = readiness;
     card.confidence = readiness;  // v16.2.1 FIX: Set confidence for ALL states (BTC BUILDING needs this)
     card.tradeReadinessScore = readiness;  // v16.2.2 FIX: Set for ALL states, not just SNIPER/CONFIRMED (UI checks this)
     
-    console.log(`[EXECUTION_STATE_v19.2.0] ${symbol}: ${card.signalState} (ignition=${card.ignitionProbability} readiness=${readiness}) SNIPER=${sniperEvent.fired} CONFIRMED=${card.isConfirmed}`);
+    console.log(`[EXECUTION_STATE] ${symbol}: ${card.signalState} (ignition=${card.ignitionProbability} readiness=${readiness})`);
     
-    // v19.2.0: Map signalState to mode/setupStatus (EVENT-DRIVEN ARCHITECTURE)
-    // BUILDING is the only persistent state
-    // SNIPER is event-driven (fires separately, doesn't affect state mapping)
-    // CONFIRMED is overlay flag (BUILDING + alignment, for sizing decisions)
+    // Map signalState to mode/setupStatus for UI compatibility
     switch (card.signalState) {
-      case "BUILDING":
-        // v19.2.0: Check if SNIPER event fired within this BUILDING state
-        if (card.sniperEvent?.fired) {
-          // SNIPER event detected - this is strong impulse entry signal
-          card.mode = "SNIPER";
-          card.setupStatus = "SNIPER"; // Event-driven entry trigger
-        } else {
-          // BUILDING state without SNIPER event - early formation, no entry yet
-          card.mode = "NONE";
-          card.setupStatus = "BUILDING";
-        }
-        
-        // v19.2.0: Apply CONFIRMED overlay if applicable
-        if (card.isConfirmed && card.ignitionProbability >= 75) {
-          card.setupStatus = "CONFIRMED"; // Overlay on BUILDING for sizing
-        }
+      case "ACTIVE_CONFIRMED":
+        card.mode = "CONFIRMED";
+        card.setupStatus = "CONFIRMED";
         break;
-        
+      case "ACTIVE_SNIPER":
+        card.mode = "SNIPER";
+        card.setupStatus = "SNIPER";
+        break;
+      case "BUILDING":
+        card.mode = "NONE";
+        card.setupStatus = "BUILDING";
+        break;
       case "NONE":
       default:
         card.mode = "NONE";
@@ -644,26 +588,20 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       card.confidence = readiness;
       card.tradeReadinessScore = readiness;
       
-      // v19.2.0: Update mode/setupStatus (EVENT-DRIVEN ARCHITECTURE)
+      // Update mode/setupStatus
       switch (card.signalState) {
-        case "BUILDING":
-          // v19.2.0: Check if SNIPER event fired within this BUILDING state
-          if (card.sniperEvent?.fired) {
-            // SNIPER event detected - this is strong impulse entry signal
-            card.mode = "SNIPER";
-            card.setupStatus = "SNIPER"; // Event-driven entry trigger
-          } else {
-            // BUILDING state without SNIPER event - early formation, no entry yet
-            card.mode = "NONE";
-            card.setupStatus = "BUILDING";
-          }
-          
-          // v19.2.0: Apply CONFIRMED overlay if applicable
-          if (card.isConfirmed && card.ignitionProbability >= 75) {
-            card.setupStatus = "CONFIRMED"; // Overlay on BUILDING for sizing
-          }
+        case "ACTIVE_CONFIRMED":
+          card.mode = "CONFIRMED";
+          card.setupStatus = "CONFIRMED";
           break;
-          
+        case "ACTIVE_SNIPER":
+          card.mode = "SNIPER";
+          card.setupStatus = "SNIPER";
+          break;
+        case "BUILDING":
+          card.mode = "NONE";
+          card.setupStatus = "BUILDING";
+          break;
         case "NONE":
         default:
           card.mode = "NONE";
@@ -852,49 +790,6 @@ function applyAssetRoleHTFBias(symbol: string, htfRawScore: number): number {
   }
   
   return 0; // Safe default
-}
-
-/**
- * v19.2.0: SNIPER EVENT DETECTION (EVENT-DRIVEN ARCHITECTURE)
- * 
- * SNIPER fires when impulse conditions detected:
- * - Ignition probability crosses 60+ threshold
- * - Momentum alignment strong (EMA + Stoch)
- * - NOT blocked by counter-trend weak EMA
- * 
- * SNIPER fires ONCE per impulse, does NOT persist
- * Each new snapshot checks for fresh impulse conditions
- */
-function detectSniperEvent(
-  ignitionProbability: number,
-  direction: "LONG" | "SHORT" | "NEUTRAL",
-  emaSlope: number | null,
-  stochRsi: number | null,
-  htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL"
-): { fired: boolean; reason: string } {
-  // SNIPER event fires when:
-  // 1. Ignition >= 60 (strong signal)
-  // 2. Direction is defined (not NEUTRAL)
-  // 3. NOT blocked by counter-trend weak EMA
-  
-  if (ignitionProbability < 60) {
-    return { fired: false, reason: "ignition < 60" };
-  }
-  
-  if (direction === "NEUTRAL") {
-    return { fired: false, reason: "direction is NEUTRAL" };
-  }
-  
-  // Check for counter-trend weak EMA block
-  const counterTrendMode = (htf4hTrend === "BEARISH" && direction === "LONG") ||
-                          (htf4hTrend === "BULLISH" && direction === "SHORT");
-  
-  if (counterTrendMode && emaSlope !== null && Math.abs(emaSlope) < 0.85) {
-    return { fired: false, reason: "counter-trend weak EMA block" };
-  }
-  
-  // All conditions met - SNIPER fires
-  return { fired: true, reason: `impulse ${direction} (ema=${emaSlope?.toFixed(2)}, stoch=${stochRsi?.toFixed(0)})` };
 }
 
 /**
@@ -1490,54 +1385,42 @@ function classifyMarketStructure(params: {
  * If ignition >= 60 → SNIPER. Period.
  * If ignition >= 75 → CONFIRMED. Period.
  */
-/**
- * v19.2.0: EXECUTION STATE DERIVATION (EVENT-DRIVEN ARCHITECTURE)
- * 
- * CRITICAL: BUILDING is the ONLY persistent state
- * SNIPER is event-driven (fires once, no state mutation)
- * CONFIRMED is overlay flag (BUILDING + alignment, for sizing)
- * 
- * State logic (v19.2.0):
- * - ignition >= 60: SNIPER event fires + BUILDING state
- * - ignition >= 20: BUILDING state only
- * - ignition < 20: NONE
- * 
- * No transitions between SNIPER and BUILDING
- * No state persistence of SNIPER across snapshots
- */
 function deriveExecutionState(ignitionProbability: number): SignalState {
-  // v19.2.0: BUILDING is the ONLY persistent state
+  if (ignitionProbability >= 75) return "ACTIVE_CONFIRMED";
+  if (ignitionProbability >= 60) return "ACTIVE_SNIPER";
   if (ignitionProbability >= 20) return "BUILDING";
   return "NONE";
 }
 
 /**
- * v19.2.0: READINESS DERIVATION (EVENT-DRIVEN ARCHITECTURE)
+ * v15.0.0 / v9.1.0: Canonical readiness derivation
  * 
- * Simplified bands after SNIPER→BUILDING consolidation:
- * - NONE:     0-19 (no setup)
- * - BUILDING: 20-100 (persistent state, unified band)
+ * Hard bands (match execution state thresholds exactly):
+ * - NONE:             0-19
+ * - BUILDING:         20-59
+ * - ACTIVE_SNIPER:    60-74
+ * - ACTIVE_CONFIRMED: 75-100
  * 
- * Within BUILDING band:
- * - 20-59: Early formation (SNIPER event has NOT fired)
- * - 60-100: Strong formation (SNIPER event fired, or high sustained alignment)
- * 
- * CONFIRMED overlay (when isConfirmed=true):
- * - readiness >= 75 indicates sustained alignment
- * - Used for sizing/confidence decisions
+ * Readiness = ignition clamped to execution state band
+ * No manipulation, no post-processing
  */
 function deriveReadiness(
   executionState: SignalState,
   ignitionProbability: number
 ): number {
-  // v19.2.0: Simplified to match new state structure
+  // Readiness directly reflects ignition within the state's band
   switch (executionState) {
     case "NONE":
       return Math.max(0, Math.min(19, Math.floor(ignitionProbability)));
 
     case "BUILDING":
-      // BUILDING spans full 20-100 range (all persistent states unified)
-      return Math.max(20, Math.min(100, Math.floor(ignitionProbability)));
+      return Math.max(20, Math.min(59, Math.floor(ignitionProbability)));
+
+    case "ACTIVE_SNIPER":
+      return Math.max(60, Math.min(74, Math.floor(ignitionProbability)));
+
+    case "ACTIVE_CONFIRMED":
+      return Math.max(75, Math.min(100, Math.floor(ignitionProbability)));
 
     default:
       return 0;
@@ -1751,95 +1634,50 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   // Simplified: compression when volatility < 40
   const htf15mCompression = volatilityLevel < 40;
 
-  // v18.8.0: DIRECTIONAL INTEGRITY REFACTOR (Snapshot-Based Real-Time Validation)
-  // CRITICAL FIX: Direction now represents "What is momentum doing NOW?" not stale historical bias
-  //
-  // Problem (v18.7.0):
-  //   - EMA > 0.25 anchors LONG for hours even during dumps
-  //   - HTF lag preserves LONG after deterioration
-  //   - DEFAULT TO LONG means direction almost never flips to SHORT
-  //   - Result: "BUILDING LONG - COUNTER_TREND" for 2+ hours
-  //
-  // Solution (v18.8.0):
-  //   1. Strengthen EMA threshold: 0.25 → 0.40 (require MEDIUM strength)
-  //   2. Remove DEFAULT TO LONG fallback (line 1679)
-  //   3. Require explicit bearish evidence for SHORT during weak conditions
-  //   4. Add deterioration gate: weak readiness + weak EMA block LONG
-  //
-  // Principles Preserved:
-  //   ✓ Pure snapshot-based (no temporal memory)
-  //   ✓ Deterministic (no hysteresis or cooldowns)
-  //   ✓ Real-time responsive (respects CURRENT conditions)
+  // HARD DIRECTIONAL INFERENCE ENGINE (v7.2.5 FIX #1 & #2)
+  // v8.3.0 REFACTOR: Volatility does NOT determine direction, only amplifies confidence
+  // Priority: EMA slope > 4H trend > momentum > displacement > Stoch position
+  // NEUTRAL becomes rare - classify ANY directional pressure
   
   let direction: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
   
-  // v18.8.0: RULE 1 - STRENGTHENED EMA THRESHOLD (0.25 → 0.40)
-  // Require MEDIUM-strength slope to anchor direction, not just any positive slope
-  if (emaSlope > 0.40) {
-    direction = "LONG"; // MEDIUM-strength EMA expanding bullish
+  // RULE 1: Strong EMA slope overrides 4H trend (primary signal)
+  if (emaSlope > 0.25) {
+    direction = "LONG"; // EMA expanding bullish
   }
-  else if (emaSlope < -0.40) {
-    direction = "SHORT"; // MEDIUM-strength EMA expanding bearish
+  else if (emaSlope < -0.25) {
+    direction = "SHORT"; // EMA expanding bearish
   }
-  // v18.8.0: RULE 2 - Weak positive EMA can be overridden by bearish HTF
-  else if (emaSlope > 0.1 && emaSlope <= 0.40) {
-    // Weak positive EMA: validate against HTF
-    if (htf4hTrend === "BEARISH" || htf4hTrend === "DETERIORATING") {
-      direction = "SHORT"; // Bearish HTF overrides weak positive EMA
-    } else if (htf4hTrend === "BULLISH") {
-      direction = "LONG"; // Bullish HTF confirms weak positive EMA
-    } else {
-      // HTF neutral: weak EMA alone cannot sustain LONG
-      // Check if deterioration is ongoing (stoch weak too)
-      if (stochRsi < 50) {
-        direction = "SHORT"; // Deterioration
-      } else {
-        direction = "NEUTRAL"; // Ambiguous
-      }
-    }
+  // RULE 2: 4H trend decides if EMA weak
+  else if (htf4hTrend === "BULLISH") {
+    direction = "LONG";
   }
-  // v18.8.0: RULE 3 - Weak negative EMA can be overridden by bullish HTF
-  else if (emaSlope < -0.1 && emaSlope >= -0.40) {
-    // Weak negative EMA: validate against HTF
-    if (htf4hTrend === "BULLISH") {
-      direction = "LONG"; // Bullish HTF overrides weak negative EMA
-    } else if (htf4hTrend === "BEARISH" || htf4hTrend === "DETERIORATING") {
-      direction = "SHORT"; // Bearish HTF confirms weak negative EMA
-    } else {
-      // HTF neutral: weak negative EMA + weak stoch = SHORT
-      if (stochRsi < 50) {
-        direction = "SHORT"; // Confirmed deterioration
-      } else {
-        direction = "NEUTRAL"; // Ambiguous
-      }
-    }
+  else if (htf4hTrend === "BEARISH") {
+    direction = "SHORT";
   }
-  // v18.8.0: RULE 4 - HTF decides when EMA is flat
-  else if (Math.abs(emaSlope) <= 0.1) {
-    if (htf4hTrend === "BULLISH") {
-      direction = "LONG";
-    } else if (htf4hTrend === "BEARISH" || htf4hTrend === "DETERIORATING") {
-      direction = "SHORT";
-    } else {
-      // HTF also neutral: use stochastic
-      if (stochRsi > 55) {
-        direction = "LONG";
-      } else if (stochRsi < 45) {
-        direction = "SHORT";
-      } else {
-        direction = "NEUTRAL"; // Truly dead market
-      }
-    }
+  // RULE 3: Stoch position if 4H neutral (momentum bias)
+  else if (stochRsi > 55) {
+    direction = "LONG"; // Stoch in bullish zone
   }
-  
-  // v18.8.0: REMOVED DEFAULT TO LONG FALLBACK
-  // No direction = no direction. NEUTRAL is valid and responsive.
-  // This prevents stale LONG bias from persisting during ambiguous deterioration.
-  
-  // v18.8.0: Log directional decision for transparency
-  console.log(
-    `[DIRECTIONAL_INTEGRITY_v18.8.0] ${symbol}: EMA=${emaSlope.toFixed(2)} HTF=${htf4hTrend} Stoch=${stochRsi.toFixed(0)} → direction=${direction}`
-  );
+  else if (stochRsi < 45) {
+    direction = "SHORT"; // Stoch in bearish zone
+  }
+  // v8.3.0 FIX: REMOVED volatility > 60 override that caused LONG during dumps
+  // Volatility amplifies confidence via displacement quality, NOT direction determination
+  // RULE 4: ONLY classify as NEUTRAL if truly dead market
+  // EMA flat AND Stoch middle AND low volatility AND no structure
+  else if (
+    Math.abs(emaSlope) <= 0.1 && 
+    stochRsi >= 48 && 
+    stochRsi <= 52 && 
+    volatilityLevel < 35
+  ) {
+    direction = "NEUTRAL"; // Dead market - no pressure
+  }
+  // Default to bullish bias if any ambiguity (risk-on)
+  else {
+    direction = "LONG";
+  }
 
   const card: SymbolCardState = {
     symbol,
