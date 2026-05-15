@@ -8,16 +8,17 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * v17.0.0 - PURE DETERMINISTIC STATELESS SIGNAL ENGINE
+ * v21.0.0 - FINAL DETERMINISTIC IMPULSE ENGINE
  * 
  * Every cron cycle:
  * 1. Fetch live market data
  * 2. Derive all signals from current market conditions only
  * 3. Replace snapshot atomically
- * 4. Emit alerts only on state transitions (NONE↔BUILDING↔ACTIVE_*)
+ * 4. Emit alerts only on state transitions (NONE↔BUILDING↔ACTIVE_SNIPER)
  * 
- * No lifecycle persistence. No temporal logic. No hidden invalidation.
- * State = current market conditions, nothing else.
+ * Pure impulse-driven execution. No state decay, no upgrades/downgrades.
+ * BUILDING persists as long as directional emergence exists.
+ * ACTIVE_SNIPER fires and never revokes once impulse >= 27.
  */
 export async function GET(req: NextRequest) {
   try {
@@ -30,7 +31,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    console.log("[CRON] v17.0.0 START - Pure Deterministic Signal Engine");
+    console.log("[CRON] v21.0.0 START - Final Deterministic Impulse Engine");
     const cronStart = Date.now();
 
     // STEP 1: Fetch live market data
@@ -74,14 +75,14 @@ export async function GET(req: NextRequest) {
       const card = newCards.find(c => c.symbol === symbol);
       if (!card) continue;
 
-      // Only alert if now in ACTIVE_SNIPER or ACTIVE_CONFIRMED (not for NONE→BUILDING)
-      if (card.signalState === "ACTIVE_SNIPER" || card.signalState === "ACTIVE_CONFIRMED") {
+      // Only alert if now in ACTIVE_SNIPER (CONFIRMED state removed in v21.0.0)
+      if (card.signalState === "ACTIVE_SNIPER") {
         console.log(`[ALERT_QUEUE] ${symbol}: ${card.signalState}`);
         
         enqueueAlert({
           card,
           symbol: card.symbol,
-          mode: card.signalState === "ACTIVE_CONFIRMED" ? "CONFIRMED" : "SNIPER",
+          mode: "SNIPER" as const,
           direction: card.direction,
           score: card.tradeReadinessScore ?? 0,
           price: card.price,
@@ -96,17 +97,17 @@ export async function GET(req: NextRequest) {
     }
 
     const totalMs = Date.now() - cronStart;
-    console.log(`[CRON] v17.0.0 COMPLETE in ${totalMs}ms`);
+    console.log(`[CRON] v21.0.0 COMPLETE in ${totalMs}ms`);
 
     return NextResponse.json({
       ok: true,
-      version: "v17.0.0",
+      version: "v21.0.0",
       perf: {
         totalMs,
         cardsGenerated: newCards.length,
         setupsQueued: newSetups.length,
         stateTransitions: alertSymbols.length,
-        alertsEmitted: alertSymbols.filter(s => newCards.find(c => c.symbol === s && (c.signalState === "ACTIVE_SNIPER" || c.signalState === "ACTIVE_CONFIRMED"))).length,
+        alertsEmitted: alertSymbols.filter(s => newCards.find(c => c.symbol === s && c.signalState === "ACTIVE_SNIPER")).length,
       },
     });
   } catch (error) {
