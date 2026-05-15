@@ -1222,7 +1222,7 @@ function calculateIgnitionProbability(
  * - 1H alignment provides directional context
  * - 15M provides execution structure (BREAKOUT_READY or EXPANDING)
  * - 5M provides ignition confirmation
-}
+ */
 
 /**
  * v8.0.4 CRITICAL FIX: Check SNIPER conditions before execution
