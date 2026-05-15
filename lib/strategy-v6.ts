@@ -1080,29 +1080,50 @@ function calculateIgnitionProbability(
   
   reasons.push(`v20.1.0 Impulse Quality: ${impulseStrengthScore.toFixed(2)} ${impulseQualityPass ? "PASS" : "FAIL"} (threshold=${IMPULSE_QUALITY_THRESHOLD})`);
   
-  // v20.1.0: Final probability WITHOUT HTF multiplicative bias
-  // probabilityBase already defined above (line 921) with saturation applied (lines 923-928)
-  // HTF bias removed entirely - no multiplicative scalar applied
-
+  // v20.2.0: HTF = EXPECTANCY SCALER (not gating, not direction)
+  // 
+  // HTF provides statistical weight on follow-through probability
+  // NOT applied to impulse detection (SNIPER trigger)
+  // NOT applied to direction determination
+  // 
+  // Only adjusts EXPECTANCY:
+  // - Aligned with HTF → follow-through probability boost
+  // - Against HTF → follow-through probability penalty
+  // 
+  // Never blocks, suppresses, or gates SNIPER events
+  
+  const htfAlignment = (htf4hTrend === "BULLISH" && direction === "LONG") ||
+                       (htf4hTrend === "BEARISH" && direction === "SHORT");
+  
+  // v20.2.0: Expectancy scaler based on HTF alignment
+  // Aligned: +0.05 boost (5% expectancy increase)
+  // Counter-trend: -0.10 penalty (10% expectancy decrease)
+  // Neutral: 0.00 (no adjustment)
+  let expectancyScaler = 0;
+  if (htf4hTrend !== "NEUTRAL") {
+    expectancyScaler = htfAlignment ? 0.05 : -0.10;
+    reasons.push(`HTF expectancy scaler: ${htfAlignment ? "+5%" : "-10%"} (${htfAlignment ? "aligned" : "counter-trend"})`);
+  }
+  
   // v17.9.0: Displacement contribution (already adjusted)
   // v18.1.0: NO HTF ADDITIVE MODIFIER - removed
 
-  // Final ignition probability WITHOUT HTF gating
-  // Pure impulse-driven, HTF logged but never enforced
-  const probability = Math.max(0, Math.min(100, probabilityBase + adjustedDisplacementModifier));
+  // Final ignition probability WITH HTF expectancy scaler (v20.2.0)
+  // Scaler applied AFTER impulse detection, never blocks impulse
+  // Pure impulse-driven baseline, HTF adjusts follow-through expectancy only
+  const rawProbability = probabilityBase + adjustedDisplacementModifier;
+  const probability = Math.max(0, Math.min(100, rawProbability * (1 + expectancyScaler)));
   
-  // v20.1.0: Log HTF context SEPARATELY (informational only, zero influence on trigger)
+  // v20.2.0: Log HTF expectancy adjustment (not gating, just statistical weight)
   if (htf4hTrend !== "NEUTRAL") {
-    const htfAlignment = (htf4hTrend === "BULLISH" && direction === "LONG") ||
-                         (htf4hTrend === "BEARISH" && direction === "SHORT");
-    reasons.push(`HTF context log: ${htf4hTrend} (${htfAlignment ? "aligned" : "counter-trend"} - informational only, zero influence)`);
+    reasons.push(`HTF expectancy context: ${htf4hTrend} (${htfAlignment ? "aligned" : "counter-trend"} - statistical weight only, never blocks SNIPER)`);
   }
   
-  // v20.1.0: Log impulse event determination
+  // v20.2.0: Log impulse detection and HTF expectancy adjustment
   console.log(
-    `[SNIPER_IMPULSE_v20.1.0] ${symbol}: impulse=${impulseStrengthScore.toFixed(2)} pass=${impulseQualityPass} ` +
+    `[SNIPER_IMPULSE_v20.2.0] ${symbol}: impulse=${impulseStrengthScore.toFixed(2)} pass=${impulseQualityPass} ` +
     `(stoch=${stochComponent.toFixed(2)} + ema=${emaComponent.toFixed(2)} + vol=${volatilityComponent.toFixed(2)} + vol_impulse=${volumeComponent.toFixed(2)}) ` +
-    `→ final=${probability.toFixed(2)}`
+    `→ raw=${rawProbability.toFixed(2)} × expectancy(${(1 + expectancyScaler).toFixed(3)}) = final=${probability.toFixed(2)}`
   );
 
   // v18.4.0: LOGGING UPDATED - Shows structural HTF context (informational)
