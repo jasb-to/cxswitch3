@@ -88,20 +88,34 @@ function shouldSendAlert(symbol: string, state: string, cycleId: string): boolea
  * - Telegram doesn't care about state transitions
  * - Telegram doesn't care about score/HTF/LTF/isExecutable
  * - Telegram ONLY cares: state + cycleId
+ * 
+ * v21.2.1 FIX: Validate setup completeness before enqueuing
  */
 export function enqueueAlert(job: TelegramAlertJob) {
   const state = job.signalState as "NONE" | "BUILDING" | "ACTIVE_SNIPER" | "ACTIVE_CONFIRMED";
   const cycleId = job.card.cycleId;
   
-  console.log(`[TELEGRAM_CHECK] ${job.symbol}: state=${state} cycleId=${cycleId} lastCycle=${lastAlertedCycle.get(job.symbol) || "none"}`);
+  console.log(`[TELEGRAM_GATE] ${job.symbol}: state=${state} cycleId=${cycleId} lastCycle=${lastAlertedCycle.get(job.symbol) || "none"}`);
   
-  if (!shouldSendAlert(job.symbol, state, cycleId)) {
-    console.log(`[TELEGRAM_SKIP] ${job.symbol}: state=${state} (blocked by dedupe or non-alertable state)`);
+  // v21.2.1 FIX: Verify setup has required fields BEFORE dedup check
+  const gateErrors: string[] = [];
+  if (!job.card.mode) gateErrors.push("missing mode");
+  if (!job.card.confidence) gateErrors.push("missing confidence");
+  if (!job.targetPrices) gateErrors.push("missing targetPrices");
+  if (!job.price || job.price <= 0) gateErrors.push(`invalid price=${job.price}`);
+  
+  if (gateErrors.length > 0) {
+    console.log(`[TELEGRAM_GATE_REJECTED] ${job.symbol}: ${gateErrors.join(" | ")} - NOT enqueued`);
     return;
   }
   
-  // SEND ALERT
-  console.log(`[TELEGRAM_SEND] ${job.symbol}: state=${state} cycleId=${cycleId}`);
+  if (!shouldSendAlert(job.symbol, state, cycleId)) {
+    console.log(`[TELEGRAM_GATE_SKIP] ${job.symbol}: state=${state} (blocked by dedupe or non-alertable state)`);
+    return;
+  }
+  
+  // GATE PASSED - ENQUEUE
+  console.log(`[TELEGRAM_GATE_PASS] ${job.symbol}: state=${state} cycleId=${cycleId} - ENQUEUED for telegram send`);
   alertQueue.push(job);
   processAlertQueueAsync();
 }
@@ -109,17 +123,30 @@ export function enqueueAlert(job: TelegramAlertJob) {
 /**
  * Process alert queue asynchronously (v7.2.7 FIX #6)
  * Runs independently without blocking cron
+ * 
+ * v21.2.1 FIX: IMMUTABLE ITERATION to prevent symbol loss
+ * - Don't use shift() which destroys queue on error
+ * - Use index tracking to safely remove only processed alerts
+ * - ETH no longer blocked if BTC fails
  */
 async function processAlertQueueAsync() {
   if (isProcessingAlerts || alertQueue.length === 0) return;
   
   isProcessingAlerts = true;
-  console.log(`[TELEGRAM_PROCESSOR_START] Processing ${alertQueue.length} queued alerts`);
+  const queueLength = alertQueue.length;
+  console.log(`[TELEGRAM_PROCESSOR_START] Processing ${queueLength} queued alerts`);
+  
+  let processedCount = 0;
+  let index = 0;
   
   try {
-    while (alertQueue.length > 0) {
-      const job = alertQueue.shift();
-      if (!job) break;
+    // v21.2.1 FIX: Safe iteration - don't use destructive shift()
+    while (index < alertQueue.length) {
+      const job = alertQueue[index];
+      if (!job) {
+        index++;
+        continue;
+      }
 
       try {
         // v13.0.0: TELEGRAM EXECUTION FIX - REMOVE EXECUTION GATING
@@ -152,6 +179,7 @@ async function processAlertQueueAsync() {
             `[ALERT_VALIDATION_ERROR] ${job.symbol}: ${validationErrors.join(" | ")} - skipping alert`
           );
           // v17.6.0: Skip only if critical price/target data is missing
+          index++; // Move to next alert even if this one fails
           continue;
         }
 
@@ -160,18 +188,23 @@ async function processAlertQueueAsync() {
           // v7.5.5: Pass full card object to sendAlert for complete formatting
           try {
             await sendAlert(job.card);
-            console.log(`[ALERT_WORKER] Telegram sent for ${job.symbol} ${job.mode} (${job.signalState})`);
+            console.log(`[ALERT_WORKER_SUCCESS] Telegram sent for ${job.symbol} ${job.mode} (${job.signalState})`);
+            // Mark for removal after successful send
+            alertQueue.splice(index, 1);
+            // Don't increment index - next alert now at this position
+            processedCount++;
           } catch (sendErr) {
-            console.error(`[ALERT_WORKER] Failed to send ${job.symbol}:`, sendErr);
+            console.error(`[ALERT_WORKER_ERROR] Failed to send ${job.symbol}:`, sendErr);
+            index++; // Move to next even if send fails
           }
         } else {
-          console.log(`[ALERT_WORKER] Cooldown active for ${job.symbol} - requeuing`);
-          // Requeue if cooldown active
-          alertQueue.push(job);
-          break; // Stop processing, retry later
+          console.log(`[ALERT_WORKER_COOLDOWN] ${job.symbol} - cooldown active, requeuing for next batch`);
+          // Leave in queue, move to next alert
+          index++;
         }
       } catch (err) {
-        console.error(`[ALERT_WORKER] Error processing ${job.symbol}:`, err);
+        console.error(`[ALERT_WORKER_EXCEPTION] Error processing ${job.symbol}:`, err);
+        index++; // Move to next alert on exception
       }
       
       // Small delay between alerts (don't hammer Telegram)
@@ -179,7 +212,7 @@ async function processAlertQueueAsync() {
     }
   } finally {
     isProcessingAlerts = false;
-    console.log(`[TELEGRAM_PROCESSOR_END] Queue processing complete - ${alertQueue.length} alerts remaining`);
+    console.log(`[TELEGRAM_PROCESSOR_END] Processed ${processedCount}/${queueLength} alerts - ${alertQueue.length} remaining in queue`);
   }
 }
 
