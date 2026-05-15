@@ -12,16 +12,14 @@ import { sendAlert, canSendAlert } from "./telegram-v6";
 import type { SymbolCardState } from "./strategy-v21";
 
 /**
- * v21.2.1 FIX: Guarantee setup builder
- * Creates fallback setup when optional setup is missing
- * NEVER allows alerts to be queued without setup object
+ * v21.2.1 FIX: Deep clone setup to create immutable snapshot
+ * Prevents downstream mutations from corrupting alert payload
  */
-function guaranteedSetup(price: number, volatilityLevel: number | null) {
-  const volFactor = (volatilityLevel || 30) / 100;
+function deepCloneSetup(setup: { tp1: number; tp2: number; sl: number }) {
   return {
-    tp1: price * (1 + volFactor),
-    tp2: price * (1 + volFactor * 2),
-    sl: price * (1 - volFactor),
+    tp1: setup.tp1,
+    tp2: setup.tp2,
+    sl: setup.sl,
   };
 }
 
@@ -138,13 +136,23 @@ export function enqueueAlert(job: TelegramAlertJob) {
   }
   
   // v21.2.1 FIX: ALWAYS attach guaranteed setup before queueing
+  // CRITICAL: Deep clone setup to prevent downstream mutations
+  const clonedSetup = deepCloneSetup(setup);
+  
   const jobWithSetup: TelegramAlertJob = {
     ...job,
-    targetPrices: setup,
+    targetPrices: clonedSetup,
   };
   
+  // v21.2.1 FIX: FREEZE AT ENQUEUE to prevent shared reference mutations
+  // Immutable snapshot = no downstream corruption
+  Object.freeze(jobWithSetup);
+  if (jobWithSetup.targetPrices) {
+    Object.freeze(jobWithSetup.targetPrices);
+  }
+  
   // GATE PASSED - ENQUEUE
-  console.log(`[ALERT_GATE_PASS] ${job.symbol}: state=${state} cycleId=${cycleId} setup.tp1=${setup.tp1.toFixed(2)} setup.sl=${setup.sl.toFixed(2)} - ENQUEUED`);
+  console.log(`[ALERT_GATE_PASS] ${job.symbol}: state=${state} cycleId=${cycleId} setup.tp1=${clonedSetup.tp1.toFixed(2)} setup.sl=${clonedSetup.sl.toFixed(2)} - ENQUEUED (FROZEN)`);
   alertQueue.push(jobWithSetup);
   processAlertQueueAsync();
 }
