@@ -9,21 +9,27 @@
 
 import type { PriceData } from "./price-router";
 
-// v15.0.0: Canonical execution states
-// Single source of truth for trade readiness
-// NONE → BUILDING → ACTIVE_SNIPER → ACTIVE_CONTINUATION → ACTIVE_CONFIRMED (with possible reversals to earlier states)
+// v19.2.0: EXECUTION ARCHITECTURE REFACTOR - EVENT-DRIVEN SNIPER
 // 
-// v19.0.0: EXECUTION ROLE ARCHITECTURE
-// - BUILDING: early formation detection (no filtering, no gating)
-// - ACTIVE_SNIPER: pure early entry trigger (unblocked, no delays, immediate on momentum impulse)
-// - ACTIVE_CONTINUATION: trend-riding phase (hold/scale logic, NOT entry trigger)
-// - ACTIVE_CONFIRMED: secondary validation layer (for sizing/confidence, NOT entry timing)
+// CRITICAL FIX: SNIPER must be EVENT ONLY, not a persistent state
+// 
+// State hierarchy (v19.2.0):
+// NONE → BUILDING (only persistent state)
+// + SNIPER EVENT (fires once, no state mutation, alert only)
+// + CONFIRMED OVERLAY (flag on BUILDING, not separate state)
+// 
+// v19.0.0 PROBLEM:
+//   SNIPER was persistent state → caused state mixing, oscillation
+//   Counter-trend SNIPER signals persisted as BUILDING LONG
+//   CONFIRMED inherited directional authority from SNIPER
+// 
+// v19.2.0 SOLUTION:
+//   SNIPER = EVENT ONLY (impulse detection, alert, no state)
+//   BUILDING = ONLY persistent state (represents incomplete formation)
+//   CONFIRMED = OVERLAY FLAG (BUILDING + sustained alignment, for sizing)
 export type SignalState = 
-  | "NONE"                  // No setup present (CHOP, conflicting signals)
-  | "BUILDING"              // Setup forming, structural quality insufficient for entry
-  | "ACTIVE_SNIPER"         // Pure early entry trigger - fires immediately on momentum impulse
-  | "ACTIVE_CONTINUATION"   // Trend-riding phase - for holding, scaling, position management
-  | "ACTIVE_CONFIRMED";     // Secondary validation layer - for sizing and confidence
+  | "NONE"                  // No setup present (conflicting signals, CHOP)
+  | "BUILDING";             // Setup forming, persistent state only
 
 // v15.0.0: Market structure classification (replaces SetupClassification)
 // Determines execution state eligibility and readiness gates
@@ -49,6 +55,21 @@ export type SymbolCardState = {
   
   // v17.2.0: EXECUTION DIRECTION
   direction: "LONG" | "SHORT" | "NEUTRAL";
+  
+  // v19.2.0: EXECUTION ARCHITECTURE REFACTOR
+  // SNIPER is EVENT ONLY, not a persistent state
+  // This field indicates if SNIPER event fired this snapshot
+  sniperEvent?: {
+    fired: boolean;           // Did SNIPER event trigger?
+    direction: "LONG" | "SHORT"; // Event direction
+    reason: string;           // Why SNIPER event triggered
+    ignitionAtTrigger: number; // ignition score at trigger time
+  };
+  
+  // v19.2.0: CONFIRMED is OVERLAY FLAG, not a state
+  // Indicates BUILDING + sustained alignment conditions
+  // Used for sizing/confidence decisions, NOT state mutation
+  isConfirmed?: boolean;
   
   // v17.2.0: Trade confidence within state band (0-100)
   tradeReadinessScore: number | null;
@@ -451,32 +472,56 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // Derive execution state ONLY from ignition (no gating logic)
     card.signalState = deriveExecutionState(card.ignitionProbability);
     
+    // v19.2.0: Detect SNIPER event (event-driven, not persisted as state)
+    const sniperEvent = detectSniperEvent(
+      card.ignitionProbability,
+      card.direction,
+      card.emaSlope,
+      card.stochRsi,
+      card.htf4hTrend
+    );
+    card.sniperEvent = {
+      fired: sniperEvent.fired,
+      direction: card.direction as "LONG" | "SHORT",
+      reason: sniperEvent.reason,
+      ignitionAtTrigger: card.ignitionProbability
+    };
+    
+    // v19.2.0: Determine if CONFIRMED overlay applies
+    // CONFIRMED = BUILDING + sustained alignment (ignition >= 75)
+    card.isConfirmed = card.signalState === "BUILDING" && card.ignitionProbability >= 75;
+    
     // Derive readiness per execution state bands
     const readiness = deriveReadiness(card.signalState, card.ignitionProbability);
     card.displayScore = readiness;
     card.confidence = readiness;  // v16.2.1 FIX: Set confidence for ALL states (BTC BUILDING needs this)
     card.tradeReadinessScore = readiness;  // v16.2.2 FIX: Set for ALL states, not just SNIPER/CONFIRMED (UI checks this)
     
-    console.log(`[EXECUTION_STATE_v19.0.0] ${symbol}: ${card.signalState} (ignition=${card.ignitionProbability} readiness=${readiness})`);
+    console.log(`[EXECUTION_STATE_v19.2.0] ${symbol}: ${card.signalState} (ignition=${card.ignitionProbability} readiness=${readiness}) SNIPER=${sniperEvent.fired} CONFIRMED=${card.isConfirmed}`);
     
-    // Map signalState to mode/setupStatus for UI compatibility (v19.0.0: Role Architecture)
+    // v19.2.0: Map signalState to mode/setupStatus (EVENT-DRIVEN ARCHITECTURE)
+    // BUILDING is the only persistent state
+    // SNIPER is event-driven (fires separately, doesn't affect state mapping)
+    // CONFIRMED is overlay flag (BUILDING + alignment, for sizing decisions)
     switch (card.signalState) {
-      case "ACTIVE_CONFIRMED":
-        card.mode = "CONFIRMED";
-        card.setupStatus = "CONFIRMED"; // Secondary validation (sizing/confidence)
-        break;
-      case "ACTIVE_CONTINUATION":
-        card.mode = "SNIPER"; // Trend-riding uses SNIPER mode for position management
-        card.setupStatus = "CONTINUATION"; // Explicit trend phase indicator
-        break;
-      case "ACTIVE_SNIPER":
-        card.mode = "SNIPER";
-        card.setupStatus = "SNIPER"; // Pure entry trigger (unblocked, immediate)
-        break;
       case "BUILDING":
-        card.mode = "NONE";
-        card.setupStatus = "BUILDING"; // Early formation detection
+        // v19.2.0: Check if SNIPER event fired within this BUILDING state
+        if (card.sniperEvent?.fired) {
+          // SNIPER event detected - this is strong impulse entry signal
+          card.mode = "SNIPER";
+          card.setupStatus = "SNIPER"; // Event-driven entry trigger
+        } else {
+          // BUILDING state without SNIPER event - early formation, no entry yet
+          card.mode = "NONE";
+          card.setupStatus = "BUILDING";
+        }
+        
+        // v19.2.0: Apply CONFIRMED overlay if applicable
+        if (card.isConfirmed && card.ignitionProbability >= 75) {
+          card.setupStatus = "CONFIRMED"; // Overlay on BUILDING for sizing
+        }
         break;
+        
       case "NONE":
       default:
         card.mode = "NONE";
@@ -599,24 +644,26 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       card.confidence = readiness;
       card.tradeReadinessScore = readiness;
       
-      // Update mode/setupStatus (v19.0.0: Role Architecture)
+      // v19.2.0: Update mode/setupStatus (EVENT-DRIVEN ARCHITECTURE)
       switch (card.signalState) {
-        case "ACTIVE_CONFIRMED":
-          card.mode = "CONFIRMED";
-          card.setupStatus = "CONFIRMED"; // Secondary validation (sizing/confidence)
-          break;
-        case "ACTIVE_CONTINUATION":
-          card.mode = "SNIPER"; // Trend-riding uses SNIPER mode for position management
-          card.setupStatus = "CONTINUATION"; // Explicit trend phase indicator
-          break;
-        case "ACTIVE_SNIPER":
-          card.mode = "SNIPER";
-          card.setupStatus = "SNIPER"; // Pure entry trigger (unblocked, immediate)
-          break;
         case "BUILDING":
-          card.mode = "NONE";
-          card.setupStatus = "BUILDING"; // Early formation detection
+          // v19.2.0: Check if SNIPER event fired within this BUILDING state
+          if (card.sniperEvent?.fired) {
+            // SNIPER event detected - this is strong impulse entry signal
+            card.mode = "SNIPER";
+            card.setupStatus = "SNIPER"; // Event-driven entry trigger
+          } else {
+            // BUILDING state without SNIPER event - early formation, no entry yet
+            card.mode = "NONE";
+            card.setupStatus = "BUILDING";
+          }
+          
+          // v19.2.0: Apply CONFIRMED overlay if applicable
+          if (card.isConfirmed && card.ignitionProbability >= 75) {
+            card.setupStatus = "CONFIRMED"; // Overlay on BUILDING for sizing
+          }
           break;
+          
         case "NONE":
         default:
           card.mode = "NONE";
@@ -805,6 +852,49 @@ function applyAssetRoleHTFBias(symbol: string, htfRawScore: number): number {
   }
   
   return 0; // Safe default
+}
+
+/**
+ * v19.2.0: SNIPER EVENT DETECTION (EVENT-DRIVEN ARCHITECTURE)
+ * 
+ * SNIPER fires when impulse conditions detected:
+ * - Ignition probability crosses 60+ threshold
+ * - Momentum alignment strong (EMA + Stoch)
+ * - NOT blocked by counter-trend weak EMA
+ * 
+ * SNIPER fires ONCE per impulse, does NOT persist
+ * Each new snapshot checks for fresh impulse conditions
+ */
+function detectSniperEvent(
+  ignitionProbability: number,
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  emaSlope: number | null,
+  stochRsi: number | null,
+  htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL"
+): { fired: boolean; reason: string } {
+  // SNIPER event fires when:
+  // 1. Ignition >= 60 (strong signal)
+  // 2. Direction is defined (not NEUTRAL)
+  // 3. NOT blocked by counter-trend weak EMA
+  
+  if (ignitionProbability < 60) {
+    return { fired: false, reason: "ignition < 60" };
+  }
+  
+  if (direction === "NEUTRAL") {
+    return { fired: false, reason: "direction is NEUTRAL" };
+  }
+  
+  // Check for counter-trend weak EMA block
+  const counterTrendMode = (htf4hTrend === "BEARISH" && direction === "LONG") ||
+                          (htf4hTrend === "BULLISH" && direction === "SHORT");
+  
+  if (counterTrendMode && emaSlope !== null && Math.abs(emaSlope) < 0.85) {
+    return { fired: false, reason: "counter-trend weak EMA block" };
+  }
+  
+  // All conditions met - SNIPER fires
+  return { fired: true, reason: `impulse ${direction} (ema=${emaSlope?.toFixed(2)}, stoch=${stochRsi?.toFixed(0)})` };
 }
 
 /**
@@ -1400,47 +1490,54 @@ function classifyMarketStructure(params: {
  * If ignition >= 60 → SNIPER. Period.
  * If ignition >= 75 → CONFIRMED. Period.
  */
+/**
+ * v19.2.0: EXECUTION STATE DERIVATION (EVENT-DRIVEN ARCHITECTURE)
+ * 
+ * CRITICAL: BUILDING is the ONLY persistent state
+ * SNIPER is event-driven (fires once, no state mutation)
+ * CONFIRMED is overlay flag (BUILDING + alignment, for sizing)
+ * 
+ * State logic (v19.2.0):
+ * - ignition >= 60: SNIPER event fires + BUILDING state
+ * - ignition >= 20: BUILDING state only
+ * - ignition < 20: NONE
+ * 
+ * No transitions between SNIPER and BUILDING
+ * No state persistence of SNIPER across snapshots
+ */
 function deriveExecutionState(ignitionProbability: number): SignalState {
-  if (ignitionProbability >= 85) return "ACTIVE_CONFIRMED";  // Secondary validation layer (sizing/confidence)
-  if (ignitionProbability >= 75) return "ACTIVE_CONTINUATION"; // Trend-riding phase (hold/scale)
-  if (ignitionProbability >= 60) return "ACTIVE_SNIPER";     // Pure entry trigger (unblocked, immediate)
-  if (ignitionProbability >= 20) return "BUILDING";          // Formation detection (no gating)
+  // v19.2.0: BUILDING is the ONLY persistent state
+  if (ignitionProbability >= 20) return "BUILDING";
   return "NONE";
 }
 
 /**
- * v19.0.0: Canonical readiness derivation with CONTINUATION
+ * v19.2.0: READINESS DERIVATION (EVENT-DRIVEN ARCHITECTURE)
  * 
- * Hard bands (match execution state thresholds exactly):
- * - NONE:                0-19
- * - BUILDING:            20-59
- * - ACTIVE_SNIPER:       60-74 (pure entry trigger, unblocked)
- * - ACTIVE_CONTINUATION: 75-84 (trend-riding phase, hold/scale)
- * - ACTIVE_CONFIRMED:    85-100 (secondary validation layer, sizing/confidence)
+ * Simplified bands after SNIPER→BUILDING consolidation:
+ * - NONE:     0-19 (no setup)
+ * - BUILDING: 20-100 (persistent state, unified band)
  * 
- * Readiness = ignition clamped to execution state band
- * No manipulation, no post-processing
+ * Within BUILDING band:
+ * - 20-59: Early formation (SNIPER event has NOT fired)
+ * - 60-100: Strong formation (SNIPER event fired, or high sustained alignment)
+ * 
+ * CONFIRMED overlay (when isConfirmed=true):
+ * - readiness >= 75 indicates sustained alignment
+ * - Used for sizing/confidence decisions
  */
 function deriveReadiness(
   executionState: SignalState,
   ignitionProbability: number
 ): number {
-  // Readiness directly reflects ignition within the state's band
+  // v19.2.0: Simplified to match new state structure
   switch (executionState) {
     case "NONE":
       return Math.max(0, Math.min(19, Math.floor(ignitionProbability)));
 
     case "BUILDING":
-      return Math.max(20, Math.min(59, Math.floor(ignitionProbability)));
-
-    case "ACTIVE_SNIPER":
-      return Math.max(60, Math.min(74, Math.floor(ignitionProbability)));
-
-    case "ACTIVE_CONTINUATION":
-      return Math.max(75, Math.min(84, Math.floor(ignitionProbability)));
-
-    case "ACTIVE_CONFIRMED":
-      return Math.max(85, Math.min(100, Math.floor(ignitionProbability)));
+      // BUILDING spans full 20-100 range (all persistent states unified)
+      return Math.max(20, Math.min(100, Math.floor(ignitionProbability)));
 
     default:
       return 0;
