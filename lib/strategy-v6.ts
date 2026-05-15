@@ -1024,16 +1024,9 @@ function calculateIgnitionProbability(
   
 
   
-  // Step 2: Apply asset-role-specific HTF bias (v18.2.0)
-  // Now with structural gradient input (v18.4.0)
-  // HTF is now independent structural context, not momentum contamination
-  const roleBasedHtfBias = applyAssetRoleHTFBias(symbol, htfRawScore);
-  const assetRole = getRoleDescription(symbol);
-  
-  console.log(
-    `[HTF_STRUCTURAL_v18.5.0] ${symbol} (${assetRole}): raw=${htfRawScore.toFixed(2)} → scalar=${roleBasedHtfBias.toFixed(3)} ` +
-    `(before: ${probabilityBase.toFixed(1)}, multiplier: ${(1 + roleBasedHtfBias).toFixed(3)})`
-  );
+  // v20.1.0: HTF is structural context only (no bias calculation needed)
+  // Asset role no longer affects impulse trigger logic
+  // HTF provides informational context via logging only
 
   // Displacement quality modifier
   const { displacementModifier, displacementReason } = calculateDisplacementQuality(
@@ -1062,35 +1055,64 @@ function calculateIgnitionProbability(
   // baseScore=54, role=MACRO_PARTICIPANT, HTF gradient=+0.2 (bullish) → 54 * 1.20 = 64.8
   // baseScore=54, role=ANCHOR, HTF gradient=±0.2 → 54 * 1.00 = 54.0 (HTF ignored)
   
-  const htfAdjustedBase = probabilityBase * (1 + roleBasedHtfBias);
+  // v20.1.0: UNIFIED IMPULSE STRENGTH SCORE (NO HTF DEPENDENCY)
+  // 
+  // SNIPER fires based ONLY on structural impulse emergence:
+  // - Displacement direction (reclaim/failure detection)
+  // - Volatility expansion (breakout magnitude)
+  // - EMA acceleration (momentum convergence)
+  // - Stochastic alignment (momentum confirmation)
+  // 
+  // HTF is LOGGED but NEVER modifies impulse scoring
+  // Pure quality filter: impulse strength >= threshold to trigger event
   
-  // v20.0.0: REMOVED MACRO PENALTIES - SNIPER MUST FIRE UNCONDITIONALLY
-  // HTF is CONTEXT ONLY, never gates or penalizes SNIPER impulse detection
-  // If impulse conditions met → SNIPER fires regardless of HTF agreement
+  const impulseStrengthScore = stochComponent + emaComponent + volatilityComponent + volumeComponent;
   
+  // v20.1.0: IMPULSE QUALITY THRESHOLD (noise-filtered)
+  // Threshold = 35 minimum to filter out:
+  // - Volatility wick noise (<20 vol)
+  // - Non-committal price movement (weak EMA <0.1)
+  // - Stochastic chop without structure (low stoch signal)
+  // 
+  // Only meaningful structural expansions pass this filter
+  const IMPULSE_QUALITY_THRESHOLD = 35;
+  const impulseQualityPass = impulseStrengthScore >= IMPULSE_QUALITY_THRESHOLD;
+  
+  reasons.push(`v20.1.0 Impulse Quality: ${impulseStrengthScore.toFixed(2)} ${impulseQualityPass ? "PASS" : "FAIL"} (threshold=${IMPULSE_QUALITY_THRESHOLD})`);
+  
+  // v20.1.0: Final probability WITHOUT HTF multiplicative bias
+  // probabilityBase already defined above (line 921) with saturation applied (lines 923-928)
+  // HTF bias removed entirely - no multiplicative scalar applied
+
   // v17.9.0: Displacement contribution (already adjusted)
   // v18.1.0: NO HTF ADDITIVE MODIFIER - removed
 
-  // Final ignition probability WITHOUT gating logic
+  // Final ignition probability WITHOUT HTF gating
   // Pure impulse-driven, HTF logged but never enforced
-  const probability = Math.max(0, Math.min(100, htfAdjustedBase + adjustedDisplacementModifier));
+  const probability = Math.max(0, Math.min(100, probabilityBase + adjustedDisplacementModifier));
   
-  // v20.0.0: Log HTF context for transparency (informational only, not enforcement)
+  // v20.1.0: Log HTF context SEPARATELY (informational only, zero influence on trigger)
   if (htf4hTrend !== "NEUTRAL") {
     const htfAlignment = (htf4hTrend === "BULLISH" && direction === "LONG") ||
                          (htf4hTrend === "BEARISH" && direction === "SHORT");
-    reasons.push(`HTF context: ${htf4hTrend} (${htfAlignment ? "aligned" : "counter-trend"} - logged, not enforced)`);
+    reasons.push(`HTF context log: ${htf4hTrend} (${htfAlignment ? "aligned" : "counter-trend"} - informational only, zero influence)`);
   }
-
-  // v18.4.0: LOGGING UPDATED - Shows structural HTF context
+  
+  // v20.1.0: Log impulse event determination
   console.log(
-    `[IGNITION_COMPONENTS_v18.5.0] ${symbol} (${assetRole}) ${direction}:` +
+    `[SNIPER_IMPULSE_v20.1.0] ${symbol}: impulse=${impulseStrengthScore.toFixed(2)} pass=${impulseQualityPass} ` +
+    `(stoch=${stochComponent.toFixed(2)} + ema=${emaComponent.toFixed(2)} + vol=${volatilityComponent.toFixed(2)} + vol_impulse=${volumeComponent.toFixed(2)}) ` +
+    `→ final=${probability.toFixed(2)}`
+  );
+
+  // v18.4.0: LOGGING UPDATED - Shows structural HTF context (informational)
+  console.log(
+    `[IGNITION_COMPONENTS_v20.1.0] ${symbol} ${direction}:` +
     ` ema=${emaComponent.toFixed(2)}` +
     ` vol=${volatilityComponent.toFixed(2)}` +
     ` stoch=${stochComponent.toFixed(2)}` +
     ` impulse=${volumeComponent.toFixed(2)}` +
     ` continuation=${continuationComponent.toFixed(2)}` +
-    ` htf_struct=${htfRawScore.toFixed(2)}→${roleBasedHtfBias.toFixed(3)}x` +
     ` disp=${adjustedDisplacementModifier.toFixed(2)}` +
     ` → final=${probability.toFixed(2)}`
   );
