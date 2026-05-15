@@ -11,19 +11,12 @@ import type { PriceData } from "./price-router";
 
 // v15.0.0: Canonical execution states
 // Single source of truth for trade readiness
-// NONE → BUILDING → ACTIVE_SNIPER → ACTIVE_CONTINUATION → ACTIVE_CONFIRMED (with possible reversals to earlier states)
-// 
-// v19.0.0: EXECUTION ROLE ARCHITECTURE
-// - BUILDING: early formation detection (no filtering, no gating)
-// - ACTIVE_SNIPER: pure early entry trigger (unblocked, no delays, immediate on momentum impulse)
-// - ACTIVE_CONTINUATION: trend-riding phase (hold/scale logic, NOT entry trigger)
-// - ACTIVE_CONFIRMED: secondary validation layer (for sizing/confidence, NOT entry timing)
+// NONE → BUILDING → ACTIVE_SNIPER → ACTIVE_CONFIRMED (with possible reversals to earlier states)
 export type SignalState = 
-  | "NONE"                  // No setup present (CHOP, conflicting signals)
-  | "BUILDING"              // Setup forming, structural quality insufficient for entry
-  | "ACTIVE_SNIPER"         // Pure early entry trigger - fires immediately on momentum impulse
-  | "ACTIVE_CONTINUATION"   // Trend-riding phase - for holding, scaling, position management
-  | "ACTIVE_CONFIRMED";     // Secondary validation layer - for sizing and confidence
+  | "NONE"              // No setup present (CHOP, conflicting signals)
+  | "BUILDING"          // Setup forming, structural quality insufficient for entry
+  | "ACTIVE_SNIPER"     // Entry aligned, ready for execution
+  | "ACTIVE_CONFIRMED"; // Trade executed or confirmed with follow-through
 
 // v15.0.0: Market structure classification (replaces SetupClassification)
 // Determines execution state eligibility and readiness gates
@@ -457,25 +450,21 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     card.confidence = readiness;  // v16.2.1 FIX: Set confidence for ALL states (BTC BUILDING needs this)
     card.tradeReadinessScore = readiness;  // v16.2.2 FIX: Set for ALL states, not just SNIPER/CONFIRMED (UI checks this)
     
-    console.log(`[EXECUTION_STATE_v19.0.0] ${symbol}: ${card.signalState} (ignition=${card.ignitionProbability} readiness=${readiness})`);
+    console.log(`[EXECUTION_STATE] ${symbol}: ${card.signalState} (ignition=${card.ignitionProbability} readiness=${readiness})`);
     
-    // Map signalState to mode/setupStatus for UI compatibility (v19.0.0: Role Architecture)
+    // Map signalState to mode/setupStatus for UI compatibility
     switch (card.signalState) {
       case "ACTIVE_CONFIRMED":
         card.mode = "CONFIRMED";
-        card.setupStatus = "CONFIRMED"; // Secondary validation (sizing/confidence)
-        break;
-      case "ACTIVE_CONTINUATION":
-        card.mode = "SNIPER"; // Trend-riding uses SNIPER mode for position management
-        card.setupStatus = "CONTINUATION"; // Explicit trend phase indicator
+        card.setupStatus = "CONFIRMED";
         break;
       case "ACTIVE_SNIPER":
         card.mode = "SNIPER";
-        card.setupStatus = "SNIPER"; // Pure entry trigger (unblocked, immediate)
+        card.setupStatus = "SNIPER";
         break;
       case "BUILDING":
         card.mode = "NONE";
-        card.setupStatus = "BUILDING"; // Early formation detection
+        card.setupStatus = "BUILDING";
         break;
       case "NONE":
       default:
@@ -599,23 +588,19 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       card.confidence = readiness;
       card.tradeReadinessScore = readiness;
       
-      // Update mode/setupStatus (v19.0.0: Role Architecture)
+      // Update mode/setupStatus
       switch (card.signalState) {
         case "ACTIVE_CONFIRMED":
           card.mode = "CONFIRMED";
-          card.setupStatus = "CONFIRMED"; // Secondary validation (sizing/confidence)
-          break;
-        case "ACTIVE_CONTINUATION":
-          card.mode = "SNIPER"; // Trend-riding uses SNIPER mode for position management
-          card.setupStatus = "CONTINUATION"; // Explicit trend phase indicator
+          card.setupStatus = "CONFIRMED";
           break;
         case "ACTIVE_SNIPER":
           card.mode = "SNIPER";
-          card.setupStatus = "SNIPER"; // Pure entry trigger (unblocked, immediate)
+          card.setupStatus = "SNIPER";
           break;
         case "BUILDING":
           card.mode = "NONE";
-          card.setupStatus = "BUILDING"; // Early formation detection
+          card.setupStatus = "BUILDING";
           break;
         case "NONE":
         default:
@@ -1401,22 +1386,20 @@ function classifyMarketStructure(params: {
  * If ignition >= 75 → CONFIRMED. Period.
  */
 function deriveExecutionState(ignitionProbability: number): SignalState {
-  if (ignitionProbability >= 85) return "ACTIVE_CONFIRMED";  // Secondary validation layer (sizing/confidence)
-  if (ignitionProbability >= 75) return "ACTIVE_CONTINUATION"; // Trend-riding phase (hold/scale)
-  if (ignitionProbability >= 60) return "ACTIVE_SNIPER";     // Pure entry trigger (unblocked, immediate)
-  if (ignitionProbability >= 20) return "BUILDING";          // Formation detection (no gating)
+  if (ignitionProbability >= 75) return "ACTIVE_CONFIRMED";
+  if (ignitionProbability >= 60) return "ACTIVE_SNIPER";
+  if (ignitionProbability >= 20) return "BUILDING";
   return "NONE";
 }
 
 /**
- * v19.0.0: Canonical readiness derivation with CONTINUATION
+ * v15.0.0 / v9.1.0: Canonical readiness derivation
  * 
  * Hard bands (match execution state thresholds exactly):
- * - NONE:                0-19
- * - BUILDING:            20-59
- * - ACTIVE_SNIPER:       60-74 (pure entry trigger, unblocked)
- * - ACTIVE_CONTINUATION: 75-84 (trend-riding phase, hold/scale)
- * - ACTIVE_CONFIRMED:    85-100 (secondary validation layer, sizing/confidence)
+ * - NONE:             0-19
+ * - BUILDING:         20-59
+ * - ACTIVE_SNIPER:    60-74
+ * - ACTIVE_CONFIRMED: 75-100
  * 
  * Readiness = ignition clamped to execution state band
  * No manipulation, no post-processing
@@ -1436,11 +1419,8 @@ function deriveReadiness(
     case "ACTIVE_SNIPER":
       return Math.max(60, Math.min(74, Math.floor(ignitionProbability)));
 
-    case "ACTIVE_CONTINUATION":
-      return Math.max(75, Math.min(84, Math.floor(ignitionProbability)));
-
     case "ACTIVE_CONFIRMED":
-      return Math.max(85, Math.min(100, Math.floor(ignitionProbability)));
+      return Math.max(75, Math.min(100, Math.floor(ignitionProbability)));
 
     default:
       return 0;
@@ -1654,95 +1634,50 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   // Simplified: compression when volatility < 40
   const htf15mCompression = volatilityLevel < 40;
 
-  // v18.8.0: DIRECTIONAL INTEGRITY REFACTOR (Snapshot-Based Real-Time Validation)
-  // CRITICAL FIX: Direction now represents "What is momentum doing NOW?" not stale historical bias
-  //
-  // Problem (v18.7.0):
-  //   - EMA > 0.25 anchors LONG for hours even during dumps
-  //   - HTF lag preserves LONG after deterioration
-  //   - DEFAULT TO LONG means direction almost never flips to SHORT
-  //   - Result: "BUILDING LONG - COUNTER_TREND" for 2+ hours
-  //
-  // Solution (v18.8.0):
-  //   1. Strengthen EMA threshold: 0.25 → 0.40 (require MEDIUM strength)
-  //   2. Remove DEFAULT TO LONG fallback (line 1679)
-  //   3. Require explicit bearish evidence for SHORT during weak conditions
-  //   4. Add deterioration gate: weak readiness + weak EMA block LONG
-  //
-  // Principles Preserved:
-  //   ✓ Pure snapshot-based (no temporal memory)
-  //   ✓ Deterministic (no hysteresis or cooldowns)
-  //   ✓ Real-time responsive (respects CURRENT conditions)
+  // HARD DIRECTIONAL INFERENCE ENGINE (v7.2.5 FIX #1 & #2)
+  // v8.3.0 REFACTOR: Volatility does NOT determine direction, only amplifies confidence
+  // Priority: EMA slope > 4H trend > momentum > displacement > Stoch position
+  // NEUTRAL becomes rare - classify ANY directional pressure
   
   let direction: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
   
-  // v18.8.0: RULE 1 - STRENGTHENED EMA THRESHOLD (0.25 → 0.40)
-  // Require MEDIUM-strength slope to anchor direction, not just any positive slope
-  if (emaSlope > 0.40) {
-    direction = "LONG"; // MEDIUM-strength EMA expanding bullish
+  // RULE 1: Strong EMA slope overrides 4H trend (primary signal)
+  if (emaSlope > 0.25) {
+    direction = "LONG"; // EMA expanding bullish
   }
-  else if (emaSlope < -0.40) {
-    direction = "SHORT"; // MEDIUM-strength EMA expanding bearish
+  else if (emaSlope < -0.25) {
+    direction = "SHORT"; // EMA expanding bearish
   }
-  // v18.8.0: RULE 2 - Weak positive EMA can be overridden by bearish HTF
-  else if (emaSlope > 0.1 && emaSlope <= 0.40) {
-    // Weak positive EMA: validate against HTF
-    if (htf4hTrend === "BEARISH" || htf4hTrend === "DETERIORATING") {
-      direction = "SHORT"; // Bearish HTF overrides weak positive EMA
-    } else if (htf4hTrend === "BULLISH") {
-      direction = "LONG"; // Bullish HTF confirms weak positive EMA
-    } else {
-      // HTF neutral: weak EMA alone cannot sustain LONG
-      // Check if deterioration is ongoing (stoch weak too)
-      if (stochRsi < 50) {
-        direction = "SHORT"; // Deterioration
-      } else {
-        direction = "NEUTRAL"; // Ambiguous
-      }
-    }
+  // RULE 2: 4H trend decides if EMA weak
+  else if (htf4hTrend === "BULLISH") {
+    direction = "LONG";
   }
-  // v18.8.0: RULE 3 - Weak negative EMA can be overridden by bullish HTF
-  else if (emaSlope < -0.1 && emaSlope >= -0.40) {
-    // Weak negative EMA: validate against HTF
-    if (htf4hTrend === "BULLISH") {
-      direction = "LONG"; // Bullish HTF overrides weak negative EMA
-    } else if (htf4hTrend === "BEARISH" || htf4hTrend === "DETERIORATING") {
-      direction = "SHORT"; // Bearish HTF confirms weak negative EMA
-    } else {
-      // HTF neutral: weak negative EMA + weak stoch = SHORT
-      if (stochRsi < 50) {
-        direction = "SHORT"; // Confirmed deterioration
-      } else {
-        direction = "NEUTRAL"; // Ambiguous
-      }
-    }
+  else if (htf4hTrend === "BEARISH") {
+    direction = "SHORT";
   }
-  // v18.8.0: RULE 4 - HTF decides when EMA is flat
-  else if (Math.abs(emaSlope) <= 0.1) {
-    if (htf4hTrend === "BULLISH") {
-      direction = "LONG";
-    } else if (htf4hTrend === "BEARISH" || htf4hTrend === "DETERIORATING") {
-      direction = "SHORT";
-    } else {
-      // HTF also neutral: use stochastic
-      if (stochRsi > 55) {
-        direction = "LONG";
-      } else if (stochRsi < 45) {
-        direction = "SHORT";
-      } else {
-        direction = "NEUTRAL"; // Truly dead market
-      }
-    }
+  // RULE 3: Stoch position if 4H neutral (momentum bias)
+  else if (stochRsi > 55) {
+    direction = "LONG"; // Stoch in bullish zone
   }
-  
-  // v18.8.0: REMOVED DEFAULT TO LONG FALLBACK
-  // No direction = no direction. NEUTRAL is valid and responsive.
-  // This prevents stale LONG bias from persisting during ambiguous deterioration.
-  
-  // v18.8.0: Log directional decision for transparency
-  console.log(
-    `[DIRECTIONAL_INTEGRITY_v18.8.0] ${symbol}: EMA=${emaSlope.toFixed(2)} HTF=${htf4hTrend} Stoch=${stochRsi.toFixed(0)} → direction=${direction}`
-  );
+  else if (stochRsi < 45) {
+    direction = "SHORT"; // Stoch in bearish zone
+  }
+  // v8.3.0 FIX: REMOVED volatility > 60 override that caused LONG during dumps
+  // Volatility amplifies confidence via displacement quality, NOT direction determination
+  // RULE 4: ONLY classify as NEUTRAL if truly dead market
+  // EMA flat AND Stoch middle AND low volatility AND no structure
+  else if (
+    Math.abs(emaSlope) <= 0.1 && 
+    stochRsi >= 48 && 
+    stochRsi <= 52 && 
+    volatilityLevel < 35
+  ) {
+    direction = "NEUTRAL"; // Dead market - no pressure
+  }
+  // Default to bullish bias if any ambiguity (risk-on)
+  else {
+    direction = "LONG";
+  }
 
   const card: SymbolCardState = {
     symbol,
