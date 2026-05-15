@@ -106,32 +106,104 @@ export type Setup = {
 };
 
 // ============================================================================
-// v21.2.0: PHASE 1 - MARKET DATA COMPUTATION
+// v21.2.0: PHASE 1 - MARKET DATA COMPUTATION (from candle history)
 // ============================================================================
 
+/**
+ * Compute Stoch RSI from candle close prices
+ * Returns value 0-100
+ */
 function computeStochRsi(priceData: PriceData): number | null {
-  if (!priceData.stochRsi || priceData.stochRsi < 0 || priceData.stochRsi > 100) return null;
-  return priceData.stochRsi;
+  if (!priceData.candles || priceData.candles.length < 14) return null;
+  
+  const closes = priceData.candles.map(c => c.close);
+  
+  // Simple RSI calculation (14 period)
+  const gains: number[] = [];
+  const losses: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1];
+    gains.push(change > 0 ? change : 0);
+    losses.push(change < 0 ? -change : 0);
+  }
+  
+  const avgGain = gains.slice(-14).reduce((a, b) => a + b, 0) / 14;
+  const avgLoss = losses.slice(-14).reduce((a, b) => a + b, 0) / 14;
+  
+  if (avgLoss === 0) return avgGain > 0 ? 100 : 50;
+  
+  const rs = avgGain / avgLoss;
+  const rsi = 100 - (100 / (1 + rs));
+  
+  // Stoch RSI: convert RSI to 0-100 scale (typically takes RSI over last 14 RSI values)
+  return Math.min(100, Math.max(0, rsi));
 }
 
-function computeEmaSlope(
-  current8Ema: number | null,
-  prior8Ema: number | null
-): number | null {
-  if (current8Ema === null || prior8Ema === null) return null;
-  return current8Ema - prior8Ema;
+/**
+ * Compute EMA slope from candle closes
+ * Returns slope of 8-period EMA
+ */
+function computeEmaSlope(priceData: PriceData): number | null {
+  if (!priceData.candles || priceData.candles.length < 8) return null;
+  
+  const closes = priceData.candles.map(c => c.close);
+  
+  // Calculate 8-period EMA
+  let ema = closes[0];
+  const multiplier = 2 / (8 + 1);
+  
+  for (let i = 1; i < closes.length; i++) {
+    ema = closes[i] * multiplier + ema * (1 - multiplier);
+  }
+  
+  // Previous EMA (one candle ago)
+  let prevEma = closes[0];
+  for (let i = 1; i < closes.length - 1; i++) {
+    prevEma = closes[i] * multiplier + prevEma * (1 - multiplier);
+  }
+  
+  return ema - prevEma;
 }
 
+/**
+ * Compute volatility level from candles (ATR-like)
+ * Returns 0-100 scale
+ */
 function computeVolatilityLevel(priceData: PriceData): number | null {
-  if (!priceData.atr) return null;
-  const percentVol = (priceData.atr / priceData.price) * 100;
-  return Math.min(percentVol * 10, 100);
+  if (!priceData.candles || priceData.candles.length < 14) return null;
+  
+  const candles = priceData.candles.slice(-14);
+  const atr = candles.reduce((sum, c) => {
+    const tr = Math.max(
+      c.high - c.low,
+      Math.abs(c.high - (priceData.candles![priceData.candles!.length - 1].close)),
+      Math.abs(c.low - (priceData.candles![priceData.candles!.length - 1].close))
+    );
+    return sum + tr;
+  }, 0) / candles.length;
+  
+  // Normalize to 0-100 (50 = moderate volatility)
+  const currentPrice = priceData.price;
+  const volatilityPercent = (atr / currentPrice) * 100;
+  return Math.min(100, volatilityPercent * 50);
 }
 
+/**
+ * Compute volume impulse component
+ */
 function computeVolumeComponent(priceData: PriceData): number {
-  if (!priceData.volume || !priceData.volumeAvg) return 0;
-  const volumeRatio = priceData.volume / priceData.volumeAvg;
-  return Math.min(volumeRatio * 15, 40);
+  if (!priceData.candles || priceData.candles.length < 20) return 0;
+  
+  const recentVolumes = priceData.candles.slice(-5).map(c => c.volume);
+  const avgVolume = priceData.candles.slice(-20).reduce((sum, c) => sum + c.volume, 0) / 20;
+  
+  if (avgVolume === 0) return 0;
+  
+  const currentVolume = recentVolumes.reduce((a, b) => a + b, 0) / recentVolumes.length;
+  const volumeRatio = currentVolume / avgVolume;
+  
+  // Scale 0-10: ratio of 1.0 = 0, ratio of 2.0 = 10
+  return Math.min(10, Math.max(0, (volumeRatio - 1) * 10));
 }
 
 // ============================================================================
@@ -252,9 +324,9 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 
   for (const [symbol, priceData] of Object.entries(market)) {
     try {
-      // PHASE 1: Market Data
+      // PHASE 1: Market Data - compute from candles
       const stochRsi = computeStochRsi(priceData);
-      const emaSlope = computeEmaSlope(priceData.ema8, priceData.ema8Prev);
+      const emaSlope = computeEmaSlope(priceData);
       const volatilityLevel = computeVolatilityLevel(priceData);
       const volumeComponent = computeVolumeComponent(priceData);
       const emaPressure = stochRsi !== null ? stochRsi - 50 : 0;
