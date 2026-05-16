@@ -8,6 +8,7 @@
  */
 
 import type { PriceData } from "./price-router";
+import type { SegregatedMarketData } from "./market-data-layer";
 
 // ═════════════════════════════════════════════════════════════════════════════
 // v7.6.0: EXECUTION CONTEXT - SINGLE SOURCE OF TRUTH
@@ -156,63 +157,35 @@ export type Setup = {
 };
 
 /**
- * Generate symbol card states + setups from market snapshot
+ * Generate symbol card states + setups from EXECUTION PIPELINE ONLY
+ * v8.0: HARD PIPELINE SEGREGATION
+ * 
+ * This function ONLY receives Kraken data (already segregated at ingestion).
+ * No gating needed - separation happened upstream in market-data-layer.
  * PURE FUNCTION - momentum-based detection
  */
-export async function generateSetups(market: Record<string, PriceData>): Promise<{ cards: SymbolCardState[]; setups: Setup[] }> {
+export async function generateSetups(segregatedMarkets: SegregatedMarketData): Promise<{ cards: SymbolCardState[]; setups: Setup[] }> {
   const cards: SymbolCardState[] = [];
   const setups: Setup[] = [];
 
-  for (const [symbol, priceData] of Object.entries(market)) {
+  // ===== v8.0: EXECUTION PIPELINE ONLY =====
+  // segregatedMarkets.execution contains ONLY Kraken data
+  // No fallback data participates in this loop
+  for (const [symbol, priceData] of Object.entries(segregatedMarkets.execution)) {
     if (priceData.price === 0) {
       console.log(`[SCAN] ${symbol} no data`);
       continue;
     }
 
-    // ===== v7.7.0: DATA TRUST GATE (ORTHOGONAL TO SYSTEM HEALTH) =====
-    // v7.7.0: Check executionGrade (data trust), NOT system health
-    // Kraken cached is still execution-grade even if systemHealth is DEGRADED
-    if (!ctx.executionGrade) {
-      console.log(`[GATE] ${symbol} BLOCKED (data trust): source=${ctx.dataSource}`);
-      // Create degraded card for display only (BUILDING state, no signals)
-      const degradedCard: SymbolCardState = {
-        symbol,
-        price: ctx.price,
-        source: ctx.dataSource,
-        degraded: true,
-        signalState: "BUILDING",  // Display only, no execution
-        marketClass: "DISPLAY_ONLY",
-        direction: "NEUTRAL",
-        tradeReadinessScore: null,
-        ignitionProbability: 0,
-        stochRsi: null,
-        emaSlope: null,
-        emaPressure: 0,
-        volatilityLevel: null,
-        htf4hTrend: "NEUTRAL",
-        htf4hMomentum: null,
-        htf1hAlignment: null,
-        htf15mCompression: null,
-        execution15mState: "CHOP",
-        marketReadinessState: "DEGRADED",
-        expectedMovePercent: null,
-        targetPrices: null,
-        riskReward: null,
-        cycleId: ctx.cycleId,
-        notes: `NON_EXECUTION_GRADE (${ctx.dataSource})`,
-        updatedAt: new Date().toISOString(),
-      };
-      cards.push(degradedCard);
-      continue;  // HARD STOP: Do NOT scan non-execution-grade data
-    }
-
-    // ===== SCAN ENGINE: Only execution-grade data reaches here =====
-    // System health may be DEGRADED, but data source is trusted (Kraken)
+    // Build execution context (guaranteed execution-grade - Kraken only)
+    const ctx = buildExecutionContext(symbol, priceData);
+    
+    // Generate card for scan
     const card = generateCardState(symbol, priceData);
-    card.cycleId = ctx.cycleId;  // Tag with execution context cycle
+    card.cycleId = ctx.cycleId;
     cards.push(card);
 
-    // Score using NEW momentum-based system
+    // Score using momentum system
     const score = calculateMomentumScore(card);
     
     console.log(`[SCAN] ${symbol} score=${score} direction=${card.direction} stoch=${card.stochRsi?.toFixed(1) ?? "—"} emaSlope=${card.emaSlope?.toFixed(2) ?? "—"}`);
@@ -324,6 +297,63 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
   }
 
   return { cards, setups };
+}
+
+/**
+ * Generate display cards from DISPLAY PIPELINE ONLY
+ * v8.0: HARD PIPELINE SEGREGATION
+ * 
+ * This function receives fallback/degraded data (CoinGecko).
+ * These cards are DISPLAY_ONLY - no signals, no execution.
+ * NEVER enters scan engine, NEVER builds ExecutionContext.
+ */
+export function generateDisplayCards(displayMarkets: Record<string, PriceData>): SymbolCardState[] {
+  const displayCards: SymbolCardState[] = [];
+
+  // ===== DISPLAY PIPELINE ONLY =====
+  // displayMarkets contains fallback data (CoinGecko only)
+  // These are for UI display, never for trading
+  for (const [symbol, priceData] of Object.entries(displayMarkets)) {
+    if (priceData.price === 0) {
+      continue;  // Skip if no price
+    }
+
+    // Create display-only card (NEUTRAL, no signals possible)
+    const displayCard: SymbolCardState = {
+      symbol,
+      price: priceData.price,
+      source: priceData.source,
+      degraded: true,
+      signalState: "BUILDING",  // Display only, no execution
+      mode: "NONE",
+      confidence: 0,
+      marketClass: "DISPLAY_ONLY",
+      direction: "NEUTRAL",
+      tradeReadinessScore: null,
+      ignitionProbability: 0,
+      stochRsi: null,
+      emaSlope: null,
+      emaPressure: 0,
+      volatilityLevel: null,
+      htf4hTrend: "NEUTRAL",
+      htf4hMomentum: null,
+      htf1hAlignment: null,
+      htf15mCompression: null,
+      execution15mState: "CHOP",
+      marketReadinessState: "DISPLAY_ONLY",
+      expectedMovePercent: null,
+      targetPrices: null,
+      riskReward: null,
+      cycleId: `${Date.now()}-${symbol}-display`,
+      notes: `Display only (${priceData.source})`,
+      updatedAt: new Date().toISOString(),
+    };
+
+    displayCards.push(displayCard);
+    console.log(`[DISPLAY] ${symbol} from ${priceData.source} (display only)`);
+  }
+
+  return displayCards;
 }
 
 /**
