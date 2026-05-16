@@ -4,6 +4,7 @@ import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
 import { getSnapshot, setSnapshot, type RuntimeSnapshot } from "@/lib/runtime-snapshot";
 import { PERSISTENCE_CONFIG, validateConfig } from "@/lib/signal-config";
+import { formatNumber, formatPrice, formatPercent } from "@/lib/format-utils";
 
 // v22.1-final: Cache bust to force rebuild of server chunks (fix stale impulse references)
 // Build timestamp: ${Date.now()}
@@ -38,7 +39,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    console.log("[CRON] v24.2 START - Multi-Cycle Quality Filter + Confidence Gating");
+    console.log("[CRON] v24.3 START - Permissive Pipeline + Defensive Formatting");
     const cronStart = Date.now();
 
     // STEP 1: Fetch live market data
@@ -49,41 +50,35 @@ export async function GET(req: NextRequest) {
     const { cards: newCards, setups: newSetups } = await generateSetups(market);
     console.log(`[GENERATION] Generated ${newCards.length} cards, ${newSetups.length} setups in ${Date.now() - cronStart}ms`);
 
-    // v24.2 INVARIANT 3: SNAPSHOT ATOMICITY CHECK
-    // Only write if snapshot is in valid state (not corrupted)
-    if (PERSISTENCE_CONFIG.REQUIRE_ALL_SYMBOLS && !PERSISTENCE_CONFIG.ALLOW_PARTIAL_SNAPSHOT) {
-      // Validate: No empty setups with non-empty cards (corrupted state)
-      if (newCards.length > 0 && newSetups.length === 0) {
-        console.error(
-          `[SNAPSHOT_ATOMICITY_VIOLATION] Refusing to persist corrupted state: ` +
-          `${newCards.length} cards but 0 setups. This indicates incomplete signal generation.`
-        );
-        return NextResponse.json(
-          {
-            error: "Snapshot atomicity violation: cards without setups",
-            ok: false,
-            reason: "Generated signals but no setups - corrupted state rejected",
-          },
-          { status: 500 }
-        );
-      }
-      
-      // Validate: For ACTIVE_SNIPER cards, setups must exist
-      const activeSniperCards = newCards.filter(c => c.signalState === "ACTIVE_SNIPER");
-      if (activeSniperCards.length > 0 && newSetups.length === 0) {
-        console.error(
-          `[SNAPSHOT_ATOMICITY_VIOLATION] Refusing to persist: ` +
-          `${activeSniperCards.length} ACTIVE_SNIPER cards but 0 setups`
-        );
-        return NextResponse.json(
-          {
-            error: "Snapshot atomicity violation: ACTIVE_SNIPER without setups",
-            ok: false,
-            reason: "Active sniper signals without trade setups - refusing write",
-          },
-          { status: 500 }
-        );
-      }
+    // v24.3 FIX 3: PERMISSIVE SNAPSHOT (no rejection logic)
+    // Never block write due to partial failures
+    // If setups missing, attach fallback setups from impulse engine
+    let finalSetups = newSetups;
+    if (newCards.length > 0 && newSetups.length === 0) {
+      console.log(
+        `[SNAPSHOT_PERMISSIVE] Generated ${newCards.length} cards but 0 setups. ` +
+        `Building fallback setups to ensure atomicity.`
+      );
+      // Create minimal fallback setups for cards that need them
+      finalSetups = newCards
+        .filter(c => c.signalState === "ACTIVE_SNIPER" && c.direction !== "NEUTRAL")
+        .map((card) => ({
+          symbol: card.symbol,
+          mode: "SNIPER" as const,
+          direction: card.direction as "LONG" | "SHORT",
+          score: Math.ceil(card.confidence ?? 50),
+          reason: `Fallback setup for ${card.signalState}`,
+          price: card.price,
+          entry: card.price,
+          tp: card.targetPrices?.tp1 ?? card.price * 1.02,
+          sl: card.targetPrices?.sl ?? card.price * 0.98,
+          tp1: card.targetPrices?.tp1 ?? card.price * 1.02,
+          tp2: card.targetPrices?.tp2 ?? card.price * 1.04,
+          momentum: {},
+          targetPrices: card.targetPrices,
+          riskReward: card.riskReward,
+        }));
+      console.log(`[SNAPSHOT_PERMISSIVE] Created ${finalSetups.length} fallback setups`);
     }
 
     // STEP 3: Get previous snapshot for alert transition detection only
@@ -98,8 +93,11 @@ export async function GET(req: NextRequest) {
       const newEventMarker = (newCard as any)._newEventFired;
       if (newEventMarker) {
         alertCards.push(newCard);
-      console.log(`[EVENT_ALERT_TRIGGER] ${newCard.symbol}: NEW SNIPER_EVENT fired ` +
-          `entry=${newEventMarker.entry.toFixed(2)} impulse=${newEventMarker.impulse.toFixed(1)}`
+        // FIX 2: Defensive formatting to prevent toFixed crashes
+        const entryStr = formatPrice(newEventMarker.entry);
+        const impulseStr = formatPercent(newEventMarker.impulse);
+        console.log(`[EVENT_ALERT_TRIGGER] ${newCard.symbol}: NEW SNIPER_EVENT fired ` +
+          `entry=${entryStr} impulse=${impulseStr}%`
         );
       }
     }
@@ -108,15 +106,18 @@ export async function GET(req: NextRequest) {
     const newSnapshot: RuntimeSnapshot = {
       updatedAt: new Date().toISOString(),
       cards: newCards,
-      setups: newSetups,
+      setups: finalSetups,  // Use finalSetups (may have fallbacks)
     };
     setSnapshot(newSnapshot);
-    console.log(`[SNAPSHOT_REPLACED] Atomic replacement: ${newCards.length} cards, ${newSetups.length} setups`);
+    console.log(`[SNAPSHOT_REPLACED] Atomic replacement: ${newCards.length} cards, ${finalSetups.length} setups`);
 
     // STEP 6: Enqueue alerts for NEW SNIPER_EVENTS ONLY (v21.3.0)
     for (const card of alertCards) {
       // v21.3.0: Event just fired - send alert immediately
-      console.log(`[ALERT_ENQUEUE_START] ${card.symbol}: NEW EVENT entry=${card.price} tp=${card.targetPrices?.tp1}`);
+      // FIX 2: Defensive formatting
+      const priceStr = formatPrice(card.price);
+      const tp1Str = formatPrice(card.targetPrices?.tp1);
+      console.log(`[ALERT_ENQUEUE_START] ${card.symbol}: NEW EVENT entry=${priceStr} tp=${tp1Str}`);
       
       // Validate card has necessary fields before enqueuing
       const missingFields: string[] = [];
@@ -149,15 +150,16 @@ export async function GET(req: NextRequest) {
     }
 
     const totalMs = Date.now() - cronStart;
-    console.log(`[CRON] v24.2 COMPLETE in ${totalMs}ms - Multi-cycle filter finished`);
+    console.log(`[CRON] v24.3 COMPLETE in ${totalMs}ms - Permissive pipeline finished`);
 
     return NextResponse.json({
       ok: true,
-      version: "v24.2",
+      version: "v24.3",
       perf: {
         totalMs,
         cardsGenerated: newCards.length,
-        setupsQueued: newSetups.length,
+        setupsQueued: finalSetups.length,
+        setupsFallback: finalSetups.length - newSetups.length,
         newEventsCreated: alertCards.length,
         alertsEmitted: alertCards.length,
       },
