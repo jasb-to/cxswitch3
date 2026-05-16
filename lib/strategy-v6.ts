@@ -9,6 +9,55 @@
 
 import type { PriceData } from "./price-router";
 
+// ═════════════════════════════════════════════════════════════════════════════
+// v7.6.0: EXECUTION CONTEXT - SINGLE SOURCE OF TRUTH
+// ═════════════════════════════════════════════════════════════════════════════
+// 
+// PRINCIPLE: One immutable context object per cycle. All downstream logic
+// reads from this context - NO re-checking of data sources or conditions.
+//
+export type ExecutionContext = {
+  // Identifier
+  symbol: string;
+  cycleId: string;
+
+  // Hard-coded truth (never changes per cycle)
+  dataSource: "KRAKEN_LIVE" | "DEGRADED";
+
+  // Gate decision (decided ONCE at entry, never re-evaluated)
+  executionAllowed: boolean;
+  gateReason?: string;
+
+  // Market snapshot (immutable for cycle)
+  price: number;
+  timestamp: number;
+};
+
+/**
+ * Build execution context at scan entry point
+ * This is THE ONLY place where executionAllowed is decided
+ * Everything downstream just reads from ctx.executionAllowed
+ */
+function buildExecutionContext(symbol: string, priceData: PriceData): ExecutionContext {
+  const isKrakenLive = priceData.source === "kraken_live" || priceData.source === "kraken_cached";
+  
+  const ctx: ExecutionContext = {
+    symbol,
+    cycleId: `${Date.now()}-${symbol}`,
+    dataSource: isKrakenLive ? "KRAKEN_LIVE" : "DEGRADED",
+    executionAllowed: isKrakenLive,
+    gateReason: isKrakenLive ? undefined : `Non-execution-grade source: ${priceData.source}`,
+    price: priceData.price,
+    timestamp: Date.now(),
+  };
+
+  if (!ctx.executionAllowed) {
+    console.log(`[GATE] ${symbol} BLOCKED: ${ctx.gateReason}`);
+  }
+
+  return ctx;
+}
+
 // FIX #1: Unified signal state (v7.2.6) - REMOVED SNIPER_IMMINENT (regression leak)
 // v7.4.0: Clean state machine - only 3 valid states for signal generation
 export type SignalState = 
@@ -63,6 +112,7 @@ export type SymbolCardState = {
   lastBearishCycle?: number;
   trendMemory?: "BULLISH" | "BEARISH";
 
+  cycleId: string;  // Unique identifier for this signal cycle
   notes: string;
   updatedAt: string;
 };
@@ -104,11 +154,48 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       continue;
     }
 
-    // FIX: Check execution-grade for SNIPER signals
-    const isExecutionGrade = priceData.source === "kraken_live" || priceData.source === "kraken_cached";
+    // ===== v7.6.0: BUILD EXECUTION CONTEXT (SINGLE SOURCE OF TRUTH) =====
+    // One immutable context per symbol per cycle
+    // executionAllowed is decided ONCE here, never re-evaluated downstream
+    const ctx = buildExecutionContext(symbol, priceData);
+    
+    if (!ctx.executionAllowed) {
+      // Create degraded card for display only (BUILDING state, no signals)
+      const degradedCard: SymbolCardState = {
+        symbol,
+        price: ctx.price,
+        source: ctx.dataSource,
+        degraded: true,
+        signalState: "BUILDING",  // Display only, no execution
+        marketClass: "DISPLAY_ONLY",
+        direction: "NEUTRAL",
+        tradeReadinessScore: null,
+        ignitionProbability: 0,
+        stochRsi: null,
+        emaSlope: null,
+        emaPressure: 0,
+        volatilityLevel: null,
+        htf4hTrend: "NEUTRAL",
+        htf4hMomentum: null,
+        htf1hAlignment: null,
+        htf15mCompression: null,
+        execution15mState: "CHOP",
+        marketReadinessState: "DEGRADED",
+        expectedMovePercent: null,
+        targetPrices: null,
+        riskReward: null,
+        cycleId: ctx.cycleId,
+        notes: ctx.gateReason || "DEGRADED_DATA",
+        updatedAt: new Date().toISOString(),
+      };
+      cards.push(degradedCard);
+      continue;  // HARD STOP: Do NOT scan non-execution-grade data
+    }
 
-    // Generate card state for this symbol
+    // ===== SCAN ENGINE: Only execution-grade data reaches here =====
+    // ExecutionContext.executionAllowed is TRUE, so proceed
     const card = generateCardState(symbol, priceData);
+    card.cycleId = ctx.cycleId;  // Tag with execution context cycle
     cards.push(card);
 
     // Score using NEW momentum-based system
@@ -120,13 +207,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // NO NEUTRAL SIGNALS ALLOWED
 
     // CONFIRMED ALERT: score >= 75 AND confirmed conditions met
-    // FIX: Require execution-grade data for CONFIRMED signals
     if (score >= 75 && card.direction !== "NEUTRAL" && checkConfirmedConditions(card)) {
-      if (!isExecutionGrade) {
-        console.log(`[EXECUTION_GATE] ${symbol} CONFIRMED blocked: non-execution-grade data (${priceData.source})`);
-        // Continue to next symbol without creating setup
-        continue;
-      }
       
       card.mode = "CONFIRMED";
       card.confidence = Math.min(score, 99);
@@ -157,14 +238,9 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       });
       console.log(`[ALERT] ${symbol} CONFIRMED ${card.direction} score=${score}`);
     }
-    // SNIPER ALERT: score >= 70 AND sniper conditions met (FIX #1 v7.3.1: enforce strict execution validation)
-    // FIX: Require execution-grade data for SNIPER signals
+    // SNIPER ALERT: score >= 70 AND sniper conditions met
+    // (No execution-grade check needed: hard gate at scan boundary ensures only Kraken data reaches here)
     else if (score >= 70 && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
-      if (!isExecutionGrade) {
-        console.log(`[EXECUTION_GATE] ${symbol} SNIPER blocked: non-execution-grade data (${priceData.source})`);
-        // Continue to next symbol without creating setup
-        continue;
-      }
       // v7.3.1 FIX #1: Validate ACTIVE_SNIPER execution requirements
       const executionValidation = validateActiveSniperExecution(card, score);
       
