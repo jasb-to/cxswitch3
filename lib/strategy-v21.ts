@@ -699,8 +699,29 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 }
 
 // ============================================================================
-// v21.2.0: HELPER FUNCTIONS
+// UTILITY: ASSET NORMALIZATION
 // ============================================================================
+
+/**
+ * v21.3.0: CANONICAL ASSET FILTER
+ * Returns canonical symbol (BTC/ETH/SOL) or null if not in whitelist
+ * Ensures no non-canonical assets reach signal engine
+ */
+function normalizeAsset(rawSymbol: string): string | null {
+  const canonical = rawSymbol.toUpperCase().replace(/\/.*/, ""); // Remove any pair suffix
+  
+  const CANONICAL_ASSETS = new Set(["BTC", "ETH", "SOL"]);
+  if (CANONICAL_ASSETS.has(canonical)) {
+    return canonical;
+  }
+  
+  return null;
+}
+
+// ============================================================================
+// UTILITY: SIGNAL COMPUTATION FUNCTIONS
+// ============================================================================
+
 
 function computeTargets(
   price: number,
