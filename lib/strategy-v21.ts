@@ -19,6 +19,7 @@
  */
 
 import type { PriceData } from "./price-router";
+import { IMPULSE_CONFIG, QUALITY_GATES, STATE_CONFIG, PERSISTENCE_CONFIG } from "./signal-config";
 
 // ============================================================================
 // v21.3.0: SNIPER EVENT LIFECYCLE STATE MACHINE (UNIFIED ARCHITECTURE)
@@ -1286,13 +1287,20 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       }
     } catch (error) {
       const displaySymbol = symbol || rawSymbol || "UNKNOWN";
-      console.error(`[STATE] ERROR processing ${displaySymbol}:`, error);
+      
+      // v24.2 INVARIANT 2: SYMBOL ISOLATION - Log fatal per-symbol error
+      console.error(
+        `[SYMBOL_FATAL] ${displaySymbol}: Processing failed, returning BUILDING_FALLBACK`,
+        error instanceof Error ? error.message : String(error)
+      );
+      
+      // Return BUILDING fallback for this symbol (doesn't crash other symbols)
       cards.push({
         symbol: displaySymbol,
         price: priceData.price,
-        source: "v21.1.0-error",
+        source: "v24.2-symbol-error",
         degraded: true,
-        signalState: "NONE",
+        signalState: "BUILDING",  // v24.2: Changed from NONE to BUILDING
         marketClass: "CHOP",
         direction: "NEUTRAL",
         tradeReadinessScore: null,
@@ -1311,7 +1319,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         targetPrices: null,
         riskReward: null,
         cycleId: `${Date.now()}-${displaySymbol}`,
-        notes: "ERROR",
+        notes: "SYMBOL_PROCESSING_ERROR",
         updatedAt: new Date().toISOString(),
       });
     }
