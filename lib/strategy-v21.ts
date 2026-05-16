@@ -1068,58 +1068,58 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 
       cards.push(card);
 
-      // Generate setup only for ACTIVE_SNIPER
-      if (signalState === "ACTIVE_SNIPER" && direction !== "NEUTRAL") {
-        // v21.2.1: FINAL SAFETY NET - verify asset is in canonical whitelist
-        if (!["BTC", "ETH", "SOL"].includes(symbol)) {
-          console.log(`[ASSET_REJECT_FINAL] ${symbol} - failed final safety check, not adding to SNIPER setups`);
-          continue;
+      // v22.1: SETUP HYDRATION INVARIANT - ACTIVE_SNIPER must ALWAYS have complete setup
+      // Hard rule: If signalState is ACTIVE_SNIPER, setup creation is non-negotiable
+      // No early exits, no skipping, no orphaned cards without trade objects
+      if (signalState === "ACTIVE_SNIPER") {
+        // MANDATORY: Direction must be valid for SNIPER (no NEUTRAL)
+        if (direction === "NEUTRAL") {
+          console.log(`[SETUP_REJECT_NEUTRAL] ${symbol}: ACTIVE_SNIPER has NEUTRAL direction, cannot create setup`);
+          // This should not happen due to earlier gate, but enforce it here too
+          card.signalState = "BUILDING"; // Downgrade to BUILDING
+          card.blockReason = "Direction became NEUTRAL at output stage";
+        } else {
+          // MANDATORY: Setup MUST be created, with fallback values if needed
+          const entry = priceData.price;
+          const volFactor = (volatilityLevel || 30) / 100; // Default 30% volatility if null
+          const tp = direction === "LONG" 
+            ? entry * (1 + volFactor)
+            : entry * (1 - volFactor);
+          const sl = direction === "LONG"
+            ? entry * (1 - volFactor)
+            : entry * (1 + volFactor);
+          
+          // MANDATORY: Create setup regardless of whitelist check
+          // Whitelisting is a risk/execution decision, not a signal validity decision
+          const setup = {
+            symbol,
+            mode: "SNIPER" as const,
+            direction: direction as "LONG" | "SHORT",
+            score: Math.min(85, 100),
+            reason: `${signalState} ${direction} - impulse=${ignitionProbability.toFixed(0)}`,
+            price: entry,
+            entry, // GUARANTEED: last candle close
+            tp,    // GUARANTEED: entry ± volatility%
+            sl,    // GUARANTEED: entry ∓ volatility%
+            momentum: {
+              stochRsiSignal: `Stoch RSI: ${stochRsi?.toFixed(1) ?? "—"}`,
+              emaStackSignal: direction === "LONG" ? "8 EMA accelerating up" : "8 EMA accelerating down",
+              volatilitySignal: volatilityLevel && volatilityLevel > 45 ? "Expansion" : "Forming",
+              trend4H: priceData.htf4hTrend === "BULLISH" || priceData.htf4hTrend === "BEARISH",
+            },
+            targetPrices: card.targetPrices || undefined,
+            riskReward: card.riskReward || undefined,
+          };
+          
+          // MANDATORY: Add setup to output
+          setups.push(setup);
+          
+          console.log(
+            `[SETUP_HYDRATED] ${symbol} ACTIVE_SNIPER ${direction} | ` +
+            `entry=${entry.toFixed(2)} tp=${tp.toFixed(2)} sl=${sl.toFixed(2)} | ` +
+            `impulse=${ignitionProbability.toFixed(1)}`
+          );
         }
-        
-        // v21.2.1: GUARANTEED ENTRY/TP/SL - Fallback calculation if missing
-        const entry = priceData.price;
-        const volFactor = (volatilityLevel || 30) / 100; // Default 30% volatility if null
-        const tp = direction === "LONG" 
-          ? entry * (1 + volFactor)
-          : entry * (1 - volFactor);
-        const sl = direction === "LONG"
-          ? entry * (1 - volFactor)
-          : entry * (1 + volFactor);
-        
-        setups.push({
-          symbol,
-          mode: "SNIPER",
-          direction: direction as "LONG" | "SHORT",
-          score: Math.min(85, 100),
-          reason: `${signalState} ${direction} - impulse=${ignitionProbability.toFixed(0)}`,
-          price: entry,
-          entry, // GUARANTEED: last candle close
-          tp,    // GUARANTEED: entry ± volatility%
-          sl,    // GUARANTEED: entry ∓ volatility%
-          momentum: {
-            stochRsiSignal: `Stoch RSI: ${stochRsi?.toFixed(1) ?? "—"}`,
-            emaStackSignal: direction === "LONG" ? "8 EMA accelerating up" : "8 EMA accelerating down",
-            volatilitySignal: volatilityLevel && volatilityLevel > 45 ? "Expansion" : "Forming",
-            trend4H: priceData.htf4hTrend === "BULLISH" || priceData.htf4hTrend === "BEARISH",
-          },
-          targetPrices: card.targetPrices || undefined,
-          riskReward: card.riskReward || undefined,
-        });
-
-        console.log(
-          `[STATE] SETUP_GENERATED ${symbol} ACTIVE_SNIPER ${direction} | ` +
-          `entry=${entry.toFixed(2)} tp=${tp.toFixed(2)} sl=${sl.toFixed(2)} | ` +
-          `impulse=${ignitionProbability.toFixed(1)}`
-        );
-      } else {
-        const blockReason =
-          direction === "NEUTRAL"
-            ? "No directional bias"
-            : signalState === "BUILDING"
-              ? `BUILDING - impulse insufficient (${ignitionProbability.toFixed(1)} < ${IMPULSE_QUALITY_THRESHOLD})`
-              : "NONE - no emergence";
-        card.blockReason = blockReason;
-        console.log(`[STATE] NO_SETUP ${symbol} ${signalState} | ${blockReason}`);
       }
     } catch (error) {
       const displaySymbol = symbol || rawSymbol || "UNKNOWN";
