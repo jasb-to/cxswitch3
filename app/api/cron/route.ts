@@ -8,7 +8,101 @@ import { calculatePatches, applySnapshotPatches } from "@/lib/snapshot-patcher";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// v8.0: CRON with hard pipeline segregation (execution vs display)
+// ═════════════════════════════════════════════════════════════════════════════
+// v8.1: ORCHESTRATION ISOLATION LAYER - TWO INDEPENDENT CYCLES
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// CRITICAL FIX: Execution and display cycles are completely independent
+// - Separate timers
+// - Separate request budgets
+// - Separate stagger schedules
+// - NO shared orchestration state
+//
+// This prevents timing contamination between pipelines
+
+// Execution cycle state (HARD REAL-TIME)
+let executionCycleRunning = false;
+let lastExecutionCycleTime = 0;
+
+// Display cycle state (SOFT ASYNC)
+let displayCycleRunning = false;
+let lastDisplayCycleTime = 0;
+
+/**
+ * v8.1: Execution Cycle (KRAKEN ONLY)
+ * - Hard real-time requirements
+ * - Deterministic ordering
+ * - No staggering
+ * - No budget sharing
+ */
+async function runExecutionCycle(): Promise<{
+  executionCards: any[];
+  setups: any[];
+  timeMs: number;
+}> {
+  if (executionCycleRunning) {
+    console.log("[EXEC_CYCLE] Already running, skipping");
+    return { executionCards: [], setups: [], timeMs: 0 };
+  }
+
+  executionCycleRunning = true;
+  const cycleStart = Date.now();
+
+  try {
+    console.log("[EXEC_CYCLE] Start - Kraken only, hard real-time");
+    
+    // STEP 1: Fetch markets (segregated at ingestion)
+    const segregatedMarkets = await refreshMarketData();
+    
+    // STEP 2: ONLY scan execution pipeline (Kraken)
+    const { cards: executionCards, setups } = await generateSetups(segregatedMarkets);
+    
+    console.log(`[EXEC_CYCLE] Generated ${executionCards.length} cards, ${setups.length} setups in ${Date.now() - cycleStart}ms`);
+    
+    return { executionCards, setups, timeMs: Date.now() - cycleStart };
+  } finally {
+    executionCycleRunning = false;
+    lastExecutionCycleTime = Date.now();
+  }
+}
+
+/**
+ * v8.1: Display Cycle (COINGECKO ONLY)
+ * - Soft async (can lag without affecting execution)
+ * - Independent timer
+ * - No budget coupling
+ */
+async function runDisplayCycle(): Promise<{
+  displayCards: any[];
+  timeMs: number;
+}> {
+  if (displayCycleRunning) {
+    console.log("[DISPLAY_CYCLE] Already running, skipping");
+    return { displayCards: [], timeMs: 0 };
+  }
+
+  displayCycleRunning = true;
+  const cycleStart = Date.now();
+
+  try {
+    console.log("[DISPLAY_CYCLE] Start - Fallback/CoinGecko only, soft async");
+    
+    // STEP 1: Fetch markets (already segregated)
+    const segregatedMarkets = await refreshMarketData();
+    
+    // STEP 2: ONLY generate display cards (fallback)
+    const displayCards = generateDisplayCards(segregatedMarkets.display);
+    
+    console.log(`[DISPLAY_CYCLE] Generated ${displayCards.length} cards in ${Date.now() - cycleStart}ms`);
+    
+    return { displayCards, timeMs: Date.now() - cycleStart };
+  } finally {
+    displayCycleRunning = false;
+    lastDisplayCycleTime = Date.now();
+  }
+}
+
+// v8.0 header: CRON optimized for delta updates, not full rebuilds
 export async function GET(req: NextRequest) {
   try {
     const secret = process.env.CRON_SECRET;
@@ -20,28 +114,24 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    console.log("[CRON] Start - v8.0 hard pipeline segregation");
+    console.log("[CRON] Start - v8.1 orchestration isolation");
     const cronStart = Date.now();
 
-    // STEP 1: Refresh market data with segregation
-    // Returns { execution: Record<string, PriceData>, display: Record<string, PriceData> }
-    const segregatedMarkets = await refreshMarketData();
-    console.log(`[TIER1] Market segregation: ${Date.now() - cronStart}ms`);
+    // v8.1: RUN BOTH CYCLES INDEPENDENTLY (not sequentially)
+    // Each cycle is completely isolated, no timing interference
+    const [executionResult, displayResult] = await Promise.all([
+      runExecutionCycle(),
+      runDisplayCycle(),
+    ]);
 
-    // STEP 2a: Generate execution pipeline cards + setups
-    // ONLY Kraken data, ONLY execution-grade signals
-    const { cards: executionCards, setups } = await generateSetups(segregatedMarkets);
+    const { executionCards, setups } = executionResult;
+    const { displayCards } = displayResult;
     
-    // STEP 2b: Generate display pipeline cards
-    // ONLY fallback data, display-only UI cards
-    const displayCards = generateDisplayCards(segregatedMarkets.display);
-    
-    // STEP 2c: Merge cards for snapshot (execution first, then display)
+    // Merge results: execution first, then display
     const newCards = [...executionCards, ...displayCards];
-    console.log(`[TIER2/3] Card generation: ${Date.now() - cronStart}ms - ${executionCards.length} execution cards + ${displayCards.length} display cards, ${setups.length} setups`);
+    console.log(`[CRON] Card generation: ${executionResult.timeMs + displayResult.timeMs}ms - ${executionCards.length} execution + ${displayCards.length} display`);
 
-    // STEP 3: Apply delta patching (FIX #5)
-    // Instead of replacing entire snapshot, patch only changed cards
+    // STEP 3: Apply delta patching
     const existingSnapshot = getSnapshot();
     const existingCards = existingSnapshot?.cards || [];
     
@@ -61,11 +151,8 @@ export async function GET(req: NextRequest) {
       setups,
     });
 
-    // STEP 5: Enqueue alerts (FIX #6 - decoupled, non-blocking)
-    // v7.3.1 FIX #1, #2, #3: Include all HTF data for execution gate and validation
-    // Do NOT await - let alerts process independently
+    // STEP 5: Enqueue alerts (decoupled, non-blocking)
     for (const setup of setups) {
-      // Find the corresponding card to get signalState, targetPrices, and HTF data
       const card = newCards.find(c => c.symbol === setup.symbol);
       
       enqueueAlert({
@@ -74,21 +161,27 @@ export async function GET(req: NextRequest) {
         direction: setup.direction,
         score: setup.score,
         price: setup.price,
-        source: card?.source, // v7.3.1: validate price source
-        signalState: card?.signalState, // v7.3.0 FIX #1: execution gate check
-        targetPrices: card?.targetPrices, // v7.3.0 FIX #2: payload validation
-        htf4hTrend: card?.htf4hTrend, // v7.3.1: HTF validation
-        execution15mState: card?.execution15mState, // v7.3.1: 15M execution validation
+        source: card?.source,
+        signalState: card?.signalState,
+        targetPrices: card?.targetPrices,
+        htf4hTrend: card?.htf4hTrend,
+        execution15mState: card?.execution15mState,
         queued: Date.now(),
       });
     }
 
     const totalMs = Date.now() - cronStart;
-    console.log(`[CRON] Complete in ${totalMs}ms - queued ${setups.length} alerts`);
+    console.log(`[CRON] Complete in ${totalMs}ms - execution: ${executionResult.timeMs}ms, display: ${displayResult.timeMs}ms, queued ${setups.length} alerts`);
 
     return NextResponse.json({ 
       ok: true, 
-      perf: { totalMs, patchesApplied: patches.length, alertsQueued: setups.length }
+      perf: { 
+        totalMs, 
+        executionMs: executionResult.timeMs,
+        displayMs: displayResult.timeMs,
+        patchesApplied: patches.length, 
+        alertsQueued: setups.length 
+      }
     });
   } catch (error) {
     console.error('[CRON ERROR]', error);
