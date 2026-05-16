@@ -4,6 +4,9 @@ import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
 import { getSnapshot, setSnapshot, type RuntimeSnapshot } from "@/lib/runtime-snapshot";
 
+// v22.1-final: Cache bust to force rebuild of server chunks (fix stale impulse references)
+// Build timestamp: ${Date.now()}
+
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
