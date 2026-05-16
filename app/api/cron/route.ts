@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * v21.3.0 - SNIPER EVENT LIFECYCLE STATE MACHINE
+ * v21.1.0 - DETERMINISTIC SIGNAL PIPELINE
  * 
  * Every cron cycle:
  * 1. Fetch live market data
@@ -16,7 +16,7 @@ export const runtime = "nodejs";
  * 3. Replace snapshot atomically
  * 4. Emit alerts ONLY on NEW EVENT CREATION (not state changes)
  * 
- * Pure event-driven execution. No more signal recalculation.
+ * Pure event-driven execution. Single 6-phase pipeline.
  * Once SNIPER_EVENT fires, it stays ACTIVE until exit conditions met.
  */
 export async function GET(req: NextRequest) {
@@ -30,7 +30,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    console.log("[CRON] v21.2.0 START - Final Deterministic Impulse Engine + Input Guarantee Layer");
+    console.log("[CRON] v21.1.0 START - Deterministic 6-Phase Signal Pipeline");
     const cronStart = Date.now();
 
     // STEP 1: Fetch live market data
@@ -53,8 +53,7 @@ export async function GET(req: NextRequest) {
       const newEventMarker = (newCard as any)._newEventFired;
       if (newEventMarker) {
         alertCards.push(newCard);
-        console.log(
-          `[EVENT_ALERT_TRIGGER] ${newCard.symbol}: NEW SNIPER_EVENT fired ` +
+      console.log(`[EVENT_ALERT_TRIGGER] ${newCard.symbol}: NEW SNIPER_EVENT fired ` +
           `entry=${newEventMarker.entry.toFixed(2)} impulse=${newEventMarker.impulse.toFixed(1)}`
         );
       }
@@ -105,11 +104,11 @@ export async function GET(req: NextRequest) {
     }
 
     const totalMs = Date.now() - cronStart;
-    console.log(`[CRON] v21.3.0 COMPLETE in ${totalMs}ms - Event lifecycle completed`);
+    console.log(`[CRON] v21.1.0 COMPLETE in ${totalMs}ms - 6-phase pipeline finished`);
 
     return NextResponse.json({
       ok: true,
-      version: "v21.3.0",
+      version: "v21.1.0",
       perf: {
         totalMs,
         cardsGenerated: newCards.length,

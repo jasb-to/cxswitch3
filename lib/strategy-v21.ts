@@ -354,18 +354,56 @@ function computeVolumeComponent(priceData: PriceData): number {
 // v21.2.0: PHASE 2 - DIRECTION INFERENCE (NO HTF AUTHORITY)
 // ============================================================================
 
+/**
+ * v21.1.0: DIRECTION ENGINE (PHASE 2)
+ * 
+ * CRITICAL AUTHORITY: Direction is the primary decision authority
+ * Sources: EMA slope, stochastic structure, displacement, expansion direction
+ * NO volatility influence on direction
+ * 
+ * Deterministic rule:
+ * - Bullish: EMA acceleration > 0.5 + stoch < 60 + positive pressure
+ * - Bearish: EMA deceleration < -0.5 + stoch > 40 + negative pressure
+ * - Conflict or missing signals: NEUTRAL (never fallback to LONG)
+ */
 function inferDirection(
   emaSlope: number | null,
   stochRsi: number | null,
   emaPressure: number
 ): "LONG" | "SHORT" | "NEUTRAL" {
-  if (emaSlope === null || stochRsi === null) return "NEUTRAL";
+  // Input validation - if critical signals missing, NEUTRAL (not fallback)
+  if (emaSlope === null || stochRsi === null) {
+    return "NEUTRAL";
+  }
 
-  const hasBullishMomentum = emaSlope > 0.5 && stochRsi > 40 && emaPressure > 0;
-  const hasBearishMomentum = emaSlope < -0.5 && stochRsi < 60 && emaPressure < 0;
+  // v21.1.0: Bullish structural confluence (ALL required)
+  // 1. EMA accelerating up (> 0.5)
+  // 2. Stochastic in lower range (< 60) - room to run
+  // 3. Price pressure positive (above EMA)
+  const bullishStructure = 
+    emaSlope > 0.5 &&           // Strong upward acceleration
+    stochRsi < 60 &&             // Not overextended
+    emaPressure > 0;             // Price above EMA
 
-  if (hasBullishMomentum) return "LONG";
-  if (hasBearishMomentum) return "SHORT";
+  // v21.1.0: Bearish structural confluence (ALL required)
+  // 1. EMA accelerating down (< -0.5)
+  // 2. Stochastic in upper range (> 40) - room to decline
+  // 3. Price pressure negative (below EMA)
+  const bearishStructure =
+    emaSlope < -0.5 &&           // Strong downward acceleration
+    stochRsi > 40 &&             // Not oversold
+    emaPressure < 0;             // Price below EMA
+
+  // Determine direction from structural confluence ONLY
+  if (bullishStructure) {
+    return "LONG";
+  }
+
+  if (bearishStructure) {
+    return "SHORT";
+  }
+
+  // No confluence = NEUTRAL (not fallback to LONG, not driven by volatility)
   return "NEUTRAL";
 }
 
@@ -601,7 +639,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       const card: SymbolCardState = {
         symbol,
         price: priceData.price,
-        source: "v21.3.0",
+        source: "v21.1.0",
         degraded: false,
         signalState,
         marketClass: "TREND_FOLLOWING",
@@ -700,7 +738,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       cards.push({
         symbol: displaySymbol,
         price: priceData.price,
-        source: "v21.2.0-error",
+        source: "v21.1.0-error",
         degraded: true,
         signalState: "NONE",
         marketClass: "CHOP",
