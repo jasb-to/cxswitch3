@@ -1,17 +1,20 @@
 /**
- * Market Data Layer (v6 - EXECUTION-GRADE GATE)
+ * Market Data Layer (v8.0 - HARD PIPELINE SEGREGATION)
+ * 
+ * CRITICAL ARCHITECTURAL FIX: Split execution and display pipelines at ingestion
  * 
  * Job:
- * - Fetch prices
+ * - Fetch prices (all sources)
  * - Cache latest snapshot
- * - MARK execution-grade vs degraded
- * - NEVER skip symbols
+ * - SEGREGATE into two separate pipelines:
+ *   - Execution Pipeline: Kraken only (executionGrade = true)
+ *   - Display Pipeline: Fallback data (executionGrade = false)
+ * - NEVER mix these pipelines
  * 
- * CRITICAL: Adds isExecutionGrade flag
- * - Kraken data: isExecutionGrade = true
- * - CoinGecko fallback: isExecutionGrade = false
- * 
- * RULE: SNIPER engine ONLY accepts execution-grade data
+ * RULE: 
+ * - ExecutionContext is ONLY built from execution pipeline
+ * - Display pipeline goes ONLY to UI rendering
+ * - No fallback data ever enters execution scan loop
  */
 
 import { getPrice, type PriceData } from "./price-router";
@@ -21,7 +24,13 @@ export type MarketDataCache = {
   priceData: PriceData | null;
   lastUpdate: number;
   updateError?: string;
-  isExecutionGrade: boolean;  // FIX: Added execution-grade flag
+  isExecutionGrade: boolean;
+};
+
+// Segregated market data (v8.0)
+export type SegregatedMarketData = {
+  execution: Record<string, PriceData>;  // Kraken only, can build ExecutionContext
+  display: Record<string, PriceData>;     // Fallback data, UI only
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -49,13 +58,12 @@ for (const symbol of TRACKED_SYMBOLS) {
 let isUpdating = false;
 
 /**
- * Refresh all prices and return market snapshot
+ * Refresh all prices and return segregated market pipelines
  * CALLED BY: cron jobs only  
- * Returns: market snapshot for strategy engine
- * RULE: NEVER skip symbols, always return all
- * FIX: Track execution-grade flag for each symbol
+ * Returns: { execution, display } completely separate pipelines
+ * RULE: Segregate at ingestion - NEVER mix in same cycle
  */
-export async function refreshMarketData(): Promise<Record<string, PriceData>> {
+export async function refreshMarketData(): Promise<SegregatedMarketData> {
   if (isUpdating) {
     console.log("[MARKET] Already updating");
     return getMarketSnapshot();
@@ -75,22 +83,22 @@ export async function refreshMarketData(): Promise<Record<string, PriceData>> {
           cache.lastUpdate = now;
           delete cache.updateError;
           
-          // FIX: Mark as execution-grade only if source is Kraken
-          cache.isExecutionGrade = priceData.source === "KRAKEN";
+          // Mark as execution-grade only if source is Kraken (live or cached)
+          cache.isExecutionGrade = priceData.source === "kraken_live" || priceData.source === "kraken_cached";
           
           console.log(
             `[MARKET] ${symbol} ${priceData.source}` + 
-            (cache.isExecutionGrade ? " (execution-grade)" : " (degraded)")
+            (cache.isExecutionGrade ? " (execution)" : " (display-only)")
           );
         } else {
           cache.isExecutionGrade = false;
-          console.log(`[MARKET] ${symbol} DEGRADED`);
+          console.log(`[MARKET] ${symbol} fallback only`);
         }
       } catch (err) {
         const cache = marketDataCache[symbol];
         cache.updateError = err instanceof Error ? err.message : String(err);
-        cache.isExecutionGrade = false;  // FIX: Ensure degraded on error
-        console.log(`[MARKET] ${symbol} DEGRADED`);
+        cache.isExecutionGrade = false;  // Ensure degraded on error
+        console.log(`[MARKET] ${symbol} fallback only (error)`);
       }
     }
   } finally {
@@ -105,18 +113,23 @@ export async function refreshMarketData(): Promise<Record<string, PriceData>> {
 // Always return best available value, NEVER null for tracked symbols
 // ═══════════════════════════════════════════════════════════════════════════
 
-export function getMarketSnapshot(): Record<string, PriceData> {
-  const snapshot: Record<string, PriceData> = {};
+export function getMarketSnapshot(): SegregatedMarketData {
+  const execution: Record<string, PriceData> = {};
+  const display: Record<string, PriceData> = {};
 
   for (const symbol of TRACKED_SYMBOLS) {
     const cache = marketDataCache[symbol];
     const priceData = cache?.priceData;
 
-    if (priceData) {
-      snapshot[symbol] = priceData;
+    if (priceData && cache.isExecutionGrade) {
+      // Execution pipeline: Kraken data only
+      execution[symbol] = priceData;
+    } else if (priceData) {
+      // Display pipeline: Fallback data only
+      display[symbol] = priceData;
     } else {
-      // NEVER return null - use fallback with last known price
-      snapshot[symbol] = {
+      // No data: goes to display pipeline (UI fallback)
+      display[symbol] = {
         symbol,
         price: cache?.priceData?.price ?? 0,
         source: "DEGRADED",
@@ -125,7 +138,7 @@ export function getMarketSnapshot(): Record<string, PriceData> {
     }
   }
 
-  return snapshot;
+  return { execution, display };
 }
 
 export function getMarketData(symbol: string): PriceData | null {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateSetups } from "@/lib/strategy-v6";
+import { generateSetups, generateDisplayCards } from "@/lib/strategy-v6";
 import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
 import { getSnapshot, setSnapshot } from "@/lib/runtime-snapshot";
@@ -20,16 +20,25 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    console.log("[CRON] Start - v7.2.7 tiered optimization");
+    console.log("[CRON] Start - v8.0 hard pipeline segregation");
     const cronStart = Date.now();
 
-    // STEP 1: Refresh market data (TIER 1 - always fast)
-    const market = await refreshMarketData();
-    console.log(`[TIER1] Market refresh: ${Date.now() - cronStart}ms`);
+    // STEP 1: Refresh market data with segregation
+    // Returns { execution: Record<string, PriceData>, display: Record<string, PriceData> }
+    const segregatedMarkets = await refreshMarketData();
+    console.log(`[TIER1] Market segregation: ${Date.now() - cronStart}ms`);
 
-    // STEP 2: Generate new cards (includes tiered caching internally)
-    const { cards: newCards, setups } = await generateSetups(market);
-    console.log(`[TIER2/3] Card generation: ${Date.now() - cronStart}ms - ${newCards.length} cards, ${setups.length} setups`);
+    // STEP 2a: Generate execution pipeline cards + setups
+    // ONLY Kraken data, ONLY execution-grade signals
+    const { cards: executionCards, setups } = await generateSetups(segregatedMarkets);
+    
+    // STEP 2b: Generate display pipeline cards
+    // ONLY fallback data, display-only UI cards
+    const displayCards = generateDisplayCards(segregatedMarkets.display);
+    
+    // STEP 2c: Merge cards for snapshot (execution first, then display)
+    const newCards = [...executionCards, ...displayCards];
+    console.log(`[TIER2/3] Card generation: ${Date.now() - cronStart}ms - ${executionCards.length} execution cards + ${displayCards.length} display cards, ${setups.length} setups`);
 
     // STEP 3: Apply delta patching (FIX #5)
     // Instead of replacing entire snapshot, patch only changed cards
