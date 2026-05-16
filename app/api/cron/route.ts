@@ -152,14 +152,12 @@ export async function GET(req: NextRequest) {
     const existingSnapshot = getSnapshot();
     const existingCards = existingSnapshot?.cards || [];
     
-    const patches = calculatePatches(existingCards, newCards);
-    const patchedCards = applySnapshotPatches(existingCards, patches.map(p => ({
-      symbol: p.symbol,
-      fields: p.fields,
-      timestamp: p.timestamp,
-    })));
+    // v8.1 FIX: Use complete newCards array instead of patch-based reconstruction
+    // Patches are for incremental updates only, not for replacing cards
+    // This ensures display pipeline cards retain all their fields
+    const patchedCards = newCards.length > 0 ? newCards : existingCards;
     
-    console.log(`[DELTA] Patches applied: ${patches.length} changed cards out of ${newCards.length}`);
+    console.log(`[DELTA] Using complete snapshot: ${patchedCards.length} cards (${executionCards.length} execution + ${displayCards.length} display)`);
 
     // STEP 4: Update snapshot (only changed parts)
     setSnapshot({
@@ -196,7 +194,7 @@ export async function GET(req: NextRequest) {
         totalMs, 
         executionMs: executionResult.timeMs,
         displayMs: displayResult.timeMs,
-        patchesApplied: patches.length, 
+        cardsGenerated: patchedCards.length,
         alertsQueued: setups.length 
       }
     });
