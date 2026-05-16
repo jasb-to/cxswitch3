@@ -9,11 +9,11 @@
 
 import type { PriceData } from "./price-router";
 
-// FIX #1: Unified signal state (v7.2.6), extended for v7.2.8
+// FIX #1: Unified signal state (v7.2.6) - REMOVED SNIPER_IMMINENT (regression leak)
+// v7.4.0: Clean state machine - only 3 valid states for signal generation
 export type SignalState = 
   | "NONE"              // No signal
   | "BUILDING"          // Directional bias + compression, waiting for ignition
-  | "SNIPER_IMMINENT"   // Score >= 60, HTF aligned, compression/expansion pending (FIX #2 v7.2.8)
   | "SNIPER_READY"      // All SNIPER conditions passed, awaiting entry confirmation
   | "CONFIRMED_READY"   // All CONFIRMED conditions passed, awaiting confirmation
   | "ACTIVE_SNIPER"     // SNIPER signal active, trade window open (30 min cooldown)
@@ -104,6 +104,9 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       continue;
     }
 
+    // FIX: Check execution-grade for SNIPER signals
+    const isExecutionGrade = priceData.source === "kraken_live" || priceData.source === "kraken_cached";
+
     // Generate card state for this symbol
     const card = generateCardState(symbol, priceData);
     cards.push(card);
@@ -111,13 +114,20 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // Score using NEW momentum-based system
     const score = calculateMomentumScore(card);
     
-    console.log(`[SCAN] ${symbol} score=${score} direction=${card.direction} stoch=${card.stochRsi.toFixed(1)} emaSlope=${card.emaSlope.toFixed(2)}`);
+    console.log(`[SCAN] ${symbol} score=${score} direction=${card.direction} stoch=${card.stochRsi?.toFixed(1) ?? "—"} emaSlope=${card.emaSlope?.toFixed(2) ?? "—"}`);
 
     // ONLY generate setups with directional conviction
     // NO NEUTRAL SIGNALS ALLOWED
 
     // CONFIRMED ALERT: score >= 75 AND confirmed conditions met
+    // FIX: Require execution-grade data for CONFIRMED signals
     if (score >= 75 && card.direction !== "NEUTRAL" && checkConfirmedConditions(card)) {
+      if (!isExecutionGrade) {
+        console.log(`[EXECUTION_GATE] ${symbol} CONFIRMED blocked: non-execution-grade data (${priceData.source})`);
+        // Continue to next symbol without creating setup
+        continue;
+      }
+      
       card.mode = "CONFIRMED";
       card.confidence = Math.min(score, 99);
       card.lastSignalTime = Date.now();
@@ -148,7 +158,13 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       console.log(`[ALERT] ${symbol} CONFIRMED ${card.direction} score=${score}`);
     }
     // SNIPER ALERT: score >= 70 AND sniper conditions met (FIX #1 v7.3.1: enforce strict execution validation)
+    // FIX: Require execution-grade data for SNIPER signals
     else if (score >= 70 && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
+      if (!isExecutionGrade) {
+        console.log(`[EXECUTION_GATE] ${symbol} SNIPER blocked: non-execution-grade data (${priceData.source})`);
+        // Continue to next symbol without creating setup
+        continue;
+      }
       // v7.3.1 FIX #1: Validate ACTIVE_SNIPER execution requirements
       const executionValidation = validateActiveSniperExecution(card, score);
       
@@ -156,8 +172,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         // Execution validation failed - block ACTIVE_SNIPER
         console.log(`[EXECUTION BLOCKED] ${symbol} ${card.direction}: ${executionValidation.reason}`);
         // Fall through to non-alert state calculation below
-        const sniperImminentPassed = score >= 60 && checkSniperImminent(card);
-        card.signalState = sniperImminentPassed ? "SNIPER_IMMINENT" : "SNIPER_READY";
+        card.signalState = "SNIPER_READY";  // FIX: Remove SNIPER_IMMINENT, use SNIPER_READY
       } else {
         // Execution validation passed - promote to ACTIVE_SNIPER
         card.mode = "SNIPER";
@@ -198,11 +213,9 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       }
     }
     else {
-      // FIX #2, #4: Derive signal state with proper evaluation order
-      // Check strict SNIPER conditions for SNIPER_READY
+      // FIX #4: Single SNIPER evaluation path (removed SNIPER_IMMINENT)
+      // No dual logic paths - only evaluate SNIPER_READY
       const sniperPassed = score >= 60 && checkSniperConditions(card, "strict");
-      // Check imminent conditions for SNIPER_IMMINENT (FIX #2)
-      const sniperImminentPassed = score >= 60 && checkSniperImminent(card);
       const confirmedPassed = score >= 75 && checkConfirmedConditions(card);
       
       card.signalState = calculateSignalState(
@@ -211,12 +224,12 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         card.direction,
         card.htf4hTrend,
         sniperPassed, 
-        sniperImminentPassed,
+        false,  // sniperImminentPassed REMOVED
         confirmedPassed, 
         card.lastSignalTime, 
         "NONE"
       );
-      console.log(`[SCAN] ${symbol} signalState=${card.signalState} score=${score} (sniper=${sniperPassed}, imminent=${sniperImminentPassed})`);
+      console.log(`[SCAN] ${symbol} signalState=${card.signalState} score=${score} (sniper=${sniperPassed})`);
     }
   }
 
@@ -488,7 +501,7 @@ function calculateSignalState(
   direction: string,
   htf4hTrend: string,
   sniperPassed: boolean,
-  sniperImminentPassed: boolean,
+  sniperImminentPassed: boolean,  // Deprecated: will be ignored
   confirmedPassed: boolean,
   lastSignalTime: number | undefined,
   lastMode: "SNIPER" | "CONFIRMED" | "NONE"
@@ -509,12 +522,6 @@ function calculateSignalState(
   // SNIPER READY: Full conditions met, no cooldown (v7.2.8)
   if (sniperPassed && score >= 60 && !confirmedPassed) {
     return "SNIPER_READY";
-  }
-  
-  // FIX #2: SNIPER_IMMINENT (v7.2.8) - early ignition detection
-  // Trigger when: score >= 60 + direction valid + HTF trend aligned + compression/expansion pending
-  if (sniperImminentPassed && score >= 60 && direction !== "NEUTRAL" && htf4hTrend !== "NEUTRAL") {
-    return "SNIPER_IMMINENT"; // NEW: Early entry preparation
   }
   
   // BUILDING: Has directional bias but not ready for signals
@@ -592,30 +599,6 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
 
   // ALL REQUIREMENTS MET: Valid ACTIVE_SNIPER execution
   return { valid: true };
-}
-
-/**
- * Check SNIPER_IMMINENT conditions (v7.2.8 FIX #2 - v7.3.1 updated)
- * Early detection: score >= 60 + direction + HTF aligned + compression/expansion forming
- * Does NOT require full ignition trigger yet
- */
-function checkSniperImminent(card: SymbolCardState): boolean {
-  // Requirements:
-  // 1. Directional bias (not NEUTRAL)
-  // 2. HTF trend aligned (not NEUTRAL)
-  // 3. Compression exists OR volatility normal/building
-  
-  const hasBias = card.direction !== "NEUTRAL";
-  const htfAligned = card.htf4hTrend !== "NEUTRAL";
-  const compressionOrBuilding = card.htf15mCompression === true || (card.volatilityLevel ?? 50) <= 50;
-  
-  const result = hasBias && htfAligned && compressionOrBuilding;
-  
-  if (result) {
-    console.log(`[SNIPER_IMMINENT] ${card.symbol} READY: ${card.direction} + ${card.htf4hTrend} + compression forming`);
-  }
-  
-  return result;
 }
 
 /**

@@ -1,16 +1,17 @@
 /**
- * Market Data Layer (v5 - DUMB INPUT ONLY)
+ * Market Data Layer (v6 - EXECUTION-GRADE GATE)
  * 
  * Job:
  * - Fetch prices
  * - Cache latest snapshot
+ * - MARK execution-grade vs degraded
  * - NEVER skip symbols
- * - NEVER mark degraded
- * - NEVER make decisions
  * 
- * Always returns last known value, even if broken
+ * CRITICAL: Adds isExecutionGrade flag
+ * - Kraken data: isExecutionGrade = true
+ * - CoinGecko fallback: isExecutionGrade = false
  * 
- * RULE: This layer has ZERO logic
+ * RULE: SNIPER engine ONLY accepts execution-grade data
  */
 
 import { getPrice, type PriceData } from "./price-router";
@@ -20,6 +21,7 @@ export type MarketDataCache = {
   priceData: PriceData | null;
   lastUpdate: number;
   updateError?: string;
+  isExecutionGrade: boolean;  // FIX: Added execution-grade flag
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -35,6 +37,7 @@ for (const symbol of TRACKED_SYMBOLS) {
     symbol,
     priceData: null,
     lastUpdate: 0,
+    isExecutionGrade: false,  // FIX: Default to degraded
   };
 }
 
@@ -50,6 +53,7 @@ let isUpdating = false;
  * CALLED BY: cron jobs only  
  * Returns: market snapshot for strategy engine
  * RULE: NEVER skip symbols, always return all
+ * FIX: Track execution-grade flag for each symbol
  */
 export async function refreshMarketData(): Promise<Record<string, PriceData>> {
   if (isUpdating) {
@@ -70,13 +74,22 @@ export async function refreshMarketData(): Promise<Record<string, PriceData>> {
           cache.priceData = priceData;
           cache.lastUpdate = now;
           delete cache.updateError;
-          console.log(`[MARKET] ${symbol} ${priceData.source}`);
+          
+          // FIX: Mark as execution-grade only if source is Kraken
+          cache.isExecutionGrade = priceData.source === "KRAKEN";
+          
+          console.log(
+            `[MARKET] ${symbol} ${priceData.source}` + 
+            (cache.isExecutionGrade ? " (execution-grade)" : " (degraded)")
+          );
         } else {
+          cache.isExecutionGrade = false;
           console.log(`[MARKET] ${symbol} DEGRADED`);
         }
       } catch (err) {
         const cache = marketDataCache[symbol];
         cache.updateError = err instanceof Error ? err.message : String(err);
+        cache.isExecutionGrade = false;  // FIX: Ensure degraded on error
         console.log(`[MARKET] ${symbol} DEGRADED`);
       }
     }
