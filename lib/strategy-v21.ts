@@ -528,18 +528,37 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       
       if (activeEvent) {
         // EVENT ALREADY ACTIVE - MAINTAIN STATE (IMMUTABLE)
-        signalState = "ACTIVE_SNIPER";
-        lockedEntry = activeEvent.entry;
-        lockedTp = activeEvent.tp;
-        lockedSl = activeEvent.sl;
-        console.log(
-          `[SNIPER_EVENT_MAINTAINED] ${symbol}: ` +
-          `age=${((Date.now() - activeEvent.createdAt) / 1000 / 60).toFixed(0)}min ` +
-          `entry=${activeEvent.entry.toFixed(2)}`
-        );
+        // v21.3.0 SAFETY: Even locked events must respect directional gate
+        if (direction === "NEUTRAL") {
+          console.log(
+            `[DIRECTION_GATE_REJECT] ${symbol}: ` +
+            `Locked event discarded (direction=NEUTRAL cannot maintain ACTIVE_SNIPER)`
+          );
+          signalState = "BUILDING";
+        } else {
+          signalState = "ACTIVE_SNIPER";
+          lockedEntry = activeEvent.entry;
+          lockedTp = activeEvent.tp;
+          lockedSl = activeEvent.sl;
+          console.log(
+            `[SNIPER_EVENT_MAINTAINED] ${symbol}: ` +
+            `age=${((Date.now() - activeEvent.createdAt) / 1000 / 60).toFixed(0)}min ` +
+            `entry=${activeEvent.entry.toFixed(2)}`
+          );
+        }
       } else {
         // NO ACTIVE EVENT - EVALUATE FRESH
         signalState = deriveExecutionState(ignitionProbability);
+        
+        // v21.3.0 CRITICAL GATE: NEUTRAL direction can NEVER produce ACTIVE_SNIPER
+        // Hard architectural invariant: directional bias is required for SNIPER state
+        if (direction === "NEUTRAL" && signalState === "ACTIVE_SNIPER") {
+          console.log(
+            `[DIRECTION_GATE_REJECT] ${symbol}: ` +
+            `ACTIVE_SNIPER downgraded to BUILDING (direction=NEUTRAL is invalid)`
+          );
+          signalState = "BUILDING";
+        }
         
         // v21.3.0: ENTRY RULE - Fire event if conditions met
         if (signalState === "ACTIVE_SNIPER" && shouldFireSniperEvent(symbol, ignitionProbability)) {
