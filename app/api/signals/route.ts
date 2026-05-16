@@ -13,10 +13,12 @@ export const revalidate = 0;
  * NO fallbacks.
  * 
  * Single source of truth.
+ * 
+ * v23.0.0: Now supports durable snapshot restoration on cold start
  */
 export async function GET() {
   try {
-    const snapshot = getSnapshot();
+    const snapshot = await getSnapshot();
     return NextResponse.json(snapshot);
   } catch (error) {
     console.error('[GET /api/signals ERROR]', error);
@@ -26,3 +28,4 @@ export async function GET() {
     );
   }
 }
+
