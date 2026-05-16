@@ -63,6 +63,7 @@ export type SymbolCardState = {
   lastBearishCycle?: number;
   trendMemory?: "BULLISH" | "BEARISH";
 
+  cycleId: string;  // Unique identifier for this signal cycle
   notes: string;
   updatedAt: string;
 };
@@ -104,9 +105,46 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       continue;
     }
 
-    // FIX: Check execution-grade for SNIPER signals
+    // ===== LAYER 0: DATA TRUST GATE (HARD BLOCK) =====
+    // BEFORE ANY SCAN: Enforce execution-grade data requirement
+    // Only Kraken live/cached data can enter signal pipeline
     const isExecutionGrade = priceData.source === "kraken_live" || priceData.source === "kraken_cached";
+    
+    if (!isExecutionGrade) {
+      console.log(`[EXECUTION_GUARD] ${symbol}: blocked scan (source=${priceData.source})`);
+      // Create degraded card for display only (BUILDING state, no signals)
+      const degradedCard: SymbolCardState = {
+        symbol,
+        price: priceData.price,
+        source: priceData.source,
+        degraded: true,
+        signalState: "BUILDING",  // Display only, no execution
+        marketClass: "DISPLAY_ONLY",
+        direction: "NEUTRAL",
+        tradeReadinessScore: null,
+        ignitionProbability: 0,
+        stochRsi: null,
+        emaSlope: null,
+        emaPressure: 0,
+        volatilityLevel: null,
+        htf4hTrend: "NEUTRAL",
+        htf4hMomentum: null,
+        htf1hAlignment: null,
+        htf15mCompression: null,
+        execution15mState: "CHOP",
+        marketReadinessState: "DEGRADED",
+        expectedMovePercent: null,
+        targetPrices: null,
+        riskReward: null,
+        cycleId: `${Date.now()}-${symbol}`,
+        notes: `NON_EXECUTION_GRADE_DATA (${priceData.source})`,
+        updatedAt: new Date().toISOString(),
+      };
+      cards.push(degradedCard);
+      continue;  // HARD STOP: Do NOT scan non-execution-grade data
+    }
 
+    // ===== SCAN ENGINE: Only execution-grade data reaches here =====
     // Generate card state for this symbol
     const card = generateCardState(symbol, priceData);
     cards.push(card);
@@ -120,13 +158,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     // NO NEUTRAL SIGNALS ALLOWED
 
     // CONFIRMED ALERT: score >= 75 AND confirmed conditions met
-    // FIX: Require execution-grade data for CONFIRMED signals
     if (score >= 75 && card.direction !== "NEUTRAL" && checkConfirmedConditions(card)) {
-      if (!isExecutionGrade) {
-        console.log(`[EXECUTION_GATE] ${symbol} CONFIRMED blocked: non-execution-grade data (${priceData.source})`);
-        // Continue to next symbol without creating setup
-        continue;
-      }
       
       card.mode = "CONFIRMED";
       card.confidence = Math.min(score, 99);
@@ -157,14 +189,9 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       });
       console.log(`[ALERT] ${symbol} CONFIRMED ${card.direction} score=${score}`);
     }
-    // SNIPER ALERT: score >= 70 AND sniper conditions met (FIX #1 v7.3.1: enforce strict execution validation)
-    // FIX: Require execution-grade data for SNIPER signals
+    // SNIPER ALERT: score >= 70 AND sniper conditions met
+    // (No execution-grade check needed: hard gate at scan boundary ensures only Kraken data reaches here)
     else if (score >= 70 && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
-      if (!isExecutionGrade) {
-        console.log(`[EXECUTION_GATE] ${symbol} SNIPER blocked: non-execution-grade data (${priceData.source})`);
-        // Continue to next symbol without creating setup
-        continue;
-      }
       // v7.3.1 FIX #1: Validate ACTIVE_SNIPER execution requirements
       const executionValidation = validateActiveSniperExecution(card, score);
       
