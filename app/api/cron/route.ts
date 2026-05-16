@@ -151,19 +151,18 @@ export async function GET(req: NextRequest) {
       console.log("[CRON] Start - v8.1 orchestration isolation");
       const cronStart = Date.now();
 
-    // v8.1: RUN BOTH CYCLES INDEPENDENTLY (not sequentially)
-    // Each cycle is completely isolated, no timing interference
-    const [executionResult, displayResult] = await Promise.all([
-      runExecutionCycle(),
-      runDisplayCycle(),
-    ]);
+      // v8.1 FIX #4: Sequential execution (execution → display)
+      // Display cycle must run AFTER execution fetches all market data
+      // Otherwise display cycle completes with 0 cards before markets are fetched
+      const executionResult = await runExecutionCycle();
+      const displayResult = await runDisplayCycle();
 
-    const { executionCards, setups } = executionResult;
-    const { displayCards } = displayResult;
+      const { executionCards, setups } = executionResult;
+      const { displayCards } = displayResult;
     
     // Merge results: execution first, then display
     const newCards = [...executionCards, ...displayCards];
-    console.log(`[CRON] Card generation: ${executionResult.timeMs + displayResult.timeMs}ms - ${executionCards.length} execution + ${displayCards.length} display`);
+    console.log(`[CRON] Card generation: ${executionResult.timeMs + displayResult.timeMs}ms - ${executionCards.length} execution + ${displayCards.length} display (sequential: exec first, then display with full market data)`);
 
     // STEP 3: Stateful snapshot merge (v8.1 FIX #1)
     // Preserves previous state unless explicitly replaced by same symbol
