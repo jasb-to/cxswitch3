@@ -89,10 +89,10 @@ function createSniperEvent(
   impulse: number,
   cycleId: string
 ): SniperEvent {
-  const volFactor = (volatilityLevel || 30) / 100;
-  const moveSize = entry * volFactor;
+  // v21.3.0 FIX: Use fixed 1.5% move size (matches computeTargets)
+  // This ensures consistency between event creation and card display
+  const moveSize = entry * 0.015;
   
-  // v21.3.0 FIX: Direction-aware targets
   // LONG: TP above entry, SL below
   // SHORT: TP below entry, SL above
   const event: SniperEvent = {
@@ -643,8 +643,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 
       // Generate setup only for ACTIVE_SNIPER
       if (signalState === "ACTIVE_SNIPER" && direction !== "NEUTRAL") {
-        // v21.2.1: FINAL SAFETY NET - verify asset one more time before SNIPER output
-        if (!VALID_ASSETS.has(symbol)) {
+        // v21.2.1: FINAL SAFETY NET - verify asset is in canonical whitelist
+        if (!["BTC", "ETH", "SOL"].includes(symbol)) {
           console.log(`[ASSET_REJECT_FINAL] ${symbol} - failed final safety check, not adding to SNIPER setups`);
           continue;
         }
