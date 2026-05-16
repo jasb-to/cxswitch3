@@ -19,6 +19,7 @@
  */
 
 import type { PriceData } from "./price-router";
+import { IMPULSE_CONFIG, QUALITY_GATES, STATE_CONFIG, PERSISTENCE_CONFIG } from "./signal-config";
 
 // ============================================================================
 // v21.3.0: SNIPER EVENT LIFECYCLE STATE MACHINE (UNIFIED ARCHITECTURE)
@@ -1082,13 +1083,16 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       } else {
         // NO ACTIVE EVENT - EVALUATE FRESH
         // v24.0 FIX: SETUP CREATED BEFORE FILTERING (critical architecture fix)
+        // v24.1 FIX: HARD RUNTIME ENFORCEMENT - setup creation is unconditional
         // Restore v21 behavior: eligibility → setup → filter → state adjustment
         
         // STEP 1: Check SNIPER eligibility (impulse-based, not filtered yet)
         const isSniperEligible = ignitionProbability >= 25; // v21 threshold
         
         // STEP 2: Create setup immediately if eligible (BEFORE filtering)
+        // v24.1: UNCONDITIONAL - setup MUST be created if eligible, with no escape paths
         let setup: any = null;
+        
         if (isSniperEligible && direction !== "NEUTRAL") {
           const entry = priceData.price;
           setup = createSniperEvent(
@@ -1110,6 +1114,16 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
             `impulse=${ignitionProbability.toFixed(1)}`
           );
         }
+        
+        // v24.1 ENFORCEMENT: Diagnostic guard - verify setup creation state
+        console.log("[SETUP_GUARD]", {
+          symbol,
+          impulse: ignitionProbability.toFixed(1),
+          eligible: isSniperEligible,
+          direction,
+          setupCreated: !!setup,
+          timestamp: Date.now(),
+        });
         
         // STEP 3: Run quality filter (SOFT - modifies confidence, doesn't block)
         const qualityResult = validateQualityFilter(
@@ -1159,6 +1173,16 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         console.log(
           `[STATE_DERIVATION] ${symbol}: ${signalStateReason}`
         );
+        
+        // v24.1 ENFORCEMENT: Validate setup creation happened as expected
+        // This is the hard guarantee that setup exists before any return or state assignment
+        if (isSniperEligible && direction !== "NEUTRAL" && !setup) {
+          // CRITICAL: This should NEVER happen if code is correct
+          // If it does, throw to catch the bug immediately
+          const errorMsg = `[SETUP_CREATION_VIOLATION] ${symbol}: Eligible for SNIPER but setup not created. Impulse=${ignitionProbability.toFixed(1)}, Direction=${direction}`;
+          console.error(errorMsg);
+          throw new Error(errorMsg);
+        }
       }
 
       // PHASE 5: Classification (metadata only)
@@ -1263,13 +1287,20 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       }
     } catch (error) {
       const displaySymbol = symbol || rawSymbol || "UNKNOWN";
-      console.error(`[STATE] ERROR processing ${displaySymbol}:`, error);
+      
+      // v24.2 INVARIANT 2: SYMBOL ISOLATION - Log fatal per-symbol error
+      console.error(
+        `[SYMBOL_FATAL] ${displaySymbol}: Processing failed, returning BUILDING_FALLBACK`,
+        error instanceof Error ? error.message : String(error)
+      );
+      
+      // Return BUILDING fallback for this symbol (doesn't crash other symbols)
       cards.push({
         symbol: displaySymbol,
         price: priceData.price,
-        source: "v21.1.0-error",
+        source: "v24.2-symbol-error",
         degraded: true,
-        signalState: "NONE",
+        signalState: "BUILDING",  // v24.2: Changed from NONE to BUILDING
         marketClass: "CHOP",
         direction: "NEUTRAL",
         tradeReadinessScore: null,
@@ -1288,7 +1319,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         targetPrices: null,
         riskReward: null,
         cycleId: `${Date.now()}-${displaySymbol}`,
-        notes: "ERROR",
+        notes: "SYMBOL_PROCESSING_ERROR",
         updatedAt: new Date().toISOString(),
       });
     }

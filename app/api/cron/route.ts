@@ -3,6 +3,7 @@ import { generateSetups } from "@/lib/strategy-v21";
 import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
 import { getSnapshot, setSnapshot, type RuntimeSnapshot } from "@/lib/runtime-snapshot";
+import { PERSISTENCE_CONFIG, validateConfig } from "@/lib/signal-config";
 
 // v22.1-final: Cache bust to force rebuild of server chunks (fix stale impulse references)
 // Build timestamp: ${Date.now()}
@@ -25,6 +26,9 @@ export const runtime = "nodejs";
  */
 export async function GET(req: NextRequest) {
   try {
+    // v24.2: Validate config at runtime (INVARIANT 1: No missing constants)
+    validateConfig();
+    
     const secret = process.env.CRON_SECRET;
     if (secret) {
       const auth = req.headers.get("authorization");
@@ -34,7 +38,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    console.log("[CRON] v22.0 START - Multi-Cycle Quality Filter + Confidence Gating");
+    console.log("[CRON] v24.2 START - Multi-Cycle Quality Filter + Confidence Gating");
     const cronStart = Date.now();
 
     // STEP 1: Fetch live market data
@@ -44,6 +48,43 @@ export async function GET(req: NextRequest) {
     // STEP 2: Generate all signals from current market conditions
     const { cards: newCards, setups: newSetups } = await generateSetups(market);
     console.log(`[GENERATION] Generated ${newCards.length} cards, ${newSetups.length} setups in ${Date.now() - cronStart}ms`);
+
+    // v24.2 INVARIANT 3: SNAPSHOT ATOMICITY CHECK
+    // Only write if snapshot is in valid state (not corrupted)
+    if (PERSISTENCE_CONFIG.REQUIRE_ALL_SYMBOLS && !PERSISTENCE_CONFIG.ALLOW_PARTIAL_SNAPSHOT) {
+      // Validate: No empty setups with non-empty cards (corrupted state)
+      if (newCards.length > 0 && newSetups.length === 0) {
+        console.error(
+          `[SNAPSHOT_ATOMICITY_VIOLATION] Refusing to persist corrupted state: ` +
+          `${newCards.length} cards but 0 setups. This indicates incomplete signal generation.`
+        );
+        return NextResponse.json(
+          {
+            error: "Snapshot atomicity violation: cards without setups",
+            ok: false,
+            reason: "Generated signals but no setups - corrupted state rejected",
+          },
+          { status: 500 }
+        );
+      }
+      
+      // Validate: For ACTIVE_SNIPER cards, setups must exist
+      const activeSniperCards = newCards.filter(c => c.signalState === "ACTIVE_SNIPER");
+      if (activeSniperCards.length > 0 && newSetups.length === 0) {
+        console.error(
+          `[SNAPSHOT_ATOMICITY_VIOLATION] Refusing to persist: ` +
+          `${activeSniperCards.length} ACTIVE_SNIPER cards but 0 setups`
+        );
+        return NextResponse.json(
+          {
+            error: "Snapshot atomicity violation: ACTIVE_SNIPER without setups",
+            ok: false,
+            reason: "Active sniper signals without trade setups - refusing write",
+          },
+          { status: 500 }
+        );
+      }
+    }
 
     // STEP 3: Get previous snapshot for alert transition detection only
     const prevSnapshot = getSnapshot();
@@ -108,11 +149,11 @@ export async function GET(req: NextRequest) {
     }
 
     const totalMs = Date.now() - cronStart;
-    console.log(`[CRON] v22.0 COMPLETE in ${totalMs}ms - Multi-cycle filter finished`);
+    console.log(`[CRON] v24.2 COMPLETE in ${totalMs}ms - Multi-cycle filter finished`);
 
     return NextResponse.json({
       ok: true,
-      version: "v22.0",
+      version: "v24.2",
       perf: {
         totalMs,
         cardsGenerated: newCards.length,
