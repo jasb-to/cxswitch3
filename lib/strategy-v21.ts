@@ -89,10 +89,10 @@ function createSniperEvent(
   impulse: number,
   cycleId: string
 ): SniperEvent {
-  const volFactor = (volatilityLevel || 30) / 100;
-  const moveSize = entry * volFactor;
+  // v21.3.0 FIX: Use fixed 1.5% move size (matches computeTargets)
+  // This ensures consistency between event creation and card display
+  const moveSize = entry * 0.015;
   
-  // v21.3.0 FIX: Direction-aware targets
   // LONG: TP above entry, SL below
   // SHORT: TP below entry, SL above
   const event: SniperEvent = {
