@@ -13,20 +13,23 @@ import type { PriceData } from "./price-router";
 // v7.6.0: EXECUTION CONTEXT - SINGLE SOURCE OF TRUTH
 // ═════════════════════════════════════════════════════════════════════════════
 // 
-// PRINCIPLE: One immutable context object per cycle. All downstream logic
-// reads from this context - NO re-checking of data sources or conditions.
+// v7.7.0 CRITICAL FIX: Separate data trust from infrastructure health
+// - executionGrade: ONLY based on source (kraken_live or kraken_cached)
+// - systemHealth: ONLY based on infrastructure state
+// - NEVER conflate these - they are orthogonal concerns
 //
 export type ExecutionContext = {
   // Identifier
   symbol: string;
   cycleId: string;
 
-  // Hard-coded truth (never changes per cycle)
-  dataSource: "KRAKEN_LIVE" | "DEGRADED";
+  // DATA TRUST (never changes per cycle, ONLY based on source)
+  executionGrade: boolean;  // true if source is kraken_live or kraken_cached
+  dataSource: "KRAKEN" | "COINGECKO";
 
-  // Gate decision (decided ONCE at entry, never re-evaluated)
-  executionAllowed: boolean;
-  gateReason?: string;
+  // SYSTEM HEALTH (infrastructure state, independent from data trust)
+  systemHealth: "LIVE" | "DEGRADED" | "OFFLINE";
+  systemHealthReason?: string;
 
   // Market snapshot (immutable for cycle)
   price: number;
@@ -35,24 +38,36 @@ export type ExecutionContext = {
 
 /**
  * Build execution context at scan entry point
- * This is THE ONLY place where executionAllowed is decided
- * Everything downstream just reads from ctx.executionAllowed
+ * v7.7.0: CORRECTLY SEPARATE data trust from system health
+ * 
+ * executionAllowed = ONLY based on DATA SOURCE
+ * (does NOT depend on system health)
  */
 function buildExecutionContext(symbol: string, priceData: PriceData): ExecutionContext {
-  const isKrakenLive = priceData.source === "kraken_live" || priceData.source === "kraken_cached";
+  // DATA TRUST: Based ONLY on source
+  const isKrakenSource = priceData.source === "kraken_live" || priceData.source === "kraken_cached";
   
   const ctx: ExecutionContext = {
     symbol,
     cycleId: `${Date.now()}-${symbol}`,
-    dataSource: isKrakenLive ? "KRAKEN_LIVE" : "DEGRADED",
-    executionAllowed: isKrakenLive,
-    gateReason: isKrakenLive ? undefined : `Non-execution-grade source: ${priceData.source}`,
+    
+    // DATA TRUST: execution-grade if Kraken source (cached OR live)
+    executionGrade: isKrakenSource,
+    dataSource: isKrakenSource ? "KRAKEN" : "COINGECKO",
+    
+    // SYSTEM HEALTH: independent from data trust
+    systemHealth: priceData.health,
+    systemHealthReason: priceData.health === "LIVE" ? undefined : `System health: ${priceData.health}`,
+    
     price: priceData.price,
     timestamp: Date.now(),
   };
 
-  if (!ctx.executionAllowed) {
-    console.log(`[GATE] ${symbol} BLOCKED: ${ctx.gateReason}`);
+  // Log the distinction clearly
+  if (!ctx.executionGrade) {
+    console.log(`[GATE] ${symbol} BLOCKED (data trust): source=${priceData.source}`);
+  } else if (ctx.systemHealth !== "LIVE") {
+    console.log(`[GATE] ${symbol} ALLOWED (execution-grade) but DEGRADED (system): ${ctx.systemHealthReason}`);
   }
 
   return ctx;
@@ -154,12 +169,11 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       continue;
     }
 
-    // ===== v7.6.0: BUILD EXECUTION CONTEXT (SINGLE SOURCE OF TRUTH) =====
-    // One immutable context per symbol per cycle
-    // executionAllowed is decided ONCE here, never re-evaluated downstream
-    const ctx = buildExecutionContext(symbol, priceData);
-    
-    if (!ctx.executionAllowed) {
+    // ===== v7.7.0: DATA TRUST GATE (ORTHOGONAL TO SYSTEM HEALTH) =====
+    // v7.7.0: Check executionGrade (data trust), NOT system health
+    // Kraken cached is still execution-grade even if systemHealth is DEGRADED
+    if (!ctx.executionGrade) {
+      console.log(`[GATE] ${symbol} BLOCKED (data trust): source=${ctx.dataSource}`);
       // Create degraded card for display only (BUILDING state, no signals)
       const degradedCard: SymbolCardState = {
         symbol,
@@ -185,7 +199,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         targetPrices: null,
         riskReward: null,
         cycleId: ctx.cycleId,
-        notes: ctx.gateReason || "DEGRADED_DATA",
+        notes: `NON_EXECUTION_GRADE (${ctx.dataSource})`,
         updatedAt: new Date().toISOString(),
       };
       cards.push(degradedCard);
@@ -193,7 +207,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     }
 
     // ===== SCAN ENGINE: Only execution-grade data reaches here =====
-    // ExecutionContext.executionAllowed is TRUE, so proceed
+    // System health may be DEGRADED, but data source is trusted (Kraken)
     const card = generateCardState(symbol, priceData);
     card.cycleId = ctx.cycleId;  // Tag with execution context cycle
     cards.push(card);
@@ -754,11 +768,24 @@ function checkConfirmedConditions(card: SymbolCardState): boolean {
 /**
  * Calculate momentum score using event-driven multiplier model
  * v7.1 STABILISATION FIX
+ * 
+ * v7.7.0 CRITICAL FIX: Separate data trust from system health
+ * - executionGrade: based ONLY on source (kraken_live or kraken_cached)
+ * - systemHealth: based on infrastructure (PriceHealth enum)
+ * - These must be ORTHOGONAL
  */
 function generateCardState(symbol: string, priceData: PriceData): SymbolCardState {
-  // Degrade is purely informational
-  const degraded = priceData.source !== "kraken_live";
-
+  // v7.7.0: SPLIT CONCERNS
+  // Data trust (execution-grade) = based ONLY on source
+  const isKrakenSource = priceData.source === "kraken_live" || priceData.source === "kraken_cached";
+  
+  // System health (infrastructure) = based on PriceHealth
+  const systemDegraded = priceData.health === "DEGRADED" || priceData.health === "OFFLINE";
+  
+  // These are INDEPENDENT:
+  // - Kraken cached data is execution-grade (true) but may have systemDegraded=true
+  // - CoinGecko is NOT execution-grade (false) regardless of systemHealth
+  
   // SIMULATE MOMENTUM INDICATORS
   // In production, calculate from OHLCV data
   
