@@ -42,8 +42,9 @@ export interface SniperEvent {
   symbol: string;
   direction: "LONG" | "SHORT";
   entry: number;
-  tp: number;
-  sl: number;
+  tp1: number;  // Primary target
+  tp2: number;  // Secondary target (2x move)
+  sl: number;   // Stop loss
   impulse: number; // impulse value when fired
   createdAt: number; // timestamp (ms)
   status: "ACTIVE" | "CLOSED";
@@ -89,17 +90,24 @@ function createSniperEvent(
   cycleId: string
 ): SniperEvent {
   const volFactor = (volatilityLevel || 30) / 100;
+  const moveSize = entry * volFactor;
   
+  // v21.3.0 FIX: Direction-aware targets
+  // LONG: TP above entry, SL below
+  // SHORT: TP below entry, SL above
   const event: SniperEvent = {
     symbol,
     direction,
     entry,
-    tp: direction === "LONG" 
-      ? entry * (1 + volFactor)
-      : entry * (1 - volFactor),
+    tp1: direction === "LONG" 
+      ? entry + moveSize
+      : entry - moveSize,
+    tp2: direction === "LONG"
+      ? entry + moveSize * 2
+      : entry - moveSize * 2,
     sl: direction === "LONG"
-      ? entry * (1 - volFactor)
-      : entry * (1 + volFactor),
+      ? entry - moveSize * 0.5
+      : entry + moveSize * 0.5,
     impulse,
     createdAt: Date.now(),
     status: "ACTIVE",
@@ -111,7 +119,7 @@ function createSniperEvent(
   
   console.log(
     `[SNIPER_EVENT_CREATED] ${symbol} ${direction} entry=${entry.toFixed(2)} ` +
-    `tp=${event.tp.toFixed(2)} sl=${event.sl.toFixed(2)} impulse=${impulse.toFixed(1)}`
+    `tp1=${event.tp1.toFixed(2)} tp2=${event.tp2.toFixed(2)} sl=${event.sl.toFixed(2)} impulse=${impulse.toFixed(1)}`
   );
   
   return event;
@@ -459,9 +467,10 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
   const cycleStart = Date.now();
 
   for (const [rawSymbol, priceData] of Object.entries(market)) {
+    let symbol: string | null = null;
     try {
       // v21.2.1: HARD ASSET FILTER - CRITICAL DATA HYGIENE BOUNDARY
-      const symbol = normalizeAsset(rawSymbol);
+      symbol = normalizeAsset(rawSymbol);
       if (!symbol) {
         console.log(`[ASSET_REJECT] ${rawSymbol} - not in canonical set (BTC/ETH/SOL)`);
         continue;
@@ -572,7 +581,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         execution15mState: "EXPANDING",
         marketReadinessState: signalState,
         expectedMovePercent: signalState === "ACTIVE_SNIPER" ? { sniper: { min: 0.5, max: 2 } } : null,
-        targetPrices: signalState === "ACTIVE_SNIPER" && lockedTp && lockedSl ? { tp1: lockedTp, tp2: lockedTp * 1.5, sl: lockedSl } : null,
+        targetPrices: signalState === "ACTIVE_SNIPER" && newEventFired ? { tp1: newEventFired.tp1, tp2: newEventFired.tp2, sl: newEventFired.sl } : (signalState === "ACTIVE_SNIPER" && activeEvent ? { tp1: activeEvent.tp1, tp2: activeEvent.tp2, sl: activeEvent.sl } : null),
         riskReward: signalState === "ACTIVE_SNIPER" ? 2 : null,
         cycleId: `${Date.now()}-${symbol}`,
         notes: `${signalState} ${direction}`,
@@ -647,9 +656,10 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         console.log(`[STATE] NO_SETUP ${symbol} ${signalState} | ${blockReason}`);
       }
     } catch (error) {
-      console.error(`[STATE] ERROR processing ${symbol}:`, error);
+      const displaySymbol = symbol || rawSymbol || "UNKNOWN";
+      console.error(`[STATE] ERROR processing ${displaySymbol}:`, error);
       cards.push({
-        symbol,
+        symbol: displaySymbol,
         price: priceData.price,
         source: "v21.2.0-error",
         degraded: true,
@@ -671,7 +681,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         expectedMovePercent: null,
         targetPrices: null,
         riskReward: null,
-        cycleId: `${Date.now()}-${symbol}`,
+        cycleId: `${Date.now()}-${displaySymbol}`,
         notes: "ERROR",
         updatedAt: new Date().toISOString(),
       });
