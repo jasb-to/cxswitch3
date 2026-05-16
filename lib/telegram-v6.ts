@@ -91,11 +91,15 @@ export async function sendAlert(card: SymbolCardState): Promise<void> {
   const sl = fmt(card.targetPrices?.sl);
   const rr = card.riskReward ? card.riskReward.toFixed(2) : "—";
   
+  // Format ignition and confidence with proper rounding
+  const ignitionRounded = Math.ceil(card.ignitionProbability);
+  const confidencePercent = Math.ceil(card.confidence);
+  
   // Build full message with all context
   const text =
     `${emoji} ${card.mode} — ${directionEmoji} ${card.direction} ${card.symbol}\n` +
     `\n` +
-    `Score: ${card.confidence.toFixed(1)} | Ignition: ${card.ignitionProbability}%\n` +
+    `Confidence: ${confidencePercent}% | Ignition: ${ignitionRounded}%\n` +
     `\n` +
     `📊 BIAS: ${bias4H} 4H | ${bias15M} 15M (${card.execution15mState})\n` +
     `\n` +
