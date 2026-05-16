@@ -1,35 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateSetups } from "@/lib/strategy-v21";
+import { generateSetups } from "@/lib/strategy-v6";
 import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
-import { getSnapshot, setSnapshot, type RuntimeSnapshot } from "@/lib/runtime-snapshot";
-import { PERSISTENCE_CONFIG, validateConfig } from "@/lib/signal-config";
-import { formatNumber, formatPrice, formatPercent } from "@/lib/format-utils";
-
-// v22.1-final: Cache bust to force rebuild of server chunks (fix stale impulse references)
-// Build timestamp: ${Date.now()}
+import { getSnapshot, setSnapshot } from "@/lib/runtime-snapshot";
+import { calculatePatches, applySnapshotPatches } from "@/lib/snapshot-patcher";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-/**
- * v22.0 - QUALITY FILTER LAYER (MULTI-CYCLE STABILITY + CONFIDENCE GATING)
- * 
- * Every cron cycle:
- * 1. Fetch live market data
- * 2. Derive all signals from current market conditions only
- * 3. Apply enhanced multi-cycle quality filter
- * 4. Replace snapshot atomically
- * 5. Emit alerts ONLY on NEW EVENT CREATION (not state changes)
- * 
- * Pure event-driven execution with multi-cycle stability checks.
- * Confidence must be >= 70, direction consistent across cycles.
- */
+// v7.2.7 FIX #3: CRON optimized for delta updates, not full rebuilds
 export async function GET(req: NextRequest) {
   try {
-    // v24.2: Validate config at runtime (INVARIANT 1: No missing constants)
-    validateConfig();
-    
     const secret = process.env.CRON_SECRET;
     if (secret) {
       const auth = req.headers.get("authorization");
@@ -39,130 +20,66 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    console.log("[CRON] v24.3 START - Permissive Pipeline + Defensive Formatting");
+    console.log("[CRON] Start - v7.2.7 tiered optimization");
     const cronStart = Date.now();
 
-    // STEP 1: Fetch live market data
+    // STEP 1: Refresh market data (TIER 1 - always fast)
     const market = await refreshMarketData();
-    console.log(`[MARKET] Refreshed in ${Date.now() - cronStart}ms`);
+    console.log(`[TIER1] Market refresh: ${Date.now() - cronStart}ms`);
 
-    // STEP 2: Generate all signals from current market conditions
-    const { cards: newCards, setups: newSetups } = await generateSetups(market);
-    console.log(`[GENERATION] Generated ${newCards.length} cards, ${newSetups.length} setups in ${Date.now() - cronStart}ms`);
+    // STEP 2: Generate new cards (includes tiered caching internally)
+    const { cards: newCards, setups } = await generateSetups(market);
+    console.log(`[TIER2/3] Card generation: ${Date.now() - cronStart}ms - ${newCards.length} cards, ${setups.length} setups`);
 
-    // v24.3 FIX 3: PERMISSIVE SNAPSHOT (no rejection logic)
-    // Never block write due to partial failures
-    // If setups missing, attach fallback setups from impulse engine
-    let finalSetups = newSetups;
-    if (newCards.length > 0 && newSetups.length === 0) {
-      console.log(
-        `[SNAPSHOT_PERMISSIVE] Generated ${newCards.length} cards but 0 setups. ` +
-        `Building fallback setups to ensure atomicity.`
-      );
-      // Create minimal fallback setups for cards that need them
-      finalSetups = newCards
-        .filter(c => c.signalState === "ACTIVE_SNIPER" && c.direction !== "NEUTRAL")
-        .map((card) => ({
-          symbol: card.symbol,
-          mode: "SNIPER" as const,
-          direction: card.direction as "LONG" | "SHORT",
-          score: Math.ceil(card.confidence ?? 50),
-          reason: `Fallback setup for ${card.signalState}`,
-          price: card.price,
-          entry: card.price,
-          tp: card.targetPrices?.tp1 ?? card.price * 1.02,
-          sl: card.targetPrices?.sl ?? card.price * 0.98,
-          tp1: card.targetPrices?.tp1 ?? card.price * 1.02,
-          tp2: card.targetPrices?.tp2 ?? card.price * 1.04,
-          momentum: {},
-          targetPrices: card.targetPrices,
-          riskReward: card.riskReward,
-        }));
-      console.log(`[SNAPSHOT_PERMISSIVE] Created ${finalSetups.length} fallback setups`);
-    }
+    // STEP 3: Apply delta patching (FIX #5)
+    // Instead of replacing entire snapshot, patch only changed cards
+    const existingSnapshot = getSnapshot();
+    const existingCards = existingSnapshot?.cards || [];
+    
+    const patches = calculatePatches(existingCards, newCards);
+    const patchedCards = applySnapshotPatches(existingCards, patches.map(p => ({
+      symbol: p.symbol,
+      fields: p.fields,
+      timestamp: p.timestamp,
+    })));
+    
+    console.log(`[DELTA] Patches applied: ${patches.length} changed cards out of ${newCards.length}`);
 
-    // STEP 3: Get previous snapshot for alert transition detection only
-    const prevSnapshot = getSnapshot();
-    const prevCards = prevSnapshot?.cards || [];
-    const prevCardMap = new Map(prevCards.map(c => [c.symbol, c]));
-
-    // STEP 4: Determine alerts based on NEW EVENT CREATION ONLY (v21.3.0)
-    const alertCards: typeof newCards = [];
-    for (const newCard of newCards) {
-      // v21.3.0: Alert only if new event was just created
-      const newEventMarker = (newCard as any)._newEventFired;
-      if (newEventMarker) {
-        alertCards.push(newCard);
-        // FIX 2: Defensive formatting to prevent toFixed crashes
-        const entryStr = formatPrice(newEventMarker.entry);
-        const impulseStr = formatPercent(newEventMarker.impulse);
-        console.log(`[EVENT_ALERT_TRIGGER] ${newCard.symbol}: NEW SNIPER_EVENT fired ` +
-          `entry=${entryStr} impulse=${impulseStr}%`
-        );
-      }
-    }
-
-    // STEP 5: ATOMIC snapshot replacement (no merging, no patching)
-    const newSnapshot: RuntimeSnapshot = {
+    // STEP 4: Update snapshot (only changed parts)
+    setSnapshot({
       updatedAt: new Date().toISOString(),
-      cards: newCards,
-      setups: finalSetups,  // Use finalSetups (may have fallbacks)
-    };
-    setSnapshot(newSnapshot);
-    console.log(`[SNAPSHOT_REPLACED] Atomic replacement: ${newCards.length} cards, ${finalSetups.length} setups`);
+      cards: patchedCards,
+      setups,
+    });
 
-    // STEP 6: Enqueue alerts for NEW SNIPER_EVENTS ONLY (v21.3.0)
-    for (const card of alertCards) {
-      // v21.3.0: Event just fired - send alert immediately
-      // FIX 2: Defensive formatting
-      const priceStr = formatPrice(card.price);
-      const tp1Str = formatPrice(card.targetPrices?.tp1);
-      console.log(`[ALERT_ENQUEUE_START] ${card.symbol}: NEW EVENT entry=${priceStr} tp=${tp1Str}`);
-      
-      // Validate card has necessary fields before enqueuing
-      const missingFields: string[] = [];
-      if (!card.targetPrices) missingFields.push("targetPrices");
-      if (!card.mode) missingFields.push("mode");
-      if (!card.confidence) missingFields.push("confidence");
-      if (!card.cycleId) missingFields.push("cycleId");
-      
-      if (missingFields.length > 0) {
-        console.log(`[ALERT_ENQUEUE_ERROR] ${card.symbol}: Missing required fields: ${missingFields.join(", ")}`);
-        continue;
-      }
+    // STEP 5: Enqueue alerts (FIX #6 - decoupled, non-blocking)
+    // v7.3.1 FIX #1, #2, #3: Include all HTF data for execution gate and validation
+    // Do NOT await - let alerts process independently
+    for (const setup of setups) {
+      // Find the corresponding card to get signalState, targetPrices, and HTF data
+      const card = newCards.find(c => c.symbol === setup.symbol);
       
       enqueueAlert({
-        card,
-        symbol: card.symbol,
-        mode: card.mode,
-        direction: card.direction,
-        score: card.tradeReadinessScore ?? 0,
-        price: card.price,
-        source: card.source,
-        signalState: card.signalState,
-        targetPrices: card.targetPrices,
-        htf4hTrend: card.htf4hTrend,
-        execution15mState: card.execution15mState,
+        symbol: setup.symbol,
+        mode: setup.mode,
+        direction: setup.direction,
+        score: setup.score,
+        price: setup.price,
+        source: card?.source, // v7.3.1: validate price source
+        signalState: card?.signalState, // v7.3.0 FIX #1: execution gate check
+        targetPrices: card?.targetPrices, // v7.3.0 FIX #2: payload validation
+        htf4hTrend: card?.htf4hTrend, // v7.3.1: HTF validation
+        execution15mState: card?.execution15mState, // v7.3.1: 15M execution validation
         queued: Date.now(),
       });
-      
-      console.log(`[ALERT_ENQUEUE_SUCCESS] ${card.symbol}: Telegram alert queued for NEW EVENT`);
     }
 
     const totalMs = Date.now() - cronStart;
-    console.log(`[CRON] v24.3 COMPLETE in ${totalMs}ms - Permissive pipeline finished`);
+    console.log(`[CRON] Complete in ${totalMs}ms - queued ${setups.length} alerts`);
 
-    return NextResponse.json({
-      ok: true,
-      version: "v24.3",
-      perf: {
-        totalMs,
-        cardsGenerated: newCards.length,
-        setupsQueued: finalSetups.length,
-        setupsFallback: finalSetups.length - newSetups.length,
-        newEventsCreated: alertCards.length,
-        alertsEmitted: alertCards.length,
-      },
+    return NextResponse.json({ 
+      ok: true, 
+      perf: { totalMs, patchesApplied: patches.length, alertsQueued: setups.length }
     });
   } catch (error) {
     console.error('[CRON ERROR]', error);

@@ -1,9 +1,9 @@
 /**
- * Market Data Layer (v6 - INCLUDE CANDLE HISTORY)
+ * Market Data Layer (v5 - DUMB INPUT ONLY)
  * 
  * Job:
- * - Fetch prices AND candles
- * - Cache latest snapshot including OHLCV history
+ * - Fetch prices
+ * - Cache latest snapshot
  * - NEVER skip symbols
  * - NEVER mark degraded
  * - NEVER make decisions
@@ -14,7 +14,6 @@
  */
 
 import { getPrice, type PriceData } from "./price-router";
-import { fetchCandles } from "./kraken";
 
 export type MarketDataCache = {
   symbol: string;
@@ -47,9 +46,9 @@ for (const symbol of TRACKED_SYMBOLS) {
 let isUpdating = false;
 
 /**
- * Refresh all prices and candles, return market snapshot
+ * Refresh all prices and return market snapshot
  * CALLED BY: cron jobs only  
- * Returns: market snapshot for strategy engine (includes OHLCV history)
+ * Returns: market snapshot for strategy engine
  * RULE: NEVER skip symbols, always return all
  */
 export async function refreshMarketData(): Promise<Record<string, PriceData>> {
@@ -68,19 +67,10 @@ export async function refreshMarketData(): Promise<Record<string, PriceData>> {
         const cache = marketDataCache[symbol];
 
         if (priceData) {
-          // Fetch candles in parallel (15-minute interval for recent history)
-          try {
-            const candleData = await fetchCandles(symbol, 15, 200);
-            priceData.candles = candleData.candles;
-          } catch (err) {
-            console.log(`[MARKET] ${symbol} candles DEGRADED: ${err instanceof Error ? err.message : String(err)}`);
-            // Continue with price-only data if candles fail
-          }
-
           cache.priceData = priceData;
           cache.lastUpdate = now;
           delete cache.updateError;
-          console.log(`[MARKET] ${symbol} ${priceData.source} + ${priceData.candles?.length || 0} candles`);
+          console.log(`[MARKET] ${symbol} ${priceData.source}`);
         } else {
           console.log(`[MARKET] ${symbol} DEGRADED`);
         }

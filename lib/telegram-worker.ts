@@ -9,36 +9,19 @@
  */
 
 import { sendAlert, canSendAlert } from "./telegram-v6";
-import type { SymbolCardState } from "./strategy-v21";
-
-/**
- * v21.2.1 FIX: Deep clone setup to create immutable snapshot
- * Prevents downstream mutations from corrupting alert payload
- */
-function deepCloneSetup(setup: { tp1: number; tp2: number; sl: number }) {
-  return {
-    tp1: setup.tp1,
-    tp2: setup.tp2,
-    sl: setup.sl,
-  };
-}
 
 export type TelegramAlertJob = {
-  // v7.5.5: Full enriched card object for complete Telegram payloads
-  card: SymbolCardState;
-  
-  // Legacy minimal fields (deprecated, kept for backward compat)
   symbol: string;
   mode: "SNIPER" | "CONFIRMED";
   direction: "LONG" | "SHORT";
   score: number;
   price: number;
-  source?: string;
-  signalState?: string;
+  source?: string; // v7.3.1: check price source validity
+  signalState?: string; // v7.3.0: track signal state for execution gate
   targetPrices?: { tp1: number; tp2: number; sl: number } | null;
-  htf4hTrend?: "BULLISH" | "BEARISH" | "NEUTRAL";
-  execution15mState?: "COMPRESSING" | "BREAKOUT_READY" | "EXPANDING" | "CHOP";
-  queued: number;
+  htf4hTrend?: "BULLISH" | "BEARISH" | "NEUTRAL"; // v7.3.1: validate HTF structure
+  execution15mState?: "COMPRESSING" | "BREAKOUT_READY" | "EXPANDING" | "CHOP"; // v7.3.1: validate 15M execution
+  queued: number; // timestamp
 };
 
 /**
@@ -49,199 +32,114 @@ let alertQueue: TelegramAlertJob[] = [];
 let isProcessingAlerts = false;
 
 /**
- * v12.0.0 LEAN TELEGRAM + CYCLE FIX
- * 
- * Problem: Spam (SNIPER persists across cron ticks) + Missing alerts (cycleId removed)
- * 
- * Solution: Use cycleId for Telegram dedupe ONLY
- * - If state === SNIPER/CONFIRMED AND cycleId hasn't been alerted, send alert
- * - Update memory ONLY after successful send
- * - NO state transitions, NO re-alert logic, NO isExecutable gating
- * 
- * Key: symbol → cycleId (what was already alerted for this symbol)
- */
-const lastAlertedCycle: Map<string, string> = new Map();
-
-/**
- * v12.0.0: shouldSendAlert - LEAN cycle-based dedup
- * 
- * Return true ONLY if:
- * 1. State is ACTIVE_SNIPER or ACTIVE_CONFIRMED (signal engine decision)
- * 2. cycleId has NOT been alerted before (Telegram anti-spam)
- * 
- * This is dumb + safe: signal engine controls state, Telegram only dedupes
- */
-function shouldSendAlert(symbol: string, state: string, cycleId: string): boolean {
-  // Rule 1: Only ACTIVE_SNIPER and ACTIVE_CONFIRMED states can alert
-  // v16.2.1 FIX: State values are "ACTIVE_SNIPER" and "ACTIVE_CONFIRMED", NOT "SNIPER" and "CONFIRMED"
-  if (state !== "ACTIVE_SNIPER" && state !== "ACTIVE_CONFIRMED") {
-    console.log(`[TELEGRAM_CHECK_DETAIL] ${symbol}: state="${state}" is not alertable (only ACTIVE_SNIPER/ACTIVE_CONFIRMED)`);
-    return false;
-  }
-  
-  // Rule 2: Check if this cycleId was already alerted for this symbol
-  const lastCycle = lastAlertedCycle.get(symbol);
-  if (lastCycle === cycleId) {
-    // Same cycleId = already alerted, skip
-    console.log(`[TELEGRAM_CHECK_DETAIL] ${symbol}: cycleId="${cycleId}" already alerted in previous cycle`);
-    return false;
-  }
-  
-  // NEW CYCLE or FIRST TIME - update memory and return true
-  lastAlertedCycle.set(symbol, cycleId);
-  console.log(`[TELEGRAM_CHECK_DETAIL] ${symbol}: NEW cycleId="${cycleId}" - will alert`);
-  return true;
-}
-
-/**
- * v12.0.0: Simplified enqueueAlert
- * 
- * Signal engine -> Telegram layer:
- * - Telegram doesn't care about state transitions
- * - Telegram doesn't care about score/HTF/LTF/isExecutable
- * - Telegram ONLY cares: state + cycleId
- * 
- * v21.2.1 FIX: ALWAYS guarantee setup object before queueing
- * - Never queue alerts without setup
- * - If setup missing, build fallback from price + volatility
- * - Add [ALERT_GATE] debug log showing decision
+ * Enqueue alert for processing (v7.2.7 FIX #6)
+ * Non-blocking - returns immediately
  */
 export function enqueueAlert(job: TelegramAlertJob) {
-  const state = job.signalState as "NONE" | "BUILDING" | "ACTIVE_SNIPER" | "ACTIVE_CONFIRMED";
-  const cycleId = job.card.cycleId;
-  
-  // v21.2.1 FIX: GUARANTEE SETUP OBJECT
-  // If targetPrices missing, build from price + volatility
-  const setup = job.targetPrices || guaranteedSetup(job.price, job.card.volatilityLevel || null);
-  
-  // v21.2.1 FIX: Per-symbol field validation BEFORE dedup check
-  const gateErrors: string[] = [];
-  if (!job.card.mode) gateErrors.push("missing mode");
-  if (!job.card.confidence) gateErrors.push("missing confidence");
-  if (!setup) gateErrors.push("missing setup (unable to build fallback)");
-  if (!job.price || job.price <= 0) gateErrors.push(`invalid price=${job.price}`);
-  
-  // v21.2.1 FIX: [ALERT_GATE] debug log with full context
-  const setupExists = !!setup && (setup.tp1 > 0 && setup.sl > 0);
-  console.log(`[ALERT_GATE] symbol=${job.symbol} state=${state} setup=${setupExists ? "EXISTS" : "MISSING"} cycleId=${cycleId} queued=${gateErrors.length === 0}`);
-  
-  if (gateErrors.length > 0) {
-    console.log(`[ALERT_GATE_REJECTED] ${job.symbol}: ${gateErrors.join(" | ")} - NOT enqueued`);
-    return;
-  }
-  
-  if (!shouldSendAlert(job.symbol, state, cycleId)) {
-    console.log(`[ALERT_GATE_SKIP] ${job.symbol}: state=${state} (blocked by dedupe or non-alertable state)`);
-    return;
-  }
-  
-  // v21.2.1 FIX: ALWAYS attach guaranteed setup before queueing
-  // CRITICAL: Deep clone setup to prevent downstream mutations
-  const clonedSetup = deepCloneSetup(setup);
-  
-  const jobWithSetup: TelegramAlertJob = {
-    ...job,
-    targetPrices: clonedSetup,
-  };
-  
-  // v21.2.1 FIX: FREEZE AT ENQUEUE to prevent shared reference mutations
-  // Immutable snapshot = no downstream corruption
-  Object.freeze(jobWithSetup);
-  if (jobWithSetup.targetPrices) {
-    Object.freeze(jobWithSetup.targetPrices);
-  }
-  
-  // GATE PASSED - ENQUEUE
-  console.log(`[ALERT_GATE_PASS] ${job.symbol}: state=${state} cycleId=${cycleId} setup.tp1=${clonedSetup.tp1.toFixed(2)} setup.sl=${clonedSetup.sl.toFixed(2)} - ENQUEUED (FROZEN)`);
-  alertQueue.push(jobWithSetup);
+  alertQueue.push(job);
+  // Fire and forget - don't await
   processAlertQueueAsync();
 }
 
 /**
  * Process alert queue asynchronously (v7.2.7 FIX #6)
  * Runs independently without blocking cron
- * 
- * v21.2.1 FIX: IMMUTABLE ITERATION to prevent symbol loss
- * - Don't use shift() which destroys queue on error
- * - Use index tracking to safely remove only processed alerts
- * - ETH no longer blocked if BTC fails
  */
 async function processAlertQueueAsync() {
   if (isProcessingAlerts || alertQueue.length === 0) return;
   
   isProcessingAlerts = true;
-  const queueLength = alertQueue.length;
-  console.log(`[TELEGRAM_PROCESSOR_START] Processing ${queueLength} queued alerts`);
-  
-  let processedCount = 0;
-  let index = 0;
   
   try {
-    // v21.2.1 FIX: Safe iteration - don't use destructive shift()
-    while (index < alertQueue.length) {
-      const job = alertQueue[index];
-      if (!job) {
-        index++;
-        continue;
-      }
+    while (alertQueue.length > 0) {
+      const job = alertQueue.shift();
+      if (!job) break;
 
       try {
-        // v13.0.0: TELEGRAM EXECUTION FIX - REMOVE EXECUTION GATING
-        // Telegram is ONLY a notification layer
-        // State filtering already done in shouldSendAlert()
-        // Proceed directly to validation
-        
-        console.log(`[ALERT_PROCESSING] ${job.symbol} ${job.direction}: signalState=${job.signalState} cycleId=${job.card.cycleId}`);
-        // v13.0.0: MINIMAL PAYLOAD VALIDATION (no execution-specific checks)
-        // Just verify we have complete price/target data for formatting
-        const validationErrors: string[] = [];
-        
-        // Check: Price must be valid
-        if (!job.price || job.price <= 0) {
-          validationErrors.push(`invalid price=${job.price}`);
-        }
-        
-        // Check: Must have target prices for ACTIVE_SNIPER
-        if (job.signalState === "ACTIVE_SNIPER" || job.signalState === "ACTIVE_CONFIRMED") {
-          if (!job.targetPrices) {
-            validationErrors.push(`missing targetPrices object (entire object null)`);
-          } else {
-            if (!job.targetPrices.tp1) validationErrors.push(`missing TP1=${job.targetPrices.tp1}`);
-            if (!job.targetPrices.sl) validationErrors.push(`missing SL=${job.targetPrices.sl}`);
-          }
-        }
-        
-        if (validationErrors.length > 0) {
+        // v7.3.1 FIX #1: HARD TELEGRAM EXECUTION GATE
+        // ONLY send for ACTIVE_SNIPER or ACTIVE_CONFIRMED
+        // Never send for setup phases (SNIPER_IMMINENT, SNIPER_READY, CONFIRMED_READY, BUILDING)
+        const isExecutableSignal =
+          job.signalState === "ACTIVE_SNIPER" ||
+          job.signalState === "ACTIVE_CONFIRMED";
+
+        if (!isExecutableSignal) {
           console.log(
-            `[ALERT_VALIDATION_ERROR] ${job.symbol}: ${validationErrors.join(" | ")} - skipping alert`
+            `[TELEGRAM_BLOCKED] ${job.symbol}: ${job.signalState} is UI-only (not executable)`
           );
-          // v17.6.0: Skip only if critical price/target data is missing
-          index++; // Move to next alert even if this one fails
+          // Don't requeue - UI-only states are not for Telegram
+          continue;
+        }
+
+        // v7.3.1 FIX #3: BLOCK TELEGRAM ALERTS IF HTF STRUCTURE INVALID
+        // Additional checks beyond signalState (defense in depth)
+        const htfValidationErrors: string[] = [];
+        
+        // Check 1: 4H trend must not be NEUTRAL (caught in signal state, but double-check)
+        if (!job.htf4hTrend || job.htf4hTrend === "NEUTRAL") {
+          htfValidationErrors.push("4H trend NEUTRAL");
+        }
+        
+        // Check 2: 15M execution state must be valid
+        if (!job.execution15mState || job.execution15mState === "CHOP" || job.execution15mState === "COMPRESSING") {
+          htfValidationErrors.push(`15M ${job.execution15mState || "undefined"}`);
+        }
+        
+        // Check 3: Price source must not be fallback (CoinGecko)
+        if (job.source === "coingecko") {
+          htfValidationErrors.push("fallback price source CoinGecko");
+        }
+        
+        if (htfValidationErrors.length > 0) {
+          console.log(
+            `[ALERT_REJECTED] ${job.symbol}: HTF validation failed - ${htfValidationErrors.join(", ")}`
+          );
+          continue;
+        }
+
+        // v7.3.1 FIX #2: BLOCK INVALID PAYLOADS
+        // Validate completeness before Telegram formatting
+        if (
+          job.score == null ||
+          Number.isNaN(job.score) ||
+          !job.price ||
+          !job.targetPrices?.tp1 ||
+          !job.targetPrices?.tp2 ||
+          !job.targetPrices?.sl
+        ) {
+          console.log(
+            `[ALERT_REJECTED] ${job.symbol}: incomplete execution payload (score=${job.score}, price=${job.price}, tp1=${job.targetPrices?.tp1})`
+          );
+          // Don't requeue - malformed payload should not retry
           continue;
         }
 
         // Check cooldown
         if (await canSendAlert(job.symbol, job.mode, job.direction)) {
-          // v7.5.5: Pass full card object to sendAlert for complete formatting
-          try {
-            await sendAlert(job.card);
-            console.log(`[ALERT_WORKER_SUCCESS] Telegram sent for ${job.symbol} ${job.mode} (${job.signalState})`);
-            // Mark for removal after successful send
-            alertQueue.splice(index, 1);
-            // Don't increment index - next alert now at this position
-            processedCount++;
-          } catch (sendErr) {
-            console.error(`[ALERT_WORKER_ERROR] Failed to send ${job.symbol}:`, sendErr);
-            index++; // Move to next even if send fails
-          }
+          // Send alert (async, don't await in tight loop)
+          sendAlert({
+            symbol: job.symbol,
+            mode: job.mode,
+            direction: job.direction,
+            score: job.score,
+            reason: `${job.mode} ${job.direction} - ${job.signalState}`,
+            price: job.price,
+            momentum: {
+              targetPrices: job.targetPrices,
+            },
+          }).catch(err => {
+            console.log(`[ALERT_WORKER] Failed to send ${job.symbol}:`, err);
+          });
+          
+          console.log(`[ALERT_WORKER] Telegram sent for ${job.symbol} ${job.mode} (${job.signalState})`);
         } else {
-          console.log(`[ALERT_WORKER_COOLDOWN] ${job.symbol} - cooldown active, requeuing for next batch`);
-          // Leave in queue, move to next alert
-          index++;
+          console.log(`[ALERT_WORKER] Cooldown active for ${job.symbol} - requeuing`);
+          // Requeue if cooldown active
+          alertQueue.push(job);
+          break; // Stop processing, retry later
         }
       } catch (err) {
-        console.error(`[ALERT_WORKER_EXCEPTION] Error processing ${job.symbol}:`, err);
-        index++; // Move to next alert on exception
+        console.error(`[ALERT_WORKER] Error processing ${job.symbol}:`, err);
       }
       
       // Small delay between alerts (don't hammer Telegram)
@@ -249,7 +147,6 @@ async function processAlertQueueAsync() {
     }
   } finally {
     isProcessingAlerts = false;
-    console.log(`[TELEGRAM_PROCESSOR_END] Processed ${processedCount}/${queueLength} alerts - ${alertQueue.length} remaining in queue`);
   }
 }
 

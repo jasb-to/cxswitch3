@@ -1,11 +1,11 @@
 "use client";
 
 import useSWR from "swr";
-import { useState, useEffect } from "react";
-import type { SymbolCardState } from "@/lib/strategy-v21";
+import { useState, useEffect, useMemo } from "react";
+import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 
-const VERSION = "v21.2.0";
+const VERSION = "v7.3.1";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load - minimal data, no fakes
@@ -16,24 +16,20 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
     source: "bootstrap",
     degraded: true,
     direction: "NEUTRAL",
-    signalState: "NONE",
-    marketClass: "CHOP",
-    ignitionProbability: 0,
-    tradeReadinessScore: null,
+    mode: "NONE",
+    confidence: 0,
     stochRsi: null,
     emaSlope: null,
-    emaPressure: 0,
     volatilityLevel: null,
     htf4hTrend: "NEUTRAL",
     htf4hMomentum: null,
     htf1hAlignment: null,
     htf15mCompression: null,
-    execution15mState: "CHOP",
     marketReadinessState: "AWAITING_DATA",
+    tradeReadinessScore: null,
     expectedMovePercent: null,
     targetPrices: null,
     riskReward: null,
-    cycleId: "",
     notes: "Waiting for live market feed…",
     updatedAt: "",
   },
@@ -43,24 +39,20 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
     source: "bootstrap",
     degraded: true,
     direction: "NEUTRAL",
-    signalState: "NONE",
-    marketClass: "CHOP",
-    ignitionProbability: 0,
-    tradeReadinessScore: null,
+    mode: "NONE",
+    confidence: 0,
     stochRsi: null,
     emaSlope: null,
-    emaPressure: 0,
     volatilityLevel: null,
     htf4hTrend: "NEUTRAL",
     htf4hMomentum: null,
     htf1hAlignment: null,
     htf15mCompression: null,
-    execution15mState: "CHOP",
     marketReadinessState: "AWAITING_DATA",
+    tradeReadinessScore: null,
     expectedMovePercent: null,
     targetPrices: null,
     riskReward: null,
-    cycleId: "",
     notes: "Waiting for live market feed…",
     updatedAt: "",
   },
@@ -70,24 +62,20 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
     source: "bootstrap",
     degraded: true,
     direction: "NEUTRAL",
-    signalState: "NONE",
-    marketClass: "CHOP",
-    ignitionProbability: 0,
-    tradeReadinessScore: null,
+    mode: "NONE",
+    confidence: 0,
     stochRsi: null,
     emaSlope: null,
-    emaPressure: 0,
     volatilityLevel: null,
     htf4hTrend: "NEUTRAL",
     htf4hMomentum: null,
     htf1hAlignment: null,
     htf15mCompression: null,
-    execution15mState: "CHOP",
     marketReadinessState: "AWAITING_DATA",
+    tradeReadinessScore: null,
     expectedMovePercent: null,
     targetPrices: null,
     riskReward: null,
-    cycleId: "",
     notes: "Waiting for live market feed…",
     updatedAt: "",
   },
@@ -145,172 +133,165 @@ function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-/**
- * v17.1.0: PURE SNAPSHOT RENDERER - SINGLE CANONICAL STATE SOURCE
- * 
- * UI renders snapshot directly with NO state derivation.
- * Only signalState determines EVERYTHING shown:
- * - Badge label (BUILDING/SNIPER/CONFIRMED)
- * - Border color (amber/cyan/green)
- * - Display score (calculated from signalState only)
- * - Trade readiness (calculated from signalState only)
- * - Rendering flags (renderable/hasActiveTrade)
- * 
- * NO parallel systems. NO independent derivations. NO cross-field logic.
- */
-
-// v17.3.0: MINIMAL STATE AUTHORITY - signalState determines badge only
-function getCardDisplay(card: SymbolCardState) {
-  const state = card.signalState || "NONE";
-  
-  let badgeLabel: string;
-  let borderClass: string;
-  let badgeClass: string;
-  
-  switch (state) {
-    case "ACTIVE_CONFIRMED":
-      badgeLabel = "CONFIRMED";
-      borderClass = "border-green-500";
-      badgeClass = "bg-green-950 text-green-300 border-green-700";
-      break;
-      
-    case "ACTIVE_SNIPER":
-      badgeLabel = "SNIPER";
-      borderClass = "border-cyan-500";
-      badgeClass = "bg-cyan-950 text-cyan-300 border-cyan-700";
-      break;
-      
-    case "BUILDING":
-      badgeLabel = "BUILDING";
-      borderClass = "border-amber-600";
-      badgeClass = "bg-amber-950 text-amber-300 border-amber-700";
-      break;
-      
-    default: // NONE
-      badgeLabel = "NO SETUP";
-      borderClass = "border-zinc-800";
-      badgeClass = "bg-zinc-900 text-zinc-500 border-zinc-700";
-      break;
-  }
-  
-  return {
-    badgeLabel,
-    borderClass,
-    badgeClass,
-    hasTradePlan: card.targetPrices !== null && card.riskReward !== null,
-  };
-}
-
 function SymbolCard({ card }: { card: SymbolCardState }) {
   const isLoading = card.source === "bootstrap";
+  // FIX #1, #2, #3: Use signalState to determine display + TP visibility
+  const isActiveSignal = card.signalState === "ACTIVE_SNIPER" || card.signalState === "ACTIVE_CONFIRMED";
+  const hasSignal = card.mode === "SNIPER" || card.mode === "CONFIRMED";
   
-  // v17.3.0: Get minimal display info from signalState only
-  const display = getCardDisplay(card);
+  // FIX #8: Remove "WATCHING" - use signalState to show meaningful states (v7.2.8 adds SNIPER_IMMINENT)
+  const statusBadge = isLoading ? "LOADING" : 
+    card.signalState === "ACTIVE_CONFIRMED" ? "CONFIRMED" :
+    card.signalState === "ACTIVE_SNIPER" ? "SNIPER" :
+    card.signalState === "CONFIRMED_READY" ? "CONFIRMED READY" :
+    card.signalState === "SNIPER_READY" ? "SNIPER READY" :
+    card.signalState === "SNIPER_IMMINENT" ? "SNIPER IMMINENT" :
+    card.signalState === "BUILDING" ? "BUILDING" :
+    card.marketReadinessState;
   
-  // v17.3.0: Bias colors (from htf4hTrend only)
-  const biasColor = (bias: string): string => {
-    if (bias === "BULLISH") return "text-green-400";
-    if (bias === "BEARISH") return "text-red-400";
-    return "text-zinc-400";
+  // Direction colors
+  const directionColor = card.direction === "LONG" ? "text-green-400" : card.direction === "SHORT" ? "text-red-400" : "text-zinc-400";
+  const directionBg = card.direction === "LONG" ? "bg-green-950" : card.direction === "SHORT" ? "bg-red-950" : "bg-zinc-900";
+  const directionBorder = card.direction === "LONG" ? "border-green-700" : card.direction === "SHORT" ? "border-red-700" : "border-zinc-700";
+  
+  // Market readiness colors (v7.2.4: updated with new live market states)
+  const readinessColor: Record<string, string> = {
+    "BULLISH BUILDING": "text-green-400",
+    "BULLISH IGNITION": "text-green-300",
+    "BULLISH EXPANSION": "text-green-200",
+    "BULLISH MOMENTUM": "text-green-400",
+    "BULLISH OVEREXTENDED": "text-orange-400",
+    "BEARISH BUILDING": "text-red-400",
+    "BEARISH IGNITION": "text-red-300",
+    "BEARISH EXPANSION": "text-red-200",
+    "BEARISH MOMENTUM": "text-red-400",
+    "BEARISH OVEREXTENDED": "text-orange-400",
+    "CHOPPY": "text-zinc-400",
+    "BUILDING PRESSURE": "text-amber-400",
+    "EXTREME READS": "text-orange-400",
+    "NEUTRAL": "text-zinc-400",
   };
+  
+  const currentReadinessColor = readinessColor[card.marketReadinessState] || "text-zinc-400";
 
-  const htfBias = card.htf4hTrend;
-  const isFallback = card.degraded;
+  // Trade readiness score color bands
+  const readinessScoreColor = card.tradeReadinessScore === null 
+    ? "text-zinc-500" 
+    : card.tradeReadinessScore < 40 
+    ? "text-red-400" 
+    : card.tradeReadinessScore < 60 
+    ? "text-amber-400" 
+    : card.tradeReadinessScore < 75 
+    ? "text-cyan-400" 
+    : "text-green-400";
+
+  const readinessBgBar = card.tradeReadinessScore === null 
+    ? "bg-zinc-900" 
+    : card.tradeReadinessScore < 40 
+    ? "bg-red-500" 
+    : card.tradeReadinessScore < 60 
+    ? "bg-amber-500" 
+    : card.tradeReadinessScore < 75 
+    ? "bg-cyan-500" 
+    : "bg-green-500";
 
   return (
-    <div className={`rounded-lg border ${display.borderClass} p-5 bg-[#0f0f0f] text-white flex flex-col gap-4`}>
-
-      {/* HEADER: Symbol + Price + Badge */}
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="flex items-center gap-2">
-            <h2 className="text-xl font-bold tracking-tight">{card.symbol}/USD</h2>
-            {isFallback && (
-              <span className="text-[10px] px-2 py-0.5 rounded border border-orange-800 bg-orange-950 text-orange-400 tracking-wider">
-                FALLBACK
-              </span>
-            )}
-          </div>
-          <span className="text-2xl font-mono font-bold text-white tabular-nums mt-0.5 block">
-            {isLoading ? "—" : `$${fmt(card.price)}`}
+    <div className={`rounded-lg border ${directionBorder} p-6 bg-[#0f0f0f] text-white space-y-5`}>
+      {/* HEADER: Symbol + Status Badge + Price */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-2xl font-bold tracking-tight">{card.symbol}/USD</h2>
+          <span className={`text-xs px-3 py-1 rounded border ${directionBg} ${directionBorder} ${directionColor}`}>
+            {statusBadge}
           </span>
-          {/* v17.3.0: Canonical subtitle - signalState, direction, marketClass only */}
-          <p className="text-[10px] text-zinc-500 mt-1">
-            {isLoading ? "Loading..." : `${card.signalState} ${card.direction} - ${card.marketClass}`}
-          </p>
         </div>
-        <span className={`text-xs px-3 py-1.5 rounded border font-semibold tracking-wider ${display.badgeClass}`}>
-          {isLoading ? "LOADING" : display.badgeLabel}
-        </span>
-      </div>
-
-      {/* MARKET STRUCTURE */}
-      <div className="border border-zinc-800 rounded p-3 space-y-2">
-        <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">Market Structure</p>
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-500">HTF (4H)</span>
-            <span className={`text-xs font-semibold ${biasColor(htfBias)}`}>{htfBias}</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-500">LTF (15M)</span>
-            <span className={`text-xs font-semibold ${biasColor(card.execution15mState === "EXPANDING" ? "BULLISH" : card.execution15mState === "COMPRESSING" ? "BEARISH" : "NEUTRAL")}`}>
-              {card.execution15mState}
-            </span>
-          </div>
+        <div className="flex items-center justify-between">
+          <span className={`text-sm font-semibold ${directionColor}`}>{card.direction}</span>
+          <span className="text-2xl font-mono font-bold text-white">${fmt(card.price)}</span>
         </div>
       </div>
 
-      {/* v17.3.0: Trade Readiness (only show if score exists) */}
-      {card.tradeReadinessScore !== null && (
-        <div className="border border-zinc-800 rounded p-3">
-          <div className="flex items-center justify-between">
-            <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">Readiness</p>
-            <span className="text-lg font-mono font-bold text-white tabular-nums">
-              {Math.round(card.tradeReadinessScore)}%
-            </span>
-          </div>
-          <div className="w-full bg-zinc-800 rounded h-1 mt-1.5">
-            <div
-              className={`${
-                card.tradeReadinessScore >= 75 ? "bg-green-500" :
-                card.tradeReadinessScore >= 60 ? "bg-cyan-500" :
-                "bg-amber-500"
-              } h-1 rounded transition-all`}
-              style={{ width: `${card.tradeReadinessScore}%` }}
-            />
-          </div>
-        </div>
-      )}
+      {/* MARKET READINESS STATE (Live) */}
+      <div className="border-t border-zinc-800 pt-4">
+        <p className="text-xs text-zinc-500 mb-2 uppercase tracking-wider">Market State</p>
+        <p className={`text-sm font-semibold ${currentReadinessColor}`}>
+          {card.marketReadinessState}
+        </p>
+      </div>
 
-      {/* v17.3.0: CONDITIONAL - Trade plan only when tradePlan !== null */}
-      {card.targetPrices && card.riskReward !== null && (
-        <div className="border border-zinc-800 rounded p-3 space-y-1.5">
-          <div className="flex items-center justify-between">
-            <p className="text-[10px] tracking-[0.2em] text-zinc-500 uppercase">{display.badgeLabel} Entry</p>
-            <p className={`text-xs font-bold tracking-wider uppercase ${
-              card.direction === "LONG" ? "text-cyan-400" : "text-pink-400"
-            }`}>
-              {card.direction}
-            </p>
-          </div>
+      {/* DIRECTIONAL BIAS PANEL */}
+      <div className="border-t border-zinc-800 pt-4 space-y-2 bg-zinc-900 p-3 rounded border border-zinc-700">
+        <p className="text-xs text-zinc-500 uppercase tracking-wider">Market Bias</p>
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-zinc-400">4H:</span>
+          <span className={card.htf4hTrend === "BULLISH" ? "text-green-400" : card.htf4hTrend === "BEARISH" ? "text-red-400" : "text-zinc-400"}>
+            {card.htf4hTrend}
+          </span>
+        </div>
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-zinc-400">15M:</span>
+          <span className={
+            card.execution15mState === "BREAKOUT_READY" ? "text-cyan-400" : 
+            card.execution15mState === "EXPANDING" ? "text-green-400" : 
+            card.execution15mState === "COMPRESSING" ? "text-amber-400" : 
+            "text-zinc-400"
+          }>
+            {card.execution15mState}
+          </span>
+        </div>
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-zinc-400">Overall:</span>
+          <span className={card.direction === "LONG" ? "text-green-400" : card.direction === "SHORT" ? "text-red-400" : "text-zinc-400"}>
+            {card.direction === "LONG" ? "LONG BIAS" : card.direction === "SHORT" ? "SHORT BIAS" : "NO TRADE"}
+          </span>
+        </div>
+      </div>
+
+      {/* TRADE READINESS SCORE - PRIMARY FOCUS */}
+      <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-zinc-700">
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-xs text-zinc-500 uppercase tracking-wider">Trade Readiness</p>
+          <span className={`text-lg font-mono font-bold ${readinessScoreColor}`}>
+            {card.tradeReadinessScore === null ? "—" : Math.round(card.tradeReadinessScore)}%
+          </span>
+        </div>
+        <div className="w-full bg-zinc-800 rounded h-3">
+          <div 
+            className={`${readinessBgBar} h-3 rounded transition-all`} 
+            style={{ width: card.tradeReadinessScore === null ? "0%" : `${card.tradeReadinessScore}%` }} 
+          />
+        </div>
+        <p className="text-xs text-zinc-500 mt-2">
+          {card.tradeReadinessScore === null 
+            ? "No signal" 
+            : card.tradeReadinessScore < 40 
+            ? "Dead market" 
+            : card.tradeReadinessScore < 60 
+            ? "Building momentum" 
+            : card.tradeReadinessScore < 75 
+            ? "SNIPER zone" 
+            : "CONFIRMED zone"}
+        </p>
+      </div>
+
+      {/* CONDITIONAL: Show targets ONLY if signal is ACTIVE (FIX #3) */}
+      {isActiveSignal && card.targetPrices && (
+        <div className="border-t border-zinc-800 pt-4 space-y-2">
+          <p className="text-xs text-zinc-500 uppercase tracking-wider">{card.mode} Entry</p>
           <div className="text-sm font-mono space-y-1">
-            <div className="flex justify-between"><span className="text-zinc-400">Entry</span><span className="text-cyan-400">${fmt(card.price)}</span></div>
-            <div className="flex justify-between"><span className="text-zinc-400">TP1</span><span className="text-green-400">${fmt(card.targetPrices?.tp1)}</span></div>
-            <div className="flex justify-between"><span className="text-zinc-400">TP2</span><span className="text-green-400">${fmt(card.targetPrices?.tp2)}</span></div>
-            <div className="flex justify-between"><span className="text-zinc-400">SL</span><span className="text-red-400">${fmt(card.targetPrices?.sl)}</span></div>
-            <div className="flex justify-between pt-1.5 border-t border-zinc-700">
-              <span className="text-zinc-400">R:R</span>
-              <span className="text-green-400 font-bold">{card.riskReward.toFixed(1)}:1</span>
-            </div>
+            <div className="flex justify-between"><span className="text-zinc-400">Entry Zone:</span> <span className="text-cyan-400">${fmt(card.price)}</span></div>
+            <div className="flex justify-between"><span className="text-zinc-400">TP1:</span> <span className="text-green-400">${fmt(card.targetPrices.tp1)}</span></div>
+            <div className="flex justify-between"><span className="text-zinc-400">TP2:</span> <span className="text-green-400">${fmt(card.targetPrices.tp2)}</span></div>
+            <div className="flex justify-between"><span className="text-zinc-400">SL:</span> <span className="text-red-400">${fmt(card.targetPrices.sl)}</span></div>
+            <div className="flex justify-between mt-2 pt-2 border-t border-zinc-700"><span className="text-zinc-400">R:R:</span> <span className="text-green-400 font-bold">{card.riskReward?.toFixed(1) ?? "—"}:1</span></div>
           </div>
         </div>
       )}
 
-      {/* Footer: source note */}
-      <p className="text-[10px] text-zinc-600 text-center">
-        {isLoading ? "Waiting for live feed..." : card.notes}
-      </p>
+      {/* Status message */}
+      <div className="text-xs text-zinc-500 text-center pt-2">
+        {isLoading ? "Loading market snapshot..." : card.notes}
+      </div>
     </div>
   );
 }
