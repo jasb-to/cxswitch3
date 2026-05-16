@@ -113,10 +113,36 @@ function getOrInitCycleMemory(symbol: string): CycleMemory {
  * 6. Signal Validity: Once fired, only valid for 2-4 candle window
  * 7. Impulse Decay: If impulse drops > 20% from trigger, invalidate
  */
+/**
+ * v22.1: DETAILED GATE TRACE for signal observability
+ * Every decision includes full reasoning chain
+ */
+interface GateTrace {
+  symbol: string;
+  rawImpulse: number;
+  confidenceBreakdown: {
+    base: number;
+    htfAdjustment: number;
+    final: number;
+  };
+  cycleMemoryState: "cycle1" | "cycle2" | "confirmed" | "missing";
+  spikeRejection: {
+    rejected: boolean;
+    reason?: string;
+  };
+  directionalConsistency: {
+    pass: boolean;
+    reason?: string;
+  };
+  finalDecision: "ALLOWED" | "BLOCKED";
+  blockReason?: string;
+}
+
 interface QualityFilterResult {
   canFire: boolean;
   finalConfidence: number;  // After HTF adjustment
   reason: string;
+  gateTrace: GateTrace;  // v22.1: Full observability
 }
 
 function validateQualityFilter(
@@ -129,101 +155,192 @@ function validateQualityFilter(
 ): QualityFilterResult {
   const memory = getOrInitCycleMemory(symbol);
   
+  // Determine cycle memory state for tracing
+  let cycleMemoryState: "cycle1" | "cycle2" | "confirmed" | "missing" = "missing";
+  if (memory.previousDirection === null) {
+    cycleMemoryState = "cycle1";
+  } else if (memory.previousDirection === direction && memory.previousImpulse !== null) {
+    cycleMemoryState = "cycle2";
+  } else {
+    cycleMemoryState = "confirmed";
+  }
+
+  // Initialize base confidence breakdown
+  let baseConfidence = rawConfidence;
+  let htfAdjustment = 0;
+  let finalConfidence = rawConfidence;
+
+  // Calculate HTF adjustment first (so it's available for all gates)
+  if (htfDirection !== "NEUTRAL" && direction !== "NEUTRAL") {
+    if (htfDirection === direction) {
+      htfAdjustment = +5;
+      finalConfidence += 5;
+    } else {
+      htfAdjustment = -10;
+      finalConfidence -= 10;
+    }
+  }
+
+  // Initialize gate trace object
+  const gateTrace: GateTrace = {
+    symbol,
+    rawImpulse: impulse,
+    confidenceBreakdown: {
+      base: baseConfidence,
+      htfAdjustment,
+      final: finalConfidence,
+    },
+    cycleMemoryState,
+    spikeRejection: { rejected: false },
+    directionalConsistency: { pass: true },
+    finalDecision: "BLOCKED",
+    blockReason: undefined,
+  };
+
+  // =========================================================================
   // GATE 1: Directional Consistency (2 consecutive cycles)
+  // =========================================================================
   if (memory.previousDirection !== null && memory.previousDirection !== direction) {
+    gateTrace.directionalConsistency = {
+      pass: false,
+      reason: `direction changed ${memory.previousDirection} → ${direction}`,
+    };
+    gateTrace.finalDecision = "BLOCKED";
+    gateTrace.blockReason = `[GATE1_DIRECTION] ${gateTrace.directionalConsistency.reason}`;
+
     return {
       canFire: false,
-      finalConfidence: rawConfidence,
-      reason: `[QUALITY_REJECT_DIRECTION] direction changed ${memory.previousDirection} → ${direction}`,
+      finalConfidence,
+      reason: gateTrace.blockReason,
+      gateTrace,
     };
   }
 
   // If direction is NEUTRAL, cannot fire SNIPER
   if (direction === "NEUTRAL") {
+    gateTrace.directionalConsistency = {
+      pass: false,
+      reason: "direction is NEUTRAL",
+    };
+    gateTrace.finalDecision = "BLOCKED";
+    gateTrace.blockReason = `[GATE1_NEUTRAL] direction is NEUTRAL`;
+
     return {
       canFire: false,
-      finalConfidence: rawConfidence,
-      reason: `[QUALITY_REJECT_NEUTRAL] direction is NEUTRAL`,
+      finalConfidence,
+      reason: gateTrace.blockReason,
+      gateTrace,
     };
   }
 
+  gateTrace.directionalConsistency = { pass: true };
+
+  // =========================================================================
   // GATE 2: Impulse Strength & Decay Detection
+  // =========================================================================
   if (impulse < 27) {
+    gateTrace.finalDecision = "BLOCKED";
+    gateTrace.blockReason = `[GATE2_IMPULSE_LOW] impulse ${impulse.toFixed(1)} < 27`;
+
     return {
       canFire: false,
-      finalConfidence: rawConfidence,
-      reason: `[QUALITY_REJECT_IMPULSE_LOW] impulse ${impulse.toFixed(1)} < 27`,
+      finalConfidence,
+      reason: gateTrace.blockReason,
+      gateTrace,
     };
   }
 
   // Reject single-cycle spikes (must continue in next cycle)
   if (memory.previousImpulse !== null && impulse > memory.previousImpulse * 1.5) {
+    gateTrace.spikeRejection = {
+      rejected: true,
+      reason: `impulse jumped ${memory.previousImpulse?.toFixed(1)} → ${impulse.toFixed(1)} (1.5x threshold)`,
+    };
+    gateTrace.finalDecision = "BLOCKED";
+    gateTrace.blockReason = `[GATE2_SPIKE] ${gateTrace.spikeRejection.reason}`;
+
     return {
       canFire: false,
-      finalConfidence: rawConfidence,
-      reason: `[QUALITY_REJECT_SPIKE] impulse jumped ${memory.previousImpulse?.toFixed(1)} → ${impulse.toFixed(1)} (single-cycle spike)`,
+      finalConfidence,
+      reason: gateTrace.blockReason,
+      gateTrace,
     };
   }
 
   // Reject if impulse is weakening
   if (memory.previousImpulse !== null && impulse < memory.previousImpulse) {
+    gateTrace.finalDecision = "BLOCKED";
+    gateTrace.blockReason = `[GATE2_DECAY] impulse weakening ${memory.previousImpulse?.toFixed(1)} → ${impulse.toFixed(1)}`;
+
     return {
       canFire: false,
-      finalConfidence: rawConfidence,
-      reason: `[QUALITY_REJECT_DECAY] impulse weakening ${memory.previousImpulse?.toFixed(1)} → ${impulse.toFixed(1)}`,
+      finalConfidence,
+      reason: gateTrace.blockReason,
+      gateTrace,
     };
   }
 
+  // =========================================================================
   // GATE 3: Confidence Gating (HARD BLOCKER - not just display)
-  let finalConfidence = rawConfidence;
-
-  // GATE 5: HTF Adjustment (modifies confidence, doesn't block)
-  if (htfDirection !== "NEUTRAL" && direction !== "NEUTRAL") {
-    if (htfDirection === direction) {
-      // HTF agrees with LTF - add small boost
-      finalConfidence += 5;
-    } else {
-      // HTF disagrees with LTF - reduce confidence
-      finalConfidence -= 10;
-    }
-  }
-
+  // =========================================================================
   if (finalConfidence < 70) {
+    gateTrace.finalDecision = "BLOCKED";
+    gateTrace.blockReason = `[GATE3_CONFIDENCE] ${finalConfidence.toFixed(0)}% < 70% threshold (base: ${baseConfidence.toFixed(0)}, HTF adj: ${htfAdjustment > 0 ? '+' : ''}${htfAdjustment})`;
+
     return {
       canFire: false,
       finalConfidence,
-      reason: `[QUALITY_REJECT_CONFIDENCE] ${finalConfidence.toFixed(0)}% < 70% threshold (HTF adjusted)`,
+      reason: gateTrace.blockReason,
+      gateTrace,
     };
   }
 
-  // GATE 6: Signal Validity Window (check if already fired)
+  // =========================================================================
+  // GATE 4: Signal Validity Window (check if already fired)
+  // =========================================================================
   if (memory.signalValidUntil !== null && nowMs < memory.signalValidUntil) {
+    gateTrace.finalDecision = "BLOCKED";
+    gateTrace.blockReason = `[GATE4_VALIDITY] signal still valid until ${new Date(memory.signalValidUntil).toISOString()}`;
+
     return {
       canFire: false,
       finalConfidence,
-      reason: `[QUALITY_REJECT_ALREADY_FIRED] signal still valid until ${new Date(memory.signalValidUntil).toISOString()}`,
+      reason: gateTrace.blockReason,
+      gateTrace,
     };
   }
 
-  // GATE 7: Check if existing signal has decayed too much (> 20%)
+  // =========================================================================
+  // GATE 5: Check if existing signal has decayed too much (> 20%)
+  // =========================================================================
   if (memory.signalFiredAt !== null && memory.previousImpulse !== null) {
     const decayThreshold = memory.previousImpulse * 0.8;
     if (impulse < decayThreshold) {
+      gateTrace.finalDecision = "BLOCKED";
+      gateTrace.blockReason = `[GATE5_DECAY] impulse ${impulse.toFixed(1)} < 80% of trigger ${memory.previousImpulse?.toFixed(1)}`;
+
       return {
         canFire: false,
         finalConfidence,
-        reason: `[QUALITY_REJECT_DECAY_TOO_MUCH] impulse ${impulse.toFixed(1)} < 80% of trigger ${memory.previousImpulse?.toFixed(1)}`,
+        reason: gateTrace.blockReason,
+        gateTrace,
       };
     }
   }
 
-  // All gates passed!
+  // =========================================================================
+  // ALL GATES PASSED!
+  // =========================================================================
+  gateTrace.finalDecision = "ALLOWED";
+
   return {
     canFire: true,
     finalConfidence,
     reason: `[QUALITY_PASS] All gates passed. Direction: ${direction}, Impulse: ${impulse.toFixed(1)}, Confidence: ${finalConfidence.toFixed(0)}%`,
+    gateTrace,
   };
 }
+
 
 /**
  * v22.0: Update cycle memory after evaluation
@@ -287,14 +404,44 @@ function shouldFireSniperEvent(
     nowMs
   );
   
+  // v22.1: ALWAYS output GATE_TRACE, even when blocked
+  console.log(`[GATE_TRACE] ${JSON.stringify(qualityResult.gateTrace)}`);
+  
   if (!qualityResult.canFire) {
-    console.log(`[SNIPER_ENTRY] ${symbol}: ${qualityResult.reason}`);
+    // v22.1: Log as SOFT_SNIPER_CANDIDATE if it would have passed in v21.1
+    // (i.e., impulse >= 27 and confidence would be > 50 base)
+    const wouldPassV21 = impulse >= 27 && confidence > 50;
+    
+    if (wouldPassV21) {
+      console.log(
+        `[SOFT_SNIPER_CANDIDATE] ${symbol}: BLOCKED in v22 but would pass v21 criteria. ` +
+        `Impulse: ${impulse.toFixed(1)}, Confidence: ${qualityResult.finalConfidence.toFixed(0)}% ` +
+        `(base: ${confidence.toFixed(0)}%). ` +
+        `Reason: ${qualityResult.gateTrace.blockReason}`
+      );
+      
+      // Flag as FILTER_OVERRIDE_CANDIDATE if this is a real signal being blocked
+      if (qualityResult.gateTrace.directionalConsistency.pass && impulse >= 27) {
+        console.log(
+          `[FILTER_OVERRIDE_CANDIDATE] ${symbol}: Review this block - ` +
+          `direction is consistent, impulse is strong. ` +
+          `Block reason: ${qualityResult.gateTrace.blockReason}`
+        );
+      }
+    }
+    
+    console.log(`[SNIPER_BLOCKED] ${symbol}: ${qualityResult.reason}`);
     // Still update memory even if rejected (for next cycle comparison)
     updateCycleMemory(symbol, direction, impulse, confidence, htfDirection, false, nowMs);
     return false;
   }
   
-  console.log(`[SNIPER_ENTRY] ${symbol}: ${qualityResult.reason}`);
+  console.log(
+    `[SNIPER_ALLOWED] ${symbol}: ${qualityResult.reason} - ` +
+    `Cycle state: ${qualityResult.gateTrace.cycleMemoryState}, ` +
+    `Confidence breakdown: base=${qualityResult.gateTrace.confidenceBreakdown.base.toFixed(0)}% + ` +
+    `HTF=${qualityResult.gateTrace.confidenceBreakdown.htfAdjustment > 0 ? '+' : ''}${qualityResult.gateTrace.confidenceBreakdown.htfAdjustment}`
+  );
   
   // Update memory for next cycle
   updateCycleMemory(symbol, direction, impulse, confidence, htfDirection, true, nowMs);
