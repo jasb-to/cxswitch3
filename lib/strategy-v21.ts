@@ -925,9 +925,9 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       );
 
       // v22.0: REAL CONFIDENCE CALCULATION (not hardcoded)
-      // Confidence = impulse * quality factors (direction consistency, expansion state)
-      // Base: impulse contributes 60%, structural factors contribute 40%
-      let confidence = Math.min(impulse, 100);  // Impulse is 0-100 percentage
+      // Confidence = ignitionProbability * quality factors (direction consistency, expansion state)
+      // Base: ignitionProbability contributes 60%, structural factors contribute 40%
+      let confidence = Math.min(ignitionProbability, 100);  // ignitionProbability is 0-100 percentage
       
       // Boost confidence if direction is trending strongly (emaSlope > 5)
       if (emaSlope !== null && Math.abs(emaSlope) > 5) {
