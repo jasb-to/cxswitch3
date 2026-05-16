@@ -9,6 +9,55 @@
 
 import type { PriceData } from "./price-router";
 
+// ═════════════════════════════════════════════════════════════════════════════
+// v7.6.0: EXECUTION CONTEXT - SINGLE SOURCE OF TRUTH
+// ═════════════════════════════════════════════════════════════════════════════
+// 
+// PRINCIPLE: One immutable context object per cycle. All downstream logic
+// reads from this context - NO re-checking of data sources or conditions.
+//
+export type ExecutionContext = {
+  // Identifier
+  symbol: string;
+  cycleId: string;
+
+  // Hard-coded truth (never changes per cycle)
+  dataSource: "KRAKEN_LIVE" | "DEGRADED";
+
+  // Gate decision (decided ONCE at entry, never re-evaluated)
+  executionAllowed: boolean;
+  gateReason?: string;
+
+  // Market snapshot (immutable for cycle)
+  price: number;
+  timestamp: number;
+};
+
+/**
+ * Build execution context at scan entry point
+ * This is THE ONLY place where executionAllowed is decided
+ * Everything downstream just reads from ctx.executionAllowed
+ */
+function buildExecutionContext(symbol: string, priceData: PriceData): ExecutionContext {
+  const isKrakenLive = priceData.source === "kraken_live" || priceData.source === "kraken_cached";
+  
+  const ctx: ExecutionContext = {
+    symbol,
+    cycleId: `${Date.now()}-${symbol}`,
+    dataSource: isKrakenLive ? "KRAKEN_LIVE" : "DEGRADED",
+    executionAllowed: isKrakenLive,
+    gateReason: isKrakenLive ? undefined : `Non-execution-grade source: ${priceData.source}`,
+    price: priceData.price,
+    timestamp: Date.now(),
+  };
+
+  if (!ctx.executionAllowed) {
+    console.log(`[GATE] ${symbol} BLOCKED: ${ctx.gateReason}`);
+  }
+
+  return ctx;
+}
+
 // FIX #1: Unified signal state (v7.2.6) - REMOVED SNIPER_IMMINENT (regression leak)
 // v7.4.0: Clean state machine - only 3 valid states for signal generation
 export type SignalState = 
@@ -105,18 +154,17 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       continue;
     }
 
-    // ===== LAYER 0: DATA TRUST GATE (HARD BLOCK) =====
-    // BEFORE ANY SCAN: Enforce execution-grade data requirement
-    // Only Kraken live/cached data can enter signal pipeline
-    const isExecutionGrade = priceData.source === "kraken_live" || priceData.source === "kraken_cached";
+    // ===== v7.6.0: BUILD EXECUTION CONTEXT (SINGLE SOURCE OF TRUTH) =====
+    // One immutable context per symbol per cycle
+    // executionAllowed is decided ONCE here, never re-evaluated downstream
+    const ctx = buildExecutionContext(symbol, priceData);
     
-    if (!isExecutionGrade) {
-      console.log(`[EXECUTION_GUARD] ${symbol}: blocked scan (source=${priceData.source})`);
+    if (!ctx.executionAllowed) {
       // Create degraded card for display only (BUILDING state, no signals)
       const degradedCard: SymbolCardState = {
         symbol,
-        price: priceData.price,
-        source: priceData.source,
+        price: ctx.price,
+        source: ctx.dataSource,
         degraded: true,
         signalState: "BUILDING",  // Display only, no execution
         marketClass: "DISPLAY_ONLY",
@@ -136,8 +184,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         expectedMovePercent: null,
         targetPrices: null,
         riskReward: null,
-        cycleId: `${Date.now()}-${symbol}`,
-        notes: `NON_EXECUTION_GRADE_DATA (${priceData.source})`,
+        cycleId: ctx.cycleId,
+        notes: ctx.gateReason || "DEGRADED_DATA",
         updatedAt: new Date().toISOString(),
       };
       cards.push(degradedCard);
@@ -145,8 +193,9 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
     }
 
     // ===== SCAN ENGINE: Only execution-grade data reaches here =====
-    // Generate card state for this symbol
+    // ExecutionContext.executionAllowed is TRUE, so proceed
     const card = generateCardState(symbol, priceData);
+    card.cycleId = ctx.cycleId;  // Tag with execution context cycle
     cards.push(card);
 
     // Score using NEW momentum-based system
