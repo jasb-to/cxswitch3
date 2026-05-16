@@ -30,7 +30,7 @@ function fmt(n: number | null | undefined): string {
 /**
  * Check if we can send alert for this setup
  * Cooldown: 30 minutes per (symbol + mode + direction)
- * v8.5.0: Graceful handling of missing alerts_sent table
+ * v21.3.0: STRICT schema validation - REJECT if table missing (prevents alert spam)
  */
 export async function canSendAlert(symbol: string, mode: "SNIPER" | "CONFIRMED", direction: "LONG" | "SHORT"): Promise<boolean> {
   if (!supabase) return true;
@@ -50,13 +50,14 @@ export async function canSendAlert(symbol: string, mode: "SNIPER" | "CONFIRMED",
       .maybeSingle();
 
     if (error) {
-      // v8.5.0: Check if it's a schema error (table not found)
+      // v21.3.0 CRITICAL: If schema missing, REJECT alert (don't allow)
+      // This prevents undeduped spam when migration hasn't run
       if (error.message.includes("alerts_sent") || error.message.includes("does not exist")) {
-        console.log(`[TELEGRAM] Schema not ready (alerts_sent table pending migration), allowing alert`);
-        return true;
+        console.log(`[TELEGRAM] CRITICAL: alerts_sent table missing - rejecting alert to prevent spam. Run Supabase migration.`);
+        return false; // REJECT - prevent undeduped alerts
       }
       console.log(`[TELEGRAM] Cooldown check error: ${error.message}`);
-      return true; // Allow if DB is down
+      return true; // Allow if other DB error (be lenient)
     }
 
     return !data; // If no recent alert, can send
