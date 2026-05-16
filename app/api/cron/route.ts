@@ -8,16 +8,17 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * v21.1.0 - DETERMINISTIC SIGNAL PIPELINE
+ * v22.0 - QUALITY FILTER LAYER (MULTI-CYCLE STABILITY + CONFIDENCE GATING)
  * 
  * Every cron cycle:
  * 1. Fetch live market data
  * 2. Derive all signals from current market conditions only
- * 3. Replace snapshot atomically
- * 4. Emit alerts ONLY on NEW EVENT CREATION (not state changes)
+ * 3. Apply enhanced multi-cycle quality filter
+ * 4. Replace snapshot atomically
+ * 5. Emit alerts ONLY on NEW EVENT CREATION (not state changes)
  * 
- * Pure event-driven execution. Single 6-phase pipeline.
- * Once SNIPER_EVENT fires, it stays ACTIVE until exit conditions met.
+ * Pure event-driven execution with multi-cycle stability checks.
+ * Confidence must be >= 70, direction consistent across cycles.
  */
 export async function GET(req: NextRequest) {
   try {
@@ -30,7 +31,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    console.log("[CRON] v21.1.0 START - Deterministic 6-Phase Signal Pipeline");
+    console.log("[CRON] v22.0 START - Multi-Cycle Quality Filter + Confidence Gating");
     const cronStart = Date.now();
 
     // STEP 1: Fetch live market data
@@ -104,11 +105,11 @@ export async function GET(req: NextRequest) {
     }
 
     const totalMs = Date.now() - cronStart;
-    console.log(`[CRON] v21.1.0 COMPLETE in ${totalMs}ms - 6-phase pipeline finished`);
+    console.log(`[CRON] v22.0 COMPLETE in ${totalMs}ms - Multi-cycle filter finished`);
 
     return NextResponse.json({
       ok: true,
-      version: "v21.1.0",
+      version: "v22.0",
       perf: {
         totalMs,
         cardsGenerated: newCards.length,
