@@ -820,15 +820,121 @@ function computeImpulseStrength(
 }
 
 // ============================================================================
-// v21.2.0: PHASE 4 - QUALITY FILTER (THRESHOLD → TERMINAL STATE)
+// v23.1.0: PHASE 4 - CONSOLIDATED STATE DERIVATION (SINGLE AUTHORITATIVE PATH)
 // ============================================================================
 
-const IMPULSE_QUALITY_THRESHOLD = 27;
+/**
+ * v23.1.0 THRESHOLD ADJUSTMENT
+ * Lower thresholds to enable practical signal generation
+ * - SNIPER: 58% (was impulse >= 27, now confidence-based)
+ * - CONFIRMED: 70% (was implicit, now explicit)
+ */
+const CONFIDENCE_SNIPER_THRESHOLD = 58;     // Practical threshold for SNIPER state
+const CONFIDENCE_CONFIRMED_THRESHOLD = 70;  // High confidence floor
 
-function deriveExecutionState(ignitionProbability: number): SignalState {
-  if (ignitionProbability >= IMPULSE_QUALITY_THRESHOLD) return "ACTIVE_SNIPER";
-  if (ignitionProbability >= 1) return "BUILDING";
-  return "NONE";
+/**
+ * v23.1.0: AUTHORITATIVE STATE DERIVATION
+ * Single function, single source of truth for signal state
+ * Quality filter output directly determines terminal state
+ * 
+ * Flow:
+ *   impulse >= 27 AND direction != NEUTRAL AND quality filter ALLOWS
+ *   → confidence >= 58 → ACTIVE_SNIPER
+ * 
+ *   impulse >= 1 AND pass directional check
+ *   → BUILDING
+ * 
+ *   else
+ *   → NONE
+ */
+function deriveFinalState(
+  ignitionProbability: number,
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  qualityFilterResult: { canFire: boolean; finalConfidence: number },
+  gateTrace: any
+): { state: SignalState; reason: string; stateTrace: any } {
+  const stateTrace = {
+    symbol: gateTrace.symbol,
+    impulse: ignitionProbability,
+    direction,
+    qualityFilterDecision: qualityFilterResult.canFire ? "ALLOWED" : "BLOCKED",
+    confidenceThresholds: {
+      sniper: CONFIDENCE_SNIPER_THRESHOLD,
+      confirmed: CONFIDENCE_CONFIRMED_THRESHOLD,
+      actual: qualityFilterResult.finalConfidence,
+    },
+    stateDerivation: "",
+    finalState: "NONE" as SignalState,
+  };
+
+  // INVARIANT 1: Direction must be valid
+  if (direction === "NEUTRAL") {
+    stateTrace.stateDerivation = "Direction is NEUTRAL - cannot produce ACTIVE_SNIPER";
+    stateTrace.finalState = "BUILDING";
+    return {
+      state: "BUILDING",
+      reason: "[STATE_NEUTRAL] Direction is NEUTRAL",
+      stateTrace,
+    };
+  }
+
+  // INVARIANT 2: Quality filter must ALLOW for ACTIVE_SNIPER
+  if (!qualityFilterResult.canFire) {
+    stateTrace.stateDerivation = `Quality filter BLOCKED: ${gateTrace.blockReason}`;
+    stateTrace.finalState = "BUILDING";
+    return {
+      state: "BUILDING",
+      reason: `[STATE_QUALITY_BLOCKED] ${gateTrace.blockReason}`,
+      stateTrace,
+    };
+  }
+
+  // INVARIANT 3: Impulse must be sufficient
+  if (ignitionProbability < 27) {
+    stateTrace.stateDerivation = `Impulse too low (${ignitionProbability.toFixed(1)} < 27)`;
+    stateTrace.finalState = "BUILDING";
+    return {
+      state: "BUILDING",
+      reason: `[STATE_IMPULSE_LOW] Impulse ${ignitionProbability.toFixed(1)} < 27`,
+      stateTrace,
+    };
+  }
+
+  // INVARIANT 4: Confidence must meet SNIPER threshold
+  if (qualityFilterResult.finalConfidence < CONFIDENCE_SNIPER_THRESHOLD) {
+    stateTrace.stateDerivation = `Confidence ${qualityFilterResult.finalConfidence.toFixed(0)}% < ${CONFIDENCE_SNIPER_THRESHOLD}%`;
+    stateTrace.finalState = "BUILDING";
+    return {
+      state: "BUILDING",
+      reason: `[STATE_CONFIDENCE_LOW] ${qualityFilterResult.finalConfidence.toFixed(0)}% < ${CONFIDENCE_SNIPER_THRESHOLD}%`,
+      stateTrace,
+    };
+  }
+
+  // ALL INVARIANTS MET → ACTIVE_SNIPER
+  stateTrace.stateDerivation = `All gates passed: impulse=${ignitionProbability.toFixed(1)}, confidence=${qualityFilterResult.finalConfidence.toFixed(0)}%, quality=ALLOWED`;
+  stateTrace.finalState = "ACTIVE_SNIPER";
+
+  console.log(
+    `[FINAL_STATE_TRACE] ${gateTrace.symbol} ACTIVE_SNIPER ` +
+    `impulse=${ignitionProbability.toFixed(1)} confidence=${qualityFilterResult.finalConfidence.toFixed(0)}% ` +
+    `direction=${direction} qualityFilter=ALLOWED`
+  );
+
+  return {
+    state: "ACTIVE_SNIPER",
+    reason: `[STATE_SNIPER_APPROVED] All gates passed (impulse=${ignitionProbability.toFixed(1)}, confidence=${qualityFilterResult.finalConfidence.toFixed(0)}%)`,
+    stateTrace,
+  };
+}
+
+/**
+ * v23.0.1: Legacy fallback for active event maintenance
+ * Only used when existing event is locked
+ */
+function deriveLockedEventState(direction: "LONG" | "SHORT" | "NEUTRAL"): SignalState {
+  if (direction === "NEUTRAL") return "BUILDING";
+  return "ACTIVE_SNIPER";
 }
 
 // ============================================================================
@@ -975,20 +1081,28 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         }
       } else {
         // NO ACTIVE EVENT - EVALUATE FRESH
-        signalState = deriveExecutionState(ignitionProbability);
+        // v23.1.0: Run quality filter FIRST, then use result to derive state
+        const qualityResult = validateQualityFilter(
+          symbol,
+          direction,
+          ignitionProbability,
+          confidence,
+          priceData.htf4hTrend || "NEUTRAL",
+          Date.now()
+        );
+
+        // v23.1.0: Consolidated state derivation (quality filter directly determines state)
+        const stateDerivation = deriveFinalState(
+          ignitionProbability,
+          direction,
+          qualityResult,
+          qualityResult.gateTrace
+        );
         
-        // v21.3.0 CRITICAL GATE: NEUTRAL direction can NEVER produce ACTIVE_SNIPER
-        // Hard architectural invariant: directional bias is required for SNIPER state
-        if (direction === "NEUTRAL" && signalState === "ACTIVE_SNIPER") {
-          console.log(
-            `[DIRECTION_GATE_REJECT] ${symbol}: ` +
-            `ACTIVE_SNIPER downgraded to BUILDING (direction=NEUTRAL is invalid)`
-          );
-          signalState = "BUILDING";
-        }
+        signalState = stateDerivation.state;
         
-        // v22.0: ENHANCED ENTRY RULE - Fire event if quality filter passes
-        if (signalState === "ACTIVE_SNIPER" && shouldFireSniperEvent(symbol, ignitionProbability, direction, confidence, priceData.htf4hTrend || "NEUTRAL", Date.now())) {
+        // v23.1.0: Only fire sniper event if state is ACTIVE_SNIPER (quality filter already passed)
+        if (signalState === "ACTIVE_SNIPER") {
           const entry = priceData.price;
           newEventFired = createSniperEvent(
             symbol,
@@ -1001,6 +1115,11 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
           lockedEntry = entry;
           lockedTp = newEventFired.tp;
           lockedSl = newEventFired.sl;
+          
+          console.log(
+            `[SNIPER_EVENT_FIRED] ${symbol} ${direction} | ` +
+            `entry=${entry.toFixed(2)} tp=${newEventFired.tp.toFixed(2)} sl=${newEventFired.sl.toFixed(2)}`
+          );
         }
       }
 
