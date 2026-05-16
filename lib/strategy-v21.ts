@@ -1081,30 +1081,17 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         }
       } else {
         // NO ACTIVE EVENT - EVALUATE FRESH
-        // v23.1.0: Run quality filter FIRST, then use result to derive state
-        const qualityResult = validateQualityFilter(
-          symbol,
-          direction,
-          ignitionProbability,
-          confidence,
-          priceData.htf4hTrend || "NEUTRAL",
-          Date.now()
-        );
-
-        // v23.1.0: Consolidated state derivation (quality filter directly determines state)
-        const stateDerivation = deriveFinalState(
-          ignitionProbability,
-          direction,
-          qualityResult,
-          qualityResult.gateTrace
-        );
+        // v24.0 FIX: SETUP CREATED BEFORE FILTERING (critical architecture fix)
+        // Restore v21 behavior: eligibility → setup → filter → state adjustment
         
-        signalState = stateDerivation.state;
+        // STEP 1: Check SNIPER eligibility (impulse-based, not filtered yet)
+        const isSniperEligible = ignitionProbability >= 25; // v21 threshold
         
-        // v23.1.0: Only fire sniper event if state is ACTIVE_SNIPER (quality filter already passed)
-        if (signalState === "ACTIVE_SNIPER") {
+        // STEP 2: Create setup immediately if eligible (BEFORE filtering)
+        let setup: any = null;
+        if (isSniperEligible && direction !== "NEUTRAL") {
           const entry = priceData.price;
-          newEventFired = createSniperEvent(
+          setup = createSniperEvent(
             symbol,
             direction,
             entry,
@@ -1113,14 +1100,65 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
             `${Date.now()}-${symbol}`
           );
           lockedEntry = entry;
-          lockedTp = newEventFired.tp;
-          lockedSl = newEventFired.sl;
+          lockedTp = setup.tp;
+          lockedSl = setup.sl;
+          newEventFired = setup;
           
           console.log(
-            `[SNIPER_EVENT_FIRED] ${symbol} ${direction} | ` +
-            `entry=${entry.toFixed(2)} tp=${newEventFired.tp.toFixed(2)} sl=${newEventFired.sl.toFixed(2)}`
+            `[SETUP_CREATED_EARLY] ${symbol} ${direction} | ` +
+            `entry=${entry.toFixed(2)} tp=${setup.tp.toFixed(2)} sl=${setup.sl.toFixed(2)} | ` +
+            `impulse=${ignitionProbability.toFixed(1)}`
           );
         }
+        
+        // STEP 3: Run quality filter (SOFT - modifies confidence, doesn't block)
+        const qualityResult = validateQualityFilter(
+          symbol,
+          direction,
+          ignitionProbability,
+          confidence,
+          priceData.htf4hTrend || "NEUTRAL",
+          Date.now()
+        );
+        
+        // STEP 4: Derive state AFTER setup exists
+        // Quality filter result modifies confidence but doesn't prevent ACTIVE_SNIPER if setup exists
+        let adjustedConfidence = qualityResult.finalConfidence;
+        let signalStateReason = "";
+        
+        if (!isSniperEligible) {
+          signalState = "BUILDING";
+          signalStateReason = `[IMPULSE_INSUFFICIENT] ${ignitionProbability.toFixed(1)} < 25`;
+        } else if (direction === "NEUTRAL") {
+          signalState = "BUILDING";
+          signalStateReason = "[DIRECTION_NEUTRAL] No directional bias";
+        } else if (qualityResult.canFire) {
+          // Quality filter ALLOWED - ACTIVE_SNIPER with full confidence
+          signalState = "ACTIVE_SNIPER";
+          signalStateReason = `[SNIPER_ALLOWED] Quality filter passed, impulse=${ignitionProbability.toFixed(1)}, confidence=${adjustedConfidence.toFixed(0)}%`;
+        } else {
+          // Quality filter rejected BUT setup still exists
+          // SOFT degradation: flag the setup, but keep it in ACTIVE_SNIPER state
+          signalState = "ACTIVE_SNIPER"; // v24.0: Setup exists, state reflects market condition
+          if (setup) {
+            setup.qualityFlag = "SOFT_REJECT";
+            setup.flagReason = qualityResult.blockReason;
+          }
+          adjustedConfidence = Math.max(adjustedConfidence - 15, 20); // Penalize but don't zero
+          signalStateReason = `[SNIPER_SOFT_REJECT] ${qualityResult.blockReason} | Confidence penalized to ${adjustedConfidence.toFixed(0)}%`;
+          
+          console.log(
+            `[SNIPER_FLAGGED] ${symbol} ${direction} | ` +
+            `Reason: ${qualityResult.blockReason} | Confidence: ${adjustedConfidence.toFixed(0)}%`
+          );
+        }
+        
+        // Update confidence to adjusted value
+        confidence = adjustedConfidence;
+        
+        console.log(
+          `[STATE_DERIVATION] ${symbol}: ${signalStateReason}`
+        );
       }
 
       // PHASE 5: Classification (metadata only)
@@ -1187,58 +1225,41 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 
       cards.push(card);
 
-      // v22.1: SETUP HYDRATION INVARIANT - ACTIVE_SNIPER must ALWAYS have complete setup
-      // Hard rule: If signalState is ACTIVE_SNIPER, setup creation is non-negotiable
-      // No early exits, no skipping, no orphaned cards without trade objects
-      if (signalState === "ACTIVE_SNIPER") {
-        // MANDATORY: Direction must be valid for SNIPER (no NEUTRAL)
-        if (direction === "NEUTRAL") {
-          console.log(`[SETUP_REJECT_NEUTRAL] ${symbol}: ACTIVE_SNIPER has NEUTRAL direction, cannot create setup`);
-          // This should not happen due to earlier gate, but enforce it here too
-          card.signalState = "BUILDING"; // Downgrade to BUILDING
-          card.blockReason = "Direction became NEUTRAL at output stage";
-        } else {
-          // MANDATORY: Setup MUST be created, with fallback values if needed
-          const entry = priceData.price;
-          const volFactor = (volatilityLevel || 30) / 100; // Default 30% volatility if null
-          const tp = direction === "LONG" 
-            ? entry * (1 + volFactor)
-            : entry * (1 - volFactor);
-          const sl = direction === "LONG"
-            ? entry * (1 - volFactor)
-            : entry * (1 + volFactor);
-          
-          // MANDATORY: Create setup regardless of whitelist check
-          // Whitelisting is a risk/execution decision, not a signal validity decision
-          const setup = {
-            symbol,
-            mode: "SNIPER" as const,
-            direction: direction as "LONG" | "SHORT",
-            score: Math.min(85, 100),
-            reason: `${signalState} ${direction} - impulse=${ignitionProbability.toFixed(0)}`,
-            price: entry,
-            entry, // GUARANTEED: last candle close
-            tp,    // GUARANTEED: entry ± volatility%
-            sl,    // GUARANTEED: entry ∓ volatility%
-            momentum: {
-              stochRsiSignal: `Stoch RSI: ${stochRsi?.toFixed(1) ?? "—"}`,
-              emaStackSignal: direction === "LONG" ? "8 EMA accelerating up" : "8 EMA accelerating down",
-              volatilitySignal: volatilityLevel && volatilityLevel > 45 ? "Expansion" : "Forming",
-              trend4H: priceData.htf4hTrend === "BULLISH" || priceData.htf4hTrend === "BEARISH",
-            },
-            targetPrices: card.targetPrices || undefined,
-            riskReward: card.riskReward || undefined,
-          };
-          
-          // MANDATORY: Add setup to output
-          setups.push(setup);
-          
-          console.log(
-            `[SETUP_HYDRATED] ${symbol} ACTIVE_SNIPER ${direction} | ` +
-            `entry=${entry.toFixed(2)} tp=${tp.toFixed(2)} sl=${sl.toFixed(2)} | ` +
-            `impulse=${ignitionProbability.toFixed(1)}`
-          );
-        }
+      // v24.0: SETUP attachment (already created early if eligible)
+      // If setup was created during impulse evaluation, attach it to output
+      if (newEventFired && signalState === "ACTIVE_SNIPER") {
+        const setup = {
+          symbol,
+          mode: "SNIPER" as const,
+          direction: direction as "LONG" | "SHORT",
+          score: Math.ceil(confidence),
+          reason: `${signalState} ${direction} - impulse=${ignitionProbability.toFixed(0)}, confidence=${confidence.toFixed(0)}%`,
+          price: newEventFired.entry,
+          entry: newEventFired.entry,
+          tp: newEventFired.tp,
+          sl: newEventFired.sl,
+          tp1: newEventFired.tp1,
+          tp2: newEventFired.tp2,
+          momentum: {
+            stochRsiSignal: `Stoch RSI: ${stochRsi?.toFixed(1) ?? "—"}`,
+            emaStackSignal: direction === "LONG" ? "8 EMA accelerating up" : "8 EMA accelerating down",
+            volatilitySignal: volatilityLevel && volatilityLevel > 45 ? "Expansion" : "Forming",
+            trend4H: priceData.htf4hTrend === "BULLISH" || priceData.htf4hTrend === "BEARISH",
+          },
+          targetPrices: card.targetPrices || undefined,
+          riskReward: card.riskReward || undefined,
+          qualityFlag: newEventFired.qualityFlag || undefined,
+          flagReason: newEventFired.flagReason || undefined,
+        };
+        
+        setups.push(setup);
+        
+        console.log(
+          `[SETUP_ATTACHED] ${symbol} ACTIVE_SNIPER | ` +
+          `entry=${setup.entry.toFixed(2)} tp=${setup.tp.toFixed(2)} sl=${setup.sl.toFixed(2)} | ` +
+          `confidence=${confidence.toFixed(0)}% | ` +
+          `flag=${setup.qualityFlag || "CLEAN"}`
+        );
       }
     } catch (error) {
       const displaySymbol = symbol || rawSymbol || "UNKNOWN";
