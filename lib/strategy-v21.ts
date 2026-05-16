@@ -643,8 +643,8 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
 
       // Generate setup only for ACTIVE_SNIPER
       if (signalState === "ACTIVE_SNIPER" && direction !== "NEUTRAL") {
-        // v21.2.1: FINAL SAFETY NET - verify asset one more time before SNIPER output
-        if (!VALID_ASSETS.has(symbol)) {
+        // v21.2.1: FINAL SAFETY NET - verify asset is in canonical whitelist
+        if (!["BTC", "ETH", "SOL"].includes(symbol)) {
           console.log(`[ASSET_REJECT_FINAL] ${symbol} - failed final safety check, not adding to SNIPER setups`);
           continue;
         }
