@@ -929,7 +929,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     symbol,
     price: priceData.price,
     source: priceData.source,
-    degraded,
+    degraded: systemDegraded,
 
     direction,
     mode: "NONE",
