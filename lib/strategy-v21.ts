@@ -459,9 +459,10 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
   const cycleStart = Date.now();
 
   for (const [rawSymbol, priceData] of Object.entries(market)) {
+    let symbol: string | null = null;
     try {
       // v21.2.1: HARD ASSET FILTER - CRITICAL DATA HYGIENE BOUNDARY
-      const symbol = normalizeAsset(rawSymbol);
+      symbol = normalizeAsset(rawSymbol);
       if (!symbol) {
         console.log(`[ASSET_REJECT] ${rawSymbol} - not in canonical set (BTC/ETH/SOL)`);
         continue;
@@ -647,9 +648,10 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         console.log(`[STATE] NO_SETUP ${symbol} ${signalState} | ${blockReason}`);
       }
     } catch (error) {
-      console.error(`[STATE] ERROR processing ${symbol}:`, error);
+      const displaySymbol = symbol || rawSymbol || "UNKNOWN";
+      console.error(`[STATE] ERROR processing ${displaySymbol}:`, error);
       cards.push({
-        symbol,
+        symbol: displaySymbol,
         price: priceData.price,
         source: "v21.2.0-error",
         degraded: true,
@@ -671,7 +673,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
         expectedMovePercent: null,
         targetPrices: null,
         riskReward: null,
-        cycleId: `${Date.now()}-${symbol}`,
+        cycleId: `${Date.now()}-${displaySymbol}`,
         notes: "ERROR",
         updatedAt: new Date().toISOString(),
       });
