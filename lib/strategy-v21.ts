@@ -11,7 +11,7 @@
  * 
  * NEW in v22.0:
  * - Multi-cycle directional consistency check (2 consecutive cycles required)
- * - Real confidence calculation and HARD gating (>= 40 required, v23.2 adjustment)
+ * - Real confidence calculation and HARD gating (>= 70 required)
  * - Impulse decay detection (reject if weakening or single-cycle spikes)
  * - HTF alignment adjustment (±10 confidence, not blocking)
  * - Signal validity window (2-4 candles, auto-expire)
@@ -283,11 +283,9 @@ function validateQualityFilter(
   // =========================================================================
   // GATE 3: Confidence Gating (HARD BLOCKER - not just display)
   // =========================================================================
-  // v23.2.0: Lowered from 70% to 40% to match live market conditions
-  // Average confidence observed: 30-42%, threshold of 70% blocks all signals
-  if (finalConfidence < 40) {
+  if (finalConfidence < 70) {
     gateTrace.finalDecision = "BLOCKED";
-    gateTrace.blockReason = `[GATE3_CONFIDENCE] ${finalConfidence.toFixed(0)}% < 40% threshold (base: ${baseConfidence.toFixed(0)}, HTF adj: ${htfAdjustment > 0 ? '+' : ''}${htfAdjustment})`;
+    gateTrace.blockReason = `[GATE3_CONFIDENCE] ${finalConfidence.toFixed(0)}% < 70% threshold (base: ${baseConfidence.toFixed(0)}, HTF adj: ${htfAdjustment > 0 ? '+' : ''}${htfAdjustment})`;
 
     return {
       canFire: false,
@@ -378,7 +376,7 @@ function updateCycleMemory(
  * Fire event if:
  * 1. Impulse >= 27 AND not weakening
  * 2. Direction consistent across 2 cycles
- * 3. Confidence >= 40 (after HTF adjustment, v23.2 rebalance)
+ * 3. Confidence >= 70 (after HTF adjustment)
  * 4. Not a single-cycle spike
  * 5. No active event exists
  * 6. Signal validity window allows
