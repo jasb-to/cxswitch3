@@ -8,7 +8,7 @@ import { calculatePatches, applySnapshotPatches } from "@/lib/snapshot-patcher";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// v7.2.7 FIX #3: CRON optimized for delta updates, not full rebuilds
+// v8.0: CRON with hard pipeline segregation (execution vs display)
 export async function GET(req: NextRequest) {
   try {
     const secret = process.env.CRON_SECRET;
