@@ -3,7 +3,7 @@ import { generateSetups, generateDisplayCards } from "@/lib/strategy-v6";
 import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
 import { getSnapshot, setSnapshot } from "@/lib/runtime-snapshot";
-import { calculatePatches, applySnapshotPatches } from "@/lib/snapshot-patcher";
+import { mergeSnapshots, validateSnipperCardState } from "@/lib/snapshot-merger";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -75,6 +75,7 @@ async function runExecutionCycle(): Promise<{
  * - Soft async (can lag without affecting execution)
  * - Independent timer
  * - No budget coupling
+ * - STATEFUL: Uses previous snapshot as fallback if CoinGecko fails (v8.1 FIX #3)
  */
 async function runDisplayCycle(): Promise<{
   displayCards: any[];
@@ -97,9 +98,25 @@ async function runDisplayCycle(): Promise<{
     // STEP 2: ONLY generate display cards (fallback)
     const displayCards = generateDisplayCards(segregatedMarkets.display);
     
-    console.log(`[DISPLAY_CYCLE] Generated ${displayCards.length} cards in ${Date.now() - cycleStart}ms`);
+    // STEP 3: If display cycle generated cards, return them
+    // Otherwise, fall back to previous display cards from snapshot
+    if (displayCards.length > 0) {
+      console.log(`[DISPLAY_CYCLE] Generated ${displayCards.length} cards in ${Date.now() - cycleStart}ms`);
+      return { displayCards, timeMs: Date.now() - cycleStart };
+    }
     
-    return { displayCards, timeMs: Date.now() - cycleStart };
+    // FALLBACK (v8.1 FIX #3): Use previous display cards from snapshot
+    // This ensures BTC/ETH are never lost if CoinGecko temporarily fails
+    const previousSnapshot = getSnapshot();
+    const previousDisplayCards = previousSnapshot?.cards?.filter(c => c.degraded) || [];
+    
+    if (previousDisplayCards.length > 0) {
+      console.log(`[DISPLAY_CYCLE] Using ${previousDisplayCards.length} cards from previous snapshot (fallback)`);
+      return { displayCards: previousDisplayCards, timeMs: Date.now() - cycleStart };
+    }
+    
+    console.log(`[DISPLAY_CYCLE] No display cards generated or available in fallback`);
+    return { displayCards: [], timeMs: Date.now() - cycleStart };
   } finally {
     displayCycleRunning = false;
     lastDisplayCycleTime = Date.now();
@@ -148,18 +165,29 @@ export async function GET(req: NextRequest) {
     const newCards = [...executionCards, ...displayCards];
     console.log(`[CRON] Card generation: ${executionResult.timeMs + displayResult.timeMs}ms - ${executionCards.length} execution + ${displayCards.length} display`);
 
-    // STEP 3: Apply delta patching
+    // STEP 3: Stateful snapshot merge (v8.1 FIX #1)
+    // Preserves previous state unless explicitly replaced by same symbol
     const existingSnapshot = getSnapshot();
     const existingCards = existingSnapshot?.cards || [];
     
-    // v8.1 FIX: Use complete newCards array instead of patch-based reconstruction
-    // Patches are for incremental updates only, not for replacing cards
-    // This ensures display pipeline cards retain all their fields
-    const patchedCards = newCards.length > 0 ? newCards : existingCards;
+    // Merge cards: keep existing → override with execution → add display (if not present)
+    // This ensures display fallback is never lost, execution always takes priority
+    const patchedCards = mergeSnapshots(existingCards, {
+      executionCards,
+      displayCards,
+    });
     
-    console.log(`[DELTA] Using complete snapshot: ${patchedCards.length} cards (${executionCards.length} execution + ${displayCards.length} display)`);
+    console.log(`[MERGE] Stateful snapshot: ${patchedCards.length} cards (${executionCards.length} execution + ${displayCards.length} display, preserved ${existingCards.length - (executionCards.length + displayCards.length)} previous)`);
 
-    // STEP 4: Update snapshot (only changed parts)
+    // STEP 4: Validate SNIPER cards completed full pipeline (v8.1 FIX #2)
+    // SNIPER_READY is intermediate, not final. Must have TP/SL before rendering
+    for (const card of patchedCards) {
+      if (!validateSnipperCardState(card)) {
+        console.warn(`[VALIDATION] Card ${card.symbol} failed pipeline validation`);
+      }
+    }
+
+    // STEP 5: Update snapshot (only changed parts)
     setSnapshot({
       updatedAt: new Date().toISOString(),
       cards: patchedCards,
