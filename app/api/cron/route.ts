@@ -28,6 +28,10 @@ let lastExecutionCycleTime = 0;
 let displayCycleRunning = false;
 let lastDisplayCycleTime = 0;
 
+// Global CRON mutex (v8.1 hardening)
+// Prevents duplicate CRON invocations from overlapping serverless executions
+let globalCronLocked = false;
+
 /**
  * v8.1: Execution Cycle (KRAKEN ONLY)
  * - Hard real-time requirements
@@ -105,17 +109,30 @@ async function runDisplayCycle(): Promise<{
 // v8.0 header: CRON optimized for delta updates, not full rebuilds
 export async function GET(req: NextRequest) {
   try {
-    const secret = process.env.CRON_SECRET;
-    if (secret) {
-      const auth = req.headers.get("authorization");
-      const query = new URL(req.url).searchParams.get("secret");
-      if (auth !== `Bearer ${secret}` && query !== secret) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      }
+    // v8.1 CRITICAL: Global CRON mutex to prevent duplicate execution
+    // Vercel serverless can invoke this handler multiple times per tick if not guarded
+    if (globalCronLocked) {
+      console.log("[CRON] Skipped - already running (mutex locked)");
+      return NextResponse.json({ 
+        ok: false, 
+        reason: "CRON already running (mutex locked)" 
+      }, { status: 429 });
     }
 
-    console.log("[CRON] Start - v8.1 orchestration isolation");
-    const cronStart = Date.now();
+    globalCronLocked = true;
+
+    try {
+      const secret = process.env.CRON_SECRET;
+      if (secret) {
+        const auth = req.headers.get("authorization");
+        const query = new URL(req.url).searchParams.get("secret");
+        if (auth !== `Bearer ${secret}` && query !== secret) {
+          return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+        }
+      }
+
+      console.log("[CRON] Start - v8.1 orchestration isolation");
+      const cronStart = Date.now();
 
     // v8.1: RUN BOTH CYCLES INDEPENDENTLY (not sequentially)
     // Each cycle is completely isolated, no timing interference
@@ -183,11 +200,21 @@ export async function GET(req: NextRequest) {
         alertsQueued: setups.length 
       }
     });
-  } catch (error) {
-    console.error('[CRON ERROR]', error);
+    } catch (error) {
+      console.error('[CRON ERROR]', error);
+      return NextResponse.json(
+        { error: error instanceof Error ? error.message : 'Unknown', ok: false },
+        { status: 500 }
+      );
+    } finally {
+      // v8.1: Always release the mutex
+      globalCronLocked = false;
+    }
+  } catch (authError) {
+    console.error('[CRON AUTH ERROR]', authError);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Unknown', ok: false },
-      { status: 500 }
+      { error: 'Authorization failed', ok: false },
+      { status: 401 }
     );
   }
 }

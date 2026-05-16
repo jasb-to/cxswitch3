@@ -327,7 +327,6 @@ export function generateDisplayCards(displayMarkets: Record<string, PriceData>):
       signalState: "BUILDING",  // Display only, no execution
       mode: "NONE",
       confidence: 0,
-      marketClass: "DISPLAY_ONLY",
       direction: "NEUTRAL",
       tradeReadinessScore: null,
       ignitionProbability: 0,
