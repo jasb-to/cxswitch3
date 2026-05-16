@@ -55,8 +55,8 @@ async function runExecutionCycle(): Promise<{
   try {
     console.log("[EXEC_CYCLE] Start - Kraken only, hard real-time");
     
-    // STEP 1: Fetch markets (segregated at ingestion)
-    const segregatedMarkets = await refreshMarketData();
+    // STEP 1: Fetch markets (segregated at ingestion) - v8.1 FIX: Use execution lock
+    const segregatedMarkets = await refreshMarketData("execution");
     
     // STEP 2: ONLY scan execution pipeline (Kraken)
     const { cards: executionCards, setups } = await generateSetups(segregatedMarkets);
@@ -92,8 +92,8 @@ async function runDisplayCycle(): Promise<{
   try {
     console.log("[DISPLAY_CYCLE] Start - Fallback/CoinGecko only, soft async");
     
-    // STEP 1: Fetch markets (already segregated)
-    const segregatedMarkets = await refreshMarketData();
+    // STEP 1: Fetch markets (already segregated) - v8.1 FIX: Use display lock (NEVER blocks)
+    const segregatedMarkets = await refreshMarketData("display");
     
     // STEP 2: ONLY generate display cards (fallback)
     const displayCards = generateDisplayCards(segregatedMarkets.display);
