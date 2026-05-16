@@ -639,7 +639,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       const card: SymbolCardState = {
         symbol,
         price: priceData.price,
-        source: "v21.3.0",
+        source: "v21.1.0",
         degraded: false,
         signalState,
         marketClass: "TREND_FOLLOWING",
@@ -738,7 +738,7 @@ export async function generateSetups(market: Record<string, PriceData>): Promise
       cards.push({
         symbol: displaySymbol,
         price: priceData.price,
-        source: "v21.2.0-error",
+        source: "v21.1.0-error",
         degraded: true,
         signalState: "NONE",
         marketClass: "CHOP",
