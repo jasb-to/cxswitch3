@@ -55,21 +55,42 @@ for (const symbol of TRACKED_SYMBOLS) {
 // Dumb job: fetch → cache → return
 // ═══════════════════════════════════════════════════════════════════════════
 
-let isUpdating = false;
+// v8.1 FIX: Split locks per pipeline (CRITICAL ARCHITECTURE)
+// NEVER use shared isUpdating flag - breaks v8.1 independence
+// Each pipeline has independent lock to prevent internal duplicate fetches
+let executionMarketLock = false;  // Prevents duplicate execution refreshes
+let displayMarketLock = false;    // Prevents duplicate display refreshes
 
 /**
  * Refresh all prices and return segregated market pipelines
  * CALLED BY: cron jobs only  
  * Returns: { execution, display } completely separate pipelines
  * RULE: Segregate at ingestion - NEVER mix in same cycle
+ * 
+ * v8.1 FIX: Pipeline parameter determines which lock applies
+ * - "execution": Uses executionMarketLock (can run in parallel with display)
+ * - "display": Uses displayMarketLock, ALWAYS allowed (never blocked)
  */
-export async function refreshMarketData(): Promise<SegregatedMarketData> {
-  if (isUpdating) {
-    console.log("[MARKET] Already updating");
+export async function refreshMarketData(pipeline: "execution" | "display" = "execution"): Promise<SegregatedMarketData> {
+  // v8.1 RULE: Display is ALWAYS allowed, never waits
+  if (pipeline === "execution" && executionMarketLock) {
+    console.log("[MARKET] Execution already refreshing, using cache");
     return getMarketSnapshot();
   }
 
-  isUpdating = true;
+  // Display NEVER blocks, even if execution is running
+  if (pipeline === "display" && displayMarketLock) {
+    console.log("[MARKET] Display already refreshing, using cache");
+    return getMarketSnapshot();
+  }
+
+  // Set appropriate lock
+  if (pipeline === "execution") {
+    executionMarketLock = true;
+  } else {
+    displayMarketLock = true;
+  }
+
   const now = Date.now();
 
   try {
@@ -102,7 +123,12 @@ export async function refreshMarketData(): Promise<SegregatedMarketData> {
       }
     }
   } finally {
-    isUpdating = false;
+    // Release appropriate lock
+    if (pipeline === "execution") {
+      executionMarketLock = false;
+    } else {
+      displayMarketLock = false;
+    }
   }
 
   return getMarketSnapshot();
@@ -189,7 +215,7 @@ export function getCacheStatus(): {
   }
 
   return {
-    refreshing: isUpdating,
+    refreshing: executionMarketLock || displayMarketLock,  // Either pipeline refreshing
     symbols,
   };
 }
