@@ -29,12 +29,11 @@ export function getInFlightRequest(key: string): Promise<any> | undefined {
 // ═══════════════════════════════════════════════════════════════════════════
 // PER-SYMBOL SCHEDULING: Stagger fetch times to avoid rate spikes
 // NEW: Retry priority differentiation — retries bypass stagger delay
-// v8.0.3 OPTIMIZATION: Reduced stagger delays from 0/250/500 to 0/100/150 for faster market refresh
 // ═══════════════════════════════════════════════════════════════════════════
 const SYMBOL_STAGGER_MS: Record<string, number> = {
   BTC: 0,
-  ETH: 100,    // v8.0.3: Reduced from 250ms
-  SOL: 150,    // v8.0.3: Reduced from 500ms
+  ETH: 250,
+  SOL: 500,
 };
 
 export async function staggerRequest<T>(
