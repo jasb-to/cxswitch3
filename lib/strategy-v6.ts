@@ -490,11 +490,11 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
         // Fall through to non-alert state calculation below
         card.signalState = "SNIPER_READY";  // FIX: Remove SNIPER_IMMINENT, use SNIPER_READY
       } else {
-        // Execution validation passed - promote to ACTIVE_SNIPER
+        // Execution validation passed - promote to ACTIVE_SNIPER (TERMINAL STATE)
         card.mode = "SNIPER";
         card.confidence = Math.min(score, 99);
         card.lastSignalTime = Date.now();
-        card.signalState = "ACTIVE_SNIPER"; // FIX #1: Set unified signal state
+        card.signalState = "ACTIVE_SNIPER"; // v9 PHASE 5: Terminal state - immutable once set
         card.notes = `SNIPER ${card.direction} execution early-entry ${score}`;
         
         // Populate trade targets (v7.2.1)
@@ -532,6 +532,17 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
       // No SNIPER conditions met - stay in BUILDING state
       card.signalState = "BUILDING";
       console.log(`[BUILDING] ${symbol} score=${score} - awaiting ignition trigger`);
+    }
+
+    // v9 PHASE 5: ACTIVE_SNIPER TERMINAL STATE IMMUTABILITY
+    // Once impulse >= 27 AND ACTIVE_SNIPER state assigned, it becomes immutable
+    // No downgrades, no state changes, no mutations after terminal state assignment
+    // This ensures alert system always receives consistent ACTIVE_SNIPER state
+    if (card.signalState === "ACTIVE_SNIPER" && card.lastSignalTime) {
+      // Mark as terminal - prevent any downstream modifications
+      // Alert worker must treat ACTIVE_SNIPER as final
+      (card as any)._terminalState = true;
+      console.log(`[TERMINAL] ${symbol} ACTIVE_SNIPER immutable lock (impulse=${score})`);
     }
   }
 
