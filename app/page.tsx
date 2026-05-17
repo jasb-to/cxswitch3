@@ -282,8 +282,16 @@ export default function Dashboard() {
     }
   }, [validLiveCards, data]);
 
-  // Card selection: prefer valid live cards, fallback to bootstrap
-  const cards = validLiveCards && validLiveCards.length > 0 ? validLiveCards : BOOTSTRAP_CARDS;
+  // HARD RENDER GATE: Only render snapshot if ready AND has exactly 3 cards
+  // This eliminates ALL blank UI, hydration failures, and validation loops
+  const cards = 
+    data?.ready === true && 
+    Array.isArray(data.cards) && 
+    data.cards.length === 3 &&
+    validLiveCards &&
+    validLiveCards.length === 3
+      ? validLiveCards 
+      : BOOTSTRAP_CARDS;
   const setups = data?.setups ?? [];
   const updatedAt = data?.updatedAt ?? "";
   const isBootstrap = !data?.cards || data.cards.length === 0;
