@@ -241,19 +241,21 @@ export default function Dashboard() {
     { refreshInterval: 30_000, keepPreviousData: true, revalidateOnFocus: false }
   );
 
-  // CANONICAL RENDER CONTRACT: ONE gate only
-  // Backend → snapshot → frontend render
-  // No validation, no interpretation, no duplication
-  const cards =
-    data?.ready === true &&
-    Array.isArray(data.cards) &&
-    data.cards.length === 3
-      ? data.cards
-      : BOOTSTRAP_CARDS;
-  
-  const setups = data?.setups ?? [];
-  const updatedAt = data?.updatedAt ?? "";
-  const isBootstrap = cards === BOOTSTRAP_CARDS;
+  // CRITICAL: Freeze snapshot at render boundary with useMemo
+  // This ensures snapshot is computed ONCE per render cycle
+  // Prevents dependency array instability and derived state bugs
+  const snapshot = useMemo(() => {
+    if (!data?.ready || !Array.isArray(data.cards) || data.cards.length !== 3) {
+      return { cards: BOOTSTRAP_CARDS, setups: [], updatedAt: "", isBootstrap: true };
+    }
+    return { cards: data.cards, setups: data.setups ?? [], updatedAt: data.updatedAt ?? "", isBootstrap: false };
+  }, [data?.ready, data?.cards, data?.setups, data?.updatedAt]);
+
+  // Use frozen snapshot directly - NO recomputation
+  const cards = snapshot.cards;
+  const setups = snapshot.setups;
+  const updatedAt = snapshot.updatedAt;
+  const isBootstrap = snapshot.isBootstrap;
   const fetchedAtMs = updatedAt ? new Date(updatedAt).getTime() : 0;
   const isStale = !isBootstrap && isHydrated && fetchedAtMs > 0 && now > 0 && (now - fetchedAtMs) > STALE_THRESHOLD_MS;
   const lastUpdateTime = isHydrated && updatedAt ? new Date(updatedAt).toLocaleTimeString("en-GB", { hour12: false }) : "—";
