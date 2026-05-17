@@ -13,6 +13,7 @@ type RuntimeSnapshot = {
   updatedAt: string;
   cards: any[];
   setups: any[];
+  ready?: boolean; // Atomic readiness flag - snapshot is valid only when ready === true
 };
 
 declare global {
@@ -24,14 +25,22 @@ const defaultSnapshot: RuntimeSnapshot = {
   updatedAt: "",
   cards: [],
   setups: [],
+  ready: false, // Default to not ready until explicitly set
 };
 
 export function setSnapshot(data: RuntimeSnapshot) {
-  globalThis.__snapshot__ = data;
+  // ATOMIC: Always set ready=true when snapshot is updated
+  // UI must NEVER read snapshot during construction (ready=false)
+  const snapshot: RuntimeSnapshot = {
+    ...data,
+    ready: data.cards && data.cards.length > 0 ? true : false,
+  };
+  globalThis.__snapshot__ = snapshot;
   console.log("[SNAPSHOT] Persisted to globalThis", {
-    updatedAt: data.updatedAt,
-    cardCount: data.cards.length,
-    setupCount: data.setups.length,
+    updatedAt: snapshot.updatedAt,
+    cardCount: snapshot.cards.length,
+    setupCount: snapshot.setups.length,
+    ready: snapshot.ready,
   });
 }
 
