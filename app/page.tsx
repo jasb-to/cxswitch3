@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR from "swr";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 import { EMPTY_SNAPSHOT } from "@/lib/canonical-snapshot";
@@ -241,21 +241,18 @@ export default function Dashboard() {
     { refreshInterval: 30_000, keepPreviousData: true, revalidateOnFocus: false }
   );
 
-  // CRITICAL: Freeze snapshot at render boundary with useMemo
-  // This ensures snapshot is computed ONCE per render cycle
-  // Prevents dependency array instability and derived state bugs
-  const snapshot = useMemo(() => {
-    if (!data?.ready || !Array.isArray(data.cards) || data.cards.length !== 3) {
-      return { cards: BOOTSTRAP_CARDS, setups: [], updatedAt: "", isBootstrap: true };
-    }
-    return { cards: data.cards, setups: data.setups ?? [], updatedAt: data.updatedAt ?? "", isBootstrap: false };
-  }, [data?.ready, data?.cards, data?.setups, data?.updatedAt]);
+  // BULLETPROOF: ONE single validation gate - no useMemo, no wrappers, no derivation
+  const isValid =
+    data &&
+    data.ready === true &&
+    Array.isArray(data.cards) &&
+    data.cards.length === 3;
 
-  // Use frozen snapshot directly - NO recomputation
-  const cards = snapshot.cards;
-  const setups = snapshot.setups;
-  const updatedAt = snapshot.updatedAt;
-  const isBootstrap = snapshot.isBootstrap;
+  // Derivations ONLY from the isValid gate
+  const cards = isValid ? data.cards : BOOTSTRAP_CARDS;
+  const setups = isValid ? (data.setups ?? []) : [];
+  const updatedAt = isValid ? (data.updatedAt ?? "") : "";
+  const isBootstrap = !isValid;
   const fetchedAtMs = updatedAt ? new Date(updatedAt).getTime() : 0;
   const isStale = !isBootstrap && isHydrated && fetchedAtMs > 0 && now > 0 && (now - fetchedAtMs) > STALE_THRESHOLD_MS;
   const lastUpdateTime = isHydrated && updatedAt ? new Date(updatedAt).toLocaleTimeString("en-GB", { hour12: false }) : "—";
