@@ -62,7 +62,28 @@ async function runExecutionCycle(): Promise<{
     // STEP 2: ONLY scan execution pipeline (Kraken)
     const { cards: executionCards, setups } = await generateSetups(segregatedMarkets);
     
-    console.log(`[EXEC_CYCLE] Generated ${executionCards.length} cards, ${setups.length} setups in ${Date.now() - cycleStart}ms`);
+    // v8.2 FIX: Populate canonical state with execution cards
+    for (const card of executionCards) {
+      if (card.symbol) {
+        initializeCanonicalState(card.symbol, card.price, card.source || "kraken");
+        updateCanonicalState(card.symbol, {
+          signalState: card.signalState,
+          direction: card.direction,
+          mode: card.mode,
+          targetPrices: card.targetPrices,
+          stopLoss: card.stopLoss,
+          riskReward: card.riskReward,
+          htf4hTrend: card.htf4hTrend,
+          htf4hMomentum: card.htf4hMomentum,
+          htf1hAlignment: card.htf1hAlignment,
+          execution15mState: card.execution15mState,
+          degraded: card.degraded,
+          confidence: card.confidence,
+        });
+      }
+    }
+    
+    console.log(`[EXEC_CYCLE] Generated ${executionCards.length} cards, ${setups.length} setups, populated canonical state in ${Date.now() - cycleStart}ms`);
     
     return { executionCards, setups, timeMs: Date.now() - cycleStart };
   } finally {
@@ -99,10 +120,24 @@ async function runDisplayCycle(): Promise<{
     // STEP 2: ONLY generate display cards (fallback)
     const displayCards = generateDisplayCards(segregatedMarkets.display);
     
+    // v8.2 FIX: Populate canonical state with display cards
+    for (const card of displayCards) {
+      if (card.symbol) {
+        initializeCanonicalState(card.symbol, card.price, card.source || "coingecko");
+        updateCanonicalState(card.symbol, {
+          signalState: card.signalState,
+          direction: card.direction,
+          mode: card.mode,
+          degraded: card.degraded,
+          confidence: card.confidence,
+        });
+      }
+    }
+    
     // STEP 3: If display cycle generated cards, return them
     // Otherwise, fall back to previous display cards from snapshot
     if (displayCards.length > 0) {
-      console.log(`[DISPLAY_CYCLE] Generated ${displayCards.length} cards in ${Date.now() - cycleStart}ms`);
+      console.log(`[DISPLAY_CYCLE] Generated ${displayCards.length} cards, populated canonical state in ${Date.now() - cycleStart}ms`);
       return { displayCards, timeMs: Date.now() - cycleStart };
     }
     
