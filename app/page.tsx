@@ -238,42 +238,121 @@ export default function Dashboard() {
   const { data, mutate, isValidating } = useSWR<{ updatedAt: string; cards: SymbolCardState[]; setups: any[] }>(
     "/api/signals",
     fetcher,
-    { refreshInterval: 30_000, keepPreviousData: true, revalidateOnFocus: false }
+    { revalidateOnFocus: false, dedupingInterval: 2000 }
   );
 
-  // BULLETPROOF: ONE single validation gate - no useMemo, no wrappers, no derivation
-  const isValid =
-    data &&
-    data.ready === true &&
-    Array.isArray(data.cards) &&
-    data.cards.length === 3;
+  // HARD EARLY RETURN: DO NOT PROCEED IF DATA IS INVALID
+  // This prevents any access to data.cards before full validation
+  if (
+    !data ||
+    data.ready !== true ||
+    !Array.isArray(data.cards) ||
+    data.cards.length !== 3
+  ) {
+    return <DashboardBootstrap />;
+  }
 
-  // Derivations ONLY from the isValid gate
-  const cards = isValid ? data.cards : BOOTSTRAP_CARDS;
-  const setups = isValid ? (data.setups ?? []) : [];
-  const updatedAt = isValid ? (data.updatedAt ?? "") : "";
-  const isBootstrap = !isValid;
+  // ONLY SAFE PATH BELOW THIS LINE
+  const cards = data.cards;
+  const setups = data.setups ?? [];
+  const updatedAt = data.updatedAt ?? "";
+
+  return (
+    <DashboardLive
+      cards={cards}
+      setups={setups}
+      updatedAt={updatedAt}
+      now={now}
+      isHydrated={isHydrated}
+      isValidating={isValidating}
+      mutate={mutate}
+      tg={tg}
+      setTg={setTg}
+      tgMsg={tgMsg}
+      setTgMsg={setTgMsg}
+      testTelegram={async () => {
+        setTg("sending");
+        setTgMsg("");
+        try {
+          const res = await fetch("/api/test-telegram", { method: "POST" });
+          const json = await res.json();
+          setTg(json.ok ? "ok" : "error");
+          setTgMsg(json.ok ? "Message sent" : (json.error ?? "Failed"));
+        } catch {
+          setTg("error");
+          setTgMsg("Network error");
+        }
+        setTimeout(() => { setTg("idle"); setTgMsg(""); }, 4000);
+      }}
+    />
+  );
+}
+
+function DashboardBootstrap() {
+  return (
+    <main className="min-h-screen bg-[#0a0a0a] text-white font-mono">
+      <header className="border-b border-zinc-800 px-6 py-3 flex items-center justify-between">
+        <p className="text-[11px] tracking-[0.22em] text-zinc-500">
+          MULTI-TIMEFRAME CRYPTO SIGNAL ANALYZER &nbsp;·&nbsp; REAL-TIME INTELLIGENCE
+        </p>
+        <p className="text-[11px] tracking-[0.15em] text-zinc-600">{VERSION}</p>
+      </header>
+
+      <div className="px-6 py-6 max-w-[1400px] mx-auto flex flex-col gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="col-span-full md:col-span-2">
+            <div className="border border-zinc-800 bg-zinc-950 p-8 flex items-center justify-center text-center">
+              <p className="text-zinc-400 text-sm">Loading market data...</p>
+            </div>
+          </div>
+          <div className="border border-zinc-800 bg-zinc-950 p-5">
+            <p className="text-[10px] tracking-[0.22em] text-zinc-500 mb-4">STATUS</p>
+            <p className="text-sm text-zinc-500">Awaiting snapshot...</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {BOOTSTRAP_CARDS.map((card) => (
+            <SymbolCard key={card.symbol} card={card} isBootstrap={true} />
+          ))}
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function DashboardLive({
+  cards,
+  setups,
+  updatedAt,
+  now,
+  isHydrated,
+  isValidating,
+  mutate,
+  tg,
+  setTg,
+  tgMsg,
+  setTgMsg,
+  testTelegram,
+}: {
+  cards: SymbolCardState[];
+  setups: any[];
+  updatedAt: string;
+  now: number;
+  isHydrated: boolean;
+  isValidating: boolean;
+  mutate: () => void;
+  tg: "idle" | "sending" | "ok" | "error";
+  setTg: (v: "idle" | "sending" | "ok" | "error") => void;
+  tgMsg: string;
+  setTgMsg: (v: string) => void;
+  testTelegram: () => Promise<void>;
+}) {
   const fetchedAtMs = updatedAt ? new Date(updatedAt).getTime() : 0;
-  const isStale = !isBootstrap && isHydrated && fetchedAtMs > 0 && now > 0 && (now - fetchedAtMs) > STALE_THRESHOLD_MS;
+  const isStale = isHydrated && fetchedAtMs > 0 && now > 0 && (now - fetchedAtMs) > STALE_THRESHOLD_MS;
   const lastUpdateTime = isHydrated && updatedAt ? new Date(updatedAt).toLocaleTimeString("en-GB", { hour12: false }) : "—";
-
   const assetCount = cards.length;
   const activeCount = setups.length;
-
-  async function testTelegram() {
-    setTg("sending");
-    setTgMsg("");
-    try {
-      const res = await fetch("/api/test-telegram", { method: "POST" });
-      const json = await res.json();
-      setTg(json.ok ? "ok" : "error");
-      setTgMsg(json.ok ? "Message sent" : (json.error ?? "Failed"));
-    } catch {
-      setTg("error");
-      setTgMsg("Network error");
-    }
-    setTimeout(() => { setTg("idle"); setTgMsg(""); }, 4000);
-  }
 
   return (
     <main className="min-h-screen bg-[#0a0a0a] text-white font-mono">
