@@ -241,27 +241,27 @@ export default function Dashboard() {
     { revalidateOnFocus: false, dedupingInterval: 2000 }
   );
 
-  // HARD EARLY RETURN: DO NOT PROCEED IF DATA IS INVALID
-  // This prevents any access to data.cards before full validation
-  if (
-    !data ||
-    data.ready !== true ||
-    !Array.isArray(data.cards) ||
-    data.cards.length !== 3
-  ) {
+  // STRICT VALIDATION: Only Dashboard interprets SWR data
+  const isValid =
+    data?.ready === true &&
+    Array.isArray(data?.cards) &&
+    data.cards.length === 3;
+
+  if (!isValid) {
     return <DashboardBootstrap />;
   }
 
-  // ONLY SAFE PATH BELOW THIS LINE
-  const cards = data.cards;
-  const setups = data.setups ?? [];
-  const updatedAt = data.updatedAt ?? "";
+  // SANITISED SNAPSHOT: Only pass validated data downstream
+  // No child component may access raw SWR data
+  const snapshot = {
+    cards: data.cards,
+    setups: data.setups ?? [],
+    updatedAt: data.updatedAt ?? "",
+  };
 
   return (
     <DashboardLive
-      cards={cards}
-      setups={setups}
-      updatedAt={updatedAt}
+      snapshot={snapshot}
       now={now}
       isHydrated={isHydrated}
       isValidating={isValidating}
@@ -322,9 +322,7 @@ function DashboardBootstrap() {
 }
 
 function DashboardLive({
-  cards,
-  setups,
-  updatedAt,
+  snapshot,
   now,
   isHydrated,
   isValidating,
@@ -335,9 +333,11 @@ function DashboardLive({
   setTgMsg,
   testTelegram,
 }: {
-  cards: SymbolCardState[];
-  setups: any[];
-  updatedAt: string;
+  snapshot: {
+    cards: SymbolCardState[];
+    setups: any[];
+    updatedAt: string;
+  };
   now: number;
   isHydrated: boolean;
   isValidating: boolean;
@@ -348,6 +348,7 @@ function DashboardLive({
   setTgMsg: (v: string) => void;
   testTelegram: () => Promise<void>;
 }) {
+  const { cards, setups, updatedAt } = snapshot;
   const fetchedAtMs = updatedAt ? new Date(updatedAt).getTime() : 0;
   const isStale = isHydrated && fetchedAtMs > 0 && now > 0 && (now - fetchedAtMs) > STALE_THRESHOLD_MS;
   const lastUpdateTime = isHydrated && updatedAt ? new Date(updatedAt).toLocaleTimeString("en-GB", { hour12: false }) : "—";
