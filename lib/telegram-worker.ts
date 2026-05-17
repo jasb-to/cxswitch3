@@ -71,13 +71,21 @@ async function processAlertQueueAsync() {
           continue;
         }
 
-        // v7.3.1 FIX #3: BLOCK TELEGRAM ALERTS IF HTF STRUCTURE INVALID
-        // Additional checks beyond signalState (defense in depth)
+        // v8.4 FIX: HTF VALIDATION IS MODE-AWARE
+        // SNIPER: Allow NEUTRAL 4H (early impulse detection, pre-macro breakout)
+        // CONFIRMED: Require non-NEUTRAL 4H (safe trend-following only)
         const htfValidationErrors: string[] = [];
         
-        // Check 1: 4H trend must not be NEUTRAL (caught in signal state, but double-check)
-        if (!job.htf4hTrend || job.htf4hTrend === "NEUTRAL") {
-          htfValidationErrors.push("4H trend NEUTRAL");
+        // Check 1: 4H trend validation is mode-dependent
+        // SNIPER allows NEUTRAL (that's the whole point - early entry before macro alignment)
+        // CONFIRMED requires alignment (strict safe system)
+        const isValidHTFForMode =
+          job.mode === "SNIPER"
+            ? true // SNIPER ignores 4H gating (macro is probability modifier only)
+            : job.htf4hTrend !== "NEUTRAL"; // CONFIRMED requires 4H alignment
+        
+        if (!isValidHTFForMode) {
+          htfValidationErrors.push(`4H trend ${job.htf4hTrend} invalid for ${job.mode}`);
         }
         
         // Check 2: 15M execution state must be valid
