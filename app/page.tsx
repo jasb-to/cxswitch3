@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
-import { normalizeCard, safePercent, safeBarWidth, getCardStatus } from "@/lib/ui-normalization";
+import { getFinalTradeState, safePercent, safeBarWidth, getReadinessColor } from "@/lib/single-state-machine";
 
 const VERSION = "v8.1";
 const STALE_THRESHOLD_MS = 6 * 60_000;
@@ -135,26 +135,19 @@ function fmt(n: number) {
 }
 
 function SymbolCard({ card }: { card: SymbolCardState }) {
-  // FIX #4: Do NOT use "LOADING" when data exists - use actual card state
+  // SINGLE SOURCE OF TRUTH: getFinalTradeState() is the ONLY place deciding UI state
   const isBootstrap = card.source === "bootstrap";
-  const isStale = false; // TODO: implement staleness check
-  const normalizedCard = normalizeCard(card);
-  const cardStatus = getCardStatus(normalizedCard, isStale);
+  const uiState = isBootstrap ? "BUILDING" : getFinalTradeState(card);
   
-  // FIX #1, #2, #3: Use signalState to determine display + TP visibility
-  const isActiveSignal = card.signalState === "ACTIVE_SNIPER" || card.signalState === "ACTIVE_CONFIRMED";
-  const hasSignal = card.mode === "SNIPER" || card.mode === "CONFIRMED";
+  // Map UI state to badge label
+  const statusBadge = isBootstrap ? "AWAITING DATA" : uiState.toUpperCase();
   
-  // FIX #8: Remove "WATCHING" - use signalState to show meaningful states (v7.2.8 adds SNIPER_IMMINENT)
-  const statusBadge = isBootstrap ? "AWAITING DATA" :
-    cardStatus === "EXECUTION" ? "SNIPER" :
-    cardStatus === "BUILDING" ? "BUILDING" :
-    cardStatus === "STALE" ? "STALE" :
-    card.signalState === "ACTIVE_CONFIRMED" ? "CONFIRMED" :
-    card.signalState === "CONFIRMED_READY" ? "CONFIRMED READY" :
-    card.signalState === "SNIPER_READY" ? "SNIPER READY" :
-    card.signalState === "SNIPER_IMMINENT" ? "SNIPER IMMINENT" :
-    card.marketReadinessState;
+  // Color for badge based on state
+  const badgeColor = 
+    isBootstrap ? "bg-zinc-700 text-zinc-300" :
+    uiState === "CONFIRMED" ? "bg-green-900 text-green-200" :
+    uiState === "SNIPER" ? "bg-blue-900 text-blue-200" :
+    "bg-zinc-800 text-zinc-300"; // BUILDING
   
   // Direction colors
   const directionColor = card.direction === "LONG" ? "text-green-400" : card.direction === "SHORT" ? "text-red-400" : "text-zinc-400";
@@ -181,17 +174,9 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
   
   const currentReadinessColor = readinessColor[card.marketReadinessState] || "text-zinc-400";
 
-  // Trade readiness score color bands
-  const readinessScoreColor = card.tradeReadinessScore === null 
-    ? "text-zinc-500" 
-    : card.tradeReadinessScore < 40 
-    ? "text-red-400" 
-    : card.tradeReadinessScore < 60 
-    ? "text-amber-400" 
-    : card.tradeReadinessScore < 75 
-    ? "text-cyan-400" 
-    : "text-green-400";
-
+  // Trade readiness score color - use getReadinessColor from single-state-machine
+  const readinessScoreColor = getReadinessColor(card.tradeReadinessScore);
+  
   const readinessBgBar = card.tradeReadinessScore === null 
     ? "bg-zinc-900" 
     : card.tradeReadinessScore < 40 
@@ -281,8 +266,8 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
         </p>
       </div>
 
-      {/* CONDITIONAL: Show targets ONLY if signal is ACTIVE (FIX #3) */}
-      {isActiveSignal && card.targetPrices && (
+      {/* CONDITIONAL: Show targets ONLY if state is SNIPER or CONFIRMED (FIX #3) */}
+      {(uiState === "SNIPER" || uiState === "CONFIRMED") && card.targetPrices && (
         <div className="border-t border-zinc-800 pt-4 space-y-2">
           <p className="text-xs text-zinc-500 uppercase tracking-wider">{card.mode} Entry</p>
           <div className="text-sm font-mono space-y-1">
