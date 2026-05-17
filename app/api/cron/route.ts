@@ -4,7 +4,7 @@ import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
 import { getSnapshot, setSnapshot } from "@/lib/runtime-snapshot";
 import { mergeSnapshots, validateSnipperCardState } from "@/lib/snapshot-merger";
-import { clearCanonicalStates, initializeCanonicalState, getAllCanonicalStates, canonicalToCard } from "@/lib/unified-market-state";
+import { clearCanonicalStates, initializeCanonicalState, updateCanonicalState, getAllCanonicalStates, canonicalToCard } from "@/lib/unified-market-state";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -66,7 +66,7 @@ async function runExecutionCycle(): Promise<{
     for (const card of executionCards) {
       if (card.symbol) {
         initializeCanonicalState(card.symbol, card.price, card.source || "kraken");
-        updateCanonicalState(card.symbol, {
+        updateCanonicalState(card.symbol.toUpperCase(), {
           signalState: card.signalState,
           direction: card.direction,
           mode: card.mode,
@@ -124,7 +124,7 @@ async function runDisplayCycle(): Promise<{
     for (const card of displayCards) {
       if (card.symbol) {
         initializeCanonicalState(card.symbol, card.price, card.source || "coingecko");
-        updateCanonicalState(card.symbol, {
+        updateCanonicalState(card.symbol.toUpperCase(), {
           signalState: card.signalState,
           direction: card.direction,
           mode: card.mode,
