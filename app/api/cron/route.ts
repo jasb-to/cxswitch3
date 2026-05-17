@@ -4,6 +4,7 @@ import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
 import { getSnapshot, setSnapshot } from "@/lib/runtime-snapshot";
 import { mergeSnapshots, validateSnipperCardState } from "@/lib/snapshot-merger";
+import { clearCanonicalStates, initializeCanonicalState, getAllCanonicalStates, canonicalToCard } from "@/lib/unified-market-state";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -151,6 +152,9 @@ export async function GET(req: NextRequest) {
       console.log("[CRON] Start - v8.1 orchestration isolation");
       const cronStart = Date.now();
 
+      // v8.2 FIX: Start fresh canonical state (one source of truth per cycle)
+      clearCanonicalStates();
+
       // v8.1 FIX #4: Sequential execution (execution → display)
       // Display cycle must run AFTER execution fetches all market data
       // Otherwise display cycle completes with 0 cards before markets are fetched
@@ -164,32 +168,25 @@ export async function GET(req: NextRequest) {
     const newCards = [...executionCards, ...displayCards];
     console.log(`[CRON] Card generation: ${executionResult.timeMs + displayResult.timeMs}ms - ${executionCards.length} execution + ${displayCards.length} display (sequential: exec first, then display with full market data)`);
 
-    // STEP 3: Stateful snapshot merge (v8.1 FIX #1)
-    // Preserves previous state unless explicitly replaced by same symbol
-    const existingSnapshot = getSnapshot();
-    const existingCards = existingSnapshot?.cards || [];
+    // STEP 3: v8.2 FIX - Use canonical state directly (unified source of truth)
+    // All cards already have canonical state populated by execution and display cycles
+    // No need for merging - canonical state is the definitive state
+    const canonicalCards = getAllCanonicalStates().map(canonicalToCard);
     
-    // Merge cards: keep existing → override with execution → add display (if not present)
-    // This ensures display fallback is never lost, execution always takes priority
-    const patchedCards = mergeSnapshots(existingCards, {
-      executionCards,
-      displayCards,
-    });
-    
-    console.log(`[MERGE] Stateful snapshot: ${patchedCards.length} cards (${executionCards.length} execution + ${displayCards.length} display, preserved ${existingCards.length - (executionCards.length + displayCards.length)} previous)`);
+    console.log(`[CANONICAL] Using ${canonicalCards.length} unified canonical states (BTC, ETH, SOL always present)`);
 
     // STEP 4: Validate SNIPER cards completed full pipeline (v8.1 FIX #2)
     // SNIPER_READY is intermediate, not final. Must have TP/SL before rendering
-    for (const card of patchedCards) {
+    for (const card of canonicalCards) {
       if (!validateSnipperCardState(card)) {
         console.warn(`[VALIDATION] Card ${card.symbol} failed pipeline validation`);
       }
     }
 
-    // STEP 5: Update snapshot (only changed parts)
+    // STEP 5: Update snapshot (using canonical state as source of truth)
     setSnapshot({
       updatedAt: new Date().toISOString(),
-      cards: patchedCards,
+      cards: canonicalCards,
       setups,
     });
 
@@ -221,7 +218,7 @@ export async function GET(req: NextRequest) {
         totalMs, 
         executionMs: executionResult.timeMs,
         displayMs: displayResult.timeMs,
-        cardsGenerated: patchedCards.length,
+        canonicalCards: canonicalCards.length,
         alertsQueued: setups.length 
       }
     });
