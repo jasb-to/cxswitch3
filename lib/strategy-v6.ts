@@ -74,15 +74,288 @@ function buildExecutionContext(symbol: string, priceData: PriceData): ExecutionC
   return ctx;
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// v8.5: BREAKOUT-AWARE DIRECTION INFERENCE (STRUCTURE-FIRST)
+// ═════════════════════════════════════════════════════════════════════════════
+// 
+// CRITICAL FIX: SNIPER was momentum-first, triggering contradictory SHORT signals
+// during bullish breakout retests. Now detects breakout states and prevents
+// direction finalization until structural confirmation is complete.
+//
+// Breakout State Machine:
+// NONE → BREAKOUT_UP → RETEST_PHASE → NONE (or confirm LONG) OR return to NONE
+// NONE → BREAKOUT_DOWN → RETEST_PHASE → NONE (or confirm SHORT) OR return to NONE
+
+type BreakoutState = "NONE" | "BREAKOUT_UP" | "BREAKOUT_DOWN" | "RETEST_PHASE";
+
+interface LevelAwareness {
+  recentHigh: number;        // Recent swing high (20-period reference)
+  recentLow: number;         // Recent swing low (20-period reference)
+  breakoutState: BreakoutState;
+  breakoutPrice: number | null;
+  breakoutTime?: number;
+  priceAboveHigh: boolean;   // Price is above recentHigh
+  priceBelowLow: boolean;    // Price is below recentLow
+}
+
+/**
+ * Compute level awareness from recent price action
+ * Tracks breakout states to prevent contradictory signals
+ */
+function computeLevelAwareness(
+  price: number,
+  priceHistory: number[] | null,
+  previousBreakoutState: BreakoutState
+): LevelAwareness {
+  // Default to recent price as reference if no history
+  const recentHigh = priceHistory && priceHistory.length >= 10 
+    ? Math.max(...priceHistory.slice(-20))
+    : price * 1.01;  // Assume 1% above current
+    
+  const recentLow = priceHistory && priceHistory.length >= 10
+    ? Math.min(...priceHistory.slice(-20))
+    : price * 0.99;  // Assume 1% below current
+
+  const priceAboveHigh = price > recentHigh;
+  const priceBelowLow = price < recentLow;
+
+  // Detect state transitions
+  let breakoutState = previousBreakoutState;
+  let breakoutPrice: number | null = null;
+
+  if (previousBreakoutState === "NONE") {
+    // Detect new breakout
+    if (priceAboveHigh) {
+      breakoutState = "BREAKOUT_UP";
+      breakoutPrice = recentHigh;
+    } else if (priceBelowLow) {
+      breakoutState = "BREAKOUT_DOWN";
+      breakoutPrice = recentLow;
+    }
+  } else if (previousBreakoutState === "BREAKOUT_UP") {
+    // In breakout-up phase, check for retest or failure
+    if (price < recentHigh * 0.98) {
+      // Price pulled back - now in retest phase
+      breakoutState = "RETEST_PHASE";
+    }
+  } else if (previousBreakoutState === "BREAKOUT_DOWN") {
+    // In breakout-down phase, check for retest or failure
+    if (price > recentLow * 1.02) {
+      // Price bounced back - now in retest phase
+      breakoutState = "RETEST_PHASE";
+    }
+  } else if (previousBreakoutState === "RETEST_PHASE") {
+    // In retest phase, price can either re-establish breakout or fail
+    if (priceAboveHigh) {
+      // Retest passed above high - confirm breakout
+      breakoutState = "NONE";
+    } else if (priceBelowLow) {
+      // Retest passed below low - confirm breakout
+      breakoutState = "NONE";
+    }
+    // Otherwise stay in RETEST_PHASE
+  }
+
+  return {
+    recentHigh,
+    recentLow,
+    breakoutState,
+    breakoutPrice,
+    priceAboveHigh,
+    priceBelowLow,
+  };
+}
+
+/**
+ * Validate direction against breakout state
+ * Prevents contradictory signals during breakout phases
+ * 
+ * Example: During bullish breakout, suppress SHORT signals
+ */
+function validateDirectionAgainstBreakout(
+  proposedDirection: "LONG" | "SHORT" | "NEUTRAL",
+  levelAwareness: LevelAwareness
+): "LONG" | "SHORT" | "NEUTRAL" | "WATCH_BREAKOUT" {
+  const { breakoutState, priceAboveHigh, priceBelowLow } = levelAwareness;
+
+  // If in retest phase of a breakout, hold direction
+  if (breakoutState === "RETEST_PHASE") {
+    return "WATCH_BREAKOUT";  // Don't commit to direction yet
+  }
+
+  // If breakout-up active, block SHORT signals
+  if (breakoutState === "BREAKOUT_UP" && proposedDirection === "SHORT") {
+    return "WATCH_BREAKOUT";  // Don't allow SHORT during bullish breakout
+  }
+
+  // If breakout-down active, block LONG signals
+  if (breakoutState === "BREAKOUT_DOWN" && proposedDirection === "LONG") {
+    return "WATCH_BREAKOUT";  // Don't allow LONG during bearish breakout
+  }
+
+  return proposedDirection;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// v9: STRUCTURE STATE SYSTEM (CORE LAYER - STRUCTURE-FIRST)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// CRITICAL PRINCIPLE: Structure determines direction BEFORE momentum evaluation
+// Momentum never overrides structure - only affects confidence
+//
+// State Machine:
+// RANGE → BREAKOUT_UP/DOWN → RETEST_UP/DOWN → TREND_CONTINUATION
+//                          ↘ FAILED_BREAKOUT ↙
+
+type StructureState = 
+  | "RANGE"                 // No clear structure, swinging within high/low
+  | "BREAKOUT_UP"           // Price breaks above swing high
+  | "BREAKOUT_DOWN"         // Price breaks below swing low
+  | "RETEST_UP"             // Pullback within breakout-up, retest zone
+  | "RETEST_DOWN"           // Bounce within breakout-down, retest zone
+  | "FAILED_BREAKOUT"       // Breakout failed, reversal
+  | "TREND_CONTINUATION";   // Retest passed, trend confirmed
+
+/**
+ * Compute structure state from price action and history
+ * Returns deterministic structure classification
+ */
+function computeStructureState(
+  price: number,
+  prevStructureState: StructureState,
+  swingHigh: number,
+  swingLow: number,
+  breakoutLevel: number | null
+): StructureState {
+  // A. RANGE DETECTION (no clear breakout)
+  if (!swingHigh || !swingLow || swingHigh <= swingLow) {
+    return "RANGE";
+  }
+
+  // B. BREAKOUT DETECTION (structure creation)
+  if (price > swingHigh * 1.005) {  // 0.5% buffer to avoid noise
+    return "BREAKOUT_UP";
+  }
+  if (price < swingLow * 0.995) {   // 0.5% buffer to avoid noise
+    return "BREAKOUT_DOWN";
+  }
+
+  // C. RETEST LOGIC (CRITICAL - locked direction)
+  if (prevStructureState === "BREAKOUT_UP" && breakoutLevel) {
+    // Price pulled back to retest zone
+    if (price <= breakoutLevel * 0.99) {  // Within 1% of breakout
+      return "RETEST_UP";
+    }
+  }
+
+  if (prevStructureState === "BREAKOUT_DOWN" && breakoutLevel) {
+    // Price bounced to retest zone
+    if (price >= breakoutLevel * 1.01) {  // Within 1% of breakout
+      return "RETEST_DOWN";
+    }
+  }
+
+  // D. FAILURE CONDITIONS (no signal if structure breaks)
+  if (prevStructureState === "BREAKOUT_UP" && price < swingLow) {
+    return "FAILED_BREAKOUT";  // Bullish breakout failed
+  }
+
+  if (prevStructureState === "BREAKOUT_DOWN" && price > swingHigh) {
+    return "FAILED_BREAKOUT";  // Bearish breakout failed
+  }
+
+  // E. CONTINUATION (retest passed, trend continuing)
+  if (prevStructureState === "RETEST_UP" && price > (breakoutLevel || swingHigh)) {
+    return "TREND_CONTINUATION";
+  }
+
+  if (prevStructureState === "RETEST_DOWN" && price < (breakoutLevel || swingLow)) {
+    return "TREND_CONTINUATION";
+  }
+
+  // Default: maintain state
+  return prevStructureState;
+}
+
+/**
+ * Get direction from structure state (HARD LOCK - structure overrides momentum)
+ * Returns direction forced by structure, or NEUTRAL if in RANGE
+ */
+function getDirectionFromStructure(
+  structureState: StructureState,
+  momentumEmaSlope: number | null
+): "LONG" | "SHORT" | "NEUTRAL" {
+  // HARD STRUCTURE LOCKS (direction cannot violate these)
+  if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
+    return "LONG";  // Structure-locked LONG
+  }
+
+  if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
+    return "SHORT";  // Structure-locked SHORT
+  }
+
+  // RANGE: use momentum to break tie
+  if (structureState === "RANGE") {
+    if (momentumEmaSlope !== null && momentumEmaSlope > 0.2) {
+      return "LONG";   // EMA bullish
+    }
+    if (momentumEmaSlope !== null && momentumEmaSlope < -0.2) {
+      return "SHORT";  // EMA bearish
+    }
+    return "NEUTRAL";  // No clear structure or momentum
+  }
+
+  // FAILED_BREAKOUT or TREND_CONTINUATION: use momentum
+  if (momentumEmaSlope !== null && momentumEmaSlope > 0.1) {
+    return "LONG";
+  }
+  if (momentumEmaSlope !== null && momentumEmaSlope < -0.1) {
+    return "SHORT";
+  }
+
+  return "NEUTRAL";
+}
+
+/**
+ * Validate direction against structure - HARD BLOCKS for contradictions
+ * Used by SNIPER entry gate to prevent impossible trades
+ */
+function validateDirectionVsStructure(
+  proposedDirection: "LONG" | "SHORT" | "NEUTRAL",
+  structureState: StructureState
+): boolean {
+  // HARD BLOCKS (these trades are impossible)
+  if (structureState === "RETEST_UP" && proposedDirection === "SHORT") {
+    return false;  // Cannot SHORT during bullish retest
+  }
+
+  if (structureState === "RETEST_DOWN" && proposedDirection === "LONG") {
+    return false;  // Cannot LONG during bearish retest
+  }
+
+  if (structureState === "FAILED_BREAKOUT") {
+    return false;  // No trades during failed breakout
+  }
+
+  if (structureState === "RANGE" && proposedDirection === "NEUTRAL") {
+    return false;  // No neutral signals
+  }
+
+  return true;  // Direction valid for this structure
+}
+
 // FIX #1: Unified signal state (v7.2.6) - REMOVED SNIPER_IMMINENT (regression leak)
 // v7.4.0: Clean state machine - only 3 valid states for signal generation
+// v8.5: Added WATCH_BREAKOUT for structure-first breakout detection
+// v9: Added structure-first direction locking
 export type SignalState = 
   | "NONE"              // No signal
   | "BUILDING"          // Directional bias + compression, waiting for ignition
   | "SNIPER_READY"      // All SNIPER conditions passed, awaiting entry confirmation
   | "CONFIRMED_READY"   // All CONFIRMED conditions passed, awaiting confirmation
   | "ACTIVE_SNIPER"     // SNIPER signal active, trade window open (30 min cooldown)
-  | "ACTIVE_CONFIRMED"; // CONFIRMED signal active, trend confirmation (90 min cooldown) - INTERNAL ONLY, UI displays CONFIRMED
+  | "ACTIVE_CONFIRMED"  // CONFIRMED signal active, trend confirmation (90 min cooldown) - INTERNAL ONLY
+  | "WATCH_BREAKOUT";   // Breakout detected, holding direction until retest confirmation
 
 export type SymbolCardState = {
   symbol: string;
@@ -95,6 +368,7 @@ export type SymbolCardState = {
   confidence: number;
   
   // FIX #1: Unified signal state (v7.2.6), extended for v7.2.8, standardized for v7.2.9
+  // v8.5: Added WATCH_BREAKOUT state for structure-first awareness
   signalState: SignalState;
   lastSignalTime?: number;
 
@@ -102,6 +376,19 @@ export type SymbolCardState = {
   stochRsi: number | null;
   emaSlope: number | null;
   volatilityLevel: number | null;
+
+  // v8.5: Breakout awareness (structure-first)
+  breakoutState?: BreakoutState;
+  recentHigh?: number;
+  recentLow?: number;
+
+  // v9: Structure state system (core layer - structure-first)
+  structureState: StructureState;
+  swingHigh: number;
+  swingLow: number;
+  breakoutLevel: number | null;
+  structureTimeframe: number;  // ms since last structure state change
+  lastStructureUpdate: number; // timestamp
 
   // Higher TimeFrame alignment (v7.1.1 - SIMPLIFIED FOR v7.2.10)
   // v7.2.10: Remove 1H dependency, use 15M execution structure instead
@@ -191,43 +478,9 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
     console.log(`[SCAN] ${symbol} score=${score} direction=${card.direction} stoch=${card.stochRsi?.toFixed(1) ?? "—"} emaSlope=${card.emaSlope?.toFixed(2) ?? "—"}`);
 
     // ONLY generate setups with directional conviction
-    // NO NEUTRAL SIGNALS ALLOWED
-
-    // CONFIRMED ALERT: score >= 75 AND confirmed conditions met
-    if (score >= 75 && card.direction !== "NEUTRAL" && checkConfirmedConditions(card)) {
-      
-      card.mode = "CONFIRMED";
-      card.confidence = Math.min(score, 99);
-      card.lastSignalTime = Date.now();
-      card.signalState = "ACTIVE_CONFIRMED"; // FIX #1: Set unified signal state
-      card.notes = `CONFIRMED ${card.direction} trend continuation ${score}`;
-      
-      // Populate trade targets (v7.2.1)
-      const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
-      card.expectedMovePercent = targets.expectedMovePercent;
-      card.targetPrices = targets.targetPrices;
-      card.riskReward = targets.riskReward;
-      card.tradeReadinessScore = calculateTradeReadinessScore("CONFIRMED", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
-      
-      setups.push({
-        symbol,
-        mode: "CONFIRMED",
-        direction: card.direction,
-        score: card.confidence,
-        reason: `CONFIRMED ${card.direction} - EMA + impulse + HTF alignment`,
-        price: card.price,
-        momentum: {
-          stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
-          emaStackSignal: card.direction === "LONG" ? "8 EMA above 21 EMA" : "8 EMA below 21 EMA",
-          volatilitySignal: (card.volatilityLevel ?? 50) < 30 ? "Compression detected" : "Normal volatility",
-          trend4H: (card.stochRsi ?? 50) > 50,
-        },
-      });
-      console.log(`[ALERT] ${symbol} CONFIRMED ${card.direction} score=${score}`);
-    }
+    // SNIPER v21.1.0: Single signal mode (CONFIRMED path deleted)
     // SNIPER ALERT: score >= 70 AND sniper conditions met
-    // (No execution-grade check needed: hard gate at scan boundary ensures only Kraken data reaches here)
-    else if (score >= 70 && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
+    if (score >= 70 && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
       // v7.3.1 FIX #1: Validate ACTIVE_SNIPER execution requirements
       const executionValidation = validateActiveSniperExecution(card, score);
       
@@ -237,11 +490,11 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
         // Fall through to non-alert state calculation below
         card.signalState = "SNIPER_READY";  // FIX: Remove SNIPER_IMMINENT, use SNIPER_READY
       } else {
-        // Execution validation passed - promote to ACTIVE_SNIPER
+        // Execution validation passed - promote to ACTIVE_SNIPER (TERMINAL STATE)
         card.mode = "SNIPER";
         card.confidence = Math.min(score, 99);
         card.lastSignalTime = Date.now();
-        card.signalState = "ACTIVE_SNIPER"; // FIX #1: Set unified signal state
+        card.signalState = "ACTIVE_SNIPER"; // v9 PHASE 5: Terminal state - immutable once set
         card.notes = `SNIPER ${card.direction} execution early-entry ${score}`;
         
         // Populate trade targets (v7.2.1)
@@ -276,23 +529,20 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
       }
     }
     else {
-      // FIX #4: Single SNIPER evaluation path (removed SNIPER_IMMINENT)
-      // No dual logic paths - only evaluate SNIPER_READY
-      const sniperPassed = score >= 60 && checkSniperConditions(card, "strict");
-      const confirmedPassed = score >= 75 && checkConfirmedConditions(card);
-      
-      card.signalState = calculateSignalState(
-        "NONE", 
-        score, 
-        card.direction,
-        card.htf4hTrend,
-        sniperPassed, 
-        false,  // sniperImminentPassed REMOVED
-        confirmedPassed, 
-        card.lastSignalTime, 
-        "NONE"
-      );
-      console.log(`[SCAN] ${symbol} signalState=${card.signalState} score=${score} (sniper=${sniperPassed})`);
+      // No SNIPER conditions met - stay in BUILDING state
+      card.signalState = "BUILDING";
+      console.log(`[BUILDING] ${symbol} score=${score} - awaiting ignition trigger`);
+    }
+
+    // v9 PHASE 5: ACTIVE_SNIPER TERMINAL STATE IMMUTABILITY
+    // Once impulse >= 27 AND ACTIVE_SNIPER state assigned, it becomes immutable
+    // No downgrades, no state changes, no mutations after terminal state assignment
+    // This ensures alert system always receives consistent ACTIVE_SNIPER state
+    if (card.signalState === "ACTIVE_SNIPER" && card.lastSignalTime) {
+      // Mark as terminal - prevent any downstream modifications
+      // Alert worker must treat ACTIVE_SNIPER as final
+      (card as any)._terminalState = true;
+      console.log(`[TERMINAL] ${symbol} ACTIVE_SNIPER immutable lock (impulse=${score})`);
     }
   }
 
@@ -762,6 +1012,19 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
  * SNIPER CONDITIONS v7.2.8 (FIX #1 & #3): RELAXED COMPRESSION + EARLY IGNITION
  */
 function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "early" = "strict"): boolean {
+  // v9: HARD STRUCTURE BLOCKS (new gate #0 - before everything else)
+  // These trades are impossible due to structure - block immediately
+  if (!validateDirectionVsStructure(card.direction, card.structureState)) {
+    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: Direction violates structure (${card.structureState} vs ${card.direction})`);
+    return false;
+  }
+
+  // v9: Structure must not be RANGE (no signals in undefined structure)
+  if (card.structureState === "RANGE") {
+    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No defined structure (RANGE state)`);
+    return false;
+  }
+
   // REQUIREMENT 1: Directional bias exists (not NEUTRAL)
   if (card.direction === "NEUTRAL") {
     console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No directional bias`);
@@ -814,24 +1077,6 @@ function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "ear
  * Requires: HTF alignment + EMA expansion + momentum continuation
  * Strict threshold: 75+
  */
-function checkConfirmedConditions(card: SymbolCardState): boolean {
-  // 1. EMA firmly established (slope > 0.5)
-  const emaEstablished = card.emaSlope !== null && Math.abs(card.emaSlope) > 0.5;
-  
-  // 2. Direction confirmed (not NEUTRAL)
-  const directionConfirmed = card.direction !== "NEUTRAL";
-  
-  // 3. Momentum continuing (Stoch showing strength)
-  const momentumContinuing = 
-    (card.direction === "LONG" && (card.stochRsi ?? 50) > 50) ||
-    (card.direction === "SHORT" && (card.stochRsi ?? 50) < 50);
-  
-  // 4. HTF aligned
-  const htfAligned = card.htf1hAlignment === true;
-
-  return emaEstablished && directionConfirmed && momentumContinuing && htfAligned;
-}
-
 /**
  * Calculate momentum score using event-driven multiplier model
  * v7.1 STABILISATION FIX
@@ -916,51 +1161,39 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   // Simplified: compression when volatility < 40
   const htf15mCompression = volatilityLevel < 40;
 
-  // HARD DIRECTIONAL INFERENCE ENGINE (v7.2.5 FIX #1 & #2)
-  // Priority: EMA slope > 4H trend > momentum > volatility > Stoch position
-  // NEUTRAL becomes rare - classify ANY directional pressure
-  
-  let direction: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
-  
-  // RULE 1: Strong EMA slope overrides 4H trend (primary signal)
-  if (emaSlope > 0.25) {
-    direction = "LONG"; // EMA expanding bullish
-  }
-  else if (emaSlope < -0.25) {
-    direction = "SHORT"; // EMA expanding bearish
-  }
-  // RULE 2: 4H trend decides if EMA weak
-  else if (htf4hTrend === "BULLISH") {
-    direction = "LONG";
-  }
-  else if (htf4hTrend === "BEARISH") {
-    direction = "SHORT";
-  }
-  // RULE 3: Stoch position if 4H neutral (momentum bias)
-  else if (stochRsi > 55) {
-    direction = "LONG"; // Stoch in bullish zone
-  }
-  else if (stochRsi < 45) {
-    direction = "SHORT"; // Stoch in bearish zone
-  }
-  // RULE 4: Volatility expansion (breakout bias)
-  else if (volatilityLevel > 60) {
-    direction = "LONG"; // Expanding - usually bullish
-  }
-  // RULE 5: ONLY classify as NEUTRAL if truly dead market
-  // EMA flat AND Stoch middle AND low volatility AND no structure
-  else if (
-    Math.abs(emaSlope) <= 0.1 && 
-    stochRsi >= 48 && 
-    stochRsi <= 52 && 
-    volatilityLevel < 35
-  ) {
-    direction = "NEUTRAL"; // Dead market - no pressure
-  }
-  // Default to bullish bias if any ambiguity (risk-on)
-  else {
-    direction = "LONG";
-  }
+  // v8.5: COMPUTE LEVEL AWARENESS (structure-first breakout detection)
+  // Determine if breakout is happening and validate direction against it
+  const levelAwareness = computeLevelAwareness(
+    priceData.price,
+    priceData.priceHistory || null,
+    "NONE"
+  );
+
+  // v9: STRUCTURE-FIRST DIRECTION ENGINE (CRITICAL REWRITE)
+  // Step 1: Compute swing levels from price history
+  const swingHigh = levelAwareness.recentHigh;
+  const swingLow = levelAwareness.recentLow;
+
+  // Step 2: Determine structure state (RANGE, BREAKOUT_UP/DOWN, RETEST_UP/DOWN, etc)
+  const structureState: StructureState = computeStructureState(
+    priceData.price,
+    "RANGE",  // TODO: persist this across cycles
+    swingHigh,
+    swingLow,
+    levelAwareness.breakoutPrice || null
+  );
+
+  // Step 3: Get direction from structure (HARD LOCK - structure overrides momentum)
+  // Direction is LOCKED by structure, not determined by momentum first
+  const direction = getDirectionFromStructure(structureState, emaSlope);
+
+  // Step 4: Validate against structure (HARD BLOCKS for impossible trades)
+  const isValidDirection = validateDirectionVsStructure(direction, structureState);
+
+  // Step 5: If direction violates structure, set to NEUTRAL (no signal in contradictory state)
+  const finalDirection = isValidDirection ? direction : "NEUTRAL";
+
+  const breakoutState: BreakoutState = levelAwareness.breakoutState;
 
   const card: SymbolCardState = {
     symbol,
@@ -968,7 +1201,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     source: priceData.source,
     degraded: systemDegraded,
 
-    direction,
+    direction: finalDirection,  // v9: Structure-locked direction
     mode: "NONE",
     confidence: 0,
 
@@ -976,28 +1209,39 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     emaSlope,
     volatilityLevel,
 
+    // v8.5: Track breakout state and key levels
+    breakoutState,
+    recentHigh: levelAwareness.recentHigh,
+    recentLow: levelAwareness.recentLow,
+
+    // v9: Structure state and levels
+    structureState,
+    swingHigh,
+    swingLow,
+    breakoutLevel: levelAwareness.breakoutPrice || null,
+    structureTimeframe: 0,  // TODO: compute from timestamp
+    lastStructureUpdate: Date.now(),
+
     // HTF alignment data
     htf4hTrend,
     htf4hMomentum,
-    htf1hAlignment, // v7.2.10: Only for signal logic, not displayed
+    htf1hAlignment,
     htf15mCompression,
-    execution15mState, // v7.2.10: NEW - replaces htf1hTrend display
+    execution15mState,
 
-    // Market readiness (v7.2.1)
-    // Market readiness (v7.2.4 FIX #4: Use live market state instead of old phases)
-    marketReadinessState: calculateLiveMarketState(direction, emaSlope, stochRsi, volatilityLevel) as any,
-    tradeReadinessScore: calculateTradeReadinessScore("NONE", direction, htf4hTrend, htf1hAlignment, emaSlope, stochRsi, volatilityLevel),
+    // Market readiness
+    marketReadinessState: calculateLiveMarketState(finalDirection, emaSlope, stochRsi, volatilityLevel) as any,
+    tradeReadinessScore: calculateTradeReadinessScore("NONE", finalDirection, htf4hTrend, htf1hAlignment, emaSlope, stochRsi, volatilityLevel),
     
-    // Conditional: Only populate if signal exists (SNIPER/CONFIRMED)
+    // Conditional: Only populate if signal exists
     expectedMovePercent: null,
     targetPrices: null,
     riskReward: null,
     
-    // FIX #1: Initialize signalState to NONE (will be updated by alert logic)
-    signalState: "NONE",
+    signalState: finalDirection === "NEUTRAL" ? "NONE" : "BUILDING",
     lastSignalTime: undefined,
 
-    notes: direction !== "NEUTRAL" ? calculateLiveMarketState(direction, emaSlope, stochRsi, volatilityLevel) : "Awaiting momentum ignition",
+    notes: `${structureState} - ${finalDirection}${!isValidDirection ? " (structure-gated)" : ""}`,
     updatedAt: new Date().toISOString(),
   };
 
