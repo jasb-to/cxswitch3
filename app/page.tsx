@@ -231,11 +231,15 @@ export default function Dashboard() {
     { revalidateOnFocus: false, dedupingInterval: 2000 }
   );
 
+  // NORMALIZE API RESPONSE: Handle both nested and flat response shapes
+  // API may return { snapshot: { ready, cards, ... } } or { ready, cards, ... }
+  const raw = data?.snapshot ?? data;
+
   // STRICT VALIDATION: Only Dashboard interprets SWR data
   const isValid =
-    data?.ready === true &&
-    Array.isArray(data?.cards) &&
-    data.cards.length === 3;
+    raw?.ready === true &&
+    Array.isArray(raw?.cards) &&
+    raw.cards.length === 3;
 
   if (!isValid) {
     return <DashboardBootstrap />;
@@ -244,9 +248,9 @@ export default function Dashboard() {
   // SANITISED SNAPSHOT: Only pass validated data downstream
   // No child component may access raw SWR data
   const snapshot = {
-    cards: data.cards,
-    setups: data.setups ?? [],
-    updatedAt: data.updatedAt ?? "",
+    cards: raw.cards,
+    setups: raw.setups ?? [],
+    updatedAt: raw.updatedAt ?? "",
   };
 
   return (
