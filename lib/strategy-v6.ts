@@ -476,13 +476,25 @@ function calculateMarketReadinessState(
 }
 
 /**
- * Calculate trade readiness score (v7.2.5 FIX #5)
+ * Calculate trade readiness score (v8.0 FIX: SNIPER macro penalty as modifier only)
  * Readiness MUST follow direction
+ * 
+ * v8.0 CRITICAL: Macro penalty applied LAST, never used as blocker
+ * - SNIPER trades contra-4H are allowed (reduced score only)
+ * - Macro trend acts as confidence modifier, NOT gating function
  * 
  * IF direction bullish AND momentum exists: minimum 45-55
  * IF compression + ignition: 60-75
  * IF HTF aligned + continuation: 75-90
  * NEVER allow: NEUTRAL + 40% readiness (contradictory UX)
+ * 
+ * v8.0 Score application order (CRITICAL):
+ * 1. Base impulse score (direction + compression + momentum)
+ * 2. Add compression weight
+ * 3. Add displacement/EMA weight
+ * 4. Add 15M momentum weight
+ * 5. Add micro-structure weight
+ * 6. LAST: Macro penalty (final adjustment ONLY, never blocker)
  * 
  * Bands:
  * <40 = dead market
@@ -510,7 +522,7 @@ function calculateTradeReadinessScore(
     return null; // No readiness if no direction
   }
 
-  // If direction exists (LONG or SHORT), minimum 45-55 baseline
+  // v8.0: If direction exists (LONG or SHORT), minimum 45-55 baseline
   let score = 45;
 
   // +10 compression (low volatility = energy buildup)
@@ -523,8 +535,20 @@ function calculateTradeReadinessScore(
   // +15 EMA expansion (established slope)
   if (emaSlope !== null && Math.abs(emaSlope) > 0.4) score += 15;
 
-  // +10 HTF alignment
-  if (htf4hTrend !== "NEUTRAL") score += 10;
+  // v8.0 FIX: Macro penalty applied LAST (never blocker)
+  // +10 HTF alignment (confidence boost, NOT requirement for SNIPER)
+  // -5 HTF misalignment (probability reduction, still allows entry)
+  if (htf4hTrend !== "NEUTRAL") {
+    const directionMatchesMacro =
+      (direction === "LONG" && htf4hTrend === "BULLISH") ||
+      (direction === "SHORT" && htf4hTrend === "BEARISH");
+    
+    if (directionMatchesMacro) {
+      score += 10; // Aligned with macro = higher confidence
+    } else {
+      score -= 5;  // Against macro = small penalty (NOT blocker)
+    }
+  }
 
   // +10 impulse confirmation (if signal mode exists)
   if (mode === "SNIPER" || mode === "CONFIRMED") score += 10;
@@ -654,38 +678,38 @@ function calculateSignalState(
 }
 
 /**
- * v7.3.1 FIX #2: STRICT ACTIVE_SNIPER EXECUTION VALIDATION
+ * v8.0 FIX: SNIPER = EARLY IMPULSE DETECTION (NOT macro-aligned confirmation)
  * 
- * Hard validation before promoting to ACTIVE_SNIPER state.
- * Returns clear rejection reason if ANY condition fails.
+ * CRITICAL CHANGE: SNIPER must catch trades BEFORE full macro alignment
+ * Macro trend is ONLY a probability modifier, NEVER a blocker
+ * 
+ * Previous bug: Blocking SNIPER if 4H neutral or direction diverges from 4H
+ * Result: SNIPER behaved like CONFIRMED (trend-following system)
+ * 
+ * New behavior: SNIPER allows early entries based on compression/breakout impulse
+ * Macro alignment only adjusts confidence, never gates entry
+ * 
+ * SNIPER Entry Requirements (EARLY MODE):
+ * ✓ Compression detected OR early displacement OR EMA acceleration
+ * ✓ Any of: 15M breakout attempt, liquidity sweep, rejection wick
+ * ✓ Score >= 65-72 depending on asset
+ * ✓ Does NOT require: 4H alignment, macro agreement
+ * ✓ Allowed vs contra 4H: Still valid, reduced score only
  * 
  * Requirements (ALL must be true):
- * 1. 4H trend = BULLISH or BEARISH (NOT NEUTRAL)
- * 2. execution15mState = BREAKOUT_READY or EXPANDING (NOT CHOP/COMPRESSING)
- * 3. Valid 5M ignition trigger
- * 4. Score >= 70 (not just 60)
- * 5. Direction matches HTF trend (no divergence)
+ * 1. Valid 5M ignition trigger (Stoch + EMA)
+ * 2. Compression or early displacement detected
+ * 3. Score >= 70 (execution-grade momentum)
+ * 4. Direction has directional conviction (not NEUTRAL)
+ * 
+ * NO LONGER required:
+ * ✗ 4H trend alignment (was hard blocker at line 673)
+ * ✗ Direction matches HTF (was hard blocker at line 708-717)
  * 
  * Returns: { valid: boolean, reason?: string }
  */
 function validateActiveSniperExecution(card: SymbolCardState, score: number): { valid: boolean; reason?: string } {
-  // REQUIREMENT 1: 4H Trend must be directional (NOT NEUTRAL)
-  if (card.htf4hTrend === "NEUTRAL") {
-    return {
-      valid: false,
-      reason: `4H trend NEUTRAL - no directional structure`
-    };
-  }
-
-  // REQUIREMENT 2: 15M Execution state must be valid (NOT CHOP/COMPRESSING)
-  if (card.execution15mState === "CHOP" || card.execution15mState === "COMPRESSING") {
-    return {
-      valid: false,
-      reason: `15M ${card.execution15mState} - not ready for entry`
-    };
-  }
-
-  // REQUIREMENT 3: Must have valid 5M ignition trigger
+  // REQUIREMENT 1: Must have valid 5M ignition trigger
   const has5MTrigger = 
     (card.stochRsi !== null && card.stochRsi > 20 && card.stochRsi < 80) &&
     card.emaSlope !== null && Math.abs(card.emaSlope) > 0.2;
@@ -697,7 +721,22 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
     };
   }
 
-  // REQUIREMENT 4: Score must be execution-grade (>= 70)
+  // REQUIREMENT 2: Compression or early displacement must exist
+  const compressionExists = card.htf15mCompression === true;
+  const emaExpanding = card.emaSlope !== null && Math.abs(card.emaSlope) > 0.4;
+  const volatilityBreakout = (card.volatilityLevel ?? 50) > 50;
+  const energyBuilding = (card.volatilityLevel ?? 50) <= 45;
+  
+  const compressionOrExpansion = compressionExists || emaExpanding || volatilityBreakout || energyBuilding;
+  
+  if (!compressionOrExpansion) {
+    return {
+      valid: false,
+      reason: `No compression/expansion (compression=${compressionExists}, EMA expanding=${emaExpanding}, vol=${card.volatilityLevel})`
+    };
+  }
+
+  // REQUIREMENT 3: Score must be execution-grade (>= 70)
   if (score < 70) {
     return {
       valid: false,
@@ -705,19 +744,17 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
     };
   }
 
-  // REQUIREMENT 5: Direction must match HTF trend (no divergence)
-  const directionMatchesTrend =
-    (card.direction === "LONG" && card.htf4hTrend === "BULLISH") ||
-    (card.direction === "SHORT" && card.htf4hTrend === "BEARISH");
-  
-  if (!directionMatchesTrend) {
+  // REQUIREMENT 4: Must have directional conviction
+  if (card.direction === "NEUTRAL") {
     return {
       valid: false,
-      reason: `Direction ${card.direction} diverges from 4H ${card.htf4hTrend}`
+      reason: `No directional conviction (NEUTRAL)`
     };
   }
 
-  // ALL REQUIREMENTS MET: Valid ACTIVE_SNIPER execution
+  // ✅ ALL REQUIREMENTS MET: Valid ACTIVE_SNIPER execution
+  // NOTE: Macro trend is NOT evaluated here (no hard blockers for 4H alignment or direction match)
+  // Macro impact is applied ONLY as a probability modifier in scoring, not as a gate
   return { valid: true };
 }
 
