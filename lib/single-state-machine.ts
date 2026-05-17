@@ -124,6 +124,6 @@ export function getReadinessColor(score: number | null | undefined): string {
   }
   if (score < 40) return "text-red-500"; // Red: dead market
   if (score < 60) return "text-yellow-500"; // Yellow: building
-  if (score < 75) return "text-blue-500"; // Blue: SNIPER zone
-  return "text-green-500"; // Green: CONFIRMED zone
+  if (score < 75) return "text-blue-500"; // Blue: SNIPER
+  return "text-green-500"; // Green: CONFIRMED
 }
