@@ -317,31 +317,35 @@ function getDirectionFromStructure(
 }
 
 /**
- * Validate direction against structure - HARD BLOCKS for contradictions
- * Used by SNIPER entry gate to prevent impossible trades
+ * VALIDATE DIRECTION AGAINST STRUCTURE (NO GATES VERSION)
+ * Structure locks direction but does NOT block entry
+ * This function validates the direction is properly locked by structure
+ * Returns the final direction after structure lock applied
+ * 
+ * NO BLOCKING LOGIC - All trades allowed if structure permits
  */
-function validateDirectionVsStructure(
+function getDirectionLockedByStructure(
   proposedDirection: "LONG" | "SHORT" | "NEUTRAL",
   structureState: StructureState
-): boolean {
-  // HARD BLOCKS (these trades are impossible)
-  if (structureState === "RETEST_UP" && proposedDirection === "SHORT") {
-    return false;  // Cannot SHORT during bullish retest
+): "LONG" | "SHORT" | "NEUTRAL" {
+  // NO GATES - Structure locks direction, never blocks
+  
+  // If structure has clear directional bias, lock it
+  if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
+    return "LONG";  // Structure-locked LONG
   }
 
-  if (structureState === "RETEST_DOWN" && proposedDirection === "LONG") {
-    return false;  // Cannot LONG during bearish retest
+  if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
+    return "SHORT";  // Structure-locked SHORT
   }
 
-  if (structureState === "FAILED_BREAKOUT") {
-    return false;  // No trades during failed breakout
+  // FAILED_BREAKOUT or TREND_CONTINUATION: use proposed direction
+  if (proposedDirection !== "NEUTRAL") {
+    return proposedDirection;
   }
 
-  if (structureState === "RANGE" && proposedDirection === "NEUTRAL") {
-    return false;  // No neutral signals
-  }
-
-  return true;  // Direction valid for this structure
+  // RANGE with no momentum: neutral allowed
+  return "NEUTRAL";
 }
 
 // FIX #1: Unified signal state (v7.2.6) - REMOVED SNIPER_IMMINENT (regression leak)
@@ -495,7 +499,8 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
         card.confidence = Math.min(score, 99);
         card.lastSignalTime = Date.now();
         card.signalState = "ACTIVE_SNIPER"; // v9 PHASE 5: Terminal state - immutable once set
-        card.notes = `SNIPER ${card.direction} execution early-entry ${score}`;
+        // v9 NO GATES: Include structure state context in alert payload
+        card.notes = `SNIPER ${card.direction} (${card.structureState}) entry ${score}% - ${card.price.toFixed(2)}`;
         
         // Populate trade targets (v7.2.1)
         const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
@@ -1009,48 +1014,35 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
 }
 
 /**
- * SNIPER CONDITIONS v7.2.8 (FIX #1 & #3): RELAXED COMPRESSION + EARLY IGNITION
+ * SNIPER CONDITIONS v9 NO GATES (NO blocking logic)
+ * Momentum refines conditions only, structure never blocks entry
  */
 function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "early" = "strict"): boolean {
-  // v9: HARD STRUCTURE BLOCKS (new gate #0 - before everything else)
-  // These trades are impossible due to structure - block immediately
-  if (!validateDirectionVsStructure(card.direction, card.structureState)) {
-    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: Direction violates structure (${card.structureState} vs ${card.direction})`);
-    return false;
-  }
-
-  // v9: Structure must not be RANGE (no signals in undefined structure)
-  if (card.structureState === "RANGE") {
-    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No defined structure (RANGE state)`);
-    return false;
-  }
-
-  // REQUIREMENT 1: Directional bias exists (not NEUTRAL)
+  // NO HARD BLOCKS - v9 NO GATES VERSION
+  // Structure locks direction but doesn't prevent trades
+  
+  // REQUIREMENT 1: Directional bias exists
   if (card.direction === "NEUTRAL") {
     console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No directional bias`);
     return false;
   }
 
-  // FIX #1: RELAXED COMPRESSION (v7.2.8)
-  // ALLOW SNIPER IF ANY OF:
-  // 1. Bollinger squeeze (compression true)
-  // 2. EMA expansion (EMA slope > 0.4)
-  // 3. Volatility expansion (ATR increase or vol > 50)
+  // REQUIREMENT 2: Impulse present (compression → expansion or breakout acceleration)
   const compressionExists = card.htf15mCompression === true;
   const emaExpanding = card.emaSlope !== null && Math.abs(card.emaSlope) > 0.4;
   const volatilityBreakout = (card.volatilityLevel ?? 50) > 50; // Breakout mode
   const energyBuilding = (card.volatilityLevel ?? 50) <= 45; // Compression mode
   
-  const compressionOrExpansion = compressionExists || emaExpanding || volatilityBreakout || energyBuilding;
+  const impulsePresent = compressionExists || emaExpanding || volatilityBreakout || energyBuilding;
   
-  if (!compressionOrExpansion) {
-    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No compression/expansion detected`);
+  if (!impulsePresent) {
+    console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: No impulse detected`);
     return false;
   }
 
-  // REQUIREMENT 2: One ignition event (Stoch cross OR EMA flip OR impulse)
-  const stochCross = (card.stochRsi ?? 50) > 25 && (card.stochRsi ?? 50) < 75; // Active zone
-  const emaFlip = card.emaSlope !== null && Math.abs(card.emaSlope) > 0.3; // Slope established
+  // REQUIREMENT 3: Ignition event
+  const stochCross = (card.stochRsi ?? 50) > 25 && (card.stochRsi ?? 50) < 75;
+  const emaFlip = card.emaSlope !== null && Math.abs(card.emaSlope) > 0.3;
   const ignitionTrigger = stochCross || emaFlip;
   
   if (!ignitionTrigger) {
@@ -1183,15 +1175,13 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     levelAwareness.breakoutPrice || null
   );
 
-  // Step 3: Get direction from structure (HARD LOCK - structure overrides momentum)
-  // Direction is LOCKED by structure, not determined by momentum first
-  const direction = getDirectionFromStructure(structureState, emaSlope);
+  // Step 3: Get direction from structure (PURE STRUCTURE LOCK - NO GATES)
+  // Direction derived from structure, momentum only affects confidence
+  const direction = getDirectionLockedByStructure(getDirectionFromStructure(structureState, emaSlope), structureState);
 
-  // Step 4: Validate against structure (HARD BLOCKS for impossible trades)
-  const isValidDirection = validateDirectionVsStructure(direction, structureState);
-
-  // Step 5: If direction violates structure, set to NEUTRAL (no signal in contradictory state)
-  const finalDirection = isValidDirection ? direction : "NEUTRAL";
+  // Step 4: No validation - structure lock is applied, not blocking
+  // NO GATES VERSION: All trades allowed if structure permits
+  const finalDirection = direction;
 
   const breakoutState: BreakoutState = levelAwareness.breakoutState;
 
