@@ -74,15 +74,139 @@ function buildExecutionContext(symbol: string, priceData: PriceData): ExecutionC
   return ctx;
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// v8.5: BREAKOUT-AWARE DIRECTION INFERENCE (STRUCTURE-FIRST)
+// ═════════════════════════════════════════════════════════════════════════════
+// 
+// CRITICAL FIX: SNIPER was momentum-first, triggering contradictory SHORT signals
+// during bullish breakout retests. Now detects breakout states and prevents
+// direction finalization until structural confirmation is complete.
+//
+// Breakout State Machine:
+// NONE → BREAKOUT_UP → RETEST_PHASE → NONE (or confirm LONG) OR return to NONE
+// NONE → BREAKOUT_DOWN → RETEST_PHASE → NONE (or confirm SHORT) OR return to NONE
+
+type BreakoutState = "NONE" | "BREAKOUT_UP" | "BREAKOUT_DOWN" | "RETEST_PHASE";
+
+interface LevelAwareness {
+  recentHigh: number;        // Recent swing high (20-period reference)
+  recentLow: number;         // Recent swing low (20-period reference)
+  breakoutState: BreakoutState;
+  breakoutPrice: number | null;
+  breakoutTime?: number;
+  priceAboveHigh: boolean;   // Price is above recentHigh
+  priceBelowLow: boolean;    // Price is below recentLow
+}
+
+/**
+ * Compute level awareness from recent price action
+ * Tracks breakout states to prevent contradictory signals
+ */
+function computeLevelAwareness(
+  price: number,
+  priceHistory: number[] | null,
+  previousBreakoutState: BreakoutState
+): LevelAwareness {
+  // Default to recent price as reference if no history
+  const recentHigh = priceHistory && priceHistory.length >= 10 
+    ? Math.max(...priceHistory.slice(-20))
+    : price * 1.01;  // Assume 1% above current
+    
+  const recentLow = priceHistory && priceHistory.length >= 10
+    ? Math.min(...priceHistory.slice(-20))
+    : price * 0.99;  // Assume 1% below current
+
+  const priceAboveHigh = price > recentHigh;
+  const priceBelowLow = price < recentLow;
+
+  // Detect state transitions
+  let breakoutState = previousBreakoutState;
+  let breakoutPrice: number | null = null;
+
+  if (previousBreakoutState === "NONE") {
+    // Detect new breakout
+    if (priceAboveHigh) {
+      breakoutState = "BREAKOUT_UP";
+      breakoutPrice = recentHigh;
+    } else if (priceBelowLow) {
+      breakoutState = "BREAKOUT_DOWN";
+      breakoutPrice = recentLow;
+    }
+  } else if (previousBreakoutState === "BREAKOUT_UP") {
+    // In breakout-up phase, check for retest or failure
+    if (price < recentHigh * 0.98) {
+      // Price pulled back - now in retest phase
+      breakoutState = "RETEST_PHASE";
+    }
+  } else if (previousBreakoutState === "BREAKOUT_DOWN") {
+    // In breakout-down phase, check for retest or failure
+    if (price > recentLow * 1.02) {
+      // Price bounced back - now in retest phase
+      breakoutState = "RETEST_PHASE";
+    }
+  } else if (previousBreakoutState === "RETEST_PHASE") {
+    // In retest phase, price can either re-establish breakout or fail
+    if (priceAboveHigh) {
+      // Retest passed above high - confirm breakout
+      breakoutState = "NONE";
+    } else if (priceBelowLow) {
+      // Retest passed below low - confirm breakout
+      breakoutState = "NONE";
+    }
+    // Otherwise stay in RETEST_PHASE
+  }
+
+  return {
+    recentHigh,
+    recentLow,
+    breakoutState,
+    breakoutPrice,
+    priceAboveHigh,
+    priceBelowLow,
+  };
+}
+
+/**
+ * Validate direction against breakout state
+ * Prevents contradictory signals during breakout phases
+ * 
+ * Example: During bullish breakout, suppress SHORT signals
+ */
+function validateDirectionAgainstBreakout(
+  proposedDirection: "LONG" | "SHORT" | "NEUTRAL",
+  levelAwareness: LevelAwareness
+): "LONG" | "SHORT" | "NEUTRAL" | "WATCH_BREAKOUT" {
+  const { breakoutState, priceAboveHigh, priceBelowLow } = levelAwareness;
+
+  // If in retest phase of a breakout, hold direction
+  if (breakoutState === "RETEST_PHASE") {
+    return "WATCH_BREAKOUT";  // Don't commit to direction yet
+  }
+
+  // If breakout-up active, block SHORT signals
+  if (breakoutState === "BREAKOUT_UP" && proposedDirection === "SHORT") {
+    return "WATCH_BREAKOUT";  // Don't allow SHORT during bullish breakout
+  }
+
+  // If breakout-down active, block LONG signals
+  if (breakoutState === "BREAKOUT_DOWN" && proposedDirection === "LONG") {
+    return "WATCH_BREAKOUT";  // Don't allow LONG during bearish breakout
+  }
+
+  return proposedDirection;
+}
+
 // FIX #1: Unified signal state (v7.2.6) - REMOVED SNIPER_IMMINENT (regression leak)
 // v7.4.0: Clean state machine - only 3 valid states for signal generation
+// v8.5: Added WATCH_BREAKOUT for structure-first breakout detection
 export type SignalState = 
   | "NONE"              // No signal
   | "BUILDING"          // Directional bias + compression, waiting for ignition
   | "SNIPER_READY"      // All SNIPER conditions passed, awaiting entry confirmation
   | "CONFIRMED_READY"   // All CONFIRMED conditions passed, awaiting confirmation
   | "ACTIVE_SNIPER"     // SNIPER signal active, trade window open (30 min cooldown)
-  | "ACTIVE_CONFIRMED"; // CONFIRMED signal active, trend confirmation (90 min cooldown) - INTERNAL ONLY, UI displays CONFIRMED
+  | "ACTIVE_CONFIRMED"  // CONFIRMED signal active, trend confirmation (90 min cooldown) - INTERNAL ONLY
+  | "WATCH_BREAKOUT";   // Breakout detected, holding direction until retest confirmation
 
 export type SymbolCardState = {
   symbol: string;
@@ -95,6 +219,7 @@ export type SymbolCardState = {
   confidence: number;
   
   // FIX #1: Unified signal state (v7.2.6), extended for v7.2.8, standardized for v7.2.9
+  // v8.5: Added WATCH_BREAKOUT state for structure-first awareness
   signalState: SignalState;
   lastSignalTime?: number;
 
@@ -102,6 +227,11 @@ export type SymbolCardState = {
   stochRsi: number | null;
   emaSlope: number | null;
   volatilityLevel: number | null;
+
+  // v8.5: Breakout awareness (structure-first)
+  breakoutState?: BreakoutState;
+  recentHigh?: number;
+  recentLow?: number;
 
   // Higher TimeFrame alignment (v7.1.1 - SIMPLIFIED FOR v7.2.10)
   // v7.2.10: Remove 1H dependency, use 15M execution structure instead
@@ -916,8 +1046,17 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   // Simplified: compression when volatility < 40
   const htf15mCompression = volatilityLevel < 40;
 
-  // HARD DIRECTIONAL INFERENCE ENGINE (v7.2.5 FIX #1 & #2)
+  // v8.5: COMPUTE LEVEL AWARENESS (structure-first breakout detection)
+  // Determine if breakout is happening and validate direction against it
+  const levelAwareness = computeLevelAwareness(
+    priceData.price,
+    priceData.priceHistory || null, // May be null if only current price available
+    "NONE" // Start fresh each cycle (TODO: track breakout state across cycles)
+  );
+
+  // HARD DIRECTIONAL INFERENCE ENGINE (v7.2.5 FIX #1 & #2, enhanced v8.5)
   // Priority: EMA slope > 4H trend > momentum > volatility > Stoch position
+  // v8.5: Add breakout-aware validation to prevent contradictory signals
   // NEUTRAL becomes rare - classify ANY directional pressure
   
   let direction: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
@@ -962,19 +1101,31 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     direction = "LONG";
   }
 
+  // v8.5: Validate direction against breakout state
+  // Prevents SHORT signals during bullish breakouts, etc.
+  const breakoutValidatedState = validateDirectionAgainstBreakout(direction, levelAwareness);
+  const breakoutState: BreakoutState = breakoutValidatedState === "WATCH_BREAKOUT" 
+    ? levelAwareness.breakoutState 
+    : "NONE";
+
   const card: SymbolCardState = {
     symbol,
     price: priceData.price,
     source: priceData.source,
     degraded: systemDegraded,
 
-    direction,
+    direction: breakoutValidatedState === "WATCH_BREAKOUT" ? "NEUTRAL" : direction,  // Hold direction during retest
     mode: "NONE",
     confidence: 0,
 
     stochRsi,
     emaSlope,
     volatilityLevel,
+
+    // v8.5: Track breakout state and key levels
+    breakoutState,
+    recentHigh: levelAwareness.recentHigh,
+    recentLow: levelAwareness.recentLow,
 
     // HTF alignment data
     htf4hTrend,
@@ -994,10 +1145,13 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     riskReward: null,
     
     // FIX #1: Initialize signalState to NONE (will be updated by alert logic)
-    signalState: "NONE",
+    // v8.5: Use WATCH_BREAKOUT if in breakout retest phase
+    signalState: breakoutValidatedState === "WATCH_BREAKOUT" ? "WATCH_BREAKOUT" : "NONE",
     lastSignalTime: undefined,
 
-    notes: direction !== "NEUTRAL" ? calculateLiveMarketState(direction, emaSlope, stochRsi, volatilityLevel) : "Awaiting momentum ignition",
+    notes: breakoutValidatedState === "WATCH_BREAKOUT" 
+      ? `Breakout detected (${breakoutState}) - holding direction for retest confirmation`
+      : (direction !== "NEUTRAL" ? calculateLiveMarketState(direction, emaSlope, stochRsi, volatilityLevel) : "Awaiting momentum ignition"),
     updatedAt: new Date().toISOString(),
   };
 
