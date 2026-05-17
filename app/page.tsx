@@ -4,9 +4,17 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
-import { getFinalTradeState, safePercent, safeBarWidth, getReadinessColor } from "@/lib/single-state-machine";
+import {
+  getFinalState,
+  safePercent,
+  safeBarWidth,
+  getReadinessColorClass,
+  getReadinessBarClass,
+  getStateColorClass,
+  type UIState,
+} from "@/lib/final-clean-state-machine";
 
-const VERSION = "v8.1";
+const VERSION = "vFINAL";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
 // Bootstrap cards for initial page load - minimal data, no fakes
@@ -135,57 +143,27 @@ function fmt(n: number) {
 }
 
 function SymbolCard({ card }: { card: SymbolCardState }) {
-  // SINGLE SOURCE OF TRUTH: getFinalTradeState() is the ONLY place deciding UI state
+  // FINAL CLEAN STATE MACHINE: getFinalState() is the ONLY function deciding UI state
+  // NO recomputation, NO parallel logic, NO UI re-interpretation
   const isBootstrap = card.source === "bootstrap";
-  const uiState = isBootstrap ? "BUILDING" : getFinalTradeState(card);
+  const uiState: UIState = getFinalState(card);
   
-  // Map UI state to badge label - LOCK RULE: ONLY BUILDING | SNIPER | CONFIRMED
+  // Map UI state to badge label - FINAL RULE: ONLY BUILDING | SNIPER | CONFIRMED
   const statusBadge = uiState.toUpperCase();
   
-  // Color for badge based on state
-  const badgeColor = 
-    isBootstrap ? "bg-zinc-700 text-zinc-300" :
-    uiState === "CONFIRMED" ? "bg-green-900 text-green-200" :
-    uiState === "SNIPER" ? "bg-blue-900 text-blue-200" :
-    "bg-zinc-800 text-zinc-300"; // BUILDING
+  // Color for badge based on state - use state machine function
+  const badgeColor = getStateColorClass(uiState);
   
   // Direction colors
   const directionColor = card.direction === "LONG" ? "text-green-400" : card.direction === "SHORT" ? "text-red-400" : "text-zinc-400";
   const directionBg = card.direction === "LONG" ? "bg-green-950" : card.direction === "SHORT" ? "bg-red-950" : "bg-zinc-900";
   const directionBorder = card.direction === "LONG" ? "border-green-700" : card.direction === "SHORT" ? "border-red-700" : "border-zinc-700";
   
-  // Market readiness colors (v7.2.4: updated with new live market states)
-  const readinessColor: Record<string, string> = {
-    "BULLISH BUILDING": "text-green-400",
-    "BULLISH IGNITION": "text-green-300",
-    "BULLISH EXPANSION": "text-green-200",
-    "BULLISH MOMENTUM": "text-green-400",
-    "BULLISH OVEREXTENDED": "text-orange-400",
-    "BEARISH BUILDING": "text-red-400",
-    "BEARISH IGNITION": "text-red-300",
-    "BEARISH EXPANSION": "text-red-200",
-    "BEARISH MOMENTUM": "text-red-400",
-    "BEARISH OVEREXTENDED": "text-orange-400",
-    "CHOPPY": "text-zinc-400",
-    "BUILDING PRESSURE": "text-amber-400",
-    "EXTREME READS": "text-orange-400",
-    "NEUTRAL": "text-zinc-400",
-  };
+  // TP/SL visibility - show targets ONLY if state is SNIPER or CONFIRMED
+  const readinessScoreColor = getReadinessColorClass(card.tradeReadinessScore);
   
-  const currentReadinessColor = readinessColor[card.marketReadinessState] || "text-zinc-400";
-
-  // Trade readiness score color - use getReadinessColor from single-state-machine
-  const readinessScoreColor = getReadinessColor(card.tradeReadinessScore);
-  
-  const readinessBgBar = card.tradeReadinessScore === null 
-    ? "bg-zinc-900" 
-    : card.tradeReadinessScore < 40 
-    ? "bg-red-500" 
-    : card.tradeReadinessScore < 60 
-    ? "bg-amber-500" 
-    : card.tradeReadinessScore < 75 
-    ? "bg-cyan-500" 
-    : "bg-green-500";
+  // Trade readiness bar color - use FINAL state machine function (ONCE ONLY)
+  const readinessBgBar = getReadinessBarClass(card.tradeReadinessScore);
 
   return (
     <div className={`rounded-lg border ${directionBorder} p-6 bg-[#0f0f0f] text-white space-y-5`}>
@@ -206,7 +184,7 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
       {/* MARKET READINESS STATE (Live) */}
       <div className="border-t border-zinc-800 pt-4">
         <p className="text-xs text-zinc-500 mb-2 uppercase tracking-wider">Market State</p>
-        <p className={`text-sm font-semibold ${currentReadinessColor}`}>
+        <p className={`text-sm font-semibold ${readinessScoreColor}`}>
           {card.marketReadinessState}
         </p>
       </div>
