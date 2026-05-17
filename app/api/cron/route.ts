@@ -66,7 +66,7 @@ async function runExecutionCycle(): Promise<{
     for (const card of executionCards) {
       if (card.symbol) {
         initializeCanonicalState(card.symbol, card.price, card.source || "kraken");
-        updateCanonicalState(card.symbol, {
+        updateCanonicalState(card.symbol.toUpperCase(), {
           signalState: card.signalState,
           direction: card.direction,
           mode: card.mode,
@@ -124,7 +124,7 @@ async function runDisplayCycle(): Promise<{
     for (const card of displayCards) {
       if (card.symbol) {
         initializeCanonicalState(card.symbol, card.price, card.source || "coingecko");
-        updateCanonicalState(card.symbol, {
+        updateCanonicalState(card.symbol.toUpperCase(), {
           signalState: card.signalState,
           direction: card.direction,
           mode: card.mode,
