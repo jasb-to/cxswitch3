@@ -198,8 +198,8 @@ function getDecisionText(state: UIState): { action: string; guidance: string } {
 function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
   const uiState: UIState = getFinalState(card);
   
-  // COMPUTE READINESS: card.tradeReadinessScore ?? card.score ?? 0
-  const readiness = card.tradeReadinessScore ?? (card as any).score ?? 0;
+  // Trade readiness from backend (canonical field)
+  const readiness = card.tradeReadinessScore ?? 0;
   
   // Direction colors
   const directionColor = card.direction === "LONG" ? "text-green-400" : card.direction === "SHORT" ? "text-red-400" : "text-zinc-400";

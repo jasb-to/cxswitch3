@@ -77,6 +77,7 @@ async function runExecutionCycle(): Promise<{
           htf4hMomentum: card.htf4hMomentum,
           htf1hAlignment: card.htf1hAlignment,
           execution15mState: card.execution15mState,
+          tradeReadinessScore: card.tradeReadinessScore,
           degraded: card.degraded,
           confidence: card.confidence,
         });
@@ -128,6 +129,7 @@ async function runDisplayCycle(): Promise<{
           signalState: card.signalState,
           direction: card.direction,
           mode: card.mode,
+          tradeReadinessScore: card.tradeReadinessScore,
           degraded: card.degraded,
           confidence: card.confidence,
         });
