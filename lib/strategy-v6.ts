@@ -1231,7 +1231,7 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     signalState: finalDirection === "NEUTRAL" ? "NONE" : "BUILDING",
     lastSignalTime: undefined,
 
-    notes: `${structureState} - ${finalDirection}${!isValidDirection ? " (structure-gated)" : ""}`,
+    notes: `${structureState} - ${finalDirection}`,
     updatedAt: new Date().toISOString(),
   };
 
