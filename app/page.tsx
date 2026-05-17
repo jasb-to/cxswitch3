@@ -127,6 +127,30 @@ function getActionGuidance(score: number | null, htf: string): string {
   return "Enter on 15M breakout confirmation";
 }
 
+/**
+ * CORE READINESS COMPUTATION - fixes the main UI issue
+ * Computes portfolio readiness from all card scores
+ */
+function computePortfolioReadiness(cards: SymbolCardState[]): number {
+  if (!Array.isArray(cards) || cards.length === 0) return 0;
+  const total = cards.reduce((sum, c) => sum + (c?.tradeReadinessScore ?? 0), 0);
+  return Math.round(total / cards.length);
+}
+
+/**
+ * DECISION ENGINE - simple and correct
+ * Maps readiness percentage to decision text
+ */
+function getPortfolioDecision(readiness: number): { text: string; level: "danger" | "warning" | "success" } {
+  if (readiness < 40) {
+    return { text: "DO NOT TRADE", level: "danger" };
+  }
+  if (readiness < 70) {
+    return { text: "WATCH ZONE", level: "warning" };
+  }
+  return { text: "READY TO TRADE", level: "success" };
+}
+
 function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
   const isBootstrap = card.source === "bootstrap";
   const uiState: UIState = getFinalState(card);
@@ -389,6 +413,21 @@ function DashboardLive({
   const assetCount = cards.length;
   const activeCount = setups.length;
 
+  // CORE READINESS COMPUTATION - directly connected to UI
+  const portfolioReadiness = computePortfolioReadiness(cards);
+  const portfolioDecision = getPortfolioDecision(portfolioReadiness);
+  
+  // Color mapping for portfolio decision
+  const decisionColor = portfolioDecision.level === "danger" ? "text-red-400" : 
+                        portfolioDecision.level === "warning" ? "text-amber-400" : 
+                        "text-green-400";
+  const decisionBg = portfolioDecision.level === "danger" ? "bg-red-950" : 
+                     portfolioDecision.level === "warning" ? "bg-amber-950" : 
+                     "bg-green-950";
+  const decisionBorder = portfolioDecision.level === "danger" ? "border-red-700" : 
+                         portfolioDecision.level === "warning" ? "border-amber-700" : 
+                         "border-green-700";
+
   return (
     <main className="min-h-screen bg-[#0a0a0a] text-white font-mono">
       <header className="border-b border-zinc-800 px-6 py-3 flex items-center justify-between">
@@ -470,6 +509,24 @@ function DashboardLive({
                 <p className="font-bold text-5xl text-green-400 tabular-nums">{activeCount}</p>
               </div>
             </div>
+            
+            {/* PORTFOLIO READINESS - NEW */}
+            <div className="border-t border-zinc-800 pt-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] tracking-[0.22em] text-zinc-500">PORTFOLIO READINESS</p>
+                <p className={`font-bold text-sm ${decisionColor}`}>{portfolioReadiness}%</p>
+              </div>
+              <div className="w-full bg-zinc-800 rounded h-3">
+                <div 
+                  className={`h-3 rounded transition-all ${portfolioDecision.level === "danger" ? "bg-red-500" : portfolioDecision.level === "warning" ? "bg-amber-500" : "bg-green-500"}`}
+                  style={{ width: `${portfolioReadiness}%` }}
+                />
+              </div>
+              <p className={`text-sm font-semibold ${decisionColor}`}>
+                {portfolioDecision.text}
+              </p>
+            </div>
+            
             <div className="border-t border-zinc-800 pt-3">
               <p className="text-[10px] tracking-[0.18em] text-zinc-600">
                 AUTO-REFRESH 30s &nbsp;·&nbsp; KRAKEN API
