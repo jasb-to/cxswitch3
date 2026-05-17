@@ -4,6 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
+import { EMPTY_SNAPSHOT } from "@/lib/canonical-snapshot";
 import {
   getFinalState,
   safePercent,
@@ -92,34 +93,6 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
 
 const fetcher = (url: string) =>
   fetch(url, { cache: "no-store" }).then((r) => r.json());
-
-/**
- * CRITICAL FIX: Snapshot readiness gating
- * Only render if snapshot.ready === true AND cards exist
- * This prevents hydration race conditions and early fallback
- */
-function validateSnapshot(snapshot: any): SymbolCardState[] | null {
-  // Check readiness flag first - if not ready, return null (will use fallback)
-  if (!snapshot?.ready) {
-    return null;
-  }
-
-  // If ready, snapshot MUST have 3 cards (never partial)
-  if (!snapshot || !Array.isArray(snapshot.cards) || snapshot.cards.length === 0) {
-    return null;
-  }
-
-  // Filter cards: accept if symbol + price > 0
-  const validCards: SymbolCardState[] = [];
-
-  for (const card of snapshot.cards) {
-    if (typeof card.symbol === "string" && typeof card.price === "number" && card.price > 0) {
-      validCards.push(card);
-    }
-  }
-
-  return validCards.length > 0 ? validCards : null;
-}
 
 function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -268,22 +241,19 @@ export default function Dashboard() {
     { refreshInterval: 30_000, keepPreviousData: true, revalidateOnFocus: false }
   );
 
-  // Snapshot validation - check ready flag and card count
-  const validLiveCards = data ? validateSnapshot(data) : null;
-  
-  // HARD RENDER GATE: Only render snapshot if ready AND has exactly 3 cards
-  // This eliminates ALL blank UI, hydration failures, and validation loops
-  const cards = 
-    data?.ready === true && 
-    Array.isArray(data.cards) && 
-    data.cards.length === 3 &&
-    validLiveCards &&
-    validLiveCards.length === 3
-      ? validLiveCards 
+  // CANONICAL RENDER CONTRACT: ONE gate only
+  // Backend → snapshot → frontend render
+  // No validation, no interpretation, no duplication
+  const cards =
+    data?.ready === true &&
+    Array.isArray(data.cards) &&
+    data.cards.length === 3
+      ? data.cards
       : BOOTSTRAP_CARDS;
+  
   const setups = data?.setups ?? [];
   const updatedAt = data?.updatedAt ?? "";
-  const isBootstrap = !data?.cards || data.cards.length === 0;
+  const isBootstrap = cards === BOOTSTRAP_CARDS;
   const fetchedAtMs = updatedAt ? new Date(updatedAt).getTime() : 0;
   const isStale = !isBootstrap && isHydrated && fetchedAtMs > 0 && now > 0 && (now - fetchedAtMs) > STALE_THRESHOLD_MS;
   const lastUpdateTime = isHydrated && updatedAt ? new Date(updatedAt).toLocaleTimeString("en-GB", { hour12: false }) : "—";

@@ -248,11 +248,12 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // STEP 5: Update snapshot (using canonical state as source of truth)
+    // ATOMIC: Update snapshot with exactly 3 cards
+    // Backend MUST ONLY write when canonicalCards.length === 3
+    // Ready flag is set automatically by setSnapshot
     setSnapshot({
       updatedAt: new Date().toISOString(),
-      cards: canonicalCards,
-      setups,
+      cards: canonicalCards.length === 3 ? canonicalCards : [],
     });
 
     // STEP 5: Enqueue alerts (decoupled, non-blocking)
