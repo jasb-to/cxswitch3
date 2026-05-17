@@ -261,7 +261,11 @@ export async function GET(req: NextRequest) {
     // STEP 5: Enqueue alerts (decoupled, non-blocking)
     // v8.3 FIX: Use execution-grade signal state (ACTIVE_SNIPER/ACTIVE_CONFIRMED)
     // NOT display signal state (SNIPER_READY, etc.)
+    // FIX #1 (CRITICAL): Pass targetPrices from card to alert job
     for (const setup of setups) {
+      // Get the card associated with this setup to extract targetPrices
+      const setupCard = executionCards.find(c => c.symbol === setup.symbol);
+      
       // Compute execution-grade signal state from setup.mode
       const signalState = setup.mode === "SNIPER" ? "ACTIVE_SNIPER" : "ACTIVE_CONFIRMED";
       
@@ -273,7 +277,7 @@ export async function GET(req: NextRequest) {
         price: setup.price,
         source: "kraken",  // Execution pipeline always uses Kraken
         signalState: signalState,  // Use execution-grade state, not display state
-        targetPrices: undefined,  // Will be fetched from canonical state in telegram-worker
+        targetPrices: setupCard?.targetPrices ?? undefined,  // FIX: Extract from card
         htf4hTrend: setup.htf.trend4h === true ? "BULLISH" : setup.htf.trend4h === false ? "BEARISH" : "NEUTRAL",
         execution15mState: setup.htf.compression15m ? "COMPRESSING" : "EXPANDING",
         queued: Date.now(),
