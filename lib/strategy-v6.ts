@@ -516,6 +516,8 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
           score: card.confidence,
           reason: `SNIPER ${card.direction} - HTF:${card.htf4hTrend} + 15M:${card.execution15mState} + 5M trigger`,
           price: card.price,
+          // FIX #2 (OPTIONAL): Include targetPrices for alert pipeline transparency
+          targetPrices: targets.targetPrices,
           momentum: {
             stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
             emaStackSignal: card.direction === "LONG" ? "8 EMA turning up" : "8 EMA turning down",
