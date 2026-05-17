@@ -263,8 +263,15 @@ export async function GET(req: NextRequest) {
     // NOT display signal state (SNIPER_READY, etc.)
     // FIX #1 (CRITICAL): Pass targetPrices from card to alert job
     for (const setup of setups) {
-      // Get the card associated with this setup to extract targetPrices
+      // Get the card associated with this setup to extract complete payload
       const setupCard = executionCards.find(c => c.symbol === setup.symbol);
+      
+      // HOTFIX: Enforce payload completeness BEFORE enqueueing
+      // Execution layer guarantees completeness, alert layer only delivers
+      if (!setupCard || !setupCard.targetPrices || !setupCard.targetPrices.tp1) {
+        console.log(`[SNIPER BLOCKED] ${setup.symbol} incomplete payload - holding for next cycle (tp1=${setupCard?.targetPrices?.tp1})`);
+        continue; // Skip alert if payload incomplete
+      }
       
       // Compute execution-grade signal state from setup.mode
       const signalState = setup.mode === "SNIPER" ? "ACTIVE_SNIPER" : "ACTIVE_CONFIRMED";
@@ -277,7 +284,7 @@ export async function GET(req: NextRequest) {
         price: setup.price,
         source: "kraken",  // Execution pipeline always uses Kraken
         signalState: signalState,  // Use execution-grade state, not display state
-        targetPrices: setupCard?.targetPrices ?? undefined,  // FIX: Extract from card
+        targetPrices: setupCard.targetPrices,  // Now guaranteed to exist
         htf4hTrend: setup.htf.trend4h === true ? "BULLISH" : setup.htf.trend4h === false ? "BEARISH" : "NEUTRAL",
         execution15mState: setup.htf.compression15m ? "COMPRESSING" : "EXPANDING",
         queued: Date.now(),

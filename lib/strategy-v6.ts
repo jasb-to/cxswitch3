@@ -491,48 +491,34 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
       if (!executionValidation.valid) {
         // Execution validation failed - block ACTIVE_SNIPER
         console.log(`[EXECUTION BLOCKED] ${symbol} ${card.direction}: ${executionValidation.reason}`);
-        // Fall through to non-alert state calculation below
-        card.signalState = "SNIPER_READY";  // FIX: Remove SNIPER_IMMINENT, use SNIPER_READY
+        card.signalState = "SNIPER_READY";
       } else {
-        // Execution validation passed - promote to ACTIVE_SNIPER (TERMINAL STATE)
-        card.mode = "SNIPER";
-        card.confidence = Math.min(score, 99);
-        card.lastSignalTime = Date.now();
-        card.signalState = "ACTIVE_SNIPER"; // v9 PHASE 5: Terminal state - immutable once set
-        // v9 NO GATES: Include structure state context in alert payload
-        card.notes = `SNIPER ${card.direction} (${card.structureState}) entry ${score}% - ${card.price.toFixed(2)}`;
+        // HOTFIX v1: ATOMIC SNIPER CONSTRUCTION
+        // Build complete signal first, only emit if valid
+        const atomicSignal = buildAtomicSniperSignal(card, score, symbol);
         
-        // Populate trade targets (v7.2.1)
-        const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
-        card.expectedMovePercent = targets.expectedMovePercent;
-        card.targetPrices = targets.targetPrices;
-        card.riskReward = targets.riskReward;
-        card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
-        
-        setups.push({
-          symbol,
-          mode: "SNIPER",
-          direction: card.direction,
-          score: card.confidence,
-          reason: `SNIPER ${card.direction} - HTF:${card.htf4hTrend} + 15M:${card.execution15mState} + 5M trigger`,
-          price: card.price,
-          // FIX #2 (OPTIONAL): Include targetPrices for alert pipeline transparency
-          targetPrices: targets.targetPrices,
-          momentum: {
-            stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
-            emaStackSignal: card.direction === "LONG" ? "8 EMA turning up" : "8 EMA turning down",
-            volatilitySignal: (card.volatilityLevel ?? 40) < 40 ? "Compression active" : "Normal",
-            trend4H: card.htf4hTrend !== "NEUTRAL",
-          },
-          // HTF Breakdown for Telegram alerts (v7.3.1: only populated if execution valid)
-          htf: {
-            trend4h: card.htf4hTrend as "BULLISH" | "BEARISH",
-            alignment1h: card.htf1hAlignment ?? false,
-            compression15m: card.htf15mCompression ?? false,
-            trigger5m: (card.stochRsi ?? 50) > 20 && (card.stochRsi ?? 50) < 80 ? "Stoch RSI cross" : "EMA flip",
-          },
-        });
-        console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
+        if (!atomicSignal) {
+          // Atomic build failed - signal was incomplete, return BUILDING
+          console.log(`[ATOMIC FAILED] ${symbol}: Incomplete payload, staying in BUILDING`);
+          card.signalState = "BUILDING";
+        } else {
+          // Atomic build succeeded - emit ACTIVE_SNIPER with complete payload
+          card.mode = "SNIPER";
+          card.confidence = Math.min(score, 99);
+          card.lastSignalTime = Date.now();
+          card.signalState = "ACTIVE_SNIPER"; // v9 PHASE 5: Terminal state - immutable once set
+          card.notes = `SNIPER ${card.direction} (${card.structureState}) entry ${score}% - ${card.price.toFixed(2)}`;
+          
+          // Populate trade targets from atomic build (already validated)
+          card.expectedMovePercent = atomicSignal.expectedMovePercent;
+          card.targetPrices = atomicSignal.targetPrices;
+          card.riskReward = atomicSignal.riskReward;
+          card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
+          
+          // Emit COMPLETE setup (all fields guaranteed)
+          setups.push(atomicSignal);
+          console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
+        }
       }
     }
     else {
@@ -811,6 +797,98 @@ function calculateTradeReadinessScore(
   if (mode === "SNIPER" || mode === "CONFIRMED") score += 10;
 
   return Math.min(score, 100);
+}
+
+/**
+ * ATOMIC SNIPER SIGNAL BUILDER (v1 STABILIZATION)
+ * 
+ * Core principle: A SNIPER signal is ONLY created if fully complete at creation time.
+ * No partial SNIPER objects are allowed to exist in the system.
+ * 
+ * Returns: Complete SNIPER setup OR null (if any required field would be undefined)
+ */
+function buildAtomicSniperSignal(
+  card: SymbolCardState,
+  score: number,
+  symbol: string
+): {
+  symbol: string;
+  mode: "SNIPER";
+  direction: "LONG" | "SHORT";
+  score: number;
+  price: number;
+  entryPrice: number;
+  structureState: string;
+  targetPrices: { tp1: number; tp2: number; sl: number };
+  riskReward: number;
+  expectedMovePercent: { sniper: { min: number; max: number } };
+  reason: string;
+  momentum: any;
+  htf: any;
+} | null {
+  // ATOMIC VALIDATION: Compute all required fields FIRST
+  
+  // 1. Verify all input data exists
+  if (!card.direction || card.direction === "NEUTRAL") {
+    console.log(`[ATOMIC BUILD FAILED] ${symbol}: No direction`);
+    return null;
+  }
+
+  if (!card.structureState) {
+    console.log(`[ATOMIC BUILD FAILED] ${symbol}: No structureState`);
+    return null;
+  }
+
+  if (!card.price || card.price === 0) {
+    console.log(`[ATOMIC BUILD FAILED] ${symbol}: Invalid price`);
+    return null;
+  }
+
+  // 2. Calculate trade targets (must not have undefined TP/SL)
+  const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
+  
+  if (!targets.targetPrices.tp1 || !targets.targetPrices.tp2 || !targets.targetPrices.sl) {
+    console.log(`[ATOMIC BUILD FAILED] ${symbol}: Target calculation failed (tp1=${targets.targetPrices.tp1}, tp2=${targets.targetPrices.tp2}, sl=${targets.targetPrices.sl})`);
+    return null;
+  }
+
+  // 3. Verify risk/reward is valid
+  if (!targets.riskReward || targets.riskReward <= 0) {
+    console.log(`[ATOMIC BUILD FAILED] ${symbol}: Invalid risk/reward (${targets.riskReward})`);
+    return null;
+  }
+
+  // 4. Build complete signal (ALL fields guaranteed to exist)
+  const signal = {
+    symbol,
+    mode: "SNIPER" as const,
+    direction: card.direction as "LONG" | "SHORT",
+    score,
+    price: card.price,
+    entryPrice: card.price,  // Entry = current price at signal time
+    structureState: card.structureState,
+    targetPrices: targets.targetPrices,  // GUARANTEED: tp1, tp2, sl all defined
+    riskReward: targets.riskReward,  // GUARANTEED: > 0
+    expectedMovePercent: targets.expectedMovePercent,
+    reason: `SNIPER ${card.direction} - HTF:${card.htf4hTrend} + 15M:${card.execution15mState} + 5M trigger`,
+    momentum: {
+      stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
+      emaStackSignal: card.direction === "LONG" ? "8 EMA turning up" : "8 EMA turning down",
+      volatilitySignal: (card.volatilityLevel ?? 40) < 40 ? "Compression active" : "Normal",
+      trend4H: card.htf4hTrend !== "NEUTRAL",
+    },
+    htf: {
+      trend4h: card.htf4hTrend as "BULLISH" | "BEARISH",
+      alignment1h: card.htf1hAlignment ?? false,
+      compression15m: card.htf15mCompression ?? false,
+      trigger5m: (card.stochRsi ?? 50) > 20 && (card.stochRsi ?? 50) < 80 ? "Stoch RSI cross" : "EMA flip",
+    },
+  };
+
+  // ATOMIC GUARANTEE: All required fields exist and are valid
+  // If we reach here, signal is complete or we return null
+  console.log(`[ATOMIC BUILD OK] ${symbol} SNIPER (tp1=${targets.targetPrices.tp1.toFixed(2)}, sl=${targets.targetPrices.sl.toFixed(2)}, rr=${targets.riskReward.toFixed(2)})`);
+  return signal;
 }
 
 /**
