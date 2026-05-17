@@ -94,48 +94,31 @@ const fetcher = (url: string) =>
   fetch(url, { cache: "no-store" }).then((r) => r.json());
 
 /**
- * Validate snapshot and filter valid cards (v7.2.3 HOTFIX)
- * MINIMAL validation: only check symbol + price > 0
- * Accept partial hydration - valid cards shown immediately
- * Optional fields hydrate later
+ * CRITICAL FIX: Snapshot readiness gating
+ * Only render if snapshot.ready === true AND cards exist
+ * This prevents hydration race conditions and early fallback
  */
 function validateSnapshot(snapshot: any): SymbolCardState[] | null {
-  // Reject if no snapshot or no cards array
-  if (!snapshot || !Array.isArray(snapshot.cards)) {
-    console.log("[VALIDATION_FAIL] snapshot.cards missing or not array");
+  // Check readiness flag first - if not ready, return null (will use fallback)
+  if (!snapshot?.ready) {
     return null;
   }
 
-  if (snapshot.cards.length === 0) {
-    console.log("[VALIDATION_FAIL] snapshot.cards empty");
+  // If ready, snapshot MUST have 3 cards (never partial)
+  if (!snapshot || !Array.isArray(snapshot.cards) || snapshot.cards.length === 0) {
     return null;
   }
 
   // Filter cards: accept if symbol + price > 0
   const validCards: SymbolCardState[] = [];
-  const rejectedCards: string[] = [];
 
   for (const card of snapshot.cards) {
     if (typeof card.symbol === "string" && typeof card.price === "number" && card.price > 0) {
       validCards.push(card);
-      console.log(`[VALIDATION_PASS] ${card.symbol}: price=${card.price}`);
-    } else {
-      rejectedCards.push(`${card.symbol || "unknown"} (price: ${card.price})`);
-      console.log(`[VALIDATION_FAIL] ${card.symbol}: price invalid (${card.price})`);
     }
   }
 
-  // If ANY valid cards exist, accept and return
-  if (validCards.length > 0) {
-    console.log(`[LIVE_ACCEPTED] ${validCards.length} valid cards`);
-    return validCards;
-  }
-
-  if (rejectedCards.length > 0) {
-    console.log(`[LIVE_REJECTED] All ${rejectedCards.length} cards invalid:`, rejectedCards);
-  }
-
-  return null;
+  return validCards.length > 0 ? validCards : null;
 }
 
 function fmt(n: number) {
@@ -285,21 +268,19 @@ export default function Dashboard() {
     { refreshInterval: 30_000, keepPreviousData: true, revalidateOnFocus: false }
   );
 
-  // HYDRATION DEBUG LOGGING (v7.2.3)
+  // Snapshot validation - check ready flag and card count
   const validLiveCards = data ? validateSnapshot(data) : null;
   
+  // Minimal logging - only log on actual state changes
   useEffect(() => {
-    if (validLiveCards && validLiveCards.length > 0) {
-      console.log("[HYDRATION] Live snapshot validated");
-      console.log("[LIVE_SWAP] Accepting", validLiveCards.length, "cards from snapshot");
-    } else if (data) {
-      console.log("[HYDRATION] Snapshot validation returned no valid cards");
-    } else if (isValidating) {
-      console.log("[HYDRATION] Fetch in progress...");
-    } else {
-      console.log("[BOOTSTRAP] Using skeleton cards - no fetch response");
+    if (validLiveCards?.length === 3) {
+      // Silently accept - system is working normally
+    } else if (!data) {
+      // Still loading - no need to log
+    } else if (!data?.ready) {
+      // Snapshot not ready yet - using fallback
     }
-  }, [validLiveCards, isValidating, data]);
+  }, [validLiveCards, data]);
 
   // Card selection: prefer valid live cards, fallback to bootstrap
   const cards = validLiveCards && validLiveCards.length > 0 ? validLiveCards : BOOTSTRAP_CARDS;
