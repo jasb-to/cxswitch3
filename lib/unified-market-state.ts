@@ -44,6 +44,9 @@ export interface CanonicalAssetState {
   htf1hAlignment: boolean | null;
   execution15mState: "SNIPE" | "SCALP" | "CHOP" | null;
   
+  // Trade Readiness Score (computed by strategy pipeline)
+  tradeReadinessScore: number | null;
+  
   // Metadata
   cycleId: string;
   updatedAt: string;
@@ -84,6 +87,7 @@ export function initializeCanonicalState(
     htf4hMomentum: null,
     htf1hAlignment: null,
     execution15mState: null,
+    tradeReadinessScore: null,
     cycleId: `${Date.now()}-${normalized}`,
     updatedAt: new Date().toISOString(),
   };
@@ -163,6 +167,7 @@ export function canonicalToCard(state: CanonicalAssetState): any {
     htf4hMomentum: state.htf4hMomentum,
     htf1hAlignment: state.htf1hAlignment,
     execution15mState: state.execution15mState,
+    tradeReadinessScore: state.tradeReadinessScore,
     confidence: state.confidence,
     cycleId: state.cycleId,
     updatedAt: state.updatedAt,
