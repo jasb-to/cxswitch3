@@ -20,8 +20,8 @@ export interface ResolvedSymbol {
 }
 
 const SYMBOL_MAP: Record<string, { kraken: string; base: string }> = {
-  BTC: { kraken: "XBTUSD", base: "BTC" },
-  ETH: { kraken: "ETHUSD", base: "ETH" },
+  BTC: { kraken: "XXBTZUSD", base: "BTC" },
+  ETH: { kraken: "XETHZUSD", base: "ETH" },
   SOL: { kraken: "SOLUSD", base: "SOL" },
   XRP: { kraken: "XRPUSD", base: "XRP" },
   ADA: { kraken: "ADAUSD", base: "ADA" },
