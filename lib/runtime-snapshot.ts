@@ -4,46 +4,64 @@
  * Uses globalThis singleton to persist across serverless invocations.
  * This ensures cron and signals route share the same in-container memory.
  * 
- * Cron writes once per minute.
- * Signals reads and returns directly.
- * Frontend renders snapshot as-is with no transforms.
+ * Cron writes once per minute with EXACTLY 3 cards.
+ * Frontend reads and renders directly with NO validation.
+ * 
+ * ATOMIC GUARANTEE: ready=true ONLY when cards.length === 3
  */
 
-type RuntimeSnapshot = {
-  updatedAt: string;
-  cards: any[];
-  setups: any[];
-  ready?: boolean; // Atomic readiness flag - snapshot is valid only when ready === true
-};
+import type { CanonicalSnapshot } from "./canonical-snapshot";
+import { EMPTY_SNAPSHOT } from "./canonical-snapshot";
 
 declare global {
   // eslint-disable-next-line no-var
-  var __snapshot__: RuntimeSnapshot | undefined;
+  var __snapshot__: CanonicalSnapshot;
 }
 
-const defaultSnapshot: RuntimeSnapshot = {
-  updatedAt: "",
-  cards: [],
-  setups: [],
-  ready: false, // Default to not ready until explicitly set
-};
+// GLOBAL SINGLETON - Always initialized to EMPTY_SNAPSHOT
+// Never undefined. Never partially constructed.
+if (!globalThis.__snapshot__) {
+  globalThis.__snapshot__ = EMPTY_SNAPSHOT;
+}
 
-export function setSnapshot(data: RuntimeSnapshot) {
-  // ATOMIC: Always set ready=true when snapshot is updated
-  // UI must NEVER read snapshot during construction (ready=false)
-  const snapshot: RuntimeSnapshot = {
-    ...data,
-    ready: data.cards && data.cards.length > 0 ? true : false,
+/**
+ * BACKEND ONLY: Set snapshot atomically with exactly 3 cards
+ * 
+ * RULE: This MUST only be called with exactly 3 cards.
+ * ready flag is set automatically based on card count.
+ * 
+ * Frontend NEVER calls this.
+ */
+export function setSnapshot(snapshot: {
+  cards: any[];
+  updatedAt: string | null;
+}): void {
+  // ATOMIC: Enforce exactly 3 cards or no cards
+  const isReady = Array.isArray(snapshot.cards) && snapshot.cards.length === 3;
+
+  const canonical: CanonicalSnapshot = {
+    ready: isReady,
+    cards: isReady ? snapshot.cards : [],
+    updatedAt: isReady ? snapshot.updatedAt : null,
   };
-  globalThis.__snapshot__ = snapshot;
-  console.log("[SNAPSHOT] Persisted to globalThis", {
-    updatedAt: snapshot.updatedAt,
-    cardCount: snapshot.cards.length,
-    setupCount: snapshot.setups.length,
-    ready: snapshot.ready,
+
+  globalThis.__snapshot__ = canonical;
+  console.log("[SNAPSHOT_ATOMIC]", {
+    ready: canonical.ready,
+    cardCount: canonical.cards.length,
+    updatedAt: canonical.updatedAt,
   });
 }
 
-export function getSnapshot(): RuntimeSnapshot {
-  return globalThis.__snapshot__ || defaultSnapshot;
+/**
+ * FRONTEND ONLY: Get snapshot
+ * 
+ * GUARANTEED invariants:
+ * - snapshot is never undefined
+ * - snapshot.ready === true only when cards.length === 3
+ * - snapshot.ready === false means use BOOTSTRAP_CARDS
+ */
+export function getSnapshot(): CanonicalSnapshot {
+  return globalThis.__snapshot__ || EMPTY_SNAPSHOT;
 }
+
