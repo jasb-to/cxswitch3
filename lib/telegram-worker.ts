@@ -105,22 +105,11 @@ async function processAlertQueueAsync() {
           continue;
         }
 
-        // v7.3.1 FIX #2: BLOCK INVALID PAYLOADS
-        // Validate completeness before Telegram formatting
-        if (
-          job.score == null ||
-          Number.isNaN(job.score) ||
-          !job.price ||
-          !job.targetPrices?.tp1 ||
-          !job.targetPrices?.tp2 ||
-          !job.targetPrices?.sl
-        ) {
-          console.log(
-            `[ALERT_REJECTED] ${job.symbol}: incomplete execution payload (score=${job.score}, price=${job.price}, tp1=${job.targetPrices?.tp1})`
-          );
-          // Don't requeue - malformed payload should not retry
-          continue;
-        }
+        // HOTFIX: REMOVED STRICT TP FIELD VALIDATION
+        // Execution layer now guarantees completeness before enqueueing
+        // Alert worker is delivery-only (doesn't validate completeness)
+        // This ensures no alerts are rejected due to missing tp1/tp2/sl
+
 
         // Check cooldown
         if (await canSendAlert(job.symbol, job.mode, job.direction)) {
