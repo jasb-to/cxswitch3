@@ -321,43 +321,9 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
     console.log(`[SCAN] ${symbol} score=${score} direction=${card.direction} stoch=${card.stochRsi?.toFixed(1) ?? "—"} emaSlope=${card.emaSlope?.toFixed(2) ?? "—"}`);
 
     // ONLY generate setups with directional conviction
-    // NO NEUTRAL SIGNALS ALLOWED
-
-    // CONFIRMED ALERT: score >= 75 AND confirmed conditions met
-    if (score >= 75 && card.direction !== "NEUTRAL" && checkConfirmedConditions(card)) {
-      
-      card.mode = "CONFIRMED";
-      card.confidence = Math.min(score, 99);
-      card.lastSignalTime = Date.now();
-      card.signalState = "ACTIVE_CONFIRMED"; // FIX #1: Set unified signal state
-      card.notes = `CONFIRMED ${card.direction} trend continuation ${score}`;
-      
-      // Populate trade targets (v7.2.1)
-      const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
-      card.expectedMovePercent = targets.expectedMovePercent;
-      card.targetPrices = targets.targetPrices;
-      card.riskReward = targets.riskReward;
-      card.tradeReadinessScore = calculateTradeReadinessScore("CONFIRMED", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
-      
-      setups.push({
-        symbol,
-        mode: "CONFIRMED",
-        direction: card.direction,
-        score: card.confidence,
-        reason: `CONFIRMED ${card.direction} - EMA + impulse + HTF alignment`,
-        price: card.price,
-        momentum: {
-          stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
-          emaStackSignal: card.direction === "LONG" ? "8 EMA above 21 EMA" : "8 EMA below 21 EMA",
-          volatilitySignal: (card.volatilityLevel ?? 50) < 30 ? "Compression detected" : "Normal volatility",
-          trend4H: (card.stochRsi ?? 50) > 50,
-        },
-      });
-      console.log(`[ALERT] ${symbol} CONFIRMED ${card.direction} score=${score}`);
-    }
+    // SNIPER v21.1.0: Single signal mode (CONFIRMED path deleted)
     // SNIPER ALERT: score >= 70 AND sniper conditions met
-    // (No execution-grade check needed: hard gate at scan boundary ensures only Kraken data reaches here)
-    else if (score >= 70 && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
+    if (score >= 70 && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
       // v7.3.1 FIX #1: Validate ACTIVE_SNIPER execution requirements
       const executionValidation = validateActiveSniperExecution(card, score);
       
@@ -406,23 +372,9 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
       }
     }
     else {
-      // FIX #4: Single SNIPER evaluation path (removed SNIPER_IMMINENT)
-      // No dual logic paths - only evaluate SNIPER_READY
-      const sniperPassed = score >= 60 && checkSniperConditions(card, "strict");
-      const confirmedPassed = score >= 75 && checkConfirmedConditions(card);
-      
-      card.signalState = calculateSignalState(
-        "NONE", 
-        score, 
-        card.direction,
-        card.htf4hTrend,
-        sniperPassed, 
-        false,  // sniperImminentPassed REMOVED
-        confirmedPassed, 
-        card.lastSignalTime, 
-        "NONE"
-      );
-      console.log(`[SCAN] ${symbol} signalState=${card.signalState} score=${score} (sniper=${sniperPassed})`);
+      // No SNIPER conditions met - stay in BUILDING state
+      card.signalState = "BUILDING";
+      console.log(`[BUILDING] ${symbol} score=${score} - awaiting ignition trigger`);
     }
   }
 
@@ -944,24 +896,6 @@ function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "ear
  * Requires: HTF alignment + EMA expansion + momentum continuation
  * Strict threshold: 75+
  */
-function checkConfirmedConditions(card: SymbolCardState): boolean {
-  // 1. EMA firmly established (slope > 0.5)
-  const emaEstablished = card.emaSlope !== null && Math.abs(card.emaSlope) > 0.5;
-  
-  // 2. Direction confirmed (not NEUTRAL)
-  const directionConfirmed = card.direction !== "NEUTRAL";
-  
-  // 3. Momentum continuing (Stoch showing strength)
-  const momentumContinuing = 
-    (card.direction === "LONG" && (card.stochRsi ?? 50) > 50) ||
-    (card.direction === "SHORT" && (card.stochRsi ?? 50) < 50);
-  
-  // 4. HTF aligned
-  const htfAligned = card.htf1hAlignment === true;
-
-  return emaEstablished && directionConfirmed && momentumContinuing && htfAligned;
-}
-
 /**
  * Calculate momentum score using event-driven multiplier model
  * v7.1 STABILISATION FIX
