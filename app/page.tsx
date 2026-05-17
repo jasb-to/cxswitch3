@@ -26,7 +26,7 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
     htf4hMomentum: null,
     htf1hAlignment: null,
     htf15mCompression: null,
-    marketReadinessState: "AWAITING_DATA",
+    marketReadinessState: "BUILDING",
     tradeReadinessScore: null,
     expectedMovePercent: null,
     targetPrices: null,
@@ -49,7 +49,7 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
     htf4hMomentum: null,
     htf1hAlignment: null,
     htf15mCompression: null,
-    marketReadinessState: "AWAITING_DATA",
+    marketReadinessState: "BUILDING",
     tradeReadinessScore: null,
     expectedMovePercent: null,
     targetPrices: null,
@@ -72,7 +72,7 @@ const BOOTSTRAP_CARDS: SymbolCardState[] = [
     htf4hMomentum: null,
     htf1hAlignment: null,
     htf15mCompression: null,
-    marketReadinessState: "AWAITING_DATA",
+    marketReadinessState: "BUILDING",
     tradeReadinessScore: null,
     expectedMovePercent: null,
     targetPrices: null,
@@ -139,8 +139,8 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
   const isBootstrap = card.source === "bootstrap";
   const uiState = isBootstrap ? "BUILDING" : getFinalTradeState(card);
   
-  // Map UI state to badge label
-  const statusBadge = isBootstrap ? "AWAITING DATA" : uiState.toUpperCase();
+  // Map UI state to badge label - LOCK RULE: ONLY BUILDING | SNIPER | CONFIRMED
+  const statusBadge = uiState.toUpperCase();
   
   // Color for badge based on state
   const badgeColor = 
@@ -234,7 +234,7 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
         <div className="flex items-center justify-between text-sm">
           <span className="text-zinc-400">Overall:</span>
           <span className={card.direction === "LONG" ? "text-green-400" : card.direction === "SHORT" ? "text-red-400" : "text-zinc-400"}>
-            {card.direction === "LONG" ? "LONG BIAS" : card.direction === "SHORT" ? "SHORT BIAS" : "NO TRADE"}
+            {card.direction === "LONG" ? "LONG" : card.direction === "SHORT" ? "SHORT" : "NEUTRAL"}
           </span>
         </div>
       </div>
@@ -261,8 +261,8 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
             : card.tradeReadinessScore < 60 
             ? "Building momentum" 
             : card.tradeReadinessScore < 75 
-            ? "SNIPER zone" 
-            : "CONFIRMED zone"}
+            ? "SNIPER entry window" 
+            : "CONFIRMED entry window"}
         </p>
       </div>
 

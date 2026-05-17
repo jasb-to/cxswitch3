@@ -82,7 +82,7 @@ export type SignalState =
   | "SNIPER_READY"      // All SNIPER conditions passed, awaiting entry confirmation
   | "CONFIRMED_READY"   // All CONFIRMED conditions passed, awaiting confirmation
   | "ACTIVE_SNIPER"     // SNIPER signal active, trade window open (30 min cooldown)
-  | "ACTIVE_CONFIRMED"; // CONFIRMED signal active, trend confirmation (90 min cooldown)
+  | "ACTIVE_CONFIRMED"; // CONFIRMED signal active, trend confirmation (90 min cooldown) - INTERNAL ONLY, UI displays CONFIRMED
 
 export type SymbolCardState = {
   symbol: string;
@@ -605,7 +605,8 @@ function isCooldownElapsed(lastSignalTime: number | undefined, mode: "SNIPER" | 
 
 /**
  * Calculate unified signal state (v7.2.6 FIX #1, extended for v7.2.8)
- * Returns: NONE | BUILDING | SNIPER_IMMINENT | SNIPER_READY | CONFIRMED_READY | ACTIVE_SNIPER | ACTIVE_CONFIRMED
+ * Returns: NONE | BUILDING | SNIPER_READY | CONFIRMED_READY | ACTIVE_SNIPER | ACTIVE_CONFIRMED
+ * NOTE: SNIPER_IMMINENT removed per LOCK rules (only BUILDING | SNIPER | CONFIRMED in UI)
  * 
  * FIX #4: Proper evaluation order:
  * 1. HTF trend
