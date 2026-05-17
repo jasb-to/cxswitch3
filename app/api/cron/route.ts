@@ -259,8 +259,11 @@ export async function GET(req: NextRequest) {
     });
 
     // STEP 5: Enqueue alerts (decoupled, non-blocking)
+    // v8.3 FIX: Use execution-grade signal state (ACTIVE_SNIPER/ACTIVE_CONFIRMED)
+    // NOT display signal state (SNIPER_READY, etc.)
     for (const setup of setups) {
-      const card = newCards.find(c => c.symbol === setup.symbol);
+      // Compute execution-grade signal state from setup.mode
+      const signalState = setup.mode === "SNIPER" ? "ACTIVE_SNIPER" : "ACTIVE_CONFIRMED";
       
       enqueueAlert({
         symbol: setup.symbol,
@@ -268,11 +271,11 @@ export async function GET(req: NextRequest) {
         direction: setup.direction,
         score: setup.score,
         price: setup.price,
-        source: card?.source,
-        signalState: card?.signalState,
-        targetPrices: card?.targetPrices,
-        htf4hTrend: card?.htf4hTrend,
-        execution15mState: card?.execution15mState,
+        source: "kraken",  // Execution pipeline always uses Kraken
+        signalState: signalState,  // Use execution-grade state, not display state
+        targetPrices: undefined,  // Will be fetched from canonical state in telegram-worker
+        htf4hTrend: setup.htf.trend4h === true ? "BULLISH" : setup.htf.trend4h === false ? "BEARISH" : "NEUTRAL",
+        execution15mState: setup.htf.compression15m ? "COMPRESSING" : "EXPANDING",
         queued: Date.now(),
       });
     }
