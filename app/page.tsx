@@ -4,6 +4,7 @@ import useSWR from "swr";
 import { useState, useEffect, useMemo } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
+import { normalizeCard, safePercent, safeBarWidth, getCardStatus } from "@/lib/ui-normalization";
 
 const VERSION = "v8.1";
 const STALE_THRESHOLD_MS = 6 * 60_000;
@@ -134,19 +135,25 @@ function fmt(n: number) {
 }
 
 function SymbolCard({ card }: { card: SymbolCardState }) {
-  const isLoading = card.source === "bootstrap";
+  // FIX #4: Do NOT use "LOADING" when data exists - use actual card state
+  const isBootstrap = card.source === "bootstrap";
+  const isStale = false; // TODO: implement staleness check
+  const normalizedCard = normalizeCard(card);
+  const cardStatus = getCardStatus(normalizedCard, isStale);
+  
   // FIX #1, #2, #3: Use signalState to determine display + TP visibility
   const isActiveSignal = card.signalState === "ACTIVE_SNIPER" || card.signalState === "ACTIVE_CONFIRMED";
   const hasSignal = card.mode === "SNIPER" || card.mode === "CONFIRMED";
   
   // FIX #8: Remove "WATCHING" - use signalState to show meaningful states (v7.2.8 adds SNIPER_IMMINENT)
-  const statusBadge = isLoading ? "LOADING" : 
+  const statusBadge = isBootstrap ? "AWAITING DATA" :
+    cardStatus === "EXECUTION" ? "SNIPER" :
+    cardStatus === "BUILDING" ? "BUILDING" :
+    cardStatus === "STALE" ? "STALE" :
     card.signalState === "ACTIVE_CONFIRMED" ? "CONFIRMED" :
-    card.signalState === "ACTIVE_SNIPER" ? "SNIPER" :
     card.signalState === "CONFIRMED_READY" ? "CONFIRMED READY" :
     card.signalState === "SNIPER_READY" ? "SNIPER READY" :
     card.signalState === "SNIPER_IMMINENT" ? "SNIPER IMMINENT" :
-    card.signalState === "BUILDING" ? "BUILDING" :
     card.marketReadinessState;
   
   // Direction colors
@@ -252,13 +259,13 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
         <div className="flex items-center justify-between mb-3">
           <p className="text-xs text-zinc-500 uppercase tracking-wider">Trade Readiness</p>
           <span className={`text-lg font-mono font-bold ${readinessScoreColor}`}>
-            {card.tradeReadinessScore === null ? "—" : Math.round(card.tradeReadinessScore)}%
+            {safePercent(card.tradeReadinessScore)}
           </span>
         </div>
         <div className="w-full bg-zinc-800 rounded h-3">
           <div 
             className={`${readinessBgBar} h-3 rounded transition-all`} 
-            style={{ width: card.tradeReadinessScore === null ? "0%" : `${card.tradeReadinessScore}%` }} 
+            style={{ width: safeBarWidth(card.tradeReadinessScore) }} 
           />
         </div>
         <p className="text-xs text-zinc-500 mt-2">
@@ -290,7 +297,7 @@ function SymbolCard({ card }: { card: SymbolCardState }) {
 
       {/* Status message */}
       <div className="text-xs text-zinc-500 text-center pt-2">
-        {isLoading ? "Loading market snapshot..." : card.notes}
+        {isBootstrap ? "Fetching market snapshot..." : card.notes}
       </div>
     </div>
   );

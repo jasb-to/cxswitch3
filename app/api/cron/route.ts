@@ -151,7 +151,37 @@ async function runDisplayCycle(): Promise<{
       return { displayCards: previousDisplayCards, timeMs: Date.now() - cycleStart };
     }
     
-    console.log(`[DISPLAY_CYCLE] No display cards generated or available in fallback`);
+    // FIX #3: Display cycle MUST ALWAYS return 3 cards (no exceptions)
+    // If no display cards generated and no fallback, use canonical state to create display cards
+    const canonicalStates = getAllCanonicalStates();
+    if (canonicalStates.length > 0) {
+      const displayCardsFromCanonical = canonicalStates.map(state => ({
+        symbol: state.normalizedSymbol,
+        price: state.price,
+        source: state.source,
+        signalState: "BUILDING" as const,
+        direction: null,
+        mode: null,
+        degraded: true,
+        confidence: 0.5,
+        htf4hTrend: null,
+        htf4hMomentum: null,
+        htf1hAlignment: null,
+        execution15mState: null,
+        targetPrices: null,
+        stopLoss: null,
+        riskReward: null,
+        emaSlope: null,
+        stochRsi: null,
+        volatilityLevel: null,
+        tradeReadinessScore: null,
+      }));
+      console.log(`[DISPLAY_CYCLE] Generated fallback display cards from canonical state (${displayCardsFromCanonical.length} cards)`);
+      return { displayCards: displayCardsFromCanonical, timeMs: Date.now() - cycleStart };
+    }
+    
+    // Last resort: return empty but log clearly
+    console.log(`[DISPLAY_CYCLE] CRITICAL: No display cards from any source`);
     return { displayCards: [], timeMs: Date.now() - cycleStart };
   } finally {
     displayCycleRunning = false;
