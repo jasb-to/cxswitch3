@@ -91,14 +91,12 @@ function recordKrakenFailure(symbol: string, failureType: KrakenFailureType) {
   }
 
   // Only escalate breaker on:
-  // 1. EMPTY_RESPONSE (persistent missing data)
-  // 2. Repeated TIMEOUT (3+ in last 5 failures = broken connection)
+  // 1. Repeated TIMEOUT (3+ in last 5 failures = broken connection)
+  // 2. HTTP 500 errors (server-side issue)
+  // NOTE: EMPTY_RESPONSE removed - parser failures are not network failures
   let shouldEscalate = false;
 
-  if (failureType === "EMPTY_RESPONSE") {
-    shouldEscalate = true;
-    console.log(`[CIRCUIT_BREAKER] ${symbol}: EMPTY_RESPONSE — escalating (critical failure)`);
-  } else if (failureType === "TIMEOUT") {
+  if (failureType === "TIMEOUT") {
     const recentTimeouts = state.recentFailures.filter(f => f === "TIMEOUT").length;
     if (recentTimeouts >= 3) {
       shouldEscalate = true;
@@ -245,15 +243,11 @@ async function getPriceFromKraken(symbol: string, isRetry: boolean = false): Pro
 
           const tickerData = data.result?.[krakenTicker];
           if (!tickerData) {
-            // CRITICAL: Empty response is pattern indicating persistent missing data
-            lastError = new Error("No ticker data returned");
-            lastFailureType = "EMPTY_RESPONSE";
-            if (attempt < maxRetries) {
-              const backoff = attempt === 0 ? 100 : 500;
-              console.warn(`[KRAKEN] Attempt ${attempt + 1}/${maxRetries + 1}: ${lastError.message}, retrying in ${backoff}ms`);
-              await new Promise(resolve => setTimeout(resolve, backoff));
-              continue;
-            }
+            // Parser failure (wrong pair name, API schema changed, etc)
+            // Do NOT retry - immediate fallback
+            lastError = new Error(`No ticker data for ${krakenTicker} (parser failure, not network failure)`);
+            lastFailureType = "API_ERROR";  // Treat as API error, not recoverable via retry
+            console.warn(`[KRAKEN] Parser failure: ${krakenTicker} not in response. Available keys: ${Object.keys(data.result || {}).join(", ")}`);
             throw lastError;
           }
 
