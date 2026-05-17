@@ -271,17 +271,6 @@ export default function Dashboard() {
   // Snapshot validation - check ready flag and card count
   const validLiveCards = data ? validateSnapshot(data) : null;
   
-  // Minimal logging - only log on actual state changes
-  useEffect(() => {
-    if (validLiveCards?.length === 3) {
-      // Silently accept - system is working normally
-    } else if (!data) {
-      // Still loading - no need to log
-    } else if (!data?.ready) {
-      // Snapshot not ready yet - using fallback
-    }
-  }, [validLiveCards, data]);
-
   // HARD RENDER GATE: Only render snapshot if ready AND has exactly 3 cards
   // This eliminates ALL blank UI, hydration failures, and validation loops
   const cards = 
