@@ -385,33 +385,6 @@ function DashboardLive({
                 <span className="text-[13px] text-white tabular-nums">{lastUpdateTime}</span>
               </div>
             </div>
-
-            <div className="flex gap-2">
-              <button
-                onClick={testTelegram}
-                disabled={tg === "sending"}
-                className={`flex-1 border text-[11px] tracking-[0.2em] py-3 transition-colors disabled:opacity-40 ${
-                  tg === "ok"
-                    ? "border-green-400 text-green-400"
-                    : tg === "error"
-                    ? "border-red-400 text-red-400"
-                    : "border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
-                }`}
-              >
-                {tg === "sending" ? "SENDING..." : tg === "ok" ? "SENT OK" : tg === "error" ? "SEND FAILED" : "TEST TELEGRAM"}
-              </button>
-              <button
-                onClick={() => mutate()}
-                className="flex-1 border border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300 text-[11px] tracking-[0.2em] py-3 transition-colors"
-              >
-                {isValidating ? "REFRESHING..." : "REFRESH"}
-              </button>
-            </div>
-            {tgMsg && (
-              <p className={`text-[11px] text-center ${tg === "ok" ? "text-green-400" : "text-red-400"}`}>
-                {tgMsg}
-              </p>
-            )}
           </div>
 
           <div className="border border-zinc-800 bg-zinc-950 p-5 flex flex-col gap-5">
@@ -426,6 +399,35 @@ function DashboardLive({
                 <p className="font-bold text-5xl text-green-400 tabular-nums">{activeCount}</p>
               </div>
             </div>
+            
+            {/* REFRESH & TEST TELEGRAM BUTTONS */}
+            <div className="border-t border-zinc-800 pt-4 flex gap-3">
+              <button
+                onClick={testTelegram}
+                className={`flex-1 border text-[11px] tracking-[0.2em] py-3 transition-colors ${
+                  tg === "ok"
+                    ? "border-green-700 text-green-400"
+                    : tg === "error"
+                    ? "border-red-700 text-red-400"
+                    : "border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
+                }`}
+              >
+                {tg === "sending" ? "SENDING..." : tg === "ok" ? "SENT OK" : tg === "error" ? "SEND FAILED" : "TEST TELEGRAM"}
+              </button>
+              <button
+                onClick={() => mutate()}
+                className="flex-1 border border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300 text-[11px] tracking-[0.2em] py-3 transition-colors"
+              >
+                {isValidating ? "REFRESHING..." : "REFRESH"}
+              </button>
+            </div>
+            
+            {tgMsg && (
+              <p className={`text-[11px] text-center ${tg === "ok" ? "text-green-400" : "text-red-400"}`}>
+                {tgMsg}
+              </p>
+            )}
+            
             <div className="border-t border-zinc-800 pt-3">
               <p className="text-[10px] tracking-[0.18em] text-zinc-600">
                 AUTO-REFRESH 30s &nbsp;·&nbsp; KRAKEN API
