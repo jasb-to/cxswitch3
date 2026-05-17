@@ -47,14 +47,85 @@ export async function canSendAlert(symbol: string, mode: "SNIPER" | "CONFIRMED",
 
 /**
  * Send alert to Telegram
+ * v1 STABILIZATION: Trader-friendly format with all critical fields
  */
-export async function sendAlert(setup: Setup): Promise<void> {
+export async function sendAlert(setup: any): Promise<void> {
   if (!BOT_TOKEN || !CHAT_ID) {
     console.log(`[TELEGRAM] No credentials, skipping alert`);
     return;
   }
 
-  const text = `${setup.mode} ${setup.direction} ${setup.symbol}\nScore: ${setup.score}`;
+  // Format alert text with all trader-facing information
+  const lines: string[] = [];
+  
+  // Header
+  lines.push(`🚨 ACTIVE_${setup.mode} — ${setup.symbol} ${setup.direction}`);
+  lines.push("");
+  
+  // Structure (most important - tells why the trade fires)
+  if (setup.structureState) {
+    lines.push("Structure:");
+    lines.push(setup.structureState);
+    lines.push("");
+  }
+  
+  // Market Context
+  lines.push("Market Context:");
+  lines.push(`4H: ${setup.htf4hTrend || "N/A"}`);
+  lines.push(`15M: ${setup.execution15mState || "N/A"}`);
+  lines.push("");
+  
+  // Entry Zone
+  if (setup.entryZone) {
+    lines.push("Entry Zone:");
+    lines.push(`${setup.entryZone.min.toFixed(2)} - ${setup.entryZone.max.toFixed(2)}`);
+  } else if (setup.price) {
+    lines.push("Entry Price:");
+    lines.push(setup.price.toFixed(2));
+  }
+  lines.push("");
+  
+  // Targets
+  if (setup.momentum?.targetPrices) {
+    const tp = setup.momentum.targetPrices;
+    lines.push("Targets:");
+    lines.push(`TP1: ${tp.tp1?.toFixed(2) || "N/A"}`);
+    lines.push(`TP2: ${tp.tp2?.toFixed(2) || "N/A"}`);
+    lines.push("");
+  }
+  
+  // Risk
+  if (setup.momentum?.targetPrices) {
+    const tp = setup.momentum.targetPrices;
+    lines.push("Risk:");
+    lines.push(`SL: ${tp.sl?.toFixed(2) || "N/A"}`);
+    if (setup.riskReward) {
+      lines.push(`R:R: ${setup.riskReward.toFixed(2)}`);
+    }
+    lines.push("");
+  }
+  
+  // Confidence
+  if (setup.score !== undefined) {
+    lines.push("Confidence:");
+    lines.push(`${setup.score.toFixed(1)}%`);
+    lines.push("");
+  }
+  
+  // Impulse State
+  if (setup.impulseState) {
+    lines.push("Impulse:");
+    lines.push(setup.impulseState);
+    lines.push("");
+  }
+  
+  // Execution Notes
+  if (setup.executionNotes) {
+    lines.push("Execution Notes:");
+    lines.push(setup.executionNotes);
+  }
+
+  const text = lines.join("\n");
 
   try {
     const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {

@@ -22,6 +22,15 @@ export type TelegramAlertJob = {
   htf4hTrend?: "BULLISH" | "BEARISH" | "NEUTRAL"; // v7.3.1: validate HTF structure
   execution15mState?: "COMPRESSING" | "BREAKOUT_READY" | "EXPANDING" | "CHOP"; // v7.3.1: validate 15M execution
   queued: number; // timestamp
+  
+  // v1 STABILIZATION: Trader-facing fields
+  structureState?: string; // BREAKOUT_UP, RETEST_DOWN, etc - why the trade fires
+  entryPrice?: number;
+  entryZone?: { min: number; max: number };
+  riskReward?: number;
+  confidence?: number;
+  impulseState?: string; // "Compression → Expansion confirmed"
+  executionNotes?: string;
 };
 
 /**

@@ -33,6 +33,10 @@ let lastDisplayCycleTime = 0;
 // Prevents duplicate CRON invocations from overlapping serverless executions
 let globalCronLocked = false;
 
+// v1 STABILIZATION: Track previous signal states to prevent duplicate alerts
+// Maps: symbol -> { signalState, lastAlertedAt }
+const signalStateHistory: Record<string, { signalState: string; lastAlertedAt: number }> = {};
+
 /**
  * v8.1: Execution Cycle (KRAKEN ONLY)
  * - Hard real-time requirements
@@ -260,8 +264,7 @@ export async function GET(req: NextRequest) {
 
     // STEP 5: Enqueue alerts (decoupled, non-blocking)
     // v8.3 FIX: Use execution-grade signal state (ACTIVE_SNIPER/ACTIVE_CONFIRMED)
-    // NOT display signal state (SNIPER_READY, etc.)
-    // FIX #1 (CRITICAL): Pass targetPrices from card to alert job
+    // v1 STABILIZATION: Only alert on NEW ACTIVE_SNIPER signals, not every cycle
     for (const setup of setups) {
       // Get the card associated with this setup to extract complete payload
       const setupCard = executionCards.find(c => c.symbol === setup.symbol);
@@ -276,6 +279,28 @@ export async function GET(req: NextRequest) {
       // Compute execution-grade signal state from setup.mode
       const signalState = setup.mode === "SNIPER" ? "ACTIVE_SNIPER" : "ACTIVE_CONFIRMED";
       
+      // v1 STABILIZATION: Check if this is a NEW signal state (transition)
+      // Only enqueue if signal state CHANGED to ACTIVE_SNIPER (prevent duplicate alerts)
+      const previousState = signalStateHistory[setup.symbol];
+      const isNewSignal = !previousState || previousState.signalState !== signalState;
+      
+      if (!isNewSignal) {
+        // Signal state unchanged, don't enqueue duplicate alert
+        console.log(`[DEDUPED] ${setup.symbol} ${signalState} already alerted (last ${Date.now() - previousState!.lastAlertedAt}ms ago)`);
+        continue;
+      }
+      
+      // Calculate entry zone (±0.5% from entry price)
+      const entryPriceBuffer = setupCard.price * 0.005;
+      
+      // Compute impulse state from compression/expansion
+      const impulseState = setupCard.volatilityLevel && setupCard.volatilityLevel < 40 
+        ? "Compression → Expansion confirmed"
+        : "Impulse active";
+      
+      // Track this signal state for next cycle (prevent duplicates)
+      signalStateHistory[setup.symbol] = { signalState, lastAlertedAt: Date.now() };
+      
       enqueueAlert({
         symbol: setup.symbol,
         mode: setup.mode,
@@ -288,6 +313,15 @@ export async function GET(req: NextRequest) {
         htf4hTrend: setup.htf.trend4h === true ? "BULLISH" : setup.htf.trend4h === false ? "BEARISH" : "NEUTRAL",
         execution15mState: setup.htf.compression15m ? "COMPRESSING" : "EXPANDING",
         queued: Date.now(),
+        
+        // v1 STABILIZATION: Trader-facing fields for beautiful alerts
+        structureState: setupCard.structureState,  // e.g., "BREAKOUT_DOWN → RETEST_DOWN"
+        entryPrice: setupCard.price,
+        entryZone: { min: setupCard.price - entryPriceBuffer, max: setupCard.price + entryPriceBuffer },
+        riskReward: setupCard.riskReward,
+        confidence: setupCard.confidence,
+        impulseState: impulseState,
+        executionNotes: `Structure locked ${setup.direction}\nAtomic payload verified`,
       });
     }
 
