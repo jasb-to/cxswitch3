@@ -98,39 +98,120 @@ function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function getDecisionText(score: number | null): { action: string; guidance: string } {
-  if (score === null || score < 40) {
+/**
+ * LIVE TRADE ANALYSIS: Operator-grade market intelligence
+ * Rules:
+ * - BTC: If sniper=false and no expansion → BLOCKED
+ * - ETH: If breakout pending → WATCH
+ * - SOL: If sniper passed but execution blocked → CLOSEST SETUP
+ */
+function getLiveTradeAnalysis(
+  symbol: string,
+  state: UIState,
+  execution15mState?: string
+): { label: string; color: string; description: string } {
+  if (symbol === "BTC") {
+    if (state === "BUILDING" && execution15mState !== "EXPANDING") {
+      return {
+        label: "BLOCKED",
+        color: "text-red-400",
+        description: "No expansion/compression"
+      };
+    }
     return {
-      action: "DO NOT TRADE",
-      guidance: "Wait for structure to develop"
+      label: "MONITORING",
+      color: "text-yellow-400",
+      description: "Awaiting structure"
     };
   }
-  if (score < 70) {
+  
+  if (symbol === "ETH") {
+    if (state === "SNIPER" && execution15mState === "BREAKOUT_READY") {
+      return {
+        label: "WATCH",
+        color: "text-amber-400",
+        description: "Needs breakout confirmation"
+      };
+    }
+    if (state === "SNIPER") {
+      return {
+        label: "WATCH",
+        color: "text-amber-400",
+        description: "Entry forming"
+      };
+    }
     return {
-      action: "WATCH ZONE",
-      guidance: "Waiting for confirmation"
+      label: "STANDBY",
+      color: "text-zinc-400",
+      description: "Awaiting signal"
     };
   }
+  
+  if (symbol === "SOL") {
+    if (state === "SNIPER") {
+      return {
+        label: "CLOSEST SETUP",
+        color: "text-cyan-400",
+        description: "Blocked by 4H structure"
+      };
+    }
+    return {
+      label: "MONITORING",
+      color: "text-yellow-400",
+      description: "Awaiting expansion"
+    };
+  }
+  
   return {
-    action: "READY TO TRADE",
-    guidance: "Entry conditions forming"
+    label: "NEUTRAL",
+    color: "text-zinc-400",
+    description: "No setup"
   };
+}
+
+function getDecisionText(state: UIState): { action: string; guidance: string } {
+  // Decision text derives from marketReadinessState, not score
+  switch (state) {
+    case "BUILDING":
+      return {
+        action: "DO NOT TRADE",
+        guidance: "Waiting for structure"
+      };
+    case "SNIPER":
+      return {
+        action: "WATCH ZONE",
+        guidance: "Entry forming"
+      };
+    case "CONFIRMED":
+      return {
+        action: "READY TO TRADE",
+        guidance: "Entry active"
+      };
+    default:
+      return {
+        action: "DO NOT TRADE",
+        guidance: "Waiting for structure"
+      };
+  }
 }
 
 function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
   const uiState: UIState = getFinalState(card);
+  
+  // COMPUTE READINESS: card.tradeReadinessScore ?? card.score ?? 0
+  const readiness = card.tradeReadinessScore ?? (card as any).score ?? 0;
   
   // Direction colors
   const directionColor = card.direction === "LONG" ? "text-green-400" : card.direction === "SHORT" ? "text-red-400" : "text-zinc-400";
   const directionBg = card.direction === "LONG" ? "bg-green-950" : card.direction === "SHORT" ? "bg-red-950" : "bg-zinc-900";
   const directionBorder = card.direction === "LONG" ? "border-green-700" : card.direction === "SHORT" ? "border-red-700" : "border-zinc-700";
   
-  // Trade readiness styling
-  const readinessScoreColor = getReadinessColorClass(card.tradeReadinessScore);
-  const readinessBgBar = getReadinessBarClass(card.tradeReadinessScore);
+  // Trade readiness styling - use normalized readiness value
+  const readinessScoreColor = getReadinessColorClass(readiness);
+  const readinessBgBar = getReadinessBarClass(readiness);
   
-  // Decision text
-  const { action, guidance } = getDecisionText(card.tradeReadinessScore);
+  // Decision text derives from state
+  const { action, guidance } = getDecisionText(uiState);
 
   return (
     <div className={`rounded-lg border ${directionBorder} p-5 bg-[#0f0f0f] text-white space-y-4`}>
@@ -170,18 +251,18 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
         </span>
       </div>
 
-      {/* TRADE READINESS BAR: 0-100% with colors */}
+      {/* TRADE READINESS BAR: 0-100% with colors - uses normalized readiness */}
       <div className="border-t border-zinc-800 pt-3 space-y-2">
         <div className="flex items-center justify-between">
           <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Trade Readiness</p>
           <span className={`text-lg font-mono font-bold ${readinessScoreColor}`}>
-            {safePercent(card.tradeReadinessScore)}
+            {safePercent(readiness)}
           </span>
         </div>
         <div className="w-full bg-zinc-800 rounded h-3">
           <div 
             className={`${readinessBgBar} h-3 rounded transition-all`} 
-            style={{ width: safeBarWidth(card.tradeReadinessScore) }} 
+            style={{ width: safeBarWidth(readiness) }} 
           />
         </div>
       </div>
@@ -389,6 +470,50 @@ function DashboardLive({
                 <span className="text-[13px] text-white tabular-nums">{lastUpdateTime}</span>
               </div>
             </div>
+
+            {/* LIVE TRADE ANALYSIS: Operator-grade market intelligence */}
+            <div className="border-t border-zinc-800 pt-4 space-y-2">
+              <p className="text-[10px] tracking-[0.22em] text-zinc-500 mb-3">LIVE TRADE ANALYSIS</p>
+              {cards.map((card) => {
+                const state = getFinalState(card);
+                const analysis = getLiveTradeAnalysis(card.symbol, state, card.execution15mState);
+                return (
+                  <div key={card.symbol} className="flex items-center justify-between text-sm">
+                    <span className="text-zinc-400">{card.symbol}</span>
+                    <span className={`${analysis.color} font-semibold text-sm`}>{analysis.label}</span>
+                    <span className="text-zinc-600 text-xs">{analysis.description}</span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* BUTTONS: TEST TG & REFRESH */}
+            <div className="border-t border-zinc-800 pt-4 flex gap-2">
+              <button
+                onClick={testTelegram}
+                className={`flex-1 border text-[10px] tracking-[0.15em] py-2 transition-colors ${
+                  tg === "ok"
+                    ? "border-green-700 text-green-400"
+                    : tg === "error"
+                    ? "border-red-700 text-red-400"
+                    : "border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
+                }`}
+              >
+                {tg === "sending" ? "TEST..." : "TEST TG"}
+              </button>
+              <button
+                onClick={() => mutate()}
+                className="flex-1 border border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300 text-[10px] tracking-[0.15em] py-2 transition-colors"
+              >
+                {isValidating ? "REFRESH..." : "REFRESH"}
+              </button>
+            </div>
+
+            {tgMsg && (
+              <p className={`text-[10px] text-center ${tg === "ok" ? "text-green-400" : "text-red-400"}`}>
+                {tgMsg}
+              </p>
+            )}
           </div>
 
           <div className="border border-zinc-800 bg-zinc-950 p-5 flex flex-col gap-5">
@@ -403,34 +528,6 @@ function DashboardLive({
                 <p className="font-bold text-5xl text-green-400 tabular-nums">{activeCount}</p>
               </div>
             </div>
-            
-            {/* REFRESH & TEST TELEGRAM BUTTONS */}
-            <div className="border-t border-zinc-800 pt-4 flex gap-3">
-              <button
-                onClick={testTelegram}
-                className={`flex-1 border text-[11px] tracking-[0.2em] py-3 transition-colors ${
-                  tg === "ok"
-                    ? "border-green-700 text-green-400"
-                    : tg === "error"
-                    ? "border-red-700 text-red-400"
-                    : "border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
-                }`}
-              >
-                {tg === "sending" ? "SENDING..." : tg === "ok" ? "SENT OK" : tg === "error" ? "SEND FAILED" : "TEST TELEGRAM"}
-              </button>
-              <button
-                onClick={() => mutate()}
-                className="flex-1 border border-zinc-700 text-zinc-500 hover:border-zinc-600 hover:text-zinc-300 text-[11px] tracking-[0.2em] py-3 transition-colors"
-              >
-                {isValidating ? "REFRESHING..." : "REFRESH"}
-              </button>
-            </div>
-            
-            {tgMsg && (
-              <p className={`text-[11px] text-center ${tg === "ok" ? "text-green-400" : "text-red-400"}`}>
-                {tgMsg}
-              </p>
-            )}
             
             <div className="border-t border-zinc-800 pt-3">
               <p className="text-[10px] tracking-[0.18em] text-zinc-600">
