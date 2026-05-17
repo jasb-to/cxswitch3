@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR from "swr";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import type { SymbolCardState } from "@/lib/strategy-v6";
 import { getMarketStatus } from "@/lib/market-status";
 import { EMPTY_SNAPSHOT } from "@/lib/canonical-snapshot";
@@ -241,28 +241,6 @@ export default function Dashboard() {
     { refreshInterval: 30_000, keepPreviousData: true, revalidateOnFocus: false }
   );
 
-  // CRITICAL: Freeze snapshot at render boundary with useMemo
-  // This ensures snapshot is computed ONCE per render cycle
-  // Prevents dependency array instability and derived state bugs
-  const snapshot = useMemo(() => {
-    if (!data?.ready || !Array.isArray(data.cards) || data.cards.length !== 3) {
-      return { cards: BOOTSTRAP_CARDS, setups: [], updatedAt: "", isBootstrap: true };
-    }
-    return { cards: data.cards, setups: data.setups ?? [], updatedAt: data.updatedAt ?? "", isBootstrap: false };
-  }, [data?.ready, data?.cards, data?.setups, data?.updatedAt]);
-
-  // Use frozen snapshot directly - NO recomputation
-  const cards = snapshot.cards;
-  const setups = snapshot.setups;
-  const updatedAt = snapshot.updatedAt;
-  const isBootstrap = snapshot.isBootstrap;
-  const fetchedAtMs = updatedAt ? new Date(updatedAt).getTime() : 0;
-  const isStale = !isBootstrap && isHydrated && fetchedAtMs > 0 && now > 0 && (now - fetchedAtMs) > STALE_THRESHOLD_MS;
-  const lastUpdateTime = isHydrated && updatedAt ? new Date(updatedAt).toLocaleTimeString("en-GB", { hour12: false }) : "—";
-
-  const assetCount = cards.length;
-  const activeCount = setups.length;
-
   async function testTelegram() {
     setTg("sending");
     setTgMsg("");
@@ -277,6 +255,121 @@ export default function Dashboard() {
     }
     setTimeout(() => { setTg("idle"); setTgMsg(""); }, 4000);
   }
+
+  // HARD STOP rendering until snapshot exists with explicit guards
+  // SWR returns: undefined, partial data, stale cache, hydration mismatch
+  // Treat as UNTRUSTED until ALL conditions pass
+  
+  if (!data) {
+    const cards = BOOTSTRAP_CARDS;
+    const setups: any[] = [];
+    const updatedAt = "";
+    const isBootstrap = true;
+    const fetchedAtMs = 0;
+    const isStale = false;
+    const lastUpdateTime = "—";
+    const assetCount = cards.length;
+    const activeCount = setups.length;
+    
+    // Return bootstrap render (see renderDashboard below)
+    return renderDashboard({
+      cards, setups, updatedAt, isBootstrap, fetchedAtMs, isStale, lastUpdateTime, assetCount, activeCount,
+      isHydrated, now, isValidating, testTelegram, tg, tgMsg
+    });
+  }
+  
+  if (!data.ready) {
+    const cards = BOOTSTRAP_CARDS;
+    const setups: any[] = [];
+    const updatedAt = "";
+    const isBootstrap = true;
+    const fetchedAtMs = 0;
+    const isStale = false;
+    const lastUpdateTime = "—";
+    const assetCount = cards.length;
+    const activeCount = setups.length;
+    
+    return renderDashboard({
+      cards, setups, updatedAt, isBootstrap, fetchedAtMs, isStale, lastUpdateTime, assetCount, activeCount,
+      isHydrated, now, isValidating, testTelegram, tg, tgMsg
+    });
+  }
+  
+  if (!Array.isArray(data.cards)) {
+    const cards = BOOTSTRAP_CARDS;
+    const setups: any[] = [];
+    const updatedAt = "";
+    const isBootstrap = true;
+    const fetchedAtMs = 0;
+    const isStale = false;
+    const lastUpdateTime = "—";
+    const assetCount = cards.length;
+    const activeCount = setups.length;
+    
+    return renderDashboard({
+      cards, setups, updatedAt, isBootstrap, fetchedAtMs, isStale, lastUpdateTime, assetCount, activeCount,
+      isHydrated, now, isValidating, testTelegram, tg, tgMsg
+    });
+  }
+  
+  if (data.cards.length !== 3) {
+    const cards = BOOTSTRAP_CARDS;
+    const setups: any[] = [];
+    const updatedAt = "";
+    const isBootstrap = true;
+    const fetchedAtMs = 0;
+    const isStale = false;
+    const lastUpdateTime = "—";
+    const assetCount = cards.length;
+    const activeCount = setups.length;
+    
+    return renderDashboard({
+      cards, setups, updatedAt, isBootstrap, fetchedAtMs, isStale, lastUpdateTime, assetCount, activeCount,
+      isHydrated, now, isValidating, testTelegram, tg, tgMsg
+    });
+  }
+  
+  // ONLY if all guards pass: use live data
+  const cards = data.cards;
+  const setups = data.setups ?? [];
+  const updatedAt = data.updatedAt ?? "";
+  const isBootstrap = false;
+  const fetchedAtMs = updatedAt ? new Date(updatedAt).getTime() : 0;
+  const isStale = !isBootstrap && isHydrated && fetchedAtMs > 0 && now > 0 && (now - fetchedAtMs) > STALE_THRESHOLD_MS;
+  const lastUpdateTime = isHydrated && updatedAt ? new Date(updatedAt).toLocaleTimeString("en-GB", { hour12: false }) : "—";
+  const assetCount = cards.length;
+  const activeCount = setups.length;
+  
+  return renderDashboard({
+    cards, setups, updatedAt, isBootstrap, fetchedAtMs, isStale, lastUpdateTime, assetCount, activeCount,
+    isHydrated, now, isValidating, testTelegram, tg, tgMsg
+  });
+}
+
+/**
+ * Extracted render function - no logic, just JSX
+ * All data passed in as props
+ */
+function renderDashboard({
+  cards, setups, updatedAt, isBootstrap, fetchedAtMs, isStale, lastUpdateTime, assetCount, activeCount,
+  isHydrated, now, isValidating, testTelegram, tg, tgMsg
+}: {
+  cards: SymbolCardState[];
+  setups: any[];
+  updatedAt: string;
+  isBootstrap: boolean;
+  fetchedAtMs: number;
+  isStale: boolean;
+  lastUpdateTime: string;
+  assetCount: number;
+  activeCount: number;
+  isHydrated: boolean;
+  now: number;
+  isValidating: boolean;
+  testTelegram: () => Promise<void>;
+  tg: string;
+  tgMsg: string;
+}) {
 
   return (
     <main className="min-h-screen bg-[#0a0a0a] text-white font-mono">
