@@ -117,42 +117,7 @@ function getDecisionText(score: number | null): { action: string; guidance: stri
   };
 }
 
-function getActionGuidance(score: number | null, htf: string): string {
-  if (score === null || score < 40) {
-    return "Wait for 15M confirmation breakout";
-  }
-  if (score < 70) {
-    return `Awaiting 4H alignment (${htf})`;
-  }
-  return "Enter on 15M breakout confirmation";
-}
-
-/**
- * CORE READINESS COMPUTATION - fixes the main UI issue
- * Computes portfolio readiness from all card scores
- */
-function computePortfolioReadiness(cards: SymbolCardState[]): number {
-  if (!Array.isArray(cards) || cards.length === 0) return 0;
-  const total = cards.reduce((sum, c) => sum + (c?.tradeReadinessScore ?? 0), 0);
-  return Math.round(total / cards.length);
-}
-
-/**
- * DECISION ENGINE - simple and correct
- * Maps readiness percentage to decision text
- */
-function getPortfolioDecision(readiness: number): { text: string; level: "danger" | "warning" | "success" } {
-  if (readiness < 40) {
-    return { text: "DO NOT TRADE", level: "danger" };
-  }
-  if (readiness < 70) {
-    return { text: "WATCH ZONE", level: "warning" };
-  }
-  return { text: "READY TO TRADE", level: "success" };
-}
-
 function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
-  const isBootstrap = card.source === "bootstrap";
   const uiState: UIState = getFinalState(card);
   
   // Direction colors
@@ -166,41 +131,62 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
   
   // Decision text
   const { action, guidance } = getDecisionText(card.tradeReadinessScore);
-  const actionGuidance = getActionGuidance(card.tradeReadinessScore, card.htf4hTrend || "NEUTRAL");
 
   return (
-    <div className={`rounded-lg border ${directionBorder} p-6 bg-[#0f0f0f] text-white space-y-4`}>
-      {/* HEADER */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
+    <div className={`rounded-lg border ${directionBorder} p-5 bg-[#0f0f0f] text-white space-y-4`}>
+      {/* HEADER: Symbol, Status, Direction, Price */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex-1">
           <h2 className="text-2xl font-bold tracking-tight">{card.symbol}/USD</h2>
-          <span className={`text-xs px-3 py-1 rounded border ${directionBg} ${directionBorder} ${directionColor}`}>
+          <span className={`text-sm font-semibold ${directionColor}`}>{card.direction}</span>
+        </div>
+        <div className="text-right">
+          <span className={`inline-block text-xs px-3 py-1 rounded border ${directionBg} ${directionBorder} ${directionColor} mb-2`}>
             {uiState.toUpperCase()}
           </span>
-        </div>
-        <div className="flex items-center justify-between">
-          <span className={`text-sm font-semibold ${directionColor}`}>{card.direction}</span>
-          <span className="text-2xl font-mono font-bold text-white">${fmt(card.price)}</span>
+          <p className="text-2xl font-mono font-bold text-white">${fmt(card.price)}</p>
         </div>
       </div>
 
-      {/* TRADE READINESS CORE (PRIMARY) */}
-      <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-zinc-700 space-y-3">
+      {/* MARKET BIAS: Single line 4H / 15M */}
+      <div className="border-t border-zinc-800 pt-3 flex items-center justify-between text-sm">
+        <span className="text-zinc-500">Market Bias:</span>
+        <span className="flex gap-4">
+          <span>
+            4H: <span className={card.htf4hTrend === "BULLISH" ? "text-green-400" : card.htf4hTrend === "BEARISH" ? "text-red-400" : "text-zinc-400"}>
+              {card.htf4hTrend || "—"}
+            </span>
+          </span>
+          <span>
+            15M: <span className={
+              card.execution15mState === "BREAKOUT_READY" ? "text-cyan-400" : 
+              card.execution15mState === "EXPANDING" ? "text-green-400" : 
+              card.execution15mState === "COMPRESSING" ? "text-amber-400" : 
+              "text-zinc-400"
+            }>
+              {card.execution15mState || "—"}
+            </span>
+          </span>
+        </span>
+      </div>
+
+      {/* TRADE READINESS BAR: 0-100% with colors */}
+      <div className="border-t border-zinc-800 pt-3 space-y-2">
         <div className="flex items-center justify-between">
           <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Trade Readiness</p>
           <span className={`text-lg font-mono font-bold ${readinessScoreColor}`}>
             {safePercent(card.tradeReadinessScore)}
           </span>
         </div>
-        <div className="w-full bg-zinc-800 rounded h-4">
+        <div className="w-full bg-zinc-800 rounded h-3">
           <div 
-            className={`${readinessBgBar} h-4 rounded transition-all`} 
+            className={`${readinessBgBar} h-3 rounded transition-all`} 
             style={{ width: safeBarWidth(card.tradeReadinessScore) }} 
           />
         </div>
       </div>
 
-      {/* DECISION BOX (CRITICAL) */}
+      {/* DECISION BOX: Big and obvious - the main decision */}
       <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-zinc-700">
         <p className={`text-lg font-bold ${
           action === "DO NOT TRADE" ? "text-red-400" :
@@ -209,71 +195,17 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
         }`}>
           {action}
         </p>
-        <p className="text-sm text-zinc-400 mt-2">{guidance}</p>
+        <p className="text-sm text-zinc-400 mt-1">{guidance}</p>
       </div>
 
-      {/* SIGNAL BREAKDOWN */}
-      <div className="border-t border-zinc-800 pt-4 space-y-2">
-        <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Market Structure</p>
-        <div className="grid grid-cols-2 gap-3 text-sm">
-          <div className="flex justify-between">
-            <span className="text-zinc-400">4H:</span>
-            <span className={card.htf4hTrend === "BULLISH" ? "text-green-400" : card.htf4hTrend === "BEARISH" ? "text-red-400" : "text-zinc-400"}>
-              {card.htf4hTrend || "—"}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-zinc-400">15M:</span>
-            <span className={
-              card.execution15mState === "BREAKOUT_READY" ? "text-cyan-400" : 
-              card.execution15mState === "EXPANDING" ? "text-green-400" : 
-              card.execution15mState === "COMPRESSING" ? "text-amber-400" : 
-              "text-zinc-400"
-            }>
-              {card.execution15mState || "—"}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* DRIVERS */}
-      <div className="space-y-2">
-        <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Drivers</p>
-        <div className="grid grid-cols-2 gap-3 text-sm">
-          <div className="flex justify-between">
-            <span className="text-zinc-400">EMA:</span>
-            <span className="text-cyan-400">{card.emaSlope ? "LONG" : "SHORT"}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-zinc-400">Displacement:</span>
-            <span className="text-cyan-400">{card.volatilityLevel ? "STRONG" : "WEAK"}</span>
-          </div>
-          <div className="flex justify-between col-span-2">
-            <span className="text-zinc-400">Momentum:</span>
-            <span className="text-cyan-400">{card.stochRsi ? "EXPANDING" : "CONTRACTING"}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* ACTION GUIDANCE */}
-      <div className="border-t border-zinc-800 pt-4">
-        <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold mb-2">Next Action</p>
-        <p className="text-sm text-zinc-300">
-          {isBootstrap ? "Fetching market snapshot..." : actionGuidance}
-        </p>
-      </div>
-
-      {/* CONDITIONAL: Show targets ONLY if state is SNIPER or CONFIRMED */}
+      {/* ENTRY DATA: Only if SNIPER or CONFIRMED */}
       {(uiState === "SNIPER" || uiState === "CONFIRMED") && card.targetPrices && (
-        <div className="border-t border-zinc-800 pt-4 space-y-2">
-          <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">{card.mode} Entry</p>
-          <div className="text-sm font-mono space-y-1">
-            <div className="flex justify-between"><span className="text-zinc-400">Entry:</span> <span className="text-cyan-400">${fmt(card.price)}</span></div>
-            <div className="flex justify-between"><span className="text-zinc-400">TP1:</span> <span className="text-green-400">${fmt(card.targetPrices.tp1)}</span></div>
-            <div className="flex justify-between"><span className="text-zinc-400">TP2:</span> <span className="text-green-400">${fmt(card.targetPrices.tp2)}</span></div>
-            <div className="flex justify-between"><span className="text-zinc-400">SL:</span> <span className="text-red-400">${fmt(card.targetPrices.sl)}</span></div>
-            <div className="flex justify-between mt-2 pt-2 border-t border-zinc-700"><span className="text-zinc-400">R:R:</span> <span className="text-green-400 font-bold">{card.riskReward?.toFixed(1) ?? "—"}:1</span></div>
-          </div>
+        <div className="border-t border-zinc-800 pt-3 text-sm font-mono space-y-1">
+          <div className="flex justify-between"><span className="text-zinc-400">Entry:</span> <span className="text-cyan-400">${fmt(card.price)}</span></div>
+          <div className="flex justify-between"><span className="text-zinc-400">TP1:</span> <span className="text-green-400">${fmt(card.targetPrices.tp1)}</span></div>
+          <div className="flex justify-between"><span className="text-zinc-400">TP2:</span> <span className="text-green-400">${fmt(card.targetPrices.tp2)}</span></div>
+          <div className="flex justify-between"><span className="text-zinc-400">SL:</span> <span className="text-red-400">${fmt(card.targetPrices.sl)}</span></div>
+          <div className="flex justify-between mt-2 pt-2 border-t border-zinc-700"><span className="text-zinc-400">R:R:</span> <span className="text-green-400 font-bold">{card.riskReward?.toFixed(1) ?? "—"}:1</span></div>
         </div>
       )}
     </div>
@@ -413,21 +345,6 @@ function DashboardLive({
   const assetCount = cards.length;
   const activeCount = setups.length;
 
-  // CORE READINESS COMPUTATION - directly connected to UI
-  const portfolioReadiness = computePortfolioReadiness(cards);
-  const portfolioDecision = getPortfolioDecision(portfolioReadiness);
-  
-  // Color mapping for portfolio decision
-  const decisionColor = portfolioDecision.level === "danger" ? "text-red-400" : 
-                        portfolioDecision.level === "warning" ? "text-amber-400" : 
-                        "text-green-400";
-  const decisionBg = portfolioDecision.level === "danger" ? "bg-red-950" : 
-                     portfolioDecision.level === "warning" ? "bg-amber-950" : 
-                     "bg-green-950";
-  const decisionBorder = portfolioDecision.level === "danger" ? "border-red-700" : 
-                         portfolioDecision.level === "warning" ? "border-amber-700" : 
-                         "border-green-700";
-
   return (
     <main className="min-h-screen bg-[#0a0a0a] text-white font-mono">
       <header className="border-b border-zinc-800 px-6 py-3 flex items-center justify-between">
@@ -509,24 +426,6 @@ function DashboardLive({
                 <p className="font-bold text-5xl text-green-400 tabular-nums">{activeCount}</p>
               </div>
             </div>
-            
-            {/* PORTFOLIO READINESS - NEW */}
-            <div className="border-t border-zinc-800 pt-5 space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-[10px] tracking-[0.22em] text-zinc-500">PORTFOLIO READINESS</p>
-                <p className={`font-bold text-sm ${decisionColor}`}>{portfolioReadiness}%</p>
-              </div>
-              <div className="w-full bg-zinc-800 rounded h-3">
-                <div 
-                  className={`h-3 rounded transition-all ${portfolioDecision.level === "danger" ? "bg-red-500" : portfolioDecision.level === "warning" ? "bg-amber-500" : "bg-green-500"}`}
-                  style={{ width: `${portfolioReadiness}%` }}
-                />
-              </div>
-              <p className={`text-sm font-semibold ${decisionColor}`}>
-                {portfolioDecision.text}
-              </p>
-            </div>
-            
             <div className="border-t border-zinc-800 pt-3">
               <p className="text-[10px] tracking-[0.18em] text-zinc-600">
                 AUTO-REFRESH 30s &nbsp;·&nbsp; KRAKEN API
