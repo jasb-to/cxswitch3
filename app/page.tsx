@@ -101,12 +101,13 @@ function fmt(n: number) {
 
 
 function getDecisionText(state: UIState): { action: string; guidance: string } {
-  // Decision text derives from marketReadinessState, not score
+  // STATE PRECEDENCE: ACTIVE_SNIPER > SNIPER > CONFIRMED > BUILDING
+  // ACTIVE_SNIPER always shows "WATCH ZONE" and full trade details
   switch (state) {
-    case "BUILDING":
+    case "ACTIVE_SNIPER":
       return {
-        action: "DO NOT TRADE",
-        guidance: "Waiting for structure"
+        action: "WATCH ZONE",
+        guidance: "Signal executed - Monitor entry"
       };
     case "SNIPER":
       return {
@@ -118,6 +119,7 @@ function getDecisionText(state: UIState): { action: string; guidance: string } {
         action: "READY TO TRADE",
         guidance: "Entry active"
       };
+    case "BUILDING":
     default:
       return {
         action: "DO NOT TRADE",
@@ -185,21 +187,24 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
         </span>
       </div>
 
-      {/* TRADE READINESS BAR: 0-100% with colors - uses normalized readiness */}
-      <div className="border-t border-zinc-800 pt-3 space-y-2">
-        <div className="flex items-center justify-between">
-          <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Trade Readiness</p>
-          <span className={`text-lg font-mono font-bold ${readinessScoreColor}`}>
-            {safePercent(readiness)}
-          </span>
+      {/* TRADE READINESS BAR: ONLY FOR BUILDING STATE
+           For ACTIVE_SNIPER/CONFIRMED: readiness is irrelevant, signal state is truth */}
+      {displayState === "BUILDING" && (
+        <div className="border-t border-zinc-800 pt-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Trade Readiness</p>
+            <span className={`text-lg font-mono font-bold ${readinessScoreColor}`}>
+              {safePercent(readiness)}
+            </span>
+          </div>
+          <div className="w-full bg-zinc-800 rounded h-3">
+            <div 
+              className={`${readinessBgBar} h-3 rounded transition-all`} 
+              style={{ width: safeBarWidth(readiness) }} 
+            />
+          </div>
         </div>
-        <div className="w-full bg-zinc-800 rounded h-3">
-          <div 
-            className={`${readinessBgBar} h-3 rounded transition-all`} 
-            style={{ width: safeBarWidth(readiness) }} 
-          />
-        </div>
-      </div>
+      )}
 
       {/* DECISION BOX: Big and obvious - the main decision */}
       <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-zinc-700">
