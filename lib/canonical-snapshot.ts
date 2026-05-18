@@ -10,6 +10,7 @@
 export type CanonicalSnapshot = {
   ready: boolean;           // true only when cards.length === 3
   cards: any[];            // exactly 0 or 3 - never partial
+  setups: any[];           // ACTIVE_SNIPER signals (execution layer)
   updatedAt: string | null; // ISO timestamp or null
 };
 
@@ -20,6 +21,7 @@ export type CanonicalSnapshot = {
 export const EMPTY_SNAPSHOT: CanonicalSnapshot = {
   ready: false,
   cards: [],
+  setups: [],
   updatedAt: null,
 };
 
@@ -33,6 +35,7 @@ export function isCanonicalSnapshot(value: any): value is CanonicalSnapshot {
     typeof value === "object" &&
     typeof value.ready === "boolean" &&
     Array.isArray(value.cards) &&
+    Array.isArray(value.setups) &&
     (value.updatedAt === null || typeof value.updatedAt === "string")
   );
 }

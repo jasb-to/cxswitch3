@@ -212,6 +212,10 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
   
   // Decision text derives from state
   const { action, guidance } = getDecisionText(uiState);
+  
+  // v1 FIX: Display signal state from card (ACTIVE_SNIPER, BUILDING, etc)
+  const signalState = (card as any).signalState || "NEUTRAL";
+  const isActiveSignal = signalState === "ACTIVE_SNIPER" || signalState === "ACTIVE_CONFIRMED";
 
   return (
     <div className={`rounded-lg border ${directionBorder} p-5 bg-[#0f0f0f] text-white space-y-4`}>
@@ -225,6 +229,14 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
           <span className={`inline-block text-xs px-3 py-1 rounded border ${directionBg} ${directionBorder} ${directionColor} mb-2`}>
             {uiState.toUpperCase()}
           </span>
+          {/* v1 FIX: Show signal state badge if ACTIVE */}
+          {isActiveSignal && (
+            <span className={`inline-block text-xs px-3 py-1 rounded border ml-2 ${
+              signalState === "ACTIVE_SNIPER" ? "border-cyan-700 bg-cyan-950 text-cyan-400" : "border-green-700 bg-green-950 text-green-400"
+            }`}>
+              {signalState}
+            </span>
+          )}
           <p className="text-2xl font-mono font-bold text-white">${fmt(card.price)}</p>
         </div>
       </div>
