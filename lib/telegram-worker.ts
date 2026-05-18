@@ -71,13 +71,16 @@ async function processAlertQueueAsync() {
         // Check cooldown
         // STEP 2 FIX: Pass signalTransitionId for granular dedupe
         if (await canSendAlert(job.symbol, job.mode, job.direction, job.signalTransitionId)) {
-          // Send alert with COMPLETE job payload (all fields required)
-          // sendAlert expects root-level fields: targetPrices, htf4hTrend, execution15mState, structureState, etc.
-          sendAlert(job).catch(err => {
-            console.log(`[ALERT_WORKER] Failed to send ${job.symbol}:`, err);
-          });
-          
-          console.log(`[ALERT_WORKER] Telegram sent for ${job.symbol} ${job.mode} (${job.signalState})`);
+          // CRITICAL FIX: MUST await sendAlert - fire-and-forget async bug caused silent failures
+          // Without await, the function returns before Telegram delivery completes
+          try {
+            await sendAlert(job);
+            console.log(`[ALERT_WORKER] Telegram sent for ${job.symbol} ${job.mode} (${job.signalState})`);
+          } catch (err) {
+            console.error(`[ALERT_WORKER] Failed to send ${job.symbol}:`, err);
+            // Re-throw so the caller knows delivery failed
+            throw err;
+          }
         } else {
           console.log(`[ALERT_WORKER] Cooldown active for ${job.symbol} - requeuing`);
           // Requeue if cooldown active
