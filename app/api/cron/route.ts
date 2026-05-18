@@ -280,6 +280,12 @@ export async function GET(req: NextRequest) {
         continue; // Skip alert if payload incomplete
       }
       
+      // Verify structureState is populated
+      if (!setupCard.structureState) {
+        console.log(`[SNIPER BLOCKED] ${setup.symbol} missing structureState`);
+        continue;
+      }
+      
       // Compute execution-grade signal state from setup.mode
       const signalState = setup.mode === "SNIPER" ? "ACTIVE_SNIPER" : "ACTIVE_CONFIRMED";
       
