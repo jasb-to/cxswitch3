@@ -213,8 +213,8 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
         <p className="text-sm text-zinc-400 mt-1">{guidance}</p>
       </div>
 
-      {/* ENTRY DATA: Only if SNIPER or CONFIRMED */}
-      {(uiState === "SNIPER" || uiState === "CONFIRMED") && card.targetPrices && (
+      {/* ENTRY DATA: Only if SNIPER, ACTIVE_SNIPER, or CONFIRMED */}
+      {(uiState === "SNIPER" || uiState === "ACTIVE_SNIPER" || uiState === "CONFIRMED") && card.targetPrices && (
         <div className="border-t border-zinc-800 pt-3 text-sm font-mono space-y-1">
           <div className="flex justify-between"><span className="text-zinc-400">Entry:</span> <span className="text-cyan-400">${fmt(card.price)}</span></div>
           <div className="flex justify-between"><span className="text-zinc-400">TP1:</span> <span className="text-green-400">${fmt(card.targetPrices.tp1)}</span></div>
