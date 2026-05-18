@@ -133,6 +133,18 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
   const displayState: UIState = resolveDisplayState(card);
   const uiState = displayState; // alias for getDecisionText compat
   
+  // Get backend signal state for ACTIVE_SNIPER hard override
+  const signalState = (card as any).signalState as string | undefined;
+  
+  // DEBUG: Log render source to detect ghost renderers
+  console.log("[v0] UI_RENDER_STATE", {
+    symbol: card.symbol,
+    signalState,
+    displayState,
+    readiness: card.tradeReadinessScore,
+    hasTradeData: !!card.targetPrices,
+  });
+  
   // Trade readiness from backend (canonical field)
   const readiness = card.tradeReadinessScore ?? 0;
   
@@ -187,36 +199,49 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
         </span>
       </div>
 
-      {/* TRADE READINESS BAR: ONLY FOR BUILDING STATE
-           For ACTIVE_SNIPER/CONFIRMED: readiness is irrelevant, signal state is truth */}
-      {displayState === "BUILDING" && (
-        <div className="border-t border-zinc-800 pt-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Trade Readiness</p>
-            <span className={`text-lg font-mono font-bold ${readinessScoreColor}`}>
-              {safePercent(readiness)}
-            </span>
+      {/* HARD OVERRIDE FOR ACTIVE_SNIPER: Never render readiness, never render "DO NOT TRADE" */}
+      {signalState === "ACTIVE_SNIPER" ? (
+        <>
+          {/* For ACTIVE_SNIPER: Skip readiness bar entirely, render minimal decision box */}
+          <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-cyan-700">
+            <p className="text-lg font-bold text-amber-400">WATCH ZONE</p>
+            <p className="text-sm text-zinc-400 mt-1">Signal executed - Monitor entry</p>
           </div>
-          <div className="w-full bg-zinc-800 rounded h-3">
-            <div 
-              className={`${readinessBgBar} h-3 rounded transition-all`} 
-              style={{ width: safeBarWidth(readiness) }} 
-            />
-          </div>
-        </div>
-      )}
+        </>
+      ) : (
+        <>
+          {/* TRADE READINESS BAR: ONLY FOR BUILDING STATE
+               For CONFIRMED: readiness is irrelevant, signal state is truth */}
+          {displayState === "BUILDING" && (
+            <div className="border-t border-zinc-800 pt-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Trade Readiness</p>
+                <span className={`text-lg font-mono font-bold ${readinessScoreColor}`}>
+                  {safePercent(readiness)}
+                </span>
+              </div>
+              <div className="w-full bg-zinc-800 rounded h-3">
+                <div 
+                  className={`${readinessBgBar} h-3 rounded transition-all`} 
+                  style={{ width: safeBarWidth(readiness) }} 
+                />
+              </div>
+            </div>
+          )}
 
-      {/* DECISION BOX: Big and obvious - the main decision */}
-      <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-zinc-700">
-        <p className={`text-lg font-bold ${
-          action === "DO NOT TRADE" ? "text-red-400" :
-          action === "WATCH ZONE" ? "text-amber-400" :
-          "text-green-400"
-        }`}>
-          {action}
-        </p>
-        <p className="text-sm text-zinc-400 mt-1">{guidance}</p>
-      </div>
+          {/* DECISION BOX: Big and obvious - the main decision */}
+          <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-zinc-700">
+            <p className={`text-lg font-bold ${
+              action === "DO NOT TRADE" ? "text-red-400" :
+              action === "WATCH ZONE" ? "text-amber-400" :
+              "text-green-400"
+            }`}>
+              {action}
+            </p>
+            <p className="text-sm text-zinc-400 mt-1">{guidance}</p>
+          </div>
+        </>
+      )}
 
       {/* ENTRY DATA: Only if SNIPER, ACTIVE_SNIPER, or CONFIRMED */}
       {(uiState === "SNIPER" || uiState === "ACTIVE_SNIPER" || uiState === "CONFIRMED") && card.targetPrices && (
@@ -328,7 +353,13 @@ function DashboardBootstrap() {
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {BOOTSTRAP_CARDS.map((card) => (
-            <TradeDecisionPanel key={card.symbol} card={card} />
+            <div key={card.symbol} className="border border-zinc-800 rounded-lg p-4 bg-zinc-900/50 animate-pulse">
+              <div className="flex items-start justify-between mb-2">
+                <h3 className="text-lg font-bold text-zinc-400">{card.symbol}</h3>
+                <span className="text-xs px-2 py-1 rounded bg-zinc-800 text-zinc-400">LOADING</span>
+              </div>
+              <p className="text-sm text-zinc-500">Initializing...</p>
+            </div>
           ))}
         </div>
       </div>
