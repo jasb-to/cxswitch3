@@ -20,7 +20,40 @@
 
 import type { SymbolCardState } from "./strategy-v6";
 
-export type UIState = "BUILDING" | "SNIPER" | "CONFIRMED";
+export type UIState = "BUILDING" | "SNIPER" | "ACTIVE_SNIPER" | "CONFIRMED";
+
+/**
+ * CANONICAL DISPLAY STATE RESOLVER
+ *
+ * SINGLE function that maps all backend signal flags → ONE display string.
+ * UI MUST call this and render ONLY its return value.
+ *
+ * RULES:
+ * - ACTIVE_SNIPER takes priority over transitional SNIPER
+ * - Never concatenate states
+ * - Never render raw flags
+ * - If state contains both SNIPER and ACTIVE_SNIPER → ACTIVE_SNIPER wins
+ */
+export function resolveDisplayState(card: SymbolCardState): UIState {
+  if (card.source === "bootstrap") return "BUILDING";
+
+  const s = (card as any).signalState as string | undefined;
+
+  // HARD GUARD: if somehow both states are present, ACTIVE_SNIPER wins
+  if (s === "ACTIVE_SNIPER") return "ACTIVE_SNIPER";
+  if (s === "ACTIVE_CONFIRMED") return "CONFIRMED";
+  if (s === "SNIPER") {
+    if (
+      card.tradeReadinessScore !== null &&
+      card.tradeReadinessScore >= 70 &&
+      card.direction &&
+      card.direction !== "NEUTRAL"
+    ) {
+      return "SNIPER";
+    }
+  }
+  return "BUILDING";
+}
 
 /**
  * FINAL STATE MACHINE - ONLY FUNCTION THAT DECIDES UI STATE
@@ -35,60 +68,8 @@ export type UIState = "BUILDING" | "SNIPER" | "CONFIRMED";
  * NO EXCEPTIONS. NO EXTENSIONS. NO ALIASES.
  */
 export function getFinalState(card: SymbolCardState): UIState {
-  // Bootstrap cards = BUILDING (no data yet, but still showing state not placeholder)
-  if (card.source === "bootstrap") {
-    return "BUILDING";
-  }
-
-  // Get internal backend state (ACTIVE_SNIPER, ACTIVE_CONFIRMED, BUILDING, NONE)
-  const internalState = card.signalState;
-
-  // RULE 1: If backend says ACTIVE_SNIPER, UI shows SNIPER
-  // SNIPER is the entry trigger - ONLY allowed when ALL are true:
-  // - ignition >= 70
-  // - compression OR expansion confirmed
-  // - direction is valid (LONG or SHORT, not NEUTRAL)
-  // - NO macro conflict
-  if (internalState === "ACTIVE_SNIPER") {
-    // Validate SNIPER preconditions
-    if (
-      card.tradeReadinessScore !== null &&
-      card.tradeReadinessScore >= 70 &&
-      card.direction &&
-      card.direction !== "NEUTRAL"
-    ) {
-      return "SNIPER";
-    }
-  }
-
-  // RULE 2: If backend says ACTIVE_CONFIRMED, UI shows CONFIRMED
-  // CONFIRMED is continuation phase - ONLY allowed when ALL are true:
-  // - previous state was SNIPER
-  // - continuation is confirmed
-  // - structure sustains direction
-  // - macro is NOT conflicting
-  if (internalState === "ACTIVE_CONFIRMED") {
-    // Validate CONFIRMED preconditions
-    if (
-      card.tradeReadinessScore !== null &&
-      card.tradeReadinessScore >= 70 &&
-      card.direction &&
-      card.direction !== "NEUTRAL"
-    ) {
-      return "CONFIRMED";
-    }
-  }
-
-  // DEFAULT: Everything else shows BUILDING
-  // BUILDING = default state, always start here
-  // Use BUILDING when ANY of these are true:
-  // - ignition < 70
-  // - structure incomplete
-  // - compression not confirmed
-  // - direction unclear or weak
-  // - macro conflict exists
-  // - early formation phase
-  return "BUILDING";
+  // Delegate entirely to the canonical resolver — single source of truth
+  return resolveDisplayState(card);
 }
 
 /**
@@ -178,12 +159,14 @@ export function getReadinessBarClass(score: number | null | undefined): string {
  */
 export function getStateColorClass(state: UIState): string {
   switch (state) {
+    case "ACTIVE_SNIPER":
+      return "border-cyan-700 bg-cyan-950 text-cyan-400";
     case "SNIPER":
-      return "bg-blue-900 text-blue-200";
+      return "border-blue-700 bg-blue-900 text-blue-200";
     case "CONFIRMED":
-      return "bg-green-900 text-green-200";
+      return "border-green-700 bg-green-900 text-green-200";
     case "BUILDING":
     default:
-      return "bg-zinc-800 text-zinc-300";
+      return "border-zinc-700 bg-zinc-800 text-zinc-300";
   }
 }
