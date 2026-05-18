@@ -254,12 +254,14 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // ATOMIC: Update snapshot with exactly 3 cards
+    // ATOMIC: Update snapshot with exactly 3 cards + active setups
     // Backend MUST ONLY write when canonicalCards.length === 3
     // Ready flag is set automatically by setSnapshot
+    // v1 FIX: Include setups so UI can display active signal count
     setSnapshot({
       updatedAt: new Date().toISOString(),
       cards: canonicalCards.length === 3 ? canonicalCards : [],
+      setups: setups,  // Pass ACTIVE_SNIPER signals to UI
     });
 
     // STEP 5: Enqueue alerts (decoupled, non-blocking)
