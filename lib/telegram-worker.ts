@@ -18,6 +18,7 @@ export type TelegramAlertJob = {
   price: number;
   source?: string; // v7.3.1: check price source validity
   signalState?: string; // v7.3.0: track signal state for execution gate
+  signalTransitionId?: string; // STEP 2 FIX: Unique ID per signal transition (prevents dedupe blocking)
   targetPrices?: { tp1: number; tp2: number; sl: number } | null;
   htf4hTrend?: "BULLISH" | "BEARISH" | "NEUTRAL"; // v7.3.1: validate HTF structure
   execution15mState?: "COMPRESSING" | "BREAKOUT_READY" | "EXPANDING" | "CHOP"; // v7.3.1: validate 15M execution
@@ -141,7 +142,8 @@ async function processAlertQueueAsync() {
         }
 
         // Check cooldown
-        if (await canSendAlert(job.symbol, job.mode, job.direction)) {
+        // STEP 2 FIX: Pass signalTransitionId for granular dedupe
+        if (await canSendAlert(job.symbol, job.mode, job.direction, job.signalTransitionId)) {
           // Send alert with COMPLETE job payload (all fields required)
           // sendAlert expects root-level fields: targetPrices, htf4hTrend, execution15mState, structureState, etc.
           sendAlert(job).catch(err => {

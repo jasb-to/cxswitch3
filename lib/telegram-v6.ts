@@ -3,6 +3,8 @@
  * 
  * Cooldown rule: 30 minutes per (symbol + mode + direction)
  * Alert table: tracks sent alerts for cooldown
+ * 
+ * STEP 1 FIX: Retry wrapper with timeout isolation for reliable delivery
  */
 
 import { supabase } from "@/lib/supabase-client";
@@ -13,22 +15,74 @@ const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 
 /**
- * Check if we can send alert for this setup
- * Cooldown: 30 minutes per (symbol + mode + direction)
+ * Hardened Telegram delivery with retry + timeout isolation
+ * STEP 1 FIX: Ensures alerts reach Telegram even with transient failures
  */
-export async function canSendAlert(symbol: string, mode: "SNIPER" | "CONFIRMED", direction: "LONG" | "SHORT"): Promise<boolean> {
+async function safeTelegramSend(payload: any, retries = 3): Promise<boolean> {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+
+      const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      if (res.ok) {
+        console.log(`[TELEGRAM_SENT] Delivery successful on attempt ${i + 1}`);
+        return true;
+      }
+
+      console.log(`[TELEGRAM_RETRY] Attempt ${i + 1} failed: HTTP ${res.status}`);
+    } catch (err) {
+      console.log(
+        `[TELEGRAM_RETRY] Attempt ${i + 1} failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+
+    // Exponential backoff: 1s, 2s, 4s
+    if (i < retries - 1) {
+      await new Promise(r => setTimeout(r, 1000 * Math.pow(2, i)));
+    }
+  }
+
+  console.error(`[TELEGRAM_FAILED] Delivery failed after ${retries} attempts`);
+  return false;
+}
+
+
+/**
+ * Check if we can send alert for this setup
+ * STEP 2 FIX: Dedupe key includes signalTransitionId to prevent blocking repeated SNIPER states
+ * Old key: symbol + mode + direction (too broad, blocks repeated signals)
+ * New key: signalTransitionId (unique per signal transition, allows new signals)
+ */
+export async function canSendAlert(
+  symbol: string,
+  mode: "SNIPER" | "CONFIRMED",
+  direction: "LONG" | "SHORT",
+  signalTransitionId?: string
+): Promise<boolean> {
   if (!supabase) return true;
 
   try {
     const now = new Date();
     const cooldownEnd = new Date(now.getTime() - COOLDOWN_MS);
 
+    // STEP 2 FIX: Use signalTransitionId if available for more granular dedupe
+    // Falls back to symbol+mode+direction for backward compatibility
+    const dedupeKey = signalTransitionId || `${symbol}-${mode}-${direction}`;
+
     const { data, error } = await supabase
       .from("alerts_sent")
       .select("timestamp")
       .eq("symbol", symbol)
-      .eq("mode", mode)
-      .eq("direction", direction)
+      .eq("dedupe_key", dedupeKey)
       .gte("timestamp", cooldownEnd.toISOString())
       .limit(1)
       .maybeSingle();
@@ -38,7 +92,7 @@ export async function canSendAlert(symbol: string, mode: "SNIPER" | "CONFIRMED",
       return true; // Allow if DB is down
     }
 
-    return !data; // If no recent alert, can send
+    return !data; // If no recent alert with this dedupe key, can send
   } catch (err) {
     console.log(`[TELEGRAM] Cooldown error: ${err instanceof Error ? err.message : String(err)}`);
     return true;
@@ -134,27 +188,27 @@ export async function sendAlert(setup: any): Promise<void> {
 
   const text = lines.join("\n");
 
-  try {
-    const response = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: CHAT_ID, text }),
-    });
+  // STEP 1 FIX: Use reliable delivery wrapper instead of bare fetch
+  const delivered = await safeTelegramSend({
+    chat_id: CHAT_ID,
+    text,
+  });
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
+  if (!delivered) {
+    console.error(`[TELEGRAM] Failed to deliver alert for ${setup.symbol}`);
+    throw new Error("Telegram delivery failed after retries");
+  }
 
-    // Store alert in database for cooldown
-    if (supabase) {
-      await supabase.from("alerts_sent").insert([{
-        symbol: setup.symbol,
-        mode: setup.mode,
-        direction: setup.direction,
-        timestamp: new Date().toISOString(),
-      }]);
-    }
-  } catch (err) {
-    throw new Error(`Failed to send: ${err instanceof Error ? err.message : String(err)}`);
+  // Store alert in database for cooldown
+  // STEP 2 FIX: Store dedupe_key for more granular cooldown checking
+  if (supabase) {
+    const dedupeKey = setup.signalTransitionId || `${setup.symbol}-${setup.mode}-${setup.direction}`;
+    await supabase.from("alerts_sent").insert([{
+      symbol: setup.symbol,
+      mode: setup.mode,
+      direction: setup.direction,
+      dedupe_key: dedupeKey,
+      timestamp: new Date().toISOString(),
+    }]);
   }
 }
