@@ -98,76 +98,6 @@ function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-/**
- * LIVE TRADE ANALYSIS: Operator-grade market intelligence
- * Rules:
- * - BTC: If sniper=false and no expansion → BLOCKED
- * - ETH: If breakout pending → WATCH
- * - SOL: If sniper passed but execution blocked → CLOSEST SETUP
- */
-function getLiveTradeAnalysis(
-  symbol: string,
-  state: UIState,
-  execution15mState?: string
-): { label: string; color: string; description: string } {
-  if (symbol === "BTC") {
-    if (state === "BUILDING" && execution15mState !== "EXPANDING") {
-      return {
-        label: "BLOCKED",
-        color: "text-red-400",
-        description: "No expansion/compression"
-      };
-    }
-    return {
-      label: "MONITORING",
-      color: "text-yellow-400",
-      description: "Awaiting structure"
-    };
-  }
-  
-  if (symbol === "ETH") {
-    if (state === "SNIPER" && execution15mState === "BREAKOUT_READY") {
-      return {
-        label: "WATCH",
-        color: "text-amber-400",
-        description: "Needs breakout confirmation"
-      };
-    }
-    if (state === "SNIPER") {
-      return {
-        label: "WATCH",
-        color: "text-amber-400",
-        description: "Entry forming"
-      };
-    }
-    return {
-      label: "STANDBY",
-      color: "text-zinc-400",
-      description: "Awaiting signal"
-    };
-  }
-  
-  if (symbol === "SOL") {
-    if (state === "SNIPER") {
-      return {
-        label: "CLOSEST SETUP",
-        color: "text-cyan-400",
-        description: "Blocked by 4H structure"
-      };
-    }
-    return {
-      label: "MONITORING",
-      color: "text-yellow-400",
-      description: "Awaiting expansion"
-    };
-  }
-  
-  return {
-    label: "NEUTRAL",
-    color: "text-zinc-400",
-    description: "No setup"
-  };
-}
 
 function getDecisionText(state: UIState): { action: string; guidance: string } {
   // Decision text derives from marketReadinessState, not score
@@ -318,33 +248,33 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, []);
 
-  const { data, mutate, isValidating } = useSWR<{ updatedAt: string; cards: SymbolCardState[]; setups: any[] }>(
+  const { data, mutate, isValidating } = useSWR(
     "/api/signals",
     fetcher,
     { revalidateOnFocus: false, dedupingInterval: 2000 }
   );
 
-  // NORMALIZE API RESPONSE: Handle both nested and flat response shapes
-  // API may return { snapshot: { ready, cards, ... } } or { ready, cards, ... }
-  const raw = data?.snapshot ?? data ?? null;
+  // Normalize: API may return { snapshot: {...} } or the snapshot directly
+  const snap = data?.snapshot ?? data;
 
-  // STRICT VALIDATION: Only Dashboard interprets SWR data
-  const isValid =
-    raw &&
-    raw?.ready === true &&
-    Array.isArray(raw?.cards) &&
-    raw.cards.length === 3;
+  // Gate: only render live UI when snapshot is complete
+  const isReady =
+    snap &&
+    snap.ready === true &&
+    Array.isArray(snap.cards) &&
+    snap.cards.length === 3;
 
-  if (!isValid) {
+  if (!isReady) {
     return <DashboardBootstrap />;
   }
 
-  // SANITISED SNAPSHOT: Only pass validated data downstream
-  // No child component may access raw SWR data
+  // Snapshot is the ONLY data passed to children — no derivation here
   const snapshot = {
-    cards: raw.cards,
-    setups: raw.setups ?? [],
-    updatedAt: raw.updatedAt ?? "",
+    cards: snap.cards as SymbolCardState[],
+    setups: snap.setups ?? [],
+    signalCount: snap.signalCount ?? 0,
+    activeSnipers: snap.activeSnipers ?? 0,
+    updatedAt: snap.updatedAt ?? "",
   };
 
   return (
@@ -424,6 +354,8 @@ function DashboardLive({
   snapshot: {
     cards: SymbolCardState[];
     setups: any[];
+    signalCount: number;
+    activeSnipers: number;
     updatedAt: string;
   };
   now: number;
@@ -436,15 +368,13 @@ function DashboardLive({
   setTgMsg: (v: string) => void;
   testTelegram: () => Promise<void>;
 }) {
-  const { cards, setups, updatedAt } = snapshot;
+  const { cards, signalCount, activeSnipers, updatedAt } = snapshot;
   const fetchedAtMs = updatedAt ? new Date(updatedAt).getTime() : 0;
   const isStale = isHydrated && fetchedAtMs > 0 && now > 0 && (now - fetchedAtMs) > STALE_THRESHOLD_MS;
   const lastUpdateTime = isHydrated && updatedAt ? new Date(updatedAt).toLocaleTimeString("en-GB", { hour12: false }) : "—";
   const assetCount = cards.length;
-  // FIX: Use setups from snapshot prop instead of accessing undefined raw variable
-  // raw is only defined in parent Dashboard scope and not in DashboardLive scope
-  const activeCount = setups.length;
-  const activeSnipers = setups.filter((s: any) => s.mode === "SNIPER").length;
+  // Pure render: counts come from snapshot, zero derivation
+  const activeCount = signalCount;
 
   return (
     <main className="min-h-screen bg-[#0a0a0a] text-white font-mono">
@@ -487,21 +417,6 @@ function DashboardLive({
               </div>
             </div>
 
-            {/* LIVE TRADE ANALYSIS: Operator-grade market intelligence */}
-            <div className="border-t border-zinc-800 pt-4 space-y-2">
-              <p className="text-[10px] tracking-[0.22em] text-zinc-500 mb-3">LIVE TRADE ANALYSIS</p>
-              {cards.map((card) => {
-                const state = getFinalState(card);
-                const analysis = getLiveTradeAnalysis(card.symbol, state, card.execution15mState);
-                return (
-                  <div key={card.symbol} className="flex items-center justify-between text-sm">
-                    <span className="text-zinc-400">{card.symbol}</span>
-                    <span className={`${analysis.color} font-semibold text-sm`}>{analysis.label}</span>
-                    <span className="text-zinc-600 text-xs">{analysis.description}</span>
-                  </div>
-                );
-              })}
-            </div>
 
             {/* BUTTONS: TEST TG & REFRESH */}
             <div className="border-t border-zinc-800 pt-4 flex gap-2">

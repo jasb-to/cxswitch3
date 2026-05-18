@@ -66,23 +66,8 @@ async function processAlertQueueAsync() {
       if (!job) break;
 
       try {
-        // v7.3.1 FIX #1: HARD TELEGRAM EXECUTION GATE
-        // ONLY send for ACTIVE_SNIPER or ACTIVE_CONFIRMED
-        // Never send for setup phases (SNIPER_IMMINENT, SNIPER_READY, CONFIRMED_READY, BUILDING)
-        const isExecutableSignal =
-          job.signalState === "ACTIVE_SNIPER" ||
-          job.signalState === "ACTIVE_CONFIRMED";
-
-        if (!isExecutableSignal) {
-          console.log(
-            `[TELEGRAM_BLOCKED] ${job.symbol}: ${job.signalState} is UI-only (not executable)`
-          );
-          // Don't requeue - UI-only states are not for Telegram
-          continue;
-        }
-
-        // v8.4 FIX: HTF VALIDATION IS MODE-AWARE
-        
+        // Alert layer is DUMB TRANSPORT only — no signal validation here.
+        // Execution layer is the single source of truth.
         // Check cooldown
         // STEP 2 FIX: Pass signalTransitionId for granular dedupe
         if (await canSendAlert(job.symbol, job.mode, job.direction, job.signalTransitionId)) {
