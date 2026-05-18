@@ -123,10 +123,10 @@ export async function sendAlert(setup: any): Promise<void> {
     lines.push("");
   }
   
-  // Market Context - use direct fields from alert job
+  // Market Context — fields guaranteed by execution layer
   lines.push("Market Context:");
-  lines.push(`4H: ${setup.htf4hTrend || "N/A"}`);
-  lines.push(`15M: ${setup.execution15mState || "N/A"}`);
+  lines.push(`4H: ${setup.htf4hTrend || "UNKNOWN"}`);
+  lines.push(`15M: ${setup.execution15mState || "UNKNOWN"}`);
   lines.push("");
   
   // Entry Price/Zone
@@ -146,16 +146,16 @@ export async function sendAlert(setup: any): Promise<void> {
   if (setup.targetPrices) {
     const tp = setup.targetPrices;
     lines.push("Targets:");
-    lines.push(`TP1: ${tp.tp1?.toFixed(2) || "N/A"}`);
-    lines.push(`TP2: ${tp.tp2?.toFixed(2) || "N/A"}`);
+    lines.push(`TP1: ${tp.tp1?.toFixed(2) ?? "UNKNOWN"}`);
+    lines.push(`TP2: ${tp.tp2?.toFixed(2) ?? "UNKNOWN"}`);
     lines.push("");
   }
   
-  // Risk - use targetPrices directly (not under momentum)
+  // Risk
   if (setup.targetPrices) {
     const tp = setup.targetPrices;
     lines.push("Risk:");
-    lines.push(`SL: ${tp.sl?.toFixed(2) || "N/A"}`);
+    lines.push(`SL: ${tp.sl?.toFixed(2) ?? "UNKNOWN"}`);
     if (setup.riskReward) {
       lines.push(`R:R: ${setup.riskReward.toFixed(2)}`);
     }
