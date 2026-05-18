@@ -441,9 +441,10 @@ function DashboardLive({
   const isStale = isHydrated && fetchedAtMs > 0 && now > 0 && (now - fetchedAtMs) > STALE_THRESHOLD_MS;
   const lastUpdateTime = isHydrated && updatedAt ? new Date(updatedAt).toLocaleTimeString("en-GB", { hour12: false }) : "—";
   const assetCount = cards.length;
-  // STEP 3 FIX: Use snapshot-provided canonical counts instead of deriving from setups
-  const activeCount = (raw as any)?.signalCount ?? 0;
-  const activeSnipers = (raw as any)?.activeSnipers ?? 0;
+  // FIX: Use setups from snapshot prop instead of accessing undefined raw variable
+  // raw is only defined in parent Dashboard scope and not in DashboardLive scope
+  const activeCount = setups.length;
+  const activeSnipers = setups.filter((s: any) => s.mode === "SNIPER").length;
 
   return (
     <main className="min-h-screen bg-[#0a0a0a] text-white font-mono">

@@ -82,65 +82,7 @@ async function processAlertQueueAsync() {
         }
 
         // v8.4 FIX: HTF VALIDATION IS MODE-AWARE
-        // SNIPER: Allow NEUTRAL 4H (early impulse detection, pre-macro breakout)
-        // CONFIRMED: Require non-NEUTRAL 4H (safe trend-following only)
-        const htfValidationErrors: string[] = [];
         
-        // Check 1: 4H trend validation is mode-dependent
-        // SNIPER allows NEUTRAL (that's the whole point - early entry before macro alignment)
-        // CONFIRMED requires alignment (strict safe system)
-        const isValidHTFForMode =
-          job.mode === "SNIPER"
-            ? true // SNIPER ignores 4H gating (macro is probability modifier only)
-            : job.htf4hTrend !== "NEUTRAL"; // CONFIRMED requires 4H alignment
-        
-        if (!isValidHTFForMode) {
-          htfValidationErrors.push(`4H trend ${job.htf4hTrend} invalid for ${job.mode}`);
-        }
-        
-        // Check 2: 15M execution state must be valid
-        if (!job.execution15mState || job.execution15mState === "CHOP" || job.execution15mState === "COMPRESSING") {
-          htfValidationErrors.push(`15M ${job.execution15mState || "undefined"}`);
-        }
-        
-        // Check 3: Price source must not be fallback (CoinGecko)
-        if (job.source === "coingecko") {
-          htfValidationErrors.push("fallback price source CoinGecko");
-        }
-        
-        if (htfValidationErrors.length > 0) {
-          console.log(
-            `[ALERT_REJECTED] ${job.symbol}: HTF validation failed - ${htfValidationErrors.join(", ")}`
-          );
-          continue;
-        }
-
-        // HOTFIX: REMOVED STRICT TP FIELD VALIDATION
-        // Execution layer now guarantees completeness before enqueueing
-        // Alert worker is delivery-only (doesn't validate completeness)
-        // This ensures no alerts are rejected due to missing tp1/tp2/sl
-
-
-        // v1 STABILIZATION: STRICT PAYLOAD VALIDATION
-        // Block alerts with missing required fields (N/A is forbidden)
-        const payloadErrors: string[] = [];
-        
-        if (!job.structureState) payloadErrors.push("structureState");
-        if (!job.htf4hTrend) payloadErrors.push("htf4hTrend");
-        if (!job.execution15mState) payloadErrors.push("execution15mState");
-        if (!job.entryPrice && !job.price) payloadErrors.push("entryPrice/price");
-        if (!job.targetPrices?.tp1) payloadErrors.push("targetPrices.tp1");
-        if (!job.targetPrices?.tp2) payloadErrors.push("targetPrices.tp2");
-        if (!job.targetPrices?.sl) payloadErrors.push("targetPrices.sl");
-        
-        if (payloadErrors.length > 0) {
-          console.log(
-            `[ALERT BLOCKED] ${job.symbol}: Missing required fields - ${payloadErrors.join(", ")}`
-          );
-          // Do not requeue - payload is incomplete at source
-          continue;
-        }
-
         // Check cooldown
         // STEP 2 FIX: Pass signalTransitionId for granular dedupe
         if (await canSendAlert(job.symbol, job.mode, job.direction, job.signalTransitionId)) {
