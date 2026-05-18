@@ -441,7 +441,7 @@ function DashboardLive({
   const isStale = isHydrated && fetchedAtMs > 0 && now > 0 && (now - fetchedAtMs) > STALE_THRESHOLD_MS;
   const lastUpdateTime = isHydrated && updatedAt ? new Date(updatedAt).toLocaleTimeString("en-GB", { hour12: false }) : "—";
   const assetCount = cards.length;
-  const activeCount = (raw as any)?.signalCount ?? 0;  // Use derived field from snapshot contract
+  const activeCount = setups.length;  // Count active setups from snapshot
 
   return (
     <main className="min-h-screen bg-[#0a0a0a] text-white font-mono">
