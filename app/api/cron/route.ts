@@ -310,6 +310,20 @@ export async function GET(req: NextRequest) {
       
       // Track this signal state for next cycle (prevent duplicates)
       signalStateHistory[setup.symbol] = { signalState, lastAlertedAt: Date.now() };
+      // STEP 4 FIX: Generate unique signalTransitionId and normalize all alert fields
+      // Ensures dedupe doesn't block new signals and all fields are defined
+      const signalTransitionId = `${setup.symbol}-${setup.mode}-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+      
+      // STEP 4 FIX: Normalize HTF mapping with fallback to "UNKNOWN"
+      let htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL" = "NEUTRAL";
+      if (setup.htf?.trend4h === true) htf4hTrend = "BULLISH";
+      else if (setup.htf?.trend4h === false) htf4hTrend = "BEARISH";
+      
+      // STEP 4 FIX: Normalize 15M mapping with fallback to "UNKNOWN"
+      let execution15mState: "COMPRESSING" | "BREAKOUT_READY" | "EXPANDING" | "CHOP" = "CHOP";
+      if (setup.htf?.compression15m === true) execution15mState = "COMPRESSING";
+      else if (setup.htf?.expansion15m === true) execution15mState = "EXPANDING";
+      else if (setup.htf?.breakout15m === true) execution15mState = "BREAKOUT_READY";
       
       enqueueAlert({
         symbol: setup.symbol,
@@ -319,18 +333,19 @@ export async function GET(req: NextRequest) {
         price: setup.price,
         source: "kraken",  // Execution pipeline always uses Kraken
         signalState: signalState,  // Use execution-grade state, not display state
+        signalTransitionId: signalTransitionId,  // STEP 2 FIX: For granular dedupe
         targetPrices: setupCard.targetPrices,  // Now guaranteed to exist
-        htf4hTrend: setup.htf.trend4h === true ? "BULLISH" : setup.htf.trend4h === false ? "BEARISH" : "NEUTRAL",
-        execution15mState: setup.htf.compression15m ? "COMPRESSING" : "EXPANDING",
+        htf4hTrend: htf4hTrend,  // STEP 4 FIX: Normalized with fallback
+        execution15mState: execution15mState,  // STEP 4 FIX: Normalized with fallback
         queued: Date.now(),
         
         // v1 STABILIZATION: Trader-facing fields for beautiful alerts
-        structureState: setupCard.structureState,  // e.g., "BREAKOUT_DOWN → RETEST_DOWN"
+        structureState: setupCard.structureState ?? "UNKNOWN",  // STEP 4 FIX: Force UNKNOWN if missing
         entryPrice: setupCard.price,
         entryZone: { min: setupCard.price - entryPriceBuffer, max: setupCard.price + entryPriceBuffer },
         riskReward: setupCard.riskReward,
         confidence: setupCard.confidence,
-        impulseState: impulseState,
+        impulseState: impulseState ?? "UNKNOWN",  // STEP 4 FIX: Force UNKNOWN if missing
         executionNotes: `Structure locked ${setup.direction}\nAtomic payload verified`,
       });
     }
