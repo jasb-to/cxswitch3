@@ -136,15 +136,6 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
   // Get backend signal state for ACTIVE_SNIPER hard override
   const signalState = (card as any).signalState as string | undefined;
   
-  // DEBUG: Log render source to detect ghost renderers
-  console.log("[v0] UI_RENDER_STATE", {
-    symbol: card.symbol,
-    signalState,
-    displayState,
-    readiness: card.tradeReadinessScore,
-    hasTradeData: !!card.targetPrices,
-  });
-  
   // Trade readiness from backend (canonical field)
   const readiness = card.tradeReadinessScore ?? 0;
   
