@@ -120,20 +120,31 @@ async function processAlertQueueAsync() {
         // This ensures no alerts are rejected due to missing tp1/tp2/sl
 
 
+        // v1 STABILIZATION: STRICT PAYLOAD VALIDATION
+        // Block alerts with missing required fields (N/A is forbidden)
+        const payloadErrors: string[] = [];
+        
+        if (!job.structureState) payloadErrors.push("structureState");
+        if (!job.htf4hTrend) payloadErrors.push("htf4hTrend");
+        if (!job.execution15mState) payloadErrors.push("execution15mState");
+        if (!job.entryPrice && !job.price) payloadErrors.push("entryPrice/price");
+        if (!job.targetPrices?.tp1) payloadErrors.push("targetPrices.tp1");
+        if (!job.targetPrices?.tp2) payloadErrors.push("targetPrices.tp2");
+        if (!job.targetPrices?.sl) payloadErrors.push("targetPrices.sl");
+        
+        if (payloadErrors.length > 0) {
+          console.log(
+            `[ALERT BLOCKED] ${job.symbol}: Missing required fields - ${payloadErrors.join(", ")}`
+          );
+          // Do not requeue - payload is incomplete at source
+          continue;
+        }
+
         // Check cooldown
         if (await canSendAlert(job.symbol, job.mode, job.direction)) {
-          // Send alert (async, don't await in tight loop)
-          sendAlert({
-            symbol: job.symbol,
-            mode: job.mode,
-            direction: job.direction,
-            score: job.score,
-            reason: `${job.mode} ${job.direction} - ${job.signalState}`,
-            price: job.price,
-            momentum: {
-              targetPrices: job.targetPrices,
-            },
-          }).catch(err => {
+          // Send alert with COMPLETE job payload (all fields required)
+          // sendAlert expects root-level fields: targetPrices, htf4hTrend, execution15mState, structureState, etc.
+          sendAlert(job).catch(err => {
             console.log(`[ALERT_WORKER] Failed to send ${job.symbol}:`, err);
           });
           

@@ -326,10 +326,11 @@ export default function Dashboard() {
 
   // NORMALIZE API RESPONSE: Handle both nested and flat response shapes
   // API may return { snapshot: { ready, cards, ... } } or { ready, cards, ... }
-  const raw = data?.snapshot ?? data;
+  const raw = data?.snapshot ?? data ?? null;
 
   // STRICT VALIDATION: Only Dashboard interprets SWR data
   const isValid =
+    raw &&
     raw?.ready === true &&
     Array.isArray(raw?.cards) &&
     raw.cards.length === 3;
