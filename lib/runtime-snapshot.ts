@@ -32,16 +32,17 @@ if (!globalThis.__snapshot__) {
  * 
  * Frontend NEVER calls this.
  */
-export function setSnapshot(snapshot: {
-  cards: any[];
-  updatedAt: string | null;
-}): void {
+export function setSnapshot(snapshot: CanonicalSnapshot): void {
   // ATOMIC: Enforce exactly 3 cards or no cards
   const isReady = Array.isArray(snapshot.cards) && snapshot.cards.length === 3;
 
   const canonical: CanonicalSnapshot = {
     ready: isReady,
     cards: isReady ? snapshot.cards : [],
+    setups: snapshot.setups || [],
+    activeSignals: snapshot.activeSignals || [],
+    signalCount: isReady ? snapshot.signalCount : 0,
+    activeSnipers: isReady ? snapshot.activeSnipers : 0,
     updatedAt: isReady ? snapshot.updatedAt : null,
   };
 
@@ -49,6 +50,8 @@ export function setSnapshot(snapshot: {
   console.log("[SNAPSHOT_ATOMIC]", {
     ready: canonical.ready,
     cardCount: canonical.cards.length,
+    setupCount: canonical.setups.length,
+    signalCount: canonical.signalCount,
     updatedAt: canonical.updatedAt,
   });
 }
