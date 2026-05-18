@@ -5,6 +5,7 @@ import { refreshMarketData } from "@/lib/market-data-layer";
 import { getSnapshot, setSnapshot } from "@/lib/runtime-snapshot";
 import { mergeSnapshots, validateSnipperCardState } from "@/lib/snapshot-merger";
 import { clearCanonicalStates, initializeCanonicalState, updateCanonicalState, getAllCanonicalStates, canonicalToCard } from "@/lib/unified-market-state";
+import { createCanonicalSnapshot } from "@/lib/canonical-snapshot";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -256,13 +257,14 @@ export async function GET(req: NextRequest) {
 
     // ATOMIC: Update snapshot with exactly 3 cards + active setups
     // Backend MUST ONLY write when canonicalCards.length === 3
-    // Ready flag is set automatically by setSnapshot
-    // v1 FIX: Include setups so UI can display active signal count
-    setSnapshot({
-      updatedAt: new Date().toISOString(),
+    // v1 FIX: Use createCanonicalSnapshot to enforce complete contract
+    // ALL fields (cards, setups, activeSignals, signalCount, activeSnipers) populated
+    const snapshot = createCanonicalSnapshot({
       cards: canonicalCards.length === 3 ? canonicalCards : [],
-      setups: setups,  // Pass ACTIVE_SNIPER signals to UI
+      setups: setups,  // ACTIVE_SNIPER + ACTIVE_CONFIRMED signals
+      updatedAt: new Date().toISOString(),
     });
+    setSnapshot(snapshot);
 
     // STEP 5: Enqueue alerts (decoupled, non-blocking)
     // v8.3 FIX: Use execution-grade signal state (ACTIVE_SNIPER/ACTIVE_CONFIRMED)
