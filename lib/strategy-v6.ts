@@ -646,16 +646,6 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
       // No SNIPER conditions met - stay in BUILDING state
       card.signalState = "BUILDING";
       console.log(`[BUILDING] ${symbol} score=${score} - awaiting ignition trigger`);
-      
-      // v21.1.5 LIGHTWEIGHT BTC/ETH WATCH_ZONE OUTPUT
-      // Simplified: just show WATCH_ZONE hints, not full signal systems
-      // No new logic layers, no persistence modifications
-      if ((symbol === "BTC" || symbol === "ETH") && score >= 62 && card.direction !== "NEUTRAL") {
-        // Minimal output: just mark as WATCH_ZONE for UI display
-        card.signalState = "WATCH_ZONE";
-        card.type = "LIGHT_SIGNAL";
-        console.log(`[${symbol}_WATCH_ZONE] score=${score} direction=${card.direction}`);
-      }
     }
 
 
