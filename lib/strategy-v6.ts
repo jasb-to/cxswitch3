@@ -38,6 +38,68 @@ export type ExecutionContext = {
 };
 
 /**
+ * PER-ASSET EXECUTION PROFILES
+ * 
+ * v21.1.0: CRITICAL - Each asset has different market structure:
+ * - BTC: slow, sustained, structure-driven (breakouts)
+ * - ETH: medium, trend-following (continuation)
+ * - SOL: fast, impulse-driven (momentum sniper)
+ * 
+ * SOL profile MUST remain unchanged from current production values.
+ * BTC/ETH profiles tuned to their structural characteristics.
+ */
+export type ExecutionProfile = {
+  ignitionThreshold: number;           // Score >= N to trigger SNIPER
+  stochWeight: number;                  // Stoch RSI multiplier
+  emaWeight: number;                    // EMA flip multiplier (acceleration)
+  volatilityWeight: number;             // Compression multiplier
+  impulseWeight: number;                // Direction conviction multiplier
+  trendWeight: number;                  // 4H trend alignment multiplier
+};
+
+export const EXECUTION_PROFILES: Record<string, ExecutionProfile> = {
+  SOL: {
+    // PRODUCTION BASELINE - DO NOT CHANGE
+    // Current SOL behavior must remain identical
+    ignitionThreshold: 70,
+    stochWeight: 1.25,       // Stoch RSI active zone
+    emaWeight: 1.35,         // EMA 8/21 flip (high impact)
+    volatilityWeight: 1.20,  // Compression present
+    impulseWeight: 1.30,     // Direction conviction
+    trendWeight: 1.40,       // 4H trend alignment (critical)
+  },
+  
+  BTC: {
+    // STRUCTURAL BREAKOUT PROFILE
+    // Lower acceleration, higher structure weight
+    // Targets: sustained breakouts, compression release
+    ignitionThreshold: 64,   // Lower threshold (slower to trigger)
+    stochWeight: 1.15,       // De-emphasize stoch (less reactive)
+    emaWeight: 0.90,         // Lower acceleration weight
+    volatilityWeight: 1.45,  // Emphasize compression (breakout setup)
+    impulseWeight: 1.25,     // Maintain direction but moderate
+    trendWeight: 1.50,       // Emphasize 4H structure (critical for BTC)
+  },
+  
+  ETH: {
+    // TREND CONTINUATION PROFILE
+    // Medium acceleration, sustainable trends
+    // Targets: directional persistence, smoother entries
+    ignitionThreshold: 66,   // Medium threshold
+    stochWeight: 1.30,       // Maintain stoch sensitivity
+    emaWeight: 1.15,         // Lower acceleration vs SOL
+    volatilityWeight: 1.25,  // Medium compression weight
+    impulseWeight: 1.28,     // Direction conviction present
+    trendWeight: 1.30,       // 4H structure important but not dominant
+  },
+};
+
+function getExecutionProfile(symbol: string): ExecutionProfile {
+  return EXECUTION_PROFILES[symbol] || EXECUTION_PROFILES.SOL;
+}
+
+
+/**
  * Build execution context at scan entry point
  * v7.7.0: CORRECTLY SEPARATE data trust from system health
  * 
@@ -476,15 +538,20 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
     card.cycleId = ctx.cycleId;
     cards.push(card);
 
-    // Score using momentum system
-    const score = calculateMomentumScore(card);
+    // Get execution profile for this asset
+    const profile = getExecutionProfile(symbol);
+
+    // Score using momentum system with per-asset profile
+    const score = calculateMomentumScore(card, symbol, profile);
     
     console.log(`[SCAN] ${symbol} score=${score} direction=${card.direction} stoch=${card.stochRsi?.toFixed(1) ?? "—"} emaSlope=${card.emaSlope?.toFixed(2) ?? "—"}`);
+    console.log(`[PROFILE_WEIGHTS] ${symbol} stoch=${profile.stochWeight} ema=${profile.emaWeight} volatility=${profile.volatilityWeight} impulse=${profile.impulseWeight} trend=${profile.trendWeight}`);
+    console.log(`[PROFILE] ${symbol} → ${symbol} (threshold=${profile.ignitionThreshold})`);
 
     // ONLY generate setups with directional conviction
     // SNIPER v21.1.0: Single signal mode (CONFIRMED path deleted)
-    // SNIPER ALERT: score >= 70 AND sniper conditions met
-    if (score >= 70 && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
+    // SNIPER ALERT: score >= profile.ignitionThreshold AND sniper conditions met
+    if (score >= profile.ignitionThreshold && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
       // v7.3.1 FIX #1: Validate ACTIVE_SNIPER execution requirements
       const executionValidation = validateActiveSniperExecution(card, score);
       
@@ -611,44 +678,47 @@ export function generateDisplayCards(displayMarkets: Record<string, PriceData>):
  * SNIPER: ≥60
  * CONFIRMED: ≥75
  */
-function calculateMomentumScore(card: SymbolCardState): number {
+function calculateMomentumScore(card: SymbolCardState, symbol: string = "SOL", profile?: ExecutionProfile): number {
+  // Use default SOL profile if not provided
+  const exec = profile || getExecutionProfile(symbol);
+
   // BASE SCORE - foundation for all signals
   let score = 30;
 
-  // EVENT MULTIPLIERS (not additive)
+  // EVENT MULTIPLIERS (not additive) - per-asset tuned
   let multiplier = 1.0;
 
   // EVENT 1: Stoch RSI cross detected
   // Range: 0-100, active zone: 20-80
   const stochRsiActive = card.stochRsi > 20 && card.stochRsi < 80;
   if (stochRsiActive) {
-    multiplier *= 1.25; // Stoch RSI event multiplier
+    multiplier *= exec.stochWeight; // Profile-tuned
   }
 
   // EVENT 2: EMA 8/21 flip detected
   // Strong slope indicates alignment
   const emaFlipped = Math.abs(card.emaSlope) > 0.5;
   if (emaFlipped) {
-    multiplier *= 1.35; // EMA flip multiplier (highest impact)
+    multiplier *= exec.emaWeight; // Profile-tuned (acceleration sensitivity)
   }
 
   // EVENT 3: Volatility compression present
   // BB squeeze or ATR contraction
   const volatilityCompression = card.volatilityLevel < 30;
   if (volatilityCompression) {
-    multiplier *= 1.20; // Compression multiplier
+    multiplier *= exec.volatilityWeight; // Profile-tuned
   }
 
   // EVENT 4: Impulse candle (direction conviction)
   if (card.direction !== "NEUTRAL") {
-    multiplier *= 1.30; // Impulse multiplier
+    multiplier *= exec.impulseWeight; // Profile-tuned
   }
 
   // EVENT 5: 4H trend alignment
   // Trend bias from higher timeframe
   const trend4HAligned = card.stochRsi > 50; // Simplified: would use actual 4H data
   if (trend4HAligned) {
-    multiplier *= 1.40; // HTF trend multiplier (critical for CONFIRMED)
+    multiplier *= exec.trendWeight; // Profile-tuned (BTC emphasizes, SOL standard)
   }
 
   // Apply multiplier
