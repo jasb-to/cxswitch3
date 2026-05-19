@@ -82,15 +82,15 @@ export const EXECUTION_PROFILES: Record<string, ExecutionProfile> = {
   },
   
   ETH: {
-    // TREND CONTINUATION PROFILE
-    // Medium acceleration, sustainable trends
-    // Targets: directional persistence, smoother entries
-    ignitionThreshold: 66,   // Medium threshold
-    stochWeight: 1.30,       // Maintain stoch sensitivity
-    emaWeight: 1.15,         // Lower acceleration vs SOL
-    volatilityWeight: 1.25,  // Medium compression weight
-    impulseWeight: 1.28,     // Direction conviction present
-    trendWeight: 1.30,       // 4H structure important but not dominant
+    // TREND CONTINUATION PROFILE - REBALANCED v21.1.1
+    // Emphasis: directional persistence + EMA continuation (not impulse spikes)
+    // ETH trends smoother than SOL - reward sustained expansion, not violent acceleration
+    ignitionThreshold: 66,   // Medium threshold (unchanged)
+    stochWeight: 1.30,       // Maintain stoch sensitivity (unchanged)
+    emaWeight: 1.25,         // INCREASED from 1.15 - reward EMA continuation slope
+    volatilityWeight: 1.25,  // Medium compression weight (unchanged)
+    impulseWeight: 1.10,     // REDUCED from 1.28 - de-emphasize impulse candles
+    trendWeight: 1.35,       // INCREASED from 1.30 - higher emphasis on directional persistence
   },
 };
 
@@ -551,7 +551,13 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
     // ONLY generate setups with directional conviction
     // SNIPER v21.1.0: Single signal mode (CONFIRMED path deleted)
     // SNIPER ALERT: score >= profile.ignitionThreshold AND sniper conditions met
-    if (score >= profile.ignitionThreshold && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
+    // ACTIVATION CONDITIONS: Score threshold OR asset-specific path
+    // SOL/ETH: Standard sniper conditions (momentum-driven)
+    // BTC: Can ALSO activate via structural breakout (structure-driven)
+    const standardSniperPath = score >= profile.ignitionThreshold && card.direction !== "NEUTRAL" && checkSniperConditions(card);
+    const btcStructuralPath = symbol === "BTC" && checkStructuralBreakout(card);
+    
+    if (standardSniperPath || btcStructuralPath) {
       // v7.3.1 FIX #1: Validate ACTIVE_SNIPER execution requirements
       const executionValidation = validateActiveSniperExecution(card, score);
       
@@ -1211,6 +1217,53 @@ function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "ear
 
   // ALL CONDITIONS MET: Valid SNIPER setup
   console.log(`[SNIPER CHECK] ${card.symbol} PASSED (${checkMode}): direction=${card.direction} + compression/expansion + ignition`);
+  return true;
+}
+
+/**
+ * BTC STRUCTURAL BREAKOUT ACTIVATION
+ * v21.1.1: Alternative activation path for BTC (not threshold-based)
+ * 
+ * Activates ONLY when ALL conditions present:
+ * - 4H directional agreement (sustained trend structure)
+ * - Compression ready to break (low volatility)
+ * - EMA slope confirming direction (sustained, not violent)
+ * - No recent impulse spike (rules out false breakouts)
+ * 
+ * This PREVENTS false activations from volatility spikes.
+ * BTC should only trigger from STRUCTURE, not VOLATILITY.
+ */
+function checkStructuralBreakout(card: SymbolCardState): boolean {
+  // CONDITION 1: 4H trend structure must be established (not neutral)
+  const htf4hEstablished = card.htf4hTrend !== "NEUTRAL";
+  if (!htf4hEstablished) {
+    return false;
+  }
+
+  // CONDITION 2: EMA slope is sustained (not a violent spike)
+  // For structural breakout: 0.3 to 0.8 is "sustained", > 0.8 is "spike"
+  const emaSustained = card.emaSlope !== null && Math.abs(card.emaSlope) > 0.3 && Math.abs(card.emaSlope) <= 0.8;
+  if (!emaSustained) {
+    return false;
+  }
+
+  // CONDITION 3: Compression is present and ready to break
+  // Volatility < 35 = ready compression
+  const compressionReady = (card.volatilityLevel ?? 50) < 35;
+  if (!compressionReady) {
+    return false;
+  }
+
+  // CONDITION 4: EMA direction matches HTF trend (structural alignment)
+  const trendAlignment = 
+    (card.htf4hTrend === "BULLISH" && card.emaSlope > 0) ||
+    (card.htf4hTrend === "BEARISH" && card.emaSlope < 0);
+  if (!trendAlignment) {
+    return false;
+  }
+
+  // ALL CONDITIONS MET: Structural breakout ready
+  console.log(`[STRUCTURAL_BREAKOUT] ${card.symbol} TRIGGERED: HTF=${card.htf4hTrend} + EMA slope=${card.emaSlope?.toFixed(2)} + compression ready`);
   return true;
 }
 
