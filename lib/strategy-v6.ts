@@ -49,13 +49,29 @@ export type ExecutionContext = {
  * BTC/ETH profiles tuned to their structural characteristics.
  */
 export type ExecutionProfile = {
+  // Scoring weights
   ignitionThreshold: number;           // Score >= N to trigger SNIPER
   stochWeight: number;                  // Stoch RSI multiplier
   emaWeight: number;                    // EMA flip multiplier (acceleration)
   volatilityWeight: number;             // Compression multiplier
   impulseWeight: number;                // Direction conviction multiplier
   trendWeight: number;                  // 4H trend alignment multiplier
+
+  // Activation style (drives how signals are generated)
+  activationStyle: "IMPULSE" | "STRUCTURAL" | "CONTINUATION";
+  
+  // Asset-specific rules (consolidates fragmented if-checks)
+  persistenceRules: {
+    requireSustainedEMA: boolean;       // ETH: must have 0.3-1.0 EMA slope
+    requireDirectionAlignment: boolean; // ETH: direction must match EMA
+    stabilityThreshold: number;         // ETH: volatility < N (< 45)
+  };
+  
+  // Bonus/penalty system
+  breakoutBonus: number;                // BTC: +5 score bonus for structural breakout
+  bonusActivation: "STRUCTURAL_BREAKOUT" | "NONE"; // When to apply bonus
 };
+
 
 export const EXECUTION_PROFILES: Record<string, ExecutionProfile> = {
   SOL: {
@@ -67,6 +83,16 @@ export const EXECUTION_PROFILES: Record<string, ExecutionProfile> = {
     volatilityWeight: 1.20,  // Compression present
     impulseWeight: 1.30,     // Direction conviction
     trendWeight: 1.40,       // 4H trend alignment (critical)
+    
+    // SOL activation style: fast, momentum-driven impulse sniper
+    activationStyle: "IMPULSE",
+    persistenceRules: {
+      requireSustainedEMA: false,        // SOL: no sustained EMA requirement
+      requireDirectionAlignment: false,  // SOL: no alignment requirement
+      stabilityThreshold: 100,           // SOL: no stability constraint
+    },
+    breakoutBonus: 0,                    // SOL: no structural bonus
+    bonusActivation: "NONE",
   },
   
   BTC: {
@@ -79,6 +105,16 @@ export const EXECUTION_PROFILES: Record<string, ExecutionProfile> = {
     volatilityWeight: 1.45,  // Emphasize compression (breakout setup)
     impulseWeight: 1.25,     // Maintain direction but moderate
     trendWeight: 1.50,       // Emphasize 4H structure (critical for BTC)
+    
+    // BTC activation style: structure-driven, rare triggers
+    activationStyle: "STRUCTURAL",
+    persistenceRules: {
+      requireSustainedEMA: false,        // BTC: structure determines activation, not EMA rules
+      requireDirectionAlignment: false,
+      stabilityThreshold: 100,
+    },
+    breakoutBonus: 5,                    // BTC: +5 score bonus for confirmed structural breakout
+    bonusActivation: "STRUCTURAL_BREAKOUT",
   },
   
   ETH: {
@@ -91,6 +127,16 @@ export const EXECUTION_PROFILES: Record<string, ExecutionProfile> = {
     volatilityWeight: 1.25,  // Medium compression weight (unchanged)
     impulseWeight: 1.10,     // REDUCED from 1.28 - de-emphasize impulse candles
     trendWeight: 1.35,       // INCREASED from 1.30 - higher emphasis on directional persistence
+    
+    // ETH activation style: continuation-focused, requires persistence validation
+    activationStyle: "CONTINUATION",
+    persistenceRules: {
+      requireSustainedEMA: true,         // ETH: must have sustained EMA slope (0.3-1.0)
+      requireDirectionAlignment: true,   // ETH: direction must align with EMA
+      stabilityThreshold: 45,            // ETH: volatility < 45 (stable compression)
+    },
+    breakoutBonus: 0,                    // ETH: no structural bonus
+    bonusActivation: "NONE",
   },
 };
 
@@ -544,24 +590,22 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
     // Score using momentum system with per-asset profile
     let score = calculateMomentumScore(card, symbol, profile);
     
-    // BTC STRUCTURAL BONUS (v21.1.2 FINAL REFINEMENT)
-    // Structural breakout does NOT bypass ignition integrity
-    // Instead: it adds bonus to score, allowing BTC to reach threshold via structure
-    // This preserves minimum quality gates while allowing asset differentiation
-    if (symbol === "BTC" && checkStructuralBreakout(card)) {
-      const structuralBonus = 5; // +5 bonus for confirmed structural breakout
-      score += structuralBonus;
-      console.log(`[STRUCTURAL_BONUS] ${symbol} +${structuralBonus} (score: ${score - structuralBonus} → ${score})`);
+    // Apply activation-specific bonus (consolidates if-symbol checks)
+    // REMOVED: if symbol === "BTC" && checkStructuralBreakout()
+    // INSTEAD: profile.bonusActivation drives the bonus application
+    if (profile.bonusActivation === "STRUCTURAL_BREAKOUT" && checkStructuralBreakout(card)) {
+      score += profile.breakoutBonus;
+      console.log(`[BONUS] ${symbol} +${profile.breakoutBonus} (${profile.bonusActivation}): score ${score - profile.breakoutBonus} → ${score}`);
     }
     
     console.log(`[SCAN] ${symbol} score=${score} direction=${card.direction} stoch=${card.stochRsi?.toFixed(1) ?? "—"} emaSlope=${card.emaSlope?.toFixed(2) ?? "—"}`);
     console.log(`[PROFILE_WEIGHTS] ${symbol} stoch=${profile.stochWeight} ema=${profile.emaWeight} volatility=${profile.volatilityWeight} impulse=${profile.impulseWeight} trend=${profile.trendWeight}`);
-    console.log(`[PROFILE] ${symbol} → ${symbol} (threshold=${profile.ignitionThreshold})`);
+    console.log(`[PROFILE] ${symbol} → ${profile.activationStyle} (threshold=${profile.ignitionThreshold})`);
 
     // ACTIVATION CONDITIONS: Score threshold only (no bypass paths)
     // SOL/ETH/BTC: All must meet minimum ignition integrity
-    // BTC gets structural bonus, but still must pass threshold
-    if (score >= profile.ignitionThreshold && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
+    // BTC gets structural bonus, but still must pass threshold + sniper conditions
+    if (score >= profile.ignitionThreshold && card.direction !== "NEUTRAL" && checkSniperConditions(card, profile)) {
       // v7.3.1 FIX #1: Validate ACTIVE_SNIPER execution requirements
       const executionValidation = validateActiveSniperExecution(card, score);
       
@@ -1176,8 +1220,11 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
 /**
  * SNIPER CONDITIONS v9 NO GATES (NO blocking logic)
  * Momentum refines conditions only, structure never blocks entry
+ * 
+ * v21.1.3 REFACTOR: Uses profile-driven persistence rules instead of if-symbol checks
+ * This allows future assets to define their own persistence requirements in the profile
  */
-function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "early" = "strict"): boolean {
+function checkSniperConditions(card: SymbolCardState, profile: ExecutionProfile, checkMode: "strict" | "early" = "strict"): boolean {
   // NO HARD BLOCKS - v9 NO GATES VERSION
   // Structure locks direction but doesn't prevent trades
   
@@ -1219,14 +1266,12 @@ function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "ear
     }
   }
 
-  // ETH PERSISTENCE GUARD (v21.1.2): ETH continuation requires sustained directional agreement
-  // Prevents false entries from single-frame EMA tilts or conflicting signals
-  if (card.symbol === "ETH") {
-    const persistenceQuality = checkETHPersistenceQuality(card);
-    if (!persistenceQuality) {
-      console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: ETH persistence guard - insufficient directional consistency`);
-      return false;
-    }
+  // PROFILE-DRIVEN PERSISTENCE RULES (v21.1.3 REFACTOR)
+  // Removed: if card.symbol === "ETH" check
+  // Now: profile.persistenceRules drives validation generically
+  // This allows future assets to define their own rules without code changes
+  if (!applyProfilePersistenceRules(card, profile)) {
+    return false;
   }
 
   // ALL CONDITIONS MET: Valid SNIPER setup
@@ -1235,38 +1280,48 @@ function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "ear
 }
 
 /**
- * ETH PERSISTENCE GUARD (v21.1.2 FINAL REFINEMENT)
+ * APPLY PROFILE PERSISTENCE RULES
+ * v21.1.2 REFACTOR: Consolidates fragmented if-symbol checks into profile-driven validation
  * 
- * ETH continuation requires sustained directional agreement.
- * Prevents false entries from single-frame EMA tilts or brief candles.
+ * Instead of: if symbol === "ETH" check persistence
+ * Now: profile.persistenceRules drives the validation generically
  * 
- * Checks:
- * - EMA slope sustained (not a single-candle tick)
- * - Direction consistent with EMA (no conflicting signals)
- * - Volatility not spiking (compression stable)
+ * This allows future assets to define their own persistence requirements
+ * without adding more if-symbol branches.
  */
-function checkETHPersistenceQuality(card: SymbolCardState): boolean {
-  // Requirement 1: EMA slope must be sustained, not a spike
-  // Sustained = 0.3 to 1.0 (moderate, not extreme)
-  const emaSustained = card.emaSlope !== null && Math.abs(card.emaSlope) >= 0.3 && Math.abs(card.emaSlope) <= 1.0;
-  if (!emaSustained) {
-    return false;
+function applyProfilePersistenceRules(card: SymbolCardState, profile: ExecutionProfile): boolean {
+  // If profile doesn't require persistence rules, pass through
+  if (!profile.persistenceRules.requireSustainedEMA && !profile.persistenceRules.requireDirectionAlignment) {
+    return true;
   }
 
-  // Requirement 2: Direction aligns with EMA direction
-  // No conflicting signals between direction and slope
-  const directionAligned = 
-    (card.emaSlope > 0 && card.direction === "LONG") ||
-    (card.emaSlope < 0 && card.direction === "SHORT");
-  if (!directionAligned) {
-    return false;
+  // RULE 1: Sustained EMA slope (if required by profile)
+  if (profile.persistenceRules.requireSustainedEMA) {
+    const emaSustained = card.emaSlope !== null && Math.abs(card.emaSlope) >= 0.3 && Math.abs(card.emaSlope) <= 1.0;
+    if (!emaSustained) {
+      console.log(`[PERSISTENCE] ${card.symbol} BLOCKED: Sustained EMA required but slope=${card.emaSlope?.toFixed(2)}`);
+      return false;
+    }
   }
 
-  // Requirement 3: Volatility not spiking (compression stable, not breaking suddenly)
-  // Prevents false breakouts from volatility expansion
-  const compressionStable = (card.volatilityLevel ?? 50) < 45; // Slightly relaxed vs BTC
-  if (!compressionStable) {
-    return false;
+  // RULE 2: Direction aligned with EMA (if required by profile)
+  if (profile.persistenceRules.requireDirectionAlignment) {
+    const directionAligned = 
+      (card.emaSlope > 0 && card.direction === "LONG") ||
+      (card.emaSlope < 0 && card.direction === "SHORT");
+    if (!directionAligned) {
+      console.log(`[PERSISTENCE] ${card.symbol} BLOCKED: Direction alignment required, EMA=${card.emaSlope > 0 ? "LONG" : "SHORT"} but direction=${card.direction}`);
+      return false;
+    }
+  }
+
+  // RULE 3: Volatility stability (if required by profile)
+  if (profile.persistenceRules.stabilityThreshold < 100) {
+    const stable = (card.volatilityLevel ?? 50) < profile.persistenceRules.stabilityThreshold;
+    if (!stable) {
+      console.log(`[PERSISTENCE] ${card.symbol} BLOCKED: Stability required (volatility < ${profile.persistenceRules.stabilityThreshold}) but level=${card.volatilityLevel}`);
+      return false;
+    }
   }
 
   return true;
