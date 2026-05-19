@@ -38,6 +38,114 @@ export type ExecutionContext = {
 };
 
 /**
+ * PER-ASSET EXECUTION PROFILES
+ * 
+ * v21.1.0: CRITICAL - Each asset has different market structure:
+ * - BTC: slow, sustained, structure-driven (breakouts)
+ * - ETH: medium, trend-following (continuation)
+ * - SOL: fast, impulse-driven (momentum sniper)
+ * 
+ * SOL profile MUST remain unchanged from current production values.
+ * BTC/ETH profiles tuned to their structural characteristics.
+ */
+export type ExecutionProfile = {
+  // Scoring weights
+  ignitionThreshold: number;           // Score >= N to trigger SNIPER
+  stochWeight: number;                  // Stoch RSI multiplier
+  emaWeight: number;                    // EMA flip multiplier (acceleration)
+  volatilityWeight: number;             // Compression multiplier
+  impulseWeight: number;                // Direction conviction multiplier
+  trendWeight: number;                  // 4H trend alignment multiplier
+
+  // Activation style (drives how signals are generated)
+  activationStyle: "IMPULSE" | "STRUCTURAL" | "CONTINUATION";
+  
+  // Asset-specific rules (consolidates fragmented if-checks)
+  persistenceRules: {
+    requireSustainedEMA: boolean;       // ETH: must have 0.3-1.0 EMA slope
+    requireDirectionAlignment: boolean; // ETH: direction must match EMA
+    stabilityThreshold: number;         // ETH: volatility < N (< 45)
+  };
+  
+  // Bonus/penalty system
+  breakoutBonus: number;                // BTC: +5 score bonus for structural breakout
+  bonusActivation: "STRUCTURAL_BREAKOUT" | "NONE"; // When to apply bonus
+};
+
+
+export const EXECUTION_PROFILES: Record<string, ExecutionProfile> = {
+  SOL: {
+    // PRODUCTION BASELINE - DO NOT CHANGE
+    // Current SOL behavior must remain identical
+    ignitionThreshold: 70,
+    stochWeight: 1.25,       // Stoch RSI active zone
+    emaWeight: 1.35,         // EMA 8/21 flip (high impact)
+    volatilityWeight: 1.20,  // Compression present
+    impulseWeight: 1.30,     // Direction conviction
+    trendWeight: 1.40,       // 4H trend alignment (critical)
+    
+    // SOL activation style: fast, momentum-driven impulse sniper
+    activationStyle: "IMPULSE",
+    persistenceRules: {
+      requireSustainedEMA: false,        // SOL: no sustained EMA requirement
+      requireDirectionAlignment: false,  // SOL: no alignment requirement
+      stabilityThreshold: 100,           // SOL: no stability constraint
+    },
+    breakoutBonus: 0,                    // SOL: no structural bonus
+    bonusActivation: "NONE",
+  },
+  
+  BTC: {
+    // STRUCTURAL BREAKOUT PROFILE
+    // Lower acceleration, higher structure weight
+    // Targets: sustained breakouts, compression release
+    ignitionThreshold: 64,   // Lower threshold (slower to trigger)
+    stochWeight: 1.15,       // De-emphasize stoch (less reactive)
+    emaWeight: 0.90,         // Lower acceleration weight
+    volatilityWeight: 1.45,  // Emphasize compression (breakout setup)
+    impulseWeight: 1.25,     // Maintain direction but moderate
+    trendWeight: 1.50,       // Emphasize 4H structure (critical for BTC)
+    
+    // BTC activation style: structure-driven, rare triggers
+    activationStyle: "STRUCTURAL",
+    persistenceRules: {
+      requireSustainedEMA: false,        // BTC: structure determines activation, not EMA rules
+      requireDirectionAlignment: false,
+      stabilityThreshold: 100,
+    },
+    breakoutBonus: 5,                    // BTC: +5 score bonus for confirmed structural breakout
+    bonusActivation: "STRUCTURAL_BREAKOUT",
+  },
+  
+  ETH: {
+    // TREND CONTINUATION PROFILE - REBALANCED v21.1.1
+    // Emphasis: directional persistence + EMA continuation (not impulse spikes)
+    // ETH trends smoother than SOL - reward sustained expansion, not violent acceleration
+    ignitionThreshold: 66,   // Medium threshold (unchanged)
+    stochWeight: 1.30,       // Maintain stoch sensitivity (unchanged)
+    emaWeight: 1.25,         // INCREASED from 1.15 - reward EMA continuation slope
+    volatilityWeight: 1.25,  // Medium compression weight (unchanged)
+    impulseWeight: 1.10,     // REDUCED from 1.28 - de-emphasize impulse candles
+    trendWeight: 1.35,       // INCREASED from 1.30 - higher emphasis on directional persistence
+    
+    // ETH activation style: continuation-focused, requires persistence validation
+    activationStyle: "CONTINUATION",
+    persistenceRules: {
+      requireSustainedEMA: true,         // ETH: must have sustained EMA slope (0.3-1.0)
+      requireDirectionAlignment: true,   // ETH: direction must align with EMA
+      stabilityThreshold: 45,            // ETH: volatility < 45 (stable compression)
+    },
+    breakoutBonus: 0,                    // ETH: no structural bonus
+    bonusActivation: "NONE",
+  },
+};
+
+function getExecutionProfile(symbol: string): ExecutionProfile {
+  return EXECUTION_PROFILES[symbol] || EXECUTION_PROFILES.SOL;
+}
+
+
+/**
  * Build execution context at scan entry point
  * v7.7.0: CORRECTLY SEPARATE data trust from system health
  * 
@@ -476,15 +584,28 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
     card.cycleId = ctx.cycleId;
     cards.push(card);
 
-    // Score using momentum system
-    const score = calculateMomentumScore(card);
+    // Get execution profile for this asset
+    const profile = getExecutionProfile(symbol);
+
+    // Score using momentum system with per-asset profile
+    let score = calculateMomentumScore(card, symbol, profile);
+    
+    // Apply activation-specific bonus (consolidates if-symbol checks)
+    // REMOVED: if symbol === "BTC" && checkStructuralBreakout()
+    // INSTEAD: profile.bonusActivation drives the bonus application
+    if (profile.bonusActivation === "STRUCTURAL_BREAKOUT" && checkStructuralBreakout(card)) {
+      score += profile.breakoutBonus;
+      console.log(`[BONUS] ${symbol} +${profile.breakoutBonus} (${profile.bonusActivation}): score ${score - profile.breakoutBonus} → ${score}`);
+    }
     
     console.log(`[SCAN] ${symbol} score=${score} direction=${card.direction} stoch=${card.stochRsi?.toFixed(1) ?? "—"} emaSlope=${card.emaSlope?.toFixed(2) ?? "—"}`);
+    console.log(`[PROFILE_WEIGHTS] ${symbol} stoch=${profile.stochWeight} ema=${profile.emaWeight} volatility=${profile.volatilityWeight} impulse=${profile.impulseWeight} trend=${profile.trendWeight}`);
+    console.log(`[PROFILE] ${symbol} → ${profile.activationStyle} (threshold=${profile.ignitionThreshold})`);
 
-    // ONLY generate setups with directional conviction
-    // SNIPER v21.1.0: Single signal mode (CONFIRMED path deleted)
-    // SNIPER ALERT: score >= 70 AND sniper conditions met
-    if (score >= 70 && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
+    // ACTIVATION CONDITIONS: Score threshold only (no bypass paths)
+    // SOL/ETH/BTC: All must meet minimum ignition integrity
+    // BTC gets structural bonus, but still must pass threshold + sniper conditions
+    if (score >= profile.ignitionThreshold && card.direction !== "NEUTRAL" && checkSniperConditions(card, profile)) {
       // v7.3.1 FIX #1: Validate ACTIVE_SNIPER execution requirements
       const executionValidation = validateActiveSniperExecution(card, score);
       
@@ -526,6 +647,7 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
       card.signalState = "BUILDING";
       console.log(`[BUILDING] ${symbol} score=${score} - awaiting ignition trigger`);
     }
+
 
     // v9 PHASE 5: ACTIVE_SNIPER TERMINAL STATE IMMUTABILITY
     // Once impulse >= 27 AND ACTIVE_SNIPER state assigned, it becomes immutable
@@ -611,44 +733,47 @@ export function generateDisplayCards(displayMarkets: Record<string, PriceData>):
  * SNIPER: ≥60
  * CONFIRMED: ≥75
  */
-function calculateMomentumScore(card: SymbolCardState): number {
+function calculateMomentumScore(card: SymbolCardState, symbol: string = "SOL", profile?: ExecutionProfile): number {
+  // Use default SOL profile if not provided
+  const exec = profile || getExecutionProfile(symbol);
+
   // BASE SCORE - foundation for all signals
   let score = 30;
 
-  // EVENT MULTIPLIERS (not additive)
+  // EVENT MULTIPLIERS (not additive) - per-asset tuned
   let multiplier = 1.0;
 
   // EVENT 1: Stoch RSI cross detected
   // Range: 0-100, active zone: 20-80
   const stochRsiActive = card.stochRsi > 20 && card.stochRsi < 80;
   if (stochRsiActive) {
-    multiplier *= 1.25; // Stoch RSI event multiplier
+    multiplier *= exec.stochWeight; // Profile-tuned
   }
 
   // EVENT 2: EMA 8/21 flip detected
   // Strong slope indicates alignment
   const emaFlipped = Math.abs(card.emaSlope) > 0.5;
   if (emaFlipped) {
-    multiplier *= 1.35; // EMA flip multiplier (highest impact)
+    multiplier *= exec.emaWeight; // Profile-tuned (acceleration sensitivity)
   }
 
   // EVENT 3: Volatility compression present
   // BB squeeze or ATR contraction
   const volatilityCompression = card.volatilityLevel < 30;
   if (volatilityCompression) {
-    multiplier *= 1.20; // Compression multiplier
+    multiplier *= exec.volatilityWeight; // Profile-tuned
   }
 
   // EVENT 4: Impulse candle (direction conviction)
   if (card.direction !== "NEUTRAL") {
-    multiplier *= 1.30; // Impulse multiplier
+    multiplier *= exec.impulseWeight; // Profile-tuned
   }
 
   // EVENT 5: 4H trend alignment
   // Trend bias from higher timeframe
   const trend4HAligned = card.stochRsi > 50; // Simplified: would use actual 4H data
   if (trend4HAligned) {
-    multiplier *= 1.40; // HTF trend multiplier (critical for CONFIRMED)
+    multiplier *= exec.trendWeight; // Profile-tuned (BTC emphasizes, SOL standard)
   }
 
   // Apply multiplier
@@ -1096,8 +1221,11 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
 /**
  * SNIPER CONDITIONS v9 NO GATES (NO blocking logic)
  * Momentum refines conditions only, structure never blocks entry
+ * 
+ * v21.1.3 REFACTOR: Uses profile-driven persistence rules instead of if-symbol checks
+ * This allows future assets to define their own persistence requirements in the profile
  */
-function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "early" = "strict"): boolean {
+function checkSniperConditions(card: SymbolCardState, profile: ExecutionProfile, checkMode: "strict" | "early" = "strict"): boolean {
   // NO HARD BLOCKS - v9 NO GATES VERSION
   // Structure locks direction but doesn't prevent trades
   
@@ -1139,16 +1267,106 @@ function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "ear
     }
   }
 
+  // PROFILE-DRIVEN PERSISTENCE RULES (v21.1.3 REFACTOR)
+  // Removed: if card.symbol === "ETH" check
+  // Now: profile.persistenceRules drives validation generically
+  // This allows future assets to define their own rules without code changes
+  if (!applyProfilePersistenceRules(card, profile)) {
+    return false;
+  }
+
   // ALL CONDITIONS MET: Valid SNIPER setup
   console.log(`[SNIPER CHECK] ${card.symbol} PASSED (${checkMode}): direction=${card.direction} + compression/expansion + ignition`);
   return true;
 }
 
 /**
- * CONFIRMED CONDITIONS (v7.2.4 FIX #3): Established trend + impulse
- * Requires: HTF alignment + EMA expansion + momentum continuation
- * Strict threshold: 75+
+ * APPLY PROFILE PERSISTENCE RULES
+ * v21.1.2 REFACTOR: Consolidates fragmented if-symbol checks into profile-driven validation
+ * 
+ * Instead of: if symbol === "ETH" check persistence
+ * Now: profile.persistenceRules drives the validation generically
+ * 
+ * This allows future assets to define their own persistence requirements
+ * without adding more if-symbol branches.
  */
+function applyProfilePersistenceRules(card: SymbolCardState, profile: ExecutionProfile): boolean {
+  // If profile doesn't require persistence rules, pass through
+  if (!profile.persistenceRules.requireSustainedEMA && !profile.persistenceRules.requireDirectionAlignment) {
+    return true;
+  }
+
+  // RULE 1: Sustained EMA slope (if required by profile)
+  if (profile.persistenceRules.requireSustainedEMA) {
+    const emaSustained = card.emaSlope !== null && Math.abs(card.emaSlope) >= 0.3 && Math.abs(card.emaSlope) <= 1.0;
+    if (!emaSustained) {
+      console.log(`[PERSISTENCE] ${card.symbol} BLOCKED: Sustained EMA required but slope=${card.emaSlope?.toFixed(2)}`);
+      return false;
+    }
+  }
+
+  // RULE 2: Direction aligned with EMA (if required by profile)
+  if (profile.persistenceRules.requireDirectionAlignment) {
+    const directionAligned = 
+      (card.emaSlope > 0 && card.direction === "LONG") ||
+      (card.emaSlope < 0 && card.direction === "SHORT");
+    if (!directionAligned) {
+      console.log(`[PERSISTENCE] ${card.symbol} BLOCKED: Direction alignment required, EMA=${card.emaSlope > 0 ? "LONG" : "SHORT"} but direction=${card.direction}`);
+      return false;
+    }
+  }
+
+  // RULE 3: Volatility stability (if required by profile)
+  if (profile.persistenceRules.stabilityThreshold < 100) {
+    const stable = (card.volatilityLevel ?? 50) < profile.persistenceRules.stabilityThreshold;
+    if (!stable) {
+      console.log(`[PERSISTENCE] ${card.symbol} BLOCKED: Stability required (volatility < ${profile.persistenceRules.stabilityThreshold}) but level=${card.volatilityLevel}`);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * BTC STRUCTURAL BREAKOUT SCORE BONUS
+ * v21.1.2: Structural setup adds +5 to score, not direct activation
+ * Preserves ignition integrity while allowing structure-driven activation
+ */
+function checkStructuralBreakout(card: SymbolCardState): boolean {
+  // CONDITION 1: 4H trend structure must be established (not neutral)
+  const htf4hEstablished = card.htf4hTrend !== "NEUTRAL";
+  if (!htf4hEstablished) {
+    return false;
+  }
+
+  // CONDITION 2: EMA slope is sustained (not a violent spike)
+  // For structural breakout: 0.3 to 0.8 is "sustained", > 0.8 is "spike"
+  const emaSustained = card.emaSlope !== null && Math.abs(card.emaSlope) > 0.3 && Math.abs(card.emaSlope) <= 0.8;
+  if (!emaSustained) {
+    return false;
+  }
+
+  // CONDITION 3: Compression is present and ready to break
+  // Volatility < 35 = ready compression
+  const compressionReady = (card.volatilityLevel ?? 50) < 35;
+  if (!compressionReady) {
+    return false;
+  }
+
+  // CONDITION 4: EMA direction matches HTF trend (structural alignment)
+  const trendAlignment = 
+    (card.htf4hTrend === "BULLISH" && card.emaSlope > 0) ||
+    (card.htf4hTrend === "BEARISH" && card.emaSlope < 0);
+  if (!trendAlignment) {
+    return false;
+  }
+
+  // ALL CONDITIONS MET: Structural breakout ready
+  console.log(`[STRUCTURAL_BREAKOUT] ${card.symbol} TRIGGERED: HTF=${card.htf4hTrend} + EMA slope=${card.emaSlope?.toFixed(2)} + compression ready`);
+  return true;
+}
+
 /**
  * Calculate momentum score using event-driven multiplier model
  * v7.1 STABILISATION FIX
