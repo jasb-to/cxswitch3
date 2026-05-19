@@ -647,51 +647,17 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
       card.signalState = "BUILDING";
       console.log(`[BUILDING] ${symbol} score=${score} - awaiting ignition trigger`);
       
-      // v21.1.4 BTC/ETH RELAXATION LAYER
-      // Secondary activation path for BTC/ETH only (NOT for SOL)
-      // Creates OPPORTUNITY_SIGNAL type setups (WATCH_ZONE state, NOT ACTIVE_SNIPER)
-      // No Telegram alerts triggered - purely informational for UI/dashboard
-      if ((symbol === "BTC" || symbol === "ETH") && card.direction !== "NEUTRAL") {
-        // RELAXED THRESHOLDS: lower than SNIPER requirements
-        const relaxedThreshold = symbol === "BTC" ? 58 : 60; // BTC: 58, ETH: 60
-        const directionConsistency = getDirectionConsistency(card); // Check EMA/Stoch alignment
-        
-        // RELAXATION CONDITION: Lower score gate + direction consistency check
-        // directionConsistency should NOT be "CONTRADICTORY" (advisory, not blocking)
-        if (score >= relaxedThreshold && directionConsistency !== "CONTRADICTORY") {
-          // Build minimal OPPORTUNITY_SIGNAL setup for dashboard/UI only
-          const opportunitySetup: Setup = {
-            symbol,
-            mode: "SNIPER", // Keep mode as SNIPER for structure consistency
-            direction: card.direction,
-            score: Math.min(score, 99),
-            reason: `BTC/ETH opportunity: ${directionConsistency} direction with ${score}% conviction`,
-            price: card.price,
-            momentum: {
-              stochRsiSignal: card.stochRsi ? `${card.stochRsi.toFixed(1)}` : "—",
-              emaStackSignal: card.emaSlope ? (card.emaSlope > 0 ? "BULLISH" : "BEARISH") : "NEUTRAL",
-              volatilitySignal: (card.volatilityLevel ?? 50) < 35 ? "COMPRESSION" : "NORMAL",
-              trend4H: card.htf4hTrend === "BULLISH" || card.htf4hTrend === "BEARISH"
-            },
-            htf: {
-              trend4h: card.htf4hTrend === "BULLISH" ? "BULLISH" : "BEARISH",
-              alignment1h: card.htf1hAlignment === true,
-              compression15m: card.htf15mCompression === true,
-              trigger5m: card.execution15mState
-            }
-          };
-          
-          // Mark card with OPPORTUNITY state for UI rendering
-          card.signalState = "WATCH_ZONE"; // NOT ACTIVE_SNIPER
-          card.mode = "SNIPER";
-          card.confidence = Math.min(score, 99);
-          card.tradeReadinessScore = 0; // Not a tradeable signal
-          
-          setups.push(opportunitySetup);
-          console.log(`[${symbol}_RELAXED_SIGNAL] score=${score} state=WATCH_ZONE direction=${card.direction} consistency=${directionConsistency}`);
-        }
+      // v21.1.5 LIGHTWEIGHT BTC/ETH WATCH_ZONE OUTPUT
+      // Simplified: just show WATCH_ZONE hints, not full signal systems
+      // No new logic layers, no persistence modifications
+      if ((symbol === "BTC" || symbol === "ETH") && score >= 62 && card.direction !== "NEUTRAL") {
+        // Minimal output: just mark as WATCH_ZONE for UI display
+        card.signalState = "WATCH_ZONE";
+        card.type = "LIGHT_SIGNAL";
+        console.log(`[${symbol}_WATCH_ZONE] score=${score} direction=${card.direction}`);
       }
     }
+
 
     // v9 PHASE 5: ACTIVE_SNIPER TERMINAL STATE IMMUTABILITY
     // Once impulse >= 27 AND ACTIVE_SNIPER state assigned, it becomes immutable
@@ -1409,45 +1375,6 @@ function checkStructuralBreakout(card: SymbolCardState): boolean {
   // ALL CONDITIONS MET: Structural breakout ready
   console.log(`[STRUCTURAL_BREAKOUT] ${card.symbol} TRIGGERED: HTF=${card.htf4hTrend} + EMA slope=${card.emaSlope?.toFixed(2)} + compression ready`);
   return true;
-}
-
-/**
- * GET DIRECTION CONSISTENCY (v21.1.4 BTC/ETH RELAXATION LAYER)
- * Check if EMA slope and directional signal are aligned
- * Used for advisory-only filtering in relaxation layer (not blocking)
- * 
- * Returns:
- * - "ALIGNED": EMA and direction agree
- * - "ADVISORY": EMA and direction disagree but not severe
- * - "CONTRADICTORY": Strong disagreement (e.g., LONG but EMA steep bearish)
- */
-function getDirectionConsistency(card: SymbolCardState): "ALIGNED" | "ADVISORY" | "CONTRADICTORY" {
-  // If no EMA slope data, assume advisory
-  if (card.emaSlope === null || card.emaSlope === undefined) {
-    return "ADVISORY";
-  }
-
-  // Check if direction matches EMA slope direction
-  const emaIsBullish = card.emaSlope > 0.1;
-  const emaIsBearish = card.emaSlope < -0.1;
-  const directionIsLong = card.direction === "LONG";
-  const directionIsShort = card.direction === "SHORT";
-
-  // ALIGNED: Both point in same direction
-  if ((emaIsBullish && directionIsLong) || (emaIsBearish && directionIsShort)) {
-    return "ALIGNED";
-  }
-
-  // CONTRADICTORY: Strong disagreement
-  if ((emaIsBullish && directionIsShort) || (emaIsBearish && directionIsLong)) {
-    // Only contradictory if EMA slope is significant (> 0.5)
-    if (Math.abs(card.emaSlope) > 0.5) {
-      return "CONTRADICTORY";
-    }
-  }
-
-  // ADVISORY: Mild disagreement or neutral EMA
-  return "ADVISORY";
 }
 
 /**
