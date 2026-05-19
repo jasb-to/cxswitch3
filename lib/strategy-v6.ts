@@ -542,22 +542,26 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
     const profile = getExecutionProfile(symbol);
 
     // Score using momentum system with per-asset profile
-    const score = calculateMomentumScore(card, symbol, profile);
+    let score = calculateMomentumScore(card, symbol, profile);
+    
+    // BTC STRUCTURAL BONUS (v21.1.2 FINAL REFINEMENT)
+    // Structural breakout does NOT bypass ignition integrity
+    // Instead: it adds bonus to score, allowing BTC to reach threshold via structure
+    // This preserves minimum quality gates while allowing asset differentiation
+    if (symbol === "BTC" && checkStructuralBreakout(card)) {
+      const structuralBonus = 5; // +5 bonus for confirmed structural breakout
+      score += structuralBonus;
+      console.log(`[STRUCTURAL_BONUS] ${symbol} +${structuralBonus} (score: ${score - structuralBonus} → ${score})`);
+    }
     
     console.log(`[SCAN] ${symbol} score=${score} direction=${card.direction} stoch=${card.stochRsi?.toFixed(1) ?? "—"} emaSlope=${card.emaSlope?.toFixed(2) ?? "—"}`);
     console.log(`[PROFILE_WEIGHTS] ${symbol} stoch=${profile.stochWeight} ema=${profile.emaWeight} volatility=${profile.volatilityWeight} impulse=${profile.impulseWeight} trend=${profile.trendWeight}`);
     console.log(`[PROFILE] ${symbol} → ${symbol} (threshold=${profile.ignitionThreshold})`);
 
-    // ONLY generate setups with directional conviction
-    // SNIPER v21.1.0: Single signal mode (CONFIRMED path deleted)
-    // SNIPER ALERT: score >= profile.ignitionThreshold AND sniper conditions met
-    // ACTIVATION CONDITIONS: Score threshold OR asset-specific path
-    // SOL/ETH: Standard sniper conditions (momentum-driven)
-    // BTC: Can ALSO activate via structural breakout (structure-driven)
-    const standardSniperPath = score >= profile.ignitionThreshold && card.direction !== "NEUTRAL" && checkSniperConditions(card);
-    const btcStructuralPath = symbol === "BTC" && checkStructuralBreakout(card);
-    
-    if (standardSniperPath || btcStructuralPath) {
+    // ACTIVATION CONDITIONS: Score threshold only (no bypass paths)
+    // SOL/ETH/BTC: All must meet minimum ignition integrity
+    // BTC gets structural bonus, but still must pass threshold
+    if (score >= profile.ignitionThreshold && card.direction !== "NEUTRAL" && checkSniperConditions(card)) {
       // v7.3.1 FIX #1: Validate ACTIVE_SNIPER execution requirements
       const executionValidation = validateActiveSniperExecution(card, score);
       
@@ -1215,23 +1219,63 @@ function checkSniperConditions(card: SymbolCardState, checkMode: "strict" | "ear
     }
   }
 
+  // ETH PERSISTENCE GUARD (v21.1.2): ETH continuation requires sustained directional agreement
+  // Prevents false entries from single-frame EMA tilts or conflicting signals
+  if (card.symbol === "ETH") {
+    const persistenceQuality = checkETHPersistenceQuality(card);
+    if (!persistenceQuality) {
+      console.log(`[SNIPER CHECK] ${card.symbol} BLOCKED: ETH persistence guard - insufficient directional consistency`);
+      return false;
+    }
+  }
+
   // ALL CONDITIONS MET: Valid SNIPER setup
   console.log(`[SNIPER CHECK] ${card.symbol} PASSED (${checkMode}): direction=${card.direction} + compression/expansion + ignition`);
   return true;
 }
 
 /**
- * BTC STRUCTURAL BREAKOUT ACTIVATION
- * v21.1.1: Alternative activation path for BTC (not threshold-based)
+ * ETH PERSISTENCE GUARD (v21.1.2 FINAL REFINEMENT)
  * 
- * Activates ONLY when ALL conditions present:
- * - 4H directional agreement (sustained trend structure)
- * - Compression ready to break (low volatility)
- * - EMA slope confirming direction (sustained, not violent)
- * - No recent impulse spike (rules out false breakouts)
+ * ETH continuation requires sustained directional agreement.
+ * Prevents false entries from single-frame EMA tilts or brief candles.
  * 
- * This PREVENTS false activations from volatility spikes.
- * BTC should only trigger from STRUCTURE, not VOLATILITY.
+ * Checks:
+ * - EMA slope sustained (not a single-candle tick)
+ * - Direction consistent with EMA (no conflicting signals)
+ * - Volatility not spiking (compression stable)
+ */
+function checkETHPersistenceQuality(card: SymbolCardState): boolean {
+  // Requirement 1: EMA slope must be sustained, not a spike
+  // Sustained = 0.3 to 1.0 (moderate, not extreme)
+  const emaSustained = card.emaSlope !== null && Math.abs(card.emaSlope) >= 0.3 && Math.abs(card.emaSlope) <= 1.0;
+  if (!emaSustained) {
+    return false;
+  }
+
+  // Requirement 2: Direction aligns with EMA direction
+  // No conflicting signals between direction and slope
+  const directionAligned = 
+    (card.emaSlope > 0 && card.direction === "LONG") ||
+    (card.emaSlope < 0 && card.direction === "SHORT");
+  if (!directionAligned) {
+    return false;
+  }
+
+  // Requirement 3: Volatility not spiking (compression stable, not breaking suddenly)
+  // Prevents false breakouts from volatility expansion
+  const compressionStable = (card.volatilityLevel ?? 50) < 45; // Slightly relaxed vs BTC
+  if (!compressionStable) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * BTC STRUCTURAL BREAKOUT SCORE BONUS
+ * v21.1.2: Structural setup adds +5 to score, not direct activation
+ * Preserves ignition integrity while allowing structure-driven activation
  */
 function checkStructuralBreakout(card: SymbolCardState): boolean {
   // CONDITION 1: 4H trend structure must be established (not neutral)
