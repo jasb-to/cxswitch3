@@ -99,7 +99,7 @@ export const EXECUTION_PROFILES: Record<string, ExecutionProfile> = {
     // STRUCTURAL BREAKOUT PROFILE
     // Lower acceleration, higher structure weight
     // Targets: sustained breakouts, compression release
-    ignitionThreshold: 64,   // Lower threshold (slower to trigger)
+    ignitionThreshold: 61,   // TUNED DOWN from 64 → allows structural setups to trigger naturally
     stochWeight: 1.15,       // De-emphasize stoch (less reactive)
     emaWeight: 0.90,         // Lower acceleration weight
     volatilityWeight: 1.45,  // Emphasize compression (breakout setup)
@@ -118,15 +118,15 @@ export const EXECUTION_PROFILES: Record<string, ExecutionProfile> = {
   },
   
   ETH: {
-    // TREND CONTINUATION PROFILE - REBALANCED v21.1.1
+    // TREND CONTINUATION PROFILE - v21.2.1 TUNED
     // Emphasis: directional persistence + EMA continuation (not impulse spikes)
     // ETH trends smoother than SOL - reward sustained expansion, not violent acceleration
-    ignitionThreshold: 66,   // Medium threshold (unchanged)
-    stochWeight: 1.30,       // Maintain stoch sensitivity (unchanged)
-    emaWeight: 1.25,         // INCREASED from 1.15 - reward EMA continuation slope
-    volatilityWeight: 1.25,  // Medium compression weight (unchanged)
-    impulseWeight: 1.10,     // REDUCED from 1.28 - de-emphasize impulse candles
-    trendWeight: 1.35,       // INCREASED from 1.30 - higher emphasis on directional persistence
+    ignitionThreshold: 63,   // TUNED DOWN from 66 → allows continuation setups to trigger naturally
+    stochWeight: 1.30,       // Maintain stoch sensitivity
+    emaWeight: 1.30,         // INCREASED from 1.25 → slightly boost EMA continuation scoring
+    volatilityWeight: 1.25,  // Medium compression weight
+    impulseWeight: 1.10,     // De-emphasize impulse candles
+    trendWeight: 1.35,       // Higher emphasis on directional persistence
     
     // ETH activation style: continuation-focused, requires persistence validation
     activationStyle: "CONTINUATION",
