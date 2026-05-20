@@ -5,24 +5,21 @@
  * TP1 = fast protection target (1R risk moved to breakeven)
  * Runner = dynamic extension based on continuation structure
  * 
- * v21.3.0 CAP FIX: Prevent excessive SL/TP expansion during volatility spikes
- * - SL capped to max 2% from entry
- * - TP1 decoupled to conservative 1R
- * - Runner extension capped to prevent psychological disconnect
+ * v21.3.2: Tighter SL cap (1.5%), decoupled TP (1R), capped runner extension
  */
 
 import type { Candle } from "./kraken";
 
 /**
- * CAPPED STOP LOSS
- * v21.3.0: SL respects structure but has hard maximum distance
- * Prevents SL from expanding excessively during high volatility regimes
+ * CAPPED STOP LOSS (v21.3.2)
+ * Hard cap: 1.5% max from entry - keeps early entries tight
+ * Still respects swing levels but won't allow excessive widening
  */
 export function calculateStopLoss(entry: number, swingLevel: number | null, direction: "LONG" | "SHORT"): number {
-  const MAX_SL_DISTANCE = 0.02; // Hard cap: SL no more than 2% from entry
+  const MAX_SL_DISTANCE = 0.015; // Hard cap: 1.5% from entry (tight for early entries)
   
   if (direction === "LONG") {
-    const cap = entry * (1 - MAX_SL_DISTANCE); // 2% below entry
+    const cap = entry * (1 - MAX_SL_DISTANCE); // 1.5% below entry
     const minimumSL = entry * 0.985; // Structural minimum (1.5%)
     
     if (swingLevel) {
@@ -31,7 +28,7 @@ export function calculateStopLoss(entry: number, swingLevel: number | null, dire
     }
     return cap;
   } else {
-    const cap = entry * (1 + MAX_SL_DISTANCE); // 2% above entry
+    const cap = entry * (1 + MAX_SL_DISTANCE); // 1.5% above entry
     const maximumSL = entry * 1.015; // Structural maximum (1.5%)
     
     if (swingLevel) {
@@ -43,26 +40,23 @@ export function calculateStopLoss(entry: number, swingLevel: number | null, dire
 }
 
 /**
- * DECOUPLED TAKE PROFIT
- * v21.3.0: TP1 is conservative 1R (not dependent on inflated SL)
- * Prevents TP from inheriting widened stop distances
+ * DECOUPLED TAKE PROFIT (v21.3.2)
+ * Conservative 1R to allow early profit-taking
+ * Prevents TP from inheriting inflated SL distances
  */
 export function calculateTakeProfit(entry: number, stopLoss: number, direction: "LONG" | "SHORT"): number {
   const riskDistance = Math.abs(entry - stopLoss);
-  
   if (direction === "LONG") {
-    // TP1 = conservative 1R (decoupled from SL distance)
-    // This allows early profit-taking while runner can extend based on structure
-    return entry + riskDistance * 1;
+    return entry + riskDistance * 1; // 1R only (was 2R)
   } else {
-    return entry - riskDistance * 1;
+    return entry - riskDistance * 1; // 1R only (was 2R)
   }
 }
 
 /**
- * CAPPED RUNNER EXTENSION
- * v21.3.0: Runner extends based on structure but has realistic maximum
- * Prevents psychological disconnect from excessive TP distances
+ * CAPPED RUNNER EXTENSION (v21.3.2)
+ * Maximum 3x risk from entry - realistic intraday targets
+ * Still respects structure but prevents excessive stretch
  */
 export function calculateRunnerExtension(
   entry: number,
@@ -75,10 +69,8 @@ export function calculateRunnerExtension(
   const recent = candles.slice(-5);
   const highs = recent.map((c) => c.high);
   const lows = recent.map((c) => c.low);
-
-  // Maximum reasonable extension: 3x risk from entry
-  // Prevents runner from extending endlessly during volatility expansion
-  const MAX_RUNNER_EXTENSION = 3;
+  
+  const MAX_RUNNER_EXTENSION = 3; // Max 3x risk from entry
 
   if (direction === "LONG") {
     // Trail below lowest of recent lows (trend continuation structure)
@@ -86,7 +78,7 @@ export function calculateRunnerExtension(
     const extension = lowestLow * 1.001; // 0.1% below LH as new target
     // Runner extends at least 50% beyond TP1, but capped at 3R max
     const minRunner = tp1 + Math.abs(tp1 - entry) * 0.5;
-    const maxRunner = entry + Math.abs(entry - (entry * 0.98)) * MAX_RUNNER_EXTENSION;
+    const maxRunner = entry + Math.abs(entry - (entry * 0.985)) * MAX_RUNNER_EXTENSION;
     return Math.max(Math.min(extension, maxRunner), minRunner);
   } else {
     // Trail above highest of recent highs (trend continuation structure)
@@ -94,7 +86,7 @@ export function calculateRunnerExtension(
     const extension = highestHigh * 0.999; // 0.1% above HH as new target
     // Runner extends at least 50% beyond TP1, but capped at 3R max
     const minRunner = tp1 - Math.abs(entry - tp1) * 0.5;
-    const maxRunner = entry - Math.abs((entry * 1.02) - entry) * MAX_RUNNER_EXTENSION;
+    const maxRunner = entry - Math.abs((entry * 1.015) - entry) * MAX_RUNNER_EXTENSION;
     return Math.min(Math.max(extension, maxRunner), minRunner);
   }
 }

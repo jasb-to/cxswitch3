@@ -639,12 +639,23 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
           // Emit COMPLETE setup (all fields guaranteed)
           setups.push(atomicSignal);
           console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
+          
+          // Trade-focused watch zone commentary (show setup health)
+          const tradeCommentary = generateTradeWatchCommentary(card);
+          console.log(`[TRADE_MONITOR] ${tradeCommentary}`);
         }
       }
     }
     else {
       // No SNIPER conditions met - stay in BUILDING state
+      const wasBuilding = card.signalState === "BUILDING";
       card.signalState = "BUILDING";
+      
+      // Generate watch zone commentary on state change (only log once when entering BUILDING)
+      if (!wasBuilding) {
+        const commentary = generateWatchZoneCommentary(card);
+        console.log(`[WATCH_ZONE_UPDATE] ${commentary}`);
+      }
       console.log(`[BUILDING] ${symbol} score=${score} - awaiting ignition trigger`);
     }
 
@@ -665,13 +676,97 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
 }
 
 /**
- * Generate display cards from DISPLAY PIPELINE ONLY
- * v8.0: HARD PIPELINE SEGREGATION
- * 
- * This function receives fallback/degraded data (CoinGecko).
- * These cards are DISPLAY_ONLY - no signals, no execution.
- * NEVER enters scan engine, NEVER builds ExecutionContext.
+ * WATCH_ZONE COMMENTARY
+ * v21.3.1: Generate real-time market context for each symbol in BUILDING state
+ * Shows: current direction, momentum, structural status, reversal warnings
  */
+function generateWatchZoneCommentary(card: SymbolCardState): string {
+  const directionArrow = card.direction === "LONG" ? "↑" : card.direction === "SHORT" ? "↓" : "↔";
+  const stochLevel = card.stochRsi ? `stoch ${card.stochRsi.toFixed(0)}` : "stoch —";
+  const emaState = card.emaSlope
+    ? card.emaSlope > 0.3 ? "8/21 steep up" : card.emaSlope > 0 ? "8/21 rising" : "8/21 falling"
+    : "8/21 flat";
+  const volatilityState = (card.volatilityLevel ?? 50) > 50 ? "breaking out" : "compression";
+  const htfContext = card.htf4hTrend === "BULLISH" ? "bullish macro" : 
+                     card.htf4hTrend === "BEARISH" ? "bearish macro" : "neutral macro";
+
+  // Build context based on asset and conditions
+  let context = "";
+  
+  if (card.symbol === "SOL") {
+    if (card.direction === "LONG" && (card.volatilityLevel ?? 50) > 45) {
+      context = `impulse phase (${emaState}, ${stochLevel}), ${volatilityState}, early entry zone`;
+    } else if (card.direction === "SHORT" && (card.volatilityLevel ?? 50) > 45) {
+      context = `selling pressure (${emaState}, ${stochLevel}), ${volatilityState}, early short zone`;
+    } else {
+      context = `consolidating (${emaState}, ${stochLevel}), ${volatilityState}, waiting for impulse`;
+    }
+  } else if (card.symbol === "BTC") {
+    if ((card.volatilityLevel ?? 50) < 35 && card.direction !== "NEUTRAL") {
+      context = `compression locked (${emaState}), awaiting structural break in ${card.direction === "LONG" ? "bullish" : "bearish"} direction`;
+    } else if (card.htf4hTrend === "NEUTRAL") {
+      context = `range consolidation (${emaState}, ${stochLevel}), macro unclear, structure building`;
+    } else {
+      context = `${card.htf4hTrend === "BULLISH" ? "structural bullish" : "structural bearish"} (${emaState}, ${stochLevel}), awaiting compression break`;
+    }
+  } else if (card.symbol === "ETH") {
+    if (card.direction === "LONG" && (card.volatilityLevel ?? 50) > 45 && (card.emaSlope ?? 0) > 0.2) {
+      context = `bullish transition (${emaState}, ${stochLevel}), expansion starting, continuation possible`;
+    } else if (card.direction === "SHORT" && (card.volatilityLevel ?? 50) > 45 && (card.emaSlope ?? 0) < -0.2) {
+      context = `bearish transition (${emaState}, ${stochLevel}), expansion starting, pullback possible`;
+    } else if (card.htf4hTrend === "BEARISH" && card.direction === "LONG") {
+      context = `early bullish move against ${htfContext} (${emaState}, ${stochLevel}), reversalrisk`;
+    } else {
+      context = `trend following (${emaState}, ${stochLevel}), ${volatilityState}, ${htfContext}`;
+    }
+  }
+
+  return `${card.symbol} WATCH_ZONE: ${directionArrow} ${context}`;
+}
+
+/**
+ * TRADE-FOCUSED WATCH ZONE COMMENTARY
+ * v21.3.2: For ACTIVE_SNIPER trades - shows if setup is still valid, reversal risks
+ * Format: "↑ momentum holding, structure intact" or "⚠ reversal forming"
+ */
+function generateTradeWatchCommentary(card: SymbolCardState): string {
+  const directionArrow = card.direction === "LONG" ? "↑" : "↓";
+  
+  // Check for momentum holding (Stoch staying in direction)
+  const stochValid = card.direction === "LONG" 
+    ? (card.stochRsi ?? 50) > 30 
+    : (card.stochRsi ?? 50) < 70;
+  
+  // Check for structure integrity (EMA not reversing sharply)
+  const emaIntact = card.direction === "LONG"
+    ? (card.emaSlope ?? 0) >= -0.1  // Slight dip OK, sharp reversal is warning
+    : (card.emaSlope ?? 0) <= 0.1;
+  
+  // Check for reversal risk (conflicting signals)
+  const reversalRisk = 
+    (card.direction === "LONG" && (card.emaSlope ?? 0) < -0.3) ||
+    (card.direction === "SHORT" && (card.emaSlope ?? 0) > 0.3);
+  
+  // Check for volatility exhaustion (expanding to extreme)
+  const exhaustion = (card.volatilityLevel ?? 50) > 70;
+  
+  let status = "";
+  
+  if (reversalRisk) {
+    status = "⚠ reversal forming";
+  } else if (exhaustion) {
+    status = "⚠ momentum exhausting";
+  } else if (stochValid && emaIntact) {
+    status = `${directionArrow} momentum holding, structure intact`;
+  } else if (stochValid) {
+    status = `${directionArrow} stoch valid, watching EMA`;
+  } else {
+    status = "⚠ momentum fading";
+  }
+  
+  return `${card.symbol} TRADE: ${status}`;
+}
+
 export function generateDisplayCards(displayMarkets: Record<string, PriceData>): SymbolCardState[] {
   const displayCards: SymbolCardState[] = [];
 
