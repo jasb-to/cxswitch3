@@ -653,13 +653,13 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
       const wasBuilding = card.signalState === "BUILDING";
       card.signalState = "BUILDING";
       
-      // Generate watch zone commentary on state change (only log once when entering BUILDING)
+      // Generate watch zone commentary - log on state change, always update notes for UI
+      const commentary = generateWatchZoneCommentary(card);
       if (!wasBuilding) {
-        const commentary = generateWatchZoneCommentary(card);
         console.log(`[WATCH_ZONE_UPDATE] ${commentary}`);
-        // Attach commentary to card notes for UI display
-        card.notes = commentary;
       }
+      // Always attach commentary to card notes for UI display (updates every scan)
+      card.notes = commentary;
       console.log(`[BUILDING] ${symbol} score=${score} - awaiting ignition trigger`);
     }
 
