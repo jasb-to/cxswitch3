@@ -914,7 +914,22 @@ function calculateTradeReadinessScore(
     if (directionMatchesMacro) {
       score += 10; // Aligned with macro = higher confidence
     } else {
-      score -= 5;  // Against macro = small penalty (NOT blocker)
+      // v21.2.2 ETH RESPONSIVENESS FIX
+      // During early bullish transitions, reduce bearish 4H suppression when:
+      // - 15M is EXPANDING (volatilityLevel > 45)
+      // - Direction is LONG (bullish impulse)
+      // - EMA slope is improving (positive slope > 0.2)
+      // This allows ETH to respond faster during genuine bullish breakouts
+      const isEarlyBullishTransition = 
+        direction === "LONG" && 
+        (volatilityLevel ?? 50) > 45 &&  // 15M EXPANDING
+        (emaSlope ?? 0) > 0.2;           // EMA improving bullish
+      
+      if (isEarlyBullishTransition) {
+        score -= 2;  // Reduced from -5 to -2: lighter bearish suppression during transition
+      } else {
+        score -= 5;  // Normal penalty: Against macro = small penalty (NOT blocker)
+      }
     }
   }
 
