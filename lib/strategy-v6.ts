@@ -639,6 +639,10 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
           // Emit COMPLETE setup (all fields guaranteed)
           setups.push(atomicSignal);
           console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
+          
+          // Trade-focused watch zone commentary (show setup health)
+          const tradeCommentary = generateTradeWatchCommentary(card);
+          console.log(`[TRADE_MONITOR] ${tradeCommentary}`);
         }
       }
     }
@@ -718,6 +722,49 @@ function generateWatchZoneCommentary(card: SymbolCardState): string {
   }
 
   return `${card.symbol} WATCH_ZONE: ${directionArrow} ${context}`;
+}
+
+/**
+ * TRADE-FOCUSED WATCH ZONE COMMENTARY
+ * v21.3.2: For ACTIVE_SNIPER trades - shows if setup is still valid, reversal risks
+ * Format: "↑ momentum holding, structure intact" or "⚠ reversal forming"
+ */
+function generateTradeWatchCommentary(card: SymbolCardState): string {
+  const directionArrow = card.direction === "LONG" ? "↑" : "↓";
+  
+  // Check for momentum holding (Stoch staying in direction)
+  const stochValid = card.direction === "LONG" 
+    ? (card.stochRsi ?? 50) > 30 
+    : (card.stochRsi ?? 50) < 70;
+  
+  // Check for structure integrity (EMA not reversing sharply)
+  const emaIntact = card.direction === "LONG"
+    ? (card.emaSlope ?? 0) >= -0.1  // Slight dip OK, sharp reversal is warning
+    : (card.emaSlope ?? 0) <= 0.1;
+  
+  // Check for reversal risk (conflicting signals)
+  const reversalRisk = 
+    (card.direction === "LONG" && (card.emaSlope ?? 0) < -0.3) ||
+    (card.direction === "SHORT" && (card.emaSlope ?? 0) > 0.3);
+  
+  // Check for volatility exhaustion (expanding to extreme)
+  const exhaustion = (card.volatilityLevel ?? 50) > 70;
+  
+  let status = "";
+  
+  if (reversalRisk) {
+    status = "⚠ reversal forming";
+  } else if (exhaustion) {
+    status = "⚠ momentum exhausting";
+  } else if (stochValid && emaIntact) {
+    status = `${directionArrow} momentum holding, structure intact`;
+  } else if (stochValid) {
+    status = `${directionArrow} stoch valid, watching EMA`;
+  } else {
+    status = "⚠ momentum fading";
+  }
+  
+  return `${card.symbol} TRADE: ${status}`;
 }
 
 export function generateDisplayCards(displayMarkets: Record<string, PriceData>): SymbolCardState[] {
