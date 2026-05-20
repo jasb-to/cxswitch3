@@ -99,12 +99,12 @@ export const EXECUTION_PROFILES: Record<string, ExecutionProfile> = {
     // STRUCTURAL BREAKOUT PROFILE
     // Lower acceleration, higher structure weight
     // Targets: sustained breakouts, compression release
-    ignitionThreshold: 61,   // TUNED DOWN from 64 → allows structural setups to trigger naturally
+    ignitionThreshold: 57,   // v21.3.5 LOWERED from 61 → 4-point reduction for meaningful breakouts
     stochWeight: 1.15,       // De-emphasize stoch (less reactive)
     emaWeight: 0.90,         // Lower acceleration weight
     volatilityWeight: 1.45,  // Emphasize compression (breakout setup)
     impulseWeight: 1.25,     // Maintain direction but moderate
-    trendWeight: 1.50,       // Emphasize 4H structure (critical for BTC)
+    trendWeight: 1.65,       // v21.3.5 BOOSTED from 1.50 → emphasize 4H structure more
     
     // BTC activation style: structure-driven, rare triggers
     activationStyle: "STRUCTURAL",
@@ -118,21 +118,21 @@ export const EXECUTION_PROFILES: Record<string, ExecutionProfile> = {
   },
   
   ETH: {
-    // TREND CONTINUATION PROFILE - v21.2.1 TUNED
+    // TREND CONTINUATION PROFILE - v21.3.5 TUNED FOR SIGNALS
     // Emphasis: directional persistence + EMA continuation (not impulse spikes)
     // ETH trends smoother than SOL - reward sustained expansion, not violent acceleration
-    ignitionThreshold: 63,   // TUNED DOWN from 66 → allows continuation setups to trigger naturally
+    ignitionThreshold: 60,   // v21.3.5 LOWERED from 63 → 3-point reduction for continuation triggers
     stochWeight: 1.30,       // Maintain stoch sensitivity
-    emaWeight: 1.30,         // INCREASED from 1.25 → slightly boost EMA continuation scoring
+    emaWeight: 1.40,         // v21.3.5 BOOSTED from 1.30 → boost EMA continuation scoring
     volatilityWeight: 1.25,  // Medium compression weight
     impulseWeight: 1.10,     // De-emphasize impulse candles
     trendWeight: 1.35,       // Higher emphasis on directional persistence
     
-    // ETH activation style: continuation-focused, requires persistence validation
+    // ETH activation style: continuation-focused, lighter validation
     activationStyle: "CONTINUATION",
     persistenceRules: {
       requireSustainedEMA: true,         // ETH: must have sustained EMA slope (0.3-1.0)
-      requireDirectionAlignment: true,   // ETH: direction must align with EMA
+      requireDirectionAlignment: false,  // v21.3.5 RELAXED from true → direction alignment advisory only
       stabilityThreshold: 45,            // ETH: volatility < 45 (stable compression)
     },
     breakoutBonus: 0,                    // ETH: no structural bonus
