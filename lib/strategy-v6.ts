@@ -643,6 +643,8 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
           // Trade-focused watch zone commentary (show setup health)
           const tradeCommentary = generateTradeWatchCommentary(card);
           console.log(`[TRADE_MONITOR] ${tradeCommentary}`);
+          // Attach trade commentary to card notes for UI display
+          card.notes = tradeCommentary;
         }
       }
     }
@@ -655,6 +657,8 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
       if (!wasBuilding) {
         const commentary = generateWatchZoneCommentary(card);
         console.log(`[WATCH_ZONE_UPDATE] ${commentary}`);
+        // Attach commentary to card notes for UI display
+        card.notes = commentary;
       }
       console.log(`[BUILDING] ${symbol} score=${score} - awaiting ignition trigger`);
     }
