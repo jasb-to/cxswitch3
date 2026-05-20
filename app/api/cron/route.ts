@@ -85,6 +85,7 @@ async function runExecutionCycle(): Promise<{
           tradeReadinessScore: card.tradeReadinessScore,
           degraded: card.degraded,
           confidence: card.confidence,
+          notes: card.notes,  // v21.3.7: Include watch zone commentary (was missing)
         });
       }
     }
