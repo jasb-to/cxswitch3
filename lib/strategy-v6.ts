@@ -606,6 +606,17 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
     // SOL/ETH/BTC: All must meet minimum ignition integrity
     // BTC gets structural bonus, but still must pass threshold + sniper conditions
     if (score >= profile.ignitionThreshold && card.direction !== "NEUTRAL" && checkSniperConditions(card, profile)) {
+      // v21.5.0 SOL Direction Alignment Check - soft, not a gate
+      // If SOL's 1H signal contradicts 4H trend, flip direction to align with 4H
+      if (symbol === "SOL" && card.htf4hTrend) {
+        if (card.direction === "SHORT" && card.htf4hTrend === "BULLISH") {
+          console.log(`[SOL_ALIGN] 1H SHORT conflicts with 4H BULLISH → flipping to LONG`);
+          card.direction = "LONG";
+        } else if (card.direction === "LONG" && card.htf4hTrend === "BEARISH") {
+          console.log(`[SOL_ALIGN] 1H LONG conflicts with 4H BEARISH → flipping to SHORT`);
+          card.direction = "SHORT";
+        }
+      }
       // v7.3.1 FIX #1: Validate ACTIVE_SNIPER execution requirements
       const executionValidation = validateActiveSniperExecution(card, score);
       
@@ -645,7 +656,6 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
           console.log(`[TRADE_MONITOR] ${tradeCommentary}`);
           // Attach trade commentary to card notes for UI display
           card.notes = tradeCommentary;
-          console.log(`[NOTES_SET] ${card.symbol} ACTIVE_SNIPER notes="${card.notes}"`);
         }
       }
     }
