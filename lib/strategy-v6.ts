@@ -5,9 +5,21 @@
  * Uses Stochastic RSI + EMA Stack + Volatility Compression
  * 
  * NO STATE, NO DB ACCESS, PURE EVALUATION
+ * 
+ * v22.5 DEPLOYMENT MARKER - Runtime verification
+ * If this version string appears in logs, v22.5 is LIVE
+ * If this version does NOT appear, old runtime artifact is executing
  */
 
+const MOMENTUM_ENGINE_VERSION = "v22.5_TRADE_MONITOR_ALIGNMENT_ACTIVE";
+
+// Log on module load to verify runtime version
+if (typeof window === "undefined") {
+  console.log(`[MOMENTUM_ENGINE] ${MOMENTUM_ENGINE_VERSION}`);
+}
+
 import type { PriceData } from "./price-router";
+
 import type { SegregatedMarketData } from "./market-data-layer";
 import type { Candle } from "./kraken";
 import { analyze4HStructure } from "./htf-structure-engine";
@@ -398,23 +410,41 @@ function getDirectionFromStructure(
   htf4hTrend: string | null,
   volatilityLevel: number | null
 ): "LONG" | "SHORT" | "NEUTRAL" {
+  // v22.3 CRITICAL FIX: MOMENTUM FIRST, STRUCTURE SECOND
+  // Early bearish bias MUST check before structure locks override it
+  // This prevents stale structure (e.g., BREAKOUT_UP from 3 cycles ago) from locking BTC in LONG
+  // when current momentum is clearly bearish
+  
+  // v21.5.4 EARLY BEARISH ROLLOVER BIAS - CHECK BEFORE OTHER HEURISTICS
+  // Detect failed continuation + rollover structure earlier
+  // v22.2 FIX: Removed 4H BEARISH requirement - allow 1H momentum to resolve independently
+  // v22.3 FIX: MOVED BEFORE STRUCTURE LOCKS - momentum overrides stale structure
+  if (stochRsi !== null && momentumEmaSlope !== null) {
+    // Failed breakout with bearish indicators: elevated stoch + flat/weakening momentum
+    // No longer requires 4H confirmation
+    if (stochRsi >= 55 && momentumEmaSlope <= 0.15) {
+      return "SHORT";  // BTC case: stoch 60, emaSlope 0.00 → SHORT (even if 4H NEUTRAL)
+    }
+  }
+
+  // v21.5.4 ETH-SPECIFIC EARLY SHORT BIAS DURING FAILED CONTINUATION
+  // Detect momentum failure earlier when EMA weakening + stoch extended
+  // v22.2 FIX: Removed 4H BEARISH requirement - 1H momentum can resolve independently
+  // v22.3 FIX: MOVED BEFORE STRUCTURE LOCKS - momentum overrides stale structure
+  if (stochRsi !== null && momentumEmaSlope !== null) {
+    if (stochRsi >= 60 && momentumEmaSlope <= 0.25 && (volatilityLevel ?? 50) > 55) {
+      return "SHORT";  // ETH case: stoch 63, emaSlope 0.30, vol expanding → SHORT (4H agnostic)
+    }
+  }
+
   // HARD STRUCTURE LOCKS (direction cannot violate these)
+  // NOW applied AFTER momentum checks, so momentum can override stale structure
   if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
     return "LONG";  // Structure-locked LONG
   }
 
   if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
     return "SHORT";  // Structure-locked SHORT
-  }
-
-  // v21.5.4 EARLY BEARISH ROLLOVER BIAS - CHECK BEFORE OTHER HEURISTICS
-  // Detect failed continuation + rollover structure earlier
-  // This resolves BTC/ETH from NEUTRAL→SHORT during bearish dumps that begin as flattening
-  if (htf4hTrend === "BEARISH" && stochRsi !== null && momentumEmaSlope !== null) {
-    // Failed breakout during bearish 4H: elevated stoch + flat/weakening momentum
-    if (stochRsi >= 55 && momentumEmaSlope <= 0.15) {
-      return "SHORT";  // BTC case: stoch 60, emaSlope 0.00 → SHORT
-    }
   }
 
   // RANGE: use momentum to break tie
@@ -434,15 +464,6 @@ function getDirectionFromStructure(
   }
   if (momentumEmaSlope !== null && momentumEmaSlope < -0.1) {
     return "SHORT";
-  }
-
-  // v21.5.4 ETH-SPECIFIC EARLY SHORT BIAS DURING FAILED CONTINUATION
-  // Detect momentum failure earlier when 4H is bearish + EMA weakening + stoch extended
-  // This allows ETH to flip LONG→SHORT faster during failed breakout attempts
-  if (htf4hTrend === "BEARISH" && stochRsi !== null && momentumEmaSlope !== null) {
-    if (stochRsi >= 60 && momentumEmaSlope <= 0.25 && (volatilityLevel ?? 50) > 55) {
-      return "SHORT";  // ETH case: stoch 63, emaSlope 0.30, vol expanding → SHORT
-    }
   }
 
   return "NEUTRAL";
@@ -825,32 +846,44 @@ function appendAdvisory(baseCommentary: string, advisory: string | null): string
  * Format: "↑ momentum holding, structure intact" or "⚠ reversal forming" + optional [⚠ ADVISORY]
  */
 function generateTradeWatchCommentary(card: SymbolCardState): string {
+  // v22.5 CRITICAL FIX: Align TRADE_MONITOR with execution engine
+  // Monitor must use SAME finalDirection + SAME momentum interpretation
+  
+  // Use card.direction which is now finalDirection (after v22.3-22.4 fixes)
   const directionArrow = card.direction === "LONG" ? "↑" : "↓";
   
-  // Check for momentum holding (Stoch staying in direction)
+  // Momentum check: Stochastic RSI confirms direction bias
   const stochValid = card.direction === "LONG" 
     ? (card.stochRsi ?? 50) > 30 
     : (card.stochRsi ?? 50) < 70;
   
-  // Check for structure integrity (EMA not reversing sharply)
+  // Structure check: EMA not reversing against direction
   const emaIntact = card.direction === "LONG"
-    ? (card.emaSlope ?? 0) >= -0.1  // Slight dip OK, sharp reversal is warning
+    ? (card.emaSlope ?? 0) >= -0.1
     : (card.emaSlope ?? 0) <= 0.1;
   
-  // Check for reversal risk (conflicting signals)
+  // Reversal risk: EMA sharply contradicts direction
   const reversalRisk = 
     (card.direction === "LONG" && (card.emaSlope ?? 0) < -0.3) ||
     (card.direction === "SHORT" && (card.emaSlope ?? 0) > 0.3);
   
-  // Check for volatility exhaustion (expanding to extreme)
-  const exhaustion = (card.volatilityLevel ?? 50) > 70;
+  // v22.5 FIX: High volatility with expansion = STRENGTH not exhaustion
+  // EXPANDING impulse: positive displacement + high volatility = strong directional move
+  // Only flag exhaustion if volatility is EXTREME (>80) AND no clear structure support
+  const isExpanding = card.execution15mState === "EXPANDING" || 
+                      card.execution15mState === "BREAKOUT_READY";
+  const extremeExhaustion = (card.volatilityLevel ?? 50) > 80 && !isExpanding;
   
   let status = "";
   
   if (reversalRisk) {
     status = "⚠ reversal forming";
-  } else if (exhaustion) {
+  } else if (extremeExhaustion) {
+    // Only show exhaustion if truly extreme and NOT expanding structure
     status = "⚠ momentum exhausting";
+  } else if (isExpanding) {
+    // Expanding impulse = strong directional move, not weakness
+    status = `${directionArrow} impulse EXPANDING`;
   } else if (stochValid && emaIntact) {
     status = `${directionArrow} momentum holding, structure intact`;
   } else if (stochValid) {
@@ -1662,7 +1695,8 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
 
   // v22.0 REAL 4H STRUCTURE DETECTION
   // Replace all synthetic hash-based 4H with real OHLC analysis
-  const htf4hAnalysis = analyze4HStructure(candles4h);
+  // v22.1 FIX: Pass momentum EMA slope as fallback when 4H candles insufficient
+  const htf4hAnalysis = analyze4HStructure(candles4h, emaSlope);
   const htf4hTrend = htf4hAnalysis.trend;
   const htf4hMomentum = htf4hAnalysis.confidence; // Use confidence as momentum proxy
 
@@ -1734,8 +1768,11 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
     }
   }
 
-  // Step 4: Lock direction against structure (applies only if structure allows)
-  const finalDirection = getDirectionLockedByStructure(direction, structureState);
+  // Step 4: REMOVED getDirectionLockedByStructure() - now redundant
+  // v22.3 consolidated momentum + structure locking into getDirectionFromStructure()
+  // Calling it again would re-apply structure locks and override momentum resolution
+  // Structure is already applied in getDirectionFromStructure() before momentum
+  const finalDirection = direction;
   console.log(`[SCAN] ${symbol} direction=${finalDirection} structureState=${structureState}`);
 
   const breakoutState: BreakoutState = levelAwareness.breakoutState;
@@ -1799,6 +1836,21 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
     updatedAt: new Date().toISOString(),
   };
 
+  // v22.5 PIPELINE TRACE: Comprehensive state verification
+  // Print complete flow for debugging subsystem consistency
+  console.log(`[PIPELINE_TRACE] ${symbol} final state:
+    direction=${finalDirection} (from momentum + structure)
+    momentum_score=${card.momentumScore?.toFixed(1) ?? "N/A"}
+    emaSlope=${emaSlope?.toFixed(3) ?? "N/A"}
+    stochRsi=${stochRsi?.toFixed(1) ?? "N/A"}
+    volatility=${volatilityLevel?.toFixed(1) ?? "N/A"}
+    execution15m=${card.execution15mState}
+    structure=${structureState}
+    htf4hTrend=${htf4hTrend}
+    monitor_status=${generateTradeWatchCommentary(card).split("TRADE:")[1]?.trim() ?? "N/A"}
+    signal_state=${card.signalState}
+  `);
+
   // v21.6.0 CRITICAL FIX: Calculate momentum score AFTER all direction mutations
   // Score must use the FINAL locked direction, not pre-mutation state
   // This ensures direction → final state → scoring, NOT scoring → direction
@@ -1807,3 +1859,8 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
   return card;
 
 }
+
+// v22.5 RUNTIME VERSION EXPORT
+// Used to verify that v22.5 is executing (not old stale artifact)
+export const STRATEGY_VERSION = MOMENTUM_ENGINE_VERSION;
+

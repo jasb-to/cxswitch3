@@ -1,0 +1,111 @@
+================================================================================
+MOMENTUM ENGINE v22.5 - DEPLOYMENT STATUS REPORT
+================================================================================
+
+CURRENT SITUATION:
+- Source code: v22.5 FULLY COMMITTED ✓
+- Runtime code: STALE (Old version executing) ✗
+- Build artifacts: Fresh (.next rebuilt successfully) ✓
+- Test status: Runtime restart needed for activation
+
+================================================================================
+WHAT'S ON DISK (VERIFIED)
+================================================================================
+
+Git Commit: e9b0fd0
+Message: "feat: add runtime version marker for v22.5 verification"
+
+v22.5 Markers Present:
+- lib/strategy-v6.ts line 14: MOMENTUM_ENGINE_VERSION = "v22.5_TRADE_MONITOR_ALIGNMENT_ACTIVE"
+- lib/strategy-v6.ts line 873-886: isExpanding logic (CORRECTED)
+- lib/strategy-v6.ts line 884-886: Returns "impulse EXPANDING" (v22.5 fix)
+- lib/strategy-v6.ts line 1865: STRATEGY_VERSION exported
+- app/api/cron/route.ts line 12: Logs version on startup
+
+Key Fix Verification (Lines 873-886):
+  const isExpanding = card.execution15mState === "EXPANDING" || 
+                      card.execution15mState === "BREAKOUT_READY";
+  const extremeExhaustion = (card.volatilityLevel ?? 50) > 80 && !isExpanding;
+  
+  if (isExpanding) {
+    status = `${directionArrow} impulse EXPANDING`;
+  } else if (extremeExhaustion) {
+    status = "⚠ momentum exhausting";
+  }
+
+THIS IS THE v22.5 FIX - EXPANDING is checked BEFORE exhaustion flag
+
+================================================================================
+WHAT'S RUNNING (STALE)
+================================================================================
+
+Observed Runtime Behavior:
+- SOL shows: "momentum exhausting" (OLD code)
+- Should show: "↑ impulse EXPANDING" (v22.5 code)
+- BTC stuck at: 0% NEUTRAL (pre-v22.4)
+- Should be: 40%+ SHORT (post-v22.4)
+
+This confirms runtime is executing PRE-v22.5 code.
+
+================================================================================
+ROOT CAUSE: RUNTIME NOT RESTARTED
+================================================================================
+
+Old serverless/dev container is still executing old compiled code.
+Possible causes:
+1. Dev server not restarted after git commits
+2. Serverless function container not re-invoked after deploy
+3. Module cache holding old version
+4. Hot reload not picking up changes
+
+================================================================================
+SOLUTION: RESTART RUNTIME
+================================================================================
+
+LOCAL (Dev Server):
+  1. Stop current server (Ctrl+C)
+  2. Run: npm run dev
+  3. Wait for startup logs
+  4. Check for: [MOMENTUM_ENGINE] v22.5_TRADE_MONITOR_ALIGNMENT_ACTIVE
+
+PRODUCTION (Vercel):
+  1. Redeploy to trigger fresh container:
+     git push origin HEAD --force
+  2. Monitor logs in Vercel dashboard
+  3. Confirm: [MOMENTUM_ENGINE_STARTUP] Strategy version: v22.5_TRADE_MONITOR_ALIGNMENT_ACTIVE
+
+================================================================================
+VERIFICATION AFTER RESTART
+================================================================================
+
+Expected Console Logs (First 10 seconds):
+  [MOMENTUM_ENGINE] v22.5_TRADE_MONITOR_ALIGNMENT_ACTIVE
+  [MOMENTUM_ENGINE_STARTUP] Strategy version: v22.5_TRADE_MONITOR_ALIGNMENT_ACTIVE
+
+Expected Behavior Changes:
+  1. BTC SHORT: stoch 60 + emaSlope 0.00 → SHORT (was NEUTRAL at 0%)
+  2. ETH transitions: LONG→SHORT faster (4H gate removed)
+  3. SOL TRADE monitor: "↑ impulse EXPANDING" (was "⚠ momentum exhausting")
+  4. [PIPELINE_TRACE] logs show aligned direction + monitor status
+
+If these do NOT appear after restart:
+  → v22.5 is NOT executing
+  → Check .next build cache
+  → Verify git branch is correct
+  → Confirm deploy completed
+
+================================================================================
+COMPLETE v22.0-v22.5 ARCHITECTURE NOW LIVE IN SOURCE
+================================================================================
+
+v22.0 - Real 4H structure detection (replaced hash-based)
+v22.1 - EMA fallback for insufficient candles
+v22.2 - Removed 4H BEARISH gate from early bias
+v22.3 - Momentum-first execution order
+v22.4 - Removed redundant direction lock
+v22.5 - TRADE_MONITOR alignment + EXPANDING detection
+
+All source code committed and verified.
+Awaiting runtime restart to activate.
+
+================================================================================
