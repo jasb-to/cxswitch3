@@ -645,6 +645,7 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
           console.log(`[TRADE_MONITOR] ${tradeCommentary}`);
           // Attach trade commentary to card notes for UI display
           card.notes = tradeCommentary;
+          console.log(`[NOTES_SET] ${card.symbol} ACTIVE_SNIPER notes="${card.notes}"`);
         }
       }
     }
