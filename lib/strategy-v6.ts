@@ -14,7 +14,7 @@
  * Monitor layer now reports state transitions instead of snapshots
  */
 
-const MOMENTUM_ENGINE_VERSION = "v23.0_EVENT_DRIVEN_MONITOR_ACTIVE";
+const MOMENTUM_ENGINE_VERSION = "v24.0_MACRO_MOMENTUM_FUSION_ACTIVE";
 
 // Log on module load to verify runtime version
 if (typeof window === "undefined") {
@@ -408,6 +408,80 @@ function computeStructureState(
  * Get direction from structure state (HARD LOCK - structure overrides momentum)
  * Returns direction forced by structure, or NEUTRAL if in RANGE
  */
+/**
+ * Calculate macro bias weight from 4H trend
+ * v24.0 MACRO-MOMENTUM FUSION LAYER
+ * 
+ * Converts 4H macro context into directional probability bias
+ * Does NOT override momentum, but TILTS probability toward macro alignment
+ */
+function calculateMacroBiasWeight(htf4hTrend: string | null): number {
+  // Macro bias is additive to momentum score, not multiplicative
+  // This allows macro to "subtly tilt probability" without being a gate
+  
+  if (htf4hTrend === "BULLISH") {
+    return 8;  // +8 points toward LONG bias
+  } else if (htf4hTrend === "BEARISH") {
+    return -8; // -8 points toward SHORT bias
+  } else {
+    return 0;  // NEUTRAL adds no bias
+  }
+}
+
+/**
+ * Calculate structure score from state
+ * Provides continuity penalty for stale structures
+ */
+function calculateStructureScore(
+  structureState: StructureState,
+  direction: string
+): number {
+  // Structure confirmation when direction aligns with locked state
+  if (
+    (structureState === "BREAKOUT_UP" && direction === "LONG") ||
+    (structureState === "RETEST_UP" && direction === "LONG") ||
+    (structureState === "BREAKOUT_DOWN" && direction === "SHORT") ||
+    (structureState === "RETEST_DOWN" && direction === "SHORT")
+  ) {
+    return 5; // +5 points for structure-direction alignment
+  } else if (structureState === "RANGE") {
+    return 0; // RANGE is neutral to structure
+  } else {
+    return -3; // -3 points penalty for direction conflicting with structure
+  }
+}
+
+/**
+ * v24.0 MACRO-MOMENTUM FUSION: Composite direction score
+ * Combines momentum, macro bias, and structure into single probability score
+ * 
+ * finalDirectionScore = momentumComponent + macroBiasComponent + structureComponent
+ * 
+ * Does NOT override momentum with macro - macro is a tilt, not a gate
+ */
+function calculateDirectionScore(
+  momentumComponent: number,
+  macroBiasWeight: number,
+  structureScore: number
+): { score: number; dominantBias: "LONG" | "SHORT" | "NEUTRAL" } {
+  // Composite score: momentum (primary) + macro (secondary) + structure (tertiary)
+  const totalScore = momentumComponent + macroBiasWeight + structureScore;
+  
+  // Determine dominant bias from composite score
+  let dominantBias: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
+  if (totalScore > 5) {
+    dominantBias = "LONG";
+  } else if (totalScore < -5) {
+    dominantBias = "SHORT";
+  }
+  
+  return { score: totalScore, dominantBias };
+}
+
+/**
+ * Get direction from structure state with MACRO-MOMENTUM FUSION
+ * v24.0: Direction now influenced by composite score (momentum + macro + structure)
+ */
 function getDirectionFromStructure(
   structureState: StructureState,
   momentumEmaSlope: number | null,
@@ -415,15 +489,50 @@ function getDirectionFromStructure(
   htf4hTrend: string | null,
   volatilityLevel: number | null
 ): "LONG" | "SHORT" | "NEUTRAL" {
+  // v24.0 MACRO-MOMENTUM FUSION LAYER
+  // Calculate macro bias weight - this tilts probability, not overrides it
+  const macroBiasWeight = calculateMacroBiasWeight(htf4hTrend);
+  
+  // Calculate base momentum component
+  // Momentum is primary signal, but will be adjusted by macro bias
+  let momentumComponent = 0;
+  if (stochRsi !== null && momentumEmaSlope !== null) {
+    // Strong bearish momentum indicator
+    if (stochRsi >= 55 && momentumEmaSlope <= 0.15) {
+      momentumComponent = -10; // Strong SHORT bias from momentum
+    }
+    // Strong bullish momentum indicator
+    else if (stochRsi <= 45 && momentumEmaSlope >= 0.3) {
+      momentumComponent = 10; // Strong LONG bias from momentum
+    }
+    // Moderate bias
+    else if (momentumEmaSlope > 0.2) {
+      momentumComponent = 5; // LONG bias
+    } else if (momentumEmaSlope < -0.2) {
+      momentumComponent = -5; // SHORT bias
+    }
+  }
+  
+  // v24.0: Fuse macro bias with momentum
+  // Macro acts as secondary weight that tilts probability
+  const { score: directionScore, dominantBias } = calculateDirectionScore(
+    momentumComponent,
+    macroBiasWeight,
+    0  // Structure score will be applied after direction is locked
+  );
+  
+  console.log(`[MACRO_FUSION_v24] stoch=${stochRsi?.toFixed(1) ?? "N/A"} ema=${momentumEmaSlope?.toFixed(3) ?? "N/A"} → momentum=${momentumComponent} + macro=${macroBiasWeight} = directionScore=${directionScore} → bias=${dominantBias}`);
+  
+  // If composite score has clear bias, use it (momentum + macro fusion)
+  if (dominantBias === "LONG") {
+    return "LONG";
+  } else if (dominantBias === "SHORT") {
+    return "SHORT";
+  }
+  
+  // Fallback to early momentum checks if composite score is neutral
   // v22.3 CRITICAL FIX: MOMENTUM FIRST, STRUCTURE SECOND
   // Early bearish bias MUST check before structure locks override it
-  // This prevents stale structure (e.g., BREAKOUT_UP from 3 cycles ago) from locking BTC in LONG
-  // when current momentum is clearly bearish
-  
-  // v21.5.4 EARLY BEARISH ROLLOVER BIAS - CHECK BEFORE OTHER HEURISTICS
-  // Detect failed continuation + rollover structure earlier
-  // v22.2 FIX: Removed 4H BEARISH requirement - allow 1H momentum to resolve independently
-  // v22.3 FIX: MOVED BEFORE STRUCTURE LOCKS - momentum overrides stale structure
   if (stochRsi !== null && momentumEmaSlope !== null) {
     // Failed breakout with bearish indicators: elevated stoch + flat/weakening momentum
     // No longer requires 4H confirmation
