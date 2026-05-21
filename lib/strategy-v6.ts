@@ -627,7 +627,14 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
     // ACTIVATION CONDITIONS: Score threshold only (no bypass paths)
     // SOL/ETH/BTC: All must meet minimum ignition integrity
     // BTC gets structural bonus, but still must pass threshold + sniper conditions
-    if (score >= profile.ignitionThreshold && card.direction !== "NEUTRAL" && checkSniperConditions(card, profile)) {
+    
+    // v21.5.5 MACRO ENFORCEMENT: If 4H conflicts with direction AND score too low, block SNIPER
+    const macroConflict = (card.htf4hTrend === "BULLISH" && card.direction === "SHORT") || 
+                         (card.htf4hTrend === "BEARISH" && card.direction === "LONG");
+    if (macroConflict && score < 65) {
+      console.log(`[MACRO_BLOCK] ${symbol} ${card.direction}: 4H ${card.htf4hTrend} conflicts + score ${score} < 65 → stay BUILDING`);
+      // Don't process SNIPER, let it stay BUILDING
+    } else if (score >= profile.ignitionThreshold && card.direction !== "NEUTRAL" && checkSniperConditions(card, profile)) {
       // v21.5.0 SOL Direction Alignment Check - soft, not a gate
       // If SOL's 1H signal contradicts 4H trend, flip direction to align with 4H
       if (symbol === "SOL" && card.htf4hTrend) {
@@ -1735,14 +1742,23 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
 
     // Market readiness
     marketReadinessState: calculateLiveMarketState(finalDirection, emaSlope, stochRsi, volatilityLevel) as any,
-    tradeReadinessScore: calculateTradeReadinessScore("NONE", finalDirection, htf4hTrend, htf1hAlignment, emaSlope, stochRsi, volatilityLevel),
+    tradeReadinessScore: finalDirection === "NEUTRAL" ? 0 : calculateTradeReadinessScore("NONE", finalDirection, htf4hTrend, htf1hAlignment, emaSlope, stochRsi, volatilityLevel),
     
     // Conditional: Only populate if signal exists
     expectedMovePercent: null,
     targetPrices: null,
     riskReward: null,
     
-    signalState: finalDirection === "NEUTRAL" ? "NONE" : "BUILDING",
+    // v21.5.5 HARD BLOCKS:
+    // 1. NEUTRAL always → DO_NOT_TRADE
+    // 2. CHOP_NO_TRADE always → DO_NOT_TRADE (hard exit, not BUILDING)
+    // 3. Otherwise BUILDING (unless ACTIVE_SNIPER)
+    signalState: (() => {
+      if (finalDirection === "NEUTRAL") return "DO_NOT_TRADE";
+      const marketState = calculateLiveMarketState(finalDirection, emaSlope, stochRsi, volatilityLevel);
+      if (marketState === "CHOP_NO_TRADE") return "DO_NOT_TRADE";
+      return "BUILDING";
+    })(),
     lastSignalTime: undefined,
 
     notes: `${structureState} - ${finalDirection}`,
@@ -1750,4 +1766,5 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   };
 
   return card;
+
 }
