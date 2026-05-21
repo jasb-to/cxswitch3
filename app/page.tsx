@@ -100,19 +100,19 @@ function fmt(n: number) {
 }
 
 
-function getDecisionText(state: UIState, notes?: string): { action: string; guidance: string } {
+function getDecisionText(state: UIState): { action: string; guidance: string } {
   // STATE PRECEDENCE: ACTIVE_SNIPER > SNIPER > CONFIRMED > BUILDING
   // ACTIVE_SNIPER always shows "WATCH ZONE" and full trade details
   switch (state) {
     case "ACTIVE_SNIPER":
       return {
         action: "WATCH ZONE",
-        guidance: notes || "Signal executed - Monitor entry"
+        guidance: "Signal executed - Monitor entry"
       };
     case "SNIPER":
       return {
         action: "WATCH ZONE",
-        guidance: notes || "Entry forming"
+        guidance: "Entry forming"
       };
     case "CONFIRMED":
       return {
@@ -123,7 +123,7 @@ function getDecisionText(state: UIState, notes?: string): { action: string; guid
     default:
       return {
         action: "DO NOT TRADE",
-        guidance: notes || "Waiting for structure"
+        guidance: "Waiting for structure"
       };
   }
 }
@@ -148,8 +148,8 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
   const readinessScoreColor = getReadinessColorClass(readiness);
   const readinessBgBar = getReadinessBarClass(readiness);
   
-  // Decision text derives from state and uses card.notes for dynamic content
-  const { action, guidance } = getDecisionText(uiState, card.notes);
+  // Decision text derives from state
+  const { action, guidance } = getDecisionText(uiState);
 
   return (
     <div className={`rounded-lg border ${directionBorder} p-5 bg-[#0f0f0f] text-white space-y-4`}>
