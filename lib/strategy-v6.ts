@@ -14,7 +14,7 @@
  * Monitor layer now reports state transitions instead of snapshots
  */
 
-const MOMENTUM_ENGINE_VERSION = "v25.0_SIGNAL_RENDERING_HIERARCHY_AND_DUAL_SL_ACTIVE";
+const MOMENTUM_ENGINE_VERSION = "v26.0_EVENT_ONLY_OUTPUT_AND_STRICT_SL_ACTIVE";
 
 // Log on module load to verify runtime version
 if (typeof window === "undefined") {
@@ -31,7 +31,8 @@ import { analyze4HStructure } from "./htf-structure-engine";
 import { 
   calculateStructureStopLoss, 
   calculateSniperStopLoss, 
-  shouldInvalidateSniperSL 
+  shouldInvalidateSniperSL,
+  validateSLSeparation
 } from "./risk-utils";
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -410,9 +411,78 @@ function computeStructureState(
 }
 
 /**
- * Get direction from structure state (HARD LOCK - structure overrides momentum)
- * Returns direction forced by structure, or NEUTRAL if in RANGE
+ * v26.0 EVENT-ONLY OUTPUT GATE
+ * CRITICAL FIX: Stop full card re-render spam
+ * Only output when meaningful events occur, never emit unchanged state
  */
+
+type CycleSnapshot = {
+  direction: string;
+  signalState: string;
+  score: number;
+  htf4hTrend: string | null;
+  stateHash: string;
+};
+
+const lastCycleSnapshot = new Map<string, CycleSnapshot>();
+
+/**
+ * Detect meaningful state transitions (not snapshots)
+ */
+function detectOutputEvent(
+  symbol: string,
+  card: SymbolCardState,
+  currentScore: number
+): string | null {
+  const last = lastCycleSnapshot.get(symbol);
+  
+  if (!last) {
+    // First cycle for symbol - always emit
+    return "FIRST_SCAN";
+  }
+  
+  // Check for meaningful transitions
+  if (card.direction !== last.direction) {
+    return "DIRECTION_FLIP";
+  }
+  
+  if (card.signalState !== last.signalState) {
+    return "SIGNAL_STATE_CHANGE";
+  }
+  
+  if (card.htf4hTrend !== last.htf4hTrend) {
+    return "MACRO_SHIFT";
+  }
+  
+  if (card.signalState === "ACTIVE_SNIPER" && currentScore >= 65 && last.score < 65) {
+    return "SIGNAL_PROMOTION";
+  }
+  
+  if (last.signalState === "ACTIVE_SNIPER" && card.signalState !== "ACTIVE_SNIPER") {
+    return "SIGNAL_INVALIDATION";
+  }
+  
+  // No meaningful event
+  return null;
+}
+
+/**
+ * Update cycle snapshot for next comparison
+ */
+function updateCycleSnapshot(
+  symbol: string,
+  card: SymbolCardState,
+  score: number
+): void {
+  lastCycleSnapshot.set(symbol, {
+    direction: card.direction,
+    signalState: card.signalState,
+    score,
+    htf4hTrend: card.htf4hTrend,
+    stateHash: `${card.direction}|${card.signalState}|${score}|${card.htf4hTrend}`,
+  });
+}
+
 /**
  * Calculate macro bias weight from 4H trend
  * v24.0 MACRO-MOMENTUM FUSION LAYER
@@ -823,8 +893,19 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
     }
     
     console.log(`[SCAN] ${symbol} score=${score} direction=${card.direction} stoch=${card.stochRsi?.toFixed(1) ?? "—"} emaSlope=${card.emaSlope?.toFixed(2) ?? "—"}`);
-    console.log(`[PROFILE_WEIGHTS] ${symbol} stoch=${profile.stochWeight} ema=${profile.emaWeight} volatility=${profile.volatilityWeight} impulse=${profile.impulseWeight} trend=${profile.trendWeight}`);
-    console.log(`[PROFILE] ${symbol} → ${profile.activationStyle} (threshold=${profile.ignitionThreshold})`);
+    
+    // v26.0 EVENT-ONLY OUTPUT GATE
+    // CRITICAL FIX: Stop full card re-render spam
+    // Only process output if meaningful event detected
+    const outputEvent = detectOutputEvent(symbol, card, score);
+    if (!outputEvent) {
+      // No meaningful event - skip output but continue state tracking
+      console.log(`[GATE] ${symbol} no event → suppress output`);
+      updateCycleSnapshot(symbol, card, score);
+      continue;  // Skip to next symbol
+    }
+    console.log(`[EVENT] ${symbol} event=${outputEvent}`);
+
 
     // ACTIVATION CONDITIONS: Score threshold only (no bypass paths)
     // SOL/ETH/BTC: All must meet minimum ignition integrity
@@ -936,6 +1017,9 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
  * Shows: current direction, momentum, structural status, reversal warnings
  */
 function generateWatchZoneCommentary(card: SymbolCardState): string {
+  // v26.0 CRITICAL FIX: Use card.direction directly (NOT recalculated)
+  // Direction is locked during generateCardState - render must respect it
+  // NEVER recalculate direction from macro at render time
   const directionArrow = card.direction === "LONG" ? "↑" : card.direction === "SHORT" ? "↓" : "↔";
   const stochLevel = card.stochRsi ? `stoch ${card.stochRsi.toFixed(0)}` : "stoch —";
   const emaState = card.emaSlope
@@ -1493,11 +1577,17 @@ function calculateTradeTargets(
   const tp1 = price * (1 + (isLong ? sniperMax : -sniperMax) / 100);
   const tp2 = price * (1 + (isLong ? sniperMax * 1.5 : -sniperMax * 1.5) / 100);
   
-  // v25.0: Dual SL system
+  // v26.0: Dual SL system with strict separation
   const sniperSL = calculateSniperStopLoss(price, recentSwingLevel, direction as "LONG" | "SHORT");
   const structureSL = calculateStructureStopLoss(price, supportResistanceLevel, null, direction as "LONG" | "SHORT");
   
-  // v25.0: Check if SNIPER SL should be invalidated
+  // v26.0 CRITICAL: Validate SL separation not violated
+  const slValidation = validateSLSeparation(sniperSL, structureSL, direction as "LONG" | "SHORT");
+  if (!slValidation.valid) {
+    console.log(`[SL_VIOLATION] ${slValidation.reason}`);
+  }
+  
+  // v26.0: Check if SNIPER SL should be invalidated
   const sniperSLInvalid = shouldInvalidateSniperSL(stochRsi, emaSlope, direction as "LONG" | "SHORT");
   
   // Use SNIPER SL if valid, otherwise fall back to STRUCTURE SL
