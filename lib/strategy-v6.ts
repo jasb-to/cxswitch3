@@ -391,7 +391,10 @@ function computeStructureState(
  */
 function getDirectionFromStructure(
   structureState: StructureState,
-  momentumEmaSlope: number | null
+  momentumEmaSlope: number | null,
+  stochRsi: number | null,
+  htf4hTrend: string | null,
+  volatilityLevel: number | null
 ): "LONG" | "SHORT" | "NEUTRAL" {
   // HARD STRUCTURE LOCKS (direction cannot violate these)
   if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
@@ -419,6 +422,19 @@ function getDirectionFromStructure(
   }
   if (momentumEmaSlope !== null && momentumEmaSlope < -0.1) {
     return "SHORT";
+  }
+
+  // v21.5.1 NEUTRAL TIE-BREAKER: Resolve NEUTRAL with macro + momentum signals
+  // This is NOT a hard gate, just a tie-breaker for unresolved states
+  if (stochRsi !== null && htf4hTrend !== null) {
+    // 4H BEARISH + 15M overbought + expanding volatility = bias SHORT
+    if (htf4hTrend === "BEARISH" && stochRsi > 70 && (volatilityLevel ?? 50) > 50) {
+      return "SHORT";  // Clear bearish exhaustion setup
+    }
+    // 4H BULLISH + 15M oversold + expanding momentum = bias LONG
+    if (htf4hTrend === "BULLISH" && stochRsi < 30 && (volatilityLevel ?? 50) > 50) {
+      return "LONG";   // Clear bullish exhaustion setup
+    }
   }
 
   return "NEUTRAL";
@@ -922,6 +938,17 @@ function calculateMomentumScore(card: SymbolCardState, symbol: string = "SOL", p
   // EVENT 4: Impulse candle (direction conviction)
   if (card.direction !== "NEUTRAL") {
     multiplier *= exec.impulseWeight; // Profile-tuned
+    
+    // v21.5.1 LIGHTWEIGHT EXHAUSTION DAMPENING
+    // Reduce impulse confidence slightly when: volatility expanding + EMA weakening + stoch extended
+    // This prevents over-triggering during violent chop/exhaustion days
+    const volatilityExpanding = (card.volatilityLevel ?? 50) > 55;
+    const emaWeakening = Math.abs(card.emaSlope ?? 0) < 0.2;
+    const stochExtended = (card.stochRsi ?? 50) > 75 || (card.stochRsi ?? 50) < 25;
+    
+    if (volatilityExpanding && emaWeakening && stochExtended) {
+      multiplier *= 0.95; // -5% dampening to impulse
+    }
   }
 
   // EVENT 5: 4H trend alignment
@@ -1645,7 +1672,8 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
 
   // Step 3: Get direction from structure (PURE STRUCTURE LOCK - NO GATES)
   // Direction derived from structure, momentum only affects confidence
-  const direction = getDirectionLockedByStructure(getDirectionFromStructure(structureState, emaSlope), structureState);
+  // v21.5.1: Added tie-breaker parameters for NEUTRAL resolution
+  const direction = getDirectionLockedByStructure(getDirectionFromStructure(structureState, emaSlope, stochRsi, htf4hTrend, volatilityLevel), structureState);
 
   // Step 4: No validation - structure lock is applied, not blocking
   // NO GATES VERSION: All trades allowed if structure permits
