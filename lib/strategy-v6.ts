@@ -398,25 +398,41 @@ function getDirectionFromStructure(
   htf4hTrend: string | null,
   volatilityLevel: number | null
 ): "LONG" | "SHORT" | "NEUTRAL" {
-  // HARD STRUCTURE LOCKS (direction cannot violate these)
-  if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
-    return "LONG";  // Structure-locked LONG
-  }
-
-  if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
-    return "SHORT";  // Structure-locked SHORT
-  }
-
+  // v22.3 CRITICAL FIX: MOMENTUM FIRST, STRUCTURE SECOND
+  // Early bearish bias MUST check before structure locks override it
+  // This prevents stale structure (e.g., BREAKOUT_UP from 3 cycles ago) from locking BTC in LONG
+  // when current momentum is clearly bearish
+  
   // v21.5.4 EARLY BEARISH ROLLOVER BIAS - CHECK BEFORE OTHER HEURISTICS
   // Detect failed continuation + rollover structure earlier
   // v22.2 FIX: Removed 4H BEARISH requirement - allow 1H momentum to resolve independently
-  // This resolves BTC/ETH from NEUTRAL→SHORT during bearish 1H momentum without waiting for 4H confirmation
+  // v22.3 FIX: MOVED BEFORE STRUCTURE LOCKS - momentum overrides stale structure
   if (stochRsi !== null && momentumEmaSlope !== null) {
     // Failed breakout with bearish indicators: elevated stoch + flat/weakening momentum
     // No longer requires 4H confirmation
     if (stochRsi >= 55 && momentumEmaSlope <= 0.15) {
       return "SHORT";  // BTC case: stoch 60, emaSlope 0.00 → SHORT (even if 4H NEUTRAL)
     }
+  }
+
+  // v21.5.4 ETH-SPECIFIC EARLY SHORT BIAS DURING FAILED CONTINUATION
+  // Detect momentum failure earlier when EMA weakening + stoch extended
+  // v22.2 FIX: Removed 4H BEARISH requirement - 1H momentum can resolve independently
+  // v22.3 FIX: MOVED BEFORE STRUCTURE LOCKS - momentum overrides stale structure
+  if (stochRsi !== null && momentumEmaSlope !== null) {
+    if (stochRsi >= 60 && momentumEmaSlope <= 0.25 && (volatilityLevel ?? 50) > 55) {
+      return "SHORT";  // ETH case: stoch 63, emaSlope 0.30, vol expanding → SHORT (4H agnostic)
+    }
+  }
+
+  // HARD STRUCTURE LOCKS (direction cannot violate these)
+  // NOW applied AFTER momentum checks, so momentum can override stale structure
+  if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
+    return "LONG";  // Structure-locked LONG
+  }
+
+  if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
+    return "SHORT";  // Structure-locked SHORT
   }
 
   // RANGE: use momentum to break tie
@@ -436,16 +452,6 @@ function getDirectionFromStructure(
   }
   if (momentumEmaSlope !== null && momentumEmaSlope < -0.1) {
     return "SHORT";
-  }
-
-  // v21.5.4 ETH-SPECIFIC EARLY SHORT BIAS DURING FAILED CONTINUATION
-  // Detect momentum failure earlier when EMA weakening + stoch extended
-  // v22.2 FIX: Removed 4H BEARISH requirement - 1H momentum can resolve independently
-  // This allows ETH to flip LONG→SHORT faster during failed breakout attempts without 4H gate
-  if (stochRsi !== null && momentumEmaSlope !== null) {
-    if (stochRsi >= 60 && momentumEmaSlope <= 0.25 && (volatilityLevel ?? 50) > 55) {
-      return "SHORT";  // ETH case: stoch 63, emaSlope 0.30, vol expanding → SHORT (4H agnostic)
-    }
   }
 
   return "NEUTRAL";
