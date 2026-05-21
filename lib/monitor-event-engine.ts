@@ -1,0 +1,268 @@
+/**
+ * Event-Driven Monitor Layer (v23.0)
+ * 
+ * Converts from static state reporting to transition-based event system.
+ * Reports what CHANGED between cycles, not what IS.
+ * 
+ * Tracks:
+ * - Direction changes (LONG→SHORT, NEUTRAL→LONG, etc.)
+ * - Signal state transitions (BUILDING→SNIPER, SNIPER→EXPIRED, etc.)
+ * - Momentum degradation/recovery
+ * - Structure validation events
+ * - Macro context shifts (4H trend changes)
+ */
+
+import type { SymbolCardState } from "./strategy-v6";
+
+export type MonitorEventType = 
+  | "DIRECTION_FLIP"           // LONG→SHORT or vice versa
+  | "SIGNAL_STATE_CHANGE"      // Any signal state transition
+  | "MOMENTUM_SPIKE"           // Stoch or EMA > threshold
+  | "MOMENTUM_FADE"            // Stoch or EMA < threshold
+  | "STRUCTURE_INVALIDATION"   // EMA reverses against direction
+  | "STRUCTURE_CONFIRMATION"   // EMA aligns with direction
+  | "MACRO_SHIFT"              // 4H trend changes
+  | "IMPULSE_STARTING"         // execution15mState = EXPANDING/BREAKOUT
+  | "IMPULSE_EXHAUSTING"       // volatility extreme + momentum fade
+  | "REVALIDATION_SUCCESS"     // SNIPER revalidation passed
+  | "REVALIDATION_FAILED"      // SNIPER revalidation failed (should expire)
+  | "CONFIDENCE_SURGE"         // Score > 70
+  | "CONFIDENCE_DROP"          // Score < 40
+  | "EXECUTION_QUALITY_CHANGE" // Source changes (Kraken live → cached)
+  | "NONE";                    // No significant change
+
+export interface MonitorEvent {
+  type: MonitorEventType;
+  symbol: string;
+  timestamp: number;
+  previousState: Partial<SymbolCardState>;
+  currentState: Partial<SymbolCardState>;
+  details: {
+    previousDirection?: string;
+    currentDirection?: string;
+    previousSignalState?: string;
+    currentSignalState?: string;
+    scoreChange?: number;
+    emaChange?: number;
+    stochChange?: number;
+    volatilityLevel?: number;
+    reason?: string;
+  };
+}
+
+// Track previous cycle state for each symbol
+const previousStates: Map<string, Partial<SymbolCardState>> = new Map();
+
+/**
+ * Detect what changed between cycles for a symbol
+ * Returns the EVENT that occurred, not the current state
+ */
+export function detectMonitorEvent(currentCard: SymbolCardState): MonitorEvent {
+  const symbol = currentCard.symbol;
+  const previousCard = previousStates.get(symbol);
+
+  // First cycle for this symbol - no changes to detect
+  if (!previousCard) {
+    previousStates.set(symbol, captureCardState(currentCard));
+    return { 
+      type: "NONE", 
+      symbol, 
+      timestamp: Date.now(),
+      previousState: {},
+      currentState: captureCardState(currentCard),
+      details: { reason: "Initial state" }
+    };
+  }
+
+  let eventType: MonitorEventType = "NONE";
+  const details: Record<string, any> = {};
+
+  // Check for direction change
+  if (previousCard.direction !== currentCard.direction) {
+    eventType = "DIRECTION_FLIP";
+    details.previousDirection = previousCard.direction;
+    details.currentDirection = currentCard.direction;
+  }
+
+  // Check for signal state transition
+  else if (previousCard.signalState !== currentCard.signalState) {
+    eventType = "SIGNAL_STATE_CHANGE";
+    details.previousSignalState = previousCard.signalState;
+    details.currentSignalState = currentCard.signalState;
+    
+    // Specific sub-cases
+    if (previousCard.signalState === "BUILDING" && currentCard.signalState === "ACTIVE_SNIPER") {
+      details.reason = "Signal promoted to SNIPER";
+    } else if (currentCard.signalState === "EXPIRED") {
+      details.reason = "Signal expired or revalidation failed";
+    }
+  }
+
+  // Check for momentum spikes (stoch or EMA surge)
+  else if (previousCard.stochRsi !== undefined && currentCard.stochRsi !== undefined) {
+    const stochChange = currentCard.stochRsi - (previousCard.stochRsi || 0);
+    
+    if (stochChange > 15 || (previousCard.stochRsi ?? 0) < 30 && currentCard.stochRsi > 55) {
+      eventType = "MOMENTUM_SPIKE";
+      details.stochChange = stochChange;
+      details.currentStoch = currentCard.stochRsi;
+    } else if (stochChange < -15 || (previousCard.stochRsi ?? 0) > 70 && currentCard.stochRsi < 45) {
+      eventType = "MOMENTUM_FADE";
+      details.stochChange = stochChange;
+      details.currentStoch = currentCard.stochRsi;
+    }
+  }
+
+  // Check for structure validation/invalidation
+  else if (previousCard.emaSlope !== undefined && currentCard.emaSlope !== undefined) {
+    const previousEmaValid = isEMAValid(previousCard.emaSlope, previousCard.direction);
+    const currentEmaValid = isEMAValid(currentCard.emaSlope, currentCard.direction);
+    
+    if (!previousEmaValid && currentEmaValid) {
+      eventType = "STRUCTURE_CONFIRMATION";
+      details.reason = "EMA now aligns with direction";
+      details.emaChange = currentCard.emaSlope - (previousCard.emaSlope || 0);
+    } else if (previousEmaValid && !currentEmaValid) {
+      eventType = "STRUCTURE_INVALIDATION";
+      details.reason = "EMA now contradicts direction";
+      details.emaChange = currentCard.emaSlope - (previousCard.emaSlope || 0);
+    }
+  }
+
+  // Check for macro shift (4H trend change)
+  else if (previousCard.htf4hTrend !== currentCard.htf4hTrend) {
+    eventType = "MACRO_SHIFT";
+    details.previousTrend = previousCard.htf4hTrend;
+    details.currentTrend = currentCard.htf4hTrend;
+    details.reason = `4H trend: ${previousCard.htf4hTrend} → ${currentCard.htf4hTrend}`;
+  }
+
+  // Check for impulse state changes
+  else if (previousCard.execution15mState !== currentCard.execution15mState) {
+    if ((previousCard.execution15mState === "RANGING" || previousCard.execution15mState === "RETEST_DOWN") && 
+        (currentCard.execution15mState === "EXPANDING" || currentCard.execution15mState === "BREAKOUT_READY")) {
+      eventType = "IMPULSE_STARTING";
+      details.reason = `15M impulse: ${previousCard.execution15mState} → ${currentCard.execution15mState}`;
+    }
+  }
+
+  // Check for confidence changes
+  else if (previousCard.momentumScore !== undefined && currentCard.momentumScore !== undefined) {
+    const scoreChange = currentCard.momentumScore - (previousCard.momentumScore || 0);
+    
+    if (previousCard.momentumScore < 70 && currentCard.momentumScore >= 70) {
+      eventType = "CONFIDENCE_SURGE";
+      details.scoreChange = scoreChange;
+      details.currentScore = currentCard.momentumScore;
+    } else if (previousCard.momentumScore >= 40 && currentCard.momentumScore < 40) {
+      eventType = "CONFIDENCE_DROP";
+      details.scoreChange = scoreChange;
+      details.currentScore = currentCard.momentumScore;
+    }
+  }
+
+  // Update stored state for next cycle
+  previousStates.set(symbol, captureCardState(currentCard));
+
+  return {
+    type: eventType,
+    symbol,
+    timestamp: Date.now(),
+    previousState: previousCard,
+    currentState: captureCardState(currentCard),
+    details,
+  };
+}
+
+/**
+ * Convert monitor event to human-readable commentary
+ * This replaces the static generateTradeWatchCommentary
+ */
+export function formatMonitorEvent(event: MonitorEvent): string {
+  const { symbol, type, currentState, details } = event;
+
+  if (type === "NONE") {
+    return `${symbol}: No change detected`;
+  }
+
+  if (type === "DIRECTION_FLIP") {
+    return `🔄 ${symbol} DIRECTION FLIP: ${details.previousDirection} → ${details.currentDirection}`;
+  }
+
+  if (type === "SIGNAL_STATE_CHANGE") {
+    if (details.reason === "Signal promoted to SNIPER") {
+      return `✅ ${symbol} SIGNAL PROMOTED: ${details.previousSignalState} → ACTIVE_SNIPER (score: ${currentState.momentumScore?.toFixed(1)})`;
+    } else if (details.currentSignalState === "EXPIRED") {
+      return `⏰ ${symbol} SIGNAL EXPIRED: ${details.previousSignalState} → EXPIRED`;
+    }
+    return `${symbol}: Signal state changed (${details.previousSignalState} → ${details.currentSignalState})`;
+  }
+
+  if (type === "MOMENTUM_SPIKE") {
+    return `📈 ${symbol} MOMENTUM SPIKE: Stoch jumped +${details.stochChange?.toFixed(0)} to ${details.currentStoch?.toFixed(0)}`;
+  }
+
+  if (type === "MOMENTUM_FADE") {
+    return `📉 ${symbol} MOMENTUM FADE: Stoch dropped ${details.stochChange?.toFixed(0)} to ${details.currentStoch?.toFixed(0)}`;
+  }
+
+  if (type === "STRUCTURE_CONFIRMATION") {
+    return `✓ ${symbol} STRUCTURE CONFIRMED: EMA aligns with ${currentState.direction} (slope: ${currentState.emaSlope?.toFixed(3)})`;
+  }
+
+  if (type === "STRUCTURE_INVALIDATION") {
+    return `✗ ${symbol} STRUCTURE BREAK: EMA now opposes ${currentState.direction} (slope: ${currentState.emaSlope?.toFixed(3)})`;
+  }
+
+  if (type === "MACRO_SHIFT") {
+    return `🌍 ${symbol} MACRO SHIFT: 4H ${details.previousTrend} → ${details.currentTrend}`;
+  }
+
+  if (type === "IMPULSE_STARTING") {
+    return `💥 ${symbol} IMPULSE STARTING: 15M now ${currentState.execution15mState}`;
+  }
+
+  if (type === "CONFIDENCE_SURGE") {
+    return `🚀 ${symbol} CONFIDENCE SURGE: Score jumped to ${details.currentScore?.toFixed(1)} (+${details.scoreChange?.toFixed(1)})`;
+  }
+
+  if (type === "CONFIDENCE_DROP") {
+    return `⚠️ ${symbol} CONFIDENCE DROP: Score fell to ${details.currentScore?.toFixed(1)} (${details.scoreChange?.toFixed(1)})`;
+  }
+
+  return `${symbol} [${type}]: ${details.reason || "Check details"}`;
+}
+
+/**
+ * Helper: Determine if EMA is valid for direction
+ */
+function isEMAValid(emaSlope: number, direction?: string): boolean {
+  if (direction === "LONG") return emaSlope >= -0.1;
+  if (direction === "SHORT") return emaSlope <= 0.1;
+  return true;
+}
+
+/**
+ * Helper: Capture only relevant fields from card state
+ */
+function captureCardState(card: SymbolCardState): Partial<SymbolCardState> {
+  return {
+    symbol: card.symbol,
+    direction: card.direction,
+    signalState: card.signalState,
+    momentumScore: card.momentumScore,
+    stochRsi: card.stochRsi,
+    emaSlope: card.emaSlope,
+    volatilityLevel: card.volatilityLevel,
+    execution15mState: card.execution15mState,
+    htf4hTrend: card.htf4hTrend,
+    tradeReadinessScore: card.tradeReadinessScore,
+  };
+}
+
+/**
+ * Reset state (for testing/debugging)
+ */
+export function resetMonitorState(): void {
+  previousStates.clear();
+}
