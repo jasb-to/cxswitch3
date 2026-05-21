@@ -1662,7 +1662,8 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
 
   // v22.0 REAL 4H STRUCTURE DETECTION
   // Replace all synthetic hash-based 4H with real OHLC analysis
-  const htf4hAnalysis = analyze4HStructure(candles4h);
+  // v22.1 FIX: Pass momentum EMA slope as fallback when 4H candles insufficient
+  const htf4hAnalysis = analyze4HStructure(candles4h, emaSlope);
   const htf4hTrend = htf4hAnalysis.trend;
   const htf4hMomentum = htf4hAnalysis.confidence; // Use confidence as momentum proxy
 

@@ -34,18 +34,29 @@ export interface HTFStructureAnalysis {
  * - NOT used to hard-override 1H direction
  * - ONLY used as macro alignment filter
  * - Recomputed fresh every cycle
+ * 
+ * v22.1 FIX: Fallback to momentum-only bias when insufficient candles
+ * When 4H candles are missing/insufficient, use EMA slope to maintain directional responsiveness
  */
-export function analyze4HStructure(candles: Candle[]): HTFStructureAnalysis {
+export function analyze4HStructure(candles: Candle[], fallbackEMASlope?: number): HTFStructureAnalysis {
   // Need minimum lookback for structure analysis
   if (!candles || candles.length < 20) {
+    // v22.1 FALLBACK: If no structure data, derive bias from EMA slope alone
+    // This prevents BTC from getting stuck at NEUTRAL when 4H candles fail to fetch
+    const fallbackTrend: HTFTrend = fallbackEMASlope !== undefined 
+      ? (fallbackEMASlope > 0.3 ? "BULLISH" : fallbackEMASlope < -0.3 ? "BEARISH" : "NEUTRAL")
+      : "NEUTRAL";
+    
+    console.log(`[4H_FALLBACK] Insufficient candles (${candles?.length ?? 0} < 20), using fallback bias: ${fallbackTrend} (EMA slope: ${fallbackEMASlope?.toFixed(3)})`);
+    
     return {
-      trend: "NEUTRAL",
+      trend: fallbackTrend,
       structure: "UNKNOWN",
-      emaSlope: 0,
+      emaSlope: fallbackEMASlope ?? 0,
       displacement: 0,
       swingHigh: 0,
       swingLow: 0,
-      confidence: 0,
+      confidence: fallbackEMASlope !== undefined ? 40 : 0, // Lower confidence for fallback
       lastCandle: null,
     };
   }
