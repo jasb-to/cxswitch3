@@ -655,32 +655,36 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
           console.log(`[ATOMIC FAILED] ${symbol}: Incomplete payload, staying in BUILDING`);
           card.signalState = "BUILDING";
         } else {
-          // Atomic build succeeded - emit ACTIVE_SNIPER with complete payload
-          card.mode = "SNIPER";
-          card.confidence = Math.min(score, 99);
-          card.lastSignalTime = Date.now();
-          card.signalState = "ACTIVE_SNIPER"; // v9 PHASE 5: Terminal state - immutable once set
-          // v21.3.8 FIX: Don't set notes here - let trade watch commentary do it below
-          
-          // Populate trade targets from atomic build (already validated)
-          card.expectedMovePercent = atomicSignal.expectedMovePercent;
-          card.targetPrices = atomicSignal.targetPrices;
-          card.riskReward = atomicSignal.riskReward;
-          card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
-          
-          // Emit COMPLETE setup (all fields guaranteed)
-          setups.push(atomicSignal);
-          console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
-          
-          // Trade-focused watch zone commentary (show setup health)
-          const tradeCommentary = generateTradeWatchCommentary(card);
-          console.log(`[TRADE_MONITOR] ${tradeCommentary}`);
-          // Attach trade commentary to card notes for UI display
-          card.notes = tradeCommentary;
+          // v21.7.0 SNIPER REVALIDATION: Check if current structure still supports SNIPER
+          if (!isValidCurrentStructureForSniper(card)) {
+            card.signalState = "BUILDING";
+          } else {
+            // Atomic build succeeded - emit ACTIVE_SNIPER with complete payload
+            card.mode = "SNIPER";
+            card.confidence = Math.min(score, 99);
+            card.lastSignalTime = Date.now();
+            card.signalState = "ACTIVE_SNIPER"; // v9 PHASE 5: Terminal state - immutable once set
+            // v21.3.8 FIX: Don't set notes here - let trade watch commentary do it below
+            
+            // Populate trade targets from atomic build (already validated)
+            card.expectedMovePercent = atomicSignal.expectedMovePercent;
+            card.targetPrices = atomicSignal.targetPrices;
+            card.riskReward = atomicSignal.riskReward;
+            card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
+            
+            // Emit COMPLETE setup (all fields guaranteed)
+            setups.push(atomicSignal);
+            console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
+            
+            // Trade-focused watch zone commentary (show setup health)
+            const tradeCommentary = generateTradeWatchCommentary(card);
+            console.log(`[TRADE_MONITOR] ${tradeCommentary}`);
+            // Attach trade commentary to card notes for UI display
+            card.notes = tradeCommentary;
+          }
         }
       }
-    }
-    else {
+    } else {
       // No SNIPER conditions met - stay in BUILDING state
       const wasBuilding = card.signalState === "BUILDING";
       card.signalState = "BUILDING";
@@ -695,6 +699,17 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
       console.log(`[BUILDING] ${symbol} score=${score} - awaiting ignition trigger`);
     }
 
+
+    // v21.7.0 SNIPER STALE STATE REVALIDATION
+    // If ACTIVE_SNIPER was set in previous cycle, revalidate against current structure
+    // Drop to BUILDING immediately if structure no longer supports it
+    if (card.signalState === "ACTIVE_SNIPER" && !isValidCurrentStructureForSniper(card)) {
+      console.log(`[SNIPER_INVALIDATED] ${symbol}: Structure no longer supports ACTIVE_SNIPER → dropping to BUILDING`);
+      card.signalState = "BUILDING";
+      card.lastSignalTime = undefined;
+      // Generate watch zone commentary for new BUILDING state
+      card.notes = generateWatchZoneCommentary(card);
+    }
 
     // v9 PHASE 5: ACTIVE_SNIPER TERMINAL STATE IMMUTABILITY
     // Once impulse >= 27 AND ACTIVE_SNIPER state assigned, it becomes immutable
@@ -1418,6 +1433,43 @@ function validateActiveSniperExecution(card: SymbolCardState, score: number): { 
   // NOTE: Macro trend is NOT evaluated here (no hard blockers for 4H alignment or direction match)
   // Macro impact is applied ONLY as a probability modifier in scoring, not as a gate
   return { valid: true };
+}
+
+/**
+ * v21.7.0 SNIPER STALE STATE FIX
+ * Revalidate ACTIVE_SNIPER against current structure every cycle
+ * If structure no longer supports it, drop to BUILDING immediately
+ */
+function isValidCurrentStructureForSniper(card: SymbolCardState): boolean {
+  // Invalidate if 15M is in CHOP (no clear direction)
+  if (card.execution15mState === "CHOP_NO_TRADE") {
+    console.log(`[SNIPER_REVALIDATION] ${card.symbol}: 15M entered CHOP → invalidate ACTIVE_SNIPER`);
+    return false;
+  }
+
+  // Invalidate if displacement weakens or flips (emaSlope flips sign or drops below threshold)
+  if (card.emaSlope !== null && Math.abs(card.emaSlope) < 0.2) {
+    console.log(`[SNIPER_REVALIDATION] ${card.symbol}: EMA slope weakened to ${card.emaSlope?.toFixed(2)} → invalidate ACTIVE_SNIPER`);
+    return false;
+  }
+
+  // Invalidate if continuation fails (stoch extreme suggest exhaustion or reversal)
+  if ((card.stochRsi ?? 50) > 85 || (card.stochRsi ?? 50) < 15) {
+    console.log(`[SNIPER_REVALIDATION] ${card.symbol}: Stoch extreme ${card.stochRsi?.toFixed(1)} → invalidate ACTIVE_SNIPER`);
+    return false;
+  }
+
+  // Invalidate if price forms reversal structure (structure state flips)
+  if (card.direction === "LONG" && (card.structureState === "RETEST_DOWN" || card.structureState === "BREAKOUT_DOWN")) {
+    console.log(`[SNIPER_REVALIDATION] ${card.symbol}: LONG direction but structure flipped DOWN → invalidate ACTIVE_SNIPER`);
+    return false;
+  }
+  if (card.direction === "SHORT" && (card.structureState === "RETEST_UP" || card.structureState === "BREAKOUT_UP")) {
+    console.log(`[SNIPER_REVALIDATION] ${card.symbol}: SHORT direction but structure flipped UP → invalidate ACTIVE_SNIPER`);
+    return false;
+  }
+
+  return true; // Structure still supports SNIPER
 }
 
 /**
