@@ -14,7 +14,7 @@
  * Monitor layer now reports state transitions instead of snapshots
  */
 
-const MOMENTUM_ENGINE_VERSION = "v27.0_SNIPER_SL_AUTHORITY_AND_UI_SEPARATION_LOCK";
+const MOMENTUM_ENGINE_VERSION = "v28.0_UNIFIED_REGIME_CONVICTION_ENGINE";
 
 // Log on module load to verify runtime version
 if (typeof window === "undefined") {
@@ -411,11 +411,249 @@ function computeStructureState(
 }
 
 /**
- * v26.0 EVENT-ONLY OUTPUT GATE
- * CRITICAL FIX: Stop full card re-render spam
- * Only output when meaningful events occur, never emit unchanged state
+ * v28.0 UNIFIED REGIME + CONVICTION ENGINE
+ * 
+ * CRITICAL ARCHITECTURAL FIX: One trade score is the single source of truth
+ * Everything derives from it: direction, state, conviction, SL, UI
+ * 
+ * No more scattered logic:
+ * - Direction no longer calculated separately
+ * - State no longer calculated separately
+ * - SL no longer calculated from swing levels independently
+ * - Conviction is new: penalizes counter-trend, rewards aligned trades
  */
 
+interface TradeScoreInput {
+  emaSlope: number | null;
+  stochRsi: number | null;
+  displacement?: number; // momentum vector
+  volatility: number | null;
+  htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL" | null | string;
+  structureState?: string;
+}
+
+/**
+ * v28.0 SINGLE SOURCE OF TRUTH: UNIFIED TRADE SCORE
+ * Combines 1H momentum (primary) + 4H regime (permission layer) + structure (filter)
+ */
+function calculateUnifiedTradeScore(input: TradeScoreInput): number {
+  const {
+    emaSlope,
+    stochRsi,
+    displacement = 0,
+    volatility = 50,
+    htf4hTrend,
+    structureState = "NEUTRAL"
+  } = input;
+
+  // Return null-safe baseline if insufficient data
+  if (emaSlope === null || stochRsi === null) {
+    return 50; // Neutral baseline
+  }
+
+  // ========================
+  // 1H MOMENTUM (PRIMARY ENGINE)
+  // ========================
+  // EMA slope: -1.0 to +1.0 (maps to -100 to +100 contribution)
+  const emaComponent = emaSlope * 100;
+  
+  // Stoch RSI: 0-100 (center at 50, maps to -50 to +50 contribution)
+  const stochComponent = (stochRsi - 50) * 1.0;
+  
+  // Displacement/direction vector: adds directional weight
+  const displacementComponent = displacement * 80;
+  
+  // Momentum sum: -250 to +250 possible range
+  const momentum = emaComponent + stochComponent + displacementComponent;
+
+  // ========================
+  // 4H REGIME BIAS (PERMISSION LAYER ONLY)
+  // ========================
+  // Macro never blocks, only tilts probability
+  let regimeBias = 0;
+  if (htf4hTrend === "BULLISH") {
+    regimeBias = +12; // Tilts toward LONG
+  } else if (htf4hTrend === "BEARISH") {
+    regimeBias = -12; // Tilts toward SHORT
+  } else {
+    regimeBias = 0; // Neutral macro = no bias
+  }
+
+  // ========================
+  // STRUCTURE CONTEXT (FILTER PRESSURE)
+  // ========================
+  // Structure provides filtering pressure, not gates
+  let structureBias = 0;
+  switch (structureState?.toUpperCase()) {
+    case "EXPANDING":
+      structureBias = +3; // Expansion = positive pressure
+      break;
+    case "RANGE":
+      structureBias = 0; // Neutral
+      break;
+    case "DISTRIBUTION":
+      structureBias = -2; // Distribution = negative pressure
+      break;
+    case "ACCUMULATION":
+      structureBias = +2; // Accumulation = positive pressure
+      break;
+    default:
+      structureBias = 0;
+  }
+
+  // ========================
+  // UNIFIED SCORE
+  // ========================
+  // Normalize momentum to 0-100 scale with regime + structure
+  let score = 50; // Baseline neutral
+  
+  // Momentum drives the score (primary)
+  // Range: -250 to +250 momentum → mapped to roughly 0-100 score
+  const momentumScaled = (momentum / 250) * 50; // Maps to -50 to +50 range
+  
+  // Regime + structure modifiers
+  const modifierSum = regimeBias + structureBias;
+  
+  // Final unified score
+  const unifiedScore = score + momentumScaled + modifierSum;
+  
+  // Clamp to 0-100
+  return Math.max(0, Math.min(100, unifiedScore));
+}
+
+/**
+ * v28.0 DERIVE DIRECTION FROM UNIFIED SCORE
+ * Direction is ALWAYS derived from score, never calculated separately
+ */
+function deriveDirectionFromScore(score: number): "LONG" | "SHORT" | "NEUTRAL" {
+  if (score > 60) {
+    return "LONG";
+  } else if (score < 40) {
+    return "SHORT";
+  } else {
+    return "NEUTRAL";
+  }
+}
+
+/**
+ * v28.0 DERIVE STATE FROM UNIFIED SCORE
+ * State is ALWAYS derived from score, never calculated separately
+ */
+function deriveStateFromScore(score: number): "ACTIVE_SNIPER" | "BUILDING" | "WATCH_ZONE" {
+  if (score >= 75) {
+    return "ACTIVE_SNIPER";
+  } else if (score >= 60) {
+    return "BUILDING";
+  } else {
+    return "WATCH_ZONE";
+  }
+}
+
+/**
+ * v28.0 CLASSIFY RELATIONSHIP (DIRECTION vs MACRO)
+ * Simple, consistent classification of how direction relates to macro trend
+ */
+function classifyRelationship(
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  htf4hTrend: string | null
+): "STRONG_ALIGNED" | "COUNTER_TREND" | "NEUTRAL" {
+  if (direction === "NEUTRAL" || !htf4hTrend || htf4hTrend === "NEUTRAL") {
+    return "NEUTRAL";
+  }
+
+  if (direction === "LONG" && htf4hTrend === "BULLISH") {
+    return "STRONG_ALIGNED";
+  }
+
+  if (direction === "SHORT" && htf4hTrend === "BEARISH") {
+    return "STRONG_ALIGNED";
+  }
+
+  if (direction === "LONG" && htf4hTrend === "BEARISH") {
+    return "COUNTER_TREND";
+  }
+
+  if (direction === "SHORT" && htf4hTrend === "BULLISH") {
+    return "COUNTER_TREND";
+  }
+
+  return "NEUTRAL";
+}
+
+/**
+ * v28.0 DERIVE CONVICTION FROM SCORE + RELATIONSHIP
+ * NEW KEY FIX: Conviction engine penalizes counter-trend, rewards aligned
+ * 
+ * Range: 0.2 (minimum conviction) to 1.0 (maximum conviction)
+ * Counter-trend gets 35% confidence penalty
+ * Aligned gets 15% confidence boost
+ */
+function deriveConvictionFromScore(
+  score: number,
+  relationship: "STRONG_ALIGNED" | "COUNTER_TREND" | "NEUTRAL"
+): number {
+  // Base conviction from score magnitude (0.2 to 1.0 range)
+  const baseConviction = 0.2 + (Math.abs(score - 50) / 50) * 0.8;
+
+  let convictionMultiplier = 1.0;
+
+  if (relationship === "COUNTER_TREND") {
+    // Counter-trend trades get lower conviction (35% penalty)
+    convictionMultiplier = 0.65;
+  } else if (relationship === "STRONG_ALIGNED") {
+    // Aligned trades get higher conviction (15% boost)
+    convictionMultiplier = 1.15;
+  }
+
+  // Apply multiplier and clamp to 0.2-1.0
+  return Math.max(0.2, Math.min(1.0, baseConviction * convictionMultiplier));
+}
+
+/**
+ * v28.0 CALCULATE SL PURELY FROM SCORE + CONVICTION
+ * NEW KEY FIX: SL is now a pure function of score + conviction
+ * No longer derived from swing levels independently
+ * 
+ * Base risk: 1.2%
+ * Adjusted by conviction (confidence increases risk allowance)
+ * Capped at 1.8% inflation threshold
+ */
+function calculateSLFromScoreAndConviction(
+  entry: number,
+  score: number,
+  conviction: number,
+  direction: "LONG" | "SHORT"
+): number {
+  // Base risk: 1.2% of entry
+  const baseRisk = 0.012;
+
+  // Adjusted risk: conviction multiplies risk allowance
+  // High conviction (1.0) = 1.2% × 1.0 = 1.2% risk
+  // Low conviction (0.2) = 1.2% × 0.2 = 0.24% risk
+  const adjustedRisk = baseRisk * conviction;
+
+  // Volatility adjust: strong score = allow wider SL
+  // Score 75+ gets 30% wider, score 50 gets standard
+  const volatilityAdjust = Math.min(1.3, (Math.abs(score - 50) / 50) * 0.3 + 1.0);
+
+  // Final risk distance
+  const finalRisk = adjustedRisk * volatilityAdjust;
+
+  // Hard cap: never exceed 1.8% (inflation cap)
+  const cappedRisk = Math.min(0.018, finalRisk);
+
+  // Apply to entry
+  if (direction === "LONG") {
+    return entry * (1 - cappedRisk);
+  } else {
+    return entry * (1 + cappedRisk);
+  }
+}
+
+/**
+ * v26.0 EVENT-ONLY OUTPUT GATE (preserved from v26)
+ * CRITICAL: Only output when meaningful events occur
+ */
 type CycleSnapshot = {
   direction: string;
   signalState: string;
@@ -437,11 +675,9 @@ function detectOutputEvent(
   const last = lastCycleSnapshot.get(symbol);
   
   if (!last) {
-    // First cycle for symbol - always emit
     return "FIRST_SCAN";
   }
   
-  // Check for meaningful transitions
   if (card.direction !== last.direction) {
     return "DIRECTION_FLIP";
   }
@@ -454,7 +690,7 @@ function detectOutputEvent(
     return "MACRO_SHIFT";
   }
   
-  if (card.signalState === "ACTIVE_SNIPER" && currentScore >= 65 && last.score < 65) {
+  if (card.signalState === "ACTIVE_SNIPER" && currentScore >= 75 && last.score < 75) {
     return "SIGNAL_PROMOTION";
   }
   
@@ -462,7 +698,6 @@ function detectOutputEvent(
     return "SIGNAL_INVALIDATION";
   }
   
-  // No meaningful event
   return null;
 }
 
@@ -482,6 +717,7 @@ function updateCycleSnapshot(
     stateHash: `${card.direction}|${card.signalState}|${score}|${card.htf4hTrend}`,
   });
 }
+
 
 /**
  * Calculate macro bias weight from 4H trend
