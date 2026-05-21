@@ -409,11 +409,13 @@ function getDirectionFromStructure(
 
   // v21.5.4 EARLY BEARISH ROLLOVER BIAS - CHECK BEFORE OTHER HEURISTICS
   // Detect failed continuation + rollover structure earlier
-  // This resolves BTC/ETH from NEUTRAL→SHORT during bearish dumps that begin as flattening
-  if (htf4hTrend === "BEARISH" && stochRsi !== null && momentumEmaSlope !== null) {
-    // Failed breakout during bearish 4H: elevated stoch + flat/weakening momentum
+  // v22.2 FIX: Removed 4H BEARISH requirement - allow 1H momentum to resolve independently
+  // This resolves BTC/ETH from NEUTRAL→SHORT during bearish 1H momentum without waiting for 4H confirmation
+  if (stochRsi !== null && momentumEmaSlope !== null) {
+    // Failed breakout with bearish indicators: elevated stoch + flat/weakening momentum
+    // No longer requires 4H confirmation
     if (stochRsi >= 55 && momentumEmaSlope <= 0.15) {
-      return "SHORT";  // BTC case: stoch 60, emaSlope 0.00 → SHORT
+      return "SHORT";  // BTC case: stoch 60, emaSlope 0.00 → SHORT (even if 4H NEUTRAL)
     }
   }
 
@@ -437,11 +439,12 @@ function getDirectionFromStructure(
   }
 
   // v21.5.4 ETH-SPECIFIC EARLY SHORT BIAS DURING FAILED CONTINUATION
-  // Detect momentum failure earlier when 4H is bearish + EMA weakening + stoch extended
-  // This allows ETH to flip LONG→SHORT faster during failed breakout attempts
-  if (htf4hTrend === "BEARISH" && stochRsi !== null && momentumEmaSlope !== null) {
+  // Detect momentum failure earlier when EMA weakening + stoch extended
+  // v22.2 FIX: Removed 4H BEARISH requirement - 1H momentum can resolve independently
+  // This allows ETH to flip LONG→SHORT faster during failed breakout attempts without 4H gate
+  if (stochRsi !== null && momentumEmaSlope !== null) {
     if (stochRsi >= 60 && momentumEmaSlope <= 0.25 && (volatilityLevel ?? 50) > 55) {
-      return "SHORT";  // ETH case: stoch 63, emaSlope 0.30, vol expanding → SHORT
+      return "SHORT";  // ETH case: stoch 63, emaSlope 0.30, vol expanding → SHORT (4H agnostic)
     }
   }
 
