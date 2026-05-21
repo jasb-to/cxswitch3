@@ -834,32 +834,44 @@ function appendAdvisory(baseCommentary: string, advisory: string | null): string
  * Format: "↑ momentum holding, structure intact" or "⚠ reversal forming" + optional [⚠ ADVISORY]
  */
 function generateTradeWatchCommentary(card: SymbolCardState): string {
+  // v22.5 CRITICAL FIX: Align TRADE_MONITOR with execution engine
+  // Monitor must use SAME finalDirection + SAME momentum interpretation
+  
+  // Use card.direction which is now finalDirection (after v22.3-22.4 fixes)
   const directionArrow = card.direction === "LONG" ? "↑" : "↓";
   
-  // Check for momentum holding (Stoch staying in direction)
+  // Momentum check: Stochastic RSI confirms direction bias
   const stochValid = card.direction === "LONG" 
     ? (card.stochRsi ?? 50) > 30 
     : (card.stochRsi ?? 50) < 70;
   
-  // Check for structure integrity (EMA not reversing sharply)
+  // Structure check: EMA not reversing against direction
   const emaIntact = card.direction === "LONG"
-    ? (card.emaSlope ?? 0) >= -0.1  // Slight dip OK, sharp reversal is warning
+    ? (card.emaSlope ?? 0) >= -0.1
     : (card.emaSlope ?? 0) <= 0.1;
   
-  // Check for reversal risk (conflicting signals)
+  // Reversal risk: EMA sharply contradicts direction
   const reversalRisk = 
     (card.direction === "LONG" && (card.emaSlope ?? 0) < -0.3) ||
     (card.direction === "SHORT" && (card.emaSlope ?? 0) > 0.3);
   
-  // Check for volatility exhaustion (expanding to extreme)
-  const exhaustion = (card.volatilityLevel ?? 50) > 70;
+  // v22.5 FIX: High volatility with expansion = STRENGTH not exhaustion
+  // EXPANDING impulse: positive displacement + high volatility = strong directional move
+  // Only flag exhaustion if volatility is EXTREME (>80) AND no clear structure support
+  const isExpanding = card.execution15mState === "EXPANDING" || 
+                      card.execution15mState === "BREAKOUT_READY";
+  const extremeExhaustion = (card.volatilityLevel ?? 50) > 80 && !isExpanding;
   
   let status = "";
   
   if (reversalRisk) {
     status = "⚠ reversal forming";
-  } else if (exhaustion) {
+  } else if (extremeExhaustion) {
+    // Only show exhaustion if truly extreme and NOT expanding structure
     status = "⚠ momentum exhausting";
+  } else if (isExpanding) {
+    // Expanding impulse = strong directional move, not weakness
+    status = `${directionArrow} impulse EXPANDING`;
   } else if (stochValid && emaIntact) {
     status = `${directionArrow} momentum holding, structure intact`;
   } else if (stochValid) {
@@ -1811,6 +1823,21 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
     notes: `${structureState} - ${finalDirection}`,
     updatedAt: new Date().toISOString(),
   };
+
+  // v22.5 PIPELINE TRACE: Comprehensive state verification
+  // Print complete flow for debugging subsystem consistency
+  console.log(`[PIPELINE_TRACE] ${symbol} final state:
+    direction=${finalDirection} (from momentum + structure)
+    momentum_score=${card.momentumScore?.toFixed(1) ?? "N/A"}
+    emaSlope=${emaSlope?.toFixed(3) ?? "N/A"}
+    stochRsi=${stochRsi?.toFixed(1) ?? "N/A"}
+    volatility=${volatilityLevel?.toFixed(1) ?? "N/A"}
+    execution15m=${card.execution15mState}
+    structure=${structureState}
+    htf4hTrend=${htf4hTrend}
+    monitor_status=${generateTradeWatchCommentary(card).split("TRADE:")[1]?.trim() ?? "N/A"}
+    signal_state=${card.signalState}
+  `);
 
   // v21.6.0 CRITICAL FIX: Calculate momentum score AFTER all direction mutations
   // Score must use the FINAL locked direction, not pre-mutation state
