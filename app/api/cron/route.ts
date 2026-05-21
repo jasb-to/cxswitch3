@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { generateSetups, generateDisplayCards } from "@/lib/strategy-v6";
 import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
+import { fetchCandles } from "@/lib/kraken";
 import { getSnapshot, setSnapshot } from "@/lib/runtime-snapshot";
 import { mergeSnapshots, validateSnipperCardState } from "@/lib/snapshot-merger";
 import { clearCanonicalStates, initializeCanonicalState, updateCanonicalState, getAllCanonicalStates, canonicalToCard } from "@/lib/unified-market-state";
@@ -64,8 +65,22 @@ async function runExecutionCycle(): Promise<{
     // STEP 1: Fetch markets (segregated at ingestion) - v8.1 FIX: Use execution lock
     const segregatedMarkets = await refreshMarketData("execution");
     
-    // STEP 2: ONLY scan execution pipeline (Kraken)
-    const { cards: executionCards, setups } = await generateSetups(segregatedMarkets);
+    // STEP 1.5: Fetch 4H candles for real structure detection (v22.0)
+    const candles4hBySymbol: Record<string, any[]> = {};
+    const symbols = ["BTC", "ETH", "SOL"];
+    for (const symbol of symbols) {
+      try {
+        const candleData = await fetchCandles(symbol, 240, 50); // 4H = 240 mins, 50 candles lookback
+        candles4hBySymbol[symbol] = candleData.candles;
+        console.log(`[4H_CANDLES] ${symbol}: Fetched ${candleData.candles.length} 4H candles from ${candleData.source}`);
+      } catch (error) {
+        console.warn(`[4H_CANDLES] ${symbol}: Failed to fetch 4H candles, using empty array`, error);
+        candles4hBySymbol[symbol] = [];
+      }
+    }
+    
+    // STEP 2: ONLY scan execution pipeline (Kraken) with real 4H structure
+    const { cards: executionCards, setups } = await generateSetups(segregatedMarkets, candles4hBySymbol);
     
     // v8.2 FIX: Populate canonical state with execution cards
     for (const card of executionCards) {
