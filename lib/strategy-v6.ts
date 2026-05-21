@@ -5,9 +5,21 @@
  * Uses Stochastic RSI + EMA Stack + Volatility Compression
  * 
  * NO STATE, NO DB ACCESS, PURE EVALUATION
+ * 
+ * v22.5 DEPLOYMENT MARKER - Runtime verification
+ * If this version string appears in logs, v22.5 is LIVE
+ * If this version does NOT appear, old runtime artifact is executing
  */
 
+const MOMENTUM_ENGINE_VERSION = "v22.5_TRADE_MONITOR_ALIGNMENT_ACTIVE";
+
+// Log on module load to verify runtime version
+if (typeof window === "undefined") {
+  console.log(`[MOMENTUM_ENGINE] ${MOMENTUM_ENGINE_VERSION}`);
+}
+
 import type { PriceData } from "./price-router";
+
 import type { SegregatedMarketData } from "./market-data-layer";
 import type { Candle } from "./kraken";
 import { analyze4HStructure } from "./htf-structure-engine";
@@ -1847,3 +1859,8 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
   return card;
 
 }
+
+// v22.5 RUNTIME VERSION EXPORT
+// Used to verify that v22.5 is executing (not old stale artifact)
+export const STRATEGY_VERSION = MOMENTUM_ENGINE_VERSION;
+
