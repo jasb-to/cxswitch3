@@ -14,7 +14,7 @@
  * Monitor layer now reports state transitions instead of snapshots
  */
 
-const MOMENTUM_ENGINE_VERSION = "v24.0_MACRO_MOMENTUM_FUSION_ACTIVE";
+const MOMENTUM_ENGINE_VERSION = "v25.0_SIGNAL_RENDERING_HIERARCHY_AND_DUAL_SL_ACTIVE";
 
 // Log on module load to verify runtime version
 if (typeof window === "undefined") {
@@ -25,9 +25,14 @@ import { detectMonitorEvent, formatMonitorEvent } from "./monitor-event-engine";
 
 import type { PriceData } from "./price-router";
 
-import type { SegregatedMarketData } from "./market-data-layer";
+import type { SegmentatedMarketData } from "./market-data-layer";
 import type { Candle } from "./kraken";
 import { analyze4HStructure } from "./htf-structure-engine";
+import { 
+  calculateStructureStopLoss, 
+  calculateSniperStopLoss, 
+  shouldInvalidateSniperSL 
+} from "./risk-utils";
 
 // ═════════════════════════════════════════════════════════════════════════════
 // v7.6.0: EXECUTION CONTEXT - SINGLE SOURCE OF TRUTH
@@ -479,9 +484,65 @@ function calculateDirectionScore(
 }
 
 /**
- * Get direction from structure state with MACRO-MOMENTUM FUSION
- * v24.0: Direction now influenced by composite score (momentum + macro + structure)
+ * v25.0 SIGNAL RENDERING HIERARCHY
+ * 
+ * PRIMARY: ACTIVE_SNIPER signal with full direction
+ * CONTEXT: 4H macro trend as secondary information
+ * 
+ * Prevents confusion: Direction comes from 1H SNIPER, not from 4H macro
  */
+type SignalHierarchy = {
+  primary: {
+    mode: "ACTIVE_SNIPER";
+    direction: "LONG" | "SHORT";
+    score: number;
+    rationale: string;
+  };
+  context?: {
+    type: "MACRO_ALIGNMENT" | "MACRO_DIVERGENCE";
+    macroTrend: "BULLISH" | "BEARISH" | "NEUTRAL";
+    impact: "REINFORCES" | "COMPLICATES" | "NEUTRAL";
+  };
+};
+
+/**
+ * v25.0 Build signal rendering hierarchy
+ * Ensures PRIMARY signal is direction from SNIPER, CONTEXT is macro suggestion
+ */
+function buildSignalHierarchy(
+  direction: "LONG" | "SHORT",
+  score: number,
+  htf4hTrend: string | null,
+  execution15mState: string,
+  stochRsi: number | null,
+  emaSlope: number | null
+): SignalHierarchy {
+  // PRIMARY: ACTIVE_SNIPER with full rationale
+  const primary: SignalHierarchy["primary"] = {
+    mode: "ACTIVE_SNIPER",
+    direction,
+    score,
+    rationale: `${direction} SNIPER ignition: 15M=${execution15mState} + momentum (stoch=${stochRsi?.toFixed(1) ?? "N/A"}, ema=${emaSlope?.toFixed(3) ?? "N/A"})`,
+  };
+  
+  // CONTEXT: 4H macro as secondary information
+  let context: SignalHierarchy["context"] | undefined;
+  if (htf4hTrend && htf4hTrend !== "NEUTRAL") {
+    // Determine if macro aligns or diverges
+    const macroAligned = (htf4hTrend === "BULLISH" && direction === "LONG") || 
+                         (htf4hTrend === "BEARISH" && direction === "SHORT");
+    const macroAlignment = macroAligned ? "REINFORCES" : "COMPLICATES";
+    
+    context = {
+      type: macroAligned ? "MACRO_ALIGNMENT" : "MACRO_DIVERGENCE",
+      macroTrend: htf4hTrend as "BULLISH" | "BEARISH",
+      impact: macroAlignment,
+    };
+  }
+  
+  return { primary, context };
+}
+
 function getDirectionFromStructure(
   structureState: StructureState,
   momentumEmaSlope: number | null,
@@ -1342,7 +1403,17 @@ function buildAtomicSniperSignal(
   }
 
   // 2. Calculate trade targets (must not have undefined TP/SL)
-  const targets = calculateTradeTargets(card.price, card.volatilityLevel ?? 50, card.direction);
+  const targets = calculateTradeTargets(
+    card.price, 
+    card.volatilityLevel ?? 50, 
+    card.direction,
+    card.recentSwingLow || card.recentSwingHigh,
+    card.structureState === "BREAKOUT_UP" || card.structureState === "RETEST_UP" 
+      ? card.swingHigh 
+      : card.swingLow,
+    card.stochRsi,
+    card.emaSlope
+  );
   
   if (!targets.targetPrices.tp1 || !targets.targetPrices.tp2 || !targets.targetPrices.sl) {
     console.log(`[ATOMIC BUILD FAILED] ${symbol}: Target calculation failed (tp1=${targets.targetPrices.tp1}, tp2=${targets.targetPrices.tp2}, sl=${targets.targetPrices.sl})`);
@@ -1355,7 +1426,16 @@ function buildAtomicSniperSignal(
     return null;
   }
 
-  // 4. Build complete signal (ALL fields guaranteed to exist)
+  // 4. Build complete signal with rendering hierarchy (v25.0)
+  const signalHierarchy = buildSignalHierarchy(
+    card.direction as "LONG" | "SHORT",
+    score,
+    card.htf4hTrend,
+    card.execution15mState,
+    card.stochRsi,
+    card.emaSlope
+  );
+  
   const signal = {
     symbol,
     mode: "SNIPER" as const,
@@ -1368,6 +1448,8 @@ function buildAtomicSniperSignal(
     riskReward: targets.riskReward,  // GUARANTEED: > 0
     expectedMovePercent: targets.expectedMovePercent,
     reason: `SNIPER ${card.direction} - HTF:${card.htf4hTrend} + 15M:${card.execution15mState} + 5M trigger`,
+    // v25.0: Signal hierarchy
+    hierarchy: signalHierarchy,
     momentum: {
       stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
       emaStackSignal: card.direction === "LONG" ? "8 EMA turning up" : "8 EMA turning down",
@@ -1389,9 +1471,20 @@ function buildAtomicSniperSignal(
 }
 
 /**
- * Calculate trade targets only when signal fired (v7.2.5: FIX TP3 removal)
+ * v25.0 Calculate trade targets with dual SL system
+ * - SNIPER SL: Tight SL at recent swing (1.5% cap)
+ * - STRUCTURE SL: Wider SL at support/resistance (2.5% cap)
+ * - Returns both, caller decides which to use
  */
-function calculateTradeTargets(price: number, volatilityLevel: number, direction: string) {
+function calculateTradeTargets(
+  price: number,
+  volatilityLevel: number,
+  direction: string,
+  recentSwingLevel: number | null = null,
+  supportResistanceLevel: number | null = null,
+  stochRsi: number | null = null,
+  emaSlope: number | null = null
+) {
   const volatilityFactor = volatilityLevel / 100;
   const sniperMin = 0.8 + volatilityFactor * 0.5;
   const sniperMax = 1.5 + volatilityFactor * 0.7;
@@ -1399,12 +1492,29 @@ function calculateTradeTargets(price: number, volatilityLevel: number, direction
   const isLong = direction === "LONG";
   const tp1 = price * (1 + (isLong ? sniperMax : -sniperMax) / 100);
   const tp2 = price * (1 + (isLong ? sniperMax * 1.5 : -sniperMax * 1.5) / 100);
-  const sl = price * (1 + (isLong ? -sniperMax : sniperMax) / 100);
+  
+  // v25.0: Dual SL system
+  const sniperSL = calculateSniperStopLoss(price, recentSwingLevel, direction as "LONG" | "SHORT");
+  const structureSL = calculateStructureStopLoss(price, supportResistanceLevel, null, direction as "LONG" | "SHORT");
+  
+  // v25.0: Check if SNIPER SL should be invalidated
+  const sniperSLInvalid = shouldInvalidateSniperSL(stochRsi, emaSlope, direction as "LONG" | "SHORT");
+  
+  // Use SNIPER SL if valid, otherwise fall back to STRUCTURE SL
+  const activeSL = sniperSLInvalid ? structureSL : sniperSL;
+  
   const riskReward = (sniperMax * 1.5) / sniperMax;
   
   return {
     expectedMovePercent: { sniper: { min: sniperMin, max: sniperMax } },
-    targetPrices: { tp1, tp2, sl },
+    targetPrices: { 
+      tp1, 
+      tp2, 
+      sl: activeSL,
+      sl_sniper: sniperSL,
+      sl_structure: structureSL,
+      sl_active_type: sniperSLInvalid ? "STRUCTURE" : "SNIPER",
+    },
     riskReward,
   };
 }
