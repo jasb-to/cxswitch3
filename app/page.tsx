@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import useSWR from "swr";
 import type { SymbolCardState } from "@/lib/types";
 import { EMPTY_SNAPSHOT } from "@/lib/canonical-snapshot";
@@ -262,41 +262,13 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
  * Engine status = snapshot_atomic.ready + heartbeat ONLY
  * NOT displayCycle, fallback, or cache state
  */
-type EngineStatus = "BOOT" | "LIVE" | "DEGRADED";
-
-interface BootState {
-  engineStatus: EngineStatus;
-  lastSnapshotAt: number | null;
-  isHydrated: boolean;
-  hasActiveStream: boolean;
-  bootMountTime: number; // v30.0: Track actual boot time
-}
-
-const HARD_TIMEOUT_MS = 8000; // 8 second hard timeout based on heartbeat
 
 export default function Dashboard() {
   const [tg, setTg] = useState<"idle" | "sending" | "ok" | "error">("idle");
   const [tgMsg, setTgMsg] = useState("");
   const [now, setNow] = useState(0);
-  const [isHydrated, setIsHydrated] = useState(false);
-  
-  // v30.0: Single source of truth for boot state (engine-driven, not display-driven)
-  const [bootState, setBootState] = useState<BootState>({
-    engineStatus: "BOOT",
-    lastSnapshotAt: null,
-    isHydrated: false,
-    hasActiveStream: false,
-    bootMountTime: Date.now(), // v30.0: Capture actual boot time
-  });
-
-  // v31.0 FIX: Use refs to prevent heartbeat re-scheduling loop
-  // This prevents the race condition where DEGRADED is set while snapshot arrives
-  const lastSnapshotRef = useRef<number | null>(null);
-  const engineStatusRef = useRef<EngineStatus>("BOOT");
-  const bootMountTimeRef = useRef<number>(bootState.bootMountTime);
 
   useEffect(() => {
-    setIsHydrated(true);
     setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
@@ -308,183 +280,22 @@ export default function Dashboard() {
     { revalidateOnFocus: false, dedupingInterval: 2000 }
   );
 
-  // Normalize: API may return { snapshot: {...} } or the snapshot directly
+  // Single source of truth: snapshot data from API
   const snap = data?.snapshot ?? data;
   
-  // v30.0: DIAGNOSTIC - Log every data change
+  // Log the snapshot shape for debugging
   useEffect(() => {
-    console.log("[v0] SWR DATA RECEIVED", {
-      hasData: !!data,
-      snapReady: snap?.ready,
-      snapCards: snap?.cards?.length,
-      dataKeys: data ? Object.keys(data) : [],
-      isValidating,
-      timestamp: new Date().toISOString(),
-    });
-  }, [data, isValidating]);
+    console.log("[SNAPSHOT_SHAPE]", JSON.stringify(snap, null, 2));
+  }, [snap]);
 
-  // v30.0: CRITICAL - Boot state derived ONLY from snapshot_atomic.ready + heartbeat
-  // NOT from displayCycle, fallback price routing, or cache state
-  const isReady =
-    snap &&
-    snap.ready === true &&
-    Array.isArray(snap.cards) &&
-    snap.cards.length === 3;
+  // Deterministic render decision: backend truth only
+  const snapshotReady = snap?.ready === true && Array.isArray(snap?.cards);
 
-  // v30.0 FIX #1: HANDSHAKE TRIGGER - when snapshot arrives, transition to LIVE
-  // This is the ONLY path to LIVE - no display/cache logic enters here
-  useEffect(() => {
-    console.log("[v0] HANDSHAKE CHECK", {
-      isReady,
-      isValidating,
-      snapReady: snap?.ready,
-      snapCards: snap?.cards?.length,
-      currentEngineStatus: bootState.engineStatus,
-      lastSnapshot: bootState.lastSnapshotAt,
-    });
-    
-    if (isReady) {
-      // Snapshot has arrived and is valid - engine is LIVE
-      console.log("[v0] HANDSHAKE TRIGGER: Snapshot ready, transitioning to LIVE");
-      setBootState((prev) => ({
-        ...prev,
-        engineStatus: "LIVE",
-        lastSnapshotAt: Date.now(),
-        isHydrated: true,
-        hasActiveStream: true,
-      }));
-    } else if (isValidating) {
-      // Stream is active and fetching (still in BOOT, waiting)
-      console.log("[v0] HANDSHAKE: Stream active, updating hasActiveStream");
-      setBootState((prev) => ({
-        ...prev,
-        hasActiveStream: true,
-      }));
-    }
-  }, [isReady, isValidating]);
-
-  // v31.0 FIX: Keep refs in sync with state (no dependency loop)
-  useEffect(() => {
-    lastSnapshotRef.current = bootState.lastSnapshotAt;
-    engineStatusRef.current = bootState.engineStatus;
-    bootMountTimeRef.current = bootState.bootMountTime;
-    console.log("[v0] Refs updated", {
-      lastSnapshotAt: lastSnapshotRef.current,
-      engineStatus: engineStatusRef.current,
-    });
-  }, [bootState]);
-
-  // v31.0 FIX #1: STABLE HEARTBEAT - use refs to prevent re-scheduling loop
-  // This eliminates the race condition where DEGRADED could be set while snapshot arrives
-  // The old version had [bootState] dependency, causing interval re-schedule on every state change
-  useEffect(() => {
-    const checkHeartbeat = setInterval(() => {
-      const timeSinceBoot = Date.now() - bootMountTimeRef.current;
-      
-      // Log heartbeat status every 2s
-      if (timeSinceBoot % 2000 < 1000) {
-        console.log("[v0] HEARTBEAT CHECK (stable via refs)", {
-          timeSinceBoot,
-          lastSnapshotAt: lastSnapshotRef.current,
-          engineStatus: engineStatusRef.current,
-          noSnapshotReceived: lastSnapshotRef.current === null,
-          timeoutReached: timeSinceBoot > HARD_TIMEOUT_MS,
-        });
-      }
-      
-      // v31.0: Check using refs (NOT bootState) - no render cycle dependency
-      // This is safe: refs are kept in sync by separate useEffect above
-      if (lastSnapshotRef.current === null && engineStatusRef.current === "BOOT") {
-        
-        // v32.0 FIX: Additional guard - if we just recovered from DEGRADED,
-      // do NOT re-enter DEGRADED even if this heartbeat fires before state syncs
-      // The refs are kept current by the sync effect, so this is safe
-      if (lastSnapshotRef.current !== null) {
-        // Snapshot has arrived - NEVER set DEGRADED again
-        console.log("[v0] HEARTBEAT: Snapshot present, skipping DEGRADED check");
-        return;
-      }
-      
-      if (timeSinceBoot > HARD_TIMEOUT_MS) {
-          // v31.0: Hard timeout reached without snapshot - mark DEGRADED
-          // Using refs ensures this check is stable and not affected by state re-renders
-          console.log("[v0] CRITICAL: Boot timeout reached - no snapshot for 8s, marking DEGRADED (stable heartbeat)", {
-            timestamp: new Date().toISOString(),
-            timeSinceBoot,
-          });
-          setBootState((prev) => ({
-            ...prev,
-            engineStatus: "DEGRADED",
-          }));
-        }
-      }
-    }, 1000);
-    return () => clearInterval(checkHeartbeat);
-  }, []);  // v31.0 FIX: EMPTY dependency - runs once at mount, never re-schedules!
-
-  // v30.0 FIX #2: BOOTSTRAP LOGIC - use engineStatus (canonical) not display state
-  if (bootState.engineStatus === "BOOT" && !bootState.isHydrated) {
-    console.log("[v0] RENDER: DashboardBootstrap (BOOT state, not hydrated)", {
-      timestamp: new Date().toISOString(),
-      engineStatus: bootState.engineStatus,
-      isHydrated: bootState.isHydrated,
-    });
+  if (!snapshotReady) {
     return <DashboardBootstrap />;
   }
 
-  // v32.0 FIX: CRITICAL - Snapshot arrival ALWAYS overrides DEGRADED timeout
-  // If snapshot is ready, we MUST transition to LIVE regardless of prior timeout
-  // This prevents permanent DEGRADED_BOOT when snapshot activity proves engine is alive
-  if (isReady) {
-    // Snapshot is present and valid - AUTO-PROMOTE to LIVE if stuck in DEGRADED
-    if (bootState.engineStatus === "DEGRADED") {
-      console.log("[v0] RECOVERY: Snapshot arrived while DEGRADED, promoting to LIVE", {
-        timestamp: new Date().toISOString(),
-        lastSnapshot: bootState.lastSnapshotAt,
-        snapCards: snap?.cards?.length,
-      });
-      // Update state to LIVE to prevent re-render as DEGRADED
-      setBootState((prev) => ({
-        ...prev,
-        engineStatus: "LIVE",
-        lastSnapshotAt: Date.now(),
-      }));
-      // Continue to render LIVE below
-    }
-    console.log("[v0] RENDER: DashboardLive (snapshot ready, engine LIVE)", {
-      timestamp: new Date().toISOString(),
-      engineStatus: bootState.engineStatus,
-      isReady: true,
-    });
-  }
-
-  // v30.0 FIX #4: Only show DEGRADED if hard timeout actually fired
-  // BUT ONLY if snapshot is NOT ready (recovery check above catches live snapshots)
-  // CRITICAL: This is NOT affected by displayCycle, fallback routing, or cache state
-  if (bootState.engineStatus === "DEGRADED" && !isReady) {
-    console.log("[v0] RENDER: DashboardDegraded (engineStatus=DEGRADED after 8s timeout, no snapshot)", {
-      timestamp: new Date().toISOString(),
-      engineStatus: bootState.engineStatus,
-      isReady: false,
-      lastSnapshot: bootState.lastSnapshotAt,
-    });
-    return <DashboardDegraded />;
-  }
-
-  if (!isReady) {
-    // Engine transitioning: show bootstrap while waiting
-    console.log("[v0] RENDER: DashboardBootstrap (snapshot not ready yet)", {
-      timestamp: new Date().toISOString(),
-      snapReady: snap?.ready,
-      snapCards: snap?.cards?.length,
-    });
-    return <DashboardBootstrap />;
-  }
-
-  console.log("[v0] RENDER: DashboardLive (snapshot ready, engine LIVE)", {
-    timestamp: new Date().toISOString(),
-    engineStatus: bootState.engineStatus,
-  });
+  // Backend confirms snapshot is ready - render LIVE
   const snapshot = {
     cards: snap.cards as SymbolCardState[],
     setups: snap.setups ?? [],
@@ -497,7 +308,7 @@ export default function Dashboard() {
     <DashboardLive
       snapshot={snapshot}
       now={now}
-      isHydrated={isHydrated}
+      isHydrated={true}
       isValidating={isValidating}
       mutate={mutate}
       tg={tg}
@@ -519,121 +330,6 @@ export default function Dashboard() {
         setTimeout(() => { setTg("idle"); setTgMsg(""); }, 4000);
       }}
     />
-  );
-}
-
-/**
- * v28.1 FIX #3: DEGRADED_BOOT state after 3s timeout
- * Renders skeleton with offline symbols instead of blocking forever
- */
-function DashboardDegraded() {
-  const DEGRADED_CARDS: SymbolCardState[] = [
-    {
-      symbol: "BTC",
-      price: 0,
-      source: "degraded",
-      degraded: true,
-      direction: "NEUTRAL",
-      mode: "NONE",
-      confidence: 0,
-      stochRsi: null,
-      emaSlope: null,
-      volatilityLevel: null,
-      htf4hTrend: "NEUTRAL",
-      htf4hMomentum: null,
-      htf1hAlignment: null,
-      htf15mCompression: null,
-      marketReadinessState: "BUILDING",
-      tradeReadinessScore: null,
-      expectedMovePercent: null,
-      targetPrices: null,
-      riskReward: null,
-      notes: "Offline – engine not responding",
-      updatedAt: "",
-    },
-    {
-      symbol: "ETH",
-      price: 0,
-      source: "degraded",
-      degraded: true,
-      direction: "NEUTRAL",
-      mode: "NONE",
-      confidence: 0,
-      stochRsi: null,
-      emaSlope: null,
-      volatilityLevel: null,
-      htf4hTrend: "NEUTRAL",
-      htf4hMomentum: null,
-      htf1hAlignment: null,
-      htf15mCompression: null,
-      marketReadinessState: "BUILDING",
-      tradeReadinessScore: null,
-      expectedMovePercent: null,
-      targetPrices: null,
-      riskReward: null,
-      notes: "Offline – engine not responding",
-      updatedAt: "",
-    },
-    {
-      symbol: "SOL",
-      price: 0,
-      source: "degraded",
-      degraded: true,
-      direction: "NEUTRAL",
-      mode: "NONE",
-      confidence: 0,
-      stochRsi: null,
-      emaSlope: null,
-      volatilityLevel: null,
-      htf4hTrend: "NEUTRAL",
-      htf4hMomentum: null,
-      htf1hAlignment: null,
-      htf15mCompression: null,
-      marketReadinessState: "BUILDING",
-      tradeReadinessScore: null,
-      expectedMovePercent: null,
-      targetPrices: null,
-      riskReward: null,
-      notes: "Offline – engine not responding",
-      updatedAt: "",
-    },
-  ];
-
-  return (
-    <main className="min-h-screen bg-[#0a0a0a] text-white font-mono">
-      <header className="border-b border-zinc-800 px-6 py-3 flex items-center justify-between">
-        <p className="text-[11px] tracking-[0.22em] text-zinc-500">
-          MULTI-TIMEFRAME CRYPTO SIGNAL ANALYZER &nbsp;·&nbsp; DEGRADED MODE
-        </p>
-        <p className="text-[11px] tracking-[0.15em] text-red-600">vFINAL (OFFLINE)</p>
-      </header>
-
-      <div className="px-6 py-6 max-w-[1400px] mx-auto flex flex-col gap-6">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="col-span-full md:col-span-2">
-            <div className="border border-red-900/50 bg-red-950/20 p-8 flex items-center justify-center text-center">
-              <p className="text-red-400 text-sm">Engine offline – waiting to reconnect...</p>
-            </div>
-          </div>
-          <div className="border border-red-900/50 bg-red-950/20 p-5">
-            <p className="text-[10px] tracking-[0.22em] text-red-500 mb-4">STATUS</p>
-            <p className="text-sm text-red-400">DEGRADED_BOOT</p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {DEGRADED_CARDS.map((card) => (
-            <div key={card.symbol} className="border border-red-900/50 rounded-lg p-4 bg-red-950/10">
-              <div className="flex items-start justify-between mb-2">
-                <h3 className="text-lg font-bold text-red-400">{card.symbol}</h3>
-                <span className="text-xs px-2 py-1 rounded bg-red-900/50 text-red-400">OFFLINE</span>
-              </div>
-              <p className="text-sm text-red-500">{card.notes}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    </main>
   );
 }
 
