@@ -960,18 +960,6 @@ function calculateMomentumScore(card: SymbolCardState, symbol: string = "SOL", p
     multiplier *= exec.trendWeight; // Profile-tuned (BTC emphasizes, SOL standard)
   }
 
-  // v21.5.2 ETH CONTINUATION DECAY
-  // When 4H is bearish but ETH is still LONG + flattening EMA, reduce continuation confidence
-  // This allows SHORT bias to emerge faster during false continuation attempts
-  if (symbol === "ETH" && card.htf4hTrend === "BEARISH" && card.direction === "LONG") {
-    const emaFlattening = Math.abs(card.emaSlope ?? 0) < 0.25;
-    const volatilityExpanding = (card.volatilityLevel ?? 50) > 55;
-    
-    if (emaFlattening && volatilityExpanding) {
-      multiplier *= 0.92; // -8% continuation decay for false breakout recovery
-    }
-  }
-
   // Apply multiplier
   score = Math.round(score * multiplier);
 
@@ -1684,14 +1672,26 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     levelAwareness.breakoutPrice || null
   );
 
-  // Step 3: Get direction from structure (PURE STRUCTURE LOCK - NO GATES)
-  // Direction derived from structure, momentum only affects confidence
-  // v21.5.1: Added tie-breaker parameters for NEUTRAL resolution
-  const direction = getDirectionLockedByStructure(getDirectionFromStructure(structureState, emaSlope, stochRsi, htf4hTrend, volatilityLevel), structureState);
+  // Step 3: Get direction from structure with tie-breaker
+  // v21.5.2: Tie-breaker logic now IN getDirectionFromStructure (executes early)
+  let direction = getDirectionFromStructure(structureState, emaSlope, stochRsi, htf4hTrend, volatilityLevel);
+  console.log(`[DIRECTION_TIE_BREAKER] ${symbol}: tie-breaker resolved direction="${direction}" (4H=${htf4hTrend}, stoch=${stochRsi?.toFixed(1)}, ema=${emaSlope?.toFixed(2)})`);
 
-  // Step 4: No validation - structure lock is applied, not blocking
-  // NO GATES VERSION: All trades allowed if structure permits
-  const finalDirection = direction;
+  // Step 3.5: ETH CONTINUATION DECAY - MUTATE direction toward SHORT during failed bearish continuation
+  // v21.5.2: This MUST happen before getDirectionLockedByStructure locks the direction
+  if (symbol === "ETH" && htf4hTrend === "BEARISH" && direction === "LONG") {
+    const emaFlattening = Math.abs(emaSlope ?? 0) < 0.25;
+    const volatilityExpanding = (volatilityLevel ?? 50) > 55;
+    
+    if (emaFlattening && volatilityExpanding) {
+      console.log(`[ETH_DECAY] Direction mutation: LONG → SHORT (failed continuation, 4H bearish)`);
+      direction = "SHORT";  // Mutate direction to SHORT, not just confidence
+    }
+  }
+
+  // Step 4: Lock direction against structure (applies only if structure allows)
+  const finalDirection = getDirectionLockedByStructure(direction, structureState);
+  console.log(`[SCAN] ${symbol} direction=${finalDirection} structureState=${structureState}`);
 
   const breakoutState: BreakoutState = levelAwareness.breakoutState;
 
