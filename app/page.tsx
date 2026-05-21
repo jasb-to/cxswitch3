@@ -262,12 +262,21 @@ export default function Dashboard() {
   const [tgMsg, setTgMsg] = useState("");
   const [now, setNow] = useState(0);
   const [isHydrated, setIsHydrated] = useState(false);
+  const [bootTimeout, setBootTimeout] = useState(false);
 
   useEffect(() => {
     setIsHydrated(true);
     setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
+  }, []);
+
+  // v28.1 FIX #3: TIMEOUT FALLBACK - prevent infinite "Awaiting snapshot..." state
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setBootTimeout(true);
+    }, 3000); // 3 second timeout before rendering DEGRADED_BOOT state
+    return () => clearTimeout(timer);
   }, []);
 
   const { data, mutate, isValidating } = useSWR(
@@ -285,6 +294,11 @@ export default function Dashboard() {
     snap.ready === true &&
     Array.isArray(snap.cards) &&
     snap.cards.length === 3;
+
+  // v28.1 FIX #3: If timeout reached and no snapshot, render DEGRADED_BOOT skeleton
+  if (bootTimeout && !isReady) {
+    return <DashboardDegraded />;
+  }
 
   if (!isReady) {
     return <DashboardBootstrap />;
@@ -325,6 +339,121 @@ export default function Dashboard() {
         setTimeout(() => { setTg("idle"); setTgMsg(""); }, 4000);
       }}
     />
+  );
+}
+
+/**
+ * v28.1 FIX #3: DEGRADED_BOOT state after 3s timeout
+ * Renders skeleton with offline symbols instead of blocking forever
+ */
+function DashboardDegraded() {
+  const DEGRADED_CARDS: SymbolCardState[] = [
+    {
+      symbol: "BTC",
+      price: 0,
+      source: "degraded",
+      degraded: true,
+      direction: "NEUTRAL",
+      mode: "NONE",
+      confidence: 0,
+      stochRsi: null,
+      emaSlope: null,
+      volatilityLevel: null,
+      htf4hTrend: "NEUTRAL",
+      htf4hMomentum: null,
+      htf1hAlignment: null,
+      htf15mCompression: null,
+      marketReadinessState: "BUILDING",
+      tradeReadinessScore: null,
+      expectedMovePercent: null,
+      targetPrices: null,
+      riskReward: null,
+      notes: "Offline – engine not responding",
+      updatedAt: "",
+    },
+    {
+      symbol: "ETH",
+      price: 0,
+      source: "degraded",
+      degraded: true,
+      direction: "NEUTRAL",
+      mode: "NONE",
+      confidence: 0,
+      stochRsi: null,
+      emaSlope: null,
+      volatilityLevel: null,
+      htf4hTrend: "NEUTRAL",
+      htf4hMomentum: null,
+      htf1hAlignment: null,
+      htf15mCompression: null,
+      marketReadinessState: "BUILDING",
+      tradeReadinessScore: null,
+      expectedMovePercent: null,
+      targetPrices: null,
+      riskReward: null,
+      notes: "Offline – engine not responding",
+      updatedAt: "",
+    },
+    {
+      symbol: "SOL",
+      price: 0,
+      source: "degraded",
+      degraded: true,
+      direction: "NEUTRAL",
+      mode: "NONE",
+      confidence: 0,
+      stochRsi: null,
+      emaSlope: null,
+      volatilityLevel: null,
+      htf4hTrend: "NEUTRAL",
+      htf4hMomentum: null,
+      htf1hAlignment: null,
+      htf15mCompression: null,
+      marketReadinessState: "BUILDING",
+      tradeReadinessScore: null,
+      expectedMovePercent: null,
+      targetPrices: null,
+      riskReward: null,
+      notes: "Offline – engine not responding",
+      updatedAt: "",
+    },
+  ];
+
+  return (
+    <main className="min-h-screen bg-[#0a0a0a] text-white font-mono">
+      <header className="border-b border-zinc-800 px-6 py-3 flex items-center justify-between">
+        <p className="text-[11px] tracking-[0.22em] text-zinc-500">
+          MULTI-TIMEFRAME CRYPTO SIGNAL ANALYZER &nbsp;·&nbsp; DEGRADED MODE
+        </p>
+        <p className="text-[11px] tracking-[0.15em] text-red-600">vFINAL (OFFLINE)</p>
+      </header>
+
+      <div className="px-6 py-6 max-w-[1400px] mx-auto flex flex-col gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="col-span-full md:col-span-2">
+            <div className="border border-red-900/50 bg-red-950/20 p-8 flex items-center justify-center text-center">
+              <p className="text-red-400 text-sm">Engine offline – waiting to reconnect...</p>
+            </div>
+          </div>
+          <div className="border border-red-900/50 bg-red-950/20 p-5">
+            <p className="text-[10px] tracking-[0.22em] text-red-500 mb-4">STATUS</p>
+            <p className="text-sm text-red-400">DEGRADED_BOOT</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {DEGRADED_CARDS.map((card) => (
+            <div key={card.symbol} className="border border-red-900/50 rounded-lg p-4 bg-red-950/10">
+              <div className="flex items-start justify-between mb-2">
+                <h3 className="text-lg font-bold text-red-400">{card.symbol}</h3>
+                <span className="text-xs px-2 py-1 rounded bg-red-900/50 text-red-400">OFFLINE</span>
+              </div>
+              <p className="text-sm text-red-500">{card.notes}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </main>
   );
 }
 
