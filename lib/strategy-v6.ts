@@ -628,7 +628,7 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
           card.confidence = Math.min(score, 99);
           card.lastSignalTime = Date.now();
           card.signalState = "ACTIVE_SNIPER"; // v9 PHASE 5: Terminal state - immutable once set
-          card.notes = `SNIPER ${card.direction} (${card.structureState}) entry ${score}% - ${card.price.toFixed(2)}`;
+          // v21.3.8 FIX: Don't set notes here - let trade watch commentary do it below
           
           // Populate trade targets from atomic build (already validated)
           card.expectedMovePercent = atomicSignal.expectedMovePercent;
@@ -724,14 +724,55 @@ function generateWatchZoneCommentary(card: SymbolCardState): string {
       context = `trend following (${emaState}, ${stochLevel}), ${volatilityState}, ${htfContext}`;
     }
   }
+  
+  // Add exhaustion advisory if applicable
+  const advisory = generateExhaustionAdvisory(card);
+  const withAdvisory = appendAdvisory(context, advisory);
 
-  return `${card.symbol} WATCH_ZONE: ${directionArrow} ${context}`;
+  return `${card.symbol} WATCH_ZONE: ${directionArrow} ${withAdvisory}`;
+}
+
+/**
+ * EXHAUSTION/CHOP ADVISORY SYSTEM
+ * v21.3.8: Detect and expose unstable market conditions
+ * Does not affect scoring, thresholds, or ACTIVE_SNIPER behavior
+ */
+function generateExhaustionAdvisory(card: SymbolCardState): string | null {
+  const volatility = card.volatilityLevel ?? 50;
+  const emaSlope = card.emaSlope ?? 0;
+  const stoch = card.stochRsi ?? 50;
+  
+  // Advisory triggers when: volatility elevated AND (EMA weakening OR stoch quality poor)
+  const volatilityElevated = volatility > 55;
+  const emaMomentumLoss = Math.abs(emaSlope) < 0.1; // EMA flattening
+  const stochInQuality = (card.direction === "LONG" && stoch < 40) || (card.direction === "SHORT" && stoch > 60);
+  
+  if (volatilityElevated && emaMomentumLoss) {
+    return "MOMENTUM EXHAUSTING";
+  } else if (volatilityElevated && stochInQuality) {
+    return "TREND WEAKENING";
+  } else if (volatility > 70 && emaSlope === 0) {
+    return "EXPANSION FATIGUE";
+  } else if (volatilityElevated && card.direction === "NEUTRAL") {
+    return "CHOP RISK";
+  }
+  
+  return null; // No advisory needed
+}
+
+/**
+ * Append advisory to watch zone commentary if conditions warrant
+ */
+function appendAdvisory(baseCommentary: string, advisory: string | null): string {
+  if (!advisory) return baseCommentary;
+  return `${baseCommentary} [⚠ ${advisory}]`;
 }
 
 /**
  * TRADE-FOCUSED WATCH ZONE COMMENTARY
  * v21.3.2: For ACTIVE_SNIPER trades - shows if setup is still valid, reversal risks
- * Format: "↑ momentum holding, structure intact" or "⚠ reversal forming"
+ * v21.3.8: Now includes exhaustion advisories
+ * Format: "↑ momentum holding, structure intact" or "⚠ reversal forming" + optional [⚠ ADVISORY]
  */
 function generateTradeWatchCommentary(card: SymbolCardState): string {
   const directionArrow = card.direction === "LONG" ? "↑" : "↓";
@@ -768,7 +809,11 @@ function generateTradeWatchCommentary(card: SymbolCardState): string {
     status = "⚠ momentum fading";
   }
   
-  return `${card.symbol} TRADE: ${status}`;
+  // Add exhaustion advisory if applicable
+  const advisory = generateExhaustionAdvisory(card);
+  const withAdvisory = appendAdvisory(status, advisory);
+  
+  return `${card.symbol} TRADE: ${withAdvisory}`;
 }
 
 export function generateDisplayCards(displayMarkets: Record<string, PriceData>): SymbolCardState[] {
