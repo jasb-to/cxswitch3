@@ -538,6 +538,7 @@ export type SymbolCardState = {
   // Market readiness engine (v7.2.1)
   marketReadinessState: string;
   tradeReadinessScore: number | null;
+  momentumScore?: number; // v21.6.0: Calculated after all direction mutations
   
   // Conditional: Only populate if mode === "SNIPER" or "CONFIRMED"
   expectedMovePercent: { sniper: { min: number; max: number } } | null;
@@ -609,8 +610,10 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
     // Get execution profile for this asset
     const profile = getExecutionProfile(symbol);
 
-    // Score using momentum system with per-asset profile
-    let score = calculateMomentumScore(card, symbol, profile);
+    // v21.6.0 CRITICAL FIX: Momentum score is now calculated in generateCardState()
+    // AFTER all direction mutations, ensuring score uses final locked direction only
+    // card.momentumScore is already populated here; use it instead of recalculating
+    let score = card.momentumScore;
     
     // Apply activation-specific bonus (consolidates if-symbol checks)
     // REMOVED: if symbol === "BTC" && checkStructuralBreakout()
@@ -635,17 +638,6 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
       console.log(`[MACRO_BLOCK] ${symbol} ${card.direction}: 4H ${card.htf4hTrend} conflicts + score ${score} < 65 → stay BUILDING`);
       // Don't process SNIPER, let it stay BUILDING
     } else if (score >= profile.ignitionThreshold && card.direction !== "NEUTRAL" && checkSniperConditions(card, profile)) {
-      // v21.5.0 SOL Direction Alignment Check - soft, not a gate
-      // If SOL's 1H signal contradicts 4H trend, flip direction to align with 4H
-      if (symbol === "SOL" && card.htf4hTrend) {
-        if (card.direction === "SHORT" && card.htf4hTrend === "BULLISH") {
-          console.log(`[SOL_ALIGN] 1H SHORT conflicts with 4H BULLISH → flipping to LONG`);
-          card.direction = "LONG";
-        } else if (card.direction === "LONG" && card.htf4hTrend === "BEARISH") {
-          console.log(`[SOL_ALIGN] 1H LONG conflicts with 4H BEARISH → flipping to SHORT`);
-          card.direction = "SHORT";
-        }
-      }
       // v7.3.1 FIX #1: Validate ACTIVE_SNIPER execution requirements
       const executionValidation = validateActiveSniperExecution(card, score);
       
@@ -1764,6 +1756,11 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
     notes: `${structureState} - ${finalDirection}`,
     updatedAt: new Date().toISOString(),
   };
+
+  // v21.6.0 CRITICAL FIX: Calculate momentum score AFTER all direction mutations
+  // Score must use the FINAL locked direction, not pre-mutation state
+  // This ensures direction → final state → scoring, NOT scoring → direction
+  card.momentumScore = calculateMomentumScore(card, symbol);
 
   return card;
 
