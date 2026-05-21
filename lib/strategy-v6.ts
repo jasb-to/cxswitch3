@@ -9,6 +9,8 @@
 
 import type { PriceData } from "./price-router";
 import type { SegregatedMarketData } from "./market-data-layer";
+import type { Candle } from "./kraken";
+import { analyze4HStructure } from "./htf-structure-engine";
 
 // ═════════════════════════════════════════════════════════════════════════════
 // v7.6.0: EXECUTION CONTEXT - SINGLE SOURCE OF TRUTH
@@ -581,12 +583,13 @@ export type Setup = {
 /**
  * Generate symbol card states + setups from EXECUTION PIPELINE ONLY
  * v8.0: HARD PIPELINE SEGREGATION
+ * v22.0: Real 4H structure detection engine
  * 
  * This function ONLY receives Kraken data (already segregated at ingestion).
  * No gating needed - separation happened upstream in market-data-layer.
  * PURE FUNCTION - momentum-based detection
  */
-export async function generateSetups(segregatedMarkets: SegregatedMarketData): Promise<{ cards: SymbolCardState[]; setups: Setup[] }> {
+export async function generateSetups(segregatedMarkets: SegregatedMarketData, candles4hBySymbol?: Record<string, Candle[]>): Promise<{ cards: SymbolCardState[]; setups: Setup[] }> {
   const cards: SymbolCardState[] = [];
   const setups: Setup[] = [];
 
@@ -602,8 +605,8 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData): P
     // Build execution context (guaranteed execution-grade - Kraken only)
     const ctx = buildExecutionContext(symbol, priceData);
     
-    // Generate card for scan
-    const card = generateCardState(symbol, priceData);
+    // Generate card for scan with real 4H structure
+    const card = generateCardState(symbol, priceData, candles4hBySymbol?.[symbol] ?? []);
     card.cycleId = ctx.cycleId;
     cards.push(card);
 
@@ -1624,13 +1627,14 @@ function checkStructuralBreakout(card: SymbolCardState): boolean {
 /**
  * Calculate momentum score using event-driven multiplier model
  * v7.1 STABILISATION FIX
+ * v22.0: Real 4H structure detection
  * 
  * v7.7.0 CRITICAL FIX: Separate data trust from system health
  * - executionGrade: based ONLY on source (kraken_live or kraken_cached)
  * - systemHealth: based on infrastructure (PriceHealth enum)
  * - These must be ORTHOGONAL
  */
-function generateCardState(symbol: string, priceData: PriceData): SymbolCardState {
+function generateCardState(symbol: string, priceData: PriceData, candles4h: Candle[] = []): SymbolCardState {
   // v7.7.0: SPLIT CONCERNS
   // Data trust (execution-grade) = based ONLY on source
   const isKrakenSource = priceData.source === "kraken_live" || priceData.source === "kraken_cached";
@@ -1656,25 +1660,11 @@ function generateCardState(symbol: string, priceData: PriceData): SymbolCardStat
   // Volatility Level: 0-100 (low = compression, high = expansion)
   const volatilityLevel = 20 + ((symbolHash * 7) % 60); // Range: 20-80
 
-  // SIMULATE HTF CONDITIONS (v7.2.6 FIX #4: PROPER HTF STRUCTURE)
-  // 4H TREND: Now based on proper HTF structure logic
-  const htf4hMomentum = 40 + (symbolHash % 30); // 40-70 range
-  
-  // FIX #4: Proper HTF structure (v7.2.6)
-  // BULLISH if: price > 21 EMA AND 21 EMA rising AND Stoch > 55
-  // BEARISH if: price < 21 EMA AND 21 EMA falling AND Stoch < 45
-  // NEUTRAL: only if true sideways structure
-  const htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL" = 
-    // BULLISH structure: EMA rising + Stoch bullish + positive momentum
-    (emaSlope > 0 && htf4hMomentum > 55) ? "BULLISH" :
-    // BEARISH structure: EMA falling + Stoch bearish + negative momentum
-    (emaSlope < 0 && htf4hMomentum < 45) ? "BEARISH" :
-    // NEUTRAL: only if truly flat structure
-    (Math.abs(emaSlope) <= 0.2 && htf4hMomentum >= 45 && htf4hMomentum <= 55) ? "NEUTRAL" :
-    // Default to momentum bias
-    htf4hMomentum > 55 ? "BULLISH" :
-    htf4hMomentum < 45 ? "BEARISH" :
-    "NEUTRAL";
+  // v22.0 REAL 4H STRUCTURE DETECTION
+  // Replace all synthetic hash-based 4H with real OHLC analysis
+  const htf4hAnalysis = analyze4HStructure(candles4h);
+  const htf4hTrend = htf4hAnalysis.trend;
+  const htf4hMomentum = htf4hAnalysis.confidence; // Use confidence as momentum proxy
 
   // v7.2.10 FIX #3: Calculate 15M EXECUTION STATE (replaces 1H trend display)
   // Shows what entry structure is forming, not a direction
