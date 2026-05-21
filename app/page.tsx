@@ -18,79 +18,6 @@ import {
 const VERSION = "vFINAL";
 const STALE_THRESHOLD_MS = 6 * 60_000;
 
-// Bootstrap cards for initial page load - minimal data, no fakes
-const BOOTSTRAP_CARDS: SymbolCardState[] = [
-  {
-    symbol: "BTC",
-    price: 0,
-    source: "bootstrap",
-    degraded: true,
-    direction: "NEUTRAL",
-    mode: "NONE",
-    confidence: 0,
-    stochRsi: null,
-    emaSlope: null,
-    volatilityLevel: null,
-    htf4hTrend: "NEUTRAL",
-    htf4hMomentum: null,
-    htf1hAlignment: null,
-    htf15mCompression: null,
-    marketReadinessState: "BUILDING",
-    tradeReadinessScore: null,
-    expectedMovePercent: null,
-    targetPrices: null,
-    riskReward: null,
-    notes: "Waiting for live market feed…",
-    updatedAt: "",
-  },
-  {
-    symbol: "ETH",
-    price: 0,
-    source: "bootstrap",
-    degraded: true,
-    direction: "NEUTRAL",
-    mode: "NONE",
-    confidence: 0,
-    stochRsi: null,
-    emaSlope: null,
-    volatilityLevel: null,
-    htf4hTrend: "NEUTRAL",
-    htf4hMomentum: null,
-    htf1hAlignment: null,
-    htf15mCompression: null,
-    marketReadinessState: "BUILDING",
-    tradeReadinessScore: null,
-    expectedMovePercent: null,
-    targetPrices: null,
-    riskReward: null,
-    notes: "Waiting for live market feed…",
-    updatedAt: "",
-  },
-  {
-    symbol: "SOL",
-    price: 0,
-    source: "bootstrap",
-    degraded: true,
-    direction: "NEUTRAL",
-    mode: "NONE",
-    confidence: 0,
-    stochRsi: null,
-    emaSlope: null,
-    volatilityLevel: null,
-    htf4hTrend: "NEUTRAL",
-    htf4hMomentum: null,
-    htf1hAlignment: null,
-    htf15mCompression: null,
-    marketReadinessState: "BUILDING",
-    tradeReadinessScore: null,
-    expectedMovePercent: null,
-    targetPrices: null,
-    riskReward: null,
-    notes: "Waiting for live market feed…",
-    updatedAt: "",
-  },
-];
-
 const fetcher = (url: string) =>
   fetch(url, { cache: "no-store" }).then((r) => r.json());
 
@@ -257,10 +184,19 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
 }
 
 /**
- * v30.0 BOOT-STATE CONTAMINATION FIX
- * Decouple display layer from engine boot state
- * Engine status = snapshot_atomic.ready + heartbeat ONLY
- * NOT displayCycle, fallback, or cache state
+ * DETERMINISTIC RENDERING FROM BACKEND TRUTH
+ *
+ * Architecture:
+ * - Backend owns snapshot state (cards, ready flag)
+ * - Frontend is pure renderer: SWR data → render decision
+ * - No derived state, no intermediate mutations, no UI state machines
+ *
+ * Render contract (immutable):
+ * if (snap?.ready && cards.length > 0) → render LIVE
+ * else → render BOOTSTRAP
+ *
+ * One-way data flow:
+ * Backend snapshot → SWR fetch → hard type safety → deterministic render
  */
 
 export default function Dashboard() {
@@ -353,18 +289,6 @@ function DashboardBootstrap() {
             <p className="text-[10px] tracking-[0.22em] text-zinc-500 mb-4">STATUS</p>
             <p className="text-sm text-zinc-500">Awaiting snapshot...</p>
           </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {BOOTSTRAP_CARDS.map((card) => (
-            <div key={card.symbol} className="border border-zinc-800 rounded-lg p-4 bg-zinc-900/50 animate-pulse">
-              <div className="flex items-start justify-between mb-2">
-                <h3 className="text-lg font-bold text-zinc-400">{card.symbol}</h3>
-                <span className="text-xs px-2 py-1 rounded bg-zinc-800 text-zinc-400">LOADING</span>
-              </div>
-              <p className="text-sm text-zinc-500">Initializing...</p>
-            </div>
-          ))}
         </div>
       </div>
     </main>
