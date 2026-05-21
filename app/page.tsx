@@ -283,13 +283,12 @@ export default function Dashboard() {
   // Single source of truth: snapshot data from API
   const snap = data?.snapshot ?? data;
   
-  // Log the snapshot shape for debugging
-  useEffect(() => {
-    console.log("[SNAPSHOT_SHAPE]", JSON.stringify(snap, null, 2));
-  }, [snap]);
-
+  // Hard type safety - ensure arrays are always arrays
+  const cards = Array.isArray(snap?.cards) ? snap.cards : [];
+  const setups = Array.isArray(snap?.setups) ? snap.setups : [];
+  
   // Deterministic render decision: backend truth only
-  const snapshotReady = snap?.ready === true && Array.isArray(snap?.cards);
+  const snapshotReady = snap?.ready === true && cards.length > 0;
 
   if (!snapshotReady) {
     return <DashboardBootstrap />;
@@ -297,8 +296,8 @@ export default function Dashboard() {
 
   // Backend confirms snapshot is ready - render LIVE
   const snapshot = {
-    cards: snap.cards as SymbolCardState[],
-    setups: snap.setups ?? [],
+    cards: cards as SymbolCardState[],
+    setups: setups,
     signalCount: snap.signalCount ?? 0,
     activeSnipers: snap.activeSnipers ?? 0,
     updatedAt: snap.updatedAt ?? "",
