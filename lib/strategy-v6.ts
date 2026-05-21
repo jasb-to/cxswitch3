@@ -1744,8 +1744,11 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
     }
   }
 
-  // Step 4: Lock direction against structure (applies only if structure allows)
-  const finalDirection = getDirectionLockedByStructure(direction, structureState);
+  // Step 4: REMOVED getDirectionLockedByStructure() - now redundant
+  // v22.3 consolidated momentum + structure locking into getDirectionFromStructure()
+  // Calling it again would re-apply structure locks and override momentum resolution
+  // Structure is already applied in getDirectionFromStructure() before momentum
+  const finalDirection = direction;
   console.log(`[SCAN] ${symbol} direction=${finalDirection} structureState=${structureState}`);
 
   const breakoutState: BreakoutState = levelAwareness.breakoutState;
