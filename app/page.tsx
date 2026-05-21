@@ -396,10 +396,22 @@ export default function Dashboard() {
       // This is safe: refs are kept in sync by separate useEffect above
       if (lastSnapshotRef.current === null && engineStatusRef.current === "BOOT") {
         
-        if (timeSinceBoot > HARD_TIMEOUT_MS) {
+        // v32.0 FIX: Additional guard - if we just recovered from DEGRADED,
+      // do NOT re-enter DEGRADED even if this heartbeat fires before state syncs
+      // The refs are kept current by the sync effect, so this is safe
+      if (lastSnapshotRef.current !== null) {
+        // Snapshot has arrived - NEVER set DEGRADED again
+        console.log("[v0] HEARTBEAT: Snapshot present, skipping DEGRADED check");
+        return;
+      }
+      
+      if (timeSinceBoot > HARD_TIMEOUT_MS) {
           // v31.0: Hard timeout reached without snapshot - mark DEGRADED
           // Using refs ensures this check is stable and not affected by state re-renders
-          console.log("[v0] CRITICAL: Boot timeout reached - no snapshot for 8s, marking DEGRADED (stable heartbeat)");
+          console.log("[v0] CRITICAL: Boot timeout reached - no snapshot for 8s, marking DEGRADED (stable heartbeat)", {
+            timestamp: new Date().toISOString(),
+            timeSinceBoot,
+          });
           setBootState((prev) => ({
             ...prev,
             engineStatus: "DEGRADED",
@@ -412,24 +424,67 @@ export default function Dashboard() {
 
   // v30.0 FIX #2: BOOTSTRAP LOGIC - use engineStatus (canonical) not display state
   if (bootState.engineStatus === "BOOT" && !bootState.isHydrated) {
-    console.log("[v0] RENDER: DashboardBootstrap (BOOT state, not hydrated)");
+    console.log("[v0] RENDER: DashboardBootstrap (BOOT state, not hydrated)", {
+      timestamp: new Date().toISOString(),
+      engineStatus: bootState.engineStatus,
+      isHydrated: bootState.isHydrated,
+    });
     return <DashboardBootstrap />;
   }
 
+  // v32.0 FIX: CRITICAL - Snapshot arrival ALWAYS overrides DEGRADED timeout
+  // If snapshot is ready, we MUST transition to LIVE regardless of prior timeout
+  // This prevents permanent DEGRADED_BOOT when snapshot activity proves engine is alive
+  if (isReady) {
+    // Snapshot is present and valid - AUTO-PROMOTE to LIVE if stuck in DEGRADED
+    if (bootState.engineStatus === "DEGRADED") {
+      console.log("[v0] RECOVERY: Snapshot arrived while DEGRADED, promoting to LIVE", {
+        timestamp: new Date().toISOString(),
+        lastSnapshot: bootState.lastSnapshotAt,
+        snapCards: snap?.cards?.length,
+      });
+      // Update state to LIVE to prevent re-render as DEGRADED
+      setBootState((prev) => ({
+        ...prev,
+        engineStatus: "LIVE",
+        lastSnapshotAt: Date.now(),
+      }));
+      // Continue to render LIVE below
+    }
+    console.log("[v0] RENDER: DashboardLive (snapshot ready, engine LIVE)", {
+      timestamp: new Date().toISOString(),
+      engineStatus: bootState.engineStatus,
+      isReady: true,
+    });
+  }
+
   // v30.0 FIX #4: Only show DEGRADED if hard timeout actually fired
+  // BUT ONLY if snapshot is NOT ready (recovery check above catches live snapshots)
   // CRITICAL: This is NOT affected by displayCycle, fallback routing, or cache state
-  if (bootState.engineStatus === "DEGRADED") {
-    console.log("[v0] RENDER: DashboardDegraded (engineStatus=DEGRADED after 8s timeout)");
+  if (bootState.engineStatus === "DEGRADED" && !isReady) {
+    console.log("[v0] RENDER: DashboardDegraded (engineStatus=DEGRADED after 8s timeout, no snapshot)", {
+      timestamp: new Date().toISOString(),
+      engineStatus: bootState.engineStatus,
+      isReady: false,
+      lastSnapshot: bootState.lastSnapshotAt,
+    });
     return <DashboardDegraded />;
   }
 
   if (!isReady) {
     // Engine transitioning: show bootstrap while waiting
-    console.log("[v0] RENDER: DashboardBootstrap (snapshot not ready yet)");
+    console.log("[v0] RENDER: DashboardBootstrap (snapshot not ready yet)", {
+      timestamp: new Date().toISOString(),
+      snapReady: snap?.ready,
+      snapCards: snap?.cards?.length,
+    });
     return <DashboardBootstrap />;
   }
 
-  console.log("[v0] RENDER: DashboardLive (snapshot ready, engine LIVE)");
+  console.log("[v0] RENDER: DashboardLive (snapshot ready, engine LIVE)", {
+    timestamp: new Date().toISOString(),
+    engineStatus: bootState.engineStatus,
+  });
   const snapshot = {
     cards: snap.cards as SymbolCardState[],
     setups: snap.setups ?? [],
