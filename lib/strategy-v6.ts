@@ -405,6 +405,16 @@ function getDirectionFromStructure(
     return "SHORT";  // Structure-locked SHORT
   }
 
+  // v21.5.4 EARLY BEARISH ROLLOVER BIAS - CHECK BEFORE OTHER HEURISTICS
+  // Detect failed continuation + rollover structure earlier
+  // This resolves BTC/ETH from NEUTRAL→SHORT during bearish dumps that begin as flattening
+  if (htf4hTrend === "BEARISH" && stochRsi !== null && momentumEmaSlope !== null) {
+    // Failed breakout during bearish 4H: elevated stoch + flat/weakening momentum
+    if (stochRsi >= 55 && momentumEmaSlope <= 0.15) {
+      return "SHORT";  // BTC case: stoch 60, emaSlope 0.00 → SHORT
+    }
+  }
+
   // RANGE: use momentum to break tie
   if (structureState === "RANGE") {
     if (momentumEmaSlope !== null && momentumEmaSlope > 0.2) {
@@ -424,18 +434,12 @@ function getDirectionFromStructure(
     return "SHORT";
   }
 
-  // v21.5.2 NEUTRAL TIE-BREAKER: Resolve NEUTRAL EARLIER with macro structure + momentum
-  // BTC/ETH should resolve during real movement, not wait for exhaustion
-  // This is NOT a hard gate, just earlier directional resolution
-  if (stochRsi !== null && htf4hTrend !== null) {
-    // 4H BEARISH + 15M building (BREAKOUT_READY/EXPANDING) + momentum weak + stoch middle = bias SHORT
-    // Lower threshold: stoch >= 55 (not >70), no strict expansion requirement
-    if (htf4hTrend === "BEARISH" && stochRsi >= 55 && (momentumEmaSlope ?? 0) <= 0.1) {
-      return "SHORT";  // Bearish structure + momentum weakening = resolve to SHORT earlier
-    }
-    // 4H BULLISH + 15M building + momentum strengthening + stoch middle = bias LONG
-    if (htf4hTrend === "BULLISH" && stochRsi <= 45 && (momentumEmaSlope ?? 0) >= -0.1) {
-      return "LONG";   // Bullish structure + momentum strengthening = resolve to LONG earlier
+  // v21.5.4 ETH-SPECIFIC EARLY SHORT BIAS DURING FAILED CONTINUATION
+  // Detect momentum failure earlier when 4H is bearish + EMA weakening + stoch extended
+  // This allows ETH to flip LONG→SHORT faster during failed breakout attempts
+  if (htf4hTrend === "BEARISH" && stochRsi !== null && momentumEmaSlope !== null) {
+    if (stochRsi >= 60 && momentumEmaSlope <= 0.25 && (volatilityLevel ?? 50) > 55) {
+      return "SHORT";  // ETH case: stoch 63, emaSlope 0.30, vol expanding → SHORT
     }
   }
 
