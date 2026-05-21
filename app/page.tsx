@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import useSWR from "swr";
 import type { SymbolCardState } from "@/lib/types";
 import { EMPTY_SNAPSHOT } from "@/lib/canonical-snapshot";
 import {
@@ -17,9 +16,6 @@ import {
 
 const VERSION = "vFINAL";
 const STALE_THRESHOLD_MS = 6 * 60_000;
-
-const fetcher = (url: string) =>
-  fetch(url, { cache: "no-store" }).then((r) => r.json());
 
 function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -200,52 +196,50 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
  */
 
 export default function Dashboard() {
+  const [snap, setSnap] = useState(null);
   const [tg, setTg] = useState<"idle" | "sending" | "ok" | "error">("idle");
   const [tgMsg, setTgMsg] = useState("");
   const [now, setNow] = useState(0);
 
+  // Clock tick (UI only, no state derivation)
   useEffect(() => {
     setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
 
-  const { data, mutate, isValidating } = useSWR(
-    "/api/signals",
-    fetcher,
-    { revalidateOnFocus: false, dedupingInterval: 2000 }
-  );
+  // Raw fetch - no SWR state machine, no derived logic
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/signals", { cache: "no-store" });
+        const json = await res.json();
+        setSnap(json);
+      } catch (error) {
+        console.error("[FETCH] /api/signals failed:", error);
+      }
+    };
 
-  // Single source of truth: snapshot data from API
-  const snap = data?.snapshot ?? data;
-  
-  // Hard type safety - ensure arrays are always arrays
-  const cards = Array.isArray(snap?.cards) ? snap.cards : [];
-  const setups = Array.isArray(snap?.setups) ? snap.setups : [];
-  
-  // Deterministic render decision: backend truth only
-  const snapshotReady = snap?.ready === true && cards.length > 0;
+    poll();
+    const id = setInterval(poll, 1000);
+    return () => clearInterval(id);
+  }, []);
 
-  if (!snapshotReady) {
+  // ZERO LOGIC: Backend truth only
+  // No interpretation, no derivation, no state machine
+  if (!snap?.ready) {
     return <DashboardBootstrap />;
   }
 
-  // Backend confirms snapshot is ready - render LIVE
-  const snapshot = {
-    cards: cards as SymbolCardState[],
-    setups: setups,
-    signalCount: snap.signalCount ?? 0,
-    activeSnipers: snap.activeSnipers ?? 0,
-    updatedAt: snap.updatedAt ?? "",
-  };
-
+  // snap.ready === true → render LIVE
+  // That's it. No snapshotReady logic, no cards.length check, no conditions
   return (
     <DashboardLive
-      snapshot={snapshot}
+      snapshot={snap}
       now={now}
       isHydrated={true}
-      isValidating={isValidating}
-      mutate={mutate}
+      isValidating={false}
+      mutate={() => {}}
       tg={tg}
       setTg={setTg}
       tgMsg={tgMsg}
