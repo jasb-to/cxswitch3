@@ -424,16 +424,18 @@ function getDirectionFromStructure(
     return "SHORT";
   }
 
-  // v21.5.1 NEUTRAL TIE-BREAKER: Resolve NEUTRAL with macro + momentum signals
-  // This is NOT a hard gate, just a tie-breaker for unresolved states
+  // v21.5.2 NEUTRAL TIE-BREAKER: Resolve NEUTRAL EARLIER with macro structure + momentum
+  // BTC/ETH should resolve during real movement, not wait for exhaustion
+  // This is NOT a hard gate, just earlier directional resolution
   if (stochRsi !== null && htf4hTrend !== null) {
-    // 4H BEARISH + 15M overbought + expanding volatility = bias SHORT
-    if (htf4hTrend === "BEARISH" && stochRsi > 70 && (volatilityLevel ?? 50) > 50) {
-      return "SHORT";  // Clear bearish exhaustion setup
+    // 4H BEARISH + 15M building (BREAKOUT_READY/EXPANDING) + momentum weak + stoch middle = bias SHORT
+    // Lower threshold: stoch >= 55 (not >70), no strict expansion requirement
+    if (htf4hTrend === "BEARISH" && stochRsi >= 55 && (momentumEmaSlope ?? 0) <= 0.1) {
+      return "SHORT";  // Bearish structure + momentum weakening = resolve to SHORT earlier
     }
-    // 4H BULLISH + 15M oversold + expanding momentum = bias LONG
-    if (htf4hTrend === "BULLISH" && stochRsi < 30 && (volatilityLevel ?? 50) > 50) {
-      return "LONG";   // Clear bullish exhaustion setup
+    // 4H BULLISH + 15M building + momentum strengthening + stoch middle = bias LONG
+    if (htf4hTrend === "BULLISH" && stochRsi <= 45 && (momentumEmaSlope ?? 0) >= -0.1) {
+      return "LONG";   // Bullish structure + momentum strengthening = resolve to LONG earlier
     }
   }
 
@@ -956,6 +958,18 @@ function calculateMomentumScore(card: SymbolCardState, symbol: string = "SOL", p
   const trend4HAligned = card.stochRsi > 50; // Simplified: would use actual 4H data
   if (trend4HAligned) {
     multiplier *= exec.trendWeight; // Profile-tuned (BTC emphasizes, SOL standard)
+  }
+
+  // v21.5.2 ETH CONTINUATION DECAY
+  // When 4H is bearish but ETH is still LONG + flattening EMA, reduce continuation confidence
+  // This allows SHORT bias to emerge faster during false continuation attempts
+  if (symbol === "ETH" && card.htf4hTrend === "BEARISH" && card.direction === "LONG") {
+    const emaFlattening = Math.abs(card.emaSlope ?? 0) < 0.25;
+    const volatilityExpanding = (card.volatilityLevel ?? 50) > 55;
+    
+    if (emaFlattening && volatilityExpanding) {
+      multiplier *= 0.92; // -8% continuation decay for false breakout recovery
+    }
   }
 
   // Apply multiplier
