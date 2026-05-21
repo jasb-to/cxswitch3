@@ -14,7 +14,7 @@
  * Monitor layer now reports state transitions instead of snapshots
  */
 
-const MOMENTUM_ENGINE_VERSION = "v23.0_EVENT_DRIVEN_MONITOR_ACTIVE";
+const MOMENTUM_ENGINE_VERSION = "v24.0_MACRO_MOMENTUM_FUSION_ACTIVE";
 
 // Log on module load to verify runtime version
 if (typeof window === "undefined") {
