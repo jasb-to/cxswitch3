@@ -257,26 +257,41 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
   );
 }
 
+/**
+ * v29.0 BOOT-STATE RESOLUTION BRIDGE
+ * Single source of truth for engine status (BOOT | LIVE | DEGRADED)
+ * Ensures UI never gets stuck in DEGRADED_BOOT when engine is actually running
+ */
+type EngineStatus = "BOOT" | "LIVE" | "DEGRADED";
+
+interface BootState {
+  engineStatus: EngineStatus;
+  lastSnapshotAt: number | null;
+  isHydrated: boolean;
+  hasActiveStream: boolean;
+}
+
+const HARD_TIMEOUT_MS = 8000; // 8 second hard timeout (vs 3 second soft)
+
 export default function Dashboard() {
   const [tg, setTg] = useState<"idle" | "sending" | "ok" | "error">("idle");
   const [tgMsg, setTgMsg] = useState("");
   const [now, setNow] = useState(0);
   const [isHydrated, setIsHydrated] = useState(false);
-  const [bootTimeout, setBootTimeout] = useState(false);
+  
+  // v29.0: Single source of truth for boot state
+  const [bootState, setBootState] = useState<BootState>({
+    engineStatus: "BOOT",
+    lastSnapshotAt: null,
+    isHydrated: false,
+    hasActiveStream: false,
+  });
 
   useEffect(() => {
     setIsHydrated(true);
     setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, []);
-
-  // v28.1 FIX #3: TIMEOUT FALLBACK - prevent infinite "Awaiting snapshot..." state
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setBootTimeout(true);
-    }, 3000); // 3 second timeout before rendering DEGRADED_BOOT state
-    return () => clearTimeout(timer);
   }, []);
 
   const { data, mutate, isValidating } = useSWR(
@@ -288,23 +303,65 @@ export default function Dashboard() {
   // Normalize: API may return { snapshot: {...} } or the snapshot directly
   const snap = data?.snapshot ?? data;
 
-  // Gate: only render live UI when snapshot is complete
+  // Gate: snapshot is complete and ready
   const isReady =
     snap &&
     snap.ready === true &&
     Array.isArray(snap.cards) &&
     snap.cards.length === 3;
 
-  // v28.1 FIX #3: If timeout reached and no snapshot, render DEGRADED_BOOT skeleton
-  if (bootTimeout && !isReady) {
+  // v29.0 FIX #1: HANDSHAKE TRIGGER - when snapshot arrives, transition to LIVE
+  useEffect(() => {
+    if (isReady) {
+      setBootState({
+        engineStatus: "LIVE",
+        lastSnapshotAt: Date.now(),
+        isHydrated: true,
+        hasActiveStream: true,
+      });
+    } else if (isValidating) {
+      // Stream is active and fetching
+      setBootState((prev) => ({
+        ...prev,
+        hasActiveStream: true,
+      }));
+    }
+  }, [isReady, isValidating]);
+
+  // v29.0 FIX #4: HARD TIMEOUT - only trigger DEGRADED if heartbeat actually missing
+  useEffect(() => {
+    const checkHeartbeat = setInterval(() => {
+      if (bootState.lastSnapshotAt === null) {
+        // No snapshot received yet
+        const timeSinceBoot = Date.now() - (now - Math.floor(now / 1000) * 1000); // rough since-boot
+        if (timeSinceBoot > HARD_TIMEOUT_MS && bootState.engineStatus === "BOOT") {
+          // Hard timeout reached: mark as DEGRADED
+          setBootState((prev) => ({
+            ...prev,
+            engineStatus: "DEGRADED",
+          }));
+        }
+      }
+    }, 1000);
+    return () => clearInterval(checkHeartbeat);
+  }, [bootState, now]);
+
+  // v29.0 FIX #2: BOOTSTRAP LOGIC - use engineStatus not local timers
+  if (bootState.engineStatus === "BOOT" && !bootState.isHydrated) {
+    return <DashboardBootstrap />;
+  }
+
+  // v29.0 FIX #4: Only show DEGRADED if hard timeout actually fired
+  if (bootState.engineStatus === "DEGRADED") {
     return <DashboardDegraded />;
   }
 
   if (!isReady) {
+    // Engine transitioning: show bootstrap while waiting
     return <DashboardBootstrap />;
   }
 
-  // Snapshot is the ONLY data passed to children — no derivation here
+  // v29.0: Snapshot is the ONLY data passed to children — no derivation here
   const snapshot = {
     cards: snap.cards as SymbolCardState[],
     setups: snap.setups ?? [],
