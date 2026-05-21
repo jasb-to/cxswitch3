@@ -150,6 +150,15 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
   
   // Decision text derives from state and dynamic notes (watch zone/trade commentary)
   const { action, guidance } = getDecisionText(uiState, card.notes);
+  
+  // v21.5.0 SOL 4H Direction Alignment - soft check, not a gate
+  // If SOL is SHORT but 4H is BULLISH, suggest direction alignment
+  let directionAdvisory = "";
+  if (card.symbol === "SOL" && card.direction === "SHORT" && card.htf4hTrend === "BULLISH") {
+    directionAdvisory = " [4H bullish - consider LONG]";
+  } else if (card.symbol === "SOL" && card.direction === "LONG" && card.htf4hTrend === "BEARISH") {
+    directionAdvisory = " [4H bearish - consider SHORT]";
+  }
 
   return (
     <div className={`rounded-lg border ${directionBorder} p-5 bg-[#0f0f0f] text-white space-y-4`}>
@@ -193,10 +202,10 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
       {/* HARD OVERRIDE FOR ACTIVE_SNIPER: Never render readiness, never render "DO NOT TRADE" */}
       {signalState === "ACTIVE_SNIPER" ? (
         <>
-          {/* For ACTIVE_SNIPER: Skip readiness bar entirely, render minimal decision box */}
+          {/* For ACTIVE_SNIPER: Skip readiness bar entirely, render decision box with real trade commentary */}
           <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-cyan-700">
-            <p className="text-lg font-bold text-amber-400">WATCH ZONE</p>
-            <p className="text-sm text-zinc-400 mt-1">Signal executed - Monitor entry</p>
+            <p className="text-lg font-bold text-amber-400">{action}</p>
+            <p className="text-sm text-zinc-400 mt-1">{guidance}{directionAdvisory}</p>
           </div>
         </>
       ) : (
