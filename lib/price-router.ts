@@ -32,11 +32,12 @@ export type KrakenFailureType = "EMPTY_RESPONSE" | "TIMEOUT" | "HTTP_ERROR" | "A
 export interface PriceData {
   price: number;
   source: PriceSource;
-  health: PriceHealth;
+  health: PriceHealth; // Execution health: LIVE/DEGRADED/OFFLINE
   bid?: number;
   ask?: number;
   timestamp: number;
-  isStale?: boolean; // NEW: Flag to prevent false LIVE from stale cache
+  isStale?: boolean; // Display metadata: cache age > freshness threshold (UI only, does NOT downgrade execution)
+  displayFreshness?: "FRESH" | "STALE" | "FALLBACK"; // Explicit separation: execution health vs display freshness
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -365,8 +366,9 @@ async function getPriceFromCoinGecko(symbol: string): Promise<PriceData | null> 
 
 /**
  * Price Router: Try Kraken first, fallback to CoinGecko, use cache for stability
- * NEW: Downgrade stale cached prices to DEGRADED instead of returning as LIVE
- * NEW: Return kraken_cached when using cache, kraken_live when fetching fresh
+ * SEPARATION OF CONCERNS: Execution health ≠ display freshness
+ * - Execution health: based on data availability and quality (LIVE/DEGRADED/OFFLINE)
+ * - Display freshness: based on cache age (FRESH/STALE/FALLBACK) — UI decoration only
  * Returns explicit health status for gate enforcement
  */
 export async function getPrice(symbol: string): Promise<PriceData | null> {
@@ -377,18 +379,21 @@ export async function getPrice(symbol: string): Promise<PriceData | null> {
   const cached = getCachedPrice(base);
   if (cached && (cached.source === "kraken_live" || cached.source === "kraken_cached")) {
     if (cached.isStale) {
-      // Downgrade stale cache to DEGRADED to prevent false LIVE status
-      console.log(`[PRICE_ROUTER] Using stale Kraken cache for ${base} — downgrading to DEGRADED`);
+      // Display cache is stale, but execution health remains unchanged
+      // Cache staleness is a DISPLAY concern, not an EXECUTION concern
+      console.log(`[PRICE_ROUTER] Using stale Kraken cache for ${base} — display freshness STALE`);
       return {
         ...cached,
-        source: "kraken_cached", // Explicit: this is cached, not live
-        health: "DEGRADED",
+        source: "kraken_cached",
+        health: cached.health ?? "LIVE", // Preserve execution health from cache
+        displayFreshness: "STALE", // Explicit: this is a display concern only
       };
     }
-    // Fresh cache, mark as cached and return as LIVE (but source indicates it's cached)
+    // Fresh cache, return as LIVE with display freshness FRESH
     return {
       ...cached,
-      source: "kraken_cached", // Explicit: this is cached, not live feed
+      source: "kraken_cached",
+      displayFreshness: "FRESH",
     };
   }
 
@@ -401,19 +406,23 @@ export async function getPrice(symbol: string): Promise<PriceData | null> {
   // Kraken failed, check cache before fallback
   if (cached && (cached.source === "kraken_live" || cached.source === "kraken_cached")) {
     if (cached.isStale) {
-      // Downgrade stale cache to DEGRADED
-      console.log(`[PRICE_ROUTER] Kraken failed, using stale cache for ${base} — downgrading to DEGRADED`);
+      // Kraken failed but we have stale cache. Execution is degraded (no fresh feed),
+      // but display is using cached data. Mark execution health appropriately.
+      console.log(`[PRICE_ROUTER] Kraken failed, using stale cache for ${base} — execution now DEGRADED (no live feed)`);
       return {
         ...cached,
-        source: "kraken_cached", // Explicit: this is cached fallback
-        health: "DEGRADED",
+        source: "kraken_cached",
+        health: "DEGRADED", // Execution is degraded (no live feed)
+        displayFreshness: "STALE", // Display is also stale
       };
     }
-    // Cache is fresh, still OK for execution but mark as cached
-    console.log(`[PRICE_ROUTER] Kraken failed, using fresh cached price for ${base}`);
+    // Cache is fresh but Kraken failed. Return cached but mark execution as degraded.
+    console.log(`[PRICE_ROUTER] Kraken failed, using fresh cached price for ${base} — execution DEGRADED`);
     return {
       ...cached,
-      source: "kraken_cached", // Explicit: this is cached, not live feed
+      source: "kraken_cached",
+      health: "DEGRADED", // Execution is degraded (no live feed)
+      displayFreshness: "FRESH", // Display is fresh
     };
   }
 
@@ -422,7 +431,7 @@ export async function getPrice(symbol: string): Promise<PriceData | null> {
   // Try secondary feed (CoinGecko)
   const coingeckoPrice = await getPriceFromCoinGecko(base);
   if (coingeckoPrice) {
-    return coingeckoPrice; // DEGRADED (visual only, no trading)
+    return coingeckoPrice; // DEGRADED (fallback only, no trading)
   }
 
   // Both feeds failed
