@@ -14,7 +14,7 @@
  * Monitor layer now reports state transitions instead of snapshots
  */
 
-const MOMENTUM_ENGINE_VERSION = "v26.0_EVENT_ONLY_OUTPUT_AND_STRICT_SL_ACTIVE";
+const MOMENTUM_ENGINE_VERSION = "v27.0_SNIPER_SL_AUTHORITY_AND_UI_SEPARATION_LOCK";
 
 // Log on module load to verify runtime version
 if (typeof window === "undefined") {
@@ -554,12 +554,11 @@ function calculateDirectionScore(
 }
 
 /**
- * v25.0 SIGNAL RENDERING HIERARCHY
+ * v27.0 BUILD SIGNAL HIERARCHY - STRICT UI SEPARATION
+ * CRITICAL: Macro MUST NEVER appear as directional suggestion ("consider LONG/SHORT")
  * 
- * PRIMARY: ACTIVE_SNIPER signal with full direction
- * CONTEXT: 4H macro trend as secondary information
- * 
- * Prevents confusion: Direction comes from 1H SNIPER, not from 4H macro
+ * PRIMARY: Direction from 1H SNIPER momentum
+ * CONTEXT: 4H macro as secondary information only (not a suggestion)
  */
 type SignalHierarchy = {
   primary: {
@@ -572,12 +571,15 @@ type SignalHierarchy = {
     type: "MACRO_ALIGNMENT" | "MACRO_DIVERGENCE";
     macroTrend: "BULLISH" | "BEARISH" | "NEUTRAL";
     impact: "REINFORCES" | "COMPLICATES" | "NEUTRAL";
+    note: string; // v27.0: FIX - never says "consider LONG/SHORT"
   };
 };
 
 /**
- * v25.0 Build signal rendering hierarchy
- * Ensures PRIMARY signal is direction from SNIPER, CONTEXT is macro suggestion
+ * v27.0 Build signal rendering hierarchy - STRICT SEPARATION LOCK
+ * PRIMARY: ACTIVE_SNIPER determines direction
+ * CONTEXT: 4H macro is informational (MACRO SUPPORTIVE, MACRO CONTRA, MACRO NEUTRAL)
+ * NO LEAKAGE: Never include "consider LONG", "consider SHORT", or similar suggestions
  */
 function buildSignalHierarchy(
   direction: "LONG" | "SHORT",
@@ -595,23 +597,34 @@ function buildSignalHierarchy(
     rationale: `${direction} SNIPER ignition: 15M=${execution15mState} + momentum (stoch=${stochRsi?.toFixed(1) ?? "N/A"}, ema=${emaSlope?.toFixed(3) ?? "N/A"})`,
   };
   
-  // CONTEXT: 4H macro as secondary information
+  // CONTEXT: 4H macro as secondary information (NEVER as suggestion)
   let context: SignalHierarchy["context"] | undefined;
   if (htf4hTrend && htf4hTrend !== "NEUTRAL") {
     // Determine if macro aligns or diverges
     const macroAligned = (htf4hTrend === "BULLISH" && direction === "LONG") || 
                          (htf4hTrend === "BEARISH" && direction === "SHORT");
-    const macroAlignment = macroAligned ? "REINFORCES" : "COMPLICATES";
     
     context = {
       type: macroAligned ? "MACRO_ALIGNMENT" : "MACRO_DIVERGENCE",
       macroTrend: htf4hTrend as "BULLISH" | "BEARISH",
-      impact: macroAlignment,
+      impact: macroAligned ? "REINFORCES" : "COMPLICATES",
+      // v27.0 FIX: Never say "consider LONG/SHORT" - only informational labels
+      note: macroAligned 
+        ? "MACRO SUPPORTIVE" 
+        : "MACRO CONTRA",
+    };
+  } else {
+    context = {
+      type: "MACRO_ALIGNMENT",
+      macroTrend: "NEUTRAL",
+      impact: "NEUTRAL",
+      note: "MACRO NEUTRAL",
     };
   }
   
   return { primary, context };
 }
+
 
 function getDirectionFromStructure(
   structureState: StructureState,
@@ -1555,10 +1568,40 @@ function buildAtomicSniperSignal(
 }
 
 /**
+ * v27.0 SNIPER SL AUTHORITY ENFORCEMENT
+ * CRITICAL RULE: ACTIVE_SNIPER MUST use SNIPER SL (momentum-based)
+ * STRUCTURE SL is ONLY for fallback when SNIPER SL is explicitly invalidated
+ * 
+ * This function computes momentum-based SL invalidation:
+ * - Returns tight SNIPER SL if momentum is healthy
+ * - Returns wider STRUCTURE SL only if momentum decay detected
+ */
+function calculateMomentumInvalidationSL(
+  price: number,
+  direction: "LONG" | "SHORT",
+  stochRsi: number | null,
+  emaSlope: number | null,
+  recentSwingLevel: number | null,
+  structureSLValue: number
+): { sl: number; source: "SNIPER_MOMENTUM" | "STRUCTURE_FALLBACK"; invalidated: boolean } {
+  // Check momentum health to decide SL authority
+  const momentumValid = stochRsi !== null && emaSlope !== null &&
+    ((direction === "LONG" && stochRsi >= 40 && emaSlope >= 0.1) ||
+     (direction === "SHORT" && stochRsi <= 60 && emaSlope <= -0.1));
+  
+  if (momentumValid) {
+    // SNIPER SL has authority - momentum is healthy
+    const sniperSL = calculateSniperStopLoss(price, recentSwingLevel, direction);
+    return { sl: sniperSL, source: "SNIPER_MOMENTUM", invalidated: false };
+  } else {
+    // Momentum failed - fall back to STRUCTURE SL
+    return { sl: structureSLValue, source: "STRUCTURE_FALLBACK", invalidated: true };
+  }
+}
+
+/**
  * v25.0 Calculate trade targets with dual SL system
- * - SNIPER SL: Tight SL at recent swing (1.5% cap)
- * - STRUCTURE SL: Wider SL at support/resistance (2.5% cap)
- * - Returns both, caller decides which to use
+ * v27.0: Now enforces SNIPER SL authority + inflation cap + adds audit trace
  */
 function calculateTradeTargets(
   price: number,
@@ -1581,17 +1624,28 @@ function calculateTradeTargets(
   const sniperSL = calculateSniperStopLoss(price, recentSwingLevel, direction as "LONG" | "SHORT");
   const structureSL = calculateStructureStopLoss(price, supportResistanceLevel, null, direction as "LONG" | "SHORT");
   
-  // v26.0 CRITICAL: Validate SL separation not violated
-  const slValidation = validateSLSeparation(sniperSL, structureSL, direction as "LONG" | "SHORT");
-  if (!slValidation.valid) {
-    console.log(`[SL_VIOLATION] ${slValidation.reason}`);
+  // v27.0: SNIPER SL AUTHORITY - momentum determines SL source
+  const { sl: activeSL, source: slSource, invalidated: slInvalidated } = calculateMomentumInvalidationSL(
+    price,
+    direction as "LONG" | "SHORT",
+    stochRsi,
+    emaSlope,
+    recentSwingLevel,
+    structureSL
+  );
+  
+  // v27.0: SL INFLATION GUARD - hard cap at 1.8%
+  const MAX_SNIPER_SL_PCT = 0.018; // 1.8% inflation cap
+  const distance = Math.abs(activeSL - price) / price;
+  
+  let finalSL = activeSL;
+  if (slSource === "SNIPER_MOMENTUM" && distance > MAX_SNIPER_SL_PCT) {
+    // SL inflation detected - clamp to hard cap
+    finalSL = direction === "LONG" 
+      ? price * (1 - MAX_SNIPER_SL_PCT)
+      : price * (1 + MAX_SNIPER_SL_PCT);
+    console.log(`[SL_INFLATION_CAP] SL was ${(distance * 100).toFixed(2)}% from entry, clamped to 1.8%`);
   }
-  
-  // v26.0: Check if SNIPER SL should be invalidated
-  const sniperSLInvalid = shouldInvalidateSniperSL(stochRsi, emaSlope, direction as "LONG" | "SHORT");
-  
-  // Use SNIPER SL if valid, otherwise fall back to STRUCTURE SL
-  const activeSL = sniperSLInvalid ? structureSL : sniperSL;
   
   const riskReward = (sniperMax * 1.5) / sniperMax;
   
@@ -1600,13 +1654,22 @@ function calculateTradeTargets(
     targetPrices: { 
       tp1, 
       tp2, 
-      sl: activeSL,
-      sl_sniper: sniperSL,
-      sl_structure: structureSL,
-      sl_active_type: sniperSLInvalid ? "STRUCTURE" : "SNIPER",
+      sl: finalSL,  // SNIPER authority enforced + inflation capped
     },
     riskReward,
+    // v27.0: Add SL audit trace for debugging
+    debug: {
+      slAudit: {
+        sniperSL,
+        structureSL,
+        selected: finalSL,
+        source: slSource,
+        invalidated: slInvalidated,
+        inflationCapped: distance > MAX_SNIPER_SL_PCT,
+      }
+    }
   };
+
 }
 
 /**
