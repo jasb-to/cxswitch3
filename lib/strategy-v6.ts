@@ -9,14 +9,19 @@
  * v22.5 DEPLOYMENT MARKER - Runtime verification
  * If this version string appears in logs, v22.5 is LIVE
  * If this version does NOT appear, old runtime artifact is executing
+ * 
+ * v23.0 EVENT-DRIVEN MONITOR
+ * Monitor layer now reports state transitions instead of snapshots
  */
 
-const MOMENTUM_ENGINE_VERSION = "v22.5_TRADE_MONITOR_ALIGNMENT_ACTIVE";
+const MOMENTUM_ENGINE_VERSION = "v23.0_EVENT_DRIVEN_MONITOR_ACTIVE";
 
 // Log on module load to verify runtime version
 if (typeof window === "undefined") {
   console.log(`[MOMENTUM_ENGINE] ${MOMENTUM_ENGINE_VERSION}`);
 }
+
+import { detectMonitorEvent, formatMonitorEvent } from "./monitor-event-engine";
 
 import type { PriceData } from "./price-router";
 
@@ -700,11 +705,12 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
             setups.push(atomicSignal);
             console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
             
-            // Trade-focused watch zone commentary (show setup health)
-            const tradeCommentary = generateTradeWatchCommentary(card);
-            console.log(`[TRADE_MONITOR] ${tradeCommentary}`);
-            // Attach trade commentary to card notes for UI display
-            card.notes = tradeCommentary;
+            // v23.0 EVENT-DRIVEN MONITOR: Report state transitions not snapshots
+            const monitorEvent = detectMonitorEvent(card);
+            const eventCommentary = formatMonitorEvent(monitorEvent);
+            console.log(`[MONITOR_EVENT] ${eventCommentary}`);
+            // Attach event-based commentary to card notes for UI display
+            card.notes = eventCommentary;
           }
         }
       }
@@ -713,13 +719,17 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
       const wasBuilding = card.signalState === "BUILDING";
       card.signalState = "BUILDING";
       
-      // Generate watch zone commentary - log on state change, always update notes for UI
-      const commentary = generateWatchZoneCommentary(card);
-      if (!wasBuilding) {
-        console.log(`[WATCH_ZONE_UPDATE] ${commentary}`);
+      // v23.0 EVENT-DRIVEN MONITOR: Only report on meaningful transitions
+      const monitorEvent = detectMonitorEvent(card);
+      if (monitorEvent.type !== "NONE") {
+        const eventCommentary = formatMonitorEvent(monitorEvent);
+        console.log(`[MONITOR_EVENT] ${eventCommentary}`);
+        card.notes = eventCommentary;
+      } else {
+        // No transition - use watch zone commentary as fallback
+        const commentary = generateWatchZoneCommentary(card);
+        card.notes = commentary;
       }
-      // Always attach commentary to card notes for UI display (updates every scan)
-      card.notes = commentary;
       console.log(`[BUILDING] ${symbol} score=${score} - awaiting ignition trigger`);
     }
 
@@ -1836,9 +1846,12 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
     updatedAt: new Date().toISOString(),
   };
 
-  // v22.5 PIPELINE TRACE: Comprehensive state verification
-  // Print complete flow for debugging subsystem consistency
-  console.log(`[PIPELINE_TRACE] ${symbol} final state:
+  // v23.0 PIPELINE TRACE: Comprehensive state verification with event detection
+  // Detect monitor events to show what transitions occurred this cycle
+  const monitorEvent = detectMonitorEvent(card);
+  const eventType = monitorEvent.type !== "NONE" ? monitorEvent.type : "NO_CHANGE";
+  
+  console.log(`[PIPELINE_TRACE] ${symbol} cycle state:
     direction=${finalDirection} (from momentum + structure)
     momentum_score=${card.momentumScore?.toFixed(1) ?? "N/A"}
     emaSlope=${emaSlope?.toFixed(3) ?? "N/A"}
@@ -1847,7 +1860,7 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
     execution15m=${card.execution15mState}
     structure=${structureState}
     htf4hTrend=${htf4hTrend}
-    monitor_status=${generateTradeWatchCommentary(card).split("TRADE:")[1]?.trim() ?? "N/A"}
+    monitor_event=${eventType}
     signal_state=${card.signalState}
   `);
 
