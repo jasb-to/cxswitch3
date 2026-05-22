@@ -20,6 +20,7 @@ export interface HTFStructureAnalysis {
   trend: HTFTrend;
   structure: "HH" | "HL" | "LH" | "LL" | "MIXED" | "UNKNOWN";
   emaSlope: number;
+  spreadAcceleration: number;
   displacement: number;
   swingHigh: number;
   swingLow: number;
@@ -63,30 +64,41 @@ export function analyze4HStructure(candles: Candle[], fallbackEMASlope?: number)
 
   const lastCandle = candles[candles.length - 1];
   
-  // FIX 1: Calculate EMA slope over multiple bars, not single candle
-  // Using 8-bar and 21-bar EMAs for meaningful slope detection
+  // FIX: Calculate directional structure from EMA cross (primary) + acceleration (secondary)
+  // STOP averaging conflicting regimes - that corrupts the signal
+  
   const ema8 = calculateEMA(candles, 8);
   const ema21 = calculateEMA(candles, 21);
   
-  // Primary slope: 8/21 cross direction (more responsive)
-  const emaCrossSlope = (ema8 - ema21) / ema21 * 100;
+  // PRIMARY: Directional bias from EMA cross
+  // This is the STRUCTURAL direction, not historical momentum
+  const directionalBias = (ema8 - ema21) / ema21 * 100;
   
-  // Secondary slope: 21 bar momentum over 5-bar window
-  const ema21Prev5 = candles.length >= 6 ? calculateEMA(candles.slice(-5), 21) : ema21;
-  const emaMomentumSlope = (ema21 - ema21Prev5) / ema21Prev5 * 100;
+  // SECONDARY: Spread acceleration (is the cross accelerating or decelerating?)
+  // This measures REAL directional expansion, not lagging drift
+  const currentSpread = ema8 - ema21;
+  const prevEma8 = candles.length >= 2 ? calculateEMA(candles.slice(0, -1), 8) : ema8;
+  const prevEma21 = candles.length >= 2 ? calculateEMA(candles.slice(0, -1), 21) : ema21;
+  const previousSpread = prevEma8 - prevEma21;
+  const spreadAcceleration = currentSpread - previousSpread;
   
-  // Final slope: average the two for stability
-  // This prevents single-candle noise from zeroing out real directional movement
-  const emaSlope = (emaCrossSlope + emaMomentumSlope) / 2;
+  // CRITICAL: emaSlope is now DIRECTIONAL, not averaged
+  // Positive = EMA8 above EMA21 (bullish structure)
+  // Negative = EMA8 below EMA21 (bearish structure)
+  // This is NO LONGER averaged with historical drift
+  const emaSlope = directionalBias;
   
-  // Mandatory debug logging
-  console.log(`[EMA_SOURCE_DEBUG] ${lastCandle?.symbol || 'UNKNOWN'}:`, {
+  // Mandatory observability: FULL directional structure
+  console.log(`[EMA_STRUCTURE] ${lastCandle?.symbol || 'UNKNOWN'}:`, {
     ema8: ema8.toFixed(2),
     ema21: ema21.toFixed(2),
-    emaCrossSlope: emaCrossSlope.toFixed(3),
-    ema21Prev5: ema21Prev5.toFixed(2),
-    emaMomentumSlope: emaMomentumSlope.toFixed(3),
-    finalSlope: emaSlope.toFixed(3),
+    spread: currentSpread.toFixed(0),
+    spreadPrev: previousSpread.toFixed(0),
+    acceleration: spreadAcceleration.toFixed(0),
+    directionalBias: directionalBias.toFixed(3),
+    emaSlope: emaSlope.toFixed(3),
+    structure: ema8 < ema21 ? "BEARISH_STRUCTURE" : ema8 > ema21 ? "BULLISH_STRUCTURE" : "NEUTRAL",
+    accelerating: spreadAcceleration > 0 ? "YES" : "NO",
     timestamp: new Date().toISOString()
   });
   
@@ -96,8 +108,8 @@ export function analyze4HStructure(candles: Candle[], fallbackEMASlope?: number)
   // Calculate displacement (trend strength)
   const displacement = calculateDisplacement(candles);
   
-  // Determine trend from combined signals
-  const trend = determineTrend(structure, emaSlope, displacement, lastCandle);
+  // Determine trend from directional structure
+  const trend = determineTrend(structure, emaSlope, spreadAcceleration, displacement, lastCandle);
   
   // Calculate confidence score (0-100)
   const confidence = calculateConfidence(structure, emaSlope, displacement);
@@ -106,6 +118,7 @@ export function analyze4HStructure(candles: Candle[], fallbackEMASlope?: number)
     trend,
     structure,
     emaSlope,
+    spreadAcceleration,
     displacement,
     swingHigh,
     swingLow,
@@ -236,16 +249,27 @@ function calculateSMA(candles: Candle[]): number {
 function determineTrend(
   structure: "HH" | "HL" | "LH" | "LL" | "MIXED",
   emaSlope: number,
+  spreadAcceleration: number,
   displacement: number,
   lastCandle: Candle | null
 ): HTFTrend {
+  // HARD RULE: If ema8 < ema21 AND spread acceleration worsening
+  // LONG cannot be generated unless reclaim structure explicitly exists
+  const bearishStructure = emaSlope < -0.1;  // EMA8 below EMA21
+  const acceleratingBearish = spreadAcceleration < -50; // Gap worsening
+  
+  if (bearishStructure && acceleratingBearish) {
+    // BEARISH structure + worsening spread = SHORT bias (no LONG exception)
+    return "BEARISH";
+  }
+  
   // Structure bullish signals
   const structureBullish = structure === "HH" || structure === "HL";
   const structureBearish = structure === "LH" || structure === "LL";
   
-  // EMA bullish/bearish signals
-  const emaBullish = emaSlope > 0.1; // > 0.1% slope
-  const emaBearish = emaSlope < -0.1;
+  // EMA bullish/bearish signals (now DIRECTIONAL, not averaged)
+  const emaBullish = emaSlope > 0.1;  // EMA8 above EMA21
+  const emaBearish = emaSlope < -0.1; // EMA8 below EMA21
   
   // Displacement bullish/bearish signals
   const displacementBullish = displacement > 0.5;
