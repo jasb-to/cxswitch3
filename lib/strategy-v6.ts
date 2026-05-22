@@ -1214,6 +1214,10 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
     // This ensures: if validation passes → signal WILL exist
     // If validation fails → signal NEVER constructed (not even briefly)
     
+    // Define macro conflict before validation
+    const macroConflict = (card.htf4hTrend === "BULLISH" && card.direction === "SHORT") || 
+                         (card.htf4hTrend === "BEARISH" && card.direction === "LONG");
+    
     const canCreateSniper = validateFullSniperEligibility(
       card,
       score,
