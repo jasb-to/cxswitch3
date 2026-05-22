@@ -875,77 +875,98 @@ function buildSignalHierarchy(
 
 function getDirectionFromStructure(
   structureState: StructureState,
-  emaStructure: any, // NEW: Pass the complete EMA_STRUCTURE object (truth source)
+  emaStructure: any,
   stochRsi: number | null,
   htf4hTrend: string | null,
   volatilityLevel: number | null
 ): "LONG" | "SHORT" | "NEUTRAL" {
-  // v25.0 SINGLE SOURCE OF TRUTH: EMA_STRUCTURE ONLY
-  // HARDENED GUARD: Ensure EMA_STRUCTURE is available
+  // v26.0 CRITICAL: EMA_STRUCTURE IS A DIRECTIONAL GATE, NOT A SCORING INPUT
+  // This prevents macro + stoch from flipping direction when structure is clear
+  
   if (!emaStructure) {
     throw new Error("EMA_STRUCTURE_REQUIRED: getDirectionFromStructure must receive valid emaStructure");
   }
   
-  // Extract directional bias from EMA_STRUCTURE (ONLY SOURCE OF TRUTH)
+  // GATE 1: Extract directional constraint from EMA structure
   const directionalBias = emaStructure.emaSlope;  // -1.0 to +1.0
-  const spreadAcceleration = emaStructure.spreadAcceleration; // Trend confirmation signal
+  const spreadAcceleration = emaStructure.spreadAcceleration; // Trend confirmation
   
-  // Macro layer: HTF alignment (permission, not override)
+  // Determine gate direction based on EMA structure (not scoring, gating)
+  let gateDirection: "LONG_ONLY" | "SHORT_ONLY" | "NEUTRAL" = "NEUTRAL";
+  
+  if (directionalBias < -0.1) {
+    // EMA8 clearly below EMA21 - SHORT gate active
+    gateDirection = "SHORT_ONLY";
+  } else if (directionalBias > 0.1) {
+    // EMA8 clearly above EMA21 - LONG gate active
+    gateDirection = "LONG_ONLY";
+  }
+  // else: NEUTRAL gate allows momentum to decide
+  
+  // GATE 2: Macro layer (HTF alignment) - secondary gate, cannot override primary
   const macroBiasWeight = calculateMacroBiasWeight(htf4hTrend);
   
-  // v25.0: Direction derived from EMA_STRUCTURE + macro alignment
-  // CRITICAL: No EMA recomputation, no momentum weighting - use directional bias directly
+  // If macro is strong bearish (-12) and EMA gate is SHORT_ONLY, reinforce SHORT
+  // If macro is strong bullish (+12) and EMA gate is LONG_ONLY, reinforce LONG
+  // But if gates conflict, EMA wins
   
-  // Convert directional bias to momentum-like score for hierarchy
-  // directionalBias -1.0 to +1.0 already scaled correctly
-  const momentumComponent = directionalBias * 100; // Now truly directional, not historical
+  // GATE 3: Oscillator (stoch RSI) - tertiary gate, cannot override primary
+  const stochConfirmation = stochRsi !== null ? (stochRsi - 50) * 0.1 : 0; // -5 to +5
   
-  const { score: directionScore, dominantBias } = calculateDirectionScore(
-    momentumComponent,
-    macroBiasWeight,
-    0
-  );
+  // Calculate candidate direction from score (for neutral gate only)
+  const momentumOnlyScore = 50 + stochConfirmation; // Base 50, add stoch influence
   
-  // Stoch RSI adds oscillator confirmation (not primary)
-  const stochInfluence = stochRsi !== null ? (stochRsi - 50) * 0.2 : 0;
-  const finalScore = directionScore + stochInfluence;
-  
-  console.log(`[EMA_STRUCTURE_INTEGRATION_v25] directionalBias=${directionalBias?.toFixed(3) ?? "N/A"} acceleration=${spreadAcceleration?.toFixed(0) ?? "N/A"} stoch=${stochRsi?.toFixed(1) ?? "N/A"} macro=${macroBiasWeight} → finalScore=${finalScore.toFixed(1)} → bias=${dominantBias}`);
-  
-  // If composite score has clear bias, use it
-  if (dominantBias === "LONG") {
-    return "LONG";
-  } else if (dominantBias === "SHORT") {
+  // APPLY GATES IN HIERARCHY ORDER
+  // PRIMARY: EMA structure gate
+  if (gateDirection === "SHORT_ONLY") {
+    console.log(`[EMA_GATE_v26] directionalBias=${directionalBias?.toFixed(3)} → SHORT_ONLY gate active (no LONG possible)`);
     return "SHORT";
   }
   
-  // HARD STRUCTURE LOCKS
-  if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
+  if (gateDirection === "LONG_ONLY") {
+    console.log(`[EMA_GATE_v26] directionalBias=${directionalBias?.toFixed(3)} → LONG_ONLY gate active (no SHORT possible)`);
     return "LONG";
+  }
+  
+  // PRIMARY gate is NEUTRAL, use macro + stoch to decide
+  
+  // SECONDARY: Macro bias (when EMA neutral)
+  if (htf4hTrend === "BEARISH") {
+    // Macro bearish, allow SHORT or NEUTRAL, NOT LONG
+    if (momentumOnlyScore > 52) {
+      return "NEUTRAL";
+    }
+    return "SHORT";
+  }
+  
+  if (htf4hTrend === "BULLISH") {
+    // Macro bullish, allow LONG or NEUTRAL, NOT SHORT
+    if (momentumOnlyScore < 48) {
+      return "NEUTRAL";
+    }
+    return "LONG";
+  }
+  
+  // NEUTRAL macro - let oscillator decide
+  if (momentumOnlyScore > 55) {
+    return "LONG";
+  } else if (momentumOnlyScore < 45) {
+    return "SHORT";
+  }
+  
+  // HARD STRUCTURE LOCKS (applied AFTER gates)
+  if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
+    // Structure says LONG, but check if EMA gate allows it
+    if (gateDirection !== "SHORT_ONLY") {
+      return "LONG";
+    }
   }
 
   if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
-    return "SHORT";
-  }
-
-  // RANGE: use momentum to break tie
-  if (structureState === "RANGE") {
-    if (momentumEmaSlope !== null && momentumEmaSlope > 0.1) {
-      return "LONG";   // EMA bullish (lowered threshold from 0.2)
+    // Structure says SHORT, but check if EMA gate allows it
+    if (gateDirection !== "LONG_ONLY") {
+      return "SHORT";
     }
-    if (momentumEmaSlope !== null && momentumEmaSlope < -0.1) {
-      return "SHORT";  // EMA bearish (lowered threshold from -0.2)
-    }
-    return "NEUTRAL";  // No clear structure or momentum
-  }
-
-  // FAILED_BREAKOUT or TREND_CONTINUATION: use momentum
-  // CRITICAL FIX: Lowered thresholds to not miss obvious trends
-  if (momentumEmaSlope !== null && momentumEmaSlope > 0.05) {
-    return "LONG";   // Even slight EMA positive slope indicates bullish bias
-  }
-  if (momentumEmaSlope !== null && momentumEmaSlope < -0.05) {
-    return "SHORT";  // Even slight EMA negative slope indicates bearish bias
   }
 
   return "NEUTRAL";
@@ -2373,6 +2394,22 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
       console.log(`[ETH_DECAY] Direction mutation: LONG → SHORT (failed continuation, 4H bearish)`);
       direction = "SHORT";  // Mutate direction to SHORT, not just confidence
     }
+  }
+
+  // ⚠️ HARD SAFETY RULE v26: EMA_STRUCTURE IS A DIRECTIONAL CONSTRAINT
+  // This enforces the gate globally - no direction can violate EMA structure
+  // This prevents the regression where macro + stoch flip direction incorrectly
+  const eemaSlope = htf4hAnalysis?.emaSlope ?? 0;
+  if (eemaSlope < -0.1 && direction === "LONG") {
+    // BEARISH structure detected but LONG direction was returned
+    // This should NEVER happen - EMA gate must enforce SHORT
+    console.warn(`[HARD_GATE_OVERRIDE_v26] SAFETY: emaSlope=${eemaSlope.toFixed(3)} (BEARISH) but direction=LONG. Forcing SHORT.`);
+    direction = "SHORT";
+  } else if (eemaSlope > 0.1 && direction === "SHORT") {
+    // BULLISH structure detected but SHORT direction was returned
+    // This should NEVER happen - EMA gate must enforce LONG
+    console.warn(`[HARD_GATE_OVERRIDE_v26] SAFETY: emaSlope=${eemaSlope.toFixed(3)} (BULLISH) but direction=SHORT. Forcing LONG.`);
+    direction = "LONG";
   }
 
   // Step 4: REMOVED getDirectionLockedByStructure() - now redundant
