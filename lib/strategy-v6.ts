@@ -778,11 +778,13 @@ function calculateDirectionScore(
   // Composite score: momentum (primary) + macro (secondary) + structure (tertiary)
   const totalScore = momentumComponent + macroBiasWeight + structureScore;
   
-  // Determine dominant bias from composite score
+  // CRITICAL FIX: Lower threshold to prevent obvious trends from collapsing to NEUTRAL
+  // With EMA slope -1 to +1 (mapped to ±100), threshold of 5 was too strict
+  // New threshold: ±2 allows clear EMA slopes (0.2+ or -0.2-) to establish direction
   let dominantBias: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
-  if (totalScore > 5) {
+  if (totalScore > 2) {
     dominantBias = "LONG";
-  } else if (totalScore < -5) {
+  } else if (totalScore < -2) {
     dominantBias = "SHORT";
   }
   
@@ -874,22 +876,18 @@ function getDirectionFromStructure(
   const macroBiasWeight = calculateMacroBiasWeight(htf4hTrend);
   
   // Calculate base momentum component
-  // Momentum is primary signal, but will be adjusted by macro bias
+  // CRITICAL FIX: Momentum must reflect actual EMA slope strength, not discrete buckets
+  // EMA slope range: -1.0 to +1.0, maps to -100 to +100 contribution
   let momentumComponent = 0;
-  if (stochRsi !== null && momentumEmaSlope !== null) {
-    // Strong bearish momentum indicator
-    if (stochRsi >= 55 && momentumEmaSlope <= 0.15) {
-      momentumComponent = -10; // Strong SHORT bias from momentum
-    }
-    // Strong bullish momentum indicator
-    else if (stochRsi <= 45 && momentumEmaSlope >= 0.3) {
-      momentumComponent = 10; // Strong LONG bias from momentum
-    }
-    // Moderate bias
-    else if (momentumEmaSlope > 0.2) {
-      momentumComponent = 5; // LONG bias
-    } else if (momentumEmaSlope < -0.2) {
-      momentumComponent = -5; // SHORT bias
+  if (momentumEmaSlope !== null && stochRsi !== null) {
+    // Primary signal: EMA slope directly (strong differentiation across trend strengths)
+    momentumComponent = momentumEmaSlope * 100;  // -100 to +100
+    
+    // Stoch RSI adds confirmation weight (±20 multiplier)
+    if (stochRsi >= 70) {
+      momentumComponent += 20;  // Strong overbought confirmation
+    } else if (stochRsi <= 30) {
+      momentumComponent -= 20;  // Strong oversold confirmation
     }
   }
   
@@ -901,7 +899,7 @@ function getDirectionFromStructure(
     0  // Structure score will be applied after direction is locked
   );
   
-  console.log(`[MACRO_FUSION_v24] stoch=${stochRsi?.toFixed(1) ?? "N/A"} ema=${momentumEmaSlope?.toFixed(3) ?? "N/A"} → momentum=${momentumComponent} + macro=${macroBiasWeight} = directionScore=${directionScore} → bias=${dominantBias}`);
+  console.log(`[MACRO_FUSION_v24] stoch=${stochRsi?.toFixed(1) ?? "N/A"} ema=${momentumEmaSlope?.toFixed(3) ?? "N/A"} → momentum=${momentumComponent.toFixed(1)} + macro=${macroBiasWeight} = directionScore=${directionScore.toFixed(1)} → bias=${dominantBias}`);
   
   // If composite score has clear bias, use it (momentum + macro fusion)
   if (dominantBias === "LONG") {
@@ -910,29 +908,8 @@ function getDirectionFromStructure(
     return "SHORT";
   }
   
-  // Fallback to early momentum checks if composite score is neutral
-  // v22.3 CRITICAL FIX: MOMENTUM FIRST, STRUCTURE SECOND
-  // Early bearish bias MUST check before structure locks override it
-  if (stochRsi !== null && momentumEmaSlope !== null) {
-    // Failed breakout with bearish indicators: elevated stoch + flat/weakening momentum
-    // No longer requires 4H confirmation
-    if (stochRsi >= 55 && momentumEmaSlope <= 0.15) {
-      return "SHORT";  // BTC case: stoch 60, emaSlope 0.00 → SHORT (even if 4H NEUTRAL)
-    }
-  }
-
-  // v21.5.4 ETH-SPECIFIC EARLY SHORT BIAS DURING FAILED CONTINUATION
-  // Detect momentum failure earlier when EMA weakening + stoch extended
-  // v22.2 FIX: Removed 4H BEARISH requirement - 1H momentum can resolve independently
-  // v22.3 FIX: MOVED BEFORE STRUCTURE LOCKS - momentum overrides stale structure
-  if (stochRsi !== null && momentumEmaSlope !== null) {
-    if (stochRsi >= 60 && momentumEmaSlope <= 0.25 && (volatilityLevel ?? 50) > 55) {
-      return "SHORT";  // ETH case: stoch 63, emaSlope 0.30, vol expanding → SHORT (4H agnostic)
-    }
-  }
-
   // HARD STRUCTURE LOCKS (direction cannot violate these)
-  // NOW applied AFTER momentum checks, so momentum can override stale structure
+  // Applied AFTER momentum checks, so momentum can override stale structure
   if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
     return "LONG";  // Structure-locked LONG
   }
@@ -943,21 +920,22 @@ function getDirectionFromStructure(
 
   // RANGE: use momentum to break tie
   if (structureState === "RANGE") {
-    if (momentumEmaSlope !== null && momentumEmaSlope > 0.2) {
-      return "LONG";   // EMA bullish
+    if (momentumEmaSlope !== null && momentumEmaSlope > 0.1) {
+      return "LONG";   // EMA bullish (lowered threshold from 0.2)
     }
-    if (momentumEmaSlope !== null && momentumEmaSlope < -0.2) {
-      return "SHORT";  // EMA bearish
+    if (momentumEmaSlope !== null && momentumEmaSlope < -0.1) {
+      return "SHORT";  // EMA bearish (lowered threshold from -0.2)
     }
     return "NEUTRAL";  // No clear structure or momentum
   }
 
   // FAILED_BREAKOUT or TREND_CONTINUATION: use momentum
-  if (momentumEmaSlope !== null && momentumEmaSlope > 0.1) {
-    return "LONG";
+  // CRITICAL FIX: Lowered thresholds to not miss obvious trends
+  if (momentumEmaSlope !== null && momentumEmaSlope > 0.05) {
+    return "LONG";   // Even slight EMA positive slope indicates bullish bias
   }
-  if (momentumEmaSlope !== null && momentumEmaSlope < -0.1) {
-    return "SHORT";
+  if (momentumEmaSlope !== null && momentumEmaSlope < -0.05) {
+    return "SHORT";  // Even slight EMA negative slope indicates bearish bias
   }
 
   return "NEUTRAL";
