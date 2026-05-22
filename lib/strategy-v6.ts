@@ -483,21 +483,20 @@ function calculateUnifiedTradeScore(input: TradeScoreInput): number {
   // ========================
   // Local momentum can strengthen or weaken Tier 1, but cannot reverse it when Tier 1 is strong
   
-  // FIX: emaSlope is now DIRECTIONAL (EMA8 vs EMA21), NOT historical momentum
-  // Positive = EMA8 above EMA21 (bullish structure)
-  // Negative = EMA8 below EMA21 (bearish structure)
-  // Range: -1.0 to +1.0 (not ±100 historical momentum)
+  // 1H EMA slope: -1.0 to +1.0 (sensitive but limited magnitude)
+  // When HTF is strong (BULLISH/BEARISH), EMA slope contributes only ±10 to the score
+  // When HTF is neutral, EMA slope can contribute up to ±30
   let tier2Contribution = 0;
   if (htf4hTrend === "BULLISH") {
-    // HTF BULLISH + local EMA directional confirmation:
+    // HTF BULLISH + local EMA momentum:
     // +EMA slope = strengthen LONG (75 → 80)
     // -EMA slope = weaken LONG but don't reverse (75 → 70)
-    tier2Contribution = emaSlope * 100 * 0.1; // ±10 max (directional, not historical)
+    tier2Contribution = emaSlope * 100 * 0.1; // ±10 max
   } else if (htf4hTrend === "BEARISH") {
-    // HTF BEARISH + local EMA directional confirmation:
+    // HTF BEARISH + local EMA momentum:
     // -EMA slope = strengthen SHORT (25 → 20)
     // +EMA slope = weaken SHORT but don't reverse (25 → 30)
-    tier2Contribution = emaSlope * 100 * 0.1; // ±10 max (directional, not historical)
+    tier2Contribution = emaSlope * 100 * 0.1; // ±10 max
   } else {
     // HTF NEUTRAL - local momentum decides
     tier2Contribution = emaSlope * 100 * 0.3; // ±30 max (full range)
@@ -525,7 +524,7 @@ function calculateUnifiedTradeScore(input: TradeScoreInput): number {
   // Tier 1 (HTF structure) + Tier 2 modulation (local momentum)
   const finalScore = tier1Score + tier2Contribution;
   
-  console.log(`[DIRECTIONAL_HIERARCHY_v3] HTF=${htf4hTrend} (tier1=${tier1Score}), EMA=${emaSlope?.toFixed(3) || 'N/A'} (directional, not historical) StochRSI=${stochRsi?.toFixed(1) || 'N/A'} (tier2=${tier2Contribution.toFixed(1)}) → finalScore=${finalScore.toFixed(1)}`);
+  console.log(`[DIRECTIONAL_HIERARCHY_v2] HTF=${htf4hTrend} (tier1=${tier1Score}), EMA=${emaSlope?.toFixed(3) || 'N/A'} StochRSI=${stochRsi?.toFixed(1) || 'N/A'} (tier2=${tier2Contribution.toFixed(1)}) → finalScore=${finalScore.toFixed(1)}`);
   
   // Clamp to 0-100
   return Math.max(0, Math.min(100, finalScore));
@@ -876,56 +875,57 @@ function buildSignalHierarchy(
 
 function getDirectionFromStructure(
   structureState: StructureState,
-  momentumEmaSlope: number | null,
+  emaStructure: any, // NEW: Pass the complete EMA_STRUCTURE object (truth source)
   stochRsi: number | null,
   htf4hTrend: string | null,
   volatilityLevel: number | null
 ): "LONG" | "SHORT" | "NEUTRAL" {
-  // v24.0 MACRO-MOMENTUM FUSION LAYER
-  // Calculate macro bias weight - this tilts probability, not overrides it
-  const macroBiasWeight = calculateMacroBiasWeight(htf4hTrend);
-  
-  // Calculate base momentum component
-  // CRITICAL FIX: Momentum must reflect actual EMA slope strength, not discrete buckets
-  // EMA slope range: -1.0 to +1.0, maps to -100 to +100 contribution
-  let momentumComponent = 0;
-  if (momentumEmaSlope !== null && stochRsi !== null) {
-    // Primary signal: EMA slope directly (strong differentiation across trend strengths)
-    momentumComponent = momentumEmaSlope * 100;  // -100 to +100
-    
-    // Stoch RSI adds confirmation weight (±20 multiplier)
-    if (stochRsi >= 70) {
-      momentumComponent += 20;  // Strong overbought confirmation
-    } else if (stochRsi <= 30) {
-      momentumComponent -= 20;  // Strong oversold confirmation
-    }
+  // v25.0 SINGLE SOURCE OF TRUTH: EMA_STRUCTURE ONLY
+  // HARDENED GUARD: Ensure EMA_STRUCTURE is available
+  if (!emaStructure) {
+    throw new Error("EMA_STRUCTURE_REQUIRED: getDirectionFromStructure must receive valid emaStructure");
   }
   
-  // v24.0: Fuse macro bias with momentum
-  // Macro acts as secondary weight that tilts probability
+  // Extract directional bias from EMA_STRUCTURE (ONLY SOURCE OF TRUTH)
+  const directionalBias = emaStructure.emaSlope;  // -1.0 to +1.0
+  const spreadAcceleration = emaStructure.spreadAcceleration; // Trend confirmation signal
+  
+  // Macro layer: HTF alignment (permission, not override)
+  const macroBiasWeight = calculateMacroBiasWeight(htf4hTrend);
+  
+  // v25.0: Direction derived from EMA_STRUCTURE + macro alignment
+  // CRITICAL: No EMA recomputation, no momentum weighting - use directional bias directly
+  
+  // Convert directional bias to momentum-like score for hierarchy
+  // directionalBias -1.0 to +1.0 already scaled correctly
+  const momentumComponent = directionalBias * 100; // Now truly directional, not historical
+  
   const { score: directionScore, dominantBias } = calculateDirectionScore(
     momentumComponent,
     macroBiasWeight,
-    0  // Structure score will be applied after direction is locked
+    0
   );
   
-  console.log(`[MACRO_FUSION_v24] stoch=${stochRsi?.toFixed(1) ?? "N/A"} ema=${momentumEmaSlope?.toFixed(3) ?? "N/A"} → momentum=${momentumComponent.toFixed(1)} + macro=${macroBiasWeight} = directionScore=${directionScore.toFixed(1)} → bias=${dominantBias}`);
+  // Stoch RSI adds oscillator confirmation (not primary)
+  const stochInfluence = stochRsi !== null ? (stochRsi - 50) * 0.2 : 0;
+  const finalScore = directionScore + stochInfluence;
   
-  // If composite score has clear bias, use it (momentum + macro fusion)
+  console.log(`[EMA_STRUCTURE_INTEGRATION_v25] directionalBias=${directionalBias?.toFixed(3) ?? "N/A"} acceleration=${spreadAcceleration?.toFixed(0) ?? "N/A"} stoch=${stochRsi?.toFixed(1) ?? "N/A"} macro=${macroBiasWeight} → finalScore=${finalScore.toFixed(1)} → bias=${dominantBias}`);
+  
+  // If composite score has clear bias, use it
   if (dominantBias === "LONG") {
     return "LONG";
   } else if (dominantBias === "SHORT") {
     return "SHORT";
   }
   
-  // HARD STRUCTURE LOCKS (direction cannot violate these)
-  // Applied AFTER momentum checks, so momentum can override stale structure
+  // HARD STRUCTURE LOCKS
   if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
-    return "LONG";  // Structure-locked LONG
+    return "LONG";
   }
 
   if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
-    return "SHORT";  // Structure-locked SHORT
+    return "SHORT";
   }
 
   // RANGE: use momentum to break tie
@@ -2358,14 +2358,15 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
   );
 
   // Step 3: Get direction from structure with tie-breaker
-  // v21.5.2: Tie-breaker logic now IN getDirectionFromStructure (executes early)
-  let direction = getDirectionFromStructure(structureState, emaSlope, stochRsi, htf4hTrend, volatilityLevel);
-  console.log(`[DIRECTION_TIE_BREAKER] ${symbol}: tie-breaker resolved direction="${direction}" (4H=${htf4hTrend}, stoch=${stochRsi?.toFixed(1)}, ema=${emaSlope?.toFixed(2)})`);
+  // v25.0: Pass complete EMA_STRUCTURE object instead of just emaSlope
+  // This ensures single source of truth: no dual-source EMA system
+  let direction = getDirectionFromStructure(structureState, htf4hAnalysis, stochRsi, htf4hTrend, volatilityLevel);
+  console.log(`[DIRECTION_TIE_BREAKER] ${symbol}: tie-breaker resolved direction="${direction}" (4H=${htf4hTrend}, stoch=${stochRsi?.toFixed(1)}, emaStructure=${htf4hAnalysis?.emaSlope?.toFixed(3)})`);
 
   // Step 3.5: ETH CONTINUATION DECAY - MUTATE direction toward SHORT during failed bearish continuation
-  // v21.5.2: This MUST happen before getDirectionLockedByStructure locks the direction
+  // v25.0: Now use real emaStructure instead of synthetic emaSlope
   if (symbol === "ETH" && htf4hTrend === "BEARISH" && direction === "LONG") {
-    const emaFlattening = Math.abs(emaSlope ?? 0) < 0.25;
+    const emaFlattening = Math.abs(htf4hAnalysis?.emaSlope ?? 0) < 0.25;
     const volatilityExpanding = (volatilityLevel ?? 50) > 55;
     
     if (emaFlattening && volatilityExpanding) {
