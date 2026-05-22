@@ -1224,7 +1224,7 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
       profile,
       symbol,
       macroConflict,
-      htf4hTrend
+      card.htf4hTrend
     );
     
     if (canCreateSniper) {
