@@ -97,7 +97,7 @@ export function analyze4HStructure(candles: Candle[], fallbackEMASlope?: number)
   const displacement = calculateDisplacement(candles);
   
   // Determine trend from combined signals
-  const trend = determineTrend(structure, emaSlope, displacement, lastCandle, ema50);
+  const trend = determineTrend(structure, emaSlope, displacement, lastCandle);
   
   // Calculate confidence score (0-100)
   const confidence = calculateConfidence(structure, emaSlope, displacement);
@@ -237,8 +237,7 @@ function determineTrend(
   structure: "HH" | "HL" | "LH" | "LL" | "MIXED",
   emaSlope: number,
   displacement: number,
-  lastCandle: Candle | null,
-  ema50: number
+  lastCandle: Candle | null
 ): HTFTrend {
   // Structure bullish signals
   const structureBullish = structure === "HH" || structure === "HL";
@@ -252,14 +251,11 @@ function determineTrend(
   const displacementBullish = displacement > 0.5;
   const displacementBearish = displacement < -0.5;
   
-  // Price above/below EMA
-  const priceAboveEMA = lastCandle && lastCandle.close > ema50;
-  
   // BULLISH: Need 2+ bullish signals
-  const bullishScore = (structureBullish ? 1 : 0) + (emaBullish ? 1 : 0) + (displacementBullish ? 1 : 0) + (priceAboveEMA ? 0.5 : 0);
+  const bullishScore = (structureBullish ? 1 : 0) + (emaBullish ? 1 : 0) + (displacementBullish ? 1 : 0);
   
   // BEARISH: Need 2+ bearish signals
-  const bearishScore = (structureBearish ? 1 : 0) + (emaBearish ? 1 : 0) + (displacementBearish ? 1 : 0) + (!priceAboveEMA ? 0.5 : 0);
+  const bearishScore = (structureBearish ? 1 : 0) + (emaBearish ? 1 : 0) + (displacementBearish ? 1 : 0);
   
   if (bullishScore >= 2) {
     return "BULLISH";
