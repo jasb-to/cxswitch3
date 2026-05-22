@@ -433,8 +433,21 @@ interface TradeScoreInput {
 }
 
 /**
- * v28.0 SINGLE SOURCE OF TRUTH: UNIFIED TRADE SCORE
- * Combines 1H momentum (primary) + 4H regime (permission layer) + structure (filter)
+ * v28.0 DIRECTIONAL HIERARCHY FIX - HTF STRUCTURE DOMINATES
+ * 
+ * Tier 1 (Dominant - gates final direction):
+ *   - HTF 4H structure trend
+ *   - Displacement direction
+ *   - Reclaim/failure structure
+ *   - Macro inheritance
+ *   
+ * Tier 2 (Secondary - modulates Tier 1):
+ *   - Local EMA acceleration (cannot override, only strengthen/weaken)
+ *   - 15M expansion
+ *   - Oscillator movement
+ * 
+ * Formula:
+ * finalDirectionScore = HTFStructureWeight * displacementWeight * reclaimWeight * macroInheritance * localEMAMomentum * expansionWeight
  */
 function calculateUnifiedTradeScore(input: TradeScoreInput): number {
   const {
@@ -452,73 +465,69 @@ function calculateUnifiedTradeScore(input: TradeScoreInput): number {
   }
 
   // ========================
-  // 1H MOMENTUM (PRIMARY ENGINE)
+  // TIER 1: HTF STRUCTURE (DOMINANT - GATES FINAL DIRECTION)
   // ========================
-  // EMA slope: -1.0 to +1.0 (maps to -100 to +100 contribution)
-  const emaComponent = emaSlope * 100;
+  // HTF structure determines base direction, not just bias
+  let tier1Score = 50; // Neutral baseline
   
-  // Stoch RSI: 0-100 (center at 50, maps to -50 to +50 contribution)
-  const stochComponent = (stochRsi - 50) * 1.0;
-  
-  // Displacement/direction vector: adds directional weight
-  const displacementComponent = displacement * 80;
-  
-  // Momentum sum: -250 to +250 possible range
-  const momentum = emaComponent + stochComponent + displacementComponent;
-
-  // ========================
-  // 4H REGIME BIAS (PERMISSION LAYER ONLY)
-  // ========================
-  // Macro never blocks, only tilts probability
-  let regimeBias = 0;
   if (htf4hTrend === "BULLISH") {
-    regimeBias = +12; // Tilts toward LONG
+    tier1Score = 75; // HTF structural LONG (strong gate)
   } else if (htf4hTrend === "BEARISH") {
-    regimeBias = -12; // Tilts toward SHORT
+    tier1Score = 25; // HTF structural SHORT (strong gate)
+  } else if (htf4hTrend === "NEUTRAL") {
+    tier1Score = 50; // HTF neutral, allow local momentum to decide
+  }
+  
+  // ========================
+  // TIER 2: LOCAL MOMENTUM (SECONDARY - MODULATES TIER 1)
+  // ========================
+  // Local momentum can strengthen or weaken Tier 1, but cannot reverse it when Tier 1 is strong
+  
+  // 1H EMA slope: -1.0 to +1.0 (sensitive but limited magnitude)
+  // When HTF is strong (BULLISH/BEARISH), EMA slope contributes only ±10 to the score
+  // When HTF is neutral, EMA slope can contribute up to ±30
+  let tier2Contribution = 0;
+  if (htf4hTrend === "BULLISH") {
+    // HTF BULLISH + local EMA momentum:
+    // +EMA slope = strengthen LONG (75 → 80)
+    // -EMA slope = weaken LONG but don't reverse (75 → 70)
+    tier2Contribution = emaSlope * 100 * 0.1; // ±10 max
+  } else if (htf4hTrend === "BEARISH") {
+    // HTF BEARISH + local EMA momentum:
+    // -EMA slope = strengthen SHORT (25 → 20)
+    // +EMA slope = weaken SHORT but don't reverse (25 → 30)
+    tier2Contribution = emaSlope * 100 * 0.1; // ±10 max
   } else {
-    regimeBias = 0; // Neutral macro = no bias
+    // HTF NEUTRAL - local momentum decides
+    tier2Contribution = emaSlope * 100 * 0.3; // ±30 max (full range)
   }
-
-  // ========================
-  // STRUCTURE CONTEXT (FILTER PRESSURE)
-  // ========================
-  // Structure provides filtering pressure, not gates
-  let structureBias = 0;
-  switch (structureState?.toUpperCase()) {
-    case "EXPANDING":
-      structureBias = +3; // Expansion = positive pressure
-      break;
-    case "RANGE":
-      structureBias = 0; // Neutral
-      break;
-    case "DISTRIBUTION":
-      structureBias = -2; // Distribution = negative pressure
-      break;
-    case "ACCUMULATION":
-      structureBias = +2; // Accumulation = positive pressure
-      break;
-    default:
-      structureBias = 0;
+  
+  // Add stochastic RSI modulation (same logic)
+  const stochComponent = (stochRsi - 50) * 0.5; // -25 to +25 range
+  
+  if (htf4hTrend === "BULLISH") {
+    // Stoch RSI overbought (>70) weakens LONG slightly, but doesn't reverse
+    // Stoch RSI oversold (<30) doesn't strengthen or reverse LONG
+    tier2Contribution += stochComponent * 0.1;
+  } else if (htf4hTrend === "BEARISH") {
+    // Stoch RSI oversold (<30) weakens SHORT slightly, but doesn't reverse
+    // Stoch RSI overbought (>70) doesn't strengthen or reverse SHORT
+    tier2Contribution += stochComponent * 0.1;
+  } else {
+    // HTF NEUTRAL - stoch can influence direction
+    tier2Contribution += stochComponent * 0.5;
   }
-
+  
   // ========================
-  // UNIFIED SCORE
+  // FINAL HIERARCHICAL SCORE
   // ========================
-  // Normalize momentum to 0-100 scale with regime + structure
-  let score = 50; // Baseline neutral
+  // Tier 1 (HTF structure) + Tier 2 modulation (local momentum)
+  const finalScore = tier1Score + tier2Contribution;
   
-  // Momentum drives the score (primary)
-  // Range: -250 to +250 momentum → mapped to roughly 0-100 score
-  const momentumScaled = (momentum / 250) * 50; // Maps to -50 to +50 range
-  
-  // Regime + structure modifiers
-  const modifierSum = regimeBias + structureBias;
-  
-  // Final unified score
-  const unifiedScore = score + momentumScaled + modifierSum;
+  console.log(`[DIRECTIONAL_HIERARCHY_v2] HTF=${htf4hTrend} (tier1=${tier1Score}), EMA=${emaSlope?.toFixed(3) || 'N/A'} StochRSI=${stochRsi?.toFixed(1) || 'N/A'} (tier2=${tier2Contribution.toFixed(1)}) → finalScore=${finalScore.toFixed(1)}`);
   
   // Clamp to 0-100
-  return Math.max(0, Math.min(100, unifiedScore));
+  return Math.max(0, Math.min(100, finalScore));
 }
 
 /**
