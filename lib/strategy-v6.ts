@@ -1216,7 +1216,9 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
       console.log(`[MACRO_BLOCK] ${symbol} ${card.direction}: 4H ${card.htf4hTrend} conflicts + score ${score} < 65 → stay BUILDING`);
       // Don't process SNIPER, let it stay BUILDING
     } else if (score >= profile.ignitionThreshold && card.direction !== "NEUTRAL" && checkSniperConditions(card, profile)) {
-      // v7.3.1 FIX #1: Validate ACTIVE_SNIPER execution requirements
+      // v28.0 DETERMINISTIC GATE-FIRST MODEL: Validate ALL gates BEFORE creating SNIPER
+      
+      // Step 1: Check execution validation
       const executionValidation = validateActiveSniperExecution(card, score);
       
       if (!executionValidation.valid) {
@@ -1224,35 +1226,33 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
         console.log(`[EXECUTION BLOCKED] ${symbol} ${card.direction}: ${executionValidation.reason}`);
         card.signalState = "SNIPER_READY";
       } else {
-        // HOTFIX v1: ATOMIC SNIPER CONSTRUCTION
-        // Build complete signal first, only emit if valid
-        const atomicSignal = buildAtomicSniperSignal(card, score, symbol);
-        
-        if (!atomicSignal) {
-          // Atomic build failed - signal was incomplete, return BUILDING
-          console.log(`[ATOMIC FAILED] ${symbol}: Incomplete payload, staying in BUILDING`);
+        // Step 2: Check structure support
+        if (!isValidCurrentStructureForSniper(card)) {
+          console.log(`[STRUCTURE_INVALID] ${symbol}: Current structure doesn't support SNIPER → stay BUILDING`);
           card.signalState = "BUILDING";
         } else {
-          // v21.7.0 SNIPER REVALIDATION: Check if current structure still supports SNIPER
-          if (!isValidCurrentStructureForSniper(card)) {
+          // Step 3: Check macro compatibility (FINAL_GUARD)
+          // v28.0: This is the final deterministic gate before SNIPER creation
+          if (macroConflict) {
+            // COUNTER_TREND signals cannot reach ACTIVE_SNIPER
+            console.warn(`[FINAL_GUARD_v28] BLOCKED: ${card.direction} contradicts 4H ${card.htf4hTrend} macro. Demoting to BUILDING.`);
             card.signalState = "BUILDING";
+            card.notes = `⚠️ Macro conflict: ${card.direction} vs 4H ${card.htf4hTrend}. Blocked from SNIPER.`;
           } else {
-            // v28.0 FINAL PROMOTION GUARD: Validate macro compatibility BEFORE ACTIVE_SNIPER
-            const macroConflict = (card.htf4hTrend === "BULLISH" && card.direction === "SHORT") || 
-                                 (card.htf4hTrend === "BEARISH" && card.direction === "LONG");
+            // ALL GATES PASSED: Now and only now build the ACTIVE_SNIPER signal
+            // HOTFIX v1: ATOMIC SNIPER CONSTRUCTION (after validation, not before)
+            const atomicSignal = buildAtomicSniperSignal(card, score, symbol);
             
-            if (macroConflict) {
-              // COUNTER_TREND signals cannot reach ACTIVE_SNIPER
-              console.warn(`[FINAL_GUARD_v28] BLOCKED: ${card.direction} contradicts 4H ${card.htf4hTrend} macro. Demoting to BUILDING.`);
+            if (!atomicSignal) {
+              // Atomic build failed - signal was incomplete, return BUILDING
+              console.log(`[ATOMIC FAILED] ${symbol}: Incomplete payload, staying in BUILDING`);
               card.signalState = "BUILDING";
-              card.notes = `⚠️ Macro conflict: ${card.direction} vs 4H ${card.htf4hTrend}. Blocked from SNIPER.`;
             } else {
               // Atomic build succeeded - emit ACTIVE_SNIPER with complete payload
               card.mode = "SNIPER";
               card.confidence = Math.min(score, 99);
               card.lastSignalTime = Date.now();
               card.signalState = "ACTIVE_SNIPER"; // v9 PHASE 5: Terminal state - immutable once set
-              // v21.3.8 FIX: Don't set notes here - let trade watch commentary do it below
               
               // Populate trade targets from atomic build (already validated)
               card.expectedMovePercent = atomicSignal.expectedMovePercent;
