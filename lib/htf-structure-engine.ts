@@ -63,10 +63,32 @@ export function analyze4HStructure(candles: Candle[], fallbackEMASlope?: number)
 
   const lastCandle = candles[candles.length - 1];
   
-  // Calculate EMA(50) for trend direction
-  const ema50 = calculateEMA(candles, 50);
-  const ema50Prev = candles.length >= 51 ? calculateEMA(candles.slice(0, -1), 50) : ema50;
-  const emaSlope = (ema50 - ema50Prev) / ema50Prev * 100; // % change
+  // FIX 1: Calculate EMA slope over multiple bars, not single candle
+  // Using 8-bar and 21-bar EMAs for meaningful slope detection
+  const ema8 = calculateEMA(candles, 8);
+  const ema21 = calculateEMA(candles, 21);
+  
+  // Primary slope: 8/21 cross direction (more responsive)
+  const emaCrossSlope = (ema8 - ema21) / ema21 * 100;
+  
+  // Secondary slope: 21 bar momentum over 5-bar window
+  const ema21Prev5 = candles.length >= 6 ? calculateEMA(candles.slice(-5), 21) : ema21;
+  const emaMomentumSlope = (ema21 - ema21Prev5) / ema21Prev5 * 100;
+  
+  // Final slope: average the two for stability
+  // This prevents single-candle noise from zeroing out real directional movement
+  const emaSlope = (emaCrossSlope + emaMomentumSlope) / 2;
+  
+  // Mandatory debug logging
+  console.log(`[EMA_SOURCE_DEBUG] ${lastCandle?.symbol || 'UNKNOWN'}:`, {
+    ema8: ema8.toFixed(2),
+    ema21: ema21.toFixed(2),
+    emaCrossSlope: emaCrossSlope.toFixed(3),
+    ema21Prev5: ema21Prev5.toFixed(2),
+    emaMomentumSlope: emaMomentumSlope.toFixed(3),
+    finalSlope: emaSlope.toFixed(3),
+    timestamp: new Date().toISOString()
+  });
   
   // Detect swing highs and lows (structure)
   const { swingHigh, swingLow, structure } = detectSwingStructure(candles);
