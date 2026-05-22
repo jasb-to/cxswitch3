@@ -545,58 +545,63 @@ function deriveDirectionFromScore(score: number): "LONG" | "SHORT" | "NEUTRAL" {
 }
 
 /**
- * v28.0 FINAL PROMOTION GUARD
- * Critical enforcement layer: blocks contradictory signals from ACTIVE_SNIPER
- * Even if score >= 75, contradictions must not reach sniper layer
+ * v29.0 DETERMINISTIC SIGNAL ELIGIBILITY - PURE FUNCTION
+ * 
+ * This function validates ALL gates atomically BEFORE any signal construction.
+ * Returns true ONLY if signal is guaranteed to be valid (no further blocking possible).
+ * This ensures: if true → signal WILL exist, if false → signal NEVER constructed
  */
-function validateFinalPromotion(
-  proposedState: "ACTIVE_SNIPER" | "BUILDING" | "WATCH_ZONE",
-  direction: "LONG" | "SHORT" | "NEUTRAL",
-  htf4hTrend: string | null,
-  emaStructure: any
-): "ACTIVE_SNIPER" | "BUILDING" | "WATCH_ZONE" {
-  // HARD BLOCK: macro contradiction override
-  if (proposedState === "ACTIVE_SNIPER") {
-    // Check for contradictions that should block promotion
-    const isCounterTrend = classifyRelationship(direction, htf4hTrend) === "COUNTER_TREND";
-    
-    if (isCounterTrend) {
-      // COUNTER_TREND signals cannot reach ACTIVE_SNIPER unless explicitly overridden
-      // (e.g., via reversal structure confirmation)
-      // For now: hard block, demote to BUILDING
-      console.warn(`[FINAL_GUARD_v28] BLOCKED: ${direction} direction contradicts ${htf4hTrend} macro. Demoting ACTIVE_SNIPER → BUILDING`);
-      return "BUILDING";
-    }
+function validateFullSniperEligibility(
+  card: SymbolCardState,
+  score: number,
+  profile: ExecutionProfile,
+  symbol: string,
+  macroConflict: boolean,
+  htf4hTrend: string | null
+): boolean {
+  // GATE 1: Score threshold
+  if (score < profile.ignitionThreshold) {
+    console.log(`[FULL_VALIDATION_v29] ${symbol} REJECTED: score ${score} < threshold ${profile.ignitionThreshold}`);
+    return false;
   }
   
-  return proposedState;
+  // GATE 2: Direction must be clear
+  if (card.direction === "NEUTRAL") {
+    console.log(`[FULL_VALIDATION_v29] ${symbol} REJECTED: no directional bias`);
+    return false;
+  }
+  
+  // GATE 3: Sniper conditions (impulse, ignition, compression/breakout)
+  if (!checkSniperConditions(card, profile, "strict")) {
+    // Already logs reason
+    return false;
+  }
+  
+  // GATE 4: Execution validation
+  const executionValidation = validateActiveSniperExecution(card, score);
+  if (!executionValidation.valid) {
+    console.log(`[FULL_VALIDATION_v29] ${symbol} REJECTED: execution validation - ${executionValidation.reason}`);
+    return false;
+  }
+  
+  // GATE 5: Structure support
+  if (!isValidCurrentStructureForSniper(card)) {
+    console.log(`[FULL_VALIDATION_v29] ${symbol} REJECTED: current structure doesn't support SNIPER`);
+    return false;
+  }
+  
+  // GATE 6: Macro compatibility (FINAL_GUARD - no contradictions allowed)
+  if (macroConflict) {
+    console.warn(`[FULL_VALIDATION_v29] ${symbol} REJECTED: ${card.direction} contradicts 4H ${htf4hTrend} macro (COUNTER_TREND)`);
+    return false;
+  }
+  
+  // ALL GATES PASSED: Signal is valid and will be created
+  console.log(`[FULL_VALIDATION_v29] ${symbol} ACCEPTED: all gates passed, SNIPER will be created`);
+  return true;
 }
 
-/**
- * v28.0 DERIVE STATE FROM UNIFIED SCORE
- * State is ALWAYS derived from score, never calculated separately
- */
-function deriveStateFromScore(
-  score: number,
-  direction: "LONG" | "SHORT" | "NEUTRAL",
-  htf4hTrend: string | null,
-  emaStructure: any
-): "ACTIVE_SNIPER" | "BUILDING" | "WATCH_ZONE" {
-  // Step 1: Derive base state from score
-  let baseState: "ACTIVE_SNIPER" | "BUILDING" | "WATCH_ZONE";
-  if (score >= 75) {
-    baseState = "ACTIVE_SNIPER";
-  } else if (score >= 60) {
-    baseState = "BUILDING";
-  } else {
-    baseState = "WATCH_ZONE";
-  }
-  
-  // Step 2: Apply final promotion guard to enforce macro constraint
-  const finalState = validateFinalPromotion(baseState, direction, htf4hTrend, emaStructure);
-  
-  return finalState;
-}
+
 
 /**
  * v28.0 CLASSIFY RELATIONSHIP (DIRECTION vs MACRO)
@@ -1205,74 +1210,47 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
     console.log(`[EVENT] ${symbol} event=${outputEvent}`);
 
 
-    // ACTIVATION CONDITIONS: Score threshold only (no bypass paths)
-    // SOL/ETH/BTC: All must meet minimum ignition integrity
-    // BTC gets structural bonus, but still must pass threshold + sniper conditions
+    // v29.0 FULLY DETERMINISTIC: Single comprehensive validation before ANY construction
+    // This ensures: if validation passes → signal WILL exist
+    // If validation fails → signal NEVER constructed (not even briefly)
     
-    // v21.5.5 MACRO ENFORCEMENT: If 4H conflicts with direction AND score too low, block SNIPER
-    const macroConflict = (card.htf4hTrend === "BULLISH" && card.direction === "SHORT") || 
-                         (card.htf4hTrend === "BEARISH" && card.direction === "LONG");
-    if (macroConflict && score < 65) {
-      console.log(`[MACRO_BLOCK] ${symbol} ${card.direction}: 4H ${card.htf4hTrend} conflicts + score ${score} < 65 → stay BUILDING`);
-      // Don't process SNIPER, let it stay BUILDING
-    } else if (score >= profile.ignitionThreshold && card.direction !== "NEUTRAL" && checkSniperConditions(card, profile)) {
-      // v28.0 DETERMINISTIC GATE-FIRST MODEL: Validate ALL gates BEFORE creating SNIPER
+    const canCreateSniper = validateFullSniperEligibility(
+      card,
+      score,
+      profile,
+      symbol,
+      macroConflict,
+      htf4hTrend
+    );
+    
+    if (canCreateSniper) {
+      // ALL GATES PASSED: Build signal DETERMINISTICALLY (no further blocking possible)
+      const atomicSignal = buildAtomicSniperSignal(card, score, symbol);
       
-      // Step 1: Check execution validation
-      const executionValidation = validateActiveSniperExecution(card, score);
-      
-      if (!executionValidation.valid) {
-        // Execution validation failed - block ACTIVE_SNIPER
-        console.log(`[EXECUTION BLOCKED] ${symbol} ${card.direction}: ${executionValidation.reason}`);
-        card.signalState = "SNIPER_READY";
+      if (atomicSignal) {
+        // Signal built successfully - emit ACTIVE_SNIPER
+        card.mode = "SNIPER";
+        card.confidence = Math.min(score, 99);
+        card.lastSignalTime = Date.now();
+        card.signalState = "ACTIVE_SNIPER";
+        
+        // Populate trade targets
+        card.expectedMovePercent = atomicSignal.expectedMovePercent;
+        card.targetPrices = atomicSignal.targetPrices;
+        card.riskReward = atomicSignal.riskReward;
+        card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
+        
+        setups.push(atomicSignal);
+        console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
+        
+        const monitorEvent = detectMonitorEvent(card);
+        const eventCommentary = formatMonitorEvent(monitorEvent);
+        console.log(`[MONITOR_EVENT] ${eventCommentary}`);
+        card.notes = eventCommentary;
       } else {
-        // Step 2: Check structure support
-        if (!isValidCurrentStructureForSniper(card)) {
-          console.log(`[STRUCTURE_INVALID] ${symbol}: Current structure doesn't support SNIPER → stay BUILDING`);
-          card.signalState = "BUILDING";
-        } else {
-          // Step 3: Check macro compatibility (FINAL_GUARD)
-          // v28.0: This is the final deterministic gate before SNIPER creation
-          if (macroConflict) {
-            // COUNTER_TREND signals cannot reach ACTIVE_SNIPER
-            console.warn(`[FINAL_GUARD_v28] BLOCKED: ${card.direction} contradicts 4H ${card.htf4hTrend} macro. Demoting to BUILDING.`);
-            card.signalState = "BUILDING";
-            card.notes = `⚠️ Macro conflict: ${card.direction} vs 4H ${card.htf4hTrend}. Blocked from SNIPER.`;
-          } else {
-            // ALL GATES PASSED: Now and only now build the ACTIVE_SNIPER signal
-            // HOTFIX v1: ATOMIC SNIPER CONSTRUCTION (after validation, not before)
-            const atomicSignal = buildAtomicSniperSignal(card, score, symbol);
-            
-            if (!atomicSignal) {
-              // Atomic build failed - signal was incomplete, return BUILDING
-              console.log(`[ATOMIC FAILED] ${symbol}: Incomplete payload, staying in BUILDING`);
-              card.signalState = "BUILDING";
-            } else {
-              // Atomic build succeeded - emit ACTIVE_SNIPER with complete payload
-              card.mode = "SNIPER";
-              card.confidence = Math.min(score, 99);
-              card.lastSignalTime = Date.now();
-              card.signalState = "ACTIVE_SNIPER"; // v9 PHASE 5: Terminal state - immutable once set
-              
-              // Populate trade targets from atomic build (already validated)
-              card.expectedMovePercent = atomicSignal.expectedMovePercent;
-              card.targetPrices = atomicSignal.targetPrices;
-              card.riskReward = atomicSignal.riskReward;
-              card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
-              
-              // Emit COMPLETE setup (all fields guaranteed)
-              setups.push(atomicSignal);
-              console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
-              
-              // v23.0 EVENT-DRIVEN MONITOR: Report state transitions not snapshots
-              const monitorEvent = detectMonitorEvent(card);
-              const eventCommentary = formatMonitorEvent(monitorEvent);
-              console.log(`[MONITOR_EVENT] ${eventCommentary}`);
-              // Attach event-based commentary to card notes for UI display
-              card.notes = eventCommentary;
-            }
-          }
-        }
+        // Atomic build failed - stay in BUILDING
+        console.log(`[ATOMIC FAILED] ${symbol}: Incomplete payload, staying in BUILDING`);
+        card.signalState = "BUILDING";
       }
     } else {
       // No SNIPER conditions met - stay in BUILDING state
