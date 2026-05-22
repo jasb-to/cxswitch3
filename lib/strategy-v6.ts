@@ -545,17 +545,57 @@ function deriveDirectionFromScore(score: number): "LONG" | "SHORT" | "NEUTRAL" {
 }
 
 /**
+ * v28.0 FINAL PROMOTION GUARD
+ * Critical enforcement layer: blocks contradictory signals from ACTIVE_SNIPER
+ * Even if score >= 75, contradictions must not reach sniper layer
+ */
+function validateFinalPromotion(
+  proposedState: "ACTIVE_SNIPER" | "BUILDING" | "WATCH_ZONE",
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  htf4hTrend: string | null,
+  emaStructure: any
+): "ACTIVE_SNIPER" | "BUILDING" | "WATCH_ZONE" {
+  // HARD BLOCK: macro contradiction override
+  if (proposedState === "ACTIVE_SNIPER") {
+    // Check for contradictions that should block promotion
+    const isCounterTrend = classifyRelationship(direction, htf4hTrend) === "COUNTER_TREND";
+    
+    if (isCounterTrend) {
+      // COUNTER_TREND signals cannot reach ACTIVE_SNIPER unless explicitly overridden
+      // (e.g., via reversal structure confirmation)
+      // For now: hard block, demote to BUILDING
+      console.warn(`[FINAL_GUARD_v28] BLOCKED: ${direction} direction contradicts ${htf4hTrend} macro. Demoting ACTIVE_SNIPER → BUILDING`);
+      return "BUILDING";
+    }
+  }
+  
+  return proposedState;
+}
+
+/**
  * v28.0 DERIVE STATE FROM UNIFIED SCORE
  * State is ALWAYS derived from score, never calculated separately
  */
-function deriveStateFromScore(score: number): "ACTIVE_SNIPER" | "BUILDING" | "WATCH_ZONE" {
+function deriveStateFromScore(
+  score: number,
+  direction: "LONG" | "SHORT" | "NEUTRAL",
+  htf4hTrend: string | null,
+  emaStructure: any
+): "ACTIVE_SNIPER" | "BUILDING" | "WATCH_ZONE" {
+  // Step 1: Derive base state from score
+  let baseState: "ACTIVE_SNIPER" | "BUILDING" | "WATCH_ZONE";
   if (score >= 75) {
-    return "ACTIVE_SNIPER";
+    baseState = "ACTIVE_SNIPER";
   } else if (score >= 60) {
-    return "BUILDING";
+    baseState = "BUILDING";
   } else {
-    return "WATCH_ZONE";
+    baseState = "WATCH_ZONE";
   }
+  
+  // Step 2: Apply final promotion guard to enforce macro constraint
+  const finalState = validateFinalPromotion(baseState, direction, htf4hTrend, emaStructure);
+  
+  return finalState;
 }
 
 /**
@@ -1197,29 +1237,40 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
           if (!isValidCurrentStructureForSniper(card)) {
             card.signalState = "BUILDING";
           } else {
-            // Atomic build succeeded - emit ACTIVE_SNIPER with complete payload
-            card.mode = "SNIPER";
-            card.confidence = Math.min(score, 99);
-            card.lastSignalTime = Date.now();
-            card.signalState = "ACTIVE_SNIPER"; // v9 PHASE 5: Terminal state - immutable once set
-            // v21.3.8 FIX: Don't set notes here - let trade watch commentary do it below
+            // v28.0 FINAL PROMOTION GUARD: Validate macro compatibility BEFORE ACTIVE_SNIPER
+            const macroConflict = (card.htf4hTrend === "BULLISH" && card.direction === "SHORT") || 
+                                 (card.htf4hTrend === "BEARISH" && card.direction === "LONG");
             
-            // Populate trade targets from atomic build (already validated)
-            card.expectedMovePercent = atomicSignal.expectedMovePercent;
-            card.targetPrices = atomicSignal.targetPrices;
-            card.riskReward = atomicSignal.riskReward;
-            card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
-            
-            // Emit COMPLETE setup (all fields guaranteed)
-            setups.push(atomicSignal);
-            console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
-            
-            // v23.0 EVENT-DRIVEN MONITOR: Report state transitions not snapshots
-            const monitorEvent = detectMonitorEvent(card);
-            const eventCommentary = formatMonitorEvent(monitorEvent);
-            console.log(`[MONITOR_EVENT] ${eventCommentary}`);
-            // Attach event-based commentary to card notes for UI display
-            card.notes = eventCommentary;
+            if (macroConflict) {
+              // COUNTER_TREND signals cannot reach ACTIVE_SNIPER
+              console.warn(`[FINAL_GUARD_v28] BLOCKED: ${card.direction} contradicts 4H ${card.htf4hTrend} macro. Demoting to BUILDING.`);
+              card.signalState = "BUILDING";
+              card.notes = `⚠️ Macro conflict: ${card.direction} vs 4H ${card.htf4hTrend}. Blocked from SNIPER.`;
+            } else {
+              // Atomic build succeeded - emit ACTIVE_SNIPER with complete payload
+              card.mode = "SNIPER";
+              card.confidence = Math.min(score, 99);
+              card.lastSignalTime = Date.now();
+              card.signalState = "ACTIVE_SNIPER"; // v9 PHASE 5: Terminal state - immutable once set
+              // v21.3.8 FIX: Don't set notes here - let trade watch commentary do it below
+              
+              // Populate trade targets from atomic build (already validated)
+              card.expectedMovePercent = atomicSignal.expectedMovePercent;
+              card.targetPrices = atomicSignal.targetPrices;
+              card.riskReward = atomicSignal.riskReward;
+              card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
+              
+              // Emit COMPLETE setup (all fields guaranteed)
+              setups.push(atomicSignal);
+              console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
+              
+              // v23.0 EVENT-DRIVEN MONITOR: Report state transitions not snapshots
+              const monitorEvent = detectMonitorEvent(card);
+              const eventCommentary = formatMonitorEvent(monitorEvent);
+              console.log(`[MONITOR_EVENT] ${eventCommentary}`);
+              // Attach event-based commentary to card notes for UI display
+              card.notes = eventCommentary;
+            }
           }
         }
       }
