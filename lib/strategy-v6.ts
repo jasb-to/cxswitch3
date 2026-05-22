@@ -483,20 +483,21 @@ function calculateUnifiedTradeScore(input: TradeScoreInput): number {
   // ========================
   // Local momentum can strengthen or weaken Tier 1, but cannot reverse it when Tier 1 is strong
   
-  // 1H EMA slope: -1.0 to +1.0 (sensitive but limited magnitude)
-  // When HTF is strong (BULLISH/BEARISH), EMA slope contributes only ±10 to the score
-  // When HTF is neutral, EMA slope can contribute up to ±30
+  // FIX: emaSlope is now DIRECTIONAL (EMA8 vs EMA21), NOT historical momentum
+  // Positive = EMA8 above EMA21 (bullish structure)
+  // Negative = EMA8 below EMA21 (bearish structure)
+  // Range: -1.0 to +1.0 (not ±100 historical momentum)
   let tier2Contribution = 0;
   if (htf4hTrend === "BULLISH") {
-    // HTF BULLISH + local EMA momentum:
+    // HTF BULLISH + local EMA directional confirmation:
     // +EMA slope = strengthen LONG (75 → 80)
     // -EMA slope = weaken LONG but don't reverse (75 → 70)
-    tier2Contribution = emaSlope * 100 * 0.1; // ±10 max
+    tier2Contribution = emaSlope * 100 * 0.1; // ±10 max (directional, not historical)
   } else if (htf4hTrend === "BEARISH") {
-    // HTF BEARISH + local EMA momentum:
+    // HTF BEARISH + local EMA directional confirmation:
     // -EMA slope = strengthen SHORT (25 → 20)
     // +EMA slope = weaken SHORT but don't reverse (25 → 30)
-    tier2Contribution = emaSlope * 100 * 0.1; // ±10 max
+    tier2Contribution = emaSlope * 100 * 0.1; // ±10 max (directional, not historical)
   } else {
     // HTF NEUTRAL - local momentum decides
     tier2Contribution = emaSlope * 100 * 0.3; // ±30 max (full range)
@@ -524,7 +525,7 @@ function calculateUnifiedTradeScore(input: TradeScoreInput): number {
   // Tier 1 (HTF structure) + Tier 2 modulation (local momentum)
   const finalScore = tier1Score + tier2Contribution;
   
-  console.log(`[DIRECTIONAL_HIERARCHY_v2] HTF=${htf4hTrend} (tier1=${tier1Score}), EMA=${emaSlope?.toFixed(3) || 'N/A'} StochRSI=${stochRsi?.toFixed(1) || 'N/A'} (tier2=${tier2Contribution.toFixed(1)}) → finalScore=${finalScore.toFixed(1)}`);
+  console.log(`[DIRECTIONAL_HIERARCHY_v3] HTF=${htf4hTrend} (tier1=${tier1Score}), EMA=${emaSlope?.toFixed(3) || 'N/A'} (directional, not historical) StochRSI=${stochRsi?.toFixed(1) || 'N/A'} (tier2=${tier2Contribution.toFixed(1)}) → finalScore=${finalScore.toFixed(1)}`);
   
   // Clamp to 0-100
   return Math.max(0, Math.min(100, finalScore));
