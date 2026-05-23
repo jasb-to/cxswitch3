@@ -10,12 +10,45 @@
  * - Momentum degradation/recovery
  * - Structure validation events
  * - Macro context shifts (4H trend changes)
- * 
- * v37.1 ARCHITECTURE FIX: Import types from centralized lib/types.ts
- * This breaks the circular dependency: monitor-event → types (not → strategy-v6)
  */
 
-import type { SymbolCardState, MonitorEventType, MonitorEvent } from "./types";
+import type { SymbolCardState } from "./strategy-v6";
+
+export type MonitorEventType = 
+  | "DIRECTION_FLIP"           // LONG→SHORT or vice versa
+  | "SIGNAL_STATE_CHANGE"      // Any signal state transition
+  | "MOMENTUM_SPIKE"           // Stoch or EMA > threshold
+  | "MOMENTUM_FADE"            // Stoch or EMA < threshold
+  | "STRUCTURE_INVALIDATION"   // EMA reverses against direction
+  | "STRUCTURE_CONFIRMATION"   // EMA aligns with direction
+  | "MACRO_SHIFT"              // 4H trend changes
+  | "IMPULSE_STARTING"         // execution15mState = EXPANDING/BREAKOUT
+  | "IMPULSE_EXHAUSTING"       // volatility extreme + momentum fade
+  | "REVALIDATION_SUCCESS"     // SNIPER revalidation passed
+  | "REVALIDATION_FAILED"      // SNIPER revalidation failed (should expire)
+  | "CONFIDENCE_SURGE"         // Score > 70
+  | "CONFIDENCE_DROP"          // Score < 40
+  | "EXECUTION_QUALITY_CHANGE" // Source changes (Kraken live → cached)
+  | "NONE";                    // No significant change
+
+export interface MonitorEvent {
+  type: MonitorEventType;
+  symbol: string;
+  timestamp: number;
+  previousState: Partial<SymbolCardState>;
+  currentState: Partial<SymbolCardState>;
+  details: {
+    previousDirection?: string;
+    currentDirection?: string;
+    previousSignalState?: string;
+    currentSignalState?: string;
+    scoreChange?: number;
+    emaChange?: number;
+    stochChange?: number;
+    volatilityLevel?: number;
+    reason?: string;
+  };
+}
 
 // v36.1 FIX: Lazy initialize previousStates to avoid circular dependency TDZ
 // The Map uses SymbolCardState type which creates circular import with strategy-v6.ts

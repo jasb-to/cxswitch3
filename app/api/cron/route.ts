@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { generateSetups, generateDisplayCards, STRATEGY_VERSION } from "@/lib/strategy-v6";
 import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
 import { fetchCandles } from "@/lib/kraken";
@@ -6,9 +7,12 @@ import { getSnapshot, setSnapshot } from "@/lib/runtime-snapshot";
 import { mergeSnapshots, validateSnipperCardState } from "@/lib/snapshot-merger";
 import { clearCanonicalStates, initializeCanonicalState, updateCanonicalState, getAllCanonicalStates, canonicalToCard } from "@/lib/unified-market-state";
 import { createCanonicalSnapshot } from "@/lib/canonical-snapshot";
+import { detectMonitorEvent, formatMonitorEvent } from "@/lib/monitor-event-engine";
 
+// v36.0 FIX: Defer module-level logging to runtime
+// Move console.log out of module initialization to prevent TDZ
+// This prevents the module from executing any code during bundle parsing
 let strategyVersionLogged = false;
-
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -52,7 +56,7 @@ const signalStateHistory: Record<string, { signalState: string; lastAlertedAt: n
  * - No staggering
  * - No budget sharing
  */
-async function runExecutionCycle(generateSetups: any): Promise<{
+async function runExecutionCycle(): Promise<{
   executionCards: any[];
   setups: any[];
   timeMs: number;
@@ -127,7 +131,7 @@ async function runExecutionCycle(generateSetups: any): Promise<{
  * - No budget coupling
  * - STATEFUL: Uses previous snapshot as fallback if CoinGecko fails (v8.1 FIX #3)
  */
-async function runDisplayCycle(generateDisplayCards: any): Promise<{
+async function runDisplayCycle(): Promise<{
   displayCards: any[];
   timeMs: number;
 }> {
@@ -221,11 +225,6 @@ async function runDisplayCycle(generateDisplayCards: any): Promise<{
 // v8.0 header: CRON optimized for delta updates, not full rebuilds
 export async function GET(req: NextRequest) {
   try {
-    // v37.0 FIX: Dynamic imports to prevent bundler circular dependency TDZ
-    // Import strategy modules INSIDE handler to break circular bundling
-    const { generateSetups, generateDisplayCards, STRATEGY_VERSION } = await import("@/lib/strategy-v6");
-    const { detectMonitorEvent, formatMonitorEvent } = await import("@/lib/monitor-event-engine");
-    
     // v36.0 FIX: Log version on first execution (after all imports resolved)
     if (!strategyVersionLogged) {
       console.log(`[MOMENTUM_ENGINE_STARTUP] Strategy version: ${STRATEGY_VERSION}`);
@@ -263,8 +262,8 @@ export async function GET(req: NextRequest) {
       // v8.1 FIX #4: Sequential execution (execution → display)
       // Display cycle must run AFTER execution fetches all market data
       // Otherwise display cycle completes with 0 cards before markets are fetched
-      const executionResult = await runExecutionCycle(generateSetups);
-      const displayResult = await runDisplayCycle(generateDisplayCards);
+      const executionResult = await runExecutionCycle();
+      const displayResult = await runDisplayCycle();
 
       const { executionCards, setups } = executionResult;
       const { displayCards } = displayResult;
