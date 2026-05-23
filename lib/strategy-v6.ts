@@ -859,28 +859,29 @@ function buildSignalHierarchy(
     rationale: `${direction} SNIPER ignition: 15M=${execution15mState} + momentum (stoch=${stochRsi?.toFixed(1) ?? "N/A"}, ema=${emaSlope?.toFixed(3) ?? "N/A"})`,
   };
   
-  // CONTEXT: 4H macro as secondary information (NEVER as suggestion)
+  // CONTEXT: 4H macro as secondary information (NEVER as suggestion or direction implication)
+  // v33.0 UI DISCIPLINE: Macro is confidence modifier only
   let context: SignalHierarchy["context"] | undefined;
   if (htf4hTrend && htf4hTrend !== "NEUTRAL") {
-    // Determine if macro aligns or diverges
+    // Determine if macro aligns or diverges (for confidence adjustment only)
     const macroAligned = (htf4hTrend === "BULLISH" && direction === "LONG") || 
                          (htf4hTrend === "BEARISH" && direction === "SHORT");
     
     context = {
       type: macroAligned ? "MACRO_ALIGNMENT" : "MACRO_DIVERGENCE",
       macroTrend: htf4hTrend as "BULLISH" | "BEARISH",
-      impact: macroAligned ? "REINFORCES" : "COMPLICATES",
-      // v27.0 FIX: Never say "consider LONG/SHORT" - only informational labels
+      impact: macroAligned ? "+15% CONFIDENCE" : "-20% CONFIDENCE",
+      // v33.0 UI DISCIPLINE: No directional language, confidence modifier only
       note: macroAligned 
-        ? "MACRO SUPPORTIVE" 
-        : "MACRO CONTRA",
+        ? "Macro aligned (confidence boost)" 
+        : "Macro divergence (confidence penalty)",
     };
   } else {
     context = {
       type: "MACRO_ALIGNMENT",
       macroTrend: "NEUTRAL",
       impact: "NEUTRAL",
-      note: "MACRO NEUTRAL",
+      note: "Macro neutral (no modifier)",
     };
   }
   
@@ -1714,7 +1715,15 @@ function buildAtomicSniperSignal(
     return null;
   }
 
-  // 4. Build complete signal with rendering hierarchy (v25.0)
+  const macroConfidenceAdjustment = (() => {
+    if (card.htf4hTrend === null || card.htf4hTrend === "NEUTRAL") return 0;
+    const isAligned = (card.htf4hTrend === "BULLISH" && card.direction === "LONG") ||
+                      (card.htf4hTrend === "BEARISH" && card.direction === "SHORT");
+    return isAligned ? 15 : -20; // +15% if aligned, -20% if counter-trend
+  })();
+
+  // 4. Build complete signal with strict UI discipline
+  // v33.0: Direction is immutable truth, macro is confidence modifier only
   const signalHierarchy = buildSignalHierarchy(
     card.direction as "LONG" | "SHORT",
     score,
@@ -1724,6 +1733,12 @@ function buildAtomicSniperSignal(
     card.emaSlope
   );
   
+  // Build reason string with strict non-directional format
+  // NO "consider SHORT", NO "should align", NO directional suggestions
+  const macroContextLabel = card.htf4hTrend === "NEUTRAL" 
+    ? "Macro neutral" 
+    : `Macro ${card.htf4hTrend.toLowerCase()} (${macroConfidenceAdjustment > 0 ? '+' : ''}${macroConfidenceAdjustment}% confidence)`;
+
   const signal = {
     symbol,
     mode: "SNIPER" as const,
@@ -1735,22 +1750,25 @@ function buildAtomicSniperSignal(
     targetPrices: targets.targetPrices,  // GUARANTEED: tp1, tp2, sl all defined
     riskReward: targets.riskReward,  // GUARANTEED: > 0
     expectedMovePercent: targets.expectedMovePercent,
-    reason: `SNIPER ${card.direction} - HTF:${card.htf4hTrend} + 15M:${card.execution15mState} + 5M trigger`,
+    // v33.0: UI DISCIPLINE - Direction is truth, macro is context only
+    reason: `ACTIVE_SNIPER: Direction=${card.direction} | Momentum: 15M ${card.execution15mState}, Stoch=${card.stochRsi?.toFixed(1)} | ${macroContextLabel}`,
     // v25.0: Signal hierarchy
     hierarchy: signalHierarchy,
     momentum: {
       stochRsiSignal: `Stoch RSI: ${card.stochRsi?.toFixed(1) ?? "—"}`,
-      emaStackSignal: card.direction === "LONG" ? "8 EMA turning up" : "8 EMA turning down",
-      volatilitySignal: (card.volatilityLevel ?? 40) < 40 ? "Compression active" : "Normal",
+      emaStackSignal: card.direction === "LONG" ? "8 EMA above 21" : "8 EMA below 21",
+      volatilitySignal: (card.volatilityLevel ?? 40) < 40 ? "Compression active" : "Expansion mode",
       trend4H: card.htf4hTrend !== "NEUTRAL",
     },
     htf: {
       trend4h: card.htf4hTrend as "BULLISH" | "BEARISH",
+      confidenceModifier: `${macroConfidenceAdjustment > 0 ? '+' : ''}${macroConfidenceAdjustment}%`,
       alignment1h: card.htf1hAlignment ?? false,
       compression15m: card.htf15mCompression ?? false,
       trigger5m: (card.stochRsi ?? 50) > 20 && (card.stochRsi ?? 50) < 80 ? "Stoch RSI cross" : "EMA flip",
     },
   };
+
 
   // ATOMIC GUARANTEE: All required fields exist and are valid
   // If we reach here, signal is complete or we return null

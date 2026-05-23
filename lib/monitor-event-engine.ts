@@ -207,15 +207,16 @@ export function formatMonitorEvent(event: MonitorEvent): string {
   }
 
   if (type === "STRUCTURE_CONFIRMATION") {
-    return `✓ ${symbol} STRUCTURE CONFIRMED: EMA aligns with ${currentState.direction} (slope: ${currentState.emaSlope?.toFixed(3)})`;
+    return `✓ ${symbol} STRUCTURE CONFIRMED: ${currentState.direction} structure holds (EMA: ${currentState.emaSlope?.toFixed(3)})`;
   }
 
   if (type === "STRUCTURE_INVALIDATION") {
-    return `✗ ${symbol} STRUCTURE BREAK: EMA now opposes ${currentState.direction} (slope: ${currentState.emaSlope?.toFixed(3)})`;
+    return `✗ ${symbol} STRUCTURE BREAK: ${currentState.direction} structure no longer valid (EMA: ${currentState.emaSlope?.toFixed(3)})`;
   }
 
   if (type === "MACRO_SHIFT") {
-    return `🌍 ${symbol} MACRO SHIFT: 4H ${details.previousTrend} → ${details.currentTrend}`;
+    // v33.0 UI DISCIPLINE: Never imply macro affects direction
+    return `🌍 ${symbol} MACRO SHIFT: 4H ${details.previousTrend} → ${details.currentTrend} (confidence modifier applies)`;
   }
 
   if (type === "IMPULSE_STARTING") {
