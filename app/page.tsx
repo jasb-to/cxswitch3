@@ -213,21 +213,30 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, []);
 
-  // Raw fetch - no SWR state machine, no derived logic
+  // Signals polling - 15s interval (backend cron updates canonical state)
+  // NEVER poll faster than 15s - this creates unnecessary Vercel executions
   useEffect(() => {
+    const POLL_INTERVAL = 15000; // 15 seconds max
+    
     const poll = async () => {
       try {
         const res = await fetch("/api/signals", { cache: "no-store" });
         const json = await res.json();
         setSnap(json);
       } catch (error) {
-        console.error("[FETCH] /api/signals failed:", error);
+        console.error("[POLL_ERROR] /api/signals:", error);
       }
     };
 
+    // Initial fetch on mount
+    console.log("[POLL_INIT] Signals polling started (15000ms)");
     poll();
-    const id = setInterval(poll, 1000);
-    return () => clearInterval(id);
+    
+    const id = setInterval(poll, POLL_INTERVAL);
+    return () => {
+      clearInterval(id);
+      console.log("[POLL_CLEANUP] Signals polling stopped");
+    };
   }, []);
 
   // ZERO LOGIC: Backend truth only
