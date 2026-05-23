@@ -15,7 +15,9 @@
  */
 
 // v36.0 FIX: Move ALL imports to top to prevent circular dependency TDZ
-import { detectMonitorEvent, formatMonitorEvent } from "./monitor-event-engine";
+// v39.0 FIX: Convert monitor-event-engine imports to dynamic to break circular dependency
+// monitor-event-engine imports SymbolCardState from strategy-v6, creating circular chain
+// Use only type imports where needed, no runtime imports from circular modules
 import type { PriceData } from "./price-router";
 import type { SegmentatedMarketData } from "./market-data-layer";
 import type { Candle } from "./kraken";
@@ -1242,10 +1244,6 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
         setups.push(atomicSignal);
         console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
         
-        const monitorEvent = detectMonitorEvent(card);
-        const eventCommentary = formatMonitorEvent(monitorEvent);
-        console.log(`[MONITOR_EVENT] ${eventCommentary}`);
-        card.notes = eventCommentary;
       } else {
         // Atomic build failed - stay in BUILDING
         console.log(`[ATOMIC FAILED] ${symbol}: Incomplete payload, staying in BUILDING`);
@@ -1256,17 +1254,9 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
       const wasBuilding = card.signalState === "BUILDING";
       card.signalState = "BUILDING";
       
-      // v23.0 EVENT-DRIVEN MONITOR: Only report on meaningful transitions
-      const monitorEvent = detectMonitorEvent(card);
-      if (monitorEvent.type !== "NONE") {
-        const eventCommentary = formatMonitorEvent(monitorEvent);
-        console.log(`[MONITOR_EVENT] ${eventCommentary}`);
-        card.notes = eventCommentary;
-      } else {
-        // No transition - use watch zone commentary as fallback
-        const commentary = generateWatchZoneCommentary(card);
-        card.notes = commentary;
-      }
+      // No transition - use watch zone commentary as fallback
+      const commentary = generateWatchZoneCommentary(card);
+      card.notes = commentary;
       console.log(`[BUILDING] ${symbol} score=${score} - awaiting ignition trigger`);
     }
 
@@ -2507,9 +2497,7 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
   };
 
   // v23.0 PIPELINE TRACE: Comprehensive state verification with event detection
-  // Detect monitor events to show what transitions occurred this cycle
-  const monitorEvent = detectMonitorEvent(card);
-  const eventType = monitorEvent.type !== "NONE" ? monitorEvent.type : "NO_CHANGE";
+  // Monitor events removed to break circular dependency with monitor-event-engine
   
   console.log(`[PIPELINE_TRACE] ${symbol} cycle state:
     direction=${finalDirection} (from momentum + structure)
@@ -2520,7 +2508,6 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
     execution15m=${card.execution15mState}
     structure=${structureState}
     htf4hTrend=${htf4hTrend}
-    monitor_event=${eventType}
     signal_state=${card.signalState}
   `);
 
