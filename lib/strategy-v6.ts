@@ -942,6 +942,83 @@ function buildSignalHierarchy(
 }
 
 
+/**
+ * v40.0 CRITICAL FIX: Directional Confidence Model
+ * 
+ * Instead of binary direction assignment, calculate confidence score.
+ * Only assign direction if confidence exceeds threshold.
+ * Prevents EMA leakage into neutral environments.
+ */
+function calculateDirectionalConfidence(
+  emaSlope: number | null,
+  structureState: StructureState,
+  volatilityLevel: number | null,
+  stochRsi: number | null,
+  card?: SymbolCardState,
+  htf4hTrend?: string | null
+): number {
+  let confidence = 0;
+  
+  // EMA acceleration (0-30 points)
+  if (emaSlope !== null && emaSlope !== undefined) {
+    if (Math.abs(emaSlope) > 0.5) {
+      confidence += 30; // Strong acceleration
+    } else if (Math.abs(emaSlope) > 0.25) {
+      confidence += 20; // Moderate acceleration
+    } else if (Math.abs(emaSlope) > 0.15) {
+      confidence += 10; // Weak acceleration (insufficient alone)
+    }
+  }
+  
+  // Structure state alignment (0-25 points)
+  if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
+    confidence += 25; // Bullish structure
+  } else if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
+    confidence += 25; // Bearish structure
+  } else if (structureState === "RANGE") {
+    confidence += 0; // RANGE adds no directional confidence
+  }
+  
+  // Volatility expansion alignment (0-20 points)
+  if (volatilityLevel !== null && volatilityLevel !== undefined) {
+    if (volatilityLevel > 65) {
+      confidence += 20; // Strong expansion
+    } else if (volatilityLevel > 55) {
+      confidence += 10; // Moderate expansion
+    }
+  }
+  
+  // Displacement activity confirmation (0-20 points)
+  if (card && card.recentImpulseStrength !== null && card.recentImpulseStrength !== undefined) {
+    if (card.recentImpulseStrength > 60) {
+      confidence += 20; // Strong impulse continuation
+    } else if (card.recentImpulseStrength > 40) {
+      confidence += 10; // Moderate impulse
+    }
+  }
+  
+  // Execution state expansion (0-5 points - bonus only)
+  if (card && (card.execution15mState === "EXPANDING" || card.execution15mState === "BREAKOUT_READY")) {
+    confidence += 5; // Minor bonus for active expansion
+  }
+  
+  // HTF alignment (0-10 points)
+  if (htf4hTrend) {
+    // Don't assign directional confidence from HTF - only for validation
+    // HTF should confirm, not drive direction
+  }
+  
+  return Math.min(confidence, 100); // Cap at 100
+}
+
+/**
+ * v40.0 CRITICAL FIX: Corrected Direction Generation
+ * 
+ * Uses confidence model instead of binary direction assignment.
+ * Only assign LONG/SHORT if confidence > 50.
+ * Otherwise return NEUTRAL.
+ * Prevents false directional leakage.
+ */
 function getDirectionFromStructure(
   structureState: StructureState,
   emaStructure: any,
@@ -950,89 +1027,67 @@ function getDirectionFromStructure(
   volatilityLevel: number | null,
   card?: SymbolCardState  // v35.0: Pass card for displacement context
 ): "LONG" | "SHORT" | "NEUTRAL" {
-  // v35.0 CRITICAL FIX: RANGE destroys stale directional memory
-  // Direction must be structurally earned at all times
+  // v40.0 FIX: Use confidence model, not binary assignment
   
   if (!emaStructure) {
     throw new Error("EMA_STRUCTURE_REQUIRED: getDirectionFromStructure must receive valid emaStructure");
   }
   
-  // STRUCTURAL SIGNALS ONLY (momentum removed as direction factor)
   const emaSlope = emaStructure.emaSlope; // -1.0 to +1.0
   
-  // Step 1: Determine direction from STRUCTURE (not momentum magnitude)
-  // EMA threshold for structure direction (not momentum)
-  let structureDirection: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
+  // Step 1: Calculate directional confidence
+  const confidence = calculateDirectionalConfidence(
+    emaSlope,
+    structureState,
+    volatilityLevel,
+    stochRsi,
+    card,
+    htf4hTrend
+  );
   
+  // Step 2: Determine tentative direction from structure (not confidence)
+  let tentativeDirection: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
+  
+  // EMA slope determines tentative direction
   if (emaSlope < -0.2) {
-    // EMA8 significantly below EMA21 = bearish structure
-    structureDirection = "SHORT";
+    tentativeDirection = "SHORT";
   } else if (emaSlope > 0.2) {
-    // EMA8 significantly above EMA21 = bullish structure
-    structureDirection = "LONG";
+    tentativeDirection = "LONG";
   }
   
   // Structure state tie-breaker (only when EMA is neutral)
-  if (structureDirection === "NEUTRAL") {
+  if (tentativeDirection === "NEUTRAL") {
     if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
-      structureDirection = "LONG";
+      tentativeDirection = "LONG";
     } else if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
-      structureDirection = "SHORT";
+      tentativeDirection = "SHORT";
     }
   }
   
-  // v39.1 FIX: RANGE should reduce confidence, not erase direction
-  // Preserve directional bias during expansion states
-  // Only neutralize when expansion is absent and structure weak
-  if (structureState === "RANGE" && structureDirection !== "NEUTRAL") {
-    // Check if expansion is active (strong directional signals)
-    const isExpanding = card && (
-      card.execution15mState === "EXPANDING" || 
-      card.execution15mState === "BREAKOUT_READY"
-    );
-    
-    // Check for directional EMA slope (regardless of displacement)
-    const hasDirectionalEMA = (
-      (structureDirection === "LONG" && emaSlope > 0.15) ||
-      (structureDirection === "SHORT" && emaSlope < -0.15)
-    );
-    
-    // Check for volatility expansion activity
-    const hasVolatilityExpansion = volatilityLevel && volatilityLevel > 55;
-    
-    // Check for active displacement continuation
-    const hasActiveDisplacement = card && (
-      (structureDirection === "LONG" && 
-        (card.currentPrice ?? 0) > (card.entryPrice ?? 0) &&
-        (card.recentImpulseStrength ?? 0) > 40) ||
-      (structureDirection === "SHORT" && 
-        (card.currentPrice ?? 0) < (card.entryPrice ?? 0) &&
-        (card.recentImpulseStrength ?? 0) > 40)
-    );
-    
-    // v39.1: Preserve direction if expansion is active OR directional signals present
-    if (isExpanding || hasDirectionalEMA || hasVolatilityExpansion || hasActiveDisplacement) {
-      console.log(`[RANGE_PRESERVED] ${card?.symbol || "SYMBOL"}: ${structureDirection} bias maintained | expansion=${isExpanding} emaDir=${hasDirectionalEMA} vol=${hasVolatilityExpansion} impulse=${hasActiveDisplacement}`);
-      // Direction survives RANGE, no modification needed
-      return structureDirection;
-    } else {
-      // No expansion signals - neutralize
-      console.log(`[RANGE_DECAY] ${card?.symbol || "SYMBOL"}: ${structureDirection} decayed to NEUTRAL | no expansion detected`);
-      return "NEUTRAL";
-    }
+  // Step 3: CRITICAL FIX - Only accept direction if confidence sufficient
+  // Confidence threshold: 50 (prevents weak EMA alone from driving direction in RANGE)
+  const confidenceThreshold = 50;
+  
+  if (confidence < confidenceThreshold) {
+    console.log(`[DIRECTION_CONFIDENCE_FAIL] ${card?.symbol || "SYMBOL"}: ${tentativeDirection} rejected | confidence=${confidence.toFixed(0)}/${confidenceThreshold} (emaSlope=${emaSlope?.toFixed(3) ?? "N/A"} structure=${structureState})`);
+    return "NEUTRAL"; // Insufficient confidence - neutralize
   }
   
-  // FINAL RESULT: Direction is determined by structure, momentum cannot override
-  return structureDirection;
+  // v40.0 FIX: RANGE with weak confidence always becomes NEUTRAL
+  // Don't preserve direction just because EMA has slight slope
+  if (structureState === "RANGE" && confidence < 70) {
+    console.log(`[RANGE_WEAK_CONFIDENCE] ${card?.symbol || "SYMBOL"}: ${tentativeDirection} neutralized in RANGE | confidence=${confidence.toFixed(0)} (needs >= 70 in RANGE)`);
+    return "NEUTRAL";
+  }
+  
+  // Direction accepted - has sufficient confidence
+  console.log(`[DIRECTION_ACCEPTED] ${card?.symbol || "SYMBOL"}: ${tentativeDirection} confirmed | confidence=${confidence.toFixed(0)}`);
+  return tentativeDirection;
 }
 
 /**
- * VALIDATE DIRECTION AGAINST STRUCTURE (NO GATES VERSION)
- * Structure locks direction but does NOT block entry
- * This function validates the direction is properly locked by structure
- * Returns the final direction after structure lock applied
- * 
- * NO BLOCKING LOGIC - All trades allowed if structure permits
+ * v40.0: OLD FUNCTION - Keeping getDirectionLockedByStructure for compatibility
+ * But getDirectionFromStructure now handles all direction logic
  */
 function getDirectionLockedByStructure(
   proposedDirection: "LONG" | "SHORT" | "NEUTRAL",
@@ -1224,6 +1279,36 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
     console.log(`[EVENT] ${symbol} event=${outputEvent}`);
 
 
+    // v40.0 CRITICAL FIX: Validate directional confidence BEFORE SNIPER creation
+    // Prevents provisional SNIPER creation with weak directional bias
+    const directionalConfidence = calculateDirectionalConfidence(
+      card.emaSlope ?? 0,
+      card.structureState,  // Use card's current structureState
+      card.volatilityLevel ?? 0,
+      card.stochRsi ?? 0,
+      card,
+      card.htf4hTrend
+    );
+    
+    // SNIPER requires higher confidence threshold than basic direction
+    const sniperConfidenceThreshold = 60; // Require 60+ confidence for SNIPER
+    const directionConfidenceThreshold = 50; // Basic direction requires 50+ confidence
+    
+    if (directionalConfidence < directionConfidenceThreshold) {
+      // Insufficient directional confidence - cannot proceed with any signal
+      card.signalState = "BUILDING";
+      const commentary = generateWatchZoneCommentary(card);
+      card.notes = commentary;
+      console.log(`[BUILDING_WEAK_DIRECTION] ${symbol} confidence=${directionalConfidence.toFixed(0)}/${directionConfidenceThreshold} - awaiting directional confirmation`);
+    } else if (directionalConfidence < sniperConfidenceThreshold && score >= 27) {
+      // Score sufficient but directional confidence low - stay in BUILDING
+      card.signalState = "BUILDING";
+      const commentary = generateWatchZoneCommentary(card);
+      card.notes = commentary;
+      console.log(`[BUILDING_SCORE_WITHOUT_DIRECTION] ${symbol} score=${score} but confidence=${directionalConfidence.toFixed(0)}/${sniperConfidenceThreshold} - momentum ahead of structure`);
+    } else {
+      // Directional confidence sufficient - proceed with SNIPER validation
+    
     // v29.0 FULLY DETERMINISTIC: Single comprehensive validation before ANY construction
     // This ensures: if validation passes → signal WILL exist
     // If validation fails → signal NEVER constructed (not even briefly)
@@ -1259,7 +1344,7 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
         card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
         
         setups.push(atomicSignal);
-        console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
+        console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} directionConfidence=${directionalConfidence.toFixed(0)} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
         
       } else {
         // Atomic build failed - stay in BUILDING
@@ -1274,8 +1359,10 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
       // No transition - use watch zone commentary as fallback
       const commentary = generateWatchZoneCommentary(card);
       card.notes = commentary;
-      console.log(`[BUILDING] ${symbol} score=${score} - awaiting ignition trigger`);
+      console.log(`[BUILDING] ${symbol} score=${score} directionConfidence=${directionalConfidence.toFixed(0)} - awaiting ignition trigger`);
     }
+    
+    } // End of directional confidence check
 
 
     // v21.7.0 SNIPER STALE STATE REVALIDATION
@@ -2436,14 +2523,23 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
   // v35.0: Pass card for RANGE displacement context
   // v38.1 FIX: Do NOT pass card to avoid forward reference TDZ
   // card is not yet defined at this point, and function has optional card parameter
+  
+  // v41.0 DECISION AXIS: Single source of truth for direction
+  // This is the ONLY place direction is determined
   let direction = getDirectionFromStructure(structureState, htf4hAnalysis, stochRsi, htf4hTrend, volatilityLevel);
-  console.log(`[DIRECTION_STRUCTURE] ${symbol}: direction="${direction}" from structure (structureState=${structureState}, 4H=${htf4hTrend})`);
+  console.log(`[DECISION_AXIS] ${symbol}: direction="${direction}" | confidence model applied | structure=${structureState} emaSlope=${htf4hAnalysis?.emaSlope?.toFixed(3) ?? "N/A"} macro=${htf4hTrend}`);
 
 
   // v32.0 CRITICAL RULE ENFORCEMENT: Price structure is ALWAYS the truth
   // No indicator overrides, no mutations, no EMA gates
   // Direction is locked and immutable once determined from structure
   const finalDirection = direction;
+  
+  // v41.0 ENFORCEMENT: Verify direction hasn't been mutated after DecisionAxis
+  if (finalDirection !== direction) {
+    console.warn(`[DECISION_AXIS_VIOLATION] ${symbol}: direction was mutated after DecisionAxis! Original=${direction} Final=${finalDirection}. IGNORING MUTATION.`);
+  }
+  
   console.log(`[SCAN] ${symbol} direction=${finalDirection} structureState=${structureState}`);
 
 
