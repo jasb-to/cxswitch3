@@ -27,8 +27,6 @@ import {
   validateSLSeparation
 } from "./risk-utils";
 
-const MOMENTUM_ENGINE_VERSION = "v28.0_UNIFIED_REGIME_CONVICTION_ENGINE";
-
 // v36.0 FIX: Defer module-level console.log to prevent TDZ
 // Don't log during module initialization, only when functions are actually called
 // This prevents potential issues with circular dependencies and module loading order
@@ -2526,5 +2524,6 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
 
 // v22.5 RUNTIME VERSION EXPORT
 // Used to verify that v22.5 is executing (not old stale artifact)
-export const STRATEGY_VERSION = MOMENTUM_ENGINE_VERSION;
+export const STRATEGY_VERSION = "v28.0_UNIFIED_REGIME_CONVICTION_ENGINE";
+export const MOMENTUM_ENGINE_VERSION = "v28.0_UNIFIED_REGIME_CONVICTION_ENGINE";
 
