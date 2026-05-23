@@ -42,6 +42,10 @@ let globalCronLocked = false;
 // Maps: symbol -> { signalState, lastAlertedAt }
 const signalStateHistory: Record<string, { signalState: string; lastAlertedAt: number }> = {};
 
+// ═════════════════════════════════════════════════════════════════════════════
+// v8.1: Execution and Display Cycle Functions
+// ═════════════════════════════════════════════════════════════════════════════
+
 /**
  * v8.1: Execution Cycle (KRAKEN ONLY)
  * - Hard real-time requirements
