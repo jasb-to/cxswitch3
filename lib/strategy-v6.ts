@@ -545,11 +545,11 @@ function deriveDirectionFromScore(score: number): "LONG" | "SHORT" | "NEUTRAL" {
 }
 
 /**
- * v29.0 DETERMINISTIC SIGNAL ELIGIBILITY - PURE FUNCTION
+ * v30.0 LIGHTWEIGHT SNIPER ELIGIBILITY - PROBABILISTIC EARLY IMPULSE ENGINE
  * 
- * This function validates ALL gates atomically BEFORE any signal construction.
- * Returns true ONLY if signal is guaranteed to be valid (no further blocking possible).
- * This ensures: if true → signal WILL exist, if false → signal NEVER constructed
+ * Removed over-gating. Now prioritizes early entry over macro confirmation.
+ * Macro trend influences confidence only, never blocks signals.
+ * Counter-trend setups are allowed with adjusted risk/confidence.
  */
 function validateFullSniperEligibility(
   card: SymbolCardState,
@@ -559,45 +559,29 @@ function validateFullSniperEligibility(
   macroConflict: boolean,
   htf4hTrend: string | null
 ): boolean {
-  // GATE 1: Score threshold
+  // GATE 1 ONLY: Score threshold (hard requirement)
   if (score < profile.ignitionThreshold) {
-    console.log(`[FULL_VALIDATION_v29] ${symbol} REJECTED: score ${score} < threshold ${profile.ignitionThreshold}`);
+    console.log(`[SNIPER_ELIGIBILITY_v30] ${symbol} REJECTED: score ${score} < threshold ${profile.ignitionThreshold}`);
     return false;
   }
   
-  // GATE 2: Direction must be clear
+  // GATE 2: Direction must be clear (no NEUTRAL trades)
   if (card.direction === "NEUTRAL") {
-    console.log(`[FULL_VALIDATION_v29] ${symbol} REJECTED: no directional bias`);
+    console.log(`[SNIPER_ELIGIBILITY_v30] ${symbol} REJECTED: no directional bias`);
     return false;
   }
   
-  // GATE 3: Sniper conditions (impulse, ignition, compression/breakout)
-  if (!checkSniperConditions(card, profile, "strict")) {
-    // Already logs reason
-    return false;
-  }
+  // That's it for hard gates. Everything else is probabilistic modulation.
+  // COUNTER_TREND and macro mismatch are NO LONGER hard rejections.
+  // They influence confidence and risk, not access to ACTIVE_SNIPER.
   
-  // GATE 4: Execution validation
-  const executionValidation = validateActiveSniperExecution(card, score);
-  if (!executionValidation.valid) {
-    console.log(`[FULL_VALIDATION_v29] ${symbol} REJECTED: execution validation - ${executionValidation.reason}`);
-    return false;
-  }
-  
-  // GATE 5: Structure support
-  if (!isValidCurrentStructureForSniper(card)) {
-    console.log(`[FULL_VALIDATION_v29] ${symbol} REJECTED: current structure doesn't support SNIPER`);
-    return false;
-  }
-  
-  // GATE 6: Macro compatibility (FINAL_GUARD - no contradictions allowed)
   if (macroConflict) {
-    console.warn(`[FULL_VALIDATION_v29] ${symbol} REJECTED: ${card.direction} contradicts 4H ${htf4hTrend} macro (COUNTER_TREND)`);
-    return false;
+    // Counter-trend setup - ALLOWED with notation
+    console.log(`[SNIPER_ELIGIBILITY_v30] ${symbol} ACCEPTED (COUNTER_TREND): ${card.direction} vs 4H ${htf4hTrend} - confidence will be modulated`);
+  } else {
+    console.log(`[SNIPER_ELIGIBILITY_v30] ${symbol} ACCEPTED (ALIGNED): ${card.direction} aligns with 4H ${htf4hTrend}`);
   }
   
-  // ALL GATES PASSED: Signal is valid and will be created
-  console.log(`[FULL_VALIDATION_v29] ${symbol} ACCEPTED: all gates passed, SNIPER will be created`);
   return true;
 }
 
@@ -925,93 +909,59 @@ function getDirectionFromStructure(
   htf4hTrend: string | null,
   volatilityLevel: number | null
 ): "LONG" | "SHORT" | "NEUTRAL" {
-  // v26.0 CRITICAL: EMA_STRUCTURE IS A DIRECTIONAL GATE, NOT A SCORING INPUT
-  // This prevents macro + stoch from flipping direction when structure is clear
+  // v30.0 PROBABILISTIC DIRECTION ENGINE - Macro is weighting, not gating
+  // Prioritizes local momentum over macro confirmation
   
   if (!emaStructure) {
     throw new Error("EMA_STRUCTURE_REQUIRED: getDirectionFromStructure must receive valid emaStructure");
   }
   
-  // GATE 1: Extract directional constraint from EMA structure
+  // Extract EMA directional bias (local momentum, primary signal)
   const directionalBias = emaStructure.emaSlope;  // -1.0 to +1.0
-  const spreadAcceleration = emaStructure.spreadAcceleration; // Trend confirmation
   
-  // Determine gate direction based on EMA structure (not scoring, gating)
-  let gateDirection: "LONG_ONLY" | "SHORT_ONLY" | "NEUTRAL" = "NEUTRAL";
-  
-  if (directionalBias < -0.1) {
-    // EMA8 clearly below EMA21 - SHORT gate active
-    gateDirection = "SHORT_ONLY";
+  // Calculate local momentum score from EMA bias
+  let localMomentumScore = 50; // Neutral baseline
+  if (directionalBias < -0.3) {
+    localMomentumScore = 20; // Strong bearish
+  } else if (directionalBias < -0.1) {
+    localMomentumScore = 35; // Moderate bearish
+  } else if (directionalBias > 0.3) {
+    localMomentumScore = 80; // Strong bullish
   } else if (directionalBias > 0.1) {
-    // EMA8 clearly above EMA21 - LONG gate active
-    gateDirection = "LONG_ONLY";
+    localMomentumScore = 65; // Moderate bullish
   }
-  // else: NEUTRAL gate allows momentum to decide
   
-  // GATE 2: Macro layer (HTF alignment) - secondary gate, cannot override primary
-  const macroBiasWeight = calculateMacroBiasWeight(htf4hTrend);
+  // Add stoch RSI modulation (oscillator context)
+  if (stochRsi !== null) {
+    const stochComponent = (stochRsi - 50) * 0.3; // -15 to +15 range
+    localMomentumScore += stochComponent;
+  }
   
-  // If macro is strong bearish (-12) and EMA gate is SHORT_ONLY, reinforce SHORT
-  // If macro is strong bullish (+12) and EMA gate is LONG_ONLY, reinforce LONG
-  // But if gates conflict, EMA wins
+  // v30.0 MACRO WEIGHTING (not gating): Adjust confidence, not direction
+  // Macro influences only the confidence of the signal, never blocks it
+  let confidenceModifier = 1.0; // Neutral
+  if (htf4hTrend === "BULLISH" && localMomentumScore > 50) {
+    confidenceModifier = 1.15; // +15% confidence when aligned
+  } else if (htf4hTrend === "BEARISH" && localMomentumScore < 50) {
+    confidenceModifier = 1.15; // +15% confidence when aligned
+  } else if (htf4hTrend === "BULLISH" && localMomentumScore < 50) {
+    confidenceModifier = 0.80; // -20% confidence when counter-trend
+  } else if (htf4hTrend === "BEARISH" && localMomentumScore > 50) {
+    confidenceModifier = 0.80; // -20% confidence when counter-trend
+  }
   
-  // GATE 3: Oscillator (stoch RSI) - tertiary gate, cannot override primary
-  const stochConfirmation = stochRsi !== null ? (stochRsi - 50) * 0.1 : 0; // -5 to +5
-  
-  // Calculate candidate direction from score (for neutral gate only)
-  const momentumOnlyScore = 50 + stochConfirmation; // Base 50, add stoch influence
-  
-  // APPLY GATES IN HIERARCHY ORDER
-  // PRIMARY: EMA structure gate
-  if (gateDirection === "SHORT_ONLY") {
-    console.log(`[EMA_GATE_v26] directionalBias=${directionalBias?.toFixed(3)} → SHORT_ONLY gate active (no LONG possible)`);
+  // LOCAL MOMENTUM DECIDES DIRECTION (macro only tints confidence)
+  if (localMomentumScore > 60) {
+    return "LONG";
+  } else if (localMomentumScore < 40) {
     return "SHORT";
   }
   
-  if (gateDirection === "LONG_ONLY") {
-    console.log(`[EMA_GATE_v26] directionalBias=${directionalBias?.toFixed(3)} → LONG_ONLY gate active (no SHORT possible)`);
-    return "LONG";
-  }
-  
-  // PRIMARY gate is NEUTRAL, use macro + stoch to decide
-  
-  // SECONDARY: Macro bias (when EMA neutral)
-  if (htf4hTrend === "BEARISH") {
-    // Macro bearish, allow SHORT or NEUTRAL, NOT LONG
-    if (momentumOnlyScore > 52) {
-      return "NEUTRAL";
-    }
-    return "SHORT";
-  }
-  
-  if (htf4hTrend === "BULLISH") {
-    // Macro bullish, allow LONG or NEUTRAL, NOT SHORT
-    if (momentumOnlyScore < 48) {
-      return "NEUTRAL";
-    }
-    return "LONG";
-  }
-  
-  // NEUTRAL macro - let oscillator decide
-  if (momentumOnlyScore > 55) {
-    return "LONG";
-  } else if (momentumOnlyScore < 45) {
-    return "SHORT";
-  }
-  
-  // HARD STRUCTURE LOCKS (applied AFTER gates)
+  // Structure tie-breaker (when momentum is neutral)
   if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
-    // Structure says LONG, but check if EMA gate allows it
-    if (gateDirection !== "SHORT_ONLY") {
-      return "LONG";
-    }
-  }
-
-  if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
-    // Structure says SHORT, but check if EMA gate allows it
-    if (gateDirection !== "LONG_ONLY") {
-      return "SHORT";
-    }
+    return "LONG";
+  } else if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
+    return "SHORT";
   }
 
   return "NEUTRAL";
