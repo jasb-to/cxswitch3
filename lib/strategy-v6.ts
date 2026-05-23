@@ -29,10 +29,10 @@ import {
 
 const MOMENTUM_ENGINE_VERSION = "v28.0_UNIFIED_REGIME_CONVICTION_ENGINE";
 
-// Log on module load to verify runtime version
-if (typeof window === "undefined") {
-  console.log(`[MOMENTUM_ENGINE] ${MOMENTUM_ENGINE_VERSION}`);
-}
+// v36.0 FIX: Defer module-level console.log to prevent TDZ
+// Don't log during module initialization, only when functions are actually called
+// This prevents potential issues with circular dependencies and module loading order
+// The version will be logged by the cron handler on first execution
 
 // ═════════════════════════════════════════════════════════════════════════════
 // v7.6.0: EXECUTION CONTEXT - SINGLE SOURCE OF TRUTH
