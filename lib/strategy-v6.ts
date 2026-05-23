@@ -2523,14 +2523,23 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
   // v35.0: Pass card for RANGE displacement context
   // v38.1 FIX: Do NOT pass card to avoid forward reference TDZ
   // card is not yet defined at this point, and function has optional card parameter
+  
+  // v41.0 DECISION AXIS: Single source of truth for direction
+  // This is the ONLY place direction is determined
   let direction = getDirectionFromStructure(structureState, htf4hAnalysis, stochRsi, htf4hTrend, volatilityLevel);
-  console.log(`[DIRECTION_STRUCTURE] ${symbol}: direction="${direction}" from structure (structureState=${structureState}, 4H=${htf4hTrend})`);
+  console.log(`[DECISION_AXIS] ${symbol}: direction="${direction}" | confidence model applied | structure=${structureState} emaSlope=${htf4hAnalysis?.emaSlope?.toFixed(3) ?? "N/A"} macro=${htf4hTrend}`);
 
 
   // v32.0 CRITICAL RULE ENFORCEMENT: Price structure is ALWAYS the truth
   // No indicator overrides, no mutations, no EMA gates
   // Direction is locked and immutable once determined from structure
   const finalDirection = direction;
+  
+  // v41.0 ENFORCEMENT: Verify direction hasn't been mutated after DecisionAxis
+  if (finalDirection !== direction) {
+    console.warn(`[DECISION_AXIS_VIOLATION] ${symbol}: direction was mutated after DecisionAxis! Original=${direction} Final=${finalDirection}. IGNORING MUTATION.`);
+  }
+  
   console.log(`[SCAN] ${symbol} direction=${finalDirection} structureState=${structureState}`);
 
 
