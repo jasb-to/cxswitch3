@@ -683,7 +683,17 @@ type CycleSnapshot = {
   stateHash: string;
 };
 
-const lastCycleSnapshot = new Map<string, CycleSnapshot>();
+// v38.0 FIX: Lazy initialize lastCycleSnapshot to prevent TDZ
+// Module-level Map<string, CycleSnapshot>() initialization caused "Cannot access 'card' before initialization"
+// (card is minified CycleSnapshot in bundled code)
+let lastCycleSnapshot: Map<string, CycleSnapshot> | null = null;
+
+function getLastCycleSnapshot(): Map<string, CycleSnapshot> {
+  if (lastCycleSnapshot === null) {
+    lastCycleSnapshot = new Map();
+  }
+  return lastCycleSnapshot;
+}
 
 /**
  * Detect meaningful state transitions (not snapshots)
@@ -693,7 +703,7 @@ function detectOutputEvent(
   card: SymbolCardState,
   currentScore: number
 ): string | null {
-  const last = lastCycleSnapshot.get(symbol);
+  const last = getLastCycleSnapshot().get(symbol);
   
   if (!last) {
     return "FIRST_SCAN";
@@ -730,7 +740,7 @@ function updateCycleSnapshot(
   card: SymbolCardState,
   score: number
 ): void {
-  lastCycleSnapshot.set(symbol, {
+  getLastCycleSnapshot().set(symbol, {
     direction: card.direction,
     signalState: card.signalState,
     score,
