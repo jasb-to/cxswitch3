@@ -981,27 +981,44 @@ function getDirectionFromStructure(
     }
   }
   
-  // v35.0 CRITICAL: RANGE destroys stale directional memory
-  // If in RANGE, direction must be re-earned through active displacement
+  // v39.1 FIX: RANGE should reduce confidence, not erase direction
+  // Preserve directional bias during expansion states
+  // Only neutralize when expansion is absent and structure weak
   if (structureState === "RANGE" && structureDirection !== "NEUTRAL") {
-    // Currently have directional bias from EMA in RANGE
-    // This must be re-validated by active displacement
-    const hasActiveDisplacement = card && (
-      (structureDirection === "LONG" && 
-        (card.currentPrice ?? 0) > (card.entryPrice ?? 0) &&  // positive displacement
-        emaSlope > 0.15 &&  // EMA still expanding upward
-        (card.recentImpulseStrength ?? 0) > 40) ||  // continuation active
-      (structureDirection === "SHORT" && 
-        (card.currentPrice ?? 0) < (card.entryPrice ?? 0) &&  // negative displacement
-        emaSlope < -0.15 &&  // EMA still compressing downward
-        (card.recentImpulseStrength ?? 0) > 40)  // rejection active
+    // Check if expansion is active (strong directional signals)
+    const isExpanding = card && (
+      card.execution15mState === "EXPANDING" || 
+      card.execution15mState === "BREAKOUT_READY"
     );
     
-    if (!hasActiveDisplacement) {
-      console.log(`[RANGE_DECAY] ${card?.symbol || "SYMBOL"}: RANGE without displacement continuation → ${structureDirection} decayed to NEUTRAL`);
-      return "NEUTRAL";  // Force decay to NEUTRAL
+    // Check for directional EMA slope (regardless of displacement)
+    const hasDirectionalEMA = (
+      (structureDirection === "LONG" && emaSlope > 0.15) ||
+      (structureDirection === "SHORT" && emaSlope < -0.15)
+    );
+    
+    // Check for volatility expansion activity
+    const hasVolatilityExpansion = volatilityLevel && volatilityLevel > 55;
+    
+    // Check for active displacement continuation
+    const hasActiveDisplacement = card && (
+      (structureDirection === "LONG" && 
+        (card.currentPrice ?? 0) > (card.entryPrice ?? 0) &&
+        (card.recentImpulseStrength ?? 0) > 40) ||
+      (structureDirection === "SHORT" && 
+        (card.currentPrice ?? 0) < (card.entryPrice ?? 0) &&
+        (card.recentImpulseStrength ?? 0) > 40)
+    );
+    
+    // v39.1: Preserve direction if expansion is active OR directional signals present
+    if (isExpanding || hasDirectionalEMA || hasVolatilityExpansion || hasActiveDisplacement) {
+      console.log(`[RANGE_PRESERVED] ${card?.symbol || "SYMBOL"}: ${structureDirection} bias maintained | expansion=${isExpanding} emaDir=${hasDirectionalEMA} vol=${hasVolatilityExpansion} impulse=${hasActiveDisplacement}`);
+      // Direction survives RANGE, no modification needed
+      return structureDirection;
     } else {
-      console.log(`[RANGE_PERSISTENCE] ${card?.symbol || "SYMBOL"}: RANGE + ${structureDirection} displacement continuation → ${structureDirection} maintained`);
+      // No expansion signals - neutralize
+      console.log(`[RANGE_DECAY] ${card?.symbol || "SYMBOL"}: ${structureDirection} decayed to NEUTRAL | no expansion detected`);
+      return "NEUTRAL";
     }
   }
   
