@@ -12,10 +12,24 @@
  * 
  * v23.0 EVENT-DRIVEN MONITOR
  * Monitor layer now reports state transitions instead of snapshots
+ * 
+ * v37.1 ARCHITECTURE FIX: Import types from centralized lib/types.ts
+ * Breaks circular dependency by removing type exports from this file
  */
 
-// v36.0 FIX: Move ALL imports to top to prevent circular dependency TDZ
-import { detectMonitorEvent, formatMonitorEvent } from "./monitor-event-engine";
+// v37.1 BUNDLER FIX: Import from central types file, not exported here
+import type {
+  ExecutionContext,
+  ExecutionProfile,
+  SignalState,
+  StructureState,
+  BreakoutState,
+  SymbolCardState,
+  Setup,
+  CycleSnapshot
+} from "./types";
+
+// Required runtime imports (NOT circular - breaking circular dependency)
 import type { PriceData } from "./price-router";
 import type { SegmentatedMarketData } from "./market-data-layer";
 import type { Candle } from "./kraken";
@@ -27,73 +41,14 @@ import {
   validateSLSeparation
 } from "./risk-utils";
 
-// v36.0 FIX: Defer module-level console.log to prevent TDZ
-// Don't log during module initialization, only when functions are actually called
-// This prevents potential issues with circular dependencies and module loading order
-// The version will be logged by the cron handler on first execution
+// v37.1 FIX: Remove circular bundler cycle
+// (do NOT import from monitor-event-engine here)
 
 // ═════════════════════════════════════════════════════════════════════════════
-// v7.6.0: EXECUTION CONTEXT - SINGLE SOURCE OF TRUTH
+// REMOVED: Type exports moved to lib/types.ts (v37.1 ARCHITECTURE FIX)
+// ExecutionContext, ExecutionProfile, SymbolCardState, Setup, SignalState etc.
+// are now imported from lib/types.ts to break circular bundler dependency
 // ═════════════════════════════════════════════════════════════════════════════
-// 
-// v7.7.0 CRITICAL FIX: Separate data trust from infrastructure health
-// - executionGrade: ONLY based on source (kraken_live or kraken_cached)
-// - systemHealth: ONLY based on infrastructure state
-// - NEVER conflate these - they are orthogonal concerns
-//
-export type ExecutionContext = {
-  // Identifier
-  symbol: string;
-  cycleId: string;
-
-  // DATA TRUST (never changes per cycle, ONLY based on source)
-  executionGrade: boolean;  // true if source is kraken_live or kraken_cached
-  dataSource: "KRAKEN" | "COINGECKO";
-
-  // SYSTEM HEALTH (infrastructure state, independent from data trust)
-  systemHealth: "LIVE" | "DEGRADED" | "OFFLINE";
-  systemHealthReason?: string;
-
-  // Market snapshot (immutable for cycle)
-  price: number;
-  timestamp: number;
-};
-
-/**
- * PER-ASSET EXECUTION PROFILES
- * 
- * v21.1.0: CRITICAL - Each asset has different market structure:
- * - BTC: slow, sustained, structure-driven (breakouts)
- * - ETH: medium, trend-following (continuation)
- * - SOL: fast, impulse-driven (momentum sniper)
- * 
- * SOL profile MUST remain unchanged from current production values.
- * BTC/ETH profiles tuned to their structural characteristics.
- */
-export type ExecutionProfile = {
-  // Scoring weights
-  ignitionThreshold: number;           // Score >= N to trigger SNIPER
-  stochWeight: number;                  // Stoch RSI multiplier
-  emaWeight: number;                    // EMA flip multiplier (acceleration)
-  volatilityWeight: number;             // Compression multiplier
-  impulseWeight: number;                // Direction conviction multiplier
-  trendWeight: number;                  // 4H trend alignment multiplier
-
-  // Activation style (drives how signals are generated)
-  activationStyle: "IMPULSE" | "STRUCTURAL" | "CONTINUATION";
-  
-  // Asset-specific rules (consolidates fragmented if-checks)
-  persistenceRules: {
-    requireSustainedEMA: boolean;       // ETH: must have 0.3-1.0 EMA slope
-    requireDirectionAlignment: boolean; // ETH: direction must match EMA
-    stabilityThreshold: number;         // ETH: volatility < N (< 45)
-  };
-  
-  // Bonus/penalty system
-  breakoutBonus: number;                // BTC: +5 score bonus for structural breakout
-  bonusActivation: "STRUCTURAL_BREAKOUT" | "NONE"; // When to apply bonus
-};
-
 
 export const EXECUTION_PROFILES: Record<string, ExecutionProfile> = {
   SOL: {
@@ -1034,106 +989,16 @@ function getDirectionLockedByStructure(
 // v7.4.0: Clean state machine - only 3 valid states for signal generation
 // v8.5: Added WATCH_BREAKOUT for structure-first breakout detection
 // v9: Added structure-first direction locking
-export type SignalState = 
-  | "NONE"              // No signal
-  | "BUILDING"          // Directional bias + compression, waiting for ignition
-  | "SNIPER_READY"      // All SNIPER conditions passed, awaiting entry confirmation
-  | "CONFIRMED_READY"   // All CONFIRMED conditions passed, awaiting confirmation
-  | "ACTIVE_SNIPER"     // SNIPER signal active, trade window open (30 min cooldown)
-  | "ACTIVE_CONFIRMED"  // CONFIRMED signal active, trend confirmation (90 min cooldown) - INTERNAL ONLY
-  | "WATCH_BREAKOUT";   // Breakout detected, holding direction until retest confirmation
+// v37.1 ARCHITECTURE FIX: Type definitions moved to lib/types.ts
+// SignalState, SymbolCardState, Setup, and related types are now imported from lib/types.ts
+// This breaks the circular dependency and improves bundler code splitting
 
-export type SymbolCardState = {
-  symbol: string;
-  price: number;
-  source: string;
-  degraded: boolean;
-
-  direction: "LONG" | "SHORT" | "NEUTRAL";
-  mode: "SNIPER" | "CONFIRMED" | "NONE";
-  confidence: number;
-  
-  // FIX #1: Unified signal state (v7.2.6), extended for v7.2.8, standardized for v7.2.9
-  // v8.5: Added WATCH_BREAKOUT state for structure-first awareness
-  signalState: SignalState;
-  lastSignalTime?: number;
-
-  // Momentum indicators (5M)
-  stochRsi: number | null;
-  emaSlope: number | null;
-  volatilityLevel: number | null;
-
-  // v8.5: Breakout awareness (structure-first)
-  breakoutState?: BreakoutState;
-  recentHigh?: number;
-  recentLow?: number;
-  
-  // v35.0: Current price tracking for displacement detection (RANGE decay)
-  currentPrice?: number;  // Current price (for displacement context)
-  entryPrice?: number;    // Entry price (for displacement calculation)
-  recentImpulseStrength?: number;  // Continuation impulse strength (0-100)
-
-  // v9: Structure state system (core layer - structure-first)
-  structureState: StructureState;
-  swingHigh: number;
-  swingLow: number;
-  breakoutLevel: number | null;
-  structureTimeframe: number;  // ms since last structure state change
-  lastStructureUpdate: number; // timestamp
-
-  // Higher TimeFrame alignment (v7.1.1 - SIMPLIFIED FOR v7.2.10)
-  // v7.2.10: Remove 1H dependency, use 15M execution structure instead
-  htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL";
-  htf4hMomentum: number | null;
-  htf1hAlignment: boolean | null; // Deprecated v7.2.10, kept only for signal logic
-  htf15mCompression: boolean | null;
-  
-  // v7.2.10 FIX #1 & #2: 15M EXECUTION STRUCTURE (replaces 1H display)
-  // Shows entry readiness based on 15M structure + volatility state
-  execution15mState: "COMPRESSING" | "BREAKOUT_READY" | "EXPANDING" | "CHOP";
-
-  // Market readiness engine (v7.2.1)
-  marketReadinessState: string;
-  tradeReadinessScore: number | null;
-  momentumScore?: number; // v21.6.0: Calculated after all direction mutations
-  
-  // Conditional: Only populate if mode === "SNIPER" or "CONFIRMED"
-  expectedMovePercent: { sniper: { min: number; max: number } } | null;
-  targetPrices: { tp1: number; tp2: number; sl: number } | null;
-  riskReward: number | null;
-
-  // Trend memory (v7.2.5)
-  lastBullishCycle?: number;
-  lastBearishCycle?: number;
-  trendMemory?: "BULLISH" | "BEARISH";
-
-  cycleId: string;  // Unique identifier for this signal cycle
-  notes: string;
-  updatedAt: string;
-};
-
-export type Setup = {
-  symbol: string;
-  mode: "SNIPER" | "CONFIRMED";
-  direction: "LONG" | "SHORT"; // NO NEUTRAL ALLOWED
-  score: number;
-  reason: string;
-  price: number;
-  // Momentum signal breakdown
-  momentum: {
-    stochRsiSignal: string;
-    emaStackSignal: string;
-    volatilitySignal: string;
-    trend4H: boolean;
-  };
-  // HTF Alignment breakdown (v7.1.1)
-  htf: {
-    trend4h: "BULLISH" | "BEARISH";
-    alignment1h: boolean;
-    compression15m: boolean;
-    trigger5m: string;
-  };
-};
+/**
+ * v35.0 CALCULATE IMPULSE STRENGTH (EARLY DECLARATION)
+ * Measures continuation impulse active in the market (0-100)
+ * Used to validate RANGE direction persistence requirements
+ * Declared early to avoid TDZ issues with hoisting
+ */
 
 /**
  * Generate symbol card states + setups from EXECUTION PIPELINE ONLY
