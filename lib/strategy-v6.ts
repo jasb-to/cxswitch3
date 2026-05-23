@@ -530,22 +530,12 @@ function calculateUnifiedTradeScore(input: TradeScoreInput): number {
  * v28.0 DERIVE DIRECTION FROM UNIFIED SCORE
  * Direction is ALWAYS derived from score, never calculated separately
  */
-function deriveDirectionFromScore(score: number): "LONG" | "SHORT" | "NEUTRAL" {
-  if (score > 60) {
-    return "LONG";
-  } else if (score < 40) {
-    return "SHORT";
-  } else {
-    return "NEUTRAL";
-  }
-}
-
 /**
  * v30.0 LIGHTWEIGHT SNIPER ELIGIBILITY - PROBABILISTIC EARLY IMPULSE ENGINE
  * 
  * Removed over-gating. Now prioritizes early entry over macro confirmation.
  * Macro trend influences confidence only, never blocks signals.
- * Counter-trend setups are allowed with adjusted risk/confidence.
+ * Counter-trend setups ALLOWED with confidence modulation.
  */
 function validateFullSniperEligibility(
   card: SymbolCardState,
@@ -2338,42 +2328,14 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
   // v25.0: Pass complete EMA_STRUCTURE object instead of just emaSlope
   // This ensures single source of truth: no dual-source EMA system
   let direction = getDirectionFromStructure(structureState, htf4hAnalysis, stochRsi, htf4hTrend, volatilityLevel);
-  console.log(`[DIRECTION_TIE_BREAKER] ${symbol}: tie-breaker resolved direction="${direction}" (4H=${htf4hTrend}, stoch=${stochRsi?.toFixed(1)}, emaStructure=${htf4hAnalysis?.emaSlope?.toFixed(3)})`);
+  console.log(`[DIRECTION_STRUCTURE] ${symbol}: direction="${direction}" from structure (structureState=${structureState}, 4H=${htf4hTrend})`);
 
-  // Step 3.5: ETH CONTINUATION DECAY - MUTATE direction toward SHORT during failed bearish continuation
-  // v25.0: Now use real emaStructure instead of synthetic emaSlope
-  if (symbol === "ETH" && htf4hTrend === "BEARISH" && direction === "LONG") {
-    const emaFlattening = Math.abs(htf4hAnalysis?.emaSlope ?? 0) < 0.25;
-    const volatilityExpanding = (volatilityLevel ?? 50) > 55;
-    
-    if (emaFlattening && volatilityExpanding) {
-      console.log(`[ETH_DECAY] Direction mutation: LONG → SHORT (failed continuation, 4H bearish)`);
-      direction = "SHORT";  // Mutate direction to SHORT, not just confidence
-    }
-  }
-
-  // ⚠️ HARD SAFETY RULE v26: EMA_STRUCTURE IS A DIRECTIONAL CONSTRAINT
-  // This enforces the gate globally - no direction can violate EMA structure
-  // This prevents the regression where macro + stoch flip direction incorrectly
-  const eemaSlope = htf4hAnalysis?.emaSlope ?? 0;
-  if (eemaSlope < -0.1 && direction === "LONG") {
-    // BEARISH structure detected but LONG direction was returned
-    // This should NEVER happen - EMA gate must enforce SHORT
-    console.warn(`[HARD_GATE_OVERRIDE_v26] SAFETY: emaSlope=${eemaSlope.toFixed(3)} (BEARISH) but direction=LONG. Forcing SHORT.`);
-    direction = "SHORT";
-  } else if (eemaSlope > 0.1 && direction === "SHORT") {
-    // BULLISH structure detected but SHORT direction was returned
-    // This should NEVER happen - EMA gate must enforce LONG
-    console.warn(`[HARD_GATE_OVERRIDE_v26] SAFETY: emaSlope=${eemaSlope.toFixed(3)} (BULLISH) but direction=SHORT. Forcing LONG.`);
-    direction = "LONG";
-  }
-
-  // Step 4: REMOVED getDirectionLockedByStructure() - now redundant
-  // v22.3 consolidated momentum + structure locking into getDirectionFromStructure()
-  // Calling it again would re-apply structure locks and override momentum resolution
-  // Structure is already applied in getDirectionFromStructure() before momentum
+  // v32.0 CRITICAL RULE ENFORCEMENT: Price structure is ALWAYS the truth
+  // No indicator overrides, no mutations, no EMA gates
+  // Direction is locked and immutable once determined from structure
   const finalDirection = direction;
   console.log(`[SCAN] ${symbol} direction=${finalDirection} structureState=${structureState}`);
+
 
   const breakoutState: BreakoutState = levelAwareness.breakoutState;
 
