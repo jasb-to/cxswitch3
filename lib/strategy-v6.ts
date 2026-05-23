@@ -14,17 +14,9 @@
  * Monitor layer now reports state transitions instead of snapshots
  */
 
-const MOMENTUM_ENGINE_VERSION = "v28.0_UNIFIED_REGIME_CONVICTION_ENGINE";
-
-// Log on module load to verify runtime version
-if (typeof window === "undefined") {
-  console.log(`[MOMENTUM_ENGINE] ${MOMENTUM_ENGINE_VERSION}`);
-}
-
+// v36.0 FIX: Move ALL imports to top to prevent circular dependency TDZ
 import { detectMonitorEvent, formatMonitorEvent } from "./monitor-event-engine";
-
 import type { PriceData } from "./price-router";
-
 import type { SegmentatedMarketData } from "./market-data-layer";
 import type { Candle } from "./kraken";
 import { analyze4HStructure } from "./htf-structure-engine";
@@ -34,6 +26,13 @@ import {
   shouldInvalidateSniperSL,
   validateSLSeparation
 } from "./risk-utils";
+
+const MOMENTUM_ENGINE_VERSION = "v28.0_UNIFIED_REGIME_CONVICTION_ENGINE";
+
+// Log on module load to verify runtime version
+if (typeof window === "undefined") {
+  console.log(`[MOMENTUM_ENGINE] ${MOMENTUM_ENGINE_VERSION}`);
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 // v7.6.0: EXECUTION CONTEXT - SINGLE SOURCE OF TRUTH
