@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateSetups, generateDisplayCards, STRATEGY_VERSION } from "@/lib/strategy-v6";
+// v37.0 BUNDLER FIX: Convert circular import modules to dynamic imports
+// Prevents Next.js from bundling circular imports into single chunk with TDZ
+// Use static imports only for non-circular utilities
 import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
 import { fetchCandles } from "@/lib/kraken";
@@ -7,11 +9,9 @@ import { getSnapshot, setSnapshot } from "@/lib/runtime-snapshot";
 import { mergeSnapshots, validateSnipperCardState } from "@/lib/snapshot-merger";
 import { clearCanonicalStates, initializeCanonicalState, updateCanonicalState, getAllCanonicalStates, canonicalToCard } from "@/lib/unified-market-state";
 import { createCanonicalSnapshot } from "@/lib/canonical-snapshot";
-import { detectMonitorEvent, formatMonitorEvent } from "@/lib/monitor-event-engine";
 
-// v36.0 FIX: Defer module-level logging to runtime
-// Move console.log out of module initialization to prevent TDZ
-// This prevents the module from executing any code during bundle parsing
+// CRITICAL: Dynamic imports for circular dependency modules
+// These will be imported lazily in the GET handler to break bundler cycles
 let strategyVersionLogged = false;
 
 export const dynamic = "force-dynamic";
@@ -225,6 +225,11 @@ async function runDisplayCycle(): Promise<{
 // v8.0 header: CRON optimized for delta updates, not full rebuilds
 export async function GET(req: NextRequest) {
   try {
+    // v37.0 FIX: Dynamic imports to prevent bundler circular dependency TDZ
+    // Import strategy modules INSIDE handler to break circular bundling
+    const { generateSetups, generateDisplayCards, STRATEGY_VERSION } = await import("@/lib/strategy-v6");
+    const { detectMonitorEvent, formatMonitorEvent } = await import("@/lib/monitor-event-engine");
+    
     // v36.0 FIX: Log version on first execution (after all imports resolved)
     if (!strategyVersionLogged) {
       console.log(`[MOMENTUM_ENGINE_STARTUP] Strategy version: ${STRATEGY_VERSION}`);
