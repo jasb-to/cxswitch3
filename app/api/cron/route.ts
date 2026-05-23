@@ -1,7 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-// v37.0 BUNDLER FIX: Convert circular import modules to dynamic imports
-// Prevents Next.js from bundling circular imports into single chunk with TDZ
-// Use static imports only for non-circular utilities
 import { enqueueAlert } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
 import { fetchCandles } from "@/lib/kraken";
@@ -10,9 +7,8 @@ import { mergeSnapshots, validateSnipperCardState } from "@/lib/snapshot-merger"
 import { clearCanonicalStates, initializeCanonicalState, updateCanonicalState, getAllCanonicalStates, canonicalToCard } from "@/lib/unified-market-state";
 import { createCanonicalSnapshot } from "@/lib/canonical-snapshot";
 
-// CRITICAL: Dynamic imports for circular dependency modules
-// These will be imported lazily in the GET handler to break bundler cycles
 let strategyVersionLogged = false;
+
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -56,7 +52,7 @@ const signalStateHistory: Record<string, { signalState: string; lastAlertedAt: n
  * - No staggering
  * - No budget sharing
  */
-async function runExecutionCycle(): Promise<{
+async function runExecutionCycle(generateSetups: any): Promise<{
   executionCards: any[];
   setups: any[];
   timeMs: number;
@@ -131,7 +127,7 @@ async function runExecutionCycle(): Promise<{
  * - No budget coupling
  * - STATEFUL: Uses previous snapshot as fallback if CoinGecko fails (v8.1 FIX #3)
  */
-async function runDisplayCycle(): Promise<{
+async function runDisplayCycle(generateDisplayCards: any): Promise<{
   displayCards: any[];
   timeMs: number;
 }> {
@@ -267,8 +263,8 @@ export async function GET(req: NextRequest) {
       // v8.1 FIX #4: Sequential execution (execution → display)
       // Display cycle must run AFTER execution fetches all market data
       // Otherwise display cycle completes with 0 cards before markets are fetched
-      const executionResult = await runExecutionCycle();
-      const displayResult = await runDisplayCycle();
+      const executionResult = await runExecutionCycle(generateSetups);
+      const displayResult = await runDisplayCycle(generateDisplayCards);
 
       const { executionCards, setups } = executionResult;
       const { displayCards } = displayResult;
