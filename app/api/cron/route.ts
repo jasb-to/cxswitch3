@@ -9,7 +9,10 @@ import { clearCanonicalStates, initializeCanonicalState, updateCanonicalState, g
 import { createCanonicalSnapshot } from "@/lib/canonical-snapshot";
 import { detectMonitorEvent, formatMonitorEvent } from "@/lib/monitor-event-engine";
 
-console.log(`[MOMENTUM_ENGINE_STARTUP] Strategy version: ${STRATEGY_VERSION}`);
+// v36.0 FIX: Defer module-level logging to runtime
+// Move console.log out of module initialization to prevent TDZ
+// This prevents the module from executing any code during bundle parsing
+let strategyVersionLogged = false;
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -222,6 +225,12 @@ async function runDisplayCycle(): Promise<{
 // v8.0 header: CRON optimized for delta updates, not full rebuilds
 export async function GET(req: NextRequest) {
   try {
+    // v36.0 FIX: Log version on first execution (after all imports resolved)
+    if (!strategyVersionLogged) {
+      console.log(`[MOMENTUM_ENGINE_STARTUP] Strategy version: ${STRATEGY_VERSION}`);
+      strategyVersionLogged = true;
+    }
+    
     // v8.1 CRITICAL: Global CRON mutex to prevent duplicate execution
     // Vercel serverless can invoke this handler multiple times per tick if not guarded
     if (globalCronLocked) {
