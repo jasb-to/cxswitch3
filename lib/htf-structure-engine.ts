@@ -10,22 +10,12 @@
  * - BULLISH: HH/HL pattern + positive EMA slope + displacement upward
  * - BEARISH: LH/LL pattern + negative EMA slope + displacement downward
  * - NEUTRAL: mixed structure or flat EMA slope
+ * 
+ * v37.1 ARCHITECTURE FIX: Import types from centralized lib/types.ts
  */
 
 import type { Candle } from "./kraken";
-
-export type HTFTrend = "BULLISH" | "BEARISH" | "NEUTRAL";
-
-export interface HTFStructureAnalysis {
-  trend: HTFTrend;
-  structure: "HH" | "HL" | "LH" | "LL" | "MIXED" | "UNKNOWN";
-  emaSlope: number;
-  displacement: number;
-  swingHigh: number;
-  swingLow: number;
-  confidence: number;
-  lastCandle: Candle | null;
-}
+import type { HTFTrend, HTFStructureAnalysis } from "./types";
 
 /**
  * Calculate 4H trend from real OHLC structure
