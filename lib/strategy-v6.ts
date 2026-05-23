@@ -165,6 +165,46 @@ export const EXECUTION_PROFILES: Record<string, ExecutionProfile> = {
   },
 };
 
+/**
+ * v35.0 CALCULATE IMPULSE STRENGTH (EARLY DECLARATION)
+ * Measures continuation impulse active in the market (0-100)
+ * Used to validate RANGE direction persistence requirements
+ * Declared early to avoid TDZ issues with hoisting
+ */
+function calculateImpulseStrength(
+  emaSlope: number | null,
+  volatilityLevel: number | null,
+  stochRsi: number | null
+): number {
+  let strength = 50; // Neutral baseline
+  
+  // EMA sharpness indicates momentum strength
+  if (emaSlope !== null) {
+    const slopeStrength = Math.abs(emaSlope);
+    strength += (slopeStrength / 1.0) * 20; // Up to +20 from slope
+  }
+  
+  // Volatility expansion indicates impulse
+  if (volatilityLevel !== null) {
+    if (volatilityLevel > 70) {
+      strength += 15;  // High expansion
+    } else if (volatilityLevel > 50) {
+      strength += 5;   // Moderate
+    } else if (volatilityLevel < 30) {
+      strength -= 10;  // Compression reduces impulse
+    }
+  }
+  
+  // Stoch extremes indicate strong directional push
+  if (stochRsi !== null) {
+    if (stochRsi > 80 || stochRsi < 20) {
+      strength += 10;  // Extreme zones show strong impulse
+    }
+  }
+  
+  return Math.max(0, Math.min(100, strength));
+}
+
 function getExecutionProfile(symbol: string): ExecutionProfile {
   return EXECUTION_PROFILES[symbol] || EXECUTION_PROFILES.SOL;
 }
@@ -531,40 +571,6 @@ function calculateUnifiedTradeScore(input: TradeScoreInput): number {
  * Measures continuation impulse active in the market (0-100)
  * Used to validate RANGE direction persistence requirements
  */
-function calculateImpulseStrength(
-  emaSlope: number | null,
-  volatilityLevel: number | null,
-  stochRsi: number | null
-): number {
-  let strength = 50; // Neutral baseline
-  
-  // EMA sharpness indicates momentum strength
-  if (emaSlope !== null) {
-    const slopeStrength = Math.abs(emaSlope);
-    strength += (slopeStrength / 1.0) * 20; // Up to +20 from slope
-  }
-  
-  // Volatility expansion indicates impulse
-  if (volatilityLevel !== null) {
-    if (volatilityLevel > 70) {
-      strength += 15;  // High expansion
-    } else if (volatilityLevel > 50) {
-      strength += 5;   // Moderate
-    } else if (volatilityLevel < 30) {
-      strength -= 10;  // Compression reduces impulse
-    }
-  }
-  
-  // Stoch extremes indicate strong directional push
-  if (stochRsi !== null) {
-    if (stochRsi > 80 || stochRsi < 20) {
-      strength += 10;  // Extreme zones show strong impulse
-    }
-  }
-  
-  return Math.max(0, Math.min(100, strength));
-}
-
 /**
  * v28.0 DERIVE DIRECTION FROM UNIFIED SCORE
  * Direction is ALWAYS derived from score, never calculated separately
