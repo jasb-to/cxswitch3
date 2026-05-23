@@ -50,8 +50,17 @@ export interface MonitorEvent {
   };
 }
 
-// Track previous cycle state for each symbol
-const previousStates: Map<string, Partial<SymbolCardState>> = new Map();
+// v36.1 FIX: Lazy initialize previousStates to avoid circular dependency TDZ
+// The Map uses SymbolCardState type which creates circular import with strategy-v6.ts
+// By deferring initialization to first function call, we avoid TDZ during module load
+let previousStates: Map<string, Partial<SymbolCardState>> | null = null;
+
+function getPreviousStates(): Map<string, Partial<SymbolCardState>> {
+  if (previousStates === null) {
+    previousStates = new Map();
+  }
+  return previousStates;
+}
 
 /**
  * Detect what changed between cycles for a symbol
@@ -59,11 +68,12 @@ const previousStates: Map<string, Partial<SymbolCardState>> = new Map();
  */
 export function detectMonitorEvent(currentCard: SymbolCardState): MonitorEvent {
   const symbol = currentCard.symbol;
-  const previousCard = previousStates.get(symbol);
+  const states = getPreviousStates();
+  const previousCard = states.get(symbol);
 
   // First cycle for this symbol - no changes to detect
   if (!previousCard) {
-    previousStates.set(symbol, captureCardState(currentCard));
+    states.set(symbol, captureCardState(currentCard));
     return { 
       type: "NONE", 
       symbol, 
@@ -162,7 +172,7 @@ export function detectMonitorEvent(currentCard: SymbolCardState): MonitorEvent {
   }
 
   // Update stored state for next cycle
-  previousStates.set(symbol, captureCardState(currentCard));
+  states.set(symbol, captureCardState(currentCard));
 
   return {
     type: eventType,
@@ -265,5 +275,6 @@ function captureCardState(card: SymbolCardState): Partial<SymbolCardState> {
  * Reset state (for testing/debugging)
  */
 export function resetMonitorState(): void {
-  previousStates.clear();
+  const states = getPreviousStates();
+  states.clear();
 }
