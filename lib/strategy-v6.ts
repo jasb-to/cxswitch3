@@ -527,6 +527,45 @@ function calculateUnifiedTradeScore(input: TradeScoreInput): number {
 }
 
 /**
+ * v35.0 CALCULATE IMPULSE STRENGTH
+ * Measures continuation impulse active in the market (0-100)
+ * Used to validate RANGE direction persistence requirements
+ */
+function calculateImpulseStrength(
+  emaSlope: number | null,
+  volatilityLevel: number | null,
+  stochRsi: number | null
+): number {
+  let strength = 50; // Neutral baseline
+  
+  // EMA sharpness indicates momentum strength
+  if (emaSlope !== null) {
+    const slopeStrength = Math.abs(emaSlope);
+    strength += (slopeStrength / 1.0) * 20; // Up to +20 from slope
+  }
+  
+  // Volatility expansion indicates impulse
+  if (volatilityLevel !== null) {
+    if (volatilityLevel > 70) {
+      strength += 15;  // High expansion
+    } else if (volatilityLevel > 50) {
+      strength += 5;   // Moderate
+    } else if (volatilityLevel < 30) {
+      strength -= 10;  // Compression reduces impulse
+    }
+  }
+  
+  // Stoch extremes indicate strong directional push
+  if (stochRsi !== null) {
+    if (stochRsi > 80 || stochRsi < 20) {
+      strength += 10;  // Extreme zones show strong impulse
+    }
+  }
+  
+  return Math.max(0, Math.min(100, strength));
+}
+
+/**
  * v28.0 DERIVE DIRECTION FROM UNIFIED SCORE
  * Direction is ALWAYS derived from score, never calculated separately
  */
@@ -894,10 +933,11 @@ function getDirectionFromStructure(
   emaStructure: any,
   stochRsi: number | null,
   htf4hTrend: string | null,
-  volatilityLevel: number | null
+  volatilityLevel: number | null,
+  card?: SymbolCardState  // v35.0: Pass card for displacement context
 ): "LONG" | "SHORT" | "NEUTRAL" {
-  // v31.0 CRITICAL FIX: Direction from STRUCTURE ONLY, momentum cannot flip it
-  // Momentum magnitude (EMA slope expansion) NEVER decides direction
+  // v35.0 CRITICAL FIX: RANGE destroys stale directional memory
+  // Direction must be structurally earned at all times
   
   if (!emaStructure) {
     throw new Error("EMA_STRUCTURE_REQUIRED: getDirectionFromStructure must receive valid emaStructure");
@@ -924,6 +964,30 @@ function getDirectionFromStructure(
       structureDirection = "LONG";
     } else if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
       structureDirection = "SHORT";
+    }
+  }
+  
+  // v35.0 CRITICAL: RANGE destroys stale directional memory
+  // If in RANGE, direction must be re-earned through active displacement
+  if (structureState === "RANGE" && structureDirection !== "NEUTRAL") {
+    // Currently have directional bias from EMA in RANGE
+    // This must be re-validated by active displacement
+    const hasActiveDisplacement = card && (
+      (structureDirection === "LONG" && 
+        (card.currentPrice ?? 0) > (card.entryPrice ?? 0) &&  // positive displacement
+        emaSlope > 0.15 &&  // EMA still expanding upward
+        (card.recentImpulseStrength ?? 0) > 40) ||  // continuation active
+      (structureDirection === "SHORT" && 
+        (card.currentPrice ?? 0) < (card.entryPrice ?? 0) &&  // negative displacement
+        emaSlope < -0.15 &&  // EMA still compressing downward
+        (card.recentImpulseStrength ?? 0) > 40)  // rejection active
+    );
+    
+    if (!hasActiveDisplacement) {
+      console.log(`[RANGE_DECAY] ${card?.symbol || "SYMBOL"}: RANGE without displacement continuation → ${structureDirection} decayed to NEUTRAL`);
+      return "NEUTRAL";  // Force decay to NEUTRAL
+    } else {
+      console.log(`[RANGE_PERSISTENCE] ${card?.symbol || "SYMBOL"}: RANGE + ${structureDirection} displacement continuation → ${structureDirection} maintained`);
     }
   }
   
@@ -1000,6 +1064,11 @@ export type SymbolCardState = {
   breakoutState?: BreakoutState;
   recentHigh?: number;
   recentLow?: number;
+  
+  // v35.0: Current price tracking for displacement detection (RANGE decay)
+  currentPrice?: number;  // Current price (for displacement context)
+  entryPrice?: number;    // Entry price (for displacement calculation)
+  recentImpulseStrength?: number;  // Continuation impulse strength (0-100)
 
   // v9: Structure state system (core layer - structure-first)
   structureState: StructureState;
@@ -2345,8 +2414,10 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
   // Step 3: Get direction from structure with tie-breaker
   // v25.0: Pass complete EMA_STRUCTURE object instead of just emaSlope
   // This ensures single source of truth: no dual-source EMA system
-  let direction = getDirectionFromStructure(structureState, htf4hAnalysis, stochRsi, htf4hTrend, volatilityLevel);
+  // v35.0: Pass card for RANGE displacement context
+  let direction = getDirectionFromStructure(structureState, htf4hAnalysis, stochRsi, htf4hTrend, volatilityLevel, card);
   console.log(`[DIRECTION_STRUCTURE] ${symbol}: direction="${direction}" from structure (structureState=${structureState}, 4H=${htf4hTrend})`);
+
 
   // v32.0 CRITICAL RULE ENFORCEMENT: Price structure is ALWAYS the truth
   // No indicator overrides, no mutations, no EMA gates
@@ -2375,6 +2446,11 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
     breakoutState,
     recentHigh: levelAwareness.recentHigh,
     recentLow: levelAwareness.recentLow,
+    
+    // v35.0: Displacement tracking for RANGE decay
+    currentPrice: priceData.price,
+    entryPrice: priceData.price,  // Initialize to current price
+    recentImpulseStrength: calculateImpulseStrength(emaSlope, volatilityLevel, stochRsi),
 
     // v9: Structure state and levels
     structureState,
