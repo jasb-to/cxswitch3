@@ -268,6 +268,11 @@ export async function GET(req: NextRequest) {
       const { executionCards, setups } = executionResult;
       const { displayCards } = displayResult;
     
+    // v41.0 MINIMAL: setups contains ONLY ACTIVE_SNIPER signals from DecisionAxis
+    // DecisionAxis is the ONLY gate - no secondary filtering
+    // If setups.length === 0, it means no signals passed DecisionAxis (structurally sound)
+    const activeSignals = setups; // UI consumes this count directly
+    
     // Merge results: execution first, then display
     const newCards = [...executionCards, ...displayCards];
     console.log(`[CRON] Card generation: ${executionResult.timeMs + displayResult.timeMs}ms - ${executionCards.length} execution + ${displayCards.length} display (sequential: exec first, then display with full market data)`);
@@ -392,7 +397,7 @@ export async function GET(req: NextRequest) {
         executionMs: executionResult.timeMs,
         displayMs: displayResult.timeMs,
         canonicalCards: canonicalCards.length,
-        alertsQueued: setups.length 
+        alertsQueued: activeSignals.length  // SNIPER signals from DecisionAxis only
       }
     });
     } catch (error) {
