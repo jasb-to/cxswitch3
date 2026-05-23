@@ -465,66 +465,62 @@ function calculateUnifiedTradeScore(input: TradeScoreInput): number {
   }
 
   // ========================
-  // TIER 1: HTF STRUCTURE (DOMINANT - GATES FINAL DIRECTION)
+  // TIER 1: STRUCTURAL BASE (EMA positioning threshold)
   // ========================
-  // HTF structure determines base direction, not just bias
+  // Direction determined by structural threshold (not momentum magnitude)
   let tier1Score = 50; // Neutral baseline
   
-  if (htf4hTrend === "BULLISH") {
-    tier1Score = 75; // HTF structural LONG (strong gate)
-  } else if (htf4hTrend === "BEARISH") {
-    tier1Score = 25; // HTF structural SHORT (strong gate)
-  } else if (htf4hTrend === "NEUTRAL") {
-    tier1Score = 50; // HTF neutral, allow local momentum to decide
+  if (emaSlope < -0.2) {
+    // Structural bearish
+    tier1Score = 25;
+  } else if (emaSlope > 0.2) {
+    // Structural bullish
+    tier1Score = 75;
+  }
+  // else: if -0.2 to +0.2, momentum cannot decide, stay neutral (50)
+  
+  // ========================
+  // TIER 2: MOMENTUM CONFIDENCE (strength only, not direction)
+  // ========================
+  // Momentum affects CONFIDENCE/strength, never decides direction
+  
+  // EMA slope sharpness = momentum expansion (not magnitude for direction)
+  const slopeSharpness = Math.abs(emaSlope);
+  let tier2Contribution = (slopeSharpness / 1.0) * 15; // Up to +15
+  
+  // Volatility expansion confidence
+  if (volatility > 70) {
+    tier2Contribution += 10; // High volatility = confidence boost
+  } else if (volatility < 40) {
+    tier2Contribution -= 5; // Low volatility = confidence penalty
+  }
+  
+  // Stochastic RSI extremes = high confidence
+  if (stochRsi > 75 || stochRsi < 25) {
+    tier2Contribution += 8;
   }
   
   // ========================
-  // TIER 2: LOCAL MOMENTUM (SECONDARY - MODULATES TIER 1)
+  // MACRO CONFIDENCE MODIFIER
   // ========================
-  // Local momentum can strengthen or weaken Tier 1, but cannot reverse it when Tier 1 is strong
-  
-  // 1H EMA slope: -1.0 to +1.0 (sensitive but limited magnitude)
-  // When HTF is strong (BULLISH/BEARISH), EMA slope contributes only ±10 to the score
-  // When HTF is neutral, EMA slope can contribute up to ±30
-  let tier2Contribution = 0;
-  if (htf4hTrend === "BULLISH") {
-    // HTF BULLISH + local EMA momentum:
-    // +EMA slope = strengthen LONG (75 → 80)
-    // -EMA slope = weaken LONG but don't reverse (75 → 70)
-    tier2Contribution = emaSlope * 100 * 0.1; // ±10 max
-  } else if (htf4hTrend === "BEARISH") {
-    // HTF BEARISH + local EMA momentum:
-    // -EMA slope = strengthen SHORT (25 → 20)
-    // +EMA slope = weaken SHORT but don't reverse (25 → 30)
-    tier2Contribution = emaSlope * 100 * 0.1; // ±10 max
-  } else {
-    // HTF NEUTRAL - local momentum decides
-    tier2Contribution = emaSlope * 100 * 0.3; // ±30 max (full range)
-  }
-  
-  // Add stochastic RSI modulation (same logic)
-  const stochComponent = (stochRsi - 50) * 0.5; // -25 to +25 range
-  
-  if (htf4hTrend === "BULLISH") {
-    // Stoch RSI overbought (>70) weakens LONG slightly, but doesn't reverse
-    // Stoch RSI oversold (<30) doesn't strengthen or reverse LONG
-    tier2Contribution += stochComponent * 0.1;
-  } else if (htf4hTrend === "BEARISH") {
-    // Stoch RSI oversold (<30) weakens SHORT slightly, but doesn't reverse
-    // Stoch RSI overbought (>70) doesn't strengthen or reverse SHORT
-    tier2Contribution += stochComponent * 0.1;
-  } else {
-    // HTF NEUTRAL - stoch can influence direction
-    tier2Contribution += stochComponent * 0.5;
+  let macroModifier = 1.0;
+  if (htf4hTrend === "BULLISH" && tier1Score >= 50) {
+    macroModifier = 1.15; // Aligned = +15% confidence
+  } else if (htf4hTrend === "BEARISH" && tier1Score < 50) {
+    macroModifier = 1.15; // Aligned = +15% confidence
+  } else if ((htf4hTrend === "BULLISH" && tier1Score < 50) || 
+             (htf4hTrend === "BEARISH" && tier1Score >= 50)) {
+    macroModifier = 0.80; // Counter-trend = -20% confidence
   }
   
   // ========================
-  // FINAL HIERARCHICAL SCORE
+  // FINAL SCORE: Direction base + momentum confidence
   // ========================
-  // Tier 1 (HTF structure) + Tier 2 modulation (local momentum)
-  const finalScore = tier1Score + tier2Contribution;
+  // CRITICAL: Direction (25/50/75) is structural only
+  // Momentum only affects strength through tier2Contribution
+  const finalScore = tier1Score + (tier2Contribution * macroModifier);
   
-  console.log(`[DIRECTIONAL_HIERARCHY_v2] HTF=${htf4hTrend} (tier1=${tier1Score}), EMA=${emaSlope?.toFixed(3) || 'N/A'} StochRSI=${stochRsi?.toFixed(1) || 'N/A'} (tier2=${tier2Contribution.toFixed(1)}) → finalScore=${finalScore.toFixed(1)}`);
+  console.log(`[UNIFIED_SCORE_v31] STRUCTURAL: base=${tier1Score} | MOMENTUM: confidence=${tier2Contribution.toFixed(1)} | MACRO: ${(macroModifier*100).toFixed(0)}% | FINAL=${Math.max(0, Math.min(100, finalScore)).toFixed(1)}`);
   
   // Clamp to 0-100
   return Math.max(0, Math.min(100, finalScore));
@@ -534,22 +530,12 @@ function calculateUnifiedTradeScore(input: TradeScoreInput): number {
  * v28.0 DERIVE DIRECTION FROM UNIFIED SCORE
  * Direction is ALWAYS derived from score, never calculated separately
  */
-function deriveDirectionFromScore(score: number): "LONG" | "SHORT" | "NEUTRAL" {
-  if (score > 60) {
-    return "LONG";
-  } else if (score < 40) {
-    return "SHORT";
-  } else {
-    return "NEUTRAL";
-  }
-}
-
 /**
- * v29.0 DETERMINISTIC SIGNAL ELIGIBILITY - PURE FUNCTION
+ * v30.0 LIGHTWEIGHT SNIPER ELIGIBILITY - PROBABILISTIC EARLY IMPULSE ENGINE
  * 
- * This function validates ALL gates atomically BEFORE any signal construction.
- * Returns true ONLY if signal is guaranteed to be valid (no further blocking possible).
- * This ensures: if true → signal WILL exist, if false → signal NEVER constructed
+ * Removed over-gating. Now prioritizes early entry over macro confirmation.
+ * Macro trend influences confidence only, never blocks signals.
+ * Counter-trend setups ALLOWED with confidence modulation.
  */
 function validateFullSniperEligibility(
   card: SymbolCardState,
@@ -559,45 +545,29 @@ function validateFullSniperEligibility(
   macroConflict: boolean,
   htf4hTrend: string | null
 ): boolean {
-  // GATE 1: Score threshold
+  // GATE 1 ONLY: Score threshold (hard requirement)
   if (score < profile.ignitionThreshold) {
-    console.log(`[FULL_VALIDATION_v29] ${symbol} REJECTED: score ${score} < threshold ${profile.ignitionThreshold}`);
+    console.log(`[SNIPER_ELIGIBILITY_v30] ${symbol} REJECTED: score ${score} < threshold ${profile.ignitionThreshold}`);
     return false;
   }
   
-  // GATE 2: Direction must be clear
+  // GATE 2: Direction must be clear (no NEUTRAL trades)
   if (card.direction === "NEUTRAL") {
-    console.log(`[FULL_VALIDATION_v29] ${symbol} REJECTED: no directional bias`);
+    console.log(`[SNIPER_ELIGIBILITY_v30] ${symbol} REJECTED: no directional bias`);
     return false;
   }
   
-  // GATE 3: Sniper conditions (impulse, ignition, compression/breakout)
-  if (!checkSniperConditions(card, profile, "strict")) {
-    // Already logs reason
-    return false;
-  }
+  // That's it for hard gates. Everything else is probabilistic modulation.
+  // COUNTER_TREND and macro mismatch are NO LONGER hard rejections.
+  // They influence confidence and risk, not access to ACTIVE_SNIPER.
   
-  // GATE 4: Execution validation
-  const executionValidation = validateActiveSniperExecution(card, score);
-  if (!executionValidation.valid) {
-    console.log(`[FULL_VALIDATION_v29] ${symbol} REJECTED: execution validation - ${executionValidation.reason}`);
-    return false;
-  }
-  
-  // GATE 5: Structure support
-  if (!isValidCurrentStructureForSniper(card)) {
-    console.log(`[FULL_VALIDATION_v29] ${symbol} REJECTED: current structure doesn't support SNIPER`);
-    return false;
-  }
-  
-  // GATE 6: Macro compatibility (FINAL_GUARD - no contradictions allowed)
   if (macroConflict) {
-    console.warn(`[FULL_VALIDATION_v29] ${symbol} REJECTED: ${card.direction} contradicts 4H ${htf4hTrend} macro (COUNTER_TREND)`);
-    return false;
+    // Counter-trend setup - ALLOWED with notation
+    console.log(`[SNIPER_ELIGIBILITY_v30] ${symbol} ACCEPTED (COUNTER_TREND): ${card.direction} vs 4H ${htf4hTrend} - confidence will be modulated`);
+  } else {
+    console.log(`[SNIPER_ELIGIBILITY_v30] ${symbol} ACCEPTED (ALIGNED): ${card.direction} aligns with 4H ${htf4hTrend}`);
   }
   
-  // ALL GATES PASSED: Signal is valid and will be created
-  console.log(`[FULL_VALIDATION_v29] ${symbol} ACCEPTED: all gates passed, SNIPER will be created`);
   return true;
 }
 
@@ -925,96 +895,39 @@ function getDirectionFromStructure(
   htf4hTrend: string | null,
   volatilityLevel: number | null
 ): "LONG" | "SHORT" | "NEUTRAL" {
-  // v26.0 CRITICAL: EMA_STRUCTURE IS A DIRECTIONAL GATE, NOT A SCORING INPUT
-  // This prevents macro + stoch from flipping direction when structure is clear
+  // v31.0 CRITICAL FIX: Direction from STRUCTURE ONLY, momentum cannot flip it
+  // Momentum magnitude (EMA slope expansion) NEVER decides direction
   
   if (!emaStructure) {
     throw new Error("EMA_STRUCTURE_REQUIRED: getDirectionFromStructure must receive valid emaStructure");
   }
   
-  // GATE 1: Extract directional constraint from EMA structure
-  const directionalBias = emaStructure.emaSlope;  // -1.0 to +1.0
-  const spreadAcceleration = emaStructure.spreadAcceleration; // Trend confirmation
+  // STRUCTURAL SIGNALS ONLY (momentum removed as direction factor)
+  const emaSlope = emaStructure.emaSlope; // -1.0 to +1.0
   
-  // Determine gate direction based on EMA structure (not scoring, gating)
-  let gateDirection: "LONG_ONLY" | "SHORT_ONLY" | "NEUTRAL" = "NEUTRAL";
+  // Step 1: Determine direction from STRUCTURE (not momentum magnitude)
+  // EMA threshold for structure direction (not momentum)
+  let structureDirection: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
   
-  if (directionalBias < -0.1) {
-    // EMA8 clearly below EMA21 - SHORT gate active
-    gateDirection = "SHORT_ONLY";
-  } else if (directionalBias > 0.1) {
-    // EMA8 clearly above EMA21 - LONG gate active
-    gateDirection = "LONG_ONLY";
-  }
-  // else: NEUTRAL gate allows momentum to decide
-  
-  // GATE 2: Macro layer (HTF alignment) - secondary gate, cannot override primary
-  const macroBiasWeight = calculateMacroBiasWeight(htf4hTrend);
-  
-  // If macro is strong bearish (-12) and EMA gate is SHORT_ONLY, reinforce SHORT
-  // If macro is strong bullish (+12) and EMA gate is LONG_ONLY, reinforce LONG
-  // But if gates conflict, EMA wins
-  
-  // GATE 3: Oscillator (stoch RSI) - tertiary gate, cannot override primary
-  const stochConfirmation = stochRsi !== null ? (stochRsi - 50) * 0.1 : 0; // -5 to +5
-  
-  // Calculate candidate direction from score (for neutral gate only)
-  const momentumOnlyScore = 50 + stochConfirmation; // Base 50, add stoch influence
-  
-  // APPLY GATES IN HIERARCHY ORDER
-  // PRIMARY: EMA structure gate
-  if (gateDirection === "SHORT_ONLY") {
-    console.log(`[EMA_GATE_v26] directionalBias=${directionalBias?.toFixed(3)} → SHORT_ONLY gate active (no LONG possible)`);
-    return "SHORT";
+  if (emaSlope < -0.2) {
+    // EMA8 significantly below EMA21 = bearish structure
+    structureDirection = "SHORT";
+  } else if (emaSlope > 0.2) {
+    // EMA8 significantly above EMA21 = bullish structure
+    structureDirection = "LONG";
   }
   
-  if (gateDirection === "LONG_ONLY") {
-    console.log(`[EMA_GATE_v26] directionalBias=${directionalBias?.toFixed(3)} → LONG_ONLY gate active (no SHORT possible)`);
-    return "LONG";
-  }
-  
-  // PRIMARY gate is NEUTRAL, use macro + stoch to decide
-  
-  // SECONDARY: Macro bias (when EMA neutral)
-  if (htf4hTrend === "BEARISH") {
-    // Macro bearish, allow SHORT or NEUTRAL, NOT LONG
-    if (momentumOnlyScore > 52) {
-      return "NEUTRAL";
-    }
-    return "SHORT";
-  }
-  
-  if (htf4hTrend === "BULLISH") {
-    // Macro bullish, allow LONG or NEUTRAL, NOT SHORT
-    if (momentumOnlyScore < 48) {
-      return "NEUTRAL";
-    }
-    return "LONG";
-  }
-  
-  // NEUTRAL macro - let oscillator decide
-  if (momentumOnlyScore > 55) {
-    return "LONG";
-  } else if (momentumOnlyScore < 45) {
-    return "SHORT";
-  }
-  
-  // HARD STRUCTURE LOCKS (applied AFTER gates)
-  if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
-    // Structure says LONG, but check if EMA gate allows it
-    if (gateDirection !== "SHORT_ONLY") {
-      return "LONG";
+  // Structure state tie-breaker (only when EMA is neutral)
+  if (structureDirection === "NEUTRAL") {
+    if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
+      structureDirection = "LONG";
+    } else if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
+      structureDirection = "SHORT";
     }
   }
-
-  if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
-    // Structure says SHORT, but check if EMA gate allows it
-    if (gateDirection !== "LONG_ONLY") {
-      return "SHORT";
-    }
-  }
-
-  return "NEUTRAL";
+  
+  // FINAL RESULT: Direction is determined by structure, momentum cannot override
+  return structureDirection;
 }
 
 /**
@@ -2415,42 +2328,14 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
   // v25.0: Pass complete EMA_STRUCTURE object instead of just emaSlope
   // This ensures single source of truth: no dual-source EMA system
   let direction = getDirectionFromStructure(structureState, htf4hAnalysis, stochRsi, htf4hTrend, volatilityLevel);
-  console.log(`[DIRECTION_TIE_BREAKER] ${symbol}: tie-breaker resolved direction="${direction}" (4H=${htf4hTrend}, stoch=${stochRsi?.toFixed(1)}, emaStructure=${htf4hAnalysis?.emaSlope?.toFixed(3)})`);
+  console.log(`[DIRECTION_STRUCTURE] ${symbol}: direction="${direction}" from structure (structureState=${structureState}, 4H=${htf4hTrend})`);
 
-  // Step 3.5: ETH CONTINUATION DECAY - MUTATE direction toward SHORT during failed bearish continuation
-  // v25.0: Now use real emaStructure instead of synthetic emaSlope
-  if (symbol === "ETH" && htf4hTrend === "BEARISH" && direction === "LONG") {
-    const emaFlattening = Math.abs(htf4hAnalysis?.emaSlope ?? 0) < 0.25;
-    const volatilityExpanding = (volatilityLevel ?? 50) > 55;
-    
-    if (emaFlattening && volatilityExpanding) {
-      console.log(`[ETH_DECAY] Direction mutation: LONG → SHORT (failed continuation, 4H bearish)`);
-      direction = "SHORT";  // Mutate direction to SHORT, not just confidence
-    }
-  }
-
-  // ⚠️ HARD SAFETY RULE v26: EMA_STRUCTURE IS A DIRECTIONAL CONSTRAINT
-  // This enforces the gate globally - no direction can violate EMA structure
-  // This prevents the regression where macro + stoch flip direction incorrectly
-  const eemaSlope = htf4hAnalysis?.emaSlope ?? 0;
-  if (eemaSlope < -0.1 && direction === "LONG") {
-    // BEARISH structure detected but LONG direction was returned
-    // This should NEVER happen - EMA gate must enforce SHORT
-    console.warn(`[HARD_GATE_OVERRIDE_v26] SAFETY: emaSlope=${eemaSlope.toFixed(3)} (BEARISH) but direction=LONG. Forcing SHORT.`);
-    direction = "SHORT";
-  } else if (eemaSlope > 0.1 && direction === "SHORT") {
-    // BULLISH structure detected but SHORT direction was returned
-    // This should NEVER happen - EMA gate must enforce LONG
-    console.warn(`[HARD_GATE_OVERRIDE_v26] SAFETY: emaSlope=${eemaSlope.toFixed(3)} (BULLISH) but direction=SHORT. Forcing LONG.`);
-    direction = "LONG";
-  }
-
-  // Step 4: REMOVED getDirectionLockedByStructure() - now redundant
-  // v22.3 consolidated momentum + structure locking into getDirectionFromStructure()
-  // Calling it again would re-apply structure locks and override momentum resolution
-  // Structure is already applied in getDirectionFromStructure() before momentum
+  // v32.0 CRITICAL RULE ENFORCEMENT: Price structure is ALWAYS the truth
+  // No indicator overrides, no mutations, no EMA gates
+  // Direction is locked and immutable once determined from structure
   const finalDirection = direction;
   console.log(`[SCAN] ${symbol} direction=${finalDirection} structureState=${structureState}`);
+
 
   const breakoutState: BreakoutState = levelAwareness.breakoutState;
 
