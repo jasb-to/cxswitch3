@@ -465,66 +465,62 @@ function calculateUnifiedTradeScore(input: TradeScoreInput): number {
   }
 
   // ========================
-  // TIER 1: HTF STRUCTURE (DOMINANT - GATES FINAL DIRECTION)
+  // TIER 1: STRUCTURAL BASE (EMA positioning threshold)
   // ========================
-  // HTF structure determines base direction, not just bias
+  // Direction determined by structural threshold (not momentum magnitude)
   let tier1Score = 50; // Neutral baseline
   
-  if (htf4hTrend === "BULLISH") {
-    tier1Score = 75; // HTF structural LONG (strong gate)
-  } else if (htf4hTrend === "BEARISH") {
-    tier1Score = 25; // HTF structural SHORT (strong gate)
-  } else if (htf4hTrend === "NEUTRAL") {
-    tier1Score = 50; // HTF neutral, allow local momentum to decide
+  if (emaSlope < -0.2) {
+    // Structural bearish
+    tier1Score = 25;
+  } else if (emaSlope > 0.2) {
+    // Structural bullish
+    tier1Score = 75;
+  }
+  // else: if -0.2 to +0.2, momentum cannot decide, stay neutral (50)
+  
+  // ========================
+  // TIER 2: MOMENTUM CONFIDENCE (strength only, not direction)
+  // ========================
+  // Momentum affects CONFIDENCE/strength, never decides direction
+  
+  // EMA slope sharpness = momentum expansion (not magnitude for direction)
+  const slopeSharpness = Math.abs(emaSlope);
+  let tier2Contribution = (slopeSharpness / 1.0) * 15; // Up to +15
+  
+  // Volatility expansion confidence
+  if (volatility > 70) {
+    tier2Contribution += 10; // High volatility = confidence boost
+  } else if (volatility < 40) {
+    tier2Contribution -= 5; // Low volatility = confidence penalty
+  }
+  
+  // Stochastic RSI extremes = high confidence
+  if (stochRsi > 75 || stochRsi < 25) {
+    tier2Contribution += 8;
   }
   
   // ========================
-  // TIER 2: LOCAL MOMENTUM (SECONDARY - MODULATES TIER 1)
+  // MACRO CONFIDENCE MODIFIER
   // ========================
-  // Local momentum can strengthen or weaken Tier 1, but cannot reverse it when Tier 1 is strong
-  
-  // 1H EMA slope: -1.0 to +1.0 (sensitive but limited magnitude)
-  // When HTF is strong (BULLISH/BEARISH), EMA slope contributes only ±10 to the score
-  // When HTF is neutral, EMA slope can contribute up to ±30
-  let tier2Contribution = 0;
-  if (htf4hTrend === "BULLISH") {
-    // HTF BULLISH + local EMA momentum:
-    // +EMA slope = strengthen LONG (75 → 80)
-    // -EMA slope = weaken LONG but don't reverse (75 → 70)
-    tier2Contribution = emaSlope * 100 * 0.1; // ±10 max
-  } else if (htf4hTrend === "BEARISH") {
-    // HTF BEARISH + local EMA momentum:
-    // -EMA slope = strengthen SHORT (25 → 20)
-    // +EMA slope = weaken SHORT but don't reverse (25 → 30)
-    tier2Contribution = emaSlope * 100 * 0.1; // ±10 max
-  } else {
-    // HTF NEUTRAL - local momentum decides
-    tier2Contribution = emaSlope * 100 * 0.3; // ±30 max (full range)
-  }
-  
-  // Add stochastic RSI modulation (same logic)
-  const stochComponent = (stochRsi - 50) * 0.5; // -25 to +25 range
-  
-  if (htf4hTrend === "BULLISH") {
-    // Stoch RSI overbought (>70) weakens LONG slightly, but doesn't reverse
-    // Stoch RSI oversold (<30) doesn't strengthen or reverse LONG
-    tier2Contribution += stochComponent * 0.1;
-  } else if (htf4hTrend === "BEARISH") {
-    // Stoch RSI oversold (<30) weakens SHORT slightly, but doesn't reverse
-    // Stoch RSI overbought (>70) doesn't strengthen or reverse SHORT
-    tier2Contribution += stochComponent * 0.1;
-  } else {
-    // HTF NEUTRAL - stoch can influence direction
-    tier2Contribution += stochComponent * 0.5;
+  let macroModifier = 1.0;
+  if (htf4hTrend === "BULLISH" && tier1Score >= 50) {
+    macroModifier = 1.15; // Aligned = +15% confidence
+  } else if (htf4hTrend === "BEARISH" && tier1Score < 50) {
+    macroModifier = 1.15; // Aligned = +15% confidence
+  } else if ((htf4hTrend === "BULLISH" && tier1Score < 50) || 
+             (htf4hTrend === "BEARISH" && tier1Score >= 50)) {
+    macroModifier = 0.80; // Counter-trend = -20% confidence
   }
   
   // ========================
-  // FINAL HIERARCHICAL SCORE
+  // FINAL SCORE: Direction base + momentum confidence
   // ========================
-  // Tier 1 (HTF structure) + Tier 2 modulation (local momentum)
-  const finalScore = tier1Score + tier2Contribution;
+  // CRITICAL: Direction (25/50/75) is structural only
+  // Momentum only affects strength through tier2Contribution
+  const finalScore = tier1Score + (tier2Contribution * macroModifier);
   
-  console.log(`[DIRECTIONAL_HIERARCHY_v2] HTF=${htf4hTrend} (tier1=${tier1Score}), EMA=${emaSlope?.toFixed(3) || 'N/A'} StochRSI=${stochRsi?.toFixed(1) || 'N/A'} (tier2=${tier2Contribution.toFixed(1)}) → finalScore=${finalScore.toFixed(1)}`);
+  console.log(`[UNIFIED_SCORE_v31] STRUCTURAL: base=${tier1Score} | MOMENTUM: confidence=${tier2Contribution.toFixed(1)} | MACRO: ${(macroModifier*100).toFixed(0)}% | FINAL=${Math.max(0, Math.min(100, finalScore)).toFixed(1)}`);
   
   // Clamp to 0-100
   return Math.max(0, Math.min(100, finalScore));
@@ -909,62 +905,39 @@ function getDirectionFromStructure(
   htf4hTrend: string | null,
   volatilityLevel: number | null
 ): "LONG" | "SHORT" | "NEUTRAL" {
-  // v30.0 PROBABILISTIC DIRECTION ENGINE - Macro is weighting, not gating
-  // Prioritizes local momentum over macro confirmation
+  // v31.0 CRITICAL FIX: Direction from STRUCTURE ONLY, momentum cannot flip it
+  // Momentum magnitude (EMA slope expansion) NEVER decides direction
   
   if (!emaStructure) {
     throw new Error("EMA_STRUCTURE_REQUIRED: getDirectionFromStructure must receive valid emaStructure");
   }
   
-  // Extract EMA directional bias (local momentum, primary signal)
-  const directionalBias = emaStructure.emaSlope;  // -1.0 to +1.0
+  // STRUCTURAL SIGNALS ONLY (momentum removed as direction factor)
+  const emaSlope = emaStructure.emaSlope; // -1.0 to +1.0
   
-  // Calculate local momentum score from EMA bias
-  let localMomentumScore = 50; // Neutral baseline
-  if (directionalBias < -0.3) {
-    localMomentumScore = 20; // Strong bearish
-  } else if (directionalBias < -0.1) {
-    localMomentumScore = 35; // Moderate bearish
-  } else if (directionalBias > 0.3) {
-    localMomentumScore = 80; // Strong bullish
-  } else if (directionalBias > 0.1) {
-    localMomentumScore = 65; // Moderate bullish
+  // Step 1: Determine direction from STRUCTURE (not momentum magnitude)
+  // EMA threshold for structure direction (not momentum)
+  let structureDirection: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
+  
+  if (emaSlope < -0.2) {
+    // EMA8 significantly below EMA21 = bearish structure
+    structureDirection = "SHORT";
+  } else if (emaSlope > 0.2) {
+    // EMA8 significantly above EMA21 = bullish structure
+    structureDirection = "LONG";
   }
   
-  // Add stoch RSI modulation (oscillator context)
-  if (stochRsi !== null) {
-    const stochComponent = (stochRsi - 50) * 0.3; // -15 to +15 range
-    localMomentumScore += stochComponent;
+  // Structure state tie-breaker (only when EMA is neutral)
+  if (structureDirection === "NEUTRAL") {
+    if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
+      structureDirection = "LONG";
+    } else if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
+      structureDirection = "SHORT";
+    }
   }
   
-  // v30.0 MACRO WEIGHTING (not gating): Adjust confidence, not direction
-  // Macro influences only the confidence of the signal, never blocks it
-  let confidenceModifier = 1.0; // Neutral
-  if (htf4hTrend === "BULLISH" && localMomentumScore > 50) {
-    confidenceModifier = 1.15; // +15% confidence when aligned
-  } else if (htf4hTrend === "BEARISH" && localMomentumScore < 50) {
-    confidenceModifier = 1.15; // +15% confidence when aligned
-  } else if (htf4hTrend === "BULLISH" && localMomentumScore < 50) {
-    confidenceModifier = 0.80; // -20% confidence when counter-trend
-  } else if (htf4hTrend === "BEARISH" && localMomentumScore > 50) {
-    confidenceModifier = 0.80; // -20% confidence when counter-trend
-  }
-  
-  // LOCAL MOMENTUM DECIDES DIRECTION (macro only tints confidence)
-  if (localMomentumScore > 60) {
-    return "LONG";
-  } else if (localMomentumScore < 40) {
-    return "SHORT";
-  }
-  
-  // Structure tie-breaker (when momentum is neutral)
-  if (structureState === "RETEST_UP" || structureState === "BREAKOUT_UP") {
-    return "LONG";
-  } else if (structureState === "RETEST_DOWN" || structureState === "BREAKOUT_DOWN") {
-    return "SHORT";
-  }
-
-  return "NEUTRAL";
+  // FINAL RESULT: Direction is determined by structure, momentum cannot override
+  return structureDirection;
 }
 
 /**
