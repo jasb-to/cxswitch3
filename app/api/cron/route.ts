@@ -28,6 +28,11 @@ function applyV43PostProcessor(cards: any[], profile: any = null): any[] {
   return cards.map(card => {
     if (!card.symbol) return card;
     
+    // Preserve trade data that was already calculated (from strategy-v6)
+    const originalTargetPrices = card.targetPrices;
+    const originalStopLoss = card.stopLoss;
+    const originalRiskReward = card.riskReward;
+    
     // Get profile dynamically if not provided
     const prof = profile || { ignitionThreshold: 57 };
     
@@ -46,6 +51,12 @@ function applyV43PostProcessor(cards: any[], profile: any = null): any[] {
     card.direction = canonicalState.direction;
     card.confidence = canonicalState.finalScore;
     card.notes = `[V43] ${canonicalState.activationState}`;
+    
+    // CRITICAL: Preserve trade data calculated by strategy-v6
+    // The v43 engine handles direction/activation only, not trade calculations
+    if (originalTargetPrices) card.targetPrices = originalTargetPrices;
+    if (originalStopLoss) card.stopLoss = originalStopLoss;
+    if (originalRiskReward) card.riskReward = originalRiskReward;
     
     return card;
   });
