@@ -3,12 +3,6 @@
 import { useEffect, useState } from "react";
 import type { SymbolCardState } from "@/lib/types";
 import { EMPTY_SNAPSHOT } from "@/lib/canonical-snapshot";
-import {
-  safePercent,
-  safeBarWidth,
-  getReadinessColorClass,
-  getReadinessBarClass,
-} from "@/lib/final-clean-state-machine";
 
 const VERSION = "vFINAL";
 const STALE_THRESHOLD_MS = 6 * 60_000;
@@ -19,23 +13,27 @@ function fmt(n: number) {
 
 
 function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
-  // PURE PASS-THROUGH: Read ONLY from canonicalState, NO inference
-  const canonicalDirection = card.direction || "NEUTRAL";
-  const canonicalActivation = (card as any).signalState || "BUILDING";
-  const canonicalMacro = card.htf4hTrend || "NEUTRAL";
+  // STRICT CONTRACT: Read ONLY from canonical state, NO fallbacks, NO inference
+  const canonicalDirection = card.direction;
+  const canonicalActivation = (card as any).signalState;
+  const canonicalMacro = card.htf4hTrend;
   const canonicalConfidence = card.confidence ?? 0;
   
-  // DEBUG: Confirm UI matches backend exactly (TEMP - removes later)
+  // DEBUG: Confirm UI matches backend exactly
   console.log("[CANONICAL TRACE]", JSON.stringify({
     symbol: card.symbol,
-    direction: canonicalDirection,
-    activation: canonicalActivation,
-    macro: canonicalMacro,
+    direction: canonicalDirection ?? null,
+    activation: canonicalActivation ?? null,
+    macro: canonicalMacro ?? null,
     confidence: canonicalConfidence,
-    targetPrices: card.targetPrices ? "YES" : "NO",
   }));
   
-  // Direction colors
+  // If canonical activation is missing, don't render card at all
+  if (!canonicalActivation) {
+    return null;
+  }
+  
+  // Direction colors - use canonical direction or default to neutral
   const directionColor = canonicalDirection === "LONG" ? "text-green-400" : canonicalDirection === "SHORT" ? "text-red-400" : "text-zinc-400";
   const directionBg = canonicalDirection === "LONG" ? "bg-green-950" : canonicalDirection === "SHORT" ? "bg-red-950" : "bg-zinc-900";
   const directionBorder = canonicalDirection === "LONG" ? "border-green-700" : canonicalDirection === "SHORT" ? "border-red-700" : "border-zinc-700";
@@ -46,11 +44,6 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
                           canonicalActivation === "CONFIRMED" ? "text-green-400" :
                           canonicalActivation === "DO_NOT_TRADE" ? "text-red-400" :
                           "text-zinc-400";
-  
-  // Trade readiness from backend (canonical field)
-  const readiness = card.tradeReadinessScore ?? 0;
-  const readinessScoreColor = getReadinessColorClass(readiness);
-  const readinessBgBar = getReadinessBarClass(readiness);
   
   return (
     <div className={`rounded-lg border ${directionBorder} p-5 bg-[#0f0f0f] text-white space-y-4`}>
@@ -91,31 +84,13 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
         </span>
       </div>
 
-      {/* TRADE READINESS BAR: Only shown for BUILDING state */}
-      {canonicalActivation === "BUILDING" && (
-        <div className="border-t border-zinc-800 pt-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Trade Readiness</p>
-            <span className={`text-lg font-mono font-bold ${readinessScoreColor}`}>
-              {safePercent(readiness)}
-            </span>
-          </div>
-          <div className="w-full bg-zinc-800 rounded h-3">
-            <div 
-              className={`${readinessBgBar} h-3 rounded transition-all`} 
-              style={{ width: safeBarWidth(readiness) }} 
-            />
-          </div>
-        </div>
-      )}
-
       {/* STATE OF PLAY: Pure print of canonicalState - NO COMMENTARY, NO FALLBACK */}
       <div className="border-t border-zinc-800 pt-3 text-xs space-y-1">
         <p className="text-zinc-600 font-semibold uppercase tracking-wider">State of Play</p>
         <div className="flex justify-between text-zinc-400">
           <span>Direction:</span>
           <span className={canonicalDirection === "LONG" ? "text-green-400" : canonicalDirection === "SHORT" ? "text-red-400" : "text-zinc-500"}>
-            {canonicalDirection}
+            {canonicalDirection ?? "—"}
           </span>
         </div>
         <div className="flex justify-between text-zinc-400">
@@ -127,7 +102,7 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
         <div className="flex justify-between text-zinc-400">
           <span>Macro:</span>
           <span className={canonicalMacro === "BULLISH" ? "text-green-400" : canonicalMacro === "BEARISH" ? "text-red-400" : "text-zinc-500"}>
-            {canonicalMacro}
+            {canonicalMacro ?? "—"}
           </span>
         </div>
       </div>
