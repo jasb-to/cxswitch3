@@ -233,10 +233,7 @@ export async function GET(req: NextRequest) {
     // Do this AFTER mapping activationState to avoid frozen object mutations
     const frozenCards = canonicalCards.map(card => safeFreezeCard(card));
     
-    console.log(`[EXEC_CYCLE] Generated ${frozenCards.length} cards (DEEP FROZEN), ${setups.length} setups, populated canonical state in ${Date.now() - cycleStart}ms`);
-    
-    return { executionCards: frozenCards, setups, timeMs: Date.now() - cycleStart };
-
+    console.log(`[EXEC_CYCLE] Generated ${frozenCards.length} cards (DEEP FROZEN), ${setups.length} setups, completed type enforcement in ${Date.now() - cronStart}ms`);
     // ATOMIC: Update snapshot with exactly 3 cards + active setups
     // Clone cards BEFORE snapshot to prevent snapshot mutations affecting execution cards
     // Backend MUST ONLY write when canonicalCards.length === 3
