@@ -8,9 +8,28 @@
  * Backend → snapshot → ALL consumers (UI, counters, alerts, displays)
  */
 
+/**
+ * SNAPSHOT CARD DTO - HARD CONTRACT
+ * REQUIRED fields only. No optional chaining. No spreads.
+ * This is what the frontend MUST receive.
+ */
+export type SnapshotCard = Required<{
+  symbol: string;
+  price: number;
+  source: "kraken" | "coingecko";
+  direction: "LONG" | "SHORT" | "NEUTRAL";
+  signalState: "ACTIVE_SNIPER" | "CONFIRMED" | "DO_NOT_TRADE" | "SNIPER_READY" | "CONFIRMED_READY" | "WATCH_BREAKOUT" | "NONE";
+  activationState: "ACTIVE_SNIPER" | "CONFIRMED" | "DO_NOT_TRADE"; // Frontend contract
+  confidence: number;
+  structure: string;
+  execution15m: string;
+  htf4hTrend: string;
+  notes?: string;
+}>;
+
 export type CanonicalSnapshot = {
   ready: boolean;           // true only when cards.length === 3
-  cards: any[];            // exactly 0 or 3 - never partial
+  cards: SnapshotCard[];    // exactly 0 or 3 - never partial
   setups: any[];           // ACTIVE_SNIPER + ACTIVE_CONFIRMED signals
   activeSignals: string[]; // Array of active signal symbols (derived from setups)
   signalCount: number;     // Total count of active signals (derived from setups.length)
@@ -33,6 +52,47 @@ export const EMPTY_SNAPSHOT: CanonicalSnapshot = {
 };
 
 /**
+ * Normalize card to SnapshotCard DTO
+ * HARD ENFORCE all required fields with no spreads or optional chaining
+ */
+function normalizeCardToDTO(card: any): SnapshotCard {
+  // STEP 5: DEBUG LOG - will show exactly what's in the card before serialization
+  console.log("[SNAPSHOT_CARD_NORMALIZATION]", {
+    symbol: card.symbol,
+    signalState: card.signalState,
+    activationState: card.activationState, // This will show undefined if missing
+  });
+
+  // STEP 2: HARD GUARD - throw if activationState missing
+  if (!card.activationState) {
+    throw new Error(
+      `[SNAPSHOT_CONTRACT_VIOLATION] Missing activationState for ${card.symbol}. Card state: ${JSON.stringify({
+        symbol: card.symbol,
+        signalState: card.signalState,
+        keys: Object.keys(card),
+      })}`
+    );
+  }
+
+  // STEP 3: EXPLICIT FIELD MAPPING - NO spreads, NO inference
+  const snapshotCard: SnapshotCard = {
+    symbol: card.symbol || "UNKNOWN",
+    price: card.price || 0,
+    source: card.source || "kraken",
+    direction: card.direction || "NEUTRAL",
+    signalState: card.signalState || "NONE",
+    activationState: card.activationState, // Already validated above
+    confidence: card.confidence || 0,
+    structure: card.structure || "UNKNOWN",
+    execution15m: card.execution15m || "CHOP",
+    htf4hTrend: card.htf4hTrend || "NEUTRAL",
+    notes: card.notes,
+  };
+
+  return snapshotCard;
+}
+
+/**
  * Create canonical snapshot from execution state
  * ENFORCES complete contract - all fields populated or defaults to empty
  */
@@ -41,8 +101,21 @@ export function createCanonicalSnapshot(input: {
   setups: any[];
   updatedAt?: string | null;
 }): CanonicalSnapshot {
-  const cards = input.cards || [];
+  const rawCards = input.cards || [];
   const setups = input.setups || [];
+  
+  // STEP 2 & 3 & 5: Normalize ALL cards to DTO with hard validation
+  let cards: SnapshotCard[] = [];
+  if (rawCards.length > 0) {
+    cards = rawCards.map((card: any) => {
+      try {
+        return normalizeCardToDTO(card);
+      } catch (error) {
+        console.error("[SNAPSHOT_NORMALIZATION_ERROR]", error);
+        throw error; // Fail fast - don't silently drop cards
+      }
+    });
+  }
   
   // Compute derived fields
   const activeSignals = setups.map((s: any) => s.symbol);
@@ -77,3 +150,4 @@ export function isCanonicalSnapshot(value: any): value is CanonicalSnapshot {
     (value.updatedAt === null || typeof value.updatedAt === "string")
   );
 }
+
