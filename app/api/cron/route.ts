@@ -185,10 +185,17 @@ export async function GET(req: NextRequest) {
     // STEP 3: v8.2 FIX - Use canonical state directly (unified source of truth)
     // All cards already have canonical state populated by execution and display cycles
     // No need for merging - canonical state is the definitive state
-    const canonicalCards = getAllCanonicalStates().map(canonicalToCard);
+    const rawCanonicalCards = getAllCanonicalStates().map(canonicalToCard);
     
-    console.log(`[CANONICAL] Using ${canonicalCards.length} unified canonical states (BTC, ETH, SOL always present)`);
+    console.log(`[CANONICAL] Using ${rawCanonicalCards.length} unified canonical states (BTC, ETH, SOL always present)`);
 
+    // ═════════════════════════════════════════════════════════════════════════════
+    // CRITICAL: ONE OBJECT = ONE LIFETIME RULE
+    // Clone IMMEDIATELY to prevent shared references
+    // Never reuse the original object - work only with the clone
+    // ═════════════════════════════════════════════════════════════════════════════
+    const canonicalCards = structuredClone(rawCanonicalCards);
+    
     // STEP 4: Validate SNIPER cards completed full pipeline (v8.1 FIX #2)
     // SNIPER_READY is intermediate, not final. Must have TP/SL before rendering
     for (const card of canonicalCards) {
@@ -198,7 +205,8 @@ export async function GET(req: NextRequest) {
     }
 
     // ═════════════════════════════════════════════════════════════════════════════
-    // STEP 4.5: HARD TYPE ENFORCEMENT - Map activationState BEFORE freezing
+    // STEP 4.5: HARD TYPE ENFORCEMENT - Map activationState on CLONED objects
+    // CRITICAL: Mutations happen on cloned cards ONLY, never on original references
     // ═════════════════════════════════════════════════════════════════════════════
     for (const card of canonicalCards) {
       // REQUIRED FIELDS - NO UNDEFINED
@@ -215,7 +223,7 @@ export async function GET(req: NextRequest) {
         throw new Error(`[TYPE_VIOLATION] Card ${card.symbol} invalid confidence: ${card.confidence}`);
       }
       
-      // CRITICAL FIX: Map signalState to activationState BEFORE freezing
+      // CRITICAL FIX: Map signalState to activationState on CLONED card (mutation safe)
       // Frontend expects activationState: "ACTIVE_SNIPER" | "CONFIRMED" | "DO_NOT_TRADE"
       // Map intermediate states to terminal states for serialization
       if (card.signalState === "ACTIVE_SNIPER") {
@@ -228,19 +236,20 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // FREEZE CARDS: Make immutable after generation with deep cloning
-    // Clone to prevent shared references, then deep freeze to prevent mutations
-    // Do this AFTER mapping activationState to avoid frozen object mutations
-    const frozenCards = canonicalCards.map(card => safeFreezeCard(card));
+    // ═════════════════════════════════════════════════════════════════════════════
+    // FREEZE MUST BE LAST STEP ONLY - after ALL mutations are complete
+    // CRITICAL: Use the CLONED canonicalCards (never reuse rawCanonicalCards)
+    // ═════════════════════════════════════════════════════════════════════════════
+    const frozenCards = canonicalCards.map(card => deepFreeze(card));
     
     console.log(`[EXEC_CYCLE] Generated ${frozenCards.length} cards (DEEP FROZEN), ${setups.length} setups, completed type enforcement in ${Date.now() - cronStart}ms`);
-    // ATOMIC: Update snapshot with exactly 3 cards + active setups
-    // Clone cards BEFORE snapshot to prevent snapshot mutations affecting execution cards
-    // Backend MUST ONLY write when canonicalCards.length === 3
-    // v1 FIX: Use createCanonicalSnapshot to enforce complete contract
-    // ALL fields (cards, setups, activeSignals, signalCount, activeSnipers) populated
-    const snapshotCards = canonicalCards.length === 3 
-      ? canonicalCards.map(card => safeFreezeCard(card))
+    
+    // ═════════════════════════════════════════════════════════════════════════════
+    // SNAPSHOT: Create from CLONED + FROZEN cards
+    // ONE OBJECT = ONE LIFETIME - clone again for snapshot isolation
+    // ═════════════════════════════════════════════════════════════════════════════
+    const snapshotCards = frozenCards.length === 3 
+      ? structuredClone(frozenCards)
       : [];
     
     const snapshot = createCanonicalSnapshot({
