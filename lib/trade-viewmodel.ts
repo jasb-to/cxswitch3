@@ -67,7 +67,7 @@ export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel 
     if (derivedActivationState === "DO_NOT_TRADE") {
       if (card.direction === "NEUTRAL") {
         rejectionReason = "Neutral direction - no directional bias";
-      } else if (card.execution15m === "CHOP") {
+      } else if (card.execution15mState === "CHOP") {
         rejectionReason = "15m execution showing chop - no entry setup";
       } else if (card.confidence < 50) {
         rejectionReason = `Low confidence: ${card.confidence.toFixed(0)}%`;
@@ -91,7 +91,7 @@ export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel 
     // Structure (CRITICAL: always populated)
     structureState: card.structureState || "RANGE",
     structure: card.structure || "UNKNOWN",
-    execution15m: card.execution15m || "CHOP",
+    execution15m: card.execution15mState || "CHOP",
     htf4hTrend: card.htf4hTrend || "NEUTRAL",
     
     // Scoring
