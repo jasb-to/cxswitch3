@@ -19,13 +19,17 @@ export type UIState = "BUILDING" | "SNIPER" | "ACTIVE_SNIPER" | "CONFIRMED";
  * No interpretation. No logic. No fallback explanation.
  */
 export function resolveDisplayState(card: SymbolCardState): UIState {
+  // Bootstrap state (initial load)
   if (card.source === "bootstrap") return "BUILDING";
 
+  // Read signalState which backend sets to canonicalState.activationState
   const s = (card as any).signalState as string | undefined;
 
+  // Map backend canonical states directly
   if (s === "ACTIVE_SNIPER") return "ACTIVE_SNIPER";
   if (s === "ACTIVE_CONFIRMED") return "CONFIRMED";
   if (s === "SNIPER") return "SNIPER";
+  if (s === "DO_NOT_TRADE") return "BUILDING";  // DO_NOT_TRADE displays as BUILDING in UI
   
   return "BUILDING";
 }

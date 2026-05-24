@@ -135,8 +135,12 @@ async function runExecutionCycle(): Promise<{
     // STEP 2: ONLY scan execution pipeline (Kraken) with real 4H structure
     const { cards: executionCards, setups } = await generateSetups(segregatedMarkets, candles4hBySymbol);
     
+    // v43.0 POST-PROCESSOR: Apply BEFORE canonical state update
+    // This ensures canonical state gets the v43 canonical values, not legacy values
+    const v43ExecutionCards = applyV43PostProcessor(executionCards);
+    
     // v8.2 FIX: Populate canonical state with execution cards
-    for (const card of executionCards) {
+    for (const card of v43ExecutionCards) {
       if (card.symbol) {
         initializeCanonicalState(card.symbol, card.price, card.source || "kraken");
         updateCanonicalState(card.symbol.toUpperCase(), {
@@ -158,10 +162,7 @@ async function runExecutionCycle(): Promise<{
       }
     }
     
-    console.log(`[EXEC_CYCLE] Generated ${executionCards.length} cards, ${setups.length} setups, populated canonical state in ${Date.now() - cycleStart}ms`);
-    
-    // v43.0 POST-PROCESSOR: Override all cards with v43 canonical engine
-    const v43ExecutionCards = applyV43PostProcessor(executionCards);
+    console.log(`[EXEC_CYCLE] Generated ${v43ExecutionCards.length} cards, ${setups.length} setups, populated canonical state in ${Date.now() - cycleStart}ms`);
     
     return { executionCards: v43ExecutionCards, setups, timeMs: Date.now() - cycleStart };
   } finally {
@@ -198,8 +199,12 @@ async function runDisplayCycle(): Promise<{
     // STEP 2: ONLY generate display cards (fallback)
     const displayCards = generateDisplayCards(segregatedMarkets.display);
     
+    // v43.0 POST-PROCESSOR: Apply BEFORE canonical state update
+    // This ensures canonical state gets the v43 canonical values, not legacy values
+    const v43DisplayCards = applyV43PostProcessor(displayCards);
+    
     // v8.2 FIX: Populate canonical state with display cards
-    for (const card of displayCards) {
+    for (const card of v43DisplayCards) {
       if (card.symbol) {
         initializeCanonicalState(card.symbol, card.price, card.source || "coingecko");
         updateCanonicalState(card.symbol.toUpperCase(), {
@@ -215,10 +220,8 @@ async function runDisplayCycle(): Promise<{
     
     // STEP 3: If display cycle generated cards, return them
     // Otherwise, fall back to previous display cards from snapshot
-    if (displayCards.length > 0) {
-      console.log(`[DISPLAY_CYCLE] Generated ${displayCards.length} cards, populated canonical state in ${Date.now() - cycleStart}ms`);
-      // v43.0 POST-PROCESSOR: Override all cards with v43 canonical engine
-      const v43DisplayCards = applyV43PostProcessor(displayCards);
+    if (v43DisplayCards.length > 0) {
+      console.log(`[DISPLAY_CYCLE] Generated ${v43DisplayCards.length} cards, populated canonical state in ${Date.now() - cycleStart}ms`);
       return { displayCards: v43DisplayCards, timeMs: Date.now() - cycleStart };
     }
     
