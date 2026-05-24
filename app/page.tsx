@@ -163,6 +163,34 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
             </div>
           </div>
 
+          {/* CONFIDENCE SCORE: Signal quality indicator */}
+          {card.confidence !== null && card.confidence !== undefined && (
+            <div className="border-t border-zinc-800 pt-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Signal Quality</p>
+                <span className={`text-sm font-mono font-bold ${
+                  card.confidence >= 75 ? "text-green-400" :
+                  card.confidence >= 50 ? "text-yellow-400" :
+                  card.confidence >= 25 ? "text-amber-400" :
+                  "text-red-400"
+                }`}>
+                  {Math.round(card.confidence)}%
+                </span>
+              </div>
+              <div className="w-full bg-zinc-800 rounded h-2">
+                <div 
+                  className={`${
+                    card.confidence >= 75 ? "bg-green-500" :
+                    card.confidence >= 50 ? "bg-yellow-500" :
+                    card.confidence >= 25 ? "bg-amber-500" :
+                    "bg-red-500"
+                  } h-2 rounded transition-all`} 
+                  style={{ width: `${Math.min(100, Math.max(0, card.confidence))}%` }} 
+                />
+              </div>
+            </div>
+          )}
+
           {/* DECISION BOX: Big and obvious - the main decision */}
           <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-zinc-700">
             <p className={`text-lg font-bold ${
