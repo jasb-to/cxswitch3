@@ -54,17 +54,135 @@ export type ExecutionProfile = {
 };
 
 // ============================================================================
+// CANONICAL CARD - STRICT 3-LAYER IMMUTABLE CONTRACT
+// ============================================================================
+
+/**
+ * CANONICAL CARD: The ONLY format that flows through pipeline
+ * 
+ * INVARIANTS:
+ * - direction MUST be one of: "LONG" | "SHORT" | "NEUTRAL"
+ * - activationState MUST be one of: "ACTIVE_SNIPER" | "DO_NOT_TRADE"
+ * - macro MUST be one of: "BULLISH" | "BEARISH" | "NEUTRAL"
+ * - confidence MUST be 0-100
+ * - targetPrices is optional (may not be calculated)
+ * 
+ * UI MUST NOT:
+ * - Recompute or inference any of these fields
+ * - Fall back to stale values
+ * - Create conditional state logic based on missing fields
+ * - Return null - render "—" instead
+ * 
+ * If ANY field is missing or wrong type: FAIL FAST with error
+ */
+export type CanonicalCard = {
+  // Identity
+  symbol: string;
+  price: number;
+  source: "kraken" | "coingecko";
+  
+  // CANONICAL STATE (from execution engine, immutable)
+  direction: "LONG" | "SHORT" | "NEUTRAL";
+  activationState: "ACTIVE_SNIPER" | "DO_NOT_TRADE";
+  macro: "BULLISH" | "BEARISH" | "NEUTRAL";
+  confidence: number; // 0-100
+  
+  // Optional trade data (may not be calculated)
+  targetPrices?: {
+    tp1: number;
+    tp2: number;
+    sl: number;
+  };
+  riskReward?: number;
+  
+  // Metadata (for audit trail, not for UI logic)
+  degraded: boolean;
+  executionGrade: boolean;
+  timestamp: number;
+};
+
+// ============================================================================
+// CANONICAL SNAPSHOT - TYPE-SAFE CONTRACT
+// ============================================================================
+
+export type CanonicalSnapshot = {
+  ready: boolean;
+  cards: CanonicalCard[];
+  setups: any[];
+  activeSignals: string[];
+  signalCount: number;
+  activeSnipers: number;
+  updatedAt: string | null;
+};
+
+// ============================================================================
+// VALIDATION GUARDS
+// ============================================================================
+
+/**
+ * Validate card is canonical format
+ * Used by UI ENTRY POINT ONLY - MUST be first check
+ */
+export function assertCanonicalCard(card: any): CanonicalCard {
+  if (!card) {
+    throw new Error("Card is null/undefined");
+  }
+  
+  const validDirections = ["LONG", "SHORT", "NEUTRAL"];
+  const validActivations = ["ACTIVE_SNIPER", "DO_NOT_TRADE"];
+  const validMacros = ["BULLISH", "BEARISH", "NEUTRAL"];
+  
+  if (!validDirections.includes(card.direction)) {
+    throw new Error(`Invalid direction: ${card.direction}`);
+  }
+  if (!validActivations.includes(card.activationState)) {
+    throw new Error(`Invalid activationState: ${card.activationState}`);
+  }
+  if (!validMacros.includes(card.macro)) {
+    throw new Error(`Invalid macro: ${card.macro}`);
+  }
+  if (typeof card.confidence !== "number" || card.confidence < 0 || card.confidence > 100) {
+    throw new Error(`Invalid confidence: ${card.confidence}`);
+  }
+  
+  return card as CanonicalCard;
+}
+
+/**
+ * Validate snapshot is canonical format
+ */
+export function assertCanonicalSnapshot(snapshot: any): CanonicalSnapshot {
+  if (!snapshot || typeof snapshot !== "object") {
+    throw new Error("Snapshot is not an object");
+  }
+  if (!Array.isArray(snapshot.cards)) {
+    throw new Error("Snapshot.cards is not an array");
+  }
+  
+  // Validate each card
+  snapshot.cards.forEach((card: any, index: number) => {
+    try {
+      assertCanonicalCard(card);
+    } catch (e) {
+      throw new Error(`Card[${index}] validation failed: ${(e as Error).message}`);
+    }
+  });
+  
+  return snapshot as CanonicalSnapshot;
+}
+
+// ============================================================================
 // SIGNAL STATE & CARD STATE
 // ============================================================================
 
 export type SignalState = 
   | "NONE"              // No signal
+  | "BUILDING"          // Directional bias + compression, waiting for ignition
   | "SNIPER_READY"      // All SNIPER conditions passed, awaiting entry confirmation
   | "CONFIRMED_READY"   // All CONFIRMED conditions passed, awaiting confirmation
   | "ACTIVE_SNIPER"     // SNIPER signal active, trade window open (30 min cooldown)
   | "ACTIVE_CONFIRMED"  // CONFIRMED signal active, trend confirmation (90 min cooldown) - INTERNAL ONLY
-  | "WATCH_BREAKOUT"    // Breakout detected, holding direction until retest confirmation
-  | "DO_NOT_TRADE";     // No viable trade setup
+  | "WATCH_BREAKOUT";   // Breakout detected, holding direction until retest confirmation
 
 export type StructureState = "UPTREND" | "DOWNTREND" | "RANGE" | "BREAKOUT";
 
