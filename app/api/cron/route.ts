@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateSetups, STRATEGY_VERSION } from "@/lib/strategy-v6";
-import { enqueueAlert } from "@/lib/telegram-worker";
+import { enqueueAlert, flushAlertQueue } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
 import { fetchCandles } from "@/lib/kraken";
 import { getSnapshot, setSnapshot } from "@/lib/runtime-snapshot";
@@ -355,6 +355,11 @@ export async function GET(req: NextRequest) {
 
     const totalMs = Date.now() - cronStart;
     console.log(`[CRON] Complete in ${totalMs}ms - execution: ${executionResult.timeMs}ms, queued ${setups.length} alerts`);
+    
+    // CRITICAL FIX v8.3.0 #1: Flush alert queue BEFORE returning response
+    // Ensures all Telegram notifications are sent before cron exit
+    console.log(`[CRON] Flushing ${setups.length} alerts before response...`);
+    await flushAlertQueue();
     
     // STATE DRIFT DETECTION: Verify no mutations occurred
     for (let i = 0; i < executionCards.length; i++) {
