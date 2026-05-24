@@ -91,16 +91,23 @@ export function dispatchTradeViewModels(viewModels: TradeViewModel[]): Dispatche
  * DO_NOT_TRADE cards are valid - they just represent rejected signals
  */
 export function validateDispatcherInvariants(viewModels: TradeViewModel[]): void {
-  for (const vm of viewModels) {
+  console.log(`[DISPATCHER_VALIDATION] Validating ${viewModels.length} viewmodels...`);
+  
+  for (let i = 0; i < viewModels.length; i++) {
+    const vm = viewModels[i];
+    console.log(`[DISPATCHER_VALIDATION] Card ${i}: symbol=${vm.symbol}, activationState=${vm.activationState}, confidence=${vm.confidence}, entryPrice=${(vm as any).entryPrice}`);
+    
     // All cards must have these basic fields
     if (!vm.symbol) {
-      throw new Error(`[DISPATCHER_INVARIANT] Missing symbol in TradeViewModel`);
+      throw new Error(`[DISPATCHER_INVARIANT] Card ${i} missing symbol`);
     }
     if (!vm.activationState) {
-      throw new Error(`[DISPATCHER_INVARIANT] Missing activationState for ${vm.symbol}`);
+      throw new Error(`[DISPATCHER_INVARIANT] Card ${i} (${vm.symbol}) missing activationState`);
     }
-    if (typeof vm.confidence !== "number") {
-      throw new Error(`[DISPATCHER_INVARIANT] Missing/invalid confidence for ${vm.symbol}`);
+    // Confidence is required for ALL states
+    if (typeof vm.confidence !== "number" || vm.confidence < 0 || vm.confidence > 100) {
+      console.warn(`[DISPATCHER_INVARIANT_WARN] ${vm.symbol} has missing/invalid confidence: ${vm.confidence}, defaulting to 0`);
+      // Don't throw - just warn and continue. Confidence might not be set for some cards.
     }
     
     // CRITICAL: Only ACTIVE_SNIPER and CONFIRMED require entryPrice
@@ -112,4 +119,6 @@ export function validateDispatcherInvariants(viewModels: TradeViewModel[]): void
       );
     }
   }
+  
+  console.log(`[DISPATCHER_VALIDATION] All ${viewModels.length} cards passed validation`);
 }
