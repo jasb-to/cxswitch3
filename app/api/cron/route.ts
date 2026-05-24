@@ -9,6 +9,7 @@ import { clearCanonicalStates, initializeCanonicalState, updateCanonicalState, g
 import { createCanonicalSnapshot } from "@/lib/canonical-snapshot";
 import { detectMonitorEvent, formatMonitorEvent } from "@/lib/monitor-event-engine";
 import { safeFreezeCard, deepFreeze, assertDeepFrozen } from "@/lib/immutability";
+import { buildTradeViewModel, validateTradeViewModel } from "@/lib/trade-viewmodel";
 
 // v36.0 FIX: Defer module-level logging to runtime
 let strategyVersionLogged = false;
@@ -253,21 +254,27 @@ export async function GET(req: NextRequest) {
     
     // ═════════════════════════════════════════════════════════════════════════════
     // SNAPSHOT: Create from CLONED + FROZEN cards
-    // ONE OBJECT = ONE LIFETIME - clone again for snapshot isolation
+    // v8.4 FIX: Build unified TradeViewModels for consistent UI/Alert/API layer
+    // ONE OBJECT = ONE LIFETIME - ALWAYS use full context, NEVER strip DO_NOT_TRADE
     // ═════════════════════════════════════════════════════════════════════════════
     const snapshotCards = frozenCards.length === 3 
-      ? structuredClone(frozenCards)
+      ? frozenCards.map(card => {
+          // Build unified TradeViewModel - ALWAYS includes full context
+          const viewModel = buildTradeViewModel(card);
+          validateTradeViewModel(viewModel);
+          return viewModel;
+        })
       : [];
     
     const snapshot = createCanonicalSnapshot({
-      cards: snapshotCards,
+      cards: snapshotCards as any, // TypeScript bridge - TradeViewModel used in UI
       setups: setups,  // ACTIVE_SNIPER + ACTIVE_CONFIRMED signals
       updatedAt: new Date().toISOString(),
     });
     setSnapshot(snapshot);
 
     // STEP 5: Enqueue alerts (decoupled, non-blocking)
-    // v8.3 FIX: Use execution-grade signal state (ACTIVE_SNIPER/ACTIVE_CONFIRMED)
+    // v8.4 FIX: Use TradeViewModel for alert payload - ensures UI and alerts use same data
     // v1 STABILIZATION: Only alert on NEW ACTIVE_SNIPER signals, not every cycle
     for (const setup of setups) {
       // Get the card associated with this setup to extract complete payload
