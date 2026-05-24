@@ -1,84 +1,78 @@
 /**
- * v43.0 COMPLETE ISOLATED ENGINE
+ * v43.1 SIMPLIFIED PRODUCTION ENGINE
  * 
- * Clean execution path only:
- * market data → structure → direction → macro → activation → canonical state → UI/Telegram
+ * ONE SIMPLE TRUTH MODEL - Early Readable Signals
  * 
- * NO legacy code reuse.
- * NO hybrid logic.
- * NO fallback qualification.
- * ONE path only.
+ * 1. DIRECTION: EMA slope + structure only
+ *    Output: LONG | SHORT | NEUTRAL
+ *    NO suppression, NO confidence rejection
+ * 
+ * 2. ACTIVATION: Momentum + 15M expansion only
+ *    Output: ACTIVE_SNIPER | BUILDING | DO_NOT_TRADE
+ *    NO 4H gating, NO macro penalty, NO alignment rejection
+ * 
+ * 3. MACRO: Visual context only
+ *    NEVER blocks signals, NEVER reduces activation
+ * 
+ * CRITICAL RULE:
+ * If direction exists AND momentum is expanding
+ * → ALWAYS show a signal (BUILDING or ACTIVE_SNIPER)
+ * 
+ * RESULT: No dead dashboards, no silent filtering bugs
  */
 
 import { SymbolCardState, StructureState } from './strategy-v6';
 
-/**
- * v43.0 CANONICAL SIGNAL STATE
- * Single immutable source of truth for ALL consumers
- */
 export type CanonicalSignalState = {
   symbol: string;
   direction: "LONG" | "SHORT" | "NEUTRAL";
   activationState: "ACTIVE_SNIPER" | "BUILDING" | "DO_NOT_TRADE";
-  baseScore: number;           // Momentum score before macro
-  macroModifier: number;        // 4H trend adjustment
-  finalScore: number;           // baseScore + macroModifier
-  structure: StructureState;
-  execution15m: string;
+  baseScore: number;
+  macroModifier: number;
+  finalScore: number;
   rejectReason: string;
 };
 
 /**
- * DIRECTION ENGINE v43.0
- * 
- * Determines market direction ONLY from structural signals.
- * NO confidence thresholds. NO gating. NO suppression.
- * 
- * Input: EMA slope, structure state, impulse direction
- * Output: LONG | SHORT | NEUTRAL
+ * SIMPLIFIED DIRECTION ENGINE
+ * EMA slope + structure only. NO confidence thresholds. NO suppression.
  */
 export function directionEngine(
   emaSlope: number | null,
   structureState: StructureState,
-  recentImpulseDirection: string | null,
   symbol: string
 ): "LONG" | "SHORT" | "NEUTRAL" {
   
-  // Primary signal: EMA acceleration (threshold-based)
+  // Primary: EMA slope (threshold-based)
   if (emaSlope !== null) {
-    if (emaSlope < -0.2) {
-      console.log(`[ENGINE_DIRECTION] ${symbol}: SHORT from EMA (slope=${emaSlope.toFixed(3)})`);
+    if (emaSlope < -0.15) {
+      console.log(`[DIRECTION] ${symbol} SHORT from EMA (slope=${emaSlope.toFixed(3)})`);
       return "SHORT";
     }
-    if (emaSlope > 0.2) {
-      console.log(`[ENGINE_DIRECTION] ${symbol}: LONG from EMA (slope=${emaSlope.toFixed(3)})`);
+    if (emaSlope > 0.15) {
+      console.log(`[DIRECTION] ${symbol} LONG from EMA (slope=${emaSlope.toFixed(3)})`);
       return "LONG";
     }
   }
   
-  // Secondary: Structure confirmation (when EMA neutral)
+  // Tiebreaker: Structure (when EMA neutral)
   if (structureState === "BREAKOUT_UP" || structureState === "RETEST_UP") {
-    console.log(`[ENGINE_DIRECTION] ${symbol}: LONG from structure (${structureState})`);
+    console.log(`[DIRECTION] ${symbol} LONG from structure (${structureState})`);
     return "LONG";
   }
   if (structureState === "BREAKOUT_DOWN" || structureState === "RETEST_DOWN") {
-    console.log(`[ENGINE_DIRECTION] ${symbol}: SHORT from structure (${structureState})`);
+    console.log(`[DIRECTION] ${symbol} SHORT from structure (${structureState})`);
     return "SHORT";
   }
   
-  // No directional structure
-  console.log(`[ENGINE_DIRECTION] ${symbol}: NEUTRAL (flat EMA, no structure)`);
+  // Neutral - no directional structure
+  console.log(`[DIRECTION] ${symbol} NEUTRAL (flat EMA, no structure)`);
   return "NEUTRAL";
 }
 
 /**
- * MACRO ENGINE v43.0
- * 
- * Modifies confidence score ONLY.
- * NEVER blocks direction. NEVER downgrades LONG/SHORT to NEUTRAL.
- * 
- * Input: direction, 4H macro trend
- * Output: modifier (-10 to +10)
+ * SIMPLIFIED MACRO ENGINE
+ * Visual context only. NEVER blocks signals. NEVER reduces activation.
  */
 export function macroEngine(
   direction: "LONG" | "SHORT" | "NEUTRAL",
@@ -86,132 +80,107 @@ export function macroEngine(
   symbol: string
 ): number {
   
-  if (direction === "NEUTRAL") {
-    return 0;  // No macro for neutral direction
+  if (direction === "NEUTRAL" || !macroTrend) {
+    return 0;
   }
   
-  // Alignment bonus
-  if (macroTrend === "BULLISH" && direction === "LONG") {
-    console.log(`[ENGINE_MACRO] ${symbol}: +5 aligned (BULLISH + LONG)`);
-    return 5;
-  }
-  if (macroTrend === "BEARISH" && direction === "SHORT") {
-    console.log(`[ENGINE_MACRO] ${symbol}: +5 aligned (BEARISH + SHORT)`);
-    return 5;
+  // Alignment bonus (visual context only)
+  if ((macroTrend === "BULLISH" && direction === "LONG") ||
+      (macroTrend === "BEARISH" && direction === "SHORT")) {
+    console.log(`[MACRO] ${symbol} ${direction} aligned with 4H ${macroTrend} (+2 context)`);
+    return 2;
   }
   
-  // Conflict penalty (NOT a blocker)
-  if (macroTrend === "BULLISH" && direction === "SHORT") {
-    console.log(`[ENGINE_MACRO] ${symbol}: -5 contra (BULLISH vs SHORT)`);
-    return -5;
-  }
-  if (macroTrend === "BEARISH" && direction === "LONG") {
-    console.log(`[ENGINE_MACRO] ${symbol}: -5 contra (BEARISH vs LONG)`);
-    return -5;
+  // Conflict noted but NEVER blocks or reduces (visual context only)
+  if ((macroTrend === "BULLISH" && direction === "SHORT") ||
+      (macroTrend === "BEARISH" && direction === "LONG")) {
+    console.log(`[MACRO] ${symbol} ${direction} vs 4H ${macroTrend} (context mismatch, signal still valid)`);
+    return 0; // NO penalty
   }
   
   return 0;
 }
 
 /**
- * ACTIVATION ENGINE v43.0
- * 
- * Determines SNIPER readiness based ONLY on momentum indicators.
- * Independent of macro alignment.
- * 
- * Input: direction, finalScore, expansion, impulse, volatility
- * Output: ACTIVE_SNIPER | BUILDING | DO_NOT_TRADE
+ * SIMPLIFIED ACTIVATION ENGINE
+ * Momentum + 15M expansion only.
+ * ALWAYS shows signal if direction exists AND expanding.
+ * NO 4H gating, NO macro penalties, NO alignment rejection.
  */
 export function activationEngine(
   direction: "LONG" | "SHORT" | "NEUTRAL",
-  finalScore: number,
-  expansionState: string | null,
-  recentImpulseStrength: number | null,
-  volatilityLevel: number | null,
-  profile: { ignitionThreshold: number },
+  baseScore: number,
+  volatilityExpansion: boolean,
+  hasExpansion: boolean,
+  impulseStrength: number,
   symbol: string
 ): "ACTIVE_SNIPER" | "BUILDING" | "DO_NOT_TRADE" {
   
-  // No direction = no trade
+  // If no direction, do not trade
   if (direction === "NEUTRAL") {
-    console.log(`[ENGINE_ACTIVATION] ${symbol}: DO_NOT_TRADE (no direction)`);
+    console.log(`[ACTIVATION] ${symbol} DO_NOT_TRADE (no direction)`);
     return "DO_NOT_TRADE";
   }
   
-  // Check expansion quality
-  const hasExpansion = expansionState === "EXPANDING" || expansionState === "BREAKOUT_READY";
-  const hasImpulse = (recentImpulseStrength ?? 0) > 40;
-  const hasVolatility = (volatilityLevel ?? 0) > 55;
+  // CRITICAL RULE: If direction exists AND momentum is expanding
+  // → ALWAYS show signal (BUILDING or ACTIVE_SNIPER)
+  const isExpanding = volatilityExpansion || hasExpansion || impulseStrength > 40;
   
-  // SNIPER: strong score + expansion activity
-  if (
-    finalScore >= profile.ignitionThreshold &&
-    (hasExpansion || hasImpulse || hasVolatility)
-  ) {
-    console.log(`[ENGINE_ACTIVATION] ${symbol}: ACTIVE_SNIPER (score=${finalScore.toFixed(1)} >= ${profile.ignitionThreshold} + expansion)`);
+  // SNIPER: strong impulse + expansion
+  if ((impulseStrength > 55 || volatilityExpansion) && isExpanding) {
+    console.log(`[ACTIVATION] ${symbol} ACTIVE_SNIPER (impulse=${impulseStrength.toFixed(0)}, expanding)`);
     return "ACTIVE_SNIPER";
   }
   
-  // BUILDING: decent score but not yet tradable
-  if (finalScore >= 25) {
-    console.log(`[ENGINE_ACTIVATION] ${symbol}: BUILDING (score=${finalScore.toFixed(1)} >= 25)`);
+  // BUILDING: direction exists, momentum present OR expanding
+  // This ensures we never hide state when movement exists
+  if (baseScore >= 20 || isExpanding) {
+    console.log(`[ACTIVATION] ${symbol} BUILDING (score=${baseScore.toFixed(0)}, expanding=${isExpanding})`);
     return "BUILDING";
   }
   
-  // Do not trade
-  console.log(`[ENGINE_ACTIVATION] ${symbol}: DO_NOT_TRADE (score=${finalScore.toFixed(1)} < 25)`);
+  // DO_NOT_TRADE: flat price, no expansion, minimal momentum
+  console.log(`[ACTIVATION] ${symbol} DO_NOT_TRADE (flat price, no expansion, score=${baseScore.toFixed(0)})`);
   return "DO_NOT_TRADE";
 }
 
 /**
- * CANONICAL STATE BUILDER v43.0
- * 
- * Single immutable creation point for ALL signal state.
- * All UI layers consume ONLY this output.
- * No secondary interpretation allowed.
+ * SIMPLIFIED CANONICAL STATE BUILDER
+ * One immutable source of truth for all presentation layers.
+ * Always returns state for all three symbols (BTC/ETH/SOL).
  */
 export function buildCanonicalState(
   symbol: string,
   card: SymbolCardState,
   baseScore: number,
-  profile: { ignitionThreshold: number },
+  profile: any,
   emaSlope: number | null,
   structureState: StructureState
 ): CanonicalSignalState {
   
-  // Step 1: Pure direction from structure (no thresholds)
-  const direction = directionEngine(emaSlope, structureState, card.recentImpulseDirection || null, symbol);
+  // Step 1: Pure direction from structure
+  const direction = directionEngine(emaSlope, structureState, symbol);
   
-  // Step 2: Macro modifier (confidence adjustment only)
+  // Step 2: Macro modifier (visual context, never blocks)
   const macroModifier = macroEngine(direction, card.htf4hTrend, symbol);
   
-  // Step 3: Compute final score
-  const finalScore = baseScore + macroModifier;
+  // Step 3: Activation (momentum-based, direction-dependent)
+  const volatilityExpansion = (card.volatilityLevel ?? 0) > 55;
+  const hasExpansion = card.execution15mState === "EXPANDING" || card.execution15mState === "BREAKOUT_READY";
+  const impulseStrength = card.recentImpulseStrength ?? 0;
   
-  // Step 4: Determine activation (momentum-based)
   const activationState = activationEngine(
     direction,
-    baseScore,  // Use baseScore for activation check (macro doesn't affect SNIPER eligibility)
-    card.execution15mState,
-    card.recentImpulseStrength,
-    card.volatilityLevel,
-    profile,
+    baseScore,
+    volatilityExpansion,
+    hasExpansion,
+    impulseStrength,
     symbol
   );
   
-  // Step 5: Generate rejection reason
-  let rejectReason = "";
-  if (activationState === "DO_NOT_TRADE") {
-    if (direction === "NEUTRAL") {
-      rejectReason = "no_directional_structure";
-    } else if (baseScore < 25) {
-      rejectReason = `insufficient_momentum_${baseScore.toFixed(0)}`;
-    } else {
-      rejectReason = "no_expansion_activity";
-    }
-  }
+  // Step 4: Build canonical state (always returned, never hidden)
+  const finalScore = baseScore + macroModifier;
   
-  // Step 6: Build immutable state
   const state: CanonicalSignalState = {
     symbol,
     direction,
@@ -219,21 +188,20 @@ export function buildCanonicalState(
     baseScore,
     macroModifier,
     finalScore,
-    structure: structureState,
-    execution15m: card.execution15mState || "UNKNOWN",
-    rejectReason,
+    rejectReason: activationState === "DO_NOT_TRADE" ? "flat_price_no_expansion" : "",
   };
   
-  console.log(`[ENGINE_CANONICAL] ${symbol}: ${direction} + macro=${macroModifier > 0 ? "+" : ""}${macroModifier} → ${activationState}`);
+  console.log(`[CANONICAL] ${symbol}: ${direction} → ${activationState} (macro=${macroModifier > 0 ? "+" : ""}${macroModifier})`);
   return state;
 }
 
 /**
- * v43.0 ENGINE INITIALIZATION
- * Validates that this is the only active engine
+ * ENGINE INITIALIZATION - Confirms simplified mode active
  */
-export function initializeV43Engine() {
-  console.log("[ENGINE_V43] ✓ Isolated canonical engine initialized");
-  console.log("[ENGINE_V43] ✓ Legacy code bypassed");
-  console.log("[ENGINE_V43] ✓ Single execution path active");
+export function initializeV43Engine(): void {
+  console.log("[ENGINE_V43.1] ✓ Simplified production-stable engine initialized");
+  console.log("[ENGINE_V43.1] ✓ Early readable signals mode ACTIVE");
+  console.log("[ENGINE_V43.1] ✓ NO signal dropping | NO gating | NO suppression");
+  console.log("[ENGINE_V43.1] ✓ Always display: BTC state, ETH state, SOL state");
 }
+
