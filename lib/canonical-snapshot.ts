@@ -20,6 +20,7 @@ export type SnapshotCard = Required<{
   direction: "LONG" | "SHORT" | "NEUTRAL";
   signalState: "ACTIVE_SNIPER" | "CONFIRMED" | "DO_NOT_TRADE" | "SNIPER_READY" | "CONFIRMED_READY" | "WATCH_BREAKOUT" | "NONE";
   activationState: "ACTIVE_SNIPER" | "CONFIRMED" | "DO_NOT_TRADE"; // Frontend contract
+  structureState: "UPTREND" | "DOWNTREND" | "RANGE" | "BREAKOUT"; // CRITICAL: Must be in DTO contract
   confidence: number;
   structure: string;
   execution15m: string;
@@ -60,7 +61,8 @@ function normalizeCardToDTO(card: any): SnapshotCard {
   console.log("[SNAPSHOT_CARD_NORMALIZATION]", {
     symbol: card.symbol,
     signalState: card.signalState,
-    activationState: card.activationState, // This will show undefined if missing
+    activationState: card.activationState,
+    structureState: card.structureState, // CRITICAL: Verify structureState is present
   });
 
   // STEP 2: HARD GUARD - throw if activationState missing
@@ -82,6 +84,7 @@ function normalizeCardToDTO(card: any): SnapshotCard {
     direction: card.direction || "NEUTRAL",
     signalState: card.signalState || "NONE",
     activationState: card.activationState, // Already validated above
+    structureState: card.structureState ?? "RANGE", // CRITICAL FIX: Include in DTO, default to RANGE
     confidence: card.confidence || 0,
     structure: card.structure || "UNKNOWN",
     execution15m: card.execution15m || "CHOP",
