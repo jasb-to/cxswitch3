@@ -1,54 +1,36 @@
 import { NextResponse } from "next/server";
 import { getSnapshot } from "@/lib/runtime-snapshot";
-import { buildTradeViewModel, validateTradeViewModel } from "@/lib/trade-viewmodel";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 /**
- * PURE SNAPSHOT API
+ * PURE SNAPSHOT API - v8.6 CRITICAL FIX
  * 
- * Returns the live scanner snapshot with TradeViewModels.
- * TradeViewModels ensure UI and alerts use the same consistent data.
+ * Returns EXACTLY what cron produced. No recomputation.
+ * No rebuilding TradeViewModels. No fallback logic.
  * 
- * CRITICAL: All cards are full TradeViewModels, even DO_NOT_TRADE.
- * NO stripping of fields based on state.
+ * If cron wrote it, we serve it. Nothing else.
+ * This is the ONLY source of truth for the UI.
  */
 export async function GET() {
   try {
     const snapshot = getSnapshot();
     
-    // v8.4 FIX: Ensure all cards are complete TradeViewModels
-    // Validate that snapshot contains full context for all states
-    const validatedCards = snapshot.cards.map(card => {
-      // If card is already a TradeViewModel (from cron), validate it
-      if ("rejectionReason" in card && "entryPrice" in card) {
-        validateTradeViewModel(card as any);
-        return card;
-      }
-      // Otherwise build from raw card
-      const viewModel = buildTradeViewModel(card as any);
-      validateTradeViewModel(viewModel);
-      return viewModel;
+    // CRITICAL: Zero transformation. Serve cron output as-is.
+    // If UI needs different shape, that's a UI layer concern.
+    // API is a pure read-through of what cron produced.
+    
+    console.log("[SIGNALS_API] Serving snapshot", {
+      ready: snapshot.ready,
+      cardCount: snapshot.cards.length,
+      firstCard: snapshot.cards.length > 0 ? {
+        symbol: snapshot.cards[0].symbol,
+        activationState: (snapshot.cards[0] as any).activationState,
+      } : null,
     });
     
-    // DEBUG LOGGING: Verify all cards have full context
-    if (validatedCards.length > 0) {
-      console.log("[SIGNALS_API_DEBUG]", {
-        cardCount: validatedCards.length,
-        firstCard: {
-          symbol: validatedCards[0].symbol,
-          activationState: validatedCards[0].activationState,
-          structureState: validatedCards[0].structureState,
-          rejectionReason: validatedCards[0].rejectionReason,
-        },
-      });
-    }
-    
-    return NextResponse.json({
-      ...snapshot,
-      cards: validatedCards,
-    });
+    return NextResponse.json(snapshot);
   } catch (error) {
     console.error('[GET /api/signals ERROR]', error);
     return NextResponse.json(
