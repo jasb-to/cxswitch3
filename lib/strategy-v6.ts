@@ -1324,7 +1324,7 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
     
     if (card.direction === "NEUTRAL") {
       // No directional structure detected - stay BUILDING without narrative
-      card.signalState = "DO_NOT_TRADE";
+      card.signalState = "BUILDING";
       const commentary = generateWatchZoneCommentary(card);
       card.notes = commentary;
       console.log(`[BUILDING_NO_STRUCTURE] ${symbol} direction=NEUTRAL - no directional bias in structure`);
@@ -1376,11 +1376,11 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
           } else {
             // Atomic build failed - stay in BUILDING
             console.log(`[ATOMIC FAILED] ${symbol}: Incomplete payload, staying in BUILDING`);
-            card.signalState = "DO_NOT_TRADE";
+            card.signalState = "BUILDING";
           }
         } else {
           // No SNIPER conditions met - stay in BUILDING with direction
-          card.signalState = "DO_NOT_TRADE";
+          card.signalState = "BUILDING";
           const commentary = generateWatchZoneCommentary(card);
           card.notes = commentary;
           console.log(`[BUILDING] ${symbol} ${card.direction} score=${score} confidence=${directionalConfidence.toFixed(0)} - awaiting SNIPER conditions`);
@@ -1388,7 +1388,7 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
       } else {
         // Direction exists but confidence insufficient for SNIPER
         // Show direction in BUILDING state with reduced confidence narrative
-        card.signalState = "DO_NOT_TRADE";
+        card.signalState = "BUILDING";
         const commentary = generateWatchZoneCommentary(card);
         card.notes = commentary;
         console.log(`[BUILDING_LOW_CONFIDENCE] ${symbol} ${card.direction} confidence=${directionalConfidence.toFixed(0)}/${sniperConfidenceThreshold} - expansion tracking (no SNIPER yet)`);
@@ -1400,7 +1400,7 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
     // Drop to BUILDING immediately if structure no longer supports it
     if (card.signalState === "ACTIVE_SNIPER" && !isValidCurrentStructureForSniper(card)) {
       console.log(`[SNIPER_INVALIDATED] ${symbol}: Structure no longer supports ACTIVE_SNIPER → dropping to BUILDING`);
-      card.signalState = "DO_NOT_TRADE";
+      card.signalState = "BUILDING";
       card.lastSignalTime = undefined;
       // Generate watch zone commentary for new BUILDING state
       card.notes = generateWatchZoneCommentary(card);

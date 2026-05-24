@@ -17,6 +17,19 @@ export const revalidate = 0;
 export async function GET() {
   try {
     const snapshot = getSnapshot();
+    
+    // DEBUG LOGGING: STEP 5 - Verify snapshot payload before serialization
+    if (snapshot.cards.length > 0) {
+      console.log("[SIGNALS_API_DEBUG]", {
+        cardCount: snapshot.cards.length,
+        firstCard: {
+          symbol: snapshot.cards[0].symbol,
+          activationState: snapshot.cards[0].activationState,
+          signalState: (snapshot.cards[0] as any).signalState,
+        },
+      });
+    }
+    
     return NextResponse.json(snapshot);
   } catch (error) {
     console.error('[GET /api/signals ERROR]', error);
