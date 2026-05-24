@@ -1,14 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { SymbolCardState } from "@/lib/types";
+import type { CanonicalCard } from "@/lib/types";
+import { assertCanonicalCard, assertCanonicalSnapshot } from "@/lib/types";
 import { EMPTY_SNAPSHOT } from "@/lib/canonical-snapshot";
-import {
-  safePercent,
-  safeBarWidth,
-  getReadinessColorClass,
-  getReadinessBarClass,
-} from "@/lib/final-clean-state-machine";
 
 const VERSION = "vFINAL";
 const STALE_THRESHOLD_MS = 6 * 60_000;
@@ -17,40 +12,39 @@ function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-
-function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
-  // PURE PASS-THROUGH: Read ONLY from canonicalState, NO inference
-  const canonicalDirection = card.direction || "NEUTRAL";
-  const canonicalActivation = (card as any).signalState || "BUILDING";
-  const canonicalMacro = card.htf4hTrend || "NEUTRAL";
-  const canonicalConfidence = card.confidence ?? 0;
+function TradeDecisionPanel({ card }: { card: CanonicalCard }) {
+  // FAIL FAST: Validate card is canonical format
+  try {
+    assertCanonicalCard(card);
+  } catch (e) {
+    console.error("[FAIL FAST] Non-canonical card:", e);
+    return <div className="text-red-500">ERROR: Invalid card format</div>;
+  }
   
-  // DEBUG: Confirm UI matches backend exactly (TEMP - removes later)
+  // STRICT CONTRACT: Read directly from canonical card, NO fallbacks
+  const canonicalDirection = card.direction;
+  const canonicalActivation = card.activationState;
+  const canonicalMacro = card.macro;
+  const canonicalConfidence = card.confidence;
+  
+  // DEBUG: Confirm UI matches backend exactly
   console.log("[CANONICAL TRACE]", JSON.stringify({
     symbol: card.symbol,
     direction: canonicalDirection,
     activation: canonicalActivation,
     macro: canonicalMacro,
     confidence: canonicalConfidence,
-    targetPrices: card.targetPrices ? "YES" : "NO",
   }));
   
-  // Direction colors
+  // Direction colors - semantic based on canonical direction
   const directionColor = canonicalDirection === "LONG" ? "text-green-400" : canonicalDirection === "SHORT" ? "text-red-400" : "text-zinc-400";
   const directionBg = canonicalDirection === "LONG" ? "bg-green-950" : canonicalDirection === "SHORT" ? "bg-red-950" : "bg-zinc-900";
   const directionBorder = canonicalDirection === "LONG" ? "border-green-700" : canonicalDirection === "SHORT" ? "border-red-700" : "border-zinc-700";
   
-  // Activation colors
+  // Activation colors - semantic based on canonical activation
   const activationColor = canonicalActivation === "ACTIVE_SNIPER" ? "text-cyan-400" : 
-                          canonicalActivation === "SNIPER" ? "text-blue-400" : 
-                          canonicalActivation === "CONFIRMED" ? "text-green-400" :
                           canonicalActivation === "DO_NOT_TRADE" ? "text-red-400" :
                           "text-zinc-400";
-  
-  // Trade readiness from backend (canonical field)
-  const readiness = card.tradeReadinessScore ?? 0;
-  const readinessScoreColor = getReadinessColorClass(readiness);
-  const readinessBgBar = getReadinessBarClass(readiness);
   
   return (
     <div className={`rounded-lg border ${directionBorder} p-5 bg-[#0f0f0f] text-white space-y-4`}>
@@ -58,7 +52,7 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1">
           <h2 className="text-2xl font-bold tracking-tight">{card.symbol}/USD</h2>
-          <span className={`text-sm font-semibold ${directionColor}`}>{card.direction}</span>
+          <span className={`text-sm font-semibold ${directionColor}`}>{canonicalDirection}</span>
         </div>
         <div className="text-right">
           {/* ACTIVATION BADGE: Pure display of canonicalActivation */}
@@ -91,25 +85,7 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
         </span>
       </div>
 
-      {/* TRADE READINESS BAR: Only shown for BUILDING state */}
-      {canonicalActivation === "BUILDING" && (
-        <div className="border-t border-zinc-800 pt-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Trade Readiness</p>
-            <span className={`text-lg font-mono font-bold ${readinessScoreColor}`}>
-              {safePercent(readiness)}
-            </span>
-          </div>
-          <div className="w-full bg-zinc-800 rounded h-3">
-            <div 
-              className={`${readinessBgBar} h-3 rounded transition-all`} 
-              style={{ width: safeBarWidth(readiness) }} 
-            />
-          </div>
-        </div>
-      )}
-
-      {/* STATE OF PLAY: Pure print of canonicalState - NO COMMENTARY, NO FALLBACK */}
+      {/* STATE OF PLAY: Pure 1:1 print of canonicalState - NO COMMENTARY, NO FALLBACK */}
       <div className="border-t border-zinc-800 pt-3 text-xs space-y-1">
         <p className="text-zinc-600 font-semibold uppercase tracking-wider">State of Play</p>
         <div className="flex justify-between text-zinc-400">
@@ -211,7 +187,15 @@ export default function Dashboard() {
       try {
         const res = await fetch("/api/signals", { cache: "no-store" });
         const json = await res.json();
-        setSnap(json);
+        
+        // FAIL FAST: Validate snapshot is canonical format
+        try {
+          assertCanonicalSnapshot(json);
+          setSnap(json);
+        } catch (validationError) {
+          console.error("[FAIL FAST] Non-canonical snapshot received:", validationError);
+          setSnap(EMPTY_SNAPSHOT);
+        }
       } catch (error) {
         console.error("[POLL_ERROR] /api/signals:", error);
       }
@@ -234,7 +218,15 @@ export default function Dashboard() {
     try {
       const res = await fetch("/api/signals", { cache: "no-store" });
       const json = await res.json();
-      setSnap(json);
+      
+      // FAIL FAST: Validate snapshot is canonical format
+      try {
+        assertCanonicalSnapshot(json);
+        setSnap(json);
+      } catch (validationError) {
+        console.error("[FAIL FAST] Non-canonical snapshot received:", validationError);
+        setSnap(EMPTY_SNAPSHOT);
+      }
     } catch (error) {
       console.error("[REFRESH_ERROR] /api/signals:", error);
     } finally {
@@ -319,7 +311,7 @@ function DashboardLive({
   testTelegram,
 }: {
   snapshot: {
-    cards: SymbolCardState[];
+    cards: CanonicalCard[];
     setups: any[];
     signalCount: number;
     activeSnipers: number;
