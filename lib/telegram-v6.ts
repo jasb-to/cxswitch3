@@ -19,10 +19,23 @@ const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
  * STEP 1 FIX: Ensures alerts reach Telegram even with transient failures
  */
 async function safeTelegramSend(payload: any, retries = 3): Promise<boolean> {
+  // Verify credentials are configured
+  if (!BOT_TOKEN) {
+    console.error(`[TELEGRAM] TELEGRAM_BOT_TOKEN not configured - alerts cannot be sent`);
+    return false;
+  }
+  if (!CHAT_ID) {
+    console.error(`[TELEGRAM] TELEGRAM_CHAT_ID not configured - alerts cannot be sent`);
+    return false;
+  }
+
   for (let i = 0; i < retries; i++) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+      // Increased timeout from 5s to 15s for Telegram API reliability
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+      console.log(`[TELEGRAM_ATTEMPT] ${i + 1}/${retries} - sending to ${CHAT_ID}...`);
 
       const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
         method: "POST",
@@ -38,16 +51,31 @@ async function safeTelegramSend(payload: any, retries = 3): Promise<boolean> {
         return true;
       }
 
-      console.log(`[TELEGRAM_RETRY] Attempt ${i + 1} failed: HTTP ${res.status}`);
+      const statusText = res.statusText || `HTTP ${res.status}`;
+      console.log(`[TELEGRAM_RETRY] Attempt ${i + 1} failed: ${statusText}`);
+      
+      // Try to read error details from Telegram response
+      try {
+        const errorData = await res.json();
+        console.log(`[TELEGRAM_ERROR_DETAIL] ${JSON.stringify(errorData)}`);
+      } catch (_) {
+        // Ignore if can't parse response
+      }
     } catch (err) {
-      console.log(
-        `[TELEGRAM_RETRY] Attempt ${i + 1} failed: ${err instanceof Error ? err.message : String(err)}`
-      );
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.log(`[TELEGRAM_RETRY] Attempt ${i + 1} failed: ${errorMsg}`);
+      
+      // Log if it was an abort error
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.log(`[TELEGRAM_TIMEOUT] Request timed out after 15s`);
+      }
     }
 
-    // Exponential backoff: 1s, 2s, 4s
+    // Exponential backoff: 1s, 2s, 4s between retries
     if (i < retries - 1) {
-      await new Promise(r => setTimeout(r, 1000 * Math.pow(2, i)));
+      const backoffMs = 1000 * Math.pow(2, i);
+      console.log(`[TELEGRAM_BACKOFF] Waiting ${backoffMs}ms before retry...`);
+      await new Promise(r => setTimeout(r, backoffMs));
     }
   }
 
@@ -105,8 +133,8 @@ export async function canSendAlert(
  */
 export async function sendAlert(setup: any): Promise<void> {
   if (!BOT_TOKEN || !CHAT_ID) {
-    console.log(`[TELEGRAM] No credentials, skipping alert`);
-    return;
+    console.error(`[TELEGRAM] Missing credentials - BOT_TOKEN: ${!!BOT_TOKEN}, CHAT_ID: ${!!CHAT_ID}`);
+    throw new Error("Telegram credentials not configured");
   }
 
   // Format alert text with all trader-facing information
@@ -188,6 +216,8 @@ export async function sendAlert(setup: any): Promise<void> {
 
   const text = lines.join("\n");
 
+  console.log(`[TELEGRAM] Attempting to send alert for ${setup.symbol} to chat ${CHAT_ID}`);
+
   // STEP 1 FIX: Use reliable delivery wrapper instead of bare fetch
   const delivered = await safeTelegramSend({
     chat_id: CHAT_ID,
@@ -195,9 +225,11 @@ export async function sendAlert(setup: any): Promise<void> {
   });
 
   if (!delivered) {
-    console.error(`[TELEGRAM] Failed to deliver alert for ${setup.symbol}`);
+    console.error(`[TELEGRAM] Failed to deliver alert for ${setup.symbol} after all retries`);
     throw new Error("Telegram delivery failed after retries");
   }
+
+  console.log(`[TELEGRAM] Alert successfully delivered for ${setup.symbol}`);
 
   // Store alert in database for cooldown
   // STEP 2 FIX: Store dedupe_key for more granular cooldown checking
