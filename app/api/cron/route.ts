@@ -204,7 +204,6 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // ═════════════════════════════════════════════════════════════════════════════
     // STEP 4.5: HARD TYPE ENFORCEMENT - Map activationState on CLONED objects
     // CRITICAL: Mutations happen on cloned cards ONLY, never on original references
     // ═════════════════════════════════════════════════════════════════════════════
@@ -234,11 +233,19 @@ export async function GET(req: NextRequest) {
         // All other states (SNIPER_READY, CONFIRMED_READY, WATCH_BREAKOUT, DO_NOT_TRADE, NONE) → DO_NOT_TRADE
         (card as any).activationState = "DO_NOT_TRADE";
       }
+      
+      // CRITICAL: Ensure structureState is ALWAYS present BEFORE freezing
+      // Add defensive default if missing (should not happen, but guards against pipeline leaks)
+      if (!card.structureState) {
+        console.log(`[ENRICHMENT] ${card.symbol} missing structureState, setting to RANGE before freeze`);
+        (card as any).structureState = "RANGE";
+      }
     }
 
     // ═════════════════════════════════════════════════════════════════════════════
     // FREEZE MUST BE LAST STEP ONLY - after ALL mutations are complete
     // CRITICAL: Use the CLONED canonicalCards (never reuse rawCanonicalCards)
+    // NO ENRICHMENT AFTER THIS POINT
     // ═════════════════════════════════════════════════════════════════════════════
     const frozenCards = canonicalCards.map(card => deepFreeze(card));
     
@@ -280,12 +287,7 @@ export async function GET(req: NextRequest) {
         continue;
       }
       
-      // CRITICAL FIX: Ensure structureState is always present
-      // Add defensive default if missing (should not happen, but guards against pipeline leaks)
-      if (!setupCard.structureState) {
-        console.log(`[SNIPER_STRUCTURE_DEFAULT] ${setup.symbol} missing structureState, defaulting to RANGE`);
-        (setupCard as any).structureState = "RANGE";
-      }
+      // structureState is guaranteed to exist (enriched before freeze)
       
       // Compute execution-grade signal state from setup.mode
       const signalState = setup.mode === "SNIPER" ? "ACTIVE_SNIPER" : "ACTIVE_CONFIRMED";
