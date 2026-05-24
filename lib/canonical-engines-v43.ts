@@ -79,7 +79,7 @@ export function determineActivationMinimal(
   macroModifier: number,
   card: SymbolCardState,
   symbol: string
-): "ACTIVE_SNIPER" | "DO_NOT_TRADE" {
+): "ACTIVE_SNIPER" | "BUILDING" | "DO_NOT_TRADE" {
   
   if (direction === "NEUTRAL") {
     console.log(`[ACT_ENGINE] ${symbol} DO_NOT_TRADE: neutral`);
@@ -97,16 +97,21 @@ export function determineActivationMinimal(
     return "ACTIVE_SNIPER";
   }
   
-  // NO BUILDING STATE - Return DO_NOT_TRADE if not ready
-  console.log(`[ACT_ENGINE] ${symbol} DO_NOT_TRADE: score=${finalScore.toFixed(1)}`);
+  // BUILDING: decent but not ready
+  if (finalScore >= 25) {
+    console.log(`[ACT_ENGINE] ${symbol} BUILDING: score=${finalScore.toFixed(1)}`);
+    return "BUILDING";
+  }
+  
+  console.log(`[ACT_ENGINE] ${symbol} DO_NOT_TRADE: score=${finalScore.toFixed(1)} < 25`);
   return "DO_NOT_TRADE";
 }
 
-/** v43.0 CANONICAL STATE - Single immutable source (NO BUILDING STATE) */
+/** v43.0 CANONICAL STATE - Single immutable source */
 export type CanonicalSignalV43 = {
   symbol: string;
   direction: "LONG" | "SHORT" | "NEUTRAL";
-  activationState: "ACTIVE_SNIPER" | "DO_NOT_TRADE";
+  activationState: "ACTIVE_SNIPER" | "BUILDING" | "DO_NOT_TRADE";
   baseScore: number;
   macroModifier: number;
   finalScore: number;
