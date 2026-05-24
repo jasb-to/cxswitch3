@@ -134,6 +134,29 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
             </div>
           )}
 
+          {/* STATE OF PLAY: Lightweight visibility layer (NO logic, pure canonicalState readout) */}
+          <div className="border-t border-zinc-800 pt-3 text-xs space-y-1">
+            <p className="text-zinc-600 font-semibold uppercase tracking-wider">State of Play</p>
+            <div className="flex justify-between text-zinc-400">
+              <span>Direction:</span>
+              <span className={card.direction === "LONG" ? "text-green-400" : card.direction === "SHORT" ? "text-red-400" : "text-zinc-500"}>
+                {card.direction || "—"}
+              </span>
+            </div>
+            <div className="flex justify-between text-zinc-400">
+              <span>Activation:</span>
+              <span className={displayState === "ACTIVE_SNIPER" ? "text-cyan-400" : displayState === "SNIPER" ? "text-blue-400" : displayState === "CONFIRMED" ? "text-green-400" : "text-zinc-500"}>
+                {displayState}
+              </span>
+            </div>
+            <div className="flex justify-between text-zinc-400">
+              <span>Macro:</span>
+              <span className={card.htf4hTrend === "BULLISH" ? "text-green-400" : card.htf4hTrend === "BEARISH" ? "text-red-400" : "text-zinc-500"}>
+                {card.htf4hTrend || "NEUTRAL"}
+              </span>
+            </div>
+          </div>
+
           {/* DECISION BOX: Big and obvious - the main decision */}
           <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-zinc-700">
             <p className={`text-lg font-bold ${
@@ -183,6 +206,7 @@ export default function Dashboard() {
   const [tg, setTg] = useState<"idle" | "sending" | "ok" | "error">("idle");
   const [tgMsg, setTgMsg] = useState("");
   const [now, setNow] = useState(0);
+  const [isValidating, setIsValidating] = useState(false);
 
   // Clock tick (UI only, no state derivation)
   useEffect(() => {
@@ -217,6 +241,20 @@ export default function Dashboard() {
     };
   }, []);
 
+  // Manual refresh handler
+  const handleRefresh = async () => {
+    setIsValidating(true);
+    try {
+      const res = await fetch("/api/signals", { cache: "no-store" });
+      const json = await res.json();
+      setSnap(json);
+    } catch (error) {
+      console.error("[REFRESH_ERROR] /api/signals:", error);
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
   // ZERO LOGIC: Backend truth only
   // No interpretation, no derivation, no state machine
   if (!snap?.ready) {
@@ -230,8 +268,8 @@ export default function Dashboard() {
       snapshot={snap}
       now={now}
       isHydrated={true}
-      isValidating={false}
-      mutate={() => {}}
+      isValidating={isValidating}
+      mutate={handleRefresh}
       tg={tg}
       setTg={setTg}
       tgMsg={tgMsg}
