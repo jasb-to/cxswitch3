@@ -1064,25 +1064,20 @@ function getDirectionFromStructure(
     }
   }
   
-  // Step 3: CRITICAL FIX - Only accept direction if confidence sufficient
-  // Confidence threshold: 50 (prevents weak EMA alone from driving direction in RANGE)
-  const confidenceThreshold = 50;
+  // v41.1 CRITICAL FIX: Separate concerns - direction ≠ confidence ≠ activation
+  // Direction is the MARKET STATE, not a tradability gate
+  // Confidence gates SNIPER activation, NOT directional visibility
   
-  if (confidence < confidenceThreshold) {
-    console.log(`[DIRECTION_CONFIDENCE_FAIL] ${card?.symbol || "SYMBOL"}: ${tentativeDirection} rejected | confidence=${confidence.toFixed(0)}/${confidenceThreshold} (emaSlope=${emaSlope?.toFixed(3) ?? "N/A"} structure=${structureState})`);
-    return "NEUTRAL"; // Insufficient confidence - neutralize
+  // If we have tentative direction from structure/EMA, preserve it
+  // Confidence affects signal readiness, not market narrative
+  if (tentativeDirection !== "NEUTRAL") {
+    console.log(`[DIRECTION_PRESERVED] ${card?.symbol || "SYMBOL"}: ${tentativeDirection} | confidence=${confidence.toFixed(0)} (market structure active, activation pending)`);
+    return tentativeDirection; // Return market direction regardless of confidence
   }
   
-  // v40.0 FIX: RANGE with weak confidence always becomes NEUTRAL
-  // Don't preserve direction just because EMA has slight slope
-  if (structureState === "RANGE" && confidence < 70) {
-    console.log(`[RANGE_WEAK_CONFIDENCE] ${card?.symbol || "SYMBOL"}: ${tentativeDirection} neutralized in RANGE | confidence=${confidence.toFixed(0)} (needs >= 70 in RANGE)`);
-    return "NEUTRAL";
-  }
-  
-  // Direction accepted - has sufficient confidence
-  console.log(`[DIRECTION_ACCEPTED] ${card?.symbol || "SYMBOL"}: ${tentativeDirection} confirmed | confidence=${confidence.toFixed(0)}`);
-  return tentativeDirection;
+  // Only neutralize if NO directional structure exists
+  console.log(`[DIRECTION_NEUTRAL] ${card?.symbol || "SYMBOL"}: no directional structure detected | confidence=${confidence.toFixed(0)}`);
+  return "NEUTRAL";
 }
 
 /**
@@ -1278,92 +1273,93 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
     }
     console.log(`[EVENT] ${symbol} event=${outputEvent}`);
 
-
-    // v40.0 CRITICAL FIX: Validate directional confidence BEFORE SNIPER creation
-    // Prevents provisional SNIPER creation with weak directional bias
+    
+    // v41.1 FIX: Separate concerns - direction visibility vs SNIPER eligibility
+    // Direction always shows market state (LONG/SHORT/NEUTRAL)
+    // Confidence only gates SNIPER creation, not signal visibility
+    
+    // Calculate directional confidence for SNIPER gating only
     const directionalConfidence = calculateDirectionalConfidence(
       card.emaSlope ?? 0,
-      card.structureState,  // Use card's current structureState
+      card.structureState,
       card.volatilityLevel ?? 0,
       card.stochRsi ?? 0,
       card,
       card.htf4hTrend
     );
     
-    // SNIPER requires higher confidence threshold than basic direction
-    const sniperConfidenceThreshold = 60; // Require 60+ confidence for SNIPER
-    const directionConfidenceThreshold = 50; // Basic direction requires 50+ confidence
-    
-    if (directionalConfidence < directionConfidenceThreshold) {
-      // Insufficient directional confidence - cannot proceed with any signal
+    if (card.direction === "NEUTRAL") {
+      // No directional structure detected - stay BUILDING without narrative
       card.signalState = "BUILDING";
       const commentary = generateWatchZoneCommentary(card);
       card.notes = commentary;
-      console.log(`[BUILDING_WEAK_DIRECTION] ${symbol} confidence=${directionalConfidence.toFixed(0)}/${directionConfidenceThreshold} - awaiting directional confirmation`);
-    } else if (directionalConfidence < sniperConfidenceThreshold && score >= 27) {
-      // Score sufficient but directional confidence low - stay in BUILDING
-      card.signalState = "BUILDING";
-      const commentary = generateWatchZoneCommentary(card);
-      card.notes = commentary;
-      console.log(`[BUILDING_SCORE_WITHOUT_DIRECTION] ${symbol} score=${score} but confidence=${directionalConfidence.toFixed(0)}/${sniperConfidenceThreshold} - momentum ahead of structure`);
+      console.log(`[BUILDING_NO_STRUCTURE] ${symbol} direction=NEUTRAL - no directional bias in structure`);
     } else {
-      // Directional confidence sufficient - proceed with SNIPER validation
-    
-    // v29.0 FULLY DETERMINISTIC: Single comprehensive validation before ANY construction
-    // This ensures: if validation passes → signal WILL exist
-    // If validation fails → signal NEVER constructed (not even briefly)
-    
-    // Define macro conflict before validation
-    const macroConflict = (card.htf4hTrend === "BULLISH" && card.direction === "SHORT") || 
-                         (card.htf4hTrend === "BEARISH" && card.direction === "LONG");
-    
-    const canCreateSniper = validateFullSniperEligibility(
-      card,
-      score,
-      profile,
-      symbol,
-      macroConflict,
-      card.htf4hTrend
-    );
-    
-    if (canCreateSniper) {
-      // ALL GATES PASSED: Build signal DETERMINISTICALLY (no further blocking possible)
-      const atomicSignal = buildAtomicSniperSignal(card, score, symbol);
+      // Direction exists (LONG or SHORT) - show it even if confidence is low
+      // Confidence determines SNIPER eligibility, not visibility
+      const sniperConfidenceThreshold = 60;
       
-      if (atomicSignal) {
-        // Signal built successfully - emit ACTIVE_SNIPER
-        card.mode = "SNIPER";
-        card.confidence = Math.min(score, 99);
-        card.lastSignalTime = Date.now();
-        card.signalState = "ACTIVE_SNIPER";
+      if (directionalConfidence >= sniperConfidenceThreshold) {
+        // Sufficient confidence - proceed with SNIPER validation
         
-        // Populate trade targets
-        card.expectedMovePercent = atomicSignal.expectedMovePercent;
-        card.targetPrices = atomicSignal.targetPrices;
-        card.riskReward = atomicSignal.riskReward;
-        card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
+        // v29.0 FULLY DETERMINISTIC: Single comprehensive validation before ANY construction
+        // This ensures: if validation passes → signal WILL exist
+        // If validation fails → signal NEVER constructed (not even briefly)
         
-        setups.push(atomicSignal);
-        console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} directionConfidence=${directionalConfidence.toFixed(0)} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
+        // Define macro conflict before validation
+        const macroConflict = (card.htf4hTrend === "BULLISH" && card.direction === "SHORT") || 
+                             (card.htf4hTrend === "BEARISH" && card.direction === "LONG");
         
+        const canCreateSniper = validateFullSniperEligibility(
+          card,
+          score,
+          profile,
+          symbol,
+          macroConflict,
+          card.htf4hTrend
+        );
+        
+        if (canCreateSniper) {
+          // ALL GATES PASSED: Build signal DETERMINISTICALLY (no further blocking possible)
+          const atomicSignal = buildAtomicSniperSignal(card, score, symbol);
+          
+          if (atomicSignal) {
+            // Signal built successfully - emit ACTIVE_SNIPER
+            card.mode = "SNIPER";
+            card.confidence = Math.min(score, 99);
+            card.lastSignalTime = Date.now();
+            card.signalState = "ACTIVE_SNIPER";
+            
+            // Populate trade targets
+            card.expectedMovePercent = atomicSignal.expectedMovePercent;
+            card.targetPrices = atomicSignal.targetPrices;
+            card.riskReward = atomicSignal.riskReward;
+            card.tradeReadinessScore = calculateTradeReadinessScore("SNIPER", card.direction, card.htf4hTrend, card.htf1hAlignment, card.emaSlope, card.stochRsi, card.volatilityLevel);
+            
+            setups.push(atomicSignal);
+            console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} confidence=${directionalConfidence.toFixed(0)} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
+            
+          } else {
+            // Atomic build failed - stay in BUILDING
+            console.log(`[ATOMIC FAILED] ${symbol}: Incomplete payload, staying in BUILDING`);
+            card.signalState = "BUILDING";
+          }
+        } else {
+          // No SNIPER conditions met - stay in BUILDING with direction
+          card.signalState = "BUILDING";
+          const commentary = generateWatchZoneCommentary(card);
+          card.notes = commentary;
+          console.log(`[BUILDING] ${symbol} ${card.direction} score=${score} confidence=${directionalConfidence.toFixed(0)} - awaiting SNIPER conditions`);
+        }
       } else {
-        // Atomic build failed - stay in BUILDING
-        console.log(`[ATOMIC FAILED] ${symbol}: Incomplete payload, staying in BUILDING`);
+        // Direction exists but confidence insufficient for SNIPER
+        // Show direction in BUILDING state with reduced confidence narrative
         card.signalState = "BUILDING";
+        const commentary = generateWatchZoneCommentary(card);
+        card.notes = commentary;
+        console.log(`[BUILDING_LOW_CONFIDENCE] ${symbol} ${card.direction} confidence=${directionalConfidence.toFixed(0)}/${sniperConfidenceThreshold} - expansion tracking (no SNIPER yet)`);
       }
-    } else {
-      // No SNIPER conditions met - stay in BUILDING state
-      const wasBuilding = card.signalState === "BUILDING";
-      card.signalState = "BUILDING";
-      
-      // No transition - use watch zone commentary as fallback
-      const commentary = generateWatchZoneCommentary(card);
-      card.notes = commentary;
-      console.log(`[BUILDING] ${symbol} score=${score} directionConfidence=${directionalConfidence.toFixed(0)} - awaiting ignition trigger`);
     }
-    
-    } // End of directional confidence check
-
 
     // v21.7.0 SNIPER STALE STATE REVALIDATION
     // If ACTIVE_SNIPER was set in previous cycle, revalidate against current structure
