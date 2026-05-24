@@ -27,14 +27,14 @@ function getDecisionText(state: UIState): { action: string; guidance: string } {
   // No notes, no dynamic commentary, no watch zone logic
   switch (state) {
     case "ACTIVE_SNIPER":
-      return { action: "ACTIVE_SNIPER", guidance: state };
+      return { action: "ACTIVE_SNIPER", guidance: "Signal Ready" };
     case "SNIPER":
-      return { action: "SNIPER", guidance: state };
+      return { action: "SNIPER", guidance: "Entry Trigger" };
     case "CONFIRMED":
-      return { action: "CONFIRMED", guidance: state };
+      return { action: "CONFIRMED", guidance: "Active Trade" };
     case "BUILDING":
     default:
-      return { action: "BUILDING", guidance: state };
+      return { action: "BUILDING", guidance: "Awaiting Expansion" };
   }
 }
 
