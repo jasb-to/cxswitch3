@@ -224,6 +224,9 @@ export async function GET(req: NextRequest) {
         throw new Error(`[TYPE_VIOLATION] Card ${card.symbol} invalid confidence: ${card.confidence}`);
       }
       
+      // DEBUG: Log BEFORE enrichment
+      console.log(`[ENRICHMENT_BEFORE] ${card.symbol}: signalState=${card.signalState}, activationState=${(card as any).activationState}`);
+      
       // CRITICAL FIX: Map signalState to activationState on CLONED card (mutation safe)
       // Frontend expects activationState: "ACTIVE_SNIPER" | "CONFIRMED" | "DO_NOT_TRADE"
       // Map intermediate states to terminal states for serialization
@@ -235,6 +238,9 @@ export async function GET(req: NextRequest) {
         // All other states (SNIPER_READY, CONFIRMED_READY, WATCH_BREAKOUT, DO_NOT_TRADE, NONE) → DO_NOT_TRADE
         (card as any).activationState = "DO_NOT_TRADE";
       }
+      
+      // DEBUG: Log AFTER enrichment
+      console.log(`[ENRICHMENT_AFTER] ${card.symbol}: signalState=${card.signalState}, activationState=${(card as any).activationState}`);
       
       // CRITICAL: Ensure structureState is ALWAYS present BEFORE freezing
       // Add defensive default if missing (should not happen, but guards against pipeline leaks)
