@@ -280,10 +280,11 @@ export async function GET(req: NextRequest) {
         continue;
       }
       
-      // Verify structureState is populated
+      // CRITICAL FIX: Ensure structureState is always present
+      // Add defensive default if missing (should not happen, but guards against pipeline leaks)
       if (!setupCard.structureState) {
-        console.log(`[SNIPER BLOCKED] ${setup.symbol} missing structureState`);
-        continue;
+        console.log(`[SNIPER_STRUCTURE_DEFAULT] ${setup.symbol} missing structureState, defaulting to RANGE`);
+        (setupCard as any).structureState = "RANGE";
       }
       
       // Compute execution-grade signal state from setup.mode
@@ -340,7 +341,7 @@ export async function GET(req: NextRequest) {
         queued: Date.now(),
         
         // v1 STABILIZATION: Trader-facing fields for beautiful alerts
-        structureState: setupCard.structureState ?? "UNKNOWN",  // STEP 4 FIX: Force UNKNOWN if missing
+        structureState: setupCard.structureState ?? "RANGE",  // CRITICAL FIX: Match DTO default
         entryPrice: setupCard.price,
         entryZone: { min: setupCard.price - entryPriceBuffer, max: setupCard.price + entryPriceBuffer },
         riskReward: setupCard.riskReward,
