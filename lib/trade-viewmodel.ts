@@ -1,0 +1,136 @@
+/**
+ * TRADE VIEWMODEL - Single Source of Truth for UI, Alerts, API
+ * 
+ * This is the ONLY object that should be used for display, alerts, and API responses.
+ * It ALWAYS contains complete trade metadata, never strips fields based on state.
+ * 
+ * CRITICAL RULE: Even DO_NOT_TRADE must have all context fields populated.
+ */
+
+import { Card, StructureState } from "./types";
+
+export type TradeViewModel = {
+  // Identity
+  symbol: string;
+  price: number;
+  source: "kraken" | "coingecko";
+  
+  // State (never omitted)
+  direction: "LONG" | "SHORT" | "NEUTRAL";
+  signalState: string;
+  activationState: "ACTIVE_SNIPER" | "CONFIRMED" | "DO_NOT_TRADE";
+  
+  // Structure Context (ALWAYS populated, never stripped)
+  structureState: StructureState;
+  structure: string;
+  execution15m: string;
+  htf4hTrend: string;
+  
+  // Scoring & Confidence
+  confidence: number;
+  score: number;
+  
+  // Trade Details (populated if actionable, reason if not)
+  entryPrice?: number;
+  takeProfit?: number;
+  stopLoss?: number;
+  riskRewardRatio?: number;
+  
+  // Rejection Metadata (why this card is DO_NOT_TRADE)
+  rejectionReason?: string;
+  
+  // Timing
+  timestamp: string;
+  signalAge?: number;
+  
+  // Display Notes
+  notes: string;
+};
+
+/**
+ * Build unified trade viewmodel from card
+ * CRITICAL: NEVER omit fields based on state
+ * Even DO_NOT_TRADE gets full context for UI observability
+ */
+export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel {
+  // Compute rejection reason if needed
+  let rejectionReason: string | undefined;
+  
+  if (card.activationState === "DO_NOT_TRADE") {
+    if (card.direction === "NEUTRAL") {
+      rejectionReason = "Neutral direction - no directional bias";
+    } else if (card.execution15m === "CHOP") {
+      rejectionReason = "15m execution showing chop - no entry setup";
+    } else if (card.confidence < 60) {
+      rejectionReason = `Low confidence: ${card.confidence.toFixed(0)}%`;
+    } else {
+      rejectionReason = "Structure does not support execution";
+    }
+  }
+  
+  // Build complete viewmodel - NEVER skip fields
+  const viewModel: TradeViewModel = {
+    // Identity (always present)
+    symbol: card.symbol,
+    price: card.price || 0,
+    source: card.source || "kraken",
+    
+    // State (always present, even if rejected)
+    direction: card.direction,
+    signalState: card.signalState,
+    activationState: card.activationState,
+    
+    // Structure (CRITICAL: always populated)
+    structureState: card.structureState || "RANGE",
+    structure: card.structure || "UNKNOWN",
+    execution15m: card.execution15m || "CHOP",
+    htf4hTrend: card.htf4hTrend || "NEUTRAL",
+    
+    // Scoring
+    confidence: card.confidence || 0,
+    score: (card as any).score || 0,
+    
+    // Trade Details (only if actionable)
+    ...(card.activationState === "ACTIVE_SNIPER" && {
+      entryPrice: (card as any).entryPrice,
+      takeProfit: (card as any).takeProfit,
+      stopLoss: (card as any).stopLoss,
+      riskRewardRatio: (card as any).riskRewardRatio,
+    }),
+    
+    // Rejection reason (only if rejected)
+    ...(card.activationState === "DO_NOT_TRADE" && { rejectionReason }),
+    
+    // Timing
+    timestamp: new Date().toISOString(),
+    
+    // Notes for display
+    notes: card.notes || "",
+  };
+  
+  return viewModel;
+}
+
+/**
+ * Ensure viewmodel has all required fields for UI/alerts
+ * Fails fast if critical fields are missing
+ */
+export function validateTradeViewModel(vm: TradeViewModel): void {
+  const required = [
+    "symbol",
+    "direction",
+    "signalState",
+    "activationState",
+    "structureState",
+    "confidence",
+    "timestamp",
+  ];
+  
+  for (const field of required) {
+    if (!(field in vm) || vm[field as keyof TradeViewModel] === undefined) {
+      throw new Error(
+        `[VIEWMODEL_VIOLATION] Missing required field '${field}' in TradeViewModel for ${vm.symbol}`
+      );
+    }
+  }
+}
