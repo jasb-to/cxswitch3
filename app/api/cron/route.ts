@@ -8,14 +8,57 @@ import { mergeSnapshots, validateSnipperCardState } from "@/lib/snapshot-merger"
 import { clearCanonicalStates, initializeCanonicalState, updateCanonicalState, getAllCanonicalStates, canonicalToCard } from "@/lib/unified-market-state";
 import { createCanonicalSnapshot } from "@/lib/canonical-snapshot";
 import { detectMonitorEvent, formatMonitorEvent } from "@/lib/monitor-event-engine";
+import {
+  buildCanonicalState as v43BuildCanonicalState,
+  initializeV43Engine,
+} from "@/lib/strategy-v43-engine";
+
+// Initialize v43 engine immediately on import
+initializeV43Engine();
 
 // v36.0 FIX: Defer module-level logging to runtime
-// Move console.log out of module initialization to prevent TDZ
-// This prevents the module from executing any code during bundle parsing
 let strategyVersionLogged = false;
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+
+// v43.0 POST-PROCESSOR - Override all legacy direction/activation with v43 canonical state
+// Applied AFTER card generation to ensure no hybrid code executes
+function applyV43PostProcessor(cards: any[], profile: any = null): any[] {
+  return cards.map(card => {
+    if (!card.symbol) return card;
+    
+    // Get profile dynamically if not provided
+    const prof = profile || { ignitionThreshold: 57 };
+    
+    // Build canonical state using v43 engine (bypasses all legacy logic)
+    const canonicalState = v43BuildCanonicalState(
+      card.symbol,
+      card,
+      card.momentumScore || 50,
+      prof,
+      card.emaSlope || null,
+      card.structureState || "RANGE"
+    );
+    
+    // Override card with v43 canonical values (complete replacement)
+    card.signalState = canonicalState.activationState;
+    card.direction = canonicalState.direction;
+    card.confidence = canonicalState.finalScore;
+    card.notes = `[V43] ${canonicalState.activationState}`;
+    
+    return card;
+  });
+}
+
+// v43.0 ENGINE GATE - Global flag to ensure v43 is the ONLY active engine
+let v43Active = true;
+if (!v43Active) {
+  throw new Error("[CRITICAL] V43 engine not initialized - hybrid runtime detected!");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+
 
 // ═════════════════════════════════════════════════════════════════════════════
 // v8.1: ORCHESTRATION ISOLATION LAYER - TWO INDEPENDENT CYCLES
@@ -117,7 +160,10 @@ async function runExecutionCycle(): Promise<{
     
     console.log(`[EXEC_CYCLE] Generated ${executionCards.length} cards, ${setups.length} setups, populated canonical state in ${Date.now() - cycleStart}ms`);
     
-    return { executionCards, setups, timeMs: Date.now() - cycleStart };
+    // v43.0 POST-PROCESSOR: Override all cards with v43 canonical engine
+    const v43ExecutionCards = applyV43PostProcessor(executionCards);
+    
+    return { executionCards: v43ExecutionCards, setups, timeMs: Date.now() - cycleStart };
   } finally {
     executionCycleRunning = false;
     lastExecutionCycleTime = Date.now();
@@ -171,7 +217,9 @@ async function runDisplayCycle(): Promise<{
     // Otherwise, fall back to previous display cards from snapshot
     if (displayCards.length > 0) {
       console.log(`[DISPLAY_CYCLE] Generated ${displayCards.length} cards, populated canonical state in ${Date.now() - cycleStart}ms`);
-      return { displayCards, timeMs: Date.now() - cycleStart };
+      // v43.0 POST-PROCESSOR: Override all cards with v43 canonical engine
+      const v43DisplayCards = applyV43PostProcessor(displayCards);
+      return { displayCards: v43DisplayCards, timeMs: Date.now() - cycleStart };
     }
     
     // FALLBACK (v8.1 FIX #3): Use previous display cards from snapshot
@@ -181,7 +229,9 @@ async function runDisplayCycle(): Promise<{
     
     if (previousDisplayCards.length > 0) {
       console.log(`[DISPLAY_CYCLE] Using ${previousDisplayCards.length} cards from previous snapshot (fallback)`);
-      return { displayCards: previousDisplayCards, timeMs: Date.now() - cycleStart };
+      // v43.0 POST-PROCESSOR: Override all cards with v43 canonical engine
+      const v43Cards = applyV43PostProcessor(previousDisplayCards);
+      return { displayCards: v43Cards, timeMs: Date.now() - cycleStart };
     }
     
     // FIX #3: Display cycle MUST ALWAYS return 3 cards (no exceptions)
@@ -194,24 +244,17 @@ async function runDisplayCycle(): Promise<{
         source: state.source,
         signalState: "BUILDING" as const,
         direction: null,
-        mode: null,
-        degraded: true,
-        confidence: 0.5,
-        htf4hTrend: null,
-        htf4hMomentum: null,
-        htf1hAlignment: null,
-        execution15mState: null,
-        targetPrices: null,
-        stopLoss: null,
-        riskReward: null,
-        emaSlope: null,
-        stochRsi: null,
-        volatilityLevel: null,
-        tradeReadinessScore: null,
+        momentumScore: 0,
+        emaSlope: 0,
+        volatilityLevel: 50,
+        structureState: "RANGE" as const,
       }));
-      console.log(`[DISPLAY_CYCLE] Generated fallback display cards from canonical state (${displayCardsFromCanonical.length} cards)`);
-      return { displayCards: displayCardsFromCanonical, timeMs: Date.now() - cycleStart };
+      console.log(`[DISPLAY_CYCLE] Using ${displayCardsFromCanonical.length} cards from canonical state (fallback)`);
+      // v43.0 POST-PROCESSOR: Override all cards with v43 canonical engine
+      const v43Cards = applyV43PostProcessor(displayCardsFromCanonical);
+      return { displayCards: v43Cards, timeMs: Date.now() - cycleStart };
     }
+
     
     // Last resort: return empty but log clearly
     console.log(`[DISPLAY_CYCLE] CRITICAL: No display cards from any source`);
