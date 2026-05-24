@@ -1185,9 +1185,43 @@ export type SymbolCardState = {
   lastBearishCycle?: number;
   trendMemory?: "BULLISH" | "BEARISH";
 
+  // v42.0 CANONICAL QUALIFICATION STATE - Single source of truth
+  qualification?: QualificationState;
+
   cycleId: string;  // Unique identifier for this signal cycle
   notes: string;
   updatedAt: string;
+};
+
+/**
+ * v42.0 CANONICAL QUALIFICATION STATE
+ * Single source of truth for all qualification logic
+ * All presentation layers (UI, Telegram, dashboard) consume THIS object ONLY
+ * No independent interpretation allowed
+ */
+export type QualificationState = {
+  // Core metrics
+  baseScore: number;              // Raw momentum score
+  macroModifier: number;          // 4H trend alignment modifier (-20 to +20)
+  expansionModifier: number;      // Expansion state modifier
+  rangePenalty: number;           // RANGE state penalty
+  confidenceScore: number;        // Directional confidence (0-100)
+  
+  // Composite scores
+  momentumScore: number;          // After all modifiers
+  qualificationScore: number;     // Final score for comparison
+  threshold: number;              // Profile-specific SNIPER threshold
+  
+  // Qualification status
+  isQualified: boolean;           // Above threshold?
+  rejectReason: string;           // Why rejected, if applicable
+  
+  // Breakdown for observability
+  stochRsiContribution: number;
+  emaContribution: number;
+  volatilityContribution: number;
+  impulseContribution: number;
+  trendContribution: number;
 };
 
 export type Setup = {
@@ -1669,6 +1703,102 @@ function calculateMomentumScore(card: SymbolCardState, symbol: string = "SOL", p
   }
 
   return Math.min(score, 99); // Cap at 99
+}
+
+/**
+ * v42.0 CANONICAL QUALIFICATION CALCULATOR
+ * Single source of truth for all SNIPER qualification logic
+ * All presentation layers consume this exclusively - no independent gates
+ */
+function calculateCanonicalQualification(
+  card: SymbolCardState,
+  momentumScore: number,
+  symbol: string,
+  profile: ExecutionProfile
+): QualificationState {
+  const qualification: QualificationState = {
+    baseScore: momentumScore,
+    macroModifier: 0,
+    expansionModifier: 0,
+    rangePenalty: 0,
+    confidenceScore: card.confidence || 0,
+    momentumScore: momentumScore,
+    qualificationScore: momentumScore,
+    threshold: profile.ignitionThreshold,
+    isQualified: false,
+    rejectReason: "",
+    stochRsiContribution: 0,
+    emaContribution: 0,
+    volatilityContribution: 0,
+    impulseContribution: 0,
+    trendContribution: 0,
+  };
+
+  // Calculate individual contributions (for observability)
+  if ((card.stochRsi ?? 50) > 20 && (card.stochRsi ?? 50) < 80) {
+    qualification.stochRsiContribution = momentumScore * (profile.stochWeight / 10);
+  }
+  if (card.emaSlope && Math.abs(card.emaSlope) > 0.5) {
+    qualification.emaContribution = momentumScore * (profile.emaWeight / 10);
+  }
+  if ((card.volatilityLevel ?? 50) < 30) {
+    qualification.volatilityContribution = momentumScore * (profile.volatilityWeight / 10);
+  }
+  if (card.direction !== "NEUTRAL") {
+    qualification.impulseContribution = momentumScore * (profile.impulseWeight / 10);
+  }
+  if (card.htf4hTrend === card.direction) {
+    qualification.trendContribution = momentumScore * (profile.trendWeight / 10);
+  }
+
+  // Apply modifiers
+  let adjustedScore = momentumScore;
+
+  // Macro modifier: 4H trend alignment
+  if (card.htf4hTrend === "BULLISH" && card.direction === "LONG") {
+    qualification.macroModifier = +10;
+  } else if (card.htf4hTrend === "BEARISH" && card.direction === "SHORT") {
+    qualification.macroModifier = +10;
+  } else if (card.htf4hTrend !== "NEUTRAL" && card.direction !== "NEUTRAL") {
+    qualification.macroModifier = -20; // Contra-trend penalty
+  }
+  adjustedScore += qualification.macroModifier;
+
+  // Expansion modifier: BREAKOUT_READY/EXPANDING adds context
+  if (card.execution15mState === "BREAKOUT_READY") {
+    qualification.expansionModifier = +8;
+    adjustedScore += qualification.expansionModifier;
+  } else if (card.execution15mState === "EXPANDING") {
+    qualification.expansionModifier = +5;
+    adjustedScore += qualification.expansionModifier;
+  }
+
+  // RANGE penalty: In RANGE with low impulse
+  if (card.structureState === "RANGE" && (card.recentImpulseStrength ?? 0) < 40) {
+    qualification.rangePenalty = -15;
+    adjustedScore += qualification.rangePenalty;
+  }
+
+  qualification.qualificationScore = adjustedScore;
+  qualification.momentumScore = adjustedScore;
+
+  // Determine qualification status
+  const confidenceThreshold = 60; // SNIPER confidence gate (separate from direction)
+  
+  if (adjustedScore >= qualification.threshold && qualification.confidenceScore >= confidenceThreshold) {
+    qualification.isQualified = true;
+    qualification.rejectReason = "";
+  } else {
+    qualification.isQualified = false;
+    
+    if (adjustedScore < qualification.threshold) {
+      qualification.rejectReason = `score=${adjustedScore.toFixed(1)} < threshold=${qualification.threshold}`;
+    } else if (qualification.confidenceScore < confidenceThreshold) {
+      qualification.rejectReason = `confidence=${qualification.confidenceScore.toFixed(0)}/${confidenceThreshold}`;
+    }
+  }
+
+  return qualification;
 }
 
 /**
@@ -2624,6 +2754,11 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
   // Score must use the FINAL locked direction, not pre-mutation state
   // This ensures direction → final state → scoring, NOT scoring → direction
   card.momentumScore = calculateMomentumScore(card, symbol);
+
+  // v42.0 CANONICAL QUALIFICATION - Single source of truth
+  // All presentation layers consume this object exclusively
+  const profile = getExecutionProfile(symbol);
+  card.qualification = calculateCanonicalQualification(card, card.momentumScore, symbol, profile);
 
   return card;
 
