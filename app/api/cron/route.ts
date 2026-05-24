@@ -367,11 +367,9 @@ export async function GET(req: NextRequest) {
       // Get the card associated with this setup to extract complete payload
       const setupCard = executionCards.find(c => c.symbol === setup.symbol);
       
-      // HOTFIX: Enforce payload completeness BEFORE enqueueing
-      // Execution layer guarantees completeness, alert layer only delivers
-      if (!setupCard || !setupCard.targetPrices || !setupCard.targetPrices.tp1) {
-        console.log(`[SNIPER BLOCKED] ${setup.symbol} incomplete payload - holding for next cycle (tp1=${setupCard?.targetPrices?.tp1})`);
-        continue; // Skip alert if payload incomplete
+      if (!setupCard) {
+        console.log(`[SNIPER BLOCKED] ${setup.symbol} no execution card found`);
+        continue;
       }
       
       // Verify structureState is populated
@@ -428,7 +426,7 @@ export async function GET(req: NextRequest) {
         source: "kraken",  // Execution pipeline always uses Kraken
         signalState: signalState,  // Use execution-grade state, not display state
         signalTransitionId: signalTransitionId,  // STEP 2 FIX: For granular dedupe
-        targetPrices: setupCard.targetPrices,  // Now guaranteed to exist
+        targetPrices: setupCard.targetPrices,  // Optional - may not be calculated yet
         htf4hTrend: htf4hTrend,  // STEP 4 FIX: Normalized with fallback
         execution15mState: execution15mState,  // STEP 4 FIX: Normalized with fallback
         queued: Date.now(),

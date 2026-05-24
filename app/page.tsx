@@ -4,14 +4,10 @@ import { useEffect, useState } from "react";
 import type { SymbolCardState } from "@/lib/types";
 import { EMPTY_SNAPSHOT } from "@/lib/canonical-snapshot";
 import {
-  resolveDisplayState,
-  getFinalState,
   safePercent,
   safeBarWidth,
   getReadinessColorClass,
   getReadinessBarClass,
-  getStateColorClass,
-  type UIState,
 } from "@/lib/final-clean-state-machine";
 
 const VERSION = "vFINAL";
@@ -22,49 +18,38 @@ function fmt(n: number) {
 }
 
 
-function getDecisionText(state: UIState): { action: string; guidance: string } {
-  // PURE STATE MAPPING - NO INTERPRETATION
-  // No notes, no dynamic commentary, no watch zone logic
-  switch (state) {
-    case "ACTIVE_SNIPER":
-      return { action: "ACTIVE_SNIPER", guidance: "Signal Ready" };
-    case "SNIPER":
-      return { action: "SNIPER", guidance: "Entry Trigger" };
-    case "CONFIRMED":
-      return { action: "CONFIRMED", guidance: "Active Trade" };
-    case "BUILDING":
-    default:
-      return { action: "BUILDING", guidance: "Awaiting Expansion" };
-  }
-}
-
 function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
-  // SINGLE canonical state — resolveDisplayState is the ONLY state source
-  const displayState: UIState = resolveDisplayState(card);
-  const uiState = displayState; // alias for getDecisionText compat
+  // PURE PASS-THROUGH: Read ONLY from canonicalState, NO inference
+  const canonicalDirection = card.direction || "NEUTRAL";
+  const canonicalActivation = (card as any).signalState || "BUILDING";
+  const canonicalMacro = card.htf4hTrend || "NEUTRAL";
+  const canonicalConfidence = card.confidence ?? 0;
   
-  // Get backend signal state for ACTIVE_SNIPER hard override
-  const signalState = (card as any).signalState as string | undefined;
+  // DEBUG: Confirm UI matches backend exactly
+  console.log("[v0] CANONICAL_STATE:", {
+    direction: canonicalDirection,
+    activation: canonicalActivation,
+    macro: canonicalMacro,
+    confidence: canonicalConfidence,
+  });
+  
+  // Direction colors
+  const directionColor = canonicalDirection === "LONG" ? "text-green-400" : canonicalDirection === "SHORT" ? "text-red-400" : "text-zinc-400";
+  const directionBg = canonicalDirection === "LONG" ? "bg-green-950" : canonicalDirection === "SHORT" ? "bg-red-950" : "bg-zinc-900";
+  const directionBorder = canonicalDirection === "LONG" ? "border-green-700" : canonicalDirection === "SHORT" ? "border-red-700" : "border-zinc-700";
+  
+  // Activation colors
+  const activationColor = canonicalActivation === "ACTIVE_SNIPER" ? "text-cyan-400" : 
+                          canonicalActivation === "SNIPER" ? "text-blue-400" : 
+                          canonicalActivation === "CONFIRMED" ? "text-green-400" :
+                          canonicalActivation === "DO_NOT_TRADE" ? "text-red-400" :
+                          "text-zinc-400";
   
   // Trade readiness from backend (canonical field)
   const readiness = card.tradeReadinessScore ?? 0;
-  
-  // Direction colors
-  const directionColor = card.direction === "LONG" ? "text-green-400" : card.direction === "SHORT" ? "text-red-400" : "text-zinc-400";
-  const directionBg = card.direction === "LONG" ? "bg-green-950" : card.direction === "SHORT" ? "bg-red-950" : "bg-zinc-900";
-  const directionBorder = card.direction === "LONG" ? "border-green-700" : card.direction === "SHORT" ? "border-red-700" : "border-zinc-700";
-  
-  // Trade readiness styling - use normalized readiness value
   const readinessScoreColor = getReadinessColorClass(readiness);
   const readinessBgBar = getReadinessBarClass(readiness);
   
-  // Decision text derives ONLY from display state
-  const { action, guidance } = getDecisionText(uiState);
-  
-  // v34.0 UI DISCIPLINE: No directional advisory based on macro
-  // Macro is displayed separately as confidence context, never as directional suggestion
-  // Removed: directionAdvisory with "consider LONG" / "consider SHORT"
-
   return (
     <div className={`rounded-lg border ${directionBorder} p-5 bg-[#0f0f0f] text-white space-y-4`}>
       {/* HEADER: Symbol, Status, Direction, Price */}
@@ -104,109 +89,82 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
         </span>
       </div>
 
-      {/* HARD OVERRIDE FOR ACTIVE_SNIPER: Never render readiness, never render "DO NOT TRADE" */}
-      {signalState === "ACTIVE_SNIPER" ? (
-        <>
-          {/* For ACTIVE_SNIPER: Skip readiness bar entirely, render decision box with real trade commentary */}
-          <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-cyan-700">
-            <p className="text-lg font-bold text-amber-400">{action}</p>
-            <p className="text-sm text-zinc-400 mt-1">{guidance}</p>
+      {/* TRADE READINESS BAR: Only shown for BUILDING state */}
+      {canonicalActivation === "BUILDING" && (
+        <div className="border-t border-zinc-800 pt-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Trade Readiness</p>
+            <span className={`text-lg font-mono font-bold ${readinessScoreColor}`}>
+              {safePercent(readiness)}
+            </span>
           </div>
-        </>
-      ) : (
-        <>
-          {/* TRADE READINESS BAR: ONLY FOR BUILDING STATE
-               For CONFIRMED: readiness is irrelevant, signal state is truth */}
-          {displayState === "BUILDING" && (
-            <div className="border-t border-zinc-800 pt-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Trade Readiness</p>
-                <span className={`text-lg font-mono font-bold ${readinessScoreColor}`}>
-                  {safePercent(readiness)}
-                </span>
-              </div>
-              <div className="w-full bg-zinc-800 rounded h-3">
-                <div 
-                  className={`${readinessBgBar} h-3 rounded transition-all`} 
-                  style={{ width: safeBarWidth(readiness) }} 
-                />
-              </div>
-            </div>
-          )}
-
-          {/* STATE OF PLAY: Lightweight visibility layer (NO logic, pure canonicalState readout) */}
-          <div className="border-t border-zinc-800 pt-3 text-xs space-y-1">
-            <p className="text-zinc-600 font-semibold uppercase tracking-wider">State of Play</p>
-            <div className="flex justify-between text-zinc-400">
-              <span>Direction:</span>
-              <span className={card.direction === "LONG" ? "text-green-400" : card.direction === "SHORT" ? "text-red-400" : "text-zinc-500"}>
-                {card.direction || "—"}
-              </span>
-            </div>
-            <div className="flex justify-between text-zinc-400">
-              <span>Activation:</span>
-              <span className={
-                (card as any).signalState === "ACTIVE_SNIPER" ? "text-cyan-400" : 
-                (card as any).signalState === "SNIPER" ? "text-blue-400" : 
-                (card as any).signalState === "CONFIRMED" ? "text-green-400" : 
-                (card as any).signalState === "DO_NOT_TRADE" ? "text-red-400" :
-                "text-zinc-500"
-              }>
-                {(card as any).signalState || displayState}
-              </span>
-            </div>
-            <div className="flex justify-between text-zinc-400">
-              <span>Macro:</span>
-              <span className={card.htf4hTrend === "BULLISH" ? "text-green-400" : card.htf4hTrend === "BEARISH" ? "text-red-400" : "text-zinc-500"}>
-                {card.htf4hTrend || "NEUTRAL"}
-              </span>
-            </div>
+          <div className="w-full bg-zinc-800 rounded h-3">
+            <div 
+              className={`${readinessBgBar} h-3 rounded transition-all`} 
+              style={{ width: safeBarWidth(readiness) }} 
+            />
           </div>
-
-          {/* CONFIDENCE SCORE: Signal quality indicator */}
-          {card.confidence !== null && card.confidence !== undefined && (
-            <div className="border-t border-zinc-800 pt-3">
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Signal Quality</p>
-                <span className={`text-sm font-mono font-bold ${
-                  card.confidence >= 75 ? "text-green-400" :
-                  card.confidence >= 50 ? "text-yellow-400" :
-                  card.confidence >= 25 ? "text-amber-400" :
-                  "text-red-400"
-                }`}>
-                  {Math.round(card.confidence)}%
-                </span>
-              </div>
-              <div className="w-full bg-zinc-800 rounded h-2">
-                <div 
-                  className={`${
-                    card.confidence >= 75 ? "bg-green-500" :
-                    card.confidence >= 50 ? "bg-yellow-500" :
-                    card.confidence >= 25 ? "bg-amber-500" :
-                    "bg-red-500"
-                  } h-2 rounded transition-all`} 
-                  style={{ width: `${Math.min(100, Math.max(0, card.confidence))}%` }} 
-                />
-              </div>
-            </div>
-          )}
-
-          {/* DECISION BOX: Big and obvious - the main decision */}
-          <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-zinc-700">
-            <p className={`text-lg font-bold ${
-              action === "DO NOT TRADE" ? "text-red-400" :
-              action === "WATCH ZONE" ? "text-amber-400" :
-              "text-green-400"
-            }`}>
-              {action}
-            </p>
-            <p className="text-sm text-zinc-400 mt-1">{guidance}</p>
-          </div>
-        </>
+        </div>
       )}
 
-      {/* ENTRY DATA: Only if SNIPER, ACTIVE_SNIPER, or CONFIRMED */}
-      {(uiState === "SNIPER" || uiState === "ACTIVE_SNIPER" || uiState === "CONFIRMED") && card.targetPrices && (
+      {/* STATE OF PLAY: Pure print of canonicalState - NO COMMENTARY, NO FALLBACK */}
+      <div className="border-t border-zinc-800 pt-3 text-xs space-y-1">
+        <p className="text-zinc-600 font-semibold uppercase tracking-wider">State of Play</p>
+        <div className="flex justify-between text-zinc-400">
+          <span>Direction:</span>
+          <span className={canonicalDirection === "LONG" ? "text-green-400" : canonicalDirection === "SHORT" ? "text-red-400" : "text-zinc-500"}>
+            {canonicalDirection}
+          </span>
+        </div>
+        <div className="flex justify-between text-zinc-400">
+          <span>Activation:</span>
+          <span className={activationColor}>
+            {canonicalActivation}
+          </span>
+        </div>
+        <div className="flex justify-between text-zinc-400">
+          <span>Macro:</span>
+          <span className={canonicalMacro === "BULLISH" ? "text-green-400" : canonicalMacro === "BEARISH" ? "text-red-400" : "text-zinc-500"}>
+            {canonicalMacro}
+          </span>
+        </div>
+      </div>
+
+      {/* CONFIDENCE SCORE: Signal quality indicator */}
+      <div className="border-t border-zinc-800 pt-3">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">Signal Quality</p>
+          <span className={`text-sm font-mono font-bold ${
+            canonicalConfidence >= 75 ? "text-green-400" :
+            canonicalConfidence >= 50 ? "text-yellow-400" :
+            canonicalConfidence >= 25 ? "text-amber-400" :
+            "text-red-400"
+          }`}>
+            {Math.round(canonicalConfidence)}%
+          </span>
+        </div>
+        <div className="w-full bg-zinc-800 rounded h-2">
+          <div 
+            className={`${
+              canonicalConfidence >= 75 ? "bg-green-500" :
+              canonicalConfidence >= 50 ? "bg-yellow-500" :
+              canonicalConfidence >= 25 ? "bg-amber-500" :
+              "bg-red-500"
+            } h-2 rounded transition-all`} 
+            style={{ width: `${Math.min(100, Math.max(0, canonicalConfidence))}%` }} 
+          />
+        </div>
+      </div>
+
+      {/* ACTIVATION STATE: Pure display - no inference, no fallback commentary */}
+      <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-zinc-700">
+        <p className={`text-lg font-bold ${activationColor}`}>
+          {canonicalActivation}
+        </p>
+      </div>
+
+      {/* ENTRY DATA: Only if targetPrices exists */}
+      {card.targetPrices && (
         <div className="border-t border-zinc-800 pt-3 text-sm font-mono space-y-1">
           <div className="flex justify-between"><span className="text-zinc-400">Entry:</span> <span className="text-cyan-400">${fmt(card.price)}</span></div>
           <div className="flex justify-between"><span className="text-zinc-400">TP1:</span> <span className="text-green-400">${fmt(card.targetPrices.tp1)}</span></div>
