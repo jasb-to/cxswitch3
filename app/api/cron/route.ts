@@ -8,6 +8,7 @@ import { mergeSnapshots, validateSnipperCardState } from "@/lib/snapshot-merger"
 import { clearCanonicalStates, initializeCanonicalState, updateCanonicalState, getAllCanonicalStates, canonicalToCard } from "@/lib/unified-market-state";
 import { createCanonicalSnapshot } from "@/lib/canonical-snapshot";
 import { detectMonitorEvent, formatMonitorEvent } from "@/lib/monitor-event-engine";
+import { safeFreezeCard, deepFreeze, assertDeepFrozen } from "@/lib/immutability";
 
 // v36.0 FIX: Defer module-level logging to runtime
 let strategyVersionLogged = false;
@@ -97,13 +98,13 @@ async function runExecutionCycle(): Promise<{
       }
     }
     
-    // FREEZE CARDS: Make immutable after generation
-    // No mutations allowed after this point
-    executionCards.forEach(card => Object.freeze(card));
+    // FREEZE CARDS: Make immutable after generation with deep cloning
+    // Clone to prevent shared references, then deep freeze to prevent mutations
+    const frozenCards = executionCards.map(card => safeFreezeCard(card));
     
-    console.log(`[EXEC_CYCLE] Generated ${executionCards.length} cards (FROZEN), ${setups.length} setups, populated canonical state in ${Date.now() - cycleStart}ms`);
+    console.log(`[EXEC_CYCLE] Generated ${frozenCards.length} cards (DEEP FROZEN), ${setups.length} setups, populated canonical state in ${Date.now() - cycleStart}ms`);
     
-    return { executionCards, setups, timeMs: Date.now() - cycleStart };
+    return { executionCards: frozenCards, setups, timeMs: Date.now() - cycleStart };
   } finally {
     executionCycleRunning = false;
     lastExecutionCycleTime = Date.now();
@@ -197,7 +198,7 @@ export async function GET(req: NextRequest) {
     }
 
     // ═════════════════════════════════════════════════════════════════════════════
-    // STEP 4.5: HARD TYPE ENFORCEMENT - FAIL FAST on contract violations
+    // STEP 4.5: HARD TYPE ENFORCEMENT - Map activationState BEFORE freezing
     // ═════════════════════════════════════════════════════════════════════════════
     for (const card of canonicalCards) {
       // REQUIRED FIELDS - NO UNDEFINED
@@ -214,7 +215,7 @@ export async function GET(req: NextRequest) {
         throw new Error(`[TYPE_VIOLATION] Card ${card.symbol} invalid confidence: ${card.confidence}`);
       }
       
-      // CRITICAL FIX: Map signalState to activationState for frontend contract
+      // CRITICAL FIX: Map signalState to activationState BEFORE freezing
       // Frontend expects activationState: "ACTIVE_SNIPER" | "CONFIRMED" | "DO_NOT_TRADE"
       // Map intermediate states to terminal states for serialization
       if (card.signalState === "ACTIVE_SNIPER") {
@@ -225,19 +226,28 @@ export async function GET(req: NextRequest) {
         // All other states (SNIPER_READY, CONFIRMED_READY, WATCH_BREAKOUT, DO_NOT_TRADE, NONE) → DO_NOT_TRADE
         (card as any).activationState = "DO_NOT_TRADE";
       }
-      
-      // IMMUTABILITY CHECK - Cards must be frozen
-      if (!Object.isFrozen(card)) {
-        throw new Error(`[IMMUTABILITY_VIOLATION] Card ${card.symbol} is not frozen - mutation detected`);
-      }
     }
 
+    // FREEZE CARDS: Make immutable after generation with deep cloning
+    // Clone to prevent shared references, then deep freeze to prevent mutations
+    // Do this AFTER mapping activationState to avoid frozen object mutations
+    const frozenCards = canonicalCards.map(card => safeFreezeCard(card));
+    
+    console.log(`[EXEC_CYCLE] Generated ${frozenCards.length} cards (DEEP FROZEN), ${setups.length} setups, populated canonical state in ${Date.now() - cycleStart}ms`);
+    
+    return { executionCards: frozenCards, setups, timeMs: Date.now() - cycleStart };
+
     // ATOMIC: Update snapshot with exactly 3 cards + active setups
+    // Clone cards BEFORE snapshot to prevent snapshot mutations affecting execution cards
     // Backend MUST ONLY write when canonicalCards.length === 3
     // v1 FIX: Use createCanonicalSnapshot to enforce complete contract
     // ALL fields (cards, setups, activeSignals, signalCount, activeSnipers) populated
+    const snapshotCards = canonicalCards.length === 3 
+      ? canonicalCards.map(card => safeFreezeCard(card))
+      : [];
+    
     const snapshot = createCanonicalSnapshot({
-      cards: canonicalCards.length === 3 ? canonicalCards : [],
+      cards: snapshotCards,
       setups: setups,  // ACTIVE_SNIPER + ACTIVE_CONFIRMED signals
       updatedAt: new Date().toISOString(),
     });
@@ -248,10 +258,19 @@ export async function GET(req: NextRequest) {
     // v1 STABILIZATION: Only alert on NEW ACTIVE_SNIPER signals, not every cycle
     for (const setup of setups) {
       // Get the card associated with this setup to extract complete payload
-      const setupCard = executionCards.find(c => c.symbol === setup.symbol);
+      // Use the FROZEN execution card, never modify it
+      const setupCard = frozenCards.find(c => c.symbol === setup.symbol);
       
       if (!setupCard) {
         console.log(`[SNIPER BLOCKED] ${setup.symbol} no execution card found`);
+        continue;
+      }
+      
+      // CRITICAL: Verify card is still frozen before reading
+      try {
+        assertDeepFrozen(setupCard, `${setup.symbol} execution card`);
+      } catch (err) {
+        console.error(`[MUTATION_VIOLATION] ${setup.symbol} card was mutated after freeze!`, err);
         continue;
       }
       
