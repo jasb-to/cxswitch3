@@ -1114,7 +1114,7 @@ function getDirectionLockedByStructure(
 // v9: Added structure-first direction locking
 export type SignalState = 
   | "NONE"              // No signal
-  | "BUILDING"          // Directional bias + compression, waiting for ignition
+  | "DO_NOT_TRADE"      // No viable trade setup
   | "SNIPER_READY"      // All SNIPER conditions passed, awaiting entry confirmation
   | "CONFIRMED_READY"   // All CONFIRMED conditions passed, awaiting confirmation
   | "ACTIVE_SNIPER"     // SNIPER signal active, trade window open (30 min cooldown)
@@ -1323,11 +1323,12 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
     );
     
     if (card.direction === "NEUTRAL") {
-      // No directional structure detected - stay BUILDING without narrative
-      card.signalState = "BUILDING";
-      const commentary = generateWatchZoneCommentary(card);
-      card.notes = commentary;
-      console.log(`[BUILDING_NO_STRUCTURE] ${symbol} direction=NEUTRAL - no directional bias in structure`);
+      // No directional structure detected - drop to DO_NOT_TRADE
+      card.signalState = "DO_NOT_TRADE";
+    }
+
+    if (!card.signalState) {
+      console.log(`[NO_STRUCTURE] ${symbol} direction=NEUTRAL - no directional bias in structure`);
     } else {
       // Direction exists (LONG or SHORT) - show it even if confidence is low
       // Confidence determines SNIPER eligibility, not visibility
@@ -1373,34 +1374,29 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
             setups.push(atomicSignal);
             console.log(`[EXECUTION] ${symbol} ACTIVE_SNIPER ${card.direction} score=${score} confidence=${directionalConfidence.toFixed(0)} | 4H:${card.htf4hTrend} 15M:${card.execution15mState}`);
             
+          } else if (hasSniper) {
+            // SNIPER conditions met
+            card.signalState = "ACTIVE_SNIPER";
           } else {
-            // Atomic build failed - stay in BUILDING
-            console.log(`[ATOMIC FAILED] ${symbol}: Incomplete payload, staying in BUILDING`);
-            card.signalState = "BUILDING";
+            // No SNIPER conditions met - do not trade
+            card.signalState = "DO_NOT_TRADE";
+            console.log(`[NO_SNIPER] ${symbol} ${card.direction} score=${score} confidence=${directionalConfidence.toFixed(0)} - insufficient for entry`);
           }
-        } else {
-          // No SNIPER conditions met - stay in BUILDING with direction
-          card.signalState = "BUILDING";
-          const commentary = generateWatchZoneCommentary(card);
-          card.notes = commentary;
-          console.log(`[BUILDING] ${symbol} ${card.direction} score=${score} confidence=${directionalConfidence.toFixed(0)} - awaiting SNIPER conditions`);
         }
       } else {
         // Direction exists but confidence insufficient for SNIPER
-        // Show direction in BUILDING state with reduced confidence narrative
-        card.signalState = "BUILDING";
-        const commentary = generateWatchZoneCommentary(card);
-        card.notes = commentary;
-        console.log(`[BUILDING_LOW_CONFIDENCE] ${symbol} ${card.direction} confidence=${directionalConfidence.toFixed(0)}/${sniperConfidenceThreshold} - expansion tracking (no SNIPER yet)`);
+        // Confidence insufficient - do not trade
+        card.signalState = "DO_NOT_TRADE";
+        console.log(`[LOW_CONFIDENCE] ${symbol} ${card.direction} confidence=${directionalConfidence.toFixed(0)}/${sniperConfidenceThreshold} - insufficient confidence for entry`);
       }
     }
 
     // v21.7.0 SNIPER STALE STATE REVALIDATION
     // If ACTIVE_SNIPER was set in previous cycle, revalidate against current structure
-    // Drop to BUILDING immediately if structure no longer supports it
-    if (card.signalState === "ACTIVE_SNIPER" && !isValidCurrentStructureForSniper(card)) {
-      console.log(`[SNIPER_INVALIDATED] ${symbol}: Structure no longer supports ACTIVE_SNIPER → dropping to BUILDING`);
-      card.signalState = "BUILDING";
+    // Drop to DO_NOT_TRADE if structure no longer supports ACTIVE_SNIPER
+    if (card.signalState === "ACTIVE_SNIPER" && !supportsExecution) {
+      console.log(`[SNIPER_INVALIDATED] ${symbol}: Structure no longer supports ACTIVE_SNIPER → dropping to DO_NOT_TRADE`);
+      card.signalState = "DO_NOT_TRADE";
       card.lastSignalTime = undefined;
       // Generate watch zone commentary for new BUILDING state
       card.notes = generateWatchZoneCommentary(card);
@@ -1590,7 +1586,7 @@ export function generateDisplayCards(displayMarkets: Record<string, PriceData>):
       price: priceData.price,
       source: priceData.source,
       degraded: true,
-      signalState: "BUILDING",  // Display only, no execution
+      signalState: "DO_NOT_TRADE",  // Display only, no execution
       mode: "NONE",
       confidence: 0,
       direction: "NEUTRAL",
@@ -1812,7 +1808,7 @@ function calculateMarketReadinessState(
   stochRsi: number | null,
   volatilityLevel: number | null,
   direction: string
-): "BUILDING_PRESSURE" | "BULLISH_IGNITION" | "BEARISH_IGNITION" | "TREND_EXPANSION" | "OVEREXTENDED" | "CHOP_NO_TRADE" | "AWAITING_DATA" {
+): "TREND_EXPANSION" | "BULLISH_IGNITION" | "BEARISH_IGNITION" | "OVEREXTENDED" | "CHOP_NO_TRADE" | "AWAITING_DATA" {
   // No data = awaiting
   if (stochRsi === null || emaSlope === null || volatilityLevel === null) {
     return "AWAITING_DATA";
@@ -1823,9 +1819,9 @@ function calculateMarketReadinessState(
     return "CHOP_NO_TRADE";
   }
 
-  // BUILDING_PRESSURE: Low volatility + aligned HTF + EMA expansion
+  // COMPRESSION: Low volatility + aligned HTF + EMA expansion
   if (volatilityLevel < 35 && htf4hTrend !== "NEUTRAL" && Math.abs(emaSlope) > 0.2) {
-    return "BUILDING_PRESSURE";
+    return "TREND_EXPANSION";
   }
 
   // BULLISH_IGNITION: HTF bullish + 1H confirms + Stoch cross up + compression release
@@ -2195,7 +2191,7 @@ function calculateLiveMarketState(
 ): string {
   // If real prices exist, NEVER show generic states
   if (direction === "LONG") {
-    if (volatilityLevel !== null && volatilityLevel < 40) return "BULLISH BUILDING";
+    if (volatilityLevel !== null && volatilityLevel < 40) return "BULLISH COMPRESSION";
     if (emaSlope !== null && emaSlope > 0.5) return "BULLISH IGNITION";
     if (volatilityLevel !== null && volatilityLevel > 60) return "BULLISH EXPANSION";
     if (stochRsi !== null && stochRsi > 80) return "BULLISH OVEREXTENDED";
@@ -2203,7 +2199,7 @@ function calculateLiveMarketState(
   }
   
   if (direction === "SHORT") {
-    if (volatilityLevel !== null && volatilityLevel < 40) return "BEARISH BUILDING";
+    if (volatilityLevel !== null && volatilityLevel < 40) return "BEARISH COMPRESSION";
     if (emaSlope !== null && emaSlope < -0.5) return "BEARISH IGNITION";
     if (volatilityLevel !== null && volatilityLevel > 60) return "BEARISH EXPANSION";
     if (stochRsi !== null && stochRsi < 20) return "BEARISH OVEREXTENDED";
@@ -2212,7 +2208,7 @@ function calculateLiveMarketState(
   
   // NEUTRAL but show structure if present
   if (emaSlope !== null && Math.abs(emaSlope) < 0.2) return "CHOPPY";
-  if (volatilityLevel !== null && volatilityLevel < 30) return "BUILDING PRESSURE";
+  if (volatilityLevel !== null && volatilityLevel < 30) return "COMPRESSION";
   if (stochRsi !== null && (stochRsi > 75 || stochRsi < 25)) return "EXTREME READS";
   
   return "NEUTRAL";
@@ -2234,8 +2230,8 @@ function isCooldownElapsed(lastSignalTime: number | undefined, mode: "SNIPER" | 
 
 /**
  * Calculate unified signal state (v7.2.6 FIX #1, extended for v7.2.8)
- * Returns: NONE | BUILDING | SNIPER_READY | CONFIRMED_READY | ACTIVE_SNIPER | ACTIVE_CONFIRMED
- * NOTE: SNIPER_IMMINENT removed per LOCK rules (only BUILDING | SNIPER | CONFIRMED in UI)
+ * Returns: NONE | DO_NOT_TRADE | SNIPER_READY | CONFIRMED_READY | ACTIVE_SNIPER | ACTIVE_CONFIRMED
+ * NOTE: Only valid states returned (BUILDING eliminated)
  * 
  * FIX #4: Proper evaluation order:
  * 1. HTF trend
@@ -2273,13 +2269,8 @@ function calculateSignalState(
     return "SNIPER_READY";
   }
   
-  // BUILDING: Has directional bias but not ready for signals
-  if (direction !== "NEUTRAL" && score >= 40) {
-    return "BUILDING";
-  }
-  
-  // No signal
-  return "NONE";
+  // No viable signal - do not trade
+  return "DO_NOT_TRADE";
 }
 
 /**
@@ -2721,13 +2712,13 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
     
     // v21.5.5 HARD BLOCKS:
     // 1. NEUTRAL always → DO_NOT_TRADE
-    // 2. CHOP_NO_TRADE always → DO_NOT_TRADE (hard exit, not BUILDING)
-    // 3. Otherwise BUILDING (unless ACTIVE_SNIPER)
+    // 2. CHOP_NO_TRADE always → DO_NOT_TRADE (hard exit)
+    // 3. Otherwise → DO_NOT_TRADE (no intermediate states)
     signalState: (() => {
       if (finalDirection === "NEUTRAL") return "DO_NOT_TRADE";
       const marketState = calculateLiveMarketState(finalDirection, emaSlope, stochRsi, volatilityLevel);
       if (marketState === "CHOP_NO_TRADE") return "DO_NOT_TRADE";
-      return "BUILDING";
+      return "DO_NOT_TRADE";
     })(),
     lastSignalTime: undefined,
 
