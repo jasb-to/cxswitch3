@@ -49,14 +49,22 @@ export type TradeViewModel = {
 
 /**
  * Build unified trade viewmodel from card
- * CRITICAL: NEVER omit fields based on state
- * Even DO_NOT_TRADE gets full context for UI observability
+ * ✅ FIX #4: activationState is DERIVED from signalState
+ * CRITICAL: activationState is UI-only, NEVER used for dispatcher logic
  */
 export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel {
+  // ✅ FIX #4: Derive activationState from signalState (engine truth)
+  // signalState → engine output (ACTIVE_SNIPER, CONFIRMED, DO_NOT_TRADE, etc)
+  // activationState → UI display (simplified to ACTIVE_SNIPER, CONFIRMED, or DO_NOT_TRADE)
+  const derivedActivationState: "ACTIVE_SNIPER" | "CONFIRMED" | "DO_NOT_TRADE" = 
+    card.signalState === "ACTIVE_SNIPER" ? "ACTIVE_SNIPER" :
+    card.signalState === "CONFIRMED" ? "CONFIRMED" :
+    "DO_NOT_TRADE";
+  
   // Compute rejection reason if needed
   let rejectionReason: string | undefined;
   
-    if (card.activationState === "DO_NOT_TRADE") {
+    if (derivedActivationState === "DO_NOT_TRADE") {
       if (card.direction === "NEUTRAL") {
         rejectionReason = "Neutral direction - no directional bias";
       } else if (card.execution15m === "CHOP") {
@@ -78,7 +86,7 @@ export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel 
     // State (always present, even if rejected)
     direction: card.direction,
     signalState: card.signalState,
-    activationState: card.activationState,
+    activationState: derivedActivationState,
     
     // Structure (CRITICAL: always populated)
     structureState: card.structureState || "RANGE",
@@ -91,7 +99,7 @@ export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel 
     score: (card as any).score || 0,
     
     // Trade Details (only if actionable - both ACTIVE_SNIPER and CONFIRMED have trade details)
-    ...(( card.activationState === "ACTIVE_SNIPER" || card.activationState === "CONFIRMED") && {
+    ...(( derivedActivationState === "ACTIVE_SNIPER" || derivedActivationState === "CONFIRMED") && {
       entryPrice: (card as any).entryPrice,
       takeProfit: (card as any).takeProfit,
       stopLoss: (card as any).stopLoss,
@@ -99,7 +107,7 @@ export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel 
     }),
     
     // Rejection reason (only if rejected)
-    ...(card.activationState === "DO_NOT_TRADE" && { rejectionReason }),
+    ...(derivedActivationState === "DO_NOT_TRADE" && { rejectionReason }),
     
     // Timing
     timestamp: new Date().toISOString(),

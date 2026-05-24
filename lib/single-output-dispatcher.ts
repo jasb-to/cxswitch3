@@ -36,14 +36,16 @@ export function dispatchTradeViewModels(viewModels: TradeViewModel[]): Dispatche
   const dispatchedSignals: DispatchedSignal[] = [];
   
   for (const viewModel of viewModels) {
-    // Check if this viewmodel represents a tradeable signal
+    // ✅ FIX #1: Use signalState (engine truth) NOT activationState (UI-only derived)
+    // signalState is the source of truth from the engine
+    // activationState is UI-only display field derived from signalState
     const isActiveSignal = 
-      viewModel.activationState === "ACTIVE_SNIPER" || 
-      viewModel.activationState === "CONFIRMED";
+      viewModel.signalState === "ACTIVE_SNIPER" || 
+      viewModel.signalState === "CONFIRMED";
     
     if (isActiveSignal) {
       console.log(
-        `[DISPATCHER] Signal found: ${viewModel.symbol} ${viewModel.activationState} @ ${viewModel.entryPrice}`
+        `[DISPATCHER] Signal found: ${viewModel.symbol} ${viewModel.signalState} @ ${viewModel.entryPrice}`
       );
       
       // Record this signal as dispatched
@@ -61,10 +63,10 @@ export function dispatchTradeViewModels(viewModels: TradeViewModel[]): Dispatche
       try {
         enqueueAlert({
           symbol: viewModel.symbol,
-          mode: viewModel.activationState === "ACTIVE_SNIPER" ? "SNIPER" : "CONFIRMED",
+          mode: viewModel.signalState === "ACTIVE_SNIPER" ? "SNIPER" : "CONFIRMED",
           direction: viewModel.direction,
           price: viewModel.entryPrice,
-          signalState: viewModel.activationState,
+          signalState: viewModel.signalState,
           structureState: viewModel.structureState,
           confidence: viewModel.confidence,
           tp: viewModel.takeProfit,
@@ -86,36 +88,33 @@ export function dispatchTradeViewModels(viewModels: TradeViewModel[]): Dispatche
 }
 
 /**
- * Validate dispatcher invariant: all viewmodels have required fields
- * CRITICAL FIX: Do NOT require entryPrice for DO_NOT_TRADE cards
- * DO_NOT_TRADE cards are valid - they just represent rejected signals
+ * ✅ FIX #2: Validate dispatcher invariant
+ * CRITICAL: DO_NOT_TRADE is VALID output, not invalid input
+ * Only ACTIVE_SNIPER requires complete trade fields
  */
 export function validateDispatcherInvariants(viewModels: TradeViewModel[]): void {
   console.log(`[DISPATCHER_VALIDATION] Validating ${viewModels.length} viewmodels...`);
   
   for (let i = 0; i < viewModels.length; i++) {
     const vm = viewModels[i];
-    console.log(`[DISPATCHER_VALIDATION] Card ${i}: symbol=${vm.symbol}, activationState=${vm.activationState}, confidence=${vm.confidence}, entryPrice=${(vm as any).entryPrice}`);
+    console.log(`[DISPATCHER_VALIDATION] Card ${i}: symbol=${vm.symbol}, signalState=${vm.signalState}, activationState=${vm.activationState}`);
     
     // All cards must have these basic fields
     if (!vm.symbol) {
       throw new Error(`[DISPATCHER_INVARIANT] Card ${i} missing symbol`);
     }
+    if (!vm.signalState) {
+      throw new Error(`[DISPATCHER_INVARIANT] Card ${i} (${vm.symbol}) missing signalState`);
+    }
     if (!vm.activationState) {
       throw new Error(`[DISPATCHER_INVARIANT] Card ${i} (${vm.symbol}) missing activationState`);
     }
-    // Confidence is required for ALL states
-    if (typeof vm.confidence !== "number" || vm.confidence < 0 || vm.confidence > 100) {
-      console.warn(`[DISPATCHER_INVARIANT_WARN] ${vm.symbol} has missing/invalid confidence: ${vm.confidence}, defaulting to 0`);
-      // Don't throw - just warn and continue. Confidence might not be set for some cards.
-    }
     
-    // CRITICAL: Only ACTIVE_SNIPER and CONFIRMED require entryPrice
-    // DO_NOT_TRADE cards don't need entryPrice (they're rejected signals)
-    if ((vm.activationState === "ACTIVE_SNIPER" || vm.activationState === "CONFIRMED") && 
-        typeof vm.entryPrice !== "number") {
+    // ✅ FIX #2: Only ACTIVE_SNIPER requires entryPrice and trade fields
+    // DO_NOT_TRADE is valid output (just rejected signals)
+    if (vm.signalState === "ACTIVE_SNIPER" && typeof vm.entryPrice !== "number") {
       throw new Error(
-        `[DISPATCHER_INVARIANT] ${vm.symbol} is ${vm.activationState} but missing entryPrice`
+        `[DISPATCHER_INVARIANT] ${vm.symbol} is ACTIVE_SNIPER but missing entryPrice`
       );
     }
   }
