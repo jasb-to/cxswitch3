@@ -25,13 +25,15 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
   const canonicalMacro = card.htf4hTrend || "NEUTRAL";
   const canonicalConfidence = card.confidence ?? 0;
   
-  // DEBUG: Confirm UI matches backend exactly
-  console.log("[v0] CANONICAL_STATE:", {
+  // DEBUG: Confirm UI matches backend exactly (TEMP - removes later)
+  console.log("[CANONICAL TRACE]", JSON.stringify({
+    symbol: card.symbol,
     direction: canonicalDirection,
     activation: canonicalActivation,
     macro: canonicalMacro,
     confidence: canonicalConfidence,
-  });
+    targetPrices: card.targetPrices ? "YES" : "NO",
+  }));
   
   // Direction colors
   const directionColor = canonicalDirection === "LONG" ? "text-green-400" : canonicalDirection === "SHORT" ? "text-red-400" : "text-zinc-400";
@@ -59,9 +61,9 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
           <span className={`text-sm font-semibold ${directionColor}`}>{card.direction}</span>
         </div>
         <div className="text-right">
-          {/* ONE canonical badge — resolveDisplayState is the only source */}
-          <span className={`inline-block text-xs px-3 py-1 rounded border mb-2 ${getStateColorClass(displayState)}`}>
-            {displayState}
+          {/* ACTIVATION BADGE: Pure display of canonicalActivation */}
+          <span className={`inline-block text-xs px-3 py-1 rounded border mb-2 ${activationColor}`}>
+            {canonicalActivation}
           </span>
           <p className="text-2xl font-mono font-bold text-white">${fmt(card.price)}</p>
         </div>
@@ -154,13 +156,6 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
             style={{ width: `${Math.min(100, Math.max(0, canonicalConfidence))}%` }} 
           />
         </div>
-      </div>
-
-      {/* ACTIVATION STATE: Pure display - no inference, no fallback commentary */}
-      <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-zinc-700">
-        <p className={`text-lg font-bold ${activationColor}`}>
-          {canonicalActivation}
-        </p>
       </div>
 
       {/* ENTRY DATA: Only if targetPrices exists */}
