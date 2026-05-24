@@ -22,31 +22,19 @@ function fmt(n: number) {
 }
 
 
-function getDecisionText(state: UIState, notes?: string): { action: string; guidance: string } {
-  // STATE PRECEDENCE: ACTIVE_SNIPER > SNIPER > CONFIRMED > BUILDING
-  // Uses card.notes for dynamic watch zone/trade commentary, fallback to hardcoded defaults
+function getDecisionText(state: UIState): { action: string; guidance: string } {
+  // PURE STATE MAPPING - NO INTERPRETATION
+  // No notes, no dynamic commentary, no watch zone logic
   switch (state) {
     case "ACTIVE_SNIPER":
-      return {
-        action: "WATCH ZONE",
-        guidance: notes || "Signal executed - Monitor entry"
-      };
+      return { action: "ACTIVE_SNIPER", guidance: state };
     case "SNIPER":
-      return {
-        action: "WATCH ZONE",
-        guidance: notes || "Entry forming"
-      };
+      return { action: "SNIPER", guidance: state };
     case "CONFIRMED":
-      return {
-        action: "READY TO TRADE",
-        guidance: "Entry active"
-      };
+      return { action: "CONFIRMED", guidance: state };
     case "BUILDING":
     default:
-      return {
-        action: "DO NOT TRADE",
-        guidance: notes || "Waiting for structure"
-      };
+      return { action: "BUILDING", guidance: state };
   }
 }
 
@@ -70,8 +58,8 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
   const readinessScoreColor = getReadinessColorClass(readiness);
   const readinessBgBar = getReadinessBarClass(readiness);
   
-  // Decision text derives from state and dynamic notes (watch zone/trade commentary)
-  const { action, guidance } = getDecisionText(uiState, card.notes);
+  // Decision text derives ONLY from display state
+  const { action, guidance } = getDecisionText(uiState);
   
   // v34.0 UI DISCIPLINE: No directional advisory based on macro
   // Macro is displayed separately as confidence context, never as directional suggestion
@@ -123,16 +111,6 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
           <div className="border-t border-zinc-800 pt-4 bg-zinc-900 p-4 rounded border border-cyan-700">
             <p className="text-lg font-bold text-amber-400">{action}</p>
             <p className="text-sm text-zinc-400 mt-1">{guidance}</p>
-            {/* v34.0 UI DISCIPLINE: Macro displayed separately as confidence context */}
-            {card.htf4hTrend && card.htf4hTrend !== "NEUTRAL" && (
-              <p className="text-xs text-zinc-500 mt-2">
-                Macro: {card.htf4hTrend.toLowerCase()}
-                {(card.htf4hTrend === "BULLISH" && card.direction === "LONG") || 
-                 (card.htf4hTrend === "BEARISH" && card.direction === "SHORT")
-                  ? " (+15% confidence)" 
-                  : " (-20% confidence)"}
-              </p>
-            )}
           </div>
         </>
       ) : (
