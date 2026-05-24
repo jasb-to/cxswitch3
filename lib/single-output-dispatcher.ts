@@ -87,16 +87,28 @@ export function dispatchTradeViewModels(viewModels: TradeViewModel[]): Dispatche
 
 /**
  * Validate dispatcher invariant: all viewmodels have required fields
+ * CRITICAL FIX: Do NOT require entryPrice for DO_NOT_TRADE cards
+ * DO_NOT_TRADE cards are valid - they just represent rejected signals
  */
 export function validateDispatcherInvariants(viewModels: TradeViewModel[]): void {
   for (const vm of viewModels) {
-    if (!vm.symbol || !vm.activationState || typeof vm.entryPrice !== "number") {
+    // All cards must have these basic fields
+    if (!vm.symbol) {
+      throw new Error(`[DISPATCHER_INVARIANT] Missing symbol in TradeViewModel`);
+    }
+    if (!vm.activationState) {
+      throw new Error(`[DISPATCHER_INVARIANT] Missing activationState for ${vm.symbol}`);
+    }
+    if (typeof vm.confidence !== "number") {
+      throw new Error(`[DISPATCHER_INVARIANT] Missing/invalid confidence for ${vm.symbol}`);
+    }
+    
+    // CRITICAL: Only ACTIVE_SNIPER and CONFIRMED require entryPrice
+    // DO_NOT_TRADE cards don't need entryPrice (they're rejected signals)
+    if ((vm.activationState === "ACTIVE_SNIPER" || vm.activationState === "CONFIRMED") && 
+        typeof vm.entryPrice !== "number") {
       throw new Error(
-        `[DISPATCHER_INVARIANT] Invalid TradeViewModel: ${JSON.stringify({
-          symbol: vm.symbol,
-          activationState: vm.activationState,
-          entryPrice: vm.entryPrice,
-        })}`
+        `[DISPATCHER_INVARIANT] ${vm.symbol} is ${vm.activationState} but missing entryPrice`
       );
     }
   }

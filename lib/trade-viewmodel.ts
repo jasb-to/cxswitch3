@@ -56,17 +56,17 @@ export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel 
   // Compute rejection reason if needed
   let rejectionReason: string | undefined;
   
-  if (card.activationState === "DO_NOT_TRADE") {
-    if (card.direction === "NEUTRAL") {
-      rejectionReason = "Neutral direction - no directional bias";
-    } else if (card.execution15m === "CHOP") {
-      rejectionReason = "15m execution showing chop - no entry setup";
-    } else if (card.confidence < 60) {
-      rejectionReason = `Low confidence: ${card.confidence.toFixed(0)}%`;
-    } else {
-      rejectionReason = "Structure does not support execution";
+    if (card.activationState === "DO_NOT_TRADE") {
+      if (card.direction === "NEUTRAL") {
+        rejectionReason = "Neutral direction - no directional bias";
+      } else if (card.execution15m === "CHOP") {
+        rejectionReason = "15m execution showing chop - no entry setup";
+      } else if (card.confidence < 50) {
+        rejectionReason = `Low confidence: ${card.confidence.toFixed(0)}%`;
+      } else {
+        rejectionReason = "Structure does not support execution";
+      }
     }
-  }
   
   // Build complete viewmodel - NEVER skip fields
   const viewModel: TradeViewModel = {
@@ -90,8 +90,8 @@ export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel 
     confidence: card.confidence || 0,
     score: (card as any).score || 0,
     
-    // Trade Details (only if actionable)
-    ...(card.activationState === "ACTIVE_SNIPER" && {
+    // Trade Details (only if actionable - both ACTIVE_SNIPER and CONFIRMED have trade details)
+    ...(( card.activationState === "ACTIVE_SNIPER" || card.activationState === "CONFIRMED") && {
       entryPrice: (card as any).entryPrice,
       takeProfit: (card as any).takeProfit,
       stopLoss: (card as any).stopLoss,
