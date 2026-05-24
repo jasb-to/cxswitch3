@@ -59,12 +59,12 @@ export type ExecutionProfile = {
 
 export type SignalState = 
   | "NONE"              // No signal
-  | "BUILDING"          // Directional bias + compression, waiting for ignition
   | "SNIPER_READY"      // All SNIPER conditions passed, awaiting entry confirmation
   | "CONFIRMED_READY"   // All CONFIRMED conditions passed, awaiting confirmation
   | "ACTIVE_SNIPER"     // SNIPER signal active, trade window open (30 min cooldown)
   | "ACTIVE_CONFIRMED"  // CONFIRMED signal active, trend confirmation (90 min cooldown) - INTERNAL ONLY
-  | "WATCH_BREAKOUT";   // Breakout detected, holding direction until retest confirmation
+  | "WATCH_BREAKOUT"    // Breakout detected, holding direction until retest confirmation
+  | "DO_NOT_TRADE";     // No viable trade setup
 
 export type StructureState = "UPTREND" | "DOWNTREND" | "RANGE" | "BREAKOUT";
 
