@@ -206,6 +206,7 @@ export default function Dashboard() {
   const [tg, setTg] = useState<"idle" | "sending" | "ok" | "error">("idle");
   const [tgMsg, setTgMsg] = useState("");
   const [now, setNow] = useState(0);
+  const [isValidating, setIsValidating] = useState(false);
 
   // Clock tick (UI only, no state derivation)
   useEffect(() => {
@@ -240,6 +241,20 @@ export default function Dashboard() {
     };
   }, []);
 
+  // Manual refresh handler
+  const handleRefresh = async () => {
+    setIsValidating(true);
+    try {
+      const res = await fetch("/api/signals", { cache: "no-store" });
+      const json = await res.json();
+      setSnap(json);
+    } catch (error) {
+      console.error("[REFRESH_ERROR] /api/signals:", error);
+    } finally {
+      setIsValidating(false);
+    }
+  };
+
   // ZERO LOGIC: Backend truth only
   // No interpretation, no derivation, no state machine
   if (!snap?.ready) {
@@ -253,8 +268,8 @@ export default function Dashboard() {
       snapshot={snap}
       now={now}
       isHydrated={true}
-      isValidating={false}
-      mutate={() => {}}
+      isValidating={isValidating}
+      mutate={handleRefresh}
       tg={tg}
       setTg={setTg}
       tgMsg={tgMsg}
