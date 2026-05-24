@@ -8,6 +8,13 @@ import { mergeSnapshots, validateSnipperCardState } from "@/lib/snapshot-merger"
 import { clearCanonicalStates, initializeCanonicalState, updateCanonicalState, getAllCanonicalStates, canonicalToCard } from "@/lib/unified-market-state";
 import { createCanonicalSnapshot } from "@/lib/canonical-snapshot";
 import { detectMonitorEvent, formatMonitorEvent } from "@/lib/monitor-event-engine";
+import {
+  buildCanonicalState as v43BuildCanonicalState,
+  initializeV43Engine,
+} from "@/lib/strategy-v43-engine";
+
+// Initialize v43 engine immediately on import
+initializeV43Engine();
 
 // v36.0 FIX: Defer module-level logging to runtime
 let strategyVersionLogged = false;
@@ -15,27 +22,93 @@ let strategyVersionLogged = false;
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// SINGLE ENGINE ONLY: strategy-v6 (SCAN phase) is the ONLY signal source
-// NO v43 post-processor, NO direction re-derivation, NO activation re-calculation
-// Direction is calculated ONCE during card generation and FROZEN
+// v43.0 POST-PROCESSOR - Override all legacy direction/activation with v43 canonical state
+// Applied AFTER card generation to ensure no hybrid code executes
+function applyV43PostProcessor(cards: any[], profile: any = null): any[] {
+  return cards.map(card => {
+    if (!card.symbol) return card;
+    
+    // Preserve trade data that was already calculated (from strategy-v6)
+    const originalTargetPrices = card.targetPrices;
+    const originalStopLoss = card.stopLoss;
+    const originalRiskReward = card.riskReward;
+    
+    // Get profile dynamically if not provided
+    const prof = profile || { ignitionThreshold: 57 };
+    
+    // Build canonical state using v43 engine (bypasses all legacy logic)
+    const canonicalState = v43BuildCanonicalState(
+      card.symbol,
+      card,
+      card.momentumScore || 50,
+      prof,
+      card.emaSlope || null,
+      card.structureState || "RANGE"
+    );
+    
+    // Override card with v43 canonical values (complete replacement)
+    card.signalState = canonicalState.activationState;
+    card.direction = canonicalState.direction;
+    card.confidence = canonicalState.finalScore;
+    card.notes = `[V43] ${canonicalState.activationState}`;
+    
+    // CRITICAL: Preserve trade data calculated by strategy-v6
+    // The v43 engine handles direction/activation only, not trade calculations
+    if (originalTargetPrices) card.targetPrices = originalTargetPrices;
+    if (originalStopLoss) card.stopLoss = originalStopLoss;
+    if (originalRiskReward) card.riskReward = originalRiskReward;
+    
+    return card;
+  });
+}
+
+// v43.0 ENGINE GATE - Global flag to ensure v43 is the ONLY active engine
+let v43Active = true;
+if (!v43Active) {
+  throw new Error("[CRITICAL] V43 engine not initialized - hybrid runtime detected!");
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
-// SINGLE PIPELINE: Market Data → Strategy-v6 → Frozen Cards → Snapshot → UI
+
+
 // ═════════════════════════════════════════════════════════════════════════════
+// v8.1: ORCHESTRATION ISOLATION LAYER - TWO INDEPENDENT CYCLES
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// CRITICAL FIX: Execution and display cycles are completely independent
+// - Separate timers
+// - Separate request budgets
+// - Separate stagger schedules
+// - NO shared orchestration state
+//
+// This prevents timing contamination between pipelines
 
 // Execution cycle state (HARD REAL-TIME)
 let executionCycleRunning = false;
 let lastExecutionCycleTime = 0;
 
+// Display cycle state (SOFT ASYNC)
+let displayCycleRunning = false;
+let lastDisplayCycleTime = 0;
+
 // Global CRON mutex (v8.1 hardening)
+// Prevents duplicate CRON invocations from overlapping serverless executions
 let globalCronLocked = false;
 
 // v1 STABILIZATION: Track previous signal states to prevent duplicate alerts
+// Maps: symbol -> { signalState, lastAlertedAt }
 const signalStateHistory: Record<string, { signalState: string; lastAlertedAt: number }> = {};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// v8.1: Execution and Display Cycle Functions
+// ═════════════════════════════════════════════════════════════════════════════
 
 /**
  * v8.1: Execution Cycle (KRAKEN ONLY)
- * Single immutable signal generation
+ * - Hard real-time requirements
+ * - Deterministic ordering
+ * - No staggering
+ * - No budget sharing
  */
 async function runExecutionCycle(): Promise<{
   executionCards: any[];
@@ -51,7 +124,7 @@ async function runExecutionCycle(): Promise<{
   const cycleStart = Date.now();
 
   try {
-    console.log("[EXEC_CYCLE] Start - Single immutable signal generation");
+    console.log("[EXEC_CYCLE] Start - Kraken only, hard real-time");
     
     // STEP 1: Fetch markets (segregated at ingestion) - v8.1 FIX: Use execution lock
     const segregatedMarkets = await refreshMarketData("execution");
@@ -71,11 +144,14 @@ async function runExecutionCycle(): Promise<{
     }
     
     // STEP 2: ONLY scan execution pipeline (Kraken) with real 4H structure
-    // Direction is calculated ONCE here and FROZEN - no re-derivation allowed
     const { cards: executionCards, setups } = await generateSetups(segregatedMarkets, candles4hBySymbol);
     
-    // v8.2 FIX: Populate canonical state with execution cards (DIRECT, NO POST-PROCESSOR)
-    for (const card of executionCards) {
+    // v43.0 POST-PROCESSOR: Apply BEFORE canonical state update
+    // This ensures canonical state gets the v43 canonical values, not legacy values
+    const v43ExecutionCards = applyV43PostProcessor(executionCards);
+    
+    // v8.2 FIX: Populate canonical state with execution cards
+    for (const card of v43ExecutionCards) {
       if (card.symbol) {
         initializeCanonicalState(card.symbol, card.price, card.source || "kraken");
         updateCanonicalState(card.symbol.toUpperCase(), {
@@ -92,49 +168,120 @@ async function runExecutionCycle(): Promise<{
           tradeReadinessScore: card.tradeReadinessScore,
           degraded: card.degraded,
           confidence: card.confidence,
-          notes: card.notes,
+          notes: card.notes,  // v21.3.7: Include watch zone commentary (was missing)
         });
       }
     }
     
-    // FREEZE CARDS: Make immutable after generation
-    // No mutations allowed after this point
-    executionCards.forEach(card => Object.freeze(card));
+    console.log(`[EXEC_CYCLE] Generated ${v43ExecutionCards.length} cards, ${setups.length} setups, populated canonical state in ${Date.now() - cycleStart}ms`);
     
-    console.log(`[EXEC_CYCLE] Generated ${executionCards.length} cards (FROZEN), ${setups.length} setups, populated canonical state in ${Date.now() - cycleStart}ms`);
-    
-    return { executionCards, setups, timeMs: Date.now() - cycleStart };
+    return { executionCards: v43ExecutionCards, setups, timeMs: Date.now() - cycleStart };
   } finally {
     executionCycleRunning = false;
     lastExecutionCycleTime = Date.now();
   }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+/**
+ * v8.1: Display Cycle (COINGECKO ONLY)
+ * - Soft async (can lag without affecting execution)
+ * - Independent timer
+ * - No budget coupling
+ * - STATEFUL: Uses previous snapshot as fallback if CoinGecko fails (v8.1 FIX #3)
+ */
+async function runDisplayCycle(): Promise<{
+  displayCards: any[];
+  timeMs: number;
+}> {
+  if (displayCycleRunning) {
+    console.log("[DISPLAY_CYCLE] Already running, skipping");
+    return { displayCards: [], timeMs: 0 };
+  }
+
+  displayCycleRunning = true;
+  const cycleStart = Date.now();
+
+  try {
+    console.log("[DISPLAY_CYCLE] Start - Fallback/CoinGecko only, soft async");
+    
+    // STEP 1: Fetch markets (already segregated) - v8.1 FIX: Use display lock (NEVER blocks)
+    const segregatedMarkets = await refreshMarketData("display");
+    
+    // STEP 2: ONLY generate display cards (fallback)
+    const displayCards = generateDisplayCards(segregatedMarkets.display);
+    
+    // v43.0 POST-PROCESSOR: Apply BEFORE canonical state update
+    // This ensures canonical state gets the v43 canonical values, not legacy values
+    const v43DisplayCards = applyV43PostProcessor(displayCards);
+    
+    // v8.2 FIX: Populate canonical state with display cards
+    for (const card of v43DisplayCards) {
+      if (card.symbol) {
+        initializeCanonicalState(card.symbol, card.price, card.source || "coingecko");
+        updateCanonicalState(card.symbol.toUpperCase(), {
+          signalState: card.signalState,
+          direction: card.direction,
+          mode: card.mode,
+          tradeReadinessScore: card.tradeReadinessScore,
+          degraded: card.degraded,
+          confidence: card.confidence,
+        });
+      }
+    }
+    
+    // STEP 3: If display cycle generated cards, return them
+    // Otherwise, fall back to previous display cards from snapshot
+    if (v43DisplayCards.length > 0) {
+      console.log(`[DISPLAY_CYCLE] Generated ${v43DisplayCards.length} cards, populated canonical state in ${Date.now() - cycleStart}ms`);
+      return { displayCards: v43DisplayCards, timeMs: Date.now() - cycleStart };
+    }
+    
+    // FALLBACK (v8.1 FIX #3): Use previous display cards from snapshot
+    // This ensures BTC/ETH are never lost if CoinGecko temporarily fails
+    const previousSnapshot = getSnapshot();
+    const previousDisplayCards = previousSnapshot?.cards?.filter(c => c.degraded) || [];
+    
+    if (previousDisplayCards.length > 0) {
+      console.log(`[DISPLAY_CYCLE] Using ${previousDisplayCards.length} cards from previous snapshot (fallback)`);
+      // v43.0 POST-PROCESSOR: Override all cards with v43 canonical engine
+      const v43Cards = applyV43PostProcessor(previousDisplayCards);
+      return { displayCards: v43Cards, timeMs: Date.now() - cycleStart };
+    }
+    
+    // FIX #3: Display cycle MUST ALWAYS return 3 cards (no exceptions)
+    // If no display cards generated and no fallback, use canonical state to create display cards
+    const canonicalStates = getAllCanonicalStates();
+    if (canonicalStates.length > 0) {
+      const displayCardsFromCanonical = canonicalStates.map(state => ({
+        symbol: state.normalizedSymbol,
+        price: state.price,
+        source: state.source,
+        signalState: "BUILDING" as const,
+        direction: null,
+        momentumScore: 0,
+        emaSlope: 0,
+        volatilityLevel: 50,
+        structureState: "RANGE" as const,
+      }));
+      console.log(`[DISPLAY_CYCLE] Using ${displayCardsFromCanonical.length} cards from canonical state (fallback)`);
+      // v43.0 POST-PROCESSOR: Override all cards with v43 canonical engine
+      const v43Cards = applyV43PostProcessor(displayCardsFromCanonical);
+      return { displayCards: v43Cards, timeMs: Date.now() - cycleStart };
+    }
+
+    
+    // Last resort: return empty but log clearly
+    console.log(`[DISPLAY_CYCLE] CRITICAL: No display cards from any source`);
+    return { displayCards: [], timeMs: Date.now() - cycleStart };
+  } finally {
+    displayCycleRunning = false;
+    lastDisplayCycleTime = Date.now();
+  }
+}
+
 // v8.0 header: CRON optimized for delta updates, not full rebuilds
-// ═════════════════════════════════════════════════════════════════════════════
-// SINGLE PIPELINE ONLY: EXECUTION_CYCLE → SNAPSHOT → UI RENDER
-// NO DISPLAY_CYCLE, NO SECONDARY DERIVATION, NO FALLBACKS
-// ═════════════════════════════════════════════════════════════════════════════
 export async function GET(req: NextRequest) {
   try {
-    // RULE 4: HARD ENFORCEMENT - Detect dual pipeline violations
-    const originalLog = console.log;
-    const violationPatterns = ["DISPLAY_CYCLE", "fallback", "recomputed", "re-derived"];
-    let violationDetected = false;
-    
-    console.log = function(...args) {
-      const message = args.join(" ");
-      for (const pattern of violationPatterns) {
-        if (message.includes(pattern)) {
-          console.error(`[DUAL PIPELINE VIOLATION] ${pattern} detected in logs`);
-          violationDetected = true;
-        }
-      }
-      return originalLog.apply(console, args);
-    };
-    
-    try {
     // v36.0 FIX: Log version on first execution (after all imports resolved)
     if (!strategyVersionLogged) {
       console.log(`[MOMENTUM_ENGINE_STARTUP] Strategy version: ${STRATEGY_VERSION}`);
@@ -170,16 +317,22 @@ export async function GET(req: NextRequest) {
       clearCanonicalStates();
 
       // v8.1 FIX #4: Sequential execution (execution → display)
-      // SINGLE PIPELINE: Execution cycle ONLY
-      // No display cycle, no fallbacks, no secondary derivation
+      // Display cycle must run AFTER execution fetches all market data
+      // Otherwise display cycle completes with 0 cards before markets are fetched
       const executionResult = await runExecutionCycle();
+      const displayResult = await runDisplayCycle();
+
       const { executionCards, setups } = executionResult;
+      const { displayCards } = displayResult;
     
-    // CANONICAL STATE: Direct from execution cycle
+    // v41.0 MINIMAL: setups contains ONLY ACTIVE_SNIPER signals from DecisionAxis
+    // DecisionAxis is the ONLY gate - no secondary filtering
+    // If setups.length === 0, it means no signals passed DecisionAxis (structurally sound)
     const activeSignals = setups; // UI consumes this count directly
     
-    // IMMUTABLE SNAPSHOT: Execution cards ONLY
-    console.log(`[CRON] Execution cycle: ${executionResult.timeMs}ms - ${executionCards.length} cards`);
+    // Merge results: execution first, then display
+    const newCards = [...executionCards, ...displayCards];
+    console.log(`[CRON] Card generation: ${executionResult.timeMs + displayResult.timeMs}ms - ${executionCards.length} execution + ${displayCards.length} display (sequential: exec first, then display with full market data)`);
 
     // STEP 3: v8.2 FIX - Use canonical state directly (unified source of truth)
     // All cards already have canonical state populated by execution and display cycles
@@ -290,21 +443,14 @@ export async function GET(req: NextRequest) {
     }
 
     const totalMs = Date.now() - cronStart;
-    console.log(`[CRON] Complete in ${totalMs}ms - execution: ${executionResult.timeMs}ms, queued ${setups.length} alerts`);
-    
-    // STATE DRIFT DETECTION: Verify no mutations occurred
-    for (let i = 0; i < executionCards.length; i++) {
-      const original = executionCards[i];
-      if (!Object.isFrozen(original)) {
-        throw new Error(`[STATE DRIFT] Card ${original.symbol} is not frozen - mutation detected`);
-      }
-    }
+    console.log(`[CRON] Complete in ${totalMs}ms - execution: ${executionResult.timeMs}ms, display: ${displayResult.timeMs}ms, queued ${setups.length} alerts`);
 
     return NextResponse.json({ 
       ok: true, 
       perf: { 
         totalMs, 
         executionMs: executionResult.timeMs,
+        displayMs: displayResult.timeMs,
         canonicalCards: canonicalCards.length,
         alertsQueued: activeSignals.length  // SNIPER signals from DecisionAxis only
       }
@@ -318,12 +464,6 @@ export async function GET(req: NextRequest) {
     } finally {
       // v8.1: Always release the mutex
       globalCronLocked = false;
-      // Restore console.log
-      console.log = originalLog;
-    }
-    } finally {
-      // Restore console.log on outer finally
-      console.log = originalLog;
     }
   } catch (authError) {
     console.error('[CRON AUTH ERROR]', authError);
