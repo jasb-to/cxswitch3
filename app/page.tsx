@@ -145,8 +145,14 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
             </div>
             <div className="flex justify-between text-zinc-400">
               <span>Activation:</span>
-              <span className={displayState === "ACTIVE_SNIPER" ? "text-cyan-400" : displayState === "SNIPER" ? "text-blue-400" : displayState === "CONFIRMED" ? "text-green-400" : "text-zinc-500"}>
-                {displayState}
+              <span className={
+                (card as any).signalState === "ACTIVE_SNIPER" ? "text-cyan-400" : 
+                (card as any).signalState === "SNIPER" ? "text-blue-400" : 
+                (card as any).signalState === "CONFIRMED" ? "text-green-400" : 
+                (card as any).signalState === "DO_NOT_TRADE" ? "text-red-400" :
+                "text-zinc-500"
+              }>
+                {(card as any).signalState || displayState}
               </span>
             </div>
             <div className="flex justify-between text-zinc-400">
