@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { SYMBOLS, createSignal } from "@/lib/strategy-core";
 import { setSignal } from "@/lib/db";
+import { sendSignalAlert } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -35,12 +36,7 @@ export async function GET() {
 
       // Send Telegram alert ONLY on SNIPER
       if (signal.state === "SNIPER") {
-        try {
-          await fetch("/api/test-telegram", { method: "POST" });
-          console.log(`[TELEGRAM] Alert sent for ${symbol}`);
-        } catch (err) {
-          console.error(`[TELEGRAM] Failed to send alert for ${symbol}`);
-        }
+        await sendSignalAlert(symbol, signal.price, signal.state, signal.signal_quality);
       }
     }
 
@@ -66,3 +62,4 @@ export async function GET() {
 export async function POST() {
   return GET();
 }
+
