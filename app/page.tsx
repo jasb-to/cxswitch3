@@ -10,21 +10,11 @@ interface ApiResponse {
   lastUpdated: string;
 }
 
-const DARK_BG = "#0a0e27";
-const CARD_BG = "#111c44";
-const BORDER = "#1e2d5f";
-const TEXT = "#e5e7eb";
-const TEXT_MUTED = "#9ca3af";
-const GREEN = "#22c55e";
-const ORANGE = "#f59e0b";
-const GREY = "#6b7280";
-
 export default function Dashboard() {
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
 
   const fetchSignals = async () => {
-    setLoading(true);
     try {
       const res = await fetch("/api/signals", { cache: "no-store" });
       if (res.ok) {
@@ -33,25 +23,28 @@ export default function Dashboard() {
       }
     } catch (err) {
       console.error("[FETCH] Error:", err);
-    } finally {
-      setLoading(false);
     }
   };
 
   const triggerCron = async () => {
+    setLoading(true);
     try {
       await fetch("/api/cron", { method: "POST" });
       await fetchSignals();
     } catch (err) {
       console.error("[CRON] Error:", err);
+    } finally {
+      setLoading(false);
     }
   };
 
   const testTelegram = async () => {
     try {
-      await fetch("/api/test-telegram", { method: "POST" });
+      const res = await fetch("/api/test-telegram", { method: "POST" });
+      const result = await res.json();
+      alert(result.ok ? "Telegram alert sent!" : "Telegram failed: " + result.error);
     } catch (err) {
-      console.error("[TELEGRAM] Error:", err);
+      alert("Telegram error: " + String(err));
     }
   };
 
@@ -64,14 +57,14 @@ export default function Dashboard() {
   const symbols = data?.symbols || [];
 
   return (
-    <div style={{ backgroundColor: DARK_BG, color: TEXT, minHeight: "100vh", padding: "24px", fontFamily: "system-ui, sans-serif" }}>
+    <div style={{ backgroundColor: "#000", color: "#e5e7eb", minHeight: "100vh", padding: "24px", fontFamily: "system-ui, sans-serif" }}>
       {/* HEADER */}
-      <div style={{ marginBottom: "32px", borderBottom: `1px solid ${BORDER}`, paddingBottom: "20px" }}>
+      <div style={{ marginBottom: "32px", borderBottom: "1px solid #2a2a2a", paddingBottom: "20px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
-            <h1 style={{ margin: "0 0 8px 0", fontSize: "32px", fontWeight: "bold" }}>Trading Signals</h1>
-            <p style={{ margin: 0, color: TEXT_MUTED, fontSize: "13px" }}>
-              Last updated: {data?.lastUpdated ? new Date(data.lastUpdated).toLocaleTimeString() : "waiting..."}
+            <h1 style={{ margin: "0 0 8px 0", fontSize: "32px", fontWeight: "bold", color: "#fff" }}>Trading Signals</h1>
+            <p style={{ margin: 0, color: "#9ca3af", fontSize: "13px" }}>
+              Last updated: {data?.lastUpdated ? new Date(data.lastUpdated).toLocaleTimeString() : "never"}
             </p>
           </div>
           <div style={{ display: "flex", gap: "12px" }}>
@@ -79,13 +72,13 @@ export default function Dashboard() {
               onClick={triggerCron}
               disabled={loading}
               style={{
-                padding: "10px 18px",
+                padding: "8px 16px",
+                backgroundColor: "#222",
+                color: "#fff",
+                border: "1px solid #2a2a2a",
+                borderRadius: "6px",
                 cursor: loading ? "not-allowed" : "pointer",
                 opacity: loading ? 0.5 : 1,
-                backgroundColor: CARD_BG,
-                color: TEXT,
-                border: `1px solid ${BORDER}`,
-                borderRadius: "6px",
                 fontSize: "14px",
                 fontWeight: "500",
               }}
@@ -95,12 +88,12 @@ export default function Dashboard() {
             <button
               onClick={testTelegram}
               style={{
-                padding: "10px 18px",
-                cursor: "pointer",
-                backgroundColor: CARD_BG,
-                color: TEXT,
-                border: `1px solid ${BORDER}`,
+                padding: "8px 16px",
+                backgroundColor: "#222",
+                color: "#fff",
+                border: "1px solid #2a2a2a",
                 borderRadius: "6px",
+                cursor: "pointer",
                 fontSize: "14px",
                 fontWeight: "500",
               }}
@@ -111,132 +104,98 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* SYMBOL CARDS GRID */}
-      <div style={{ marginBottom: "40px" }}>
-        <h2 style={{ marginBottom: "20px", fontSize: "18px", fontWeight: "600", margin: "0 0 20px 0" }}>Market Overview</h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))", gap: "20px" }}>
-          {symbols.map((signal) => {
-            const isSNIPER = signal.state === "SNIPER";
-            const isBuilding = signal.state === "BUILDING";
-            const stateColor = isSNIPER ? GREEN : isBuilding ? ORANGE : GREY;
-            const borderColor = isSNIPER ? "#064e3b" : isBuilding ? "#78350f" : "#374151";
+      {/* SYMBOL CARDS */}
+      <div style={{ marginBottom: "32px" }}>
+        <h2 style={{ marginBottom: "16px", fontSize: "18px", fontWeight: "600", color: "#fff" }}>Market Overview</h2>
+        {symbols.length === 0 ? (
+          <div style={{ color: "#9ca3af", padding: "32px", textAlign: "center" }}>
+            Waiting for market data...
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "16px" }}>
+            {symbols.map((signal) => {
+              const isSNIPER = signal.state === "SNIPER";
+              const isBuilding = signal.state === "BUILDING";
+              const borderColor = isSNIPER ? (signal.direction === "LONG" ? "#00c853" : "#ff1744") : isBuilding ? "#ff9100" : "#555";
 
-            return (
-              <div
-                key={signal.symbol}
-                style={{
-                  backgroundColor: CARD_BG,
-                  border: `2px solid ${borderColor}`,
-                  borderRadius: "8px",
-                  padding: "24px",
-                }}
-              >
-                {/* HEADER WITH SYMBOL AND STATE BADGE */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px" }}>
-                  <div>
-                    <div style={{ fontSize: "28px", fontWeight: "bold", color: TEXT }}>{signal.symbol}/USD</div>
-                  </div>
-                  <div
-                    style={{
-                      backgroundColor: stateColor,
-                      color: isBuilding ? "#000" : "#fff",
-                      padding: "6px 14px",
-                      borderRadius: "4px",
-                      fontSize: "12px",
-                      fontWeight: "bold",
-                    }}
-                  >
-                    {signal.state}
-                  </div>
-                </div>
-
-                {/* PRICE */}
-                <div style={{ fontSize: "36px", fontWeight: "bold", color: stateColor, marginBottom: "24px" }}>
-                  ${signal.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </div>
-
-                {/* SNIPER TRADE DETAILS */}
-                {isSNIPER && signal.direction ? (
-                  <div style={{ backgroundColor: DARK_BG, padding: "16px", borderRadius: "6px", marginBottom: "16px", borderLeft: `3px solid ${stateColor}` }}>
-                    <div style={{ marginBottom: "12px" }}>
-                      <div style={{ fontSize: "12px", color: TEXT_MUTED, fontWeight: "600", marginBottom: "4px" }}>DIRECTION</div>
-                      <div style={{ fontSize: "16px", fontWeight: "bold", color: stateColor }}>{signal.direction}</div>
+              return (
+                <div
+                  key={signal.symbol}
+                  style={{
+                    backgroundColor: "#111",
+                    border: "1px solid #2a2a2a",
+                    borderLeft: `4px solid ${borderColor}`,
+                    borderRadius: "8px",
+                    padding: "16px",
+                  }}
+                >
+                  {/* HEADER */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "16px" }}>
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: "20px", fontWeight: "bold", color: "#fff" }}>{signal.symbol}</h3>
+                      <p style={{ margin: "4px 0 0 0", fontSize: "12px", color: "#9ca3af" }}>Price: ${signal.price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                     </div>
-
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "12px" }}>
-                      <div>
-                        <div style={{ fontSize: "11px", color: TEXT_MUTED, fontWeight: "600", marginBottom: "4px" }}>ENTRY</div>
-                        <div style={{ fontSize: "14px", fontWeight: "bold" }}>${signal.entry?.toFixed(2)}</div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: "11px", color: TEXT_MUTED, fontWeight: "600", marginBottom: "4px" }}>STOP LOSS</div>
-                        <div style={{ fontSize: "14px", fontWeight: "bold" }}>${signal.stopLoss?.toFixed(2)}</div>
-                      </div>
-                    </div>
-
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-                      <div>
-                        <div style={{ fontSize: "11px", color: TEXT_MUTED, fontWeight: "600", marginBottom: "4px" }}>TAKE PROFIT</div>
-                        <div style={{ fontSize: "14px", fontWeight: "bold" }}>${signal.takeProfit?.toFixed(2)}</div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: "11px", color: TEXT_MUTED, fontWeight: "600", marginBottom: "4px" }}>RISK/REWARD</div>
-                        <div style={{ fontSize: "14px", fontWeight: "bold", color: GREEN }}>{signal.riskReward?.toFixed(2)}</div>
-                      </div>
-                    </div>
-
-                    <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: `1px solid ${BORDER}` }}>
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-                        <div>
-                          <div style={{ fontSize: "11px", color: TEXT_MUTED, fontWeight: "600", marginBottom: "4px" }}>CONFIDENCE</div>
-                          <div style={{ fontSize: "14px", fontWeight: "bold" }}>{signal.confidence}%</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize: "11px", color: TEXT_MUTED, fontWeight: "600", marginBottom: "4px" }}>REASON</div>
-                          <div style={{ fontSize: "12px" }}>{signal.reason}</div>
-                        </div>
-                      </div>
+                    <div
+                      style={{
+                        padding: "6px 12px",
+                        backgroundColor: borderColor,
+                        color: "#000",
+                        borderRadius: "4px",
+                        fontSize: "12px",
+                        fontWeight: "bold",
+                      }}
+                    >
+                      {signal.state}
                     </div>
                   </div>
-                ) : null}
 
-                {/* FOOTER */}
-                <div style={{ fontSize: "11px", color: TEXT_MUTED, textAlign: "right" }}>
-                  Updated: {new Date(signal.updated_at).toLocaleTimeString()}
+                  {/* SNIPER DETAILS */}
+                  {isSNIPER && signal.direction ? (
+                    <div style={{ fontSize: "13px", lineHeight: "1.6", color: "#e5e7eb" }}>
+                      <div style={{ marginBottom: "12px", borderTop: "1px solid #2a2a2a", paddingTop: "12px" }}>
+                        <div style={{ color: "#9ca3af", fontSize: "11px", fontWeight: "600", marginBottom: "8px" }}>TRADE DETAILS</div>
+                        <div style={{ marginBottom: "6px" }}><span style={{ color: "#9ca3af" }}>Direction:</span> <span style={{ color: borderColor, fontWeight: "bold" }}>{signal.direction}</span></div>
+                        <div style={{ marginBottom: "6px" }}><span style={{ color: "#9ca3af" }}>Entry:</span> <span style={{ fontWeight: "bold" }}>${signal.entry?.toFixed(2)}</span></div>
+                        <div style={{ marginBottom: "6px" }}><span style={{ color: "#9ca3af" }}>SL:</span> <span style={{ fontWeight: "bold" }}>${signal.stopLoss?.toFixed(2)}</span></div>
+                        <div style={{ marginBottom: "6px" }}><span style={{ color: "#9ca3af" }}>TP:</span> <span style={{ fontWeight: "bold" }}>${signal.takeProfit?.toFixed(2)}</span></div>
+                        <div style={{ marginBottom: "6px" }}><span style={{ color: "#9ca3af" }}>RR:</span> <span style={{ fontWeight: "bold" }}>{signal.riskReward?.toFixed(2)}</span></div>
+                        <div style={{ marginBottom: "6px" }}><span style={{ color: "#9ca3af" }}>Confidence:</span> <span style={{ fontWeight: "bold", color: borderColor }}>{signal.confidence}%</span></div>
+                        <div><span style={{ color: "#9ca3af" }}>Reason:</span> <span style={{ fontWeight: "500" }}>{signal.reason}</span></div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: "13px", color: "#9ca3af", paddingTop: "8px" }}>
+                      No active trade details
+                    </div>
+                  )}
+
+                  {/* FOOTER */}
+                  <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px solid #2a2a2a", fontSize: "11px", color: "#6b7280", textAlign: "right" }}>
+                    Updated: {new Date(signal.updated_at).toLocaleTimeString()}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* ACTIVE TRADES SECTION */}
-      {data?.activeTrades.length ? (
-        <div style={{ marginBottom: "32px" }}>
-          <h2 style={{ marginBottom: "16px", fontSize: "18px", fontWeight: "600", margin: "0 0 16px 0" }}>Active Trades ({data.activeTrades.length})</h2>
-          <div style={{ backgroundColor: CARD_BG, border: `1px solid ${BORDER}`, borderRadius: "8px", overflow: "hidden" }}>
-            {data.activeTrades.map((signal, idx) => (
-              <div
-                key={signal.symbol}
-                style={{
-                  padding: "16px",
-                  borderBottom: idx < data.activeTrades.length - 1 ? `1px solid ${BORDER}` : "none",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                  <div style={{ fontSize: "14px", fontWeight: "bold" }}>{signal.symbol}</div>
-                  <div style={{ fontSize: "13px", color: TEXT_MUTED }}>
-                    {signal.direction} @ ${signal.entry?.toFixed(2)}
-                  </div>
-                </div>
-                <div style={{ fontSize: "12px", color: TEXT_MUTED }}>
-                  SL: ${signal.stopLoss?.toFixed(2)} | TP: ${signal.takeProfit?.toFixed(2)} | RR: {signal.riskReward?.toFixed(2)}
+      {data?.activeTrades && data.activeTrades.length > 0 && (
+        <div>
+          <h2 style={{ marginBottom: "16px", fontSize: "18px", fontWeight: "600", color: "#fff" }}>Active Trades ({data.activeTrades.length})</h2>
+          <div style={{ backgroundColor: "#111", border: "1px solid #2a2a2a", borderRadius: "8px", padding: "16px" }}>
+            {data.activeTrades.map((signal) => (
+              <div key={signal.symbol} style={{ marginBottom: "12px", paddingBottom: "12px", borderBottom: "1px solid #2a2a2a" }}>
+                <div style={{ fontWeight: "bold", marginBottom: "4px", color: "#fff" }}>{signal.symbol}</div>
+                <div style={{ fontSize: "12px", color: "#9ca3af" }}>
+                  {signal.direction} @ ${signal.entry?.toFixed(2)} | RR: {signal.riskReward?.toFixed(2)}
                 </div>
               </div>
             ))}
           </div>
         </div>
-      ) : null}
+      )}
     </div>
   );
 }

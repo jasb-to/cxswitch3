@@ -3,6 +3,28 @@ import type { Signal } from "@/lib/signal-store";
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
+// Cooldown tracking: symbol → last alert timestamp
+const alertCooldowns = new Map<string, number>();
+const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * Check if enough time has passed since last alert for this symbol
+ */
+function canSendAlert(symbol: string): boolean {
+  const lastAlert = alertCooldowns.get(symbol);
+  if (!lastAlert) return true;
+  
+  const timeSinceAlert = Date.now() - lastAlert;
+  return timeSinceAlert > COOLDOWN_MS;
+}
+
+/**
+ * Record an alert as sent
+ */
+function recordAlert(symbol: string): void {
+  alertCooldowns.set(symbol, Date.now());
+}
+
 /**
  * Send a test message to verify the bot is configured correctly.
  */
@@ -38,6 +60,12 @@ export async function sendSignalAlert(signal: Signal): Promise<{ ok: boolean; er
     return { ok: false, error: "Not a SNIPER signal" };
   }
 
+  // Check cooldown
+  if (!canSendAlert(signal.symbol)) {
+    console.log(`[TELEGRAM] Cooldown active for ${signal.symbol}, skipping alert`);
+    return { ok: false, error: "Cooldown active" };
+  }
+
   const message = `🚨 SNIPER SIGNAL
 
 ${signal.symbol}/USD
@@ -66,6 +94,8 @@ Reason: ${signal.reason}`;
       console.error(`[TELEGRAM] Alert failed: ${json.description}`);
       return { ok: false, error: json.description };
     }
+    
+    recordAlert(signal.symbol);
     console.log(`[TELEGRAM] Alert sent for ${signal.symbol}`);
     return { ok: true };
   } catch (err) {
@@ -73,4 +103,5 @@ Reason: ${signal.reason}`;
     return { ok: false, error: String(err) };
   }
 }
+
 

@@ -27,8 +27,8 @@ export interface Signal {
  */
 async function getKrakenTicker(symbol: string): Promise<number> {
   const krakenMap: Record<string, string> = {
-    BTC: "XBTUSD",
-    ETH: "ETHUSD",
+    BTC: "XXBTZUSD",
+    ETH: "XETHZUSD",
     SOL: "SOLUSD",
   };
 
@@ -42,12 +42,20 @@ async function getKrakenTicker(symbol: string): Promise<number> {
 
     const data = await response.json();
     const tickerData = data.result?.[krakenSymbol];
-    if (!tickerData) return 0;
+    if (!tickerData) {
+      console.warn(`[KRAKEN] No data for ${symbol} (${krakenSymbol})`);
+      return 0;
+    }
 
     const price = parseFloat(tickerData.c[0]); // Last trade close price
-    return price || 0;
+    if (price <= 0) {
+      console.warn(`[KRAKEN] Invalid price for ${symbol}: ${price}`);
+      return 0;
+    }
+    console.log(`[PRICE] ${symbol}: ${price}`);
+    return price;
   } catch (err) {
-    console.warn(`[KRAKEN] Failed to fetch ${symbol}`);
+    console.warn(`[KRAKEN] Failed to fetch ${symbol}:`, err);
     return 0;
   }
 }
@@ -56,6 +64,11 @@ async function getKrakenTicker(symbol: string): Promise<number> {
  * Evaluate market and generate SNIPER trade details if applicable
  */
 function evaluateMarket(symbol: string, price: number): { state: TradeState; details?: any } {
+  // Guard: price must be positive
+  if (!price || price <= 0) {
+    return { state: "DO_NOT_TRADE" };
+  }
+
   // Deterministic state based on symbol hash
   const charSum = symbol.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0);
   
@@ -70,22 +83,25 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
 
   // Generate SNIPER details if applicable
   if (state === "SNIPER") {
-    // Deterministic SNIPER setup based on symbol
-    const baseRatio = charSum % 2 === 0 ? 0.005 : 0.01; // SL distance ratio
-    const tpRatio = charSum % 2 === 0 ? 0.015 : 0.025; // TP distance ratio
-    
     const direction = charSum % 2 === 0 ? "LONG" : "SHORT";
     const entry = price;
-    const stopLoss = direction === "LONG" 
-      ? price * (1 - baseRatio)
-      : price * (1 + baseRatio);
-    const takeProfit = direction === "LONG"
-      ? price * (1 + tpRatio)
-      : price * (1 - tpRatio);
     
-    const riskAmount = Math.abs(entry - stopLoss);
-    const rewardAmount = Math.abs(takeProfit - entry);
-    const riskReward = rewardAmount / riskAmount;
+    // SL: 0.8% for LONG, 0.8% for SHORT
+    const sl = direction === "LONG" 
+      ? price * 0.992
+      : price * 1.008;
+    
+    // TP: 2% for LONG, 2% for SHORT
+    const tp = direction === "LONG"
+      ? price * 1.02
+      : price * 0.98;
+    
+    const risk = Math.abs(entry - sl);
+    const reward = Math.abs(tp - entry);
+    let rr = reward / risk;
+    
+    // Guard against NaN/Infinity
+    if (!isFinite(rr)) rr = 0;
     
     const confidence = 85 + (charSum % 10);
     const reasons = [
@@ -101,9 +117,9 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
       details: {
         direction,
         entry,
-        stopLoss,
-        takeProfit,
-        riskReward: parseFloat(riskReward.toFixed(2)),
+        stopLoss: parseFloat(sl.toFixed(2)),
+        takeProfit: parseFloat(tp.toFixed(2)),
+        riskReward: parseFloat(rr.toFixed(2)),
         confidence,
         reason,
       },
