@@ -9,42 +9,44 @@ import type { TradeSignal, ActiveTrade, NoTrade } from "./trade-signal-types";
 import { assertValidActiveTrade } from "./trade-signal-types";
 
 /**
- * Format TradeSignal for API response
- * No mutation, no transformation - just validation
+ * Format array of TradeSignals for API response
  */
-export function formatSignalResponse(signal: TradeSignal) {
-  if (signal.state === "ACTIVE_TRADE") {
-    // Validate before returning
-    assertValidActiveTrade(signal);
-    
-    return {
-      status: "success",
-      signal: {
-        state: signal.state,
-        symbol: signal.symbol,
-        direction: signal.direction,
-        entry: signal.entry,
-        stopLoss: signal.stopLoss,
-        targets: {
-          tp1: signal.takeProfit1,
-          tp2: signal.takeProfit2,
-        },
-        riskReward: signal.riskReward,
-        confidence: signal.confidence,
-        reason: signal.reason,
-        structure: signal.structure,
-        trend: signal.htf4hTrend,
-        timestamp: signal.timestamp,
-      },
-    };
-  } else {
-    // DO_NOT_TRADE - minimal response
-    return {
-      status: "no_signal",
-      reason: signal.reason,
-    };
-  }
+export function formatSignalResponse(signals: TradeSignal[]) {
+  return {
+    ready: true,
+    signals: signals.map((signal) => {
+      if (signal.state === "ACTIVE_TRADE") {
+        // Validate before returning
+        assertValidActiveTrade(signal);
+        
+        return {
+          state: signal.state,
+          symbol: signal.symbol,
+          direction: signal.direction,
+          entry: signal.entry,
+          stopLoss: signal.stopLoss,
+          targets: {
+            tp1: signal.takeProfit1,
+            tp2: signal.takeProfit2,
+          },
+          riskReward: signal.riskReward,
+          confidence: signal.confidence,
+          reason: signal.reason,
+          structure: signal.structure,
+          trend: signal.htf4hTrend,
+          timestamp: signal.timestamp,
+        };
+      } else {
+        // DO_NOT_TRADE - minimal response
+        return {
+          state: signal.state,
+          reason: signal.reason,
+        };
+      }
+    }),
+  };
 }
+
 
 /**
  * Format for Telegram alert (only ACTIVE_TRADE)
