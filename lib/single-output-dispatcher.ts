@@ -48,6 +48,12 @@ export function dispatchTradeViewModels(viewModels: TradeViewModel[]): Dispatche
         `[DISPATCHER] Signal found: ${viewModel.symbol} ${viewModel.signalState} @ ${viewModel.entryPrice}`
       );
       
+      // CRITICAL: entryPrice MUST be present for active signals
+      if (!viewModel.entryPrice) {
+        console.error(`[DISPATCHER] ERROR: ${viewModel.symbol} is ${viewModel.signalState} but missing entryPrice`);
+        continue;
+      }
+      
       // Record this signal as dispatched
       const signal: DispatchedSignal = {
         symbol: viewModel.symbol,
