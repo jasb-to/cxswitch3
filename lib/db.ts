@@ -24,7 +24,7 @@ export async function getSignals(): Promise<Signal[]> {
     const { data, error } = await supabase
       .from("signals")
       .select("*")
-      .order("updated_at", { ascending: false });
+      .order("updatedAt", { ascending: false });
 
     if (error) {
       console.error("[DB] Error fetching signals:", error);
@@ -89,5 +89,3 @@ export async function setSignals(signals: Signal[]): Promise<boolean> {
     return false;
   }
 }
-
-

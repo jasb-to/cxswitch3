@@ -10,42 +10,11 @@ interface ApiResponse {
   lastUpdated: string;
 }
 
-// Default signals to show when no data is loaded
-const DEFAULT_SIGNALS: Signal[] = [
-  {
-    symbol: "BTC",
-    price: 0,
-    state: "DO_NOT_TRADE",
-    bias_4h: "NEUTRAL",
-    bias_15m: "NEUTRAL",
-    macro: "NEUTRAL",
-    activation: "DO_NOT_TRADE",
-    signal_quality: 0,
-    updated_at: new Date().toISOString(),
-  },
-  {
-    symbol: "ETH",
-    price: 0,
-    state: "DO_NOT_TRADE",
-    bias_4h: "NEUTRAL",
-    bias_15m: "NEUTRAL",
-    macro: "NEUTRAL",
-    activation: "DO_NOT_TRADE",
-    signal_quality: 0,
-    updated_at: new Date().toISOString(),
-  },
-  {
-    symbol: "SOL",
-    price: 0,
-    state: "DO_NOT_TRADE",
-    bias_4h: "NEUTRAL",
-    bias_15m: "NEUTRAL",
-    macro: "NEUTRAL",
-    activation: "DO_NOT_TRADE",
-    signal_quality: 0,
-    updated_at: new Date().toISOString(),
-  },
-];
+const DARK_BG = "#0b0f14";
+const CARD_BG = "#111827";
+const BORDER_COLOR = "#1f2937";
+const TEXT_PRIMARY = "#e5e7eb";
+const TEXT_MUTED = "#9ca3af";
 
 export default function Dashboard() {
   const [data, setData] = useState<ApiResponse | null>(null);
@@ -89,138 +58,136 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, []);
 
-  // Always use loaded data or defaults - NEVER show loading screen
-  const symbols = data?.symbols || DEFAULT_SIGNALS;
-  const activeTrades = data?.activeTrades || [];
-  const activeSymbols = data?.activeSymbols || [];
+  const symbols = data?.symbols || [];
 
   return (
-    <div style={{ padding: "20px", fontFamily: "system-ui, sans-serif" }}>
+    <div style={{ backgroundColor: DARK_BG, color: TEXT_PRIMARY, minHeight: "100vh", padding: "20px", fontFamily: "system-ui, sans-serif" }}>
       {/* TOP BAR */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: "30px",
-          borderBottom: "1px solid #ddd",
-          paddingBottom: "15px",
-        }}
-      >
-        <div>
-          <h1 style={{ margin: "0 0 5px 0" }}>Trading Signals</h1>
-          <p style={{ margin: 0, color: "#666", fontSize: "12px" }}>
-            Last updated: {data?.lastUpdated ? new Date(data.lastUpdated).toLocaleTimeString() : "waiting..."}
-          </p>
-        </div>
-        <div style={{ display: "flex", gap: "10px" }}>
-          <button
-            onClick={triggerCron}
-            disabled={loading}
-            style={{
-              padding: "8px 16px",
-              cursor: loading ? "not-allowed" : "pointer",
-              opacity: loading ? 0.5 : 1,
-            }}
-          >
-            Refresh
-          </button>
-          <button onClick={testTelegram} style={{ padding: "8px 16px", cursor: "pointer" }}>
-            Test Alert
-          </button>
+      <div style={{ marginBottom: "30px", borderBottom: `1px solid ${BORDER_COLOR}`, paddingBottom: "15px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <h1 style={{ margin: "0 0 5px 0", fontSize: "28px", fontWeight: "bold" }}>Trading Signals</h1>
+            <p style={{ margin: 0, color: TEXT_MUTED, fontSize: "12px" }}>
+              Last updated: {data?.lastUpdated ? new Date(data.lastUpdated).toLocaleTimeString() : "waiting..."}
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: "10px" }}>
+            <button
+              onClick={triggerCron}
+              disabled={loading}
+              style={{
+                padding: "8px 16px",
+                cursor: loading ? "not-allowed" : "pointer",
+                opacity: loading ? 0.5 : 1,
+                backgroundColor: CARD_BG,
+                color: TEXT_PRIMARY,
+                border: `1px solid ${BORDER_COLOR}`,
+                borderRadius: "6px",
+              }}
+            >
+              Refresh
+            </button>
+            <button
+              onClick={testTelegram}
+              style={{
+                padding: "8px 16px",
+                cursor: "pointer",
+                backgroundColor: CARD_BG,
+                color: TEXT_PRIMARY,
+                border: `1px solid ${BORDER_COLOR}`,
+                borderRadius: "6px",
+              }}
+            >
+              Test Alert
+            </button>
+          </div>
         </div>
       </div>
 
       {/* SYMBOL CARDS - ALWAYS 3 */}
-      <div style={{ marginBottom: "30px" }}>
-        <h2>Market Overview</h2>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
-            gap: "15px",
-          }}
-        >
-          {symbols.map((signal) => (
-            <div
-              key={signal.symbol}
-              style={{
-                border: "1px solid #ddd",
-                borderRadius: "8px",
-                padding: "15px",
-                backgroundColor:
-                  signal.state === "SNIPER" ? "#f0fff4" : signal.state === "BUILDING" ? "#fffbeb" : "#fef2f2",
-              }}
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px" }}>
-                <h3 style={{ margin: 0 }}>{signal.symbol}</h3>
-                <span
-                  style={{
-                    fontWeight: "bold",
-                    color:
-                      signal.state === "SNIPER" ? "green" : signal.state === "BUILDING" ? "orange" : "red",
-                  }}
-                >
-                  {signal.state}
-                </span>
-              </div>
-              <div style={{ fontSize: "14px", color: "#666", marginBottom: "10px" }}>
-                <div>Price: ${signal.price.toFixed(2)}</div>
-                <div>4H Bias: {signal.bias_4h}</div>
-                <div>15M Bias: {signal.bias_15m}</div>
-                <div>Macro: {signal.macro}</div>
-                <div>Activation: {signal.activation}</div>
-                <div>Signal Quality: {signal.signal_quality}%</div>
-                <div style={{ fontSize: "12px", color: "#999", marginTop: "8px" }}>
-                  Updated: {new Date(signal.updated_at).toLocaleTimeString()}
+      <div style={{ marginBottom: "40px" }}>
+        <h2 style={{ marginBottom: "20px", fontSize: "18px", fontWeight: "600" }}>Market Overview</h2>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "20px" }}>
+          {symbols.map((signal) => {
+            const isSniper = signal.state === "SNIPER";
+            const isBuilding = signal.state === "BUILDING";
+            const stateColor = isSniper ? "#22c55e" : isBuilding ? "#eab308" : "#6b7280";
+            const borderColor = isSniper ? "#15803d" : isBuilding ? "#854d0e" : "#374151";
+
+            return (
+              <div
+                key={signal.symbol}
+                style={{
+                  backgroundColor: CARD_BG,
+                  border: `1px solid ${borderColor}`,
+                  borderRadius: "8px",
+                  padding: "20px",
+                }}
+              >
+                {/* HEADER */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+                  <div>
+                    <div style={{ fontSize: "24px", fontWeight: "bold" }}>{signal.symbol}/USD</div>
+                  </div>
+                  <div
+                    style={{
+                      backgroundColor: stateColor,
+                      color: signal.state === "BUILDING" ? "#000" : "#fff",
+                      padding: "6px 12px",
+                      borderRadius: "4px",
+                      fontSize: "12px",
+                      fontWeight: "bold",
+                    }}
+                  >
+                    {signal.state}
+                  </div>
+                </div>
+
+                {/* PRICE */}
+                <div style={{ marginBottom: "16px", fontSize: "32px", fontWeight: "bold", color: stateColor }}>
+                  ${signal.price.toLocaleString()}
+                </div>
+
+                {/* MARKET BIAS SECTION */}
+                <div style={{ marginBottom: "16px", backgroundColor: DARK_BG, padding: "12px", borderRadius: "4px", borderLeft: `2px solid ${stateColor}` }}>
+                  <div style={{ fontSize: "12px", color: TEXT_MUTED, fontWeight: "600", marginBottom: "8px" }}>Market Bias</div>
+                  <div style={{ fontSize: "14px", marginBottom: "4px" }}>4H: <span style={{ fontWeight: "bold" }}>{signal.bias_4h}</span></div>
+                  <div style={{ fontSize: "14px", marginBottom: "4px" }}>15M: <span style={{ fontWeight: "bold" }}>{signal.bias_15m}</span></div>
+                  <div style={{ fontSize: "14px" }}>Macro: <span style={{ fontWeight: "bold" }}>{signal.macro}</span></div>
+                </div>
+
+                {/* STATE OF PLAY SECTION */}
+                <div style={{ marginBottom: "16px", backgroundColor: DARK_BG, padding: "12px", borderRadius: "4px" }}>
+                  <div style={{ fontSize: "12px", color: TEXT_MUTED, fontWeight: "600", marginBottom: "8px" }}>State of Play</div>
+                  <div style={{ fontSize: "14px", marginBottom: "4px" }}>Direction: <span style={{ fontWeight: "bold", color: stateColor }}>{isSniper ? "LONG bias" : isBuilding ? "WAIT" : "NEUTRAL"}</span></div>
+                  <div style={{ fontSize: "14px", marginBottom: "4px" }}>Activation: <span style={{ fontWeight: "bold" }}>{signal.activation}</span></div>
+                  <div style={{ fontSize: "14px" }}>Signal Quality: <span style={{ fontWeight: "bold", color: stateColor }}>{signal.signalQuality}%</span></div>
+                </div>
+
+                {/* FOOTER */}
+                <div style={{ fontSize: "12px", color: TEXT_MUTED, textAlign: "right" }}>
+                  Updated: {new Date(signal.updatedAt).toLocaleTimeString()}
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
       {/* ACTIVE TRADES SECTION */}
-      {activeTrades.length > 0 && (
+      {data?.activeTrades.length ? (
         <div style={{ marginBottom: "30px" }}>
-          <h2>Active Trades ({activeTrades.length})</h2>
-          <div style={{ border: "1px solid #ddd", borderRadius: "8px", padding: "15px" }}>
-            {activeTrades.map((signal) => (
-              <div key={signal.symbol} style={{ marginBottom: "10px", paddingBottom: "10px", borderBottom: "1px solid #eee" }}>
-                <strong>{signal.symbol}</strong> - {signal.state}
-                <div style={{ fontSize: "12px", color: "#666", marginTop: "5px" }}>
-                  Price: ${signal.price.toFixed(2)} | Quality: {signal.signal_quality}%
-                </div>
+          <h2 style={{ marginBottom: "16px", fontSize: "18px", fontWeight: "600" }}>Active Trades ({data.activeTrades.length})</h2>
+          <div style={{ backgroundColor: CARD_BG, border: `1px solid ${BORDER_COLOR}`, borderRadius: "8px", padding: "16px" }}>
+            {data.activeTrades.map((signal) => (
+              <div key={signal.symbol} style={{ paddingBottom: "12px", marginBottom: "12px", borderBottom: `1px solid ${BORDER_COLOR}` }}>
+                <div style={{ fontSize: "14px", fontWeight: "bold", marginBottom: "4px" }}>{signal.symbol}</div>
+                <div style={{ fontSize: "12px", color: TEXT_MUTED }}>Price: ${signal.price.toLocaleString()} | Quality: {signal.signalQuality}%</div>
               </div>
             ))}
           </div>
         </div>
-      )}
-
-      {/* ACTIVE SYMBOLS SECTION */}
-      {activeSymbols.length > 0 && (
-        <div>
-          <h2>Active Symbols ({activeSymbols.length})</h2>
-          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-            {activeSymbols.map((signal) => (
-              <span
-                key={signal.symbol}
-                style={{
-                  backgroundColor:
-                    signal.state === "SNIPER" ? "#d1fae5" : signal.state === "BUILDING" ? "#fed7aa" : "#fecaca",
-                  padding: "8px 12px",
-                  borderRadius: "4px",
-                  fontSize: "12px",
-                  fontWeight: "bold",
-                }}
-              >
-                {signal.symbol}: {signal.state}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
+      ) : null}
     </div>
   );
 }
-

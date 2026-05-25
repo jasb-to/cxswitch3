@@ -5,9 +5,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 /**
- * READ-ONLY API - Returns signals from Supabase
- * NO transformation, NO computation, NO interpretation
- * Pure passthrough of what cron stored
+ * Fixed API contract with exact field names
  */
 export async function GET() {
   try {
@@ -38,4 +36,5 @@ export async function GET() {
     );
   }
 }
+
 

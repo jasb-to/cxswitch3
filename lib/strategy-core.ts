@@ -16,20 +16,14 @@ export interface Signal {
   bias_15m: string;
   macro: string;
   activation: string;
-  signal_quality: number;
-  updated_at: string;
+  signalQuality: number;
+  updatedAt: string;
 }
 
 /**
  * STRATEGY ENGINE - Pure function, no side effects
  * Input: symbol (validated)
  * Output: exactly one of ["SNIPER", "BUILDING", "DO_NOT_TRADE"]
- * 
- * RULES:
- * - MUST return one of 3 states (no null, undefined, partial)
- * - MUST NOT throw (except on invalid symbol)
- * - MUST NOT depend on frontend/API/external state
- * - MUST be deterministic (same input = same output)
  */
 export function evaluateMarket(symbol: string): TradeState {
   // Guard 1: Symbol validation - hard fail
@@ -45,11 +39,7 @@ export function evaluateMarket(symbol: string): TradeState {
     return "DO_NOT_TRADE";
   }
 
-  // SIMPLIFIED STRATEGY (deterministic, repeatable)
-  // This is intentionally minimal to avoid multi-layer interpretation
-  
   // Pseudo-deterministic: hash symbol to state (for testing)
-  // In production, this would fetch real market data and evaluate
   const charSum = sym.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0);
   
   if (charSum % 3 === 0) {
@@ -62,21 +52,27 @@ export function evaluateMarket(symbol: string): TradeState {
 }
 
 /**
- * Create a complete signal with all required fields for Supabase
+ * Create a complete signal for Supabase
  */
 export function createSignal(symbol: string): Signal {
   const state = evaluateMarket(symbol);
   
-  // Default values for market data (in production, these would come from real market data)
+  // Mock prices for testing
+  const prices: Record<string, number> = {
+    BTC: 77250,
+    ETH: 2113,
+    SOL: 85,
+  };
+
   return {
     symbol,
-    price: 0,
+    price: prices[symbol] || 0,
     state,
     bias_4h: "NEUTRAL",
     bias_15m: "NEUTRAL",
     macro: "NEUTRAL",
     activation: state,
-    signal_quality: state === "SNIPER" ? 100 : state === "BUILDING" ? 50 : 0,
-    updated_at: new Date().toISOString(),
+    signalQuality: state === "SNIPER" ? 100 : state === "BUILDING" ? 50 : 0,
+    updatedAt: new Date().toISOString(),
   };
 }
