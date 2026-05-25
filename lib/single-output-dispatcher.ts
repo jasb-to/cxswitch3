@@ -6,10 +6,11 @@
  * 
  * This eliminates the two-pipeline problem where UI and alerts read different data.
  * 
- * The dispatcher is responsible for:
- * 1. Publishing TradeViewModels to UI snapshot
- * 2. Deriving alert payload from the SAME TradeViewModels
- * 3. Ensuring consistency between what UI sees and what alerts say
+ * TELEGRAM DEDUPLICATION: Use stable signalTransitionId based on symbol+mode+direction.
+ * This ensures:
+ * - Same signal = same ID = cooldown works
+ * - Edge-triggered alerts only (state change = new ID hash)
+ * - No spam on cron retries
  */
 
 import { TradeViewModel } from "./trade-viewmodel";
@@ -28,7 +29,7 @@ export interface DispatchedSignal {
  * Dispatch TradeViewModels through single output channel
  * 
  * CRITICAL: This is THE ONLY place where alerts are enqueued.
- * All other alert-checking logic is now invalid and MUST be removed.
+ * Uses stable signalTransitionId for proper edge-triggered deduplication.
  */
 export function dispatchTradeViewModels(viewModels: TradeViewModel[]): DispatchedSignal[] {
   console.log(`[DISPATCHER] Dispatching ${viewModels.length} TradeViewModels`);
@@ -36,53 +37,69 @@ export function dispatchTradeViewModels(viewModels: TradeViewModel[]): Dispatche
   const dispatchedSignals: DispatchedSignal[] = [];
   
   for (const viewModel of viewModels) {
-    // ✅ FIX #1: Use signalState (engine truth) NOT activationState (UI-only derived)
-    // signalState is the source of truth from the engine
-    // activationState is UI-only display field derived from signalState
+    // Only dispatch ACTIVE_SNIPER and CONFIRMED (active signals)
     const isActiveSignal = 
       viewModel.signalState === "ACTIVE_SNIPER" || 
       viewModel.signalState === "CONFIRMED";
     
     if (isActiveSignal) {
       console.log(
-        `[DISPATCHER] Signal found: ${viewModel.symbol} ${viewModel.signalState} @ ${viewModel.entryPrice}`
+        `[DISPATCHER] Active signal: ${viewModel.symbol} ${viewModel.signalState} ` +
+        `dir=${viewModel.direction} conf=${viewModel.confidence}% ` +
+        `entry=${viewModel.targetPrices?.tp1 || viewModel.price || "?"}`
       );
       
-      // CRITICAL: entryPrice MUST be present for active signals
-      if (!viewModel.entryPrice || viewModel.entryPrice === 0) {
-        console.warn(`[DISPATCHER] WARNING: ${viewModel.symbol} is ${viewModel.signalState} but entryPrice is ${viewModel.entryPrice}. Skipping dispatch.`);
-        continue; // Skip this signal, don't throw - graceful degradation
+      // CRITICAL: Validate all required fields before dispatch
+      if (!viewModel.price || viewModel.price === 0) {
+        console.warn(`[DISPATCHER] ${viewModel.symbol}: missing price, skipping`);
+        continue;
+      }
+      if (!viewModel.targetPrices || !viewModel.targetPrices.tp1 || !viewModel.targetPrices.sl) {
+        console.warn(
+          `[DISPATCHER] ${viewModel.symbol}: incomplete trade details ` +
+          `tp1=${viewModel.targetPrices?.tp1} sl=${viewModel.targetPrices?.sl}, skipping`
+        );
+        continue;
       }
       
-      // Record this signal as dispatched
+      // Record signal
       const signal: DispatchedSignal = {
         symbol: viewModel.symbol,
         activationState: viewModel.activationState,
-        entryPrice: viewModel.entryPrice,
+        entryPrice: viewModel.price,
         direction: viewModel.direction,
         confidence: viewModel.confidence,
       };
       dispatchedSignals.push(signal);
       
-      // CRITICAL: Enqueue alert from this SAME viewmodel data
-      // UI and alerts now read from identical source
+      // Enqueue alert from SAME viewmodel data
       try {
+        // CRITICAL FIX: Use STABLE signalTransitionId, not Date.now()
+        // Same signal = same ID = cooldown works = NO SPAM
+        const stableSignalId = `${viewModel.symbol}-${viewModel.signalState}-${viewModel.direction}`;
+        
         enqueueAlert({
           symbol: viewModel.symbol,
           mode: viewModel.signalState === "ACTIVE_SNIPER" ? "SNIPER" : "CONFIRMED",
           direction: viewModel.direction,
-          price: viewModel.entryPrice,
+          price: viewModel.price,
           signalState: viewModel.signalState,
           structureState: viewModel.structureState,
           confidence: viewModel.confidence,
-          tp: viewModel.takeProfit,
-          sl: viewModel.stopLoss,
+          tp: viewModel.targetPrices.tp1,
+          sl: viewModel.targetPrices.sl,
           reason: viewModel.rejectionReason || "Signal activated",
           timestamp: new Date().toISOString(),
-          signalTransitionId: `${viewModel.symbol}-${Date.now()}`,
+          signalTransitionId: stableSignalId,
+          // Include complete trade context so Telegram doesn't need to derive it
+          targetPrices: viewModel.targetPrices,
+          riskReward: viewModel.riskReward,
+          htf4hTrend: viewModel.htf4hTrend,
+          execution15mState: viewModel.execution15mState,
+          entryPrice: viewModel.price,
         });
         
-        console.log(`[DISPATCHER] Alert enqueued for ${viewModel.symbol}`);
+        console.log(`[DISPATCHER] Alert enqueued: ${viewModel.symbol} ID=${stableSignalId}`);
       } catch (err) {
         console.error(`[DISPATCHER] Failed to enqueue alert for ${viewModel.symbol}:`, err);
       }
@@ -94,16 +111,14 @@ export function dispatchTradeViewModels(viewModels: TradeViewModel[]): Dispatche
 }
 
 /**
- * ✅ FIX #2: Validate dispatcher invariant
- * CRITICAL: DO_NOT_TRADE is VALID output, not invalid input
- * Only ACTIVE_SNIPER requires complete trade fields
+ * Validate dispatcher invariants
+ * DO_NOT_TRADE is valid output (rejected signals), not an error
  */
 export function validateDispatcherInvariants(viewModels: TradeViewModel[]): void {
   console.log(`[DISPATCHER_VALIDATION] Validating ${viewModels.length} viewmodels...`);
   
   for (let i = 0; i < viewModels.length; i++) {
     const vm = viewModels[i];
-    console.log(`[DISPATCHER_VALIDATION] Card ${i}: symbol=${vm.symbol}, signalState=${vm.signalState}, activationState=${vm.activationState}`);
     
     // All cards must have these basic fields
     if (!vm.symbol) {
@@ -116,10 +131,10 @@ export function validateDispatcherInvariants(viewModels: TradeViewModel[]): void
       throw new Error(`[DISPATCHER_INVARIANT] Card ${i} (${vm.symbol}) missing activationState`);
     }
     
-    // ✅ FIX #2: Only ACTIVE_SNIPER requires entryPrice and trade fields
-    // DO_NOT_TRADE is valid output (just rejected signals)
-    // Note: entryPrice validation happens in dispatchTradeViewModels (graceful skip)
-    // This invariant validator now only checks for missing fields, not values
+    console.log(
+      `[DISPATCHER_VALIDATION] ${vm.symbol}: state=${vm.signalState} ` +
+      `has_tp=${!!vm.targetPrices?.tp1} rr=${vm.riskReward}`
+    );
   }
   
   console.log(`[DISPATCHER_VALIDATION] All ${viewModels.length} cards passed validation`);

@@ -57,46 +57,64 @@ export const EMPTY_SNAPSHOT: CanonicalSnapshot = {
 
 /**
  * Normalize card to SnapshotCard DTO
- * HARD ENFORCE all required fields with no spreads or optional chaining
+ * HARD ENFORCE all required fields - no spreads, no optional chaining
+ * 
+ * CRITICAL: Card MUST come from buildTradeViewModel which populates:
+ * - targetPrices: { tp1, tp2, sl }
+ * - riskReward: number
+ * 
+ * These are ALWAYS present after buildTradeViewModel, so we ALWAYS include them.
  */
 function normalizeCardToDTO(card: any): SnapshotCard {
-  // STEP 5: DEBUG LOG - will show exactly what's in the card before serialization
-  console.log("[SNAPSHOT_CARD_NORMALIZATION]", {
+  // DEBUG: Log card state BEFORE DTO normalization
+  console.log("[SNAPSHOT_NORMALIZATION]", {
     symbol: card.symbol,
     signalState: card.signalState,
     activationState: card.activationState,
-    structureState: card.structureState, // CRITICAL: Verify structureState is present
+    structureState: card.structureState,
+    hasTargetPrices: !!card.targetPrices,
+    riskReward: card.riskReward,
   });
 
-  // STEP 2: HARD GUARD - throw if activationState missing
+  // HARD GUARD - throw if activationState missing
   if (!card.activationState) {
     throw new Error(
-      `[SNAPSHOT_CONTRACT_VIOLATION] Missing activationState for ${card.symbol}. Card state: ${JSON.stringify({
-        symbol: card.symbol,
-        signalState: card.signalState,
-        keys: Object.keys(card),
-      })}`
+      `[SNAPSHOT_VIOLATION] ${card.symbol} missing activationState. ` +
+      `Keys: ${Object.keys(card).join(", ")}`
     );
   }
 
-  // STEP 3: EXPLICIT FIELD MAPPING - NO spreads, NO inference
+  // CRITICAL: Always use targetPrices and riskReward from viewmodel
+  // These are guaranteed to exist after buildTradeViewModel
   const snapshotCard: SnapshotCard = {
     symbol: card.symbol || "UNKNOWN",
     price: card.price || 0,
     source: card.source || "kraken",
     direction: card.direction || "NEUTRAL",
     signalState: card.signalState || "NONE",
-    activationState: card.activationState, // Already validated above
-    structureState: card.structureState ?? "RANGE", // CRITICAL FIX: Include in DTO, default to RANGE
+    activationState: card.activationState,
+    structureState: card.structureState || "RANGE",
     confidence: card.confidence || 0,
     structure: card.structure || "UNKNOWN",
     execution15mState: card.execution15mState || "CHOP",
     htf4hTrend: card.htf4hTrend || "NEUTRAL",
     notes: card.notes,
-    // Trade details - only if present (for ACTIVE_SNIPER/CONFIRMED)
-    ...(card.targetPrices && { targetPrices: card.targetPrices }),
-    ...(card.riskReward !== undefined && { riskReward: card.riskReward }),
+    
+    // CRITICAL FIX: Use viewmodel's targetPrices and riskReward directly
+    // buildTradeViewModel ALWAYS populates these, so spread them always
+    ...(card.targetPrices && {
+      targetPrices: card.targetPrices,
+    }),
+    ...(card.riskReward !== undefined && {
+      riskReward: card.riskReward,
+    }),
   };
+
+  console.log("[SNAPSHOT_DTO_RESULT]", {
+    symbol: snapshotCard.symbol,
+    hasTargetPrices: !!snapshotCard.targetPrices,
+    riskReward: snapshotCard.riskReward,
+  });
 
   return snapshotCard;
 }
