@@ -8,6 +8,8 @@
  * Backend → snapshot → ALL consumers (UI, counters, alerts, displays)
  */
 
+import { logForensicPoint } from "./forensic-logger";
+
 /**
  * SNAPSHOT CARD DTO - HARD CONTRACT
  * REQUIRED fields only. No optional chaining. No spreads.
@@ -66,7 +68,9 @@ export const EMPTY_SNAPSHOT: CanonicalSnapshot = {
  * These are ALWAYS present after buildTradeViewModel, so we ALWAYS include them.
  */
 function normalizeCardToDTO(card: any): SnapshotCard {
-  // DEBUG: Log card state BEFORE DTO normalization
+  // FORENSIC POINT 1: Log card state BEFORE DTO normalization
+  logForensicPoint("SNAPSHOT_INPUT", card, card.symbol);
+  
   console.log("[SNAPSHOT_NORMALIZATION]", {
     symbol: card.symbol,
     signalState: card.signalState,
@@ -109,6 +113,9 @@ function normalizeCardToDTO(card: any): SnapshotCard {
       riskReward: card.riskReward,
     }),
   };
+
+  // FORENSIC POINT 2: Log snapshot card AFTER normalization
+  logForensicPoint("SNAPSHOT_OUTPUT", snapshotCard, snapshotCard.symbol);
 
   console.log("[SNAPSHOT_DTO_RESULT]", {
     symbol: snapshotCard.symbol,
