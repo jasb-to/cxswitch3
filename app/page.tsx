@@ -184,30 +184,44 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
 
 export default function Dashboard() {
   const [snap, setSnap] = useState(null);
+  const [mounted, setMounted] = useState(false);
   const [tg, setTg] = useState<"idle" | "sending" | "ok" | "error">("idle");
   const [tgMsg, setTgMsg] = useState("");
   const [now, setNow] = useState(0);
   const [isValidating, setIsValidating] = useState(false);
 
+  // Hydration safety: only render after mount
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   // Clock tick (UI only, no state derivation)
   useEffect(() => {
+    if (!mounted) return;
     setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [mounted]);
 
   // Signals polling - 15s interval (backend cron updates canonical state)
   // NEVER poll faster than 15s - this creates unnecessary Vercel executions
   useEffect(() => {
+    if (!mounted) return;
+    
     const POLL_INTERVAL = 15000; // 15 seconds max
     
     const poll = async () => {
       try {
         const res = await fetch("/api/signals", { cache: "no-store" });
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
         const json = await res.json();
-        setSnap(json);
+        // Guard: only set if valid data structure
+        if (json && typeof json === "object") {
+          setSnap(json);
+        }
       } catch (error) {
         console.error("[POLL_ERROR] /api/signals:", error);
+        // Continue polling even on error
       }
     };
 
@@ -220,21 +234,30 @@ export default function Dashboard() {
       clearInterval(id);
       console.log("[POLL_CLEANUP] Signals polling stopped");
     };
-  }, []);
+  }, [mounted]);
 
   // Manual refresh handler
   const handleRefresh = async () => {
     setIsValidating(true);
     try {
       const res = await fetch("/api/signals", { cache: "no-store" });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const json = await res.json();
-      setSnap(json);
+      // Guard: only set if valid data structure
+      if (json && typeof json === "object") {
+        setSnap(json);
+      }
     } catch (error) {
       console.error("[REFRESH_ERROR] /api/signals:", error);
     } finally {
       setIsValidating(false);
     }
   };
+
+  // Hydration guard: don't render until mounted
+  if (!mounted) {
+    return <DashboardBootstrap />;
+  }
 
   // ZERO LOGIC: Backend truth only
   // No interpretation, no derivation, no state machine
@@ -248,7 +271,7 @@ export default function Dashboard() {
     <DashboardLive
       snapshot={snap}
       now={now}
-      isHydrated={true}
+      isHydrated={mounted}
       isValidating={isValidating}
       mutate={handleRefresh}
       tg={tg}
@@ -260,10 +283,12 @@ export default function Dashboard() {
         setTgMsg("");
         try {
           const res = await fetch("/api/test-telegram", { method: "POST" });
+          if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
           const json = await res.json();
           setTg(json.ok ? "ok" : "error");
           setTgMsg(json.ok ? "Message sent" : (json.error ?? "Failed"));
-        } catch {
+        } catch (error) {
+          console.error("[TG_ERROR]", error);
           setTg("error");
           setTgMsg("Network error");
         }
