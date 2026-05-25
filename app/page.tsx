@@ -1,19 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-
-interface Signal {
-  symbol: string;
-  price: number;
-  state: "DO_NOT_TRADE" | "BUILDING" | "SNIPER";
-  bias_4h: string;
-  bias_15m: string;
-  macro: string;
-  activation: string;
-  signal_quality: number;
-  trade: any;
-  updated_at: string;
-}
+import type { Signal } from "@/lib/strategy-core";
 
 interface ApiResponse {
   symbols: Signal[];
@@ -21,6 +9,43 @@ interface ApiResponse {
   activeSymbols: Signal[];
   lastUpdated: string;
 }
+
+// Default signals to show when no data is loaded
+const DEFAULT_SIGNALS: Signal[] = [
+  {
+    symbol: "BTC",
+    price: 0,
+    state: "DO_NOT_TRADE",
+    bias_4h: "NEUTRAL",
+    bias_15m: "NEUTRAL",
+    macro: "NEUTRAL",
+    activation: "DO_NOT_TRADE",
+    signal_quality: 0,
+    updated_at: new Date().toISOString(),
+  },
+  {
+    symbol: "ETH",
+    price: 0,
+    state: "DO_NOT_TRADE",
+    bias_4h: "NEUTRAL",
+    bias_15m: "NEUTRAL",
+    macro: "NEUTRAL",
+    activation: "DO_NOT_TRADE",
+    signal_quality: 0,
+    updated_at: new Date().toISOString(),
+  },
+  {
+    symbol: "SOL",
+    price: 0,
+    state: "DO_NOT_TRADE",
+    bias_4h: "NEUTRAL",
+    bias_15m: "NEUTRAL",
+    macro: "NEUTRAL",
+    activation: "DO_NOT_TRADE",
+    signal_quality: 0,
+    updated_at: new Date().toISOString(),
+  },
+];
 
 export default function Dashboard() {
   const [data, setData] = useState<ApiResponse | null>(null);
@@ -64,7 +89,8 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, []);
 
-  const symbols = data?.symbols || [];
+  // Always use loaded data or defaults - NEVER show loading screen
+  const symbols = data?.symbols || DEFAULT_SIGNALS;
   const activeTrades = data?.activeTrades || [];
   const activeSymbols = data?.activeSymbols || [];
 
@@ -84,7 +110,7 @@ export default function Dashboard() {
         <div>
           <h1 style={{ margin: "0 0 5px 0" }}>Trading Signals</h1>
           <p style={{ margin: 0, color: "#666", fontSize: "12px" }}>
-            Last updated: {data?.lastUpdated ? new Date(data.lastUpdated).toLocaleTimeString() : "never"}
+            Last updated: {data?.lastUpdated ? new Date(data.lastUpdated).toLocaleTimeString() : "waiting..."}
           </p>
         </div>
         <div style={{ display: "flex", gap: "10px" }}>
@@ -97,10 +123,10 @@ export default function Dashboard() {
               opacity: loading ? 0.5 : 1,
             }}
           >
-            🔄 Refresh
+            Refresh
           </button>
           <button onClick={testTelegram} style={{ padding: "8px 16px", cursor: "pointer" }}>
-            📩 Test Alert
+            Test Alert
           </button>
         </div>
       </div>
@@ -143,14 +169,12 @@ export default function Dashboard() {
                 <div>4H Bias: {signal.bias_4h}</div>
                 <div>15M Bias: {signal.bias_15m}</div>
                 <div>Macro: {signal.macro}</div>
+                <div>Activation: {signal.activation}</div>
                 <div>Signal Quality: {signal.signal_quality}%</div>
-              </div>
-              {signal.trade && (
-                <div style={{ backgroundColor: "white", padding: "10px", borderRadius: "4px", fontSize: "12px" }}>
-                  <strong>Active Trade</strong>
-                  <pre style={{ margin: "5px 0 0 0" }}>{JSON.stringify(signal.trade, null, 2)}</pre>
+                <div style={{ fontSize: "12px", color: "#999", marginTop: "8px" }}>
+                  Updated: {new Date(signal.updated_at).toLocaleTimeString()}
                 </div>
-              )}
+              </div>
             </div>
           ))}
         </div>
@@ -164,7 +188,9 @@ export default function Dashboard() {
             {activeTrades.map((signal) => (
               <div key={signal.symbol} style={{ marginBottom: "10px", paddingBottom: "10px", borderBottom: "1px solid #eee" }}>
                 <strong>{signal.symbol}</strong> - {signal.state}
-                <pre style={{ margin: "5px 0 0 0", fontSize: "12px" }}>{JSON.stringify(signal.trade, null, 2)}</pre>
+                <div style={{ fontSize: "12px", color: "#666", marginTop: "5px" }}>
+                  Price: ${signal.price.toFixed(2)} | Quality: {signal.signal_quality}%
+                </div>
               </div>
             ))}
           </div>
@@ -197,3 +223,4 @@ export default function Dashboard() {
     </div>
   );
 }
+

@@ -8,6 +8,18 @@ export type TradeState = "SNIPER" | "BUILDING" | "DO_NOT_TRADE";
 export const SYMBOLS = ["BTC", "ETH", "SOL"] as const;
 export type Symbol = typeof SYMBOLS[number];
 
+export interface Signal {
+  symbol: string;
+  price: number;
+  state: TradeState;
+  bias_4h: string;
+  bias_15m: string;
+  macro: string;
+  activation: string;
+  signal_quality: number;
+  updated_at: string;
+}
+
 /**
  * STRATEGY ENGINE - Pure function, no side effects
  * Input: symbol (validated)
@@ -50,22 +62,21 @@ export function evaluateMarket(symbol: string): TradeState {
 }
 
 /**
- * Raw signal result - used everywhere, no transformation
+ * Create a complete signal with all required fields for Supabase
  */
-export interface RawSignal {
-  symbol: Symbol;
-  state: TradeState;
-  timestamp: number;
-}
-
-/**
- * Create a raw signal (cron only)
- */
-export function createSignal(symbol: string): RawSignal {
+export function createSignal(symbol: string): Signal {
   const state = evaluateMarket(symbol);
+  
+  // Default values for market data (in production, these would come from real market data)
   return {
-    symbol: symbol as Symbol,
+    symbol,
+    price: 0,
     state,
-    timestamp: Date.now(),
+    bias_4h: "NEUTRAL",
+    bias_15m: "NEUTRAL",
+    macro: "NEUTRAL",
+    activation: state,
+    signal_quality: state === "SNIPER" ? 100 : state === "BUILDING" ? 50 : 0,
+    updated_at: new Date().toISOString(),
   };
 }

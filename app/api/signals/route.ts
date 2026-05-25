@@ -16,7 +16,7 @@ export async function GET() {
     console.log("[API/SIGNALS] Fetched", signals.length, "signals");
 
     // Organize signals by state
-    const activeTrades = signals.filter((s) => s.state === "SNIPER" && s.trade);
+    const activeTrades = signals.filter((s) => s.state === "SNIPER");
     const activeSymbols = signals.filter((s) => s.state !== "DO_NOT_TRADE");
 
     return NextResponse.json({
