@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { sendTestMessage } from "@/lib/telegram";
+import { sendTestMessage } from "@/lib/telegram-listener";
 
 export const dynamic = "force-dynamic";
 
@@ -15,3 +15,4 @@ export async function POST() {
     );
   }
 }
+
