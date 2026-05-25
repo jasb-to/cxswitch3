@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import type { Signal } from "@/lib/strategy-core";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
@@ -8,19 +9,6 @@ let supabase: any = null;
 // Only create client if env vars are available
 if (supabaseUrl && supabaseKey) {
   supabase = createClient(supabaseUrl, supabaseKey);
-}
-
-export interface Signal {
-  symbol: string;
-  state: "DO_NOT_TRADE" | "BUILDING" | "SNIPER";
-  price: number;
-  bias_4h: string;
-  bias_15m: string;
-  macro: string;
-  activation: string;
-  signal_quality: number;
-  trade?: any;
-  updated_at: string;
 }
 
 /**
@@ -101,4 +89,5 @@ export async function setSignals(signals: Signal[]): Promise<boolean> {
     return false;
   }
 }
+
 
