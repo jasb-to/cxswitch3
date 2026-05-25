@@ -10,268 +10,236 @@ interface ApiResponse {
   lastUpdated: string;
 }
 
-const FALLBACK_SIGNAL = (symbol: string): Signal => ({
-  symbol,
-  price: 0,
-  state: "DO_NOT_TRADE",
-  bias_4h: "NEUTRAL",
-  bias_15m: "NEUTRAL",
-  macro: "NEUTRAL",
-  activation: "DO_NOT_TRADE",
-  signal_quality: 0,
-  updated_at: new Date().toISOString(),
-});
-
 export default function Dashboard() {
-  const [data, setData] = useState<ApiResponse | null>(null);
+  const [signals, setSignals] = useState<Signal[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [testingAlert, setTestingAlert] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
+  // Fetch signals from API
   const fetchSignals = async () => {
     try {
       setError(null);
+      console.log("[FRONTEND] Fetching signals...");
+      
       const res = await fetch("/api/signals", { cache: "no-store" });
+      const json = (await res.json()) as ApiResponse;
       
-      if (!res.ok) {
-        throw new Error(`API returned ${res.status}`);
+      console.log("[FRONTEND API RESPONSE]", json);
+      
+      // Guaranteed: symbols array always exists and has 3 items
+      const symbols = json?.symbols ?? [];
+      console.log("[FRONTEND SYMBOLS]", symbols);
+      
+      if (Array.isArray(symbols)) {
+        setSignals(symbols);
       }
-
-      const json = await res.json();
-      console.log("[FRONTEND SIGNALS]", json);
-
-      // Parse symbols with fallback logic
-      let symbols = 
-        json?.symbols ??
-        json?.data?.symbols ??
-        (Array.isArray(json) ? json : []);
-
-      if (!Array.isArray(symbols)) {
-        symbols = [];
-      }
-
-      console.log("[FRONTEND PARSED]", symbols);
-
-      setData({
-        symbols,
-        activeTrades: json?.activeTrades ?? symbols.filter(s => s?.state === "SNIPER"),
-        activeSymbols: json?.activeSymbols ?? symbols.filter(s => s?.state !== "DO_NOT_TRADE"),
-        lastUpdated: json?.lastUpdated ?? new Date().toISOString(),
-      });
     } catch (err) {
-      console.error("[FETCH] Error:", err);
-      setError(String(err));
+      const message = err instanceof Error ? err.message : "Failed to fetch signals";
+      console.error("[FRONTEND ERROR]", message);
+      setError(message);
     }
   };
 
-  const triggerCron = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch("/api/cron", { method: "POST" });
-      if (!res.ok) throw new Error("Cron failed");
-      
-      // Wait a moment for data to update
-      await new Promise(r => setTimeout(r, 500));
-      
-      await fetchSignals();
-    } catch (err) {
-      setError("Cron error: " + String(err));
-      console.error("[CRON] Error:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const testTelegram = async () => {
-    try {
-      const res = await fetch("/api/test-telegram", { method: "POST" });
-      const result = await res.json();
-      alert(result.ok ? "Telegram alert sent!" : "Telegram failed: " + (result.error || "Unknown error"));
-    } catch (err) {
-      alert("Telegram error: " + String(err));
-    }
-  };
-
+  // Load signals on mount and every 5 seconds
   useEffect(() => {
     fetchSignals();
-    const id = setInterval(fetchSignals, 15000);
-    return () => clearInterval(id);
+    const interval = setInterval(fetchSignals, 5000);
+    return () => clearInterval(interval);
   }, []);
 
-  // Force merge: always show 3 cards
-  const SYMBOLS = ["BTC", "ETH", "SOL"];
-  const apiSymbols = data?.symbols ?? [];
-  
-  console.log("[FRONTEND MERGED]", apiSymbols);
+  // Refresh button: call cron, wait, then reload signals
+  const handleRefresh = async () => {
+    try {
+      setRefreshing(true);
+      console.log("[FRONTEND] Calling /api/cron...");
+      await fetch("/api/cron", { method: "POST" });
+      
+      // Wait 500ms for cron to complete
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      await fetchSignals();
+      setToast({ type: "success", message: "Signals refreshed" });
+    } catch (err) {
+      setToast({ type: "error", message: "Refresh failed" });
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
-  const merged = SYMBOLS.map(sym => {
-    const found = apiSymbols.find(s => s?.symbol === sym);
-    if (found) return found;
-    return FALLBACK_SIGNAL(sym);
-  });
+  // Test Telegram button
+  const handleTestTelegram = async () => {
+    try {
+      setTestingAlert(true);
+      console.log("[FRONTEND] Calling /api/test-telegram...");
+      const res = await fetch("/api/test-telegram", { method: "POST" });
+      
+      if (res.ok) {
+        setToast({ type: "success", message: "Telegram alert sent" });
+      } else {
+        setToast({ type: "error", message: "Telegram alert failed" });
+      }
+    } catch (err) {
+      setToast({ type: "error", message: "Telegram error" });
+    } finally {
+      setTestingAlert(false);
+    }
+  };
 
-  console.log("[FRONTEND MERGED RESULT]", merged);
+  // Determine readiness label
+  const getReadiness = (signal: Signal): string => {
+    if (signal.state === "SNIPER") return "READY";
+    if (signal.state === "BUILDING") return "WATCH";
+    return "NO TRADE";
+  };
+
+  // Get state color (left border)
+  const getStateColor = (signal: Signal): string => {
+    if (signal.state === "SNIPER") {
+      return signal.direction === "LONG" ? "#00c853" : "#ff1744";
+    }
+    if (signal.state === "BUILDING") return "#ff9100";
+    return "#666";
+  };
 
   return (
-    <div style={{ backgroundColor: "#000", color: "#e5e7eb", minHeight: "100vh", padding: "24px", fontFamily: "system-ui, sans-serif" }}>
-      {/* HEADER */}
-      <div style={{ marginBottom: "32px", borderBottom: "1px solid #2a2a2a", paddingBottom: "20px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <h1 style={{ margin: "0 0 8px 0", fontSize: "32px", fontWeight: "bold", color: "#fff" }}>Trading Signals</h1>
-            <p style={{ margin: 0, color: "#9ca3af", fontSize: "13px" }}>
-              Last updated: {data?.lastUpdated ? new Date(data.lastUpdated).toLocaleTimeString() : "never"}
-            </p>
-            {error && (
-              <p style={{ margin: "8px 0 0 0", color: "#ff6b6b", fontSize: "12px" }}>
-                ⚠️ {error}
-              </p>
-            )}
-          </div>
-          <div style={{ display: "flex", gap: "12px" }}>
-            <button
-              onClick={triggerCron}
-              disabled={loading}
-              style={{
-                padding: "8px 16px",
-                backgroundColor: "#222",
-                color: "#fff",
-                border: "1px solid #2a2a2a",
-                borderRadius: "6px",
-                cursor: loading ? "not-allowed" : "pointer",
-                opacity: loading ? 0.5 : 1,
-                fontSize: "14px",
-                fontWeight: "500",
-              }}
-            >
-              {loading ? "Refreshing..." : "Refresh"}
-            </button>
-            <button
-              onClick={testTelegram}
-              style={{
-                padding: "8px 16px",
-                backgroundColor: "#222",
-                color: "#fff",
-                border: "1px solid #2a2a2a",
-                borderRadius: "6px",
-                cursor: "pointer",
-                fontSize: "14px",
-                fontWeight: "500",
-              }}
-            >
-              Test Alert
-            </button>
-          </div>
+    <div className="min-h-screen bg-black text-white p-6">
+      {/* Header */}
+      <div className="flex justify-between items-center mb-8">
+        <h1 className="text-3xl font-bold">Trading Signals</h1>
+        <div className="flex gap-3">
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded"
+          >
+            {refreshing ? "Refreshing..." : "Refresh"}
+          </button>
+          <button
+            onClick={handleTestTelegram}
+            disabled={testingAlert}
+            className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 rounded"
+          >
+            {testingAlert ? "Testing..." : "Test Telegram"}
+          </button>
         </div>
       </div>
 
-      {/* SYMBOL CARDS - ALWAYS RENDER 3 */}
-      <div style={{ marginBottom: "32px" }}>
-        <h2 style={{ marginBottom: "16px", fontSize: "18px", fontWeight: "600", color: "#fff" }}>Market Overview</h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "16px" }}>
-          {merged.map((signal) => {
-            if (!signal) return null;
-
-            const isSNIPER = signal.state === "SNIPER";
-            const isBuilding = signal.state === "BUILDING";
-            const borderColor = isSNIPER 
-              ? (signal.direction === "LONG" ? "#00c853" : "#ff1744") 
-              : isBuilding ? "#ff9100" : "#555";
-
-            return (
-              <div
-                key={signal.symbol}
-                style={{
-                  backgroundColor: "#111",
-                  border: "1px solid #2a2a2a",
-                  borderLeft: `4px solid ${borderColor}`,
-                  borderRadius: "8px",
-                  padding: "16px",
-                }}
-              >
-                {/* HEADER */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "16px" }}>
-                  <div>
-                    <h3 style={{ margin: "0 0 8px 0", fontSize: "20px", fontWeight: "bold", color: "#fff" }}>{signal.symbol}</h3>
-                    <p style={{ margin: 0, fontSize: "12px", color: "#9ca3af" }}>
-                      Price: ${signal.price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </p>
-                  </div>
-                  <div
-                    style={{
-                      padding: "6px 12px",
-                      backgroundColor: borderColor,
-                      color: "#000",
-                      borderRadius: "4px",
-                      fontSize: "12px",
-                      fontWeight: "bold",
-                    }}
-                  >
-                    {signal.state}
-                  </div>
-                </div>
-
-                {/* SNIPER DETAILS */}
-                {isSNIPER && signal.direction ? (
-                  <div style={{ fontSize: "13px", lineHeight: "1.6", color: "#e5e7eb" }}>
-                    <div style={{ marginBottom: "12px", borderTop: "1px solid #2a2a2a", paddingTop: "12px" }}>
-                      <div style={{ color: "#9ca3af", fontSize: "11px", fontWeight: "600", marginBottom: "8px" }}>TRADE DETAILS</div>
-                      <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>Direction:</span>{" "}
-                        <span style={{ color: borderColor, fontWeight: "bold" }}>{signal.direction}</span>
-                      </div>
-                      <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>Entry:</span> <span style={{ fontWeight: "bold" }}>${signal.entry?.toFixed(2)}</span>
-                      </div>
-                      <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>SL:</span> <span style={{ fontWeight: "bold" }}>${signal.stopLoss?.toFixed(2)}</span>
-                      </div>
-                      <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>TP:</span> <span style={{ fontWeight: "bold" }}>${signal.takeProfit?.toFixed(2)}</span>
-                      </div>
-                      <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>RR:</span> <span style={{ fontWeight: "bold" }}>{signal.riskReward?.toFixed(2)}</span>
-                      </div>
-                      <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>Confidence:</span>{" "}
-                        <span style={{ fontWeight: "bold", color: borderColor }}>{signal.confidence}%</span>
-                      </div>
-                      <div>
-                        <span style={{ color: "#9ca3af" }}>Reason:</span> <span style={{ fontWeight: "500" }}>{signal.reason}</span>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ fontSize: "13px", color: "#9ca3af", paddingTop: "8px" }}>
-                    No active trade details
-                  </div>
-                )}
-
-                {/* FOOTER */}
-                <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px solid #2a2a2a", fontSize: "11px", color: "#6b7280", textAlign: "right" }}>
-                  Updated: {new Date(signal.updated_at).toLocaleTimeString()}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* ACTIVE TRADES SECTION */}
-      {data?.activeTrades && data.activeTrades.length > 0 && (
-        <div>
-          <h2 style={{ marginBottom: "16px", fontSize: "18px", fontWeight: "600", color: "#fff" }}>Active Trades ({data.activeTrades.length})</h2>
-          <div style={{ backgroundColor: "#111", border: "1px solid #2a2a2a", borderRadius: "8px", padding: "16px" }}>
-            {data.activeTrades.map((signal) => (
-              <div key={signal.symbol} style={{ marginBottom: "12px", paddingBottom: "12px", borderBottom: "1px solid #2a2a2a" }}>
-                <div style={{ fontWeight: "bold", marginBottom: "4px", color: "#fff" }}>{signal.symbol}</div>
-                <div style={{ fontSize: "12px", color: "#9ca3af" }}>
-                  {signal.direction} @ ${signal.entry?.toFixed(2)} | RR: {signal.riskReward?.toFixed(2)}
-                </div>
-              </div>
-            ))}
-          </div>
+      {/* Toast */}
+      {toast && (
+        <div className={`mb-4 p-3 rounded ${toast.type === "success" ? "bg-green-900" : "bg-red-900"}`}>
+          {toast.message}
         </div>
       )}
+
+      {/* Error message */}
+      {error && <div className="mb-4 p-3 bg-red-900 rounded">{error}</div>}
+
+      {/* Symbol cards grid */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {signals.map((signal) => (
+          <div
+            key={signal.symbol}
+            className="border rounded-lg p-6"
+            style={{
+              backgroundColor: "#111111",
+              borderColor: "#2a2a2a",
+              borderLeftColor: getStateColor(signal),
+              borderLeftWidth: "4px",
+            }}
+          >
+            {/* Symbol header */}
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-2xl font-bold">{signal.symbol}/USD</h2>
+              <div className={`px-3 py-1 rounded text-sm font-semibold ${
+                signal.state === "SNIPER" 
+                  ? signal.direction === "LONG" 
+                    ? "bg-green-900 text-green-200"
+                    : "bg-red-900 text-red-200"
+                  : signal.state === "BUILDING"
+                  ? "bg-orange-900 text-orange-200"
+                  : "bg-gray-700 text-gray-200"
+              }`}>
+                {signal.state}
+              </div>
+            </div>
+
+            {/* Price */}
+            <div className="mb-4 pb-4 border-b border-gray-700">
+              <div className="text-gray-400 text-sm">Price</div>
+              <div className="text-2xl font-mono font-bold">
+                ${signal.price > 0 ? signal.price.toLocaleString("en-US", { maximumFractionDigits: 2 }) : "0.00"}
+              </div>
+            </div>
+
+            {/* State and readiness */}
+            <div className="mb-4 pb-4 border-b border-gray-700">
+              <div className="text-gray-400 text-sm">Readiness</div>
+              <div className="text-lg font-semibold">{getReadiness(signal)}</div>
+            </div>
+
+            {/* Market biases */}
+            <div className="mb-4 pb-4 border-b border-gray-700 grid grid-cols-2 gap-2">
+              <div>
+                <div className="text-gray-400 text-xs">4H Bias</div>
+                <div className="font-mono text-sm">Neutral</div>
+              </div>
+              <div>
+                <div className="text-gray-400 text-xs">15M Bias</div>
+                <div className="font-mono text-sm">Neutral</div>
+              </div>
+              <div className="col-span-2">
+                <div className="text-gray-400 text-xs">Macro Trend</div>
+                <div className="font-mono text-sm">Neutral</div>
+              </div>
+            </div>
+
+            {/* SNIPER trade details */}
+            {signal.state === "SNIPER" && signal.direction && (
+              <div className="pt-4 border-t border-gray-700">
+                <div className="text-sm font-semibold mb-3 text-green-300">Trade Setup</div>
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Direction:</span>
+                    <span className="font-mono font-bold">{signal.direction}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Entry:</span>
+                    <span className="font-mono">${signal.entry?.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Stop Loss:</span>
+                    <span className="font-mono text-red-400">${signal.stopLoss?.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Take Profit:</span>
+                    <span className="font-mono text-green-400">${signal.takeProfit?.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between pt-2 border-t border-gray-700">
+                    <span className="text-gray-400">Risk/Reward:</span>
+                    <span className="font-mono font-bold">{signal.riskReward?.toFixed(2)}x</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Confidence:</span>
+                    <span className="font-mono">{signal.confidence}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Reason:</span>
+                    <span className="font-mono text-xs">{signal.reason}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Updated timestamp */}
+            <div className="mt-4 pt-4 border-t border-gray-700 text-xs text-gray-500">
+              {new Date(signal.updated_at).toLocaleTimeString()}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
