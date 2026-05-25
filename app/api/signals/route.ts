@@ -1,40 +1,33 @@
 import { NextResponse } from "next/server";
-import { getSnapshot } from "@/lib/runtime-snapshot";
+import { getSignals, isReady } from "@/lib/signal-store";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 /**
- * PURE SNAPSHOT API - v8.6 CRITICAL FIX
- * 
- * Returns EXACTLY what cron produced. No recomputation.
- * No rebuilding TradeViewModels. No fallback logic.
- * 
- * If cron wrote it, we serve it. Nothing else.
- * This is the ONLY source of truth for the UI.
+ * READ-ONLY API - Returns raw signals from cron
+ * NO transformation, NO computation, NO interpretation
+ * Pure passthrough of what cron stored
  */
 export async function GET() {
   try {
-    const snapshot = getSnapshot();
-    
-    // CRITICAL: Zero transformation. Serve cron output as-is.
-    // If UI needs different shape, that's a UI layer concern.
-    // API is a pure read-through of what cron produced.
-    
-    console.log("[SIGNALS_API] Serving snapshot", {
-      ready: snapshot.ready,
-      cardCount: snapshot.cards.length,
-      firstCard: snapshot.cards.length > 0 ? {
-        symbol: snapshot.cards[0].symbol,
-        activationState: (snapshot.cards[0] as any).activationState,
-      } : null,
+    const signals = getSignals();
+    const ready = isReady();
+
+    console.log("[API/SIGNALS] Ready:", ready, "Count:", signals.length);
+
+    return NextResponse.json({
+      ready,
+      signals: signals.map((s) => ({
+        symbol: s.symbol,
+        state: s.state,
+        timestamp: s.timestamp,
+      })),
     });
-    
-    return NextResponse.json(snapshot);
   } catch (error) {
-    console.error('[GET /api/signals ERROR]', error);
+    console.error("[API/SIGNALS] Error:", error);
     return NextResponse.json(
-      { error: 'Internal error', cards: [], setups: [] },
+      { ready: false, signals: [] },
       { status: 500 }
     );
   }
