@@ -13,9 +13,11 @@ const nextConfig = {
         headers: [
           {
             key: "Content-Security-Policy",
-            // Strict CSP: no eval, no dynamic code execution
-            // Recharts works fine with strict CSP - no eval needed
-            value: "default-src 'self'; script-src 'self' https:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https:;",
+            // Allow inline scripts and styles for frontend execution
+            // script-src: 'self' + 'unsafe-inline' + 'unsafe-eval' for dynamic code
+            // style-src: 'self' + 'unsafe-inline' for inline styles
+            // This unblocks all frontend rendering
+            value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https:;",
           },
         ],
       },
