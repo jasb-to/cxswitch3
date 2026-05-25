@@ -14,13 +14,10 @@ const FALLBACK_SIGNAL = (symbol: string): Signal => ({
   symbol,
   price: 0,
   state: "DO_NOT_TRADE",
-  direction: undefined,
-  entry: undefined,
-  stopLoss: undefined,
-  takeProfit: undefined,
-  riskReward: undefined,
-  confidence: undefined,
-  reason: undefined,
+  trend_4h: "Neutral",
+  structure_15m: "Range",
+  macro_bias: "Neutral",
+  readiness_score: 0,
   updated_at: new Date().toISOString(),
 });
 
@@ -103,21 +100,36 @@ export default function Dashboard() {
   const SYMBOLS = ["BTC", "ETH", "SOL"];
   const apiSymbols = data?.symbols ?? [];
   
-  console.log("[FRONTEND MERGED]", apiSymbols);
-
   const merged = SYMBOLS.map(sym => {
     const found = apiSymbols.find(s => s?.symbol === sym);
     if (found) return found;
     return FALLBACK_SIGNAL(sym);
   });
 
-  console.log("[FRONTEND MERGED RESULT]", merged);
+  // Calculate global readiness (average of 3 cards)
+  const globalReadiness = Math.round(
+    merged.reduce((sum, s) => sum + (s?.readiness_score ?? 0), 0) / 3
+  );
+
+  const getReadinessLabel = (score: number) => {
+    if (score < 30) return "No setup forming";
+    if (score < 60) return "Watching breakout structure";
+    if (score < 85) return "Approaching sniper condition";
+    return "High probability execution zone";
+  };
+
+  const getReadinessColor = (score: number) => {
+    if (score < 30) return "#555";
+    if (score < 60) return "#ff9100";
+    if (score < 85) return "#00d4ff";
+    return "#00c853";
+  };
 
   return (
     <div style={{ backgroundColor: "#000", color: "#e5e7eb", minHeight: "100vh", padding: "24px", fontFamily: "system-ui, sans-serif" }}>
       {/* HEADER */}
       <div style={{ marginBottom: "32px", borderBottom: "1px solid #2a2a2a", paddingBottom: "20px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
           <div>
             <p style={{ margin: "0 0 8px 0", fontSize: "32px", fontWeight: "bold", color: "#fff" }}>Trading Signals</p>
             <p style={{ margin: 0, color: "#9ca3af", fontSize: "13px" }} suppressHydrationWarning>
@@ -164,12 +176,35 @@ export default function Dashboard() {
             </button>
           </div>
         </div>
+
+        {/* TRADE READINESS METER (GLOBAL) */}
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+            <span style={{ fontSize: "13px", fontWeight: "600", color: "#fff" }}>Trade Readiness</span>
+            <span style={{ fontSize: "14px", fontWeight: "bold", color: getReadinessColor(globalReadiness) }}>
+              {globalReadiness}%
+            </span>
+          </div>
+          <div style={{ width: "100%", height: "8px", backgroundColor: "#111", borderRadius: "4px", overflow: "hidden", marginBottom: "8px" }}>
+            <div
+              style={{
+                width: `${globalReadiness}%`,
+                height: "100%",
+                backgroundColor: getReadinessColor(globalReadiness),
+                transition: "width 0.3s ease",
+              }}
+            />
+          </div>
+          <p style={{ margin: "6px 0 0 0", fontSize: "12px", color: "#9ca3af" }}>
+            {getReadinessLabel(globalReadiness)}
+          </p>
+        </div>
       </div>
 
       {/* SYMBOL CARDS - ALWAYS RENDER 3 */}
       <div style={{ marginBottom: "32px" }}>
         <h2 style={{ marginBottom: "16px", fontSize: "18px", fontWeight: "600", color: "#fff" }}>Market Overview</h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "16px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "16px" }}>
           {merged.map((signal) => {
             if (!signal) return null;
 
@@ -212,41 +247,72 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {/* SNIPER DETAILS */}
-                {isSNIPER && signal.direction ? (
-                  <div style={{ fontSize: "13px", lineHeight: "1.6", color: "#e5e7eb" }}>
-                    <div style={{ marginBottom: "12px", borderTop: "1px solid #2a2a2a", paddingTop: "12px" }}>
-                      <div style={{ color: "#9ca3af", fontSize: "11px", fontWeight: "600", marginBottom: "8px" }}>TRADE DETAILS</div>
-                      <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>Direction:</span>{" "}
-                        <span style={{ color: borderColor, fontWeight: "bold" }}>{signal.direction}</span>
-                      </div>
-                      <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>Entry:</span> <span style={{ fontWeight: "bold" }}>${signal.entry?.toFixed(2)}</span>
-                      </div>
-                      <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>SL:</span> <span style={{ fontWeight: "bold" }}>${signal.stopLoss?.toFixed(2)}</span>
-                      </div>
-                      <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>TP:</span> <span style={{ fontWeight: "bold" }}>${signal.takeProfit?.toFixed(2)}</span>
-                      </div>
-                      <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>RR:</span> <span style={{ fontWeight: "bold" }}>{signal.riskReward?.toFixed(2)}</span>
-                      </div>
-                      <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>Confidence:</span>{" "}
-                        <span style={{ fontWeight: "bold", color: borderColor }}>{signal.confidence}%</span>
-                      </div>
-                      <div>
-                        <span style={{ color: "#9ca3af" }}>Reason:</span> <span style={{ fontWeight: "500" }}>{signal.reason}</span>
-                      </div>
+                {/* MARKET STRUCTURE (ALWAYS SHOWN) */}
+                <div style={{ fontSize: "12px", lineHeight: "1.6", color: "#e5e7eb", marginBottom: "12px", paddingBottom: "12px", borderBottom: "1px solid #2a2a2a" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                    <div>
+                      <div style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600", marginBottom: "4px" }}>4H TREND</div>
+                      <div style={{ fontWeight: "500", color: "#fff" }}>{signal.trend_4h}</div>
+                    </div>
+                    <div>
+                      <div style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600", marginBottom: "4px" }}>15M STRUCTURE</div>
+                      <div style={{ fontWeight: "500", color: "#fff" }}>{signal.structure_15m}</div>
                     </div>
                   </div>
-                ) : (
-                  <div style={{ fontSize: "13px", color: "#9ca3af", paddingTop: "8px" }}>
-                    No active trade details
+                  <div style={{ marginTop: "8px" }}>
+                    <div style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600", marginBottom: "4px" }}>MACRO BIAS</div>
+                    <div style={{ fontWeight: "500", color: "#fff" }}>{signal.macro_bias}</div>
                   </div>
-                )}
+                </div>
+
+                {/* READINESS SCORE (PERSONAL) */}
+                <div style={{ fontSize: "12px", marginBottom: "12px", paddingBottom: "12px", borderBottom: "1px solid #2a2a2a" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                    <span style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600" }}>READINESS</span>
+                    <span style={{ fontWeight: "bold", color: getReadinessColor(signal.readiness_score) }}>
+                      {signal.readiness_score}%
+                    </span>
+                  </div>
+                  <div style={{ width: "100%", height: "6px", backgroundColor: "#0a0a0a", borderRadius: "3px", overflow: "hidden" }}>
+                    <div
+                      style={{
+                        width: `${signal.readiness_score}%`,
+                        height: "100%",
+                        backgroundColor: getReadinessColor(signal.readiness_score),
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* SNIPER DETAILS (IF APPLICABLE) */}
+                {isSNIPER && signal.direction ? (
+                  <div style={{ fontSize: "12px", lineHeight: "1.6", color: "#e5e7eb" }}>
+                    <div style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600", marginBottom: "8px" }}>TRADE SETUP</div>
+                    <div style={{ marginBottom: "6px" }}>
+                      <span style={{ color: "#9ca3af" }}>Direction:</span>{" "}
+                      <span style={{ color: borderColor, fontWeight: "bold" }}>{signal.direction}</span>
+                    </div>
+                    <div style={{ marginBottom: "6px" }}>
+                      <span style={{ color: "#9ca3af" }}>Entry:</span> <span style={{ fontWeight: "bold" }}>${signal.entry?.toFixed(2)}</span>
+                    </div>
+                    <div style={{ marginBottom: "6px" }}>
+                      <span style={{ color: "#9ca3af" }}>SL:</span> <span style={{ fontWeight: "bold" }}>${signal.stopLoss?.toFixed(2)}</span>
+                    </div>
+                    <div style={{ marginBottom: "6px" }}>
+                      <span style={{ color: "#9ca3af" }}>TP:</span> <span style={{ fontWeight: "bold" }}>${signal.takeProfit?.toFixed(2)}</span>
+                    </div>
+                    <div style={{ marginBottom: "6px" }}>
+                      <span style={{ color: "#9ca3af" }}>RR:</span> <span style={{ fontWeight: "bold" }}>{signal.riskReward?.toFixed(2)}</span>
+                    </div>
+                    <div style={{ marginBottom: "6px" }}>
+                      <span style={{ color: "#9ca3af" }}>Confidence:</span>{" "}
+                      <span style={{ fontWeight: "bold", color: borderColor }}>{signal.confidence}%</span>
+                    </div>
+                    <div>
+                      <span style={{ color: "#9ca3af" }}>Reason:</span> <span style={{ fontWeight: "500" }}>{signal.reason}</span>
+                    </div>
+                  </div>
+                ) : null}
 
                 {/* FOOTER */}
                 <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px solid #2a2a2a", fontSize: "11px", color: "#6b7280", textAlign: "right" }} suppressHydrationWarning>
@@ -257,23 +323,6 @@ export default function Dashboard() {
           })}
         </div>
       </div>
-
-      {/* ACTIVE TRADES SECTION */}
-      {data?.activeTrades && data.activeTrades.length > 0 && (
-        <div>
-          <h2 style={{ marginBottom: "16px", fontSize: "18px", fontWeight: "600", color: "#fff" }}>Active Trades ({data.activeTrades.length})</h2>
-          <div style={{ backgroundColor: "#111", border: "1px solid #2a2a2a", borderRadius: "8px", padding: "16px" }}>
-            {data.activeTrades.map((signal) => (
-              <div key={signal.symbol} style={{ marginBottom: "12px", paddingBottom: "12px", borderBottom: "1px solid #2a2a2a" }}>
-                <div style={{ fontWeight: "bold", marginBottom: "4px", color: "#fff" }}>{signal.symbol}</div>
-                <div style={{ fontSize: "12px", color: "#9ca3af" }}>
-                  {signal.direction} @ ${signal.entry?.toFixed(2)} | RR: {signal.riskReward?.toFixed(2)}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
