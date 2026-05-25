@@ -6,17 +6,31 @@ import type { TradeSignal } from "@/lib/trade-signal-types";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-// Hard-coded valid symbols only
-const VALID_SYMBOLS = ["BTC", "ETH", "SOL"];
+// Hard-coded valid symbols only - NEVER ALLOW UNDEFINED
+const VALID_SYMBOLS = ["BTC", "ETH", "SOL"] as const;
+
+// Strict symbol validation - fail fast on any invalid input
+function validateSymbol(symbol: unknown): symbol is typeof VALID_SYMBOLS[number] {
+  if (typeof symbol !== "string") return false;
+  if (!symbol || symbol.length === 0) return false;
+  return VALID_SYMBOLS.includes(symbol as any);
+}
+
 
 /**
  * Generate market data for a symbol
+ * GUARD: Symbol must be type-validated before calling
  * Returns null if data cannot be fetched
  */
 async function getMarketData(symbol: string) {
-  // Guard: Validate symbol is in whitelist
-  if (!symbol || !VALID_SYMBOLS.includes(symbol)) {
-    throw new Error(`Unknown symbol: ${symbol}`);
+  // Double guard: Reject any undefined or invalid symbol
+  if (!symbol || symbol === "undefined" || symbol === "") {
+    throw new Error(`[GUARD] Invalid symbol: ${JSON.stringify(symbol)}`);
+  }
+
+  // Validate symbol is in whitelist
+  if (!VALID_SYMBOLS.includes(symbol as any)) {
+    throw new Error(`[GUARD] Unknown symbol: ${symbol}`);
   }
 
   // TODO: Fetch real market data from Kraken or data source
@@ -46,25 +60,31 @@ async function runExecutionCycle(): Promise<TradeSignal[]> {
   const cycleStart = Date.now();
 
   console.log("[CRON] Execution cycle started");
-  console.log("[CRON] Fetching market data for: BTC, ETH, SOL");
+  console.log("[CRON] Processing: BTC, ETH, SOL");
 
   for (const symbol of VALID_SYMBOLS) {
+    // Guard: Type-safe validation - symbol is guaranteed to be valid
+    if (!validateSymbol(symbol)) {
+      console.error(`[CRON] Invalid symbol type: ${typeof symbol}`);
+      continue;
+    }
+
     try {
-      // Fetch market data - this will throw if symbol is invalid
+      // Fetch market data - validateSymbol ensures it's in whitelist
       const marketData = await getMarketData(symbol);
 
       // Generate signal from market data
       const signal = generateTradeSignal(marketData);
 
       signals.push(signal);
-      console.log(`[CRON] Signal generated for ${symbol}: ${signal.state}`);
+      console.log(`[CRON] ${symbol}: ${signal.state}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[CRON] Error processing ${symbol}: ${message}`);
+      console.error(`[CRON] ${symbol} error: ${message}`);
       // Add explicit DO_NOT_TRADE with error reason
       signals.push({
         state: "DO_NOT_TRADE",
-        reason: `Failed to generate signal: ${message}`,
+        reason: `Error: ${message}`,
       });
     }
   }
@@ -74,6 +94,7 @@ async function runExecutionCycle(): Promise<TradeSignal[]> {
 
   return signals;
 }
+
 
 /**
  * GET /api/cron - Main entry point
