@@ -25,16 +25,6 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
   const canonicalMacro = card.htf4hTrend || "NEUTRAL";
   const canonicalConfidence = card.confidence ?? 0;
   
-  // DEBUG: Confirm UI matches backend exactly (TEMP - removes later)
-  console.log("[CANONICAL TRACE]", JSON.stringify({
-    symbol: card.symbol,
-    direction: canonicalDirection,
-    activation: canonicalActivation,
-    macro: canonicalMacro,
-    confidence: canonicalConfidence,
-    targetPrices: card.targetPrices ? "YES" : "NO",
-  }));
-  
   // Direction colors
   const directionColor = canonicalDirection === "LONG" ? "text-green-400" : canonicalDirection === "SHORT" ? "text-red-400" : "text-zinc-400";
   const directionBg = canonicalDirection === "LONG" ? "bg-green-950" : canonicalDirection === "SHORT" ? "bg-red-950" : "bg-zinc-900";
@@ -158,14 +148,18 @@ function TradeDecisionPanel({ card }: { card: SymbolCardState }) {
         </div>
       </div>
 
-      {/* ENTRY DATA: Only if targetPrices exists */}
-      {card.targetPrices && (
+      {/* ENTRY DATA: Only if targetPrices exists (ACTIVE_SNIPER/CONFIRMED) */}
+      {card.targetPrices ? (
         <div className="border-t border-zinc-800 pt-3 text-sm font-mono space-y-1">
           <div className="flex justify-between"><span className="text-zinc-400">Entry:</span> <span className="text-cyan-400">${fmt(card.price)}</span></div>
           <div className="flex justify-between"><span className="text-zinc-400">TP1:</span> <span className="text-green-400">${fmt(card.targetPrices.tp1)}</span></div>
           <div className="flex justify-between"><span className="text-zinc-400">TP2:</span> <span className="text-green-400">${fmt(card.targetPrices.tp2)}</span></div>
           <div className="flex justify-between"><span className="text-zinc-400">SL:</span> <span className="text-red-400">${fmt(card.targetPrices.sl)}</span></div>
           <div className="flex justify-between mt-2 pt-2 border-t border-zinc-700"><span className="text-zinc-400">R:R:</span> <span className="text-green-400 font-bold">{card.riskReward?.toFixed(1) ?? "—"}:1</span></div>
+        </div>
+      ) : (
+        <div className="border-t border-zinc-800 pt-3 text-sm text-zinc-500">
+          No active trade setup available
         </div>
       )}
     </div>
