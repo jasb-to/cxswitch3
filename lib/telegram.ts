@@ -1,3 +1,5 @@
+import type { Signal } from "@/lib/signal-store";
+
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
@@ -24,20 +26,30 @@ export async function sendTestMessage(): Promise<{ ok: boolean; error?: string }
 }
 
 /**
- * Send a signal alert when SNIPER state is detected.
+ * Send a SNIPER signal alert with trade details
  */
-export async function sendSignalAlert(symbol: string, price: number, state: string, quality: number): Promise<{ ok: boolean; error?: string }> {
+export async function sendSignalAlert(signal: Signal): Promise<{ ok: boolean; error?: string }> {
   if (!BOT_TOKEN || !CHAT_ID) {
-    console.warn("[TELEGRAM] Bot not configured, skipping alert");
+    console.warn("[TELEGRAM] Bot not configured");
     return { ok: false, error: "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set" };
   }
 
-  if (state !== "SNIPER") {
-    console.log(`[TELEGRAM] State is ${state}, not SNIPER - skipping alert`);
-    return { ok: false, error: `State ${state} is not SNIPER` };
+  if (signal.state !== "SNIPER" || !signal.direction) {
+    return { ok: false, error: "Not a SNIPER signal" };
   }
 
-  const message = `🚨 SNIPER SIGNAL\n\n${symbol}/USD\nPrice: $${price.toLocaleString()}\nQuality: ${quality}%`;
+  const message = `🚨 SNIPER SIGNAL
+
+${signal.symbol}/USD
+${signal.direction}
+
+Entry: $${signal.entry?.toFixed(2)}
+SL: $${signal.stopLoss?.toFixed(2)}
+TP: $${signal.takeProfit?.toFixed(2)}
+RR: ${signal.riskReward?.toFixed(2)}
+
+Confidence: ${signal.confidence}%
+Reason: ${signal.reason}`;
 
   try {
     const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
@@ -51,13 +63,14 @@ export async function sendSignalAlert(symbol: string, price: number, state: stri
 
     const json = await res.json();
     if (!json.ok) {
-      console.error(`[TELEGRAM] Alert send failed: ${json.description}`);
-      return { ok: false, error: json.description ?? "Unknown error" };
+      console.error(`[TELEGRAM] Alert failed: ${json.description}`);
+      return { ok: false, error: json.description };
     }
-    console.log(`[TELEGRAM] Alert sent for ${symbol}`);
+    console.log(`[TELEGRAM] Alert sent for ${signal.symbol}`);
     return { ok: true };
   } catch (err) {
-    console.error(`[TELEGRAM] Exception sending alert:`, err);
+    console.error(`[TELEGRAM] Exception:`, err);
     return { ok: false, error: String(err) };
   }
 }
+

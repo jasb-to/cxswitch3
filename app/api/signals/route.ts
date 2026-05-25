@@ -1,17 +1,15 @@
 import { NextResponse } from "next/server";
-import { getSignals } from "@/lib/db";
+import { getSignals } from "@/lib/signal-store";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 /**
- * READ-ONLY API - Returns signals from Supabase
- * NO transformation, NO computation, NO interpretation
- * Pure passthrough of what cron stored
+ * READ-ONLY API - Returns signals from memory
  */
 export async function GET() {
   try {
-    const signals = await getSignals();
+    const signals = getSignals();
 
     console.log("[API/SIGNALS] Fetched", signals.length, "signals");
 
@@ -38,4 +36,5 @@ export async function GET() {
     );
   }
 }
+
 
