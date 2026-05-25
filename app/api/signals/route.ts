@@ -11,18 +11,25 @@ export async function GET() {
   try {
     const signals = getSignals();
 
-    console.log("[API/SIGNALS] Fetched", signals.length, "signals");
+    console.log("[API/SIGNALS RAW]", JSON.stringify({
+      symbolsCount: signals.length,
+      symbols: signals.map(s => ({ symbol: s.symbol, state: s.state, price: s.price }))
+    }, null, 2));
 
     // Organize signals by state
     const activeTrades = signals.filter((s) => s.state === "SNIPER");
     const activeSymbols = signals.filter((s) => s.state !== "DO_NOT_TRADE");
 
-    return NextResponse.json({
-      symbols: signals,
+    const response = {
+      symbols: Array.isArray(signals) ? signals : [],
       activeTrades,
       activeSymbols,
       lastUpdated: new Date().toISOString(),
-    });
+    };
+
+    console.log("[API/SIGNALS RESPONSE]", JSON.stringify(response, null, 2));
+
+    return NextResponse.json(response);
   } catch (error) {
     console.error("[API/SIGNALS] Error:", error);
     return NextResponse.json(
