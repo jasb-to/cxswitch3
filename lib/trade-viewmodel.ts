@@ -6,6 +6,7 @@
  */
 
 import { Card, StructureState } from "./types";
+import { logForensicPoint } from "./forensic-logger";
 
 export type TradeViewModel = {
   // Identity
@@ -47,8 +48,15 @@ export type TradeViewModel = {
 /**
  * Build trade viewmodel from card
  * Maps card.takeProfit/stopLoss → targetPrices for DTO compatibility
+ * 
+ * FORENSIC LOGGING at every step to detect where tp1/tp2/sl/rr become zero
  */
 export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel {
+  const symbol = card.symbol;
+  
+  // FORENSIC POINT 1: Log input card state
+  logForensicPoint("CARD_INPUT", card, symbol);
+  
   // Derive activation state from signal state
   const derivedActivationState: "ACTIVE_SNIPER" | "CONFIRMED" | "DO_NOT_TRADE" = 
     card.signalState === "ACTIVE_SNIPER" ? "ACTIVE_SNIPER" :
@@ -73,6 +81,9 @@ export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel 
   const tp = (card as any).takeProfit || 0;
   const sl = (card as any).stopLoss || 0;
   const rr = (card as any).riskRewardRatio || 0;
+  
+  // FORENSIC POINT 2: Log extracted trade details
+  console.log(`[FORENSIC_EXTRACTION] ${symbol}: tp=${tp}, sl=${sl}, rr=${rr}`);
   
   // Build viewmodel with ALWAYS-populated trade fields
   const viewModel: TradeViewModel = {
@@ -106,6 +117,9 @@ export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel 
     timestamp: new Date().toISOString(),
     notes: card.notes || "",
   };
+  
+  // FORENSIC POINT 3: Log constructed viewmodel BEFORE returning
+  logForensicPoint("VIEWMODEL_OUTPUT", viewModel, symbol);
   
   return viewModel;
 }

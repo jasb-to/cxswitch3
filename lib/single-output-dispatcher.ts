@@ -15,6 +15,7 @@
 
 import { TradeViewModel } from "./trade-viewmodel";
 import { enqueueAlert } from "./telegram-worker";
+import { logForensicPoint } from "./forensic-logger";
 
 export interface DispatchedSignal {
   symbol: string;
@@ -37,6 +38,9 @@ export function dispatchTradeViewModels(viewModels: TradeViewModel[]): Dispatche
   const dispatchedSignals: DispatchedSignal[] = [];
   
   for (const viewModel of viewModels) {
+    // FORENSIC POINT 1: Log dispatcher input
+    logForensicPoint("DISPATCHER_INPUT", viewModel, viewModel.symbol);
+    
     // Only dispatch ACTIVE_SNIPER and CONFIRMED (active signals)
     const isActiveSignal = 
       viewModel.signalState === "ACTIVE_SNIPER" || 
@@ -71,6 +75,9 @@ export function dispatchTradeViewModels(viewModels: TradeViewModel[]): Dispatche
         confidence: viewModel.confidence,
       };
       dispatchedSignals.push(signal);
+      
+      // FORENSIC POINT 2: Log dispatcher output (dispatched signal)
+      logForensicPoint("DISPATCHER_OUTPUT", signal, signal.symbol);
       
       // Enqueue alert from SAME viewmodel data
       try {

@@ -11,6 +11,8 @@ import { detectMonitorEvent, formatMonitorEvent } from "@/lib/monitor-event-engi
 import { safeFreezeCard, deepFreeze, assertDeepFrozen } from "@/lib/immutability";
 import { buildTradeViewModel, validateTradeViewModel } from "@/lib/trade-viewmodel";
 import { dispatchTradeViewModels, validateDispatcherInvariants } from "@/lib/single-output-dispatcher";
+import { logForensicPoint, compareForensicData, validateForensicData } from "@/lib/forensic-logger";
+
 
 // v36.0 FIX: Defer module-level logging to runtime
 let strategyVersionLogged = false;
@@ -268,6 +270,15 @@ export async function GET(req: NextRequest) {
     }
     
     // ═════════════════════════════════════════════════════════════════════════════
+    // FORENSIC LOGGING: Capture card state RIGHT BEFORE viewmodel build
+    // ═════════════════════════════════════════════════════════════════════════════
+    console.log("[FORENSIC] Frozen card state RIGHT BEFORE buildTradeViewModel:");
+    for (const card of frozenCards) {
+      logForensicPoint("FROZEN_CARD", card, card.symbol);
+      validateForensicData(`FROZEN_CARD_${card.symbol}`, card);
+    }
+    
+    // ═════════════════════════════════════════════════════════════════════════════
     // SNAPSHOT: Create from CLONED + FROZEN cards
     // v8.4 FIX: Build unified TradeViewModels for consistent UI/Alert/API layer
     // ONE OBJECT = ONE LIFETIME - ALWAYS use full context, NEVER strip DO_NOT_TRADE
@@ -277,6 +288,11 @@ export async function GET(req: NextRequest) {
           // Build unified TradeViewModel - ALWAYS includes full context
           const viewModel = buildTradeViewModel(card);
           validateTradeViewModel(viewModel);
+          
+          // FORENSIC LOGGING: Log AFTER buildTradeViewModel
+          logForensicPoint("VIEWMODEL_BUILT", viewModel, viewModel.symbol);
+          validateForensicData(`VIEWMODEL_${viewModel.symbol}`, viewModel);
+          
           return viewModel;
         })
       : [];
