@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import { SYMBOLS, createSignal } from "@/lib/strategy-core";
-import { setSignal } from "@/lib/signal-store";
+import { setSignal } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * DUMB EXECUTOR - fetch market data, evaluate, store
+ * DUMB EXECUTOR - fetch market data, evaluate, store to Supabase
  * NO formatting, NO transformation, NO interpretation
  */
 export async function GET() {
@@ -16,7 +16,7 @@ export async function GET() {
     // Evaluate each symbol
     for (const symbol of SYMBOLS) {
       const signal = createSignal(symbol);
-      setSignal(signal);
+      await setSignal(signal);
       console.log(`[CRON] ${symbol}: ${signal.state}`);
     }
 
@@ -33,4 +33,8 @@ export async function GET() {
       { status: 500 }
     );
   }
+}
+
+export async function POST() {
+  return GET();
 }
