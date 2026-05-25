@@ -94,7 +94,7 @@ function normalizeCardToDTO(card: any): SnapshotCard {
     price: card.price || 0,
     source: card.source || "kraken",
     direction: card.direction || "NEUTRAL",
-    signalState: card.signalState || "NONE",
+    signalState: card.signalState,  // CRITICAL: Don't fallback - must be valid enum from upstream
     activationState: card.activationState,
     structureState: card.structureState || "RANGE",
     confidence: card.confidence || 0,
@@ -112,12 +112,6 @@ function normalizeCardToDTO(card: any): SnapshotCard {
 
   // FORENSIC POINT 2: Log snapshot card AFTER normalization
   logForensicPoint("SNAPSHOT_OUTPUT", snapshotCard, snapshotCard.symbol);
-
-  console.log("[SNAPSHOT_DTO_RESULT]", {
-    symbol: snapshotCard.symbol,
-    hasTargetPrices: !!snapshotCard.targetPrices,
-    riskReward: snapshotCard.riskReward,
-  });
 
   return snapshotCard;
 }

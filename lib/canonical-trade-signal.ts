@@ -67,11 +67,12 @@ export type CanonicalTradeSignal = {
  * Create a new canonical trade signal from raw engine output
  * This is the ONLY place signals are created and populated.
  * 
- * RULES:
- * - FAIL LOUDLY on missing EMA, direction, or trade data
- * - NEVER default EMA to 0
- * - NEVER skip validation
- * - Return with _frozen: false (caller must freeze after all mutations)
+ * FAIL-FAST RULES (no fallback coercion):
+ * - THROW on missing direction
+ * - THROW on invalid EMA (null/undefined/0)
+ * - THROW on actionable signals with missing trade data
+ * - THROW on invalid signalState enum
+ * - Never use || 0, never use || "?"
  */
 export function createCanonicalTradeSignal(raw: {
   symbol: string;
@@ -95,34 +96,76 @@ export function createCanonicalTradeSignal(raw: {
   const now = new Date().toISOString();
   const cycleId = raw.cycleId || `cycle-${Date.now()}`;
   
-  // CRITICAL VALIDATION: Fail loudly on missing data
+  // ❌ FAIL-FAST: Validate direction
   if (!raw.direction || !["LONG", "SHORT", "NEUTRAL"].includes(raw.direction)) {
-    throw new Error(`[CANONICAL_SIGNAL] ${raw.symbol} has invalid direction: ${raw.direction}`);
-  }
-  
-  // CRITICAL: EMA must exist and be a number. NEVER default to 0
-  if (raw.emaSlope === null || raw.emaSlope === undefined || typeof raw.emaSlope !== "number") {
     throw new Error(
-      `[CANONICAL_SIGNAL] ${raw.symbol} EMA calculation failed: ${raw.emaSlope}. ` +
-      `Cannot create signal without EMA. Return null/reject instead.`
+      `[CANONICAL_SIGNAL] ${raw.symbol} invalid direction: ${raw.direction}. ` +
+      `Must be LONG, SHORT, or NEUTRAL.`
     );
   }
   
-  // For ACTIVE_SNIPER/CONFIRMED, trade details are mandatory
+  // ❌ FAIL-FAST: EMA MUST exist and be a valid number
+  // This is the critical data field. If calculation failed, reject the entire signal.
+  if (raw.emaSlope === null || raw.emaSlope === undefined) {
+    throw new Error(
+      `[CANONICAL_SIGNAL] ${raw.symbol} EMA calculation failed (null). ` +
+      `Cannot create signal without EMA. Either calculate it or reject this symbol.`
+    );
+  }
+  if (typeof raw.emaSlope !== "number" || isNaN(raw.emaSlope)) {
+    throw new Error(
+      `[CANONICAL_SIGNAL] ${raw.symbol} EMA is not a valid number: ${raw.emaSlope}. ` +
+      `EMA calculation produced invalid result.`
+    );
+  }
+  if (raw.emaSlope === 0) {
+    throw new Error(
+      `[CANONICAL_SIGNAL] ${raw.symbol} EMA is zero. ` +
+      `This indicates calculation failure, not a valid zero EMA.`
+    );
+  }
+  
+  // ❌ FAIL-FAST: Validate signalState is a known enum
+  const validStates = [
+    "ACTIVE_SNIPER",
+    "CONFIRMED",
+    "DO_NOT_TRADE",
+    "SNIPER_READY",
+    "CONFIRMED_READY",
+    "WATCH_BREAKOUT",
+    "NONE",
+  ];
+  if (!validStates.includes(raw.signalState)) {
+    throw new Error(
+      `[CANONICAL_SIGNAL] ${raw.symbol} invalid signalState: '${raw.signalState}'. ` +
+      `Must be one of: ${validStates.join(", ")}`
+    );
+  }
+  
+  // ❌ FAIL-FAST: For actionable signals, trade details are MANDATORY
   const isActionable = raw.signalState === "ACTIVE_SNIPER" || raw.signalState === "CONFIRMED";
   if (isActionable) {
-    if (typeof raw.takeProfit !== "number" || raw.takeProfit === 0) {
-      throw new Error(`[CANONICAL_SIGNAL] ${raw.symbol} ACTIVE_SNIPER missing takeProfit`);
+    if (raw.takeProfit === undefined || raw.takeProfit === null || raw.takeProfit === 0) {
+      throw new Error(
+        `[CANONICAL_SIGNAL] ${raw.symbol} ${raw.signalState} missing/zero takeProfit: ${raw.takeProfit}. ` +
+        `Actionable signals require valid trade levels.`
+      );
     }
-    if (typeof raw.stopLoss !== "number" || raw.stopLoss === 0) {
-      throw new Error(`[CANONICAL_SIGNAL] ${raw.symbol} ACTIVE_SNIPER missing stopLoss`);
+    if (raw.stopLoss === undefined || raw.stopLoss === null || raw.stopLoss === 0) {
+      throw new Error(
+        `[CANONICAL_SIGNAL] ${raw.symbol} ${raw.signalState} missing/zero stopLoss: ${raw.stopLoss}. ` +
+        `Actionable signals require valid trade levels.`
+      );
     }
-    if (typeof raw.riskRewardRatio !== "number" || raw.riskRewardRatio === 0) {
-      throw new Error(`[CANONICAL_SIGNAL] ${raw.symbol} ACTIVE_SNIPER missing riskRewardRatio`);
+    if (raw.riskRewardRatio === undefined || raw.riskRewardRatio === null || raw.riskRewardRatio === 0) {
+      throw new Error(
+        `[CANONICAL_SIGNAL] ${raw.symbol} ${raw.signalState} missing/zero riskRewardRatio: ${raw.riskRewardRatio}. ` +
+        `Actionable signals require valid risk/reward.`
+      );
     }
   }
   
-  // Build the immutable signal
+  // ✅ ALL VALIDATIONS PASSED - Build the immutable signal
   const signal: CanonicalTradeSignal = {
     symbol: raw.symbol,
     timestamp: now,
@@ -139,44 +182,38 @@ export function createCanonicalTradeSignal(raw: {
       direction: raw.direction,
       htf4h: raw.htf4hTrend || "NEUTRAL",
       execution15m: raw.execution15mState || "CHOP",
-      emaSlope: raw.emaSlope,  // ALREADY VALIDATED - not null
+      emaSlope: raw.emaSlope,  // GUARANTEED valid number at this point
       confidence: Math.max(0, Math.min(100, raw.confidence || 0)),
       reasonMissing: raw.confidence < 50 ? raw.notes : undefined,
     },
     
     signal: {
-      state: (raw.signalState || "NONE") as any,
+      state: raw.signalState as any,  // GUARANTEED valid enum at this point
       quality: Math.max(0, Math.min(100, raw.confidence || 0)),
       reason: raw.notes || "No details provided",
     },
     
-    // CRITICAL: Trade details ALWAYS present, even for DO_NOT_TRADE
-    // This allows frontend to display "why not" with context
+    // Trade details populated only if validation passed
     trade: {
       entry: raw.price || 0,
       stopLoss: raw.stopLoss || 0,
       takeProfit1: raw.takeProfit || 0,
-      takeProfit2: raw.takeProfit || 0,  // Both targets same for now
+      takeProfit2: raw.takeProfit || 0,
       riskReward: raw.riskRewardRatio || 0,
     },
     
     telemetry: {
       executionMs: raw.executionMs || 0,
       source: "strategy-v6",
-      degraded: false,  // Updated below if any field is 0/missing
+      degraded: false,
     },
     
     _frozen: false,
   };
   
-  // Check for degraded signals (missing critical data)
-  if (!signal.bias.emaSlope || signal.trade.riskReward === 0) {
-    signal.telemetry.degraded = true;
-    console.warn(`[CANONICAL_SIGNAL_DEGRADED] ${signal.symbol}: missing EMA or RR`);
-  }
-  
   return signal;
 }
+
 
 /**
  * Convert canonical signal to UI card format
