@@ -14,7 +14,7 @@
  */
 
 import { TradeViewModel } from "./trade-viewmodel";
-import { enqueueAlert } from "./telegram-worker";
+import { enqueueAlert } from "./unified-alert-pipeline";
 import { logForensicPoint } from "./forensic-logger";
 
 export interface DispatchedSignal {
@@ -81,32 +81,8 @@ export function dispatchTradeViewModels(viewModels: TradeViewModel[]): Dispatche
       
       // Enqueue alert from SAME viewmodel data
       try {
-        // CRITICAL FIX: Use STABLE signalTransitionId, not Date.now()
-        // Same signal = same ID = cooldown works = NO SPAM
-        const stableSignalId = `${viewModel.symbol}-${viewModel.signalState}-${viewModel.direction}`;
-        
-        enqueueAlert({
-          symbol: viewModel.symbol,
-          mode: viewModel.signalState === "ACTIVE_SNIPER" ? "SNIPER" : "CONFIRMED",
-          direction: viewModel.direction,
-          price: viewModel.price,
-          signalState: viewModel.signalState,
-          structureState: viewModel.structureState,
-          confidence: viewModel.confidence,
-          tp: viewModel.targetPrices.tp1,
-          sl: viewModel.targetPrices.sl,
-          reason: viewModel.rejectionReason || "Signal activated",
-          timestamp: new Date().toISOString(),
-          signalTransitionId: stableSignalId,
-          // Include complete trade context so Telegram doesn't need to derive it
-          targetPrices: viewModel.targetPrices,
-          riskReward: viewModel.riskReward,
-          htf4hTrend: viewModel.htf4hTrend,
-          execution15mState: viewModel.execution15mState,
-          entryPrice: viewModel.price,
-        });
-        
-        console.log(`[DISPATCHER] Alert enqueued: ${viewModel.symbol} ID=${stableSignalId}`);
+        enqueueAlert(viewModel);
+        console.log(`[DISPATCHER] Alert enqueued: ${viewModel.symbol}`);
       } catch (err) {
         console.error(`[DISPATCHER] Failed to enqueue alert for ${viewModel.symbol}:`, err);
       }

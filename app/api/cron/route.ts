@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateSetups, STRATEGY_VERSION } from "@/lib/strategy-v6";
-import { flushAlertQueue } from "@/lib/telegram-worker";
+import { flushAlertQueue } from "@/lib/unified-alert-pipeline";
 import { refreshMarketData } from "@/lib/market-data-layer";
 import { fetchCandles } from "@/lib/kraken";
 import { getSnapshot, setSnapshot } from "@/lib/runtime-snapshot";
