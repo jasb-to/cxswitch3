@@ -58,16 +58,16 @@ let isProcessing = false;
  * - No null values in required fields
  */
 export function enqueueAlert(vm: TradeViewModel): void {
-  // Validate actionable signal has trade details
+  // Skip DO_NOT_TRADE signals - they're not actionable
+  if (vm.signalState === "DO_NOT_TRADE") {
+    return;
+  }
+  
+  // Validate actionable signal has trade details (only throw on real error)
   if ((vm.signalState === "ACTIVE_SNIPER" || vm.signalState === "CONFIRMED") && !vm.targetPrices) {
     throw new Error(
       `[ALERT_ENQUEUE] ${vm.symbol} is actionable but missing targetPrices`
     );
-  }
-
-  // Skip DO_NOT_TRADE signals - they're not actionable
-  if (vm.signalState === "DO_NOT_TRADE") {
-    return;
   }
 
   // Validate stable signal ID

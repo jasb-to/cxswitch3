@@ -88,9 +88,6 @@ export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel 
   const sl = card.targetPrices?.sl ?? null;
   const rr = card.riskReward ?? null;
   
-  // FORENSIC POINT 2: Log extracted trade details
-  console.log(`[FORENSIC_EXTRACTION] ${symbol}: tp1=${tp1}, tp2=${tp2}, sl=${sl}, rr=${rr}`);
-  
   // Build viewmodel with ALWAYS-populated trade fields
   const viewModel: TradeViewModel = {
     symbol: card.symbol,
@@ -101,10 +98,12 @@ export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel 
     signalState: card.signalState,
     activationState: derivedActivationState,
     
+    // CRITICAL: Structure/market context MUST have real values, never "UNKNOWN"
+    // If source is missing, use BUILDING state (card doesn't know yet)
     structureState: card.structureState || "RANGE",
-    structure: card.structure || "UNKNOWN",
-    execution15mState: card.execution15mState || "CHOP",
-    htf4hTrend: card.htf4hTrend || "NEUTRAL",
+    structure: card.structure ? String(card.structure) : "BUILDING",
+    execution15mState: card.execution15mState || "EVALUATING",
+    htf4hTrend: card.htf4hTrend || "EVALUATING",
     
     confidence: card.confidence || 0,
     score: (card as any).score || 0,
@@ -140,8 +139,7 @@ export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel 
 
 /**
  * Validate that viewmodel has all required fields
- * For DO_NOT_TRADE: targetPrices and riskReward MUST be null
- * For ACTIVE_SNIPER/CONFIRMED: targetPrices and riskReward MUST be present
+ * Throws only on critical errors, no warnings for normal DO_NOT_TRADE cards
  */
 export function validateTradeViewModel(vm: TradeViewModel): void {
   const required = [

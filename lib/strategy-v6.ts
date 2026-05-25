@@ -2695,12 +2695,12 @@ function generateCardState(symbol: string, priceData: PriceData, candles4h: Cand
     structureTimeframe: 0,  // TODO: compute from timestamp
     lastStructureUpdate: Date.now(),
 
-    // HTF alignment data
-    htf4hTrend,
+    // HTF alignment data - MUST have real values, never zero/UNKNOWN
+    htf4hTrend: htf4hTrend || "EVALUATING",
     htf4hMomentum,
     htf1hAlignment,
     htf15mCompression,
-    execution15mState,
+    execution15mState: execution15mState || "EVALUATING",
 
     // Market readiness
     marketReadinessState: calculateLiveMarketState(finalDirection, emaSlope, stochRsi, volatilityLevel) as any,
