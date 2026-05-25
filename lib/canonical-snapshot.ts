@@ -58,7 +58,6 @@ export const EMPTY_SNAPSHOT: CanonicalSnapshot = {
 /**
  * Normalize card to SnapshotCard DTO
  * HARD ENFORCE all required fields with no spreads or optional chaining
- * Maps from TradeViewModel fields to SnapshotCard DTO fields
  */
 function normalizeCardToDTO(card: any): SnapshotCard {
   // STEP 5: DEBUG LOG - will show exactly what's in the card before serialization
@@ -67,9 +66,6 @@ function normalizeCardToDTO(card: any): SnapshotCard {
     signalState: card.signalState,
     activationState: card.activationState,
     structureState: card.structureState, // CRITICAL: Verify structureState is present
-    takeProfit: card.takeProfit,
-    stopLoss: card.stopLoss,
-    riskRewardRatio: card.riskRewardRatio,
   });
 
   // STEP 2: HARD GUARD - throw if activationState missing
@@ -84,7 +80,6 @@ function normalizeCardToDTO(card: any): SnapshotCard {
   }
 
   // STEP 3: EXPLICIT FIELD MAPPING - NO spreads, NO inference
-  // CRITICAL: Map from TradeViewModel fields to SnapshotCard DTO fields
   const snapshotCard: SnapshotCard = {
     symbol: card.symbol || "UNKNOWN",
     price: card.price || 0,
@@ -98,17 +93,9 @@ function normalizeCardToDTO(card: any): SnapshotCard {
     execution15mState: card.execution15mState || "CHOP",
     htf4hTrend: card.htf4hTrend || "NEUTRAL",
     notes: card.notes,
-    // Trade details - map from TradeViewModel fields to SnapshotCard DTO format
-    // TradeViewModel has: takeProfit, stopLoss, riskRewardRatio
-    // SnapshotCard expects: targetPrices {tp1, tp2, sl}, riskReward
-    ...(card.takeProfit !== undefined && card.stopLoss !== undefined && {
-      targetPrices: {
-        tp1: card.takeProfit,
-        tp2: card.takeProfit, // Use same TP as tp1 for now (could be TP2 if available)
-        sl: card.stopLoss,
-      }
-    }),
-    ...(card.riskRewardRatio !== undefined && { riskReward: card.riskRewardRatio }),
+    // Trade details - only if present (for ACTIVE_SNIPER/CONFIRMED)
+    ...(card.targetPrices && { targetPrices: card.targetPrices }),
+    ...(card.riskReward !== undefined && { riskReward: card.riskReward }),
   };
 
   return snapshotCard;

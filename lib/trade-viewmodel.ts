@@ -100,7 +100,7 @@ export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel 
     
     // Trade Details (only if actionable - both ACTIVE_SNIPER and CONFIRMED have trade details)
     ...(( derivedActivationState === "ACTIVE_SNIPER" || derivedActivationState === "CONFIRMED") && {
-      entryPrice: card.price || 0, // Use current price as entry point
+      entryPrice: card.price || 0, // Use current market price as entry point
       takeProfit: (card as any).takeProfit || 0,
       stopLoss: (card as any).stopLoss || 0,
       riskRewardRatio: (card as any).riskRewardRatio || 0,
