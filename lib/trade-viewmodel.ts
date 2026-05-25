@@ -139,15 +139,9 @@ export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel 
 
 /**
  * Validate that viewmodel has all required fields
- * CRITICAL: Hard gate for DO_NOT_TRADE - skip ALL validation
+ * Throws only on critical errors, no warnings for normal DO_NOT_TRADE cards
  */
 export function validateTradeViewModel(vm: TradeViewModel): void {
-  // 🧊 CRITICAL FIX: Skip validation entirely for inactive signals
-  if (vm.signalState === "DO_NOT_TRADE") {
-    return;
-  }
-
-  // Only validate basic fields that must always exist
   const required = [
     "symbol",
     "direction",

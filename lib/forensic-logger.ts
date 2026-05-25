@@ -84,8 +84,7 @@ export function logForensicPoint(
 }
 
 /**
- * Validate that critical values are not zero (only for active trades)
- * CRITICAL: Skip validation for DO_NOT_TRADE - they're allowed to have null/0 values
+ * Validate that critical values are not zero
  */
 export function validateForensicData(
   location: string,
@@ -93,12 +92,6 @@ export function validateForensicData(
   expectNonZero: string[] = ["tp1", "sl", "rr"]
 ): boolean {
   const sym = data.symbol || "UNKNOWN";
-  
-  // 🧊 CRITICAL: Skip validation for frozen/inactive cards
-  if (data.signalState === "DO_NOT_TRADE") {
-    return true;
-  }
-  
   let isValid = true;
   
   for (const field of expectNonZero) {
@@ -116,8 +109,8 @@ export function validateForensicData(
     }
     
     if (value === 0) {
-      console.error(
-        `[FORENSIC_ERROR] ${location} ${sym}: Expected non-zero ${field}, got ${value}`
+      console.warn(
+        `[VALIDATION_WARNING_${location}] ${sym}: Expected non-zero ${field}, got ${value}`
       );
       isValid = false;
     }

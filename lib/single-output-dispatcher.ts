@@ -96,18 +96,14 @@ export function dispatchTradeViewModels(viewModels: TradeViewModel[]): Dispatche
 /**
  * Validate dispatcher invariants
  * DO_NOT_TRADE is valid output (rejected signals), not an error
- * CRITICAL: Skip all validation for inactive cards
  */
 export function validateDispatcherInvariants(viewModels: TradeViewModel[]): void {
+  console.log(`[DISPATCHER_VALIDATION] Validating ${viewModels.length} viewmodels...`);
+  
   for (let i = 0; i < viewModels.length; i++) {
     const vm = viewModels[i];
     
-    // 🧊 CRITICAL: Frozen cards are ALWAYS valid - skip validation entirely
-    if (vm.signalState === "DO_NOT_TRADE") {
-      continue;
-    }
-    
-    // Only validate active trades for required fields
+    // All cards must have these basic fields
     if (!vm.symbol) {
       throw new Error(`[DISPATCHER_INVARIANT] Card ${i} missing symbol`);
     }
@@ -118,9 +114,11 @@ export function validateDispatcherInvariants(viewModels: TradeViewModel[]): void
       throw new Error(`[DISPATCHER_INVARIANT] Card ${i} (${vm.symbol}) missing activationState`);
     }
     
-    // Active trades must have trade details
-    if (!vm.targetPrices) {
-      throw new Error(`[DISPATCHER_INVARIANT] Active trade ${vm.symbol} missing targetPrices`);
-    }
+    console.log(
+      `[DISPATCHER_VALIDATION] ${vm.symbol}: state=${vm.signalState} ` +
+      `has_tp=${!!vm.targetPrices?.tp1} rr=${vm.riskReward}`
+    );
   }
+  
+  console.log(`[DISPATCHER_VALIDATION] All ${viewModels.length} cards passed validation`);
 }
