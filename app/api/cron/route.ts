@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateTradeSignal } from "@/lib/strategy-pure";
 import { formatSignalResponse } from "@/lib/signal-api";
+import { setSnapshot } from "@/lib/runtime-snapshot";
 import type { TradeSignal } from "@/lib/trade-signal-types";
+import type { CanonicalSnapshot } from "@/lib/canonical-snapshot";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -54,13 +56,16 @@ async function getMarketData(symbol: string) {
 /**
  * CLEAN EXECUTION CYCLE
  * Market Data → generateTradeSignal() → TradeSignal[]
+ * 
+ * IMPORTANT: This function generates signals but does NOT persist them.
+ * The caller (GET handler) is responsible for calling setSnapshot().
  */
 async function runExecutionCycle(): Promise<TradeSignal[]> {
   const signals: TradeSignal[] = [];
   const cycleStart = Date.now();
 
-  console.log("[CRON] Execution cycle started");
-  console.log("[CRON] Processing: BTC, ETH, SOL");
+  console.log("[CRON] ========== EXECUTION CYCLE START ==========");
+  console.log("[CRON] input symbols:", VALID_SYMBOLS);
 
   for (const symbol of VALID_SYMBOLS) {
     // Guard: Type-safe validation - symbol is guaranteed to be valid
@@ -72,12 +77,20 @@ async function runExecutionCycle(): Promise<TradeSignal[]> {
     try {
       // Fetch market data - validateSymbol ensures it's in whitelist
       const marketData = await getMarketData(symbol);
+      console.log(`[CRON] market data fetched for ${symbol}:`, {
+        price: marketData.price,
+        emaShort: marketData.emaShort,
+        htf4hTrend: marketData.htf4hTrend,
+      });
 
       // Generate signal from market data
       const signal = generateTradeSignal(marketData);
+      console.log(`[CRON] raw signal output for ${symbol}:`, {
+        state: signal.state,
+        reason: signal.reason,
+      });
 
       signals.push(signal);
-      console.log(`[CRON] ${symbol}: ${signal.state}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[CRON] ${symbol} error: ${message}`);
@@ -90,7 +103,9 @@ async function runExecutionCycle(): Promise<TradeSignal[]> {
   }
 
   const timeMs = Date.now() - cycleStart;
-  console.log(`[CRON] Cycle complete: ${signals.length} signals in ${timeMs}ms`);
+  console.log("[CRON] raw signal output:", signals.map(s => ({ state: s.state, symbol: (s as any).symbol })));
+  console.log("[CRON] execution duration ms:", timeMs);
+  console.log("[CRON] ========== EXECUTION CYCLE END ==========");
 
   return signals;
 }
@@ -98,11 +113,36 @@ async function runExecutionCycle(): Promise<TradeSignal[]> {
 
 /**
  * GET /api/cron - Main entry point
- * Returns array of TradeSignal objects
+ * CRITICAL: Executes strategy AND persists results to runtime snapshot
  */
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
     const signals = await runExecutionCycle();
+    
+    // CRITICAL FIX: Convert TradeSignal[] to CanonicalSnapshot format and persist
+    // This ensures /api/signals returns the same data as /api/cron generated
+    const snapshot: CanonicalSnapshot = {
+      ready: signals.length === 3,
+      cards: signals.map(signal => ({
+        symbol: (signal as any).symbol || "UNKNOWN",
+        signalState: signal.state,
+        reason: signal.reason,
+        // Add minimal card data from signal for backward compat
+        price: (signal as any).entry || 0,
+        structure: (signal as any).structure || "UNKNOWN",
+        confidence: (signal as any).confidence || 0,
+      })) as any,
+      setups: [],
+      activeSignals: signals.filter(s => s.state === "ACTIVE_TRADE").length,
+      activeSnipers: 0,
+      signalCount: signals.length,
+      updatedAt: new Date().toISOString(),
+    };
+    
+    // PERSIST to runtime snapshot so /api/signals sees it
+    setSnapshot(snapshot);
+    console.log("[STATE] signals updated:", snapshot.cards.length, "cards, ready:", snapshot.ready);
+    
     return NextResponse.json(formatSignalResponse(signals));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
