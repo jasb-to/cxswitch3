@@ -1,51 +1,53 @@
 import { NextResponse } from "next/server";
 import { SYMBOLS, createSignal } from "@/lib/strategy-core";
 import { setSignal } from "@/lib/db";
+import { sendSignalAlert } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-async function sendTelegram(symbol: string, price: number, state: string) {
-  try {
-    const response = await fetch("/api/test-telegram", { method: "POST" });
-    if (response.ok) {
-      console.log(`[TELEGRAM] Alert sent for ${symbol}: ${state}`);
-    }
-  } catch (err) {
-    console.error(`[TELEGRAM] Failed to send alert for ${symbol}:`, err);
-  }
-}
-
 /**
- * DUMB EXECUTOR - fetch market data, evaluate, store to Supabase
- * Sends Telegram alert ONLY on SNIPER state
+ * EXECUTOR - Fetch live prices, evaluate states, store to Supabase
+ * Sends Telegram alerts only on SNIPER state
  */
 export async function GET() {
   try {
     console.log("[CRON] Starting execution cycle");
     const results: any[] = [];
 
-    // Evaluate each symbol
+    // Evaluate each symbol with live prices
     for (const symbol of SYMBOLS) {
-      const signal = createSignal(symbol);
+      const signal = await createSignal(symbol);
       await setSignal(signal);
       
-      // Log with real data
-      console.log(`[CRON] ${symbol}: ${signal.state} - $${signal.price}`);
+      console.log(`[CRON] ${symbol}`);
+      console.log(`  STATE: ${signal.state}`);
+      console.log(`  PRICE: $${signal.price}`);
+      console.log(`  4H: ${signal.bias_4h}`);
+      console.log(`  15M: ${signal.bias_15m}`);
+      console.log(`  QUALITY: ${signal.signal_quality}%`);
       
-      // Send telegram ONLY on SNIPER
+      results.push({
+        symbol,
+        state: signal.state,
+        price: signal.price,
+        quality: signal.signal_quality,
+      });
+
+      // Send Telegram alert ONLY on SNIPER
       if (signal.state === "SNIPER") {
-        await sendTelegram(symbol, signal.price, signal.state);
+        await sendSignalAlert(symbol, signal.price, signal.state, signal.signal_quality);
       }
-      
-      results.push({ symbol, state: signal.state, price: signal.price });
     }
 
-    console.log("[CRON COMPLETE]", results);
+    console.log("[CRON SUMMARY]");
+    results.forEach((r) => {
+      console.log(`${r.symbol} → ${r.state} ($${r.price})`);
+    });
 
     return NextResponse.json({
       ok: true,
-      message: "Signals evaluated",
+      message: "Signals evaluated and stored",
       results,
     });
   } catch (error) {
@@ -60,3 +62,4 @@ export async function GET() {
 export async function POST() {
   return GET();
 }
+
