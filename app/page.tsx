@@ -119,9 +119,9 @@ export default function Dashboard() {
       <div style={{ marginBottom: "32px", borderBottom: "1px solid #2a2a2a", paddingBottom: "20px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
-            <h1 style={{ margin: "0 0 8px 0", fontSize: "32px", fontWeight: "bold", color: "#fff" }}>Trading Signals</h1>
-            <p style={{ margin: 0, color: "#9ca3af", fontSize: "13px" }}>
-              Last updated: {data?.lastUpdated ? new Date(data.lastUpdated).toLocaleTimeString() : "never"}
+            <p style={{ margin: "0 0 8px 0", fontSize: "32px", fontWeight: "bold", color: "#fff" }}>Trading Signals</p>
+            <p style={{ margin: 0, color: "#9ca3af", fontSize: "13px" }} suppressHydrationWarning>
+              Last updated: {data?.lastUpdated ? new Date(data.lastUpdated).toLocaleString() : "never"}
             </p>
             {error && (
               <p style={{ margin: "8px 0 0 0", color: "#ff6b6b", fontSize: "12px" }}>
@@ -249,8 +249,8 @@ export default function Dashboard() {
                 )}
 
                 {/* FOOTER */}
-                <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px solid #2a2a2a", fontSize: "11px", color: "#6b7280", textAlign: "right" }}>
-                  Updated: {new Date(signal.updated_at).toLocaleTimeString()}
+                <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px solid #2a2a2a", fontSize: "11px", color: "#6b7280", textAlign: "right" }} suppressHydrationWarning>
+                  Updated: {new Date(signal.updated_at).toLocaleString()}
                 </div>
               </div>
             );
