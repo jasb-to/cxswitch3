@@ -1,50 +1,41 @@
 import { NextResponse } from "next/server";
-import { getSignals, isReady } from "@/lib/signal-store";
+import { getSignals } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 /**
- * READ-ONLY API - Returns raw signals from cron
+ * READ-ONLY API - Returns signals from Supabase
  * NO transformation, NO computation, NO interpretation
  * Pure passthrough of what cron stored
  */
 export async function GET() {
   try {
-    const signals = getSignals();
-    const ready = isReady();
+    const signals = await getSignals();
 
-    console.log("[API/SIGNALS] Ready:", ready, "Count:", signals.length);
+    console.log("[API/SIGNALS] Fetched", signals.length, "signals");
 
-    // If no signals stored yet, return defaults so UI never sees empty state
-    const output = signals.length === 0
-      ? [
-          { symbol: "BTC", state: "DO_NOT_TRADE" as const, timestamp: Date.now() },
-          { symbol: "ETH", state: "DO_NOT_TRADE" as const, timestamp: Date.now() },
-          { symbol: "SOL", state: "DO_NOT_TRADE" as const, timestamp: Date.now() },
-        ]
-      : signals;
+    // Organize signals by state
+    const activeTrades = signals.filter((s) => s.state === "SNIPER" && s.trade);
+    const activeSymbols = signals.filter((s) => s.state !== "DO_NOT_TRADE");
 
     return NextResponse.json({
-      ready,
-      signals: output.map((s) => ({
-        symbol: s.symbol,
-        state: s.state,
-        timestamp: s.timestamp,
-      })),
+      symbols: signals,
+      activeTrades,
+      activeSymbols,
+      lastUpdated: new Date().toISOString(),
     });
   } catch (error) {
     console.error("[API/SIGNALS] Error:", error);
     return NextResponse.json(
       {
-        ready: false,
-        signals: [
-          { symbol: "BTC", state: "DO_NOT_TRADE", timestamp: Date.now() },
-          { symbol: "ETH", state: "DO_NOT_TRADE", timestamp: Date.now() },
-          { symbol: "SOL", state: "DO_NOT_TRADE", timestamp: Date.now() },
-        ],
+        symbols: [],
+        activeTrades: [],
+        activeSymbols: [],
+        lastUpdated: new Date().toISOString(),
       },
       { status: 500 }
     );
   }
 }
+
