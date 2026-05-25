@@ -66,20 +66,50 @@ async function getKrakenTicker(symbol: string): Promise<number> {
 function evaluateMarket(symbol: string, price: number): { state: TradeState; details?: any } {
   // Guard: price must be positive
   if (!price || price <= 0) {
-    return { state: "DO_NOT_TRADE" };
+    return { 
+      state: "DO_NOT_TRADE",
+      details: {
+        trend_4h: "Neutral",
+        structure_15m: "Range",
+        macro_bias: "Neutral",
+        readiness_score: 0,
+      }
+    };
   }
 
   // Deterministic state based on symbol hash
   const charSum = symbol.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0);
   
   let state: TradeState;
+  let baseReadiness = 0;
+  
   if (charSum % 3 === 0) {
     state = "SNIPER";
+    baseReadiness = 90; // SNIPER = high readiness
   } else if (charSum % 3 === 1) {
     state = "BUILDING";
+    baseReadiness = 50; // BUILDING = mid readiness
   } else {
     state = "DO_NOT_TRADE";
+    baseReadiness = 15; // DO_NOT_TRADE = low readiness
   }
+
+  // Generate deterministic market structure
+  const structureIndex = charSum % 5;
+  const structures = ["Breakout", "Compression", "Expansion", "Reversal", "Range"] as const;
+  const structure_15m = structures[structureIndex];
+  
+  const trendIndex = charSum % 3;
+  const trends = ["Bullish", "Bearish", "Neutral"] as const;
+  const trend_4h = trends[trendIndex];
+  const macro_bias = trends[(trendIndex + 1) % 3];
+  
+  // Boost readiness based on confluence
+  let readiness_score = baseReadiness;
+  if (trend_4h === "Bullish" && structure_15m === "Breakout") readiness_score += 15;
+  if (trend_4h === "Bearish" && structure_15m === "Reversal") readiness_score += 15;
+  if (macro_bias === trend_4h) readiness_score += 10;
+  readiness_score = Math.min(100, readiness_score);
 
   // Generate SNIPER details if applicable
   if (state === "SNIPER") {
@@ -115,6 +145,10 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
     return {
       state,
       details: {
+        trend_4h,
+        structure_15m,
+        macro_bias,
+        readiness_score,
         direction,
         entry,
         stopLoss: parseFloat(sl.toFixed(2)),
@@ -126,7 +160,15 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
     };
   }
 
-  return { state };
+  return { 
+    state,
+    details: {
+      trend_4h,
+      structure_15m,
+      macro_bias,
+      readiness_score,
+    }
+  };
 }
 
 /**
