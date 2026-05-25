@@ -1,5 +1,5 @@
 /**
- * UNIFIED ALERT PIPELINE v9.0 - DEFINITIVE SINGLE ALERT COORDINATOR
+ * UNIFIED ALERT PIPELINE v9.1 - CLEAN PRODUCTION LOGGING
  * 
  * Replaces: telegram.ts, telegram-consumer.ts, production-alert-pipeline.ts
  * Consolidates all alert logic into one immutable pipeline
@@ -67,7 +67,6 @@ export function enqueueAlert(vm: TradeViewModel): void {
 
   // Skip DO_NOT_TRADE signals - they're not actionable
   if (vm.signalState === "DO_NOT_TRADE") {
-    console.log(`[ALERT_ENQUEUE] Skipping DO_NOT_TRADE signal for ${vm.symbol}`);
     return;
   }
 
@@ -93,11 +92,6 @@ export function enqueueAlert(vm: TradeViewModel): void {
     queued: Date.now(),
   };
 
-  console.log(
-    `[ALERT_ENQUEUE] Queued: ${vm.symbol} ${vm.signalState} ` +
-    `tp1=${vm.targetPrices?.tp1 || "null"} sl=${vm.targetPrices?.sl || "null"}`
-  );
-  
   alertQueue.push(job);
 }
 
@@ -116,7 +110,6 @@ async function processAlertQueue(): Promise<void> {
   isProcessing = true;
 
   try {
-    const processedSymbols = new Set<string>();
     const failedJobs: AlertJob[] = [];
 
     while (alertQueue.length > 0) {
@@ -133,9 +126,6 @@ async function processAlertQueue(): Promise<void> {
         );
 
         if (!canSend) {
-          console.log(
-            `[ALERT_PROCESS] Cooldown active for ${job.symbol} ${job.signalTransitionId}, requeuing`
-          );
           failedJobs.push(job);
           continue;
         }
@@ -156,12 +146,9 @@ async function processAlertQueue(): Promise<void> {
             execution15mState: job.execution15mState,
             signalTransitionId: job.signalTransitionId,
           });
-
-          console.log(`[ALERT_PROCESS] Sent: ${job.symbol} ${job.mode}`);
-          processedSymbols.add(job.symbol);
         } catch (err) {
           console.error(
-            `[ALERT_PROCESS] Failed to send ${job.symbol}:`,
+            `[TELEGRAM] Failed to send ${job.symbol}:`,
             err instanceof Error ? err.message : String(err)
           );
           failedJobs.push(job);
@@ -178,10 +165,7 @@ async function processAlertQueue(): Promise<void> {
     // Requeue failed jobs
     if (failedJobs.length > 0) {
       alertQueue.unshift(...failedJobs);
-      console.log(`[ALERT_PROCESS] Requeued ${failedJobs.length} jobs for retry`);
     }
-
-    console.log(`[ALERT_PROCESS] Cycle complete: ${processedSymbols.size} sent, ${alertQueue.length} pending`);
   } finally {
     isProcessing = false;
   }
@@ -194,10 +178,7 @@ async function processAlertQueue(): Promise<void> {
  * Ensures Telegram delivery before cron response
  */
 export async function flushAlertQueue(): Promise<void> {
-  console.log(`[ALERT_FLUSH] Starting flush with ${alertQueue.length} pending`);
-
   if (alertQueue.length === 0) {
-    console.log(`[ALERT_FLUSH] No pending alerts`);
     return;
   }
 
@@ -212,9 +193,7 @@ export async function flushAlertQueue(): Promise<void> {
   }
 
   const elapsed = Date.now() - startTime;
-  if (alertQueue.length === 0) {
-    console.log(`[ALERT_FLUSH] Complete - all alerts sent in ${elapsed}ms`);
-  } else {
+  if (alertQueue.length > 0) {
     console.warn(
       `[ALERT_FLUSH] Timeout after ${elapsed}ms - ${alertQueue.length} alerts still pending`
     );
