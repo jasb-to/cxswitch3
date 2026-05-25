@@ -59,13 +59,11 @@ export const EMPTY_SNAPSHOT: CanonicalSnapshot = {
 
 /**
  * Normalize card to SnapshotCard DTO
- * HARD ENFORCE all required fields - no spreads, no optional chaining
  * 
- * CRITICAL: Card MUST come from buildTradeViewModel which populates:
- * - targetPrices: { tp1, tp2, sl }
- * - riskReward: number
- * 
- * These are ALWAYS present after buildTradeViewModel, so we ALWAYS include them.
+ * CRITICAL: Preserve null values for DO_NOT_TRADE cards
+ * NEVER manufacture synthetic zero defaults
+ * - targetPrices: null for non-actionable, object for actionable
+ * - riskReward: null for non-actionable, number for actionable
  */
 function normalizeCardToDTO(card: any): SnapshotCard {
   // FORENSIC POINT 1: Log card state BEFORE DTO normalization
@@ -88,8 +86,9 @@ function normalizeCardToDTO(card: any): SnapshotCard {
     );
   }
 
-  // CRITICAL: Always use targetPrices and riskReward from viewmodel
-  // These are guaranteed to exist after buildTradeViewModel
+  // CRITICAL: Preserve null values from buildTradeViewModel
+  // DO_NOT_TRADE cards will have targetPrices=null, riskReward=null
+  // ACTIVE_SNIPER/CONFIRMED cards will have real values
   const snapshotCard: SnapshotCard = {
     symbol: card.symbol || "UNKNOWN",
     price: card.price || 0,
@@ -104,14 +103,11 @@ function normalizeCardToDTO(card: any): SnapshotCard {
     htf4hTrend: card.htf4hTrend || "NEUTRAL",
     notes: card.notes,
     
-    // CRITICAL FIX: Use viewmodel's targetPrices and riskReward directly
-    // buildTradeViewModel ALWAYS populates these, so spread them always
-    ...(card.targetPrices && {
-      targetPrices: card.targetPrices,
-    }),
-    ...(card.riskReward !== undefined && {
-      riskReward: card.riskReward,
-    }),
+    // CRITICAL FIX: Preserve null values from viewmodel
+    // If targetPrices is null, DO NOT include in spread
+    // If riskReward is null, DO NOT include in spread
+    ...(card.targetPrices ? { targetPrices: card.targetPrices } : {}),
+    ...(card.riskReward !== null && card.riskReward !== undefined ? { riskReward: card.riskReward } : {}),
   };
 
   // FORENSIC POINT 2: Log snapshot card AFTER normalization
