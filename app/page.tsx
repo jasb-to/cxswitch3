@@ -116,7 +116,7 @@ export default function Dashboard() {
                   {signal.state}
                 </td>
                 <td style={{ padding: "10px" }}>
-                  {new Date(signal.timestamp).toLocaleTimeString()}
+                  {new Date(signal.timestamp).toISOString().split('T')[1].slice(0, 8)}
                 </td>
               </tr>
             ))}
