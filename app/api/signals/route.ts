@@ -16,9 +16,18 @@ export async function GET() {
 
     console.log("[API/SIGNALS] Ready:", ready, "Count:", signals.length);
 
+    // If no signals stored yet, return defaults so UI never sees empty state
+    const output = signals.length === 0
+      ? [
+          { symbol: "BTC", state: "DO_NOT_TRADE" as const, timestamp: Date.now() },
+          { symbol: "ETH", state: "DO_NOT_TRADE" as const, timestamp: Date.now() },
+          { symbol: "SOL", state: "DO_NOT_TRADE" as const, timestamp: Date.now() },
+        ]
+      : signals;
+
     return NextResponse.json({
       ready,
-      signals: signals.map((s) => ({
+      signals: output.map((s) => ({
         symbol: s.symbol,
         state: s.state,
         timestamp: s.timestamp,
@@ -27,7 +36,14 @@ export async function GET() {
   } catch (error) {
     console.error("[API/SIGNALS] Error:", error);
     return NextResponse.json(
-      { ready: false, signals: [] },
+      {
+        ready: false,
+        signals: [
+          { symbol: "BTC", state: "DO_NOT_TRADE", timestamp: Date.now() },
+          { symbol: "ETH", state: "DO_NOT_TRADE", timestamp: Date.now() },
+          { symbol: "SOL", state: "DO_NOT_TRADE", timestamp: Date.now() },
+        ],
+      },
       { status: 500 }
     );
   }

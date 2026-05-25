@@ -16,7 +16,6 @@ interface ApiResponse {
 export default function Dashboard() {
   const [data, setData] = useState<ApiResponse | null>(null);
   const [mounted, setMounted] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   // Hydration guard
   useEffect(() => {
@@ -35,11 +34,9 @@ export default function Dashboard() {
         // Guard: validate structure
         if (json && typeof json === "object" && Array.isArray(json.signals)) {
           setData(json);
-          setError(null);
         }
       } catch (err) {
         console.error("[POLL] Error:", err);
-        setError(String(err));
       }
     };
 
@@ -49,30 +46,35 @@ export default function Dashboard() {
   }, [mounted]);
 
   if (!mounted) return <div>Loading...</div>;
-  if (error) return <div>Error: {error}</div>;
-  if (!data) return <div>No data</div>;
+  
+  // Simple guard: if no data yet, show waiting message
+  if (!data) return <div>Waiting for market data...</div>;
+
+  // Extract signals - never empty thanks to default DO_NOT_TRADE from cron
+  const signals = data.signals ?? [];
 
   return (
     <div style={{ padding: "20px", fontFamily: "monospace" }}>
       <h1>Trading Signals</h1>
-      <p>Ready: {data.ready ? "✓" : "✗"}</p>
 
       <div style={{ marginTop: "20px" }}>
-        {data.signals.length === 0 ? (
-          <p>No signals</p>
+        {signals.length === 0 ? (
+          <p>No signals available</p>
         ) : (
           <table style={{ borderCollapse: "collapse", width: "100%" }}>
             <thead>
               <tr style={{ borderBottom: "2px solid #333" }}>
                 <th style={{ padding: "10px", textAlign: "left" }}>Symbol</th>
                 <th style={{ padding: "10px", textAlign: "left" }}>State</th>
-                <th style={{ padding: "10px", textAlign: "left" }}>Time</th>
+                <th style={{ padding: "10px", textAlign: "left" }}>Updated</th>
               </tr>
             </thead>
             <tbody>
-              {data.signals.map((signal) => (
+              {signals.map((signal) => (
                 <tr key={signal.symbol} style={{ borderBottom: "1px solid #ccc" }}>
-                  <td style={{ padding: "10px" }}>{signal.symbol}</td>
+                  <td style={{ padding: "10px", fontWeight: "bold" }}>
+                    {signal.symbol}
+                  </td>
                   <td
                     style={{
                       padding: "10px",
