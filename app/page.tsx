@@ -3,78 +3,32 @@
 import { useState, useEffect } from "react";
 import type { Signal } from "@/lib/signal-store";
 
-interface ApiResponse {
-  symbols: Signal[];
-  activeTrades: Signal[];
-  activeSymbols: Signal[];
-  lastUpdated: string;
-}
-
-const FALLBACK_SIGNAL = (symbol: string): Signal => ({
-  symbol,
-  price: 0,
-  state: "DO_NOT_TRADE",
-  trend_4h: "Neutral",
-  structure_15m: "Range",
-  macro_bias: "Neutral",
-  readiness_score: 0,
-  updated_at: new Date().toISOString(),
-});
-
 export default function Dashboard() {
-  const [data, setData] = useState<ApiResponse | null>(null);
+  const [signals, setSignals] = useState<Signal[]>([]);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 
   const fetchSignals = async () => {
     try {
-      setError(null);
       const res = await fetch("/api/signals", { cache: "no-store" });
-      
-      if (!res.ok) {
-        throw new Error(`API returned ${res.status}`);
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-      const json = await res.json();
-      console.log("[FRONTEND SIGNALS]", json);
-
-      // Parse symbols with fallback logic
-      let symbols = 
-        json?.symbols ??
-        json?.data?.symbols ??
-        (Array.isArray(json) ? json : []);
-
-      if (!Array.isArray(symbols)) {
-        symbols = [];
-      }
-
-      console.log("[FRONTEND PARSED]", symbols);
-
-      setData({
-        symbols,
-        activeTrades: json?.activeTrades ?? symbols.filter(s => s?.state === "SNIPER"),
-        activeSymbols: json?.activeSymbols ?? symbols.filter(s => s?.state !== "DO_NOT_TRADE"),
-        lastUpdated: json?.lastUpdated ?? new Date().toISOString(),
-      });
+      const data: Signal[] = await res.json();
+      setSignals(Array.isArray(data) ? data : []);
+      setLastUpdated(new Date().toISOString());
     } catch (err) {
-      console.error("[FETCH] Error:", err);
-      setError(String(err));
+      console.error("[DASHBOARD]", err);
     }
   };
 
   const triggerCron = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/cron", { method: "POST" });
-      if (!res.ok) throw new Error("Cron failed");
-      
-      // Wait a moment for data to update
+      await fetch("/api/cron", { method: "POST" });
       await new Promise(r => setTimeout(r, 500));
-      
       await fetchSignals();
     } catch (err) {
-      setError("Cron error: " + String(err));
-      console.error("[CRON] Error:", err);
+      console.error("[CRON]", err);
     } finally {
       setLoading(false);
     }
@@ -83,245 +37,131 @@ export default function Dashboard() {
   const testTelegram = async () => {
     try {
       const res = await fetch("/api/test-telegram", { method: "POST" });
-      const result = await res.json();
-      alert(result.ok ? "Telegram alert sent!" : "Telegram failed: " + (result.error || "Unknown error"));
+      const json = await res.json();
+      alert(json.ok ? "Telegram connected!" : `Error: ${json.error}`);
     } catch (err) {
-      alert("Telegram error: " + String(err));
+      alert(`Error: ${err}`);
     }
   };
 
   useEffect(() => {
     fetchSignals();
-    const id = setInterval(fetchSignals, 15000);
-    return () => clearInterval(id);
   }, []);
 
-  // Force merge: always show 3 cards
-  const SYMBOLS = ["BTC", "ETH", "SOL"];
-  const apiSymbols = data?.symbols ?? [];
-  
-  const merged = SYMBOLS.map(sym => {
-    const found = apiSymbols.find(s => s?.symbol === sym);
-    if (found) return found;
-    return FALLBACK_SIGNAL(sym);
-  });
-
-  // Calculate global readiness (average of 3 cards)
-  const globalReadiness = Math.round(
-    merged.reduce((sum, s) => sum + (s?.readiness_score ?? 0), 0) / 3
-  );
-
-  const getReadinessLabel = (score: number) => {
-    if (score < 30) return "No setup forming";
-    if (score < 60) return "Watching breakout structure";
-    if (score < 85) return "Approaching sniper condition";
-    return "High probability execution zone";
-  };
-
-  const getReadinessColor = (score: number) => {
-    if (score < 30) return "#555";
-    if (score < 60) return "#ff9100";
-    if (score < 85) return "#00d4ff";
-    return "#00c853";
-  };
-
   return (
-    <div style={{ backgroundColor: "#000", color: "#e5e7eb", minHeight: "100vh", padding: "24px", fontFamily: "system-ui, sans-serif" }}>
-      {/* HEADER */}
-      <div style={{ marginBottom: "32px", borderBottom: "1px solid #2a2a2a", paddingBottom: "20px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+    <div style={{ backgroundColor: "#000", color: "#fff", minHeight: "100vh", padding: "20px" }}>
+      <div style={{ maxWidth: "1200px", margin: "0 auto" }}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "30px" }}>
           <div>
-            <p style={{ margin: "0 0 8px 0", fontSize: "32px", fontWeight: "bold", color: "#fff" }}>Trading Signals</p>
-            <p style={{ margin: 0, color: "#9ca3af", fontSize: "13px" }} suppressHydrationWarning>
-              Last updated: {data?.lastUpdated ? new Date(data.lastUpdated).toLocaleString() : "never"}
+            <h1 style={{ margin: 0, fontSize: "32px" }}>Trading Signals</h1>
+            <p style={{ margin: "5px 0 0 0", color: "#999", fontSize: "13px" }} suppressHydrationWarning>
+              {lastUpdated ? `Last updated: ${new Date(lastUpdated).toLocaleString()}` : "Never"}
             </p>
-            {error && (
-              <p style={{ margin: "8px 0 0 0", color: "#ff6b6b", fontSize: "12px" }}>
-                ⚠️ {error}
-              </p>
-            )}
           </div>
-          <div style={{ display: "flex", gap: "12px" }}>
-            <button
-              onClick={triggerCron}
-              disabled={loading}
-              style={{
-                padding: "8px 16px",
-                backgroundColor: "#222",
-                color: "#fff",
-                border: "1px solid #2a2a2a",
-                borderRadius: "6px",
-                cursor: loading ? "not-allowed" : "pointer",
-                opacity: loading ? 0.5 : 1,
-                fontSize: "14px",
-                fontWeight: "500",
-              }}
-            >
+          <div style={{ display: "flex", gap: "10px" }}>
+            <button onClick={triggerCron} disabled={loading} style={{
+              padding: "8px 16px",
+              backgroundColor: loading ? "#444" : "#0066cc",
+              color: "#fff",
+              border: "none",
+              borderRadius: "4px",
+              cursor: loading ? "not-allowed" : "pointer"
+            }}>
               {loading ? "Refreshing..." : "Refresh"}
             </button>
-            <button
-              onClick={testTelegram}
-              style={{
-                padding: "8px 16px",
-                backgroundColor: "#222",
-                color: "#fff",
-                border: "1px solid #2a2a2a",
-                borderRadius: "6px",
-                cursor: "pointer",
-                fontSize: "14px",
-                fontWeight: "500",
-              }}
-            >
+            <button onClick={testTelegram} style={{
+              padding: "8px 16px",
+              backgroundColor: "#666",
+              color: "#fff",
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer"
+            }}>
               Test Alert
             </button>
           </div>
         </div>
 
-        {/* TRADE READINESS METER (GLOBAL) */}
-        <div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-            <span style={{ fontSize: "13px", fontWeight: "600", color: "#fff" }}>Trade Readiness</span>
-            <span style={{ fontSize: "14px", fontWeight: "bold", color: getReadinessColor(globalReadiness) }}>
-              {globalReadiness}%
-            </span>
-          </div>
-          <div style={{ width: "100%", height: "8px", backgroundColor: "#111", borderRadius: "4px", overflow: "hidden", marginBottom: "8px" }}>
-            <div
-              style={{
-                width: `${globalReadiness}%`,
-                height: "100%",
-                backgroundColor: getReadinessColor(globalReadiness),
-                transition: "width 0.3s ease",
-              }}
-            />
-          </div>
-          <p style={{ margin: "6px 0 0 0", fontSize: "12px", color: "#9ca3af" }}>
-            {getReadinessLabel(globalReadiness)}
-          </p>
-        </div>
-      </div>
-
-      {/* SYMBOL CARDS - ALWAYS RENDER 3 */}
-      <div style={{ marginBottom: "32px" }}>
-        <h2 style={{ marginBottom: "16px", fontSize: "18px", fontWeight: "600", color: "#fff" }}>Market Overview</h2>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "16px" }}>
-          {merged.map((signal) => {
-            if (!signal) return null;
-
-            const isSNIPER = signal.state === "SNIPER";
-            const isBuilding = signal.state === "BUILDING";
-            const borderColor = isSNIPER 
-              ? (signal.direction === "LONG" ? "#00c853" : "#ff1744") 
-              : isBuilding ? "#ff9100" : "#555";
-
-            return (
+        {/* Signals Grid */}
+        {signals.length === 0 ? (
+          <p style={{ color: "#999", textAlign: "center", padding: "40px" }}>No signals</p>
+        ) : (
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+            gap: "20px"
+          }}>
+            {signals.map((signal) => (
               <div
                 key={signal.symbol}
                 style={{
                   backgroundColor: "#111",
                   border: "1px solid #2a2a2a",
-                  borderLeft: `4px solid ${borderColor}`,
+                  borderLeft: signal.state === "SNIPER" 
+                    ? (signal.direction === "LONG" ? "4px solid #00c853" : "4px solid #ff1744")
+                    : signal.state === "BUILDING"
+                    ? "4px solid #ff9100"
+                    : "4px solid #666",
                   borderRadius: "8px",
                   padding: "16px",
+                  display: "flex",
+                  flexDirection: "column"
                 }}
               >
-                {/* HEADER */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "16px" }}>
-                  <div>
-                    <h3 style={{ margin: "0 0 8px 0", fontSize: "20px", fontWeight: "bold", color: "#fff" }}>{signal.symbol}</h3>
-                    <p style={{ margin: 0, fontSize: "12px", color: "#9ca3af" }}>
-                      Price: ${signal.price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </p>
-                  </div>
-                  <div
-                    style={{
-                      padding: "6px 12px",
-                      backgroundColor: borderColor,
-                      color: "#000",
-                      borderRadius: "4px",
-                      fontSize: "12px",
-                      fontWeight: "bold",
-                    }}
-                  >
+                {/* Header */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                  <h2 style={{ margin: 0, fontSize: "20px" }}>{signal.symbol}</h2>
+                  <span style={{
+                    backgroundColor: signal.state === "SNIPER" ? "#00c853" : signal.state === "BUILDING" ? "#ff9100" : "#666",
+                    color: "#000",
+                    padding: "4px 8px",
+                    borderRadius: "4px",
+                    fontSize: "12px",
+                    fontWeight: "bold"
+                  }}>
                     {signal.state}
-                  </div>
+                  </span>
                 </div>
 
-                {/* MARKET STRUCTURE (ALWAYS SHOWN) */}
-                <div style={{ fontSize: "12px", lineHeight: "1.6", color: "#e5e7eb", marginBottom: "12px", paddingBottom: "12px", borderBottom: "1px solid #2a2a2a" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-                    <div>
-                      <div style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600", marginBottom: "4px" }}>4H TREND</div>
-                      <div style={{ fontWeight: "500", color: "#fff" }}>{signal.trend_4h}</div>
-                    </div>
-                    <div>
-                      <div style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600", marginBottom: "4px" }}>15M STRUCTURE</div>
-                      <div style={{ fontWeight: "500", color: "#fff" }}>{signal.structure_15m}</div>
-                    </div>
-                  </div>
-                  <div style={{ marginTop: "8px" }}>
-                    <div style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600", marginBottom: "4px" }}>MACRO BIAS</div>
-                    <div style={{ fontWeight: "500", color: "#fff" }}>{signal.macro_bias}</div>
-                  </div>
-                </div>
+                {/* Price */}
+                <p style={{ margin: "0 0 12px 0", fontSize: "24px", fontWeight: "bold" }}>
+                  ${signal.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </p>
 
-                {/* READINESS SCORE (PERSONAL) */}
-                <div style={{ fontSize: "12px", marginBottom: "12px", paddingBottom: "12px", borderBottom: "1px solid #2a2a2a" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                    <span style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600" }}>READINESS</span>
-                    <span style={{ fontWeight: "bold", color: getReadinessColor(signal.readiness_score) }}>
-                      {signal.readiness_score}%
-                    </span>
+                {/* SNIPER Details */}
+                {signal.state === "SNIPER" && signal.direction && (
+                  <div style={{ backgroundColor: "#1a1a1a", padding: "12px", borderRadius: "4px", marginBottom: "12px" }}>
+                    <p style={{ margin: "0 0 8px 0", fontSize: "14px", fontWeight: "bold" }}>Trade Setup</p>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", fontSize: "12px" }}>
+                      <div><span style={{ color: "#999" }}>Direction:</span> {signal.direction}</div>
+                      <div><span style={{ color: "#999" }}>Entry:</span> ${signal.entry?.toFixed(2)}</div>
+                      <div><span style={{ color: "#999" }}>SL:</span> ${signal.stopLoss?.toFixed(2)}</div>
+                      <div><span style={{ color: "#999" }}>TP:</span> ${signal.takeProfit?.toFixed(2)}</div>
+                      <div><span style={{ color: "#999" }}>RR:</span> {signal.riskReward?.toFixed(2)}</div>
+                      <div><span style={{ color: "#999" }}>Confidence:</span> {signal.confidence}%</div>
+                    </div>
+                    {signal.reason && (
+                      <p style={{ margin: "8px 0 0 0", fontSize: "12px", color: "#aaa" }}>Reason: {signal.reason}</p>
+                    )}
                   </div>
-                  <div style={{ width: "100%", height: "6px", backgroundColor: "#0a0a0a", borderRadius: "3px", overflow: "hidden" }}>
-                    <div
-                      style={{
-                        width: `${signal.readiness_score}%`,
-                        height: "100%",
-                        backgroundColor: getReadinessColor(signal.readiness_score),
-                      }}
-                    />
-                  </div>
-                </div>
+                )}
 
-                {/* SNIPER DETAILS (IF APPLICABLE) */}
-                {isSNIPER && signal.direction ? (
-                  <div style={{ fontSize: "12px", lineHeight: "1.6", color: "#e5e7eb" }}>
-                    <div style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600", marginBottom: "8px" }}>TRADE SETUP</div>
-                    <div style={{ marginBottom: "6px" }}>
-                      <span style={{ color: "#9ca3af" }}>Direction:</span>{" "}
-                      <span style={{ color: borderColor, fontWeight: "bold" }}>{signal.direction}</span>
-                    </div>
-                    <div style={{ marginBottom: "6px" }}>
-                      <span style={{ color: "#9ca3af" }}>Entry:</span> <span style={{ fontWeight: "bold" }}>${signal.entry?.toFixed(2)}</span>
-                    </div>
-                    <div style={{ marginBottom: "6px" }}>
-                      <span style={{ color: "#9ca3af" }}>SL:</span> <span style={{ fontWeight: "bold" }}>${signal.stopLoss?.toFixed(2)}</span>
-                    </div>
-                    <div style={{ marginBottom: "6px" }}>
-                      <span style={{ color: "#9ca3af" }}>TP:</span> <span style={{ fontWeight: "bold" }}>${signal.takeProfit?.toFixed(2)}</span>
-                    </div>
-                    <div style={{ marginBottom: "6px" }}>
-                      <span style={{ color: "#9ca3af" }}>RR:</span> <span style={{ fontWeight: "bold" }}>{signal.riskReward?.toFixed(2)}</span>
-                    </div>
-                    <div style={{ marginBottom: "6px" }}>
-                      <span style={{ color: "#9ca3af" }}>Confidence:</span>{" "}
-                      <span style={{ fontWeight: "bold", color: borderColor }}>{signal.confidence}%</span>
-                    </div>
-                    <div>
-                      <span style={{ color: "#9ca3af" }}>Reason:</span> <span style={{ fontWeight: "500" }}>{signal.reason}</span>
-                    </div>
-                  </div>
-                ) : null}
-
-                {/* FOOTER */}
-                <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px solid #2a2a2a", fontSize: "11px", color: "#6b7280", textAlign: "right" }} suppressHydrationWarning>
-                  Updated: {new Date(signal.updated_at).toLocaleString()}
-                </div>
+                {/* Footer */}
+                <p style={{
+                  margin: "auto 0 0 0",
+                  paddingTop: "12px",
+                  borderTop: "1px solid #2a2a2a",
+                  fontSize: "11px",
+                  color: "#666",
+                  textAlign: "right"
+                }} suppressHydrationWarning>
+                  {new Date(signal.updated_at).toLocaleString()}
+                </p>
               </div>
-            );
-          })}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
