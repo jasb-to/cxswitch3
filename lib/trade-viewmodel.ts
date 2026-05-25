@@ -23,7 +23,7 @@ export type TradeViewModel = {
   // Structure Context (ALWAYS populated, never stripped)
   structureState: StructureState;
   structure: string;
-  execution15m: string;
+  execution15mState: "COMPRESSING" | "BREAKOUT_READY" | "EXPANDING" | "CHOP";
   htf4hTrend: string;
   
   // Scoring & Confidence
@@ -91,7 +91,7 @@ export function buildTradeViewModel(card: Card, metadata?: any): TradeViewModel 
     // Structure (CRITICAL: always populated)
     structureState: card.structureState || "RANGE",
     structure: card.structure || "UNKNOWN",
-    execution15m: card.execution15mState || "CHOP",
+    execution15mState: card.execution15mState || "CHOP",
     htf4hTrend: card.htf4hTrend || "NEUTRAL",
     
     // Scoring
