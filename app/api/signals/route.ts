@@ -5,30 +5,30 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 /**
- * PURE SNAPSHOT API
+ * PURE SNAPSHOT API - v8.6 CRITICAL FIX
  * 
- * Returns the live scanner snapshot directly.
- * NO card generation.
- * NO placeholders.
- * NO fallbacks.
+ * Returns EXACTLY what cron produced. No recomputation.
+ * No rebuilding TradeViewModels. No fallback logic.
  * 
- * Single source of truth.
+ * If cron wrote it, we serve it. Nothing else.
+ * This is the ONLY source of truth for the UI.
  */
 export async function GET() {
   try {
     const snapshot = getSnapshot();
     
-    // DEBUG LOGGING: STEP 5 - Verify snapshot payload before serialization
-    if (snapshot.cards.length > 0) {
-      console.log("[SIGNALS_API_DEBUG]", {
-        cardCount: snapshot.cards.length,
-        firstCard: {
-          symbol: snapshot.cards[0].symbol,
-          activationState: snapshot.cards[0].activationState,
-          signalState: (snapshot.cards[0] as any).signalState,
-        },
-      });
-    }
+    // CRITICAL: Zero transformation. Serve cron output as-is.
+    // If UI needs different shape, that's a UI layer concern.
+    // API is a pure read-through of what cron produced.
+    
+    console.log("[SIGNALS_API] Serving snapshot", {
+      ready: snapshot.ready,
+      cardCount: snapshot.cards.length,
+      firstCard: snapshot.cards.length > 0 ? {
+        symbol: snapshot.cards[0].symbol,
+        activationState: (snapshot.cards[0] as any).activationState,
+      } : null,
+    });
     
     return NextResponse.json(snapshot);
   } catch (error) {

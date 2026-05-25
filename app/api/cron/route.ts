@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateSetups, STRATEGY_VERSION } from "@/lib/strategy-v6";
-import { enqueueAlert } from "@/lib/telegram-worker";
+import { flushAlertQueue } from "@/lib/telegram-worker";
 import { refreshMarketData } from "@/lib/market-data-layer";
 import { fetchCandles } from "@/lib/kraken";
 import { getSnapshot, setSnapshot } from "@/lib/runtime-snapshot";
@@ -8,6 +8,9 @@ import { mergeSnapshots, validateSnipperCardState } from "@/lib/snapshot-merger"
 import { clearCanonicalStates, initializeCanonicalState, updateCanonicalState, getAllCanonicalStates, canonicalToCard } from "@/lib/unified-market-state";
 import { createCanonicalSnapshot } from "@/lib/canonical-snapshot";
 import { detectMonitorEvent, formatMonitorEvent } from "@/lib/monitor-event-engine";
+import { safeFreezeCard, deepFreeze, assertDeepFrozen } from "@/lib/immutability";
+import { buildTradeViewModel, validateTradeViewModel } from "@/lib/trade-viewmodel";
+import { dispatchTradeViewModels, validateDispatcherInvariants } from "@/lib/single-output-dispatcher";
 
 // v36.0 FIX: Defer module-level logging to runtime
 let strategyVersionLogged = false;
@@ -97,13 +100,13 @@ async function runExecutionCycle(): Promise<{
       }
     }
     
-    // FREEZE CARDS: Make immutable after generation
-    // No mutations allowed after this point
-    executionCards.forEach(card => Object.freeze(card));
+    // FREEZE CARDS: Make immutable after generation with deep cloning
+    // Clone to prevent shared references, then deep freeze to prevent mutations
+    const frozenCards = executionCards.map(card => safeFreezeCard(card));
     
-    console.log(`[EXEC_CYCLE] Generated ${executionCards.length} cards (FROZEN), ${setups.length} setups, populated canonical state in ${Date.now() - cycleStart}ms`);
+    console.log(`[EXEC_CYCLE] Generated ${frozenCards.length} cards (DEEP FROZEN), ${setups.length} setups, populated canonical state in ${Date.now() - cycleStart}ms`);
     
-    return { executionCards, setups, timeMs: Date.now() - cycleStart };
+    return { executionCards: frozenCards, setups, timeMs: Date.now() - cycleStart };
   } finally {
     executionCycleRunning = false;
     lastExecutionCycleTime = Date.now();
@@ -184,10 +187,17 @@ export async function GET(req: NextRequest) {
     // STEP 3: v8.2 FIX - Use canonical state directly (unified source of truth)
     // All cards already have canonical state populated by execution and display cycles
     // No need for merging - canonical state is the definitive state
-    const canonicalCards = getAllCanonicalStates().map(canonicalToCard);
+    const rawCanonicalCards = getAllCanonicalStates().map(canonicalToCard);
     
-    console.log(`[CANONICAL] Using ${canonicalCards.length} unified canonical states (BTC, ETH, SOL always present)`);
+    console.log(`[CANONICAL] Using ${rawCanonicalCards.length} unified canonical states (BTC, ETH, SOL always present)`);
 
+    // ═════════════════════════════════════════════════════════════════════════════
+    // CRITICAL: ONE OBJECT = ONE LIFETIME RULE
+    // Clone IMMEDIATELY to prevent shared references
+    // Never reuse the original object - work only with the clone
+    // ═════════════════════════════════════════════════════════════════════════════
+    const canonicalCards = structuredClone(rawCanonicalCards);
+    
     // STEP 4: Validate SNIPER cards completed full pipeline (v8.1 FIX #2)
     // SNIPER_READY is intermediate, not final. Must have TP/SL before rendering
     for (const card of canonicalCards) {
@@ -196,8 +206,8 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // ═════════════════════════════════════════════════════════════════════════════
-    // STEP 4.5: HARD TYPE ENFORCEMENT - FAIL FAST on contract violations
+    // STEP 4.5: HARD TYPE ENFORCEMENT - Map activationState on CLONED objects
+    // CRITICAL: Mutations happen on cloned cards ONLY, never on original references
     // ═════════════════════════════════════════════════════════════════════════════
     for (const card of canonicalCards) {
       // REQUIRED FIELDS - NO UNDEFINED
@@ -214,7 +224,10 @@ export async function GET(req: NextRequest) {
         throw new Error(`[TYPE_VIOLATION] Card ${card.symbol} invalid confidence: ${card.confidence}`);
       }
       
-      // CRITICAL FIX: Map signalState to activationState for frontend contract
+      // DEBUG: Log BEFORE enrichment
+      console.log(`[ENRICHMENT_BEFORE] ${card.symbol}: signalState=${card.signalState}, activationState=${(card as any).activationState}`);
+      
+      // CRITICAL FIX: Map signalState to activationState on CLONED card (mutation safe)
       // Frontend expects activationState: "ACTIVE_SNIPER" | "CONFIRMED" | "DO_NOT_TRADE"
       // Map intermediate states to terminal states for serialization
       if (card.signalState === "ACTIVE_SNIPER") {
@@ -226,107 +239,94 @@ export async function GET(req: NextRequest) {
         (card as any).activationState = "DO_NOT_TRADE";
       }
       
-      // IMMUTABILITY CHECK - Cards must be frozen
-      if (!Object.isFrozen(card)) {
-        throw new Error(`[IMMUTABILITY_VIOLATION] Card ${card.symbol} is not frozen - mutation detected`);
+      // DEBUG: Log AFTER enrichment
+      console.log(`[ENRICHMENT_AFTER] ${card.symbol}: signalState=${card.signalState}, activationState=${(card as any).activationState}`);
+      
+      // CRITICAL: Ensure structureState is ALWAYS present BEFORE freezing
+      // Add defensive default if missing (should not happen, but guards against pipeline leaks)
+      if (!card.structureState) {
+        console.log(`[ENRICHMENT] ${card.symbol} missing structureState, setting to RANGE before freeze`);
+        (card as any).structureState = "RANGE";
       }
     }
 
-    // ATOMIC: Update snapshot with exactly 3 cards + active setups
-    // Backend MUST ONLY write when canonicalCards.length === 3
-    // v1 FIX: Use createCanonicalSnapshot to enforce complete contract
-    // ALL fields (cards, setups, activeSignals, signalCount, activeSnipers) populated
+    // ═════════════════════════════════════════════════════════════════════════════
+    // FREEZE MUST BE LAST STEP ONLY - after ALL mutations are complete
+    // CRITICAL: Use the CLONED canonicalCards (never reuse rawCanonicalCards)
+    // NO ENRICHMENT AFTER THIS POINT
+    // ═════════════════════════════════════════════════════════════════════════════
+    const frozenCards = canonicalCards.map(card => deepFreeze(card));
+    
+    console.log(`[EXEC_CYCLE] Generated ${frozenCards.length} cards (DEEP FROZEN), ${setups.length} setups, completed type enforcement in ${Date.now() - cronStart}ms`);
+    
+    // ═════════════════════════════════════════════════════════════════════════════
+    // FORENSIC LOGGING: Capture card state BEFORE snapshot to detect corruption
+    // ═════════════════════════════════════════════════════════════════════════════
+    console.log("[FORENSIC] Card state RIGHT AFTER freeze:");
+    for (const card of frozenCards) {
+      console.log(`  ${card.symbol}: signalState=${card.signalState}, activationState=${(card as any).activationState}, direction=${card.direction}`);
+    }
+    
+    // ═════════════════════════════════════════════════════════════════════════════
+    // SNAPSHOT: Create from CLONED + FROZEN cards
+    // v8.4 FIX: Build unified TradeViewModels for consistent UI/Alert/API layer
+    // ONE OBJECT = ONE LIFETIME - ALWAYS use full context, NEVER strip DO_NOT_TRADE
+    // ═════════════════════════════════════════════════════════════════════════════
+    const snapshotCards = frozenCards.length === 3 
+      ? frozenCards.map(card => {
+          // Build unified TradeViewModel - ALWAYS includes full context
+          const viewModel = buildTradeViewModel(card);
+          validateTradeViewModel(viewModel);
+          return viewModel;
+        })
+      : [];
+    
+    // ═════════════════════════════════════════════════════════════════════════════
+    // FORENSIC LOGGING: Capture viewmodel state RIGHT AFTER build
+    // ═════════════════════════════════════════════════════════════════════════════
+    console.log("[FORENSIC] SnapshotCard state RIGHT AFTER buildTradeViewModel:");
+    for (const vm of snapshotCards) {
+      console.log(`  ${vm.symbol}: signalState=${vm.signalState}, activationState=${vm.activationState}, direction=${vm.direction}`);
+    }
+    
     const snapshot = createCanonicalSnapshot({
-      cards: canonicalCards.length === 3 ? canonicalCards : [],
+      cards: snapshotCards as any, // TypeScript bridge - TradeViewModel used in UI
       setups: setups,  // ACTIVE_SNIPER + ACTIVE_CONFIRMED signals
       updatedAt: new Date().toISOString(),
     });
-    setSnapshot(snapshot);
-
-    // STEP 5: Enqueue alerts (decoupled, non-blocking)
-    // v8.3 FIX: Use execution-grade signal state (ACTIVE_SNIPER/ACTIVE_CONFIRMED)
-    // v1 STABILIZATION: Only alert on NEW ACTIVE_SNIPER signals, not every cycle
-    for (const setup of setups) {
-      // Get the card associated with this setup to extract complete payload
-      const setupCard = executionCards.find(c => c.symbol === setup.symbol);
-      
-      if (!setupCard) {
-        console.log(`[SNIPER BLOCKED] ${setup.symbol} no execution card found`);
-        continue;
-      }
-      
-      // Verify structureState is populated
-      if (!setupCard.structureState) {
-        console.log(`[SNIPER BLOCKED] ${setup.symbol} missing structureState`);
-        continue;
-      }
-      
-      // Compute execution-grade signal state from setup.mode
-      const signalState = setup.mode === "SNIPER" ? "ACTIVE_SNIPER" : "ACTIVE_CONFIRMED";
-      
-      // v1 STABILIZATION: Check if this is a NEW signal state (transition)
-      // Only enqueue if signal state CHANGED to ACTIVE_SNIPER (prevent duplicate alerts)
-      const previousState = signalStateHistory[setup.symbol];
-      const isNewSignal = !previousState || previousState.signalState !== signalState;
-      
-      if (!isNewSignal) {
-        // Signal state unchanged, don't enqueue duplicate alert
-        console.log(`[DEDUPED] ${setup.symbol} ${signalState} already alerted (last ${Date.now() - previousState!.lastAlertedAt}ms ago)`);
-        continue;
-      }
-      
-      // Calculate entry zone (±0.5% from entry price)
-      const entryPriceBuffer = setupCard.price * 0.005;
-      
-      // Compute impulse state from compression/expansion
-      const impulseState = setupCard.volatilityLevel && setupCard.volatilityLevel < 40 
-        ? "Compression → Expansion confirmed"
-        : "Impulse active";
-      
-      // Track this signal state for next cycle (prevent duplicates)
-      signalStateHistory[setup.symbol] = { signalState, lastAlertedAt: Date.now() };
-      // STEP 4 FIX: Generate unique signalTransitionId and normalize all alert fields
-      // Ensures dedupe doesn't block new signals and all fields are defined
-      const signalTransitionId = `${setup.symbol}-${setup.mode}-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-      
-      // STEP 4 FIX: Normalize HTF mapping with fallback to "UNKNOWN"
-      let htf4hTrend: "BULLISH" | "BEARISH" | "NEUTRAL" = "NEUTRAL";
-      if (setup.htf?.trend4h === true) htf4hTrend = "BULLISH";
-      else if (setup.htf?.trend4h === false) htf4hTrend = "BEARISH";
-      
-      // STEP 4 FIX: Normalize 15M mapping with fallback to "UNKNOWN"
-      let execution15mState: "COMPRESSING" | "BREAKOUT_READY" | "EXPANDING" | "CHOP" = "CHOP";
-      if (setup.htf?.compression15m === true) execution15mState = "COMPRESSING";
-      else if (setup.htf?.expansion15m === true) execution15mState = "EXPANDING";
-      else if (setup.htf?.breakout15m === true) execution15mState = "BREAKOUT_READY";
-      
-      enqueueAlert({
-        symbol: setup.symbol,
-        mode: setup.mode,
-        direction: setup.direction,
-        score: setup.score,
-        price: setup.price,
-        source: "kraken",  // Execution pipeline always uses Kraken
-        signalState: signalState,  // Use execution-grade state, not display state
-        signalTransitionId: signalTransitionId,  // STEP 2 FIX: For granular dedupe
-        targetPrices: setupCard.targetPrices,  // Optional - may not be calculated yet
-        htf4hTrend: htf4hTrend,  // STEP 4 FIX: Normalized with fallback
-        execution15mState: execution15mState,  // STEP 4 FIX: Normalized with fallback
-        queued: Date.now(),
-        
-        // v1 STABILIZATION: Trader-facing fields for beautiful alerts
-        structureState: setupCard.structureState ?? "UNKNOWN",  // STEP 4 FIX: Force UNKNOWN if missing
-        entryPrice: setupCard.price,
-        entryZone: { min: setupCard.price - entryPriceBuffer, max: setupCard.price + entryPriceBuffer },
-        riskReward: setupCard.riskReward,
-        confidence: setupCard.confidence,
-        impulseState: impulseState ?? "UNKNOWN",  // STEP 4 FIX: Force UNKNOWN if missing
-        executionNotes: `Structure locked ${setup.direction}\nAtomic payload verified`,
-      });
+    
+    // ═════════════════════════════════════════════════════════════════════════════
+    // FORENSIC LOGGING: Capture snapshot state RIGHT AFTER creation
+    // ═════════════════════════════════════════════════════════════════════════════
+    console.log("[FORENSIC] Snapshot cards RIGHT AFTER createCanonicalSnapshot:");
+    for (const card of snapshot.cards) {
+      console.log(`  ${card.symbol}: signalState=${(card as any).signalState}, activationState=${(card as any).activationState}, direction=${(card as any).direction}`);
     }
+    
+    setSnapshot(snapshot);
+    
+    // ═════════════════════════════════════════════════════════════════════════════
+    // FORENSIC LOGGING: Confirm snapshot was written correctly
+    // ═════════════════════════════════════════════════════════════════════════════
+    const storedSnapshot = getSnapshot();
+    console.log("[FORENSIC] Stored snapshot (READ BACK FROM STORAGE):");
+    for (const card of storedSnapshot.cards) {
+      console.log(`  ${card.symbol}: activationState=${(card as any).activationState}`);
+    }
+    validateDispatcherInvariants(snapshotCards as TradeViewModel[]);
+    
+    // Dispatch: This enqueues ALL alerts from the SAME viewmodels that drive UI
+    // NO OTHER alert enqueueing happens anywhere - this is THE ONLY SOURCE
+    const dispatchedSignals = dispatchTradeViewModels(snapshotCards as TradeViewModel[]);
+    console.log(`[DISPATCHER] Dispatched ${dispatchedSignals.length} active signals`);
 
     const totalMs = Date.now() - cronStart;
-    console.log(`[CRON] Complete in ${totalMs}ms - execution: ${executionResult.timeMs}ms, queued ${setups.length} alerts`);
+    console.log(`[CRON] Complete in ${totalMs}ms - execution: ${executionResult.timeMs}ms, dispatched ${dispatchedSignals.length} active signals`);
+    
+    // CRITICAL FIX v8.3.0 #1: Flush alert queue BEFORE returning response
+    // Ensures all Telegram notifications are sent before cron exit
+    console.log(`[CRON] Flushing alerts before response...`);
+    await flushAlertQueue();
     
     // STATE DRIFT DETECTION: Verify no mutations occurred
     for (let i = 0; i < executionCards.length; i++) {

@@ -1394,11 +1394,12 @@ export async function generateSetups(segregatedMarkets: SegregatedMarketData, ca
     // v21.7.0 SNIPER STALE STATE REVALIDATION
     // If ACTIVE_SNIPER was set in previous cycle, revalidate against current structure
     // Drop to DO_NOT_TRADE if structure no longer supports ACTIVE_SNIPER
+    const supportsExecution = card.execution15mState !== "CHOP" && card.structureState !== "CHOP";
     if (card.signalState === "ACTIVE_SNIPER" && !supportsExecution) {
       console.log(`[SNIPER_INVALIDATED] ${symbol}: Structure no longer supports ACTIVE_SNIPER → dropping to DO_NOT_TRADE`);
       card.signalState = "DO_NOT_TRADE";
       card.lastSignalTime = undefined;
-      // Generate watch zone commentary for new BUILDING state
+      // Generate watch zone commentary for new state
       card.notes = generateWatchZoneCommentary(card);
     }
 

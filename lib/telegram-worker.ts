@@ -100,6 +100,40 @@ async function processAlertQueueAsync() {
 }
 
 /**
+ * CRITICAL: Flush alert queue synchronously (v8.3.0 FIX #1)
+ * Used at end of cron cycle to ensure alerts are sent before response returns
+ * This prevents alerts being queued but not processed before cron exits
+ */
+export async function flushAlertQueue() {
+  console.log(`[ALERT_FLUSH] Starting flush with ${alertQueue.length} pending alerts`);
+  
+  if (alertQueue.length === 0) {
+    console.log(`[ALERT_FLUSH] No pending alerts`);
+    return;
+  }
+  
+  // Wait for all alerts to be processed
+  const startTime = Date.now();
+  const maxWaitMs = 5000; // 5 second timeout
+  
+  while (alertQueue.length > 0 && Date.now() - startTime < maxWaitMs) {
+    // If not already processing, start processing
+    if (!isProcessingAlerts) {
+      await processAlertQueueAsync();
+    }
+    
+    // Wait a bit for async processing to complete
+    await new Promise(r => setTimeout(r, 50));
+  }
+  
+  if (alertQueue.length > 0) {
+    console.warn(`[ALERT_FLUSH] Timeout: ${alertQueue.length} alerts still pending after ${maxWaitMs}ms`);
+  } else {
+    console.log(`[ALERT_FLUSH] Complete - all alerts processed in ${Date.now() - startTime}ms`);
+  }
+}
+
+/**
  * Get queue stats (debugging)
  */
 export function getAlertQueueStats() {

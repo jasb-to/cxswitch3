@@ -6,6 +6,7 @@
  */
 
 import { CanonicalSignal } from "./types";
+import { deepFreeze } from "./immutability";
 
 // ============================================================================
 // PURE SNAPSHOT TYPE
@@ -119,15 +120,42 @@ export function validateSnapshotPurity(snapshot: PureSnapshot): void {
  * JSON stringification is the ONLY operation allowed
  */
 export function serializeSnapshot(snapshot: PureSnapshot): string {
+  // Verify snapshot is pure before serialization
   validateSnapshotPurity(snapshot);
+  
+  // Re-freeze to ensure immutability before serialization
+  const refrozen = deepFreeze({ ...snapshot, cards: snapshot.cards });
+  
+  return JSON.stringify(refrozen);
+}
 
+/**
+ * Deserialize snapshot from JSON
+ * Re-freeze all signals after deserialization
+ */
+export function deserializeSnapshot(json: string): PureSnapshot {
   try {
-    const json = JSON.stringify(snapshot);
-    console.log(`[SNAPSHOT_SERIALIZED] ${json.length} bytes`);
-    return json;
+    const data = JSON.parse(json);
+
+    // Re-freeze all signals with deep freeze (they lose frozen status during JSON round-trip)
+    const cards = (data.cards || []).map((card: any) => deepFreeze(card));
+
+    const snapshot = {
+      ready: data.ready,
+      cards: deepFreeze(cards),
+      timestamp: data.timestamp,
+      version: data.version,
+    };
+
+    validateSnapshotPurity(snapshot);
+    return deepFreeze(snapshot) as PureSnapshot;
   } catch (error) {
-    throw new Error(`[SNAPSHOT_ERROR] Failed to serialize snapshot: ${(error as Error).message}`);
+    throw new Error(
+      `[SNAPSHOT_ERROR] Failed to deserialize snapshot: ${(error as Error).message}`
+    );
   }
+}
+
 }
 
 /**
