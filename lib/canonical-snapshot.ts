@@ -23,9 +23,12 @@ export type SnapshotCard = Required<{
   structureState: "UPTREND" | "DOWNTREND" | "RANGE" | "BREAKOUT"; // CRITICAL: Must be in DTO contract
   confidence: number;
   structure: string;
-  execution15m: string;
+  execution15mState: string;
   htf4hTrend: string;
   notes?: string;
+  // Trade details (optional - only for active signals)
+  targetPrices?: { tp1: number; tp2: number; sl: number };
+  riskReward?: number;
 }>;
 
 export type CanonicalSnapshot = {
@@ -87,9 +90,12 @@ function normalizeCardToDTO(card: any): SnapshotCard {
     structureState: card.structureState ?? "RANGE", // CRITICAL FIX: Include in DTO, default to RANGE
     confidence: card.confidence || 0,
     structure: card.structure || "UNKNOWN",
-    execution15m: card.execution15m || "CHOP",
+    execution15mState: card.execution15mState || "CHOP",
     htf4hTrend: card.htf4hTrend || "NEUTRAL",
     notes: card.notes,
+    // Trade details - only if present (for ACTIVE_SNIPER/CONFIRMED)
+    ...(card.targetPrices && { targetPrices: card.targetPrices }),
+    ...(card.riskReward !== undefined && { riskReward: card.riskReward }),
   };
 
   return snapshotCard;
