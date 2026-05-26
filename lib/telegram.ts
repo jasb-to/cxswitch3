@@ -1,29 +1,8 @@
-import type { Signal } from "@/lib/signal-store";
+import type { Signal } from "@/lib/strategy-core";
+import { getTelegramCooldown, setTelegramCooldown } from "@/lib/persistent-store";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-
-// Cooldown tracking: symbol → last alert timestamp
-const alertCooldowns = new Map<string, number>();
-const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
-
-/**
- * Check if enough time has passed since last alert for this symbol
- */
-function canSendAlert(symbol: string): boolean {
-  const lastAlert = alertCooldowns.get(symbol);
-  if (!lastAlert) return true;
-  
-  const timeSinceAlert = Date.now() - lastAlert;
-  return timeSinceAlert > COOLDOWN_MS;
-}
-
-/**
- * Record an alert as sent
- */
-function recordAlert(symbol: string): void {
-  alertCooldowns.set(symbol, Date.now());
-}
 
 /**
  * Send a test message to verify the bot is configured correctly.
@@ -49,6 +28,8 @@ export async function sendTestMessage(): Promise<{ ok: boolean; error?: string }
 
 /**
  * Send a SNIPER signal alert with trade details
+ * IMPORTANT: Cooldown is handled by cron route, not here
+ * This function assumes cooldown has already been checked
  */
 export async function sendSignalAlert(signal: Signal): Promise<{ ok: boolean; error?: string }> {
   if (!BOT_TOKEN || !CHAT_ID) {
@@ -60,24 +41,22 @@ export async function sendSignalAlert(signal: Signal): Promise<{ ok: boolean; er
     return { ok: false, error: "Not a SNIPER signal" };
   }
 
-  // Check cooldown
-  if (!canSendAlert(signal.symbol)) {
-    console.log(`[TELEGRAM] Cooldown active for ${signal.symbol}, skipping alert`);
-    return { ok: false, error: "Cooldown active" };
-  }
-
+  // Build alert message
+  const confidenceEmoji = signal.confidence >= 75 ? "🔥" : signal.confidence >= 55 ? "⚠️" : "❄️";
   const message = `🚨 SNIPER SIGNAL
 
-${signal.symbol}/USD
-${signal.direction}
+${signal.symbol}/USDT
+${signal.direction === "LONG" ? "📈" : "📉"} ${signal.direction}
 
+Price: $${signal.price?.toFixed(2)}
 Entry: $${signal.entry?.toFixed(2)}
 SL: $${signal.stopLoss?.toFixed(2)}
 TP: $${signal.takeProfit?.toFixed(2)}
 RR: ${signal.riskReward?.toFixed(2)}
 
-Confidence: ${signal.confidence}%
-Reason: ${signal.reason}`;
+${confidenceEmoji} Confidence: ${signal.confidence}%
+📊 4H: ${signal.bias_4h}
+⏱️ 15m: ${signal.structure_15m}`;
 
   try {
     const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
@@ -86,6 +65,7 @@ Reason: ${signal.reason}`;
       body: JSON.stringify({
         chat_id: CHAT_ID,
         text: message,
+        parse_mode: "HTML",
       }),
     });
 
@@ -95,8 +75,7 @@ Reason: ${signal.reason}`;
       return { ok: false, error: json.description };
     }
     
-    recordAlert(signal.symbol);
-    console.log(`[TELEGRAM] Alert sent for ${signal.symbol}`);
+    console.log(`[TELEGRAM] Alert sent for ${signal.symbol} ${signal.direction}`);
     return { ok: true };
   } catch (err) {
     console.error(`[TELEGRAM] Exception:`, err);
