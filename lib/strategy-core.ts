@@ -356,7 +356,7 @@ function evaluateMarket(symbol: string, price: number): Signal {
     price,
     state,
     bias_4h: bias4h,
-    structure_4h,
+    structure_4h: structure4h,
     structure_15m: setup.structure,
     hh_hl_active: setup.hhhlActive,
     lh_ll_active: setup.llnlActive,
