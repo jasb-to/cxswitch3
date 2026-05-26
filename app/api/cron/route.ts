@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { SYMBOLS, createSignal } from "@/lib/strategy-core";
-import { getTelegramCooldown, setTelegramCooldown, healthCheck, getHoldState, getSignalEvents, clearSignalEvents } from "@/lib/persistent-store";
+import { getTelegramCooldown, setTelegramCooldown, healthCheck, getSignalEvents, clearSignalEvents } from "@/lib/persistent-store";
 import { sendSignalAlert } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
@@ -9,19 +8,18 @@ export const runtime = "nodejs";
 const TELEGRAM_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes between alerts per symbol
 
 /**
- * CRON EXECUTOR - Event-Driven Alert System
+ * CRON EXECUTOR - Event-Driven Alert System ONLY
  * 
- * Architecture:
- * 1. Compute live strategy for all symbols (state machine with hold rules)
- * 2. Signal Event Layer emits events on state transitions
- * 3. This cron consumes SIGNAL_ENTERED_SNIPER events (not polling state)
- * 4. Alert fires ONCE per SNIPER entry, with cooldown protection
+ * CRITICAL: This route MUST NOT compute state.
+ * State is computed ONLY in /api/signals
  * 
- * Key Benefits:
- * - No missed SNIPER alerts (event-driven, not polling-based)
- * - No duplicate alerts (one event per transition)
- * - No flickering SNIPER states affecting alerts
- * - Reliable across restarts and deploys
+ * This cron ONLY:
+ * 1. Consume SIGNAL_ENTERED_SNIPER events from queue
+ * 2. Get latest signal data from /api/signals (read-only snapshot)
+ * 3. Send Telegram alerts
+ * 4. Clear processed events
+ * 
+ * Why: Single source of truth prevents state corruption
  */
 export async function GET() {
   try {
@@ -34,39 +32,24 @@ export async function GET() {
       );
     }
 
-    console.log("[CRON] Starting execution cycle (live computation + event-driven alerts)");
-    const results: any[] = [];
+    console.log("[CRON] Starting execution cycle (event-driven alerts only, NO state computation)");
     const now = Date.now();
 
-    // STEP 1: Compute live strategy for all symbols
-    for (const symbol of SYMBOLS) {
-      const signal = await createSignal(symbol);
-      
-      console.log(`[CRON] ${symbol}: state=${signal.state}, hold_remaining=${signal.hold_remaining_ms}ms`);
-      
-      if (signal.state === "SNIPER" && signal.direction) {
-        console.log(`  SNIPER: ${signal.direction} @ ${signal.price}`);
-        console.log(`  Entry: ${signal.entry} | SL: ${signal.stopLoss} | TP: ${signal.takeProfit}`);
-        console.log(`  RR: ${signal.riskReward} | Confidence: ${signal.confidence}%`);
-      }
-      
-      results.push({
-        symbol,
-        state: signal.state,
-        price: signal.price,
-        hold_remaining_ms: signal.hold_remaining_ms,
-        ...(signal.state === "SNIPER" && signal.direction ? {
-          direction: signal.direction,
-          entry: signal.entry,
-          stopLoss: signal.stopLoss,
-          takeProfit: signal.takeProfit,
-          riskReward: signal.riskReward,
-          confidence: signal.confidence,
-        } : {}),
+    // Fetch signal state snapshot from signals API (read-only)
+    let allSignals: any[] = [];
+    try {
+      const res = await fetch("http://localhost:3000/api/signals", {
+        cache: "no-store",
+        headers: { "x-internal-call": "cron" }
       });
+      if (res.ok) {
+        allSignals = await res.json();
+      }
+    } catch (err) {
+      console.warn("[CRON] Could not fetch signals snapshot:", err);
     }
 
-    // STEP 2: Consume Signal Events (EVENT-DRIVEN ALERTS)
+    // CRITICAL: Consume Signal Events (EVENT-DRIVEN ALERTS)
     const events = await getSignalEvents();
     console.log(`[EVENT_LOOP] Processing ${events.length} signal events...`);
     
@@ -76,15 +59,15 @@ export async function GET() {
       if (event.type === "SIGNAL_ENTERED_SNIPER") {
         console.log(`[EVENT] Processing SNIPER entry for ${event.symbol}`);
         
-        // Get current signal to send alert with latest data
-        const signal = await createSignal(event.symbol);
+        // Get latest signal snapshot from API (DO NOT RECOMPUTE)
+        const signal = allSignals.find(s => s.symbol === event.symbol);
         
-        if (signal.state === "SNIPER" && signal.direction) {
-          // Check cooldown (prevent alert spam)
+        if (signal && signal.state === "SNIPER" && signal.direction) {
+          // Check cooldown
           const lastAlertTime = await getTelegramCooldown(event.symbol);
           
           if (now - lastAlertTime >= TELEGRAM_COOLDOWN_MS) {
-            console.log(`[EVENT_ALERT] ✓ Sending Telegram alert for ${event.symbol} SNIPER entry`);
+            console.log(`[EVENT_ALERT] Sending Telegram alert for ${event.symbol} SNIPER entry`);
             await sendSignalAlert(signal);
             await setTelegramCooldown(event.symbol, now);
             alertsSent++;
@@ -103,22 +86,14 @@ export async function GET() {
     }
 
     console.log("[CRON SUMMARY]");
-    results.forEach((r) => {
-      if (r.state === "SNIPER") {
-        const holdMs = r.hold_remaining_ms || 0;
-        console.log(`${r.symbol} → SNIPER (${r.direction}) $${r.price} [hold: ${holdMs}ms]`);
-      } else {
-        console.log(`${r.symbol} → ${r.state}`);
-      }
-    });
     console.log(`[EVENT_SUMMARY] ${alertsSent} Telegram alerts sent from ${events.length} events`);
 
     return NextResponse.json({
       ok: true,
-      message: "Cron cycle complete (live computation + event-driven alerts)",
-      results,
+      message: "Cron cycle complete (event-driven alerts only, no state computation)",
       events_processed: events.length,
       alerts_sent: alertsSent,
+      signals_count: allSignals.length,
     });
   } catch (error) {
     console.error("[CRON] Error:", error);
