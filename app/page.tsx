@@ -11,8 +11,9 @@ const fetcher = (url: string) => fetch(url, { cache: "no-store" }).then(res => {
 
 export default function Dashboard() {
   const [mounted, setMounted] = useState(false);
+  const [signalCache, setSignalCache] = useState<Record<string, Signal & { visibleUntil: number }>>({});
 
-  const { data: signals = [], error, isLoading } = useSWR<Signal[]>(
+  const { data: apiSignals = [], error, isLoading } = useSWR<Signal[]>(
     "/api/signals",
     fetcher,
     {
@@ -22,11 +23,39 @@ export default function Dashboard() {
     }
   );
 
+  // Merge API response into cache instead of replacing
+  useEffect(() => {
+    const now = Date.now();
+    
+    setSignalCache((prev) => {
+      const updated = { ...prev };
+
+      // Merge API signals into cache
+      apiSignals.forEach((sig) => {
+        updated[sig.symbol] = {
+          ...sig,
+          visibleUntil: now + 120000, // Keep in UI for 120s minimum
+        };
+      });
+
+      // Remove expired signals (180s stale)
+      Object.keys(updated).forEach((key) => {
+        if (now > updated[key].visibleUntil) {
+          delete updated[key];
+        }
+      });
+
+      return updated;
+    });
+  }, [apiSignals]);
+
   useEffect(() => {
     setMounted(true);
   }, []);
 
   if (!mounted) return null;
+
+  const visibleSignals = Object.values(signalCache);
 
   return (
     <div className="min-h-screen bg-black text-gray-300 p-8">
@@ -50,15 +79,15 @@ export default function Dashboard() {
         )}
 
         {/* Signals Grid */}
-        {signals.length > 0 && (
+        {visibleSignals.length > 0 && (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {signals.map((signal) => (
+            {visibleSignals.map((signal) => (
               <SignalCard key={signal.symbol} signal={signal} />
             ))}
           </div>
         )}
 
-        {signals.length === 0 && !isLoading && (
+        {visibleSignals.length === 0 && !isLoading && (
           <div className="text-center py-12 text-gray-600">
             No signals available
           </div>
