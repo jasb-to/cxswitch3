@@ -58,20 +58,27 @@ export default function Dashboard() {
   }, []);
 
   const globalReadiness = signals.length > 0
-    ? Math.round(signals.reduce((sum, s) => sum + s.readiness_score, 0) / signals.length)
+    ? Math.round(
+        signals.reduce((sum, s) => {
+          const score = typeof s.readiness_score === "number" ? s.readiness_score : 0;
+          return sum + Math.max(0, Math.min(100, score)); // Clamp to 0-100
+        }, 0) / signals.length
+      )
     : 0;
 
   const getReadinessLabel = (score: number) => {
-    if (score < 30) return "No setup forming";
-    if (score < 60) return "Watching breakout structure";
-    if (score < 85) return "Approaching sniper condition";
+    const safeScore = typeof score === "number" && !isNaN(score) ? score : 0;
+    if (safeScore < 30) return "No setup forming";
+    if (safeScore < 60) return "Watching breakout structure";
+    if (safeScore < 85) return "Approaching sniper condition";
     return "High probability execution zone";
   };
 
   const getReadinessColor = (score: number) => {
-    if (score < 30) return "#555";
-    if (score < 60) return "#ff9100";
-    if (score < 85) return "#00d4ff";
+    const safeScore = typeof score === "number" && !isNaN(score) ? score : 0;
+    if (safeScore < 30) return "#555";
+    if (safeScore < 60) return "#ff9100";
+    if (safeScore < 85) return "#00d4ff";
     return "#00c853";
   };
 
@@ -159,6 +166,9 @@ export default function Dashboard() {
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "16px" }}>
             {signals.map((signal) => {
+              const safeReadiness = typeof signal.readiness_score === "number" && !isNaN(signal.readiness_score)
+                ? Math.max(0, Math.min(100, signal.readiness_score))
+                : 0;
               const isSNIPER = signal.state === "SNIPER";
               const isBuilding = signal.state === "BUILDING";
               const borderColor = isSNIPER 
@@ -222,20 +232,20 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {/* READINESS SCORE (PERSONAL) */}
+                  {/* READINESS SCORE (ALWAYS SHOWN - DEFENSIVE) */}
                   <div style={{ fontSize: "12px", marginBottom: "12px", paddingBottom: "12px", borderBottom: "1px solid #2a2a2a" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
                       <span style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600" }}>READINESS</span>
-                      <span style={{ fontWeight: "bold", color: getReadinessColor(signal.readiness_score) }}>
-                        {signal.readiness_score}%
+                      <span style={{ fontWeight: "bold", color: getReadinessColor(safeReadiness) }}>
+                        {safeReadiness}%
                       </span>
                     </div>
                     <div style={{ width: "100%", height: "6px", backgroundColor: "#0a0a0a", borderRadius: "3px", overflow: "hidden" }}>
                       <div
                         style={{
-                          width: `${signal.readiness_score}%`,
+                          width: `${safeReadiness}%`,
                           height: "100%",
-                          backgroundColor: getReadinessColor(signal.readiness_score),
+                          backgroundColor: getReadinessColor(safeReadiness),
                         }}
                       />
                     </div>
@@ -255,7 +265,7 @@ export default function Dashboard() {
                       <>
                         <div style={{ color: "#ff9100", fontSize: "11px", fontWeight: "600", marginBottom: "4px" }}>EARLY SETUP FORMING</div>
                         <p style={{ margin: "0 0 6px 0", fontSize: "11px", color: "#9ca3af" }}>
-                          {signal.momentum_percent > 0.5 
+                          {typeof signal.momentum_percent === "number" && signal.momentum_percent > 0.5 
                             ? "Momentum developing. Waiting for structure confirmation."
                             : signal.trend_4h !== "Neutral"
                             ? `${signal.trend_4h} trend alignment developing. Structure not yet confirmed.`
@@ -267,11 +277,11 @@ export default function Dashboard() {
                       <>
                         <div style={{ color: "#555", fontSize: "11px", fontWeight: "600", marginBottom: "4px" }}>MARKET MONITORING</div>
                         <p style={{ margin: "0 0 6px 0", fontSize: "11px", color: "#9ca3af" }}>
-                          {signal.structure_15m === "Range" && signal.volatility_percent < 0.5
+                          {signal.structure_15m === "Range" && typeof signal.volatility_percent === "number" && signal.volatility_percent < 0.5
                             ? "Market in consolidation phase. Low volatility. Waiting for breakout structure."
                             : signal.macro_bias === "Neutral"
                             ? "Macro bias neutral. Trend direction unclear. Observing market development."
-                            : `Confluence low (${Math.round(Math.random() * 40 + 20)}%). Market context: ${signal.structure_15m.toLowerCase()} structure with ${signal.momentum_percent?.toFixed(1)}% momentum.`}
+                            : `Confluence low. Market context: ${signal.structure_15m.toLowerCase()} structure with ${typeof signal.momentum_percent === "number" ? signal.momentum_percent.toFixed(1) : "0.0"}% momentum.`}
                         </p>
                       </>
                     )}

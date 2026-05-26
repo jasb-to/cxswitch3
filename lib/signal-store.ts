@@ -8,15 +8,19 @@ export interface Signal {
   price: number;
   state: "SNIPER" | "BUILDING" | "DO_NOT_TRADE";
   
-  // Market structure (always shown)
+  // Market structure (always present)
   trend_4h: "Bullish" | "Bearish" | "Neutral";
   structure_15m: "Breakout" | "Compression" | "Expansion" | "Reversal" | "Range";
   macro_bias: "Bullish" | "Bearish" | "Neutral";
   
-  // Trade readiness 0-100%
+  // Market metrics (always present)
+  momentum_percent: number; // 0-100+
+  volatility_percent: number; // 0-100+
+  
+  // Trade readiness 0-100% (always present, never undefined)
   readiness_score: number;
   
-  // SNIPER details (optional)
+  // SNIPER trade details (optional)
   direction?: "LONG" | "SHORT";
   entry?: number;
   stopLoss?: number;
@@ -24,6 +28,17 @@ export interface Signal {
   riskReward?: number;
   confidence?: number;
   reason?: string;
+  
+  // Nested trade object (optional, legacy)
+  trade?: {
+    direction: "LONG" | "SHORT";
+    entry: number;
+    sl: number;
+    tp: number;
+    rr: number;
+    confidence: number;
+    reason: string;
+  };
   
   updated_at: string;
 }
