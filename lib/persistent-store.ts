@@ -74,7 +74,7 @@ export async function applyHoldRules(
       state: evaluatedState,
       lastState: evaluatedState,
       lastChangeTimestamp: now,
-      holdUntil: evaluatedState !== "DO_NOT_TRADE" ? now + HOLD_DURATION_MS : 0,
+      holdUntil: evaluatedState !== "WATCHING_SHIFT" ? now + HOLD_DURATION_MS : 0,
       confidence: evaluatedConfidence,
       ...(evaluatedState === "SNIPER" ? { sniper_confirmed_at: now } : {}),
     };
@@ -119,12 +119,7 @@ export async function applyHoldRules(
       console.log(`[HOLD] ${symbol} upgraded: BUILDING → SNIPER`);
       return { finalState: "SNIPER", holdRemaining: 0 };
     }
-    if (evaluatedState === "DO_NOT_TRADE") {
-      // Cannot downgrade during hold
-      console.log(`[HOLD] ${symbol} locked in BUILDING (hold expires in ${holdRemaining}ms)`);
-      return { finalState: "BUILDING", holdRemaining };
-    }
-    // BUILDING remains
+    // BUILDING persists through hold - cannot downgrade
     return { finalState: "BUILDING", holdRemaining };
   }
 
@@ -134,8 +129,8 @@ export async function applyHoldRules(
     return { finalState: evaluatedState, holdRemaining: 0 };
   }
 
-  // State changed (hold expired or DO_NOT_TRADE to BUILDING transition)
-  if (evaluatedState !== "DO_NOT_TRADE") {
+  // State changed (hold expired or transition happening)
+  if (evaluatedState !== "WATCHING_SHIFT") {
     // Entering BUILDING or SNIPER, apply new hold
     const updated: SignalHoldState = {
       symbol,
@@ -151,18 +146,33 @@ export async function applyHoldRules(
     return { finalState: evaluatedState, holdRemaining: 0 };
   }
 
-  // Transitioning to DO_NOT_TRADE (no hold)
+  // Transitioning to WATCHING_SHIFT
+  if (holdState.state === "WATCHING_SHIFT") {
+    // Already watching, just update confidence
+    const updated: SignalHoldState = {
+      symbol,
+      state: "WATCHING_SHIFT",
+      lastState: holdState.state,
+      lastChangeTimestamp: now,
+      holdUntil: 0,
+      confidence: evaluatedConfidence,
+    };
+    await setHoldState(updated);
+    return { finalState: "WATCHING_SHIFT", holdRemaining: 0 };
+  }
+
+  // From BUILDING/SNIPER back to WATCHING_SHIFT - release hold but add hysteresis
   const updated: SignalHoldState = {
     symbol,
-    state: "DO_NOT_TRADE",
+    state: "WATCHING_SHIFT",
     lastState: holdState.state,
     lastChangeTimestamp: now,
     holdUntil: 0,
     confidence: evaluatedConfidence,
   };
   await setHoldState(updated);
-  console.log(`[HOLD] ${symbol} released: ${holdState.state} → DO_NOT_TRADE`);
-  return { finalState: "DO_NOT_TRADE", holdRemaining: 0 };
+  console.log(`[HOLD] ${symbol} released: ${holdState.state} → WATCHING_SHIFT`);
+  return { finalState: "WATCHING_SHIFT", holdRemaining: 0 };
 }
 
 /**
