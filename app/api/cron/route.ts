@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { SYMBOLS, createSignal } from "@/lib/strategy-core";
-import { getTelegramCooldown, setTelegramCooldown } from "@/lib/persistent-store";
+import { readSignals, writeSignals, getTelegramCooldown, setTelegramCooldown, healthCheck } from "@/lib/persistent-store";
 import { sendSignalAlert } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
@@ -9,27 +9,54 @@ export const runtime = "nodejs";
 const TELEGRAM_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 
 /**
- * CRON EXECUTOR - Side effects only
- * Evaluates strategy LIVE to trigger alerts
- * Does NOT write signal state to Redis (that kills BUILDING/SNIPER)
- * ONLY stores Telegram cooldowns
+ * EXECUTOR - Fetch Kraken prices, evaluate, store persistently in Redis
+ * Sends Telegram alerts when state changes INTO SNIPER
+ * ONLY triggered by Vercel Cron (enforce single source in production)
  */
 export async function GET() {
   try {
-    console.log("[CRON] Starting execution cycle (side effects only)");
+    // Check Redis health first
+    const isHealthy = await healthCheck();
+    if (!isHealthy) {
+      console.error("[CRON] Redis health check failed - aborting execution");
+      return NextResponse.json(
+        { ok: false, error: "Redis not available" },
+        { status: 503 }
+      );
+    }
+
+    console.log("[CRON] Starting execution cycle");
     const results: any[] = [];
+    
+    // Read previous signals from persistent Redis store
+    const previousSignals = await readSignals();
+    const previousMap = new Map(previousSignals.map(s => [s.symbol, s]));
+
+    const newSignals: any[] = [];
 
     for (const symbol of SYMBOLS) {
-      // Compute strategy LIVE (no cached state)
       const signal = await createSignal(symbol);
+      const previousSignal = previousMap.get(symbol);
+      const previousState = previousSignal?.state;
       
-      console.log(`[CRON] ${symbol}: state=${signal.state}`);
+      newSignals.push(signal);
       
-      // Log SNIPER opportunities
+      // Log full signal details
+      console.log(`[CRON]`);
+      console.log(`${symbol}`);
+      console.log(`STATE: ${signal.state}`);
+      
       if (signal.state === "SNIPER" && signal.direction) {
-        console.log(`[CRON] 🎯 SNIPER FOUND: ${symbol} ${signal.direction} @ ${signal.price}`);
-        console.log(`  ENTRY: ${signal.entry} | SL: ${signal.stopLoss} | TP: ${signal.takeProfit}`);
-        console.log(`  RR: ${signal.riskReward} | CONFIDENCE: ${signal.confidence}%`);
+        console.log(`DIRECTION: ${signal.direction}`);
+        console.log(`PRICE: ${signal.price}`);
+        console.log(`ENTRY: ${signal.entry}`);
+        console.log(`SL: ${signal.stopLoss}`);
+        console.log(`TP: ${signal.takeProfit}`);
+        console.log(`RR: ${signal.riskReward}`);
+        console.log(`CONFIDENCE: ${signal.confidence}%`);
+        console.log(`REASON: ${signal.reason}`);
+      } else {
+        console.log(`PRICE: ${signal.price}`);
       }
       
       results.push({
@@ -46,21 +73,24 @@ export async function GET() {
         } : {}),
       });
 
-      // SIDE EFFECT: Send Telegram alert if SNIPER (with cooldown)
-      if (signal.state === "SNIPER" && signal.direction) {
+      // Send alert when state changes INTO SNIPER (with cooldown check)
+      if (signal.state === "SNIPER" && previousState !== "SNIPER") {
         const lastAlertTime = await getTelegramCooldown(symbol);
         const now = Date.now();
         
         if (now - lastAlertTime >= TELEGRAM_COOLDOWN_MS) {
-          console.log(`[ALERT] Sending Telegram alert for ${symbol}`);
+          console.log(`[ALERT] State changed from ${previousState} to SNIPER - Sending Telegram alert`);
           await sendSignalAlert(signal);
           await setTelegramCooldown(symbol, now);
         } else {
           const timeRemaining = Math.ceil((TELEGRAM_COOLDOWN_MS - (now - lastAlertTime)) / 1000 / 60);
-          console.log(`[ALERT] ${symbol} cooldown active (${timeRemaining}m remaining)`);
+          console.log(`[ALERT] SNIPER triggered but cooldown active (${timeRemaining}m remaining)`);
         }
       }
     }
+
+    // Persist new signals to Redis
+    await writeSignals(newSignals);
 
     console.log("[CRON SUMMARY]");
     results.forEach((r) => {
@@ -73,7 +103,7 @@ export async function GET() {
 
     return NextResponse.json({
       ok: true,
-      message: "Cron cycle complete (side effects only, no state writes)",
+      message: "Signals evaluated and persisted to Redis",
       results,
     });
   } catch (error) {
@@ -86,6 +116,8 @@ export async function GET() {
 }
 
 export async function POST() {
+  // In production, only Vercel Cron should POST
+  // Return error to discourage manual triggers
   return NextResponse.json(
     { ok: false, error: "Cron endpoint should only be triggered by Vercel Cron" },
     { status: 403 }
