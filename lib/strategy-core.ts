@@ -245,36 +245,44 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
   if (volatility > 0.5 && volatility < 2.0) confluenceScore += 15, reasons.push("Healthy volatility");
   if (volatility > 2.0) confluenceScore += 10, reasons.push("High volatility expansion");
 
-  // STATE TRANSITIONS - FIXED TO MAKE MARKET ALWAYS ACTIVE
-  // DO_NOT_TRADE: ONLY when EVERYTHING is quiet
-  // BUILDING: DEFAULT for any market activity
-  // SNIPER: Execution ready
+  // Confluence threshold logic - STRICT 3-STATE MODEL PER PROMPT
+  // DO_NOT_TRADE: confluence < 35 OR momentum < 0.2% AND range/compression
+  // BUILDING: confluence >= 35 AND (structure != Range OR momentum >= 0.25% OR vol > 0.3%)
+  // SNIPER: confluence >= 70 AND breakout AND trend aligned
   
   let state: TradeState;
   let readiness_score = 0; // 0-100
 
-  // SNIPER: Strict execution condition (unchanged)
   if (confluenceScore >= 70 && structure === "Breakout" && trend !== "Neutral") {
+    // SNIPER: FULL EXECUTION CONDITION
     state = "SNIPER";
     readiness_score = Math.min(100, confluenceScore + (absMomentum * 5));
-    console.log(`[STRATEGY] ${symbol} → SNIPER (confluence=${confluenceScore}, breakout + trend aligned)`);
-  }
-  // BUILDING: Activates if ANY market activity exists
-  else if (
-    structure !== "Range" ||                    // Condition A: structure forming
-    absMomentum >= 0.15 ||                      // Condition B: momentum emerging
-    volatility >= 0.25 ||                       // Condition C: volatility active
-    (trend !== "Neutral" && absMomentum > 0.2)  // Condition D: trend + price change
+    console.log(`[STRATEGY] ${symbol} → SNIPER (confluence=${confluenceScore}, structure=${structure}, trend=${trend})`);
+  } else if (
+    confluenceScore >= 35 &&
+    (structure !== "Range" || absMomentum >= 0.25 || volatility > 0.3) &&
+    trend !== "Neutral"
   ) {
+    // BUILDING: EDGE STATE FOR EARLY ENTRIES
+    // Triggers when structure is forming OR momentum emerging with trend direction
     state = "BUILDING";
-    readiness_score = Math.min(100, Math.max(35, confluenceScore + (absMomentum * 3)));
-    console.log(`[STRATEGY] ${symbol} → BUILDING (market active: struct=${structure}, mom=${absMomentum.toFixed(2)}%, vol=${volatility.toFixed(2)}%)`);
-  }
-  // DO_NOT_TRADE: ONLY when EVERYTHING is quiet (flat range + no momentum + no volatility)
-  else {
+    readiness_score = Math.min(100, confluenceScore + (absMomentum * 3));
+    console.log(`[STRATEGY] ${symbol} → BUILDING (confluence=${confluenceScore}, structure=${structure}, momentum=${absMomentum.toFixed(2)}%)`);
+  } else if (
+    // Additional BUILDING condition: if even low confluence but structure is clearly forming
+    (structure === "Reversal" || structure === "Expansion") &&
+    trend !== "Neutral" &&
+    absMomentum >= 0.25
+  ) {
+    // Early-stage momentum with structure type
+    state = "BUILDING";
+    readiness_score = Math.min(100, Math.max(30, confluenceScore + (absMomentum * 5)));
+    console.log(`[STRATEGY] ${symbol} → BUILDING (early structure forming, confluence=${confluenceScore}, momentum=${absMomentum.toFixed(2)}%)`);
+  } else {
+    // DO_NOT_TRADE: Market not ready
     state = "DO_NOT_TRADE";
-    readiness_score = Math.max(0, confluenceScore / 2);
-    console.log(`[STRATEGY] ${symbol} → DO_NOT_TRADE (flat market: range + low activity)`);
+    readiness_score = Math.max(0, confluenceScore / 2); // Show some context even when not trading
+    console.log(`[STRATEGY] ${symbol} → DO_NOT_TRADE (confluence=${confluenceScore}, structure=${structure})`);
   }
 
   // Generate SNIPER details only when triggered
