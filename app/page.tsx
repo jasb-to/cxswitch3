@@ -222,20 +222,6 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {/* MARKET METRICS */}
-                  <div style={{ fontSize: "12px", lineHeight: "1.6", color: "#e5e7eb", marginBottom: "12px", paddingBottom: "12px", borderBottom: "1px solid #2a2a2a" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-                      <div>
-                        <div style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600", marginBottom: "4px" }}>MOMENTUM</div>
-                        <div style={{ fontWeight: "500", color: "#fff" }}>{signal.momentum_percent?.toFixed(2) || "0.00"}%</div>
-                      </div>
-                      <div>
-                        <div style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600", marginBottom: "4px" }}>VOLATILITY</div>
-                        <div style={{ fontWeight: "500", color: "#fff" }}>{signal.volatility_percent?.toFixed(2) || "0.00"}%</div>
-                      </div>
-                    </div>
-                  </div>
-
                   {/* READINESS SCORE (PERSONAL) */}
                   <div style={{ fontSize: "12px", marginBottom: "12px", paddingBottom: "12px", borderBottom: "1px solid #2a2a2a" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
