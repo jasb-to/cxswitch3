@@ -30,8 +30,15 @@ export interface Signal {
   confidence?: number;
   reason?: string;
   
+  // Internal: SNIPER confirmation state
+  sniper_confirmation_count?: number;
+  
   updated_at: string;
 }
+
+// Track SNIPER confirmation cycles per symbol
+const sniperConfirmationTracker = new Map<string, { count: number; confluenceScore: number; structure: string }>();
+
 
 /**
  * Fetch live price from Kraken
@@ -187,8 +194,13 @@ function calculateVolatility(history: number[]): number {
 }
 
 /**
- * REAL MARKET-REACTIVE EVALUATION
+ * REAL MARKET-REACTIVE EVALUATION - REBALANCED THRESHOLDS
  * Returns dynamic state based on actual market conditions
+ * 
+ * State Distribution Goal:
+ * - DO_NOT_TRADE: 60-70% (background noise only)
+ * - BUILDING: 20-35% (active monitoring zone)
+ * - SNIPER: 2-8% (rare, high-quality alerts)
  */
 function evaluateMarket(symbol: string, price: number): { state: TradeState; details?: any } {
   // Guard: price must be positive
@@ -223,66 +235,113 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
 
   console.log(`[STRATEGY] ${symbol}: trend=${trend}, struct=${structure}, vol=${volatility.toFixed(2)}%, momentum=${momentum.toFixed(2)}%`);
 
-  // Confluence scoring (0-100)
+  // Confluence scoring (0-100) - REBALANCED
   let confluenceScore = 0;
   let reasons: string[] = [];
 
-  // Structure alignment (max +30)
-  if (structure === "Breakout") confluenceScore += 30, reasons.push("Breakout structure");
-  if (structure === "Expansion") confluenceScore += 20, reasons.push("Volatility expansion");
-  if (structure === "Compression") confluenceScore += 10, reasons.push("Setup compression");
+  // Structure alignment (max +40) - INCREASED IMPORTANCE
+  if (structure === "Breakout") confluenceScore += 40, reasons.push("Breakout structure");
+  else if (structure === "Expansion") confluenceScore += 25, reasons.push("Volatility expansion");
+  else if (structure === "Reversal") confluenceScore += 20, reasons.push("Reversal structure");
+  else if (structure === "Compression") confluenceScore += 10, reasons.push("Setup compression");
 
   // Trend alignment (max +30)
   if (trend === "Bullish") confluenceScore += 15, reasons.push("Bullish trend");
-  if (trend === "Bearish") confluenceScore += 15, reasons.push("Bearish trend");
+  else if (trend === "Bearish") confluenceScore += 15, reasons.push("Bearish trend");
 
-  // Momentum (max +20)
+  // Momentum (max +20) - REBALANCED THRESHOLDS
   const absMomentum = Math.abs(momentum);
-  if (absMomentum > 1.0) confluenceScore += 10, reasons.push("Strong momentum");
-  if (absMomentum > 2.0) confluenceScore += 10, reasons.push("Very strong momentum");
+  if (absMomentum >= 0.50) confluenceScore += 10, reasons.push("Significant momentum");
+  if (absMomentum >= 1.0) confluenceScore += 10, reasons.push("Strong momentum");
 
-  // Volatility (max +20)
-  if (volatility > 0.5 && volatility < 2.0) confluenceScore += 15, reasons.push("Healthy volatility");
-  if (volatility > 2.0) confluenceScore += 10, reasons.push("High volatility expansion");
+  // Volatility (max +20) - REBALANCED THRESHOLDS
+  if (volatility >= 0.10 && volatility < 0.50) confluenceScore += 10, reasons.push("Healthy volatility");
+  if (volatility >= 0.50 && volatility < 2.0) confluenceScore += 15, reasons.push("Elevated volatility");
+  if (volatility >= 2.0) confluenceScore += 5, reasons.push("Extreme volatility");
 
-  // Confluence threshold logic - STRICT 3-STATE MODEL PER PROMPT
-  // DO_NOT_TRADE: confluence < 35 OR momentum < 0.2% AND range/compression
-  // BUILDING: confluence >= 35 AND (structure != Range OR momentum >= 0.25% OR vol > 0.3%)
-  // SNIPER: confluence >= 70 AND breakout AND trend aligned
-  
   let state: TradeState;
   let readiness_score = 0; // 0-100
+  let sniper_confirmation_count = 0;
 
-  if (confluenceScore >= 70 && structure === "Breakout" && trend !== "Neutral") {
-    // SNIPER: FULL EXECUTION CONDITION
-    state = "SNIPER";
-    readiness_score = Math.min(100, confluenceScore + (absMomentum * 5));
-    console.log(`[STRATEGY] ${symbol} → SNIPER (confluence=${confluenceScore}, structure=${structure}, trend=${trend})`);
-  } else if (
-    confluenceScore >= 35 &&
-    (structure !== "Range" || absMomentum >= 0.25 || volatility > 0.3) &&
-    trend !== "Neutral"
-  ) {
-    // BUILDING: EDGE STATE FOR EARLY ENTRIES
-    // Triggers when structure is forming OR momentum emerging with trend direction
-    state = "BUILDING";
-    readiness_score = Math.min(100, confluenceScore + (absMomentum * 3));
-    console.log(`[STRATEGY] ${symbol} → BUILDING (confluence=${confluenceScore}, structure=${structure}, momentum=${absMomentum.toFixed(2)}%)`);
-  } else if (
-    // Additional BUILDING condition: if even low confluence but structure is clearly forming
-    (structure === "Reversal" || structure === "Expansion") &&
+  // ===== REBALANCED STATE LOGIC =====
+
+  // 🟩 SNIPER DETECTION (confluence ≥ 65, must confirm for 2 cycles)
+  if (
+    confluenceScore >= 65 &&
+    structure === "Breakout" &&
     trend !== "Neutral" &&
-    absMomentum >= 0.25
+    absMomentum >= 0.20 &&
+    volatility >= 0.15
   ) {
-    // Early-stage momentum with structure type
+    // Check SNIPER confirmation tracker
+    const confirmationState = sniperConfirmationTracker.get(symbol);
+    
+    if (
+      confirmationState &&
+      confirmationState.count >= 1 &&
+      confirmationState.confluenceScore >= 65 &&
+      confirmationState.structure === "Breakout"
+    ) {
+      // CONFIRMED SNIPER (2nd cycle)
+      state = "SNIPER";
+      sniper_confirmation_count = confirmationState.count + 1;
+      readiness_score = Math.min(100, confluenceScore + (absMomentum * 5));
+      console.log(`[STRATEGY] ${symbol} → SNIPER CONFIRMED (cycles=${sniper_confirmation_count}, confluence=${confluenceScore})`);
+      
+      // Reset tracker after confirmation
+      sniperConfirmationTracker.delete(symbol);
+    } else {
+      // First cycle of potential SNIPER (PRE-SNIPER)
+      state = "BUILDING";
+      sniper_confirmation_count = 1;
+      readiness_score = Math.min(100, confluenceScore + (absMomentum * 3));
+      
+      // Store confirmation state
+      sniperConfirmationTracker.set(symbol, {
+        count: 1,
+        confluenceScore,
+        structure,
+      });
+      
+      console.log(`[STRATEGY] ${symbol} → BUILDING (PRE-SNIPER, cycle 1/2, confluence=${confluenceScore})`);
+    }
+  }
+  // 🟧 BUILDING (confluence ≥ 35 OR structure != RANGE with momentum/volatility, must appear frequently)
+  else if (
+    (confluenceScore >= 35 && (structure !== "Range" || absMomentum >= 0.05 || volatility >= 0.10)) ||
+    (structure !== "Range" && trend !== "Neutral" && (absMomentum >= 0.05 || volatility >= 0.10))
+  ) {
     state = "BUILDING";
-    readiness_score = Math.min(100, Math.max(30, confluenceScore + (absMomentum * 5)));
-    console.log(`[STRATEGY] ${symbol} → BUILDING (early structure forming, confluence=${confluenceScore}, momentum=${absMomentum.toFixed(2)}%)`);
-  } else {
-    // DO_NOT_TRADE: Market not ready
+    readiness_score = Math.min(100, Math.max(25, confluenceScore + (absMomentum * 3)));
+    console.log(`[STRATEGY] ${symbol} → BUILDING (confluence=${confluenceScore}, structure=${structure})`);
+    
+    // Reset SNIPER confirmation if structure reverted
+    if (structure !== "Breakout") {
+      sniperConfirmationTracker.delete(symbol);
+    }
+  }
+  // 🟥 DO_NOT_TRADE (strict baseline - only true consolidation)
+  else if (
+    structure === "Range" &&
+    absMomentum < 0.05 &&
+    volatility < 0.10 &&
+    trend === "Neutral"
+  ) {
     state = "DO_NOT_TRADE";
-    readiness_score = Math.max(0, confluenceScore / 2); // Show some context even when not trading
-    console.log(`[STRATEGY] ${symbol} → DO_NOT_TRADE (confluence=${confluenceScore}, structure=${structure})`);
+    readiness_score = Math.max(0, confluenceScore / 3);
+    console.log(`[STRATEGY] ${symbol} → DO_NOT_TRADE (strict consolidation, confluence=${confluenceScore})`);
+    sniperConfirmationTracker.delete(symbol);
+  }
+  // Default to BUILDING for any other condition (not strict enough for DO_NOT_TRADE)
+  else {
+    state = "BUILDING";
+    readiness_score = Math.min(100, Math.max(20, confluenceScore + (absMomentum * 2)));
+    console.log(`[STRATEGY] ${symbol} → BUILDING (default fall-through, confluence=${confluenceScore})`);
+    
+    // Reset SNIPER confirmation if not breakout
+    if (structure !== "Breakout") {
+      sniperConfirmationTracker.delete(symbol);
+    }
   }
 
   // Generate SNIPER details only when triggered
@@ -317,6 +376,7 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
 
     return {
       state,
+      sniper_confirmation_count,
       trend_4h: trend,
       structure_15m: structure,
       macro_bias,
@@ -335,6 +395,7 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
 
   return { 
     state,
+    sniper_confirmation_count,
     trend_4h: trend,
     structure_15m: structure,
     macro_bias,
