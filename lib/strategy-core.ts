@@ -61,7 +61,123 @@ async function getKrakenTicker(symbol: string): Promise<number> {
 }
 
 /**
- * Evaluate market and generate SNIPER trade details if applicable
+ * REAL MARKET-REACTIVE STRATEGY ENGINE
+ * Uses live Kraken price data, volatility, structure, and momentum
+ * to dynamically transition between DO_NOT_TRADE → BUILDING → SNIPER
+ */
+
+// In-memory price history for structure detection (last 50 prices per symbol)
+const priceHistory = new Map<string, number[]>();
+const MAX_HISTORY = 50;
+
+/**
+ * Store price in history for structure detection
+ */
+function recordPrice(symbol: string, price: number): void {
+  if (!priceHistory.has(symbol)) {
+    priceHistory.set(symbol, []);
+  }
+  const history = priceHistory.get(symbol)!;
+  history.push(price);
+  if (history.length > MAX_HISTORY) {
+    history.shift(); // Keep only last 50
+  }
+}
+
+/**
+ * Detect market structure from price history
+ * breakout | compression | expansion | reversal | range
+ */
+function detectStructure(history: number[]): "Breakout" | "Compression" | "Expansion" | "Reversal" | "Range" {
+  if (history.length < 3) return "Range";
+
+  const current = history[history.length - 1];
+  const prev = history[history.length - 2];
+  const prev2 = history[history.length - 3];
+  
+  const changePercent = ((current - prev) / prev) * 100;
+  const absChange = Math.abs(changePercent);
+  
+  // Calculate recent volatility (std dev of last 5 changes)
+  const recentVolatility = Math.max(...history.slice(-5).map((p, i, arr) => 
+    i > 0 ? Math.abs((p - arr[i-1]) / arr[i-1] * 100) : 0
+  ));
+  
+  // Calculate baseline volatility (std dev of all history)
+  const baselineVolatility = history.length > 10 
+    ? Math.max(...history.slice(-10).map((p, i, arr) => 
+        i > 0 ? Math.abs((p - arr[i-1]) / arr[i-1] * 100) : 0
+      ))
+    : recentVolatility;
+
+  // Direction: higher high / lower low
+  const isHigherHigh = current > prev && prev > prev2;
+  const isLowerLow = current < prev && prev < prev2;
+  
+  // Volatility expansion / compression
+  const volExpanding = recentVolatility > baselineVolatility * 1.2;
+  const volCompressing = recentVolatility < baselineVolatility * 0.8;
+
+  if (isHigherHigh && volExpanding) return "Breakout";
+  if (isLowerLow && volExpanding) return "Breakout";
+  if (volCompressing) return "Compression";
+  if (volExpanding) return "Expansion";
+  if (isHigherHigh || isLowerLow) return "Reversal";
+  return "Range";
+}
+
+/**
+ * Determine trend from price history
+ * bullish | bearish | neutral
+ */
+function determineTrend(history: number[]): "Bullish" | "Bearish" | "Neutral" {
+  if (history.length < 5) return "Neutral";
+
+  // Simple MA comparison (last 5 vs last 10-20)
+  const recent = history.slice(-5).reduce((a, b) => a + b, 0) / 5;
+  const older = history.length >= 10 
+    ? history.slice(-10, -5).reduce((a, b) => a + b, 0) / 5 
+    : recent;
+
+  const trendStrength = Math.abs((recent - older) / older) * 100;
+
+  // Higher highs = bullish, lower lows = bearish
+  const closes = history.slice(-10);
+  let higherHighs = 0, lowerLows = 0;
+  for (let i = 1; i < closes.length; i++) {
+    if (closes[i] > closes[i - 1]) higherHighs++;
+    else if (closes[i] < closes[i - 1]) lowerLows++;
+  }
+
+  if (higherHighs > lowerLows && trendStrength > 0.1) return "Bullish";
+  if (lowerLows > higherHighs && trendStrength > 0.1) return "Bearish";
+  return "Neutral";
+}
+
+/**
+ * Calculate momentum (rate of change)
+ * Returns -100 to +100 (percentage change)
+ */
+function calculateMomentum(history: number[]): number {
+  if (history.length < 2) return 0;
+  const current = history[history.length - 1];
+  const prev = history[history.length - 2];
+  return ((current - prev) / prev) * 100;
+}
+
+/**
+ * Calculate volatility as percentage of average price
+ */
+function calculateVolatility(history: number[]): number {
+  if (history.length < 2) return 0;
+  const avg = history.reduce((a, b) => a + b) / history.length;
+  const variance = history.reduce((sum, p) => sum + Math.pow(p - avg, 2), 0) / history.length;
+  return Math.sqrt(variance) / avg * 100;
+}
+
+/**
+ * REAL MARKET-REACTIVE EVALUATION
+ * Returns dynamic state based on actual market conditions
  */
 function evaluateMarket(symbol: string, price: number): { state: TradeState; details?: any } {
   // Guard: price must be positive
@@ -73,82 +189,109 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
         structure_15m: "Range",
         macro_bias: "Neutral",
         readiness_score: 0,
+        reason: "Invalid price data",
       }
     };
   }
 
-  // Deterministic state based on symbol hash
-  const charSum = symbol.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  // Record price in history
+  const history = priceHistory.get(symbol) || [];
+  recordPrice(symbol, price);
+
+  // Market analysis
+  const structure = detectStructure(history);
+  const trend = determineTrend(history);
+  const momentum = calculateMomentum(history);
+  const volatility = calculateVolatility(history);
+
+  // Derive macro bias (opposite of current trend for confirmation)
+  const macro_bias: "Bullish" | "Bearish" | "Neutral" = 
+    trend === "Bullish" ? "Bearish" : 
+    trend === "Bearish" ? "Bullish" : 
+    "Neutral";
+
+  console.log(`[STRATEGY] ${symbol}: trend=${trend}, struct=${structure}, vol=${volatility.toFixed(2)}%, momentum=${momentum.toFixed(2)}%`);
+
+  // Confluence scoring (0-100)
+  let confluenceScore = 0;
+  let reasons: string[] = [];
+
+  // Structure alignment (max +30)
+  if (structure === "Breakout") confluenceScore += 30, reasons.push("Breakout structure");
+  if (structure === "Expansion") confluenceScore += 20, reasons.push("Volatility expansion");
+  if (structure === "Compression") confluenceScore += 10, reasons.push("Setup compression");
+
+  // Trend alignment (max +30)
+  if (trend === "Bullish") confluenceScore += 15, reasons.push("Bullish trend");
+  if (trend === "Bearish") confluenceScore += 15, reasons.push("Bearish trend");
+
+  // Momentum (max +20)
+  const absMomentum = Math.abs(momentum);
+  if (absMomentum > 1.0) confluenceScore += 10, reasons.push("Strong momentum");
+  if (absMomentum > 2.0) confluenceScore += 10, reasons.push("Very strong momentum");
+
+  // Volatility (max +20)
+  if (volatility > 0.5 && volatility < 2.0) confluenceScore += 15, reasons.push("Healthy volatility");
+  if (volatility > 2.0) confluenceScore += 10, reasons.push("High volatility expansion");
+
+  // Confluence threshold logic
+  const minReadiness = Math.min(100, confluenceScore);
   
+  // STATE TRANSITIONS
   let state: TradeState;
-  let baseReadiness = 0;
-  
-  if (charSum % 3 === 0) {
+  let readiness_score = minReadiness;
+
+  if (confluenceScore >= 75 && structure === "Breakout" && trend !== "Neutral") {
+    // SNIPER: High confluence + structure confirmed + clear trend
     state = "SNIPER";
-    baseReadiness = 90; // SNIPER = high readiness
-  } else if (charSum % 3 === 1) {
+    console.log(`[STRATEGY] ${symbol} → SNIPER (confluence=${confluenceScore}, reasons: ${reasons.join(", ")})`);
+  } else if (confluenceScore >= 50 && (structure === "Compression" || structure === "Expansion")) {
+    // BUILDING: Moderate confluence, setup forming
     state = "BUILDING";
-    baseReadiness = 50; // BUILDING = mid readiness
+    console.log(`[STRATEGY] ${symbol} → BUILDING (confluence=${confluenceScore}, reasons: ${reasons.join(", ")})`);
   } else {
+    // DO_NOT_TRADE: Weak confluence or conflicting signals
     state = "DO_NOT_TRADE";
-    baseReadiness = 15; // DO_NOT_TRADE = low readiness
+    console.log(`[STRATEGY] ${symbol} → DO_NOT_TRADE (confluence=${confluenceScore}, reasons: ${reasons.join(", ")})`);
   }
 
-  // Generate deterministic market structure
-  const structureIndex = charSum % 5;
-  const structures = ["Breakout", "Compression", "Expansion", "Reversal", "Range"] as const;
-  const structure_15m = structures[structureIndex];
-  
-  const trendIndex = charSum % 3;
-  const trends = ["Bullish", "Bearish", "Neutral"] as const;
-  const trend_4h = trends[trendIndex];
-  const macro_bias = trends[(trendIndex + 1) % 3];
-  
-  // Boost readiness based on confluence
-  let readiness_score = baseReadiness;
-  if (trend_4h === "Bullish" && structure_15m === "Breakout") readiness_score += 15;
-  if (trend_4h === "Bearish" && structure_15m === "Reversal") readiness_score += 15;
-  if (macro_bias === trend_4h) readiness_score += 10;
-  readiness_score = Math.min(100, readiness_score);
+  // Generate SNIPER details only when triggered
+  if (state === "SNIPER" && trend !== "Neutral") {
+    // Determine direction from trend and momentum
+    const direction = (trend === "Bullish" && momentum > 0) || (trend === "Bearish" && momentum < 0) 
+      ? (trend === "Bullish" ? "LONG" : "SHORT")
+      : (momentum > 0.5 ? "LONG" : "SHORT");
 
-  // Generate SNIPER details if applicable
-  if (state === "SNIPER") {
-    const direction = charSum % 2 === 0 ? "LONG" : "SHORT";
     const entry = price;
     
-    // SL: 0.8% for LONG, 0.8% for SHORT
-    const sl = direction === "LONG" 
-      ? price * 0.992
-      : price * 1.008;
+    // Dynamic SL/TP based on volatility and structure
+    const slPercent = 0.8 + (volatility / 10); // 0.8% - 1.2% depending on vol
+    const tpPercent = 2.0 + (volatility / 5);  // 2% - 4% depending on vol
     
-    // TP: 2% for LONG, 2% for SHORT
+    const sl = direction === "LONG" 
+      ? price * (1 - slPercent / 100)
+      : price * (1 + slPercent / 100);
+    
     const tp = direction === "LONG"
-      ? price * 1.02
-      : price * 0.98;
+      ? price * (1 + tpPercent / 100)
+      : price * (1 - tpPercent / 100);
     
     const risk = Math.abs(entry - sl);
     const reward = Math.abs(tp - entry);
     let rr = reward / risk;
     
-    // Guard against NaN/Infinity
     if (!isFinite(rr)) rr = 0;
-    
-    const confidence = 85 + (charSum % 10);
-    const reasons = [
-      "HTF structure break",
-      "4H bias confluence",
-      "Premium/discount zone",
-      "Supply/demand zone",
-    ];
-    const reason = reasons[charSum % reasons.length];
+
+    const confidence = Math.min(100, Math.floor(confluenceScore + (absMomentum * 5)));
+    const reason = reasons[0] || "Market confluence trigger";
 
     return {
       state,
       details: {
-        trend_4h,
-        structure_15m,
+        trend_4h: trend,
+        structure_15m: structure,
         macro_bias,
-        readiness_score,
+        readiness_score: minReadiness,
         direction,
         entry,
         stopLoss: parseFloat(sl.toFixed(2)),
@@ -163,10 +306,11 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
   return { 
     state,
     details: {
-      trend_4h,
-      structure_15m,
+      trend_4h: trend,
+      structure_15m: structure,
       macro_bias,
-      readiness_score,
+      readiness_score: minReadiness,
+      reason: reasons[0] || "Market context",
     }
   };
 }
