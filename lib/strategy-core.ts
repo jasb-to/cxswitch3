@@ -14,38 +14,17 @@ export interface Signal {
   symbol: string;
   price: number;
   state: TradeState;
-  
-  // 4H STRUCTURE CONTEXT (directional bias layer)
   bias_4h: "Bullish" | "Bearish" | "Neutral";
-  structure_4h: "HH/HL" | "LH/LL" | "Ranging" | "Transitioning";
-  
-  // 15M STRUCTURE (shift detection layer)
-  structure_15m: "Shift Forming" | "Compressing" | "Expanding" | "Ranging";
-  shift_type: "HH/HL to LH/LL" | "LH/LL to HH/HL" | "None";
-  
-  // 5M TRIGGER (execution layer)
-  trigger_5m: "Early Break Up" | "Early Break Down" | "Retest" | "Compression" | "Neutral";
-  
-  // MARKET ACTIVITY DETECTION
-  is_active: boolean;
-  momentum_shift: boolean;
-  
-  // ENTRY POINT
-  entry?: number;
-  entry_description?: string;
-  
-  // Trade details
+  structure_4h: "HH/HL" | "LH/LL" | "Transitioning" | "Ranging";
+  structure_15m: "Compressing" | "Shift Forming" | "Expanding" | "Ranging";
+  trigger_5m: "Early Break Up" | "Early Break Down" | "Retest Bullish" | "Retest Bearish" | "Flat";
   direction?: "LONG" | "SHORT";
+  entry?: number;
   stopLoss?: number;
   takeProfit?: number;
   riskReward?: number;
-  confidence?: number;
-  reason?: string;
-  
-  // Hold state
-  hold_until?: number;
+  confidence: number;
   hold_remaining_ms?: number;
-  
   updated_at: string;
 }
 
@@ -164,10 +143,10 @@ function detect15mShift(history: number[], bias: "Bullish" | "Bearish" | "Neutra
  * LAYER 3: 5M TRIGGER DETECTION
  */
 function detect5mTrigger(history: number[], isActive: boolean, momentumShift: boolean): {
-  trigger: "Early Break Up" | "Early Break Down" | "Retest" | "Compression" | "Neutral";
+  trigger: "Early Break Up" | "Early Break Down" | "Retest Bullish" | "Retest Bearish" | "Flat";
 } {
   if (history.length < 3 || !isActive) {
-    return { trigger: "Neutral" };
+    return { trigger: "Flat" };
   }
 
   const current = history[history.length - 1];
@@ -176,20 +155,17 @@ function detect5mTrigger(history: number[], isActive: boolean, momentumShift: bo
 
   const isBreakingUp = current > prev && prev > prev2;
   const isBreakingDown = current < prev && prev < prev2;
-  const isRetest = (prev > current && prev > prev2) || (prev < current && prev < prev2);
+  const isRetestBullish = (prev > current && prev > prev2) && current > prev2;
+  const isRetestBearish = (prev < current && prev < prev2) && current < prev2;
 
   if (isBreakingUp && momentumShift) return { trigger: "Early Break Up" };
   if (isBreakingDown && momentumShift) return { trigger: "Early Break Down" };
   if (isBreakingUp) return { trigger: "Early Break Up" };
   if (isBreakingDown) return { trigger: "Early Break Down" };
-  if (isRetest) return { trigger: "Retest" };
+  if (isRetestBullish) return { trigger: "Retest Bullish" };
+  if (isRetestBearish) return { trigger: "Retest Bearish" };
 
-  const recent5 = history.slice(-5);
-  const range = Math.max(...recent5) - Math.min(...recent5);
-  const isCompressing = range < (Math.max(...recent5) + Math.min(...recent5)) / 2 * 0.005;
-  if (isCompressing) return { trigger: "Compression" };
-
-  return { trigger: "Neutral" };
+  return { trigger: "Flat" };
 }
 
 /**
@@ -202,12 +178,8 @@ function evaluateMarket(symbol: string, price: number): Omit<Signal, "symbol" | 
       bias_4h: "Neutral",
       structure_4h: "Ranging",
       structure_15m: "Ranging",
-      shift_type: "None",
-      trigger_5m: "Neutral",
-      is_active: false,
-      momentum_shift: false,
+      trigger_5m: "Flat",
       confidence: 0,
-      reason: "Invalid price data",
     };
   }
 
@@ -288,14 +260,10 @@ function evaluateMarket(symbol: string, price: number): Omit<Signal, "symbol" | 
     bias_4h: bias4h,
     structure_4h,
     structure_15m: shift.structure,
-    shift_type: shift.shiftType,
     trigger_5m,
-    is_active: isActive,
-    momentum_shift: momentumShift,
-    ...(entry ? { entry, entry_description: entryDescription } : {}),
+    ...(entry ? { entry } : {}),
     ...(direction ? { direction, stopLoss, takeProfit, riskReward } : {}),
     confidence,
-    reason,
   };
 }
 
