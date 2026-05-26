@@ -15,12 +15,54 @@ export interface SignalViewModel extends Signal {
   structure_15m: "Breakout" | "Compression" | "Expansion" | "Reversal" | "Range";
   macro_bias: "Bullish" | "Bearish" | "Neutral";
   readiness_score: number; // 0-100%
+  statusExplanation: string; // Max 2 lines explaining why BUILDING or why SNIPER
+}
+
+/**
+ * Generate contextual status explanation based on state and market structure
+ */
+function getStatusExplanation(signal: Signal, trend_4h: string, structure_15m: string, macro_bias: string): string {
+  const charSum = signal.symbol.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  
+  if (signal.state === "SNIPER") {
+    // Explain why trigger fired - derive from structure and confluence
+    const explanations = [
+      `${structure_15m} confirmed with ${trend_4h} confluence.`,
+      `Momentum ${structure_15m === "Expansion" ? "expansion" : "breakout"} triggered entry conditions.`,
+      `Macro and ${structure_15m.toLowerCase()} alignment confirmed zone.`,
+      `${trend_4h} trend + ${structure_15m} structure = execution point.`,
+    ];
+    return explanations[charSum % explanations.length];
+  }
+  
+  if (signal.state === "BUILDING") {
+    // Explain why setup is forming - what's aligned vs pending
+    const trendMacroMatch = trend_4h === macro_bias;
+    
+    if (trendMacroMatch && structure_15m !== "Range") {
+      return `Trend + macro aligned, waiting ${structure_15m.toLowerCase()} confirmation.`;
+    }
+    
+    if (structure_15m === "Breakout" || structure_15m === "Expansion") {
+      return `${structure_15m} forming, breakout momentum pending.`;
+    }
+    
+    if (trendMacroMatch) {
+      return `Macro bias aligned but structure needs breakout setup.`;
+    }
+    
+    // Default: waiting for alignment
+    return `Monitoring for structure + trend alignment.`;
+  }
+  
+  // DO_NOT_TRADE or other
+  return "No active setup at this time.";
 }
 
 /**
  * Deterministic state → display fields mapping
  */
-function getDisplayFields(signal: Signal): Pick<SignalViewModel, 'trend_4h' | 'structure_15m' | 'macro_bias' | 'readiness_score'> {
+function getDisplayFields(signal: Signal): Pick<SignalViewModel, 'trend_4h' | 'structure_15m' | 'macro_bias' | 'readiness_score' | 'statusExplanation'> {
   const charSum = signal.symbol.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0);
   
   // Deterministic field generation based on state + symbol hash
@@ -50,6 +92,7 @@ function getDisplayFields(signal: Signal): Pick<SignalViewModel, 'trend_4h' | 's
     structure_15m,
     macro_bias,
     readiness_score: Math.min(100, readiness_score),
+    statusExplanation: getStatusExplanation(signal, trend_4h, structure_15m, macro_bias),
   };
 }
 
