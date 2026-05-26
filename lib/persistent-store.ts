@@ -254,7 +254,13 @@ export async function applyHoldRules(
   };
   await setHoldState(updated);
   console.log(`[HOLD] ${symbol} released: ${holdState.state} → WATCHING_SHIFT`);
-  return { finalState: "WATCHING_SHIFT", holdRemaining: 0 };
+  // SAFETY: Ensure finalState is always valid
+  if (!finalState || !["WATCHING_SHIFT", "BUILDING", "SNIPER"].includes(finalState)) {
+    console.warn(`[HOLD] SAFETY: Invalid finalState '${finalState}' for ${symbol}, defaulting to WATCHING_SHIFT`);
+    return { finalState: "WATCHING_SHIFT", holdRemaining: 0 };
+  }
+
+  return { finalState, holdRemaining };
 }
 
 /**
