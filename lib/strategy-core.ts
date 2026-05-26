@@ -273,7 +273,9 @@ function evaluateMarket(symbol: string, price: number): Omit<Signal, "symbol" | 
   }
 
   let stopLoss, takeProfit, riskReward;
-  if (state !== "WATCHING_SHIFT" && direction && entry) {
+  // CRITICAL: Only generate SL/TP when state is SNIPER (confirmed trade)
+  // BUILDING is analysis only, not executable
+  if (state === "SNIPER" && direction && entry) {
     const recent = history.slice(-10);
     const high = Math.max(...recent);
     const low = Math.min(...recent);

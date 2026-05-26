@@ -200,8 +200,8 @@ function SignalCard({ signal }: { signal: Signal }) {
         </div>
       </div>
 
-      {/* Trade Setup (if direction set) */}
-      {signal.direction && (
+      {/* Trade Setup (ONLY for SNIPER state) */}
+      {signal.state === "SNIPER" && signal.direction && (
         <div className="mb-6 pb-6 border-t border-gray-800">
           <div className="text-xs font-bold text-gray-500 uppercase tracking-wider mt-4 mb-3">Trade Setup</div>
           
