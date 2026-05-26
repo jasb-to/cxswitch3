@@ -8,7 +8,7 @@
  * All market context comes from strategy-core
  */
 
-import type { Signal } from "@/lib/strategy-core";
+import type { Signal } from "@/lib/signal-store";
 
 export type SignalViewModel = Signal;
 

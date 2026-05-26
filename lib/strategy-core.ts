@@ -1,6 +1,12 @@
 /**
- * TRADING STRATEGY ENGINE
- * Kraken prices → state generation → SNIPER details
+ * TRADING STRATEGY ENGINE - TOP-DOWN MULTI-TIMEFRAME STRUCTURE MODEL
+ * 
+ * Architecture:
+ * 4H Layer → Determines directional bias (Bullish/Bearish/Neutral)
+ * 15M/5M Layer → Detects setup formation and breakout triggers
+ * 
+ * This is a STRUCTURE-BASED system, not a scoring system.
+ * Decision logic: HH/HL/LH/LL sequencing, trendlines, retests
  */
 
 export type TradeState = "SNIPER" | "BUILDING" | "DO_NOT_TRADE";
@@ -13,15 +19,17 @@ export interface Signal {
   price: number;
   state: TradeState;
   
-  // Market context (always present - used to render even DO_NOT_TRADE states)
-  trend_4h: "Bullish" | "Bearish" | "Neutral";
-  structure_15m: "Breakout" | "Compression" | "Expansion" | "Reversal" | "Range";
-  macro_bias: "Bullish" | "Bearish" | "Neutral";
-  momentum_percent: number; // Current momentum as percentage
-  volatility_percent: number; // Current volatility as percentage
-  readiness_score: number; // 0-100 readiness percentage
+  // 4H Market Context (bias layer)
+  bias_4h: "Bullish" | "Bearish" | "Neutral";
+  structure_4h: "HH/HL" | "LH/LL" | "Ranging" | "Unclear";
   
-  // Trade details (optional, only for SNIPER)
+  // 15M/5M Execution Context (trigger layer)
+  structure_15m: "Breakout" | "Setup" | "Ranging";
+  hh_hl_active: boolean;
+  lh_ll_active: boolean;
+  trendline_interaction: "Break" | "Retest" | "None";
+  
+  // Trade details (only for SNIPER)
   direction?: "LONG" | "SHORT";
   entry?: number;
   stopLoss?: number;
@@ -31,10 +39,245 @@ export interface Signal {
   reason?: string;
   
   // Hold state fields (UI display)
-  hold_until?: number; // Timestamp when hold expires (0 or undefined = no hold)
-  hold_remaining_ms?: number; // Milliseconds remaining on hold
+  hold_until?: number;
+  hold_remaining_ms?: number;
   
   updated_at: string;
+}
+
+// In-memory price history for structure detection
+const priceHistory = new Map<string, number[]>();
+const MAX_HISTORY = 100;
+
+function recordPrice(symbol: string, price: number): void {
+  if (!priceHistory.has(symbol)) {
+    priceHistory.set(symbol, []);
+  }
+  const history = priceHistory.get(symbol)!;
+  history.push(price);
+  if (history.length > MAX_HISTORY) {
+    history.shift();
+  }
+}
+
+/**
+ * LAYER 1: 4H BIAS DETECTION (Not a gate, just context)
+ */
+function detect4HBias(history: number[]): { bias: "Bullish" | "Bearish" | "Neutral"; structure: "HH/HL" | "LH/LL" | "Ranging" | "Unclear" } {
+  if (history.length < 10) {
+    return { bias: "Neutral", structure: "Unclear" };
+  }
+
+  const recent = history.slice(-20);
+  
+  let hhCount = 0, hlCount = 0, llCount = 0, lhCount = 0;
+  
+  for (let i = 2; i < recent.length; i++) {
+    const isHH = recent[i] > recent[i-2] && recent[i-1] > recent[i-3];
+    const isHL = recent[i-1] > recent[i-3] && recent[i] < recent[i-1];
+    const isLL = recent[i] < recent[i-2] && recent[i-1] < recent[i-3];
+    const isLH = recent[i-1] < recent[i-3] && recent[i] > recent[i-1];
+    
+    if (isHH) hhCount++;
+    if (isHL) hlCount++;
+    if (isLL) llCount++;
+    if (isLH) lhCount++;
+  }
+
+  const hhhlActive = hhCount >= 2 || (hhCount > 0 && hlCount > 0);
+  const llnlActive = llCount >= 2 || (llCount > 0 && lhCount > 0);
+
+  if (hhhlActive && !llnlActive) {
+    return { bias: "Bullish", structure: "HH/HL" };
+  }
+  if (llnlActive && !hhhlActive) {
+    return { bias: "Bearish", structure: "LH/LL" };
+  }
+  if (hhhlActive && llnlActive) {
+    return { bias: "Neutral", structure: "Ranging" };
+  }
+
+  return { bias: "Neutral", structure: "Unclear" };
+}
+
+/**
+ * LAYER 2: 15M/5M SETUP DETECTION
+ */
+function detect15mSetup(history: number[], bias: "Bullish" | "Bearish" | "Neutral"): { 
+  isSetup: boolean; 
+  hhhlActive: boolean; 
+  llnlActive: boolean; 
+  structure: "Breakout" | "Setup" | "Ranging";
+  trendlineInteraction: "Break" | "Retest" | "None";
+} {
+  if (history.length < 5) {
+    return { isSetup: false, hhhlActive: false, llnlActive: false, structure: "Ranging", trendlineInteraction: "None" };
+  }
+
+  const recent = history.slice(-15);
+  const current = recent[recent.length - 1];
+  const prev = recent[recent.length - 2];
+  
+  let hhhlCount = 0;
+  for (let i = 2; i < recent.length; i++) {
+    if (recent[i] > recent[i-2] && recent[i-1] > recent[i-3]) hhhlCount++;
+  }
+  
+  let llnlCount = 0;
+  for (let i = 2; i < recent.length; i++) {
+    if (recent[i] < recent[i-2] && recent[i-1] < recent[i-3]) llnlCount++;
+  }
+
+  const hhhlActive = hhhlCount >= 2;
+  const llnlActive = llnlCount >= 2;
+
+  const high = Math.max(...recent.slice(-5));
+  const low = Math.min(...recent.slice(-5));
+  const range = high - low;
+  const isCompressing = range < (high + low) / 2 * 0.01;
+
+  let trendlineInteraction: "Break" | "Retest" | "None" = "None";
+  
+  if (bias === "Bullish" && hhhlActive) {
+    const support = Math.min(...recent.slice(-10));
+    if (current > support * 1.002) {
+      trendlineInteraction = current > prev ? "Break" : "Retest";
+    }
+  } else if (bias === "Bearish" && llnlActive) {
+    const resistance = Math.max(...recent.slice(-10));
+    if (current < resistance * 0.998) {
+      trendlineInteraction = current < prev ? "Break" : "Retest";
+    }
+  }
+
+  const isSetup = (
+    (bias === "Bullish" && hhhlActive && isCompressing) ||
+    (bias === "Bearish" && llnlActive && isCompressing) ||
+    (bias !== "Neutral" && (hhhlActive || llnlActive))
+  );
+
+  let structure: "Breakout" | "Setup" | "Ranging" = "Ranging";
+  if (hhhlActive || llnlActive) {
+    structure = isCompressing ? "Setup" : "Breakout";
+  }
+
+  return {
+    isSetup,
+    hhhlActive,
+    llnlActive,
+    structure,
+    trendlineInteraction,
+  };
+}
+
+/**
+ * TOP-DOWN DECISION ENGINE
+ */
+function evaluateMarket(symbol: string, price: number): { state: TradeState; bias_4h: "Bullish" | "Bearish" | "Neutral"; structure_4h: "HH/HL" | "LH/LL" | "Ranging" | "Unclear"; structure_15m: "Breakout" | "Setup" | "Ranging"; hh_hl_active: boolean; lh_ll_active: boolean; trendline_interaction: "Break" | "Retest" | "None"; direction?: "LONG" | "SHORT"; entry?: number; stopLoss?: number; takeProfit?: number; riskReward?: number; confidence?: number; reason?: string } {
+  if (!price || price <= 0) {
+    return {
+      state: "DO_NOT_TRADE",
+      bias_4h: "Neutral",
+      structure_4h: "Unclear",
+      structure_15m: "Ranging",
+      hh_hl_active: false,
+      lh_ll_active: false,
+      trendline_interaction: "None",
+      confidence: 0,
+      reason: "Invalid price data",
+    };
+  }
+
+  const history = priceHistory.get(symbol) || [];
+  recordPrice(symbol, price);
+
+  const { bias: bias4h, structure: structure4h } = detect4HBias(history);
+  console.log(`[4H BIAS] ${symbol}: bias=${bias4h}, structure=${structure4h}`);
+
+  const setup = detect15mSetup(history, bias4h);
+  console.log(`[15M SETUP] ${symbol}: isSetup=${setup.isSetup}, structure=${setup.structure}, trendline=${setup.trendlineInteraction}`);
+
+  let state: TradeState;
+  let direction: "LONG" | "SHORT" | undefined;
+  let reason: string;
+  let confidence: number;
+
+  if (bias4h === "Neutral" && !setup.isSetup) {
+    state = "DO_NOT_TRADE";
+    reason = "No structure, neutral bias";
+    confidence = 0;
+  }
+  else if (setup.isSetup && bias4h !== "Neutral") {
+    state = "BUILDING";
+    if (bias4h === "Bullish") {
+      reason = "Bullish setup forming (HH/HL pattern)";
+      confidence = setup.hhhlActive ? 60 : 40;
+    } else {
+      reason = "Bearish setup forming (LH/LL pattern)";
+      confidence = setup.llnlActive ? 60 : 40;
+    }
+  }
+  else if (
+    bias4h !== "Neutral" &&
+    (setup.trendlineInteraction === "Break" || setup.structure === "Breakout")
+  ) {
+    state = "SNIPER";
+    if (bias4h === "Bullish" && setup.hhhlActive) {
+      direction = "LONG";
+      reason = "Bullish breakout: HH/HL confirmed + trendline break";
+      confidence = 75;
+    } else if (bias4h === "Bearish" && setup.llnlActive) {
+      direction = "SHORT";
+      reason = "Bearish breakdown: LH/LL confirmed + trendline break";
+      confidence = 75;
+    } else {
+      state = "BUILDING";
+      reason = "Structure alignment unclear";
+      confidence = 40;
+    }
+  }
+  else if (bias4h !== "Neutral") {
+    state = "BUILDING";
+    reason = `Structure active, ${bias4h.toLowerCase()} bias`;
+    confidence = 50;
+  }
+  else {
+    state = "DO_NOT_TRADE";
+    reason = "No actionable structure";
+    confidence = 0;
+  }
+
+  let entry, stopLoss, takeProfit, riskReward;
+  if (state === "SNIPER" && direction) {
+    entry = price;
+    
+    const recent15 = history.slice(-15);
+    const high = Math.max(...recent15);
+    const low = Math.min(...recent15);
+    const rangeSize = high - low;
+
+    if (direction === "LONG") {
+      stopLoss = Math.max(low, price * 0.97);
+      takeProfit = price + (rangeSize * 1.5);
+    } else {
+      stopLoss = Math.min(high, price * 1.03);
+      takeProfit = price - (rangeSize * 1.5);
+    }
+
+    riskReward = Math.abs((takeProfit - entry) / (entry - stopLoss));
+    if (!isFinite(riskReward)) riskReward = 0;
+  }
+
+  return {
+    state,
+    bias_4h: bias4h,
+    structure_4h,
+    structure_15m: setup.structure,
+    hh_hl_active: setup.hhhlActive,
+    lh_ll_active: setup.llnlActive,
+    trendline_interaction: setup.trendlineInteraction,
+    ...(direction ? { direction, entry, stopLoss, takeProfit, riskReward, confidence, reason } : { confidence, reason }),
+  };
 }
 
 /**
@@ -62,7 +305,7 @@ async function getKrakenTicker(symbol: string): Promise<number> {
       return 0;
     }
 
-    const price = parseFloat(tickerData.c[0]); // Last trade close price
+    const price = parseFloat(tickerData.c[0]);
     if (price <= 0) {
       console.warn(`[KRAKEN] Invalid price for ${symbol}: ${price}`);
       return 0;
@@ -76,282 +319,7 @@ async function getKrakenTicker(symbol: string): Promise<number> {
 }
 
 /**
- * REAL MARKET-REACTIVE STRATEGY ENGINE
- * Uses live Kraken price data, volatility, structure, and momentum
- * to dynamically transition between DO_NOT_TRADE → BUILDING → SNIPER
- */
-
-// In-memory price history for structure detection (last 50 prices per symbol)
-const priceHistory = new Map<string, number[]>();
-const MAX_HISTORY = 50;
-
-/**
- * Store price in history for structure detection
- */
-function recordPrice(symbol: string, price: number): void {
-  if (!priceHistory.has(symbol)) {
-    priceHistory.set(symbol, []);
-  }
-  const history = priceHistory.get(symbol)!;
-  history.push(price);
-  if (history.length > MAX_HISTORY) {
-    history.shift(); // Keep only last 50
-  }
-}
-
-/**
- * Detect market structure from price history
- * breakout | compression | expansion | reversal | range
- */
-function detectStructure(history: number[]): "Breakout" | "Compression" | "Expansion" | "Reversal" | "Range" {
-  if (history.length < 3) return "Range";
-
-  const current = history[history.length - 1];
-  const prev = history[history.length - 2];
-  const prev2 = history[history.length - 3];
-  
-  const changePercent = ((current - prev) / prev) * 100;
-  const absChange = Math.abs(changePercent);
-  
-  // Calculate recent volatility (std dev of last 5 changes)
-  const recentVolatility = Math.max(...history.slice(-5).map((p, i, arr) => 
-    i > 0 ? Math.abs((p - arr[i-1]) / arr[i-1] * 100) : 0
-  ));
-  
-  // Calculate baseline volatility (std dev of all history)
-  const baselineVolatility = history.length > 10 
-    ? Math.max(...history.slice(-10).map((p, i, arr) => 
-        i > 0 ? Math.abs((p - arr[i-1]) / arr[i-1] * 100) : 0
-      ))
-    : recentVolatility;
-
-  // Direction: higher high / lower low
-  const isHigherHigh = current > prev && prev > prev2;
-  const isLowerLow = current < prev && prev < prev2;
-  
-  // Volatility expansion / compression
-  const volExpanding = recentVolatility > baselineVolatility * 1.2;
-  const volCompressing = recentVolatility < baselineVolatility * 0.8;
-
-  if (isHigherHigh && volExpanding) return "Breakout";
-  if (isLowerLow && volExpanding) return "Breakout";
-  if (volCompressing) return "Compression";
-  if (volExpanding) return "Expansion";
-  if (isHigherHigh || isLowerLow) return "Reversal";
-  return "Range";
-}
-
-/**
- * Determine trend from price history
- * bullish | bearish | neutral
- */
-function determineTrend(history: number[]): "Bullish" | "Bearish" | "Neutral" {
-  if (history.length < 5) return "Neutral";
-
-  // Simple MA comparison (last 5 vs last 10-20)
-  const recent = history.slice(-5).reduce((a, b) => a + b, 0) / 5;
-  const older = history.length >= 10 
-    ? history.slice(-10, -5).reduce((a, b) => a + b, 0) / 5 
-    : recent;
-
-  const trendStrength = Math.abs((recent - older) / older) * 100;
-
-  // Higher highs = bullish, lower lows = bearish
-  const closes = history.slice(-10);
-  let higherHighs = 0, lowerLows = 0;
-  for (let i = 1; i < closes.length; i++) {
-    if (closes[i] > closes[i - 1]) higherHighs++;
-    else if (closes[i] < closes[i - 1]) lowerLows++;
-  }
-
-  if (higherHighs > lowerLows && trendStrength > 0.1) return "Bullish";
-  if (lowerLows > higherHighs && trendStrength > 0.1) return "Bearish";
-  return "Neutral";
-}
-
-/**
- * Calculate momentum (rate of change)
- * Returns -100 to +100 (percentage change)
- */
-function calculateMomentum(history: number[]): number {
-  if (history.length < 2) return 0;
-  const current = history[history.length - 1];
-  const prev = history[history.length - 2];
-  return ((current - prev) / prev) * 100;
-}
-
-/**
- * Calculate volatility as percentage of average price
- */
-function calculateVolatility(history: number[]): number {
-  if (history.length < 2) return 0;
-  const avg = history.reduce((a, b) => a + b) / history.length;
-  const variance = history.reduce((sum, p) => sum + Math.pow(p - avg, 2), 0) / history.length;
-  return Math.sqrt(variance) / avg * 100;
-}
-
-/**
- * REAL MARKET-REACTIVE EVALUATION
- * Returns dynamic state based on actual market conditions
- */
-function evaluateMarket(symbol: string, price: number): { state: TradeState; details?: any } {
-  // Guard: price must be positive
-  if (!price || price <= 0) {
-    return { 
-      state: "DO_NOT_TRADE",
-      trend_4h: "Neutral",
-      structure_15m: "Range",
-      macro_bias: "Neutral",
-      momentum_percent: 0,
-      volatility_percent: 0,
-      readiness_score: 0,
-      reason: "Invalid price data",
-    };
-  }
-
-  // Record price in history
-  const history = priceHistory.get(symbol) || [];
-  recordPrice(symbol, price);
-
-  // Market analysis
-  const structure = detectStructure(history);
-  const trend = determineTrend(history);
-  const momentum = calculateMomentum(history);
-  const volatility = calculateVolatility(history);
-
-  // Derive macro bias (opposite of current trend for confirmation)
-  const macro_bias: "Bullish" | "Bearish" | "Neutral" = 
-    trend === "Bullish" ? "Bearish" : 
-    trend === "Bearish" ? "Bullish" : 
-    "Neutral";
-
-  console.log(`[STRATEGY] ${symbol}: trend=${trend}, struct=${structure}, vol=${volatility.toFixed(2)}%, momentum=${momentum.toFixed(2)}%`);
-
-  // Confluence scoring (0-100)
-  let confluenceScore = 0;
-  let reasons: string[] = [];
-
-  // Structure alignment (max +30)
-  if (structure === "Breakout") confluenceScore += 30, reasons.push("Breakout structure");
-  if (structure === "Expansion") confluenceScore += 20, reasons.push("Volatility expansion");
-  if (structure === "Compression") confluenceScore += 10, reasons.push("Setup compression");
-
-  // Trend alignment (max +30)
-  if (trend === "Bullish") confluenceScore += 15, reasons.push("Bullish trend");
-  if (trend === "Bearish") confluenceScore += 15, reasons.push("Bearish trend");
-
-  // Momentum (max +20)
-  const absMomentum = Math.abs(momentum);
-  if (absMomentum > 1.0) confluenceScore += 10, reasons.push("Strong momentum");
-  if (absMomentum > 2.0) confluenceScore += 10, reasons.push("Very strong momentum");
-
-  // Volatility (max +20)
-  if (volatility > 0.5 && volatility < 2.0) confluenceScore += 15, reasons.push("Healthy volatility");
-  if (volatility > 2.0) confluenceScore += 10, reasons.push("High volatility expansion");
-
-  // Confluence threshold logic - STRICT 3-STATE MODEL PER PROMPT
-  // DO_NOT_TRADE: confluence < 35 OR momentum < 0.2% AND range/compression
-  // BUILDING: confluence >= 35 AND (structure != Range OR momentum >= 0.25% OR vol > 0.3%)
-  // SNIPER: confluence >= 70 AND breakout AND trend aligned
-  
-  let state: TradeState;
-  let readiness_score = 0; // 0-100
-
-  if (confluenceScore >= 70 && structure === "Breakout" && trend !== "Neutral") {
-    // SNIPER: FULL EXECUTION CONDITION
-    state = "SNIPER";
-    readiness_score = Math.min(100, confluenceScore + (absMomentum * 5));
-    console.log(`[STRATEGY] ${symbol} → SNIPER (confluence=${confluenceScore}, structure=${structure}, trend=${trend})`);
-  } else if (
-    confluenceScore >= 35 &&
-    (structure !== "Range" || absMomentum >= 0.25 || volatility > 0.3) &&
-    trend !== "Neutral"
-  ) {
-    // BUILDING: EDGE STATE FOR EARLY ENTRIES
-    // Triggers when structure is forming OR momentum emerging with trend direction
-    state = "BUILDING";
-    readiness_score = Math.min(100, confluenceScore + (absMomentum * 3));
-    console.log(`[STRATEGY] ${symbol} → BUILDING (confluence=${confluenceScore}, structure=${structure}, momentum=${absMomentum.toFixed(2)}%)`);
-  } else if (
-    // Additional BUILDING condition: if even low confluence but structure is clearly forming
-    (structure === "Reversal" || structure === "Expansion") &&
-    trend !== "Neutral" &&
-    absMomentum >= 0.25
-  ) {
-    // Early-stage momentum with structure type
-    state = "BUILDING";
-    readiness_score = Math.min(100, Math.max(30, confluenceScore + (absMomentum * 5)));
-    console.log(`[STRATEGY] ${symbol} → BUILDING (early structure forming, confluence=${confluenceScore}, momentum=${absMomentum.toFixed(2)}%)`);
-  } else {
-    // DO_NOT_TRADE: Market not ready
-    state = "DO_NOT_TRADE";
-    readiness_score = Math.max(0, confluenceScore / 2); // Show some context even when not trading
-    console.log(`[STRATEGY] ${symbol} → DO_NOT_TRADE (confluence=${confluenceScore}, structure=${structure})`);
-  }
-
-  // Generate SNIPER details only when triggered
-  if (state === "SNIPER" && trend !== "Neutral") {
-    // Determine direction from trend and momentum
-    const direction = (trend === "Bullish" && momentum > 0) || (trend === "Bearish" && momentum < 0) 
-      ? (trend === "Bullish" ? "LONG" : "SHORT")
-      : (momentum > 0.5 ? "LONG" : "SHORT");
-
-    const entry = price;
-    
-    // Dynamic SL/TP based on volatility and structure
-    const slPercent = 0.8 + (volatility / 10); // 0.8% - 1.2% depending on vol
-    const tpPercent = 2.0 + (volatility / 5);  // 2% - 4% depending on vol
-    
-    const sl = direction === "LONG" 
-      ? price * (1 - slPercent / 100)
-      : price * (1 + slPercent / 100);
-    
-    const tp = direction === "LONG"
-      ? price * (1 + tpPercent / 100)
-      : price * (1 - tpPercent / 100);
-    
-    const risk = Math.abs(entry - sl);
-    const reward = Math.abs(tp - entry);
-    let rr = reward / risk;
-    
-    if (!isFinite(rr)) rr = 0;
-
-    const confidence = Math.min(100, Math.floor(confluenceScore + (absMomentum * 5)));
-    const reason = reasons[0] || "Market confluence trigger";
-
-    return {
-      state,
-      trend_4h: trend,
-      structure_15m: structure,
-      macro_bias,
-      momentum_percent: momentum,
-      volatility_percent: volatility,
-      readiness_score,
-      direction,
-      entry,
-      stopLoss: parseFloat(sl.toFixed(2)),
-      takeProfit: parseFloat(tp.toFixed(2)),
-      riskReward: parseFloat(rr.toFixed(2)),
-      confidence,
-      reason,
-    };
-  }
-
-  return { 
-    state,
-    trend_4h: trend,
-    structure_15m: structure,
-    macro_bias,
-    momentum_percent: momentum,
-    volatility_percent: volatility,
-    readiness_score,
-    reason: reasons[0] || "Market context",
-  };
-}
-
-/**
- * Create a complete signal with Kraken prices and market context
- * Applies hold rules for state inertia (prevents flickering)
+ * Create a complete signal with live structure-based evaluation
  */
 export async function createSignal(symbol: string): Promise<Signal> {
   const { applyHoldRules } = await import("./persistent-store");
@@ -359,18 +327,17 @@ export async function createSignal(symbol: string): Promise<Signal> {
   const price = await getKrakenTicker(symbol);
   const marketContext = evaluateMarket(symbol, price);
 
-  // Apply hold rules to the evaluated state
   const { finalState, holdRemaining } = await applyHoldRules(
     symbol,
     marketContext.state,
-    marketContext.readiness_score
+    marketContext.confidence || 0
   );
 
   const signal: Signal = {
     symbol,
     price,
     ...marketContext,
-    state: finalState, // Use hold-adjusted state
+    state: finalState,
     hold_until: holdRemaining > 0 ? Date.now() + holdRemaining : 0,
     hold_remaining_ms: holdRemaining,
     updated_at: new Date().toISOString(),
@@ -378,5 +345,3 @@ export async function createSignal(symbol: string): Promise<Signal> {
 
   return signal;
 }
-
-
