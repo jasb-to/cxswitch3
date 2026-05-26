@@ -1,36 +1,61 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import useSWR from "swr";
 import type { SignalViewModel } from "@/lib/signal-view-model";
 
-const fetcher = (url: string) => fetch(url).then(res => res.json());
-
 export default function Dashboard() {
-  const [mounted, setMounted] = useState(false);
+  const [signals, setSignals] = useState<SignalViewModel[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // SWR with 30s staleTime minimum - prevents aggressive polling
-  const { data: signals = [], error, isLoading } = useSWR<SignalViewModel[]>(
-    "/api/signals",
-    fetcher,
-    {
-      revalidateOnFocus: false,
-      revalidateOnReconnect: false,
-      focusThrottleInterval: 30000, // 30s minimum
-      dedupingInterval: 30000, // Don't request more than every 30s
-      refreshInterval: 45000, // Refresh every 45s if stale
-      errorRetryInterval: 10000, // Retry errors every 10s
-      errorRetryCount: 3,
+  const fetchSignals = async () => {
+    try {
+      setError(null);
+      const res = await fetch("/api/signals", { cache: "no-store" });
+      
+      if (!res.ok) {
+        throw new Error(`API returned ${res.status}`);
+      }
+
+      const json = await res.json();
+      setSignals(Array.isArray(json) ? json : []);
+    } catch (err) {
+      console.error("[FETCH] Error:", err);
+      setError(String(err));
     }
-  );
+  };
+
+  const triggerCron = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/cron", { method: "POST" });
+      if (!res.ok) throw new Error("Cron failed");
+      
+      await new Promise(r => setTimeout(r, 500));
+      await fetchSignals();
+    } catch (err) {
+      setError("Cron error: " + String(err));
+      console.error("[CRON] Error:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const testTelegram = async () => {
+    try {
+      const res = await fetch("/api/test-telegram", { method: "POST" });
+      const result = await res.json();
+      alert(result.ok ? "Telegram alert sent!" : "Telegram failed: " + (result.error || "Unknown error"));
+    } catch (err) {
+      alert("Telegram error: " + String(err));
+    }
+  };
 
   useEffect(() => {
-    setMounted(true);
+    fetchSignals();
+    const id = setInterval(fetchSignals, 15000);
+    return () => clearInterval(id);
   }, []);
-
-  if (!mounted) return <div style={{ padding: "20px", color: "#9ca3af" }}>Loading...</div>;
-  if (error) return <div style={{ padding: "20px", color: "#ff1744" }}>Error: {String(error)}</div>;
-  if (isLoading && signals.length === 0) return <div style={{ padding: "20px", color: "#9ca3af" }}>Loading signals...</div>;
 
   const globalReadiness = signals.length > 0
     ? Math.round(
@@ -72,6 +97,40 @@ export default function Dashboard() {
                 ⚠️ {error}
               </p>
             )}
+          </div>
+          <div style={{ display: "flex", gap: "12px" }}>
+            <button
+              onClick={triggerCron}
+              disabled={loading}
+              style={{
+                padding: "8px 16px",
+                backgroundColor: "#222",
+                color: "#fff",
+                border: "1px solid #2a2a2a",
+                borderRadius: "6px",
+                cursor: loading ? "not-allowed" : "pointer",
+                opacity: loading ? 0.5 : 1,
+                fontSize: "14px",
+                fontWeight: "500",
+              }}
+            >
+              {loading ? "Refreshing..." : "Refresh"}
+            </button>
+            <button
+              onClick={testTelegram}
+              style={{
+                padding: "8px 16px",
+                backgroundColor: "#222",
+                color: "#fff",
+                border: "1px solid #2a2a2a",
+                borderRadius: "6px",
+                cursor: "pointer",
+                fontSize: "14px",
+                fontWeight: "500",
+              }}
+            >
+              Test Alert
+            </button>
           </div>
         </div>
 
@@ -212,6 +271,54 @@ export default function Dashboard() {
                             ? `${signal.trend_4h} trend alignment developing. Structure not yet confirmed.`
                             : "Setup building. Multiple confluence factors tracking."}
                         </p>
+
+                        {/* TRIGGER CONDITIONS - Shows exactly which conditions triggered BUILDING */}
+                        <div style={{ margin: "8px 0", fontSize: "10px", color: "#9ca3af", lineHeight: "1.6" }}>
+                          <div style={{ fontWeight: "600", marginBottom: "4px", color: "#fff" }}>TRIGGER CONDITIONS</div>
+                          
+                          {/* Condition A: Structure != Range */}
+                          {(() => {
+                            const isActive = signal.structure_15m !== "Range";
+                            return (
+                              <div style={{ opacity: isActive ? 1 : 0.5, color: isActive ? "#9ca3af" : "#555" }}>
+                                {isActive ? "✔" : "✖"} Structure: {signal.structure_15m}
+                              </div>
+                            );
+                          })()}
+
+                          {/* Condition B: Momentum >= 0.15% */}
+                          {(() => {
+                            const mom = typeof signal.momentum_percent === "number" ? signal.momentum_percent : 0;
+                            const isActive = mom >= 0.15;
+                            return (
+                              <div style={{ opacity: isActive ? 1 : 0.5, color: isActive ? "#9ca3af" : "#555" }}>
+                                {isActive ? "✔" : "✖"} Momentum: {mom.toFixed(3)}% (threshold ≥ 0.15%)
+                              </div>
+                            );
+                          })()}
+
+                          {/* Condition C: Volatility >= 0.25% */}
+                          {(() => {
+                            const vol = typeof signal.volatility_percent === "number" ? signal.volatility_percent : 0;
+                            const isActive = vol >= 0.25;
+                            return (
+                              <div style={{ opacity: isActive ? 1 : 0.5, color: isActive ? "#9ca3af" : "#555" }}>
+                                {isActive ? "✔" : "✖"} Volatility: {vol.toFixed(3)}% (threshold ≥ 0.25%)
+                              </div>
+                            );
+                          })()}
+
+                          {/* Condition D: Trend != Neutral AND Momentum > 0.2% */}
+                          {(() => {
+                            const mom = typeof signal.momentum_percent === "number" ? signal.momentum_percent : 0;
+                            const isActive = signal.trend_4h !== "Neutral" && mom > 0.2;
+                            return (
+                              <div style={{ opacity: isActive ? 1 : 0.5, color: isActive ? "#9ca3af" : "#555" }}>
+                                {isActive ? "✔" : "✖"} Trend: {signal.trend_4h} {mom > 0.2 ? "+ momentum" : "(insufficient momentum)"}
+                              </div>
+                            );
+                          })()}
+                        </div>
                       </>
                     )}
                     {signal.state === "DO_NOT_TRADE" && (
