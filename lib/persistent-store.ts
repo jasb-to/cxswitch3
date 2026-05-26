@@ -28,7 +28,8 @@ export interface SignalHoldState {
   holdUntil: number;
   confidence: number;
   sniper_confirmed_at?: number; // When SNIPER was confirmed
-  lockUntil?: number; // Signal lock window - prevents state changes during this period
+  lockUntil?: number; // UI-only: prevents flicker, does NOT block evaluation
+  sniperProbationUntil?: number; // SNIPER probation: minimum cycles before downgrade allowed
 }
 
 /**
@@ -80,12 +81,12 @@ export async function applyHoldRules(
 ): Promise<{ finalState: TradeState; holdRemaining: number }> {
   const holdState = await getHoldState(symbol);
   
-  // SIGNAL LOCK CHECK - If locked, return signal as-is (DO NOT RECOMPUTE)
-  if (holdState && holdState.lockUntil && now < holdState.lockUntil) {
-    const lockRemaining = holdState.lockUntil - now;
-    console.log(`[LOCK] ${symbol} signal locked: ${holdState.state} (${lockRemaining}ms remaining)`);
-    return { finalState: holdState.state, holdRemaining: lockRemaining };
-  }
+  // NOTE: Signal lock is UI-only (prevents flicker in display)
+  // It does NOT block evaluation, state transitions, or event emission
+  // Lock just tells UI to display the last locked state instead of flickering
+  
+  const lockRemaining = holdState?.lockUntil ? Math.max(0, holdState.lockUntil - now) : 0;
+  const lockActive = lockRemaining > 0;
 
   // No hold state exists yet
   if (!holdState) {
@@ -120,17 +121,26 @@ export async function applyHoldRules(
 
   console.log(`[HOLD] ${symbol}: current=${holdState.state}, evaluated=${evaluatedState}, holdActive=${isHoldActive}, holdRemaining=${holdRemaining}ms`);
 
-  // SNIPER LOCK - Never downgrade during hold, maintain lock
+  // SNIPER HOLD - Never downgrade during hold or probation
   if (holdState.state === "SNIPER" && isHoldActive) {
+    const probationRemaining = holdState.sniperProbationUntil ? Math.max(0, holdState.sniperProbationUntil - now) : 0;
+    
     if (evaluatedState !== "SNIPER") {
-      console.log(`[HOLD] ${symbol} locked in SNIPER (hold expires in ${holdRemaining}ms)`);
-      return { finalState: "SNIPER", holdRemaining };
+      // Try to downgrade from SNIPER
+      if (probationRemaining > 0) {
+        // Still in probation window - keep SNIPER (2-cycle minimum protection)
+        console.log(`[HOLD] ${symbol} in SNIPER probation (${Math.ceil(probationRemaining/1000)}s remaining)`);
+        return { finalState: "SNIPER", holdRemaining };
+      }
+      // Probation expired, allow transition below
     }
-    // SNIPER remains, refresh confidence and maintain lock
+    
+    // SNIPER remains, refresh confidence and set probation window
     const updated: SignalHoldState = {
       ...holdState,
       confidence: Math.max(holdState.confidence, evaluatedConfidence),
       lockUntil: holdState.lockUntil || now + SIGNAL_LOCK_MS,
+      sniperProbationUntil: holdState.sniperProbationUntil || (now + 10 * 60 * 1000), // 10 min minimum (2 cycles)
     };
     await setHoldState(updated);
     return { finalState: "SNIPER", holdRemaining };
