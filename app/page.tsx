@@ -1,61 +1,48 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import useSWR from "swr";
 import type { SignalViewModel } from "@/lib/signal-view-model";
 
+const fetcher = (url: string) => fetch(url, { cache: "no-store" }).then(res => {
+  if (!res.ok) throw new Error(`API returned ${res.status}`);
+  return res.json();
+});
+
 export default function Dashboard() {
-  const [signals, setSignals] = useState<SignalViewModel[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
 
-  const fetchSignals = async () => {
-    try {
-      setError(null);
-      const res = await fetch("/api/signals", { cache: "no-store" });
-      
-      if (!res.ok) {
-        throw new Error(`API returned ${res.status}`);
-      }
-
-      const json = await res.json();
-      setSignals(Array.isArray(json) ? json : []);
-    } catch (err) {
-      console.error("[FETCH] Error:", err);
-      setError(String(err));
+  // SWR with NO caching - always fresh from API
+  const { data: signals = [], error, isLoading } = useSWR<SignalViewModel[]>(
+    "/api/signals",
+    fetcher,
+    {
+      revalidateOnFocus: true,
+      revalidateOnReconnect: true,
+      focusThrottleInterval: 0, // No throttling
+      dedupingInterval: 0, // No deduping
+      refreshInterval: 30000, // Refresh every 30s
+      errorRetryInterval: 10000, // Retry errors every 10s
+      errorRetryCount: 3,
+      compare: (a, b) => JSON.stringify(a) === JSON.stringify(b), // Deep comparison
     }
-  };
-
-  const triggerCron = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch("/api/cron", { method: "POST" });
-      if (!res.ok) throw new Error("Cron failed");
-      
-      await new Promise(r => setTimeout(r, 500));
-      await fetchSignals();
-    } catch (err) {
-      setError("Cron error: " + String(err));
-      console.error("[CRON] Error:", err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const testTelegram = async () => {
-    try {
-      const res = await fetch("/api/test-telegram", { method: "POST" });
-      const result = await res.json();
-      alert(result.ok ? "Telegram alert sent!" : "Telegram failed: " + (result.error || "Unknown error"));
-    } catch (err) {
-      alert("Telegram error: " + String(err));
-    }
-  };
+  );
 
   useEffect(() => {
-    fetchSignals();
-    const id = setInterval(fetchSignals, 15000);
-    return () => clearInterval(id);
+    setMounted(true);
   }, []);
+
+  // DEBUG: Log the API response to verify Redis → API → UI flow
+  useEffect(() => {
+    console.log("[v0] SIGNAL SNAPSHOT FROM API:", signals);
+    signals.forEach(s => {
+      console.log(`[v0] ${s.symbol}: state=${s.state}, readiness=${s.readiness_score}, structure=${s.structure_15m}`);
+    });
+  }, [signals]);
+
+  if (!mounted) return <div style={{ padding: "20px", color: "#9ca3af" }}>Loading...</div>;
+  if (error) return <div style={{ padding: "20px", color: "#ff1744" }}>Error: {String(error)}</div>;
+  if (isLoading && signals.length === 0) return <div style={{ padding: "20px", color: "#9ca3af" }}>Loading signals...</div>;
 
   const globalReadiness = signals.length > 0
     ? Math.round(
@@ -97,40 +84,6 @@ export default function Dashboard() {
                 ⚠️ {error}
               </p>
             )}
-          </div>
-          <div style={{ display: "flex", gap: "12px" }}>
-            <button
-              onClick={triggerCron}
-              disabled={loading}
-              style={{
-                padding: "8px 16px",
-                backgroundColor: "#222",
-                color: "#fff",
-                border: "1px solid #2a2a2a",
-                borderRadius: "6px",
-                cursor: loading ? "not-allowed" : "pointer",
-                opacity: loading ? 0.5 : 1,
-                fontSize: "14px",
-                fontWeight: "500",
-              }}
-            >
-              {loading ? "Refreshing..." : "Refresh"}
-            </button>
-            <button
-              onClick={testTelegram}
-              style={{
-                padding: "8px 16px",
-                backgroundColor: "#222",
-                color: "#fff",
-                border: "1px solid #2a2a2a",
-                borderRadius: "6px",
-                cursor: "pointer",
-                fontSize: "14px",
-                fontWeight: "500",
-              }}
-            >
-              Test Alert
-            </button>
           </div>
         </div>
 
