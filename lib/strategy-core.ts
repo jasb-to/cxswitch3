@@ -10,6 +10,23 @@ export type TradeState = "SNIPER" | "BUILDING" | "WATCHING_SHIFT";
 export const SYMBOLS = ["BTC", "ETH", "SOL"] as const;
 export type Symbol = typeof SYMBOLS[number];
 
+// SIGNAL EVENT TYPES - Event-driven architecture for reliability
+export type SignalEventType = 
+  | "SIGNAL_CREATED"
+  | "SIGNAL_ENTERED_BUILDING"
+  | "SIGNAL_ENTERED_SNIPER"
+  | "SIGNAL_EXPIRED";
+
+export interface SignalEvent {
+  type: SignalEventType;
+  symbol: string;
+  timestamp: number;
+  prevState?: TradeState;
+  newState: TradeState;
+  confidence: number;
+  price: number;
+}
+
 export interface Signal {
   symbol: string;
   price: number;
