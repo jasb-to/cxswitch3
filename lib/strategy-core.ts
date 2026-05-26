@@ -202,14 +202,15 @@ function evaluateMarket(symbol: string, price: number): Omit<Signal, "symbol" | 
   let confidence: number;
   let entry: number | undefined;
 
-  if (shift.structure === "Shift Forming" || (shift.structure === "Compressing" && bias_4h !== "Neutral")) {
+  // BUILDING: Early entry zone - triggers on ANY structural activity
+  if (bias_4h !== "Neutral" || shift.structure !== "Ranging") {
     state = "BUILDING";
     entry = shift.entryLevel;
     
-    if (bias_4h === "Bullish" && shift.shiftType === "HH/HL to LH/LL") {
+    if (bias_4h === "Bullish") {
       direction = "LONG";
       confidence = 55;
-    } else if (bias_4h === "Bearish" && shift.shiftType === "LH/LL to HH/HL") {
+    } else if (bias_4h === "Bearish") {
       direction = "SHORT";
       confidence = 55;
     } else {
