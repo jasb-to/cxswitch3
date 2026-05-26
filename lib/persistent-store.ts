@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import type { Signal, TradeState } from "./strategy-core";
+import type { Signal, TradeState, SignalEvent } from "./strategy-core";
 
 const redis = new Redis({
   url: process.env.KV_REST_API_URL || "",
@@ -11,6 +11,7 @@ const COOLDOWN_KEY_PREFIX = "telegram:cooldown:";
 const HOLD_STATE_KEY_PREFIX = "hold:state:";
 const LAST_CRON_KEY = "cron:last_execution";
 const REQUEST_DEDUP_KEY_PREFIX = "request:dedup:";
+const SIGNAL_EVENTS_QUEUE_KEY = "signal:events:queue"; // Event-driven architecture
 
 const HOLD_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 const SIGNAL_LOCK_MS = 120 * 1000; // 2 minutes - lock window for signal persistence
@@ -100,6 +101,17 @@ export async function applyHoldRules(
       ...(evaluatedState === "SNIPER" ? { sniper_confirmed_at: now } : {}),
     };
     await setHoldState(newHoldState);
+    
+    // EMIT EVENT: Signal created
+    await emitSignalEvent({
+      type: "SIGNAL_CREATED",
+      symbol,
+      timestamp: now,
+      newState: evaluatedState,
+      confidence: evaluatedConfidence,
+      price: 0,
+    });
+    
     return { finalState: evaluatedState, holdRemaining: 0 };
   }
 
@@ -140,6 +152,18 @@ export async function applyHoldRules(
       };
       await setHoldState(updated);
       console.log(`[HOLD] ${symbol} upgraded: BUILDING → SNIPER (locked)`);
+      
+      // EMIT EVENT: SNIPER entry
+      await emitSignalEvent({
+        type: "SIGNAL_ENTERED_SNIPER",
+        symbol,
+        timestamp: now,
+        prevState: "BUILDING",
+        newState: "SNIPER",
+        confidence: evaluatedConfidence,
+        price: 0,
+      });
+      
       return { finalState: "SNIPER", holdRemaining: 0 };
     }
     // BUILDING persists through hold - cannot downgrade
@@ -167,6 +191,30 @@ export async function applyHoldRules(
     };
     await setHoldState(updated);
     console.log(`[HOLD] ${symbol} transitioned: ${holdState.state} → ${evaluatedState} (locked)`);
+    
+    // EMIT EVENT: State transition
+    if (evaluatedState === "BUILDING") {
+      await emitSignalEvent({
+        type: "SIGNAL_ENTERED_BUILDING",
+        symbol,
+        timestamp: now,
+        prevState: holdState.state,
+        newState: "BUILDING",
+        confidence: evaluatedConfidence,
+        price: 0,
+      });
+    } else if (evaluatedState === "SNIPER") {
+      await emitSignalEvent({
+        type: "SIGNAL_ENTERED_SNIPER",
+        symbol,
+        timestamp: now,
+        prevState: holdState.state,
+        newState: "SNIPER",
+        confidence: evaluatedConfidence,
+        price: 0,
+      });
+    }
+    
     return { finalState: evaluatedState, holdRemaining: 0 };
   }
 
@@ -303,6 +351,60 @@ export async function checkAndSetRequestDedup(requestId: string): Promise<boolea
   } catch (error) {
     console.error(`[STORE] Error checking dedup for ${requestId}:`, error);
     return true;
+  }
+}
+
+/**
+ * SIGNAL EVENT LAYER - Event-driven architecture
+ * Emits ONE event exactly once per state transition
+ */
+export async function emitSignalEvent(event: SignalEvent): Promise<void> {
+  try {
+    // Push event to queue (persisted as JSON list)
+    await redis.lpush(SIGNAL_EVENTS_QUEUE_KEY, JSON.stringify(event));
+    // Keep queue size bounded (max 1000 recent events)
+    await redis.ltrim(SIGNAL_EVENTS_QUEUE_KEY, 0, 999);
+    console.log(`[EVENT] ${event.type}: ${event.symbol} → ${event.newState}`);
+  } catch (error) {
+    console.error(`[EVENT] Error emitting event:`, error);
+  }
+}
+
+/**
+ * Get unprocessed signal events
+ * Events are consumed and removed from queue after processing
+ */
+export async function getSignalEvents(): Promise<SignalEvent[]> {
+  try {
+    // Fetch all events (max 100)
+    const events = await redis.lrange(SIGNAL_EVENTS_QUEUE_KEY, 0, 99);
+    if (!events || events.length === 0) return [];
+    
+    // Parse and return
+    return events.map((e) => {
+      try {
+        return JSON.parse(typeof e === "string" ? e : String(e)) as SignalEvent;
+      } catch {
+        return null;
+      }
+    }).filter((e): e is SignalEvent => e !== null);
+  } catch (error) {
+    console.error(`[EVENT] Error getting signal events:`, error);
+    return [];
+  }
+}
+
+/**
+ * Clear processed signal events from queue
+ */
+export async function clearSignalEvents(count: number): Promise<void> {
+  try {
+    // Remove 'count' events from the right end of queue
+    for (let i = 0; i < count; i++) {
+      await redis.rpop(SIGNAL_EVENTS_QUEUE_KEY);
+    }
+  } catch (error) {
+    console.error(`[EVENT] Error clearing signal events:`, error);
   }
 }
 

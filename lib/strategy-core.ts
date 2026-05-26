@@ -10,6 +10,23 @@ export type TradeState = "SNIPER" | "BUILDING" | "WATCHING_SHIFT";
 export const SYMBOLS = ["BTC", "ETH", "SOL"] as const;
 export type Symbol = typeof SYMBOLS[number];
 
+// SIGNAL EVENT TYPES - Event-driven architecture for reliability
+export type SignalEventType = 
+  | "SIGNAL_CREATED"
+  | "SIGNAL_ENTERED_BUILDING"
+  | "SIGNAL_ENTERED_SNIPER"
+  | "SIGNAL_EXPIRED";
+
+export interface SignalEvent {
+  type: SignalEventType;
+  symbol: string;
+  timestamp: number;
+  prevState?: TradeState;
+  newState: TradeState;
+  confidence: number;
+  price: number;
+}
+
 export interface Signal {
   symbol: string;
   price: number;
@@ -273,7 +290,9 @@ function evaluateMarket(symbol: string, price: number): Omit<Signal, "symbol" | 
   }
 
   let stopLoss, takeProfit, riskReward;
-  if (state !== "WATCHING_SHIFT" && direction && entry) {
+  // CRITICAL: Only generate SL/TP when state is SNIPER (confirmed trade)
+  // BUILDING is analysis only, not executable
+  if (state === "SNIPER" && direction && entry) {
     const recent = history.slice(-10);
     const high = Math.max(...recent);
     const low = Math.min(...recent);

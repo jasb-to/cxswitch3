@@ -1,20 +1,27 @@
 import { NextResponse } from "next/server";
 import { SYMBOLS, createSignal } from "@/lib/strategy-core";
-import { getTelegramCooldown, setTelegramCooldown, healthCheck, getHoldState } from "@/lib/persistent-store";
+import { getTelegramCooldown, setTelegramCooldown, healthCheck, getHoldState, getSignalEvents, clearSignalEvents } from "@/lib/persistent-store";
 import { sendSignalAlert } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const TELEGRAM_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
-const SNIPER_STABILITY_MS = 5 * 60 * 1000; // 5 minutes minimum before alert
+const TELEGRAM_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes between alerts per symbol
 
 /**
- * CRON EXECUTOR - Live Computation with Hold Rules
- * Runs every 5 minutes to:
- * 1. Compute live strategy for all symbols
- * 2. Apply hold rules (sticky states)
- * 3. Send Telegram alerts only for stable SNIPER states
+ * CRON EXECUTOR - Event-Driven Alert System
+ * 
+ * Architecture:
+ * 1. Compute live strategy for all symbols (state machine with hold rules)
+ * 2. Signal Event Layer emits events on state transitions
+ * 3. This cron consumes SIGNAL_ENTERED_SNIPER events (not polling state)
+ * 4. Alert fires ONCE per SNIPER entry, with cooldown protection
+ * 
+ * Key Benefits:
+ * - No missed SNIPER alerts (event-driven, not polling-based)
+ * - No duplicate alerts (one event per transition)
+ * - No flickering SNIPER states affecting alerts
+ * - Reliable across restarts and deploys
  */
 export async function GET() {
   try {
@@ -27,12 +34,12 @@ export async function GET() {
       );
     }
 
-    console.log("[CRON] Starting execution cycle (live computation + hold rules)");
+    console.log("[CRON] Starting execution cycle (live computation + event-driven alerts)");
     const results: any[] = [];
     const now = Date.now();
 
+    // STEP 1: Compute live strategy for all symbols
     for (const symbol of SYMBOLS) {
-      // Compute live strategy with hold rules applied
       const signal = await createSignal(symbol);
       
       console.log(`[CRON] ${symbol}: state=${signal.state}, hold_remaining=${signal.hold_remaining_ms}ms`);
@@ -57,34 +64,42 @@ export async function GET() {
           confidence: signal.confidence,
         } : {}),
       });
+    }
 
-      // ALERT LOGIC: Only send if SNIPER is stable (confirmed via hold)
-      if (signal.state === "SNIPER" && signal.direction) {
-        const holdState = await getHoldState(symbol);
+    // STEP 2: Consume Signal Events (EVENT-DRIVEN ALERTS)
+    const events = await getSignalEvents();
+    console.log(`[EVENT_LOOP] Processing ${events.length} signal events...`);
+    
+    let alertsSent = 0;
+    for (const event of events) {
+      // CRITICAL: Only fire alert on SIGNAL_ENTERED_SNIPER event
+      if (event.type === "SIGNAL_ENTERED_SNIPER") {
+        console.log(`[EVENT] Processing SNIPER entry for ${event.symbol}`);
         
-        // Check if SNIPER has been confirmed (hold was initialized when SNIPER was entered)
-        const sniperConfirmedAt = holdState?.sniper_confirmed_at || 0;
-        const sniper_stability = now - sniperConfirmedAt;
-        const is_stable = sniper_stability >= SNIPER_STABILITY_MS;
+        // Get current signal to send alert with latest data
+        const signal = await createSignal(event.symbol);
         
-        console.log(`[ALERT] ${symbol} SNIPER: stability=${sniper_stability}ms, stable=${is_stable}`);
-        
-        if (is_stable) {
-          const lastAlertTime = await getTelegramCooldown(symbol);
+        if (signal.state === "SNIPER" && signal.direction) {
+          // Check cooldown (prevent alert spam)
+          const lastAlertTime = await getTelegramCooldown(event.symbol);
           
           if (now - lastAlertTime >= TELEGRAM_COOLDOWN_MS) {
-            console.log(`[ALERT] ✓ Sending Telegram alert for ${symbol}`);
+            console.log(`[EVENT_ALERT] ✓ Sending Telegram alert for ${event.symbol} SNIPER entry`);
             await sendSignalAlert(signal);
-            await setTelegramCooldown(symbol, now);
+            await setTelegramCooldown(event.symbol, now);
+            alertsSent++;
           } else {
             const timeRemaining = Math.ceil((TELEGRAM_COOLDOWN_MS - (now - lastAlertTime)) / 1000 / 60);
-            console.log(`[ALERT] Cooldown active (${timeRemaining}m remaining)`);
+            console.log(`[EVENT_ALERT] Cooldown active (${timeRemaining}m remaining)`);
           }
-        } else {
-          const remaining = Math.ceil((SNIPER_STABILITY_MS - sniper_stability) / 1000);
-          console.log(`[ALERT] Waiting for confirmation (${remaining}s remaining)`);
         }
       }
+    }
+    
+    // Clear processed events from queue
+    if (events.length > 0) {
+      await clearSignalEvents(events.length);
+      console.log(`[EVENT_LOOP] Cleared ${events.length} processed events`);
     }
 
     console.log("[CRON SUMMARY]");
@@ -96,11 +111,14 @@ export async function GET() {
         console.log(`${r.symbol} → ${r.state}`);
       }
     });
+    console.log(`[EVENT_SUMMARY] ${alertsSent} Telegram alerts sent from ${events.length} events`);
 
     return NextResponse.json({
       ok: true,
-      message: "Cron cycle complete (live computation + hold rules)",
+      message: "Cron cycle complete (live computation + event-driven alerts)",
       results,
+      events_processed: events.length,
+      alerts_sent: alertsSent,
     });
   } catch (error) {
     console.error("[CRON] Error:", error);
