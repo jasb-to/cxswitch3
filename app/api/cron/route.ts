@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { SYMBOLS, createSignal } from "@/lib/strategy-core";
-import { readSignals, writeSignals, getTelegramCooldown, setTelegramCooldown, healthCheck, getHoldState } from "@/lib/persistent-store";
+import { getTelegramCooldown, setTelegramCooldown, healthCheck, getHoldState } from "@/lib/persistent-store";
 import { sendSignalAlert } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
@@ -10,9 +10,11 @@ const TELEGRAM_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
 const SNIPER_STABILITY_MS = 5 * 60 * 1000; // 5 minutes minimum before alert
 
 /**
- * CRON EXECUTOR - With Signal Hold Engine
- * Respects state holds (no downgrades during hold windows)
- * Sends alerts only when SNIPER is stable and confirmed
+ * CRON EXECUTOR - Live Computation with Hold Rules
+ * Runs every 5 minutes to:
+ * 1. Compute live strategy for all symbols
+ * 2. Apply hold rules (sticky states)
+ * 3. Send Telegram alerts only for stable SNIPER states
  */
 export async function GET() {
   try {
@@ -25,18 +27,13 @@ export async function GET() {
       );
     }
 
-    console.log("[CRON] Starting execution cycle (with signal hold engine)");
+    console.log("[CRON] Starting execution cycle (live computation + hold rules)");
     const results: any[] = [];
-    const previousSignals = await readSignals();
-    const previousMap = new Map(previousSignals.map(s => [s.symbol, s]));
-    const newSignals: any[] = [];
+    const now = Date.now();
 
     for (const symbol of SYMBOLS) {
-      const signal = await createSignal(symbol); // Includes hold rule application
-      const previousSignal = previousMap.get(symbol);
-      const previousState = previousSignal?.state;
-      
-      newSignals.push(signal);
+      // Compute live strategy with hold rules applied
+      const signal = await createSignal(symbol);
       
       console.log(`[CRON] ${symbol}: state=${signal.state}, hold_remaining=${signal.hold_remaining_ms}ms`);
       
@@ -64,7 +61,6 @@ export async function GET() {
       // ALERT LOGIC: Only send if SNIPER is stable (confirmed via hold)
       if (signal.state === "SNIPER" && signal.direction) {
         const holdState = await getHoldState(symbol);
-        const now = Date.now();
         
         // Check if SNIPER has been confirmed (hold was initialized when SNIPER was entered)
         const sniperConfirmedAt = holdState?.sniper_confirmed_at || 0;
@@ -91,9 +87,6 @@ export async function GET() {
       }
     }
 
-    // Persist signals to Redis
-    await writeSignals(newSignals);
-
     console.log("[CRON SUMMARY]");
     results.forEach((r) => {
       if (r.state === "SNIPER") {
@@ -106,7 +99,7 @@ export async function GET() {
 
     return NextResponse.json({
       ok: true,
-      message: "Cron cycle complete (with signal hold engine)",
+      message: "Cron cycle complete (live computation + hold rules)",
       results,
     });
   } catch (error) {
@@ -119,8 +112,6 @@ export async function GET() {
 }
 
 export async function POST() {
-  // In production, only Vercel Cron should POST
-  // Return error to discourage manual triggers
   return NextResponse.json(
     { ok: false, error: "Cron endpoint should only be triggered by Vercel Cron" },
     { status: 403 }
