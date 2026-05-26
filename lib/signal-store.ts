@@ -1,12 +1,22 @@
 /**
  * SIMPLE IN-MEMORY SIGNAL STORE
- * Pure data store, no fallback logic, no inference
+ * No persistence, no abstractions, no overhead
  */
 
 export interface Signal {
   symbol: string;
   price: number;
   state: "SNIPER" | "BUILDING" | "DO_NOT_TRADE";
+  
+  // Market structure (always shown)
+  trend_4h: "Bullish" | "Bearish" | "Neutral";
+  structure_15m: "Breakout" | "Compression" | "Expansion" | "Reversal" | "Range";
+  macro_bias: "Bullish" | "Bearish" | "Neutral";
+  
+  // Trade readiness 0-100%
+  readiness_score: number;
+  
+  // SNIPER details (optional)
   direction?: "LONG" | "SHORT";
   entry?: number;
   stopLoss?: number;
@@ -14,6 +24,7 @@ export interface Signal {
   riskReward?: number;
   confidence?: number;
   reason?: string;
+  
   updated_at: string;
 }
 
@@ -32,5 +43,6 @@ export function getSignals(): Signal[] {
 }
 
 export function getPreviousSignal(symbol: string): Signal | undefined {
+  // Get from store (this tracks last state)
   return signalStore.get(symbol);
 }
