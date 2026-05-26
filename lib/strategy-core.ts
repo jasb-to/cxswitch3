@@ -257,7 +257,7 @@ function evaluateMarket(symbol: string, price: number): Omit<Signal, "symbol" | 
   
   const { trigger: trigger_5m } = detect5mTrigger(history, isActive, momentumShift);
 
-  let state: TradeState;
+  let state: TradeState = "WATCHING_SHIFT"; // SAFETY: Always initialize to valid state
   let direction: "LONG" | "SHORT" | undefined;
   let confidence: number;
   let entry: number | undefined;
@@ -276,32 +276,39 @@ function evaluateMarket(symbol: string, price: number): Omit<Signal, "symbol" | 
     } else {
       confidence = 45;
     }
-  // SNIPER: Early momentum-based execution (RELAXED for early entry mode)
-  // Triggers on: (Shift Forming OR Expanding) + (Bullish OR Bearish bias) + Early Break OR Retest
-  const isShiftActive = shift.structure === "Shift Forming" || shift.structure === "Expanding";
-  const isBiasActive = bias_4h !== "Neutral";
-  const isTriggerActive = trigger_5m !== "Flat";
-  
-  if (isShiftActive && isBiasActive && isTriggerActive) {
-    state = "SNIPER";
-    entry = price;
+  } else {
+    // SNIPER: Early momentum-based execution (RELAXED for early entry mode)
+    // Triggers on: (Shift Forming OR Expanding) + (Bullish OR Bearish bias) + Early Break OR Retest
+    const isShiftActive = shift.structure === "Shift Forming" || shift.structure === "Expanding";
+    const isBiasActive = bias_4h !== "Neutral";
+    const isTriggerActive = trigger_5m !== "Flat";
     
-    // Direction from bias + trigger alignment
-    if (bias_4h === "Bullish" && (trigger_5m === "Early Break Up" || trigger_5m === "Retest Bullish")) {
-      direction = "LONG";
-      confidence = 75;
-    } else if (bias_4h === "Bearish" && (trigger_5m === "Early Break Down" || trigger_5m === "Retest Bearish")) {
-      direction = "SHORT";
-      confidence = 75;
-    }
-    
-    // Even if direction not aligned, still SNIPER (but no direction set)
-    if (!direction) {
-      confidence = 65; // Lower confidence without direction alignment
+    if (isShiftActive && isBiasActive && isTriggerActive) {
+      state = "SNIPER";
+      entry = price;
+      
+      // Direction from bias + trigger alignment
+      if (bias_4h === "Bullish" && (trigger_5m === "Early Break Up" || trigger_5m === "Retest Bullish")) {
+        direction = "LONG";
+        confidence = 75;
+      } else if (bias_4h === "Bearish" && (trigger_5m === "Early Break Down" || trigger_5m === "Retest Bearish")) {
+        direction = "SHORT";
+        confidence = 75;
+      } else {
+        // Even if direction not aligned, still SNIPER (but no direction set)
+        confidence = 65; // Lower confidence without direction alignment
+      }
+    } else {
+      // Default to WATCHING_SHIFT with minimal confidence
+      state = "WATCHING_SHIFT";
+      confidence = Math.max(20, Math.floor(momentumShift ? 35 : 20));
     }
   }
+  
+  // SAFETY: Ensure state is always valid
+  if (!state || !["WATCHING_SHIFT", "BUILDING", "SNIPER"].includes(state)) {
     state = "WATCHING_SHIFT";
-    confidence = Math.max(20, Math.floor(momentumShift ? 35 : 20));
+    confidence = 0;
   }
 
   let stopLoss, takeProfit, riskReward;
@@ -390,6 +397,13 @@ export async function createSignal(symbol: string): Promise<Signal> {
     marketContext.confidence || 0
   );
 
+  // SAFETY: Ensure finalState is always valid
+  let state = finalState;
+  if (!state || !["WATCHING_SHIFT", "BUILDING", "SNIPER"].includes(state)) {
+    console.warn(`[SIGNAL] SAFETY: Invalid state '${state}' for ${symbol}, defaulting to WATCHING_SHIFT`);
+    state = "WATCHING_SHIFT";
+  }
+
   // Preserve confidence from hold state if HOLD is active
   let confidence = marketContext.confidence || 0;
   if (holdRemaining > 0) {
@@ -403,7 +417,7 @@ export async function createSignal(symbol: string): Promise<Signal> {
     symbol,
     price,
     ...marketContext,
-    state: finalState,
+    state, // Use validated state
     confidence,
     hold_until: holdRemaining > 0 ? Date.now() + holdRemaining : 0,
     hold_remaining_ms: holdRemaining,

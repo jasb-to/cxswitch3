@@ -12,10 +12,8 @@ const fetcher = (url: string) => fetch(url, { cache: "no-store" }).then(res => {
 export default function Dashboard() {
   const [mounted, setMounted] = useState(false);
   const [signalCache, setSignalCache] = useState<Record<string, Signal & { visibleUntil: number }>>({});
-  const [testingTelegram, setTestingTelegram] = useState(false);
-  const [telegramStatus, setTelegramStatus] = useState<{ ok: boolean; error?: string } | null>(null);
 
-  const { data: apiSignals = [], error, isLoading, mutate } = useSWR<Signal[]>(
+  const { data: apiSignals = [], error, isLoading } = useSWR<Signal[]>(
     "/api/signals",
     fetcher,
     {
@@ -55,24 +53,6 @@ export default function Dashboard() {
     setMounted(true);
   }, []);
 
-  const handleRefresh = async () => {
-    await mutate();
-  };
-
-  const handleTestTelegram = async () => {
-    setTestingTelegram(true);
-    setTelegramStatus(null);
-    try {
-      const res = await fetch("/api/test-telegram", { method: "POST" });
-      const json = await res.json();
-      setTelegramStatus(json);
-    } catch (err) {
-      setTelegramStatus({ ok: false, error: String(err) });
-    } finally {
-      setTestingTelegram(false);
-    }
-  };
-
   if (!mounted) return null;
 
   const visibleSignals = Object.values(signalCache);
@@ -82,38 +62,7 @@ export default function Dashboard() {
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="mb-12">
-          <div className="flex items-center justify-between mb-6">
-            <h1 className="text-3xl font-bold text-gray-100">Market Overview</h1>
-            <div className="flex gap-3">
-              <button
-                onClick={handleRefresh}
-                disabled={isLoading}
-                className="px-4 py-2 bg-blue-900 hover:bg-blue-800 disabled:bg-gray-700 text-gray-200 rounded text-sm font-medium transition-colors"
-              >
-                {isLoading ? "Refreshing..." : "Refresh"}
-              </button>
-              <button
-                onClick={handleTestTelegram}
-                disabled={testingTelegram}
-                className="px-4 py-2 bg-purple-900 hover:bg-purple-800 disabled:bg-gray-700 text-gray-200 rounded text-sm font-medium transition-colors"
-              >
-                {testingTelegram ? "Testing..." : "Test Telegram"}
-              </button>
-            </div>
-          </div>
-          
-          {/* Telegram Status */}
-          {telegramStatus && (
-            <div className={`p-3 rounded text-sm ${
-              telegramStatus.ok
-                ? "bg-green-950/30 border border-green-700 text-green-300"
-                : "bg-red-950/30 border border-red-700 text-red-300"
-            }`}>
-              {telegramStatus.ok
-                ? "✓ Telegram bot is connected and working"
-                : `✗ Telegram error: ${telegramStatus.error}`}
-            </div>
-          )}
+          <h1 className="text-3xl font-bold text-gray-100 mb-2">Market Overview</h1>
         </div>
 
         {/* Status Messages */}
