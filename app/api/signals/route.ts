@@ -1,20 +1,22 @@
 import { NextResponse } from "next/server";
-import { SYMBOLS, createSignal } from "@/lib/strategy-core";
+import { SYMBOLS } from "@/lib/strategy-core";
+import { evaluateSignal } from "@/lib/signal-engine";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 /**
  * LIVE STRATEGY API - Early Entry Mode v2
- * Computes signals live, applies hold rules
- * Returns clean signal data with state and entry information
+ * 
+ * CRITICAL: Uses unified signal-engine.ts
+ * This is the ONLY place signals are computed
  */
 export async function GET() {
   try {
     console.log("[API/SIGNALS] Computing live strategy for all symbols");
     
     const signals = await Promise.all(
-      SYMBOLS.map(symbol => createSignal(symbol))
+      SYMBOLS.map(symbol => evaluateSignal(symbol))
     );
 
     console.log(`[API/SIGNALS] Computed ${signals.length} live signals`);
