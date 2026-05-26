@@ -11,9 +11,11 @@ const fetcher = (url: string) => fetch(url, { cache: "no-store" }).then(res => {
 
 export default function Dashboard() {
   const [mounted, setMounted] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
 
   // SWR with NO caching - always fresh from API
-  const { data: signals = [], error, isLoading } = useSWR<SignalViewModel[]>(
+  const { data: signals = [], error, isLoading, mutate } = useSWR<SignalViewModel[]>(
     "/api/signals",
     fetcher,
     {
@@ -39,6 +41,30 @@ export default function Dashboard() {
       console.log(`[v0] ${s.symbol}: state=${s.state}, readiness=${s.readiness_score}, structure=${s.structure_15m}`);
     });
   }, [signals]);
+
+  const handleRefreshSignals = async () => {
+    setIsRefreshing(true);
+    try {
+      await mutate(); // Trigger SWR refetch
+    } catch (err) {
+      console.error("[v0] Refresh error:", err);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
+  const handleTestTelegram = async () => {
+    setIsTesting(true);
+    try {
+      const res = await fetch("/api/test-telegram", { method: "POST" });
+      const result = await res.json();
+      alert(result.ok ? "✓ Test alert sent!" : `✗ Error: ${result.error || "Unknown error"}`);
+    } catch (err) {
+      alert(`✗ Error: ${String(err)}`);
+    } finally {
+      setIsTesting(false);
+    }
+  };
 
   if (!mounted) return <div style={{ padding: "20px", color: "#9ca3af" }}>Loading...</div>;
   if (error) return <div style={{ padding: "20px", color: "#ff1744" }}>Error: {String(error)}</div>;
@@ -73,7 +99,7 @@ export default function Dashboard() {
     <div style={{ backgroundColor: "#000", color: "#e5e7eb", minHeight: "100vh", padding: "24px", fontFamily: "system-ui, sans-serif" }}>
       {/* HEADER */}
       <div style={{ marginBottom: "32px", borderBottom: "1px solid #2a2a2a", paddingBottom: "20px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px", gap: "16px" }}>
           <div>
             <p style={{ margin: "0 0 8px 0", fontSize: "32px", fontWeight: "bold", color: "#fff" }}>Trading Signals</p>
             <p style={{ margin: 0, color: "#9ca3af", fontSize: "13px" }} suppressHydrationWarning>
@@ -84,6 +110,54 @@ export default function Dashboard() {
                 ⚠️ {error}
               </p>
             )}
+          </div>
+          
+          {/* CONTROL BUTTONS */}
+          <div style={{ display: "flex", gap: "8px", flexShrink: 0 }}>
+            <button
+              onClick={handleRefreshSignals}
+              disabled={isRefreshing}
+              style={{
+                padding: "8px 16px",
+                backgroundColor: "#00d4ff",
+                color: "#000",
+                border: "none",
+                borderRadius: "6px",
+                cursor: isRefreshing ? "not-allowed" : "pointer",
+                opacity: isRefreshing ? 0.6 : 1,
+                fontSize: "13px",
+                fontWeight: "600",
+                transition: "opacity 0.2s",
+              }}
+            >
+              {isRefreshing ? "Refreshing..." : "Refresh Signals"}
+            </button>
+            <button
+              onClick={handleTestTelegram}
+              disabled={isTesting}
+              style={{
+                padding: "8px 16px",
+                backgroundColor: "transparent",
+                color: "#9ca3af",
+                border: "1px solid #2a2a2a",
+                borderRadius: "6px",
+                cursor: isTesting ? "not-allowed" : "pointer",
+                opacity: isTesting ? 0.6 : 1,
+                fontSize: "13px",
+                fontWeight: "600",
+                transition: "opacity 0.2s, color 0.2s",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = "#fff";
+                e.currentTarget.style.borderColor = "#555";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = "#9ca3af";
+                e.currentTarget.style.borderColor = "#2a2a2a";
+              }}
+            >
+              {isTesting ? "Testing..." : "Test Telegram"}
+            </button>
           </div>
         </div>
 
@@ -114,8 +188,13 @@ export default function Dashboard() {
       {/* SYMBOL CARDS */}
       <div style={{ marginBottom: "32px" }}>
         <h2 style={{ marginBottom: "16px", fontSize: "18px", fontWeight: "600", color: "#fff" }}>Market Overview</h2>
-        {signals.length === 0 ? (
-          <p style={{ color: "#9ca3af" }}>Waiting for market data...</p>
+        {isLoading && signals.length === 0 ? (
+          <div style={{ color: "#9ca3af", fontSize: "14px" }}>
+            <div style={{ animation: "pulse 2s infinite" }}>Loading market signals from API...</div>
+            <div style={{ marginTop: "12px", fontSize: "12px" }}>Fetching from /api/signals...</div>
+          </div>
+        ) : signals.length === 0 ? (
+          <p style={{ color: "#9ca3af" }}>No signals available. API returned empty array.</p>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "16px" }}>
             {signals.map((signal) => {
@@ -139,6 +218,11 @@ export default function Dashboard() {
                     padding: "16px",
                   }}
                 >
+                  {/* DEBUG STATE LINE */}
+                  <div style={{ fontSize: "9px", color: "#666", marginBottom: "8px", fontFamily: "monospace" }}>
+                    DEBUG STATE: {signal.state} | readiness: {safeReadiness}% | structure: {signal.structure_15m} | trend: {signal.trend_4h}
+                  </div>
+
                   {/* HEADER */}
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "16px" }}>
                     <div>
