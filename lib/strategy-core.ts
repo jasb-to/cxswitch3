@@ -241,14 +241,18 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
   let state: TradeState;
   let readiness_score = minReadiness;
 
-  if (confluenceScore >= 75 && structure === "Breakout" && trend !== "Neutral") {
-    // SNIPER: High confluence + structure confirmed + clear trend
+  if (confluenceScore >= 70 && structure === "Breakout" && trend !== "Neutral") {
+    // SNIPER: High confluence + breakout structure + clear trend
     state = "SNIPER";
     console.log(`[STRATEGY] ${symbol} → SNIPER (confluence=${confluenceScore}, reasons: ${reasons.join(", ")})`);
-  } else if (confluenceScore >= 50 && (structure === "Compression" || structure === "Expansion")) {
-    // BUILDING: Moderate confluence, setup forming
+  } else if (confluenceScore >= 40 && (structure === "Breakout" || structure === "Expansion" || structure === "Compression" || structure === "Reversal")) {
+    // BUILDING: Moderate confluence + any non-range structure = early setup forming
     state = "BUILDING";
     console.log(`[STRATEGY] ${symbol} → BUILDING (confluence=${confluenceScore}, reasons: ${reasons.join(", ")})`);
+  } else if (confluenceScore >= 25 && (trend !== "Neutral")) {
+    // BUILDING: Borderline setup (25-40 confluence) with trend direction
+    state = "BUILDING";
+    console.log(`[STRATEGY] ${symbol} → BUILDING (confluence=${confluenceScore}, early-stage, reasons: ${reasons.join(", ")})`);
   } else {
     // DO_NOT_TRADE: Weak confluence or conflicting signals
     state = "DO_NOT_TRADE";
