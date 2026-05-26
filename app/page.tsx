@@ -243,9 +243,14 @@ export default function Dashboard() {
                           marginBottom: "6px",
                         }}
                       >
-                        {signal.state}
+                        {signal.state} {signal.hold_remaining_ms && signal.hold_remaining_ms > 0 ? "(locked)" : ""}
                       </div>
-                      <p style={{ margin: 0, fontSize: "11px", color: "#9ca3af", lineHeight: "1.4", maxWidth: "140px" }}>
+                      {signal.hold_remaining_ms && signal.hold_remaining_ms > 0 && (
+                        <p style={{ margin: "4px 0 0 0", fontSize: "10px", color: "#ff9100" }}>
+                          Hold: {Math.ceil(signal.hold_remaining_ms / 1000)}s remaining
+                        </p>
+                      )}
+                      <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "#9ca3af", lineHeight: "1.4", maxWidth: "140px" }}>
                         {signal.reason || "No trade context"}
                       </p>
                     </div>

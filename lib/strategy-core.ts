@@ -30,6 +30,10 @@ export interface Signal {
   confidence?: number;
   reason?: string;
   
+  // Hold state fields (UI display)
+  hold_until?: number; // Timestamp when hold expires (0 or undefined = no hold)
+  hold_remaining_ms?: number; // Milliseconds remaining on hold
+  
   updated_at: string;
 }
 
@@ -347,16 +351,28 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
 
 /**
  * Create a complete signal with Kraken prices and market context
- * Single source of truth - no simulation, no view-model transform
+ * Applies hold rules for state inertia (prevents flickering)
  */
 export async function createSignal(symbol: string): Promise<Signal> {
+  const { applyHoldRules } = await import("./persistent-store");
+  
   const price = await getKrakenTicker(symbol);
   const marketContext = evaluateMarket(symbol, price);
+
+  // Apply hold rules to the evaluated state
+  const { finalState, holdRemaining } = await applyHoldRules(
+    symbol,
+    marketContext.state,
+    marketContext.readiness_score
+  );
 
   const signal: Signal = {
     symbol,
     price,
     ...marketContext,
+    state: finalState, // Use hold-adjusted state
+    hold_until: holdRemaining > 0 ? Date.now() + holdRemaining : 0,
+    hold_remaining_ms: holdRemaining,
     updated_at: new Date().toISOString(),
   };
 

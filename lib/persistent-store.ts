@@ -1,5 +1,5 @@
 import { Redis } from "@upstash/redis";
-import type { Signal } from "./strategy-core";
+import type { Signal, TradeState } from "./strategy-core";
 
 const redis = new Redis({
   url: process.env.KV_REST_API_URL || "",
@@ -8,8 +8,162 @@ const redis = new Redis({
 
 const SIGNALS_KEY = "signals:current";
 const COOLDOWN_KEY_PREFIX = "telegram:cooldown:";
+const HOLD_STATE_KEY_PREFIX = "hold:state:";
 const LAST_CRON_KEY = "cron:last_execution";
 const REQUEST_DEDUP_KEY_PREFIX = "request:dedup:";
+
+const HOLD_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Signal Hold State - persisted per symbol
+ * Prevents state flickering by adding inertia
+ */
+export interface SignalHoldState {
+  symbol: string;
+  state: TradeState;
+  lastState: TradeState;
+  lastChangeTimestamp: number;
+  holdUntil: number;
+  confidence: number;
+  sniper_confirmed_at?: number; // When SNIPER was confirmed
+}
+
+/**
+ * Get current hold state for a symbol
+ */
+export async function getHoldState(symbol: string): Promise<SignalHoldState | null> {
+  try {
+    const data = await redis.get(`${HOLD_STATE_KEY_PREFIX}${symbol}`);
+    if (!data) return null;
+    return data as SignalHoldState;
+  } catch (error) {
+    console.error(`[STORE] Error getting hold state for ${symbol}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Set hold state for a symbol (persists for 30 minutes to outlive any hold)
+ */
+export async function setHoldState(state: SignalHoldState): Promise<void> {
+  try {
+    await redis.set(`${HOLD_STATE_KEY_PREFIX}${state.symbol}`, state, { ex: 1800 }); // 30 min TTL
+  } catch (error) {
+    console.error(`[STORE] Error setting hold state for ${state.symbol}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Apply hold rule to an evaluated state
+ * Returns the actual state to use based on hold rules
+ */
+export async function applyHoldRules(
+  symbol: string,
+  evaluatedState: TradeState,
+  evaluatedConfidence: number,
+  now: number = Date.now()
+): Promise<{ finalState: TradeState; holdRemaining: number }> {
+  const holdState = await getHoldState(symbol);
+  
+  // No hold state exists yet
+  if (!holdState) {
+    // Initialize hold state
+    const newHoldState: SignalHoldState = {
+      symbol,
+      state: evaluatedState,
+      lastState: evaluatedState,
+      lastChangeTimestamp: now,
+      holdUntil: evaluatedState !== "DO_NOT_TRADE" ? now + HOLD_DURATION_MS : 0,
+      confidence: evaluatedConfidence,
+      ...(evaluatedState === "SNIPER" ? { sniper_confirmed_at: now } : {}),
+    };
+    await setHoldState(newHoldState);
+    return { finalState: evaluatedState, holdRemaining: 0 };
+  }
+
+  const holdRemaining = Math.max(0, holdState.holdUntil - now);
+  const isHoldActive = holdRemaining > 0;
+
+  console.log(`[HOLD] ${symbol}: current=${holdState.state}, evaluated=${evaluatedState}, holdActive=${isHoldActive}, holdRemaining=${holdRemaining}ms`);
+
+  // SNIPER LOCK - Never downgrade during hold
+  if (holdState.state === "SNIPER" && isHoldActive) {
+    if (evaluatedState !== "SNIPER") {
+      console.log(`[HOLD] ${symbol} locked in SNIPER (hold expires in ${holdRemaining}ms)`);
+      return { finalState: "SNIPER", holdRemaining };
+    }
+    // SNIPER remains, refresh hold
+    const updated: SignalHoldState = {
+      ...holdState,
+      confidence: Math.max(holdState.confidence, evaluatedConfidence),
+    };
+    await setHoldState(updated);
+    return { finalState: "SNIPER", holdRemaining };
+  }
+
+  // BUILDING HOLD - Can upgrade to SNIPER immediately, cannot downgrade
+  if (holdState.state === "BUILDING" && isHoldActive) {
+    if (evaluatedState === "SNIPER") {
+      // Upgrade to SNIPER
+      const updated: SignalHoldState = {
+        symbol,
+        state: "SNIPER",
+        lastState: "BUILDING",
+        lastChangeTimestamp: now,
+        holdUntil: now + HOLD_DURATION_MS,
+        confidence: evaluatedConfidence,
+        sniper_confirmed_at: now,
+      };
+      await setHoldState(updated);
+      console.log(`[HOLD] ${symbol} upgraded: BUILDING → SNIPER`);
+      return { finalState: "SNIPER", holdRemaining: 0 };
+    }
+    if (evaluatedState === "DO_NOT_TRADE") {
+      // Cannot downgrade during hold
+      console.log(`[HOLD] ${symbol} locked in BUILDING (hold expires in ${holdRemaining}ms)`);
+      return { finalState: "BUILDING", holdRemaining };
+    }
+    // BUILDING remains
+    return { finalState: "BUILDING", holdRemaining };
+  }
+
+  // Hold expired or no active hold
+  if (evaluatedState === holdState.state) {
+    // State unchanged
+    return { finalState: evaluatedState, holdRemaining: 0 };
+  }
+
+  // State changed (hold expired or DO_NOT_TRADE to BUILDING transition)
+  if (evaluatedState !== "DO_NOT_TRADE") {
+    // Entering BUILDING or SNIPER, apply new hold
+    const updated: SignalHoldState = {
+      symbol,
+      state: evaluatedState,
+      lastState: holdState.state,
+      lastChangeTimestamp: now,
+      holdUntil: now + HOLD_DURATION_MS,
+      confidence: evaluatedConfidence,
+      ...(evaluatedState === "SNIPER" ? { sniper_confirmed_at: now } : {}),
+    };
+    await setHoldState(updated);
+    console.log(`[HOLD] ${symbol} transitioned: ${holdState.state} → ${evaluatedState}`);
+    return { finalState: evaluatedState, holdRemaining: 0 };
+  }
+
+  // Transitioning to DO_NOT_TRADE (no hold)
+  const updated: SignalHoldState = {
+    symbol,
+    state: "DO_NOT_TRADE",
+    lastState: holdState.state,
+    lastChangeTimestamp: now,
+    holdUntil: 0,
+    confidence: evaluatedConfidence,
+  };
+  await setHoldState(updated);
+  console.log(`[HOLD] ${symbol} released: ${holdState.state} → DO_NOT_TRADE`);
+  return { finalState: "DO_NOT_TRADE", holdRemaining: 0 };
+}
 
 /**
  * Read all current signals from Redis
@@ -18,19 +172,7 @@ const REQUEST_DEDUP_KEY_PREFIX = "request:dedup:";
 export async function readSignals(): Promise<Signal[]> {
   try {
     const data = await redis.get(SIGNALS_KEY);
-    console.log("[STORE/READ] Raw Redis response:", data ? `${(data as any[]).length} items` : "null");
-    if (!data) {
-      console.log("[STORE/READ] No data in Redis, returning empty array");
-      return [];
-    }
-    if (!Array.isArray(data)) {
-      console.error("[STORE/READ] Data is not array, got:", typeof data, data);
-      return [];
-    }
-    console.log("[STORE/READ] Returning", data.length, "signals from Redis");
-    data.forEach((s: any) => {
-      console.log(`[STORE/READ] ${s.symbol}: state=${s.state}, readiness=${s.readiness_score}`);
-    });
+    if (!data || !Array.isArray(data)) return [];
     return data;
   } catch (error) {
     console.error("[STORE] Error reading signals:", error);
@@ -39,8 +181,7 @@ export async function readSignals(): Promise<Signal[]> {
 }
 
 /**
- * Write signals to Redis (overwrites existing)
- * Sets 24-hour TTL to prevent stale data
+ * Write signals to Redis
  */
 export async function writeSignals(signals: Signal[]): Promise<void> {
   try {
@@ -122,14 +263,12 @@ export async function setLastCronExecution(timestamp: number): Promise<void> {
 export async function checkAndSetRequestDedup(requestId: string): Promise<boolean> {
   try {
     const existing = await redis.get(`${REQUEST_DEDUP_KEY_PREFIX}${requestId}`);
-    if (existing) {
-      return false; // Duplicate, skip processing
-    }
-    await redis.set(`${REQUEST_DEDUP_KEY_PREFIX}${requestId}`, "1", { ex: 60 }); // 60 sec TTL
-    return true; // First time, process it
+    if (existing) return false;
+    await redis.set(`${REQUEST_DEDUP_KEY_PREFIX}${requestId}`, "1", { ex: 60 });
+    return true;
   } catch (error) {
     console.error(`[STORE] Error checking dedup for ${requestId}:`, error);
-    return true; // On error, allow processing
+    return true;
   }
 }
 
