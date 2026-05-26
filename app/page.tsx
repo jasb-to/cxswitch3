@@ -12,7 +12,7 @@ const fetcher = (url: string) => fetch(url, { cache: "no-store" }).then(res => {
 export default function Dashboard() {
   const [mounted, setMounted] = useState(false);
 
-  const { data: signals = [], error, isLoading, mutate } = useSWR<Signal[]>(
+  const { data: signals = [], error, isLoading } = useSWR<Signal[]>(
     "/api/signals",
     fetcher,
     {
@@ -28,42 +28,23 @@ export default function Dashboard() {
 
   if (!mounted) return null;
 
-  const getStateColor = (state: string) => {
-    switch (state) {
-      case "SNIPER": return "bg-green-950 border-green-600";
-      case "BUILDING": return "bg-amber-950 border-amber-600";
-      case "WATCHING_SHIFT": return "bg-slate-900 border-slate-700";
-      default: return "bg-slate-900 border-slate-700";
-    }
-  };
-
-  const getStateBadge = (state: string) => {
-    switch (state) {
-      case "SNIPER": return "bg-green-600 text-white";
-      case "BUILDING": return "bg-amber-600 text-white";
-      case "WATCHING_SHIFT": return "bg-slate-700 text-slate-300";
-      default: return "bg-slate-700 text-slate-300";
-    }
-  };
-
   return (
-    <div className="min-h-screen bg-slate-950 text-white p-8">
+    <div className="min-h-screen bg-black text-gray-300 p-8">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-4xl font-bold mb-2">Trading Signals</h1>
-          <p className="text-slate-400">Early Entry Mode v2 - Structural Shift Detection</p>
+        <div className="mb-12">
+          <h1 className="text-3xl font-bold text-gray-100 mb-2">Market Overview</h1>
         </div>
 
         {/* Status Messages */}
         {error && (
-          <div className="mb-6 p-4 bg-red-900/20 border border-red-600 rounded text-red-300">
+          <div className="mb-6 p-4 bg-red-950/30 border border-red-700 rounded text-red-300 text-sm">
             Error: {error.message}
           </div>
         )}
 
         {isLoading && (
-          <div className="mb-6 p-4 bg-slate-900 border border-slate-700 rounded text-slate-300">
+          <div className="mb-6 p-4 bg-gray-900 border border-gray-700 rounded text-gray-400 text-sm">
             Loading signals...
           </div>
         )}
@@ -78,7 +59,7 @@ export default function Dashboard() {
         )}
 
         {signals.length === 0 && !isLoading && (
-          <div className="text-center py-12 text-slate-500">
+          <div className="text-center py-12 text-gray-600">
             No signals available
           </div>
         )}
@@ -88,128 +69,158 @@ export default function Dashboard() {
 }
 
 function SignalCard({ signal }: { signal: Signal }) {
-  const getStateColor = (state: string) => {
-    switch (state) {
-      case "SNIPER": return "bg-green-950 border-green-600";
-      case "BUILDING": return "bg-amber-950 border-amber-600";
-      case "WATCHING_SHIFT": return "bg-slate-900 border-slate-700";
-      default: return "bg-slate-900 border-slate-700";
+  const getBorderColor = () => {
+    if (signal.direction === "LONG") return "border-l-4 border-l-green-500";
+    if (signal.direction === "SHORT") return "border-l-4 border-l-red-500";
+    
+    switch (signal.state) {
+      case "SNIPER": return "border-l-4 border-l-red-500";
+      case "BUILDING": return "border-l-4 border-l-amber-500";
+      case "WATCHING_SHIFT": return "border-l-4 border-l-cyan-500";
+      default: return "border-l-4 border-l-gray-600";
     }
   };
 
-  const getStateBadge = (state: string) => {
-    switch (state) {
-      case "SNIPER": return "bg-green-600";
-      case "BUILDING": return "bg-amber-600";
-      case "WATCHING_SHIFT": return "bg-slate-700";
-      default: return "bg-slate-700";
+  const getStateBadgeStyle = () => {
+    switch (signal.state) {
+      case "SNIPER": return "bg-red-600 text-white font-bold px-3 py-1 rounded text-sm";
+      case "BUILDING": return "bg-amber-500 text-black font-bold px-3 py-1 rounded text-sm";
+      case "WATCHING_SHIFT": return "bg-cyan-600 text-white font-bold px-3 py-1 rounded text-sm";
+      default: return "bg-gray-600 text-white font-bold px-3 py-1 rounded text-sm";
     }
   };
 
-  const getBiasColor = (bias: string) => {
-    if (bias === "Bullish") return "text-green-400";
-    if (bias === "Bearish") return "text-red-400";
-    return "text-slate-400";
+  const getReadinessColor = () => {
+    if (signal.confidence >= 75) return "bg-green-500";
+    if (signal.confidence >= 55) return "bg-amber-500";
+    if (signal.confidence >= 40) return "bg-cyan-500";
+    return "bg-gray-600";
+  };
+
+  const getReadinessTextColor = () => {
+    if (signal.confidence >= 75) return "text-green-400";
+    if (signal.confidence >= 55) return "text-amber-400";
+    if (signal.confidence >= 40) return "text-cyan-400";
+    return "text-gray-400";
   };
 
   return (
-    <div className={`border rounded-lg p-6 ${getStateColor(signal.state)}`}>
-      {/* Header */}
+    <div className={`bg-gray-950 border border-gray-800 rounded-lg p-6 ${getBorderColor()}`}>
+      {/* Header with Symbol and Badge */}
       <div className="flex items-start justify-between mb-6">
         <div>
-          <h2 className="text-3xl font-bold mb-1">{signal.symbol}</h2>
-          <p className="text-sm text-slate-400">${signal.price.toFixed(2)}</p>
+          <h2 className="text-2xl font-bold text-gray-100 mb-1">{signal.symbol}</h2>
+          <p className="text-sm text-gray-500">Price: ${signal.price.toFixed(2)}</p>
         </div>
-        <span className={`${getStateBadge(signal.state)} text-white text-sm font-bold px-3 py-1 rounded`}>
+        <span className={getStateBadgeStyle()}>
           {signal.state}
         </span>
       </div>
 
-      {/* Market Context - 3 Layers */}
-      <div className="space-y-4 mb-6">
-        {/* 4H Context */}
-        <div className="border-l-2 border-slate-600 pl-3">
-          <div className="text-xs text-slate-500 font-mono">4H BIAS</div>
-          <div className="flex items-center gap-2 mt-1">
-            <span className={`font-bold ${getBiasColor(signal.bias_4h)}`}>
-              {signal.bias_4h}
-            </span>
-            <span className="text-xs text-slate-400">{signal.structure_4h}</span>
-          </div>
-        </div>
-
-        {/* 15M Structure */}
-        <div className="border-l-2 border-slate-600 pl-3">
-          <div className="text-xs text-slate-500 font-mono">15M STRUCTURE</div>
-          <div className="text-sm text-slate-300 mt-1">{signal.structure_15m}</div>
-          {signal.shift_type !== "None" && (
-            <div className="text-xs text-amber-400 mt-1">→ {signal.shift_type}</div>
-          )}
-        </div>
-
-        {/* 5M Trigger */}
-        <div className="border-l-2 border-slate-600 pl-3">
-          <div className="text-xs text-slate-500 font-mono">5M TRIGGER</div>
-          <div className="text-sm text-slate-300 mt-1">{signal.trigger_5m}</div>
+      {/* 4H Trend */}
+      <div className="mb-5">
+        <div className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">4H Trend</div>
+        <div className="flex justify-between items-center">
+          <span className={`font-bold ${
+            signal.bias_4h === "Bullish" ? "text-green-400" :
+            signal.bias_4h === "Bearish" ? "text-red-400" :
+            "text-gray-400"
+          }`}>
+            {signal.bias_4h}
+          </span>
+          <div className="text-xs text-gray-500">{signal.structure_4h}</div>
         </div>
       </div>
 
-      {/* Entry Point (if available) */}
-      {signal.entry !== undefined && (
-        <div className="bg-yellow-900/30 border border-yellow-600/50 rounded p-4 mb-6">
-          <div className="text-xs text-yellow-400 font-bold mb-2">ENTRY ZONE</div>
-          <div className="text-2xl font-bold text-yellow-300 mb-1">${signal.entry.toFixed(2)}</div>
-          <div className="text-xs text-slate-400">{signal.entry_description}</div>
-          <div className="mt-2 text-xs">
-            <span className="text-slate-400">Current vs Entry: </span>
-            <span className={signal.price > signal.entry ? "text-green-400" : "text-red-400"}>
-              ${(signal.price - signal.entry).toFixed(2)}
-            </span>
-          </div>
+      {/* 15M Structure */}
+      <div className="mb-5">
+        <div className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">15M Structure</div>
+        <div className={`font-bold ${
+          signal.structure_15m.includes("Forming") || signal.structure_15m.includes("Shift") ? "text-amber-400" :
+          signal.structure_15m.includes("Compressing") ? "text-amber-400" :
+          signal.structure_15m.includes("Expanding") ? "text-green-400" :
+          "text-gray-400"
+        }`}>
+          {signal.structure_15m}
         </div>
-      )}
+      </div>
+
+      {/* Macro Bias */}
+      <div className="mb-6">
+        <div className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Macro Bias</div>
+        <div className={`font-bold ${
+          signal.bias_4h === "Bullish" ? "text-green-400" :
+          signal.bias_4h === "Bearish" ? "text-red-400" :
+          "text-gray-400"
+        }`}>
+          {signal.bias_4h}
+        </div>
+      </div>
+
+      {/* Readiness Bar */}
+      <div className="mb-6">
+        <div className="flex justify-between items-center mb-2">
+          <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Readiness</div>
+          <span className={`text-sm font-bold ${getReadinessTextColor()}`}>{signal.confidence}%</span>
+        </div>
+        <div className="w-full bg-gray-800 rounded-full h-2">
+          <div
+            className={`h-2 rounded-full ${getReadinessColor()} transition-all`}
+            style={{ width: `${signal.confidence}%` }}
+          />
+        </div>
+      </div>
 
       {/* Trade Setup (if direction set) */}
       {signal.direction && (
-        <div className="space-y-3 mb-6">
-          <div className={`text-sm font-bold px-3 py-2 rounded ${
-            signal.direction === "LONG" ? "bg-green-600/30 text-green-300" : "bg-red-600/30 text-red-300"
-          }`}>
-            {signal.direction} Trade
+        <div className="mb-6 pb-6 border-t border-gray-800">
+          <div className="text-xs font-bold text-gray-500 uppercase tracking-wider mt-4 mb-3">Trade Setup</div>
+          
+          <div className="mb-4">
+            <div className="text-xs text-gray-500 mb-1">Direction:</div>
+            <div className={`text-lg font-bold ${
+              signal.direction === "LONG" ? "text-green-400" : "text-red-400"
+            }`}>
+              {signal.direction}
+            </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-2 text-sm">
-            <div className="bg-slate-800/50 p-2 rounded">
-              <div className="text-xs text-slate-500">SL</div>
-              <div className="font-mono text-red-400">${signal.stopLoss?.toFixed(2)}</div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <div className="text-xs text-gray-500 mb-1">Entry:</div>
+              <div className="font-mono text-sm text-gray-300 font-bold">${signal.entry?.toFixed(2)}</div>
             </div>
-            <div className="bg-slate-800/50 p-2 rounded">
-              <div className="text-xs text-slate-500">TP</div>
-              <div className="font-mono text-green-400">${signal.takeProfit?.toFixed(2)}</div>
+            <div>
+              <div className="text-xs text-gray-500 mb-1">SL:</div>
+              <div className="font-mono text-sm text-red-400 font-bold">${signal.stopLoss?.toFixed(2)}</div>
             </div>
-            <div className="bg-slate-800/50 p-2 rounded">
-              <div className="text-xs text-slate-500">R:R</div>
-              <div className="font-mono text-amber-400">{signal.riskReward?.toFixed(2)}</div>
+            <div>
+              <div className="text-xs text-gray-500 mb-1">TP:</div>
+              <div className="font-mono text-sm text-green-400 font-bold">${signal.takeProfit?.toFixed(2)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-gray-500 mb-1">RR:</div>
+              <div className="font-mono text-sm text-amber-400 font-bold">{signal.riskReward?.toFixed(2)}</div>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <div className="text-xs text-gray-500 mb-1">Confidence:</div>
+            <div className={`font-bold ${
+              signal.confidence >= 75 ? "text-green-400" :
+              signal.confidence >= 55 ? "text-amber-400" :
+              "text-cyan-400"
+            }`}>
+              {signal.confidence}%
             </div>
           </div>
         </div>
       )}
 
-      {/* Metadata */}
-      <div className="border-t border-slate-700 pt-3 text-xs text-slate-400 space-y-1">
-        <div>Confidence: <span className="text-slate-300 font-mono">{signal.confidence}%</span></div>
-        {signal.hold_remaining_ms && signal.hold_remaining_ms > 0 && (
-          <div className="text-amber-400">Hold: {(signal.hold_remaining_ms / 1000 / 60).toFixed(1)}m</div>
-        )}
-        <div className="text-slate-500">{new Date(signal.updated_at).toLocaleTimeString()}</div>
+      {/* Timestamp */}
+      <div className="text-xs text-gray-600 text-center">
+        Updated: {new Date(signal.updated_at).toLocaleString()}
       </div>
-
-      {/* Reason */}
-      {signal.reason && (
-        <div className="mt-3 p-2 bg-slate-800/50 rounded text-xs text-slate-400 italic">
-          {signal.reason}
-        </div>
-      )}
     </div>
   );
 }
