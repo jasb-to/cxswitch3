@@ -12,6 +12,15 @@ export interface Signal {
   symbol: string;
   price: number;
   state: TradeState;
+  
+  // Market context (always present - used to render even DO_NOT_TRADE states)
+  trend_4h: "Bullish" | "Bearish" | "Neutral";
+  structure_15m: "Breakout" | "Compression" | "Expansion" | "Reversal" | "Range";
+  macro_bias: "Bullish" | "Bearish" | "Neutral";
+  momentum_percent: number; // Current momentum as percentage
+  volatility_percent: number; // Current volatility as percentage
+  
+  // Trade details (optional, only for SNIPER)
   direction?: "LONG" | "SHORT";
   entry?: number;
   stopLoss?: number;
@@ -19,6 +28,7 @@ export interface Signal {
   riskReward?: number;
   confidence?: number;
   reason?: string;
+  
   updated_at: string;
 }
 
@@ -184,13 +194,12 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
   if (!price || price <= 0) {
     return { 
       state: "DO_NOT_TRADE",
-      details: {
-        trend_4h: "Neutral",
-        structure_15m: "Range",
-        macro_bias: "Neutral",
-        readiness_score: 0,
-        reason: "Invalid price data",
-      }
+      trend_4h: "Neutral",
+      structure_15m: "Range",
+      macro_bias: "Neutral",
+      momentum_percent: 0,
+      volatility_percent: 0,
+      reason: "Invalid price data",
     };
   }
 
@@ -234,25 +243,32 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
   if (volatility > 0.5 && volatility < 2.0) confluenceScore += 15, reasons.push("Healthy volatility");
   if (volatility > 2.0) confluenceScore += 10, reasons.push("High volatility expansion");
 
-  // Confluence threshold logic
-  const minReadiness = Math.min(100, confluenceScore);
+  // Confluence threshold logic - FINAL 3-STATE MODEL
+  // NO sub-states, NO hidden tiers, NO simulation
   
-  // STATE TRANSITIONS
   let state: TradeState;
-  let readiness_score = minReadiness;
 
-  if (confluenceScore >= 75 && structure === "Breakout" && trend !== "Neutral") {
-    // SNIPER: High confluence + structure confirmed + clear trend
+  if (confluenceScore >= 70 && structure === "Breakout" && trend !== "Neutral") {
+    // SNIPER: FULL EXECUTION CONDITION
+    // Clear directional structure + momentum aligned + strong confluence
     state = "SNIPER";
-    console.log(`[STRATEGY] ${symbol} → SNIPER (confluence=${confluenceScore}, reasons: ${reasons.join(", ")})`);
-  } else if (confluenceScore >= 50 && (structure === "Compression" || structure === "Expansion")) {
-    // BUILDING: Moderate confluence, setup forming
+    console.log(`[STRATEGY] ${symbol} → SNIPER (confluence=${confluenceScore}, structure=${structure}, trend=${trend})`);
+  } else if (
+    (structure === "Reversal" || structure === "Expansion" || structure === "Breakout") &&
+    (confluenceScore >= 35 || absMomentum > 0.3) &&
+    trend !== "Neutral" &&
+    volatility > 0.3
+  ) {
+    // BUILDING: EARLY SETUP FORMING (EDGE STATE FOR EARLY ENTRIES)
+    // This is where you "watch and stage" - structure developing + momentum emerging
+    // Key: This triggers when setup is FORMING, not when full execution is ready
     state = "BUILDING";
-    console.log(`[STRATEGY] ${symbol} → BUILDING (confluence=${confluenceScore}, reasons: ${reasons.join(", ")})`);
+    console.log(`[STRATEGY] ${symbol} → BUILDING (confluence=${confluenceScore}, structure=${structure}, momentum=${absMomentum.toFixed(2)}%)`);
   } else {
-    // DO_NOT_TRADE: Weak confluence or conflicting signals
+    // DO_NOT_TRADE: MARKET NOT READY
+    // Compression, range, or unclear structure + low/conflicting confluence
     state = "DO_NOT_TRADE";
-    console.log(`[STRATEGY] ${symbol} → DO_NOT_TRADE (confluence=${confluenceScore}, reasons: ${reasons.join(", ")})`);
+    console.log(`[STRATEGY] ${symbol} → DO_NOT_TRADE (confluence=${confluenceScore}, structure=${structure})`);
   }
 
   // Generate SNIPER details only when triggered
@@ -287,46 +303,44 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
 
     return {
       state,
-      details: {
-        trend_4h: trend,
-        structure_15m: structure,
-        macro_bias,
-        readiness_score: minReadiness,
-        direction,
-        entry,
-        stopLoss: parseFloat(sl.toFixed(2)),
-        takeProfit: parseFloat(tp.toFixed(2)),
-        riskReward: parseFloat(rr.toFixed(2)),
-        confidence,
-        reason,
-      },
+      trend_4h: trend,
+      structure_15m: structure,
+      macro_bias,
+      momentum_percent: momentum,
+      volatility_percent: volatility,
+      direction,
+      entry,
+      stopLoss: parseFloat(sl.toFixed(2)),
+      takeProfit: parseFloat(tp.toFixed(2)),
+      riskReward: parseFloat(rr.toFixed(2)),
+      confidence,
+      reason,
     };
   }
 
   return { 
     state,
-    details: {
-      trend_4h: trend,
-      structure_15m: structure,
-      macro_bias,
-      readiness_score: minReadiness,
-      reason: reasons[0] || "Market context",
-    }
+    trend_4h: trend,
+    structure_15m: structure,
+    macro_bias,
+    momentum_percent: momentum,
+    volatility_percent: volatility,
+    reason: reasons[0] || "Market context",
   };
 }
 
 /**
- * Create a complete signal with Kraken prices
+ * Create a complete signal with Kraken prices and market context
+ * Single source of truth - no simulation, no view-model transform
  */
 export async function createSignal(symbol: string): Promise<Signal> {
   const price = await getKrakenTicker(symbol);
-  const { state, details } = evaluateMarket(symbol, price);
+  const marketContext = evaluateMarket(symbol, price);
 
   const signal: Signal = {
     symbol,
     price,
-    state,
-    ...details,
+    ...marketContext,
     updated_at: new Date().toISOString(),
   };
 
