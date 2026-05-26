@@ -1,41 +1,56 @@
 import { NextResponse } from "next/server";
 import { SYMBOLS, createSignal } from "@/lib/strategy-core";
-import { getTelegramCooldown, setTelegramCooldown } from "@/lib/persistent-store";
+import { readSignals, writeSignals, getTelegramCooldown, setTelegramCooldown, healthCheck, getHoldState } from "@/lib/persistent-store";
 import { sendSignalAlert } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const TELEGRAM_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
+const SNIPER_STABILITY_MS = 5 * 60 * 1000; // 5 minutes minimum before alert
 
 /**
- * CRON EXECUTOR - Side effects only
- * Evaluates strategy LIVE to trigger alerts
- * Does NOT write signal state to Redis (that kills BUILDING/SNIPER)
- * ONLY stores Telegram cooldowns
+ * CRON EXECUTOR - With Signal Hold Engine
+ * Respects state holds (no downgrades during hold windows)
+ * Sends alerts only when SNIPER is stable and confirmed
  */
 export async function GET() {
   try {
-    console.log("[CRON] Starting execution cycle (side effects only)");
+    const isHealthy = await healthCheck();
+    if (!isHealthy) {
+      console.error("[CRON] Redis health check failed");
+      return NextResponse.json(
+        { ok: false, error: "Redis not available" },
+        { status: 503 }
+      );
+    }
+
+    console.log("[CRON] Starting execution cycle (with signal hold engine)");
     const results: any[] = [];
+    const previousSignals = await readSignals();
+    const previousMap = new Map(previousSignals.map(s => [s.symbol, s]));
+    const newSignals: any[] = [];
 
     for (const symbol of SYMBOLS) {
-      // Compute strategy LIVE (no cached state)
-      const signal = await createSignal(symbol);
+      const signal = await createSignal(symbol); // Includes hold rule application
+      const previousSignal = previousMap.get(symbol);
+      const previousState = previousSignal?.state;
       
-      console.log(`[CRON] ${symbol}: state=${signal.state}`);
+      newSignals.push(signal);
       
-      // Log SNIPER opportunities
+      console.log(`[CRON] ${symbol}: state=${signal.state}, hold_remaining=${signal.hold_remaining_ms}ms`);
+      
       if (signal.state === "SNIPER" && signal.direction) {
-        console.log(`[CRON] 🎯 SNIPER FOUND: ${symbol} ${signal.direction} @ ${signal.price}`);
-        console.log(`  ENTRY: ${signal.entry} | SL: ${signal.stopLoss} | TP: ${signal.takeProfit}`);
-        console.log(`  RR: ${signal.riskReward} | CONFIDENCE: ${signal.confidence}%`);
+        console.log(`  SNIPER: ${signal.direction} @ ${signal.price}`);
+        console.log(`  Entry: ${signal.entry} | SL: ${signal.stopLoss} | TP: ${signal.takeProfit}`);
+        console.log(`  RR: ${signal.riskReward} | Confidence: ${signal.confidence}%`);
       }
       
       results.push({
         symbol,
         state: signal.state,
         price: signal.price,
+        hold_remaining_ms: signal.hold_remaining_ms,
         ...(signal.state === "SNIPER" && signal.direction ? {
           direction: signal.direction,
           entry: signal.entry,
@@ -46,26 +61,44 @@ export async function GET() {
         } : {}),
       });
 
-      // SIDE EFFECT: Send Telegram alert if SNIPER (with cooldown)
+      // ALERT LOGIC: Only send if SNIPER is stable (confirmed via hold)
       if (signal.state === "SNIPER" && signal.direction) {
-        const lastAlertTime = await getTelegramCooldown(symbol);
+        const holdState = await getHoldState(symbol);
         const now = Date.now();
         
-        if (now - lastAlertTime >= TELEGRAM_COOLDOWN_MS) {
-          console.log(`[ALERT] Sending Telegram alert for ${symbol}`);
-          await sendSignalAlert(signal);
-          await setTelegramCooldown(symbol, now);
+        // Check if SNIPER has been confirmed (hold was initialized when SNIPER was entered)
+        const sniperConfirmedAt = holdState?.sniper_confirmed_at || 0;
+        const sniper_stability = now - sniperConfirmedAt;
+        const is_stable = sniper_stability >= SNIPER_STABILITY_MS;
+        
+        console.log(`[ALERT] ${symbol} SNIPER: stability=${sniper_stability}ms, stable=${is_stable}`);
+        
+        if (is_stable) {
+          const lastAlertTime = await getTelegramCooldown(symbol);
+          
+          if (now - lastAlertTime >= TELEGRAM_COOLDOWN_MS) {
+            console.log(`[ALERT] ✓ Sending Telegram alert for ${symbol}`);
+            await sendSignalAlert(signal);
+            await setTelegramCooldown(symbol, now);
+          } else {
+            const timeRemaining = Math.ceil((TELEGRAM_COOLDOWN_MS - (now - lastAlertTime)) / 1000 / 60);
+            console.log(`[ALERT] Cooldown active (${timeRemaining}m remaining)`);
+          }
         } else {
-          const timeRemaining = Math.ceil((TELEGRAM_COOLDOWN_MS - (now - lastAlertTime)) / 1000 / 60);
-          console.log(`[ALERT] ${symbol} cooldown active (${timeRemaining}m remaining)`);
+          const remaining = Math.ceil((SNIPER_STABILITY_MS - sniper_stability) / 1000);
+          console.log(`[ALERT] Waiting for confirmation (${remaining}s remaining)`);
         }
       }
     }
 
+    // Persist signals to Redis
+    await writeSignals(newSignals);
+
     console.log("[CRON SUMMARY]");
     results.forEach((r) => {
       if (r.state === "SNIPER") {
-        console.log(`${r.symbol} → SNIPER (${r.direction}) $${r.price}`);
+        const holdMs = r.hold_remaining_ms || 0;
+        console.log(`${r.symbol} → SNIPER (${r.direction}) $${r.price} [hold: ${holdMs}ms]`);
       } else {
         console.log(`${r.symbol} → ${r.state}`);
       }
@@ -73,7 +106,7 @@ export async function GET() {
 
     return NextResponse.json({
       ok: true,
-      message: "Cron cycle complete (side effects only, no state writes)",
+      message: "Cron cycle complete (with signal hold engine)",
       results,
     });
   } catch (error) {
@@ -86,6 +119,8 @@ export async function GET() {
 }
 
 export async function POST() {
+  // In production, only Vercel Cron should POST
+  // Return error to discourage manual triggers
   return NextResponse.json(
     { ok: false, error: "Cron endpoint should only be triggered by Vercel Cron" },
     { status: 403 }
