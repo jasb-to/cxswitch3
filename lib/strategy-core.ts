@@ -276,15 +276,30 @@ function evaluateMarket(symbol: string, price: number): Omit<Signal, "symbol" | 
     } else {
       confidence = 45;
     }
-  } else if (
-    (trigger_5m === "Early Break Up" && bias_4h === "Bullish") ||
-    (trigger_5m === "Early Break Down" && bias_4h === "Bearish")
-  ) {
+  // SNIPER: Early momentum-based execution (RELAXED for early entry mode)
+  // Triggers on: (Shift Forming OR Expanding) + (Bullish OR Bearish bias) + Early Break OR Retest
+  const isShiftActive = shift.structure === "Shift Forming" || shift.structure === "Expanding";
+  const isBiasActive = bias_4h !== "Neutral";
+  const isTriggerActive = trigger_5m !== "Flat";
+  
+  if (isShiftActive && isBiasActive && isTriggerActive) {
     state = "SNIPER";
     entry = price;
-    direction = trigger_5m === "Early Break Up" ? "LONG" : "SHORT";
-    confidence = 75;
-  } else {
+    
+    // Direction from bias + trigger alignment
+    if (bias_4h === "Bullish" && (trigger_5m === "Early Break Up" || trigger_5m === "Retest Bullish")) {
+      direction = "LONG";
+      confidence = 75;
+    } else if (bias_4h === "Bearish" && (trigger_5m === "Early Break Down" || trigger_5m === "Retest Bearish")) {
+      direction = "SHORT";
+      confidence = 75;
+    }
+    
+    // Even if direction not aligned, still SNIPER (but no direction set)
+    if (!direction) {
+      confidence = 65; // Lower confidence without direction alignment
+    }
+  }
     state = "WATCHING_SHIFT";
     confidence = Math.max(20, Math.floor(momentumShift ? 35 : 20));
   }

@@ -28,7 +28,8 @@ export interface SignalHoldState {
   holdUntil: number;
   confidence: number;
   sniper_confirmed_at?: number; // When SNIPER was confirmed
-  lockUntil?: number; // Signal lock window - prevents state changes during this period
+  lockUntil?: number; // UI-only: prevents flicker, does NOT block evaluation
+  sniperProbationUntil?: number; // SNIPER probation: minimum cycles before downgrade allowed
 }
 
 /**
@@ -80,12 +81,12 @@ export async function applyHoldRules(
 ): Promise<{ finalState: TradeState; holdRemaining: number }> {
   const holdState = await getHoldState(symbol);
   
-  // SIGNAL LOCK CHECK - If locked, return signal as-is (DO NOT RECOMPUTE)
-  if (holdState && holdState.lockUntil && now < holdState.lockUntil) {
-    const lockRemaining = holdState.lockUntil - now;
-    console.log(`[LOCK] ${symbol} signal locked: ${holdState.state} (${lockRemaining}ms remaining)`);
-    return { finalState: holdState.state, holdRemaining: lockRemaining };
-  }
+  // NOTE: Signal lock is UI-only (prevents flicker in display)
+  // It does NOT block evaluation, state transitions, or event emission
+  // Lock just tells UI to display the last locked state instead of flickering
+  
+  const lockRemaining = holdState?.lockUntil ? Math.max(0, holdState.lockUntil - now) : 0;
+  const lockActive = lockRemaining > 0;
 
   // No hold state exists yet
   if (!holdState) {
