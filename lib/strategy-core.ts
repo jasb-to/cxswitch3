@@ -302,7 +302,7 @@ async function getKrakenTicker(symbol: string): Promise<number> {
  * Create a complete signal with live prices and Early Entry Mode v2 evaluation
  */
 export async function createSignal(symbol: string): Promise<Signal> {
-  const { applyHoldRules } = await import("./persistent-store");
+  const { applyHoldRules, getHoldState } = await import("./persistent-store");
   
   const price = await getKrakenTicker(symbol);
   const marketContext = evaluateMarket(symbol, price);
@@ -313,11 +313,21 @@ export async function createSignal(symbol: string): Promise<Signal> {
     marketContext.confidence || 0
   );
 
+  // Preserve confidence from hold state if HOLD is active
+  let confidence = marketContext.confidence || 0;
+  if (holdRemaining > 0) {
+    const holdState = await getHoldState(symbol);
+    if (holdState) {
+      confidence = holdState.confidence;
+    }
+  }
+
   const signal: Signal = {
     symbol,
     price,
     ...marketContext,
     state: finalState,
+    confidence,
     hold_until: holdRemaining > 0 ? Date.now() + holdRemaining : 0,
     hold_remaining_ms: holdRemaining,
     updated_at: new Date().toISOString(),
