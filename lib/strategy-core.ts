@@ -12,6 +12,15 @@ export interface Signal {
   symbol: string;
   price: number;
   state: TradeState;
+  
+  // Market context (always present - used to render even DO_NOT_TRADE states)
+  trend_4h: "Bullish" | "Bearish" | "Neutral";
+  structure_15m: "Breakout" | "Compression" | "Expansion" | "Reversal" | "Range";
+  macro_bias: "Bullish" | "Bearish" | "Neutral";
+  momentum_percent: number; // Current momentum as percentage
+  volatility_percent: number; // Current volatility as percentage
+  
+  // Trade details (optional, only for SNIPER)
   direction?: "LONG" | "SHORT";
   entry?: number;
   stopLoss?: number;
@@ -19,6 +28,7 @@ export interface Signal {
   riskReward?: number;
   confidence?: number;
   reason?: string;
+  
   updated_at: string;
 }
 
@@ -241,18 +251,14 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
   let state: TradeState;
   let readiness_score = minReadiness;
 
-  if (confluenceScore >= 70 && structure === "Breakout" && trend !== "Neutral") {
-    // SNIPER: High confluence + breakout structure + clear trend
+  if (confluenceScore >= 75 && structure === "Breakout" && trend !== "Neutral") {
+    // SNIPER: High confluence + structure confirmed + clear trend
     state = "SNIPER";
     console.log(`[STRATEGY] ${symbol} → SNIPER (confluence=${confluenceScore}, reasons: ${reasons.join(", ")})`);
-  } else if (confluenceScore >= 40 && (structure === "Breakout" || structure === "Expansion" || structure === "Compression" || structure === "Reversal")) {
-    // BUILDING: Moderate confluence + any non-range structure = early setup forming
+  } else if (confluenceScore >= 50 && (structure === "Compression" || structure === "Expansion")) {
+    // BUILDING: Moderate confluence, setup forming
     state = "BUILDING";
     console.log(`[STRATEGY] ${symbol} → BUILDING (confluence=${confluenceScore}, reasons: ${reasons.join(", ")})`);
-  } else if (confluenceScore >= 25 && (trend !== "Neutral")) {
-    // BUILDING: Borderline setup (25-40 confluence) with trend direction
-    state = "BUILDING";
-    console.log(`[STRATEGY] ${symbol} → BUILDING (confluence=${confluenceScore}, early-stage, reasons: ${reasons.join(", ")})`);
   } else {
     // DO_NOT_TRADE: Weak confluence or conflicting signals
     state = "DO_NOT_TRADE";
@@ -291,46 +297,44 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
 
     return {
       state,
-      details: {
-        trend_4h: trend,
-        structure_15m: structure,
-        macro_bias,
-        readiness_score: minReadiness,
-        direction,
-        entry,
-        stopLoss: parseFloat(sl.toFixed(2)),
-        takeProfit: parseFloat(tp.toFixed(2)),
-        riskReward: parseFloat(rr.toFixed(2)),
-        confidence,
-        reason,
-      },
+      trend_4h: trend,
+      structure_15m: structure,
+      macro_bias,
+      momentum_percent: momentum,
+      volatility_percent: volatility,
+      direction,
+      entry,
+      stopLoss: parseFloat(sl.toFixed(2)),
+      takeProfit: parseFloat(tp.toFixed(2)),
+      riskReward: parseFloat(rr.toFixed(2)),
+      confidence,
+      reason,
     };
   }
 
   return { 
     state,
-    details: {
-      trend_4h: trend,
-      structure_15m: structure,
-      macro_bias,
-      readiness_score: minReadiness,
-      reason: reasons[0] || "Market context",
-    }
+    trend_4h: trend,
+    structure_15m: structure,
+    macro_bias,
+    momentum_percent: momentum,
+    volatility_percent: volatility,
+    reason: reasons[0] || "Market context",
   };
 }
 
 /**
- * Create a complete signal with Kraken prices
+ * Create a complete signal with Kraken prices and market context
+ * Single source of truth - no simulation, no view-model transform
  */
 export async function createSignal(symbol: string): Promise<Signal> {
   const price = await getKrakenTicker(symbol);
-  const { state, details } = evaluateMarket(symbol, price);
+  const marketContext = evaluateMarket(symbol, price);
 
   const signal: Signal = {
     symbol,
     price,
-    state,
-    ...details,
+    ...marketContext,
     updated_at: new Date().toISOString(),
   };
 

@@ -199,7 +199,7 @@ export default function Dashboard() {
                         {signal.state}
                       </div>
                       <p style={{ margin: 0, fontSize: "11px", color: "#9ca3af", lineHeight: "1.4", maxWidth: "140px" }}>
-                        {signal.statusExplanation}
+                        {signal.reason || "No trade context"}
                       </p>
                     </div>
                   </div>
@@ -219,6 +219,20 @@ export default function Dashboard() {
                     <div style={{ marginTop: "8px" }}>
                       <div style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600", marginBottom: "4px" }}>MACRO BIAS</div>
                       <div style={{ fontWeight: "500", color: "#fff" }}>{signal.macro_bias}</div>
+                    </div>
+                  </div>
+
+                  {/* MARKET METRICS */}
+                  <div style={{ fontSize: "12px", lineHeight: "1.6", color: "#e5e7eb", marginBottom: "12px", paddingBottom: "12px", borderBottom: "1px solid #2a2a2a" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                      <div>
+                        <div style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600", marginBottom: "4px" }}>MOMENTUM</div>
+                        <div style={{ fontWeight: "500", color: "#fff" }}>{signal.momentum_percent?.toFixed(2) || "0.00"}%</div>
+                      </div>
+                      <div>
+                        <div style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600", marginBottom: "4px" }}>VOLATILITY</div>
+                        <div style={{ fontWeight: "500", color: "#fff" }}>{signal.volatility_percent?.toFixed(2) || "0.00"}%</div>
+                      </div>
                     </div>
                   </div>
 
@@ -242,31 +256,31 @@ export default function Dashboard() {
                   </div>
 
                   {/* SNIPER DETAILS (IF APPLICABLE) */}
-                  {signal.trade ? (
+                  {signal.direction ? (
                     <div style={{ fontSize: "12px", lineHeight: "1.6", color: "#e5e7eb" }}>
                       <div style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600", marginBottom: "8px" }}>TRADE SETUP</div>
                       <div style={{ marginBottom: "6px" }}>
                         <span style={{ color: "#9ca3af" }}>Direction:</span>{" "}
-                        <span style={{ color: borderColor, fontWeight: "bold" }}>{signal.trade.direction}</span>
+                        <span style={{ color: borderColor, fontWeight: "bold" }}>{signal.direction}</span>
                       </div>
                       <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>Entry:</span> <span style={{ fontWeight: "bold" }}>${signal.trade.entry.toFixed(2)}</span>
+                        <span style={{ color: "#9ca3af" }}>Entry:</span> <span style={{ fontWeight: "bold" }}>${signal.entry?.toFixed(2)}</span>
                       </div>
                       <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>SL:</span> <span style={{ fontWeight: "bold" }}>${signal.trade.sl.toFixed(2)}</span>
+                        <span style={{ color: "#9ca3af" }}>SL:</span> <span style={{ fontWeight: "bold" }}>${signal.stopLoss?.toFixed(2)}</span>
                       </div>
                       <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>TP:</span> <span style={{ fontWeight: "bold" }}>${signal.trade.tp.toFixed(2)}</span>
+                        <span style={{ color: "#9ca3af" }}>TP:</span> <span style={{ fontWeight: "bold" }}>${signal.takeProfit?.toFixed(2)}</span>
                       </div>
                       <div style={{ marginBottom: "6px" }}>
-                        <span style={{ color: "#9ca3af" }}>RR:</span> <span style={{ fontWeight: "bold" }}>{signal.trade.rr.toFixed(2)}</span>
+                        <span style={{ color: "#9ca3af" }}>RR:</span> <span style={{ fontWeight: "bold" }}>{signal.riskReward?.toFixed(2)}</span>
                       </div>
                       <div style={{ marginBottom: "6px" }}>
                         <span style={{ color: "#9ca3af" }}>Confidence:</span>{" "}
-                        <span style={{ fontWeight: "bold", color: borderColor }}>{signal.trade.confidence}%</span>
+                        <span style={{ fontWeight: "bold", color: borderColor }}>{signal.confidence}%</span>
                       </div>
                       <div>
-                        <span style={{ color: "#9ca3af" }}>Reason:</span> <span style={{ fontWeight: "500" }}>{signal.trade.reason}</span>
+                        <span style={{ color: "#9ca3af" }}>Reason:</span> <span style={{ fontWeight: "500" }}>{signal.reason}</span>
                       </div>
                     </div>
                   ) : null}
