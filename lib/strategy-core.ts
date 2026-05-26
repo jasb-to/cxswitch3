@@ -45,6 +45,7 @@ function recordPrice(symbol: string, price: number): void {
 
 /**
  * LAYER 1: 4H BIAS DETECTION
+ * Detects directional bias with trendline break detection
  */
 function detect4HBias(history: number[]): { bias: "Bullish" | "Bearish" | "Neutral"; structure: "HH/HL" | "LH/LL" | "Ranging" | "Transitioning" } {
   if (history.length < 10) {
@@ -52,6 +53,48 @@ function detect4HBias(history: number[]): { bias: "Bullish" | "Bearish" | "Neutr
   }
 
   const recent = history.slice(-20);
+  
+  // TRENDLINE BREAK DETECTION (HIGH PRIORITY)
+  // If we see a clear trendline break, immediately flip bias regardless of pattern count
+  if (recent.length >= 5) {
+    const veryRecent = recent.slice(-5);
+    const previousSection = recent.slice(-10, -5);
+    
+    // Check momentum: are we making lower lows/highs?
+    const veryRecentLow = Math.min(...veryRecent);
+    const veryRecentHigh = Math.max(...veryRecent);
+    const previousLow = Math.min(...previousSection);
+    const previousHigh = Math.max(...previousSection);
+    
+    // Strong bearish: new lows below previous lows (breakdown confirmed)
+    if (veryRecentLow < previousLow * 0.98) {
+      return { bias: "Bearish", structure: "LH/LL" };
+    }
+    
+    // Strong bullish: new highs above previous highs (breakout confirmed)
+    if (veryRecentHigh > previousHigh * 1.02) {
+      return { bias: "Bullish", structure: "HH/HL" };
+    }
+    
+    // Trend direction: last 5 candles trending down or up?
+    let downCount = 0, upCount = 0;
+    for (let i = 1; i < veryRecent.length; i++) {
+      if (veryRecent[i] < veryRecent[i-1]) downCount++;
+      if (veryRecent[i] > veryRecent[i-1]) upCount++;
+    }
+    
+    // Strong downtrend momentum (4+ down candles out of 5)
+    if (downCount >= 4 && veryRecentLow <= previousLow) {
+      return { bias: "Bearish", structure: "LH/LL" };
+    }
+    
+    // Strong uptrend momentum (4+ up candles out of 5)
+    if (upCount >= 4 && veryRecentHigh >= previousHigh) {
+      return { bias: "Bullish", structure: "HH/HL" };
+    }
+  }
+  
+  // Pattern counting (secondary detection)
   let hhCount = 0, hlCount = 0, llCount = 0, lhCount = 0;
   
   for (let i = 2; i < recent.length; i++) {
