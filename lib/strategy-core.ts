@@ -14,38 +14,17 @@ export interface Signal {
   symbol: string;
   price: number;
   state: TradeState;
-  
-  // 4H STRUCTURE CONTEXT (directional bias layer)
   bias_4h: "Bullish" | "Bearish" | "Neutral";
-  structure_4h: "HH/HL" | "LH/LL" | "Ranging" | "Transitioning";
-  
-  // 15M STRUCTURE (shift detection layer)
-  structure_15m: "Shift Forming" | "Compressing" | "Expanding" | "Ranging";
-  shift_type: "HH/HL to LH/LL" | "LH/LL to HH/HL" | "None";
-  
-  // 5M TRIGGER (execution layer)
-  trigger_5m: "Early Break Up" | "Early Break Down" | "Retest" | "Compression" | "Neutral";
-  
-  // MARKET ACTIVITY DETECTION
-  is_active: boolean;
-  momentum_shift: boolean;
-  
-  // ENTRY POINT
-  entry?: number;
-  entry_description?: string;
-  
-  // Trade details
+  structure_4h: "HH/HL" | "LH/LL" | "Transitioning" | "Ranging";
+  structure_15m: "Compressing" | "Shift Forming" | "Expanding" | "Ranging";
+  trigger_5m: "Early Break Up" | "Early Break Down" | "Retest Bullish" | "Retest Bearish" | "Flat";
   direction?: "LONG" | "SHORT";
+  entry?: number;
   stopLoss?: number;
   takeProfit?: number;
   riskReward?: number;
-  confidence?: number;
-  reason?: string;
-  
-  // Hold state
-  hold_until?: number;
+  confidence: number;
   hold_remaining_ms?: number;
-  
   updated_at: string;
 }
 
@@ -207,48 +186,44 @@ function evaluateMarket(symbol: string, price: number): Omit<Signal, "symbol" | 
   const history = priceHistory.get(symbol) || [];
   recordPrice(symbol, price);
 
-  const { bias: bias4h, structure: structure4h } = detect4HBias(history);
-  const shift = detect15mShift(history, bias4h);
+  // Layer 1: 4H bias
+  const { bias: bias_4h, structure: structure_4h } = detect4HBias(history);
+  const shift = detect15mShift(history, bias_4h);
 
-  const isActive = shift.structure !== "Ranging" || bias4h !== "Neutral";
+  const isActive = shift.structure !== "Ranging" || bias_4h !== "Neutral";
   const momentumShift = history.length >= 3 && 
     (history[history.length - 1] - history[history.length - 2]) * 
     (history[history.length - 2] - history[history.length - 3]) < 0;
   
-  const { trigger: trigger5m } = detect5mTrigger(history, isActive, momentumShift);
+  const { trigger: trigger_5m } = detect5mTrigger(history, isActive, momentumShift);
 
   let state: TradeState;
   let direction: "LONG" | "SHORT" | undefined;
   let confidence: number;
   let entry: number | undefined;
 
-  // BUILDING: Early entry zone (any shift forming)
-  if (shift.structure === "Shift Forming" || (shift.structure === "Compressing" && bias4h !== "Neutral")) {
+  if (shift.structure === "Shift Forming" || (shift.structure === "Compressing" && bias_4h !== "Neutral")) {
     state = "BUILDING";
     entry = shift.entryLevel;
     
-    if (bias4h === "Bullish" && shift.shiftType === "HH/HL to LH/LL") {
+    if (bias_4h === "Bullish" && shift.shiftType === "HH/HL to LH/LL") {
       direction = "LONG";
       confidence = 55;
-    } else if (bias4h === "Bearish" && shift.shiftType === "LH/LL to HH/HL") {
+    } else if (bias_4h === "Bearish" && shift.shiftType === "LH/LL to HH/HL") {
       direction = "SHORT";
       confidence = 55;
     } else {
       confidence = 45;
     }
-  }
-  // SNIPER: Move already underway
-  else if (
-    (trigger5m === "Early Break Up" && bias4h === "Bullish") ||
-    (trigger5m === "Early Break Down" && bias4h === "Bearish")
+  } else if (
+    (trigger_5m === "Early Break Up" && bias_4h === "Bullish") ||
+    (trigger_5m === "Early Break Down" && bias_4h === "Bearish")
   ) {
     state = "SNIPER";
     entry = price;
-    direction = trigger5m === "Early Break Up" ? "LONG" : "SHORT";
+    direction = trigger_5m === "Early Break Up" ? "LONG" : "SHORT";
     confidence = 75;
-  }
-  // WATCHING_SHIFT: Default active state
-  else {
+  } else {
     state = "WATCHING_SHIFT";
     confidence = Math.max(20, Math.floor(momentumShift ? 35 : 20));
   }
@@ -274,7 +249,7 @@ function evaluateMarket(symbol: string, price: number): Omit<Signal, "symbol" | 
 
   return {
     state,
-    bias_4h: bias4h,
+    bias_4h,
     structure_4h,
     structure_15m: shift.structure,
     trigger_5m,
