@@ -20,7 +20,13 @@ export async function GET() {
     }
 
     const signals = await readSignals();
+    console.log("[API/SIGNALS] Retrieved from Redis:", signals.length, "signals");
+    signals.forEach(s => {
+      console.log(`[API/SIGNALS] ${s.symbol}: state=${s.state}, readiness=${s.readiness_score}, structure=${s.structure_15m}, trend=${s.trend_4h}`);
+    });
+    
     const viewModels = signals.map(toViewModel);
+    console.log("[API/SIGNALS] Returning to UI:", viewModels.length, "viewmodels");
     return NextResponse.json(viewModels);
   } catch (error) {
     console.error("[API/SIGNALS] Error:", error);
