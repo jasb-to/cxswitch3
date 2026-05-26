@@ -271,6 +271,54 @@ export default function Dashboard() {
                             ? `${signal.trend_4h} trend alignment developing. Structure not yet confirmed.`
                             : "Setup building. Multiple confluence factors tracking."}
                         </p>
+
+                        {/* TRIGGER CONDITIONS - Shows exactly which conditions triggered BUILDING */}
+                        <div style={{ margin: "8px 0", fontSize: "10px", color: "#9ca3af", lineHeight: "1.6" }}>
+                          <div style={{ fontWeight: "600", marginBottom: "4px", color: "#fff" }}>TRIGGER CONDITIONS</div>
+                          
+                          {/* Condition A: Structure != Range */}
+                          {(() => {
+                            const isActive = signal.structure_15m !== "Range";
+                            return (
+                              <div style={{ opacity: isActive ? 1 : 0.5, color: isActive ? "#9ca3af" : "#555" }}>
+                                {isActive ? "✔" : "✖"} Structure: {signal.structure_15m}
+                              </div>
+                            );
+                          })()}
+
+                          {/* Condition B: Momentum >= 0.15% */}
+                          {(() => {
+                            const mom = typeof signal.momentum_percent === "number" ? signal.momentum_percent : 0;
+                            const isActive = mom >= 0.15;
+                            return (
+                              <div style={{ opacity: isActive ? 1 : 0.5, color: isActive ? "#9ca3af" : "#555" }}>
+                                {isActive ? "✔" : "✖"} Momentum: {mom.toFixed(3)}% (threshold ≥ 0.15%)
+                              </div>
+                            );
+                          })()}
+
+                          {/* Condition C: Volatility >= 0.25% */}
+                          {(() => {
+                            const vol = typeof signal.volatility_percent === "number" ? signal.volatility_percent : 0;
+                            const isActive = vol >= 0.25;
+                            return (
+                              <div style={{ opacity: isActive ? 1 : 0.5, color: isActive ? "#9ca3af" : "#555" }}>
+                                {isActive ? "✔" : "✖"} Volatility: {vol.toFixed(3)}% (threshold ≥ 0.25%)
+                              </div>
+                            );
+                          })()}
+
+                          {/* Condition D: Trend != Neutral AND Momentum > 0.2% */}
+                          {(() => {
+                            const mom = typeof signal.momentum_percent === "number" ? signal.momentum_percent : 0;
+                            const isActive = signal.trend_4h !== "Neutral" && mom > 0.2;
+                            return (
+                              <div style={{ opacity: isActive ? 1 : 0.5, color: isActive ? "#9ca3af" : "#555" }}>
+                                {isActive ? "✔" : "✖"} Trend: {signal.trend_4h} {mom > 0.2 ? "+ momentum" : "(insufficient momentum)"}
+                              </div>
+                            );
+                          })()}
+                        </div>
                       </>
                     )}
                     {signal.state === "DO_NOT_TRADE" && (
