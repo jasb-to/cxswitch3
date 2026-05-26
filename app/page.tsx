@@ -33,29 +33,20 @@ export default function Dashboard() {
     setMounted(true);
   }, []);
 
-  const handleRefreshSignals = async () => {
+  const handleRefresh = async () => {
     setIsRefreshing(true);
-    try {
-      await mutate();
-    } catch (err) {
-      console.error("[v0] Refresh error:", err);
-    } finally {
-      setIsRefreshing(false);
-    }
+    await mutate();
+    setIsRefreshing(false);
   };
 
   const handleTestTelegram = async () => {
     setIsTesting(true);
     try {
-      const res = await fetch("/api/test-telegram", { method: "POST" });
-      const data = await res.json();
-      if (data.ok) {
-        alert("Telegram message sent!");
-      } else {
-        alert(`Error: ${data.error}`);
-      }
+      const response = await fetch("/api/test-telegram", { method: "POST" });
+      const data = await response.json();
+      alert(data.message || "Test message sent");
     } catch (err) {
-      alert(`Test failed: ${err}`);
+      alert("Error sending test message");
     } finally {
       setIsTesting(false);
     }
@@ -63,294 +54,182 @@ export default function Dashboard() {
 
   if (!mounted) return null;
 
+  const getStateColor = (state: string) => {
+    switch (state) {
+      case "SNIPER": return "bg-green-900/20 border-green-600";
+      case "BUILDING": return "bg-orange-900/20 border-orange-600";
+      case "WATCHING_SHIFT": return "bg-slate-900/20 border-slate-600";
+      default: return "bg-slate-900/20 border-slate-600";
+    }
+  };
+
+  const getStateBadge = (state: string) => {
+    switch (state) {
+      case "SNIPER": return "text-green-400 font-bold";
+      case "BUILDING": return "text-orange-400 font-bold";
+      case "WATCHING_SHIFT": return "text-slate-400";
+      default: return "text-slate-400";
+    }
+  };
+
   return (
-    <div style={{ backgroundColor: "#0a0a0a", color: "#fff", minHeight: "100vh", padding: "24px" }}>
-      {/* HEADER */}
-      <div style={{ marginBottom: "32px" }}>
-        <h1 style={{ margin: "0 0 8px 0", fontSize: "32px", fontWeight: "bold" }}>
-          Trading Signals
-        </h1>
-        <p style={{ margin: 0, fontSize: "13px", color: "#9ca3af" }}>
-          Early Entry Mode v2: Prioritizing structural shifts and early breaks
-        </p>
-      </div>
-
-      {/* STATUS BAR */}
-      <div style={{ display: "flex", gap: "12px", marginBottom: "24px", flexWrap: "wrap" }}>
-        <div style={{ display: "flex", gap: "8px" }}>
-          <button
-            onClick={handleRefreshSignals}
-            disabled={isRefreshing || isLoading}
-            style={{
-              padding: "8px 16px",
-              backgroundColor: "#1a7fff",
-              color: "#fff",
-              border: "none",
-              borderRadius: "6px",
-              cursor: isRefreshing ? "not-allowed" : "pointer",
-              fontSize: "13px",
-              fontWeight: "600",
-              opacity: isRefreshing ? 0.6 : 1,
-            }}
-          >
-            {isRefreshing ? "Refreshing..." : "Refresh Signals"}
-          </button>
-
-          <button
-            onClick={handleTestTelegram}
-            disabled={isTesting}
-            style={{
-              padding: "8px 16px",
-              backgroundColor: "transparent",
-              color: "#9ca3af",
-              border: "1px solid #2a2a2a",
-              borderRadius: "6px",
-              cursor: isTesting ? "not-allowed" : "pointer",
-              opacity: isTesting ? 0.6 : 1,
-              fontSize: "13px",
-              fontWeight: "600",
-            }}
-          >
-            {isTesting ? "Testing..." : "Test Telegram"}
-          </button>
+    <div className="min-h-screen bg-slate-950 text-slate-100 p-8">
+      <div className="max-w-7xl mx-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h1 className="text-4xl font-bold text-white mb-2">Trading Signals</h1>
+            <p className="text-slate-400">Early Entry Mode v2 - Real-time structure detection</p>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={handleRefresh}
+              disabled={isRefreshing || isLoading}
+              className="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:bg-slate-700 text-white rounded font-medium transition"
+            >
+              {isRefreshing ? "Refreshing..." : "Refresh Signals"}
+            </button>
+            <button
+              onClick={handleTestTelegram}
+              disabled={isTesting}
+              className="px-4 py-2 border border-slate-600 hover:border-slate-500 text-slate-300 rounded font-medium transition"
+            >
+              {isTesting ? "Testing..." : "Test Telegram"}
+            </button>
+          </div>
         </div>
 
+        {/* Status */}
+        {isLoading && !mounted && (
+          <div className="text-center py-12 text-slate-400">
+            Loading signals...
+          </div>
+        )}
+
         {error && (
-          <div style={{ color: "#ff1744", fontSize: "13px", fontWeight: "600" }}>
-            ⚠️ Error loading signals
+          <div className="bg-red-900/20 border border-red-600 p-4 rounded mb-6 text-red-300">
+            Error loading signals: {error.message}
           </div>
         )}
 
-        {isLoading && (
-          <div style={{ color: "#9ca3af", fontSize: "13px", fontWeight: "600" }}>
-            ⏳ Loading...
-          </div>
-        )}
-
-        {signals.length > 0 && !isLoading && (
-          <div style={{ color: "#4caf50", fontSize: "13px", fontWeight: "600" }}>
-            ✓ {signals.length} signals live
-          </div>
-        )}
-      </div>
-
-      {/* SIGNAL CARDS GRID */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: "16px" }}>
-        {signals.map((signal) => {
-          const isSNIPER = signal.state === "SNIPER";
-          const isBuilding = signal.state === "BUILDING";
-          const isWatching = signal.state === "WATCHING_SHIFT";
-
-          // Color scheme: Green=LONG, Red=SHORT, Orange=BUILDING, Gray=WATCHING
-          let stateColor = "#4a4a4a"; // WATCHING_SHIFT default
-          let stateBgColor = "#1a1a1a";
-          
-          if (isSNIPER && signal.direction === "LONG") {
-            stateColor = "#4caf50";
-            stateBgColor = "#1b5e20";
-          } else if (isSNIPER && signal.direction === "SHORT") {
-            stateColor = "#f44336";
-            stateBgColor = "#b71c1c";
-          } else if (isBuilding) {
-            stateColor = "#ff9100";
-            stateBgColor = "#e65100";
-          }
-
-          const priceDiff = signal.entry ? signal.price - signal.entry : 0;
-          const pricePercentDiff = signal.entry ? (((signal.price - signal.entry) / signal.entry) * 100).toFixed(2) : "0.00";
-
-          return (
+        {/* Signals Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {signals.map((signal) => (
             <div
               key={signal.symbol}
-              style={{
-                backgroundColor: "#111",
-                border: "1px solid #2a2a2a",
-                borderLeft: `5px solid ${stateColor}`,
-                borderRadius: "10px",
-                padding: "18px",
-              }}
+              className={`border rounded-lg p-6 ${getStateColor(signal.state)}`}
             >
-              {/* HEADER: Symbol + State + Price */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "16px" }}>
+              {/* Header: Symbol & State */}
+              <div className="flex items-start justify-between mb-4">
                 <div>
-                  <h2 style={{ margin: "0 0 8px 0", fontSize: "28px", fontWeight: "bold", color: "#fff" }}>
-                    {signal.symbol}
-                  </h2>
-                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                    <div
-                      style={{
-                        padding: "6px 10px",
-                        backgroundColor: stateBgColor,
-                        color: stateColor,
-                        borderRadius: "4px",
-                        fontSize: "11px",
-                        fontWeight: "bold",
-                        border: `1px solid ${stateColor}`,
-                      }}
-                    >
-                      {signal.state === "SNIPER"
-                        ? signal.direction === "LONG"
-                          ? "SNIPER LONG"
-                          : "SNIPER SHORT"
-                        : signal.state === "BUILDING"
-                          ? "BUILDING"
-                          : "WATCHING"}
-                    </div>
-                    {signal.is_active && (
-                      <div style={{ fontSize: "11px", color: "#ff9100", fontWeight: "bold" }}>
-                        🔴 ACTIVE
-                      </div>
-                    )}
-                  </div>
+                  <h2 className="text-2xl font-bold text-white">{signal.symbol}</h2>
+                  <p className="text-sm text-slate-400">${signal.price.toFixed(2)}</p>
                 </div>
-                <div style={{ textAlign: "right" }}>
-                  <p style={{ margin: "0 0 6px 0", fontSize: "18px", fontWeight: "bold", color: "#fff" }}>
-                    ${signal.price.toFixed(2)}
-                  </p>
-                  {signal.hold_remaining_ms && signal.hold_remaining_ms > 0 && (
-                    <p style={{ margin: 0, fontSize: "11px", color: "#ff9100" }}>
-                      🔒 Hold: {Math.ceil(signal.hold_remaining_ms / 1000)}s
-                    </p>
+                <div className={`text-sm font-bold px-3 py-1 rounded ${getStateBadge(signal.state)}`}>
+                  {signal.state}
+                </div>
+              </div>
+
+              {/* Market Context (3-Layer) */}
+              <div className="bg-slate-900/40 rounded p-4 mb-4 space-y-2">
+                <div className="text-xs text-slate-400">4H BIAS</div>
+                <div className="text-sm font-mono">
+                  <span className={
+                    signal.bias_4h === "Bullish" ? "text-green-400" :
+                    signal.bias_4h === "Bearish" ? "text-red-400" :
+                    "text-slate-400"
+                  }>
+                    {signal.bias_4h}
+                  </span>
+                  {" · "}
+                  <span className="text-slate-300">{signal.structure_4h}</span>
+                </div>
+
+                <div className="text-xs text-slate-400 mt-2">15M STRUCTURE</div>
+                <div className="text-sm font-mono text-slate-300">
+                  {signal.structure_15m}
+                  {signal.shift_type !== "None" && (
+                    <span className="text-amber-400 ml-1">({signal.shift_type})</span>
                   )}
                 </div>
-              </div>
 
-              {/* MARKET CONTEXT - 3 LAYERS */}
-              <div style={{ marginBottom: "16px", paddingBottom: "16px", borderBottom: "1px solid #2a2a2a" }}>
-                {/* 4H BIAS */}
-                <div style={{ marginBottom: "11px" }}>
-                  <div style={{ fontSize: "10px", fontWeight: "700", color: "#7a8a9a", marginBottom: "4px", textTransform: "uppercase" }}>
-                    4H BIAS
-                  </div>
-                  <div style={{ fontSize: "14px", color: "#e0e0e0", fontWeight: "500" }}>
-                    {signal.bias_4h === "Bullish"
-                      ? "📈 Bullish (HH/HL)"
-                      : signal.bias_4h === "Bearish"
-                        ? "📉 Bearish (LH/LL)"
-                        : "➡️ Neutral"}
-                  </div>
-                </div>
-
-                {/* 15M STRUCTURE */}
-                <div style={{ marginBottom: "11px" }}>
-                  <div style={{ fontSize: "10px", fontWeight: "700", color: "#7a8a9a", marginBottom: "4px", textTransform: "uppercase" }}>
-                    15M STRUCTURE
-                  </div>
-                  <div style={{ fontSize: "14px", color: "#e0e0e0", fontWeight: "500" }}>
-                    {signal.structure_15m === "Shift Forming"
-                      ? "🌀 Shift Forming (" + signal.shift_type + ")"
-                      : signal.structure_15m === "Compressing"
-                        ? "🟡 Compressing (entry zone)"
-                        : signal.structure_15m === "Expanding"
-                          ? "📊 Expanding (breakout)"
-                          : "〰️ Ranging"}
-                  </div>
-                </div>
-
-                {/* 5M TRIGGER */}
-                <div>
-                  <div style={{ fontSize: "10px", fontWeight: "700", color: "#7a8a9a", marginBottom: "4px", textTransform: "uppercase" }}>
-                    5M TRIGGER
-                  </div>
-                  <div style={{ fontSize: "14px", color: "#e0e0e0", fontWeight: "500" }}>
-                    {signal.trigger_5m === "Early Break Up"
-                      ? "⬆️ Early Break Up"
-                      : signal.trigger_5m === "Early Break Down"
-                        ? "⬇️ Early Break Down"
-                        : signal.trigger_5m === "Retest"
-                          ? "🔄 Retest"
-                          : signal.trigger_5m === "Compression"
-                            ? "🔵 Compression"
-                            : "⚪ Neutral"}
-                  </div>
+                <div className="text-xs text-slate-400 mt-2">5M TRIGGER</div>
+                <div className="text-sm font-mono text-slate-300">
+                  {signal.trigger_5m}
                 </div>
               </div>
 
-              {/* ENTRY ZONE (if BUILDING or SNIPER) */}
-              {(isBuilding || isSNIPER) && signal.entry !== undefined && (
-                <div style={{ marginBottom: "16px", paddingBottom: "16px", borderBottom: "1px solid #2a2a2a" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "6px" }}>
-                    <div>
-                      <div style={{ fontSize: "10px", fontWeight: "700", color: "#7a8a9a", marginBottom: "4px", textTransform: "uppercase" }}>
-                        🟡 ENTRY POINT
-                      </div>
-                      <div style={{ fontSize: "16px", fontWeight: "bold", color: "#ffeb3b" }}>
-                        ${signal.entry.toFixed(2)}
-                      </div>
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontSize: "12px", color: "#9ca3af" }}>
-                        {priceDiff >= 0 ? "+" : ""}{priceDiff.toFixed(2)} ({pricePercentDiff}%)
-                      </div>
-                      <div style={{ fontSize: "10px", color: "#7a8a9a", marginTop: "3px" }}>
-                        {signal.entry_description}
-                      </div>
-                    </div>
+              {/* Entry Point */}
+              {signal.entry !== undefined && (
+                <div className="bg-yellow-900/20 border border-yellow-600/50 rounded p-3 mb-4">
+                  <div className="text-xs text-yellow-400 font-semibold mb-1">🟡 ENTRY POINT</div>
+                  <div className="text-lg font-bold text-yellow-300">${signal.entry.toFixed(2)}</div>
+                  <div className="text-xs text-slate-400 mt-1">{signal.entry_description}</div>
+                  <div className="text-xs text-slate-400 mt-1">
+                    Current: <span className="text-slate-300">${(signal.price - signal.entry).toFixed(2)}</span>
+                    {" "}
+                    <span className={signal.price > signal.entry ? "text-green-400" : "text-red-400"}>
+                      ({((signal.price - signal.entry) / signal.entry * 100).toFixed(2)}%)
+                    </span>
                   </div>
                 </div>
               )}
 
-              {/* TRADE SETUP (if direction exists) */}
+              {/* Trade Setup (when active) */}
               {signal.direction && (
-                <div style={{ marginBottom: "12px" }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginBottom: "12px" }}>
-                    <div>
-                      <div style={{ fontSize: "10px", fontWeight: "700", color: "#7a8a9a", marginBottom: "4px" }}>
-                        STOP LOSS
-                      </div>
-                      <div style={{ fontSize: "13px", color: "#ff6b6b", fontWeight: "600" }}>
-                        ${signal.stopLoss?.toFixed(2)}
-                      </div>
+                <div className="space-y-2 mb-4">
+                  <div className={`text-sm font-bold px-3 py-1 rounded inline-block ${
+                    signal.direction === "LONG" ? "bg-green-600/30 text-green-300" : "bg-red-600/30 text-red-300"
+                  }`}>
+                    {signal.direction} @ {signal.entry?.toFixed(2)}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-sm font-mono">
+                    <div className="bg-slate-900/40 p-2 rounded">
+                      <div className="text-xs text-slate-400">SL</div>
+                      <div className="text-red-400">${signal.stopLoss?.toFixed(2)}</div>
                     </div>
-                    <div>
-                      <div style={{ fontSize: "10px", fontWeight: "700", color: "#7a8a9a", marginBottom: "4px" }}>
-                        TAKE PROFIT
-                      </div>
-                      <div style={{ fontSize: "13px", color: "#4caf50", fontWeight: "600" }}>
-                        ${signal.takeProfit?.toFixed(2)}
-                      </div>
+                    <div className="bg-slate-900/40 p-2 rounded">
+                      <div className="text-xs text-slate-400">TP</div>
+                      <div className="text-green-400">${signal.takeProfit?.toFixed(2)}</div>
                     </div>
                   </div>
 
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-                    <div>
-                      <div style={{ fontSize: "10px", fontWeight: "700", color: "#7a8a9a", marginBottom: "4px" }}>
-                        RISK/REWARD
-                      </div>
-                      <div style={{ fontSize: "14px", color: "#ffc107", fontWeight: "bold" }}>
-                        {signal.riskReward?.toFixed(2)}:1
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: "10px", fontWeight: "700", color: "#7a8a9a", marginBottom: "4px" }}>
-                        CONFIDENCE
-                      </div>
-                      <div style={{ fontSize: "14px", color: stateColor, fontWeight: "bold" }}>
-                        {signal.confidence}%
-                      </div>
-                    </div>
+                  <div className="bg-slate-900/40 p-2 rounded text-sm">
+                    <div className="text-xs text-slate-400">Risk/Reward</div>
+                    <div className="font-mono text-amber-300">{signal.riskReward?.toFixed(2)} : 1</div>
                   </div>
                 </div>
               )}
 
-              {/* REASON / NOTES */}
+              {/* Metadata */}
+              <div className="space-y-1 text-xs text-slate-400 border-t border-slate-700 pt-3">
+                <div>Confidence: <span className="text-slate-300 font-mono">{signal.confidence}%</span></div>
+                {signal.hold_remaining_ms && signal.hold_remaining_ms > 0 && (
+                  <div className="text-amber-500">Hold: {(signal.hold_remaining_ms / 1000 / 60).toFixed(1)}m remaining</div>
+                )}
+                <div className="text-slate-500 text-xs">
+                  {new Date(signal.updated_at).toLocaleTimeString()}
+                </div>
+              </div>
+
+              {/* Reason */}
               {signal.reason && (
-                <div style={{ padding: "10px", backgroundColor: "#1a1a1a", borderRadius: "6px", fontSize: "12px", color: "#b0b0b0", fontStyle: "italic" }}>
-                  "{signal.reason}"
+                <div className="mt-3 p-2 bg-slate-900/40 rounded text-xs text-slate-400">
+                  {signal.reason}
                 </div>
               )}
             </div>
-          );
-        })}
-      </div>
-
-      {/* EMPTY STATE (NO SIGNALS) */}
-      {signals.length === 0 && !isLoading && (
-        <div style={{ textAlign: "center", padding: "48px 24px", color: "#7a8a9a" }}>
-          <p style={{ fontSize: "16px", marginBottom: "8px" }}>No signals yet</p>
-          <p style={{ fontSize: "13px", color: "#555" }}>Waiting for early market shifts to be detected...</p>
+          ))}
         </div>
-      )}
+
+        {/* Empty State */}
+        {signals.length === 0 && mounted && !isLoading && (
+          <div className="text-center py-12 text-slate-400">
+            No signals available. Check API connection.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
