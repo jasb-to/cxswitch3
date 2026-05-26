@@ -1,10 +1,11 @@
 /**
- * TRADING STRATEGY ENGINE - TOP-DOWN MULTI-TIMEFRAME STRUCTURE MODEL
+ * TRADING STRATEGY ENGINE - EARLY ENTRY MODE v2
  * 
- * Entries at yellow circles: compression tops where breakouts occur
+ * Focus: Early structural shifts and trendline breaks, not confirmed setups.
+ * Detect the shift early → prioritise transition states over completed structures
  */
 
-export type TradeState = "SNIPER" | "BUILDING" | "DO_NOT_TRADE";
+export type TradeState = "SNIPER" | "BUILDING" | "WATCHING_SHIFT";
 
 export const SYMBOLS = ["BTC", "ETH", "SOL"] as const;
 export type Symbol = typeof SYMBOLS[number];
@@ -16,21 +17,24 @@ export interface Signal {
   
   // 4H STRUCTURE CONTEXT (directional bias layer)
   bias_4h: "Bullish" | "Bearish" | "Neutral";
-  structure_4h: "HH/HL" | "LH/LL" | "Ranging" | "Unclear";
+  structure_4h: "HH/HL" | "LH/HL" | "Ranging" | "Transitioning";
   
-  // 15M STRUCTURE (setup layer - what is forming)
-  structure_15m: "Breakout" | "Setup" | "Ranging";
-  hh_hl_active: boolean; // Bullish pattern forming
-  lh_ll_active: boolean; // Bearish pattern forming
+  // 15M STRUCTURE (shift detection layer)
+  structure_15m: "Shift Forming" | "Compressing" | "Expanding" | "Ranging";
+  shift_type: "HH/HL to LH/LL" | "LH/LL to HH/HL" | "None"; // Directional shift happening
   
-  // 5M TRIGGER (execution layer - what is happening now)
-  trigger_5m: "Breaking Up" | "Breaking Down" | "Retest Bullish" | "Retest Bearish" | "Flat";
+  // 5M TRIGGER (execution layer - what is happening NOW)
+  trigger_5m: "Early Break Up" | "Early Break Down" | "Retest" | "Compression" | "Neutral";
   
-  // ENTRY POINT (at compression top / formation completion)
-  entry?: number; // Entry price at compression level / formation completion
-  entry_description?: string; // "At compression top" | "Breaking above resistance" etc
+  // MARKET ACTIVITY DETECTION
+  is_active: boolean; // Price is moving near key levels or changing momentum
+  momentum_shift: boolean; // Momentum just changed direction (early signal)
   
-  // Trade details (only for SNIPER / BUILDING)
+  // ENTRY POINT (structure edge, not completion)
+  entry?: number; // Entry at structure edge / compression boundary
+  entry_description?: string; // "At compression edge" | "Structure shift forming" etc
+  
+  // Trade details (only for BUILDING / SNIPER)
   direction?: "LONG" | "SHORT";
   stopLoss?: number;
   takeProfit?: number;
@@ -99,12 +103,12 @@ async function getKrakenTicker(symbol: string): Promise<number> {
 }
 
 /**
- * LAYER 1: 4H BIAS DETECTION
- * Determines market direction via HH/HL vs LH/LL patterns
+ * LAYER 1: 4H BIAS - Directional context
+ * Detects if bullish (HH/HL) or bearish (LH/LL) pattern is active
  */
-function detect4HBias(history: number[]): { bias: "Bullish" | "Bearish" | "Neutral"; structure: "HH/HL" | "LH/LL" | "Ranging" | "Unclear" } {
+function detect4HBias(history: number[]): { bias: "Bullish" | "Bearish" | "Neutral"; structure: "HH/HL" | "LH/LL" | "Ranging" | "Transitioning" } {
   if (history.length < 10) {
-    return { bias: "Neutral", structure: "Unclear" };
+    return { bias: "Neutral", structure: "Ranging" };
   }
 
   const recent = history.slice(-20);
@@ -136,249 +140,308 @@ function detect4HBias(history: number[]): { bias: "Bullish" | "Bearish" | "Neutr
     return { bias: "Neutral", structure: "Ranging" };
   }
 
-  return { bias: "Neutral", structure: "Unclear" };
+  return { bias: "Neutral", structure: "Ranging" };
 }
 
 /**
- * LAYER 2: 15M SETUP DETECTION
- * Finds compression tops where entries should be placed (yellow circles)
+ * LAYER 2: 15M SHIFT DETECTION - Early structural changes
+ * Detects compression, expansion, and early shift formations (yellow circles)
  */
-function detect15mSetup(history: number[], bias: "Bullish" | "Bearish" | "Neutral"): { 
-  isSetup: boolean; 
-  hhhlActive: boolean; 
-  llnlActive: boolean; 
-  structure: "Breakout" | "Setup" | "Ranging";
-  compressionTop?: number; // Entry price at compression top
-  trendlineInteraction: "Breaking Up" | "Breaking Down" | "Retest Bullish" | "Retest Bearish" | "Flat";
+function detect15mShift(history: number[], bias: "Bullish" | "Bearish" | "Neutral"): { 
+  shiftForming: boolean; // Any transition starting
+  isCompressing: boolean; // In compression zone
+  isExpanding: boolean; // Breaking out of compression
+  structure: "Shift Forming" | "Compressing" | "Expanding" | "Ranging";
+  shiftType: "HH/HL to LH/LL" | "LH/LL to HH/HL" | "None";
+  compressionEdge?: number; // Entry at edge, not completion
+  rejectionPoint?: boolean; // Failed retest detected
 } {
   if (history.length < 5) {
-    return { isSetup: false, hhhlActive: false, llnlActive: false, structure: "Ranging", trendlineInteraction: "Flat" };
+    return { shiftForming: false, isCompressing: false, isExpanding: false, structure: "Ranging", shiftType: "None" };
   }
 
   const recent = history.slice(-15);
   const current = recent[recent.length - 1];
   const prev = recent[recent.length - 2];
+  const prev2 = recent[recent.length - 3];
   
-  // Detect HH/HL (bullish setup)
+  // Detect if bullish structure (HH/HL) is forming
   let hhhlCount = 0;
   for (let i = 2; i < recent.length; i++) {
     if (recent[i] > recent[i-2] && recent[i-1] > recent[i-3]) hhhlCount++;
   }
   
-  // Detect LH/LL (bearish setup)
+  // Detect if bearish structure (LH/LL) is forming
   let llnlCount = 0;
   for (let i = 2; i < recent.length; i++) {
     if (recent[i] < recent[i-2] && recent[i-1] < recent[i-3]) llnlCount++;
   }
 
-  const hhhlActive = hhhlCount >= 2;
-  const llnlActive = llnlCount >= 2;
+  const hhhlForming = hhhlCount >= 1; // Early detection, not waiting for 2+ confirmations
+  const llnlForming = llnlCount >= 1;
 
-  // Find compression zone (narrow range = entry zone / yellow circle)
-  const high = Math.max(...recent.slice(-5));
-  const low = Math.min(...recent.slice(-5));
-  const range = high - low;
-  const avgPrice = (high + low) / 2;
-  const isCompressing = range < avgPrice * 0.01; // < 1% compression zone
+  // Compression detection: tight range
+  const high5 = Math.max(...recent.slice(-5));
+  const low5 = Math.min(...recent.slice(-5));
+  const range5 = high5 - low5;
+  const avgPrice = (high5 + low5) / 2;
+  const isCompressing = range5 < avgPrice * 0.005; // < 0.5% = tight compression
 
-  // Compression top = high of compression zone (entry for bullish)
-  // Compression bottom = low of compression zone (entry for bearish)
-  const compressionTop = high;
+  // Expansion detection: volatility increase
+  const volatilityRecent = Math.abs(current - prev) + Math.abs(prev - prev2);
+  const volatilityOld = recent.slice(-10).reduce((sum, p, i, arr) => 
+    i > 0 ? sum + Math.abs(p - arr[i-1]) : 0, 0) / 10;
+  const isExpanding = volatilityRecent > volatilityOld * 1.3;
 
-  // Trendline interaction detection
-  let trendlineInteraction: "Breaking Up" | "Breaking Down" | "Retest Bullish" | "Retest Bearish" | "Flat" = "Flat";
-  
-  if (bias === "Bullish" && hhhlActive) {
-    const support = Math.min(...recent.slice(-10));
-    if (current > support * 1.002) {
-      trendlineInteraction = current > prev ? "Breaking Up" : "Retest Bullish";
-    }
-  } else if (bias === "Bearish" && llnlActive) {
-    const resistance = Math.max(...recent.slice(-10));
-    if (current < resistance * 0.998) {
-      trendlineInteraction = current < prev ? "Breaking Down" : "Retest Bearish";
-    }
+  // Rejection detection: failed retest at level
+  const support = Math.min(...recent.slice(-8));
+  const resistance = Math.max(...recent.slice(-8));
+  const rejectionAtSupport = prev > support && current < support && Math.abs(current - support) < range5;
+  const rejectionAtResistance = prev < resistance && current > resistance && Math.abs(current - resistance) < range5;
+  const rejectionPoint = rejectionAtSupport || rejectionAtResistance;
+
+  // Shift detection: pattern reversing
+  let shiftType: "HH/HL to LH/LL" | "LH/LL to HH/HL" | "None" = "None";
+  if (bias === "Bullish" && llnlForming && !hhhlForming) {
+    shiftType = "HH/HL to LH/LL";
+  } else if (bias === "Bearish" && hhhlForming && !llnlForming) {
+    shiftType = "LH/LL to HH/HL";
   }
 
-  // Setup is active when: structure + bias alignment + compression
-  const isSetup = (
-    (bias === "Bullish" && hhhlActive && isCompressing) ||
-    (bias === "Bearish" && llnlActive && isCompressing) ||
-    (bias !== "Neutral" && (hhhlActive || llnlActive))
-  );
-
-  // Determine structure
-  let structure: "Breakout" | "Setup" | "Ranging" = "Ranging";
-  if (hhhlActive || llnlActive) {
-    structure = isCompressing ? "Setup" : "Breakout";
+  // Determine structure phase
+  let structure: "Shift Forming" | "Compressing" | "Expanding" | "Ranging" = "Ranging";
+  if (shiftType !== "None") {
+    structure = "Shift Forming";
+  } else if (isCompressing) {
+    structure = "Compressing";
+  } else if (isExpanding) {
+    structure = "Expanding";
   }
+
+  const shiftForming = shiftType !== "None" || rejectionPoint || (isCompressing && (hhhlForming || llnlForming));
 
   return {
-    isSetup,
-    hhhlActive,
-    llnlActive,
+    shiftForming,
+    isCompressing,
+    isExpanding,
     structure,
-    compressionTop,
-    trendlineInteraction,
+    shiftType,
+    compressionEdge: isCompressing ? high5 : undefined,
+    rejectionPoint,
   };
 }
 
 /**
- * TOP-DOWN DECISION ENGINE WITH ENTRY POINTS
- * Returns state based on structure analysis + calculates entry at compression tops
+ * LAYER 3: 5M TRIGGER - Real-time price action
+ * Detects early breaks, retests, and momentum changes
+ */
+function detect5mTrigger(history: number[], bias: "Bullish" | "Bearish" | "Neutral", shift: ReturnType<typeof detect15mShift>): {
+  trigger: "Early Break Up" | "Early Break Down" | "Retest" | "Compression" | "Neutral";
+  momentumShift: boolean;
+} {
+  if (history.length < 3) {
+    return { trigger: "Neutral", momentumShift: false };
+  }
+
+  const recent = history.slice(-5);
+  const current = recent[recent.length - 1];
+  const prev = recent[recent.length - 2];
+  const prev2 = recent[recent.length - 3];
+
+  const priceChange = current - prev;
+  const direction = priceChange > 0 ? "Up" : priceChange < 0 ? "Down" : "Flat";
+
+  // Early momentum shift detection
+  const momentumChanging = 
+    (prev2 > prev && current > prev) || // Starting to move up
+    (prev2 < prev && current < prev);   // Starting to move down
+  const momentumShift = Math.abs(priceChange) > 0.001 && momentumChanging;
+
+  let trigger: "Early Break Up" | "Early Break Down" | "Retest" | "Compression" | "Neutral" = "Neutral";
+
+  if (shift.isExpanding) {
+    if (bias === "Bullish" && direction === "Up") {
+      trigger = "Early Break Up";
+    } else if (bias === "Bearish" && direction === "Down") {
+      trigger = "Early Break Down";
+    }
+  }
+  
+  if (shift.isCompressing && momentumShift) {
+    trigger = "Compression";
+  }
+  
+  if (shift.rejectionPoint) {
+    trigger = "Retest";
+  }
+
+  return { trigger, momentumShift };
+}
+
+/**
+ * EARLY ENTRY MODE v2 EVALUATION
+ * Prioritises early shifts and transition states, not confirmations
  */
 function evaluateMarket(symbol: string, price: number): Signal {
-  if (!price || price <= 0) {
+  const history = priceHistory.get(symbol) || [];
+  recordPrice(symbol, price);
+
+  // GUARD: Need minimum history
+  if (history.length < 3) {
     return {
       symbol,
       price,
-      state: "DO_NOT_TRADE",
+      state: "WATCHING_SHIFT",
       bias_4h: "Neutral",
-      structure_4h: "Unclear",
+      structure_4h: "Ranging",
       structure_15m: "Ranging",
-      hh_hl_active: false,
-      lh_ll_active: false,
-      trigger_5m: "Flat",
+      shift_type: "None",
+      trigger_5m: "Neutral",
+      is_active: false,
+      momentum_shift: false,
       confidence: 0,
-      reason: "Invalid price data",
+      reason: "Insufficient data",
       updated_at: new Date().toISOString(),
     };
   }
 
-  const history = priceHistory.get(symbol) || [];
-  recordPrice(symbol, price);
+  // Layer 1: 4H Bias (directional context)
+  const bias = detect4HBias(history);
+  console.log(`[4H BIAS] ${symbol}: bias=${bias.bias}, structure=${bias.structure}`);
 
-  // STEP 1: Determine 4H bias
-  const { bias: bias4h, structure: structure4h } = detect4HBias(history);
-  console.log(`[4H BIAS] ${symbol}: bias=${bias4h}, structure=${structure4h}`);
+  // Layer 2: 15M Shift (early changes)
+  const shift = detect15mShift(history, bias.bias);
+  console.log(`[15M SHIFT] ${symbol}: forming=${shift.shiftForming}, structure=${shift.structure}, type=${shift.shiftType}`);
 
-  // STEP 2: Detect 15M setup + find compression top entry point
-  const setup = detect15mSetup(history, bias4h);
-  console.log(`[15M SETUP] ${symbol}: structure=${setup.structure}, trigger=${setup.trendlineInteraction}, compressionTop=${setup.compressionTop}`);
+  // Layer 3: 5M Trigger (real-time action)
+  const trigger = detect5mTrigger(history, bias.bias, shift);
+  console.log(`[5M TRIGGER] ${symbol}: trigger=${trigger.trigger}, momentum=${trigger.momentumShift}`);
 
-  let state: TradeState;
+  // DECISION LOGIC: Early Entry Focus
+  let state: TradeState = "WATCHING_SHIFT";
   let direction: "LONG" | "SHORT" | undefined;
-  let reason: string;
-  let confidence: number;
   let entry: number | undefined;
-  let entryDescription: string | undefined;
+  let entry_description: string | undefined;
+  let confidence: number = 0;
+  let reason: string = "";
 
-  // STEP 3: Apply decision logic
-
-  // DO_NOT_TRADE: No structure alignment
-  if (bias4h === "Neutral" && !setup.isSetup) {
-    state = "DO_NOT_TRADE";
-    reason = "No structure, neutral bias";
-    confidence = 0;
-  }
-  // BUILDING: Setup forming (compression zone with bias alignment)
-  // This is where traders enter at yellow circle (compression top)
-  else if (setup.isSetup && bias4h !== "Neutral") {
+  // BUILDING: Early entry zone when shift is forming
+  if (shift.shiftForming || (shift.isCompressing && (trigger.momentumShift || shift.rejectionPoint))) {
     state = "BUILDING";
-    entry = setup.compressionTop; // Entry at compression top (yellow circle)
-    entryDescription = "At compression top";
-    
-    if (bias4h === "Bullish") {
-      reason = "Bullish setup forming (HH/HL pattern)";
-      confidence = setup.hhhlActive ? 65 : 45;
-      direction = "LONG";
-    } else {
-      reason = "Bearish setup forming (LH/LL pattern)";
-      confidence = setup.llnlActive ? 65 : 45;
+    entry = shift.compressionEdge;
+    entry_description = "At compression edge - structure shift forming";
+    confidence = 50;
+    reason = "Early entry zone: " + shift.shiftType;
+
+    // Determine direction based on shift
+    if (shift.shiftType === "HH/HL to LH/LL") {
       direction = "SHORT";
+      confidence = 55;
+    } else if (shift.shiftType === "LH/LL to HH/HL") {
+      direction = "LONG";
+      confidence = 55;
+    } else if (shift.rejectionPoint) {
+      if (trigger.trigger === "Early Break Up") {
+        direction = "LONG";
+        confidence = 50;
+      } else if (trigger.trigger === "Early Break Down") {
+        direction = "SHORT";
+        confidence = 50;
+      }
     }
   }
-  // SNIPER: Breakout/breakdown confirmed with trendline break
+  // SNIPER: Move already underway, structure break clear
   else if (
-    bias4h !== "Neutral" &&
-    (setup.trendlineInteraction === "Breaking Up" || setup.trendlineInteraction === "Breaking Down")
+    (trigger.trigger === "Early Break Up" && bias.bias === "Bullish") ||
+    (trigger.trigger === "Early Break Down" && bias.bias === "Bearish")
   ) {
     state = "SNIPER";
-    entry = price; // Entry at current breakout price
-    entryDescription = "Breakout confirmed";
-    
-    if (bias4h === "Bullish" && setup.hhhlActive) {
+    entry = price;
+    entry_description = "Breakout confirmed - move underway";
+    confidence = 72;
+    reason = trigger.trigger;
+
+    if (trigger.trigger === "Early Break Up") {
       direction = "LONG";
-      reason = "Bullish breakout: HH/HL confirmed + trendline break";
-      confidence = 78;
-    } else if (bias4h === "Bearish" && setup.llnlActive) {
-      direction = "SHORT";
-      reason = "Bearish breakdown: LH/LL confirmed + trendline break";
-      confidence = 78;
     } else {
-      state = "BUILDING";
-      entry = setup.compressionTop;
-      entryDescription = "At compression top";
-      reason = "Structure alignment unclear";
-      confidence = 50;
+      direction = "SHORT";
     }
   }
-  // Default: BUILDING if bias exists but no clear break
-  else if (bias4h !== "Neutral") {
-    state = "BUILDING";
-    entry = setup.compressionTop;
-    entryDescription = "At compression top";
-    reason = `Structure active, ${bias4h.toLowerCase()} bias`;
-    confidence = 50;
-  }
-  // Absolute default
+  // WATCHING_SHIFT: Default active state, market is live
   else {
-    state = "DO_NOT_TRADE";
-    reason = "No actionable structure";
-    confidence = 0;
+    state = "WATCHING_SHIFT";
+    entry = shift.compressionEdge;
+    entry_description = "Monitoring structure - ready for shift";
+    confidence = 30;
+    reason = shift.structure !== "Ranging" ? shift.structure : "Market activity detected";
   }
 
-  // Calculate SL/TP for trade setups
-  let stopLoss: number | undefined;
-  let takeProfit: number | undefined;
-  let riskReward: number | undefined;
-
-  if (direction && entry) {
-    const recent15 = history.slice(-15);
-    const high = Math.max(...recent15);
-    const low = Math.min(...recent15);
+  // Generate trade details if direction exists
+  let stopLoss, takeProfit, riskReward;
+  if (direction) {
+    const recent10 = history.slice(-10);
+    const high = Math.max(...recent10);
+    const low = Math.min(...recent10);
     const rangeSize = high - low;
 
     if (direction === "LONG") {
-      stopLoss = Math.max(low, entry * 0.97);
-      takeProfit = entry + (rangeSize * 1.5);
+      stopLoss = Math.max(low, price * 0.97);
+      takeProfit = price + (rangeSize * 1.5);
     } else {
-      stopLoss = Math.min(high, entry * 1.03);
-      takeProfit = entry - (rangeSize * 1.5);
+      stopLoss = Math.min(high, price * 1.03);
+      takeProfit = price - (rangeSize * 1.5);
     }
 
-    riskReward = Math.abs((takeProfit - entry) / (entry - stopLoss));
+    riskReward = Math.abs((takeProfit - entry!) / (entry! - stopLoss));
     if (!isFinite(riskReward)) riskReward = 0;
   }
 
-  const signal: Signal = {
+  return {
     symbol,
     price,
     state,
-    bias_4h: bias4h,
-    structure_4h: structure4h,
-    structure_15m: setup.structure,
-    hh_hl_active: setup.hhhlActive,
-    lh_ll_active: setup.llnlActive,
-    trigger_5m: setup.trendlineInteraction,
-    ...(entry !== undefined ? { entry, entry_description: entryDescription } : {}),
+    bias_4h: bias.bias,
+    structure_4h: bias.structure,
+    structure_15m: shift.structure,
+    shift_type: shift.shiftType,
+    trigger_5m: trigger.trigger,
+    is_active: shift.shiftForming || trigger.momentumShift || shift.isExpanding,
+    momentum_shift: trigger.momentumShift,
+    ...(entry !== undefined ? { entry, entry_description } : {}),
     ...(direction ? { direction, stopLoss, takeProfit, riskReward } : {}),
     confidence,
     reason,
     updated_at: new Date().toISOString(),
   };
-
-  return signal;
 }
 
 /**
- * Create a complete signal with Kraken prices and structure-based evaluation
+ * Create a complete signal with Kraken prices and early entry analysis
  * Applies hold rules for state inertia
  */
 export async function createSignal(symbol: string): Promise<Signal> {
   const { applyHoldRules } = await import("./persistent-store");
   
   const price = await getKrakenTicker(symbol);
+  
+  if (!price || price <= 0) {
+    return {
+      symbol,
+      price: 0,
+      state: "WATCHING_SHIFT",
+      bias_4h: "Neutral",
+      structure_4h: "Ranging",
+      structure_15m: "Ranging",
+      shift_type: "None",
+      trigger_5m: "Neutral",
+      is_active: false,
+      momentum_shift: false,
+      confidence: 0,
+      reason: "Invalid price data",
+      updated_at: new Date().toISOString(),
+    };
+  }
+
   const marketContext = evaluateMarket(symbol, price);
 
   // Apply hold rules to the evaluated state
@@ -393,7 +456,6 @@ export async function createSignal(symbol: string): Promise<Signal> {
     state: finalState,
     hold_until: holdRemaining > 0 ? Date.now() + holdRemaining : 0,
     hold_remaining_ms: holdRemaining,
-    updated_at: new Date().toISOString(),
   };
 
   return signal;
