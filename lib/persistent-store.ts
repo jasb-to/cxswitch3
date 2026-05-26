@@ -1,106 +1,135 @@
+import { Redis } from "@upstash/redis";
+import type { Signal } from "./strategy-core";
+
+const redis = new Redis({
+  url: process.env.KV_REST_API_URL || "",
+  token: process.env.KV_REST_API_TOKEN || "",
+});
+
+const SIGNALS_KEY = "signals:current";
+const COOLDOWN_KEY_PREFIX = "telegram:cooldown:";
+const LAST_CRON_KEY = "cron:last_execution";
+const REQUEST_DEDUP_KEY_PREFIX = "request:dedup:";
+
 /**
- * PERSISTENT SIGNAL STORE
- * Stores signals and Telegram cooldowns in file system
- * Single source of truth across serverless invocations
+ * Read all current signals from Redis
+ * Returns empty array if no signals exist
  */
-
-import { promises as fs } from "fs";
-import path from "path";
-import type { Signal } from "./signal-store";
-
-const STORE_DIR = "/tmp";
-const SIGNALS_FILE = path.join(STORE_DIR, "signals.json");
-const COOLDOWN_FILE = path.join(STORE_DIR, "telegram_cooldown.json");
-
-interface SignalsStore {
-  signals: Record<string, Signal>;
-  lastUpdated: string;
-}
-
-interface TelegramCooldown {
-  [symbol: string]: number; // timestamp of last alert
-}
-
-// Ensure store directory exists
-async function ensureDir() {
-  try {
-    await fs.mkdir(STORE_DIR, { recursive: true });
-  } catch (err) {
-    console.error("[STORE] Failed to create dir:", err);
-  }
-}
-
-// Read signals from persistent store
 export async function readSignals(): Promise<Signal[]> {
   try {
-    await ensureDir();
-    const data = await fs.readFile(SIGNALS_FILE, "utf-8");
-    const store: SignalsStore = JSON.parse(data);
-    return Object.values(store.signals);
-  } catch (err) {
-    if ((err as any).code === "ENOENT") {
-      console.log("[STORE] Signals file not found, starting fresh");
-      return [];
-    }
-    console.error("[STORE] Failed to read signals:", err);
+    const data = await redis.get(SIGNALS_KEY);
+    if (!data) return [];
+    return Array.isArray(data) ? data : [];
+  } catch (error) {
+    console.error("[STORE] Error reading signals:", error);
     return [];
   }
 }
 
-// Write signals to persistent store
+/**
+ * Write signals to Redis (overwrites existing)
+ * Sets 24-hour TTL to prevent stale data
+ */
 export async function writeSignals(signals: Signal[]): Promise<void> {
   try {
-    await ensureDir();
-    const store: SignalsStore = {
-      signals: Object.fromEntries(signals.map(s => [s.symbol, s])),
-      lastUpdated: new Date().toISOString(),
-    };
-    await fs.writeFile(SIGNALS_FILE, JSON.stringify(store, null, 2));
-    console.log(`[STORE] Persisted ${signals.length} signals`);
-  } catch (err) {
-    console.error("[STORE] Failed to write signals:", err);
+    await redis.set(SIGNALS_KEY, signals, { ex: 86400 }); // 24 hour TTL
+  } catch (error) {
+    console.error("[STORE] Error writing signals:", error);
+    throw error;
   }
 }
 
-// Get a specific signal
-export async function getSignal(symbol: string): Promise<Signal | undefined> {
-  const signals = await readSignals();
-  return signals.find(s => s.symbol === symbol);
+/**
+ * Get a single signal by symbol
+ */
+export async function getSignal(symbol: string): Promise<Signal | null> {
+  try {
+    const signals = await readSignals();
+    return signals.find((s) => s.symbol === symbol) || null;
+  } catch (error) {
+    console.error(`[STORE] Error getting signal for ${symbol}:`, error);
+    return null;
+  }
 }
 
-// Get Telegram cooldown timestamp for symbol
+/**
+ * Get Telegram cooldown for a symbol (milliseconds)
+ * Returns 0 if no cooldown exists (alert is ready)
+ */
 export async function getTelegramCooldown(symbol: string): Promise<number> {
   try {
-    await ensureDir();
-    const data = await fs.readFile(COOLDOWN_FILE, "utf-8");
-    const cooldowns: TelegramCooldown = JSON.parse(data);
-    return cooldowns[symbol] || 0;
-  } catch (err) {
-    if ((err as any).code === "ENOENT") {
-      return 0; // No cooldown file yet
-    }
-    console.error("[STORE] Failed to read cooldowns:", err);
+    const cooldown = await redis.get(`${COOLDOWN_KEY_PREFIX}${symbol}`);
+    return cooldown ? Number(cooldown) : 0;
+  } catch (error) {
+    console.error(`[STORE] Error getting cooldown for ${symbol}:`, error);
     return 0;
   }
 }
 
-// Set Telegram cooldown for symbol
+/**
+ * Set Telegram cooldown for a symbol (persists for 30 minutes)
+ */
 export async function setTelegramCooldown(symbol: string, timestamp: number): Promise<void> {
   try {
-    await ensureDir();
-    let cooldowns: TelegramCooldown = {};
-    
-    try {
-      const data = await fs.readFile(COOLDOWN_FILE, "utf-8");
-      cooldowns = JSON.parse(data);
-    } catch (err) {
-      // File doesn't exist yet, start fresh
+    await redis.set(`${COOLDOWN_KEY_PREFIX}${symbol}`, timestamp, { ex: 1800 }); // 30 min TTL
+  } catch (error) {
+    console.error(`[STORE] Error setting cooldown for ${symbol}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Record last cron execution time
+ */
+export async function getLastCronExecution(): Promise<number> {
+  try {
+    const lastExec = await redis.get(LAST_CRON_KEY);
+    return lastExec ? Number(lastExec) : 0;
+  } catch (error) {
+    console.error("[STORE] Error getting last cron execution:", error);
+    return 0;
+  }
+}
+
+/**
+ * Update last cron execution time
+ */
+export async function setLastCronExecution(timestamp: number): Promise<void> {
+  try {
+    await redis.set(LAST_CRON_KEY, timestamp, { ex: 3600 }); // 1 hour TTL
+  } catch (error) {
+    console.error("[STORE] Error setting last cron execution:", error);
+    throw error;
+  }
+}
+
+/**
+ * Request deduplication for 60 seconds
+ * Returns true if request should be processed, false if duplicate
+ */
+export async function checkAndSetRequestDedup(requestId: string): Promise<boolean> {
+  try {
+    const existing = await redis.get(`${REQUEST_DEDUP_KEY_PREFIX}${requestId}`);
+    if (existing) {
+      return false; // Duplicate, skip processing
     }
-    
-    cooldowns[symbol] = timestamp;
-    await fs.writeFile(COOLDOWN_FILE, JSON.stringify(cooldowns, null, 2));
-    console.log(`[STORE] Set Telegram cooldown for ${symbol} to ${new Date(timestamp).toISOString()}`);
-  } catch (err) {
-    console.error("[STORE] Failed to set cooldown:", err);
+    await redis.set(`${REQUEST_DEDUP_KEY_PREFIX}${requestId}`, "1", { ex: 60 }); // 60 sec TTL
+    return true; // First time, process it
+  } catch (error) {
+    console.error(`[STORE] Error checking dedup for ${requestId}:`, error);
+    return true; // On error, allow processing
+  }
+}
+
+/**
+ * Health check - verify Redis connectivity
+ */
+export async function healthCheck(): Promise<boolean> {
+  try {
+    await redis.ping();
+    return true;
+  } catch (error) {
+    console.error("[STORE] Redis health check failed:", error);
+    return false;
   }
 }
