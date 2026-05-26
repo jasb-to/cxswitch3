@@ -14,17 +14,38 @@ export interface Signal {
   symbol: string;
   price: number;
   state: TradeState;
+  
+  // 4H STRUCTURE CONTEXT (directional bias layer)
   bias_4h: "Bullish" | "Bearish" | "Neutral";
-  structure_4h: "HH/HL" | "LH/LL" | "Transitioning" | "Ranging";
-  structure_15m: "Compressing" | "Shift Forming" | "Expanding" | "Ranging";
-  trigger_5m: "Early Break Up" | "Early Break Down" | "Retest Bullish" | "Retest Bearish" | "Flat";
-  direction?: "LONG" | "SHORT";
+  structure_4h: "HH/HL" | "LH/LL" | "Ranging" | "Transitioning";
+  
+  // 15M STRUCTURE (shift detection layer)
+  structure_15m: "Shift Forming" | "Compressing" | "Expanding" | "Ranging";
+  shift_type: "HH/HL to LH/LL" | "LH/LL to HH/HL" | "None";
+  
+  // 5M TRIGGER (execution layer)
+  trigger_5m: "Early Break Up" | "Early Break Down" | "Retest" | "Compression" | "Neutral";
+  
+  // MARKET ACTIVITY DETECTION
+  is_active: boolean;
+  momentum_shift: boolean;
+  
+  // ENTRY POINT
   entry?: number;
+  entry_description?: string;
+  
+  // Trade details
+  direction?: "LONG" | "SHORT";
   stopLoss?: number;
   takeProfit?: number;
   riskReward?: number;
-  confidence: number;
+  confidence?: number;
+  reason?: string;
+  
+  // Hold state
+  hold_until?: number;
   hold_remaining_ms?: number;
+  
   updated_at: string;
 }
 
@@ -199,41 +220,37 @@ function evaluateMarket(symbol: string, price: number): Omit<Signal, "symbol" | 
   let state: TradeState;
   let direction: "LONG" | "SHORT" | undefined;
   let confidence: number;
-  let reason: string;
   let entry: number | undefined;
-  let entryDescription: string | undefined;
 
+  // BUILDING: Early entry zone (any shift forming)
   if (shift.structure === "Shift Forming" || (shift.structure === "Compressing" && bias4h !== "Neutral")) {
     state = "BUILDING";
     entry = shift.entryLevel;
-    entryDescription = "At compression edge";
     
     if (bias4h === "Bullish" && shift.shiftType === "HH/HL to LH/LL") {
       direction = "LONG";
       confidence = 55;
-      reason = "Bullish structure, shift forming";
     } else if (bias4h === "Bearish" && shift.shiftType === "LH/LL to HH/HL") {
       direction = "SHORT";
       confidence = 55;
-      reason = "Bearish structure, shift forming";
     } else {
       confidence = 45;
-      reason = "Setup edge detected";
     }
-  } else if (
+  }
+  // SNIPER: Move already underway
+  else if (
     (trigger5m === "Early Break Up" && bias4h === "Bullish") ||
     (trigger5m === "Early Break Down" && bias4h === "Bearish")
   ) {
     state = "SNIPER";
     entry = price;
-    entryDescription = "Breakout confirmed";
     direction = trigger5m === "Early Break Up" ? "LONG" : "SHORT";
     confidence = 75;
-    reason = "Trendline break confirmed";
-  } else {
+  }
+  // WATCHING_SHIFT: Default active state
+  else {
     state = "WATCHING_SHIFT";
     confidence = Math.max(20, Math.floor(momentumShift ? 35 : 20));
-    reason = "Market context: " + structure4h + ", " + shift.structure;
   }
 
   let stopLoss, takeProfit, riskReward;
