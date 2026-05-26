@@ -13,6 +13,7 @@ const LAST_CRON_KEY = "cron:last_execution";
 const REQUEST_DEDUP_KEY_PREFIX = "request:dedup:";
 
 const HOLD_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+const SIGNAL_LOCK_MS = 120 * 1000; // 2 minutes - lock window for signal persistence
 
 /**
  * Signal Hold State - persisted per symbol
@@ -26,6 +27,7 @@ export interface SignalHoldState {
   holdUntil: number;
   confidence: number;
   sniper_confirmed_at?: number; // When SNIPER was confirmed
+  lockUntil?: number; // Signal lock window - prevents state changes during this period
 }
 
 /**
@@ -43,6 +45,15 @@ export async function getHoldState(symbol: string): Promise<SignalHoldState | nu
 }
 
 /**
+ * Check if a signal is currently locked (prevent recomputation)
+ */
+export async function isSignalLocked(symbol: string, now: number = Date.now()): Promise<boolean> {
+  const holdState = await getHoldState(symbol);
+  if (!holdState || !holdState.lockUntil) return false;
+  return now < holdState.lockUntil;
+}
+
+/**
  * Set hold state for a symbol (persists for 30 minutes to outlive any hold)
  */
 export async function setHoldState(state: SignalHoldState): Promise<void> {
@@ -57,6 +68,8 @@ export async function setHoldState(state: SignalHoldState): Promise<void> {
 /**
  * Apply hold rule to an evaluated state
  * Returns the actual state to use based on hold rules
+ * 
+ * CRITICAL: Signal lock prevents recomputation during lock window
  */
 export async function applyHoldRules(
   symbol: string,
@@ -66,9 +79,16 @@ export async function applyHoldRules(
 ): Promise<{ finalState: TradeState; holdRemaining: number }> {
   const holdState = await getHoldState(symbol);
   
+  // SIGNAL LOCK CHECK - If locked, return signal as-is (DO NOT RECOMPUTE)
+  if (holdState && holdState.lockUntil && now < holdState.lockUntil) {
+    const lockRemaining = holdState.lockUntil - now;
+    console.log(`[LOCK] ${symbol} signal locked: ${holdState.state} (${lockRemaining}ms remaining)`);
+    return { finalState: holdState.state, holdRemaining: lockRemaining };
+  }
+
   // No hold state exists yet
   if (!holdState) {
-    // Initialize hold state
+    // Initialize hold state with signal lock
     const newHoldState: SignalHoldState = {
       symbol,
       state: evaluatedState,
@@ -76,6 +96,7 @@ export async function applyHoldRules(
       lastChangeTimestamp: now,
       holdUntil: evaluatedState !== "WATCHING_SHIFT" ? now + HOLD_DURATION_MS : 0,
       confidence: evaluatedConfidence,
+      lockUntil: evaluatedState !== "WATCHING_SHIFT" ? now + SIGNAL_LOCK_MS : 0,
       ...(evaluatedState === "SNIPER" ? { sniper_confirmed_at: now } : {}),
     };
     await setHoldState(newHoldState);
@@ -87,16 +108,17 @@ export async function applyHoldRules(
 
   console.log(`[HOLD] ${symbol}: current=${holdState.state}, evaluated=${evaluatedState}, holdActive=${isHoldActive}, holdRemaining=${holdRemaining}ms`);
 
-  // SNIPER LOCK - Never downgrade during hold
+  // SNIPER LOCK - Never downgrade during hold, maintain lock
   if (holdState.state === "SNIPER" && isHoldActive) {
     if (evaluatedState !== "SNIPER") {
       console.log(`[HOLD] ${symbol} locked in SNIPER (hold expires in ${holdRemaining}ms)`);
       return { finalState: "SNIPER", holdRemaining };
     }
-    // SNIPER remains, refresh hold
+    // SNIPER remains, refresh confidence and maintain lock
     const updated: SignalHoldState = {
       ...holdState,
       confidence: Math.max(holdState.confidence, evaluatedConfidence),
+      lockUntil: holdState.lockUntil || now + SIGNAL_LOCK_MS,
     };
     await setHoldState(updated);
     return { finalState: "SNIPER", holdRemaining };
@@ -105,7 +127,7 @@ export async function applyHoldRules(
   // BUILDING HOLD - Can upgrade to SNIPER immediately, cannot downgrade
   if (holdState.state === "BUILDING" && isHoldActive) {
     if (evaluatedState === "SNIPER") {
-      // Upgrade to SNIPER
+      // Upgrade to SNIPER - extend lock
       const updated: SignalHoldState = {
         symbol,
         state: "SNIPER",
@@ -113,10 +135,11 @@ export async function applyHoldRules(
         lastChangeTimestamp: now,
         holdUntil: now + HOLD_DURATION_MS,
         confidence: evaluatedConfidence,
+        lockUntil: now + SIGNAL_LOCK_MS,
         sniper_confirmed_at: now,
       };
       await setHoldState(updated);
-      console.log(`[HOLD] ${symbol} upgraded: BUILDING → SNIPER`);
+      console.log(`[HOLD] ${symbol} upgraded: BUILDING → SNIPER (locked)`);
       return { finalState: "SNIPER", holdRemaining: 0 };
     }
     // BUILDING persists through hold - cannot downgrade
@@ -131,7 +154,7 @@ export async function applyHoldRules(
 
   // State changed (hold expired or transition happening)
   if (evaluatedState !== "WATCHING_SHIFT") {
-    // Entering BUILDING or SNIPER, apply new hold
+    // Entering BUILDING or SNIPER, apply new hold and lock
     const updated: SignalHoldState = {
       symbol,
       state: evaluatedState,
@@ -139,10 +162,11 @@ export async function applyHoldRules(
       lastChangeTimestamp: now,
       holdUntil: now + HOLD_DURATION_MS,
       confidence: evaluatedConfidence,
+      lockUntil: now + SIGNAL_LOCK_MS,
       ...(evaluatedState === "SNIPER" ? { sniper_confirmed_at: now } : {}),
     };
     await setHoldState(updated);
-    console.log(`[HOLD] ${symbol} transitioned: ${holdState.state} → ${evaluatedState}`);
+    console.log(`[HOLD] ${symbol} transitioned: ${holdState.state} → ${evaluatedState} (locked)`);
     return { finalState: evaluatedState, holdRemaining: 0 };
   }
 
