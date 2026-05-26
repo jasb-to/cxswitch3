@@ -186,54 +186,46 @@ function evaluateMarket(symbol: string, price: number): Omit<Signal, "symbol" | 
   const history = priceHistory.get(symbol) || [];
   recordPrice(symbol, price);
 
-  const { bias: bias4h, structure: structure4h } = detect4HBias(history);
-  const shift = detect15mShift(history, bias4h);
+  // Layer 1: 4H bias
+  const { bias: bias_4h, structure: structure_4h } = detect4HBias(history);
+  const shift = detect15mShift(history, bias_4h);
 
-  const isActive = shift.structure !== "Ranging" || bias4h !== "Neutral";
+  const isActive = shift.structure !== "Ranging" || bias_4h !== "Neutral";
   const momentumShift = history.length >= 3 && 
     (history[history.length - 1] - history[history.length - 2]) * 
     (history[history.length - 2] - history[history.length - 3]) < 0;
   
-  const { trigger: trigger5m } = detect5mTrigger(history, isActive, momentumShift);
+  const { trigger: trigger_5m } = detect5mTrigger(history, isActive, momentumShift);
 
   let state: TradeState;
   let direction: "LONG" | "SHORT" | undefined;
   let confidence: number;
-  let reason: string;
   let entry: number | undefined;
-  let entryDescription: string | undefined;
 
-  if (shift.structure === "Shift Forming" || (shift.structure === "Compressing" && bias4h !== "Neutral")) {
+  if (shift.structure === "Shift Forming" || (shift.structure === "Compressing" && bias_4h !== "Neutral")) {
     state = "BUILDING";
     entry = shift.entryLevel;
-    entryDescription = "At compression edge";
     
-    if (bias4h === "Bullish" && shift.shiftType === "HH/HL to LH/LL") {
+    if (bias_4h === "Bullish" && shift.shiftType === "HH/HL to LH/LL") {
       direction = "LONG";
       confidence = 55;
-      reason = "Bullish structure, shift forming";
-    } else if (bias4h === "Bearish" && shift.shiftType === "LH/LL to HH/HL") {
+    } else if (bias_4h === "Bearish" && shift.shiftType === "LH/LL to HH/HL") {
       direction = "SHORT";
       confidence = 55;
-      reason = "Bearish structure, shift forming";
     } else {
       confidence = 45;
-      reason = "Setup edge detected";
     }
   } else if (
-    (trigger5m === "Early Break Up" && bias4h === "Bullish") ||
-    (trigger5m === "Early Break Down" && bias4h === "Bearish")
+    (trigger_5m === "Early Break Up" && bias_4h === "Bullish") ||
+    (trigger_5m === "Early Break Down" && bias_4h === "Bearish")
   ) {
     state = "SNIPER";
     entry = price;
-    entryDescription = "Breakout confirmed";
-    direction = trigger5m === "Early Break Up" ? "LONG" : "SHORT";
+    direction = trigger_5m === "Early Break Up" ? "LONG" : "SHORT";
     confidence = 75;
-    reason = "Trendline break confirmed";
   } else {
     state = "WATCHING_SHIFT";
     confidence = Math.max(20, Math.floor(momentumShift ? 35 : 20));
-    reason = "Market context: " + structure4h + ", " + shift.structure;
   }
 
   let stopLoss, takeProfit, riskReward;
@@ -257,7 +249,7 @@ function evaluateMarket(symbol: string, price: number): Omit<Signal, "symbol" | 
 
   return {
     state,
-    bias_4h: bias4h,
+    bias_4h,
     structure_4h,
     structure_15m: shift.structure,
     trigger_5m,
