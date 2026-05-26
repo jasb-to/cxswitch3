@@ -19,6 +19,7 @@ export interface Signal {
   macro_bias: "Bullish" | "Bearish" | "Neutral";
   momentum_percent: number; // Current momentum as percentage
   volatility_percent: number; // Current volatility as percentage
+  readiness_score: number; // 0-100 readiness percentage
   
   // Trade details (optional, only for SNIPER)
   direction?: "LONG" | "SHORT";
@@ -199,6 +200,7 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
       macro_bias: "Neutral",
       momentum_percent: 0,
       volatility_percent: 0,
+      readiness_score: 0,
       reason: "Invalid price data",
     };
   }
@@ -243,31 +245,43 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
   if (volatility > 0.5 && volatility < 2.0) confluenceScore += 15, reasons.push("Healthy volatility");
   if (volatility > 2.0) confluenceScore += 10, reasons.push("High volatility expansion");
 
-  // Confluence threshold logic - FINAL 3-STATE MODEL
-  // NO sub-states, NO hidden tiers, NO simulation
+  // Confluence threshold logic - STRICT 3-STATE MODEL PER PROMPT
+  // DO_NOT_TRADE: confluence < 35 OR momentum < 0.2% AND range/compression
+  // BUILDING: confluence >= 35 AND (structure != Range OR momentum >= 0.25% OR vol > 0.3%)
+  // SNIPER: confluence >= 70 AND breakout AND trend aligned
   
   let state: TradeState;
+  let readiness_score = 0; // 0-100
 
   if (confluenceScore >= 70 && structure === "Breakout" && trend !== "Neutral") {
     // SNIPER: FULL EXECUTION CONDITION
-    // Clear directional structure + momentum aligned + strong confluence
     state = "SNIPER";
+    readiness_score = Math.min(100, confluenceScore + (absMomentum * 5));
     console.log(`[STRATEGY] ${symbol} → SNIPER (confluence=${confluenceScore}, structure=${structure}, trend=${trend})`);
   } else if (
-    (structure === "Reversal" || structure === "Expansion" || structure === "Breakout") &&
-    (confluenceScore >= 35 || absMomentum > 0.3) &&
-    trend !== "Neutral" &&
-    volatility > 0.3
+    confluenceScore >= 35 &&
+    (structure !== "Range" || absMomentum >= 0.25 || volatility > 0.3) &&
+    trend !== "Neutral"
   ) {
-    // BUILDING: EARLY SETUP FORMING (EDGE STATE FOR EARLY ENTRIES)
-    // This is where you "watch and stage" - structure developing + momentum emerging
-    // Key: This triggers when setup is FORMING, not when full execution is ready
+    // BUILDING: EDGE STATE FOR EARLY ENTRIES
+    // Triggers when structure is forming OR momentum emerging with trend direction
     state = "BUILDING";
+    readiness_score = Math.min(100, confluenceScore + (absMomentum * 3));
     console.log(`[STRATEGY] ${symbol} → BUILDING (confluence=${confluenceScore}, structure=${structure}, momentum=${absMomentum.toFixed(2)}%)`);
+  } else if (
+    // Additional BUILDING condition: if even low confluence but structure is clearly forming
+    (structure === "Reversal" || structure === "Expansion") &&
+    trend !== "Neutral" &&
+    absMomentum >= 0.25
+  ) {
+    // Early-stage momentum with structure type
+    state = "BUILDING";
+    readiness_score = Math.min(100, Math.max(30, confluenceScore + (absMomentum * 5)));
+    console.log(`[STRATEGY] ${symbol} → BUILDING (early structure forming, confluence=${confluenceScore}, momentum=${absMomentum.toFixed(2)}%)`);
   } else {
-    // DO_NOT_TRADE: MARKET NOT READY
-    // Compression, range, or unclear structure + low/conflicting confluence
+    // DO_NOT_TRADE: Market not ready
     state = "DO_NOT_TRADE";
+    readiness_score = Math.max(0, confluenceScore / 2); // Show some context even when not trading
     console.log(`[STRATEGY] ${symbol} → DO_NOT_TRADE (confluence=${confluenceScore}, structure=${structure})`);
   }
 
@@ -308,6 +322,7 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
       macro_bias,
       momentum_percent: momentum,
       volatility_percent: volatility,
+      readiness_score,
       direction,
       entry,
       stopLoss: parseFloat(sl.toFixed(2)),
@@ -325,6 +340,7 @@ function evaluateMarket(symbol: string, price: number): { state: TradeState; det
     macro_bias,
     momentum_percent: momentum,
     volatility_percent: volatility,
+    readiness_score,
     reason: reasons[0] || "Market context",
   };
 }
