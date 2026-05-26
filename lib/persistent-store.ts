@@ -18,8 +18,20 @@ const REQUEST_DEDUP_KEY_PREFIX = "request:dedup:";
 export async function readSignals(): Promise<Signal[]> {
   try {
     const data = await redis.get(SIGNALS_KEY);
-    if (!data) return [];
-    return Array.isArray(data) ? data : [];
+    console.log("[STORE/READ] Raw Redis response:", data ? `${(data as any[]).length} items` : "null");
+    if (!data) {
+      console.log("[STORE/READ] No data in Redis, returning empty array");
+      return [];
+    }
+    if (!Array.isArray(data)) {
+      console.error("[STORE/READ] Data is not array, got:", typeof data, data);
+      return [];
+    }
+    console.log("[STORE/READ] Returning", data.length, "signals from Redis");
+    data.forEach((s: any) => {
+      console.log(`[STORE/READ] ${s.symbol}: state=${s.state}, readiness=${s.readiness_score}`);
+    });
+    return data;
   } catch (error) {
     console.error("[STORE] Error reading signals:", error);
     return [];
