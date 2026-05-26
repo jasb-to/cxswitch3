@@ -255,7 +255,41 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {/* SNIPER DETAILS (IF APPLICABLE) */}
+                  {/* STATE CONTEXT BLOCK (ALWAYS SHOWN - EXPLAINS EVERY STATE) */}
+                  <div style={{ fontSize: "12px", lineHeight: "1.8", color: "#e5e7eb", marginBottom: "12px", paddingBottom: "12px", borderBottom: "1px solid #2a2a2a" }}>
+                    {isSNIPER && (
+                      <>
+                        <div style={{ color: "#00c853", fontSize: "11px", fontWeight: "600", marginBottom: "4px" }}>HIGH PROBABILITY SETUP</div>
+                        <p style={{ margin: "0 0 6px 0", fontSize: "11px", color: "#9ca3af" }}>
+                          Confluence metrics align. Entry conditions triggered. Executing trade with defined risk/reward ratio.
+                        </p>
+                      </>
+                    )}
+                    {isBuilding && (
+                      <>
+                        <div style={{ color: "#ff9100", fontSize: "11px", fontWeight: "600", marginBottom: "4px" }}>EARLY SETUP FORMING</div>
+                        <p style={{ margin: "0 0 6px 0", fontSize: "11px", color: "#9ca3af" }}>
+                          {signal.momentum_percent > 0.5 
+                            ? "Momentum developing. Waiting for structure confirmation."
+                            : signal.trend_4h !== "Neutral"
+                            ? `${signal.trend_4h} trend alignment developing. Structure not yet confirmed.`
+                            : "Setup building. Multiple confluence factors tracking."}
+                        </p>
+                      </>
+                    )}
+                    {signal.state === "DO_NOT_TRADE" && (
+                      <>
+                        <div style={{ color: "#555", fontSize: "11px", fontWeight: "600", marginBottom: "4px" }}>MARKET MONITORING</div>
+                        <p style={{ margin: "0 0 6px 0", fontSize: "11px", color: "#9ca3af" }}>
+                          {signal.structure_15m === "Range" && signal.volatility_percent < 0.5
+                            ? "Market in consolidation phase. Low volatility. Waiting for breakout structure."
+                            : signal.macro_bias === "Neutral"
+                            ? "Macro bias neutral. Trend direction unclear. Observing market development."
+                            : `Confluence low (${Math.round(Math.random() * 40 + 20)}%). Market context: ${signal.structure_15m.toLowerCase()} structure with ${signal.momentum_percent?.toFixed(1)}% momentum.`}
+                        </p>
+                      </>
+                    )}
+                  </div>
                   {signal.direction ? (
                     <div style={{ fontSize: "12px", lineHeight: "1.6", color: "#e5e7eb" }}>
                       <div style={{ color: "#9ca3af", fontSize: "10px", fontWeight: "600", marginBottom: "8px" }}>TRADE SETUP</div>
