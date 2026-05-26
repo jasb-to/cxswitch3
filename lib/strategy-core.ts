@@ -1,55 +1,15 @@
 /**
- * TRADING STRATEGY ENGINE - EARLY ENTRY MODE v2
- * 
- * Focus: Early structural shifts and trendline breaks, not confirmed setups.
- * Detect the shift early → prioritise transition states over completed structures
+ * EVENT-DRIVEN TRADING STRATEGY ENGINE
+ * Detects real-time price action events and transitions between BUILDING → SNIPER
+ * Every candle produces a directional read. Markets are always active.
  */
 
-export type TradeState = "SNIPER" | "BUILDING" | "WATCHING_SHIFT";
+import type { Signal } from "./signal-store";
 
 export const SYMBOLS = ["BTC", "ETH", "SOL"] as const;
 export type Symbol = typeof SYMBOLS[number];
 
-export interface Signal {
-  symbol: string;
-  price: number;
-  state: TradeState;
-  
-  // 4H STRUCTURE CONTEXT (directional bias layer)
-  bias_4h: "Bullish" | "Bearish" | "Neutral";
-  structure_4h: "HH/HL" | "LH/HL" | "Ranging" | "Transitioning";
-  
-  // 15M STRUCTURE (shift detection layer)
-  structure_15m: "Shift Forming" | "Compressing" | "Expanding" | "Ranging";
-  shift_type: "HH/HL to LH/LL" | "LH/LL to HH/HL" | "None"; // Directional shift happening
-  
-  // 5M TRIGGER (execution layer - what is happening NOW)
-  trigger_5m: "Early Break Up" | "Early Break Down" | "Retest" | "Compression" | "Neutral";
-  
-  // MARKET ACTIVITY DETECTION
-  is_active: boolean; // Price is moving near key levels or changing momentum
-  momentum_shift: boolean; // Momentum just changed direction (early signal)
-  
-  // ENTRY POINT (structure edge, not completion)
-  entry?: number; // Entry at structure edge / compression boundary
-  entry_description?: string; // "At compression edge" | "Structure shift forming" etc
-  
-  // Trade details (only for BUILDING / SNIPER)
-  direction?: "LONG" | "SHORT";
-  stopLoss?: number;
-  takeProfit?: number;
-  riskReward?: number;
-  confidence?: number;
-  reason?: string;
-  
-  // Hold state fields (UI display)
-  hold_until?: number;
-  hold_remaining_ms?: number;
-  
-  updated_at: string;
-}
-
-// In-memory price history for structure detection
+// In-memory price history for event detection
 const priceHistory = new Map<string, number[]>();
 const MAX_HISTORY = 100;
 
@@ -89,7 +49,7 @@ async function getKrakenTicker(symbol: string): Promise<number> {
       return 0;
     }
 
-    const price = parseFloat(tickerData.c[0]); // Last trade close price
+    const price = parseFloat(tickerData.c[0]);
     if (price <= 0) {
       console.warn(`[KRAKEN] Invalid price for ${symbol}: ${price}`);
       return 0;
@@ -103,359 +63,347 @@ async function getKrakenTicker(symbol: string): Promise<number> {
 }
 
 /**
- * LAYER 1: 4H BIAS - Directional context
- * Detects if bullish (HH/HL) or bearish (LH/LL) pattern is active
+ * REAL-TIME EVENT DETECTION
+ * Detects: breakout_attempt, rejection, retest, sweep, acceleration, exhaustion
  */
-function detect4HBias(history: number[]): { bias: "Bullish" | "Bearish" | "Neutral"; structure: "HH/HL" | "LH/LL" | "Ranging" | "Transitioning" } {
-  if (history.length < 10) {
-    return { bias: "Neutral", structure: "Ranging" };
-  }
-
-  const recent = history.slice(-20);
-  
-  let hhCount = 0, hlCount = 0, llCount = 0, lhCount = 0;
-  
-  for (let i = 2; i < recent.length; i++) {
-    const isHH = recent[i] > recent[i-2] && recent[i-1] > recent[i-3];
-    const isHL = recent[i-1] > recent[i-3] && recent[i] < recent[i-1];
-    const isLL = recent[i] < recent[i-2] && recent[i-1] < recent[i-3];
-    const isLH = recent[i-1] < recent[i-3] && recent[i] > recent[i-1];
-    
-    if (isHH) hhCount++;
-    if (isHL) hlCount++;
-    if (isLL) llCount++;
-    if (isLH) lhCount++;
-  }
-
-  const hhhlActive = hhCount >= 2 || (hhCount > 0 && hlCount > 0);
-  const llnlActive = llCount >= 2 || (llCount > 0 && lhCount > 0);
-
-  if (hhhlActive && !llnlActive) {
-    return { bias: "Bullish", structure: "HH/HL" };
-  }
-  if (llnlActive && !hhhlActive) {
-    return { bias: "Bearish", structure: "LH/LL" };
-  }
-  if (hhhlActive && llnlActive) {
-    return { bias: "Neutral", structure: "Ranging" };
-  }
-
-  return { bias: "Neutral", structure: "Ranging" };
+interface EventDetection {
+  event: "breakout_attempt" | "rejection" | "retest" | "sweep" | "acceleration" | "exhaustion";
+  direction: "LONG" | "SHORT";
+  entryLevel: number;
+  description: string;
+  confidence: number; // 0-100
 }
 
-/**
- * LAYER 2: 15M SHIFT DETECTION - Early structural changes
- * Detects compression, expansion, and early shift formations (yellow circles)
- */
-function detect15mShift(history: number[], bias: "Bullish" | "Bearish" | "Neutral"): { 
-  shiftForming: boolean; // Any transition starting
-  isCompressing: boolean; // In compression zone
-  isExpanding: boolean; // Breaking out of compression
-  structure: "Shift Forming" | "Compressing" | "Expanding" | "Ranging";
-  shiftType: "HH/HL to LH/LL" | "LH/LL to HH/HL" | "None";
-  compressionEdge?: number; // Entry at edge, not completion
-  rejectionPoint?: boolean; // Failed retest detected
-} {
-  if (history.length < 5) {
-    return { shiftForming: false, isCompressing: false, isExpanding: false, structure: "Ranging", shiftType: "None" };
+function detectEvent(symbol: string, history: number[]): EventDetection | null {
+  if (history.length < 5) return null;
+
+  const current = history[history.length - 1];
+  const prev = history[history.length - 2];
+  const prev2 = history[history.length - 3];
+  const prev3 = history[history.length - 4];
+  const prev4 = history[history.length - 5];
+
+  // Get recent extremes
+  const last10 = history.slice(-10);
+  const recentHigh = Math.max(...last10);
+  const recentLow = Math.min(...last10);
+  const rangeSize = recentHigh - recentLow;
+
+  // BREAKOUT ATTEMPT: Price pushes beyond recent high/low
+  const breakoutUpAttempt = current > recentHigh && prev <= recentHigh;
+  const breakoutDownAttempt = current < recentLow && prev >= recentLow;
+
+  if (breakoutUpAttempt) {
+    console.log(`[EVENT] ${symbol}: Breakout attempt UP at ${current}`);
+    return {
+      event: "breakout_attempt",
+      direction: "LONG",
+      entryLevel: current,
+      description: `Breakout above ${recentHigh.toFixed(2)}`,
+      confidence: 65,
+    };
   }
 
-  const recent = history.slice(-15);
-  const current = recent[recent.length - 1];
-  const prev = recent[recent.length - 2];
-  const prev2 = recent[recent.length - 3];
-  
-  // Detect if bullish structure (HH/HL) is forming
-  let hhhlCount = 0;
-  for (let i = 2; i < recent.length; i++) {
-    if (recent[i] > recent[i-2] && recent[i-1] > recent[i-3]) hhhlCount++;
-  }
-  
-  // Detect if bearish structure (LH/LL) is forming
-  let llnlCount = 0;
-  for (let i = 2; i < recent.length; i++) {
-    if (recent[i] < recent[i-2] && recent[i-1] < recent[i-3]) llnlCount++;
+  if (breakoutDownAttempt) {
+    console.log(`[EVENT] ${symbol}: Breakout attempt DOWN at ${current}`);
+    return {
+      event: "breakout_attempt",
+      direction: "SHORT",
+      entryLevel: current,
+      description: `Breakout below ${recentLow.toFixed(2)}`,
+      confidence: 65,
+    };
   }
 
-  const hhhlForming = hhhlCount >= 1; // Early detection, not waiting for 2+ confirmations
-  const llnlForming = llnlCount >= 1;
+  // REJECTION: Failed breakout with strong reversal wick
+  const rejectionUp = prev > recentHigh && current < prev * 0.998; // Wick up, closed lower
+  const rejectionDown = prev < recentLow && current > prev * 1.002; // Wick down, closed higher
 
-  // Compression detection: tight range
-  const high5 = Math.max(...recent.slice(-5));
-  const low5 = Math.min(...recent.slice(-5));
-  const range5 = high5 - low5;
-  const avgPrice = (high5 + low5) / 2;
-  const isCompressing = range5 < avgPrice * 0.005; // < 0.5% = tight compression
-
-  // Expansion detection: volatility increase
-  const volatilityRecent = Math.abs(current - prev) + Math.abs(prev - prev2);
-  const volatilityOld = recent.slice(-10).reduce((sum, p, i, arr) => 
-    i > 0 ? sum + Math.abs(p - arr[i-1]) : 0, 0) / 10;
-  const isExpanding = volatilityRecent > volatilityOld * 1.3;
-
-  // Rejection detection: failed retest at level
-  const support = Math.min(...recent.slice(-8));
-  const resistance = Math.max(...recent.slice(-8));
-  const rejectionAtSupport = prev > support && current < support && Math.abs(current - support) < range5;
-  const rejectionAtResistance = prev < resistance && current > resistance && Math.abs(current - resistance) < range5;
-  const rejectionPoint = rejectionAtSupport || rejectionAtResistance;
-
-  // Shift detection: pattern reversing
-  let shiftType: "HH/HL to LH/LL" | "LH/LL to HH/HL" | "None" = "None";
-  if (bias === "Bullish" && llnlForming && !hhhlForming) {
-    shiftType = "HH/HL to LH/LL";
-  } else if (bias === "Bearish" && hhhlForming && !llnlForming) {
-    shiftType = "LH/LL to HH/HL";
+  if (rejectionUp) {
+    console.log(`[EVENT] ${symbol}: Rejection at resistance ${prev}`);
+    return {
+      event: "rejection",
+      direction: "SHORT",
+      entryLevel: prev, // Entry at rejection wick high
+      description: `Rejection at resistance ${prev.toFixed(2)}`,
+      confidence: 70,
+    };
   }
 
-  // Determine structure phase
-  let structure: "Shift Forming" | "Compressing" | "Expanding" | "Ranging" = "Ranging";
-  if (shiftType !== "None") {
-    structure = "Shift Forming";
-  } else if (isCompressing) {
-    structure = "Compressing";
-  } else if (isExpanding) {
-    structure = "Expanding";
+  if (rejectionDown) {
+    console.log(`[EVENT] ${symbol}: Rejection at support ${prev}`);
+    return {
+      event: "rejection",
+      direction: "LONG",
+      entryLevel: prev, // Entry at rejection wick low
+      description: `Rejection at support ${prev.toFixed(2)}`,
+      confidence: 70,
+    };
   }
 
-  const shiftForming = shiftType !== "None" || rejectionPoint || (isCompressing && (hhhlForming || llnlForming));
+  // SWEEP: Liquidity grab above/below recent extreme
+  const sweepHigh = current > recentHigh * 1.003; // 0.3% above recent high
+  const sweepLow = current < recentLow * 0.997; // 0.3% below recent low
 
-  return {
-    shiftForming,
-    isCompressing,
-    isExpanding,
-    structure,
-    shiftType,
-    compressionEdge: isCompressing ? high5 : undefined,
-    rejectionPoint,
-  };
-}
-
-/**
- * LAYER 3: 5M TRIGGER - Real-time price action
- * Detects early breaks, retests, and momentum changes
- */
-function detect5mTrigger(history: number[], bias: "Bullish" | "Bearish" | "Neutral", shift: ReturnType<typeof detect15mShift>): {
-  trigger: "Early Break Up" | "Early Break Down" | "Retest" | "Compression" | "Neutral";
-  momentumShift: boolean;
-} {
-  if (history.length < 3) {
-    return { trigger: "Neutral", momentumShift: false };
+  if (sweepHigh) {
+    console.log(`[EVENT] ${symbol}: Sweep HIGH at ${current}`);
+    return {
+      event: "sweep",
+      direction: "LONG",
+      entryLevel: current,
+      description: `Liquidity grab above ${recentHigh.toFixed(2)}`,
+      confidence: 72,
+    };
   }
 
-  const recent = history.slice(-5);
-  const current = recent[recent.length - 1];
-  const prev = recent[recent.length - 2];
-  const prev2 = recent[recent.length - 3];
+  if (sweepLow) {
+    console.log(`[EVENT] ${symbol}: Sweep LOW at ${current}`);
+    return {
+      event: "sweep",
+      direction: "SHORT",
+      entryLevel: current,
+      description: `Liquidity grab below ${recentLow.toFixed(2)}`,
+      confidence: 72,
+    };
+  }
 
-  const priceChange = current - prev;
-  const direction = priceChange > 0 ? "Up" : priceChange < 0 ? "Down" : "Flat";
+  // RETEST: Return to recently tested level
+  const retestingHigh = Math.abs(current - recentHigh) < rangeSize * 0.02 && current > recentLow;
+  const retestingLow = Math.abs(current - recentLow) < rangeSize * 0.02 && current < recentHigh;
 
-  // Early momentum shift detection
-  const momentumChanging = 
-    (prev2 > prev && current > prev) || // Starting to move up
-    (prev2 < prev && current < prev);   // Starting to move down
-  const momentumShift = Math.abs(priceChange) > 0.001 && momentumChanging;
+  if (retestingHigh && (prev > current || prev2 > current)) {
+    console.log(`[EVENT] ${symbol}: Retest of high at ${current}`);
+    return {
+      event: "retest",
+      direction: "LONG",
+      entryLevel: recentLow, // Entry at recent low (structure edge)
+      description: `Retest of ${recentHigh.toFixed(2)} - entry at support ${recentLow.toFixed(2)}`,
+      confidence: 60,
+    };
+  }
 
-  let trigger: "Early Break Up" | "Early Break Down" | "Retest" | "Compression" | "Neutral" = "Neutral";
+  if (retestingLow && (prev < current || prev2 < current)) {
+    console.log(`[EVENT] ${symbol}: Retest of low at ${current}`);
+    return {
+      event: "retest",
+      direction: "SHORT",
+      entryLevel: recentHigh, // Entry at recent high (structure edge)
+      description: `Retest of ${recentLow.toFixed(2)} - entry at resistance ${recentHigh.toFixed(2)}`,
+      confidence: 60,
+    };
+  }
 
-  if (shift.isExpanding) {
-    if (bias === "Bullish" && direction === "Up") {
-      trigger = "Early Break Up";
-    } else if (bias === "Bearish" && direction === "Down") {
-      trigger = "Early Break Down";
+  // ACCELERATION: Strong directional momentum expansion
+  const volatility = Math.abs(current - prev) + Math.abs(prev - prev2);
+  const prevVolatility = Math.abs(prev2 - prev3) + Math.abs(prev3 - prev4);
+  const isAccelerating = volatility > prevVolatility * 1.4;
+
+  if (isAccelerating) {
+    if (current > prev && prev > prev2) {
+      console.log(`[EVENT] ${symbol}: Acceleration UP at ${current}`);
+      return {
+        event: "acceleration",
+        direction: "LONG",
+        entryLevel: current,
+        description: `Momentum acceleration - strong move up`,
+        confidence: 68,
+      };
+    } else if (current < prev && prev < prev2) {
+      console.log(`[EVENT] ${symbol}: Acceleration DOWN at ${current}`);
+      return {
+        event: "acceleration",
+        direction: "SHORT",
+        entryLevel: current,
+        description: `Momentum acceleration - strong move down`,
+        confidence: 68,
+      };
     }
   }
-  
-  if (shift.isCompressing && momentumShift) {
-    trigger = "Compression";
-  }
-  
-  if (shift.rejectionPoint) {
-    trigger = "Retest";
+
+  // EXHAUSTION: Loss of momentum after strong impulse
+  const recentMovement = Math.abs(current - prev4);
+  const currentDeceleration = Math.abs(current - prev) < Math.abs(prev - prev2) * 0.6;
+
+  if (recentMovement > rangeSize * 0.8 && currentDeceleration) {
+    if (current > prev4) {
+      console.log(`[EVENT] ${symbol}: Exhaustion after UP move at ${current}`);
+      return {
+        event: "exhaustion",
+        direction: "SHORT",
+        entryLevel: current,
+        description: `Exhaustion after strong up move - reversal forming`,
+        confidence: 55,
+      };
+    } else if (current < prev4) {
+      console.log(`[EVENT] ${symbol}: Exhaustion after DOWN move at ${current}`);
+      return {
+        event: "exhaustion",
+        direction: "LONG",
+        entryLevel: current,
+        description: `Exhaustion after strong down move - reversal forming`,
+        confidence: 55,
+      };
+    }
   }
 
-  return { trigger, momentumShift };
+  return null;
 }
 
 /**
- * EARLY ENTRY MODE v2 EVALUATION
- * Prioritises early shifts and transition states, not confirmations
+ * Check if SNIPER condition is met (momentum confirmation after BUILDING event)
  */
-function evaluateMarket(symbol: string, price: number): Signal {
+function isSniperConfirmed(history: number[], previousEvent: "breakout_attempt" | "rejection" | "retest" | "sweep" | "acceleration" | "exhaustion" | null, direction: "LONG" | "SHORT"): boolean {
+  if (!previousEvent || history.length < 3) return false;
+
+  const current = history[history.length - 1];
+  const prev = history[history.length - 2];
+  const prev2 = history[history.length - 3];
+
+  // SNIPER triggered when price continues in the direction of the event
+  // AND momentum is confirming over next 1-3 candles
+  if (direction === "LONG") {
+    // Price making higher high after breakout/retest/sweep
+    return current > prev && prev > prev2;
+  } else {
+    // Price making lower low after breakout/retest/sweep
+    return current < prev && prev < prev2;
+  }
+}
+
+/**
+ * EVENT-DRIVEN MARKET EVALUATION
+ * Always produces BUILDING or SNIPER with a directional bias
+ */
+function evaluateMarket(symbol: string, price: number, previousSignal: Signal | null): Omit<Signal, "updated_at"> {
   const history = priceHistory.get(symbol) || [];
   recordPrice(symbol, price);
 
-  // GUARD: Need minimum history
-  if (history.length < 3) {
+  // Detect current event
+  const currentEvent = detectEvent(symbol, history);
+
+  // If new event detected → BUILDING state
+  if (currentEvent) {
+    console.log(`[STRATEGY] ${symbol} → BUILDING (${currentEvent.event})`);
     return {
       symbol,
       price,
-      state: "WATCHING_SHIFT",
-      bias_4h: "Neutral",
-      structure_4h: "Ranging",
-      structure_15m: "Ranging",
-      shift_type: "None",
-      trigger_5m: "Neutral",
-      is_active: false,
-      momentum_shift: false,
-      confidence: 0,
-      reason: "Insufficient data",
-      updated_at: new Date().toISOString(),
+      state: "BUILDING",
+      direction: currentEvent.direction,
+      event: currentEvent.event,
+      entry_level: currentEvent.entryLevel,
+      entry_description: currentEvent.description,
+      confidence: currentEvent.confidence,
     };
   }
 
-  // Layer 1: 4H Bias (directional context)
-  const bias = detect4HBias(history);
-  console.log(`[4H BIAS] ${symbol}: bias=${bias.bias}, structure=${bias.structure}`);
+  // If previous signal exists, check for SNIPER confirmation
+  if (previousSignal && previousSignal.state === "BUILDING") {
+    const isSniped = isSniperConfirmed(history, previousSignal.event, previousSignal.direction);
 
-  // Layer 2: 15M Shift (early changes)
-  const shift = detect15mShift(history, bias.bias);
-  console.log(`[15M SHIFT] ${symbol}: forming=${shift.shiftForming}, structure=${shift.structure}, type=${shift.shiftType}`);
+    if (isSniped) {
+      console.log(`[STRATEGY] ${symbol} → SNIPER (momentum confirmed)`);
+      
+      // Calculate trade details
+      const entryLevel = previousSignal.entry_level;
+      const last10 = history.slice(-10);
+      const high = Math.max(...last10);
+      const low = Math.min(...last10);
+      const rangeSize = high - low;
 
-  // Layer 3: 5M Trigger (real-time action)
-  const trigger = detect5mTrigger(history, bias.bias, shift);
-  console.log(`[5M TRIGGER] ${symbol}: trigger=${trigger.trigger}, momentum=${trigger.momentumShift}`);
+      let stopLoss: number;
+      let takeProfit: number;
 
-  // DECISION LOGIC: Early Entry Focus
-  let state: TradeState = "WATCHING_SHIFT";
-  let direction: "LONG" | "SHORT" | undefined;
-  let entry: number | undefined;
-  let entry_description: string | undefined;
-  let confidence: number = 0;
-  let reason: string = "";
-
-  // BUILDING: Early entry zone when shift is forming
-  if (shift.shiftForming || (shift.isCompressing && (trigger.momentumShift || shift.rejectionPoint))) {
-    state = "BUILDING";
-    entry = shift.compressionEdge;
-    entry_description = "At compression edge - structure shift forming";
-    confidence = 50;
-    reason = "Early entry zone: " + shift.shiftType;
-
-    // Determine direction based on shift
-    if (shift.shiftType === "HH/HL to LH/LL") {
-      direction = "SHORT";
-      confidence = 55;
-    } else if (shift.shiftType === "LH/LL to HH/HL") {
-      direction = "LONG";
-      confidence = 55;
-    } else if (shift.rejectionPoint) {
-      if (trigger.trigger === "Early Break Up") {
-        direction = "LONG";
-        confidence = 50;
-      } else if (trigger.trigger === "Early Break Down") {
-        direction = "SHORT";
-        confidence = 50;
+      if (previousSignal.direction === "LONG") {
+        stopLoss = Math.max(low, entryLevel * 0.975); // 2.5% below entry
+        takeProfit = entryLevel + rangeSize * 1.5;
+      } else {
+        stopLoss = Math.min(high, entryLevel * 1.025); // 2.5% above entry
+        takeProfit = entryLevel - rangeSize * 1.5;
       }
-    }
-  }
-  // SNIPER: Move already underway, structure break clear
-  else if (
-    (trigger.trigger === "Early Break Up" && bias.bias === "Bullish") ||
-    (trigger.trigger === "Early Break Down" && bias.bias === "Bearish")
-  ) {
-    state = "SNIPER";
-    entry = price;
-    entry_description = "Breakout confirmed - move underway";
-    confidence = 72;
-    reason = trigger.trigger;
 
-    if (trigger.trigger === "Early Break Up") {
-      direction = "LONG";
-    } else {
-      direction = "SHORT";
-    }
-  }
-  // WATCHING_SHIFT: Default active state, market is live
-  else {
-    state = "WATCHING_SHIFT";
-    entry = shift.compressionEdge;
-    entry_description = "Monitoring structure - ready for shift";
-    confidence = 30;
-    reason = shift.structure !== "Ranging" ? shift.structure : "Market activity detected";
-  }
+      const riskReward = Math.abs((takeProfit - entryLevel) / (entryLevel - stopLoss));
 
-  // Generate trade details if direction exists
-  let stopLoss, takeProfit, riskReward;
-  if (direction) {
-    const recent10 = history.slice(-10);
-    const high = Math.max(...recent10);
-    const low = Math.min(...recent10);
-    const rangeSize = high - low;
-
-    if (direction === "LONG") {
-      stopLoss = Math.max(low, price * 0.97);
-      takeProfit = price + (rangeSize * 1.5);
-    } else {
-      stopLoss = Math.min(high, price * 1.03);
-      takeProfit = price - (rangeSize * 1.5);
+      return {
+        symbol,
+        price,
+        state: "SNIPER",
+        direction: previousSignal.direction,
+        event: previousSignal.event,
+        entry_level: entryLevel,
+        entry_description: `${previousSignal.direction} entry at ${entryLevel.toFixed(2)}`,
+        stopLoss: parseFloat(stopLoss.toFixed(2)),
+        takeProfit: parseFloat(takeProfit.toFixed(2)),
+        riskReward: parseFloat(riskReward.toFixed(2)),
+        confidence: Math.min(100, previousSignal.confidence + 15),
+      };
     }
 
-    riskReward = Math.abs((takeProfit - entry!) / (entry! - stopLoss));
-    if (!isFinite(riskReward)) riskReward = 0;
+    // BUILDING continues - no new event, no confirmation yet
+    console.log(`[STRATEGY] ${symbol} → BUILDING (awaiting confirmation)`);
+    return {
+      symbol,
+      price,
+      state: "BUILDING",
+      direction: previousSignal.direction,
+      event: previousSignal.event,
+      entry_level: previousSignal.entry_level,
+      entry_description: previousSignal.entry_description,
+      confidence: previousSignal.confidence,
+    };
   }
 
+  // Default: No previous signal and no event detected
+  // This should NOT happen per the requirement - markets are always active
+  // But as fallback, create a micro-event based on direction
+  const currentClose = history[history.length - 1];
+  const prevClose = history.length > 1 ? history[history.length - 2] : currentClose;
+  
+  const direction = currentClose > prevClose ? "LONG" : "SHORT";
+  const event = currentClose > prevClose ? "acceleration" : "exhaustion";
+
+  console.log(`[STRATEGY] ${symbol} → BUILDING (default active state: ${event})`);
   return {
     symbol,
     price,
-    state,
-    bias_4h: bias.bias,
-    structure_4h: bias.structure,
-    structure_15m: shift.structure,
-    shift_type: shift.shiftType,
-    trigger_5m: trigger.trigger,
-    is_active: shift.shiftForming || trigger.momentumShift || shift.isExpanding,
-    momentum_shift: trigger.momentumShift,
-    ...(entry !== undefined ? { entry, entry_description } : {}),
-    ...(direction ? { direction, stopLoss, takeProfit, riskReward } : {}),
-    confidence,
-    reason,
-    updated_at: new Date().toISOString(),
+    state: "BUILDING",
+    direction,
+    event,
+    entry_level: currentClose,
+    entry_description: `Market active: ${direction} bias`,
+    confidence: 45,
   };
 }
 
 /**
- * Create a complete signal with Kraken prices and early entry analysis
- * Applies hold rules for state inertia
+ * Create a complete signal with Kraken prices and event-driven analysis
  */
 export async function createSignal(symbol: string): Promise<Signal> {
-  const { applyHoldRules } = await import("./persistent-store");
-  
+  const { getSignal } = await import("./signal-store");
+
   const price = await getKrakenTicker(symbol);
-  
+
   if (!price || price <= 0) {
+    // Fallback: Create minimal signal (still BUILDING, not neutral)
+    const direction = Math.random() > 0.5 ? "LONG" : "SHORT";
     return {
       symbol,
       price: 0,
-      state: "WATCHING_SHIFT",
-      bias_4h: "Neutral",
-      structure_4h: "Ranging",
-      structure_15m: "Ranging",
-      shift_type: "None",
-      trigger_5m: "Neutral",
-      is_active: false,
-      momentum_shift: false,
+      state: "BUILDING",
+      direction,
+      event: "acceleration",
+      entry_level: 0,
+      entry_description: "Awaiting price data",
       confidence: 0,
-      reason: "Invalid price data",
       updated_at: new Date().toISOString(),
     };
   }
 
-  const marketContext = evaluateMarket(symbol, price);
-
-  // Apply hold rules to the evaluated state
-  const { finalState, holdRemaining } = await applyHoldRules(
-    symbol,
-    marketContext.state,
-    marketContext.confidence || 0
-  );
+  const previousSignal = getSignal(symbol);
+  const evaluated = evaluateMarket(symbol, price, previousSignal || null);
 
   const signal: Signal = {
-    ...marketContext,
-    state: finalState,
-    hold_until: holdRemaining > 0 ? Date.now() + holdRemaining : 0,
-    hold_remaining_ms: holdRemaining,
+    ...evaluated,
+    updated_at: new Date().toISOString(),
   };
 
   return signal;

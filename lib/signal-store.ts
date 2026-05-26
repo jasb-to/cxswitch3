@@ -1,44 +1,31 @@
 /**
- * SIMPLE IN-MEMORY SIGNAL STORE
- * No persistence, no abstractions, no overhead
+ * EVENT-DRIVEN SIGNAL MODEL
+ * Only two states: BUILDING (event triggered) and SNIPER (momentum confirmed)
+ * Every update produces a directional read - markets are always active
  */
 
 export interface Signal {
   symbol: string;
   price: number;
-  state: "SNIPER" | "BUILDING" | "DO_NOT_TRADE";
   
-  // Market structure (always present)
-  trend_4h: "Bullish" | "Bearish" | "Neutral";
-  structure_15m: "Breakout" | "Compression" | "Expansion" | "Reversal" | "Range";
-  macro_bias: "Bullish" | "Bearish" | "Neutral";
+  // Only two states - no neutral/ranging/watching
+  state: "BUILDING" | "SNIPER";
   
-  // Market metrics (always present)
-  momentum_percent: number; // 0-100+
-  volatility_percent: number; // 0-100+
+  // Direction always inferred from event
+  direction: "LONG" | "SHORT";
   
-  // Trade readiness 0-100% (always present, never undefined)
-  readiness_score: number;
+  // Event that triggered this state
+  event: "breakout_attempt" | "rejection" | "retest" | "sweep" | "acceleration" | "exhaustion";
   
-  // SNIPER trade details (optional)
-  direction?: "LONG" | "SHORT";
-  entry?: number;
+  // Entry level (derived from event level)
+  entry_level: number;
+  entry_description: string; // e.g., "Breakout above 77,500", "Rejection at resistance"
+  
+  // Trade details for SNIPER
   stopLoss?: number;
   takeProfit?: number;
   riskReward?: number;
   confidence?: number;
-  reason?: string;
-  
-  // Nested trade object (optional, legacy)
-  trade?: {
-    direction: "LONG" | "SHORT";
-    entry: number;
-    sl: number;
-    tp: number;
-    rr: number;
-    confidence: number;
-    reason: string;
-  };
   
   updated_at: string;
 }
@@ -58,6 +45,6 @@ export function getSignals(): Signal[] {
 }
 
 export function getPreviousSignal(symbol: string): Signal | undefined {
-  // Get from store (this tracks last state)
   return signalStore.get(symbol);
 }
+
