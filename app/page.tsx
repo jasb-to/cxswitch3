@@ -114,13 +114,8 @@ export default function Dashboard() {
       {/* SYMBOL CARDS */}
       <div style={{ marginBottom: "32px" }}>
         <h2 style={{ marginBottom: "16px", fontSize: "18px", fontWeight: "600", color: "#fff" }}>Market Overview</h2>
-        {isLoading && signals.length === 0 ? (
-          <div style={{ color: "#9ca3af", fontSize: "14px" }}>
-            <div style={{ animation: "pulse 2s infinite" }}>Loading market signals from API...</div>
-            <div style={{ marginTop: "12px", fontSize: "12px" }}>Fetching from /api/signals...</div>
-          </div>
-        ) : signals.length === 0 ? (
-          <p style={{ color: "#9ca3af" }}>No signals available. API returned empty array.</p>
+        {signals.length === 0 ? (
+          <p style={{ color: "#9ca3af" }}>Waiting for market data...</p>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "16px" }}>
             {signals.map((signal) => {
@@ -144,11 +139,6 @@ export default function Dashboard() {
                     padding: "16px",
                   }}
                 >
-                  {/* DEBUG STATE LINE */}
-                  <div style={{ fontSize: "9px", color: "#666", marginBottom: "8px", fontFamily: "monospace" }}>
-                    DEBUG STATE: {signal.state} | readiness: {safeReadiness}% | structure: {signal.structure_15m} | trend: {signal.trend_4h}
-                  </div>
-
                   {/* HEADER */}
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "16px" }}>
                     <div>
