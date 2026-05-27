@@ -7,12 +7,23 @@ const MIN_CONFIDENCE = 60;
 
 export const dynamic = "force-dynamic";
 
-function formatEnteredAlert(signal: any): string {
+function formatSignalAlert(signal: any): string {
   const emoji = signal.state === "LONG" ? "🟢" : "🔴";
-  return `${emoji} ENTERED: ${signal.symbol} ${signal.state} @ $${signal.entry?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+  return `${emoji} ${signal.symbol} ${signal.state}
 
+Price: $${signal.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+Confidence: ${signal.confidence}%
+4H Bias: ${signal.bias4h || "Unknown"}
+
+Layer Status:
+1️⃣ Bullish Break
+2️⃣ Confirmed
+3️⃣ Fired
+
+Entry: $${signal.entry?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 SL: $${signal.stopLoss?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 TP: $${signal.takeProfit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+R:R ${signal.riskReward?.toFixed(2)}
 
 ⏰ ${new Date().toLocaleTimeString()}`;
 }
@@ -144,8 +155,8 @@ export async function GET(req: Request) {
         });
 
         // Send alert
-        const enteredAlert = formatEnteredAlert(signal);
-        await sendTelegramMessage(enteredAlert);
+        const signalAlert = formatSignalAlert(signal);
+        await sendTelegramMessage(signalAlert);
         alerts.push({ symbol: signal.symbol, type: "entered", sent: true });
 
         results.push({
