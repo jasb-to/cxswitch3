@@ -1,76 +1,78 @@
-import { evaluateSignal } from "@/lib/engine";
+import { evaluate } from "@/lib/engine";
 import { placeOrder } from "@/lib/kraken";
+import { NextResponse } from "next/server";
+
+const CRON_SECRET = process.env.CRON_SECRET;
+const MIN_CONFIDENCE = 60;
 
 export const dynamic = "force-dynamic";
 
-const SECRET = process.env.CRON_SECRET;
-const MIN_CONFIDENCE = 60;
-
-// Simple in-memory position tracking (restart on deploy)
-const positions = new Map<string, boolean>();
-
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-  if (searchParams.get("secret") !== SECRET) {
-    return new Response("Unauthorized", { status: 401 });
-  }
-  
   try {
+    const { searchParams } = new URL(req.url);
+    if (searchParams.get("secret") !== CRON_SECRET) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    console.log("[CRON] Starting execution cycle...");
+
     const signals = await Promise.all([
-      evaluateSignal("BTC"),
-      evaluateSignal("ETH"),
-      evaluateSignal("SOL"),
+      evaluate("BTC"),
+      evaluate("ETH"),
+      evaluate("SOL"),
     ]);
-    
+
     const results = [];
-    
+
     for (const signal of signals) {
+      console.log(`[CRON] ${signal.symbol}: state=${signal.state}, confidence=${signal.confidence}%`);
+
       if (signal.state === "FLAT" || signal.confidence < MIN_CONFIDENCE) {
-        results.push({ symbol: signal.symbol, action: "skipped", reason: "below threshold" });
+        results.push({
+          symbol: signal.symbol,
+          action: "skipped",
+          reason: signal.state === "FLAT" ? "no signal" : `confidence ${signal.confidence}% < ${MIN_CONFIDENCE}%`,
+        });
         continue;
       }
-      
-      // Check if we already have a position
-      if (positions.get(signal.symbol)) {
-        results.push({ symbol: signal.symbol, action: "skipped", reason: "already positioned" });
-        continue;
-      }
-      
+
       try {
-        const pairMap = {
-          BTC: "XXBTZUSD",
-          ETH: "XETHZUSD",
-          SOL: "SOLUSD",
-        };
-        
-        const volumeMap = {
-          BTC: "0.001",
-          ETH: "0.01",
-          SOL: "0.1",
-        };
-        
+        const pair = signal.symbol === "BTC" ? "XXBTZUSD" : signal.symbol === "ETH" ? "XETHZUSD" : "SOLUSD";
+        const volume = signal.symbol === "BTC" ? "0.001" : signal.symbol === "ETH" ? "0.01" : "0.1";
+
+        console.log(`[CRON] Executing ${signal.state} on ${signal.symbol} at ${signal.entry}`);
+
         const order = await placeOrder({
-          pair: pairMap[signal.symbol],
+          pair,
           type: signal.state === "LONG" ? "buy" : "sell",
           ordertype: "market",
-          volume: volumeMap[signal.symbol],
+          volume,
         });
-        
-        // Mark position open
-        positions.set(signal.symbol, true);
-        
-        console.log(`[CRON] Trade executed: ${signal.symbol} ${signal.state} @ ${signal.entry}`);
-        
-        results.push({ symbol: signal.symbol, action: "executed", txid: order.txid });
-        
-      } catch (err) {
-        results.push({ symbol: signal.symbol, action: "failed", error: (err as Error).message });
+
+        results.push({
+          symbol: signal.symbol,
+          action: "executed",
+          direction: signal.state,
+          entry: signal.entry,
+          txid: order.txid,
+        });
+
+      } catch (err: any) {
+        console.error(`[CRON] Trade failed for ${signal.symbol}:`, err.message);
+        results.push({
+          symbol: signal.symbol,
+          action: "failed",
+          error: err.message,
+        });
       }
     }
-    
-    return Response.json({ results, timestamp: Date.now() });
-  } catch (error) {
-    console.error("[CRON] Error:", error);
-    return Response.json({ error: "Cron execution failed" }, { status: 500 });
+
+    console.log(`[CRON] Cycle complete: ${results.filter(r => r.action === "executed").length} trades`);
+
+    return NextResponse.json({ results, timestamp: Date.now() });
+
+  } catch (err: any) {
+    console.error("[CRON] Fatal error:", err);
+    return NextResponse.json({ error: err.message }, { status: 200 });
   }
 }
