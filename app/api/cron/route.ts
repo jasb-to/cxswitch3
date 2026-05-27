@@ -1,11 +1,39 @@
 import { evaluate } from "@/lib/engine";
 import { placeOrder } from "@/lib/kraken";
+import { sendTelegramMessage } from "@/app/api/telegram/route";
 import { NextResponse } from "next/server";
 
 const CRON_SECRET = process.env.CRON_SECRET;
 const MIN_CONFIDENCE = 60;
 
 export const dynamic = "force-dynamic";
+
+function formatTradeAlert(signal: any, txid: string): string {
+  const emoji = signal.state === "LONG" ? "🟢" : "🔴";
+  return `${emoji} **TRADE EXECUTED: ${signal.symbol} ${signal.state}**
+
+Entry: $${signal.entry?.toLocaleString()}
+SL: $${signal.stopLoss?.toLocaleString()}
+TP: $${signal.takeProfit?.toLocaleString()}
+R:R ${signal.riskReward?.toFixed(2)}
+Confidence: ${signal.confidence}%
+
+TxID: ${txid}
+⏰ ${new Date().toLocaleTimeString()}`;
+}
+
+function formatSignalAlert(signal: any): string {
+  const emoji = signal.state === "LONG" ? "🟢" : "🔴";
+  return `${emoji} **SIGNAL: ${signal.symbol} ${signal.state}**
+
+Price: $${signal.price?.toLocaleString()}
+Confidence: ${signal.confidence}%
+4H Bias: ${signal.bias4h}
+
+Layers: 1️⃣ ${signal.layer1?.status} | 2️⃣ ${signal.layer2?.status} | 3️⃣ ${signal.layer3?.status}
+
+⏰ ${new Date().toLocaleTimeString()}`;
+}
 
 export async function GET(req: Request) {
   try {
@@ -23,9 +51,17 @@ export async function GET(req: Request) {
     ]);
 
     const results = [];
+    const alerts = [];
 
     for (const signal of signals) {
       console.log(`[CRON] ${signal.symbol}: state=${signal.state}, confidence=${signal.confidence}%`);
+
+      // Send Telegram alert for any non-FLAT signal at 60%+ confidence
+      if (signal.state !== "FLAT" && signal.confidence >= 60) {
+        const alertText = formatSignalAlert(signal);
+        const alertSent = await sendTelegramMessage(alertText);
+        alerts.push({ symbol: signal.symbol, type: "signal", sent: alertSent });
+      }
 
       if (signal.state === "FLAT" || signal.confidence < MIN_CONFIDENCE) {
         results.push({
@@ -49,12 +85,17 @@ export async function GET(req: Request) {
           volume,
         });
 
+        // Send trade execution alert
+        const tradeAlert = formatTradeAlert(signal, order.txid);
+        const tradeAlertSent = await sendTelegramMessage(tradeAlert);
+
         results.push({
           symbol: signal.symbol,
           action: "executed",
           direction: signal.state,
           entry: signal.entry,
           txid: order.txid,
+          alertSent: tradeAlertSent,
         });
 
       } catch (err: any) {
@@ -67,9 +108,9 @@ export async function GET(req: Request) {
       }
     }
 
-    console.log(`[CRON] Cycle complete: ${results.filter(r => r.action === "executed").length} trades`);
+    console.log(`[CRON] Cycle complete: ${results.filter(r => r.action === "executed").length} trades, ${alerts.length} alerts`);
 
-    return NextResponse.json({ results, timestamp: Date.now() });
+    return NextResponse.json({ results, alerts, timestamp: Date.now() });
 
   } catch (err: any) {
     console.error("[CRON] Fatal error:", err);
