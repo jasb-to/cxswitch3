@@ -1,27 +1,22 @@
-import { evaluate } from "@/lib/engine";
-import { NextResponse } from "next/server";
-
-export const dynamic = "force-dynamic";
+import { evaluateSignal } from "@/lib/engine";
 
 export async function GET() {
   try {
-    console.log("[SIGNALS] Fetching signals...");
-
-    const signals = await Promise.all([
-      evaluate("BTC"),
-      evaluate("ETH"),
-      evaluate("SOL"),
+    const [btc, eth, sol] = await Promise.all([
+      evaluateSignal("BTC"),
+      evaluateSignal("ETH"),
+      evaluateSignal("SOL"),
     ]);
 
-    return NextResponse.json(
-      { signals, timestamp: Date.now() },
-      { headers: { "Cache-Control": "public, max-age=10" } }
-    );
-  } catch (err: any) {
-    console.error("[SIGNALS] Error:", err.message);
-    return NextResponse.json(
-      { error: err.message, signals: [] },
-      { status: 500 }
-    );
+    return Response.json({ 
+      signals: [btc, eth, sol], 
+      timestamp: Date.now() 
+    });
+  } catch (err) {
+    console.error("[SIGNALS] Failed:", err);
+    return Response.json({ 
+      error: "Failed to evaluate signals", 
+      signals: [] 
+    }, { status: 500 });
   }
 }
