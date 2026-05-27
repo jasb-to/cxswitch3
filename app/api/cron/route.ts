@@ -1,25 +1,22 @@
 import { NextResponse } from "next/server";
 import { getTelegramCooldown, setTelegramCooldown, healthCheck, getSignalEvents, clearSignalEvents } from "@/lib/persistent-store";
 import { sendSignalAlert } from "@/lib/telegram";
+import { executeKrakenOrder, checkPosition } from "@/lib/kraken";
+import { evaluateSignal } from "@/lib/signal-engine";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const TELEGRAM_COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes between alerts per symbol
+const SYMBOLS = ["BTC", "ETH", "SOL"];
 
 /**
- * CRON EXECUTOR - Event-Driven Alert System ONLY
+ * CRON EXECUTOR - Minimal implementation
  * 
- * CRITICAL: This route MUST NOT compute state.
- * State is computed ONLY in /api/signals
- * 
- * This cron ONLY:
- * 1. Consume SIGNAL_ENTERED_SNIPER events from queue
- * 2. Get latest signal data from /api/signals (read-only snapshot)
+ * 1. Evaluate signals for all symbols
+ * 2. When SNIPER + confidence >= 60, execute trade on Kraken
  * 3. Send Telegram alerts
- * 4. Clear processed events
- * 
- * Why: Single source of truth prevents state corruption
+ * 4. Log to Supabase
  */
 export async function GET() {
   try {
@@ -32,68 +29,102 @@ export async function GET() {
       );
     }
 
-    console.log("[CRON] Starting execution cycle (event-driven alerts only, NO state computation)");
+    console.log("[CRON] Starting execution cycle");
     const now = Date.now();
 
-    // Fetch signal state snapshot from signals API (read-only)
-    let allSignals: any[] = [];
-    try {
-      const res = await fetch("http://localhost:3000/api/signals", {
-        cache: "no-store",
-        headers: { "x-internal-call": "cron" }
-      });
-      if (res.ok) {
-        allSignals = await res.json();
-      }
-    } catch (err) {
-      console.warn("[CRON] Could not fetch signals snapshot:", err);
-    }
+    // Step 1: Evaluate all signals
+    const signals = await Promise.all(SYMBOLS.map(evaluateSignal));
+    console.log(`[CRON] Evaluated ${signals.length} signals`);
 
-    // CRITICAL: Consume Signal Events (EVENT-DRIVEN ALERTS)
-    const events = await getSignalEvents();
-    console.log(`[EVENT_LOOP] Processing ${events.length} signal events...`);
-    
-    let alertsSent = 0;
-    for (const event of events) {
-      // CRITICAL: Only fire alert on SIGNAL_ENTERED_SNIPER event
-      if (event.type === "SIGNAL_ENTERED_SNIPER") {
-        console.log(`[EVENT] Processing SNIPER entry for ${event.symbol}`);
+    let tradeCount = 0;
+    let alertCount = 0;
+
+    // Step 2: Check each signal for trade execution
+    for (const signal of signals) {
+      console.log(`[CRON] ${signal.symbol}: state=${signal.state}, confidence=${signal.confidence}%, direction=${signal.direction || "N/A"}`);
+
+      // Execute trade if SNIPER with confidence >= 60 and direction
+      if (signal.state === "SNIPER" && signal.confidence >= 60 && signal.direction) {
+        // Check if already have position
+        const hasPosition = await checkPosition(signal.symbol);
+        if (hasPosition) {
+          console.log(`[CRON] ${signal.symbol} already has position, skipping`);
+          continue;
+        }
+
+        // Map symbol to Kraken pair
+        const krakenPairs: Record<string, string> = {
+          BTC: "XXBTZUSD",
+          ETH: "XETHZUSD",
+          SOL: "SOLUSD",
+        };
+
+        const minVolumes: Record<string, string> = {
+          BTC: "0.001",
+          ETH: "0.01",
+          SOL: "0.1",
+        };
+
+        // Execute market order
+        const pair = krakenPairs[signal.symbol];
+        const volume = minVolumes[signal.symbol];
         
-        // Get latest signal snapshot from API (DO NOT RECOMPUTE)
-        const signal = allSignals.find(s => s.symbol === event.symbol);
-        
-        if (signal && signal.state === "SNIPER" && signal.direction) {
-          // Check cooldown
-          const lastAlertTime = await getTelegramCooldown(event.symbol);
+        console.log(`[CRON] Executing: ${signal.type} ${volume} ${signal.symbol}`);
+        const result = await executeKrakenOrder({
+          pair,
+          type: signal.direction === "LONG" ? "buy" : "sell",
+          ordertype: "market",
+          volume,
+        });
+
+        if (result.ok) {
+          tradeCount++;
+          console.log(`[CRON] Trade executed: ${result.orderId}`);
           
-          if (now - lastAlertTime >= TELEGRAM_COOLDOWN_MS) {
-            console.log(`[EVENT_ALERT] Sending Telegram alert for ${event.symbol} SNIPER entry`);
-            await sendSignalAlert(signal);
-            await setTelegramCooldown(event.symbol, now);
-            alertsSent++;
-          } else {
-            const timeRemaining = Math.ceil((TELEGRAM_COOLDOWN_MS - (now - lastAlertTime)) / 1000 / 60);
-            console.log(`[EVENT_ALERT] Cooldown active (${timeRemaining}m remaining)`);
+          // Log to Supabase
+          try {
+            await fetch("http://localhost:3000/api/log-trade", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                symbol: signal.symbol,
+                direction: signal.direction,
+                price: signal.entry,
+                confidence: signal.confidence,
+                orderId: result.orderId,
+              }),
+            });
+          } catch (err) {
+            console.warn("[CRON] Could not log trade:", err);
           }
+        } else {
+          console.error(`[CRON] Trade failed: ${result.error}`);
+        }
+
+        // Send Telegram alert
+        const lastAlertTime = await getTelegramCooldown(signal.symbol);
+        if (now - lastAlertTime >= TELEGRAM_COOLDOWN_MS) {
+          await sendSignalAlert(signal);
+          await setTelegramCooldown(signal.symbol, now);
+          alertCount++;
         }
       }
     }
-    
-    // Clear processed events from queue
+
+    // Consume and clear signal events (for historical tracking)
+    const events = await getSignalEvents();
     if (events.length > 0) {
       await clearSignalEvents(events.length);
-      console.log(`[EVENT_LOOP] Cleared ${events.length} processed events`);
+      console.log(`[CRON] Cleared ${events.length} signal events`);
     }
 
-    console.log("[CRON SUMMARY]");
-    console.log(`[EVENT_SUMMARY] ${alertsSent} Telegram alerts sent from ${events.length} events`);
+    console.log(`[CRON] Cycle complete: ${tradeCount} trades, ${alertCount} alerts`);
 
     return NextResponse.json({
       ok: true,
-      message: "Cron cycle complete (event-driven alerts only, no state computation)",
-      events_processed: events.length,
-      alerts_sent: alertsSent,
-      signals_count: allSignals.length,
+      signals_evaluated: signals.length,
+      trades_executed: tradeCount,
+      alerts_sent: alertCount,
     });
   } catch (error) {
     console.error("[CRON] Error:", error);

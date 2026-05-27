@@ -183,18 +183,25 @@ function detect15mShift(history: number[], bias: "Bullish" | "Bearish" | "Neutra
  * LAYER 3: 5M TRIGGER DETECTION
  */
 function detect5mTrigger(history: number[], isActive: boolean, momentumShift: boolean): "Early Break Up" | "Early Break Down" | "Retest Bullish" | "Retest Bearish" | "Flat" {
-  if (history.length < 3 || !isActive) {
+  if (history.length < 2 || !isActive) {
     return "Flat";
   }
 
   const current = history[history.length - 1];
   const prev = history[history.length - 2];
-  const prev2 = history[history.length - 3];
 
-  const isBreakingUp = current > prev && prev > prev2;
-  const isBreakingDown = current < prev && prev < prev2;
-  const isRetestBullish = (prev > current && prev > prev2) && current > prev2;
-  const isRetestBearish = (prev < current && prev < prev2) && current < prev2;
+  // RELAXED TRIGGER: Only require 1 bar break (current > prev), not 3 consecutive
+  const isBreakingUp = current > prev;
+  const isBreakingDown = current < prev;
+
+  // Retest patterns (still require 3-bar structure)
+  let isRetestBullish = false;
+  let isRetestBearish = false;
+  if (history.length >= 3) {
+    const prev2 = history[history.length - 3];
+    isRetestBullish = (prev > current && prev > prev2) && current > prev2;
+    isRetestBearish = (prev < current && prev < prev2) && current < prev2;
+  }
 
   if (isBreakingUp && momentumShift) return "Early Break Up";
   if (isBreakingDown && momentumShift) return "Early Break Down";
@@ -268,8 +275,31 @@ export async function evaluateSignal(symbol: string): Promise<EngineSignal> {
   let confidence: number;
   let entry: number | undefined;
 
-  // BUILDING: Early entry zone - triggers on ANY structural activity
-  if (bias_4h !== "Neutral" || shift.structure !== "Ranging") {
+  // CRITICAL: Check strictest condition FIRST (SNIPER), then fallback to BUILDING, then WATCHING_SHIFT
+  
+  const isShiftActive = shift.structure === "Shift Forming" || shift.structure === "Expanding";
+  const isBiasActive = bias_4h !== "Neutral";
+  const isTriggerActive = trigger_5m !== "Flat";
+
+  // CHECK SNIPER FIRST (strictest conditions)
+  if (isShiftActive && isBiasActive && isTriggerActive) {
+    state = "SNIPER";
+    entry = price;
+    
+    // Direction from bias + trigger alignment
+    if (bias_4h === "Bullish" && (trigger_5m === "Early Break Up" || trigger_5m === "Retest Bullish")) {
+      direction = "LONG";
+      confidence = 75;
+    } else if (bias_4h === "Bearish" && (trigger_5m === "Early Break Down" || trigger_5m === "Retest Bearish")) {
+      direction = "SHORT";
+      confidence = 75;
+    } else {
+      // SNIPER without perfect alignment (trigger doesn't match bias)
+      confidence = 60; // Reduced threshold for trade execution
+    }
+  } 
+  // FALLBACK TO BUILDING (relaxed conditions)
+  else if (bias_4h !== "Neutral" || shift.structure !== "Ranging") {
     state = "BUILDING";
     entry = shift.entryLevel;
     
@@ -282,31 +312,11 @@ export async function evaluateSignal(symbol: string): Promise<EngineSignal> {
     } else {
       confidence = 45;
     }
-  } else {
-    // SNIPER: Early momentum-based execution
-    // Triggers on: (Shift Forming OR Expanding) + (Bullish OR Bearish bias) + Early Break OR Retest
-    const isShiftActive = shift.structure === "Shift Forming" || shift.structure === "Expanding";
-    const isBiasActive = bias_4h !== "Neutral";
-    const isTriggerActive = trigger_5m !== "Flat";
-    
-    if (isShiftActive && isBiasActive && isTriggerActive) {
-      state = "SNIPER";
-      entry = price;
-      
-      // Direction from bias + trigger alignment
-      if (bias_4h === "Bullish" && (trigger_5m === "Early Break Up" || trigger_5m === "Retest Bullish")) {
-        direction = "LONG";
-        confidence = 75;
-      } else if (bias_4h === "Bearish" && (trigger_5m === "Early Break Down" || trigger_5m === "Retest Bearish")) {
-        direction = "SHORT";
-        confidence = 75;
-      } else {
-        confidence = 65;
-      }
-    } else {
-      state = "WATCHING_SHIFT";
-      confidence = Math.max(20, Math.floor(shift.momentumShift ? 35 : 20));
-    }
+  } 
+  // ELSE: WATCHING_SHIFT (already initialized above)
+  else {
+    state = "WATCHING_SHIFT";
+    confidence = Math.max(20, Math.floor(shift.momentumShift ? 35 : 20));
   }
   
   // SAFETY: Ensure state is always valid

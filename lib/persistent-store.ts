@@ -121,21 +121,18 @@ export async function applyHoldRules(
 
   console.log(`[HOLD] ${symbol}: current=${holdState.state}, evaluated=${evaluatedState}, holdActive=${isHoldActive}, holdRemaining=${holdRemaining}ms`);
 
-  // SNIPER HOLD - Never downgrade during hold or probation
+  // SNIPER HOLD - Never downgrade SNIPER state (can only extend hold or refresh)
   if (holdState.state === "SNIPER" && isHoldActive) {
     const probationRemaining = holdState.sniperProbationUntil ? Math.max(0, holdState.sniperProbationUntil - now) : 0;
     
-    if (evaluatedState !== "SNIPER") {
-      // Try to downgrade from SNIPER
-      if (probationRemaining > 0) {
-        // Still in probation window - keep SNIPER (2-cycle minimum protection)
-        console.log(`[HOLD] ${symbol} in SNIPER probation (${Math.ceil(probationRemaining/1000)}s remaining)`);
-        return { finalState: "SNIPER", holdRemaining };
-      }
-      // Probation expired, allow transition below
+    // CRITICAL FIX: Never downgrade SNIPER, even if evaluated state is lower
+    if (evaluatedState !== "SNIPER" && probationRemaining > 0) {
+      // Still in probation window - keep SNIPER protected
+      console.log(`[HOLD] ${symbol} SNIPER protected by probation (${Math.ceil(probationRemaining/1000)}s remaining)`);
+      return { finalState: "SNIPER", holdRemaining };
     }
     
-    // SNIPER remains, refresh confidence and set probation window
+    // Refresh SNIPER hold and extend probation if re-evaluated as SNIPER
     const updated: SignalHoldState = {
       ...holdState,
       confidence: Math.max(holdState.confidence, evaluatedConfidence),
