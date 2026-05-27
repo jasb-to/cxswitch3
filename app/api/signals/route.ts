@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    console.log("[API/SIGNALS] Evaluating all symbols...");
+    console.log("[SIGNALS] Fetching signals...");
 
     const signals = await Promise.all([
       evaluate("BTC"),
@@ -13,13 +13,15 @@ export async function GET() {
       evaluate("SOL"),
     ]);
 
-    for (const s of signals) {
-      console.log(`[API/SIGNALS] ${s.symbol}: state=${s.state}, confidence=${s.confidence}%, bias=${s.bias4h}`);
-    }
-
-    return NextResponse.json({ signals, timestamp: Date.now() });
+    return NextResponse.json(
+      { signals, timestamp: Date.now() },
+      { headers: { "Cache-Control": "public, max-age=10" } }
+    );
   } catch (err: any) {
-    console.error("[API/SIGNALS] Error:", err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    console.error("[SIGNALS] Error:", err.message);
+    return NextResponse.json(
+      { error: err.message, signals: [] },
+      { status: 500 }
+    );
   }
 }
