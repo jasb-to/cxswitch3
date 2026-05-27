@@ -68,10 +68,10 @@ export default function Home() {
   };
 
   const getStatusBadgeStyle = (state: string, direction?: string) => {
-    if (state === "BUILDING") return "bg-amber-600 text-black font-bold px-3 py-1 rounded text-xs uppercase tracking-wide";
-    if (state === "SNIPER" && direction === "LONG") return "bg-green-600 text-black font-bold px-3 py-1 rounded text-xs uppercase tracking-wide";
-    if (state === "SNIPER" && direction === "SHORT") return "bg-red-600 text-black font-bold px-3 py-1 rounded text-xs uppercase tracking-wide";
-    return "bg-gray-600 text-black font-bold px-3 py-1 rounded text-xs uppercase tracking-wide";
+    if (state === "BUILDING") return "bg-amber-500 text-black font-bold px-3 py-1.5 rounded text-xs uppercase tracking-wide";
+    if (state === "SNIPER" && direction === "LONG") return "bg-green-500 text-black font-bold px-3 py-1.5 rounded text-xs uppercase tracking-wide";
+    if (state === "SNIPER" && direction === "SHORT") return "bg-red-500 text-white font-bold px-3 py-1.5 rounded text-xs uppercase tracking-wide";
+    return "bg-gray-600 text-white font-bold px-3 py-1.5 rounded text-xs uppercase tracking-wide";
   };
 
   const getReadinessColor = (state: string, direction?: string) => {
@@ -81,12 +81,6 @@ export default function Home() {
     return "bg-cyan-500";
   };
 
-  const getConfidenceColor = (confidence: number, state: string, direction?: string) => {
-    if (state === "SNIPER" && direction === "SHORT") return "text-red-400";
-    if (state === "SNIPER" && direction === "LONG") return "text-green-400";
-    return "text-white";
-  };
-
   const getAvgReadiness = () => {
     if (signals.length === 0) return 0;
     const total = signals.reduce((sum, sig) => sum + sig.confidence, 0);
@@ -94,27 +88,27 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen w-full bg-black text-gray-100">
+    <div className="min-h-screen w-full bg-black">
       <div className="w-screen px-20 py-16">
-        <div className="max-w-7xl mx-auto">
+        <div className="max-w-7xl mx-auto space-y-16">
           {/* Header */}
-          <div className="flex items-start justify-between mb-12">
+          <div className="flex items-start justify-between">
             <div>
-              <h1 className="text-4xl font-bold text-white">Trading Signals</h1>
-              <p className="text-sm text-gray-500 mt-2">Last updated: {lastUpdate}</p>
+              <h1 className="text-5xl font-bold text-white tracking-tight">Trading Signals</h1>
+              <p className="text-sm text-gray-500 mt-3">Last updated: {lastUpdate}</p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
               <button
                 onClick={fetchSignals}
                 disabled={loading}
-                className="px-4 py-2 bg-gray-900 hover:bg-gray-800 text-sm font-semibold rounded text-white disabled:opacity-50 transition border border-gray-700"
+                className="px-5 py-2.5 bg-gray-900 hover:bg-gray-800 text-sm font-semibold rounded text-white disabled:opacity-50 transition border border-gray-700"
               >
                 {loading ? "Refreshing..." : "Refresh"}
               </button>
               <button
                 onClick={testTelegram}
                 disabled={testLoading}
-                className="px-4 py-2 bg-gray-900 hover:bg-gray-800 text-sm font-semibold rounded text-white disabled:opacity-50 transition border border-gray-700"
+                className="px-5 py-2.5 bg-gray-900 hover:bg-gray-800 text-sm font-semibold rounded text-white disabled:opacity-50 transition border border-gray-700"
               >
                 {testLoading ? "Testing..." : "Test Alert"}
               </button>
@@ -123,52 +117,52 @@ export default function Home() {
 
           {/* Error Banner */}
           {error && (
-            <div className="mb-8 p-3 bg-red-950/40 border border-red-800/50 rounded text-red-300 text-sm">
+            <div className="p-4 bg-red-950/40 border border-red-800/50 rounded text-red-300 text-sm">
               Error: {error}
             </div>
           )}
 
-          {/* Trade Readiness Section */}
-          <div className="mb-12">
+          {/* Trade Readiness */}
+          <div>
             <div className="flex justify-between items-center mb-3">
-              <h3 className="text-sm font-bold text-white uppercase tracking-wide">Trade Readiness</h3>
-              <span className="text-cyan-400 font-bold text-lg">{getAvgReadiness()}%</span>
+              <h3 className="text-sm font-bold text-white uppercase tracking-wider">Trade Readiness</h3>
+              <span className="text-cyan-400 font-bold text-xl">{getAvgReadiness()}%</span>
             </div>
-            <div className="w-full bg-gray-900 rounded-full h-3 overflow-hidden mb-2">
+            <div className="w-full bg-gray-900 rounded-full h-3 overflow-hidden mb-3">
               <div
                 className="h-3 rounded-full bg-cyan-500 transition-all duration-300"
                 style={{ width: `${getAvgReadiness()}%` }}
               />
             </div>
-            <p className="text-xs text-gray-500">Approaching sniper condition</p>
+            <p className="text-xs text-gray-600">Approaching sniper condition</p>
           </div>
 
           {/* Market Overview */}
           <div>
-            <h2 className="text-lg font-bold text-white mb-8 uppercase tracking-wide">Market Overview</h2>
-            <div className="grid grid-cols-3 gap-8">
+            <h2 className="text-lg font-bold text-white mb-10 uppercase tracking-wider">Market Overview</h2>
+            <div className="grid grid-cols-3 gap-10">
               {signals.map((signal) => (
                 <div
                   key={signal.symbol}
-                  className={`rounded-lg overflow-hidden bg-gray-950 border border-gray-800 transition-all ${getCardBorderColor(
+                  className={`rounded-xl overflow-hidden bg-gray-950 border border-gray-800 ${getCardBorderColor(
                     signal.state,
                     signal.direction
                   )}`}
                 >
                   {/* Card Header */}
-                  <div className="px-6 py-5 border-b border-gray-800 flex items-start justify-between">
-                    <h3 className="text-2xl font-bold text-white">{signal.symbol}</h3>
+                  <div className="px-7 py-6 border-b border-gray-800 flex items-start justify-between bg-gray-900/40">
+                    <h3 className="text-4xl font-bold text-white">{signal.symbol}</h3>
                     <span className={getStatusBadgeStyle(signal.state, signal.direction)}>
                       {signal.state === "SNIPER" ? signal.direction : signal.state}
                     </span>
                   </div>
 
                   {/* Card Body */}
-                  <div className="px-6 py-6 space-y-6">
+                  <div className="px-7 py-8 space-y-8">
                     {/* Price */}
                     <div>
-                      <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold mb-2">Price</p>
-                      <p className="text-xl font-mono text-white">
+                      <p className="text-xs text-gray-600 uppercase tracking-wider font-bold mb-2">Price</p>
+                      <p className="text-2xl font-mono text-white font-bold">
                         ${signal.price.toLocaleString(undefined, {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2,
@@ -176,12 +170,12 @@ export default function Home() {
                       </p>
                     </div>
 
-                    {/* 4H Trend Row */}
-                    <div className="flex justify-between items-start">
+                    {/* 4H Trend & 15M Structure Row */}
+                    <div className="flex justify-between items-start gap-8">
                       <div>
-                        <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold mb-1">4H Trend</p>
+                        <p className="text-xs text-gray-600 uppercase tracking-wider font-bold mb-2">4H Trend</p>
                         <p
-                          className={`font-bold text-sm ${
+                          className={`text-sm font-bold ${
                             signal.bias === "Bullish"
                               ? "text-green-400"
                               : signal.bias === "Bearish"
@@ -193,26 +187,26 @@ export default function Home() {
                         </p>
                       </div>
                       <div className="text-right">
-                        <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold mb-1">15M Structure</p>
-                        <p className="font-bold text-sm text-white">{signal.trigger}</p>
+                        <p className="text-xs text-gray-600 uppercase tracking-wider font-bold mb-2">15M Structure</p>
+                        <p className="text-sm font-bold text-white">{signal.trigger}</p>
                       </div>
                     </div>
 
                     {/* Macro Bias */}
                     <div>
-                      <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold mb-2">Macro Bias</p>
-                      <p className="text-sm text-white">{signal.bias}</p>
+                      <p className="text-xs text-gray-600 uppercase tracking-wider font-bold mb-2">Macro Bias</p>
+                      <p className="text-sm text-white font-medium">{signal.bias}</p>
                     </div>
 
                     {/* Readiness Bar */}
                     <div>
-                      <div className="flex justify-between items-center mb-2">
-                        <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold">Readiness</p>
+                      <div className="flex justify-between items-center mb-3">
+                        <p className="text-xs text-gray-600 uppercase tracking-wider font-bold">Readiness</p>
                         <p className="text-sm font-bold text-white">{signal.confidence}%</p>
                       </div>
-                      <div className="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
+                      <div className="w-full bg-gray-800 rounded-full h-2.5 overflow-hidden">
                         <div
-                          className={`h-2 rounded-full transition-all ${getReadinessColor(
+                          className={`h-2.5 rounded-full transition-all ${getReadinessColor(
                             signal.state,
                             signal.direction
                           )}`}
@@ -223,10 +217,10 @@ export default function Home() {
 
                     {/* Trade Setup - Only for SNIPER */}
                     {signal.state === "SNIPER" && (
-                      <div className="border-t border-gray-800 pt-5">
-                        <p className="text-xs text-gray-500 uppercase tracking-wide font-semibold mb-4">Trade Setup</p>
-                        <div className="space-y-3 text-sm">
-                          <div className="flex justify-between">
+                      <div className="border-t border-gray-800 pt-8">
+                        <p className="text-xs text-gray-600 uppercase tracking-wider font-bold mb-5">Trade Setup</p>
+                        <div className="space-y-3">
+                          <div className="flex justify-between text-sm">
                             <span className="text-gray-500">Direction:</span>
                             <span
                               className={`font-bold ${
@@ -236,7 +230,7 @@ export default function Home() {
                               {signal.direction}
                             </span>
                           </div>
-                          <div className="flex justify-between">
+                          <div className="flex justify-between text-sm">
                             <span className="text-gray-500">Entry:</span>
                             <span className="font-mono text-white font-bold">
                               ${signal.entry?.toLocaleString(undefined, {
@@ -245,39 +239,41 @@ export default function Home() {
                               })}
                             </span>
                           </div>
-                          <div className="flex justify-between">
+                          <div className="flex justify-between text-sm">
                             <span className="text-gray-500">SL:</span>
-                            <span className="font-mono text-white">
+                            <span className="font-mono text-white font-bold">
                               ${signal.stopLoss?.toLocaleString(undefined, {
                                 minimumFractionDigits: 2,
                                 maximumFractionDigits: 2,
                               })}
                             </span>
                           </div>
-                          <div className="flex justify-between">
+                          <div className="flex justify-between text-sm">
                             <span className="text-gray-500">TP:</span>
-                            <span className="font-mono text-white">
+                            <span className="font-mono text-white font-bold">
                               ${signal.takeProfit?.toLocaleString(undefined, {
                                 minimumFractionDigits: 2,
                                 maximumFractionDigits: 2,
                               })}
                             </span>
                           </div>
-                          <div className="flex justify-between">
+                          <div className="flex justify-between text-sm">
                             <span className="text-gray-500">RR:</span>
                             <span className="font-mono text-white font-bold">
                               {signal.riskReward?.toFixed(2)}
                             </span>
                           </div>
-                          <div className="flex justify-between">
+                          <div className="flex justify-between text-sm">
                             <span className="text-gray-500">Confidence:</span>
-                            <span className={`font-bold ${getConfidenceColor(signal.confidence, signal.state, signal.direction)}`}>
+                            <span className={`font-bold ${
+                              signal.direction === "LONG" ? "text-green-400" : "text-red-400"
+                            }`}>
                               {signal.confidence}%
                             </span>
                           </div>
-                          <div className="flex justify-between">
+                          <div className="flex justify-between text-sm">
                             <span className="text-gray-500">Reason:</span>
-                            <span className="text-white text-xs">{signal.reason || "Multi-layer alignment"}</span>
+                            <span className="text-white text-right text-xs max-w-xs">{signal.reason || "4H bias confluence"}</span>
                           </div>
                         </div>
                       </div>
@@ -285,7 +281,7 @@ export default function Home() {
                   </div>
 
                   {/* Footer */}
-                  <div className="px-6 py-3 border-t border-gray-800 bg-gray-900/30">
+                  <div className="px-7 py-4 border-t border-gray-800 bg-gray-900/30">
                     <p className="text-xs text-gray-600">
                       Updated: {new Date(signal.updatedAt).toLocaleTimeString("en-GB")}
                     </p>
