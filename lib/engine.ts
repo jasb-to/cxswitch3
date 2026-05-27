@@ -1,5 +1,7 @@
 /**
- * SIGNAL ENGINE - With position memory, caching, momentum filter
+ * FILE: lib/engine.ts
+ * PURPOSE: Evaluate trading signals with position memory and momentum filter
+ * WHY: Prevents Telegram spam (1 alert per move) and catches accelerating moves only
  */
 
 import { fetchPrices } from "./coingecko";
@@ -24,8 +26,13 @@ export interface Signal {
   updatedAt: string;
 }
 
+// Track last price per symbol (for trigger detection)
 const lastPrices = new Map<Symbol, number>();
+
+// Track last 24h change per symbol (for momentum detection)
 const lastChanges = new Map<Symbol, number>();
+
+// Track last alert per symbol+direction (prevents spam)
 const alertedPositions = new Map<string, { price: number; time: number }>();
 
 function getBias(change24h: number): "Bullish" | "Bearish" | "Neutral" {
@@ -45,7 +52,10 @@ function getMomentum(symbol: Symbol, currentChange: number): "Accelerating" | "D
 
 function getTrigger(symbol: Symbol, current: number): string {
   const last = lastPrices.get(symbol);
-  if (!last) { lastPrices.set(symbol, current); return "Waiting"; }
+  if (!last) { 
+    lastPrices.set(symbol, current); 
+    return "Waiting"; 
+  }
   const change = (current - last) / last;
   lastPrices.set(symbol, current);
   if (change > 0.0015) return "Early Break Up";
@@ -53,15 +63,20 @@ function getTrigger(symbol: Symbol, current: number): string {
   return "Waiting";
 }
 
+// Check if we already alerted for this symbol+direction recently
 function shouldAlert(symbol: Symbol, direction: "LONG" | "SHORT", price: number): boolean {
   const key = `${symbol}:${direction}`;
   const last = alertedPositions.get(key);
-  if (!last) return true;
+  if (!last) return true; // Never alerted before → alert now
+  
   const mins = (Date.now() - last.time) / 60000;
   const priceChange = Math.abs((price - last.price) / last.price);
+  
+  // Only re-alert if 30+ minutes passed AND price moved >2% (new setup)
   return mins > 30 && priceChange > 0.02;
 }
 
+// Call this AFTER sending Telegram alert
 export function recordAlert(symbol: Symbol, direction: "LONG" | "SHORT", price: number) {
   alertedPositions.set(`${symbol}:${direction}`, { price, time: Date.now() });
 }
@@ -79,12 +94,14 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   let direction: Signal["direction"] = undefined;
   let confidence = 0;
 
+  // BUILDING: Bias exists
   if (bias !== "Neutral") {
     state = "BUILDING";
     direction = bias === "Bullish" ? "LONG" : "SHORT";
     confidence = Math.min(60, 40 + Math.abs(change24h) * 8);
   }
 
+  // SNIPER: Bias + trigger aligned
   const isAligned = 
     (bias === "Bullish" && trigger === "Early Break Up") ||
     (bias === "Bearish" && trigger === "Early Break Down");
@@ -94,21 +111,23 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     confidence = Math.min(95, 70 + Math.abs(change24h) * 3);
   }
 
-  // Momentum filter: downgrade if move is decelerating
+  // MOMENTUM FILTER: Downgrade if move is losing steam
   if (state === "SNIPER" && momentum === "Decelerating") {
     state = "BUILDING";
     confidence = Math.floor(confidence * 0.6);
   }
 
+  // ANTI-SPAM: Only alert if we haven't alerted for this direction recently
   const shouldSendAlert = state === "SNIPER" && direction && shouldAlert(symbol, direction, price);
 
+  // SL/TP calculation
   let stopLoss: number | undefined;
   let takeProfit: number | undefined;
   let riskReward: number | undefined;
 
   if (state === "SNIPER" && direction) {
-    const slDistance = price * 0.025; // 2.5% base
-    const tpDistance = slDistance * 2; // 2:1 R:R
+    const slDistance = price * 0.025; // 2.5%
+    const tpDistance = slDistance * 2;  // 2:1 R:R
     
     if (direction === "LONG") {
       stopLoss = price - slDistance;
@@ -121,9 +140,16 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   }
 
   return {
-    symbol, price, change24h, bias, state, direction,
+    symbol, 
+    price, 
+    change24h, 
+    bias, 
+    state, 
+    direction,
     entry: state === "SNIPER" ? price : undefined,
-    stopLoss, takeProfit, riskReward,
+    stopLoss, 
+    takeProfit, 
+    riskReward,
     confidence: Math.floor(confidence),
     trigger,
     momentum,
