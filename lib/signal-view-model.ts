@@ -2,13 +2,13 @@
  * SIGNAL VIEW MODEL MAPPER
  * 
  * Pure pass-through: Signal → SignalViewModel
- * No simulation, no deterministic transforms
+ * No simulation, no transformation
  * Just type alias to ensure consistency
  * 
- * All market context comes from strategy-core
+ * All market context comes from signal-engine (unified evaluation source)
  */
 
-import type { Signal } from "@/lib/strategy-core";
+import type { Signal } from "@/lib/signal-engine";
 
 export type SignalViewModel = Signal;
 
