@@ -1,4 +1,4 @@
-import { evaluate } from "@/lib/engine";
+import { evaluateSignal } from "@/lib/engine";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -6,9 +6,9 @@ export const revalidate = 0;
 export async function GET() {
   try {
     const signals = await Promise.all([
-      evaluate("BTC"),
-      evaluate("ETH"),
-      evaluate("SOL"),
+      evaluateSignal("BTC"),
+      evaluateSignal("ETH"),
+      evaluateSignal("SOL"),
     ]);
     
     return Response.json({ signals, timestamp: Date.now() });
