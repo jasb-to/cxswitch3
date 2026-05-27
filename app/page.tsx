@@ -2,12 +2,6 @@
 
 import { useState, useEffect } from "react";
 
-interface LayerStatus {
-  status: string;
-  detail: string;
-  met: boolean;
-}
-
 interface Signal {
   symbol: string;
   price: number;
@@ -17,10 +11,6 @@ interface Signal {
   takeProfit?: number;
   riskReward?: number;
   confidence: number;
-  layer1: LayerStatus;
-  layer2: LayerStatus;
-  layer3: LayerStatus;
-  bias4h: string;
   updatedAt: string;
 }
 
@@ -62,7 +52,7 @@ export default function Home() {
 
   useEffect(() => {
     fetchSignals();
-    const interval = setInterval(fetchSignals, 5000);
+    const interval = setInterval(fetchSignals, 60000); // 60 second refresh
     return () => clearInterval(interval);
   }, []);
 
@@ -148,7 +138,7 @@ export default function Home() {
         {/* Market Overview */}
         <div>
           <h2 className="text-lg font-semibold text-white mb-4">Market Overview</h2>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-3 gap-4 pl-[30px]">
             {signals.map((signal) => {
               const badge = getStatusBadge(signal.confidence);
               return (
@@ -173,22 +163,9 @@ export default function Home() {
                     </div>
 
                     {/* Market Info Grid */}
-                    <div className="grid grid-cols-2 gap-3 text-xs">
-                      <div>
-                        <p className="text-gray-600 uppercase">4H Trend</p>
-                        <p className={`font-semibold ${signal.bias4h.includes("Bullish") ? "text-green-400" : signal.bias4h.includes("Bearish") ? "text-red-400" : "text-gray-400"}`}>
-                          {signal.bias4h.split(" ")[0]}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-gray-600 uppercase">15M Structure</p>
-                        <p className="font-semibold text-white">{signal.layer2?.status || "--"}</p>
-                      </div>
-                      <div>
-                        <p className="text-gray-600 uppercase">Macro Bias</p>
-                        <p className="font-semibold text-white">{signal.layer1?.status?.split(" ")[0] || "Neutral"}</p>
-                      </div>
-                      <div></div>
+                    <div className="flex items-center justify-between py-1">
+                      <p className="text-xs text-gray-600 uppercase">Confidence</p>
+                      <p className="text-xs font-bold text-white">{signal.confidence}%</p>
                     </div>
 
                     {/* Readiness Bar */}

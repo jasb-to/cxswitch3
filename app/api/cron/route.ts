@@ -31,6 +31,14 @@ PnL: ${pnlLabel}
 
 export async function GET(req: Request) {
   try {
+    const { searchParams } = new URL(req.url);
+    const secret = searchParams.get("secret");
+    
+    // Verify secret matches
+    if (secret !== process.env.CRON_SECRET) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     console.log("[CRON] Starting signal evaluation cycle...");
 
     const signals = await Promise.all([
