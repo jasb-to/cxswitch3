@@ -1,202 +1,255 @@
-export type Symbol = "BTC" | "ETH" | "SOL";
+import { fetchPrice, fetchOHLC1H, fetchOHLC4H, OHLC, PriceData } from "./coingecko";
 
-export interface Candle {
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-}
+const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL;
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+type Symbol = "BTC" | "ETH" | "SOL";
+type CGId = "bitcoin" | "ethereum" | "solana";
+type Layer1State = "Bullish" | "Bearish" | "Neutral";
+type Layer2State = "FLAT" | "BUILDING" | "SNIPER";
+
+const CG_ID_MAP: Record<Symbol, CGId> = {
+  BTC: "bitcoin",
+  ETH: "ethereum",
+  SOL: "solana",
+};
 
 export interface Signal {
-  symbol: string;
+  symbol: Symbol;
   price: number;
-  state: "FLAT" | "LONG" | "SHORT";
+  state: "FLAT" | "BUILDING" | "SNIPER";
+  confidence: number;
+  layer1: {
+    trend: Layer1State;
+    sma20: number;
+    smaDistance: number;
+  };
+  layer2: {
+    state: Layer2State;
+    sma12: number;
+    smaDistance: number;
+  };
+  layer3: {
+    trigger: "Pullback" | "Breakout" | "Waiting";
+  };
   entry?: number;
   stopLoss?: number;
   takeProfit?: number;
   riskReward?: number;
-  confidence: number;
-  
-  // Market data display
-  candle4h?: Candle;
-  candle15m?: Candle;
-  bias4h?: string;
-  structure15m?: string;
-  
+  holdDuration?: string;
+  timeStop?: number;
   updatedAt: string;
 }
 
-interface TickerData {
-  symbol: Symbol;
-  price: number;
-  high24h: number;
-  low24h: number;
-  vwap24h: number;
-}
-
-const PAIRS: Record<Symbol, string> = {
-  BTC: "XBTUSD",
-  ETH: "ETHUSD",
-  SOL: "SOLUSD",
-};
-
-// Fetch ticker data for a single symbol with delay
-async function fetchTickerForSymbol(pair: string, delay: number = 0): Promise<TickerData | null> {
-  if (delay > 0) {
-    await new Promise(resolve => setTimeout(resolve, delay));
-  }
-  
+async function redis(command: string[]): Promise<any> {
+  if (!REDIS_URL || !REDIS_TOKEN) return null;
   try {
-    const res = await fetch(
-      `https://api.kraken.com/0/public/Ticker?pair=${pair}`,
-      { cache: "no-store" }
-    );
-    const data = await res.json();
-    if (data.error?.length) throw new Error(data.error.join(", "));
-
-    const result: Record<string, any> = data.result;
-    const keys = Object.keys(result);
-    if (keys.length === 0) throw new Error(`No data for ${pair}`);
-    
-    const key = keys[0];
-    const ticker = result[key];
-    
-    const symbol = pair.startsWith("XX") ? pair.substring(1, 4) : pair.substring(0, 3);
-    
-    return {
-      symbol: symbol as Symbol,
-      price: parseFloat(ticker.c[0]),
-      high24h: parseFloat(ticker.h[1]),
-      low24h: parseFloat(ticker.l[1]),
-      vwap24h: parseFloat(ticker.p[1]),
-    };
+    const response = await fetch(`${REDIS_URL}/exec`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${REDIS_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ commands: [command] }),
+    });
+    const data = await response.json();
+    return data.result?.[0];
   } catch (err) {
-    console.error(`[TICKER] ${pair} fetch failed:`, err);
+    console.error("[REDIS] Error:", err);
     return null;
   }
 }
 
-// Fetch all tickers with delays to avoid rate limits
-async function fetchAllTickers(): Promise<Record<Symbol, TickerData>> {
-  const [btc, eth, sol] = await Promise.all([
-    fetchTickerForSymbol("XXBTZUSD", 0),
-    fetchTickerForSymbol("XETHZUSD", 500),
-    fetchTickerForSymbol("SOLUSD", 1000),
-  ]);
-
-  if (!btc || !eth || !sol) {
-    throw new Error("Failed to fetch one or more tickers");
-  }
-
-  return {
-    BTC: btc,
-    ETH: eth,
-    SOL: sol,
-  };
+async function getStateCache(symbol: Symbol): Promise<{ state: Layer2State; time: number } | null> {
+  const key = `state:${symbol}`;
+  const cached = await redis(["GET", key]);
+  return cached ? JSON.parse(cached as string) : null;
 }
 
-// Fetch OHLC data for a specific timeframe
-async function fetchOHLC(pair: string, interval: number): Promise<Candle | null> {
-  try {
-    const res = await fetch(
-      `https://api.kraken.com/0/public/OHLC?pair=${pair}&interval=${interval}`,
-      { cache: "no-store" }
-    );
-    const data = await res.json();
-    if (data.error?.length) throw new Error(data.error.join(", "));
-
-    const ohlcArray = data.result[pair];
-    if (!ohlcArray || ohlcArray.length === 0) return null;
-
-    const latest = ohlcArray[ohlcArray.length - 1];
-    return {
-      open: parseFloat(latest[1]),
-      high: parseFloat(latest[2]),
-      low: parseFloat(latest[3]),
-      close: parseFloat(latest[4]),
-    };
-  } catch (err) {
-    console.error(`[OHLC] ${pair} interval ${interval} failed:`, err);
-    return null;
-  }
+async function setStateCache(symbol: Symbol, state: Layer2State): Promise<void> {
+  const key = `state:${symbol}`;
+  await redis(["SET", key, JSON.stringify({ state, time: Date.now() })]);
 }
 
-// Analyze candle for bias
-function analyzeBias(candle: Candle | undefined): { bias: string; structure: string } {
-  if (!candle) return { bias: "Unknown", structure: "Unknown" };
+// Calculate SMA
+function calculateSMA(candles: OHLC[], period: number): number {
+  if (candles.length < period) return candles[candles.length - 1]?.close || 0;
+  const closes = candles.slice(-period).map(c => c.close);
+  return closes.reduce((a, b) => a + b, 0) / period;
+}
 
-  const bodySize = Math.abs(candle.close - candle.open);
-  const totalRange = candle.high - candle.low;
-  const bodyPercent = totalRange > 0 ? (bodySize / totalRange) * 100 : 0;
+// LAYER 1: 4H Trend Filter
+function analyzeLayer1(candles4h: OHLC[], currentPrice: number): { trend: Layer1State; sma20: number; smaDistance: number } {
+  if (candles4h.length < 2) return { trend: "Neutral", sma20: 0, smaDistance: 0 };
 
-  const bias = candle.close > candle.open ? "Bullish" : "Bearish";
+  const sma20 = calculateSMA(candles4h, 20);
+  const smaDistance = ((currentPrice - sma20) / sma20) * 100;
+  const last2Above = candles4h.slice(-2).every(c => c.close > sma20);
+  const last2Below = candles4h.slice(-2).every(c => c.close < sma20);
+
+  let trend: Layer1State = "Neutral";
   
-  let structure = "Neutral";
-  if (bodyPercent > 70) {
-    structure = candle.close > candle.open ? "Strong Bullish" : "Strong Bearish";
-  } else if (bodyPercent > 40) {
-    structure = candle.close > candle.open ? "Bullish Break" : "Bearish Break";
-  } else if (bodyPercent < 20) {
-    structure = "Doji/Indecision";
+  if (currentPrice > sma20 && last2Above && smaDistance > 1.5) {
+    trend = "Bullish";
+  } else if (currentPrice < sma20 && last2Below && smaDistance < -1.5) {
+    trend = "Bearish";
   }
 
-  return { bias, structure };
+  return { trend, sma20, smaDistance };
+}
+
+// LAYER 2: 1H Primary Signal
+function analyzeLayer2(candles1h: OHLC[], currentPrice: number, layer1Trend: Layer1State, previousState: Layer2State | null, lastStateTime: number | null): Layer2State {
+  if (candles1h.length < 2) return "FLAT";
+
+  const sma12 = calculateSMA(candles1h, 12);
+  const smaDistance = ((currentPrice - sma12) / sma12) * 100;
+
+  // FLAT: price within 0.5% of SMA (chop zone)
+  if (Math.abs(smaDistance) <= 0.5) {
+    return "FLAT";
+  }
+
+  if (layer1Trend === "Neutral") {
+    return "FLAT";
+  }
+
+  const last2Candles = candles1h.slice(-2);
+  const crossedSMA = (layer1Trend === "Bullish" && currentPrice > sma12) || (layer1Trend === "Bearish" && currentPrice < sma12);
+  
+  if (!crossedSMA) {
+    return "FLAT";
+  }
+
+  const confirmedBreak = (layer1Trend === "Bullish" && last2Candles.every(c => c.close > sma12)) ||
+                         (layer1Trend === "Bearish" && last2Candles.every(c => c.close < sma12));
+
+  // Check minimum state duration (30 minutes = 2 candles)
+  if (previousState && previousState !== "FLAT" && lastStateTime) {
+    const elapsed = Date.now() - lastStateTime;
+    if (elapsed < 30 * 60 * 1000) { // 30 minutes
+      return previousState;
+    }
+  }
+
+  // SNIPER: confirmed break (2 consecutive 1H candles)
+  if (confirmedBreak) {
+    return "SNIPER";
+  }
+
+  // BUILDING: crossed SMA but not confirmed yet
+  return "BUILDING";
+}
+
+// LAYER 3: 15M Execution Trigger
+function analyzeLayer3(currentPrice: number, layer2SMA: number, layer1Trend: Layer1State): "Pullback" | "Breakout" | "Waiting" {
+  if (layer1Trend === "Neutral") return "Waiting";
+
+  const pullbackDistance = Math.abs(currentPrice - layer2SMA);
+  const smaPercent = (pullbackDistance / layer2SMA) * 100;
+
+  if (smaPercent <= 0.3) {
+    return "Pullback";
+  }
+
+  return "Waiting";
 }
 
 export async function evaluate(symbol: Symbol): Promise<Signal> {
   try {
-    const pair = PAIRS[symbol];
+    const cgId = CG_ID_MAP[symbol];
     
-    // Fetch ticker and OHLC data
-    const ticker = await fetchAllTickers();
-    const data = ticker[symbol];
-    
-    // Fetch OHLC data in parallel with delays
-    const candle4h = await fetchOHLC(pair, 240);
-    await new Promise(resolve => setTimeout(resolve, 500));
-    const candle15m = await fetchOHLC(pair, 15);
+    // Fetch all data in parallel
+    const [priceData, candles1h, candles4h] = await Promise.all([
+      fetchPrice(cgId),
+      fetchOHLC1H(cgId),
+      fetchOHLC4H(cgId),
+    ]);
 
-    const { bias: bias4h, structure: structure15m } = analyzeBias(candle4h);
+    if (!priceData) throw new Error(`Failed to fetch price for ${symbol}`);
 
-    let state: "FLAT" | "LONG" | "SHORT" = "FLAT";
-    let confidence = 0;
+    const price = priceData.price;
 
-    // Simple logic: 4H bullish/bearish determines direction
-    if (bias4h.includes("Bullish")) {
-      state = "LONG";
-      confidence = 85;
-    } else if (bias4h.includes("Bearish")) {
-      state = "SHORT";
-      confidence = 85;
+    // Layer 1: 4H Trend Filter
+    const layer1 = analyzeLayer1(candles4h, price);
+
+    // Layer 2: 1H Primary Signal with state memory
+    const stateMemory = await getStateCache(symbol);
+    const layer2 = analyzeLayer2(candles1h, price, layer1.trend, stateMemory?.state || null, stateMemory?.time || null);
+
+    // Update state cache if state changed
+    if (layer2 !== stateMemory?.state) {
+      await setStateCache(symbol, layer2);
     }
 
-    const entry = data.price;
-    const stopLoss = state === "LONG" ? entry * 0.985 : state === "SHORT" ? entry * 1.015 : 0;
-    const takeProfit = state === "LONG" ? entry * 1.03 : state === "SHORT" ? entry * 0.97 : 0;
-    const riskReward = state !== "FLAT" ? 2.0 : 0; // 2:1 R:R
+    // Layer 3: 15M Execution Trigger
+    const sma12 = calculateSMA(candles1h, 12);
+    const layer3 = analyzeLayer3(price, sma12, layer1.trend);
+
+    // Determine final signal state
+    let finalState: "FLAT" | "BUILDING" | "SNIPER" = "FLAT";
+    let confidence = 0;
+
+    if (layer1.trend !== "Neutral" && layer2 === "SNIPER" && layer3 === "Pullback") {
+      finalState = "SNIPER";
+      confidence = 95;
+    } else if (layer1.trend !== "Neutral" && layer2 === "SNIPER") {
+      finalState = "SNIPER";
+      confidence = 85;
+    } else if (layer1.trend !== "Neutral" && layer2 === "BUILDING") {
+      finalState = "BUILDING";
+      confidence = 60;
+    }
+
+    // Calculate SL/TP
+    let entry = price;
+    let stopLoss = 0;
+    let takeProfit = 0;
+
+    if (finalState === "SNIPER") {
+      stopLoss = layer1.trend === "Bullish" ? entry * 0.985 : entry * 1.015;
+      takeProfit = layer1.trend === "Bullish" ? entry * 1.045 : entry * 0.955;
+    }
+
+    const riskReward = finalState === "SNIPER" ? 3.0 : 0;
+    const timeStop = finalState === "SNIPER" ? 4 * 60 * 60 * 1000 : 0;
 
     return {
       symbol,
-      price: data.price,
-      state,
-      entry: state !== "FLAT" ? entry : undefined,
-      stopLoss: state !== "FLAT" ? stopLoss : undefined,
-      takeProfit: state !== "FLAT" ? takeProfit : undefined,
-      riskReward: state !== "FLAT" ? riskReward : undefined,
+      price,
+      state: finalState,
       confidence,
-      candle4h,
-      candle15m,
-      bias4h,
-      structure15m,
+      layer1: {
+        trend: layer1.trend,
+        sma20: layer1.sma20,
+        smaDistance: layer1.smaDistance,
+      },
+      layer2: {
+        state: layer2,
+        sma12,
+        smaDistance: ((price - sma12) / sma12) * 100,
+      },
+      layer3: {
+        trigger: layer3,
+      },
+      entry: finalState === "SNIPER" ? entry : undefined,
+      stopLoss: finalState === "SNIPER" ? stopLoss : undefined,
+      takeProfit: finalState === "SNIPER" ? takeProfit : undefined,
+      riskReward: finalState === "SNIPER" ? riskReward : undefined,
+      holdDuration: finalState === "SNIPER" ? "6-8h" : undefined,
+      timeStop: finalState === "SNIPER" ? timeStop : undefined,
       updatedAt: new Date().toISOString(),
     };
   } catch (err: any) {
-    console.error(`[SIGNAL] ${symbol} evaluation failed:`, err.message);
+    console.error(`[ENGINE] ${symbol} evaluation failed:`, err.message);
     return {
       symbol,
       price: 0,
       state: "FLAT",
       confidence: 0,
+      layer1: { trend: "Neutral", sma20: 0, smaDistance: 0 },
+      layer2: { state: "FLAT", sma12: 0, smaDistance: 0 },
+      layer3: { trigger: "Waiting" },
       updatedAt: new Date().toISOString(),
     };
   }
