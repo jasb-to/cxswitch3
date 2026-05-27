@@ -81,7 +81,7 @@ export async function GET(req: Request) {
       }
 
       try {
-        const pair = signal.symbol === "BTC" ? "XXBTZUSD" : signal.symbol === "ETH" ? "XETHZUSD" : "SOLUSD";
+        const pair = signal.symbol === "BTC" ? "XBTUSD" : signal.symbol === "ETH" ? "ETHUSD" : "SOLUSD";
         const volume = signal.symbol === "BTC" ? "0.001" : signal.symbol === "ETH" ? "0.01" : "0.1";
 
         console.log(`[CRON] Executing ${signal.state} on ${signal.symbol} at ${signal.entry}`);
