@@ -295,14 +295,21 @@ export async function evaluate(symbol: Symbol): Promise<Signal> {
       entry = trigger.entry;
       state = layer1Result.bias === "Bullish" ? "LONG" : "SHORT";
 
-      // Calculate SL/TP from retest level
+      // Calculate SL/TP: 1.5x SL distance, 3% TP
       const retest = detectRetest(candles15m, layer1Result.bias);
       const slLevel = retest.level || (state === "LONG" ? candles15m[candles15m.length - 1].low : candles15m[candles15m.length - 1].high);
-      const range = Math.abs(entry - slLevel);
+      const slDistance = Math.abs(entry - slLevel);
 
-      stopLoss = state === "LONG" ? Math.min(slLevel, entry * 0.97) : Math.max(slLevel, entry * 1.03);
-      takeProfit = state === "LONG" ? entry + range * 2 : entry - range * 2;
-      riskReward = range > 0 ? Math.abs(takeProfit - entry) / Math.abs(entry - stopLoss) : 0;
+      // 1.5x SL: move SL back by 1.5x the retest distance
+      stopLoss = state === "LONG" ? entry - slDistance * 1.5 : entry + slDistance * 1.5;
+      
+      // 3% TP from entry
+      takeProfit = state === "LONG" ? entry * 1.03 : entry * 0.97;
+      
+      // Risk/Reward ratio
+      const risk = Math.abs(entry - stopLoss);
+      const reward = Math.abs(takeProfit - entry);
+      riskReward = risk > 0 ? reward / risk : 0;
 
       // Confidence based on setup quality
       confidence = 60;
