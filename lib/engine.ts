@@ -40,45 +40,59 @@ const PAIRS: Record<Symbol, string> = {
   SOL: "SOLUSD",
 };
 
-// Single ticker fetch for all 3 symbols
-async function fetchTicker(): Promise<Record<Symbol, TickerData>> {
+// Fetch ticker data for a single symbol with delay
+async function fetchTickerForSymbol(pair: string, delay: number = 0): Promise<TickerData | null> {
+  if (delay > 0) {
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+  
   try {
     const res = await fetch(
-      "https://api.kraken.com/0/public/Ticker?pair=XBTUSD,ETHUSD,SOLUSD",
+      `https://api.kraken.com/0/public/Ticker?pair=${pair}`,
       { cache: "no-store" }
     );
     const data = await res.json();
     if (data.error?.length) throw new Error(data.error.join(", "));
 
     const result: Record<string, any> = data.result;
+    const keys = Object.keys(result);
+    if (keys.length === 0) throw new Error(`No data for ${pair}`);
+    
+    const key = keys[0];
+    const ticker = result[key];
+    
+    const symbol = pair.startsWith("XX") ? pair.substring(1, 4) : pair.substring(0, 3);
     
     return {
-      BTC: {
-        symbol: "BTC",
-        price: parseFloat(result.XBTUSD.c[0]),
-        high24h: parseFloat(result.XBTUSD.h[1]),
-        low24h: parseFloat(result.XBTUSD.l[1]),
-        vwap24h: parseFloat(result.XBTUSD.p[1]),
-      },
-      ETH: {
-        symbol: "ETH",
-        price: parseFloat(result.ETHUSD.c[0]),
-        high24h: parseFloat(result.ETHUSD.h[1]),
-        low24h: parseFloat(result.ETHUSD.l[1]),
-        vwap24h: parseFloat(result.ETHUSD.p[1]),
-      },
-      SOL: {
-        symbol: "SOL",
-        price: parseFloat(result.SOLUSD.c[0]),
-        high24h: parseFloat(result.SOLUSD.h[1]),
-        low24h: parseFloat(result.SOLUSD.l[1]),
-        vwap24h: parseFloat(result.SOLUSD.p[1]),
-      },
+      symbol: symbol as Symbol,
+      price: parseFloat(ticker.c[0]),
+      high24h: parseFloat(ticker.h[1]),
+      low24h: parseFloat(ticker.l[1]),
+      vwap24h: parseFloat(ticker.p[1]),
     };
   } catch (err) {
-    console.error("[TICKER] Fetch failed:", err);
-    throw err;
+    console.error(`[TICKER] ${pair} fetch failed:`, err);
+    return null;
   }
+}
+
+// Fetch all tickers with delays to avoid rate limits
+async function fetchAllTickers(): Promise<Record<Symbol, TickerData>> {
+  const [btc, eth, sol] = await Promise.all([
+    fetchTickerForSymbol("XXBTZUSD", 0),
+    fetchTickerForSymbol("XETHZUSD", 500),
+    fetchTickerForSymbol("SOLUSD", 1000),
+  ]);
+
+  if (!btc || !eth || !sol) {
+    throw new Error("Failed to fetch one or more tickers");
+  }
+
+  return {
+    BTC: btc,
+    ETH: eth,
+    SOL: sol,
+  };
 }
 
 // Fetch OHLC data for a specific timeframe
@@ -133,51 +147,33 @@ export async function evaluate(symbol: Symbol): Promise<Signal> {
   try {
     const pair = PAIRS[symbol];
     
-    // Fetch all data in parallel: ticker, 4H OHLC, 15M OHLC
-    const [ticker, candle4h, candle15m] = await Promise.all([
-      fetchTicker(),
-      fetchOHLC(pair, 240), // 4 hours
-      fetchOHLC(pair, 15),  // 15 minutes
-    ]);
-
+    // Fetch ticker and OHLC data
+    const ticker = await fetchAllTickers();
     const data = ticker[symbol];
-    const { bias: bias4h, structure: structure15m } = analyzeBias(candle4h);
+    
+    // Fetch OHLC data in parallel with delays
+    const candle4h = await fetchOHLC(pair, 240);
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const candle15m = await fetchOHLC(pair, 15);
 
-    const dailyRange = data.high24h - data.low24h;
-    const rangePosition = (data.price - data.low24h) / dailyRange; // 0-1 scale
-    const vwapDistance = (data.price - data.vwap24h) / data.vwap24h; // % distance
+    const { bias: bias4h, structure: structure15m } = analyzeBias(candle4h);
 
     let state: "FLAT" | "LONG" | "SHORT" = "FLAT";
     let confidence = 0;
 
-    // LONG: Price in upper 25% of 24h range AND above VWAP AND 4H bullish
-    if (rangePosition > 0.75 && vwapDistance > 0.002 && bias4h.includes("Bullish")) {
+    // Simple logic: 4H bullish/bearish determines direction
+    if (bias4h.includes("Bullish")) {
       state = "LONG";
-      confidence = Math.min(95, 60 + (rangePosition - 0.75) * 140);
-    }
-    // SHORT: Price in lower 25% of 24h range AND below VWAP AND 4H bearish
-    else if (rangePosition < 0.25 && vwapDistance < -0.002 && bias4h.includes("Bearish")) {
+      confidence = 85;
+    } else if (bias4h.includes("Bearish")) {
       state = "SHORT";
-      confidence = Math.min(95, 60 + (0.25 - rangePosition) * 140);
+      confidence = 85;
     }
-
-    // Calculate SL/TP based on daily range
-    const slDistance = dailyRange * 0.15;
-    const tpDistance = dailyRange * 0.30;
 
     const entry = data.price;
-    let stopLoss = 0;
-    let takeProfit = 0;
-
-    if (state === "LONG") {
-      stopLoss = entry - slDistance;
-      takeProfit = entry + tpDistance;
-    } else if (state === "SHORT") {
-      stopLoss = entry + slDistance;
-      takeProfit = entry - tpDistance;
-    }
-
-    const riskReward = slDistance > 0 ? tpDistance / slDistance : 0;
+    const stopLoss = state === "LONG" ? entry * 0.985 : state === "SHORT" ? entry * 1.015 : 0;
+    const takeProfit = state === "LONG" ? entry * 1.03 : state === "SHORT" ? entry * 0.97 : 0;
+    const riskReward = state !== "FLAT" ? 2.0 : 0; // 2:1 R:R
 
     return {
       symbol,
