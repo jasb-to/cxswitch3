@@ -97,27 +97,26 @@ export default function Home() {
     : 0;
 
   return (
-    <div className="min-h-screen w-full bg-black text-gray-100">
-      {/* Main Container */}
-      <div className="w-full max-w-screen-xl mx-auto px-8 py-8">
-        {/* Header */}
-        <div className="flex items-start justify-between mb-12">
+    <div className="min-h-screen bg-black text-gray-100">
+      {/* Header */}
+      <div className="px-6 py-6">
+        <div className="flex items-start justify-between mb-8">
           <div>
-            <h1 className="text-4xl font-bold text-white">Trading Signals</h1>
-            <p className="text-sm text-gray-400 mt-2">Last updated: {lastUpdate}</p>
+            <h1 className="text-3xl font-bold text-white">Trading Signals</h1>
+            <p className="text-xs text-gray-500 mt-1">Last updated: {lastUpdate}</p>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             <button
               onClick={fetchSignals}
               disabled={loading}
-              className="px-6 py-2.5 bg-gray-900 hover:bg-gray-800 text-sm font-medium rounded text-white disabled:opacity-50 transition-colors"
+              className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm rounded text-white disabled:opacity-50"
             >
               {loading ? "Refresh..." : "Refresh"}
             </button>
             <button
               onClick={testTelegram}
               disabled={testLoading}
-              className="px-6 py-2.5 bg-gray-900 hover:bg-gray-800 text-sm font-medium rounded text-white disabled:opacity-50 transition-colors"
+              className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm rounded text-white disabled:opacity-50"
             >
               {testLoading ? "Test..." : "Test Alert"}
             </button>
@@ -125,81 +124,82 @@ export default function Home() {
         </div>
 
         {/* Trade Readiness Section */}
-        <div className="mb-16">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-semibold text-white">Trade Readiness</h2>
-            <span className="text-3xl font-bold text-cyan-400">{overallConfidence}%</span>
+        <div className="mb-12">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-lg font-semibold text-white">Trade Readiness</h2>
+            <span className="text-2xl font-bold text-cyan-400">{overallConfidence}%</span>
           </div>
-          <div className="w-full bg-gray-900 rounded h-3 mb-3 overflow-hidden">
+          <div className="w-full bg-gray-900 rounded-full h-2 mb-2">
             <div
-              className="h-3 bg-cyan-500 transition-all duration-500 rounded"
+              className="h-2 rounded-full bg-cyan-500 transition-all duration-300"
               style={{ width: `${Math.min(100, overallConfidence)}%` }}
             />
           </div>
-          <p className="text-sm text-gray-400">Approaching sniper condition</p>
+          <p className="text-xs text-gray-500">Approaching sniper condition</p>
         </div>
 
         {/* Error Banner */}
         {error && (
-          <div className="mb-8 p-4 bg-red-950/50 border border-red-800 rounded text-red-300 text-sm">
+          <div className="mb-6 p-3 bg-red-950/50 border border-red-800 rounded text-red-300 text-sm">
             Error: {error}
           </div>
         )}
 
         {/* Market Overview */}
         <div>
-          <h2 className="text-xl font-semibold text-white mb-6">Market Overview</h2>
-          <div className="grid grid-cols-3 gap-6">
+          <h2 className="text-lg font-semibold text-white mb-4">Market Overview</h2>
+          <div className="grid grid-cols-3 gap-4">
             {signals.map((signal) => {
               const badge = getStatusBadge(signal.confidence);
               return (
                 <div
                   key={signal.symbol}
-                  className={`rounded-lg border border-gray-800 bg-gray-950 overflow-hidden transition-all hover:border-gray-700 ${getCardBorder(signal.confidence)}`}
+                  className={`rounded-lg border border-gray-800 bg-gray-950 overflow-hidden ${getCardBorder(signal.confidence)}`}
                 >
                   {/* Card Header */}
-                  <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between bg-gray-900/30">
-                    <span className="text-2xl font-bold text-white">{signal.symbol}</span>
-                    <span className={`px-3 py-1.5 rounded text-xs font-bold text-white ${badge.bg}`}>
+                  <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+                    <span className="text-xl font-bold text-white">{signal.symbol}</span>
+                    <span className={`px-2.5 py-1 rounded text-xs font-bold text-white ${badge.bg}`}>
                       {badge.text}
                     </span>
                   </div>
 
                   {/* Card Body */}
-                  <div className="px-6 py-5 space-y-4">
+                  <div className="px-4 py-4 space-y-3">
                     {/* Price */}
                     <div>
-                      <p className="text-xs text-gray-500 uppercase tracking-widest font-semibold">Price</p>
-                      <p className="text-lg font-mono text-white mt-1">{formatPrice(signal.price)}</p>
+                      <p className="text-xs text-gray-500 uppercase tracking-wider">Price</p>
+                      <p className="text-sm font-mono text-white">{formatPrice(signal.price)}</p>
                     </div>
 
                     {/* Market Info Grid */}
-                    <div className="grid grid-cols-2 gap-4 py-2">
+                    <div className="grid grid-cols-2 gap-3 text-xs">
                       <div>
-                        <p className="text-xs text-gray-600 uppercase tracking-widest font-semibold">4H Trend</p>
-                        <p className={`text-sm font-bold mt-1 ${signal.bias4h.includes("Bullish") ? "text-green-400" : signal.bias4h.includes("Bearish") ? "text-red-400" : "text-gray-400"}`}>
+                        <p className="text-gray-600 uppercase">4H Trend</p>
+                        <p className={`font-semibold ${signal.bias4h.includes("Bullish") ? "text-green-400" : signal.bias4h.includes("Bearish") ? "text-red-400" : "text-gray-400"}`}>
                           {signal.bias4h.split(" ")[0]}
                         </p>
                       </div>
                       <div>
-                        <p className="text-xs text-gray-600 uppercase tracking-widest font-semibold">15M Structure</p>
-                        <p className="text-sm font-bold text-white mt-1">{signal.layer2?.status || "--"}</p>
+                        <p className="text-gray-600 uppercase">15M Structure</p>
+                        <p className="font-semibold text-white">{signal.layer2?.status || "--"}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-gray-600 uppercase tracking-widest font-semibold">Macro Bias</p>
-                        <p className="text-sm font-bold text-white mt-1">{signal.layer1?.status?.split(" ")[0] || "Neutral"}</p>
+                        <p className="text-gray-600 uppercase">Macro Bias</p>
+                        <p className="font-semibold text-white">{signal.layer1?.status?.split(" ")[0] || "Neutral"}</p>
                       </div>
+                      <div></div>
                     </div>
 
                     {/* Readiness Bar */}
-                    <div className="py-2">
-                      <div className="flex items-center justify-between mb-2">
-                        <p className="text-xs text-gray-600 uppercase tracking-widest font-semibold">Readiness</p>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-xs text-gray-600 uppercase">Readiness</p>
                         <p className="text-xs font-bold text-white">{signal.confidence}%</p>
                       </div>
-                      <div className="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
+                      <div className="w-full bg-gray-800 rounded-full h-1.5">
                         <div
-                          className={`h-2 rounded-full transition-all ${getReadinessBar(signal.confidence)}`}
+                          className={`h-1.5 rounded-full transition-all ${getReadinessBar(signal.confidence)}`}
                           style={{ width: `${Math.min(100, signal.confidence)}%` }}
                         />
                       </div>
@@ -207,9 +207,9 @@ export default function Home() {
 
                     {/* Trade Setup - Only show when active signal */}
                     {signal.state !== "FLAT" && (
-                      <div className="border-t border-gray-800 pt-4 mt-4">
-                        <p className="text-xs text-gray-600 uppercase tracking-widest font-semibold mb-3">Trade Setup</p>
-                        <div className="space-y-2 text-sm">
+                      <div className="border-t border-gray-800 pt-3 mt-3">
+                        <p className="text-xs text-gray-600 uppercase mb-2">Trade Setup</p>
+                        <div className="space-y-1.5 text-xs">
                           <div className="flex justify-between">
                             <span className="text-gray-500">Direction:</span>
                             <span className={`font-bold ${signal.state === "LONG" ? "text-green-400" : "text-red-400"}`}>
@@ -240,7 +240,7 @@ export default function Home() {
                           </div>
                           <div className="flex justify-between pt-1">
                             <span className="text-gray-500">Reason:</span>
-                            <span className="text-gray-400 text-right text-xs">{signal.layer1?.detail || "Multi-layer alignment"}</span>
+                            <span className="text-gray-400 text-right">{signal.layer1?.detail || "Multi-layer alignment"}</span>
                           </div>
                         </div>
                       </div>
@@ -248,7 +248,7 @@ export default function Home() {
                   </div>
 
                   {/* Footer */}
-                  <div className="px-6 py-3 border-t border-gray-800 bg-gray-900/30">
+                  <div className="px-4 py-2 border-t border-gray-800 bg-gray-900/50">
                     <p className="text-xs text-gray-600">
                       Updated: {signal.updatedAt ? new Date(signal.updatedAt).toLocaleString("en-GB") : "--"}
                     </p>
