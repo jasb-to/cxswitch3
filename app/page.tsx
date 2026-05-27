@@ -73,7 +73,7 @@ export default function Home() {
 
   return (
     <div className="min-h-screen w-full bg-black text-gray-100">
-      <div className="w-full max-w-screen-xl mx-auto px-8 py-8">
+      <div className="w-full max-w-7xl mx-auto px-12 py-12">
         {/* Header */}
         <div className="flex items-start justify-between mb-12">
           <div>
@@ -108,7 +108,7 @@ export default function Home() {
         {/* Market Overview */}
         <div>
           <h2 className="text-xl font-semibold text-white mb-6">Market Overview</h2>
-          <div className="grid grid-cols-3 gap-6 pl-[30px]">
+          <div className="grid grid-cols-3 gap-6">
             {signals.map((signal) => (
               <div
                 key={signal.symbol}
