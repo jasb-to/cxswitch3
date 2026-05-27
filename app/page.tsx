@@ -29,7 +29,6 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [lastUpdate, setLastUpdate] = useState("");
-  const [telegramStatus, setTelegramStatus] = useState("");
   const [testLoading, setTestLoading] = useState(false);
 
   async function fetchSignals() {
@@ -39,7 +38,7 @@ export default function Home() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setSignals(data.signals || []);
-      setLastUpdate(new Date().toLocaleTimeString());
+      setLastUpdate(new Date().toLocaleString("en-GB"));
       setError("");
     } catch (err: any) {
       setError(err.message || "Failed to fetch");
@@ -50,16 +49,14 @@ export default function Home() {
 
   async function testTelegram() {
     setTestLoading(true);
-    setTelegramStatus("Sending test...");
     try {
       const res = await fetch("/api/telegram?action=test", { cache: "no-store" });
       const data = await res.json();
-      setTelegramStatus(data.success ? "✓ Test message sent" : `✗ ${data.error || data.message}`);
+      console.log("Test alert result:", data);
     } catch (err: any) {
-      setTelegramStatus(`✗ ${err.message}`);
+      console.error("Test alert failed:", err.message);
     } finally {
       setTestLoading(false);
-      setTimeout(() => setTelegramStatus(""), 5000);
     }
   }
 
@@ -69,23 +66,23 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
-  const getCardClasses = (state: string) => {
-    const base = "rounded-lg border border-gray-800 overflow-hidden";
-    if (state === "LONG") return `${base} border-l-4 border-l-green-500 bg-[#0f1f0f]`;
-    if (state === "SHORT") return `${base} border-l-4 border-l-red-500 bg-[#1f0f0f]`;
-    return `${base} border-l-4 border-l-gray-600 bg-[#1a1a1a]`;
+  const getReadinessBar = (confidence: number) => {
+    if (confidence >= 90) return "bg-green-500";
+    if (confidence >= 70) return "bg-cyan-500";
+    if (confidence >= 50) return "bg-yellow-500";
+    return "bg-gray-600";
   };
 
-  const getStateBadge = (state: string) => {
-    if (state === "LONG") return "bg-green-600 text-white px-3 py-1 rounded text-sm font-bold";
-    if (state === "SHORT") return "bg-red-600 text-white px-3 py-1 rounded text-sm font-bold";
-    return "bg-gray-700 text-gray-300 px-3 py-1 rounded text-sm";
+  const getCardBorder = (confidence: number) => {
+    if (confidence >= 80) return "border-l-4 border-l-red-500"; // Ready/Sniper
+    if (confidence >= 60) return "border-l-4 border-l-cyan-500"; // Building
+    return "border-l-4 border-l-amber-500"; // Neutral
   };
 
-  const getBiasColor = (bias: string) => {
-    if (bias.includes("Bullish")) return "text-green-400";
-    if (bias.includes("Bearish")) return "text-red-400";
-    return "text-gray-400";
+  const getStatusBadge = (confidence: number) => {
+    if (confidence >= 90) return { text: "SNIPER", bg: "bg-red-600" };
+    if (confidence >= 60) return { text: "BUILDING", bg: "bg-amber-500" };
+    return { text: "SCANNING", bg: "bg-gray-700" };
   };
 
   const formatPrice = (price?: number) => {
@@ -95,213 +92,174 @@ export default function Home() {
       : `$${price.toFixed(2)}`;
   };
 
+  const overallConfidence = signals.length > 0 
+    ? Math.round(signals.reduce((sum, s) => sum + s.confidence, 0) / signals.length)
+    : 0;
+
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-gray-100">
-      {/* Header Bar */}
-      <div className="border-b border-gray-800 bg-[#111]">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+    <div className="min-h-screen bg-black text-gray-100">
+      {/* Header */}
+      <div className="px-6 py-6">
+        <div className="flex items-start justify-between mb-8">
           <div>
-            <h1 className="text-xl font-bold text-white tracking-tight">CXSWITCH</h1>
-            <p className="text-xs text-gray-500 mt-0.5">3-Layer Trendline Trading · 4H → 15M → 5M</p>
+            <h1 className="text-3xl font-bold text-white">Trading Signals</h1>
+            <p className="text-xs text-gray-500 mt-1">Last updated: {lastUpdate}</p>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-xs text-gray-600">
-              {lastUpdate || "--:--:--"}
-            </span>
             <button
               onClick={fetchSignals}
               disabled={loading}
-              className="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs rounded text-white disabled:opacity-50 transition-colors"
+              className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm rounded text-white disabled:opacity-50"
             >
-              {loading ? "..." : "Refresh"}
+              {loading ? "Refresh..." : "Refresh"}
             </button>
             <button
               onClick={testTelegram}
               disabled={testLoading}
-              className="px-3 py-1.5 bg-blue-900 hover:bg-blue-800 text-xs rounded text-blue-200 disabled:opacity-50 transition-colors"
+              className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm rounded text-white disabled:opacity-50"
             >
-              {testLoading ? "..." : "Test Telegram"}
+              {testLoading ? "Test..." : "Test Alert"}
             </button>
           </div>
         </div>
-        {telegramStatus && (
-          <div className="max-w-7xl mx-auto px-4 pb-2">
-            <span className="text-xs text-blue-400">{telegramStatus}</span>
-          </div>
-        )}
-      </div>
 
-      {/* Error Banner */}
-      {error && (
-        <div className="max-w-7xl mx-auto px-4 mt-4">
-          <div className="p-3 bg-red-950/50 border border-red-800 rounded text-red-300 text-sm">
+        {/* Trade Readiness Section */}
+        <div className="mb-12">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-lg font-semibold text-white">Trade Readiness</h2>
+            <span className="text-2xl font-bold text-cyan-400">{overallConfidence}%</span>
+          </div>
+          <div className="w-full bg-gray-900 rounded-full h-2 mb-2">
+            <div
+              className="h-2 rounded-full bg-cyan-500 transition-all duration-300"
+              style={{ width: `${Math.min(100, overallConfidence)}%` }}
+            />
+          </div>
+          <p className="text-xs text-gray-500">Approaching sniper condition</p>
+        </div>
+
+        {/* Error Banner */}
+        {error && (
+          <div className="mb-6 p-3 bg-red-950/50 border border-red-800 rounded text-red-300 text-sm">
             Error: {error}
           </div>
-        </div>
-      )}
-
-      {/* Main Grid - 3 Columns */}
-      <div className="max-w-7xl mx-auto px-4 py-6">
-        {signals.length === 0 && !loading ? (
-          <div className="text-center py-20 text-gray-600">
-            <div className="text-4xl mb-4">📡</div>
-            <p>No signals available</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-3 gap-4">
-            {signals.map((signal) => (
-              <div key={signal.symbol} className={getCardClasses(signal.state)}>
-
-                {/* Card Header: Symbol + Price + State */}
-                <div className="p-4 border-b border-gray-800/50">
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-3xl font-black text-white tracking-tighter">
-                      {signal.symbol}
-                    </span>
-                    <span className={getStateBadge(signal.state)}>
-                      {signal.state}
-                    </span>
-                  </div>
-                  <div className="flex items-baseline justify-between">
-                    <span className="text-2xl font-mono text-white">
-                      {formatPrice(signal.price)}
-                    </span>
-                    <span className="text-xs text-gray-500">Live Price</span>
-                  </div>
-                </div>
-
-                {/* 4H Bias Section */}
-                <div className="px-4 py-3 border-b border-gray-800/50">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs uppercase tracking-wider text-gray-500 font-semibold">
-                      4H Bias
-                    </span>
-                    <span className={`text-sm font-bold ${getBiasColor(signal.bias4h)}`}>
-                      {signal.bias4h}
-                    </span>
-                  </div>
-                  <div className="w-full bg-gray-800 rounded-full h-1.5 mb-1">
-                    <div
-                      className={`h-1.5 rounded-full transition-all duration-500 ${
-                        signal.confidence >= 60
-                          ? signal.state === "LONG"
-                            ? "bg-green-500"
-                            : signal.state === "SHORT"
-                            ? "bg-red-500"
-                            : "bg-yellow-500"
-                          : "bg-gray-600"
-                      }`}
-                      style={{ width: `${Math.min(100, signal.confidence)}%` }}
-                    />
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-[10px] text-gray-600">Confidence</span>
-                    <span className="text-[10px] text-gray-400">{signal.confidence}%</span>
-                  </div>
-                </div>
-
-                {/* Layer Stack */}
-                <div className="px-4 py-3 space-y-2">
-                  {[
-                    { num: "1", name: "4H Break", layer: signal.layer1 },
-                    { num: "2", name: "15M Retest", layer: signal.layer2 },
-                    { num: "3", name: "5M Entry", layer: signal.layer3 },
-                  ].map(({ num, name, layer }) => (
-                    <div key={num} className="flex items-center gap-3">
-                      <div
-                        className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
-                          layer?.met
-                            ? "bg-green-600 text-white"
-                            : "bg-gray-800 text-gray-500"
-                        }`}
-                      >
-                        {num}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm text-gray-300">{name}</span>
-                          <span
-                            className={`text-xs ${
-                              layer?.met ? "text-green-400" : "text-gray-500"
-                            }`}
-                          >
-                            {layer?.status || "Waiting"}
-                          </span>
-                        </div>
-                        {layer?.detail && (
-                          <p className="text-xs text-gray-600 truncate">{layer.detail}</p>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Trade Levels - Only when active */}
-                {(signal.state === "LONG" || signal.state === "SHORT") && (
-                  <div className="px-4 py-3 border-t border-gray-800/50 bg-black/20">
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                      <div>
-                        <span className="text-[10px] text-gray-500 uppercase block">Entry</span>
-                        <span className="text-white font-mono">{formatPrice(signal.entry)}</span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-gray-500 uppercase block">Stop Loss</span>
-                        <span className="text-red-400 font-mono">{formatPrice(signal.stopLoss)}</span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-gray-500 uppercase block">Take Profit</span>
-                        <span className="text-green-400 font-mono">{formatPrice(signal.takeProfit)}</span>
-                      </div>
-                      <div>
-                        <span className="text-[10px] text-gray-500 uppercase block">R:R</span>
-                        <span className="text-yellow-400 font-mono">{signal.riskReward?.toFixed(2) || "--"}</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Footer */}
-                <div className="px-4 py-2 border-t border-gray-800/50 bg-black/30">
-                  <div className="flex items-center justify-between text-[10px]">
-                    <span className="text-gray-600">
-                      {signal.updatedAt ? new Date(signal.updatedAt).toLocaleTimeString() : "--"}
-                    </span>
-                    <span
-                      className={
-                        signal.state === "FLAT"
-                          ? "text-gray-600"
-                          : signal.confidence >= 60
-                          ? signal.state === "LONG"
-                            ? "text-green-400"
-                            : "text-red-400"
-                          : "text-yellow-500"
-                      }
-                    >
-                      {signal.state === "FLAT"
-                        ? "Scanning Market"
-                        : signal.confidence >= 60
-                        ? "🔥 Ready to Execute"
-                        : "Building Setup"}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
         )}
-      </div>
 
-      {/* Status Bar */}
-      <div className="border-t border-gray-800 bg-[#111] mt-auto">
-        <div className="max-w-7xl mx-auto px-4 py-2 flex items-center justify-between text-[10px] text-gray-600">
-          <div className="flex gap-4">
-            <span>● Green = LONG Active</span>
-            <span>● Red = SHORT Active</span>
-            <span>● Grey = FLAT / Scanning</span>
+        {/* Market Overview */}
+        <div>
+          <h2 className="text-lg font-semibold text-white mb-4">Market Overview</h2>
+          <div className="grid grid-cols-3 gap-4">
+            {signals.map((signal) => {
+              const badge = getStatusBadge(signal.confidence);
+              return (
+                <div
+                  key={signal.symbol}
+                  className={`rounded-lg border border-gray-800 bg-gray-950 overflow-hidden ${getCardBorder(signal.confidence)}`}
+                >
+                  {/* Card Header */}
+                  <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+                    <span className="text-xl font-bold text-white">{signal.symbol}</span>
+                    <span className={`px-2.5 py-1 rounded text-xs font-bold text-white ${badge.bg}`}>
+                      {badge.text}
+                    </span>
+                  </div>
+
+                  {/* Card Body */}
+                  <div className="px-4 py-4 space-y-3">
+                    {/* Price */}
+                    <div>
+                      <p className="text-xs text-gray-500 uppercase tracking-wider">Price</p>
+                      <p className="text-sm font-mono text-white">{formatPrice(signal.price)}</p>
+                    </div>
+
+                    {/* Market Info Grid */}
+                    <div className="grid grid-cols-2 gap-3 text-xs">
+                      <div>
+                        <p className="text-gray-600 uppercase">4H Trend</p>
+                        <p className={`font-semibold ${signal.bias4h.includes("Bullish") ? "text-green-400" : signal.bias4h.includes("Bearish") ? "text-red-400" : "text-gray-400"}`}>
+                          {signal.bias4h.split(" ")[0]}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-gray-600 uppercase">15M Structure</p>
+                        <p className="font-semibold text-white">{signal.layer2?.status || "--"}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-600 uppercase">Macro Bias</p>
+                        <p className="font-semibold text-white">{signal.layer1?.status?.split(" ")[0] || "Neutral"}</p>
+                      </div>
+                      <div></div>
+                    </div>
+
+                    {/* Readiness Bar */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-xs text-gray-600 uppercase">Readiness</p>
+                        <p className="text-xs font-bold text-white">{signal.confidence}%</p>
+                      </div>
+                      <div className="w-full bg-gray-800 rounded-full h-1.5">
+                        <div
+                          className={`h-1.5 rounded-full transition-all ${getReadinessBar(signal.confidence)}`}
+                          style={{ width: `${Math.min(100, signal.confidence)}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Trade Setup - Only show when active signal */}
+                    {signal.state !== "FLAT" && (
+                      <div className="border-t border-gray-800 pt-3 mt-3">
+                        <p className="text-xs text-gray-600 uppercase mb-2">Trade Setup</p>
+                        <div className="space-y-1.5 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">Direction:</span>
+                            <span className={`font-bold ${signal.state === "LONG" ? "text-green-400" : "text-red-400"}`}>
+                              {signal.state}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">Entry:</span>
+                            <span className="font-mono text-white font-semibold">{formatPrice(signal.entry)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">SL:</span>
+                            <span className="font-mono text-white">{formatPrice(signal.stopLoss)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">TP:</span>
+                            <span className="font-mono text-white">{formatPrice(signal.takeProfit)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">RR:</span>
+                            <span className="font-mono text-white font-semibold">{signal.riskReward?.toFixed(2)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">Confidence:</span>
+                            <span className={`font-bold ${signal.confidence >= 80 ? "text-red-400" : signal.confidence >= 60 ? "text-cyan-400" : "text-gray-400"}`}>
+                              {signal.confidence}%
+                            </span>
+                          </div>
+                          <div className="flex justify-between pt-1">
+                            <span className="text-gray-500">Reason:</span>
+                            <span className="text-gray-400 text-right">{signal.layer1?.detail || "Multi-layer alignment"}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Footer */}
+                  <div className="px-4 py-2 border-t border-gray-800 bg-gray-900/50">
+                    <p className="text-xs text-gray-600">
+                      Updated: {signal.updatedAt ? new Date(signal.updatedAt).toLocaleString("en-GB") : "--"}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
           </div>
-          <span>Polls every 5s · Cron every 5m</span>
         </div>
       </div>
     </div>
   );
 }
+
