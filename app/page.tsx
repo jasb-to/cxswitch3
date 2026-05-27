@@ -229,7 +229,7 @@ export default function Home() {
                           </div>
                           <div className="flex justify-between pt-1">
                             <span className="text-gray-500">Reason:</span>
-                            <span className="text-gray-400 text-right">{signal.layer1?.detail || "Multi-layer alignment"}</span>
+                            <span className="text-gray-400 text-right">4H Bias + 15M Structure</span>
                           </div>
                         </div>
                       </div>
