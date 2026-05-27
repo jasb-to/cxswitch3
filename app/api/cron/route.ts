@@ -8,9 +8,30 @@ const MIN_CONFIDENCE = 60;
 
 export const dynamic = "force-dynamic";
 
-function formatTradeAlert(signal: any, txid: string): string {
+function formatAllConditionAlert(signal: any): string {
   const emoji = signal.state === "LONG" ? "🟢" : "🔴";
-  return `${emoji} **TRADE EXECUTED: ${signal.symbol} ${signal.state}**
+  return `${emoji} ${signal.symbol} ${signal.state}
+
+Price: $${signal.price?.toLocaleString()}
+Confidence: ${signal.confidence}%
+4H Bias: ${signal.bias4h}
+
+Layer Status:
+1️⃣ ${signal.layer1?.status}
+2️⃣ ${signal.layer2?.status}
+3️⃣ ${signal.layer3?.status}
+
+Entry: $${signal.entry?.toLocaleString()}
+SL: $${signal.stopLoss?.toLocaleString()}
+TP: $${signal.takeProfit?.toLocaleString()}
+R:R ${signal.riskReward?.toFixed(2)}
+
+⏰ ${new Date().toLocaleTimeString()}`;
+}
+
+function formatTradeExecutedAlert(signal: any, txid: string): string {
+  const emoji = signal.state === "LONG" ? "🟢" : "🔴";
+  return `${emoji} TRADE EXECUTED: ${signal.symbol} ${signal.state}
 
 Entry: $${signal.entry?.toLocaleString()}
 SL: $${signal.stopLoss?.toLocaleString()}
@@ -19,19 +40,6 @@ R:R ${signal.riskReward?.toFixed(2)}
 Confidence: ${signal.confidence}%
 
 TxID: ${txid}
-⏰ ${new Date().toLocaleTimeString()}`;
-}
-
-function formatSignalAlert(signal: any): string {
-  const emoji = signal.state === "LONG" ? "🟢" : "🔴";
-  return `${emoji} **SIGNAL: ${signal.symbol} ${signal.state}**
-
-Price: $${signal.price?.toLocaleString()}
-Confidence: ${signal.confidence}%
-4H Bias: ${signal.bias4h}
-
-Layers: 1️⃣ ${signal.layer1?.status} | 2️⃣ ${signal.layer2?.status} | 3️⃣ ${signal.layer3?.status}
-
 ⏰ ${new Date().toLocaleTimeString()}`;
 }
 
@@ -56,11 +64,11 @@ export async function GET(req: Request) {
     for (const signal of signals) {
       console.log(`[CRON] ${signal.symbol}: state=${signal.state}, confidence=${signal.confidence}%`);
 
-      // Send Telegram alert for any non-FLAT signal at 60%+ confidence
-      if (signal.state !== "FLAT" && signal.confidence >= 60) {
-        const alertText = formatSignalAlert(signal);
+      // Send Telegram alert ONLY when all 3 layers are met (Layer 3 fired = all conditions aligned)
+      if (signal.state !== "FLAT" && signal.layer3?.met && signal.confidence >= 60) {
+        const alertText = formatAllConditionAlert(signal);
         const alertSent = await sendTelegramMessage(alertText);
-        alerts.push({ symbol: signal.symbol, type: "signal", sent: alertSent });
+        alerts.push({ symbol: signal.symbol, type: "all_conditions_met", sent: alertSent });
       }
 
       if (signal.state === "FLAT" || signal.confidence < MIN_CONFIDENCE) {
@@ -86,7 +94,7 @@ export async function GET(req: Request) {
         });
 
         // Send trade execution alert
-        const tradeAlert = formatTradeAlert(signal, order.txid);
+        const tradeAlert = formatTradeExecutedAlert(signal, order.txid);
         const tradeAlertSent = await sendTelegramMessage(tradeAlert);
 
         results.push({
