@@ -1,5 +1,4 @@
-
-fixed_page = '''"use client";
+"use client";
 
 import { useState, useEffect } from "react";
 
@@ -51,7 +50,6 @@ export default function Home() {
     <div className="min-h-screen w-full bg-black text-gray-100">
       <div className="w-screen px-20 py-16">
         <div className="max-w-7xl mx-auto">
-          {/* Header */}
           <div className="flex items-start justify-between mb-12">
             <div>
               <h1 className="text-4xl font-bold text-white">Trading Signals</h1>
@@ -66,14 +64,12 @@ export default function Home() {
             </button>
           </div>
 
-          {/* Error Banner */}
           {error && (
             <div className="mb-8 p-4 bg-red-950/50 border border-red-800 rounded text-red-300 text-sm">
               Error: {error}
             </div>
           )}
 
-          {/* Market Overview */}
           <div>
             <h2 className="text-xl font-semibold text-white mb-6">Market Overview</h2>
             <div className="grid grid-cols-3 gap-6">
@@ -88,7 +84,6 @@ export default function Home() {
                       : "border-gray-800"
                   }`}
                 >
-                  {/* Card Header */}
                   <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between bg-gray-900/30">
                     <span className="text-2xl font-bold text-white">{signal.symbol}</span>
                     <span
@@ -104,9 +99,7 @@ export default function Home() {
                     </span>
                   </div>
 
-                  {/* Card Body */}
                   <div className="px-6 py-5 space-y-4">
-                    {/* Price */}
                     <div>
                       <p className="text-xs text-gray-500 uppercase tracking-widest font-semibold">Price</p>
                       <p className="text-lg font-mono text-white mt-1">
@@ -117,26 +110,16 @@ export default function Home() {
                       </p>
                     </div>
 
-                    {/* 4H Bias */}
                     <div className="border-t border-gray-800 pt-3">
                       <p className="text-xs text-gray-600 uppercase tracking-widest font-semibold mb-2">4H Bias</p>
                       <div className="flex justify-between text-sm">
                         <span className="text-gray-400">Direction:</span>
-                        <span
-                          className={`font-bold ${
-                            signal.bias === "Bullish"
-                              ? "text-green-400"
-                              : signal.bias === "Bearish"
-                              ? "text-red-400"
-                              : "text-gray-400"
-                          }`}
-                        >
+                        <span className={`font-bold ${signal.bias === "Bullish" ? "text-green-400" : signal.bias === "Bearish" ? "text-red-400" : "text-gray-400"}`}>
                           {signal.bias}
                         </span>
                       </div>
                     </div>
 
-                    {/* Trigger */}
                     <div className="border-t border-gray-800 pt-3">
                       <p className="text-xs text-gray-600 uppercase tracking-widest font-semibold mb-2">Trigger</p>
                       <div className="flex justify-between text-sm">
@@ -145,7 +128,6 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {/* Direction */}
                     <div className="border-t border-gray-800 pt-3">
                       <p className="text-xs text-gray-600 uppercase tracking-widest font-semibold mb-2">Direction</p>
                       <div className="flex justify-between text-sm">
@@ -156,7 +138,6 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {/* Confidence */}
                     <div className="border-t border-gray-800 pt-3">
                       <div className="flex items-center justify-between mb-2">
                         <p className="text-xs text-gray-600 uppercase tracking-widest font-semibold">Confidence</p>
@@ -165,39 +146,28 @@ export default function Home() {
                       <div className="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
                         <div
                           className={`h-2 rounded-full transition-all ${
-                            signal.confidence >= 85
-                              ? "bg-red-500"
-                              : signal.confidence >= 60
-                              ? "bg-cyan-500"
-                              : "bg-gray-600"
+                            signal.confidence >= 85 ? "bg-red-500" : signal.confidence >= 60 ? "bg-cyan-500" : "bg-gray-600"
                           }`}
                           style={{ width: `${Math.min(100, signal.confidence)}%` }}
                         />
                       </div>
                     </div>
 
-                    {/* Trade Setup - Only for SNIPER */}
                     {signal.state === "SNIPER" && signal.entry && (
                       <div className="border-t border-gray-800 pt-4 mt-4">
                         <p className="text-xs text-gray-600 uppercase tracking-widest font-semibold mb-3">Trade Setup</p>
                         <div className="space-y-2 text-sm">
                           <div className="flex justify-between">
                             <span className="text-gray-500">Entry:</span>
-                            <span className="font-mono text-white font-semibold">
-                              ${signal.entry.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </span>
+                            <span className="font-mono text-white font-semibold">${signal.entry.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                           </div>
                           <div className="flex justify-between">
                             <span className="text-gray-500">SL:</span>
-                            <span className="font-mono text-white">
-                              ${signal.stopLoss?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </span>
+                            <span className="font-mono text-white">${signal.stopLoss?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                           </div>
                           <div className="flex justify-between">
                             <span className="text-gray-500">TP:</span>
-                            <span className="font-mono text-white">
-                              ${signal.takeProfit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </span>
+                            <span className="font-mono text-white">${signal.takeProfit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                           </div>
                           <div className="flex justify-between">
                             <span className="text-gray-500">R:R:</span>
@@ -208,7 +178,6 @@ export default function Home() {
                     )}
                   </div>
 
-                  {/* Footer */}
                   <div className="px-6 py-3 border-t border-gray-800 bg-gray-900/30">
                     <p className="text-xs text-gray-600">
                       Updated: {new Date(signal.updatedAt).toLocaleTimeString("en-GB")}
@@ -223,16 +192,3 @@ export default function Home() {
     </div>
   );
 }
-'''
-
-with open("/mnt/agents/output/cxswitch3_fix/page.tsx", "w") as f:
-    f.write(fixed_page)
-
-print("✅ Fixed page.tsx written")
-print("\n📋 What changed:")
-print("  - Removed layer1, layer2, layer3 references")
-print("  - Added bias, change24h, trigger fields")
-print("  - Removed Test Alert button (no /api/telegram endpoint)")
-print("  - Added 24h change % display")
-print("  - Kept your px-20 py-16 padding")
-print("\n🚀 Replace your app/page.tsx with this file and redeploy.")
