@@ -3,7 +3,6 @@ import { sendTelegramMessage } from "@/app/api/telegram/route";
 import { getPosition, setPosition, deletePosition, setCooldown, isCooldownActive } from "@/lib/position";
 import { NextResponse } from "next/server";
 
-const CRON_SECRET = process.env.CRON_SECRET;
 const MIN_CONFIDENCE = 60;
 
 export const dynamic = "force-dynamic";
@@ -32,11 +31,6 @@ PnL: ${pnlLabel}
 
 export async function GET(req: Request) {
   try {
-    const { searchParams } = new URL(req.url);
-    if (searchParams.get("secret") !== CRON_SECRET) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     console.log("[CRON] Starting signal evaluation cycle...");
 
     const signals = await Promise.all([
