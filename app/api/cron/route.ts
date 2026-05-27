@@ -1,4 +1,4 @@
-import { evaluate } from "@/lib/engine";
+import { evaluateSignal } from "@/lib/engine";
 import { placeOrder } from "@/lib/kraken";
 
 export const dynamic = "force-dynamic";
@@ -17,9 +17,9 @@ export async function GET(req: Request) {
   
   try {
     const signals = await Promise.all([
-      evaluate("BTC"),
-      evaluate("ETH"),
-      evaluate("SOL"),
+      evaluateSignal("BTC"),
+      evaluateSignal("ETH"),
+      evaluateSignal("SOL"),
     ]);
     
     const results = [];
@@ -58,6 +58,8 @@ export async function GET(req: Request) {
         
         // Mark position open
         positions.set(signal.symbol, true);
+        
+        console.log(`[CRON] Trade executed: ${signal.symbol} ${signal.state} @ ${signal.entry}`);
         
         results.push({ symbol: signal.symbol, action: "executed", txid: order.txid });
         
