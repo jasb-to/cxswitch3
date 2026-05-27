@@ -11,6 +11,10 @@ interface Signal {
   takeProfit?: number;
   riskReward?: number;
   confidence: number;
+  candle4h?: { open: number; high: number; low: number; close: number };
+  candle15m?: { open: number; high: number; low: number; close: number };
+  bias4h?: string;
+  structure15m?: string;
   updatedAt: string;
 }
 
@@ -163,9 +167,17 @@ export default function Home() {
                     </div>
 
                     {/* Market Info Grid */}
-                    <div className="flex items-center justify-between py-1">
-                      <p className="text-xs text-gray-600 uppercase">Confidence</p>
-                      <p className="text-xs font-bold text-white">{signal.confidence}%</p>
+                    <div className="grid grid-cols-2 gap-3 py-2 border-b border-gray-800 pb-3 text-xs">
+                      <div>
+                        <p className="text-gray-600 uppercase font-semibold">4H Trend</p>
+                        <p className={`font-bold mt-1 ${signal.bias4h?.includes("Bullish") ? "text-green-400" : signal.bias4h?.includes("Bearish") ? "text-red-400" : "text-gray-400"}`}>
+                          {signal.bias4h || "Unknown"}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-gray-600 uppercase font-semibold">15M Structure</p>
+                        <p className="font-bold text-white mt-1">{signal.structure15m || "Unknown"}</p>
+                      </div>
                     </div>
 
                     {/* Readiness Bar */}
