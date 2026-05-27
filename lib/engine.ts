@@ -1,4 +1,10 @@
-import { fetchSimplePrice } from "./coingecko";
+/**
+ * SIGNAL ENGINE - Stateless, simple, working
+ * No Redis. No state memory. No sticky logic.
+ * Evaluates from single price call + in-memory history.
+ */
+
+import { fetchPrices, PriceData } from "./coingecko";
 
 export type Symbol = "BTC" | "ETH" | "SOL";
 
@@ -8,87 +14,107 @@ export interface Signal {
   change24h: number;
   bias: "Bullish" | "Bearish" | "Neutral";
   state: "FLAT" | "BUILDING" | "SNIPER";
-  confidence: number;
+  direction?: "LONG" | "SHORT";
   entry?: number;
   stopLoss?: number;
   takeProfit?: number;
-  direction?: "LONG" | "SHORT";
+  riskReward?: number;
+  confidence: number;
+  trigger: "Waiting" | "Early Break Up" | "Early Break Down" | "Pullback";
   updatedAt: string;
 }
 
-const symbolMap: Record<Symbol, "bitcoin" | "ethereum" | "solana"> = {
-  BTC: "bitcoin",
-  ETH: "ethereum",
-  SOL: "solana",
-};
+// In-memory price history (survives one request, lost on cold start)
+const lastPrices = new Map<Symbol, number>();
 
-export async function evaluate(symbol: Symbol): Promise<Signal> {
-  try {
-    const prices = await fetchSimplePrice();
-    const key = symbolMap[symbol];
-    const price = prices[key as keyof typeof prices].usd;
-    const change24h = prices[key as keyof typeof prices].usd_24h_change;
+function getBias(change24h: number): "Bullish" | "Bearish" | "Neutral" {
+  if (change24h > 1.0) return "Bullish";
+  if (change24h < -1.0) return "Bearish";
+  return "Neutral";
+}
 
-    let bias: "Bullish" | "Bearish" | "Neutral" = "Neutral";
-    if (change24h > 1.0) bias = "Bullish";
-    else if (change24h < -1.0) bias = "Bearish";
+function getTrigger(symbol: Symbol, current: number): Signal["trigger"] {
+  const last = lastPrices.get(symbol);
+  if (!last || last === 0) {
+    lastPrices.set(symbol, current);
+    return "Waiting";
+  }
 
-    let state: "FLAT" | "BUILDING" | "SNIPER" = "FLAT";
-    let confidence = 0;
-    let entry: number | undefined;
-    let stopLoss: number | undefined;
-    let takeProfit: number | undefined;
-    let direction: "LONG" | "SHORT" | undefined;
+  const change = (current - last) / last;
+  lastPrices.set(symbol, current);
 
-    if (bias === "Bullish") {
-      state = "BUILDING";
-      confidence = Math.min(95, 50 + Math.abs(change24h) * 10);
-      
-      if (change24h > 0.3) {
-        state = "SNIPER";
-        confidence = Math.min(95, 70 + Math.abs(change24h) * 10);
-        entry = price;
-        stopLoss = price * 0.97;
-        takeProfit = price * 1.05;
-        direction = "LONG";
-      }
-    } else if (bias === "Bearish") {
-      state = "BUILDING";
-      confidence = Math.min(95, 50 + Math.abs(change24h) * 10);
-      
-      if (change24h < -0.3) {
-        state = "SNIPER";
-        confidence = Math.min(95, 70 + Math.abs(change24h) * 10);
-        entry = price;
-        stopLoss = price * 1.03;
-        takeProfit = price * 0.95;
-        direction = "SHORT";
-      }
+  if (change > 0.003) return "Early Break Up";
+  if (change < -0.003) return "Early Break Down";
+  if (change > 0.001) return "Pullback";
+  if (change < -0.001) return "Pullback";
+  return "Waiting";
+}
+
+export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
+  const prices = await fetchPrices();
+  const data = prices[symbol];
+
+  const price = data.price;
+  const change24h = data.change24h;
+  const bias = getBias(change24h);
+  const trigger = getTrigger(symbol, price);
+
+  let state: Signal["state"] = "FLAT";
+  let direction: Signal["direction"] = undefined;
+  let confidence = 0;
+
+  // BUILDING: Bias exists but no strong trigger yet
+  if (bias !== "Neutral") {
+    state = "BUILDING";
+    direction = bias === "Bullish" ? "LONG" : "SHORT";
+    confidence = Math.min(60, 40 + Math.abs(change24h) * 5);
+  }
+
+  // SNIPER: Bias + trigger aligned
+  if (bias === "Bullish" && trigger === "Early Break Up") {
+    state = "SNIPER";
+    direction = "LONG";
+    confidence = Math.min(95, 70 + change24h * 3);
+  } else if (bias === "Bearish" && trigger === "Early Break Down") {
+    state = "SNIPER";
+    direction = "SHORT";
+    confidence = Math.min(95, 70 + Math.abs(change24h) * 3);
+  }
+
+  // SL/TP ONLY for SNIPER
+  let stopLoss: number | undefined;
+  let takeProfit: number | undefined;
+  let riskReward: number | undefined;
+
+  if (state === "SNIPER" && direction) {
+    const slPct = 0.03; // 3%
+    const tpPct = 0.05; // 5%
+
+    if (direction === "LONG") {
+      stopLoss = price * (1 - slPct);
+      takeProfit = price * (1 + tpPct);
+    } else {
+      stopLoss = price * (1 + slPct);
+      takeProfit = price * (1 - tpPct);
     }
 
-    return {
-      symbol,
-      price,
-      change24h,
-      bias,
-      state,
-      confidence,
-      entry,
-      stopLoss,
-      takeProfit,
-      direction,
-      updatedAt: new Date().toISOString(),
-    };
-  } catch (err: any) {
-    console.error(`[SIGNAL] ${symbol} evaluation failed:`, err.message);
-    return {
-      symbol,
-      price: 0,
-      change24h: 0,
-      bias: "Neutral",
-      state: "FLAT",
-      confidence: 0,
-      updatedAt: new Date().toISOString(),
-    };
+    riskReward = Math.abs((takeProfit - price) / (price - stopLoss));
+    if (!isFinite(riskReward)) riskReward = 1.67;
   }
+
+  return {
+    symbol,
+    price,
+    change24h,
+    bias,
+    state,
+    direction,
+    entry: state === "SNIPER" ? price : undefined,
+    stopLoss,
+    takeProfit,
+    riskReward,
+    confidence: Math.floor(confidence),
+    trigger,
+    updatedAt: new Date().toISOString(),
+  };
 }
