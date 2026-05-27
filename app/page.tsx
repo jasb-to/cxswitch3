@@ -148,7 +148,7 @@ export default function Home() {
             <p>No signals available</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             {signals.map((signal) => (
               <div key={signal.symbol} className={getCardClasses(signal.state)}>
 
