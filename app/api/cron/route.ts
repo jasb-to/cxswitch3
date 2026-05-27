@@ -1,5 +1,4 @@
 import { evaluate } from "@/lib/engine";
-import { placeOrder } from "@/lib/kraken";
 import { sendTelegramMessage } from "@/app/api/telegram/route";
 import { NextResponse } from "next/server";
 
@@ -29,20 +28,6 @@ R:R ${signal.riskReward?.toFixed(2)}
 ⏰ ${new Date().toLocaleTimeString()}`;
 }
 
-function formatTradeExecutedAlert(signal: any, txid: string): string {
-  const emoji = signal.state === "LONG" ? "🟢" : "🔴";
-  return `${emoji} TRADE EXECUTED: ${signal.symbol} ${signal.state}
-
-Entry: $${signal.entry?.toLocaleString()}
-SL: $${signal.stopLoss?.toLocaleString()}
-TP: $${signal.takeProfit?.toLocaleString()}
-R:R ${signal.riskReward?.toFixed(2)}
-Confidence: ${signal.confidence}%
-
-TxID: ${txid}
-⏰ ${new Date().toLocaleTimeString()}`;
-}
-
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
@@ -50,7 +35,7 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    console.log("[CRON] Starting execution cycle...");
+    console.log("[CRON] Starting signal evaluation cycle...");
 
     const signals = await Promise.all([
       evaluate("BTC"),
@@ -69,54 +54,24 @@ export async function GET(req: Request) {
         const alertText = formatAllConditionAlert(signal);
         const alertSent = await sendTelegramMessage(alertText);
         alerts.push({ symbol: signal.symbol, type: "all_conditions_met", sent: alertSent });
-      }
-
-      if (signal.state === "FLAT" || signal.confidence < MIN_CONFIDENCE) {
+        
+        results.push({
+          symbol: signal.symbol,
+          action: "alert_sent",
+          state: signal.state,
+          confidence: signal.confidence,
+          alertSent,
+        });
+      } else {
         results.push({
           symbol: signal.symbol,
           action: "skipped",
-          reason: signal.state === "FLAT" ? "no signal" : `confidence ${signal.confidence}% < ${MIN_CONFIDENCE}%`,
-        });
-        continue;
-      }
-
-      try {
-        const pair = signal.symbol === "BTC" ? "XBTUSD" : signal.symbol === "ETH" ? "ETHUSD" : "SOLUSD";
-        const volume = signal.symbol === "BTC" ? "0.001" : signal.symbol === "ETH" ? "0.01" : "0.1";
-
-        console.log(`[CRON] Executing ${signal.state} on ${signal.symbol} at ${signal.entry}`);
-
-        const order = await placeOrder({
-          pair,
-          type: signal.state === "LONG" ? "buy" : "sell",
-          ordertype: "market",
-          volume,
-        });
-
-        // Send trade execution alert
-        const tradeAlert = formatTradeExecutedAlert(signal, order.txid);
-        const tradeAlertSent = await sendTelegramMessage(tradeAlert);
-
-        results.push({
-          symbol: signal.symbol,
-          action: "executed",
-          direction: signal.state,
-          entry: signal.entry,
-          txid: order.txid,
-          alertSent: tradeAlertSent,
-        });
-
-      } catch (err: any) {
-        console.error(`[CRON] Trade failed for ${signal.symbol}:`, err.message);
-        results.push({
-          symbol: signal.symbol,
-          action: "failed",
-          error: err.message,
+          reason: signal.state === "FLAT" ? "no signal" : signal.layer3?.met ? "low confidence" : "layers not complete",
         });
       }
     }
 
-    console.log(`[CRON] Cycle complete: ${results.filter(r => r.action === "executed").length} trades, ${alerts.length} alerts`);
+    console.log(`[CRON] Cycle complete: ${alerts.length} alerts sent`);
 
     return NextResponse.json({ results, alerts, timestamp: Date.now() });
 
