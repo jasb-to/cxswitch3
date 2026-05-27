@@ -23,8 +23,8 @@ export interface Signal {
 }
 
 const PAIRS: Record<Symbol, string> = {
-  BTC: "XXBTZUSD",
-  ETH: "XETHZUSD",
+  BTC: "XBTUSD",
+  ETH: "ETHUSD",
   SOL: "SOLUSD",
 };
 
