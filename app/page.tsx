@@ -73,7 +73,8 @@ export default function Home() {
 
   return (
     <div className="min-h-screen w-full bg-black text-gray-100">
-      <div className="w-full mx-auto px-16 py-12">
+      <div className="w-screen px-20 py-16">
+        <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="flex items-start justify-between mb-12">
           <div>
@@ -258,6 +259,7 @@ export default function Home() {
               </div>
             ))}
           </div>
+        </div>
         </div>
       </div>
     </div>
