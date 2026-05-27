@@ -1,5 +1,5 @@
 /**
- * SIGNAL ENGINE - Optimized for early crypto entries
+ * SIGNAL ENGINE - With position memory, caching, momentum filter
  */
 
 import { fetchPrices } from "./coingecko";
@@ -18,111 +18,106 @@ export interface Signal {
   takeProfit?: number;
   riskReward?: number;
   confidence: number;
-  trigger: "Waiting" | "Early Break Up" | "Early Break Down" | "Pullback Long" | "Pullback Short";
+  trigger: string;
+  momentum: string;
+  shouldAlert: boolean;
   updatedAt: string;
 }
 
 const lastPrices = new Map<Symbol, number>();
-const lastStates = new Map<Symbol, { state: string; time: number }>();
+const lastChanges = new Map<Symbol, number>();
+const alertedPositions = new Map<string, { price: number; time: number }>();
 
 function getBias(change24h: number): "Bullish" | "Bearish" | "Neutral" {
-  if (change24h > 0.5) return "Bullish";   // lowered from 1.0
-  if (change24h < -0.5) return "Bearish";  // lowered from -1.0
+  if (change24h > 0.5) return "Bullish";
+  if (change24h < -0.5) return "Bearish";
   return "Neutral";
 }
 
-function getTrigger(symbol: Symbol, current: number, bias: "Bullish" | "Bearish" | "Neutral"): Signal["trigger"] {
-  const last = lastPrices.get(symbol);
-  if (!last || last === 0) {
-    lastPrices.set(symbol, current);
-    return "Waiting";
-  }
+function getMomentum(symbol: Symbol, currentChange: number): "Accelerating" | "Decelerating" | "Flat" {
+  const last = lastChanges.get(symbol);
+  lastChanges.set(symbol, currentChange);
+  if (!last) return "Flat";
+  const delta = currentChange - last;
+  if (Math.abs(delta) < 0.05) return "Flat";
+  return delta > 0 ? "Accelerating" : "Decelerating";
+}
 
+function getTrigger(symbol: Symbol, current: number): string {
+  const last = lastPrices.get(symbol);
+  if (!last) { lastPrices.set(symbol, current); return "Waiting"; }
   const change = (current - last) / last;
   lastPrices.set(symbol, current);
-
-  if (change > 0.0015) return "Early Break Up";    // lowered from 0.003
-  if (change < -0.0015) return "Early Break Down"; // lowered from -0.003
-  
-  // NEW: Pullback entries for better R:R
-  if (bias === "Bullish" && change < -0.0005) return "Pullback Long";
-  if (bias === "Bearish" && change > 0.0005) return "Pullback Short";
-  
+  if (change > 0.0015) return "Early Break Up";
+  if (change < -0.0015) return "Early Break Down";
   return "Waiting";
 }
 
-function getVolatilityAdjustedSL(price: number, change24h: number, direction: "LONG" | "SHORT"): number {
-  const baseSL = 0.03;
-  const volatility = Math.abs(change24h) / 100;
-  const adjustedSL = Math.max(0.02, Math.min(0.045, baseSL + (volatility - 0.02)));
-  
-  return direction === "LONG" ? price * (1 - adjustedSL) : price * (1 + adjustedSL);
+function shouldAlert(symbol: Symbol, direction: "LONG" | "SHORT", price: number): boolean {
+  const key = `${symbol}:${direction}`;
+  const last = alertedPositions.get(key);
+  if (!last) return true;
+  const mins = (Date.now() - last.time) / 60000;
+  const priceChange = Math.abs((price - last.price) / last.price);
+  return mins > 30 && priceChange > 0.02;
 }
 
-function getConfidence(bias: string, change24h: number, trigger: Signal["trigger"], symbol: Symbol): number {
-  let confidence = bias !== "Neutral" ? 40 + Math.abs(change24h) * 8 : 0;
-  
-  const isAligned = 
-    (bias === "Bullish" && (trigger === "Early Break Up" || trigger === "Pullback Long")) ||
-    (bias === "Bearish" && (trigger === "Early Break Down" || trigger === "Pullback Short"));
-  
-  if (isAligned) confidence += 25;
-  if (trigger.includes("Pullback")) confidence += 10;
-  
-  // Stale signal decay
-  const last = lastStates.get(symbol);
-  if (last?.state === "SNIPER") {
-    const mins = (Date.now() - last.time) / 60000;
-    if (mins > 30) confidence -= Math.min(20, mins - 30);
-  }
-  
-  return Math.min(95, Math.max(0, confidence));
+export function recordAlert(symbol: Symbol, direction: "LONG" | "SHORT", price: number) {
+  alertedPositions.set(`${symbol}:${direction}`, { price, time: Date.now() });
 }
 
 export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   const prices = await fetchPrices();
   const data = prices[symbol];
-
   const price = data.price;
   const change24h = data.change24h;
   const bias = getBias(change24h);
-  const trigger = getTrigger(symbol, price, bias);
+  const trigger = getTrigger(symbol, price);
+  const momentum = getMomentum(symbol, change24h);
 
   let state: Signal["state"] = "FLAT";
   let direction: Signal["direction"] = undefined;
+  let confidence = 0;
 
   if (bias !== "Neutral") {
     state = "BUILDING";
     direction = bias === "Bullish" ? "LONG" : "SHORT";
+    confidence = Math.min(60, 40 + Math.abs(change24h) * 8);
   }
 
-  const isLongTrigger = trigger === "Early Break Up" || trigger === "Pullback Long";
-  const isShortTrigger = trigger === "Early Break Down" || trigger === "Pullback Short";
-  
-  if (bias === "Bullish" && isLongTrigger) {
-    state = "SNIPER"; direction = "LONG";
-  } else if (bias === "Bearish" && isShortTrigger) {
-    state = "SNIPER"; direction = "SHORT";
+  const isAligned = 
+    (bias === "Bullish" && trigger === "Early Break Up") ||
+    (bias === "Bearish" && trigger === "Early Break Down");
+
+  if (isAligned) {
+    state = "SNIPER";
+    confidence = Math.min(95, 70 + Math.abs(change24h) * 3);
   }
 
-  const confidence = getConfidence(bias, change24h, trigger, symbol);
+  // Momentum filter: downgrade if move is decelerating
+  if (state === "SNIPER" && momentum === "Decelerating") {
+    state = "BUILDING";
+    confidence = Math.floor(confidence * 0.6);
+  }
+
+  const shouldSendAlert = state === "SNIPER" && direction && shouldAlert(symbol, direction, price);
 
   let stopLoss: number | undefined;
   let takeProfit: number | undefined;
   let riskReward: number | undefined;
 
   if (state === "SNIPER" && direction) {
-    stopLoss = getVolatilityAdjustedSL(price, change24h, direction);
-    const slDistance = Math.abs(price - stopLoss);
-    const tpDistance = slDistance * 1.8;
+    const slDistance = price * 0.025; // 2.5% base
+    const tpDistance = slDistance * 2; // 2:1 R:R
     
-    takeProfit = direction === "LONG" ? price + tpDistance : price - tpDistance;
-    riskReward = Math.abs((takeProfit - price) / (price - stopLoss));
-    if (!isFinite(riskReward)) riskReward = 1.8;
-  }
-
-  if (state === "SNIPER") {
-    lastStates.set(symbol, { state: "SNIPER", time: Date.now() });
+    if (direction === "LONG") {
+      stopLoss = price - slDistance;
+      takeProfit = price + tpDistance;
+    } else {
+      stopLoss = price + slDistance;
+      takeProfit = price - tpDistance;
+    }
+    riskReward = 2.0;
   }
 
   return {
@@ -131,6 +126,8 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     stopLoss, takeProfit, riskReward,
     confidence: Math.floor(confidence),
     trigger,
+    momentum,
+    shouldAlert: shouldSendAlert,
     updatedAt: new Date().toISOString(),
   };
 }
