@@ -1,7 +1,7 @@
 /**
  * FILE: api/cron/route.ts
  * PURPOSE: Run every 5 minutes, evaluate signals, send Telegram alerts
- * NEW: Bias flip detection sends exit alerts when trend reverses
+ * NEW: Bias flip exit alerts + StochRSI in entry alerts
  */
 
 import { evaluateSignal, recordAlert, detectBiasFlip } from "@/lib/engine";
@@ -30,8 +30,9 @@ Old bias: ${signal.oldBias} → New bias: ${signal.newBias}
   } else {
     const emoji = signal.direction === "LONG" ? "🟢" : "🔴";
     const quality = signal.dataQuality && signal.dataQuality !== "OHLC" ? ` [${signal.dataQuality}]` : "";
+    const stochInfo = signal.stochRSI != null ? ` | StochRSI: ${signal.stochRSI.toFixed(0)} (${signal.stochRSIState})` : "";
     text = `${emoji} ${signal.symbol} ${signal.direction}${quality} — $${signal.price.toFixed(2)}
-24h: ${signal.change24h > 0 ? "+" : ""}${signal.change24h.toFixed(2)}% | Bias: ${signal.bias} | Momentum: ${signal.momentum}
+24h: ${signal.change24h > 0 ? "+" : ""}${signal.change24h.toFixed(2)}% | Bias: ${signal.bias} | Momentum: ${signal.momentum}${stochInfo}
 Entry: $${signal.entry?.toFixed(2)} | SL: $${signal.stopLoss?.toFixed(2)} | TP: $${signal.takeProfit?.toFixed(2)}
 ⏰ ${new Date().toLocaleTimeString()}`;
   }
@@ -78,6 +79,8 @@ export async function GET(req: Request) {
       stopLoss: 97500,
       takeProfit: 105000,
       riskReward: 2.0,
+      stochRSI: 15,
+      stochRSIState: "Oversold",
       updatedAt: new Date().toISOString()
     };
     await sendTelegramAlert(testSignal);
@@ -99,7 +102,7 @@ export async function GET(req: Request) {
     let exitAlertsSent = 0;
 
     for (const signal of signals) {
-      // Check for bias flip FIRST (before entry logic)
+      // Check for bias flip FIRST
       const flip = detectBiasFlip(signal.symbol, signal.bias, signal.price);
       if (flip.flipped) {
         console.log(`[CRON] 🔄 ${signal.symbol} BIAS FLIP: ${flip.oldBias} → ${flip.newBias}`);
@@ -122,6 +125,7 @@ export async function GET(req: Request) {
       console.log(`[CRON] │ Direction:    ${signal.direction || "—"}`);
       console.log(`[CRON] │ Trigger:      ${signal.trigger}`);
       console.log(`[CRON] │ Momentum:     ${signal.momentum}`);
+      console.log(`[CRON] │ StochRSI:     ${signal.stochRSI?.toFixed(0)} (${signal.stochRSIState})`);
       console.log(`[CRON] │ Confidence:   ${signal.confidence}%`);
       console.log(`[CRON] │ Data Quality: ${signal.dataQuality || "OHLC"}`);
       console.log(`[CRON] │ Should Alert: ${signal.shouldAlert}`);
