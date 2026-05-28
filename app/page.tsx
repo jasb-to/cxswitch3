@@ -1,8 +1,4 @@
-
-# Write the complete new page.tsx with trend score, range position, move timing, and verdict
-# This matches the new engine.ts with OHLC data and trend analysis
-
-page_tsx = '''"use client";
+'''"use client";
 
 import { useState, useEffect } from "react";
 
