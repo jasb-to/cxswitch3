@@ -1,17 +1,11 @@
 /**
- * SIGNAL ENGINE v2.4 — Multi-Timeframe StochRSI Filter
+ * SIGNAL ENGINE v2.5 — Decoupled Signal Cache
  *
- * Strategy:
- * 1. 4H bias determines direction (the big picture)
- * 2. 1H StochRSI filters entry timing (buy oversold dips, sell overbought bounces)
- * 3. 1H trigger provides micro-timing
+ * Problem: /api/signals was calling evaluateSignal() on every UI refresh,
+ * burning through CoinGecko rate limits.
  *
- * Entry rules:
- * LONG:  4H Bullish + 1H StochRSI < 20 + Early Break Up  → SNIPER
- * SHORT: 4H Bearish + 1H StochRSI > 80 + Early Break Down → SNIPER
- *
- * This prevents buying rips and selling dips — you enter at value,
- * not at extremes, with higher timeframe alignment.
+ * Fix: Signals are computed ONLY by /api/cron. /api/signals returns cached.
+ * StochRSI + 4H bias computed from 1H OHLC candles.
  */
 
 import { fetchPrices } from "./coingecko";
@@ -46,13 +40,30 @@ export interface Signal {
   trendScore: number;
   candleBreak: string;
   volatilityState: string;
-  stochRSI: number;           // NEW: 1H StochRSI value 0-100
-  stochRSIState: string;      // NEW: Oversold / Neutral / Overbought
+  stochRSI: number;
+  stochRSIState: string;
   dataQuality: "OHLC" | "Cached" | "Fallback";
   updatedAt: string;
 }
 
-// Per-symbol cache with independent TTLs
+// ─── Signal Cache (shared between cron and signals route) ──────────
+let signalCache: Signal[] = [];
+let signalCacheTime = 0;
+const SIGNAL_CACHE_TTL = 300000; // 5 minutes
+
+export function getCachedSignals(): Signal[] {
+  if (Date.now() - signalCacheTime < SIGNAL_CACHE_TTL) {
+    return signalCache;
+  }
+  return [];
+}
+
+export function setCachedSignals(signals: Signal[]) {
+  signalCache = signals;
+  signalCacheTime = Date.now();
+}
+
+// ─── OHLC Cache ────────────────────────────────────────────────────
 interface CacheEntry {
   candles: number[][];
   time: number;
@@ -102,14 +113,10 @@ async function fetchAllOHLC(): Promise<Record<Symbol, number[][]>> {
 }
 
 // ─── StochRSI Calculation ──────────────────────────────────────────
-function computeStochRSI(candles: number[][], period = 14, smoothK = 3, smoothD = 3): { k: number; d: number } {
-  if (candles.length < period + smoothK + smoothD + 5) {
-    return { k: 50, d: 50 }; // neutral if insufficient data
-  }
+function computeStochRSI(candles: number[][], period = 14): { k: number; d: number } {
+  if (candles.length < period + 5) return { k: 50, d: 50 };
 
   const closes = candles.map(c => c[4]);
-
-  // Step 1: RSI
   const gains: number[] = [];
   const losses: number[] = [];
   for (let i = 1; i < closes.length; i++) {
@@ -129,29 +136,20 @@ function computeStochRSI(candles: number[][], period = 14, smoothK = 3, smoothD 
     rsiValues.push(100 - (100 / (1 + rs)));
   }
 
-  // Step 2: Stochastic of RSI
   const stochPeriod = Math.min(period, rsiValues.length);
   const recentRSI = rsiValues.slice(-stochPeriod);
   const minRSI = Math.min(...recentRSI);
   const maxRSI = Math.max(...recentRSI);
   const rangeRSI = maxRSI - minRSI;
-
   const rawStoch = rangeRSI === 0 ? 50 : ((recentRSI[recentRSI.length - 1] - minRSI) / rangeRSI) * 100;
-
-  // Step 3: Smooth K (SMA of raw stoch)
-  // We only have one raw value, so K = raw for now
-  // In a full implementation we'd keep a rolling window
   const k = Math.max(0, Math.min(100, rawStoch));
-  const d = k; // simplified — full %D would need more history
-
-  return { k, d };
+  return { k, d: k };
 }
 
 // ─── 4H Bias from 1H candles ───────────────────────────────────────
 function compute4HBias(candles: number[][]): "Bullish" | "Bearish" | "Neutral" {
   if (candles.length < 8) return "Neutral";
 
-  // Group 1H candles into 4H blocks (4 candles = 1 block)
   const fourHourBlocks: number[][] = [];
   for (let i = 0; i < candles.length - 3; i += 4) {
     const block = candles.slice(i, i + 4);
@@ -176,7 +174,6 @@ function compute4HBias(candles: number[][]): "Bullish" | "Bearish" | "Neutral" {
   const close = latest[4];
   const prevClose = prev[4];
 
-  // 4H range
   const recentHighs = recent4H.map(b => b[2]);
   const recentLows = recent4H.map(b => b[3]);
   const rangeHigh = Math.max(...recentHighs);
@@ -400,7 +397,6 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   const high24h = data.high24h || price * 1.02;
   const low24h = data.low24h || price * 0.98;
 
-  // Multi-timeframe analysis
   const bias4H = compute4HBias(candles);
   const analysis1H = analyze1H(candles, change24h, price, high24h, low24h);
   const stoch = computeStochRSI(candles);
@@ -415,23 +411,19 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   let confidence = 0;
   let finalTrigger = trigger;
 
-  // BUILDING: 1H bias detected
   if (analysis1H.bias !== "Neutral") {
     state = "BUILDING";
     direction = analysis1H.bias === "Bullish" ? "LONG" : "SHORT";
     confidence = Math.min(50, analysis1H.trendScore * 0.6);
   }
 
-  // SNIPER ENTRY RULES — Multi-timeframe with StochRSI filter
   const isAligned =
     (analysis1H.bias === "Bullish" && trigger === "Early Break Up") ||
     (analysis1H.bias === "Bearish" && trigger === "Early Break Down");
 
-  const isEarly = analysis1H.moveTiming === "Early";
   const hasVolume = analysis1H.volatilityState.includes("Expanding");
 
   // === LONG ENTRY ===
-  // 4H Bullish + 1H StochRSI < 20 (oversold) + trigger → buy the dip
   if (bias4H === "Bullish" && analysis1H.bias === "Bullish" && stochRSI < 20 && isAligned) {
     state = "SNIPER";
     direction = "LONG";
@@ -439,7 +431,6 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     if (hasVolume) confidence += 10;
     finalTrigger = "4H Bullish + Stoch Oversold";
   }
-  // Fallback: 4H Bullish + mid move + still oversold-ish
   else if (bias4H === "Bullish" && analysis1H.bias === "Bullish" && stochRSI < 35 && isAligned && momentum === "Accelerating") {
     state = "SNIPER";
     direction = "LONG";
@@ -448,7 +439,6 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   }
 
   // === SHORT ENTRY ===
-  // 4H Bearish + 1H StochRSI > 80 (overbought) + trigger → sell the bounce
   else if (bias4H === "Bearish" && analysis1H.bias === "Bearish" && stochRSI > 80 && isAligned) {
     state = "SNIPER";
     direction = "SHORT";
@@ -456,7 +446,6 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     if (hasVolume) confidence += 10;
     finalTrigger = "4H Bearish + Stoch Overbought";
   }
-  // Fallback: 4H Bearish + mid move + still overbought-ish
   else if (bias4H === "Bearish" && analysis1H.bias === "Bearish" && stochRSI > 65 && isAligned && momentum === "Accelerating") {
     state = "SNIPER";
     direction = "SHORT";
@@ -464,7 +453,7 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     finalTrigger = "4H Bearish + Stoch Elevated";
   }
 
-  // LATE MOVE FILTER: Only kill if decelerating
+  // LATE MOVE FILTER
   if (state === "SNIPER" && analysis1H.moveTiming === "Late" && momentum === "Decelerating") {
     state = "BUILDING";
     confidence = Math.floor(confidence * 0.4);
@@ -489,7 +478,7 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     riskReward = 2.5;
   }
 
-  return {
+  const signal: Signal = {
     symbol,
     price,
     change24h,
@@ -516,4 +505,6 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     dataQuality: analysis1H.dataQuality,
     updatedAt: new Date().toISOString(),
   };
+
+  return signal;
 }
