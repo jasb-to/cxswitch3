@@ -1,19 +1,17 @@
 /**
- * SIGNAL ENGINE v2.7 — Kraken OHLC + CoinGecko Prices
+ * SIGNAL ENGINE v2.8 — StochRSI Peak Detection + Kraken OHLC + CoinGecko Prices
  *
  * Kraken pair names:
  *   BTC/USD → XXBTZUSD (API key) or XBTUSD (altname)
  *   ETH/USD → XETHZUSD (API key) or ETHUSD (altname)
  *   SOL/USD → SOLUSD
- *
- * We use the altname format in the URL and dynamically find the result key.
  */
 
 import { fetchPrices } from "./coingecko";
 
 export type Symbol = "BTC" | "ETH" | "SOL";
 
-const KRaken_ALTNAMES: Record<Symbol, string> = {
+const KRaken_ALTNAMES: Record<<Symbol, string> = {
   BTC: "XBTUSD",
   ETH: "ETHUSD",
   SOL: "SOLUSD",
@@ -43,6 +41,9 @@ export interface Signal {
   volatilityState: string;
   stochRSI: number;
   stochRSIState: string;
+  stochRSIPeak?: { peakValue: number; dropFromPeak: number } | null;
+  stochRSITrough?: { troughValue: number; riseFromTrough: number } | null;
+  stochRSIDirection: "rising" | "falling" | "neutral";
   tradeType: "With Trend" | "Counter Trend" | "—";
   dataQuality: "Kraken" | "Fallback";
   updatedAt: string;
@@ -64,8 +65,13 @@ export function setCachedSignals(signals: Signal[]) {
 }
 
 // ─── Kraken OHLC ───────────────────────────────────────────────────
-// Kraken returns: [time, open, high, low, close, vwap, volume, count]
-interface KrakenCandle { time: number; open: number; high: number; low: number; close: number; }
+interface KrakenCandle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
 
 async function fetchKrakenOHLC(symbol: Symbol): Promise<KrakenCandle[]> {
   const altname = KRaken_ALTNAMES[symbol];
@@ -84,9 +90,7 @@ async function fetchKrakenOHLC(symbol: Symbol): Promise<KrakenCandle[]> {
       return [];
     }
 
-    // Kraken returns { result: { "XXBTZUSD": [[...], [...]], "last": 1234567890 } }
-    // We need to find the key that is NOT "last"
-    const resultKeys = Object.keys(data.result).filter(k => k !== "last");
+    const resultKeys = Object.keys(data.result).filter((k) => k !== "last");
     if (resultKeys.length === 0) {
       console.warn(`[Kraken] ${symbol} no pair data found`);
       return [];
@@ -95,7 +99,7 @@ async function fetchKrakenOHLC(symbol: Symbol): Promise<KrakenCandle[]> {
     const pairKey = resultKeys[0];
     const raw = data.result[pairKey] as number[][];
 
-    return raw.map(c => ({
+    return raw.map((c) => ({
       time: c[0],
       open: parseFloat(c[1]),
       high: parseFloat(c[2]),
@@ -108,18 +112,18 @@ async function fetchKrakenOHLC(symbol: Symbol): Promise<KrakenCandle[]> {
   }
 }
 
-async function fetchAllOHLC(): Promise<Record<Symbol, KrakenCandle[]>> {
-  const result: Partial<Record<Symbol, KrakenCandle[]>> = {};
-  for (const sym of (["BTC", "ETH", "SOL"] as Symbol[])) {
+async function fetchAllOHLC(): Promise<<Record<<Symbol, KrakenCandle[]>> {
+  const result: Partial<<Record<<Symbol, KrakenCandle[]>> = {};
+  for (const sym of ["BTC", "ETH", "SOL"] as Symbol[]) {
     result[sym] = await fetchKrakenOHLC(sym);
-    if (sym !== "SOL") await new Promise(r => setTimeout(r, 300));
+    if (sym !== "SOL") await new Promise((r) => setTimeout(r, 300));
   }
-  return result as Record<Symbol, KrakenCandle[]>;
+  return result as Record<<Symbol, KrakenCandle[]>;
 }
 
 // ─── StochRSI ──────────────────────────────────────────────────────
-function computeStochRSI(closes: number[], period = 14): { k: number } {
-  if (closes.length < period + 5) return { k: 50 };
+function computeStochRSI(closes: number[], period = 14): { k: number[] } {
+  if (closes.length < period + 5) return { k: [] };
 
   const gains: number[] = [];
   const losses: number[] = [];
@@ -137,17 +141,63 @@ function computeStochRSI(closes: number[], period = 14): { k: number } {
     avgGain = (avgGain * (period - 1) + gains[i]) / period;
     avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
     const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-    rsiValues.push(100 - (100 / (1 + rs)));
+    rsiValues.push(100 - 100 / (1 + rs));
   }
 
   const stochPeriod = Math.min(period, rsiValues.length);
-  const recentRSI = rsiValues.slice(-stochPeriod);
-  const minRSI = Math.min(...recentRSI);
-  const maxRSI = Math.max(...recentRSI);
-  const rangeRSI = maxRSI - minRSI;
-  const rawStoch = rangeRSI === 0 ? 50 : ((recentRSI[recentRSI.length - 1] - minRSI) / rangeRSI) * 100;
+  const kValues: number[] = [];
 
-  return { k: Math.max(0, Math.min(100, rawStoch)) };
+  for (let i = stochPeriod; i <= rsiValues.length; i++) {
+    const slice = rsiValues.slice(i - stochPeriod, i);
+    const minRSI = Math.min(...slice);
+    const maxRSI = Math.max(...slice);
+    const rangeRSI = maxRSI - minRSI;
+    const rawStoch =
+      rangeRSI === 0 ? 50 : ((slice[slice.length - 1] - minRSI) / rangeRSI) * 100;
+    kValues.push(Math.max(0, Math.min(100, rawStoch)));
+  }
+
+  return { k: kValues };
+}
+
+// ─── Peak / Trough Detection ───────────────────────────────────────
+function detectStochPeak(kValues: number[], minLevel = 70) {
+  if (kValues.length < 3) {
+    return {
+      peaked: false,
+      troughed: false,
+      peakValue: null as number | null,
+      troughValue: null as number | null,
+      currentValue: kValues[kValues.length - 1] ?? 50,
+      previousValue: kValues[kValues.length - 2] ?? 50,
+      direction: "neutral" as "rising" | "falling" | "neutral",
+      dropFromPeak: 0,
+      riseFromTrough: 0,
+    };
+  }
+
+  const c = kValues[kValues.length - 1];
+  const p = kValues[kValues.length - 2];
+  const p2 = kValues[kValues.length - 3];
+
+  const peaked = p > p2 && p > c && p > minLevel;
+  const troughed = p < p2 && p < c && p < 100 - minLevel;
+
+  let direction: "rising" | "falling" | "neutral" = "neutral";
+  if (c > p) direction = "rising";
+  else if (c < p) direction = "falling";
+
+  return {
+    peaked,
+    troughed,
+    peakValue: peaked ? p : null,
+    troughValue: troughed ? p : null,
+    currentValue: c,
+    previousValue: p,
+    direction,
+    dropFromPeak: peaked ? p - c : 0,
+    riseFromTrough: troughed ? c - p : 0,
+  };
 }
 
 // ─── 4H Bias from 1H candles ───────────────────────────────────────
@@ -159,8 +209,8 @@ function compute4HBias(candles: KrakenCandle[]): "Bullish" | "Bearish" | "Neutra
     const b = candles.slice(i, i + 4);
     blocks.push({
       open: b[0].open,
-      high: Math.max(...b.map(c => c.high)),
-      low: Math.min(...b.map(c => c.low)),
+      high: Math.max(...b.map((c) => c.high)),
+      low: Math.min(...b.map((c) => c.low)),
       close: b[b.length - 1].close,
     });
   }
@@ -168,16 +218,17 @@ function compute4HBias(candles: KrakenCandle[]): "Bullish" | "Bearish" | "Neutra
   if (blocks.length < 2) return "Neutral";
 
   const recent = blocks.slice(-3);
-  let up = 0, down = 0;
+  let up = 0,
+    down = 0;
   for (let i = 1; i < recent.length; i++) {
-    if (recent[i].close > recent[i-1].close) up++;
-    if (recent[i].close < recent[i-1].close) down++;
+    if (recent[i].close > recent[i - 1].close) up++;
+    if (recent[i].close < recent[i - 1].close) down++;
   }
 
   const close = recent[recent.length - 1].close;
   const prevClose = recent[recent.length - 2].close;
-  const highs = recent.map(b => b.high);
-  const lows = recent.map(b => b.low);
+  const highs = recent.map((b) => b.high);
+  const lows = recent.map((b) => b.low);
   const mid = (Math.max(...highs) + Math.min(...lows)) / 2;
 
   if (up >= 2 && close > mid && close > prevClose) return "Bullish";
@@ -194,23 +245,29 @@ function analyze1H(
   low24h: number
 ) {
   const fallback = {
-    bias: "Neutral" as const, trendScore: 0, rangePosition: 0.5, moveTiming: "Early" as const,
-    candleBreak: "Insufficient data", volatilityState: "—", high24h, low24h,
+    bias: "Neutral" as const,
+    trendScore: 0,
+    rangePosition: 0.5,
+    moveTiming: "Early" as const,
+    candleBreak: "Insufficient data",
+    volatilityState: "—",
+    high24h,
+    low24h,
     dataQuality: "Fallback" as const,
   };
 
   if (candles.length < 4) return fallback;
 
-  const allHighs = candles.map(c => c.high);
-  const allLows = candles.map(c => c.low);
+  const allHighs = candles.map((c) => c.high);
+  const allLows = candles.map((c) => c.low);
   const h24 = Math.max(...allHighs);
   const l24 = Math.min(...allLows);
 
   const recent = candles.slice(-6);
   const previous = candles.slice(-10, -6);
 
-  const prevHighs = previous.map(c => c.high);
-  const prevLows = previous.map(c => c.low);
+  const prevHighs = previous.map((c) => c.high);
+  const prevLows = previous.map((c) => c.low);
   const rangeHigh = Math.max(...prevHighs);
   const rangeLow = Math.min(...prevLows);
   const rangeMid = (rangeHigh + rangeLow) / 2;
@@ -218,12 +275,14 @@ function analyze1H(
   const latest = recent[recent.length - 1];
   const close = latest.close;
 
-  const rangePos = h24 === l24 ? 0.5 : Math.max(0, Math.min(1, (close - l24) / (h24 - l24)));
+  const rangePos =
+    h24 === l24 ? 0.5 : Math.max(0, Math.min(1, (close - l24) / (h24 - l24)));
 
-  let upCount = 0, downCount = 0;
+  let upCount = 0,
+    downCount = 0;
   for (let i = 1; i < recent.length; i++) {
-    if (recent[i].close > recent[i-1].close) upCount++;
-    if (recent[i].close < recent[i-1].close) downCount++;
+    if (recent[i].close > recent[i - 1].close) upCount++;
+    if (recent[i].close < recent[i - 1].close) downCount++;
   }
 
   let bias: "Bullish" | "Bearish" | "Neutral" = "Neutral";
@@ -238,11 +297,11 @@ function analyze1H(
     bias = "Bearish";
     trendScore = 30 + downCount * 15;
     candleBreak = close < rangeLow ? "Broke below 4H range" : "Falling inside range";
-  } else if (rangePos < 0.30 && change24h < -1.5) {
+  } else if (rangePos < 0.3 && change24h < -1.5) {
     bias = "Bearish";
     trendScore = 25 + Math.abs(change24h) * 5;
     candleBreak = "Near 24h low — downtrend";
-  } else if (rangePos > 0.70 && change24h > 1.5) {
+  } else if (rangePos > 0.7 && change24h > 1.5) {
     bias = "Bullish";
     trendScore = 25 + change24h * 5;
     candleBreak = "Near 24h high — uptrend";
@@ -267,10 +326,15 @@ function analyze1H(
   if (moveCandles >= 4) moveTiming = "Late";
   else if (moveCandles >= 2) moveTiming = "Mid";
 
-  const avgRange = previous.reduce((sum, c) => sum + (c.high - c.low), 0) / previous.length;
+  const avgRange =
+    previous.reduce((sum, c) => sum + (c.high - c.low), 0) / previous.length;
   const latestRange = latest.high - latest.low;
-  const volState = latestRange > avgRange * 1.3 ? "Expanding ✅" :
-                   latestRange > avgRange * 1.1 ? "Normal" : "Contracting";
+  const volState =
+    latestRange > avgRange * 1.3
+      ? "Expanding ✅"
+      : latestRange > avgRange * 1.1
+        ? "Normal"
+        : "Contracting";
 
   return {
     bias,
@@ -309,7 +373,7 @@ function getMomentum(candles: KrakenCandle[]): "Accelerating" | "Decelerating" |
 
 // ─── Alert tracking ────────────────────────────────────────────────
 const alertedPositions = new Map<string, { price: number; time: number }>();
-const previousBiases = new Map<Symbol, "Bullish" | "Bearish" | "Neutral">();
+const previousBiases = new Map<<Symbol, "Bullish" | "Bearish" | "Neutral">();
 
 function shouldAlert(symbol: Symbol, direction: "LONG" | "SHORT", price: number): boolean {
   const key = `${symbol}:${direction}`;
@@ -331,16 +395,19 @@ export function detectBiasFlip(
 ) {
   const oldBias = previousBiases.get(symbol);
   previousBiases.set(symbol, currentBias);
-  if (!oldBias || oldBias === currentBias || currentBias === "Neutral") return { flipped: false };
-  if ((oldBias === "Bullish" && currentBias === "Bearish") ||
-      (oldBias === "Bearish" && currentBias === "Bullish")) {
+  if (!oldBias || oldBias === currentBias || currentBias === "Neutral")
+    return { flipped: false };
+  if (
+    (oldBias === "Bullish" && currentBias === "Bearish") ||
+    (oldBias === "Bearish" && currentBias === "Bullish")
+  ) {
     return { flipped: true, oldBias, newBias: currentBias };
   }
   return { flipped: false };
 }
 
 // ─── Main evaluateSignal ───────────────────────────────────────────
-export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
+export async function evaluateSignal(symbol: Symbol): Promise<<Signal> {
   const [ohlcMap, prices] = await Promise.all([
     fetchAllOHLC(),
     fetchPrices(),
@@ -353,16 +420,19 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   const high24h = data.high24h || price * 1.02;
   const low24h = data.low24h || price * 0.98;
 
-  const closes = candles.map(c => c.close);
+  const closes = candles.map((c) => c.close);
 
   const bias4H = compute4HBias(candles);
   const a1H = analyze1H(candles, change24h, price, high24h, low24h);
   const stoch = computeStochRSI(closes);
+  const peak = detectStochPeak(stoch.k, 70);
+
   const trigger = getTrigger(candles, a1H.bias);
   const momentum = getMomentum(candles);
 
-  const stochRSI = Math.round(stoch.k);
-  const stochRSIState = stochRSI < 20 ? "Oversold" : stochRSI > 80 ? "Overbought" : "Neutral";
+  const stochRSI = Math.round(peak.currentValue);
+  const stochRSIState =
+    stochRSI < 20 ? "Oversold" : stochRSI > 80 ? "Overbought" : "Neutral";
 
   let state: Signal["state"] = "FLAT";
   let direction: Signal["direction"] = undefined;
@@ -382,45 +452,101 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   const hasVolume = a1H.volatilityState.includes("Expanding");
 
   // ═══════════════════════════════════════════════════════════════════
-  // WITH-TREND ENTRIES
+  // WITH-TREND ENTRIES — trough detection for early entry
   // ═══════════════════════════════════════════════════════════════════
-  if (bias4H === "Bullish" && a1H.bias === "Bullish" && stochRSI < 20 && isAligned) {
-    state = "SNIPER"; direction = "LONG"; tradeType = "With Trend";
-    confidence = Math.min(90, 60 + a1H.trendScore * 0.3);
+  if (bias4H === "Bullish" && a1H.bias === "Bullish" && peak.troughed && isAligned) {
+    state = "SNIPER";
+    direction = "LONG";
+    tradeType = "With Trend";
+    confidence = Math.min(90, 60 + a1H.trendScore * 0.3 + peak.riseFromTrough * 1.5);
     if (hasVolume) confidence += 10;
-    finalTrigger = "With Trend: Buy Dip";
-  }
-  else if (bias4H === "Bearish" && a1H.bias === "Bearish" && stochRSI > 80 && isAligned) {
-    state = "SNIPER"; direction = "SHORT"; tradeType = "With Trend";
-    confidence = Math.min(90, 60 + a1H.trendScore * 0.3);
+    finalTrigger = "With Trend: Trough Bounce";
+  } else if (
+    bias4H === "Bearish" &&
+    a1H.bias === "Bearish" &&
+    peak.peaked &&
+    isAligned
+  ) {
+    state = "SNIPER";
+    direction = "SHORT";
+    tradeType = "With Trend";
+    confidence = Math.min(90, 60 + a1H.trendScore * 0.3 + peak.dropFromPeak * 1.5);
     if (hasVolume) confidence += 10;
-    finalTrigger = "With Trend: Sell Bounce";
+    finalTrigger = "With Trend: Peak Drop";
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  // COUNTER-TREND ENTRIES
+  // COUNTER-TREND ENTRIES — peak/trough detection for early reversal
   // ═══════════════════════════════════════════════════════════════════
-  else if (bias4H === "Bullish" && a1H.bias === "Bearish" && stochRSI > 80 && isAligned) {
-    state = "SNIPER"; direction = "SHORT"; tradeType = "Counter Trend";
-    confidence = Math.min(60, 40 + a1H.trendScore * 0.2);
+  else if (
+    bias4H === "Bullish" &&
+    a1H.bias === "Bearish" &&
+    peak.peaked &&
+    isAligned
+  ) {
+    state = "SNIPER";
+    direction = "SHORT";
+    tradeType = "Counter Trend";
+    confidence = Math.min(95, 50 + peak.peakValue! * 0.3 + peak.dropFromPeak * 2);
     if (hasVolume) confidence += 5;
-    finalTrigger = "Counter Trend: Short Top";
-  }
-  else if (bias4H === "Bearish" && a1H.bias === "Bullish" && stochRSI < 20 && isAligned) {
-    state = "SNIPER"; direction = "LONG"; tradeType = "Counter Trend";
-    confidence = Math.min(60, 40 + a1H.trendScore * 0.2);
+    finalTrigger = "Counter Trend: Peak Reversal";
+  } else if (
+    bias4H === "Bearish" &&
+    a1H.bias === "Bullish" &&
+    peak.troughed &&
+    isAligned
+  ) {
+    state = "SNIPER";
+    direction = "LONG";
+    tradeType = "Counter Trend";
+    confidence = Math.min(
+      95,
+      50 + (100 - peak.troughValue!) * 0.3 + peak.riseFromTrough * 2
+    );
     if (hasVolume) confidence += 5;
-    finalTrigger = "Counter Trend: Buy Bottom";
+    finalTrigger = "Counter Trend: Trough Bounce";
   }
 
-  // Fallback with-trend entries
-  else if (bias4H === "Bullish" && a1H.bias === "Bullish" && stochRSI < 35 && isAligned && momentum === "Accelerating") {
-    state = "SNIPER"; direction = "LONG"; tradeType = "With Trend";
+  // ═══════════════════════════════════════════════════════════════════
+  // BUILDING: Peak detected but bias hasn't flipped yet (watching)
+  // ═══════════════════════════════════════════════════════════════════
+  else if (bias4H === "Bullish" && peak.peaked && a1H.bias === "Bullish") {
+    state = "BUILDING";
+    direction = "SHORT";
+    tradeType = "Counter Trend";
+    confidence = Math.min(60, 40 + peak.peakValue! * 0.2);
+    finalTrigger = "Momentum Exhaustion — Waiting for Bias Flip";
+  } else if (bias4H === "Bearish" && peak.troughed && a1H.bias === "Bearish") {
+    state = "BUILDING";
+    direction = "LONG";
+    tradeType = "Counter Trend";
+    confidence = Math.min(60, 40 + (100 - peak.troughValue!) * 0.2);
+    finalTrigger = "Momentum Building — Waiting for Bias Flip";
+  }
+
+  // Fallback with-trend entries (old threshold logic as backup)
+  else if (
+    bias4H === "Bullish" &&
+    a1H.bias === "Bullish" &&
+    stochRSI < 35 &&
+    isAligned &&
+    momentum === "Accelerating"
+  ) {
+    state = "SNIPER";
+    direction = "LONG";
+    tradeType = "With Trend";
     confidence = Math.min(70, 45 + a1H.trendScore * 0.15);
     finalTrigger = "With Trend: Stoch Reset";
-  }
-  else if (bias4H === "Bearish" && a1H.bias === "Bearish" && stochRSI > 65 && isAligned && momentum === "Accelerating") {
-    state = "SNIPER"; direction = "SHORT"; tradeType = "With Trend";
+  } else if (
+    bias4H === "Bearish" &&
+    a1H.bias === "Bearish" &&
+    stochRSI > 65 &&
+    isAligned &&
+    momentum === "Accelerating"
+  ) {
+    state = "SNIPER";
+    direction = "SHORT";
+    tradeType = "With Trend";
     confidence = Math.min(70, 45 + a1H.trendScore * 0.15);
     finalTrigger = "With Trend: Stoch Elevated";
   }
@@ -431,7 +557,8 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     confidence = Math.floor(confidence * 0.4);
   }
 
-  const shouldSendAlert = state === "SNIPER" && direction && shouldAlert(symbol, direction, price);
+  const shouldSendAlert =
+    state === "SNIPER" && direction && shouldAlert(symbol, direction, price);
 
   let stopLoss: number | undefined;
   let takeProfit: number | undefined;
@@ -454,11 +581,18 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   }
 
   return {
-    symbol, price, change24h,
-    high24h: a1H.high24h, low24h: a1H.low24h,
-    bias: a1H.bias, state, direction,
+    symbol,
+    price,
+    change24h,
+    high24h: a1H.high24h,
+    low24h: a1H.low24h,
+    bias: a1H.bias,
+    state,
+    direction,
     entry: state === "SNIPER" ? price : undefined,
-    stopLoss, takeProfit, riskReward,
+    stopLoss,
+    takeProfit,
+    riskReward,
     confidence: Math.floor(confidence),
     trigger: finalTrigger,
     momentum,
@@ -468,7 +602,15 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     trendScore: a1H.trendScore,
     candleBreak: a1H.candleBreak,
     volatilityState: a1H.volatilityState,
-    stochRSI, stochRSIState,
+    stochRSI,
+    stochRSIState,
+    stochRSIPeak: peak.peaked
+      ? { peakValue: Math.round(peak.peakValue!), dropFromPeak: Math.round(peak.dropFromPeak) }
+      : null,
+    stochRSITrough: peak.troughed
+      ? { troughValue: Math.round(peak.troughValue!), riseFromTrough: Math.round(peak.riseFromTrough) }
+      : null,
+    stochRSIDirection: peak.direction,
     tradeType,
     dataQuality: a1H.dataQuality,
     updatedAt: new Date().toISOString(),
