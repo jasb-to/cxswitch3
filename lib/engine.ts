@@ -1,11 +1,11 @@
 /**
- * SIGNAL ENGINE v2.1 — Better Bias Detection
- * 
- * Uses CoinGecko OHLC (1H candles) instead of 24h change %.
- * 
- * Key fix: Bias now falls back to 24h change % + range position when
- * candle structure is ambiguous. A coin at 22% of its 24h range down -3.4%
- * is Bearish, even if the last 6 candles aren't perfectly consecutive.
+ * SIGNAL ENGINE v2.2 — Swing-Tuned (6-8h holds)
+ *
+ * Fixes:
+ * 1. Staggered OHLC fetches with 800ms delay to avoid CoinGecko 429
+ * 2. Trigger uses 15-min lookback (3 candles) instead of 5-min price memory
+ * 3. Late-move filter only kills decelerating setups; accelerating late trends stay SNIPER
+ * 4. Strong trend (score>70) + accelerating momentum can SNIPER even without perfect trigger
  */
 
 import { fetchPrices } from "./coingecko";
@@ -72,7 +72,16 @@ async function fetchOHLC(symbol: Symbol): Promise<number[][]> {
   }
 }
 
-const lastPrices = new Map<Symbol, number>();
+// Staggered fetch to avoid 429 rate limits
+async function fetchAllOHLC(): Promise<Record<Symbol, number[][]>> {
+  const result: Partial<Record<Symbol, number[][]>> = {};
+  for (const sym of (["BTC", "ETH", "SOL"] as Symbol[])) {
+    result[sym] = await fetchOHLC(sym);
+    if (sym !== "SOL") await new Promise(r => setTimeout(r, 800));
+  }
+  return result as Record<Symbol, number[][]>;
+}
+
 const alertedPositions = new Map<string, { price: number; time: number }>();
 
 function analyzeCandles(
@@ -120,7 +129,6 @@ function analyzeCandles(
 
   const rangePosition = high24h === low24h ? 0.5 : Math.max(0, Math.min(1, (close - low24h) / (high24h - low24h)));
 
-  // Count directional candles
   let upCount = 0, downCount = 0;
   for (let i = 1; i < recent.length; i++) {
     if (recent[i][4] > recent[i-1][4]) upCount++;
@@ -131,7 +139,6 @@ function analyzeCandles(
   let trendScore = 0;
   let candleBreak = "None";
 
-  // PRIMARY: Strong consecutive structure
   if (upCount >= 3 && close > rangeMid) {
     bias = "Bullish";
     trendScore = 30 + upCount * 15;
@@ -142,9 +149,7 @@ function analyzeCandles(
     trendScore = 30 + downCount * 15;
     if (close < rangeLow) candleBreak = "Broke below 4H range";
     else candleBreak = "Falling inside range";
-  }
-  // SECONDARY: 24h change % + range position (catches SOL-like setups)
-  else if (rangePosition < 0.30 && change24h < -1.5) {
+  } else if (rangePosition < 0.30 && change24h < -1.5) {
     bias = "Bearish";
     trendScore = 25 + Math.abs(change24h) * 5;
     candleBreak = "Near 24h low — downtrend";
@@ -152,9 +157,7 @@ function analyzeCandles(
     bias = "Bullish";
     trendScore = 25 + change24h * 5;
     candleBreak = "Near 24h high — uptrend";
-  }
-  // TERTIARY: Net directional majority
-  else {
+  } else {
     const net = upCount - downCount;
     if (net >= 2 && close > rangeMid) {
       bias = "Bullish";
@@ -170,13 +173,11 @@ function analyzeCandles(
     }
   }
 
-  // Move timing
   let moveTiming: "Early" | "Mid" | "Late" = "Early";
   const moveCandles = bias === "Bullish" ? upCount : downCount;
   if (moveCandles >= 4) moveTiming = "Late";
   else if (moveCandles >= 2) moveTiming = "Mid";
 
-  // Volatility state
   const avgRange = previous.reduce((sum, c) => sum + (c[2] - c[3]), 0) / previous.length;
   const latestRange = latest[2] - latest[3];
   const volatilityState = latestRange > avgRange * 1.3 ? "Expanding ✅" :
@@ -194,16 +195,18 @@ function analyzeCandles(
   };
 }
 
-function getTrigger(symbol: Symbol, current: number): string {
-  const last = lastPrices.get(symbol);
-  if (!last) {
-    lastPrices.set(symbol, current);
-    return "Waiting";
-  }
-  const change = (current - last) / last;
-  lastPrices.set(symbol, current);
-  if (change > 0.0015) return "Early Break Up";
-  if (change < -0.0015) return "Early Break Down";
+// NEW: 15-min lookback trigger using candles instead of 5-min price memory
+function getTriggerFromCandles(candles: number[][], bias: string): string {
+  if (candles.length < 4) return "Waiting";
+  const recent = candles.slice(-3); // last 3 hours
+  const latest = recent[recent.length - 1];
+  const prev = recent[recent.length - 2];
+  const [, , , , close] = latest;
+  const [, , , , prevClose] = prev;
+  const change = (close - prevClose) / prevClose;
+
+  if (bias === "Bullish" && change > 0.001) return "Early Break Up";
+  if (bias === "Bearish" && change < -0.001) return "Early Break Down";
   return "Waiting";
 }
 
@@ -233,48 +236,59 @@ export function recordAlert(symbol: Symbol, direction: "LONG" | "SHORT", price: 
 }
 
 export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
-  const [prices, candles] = await Promise.all([
+  // Fetch all OHLC staggered, then prices
+  const [ohlcMap, prices] = await Promise.all([
+    fetchAllOHLC(),
     fetchPrices(),
-    fetchOHLC(symbol),
   ]);
 
+  const candles = ohlcMap[symbol];
   const data = prices[symbol];
   const price = data.price;
   const change24h = data.change24h;
 
   const analysis = analyzeCandles(candles, change24h);
-  const trigger = getTrigger(symbol, price);
+  const trigger = getTriggerFromCandles(candles, analysis.bias);
   const momentum = getMomentum(candles);
 
   let state: Signal["state"] = "FLAT";
   let direction: Signal["direction"] = undefined;
   let confidence = 0;
 
-  // BUILDING: Bias detected
   if (analysis.bias !== "Neutral") {
     state = "BUILDING";
     direction = analysis.bias === "Bullish" ? "LONG" : "SHORT";
     confidence = Math.min(50, analysis.trendScore * 0.6);
   }
 
-  // SNIPER: Structure break + trigger + early timing + volume
-  const isBreakout = analysis.candleBreak.includes("Broke") || analysis.candleBreak.includes("downtrend") || analysis.candleBreak.includes("uptrend");
+  const isBreakout = analysis.candleBreak.includes("Broke") ||
+                     analysis.candleBreak.includes("downtrend") ||
+                     analysis.candleBreak.includes("uptrend");
   const isEarly = analysis.moveTiming === "Early";
   const hasVolume = analysis.volatilityState.includes("Expanding");
   const isAligned =
     (analysis.bias === "Bullish" && trigger === "Early Break Up") ||
     (analysis.bias === "Bearish" && trigger === "Early Break Down");
 
+  // EARLY: Fresh break + trigger
   if (isBreakout && isEarly && isAligned) {
     state = "SNIPER";
     confidence = Math.min(90, 60 + analysis.trendScore * 0.3);
     if (hasVolume) confidence += 10;
-  } else if (analysis.bias !== "Neutral" && momentum === "Accelerating" && isAligned) {
+  }
+  // MID: Trend + momentum + trigger
+  else if (analysis.bias !== "Neutral" && momentum === "Accelerating" && isAligned) {
     state = "SNIPER";
     confidence = Math.min(75, 50 + analysis.trendScore * 0.2);
   }
+  // LATE BUT STRONG: Very high trend score + still accelerating → allow continuation entry
+  else if (analysis.bias !== "Neutral" && analysis.trendScore >= 70 && momentum === "Accelerating" && analysis.moveTiming === "Late") {
+    state = "SNIPER";
+    confidence = Math.min(65, 40 + analysis.trendScore * 0.15);
+    trigger = trigger === "Waiting" ? "Trend Continuation" : trigger;
+  }
 
-  // LATE MOVE FILTER
+  // LATE MOVE FILTER: Only kill if decelerating (not if accelerating)
   if (state === "SNIPER" && analysis.moveTiming === "Late" && momentum === "Decelerating") {
     state = "BUILDING";
     confidence = Math.floor(confidence * 0.4);
