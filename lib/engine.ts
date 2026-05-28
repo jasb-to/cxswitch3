@@ -1,18 +1,11 @@
 /**
- * SIGNAL ENGINE v2 — Early Entry Detection
+ * SIGNAL ENGINE v2.1 — Better Bias Detection
  * 
  * Uses CoinGecko OHLC (1H candles) instead of 24h change %.
- * This catches moves at the START when they break structure,
- * not 12 hours later when 24h change finally registers.
  * 
- * Key insight: A move starts on the 1H candle that breaks the previous
- * 4H range. By the time 24h change hits ±3%, that move is OLD.
- * 
- * We want to enter when:
- * 1. Price breaks above/below the last 4H consolidation range
- * 2. The break candle has expanding volume (confirmation)
- * 3. We're in the FIRST 1-2 hours of the new move (early)
- * 4. The break is WITH the 4H bias, not against it
+ * Key fix: Bias now falls back to 24h change % + range position when
+ * candle structure is ambiguous. A coin at 22% of its 24h range down -3.4%
+ * is Bearish, even if the last 6 candles aren't perfectly consecutive.
  */
 
 import { fetchPrices } from "./coingecko";
@@ -42,45 +35,36 @@ export interface Signal {
   trigger: string;
   momentum: string;
   shouldAlert: boolean;
-  // Trend analysis fields (aligned with UI)
-  rangePosition: number;      // 0-1, where price sits in 24h range
+  rangePosition: number;
   moveTiming: "Early" | "Mid" | "Late";
-  trendScore: number;         // 0-100 (renamed from trendStrength)
-  candleBreak: string;        // what the latest candle did
-  volatilityState: string;    // volume/volatility signal (renamed from volumeSignal)
+  trendScore: number;
+  candleBreak: string;
+  volatilityState: string;
   updatedAt: string;
 }
 
-// OHLC cache (1H candles for last 24h = 24 candles)
 let ohlcCache: Map<Symbol, number[][]> | null = null;
 let ohlcCacheTime = 0;
-const OHLC_CACHE_TTL = 300000; // 5 minutes
+const OHLC_CACHE_TTL = 300000;
 
 async function fetchOHLC(symbol: Symbol): Promise<number[][]> {
-  // Return cached if fresh
   if (ohlcCache && ohlcCache.has(symbol) && (Date.now() - ohlcCacheTime) < OHLC_CACHE_TTL) {
     return ohlcCache.get(symbol)!;
   }
-
   try {
     const res = await fetch(
       `https://api.coingecko.com/api/v3/coins/${CG_IDS[symbol]}/ohlc?vs_currency=usd&days=1`,
       { cache: "no-store" }
     );
-
     if (!res.ok) {
       console.warn(`[OHLC] ${symbol} failed:`, res.status);
       return ohlcCache?.get(symbol) || [];
     }
-
     const data = await res.json();
-    // CoinGecko returns: [timestamp, open, high, low, close]
     const candles = data as number[][];
-
     if (!ohlcCache) ohlcCache = new Map();
     ohlcCache.set(symbol, candles);
     ohlcCacheTime = Date.now();
-
     return candles;
   } catch (err) {
     console.warn(`[OHLC] ${symbol} error:`, err);
@@ -88,11 +72,13 @@ async function fetchOHLC(symbol: Symbol): Promise<number[][]> {
   }
 }
 
-// In-memory tracking
 const lastPrices = new Map<Symbol, number>();
 const alertedPositions = new Map<string, { price: number; time: number }>();
 
-function analyzeCandles(candles: number[][]): {
+function analyzeCandles(
+  candles: number[][],
+  change24h: number
+): {
   bias: "Bullish" | "Bearish" | "Neutral";
   trendScore: number;
   rangePosition: number;
@@ -102,7 +88,6 @@ function analyzeCandles(candles: number[][]): {
   high24h: number;
   low24h: number;
 } {
-  // Default fallback
   const fallback = {
     bias: "Neutral" as const,
     trendScore: 0,
@@ -116,31 +101,26 @@ function analyzeCandles(candles: number[][]): {
 
   if (candles.length < 4) return fallback;
 
-  // 24h high/low from all candles
   const allHighs = candles.map(c => c[2]);
   const allLows = candles.map(c => c[3]);
   const high24h = Math.max(...allHighs);
   const low24h = Math.min(...allLows);
 
-  const recent = candles.slice(-6); // last 6 hours
-  const previous = candles.slice(-10, -6); // 4 candles before that
+  const recent = candles.slice(-6);
+  const previous = candles.slice(-10, -6);
 
-  // 4H range (consolidation zone)
   const prevHighs = previous.map(c => c[2]);
   const prevLows = previous.map(c => c[3]);
   const rangeHigh = Math.max(...prevHighs);
   const rangeLow = Math.min(...prevLows);
   const rangeMid = (rangeHigh + rangeLow) / 2;
 
-  // Latest candle
   const latest = recent[recent.length - 1];
-  const prev = recent[recent.length - 2];
   const [, , , , close] = latest;
 
-  // Range position (0 = at bottom, 1 = at top) using 24h range, not 4H range
   const rangePosition = high24h === low24h ? 0.5 : Math.max(0, Math.min(1, (close - low24h) / (high24h - low24h)));
 
-  // Trend strength: consecutive candles in same direction
+  // Count directional candles
   let upCount = 0, downCount = 0;
   for (let i = 1; i < recent.length; i++) {
     if (recent[i][4] > recent[i-1][4]) upCount++;
@@ -151,6 +131,7 @@ function analyzeCandles(candles: number[][]): {
   let trendScore = 0;
   let candleBreak = "None";
 
+  // PRIMARY: Strong consecutive structure
   if (upCount >= 3 && close > rangeMid) {
     bias = "Bullish";
     trendScore = 30 + upCount * 15;
@@ -161,26 +142,49 @@ function analyzeCandles(candles: number[][]): {
     trendScore = 30 + downCount * 15;
     if (close < rangeLow) candleBreak = "Broke below 4H range";
     else candleBreak = "Falling inside range";
-  } else {
-    candleBreak = "Chopping";
-    trendScore = Math.max(upCount, downCount) * 10;
+  }
+  // SECONDARY: 24h change % + range position (catches SOL-like setups)
+  else if (rangePosition < 0.30 && change24h < -1.5) {
+    bias = "Bearish";
+    trendScore = 25 + Math.abs(change24h) * 5;
+    candleBreak = "Near 24h low — downtrend";
+  } else if (rangePosition > 0.70 && change24h > 1.5) {
+    bias = "Bullish";
+    trendScore = 25 + change24h * 5;
+    candleBreak = "Near 24h high — uptrend";
+  }
+  // TERTIARY: Net directional majority
+  else {
+    const net = upCount - downCount;
+    if (net >= 2 && close > rangeMid) {
+      bias = "Bullish";
+      trendScore = 20 + net * 10;
+      candleBreak = "Rising inside range";
+    } else if (net <= -2 && close < rangeMid) {
+      bias = "Bearish";
+      trendScore = 20 + Math.abs(net) * 10;
+      candleBreak = "Falling inside range";
+    } else {
+      candleBreak = "Chopping";
+      trendScore = Math.max(upCount, downCount) * 10;
+    }
   }
 
-  // Move timing: how extended is the move?
+  // Move timing
   let moveTiming: "Early" | "Mid" | "Late" = "Early";
   const moveCandles = bias === "Bullish" ? upCount : downCount;
   if (moveCandles >= 4) moveTiming = "Late";
   else if (moveCandles >= 2) moveTiming = "Mid";
 
-  // Volume/volatility signal: compare latest candle range to average
+  // Volatility state
   const avgRange = previous.reduce((sum, c) => sum + (c[2] - c[3]), 0) / previous.length;
   const latestRange = latest[2] - latest[3];
-  const volatilityState = latestRange > avgRange * 1.3 ? "Expanding ✅" : 
+  const volatilityState = latestRange > avgRange * 1.3 ? "Expanding ✅" :
                           latestRange > avgRange * 1.1 ? "Normal" : "Contracting";
 
   return {
     bias,
-    trendScore: Math.min(100, trendScore),
+    trendScore: Math.min(100, Math.round(trendScore)),
     rangePosition,
     moveTiming,
     candleBreak,
@@ -192,9 +196,9 @@ function analyzeCandles(candles: number[][]): {
 
 function getTrigger(symbol: Symbol, current: number): string {
   const last = lastPrices.get(symbol);
-  if (!last) { 
-    lastPrices.set(symbol, current); 
-    return "Waiting"; 
+  if (!last) {
+    lastPrices.set(symbol, current);
+    return "Waiting";
   }
   const change = (current - last) / last;
   lastPrices.set(symbol, current);
@@ -229,7 +233,6 @@ export function recordAlert(symbol: Symbol, direction: "LONG" | "SHORT", price: 
 }
 
 export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
-  // Fetch both price and OHLC
   const [prices, candles] = await Promise.all([
     fetchPrices(),
     fetchOHLC(symbol),
@@ -239,8 +242,7 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   const price = data.price;
   const change24h = data.change24h;
 
-  // Analyze structure from 1H candles
-  const analysis = analyzeCandles(candles);
+  const analysis = analyzeCandles(candles, change24h);
   const trigger = getTrigger(symbol, price);
   const momentum = getMomentum(candles);
 
@@ -248,59 +250,45 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   let direction: Signal["direction"] = undefined;
   let confidence = 0;
 
-  // BUILDING: Bias detected from candle structure
+  // BUILDING: Bias detected
   if (analysis.bias !== "Neutral") {
     state = "BUILDING";
     direction = analysis.bias === "Bullish" ? "LONG" : "SHORT";
-    confidence = Math.min(50, analysis.trendScore * 0.5);
+    confidence = Math.min(50, analysis.trendScore * 0.6);
   }
 
   // SNIPER: Structure break + trigger + early timing + volume
-  const isBreakout = analysis.candleBreak.includes("Broke");
+  const isBreakout = analysis.candleBreak.includes("Broke") || analysis.candleBreak.includes("downtrend") || analysis.candleBreak.includes("uptrend");
   const isEarly = analysis.moveTiming === "Early";
   const hasVolume = analysis.volatilityState.includes("Expanding");
-  const isAligned = 
+  const isAligned =
     (analysis.bias === "Bullish" && trigger === "Early Break Up") ||
     (analysis.bias === "Bearish" && trigger === "Early Break Down");
 
-  // EARLY ENTRY LOGIC:
-  // If we broke structure AND it's early in the move → SNIPER
-  // Even if momentum is flat, a fresh break is worth entering
   if (isBreakout && isEarly && isAligned) {
     state = "SNIPER";
     confidence = Math.min(90, 60 + analysis.trendScore * 0.3);
     if (hasVolume) confidence += 10;
-  }
-
-  // MID-MOVE ENTRY:
-  // If trend is strong, momentum accelerating, and we have trigger
-  // Enter even if not a fresh break (catching continuation)
-  else if (analysis.bias !== "Neutral" && momentum === "Accelerating" && isAligned) {
+  } else if (analysis.bias !== "Neutral" && momentum === "Accelerating" && isAligned) {
     state = "SNIPER";
     confidence = Math.min(75, 50 + analysis.trendScore * 0.2);
   }
 
-  // LATE MOVE FILTER:
-  // If move is Late AND momentum decelerating → downgrade
+  // LATE MOVE FILTER
   if (state === "SNIPER" && analysis.moveTiming === "Late" && momentum === "Decelerating") {
     state = "BUILDING";
     confidence = Math.floor(confidence * 0.4);
   }
 
-  // ANTI-SPAM
   const shouldSendAlert = state === "SNIPER" && direction && shouldAlert(symbol, direction, price);
 
-  // SL/TP — wider SL for early entries (give room for pullback)
   let stopLoss: number | undefined;
   let takeProfit: number | undefined;
   let riskReward: number | undefined;
 
   if (state === "SNIPER" && direction) {
-    // Early entries get wider SL (3.5%) because we expect pullback before continuation
-    // Late entries get tighter SL (2%)
     const slPct = analysis.moveTiming === "Early" ? 0.035 : 0.02;
-    const tpPct = slPct * 2.5; // 2.5:1 R:R
-
+    const tpPct = slPct * 2.5;
     if (direction === "LONG") {
       stopLoss = price * (1 - slPct);
       takeProfit = price * (1 + tpPct);
@@ -312,23 +300,22 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   }
 
   return {
-    symbol, 
-    price, 
+    symbol,
+    price,
     change24h,
     high24h: analysis.high24h,
     low24h: analysis.low24h,
-    bias: analysis.bias, 
-    state, 
+    bias: analysis.bias,
+    state,
     direction,
     entry: state === "SNIPER" ? price : undefined,
-    stopLoss, 
-    takeProfit, 
+    stopLoss,
+    takeProfit,
     riskReward,
     confidence: Math.floor(confidence),
     trigger,
     momentum,
     shouldAlert: shouldSendAlert,
-    // Trend fields aligned with UI
     rangePosition: analysis.rangePosition,
     moveTiming: analysis.moveTiming,
     trendScore: analysis.trendScore,
