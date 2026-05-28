@@ -1,4 +1,8 @@
-"use client";
+
+# Write the complete new page.tsx with trend score, range position, move timing, and verdict
+# This matches the new engine.ts with OHLC data and trend analysis
+
+page_tsx = '''"use client";
 
 import { useState, useEffect } from "react";
 
@@ -6,6 +10,8 @@ interface Signal {
   symbol: string;
   price: number;
   change24h: number;
+  high24h: number;
+  low24h: number;
   bias: "Bullish" | "Bearish" | "Neutral";
   state: "FLAT" | "BUILDING" | "SNIPER";
   direction?: "LONG" | "SHORT";
@@ -16,6 +22,10 @@ interface Signal {
   confidence: number;
   trigger: string;
   momentum: string;
+  trendScore: number;
+  rangePosition: number;
+  volatilityState: string;
+  moveTiming: string;
   shouldAlert: boolean;
   updatedAt: string;
 }
@@ -65,7 +75,6 @@ export default function Home() {
     }
   }
 
-  // Countdown timer
   useEffect(() => {
     const timer = setInterval(() => {
       setCountdown((prev) => (prev > 0 ? prev - 1 : 60));
@@ -73,7 +82,6 @@ export default function Home() {
     return () => clearInterval(timer);
   }, []);
 
-  // Fetch signals
   useEffect(() => {
     fetchSignals();
     const interval = setInterval(fetchSignals, 60000);
@@ -88,12 +96,9 @@ export default function Home() {
   };
 
   const getStateBadge = (state: string, direction?: string) => {
-    if (state === "SNIPER" && direction === "LONG") 
-      return "bg-green-500 text-black font-bold";
-    if (state === "SNIPER" && direction === "SHORT") 
-      return "bg-red-500 text-white font-bold";
-    if (state === "BUILDING") 
-      return "bg-amber-500 text-black font-bold";
+    if (state === "SNIPER" && direction === "LONG") return "bg-green-500 text-black font-bold";
+    if (state === "SNIPER" && direction === "SHORT") return "bg-red-500 text-white font-bold";
+    if (state === "BUILDING") return "bg-amber-500 text-black font-bold";
     return "bg-gray-700 text-white font-bold";
   };
 
@@ -116,11 +121,30 @@ export default function Home() {
     return "text-gray-400";
   };
 
+  const getRangeBarColor = (pos: number) => {
+    if (pos < 0.2) return "bg-green-500"; // near bottom = long opportunity
+    if (pos > 0.8) return "bg-red-500";   // near top = short opportunity
+    return "bg-gray-500";
+  };
+
+  const getVerdict = (signal: Signal) => {
+    if (signal.state === "SNIPER" && signal.shouldAlert) {
+      if (signal.moveTiming === "Early") return { text: "✅ EARLY ENTRY — Fresh move", color: "text-green-400" };
+      if (signal.moveTiming === "Mid") return { text: "⚠️ MID MOVE — Manage risk", color: "text-amber-400" };
+      return { text: "❌ LATE MOVE — Consider skipping", color: "text-red-400" };
+    }
+    if (signal.state === "BUILDING") {
+      if (signal.trendScore > 60) return { text: "👁️ WATCHING — Setup forming", color: "text-cyan-400" };
+      return { text: "⏸️ NO SETUP — Wait for trigger", color: "text-gray-500" };
+    }
+    return { text: "⏸️ FLAT — No bias", color: "text-gray-500" };
+  };
+
   return (
     <div className="min-h-screen w-full bg-black text-gray-100">
       <div className="w-full px-8 py-8">
         <div className="max-w-7xl mx-auto">
-
+          
           {/* Header */}
           <div className="flex items-start justify-between mb-8">
             <div>
@@ -165,9 +189,11 @@ export default function Home() {
           {/* Market Overview */}
           <div>
             <h2 className="text-lg font-bold text-white mb-6 uppercase tracking-wider">Market Overview</h2>
-
+            
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-              {signals.map((signal) => (
+              {signals.map((signal) => {
+                const verdict = getVerdict(signal);
+                return (
                 <div
                   key={signal.symbol}
                   className={`rounded-xl overflow-hidden bg-gray-950 border-2 ${getStateColor(signal.state, signal.direction)} transition-all hover:opacity-95`}
@@ -187,7 +213,7 @@ export default function Home() {
 
                   {/* Card Body */}
                   <div className="px-6 py-6 space-y-5">
-
+                    
                     {/* Price Row */}
                     <div className="flex items-baseline justify-between">
                       <div>
@@ -201,6 +227,32 @@ export default function Home() {
                           {signal.change24h > 0 ? "+" : ""}{signal.change24h.toFixed(2)}%
                         </p>
                         <p className="text-xs text-gray-500">24h change</p>
+                      </div>
+                    </div>
+
+                    {/* 24h Range */}
+                    <div className="bg-gray-900/50 rounded-lg p-4">
+                      <div className="flex justify-between items-center mb-2">
+                        <p className="text-xs text-gray-500 uppercase tracking-wider font-bold">24h Range</p>
+                        <p className="text-xs text-gray-400">
+                          L: ${signal.low24h.toLocaleString(undefined, {maximumFractionDigits: 0})} 
+                          / H: ${signal.high24h.toLocaleString(undefined, {maximumFractionDigits: 0})}
+                        </p>
+                      </div>
+                      <div className="w-full bg-gray-800 rounded-full h-3 overflow-hidden relative">
+                        <div
+                          className={`h-3 rounded-full ${getRangeBarColor(signal.rangePosition)}`}
+                          style={{ width: `${Math.min(100, signal.rangePosition * 100)}%` }}
+                        />
+                        <div 
+                          className="absolute top-0 w-1 h-3 bg-white rounded-full"
+                          style={{ left: `${Math.min(100, signal.rangePosition * 100)}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-xs mt-1">
+                        <span className="text-green-400">Bottom</span>
+                        <span className="text-gray-400">{Math.round(signal.rangePosition * 100)}% from low</span>
+                        <span className="text-red-400">Top</span>
                       </div>
                     </div>
 
@@ -236,6 +288,39 @@ export default function Home() {
                       </div>
                     </div>
 
+                    {/* Trend Health */}
+                    <div className="bg-gray-900/50 rounded-lg p-4">
+                      <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-3">Trend Health</p>
+                      
+                      {/* Trend Score */}
+                      <div className="mb-3">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs text-gray-400">Trend Score</span>
+                          <span className="text-sm font-bold text-white">{signal.trendScore}/100</span>
+                        </div>
+                        <div className="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
+                          <div
+                            className={`h-2 rounded-full ${signal.trendScore > 70 ? "bg-green-500" : signal.trendScore > 40 ? "bg-amber-500" : "bg-gray-600"}`}
+                            style={{ width: `${Math.min(100, signal.trendScore)}%` }}
+                          />
+                        </div>
+                      </div>
+                      
+                      {/* Move Timing & Volatility */}
+                      <div className="grid grid-cols-2 gap-3 text-sm">
+                        <div>
+                          <span className="text-gray-500 text-xs">Move Timing</span>
+                          <p className={`font-bold ${signal.moveTiming === "Early" ? "text-green-400" : signal.moveTiming === "Mid" ? "text-amber-400" : "text-red-400"}`}>
+                            {signal.moveTiming}
+                          </p>
+                        </div>
+                        <div>
+                          <span className="text-gray-500 text-xs">Volatility</span>
+                          <p className="text-white font-bold">{signal.volatilityState}</p>
+                        </div>
+                      </div>
+                    </div>
+
                     {/* Confidence Slider */}
                     <div className="bg-gray-900/50 rounded-lg p-4">
                       <div className="flex justify-between items-center mb-2">
@@ -248,10 +333,12 @@ export default function Home() {
                           style={{ width: `${Math.min(100, signal.confidence)}%` }}
                         />
                       </div>
-                      <p className="text-xs text-gray-600 mt-2">
-                        {signal.confidence >= 80 ? "High conviction setup" : 
-                         signal.confidence >= 60 ? "Moderate conviction" : 
-                         signal.confidence >= 40 ? "Developing setup" : "No setup"}
+                    </div>
+
+                    {/* Verdict */}
+                    <div className={`rounded-lg p-4 text-center border ${signal.state === "SNIPER" ? "bg-gray-900/80 border-gray-700" : "bg-gray-900/50 border-gray-800"}`}>
+                      <p className={`text-lg font-bold ${verdict.color}`}>
+                        {verdict.text}
                       </p>
                     </div>
 
@@ -303,7 +390,7 @@ export default function Home() {
                     </p>
                   </div>
                 </div>
-              ))}
+              );})}
             </div>
           </div>
         </div>
@@ -311,3 +398,16 @@ export default function Home() {
     </div>
   );
 }
+'''
+
+with open("/mnt/agents/output/cxswitch3_fix/page.tsx", "w") as f:
+    f.write(page_tsx)
+
+print("✅ New page.tsx with trend score, range position, move timing written")
+print(f"   Size: {len(page_tsx)} characters")
+print("\n📋 New features:")
+print("  1. 24h Range visual bar with position marker")
+print("  2. Trend Health section (score, timing, volatility)")
+print("  3. Verdict banner (Early Entry / Mid Move / Late Move / No Setup)")
+print("  4. All previous features kept (confidence, momentum, alert status, test button)")
+print("\n🚀 Replace app/page.tsx and redeploy.")
