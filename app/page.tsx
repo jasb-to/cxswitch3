@@ -22,6 +22,9 @@ interface Signal {
   rangePosition?: number;
   volatilityState?: string;
   moveTiming?: string;
+  stochRSI?: number;
+  stochRSIState?: string;
+  dataQuality?: string;
   shouldAlert?: boolean;
   updatedAt?: string;
 }
@@ -140,6 +143,13 @@ export default function Home() {
     return "bg-gray-500";
   };
 
+  const getStochColor = (stoch?: number) => {
+    if (stoch == null) return "text-gray-400";
+    if (stoch < 20) return "text-green-400";
+    if (stoch > 80) return "text-red-400";
+    return "text-amber-400";
+  };
+
   const getVerdict = (signal: Signal) => {
     if (signal.state === "SNIPER" && signal.shouldAlert) {
       if (signal.moveTiming === "Early") return { text: "✅ EARLY ENTRY — Fresh move", color: "text-green-400" };
@@ -213,6 +223,7 @@ export default function Home() {
                 const rangePos = signal.rangePosition ?? 0.5;
                 const trendScore = signal.trendScore ?? 0;
                 const confidence = signal.confidence ?? 0;
+                const stoch = signal.stochRSI ?? 50;
                 return (
                 <div
                   key={signal.symbol || Math.random()}
@@ -224,6 +235,9 @@ export default function Home() {
                       <h3 className="text-3xl font-bold text-white">{signal.symbol || "???"}</h3>
                       <p className="text-xs text-gray-500 mt-1">
                         {signal.state === "SNIPER" ? "🎯 SNIPER ACTIVE" : signal.state === "BUILDING" ? "📊 Building Setup" : "⏸️ Flat"}
+                        {signal.dataQuality && signal.dataQuality !== "OHLC" && (
+                          <span className="ml-2 text-amber-500">[{signal.dataQuality}]</span>
+                        )}
                       </p>
                     </div>
                     <span className={`px-4 py-2 rounded-lg text-sm ${getStateBadge(signal.state, signal.direction)}`}>
@@ -275,10 +289,35 @@ export default function Home() {
                       </div>
                     </div>
 
+                    {/* StochRSI */}
+                    <div className="bg-gray-900/50 rounded-lg p-4">
+                      <div className="flex justify-between items-center mb-2">
+                        <p className="text-xs text-gray-500 uppercase tracking-wider font-bold">1H StochRSI</p>
+                        <p className={`text-xl font-bold ${getStochColor(stoch)}`}>
+                          {stoch.toFixed(0)}
+                        </p>
+                      </div>
+                      <div className="w-full bg-gray-800 rounded-full h-3 overflow-hidden relative">
+                        {/* Oversold zone */}
+                        <div className="absolute left-0 h-3 bg-green-900/30" style={{ width: "20%" }} />
+                        {/* Overbought zone */}
+                        <div className="absolute right-0 h-3 bg-red-900/30" style={{ width: "20%" }} />
+                        <div
+                          className="absolute top-0 w-2 h-3 bg-white rounded-full"
+                          style={{ left: `${Math.min(100, stoch)}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-xs mt-1">
+                        <span className="text-green-400">Oversold (&lt;20)</span>
+                        <span className={`font-bold ${getStochColor(stoch)}`}>{signal.stochRSIState || "Neutral"}</span>
+                        <span className="text-red-400">Overbought (&gt;80)</span>
+                      </div>
+                    </div>
+
                     {/* Bias & Trigger Row */}
                     <div className="grid grid-cols-2 gap-4">
                       <div className="bg-gray-900/50 rounded-lg p-3">
-                        <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">4H Bias</p>
+                        <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">1H Bias</p>
                         <p className={`text-lg font-bold ${getBiasColor(signal.bias)}`}>
                           {signal.bias || "—"}
                         </p>
@@ -311,7 +350,6 @@ export default function Home() {
                     <div className="bg-gray-900/50 rounded-lg p-4">
                       <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-3">Trend Health</p>
 
-                      {/* Trend Score */}
                       <div className="mb-3">
                         <div className="flex justify-between items-center mb-1">
                           <span className="text-xs text-gray-400">Trend Score</span>
@@ -325,7 +363,6 @@ export default function Home() {
                         </div>
                       </div>
 
-                      {/* Move Timing & Volatility */}
                       <div className="grid grid-cols-2 gap-3 text-sm">
                         <div>
                           <span className="text-gray-500 text-xs">Move Timing</span>
