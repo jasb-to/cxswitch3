@@ -1,17 +1,12 @@
 /**
  * SIGNAL ENGINE v2.8 — StochRSI Peak Detection + Kraken OHLC + CoinGecko Prices
- *
- * Kraken pair names:
- *   BTC/USD → XXBTZUSD (API key) or XBTUSD (altname)
- *   ETH/USD → XETHZUSD (API key) or ETHUSD (altname)
- *   SOL/USD → SOLUSD
  */
 
 import { fetchPrices } from "./coingecko";
 
 export type Symbol = "BTC" | "ETH" | "SOL";
 
-const KRaken_ALTNAMES: Record<<Symbol, string> = {
+const KRaken_ALTNAMES: Record<Symbol, string> = {
   BTC: "XBTUSD",
   ETH: "ETHUSD",
   SOL: "SOLUSD",
@@ -49,7 +44,6 @@ export interface Signal {
   updatedAt: string;
 }
 
-// ─── Signal Cache ──────────────────────────────────────────────────
 let signalCache: Signal[] = [];
 let signalCacheTime = 0;
 const SIGNAL_CACHE_TTL = 300000;
@@ -64,7 +58,6 @@ export function setCachedSignals(signals: Signal[]) {
   signalCacheTime = Date.now();
 }
 
-// ─── Kraken OHLC ───────────────────────────────────────────────────
 interface KrakenCandle {
   time: number;
   open: number;
@@ -112,16 +105,15 @@ async function fetchKrakenOHLC(symbol: Symbol): Promise<KrakenCandle[]> {
   }
 }
 
-async function fetchAllOHLC(): Promise<<Record<<Symbol, KrakenCandle[]>> {
-  const result: Partial<<Record<<Symbol, KrakenCandle[]>> = {};
+async function fetchAllOHLC(): Promise<Record<Symbol, KrakenCandle[]>> {
+  const result: Partial<Record<Symbol, KrakenCandle[]>> = {};
   for (const sym of ["BTC", "ETH", "SOL"] as Symbol[]) {
     result[sym] = await fetchKrakenOHLC(sym);
     if (sym !== "SOL") await new Promise((r) => setTimeout(r, 300));
   }
-  return result as Record<<Symbol, KrakenCandle[]>;
+  return result as Record<Symbol, KrakenCandle[]>;
 }
 
-// ─── StochRSI ──────────────────────────────────────────────────────
 function computeStochRSI(closes: number[], period = 14): { k: number[] } {
   if (closes.length < period + 5) return { k: [] };
 
@@ -160,7 +152,6 @@ function computeStochRSI(closes: number[], period = 14): { k: number[] } {
   return { k: kValues };
 }
 
-// ─── Peak / Trough Detection ───────────────────────────────────────
 function detectStochPeak(kValues: number[], minLevel = 70) {
   if (kValues.length < 3) {
     return {
@@ -200,7 +191,6 @@ function detectStochPeak(kValues: number[], minLevel = 70) {
   };
 }
 
-// ─── 4H Bias from 1H candles ───────────────────────────────────────
 function compute4HBias(candles: KrakenCandle[]): "Bullish" | "Bearish" | "Neutral" {
   if (candles.length < 8) return "Neutral";
 
@@ -236,7 +226,6 @@ function compute4HBias(candles: KrakenCandle[]): "Bullish" | "Bearish" | "Neutra
   return "Neutral";
 }
 
-// ─── 1H Analysis ───────────────────────────────────────────────────
 function analyze1H(
   candles: KrakenCandle[],
   change24h: number,
@@ -371,9 +360,8 @@ function getMomentum(candles: KrakenCandle[]): "Accelerating" | "Decelerating" |
   return "Flat";
 }
 
-// ─── Alert tracking ────────────────────────────────────────────────
 const alertedPositions = new Map<string, { price: number; time: number }>();
-const previousBiases = new Map<<Symbol, "Bullish" | "Bearish" | "Neutral">();
+const previousBiases = new Map<Symbol, "Bullish" | "Bearish" | "Neutral">();
 
 function shouldAlert(symbol: Symbol, direction: "LONG" | "SHORT", price: number): boolean {
   const key = `${symbol}:${direction}`;
@@ -406,8 +394,7 @@ export function detectBiasFlip(
   return { flipped: false };
 }
 
-// ─── Main evaluateSignal ───────────────────────────────────────────
-export async function evaluateSignal(symbol: Symbol): Promise<<Signal> {
+export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   const [ohlcMap, prices] = await Promise.all([
     fetchAllOHLC(),
     fetchPrices(),
@@ -451,9 +438,6 @@ export async function evaluateSignal(symbol: Symbol): Promise<<Signal> {
     (a1H.bias === "Bearish" && trigger === "Early Break Down");
   const hasVolume = a1H.volatilityState.includes("Expanding");
 
-  // ═══════════════════════════════════════════════════════════════════
-  // WITH-TREND ENTRIES — trough detection for early entry
-  // ═══════════════════════════════════════════════════════════════════
   if (bias4H === "Bullish" && a1H.bias === "Bullish" && peak.troughed && isAligned) {
     state = "SNIPER";
     direction = "LONG";
@@ -475,9 +459,6 @@ export async function evaluateSignal(symbol: Symbol): Promise<<Signal> {
     finalTrigger = "With Trend: Peak Drop";
   }
 
-  // ═══════════════════════════════════════════════════════════════════
-  // COUNTER-TREND ENTRIES — peak/trough detection for early reversal
-  // ═══════════════════════════════════════════════════════════════════
   else if (
     bias4H === "Bullish" &&
     a1H.bias === "Bearish" &&
@@ -507,9 +488,6 @@ export async function evaluateSignal(symbol: Symbol): Promise<<Signal> {
     finalTrigger = "Counter Trend: Trough Bounce";
   }
 
-  // ═══════════════════════════════════════════════════════════════════
-  // BUILDING: Peak detected but bias hasn't flipped yet (watching)
-  // ═══════════════════════════════════════════════════════════════════
   else if (bias4H === "Bullish" && peak.peaked && a1H.bias === "Bullish") {
     state = "BUILDING";
     direction = "SHORT";
@@ -524,7 +502,6 @@ export async function evaluateSignal(symbol: Symbol): Promise<<Signal> {
     finalTrigger = "Momentum Building — Waiting for Bias Flip";
   }
 
-  // Fallback with-trend entries (old threshold logic as backup)
   else if (
     bias4H === "Bullish" &&
     a1H.bias === "Bullish" &&
@@ -551,7 +528,6 @@ export async function evaluateSignal(symbol: Symbol): Promise<<Signal> {
     finalTrigger = "With Trend: Stoch Elevated";
   }
 
-  // Late move filter
   if (state === "SNIPER" && a1H.moveTiming === "Late" && momentum === "Decelerating") {
     state = "BUILDING";
     confidence = Math.floor(confidence * 0.4);
@@ -616,4 +592,3 @@ export async function evaluateSignal(symbol: Symbol): Promise<<Signal> {
     updatedAt: new Date().toISOString(),
   };
 }
- 
