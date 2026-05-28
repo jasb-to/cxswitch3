@@ -24,6 +24,7 @@ interface Signal {
   moveTiming?: string;
   stochRSI?: number;
   stochRSIState?: string;
+  tradeType?: string;
   dataQuality?: string;
   shouldAlert?: boolean;
   updatedAt?: string;
@@ -195,21 +196,18 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Test Result */}
           {testResult && (
             <div className="mb-6 p-4 bg-gray-900/50 border border-gray-700 rounded text-sm">
               {testResult}
             </div>
           )}
 
-          {/* Error Banner */}
           {error && (
             <div className="mb-6 p-4 bg-red-950/40 border border-red-800/50 rounded text-red-300 text-sm">
               Error: {error}
             </div>
           )}
 
-          {/* Market Overview */}
           <div>
             <h2 className="text-lg font-bold text-white mb-6 uppercase tracking-wider">Market Overview</h2>
 
@@ -224,6 +222,7 @@ export default function Home() {
                 const trendScore = signal.trendScore ?? 0;
                 const confidence = signal.confidence ?? 0;
                 const stoch = signal.stochRSI ?? 50;
+                const isCounter = signal.tradeType === "Counter Trend";
                 return (
                 <div
                   key={signal.symbol || Math.random()}
@@ -240,9 +239,14 @@ export default function Home() {
                         )}
                       </p>
                     </div>
-                    <span className={`px-4 py-2 rounded-lg text-sm ${getStateBadge(signal.state, signal.direction)}`}>
-                      {signal.state === "SNIPER" ? signal.direction : (signal.state || "UNKNOWN")}
-                    </span>
+                    <div className="text-right">
+                      <span className={`px-4 py-2 rounded-lg text-sm ${getStateBadge(signal.state, signal.direction)}`}>
+                        {signal.state === "SNIPER" ? signal.direction : (signal.state || "UNKNOWN")}
+                      </span>
+                      {isCounter && (
+                        <p className="text-xs text-amber-400 mt-1 font-bold">⚠️ COUNTER TREND</p>
+                      )}
+                    </div>
                   </div>
 
                   {/* Card Body */}
@@ -263,6 +267,18 @@ export default function Home() {
                         <p className="text-xs text-gray-500">24h change</p>
                       </div>
                     </div>
+
+                    {/* Trade Type Banner */}
+                    {signal.tradeType && signal.tradeType !== "—" && (
+                      <div className={`rounded-lg p-3 text-center border ${isCounter ? "bg-amber-950/30 border-amber-700" : "bg-green-950/30 border-green-700"}`}>
+                        <p className={`text-sm font-bold ${isCounter ? "text-amber-400" : "text-green-400"}`}>
+                          {isCounter ? "⚠️ " : "✅ "}{signal.tradeType}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-1">
+                          {isCounter ? "Tighter stop, lower R:R" : "Wider stop, higher R:R"}
+                        </p>
+                      </div>
+                    )}
 
                     {/* 24h Range */}
                     <div className="bg-gray-900/50 rounded-lg p-4">
@@ -298,9 +314,7 @@ export default function Home() {
                         </p>
                       </div>
                       <div className="w-full bg-gray-800 rounded-full h-3 overflow-hidden relative">
-                        {/* Oversold zone */}
                         <div className="absolute left-0 h-3 bg-green-900/30" style={{ width: "20%" }} />
-                        {/* Overbought zone */}
                         <div className="absolute right-0 h-3 bg-red-900/30" style={{ width: "20%" }} />
                         <div
                           className="absolute top-0 w-2 h-3 bg-white rounded-full"
@@ -324,7 +338,7 @@ export default function Home() {
                       </div>
                       <div className="bg-gray-900/50 rounded-lg p-3">
                         <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">Trigger</p>
-                        <p className="text-lg font-bold text-white">
+                        <p className="text-sm font-bold text-white">
                           {signal.trigger || "—"}
                         </p>
                       </div>
@@ -407,28 +421,22 @@ export default function Home() {
                       </div>
                     )}
 
-                    {/* Trade Setup - Only for SNIPER */}
+                    {/* Trade Setup */}
                     {signal.state === "SNIPER" && signal.entry != null && (
                       <div className="border-t-2 border-gray-800 pt-5 mt-2">
                         <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-4">Trade Setup</p>
                         <div className="space-y-3">
                           <div className="flex justify-between items-center">
                             <span className="text-gray-400 text-sm">Entry</span>
-                            <span className="font-mono text-white font-bold text-lg">
-                              {fmtPrice(signal.entry)}
-                            </span>
+                            <span className="font-mono text-white font-bold text-lg">{fmtPrice(signal.entry)}</span>
                           </div>
                           <div className="flex justify-between items-center">
                             <span className="text-gray-400 text-sm">Stop Loss</span>
-                            <span className="font-mono text-red-400 font-bold">
-                              {fmtPrice(signal.stopLoss)}
-                            </span>
+                            <span className="font-mono text-red-400 font-bold">{fmtPrice(signal.stopLoss)}</span>
                           </div>
                           <div className="flex justify-between items-center">
                             <span className="text-gray-400 text-sm">Take Profit</span>
-                            <span className="font-mono text-green-400 font-bold">
-                              {fmtPrice(signal.takeProfit)}
-                            </span>
+                            <span className="font-mono text-green-400 font-bold">{fmtPrice(signal.takeProfit)}</span>
                           </div>
                           <div className="flex justify-between items-center">
                             <span className="text-gray-400 text-sm">Risk:Reward</span>
