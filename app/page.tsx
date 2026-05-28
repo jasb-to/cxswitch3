@@ -49,7 +49,7 @@ function fmtPct(n?: number) {
 }
 
 export default function Home() {
-  const [signals, setSignals] = useState<<Signal[]>([]);
+  const [signals, setSignals] = useState<Signal[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [lastUpdate, setLastUpdate] = useState("");
