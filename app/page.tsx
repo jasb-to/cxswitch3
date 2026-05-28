@@ -1,4 +1,4 @@
-'''"use client";
+"use client";
 
 import { useState, useEffect } from "react";
 
@@ -394,16 +394,3 @@ export default function Home() {
     </div>
   );
 }
-'''
-
-with open("/mnt/agents/output/cxswitch3_fix/page.tsx", "w") as f:
-    f.write(page_tsx)
-
-print("✅ New page.tsx with trend score, range position, move timing written")
-print(f"   Size: {len(page_tsx)} characters")
-print("\n📋 New features:")
-print("  1. 24h Range visual bar with position marker")
-print("  2. Trend Health section (score, timing, volatility)")
-print("  3. Verdict banner (Early Entry / Mid Move / Late Move / No Setup)")
-print("  4. All previous features kept (confidence, momentum, alert status, test button)")
-print("\n🚀 Replace app/page.tsx and redeploy.")
