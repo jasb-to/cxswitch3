@@ -1,7 +1,16 @@
 /**
- * FILE: lib/engine.ts
- * PURPOSE: Evaluate trading signals with position memory and momentum filter
- * WHY: Prevents Telegram spam (1 alert per move) and catches accelerating moves only
+ * SIGNAL ENGINE - Tuned for early entries with hold duration
+ * 
+ * Thresholds:
+ * - BUILDING at ±0.5% 24h change (early bias detection)
+ * - SNIPER at ±0.6% 24h change + trigger alignment (confirmed move)
+ * - SL: 2.5% (tight enough for discipline, wide enough for crypto)
+ * - TP: 5% (2:1 R:R, captures full move)
+ * 
+ * Anti-whipsaw:
+ * - Momentum filter: only alert when accelerating
+ * - Position memory: 1 alert per direction per 30 min
+ * - Trigger needs 0.15% price move in bias direction
  */
 
 import { fetchPrices } from "./coingecko";
@@ -26,16 +35,13 @@ export interface Signal {
   updatedAt: string;
 }
 
-// Track last price per symbol (for trigger detection)
+// In-memory tracking
 const lastPrices = new Map<Symbol, number>();
-
-// Track last 24h change per symbol (for momentum detection)
 const lastChanges = new Map<Symbol, number>();
-
-// Track last alert per symbol+direction (prevents spam)
 const alertedPositions = new Map<string, { price: number; time: number }>();
 
 function getBias(change24h: number): "Bullish" | "Bearish" | "Neutral" {
+  // BUILDING threshold: 0.5% — early bias detection
   if (change24h > 0.5) return "Bullish";
   if (change24h < -0.5) return "Bearish";
   return "Neutral";
@@ -63,20 +69,15 @@ function getTrigger(symbol: Symbol, current: number): string {
   return "Waiting";
 }
 
-// Check if we already alerted for this symbol+direction recently
 function shouldAlert(symbol: Symbol, direction: "LONG" | "SHORT", price: number): boolean {
   const key = `${symbol}:${direction}`;
   const last = alertedPositions.get(key);
-  if (!last) return true; // Never alerted before → alert now
-  
+  if (!last) return true;
   const mins = (Date.now() - last.time) / 60000;
   const priceChange = Math.abs((price - last.price) / last.price);
-  
-  // Only re-alert if 30+ minutes passed AND price moved >2% (new setup)
   return mins > 30 && priceChange > 0.02;
 }
 
-// Call this AFTER sending Telegram alert
 export function recordAlert(symbol: Symbol, direction: "LONG" | "SHORT", price: number) {
   alertedPositions.set(`${symbol}:${direction}`, { price, time: Date.now() });
 }
@@ -94,41 +95,44 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   let direction: Signal["direction"] = undefined;
   let confidence = 0;
 
-  // BUILDING: Bias exists
+  // BUILDING: 24h change > 0.5% or < -0.5%
   if (bias !== "Neutral") {
     state = "BUILDING";
     direction = bias === "Bullish" ? "LONG" : "SHORT";
-    confidence = Math.min(60, 40 + Math.abs(change24h) * 8);
+    confidence = Math.min(55, 35 + Math.abs(change24h) * 10);
   }
 
-  // SNIPER: Bias + trigger aligned
+  // SNIPER: 24h change > 0.6% or < -0.6% + trigger aligned + accelerating
+  const sniperThreshold = 0.6;
+  const isStrongBias = Math.abs(change24h) >= sniperThreshold;
+
   const isAligned = 
     (bias === "Bullish" && trigger === "Early Break Up") ||
     (bias === "Bearish" && trigger === "Early Break Down");
 
-  if (isAligned) {
+  if (isStrongBias && isAligned) {
     state = "SNIPER";
-    confidence = Math.min(95, 70 + Math.abs(change24h) * 3);
+    confidence = Math.min(90, 60 + Math.abs(change24h) * 15);
   }
 
-  // MOMENTUM FILTER: Downgrade if move is losing steam
+  // MOMENTUM FILTER: Downgrade if decelerating (prevents whipsaw)
   if (state === "SNIPER" && momentum === "Decelerating") {
     state = "BUILDING";
-    confidence = Math.floor(confidence * 0.6);
+    confidence = Math.floor(confidence * 0.5);
   }
 
-  // ANTI-SPAM: Only alert if we haven't alerted for this direction recently
+  // ANTI-SPAM
   const shouldSendAlert = state === "SNIPER" && direction && shouldAlert(symbol, direction, price);
 
-  // SL/TP calculation
+  // SL/TP — 2.5% SL, 5% TP = 2:1 R:R
   let stopLoss: number | undefined;
   let takeProfit: number | undefined;
   let riskReward: number | undefined;
 
   if (state === "SNIPER" && direction) {
-    const slDistance = price * 0.025; // 2.5%
-    const tpDistance = slDistance * 2;  // 2:1 R:R
-    
+    const slDistance = price * 0.025;
+    const tpDistance = slDistance * 2;
+
     if (direction === "LONG") {
       stopLoss = price - slDistance;
       takeProfit = price + tpDistance;
