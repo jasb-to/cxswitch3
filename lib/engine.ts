@@ -1,11 +1,13 @@
 /**
  * SIGNAL ENGINE v2.2 — Swing-Tuned (6-8h holds)
  *
- * Fixes:
- * 1. Staggered OHLC fetches with 800ms delay to avoid CoinGecko 429
- * 2. Trigger uses 15-min lookback (3 candles) instead of 5-min price memory
- * 3. Late-move filter only kills decelerating setups; accelerating late trends stay SNIPER
- * 4. Strong trend (score>70) + accelerating momentum can SNIPER even without perfect trigger
+ * Strategy Summary:
+ * 1. Early entries: Fresh 4H range break + early timing + trigger → SNIPER (60-90% confidence)
+ * 2. Mid entries: Trend + accelerating momentum + trigger → SNIPER (50-75% confidence)
+ * 3. Late continuation: Trend score ≥70 + accelerating + late → SNIPER "Trend Continuation" (40-65%)
+ * 4. Late decelerating → downgraded to BUILDING (avoids chasing exhausted moves)
+ * 5. Anti-spam: 30-min cooldown + 2% price buffer per direction per symbol
+ * 6. OHLC staggered fetches (800ms) to avoid CoinGecko 429 rate limits
  */
 
 import { fetchPrices } from "./coingecko";
@@ -72,7 +74,6 @@ async function fetchOHLC(symbol: Symbol): Promise<number[][]> {
   }
 }
 
-// Staggered fetch to avoid 429 rate limits
 async function fetchAllOHLC(): Promise<Record<Symbol, number[][]>> {
   const result: Partial<Record<Symbol, number[][]>> = {};
   for (const sym of (["BTC", "ETH", "SOL"] as Symbol[])) {
@@ -195,10 +196,9 @@ function analyzeCandles(
   };
 }
 
-// NEW: 15-min lookback trigger using candles instead of 5-min price memory
 function getTriggerFromCandles(candles: number[][], bias: string): string {
   if (candles.length < 4) return "Waiting";
-  const recent = candles.slice(-3); // last 3 hours
+  const recent = candles.slice(-3);
   const latest = recent[recent.length - 1];
   const prev = recent[recent.length - 2];
   const [, , , , close] = latest;
@@ -236,7 +236,6 @@ export function recordAlert(symbol: Symbol, direction: "LONG" | "SHORT", price: 
 }
 
 export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
-  // Fetch all OHLC staggered, then prices
   const [ohlcMap, prices] = await Promise.all([
     fetchAllOHLC(),
     fetchPrices(),
@@ -254,6 +253,7 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   let state: Signal["state"] = "FLAT";
   let direction: Signal["direction"] = undefined;
   let confidence = 0;
+  let finalTrigger = trigger;
 
   if (analysis.bias !== "Neutral") {
     state = "BUILDING";
@@ -281,14 +281,14 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     state = "SNIPER";
     confidence = Math.min(75, 50 + analysis.trendScore * 0.2);
   }
-  // LATE BUT STRONG: Very high trend score + still accelerating → allow continuation entry
+  // LATE BUT STRONG: Very high trend score + still accelerating → continuation entry
   else if (analysis.bias !== "Neutral" && analysis.trendScore >= 70 && momentum === "Accelerating" && analysis.moveTiming === "Late") {
     state = "SNIPER";
     confidence = Math.min(65, 40 + analysis.trendScore * 0.15);
-    trigger = trigger === "Waiting" ? "Trend Continuation" : trigger;
+    finalTrigger = trigger === "Waiting" ? "Trend Continuation" : trigger;
   }
 
-  // LATE MOVE FILTER: Only kill if decelerating (not if accelerating)
+  // LATE MOVE FILTER: Only kill if decelerating
   if (state === "SNIPER" && analysis.moveTiming === "Late" && momentum === "Decelerating") {
     state = "BUILDING";
     confidence = Math.floor(confidence * 0.4);
@@ -327,7 +327,7 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     takeProfit,
     riskReward,
     confidence: Math.floor(confidence),
-    trigger,
+    trigger: finalTrigger,
     momentum,
     shouldAlert: shouldSendAlert,
     rangePosition: analysis.rangePosition,
