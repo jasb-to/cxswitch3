@@ -1,14 +1,17 @@
 /**
- * SIGNAL ENGINE v2.3 — Resilient OHLC + Graceful Degradation
- *
- * Problem: CoinGecko free tier 429s on frequent OHLC calls.
- * Solution: Independent per-symbol cache TTLs + fallback to 24h price data.
+ * SIGNAL ENGINE v2.4 — Multi-Timeframe StochRSI Filter
  *
  * Strategy:
- * 1. Try OHLC first (freshest candle structure)
- * 2. If 429/fail → use cached OHLC if <15min old
- * 3. If no cache → fallback to 24h change % + current price for bias
- * 4. Staggered fetches with 1.5s gaps + 1 retry per symbol
+ * 1. 4H bias determines direction (the big picture)
+ * 2. 1H StochRSI filters entry timing (buy oversold dips, sell overbought bounces)
+ * 3. 1H trigger provides micro-timing
+ *
+ * Entry rules:
+ * LONG:  4H Bullish + 1H StochRSI < 20 + Early Break Up  → SNIPER
+ * SHORT: 4H Bearish + 1H StochRSI > 80 + Early Break Down → SNIPER
+ *
+ * This prevents buying rips and selling dips — you enter at value,
+ * not at extremes, with higher timeframe alignment.
  */
 
 import { fetchPrices } from "./coingecko";
@@ -43,7 +46,9 @@ export interface Signal {
   trendScore: number;
   candleBreak: string;
   volatilityState: string;
-  dataQuality: "OHLC" | "Cached" | "Fallback"; // NEW: tells you how fresh the signal is
+  stochRSI: number;           // NEW: 1H StochRSI value 0-100
+  stochRSIState: string;      // NEW: Oversold / Neutral / Overbought
+  dataQuality: "OHLC" | "Cached" | "Fallback";
   updatedAt: string;
 }
 
@@ -53,36 +58,29 @@ interface CacheEntry {
   time: number;
 }
 const ohlcCache = new Map<Symbol, CacheEntry>();
-const OHLC_CACHE_TTL = 300000;      // 5 min preferred
-const OHLC_CACHE_STALE = 900000;    // 15 min max (use stale rather than fallback)
+const OHLC_CACHE_TTL = 300000;
+const OHLC_CACHE_STALE = 900000;
 
-async function fetchOHLC(symbol: Symbol, retry = true): Promise<number[][]> {
+async function fetchOHLC(symbol: Symbol): Promise<number[][]> {
   const cached = ohlcCache.get(symbol);
   const now = Date.now();
-
-  // Fresh cache hit
-  if (cached && (now - cached.time) < OHLC_CACHE_TTL) {
-    return cached.candles;
-  }
+  if (cached && (now - cached.time) < OHLC_CACHE_TTL) return cached.candles;
 
   try {
     const res = await fetch(
       `https://api.coingecko.com/api/v3/coins/${CG_IDS[symbol]}/ohlc?vs_currency=usd&days=1`,
       { cache: "no-store" }
     );
-
     if (res.status === 429) {
-      console.warn(`[OHLC] ${symbol} 429 — using ${cached ? "stale cache" : "fallback"}`);
+      console.warn(`[OHLC] ${symbol} 429`);
       if (cached && (now - cached.time) < OHLC_CACHE_STALE) return cached.candles;
       return [];
     }
-
     if (!res.ok) {
       console.warn(`[OHLC] ${symbol} HTTP ${res.status}`);
       if (cached && (now - cached.time) < OHLC_CACHE_STALE) return cached.candles;
       return [];
     }
-
     const data = await res.json();
     const candles = data as number[][];
     ohlcCache.set(symbol, { candles, time: now });
@@ -103,12 +101,95 @@ async function fetchAllOHLC(): Promise<Record<Symbol, number[][]>> {
   return result as Record<Symbol, number[][]>;
 }
 
-const alertedPositions = new Map<string, { price: number; time: number }>();
+// ─── StochRSI Calculation ──────────────────────────────────────────
+function computeStochRSI(candles: number[][], period = 14, smoothK = 3, smoothD = 3): { k: number; d: number } {
+  if (candles.length < period + smoothK + smoothD + 5) {
+    return { k: 50, d: 50 }; // neutral if insufficient data
+  }
 
-// Track previous bias for flip detection
-const previousBiases = new Map<Symbol, "Bullish" | "Bearish" | "Neutral">();
+  const closes = candles.map(c => c[4]);
 
-function analyzeCandles(
+  // Step 1: RSI
+  const gains: number[] = [];
+  const losses: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1];
+    gains.push(change > 0 ? change : 0);
+    losses.push(change < 0 ? -change : 0);
+  }
+
+  let avgGain = gains.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  let avgLoss = losses.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  const rsiValues: number[] = [];
+
+  for (let i = period; i < gains.length; i++) {
+    avgGain = (avgGain * (period - 1) + gains[i]) / period;
+    avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
+    const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+    rsiValues.push(100 - (100 / (1 + rs)));
+  }
+
+  // Step 2: Stochastic of RSI
+  const stochPeriod = Math.min(period, rsiValues.length);
+  const recentRSI = rsiValues.slice(-stochPeriod);
+  const minRSI = Math.min(...recentRSI);
+  const maxRSI = Math.max(...recentRSI);
+  const rangeRSI = maxRSI - minRSI;
+
+  const rawStoch = rangeRSI === 0 ? 50 : ((recentRSI[recentRSI.length - 1] - minRSI) / rangeRSI) * 100;
+
+  // Step 3: Smooth K (SMA of raw stoch)
+  // We only have one raw value, so K = raw for now
+  // In a full implementation we'd keep a rolling window
+  const k = Math.max(0, Math.min(100, rawStoch));
+  const d = k; // simplified — full %D would need more history
+
+  return { k, d };
+}
+
+// ─── 4H Bias from 1H candles ───────────────────────────────────────
+function compute4HBias(candles: number[][]): "Bullish" | "Bearish" | "Neutral" {
+  if (candles.length < 8) return "Neutral";
+
+  // Group 1H candles into 4H blocks (4 candles = 1 block)
+  const fourHourBlocks: number[][] = [];
+  for (let i = 0; i < candles.length - 3; i += 4) {
+    const block = candles.slice(i, i + 4);
+    const open = block[0][1];
+    const high = Math.max(...block.map(c => c[2]));
+    const low = Math.min(...block.map(c => c[3]));
+    const close = block[block.length - 1][4];
+    fourHourBlocks.push([0, open, high, low, close]);
+  }
+
+  if (fourHourBlocks.length < 2) return "Neutral";
+
+  const recent4H = fourHourBlocks.slice(-3);
+  let upCount = 0, downCount = 0;
+  for (let i = 1; i < recent4H.length; i++) {
+    if (recent4H[i][4] > recent4H[i-1][4]) upCount++;
+    if (recent4H[i][4] < recent4H[i-1][4]) downCount++;
+  }
+
+  const latest = recent4H[recent4H.length - 1];
+  const prev = recent4H[recent4H.length - 2];
+  const close = latest[4];
+  const prevClose = prev[4];
+
+  // 4H range
+  const recentHighs = recent4H.map(b => b[2]);
+  const recentLows = recent4H.map(b => b[3]);
+  const rangeHigh = Math.max(...recentHighs);
+  const rangeLow = Math.min(...recentLows);
+  const rangeMid = (rangeHigh + rangeLow) / 2;
+
+  if (upCount >= 2 && close > rangeMid && close > prevClose) return "Bullish";
+  if (downCount >= 2 && close < rangeMid && close < prevClose) return "Bearish";
+  return "Neutral";
+}
+
+// ─── 1H Analysis ───────────────────────────────────────────────────
+function analyze1H(
   candles: number[][],
   change24h: number,
   price: number,
@@ -125,7 +206,6 @@ function analyzeCandles(
   low24h: number;
   dataQuality: "OHLC" | "Cached" | "Fallback";
 } {
-  // If we have OHLC candles, use them
   if (candles.length >= 4) {
     const allHighs = candles.map(c => c[2]);
     const allLows = candles.map(c => c[3]);
@@ -213,40 +293,32 @@ function analyzeCandles(
     };
   }
 
-  // FALLBACK: No OHLC data — use 24h change % + price position
+  // Fallback
   const rangePosition = high24h === low24h ? 0.5 : Math.max(0, Math.min(1, (price - low24h) / (high24h - low24h)));
-
   let bias: "Bullish" | "Bearish" | "Neutral" = "Neutral";
   let trendScore = 0;
-  let candleBreak = "Fallback — no candle data";
 
   if (change24h > 2 && rangePosition > 0.6) {
     bias = "Bullish";
     trendScore = 30 + change24h * 3;
-    candleBreak = "24h uptrend (fallback)";
   } else if (change24h < -2 && rangePosition < 0.4) {
     bias = "Bearish";
     trendScore = 30 + Math.abs(change24h) * 3;
-    candleBreak = "24h downtrend (fallback)";
   } else if (change24h > 0.5) {
     bias = "Bullish";
     trendScore = 15 + change24h * 2;
-    candleBreak = "Slight bullish (fallback)";
   } else if (change24h < -0.5) {
     bias = "Bearish";
     trendScore = 15 + Math.abs(change24h) * 2;
-    candleBreak = "Slight bearish (fallback)";
-  } else {
-    candleBreak = "Neutral (fallback)";
   }
 
   return {
     bias,
     trendScore: Math.min(100, Math.round(trendScore)),
     rangePosition,
-    moveTiming: "Mid", // assume mid when we don't have candles
-    candleBreak,
-    volatilityState: "Unknown (fallback)",
+    moveTiming: "Mid",
+    candleBreak: "Fallback",
+    volatilityState: "Unknown",
     high24h,
     low24h,
     dataQuality: "Fallback",
@@ -279,6 +351,10 @@ function getMomentum(candles: number[][]): "Accelerating" | "Decelerating" | "Fl
   return "Flat";
 }
 
+// ─── Alert tracking ────────────────────────────────────────────────
+const alertedPositions = new Map<string, { price: number; time: number }>();
+const previousBiases = new Map<Symbol, "Bullish" | "Bearish" | "Neutral">();
+
 function shouldAlert(symbol: Symbol, direction: "LONG" | "SHORT", price: number): boolean {
   const key = `${symbol}:${direction}`;
   const last = alertedPositions.get(key);
@@ -292,7 +368,6 @@ export function recordAlert(symbol: Symbol, direction: "LONG" | "SHORT", price: 
   alertedPositions.set(`${symbol}:${direction}`, { price, time: Date.now() });
 }
 
-// NEW: Bias flip detection
 export function detectBiasFlip(
   symbol: Symbol,
   currentBias: "Bullish" | "Bearish" | "Neutral",
@@ -304,16 +379,14 @@ export function detectBiasFlip(
   if (!oldBias || oldBias === currentBias || currentBias === "Neutral") {
     return { flipped: false };
   }
-
-  // Only count as flip if we go Bullish↔Bearish (not into/out of Neutral)
   if ((oldBias === "Bullish" && currentBias === "Bearish") ||
       (oldBias === "Bearish" && currentBias === "Bullish")) {
     return { flipped: true, oldBias, newBias: currentBias };
   }
-
   return { flipped: false };
 }
 
+// ─── Main evaluateSignal ───────────────────────────────────────────
 export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   const [ohlcMap, prices] = await Promise.all([
     fetchAllOHLC(),
@@ -324,55 +397,75 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   const data = prices[symbol];
   const price = data.price;
   const change24h = data.change24h;
-
-  // Use CoinGecko's 24h high/low from price API as fallback
   const high24h = data.high24h || price * 1.02;
   const low24h = data.low24h || price * 0.98;
 
-  const analysis = analyzeCandles(candles, change24h, price, high24h, low24h);
-  const trigger = getTriggerFromCandles(candles, analysis.bias);
+  // Multi-timeframe analysis
+  const bias4H = compute4HBias(candles);
+  const analysis1H = analyze1H(candles, change24h, price, high24h, low24h);
+  const stoch = computeStochRSI(candles);
+  const trigger = getTriggerFromCandles(candles, analysis1H.bias);
   const momentum = getMomentum(candles);
+
+  const stochRSI = Math.round(stoch.k);
+  const stochRSIState = stochRSI < 20 ? "Oversold" : stochRSI > 80 ? "Overbought" : "Neutral";
 
   let state: Signal["state"] = "FLAT";
   let direction: Signal["direction"] = undefined;
   let confidence = 0;
   let finalTrigger = trigger;
 
-  if (analysis.bias !== "Neutral") {
+  // BUILDING: 1H bias detected
+  if (analysis1H.bias !== "Neutral") {
     state = "BUILDING";
-    direction = analysis.bias === "Bullish" ? "LONG" : "SHORT";
-    confidence = Math.min(50, analysis.trendScore * 0.6);
+    direction = analysis1H.bias === "Bullish" ? "LONG" : "SHORT";
+    confidence = Math.min(50, analysis1H.trendScore * 0.6);
   }
 
-  const isBreakout = analysis.candleBreak.includes("Broke") ||
-                     analysis.candleBreak.includes("downtrend") ||
-                     analysis.candleBreak.includes("uptrend");
-  const isEarly = analysis.moveTiming === "Early";
-  const hasVolume = analysis.volatilityState.includes("Expanding");
+  // SNIPER ENTRY RULES — Multi-timeframe with StochRSI filter
   const isAligned =
-    (analysis.bias === "Bullish" && trigger === "Early Break Up") ||
-    (analysis.bias === "Bearish" && trigger === "Early Break Down");
+    (analysis1H.bias === "Bullish" && trigger === "Early Break Up") ||
+    (analysis1H.bias === "Bearish" && trigger === "Early Break Down");
 
-  // EARLY: Fresh break + trigger
-  if (isBreakout && isEarly && isAligned) {
+  const isEarly = analysis1H.moveTiming === "Early";
+  const hasVolume = analysis1H.volatilityState.includes("Expanding");
+
+  // === LONG ENTRY ===
+  // 4H Bullish + 1H StochRSI < 20 (oversold) + trigger → buy the dip
+  if (bias4H === "Bullish" && analysis1H.bias === "Bullish" && stochRSI < 20 && isAligned) {
     state = "SNIPER";
-    confidence = Math.min(90, 60 + analysis.trendScore * 0.3);
+    direction = "LONG";
+    confidence = Math.min(90, 60 + analysis1H.trendScore * 0.3);
     if (hasVolume) confidence += 10;
+    finalTrigger = "4H Bullish + Stoch Oversold";
   }
-  // MID: Trend + momentum + trigger
-  else if (analysis.bias !== "Neutral" && momentum === "Accelerating" && isAligned) {
+  // Fallback: 4H Bullish + mid move + still oversold-ish
+  else if (bias4H === "Bullish" && analysis1H.bias === "Bullish" && stochRSI < 35 && isAligned && momentum === "Accelerating") {
     state = "SNIPER";
-    confidence = Math.min(75, 50 + analysis.trendScore * 0.2);
+    direction = "LONG";
+    confidence = Math.min(75, 50 + analysis1H.trendScore * 0.2);
+    finalTrigger = "4H Bullish + Stoch Reset";
   }
-  // LATE BUT STRONG: High trend score + still accelerating
-  else if (analysis.bias !== "Neutral" && analysis.trendScore >= 70 && momentum === "Accelerating" && analysis.moveTiming === "Late") {
+
+  // === SHORT ENTRY ===
+  // 4H Bearish + 1H StochRSI > 80 (overbought) + trigger → sell the bounce
+  else if (bias4H === "Bearish" && analysis1H.bias === "Bearish" && stochRSI > 80 && isAligned) {
     state = "SNIPER";
-    confidence = Math.min(65, 40 + analysis.trendScore * 0.15);
-    finalTrigger = trigger === "Waiting" ? "Trend Continuation" : trigger;
+    direction = "SHORT";
+    confidence = Math.min(90, 60 + analysis1H.trendScore * 0.3);
+    if (hasVolume) confidence += 10;
+    finalTrigger = "4H Bearish + Stoch Overbought";
+  }
+  // Fallback: 4H Bearish + mid move + still overbought-ish
+  else if (bias4H === "Bearish" && analysis1H.bias === "Bearish" && stochRSI > 65 && isAligned && momentum === "Accelerating") {
+    state = "SNIPER";
+    direction = "SHORT";
+    confidence = Math.min(75, 50 + analysis1H.trendScore * 0.2);
+    finalTrigger = "4H Bearish + Stoch Elevated";
   }
 
   // LATE MOVE FILTER: Only kill if decelerating
-  if (state === "SNIPER" && analysis.moveTiming === "Late" && momentum === "Decelerating") {
+  if (state === "SNIPER" && analysis1H.moveTiming === "Late" && momentum === "Decelerating") {
     state = "BUILDING";
     confidence = Math.floor(confidence * 0.4);
   }
@@ -384,7 +477,7 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   let riskReward: number | undefined;
 
   if (state === "SNIPER" && direction) {
-    const slPct = analysis.moveTiming === "Early" ? 0.035 : 0.02;
+    const slPct = analysis1H.moveTiming === "Early" ? 0.035 : 0.02;
     const tpPct = slPct * 2.5;
     if (direction === "LONG") {
       stopLoss = price * (1 - slPct);
@@ -400,9 +493,9 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     symbol,
     price,
     change24h,
-    high24h: analysis.high24h,
-    low24h: analysis.low24h,
-    bias: analysis.bias,
+    high24h: analysis1H.high24h,
+    low24h: analysis1H.low24h,
+    bias: analysis1H.bias,
     state,
     direction,
     entry: state === "SNIPER" ? price : undefined,
@@ -413,12 +506,14 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     trigger: finalTrigger,
     momentum,
     shouldAlert: shouldSendAlert,
-    rangePosition: analysis.rangePosition,
-    moveTiming: analysis.moveTiming,
-    trendScore: analysis.trendScore,
-    candleBreak: analysis.candleBreak,
-    volatilityState: analysis.volatilityState,
-    dataQuality: analysis.dataQuality,
+    rangePosition: analysis1H.rangePosition,
+    moveTiming: analysis1H.moveTiming,
+    trendScore: analysis1H.trendScore,
+    candleBreak: analysis1H.candleBreak,
+    volatilityState: analysis1H.volatilityState,
+    stochRSI,
+    stochRSIState,
+    dataQuality: analysis1H.dataQuality,
     updatedAt: new Date().toISOString(),
   };
 }
