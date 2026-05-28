@@ -178,7 +178,6 @@ export default function Home() {
       <div className="w-full px-8 py-8">
         <div className="max-w-7xl mx-auto">
 
-          {/* Header */}
           <div className="flex items-start justify-between mb-8">
             <div>
               <h1 className="text-4xl font-bold text-white tracking-tight">Trading Signals</h1>
@@ -239,7 +238,6 @@ export default function Home() {
                     key={signal.symbol || Math.random()}
                     className={`rounded-xl overflow-hidden bg-gray-950 border-2 ${getStateColor(signal.state, signal.direction)} transition-all hover:opacity-95`}
                   >
-                    {/* Card Header */}
                     <div className="px-6 py-5 border-b border-gray-800 flex items-center justify-between bg-gray-900/50">
                       <div>
                         <h3 className="text-3xl font-bold text-white">{signal.symbol || "???"}</h3>
@@ -260,10 +258,8 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {/* Card Body */}
                     <div className="px-6 py-6 space-y-5">
 
-                      {/* Price Row */}
                       <div className="flex items-baseline justify-between">
                         <div>
                           <p className="text-xs text-gray-500 uppercase tracking-wider font-bold">Price</p>
@@ -279,7 +275,6 @@ export default function Home() {
                         </div>
                       </div>
 
-                      {/* Trade Type Banner */}
                       {signal.tradeType && signal.tradeType !== "—" && (
                         <div className={`rounded-lg p-3 text-center border ${isCounter ? "bg-amber-950/30 border-amber-700" : "bg-green-950/30 border-green-700"}`}>
                           <p className={`text-sm font-bold ${isCounter ? "text-amber-400" : "text-green-400"}`}>
@@ -291,7 +286,6 @@ export default function Home() {
                         </div>
                       )}
 
-                      {/* 24h Range */}
                       <div className="bg-gray-900/50 rounded-lg p-4">
                         <div className="flex justify-between items-center mb-2">
                           <p className="text-xs text-gray-500 uppercase tracking-wider font-bold">24h Range</p>
@@ -316,7 +310,6 @@ export default function Home() {
                         </div>
                       </div>
 
-                      {/* StochRSI with Peak/Trough */}
                       <div className="bg-gray-900/50 rounded-lg p-4">
                         <div className="flex justify-between items-center mb-2">
                           <p className="text-xs text-gray-500 uppercase tracking-wider font-bold">1H StochRSI</p>
@@ -332,7 +325,6 @@ export default function Home() {
                           </div>
                         </div>
 
-                        {/* Peak Alert */}
                         {hasPeak && (
                           <div className="mb-2 p-2 bg-red-950/40 border border-red-800/50 rounded">
                             <p className="text-xs text-red-400 font-bold">
@@ -341,7 +333,6 @@ export default function Home() {
                           </div>
                         )}
 
-                        {/* Trough Alert */}
                         {hasTrough && (
                           <div className="mb-2 p-2 bg-green-950/40 border border-green-800/50 rounded">
                             <p className="text-xs text-green-400 font-bold">
@@ -365,7 +356,6 @@ export default function Home() {
                         </div>
                       </div>
 
-                      {/* Bias & Trigger Row */}
                       <div className="grid grid-cols-2 gap-4">
                         <div className="bg-gray-900/50 rounded-lg p-3">
                           <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">1H Bias</p>
@@ -381,7 +371,6 @@ export default function Home() {
                         </div>
                       </div>
 
-                      {/* Momentum & Direction Row */}
                       <div className="grid grid-cols-2 gap-4">
                         <div className="bg-gray-900/50 rounded-lg p-3">
                           <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">Momentum</p>
@@ -397,7 +386,6 @@ export default function Home() {
                         </div>
                       </div>
 
-                      {/* Trend Health */}
                       <div className="bg-gray-900/50 rounded-lg p-4">
                         <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-3">Trend Health</p>
 
@@ -428,7 +416,6 @@ export default function Home() {
                         </div>
                       </div>
 
-                      {/* Confidence Slider */}
                       <div className="bg-gray-900/50 rounded-lg p-4">
                         <div className="flex justify-between items-center mb-2">
                           <p className="text-xs text-gray-500 uppercase tracking-wider font-bold">Confidence</p>
@@ -442,14 +429,12 @@ export default function Home() {
                         </div>
                       </div>
 
-                      {/* Verdict */}
                       <div className={`rounded-lg p-4 text-center border ${signal.state === "SNIPER" ? "bg-gray-900/80 border-gray-700" : "bg-gray-900/50 border-gray-800"}`}>
                         <p className={`text-lg font-bold ${verdict.color}`}>
                           {verdict.text}
                         </p>
                       </div>
 
-                      {/* Alert Status */}
                       {signal.state === "SNIPER" && (
                         <div className={`rounded-lg p-3 text-center ${signal.shouldAlert ? "bg-green-900/30 border border-green-700" : "bg-gray-900/50 border border-gray-700"}`}>
                           <p className={`text-sm font-bold ${signal.shouldAlert ? "text-green-400" : "text-gray-500"}`}>
@@ -458,7 +443,6 @@ export default function Home() {
                         </div>
                       )}
 
-                      {/* Trade Setup */}
                       {signal.state === "SNIPER" && signal.entry != null && (
                         <div className="border-t-2 border-gray-800 pt-5 mt-2">
                           <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-4">Trade Setup</p>
@@ -484,7 +468,6 @@ export default function Home() {
                       )}
                     </div>
 
-                    {/* Footer */}
                     <div className="px-6 py-4 border-t border-gray-800 bg-gray-900/30">
                       <p className="text-xs text-gray-600">
                         Updated: {signal.updatedAt ? new Date(signal.updatedAt).toLocaleTimeString("en-GB") : "—"}
