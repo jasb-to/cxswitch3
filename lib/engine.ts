@@ -29,6 +29,8 @@ export interface Signal {
   symbol: Symbol;
   price: number;
   change24h: number;
+  high24h: number;
+  low24h: number;
   bias: "Bullish" | "Bearish" | "Neutral";
   state: "FLAT" | "BUILDING" | "SNIPER";
   direction?: "LONG" | "SHORT";
@@ -40,12 +42,12 @@ export interface Signal {
   trigger: string;
   momentum: string;
   shouldAlert: boolean;
-  // New trend analysis fields
+  // Trend analysis fields (aligned with UI)
   rangePosition: number;      // 0-1, where price sits in 24h range
   moveTiming: "Early" | "Mid" | "Late";
-  trendStrength: number;      // 0-100
+  trendScore: number;         // 0-100 (renamed from trendStrength)
   candleBreak: string;        // what the latest candle did
-  volumeSignal: string;       // volume confirmation
+  volatilityState: string;    // volume/volatility signal (renamed from volumeSignal)
   updatedAt: string;
 }
 
@@ -92,22 +94,33 @@ const alertedPositions = new Map<string, { price: number; time: number }>();
 
 function analyzeCandles(candles: number[][]): {
   bias: "Bullish" | "Bearish" | "Neutral";
-  trendStrength: number;
+  trendScore: number;
   rangePosition: number;
   moveTiming: "Early" | "Mid" | "Late";
   candleBreak: string;
-  volumeSignal: string;
+  volatilityState: string;
+  high24h: number;
+  low24h: number;
 } {
-  if (candles.length < 4) {
-    return {
-      bias: "Neutral",
-      trendStrength: 0,
-      rangePosition: 0.5,
-      moveTiming: "Early",
-      candleBreak: "Insufficient data",
-      volumeSignal: "—",
-    };
-  }
+  // Default fallback
+  const fallback = {
+    bias: "Neutral" as const,
+    trendScore: 0,
+    rangePosition: 0.5,
+    moveTiming: "Early" as const,
+    candleBreak: "Insufficient data",
+    volatilityState: "—",
+    high24h: 0,
+    low24h: 0,
+  };
+
+  if (candles.length < 4) return fallback;
+
+  // 24h high/low from all candles
+  const allHighs = candles.map(c => c[2]);
+  const allLows = candles.map(c => c[3]);
+  const high24h = Math.max(...allHighs);
+  const low24h = Math.min(...allLows);
 
   const recent = candles.slice(-6); // last 6 hours
   const previous = candles.slice(-10, -6); // 4 candles before that
@@ -123,10 +136,9 @@ function analyzeCandles(candles: number[][]): {
   const latest = recent[recent.length - 1];
   const prev = recent[recent.length - 2];
   const [, , , , close] = latest;
-  const [, , , , prevClose] = prev;
 
-  // Range position (0 = at bottom, 1 = at top)
-  const rangePosition = Math.max(0, Math.min(1, (close - rangeLow) / (rangeHigh - rangeLow)));
+  // Range position (0 = at bottom, 1 = at top) using 24h range, not 4H range
+  const rangePosition = high24h === low24h ? 0.5 : Math.max(0, Math.min(1, (close - low24h) / (high24h - low24h)));
 
   // Trend strength: consecutive candles in same direction
   let upCount = 0, downCount = 0;
@@ -136,22 +148,22 @@ function analyzeCandles(candles: number[][]): {
   }
 
   let bias: "Bullish" | "Bearish" | "Neutral" = "Neutral";
-  let trendStrength = 0;
+  let trendScore = 0;
   let candleBreak = "None";
 
   if (upCount >= 3 && close > rangeMid) {
     bias = "Bullish";
-    trendStrength = 30 + upCount * 15;
+    trendScore = 30 + upCount * 15;
     if (close > rangeHigh) candleBreak = "Broke above 4H range";
     else candleBreak = "Rising inside range";
   } else if (downCount >= 3 && close < rangeMid) {
     bias = "Bearish";
-    trendStrength = 30 + downCount * 15;
+    trendScore = 30 + downCount * 15;
     if (close < rangeLow) candleBreak = "Broke below 4H range";
     else candleBreak = "Falling inside range";
   } else {
     candleBreak = "Chopping";
-    trendStrength = Math.max(upCount, downCount) * 10;
+    trendScore = Math.max(upCount, downCount) * 10;
   }
 
   // Move timing: how extended is the move?
@@ -160,19 +172,21 @@ function analyzeCandles(candles: number[][]): {
   if (moveCandles >= 4) moveTiming = "Late";
   else if (moveCandles >= 2) moveTiming = "Mid";
 
-  // Volume signal: compare latest candle range to average
+  // Volume/volatility signal: compare latest candle range to average
   const avgRange = previous.reduce((sum, c) => sum + (c[2] - c[3]), 0) / previous.length;
   const latestRange = latest[2] - latest[3];
-  const volumeSignal = latestRange > avgRange * 1.3 ? "Expanding ✅" : 
-                       latestRange > avgRange * 1.1 ? "Normal" : "Contracting";
+  const volatilityState = latestRange > avgRange * 1.3 ? "Expanding ✅" : 
+                          latestRange > avgRange * 1.1 ? "Normal" : "Contracting";
 
   return {
     bias,
-    trendStrength: Math.min(100, trendStrength),
+    trendScore: Math.min(100, trendScore),
     rangePosition,
     moveTiming,
     candleBreak,
-    volumeSignal,
+    volatilityState,
+    high24h,
+    low24h,
   };
 }
 
@@ -238,13 +252,13 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   if (analysis.bias !== "Neutral") {
     state = "BUILDING";
     direction = analysis.bias === "Bullish" ? "LONG" : "SHORT";
-    confidence = Math.min(50, analysis.trendStrength * 0.5);
+    confidence = Math.min(50, analysis.trendScore * 0.5);
   }
 
   // SNIPER: Structure break + trigger + early timing + volume
   const isBreakout = analysis.candleBreak.includes("Broke");
   const isEarly = analysis.moveTiming === "Early";
-  const hasVolume = analysis.volumeSignal.includes("Expanding");
+  const hasVolume = analysis.volatilityState.includes("Expanding");
   const isAligned = 
     (analysis.bias === "Bullish" && trigger === "Early Break Up") ||
     (analysis.bias === "Bearish" && trigger === "Early Break Down");
@@ -254,7 +268,7 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   // Even if momentum is flat, a fresh break is worth entering
   if (isBreakout && isEarly && isAligned) {
     state = "SNIPER";
-    confidence = Math.min(90, 60 + analysis.trendStrength * 0.3);
+    confidence = Math.min(90, 60 + analysis.trendScore * 0.3);
     if (hasVolume) confidence += 10;
   }
 
@@ -263,7 +277,7 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   // Enter even if not a fresh break (catching continuation)
   else if (analysis.bias !== "Neutral" && momentum === "Accelerating" && isAligned) {
     state = "SNIPER";
-    confidence = Math.min(75, 50 + analysis.trendStrength * 0.2);
+    confidence = Math.min(75, 50 + analysis.trendScore * 0.2);
   }
 
   // LATE MOVE FILTER:
@@ -300,7 +314,9 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   return {
     symbol, 
     price, 
-    change24h, 
+    change24h,
+    high24h: analysis.high24h,
+    low24h: analysis.low24h,
     bias: analysis.bias, 
     state, 
     direction,
@@ -312,12 +328,12 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     trigger,
     momentum,
     shouldAlert: shouldSendAlert,
-    // New fields
+    // Trend fields aligned with UI
     rangePosition: analysis.rangePosition,
     moveTiming: analysis.moveTiming,
-    trendStrength: analysis.trendStrength,
+    trendScore: analysis.trendScore,
     candleBreak: analysis.candleBreak,
-    volumeSignal: analysis.volumeSignal,
+    volatilityState: analysis.volatilityState,
     updatedAt: new Date().toISOString(),
   };
 }
