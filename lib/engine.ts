@@ -161,3 +161,4 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     updatedAt: new Date().toISOString(),
   };
 }
+
