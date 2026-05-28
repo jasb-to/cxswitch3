@@ -1,6 +1,6 @@
 /**
  * FILE: api/cron/route.ts
- * PURPOSE: Run every 5 minutes, compute signals, cache them, send alerts
+ * PURPOSE: Run every 5 minutes, evaluate signals, cache them, send alerts
  */
 
 import { evaluateSignal, recordAlert, detectBiasFlip, setCachedSignals } from "@/lib/engine";
@@ -29,9 +29,10 @@ Old bias: ${signal.oldBias} → New bias: ${signal.newBias}
   } else {
     const emoji = signal.direction === "LONG" ? "🟢" : "🔴";
     const quality = signal.dataQuality && signal.dataQuality !== "OHLC" ? ` [${signal.dataQuality}]` : "";
-    const stochInfo = signal.stochRSI != null ? ` | StochRSI: ${signal.stochRSI.toFixed(0)} (${signal.stochRSIState})` : "";
-    text = `${emoji} ${signal.symbol} ${signal.direction}${quality} — $${signal.price.toFixed(2)}
-24h: ${signal.change24h > 0 ? "+" : ""}${signal.change24h.toFixed(2)}% | Bias: ${signal.bias} | Momentum: ${signal.momentum}${stochInfo}
+    const typeTag = signal.tradeType === "Counter Trend" ? " ⚠️COUNTER" : "";
+    const stochInfo = signal.stochRSI != null ? ` | Stoch: ${signal.stochRSI.toFixed(0)}` : "";
+    text = `${emoji}${typeTag} ${signal.symbol} ${signal.direction}${quality} — $${signal.price.toFixed(2)}
+${signal.tradeType} | 24h: ${signal.change24h > 0 ? "+" : ""}${signal.change24h.toFixed(2)}% | Bias: ${signal.bias}${stochInfo}
 Entry: $${signal.entry?.toFixed(2)} | SL: $${signal.stopLoss?.toFixed(2)} | TP: $${signal.takeProfit?.toFixed(2)}
 ⏰ ${new Date().toLocaleTimeString()}`;
   }
@@ -63,7 +64,7 @@ export async function GET(req: Request) {
       symbol: "TEST", price: 100000, change24h: 5.0, bias: "Bullish", state: "SNIPER",
       direction: "LONG", confidence: 95, trigger: "Test", momentum: "Accelerating",
       shouldAlert: true, entry: 100000, stopLoss: 97500, takeProfit: 105000,
-      riskReward: 2.0, stochRSI: 15, stochRSIState: "Oversold",
+      riskReward: 2.0, stochRSI: 15, stochRSIState: "Oversold", tradeType: "With Trend",
       updatedAt: new Date().toISOString()
     };
     await sendTelegramAlert(testSignal);
@@ -81,7 +82,6 @@ export async function GET(req: Request) {
       evaluateSignal("SOL"),
     ]);
 
-    // Cache signals for /api/signals route
     setCachedSignals(signals);
 
     let alertsSent = 0;
@@ -99,9 +99,10 @@ export async function GET(req: Request) {
       console.log(`[CRON] ┌── ${signal.symbol} ───────────────────────────────`);
       console.log(`[CRON] │ Price:        $${signal.price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`);
       console.log(`[CRON] │ 24h Change:   ${signal.change24h > 0 ? "+" : ""}${signal.change24h.toFixed(3)}%`);
-      console.log(`[CRON] │ Bias:         ${signal.bias}`);
+      console.log(`[CRON] │ 4H Bias:      ${signal.bias}`);
       console.log(`[CRON] │ State:        ${signal.state}`);
       console.log(`[CRON] │ Direction:    ${signal.direction || "—"}`);
+      console.log(`[CRON] │ Trade Type:   ${signal.tradeType}`);
       console.log(`[CRON] │ Trigger:      ${signal.trigger}`);
       console.log(`[CRON] │ Momentum:     ${signal.momentum}`);
       console.log(`[CRON] │ StochRSI:     ${signal.stochRSI?.toFixed(0)} (${signal.stochRSIState})`);
