@@ -2,7 +2,7 @@
  * FILE: api/cron/route.ts
  * PURPOSE: Run every 5 minutes, evaluate signals, send Telegram alerts
  * WHY: Uses shouldAlert to prevent spam, recordAlert to track sent alerts
- * TEST MODE: ?test=true sends a test alert without evaluating real signals
+ * LOGGING: Verbose per-symbol logging for debugging
  */
 
 import { evaluateSignal, recordAlert } from "@/lib/engine";
@@ -46,7 +46,7 @@ export async function GET(req: Request) {
     return new Response("Unauthorized", { status: 401 });
   }
 
-  // TEST MODE: Send a test alert without evaluating real signals
+  // TEST MODE
   const isTest = searchParams.get("test") === "true";
 
   if (isTest) {
@@ -80,7 +80,11 @@ export async function GET(req: Request) {
     });
   }
 
-  // NORMAL MODE: Evaluate real signals
+  // NORMAL MODE
+  console.log("[CRON] ═══════════════════════════════════════════");
+  console.log("[CRON] Starting evaluation cycle —", new Date().toISOString());
+  console.log("[CRON] ═══════════════════════════════════════════");
+
   try {
     const signals = await Promise.all([
       evaluateSignal("BTC"),
@@ -91,9 +95,29 @@ export async function GET(req: Request) {
     let alertsSent = 0;
 
     for (const signal of signals) {
-      console.log(`[CRON] ${signal.symbol}: ${signal.state}, momentum=${signal.momentum}, shouldAlert=${signal.shouldAlert}`);
+      // VERBOSE LOGGING — one block per symbol
+      console.log("");
+      console.log(`[CRON] ┌── ${signal.symbol} ───────────────────────────────`);
+      console.log(`[CRON] │ Price:        $${signal.price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`);
+      console.log(`[CRON] │ 24h Change:   ${signal.change24h > 0 ? "+" : ""}${signal.change24h.toFixed(3)}%`);
+      console.log(`[CRON] │ Bias:         ${signal.bias}`);
+      console.log(`[CRON] │ State:        ${signal.state}`);
+      console.log(`[CRON] │ Direction:    ${signal.direction || "—"}`);
+      console.log(`[CRON] │ Trigger:      ${signal.trigger}`);
+      console.log(`[CRON] │ Momentum:     ${signal.momentum}`);
+      console.log(`[CRON] │ Confidence:   ${signal.confidence}%`);
+      console.log(`[CRON] │ Should Alert: ${signal.shouldAlert}`);
 
-      // ONLY send alert if shouldAlert is true (prevents spam)
+      if (signal.state === "SNIPER") {
+        console.log(`[CRON] │ Entry:        $${signal.entry?.toFixed(2)}`);
+        console.log(`[CRON] │ SL:           $${signal.stopLoss?.toFixed(2)}`);
+        console.log(`[CRON] │ TP:           $${signal.takeProfit?.toFixed(2)}`);
+        console.log(`[CRON] │ R:R:          ${signal.riskReward?.toFixed(2)}:1`);
+      }
+
+      console.log(`[CRON] └── Decision:   ${signal.state === "SNIPER" && signal.shouldAlert ? "🚨 SEND ALERT" : signal.state === "SNIPER" ? "⏳ SUPPRESSED (already sent)" : "👁️ WATCHING"}`);
+
+      // Send alert if conditions met
       if (signal.state === "SNIPER" && signal.shouldAlert) {
         await sendTelegramAlert(signal);
         recordAlert(signal.symbol, signal.direction!, signal.price);
@@ -101,11 +125,15 @@ export async function GET(req: Request) {
       }
     }
 
-    console.log(`[CRON] Cycle complete: ${alertsSent} alerts sent`);
+    console.log("");
+    console.log("[CRON] ═══════════════════════════════════════════");
+    console.log(`[CRON] Cycle complete: ${alertsSent} alert(s) sent`);
+    console.log("[CRON] ═══════════════════════════════════════════");
+
     return Response.json({ signals, alertsSent, timestamp: Date.now() });
 
   } catch (err) {
-    console.error("[CRON] Failed:", err);
+    console.error("[CRON] ❌ Failed:", err);
     return Response.json({ error: err.message }, { status: 500 });
   }
 }
