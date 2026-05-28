@@ -4,26 +4,41 @@ import { useState, useEffect } from "react";
 
 interface Signal {
   symbol: string;
-  price: number;
-  change24h: number;
-  high24h: number;
-  low24h: number;
-  bias: "Bullish" | "Bearish" | "Neutral";
-  state: "FLAT" | "BUILDING" | "SNIPER";
+  price?: number;
+  change24h?: number;
+  high24h?: number;
+  low24h?: number;
+  bias?: "Bullish" | "Bearish" | "Neutral";
+  state?: "FLAT" | "BUILDING" | "SNIPER";
   direction?: "LONG" | "SHORT";
   entry?: number;
   stopLoss?: number;
   takeProfit?: number;
   riskReward?: number;
-  confidence: number;
-  trigger: string;
-  momentum: string;
-  trendScore: number;
-  rangePosition: number;
-  volatilityState: string;
-  moveTiming: string;
-  shouldAlert: boolean;
-  updatedAt: string;
+  confidence?: number;
+  trigger?: string;
+  momentum?: string;
+  trendScore?: number;
+  rangePosition?: number;
+  volatilityState?: string;
+  moveTiming?: string;
+  shouldAlert?: boolean;
+  updatedAt?: string;
+}
+
+function fmtPrice(n?: number) {
+  if (n == null || Number.isNaN(n)) return "—";
+  return "$" + n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function fmtWhole(n?: number) {
+  if (n == null || Number.isNaN(n)) return "—";
+  return n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+
+function fmtPct(n?: number) {
+  if (n == null || Number.isNaN(n)) return "0.00";
+  return (n > 0 ? "+" : "") + n.toFixed(2);
 }
 
 export default function Home() {
@@ -84,42 +99,44 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
-  const getStateColor = (state: string, direction?: string) => {
+  const getStateColor = (state?: string, direction?: string) => {
     if (state === "SNIPER" && direction === "LONG") return "border-green-500";
     if (state === "SNIPER" && direction === "SHORT") return "border-red-500";
     if (state === "BUILDING") return "border-amber-500";
     return "border-gray-700";
   };
 
-  const getStateBadge = (state: string, direction?: string) => {
+  const getStateBadge = (state?: string, direction?: string) => {
     if (state === "SNIPER" && direction === "LONG") return "bg-green-500 text-black font-bold";
     if (state === "SNIPER" && direction === "SHORT") return "bg-red-500 text-white font-bold";
     if (state === "BUILDING") return "bg-amber-500 text-black font-bold";
     return "bg-gray-700 text-white font-bold";
   };
 
-  const getBiasColor = (bias: string) => {
+  const getBiasColor = (bias?: string) => {
     if (bias === "Bullish") return "text-green-400";
     if (bias === "Bearish") return "text-red-400";
     return "text-gray-400";
   };
 
-  const getConfidenceColor = (conf: number) => {
+  const getConfidenceColor = (conf?: number) => {
+    if (conf == null) return "bg-gray-600";
     if (conf >= 80) return "bg-green-500";
     if (conf >= 60) return "bg-amber-500";
     if (conf >= 40) return "bg-yellow-500";
     return "bg-gray-600";
   };
 
-  const getMomentumColor = (mom: string) => {
+  const getMomentumColor = (mom?: string) => {
     if (mom === "Accelerating") return "text-green-400";
     if (mom === "Decelerating") return "text-red-400";
     return "text-gray-400";
   };
 
-  const getRangeBarColor = (pos: number) => {
-    if (pos < 0.2) return "bg-green-500"; // near bottom = long opportunity
-    if (pos > 0.8) return "bg-red-500";   // near top = short opportunity
+  const getRangeBarColor = (pos?: number) => {
+    if (pos == null) return "bg-gray-500";
+    if (pos < 0.2) return "bg-green-500";
+    if (pos > 0.8) return "bg-red-500";
     return "bg-gray-500";
   };
 
@@ -130,7 +147,7 @@ export default function Home() {
       return { text: "❌ LATE MOVE — Consider skipping", color: "text-red-400" };
     }
     if (signal.state === "BUILDING") {
-      if (signal.trendScore > 60) return { text: "👁️ WATCHING — Setup forming", color: "text-cyan-400" };
+      if ((signal.trendScore ?? 0) > 60) return { text: "👁️ WATCHING — Setup forming", color: "text-cyan-400" };
       return { text: "⏸️ NO SETUP — Wait for trigger", color: "text-gray-500" };
     }
     return { text: "⏸️ FLAT — No bias", color: "text-gray-500" };
@@ -140,7 +157,7 @@ export default function Home() {
     <div className="min-h-screen w-full bg-black text-gray-100">
       <div className="w-full px-8 py-8">
         <div className="max-w-7xl mx-auto">
-          
+
           {/* Header */}
           <div className="flex items-start justify-between mb-8">
             <div>
@@ -185,42 +202,49 @@ export default function Home() {
           {/* Market Overview */}
           <div>
             <h2 className="text-lg font-bold text-white mb-6 uppercase tracking-wider">Market Overview</h2>
-            
+
+            {signals.length === 0 && !loading && (
+              <div className="text-gray-500 text-sm">No signals available.</div>
+            )}
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
               {signals.map((signal) => {
                 const verdict = getVerdict(signal);
+                const rangePos = signal.rangePosition ?? 0.5;
+                const trendScore = signal.trendScore ?? 0;
+                const confidence = signal.confidence ?? 0;
                 return (
                 <div
-                  key={signal.symbol}
+                  key={signal.symbol || Math.random()}
                   className={`rounded-xl overflow-hidden bg-gray-950 border-2 ${getStateColor(signal.state, signal.direction)} transition-all hover:opacity-95`}
                 >
                   {/* Card Header */}
                   <div className="px-6 py-5 border-b border-gray-800 flex items-center justify-between bg-gray-900/50">
                     <div>
-                      <h3 className="text-3xl font-bold text-white">{signal.symbol}</h3>
+                      <h3 className="text-3xl font-bold text-white">{signal.symbol || "???"}</h3>
                       <p className="text-xs text-gray-500 mt-1">
                         {signal.state === "SNIPER" ? "🎯 SNIPER ACTIVE" : signal.state === "BUILDING" ? "📊 Building Setup" : "⏸️ Flat"}
                       </p>
                     </div>
                     <span className={`px-4 py-2 rounded-lg text-sm ${getStateBadge(signal.state, signal.direction)}`}>
-                      {signal.state === "SNIPER" ? signal.direction : signal.state}
+                      {signal.state === "SNIPER" ? signal.direction : (signal.state || "UNKNOWN")}
                     </span>
                   </div>
 
                   {/* Card Body */}
                   <div className="px-6 py-6 space-y-5">
-                    
+
                     {/* Price Row */}
                     <div className="flex items-baseline justify-between">
                       <div>
                         <p className="text-xs text-gray-500 uppercase tracking-wider font-bold">Price</p>
                         <p className="text-3xl font-mono text-white font-bold mt-1">
-                          ${signal.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          {fmtPrice(signal.price)}
                         </p>
                       </div>
                       <div className="text-right">
-                        <p className={`text-lg font-bold ${signal.change24h > 0 ? "text-green-400" : signal.change24h < 0 ? "text-red-400" : "text-gray-400"}`}>
-                          {signal.change24h > 0 ? "+" : ""}{signal.change24h.toFixed(2)}%
+                        <p className={`text-lg font-bold ${(signal.change24h ?? 0) > 0 ? "text-green-400" : (signal.change24h ?? 0) < 0 ? "text-red-400" : "text-gray-400"}`}>
+                          {fmtPct(signal.change24h)}%
                         </p>
                         <p className="text-xs text-gray-500">24h change</p>
                       </div>
@@ -231,23 +255,22 @@ export default function Home() {
                       <div className="flex justify-between items-center mb-2">
                         <p className="text-xs text-gray-500 uppercase tracking-wider font-bold">24h Range</p>
                         <p className="text-xs text-gray-400">
-                          L: ${signal.low24h.toLocaleString(undefined, {maximumFractionDigits: 0})} 
-                          / H: ${signal.high24h.toLocaleString(undefined, {maximumFractionDigits: 0})}
+                          L: {fmtWhole(signal.low24h)} / H: {fmtWhole(signal.high24h)}
                         </p>
                       </div>
                       <div className="w-full bg-gray-800 rounded-full h-3 overflow-hidden relative">
                         <div
-                          className={`h-3 rounded-full ${getRangeBarColor(signal.rangePosition)}`}
-                          style={{ width: `${Math.min(100, signal.rangePosition * 100)}%` }}
+                          className={`h-3 rounded-full ${getRangeBarColor(rangePos)}`}
+                          style={{ width: `${Math.min(100, rangePos * 100)}%` }}
                         />
                         <div 
                           className="absolute top-0 w-1 h-3 bg-white rounded-full"
-                          style={{ left: `${Math.min(100, signal.rangePosition * 100)}%` }}
+                          style={{ left: `${Math.min(100, rangePos * 100)}%` }}
                         />
                       </div>
                       <div className="flex justify-between text-xs mt-1">
                         <span className="text-green-400">Bottom</span>
-                        <span className="text-gray-400">{Math.round(signal.rangePosition * 100)}% from low</span>
+                        <span className="text-gray-400">{Math.round(rangePos * 100)}% from low</span>
                         <span className="text-red-400">Top</span>
                       </div>
                     </div>
@@ -257,13 +280,13 @@ export default function Home() {
                       <div className="bg-gray-900/50 rounded-lg p-3">
                         <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">4H Bias</p>
                         <p className={`text-lg font-bold ${getBiasColor(signal.bias)}`}>
-                          {signal.bias}
+                          {signal.bias || "—"}
                         </p>
                       </div>
                       <div className="bg-gray-900/50 rounded-lg p-3">
                         <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">Trigger</p>
                         <p className="text-lg font-bold text-white">
-                          {signal.trigger}
+                          {signal.trigger || "—"}
                         </p>
                       </div>
                     </div>
@@ -273,7 +296,7 @@ export default function Home() {
                       <div className="bg-gray-900/50 rounded-lg p-3">
                         <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-1">Momentum</p>
                         <p className={`text-lg font-bold ${getMomentumColor(signal.momentum)}`}>
-                          {signal.momentum}
+                          {signal.momentum || "—"}
                         </p>
                       </div>
                       <div className="bg-gray-900/50 rounded-lg p-3">
@@ -287,32 +310,32 @@ export default function Home() {
                     {/* Trend Health */}
                     <div className="bg-gray-900/50 rounded-lg p-4">
                       <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-3">Trend Health</p>
-                      
+
                       {/* Trend Score */}
                       <div className="mb-3">
                         <div className="flex justify-between items-center mb-1">
                           <span className="text-xs text-gray-400">Trend Score</span>
-                          <span className="text-sm font-bold text-white">{signal.trendScore}/100</span>
+                          <span className="text-sm font-bold text-white">{trendScore}/100</span>
                         </div>
                         <div className="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
                           <div
-                            className={`h-2 rounded-full ${signal.trendScore > 70 ? "bg-green-500" : signal.trendScore > 40 ? "bg-amber-500" : "bg-gray-600"}`}
-                            style={{ width: `${Math.min(100, signal.trendScore)}%` }}
+                            className={`h-2 rounded-full ${trendScore > 70 ? "bg-green-500" : trendScore > 40 ? "bg-amber-500" : "bg-gray-600"}`}
+                            style={{ width: `${Math.min(100, trendScore)}%` }}
                           />
                         </div>
                       </div>
-                      
+
                       {/* Move Timing & Volatility */}
                       <div className="grid grid-cols-2 gap-3 text-sm">
                         <div>
                           <span className="text-gray-500 text-xs">Move Timing</span>
                           <p className={`font-bold ${signal.moveTiming === "Early" ? "text-green-400" : signal.moveTiming === "Mid" ? "text-amber-400" : "text-red-400"}`}>
-                            {signal.moveTiming}
+                            {signal.moveTiming || "—"}
                           </p>
                         </div>
                         <div>
                           <span className="text-gray-500 text-xs">Volatility</span>
-                          <p className="text-white font-bold">{signal.volatilityState}</p>
+                          <p className="text-white font-bold">{signal.volatilityState || "—"}</p>
                         </div>
                       </div>
                     </div>
@@ -321,12 +344,12 @@ export default function Home() {
                     <div className="bg-gray-900/50 rounded-lg p-4">
                       <div className="flex justify-between items-center mb-2">
                         <p className="text-xs text-gray-500 uppercase tracking-wider font-bold">Confidence</p>
-                        <p className="text-xl font-bold text-white">{signal.confidence}%</p>
+                        <p className="text-xl font-bold text-white">{confidence}%</p>
                       </div>
                       <div className="w-full bg-gray-800 rounded-full h-3 overflow-hidden">
                         <div
-                          className={`h-3 rounded-full transition-all duration-500 ${getConfidenceColor(signal.confidence)}`}
-                          style={{ width: `${Math.min(100, signal.confidence)}%` }}
+                          className={`h-3 rounded-full transition-all duration-500 ${getConfidenceColor(confidence)}`}
+                          style={{ width: `${Math.min(100, confidence)}%` }}
                         />
                       </div>
                     </div>
@@ -348,31 +371,31 @@ export default function Home() {
                     )}
 
                     {/* Trade Setup - Only for SNIPER */}
-                    {signal.state === "SNIPER" && signal.entry && (
+                    {signal.state === "SNIPER" && signal.entry != null && (
                       <div className="border-t-2 border-gray-800 pt-5 mt-2">
                         <p className="text-xs text-gray-500 uppercase tracking-wider font-bold mb-4">Trade Setup</p>
                         <div className="space-y-3">
                           <div className="flex justify-between items-center">
                             <span className="text-gray-400 text-sm">Entry</span>
                             <span className="font-mono text-white font-bold text-lg">
-                              ${signal.entry.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              {fmtPrice(signal.entry)}
                             </span>
                           </div>
                           <div className="flex justify-between items-center">
                             <span className="text-gray-400 text-sm">Stop Loss</span>
                             <span className="font-mono text-red-400 font-bold">
-                              ${signal.stopLoss?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              {fmtPrice(signal.stopLoss)}
                             </span>
                           </div>
                           <div className="flex justify-between items-center">
                             <span className="text-gray-400 text-sm">Take Profit</span>
                             <span className="font-mono text-green-400 font-bold">
-                              ${signal.takeProfit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              {fmtPrice(signal.takeProfit)}
                             </span>
                           </div>
                           <div className="flex justify-between items-center">
                             <span className="text-gray-400 text-sm">Risk:Reward</span>
-                            <span className="font-mono text-white font-bold">{signal.riskReward?.toFixed(2)}:1</span>
+                            <span className="font-mono text-white font-bold">{(signal.riskReward ?? 0).toFixed(2)}:1</span>
                           </div>
                         </div>
                       </div>
@@ -382,7 +405,7 @@ export default function Home() {
                   {/* Footer */}
                   <div className="px-6 py-4 border-t border-gray-800 bg-gray-900/30">
                     <p className="text-xs text-gray-600">
-                      Updated: {new Date(signal.updatedAt).toLocaleTimeString("en-GB")}
+                      Updated: {signal.updatedAt ? new Date(signal.updatedAt).toLocaleTimeString("en-GB") : "—"}
                     </p>
                   </div>
                 </div>
