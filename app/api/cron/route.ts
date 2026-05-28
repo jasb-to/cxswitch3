@@ -1,10 +1,9 @@
 /**
  * FILE: api/cron/route.ts
- * PURPOSE: Run every 5 minutes, evaluate signals, send Telegram alerts
- * NEW: Bias flip exit alerts + StochRSI in entry alerts
+ * PURPOSE: Run every 5 minutes, compute signals, cache them, send alerts
  */
 
-import { evaluateSignal, recordAlert, detectBiasFlip } from "@/lib/engine";
+import { evaluateSignal, recordAlert, detectBiasFlip, setCachedSignals } from "@/lib/engine";
 
 const CRON_SECRET = process.env.CRON_SECRET || "abc123xyz789";
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -41,11 +40,7 @@ Entry: $${signal.entry?.toFixed(2)} | SL: $${signal.stopLoss?.toFixed(2)} | TP: 
     await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: TELEGRAM_CHAT_ID,
-        text,
-        parse_mode: "HTML",
-      }),
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text, parse_mode: "HTML" }),
     });
     console.log(isExit ? `[CRON] 🚨 Exit alert sent:` : `[CRON] ✅ Entry alert sent:`, signal.symbol);
   } catch (err) {
@@ -65,22 +60,10 @@ export async function GET(req: Request) {
   if (isTest) {
     console.log("[CRON] 🧪 Test mode activated");
     const testSignal = {
-      symbol: "TEST",
-      price: 100000,
-      change24h: 5.0,
-      bias: "Bullish",
-      state: "SNIPER",
-      direction: "LONG",
-      confidence: 95,
-      trigger: "Test",
-      momentum: "Accelerating",
-      shouldAlert: true,
-      entry: 100000,
-      stopLoss: 97500,
-      takeProfit: 105000,
-      riskReward: 2.0,
-      stochRSI: 15,
-      stochRSIState: "Oversold",
+      symbol: "TEST", price: 100000, change24h: 5.0, bias: "Bullish", state: "SNIPER",
+      direction: "LONG", confidence: 95, trigger: "Test", momentum: "Accelerating",
+      shouldAlert: true, entry: 100000, stopLoss: 97500, takeProfit: 105000,
+      riskReward: 2.0, stochRSI: 15, stochRSIState: "Oversold",
       updatedAt: new Date().toISOString()
     };
     await sendTelegramAlert(testSignal);
@@ -98,24 +81,20 @@ export async function GET(req: Request) {
       evaluateSignal("SOL"),
     ]);
 
+    // Cache signals for /api/signals route
+    setCachedSignals(signals);
+
     let alertsSent = 0;
     let exitAlertsSent = 0;
 
     for (const signal of signals) {
-      // Check for bias flip FIRST
       const flip = detectBiasFlip(signal.symbol, signal.bias, signal.price);
       if (flip.flipped) {
         console.log(`[CRON] 🔄 ${signal.symbol} BIAS FLIP: ${flip.oldBias} → ${flip.newBias}`);
-        await sendTelegramAlert({
-          symbol: signal.symbol,
-          price: signal.price,
-          oldBias: flip.oldBias,
-          newBias: flip.newBias,
-        }, true);
+        await sendTelegramAlert({ symbol: signal.symbol, price: signal.price, oldBias: flip.oldBias, newBias: flip.newBias }, true);
         exitAlertsSent++;
       }
 
-      // Verbose logging
       console.log("");
       console.log(`[CRON] ┌── ${signal.symbol} ───────────────────────────────`);
       console.log(`[CRON] │ Price:        $${signal.price.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`);
@@ -136,10 +115,8 @@ export async function GET(req: Request) {
         console.log(`[CRON] │ TP:           $${signal.takeProfit?.toFixed(2)}`);
         console.log(`[CRON] │ R:R:          ${signal.riskReward?.toFixed(2)}:1`);
       }
+      console.log(`[CRON] └── Decision:   ${signal.state === "SNIPER" && signal.shouldAlert ? "🚨 SEND ALERT" : signal.state === "SNIPER" ? "⏳ SUPPRESSED" : "👁️ WATCHING"}`);
 
-      console.log(`[CRON] └── Decision:   ${signal.state === "SNIPER" && signal.shouldAlert ? "🚨 SEND ALERT" : signal.state === "SNIPER" ? "⏳ SUPPRESSED (already sent)" : "👁️ WATCHING"}`);
-
-      // Send entry alert
       if (signal.state === "SNIPER" && signal.shouldAlert) {
         await sendTelegramAlert(signal);
         recordAlert(signal.symbol, signal.direction!, signal.price);
@@ -149,7 +126,7 @@ export async function GET(req: Request) {
 
     console.log("");
     console.log("[CRON] ═══════════════════════════════════════════");
-    console.log(`[CRON] Cycle complete: ${alertsSent} entry alert(s), ${exitAlertsSent} exit alert(s) sent`);
+    console.log(`[CRON] Cycle complete: ${alertsSent} entry, ${exitAlertsSent} exit alerts sent`);
     console.log("[CRON] ═══════════════════════════════════════════");
 
     return Response.json({ signals, alertsSent, exitAlertsSent, timestamp: Date.now() });
