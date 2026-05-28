@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Trading Signals",
+  title: "Switch Trading Signals",
   description: "3-Layer Trendline Trading Dashboard",
 };
 
