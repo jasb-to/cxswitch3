@@ -2,10 +2,11 @@ export const runtime = "nodejs";
 
 export async function GET(request: Request) {
   const secret = new URL(request.url).searchParams.get("secret");
+  const expectedSecret = process.env.CRON_SECRET || "abc123xyz789";
   
-  // Verify cron secret only if provided
-  if (secret && secret !== process.env.CRON_SECRET) {
-    console.error("[CRON] Invalid cron secret");
+  // Verify cron secret - must match expected value
+  if (secret !== expectedSecret) {
+    console.error(`[CRON] Invalid cron secret: got '${secret}', expected '${expectedSecret}'`);
     return new Response("Unauthorized", { status: 401 });
   }
 
