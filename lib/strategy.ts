@@ -310,9 +310,9 @@ export function generateSignal(
     ema15MBearish: ema15MBearish,
   };
 
-  // Counter-trend SHORT override: Bearish 15M EMA structure (no extreme Stoch requirement like dumps)
-  // During downtrends, price is already weak - just need bearish EMA confirmation to SHORT
-  const counterTrendShortSetup = ema15MBearish;
+  // Counter-trend SHORT override: Both 4H AND 15M must be bearish for SHORT signal
+  // This prevents false shorts when only 4H is bearish but 15M is bullish (when you'd actually want LONG)
+  const counterTrendShortSetup = ema15MBearish && marketBias === "Bearish";
 
   console.log(
     `[STRATEGY] ${symbol} SHORT conditions: priceBelow=${shortConditions.priceBelowSupport} (${currentPrice.toFixed(2)} < ${lowLevel.toFixed(2)}), ema15M=${shortConditions.ema15MBearish} (${ema8_15M.toFixed(2)} < ${ema21_15M.toFixed(2)}), stochK=${stochK}, counterTrend=${counterTrendShortSetup}, adx=${adx.toFixed(1)}`
