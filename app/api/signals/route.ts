@@ -9,7 +9,15 @@ export const runtime = "nodejs";
 const ALERT_COOLDOWN = 60 * 60 * 1000; // 60 minutes cooldown between same signal
 let lastAlerts: { [key: string]: { status: string; timestamp: number } } = {};
 
-export async function GET() {
+export async function GET(request: Request) {
+  const secret = new URL(request.url).searchParams.get("secret");
+  
+  // Only validate secret if one is provided (for cron job). Allow unsigned requests from UI.
+  if (secret && secret !== process.env.CRON_SECRET) {
+    console.error("[API] Invalid cron secret");
+    return new Response("Unauthorized", { status: 401 });
+  }
+
   const startTime = Date.now();
   console.log(`[API] === SIGNALS SCAN STARTED at ${new Date().toLocaleTimeString()} ===`);
 
@@ -43,18 +51,8 @@ export async function GET() {
 
           // Log signal details
           console.log(
-            `[API] ${symbol} signal: status=${signal.status}, price=$${signal.price}, adx=${signal.adx.toFixed(1)}, stoch=${signal.stochK}, confidence=${signal.confidence}%, entryType=${signal.entryType || "—"}, volume=${signal.volumeRatio?.toFixed(1)}x`
+            `[API] ${symbol} signal: state=${signal.state}, price=$${signal.price}, adx=${signal.adx.toFixed(1)}, stoch=${signal.stochK}, confidence=${signal.confidence}%`
           );
-
-          if (signal.status !== "NO_SIGNAL") {
-            console.log(
-              `[API] ${symbol} ACTIVE TRADE: entry=$${signal.entry}, sl=$${signal.stopLoss}, tp=$${signal.takeProfit}, rr=${signal.riskReward?.toFixed(2)}x`
-            );
-          } else {
-            console.log(
-              `[API] ${symbol} waiting: ${signal.reason} | next level=$${signal.nearestSwingLevel} (${signal.distanceToSwing}%)`
-            );
-          }
 
           return signal;
         } catch (err) {
@@ -69,25 +67,25 @@ export async function GET() {
 
       signals.push(signal);
 
-      // Check if we should send telegram alert
-      const key = `${signal.symbol}-${signal.status}`;
+      // Check if we should send telegram alert - ONLY for LONG or SHORT states
+      const key = `${signal.symbol}-${signal.state}`;
       const lastSent = lastAlerts[key];
       const now = Date.now();
 
-      if (signal.status !== "NO_SIGNAL") {
+      if (signal.state === "LONG" || signal.state === "SHORT") {
         const shouldAlert =
           !lastSent || // First time
           now - lastSent.timestamp > ALERT_COOLDOWN; // Cooldown expired
 
         if (shouldAlert) {
           console.log(
-            `[API] Sending Telegram alert for ${signal.symbol} ${signal.status}...`
+            `[API] Sending Telegram alert for ${signal.symbol} ${signal.state}...`
           );
           sendTelegramAlert(signal).then((success) => {
             if (success) {
-              lastAlerts[key] = { status: signal.status, timestamp: now };
+              lastAlerts[key] = { status: signal.state, timestamp: now };
               console.log(
-                `[API] ✅ Telegram alert sent for ${signal.symbol} ${signal.status}`
+                `[API] ✅ Telegram alert sent for ${signal.symbol} ${signal.state}`
               );
             } else {
               console.error(
@@ -100,7 +98,7 @@ export async function GET() {
             (ALERT_COOLDOWN - (now - lastSent.timestamp)) / 1000
           );
           console.log(
-            `[API] Alert skipped for ${signal.symbol}: same ${signal.status} within cooldown (${secondsUntilNext}s remaining)`
+            `[API] Alert skipped for ${signal.symbol}: same ${signal.state} within cooldown (${secondsUntilNext}s remaining)`
           );
         }
       }
