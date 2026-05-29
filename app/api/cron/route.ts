@@ -3,8 +3,8 @@ export const runtime = "nodejs";
 export async function GET(request: Request) {
   const secret = new URL(request.url).searchParams.get("secret");
   
-  // Verify cron secret for security
-  if (secret !== process.env.CRON_SECRET) {
+  // Verify cron secret only if provided
+  if (secret && secret !== process.env.CRON_SECRET) {
     console.error("[CRON] Invalid cron secret");
     return new Response("Unauthorized", { status: 401 });
   }
