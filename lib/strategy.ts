@@ -187,6 +187,8 @@ export function generateSignal(
   const atr = calculateATR(candles4H);
   const { highLevel, lowLevel } = findSwings(candles4H, 50);
 
+  console.log(`[STRATEGY] ${symbol} ATR=${atr.toFixed(2)}, entry will use 1.5*ATR=${(1.5 * atr).toFixed(2)}, 4*ATR=${(4 * atr).toFixed(2)}`);
+
   // Default: no signal
   let status: "LONG" | "SHORT" | "NO_SIGNAL" = "NO_SIGNAL";
   let entry: number | undefined;
