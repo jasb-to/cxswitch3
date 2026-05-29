@@ -57,7 +57,8 @@ function calculateADX(candles: Candle[], period: number = 14): number {
   let minus_dm_sum = 0;
   let tr_sum = 0;
 
-  for (let i = 1; i < candles.length; i++) {
+  // Calculate initial directional movements and true range
+  for (let i = 1; i <= period; i++) {
     const curr = candles[i];
     const prev = candles[i - 1];
 
@@ -80,13 +81,51 @@ function calculateADX(candles: Candle[], period: number = 14): number {
     tr_sum += tr;
   }
 
-  const plus_di = (plus_dm_sum / tr_sum) * 100;
-  const minus_di = (minus_dm_sum / tr_sum) * 100;
+  // Calculate DI values
+  let plus_di = (plus_dm_sum / tr_sum) * 100;
+  let minus_di = (minus_dm_sum / tr_sum) * 100;
 
-  const di_sum = plus_di + minus_di;
-  const adx = Math.abs(plus_di - minus_di) / di_sum * 100;
+  // Smooth the DI values (simplified smoothing)
+  let di_diff_sum = 0;
+  let di_sum_sum = 0;
 
-  return Math.round(adx * 100) / 100;
+  for (let i = period + 1; i < candles.length; i++) {
+    const curr = candles[i];
+    const prev = candles[i - 1];
+
+    const tr1 = curr.high - curr.low;
+    const tr2 = Math.abs(curr.high - prev.close);
+    const tr3 = Math.abs(curr.low - prev.close);
+    const tr = Math.max(tr1, tr2, tr3);
+
+    const up_move = curr.high - prev.high;
+    const down_move = prev.low - curr.low;
+
+    let plus_dm = 0;
+    let minus_dm = 0;
+
+    if (up_move > down_move && up_move > 0) plus_dm = up_move;
+    if (down_move > up_move && down_move > 0) minus_dm = down_move;
+
+    plus_dm_sum = plus_dm_sum * 13 / 14 + plus_dm;
+    minus_dm_sum = minus_dm_sum * 13 / 14 + minus_dm;
+    tr_sum = tr_sum * 13 / 14 + tr;
+
+    plus_di = (plus_dm_sum / tr_sum) * 100;
+    minus_di = (minus_dm_sum / tr_sum) * 100;
+
+    const di_diff = Math.abs(plus_di - minus_di);
+    const di_sum = plus_di + minus_di;
+
+    di_diff_sum += di_diff;
+    di_sum_sum += di_sum;
+  }
+
+  // Calculate ADX as smoothed DX
+  const dx = (di_diff_sum / (candles.length - period)) / (di_sum_sum / (candles.length - period)) * 100;
+  const adx = Math.round(dx * 100) / 100;
+
+  return Math.max(0, Math.min(100, adx));
 }
 
 // Calculate Stochastic RSI
@@ -117,7 +156,10 @@ function findSwings(
   candles: Candle[],
   lookback: number = 20
 ): { highLevel: number; lowLevel: number } {
-  if (candles.length < 3) return { highLevel: 0, lowLevel: 0 };
+  if (candles.length < 3) {
+    const current = candles[candles.length - 1];
+    return { highLevel: current.high, lowLevel: current.low };
+  }
 
   let highLevel = candles[candles.length - 1].high;
   let lowLevel = candles[candles.length - 1].low;
@@ -197,7 +239,7 @@ export function generateSignal(
   // Calculate 5M momentum and volume spike detection
   let entry5MConfirmed = false;
   let entryType: "5M Momentum" | "4H Structure" | undefined;
-  let volumeRatio = 1;
+  let volumeRatio: number | undefined;
 
   if (candles5M && candles5M.length >= 30) {
     const ema8_5M = candles5M.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
@@ -214,11 +256,19 @@ export function generateSignal(
     );
   }
 
+  // LONG Signal: Price above resistance + bullish 15M EMA (Stoch is confidence only, not gating)
+  const longConditions = {
+    priceAboveResistance: currentPrice > highLevel,
+    ema15MBullish: ema8_15M > ema21_15M,
+  };
+
+  console.log(
+    `[STRATEGY] ${symbol} LONG conditions: priceAbove=${longConditions.priceAboveResistance} (${currentPrice.toFixed(2)} > ${highLevel.toFixed(2)}), ema15M=${longConditions.ema15MBullish} (${ema8_15M.toFixed(2)} > ${ema21_15M.toFixed(2)}), stochK=${stochK} (confidence only)`
+  );
+
   if (
-    currentPrice > highLevel &&
-    stochK < 35 &&
-    stoch15M < 35 &&
-    ema8_15M > ema21_15M
+    longConditions.priceAboveResistance &&
+    longConditions.ema15MBullish
   ) {
     status = "LONG";
     entry = currentPrice;
@@ -231,16 +281,23 @@ export function generateSignal(
       reason = `5M Momentum: vol spike (${volumeRatio.toFixed(1)}x) + bullish EMA + 4H break`;
     } else {
       entryType = "4H Structure";
-      reason = `4H break above resistance + oversold stoch (${stochK.toFixed(0)}) + 15M bullish`;
+      reason = `4H break above resistance + 15M bullish EMA`;
     }
   }
 
-  // SHORT Signal: Price below support + overbought stoch + bearish 15M
-  else if (
-    currentPrice < lowLevel &&
-    stochK > 65 &&
-    stoch15M > 65 &&
-    ema8_15M < ema21_15M
+  // SHORT Signal: Price below support + bearish 15M EMA (Stoch is confidence only, not gating)
+  const shortConditions = {
+    priceBelowSupport: currentPrice < lowLevel,
+    ema15MBearish: ema8_15M < ema21_15M,
+  };
+
+  console.log(
+    `[STRATEGY] ${symbol} SHORT conditions: priceBelow=${shortConditions.priceBelowSupport} (${currentPrice.toFixed(2)} < ${lowLevel.toFixed(2)}), ema15M=${shortConditions.ema15MBearish} (${ema8_15M.toFixed(2)} < ${ema21_15M.toFixed(2)}), stochK=${stochK} (confidence only)`
+  );
+
+  if (
+    shortConditions.priceBelowSupport &&
+    shortConditions.ema15MBearish
   ) {
     status = "SHORT";
     entry = currentPrice;
@@ -253,7 +310,7 @@ export function generateSignal(
       reason = `5M Momentum: vol spike (${volumeRatio.toFixed(1)}x) + bearish EMA + 4H break`;
     } else {
       entryType = "4H Structure";
-      reason = `4H break below support + overbought stoch (${stochK.toFixed(0)}) + 15M bearish`;
+      reason = `4H break below support + 15M bearish EMA`;
     }
   }
 
@@ -295,7 +352,7 @@ export function generateSignal(
     stochK: Math.round(stochK),
     marketBias,
     entryType,
-    volumeRatio: Math.round(volumeRatio * 100) / 100,
+    volumeRatio: volumeRatio ? Math.round(volumeRatio * 100) / 100 : undefined,
     entry5MConfirmed,
     nearestSwingLevel: nearestSwingLevel ? Math.round(nearestSwingLevel * 100) / 100 : undefined,
     distanceToSwing,
