@@ -201,15 +201,24 @@ function bias(closes: number[]) {
 }
 
 function stoch(closes: number[]) {
-  if (closes.length < 14) return 50;
+  if (closes.length < 14) {
+    console.log(`[v0] Insufficient candles for stoch: ${closes.length} < 14`);
+    return 50;
+  }
   
   const slice = closes.slice(-14);
   const low = Math.min(...slice);
   const high = Math.max(...slice);
   const current = slice.at(-1)!;
 
+  if (isNaN(low) || isNaN(high) || isNaN(current)) {
+    console.log(`[v0] NaN in stoch calculation: low=${low}, high=${high}, current=${current}`);
+    return 50;
+  }
+
   const value = high === low ? 50 : ((current - low) / (high - low)) * 100;
 
+  console.log(`[v0] Stoch: closes=${closes.length}, low=${low}, high=${high}, current=${current}, value=${Math.round(value)}`);
   return Math.round(value);
 }
 
@@ -236,6 +245,10 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   console.log(`[v0] ${symbol}: closes4=${closes4.length}, closes1=${closes1.length}, closes15=${closes15.length}`);
   if (closes15.length > 0) {
     console.log(`[v0] ${symbol} latest 15m closes: ${closes15.slice(-3).join(", ")}`);
+    console.log(`[v0] ${symbol} 15m sample (first 2): ${closes15.slice(0, 2).join(", ")}`);
+    console.log(`[v0] ${symbol} 15m close types: ${closes15.slice(0, 3).map(c => typeof c).join(", ")}`);
+  } else {
+    console.log(`[v0] ${symbol}: NO 15m candles returned!`);
   }
 
   const price = closes15.at(-1) || 0;
