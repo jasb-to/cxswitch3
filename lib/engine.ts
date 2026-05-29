@@ -259,14 +259,17 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
 
   // REVERSAL ENTRIES: Oversold bounce or overbought fade (faster entries)
   if (!setup) {
-    // Oversold bounce: stoch < 20 + EMA crosses bullish = early LONG
-    if (stoch < 20 && emaCross === "Bullish") {
+    // Check if price is currently rising or falling
+    const priceDirection = price > closes1H.at(-2)! ? "up" : "down";
+    
+    // Oversold bounce: stoch < 20 + EMA crosses bullish + price moving up = early LONG
+    if (stoch < 20 && emaCross === "Bullish" && priceDirection === "up") {
       setup = "LONG";
       setupType = "Reversal (Oversold)";
     }
 
-    // Overbought fade: stoch > 80 + EMA crosses bearish = early SHORT
-    if (stoch > 80 && emaCross === "Bearish") {
+    // Overbought fade: stoch > 80 + EMA crosses bearish + price moving down = early SHORT
+    if (stoch > 80 && emaCross === "Bearish" && priceDirection === "down") {
       setup = "SHORT";
       setupType = "Reversal (Overbought)";
     }
