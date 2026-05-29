@@ -1,182 +1,173 @@
 "use client";
 
 import { useEffect, useState } from "react";
-
-interface Signal {
-  symbol: string;
-  price: number;
-  bias4H: string;
-  bias1H: string;
-  setup: "LONG" | "SHORT" | null;
-  confidence?: number;
-  emaCross: string;
-  stochRSI: number;
-  stochDirection: string;
-  momentum: string;
-  trigger: string;
-  entry?: number;
-  stopLoss?: number;
-  takeProfit?: number;
-  updatedAt: string;
-}
-
-function safe(value: any, fallback: any) {
-  return value !== undefined && value !== null ? value : fallback;
-}
-
-function getStochLabel(stochRSI: number) {
-  if (stochRSI < 20) return "Oversold";
-  if (stochRSI > 65) return "Overbought";
-  return "Neutral";
-}
-
-function formatPrice(n?: number) {
-  if (!n) return "—";
-  return n.toLocaleString(undefined, { style: "currency", currency: "USD" });
-}
-
-function SignalCard({ signal }: { signal: Signal }) {
-  const bias4H = safe(signal.bias4H, "Neutral");
-  const bias1H = safe(signal.bias1H, "Neutral");
-  const emaCross = safe(signal.emaCross, "None");
-  const stochRSI = safe(signal.stochRSI, 50);
-  const momentum = safe(signal.momentum, "Flat");
-  const confidence = safe(signal.confidence, 0);
-
-  const isActive = signal.setup === "LONG" || signal.setup === "SHORT";
-  const isMuted = !isActive;
-
-  const biasColor = (bias: string) => {
-    if (bias === "Bullish") return "text-green-400";
-    if (bias === "Bearish") return "text-red-400";
-    return "text-gray-400";
-  };
-
-  const stochColor = (stoch: number) => {
-    if (stoch < 20) return "text-blue-400";
-    if (stoch > 65) return "text-orange-400";
-    return "text-gray-400";
-  };
-
-  const borderStyle = 
-    signal.setup === "LONG" ? "border border-green-500/50 shadow-lg shadow-green-500/20" :
-    signal.setup === "SHORT" ? "border border-red-500/50 shadow-lg shadow-red-500/20" :
-    "border border-zinc-800";
-
-  return (
-    <div
-      className={`rounded-xl p-6 transition-all duration-300 ${
-        isActive ? "bg-zinc-900/80" : "bg-zinc-950/40"
-      } ${borderStyle} ${isMuted ? "opacity-60" : ""}`}
-    >
-      {/* TOP SECTION */}
-      <div className="flex items-start justify-between mb-5">
-        <div>
-          <h2 className="text-4xl font-bold text-white tracking-tight">{signal.symbol}</h2>
-          <p className="text-2xl font-mono text-white/80 mt-1">{formatPrice(signal.price)}</p>
-        </div>
-        <div className={`px-3 py-2 rounded-lg text-sm font-bold ${
-          signal.setup === "LONG" ? "bg-green-500 text-black" :
-          signal.setup === "SHORT" ? "bg-red-500 text-white" :
-          "bg-gray-700 text-gray-300"
-        }`}>
-          {signal.setup || "WAIT"}
-        </div>
-      </div>
-
-      {/* MIDDLE SECTION - STRUCTURED INTELLIGENCE */}
-      <div className="space-y-3 mb-5 border-t border-zinc-800 pt-5">
-        <div className="flex justify-between items-center text-sm">
-          <span className="text-gray-600">4H Trend</span>
-          <span className={`font-bold ${biasColor(bias4H)}`}>{bias4H}</span>
-        </div>
-        <div className="flex justify-between items-center text-sm">
-          <span className="text-gray-600">1H Confirmation</span>
-          <span className={`font-bold ${biasColor(bias1H)}`}>{bias1H}</span>
-        </div>
-        <div className="flex justify-between items-center text-sm">
-          <span className="text-gray-600">EMA Cross (15m)</span>
-          <span className="font-bold text-white">{emaCross}</span>
-        </div>
-        <div className="flex justify-between items-center text-sm">
-          <span className="text-gray-600">StochRSI</span>
-          <span className={`font-mono font-bold ${stochColor(stochRSI)}`}>
-            {stochRSI} <span className="text-xs text-gray-500">({getStochLabel(stochRSI)})</span>
-          </span>
-        </div>
-      </div>
-
-      {/* MOMENTUM & CONFIDENCE STRIP */}
-      <div className="flex gap-4 mb-5 border-t border-zinc-800 pt-5">
-        <div className="flex-1">
-          <p className="text-xs text-gray-600 mb-1">Momentum</p>
-          <p className="text-sm font-bold text-white">{momentum}</p>
-        </div>
-        <div className="flex-1">
-          <p className="text-xs text-gray-600 mb-1">Confidence</p>
-          <p className="text-sm font-bold text-cyan-400">{confidence}%</p>
-        </div>
-      </div>
-
-      {/* BOTTOM CTA AREA */}
-      {signal.setup ? (
-        <div className="border-t border-zinc-800 pt-5 space-y-2">
-          <div className="text-xs font-bold text-gray-500 uppercase tracking-widest">Entry Active</div>
-          <div className="space-y-1.5 text-sm">
-            <div className="flex justify-between">
-              <span className="text-gray-600">Entry</span>
-              <span className="font-mono text-white">{formatPrice(signal.entry)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-600">SL</span>
-              <span className="font-mono text-red-400">{formatPrice(signal.stopLoss)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-gray-600">TP</span>
-              <span className="font-mono text-green-400">{formatPrice(signal.takeProfit)}</span>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className="border-t border-zinc-800 pt-5">
-          <p className="text-xs text-gray-600">Waiting for setup...</p>
-        </div>
-      )}
-    </div>
-  );
-}
+import type { Signal } from "@/lib/strategy";
 
 export default function Home() {
   const [signals, setSignals] = useState<Signal[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [lastUpdate, setLastUpdate] = useState<string>("");
 
-  async function load() {
-    const res = await fetch("/api/signals", { cache: "no-store" });
-    const data = await res.json();
-    setSignals(data.signals || []);
+  async function fetchSignals() {
+    try {
+      setLoading(true);
+      const res = await fetch("/api/signals");
+      const data = await res.json();
+      setSignals(data.signals || []);
+      setLastUpdate(new Date().toLocaleTimeString());
+    } catch (err) {
+      console.error("Failed to fetch signals:", err);
+    } finally {
+      setLoading(false);
+    }
   }
 
+  async function testTelegram() {
+    try {
+      const res = await fetch("/api/telegram/test", { method: "POST" });
+      const data = await res.json();
+      alert(data.message || "Test alert sent!");
+    } catch (err) {
+      alert("Failed to send test alert");
+      console.error(err);
+    }
+  }
+
+  // Initial load
   useEffect(() => {
-    load();
-    const t = setInterval(load, 60000);
-    return () => clearInterval(t);
+    fetchSignals();
+  }, []);
+
+  // Auto-refresh every 60 seconds
+  useEffect(() => {
+    const interval = setInterval(fetchSignals, 60000);
+    return () => clearInterval(interval);
   }, []);
 
   return (
-    <main className="min-h-screen w-full bg-black text-white">
-      <div className="w-full px-12 py-16">
-        <div className="max-w-7xl mx-auto">
-          <div className="mb-16">
-            <h1 className="text-5xl font-bold tracking-tight">Switch Signals</h1>
-            <p className="text-gray-400 mt-3">Real-time multi-timeframe trading signals</p>
-          </div>
+    <main className="min-h-screen bg-background">
+      <div className="px-12 py-8 max-w-7xl mx-auto">
+        {/* Header */}
+        <div className="mb-8">
+          <h1 className="text-5xl font-bold tracking-tight mb-2">CX Switch</h1>
+          <p className="text-muted-foreground">
+            4H Structure • 15M Momentum • ADX Filter
+          </p>
+        </div>
 
-          <div className="grid md:grid-cols-3 gap-8">
-            {signals.map((s) => (
-              <SignalCard key={s.symbol} signal={s} />
-            ))}
-          </div>
+        {/* Controls */}
+        <div className="flex items-center gap-4 mb-8">
+          <button
+            onClick={fetchSignals}
+            disabled={loading}
+            className="px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 disabled:opacity-50 font-medium"
+          >
+            {loading ? "Scanning..." : "SCAN"}
+          </button>
+          <button
+            onClick={testTelegram}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
+          >
+            Test Telegram
+          </button>
+          <span className="text-sm text-muted-foreground ml-auto">
+            Last update: {lastUpdate || "—"}
+          </span>
+        </div>
+
+        {/* Signals Grid */}
+        <div className="grid md:grid-cols-3 gap-6">
+          {signals.map((signal) => (
+            <SignalCard key={signal.symbol} signal={signal} />
+          ))}
         </div>
       </div>
     </main>
+  );
+}
+
+function SignalCard({ signal }: { signal: Signal }) {
+  const isSignal = signal.status !== "NO_SIGNAL";
+  const isBullish = signal.status === "LONG";
+
+  const statusColor = isBullish
+    ? "bg-green-500/10 border-green-500/20 text-green-400"
+    : signal.status === "SHORT"
+      ? "bg-red-500/10 border-red-500/20 text-red-400"
+      : "bg-slate-500/10 border-slate-500/20 text-slate-400";
+
+  const emoji = isBullish ? "🟢" : signal.status === "SHORT" ? "🔴" : "⚪";
+
+  return (
+    <div className="border border-border bg-card rounded-xl p-6 hover:border-border/80 transition">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-2xl font-bold">{signal.symbol}</h2>
+          <p className="text-sm text-muted-foreground">${signal.price}</p>
+        </div>
+        <div className={`px-3 py-1 rounded-full border text-sm font-medium ${statusColor}`}>
+          {emoji} {signal.status}
+        </div>
+      </div>
+
+      {/* Metrics */}
+      <div className="space-y-3 mb-6 pb-6 border-b border-border">
+        <div className="flex justify-between text-sm">
+          <span className="text-muted-foreground">ADX</span>
+          <span className="font-mono font-semibold">{signal.adx.toFixed(1)}</span>
+        </div>
+        <div className="flex justify-between text-sm">
+          <span className="text-muted-foreground">Stoch K</span>
+          <span className="font-mono font-semibold">{signal.stochK}</span>
+        </div>
+        <div className="flex justify-between text-sm">
+          <span className="text-muted-foreground">Confidence</span>
+          <span className="font-mono font-semibold">{signal.confidence}%</span>
+        </div>
+      </div>
+
+      {/* Signal Details or Swing Levels */}
+      {isSignal ? (
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">Entry</p>
+              <p className="font-mono font-semibold">${signal.entry}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">R:R</p>
+              <p className="font-mono font-semibold text-green-400">
+                {signal.riskReward?.toFixed(2)}x
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">Stop Loss</p>
+              <p className="font-mono font-semibold text-red-400">${signal.stopLoss}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">Take Profit</p>
+              <p className="font-mono font-semibold text-green-400">${signal.takeProfit}</p>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground pt-2">{signal.reason}</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <p className="text-xs text-muted-foreground mb-3">{signal.reason}</p>
+          {signal.nearestSwingLevel && (
+            <div>
+              <p className="text-xs text-muted-foreground mb-1">Next Level</p>
+              <div className="flex justify-between items-center">
+                <p className="font-mono font-semibold">${signal.nearestSwingLevel}</p>
+                <p className="text-sm font-semibold text-blue-400">
+                  {signal.distanceToSwing}%
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
