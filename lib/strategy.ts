@@ -195,7 +195,7 @@ export function generateSignal(
   const atr = calculateATR(candles4H_ordered);
   const { highLevel, lowLevel } = findSwings(candles4H_ordered, 50);
 
-  console.log(`[STRATEGY] ${symbol} ATR=${atr.toFixed(2)}, entry will use 1.5*ATR=${(1.5 * atr).toFixed(2)}, 4*ATR=${(4 * atr).toFixed(2)}`);
+  console.log(`[STRATEGY] ${symbol} ATR=${atr.toFixed(2)}`);
 
   // Default: no signal
   let status: "LONG" | "SHORT" | "NO_SIGNAL" = "NO_SIGNAL";
@@ -204,8 +204,8 @@ export function generateSignal(
   let takeProfit: number | undefined;
   let reason = "Waiting for setup";
 
-  // ADX threshold varies by symbol - lowered back down for faster entries without Stoch K
-  const adxThreshold = symbol === "SOL" ? 15 : 20;
+  // ADX threshold - lowered to 15 for all symbols to catch trends without over-filtering
+  const adxThreshold = 15;
 
   // Calculate EMAs first for structure break override check
   const stoch15M = calculateStochRSI(candles15M_ordered);
@@ -248,11 +248,8 @@ export function generateSignal(
   const structureBreakWithEMA = (priceAboveResistance && ema15MBullish) || (priceBelowSupport && ema15MBearish);
   const effectiveAdxThreshold = structureBreakWithEMA ? 10 : adxThreshold;
   
-  console.log(`[STRATEGY] ${symbol} ADX check: adx=${adx.toFixed(1)}, threshold=${adxThreshold}, structureBreak=${structureBreakWithEMA}, effectiveThreshold=${effectiveAdxThreshold}, passes=${adx >= effectiveAdxThreshold}`);
-  
   if (adx < effectiveAdxThreshold) {
     reason = `ADX too low (${adx.toFixed(1)} < ${effectiveAdxThreshold}), skipping choppy market`;
-    console.log(`[STRATEGY] ${symbol} BLOCKED: ${reason}`);
     return {
       symbol,
       price: currentPrice,
@@ -296,14 +293,13 @@ export function generateSignal(
   const counterTrendLongSetup = stochK < 35 && ema15MBullish;
 
   console.log(
-    `[STRATEGY] ${symbol} LONG conditions: priceAbove=${longConditions.priceAboveResistance} (${currentPrice.toFixed(2)} > ${highLevel.toFixed(2)}), ema15M=${longConditions.ema15MBullish} (${ema8_15M.toFixed(2)} > ${ema21_15M.toFixed(2)}), stochK=${stochK}, counterTrend=${counterTrendLongSetup}, adx=${adx.toFixed(1)}`
+    `[STRATEGY] ${symbol} LONG conditions: priceAbove=${longConditions.priceAboveResistance}, ema15M=${longConditions.ema15MBullish}, stochK=${stochK}, counterTrend=${counterTrendLongSetup}`
   );
 
   if (
     (longConditions.priceAboveResistance && longConditions.ema15MBullish) ||
     counterTrendLongSetup
   ) {
-    console.log(`[STRATEGY] ${symbol} LONG SIGNAL TRIGGERED - counterTrend=${counterTrendLongSetup}, structureBreak=${longConditions.priceAboveResistance && longConditions.ema15MBullish}`);
     status = "LONG";
     entry = currentPrice;
     
@@ -332,12 +328,12 @@ export function generateSignal(
     ema15MBearish: ema15MBearish,
   };
 
-  // Counter-trend SHORT override: Both 4H AND 15M must be bearish for SHORT signal
-  // This prevents false shorts when only 4H is bearish but 15M is bullish (when you'd actually want LONG)
-  const counterTrendShortSetup = ema15MBearish && marketBias === "Bearish";
+  // Counter-trend SHORT: Fire when 4H shows bearish bias (temporary override for falling markets)
+  // This catches shorts during dump moves even if 15M hasn't fully flipped yet
+  const counterTrendShortSetup = marketBias === "Bearish" && priceBelowSupport;
 
   console.log(
-    `[STRATEGY] ${symbol} SHORT conditions: priceBelow=${shortConditions.priceBelowSupport} (${currentPrice.toFixed(2)} < ${lowLevel.toFixed(2)}), ema15M=${shortConditions.ema15MBearish} (${ema8_15M.toFixed(2)} < ${ema21_15M.toFixed(2)}), stochK=${stochK}, counterTrend=${counterTrendShortSetup}, adx=${adx.toFixed(1)}`
+    `[STRATEGY] ${symbol} SHORT conditions: priceBelow=${shortConditions.priceBelowSupport}, ema15M=${shortConditions.ema15MBearish}, stochK=${stochK}, counterTrend=${counterTrendShortSetup}`
   );
 
   if (
