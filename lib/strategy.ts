@@ -12,15 +12,12 @@ export interface Candle {
 export interface Signal {
   symbol: Symbol;
   price: number;
-  status: "LONG" | "SHORT" | "NO_SIGNAL";
   state: "WAIT" | "WATCH" | "LONG" | "SHORT";
-  entry?: number;
-  stopLoss?: number;
-  takeProfit?: number;
+  bias: "Bullish" | "Bearish" | "Neutral";
   confidence: number;
   adx: number;
   stochK: number;
-  marketBias: "Bullish" | "Bearish" | "Neutral";
+  stochD: number;
   reason: string;
   updatedAt: string;
 }
@@ -29,307 +26,212 @@ export interface Signal {
 function calculateADX(candles: Candle[], period: number = 14): number {
   if (candles.length < period + 1) return 0;
 
-  let plus_dm_sum = 0;
-  let minus_dm_sum = 0;
-  let tr_sum = 0;
+  let plusDM = 0, minusDM = 0, trueRange = 0;
 
-  for (let i = 1; i <= period; i++) {
+  for (let i = Math.max(1, candles.length - period); i < candles.length; i++) {
     const curr = candles[i];
     const prev = candles[i - 1];
+
+    const upMove = curr.high - prev.high;
+    const downMove = prev.low - curr.low;
+
+    if (upMove > 0 && upMove > downMove) plusDM += upMove;
+    if (downMove > 0 && downMove > upMove) minusDM += downMove;
 
     const tr1 = curr.high - curr.low;
     const tr2 = Math.abs(curr.high - prev.close);
     const tr3 = Math.abs(curr.low - prev.close);
-    const tr = Math.max(tr1, tr2, tr3);
-
-    const up_move = curr.high - prev.high;
-    const down_move = prev.low - curr.low;
-
-    let plus_dm = 0;
-    let minus_dm = 0;
-
-    if (up_move > down_move && up_move > 0) plus_dm = up_move;
-    if (down_move > up_move && down_move > 0) minus_dm = down_move;
-
-    plus_dm_sum += plus_dm;
-    minus_dm_sum += minus_dm;
-    tr_sum += tr;
+    trueRange += Math.max(tr1, tr2, tr3);
   }
 
-  const plus_di = (plus_dm_sum / tr_sum) * 100;
-  const minus_di = (minus_dm_sum / tr_sum) * 100;
-  const dx = Math.abs(plus_di - minus_di) / (plus_di + minus_di) * 100;
-  return Math.round(Math.max(0, Math.min(100, dx)) * 100) / 100;
+  const avgTR = trueRange / period;
+  const plusDI = (plusDM / avgTR) * 100;
+  const minusDI = (minusDM / avgTR) * 100;
+  const di = Math.abs(plusDI - minusDI) / (plusDI + minusDI);
+  
+  return Math.round(di * 100 * 10) / 10;
 }
 
-// Calculate Stochastic RSI
-function calculateStochRSI(candles: Candle[], period: number = 14): number {
-  if (candles.length < period) return 50;
-
-  let gains = 0;
-  let losses = 0;
-
-  for (let i = candles.length - period; i < candles.length; i++) {
-    const change = candles[i].close - (i > 0 ? candles[i - 1].close : candles[i].close);
-    if (change > 0) gains += change;
-    else losses -= change;
-  }
-
-  const avg_gain = gains / period;
-  const avg_loss = losses / period;
-  const rs = avg_gain / (avg_loss || 0.0001);
-  const rsi = 100 - 100 / (1 + rs);
-  return Math.round(Math.max(0, Math.min(100, rsi)));
-}
-
-// Calculate Stochastic K and D (for crossover detection)
+// Calculate Stochastic K and D (with K/D crossover detection)
 function calculateStochKD(candles: Candle[], period: number = 14, smoothK: number = 3, smoothD: number = 3) {
-  if (candles.length < period) return { K: 50, D: 50, prevK: 50, prevD: 50 };
+  if (candles.length < period) return { K: 50, D: 50, prevK: 50, prevD: 50, kCrossAboveD: false, kCrossBelowD: false };
 
-  // Calculate Stochastic %K
-  let lowestLow = candles[candles.length - 1].low;
-  let highestHigh = candles[candles.length - 1].high;
+  // Calculate fast K
+  const slice = candles.slice(-period);
+  const lowestLow = Math.min(...slice.map(c => c.low));
+  const highestHigh = Math.max(...slice.map(c => c.high));
+  const currentClose = candles[candles.length - 1].close;
+  const fastK = ((currentClose - lowestLow) / (highestHigh - lowestLow)) * 100;
 
-  for (let i = Math.max(0, candles.length - period); i < candles.length; i++) {
-    lowestLow = Math.min(lowestLow, candles[i].low);
-    highestHigh = Math.max(highestHigh, candles[i].high);
-  }
-
-  const fastK = ((candles[candles.length - 1].close - lowestLow) / (highestHigh - lowestLow)) * 100;
-
-  // Smooth K
-  let K_sum = 0;
+  // Smooth K over smoothK periods
+  let K_values: number[] = [];
   for (let i = Math.max(0, candles.length - smoothK); i < candles.length; i++) {
-    const low = Math.min(...candles.slice(Math.max(0, i - period), i + 1).map(c => c.low));
-    const high = Math.max(...candles.slice(Math.max(0, i - period), i + 1).map(c => c.high));
-    K_sum += ((candles[i].close - low) / (high - low)) * 100;
+    const slice_i = candles.slice(Math.max(0, i - period + 1), i + 1);
+    const low_i = Math.min(...slice_i.map(c => c.low));
+    const high_i = Math.max(...slice_i.map(c => c.high));
+    const k_i = ((candles[i].close - low_i) / (high_i - low_i)) * 100;
+    K_values.push(k_i);
   }
-  const K = K_sum / smoothK;
+  const K = K_values.length > 0 ? K_values.reduce((a, b) => a + b) / K_values.length : fastK;
 
   // D is SMA of K
-  let D_sum = 0;
-  for (let i = Math.max(0, candles.length - smoothD); i < candles.length; i++) {
-    const low = Math.min(...candles.slice(Math.max(0, i - period), i + 1).map(c => c.low));
-    const high = Math.max(...candles.slice(Math.max(0, i - period), i + 1).map(c => c.high));
-    const k = ((candles[i].close - low) / (high - low)) * 100;
-    D_sum += k;
-  }
-  const D = D_sum / smoothD;
+  const D = K_values.length > smoothD ? K_values.slice(-smoothD).reduce((a, b) => a + b) / smoothD : K;
 
-  // Previous K and D from prior candle
-  let prevK = 50, prevD = 50;
+  // Previous K and D
+  let prevK = K, prevD = D;
   if (candles.length > smoothK) {
-    const priorIndex = candles.length - smoothK - 1;
-    const low = Math.min(...candles.slice(Math.max(0, priorIndex - period), priorIndex + 1).map(c => c.low));
-    const high = Math.max(...candles.slice(Math.max(0, priorIndex - period), priorIndex + 1).map(c => c.high));
-    prevK = ((candles[priorIndex].close - low) / (high - low)) * 100;
-    prevD = prevK; // Simplified
+    const priorSlice = candles.slice(Math.max(0, candles.length - smoothK - 1), candles.length - 1);
+    if (priorSlice.length >= period) {
+      const low_prior = Math.min(...priorSlice.map(c => c.low));
+      const high_prior = Math.max(...priorSlice.map(c => c.high));
+      prevK = ((candles[candles.length - 2].close - low_prior) / (high_prior - low_prior)) * 100;
+      prevD = prevK;
+    }
   }
 
-  return { K: Math.round(K), D: Math.round(D), prevK: Math.round(prevK), prevD: Math.round(prevD) };
+  // Detect crossovers
+  const kCrossAboveD = prevK <= prevD && K > D;
+  const kCrossBelowD = prevK >= prevD && K < D;
+
+  return { K: Math.round(K * 10) / 10, D: Math.round(D * 10) / 10, prevK: Math.round(prevK * 10) / 10, prevD: Math.round(prevD * 10) / 10, kCrossAboveD, kCrossBelowD };
 }
 
-// 4H Bias: Determine Bullish/Bearish from structure
-function determine4HBias(candles: Candle[]): "Bullish" | "Bearish" | "Neutral" {
+// 4H Bias: Bullish/Bearish from structure (no signals)
+function calculate4HBias(candles: Candle[]): "Bullish" | "Bearish" | "Neutral" {
   if (candles.length < 10) return "Neutral";
 
-  const current = candles[candles.length - 1];
-  const last20 = candles.slice(-20);
+  const last5 = candles.slice(-5);
+  const highs = last5.map(c => c.high);
+  const lows = last5.map(c => c.low);
 
-  // Check for higher highs and higher lows (Bullish)
-  let higherHighs = 0;
-  let higherLows = 0;
+  // Higher highs and higher lows = Bullish
+  const higherHighs = highs[4] > highs[3] && highs[3] > highs[2];
+  const higherLows = lows[4] > lows[3] && lows[3] > lows[2];
 
-  for (let i = 1; i < last20.length; i++) {
-    if (last20[i].high > last20[i - 1].high) higherHighs++;
-    if (last20[i].low > last20[i - 1].low) higherLows++;
-  }
+  // Lower highs and lower lows = Bearish
+  const lowerHighs = highs[4] < highs[3] && highs[3] < highs[2];
+  const lowerLows = lows[4] < lows[3] && lows[3] < lows[2];
 
-  // Check for lower highs and lower lows (Bearish)
-  let lowerHighs = 0;
-  let lowerLows = 0;
+  // Price vs trendline (20-period SMA)
+  const sma20 = candles.slice(-20).reduce((sum, c) => sum + c.close, 0) / 20;
+  const currentPrice = candles[candles.length - 1].close;
 
-  for (let i = 1; i < last20.length; i++) {
-    if (last20[i].high < last20[i - 1].high) lowerHighs++;
-    if (last20[i].low < last20[i - 1].low) lowerLows++;
-  }
-
-  if (higherHighs > 8 && higherLows > 8) return "Bullish";
-  if (lowerHighs > 8 && lowerLows > 8) return "Bearish";
+  if ((higherHighs && higherLows) || currentPrice > sma20) return "Bullish";
+  if ((lowerHighs && lowerLows) || currentPrice < sma20) return "Bearish";
 
   return "Neutral";
 }
 
-// 1H Confirmation: Bullish/Bearish structure + Stoch direction + ADX
-function determine1HConfirmation(candles: Candle[], adx: number): "Bullish" | "Bearish" | "Neutral" {
-  if (adx < 20) return "Neutral"; // ADX too weak
+// 1H Confirmation: Structure + Stoch direction + ADX > 20
+function calculate1HConfirmation(candles: Candle[], adx: number): "Bullish" | "Bearish" | "Neutral" {
+  if (adx < 20) return "Neutral";
+  if (candles.length < 5) return "Neutral";
 
-  if (candles.length < 10) return "Neutral";
+  const last5 = candles.slice(-5);
+  const highs = last5.map(c => c.high);
+  const lows = last5.map(c => c.low);
 
-  const last10 = candles.slice(-10);
+  // Bullish structure: higher highs + higher lows + Stoch rising
+  const bullishStructure = highs[4] > highs[3] && lows[4] > lows[3];
+  const stochRising = candles[candles.length - 1].close > candles[Math.max(0, candles.length - 2)].close;
 
-  // Check structure
-  let higherHighs = 0;
-  let higherLows = 0;
-  let lowerHighs = 0;
-  let lowerLows = 0;
+  // Bearish structure: lower highs + lower lows + Stoch falling
+  const bearishStructure = highs[4] < highs[3] && lows[4] < lows[3];
+  const stochFalling = candles[candles.length - 1].close < candles[Math.max(0, candles.length - 2)].close;
 
-  for (let i = 1; i < last10.length; i++) {
-    if (last10[i].high > last10[i - 1].high) higherHighs++;
-    else if (last10[i].high < last10[i - 1].high) lowerHighs++;
-
-    if (last10[i].low > last10[i - 1].low) higherLows++;
-    else if (last10[i].low < last10[i - 1].low) lowerLows++;
-  }
-
-  // Stoch RSI direction
-  const stochK = calculateStochRSI(candles);
-  const stochRising = candles[candles.length - 1].close > candles[candles.length - 2].close;
-
-  if (higherHighs >= 4 && higherLows >= 4 && stochRising) return "Bullish";
-  if (lowerHighs >= 4 && lowerLows >= 4 && !stochRising) return "Bearish";
+  if (bullishStructure && stochRising) return "Bullish";
+  if (bearishStructure && stochFalling) return "Bearish";
 
   return "Neutral";
-}
-
-// 15M Entry Trigger: Detect Stoch K/D crossovers
-function detect15MEntry(candles: Candle[], adx: number): "LONG" | "SHORT" | "NONE" {
-  if (adx < 20) return "NONE";
-  if (candles.length < 5) return "NONE";
-
-  const { K, D, prevK, prevD } = calculateStochKD(candles);
-
-  // LONG: K crosses above D, cross below 35, ADX > 20
-  if (prevK < prevD && K > D && K < 35 && adx > 20) {
-    return "LONG";
-  }
-
-  // SHORT: K crosses below D, cross above 65, ADX > 20
-  if (prevK > prevD && K < D && K > 65 && adx > 20) {
-    return "SHORT";
-  }
-
-  return "NONE";
 }
 
 export function generateSignal(
   symbol: Symbol,
   candles4H: Candle[],
-  candles15M: Candle[],
-  candles5M?: Candle[]
+  candles1H: Candle[],
+  candles15M: Candle[]
 ): Signal {
   // Reverse to chronological order
   const c4H = candles4H.slice().reverse();
-  const c1H = candles15M.slice().reverse(); // Using 15M as 1H proxy for this implementation
+  const c1H = candles1H.slice().reverse();
   const c15M = candles15M.slice().reverse();
 
-  if (c15M.length < 30 || c4H.length < 20 || c1H.length < 20) {
+  if (c4H.length < 5 || c1H.length < 5 || c15M.length < 14) {
     return {
       symbol,
       price: 0,
-      status: "NO_SIGNAL",
       state: "WAIT",
+      bias: "Neutral",
       confidence: 0,
       adx: 0,
       stochK: 0,
-      marketBias: "Neutral",
+      stochD: 0,
       reason: "Insufficient data",
       updatedAt: new Date().toISOString(),
     };
   }
 
   const currentPrice = c15M[c15M.length - 1].close;
-  const adx15M = calculateADX(c15M);
-  const stochK15M = calculateStochRSI(c15M);
-  const atr = calculateATR(c15M);
+  const adx = calculateADX(c15M);
+  const stochKD = calculateStochKD(c15M);
 
-  // Determine bias and confirmation
-  const bias4H = determine4HBias(c4H);
-  const confirm1H = determine1HConfirmation(c1H, adx15M);
-  const entry15M = detect15MEntry(c15M, adx15M);
+  // Step 1: 4H Bias (Direction only)
+  const bias4H = calculate4HBias(c4H);
 
-  // Determine state
+  // Step 2: 1H Confirmation (requires ADX > 20)
+  const confirmation1H = calculate1HConfirmation(c1H, adx);
+
+  // Step 3: 15M Entry Trigger (K/D crossover)
+  const { kCrossAboveD, kCrossBelowD } = stochKD;
+  const entryReady = (
+    (bias4H === "Bullish" && confirmation1H === "Bullish" && kCrossAboveD && stochKD.K < 35) ||
+    (bias4H === "Bearish" && confirmation1H === "Bearish" && kCrossBelowD && stochKD.K > 65)
+  );
+
+  // Determine state based on ADX
   let state: "WAIT" | "WATCH" | "LONG" | "SHORT" = "WAIT";
-  let status: "LONG" | "SHORT" | "NO_SIGNAL" = "NO_SIGNAL";
-  let entry: number | undefined;
-  let stopLoss: number | undefined;
-  let takeProfit: number | undefined;
   let reason = "";
 
-  // ADX filter
-  if (adx15M < 20) {
+  if (adx < 20) {
     state = "WAIT";
-    reason = `ADX ${adx15M.toFixed(1)} < 20: Range/no trade`;
-  } else if (adx15M < 25) {
+    reason = `ADX ${adx.toFixed(1)} < 20: Range/choppy - no trade`;
+  } else if (adx < 25) {
     state = "WATCH";
-    reason = `ADX ${adx15M.toFixed(1)}: Weak trend - monitoring`;
+    reason = `ADX ${adx.toFixed(1)} (20-25): Weak trend - monitoring 4H=${bias4H}, 1H=${confirmation1H}`;
   } else {
-    // Check for LONG signal
-    if (bias4H === "Bullish" && confirm1H === "Bullish" && entry15M === "LONG") {
+    // ADX >= 25: Good trend, check for entry
+    if (bias4H === "Bullish" && confirmation1H === "Bullish" && kCrossAboveD && stochKD.K < 35) {
       state = "LONG";
-      status = "LONG";
-      entry = currentPrice;
-      const atrCap = Math.min(atr, entry * 0.05);
-      stopLoss = Math.round((entry - 1.5 * atrCap) * 100) / 100;
-      takeProfit = Math.round((entry + 4 * atrCap) * 100) / 100;
-      reason = `LONG: 4H Bullish + 1H Bullish + 15M K cross above D`;
-    }
-    // Check for SHORT signal
-    else if (bias4H === "Bearish" && confirm1H === "Bearish" && entry15M === "SHORT") {
+      reason = `LONG: 4H Bullish + 1H Bullish + 15M K crossed above D (K=${stochKD.K.toFixed(1)}) + ADX ${adx.toFixed(1)}`;
+    } else if (bias4H === "Bearish" && confirmation1H === "Bearish" && kCrossBelowD && stochKD.K > 65) {
       state = "SHORT";
-      status = "SHORT";
-      entry = currentPrice;
-      const atrCap = Math.min(atr, entry * 0.05);
-      stopLoss = Math.round((entry + 1.5 * atrCap) * 100) / 100;
-      takeProfit = Math.round((entry - 4 * atrCap) * 100) / 100;
-      reason = `SHORT: 4H Bearish + 1H Bearish + 15M K cross below D`;
-    }
-    // WATCH state for potential entries
-    else if ((bias4H === "Bullish" && confirm1H === "Bullish") || (bias4H === "Bearish" && confirm1H === "Bearish")) {
+      reason = `SHORT: 4H Bearish + 1H Bearish + 15M K crossed below D (K=${stochKD.K.toFixed(1)}) + ADX ${adx.toFixed(1)}`;
+    } else if ((bias4H === "Bullish" && confirmation1H === "Bullish") || (bias4H === "Bearish" && confirmation1H === "Bearish")) {
       state = "WATCH";
-      reason = `${bias4H} setup ready, waiting for 15M Stoch crossover`;
+      reason = `Setup aligned: 4H=${bias4H}, 1H=${confirmation1H}, waiting for 15M K/D crossover`;
     } else {
       state = "WAIT";
-      reason = "No alignment across timeframes";
+      reason = `ADX ${adx.toFixed(1)} but alignment missing: 4H=${bias4H}, 1H=${confirmation1H}`;
     }
   }
 
   // Calculate confidence score
-  let confidenceScore = 0;
-  if (bias4H !== "Neutral") confidenceScore += 30;
-  if (confirm1H !== "Neutral") confidenceScore += 30;
-  if (entry15M !== "NONE") confidenceScore += 20;
-  if (adx15M > 25) confidenceScore += 20;
+  let confidence = 0;
+  if (bias4H !== "Neutral") confidence += 30;
+  if (confirmation1H !== "Neutral") confidence += 30;
+  if (kCrossAboveD || kCrossBelowD) confidence += 20;
+  if (adx > 25) confidence += 20;
 
   return {
     symbol,
     price: Math.round(currentPrice * 100) / 100,
-    status,
     state,
-    entry: entry ? Math.round(entry * 100) / 100 : undefined,
-    stopLoss,
-    takeProfit,
-    confidence: confidenceScore,
-    adx: adx15M,
-    stochK: stochK15M,
-    marketBias: bias4H,
+    bias: bias4H,
+    confidence: Math.min(100, confidence),
+    adx: Math.round(adx * 10) / 10,
+    stochK: Math.round(stochKD.K * 10) / 10,
+    stochD: Math.round(stochKD.D * 10) / 10,
     reason,
     updatedAt: new Date().toISOString(),
   };
-}
-
-// Helper function for ATR
-function calculateATR(candles: Candle[], period: number = 14): number {
-  if (candles.length < period + 1) return 0;
-  let tr_sum = 0;
-  const start = Math.max(1, candles.length - period);
-  for (let i = start; i < candles.length; i++) {
-    const curr = candles[i];
-    const prev = candles[i - 1];
-    const tr1 = curr.high - curr.low;
-    const tr2 = Math.abs(curr.high - prev.close);
-    const tr3 = Math.abs(curr.low - prev.close);
-    tr_sum += Math.max(tr1, tr2, tr3);
-  }
-  return tr_sum / period;
 }
