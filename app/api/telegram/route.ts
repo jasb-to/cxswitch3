@@ -8,19 +8,19 @@ export const dynamic = "force-dynamic";
 export function formatAlert(signal: any): string {
   const emoji = signal.setup === "LONG" ? "🟢" : signal.setup === "SHORT" ? "🔴" : "⚪";
   const dir = signal.setup === "LONG" ? "LONG" : signal.setup === "SHORT" ? "SHORT" : "WAIT";
+  const stoch = signal.stochRSI !== undefined ? signal.stochRSI : "—";
 
   let msg = `${emoji} **${signal.symbol} ${dir}** — $${signal.price}
 `;
-  msg += `${signal.tradeType} | 24h: ${signal.change24h.toFixed(2)}% | Bias: ${signal.bias4H} | Stoch: ${signal.stochRSI} | ${signal.momentum}
-
+  msg += `${signal.trigger || "—"} | Bias: ${signal.bias4H} | Stoch: ${stoch} | ${signal.momentum}
 `;
 
   if (signal.entry) {
     msg += `Entry: $${signal.entry} | SL: $${signal.stopLoss} | TP: $${signal.takeProfit}
 `;
-    msg += `R:R: ${signal.riskReward?.toFixed(2) || "—"}
+    msg += `R:R: ${signal.riskReward?.toFixed(2) || "—"}%
 `;
-    msg += `Confidence: ${signal.confidence}%
+    msg += `Confidence: ${signal.confidence || 0}%
 `;
   }
 

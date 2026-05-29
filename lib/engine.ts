@@ -61,34 +61,33 @@ export function shouldSendAlert(
 
   const lastAlert = sentAlerts.get(symbol);
   const now = Date.now();
-  const fiveMinutes = 5 * 60 * 1000;
+  const thirtyMinutes = 30 * 60 * 1000;
+  const twoMinutes = 2 * 60 * 1000;
 
+  // First time: always send
   if (!lastAlert) return true;
 
-  const entryDiff = Math.abs(entry - lastAlert.entry) / lastAlert.entry;
-  if (
-    lastAlert.direction === direction &&
-    entryDiff < 0.05 &&
-    now - lastAlert.timestamp < fiveMinutes
-  ) {
-    return false;
-  }
-
+  // Direction flip: always send immediately
   if (lastAlert.direction !== direction) {
     sentAlerts.set(symbol, { entry, direction, timestamp: now });
+    console.log(`[ENGINE] ✅ Direction flip for ${symbol}: ${lastAlert.direction} → ${direction}`);
     return true;
   }
 
-  if (entryDiff >= 0.05) {
+  // Same direction: require BOTH 30min cooldown AND entry moved >2%
+  const entryDiff = Math.abs(entry - lastAlert.entry) / lastAlert.entry;
+  const timeSinceAlert = now - lastAlert.timestamp;
+
+  if (entryDiff >= 0.02 && timeSinceAlert > thirtyMinutes) {
     sentAlerts.set(symbol, { entry, direction, timestamp: now });
+    console.log(`[ENGINE] ✅ Significant move for ${symbol}: entry diff=${(entryDiff * 100).toFixed(2)}% + 30min cooldown`);
     return true;
   }
 
-  if (now - lastAlert.timestamp > fiveMinutes) {
-    sentAlerts.set(symbol, { entry, direction, timestamp: now });
-    return true;
-  }
-
+  // Block: same direction + insufficient cooldown/movement
+  console.log(
+    `[ENGINE] ⏸️  ${symbol} ${direction} blocked: entryDiff=${(entryDiff * 100).toFixed(2)}% (need 2%), timeSince=${Math.round(timeSinceAlert / 1000)}s (need 1800s)`
+  );
   return false;
 }
 
@@ -197,6 +196,11 @@ function calculateStoch(closes: number[]) {
   const current = slice.at(-1)!;
 
   const value = high === low ? 50 : ((current - low) / (high - low)) * 100;
+  
+  // DEBUG: Log the actual candle values
+  console.log(`[ENGINE] STOCH DEBUG: current=${current}, low=${low}, high=${high}, range=${high-low}, value=${value.toFixed(1)}%`);
+  console.log(`[ENGINE] STOCH 14 closes: [${slice.slice(0, 3).join(", ")}...${slice.slice(-3).join(", ")}]`);
+  
   return Math.round(value);
 }
 
@@ -216,6 +220,8 @@ function calculateEMACross(closes: number[]) {
 
   const ema8 = closes.slice(-8).reduce((a, b) => a + b, 0) / 8;
   const ema21 = closes.slice(-21).reduce((a, b) => a + b, 0) / 21;
+
+  console.log(`[ENGINE] EMA DEBUG: ema8=${ema8.toFixed(2)}, ema21=${ema21.toFixed(2)}, last3=${closes.slice(-3).join(", ")}`);
 
   if (ema8 > ema21) return "Bullish";
   if (ema8 < ema21) return "Bearish";
@@ -253,14 +259,17 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
 
   // REVERSAL ENTRIES: Oversold bounce or overbought fade (faster entries)
   if (!setup) {
-    // Oversold bounce: stoch < 20 + EMA crosses bullish = early LONG
-    if (stoch < 20 && emaCross === "Bullish") {
+    // Check if price is currently rising or falling
+    const priceDirection = price > closes1H.at(-2)! ? "up" : "down";
+    
+    // Oversold bounce: stoch < 20 + EMA crosses bullish + price moving up = early LONG
+    if (stoch < 20 && emaCross === "Bullish" && priceDirection === "up") {
       setup = "LONG";
       setupType = "Reversal (Oversold)";
     }
 
-    // Overbought fade: stoch > 80 + EMA crosses bearish = early SHORT
-    if (stoch > 80 && emaCross === "Bearish") {
+    // Overbought fade: stoch > 80 + EMA crosses bearish + price moving down = early SHORT
+    if (stoch > 80 && emaCross === "Bearish" && priceDirection === "down") {
       setup = "SHORT";
       setupType = "Reversal (Overbought)";
     }
