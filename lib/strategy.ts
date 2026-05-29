@@ -271,21 +271,27 @@ export function generateSignal(
     ema15MBullish: ema15MBullish,
   };
 
+  // Counter-trend LONG override: Extreme oversold bounce (Stoch < 20) + upward bounce + 15M recovering
+  const counterTrendLongSetup = stochK < 20 && ema15MBullish;
+
   console.log(
-    `[STRATEGY] ${symbol} LONG conditions: priceAbove=${longConditions.priceAboveResistance} (${currentPrice.toFixed(2)} > ${highLevel.toFixed(2)}), ema15M=${longConditions.ema15MBullish} (${ema8_15M.toFixed(2)} > ${ema21_15M.toFixed(2)}), adx=${adx.toFixed(1)}, stochK=${stochK} (confidence only)`
+    `[STRATEGY] ${symbol} LONG conditions: priceAbove=${longConditions.priceAboveResistance} (${currentPrice.toFixed(2)} > ${highLevel.toFixed(2)}), ema15M=${longConditions.ema15MBullish} (${ema8_15M.toFixed(2)} > ${ema21_15M.toFixed(2)}), stochK=${stochK}, counterTrend=${counterTrendLongSetup}, adx=${adx.toFixed(1)}`
   );
 
   if (
-    longConditions.priceAboveResistance &&
-    longConditions.ema15MBullish
+    (longConditions.priceAboveResistance && longConditions.ema15MBullish) ||
+    counterTrendLongSetup
   ) {
     status = "LONG";
     entry = currentPrice;
     stopLoss = Math.round((entry - 1.5 * atr) * 100) / 100;
     takeProfit = Math.round((entry + 4 * atr) * 100) / 100;
     
-    // Determine entry type based on 5M confirmation
-    if (entry5MConfirmed) {
+    // Determine entry type based on which condition triggered
+    if (counterTrendLongSetup && !longConditions.priceAboveResistance) {
+      entryType = "5M Momentum";
+      reason = `Counter-trend LONG: oversold bounce (Stoch=${stochK}) + 15M bullish EMA recovery`;
+    } else if (entry5MConfirmed) {
       entryType = "5M Momentum";
       reason = `5M Momentum: vol spike (${volumeRatio.toFixed(1)}x) + bullish EMA + 4H break`;
     } else {
