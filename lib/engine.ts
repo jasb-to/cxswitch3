@@ -238,13 +238,32 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   const emaCross = calculateEMACross(closes1H);
 
   let setup: "LONG" | "SHORT" | null = null;
+  let setupType = "";
 
+  // TREND FOLLOWING: Wait for full confirmation
   if (bias1H === "Bullish" && emaCross === "Bullish" && stoch >= 35) {
     setup = "LONG";
+    setupType = "Trend";
   }
 
   if (bias1H === "Bearish" && emaCross === "Bearish" && stoch <= 65) {
     setup = "SHORT";
+    setupType = "Trend";
+  }
+
+  // REVERSAL ENTRIES: Oversold bounce or overbought fade (faster entries)
+  if (!setup) {
+    // Oversold bounce: stoch < 20 + EMA crosses bullish = early LONG
+    if (stoch < 20 && emaCross === "Bullish") {
+      setup = "LONG";
+      setupType = "Reversal (Oversold)";
+    }
+
+    // Overbought fade: stoch > 80 + EMA crosses bearish = early SHORT
+    if (stoch > 80 && emaCross === "Bearish") {
+      setup = "SHORT";
+      setupType = "Reversal (Overbought)";
+    }
   }
 
   const roundPrice = (p: number) => Math.round(p * 100) / 100;
@@ -263,7 +282,7 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     entry: setup ? roundPrice(price) : undefined,
     stopLoss: setup ? roundPrice(price * (setup === "LONG" ? 0.985 : 1.015)) : undefined,
     takeProfit: setup ? roundPrice(price * (setup === "LONG" ? 1.04 : 0.96)) : undefined,
-    trigger: setup ? "1H Bias + EMA + Stoch" : "Waiting",
+    trigger: setup ? setupType : "Waiting",
     updatedAt: new Date().toISOString(),
     state: setup ? "SNIPER" : "FLAT",
     confidence: setup ? 80 : 0,
