@@ -288,8 +288,12 @@ export function generateSignal(
   ) {
     status = "LONG";
     entry = currentPrice;
-    stopLoss = Math.round((entry - 1.5 * atr) * 100) / 100;
-    takeProfit = Math.round((entry + 4 * atr) * 100) / 100;
+    
+    // Safety check: if ATR is > 10% of entry price, something is wrong - cap it
+    const atrSanityCheck = Math.min(atr, entry * 0.05); // Cap ATR at 5% of entry
+    
+    stopLoss = Math.round((entry - 1.5 * atrSanityCheck) * 100) / 100;
+    takeProfit = Math.round((entry + 4 * atrSanityCheck) * 100) / 100;
     
     // Determine entry type based on which condition triggered
     if (counterTrendLongSetup && !longConditions.priceAboveResistance) {
@@ -324,8 +328,12 @@ export function generateSignal(
   ) {
     status = "SHORT";
     entry = currentPrice;
-    stopLoss = Math.round((entry + 1.5 * atr) * 100) / 100;
-    takeProfit = Math.round((entry - 4 * atr) * 100) / 100;
+    
+    // Safety check: if ATR is > 10% of entry price, something is wrong - cap it
+    const atrSanityCheck = Math.min(atr, entry * 0.05); // Cap ATR at 5% of entry
+    
+    stopLoss = Math.round((entry + 1.5 * atrSanityCheck) * 100) / 100;
+    takeProfit = Math.round((entry - 4 * atrSanityCheck) * 100) / 100;
     
     // Determine entry type based on which condition triggered
     if (counterTrendShortSetup && !shortConditions.priceBelowSupport) {
