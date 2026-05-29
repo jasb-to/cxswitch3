@@ -183,11 +183,17 @@ export function generateSignal(
   candles15M: Candle[],
   candles5M?: Candle[]
 ): Signal {
-  const currentPrice = candles4H[candles4H.length - 1].close;
-  const adx = calculateADX(candles4H);
-  const stochK = calculateStochRSI(candles4H);
-  const atr = calculateATR(candles4H);
-  const { highLevel, lowLevel } = findSwings(candles4H, 50);
+  // CRITICAL FIX: Kraken returns candles in reverse order (newest first)
+  // Reverse all candles to chronological order for correct calculations
+  const candles4H_ordered = candles4H.slice().reverse();
+  const candles15M_ordered = candles15M.slice().reverse();
+  const candles5M_ordered = candles5M ? candles5M.slice().reverse() : undefined;
+
+  const currentPrice = candles4H_ordered[candles4H_ordered.length - 1].close;
+  const adx = calculateADX(candles4H_ordered);
+  const stochK = calculateStochRSI(candles4H_ordered);
+  const atr = calculateATR(candles4H_ordered);
+  const { highLevel, lowLevel } = findSwings(candles4H_ordered, 50);
 
   console.log(`[STRATEGY] ${symbol} ATR=${atr.toFixed(2)}, entry will use 1.5*ATR=${(1.5 * atr).toFixed(2)}, 4*ATR=${(4 * atr).toFixed(2)}`);
 
@@ -202,25 +208,24 @@ export function generateSignal(
   const adxThreshold = symbol === "SOL" ? 15 : 20;
 
   // Calculate EMAs first for structure break override check
-  const stoch15M = calculateStochRSI(candles15M);
+  const stoch15M = calculateStochRSI(candles15M_ordered);
   const ema8_15M =
-    candles15M.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
+    candles15M_ordered.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
   const ema21_15M =
-    candles15M.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
+    candles15M_ordered.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
 
-  // Debug: Check if 15M candles are inverted or wrong
   console.log(
-    `[STRATEGY] ${symbol} 15M candles: last5close=${candles15M.slice(-5).map(c => c.close.toFixed(2))}, ema8=${ema8_15M.toFixed(2)}, ema21=${ema21_15M.toFixed(2)}, bullish=${ema8_15M > ema21_15M}`
+    `[STRATEGY] ${symbol} 15M (FIXED): last5close=${candles15M_ordered.slice(-5).map(c => c.close.toFixed(2))}, ema8=${ema8_15M.toFixed(2)}, ema21=${ema21_15M.toFixed(2)}, bullish=${ema8_15M > ema21_15M}`
   );
 
   // Calculate 4H market bias (EMA cross)
   const ema8_4H =
-    candles4H.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
+    candles4H_ordered.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
   const ema21_4H =
-    candles4H.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
+    candles4H_ordered.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
 
   console.log(
-    `[STRATEGY] ${symbol} 4H candles: last5close=${candles4H.slice(-5).map(c => c.close.toFixed(2))}, ema8=${ema8_4H.toFixed(2)}, ema21=${ema21_4H.toFixed(2)}, bullish=${ema8_4H > ema21_4H}`
+    `[STRATEGY] ${symbol} 4H (FIXED): last5close=${candles4H_ordered.slice(-5).map(c => c.close.toFixed(2))}, ema8=${ema8_4H.toFixed(2)}, ema21=${ema21_4H.toFixed(2)}, bullish=${ema8_4H > ema21_4H}`
   );
 
   let marketBias: "Bullish" | "Bearish" | "Neutral" = "Neutral";
@@ -243,8 +248,11 @@ export function generateSignal(
   const structureBreakWithEMA = (priceAboveResistance && ema15MBullish) || (priceBelowSupport && ema15MBearish);
   const effectiveAdxThreshold = structureBreakWithEMA ? 10 : adxThreshold;
   
+  console.log(`[STRATEGY] ${symbol} ADX check: adx=${adx.toFixed(1)}, threshold=${adxThreshold}, structureBreak=${structureBreakWithEMA}, effectiveThreshold=${effectiveAdxThreshold}, passes=${adx >= effectiveAdxThreshold}`);
+  
   if (adx < effectiveAdxThreshold) {
     reason = `ADX too low (${adx.toFixed(1)} < ${effectiveAdxThreshold}), skipping choppy market`;
+    console.log(`[STRATEGY] ${symbol} BLOCKED: ${reason}`);
     return {
       symbol,
       price: currentPrice,
@@ -263,11 +271,11 @@ export function generateSignal(
   let entryType: "5M Momentum" | "4H Structure" | undefined;
   let volumeRatio: number | undefined;
 
-  if (candles5M && candles5M.length >= 30) {
-    const ema8_5M = candles5M.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
-    const ema21_5M = candles5M.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
-    const avgVolume = candles5M.slice(-20).reduce((a, b) => a + b.volume, 0) / 20;
-    const currentVolume = candles5M[candles5M.length - 1].volume;
+  if (candles5M_ordered && candles5M_ordered.length >= 30) {
+    const ema8_5M = candles5M_ordered.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
+    const ema21_5M = candles5M_ordered.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
+    const avgVolume = candles5M_ordered.slice(-20).reduce((a, b) => a + b.volume, 0) / 20;
+    const currentVolume = candles5M_ordered[candles5M_ordered.length - 1].volume;
 
     volumeRatio = Math.round((currentVolume / avgVolume) * 100) / 100;
 
@@ -295,6 +303,7 @@ export function generateSignal(
     (longConditions.priceAboveResistance && longConditions.ema15MBullish) ||
     counterTrendLongSetup
   ) {
+    console.log(`[STRATEGY] ${symbol} LONG SIGNAL TRIGGERED - counterTrend=${counterTrendLongSetup}, structureBreak=${longConditions.priceAboveResistance && longConditions.ema15MBullish}`);
     status = "LONG";
     entry = currentPrice;
     
