@@ -4,8 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Switch Signals",
-  description:
-    "Early-entry crypto momentum trading dashboard",
+  description: "Early-entry trading system",
 };
 
 export default function RootLayout({
