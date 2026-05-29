@@ -9,19 +9,22 @@ export async function sendTelegramAlert(signal: Signal) {
     return false;
   }
 
-  // Use new state format instead of status
-  const isLong = signal.state === "LONG";
-  const isShort = signal.state === "SHORT";
+  // Handle both old and new Signal formats
+  const state = signal.state || "UNKNOWN";
+  const stochD = signal.stochD || signal.stochK || 0;
+  
+  const isLong = state === "LONG";
+  const isShort = state === "SHORT";
   const emoji = isLong ? "🟢" : isShort ? "🔴" : "⚪";
-  const stateText = signal.state.toUpperCase();
+  const stateText = state.toUpperCase();
 
   const message = `${emoji} **${signal.symbol} ${stateText}** — $${signal.price.toFixed(2)}
 
-**Bias:** ${signal.bias}
+**Bias:** ${signal.bias || "—"}
 **Setup:** ${signal.reason}
 **Confidence:** ${signal.confidence}%
 
-ADX: ${signal.adx.toFixed(1)} | Stoch K: ${signal.stochK.toFixed(1)} | Stoch D: ${signal.stochD.toFixed(1)}
+ADX: ${signal.adx.toFixed(1)} | Stoch K: ${signal.stochK.toFixed(1)} | Stoch D: ${stochD.toFixed(1)}
 ⏰ ${new Date().toLocaleTimeString()}`;
 
   try {
