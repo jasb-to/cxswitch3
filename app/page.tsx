@@ -114,6 +114,16 @@ function SignalCard({ signal }: { signal: Signal }) {
       {/* Metrics */}
       <div className="space-y-3 mb-6 pb-6 border-b border-border">
         <div className="flex justify-between text-sm">
+          <span className="text-muted-foreground">4H Bias</span>
+          <span className={`font-mono font-semibold ${
+            signal.marketBias === "Bullish" ? "text-green-400" :
+            signal.marketBias === "Bearish" ? "text-red-400" :
+            "text-slate-400"
+          }`}>
+            {signal.marketBias}
+          </span>
+        </div>
+        <div className="flex justify-between text-sm">
           <span className="text-muted-foreground">ADX</span>
           <span className="font-mono font-semibold">{signal.adx.toFixed(1)}</span>
         </div>
