@@ -13,13 +13,6 @@ export default function Home() {
       setLoading(true);
       const res = await fetch("/api/signals");
       const data = await res.json();
-      console.log("[v0] API Response:", data);
-      console.log("[v0] Signals received:", data.signals?.length || 0);
-      data.signals?.forEach((sig: Signal) => {
-        console.log(
-          `[v0] ${sig.symbol}: status=${sig.status}, entry=${sig.entry?.toFixed(2)}, sl=${sig.stopLoss?.toFixed(2)}, tp=${sig.takeProfit?.toFixed(2)}`
-        );
-      });
       setSignals(data.signals || []);
       setLastUpdate(new Date().toLocaleTimeString());
     } catch (err) {
@@ -84,16 +77,9 @@ export default function Home() {
 
         {/* Signals Grid */}
         <div className="grid md:grid-cols-3 gap-6">
-          {console.log("[v0] Rendering signals grid with", signals.length, "signals")}
-          {signals.length === 0 ? (
-            <div className="col-span-3 text-center py-12">
-              <p className="text-muted-foreground">No signals received. API returned {signals.length} signals.</p>
-            </div>
-          ) : (
-            signals.map((signal) => (
-              <SignalCard key={signal.symbol} signal={signal} />
-            ))
-          )}
+          {signals.map((signal) => (
+            <SignalCard key={signal.symbol} signal={signal} />
+          ))}
         </div>
       </div>
     </main>
