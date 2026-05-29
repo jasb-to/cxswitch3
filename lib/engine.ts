@@ -128,8 +128,8 @@ export function detectBiasFlip(
 }
 
 const KRAKEN: Record<Symbol, string> = {
-  BTC: "XBTUSD",
-  ETH: "ETHUSD",
+  BTC: "XXBTZUSD",
+  ETH: "XETHZUSD",
   SOL: "SOLUSD",
 };
 
