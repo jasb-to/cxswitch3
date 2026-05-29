@@ -8,7 +8,7 @@ interface Signal {
   bias4H: string;
   bias1H: string;
   setup: "LONG" | "SHORT" | null;
-  strength: string;
+  confidence?: number;
   emaCross: string;
   stochRSI: number;
   stochDirection: string;
@@ -20,7 +20,6 @@ interface Signal {
   updatedAt: string;
 }
 
-// Defensive fallbacks
 function safe(value: any, fallback: any) {
   return value !== undefined && value !== null ? value : fallback;
 }
@@ -29,12 +28,6 @@ function getStochLabel(stochRSI: number) {
   if (stochRSI < 20) return "Oversold";
   if (stochRSI > 65) return "Overbought";
   return "Neutral";
-}
-
-function getStrengthGrade(strength: string) {
-  const s = safe(strength, "D");
-  const map: Record<string, string> = { "A+": "A+", A: "A", B: "B", C: "C", D: "D" };
-  return map[s] || "D";
 }
 
 function formatPrice(n?: number) {
@@ -47,9 +40,8 @@ function SignalCard({ signal }: { signal: Signal }) {
   const bias1H = safe(signal.bias1H, "Neutral");
   const emaCross = safe(signal.emaCross, "None");
   const stochRSI = safe(signal.stochRSI, 50);
-  const stochDirection = safe(signal.stochDirection, "neutral");
   const momentum = safe(signal.momentum, "Flat");
-  const strength = getStrengthGrade(signal.strength);
+  const confidence = safe(signal.confidence, 0);
 
   const isActive = signal.setup === "LONG" || signal.setup === "SHORT";
   const isMuted = !isActive;
@@ -57,12 +49,6 @@ function SignalCard({ signal }: { signal: Signal }) {
   const biasColor = (bias: string) => {
     if (bias === "Bullish") return "text-green-400";
     if (bias === "Bearish") return "text-red-400";
-    return "text-gray-400";
-  };
-
-  const emaCrossColor = (cross: string) => {
-    if (cross === "Bullish Cross") return "text-green-400";
-    if (cross === "Bearish Cross") return "text-red-400";
     return "text-gray-400";
   };
 
@@ -89,21 +75,12 @@ function SignalCard({ signal }: { signal: Signal }) {
           <h2 className="text-4xl font-bold text-white tracking-tight">{signal.symbol}</h2>
           <p className="text-2xl font-mono text-white/80 mt-1">{formatPrice(signal.price)}</p>
         </div>
-        <div className="text-right">
-          <div className={`inline-block px-3 py-1 rounded-full text-xs font-bold ${
-            signal.change24h > 0 ? "bg-green-500/20 text-green-400" :
-            signal.change24h < 0 ? "bg-red-500/20 text-red-400" :
-            "bg-gray-500/20 text-gray-400"
-          }`}>
-            {signal.change24h > 0 ? "+" : ""}{signal.change24h.toFixed(2)}%
-          </div>
-          <div className={`mt-3 px-3 py-2 rounded-lg text-sm font-bold ${
-            signal.setup === "LONG" ? "bg-green-500 text-black" :
-            signal.setup === "SHORT" ? "bg-red-500 text-white" :
-            "bg-gray-700 text-gray-300"
-          }`}>
-            {signal.setup || "WAIT"}
-          </div>
+        <div className={`px-3 py-2 rounded-lg text-sm font-bold ${
+          signal.setup === "LONG" ? "bg-green-500 text-black" :
+          signal.setup === "SHORT" ? "bg-red-500 text-white" :
+          "bg-gray-700 text-gray-300"
+        }`}>
+          {signal.setup || "WAIT"}
         </div>
       </div>
 
@@ -119,7 +96,7 @@ function SignalCard({ signal }: { signal: Signal }) {
         </div>
         <div className="flex justify-between items-center text-sm">
           <span className="text-gray-600">EMA Cross (15m)</span>
-          <span className={`font-bold ${emaCrossColor(emaCross)}`}>{emaCross}</span>
+          <span className="font-bold text-white">{emaCross}</span>
         </div>
         <div className="flex justify-between items-center text-sm">
           <span className="text-gray-600">StochRSI</span>
@@ -129,20 +106,15 @@ function SignalCard({ signal }: { signal: Signal }) {
         </div>
       </div>
 
-      {/* MOMENTUM STRIP */}
+      {/* MOMENTUM & CONFIDENCE STRIP */}
       <div className="flex gap-4 mb-5 border-t border-zinc-800 pt-5">
         <div className="flex-1">
           <p className="text-xs text-gray-600 mb-1">Momentum</p>
           <p className="text-sm font-bold text-white">{momentum}</p>
         </div>
         <div className="flex-1">
-          <p className="text-xs text-gray-600 mb-1">Strength</p>
-          <p className={`text-sm font-bold ${
-            strength === "A+" ? "text-green-400" :
-            strength === "A" ? "text-emerald-400" :
-            strength === "B" ? "text-yellow-400" :
-            "text-gray-400"
-          }`}>{strength}</p>
+          <p className="text-xs text-gray-600 mb-1">Confidence</p>
+          <p className="text-sm font-bold text-cyan-400">{confidence}%</p>
         </div>
       </div>
 
@@ -190,12 +162,12 @@ export default function Home() {
   }, []);
 
   return (
-    <main className="min-h-screen bg-black text-white">
-      <div className="px-8 py-12">
+    <main className="min-h-screen w-full bg-black text-white">
+      <div className="w-full px-12 py-16">
         <div className="max-w-7xl mx-auto">
-          <div className="mb-12">
+          <div className="mb-16">
             <h1 className="text-5xl font-bold tracking-tight">Switch Signals</h1>
-            <p className="text-gray-400 mt-2">Real-time multi-timeframe trading signals</p>
+            <p className="text-gray-400 mt-3">Real-time multi-timeframe trading signals</p>
           </div>
 
           <div className="grid md:grid-cols-3 gap-8">
