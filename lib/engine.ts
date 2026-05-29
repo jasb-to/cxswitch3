@@ -462,8 +462,7 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   else if (
     bias4H === "Bullish" &&
     a1H.bias === "Bearish" &&
-    peak.peaked &&
-    isAligned
+    peak.peaked
   ) {
     state = "SNIPER";
     direction = "SHORT";
@@ -474,8 +473,7 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   } else if (
     bias4H === "Bearish" &&
     a1H.bias === "Bullish" &&
-    peak.troughed &&
-    isAligned
+    peak.troughed
   ) {
     state = "SNIPER";
     direction = "LONG";
