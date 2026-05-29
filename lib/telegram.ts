@@ -9,13 +9,19 @@ export async function sendTelegramAlert(signal: Signal) {
     return false;
   }
 
-  // Handle both old and new Signal formats
+  // Only send alerts for LONG or SHORT states
   const state = signal.state || "UNKNOWN";
+  if (state !== "LONG" && state !== "SHORT") {
+    console.log(`[TELEGRAM] Skipping ${state} state - only alerting on LONG/SHORT`);
+    return false;
+  }
+
+  // Handle both old and new Signal formats
   const stochD = signal.stochD || signal.stochK || 0;
   
   const isLong = state === "LONG";
   const isShort = state === "SHORT";
-  const emoji = isLong ? "🟢" : isShort ? "🔴" : "⚪";
+  const emoji = isLong ? "🟢" : "🔴";
   const stateText = state.toUpperCase();
 
   const message = `${emoji} **${signal.symbol} ${stateText}** — $${signal.price.toFixed(2)}
