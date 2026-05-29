@@ -189,46 +189,21 @@ export default function Home() {
     return () => clearInterval(t);
   }, []);
 
-  const badge = (s?: string) => {
-    if (s === "LONG") return "bg-green-500 text-black";
-    if (s === "SHORT") return "bg-red-500 text-white";
-    return "bg-zinc-800 text-white";
-  };
-
   return (
-    <main className="min-h-screen bg-black text-white p-8">
-      <h1 className="text-4xl font-bold mb-8">Switch Signals</h1>
-
-      <div className="grid md:grid-cols-3 gap-6">
-        {signals.map((s) => (
-          <div key={s.symbol} className="bg-zinc-950 p-6 rounded-xl border border-zinc-800">
-            <div className="flex justify-between items-center">
-              <h2 className="text-2xl font-bold">{s.symbol}</h2>
-
-              <div className={`px-3 py-1 rounded ${badge(s.setup)}`}>
-                {s.setup || "WAIT"}
-              </div>
-            </div>
-
-            <div className="mt-4 space-y-2 text-sm text-zinc-300">
-              <div>Price: {s.price}</div>
-              <div>4H: {s.bias4H}</div>
-              <div>1H: {s.bias1H}</div>
-              <div>EMA: {s.emaCross}</div>
-              <div>Stoch: {s.stochRSI} ({s.stochDirection})</div>
-              <div>Momentum: {s.momentum}</div>
-              <div className="text-zinc-500 mt-2">{s.trigger}</div>
-            </div>
-
-            {s.setup && (
-              <div className="mt-4 border-t border-zinc-800 pt-4 text-sm">
-                <div>Entry: {s.entry}</div>
-                <div className="text-red-400">SL: {s.stopLoss}</div>
-                <div className="text-green-400">TP: {s.takeProfit}</div>
-              </div>
-            )}
+    <main className="min-h-screen bg-black text-white">
+      <div className="px-8 py-12">
+        <div className="max-w-7xl mx-auto">
+          <div className="mb-12">
+            <h1 className="text-5xl font-bold tracking-tight">Switch Signals</h1>
+            <p className="text-gray-400 mt-2">Real-time multi-timeframe trading signals</p>
           </div>
-        ))}
+
+          <div className="grid md:grid-cols-3 gap-8">
+            {signals.map((s) => (
+              <SignalCard key={s.symbol} signal={s} />
+            ))}
+          </div>
+        </div>
       </div>
     </main>
   );
