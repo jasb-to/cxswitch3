@@ -54,8 +54,13 @@ export async function sendTestAlert() {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
 
+  console.log("[TELEGRAM] Test alert - checking credentials...");
+  console.log(`[TELEGRAM] Bot token exists: ${!!botToken}`);
+  console.log(`[TELEGRAM] Chat ID exists: ${!!chatId}`);
+  console.log(`[TELEGRAM] Chat ID value: ${chatId}`);
+
   if (!botToken || !chatId) {
-    console.log("[TELEGRAM] Missing credentials");
+    console.error("[TELEGRAM] Missing credentials - bot token or chat ID not set");
     return { success: false, message: "Telegram credentials not configured" };
   }
 
@@ -67,6 +72,8 @@ This is a test message to verify Telegram integration is working correctly.
 
   try {
     const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+    console.log("[TELEGRAM] Sending to URL: (masked for security)");
+    
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -77,9 +84,13 @@ This is a test message to verify Telegram integration is working correctly.
       }),
     });
 
+    const responseText = await response.text();
+    console.log(`[TELEGRAM] Response status: ${response.status}`);
+    console.log(`[TELEGRAM] Response body: ${responseText}`);
+
     if (!response.ok) {
-      console.error(`[TELEGRAM] Test failed: ${response.status}`);
-      return { success: false, message: `Telegram API error: ${response.status}` };
+      console.error(`[TELEGRAM] Test failed with status ${response.status}: ${responseText}`);
+      return { success: false, message: `Telegram API error: ${response.status} - ${responseText}` };
     }
 
     console.log("[TELEGRAM] Test alert sent successfully");

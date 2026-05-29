@@ -20,6 +20,7 @@ export interface Signal {
   confidence: number;
   adx: number;
   stochK: number;
+  marketBias: "Bullish" | "Bearish" | "Neutral";
   nearestSwingLevel?: number;
   distanceToSwing?: number; // as percentage
   reason: string;
@@ -157,6 +158,7 @@ export function generateSignal(
       adx,
       stochK,
       confidence: 0,
+      marketBias: "Neutral",
       reason,
       updatedAt: new Date().toISOString(),
     };
@@ -169,10 +171,23 @@ export function generateSignal(
   const ema21_15M =
     candles15M.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
 
+  // Calculate 4H market bias (EMA cross)
+  const ema8_4H =
+    candles4H.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
+  const ema21_4H =
+    candles4H.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
+
+  let marketBias: "Bullish" | "Bearish" | "Neutral" = "Neutral";
+  if (ema8_4H > ema21_4H) {
+    marketBias = "Bullish";
+  } else if (ema8_4H < ema21_4H) {
+    marketBias = "Bearish";
+  }
+
   if (
     currentPrice > highLevel &&
-    stochK < 20 &&
-    stoch15M < 30 &&
+    stochK < 35 &&
+    stoch15M < 35 &&
     ema8_15M > ema21_15M
   ) {
     status = "LONG";
@@ -185,8 +200,8 @@ export function generateSignal(
   // SHORT Signal: Price below support + overbought stoch + bearish 15M
   else if (
     currentPrice < lowLevel &&
-    stochK > 80 &&
-    stoch15M > 70 &&
+    stochK > 65 &&
+    stoch15M > 65 &&
     ema8_15M < ema21_15M
   ) {
     status = "SHORT";
@@ -232,6 +247,7 @@ export function generateSignal(
     confidence: status === "NO_SIGNAL" ? 0 : Math.round((adx / 50) * 100),
     adx: Math.round(adx * 100) / 100,
     stochK: Math.round(stochK),
+    marketBias,
     nearestSwingLevel: nearestSwingLevel ? Math.round(nearestSwingLevel * 100) / 100 : undefined,
     distanceToSwing,
     reason,
