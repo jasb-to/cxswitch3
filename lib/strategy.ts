@@ -301,7 +301,7 @@ export function generateSignal(
     `[STRATEGY] ${symbol} SHORT conditions: priceBelow=${shortConditions.priceBelowSupport} (${currentPrice.toFixed(2)} < ${lowLevel.toFixed(2)}), stoch=${shortConditions.stochOverbought} (${stochK} > 65), stoch15M=${shortConditions.stoch15MOverbought} (${stoch15M} > 65), ema15M=${shortConditions.ema15MBearish} (${ema8_15M.toFixed(2)} < ${ema21_15M.toFixed(2)})`
   );
 
-  else if (
+  if (
     shortConditions.priceBelowSupport &&
     shortConditions.stochOverbought &&
     shortConditions.stoch15MOverbought &&
