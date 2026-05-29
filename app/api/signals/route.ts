@@ -1,5 +1,5 @@
 import { generateSignal, Signal, Symbol } from "@/lib/strategy";
-import { getCandles4H, getCandles15M } from "@/lib/kraken";
+import { getCandles4H, getCandles15M, getCandles5M } from "@/lib/kraken";
 import { sendTelegramAlert } from "@/lib/telegram";
 
 export const runtime = "nodejs";
@@ -21,9 +21,10 @@ export async function GET() {
       symbols.map(async (symbol) => {
         try {
           console.log(`[API] Fetching candles for ${symbol}...`);
-          const [candles4H, candles15M] = await Promise.all([
+          const [candles4H, candles15M, candles5M] = await Promise.all([
             getCandles4H(symbol),
             getCandles15M(symbol),
+            getCandles5M(symbol),
           ]);
 
           if (candles4H.length === 0 || candles15M.length === 0) {
@@ -34,14 +35,14 @@ export async function GET() {
           }
 
           console.log(
-            `[API] ${symbol}: Got 4H=${candles4H.length} candles, 15M=${candles15M.length} candles`
+            `[API] ${symbol}: Got 4H=${candles4H.length} candles, 15M=${candles15M.length} candles, 5M=${candles5M.length} candles`
           );
 
-          const signal = generateSignal(symbol, candles4H, candles15M);
+          const signal = generateSignal(symbol, candles4H, candles15M, candles5M);
 
           // Log signal details
           console.log(
-            `[API] ${symbol} signal: status=${signal.status}, price=$${signal.price}, adx=${signal.adx.toFixed(1)}, stoch=${signal.stochK}, confidence=${signal.confidence}%`
+            `[API] ${symbol} signal: status=${signal.status}, price=$${signal.price}, adx=${signal.adx.toFixed(1)}, stoch=${signal.stochK}, confidence=${signal.confidence}%, entryType=${signal.entryType || "—"}, volume=${signal.volumeRatio?.toFixed(1)}x`
           );
 
           if (signal.status !== "NO_SIGNAL") {

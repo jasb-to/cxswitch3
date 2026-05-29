@@ -61,3 +61,7 @@ export async function getCandles4H(symbol: Symbol): Promise<Candle[]> {
 export async function getCandles15M(symbol: Symbol): Promise<Candle[]> {
   return fetchCandles(symbol, 15);
 }
+
+export async function getCandles5M(symbol: Symbol): Promise<Candle[]> {
+  return fetchCandles(symbol, 5);
+}
