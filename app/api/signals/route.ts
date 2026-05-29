@@ -12,7 +12,7 @@ let lastAlerts: { [key: string]: { status: string; timestamp: number } } = {};
 export async function GET(request: Request) {
   const secret = new URL(request.url).searchParams.get("secret");
   
-  // Verify cron secret if provided
+  // Only validate secret if one is provided (for cron job). Allow unsigned requests from UI.
   if (secret && secret !== process.env.CRON_SECRET) {
     console.error("[API] Invalid cron secret");
     return new Response("Unauthorized", { status: 401 });

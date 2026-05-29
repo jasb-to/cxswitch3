@@ -9,20 +9,19 @@ export async function sendTelegramAlert(signal: Signal) {
     return false;
   }
 
-  const emoji = signal.status === "LONG" ? "🟢" : signal.status === "SHORT" ? "🔴" : "⚪";
-  const riskReward = signal.riskReward?.toFixed(2) || "—";
+  // Use new state format instead of status
+  const isLong = signal.state === "LONG";
+  const isShort = signal.state === "SHORT";
+  const emoji = isLong ? "🟢" : isShort ? "🔴" : "⚪";
+  const stateText = signal.state.toUpperCase();
 
-  const message = `${emoji} **${signal.symbol} ${signal.status}** — $${signal.price}
+  const message = `${emoji} **${signal.symbol} ${stateText}** — $${signal.price.toFixed(2)}
 
+**Bias:** ${signal.bias}
 **Setup:** ${signal.reason}
 **Confidence:** ${signal.confidence}%
 
-**Entry:** $${signal.entry}
-**Stop Loss:** $${signal.stopLoss}
-**Take Profit:** $${signal.takeProfit}
-**R:R Ratio:** ${riskReward}x
-
-ADX: ${signal.adx.toFixed(1)} | Stoch K: ${signal.stochK}
+ADX: ${signal.adx.toFixed(1)} | Stoch K: ${signal.stochK.toFixed(1)} | Stoch D: ${signal.stochD.toFixed(1)}
 ⏰ ${new Date().toLocaleTimeString()}`;
 
   try {
@@ -42,7 +41,7 @@ ADX: ${signal.adx.toFixed(1)} | Stoch K: ${signal.stochK}
       return false;
     }
 
-    console.log(`[TELEGRAM] Alert sent for ${signal.symbol} ${signal.status}`);
+    console.log(`[TELEGRAM] Alert sent for ${signal.symbol} ${stateText}`);
     return true;
   } catch (err) {
     console.error(`[TELEGRAM] Error: ${err}`);
