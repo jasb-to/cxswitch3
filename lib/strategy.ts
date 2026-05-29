@@ -256,11 +256,23 @@ export function generateSignal(
     );
   }
 
+  // LONG Signal: Price above resistance + oversold stoch + bullish 15M
+  const longConditions = {
+    priceAboveResistance: currentPrice > highLevel,
+    stochOversold: stochK < 35,
+    stoch15MOversold: stoch15M < 35,
+    ema15MBullish: ema8_15M > ema21_15M,
+  };
+
+  console.log(
+    `[STRATEGY] ${symbol} LONG conditions: priceAbove=${longConditions.priceAboveResistance} (${currentPrice.toFixed(2)} > ${highLevel.toFixed(2)}), stoch=${longConditions.stochOversold} (${stochK} < 35), stoch15M=${longConditions.stoch15MOversold} (${stoch15M} < 35), ema15M=${longConditions.ema15MBullish} (${ema8_15M.toFixed(2)} > ${ema21_15M.toFixed(2)})`
+  );
+
   if (
-    currentPrice > highLevel &&
-    stochK < 35 &&
-    stoch15M < 35 &&
-    ema8_15M > ema21_15M
+    longConditions.priceAboveResistance &&
+    longConditions.stochOversold &&
+    longConditions.stoch15MOversold &&
+    longConditions.ema15MBullish
   ) {
     status = "LONG";
     entry = currentPrice;
@@ -278,11 +290,22 @@ export function generateSignal(
   }
 
   // SHORT Signal: Price below support + overbought stoch + bearish 15M
+  const shortConditions = {
+    priceBelowSupport: currentPrice < lowLevel,
+    stochOverbought: stochK > 65,
+    stoch15MOverbought: stoch15M > 65,
+    ema15MBearish: ema8_15M < ema21_15M,
+  };
+
+  console.log(
+    `[STRATEGY] ${symbol} SHORT conditions: priceBelow=${shortConditions.priceBelowSupport} (${currentPrice.toFixed(2)} < ${lowLevel.toFixed(2)}), stoch=${shortConditions.stochOverbought} (${stochK} > 65), stoch15M=${shortConditions.stoch15MOverbought} (${stoch15M} > 65), ema15M=${shortConditions.ema15MBearish} (${ema8_15M.toFixed(2)} < ${ema21_15M.toFixed(2)})`
+  );
+
   else if (
-    currentPrice < lowLevel &&
-    stochK > 65 &&
-    stoch15M > 65 &&
-    ema8_15M < ema21_15M
+    shortConditions.priceBelowSupport &&
+    shortConditions.stochOverbought &&
+    shortConditions.stoch15MOverbought &&
+    shortConditions.ema15MBearish
   ) {
     status = "SHORT";
     entry = currentPrice;
