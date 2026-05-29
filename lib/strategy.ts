@@ -195,7 +195,7 @@ export function generateSignal(
   let reason = "Waiting for setup";
 
   // ADX threshold varies by symbol (SOL is more volatile, needs lower threshold)
-  const adxThreshold = symbol === "SOL" ? 15 : 18;
+  const adxThreshold = symbol === "SOL" ? 18 : 22;
   
   if (adx < adxThreshold) {
     reason = `ADX too low (${adx.toFixed(1)} < ${adxThreshold}), skipping choppy market`;
