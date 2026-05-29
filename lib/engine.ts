@@ -1,5 +1,3 @@
-export type Symbol = "BTC" | "ETH" | "SOL";
-
 export interface Signal {
   symbol: Symbol;
   price: number;
@@ -11,7 +9,6 @@ export interface Signal {
   stochDirection: "rising" | "falling" | "neutral";
   emaCross: "Bullish" | "Bearish" | "None";
   momentum: "Accelerating" | "Decelerating" | "Flat";
-  strength: string;
   entry?: number;
   stopLoss?: number;
   takeProfit?: number;
@@ -28,6 +25,7 @@ export interface Signal {
   stochRSIPeak?: any;
   stochRSITrough?: any;
   stochRSIDirection?: string;
+  direction?: string;
 }
 
 // In-memory signal cache
@@ -123,6 +121,8 @@ function bias(closes: number[]) {
 }
 
 function stoch(closes: number[]) {
+  if (closes.length < 14) return 50;
+  
   const slice = closes.slice(-14);
   const low = Math.min(...slice);
   const high = Math.max(...slice);
@@ -163,14 +163,16 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   const mom = momentum(closes15);
 
   let setup: "LONG" | "SHORT" | null = null;
+  let direction: string = "";
 
   if (
     bias4H === "Bullish" &&
     bias1H === "Bullish" &&
     ema === "Bullish" &&
-    st >= 65
+    st >= 35
   ) {
     setup = "LONG";
+    direction = "LONG";
   }
 
   if (
@@ -180,31 +182,26 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     st <= 65
   ) {
     setup = "SHORT";
+    direction = "SHORT";
   }
+
+  const roundPrice = (p: number) => Math.round(p * 100) / 100;
 
   return {
     symbol,
-
-    price,
+    price: roundPrice(price),
     change24h: 0,
-
     bias4H,
     bias1H,
-
     setup,
     stochRSI: st,
-    stochDirection: "neutral",
-
+    stochDirection: st < 20 ? "rising" : st > 80 ? "falling" : "neutral",
     emaCross: ema,
     momentum: mom,
-    strength: setup ? (st > 70 || st < 30 ? "A+" : "A") : "C",
-
-    entry: setup ? price : undefined,
-    stopLoss: setup ? price * (setup === "LONG" ? 0.985 : 1.015) : undefined,
-    takeProfit: setup ? price * (setup === "LONG" ? 1.04 : 0.96) : undefined,
-
+    entry: setup ? roundPrice(price) : undefined,
+    stopLoss: setup ? roundPrice(price * (setup === "LONG" ? 0.985 : 1.015)) : undefined,
+    takeProfit: setup ? roundPrice(price * (setup === "LONG" ? 1.04 : 0.96)) : undefined,
     trigger: setup ? "EMA + Bias + Stoch" : "Waiting",
-
     updatedAt: new Date().toISOString(),
     state: setup ? "SNIPER" : "FLAT",
     confidence: setup ? 85 : 0,
@@ -212,5 +209,10 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     tradeType: "With Trend",
     riskReward: setup ? 1.33 : undefined,
     bias: bias4H,
+    dataQuality: "OHLC",
+    stochRSIState: st < 20 ? "Oversold" : st > 80 ? "Overbought" : "Neutral",
+    stochRSIPeak: null,
+    stochRSITrough: null,
+    stochRSIDirection: st < 20 ? "rising" : st > 80 ? "falling" : "neutral",
   };
 }
