@@ -181,6 +181,10 @@ export function generateSignal(
   const ema21_4H =
     candles4H.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
 
+  console.log(
+    `[STRATEGY] ${symbol} 4H: price=${currentPrice.toFixed(2)}, ema8=${ema8_4H.toFixed(2)}, ema21=${ema21_4H.toFixed(2)}, diff=${(ema8_4H - ema21_4H).toFixed(2)}`
+  );
+
   let marketBias: "Bullish" | "Bearish" | "Neutral" = "Neutral";
   if (ema8_4H > ema21_4H) {
     marketBias = "Bullish";
