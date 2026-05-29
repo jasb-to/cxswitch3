@@ -171,8 +171,8 @@ export function generateSignal(
 
   if (
     currentPrice > highLevel &&
-    stochK < 20 &&
-    stoch15M < 30 &&
+    stochK < 35 &&
+    stoch15M < 35 &&
     ema8_15M > ema21_15M
   ) {
     status = "LONG";
@@ -185,8 +185,8 @@ export function generateSignal(
   // SHORT Signal: Price below support + overbought stoch + bearish 15M
   else if (
     currentPrice < lowLevel &&
-    stochK > 80 &&
-    stoch15M > 70 &&
+    stochK > 65 &&
+    stoch15M > 65 &&
     ema8_15M < ema21_15M
   ) {
     status = "SHORT";

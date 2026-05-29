@@ -6,28 +6,10 @@ const KRAKEN_PAIRS: Record<Symbol, string> = {
   SOL: "SOLUSD",
 };
 
-const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
-const candle_cache = new Map<
-  string,
-  { candles: Candle[]; timestamp: number }
->();
-
 export async function fetchCandles(
   symbol: Symbol,
   interval: number
 ): Promise<Candle[]> {
-  const cacheKey = `${symbol}_${interval}`;
-  const cached = candle_cache.get(cacheKey);
-  const now = Date.now();
-
-  // Return cached if still valid
-  if (cached && now - cached.timestamp < CACHE_DURATION) {
-    console.log(
-      `[KRAKEN] Cache hit for ${symbol} ${interval}m (${Math.round((now - cached.timestamp) / 1000)}s old)`
-    );
-    return cached.candles;
-  }
-
   try {
     const pair = KRAKEN_PAIRS[symbol];
     const url = `https://api.kraken.com/0/public/OHLC?pair=${pair}&interval=${interval}`;
@@ -60,9 +42,6 @@ export async function fetchCandles(
       close: Number(row[4]),
       volume: Number(row[6]),
     }));
-
-    // Cache it
-    candle_cache.set(cacheKey, { candles, timestamp: now });
 
     console.log(
       `[KRAKEN] Fetched ${candles.length} candles for ${pair} (${interval}m)`
