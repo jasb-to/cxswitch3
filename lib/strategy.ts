@@ -156,22 +156,33 @@ export function generateSignal(
   candles15M: Candle[],
   candles5M?: Candle[]
 ): Signal {
-  // Reverse all candles to chronological order (Kraken returns newest first)
-  const candles4H_ordered = candles4H.slice().reverse();
-  const candles15M_ordered = candles15M.slice().reverse();
-  const candles5M_ordered = candles5M ? candles5M.slice().reverse() : undefined;
+  // USE ONLY 15M TIMEFRAME FOR ALL CALCULATIONS - SIMPLEST, BEST FOR EARLY ENTRIES
+  const candles = candles15M.slice().reverse();
+  
+  if (candles.length < 30) {
+    return {
+      symbol,
+      price: 0,
+      status: "NO_SIGNAL",
+      confidence: 0,
+      adx: 0,
+      stochK: 0,
+      marketBias: "Neutral",
+      reason: "Not enough 15M data",
+      updatedAt: new Date().toISOString(),
+    };
+  }
 
-  const currentPrice = candles4H_ordered[candles4H_ordered.length - 1].close;
-  const adx = calculateADX(candles4H_ordered);
-  const stochK = calculateStochRSI(candles4H_ordered);
-  const atr = calculateATR(candles4H_ordered);
-  const { highLevel, lowLevel } = findSwings(candles4H_ordered, 50);
+  const currentPrice = candles[candles.length - 1].close;
+  const adx = calculateADX(candles);
+  const stochK = calculateStochRSI(candles);
+  const atr = calculateATR(candles);
+  const { highLevel, lowLevel } = findSwings(candles, 50);
 
-  // Calculate trend on both timeframes using SIMPLE method
-  const trend4H = calculateTrend(candles4H_ordered);
-  const trend15M = calculateTrend(candles15M_ordered);
+  // Calculate trend using 15M only
+  const trend = calculateTrend(candles);
 
-  console.log(`[STRATEGY] ${symbol}: trend4H=${trend4H}, trend15M=${trend15M}, adx=${adx.toFixed(1)}, stoch=${stochK}, price=${currentPrice.toFixed(2)}`);
+  console.log(`[STRATEGY] ${symbol}: trend=${trend}, adx=${adx.toFixed(1)}, stoch=${stochK}, price=${currentPrice.toFixed(2)}, high=${highLevel.toFixed(2)}, low=${lowLevel.toFixed(2)}`);
 
   let status: "LONG" | "SHORT" | "NO_SIGNAL" = "NO_SIGNAL";
   let entry: number | undefined;
@@ -181,16 +192,16 @@ export function generateSignal(
   let marketBias: "Bullish" | "Bearish" | "Neutral" = "Neutral";
   let entryType: "5M Momentum" | "4H Structure" | undefined;
 
-  const adxThreshold = 15;
+  const adxThreshold = 12; // Lower threshold for 15M since it's noisier
   const priceAboveResistance = currentPrice > highLevel;
   const priceBelowSupport = currentPrice < lowLevel;
 
-  // Determine market bias from 4H trend
-  marketBias = trend4H === "UP" ? "Bullish" : trend4H === "DOWN" ? "Bearish" : "Neutral";
+  // Market bias from trend
+  marketBias = trend === "UP" ? "Bullish" : trend === "DOWN" ? "Bearish" : "Neutral";
 
-  // Check if ADX is strong enough to trade
+  // Check if ADX is strong enough
   if (adx < adxThreshold) {
-    reason = `ADX too low (${adx.toFixed(1)} < ${adxThreshold}), market too choppy`;
+    reason = `ADX too low (${adx.toFixed(1)} < ${adxThreshold})`;
     return {
       symbol,
       price: Math.round(currentPrice * 100) / 100,
@@ -204,35 +215,33 @@ export function generateSignal(
     };
   }
 
-  // LONG Setup: 4H bullish + 15M bullish + price at or breaking above resistance
-  if (trend4H === "UP" && trend15M === "UP") {
-    // Fire on structure break or oversold bounce
-    if (priceAboveResistance || stochK < 30) {
+  // LONG: Trend is UP + either structure break (price > high) OR oversold bounce (stoch < 35)
+  if (trend === "UP") {
+    if (priceAboveResistance || stochK < 35) {
       status = "LONG";
       entry = currentPrice;
       const atrCap = Math.min(atr, entry * 0.05);
       stopLoss = Math.round((entry - 1.5 * atrCap) * 100) / 100;
       takeProfit = Math.round((entry + 4 * atrCap) * 100) / 100;
       entryType = priceAboveResistance ? "4H Structure" : "5M Momentum";
-      reason = entryType === "4H Structure" 
-        ? `Bullish: 4H + 15M trending up, price broke resistance` 
-        : `Bullish: 4H + 15M up, oversold bounce (Stoch=${Math.round(stochK)})`;
+      reason = priceAboveResistance 
+        ? `LONG: 15M trending up, price broke resistance` 
+        : `LONG: 15M up, oversold bounce (Stoch=${Math.round(stochK)})`;
     }
   }
 
-  // SHORT Setup: 4H bearish + 15M bearish + price at or breaking below support
-  if (trend4H === "DOWN" && trend15M === "DOWN") {
-    // Fire on structure break or overbought reversal
-    if (priceBelowSupport || stochK > 70) {
+  // SHORT: Trend is DOWN + either structure break (price < low) OR overbought fail (stoch > 65)
+  if (trend === "DOWN") {
+    if (priceBelowSupport || stochK > 65) {
       status = "SHORT";
       entry = currentPrice;
       const atrCap = Math.min(atr, entry * 0.05);
       stopLoss = Math.round((entry + 1.5 * atrCap) * 100) / 100;
       takeProfit = Math.round((entry - 4 * atrCap) * 100) / 100;
       entryType = priceBelowSupport ? "4H Structure" : "5M Momentum";
-      reason = entryType === "4H Structure"
-        ? `Bearish: 4H + 15M trending down, price broke support`
-        : `Bearish: 4H + 15M down, overbought reversal (Stoch=${Math.round(stochK)})`;
+      reason = priceBelowSupport
+        ? `SHORT: 15M trending down, price broke support`
+        : `SHORT: 15M down, overbought fail (Stoch=${Math.round(stochK)})`;
     }
   }
 
