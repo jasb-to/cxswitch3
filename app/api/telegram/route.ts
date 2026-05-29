@@ -6,37 +6,21 @@ const CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
 export const dynamic = "force-dynamic";
 
 export function formatAlert(signal: any): string {
-  const emoji = signal.state === "LONG" ? "🟢" : signal.state === "SHORT" ? "🔴" : "⚪";
-  const dir = signal.state === "LONG" ? "LONG" : signal.state === "SHORT" ? "SHORT" : "FLAT";
+  const emoji = signal.setup === "LONG" ? "🟢" : signal.setup === "SHORT" ? "🔴" : "⚪";
+  const dir = signal.setup === "LONG" ? "LONG" : signal.setup === "SHORT" ? "SHORT" : "WAIT";
 
-  let msg = `${emoji} **${signal.symbol} ${dir}**
+  let msg = `${emoji} **${signal.symbol} ${dir}** — $${signal.price}
 `;
-  msg += `Price: $${signal.price?.toLocaleString()}
-`;
-  msg += `Confidence: ${signal.confidence}%
-`;
-  msg += `4H Bias: ${signal.bias4h}
-
-`;
-
-  msg += `Layer Status:
-`;
-  msg += `1️⃣ ${signal.layer1?.status || "Waiting"}
-`;
-  msg += `2️⃣ ${signal.layer2?.status || "Waiting"}
-`;
-  msg += `3️⃣ ${signal.layer3?.status || "Waiting"}
+  msg += `${signal.tradeType} | 24h: ${signal.change24h.toFixed(2)}% | Bias: ${signal.bias4H} | Stoch: ${signal.stochRSI} | ${signal.momentum}
 
 `;
 
   if (signal.entry) {
-    msg += `Entry: $${signal.entry?.toLocaleString()}
+    msg += `Entry: $${signal.entry} | SL: $${signal.stopLoss} | TP: $${signal.takeProfit}
 `;
-    msg += `SL: $${signal.stopLoss?.toLocaleString()}
+    msg += `R:R: ${signal.riskReward?.toFixed(2) || "—"}
 `;
-    msg += `TP: $${signal.takeProfit?.toLocaleString()}
-`;
-    msg += `R:R ${signal.riskReward?.toFixed(2)}
+    msg += `Confidence: ${signal.confidence}%
 `;
   }
 
