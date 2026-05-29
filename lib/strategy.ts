@@ -35,7 +35,9 @@ function calculateATR(candles: Candle[], period: number = 14): number {
   if (candles.length < period + 1) return 0;
 
   let tr_sum = 0;
-  for (let i = 1; i < candles.length; i++) {
+  // Only calculate TR for the last `period` candles, not all candles
+  const start = Math.max(1, candles.length - period);
+  for (let i = start; i < candles.length; i++) {
     const curr = candles[i];
     const prev = candles[i - 1];
 
