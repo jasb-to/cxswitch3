@@ -1,3 +1,5 @@
+export type Symbol = "BTC" | "ETH" | "SOL";
+
 export interface Signal {
   symbol: Symbol;
   price: number;
