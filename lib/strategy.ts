@@ -13,38 +13,19 @@ export interface Signal {
   symbol: Symbol;
   price: number;
   status: "LONG" | "SHORT" | "NO_SIGNAL";
+  state: "WAIT" | "WATCH" | "LONG" | "SHORT";
   entry?: number;
   stopLoss?: number;
   takeProfit?: number;
-  riskReward?: number;
   confidence: number;
   adx: number;
   stochK: number;
   marketBias: "Bullish" | "Bearish" | "Neutral";
-  entryType?: "5M Momentum" | "4H Structure";
-  volumeRatio?: number;
   reason: string;
   updatedAt: string;
 }
 
-// Calculate ATR (Average True Range)
-function calculateATR(candles: Candle[], period: number = 14): number {
-  if (candles.length < period + 1) return 0;
-
-  let tr_sum = 0;
-  const start = Math.max(1, candles.length - period);
-  for (let i = start; i < candles.length; i++) {
-    const curr = candles[i];
-    const prev = candles[i - 1];
-    const tr1 = curr.high - curr.low;
-    const tr2 = Math.abs(curr.high - prev.close);
-    const tr3 = Math.abs(curr.low - prev.close);
-    tr_sum += Math.max(tr1, tr2, tr3);
-  }
-  return tr_sum / period;
-}
-
-// Calculate ADX (Average Directional Index) - simplified
+// Calculate ADX
 function calculateADX(candles: Candle[], period: number = 14): number {
   if (candles.length < period + 1) return 0;
 
@@ -81,7 +62,7 @@ function calculateADX(candles: Candle[], period: number = 14): number {
   return Math.round(Math.max(0, Math.min(100, dx)) * 100) / 100;
 }
 
-// Calculate Stochastic RSI - simplified
+// Calculate Stochastic RSI
 function calculateStochRSI(candles: Candle[], period: number = 14): number {
   if (candles.length < period) return 50;
 
@@ -101,53 +82,134 @@ function calculateStochRSI(candles: Candle[], period: number = 14): number {
   return Math.round(Math.max(0, Math.min(100, rsi)));
 }
 
-// Find swing highs and lows
-function findSwings(candles: Candle[], lookback: number = 20): { highLevel: number; lowLevel: number } {
-  if (candles.length < 3) {
-    const current = candles[candles.length - 1];
-    return { highLevel: current.high, lowLevel: current.low };
+// Calculate Stochastic K and D (for crossover detection)
+function calculateStochKD(candles: Candle[], period: number = 14, smoothK: number = 3, smoothD: number = 3) {
+  if (candles.length < period) return { K: 50, D: 50, prevK: 50, prevD: 50 };
+
+  // Calculate Stochastic %K
+  let lowestLow = candles[candles.length - 1].low;
+  let highestHigh = candles[candles.length - 1].high;
+
+  for (let i = Math.max(0, candles.length - period); i < candles.length; i++) {
+    lowestLow = Math.min(lowestLow, candles[i].low);
+    highestHigh = Math.max(highestHigh, candles[i].high);
   }
 
-  let highLevel = candles[candles.length - 1].high;
-  let lowLevel = candles[candles.length - 1].low;
+  const fastK = ((candles[candles.length - 1].close - lowestLow) / (highestHigh - lowestLow)) * 100;
 
-  const start = Math.max(0, candles.length - lookback);
+  // Smooth K
+  let K_sum = 0;
+  for (let i = Math.max(0, candles.length - smoothK); i < candles.length; i++) {
+    const low = Math.min(...candles.slice(Math.max(0, i - period), i + 1).map(c => c.low));
+    const high = Math.max(...candles.slice(Math.max(0, i - period), i + 1).map(c => c.high));
+    K_sum += ((candles[i].close - low) / (high - low)) * 100;
+  }
+  const K = K_sum / smoothK;
 
-  for (let i = start; i < candles.length; i++) {
-    if (candles[i].high > highLevel) highLevel = candles[i].high;
-    if (candles[i].low < lowLevel) lowLevel = candles[i].low;
+  // D is SMA of K
+  let D_sum = 0;
+  for (let i = Math.max(0, candles.length - smoothD); i < candles.length; i++) {
+    const low = Math.min(...candles.slice(Math.max(0, i - period), i + 1).map(c => c.low));
+    const high = Math.max(...candles.slice(Math.max(0, i - period), i + 1).map(c => c.high));
+    const k = ((candles[i].close - low) / (high - low)) * 100;
+    D_sum += k;
+  }
+  const D = D_sum / smoothD;
+
+  // Previous K and D from prior candle
+  let prevK = 50, prevD = 50;
+  if (candles.length > smoothK) {
+    const priorIndex = candles.length - smoothK - 1;
+    const low = Math.min(...candles.slice(Math.max(0, priorIndex - period), priorIndex + 1).map(c => c.low));
+    const high = Math.max(...candles.slice(Math.max(0, priorIndex - period), priorIndex + 1).map(c => c.high));
+    prevK = ((candles[priorIndex].close - low) / (high - low)) * 100;
+    prevD = prevK; // Simplified
   }
 
-  return { highLevel, lowLevel };
+  return { K: Math.round(K), D: Math.round(D), prevK: Math.round(prevK), prevD: Math.round(prevD) };
 }
 
-// SLOPE-BASED TREND: Compare current vs previous SMA values to detect turning points
-function calculateTrend(candles: Candle[]): "UP" | "DOWN" | "FLAT" {
-  if (candles.length < 30) return "FLAT";
-  
-  // Calculate 8-period SMA current and previous
-  const sma8_current = candles.slice(-8).reduce((sum, c) => sum + c.close, 0) / 8;
-  const sma8_prev = candles.slice(-16, -8).reduce((sum, c) => sum + c.close, 0) / 8;
-  
-  // Calculate 21-period SMA current and previous
-  const sma21_current = candles.slice(-21).reduce((sum, c) => sum + c.close, 0) / 21;
-  const sma21_prev = candles.slice(-42, -21).reduce((sum, c) => sum + c.close, 0) / 21;
-  
-  // Calculate slopes (change in SMA)
-  const slope8 = ((sma8_current - sma8_prev) / sma8_prev) * 100;
-  const slope21 = ((sma21_current - sma21_prev) / sma21_prev) * 100;
-  
-  const currentClose = candles[candles.length - 1].close;
-  
-  console.log(`[STRATEGY] Trend: close=${currentClose.toFixed(2)}, sma8=${sma8_current.toFixed(2)} (slope=${slope8.toFixed(3)}%), sma21=${sma21_current.toFixed(2)} (slope=${slope21.toFixed(3)}%)`);
-  
-  // Bullish: both SMAs have positive slope (turning up)
-  if (slope8 > 0.1 && slope21 > 0.05) return "UP";
-  
-  // Bearish: both SMAs have negative slope (turning down)
-  if (slope8 < -0.1 && slope21 < -0.05) return "DOWN";
-  
-  return "FLAT";
+// 4H Bias: Determine Bullish/Bearish from structure
+function determine4HBias(candles: Candle[]): "Bullish" | "Bearish" | "Neutral" {
+  if (candles.length < 10) return "Neutral";
+
+  const current = candles[candles.length - 1];
+  const last20 = candles.slice(-20);
+
+  // Check for higher highs and higher lows (Bullish)
+  let higherHighs = 0;
+  let higherLows = 0;
+
+  for (let i = 1; i < last20.length; i++) {
+    if (last20[i].high > last20[i - 1].high) higherHighs++;
+    if (last20[i].low > last20[i - 1].low) higherLows++;
+  }
+
+  // Check for lower highs and lower lows (Bearish)
+  let lowerHighs = 0;
+  let lowerLows = 0;
+
+  for (let i = 1; i < last20.length; i++) {
+    if (last20[i].high < last20[i - 1].high) lowerHighs++;
+    if (last20[i].low < last20[i - 1].low) lowerLows++;
+  }
+
+  if (higherHighs > 8 && higherLows > 8) return "Bullish";
+  if (lowerHighs > 8 && lowerLows > 8) return "Bearish";
+
+  return "Neutral";
+}
+
+// 1H Confirmation: Bullish/Bearish structure + Stoch direction + ADX
+function determine1HConfirmation(candles: Candle[], adx: number): "Bullish" | "Bearish" | "Neutral" {
+  if (adx < 20) return "Neutral"; // ADX too weak
+
+  if (candles.length < 10) return "Neutral";
+
+  const last10 = candles.slice(-10);
+
+  // Check structure
+  let higherHighs = 0;
+  let higherLows = 0;
+  let lowerHighs = 0;
+  let lowerLows = 0;
+
+  for (let i = 1; i < last10.length; i++) {
+    if (last10[i].high > last10[i - 1].high) higherHighs++;
+    else if (last10[i].high < last10[i - 1].high) lowerHighs++;
+
+    if (last10[i].low > last10[i - 1].low) higherLows++;
+    else if (last10[i].low < last10[i - 1].low) lowerLows++;
+  }
+
+  // Stoch RSI direction
+  const stochK = calculateStochRSI(candles);
+  const stochRising = candles[candles.length - 1].close > candles[candles.length - 2].close;
+
+  if (higherHighs >= 4 && higherLows >= 4 && stochRising) return "Bullish";
+  if (lowerHighs >= 4 && lowerLows >= 4 && !stochRising) return "Bearish";
+
+  return "Neutral";
+}
+
+// 15M Entry Trigger: Detect Stoch K/D crossovers
+function detect15MEntry(candles: Candle[], adx: number): "LONG" | "SHORT" | "NONE" {
+  if (adx < 20) return "NONE";
+  if (candles.length < 5) return "NONE";
+
+  const { K, D, prevK, prevD } = calculateStochKD(candles);
+
+  // LONG: K crosses above D, cross below 35, ADX > 20
+  if (prevK < prevD && K > D && K < 35 && adx > 20) {
+    return "LONG";
+  }
+
+  // SHORT: K crosses below D, cross above 65, ADX > 20
+  if (prevK > prevD && K < D && K > 65 && adx > 20) {
+    return "SHORT";
+  }
+
+  return "NONE";
 }
 
 export function generateSignal(
@@ -156,117 +218,118 @@ export function generateSignal(
   candles15M: Candle[],
   candles5M?: Candle[]
 ): Signal {
-  // USE ONLY 15M TIMEFRAME FOR ALL CALCULATIONS - SIMPLEST, BEST FOR EARLY ENTRIES
-  const candles = candles15M.slice().reverse();
-  
-  if (candles.length < 30) {
+  // Reverse to chronological order
+  const c4H = candles4H.slice().reverse();
+  const c1H = candles15M.slice().reverse(); // Using 15M as 1H proxy for this implementation
+  const c15M = candles15M.slice().reverse();
+
+  if (c15M.length < 30 || c4H.length < 20 || c1H.length < 20) {
     return {
       symbol,
       price: 0,
       status: "NO_SIGNAL",
+      state: "WAIT",
       confidence: 0,
       adx: 0,
       stochK: 0,
       marketBias: "Neutral",
-      reason: "Not enough 15M data",
+      reason: "Insufficient data",
       updatedAt: new Date().toISOString(),
     };
   }
 
-  const currentPrice = candles[candles.length - 1].close;
-  const adx = calculateADX(candles);
-  const stochK = calculateStochRSI(candles);
-  const atr = calculateATR(candles);
-  const { highLevel, lowLevel } = findSwings(candles, 50);
+  const currentPrice = c15M[c15M.length - 1].close;
+  const adx15M = calculateADX(c15M);
+  const stochK15M = calculateStochRSI(c15M);
+  const atr = calculateATR(c15M);
 
-  // Calculate trend using 15M only
-  const trend = calculateTrend(candles);
+  // Determine bias and confirmation
+  const bias4H = determine4HBias(c4H);
+  const confirm1H = determine1HConfirmation(c1H, adx15M);
+  const entry15M = detect15MEntry(c15M, adx15M);
 
-  console.log(`[STRATEGY] ${symbol}: trend=${trend}, adx=${adx.toFixed(1)}, stoch=${stochK}, price=${currentPrice.toFixed(2)}, high=${highLevel.toFixed(2)}, low=${lowLevel.toFixed(2)}`);
-
+  // Determine state
+  let state: "WAIT" | "WATCH" | "LONG" | "SHORT" = "WAIT";
   let status: "LONG" | "SHORT" | "NO_SIGNAL" = "NO_SIGNAL";
   let entry: number | undefined;
   let stopLoss: number | undefined;
   let takeProfit: number | undefined;
-  let reason = "Waiting for setup";
-  let marketBias: "Bullish" | "Bearish" | "Neutral" = "Neutral";
-  let entryType: "5M Momentum" | "4H Structure" | undefined;
+  let reason = "";
 
-  const adxThreshold = 12; // Lower threshold for 15M since it's noisier
-  const priceAboveResistance = currentPrice > highLevel;
-  const priceBelowSupport = currentPrice < lowLevel;
-
-  // Market bias from trend
-  marketBias = trend === "UP" ? "Bullish" : trend === "DOWN" ? "Bearish" : "Neutral";
-
-  // Check if ADX is strong enough
-  if (adx < adxThreshold) {
-    reason = `ADX too low (${adx.toFixed(1)} < ${adxThreshold})`;
-    return {
-      symbol,
-      price: Math.round(currentPrice * 100) / 100,
-      status: "NO_SIGNAL",
-      confidence: 0,
-      adx,
-      stochK: Math.round(stochK),
-      marketBias,
-      reason,
-      updatedAt: new Date().toISOString(),
-    };
-  }
-
-  // LONG: Trend is UP + either structure break (price > high) OR oversold bounce (stoch < 35)
-  if (trend === "UP") {
-    if (priceAboveResistance || stochK < 35) {
+  // ADX filter
+  if (adx15M < 20) {
+    state = "WAIT";
+    reason = `ADX ${adx15M.toFixed(1)} < 20: Range/no trade`;
+  } else if (adx15M < 25) {
+    state = "WATCH";
+    reason = `ADX ${adx15M.toFixed(1)}: Weak trend - monitoring`;
+  } else {
+    // Check for LONG signal
+    if (bias4H === "Bullish" && confirm1H === "Bullish" && entry15M === "LONG") {
+      state = "LONG";
       status = "LONG";
       entry = currentPrice;
       const atrCap = Math.min(atr, entry * 0.05);
       stopLoss = Math.round((entry - 1.5 * atrCap) * 100) / 100;
       takeProfit = Math.round((entry + 4 * atrCap) * 100) / 100;
-      entryType = priceAboveResistance ? "4H Structure" : "5M Momentum";
-      reason = priceAboveResistance 
-        ? `LONG: 15M trending up, price broke resistance` 
-        : `LONG: 15M up, oversold bounce (Stoch=${Math.round(stochK)})`;
+      reason = `LONG: 4H Bullish + 1H Bullish + 15M K cross above D`;
     }
-  }
-
-  // SHORT: Trend is DOWN + either structure break (price < low) OR overbought fail (stoch > 65)
-  if (trend === "DOWN") {
-    if (priceBelowSupport || stochK > 65) {
+    // Check for SHORT signal
+    else if (bias4H === "Bearish" && confirm1H === "Bearish" && entry15M === "SHORT") {
+      state = "SHORT";
       status = "SHORT";
       entry = currentPrice;
       const atrCap = Math.min(atr, entry * 0.05);
       stopLoss = Math.round((entry + 1.5 * atrCap) * 100) / 100;
       takeProfit = Math.round((entry - 4 * atrCap) * 100) / 100;
-      entryType = priceBelowSupport ? "4H Structure" : "5M Momentum";
-      reason = priceBelowSupport
-        ? `SHORT: 15M trending down, price broke support`
-        : `SHORT: 15M down, overbought fail (Stoch=${Math.round(stochK)})`;
+      reason = `SHORT: 4H Bearish + 1H Bearish + 15M K cross below D`;
+    }
+    // WATCH state for potential entries
+    else if ((bias4H === "Bullish" && confirm1H === "Bullish") || (bias4H === "Bearish" && confirm1H === "Bearish")) {
+      state = "WATCH";
+      reason = `${bias4H} setup ready, waiting for 15M Stoch crossover`;
+    } else {
+      state = "WAIT";
+      reason = "No alignment across timeframes";
     }
   }
 
-  // Calculate risk/reward
-  let riskReward: number | undefined;
-  if (entry && stopLoss && takeProfit) {
-    const risk = Math.abs(entry - stopLoss);
-    const reward = Math.abs(takeProfit - entry);
-    riskReward = Math.round((reward / risk) * 100) / 100;
-  }
+  // Calculate confidence score
+  let confidenceScore = 0;
+  if (bias4H !== "Neutral") confidenceScore += 30;
+  if (confirm1H !== "Neutral") confidenceScore += 30;
+  if (entry15M !== "NONE") confidenceScore += 20;
+  if (adx15M > 25) confidenceScore += 20;
 
   return {
     symbol,
     price: Math.round(currentPrice * 100) / 100,
     status,
+    state,
     entry: entry ? Math.round(entry * 100) / 100 : undefined,
     stopLoss,
     takeProfit,
-    riskReward,
-    confidence: status === "NO_SIGNAL" ? 0 : Math.round((adx / 50) * 100),
-    adx,
-    stochK: Math.round(stochK),
-    marketBias,
-    entryType,
+    confidence: confidenceScore,
+    adx: adx15M,
+    stochK: stochK15M,
+    marketBias: bias4H,
     reason,
     updatedAt: new Date().toISOString(),
   };
+}
+
+// Helper function for ATR
+function calculateATR(candles: Candle[], period: number = 14): number {
+  if (candles.length < period + 1) return 0;
+  let tr_sum = 0;
+  const start = Math.max(1, candles.length - period);
+  for (let i = start; i < candles.length; i++) {
+    const curr = candles[i];
+    const prev = candles[i - 1];
+    const tr1 = curr.high - curr.low;
+    const tr2 = Math.abs(curr.high - prev.close);
+    const tr3 = Math.abs(curr.low - prev.close);
+    tr_sum += Math.max(tr1, tr2, tr3);
+  }
+  return tr_sum / period;
 }
