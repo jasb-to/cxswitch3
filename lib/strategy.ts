@@ -208,11 +208,20 @@ export function generateSignal(
   const ema21_15M =
     candles15M.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
 
+  // Debug: Check if 15M candles are inverted or wrong
+  console.log(
+    `[STRATEGY] ${symbol} 15M candles: last5close=${candles15M.slice(-5).map(c => c.close.toFixed(2))}, ema8=${ema8_15M.toFixed(2)}, ema21=${ema21_15M.toFixed(2)}, bullish=${ema8_15M > ema21_15M}`
+  );
+
   // Calculate 4H market bias (EMA cross)
   const ema8_4H =
     candles4H.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
   const ema21_4H =
     candles4H.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
+
+  console.log(
+    `[STRATEGY] ${symbol} 4H candles: last5close=${candles4H.slice(-5).map(c => c.close.toFixed(2))}, ema8=${ema8_4H.toFixed(2)}, ema21=${ema21_4H.toFixed(2)}, bullish=${ema8_4H > ema21_4H}`
+  );
 
   let marketBias: "Bullish" | "Bearish" | "Neutral" = "Neutral";
   if (ema8_4H > ema21_4H) {
