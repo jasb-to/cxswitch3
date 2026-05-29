@@ -22,6 +22,17 @@ export default function Home() {
     }
   }
 
+  async function testTelegram() {
+    try {
+      const res = await fetch("/api/telegram/test", { method: "POST" });
+      const data = await res.json();
+      alert(data.message || "Test alert sent!");
+    } catch (err) {
+      alert("Failed to send test alert");
+      console.error(err);
+    }
+  }
+
   // Initial load
   useEffect(() => {
     fetchSignals();
@@ -35,7 +46,7 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-background">
-      <div className="px-6 py-8 max-w-7xl mx-auto">
+      <div className="px-12 py-8 max-w-7xl mx-auto">
         {/* Header */}
         <div className="mb-8">
           <h1 className="text-5xl font-bold tracking-tight mb-2">CX Switch</h1>
@@ -53,7 +64,13 @@ export default function Home() {
           >
             {loading ? "Scanning..." : "SCAN"}
           </button>
-          <span className="text-sm text-muted-foreground">
+          <button
+            onClick={testTelegram}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
+          >
+            Test Telegram
+          </button>
+          <span className="text-sm text-muted-foreground ml-auto">
             Last update: {lastUpdate || "—"}
           </span>
         </div>
@@ -154,4 +171,3 @@ function SignalCard({ signal }: { signal: Signal }) {
     </div>
   );
 }
-
