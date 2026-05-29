@@ -152,9 +152,11 @@ export function generateSignal(
   let takeProfit: number | undefined;
   let reason = "Waiting for setup";
 
-  // ADX > 20 required to avoid chop
-  if (adx < 20) {
-    reason = `ADX too low (${adx.toFixed(1)}), skipping choppy market`;
+  // ADX threshold varies by symbol (SOL is more volatile, needs lower threshold)
+  const adxThreshold = symbol === "SOL" ? 15 : 18;
+  
+  if (adx < adxThreshold) {
+    reason = `ADX too low (${adx.toFixed(1)} < ${adxThreshold}), skipping choppy market`;
     return {
       symbol,
       price: currentPrice,
