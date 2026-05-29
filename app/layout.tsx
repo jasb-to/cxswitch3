@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
+
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Trading Signals",
-  description: "3-Layer Trendline Trading Dashboard",
+  title: "Switch Signals",
+  description:
+    "Early-entry crypto momentum trading dashboard",
 };
 
 export default function RootLayout({
@@ -12,8 +14,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className="bg-black scroll-smooth">
-      <body className="bg-black antialiased">{children}</body>
+    <html lang="en">
+      <body className="bg-black text-white antialiased">
+        {children}
+      </body>
     </html>
   );
 }
