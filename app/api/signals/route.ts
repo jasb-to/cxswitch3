@@ -113,12 +113,26 @@ export async function GET() {
       `[API] === SIGNALS SCAN COMPLETE in ${duration}ms | Generated ${signals.length} signals ===`
     );
 
-    return Response.json({ signals, updatedAt: new Date().toISOString() });
+    return Response.json(
+      { signals, updatedAt: new Date().toISOString() },
+      {
+        headers: {
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          "Pragma": "no-cache",
+          "Expires": "0",
+        },
+      }
+    );
   } catch (err) {
     console.error(`[API] Fatal error: ${err}`);
     return Response.json(
       { error: "Failed to generate signals", signals: [] },
-      { status: 500 }
+      {
+        status: 500,
+        headers: {
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
+      }
     );
   }
 }
