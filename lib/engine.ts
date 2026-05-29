@@ -34,6 +34,7 @@ export interface Signal {
 let signalCache: Signal[] = [];
 const alertHistory = new Map<string, { direction: string; price: number; time: number }>();
 const biasHistory = new Map<string, { bias: string; price: number; time: number }>();
+const sentAlerts = new Map<string, { entry: number; direction: string; timestamp: number }>();
 
 export function getCachedSignals(): Signal[] {
   return signalCache;
@@ -49,6 +50,64 @@ export function recordAlert(
   price: number
 ): void {
   alertHistory.set(symbol, { direction, price, time: Date.now() });
+}
+
+export function shouldSendAlert(
+  symbol: string,
+  direction: string | undefined,
+  entry: number | undefined
+): boolean {
+  if (!direction || !entry) return false;
+
+  const lastAlert = sentAlerts.get(symbol);
+  const now = Date.now();
+  const fiveMinutes = 5 * 60 * 1000;
+
+  // If never sent for this symbol, allow it
+  if (!lastAlert) {
+    return true;
+  }
+
+  // If same direction AND entry within 5% AND sent within 5 minutes: SKIP (spam)
+  const entryDiff = Math.abs(entry - lastAlert.entry) / lastAlert.entry;
+  if (
+    lastAlert.direction === direction &&
+    entryDiff < 0.05 &&
+    now - lastAlert.timestamp < fiveMinutes
+  ) {
+    console.log(
+      `[ENGINE] ⏸️  Spam blocked for ${symbol}: same setup (entry diff: ${(entryDiff * 100).toFixed(2)}%)`
+    );
+    return false;
+  }
+
+  // If direction changed: allow (new setup)
+  if (lastAlert.direction !== direction) {
+    sentAlerts.set(symbol, { entry, direction, timestamp: now });
+    return true;
+  }
+
+  // If entry moved significantly (>5%): allow
+  if (entryDiff >= 0.05) {
+    sentAlerts.set(symbol, { entry, direction, timestamp: now });
+    return true;
+  }
+
+  // If more than 5 minutes have passed: allow
+  if (now - lastAlert.timestamp > fiveMinutes) {
+    sentAlerts.set(symbol, { entry, direction, timestamp: now });
+    return true;
+  }
+
+  return false;
+}
+
+export function recordSentAlert(
+  symbol: string,
+  direction: string,
+  entry: number
+): void {
+  sentAlerts.set(symbol, { entry, direction, timestamp: Date.now() });
 }
 
 export function detectBiasFlip(

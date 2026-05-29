@@ -6,6 +6,8 @@
 import {
   evaluateSignal,
   recordAlert,
+  recordSentAlert,
+  shouldSendAlert,
   detectBiasFlip,
   setCachedSignals,
 } from "@/lib/engine";
@@ -203,9 +205,16 @@ export async function GET(req: Request) {
       );
 
       if (signal.state === "SNIPER" && signal.shouldAlert) {
-        await sendTelegramAlert(signal);
-        recordAlert(signal.symbol, signal.direction!, signal.price);
-        alertsSent++;
+        // Check if this is a new/unique alert (prevent spam)
+        if (shouldSendAlert(signal.symbol, signal.direction, signal.entry)) {
+          await sendTelegramAlert(signal);
+          recordSentAlert(signal.symbol, signal.direction!, signal.entry!);
+          alertsSent++;
+        } else {
+          console.log(
+            `[CRON] ⏸️  Alert suppressed (spam prevention): ${signal.symbol} ${signal.direction}`
+          );
+        }
       }
     }
 
