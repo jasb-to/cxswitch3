@@ -142,17 +142,36 @@ async function fetchOHLC(symbol: Symbol, interval: number) {
     "&interval=" +
     interval;
 
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) return [];
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) {
+      console.log(`[v0] Kraken API error for ${pair}: ${res.status}`);
+      return [];
+    }
 
-  const data = await res.json();
+    const data = await res.json();
+    
+    if (data.error && data.error.length > 0) {
+      console.log(`[v0] Kraken error for ${pair}: ${data.error.join(", ")}`);
+      return [];
+    }
 
-  const key = Object.keys(data.result || {}).find((k) => k !== "last");
-  if (!key) return [];
+    const key = Object.keys(data.result || {}).find((k) => k !== "last");
+    if (!key) {
+      console.log(`[v0] No OHLC data for ${pair} (interval: ${interval})`);
+      return [];
+    }
 
-  return data.result[key].map((c: any[]) => ({
-    close: Number(c[4]),
-  }));
+    const candles = data.result[key].map((c: any[]) => ({
+      close: Number(c[4]),
+    }));
+    
+    console.log(`[v0] Fetched ${candles.length} candles for ${pair} (${interval}m)`);
+    return candles;
+  } catch (err) {
+    console.log(`[v0] Fetch error for ${pair}: ${err}`);
+    return [];
+  }
 }
 
 function emaCross(closes: number[]) {
@@ -213,6 +232,11 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
   const closes4 = c4.map((c) => c.close);
   const closes1 = c1.map((c) => c.close);
   const closes15 = c15.map((c) => c.close);
+
+  console.log(`[v0] ${symbol}: closes4=${closes4.length}, closes1=${closes1.length}, closes15=${closes15.length}`);
+  if (closes15.length > 0) {
+    console.log(`[v0] ${symbol} latest 15m closes: ${closes15.slice(-3).join(", ")}`);
+  }
 
   const price = closes15.at(-1) || 0;
 
