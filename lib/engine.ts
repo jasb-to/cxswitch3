@@ -61,34 +61,33 @@ export function shouldSendAlert(
 
   const lastAlert = sentAlerts.get(symbol);
   const now = Date.now();
-  const fiveMinutes = 5 * 60 * 1000;
+  const thirtyMinutes = 30 * 60 * 1000;
+  const twoMinutes = 2 * 60 * 1000;
 
+  // First time: always send
   if (!lastAlert) return true;
 
-  const entryDiff = Math.abs(entry - lastAlert.entry) / lastAlert.entry;
-  if (
-    lastAlert.direction === direction &&
-    entryDiff < 0.05 &&
-    now - lastAlert.timestamp < fiveMinutes
-  ) {
-    return false;
-  }
-
+  // Direction flip: always send immediately
   if (lastAlert.direction !== direction) {
     sentAlerts.set(symbol, { entry, direction, timestamp: now });
+    console.log(`[ENGINE] ✅ Direction flip for ${symbol}: ${lastAlert.direction} → ${direction}`);
     return true;
   }
 
-  if (entryDiff >= 0.05) {
+  // Same direction: require BOTH 30min cooldown AND entry moved >2%
+  const entryDiff = Math.abs(entry - lastAlert.entry) / lastAlert.entry;
+  const timeSinceAlert = now - lastAlert.timestamp;
+
+  if (entryDiff >= 0.02 && timeSinceAlert > thirtyMinutes) {
     sentAlerts.set(symbol, { entry, direction, timestamp: now });
+    console.log(`[ENGINE] ✅ Significant move for ${symbol}: entry diff=${(entryDiff * 100).toFixed(2)}% + 30min cooldown`);
     return true;
   }
 
-  if (now - lastAlert.timestamp > fiveMinutes) {
-    sentAlerts.set(symbol, { entry, direction, timestamp: now });
-    return true;
-  }
-
+  // Block: same direction + insufficient cooldown/movement
+  console.log(
+    `[ENGINE] ⏸️  ${symbol} ${direction} blocked: entryDiff=${(entryDiff * 100).toFixed(2)}% (need 2%), timeSince=${Math.round(timeSinceAlert / 1000)}s (need 1800s)`
+  );
   return false;
 }
 
