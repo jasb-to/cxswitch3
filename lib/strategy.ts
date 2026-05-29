@@ -57,7 +57,8 @@ function calculateADX(candles: Candle[], period: number = 14): number {
   let minus_dm_sum = 0;
   let tr_sum = 0;
 
-  for (let i = 1; i < candles.length; i++) {
+  // Calculate initial directional movements and true range
+  for (let i = 1; i <= period; i++) {
     const curr = candles[i];
     const prev = candles[i - 1];
 
@@ -80,13 +81,51 @@ function calculateADX(candles: Candle[], period: number = 14): number {
     tr_sum += tr;
   }
 
-  const plus_di = (plus_dm_sum / tr_sum) * 100;
-  const minus_di = (minus_dm_sum / tr_sum) * 100;
+  // Calculate DI values
+  let plus_di = (plus_dm_sum / tr_sum) * 100;
+  let minus_di = (minus_dm_sum / tr_sum) * 100;
 
-  const di_sum = plus_di + minus_di;
-  const adx = Math.abs(plus_di - minus_di) / di_sum * 100;
+  // Smooth the DI values (simplified smoothing)
+  let di_diff_sum = 0;
+  let di_sum_sum = 0;
 
-  return Math.round(adx * 100) / 100;
+  for (let i = period + 1; i < candles.length; i++) {
+    const curr = candles[i];
+    const prev = candles[i - 1];
+
+    const tr1 = curr.high - curr.low;
+    const tr2 = Math.abs(curr.high - prev.close);
+    const tr3 = Math.abs(curr.low - prev.close);
+    const tr = Math.max(tr1, tr2, tr3);
+
+    const up_move = curr.high - prev.high;
+    const down_move = prev.low - curr.low;
+
+    let plus_dm = 0;
+    let minus_dm = 0;
+
+    if (up_move > down_move && up_move > 0) plus_dm = up_move;
+    if (down_move > up_move && down_move > 0) minus_dm = down_move;
+
+    plus_dm_sum = plus_dm_sum * 13 / 14 + plus_dm;
+    minus_dm_sum = minus_dm_sum * 13 / 14 + minus_dm;
+    tr_sum = tr_sum * 13 / 14 + tr;
+
+    plus_di = (plus_dm_sum / tr_sum) * 100;
+    minus_di = (minus_dm_sum / tr_sum) * 100;
+
+    const di_diff = Math.abs(plus_di - minus_di);
+    const di_sum = plus_di + minus_di;
+
+    di_diff_sum += di_diff;
+    di_sum_sum += di_sum;
+  }
+
+  // Calculate ADX as smoothed DX
+  const dx = (di_diff_sum / (candles.length - period)) / (di_sum_sum / (candles.length - period)) * 100;
+  const adx = Math.round(dx * 100) / 100;
+
+  return Math.max(0, Math.min(100, adx));
 }
 
 // Calculate Stochastic RSI
@@ -117,7 +156,10 @@ function findSwings(
   candles: Candle[],
   lookback: number = 20
 ): { highLevel: number; lowLevel: number } {
-  if (candles.length < 3) return { highLevel: 0, lowLevel: 0 };
+  if (candles.length < 3) {
+    const current = candles[candles.length - 1];
+    return { highLevel: current.high, lowLevel: current.low };
+  }
 
   let highLevel = candles[candles.length - 1].high;
   let lowLevel = candles[candles.length - 1].low;
@@ -197,7 +239,7 @@ export function generateSignal(
   // Calculate 5M momentum and volume spike detection
   let entry5MConfirmed = false;
   let entryType: "5M Momentum" | "4H Structure" | undefined;
-  let volumeRatio = 1;
+  let volumeRatio: number | undefined;
 
   if (candles5M && candles5M.length >= 30) {
     const ema8_5M = candles5M.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
@@ -295,7 +337,7 @@ export function generateSignal(
     stochK: Math.round(stochK),
     marketBias,
     entryType,
-    volumeRatio: Math.round(volumeRatio * 100) / 100,
+    volumeRatio: volumeRatio ? Math.round(volumeRatio * 100) / 100 : undefined,
     entry5MConfirmed,
     nearestSwingLevel: nearestSwingLevel ? Math.round(nearestSwingLevel * 100) / 100 : undefined,
     distanceToSwing,
