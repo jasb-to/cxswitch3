@@ -211,7 +211,7 @@ export function generateSignal(
     return {
       symbol,
       price: currentPrice,
-      status,
+      status: "NO_SIGNAL",
       adx,
       stochK,
       confidence: 0,
