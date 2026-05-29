@@ -194,11 +194,20 @@ export function generateSignal(
   let takeProfit: number | undefined;
   let reason = "Waiting for setup";
 
-  // ADX threshold varies by symbol (SOL is more volatile, needs lower threshold)
-  const adxThreshold = symbol === "SOL" ? 18 : 22;
+  // ADX threshold varies by symbol - lowered back down for faster entries without Stoch K
+  const adxThreshold = symbol === "SOL" ? 15 : 20;
   
-  if (adx < adxThreshold) {
-    reason = `ADX too low (${adx.toFixed(1)} < ${adxThreshold}), skipping choppy market`;
+  // Check for emerging trend override: if price breaks structure + EMA aligned, allow ADX > 10
+  const priceAboveResistance = currentPrice > highLevel;
+  const priceBelowSupport = currentPrice < lowLevel;
+  const ema15MBullish = ema8_15M > ema21_15M;
+  const ema15MBearish = ema8_15M < ema21_15M;
+  
+  const structureBreakWithEMA = (priceAboveResistance && ema15MBullish) || (priceBelowSupport && ema15MBearish);
+  const effectiveAdxThreshold = structureBreakWithEMA ? 10 : adxThreshold;
+  
+  if (adx < effectiveAdxThreshold) {
+    reason = `ADX too low (${adx.toFixed(1)} < ${effectiveAdxThreshold}), skipping choppy market`;
     return {
       symbol,
       price: currentPrice,
@@ -258,12 +267,12 @@ export function generateSignal(
 
   // LONG Signal: Price above resistance + bullish 15M EMA (Stoch is confidence only, not gating)
   const longConditions = {
-    priceAboveResistance: currentPrice > highLevel,
-    ema15MBullish: ema8_15M > ema21_15M,
+    priceAboveResistance: priceAboveResistance,
+    ema15MBullish: ema15MBullish,
   };
 
   console.log(
-    `[STRATEGY] ${symbol} LONG conditions: priceAbove=${longConditions.priceAboveResistance} (${currentPrice.toFixed(2)} > ${highLevel.toFixed(2)}), ema15M=${longConditions.ema15MBullish} (${ema8_15M.toFixed(2)} > ${ema21_15M.toFixed(2)}), stochK=${stochK} (confidence only)`
+    `[STRATEGY] ${symbol} LONG conditions: priceAbove=${longConditions.priceAboveResistance} (${currentPrice.toFixed(2)} > ${highLevel.toFixed(2)}), ema15M=${longConditions.ema15MBullish} (${ema8_15M.toFixed(2)} > ${ema21_15M.toFixed(2)}), adx=${adx.toFixed(1)}, stochK=${stochK} (confidence only)`
   );
 
   if (
@@ -287,12 +296,12 @@ export function generateSignal(
 
   // SHORT Signal: Price below support + bearish 15M EMA (Stoch is confidence only, not gating)
   const shortConditions = {
-    priceBelowSupport: currentPrice < lowLevel,
-    ema15MBearish: ema8_15M < ema21_15M,
+    priceBelowSupport: priceBelowSupport,
+    ema15MBearish: ema15MBearish,
   };
 
   console.log(
-    `[STRATEGY] ${symbol} SHORT conditions: priceBelow=${shortConditions.priceBelowSupport} (${currentPrice.toFixed(2)} < ${lowLevel.toFixed(2)}), ema15M=${shortConditions.ema15MBearish} (${ema8_15M.toFixed(2)} < ${ema21_15M.toFixed(2)}), stochK=${stochK} (confidence only)`
+    `[STRATEGY] ${symbol} SHORT conditions: priceBelow=${shortConditions.priceBelowSupport} (${currentPrice.toFixed(2)} < ${lowLevel.toFixed(2)}), ema15M=${shortConditions.ema15MBearish} (${ema8_15M.toFixed(2)} < ${ema21_15M.toFixed(2)}), adx=${adx.toFixed(1)}, stochK=${stochK} (confidence only)`
   );
 
   if (
