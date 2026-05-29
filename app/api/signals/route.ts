@@ -9,7 +9,15 @@ export const runtime = "nodejs";
 const ALERT_COOLDOWN = 60 * 60 * 1000; // 60 minutes cooldown between same signal
 let lastAlerts: { [key: string]: { status: string; timestamp: number } } = {};
 
-export async function GET() {
+export async function GET(request: Request) {
+  const secret = new URL(request.url).searchParams.get("secret");
+  
+  // Verify cron secret if provided
+  if (secret && secret !== process.env.CRON_SECRET) {
+    console.error("[API] Invalid cron secret");
+    return new Response("Unauthorized", { status: 401 });
+  }
+
   const startTime = Date.now();
   console.log(`[API] === SIGNALS SCAN STARTED at ${new Date().toLocaleTimeString()} ===`);
 

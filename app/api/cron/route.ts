@@ -17,7 +17,7 @@ export async function GET(request: Request) {
       ? `https://${process.env.VERCEL_URL}` 
       : "http://localhost:3000";
     
-    const response = await fetch(`${baseUrl}/api/signals`, {
+    const response = await fetch(`${baseUrl}/api/signals?secret=${encodeURIComponent(process.env.CRON_SECRET || "")}`, {
       method: "GET",
       headers: {
         "Content-Type": "application/json",

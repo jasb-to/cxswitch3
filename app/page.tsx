@@ -45,32 +45,32 @@ export default function Home() {
   }, []);
 
   return (
-    <main className="min-h-screen bg-background">
-      <div className="px-12 py-8 max-w-7xl mx-auto">
+    <main className="min-h-screen bg-black text-white">
+      <div className="px-6 py-8 max-w-7xl mx-auto">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-5xl font-bold tracking-tight mb-2">CX Switch</h1>
-          <p className="text-muted-foreground">
-            4H Structure • 15M Momentum • ADX Filter
+        <div className="mb-12">
+          <h1 className="text-6xl font-bold tracking-tight mb-2">CX Switch</h1>
+          <p className="text-gray-400 text-lg">
+            4H Structure • 1H Confirmation • 15M Entry
           </p>
         </div>
 
         {/* Controls */}
-        <div className="flex items-center gap-4 mb-8">
+        <div className="flex items-center gap-3 mb-8">
           <button
             onClick={fetchSignals}
             disabled={loading}
-            className="px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 disabled:opacity-50 font-medium"
+            className="px-6 py-2.5 bg-white text-black rounded-lg hover:bg-gray-100 disabled:opacity-50 font-semibold transition"
           >
             {loading ? "Scanning..." : "SCAN"}
           </button>
           <button
             onClick={testTelegram}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
+            className="px-6 py-2.5 bg-gray-800 text-white rounded-lg hover:bg-gray-700 font-semibold transition border border-gray-700"
           >
             Test Telegram
           </button>
-          <span className="text-sm text-muted-foreground ml-auto">
+          <span className="text-sm text-gray-500 ml-auto">
             Last update: {lastUpdate || "—"}
           </span>
         </div>
@@ -87,119 +87,52 @@ export default function Home() {
 }
 
 function SignalCard({ signal }: { signal: Signal }) {
-  const isSignal = signal.status !== "NO_SIGNAL";
-  const isBullish = signal.status === "LONG";
+  const isBullish = signal.state === "LONG";
+  const isBearish = signal.state === "SHORT";
+  const isActive = signal.state === "LONG" || signal.state === "SHORT";
 
-  const statusColor = isBullish
-    ? "bg-green-500/10 border-green-500/20 text-green-400"
-    : signal.status === "SHORT"
-      ? "bg-red-500/10 border-red-500/20 text-red-400"
-      : "bg-slate-500/10 border-slate-500/20 text-slate-400";
+  // State colors
+  const borderColor = isBullish ? "border-green-500/30" : isBearish ? "border-red-500/30" : "border-gray-700";
+  const bgHighlight = isBullish ? "bg-green-500/5" : isBearish ? "bg-red-500/5" : "bg-gray-900/50";
+  const stateBadgeColor = isBullish ? "bg-green-500/20 text-green-400 border-green-500/30" : isBearish ? "bg-red-500/20 text-red-400 border-red-500/30" : "bg-gray-800 text-gray-400 border-gray-700";
+  const stateEmoji = isBullish ? "🟢" : isBearish ? "🔴" : "⚪";
 
-  const emoji = isBullish ? "🟢" : signal.status === "SHORT" ? "🔴" : "⚪";
+  const biasColor = signal.bias === "Bullish" ? "text-green-400" : signal.bias === "Bearish" ? "text-red-400" : "text-gray-400";
 
   return (
-    <div className="border border-border bg-card rounded-xl p-6 hover:border-border/80 transition">
+    <div className={`border ${borderColor} ${bgHighlight} rounded-xl p-6 transition backdrop-blur-sm`}>
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h2 className="text-2xl font-bold">{signal.symbol}</h2>
-          <p className="text-sm text-muted-foreground">${signal.price}</p>
+          <h2 className="text-3xl font-bold">{signal.symbol}</h2>
+          <p className="text-gray-400 text-sm mt-1">${signal.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
         </div>
-        <div className={`px-3 py-1 rounded-full border text-sm font-medium ${statusColor}`}>
-          {emoji} {signal.status}
-        </div>
-      </div>
-
-      {/* Metrics */}
-      <div className="space-y-3 mb-6 pb-6 border-b border-border">
-        <div className="flex justify-between text-sm">
-          <span className="text-muted-foreground">4H Bias</span>
-          <span className={`font-mono font-semibold ${
-            signal.marketBias === "Bullish" ? "text-green-400" :
-            signal.marketBias === "Bearish" ? "text-red-400" :
-            "text-slate-400"
-          }`}>
-            {signal.marketBias}
-          </span>
-        </div>
-        {signal.entryType && (
-          <div className="flex justify-between text-sm">
-            <span className="text-muted-foreground">Entry Type</span>
-            <span className={`font-mono font-semibold px-2 py-0.5 rounded text-xs ${
-              signal.entryType === "5M Momentum" 
-                ? "bg-green-500/20 text-green-400" 
-                : "bg-yellow-500/20 text-yellow-400"
-            }`}>
-              {signal.entryType}
-            </span>
-          </div>
-        )}
-        {signal.volumeRatio !== undefined && signal.status !== "NO_SIGNAL" && (
-          <div className="flex justify-between text-sm">
-            <span className="text-muted-foreground">Volume Spike</span>
-            <span className={`font-mono font-semibold ${
-              signal.volumeRatio > 1.5 ? "text-blue-400" : "text-slate-400"
-            }`}>
-              {signal.volumeRatio.toFixed(1)}x
-            </span>
-          </div>
-        )}
-        <div className="flex justify-between text-sm">
-          <span className="text-muted-foreground">ADX</span>
-          <span className="font-mono font-semibold">{signal.adx.toFixed(1)}</span>
-        </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-muted-foreground">Stoch K</span>
-          <span className="font-mono font-semibold">{signal.stochK}</span>
-        </div>
-        <div className="flex justify-between text-sm">
-          <span className="text-muted-foreground">Confidence</span>
-          <span className="font-mono font-semibold">{signal.confidence}%</span>
+        <div className={`px-4 py-2 rounded-lg border text-sm font-semibold ${stateBadgeColor} flex items-center gap-2`}>
+          {stateEmoji}
+          <span>{signal.state.toUpperCase()}</span>
         </div>
       </div>
 
-      {/* Signal Details or Swing Levels */}
-      {isSignal ? (
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">Entry</p>
-              <p className="font-mono font-semibold">${signal.entry}</p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">R:R</p>
-              <p className="font-mono font-semibold text-green-400">
-                {signal.riskReward?.toFixed(2)}x
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">Stop Loss</p>
-              <p className="font-mono font-semibold text-red-400">${signal.stopLoss}</p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">Take Profit</p>
-              <p className="font-mono font-semibold text-green-400">${signal.takeProfit}</p>
-            </div>
-          </div>
-          <p className="text-xs text-muted-foreground pt-2">{signal.reason}</p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          <p className="text-xs text-muted-foreground mb-3">{signal.reason}</p>
-          {signal.nearestSwingLevel && (
-            <div>
-              <p className="text-xs text-muted-foreground mb-1">Next Level</p>
-              <div className="flex justify-between items-center">
-                <p className="font-mono font-semibold">${signal.nearestSwingLevel}</p>
-                <p className="text-sm font-semibold text-blue-400">
-                  {signal.distanceToSwing}%
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      {/* Metrics Grid */}
+      <div className="grid grid-cols-2 gap-4 mb-6 pb-6 border-b border-gray-800">
+        <MetricBox label="Bias" value={signal.bias} color={biasColor} />
+        <MetricBox label="ADX" value={signal.adx.toFixed(1)} color="text-gray-300" />
+        <MetricBox label="Stoch K" value={signal.stochK.toFixed(1)} color="text-gray-300" />
+        <MetricBox label="Stoch D" value={signal.stochD.toFixed(1)} color="text-gray-300" />
+        <MetricBox label="Confidence" value={`${signal.confidence}%`} color={signal.confidence >= 60 ? "text-green-400" : signal.confidence >= 40 ? "text-yellow-400" : "text-gray-400"} />
+      </div>
+
+      {/* Reason */}
+      <p className="text-xs text-gray-400 mb-6 leading-relaxed">{signal.reason}</p>
+    </div>
+  );
+}
+
+function MetricBox({ label, value, color }: { label: string; value: string; color: string }) {
+  return (
+    <div>
+      <p className="text-xs text-gray-500 mb-1">{label}</p>
+      <p className={`font-mono font-semibold ${color}`}>{value}</p>
     </div>
   );
 }
