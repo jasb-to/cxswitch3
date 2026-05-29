@@ -121,19 +121,32 @@ function findSwings(candles: Candle[], lookback: number = 20): { highLevel: numb
   return { highLevel, lowLevel };
 }
 
-// SIMPLE TREND CALCULATION: Compare price to SMA, don't use complex EMA
+// SLOPE-BASED TREND: Compare current vs previous SMA values to detect turning points
 function calculateTrend(candles: Candle[]): "UP" | "DOWN" | "FLAT" {
-  if (candles.length < 20) return "FLAT";
+  if (candles.length < 30) return "FLAT";
   
-  // Simple approach: compare current close to 20-period simple moving average
-  const sma20 = candles.slice(-20).reduce((sum, c) => sum + c.close, 0) / 20;
+  // Calculate 8-period SMA current and previous
+  const sma8_current = candles.slice(-8).reduce((sum, c) => sum + c.close, 0) / 8;
+  const sma8_prev = candles.slice(-16, -8).reduce((sum, c) => sum + c.close, 0) / 8;
+  
+  // Calculate 21-period SMA current and previous
+  const sma21_current = candles.slice(-21).reduce((sum, c) => sum + c.close, 0) / 21;
+  const sma21_prev = candles.slice(-42, -21).reduce((sum, c) => sum + c.close, 0) / 21;
+  
+  // Calculate slopes (change in SMA)
+  const slope8 = ((sma8_current - sma8_prev) / sma8_prev) * 100;
+  const slope21 = ((sma21_current - sma21_prev) / sma21_prev) * 100;
+  
   const currentClose = candles[candles.length - 1].close;
-  const diff = ((currentClose - sma20) / sma20) * 100;
   
-  console.log(`[STRATEGY] Trend calc: current=${currentClose.toFixed(2)}, sma20=${sma20.toFixed(2)}, diff=${diff.toFixed(2)}%`);
+  console.log(`[STRATEGY] Trend: close=${currentClose.toFixed(2)}, sma8=${sma8_current.toFixed(2)} (slope=${slope8.toFixed(3)}%), sma21=${sma21_current.toFixed(2)} (slope=${slope21.toFixed(3)}%)`);
   
-  if (diff > 0.5) return "UP";
-  if (diff < -0.5) return "DOWN";
+  // Bullish: both SMAs have positive slope (turning up)
+  if (slope8 > 0.1 && slope21 > 0.05) return "UP";
+  
+  // Bearish: both SMAs have negative slope (turning down)
+  if (slope8 < -0.1 && slope21 < -0.05) return "DOWN";
+  
   return "FLAT";
 }
 
