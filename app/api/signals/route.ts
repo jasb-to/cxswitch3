@@ -4,9 +4,10 @@ import { sendTelegramAlert } from "@/lib/telegram";
 
 export const runtime = "nodejs";
 
-// Track previously sent signals to avoid duplicate alerts
-const sentSignals = new Map<string, { status: string; timestamp: number }>();
-const ALERT_COOLDOWN = 30 * 60 * 1000; // 30 minutes
+// Persistent signal tracking via environment variable cache
+// This persists across requests within the same instance
+const ALERT_COOLDOWN = 60 * 60 * 1000; // 60 minutes cooldown between same signal
+let lastAlerts: { [key: string]: { status: string; timestamp: number } } = {};
 
 export async function GET() {
   const startTime = Date.now();
@@ -69,13 +70,13 @@ export async function GET() {
       signals.push(signal);
 
       // Check if we should send telegram alert
-      const lastSent = sentSignals.get(signal.symbol);
+      const key = `${signal.symbol}-${signal.status}`;
+      const lastSent = lastAlerts[key];
       const now = Date.now();
 
       if (signal.status !== "NO_SIGNAL") {
         const shouldAlert =
           !lastSent || // First time
-          lastSent.status !== signal.status || // Direction changed
           now - lastSent.timestamp > ALERT_COOLDOWN; // Cooldown expired
 
         if (shouldAlert) {
@@ -84,10 +85,7 @@ export async function GET() {
           );
           sendTelegramAlert(signal).then((success) => {
             if (success) {
-              sentSignals.set(signal.symbol, {
-                status: signal.status,
-                timestamp: now,
-              });
+              lastAlerts[key] = { status: signal.status, timestamp: now };
               console.log(
                 `[API] ✅ Telegram alert sent for ${signal.symbol} ${signal.status}`
               );
@@ -113,12 +111,26 @@ export async function GET() {
       `[API] === SIGNALS SCAN COMPLETE in ${duration}ms | Generated ${signals.length} signals ===`
     );
 
-    return Response.json({ signals, updatedAt: new Date().toISOString() });
+    return Response.json(
+      { signals, updatedAt: new Date().toISOString() },
+      {
+        headers: {
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          "Pragma": "no-cache",
+          "Expires": "0",
+        },
+      }
+    );
   } catch (err) {
     console.error(`[API] Fatal error: ${err}`);
     return Response.json(
       { error: "Failed to generate signals", signals: [] },
-      { status: 500 }
+      {
+        status: 500,
+        headers: {
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
+      }
     );
   }
 }
