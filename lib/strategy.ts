@@ -23,9 +23,6 @@ export interface Signal {
   marketBias: "Bullish" | "Bearish" | "Neutral";
   entryType?: "5M Momentum" | "4H Structure";
   volumeRatio?: number;
-  entry5MConfirmed?: boolean;
-  nearestSwingLevel?: number;
-  distanceToSwing?: number; // as percentage
   reason: string;
   updatedAt: string;
 }
@@ -35,23 +32,19 @@ function calculateATR(candles: Candle[], period: number = 14): number {
   if (candles.length < period + 1) return 0;
 
   let tr_sum = 0;
-  // Only calculate TR for the last `period` candles, not all candles
   const start = Math.max(1, candles.length - period);
   for (let i = start; i < candles.length; i++) {
     const curr = candles[i];
     const prev = candles[i - 1];
-
     const tr1 = curr.high - curr.low;
     const tr2 = Math.abs(curr.high - prev.close);
     const tr3 = Math.abs(curr.low - prev.close);
-
     tr_sum += Math.max(tr1, tr2, tr3);
   }
-
   return tr_sum / period;
 }
 
-// Calculate ADX (Average Directional Index)
+// Calculate ADX (Average Directional Index) - simplified
 function calculateADX(candles: Candle[], period: number = 14): number {
   if (candles.length < period + 1) return 0;
 
@@ -59,7 +52,6 @@ function calculateADX(candles: Candle[], period: number = 14): number {
   let minus_dm_sum = 0;
   let tr_sum = 0;
 
-  // Calculate initial directional movements and true range
   for (let i = 1; i <= period; i++) {
     const curr = candles[i];
     const prev = candles[i - 1];
@@ -83,58 +75,16 @@ function calculateADX(candles: Candle[], period: number = 14): number {
     tr_sum += tr;
   }
 
-  // Calculate DI values
-  let plus_di = (plus_dm_sum / tr_sum) * 100;
-  let minus_di = (minus_dm_sum / tr_sum) * 100;
-
-  // Smooth the DI values (simplified smoothing)
-  let di_diff_sum = 0;
-  let di_sum_sum = 0;
-
-  for (let i = period + 1; i < candles.length; i++) {
-    const curr = candles[i];
-    const prev = candles[i - 1];
-
-    const tr1 = curr.high - curr.low;
-    const tr2 = Math.abs(curr.high - prev.close);
-    const tr3 = Math.abs(curr.low - prev.close);
-    const tr = Math.max(tr1, tr2, tr3);
-
-    const up_move = curr.high - prev.high;
-    const down_move = prev.low - curr.low;
-
-    let plus_dm = 0;
-    let minus_dm = 0;
-
-    if (up_move > down_move && up_move > 0) plus_dm = up_move;
-    if (down_move > up_move && down_move > 0) minus_dm = down_move;
-
-    plus_dm_sum = plus_dm_sum * 13 / 14 + plus_dm;
-    minus_dm_sum = minus_dm_sum * 13 / 14 + minus_dm;
-    tr_sum = tr_sum * 13 / 14 + tr;
-
-    plus_di = (plus_dm_sum / tr_sum) * 100;
-    minus_di = (minus_dm_sum / tr_sum) * 100;
-
-    const di_diff = Math.abs(plus_di - minus_di);
-    const di_sum = plus_di + minus_di;
-
-    di_diff_sum += di_diff;
-    di_sum_sum += di_sum;
-  }
-
-  // Calculate ADX as smoothed DX
-  const dx = (di_diff_sum / (candles.length - period)) / (di_sum_sum / (candles.length - period)) * 100;
-  const adx = Math.round(dx * 100) / 100;
-
-  return Math.max(0, Math.min(100, adx));
+  const plus_di = (plus_dm_sum / tr_sum) * 100;
+  const minus_di = (minus_dm_sum / tr_sum) * 100;
+  const dx = Math.abs(plus_di - minus_di) / (plus_di + minus_di) * 100;
+  return Math.round(Math.max(0, Math.min(100, dx)) * 100) / 100;
 }
 
-// Calculate Stochastic RSI
+// Calculate Stochastic RSI - simplified
 function calculateStochRSI(candles: Candle[], period: number = 14): number {
   if (candles.length < period) return 50;
 
-  // Calculate RSI first
   let gains = 0;
   let losses = 0;
 
@@ -148,16 +98,11 @@ function calculateStochRSI(candles: Candle[], period: number = 14): number {
   const avg_loss = losses / period;
   const rs = avg_gain / (avg_loss || 0.0001);
   const rsi = 100 - 100 / (1 + rs);
-
-  // Stochastic of RSI (use last 14 RSI values, simplified to current)
   return Math.round(Math.max(0, Math.min(100, rsi)));
 }
 
 // Find swing highs and lows
-function findSwings(
-  candles: Candle[],
-  lookback: number = 20
-): { highLevel: number; lowLevel: number } {
+function findSwings(candles: Candle[], lookback: number = 20): { highLevel: number; lowLevel: number } {
   if (candles.length < 3) {
     const current = candles[candles.length - 1];
     return { highLevel: current.high, lowLevel: current.low };
@@ -176,15 +121,29 @@ function findSwings(
   return { highLevel, lowLevel };
 }
 
-// Generate signal based on structure
+// SIMPLE TREND CALCULATION: Compare price to SMA, don't use complex EMA
+function calculateTrend(candles: Candle[]): "UP" | "DOWN" | "FLAT" {
+  if (candles.length < 20) return "FLAT";
+  
+  // Simple approach: compare current close to 20-period simple moving average
+  const sma20 = candles.slice(-20).reduce((sum, c) => sum + c.close, 0) / 20;
+  const currentClose = candles[candles.length - 1].close;
+  const diff = ((currentClose - sma20) / sma20) * 100;
+  
+  console.log(`[STRATEGY] Trend calc: current=${currentClose.toFixed(2)}, sma20=${sma20.toFixed(2)}, diff=${diff.toFixed(2)}%`);
+  
+  if (diff > 0.5) return "UP";
+  if (diff < -0.5) return "DOWN";
+  return "FLAT";
+}
+
 export function generateSignal(
   symbol: Symbol,
   candles4H: Candle[],
   candles15M: Candle[],
   candles5M?: Candle[]
 ): Signal {
-  // CRITICAL FIX: Kraken returns candles in reverse order (newest first)
-  // Reverse all candles to chronological order for correct calculations
+  // Reverse all candles to chronological order (Kraken returns newest first)
   const candles4H_ordered = candles4H.slice().reverse();
   const candles15M_ordered = candles15M.slice().reverse();
   const candles5M_ordered = candles5M ? candles5M.slice().reverse() : undefined;
@@ -195,170 +154,72 @@ export function generateSignal(
   const atr = calculateATR(candles4H_ordered);
   const { highLevel, lowLevel } = findSwings(candles4H_ordered, 50);
 
-  console.log(`[STRATEGY] ${symbol} ATR=${atr.toFixed(2)}`);
+  // Calculate trend on both timeframes using SIMPLE method
+  const trend4H = calculateTrend(candles4H_ordered);
+  const trend15M = calculateTrend(candles15M_ordered);
 
-  // Default: no signal
+  console.log(`[STRATEGY] ${symbol}: trend4H=${trend4H}, trend15M=${trend15M}, adx=${adx.toFixed(1)}, stoch=${stochK}, price=${currentPrice.toFixed(2)}`);
+
   let status: "LONG" | "SHORT" | "NO_SIGNAL" = "NO_SIGNAL";
   let entry: number | undefined;
   let stopLoss: number | undefined;
   let takeProfit: number | undefined;
   let reason = "Waiting for setup";
-
-  // ADX threshold - lowered to 15 for all symbols to catch trends without over-filtering
-  const adxThreshold = 15;
-
-  // Calculate EMAs first for structure break override check
-  const stoch15M = calculateStochRSI(candles15M_ordered);
-  const ema8_15M =
-    candles15M_ordered.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
-  const ema21_15M =
-    candles15M_ordered.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
-
-  console.log(
-    `[STRATEGY] ${symbol} 15M (FIXED): last5close=${candles15M_ordered.slice(-5).map(c => c.close.toFixed(2))}, ema8=${ema8_15M.toFixed(2)}, ema21=${ema21_15M.toFixed(2)}, bullish=${ema8_15M > ema21_15M}`
-  );
-
-  // Calculate 4H market bias (EMA cross)
-  const ema8_4H =
-    candles4H_ordered.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
-  const ema21_4H =
-    candles4H_ordered.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
-
-  console.log(
-    `[STRATEGY] ${symbol} 4H (FIXED): last5close=${candles4H_ordered.slice(-5).map(c => c.close.toFixed(2))}, ema8=${ema8_4H.toFixed(2)}, ema21=${ema21_4H.toFixed(2)}, bullish=${ema8_4H > ema21_4H}`
-  );
-
   let marketBias: "Bullish" | "Bearish" | "Neutral" = "Neutral";
-  if (ema8_4H > ema21_4H) {
-    marketBias = "Bullish";
-  } else if (ema8_4H < ema21_4H) {
-    marketBias = "Bearish";
-  }
+  let entryType: "5M Momentum" | "4H Structure" | undefined;
 
-  console.log(
-    `[STRATEGY] ${symbol} 4H: price=${currentPrice.toFixed(2)}, ema8=${ema8_4H.toFixed(2)}, ema21=${ema21_4H.toFixed(2)}, diff=${(ema8_4H - ema21_4H).toFixed(2)}`
-  );
-
-  // Check for emerging trend override: if price breaks structure + EMA aligned, allow ADX > 10
+  const adxThreshold = 15;
   const priceAboveResistance = currentPrice > highLevel;
   const priceBelowSupport = currentPrice < lowLevel;
-  const ema15MBullish = ema8_15M > ema21_15M;
-  const ema15MBearish = ema8_15M < ema21_15M;
-  
-  const structureBreakWithEMA = (priceAboveResistance && ema15MBullish) || (priceBelowSupport && ema15MBearish);
-  const effectiveAdxThreshold = structureBreakWithEMA ? 10 : adxThreshold;
-  
-  if (adx < effectiveAdxThreshold) {
-    reason = `ADX too low (${adx.toFixed(1)} < ${effectiveAdxThreshold}), skipping choppy market`;
+
+  // Determine market bias from 4H trend
+  marketBias = trend4H === "UP" ? "Bullish" : trend4H === "DOWN" ? "Bearish" : "Neutral";
+
+  // Check if ADX is strong enough to trade
+  if (adx < adxThreshold) {
+    reason = `ADX too low (${adx.toFixed(1)} < ${adxThreshold}), market too choppy`;
     return {
       symbol,
-      price: currentPrice,
+      price: Math.round(currentPrice * 100) / 100,
       status: "NO_SIGNAL",
-      adx,
-      stochK,
       confidence: 0,
-      marketBias: "Neutral",
+      adx,
+      stochK: Math.round(stochK),
+      marketBias,
       reason,
       updatedAt: new Date().toISOString(),
     };
   }
 
-  // Calculate 5M momentum and volume spike detection
-  let entry5MConfirmed = false;
-  let entryType: "5M Momentum" | "4H Structure" | undefined;
-  let volumeRatio: number | undefined;
-
-  if (candles5M_ordered && candles5M_ordered.length >= 30) {
-    const ema8_5M = candles5M_ordered.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
-    const ema21_5M = candles5M_ordered.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
-    const avgVolume = candles5M_ordered.slice(-20).reduce((a, b) => a + b.volume, 0) / 20;
-    const currentVolume = candles5M_ordered[candles5M_ordered.length - 1].volume;
-
-    volumeRatio = Math.round((currentVolume / avgVolume) * 100) / 100;
-
-    // 5M momentum confirmed: price above 5M EMA + volume spike
-    entry5MConfirmed = currentVolume > avgVolume * 1.5 && (
-      (marketBias === "Bullish" && ema8_5M > ema21_5M) ||
-      (marketBias === "Bearish" && ema8_5M < ema21_5M)
-    );
-  }
-
-  // LONG Signal: Price above resistance + bullish 15M EMA (Stoch is confidence only, not gating)
-  const longConditions = {
-    priceAboveResistance: priceAboveResistance,
-    ema15MBullish: ema15MBullish,
-  };
-
-  // Counter-trend LONG override: Oversold/recovering bounce (Stoch < 35) + upward bounce + 15M bullish
-  const counterTrendLongSetup = stochK < 35 && ema15MBullish;
-
-  console.log(
-    `[STRATEGY] ${symbol} LONG conditions: priceAbove=${longConditions.priceAboveResistance}, ema15M=${longConditions.ema15MBullish}, stochK=${stochK}, counterTrend=${counterTrendLongSetup}`
-  );
-
-  if (
-    (longConditions.priceAboveResistance && longConditions.ema15MBullish) ||
-    counterTrendLongSetup
-  ) {
-    status = "LONG";
-    entry = currentPrice;
-    
-    // Safety check: if ATR is > 10% of entry price, something is wrong - cap it
-    const atrSanityCheck = Math.min(atr, entry * 0.05); // Cap ATR at 5% of entry
-    
-    stopLoss = Math.round((entry - 1.5 * atrSanityCheck) * 100) / 100;
-    takeProfit = Math.round((entry + 4 * atrSanityCheck) * 100) / 100;
-    
-    // Determine entry type based on which condition triggered
-    if (counterTrendLongSetup && !longConditions.priceAboveResistance) {
-      entryType = "5M Momentum";
-      reason = `Counter-trend LONG: oversold bounce (Stoch=${stochK}) + 15M bullish EMA recovery`;
-    } else if (entry5MConfirmed) {
-      entryType = "5M Momentum";
-      reason = `5M Momentum: vol spike (${volumeRatio.toFixed(1)}x) + bullish EMA + 4H break`;
-    } else {
-      entryType = "4H Structure";
-      reason = `4H break above resistance + 15M bullish EMA`;
+  // LONG Setup: 4H bullish + 15M bullish + price at or breaking above resistance
+  if (trend4H === "UP" && trend15M === "UP") {
+    // Fire on structure break or oversold bounce
+    if (priceAboveResistance || stochK < 30) {
+      status = "LONG";
+      entry = currentPrice;
+      const atrCap = Math.min(atr, entry * 0.05);
+      stopLoss = Math.round((entry - 1.5 * atrCap) * 100) / 100;
+      takeProfit = Math.round((entry + 4 * atrCap) * 100) / 100;
+      entryType = priceAboveResistance ? "4H Structure" : "5M Momentum";
+      reason = entryType === "4H Structure" 
+        ? `Bullish: 4H + 15M trending up, price broke resistance` 
+        : `Bullish: 4H + 15M up, oversold bounce (Stoch=${Math.round(stochK)})`;
     }
   }
 
-  // SHORT Signal: Price below support + bearish 15M EMA (Stoch is confidence only, not gating)
-  const shortConditions = {
-    priceBelowSupport: priceBelowSupport,
-    ema15MBearish: ema15MBearish,
-  };
-
-  // Counter-trend SHORT: Fire when 4H shows bearish bias (temporary override for falling markets)
-  // This catches shorts during dump moves even if 15M hasn't fully flipped yet
-  const counterTrendShortSetup = marketBias === "Bearish" && priceBelowSupport;
-
-  console.log(
-    `[STRATEGY] ${symbol} SHORT conditions: priceBelow=${shortConditions.priceBelowSupport}, ema15M=${shortConditions.ema15MBearish}, stochK=${stochK}, counterTrend=${counterTrendShortSetup}`
-  );
-
-  if (
-    (shortConditions.priceBelowSupport && shortConditions.ema15MBearish) ||
-    counterTrendShortSetup
-  ) {
-    status = "SHORT";
-    entry = currentPrice;
-    
-    // Safety check: if ATR is > 10% of entry price, something is wrong - cap it
-    const atrSanityCheck = Math.min(atr, entry * 0.05); // Cap ATR at 5% of entry
-    
-    stopLoss = Math.round((entry + 1.5 * atrSanityCheck) * 100) / 100;
-    takeProfit = Math.round((entry - 4 * atrSanityCheck) * 100) / 100;
-    
-    // Determine entry type based on which condition triggered
-    if (counterTrendShortSetup && !shortConditions.priceBelowSupport) {
-      entryType = "5M Momentum";
-      reason = `Counter-trend SHORT: overbought fail (Stoch=${stochK}) + 15M bearish EMA reversal`;
-    } else if (entry5MConfirmed) {
-      entryType = "5M Momentum";
-      reason = `5M Momentum: vol spike (${volumeRatio.toFixed(1)}x) + bearish EMA + 4H break`;
-    } else {
-      entryType = "4H Structure";
-      reason = `4H break below support + 15M bearish EMA`;
+  // SHORT Setup: 4H bearish + 15M bearish + price at or breaking below support
+  if (trend4H === "DOWN" && trend15M === "DOWN") {
+    // Fire on structure break or overbought reversal
+    if (priceBelowSupport || stochK > 70) {
+      status = "SHORT";
+      entry = currentPrice;
+      const atrCap = Math.min(atr, entry * 0.05);
+      stopLoss = Math.round((entry + 1.5 * atrCap) * 100) / 100;
+      takeProfit = Math.round((entry - 4 * atrCap) * 100) / 100;
+      entryType = priceBelowSupport ? "4H Structure" : "5M Momentum";
+      reason = entryType === "4H Structure"
+        ? `Bearish: 4H + 15M trending down, price broke support`
+        : `Bearish: 4H + 15M down, overbought reversal (Stoch=${Math.round(stochK)})`;
     }
   }
 
@@ -370,23 +231,6 @@ export function generateSignal(
     riskReward = Math.round((reward / risk) * 100) / 100;
   }
 
-  // Calculate distance to nearest swing level
-  let nearestSwingLevel: number | undefined;
-  let distanceToSwing: number | undefined;
-
-  if (status === "NO_SIGNAL") {
-    const distToHigh = Math.abs(currentPrice - highLevel);
-    const distToLow = Math.abs(currentPrice - lowLevel);
-
-    if (distToHigh < distToLow) {
-      nearestSwingLevel = highLevel;
-      distanceToSwing = Math.round(((highLevel - currentPrice) / currentPrice) * 10000) / 100;
-    } else {
-      nearestSwingLevel = lowLevel;
-      distanceToSwing = Math.round(((currentPrice - lowLevel) / currentPrice) * 10000) / 100;
-    }
-  }
-
   return {
     symbol,
     price: Math.round(currentPrice * 100) / 100,
@@ -396,14 +240,10 @@ export function generateSignal(
     takeProfit,
     riskReward,
     confidence: status === "NO_SIGNAL" ? 0 : Math.round((adx / 50) * 100),
-    adx: Math.round(adx * 100) / 100,
+    adx,
     stochK: Math.round(stochK),
     marketBias,
     entryType,
-    volumeRatio: volumeRatio ? Math.round(volumeRatio * 100) / 100 : undefined,
-    entry5MConfirmed,
-    nearestSwingLevel: nearestSwingLevel ? Math.round(nearestSwingLevel * 100) / 100 : undefined,
-    distanceToSwing,
     reason,
     updatedAt: new Date().toISOString(),
   };
