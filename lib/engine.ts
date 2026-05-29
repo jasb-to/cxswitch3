@@ -3,27 +3,69 @@ export type Symbol = "BTC" | "ETH" | "SOL";
 export interface Signal {
   symbol: Symbol;
   price: number;
-
   change24h: number;
-
   bias4H: "Bullish" | "Bearish" | "Neutral";
   bias1H: "Bullish" | "Bearish" | "Neutral";
-
   setup: "LONG" | "SHORT" | null;
-
   stochRSI: number;
   stochDirection: "rising" | "falling" | "neutral";
-
   emaCross: "Bullish" | "Bearish" | "None";
-
   momentum: "Accelerating" | "Decelerating" | "Flat";
-
+  strength: string;
   entry?: number;
   stopLoss?: number;
   takeProfit?: number;
-
   trigger: string;
   updatedAt: string;
+  state?: "FLAT" | "BUILDING" | "SNIPER";
+  confidence?: number;
+  shouldAlert?: boolean;
+  tradeType?: string;
+  riskReward?: number;
+  bias?: string;
+  dataQuality?: string;
+  stochRSIState?: string;
+  stochRSIPeak?: any;
+  stochRSITrough?: any;
+  stochRSIDirection?: string;
+}
+
+// In-memory signal cache
+let signalCache: Signal[] = [];
+const alertHistory = new Map<string, { direction: string; price: number; time: number }>();
+const biasHistory = new Map<string, { bias: string; price: number; time: number }>();
+
+export function getCachedSignals(): Signal[] {
+  return signalCache;
+}
+
+export function setCachedSignals(signals: Signal[]): void {
+  signalCache = signals;
+}
+
+export function recordAlert(
+  symbol: string,
+  direction: string,
+  price: number
+): void {
+  alertHistory.set(symbol, { direction, price, time: Date.now() });
+}
+
+export function detectBiasFlip(
+  symbol: string,
+  newBias: string,
+  price: number
+): { flipped: boolean; oldBias?: string; newBias: string } {
+  const history = biasHistory.get(symbol);
+  const oldBias = history?.bias;
+
+  biasHistory.set(symbol, { bias: newBias, price, time: Date.now() });
+
+  if (oldBias && oldBias !== newBias) {
+    return { flipped: true, oldBias, newBias };
+  }
+
+  return { flipped: false, newBias };
 }
 
 const KRAKEN: Record<Symbol, string> = {
@@ -155,6 +197,7 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
 
     emaCross: ema,
     momentum: mom,
+    strength: setup ? (st > 70 || st < 30 ? "A+" : "A") : "C",
 
     entry: setup ? price : undefined,
     stopLoss: setup ? price * (setup === "LONG" ? 0.985 : 1.015) : undefined,
@@ -163,5 +206,11 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
     trigger: setup ? "EMA + Bias + Stoch" : "Waiting",
 
     updatedAt: new Date().toISOString(),
+    state: setup ? "SNIPER" : "FLAT",
+    confidence: setup ? 85 : 0,
+    shouldAlert: setup ? true : false,
+    tradeType: "With Trend",
+    riskReward: setup ? 1.33 : undefined,
+    bias: bias4H,
   };
 }
