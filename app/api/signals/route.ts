@@ -51,18 +51,8 @@ export async function GET(request: Request) {
 
           // Log signal details
           console.log(
-            `[API] ${symbol} signal: status=${signal.status}, price=$${signal.price}, adx=${signal.adx.toFixed(1)}, stoch=${signal.stochK}, confidence=${signal.confidence}%, entryType=${signal.entryType || "—"}, volume=${signal.volumeRatio?.toFixed(1)}x`
+            `[API] ${symbol} signal: state=${signal.state}, price=$${signal.price}, adx=${signal.adx.toFixed(1)}, stoch=${signal.stochK}, confidence=${signal.confidence}%`
           );
-
-          if (signal.status !== "NO_SIGNAL") {
-            console.log(
-              `[API] ${symbol} ACTIVE TRADE: entry=$${signal.entry}, sl=$${signal.stopLoss}, tp=$${signal.takeProfit}, rr=${signal.riskReward?.toFixed(2)}x`
-            );
-          } else {
-            console.log(
-              `[API] ${symbol} waiting: ${signal.reason} | next level=$${signal.nearestSwingLevel} (${signal.distanceToSwing}%)`
-            );
-          }
 
           return signal;
         } catch (err) {
@@ -77,25 +67,25 @@ export async function GET(request: Request) {
 
       signals.push(signal);
 
-      // Check if we should send telegram alert
-      const key = `${signal.symbol}-${signal.status}`;
+      // Check if we should send telegram alert - ONLY for LONG or SHORT states
+      const key = `${signal.symbol}-${signal.state}`;
       const lastSent = lastAlerts[key];
       const now = Date.now();
 
-      if (signal.status !== "NO_SIGNAL") {
+      if (signal.state === "LONG" || signal.state === "SHORT") {
         const shouldAlert =
           !lastSent || // First time
           now - lastSent.timestamp > ALERT_COOLDOWN; // Cooldown expired
 
         if (shouldAlert) {
           console.log(
-            `[API] Sending Telegram alert for ${signal.symbol} ${signal.status}...`
+            `[API] Sending Telegram alert for ${signal.symbol} ${signal.state}...`
           );
           sendTelegramAlert(signal).then((success) => {
             if (success) {
-              lastAlerts[key] = { status: signal.status, timestamp: now };
+              lastAlerts[key] = { status: signal.state, timestamp: now };
               console.log(
-                `[API] ✅ Telegram alert sent for ${signal.symbol} ${signal.status}`
+                `[API] ✅ Telegram alert sent for ${signal.symbol} ${signal.state}`
               );
             } else {
               console.error(
@@ -108,7 +98,7 @@ export async function GET(request: Request) {
             (ALERT_COOLDOWN - (now - lastSent.timestamp)) / 1000
           );
           console.log(
-            `[API] Alert skipped for ${signal.symbol}: same ${signal.status} within cooldown (${secondsUntilNext}s remaining)`
+            `[API] Alert skipped for ${signal.symbol}: same ${signal.state} within cooldown (${secondsUntilNext}s remaining)`
           );
         }
       }
