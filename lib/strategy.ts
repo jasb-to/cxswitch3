@@ -248,8 +248,11 @@ export function generateSignal(
   const structureBreakWithEMA = (priceAboveResistance && ema15MBullish) || (priceBelowSupport && ema15MBearish);
   const effectiveAdxThreshold = structureBreakWithEMA ? 10 : adxThreshold;
   
+  console.log(`[STRATEGY] ${symbol} ADX check: adx=${adx.toFixed(1)}, threshold=${adxThreshold}, structureBreak=${structureBreakWithEMA}, effectiveThreshold=${effectiveAdxThreshold}, passes=${adx >= effectiveAdxThreshold}`);
+  
   if (adx < effectiveAdxThreshold) {
     reason = `ADX too low (${adx.toFixed(1)} < ${effectiveAdxThreshold}), skipping choppy market`;
+    console.log(`[STRATEGY] ${symbol} BLOCKED: ${reason}`);
     return {
       symbol,
       price: currentPrice,
@@ -300,6 +303,7 @@ export function generateSignal(
     (longConditions.priceAboveResistance && longConditions.ema15MBullish) ||
     counterTrendLongSetup
   ) {
+    console.log(`[STRATEGY] ${symbol} LONG SIGNAL TRIGGERED - counterTrend=${counterTrendLongSetup}, structureBreak=${longConditions.priceAboveResistance && longConditions.ema15MBullish}`);
     status = "LONG";
     entry = currentPrice;
     
