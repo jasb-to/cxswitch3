@@ -29,3 +29,17 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #606060;
 }
+
+/* Neon glow pulse for active signals */
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(59, 130, 246, 0.6);
+  }
+}
+
+.pulse-glow {
+  animation: pulse-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}

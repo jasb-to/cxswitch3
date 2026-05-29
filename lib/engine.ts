@@ -3,6 +3,7 @@ export type Symbol = "BTC" | "ETH" | "SOL";
 export interface Signal {
   symbol: Symbol;
   price: number;
+
   change24h: number;
 
   bias4H: "Bullish" | "Bearish" | "Neutral";
@@ -141,6 +142,7 @@ export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
 
   return {
     symbol,
+
     price,
     change24h: 0,
 
