@@ -196,7 +196,31 @@ export function generateSignal(
 
   // ADX threshold varies by symbol - lowered back down for faster entries without Stoch K
   const adxThreshold = symbol === "SOL" ? 15 : 20;
-  
+
+  // Calculate EMAs first for structure break override check
+  const stoch15M = calculateStochRSI(candles15M);
+  const ema8_15M =
+    candles15M.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
+  const ema21_15M =
+    candles15M.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
+
+  // Calculate 4H market bias (EMA cross)
+  const ema8_4H =
+    candles4H.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
+  const ema21_4H =
+    candles4H.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
+
+  let marketBias: "Bullish" | "Bearish" | "Neutral" = "Neutral";
+  if (ema8_4H > ema21_4H) {
+    marketBias = "Bullish";
+  } else if (ema8_4H < ema21_4H) {
+    marketBias = "Bearish";
+  }
+
+  console.log(
+    `[STRATEGY] ${symbol} 4H: price=${currentPrice.toFixed(2)}, ema8=${ema8_4H.toFixed(2)}, ema21=${ema21_4H.toFixed(2)}, diff=${(ema8_4H - ema21_4H).toFixed(2)}`
+  );
+
   // Check for emerging trend override: if price breaks structure + EMA aligned, allow ADX > 10
   const priceAboveResistance = currentPrice > highLevel;
   const priceBelowSupport = currentPrice < lowLevel;
@@ -219,30 +243,6 @@ export function generateSignal(
       reason,
       updatedAt: new Date().toISOString(),
     };
-  }
-
-  // LONG Signal: Price above resistance + oversold stoch + bullish 15M
-  const stoch15M = calculateStochRSI(candles15M);
-  const ema8_15M =
-    candles15M.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
-  const ema21_15M =
-    candles15M.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
-
-  // Calculate 4H market bias (EMA cross)
-  const ema8_4H =
-    candles4H.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
-  const ema21_4H =
-    candles4H.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
-
-  console.log(
-    `[STRATEGY] ${symbol} 4H: price=${currentPrice.toFixed(2)}, ema8=${ema8_4H.toFixed(2)}, ema21=${ema21_4H.toFixed(2)}, diff=${(ema8_4H - ema21_4H).toFixed(2)}`
-  );
-
-  let marketBias: "Bullish" | "Bearish" | "Neutral" = "Neutral";
-  if (ema8_4H > ema21_4H) {
-    marketBias = "Bullish";
-  } else if (ema8_4H < ema21_4H) {
-    marketBias = "Bearish";
   }
 
   // Calculate 5M momentum and volume spike detection
