@@ -196,6 +196,11 @@ function calculateStoch(closes: number[]) {
   const current = slice.at(-1)!;
 
   const value = high === low ? 50 : ((current - low) / (high - low)) * 100;
+  
+  // DEBUG: Log the actual candle values
+  console.log(`[ENGINE] STOCH DEBUG: current=${current}, low=${low}, high=${high}, range=${high-low}, value=${value.toFixed(1)}%`);
+  console.log(`[ENGINE] STOCH 14 closes: [${slice.slice(0, 3).join(", ")}...${slice.slice(-3).join(", ")}]`);
+  
   return Math.round(value);
 }
 
@@ -215,6 +220,8 @@ function calculateEMACross(closes: number[]) {
 
   const ema8 = closes.slice(-8).reduce((a, b) => a + b, 0) / 8;
   const ema21 = closes.slice(-21).reduce((a, b) => a + b, 0) / 21;
+
+  console.log(`[ENGINE] EMA DEBUG: ema8=${ema8.toFixed(2)}, ema21=${ema21.toFixed(2)}, last3=${closes.slice(-3).join(", ")}`);
 
   if (ema8 > ema21) return "Bullish";
   if (ema8 < ema21) return "Bearish";
