@@ -271,8 +271,8 @@ export function generateSignal(
     ema15MBullish: ema15MBullish,
   };
 
-  // Counter-trend LONG override: Extreme oversold bounce (Stoch < 20) + upward bounce + 15M recovering
-  const counterTrendLongSetup = stochK < 20 && ema15MBullish;
+  // Counter-trend LONG override: Oversold/recovering bounce (Stoch < 35) + upward bounce + 15M bullish
+  const counterTrendLongSetup = stochK < 35 && ema15MBullish;
 
   console.log(
     `[STRATEGY] ${symbol} LONG conditions: priceAbove=${longConditions.priceAboveResistance} (${currentPrice.toFixed(2)} > ${highLevel.toFixed(2)}), ema15M=${longConditions.ema15MBullish} (${ema8_15M.toFixed(2)} > ${ema21_15M.toFixed(2)}), stochK=${stochK}, counterTrend=${counterTrendLongSetup}, adx=${adx.toFixed(1)}`
@@ -306,8 +306,8 @@ export function generateSignal(
     ema15MBearish: ema15MBearish,
   };
 
-  // Counter-trend SHORT override: Extreme overbought bounce (Stoch > 80) + downward reversal + 15M turning bearish
-  const counterTrendShortSetup = stochK > 80 && ema15MBearish;
+  // Counter-trend SHORT override: Overbought/failing rally (Stoch > 65) + downward reversal + 15M bearish
+  const counterTrendShortSetup = stochK > 65 && ema15MBearish;
 
   console.log(
     `[STRATEGY] ${symbol} SHORT conditions: priceBelow=${shortConditions.priceBelowSupport} (${currentPrice.toFixed(2)} < ${lowLevel.toFixed(2)}), ema15M=${shortConditions.ema15MBearish} (${ema8_15M.toFixed(2)} < ${ema21_15M.toFixed(2)}), stochK=${stochK}, counterTrend=${counterTrendShortSetup}, adx=${adx.toFixed(1)}`
