@@ -35,7 +35,9 @@ function calculateATR(candles: Candle[], period: number = 14): number {
   if (candles.length < period + 1) return 0;
 
   let tr_sum = 0;
-  for (let i = 1; i < candles.length; i++) {
+  // Only calculate TR for the last `period` candles, not all candles
+  const start = Math.max(1, candles.length - period);
+  for (let i = start; i < candles.length; i++) {
     const curr = candles[i];
     const prev = candles[i - 1];
 
@@ -187,6 +189,8 @@ export function generateSignal(
   const atr = calculateATR(candles4H);
   const { highLevel, lowLevel } = findSwings(candles4H, 50);
 
+  console.log(`[STRATEGY] ${symbol} ATR=${atr.toFixed(2)}, entry will use 1.5*ATR=${(1.5 * atr).toFixed(2)}, 4*ATR=${(4 * atr).toFixed(2)}`);
+
   // Default: no signal
   let status: "LONG" | "SHORT" | "NO_SIGNAL" = "NO_SIGNAL";
   let entry: number | undefined;
@@ -271,8 +275,8 @@ export function generateSignal(
     ema15MBullish: ema15MBullish,
   };
 
-  // Counter-trend LONG override: Extreme oversold bounce (Stoch < 20) + upward bounce + 15M recovering
-  const counterTrendLongSetup = stochK < 20 && ema15MBullish;
+  // Counter-trend LONG override: Oversold/recovering bounce (Stoch < 35) + upward bounce + 15M bullish
+  const counterTrendLongSetup = stochK < 35 && ema15MBullish;
 
   console.log(
     `[STRATEGY] ${symbol} LONG conditions: priceAbove=${longConditions.priceAboveResistance} (${currentPrice.toFixed(2)} > ${highLevel.toFixed(2)}), ema15M=${longConditions.ema15MBullish} (${ema8_15M.toFixed(2)} > ${ema21_15M.toFixed(2)}), stochK=${stochK}, counterTrend=${counterTrendLongSetup}, adx=${adx.toFixed(1)}`
@@ -306,8 +310,8 @@ export function generateSignal(
     ema15MBearish: ema15MBearish,
   };
 
-  // Counter-trend SHORT override: Extreme overbought bounce (Stoch > 80) + downward reversal + 15M turning bearish
-  const counterTrendShortSetup = stochK > 80 && ema15MBearish;
+  // Counter-trend SHORT override: Overbought/failing rally (Stoch > 65) + downward reversal + 15M bearish
+  const counterTrendShortSetup = stochK > 65 && ema15MBearish;
 
   console.log(
     `[STRATEGY] ${symbol} SHORT conditions: priceBelow=${shortConditions.priceBelowSupport} (${currentPrice.toFixed(2)} < ${lowLevel.toFixed(2)}), ema15M=${shortConditions.ema15MBearish} (${ema8_15M.toFixed(2)} < ${ema21_15M.toFixed(2)}), stochK=${stochK}, counterTrend=${counterTrendShortSetup}, adx=${adx.toFixed(1)}`
