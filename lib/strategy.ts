@@ -21,6 +21,9 @@ export interface Signal {
   adx: number;
   stochK: number;
   marketBias: "Bullish" | "Bearish" | "Neutral";
+  entryType?: "5M Momentum" | "4H Structure";
+  volumeRatio?: number;
+  entry5MConfirmed?: boolean;
   nearestSwingLevel?: number;
   distanceToSwing?: number; // as percentage
   reason: string;
@@ -133,7 +136,8 @@ function findSwings(
 export function generateSignal(
   symbol: Symbol,
   candles4H: Candle[],
-  candles15M: Candle[]
+  candles15M: Candle[],
+  candles5M?: Candle[]
 ): Signal {
   const currentPrice = candles4H[candles4H.length - 1].close;
   const adx = calculateADX(candles4H);
@@ -184,6 +188,26 @@ export function generateSignal(
     marketBias = "Bearish";
   }
 
+  // Calculate 5M momentum and volume spike detection
+  let entry5MConfirmed = false;
+  let entryType: "5M Momentum" | "4H Structure" | undefined;
+  let volumeRatio = 1;
+
+  if (candles5M && candles5M.length >= 30) {
+    const ema8_5M = candles5M.slice(-8).reduce((a, b) => a + b.close, 0) / 8;
+    const ema21_5M = candles5M.slice(-21).reduce((a, b) => a + b.close, 0) / 21;
+    const avgVolume = candles5M.slice(-20).reduce((a, b) => a + b.volume, 0) / 20;
+    const currentVolume = candles5M[candles5M.length - 1].volume;
+
+    volumeRatio = Math.round((currentVolume / avgVolume) * 100) / 100;
+
+    // 5M momentum confirmed: price above 5M EMA + volume spike
+    entry5MConfirmed = currentVolume > avgVolume * 1.5 && (
+      (marketBias === "Bullish" && ema8_5M > ema21_5M) ||
+      (marketBias === "Bearish" && ema8_5M < ema21_5M)
+    );
+  }
+
   if (
     currentPrice > highLevel &&
     stochK < 35 &&
@@ -194,7 +218,15 @@ export function generateSignal(
     entry = currentPrice;
     stopLoss = Math.round((entry - 1.5 * atr) * 100) / 100;
     takeProfit = Math.round((entry + 4 * atr) * 100) / 100;
-    reason = `4H break above resistance + oversold stoch (${stochK.toFixed(0)}) + 15M bullish`;
+    
+    // Determine entry type based on 5M confirmation
+    if (entry5MConfirmed) {
+      entryType = "5M Momentum";
+      reason = `5M Momentum: vol spike (${volumeRatio.toFixed(1)}x) + bullish EMA + 4H break`;
+    } else {
+      entryType = "4H Structure";
+      reason = `4H break above resistance + oversold stoch (${stochK.toFixed(0)}) + 15M bullish`;
+    }
   }
 
   // SHORT Signal: Price below support + overbought stoch + bearish 15M
@@ -208,7 +240,15 @@ export function generateSignal(
     entry = currentPrice;
     stopLoss = Math.round((entry + 1.5 * atr) * 100) / 100;
     takeProfit = Math.round((entry - 4 * atr) * 100) / 100;
-    reason = `4H break below support + overbought stoch (${stochK.toFixed(0)}) + 15M bearish`;
+    
+    // Determine entry type based on 5M confirmation
+    if (entry5MConfirmed) {
+      entryType = "5M Momentum";
+      reason = `5M Momentum: vol spike (${volumeRatio.toFixed(1)}x) + bearish EMA + 4H break`;
+    } else {
+      entryType = "4H Structure";
+      reason = `4H break below support + overbought stoch (${stochK.toFixed(0)}) + 15M bearish`;
+    }
   }
 
   // Calculate risk/reward
@@ -248,6 +288,9 @@ export function generateSignal(
     adx: Math.round(adx * 100) / 100,
     stochK: Math.round(stochK),
     marketBias,
+    entryType,
+    volumeRatio: Math.round(volumeRatio * 100) / 100,
+    entry5MConfirmed,
     nearestSwingLevel: nearestSwingLevel ? Math.round(nearestSwingLevel * 100) / 100 : undefined,
     distanceToSwing,
     reason,

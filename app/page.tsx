@@ -123,6 +123,28 @@ function SignalCard({ signal }: { signal: Signal }) {
             {signal.marketBias}
           </span>
         </div>
+        {signal.entryType && (
+          <div className="flex justify-between text-sm">
+            <span className="text-muted-foreground">Entry Type</span>
+            <span className={`font-mono font-semibold px-2 py-0.5 rounded text-xs ${
+              signal.entryType === "5M Momentum" 
+                ? "bg-green-500/20 text-green-400" 
+                : "bg-yellow-500/20 text-yellow-400"
+            }`}>
+              {signal.entryType}
+            </span>
+          </div>
+        )}
+        {signal.volumeRatio !== undefined && signal.status !== "NO_SIGNAL" && (
+          <div className="flex justify-between text-sm">
+            <span className="text-muted-foreground">Volume Spike</span>
+            <span className={`font-mono font-semibold ${
+              signal.volumeRatio > 1.5 ? "text-blue-400" : "text-slate-400"
+            }`}>
+              {signal.volumeRatio.toFixed(1)}x
+            </span>
+          </div>
+        )}
         <div className="flex justify-between text-sm">
           <span className="text-muted-foreground">ADX</span>
           <span className="font-mono font-semibold">{signal.adx.toFixed(1)}</span>
