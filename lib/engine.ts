@@ -1,64 +1,42 @@
-/**
- * SIGNAL ENGINE v2.8 — StochRSI Peak Detection + Kraken OHLC + CoinGecko Prices
- */
+# lib/engine.ts
 
+```ts
 import { fetchPrices } from "./coingecko";
 
 export type Symbol = "BTC" | "ETH" | "SOL";
 
-const KRaken_ALTNAMES: Record<Symbol, string> = {
-  BTC: "XBTUSD",
-  ETH: "ETHUSD",
-  SOL: "SOLUSD",
-};
-
 export interface Signal {
   symbol: Symbol;
   price: number;
+
   change24h: number;
   high24h: number;
   low24h: number;
-  bias: "Bullish" | "Bearish" | "Neutral";
-  state: "FLAT" | "BUILDING" | "SNIPER";
-  direction?: "LONG" | "SHORT";
+
+  bias4H: "Bullish" | "Bearish" | "Neutral";
+  bias1H: "Bullish" | "Bearish" | "Neutral";
+
+  setup: "LONG" | "SHORT" | null;
+
+  strength: "A+" | "A" | "B" | "C";
+
+  emaCross: "Bullish" | "Bearish" | "None";
+
+  stochRSI: number;
+  stochDirection: "rising" | "falling" | "neutral";
+
   entry?: number;
   stopLoss?: number;
   takeProfit?: number;
-  riskReward?: number;
-  confidence: number;
+
+  momentum: "Accelerating" | "Decelerating" | "Flat";
+
   trigger: string;
-  momentum: string;
-  shouldAlert: boolean;
-  rangePosition: number;
-  moveTiming: "Early" | "Mid" | "Late";
-  trendScore: number;
-  candleBreak: string;
-  volatilityState: string;
-  stochRSI: number;
-  stochRSIState: string;
-  stochRSIPeak?: { peakValue: number; dropFromPeak: number } | null;
-  stochRSITrough?: { troughValue: number; riseFromTrough: number } | null;
-  stochRSIDirection: "rising" | "falling" | "neutral";
-  tradeType: "With Trend" | "Counter Trend" | "—";
-  dataQuality: "Kraken" | "Fallback";
+
   updatedAt: string;
 }
 
-let signalCache: Signal[] = [];
-let signalCacheTime = 0;
-const SIGNAL_CACHE_TTL = 300000;
-
-export function getCachedSignals(): Signal[] {
-  if (Date.now() - signalCacheTime < SIGNAL_CACHE_TTL) return signalCache;
-  return [];
-}
-
-export function setCachedSignals(signals: Signal[]) {
-  signalCache = signals;
-  signalCacheTime = Date.now();
-}
-
-interface KrakenCandle {
+interface Candle {
   time: number;
   open: number;
   high: number;
@@ -66,527 +44,271 @@ interface KrakenCandle {
   close: number;
 }
 
-async function fetchKrakenOHLC(symbol: Symbol): Promise<KrakenCandle[]> {
-  const altname = KRaken_ALTNAMES[symbol];
+const KRAKEN: Record<Symbol, string> = {
+  BTC: "XBTUSD",
+  ETH: "ETHUSD",
+  SOL: "SOLUSD",
+};
+
+async function fetchOHLC(
+  symbol: Symbol,
+  interval: number
+): Promise<Candle[]> {
   try {
+    const pair = KRAKEN[symbol];
+
     const res = await fetch(
-      `https://api.kraken.com/0/public/OHLC?pair=${altname}&interval=60`,
+      `https://api.kraken.com/0/public/OHLC?pair=${pair}&interval=${interval}`,
       { cache: "no-store" }
     );
-    if (!res.ok) {
-      console.warn(`[Kraken] ${symbol} HTTP ${res.status}`);
-      return [];
-    }
+
     const data = await res.json();
-    if (data.error && data.error.length > 0) {
-      console.warn(`[Kraken] ${symbol} API error:`, data.error);
-      return [];
-    }
 
-    const resultKeys = Object.keys(data.result).filter((k) => k !== "last");
-    if (resultKeys.length === 0) {
-      console.warn(`[Kraken] ${symbol} no pair data found`);
-      return [];
-    }
+    const key = Object.keys(data.result).find((k) => k !== "last");
 
-    const pairKey = resultKeys[0];
-    const raw = data.result[pairKey] as number[][];
+    if (!key) return [];
 
-    return raw.map((c) => ({
+    return data.result[key].map((c: any[]) => ({
       time: c[0],
       open: parseFloat(c[1]),
       high: parseFloat(c[2]),
       low: parseFloat(c[3]),
       close: parseFloat(c[4]),
     }));
-  } catch (err) {
-    console.warn(`[Kraken] ${symbol} error:`, (err as Error).message);
+  } catch {
     return [];
   }
 }
 
-async function fetchAllOHLC(): Promise<Record<Symbol, KrakenCandle[]>> {
-  const result: Partial<Record<Symbol, KrakenCandle[]>> = {};
-  for (const sym of ["BTC", "ETH", "SOL"] as Symbol[]) {
-    result[sym] = await fetchKrakenOHLC(sym);
-    if (sym !== "SOL") await new Promise((r) => setTimeout(r, 300));
+function ema(values: number[], period: number) {
+  const k = 2 / (period + 1);
+
+  let prev = values[0];
+
+  const result = [prev];
+
+  for (let i = 1; i < values.length; i++) {
+    prev = values[i] * k + prev * (1 - k);
+    result.push(prev);
   }
-  return result as Record<Symbol, KrakenCandle[]>;
+
+  return result;
 }
 
-function computeStochRSI(closes: number[], period = 14): { k: number[] } {
-  if (closes.length < period + 5) return { k: [] };
+function getEMACross(closes: number[]) {
+  if (closes.length < 30) return "None";
 
-  const gains: number[] = [];
-  const losses: number[] = [];
-  for (let i = 1; i < closes.length; i++) {
-    const change = closes[i] - closes[i - 1];
-    gains.push(change > 0 ? change : 0);
-    losses.push(change < 0 ? -change : 0);
+  const ema8 = ema(closes, 8);
+  const ema21 = ema(closes, 21);
+
+  const prev8 = ema8[ema8.length - 2];
+  const prev21 = ema21[ema21.length - 2];
+
+  const current8 = ema8[ema8.length - 1];
+  const current21 = ema21[ema21.length - 1];
+
+  if (prev8 < prev21 && current8 > current21) {
+    return "Bullish";
   }
 
-  let avgGain = gains.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  let avgLoss = losses.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  const rsiValues: number[] = [];
-
-  for (let i = period; i < gains.length; i++) {
-    avgGain = (avgGain * (period - 1) + gains[i]) / period;
-    avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
-    const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
-    rsiValues.push(100 - 100 / (1 + rs));
+  if (prev8 > prev21 && current8 < current21) {
+    return "Bearish";
   }
 
-  const stochPeriod = Math.min(period, rsiValues.length);
-  const kValues: number[] = [];
-
-  for (let i = stochPeriod; i <= rsiValues.length; i++) {
-    const slice = rsiValues.slice(i - stochPeriod, i);
-    const minRSI = Math.min(...slice);
-    const maxRSI = Math.max(...slice);
-    const rangeRSI = maxRSI - minRSI;
-    const rawStoch =
-      rangeRSI === 0 ? 50 : ((slice[slice.length - 1] - minRSI) / rangeRSI) * 100;
-    kValues.push(Math.max(0, Math.min(100, rawStoch)));
-  }
-
-  return { k: kValues };
+  return "None";
 }
 
-function detectStochPeak(kValues: number[], minLevel = 70) {
-  if (kValues.length < 3) {
+function computeStochRSI(closes: number[]) {
+  if (closes.length < 20) {
     return {
-      peaked: false,
-      troughed: false,
-      peakValue: null as number | null,
-      troughValue: null as number | null,
-      currentValue: kValues[kValues.length - 1] ?? 50,
-      previousValue: kValues[kValues.length - 2] ?? 50,
-      direction: "neutral" as "rising" | "falling" | "neutral",
-      dropFromPeak: 0,
-      riseFromTrough: 0,
+      value: 50,
+      direction: "neutral" as const,
     };
   }
 
-  const c = kValues[kValues.length - 1];
-  const p = kValues[kValues.length - 2];
-  const p2 = kValues[kValues.length - 3];
+  const gains: number[] = [];
+  const losses: number[] = [];
 
-  const peaked = p > p2 && p > c && p > minLevel;
-  const troughed = p < p2 && p < c && p < 100 - minLevel;
+  for (let i = 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
 
-  let direction: "rising" | "falling" | "neutral" = "neutral";
-  if (c > p) direction = "rising";
-  else if (c < p) direction = "falling";
+    gains.push(diff > 0 ? diff : 0);
+    losses.push(diff < 0 ? Math.abs(diff) : 0);
+  }
+
+  const avgGain =
+    gains.slice(-14).reduce((a, b) => a + b, 0) / 14;
+
+  const avgLoss =
+    losses.slice(-14).reduce((a, b) => a + b, 0) / 14;
+
+  const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+
+  const rsi = 100 - 100 / (1 + rs);
+
+  const recent = closes.slice(-14);
+
+  const low = Math.min(...recent);
+  const high = Math.max(...recent);
+
+  const stoch =
+    high === low
+      ? 50
+      : ((closes[closes.length - 1] - low) / (high - low)) * 100;
+
+  const prev =
+    ((closes[closes.length - 2] - low) / (high - low)) * 100;
+
+  let direction: "rising" | "falling" | "neutral" =
+    "neutral";
+
+  if (stoch > prev) direction = "rising";
+  else if (stoch < prev) direction = "falling";
 
   return {
-    peaked,
-    troughed,
-    peakValue: peaked ? p : null,
-    troughValue: troughed ? p : null,
-    currentValue: c,
-    previousValue: p,
+    value: Math.round((stoch + rsi) / 2),
     direction,
-    dropFromPeak: peaked ? p - c : 0,
-    riseFromTrough: troughed ? c - p : 0,
   };
 }
 
-function compute4HBias(candles: KrakenCandle[]): "Bullish" | "Bearish" | "Neutral" {
-  if (candles.length < 8) return "Neutral";
+function getBias(closes: number[]) {
+  if (closes.length < 20) return "Neutral";
 
-  const blocks: { open: number; high: number; low: number; close: number }[] = [];
-  for (let i = 0; i < candles.length - 3; i += 4) {
-    const b = candles.slice(i, i + 4);
-    blocks.push({
-      open: b[0].open,
-      high: Math.max(...b.map((c) => c.high)),
-      low: Math.min(...b.map((c) => c.low)),
-      close: b[b.length - 1].close,
-    });
-  }
+  const recent = closes.slice(-6);
 
-  if (blocks.length < 2) return "Neutral";
+  let up = 0;
+  let down = 0;
 
-  const recent = blocks.slice(-3);
-  let up = 0,
-    down = 0;
   for (let i = 1; i < recent.length; i++) {
-    if (recent[i].close > recent[i - 1].close) up++;
-    if (recent[i].close < recent[i - 1].close) down++;
+    if (recent[i] > recent[i - 1]) up++;
+    if (recent[i] < recent[i - 1]) down++;
   }
 
-  const close = recent[recent.length - 1].close;
-  const prevClose = recent[recent.length - 2].close;
-  const highs = recent.map((b) => b.high);
-  const lows = recent.map((b) => b.low);
-  const mid = (Math.max(...highs) + Math.min(...lows)) / 2;
+  if (up >= 4) return "Bullish";
+  if (down >= 4) return "Bearish";
 
-  if (up >= 2 && close > mid && close > prevClose) return "Bullish";
-  if (down >= 2 && close < mid && close < prevClose) return "Bearish";
   return "Neutral";
 }
 
-function analyze1H(
-  candles: KrakenCandle[],
-  change24h: number,
-  price: number,
-  high24h: number,
-  low24h: number
-) {
-  const fallback = {
-    bias: "Neutral" as const,
-    trendScore: 0,
-    rangePosition: 0.5,
-    moveTiming: "Early" as const,
-    candleBreak: "Insufficient data",
-    volatilityState: "—",
-    high24h,
-    low24h,
-    dataQuality: "Fallback" as const,
-  };
+function getMomentum(closes: number[]) {
+  if (closes.length < 4) return "Flat";
 
-  if (candles.length < 4) return fallback;
+  const c1 =
+    Math.abs(closes[closes.length - 2] - closes[closes.length - 3]);
 
-  const allHighs = candles.map((c) => c.high);
-  const allLows = candles.map((c) => c.low);
-  const h24 = Math.max(...allHighs);
-  const l24 = Math.min(...allLows);
+  const c2 =
+    Math.abs(closes[closes.length - 1] - closes[closes.length - 2]);
 
-  const recent = candles.slice(-6);
-  const previous = candles.slice(-10, -6);
-
-  const prevHighs = previous.map((c) => c.high);
-  const prevLows = previous.map((c) => c.low);
-  const rangeHigh = Math.max(...prevHighs);
-  const rangeLow = Math.min(...prevLows);
-  const rangeMid = (rangeHigh + rangeLow) / 2;
-
-  const latest = recent[recent.length - 1];
-  const close = latest.close;
-
-  const rangePos =
-    h24 === l24 ? 0.5 : Math.max(0, Math.min(1, (close - l24) / (h24 - l24)));
-
-  let upCount = 0,
-    downCount = 0;
-  for (let i = 1; i < recent.length; i++) {
-    if (recent[i].close > recent[i - 1].close) upCount++;
-    if (recent[i].close < recent[i - 1].close) downCount++;
-  }
-
-  let bias: "Bullish" | "Bearish" | "Neutral" = "Neutral";
-  let trendScore = 0;
-  let candleBreak = "None";
-
-  if (upCount >= 3 && close > rangeMid) {
-    bias = "Bullish";
-    trendScore = 30 + upCount * 15;
-    candleBreak = close > rangeHigh ? "Broke above 4H range" : "Rising inside range";
-  } else if (downCount >= 3 && close < rangeMid) {
-    bias = "Bearish";
-    trendScore = 30 + downCount * 15;
-    candleBreak = close < rangeLow ? "Broke below 4H range" : "Falling inside range";
-  } else if (rangePos < 0.3 && change24h < -1.5) {
-    bias = "Bearish";
-    trendScore = 25 + Math.abs(change24h) * 5;
-    candleBreak = "Near 24h low — downtrend";
-  } else if (rangePos > 0.7 && change24h > 1.5) {
-    bias = "Bullish";
-    trendScore = 25 + change24h * 5;
-    candleBreak = "Near 24h high — uptrend";
-  } else {
-    const net = upCount - downCount;
-    if (net >= 2 && close > rangeMid) {
-      bias = "Bullish";
-      trendScore = 20 + net * 10;
-      candleBreak = "Rising inside range";
-    } else if (net <= -2 && close < rangeMid) {
-      bias = "Bearish";
-      trendScore = 20 + Math.abs(net) * 10;
-      candleBreak = "Falling inside range";
-    } else {
-      candleBreak = "Chopping";
-      trendScore = Math.max(upCount, downCount) * 10;
-    }
-  }
-
-  let moveTiming: "Early" | "Mid" | "Late" = "Early";
-  const moveCandles = bias === "Bullish" ? upCount : downCount;
-  if (moveCandles >= 4) moveTiming = "Late";
-  else if (moveCandles >= 2) moveTiming = "Mid";
-
-  const avgRange =
-    previous.reduce((sum, c) => sum + (c.high - c.low), 0) / previous.length;
-  const latestRange = latest.high - latest.low;
-  const volState =
-    latestRange > avgRange * 1.3
-      ? "Expanding ✅"
-      : latestRange > avgRange * 1.1
-        ? "Normal"
-        : "Contracting";
-
-  return {
-    bias,
-    trendScore: Math.min(100, Math.round(trendScore)),
-    rangePosition: rangePos,
-    moveTiming,
-    candleBreak,
-    volatilityState: volState,
-    high24h: h24,
-    low24h: l24,
-    dataQuality: "Kraken" as const,
-  };
-}
-
-function getTrigger(candles: KrakenCandle[], bias: string): string {
-  if (candles.length < 4) return "Waiting";
-  const recent = candles.slice(-3);
-  const close = recent[recent.length - 1].close;
-  const prevClose = recent[recent.length - 2].close;
-  const change = (close - prevClose) / prevClose;
-
-  if (bias === "Bullish" && change > 0.001) return "Early Break Up";
-  if (bias === "Bearish" && change < -0.001) return "Early Break Down";
-  return "Waiting";
-}
-
-function getMomentum(candles: KrakenCandle[]): "Accelerating" | "Decelerating" | "Flat" {
-  if (candles.length < 3) return "Flat";
-  const r = candles.slice(-3);
-  const c1 = Math.abs(r[1].close - r[0].close) / r[0].close;
-  const c2 = Math.abs(r[2].close - r[1].close) / r[1].close;
   if (c2 > c1 * 1.2) return "Accelerating";
   if (c2 < c1 * 0.8) return "Decelerating";
+
   return "Flat";
 }
 
-const alertedPositions = new Map<string, { price: number; time: number }>();
-const previousBiases = new Map<Symbol, "Bullish" | "Bearish" | "Neutral">();
+export async function evaluateSignal(
+  symbol: Symbol
+): Promise<Signal> {
+  const [prices, candles4H, candles1H, candles15m] =
+    await Promise.all([
+      fetchPrices(),
+      fetchOHLC(symbol, 240),
+      fetchOHLC(symbol, 60),
+      fetchOHLC(symbol, 15),
+    ]);
 
-function shouldAlert(symbol: Symbol, direction: "LONG" | "SHORT", price: number): boolean {
-  const key = `${symbol}:${direction}`;
-  const last = alertedPositions.get(key);
-  if (!last) return true;
-  const mins = (Date.now() - last.time) / 60000;
-  const priceChange = Math.abs((price - last.price) / last.price);
-  return mins > 30 && priceChange > 0.02;
-}
+  const market = prices[symbol];
 
-export function recordAlert(symbol: Symbol, direction: "LONG" | "SHORT", price: number) {
-  alertedPositions.set(`${symbol}:${direction}`, { price, time: Date.now() });
-}
+  const closes4H = candles4H.map((c) => c.close);
+  const closes1H = candles1H.map((c) => c.close);
+  const closes15m = candles15m.map((c) => c.close);
 
-export function detectBiasFlip(
-  symbol: Symbol,
-  currentBias: "Bullish" | "Bearish" | "Neutral",
-  price: number
-) {
-  const oldBias = previousBiases.get(symbol);
-  previousBiases.set(symbol, currentBias);
-  if (!oldBias || oldBias === currentBias || currentBias === "Neutral")
-    return { flipped: false };
-  if (
-    (oldBias === "Bullish" && currentBias === "Bearish") ||
-    (oldBias === "Bearish" && currentBias === "Bullish")
-  ) {
-    return { flipped: true, oldBias, newBias: currentBias };
-  }
-  return { flipped: false };
-}
+  const bias4H = getBias(closes4H);
+  const bias1H = getBias(closes1H);
 
-export async function evaluateSignal(symbol: Symbol): Promise<Signal> {
-  const [ohlcMap, prices] = await Promise.all([
-    fetchAllOHLC(),
-    fetchPrices(),
-  ]);
+  const emaCross = getEMACross(closes15m);
 
-  const candles = ohlcMap[symbol];
-  const data = prices[symbol];
-  const price = data.price;
-  const change24h = data.change24h;
-  const high24h = data.high24h || price * 1.02;
-  const low24h = data.low24h || price * 0.98;
+  const stoch = computeStochRSI(closes15m);
 
-  const closes = candles.map((c) => c.close);
+  const momentum = getMomentum(closes15m);
 
-  const bias4H = compute4HBias(candles);
-  const a1H = analyze1H(candles, change24h, price, high24h, low24h);
-  const stoch = computeStochRSI(closes);
-  const peak = detectStochPeak(stoch.k, 70);
+  let setup: "LONG" | "SHORT" | null = null;
 
-  const trigger = getTrigger(candles, a1H.bias);
-  const momentum = getMomentum(candles);
+  let trigger = "Waiting";
 
-  const stochRSI = Math.round(peak.currentValue);
-  const stochRSIState =
-    stochRSI < 20 ? "Oversold" : stochRSI > 80 ? "Overbought" : "Neutral";
+  let strength: "A+" | "A" | "B" | "C" = "C";
 
-  let state: Signal["state"] = "FLAT";
-  let direction: Signal["direction"] = undefined;
-  let confidence = 0;
-  let finalTrigger = trigger;
-  let tradeType: "With Trend" | "Counter Trend" | "—" = "—";
-
-  if (a1H.bias !== "Neutral") {
-    state = "BUILDING";
-    direction = a1H.bias === "Bullish" ? "LONG" : "SHORT";
-    confidence = Math.min(50, a1H.trendScore * 0.6);
-  }
-
-  const isAligned =
-    (a1H.bias === "Bullish" && trigger === "Early Break Up") ||
-    (a1H.bias === "Bearish" && trigger === "Early Break Down");
-  const hasVolume = a1H.volatilityState.includes("Expanding");
-
-  if (bias4H === "Bullish" && a1H.bias === "Bullish" && peak.troughed && isAligned) {
-    state = "SNIPER";
-    direction = "LONG";
-    tradeType = "With Trend";
-    confidence = Math.min(90, 60 + a1H.trendScore * 0.3 + peak.riseFromTrough * 1.5);
-    if (hasVolume) confidence += 10;
-    finalTrigger = "With Trend: Trough Bounce";
-  } else if (
-    bias4H === "Bearish" &&
-    a1H.bias === "Bearish" &&
-    peak.peaked &&
-    isAligned
-  ) {
-    state = "SNIPER";
-    direction = "SHORT";
-    tradeType = "With Trend";
-    confidence = Math.min(90, 60 + a1H.trendScore * 0.3 + peak.dropFromPeak * 1.5);
-    if (hasVolume) confidence += 10;
-    finalTrigger = "With Trend: Peak Drop";
-  }
-
-  else if (
+  const bullish =
     bias4H === "Bullish" &&
-    a1H.bias === "Bearish" &&
-    peak.peaked
-  ) {
-    state = "SNIPER";
-    direction = "SHORT";
-    tradeType = "Counter Trend";
-    confidence = Math.min(95, 50 + peak.peakValue! * 0.3 + peak.dropFromPeak * 2);
-    if (hasVolume) confidence += 5;
-    finalTrigger = "Counter Trend: Peak Reversal";
-  } else if (
+    bias1H === "Bullish" &&
+    emaCross === "Bullish" &&
+    stoch.value >= 35 &&
+    stoch.direction === "rising";
+
+  const bearish =
     bias4H === "Bearish" &&
-    a1H.bias === "Bullish" &&
-    peak.troughed
-  ) {
-    state = "SNIPER";
-    direction = "LONG";
-    tradeType = "Counter Trend";
-    confidence = Math.min(
-      95,
-      50 + (100 - peak.troughValue!) * 0.3 + peak.riseFromTrough * 2
-    );
-    if (hasVolume) confidence += 5;
-    finalTrigger = "Counter Trend: Trough Bounce";
+    bias1H === "Bearish" &&
+    emaCross === "Bearish" &&
+    stoch.value <= 65 &&
+    stoch.direction === "falling";
+
+  if (bullish) {
+    setup = "LONG";
+    trigger = "15m Bullish EMA Cross";
+    strength = momentum === "Accelerating" ? "A+" : "A";
   }
 
-  else if (bias4H === "Bullish" && peak.peaked && a1H.bias === "Bullish") {
-    state = "BUILDING";
-    direction = "SHORT";
-    tradeType = "Counter Trend";
-    confidence = Math.min(60, 40 + peak.peakValue! * 0.2);
-    finalTrigger = "Momentum Exhaustion — Waiting for Bias Flip";
-  } else if (bias4H === "Bearish" && peak.troughed && a1H.bias === "Bearish") {
-    state = "BUILDING";
-    direction = "LONG";
-    tradeType = "Counter Trend";
-    confidence = Math.min(60, 40 + (100 - peak.troughValue!) * 0.2);
-    finalTrigger = "Momentum Building — Waiting for Bias Flip";
+  if (bearish) {
+    setup = "SHORT";
+    trigger = "15m Bearish EMA Cross";
+    strength = momentum === "Accelerating" ? "A+" : "A";
   }
-
-  else if (
-    bias4H === "Bullish" &&
-    a1H.bias === "Bullish" &&
-    stochRSI < 35 &&
-    isAligned &&
-    momentum === "Accelerating"
-  ) {
-    state = "SNIPER";
-    direction = "LONG";
-    tradeType = "With Trend";
-    confidence = Math.min(70, 45 + a1H.trendScore * 0.15);
-    finalTrigger = "With Trend: Stoch Reset";
-  } else if (
-    bias4H === "Bearish" &&
-    a1H.bias === "Bearish" &&
-    stochRSI > 65 &&
-    isAligned &&
-    momentum === "Accelerating"
-  ) {
-    state = "SNIPER";
-    direction = "SHORT";
-    tradeType = "With Trend";
-    confidence = Math.min(70, 45 + a1H.trendScore * 0.15);
-    finalTrigger = "With Trend: Stoch Elevated";
-  }
-
-  if (state === "SNIPER" && a1H.moveTiming === "Late" && momentum === "Decelerating") {
-    state = "BUILDING";
-    confidence = Math.floor(confidence * 0.4);
-  }
-
-  const shouldSendAlert =
-    state === "SNIPER" && direction && shouldAlert(symbol, direction, price);
 
   let stopLoss: number | undefined;
   let takeProfit: number | undefined;
-  let riskReward: number | undefined;
 
-  if (state === "SNIPER" && direction) {
-    const isCounter = tradeType === "Counter Trend";
-    const baseSl = a1H.moveTiming === "Early" ? 0.035 : 0.02;
-    const slPct = isCounter ? baseSl * 0.7 : baseSl;
-    const tpPct = slPct * (isCounter ? 2.0 : 2.5);
+  const price = market.price;
 
-    if (direction === "LONG") {
-      stopLoss = price * (1 - slPct);
-      takeProfit = price * (1 + tpPct);
-    } else {
-      stopLoss = price * (1 + slPct);
-      takeProfit = price * (1 - tpPct);
-    }
-    riskReward = isCounter ? 2.0 : 2.5;
+  if (setup === "LONG") {
+    stopLoss = price * 0.985;
+    takeProfit = price * 1.04;
+  }
+
+  if (setup === "SHORT") {
+    stopLoss = price * 1.015;
+    takeProfit = price * 0.96;
   }
 
   return {
     symbol,
+
     price,
-    change24h,
-    high24h: a1H.high24h,
-    low24h: a1H.low24h,
-    bias: a1H.bias,
-    state,
-    direction,
-    entry: state === "SNIPER" ? price : undefined,
+
+    change24h: market.change24h,
+    high24h: market.high24h,
+    low24h: market.low24h,
+
+    bias4H,
+    bias1H,
+
+    setup,
+
+    strength,
+
+    emaCross,
+
+    stochRSI: stoch.value,
+    stochDirection: stoch.direction,
+
+    entry: setup ? price : undefined,
+
     stopLoss,
     takeProfit,
-    riskReward,
-    confidence: Math.floor(confidence),
-    trigger: finalTrigger,
+
     momentum,
-    shouldAlert: shouldSendAlert,
-    rangePosition: a1H.rangePosition,
-    moveTiming: a1H.moveTiming,
-    trendScore: a1H.trendScore,
-    candleBreak: a1H.candleBreak,
-    volatilityState: a1H.volatilityState,
-    stochRSI,
-    stochRSIState,
-    stochRSIPeak: peak.peaked
-      ? { peakValue: Math.round(peak.peakValue!), dropFromPeak: Math.round(peak.dropFromPeak) }
-      : null,
-    stochRSITrough: peak.troughed
-      ? { troughValue: Math.round(peak.troughValue!), riseFromTrough: Math.round(peak.riseFromTrough) }
-      : null,
-    stochRSIDirection: peak.direction,
-    tradeType,
-    dataQuality: a1H.dataQuality,
+
+    trigger,
+
     updatedAt: new Date().toISOString(),
   };
 }
+```
