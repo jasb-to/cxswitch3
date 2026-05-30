@@ -228,7 +228,15 @@ export function generateSignal(
 
   // Use live price instead of candle close price
   const currentPrice = livePrice;
+  
+  // Calculate ADX with debug logging
+  console.log(`[STRATEGY] ${symbol}: ADX Calculation Debug:`);
+  console.log(`[STRATEGY]   Timeframe: 15M`);
+  console.log(`[STRATEGY]   Candle count: ${c15M.length}`);
   const { adx, prevAdx } = calculateADX(c15M);
+  console.log(`[STRATEGY]   ADX Result: ${adx.toFixed(1)}`);
+  console.log(`[STRATEGY]   Previous ADX: ${prevAdx.toFixed(1)}`);
+  
   const stochKD = calculateStochKD(c15M);
 
   // Step 1: 4H Bias (Direction only)

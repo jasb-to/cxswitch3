@@ -26,13 +26,34 @@ export async function GET() {
       updatedAt: snapshot.updatedAt,
     }));
 
-    // Debug logging
-    console.log(`[API] Returning ${signals.length} signals:`);
-    signals.forEach((s) => {
-      console.log(
-        `[API]   ${s.symbol}: isBuilding=${s.isBuilding}, isSniper=${s.isSniper}, ADX=${s.adx.toFixed(1)}, K=${s.stochK.toFixed(1)}, Confidence=${s.confidence}%`
-      );
+    // Validation logging at API boundary
+    console.log(`[API] ========== VALIDATION LOG ==========`);
+    console.log(`[API] Returning ${signals.length} signals from persistence layer`);
+    
+    // Log full signal objects for critical symbols
+    ["BTC", "ETH", "SOL"].forEach((symbolName) => {
+      const signal = signals.find((s) => s.symbol === symbolName);
+      if (signal) {
+        console.log(`[API] ${symbolName}: {`);
+        console.log(`[API]   isBuilding: ${signal.isBuilding}`);
+        console.log(`[API]   isSniper: ${signal.isSniper}`);
+        console.log(`[API]   price: $${signal.price.toFixed(2)}`);
+        console.log(`[API]   adx: ${signal.adx.toFixed(1)}`);
+        console.log(`[API]   stochK: ${signal.stochK.toFixed(1)}`);
+        console.log(`[API]   stochD: ${signal.stochD.toFixed(1)}`);
+        console.log(`[API]   bias: ${signal.bias}`);
+        console.log(`[API]   confidence: ${signal.confidence}%`);
+        console.log(`[API]   stopLoss: $${signal.stopLoss.toFixed(2)}`);
+        console.log(`[API]   takeProfit: $${signal.takeProfit.toFixed(2)}`);
+        console.log(`[API]   riskRewardRatio: ${signal.riskRewardRatio.toFixed(2)}`);
+        console.log(`[API]   reason: ${signal.reason}`);
+        console.log(`[API] }`);
+      } else {
+        console.log(`[API] ${symbolName}: NOT IN SNAPSHOTS`);
+      }
     });
+    
+    console.log(`[API] ========== END VALIDATION LOG ==========`);
 
     return Response.json(
       { signals, updatedAt: new Date().toISOString() },
