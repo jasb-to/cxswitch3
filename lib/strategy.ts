@@ -23,11 +23,11 @@ export interface Signal {
 }
 
 // Calculate ADX
-function calculateADX(candles: Candle[], period: number = 14): number {
-  if (candles.length < period + 1) return 0;
+function calculateADX(candles: Candle[], period: number = 14): { adx: number; prevAdx: number } {
+  if (candles.length < period + 1) return { adx: 0, prevAdx: 0 };
 
+  // Calculate current ADX
   let plusDM = 0, minusDM = 0, trueRange = 0;
-
   for (let i = Math.max(1, candles.length - period); i < candles.length; i++) {
     const curr = candles[i];
     const prev = candles[i - 1];
@@ -48,8 +48,36 @@ function calculateADX(candles: Candle[], period: number = 14): number {
   const plusDI = (plusDM / avgTR) * 100;
   const minusDI = (minusDM / avgTR) * 100;
   const di = Math.abs(plusDI - minusDI) / (plusDI + minusDI);
-  
-  return Math.round(di * 100 * 10) / 10;
+  const currentAdx = Math.round(di * 100 * 10) / 10;
+
+  // Calculate previous ADX (one period back)
+  let prevAdx = 0;
+  if (candles.length >= period + 2) {
+    let plusDM_prev = 0, minusDM_prev = 0, trueRange_prev = 0;
+    for (let i = Math.max(1, candles.length - period - 1); i < candles.length - 1; i++) {
+      const curr = candles[i];
+      const prev = candles[i - 1];
+
+      const upMove = curr.high - prev.high;
+      const downMove = prev.low - curr.low;
+
+      if (upMove > 0 && upMove > downMove) plusDM_prev += upMove;
+      if (downMove > 0 && downMove > upMove) minusDM_prev += downMove;
+
+      const tr1 = curr.high - curr.low;
+      const tr2 = Math.abs(curr.high - prev.close);
+      const tr3 = Math.abs(curr.low - prev.close);
+      trueRange_prev += Math.max(tr1, tr2, tr3);
+    }
+
+    const avgTR_prev = trueRange_prev / period;
+    const plusDI_prev = (plusDM_prev / avgTR_prev) * 100;
+    const minusDI_prev = (minusDM_prev / avgTR_prev) * 100;
+    const di_prev = Math.abs(plusDI_prev - minusDI_prev) / (plusDI_prev + minusDI_prev);
+    prevAdx = Math.round(di_prev * 100 * 10) / 10;
+  }
+
+  return { adx: currentAdx, prevAdx };
 }
 
 // Calculate Stochastic K and D (with K/D crossover detection)
@@ -122,9 +150,9 @@ function calculate4HBias(candles: Candle[]): "Bullish" | "Bearish" | "Neutral" {
   return "Neutral";
 }
 
-// 1H Confirmation: Structure + Stoch direction + ADX > 20
+// 1H Confirmation: Structure + Stoch direction + ADX > 18 (updated threshold)
 function calculate1HConfirmation(candles: Candle[], adx: number): "Bullish" | "Bearish" | "Neutral" {
-  if (adx < 20) return "Neutral";
+  if (adx < 18) return "Neutral";
   if (candles.length < 5) return "Neutral";
 
   const last5 = candles.slice(-5);
@@ -172,8 +200,9 @@ export function generateSignal(
   }
 
   const currentPrice = c15M[c15M.length - 1].close;
-  const adx = calculateADX(c15M);
+  const { adx, prevAdx } = calculateADX(c15M);
   const stochKD = calculateStochKD(c15M);
+  const adxSlope = adx > prevAdx; // ADX rising condition
 
   // Step 1: 4H Bias (Direction only)
   const bias4H = calculate4HBias(c4H);
@@ -181,34 +210,34 @@ export function generateSignal(
   // Step 2: 1H Confirmation (requires ADX > 20)
   const confirmation1H = calculate1HConfirmation(c1H, adx);
 
-  // Step 3: 15M Entry Trigger (K/D crossover)
+  // Step 3: 15M Entry Trigger (K/D crossover + loosened stochastic thresholds + ADX slope)
   const { kCrossAboveD, kCrossBelowD } = stochKD;
   const entryReady = (
-    (bias4H === "Bullish" && confirmation1H === "Bullish" && kCrossAboveD && stochKD.K < 35) ||
-    (bias4H === "Bearish" && confirmation1H === "Bearish" && kCrossBelowD && stochKD.K > 65)
+    (bias4H === "Bullish" && confirmation1H === "Bullish" && kCrossAboveD && stochKD.K < 45 && adxSlope) ||
+    (bias4H === "Bearish" && confirmation1H === "Bearish" && kCrossBelowD && stochKD.K > 55 && adxSlope)
   );
 
-  // Determine state based on ADX
+  // Determine state based on ADX (adjusted thresholds: 18, 18-23, 23)
   let state: "WAIT" | "WATCH" | "LONG" | "SHORT" = "WAIT";
   let reason = "";
 
-  if (adx < 20) {
+  if (adx < 18) {
     state = "WAIT";
-    reason = `ADX ${adx.toFixed(1)} < 20: Range/choppy - no trade`;
-  } else if (adx < 25) {
+    reason = `ADX ${adx.toFixed(1)} < 18: Range/choppy - no trade`;
+  } else if (adx < 23) {
     state = "WATCH";
-    reason = `ADX ${adx.toFixed(1)} (20-25): Weak trend - monitoring 4H=${bias4H}, 1H=${confirmation1H}`;
+    reason = `ADX ${adx.toFixed(1)} (18-23): Weak trend - monitoring 4H=${bias4H}, 1H=${confirmation1H}`;
   } else {
-    // ADX >= 25: Good trend, check for entry
-    if (bias4H === "Bullish" && confirmation1H === "Bullish" && kCrossAboveD && stochKD.K < 35) {
+    // ADX >= 23: Good trend, check for entry
+    if (bias4H === "Bullish" && confirmation1H === "Bullish" && kCrossAboveD && stochKD.K < 45 && adxSlope) {
       state = "LONG";
-      reason = `LONG: 4H Bullish + 1H Bullish + 15M K crossed above D (K=${stochKD.K.toFixed(1)}) + ADX ${adx.toFixed(1)}`;
-    } else if (bias4H === "Bearish" && confirmation1H === "Bearish" && kCrossBelowD && stochKD.K > 65) {
+      reason = `LONG: 4H Bullish + 1H Bullish + 15M K crossed above D (K=${stochKD.K.toFixed(1)}) + ADX rising (${adx.toFixed(1)})`;
+    } else if (bias4H === "Bearish" && confirmation1H === "Bearish" && kCrossBelowD && stochKD.K > 55 && adxSlope) {
       state = "SHORT";
-      reason = `SHORT: 4H Bearish + 1H Bearish + 15M K crossed below D (K=${stochKD.K.toFixed(1)}) + ADX ${adx.toFixed(1)}`;
+      reason = `SHORT: 4H Bearish + 1H Bearish + 15M K crossed below D (K=${stochKD.K.toFixed(1)}) + ADX rising (${adx.toFixed(1)})`;
     } else if ((bias4H === "Bullish" && confirmation1H === "Bullish") || (bias4H === "Bearish" && confirmation1H === "Bearish")) {
       state = "WATCH";
-      reason = `Setup aligned: 4H=${bias4H}, 1H=${confirmation1H}, waiting for 15M K/D crossover`;
+      reason = `Setup aligned: 4H=${bias4H}, 1H=${confirmation1H}, waiting for 15M K/D crossover (ADX ${adx.toFixed(1)})`;
     } else {
       state = "WAIT";
       reason = `ADX ${adx.toFixed(1)} but alignment missing: 4H=${bias4H}, 1H=${confirmation1H}`;
@@ -220,7 +249,7 @@ export function generateSignal(
   if (bias4H !== "Neutral") confidence += 30;
   if (confirmation1H !== "Neutral") confidence += 30;
   if (kCrossAboveD || kCrossBelowD) confidence += 20;
-  if (adx > 25) confidence += 20;
+  if (adx > 23) confidence += 20;
 
   return {
     symbol,
