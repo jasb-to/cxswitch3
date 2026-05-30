@@ -122,6 +122,10 @@ export async function generateAndStoreSignals() {
         updatedAt: signal.updatedAt,
       };
 
+      // Validate snapshot integrity
+      console.log(`[ENGINE] ${symbol}: Validating snapshot integrity...`);
+      validateSnapshot(signal, snapshot, symbol);
+
       await storeSignalSnapshot(snapshot);
       results.push(snapshot);
 
@@ -160,4 +164,32 @@ export async function generateAndStoreSignals() {
   });
 
   return results;
+}
+
+/**
+ * Validates that snapshot exactly matches the signal object
+ * Logs any mismatches (single source of truth verification)
+ */
+function validateSnapshot(signal: ReturnType<typeof generateSignal>, snapshot: SignalSnapshot, symbol: string) {
+  const mismatches: string[] = [];
+
+  // Check all critical fields
+  if (snapshot.symbol !== signal.symbol) mismatches.push(`symbol: ${snapshot.symbol} !== ${signal.symbol}`);
+  if (snapshot.isBuilding !== signal.isBuilding) mismatches.push(`isBuilding: ${snapshot.isBuilding} !== ${signal.isBuilding}`);
+  if (snapshot.isSniper !== signal.isSniper) mismatches.push(`isSniper: ${snapshot.isSniper} !== ${signal.isSniper}`);
+  if (snapshot.confidence !== signal.confidence) mismatches.push(`confidence: ${snapshot.confidence} !== ${signal.confidence}`);
+  if (snapshot.price !== signal.price) mismatches.push(`price: ${snapshot.price} !== ${signal.price}`);
+  if (snapshot.adx !== signal.adx) mismatches.push(`adx: ${snapshot.adx} !== ${signal.adx}`);
+  if (snapshot.stochK !== signal.stochK) mismatches.push(`stochK: ${snapshot.stochK} !== ${signal.stochK}`);
+  if (snapshot.stochD !== signal.stochD) mismatches.push(`stochD: ${snapshot.stochD} !== ${signal.stochD}`);
+  if (snapshot.bias !== signal.bias) mismatches.push(`bias: ${snapshot.bias} !== ${signal.bias}`);
+  if (snapshot.stopLoss !== signal.stopLoss) mismatches.push(`stopLoss: ${snapshot.stopLoss} !== ${signal.stopLoss}`);
+  if (snapshot.takeProfit !== signal.takeProfit) mismatches.push(`takeProfit: ${snapshot.takeProfit} !== ${signal.takeProfit}`);
+  if (snapshot.riskRewardRatio !== signal.riskRewardRatio) mismatches.push(`riskRewardRatio: ${snapshot.riskRewardRatio} !== ${signal.riskRewardRatio}`);
+
+  if (mismatches.length > 0) {
+    console.warn(`[ENGINE] ⚠️  SNAPSHOT MISMATCH for ${symbol}: ${mismatches.join(", ")}`);
+  } else {
+    console.log(`[ENGINE] ✓ Snapshot integrity verified for ${symbol}`);
+  }
 }
