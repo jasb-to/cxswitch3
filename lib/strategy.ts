@@ -248,19 +248,33 @@ export function generateSignal(
   // Step 3: Calculate market conditions (context flags, not states)
   const { kCrossAboveD, kCrossBelowD } = stochKD;
   
+  // ===== BUILDING LOGIC AUDIT TRACE =====
+  console.log(`[STRATEGY] ${symbol}: ===== BUILDING CHECK =====`);
+  console.log(`[STRATEGY]   4H Bias: ${bias4H}`);
+  console.log(`[STRATEGY]   1H Confirmation: ${confirmation1H}`);
+  console.log(`[STRATEGY]   ADX: ${adx.toFixed(1)}`);
+  console.log(`[STRATEGY]   stochK: ${stochKD.K.toFixed(1)}`);
+  
   // isBuilding: STRICT multi-timeframe alignment ONLY
   // TRUE only when 4H and 1H are in genuine agreement on direction
-  const isBuilding = (
-    (bias4H === "Bullish" && confirmation1H === "Bullish") ||
-    (bias4H === "Bearish" && confirmation1H === "Bearish")
-  );
+  const isBuildingBullish = bias4H === "Bullish" && confirmation1H === "Bullish";
+  const isBuildingBearish = bias4H === "Bearish" && confirmation1H === "Bearish";
+  const isBuilding = isBuildingBullish || isBuildingBearish;
+  
+  console.log(`[STRATEGY]   Bullish check (4H=Bullish AND 1H=Bullish): ${isBuildingBullish}`);
+  console.log(`[STRATEGY]   Bearish check (4H=Bearish AND 1H=Bearish): ${isBuildingBearish}`);
+  console.log(`[STRATEGY]   isBuilding result: ${isBuilding}`);
   
   // isSniper: BUILDING confirmed + 15M trigger fires
   // Direct progression: no extra gates
-  const isSniper = isBuilding && (
-    (bias4H === "Bullish" && confirmation1H === "Bullish" && (kCrossAboveD || stochKD.K < 50)) ||
-    (bias4H === "Bearish" && confirmation1H === "Bearish" && (kCrossBelowD || stochKD.K > 50))
-  );
+  const isSniperBullish = isBuildingBullish && (kCrossAboveD || stochKD.K < 50);
+  const isSniperBearish = isBuildingBearish && (kCrossBelowD || stochKD.K > 50);
+  const isSniper = isSniperBullish || isSniperBearish;
+  
+  console.log(`[STRATEGY]   SNIPER Bullish: ${isSniperBullish} (building=${isBuildingBullish}, crossover=${kCrossAboveD}, K<50=${stochKD.K < 50})`);
+  console.log(`[STRATEGY]   SNIPER Bearish: ${isSniperBearish} (building=${isBuildingBearish}, crossover=${kCrossBelowD}, K>50=${stochKD.K > 50})`);
+  console.log(`[STRATEGY]   isSniper result: ${isSniper}`);
+  console.log(`[STRATEGY] ===== END BUILDING CHECK =====`);
 
   // Generate reason text for context
   let reason = "";

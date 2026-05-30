@@ -1,3 +1,15 @@
+-- OBSOLETE: This schema is NOT USED
+-- The system uses in-memory storage (Map<string, SignalSnapshot>) in persistence.ts
+-- These tables are archived for reference only and should not be created
+--
+-- Current production system:
+-- - signalSnapshots: Map<string, SignalSnapshot> (in-memory, JavaScript object)
+-- - telegramCooldowns: Map<string, TelegramCooldown> (in-memory, JavaScript object)
+--
+-- No external database is used. Data is ephemeral per process lifecycle.
+-- If persistent storage is needed in the future, these schemas can be re-activated.
+
+-- Legacy schema (DO NOT CREATE):
 -- Signal Snapshots: Store latest signal state for each symbol
 CREATE TABLE IF NOT EXISTS signal_snapshots (
   id BIGSERIAL PRIMARY KEY,

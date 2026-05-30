@@ -136,7 +136,9 @@ export async function generateAndStoreSignals() {
       executionLog.push({
         symbol,
         success: true,
-        state: signal.isSniper ? "SNIPER" : signal.isBuilding ? "BUILDING" : "WATCHING_SHIFT",
+        // Display state for logging: BUILDING or SNIPER are the only real states
+        // (not WATCHING_SHIFT - that was legacy, now it's just "no setup" when both isBuilding and isSniper are false)
+        state: signal.isSniper ? "SNIPER" : signal.isBuilding ? "BUILDING" : "NO_SETUP",
       });
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
