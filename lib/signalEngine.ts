@@ -97,17 +97,17 @@ export async function generateAndStoreSignals() {
             `[ENGINE] ${symbol}: Alert in cooldown (${minutesUntilNext}m remaining)`
           );
         }
-      } else if (signal.isBuilding) {
-        console.log(`[ENGINE] ${symbol}: BUILDING (awaiting SNIPER trigger)`);
+      } else if (signal.isSetupValid) {
+        console.log(`[ENGINE] ${symbol}: SETUP READY (awaiting SNIPER trigger)`);
       } else {
-        console.log(`[ENGINE] ${symbol}: No setup (isBuilding=false)`);
+        console.log(`[ENGINE] ${symbol}: No setup (isSetupValid=false)`);
       }
 
       // Step 4: Store snapshot to in-memory storage
       console.log(`[ENGINE] ${symbol}: Storing snapshot...`);
       const snapshot: SignalSnapshot = {
         symbol,
-        isBuilding: signal.isBuilding,
+        isSetupValid: signal.isSetupValid,
         isSniper: signal.isSniper,
         confidence: signal.confidence,
         price: signal.price,
@@ -129,14 +129,24 @@ export async function generateAndStoreSignals() {
       await storeSignalSnapshot(snapshot);
       results.push(snapshot);
 
-      console.log(
-        `[ENGINE] ${symbol}: ✓ Complete (isSniper=${signal.isSniper}, isBuilding=${signal.isBuilding}, ADX=${signal.adx.toFixed(1)}, confidence: ${signal.confidence}%)`
-      );
+      // FINAL CANONICAL OUTPUT LOG - This is the ONLY place state is logged
+      console.log(`[ENGINE OUTPUT FINAL] ${symbol}`);
+      console.log(`[ENGINE OUTPUT FINAL]   isSetupValid=${snapshot.isSetupValid}`);
+      console.log(`[ENGINE OUTPUT FINAL]   isSniper=${snapshot.isSniper}`);
+      console.log(`[ENGINE OUTPUT FINAL]   price=$${snapshot.price.toFixed(2)}`);
+      console.log(`[ENGINE OUTPUT FINAL]   adx=${snapshot.adx.toFixed(1)}`);
+      console.log(`[ENGINE OUTPUT FINAL]   stochK=${snapshot.stochK.toFixed(1)}`);
+      console.log(`[ENGINE OUTPUT FINAL]   stochD=${snapshot.stochD.toFixed(1)}`);
+      console.log(`[ENGINE OUTPUT FINAL]   bias=${snapshot.bias}`);
+      console.log(`[ENGINE OUTPUT FINAL]   reason=${snapshot.reason}`);
+      console.log(`[ENGINE OUTPUT FINAL] ✓ Complete`);
 
       executionLog.push({
         symbol,
         success: true,
-        state: signal.isSniper ? "SNIPER" : signal.isBuilding ? "BUILDING" : "WATCHING_SHIFT",
+        // Display state for logging: BUILDING or SNIPER are the only real states
+        // (not WATCHING_SHIFT - that was legacy, now it's just "no setup" when both isBuilding and isSniper are false)
+        state: signal.isSniper ? "SNIPER" : signal.isBuilding ? "BUILDING" : "NO_SETUP",
       });
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -175,7 +185,7 @@ function validateSnapshot(signal: ReturnType<typeof generateSignal>, snapshot: S
 
   // Check all critical fields
   if (snapshot.symbol !== signal.symbol) mismatches.push(`symbol: ${snapshot.symbol} !== ${signal.symbol}`);
-  if (snapshot.isBuilding !== signal.isBuilding) mismatches.push(`isBuilding: ${snapshot.isBuilding} !== ${signal.isBuilding}`);
+  if (snapshot.isSetupValid !== signal.isSetupValid) mismatches.push(`isSetupValid: ${snapshot.isSetupValid} !== ${signal.isSetupValid}`);
   if (snapshot.isSniper !== signal.isSniper) mismatches.push(`isSniper: ${snapshot.isSniper} !== ${signal.isSniper}`);
   if (snapshot.confidence !== signal.confidence) mismatches.push(`confidence: ${snapshot.confidence} !== ${signal.confidence}`);
   if (snapshot.price !== signal.price) mismatches.push(`price: ${snapshot.price} !== ${signal.price}`);
