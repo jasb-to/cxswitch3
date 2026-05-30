@@ -9,28 +9,25 @@ export async function sendTelegramAlert(signal: Signal) {
     return false;
   }
 
-  // Only send alerts for LONG or SHORT states
+  // Accept only legacy states (LONG/SHORT) from signalEngine
+  // signalEngine is responsible for ensuring only LONG/SHORT are passed here
   const state = signal.state || "UNKNOWN";
   if (state !== "LONG" && state !== "SHORT") {
-    console.log(`[TELEGRAM] Skipping ${state} state - only alerting on LONG/SHORT`);
+    console.log(`[TELEGRAM] Skipping state ${state} - only alerting on LONG/SHORT`);
     return false;
   }
 
-  // Handle both old and new Signal formats
-  const stochD = signal.stochD || signal.stochK || 0;
-  
   const isLong = state === "LONG";
-  const isShort = state === "SHORT";
-  const emoji = isLong ? "🟢" : "🔴";
-  const stateText = state.toUpperCase();
+  const emoji = isLong ? "🟢 SNIPER ENTRY" : "🔴 SNIPER ENTRY";
 
-  const message = `${emoji} **${signal.symbol} ${stateText}** — $${signal.price.toFixed(2)}
+  const message = `${emoji}
+${signal.symbol} — $${signal.price.toFixed(2)}
 
 **Bias:** ${signal.bias || "—"}
 **Setup:** ${signal.reason}
 **Confidence:** ${signal.confidence}%
 
-ADX: ${signal.adx.toFixed(1)} | Stoch K: ${signal.stochK.toFixed(1)} | Stoch D: ${stochD.toFixed(1)}
+ADX: ${signal.adx.toFixed(1)} | Stoch K: ${signal.stochK.toFixed(1)} | Stoch D: ${signal.stochD.toFixed(1)}
 ⏰ ${new Date().toLocaleTimeString()}`;
 
   try {
@@ -46,14 +43,14 @@ ADX: ${signal.adx.toFixed(1)} | Stoch K: ${signal.stochK.toFixed(1)} | Stoch D: 
     });
 
     if (!response.ok) {
-      console.error(`[TELEGRAM] Failed to send: ${response.status}`);
+      console.error(`[TELEGRAM] Failed to send: HTTP ${response.status}`);
       return false;
     }
 
-    console.log(`[TELEGRAM] Alert sent for ${signal.symbol} ${stateText}`);
+    console.log(`[TELEGRAM] ✓ Alert sent for ${signal.symbol} ${state}`);
     return true;
   } catch (err) {
-    console.error(`[TELEGRAM] Error: ${err}`);
+    console.error(`[TELEGRAM] Error sending alert: ${err}`);
     return false;
   }
 }
