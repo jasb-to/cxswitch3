@@ -1,4 +1,4 @@
-import { getCandles4H, getCandles15M, getCandles5M } from "./kraken";
+import { getCandles4H, getCandles15M, getCandles5M, getCurrentPrice } from "./kraken";
 import { generateSignal, Symbol } from "./strategy";
 import {
   storeSignalSnapshot,
@@ -51,9 +51,17 @@ export async function generateAndStoreSignals() {
         );
       }
 
-      // Step 2: Generate signal (now returns unified state directly: WAIT/WATCH/BUILDING/SNIPER)
-      console.log(`[ENGINE] ${symbol}: Generating signal...`);
-      const signal = generateSignal(symbol, candles4H, candles1H, candles15M);
+      // Step 2: Fetch live current price
+      console.log(`[ENGINE] ${symbol}: Fetching live price...`);
+      const livePrice = await getCurrentPrice(symbol);
+      
+      if (livePrice === 0) {
+        throw new Error(`Failed to fetch live price for ${symbol}`);
+      }
+
+      // Step 3: Generate signal with live price
+      console.log(`[ENGINE] ${symbol}: Generating signal (live price: $${livePrice.toFixed(2)})...`);
+      const signal = generateSignal(symbol, candles4H, candles1H, candles15M, livePrice);
 
       if (!signal) {
         throw new Error("Signal generation returned null");

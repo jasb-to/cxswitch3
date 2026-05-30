@@ -199,7 +199,8 @@ export function generateSignal(
   symbol: Symbol,
   candles4H: Candle[],
   candles1H: Candle[],
-  candles15M: Candle[]
+  candles15M: Candle[],
+  livePrice: number
 ): Signal {
   // Reverse to chronological order
   const c4H = candles4H.slice().reverse();
@@ -210,18 +211,23 @@ export function generateSignal(
     return {
       symbol,
       price: 0,
-      state: "WAIT",
+      isBuilding: false,
+      isSniper: false,
       bias: "Neutral",
       confidence: 0,
       adx: 0,
       stochK: 0,
       stochD: 0,
       reason: "Insufficient data",
+      stopLoss: 0,
+      takeProfit: 0,
+      riskRewardRatio: 0,
       updatedAt: new Date().toISOString(),
     };
   }
 
-  const currentPrice = c15M[c15M.length - 1].close;
+  // Use live price instead of candle close price
+  const currentPrice = livePrice;
   const { adx, prevAdx } = calculateADX(c15M);
   const stochKD = calculateStochKD(c15M);
 
