@@ -20,11 +20,20 @@ export async function GET(request: Request) {
     const signalUrl = `${baseUrl}/api/signals`;
     console.log(`[CRON] Calling: ${signalUrl}`);
     
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    
+    // Add Vercel Trusted Sources OIDC token if available (bypasses Deployment Protection)
+    const oidcToken = process.env.VERCEL_OIDC_TOKEN;
+    if (oidcToken) {
+      headers["x-vercel-trusted-oidc-idp-token"] = oidcToken;
+      console.log(`[CRON] Using Vercel OIDC token for authentication`);
+    }
+    
     const response = await fetch(signalUrl, {
       method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers,
       timeout: 30000, // 30 second timeout
     });
 
