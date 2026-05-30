@@ -1,34 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
 import { ValidState } from "./stateValidator";
-
-// Only initialize Supabase on the server side
-let supabaseClient: ReturnType<typeof createClient> | null = null;
-
-function getSupabaseClient() {
-  if (typeof window !== "undefined") {
-    throw new Error("[PERSISTENCE] FATAL: Persistence layer called from browser context");
-  }
-
-  if (!supabaseClient) {
-    // Use SUPABASE_URL (server-safe) not NEXT_PUBLIC_SUPABASE_URL (client-exposed)
-    const url = process.env.SUPABASE_URL;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-    if (!url || !key) {
-      const missing = [];
-      if (!url) missing.push("SUPABASE_URL");
-      if (!key) missing.push("SUPABASE_SERVICE_ROLE_KEY");
-      
-      const error = `[PERSISTENCE] FATAL: Missing required env vars: ${missing.join(", ")}`;
-      console.error(error);
-      throw new Error(error);
-    }
-
-    supabaseClient = createClient(url, key);
-  }
-
-  return supabaseClient;
-}
 
 export interface SignalSnapshot {
   symbol: string;
@@ -65,139 +35,65 @@ export interface TelegramCooldown {
   lastAlertAt: string;
 }
 
+// In-memory storage (single source of truth)
+const signalSnapshots = new Map<string, SignalSnapshot>();
+const signalTransitions: SignalTransition[] = [];
+const alertHistory: AlertHistory[] = [];
+const telegramCooldowns = new Map<string, TelegramCooldown>();
+
+console.log("[PERSISTENCE] In-memory storage initialized (no external DB)");
+
 // Store signal snapshot
 export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
-  const supabase = getSupabaseClient();
-  const { error } = await supabase.from("signal_snapshots").upsert({
-    symbol: snapshot.symbol,
-    state: snapshot.state,
-    previous_state: snapshot.previousState,
-    confidence: snapshot.confidence,
-    price: snapshot.price,
-    entry: snapshot.entry,
-    stop_loss: snapshot.stopLoss,
-    take_profit: snapshot.takeProfit,
-    risk_reward: snapshot.riskReward,
-    bias: snapshot.bias,
-    structure: snapshot.structure,
-    updated_at: snapshot.updatedAt,
-    state_entered_at: snapshot.stateEnteredAt,
-  });
-
-  if (error) {
-    console.error("[PERSISTENCE] Failed to store signal snapshot:", error);
-    throw error;
-  }
+  signalSnapshots.set(snapshot.symbol, snapshot);
+  console.log(`[PERSISTENCE] Stored snapshot for ${snapshot.symbol}: ${snapshot.state}`);
 }
 
 // Get latest signal snapshots for all symbols
 export async function getLatestSignalSnapshots(): Promise<SignalSnapshot[]> {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from("signal_snapshots")
-    .select("*")
-    .order("updated_at", { ascending: false });
-
-  if (error) {
-    console.error("[PERSISTENCE] Failed to fetch signal snapshots:", error);
-    throw error;
-  }
-
-  return (data || []).map((row: any) => ({
-    symbol: row.symbol,
-    state: row.state,
-    previousState: row.previous_state,
-    confidence: row.confidence,
-    price: row.price,
-    entry: row.entry,
-    stopLoss: row.stop_loss,
-    takeProfit: row.take_profit,
-    riskReward: row.risk_reward,
-    bias: row.bias,
-    structure: row.structure,
-    updatedAt: row.updated_at,
-    stateEnteredAt: row.state_entered_at,
-  }));
+  const snapshots = Array.from(signalSnapshots.values());
+  console.log(`[PERSISTENCE] Retrieved ${snapshots.length} snapshots from memory`);
+  return snapshots;
 }
 
 // Store state transition
 export async function storeTransition(transition: SignalTransition) {
-  const supabase = getSupabaseClient();
-  const { error } = await supabase.from("signal_transitions").insert({
-    symbol: transition.symbol,
-    from_state: transition.fromState,
-    to_state: transition.toState,
-    timestamp: transition.timestamp,
-  });
-
-  if (error) {
-    console.error("[PERSISTENCE] Failed to store transition:", error);
-    throw error;
-  }
+  signalTransitions.push(transition);
+  console.log(`[PERSISTENCE] Stored transition: ${transition.symbol} ${transition.fromState} → ${transition.toState}`);
 }
 
 // Record alert
 export async function recordAlert(alert: AlertHistory) {
-  const supabase = getSupabaseClient();
-  const { error } = await supabase.from("alert_history").insert({
-    symbol: alert.symbol,
-    state: alert.state,
-    timestamp: alert.timestamp,
-    alert_sent: alert.alertSent,
-  });
-
-  if (error) {
-    console.error("[PERSISTENCE] Failed to record alert:", error);
-    throw error;
-  }
+  alertHistory.push(alert);
+  console.log(`[PERSISTENCE] Recorded alert: ${alert.symbol} ${alert.state}`);
 }
 
 // Get or update telegram cooldown
 export async function getTelegramCooldown(
   symbol: string
 ): Promise<TelegramCooldown | null> {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from("telegram_cooldowns")
-    .select("*")
-    .eq("symbol", symbol)
-    .single();
-
-  if (error && error.code !== "PGRST116") {
-    console.error("[PERSISTENCE] Failed to fetch cooldown:", error);
-  }
-
-  return data
-    ? { symbol: data.symbol, lastAlertAt: data.last_alert_at }
-    : null;
+  const cooldown = telegramCooldowns.get(symbol);
+  return cooldown || null;
 }
 
 // Update telegram cooldown
 export async function updateTelegramCooldown(symbol: string, timestamp: string) {
-  const supabase = getSupabaseClient();
-  const { error } = await supabase.from("telegram_cooldowns").upsert({
-    symbol,
-    last_alert_at: timestamp,
-  });
-
-  if (error) {
-    console.error("[PERSISTENCE] Failed to update cooldown:", error);
-    throw error;
-  }
+  telegramCooldowns.set(symbol, { symbol, lastAlertAt: timestamp });
+  console.log(`[PERSISTENCE] Updated telegram cooldown for ${symbol}: ${timestamp}`);
 }
 
 // Get previous state for symbol
 export async function getPreviousState(symbol: string): Promise<ValidState> {
-  const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from("signal_snapshots")
-    .select("state")
-    .eq("symbol", symbol)
-    .single();
+  const snapshot = signalSnapshots.get(symbol);
+  return snapshot?.state || "WATCHING_SHIFT";
+}
 
-  if (error || !data) {
-    return "WATCHING_SHIFT";
-  }
-
-  return data.state;
+// Debug: Get all in-memory state
+export function getDebugState() {
+  return {
+    snapshots: Array.from(signalSnapshots.entries()),
+    transitions: signalTransitions,
+    alerts: alertHistory,
+    cooldowns: Array.from(telegramCooldowns.entries()),
+  };
 }

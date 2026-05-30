@@ -124,8 +124,8 @@ export async function generateAndStoreSignals() {
         );
       }
 
-      // Step 6: Store snapshot to Supabase
-      console.log(`[ENGINE] ${symbol}: Storing snapshot...`);
+      // Step 6: Store snapshot to in-memory storage
+      console.log(`[ENGINE] ${symbol}: Storing snapshot to memory...`);
       const snapshot: SignalSnapshot = {
         symbol,
         state: validatedState,
