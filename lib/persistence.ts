@@ -29,13 +29,13 @@ console.log("[PERSISTENCE] In-memory storage initialized (no external DB)");
 // Store signal snapshot
 export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
   signalSnapshots.set(snapshot.symbol, snapshot);
-  console.log(`[PERSISTENCE] Stored snapshot for ${snapshot.symbol}: isBuilding=${snapshot.isBuilding}, isSniper=${snapshot.isSniper}, ADX=${snapshot.adx.toFixed(1)}`);
+  console.log(`[PERSISTENCE] ${snapshot.symbol}: isSetupValid=${snapshot.isSetupValid}, isSniper=${snapshot.isSniper}, ADX=${snapshot.adx.toFixed(1)}, bias=${snapshot.bias}`);
 }
 
 // Get latest signal snapshots for all symbols
 export async function getLatestSignalSnapshots(): Promise<SignalSnapshot[]> {
   const snapshots = Array.from(signalSnapshots.values());
-  console.log(`[PERSISTENCE] Retrieved ${snapshots.length} snapshots: ${snapshots.map(s => `${s.symbol}(${s.isBuilding ? 'B' : ''}${s.isSniper ? 'S' : ''} ADX=${s.adx.toFixed(1)})`).join(', ')}`);
+  console.log(`[PERSISTENCE] Retrieved ${snapshots.length} snapshots`);
   return snapshots;
 }
 
