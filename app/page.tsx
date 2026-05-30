@@ -97,15 +97,15 @@ export default function Home() {
 
 function SignalCard({ signal }: { signal: Signal }) {
   const isSniper = signal.isSniper;
-  const isBuilding = signal.isBuilding;
+  const isSetupValid = signal.isSetupValid;
 
   // State display - ONLY from engine flags, never derived
-  const borderColor = isSniper ? "border-green-500/30" : isBuilding ? "border-yellow-500/30" : "border-gray-700";
-  const bgHighlight = isSniper ? "bg-green-500/5" : isBuilding ? "bg-yellow-500/5" : "bg-gray-900/50";
-  const stateBadgeColor = isSniper ? "bg-green-500/20 text-green-400 border-green-500/30" : isBuilding ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" : "bg-gray-800 text-gray-400 border-gray-700";
-  const stateEmoji = isSniper ? "🟢" : isBuilding ? "🟡" : "⚪";
+  const borderColor = isSniper ? "border-green-500/30" : isSetupValid ? "border-yellow-500/30" : "border-gray-700";
+  const bgHighlight = isSniper ? "bg-green-500/5" : isSetupValid ? "bg-yellow-500/5" : "bg-gray-900/50";
+  const stateBadgeColor = isSniper ? "bg-green-500/20 text-green-400 border-green-500/30" : isSetupValid ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" : "bg-gray-800 text-gray-400 border-gray-700";
+  const stateEmoji = isSniper ? "🟢" : isSetupValid ? "🟡" : "⚪";
   // Display status label based ONLY on engine flags (no derivation)
-  const stateLabel = isSniper ? "SNIPER" : isBuilding ? "BUILDING" : "NO_SETUP";
+  const stateLabel = isSniper ? "SNIPER" : isSetupValid ? "SETUP_READY" : "NO_SETUP";
 
   const biasColor = signal.bias === "Bullish" ? "text-green-400" : signal.bias === "Bearish" ? "text-red-400" : "text-gray-400";
 

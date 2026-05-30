@@ -97,17 +97,17 @@ export async function generateAndStoreSignals() {
             `[ENGINE] ${symbol}: Alert in cooldown (${minutesUntilNext}m remaining)`
           );
         }
-      } else if (signal.isBuilding) {
-        console.log(`[ENGINE] ${symbol}: BUILDING (awaiting SNIPER trigger)`);
+      } else if (signal.isSetupValid) {
+        console.log(`[ENGINE] ${symbol}: SETUP READY (awaiting SNIPER trigger)`);
       } else {
-        console.log(`[ENGINE] ${symbol}: No setup (isBuilding=false)`);
+        console.log(`[ENGINE] ${symbol}: No setup (isSetupValid=false)`);
       }
 
       // Step 4: Store snapshot to in-memory storage
       console.log(`[ENGINE] ${symbol}: Storing snapshot...`);
       const snapshot: SignalSnapshot = {
         symbol,
-        isBuilding: signal.isBuilding,
+        isSetupValid: signal.isSetupValid,
         isSniper: signal.isSniper,
         confidence: signal.confidence,
         price: signal.price,
@@ -131,7 +131,7 @@ export async function generateAndStoreSignals() {
 
       // FINAL CANONICAL OUTPUT LOG - This is the ONLY place state is logged
       console.log(`[ENGINE OUTPUT FINAL] ${symbol}`);
-      console.log(`[ENGINE OUTPUT FINAL]   isBuilding=${snapshot.isBuilding}`);
+      console.log(`[ENGINE OUTPUT FINAL]   isSetupValid=${snapshot.isSetupValid}`);
       console.log(`[ENGINE OUTPUT FINAL]   isSniper=${snapshot.isSniper}`);
       console.log(`[ENGINE OUTPUT FINAL]   price=$${snapshot.price.toFixed(2)}`);
       console.log(`[ENGINE OUTPUT FINAL]   adx=${snapshot.adx.toFixed(1)}`);
@@ -185,7 +185,7 @@ function validateSnapshot(signal: ReturnType<typeof generateSignal>, snapshot: S
 
   // Check all critical fields
   if (snapshot.symbol !== signal.symbol) mismatches.push(`symbol: ${snapshot.symbol} !== ${signal.symbol}`);
-  if (snapshot.isBuilding !== signal.isBuilding) mismatches.push(`isBuilding: ${snapshot.isBuilding} !== ${signal.isBuilding}`);
+  if (snapshot.isSetupValid !== signal.isSetupValid) mismatches.push(`isSetupValid: ${snapshot.isSetupValid} !== ${signal.isSetupValid}`);
   if (snapshot.isSniper !== signal.isSniper) mismatches.push(`isSniper: ${snapshot.isSniper} !== ${signal.isSniper}`);
   if (snapshot.confidence !== signal.confidence) mismatches.push(`confidence: ${snapshot.confidence} !== ${signal.confidence}`);
   if (snapshot.price !== signal.price) mismatches.push(`price: ${snapshot.price} !== ${signal.price}`);

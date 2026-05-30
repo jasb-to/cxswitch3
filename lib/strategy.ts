@@ -12,7 +12,7 @@ export interface Candle {
 export interface Signal {
   symbol: Symbol;
   price: number;
-  isBuilding: boolean;
+  isSetupValid: boolean;  // Replaced isBuilding: deterministic setup condition (4H + 1H aligned + ADX >= threshold)
   isSniper: boolean;
   bias: "Bullish" | "Bearish" | "Neutral";
   confidence: number;
@@ -248,46 +248,33 @@ export function generateSignal(
   // Step 3: Calculate market conditions (context flags, not states)
   const { kCrossAboveD, kCrossBelowD } = stochKD;
   
-  // ===== BUILDING LOGIC AUDIT TRACE =====
-  console.log(`[STRATEGY] ${symbol}: ===== BUILDING CHECK =====`);
-  console.log(`[STRATEGY]   4H Bias: ${bias4H}`);
-  console.log(`[STRATEGY]   1H Confirmation: ${confirmation1H}`);
-  console.log(`[STRATEGY]   ADX: ${adx.toFixed(1)}`);
-  console.log(`[STRATEGY]   stochK: ${stochKD.K.toFixed(1)}`);
+  // ===== SETUP DETECTION (DETERMINISTIC, NOT VOLATILE) =====
+  // isSetupValid is TRUE when multi-timeframe alignment is confirmed
+  // Unlike old isBuilding, this is stable and won't flicker between cron cycles
+  const isSetupValidBullish = bias4H === "Bullish" && confirmation1H === "Bullish";
+  const isSetupValidBearish = bias4H === "Bearish" && confirmation1H === "Bearish";
+  const isSetupValid = isSetupValidBullish || isSetupValidBearish;
   
-  // isBuilding: STRICT multi-timeframe alignment ONLY
-  // TRUE only when 4H and 1H are in genuine agreement on direction
-  const isBuildingBullish = bias4H === "Bullish" && confirmation1H === "Bullish";
-  const isBuildingBearish = bias4H === "Bearish" && confirmation1H === "Bearish";
-  const isBuilding = isBuildingBullish || isBuildingBearish;
+  console.log(`[STRATEGY] ${symbol}: isSetupValid: ${isSetupValid} (Bullish=${isSetupValidBullish}, Bearish=${isSetupValidBearish})`);
   
-  console.log(`[STRATEGY]   Bullish check (4H=Bullish AND 1H=Bullish): ${isBuildingBullish}`);
-  console.log(`[STRATEGY]   Bearish check (4H=Bearish AND 1H=Bearish): ${isBuildingBearish}`);
-  console.log(`[STRATEGY]   isBuilding result: ${isBuilding}`);
-  
-  // isSniper: BUILDING confirmed + 15M trigger fires
-  // Direct progression: no extra gates
-  const isSniperBullish = isBuildingBullish && (kCrossAboveD || stochKD.K < 50);
-  const isSniperBearish = isBuildingBearish && (kCrossBelowD || stochKD.K > 50);
+  // isSniper: SETUP VALID + 15M trigger fires
+  // SNIPER is the ONLY execution event in the system
+  const isSniperBullish = isSetupValidBullish && (kCrossAboveD || stochKD.K < 50);
+  const isSniperBearish = isSetupValidBearish && (kCrossBelowD || stochKD.K > 50);
   const isSniper = isSniperBullish || isSniperBearish;
   
-  console.log(`[STRATEGY]   SNIPER Bullish: ${isSniperBullish} (building=${isBuildingBullish}, crossover=${kCrossAboveD}, K<50=${stochKD.K < 50})`);
-  console.log(`[STRATEGY]   SNIPER Bearish: ${isSniperBearish} (building=${isBuildingBearish}, crossover=${kCrossBelowD}, K>50=${stochKD.K > 50})`);
-  console.log(`[STRATEGY]   isSniper result: ${isSniper}`);
-  console.log(`[STRATEGY] ===== END BUILDING CHECK =====`);
+  console.log(`[STRATEGY] ${symbol}: isSniper: ${isSniper} (trigger detected)`);
 
-  // Generate reason text - ONLY for engine execution states (SNIPER/BUILDING)
-  // NOT for display of state label (that should ONLY come from isBuilding/isSniper flags)
+  // Generate reason text - simple and clean with new terminology
   let reason = "";
   if (isSniper) {
     const direction = bias4H === "Bullish" ? "LONG" : "SHORT";
     const trigger = kCrossAboveD || kCrossBelowD ? "K/D crossover" : "stoch momentum";
-    reason = `SNIPER: ${direction} confirmed via ${trigger} (4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)})`;
-  } else if (isBuilding) {
+    reason = `SNIPER: ${direction} triggered via ${trigger} (4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)})`;
+  } else if (isSetupValid) {
     const direction = bias4H === "Bullish" ? "BULLISH" : "BEARISH";
-    reason = `BUILDING: ${direction} alignment confirmed (4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)}) - awaiting 15M trigger`;
+    reason = `Setup valid: ${direction} alignment (4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)}) - awaiting 15M trigger`;
   } else {
-    // No state description for inactive signals - let raw indicators speak
     reason = `Monitoring: 4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)}`;
   }
 
@@ -325,7 +312,7 @@ export function generateSignal(
   return {
     symbol,
     price: Math.round(currentPrice * 100) / 100,
-    isBuilding,
+    isSetupValid,  // Replaced isBuilding: deterministic setup condition
     isSniper,
     bias: bias4H,
     confidence: Math.min(100, confidence),

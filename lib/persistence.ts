@@ -1,6 +1,6 @@
 export interface SignalSnapshot {
   symbol: string;
-  isBuilding: boolean;
+  isSetupValid: boolean;  // Replaced isBuilding: deterministic setup condition
   isSniper: boolean;
   confidence: number;
   price: number;
