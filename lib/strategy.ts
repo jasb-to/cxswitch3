@@ -323,12 +323,19 @@ export function generateSignal(
     const reward = takeProfit - currentPrice;
     riskRewardRatio = reward > 0 ? Math.round((reward / risk) * 10) / 10 : 0;
     
+    // Determine if SL was swing-based or ATR-based
+    const slSource = slFromSwing > slDistance ? "SWING-BASED" : "ATR-BASED";
+    const tp2Distance = finalSlDistance * 2;
+    const tp2 = Math.round((currentPrice + tp2Distance) * 100) / 100;
+    
     console.log(`[STRATEGY] ${symbol}: LONG SL/TP Calculation`);
     console.log(`[STRATEGY]   ATR 15M: $${atr15M.toFixed(2)}, ATR 1H: $${atr1H.toFixed(2)}`);
-    console.log(`[STRATEGY]   ATR-based SL distance: $${slDistance.toFixed(2)}`);
+    console.log(`[STRATEGY]   SL Source: ${slSource}`);
+    console.log(`[STRATEGY]   ATR-based SL distance: $${slDistance.toFixed(2)} (${(slDistance / atrScaled).toFixed(2)}x ATR)`);
     console.log(`[STRATEGY]   Swing low: $${swingLow.toFixed(2)}, swing SL distance: $${slFromSwing.toFixed(2)}`);
     console.log(`[STRATEGY]   Final SL distance: $${finalSlDistance.toFixed(2)} (${(finalSlDistance / atrScaled).toFixed(2)}x ATR)`);
-    console.log(`[STRATEGY]   Entry: $${currentPrice.toFixed(2)}, SL: $${stopLoss.toFixed(2)}, TP1: $${takeProfit.toFixed(2)}`);
+    console.log(`[STRATEGY]   Entry: $${currentPrice.toFixed(2)}, SL: $${stopLoss.toFixed(2)}`);
+    console.log(`[STRATEGY]   TP1 (1R): $${takeProfit.toFixed(2)}, TP2 (2R): $${tp2.toFixed(2)}`);
     console.log(`[STRATEGY]   Risk/Reward: ${riskRewardRatio}:1`);
   } else if (bias4H === "Bearish") {
     // SHORT trades
@@ -350,12 +357,19 @@ export function generateSignal(
     const reward = currentPrice - takeProfit;
     riskRewardRatio = reward > 0 ? Math.round((reward / risk) * 10) / 10 : 0;
     
+    // Determine if SL was swing-based or ATR-based
+    const slSource = slFromSwing > slDistance ? "SWING-BASED" : "ATR-BASED";
+    const tp2Distance = finalSlDistance * 2;
+    const tp2 = Math.round((currentPrice - tp2Distance) * 100) / 100;
+    
     console.log(`[STRATEGY] ${symbol}: SHORT SL/TP Calculation`);
     console.log(`[STRATEGY]   ATR 15M: $${atr15M.toFixed(2)}, ATR 1H: $${atr1H.toFixed(2)}`);
-    console.log(`[STRATEGY]   ATR-based SL distance: $${slDistance.toFixed(2)}`);
+    console.log(`[STRATEGY]   SL Source: ${slSource}`);
+    console.log(`[STRATEGY]   ATR-based SL distance: $${slDistance.toFixed(2)} (${(slDistance / atrScaled).toFixed(2)}x ATR)`);
     console.log(`[STRATEGY]   Swing high: $${swingHigh.toFixed(2)}, swing SL distance: $${slFromSwing.toFixed(2)}`);
     console.log(`[STRATEGY]   Final SL distance: $${finalSlDistance.toFixed(2)} (${(finalSlDistance / atrScaled).toFixed(2)}x ATR)`);
-    console.log(`[STRATEGY]   Entry: $${currentPrice.toFixed(2)}, SL: $${stopLoss.toFixed(2)}, TP1: $${takeProfit.toFixed(2)}`);
+    console.log(`[STRATEGY]   Entry: $${currentPrice.toFixed(2)}, SL: $${stopLoss.toFixed(2)}`);
+    console.log(`[STRATEGY]   TP1 (1R): $${takeProfit.toFixed(2)}, TP2 (2R): $${tp2.toFixed(2)}`);
     console.log(`[STRATEGY]   Risk/Reward: ${riskRewardRatio}:1`);
   }
 
