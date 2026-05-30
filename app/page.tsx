@@ -87,15 +87,15 @@ export default function Home() {
 }
 
 function SignalCard({ signal }: { signal: Signal }) {
-  const isBullish = signal.state === "LONG";
-  const isBearish = signal.state === "SHORT";
-  const isActive = signal.state === "LONG" || signal.state === "SHORT";
+  const isSniper = signal.state === "SNIPER";
+  const isBuilding = signal.state === "BUILDING";
+  const isWatchingShift = signal.state === "WATCHING_SHIFT";
 
   // State colors
-  const borderColor = isBullish ? "border-green-500/30" : isBearish ? "border-red-500/30" : "border-gray-700";
-  const bgHighlight = isBullish ? "bg-green-500/5" : isBearish ? "bg-red-500/5" : "bg-gray-900/50";
-  const stateBadgeColor = isBullish ? "bg-green-500/20 text-green-400 border-green-500/30" : isBearish ? "bg-red-500/20 text-red-400 border-red-500/30" : "bg-gray-800 text-gray-400 border-gray-700";
-  const stateEmoji = isBullish ? "🟢" : isBearish ? "🔴" : "⚪";
+  const borderColor = isSniper ? "border-green-500/30" : isBuilding ? "border-yellow-500/30" : "border-gray-700";
+  const bgHighlight = isSniper ? "bg-green-500/5" : isBuilding ? "bg-yellow-500/5" : "bg-gray-900/50";
+  const stateBadgeColor = isSniper ? "bg-green-500/20 text-green-400 border-green-500/30" : isBuilding ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" : "bg-gray-800 text-gray-400 border-gray-700";
+  const stateEmoji = isSniper ? "🟢" : isBuilding ? "🟡" : "⚪";
 
   const biasColor = signal.bias === "Bullish" ? "text-green-400" : signal.bias === "Bearish" ? "text-red-400" : "text-gray-400";
 
@@ -116,9 +116,6 @@ function SignalCard({ signal }: { signal: Signal }) {
       {/* Metrics Grid */}
       <div className="grid grid-cols-2 gap-4 mb-6 pb-6 border-b border-gray-800">
         <MetricBox label="Bias" value={signal.bias} color={biasColor} />
-        <MetricBox label="ADX" value={signal.adx.toFixed(1)} color="text-gray-300" />
-        <MetricBox label="Stoch K" value={signal.stochK.toFixed(1)} color="text-gray-300" />
-        <MetricBox label="Stoch D" value={signal.stochD.toFixed(1)} color="text-gray-300" />
         <MetricBox label="Confidence" value={`${signal.confidence}%`} color={signal.confidence >= 60 ? "text-green-400" : signal.confidence >= 40 ? "text-yellow-400" : "text-gray-400"} />
       </div>
 
