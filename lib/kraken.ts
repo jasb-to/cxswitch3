@@ -14,7 +14,10 @@ export async function fetchCandles(
     const pair = KRAKEN_PAIRS[symbol];
     const url = `https://api.kraken.com/0/public/OHLC?pair=${pair}&interval=${interval}`;
 
-    const res = await fetch(url, { cache: "no-store" });
+    const res = await fetch(url, { 
+      cache: "no-store",
+      timeout: 10000, // 10 second timeout per request
+    });
     if (!res.ok) {
       console.error(`[KRAKEN] Error fetching ${pair}: ${res.status}`);
       return [];
