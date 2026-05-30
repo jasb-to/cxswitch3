@@ -9,6 +9,9 @@ export interface SignalSnapshot {
   stochD: number;
   bias: "Bullish" | "Bearish" | "Neutral";
   reason: string;
+  stopLoss: number;
+  takeProfit: number;
+  riskRewardRatio: number;
   updatedAt: string;
 }
 

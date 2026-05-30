@@ -23,7 +23,12 @@ ${signal.symbol} — $${signal.price.toFixed(2)}
 **Trigger:** ${signal.reason}
 **Confidence:** ${signal.confidence}%
 
-ADX: ${signal.adx.toFixed(1)} | Stoch K: ${signal.stochK.toFixed(1)} | Stoch D: ${signal.stochD.toFixed(1)}
+**Risk Management:**
+🔴 Stop Loss: $${signal.stopLoss.toFixed(2)}
+🟢 Take Profit: $${signal.takeProfit.toFixed(2)}
+⚖️ Risk/Reward: ${signal.riskRewardRatio.toFixed(2)}:1
+
+📊 ADX: ${signal.adx.toFixed(1)} | Stoch K: ${signal.stochK.toFixed(1)} | Stoch D: ${signal.stochD.toFixed(1)}
 ⏰ ${new Date().toLocaleTimeString()}`;
 
   try {
