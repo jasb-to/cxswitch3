@@ -7,27 +7,44 @@ export async function GET(request: Request) {
 
   // Verify secret
   if (secret !== "abc123xyz789") {
-    console.error(`[CRON] Invalid secret: ${secret}`);
-    return new Response("Unauthorized", { status: 401 });
+    const msg = `[CRON] UNAUTHORIZED: Invalid secret provided`;
+    console.error(msg);
+    return new Response(JSON.stringify({ success: false, error: msg }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   const startTime = Date.now();
-  console.log(`[CRON] === CRON JOB TRIGGERED at ${new Date().toLocaleTimeString()} ===`);
+  console.log(`[CRON] ════════════════════════════════════════════════════════════`);
+  console.log(`[CRON] CRON JOB STARTED at ${new Date().toLocaleString()}`);
+  console.log(`[CRON] ════════════════════════════════════════════════════════════`);
 
   try {
+    // Verify environment before proceeding
+    if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      const missing = [];
+      if (!process.env.SUPABASE_URL) missing.push("SUPABASE_URL");
+      if (!process.env.SUPABASE_SERVICE_ROLE_KEY) missing.push("SUPABASE_SERVICE_ROLE_KEY");
+      throw new Error(`Missing critical env vars: ${missing.join(", ")}`);
+    }
+
     // Single source of truth for signal generation
     const signals = await generateAndStoreSignals();
 
     const duration = Date.now() - startTime;
-    console.log(
-      `[CRON] === CRON JOB COMPLETE in ${duration}ms | Processed ${signals.length} signals ===`
-    );
+    const msg = `CRON JOB COMPLETE in ${duration}ms: Processed ${signals.length} signals`;
+
+    console.log(`[CRON] ════════════════════════════════════════════════════════════`);
+    console.log(`[CRON] ${msg}`);
+    console.log(`[CRON] ════════════════════════════════════════════════════════════`);
 
     return new Response(
       JSON.stringify({
         success: true,
-        message: "Signals processed",
+        message: msg,
         signalCount: signals.length,
+        executionTime: duration,
       }),
       {
         status: 200,
@@ -35,11 +52,19 @@ export async function GET(request: Request) {
       }
     );
   } catch (err) {
-    console.error(`[CRON] Fatal error:`, err);
+    const duration = Date.now() - startTime;
+    const errorMsg = err instanceof Error ? err.message : String(err);
+
+    console.error(`[CRON] ════════════════════════════════════════════════════════════`);
+    console.error(`[CRON] FATAL ERROR after ${duration}ms: ${errorMsg}`);
+    console.error(`[CRON] Stack:`, err instanceof Error ? err.stack : "N/A");
+    console.error(`[CRON] ════════════════════════════════════════════════════════════`);
+
     return new Response(
       JSON.stringify({
         success: false,
-        error: err instanceof Error ? err.message : "Unknown error",
+        error: errorMsg,
+        executionTime: duration,
       }),
       { status: 500, headers: { "Content-Type": "application/json" } }
     );

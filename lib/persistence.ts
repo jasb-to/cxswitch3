@@ -6,17 +6,22 @@ let supabaseClient: ReturnType<typeof createClient> | null = null;
 
 function getSupabaseClient() {
   if (typeof window !== "undefined") {
-    throw new Error("Persistence layer should only be called from server");
+    throw new Error("[PERSISTENCE] FATAL: Persistence layer called from browser context");
   }
 
   if (!supabaseClient) {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    // Use SUPABASE_URL (server-safe) not NEXT_PUBLIC_SUPABASE_URL (client-exposed)
+    const url = process.env.SUPABASE_URL;
     const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
     if (!url || !key) {
-      throw new Error(
-        "Supabase credentials missing: NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY"
-      );
+      const missing = [];
+      if (!url) missing.push("SUPABASE_URL");
+      if (!key) missing.push("SUPABASE_SERVICE_ROLE_KEY");
+      
+      const error = `[PERSISTENCE] FATAL: Missing required env vars: ${missing.join(", ")}`;
+      console.error(error);
+      throw new Error(error);
     }
 
     supabaseClient = createClient(url, key);
