@@ -202,7 +202,7 @@ export function generateSignal(
   const currentPrice = c15M[c15M.length - 1].close;
   const { adx, prevAdx } = calculateADX(c15M);
   const stochKD = calculateStochKD(c15M);
-  const adxSlope = adx > prevAdx; // ADX rising condition
+  const adxSlope = adx >= prevAdx - 0.3; // Soft slope: allows flat or slight dip during early trend formation
 
   // Step 1: 4H Bias (Direction only)
   const bias4H = calculate4HBias(c4H);
@@ -210,34 +210,43 @@ export function generateSignal(
   // Step 2: 1H Confirmation (requires ADX > 20)
   const confirmation1H = calculate1HConfirmation(c1H, adx);
 
-  // Step 3: 15M Entry Trigger (K/D crossover + loosened stochastic thresholds + ADX slope)
+  // Step 3: 15M Entry Trigger with early detection OR logic for earlier entry sensitivity
   const { kCrossAboveD, kCrossBelowD } = stochKD;
+  
+  // Momentum detection for early entries
+  const upwardMomentum = c15M[c15M.length - 1].close > c15M[c15M.length - 2].close;
+  const downwardMomentum = c15M[c15M.length - 1].close < c15M[c15M.length - 2].close;
+  
+  // Early detection: K crossover OR (stoch in zone AND momentum direction)
+  const bullishEarlyEntry = kCrossAboveD || (stochKD.K < 45 && upwardMomentum);
+  const bearishEarlyEntry = kCrossBelowD || (stochKD.K > 55 && downwardMomentum);
+  
   const entryReady = (
-    (bias4H === "Bullish" && confirmation1H === "Bullish" && kCrossAboveD && stochKD.K < 45 && adxSlope) ||
-    (bias4H === "Bearish" && confirmation1H === "Bearish" && kCrossBelowD && stochKD.K > 55 && adxSlope)
+    (bias4H === "Bullish" && confirmation1H === "Bullish" && bullishEarlyEntry && adxSlope) ||
+    (bias4H === "Bearish" && confirmation1H === "Bearish" && bearishEarlyEntry && adxSlope)
   );
 
-  // Determine state based on ADX (adjusted thresholds: 18, 18-23, 23)
+  // Determine state based on ADX (adjusted thresholds: 18, 18-22, 22)
   let state: "WAIT" | "WATCH" | "LONG" | "SHORT" = "WAIT";
   let reason = "";
 
   if (adx < 18) {
     state = "WAIT";
     reason = `ADX ${adx.toFixed(1)} < 18: Range/choppy - no trade`;
-  } else if (adx < 23) {
+  } else if (adx < 22) {
     state = "WATCH";
-    reason = `ADX ${adx.toFixed(1)} (18-23): Weak trend - monitoring 4H=${bias4H}, 1H=${confirmation1H}`;
+    reason = `ADX ${adx.toFixed(1)} (18-22): Weak trend - monitoring 4H=${bias4H}, 1H=${confirmation1H}`;
   } else {
-    // ADX >= 23: Good trend, check for entry
-    if (bias4H === "Bullish" && confirmation1H === "Bullish" && kCrossAboveD && stochKD.K < 45 && adxSlope) {
+    // ADX >= 22: Good trend, check for entry with early detection
+    if (bias4H === "Bullish" && confirmation1H === "Bullish" && bullishEarlyEntry && adxSlope) {
       state = "LONG";
-      reason = `LONG: 4H Bullish + 1H Bullish + 15M K crossed above D (K=${stochKD.K.toFixed(1)}) + ADX rising (${adx.toFixed(1)})`;
-    } else if (bias4H === "Bearish" && confirmation1H === "Bearish" && kCrossBelowD && stochKD.K > 55 && adxSlope) {
+      reason = `LONG: 4H Bullish + 1H Bullish + 15M K=${stochKD.K.toFixed(1)} (early detection) + ADX ${adx.toFixed(1)} rising`;
+    } else if (bias4H === "Bearish" && confirmation1H === "Bearish" && bearishEarlyEntry && adxSlope) {
       state = "SHORT";
-      reason = `SHORT: 4H Bearish + 1H Bearish + 15M K crossed below D (K=${stochKD.K.toFixed(1)}) + ADX rising (${adx.toFixed(1)})`;
+      reason = `SHORT: 4H Bearish + 1H Bearish + 15M K=${stochKD.K.toFixed(1)} (early detection) + ADX ${adx.toFixed(1)} rising`;
     } else if ((bias4H === "Bullish" && confirmation1H === "Bullish") || (bias4H === "Bearish" && confirmation1H === "Bearish")) {
       state = "WATCH";
-      reason = `Setup aligned: 4H=${bias4H}, 1H=${confirmation1H}, waiting for 15M K/D crossover (ADX ${adx.toFixed(1)})`;
+      reason = `Setup aligned: 4H=${bias4H}, 1H=${confirmation1H}, waiting for 15M early entry signal (ADX ${adx.toFixed(1)})`;
     } else {
       state = "WAIT";
       reason = `ADX ${adx.toFixed(1)} but alignment missing: 4H=${bias4H}, 1H=${confirmation1H}`;
@@ -249,7 +258,7 @@ export function generateSignal(
   if (bias4H !== "Neutral") confidence += 30;
   if (confirmation1H !== "Neutral") confidence += 30;
   if (kCrossAboveD || kCrossBelowD) confidence += 20;
-  if (adx > 23) confidence += 20;
+  if (adx > 22) confidence += 20;
 
   return {
     symbol,
