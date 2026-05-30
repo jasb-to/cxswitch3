@@ -108,6 +108,9 @@ export async function generateAndStoreSignals() {
         stochD: signal.stochD,
         bias: signal.bias,
         reason: signal.reason,
+        stopLoss: signal.stopLoss,
+        takeProfit: signal.takeProfit,
+        riskRewardRatio: signal.riskRewardRatio,
         updatedAt: signal.updatedAt,
       };
 

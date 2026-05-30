@@ -20,6 +20,9 @@ export interface Signal {
   stochK: number;
   stochD: number;
   reason: string;
+  stopLoss: number;
+  takeProfit: number;
+  riskRewardRatio: number;
   updatedAt: string;
 }
 
@@ -79,6 +82,24 @@ function calculateADX(candles: Candle[], period: number = 14): { adx: number; pr
   }
 
   return { adx: currentAdx, prevAdx };
+}
+
+// Calculate ATR (Average True Range) for SL/TP calculation
+function calculateATR(candles: Candle[], period: number = 14): number {
+  if (candles.length < period + 1) return 0;
+
+  let trueRangeSum = 0;
+  for (let i = Math.max(1, candles.length - period); i < candles.length; i++) {
+    const curr = candles[i];
+    const prev = candles[i - 1];
+
+    const tr1 = curr.high - curr.low;
+    const tr2 = Math.abs(curr.high - prev.close);
+    const tr3 = Math.abs(curr.low - prev.close);
+    trueRangeSum += Math.max(tr1, tr2, tr3);
+  }
+
+  return trueRangeSum / period;
 }
 
 // Calculate Stochastic K and D (with K/D crossover detection)
@@ -245,6 +266,30 @@ export function generateSignal(
   if (kCrossAboveD || kCrossBelowD) confidence += 20;
   if (adx >= 20) confidence += 20;
 
+  // Calculate stop loss and take profit based on ATR (Average True Range)
+  // Use last 14 candles to calculate ATR
+  let atr = calculateATR(c15M, 14);
+  
+  let stopLoss = 0;
+  let takeProfit = 0;
+  let riskRewardRatio = 0;
+  
+  if (bias4H === "Bullish") {
+    // LONG: SL below entry, TP above entry
+    stopLoss = Math.round((currentPrice - atr * 1.5) * 100) / 100;
+    takeProfit = Math.round((currentPrice + atr * 3.0) * 100) / 100;
+    const risk = currentPrice - stopLoss;
+    const reward = takeProfit - currentPrice;
+    riskRewardRatio = Math.round((reward / risk) * 10) / 10;
+  } else if (bias4H === "Bearish") {
+    // SHORT: SL above entry, TP below entry
+    stopLoss = Math.round((currentPrice + atr * 1.5) * 100) / 100;
+    takeProfit = Math.round((currentPrice - atr * 3.0) * 100) / 100;
+    const risk = stopLoss - currentPrice;
+    const reward = currentPrice - takeProfit;
+    riskRewardRatio = Math.round((reward / risk) * 10) / 10;
+  }
+
   return {
     symbol,
     price: Math.round(currentPrice * 100) / 100,
@@ -256,6 +301,9 @@ export function generateSignal(
     stochK: Math.round(stochKD.K * 10) / 10,
     stochD: Math.round(stochKD.D * 10) / 10,
     reason,
+    stopLoss,
+    takeProfit,
+    riskRewardRatio,
     updatedAt: new Date().toISOString(),
   };
 }

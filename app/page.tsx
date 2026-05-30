@@ -192,6 +192,25 @@ function SignalCard({ signal }: { signal: Signal }) {
         </div>
       </div>
 
+      {/* Risk Management Section */}
+      <div className="mb-6 pb-6 border-b border-gray-800">
+        <h3 className="text-xs font-semibold text-gray-300 mb-3 uppercase tracking-wide">Risk Management</h3>
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <p className="text-xs text-gray-500 mb-1">Stop Loss</p>
+            <p className="font-mono font-semibold text-red-400">${signal.stopLoss.toFixed(2)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 mb-1">Take Profit</p>
+            <p className="font-mono font-semibold text-green-400">${signal.takeProfit.toFixed(2)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 mb-1">R/R Ratio</p>
+            <p className="font-mono font-semibold text-blue-400">{signal.riskRewardRatio.toFixed(2)}:1</p>
+          </div>
+        </div>
+      </div>
+
       {/* Reason */}
       <p className="text-xs text-gray-400 leading-relaxed">{signal.reason}</p>
     </div>

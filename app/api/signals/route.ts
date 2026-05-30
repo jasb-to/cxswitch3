@@ -20,6 +20,9 @@ export async function GET() {
       stochK: snapshot.stochK,
       stochD: snapshot.stochD,
       reason: snapshot.reason,
+      stopLoss: snapshot.stopLoss,
+      takeProfit: snapshot.takeProfit,
+      riskRewardRatio: snapshot.riskRewardRatio,
       updatedAt: snapshot.updatedAt,
     }));
 
