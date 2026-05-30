@@ -46,17 +46,17 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-black text-white">
-      <div className="px-8 py-12 max-w-7xl mx-auto">
+      <div className="px-6 sm:px-8 md:px-10 py-12 max-w-7xl mx-auto w-full">
         {/* Header */}
         <div className="mb-12">
-          <h1 className="text-6xl font-bold tracking-tight mb-2">CX Switch</h1>
-          <p className="text-gray-400 text-lg">
+          <h1 className="text-5xl sm:text-6xl font-bold tracking-tight mb-2">CX Switch</h1>
+          <p className="text-gray-400 text-base sm:text-lg">
             Trade Brewing Radar • 4H Structure • 1H Confirmation • 15M Entry
           </p>
         </div>
 
         {/* Controls */}
-        <div className="flex items-center gap-3 mb-8">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 mb-8">
           <button
             onClick={fetchSignals}
             disabled={loading}
@@ -70,13 +70,13 @@ export default function Home() {
           >
             Test Telegram
           </button>
-          <span className="text-sm text-gray-500 ml-auto">
+          <span className="text-sm text-gray-500 sm:ml-auto">
             Last update: {lastUpdate || "—"}
           </span>
         </div>
 
         {/* Signals Grid */}
-        <div className="grid md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {signals.map((signal) => (
             <SignalCard key={signal.symbol} signal={signal} />
           ))}
@@ -218,8 +218,8 @@ function getStochZone(k: number): { label: string; emoji: string; color: string 
 function calculateEntryReadiness(signal: Signal): number {
   let score = 0;
 
-  // +25 if bias and confirmation are aligned
-  if ((signal.bias === "Bullish" && signal.bias === "Bullish") || (signal.bias === "Bearish" && signal.bias === "Bearish")) {
+  // +25 if bias and confirmation are aligned (since we only have bias, check if state supports it)
+  if (signal.state === "SNIPER" || signal.state === "BUILDING") {
     score += 25;
   }
 
