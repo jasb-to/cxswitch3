@@ -21,14 +21,6 @@ export async function GET(request: Request) {
   console.log(`[CRON] ════════════════════════════════════════════════════════════`);
 
   try {
-    // Verify environment before proceeding
-    if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-      const missing = [];
-      if (!process.env.SUPABASE_URL) missing.push("SUPABASE_URL");
-      if (!process.env.SUPABASE_SERVICE_ROLE_KEY) missing.push("SUPABASE_SERVICE_ROLE_KEY");
-      throw new Error(`Missing critical env vars: ${missing.join(", ")}`);
-    }
-
     // Single source of truth for signal generation
     const signals = await generateAndStoreSignals();
 
