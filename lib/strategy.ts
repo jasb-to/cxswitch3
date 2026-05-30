@@ -248,12 +248,15 @@ export function generateSignal(
   // Step 3: Calculate market conditions (context flags, not states)
   const { kCrossAboveD, kCrossBelowD } = stochKD;
   
-  // isBuilding: Earlier detection - both 4H and 1H must be aligned (non-Neutral) at ADX >= 20
-  // Triggers as soon as valid setup forms, before entry signal
-  const isBuilding = adx >= 20 && bias4H !== "Neutral" && confirmation1H !== "Neutral";
+  // isBuilding: STRICT multi-timeframe alignment ONLY
+  // TRUE only when 4H and 1H are in genuine agreement on direction
+  const isBuilding = (
+    (bias4H === "Bullish" && confirmation1H === "Bullish") ||
+    (bias4H === "Bearish" && confirmation1H === "Bearish")
+  );
   
-  // isSniper: Immediate execution on first valid trigger
-  // No extra confirmation layers - direct trigger on crossover or momentum alignment
+  // isSniper: BUILDING confirmed + 15M trigger fires
+  // Direct progression: no extra gates
   const isSniper = isBuilding && (
     (bias4H === "Bullish" && confirmation1H === "Bullish" && (kCrossAboveD || stochKD.K < 50)) ||
     (bias4H === "Bearish" && confirmation1H === "Bearish" && (kCrossBelowD || stochKD.K > 50))
@@ -263,14 +266,20 @@ export function generateSignal(
   let reason = "";
   if (isSniper) {
     const direction = bias4H === "Bullish" ? "LONG" : "SHORT";
-    const trigger = kCrossAboveD || kCrossBelowD ? "K/D crossover" : "stoch aligned";
-    reason = `SNIPER ENTRY: ${direction} via ${trigger} | 4H=${bias4H}, 1H=${confirmation1H}, K=${stochKD.K.toFixed(1)}, ADX=${adx.toFixed(1)}`;
+    const trigger = kCrossAboveD || kCrossBelowD ? "K/D crossover" : "stoch momentum";
+    reason = `SNIPER: ${direction} confirmed via ${trigger} (4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)})`;
   } else if (isBuilding) {
-    reason = `BUILDING: Setup valid | 4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)} - awaiting 15M trigger`;
-  } else if (adx < 20) {
-    reason = `ADX ${adx.toFixed(1)} < 20: Insufficient momentum - no setup`;
+    const direction = bias4H === "Bullish" ? "BULLISH" : "BEARISH";
+    reason = `BUILDING: ${direction} alignment confirmed (4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)}) - awaiting 15M trigger`;
   } else {
-    reason = `No alignment: 4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)}`;
+    // WATCHING: No valid alignment
+    if (bias4H === "Neutral" && confirmation1H === "Neutral") {
+      reason = `WATCHING: No directional bias (4H=Neutral, 1H=Neutral, ADX=${adx.toFixed(1)})`;
+    } else if (bias4H !== confirmation1H) {
+      reason = `WATCHING: Misaligned timeframes (4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)})`;
+    } else {
+      reason = `WATCHING: One direction only (4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)})`;
+    }
   }
 
   // Calculate confidence score

@@ -15,20 +15,6 @@ export interface SignalSnapshot {
   updatedAt: string;
 }
 
-export interface SignalTransition {
-  symbol: string;
-  fromState: ValidState;
-  toState: ValidState;
-  timestamp: string;
-}
-
-export interface AlertHistory {
-  symbol: string;
-  state: ValidState;
-  timestamp: string;
-  alertSent: boolean;
-}
-
 export interface TelegramCooldown {
   symbol: string;
   lastAlertAt: string;
@@ -36,8 +22,6 @@ export interface TelegramCooldown {
 
 // In-memory storage (single source of truth)
 const signalSnapshots = new Map<string, SignalSnapshot>();
-const signalTransitions: SignalTransition[] = [];
-const alertHistory: AlertHistory[] = [];
 const telegramCooldowns = new Map<string, TelegramCooldown>();
 
 console.log("[PERSISTENCE] In-memory storage initialized (no external DB)");
@@ -67,14 +51,4 @@ export async function getTelegramCooldown(
 export async function updateTelegramCooldown(symbol: string, timestamp: string) {
   telegramCooldowns.set(symbol, { symbol, lastAlertAt: timestamp });
   console.log(`[PERSISTENCE] Updated telegram cooldown for ${symbol}: ${timestamp}`);
-}
-
-// Debug: Get all in-memory state
-export function getDebugState() {
-  return {
-    snapshots: Array.from(signalSnapshots.entries()),
-    transitions: signalTransitions,
-    alerts: alertHistory,
-    cooldowns: Array.from(telegramCooldowns.entries()),
-  };
 }
