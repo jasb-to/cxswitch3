@@ -10,7 +10,6 @@ import {
 import { detectTransition } from "./transitionDetector";
 import { validateState } from "./stateValidator";
 import { sendTelegramAlert } from "./telegram";
-import { mapLegacyStateToUnified, assertLegacyState } from "./stateMapper";
 
 const ALERT_COOLDOWN_MS = 60 * 60 * 1000; // 60 minutes
 
@@ -55,7 +54,7 @@ export async function generateAndStoreSignals() {
         );
       }
 
-      // Step 2: Generate signal (returns legacy state)
+      // Step 2: Generate signal (now returns unified state directly: WAIT/WATCH/BUILDING/SNIPER)
       console.log(`[ENGINE] ${symbol}: Generating signal...`);
       const signal = generateSignal(symbol, candles4H, candles1H, candles15M);
 
@@ -63,14 +62,12 @@ export async function generateAndStoreSignals() {
         throw new Error("Signal generation returned null");
       }
 
-      // Step 3: Map legacy state to unified state (WAIT→WATCHING_SHIFT, WATCH→BUILDING, LONG/SHORT→SNIPER)
-      console.log(`[ENGINE] ${symbol}: Mapping state ${signal.state} → unified...`);
-      const legacyState = assertLegacyState(signal.state);
-      const unifiedState = mapLegacyStateToUnified(legacyState);
-      const validatedState = validateState(unifiedState);
+      // Step 3: Validate unified state
+      console.log(`[ENGINE] ${symbol}: Validating state ${signal.state}...`);
+      const validatedState = validateState(signal.state as any);
 
       console.log(
-        `[ENGINE] ${symbol}: State mapped: ${signal.state} → ${validatedState}`
+        `[ENGINE] ${symbol}: State validated: ${signal.state} → ${validatedState}`
       );
 
       // Step 4: Detect transition
@@ -89,13 +86,8 @@ export async function generateAndStoreSignals() {
         if (canAlert) {
           console.log(`[ENGINE] ${symbol}: Sending Telegram alert (cooldown OK)...`);
 
-          // CRITICAL: telegram.ts expects legacy state names (LONG/SHORT)
-          const telegramSignal = {
-            ...signal,
-            state: legacyState, // Keep legacy state for telegram module only
-          };
-
-          const sent = await sendTelegramAlert(telegramSignal);
+          // Send unified signal directly (now SNIPER state)
+          const sent = await sendTelegramAlert(signal as any);
 
           if (sent) {
             const now_iso = new Date().toISOString();

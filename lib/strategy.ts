@@ -12,7 +12,7 @@ export interface Candle {
 export interface Signal {
   symbol: Symbol;
   price: number;
-  state: "WAIT" | "WATCH" | "LONG" | "SHORT";
+  state: "WAIT" | "WATCH" | "BUILDING" | "SNIPER";
   bias: "Bullish" | "Bearish" | "Neutral";
   confidence: number;
   adx: number;
@@ -210,24 +210,15 @@ export function generateSignal(
   // Step 2: 1H Confirmation (requires ADX > 20)
   const confirmation1H = calculate1HConfirmation(c1H, adx);
 
-  // Step 3: 15M Entry Trigger with early detection OR logic for earlier entry sensitivity
+  // Step 3: 15M Entry Trigger - Immediate SNIPER execution
   const { kCrossAboveD, kCrossBelowD } = stochKD;
   
-  // Momentum detection for early entries
-  const upwardMomentum = c15M[c15M.length - 1].close > c15M[c15M.length - 2].close;
-  const downwardMomentum = c15M[c15M.length - 1].close < c15M[c15M.length - 2].close;
-  
-  // Early detection: K crossover OR (stoch in zone AND momentum direction)
-  const bullishEarlyEntry = kCrossAboveD || (stochKD.K < 45 && upwardMomentum);
-  const bearishEarlyEntry = kCrossBelowD || (stochKD.K > 55 && downwardMomentum);
-  
-  const entryReady = (
-    (bias4H === "Bullish" && confirmation1H === "Bullish" && bullishEarlyEntry && adxSlope) ||
-    (bias4H === "Bearish" && confirmation1H === "Bearish" && bearishEarlyEntry && adxSlope)
-  );
+  // SNIPER trigger condition: setup valid + crossover signal
+  const buildingValid = bias4H !== "Neutral" && confirmation1H !== "Neutral" && adx >= 22;
+  const sniperTrigger = buildingValid && (kCrossAboveD || kCrossBelowD);
 
-  // Determine state based on ADX (adjusted thresholds: 18, 18-22, 22)
-  let state: "WAIT" | "WATCH" | "LONG" | "SHORT" = "WAIT";
+  // Determine state based on ADX (adjusted thresholds: 18, 18-22, 22+)
+  let state: "WAIT" | "WATCH" | "BUILDING" | "SNIPER" = "WAIT";
   let reason = "";
 
   if (adx < 18) {
@@ -237,16 +228,16 @@ export function generateSignal(
     state = "WATCH";
     reason = `ADX ${adx.toFixed(1)} (18-22): Weak trend - monitoring 4H=${bias4H}, 1H=${confirmation1H}`;
   } else {
-    // ADX >= 22: Good trend, check for entry with early detection
-    if (bias4H === "Bullish" && confirmation1H === "Bullish" && bullishEarlyEntry && adxSlope) {
-      state = "LONG";
-      reason = `LONG: 4H Bullish + 1H Bullish + 15M K=${stochKD.K.toFixed(1)} (early detection) + ADX ${adx.toFixed(1)} rising`;
-    } else if (bias4H === "Bearish" && confirmation1H === "Bearish" && bearishEarlyEntry && adxSlope) {
-      state = "SHORT";
-      reason = `SHORT: 4H Bearish + 1H Bearish + 15M K=${stochKD.K.toFixed(1)} (early detection) + ADX ${adx.toFixed(1)} rising`;
+    // ADX >= 22: Check for immediate SNIPER trigger
+    if (sniperTrigger) {
+      state = "SNIPER";
+      reason = `BUILDING confirmed → K crossover detected (K=${stochKD.K.toFixed(1)}) → SNIPER ENTRY FIRED at ADX ${adx.toFixed(1)}`;
+    } else if (buildingValid) {
+      state = "BUILDING";
+      reason = `Setup valid: 4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)} - waiting for K/D crossover trigger`;
     } else if ((bias4H === "Bullish" && confirmation1H === "Bullish") || (bias4H === "Bearish" && confirmation1H === "Bearish")) {
-      state = "WATCH";
-      reason = `Setup aligned: 4H=${bias4H}, 1H=${confirmation1H}, waiting for 15M early entry signal (ADX ${adx.toFixed(1)})`;
+      state = "BUILDING";
+      reason = `Setup aligned: 4H=${bias4H}, 1H=${confirmation1H}, but ADX ${adx.toFixed(1)} < 22 threshold`;
     } else {
       state = "WAIT";
       reason = `ADX ${adx.toFixed(1)} but alignment missing: 4H=${bias4H}, 1H=${confirmation1H}`;

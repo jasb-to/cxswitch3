@@ -9,22 +9,20 @@ export async function sendTelegramAlert(signal: Signal) {
     return false;
   }
 
-  // Accept only legacy states (LONG/SHORT) from signalEngine
-  // signalEngine is responsible for ensuring only LONG/SHORT are passed here
+  // Alert only on SNIPER state (immediate entry trigger)
   const state = signal.state || "UNKNOWN";
-  if (state !== "LONG" && state !== "SHORT") {
-    console.log(`[TELEGRAM] Skipping state ${state} - only alerting on LONG/SHORT`);
+  if (state !== "SNIPER") {
+    console.log(`[TELEGRAM] Skipping state ${state} - only alerting on SNIPER`);
     return false;
   }
 
-  const isLong = state === "LONG";
-  const emoji = isLong ? "🟢 SNIPER ENTRY" : "🔴 SNIPER ENTRY";
+  const emoji = signal.bias === "Bullish" ? "🟢 SNIPER LONG" : "🔴 SNIPER SHORT";
 
   const message = `${emoji}
 ${signal.symbol} — $${signal.price.toFixed(2)}
 
 **Bias:** ${signal.bias || "—"}
-**Setup:** ${signal.reason}
+**Trigger:** ${signal.reason}
 **Confidence:** ${signal.confidence}%
 
 ADX: ${signal.adx.toFixed(1)} | Stoch K: ${signal.stochK.toFixed(1)} | Stoch D: ${signal.stochD.toFixed(1)}
@@ -47,7 +45,7 @@ ADX: ${signal.adx.toFixed(1)} | Stoch K: ${signal.stochK.toFixed(1)} | Stoch D: 
       return false;
     }
 
-    console.log(`[TELEGRAM] ✓ Alert sent for ${signal.symbol} ${state}`);
+    console.log(`[TELEGRAM] ✓ SNIPER alert sent for ${signal.symbol} ${signal.bias}`);
     return true;
   } catch (err) {
     console.error(`[TELEGRAM] Error sending alert: ${err}`);
