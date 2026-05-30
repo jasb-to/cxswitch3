@@ -87,15 +87,15 @@ export default function Home() {
 }
 
 function SignalCard({ signal }: { signal: Signal }) {
-  const isSniper = signal.state === "SNIPER";
-  const isBuilding = signal.state === "BUILDING";
-  const isWatchingShift = signal.state === "WATCHING_SHIFT";
+  const isSniper = signal.isSniper;
+  const isBuilding = signal.isBuilding;
 
-  // State colors
+  // State colors - only show green for SNIPER, yellow for BUILDING
   const borderColor = isSniper ? "border-green-500/30" : isBuilding ? "border-yellow-500/30" : "border-gray-700";
   const bgHighlight = isSniper ? "bg-green-500/5" : isBuilding ? "bg-yellow-500/5" : "bg-gray-900/50";
   const stateBadgeColor = isSniper ? "bg-green-500/20 text-green-400 border-green-500/30" : isBuilding ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" : "bg-gray-800 text-gray-400 border-gray-700";
   const stateEmoji = isSniper ? "🟢" : isBuilding ? "🟡" : "⚪";
+  const stateLabel = isSniper ? "SNIPER" : isBuilding ? "BUILDING" : "WATCHING";
 
   const biasColor = signal.bias === "Bullish" ? "text-green-400" : signal.bias === "Bearish" ? "text-red-400" : "text-gray-400";
 
@@ -117,7 +117,7 @@ function SignalCard({ signal }: { signal: Signal }) {
         </div>
         <div className={`px-4 py-2 rounded-lg border text-sm font-semibold ${stateBadgeColor} flex items-center gap-2`}>
           {stateEmoji}
-          <span>{signal.state.toUpperCase()}</span>
+          <span>{stateLabel}</span>
         </div>
       </div>
 
@@ -218,13 +218,13 @@ function getStochZone(k: number): { label: string; emoji: string; color: string 
 function calculateEntryReadiness(signal: Signal): number {
   let score = 0;
 
-  // +25 if bias and confirmation are aligned (since we only have bias, check if state supports it)
-  if (signal.state === "SNIPER" || signal.state === "BUILDING") {
+  // +25 if isBuilding flag is true
+  if (signal.isBuilding) {
     score += 25;
   }
 
-  // +25 if ADX > 23
-  if (signal.adx > 23) {
+  // +25 if ADX > 22
+  if (signal.adx > 22) {
     score += 25;
   }
 
@@ -234,8 +234,8 @@ function calculateEntryReadiness(signal: Signal): number {
     score += 25;
   }
 
-  // +25 if state is BUILDING or SNIPER
-  if (signal.state === "BUILDING" || signal.state === "SNIPER") {
+  // +25 if isSniper flag is true
+  if (signal.isSniper) {
     score += 25;
   }
 

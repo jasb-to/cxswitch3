@@ -7,8 +7,6 @@ import {
   updateTelegramCooldown,
   SignalSnapshot,
 } from "./persistence";
-import { detectTransition } from "./transitionDetector";
-import { validateState } from "./stateValidator";
 import { sendTelegramAlert } from "./telegram";
 
 const ALERT_COOLDOWN_MS = 60 * 60 * 1000; // 60 minutes
@@ -62,21 +60,9 @@ export async function generateAndStoreSignals() {
         throw new Error("Signal generation returned null");
       }
 
-      // Step 3: Validate unified state
-      console.log(`[ENGINE] ${symbol}: Validating state ${signal.state}...`);
-      const validatedState = validateState(signal.state as any);
-
-      console.log(
-        `[ENGINE] ${symbol}: State validated: ${signal.state} → ${validatedState}`
-      );
-
-      // Step 4: Detect transition
-      console.log(`[ENGINE] ${symbol}: Detecting state transition...`);
-      const transition = await detectTransition(symbol, validatedState);
-
-      // Step 5: Handle alert (only on SNIPER entry)
-      if (transition.isSniperEntry) {
-        console.log(`[ENGINE] ${symbol}: SNIPER entry detected, checking cooldown...`);
+      // Step 3: Check for SNIPER execution trigger
+      if (signal.isSniper) {
+        console.log(`[ENGINE] ${symbol}: SNIPER TRIGGER DETECTED, checking cooldown...`);
 
         const cooldown = await getTelegramCooldown(symbol);
         const now = Date.now();
@@ -86,15 +72,15 @@ export async function generateAndStoreSignals() {
         if (canAlert) {
           console.log(`[ENGINE] ${symbol}: Sending Telegram alert (cooldown OK)...`);
 
-          // Send unified signal directly (now SNIPER state)
-          const sent = await sendTelegramAlert(signal as any);
+          // Send signal directly with isSniper flag
+          const sent = await sendTelegramAlert(signal);
 
           if (sent) {
             const now_iso = new Date().toISOString();
             await updateTelegramCooldown(symbol, now_iso);
             await recordAlert({
               symbol,
-              state: validatedState,
+              state: "SNIPER",
               timestamp: now_iso,
               alertSent: true,
             });
@@ -110,18 +96,18 @@ export async function generateAndStoreSignals() {
             `[ENGINE] ${symbol}: Alert in cooldown (${minutesUntilNext}m remaining)`
           );
         }
+      } else if (signal.isBuilding) {
+        console.log(`[ENGINE] ${symbol}: BUILDING (awaiting SNIPER trigger)`);
       } else {
-        console.log(
-          `[ENGINE] ${symbol}: No SNIPER entry (transition: ${transition.fromState} → ${validatedState})`
-        );
+        console.log(`[ENGINE] ${symbol}: No setup (isBuilding=false)`);
       }
 
-      // Step 6: Store snapshot to in-memory storage
-      console.log(`[ENGINE] ${symbol}: Storing snapshot to memory...`);
+      // Step 4: Store snapshot to in-memory storage
+      console.log(`[ENGINE] ${symbol}: Storing snapshot...`);
       const snapshot: SignalSnapshot = {
         symbol,
-        state: validatedState,
-        previousState: transition.fromState,
+        state: signal.isSniper ? "SNIPER" : signal.isBuilding ? "BUILDING" : "WATCHING_SHIFT",
+        previousState: "UNKNOWN",
         confidence: signal.confidence,
         price: signal.price,
         bias: signal.bias,
@@ -134,13 +120,13 @@ export async function generateAndStoreSignals() {
       results.push(snapshot);
 
       console.log(
-        `[ENGINE] ${symbol}: ✓ Complete (${transition.fromState} → ${validatedState}, confidence: ${signal.confidence}%)`
+        `[ENGINE] ${symbol}: ✓ Complete (isSniper=${signal.isSniper}, isBuilding=${signal.isBuilding}, confidence: ${signal.confidence}%)`
       );
 
       executionLog.push({
         symbol,
         success: true,
-        state: validatedState,
+        state: signal.isSniper ? "SNIPER" : signal.isBuilding ? "BUILDING" : "WATCHING_SHIFT",
       });
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);

@@ -12,7 +12,8 @@ export interface Candle {
 export interface Signal {
   symbol: Symbol;
   price: number;
-  state: "WAIT" | "WATCH" | "BUILDING" | "SNIPER";
+  isBuilding: boolean;
+  isSniper: boolean;
   bias: "Bullish" | "Bearish" | "Neutral";
   confidence: number;
   adx: number;
@@ -210,38 +211,29 @@ export function generateSignal(
   // Step 2: 1H Confirmation (requires ADX > 20)
   const confirmation1H = calculate1HConfirmation(c1H, adx);
 
-  // Step 3: 15M Entry Trigger - Immediate SNIPER execution
+  // Step 3: Calculate market conditions (context flags, not states)
   const { kCrossAboveD, kCrossBelowD } = stochKD;
   
-  // SNIPER trigger condition: setup valid + crossover signal
-  const buildingValid = bias4H !== "Neutral" && confirmation1H !== "Neutral" && adx >= 22;
-  const sniperTrigger = buildingValid && (kCrossAboveD || kCrossBelowD);
+  // isBuilding: Market conditions are forming (ADX trend + setup alignment)
+  const isBuilding = adx >= 18 && (bias4H !== "Neutral" || confirmation1H !== "Neutral");
+  
+  // isSniper: Immediate execution trigger
+  const isSniper = isBuilding && (
+    (bias4H === "Bullish" && confirmation1H === "Bullish" && kCrossAboveD && stochKD.K < 45) ||
+    (bias4H === "Bearish" && confirmation1H === "Bearish" && kCrossBelowD && stochKD.K > 55)
+  );
 
-  // Determine state based on ADX (adjusted thresholds: 18, 18-22, 22+)
-  let state: "WAIT" | "WATCH" | "BUILDING" | "SNIPER" = "WAIT";
+  // Generate reason text for context
   let reason = "";
-
-  if (adx < 18) {
-    state = "WAIT";
-    reason = `ADX ${adx.toFixed(1)} < 18: Range/choppy - no trade`;
-  } else if (adx < 22) {
-    state = "WATCH";
-    reason = `ADX ${adx.toFixed(1)} (18-22): Weak trend - monitoring 4H=${bias4H}, 1H=${confirmation1H}`;
+  if (isSniper) {
+    const direction = bias4H === "Bullish" ? "LONG" : "SHORT";
+    reason = `SNIPER ENTRY: ${direction} | 4H=${bias4H}, 1H=${confirmation1H}, K=${stochKD.K.toFixed(1)}, ADX=${adx.toFixed(1)}`;
+  } else if (isBuilding) {
+    reason = `BUILDING: Setup forming | 4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)} - waiting for 15M K/D crossover`;
+  } else if (adx < 18) {
+    reason = `ADX ${adx.toFixed(1)} < 18: Range/choppy - no trade setup`;
   } else {
-    // ADX >= 22: Check for immediate SNIPER trigger
-    if (sniperTrigger) {
-      state = "SNIPER";
-      reason = `BUILDING confirmed → K crossover detected (K=${stochKD.K.toFixed(1)}) → SNIPER ENTRY FIRED at ADX ${adx.toFixed(1)}`;
-    } else if (buildingValid) {
-      state = "BUILDING";
-      reason = `Setup valid: 4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)} - waiting for K/D crossover trigger`;
-    } else if ((bias4H === "Bullish" && confirmation1H === "Bullish") || (bias4H === "Bearish" && confirmation1H === "Bearish")) {
-      state = "BUILDING";
-      reason = `Setup aligned: 4H=${bias4H}, 1H=${confirmation1H}, but ADX ${adx.toFixed(1)} < 22 threshold`;
-    } else {
-      state = "WAIT";
-      reason = `ADX ${adx.toFixed(1)} but alignment missing: 4H=${bias4H}, 1H=${confirmation1H}`;
-    }
+    reason = `No setup alignment: 4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)}`;
   }
 
   // Calculate confidence score
@@ -254,7 +246,8 @@ export function generateSignal(
   return {
     symbol,
     price: Math.round(currentPrice * 100) / 100,
-    state,
+    isBuilding,
+    isSniper,
     bias: bias4H,
     confidence: Math.min(100, confidence),
     adx: Math.round(adx * 10) / 10,

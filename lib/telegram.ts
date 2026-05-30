@@ -9,10 +9,9 @@ export async function sendTelegramAlert(signal: Signal) {
     return false;
   }
 
-  // Alert only on SNIPER state (immediate entry trigger)
-  const state = signal.state || "UNKNOWN";
-  if (state !== "SNIPER") {
-    console.log(`[TELEGRAM] Skipping state ${state} - only alerting on SNIPER`);
+  // Alert only on isSniper flag (the only execution trigger)
+  if (!signal.isSniper) {
+    console.log(`[TELEGRAM] Skipping - isSniper is false`);
     return false;
   }
 
@@ -21,7 +20,6 @@ export async function sendTelegramAlert(signal: Signal) {
   const message = `${emoji}
 ${signal.symbol} — $${signal.price.toFixed(2)}
 
-**Bias:** ${signal.bias || "—"}
 **Trigger:** ${signal.reason}
 **Confidence:** ${signal.confidence}%
 
