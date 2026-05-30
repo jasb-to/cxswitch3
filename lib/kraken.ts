@@ -68,3 +68,50 @@ export async function getCandles15M(symbol: Symbol): Promise<Candle[]> {
 export async function getCandles5M(symbol: Symbol): Promise<Candle[]> {
   return fetchCandles(symbol, 5);
 }
+
+// Fetch live current price from Kraken ticker
+export async function getCurrentPrice(symbol: Symbol): Promise<number> {
+  try {
+    const pair = KRAKEN_PAIRS[symbol];
+    const url = `https://api.kraken.com/0/public/Ticker?pair=${pair}`;
+
+    const res = await fetch(url, {
+      cache: "no-store",
+      timeout: 10000,
+    });
+
+    if (!res.ok) {
+      console.error(`[KRAKEN] Error fetching ticker for ${pair}: ${res.status}`);
+      return 0;
+    }
+
+    const data = await res.json();
+
+    if (data.error && data.error.length > 0) {
+      console.error(`[KRAKEN] Ticker API error for ${pair}: ${data.error.join(", ")}`);
+      return 0;
+    }
+
+    // Kraken ticker format: { pair: { a: [ask, ...], b: [bid, ...], c: [last, ...], ... } }
+    const key = Object.keys(data.result || {}).find((k) => k !== "last");
+    if (!key) {
+      console.warn(`[KRAKEN] No ticker data found for ${pair}`);
+      return 0;
+    }
+
+    // Get last trade price (index 0 of the "c" array is the price)
+    const tickerData = data.result[key];
+    const lastPrice = Number(tickerData.c?.[0] || 0);
+
+    if (lastPrice === 0) {
+      console.warn(`[KRAKEN] Invalid price data for ${pair}`);
+      return 0;
+    }
+
+    console.log(`[KRAKEN] Current price for ${pair}: $${lastPrice.toFixed(2)}`);
+    return lastPrice;
+  } catch (err) {
+    console.error(`[KRAKEN] Ticker fetch error: ${err}`);
+    return 0;
+  }
+}
