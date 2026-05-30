@@ -51,7 +51,7 @@ export default function Home() {
         <div className="mb-12">
           <h1 className="text-5xl sm:text-6xl font-bold tracking-tight mb-2">CX Switch</h1>
           <p className="text-gray-400 text-base sm:text-lg">
-            Trade Brewing Radar • 4H Structure • 1H Confirmation • 15M Entry
+            Trade Radar • 4H Structure • 1H Confirmation • 15M Entry
           </p>
         </div>
 
