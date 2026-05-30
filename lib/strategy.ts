@@ -203,7 +203,6 @@ export function generateSignal(
   const currentPrice = c15M[c15M.length - 1].close;
   const { adx, prevAdx } = calculateADX(c15M);
   const stochKD = calculateStochKD(c15M);
-  const adxSlope = adx >= prevAdx - 0.3; // Soft slope: allows flat or slight dip during early trend formation
 
   // Step 1: 4H Bias (Direction only)
   const bias4H = calculate4HBias(c4H);
@@ -214,26 +213,29 @@ export function generateSignal(
   // Step 3: Calculate market conditions (context flags, not states)
   const { kCrossAboveD, kCrossBelowD } = stochKD;
   
-  // isBuilding: Market conditions are forming (ADX trend + setup alignment)
-  const isBuilding = adx >= 18 && (bias4H !== "Neutral" || confirmation1H !== "Neutral");
+  // isBuilding: Earlier detection - both 4H and 1H must be aligned (non-Neutral) at ADX >= 20
+  // Triggers as soon as valid setup forms, before entry signal
+  const isBuilding = adx >= 20 && bias4H !== "Neutral" && confirmation1H !== "Neutral";
   
-  // isSniper: Immediate execution trigger
+  // isSniper: Immediate execution on first valid trigger
+  // No extra confirmation layers - direct trigger on crossover or momentum alignment
   const isSniper = isBuilding && (
-    (bias4H === "Bullish" && confirmation1H === "Bullish" && kCrossAboveD && stochKD.K < 45) ||
-    (bias4H === "Bearish" && confirmation1H === "Bearish" && kCrossBelowD && stochKD.K > 55)
+    (bias4H === "Bullish" && confirmation1H === "Bullish" && (kCrossAboveD || stochKD.K < 50)) ||
+    (bias4H === "Bearish" && confirmation1H === "Bearish" && (kCrossBelowD || stochKD.K > 50))
   );
 
   // Generate reason text for context
   let reason = "";
   if (isSniper) {
     const direction = bias4H === "Bullish" ? "LONG" : "SHORT";
-    reason = `SNIPER ENTRY: ${direction} | 4H=${bias4H}, 1H=${confirmation1H}, K=${stochKD.K.toFixed(1)}, ADX=${adx.toFixed(1)}`;
+    const trigger = kCrossAboveD || kCrossBelowD ? "K/D crossover" : "stoch aligned";
+    reason = `SNIPER ENTRY: ${direction} via ${trigger} | 4H=${bias4H}, 1H=${confirmation1H}, K=${stochKD.K.toFixed(1)}, ADX=${adx.toFixed(1)}`;
   } else if (isBuilding) {
-    reason = `BUILDING: Setup forming | 4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)} - waiting for 15M K/D crossover`;
-  } else if (adx < 18) {
-    reason = `ADX ${adx.toFixed(1)} < 18: Range/choppy - no trade setup`;
+    reason = `BUILDING: Setup valid | 4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)} - awaiting 15M trigger`;
+  } else if (adx < 20) {
+    reason = `ADX ${adx.toFixed(1)} < 20: Insufficient momentum - no setup`;
   } else {
-    reason = `No setup alignment: 4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)}`;
+    reason = `No alignment: 4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)}`;
   }
 
   // Calculate confidence score
@@ -241,7 +243,7 @@ export function generateSignal(
   if (bias4H !== "Neutral") confidence += 30;
   if (confirmation1H !== "Neutral") confidence += 30;
   if (kCrossAboveD || kCrossBelowD) confidence += 20;
-  if (adx > 22) confidence += 20;
+  if (adx >= 20) confidence += 20;
 
   return {
     symbol,
