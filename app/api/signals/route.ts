@@ -5,15 +5,17 @@ export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    // READ-ONLY: Fetch latest signal snapshots from in-memory storage
+    // PURE PASSTHROUGH: Fetch and return snapshots without any transformation or derivation
+    // No state reconstruction, no label generation, no indicator interpretation
     const snapshots = await getLatestSignalSnapshots();
 
-    // Transform snapshots directly to Signal format (no transformation loss)
+    // Direct mapping - snapshot fields map 1:1 to Signal fields
+    // isBuilding and isSniper come ONLY from engine, never computed here
     const signals: Signal[] = snapshots.map((snapshot) => ({
       symbol: snapshot.symbol,
       price: snapshot.price,
-      isBuilding: snapshot.isBuilding,
-      isSniper: snapshot.isSniper,
+      isBuilding: snapshot.isBuilding,  // From engine only
+      isSniper: snapshot.isSniper,      // From engine only
       bias: snapshot.bias,
       confidence: snapshot.confidence,
       adx: snapshot.adx,

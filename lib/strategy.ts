@@ -276,7 +276,8 @@ export function generateSignal(
   console.log(`[STRATEGY]   isSniper result: ${isSniper}`);
   console.log(`[STRATEGY] ===== END BUILDING CHECK =====`);
 
-  // Generate reason text for context
+  // Generate reason text - ONLY for engine execution states (SNIPER/BUILDING)
+  // NOT for display of state label (that should ONLY come from isBuilding/isSniper flags)
   let reason = "";
   if (isSniper) {
     const direction = bias4H === "Bullish" ? "LONG" : "SHORT";
@@ -286,14 +287,8 @@ export function generateSignal(
     const direction = bias4H === "Bullish" ? "BULLISH" : "BEARISH";
     reason = `BUILDING: ${direction} alignment confirmed (4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)}) - awaiting 15M trigger`;
   } else {
-    // WATCHING: No valid alignment
-    if (bias4H === "Neutral" && confirmation1H === "Neutral") {
-      reason = `WATCHING: No directional bias (4H=Neutral, 1H=Neutral, ADX=${adx.toFixed(1)})`;
-    } else if (bias4H !== confirmation1H) {
-      reason = `WATCHING: Misaligned timeframes (4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)})`;
-    } else {
-      reason = `WATCHING: One direction only (4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)})`;
-    }
+    // No state description for inactive signals - let raw indicators speak
+    reason = `Monitoring: 4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)}`;
   }
 
   // Calculate confidence score

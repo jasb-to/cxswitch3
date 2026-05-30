@@ -129,9 +129,17 @@ export async function generateAndStoreSignals() {
       await storeSignalSnapshot(snapshot);
       results.push(snapshot);
 
-      console.log(
-        `[ENGINE] ${symbol}: ✓ Complete (isSniper=${signal.isSniper}, isBuilding=${signal.isBuilding}, ADX=${signal.adx.toFixed(1)}, confidence: ${signal.confidence}%)`
-      );
+      // FINAL CANONICAL OUTPUT LOG - This is the ONLY place state is logged
+      console.log(`[ENGINE OUTPUT FINAL] ${symbol}`);
+      console.log(`[ENGINE OUTPUT FINAL]   isBuilding=${snapshot.isBuilding}`);
+      console.log(`[ENGINE OUTPUT FINAL]   isSniper=${snapshot.isSniper}`);
+      console.log(`[ENGINE OUTPUT FINAL]   price=$${snapshot.price.toFixed(2)}`);
+      console.log(`[ENGINE OUTPUT FINAL]   adx=${snapshot.adx.toFixed(1)}`);
+      console.log(`[ENGINE OUTPUT FINAL]   stochK=${snapshot.stochK.toFixed(1)}`);
+      console.log(`[ENGINE OUTPUT FINAL]   stochD=${snapshot.stochD.toFixed(1)}`);
+      console.log(`[ENGINE OUTPUT FINAL]   bias=${snapshot.bias}`);
+      console.log(`[ENGINE OUTPUT FINAL]   reason=${snapshot.reason}`);
+      console.log(`[ENGINE OUTPUT FINAL] ✓ Complete`);
 
       executionLog.push({
         symbol,
