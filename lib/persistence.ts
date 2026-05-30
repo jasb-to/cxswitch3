@@ -1,19 +1,15 @@
-import { ValidState } from "./stateValidator";
-
 export interface SignalSnapshot {
   symbol: string;
-  state: ValidState;
-  previousState: ValidState;
+  isBuilding: boolean;
+  isSniper: boolean;
   confidence: number;
   price: number;
-  entry?: number;
-  stopLoss?: number;
-  takeProfit?: number;
-  riskReward?: number;
+  adx: number;
+  stochK: number;
+  stochD: number;
   bias: "Bullish" | "Bearish" | "Neutral";
-  structure: string;
+  reason: string;
   updatedAt: string;
-  stateEnteredAt: string;
 }
 
 export interface SignalTransition {
@@ -46,26 +42,14 @@ console.log("[PERSISTENCE] In-memory storage initialized (no external DB)");
 // Store signal snapshot
 export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
   signalSnapshots.set(snapshot.symbol, snapshot);
-  console.log(`[PERSISTENCE] Stored snapshot for ${snapshot.symbol}: ${snapshot.state}`);
+  console.log(`[PERSISTENCE] Stored snapshot for ${snapshot.symbol}: isBuilding=${snapshot.isBuilding}, isSniper=${snapshot.isSniper}, ADX=${snapshot.adx.toFixed(1)}`);
 }
 
 // Get latest signal snapshots for all symbols
 export async function getLatestSignalSnapshots(): Promise<SignalSnapshot[]> {
   const snapshots = Array.from(signalSnapshots.values());
-  console.log(`[PERSISTENCE] Retrieved ${snapshots.length} snapshots from memory`);
+  console.log(`[PERSISTENCE] Retrieved ${snapshots.length} snapshots: ${snapshots.map(s => `${s.symbol}(${s.isBuilding ? 'B' : ''}${s.isSniper ? 'S' : ''} ADX=${s.adx.toFixed(1)})`).join(', ')}`);
   return snapshots;
-}
-
-// Store state transition
-export async function storeTransition(transition: SignalTransition) {
-  signalTransitions.push(transition);
-  console.log(`[PERSISTENCE] Stored transition: ${transition.symbol} ${transition.fromState} → ${transition.toState}`);
-}
-
-// Record alert
-export async function recordAlert(alert: AlertHistory) {
-  alertHistory.push(alert);
-  console.log(`[PERSISTENCE] Recorded alert: ${alert.symbol} ${alert.state}`);
 }
 
 // Get or update telegram cooldown
@@ -80,12 +64,6 @@ export async function getTelegramCooldown(
 export async function updateTelegramCooldown(symbol: string, timestamp: string) {
   telegramCooldowns.set(symbol, { symbol, lastAlertAt: timestamp });
   console.log(`[PERSISTENCE] Updated telegram cooldown for ${symbol}: ${timestamp}`);
-}
-
-// Get previous state for symbol
-export async function getPreviousState(symbol: string): Promise<ValidState> {
-  const snapshot = signalSnapshots.get(symbol);
-  return snapshot?.state || "WATCHING_SHIFT";
 }
 
 // Debug: Get all in-memory state

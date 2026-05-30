@@ -2,7 +2,6 @@ import { getCandles4H, getCandles15M, getCandles5M } from "./kraken";
 import { generateSignal, Symbol } from "./strategy";
 import {
   storeSignalSnapshot,
-  recordAlert,
   getTelegramCooldown,
   updateTelegramCooldown,
   SignalSnapshot,
@@ -78,12 +77,6 @@ export async function generateAndStoreSignals() {
           if (sent) {
             const now_iso = new Date().toISOString();
             await updateTelegramCooldown(symbol, now_iso);
-            await recordAlert({
-              symbol,
-              state: "SNIPER",
-              timestamp: now_iso,
-              alertSent: true,
-            });
             console.log(`[ENGINE] ${symbol}: Alert sent successfully`);
           } else {
             console.warn(`[ENGINE] ${symbol}: Alert send failed`);
@@ -106,21 +99,23 @@ export async function generateAndStoreSignals() {
       console.log(`[ENGINE] ${symbol}: Storing snapshot...`);
       const snapshot: SignalSnapshot = {
         symbol,
-        state: signal.isSniper ? "SNIPER" : signal.isBuilding ? "BUILDING" : "WATCHING_SHIFT",
-        previousState: "UNKNOWN",
+        isBuilding: signal.isBuilding,
+        isSniper: signal.isSniper,
         confidence: signal.confidence,
         price: signal.price,
+        adx: signal.adx,
+        stochK: signal.stochK,
+        stochD: signal.stochD,
         bias: signal.bias,
-        structure: signal.reason,
+        reason: signal.reason,
         updatedAt: signal.updatedAt,
-        stateEnteredAt: new Date().toISOString(),
       };
 
       await storeSignalSnapshot(snapshot);
       results.push(snapshot);
 
       console.log(
-        `[ENGINE] ${symbol}: ✓ Complete (isSniper=${signal.isSniper}, isBuilding=${signal.isBuilding}, confidence: ${signal.confidence}%)`
+        `[ENGINE] ${symbol}: ✓ Complete (isSniper=${signal.isSniper}, isBuilding=${signal.isBuilding}, ADX=${signal.adx.toFixed(1)}, confidence: ${signal.confidence}%)`
       );
 
       executionLog.push({

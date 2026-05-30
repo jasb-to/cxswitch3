@@ -14,6 +14,15 @@ export default function Home() {
       const res = await fetch("/api/signals");
       const data = await res.json();
       setSignals(data.signals || []);
+      
+      // Debug logging
+      console.log(`[UI] Received ${data.signals?.length || 0} signals from API:`);
+      (data.signals || []).forEach((signal: Signal) => {
+        console.log(
+          `[UI]   ${signal.symbol}: isBuilding=${signal.isBuilding}, isSniper=${signal.isSniper}, ADX=${signal.adx.toFixed(1)}, K=${signal.stochK.toFixed(1)}, confidence=${signal.confidence}%`
+        );
+      });
+      
       setLastUpdate(new Date().toLocaleTimeString());
     } catch (err) {
       console.error("Failed to fetch signals:", err);
