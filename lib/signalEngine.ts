@@ -1,31 +1,32 @@
-import { getCandles4H, getCandles15M, getCandles5M, getCurrentPrice } from "./kraken";
+import {
+  getCandles4H,
+  getCandles15M,
+  getCandles5M,
+  getCurrentPrice,
+} from "./kraken";
+
 import { generateSignal, Symbol } from "./strategy";
+
 import {
   storeSignalSnapshot,
   getTelegramCooldown,
   updateTelegramCooldown,
   SignalSnapshot,
 } from "./persistence";
+
 import { sendTelegramAlert } from "./telegram";
 
-const ALERT_COOLDOWN_MS = 60 * 60 * 1000; // 60 minutes
+const ALERT_COOLDOWN_MS = 60 * 60 * 1000;
 
-/**
- * SINGLE SOURCE OF TRUTH: generateAndStoreSignals()
- * 
- * This is the ONLY function that:
- * - Fetches candles from Kraken
- * - Generates signals via strategy.ts
- * - Maps states from legacy to unified
- * - Detects state transitions
- * - Writes to Supabase
- * - Triggers Telegram alerts
- * 
- * Called ONLY by cron. Never called by API or UI.
- */
+/* =========================
+   MAIN ENGINE
+========================= */
+
 export async function generateAndStoreSignals() {
   const symbols: Symbol[] = ["BTC", "ETH", "SOL"];
+
   const results: SignalSnapshot[] = [];
+
   const executionLog: {
     symbol: string;
     success: boolean;
@@ -35,10 +36,12 @@ export async function generateAndStoreSignals() {
 
   for (const symbol of symbols) {
     try {
-      console.log(`[ENGINE] ========== Processing ${symbol} ==========`);
+      console.log(`[ENGINE] ===== ${symbol} =====`);
 
-      // Step 1: Fetch candles
-      console.log(`[ENGINE] ${symbol}: Fetching candles...`);
+      /* =========================
+         STEP 1: DATA FETCH
+      ========================= */
+
       const [candles4H, candles1H, candles15M] = await Promise.all([
         getCandles4H(symbol),
         getCandles15M(symbol),
@@ -46,65 +49,86 @@ export async function generateAndStoreSignals() {
       ]);
 
       if (!candles4H?.length || !candles1H?.length || !candles15M?.length) {
-        throw new Error(
-          `Incomplete candle data: 4H=${candles4H?.length || 0}, 1H=${candles1H?.length || 0}, 15M=${candles15M?.length || 0}`
-        );
+        throw new Error(`Missing candle data for ${symbol}`);
       }
 
-      // Step 2: Fetch live current price
-      console.log(`[ENGINE] ${symbol}: Fetching live price...`);
+      /* =========================
+         STEP 2: LIVE PRICE
+      ========================= */
+
       const livePrice = await getCurrentPrice(symbol);
-      
-      if (livePrice === 0) {
-        throw new Error(`Failed to fetch live price for ${symbol}`);
+
+      if (!livePrice) {
+        throw new Error(`Invalid live price for ${symbol}`);
       }
 
-      // Step 3: Generate signal with live price
-      console.log(`[ENGINE] ${symbol}: Generating signal (live price: $${livePrice.toFixed(2)})...`);
-      const signal = generateSignal(symbol, candles4H, candles1H, candles15M, livePrice);
+      console.log(
+        `[ENGINE] ${symbol}: price=$${livePrice.toFixed(2)}`
+      );
 
-      if (!signal) {
-        throw new Error("Signal generation returned null");
-      }
+      /* =========================
+         STEP 3: SIGNAL GENERATION
+      ========================= */
 
-      // Step 3: Check for SNIPER execution trigger
+      const signal = generateSignal(
+        symbol,
+        candles4H,
+        candles1H,
+        candles15M,
+        livePrice
+      );
+
+      /* =========================
+         STEP 4: TELEGRAM ALERT (EVENT ONLY)
+      ========================= */
+
       if (signal.isSniper) {
-        console.log(`[ENGINE] ${symbol}: SNIPER TRIGGER DETECTED, checking cooldown...`);
+        console.log(`[ENGINE] ${symbol}: SNIPER EVENT DETECTED`);
 
         const cooldown = await getTelegramCooldown(symbol);
+
         const now = Date.now();
-        const lastAlertTime = cooldown ? new Date(cooldown.lastAlertAt).getTime() : 0;
-        const canAlert = now - lastAlertTime >= ALERT_COOLDOWN_MS;
+        const last = cooldown
+          ? new Date(cooldown.lastAlertAt).getTime()
+          : 0;
 
-        if (canAlert) {
-          console.log(`[ENGINE] ${symbol}: Sending Telegram alert (cooldown OK)...`);
+        const canSend = now - last >= ALERT_COOLDOWN_MS;
 
-          // Send signal directly with isSniper flag
+        if (canSend) {
+          console.log(`[ENGINE] ${symbol}: sending alert`);
+
           const sent = await sendTelegramAlert(signal);
 
           if (sent) {
-            const now_iso = new Date().toISOString();
-            await updateTelegramCooldown(symbol, now_iso);
-            console.log(`[ENGINE] ${symbol}: Alert sent successfully`);
+            await updateTelegramCooldown(
+              symbol,
+              new Date().toISOString()
+            );
+            console.log(`[ENGINE] ${symbol}: alert sent`);
           } else {
-            console.warn(`[ENGINE] ${symbol}: Alert send failed`);
+            console.warn(`[ENGINE] ${symbol}: alert failed`);
           }
         } else {
-          const minutesUntilNext = Math.ceil(
-            (ALERT_COOLDOWN_MS - (now - lastAlertTime)) / 60000
+          const mins = Math.ceil(
+            (ALERT_COOLDOWN_MS - (now - last)) / 60000
           );
+
           console.log(
-            `[ENGINE] ${symbol}: Alert in cooldown (${minutesUntilNext}m remaining)`
+            `[ENGINE] ${symbol}: cooldown active (${mins}m)`
           );
         }
       } else if (signal.isSetupValid) {
-        console.log(`[ENGINE] ${symbol}: SETUP READY (awaiting SNIPER trigger)`);
+        console.log(
+          `[ENGINE] ${symbol}: setup valid (waiting trigger)`
+        );
       } else {
-        console.log(`[ENGINE] ${symbol}: No setup (isSetupValid=false)`);
+        console.log(`[ENGINE] ${symbol}: no setup`);
       }
 
-      // Step 4: Store snapshot to in-memory storage
-      console.log(`[ENGINE] ${symbol}: Storing snapshot...`);
+      /* =========================
+         STEP 5: SNAPSHOT STORE
+      ========================= */
+
       const snapshot: SignalSnapshot = {
         symbol,
         isSetupValid: signal.isSetupValid,
@@ -122,84 +146,119 @@ export async function generateAndStoreSignals() {
         updatedAt: signal.updatedAt,
       };
 
-      // Validate snapshot integrity
-      console.log(`[ENGINE] ${symbol}: Validating snapshot integrity...`);
       validateSnapshot(signal, snapshot, symbol);
 
       await storeSignalSnapshot(snapshot);
+
       results.push(snapshot);
 
-      // FINAL CANONICAL OUTPUT LOG - This is the ONLY place state is logged
-      console.log(`[ENGINE OUTPUT FINAL] ${symbol}`);
-      console.log(`[ENGINE OUTPUT FINAL]   isSetupValid=${snapshot.isSetupValid}`);
-      console.log(`[ENGINE OUTPUT FINAL]   isSniper=${snapshot.isSniper}`);
-      console.log(`[ENGINE OUTPUT FINAL]   price=$${snapshot.price.toFixed(2)}`);
-      console.log(`[ENGINE OUTPUT FINAL]   adx=${snapshot.adx.toFixed(1)}`);
-      console.log(`[ENGINE OUTPUT FINAL]   stochK=${snapshot.stochK.toFixed(1)}`);
-      console.log(`[ENGINE OUTPUT FINAL]   stochD=${snapshot.stochD.toFixed(1)}`);
-      console.log(`[ENGINE OUTPUT FINAL]   bias=${snapshot.bias}`);
-      console.log(`[ENGINE OUTPUT FINAL]   reason=${snapshot.reason}`);
-      console.log(`[ENGINE OUTPUT FINAL] ✓ Complete`);
+      /* =========================
+         FINAL OUTPUT LOG
+      ========================= */
+
+      console.log(`[ENGINE OUTPUT] ${symbol}`);
+      console.log(`  setup=${snapshot.isSetupValid}`);
+      console.log(`  sniper=${snapshot.isSniper}`);
+      console.log(`  price=$${snapshot.price.toFixed(2)}`);
+      console.log(`  adx=${snapshot.adx.toFixed(1)}`);
+      console.log(`  stochK=${snapshot.stochK.toFixed(1)}`);
+      console.log(`  stochD=${snapshot.stochD.toFixed(1)}`);
+      console.log(`  bias=${snapshot.bias}`);
+      console.log(`  reason=${snapshot.reason}`);
 
       executionLog.push({
         symbol,
         success: true,
-        // Display state for logging: BUILDING or SNIPER are the only real states
-        // (not WATCHING_SHIFT - that was legacy, now it's just "no setup" when both isBuilding and isSniper are false)
-        state: signal.isSniper ? "SNIPER" : signal.isBuilding ? "BUILDING" : "NO_SETUP",
+        state: signal.isSniper
+          ? "SNIPER"
+          : signal.isSetupValid
+          ? "SETUP"
+          : "NO_SETUP",
       });
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[ENGINE] ✗ ERROR processing ${symbol}: ${errorMsg}`);
+      const msg = err instanceof Error ? err.message : String(err);
+
+      console.error(`[ENGINE] ERROR ${symbol}: ${msg}`);
+
       executionLog.push({
         symbol,
         success: false,
-        error: errorMsg,
+        error: msg,
       });
-      // Continue processing other symbols even if one fails
     }
   }
 
-  // Log execution summary
-  const successCount = executionLog.filter((e) => e.success).length;
+  /* =========================
+     SUMMARY
+  ========================= */
+
+  const success = executionLog.filter(e => e.success).length;
+
   console.log(
-    `[ENGINE] ========== EXECUTION COMPLETE: ${successCount}/${symbols.length} symbols processed ==========`
+    `[ENGINE] COMPLETE ${success}/${symbols.length}`
   );
-  executionLog.forEach((log) => {
+
+  executionLog.forEach(log => {
     if (log.success) {
-      console.log(`[ENGINE]   ✓ ${log.symbol}: ${log.state}`);
+      console.log(
+        `[ENGINE] ✓ ${log.symbol}: ${log.state}`
+      );
     } else {
-      console.log(`[ENGINE]   ✗ ${log.symbol}: ${log.error}`);
+      console.log(
+        `[ENGINE] ✗ ${log.symbol}: ${log.error}`
+      );
     }
   });
 
   return results;
 }
 
-/**
- * Validates that snapshot exactly matches the signal object
- * Logs any mismatches (single source of truth verification)
- */
-function validateSnapshot(signal: ReturnType<typeof generateSignal>, snapshot: SignalSnapshot, symbol: string) {
+/* =========================
+   SNAPSHOT VALIDATION
+========================= */
+
+function validateSnapshot(
+  signal: ReturnType<typeof generateSignal>,
+  snapshot: SignalSnapshot,
+  symbol: string
+) {
   const mismatches: string[] = [];
 
-  // Check all critical fields
-  if (snapshot.symbol !== signal.symbol) mismatches.push(`symbol: ${snapshot.symbol} !== ${signal.symbol}`);
-  if (snapshot.isSetupValid !== signal.isSetupValid) mismatches.push(`isSetupValid: ${snapshot.isSetupValid} !== ${signal.isSetupValid}`);
-  if (snapshot.isSniper !== signal.isSniper) mismatches.push(`isSniper: ${snapshot.isSniper} !== ${signal.isSniper}`);
-  if (snapshot.confidence !== signal.confidence) mismatches.push(`confidence: ${snapshot.confidence} !== ${signal.confidence}`);
-  if (snapshot.price !== signal.price) mismatches.push(`price: ${snapshot.price} !== ${signal.price}`);
-  if (snapshot.adx !== signal.adx) mismatches.push(`adx: ${snapshot.adx} !== ${signal.adx}`);
-  if (snapshot.stochK !== signal.stochK) mismatches.push(`stochK: ${snapshot.stochK} !== ${signal.stochK}`);
-  if (snapshot.stochD !== signal.stochD) mismatches.push(`stochD: ${snapshot.stochD} !== ${signal.stochD}`);
-  if (snapshot.bias !== signal.bias) mismatches.push(`bias: ${snapshot.bias} !== ${signal.bias}`);
-  if (snapshot.stopLoss !== signal.stopLoss) mismatches.push(`stopLoss: ${snapshot.stopLoss} !== ${signal.stopLoss}`);
-  if (snapshot.takeProfit !== signal.takeProfit) mismatches.push(`takeProfit: ${snapshot.takeProfit} !== ${signal.takeProfit}`);
-  if (snapshot.riskRewardRatio !== signal.riskRewardRatio) mismatches.push(`riskRewardRatio: ${snapshot.riskRewardRatio} !== ${signal.riskRewardRatio}`);
+  if (snapshot.symbol !== signal.symbol)
+    mismatches.push("symbol");
 
-  if (mismatches.length > 0) {
-    console.warn(`[ENGINE] ⚠️  SNAPSHOT MISMATCH for ${symbol}: ${mismatches.join(", ")}`);
+  if (snapshot.isSetupValid !== signal.isSetupValid)
+    mismatches.push("setup");
+
+  if (snapshot.isSniper !== signal.isSniper)
+    mismatches.push("sniper");
+
+  if (snapshot.price !== signal.price)
+    mismatches.push("price");
+
+  if (snapshot.bias !== signal.bias)
+    mismatches.push("bias");
+
+  if (snapshot.adx !== signal.adx)
+    mismatches.push("adx");
+
+  if (snapshot.stochK !== signal.stochK)
+    mismatches.push("stochK");
+
+  if (snapshot.stochD !== signal.stochD)
+    mismatches.push("stochD");
+
+  if (snapshot.stopLoss !== signal.stopLoss)
+    mismatches.push("sl");
+
+  if (snapshot.takeProfit !== signal.takeProfit)
+    mismatches.push("tp");
+
+  if (mismatches.length) {
+    console.warn(
+      `[ENGINE] SNAPSHOT MISMATCH ${symbol}: ${mismatches.join(", ")}`
+    );
   } else {
-    console.log(`[ENGINE] ✓ Snapshot integrity verified for ${symbol}`);
+    console.log(`[ENGINE] snapshot OK ${symbol}`);
   }
 }
