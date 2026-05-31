@@ -1,3 +1,6 @@
+import fs from "fs";
+import path from "path";
+
 export interface SignalSnapshot {
   symbol: string;
   isEarly: boolean;
@@ -21,100 +24,61 @@ export interface SignalSnapshot {
   updatedAt: string;
 }
 
-export interface SignalHistory {
-  symbol: string;
-  snapshots: SignalSnapshot[];
-}
+const FILE_PATH = path.join(process.cwd(), "signal-store.json");
 
-export interface TelegramCooldown {
-  symbol: string;
-  lastAlertAt: string;
+/* =========================
+   LOAD STORE
+========================= */
+function loadStore(): Record<string, SignalSnapshot[]> {
+  try {
+    if (!fs.existsSync(FILE_PATH)) return {};
+    return JSON.parse(fs.readFileSync(FILE_PATH, "utf-8"));
+  } catch {
+    return {};
+  }
 }
 
 /* =========================
-   IN-MEMORY STORE
+   SAVE STORE
 ========================= */
-
-const signalHistory = new Map<string, SignalSnapshot[]>();
-const telegramCooldowns = new Map<string, TelegramCooldown>();
-
-console.log("[PERSISTENCE] initialized");
+function saveStore(data: Record<string, SignalSnapshot[]>) {
+  fs.writeFileSync(FILE_PATH, JSON.stringify(data, null, 2));
+}
 
 /* =========================
-   SNAPSHOT STORAGE (NOW WITH HISTORY)
+   STORE SNAPSHOT
 ========================= */
-
 export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
-  const existing = signalHistory.get(snapshot.symbol) || [];
+  const store = loadStore();
 
-  const updated = [...existing, snapshot];
-
-  // keep last 50 snapshots per symbol (lightweight + enough context)
-  if (updated.length > 50) {
-    updated.shift();
+  if (!store[snapshot.symbol]) {
+    store[snapshot.symbol] = [];
   }
 
-  signalHistory.set(snapshot.symbol, updated);
+  store[snapshot.symbol].push(snapshot);
 
-  const status = snapshot.isSniper
-    ? "🟢 SNIPER"
-    : snapshot.isEarly
-    ? "🟣 EARLY"
-    : "⚪ WAIT";
+  if (store[snapshot.symbol].length > 50) {
+    store[snapshot.symbol].shift();
+  }
+
+  saveStore(store);
 
   console.log(
-    `[PERSISTENCE] ${snapshot.symbol}: ${status} | $${snapshot.price}`
+    `[PERSISTENCE] ${snapshot.symbol}: ${
+      snapshot.isSniper ? "🟢 SNIPER" : snapshot.isEarly ? "🟣 EARLY" : "⚪ WAIT"
+    } | $${snapshot.price}`
   );
 }
 
 /* =========================
-   GET LATEST SNAPSHOT (UI USE)
+   GET LATEST SNAPSHOTS
 ========================= */
-
 export async function getLatestSignalSnapshots(): Promise<
   SignalSnapshot[]
 > {
-  const latest: SignalSnapshot[] = [];
+  const store = loadStore();
 
-  for (const [, history] of signalHistory.entries()) {
-    if (history.length > 0) {
-      latest.push(history[history.length - 1]);
-    }
-  }
-
-  return latest;
-}
-
-/* =========================
-   OPTIONAL: FULL HISTORY (for future charting)
-========================= */
-
-export async function getSignalHistory(
-  symbol: string
-): Promise<SignalSnapshot[]> {
-  return signalHistory.get(symbol) || [];
-}
-
-/* =========================
-   TELEGRAM COOLDOWN
-========================= */
-
-export async function getTelegramCooldown(
-  symbol: string
-): Promise<TelegramCooldown | null> {
-  return telegramCooldowns.get(symbol) || null;
-}
-
-export async function updateTelegramCooldown(
-  symbol: string,
-  timestamp: string
-) {
-  telegramCooldowns.set(symbol, {
-    symbol,
-    lastAlertAt: timestamp,
-  });
-
-  console.log(
-    `[PERSISTENCE] cooldown updated ${symbol} @ ${timestamp}`
-  );
+  return Object.values(store)
+    .map((arr) => arr[arr.length - 1])
+    .filter(Boolean);
 }
