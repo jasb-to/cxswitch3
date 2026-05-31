@@ -7,14 +7,11 @@ export interface EngineResult {
 
 /* =========================
    MARKET QUALITY FILTER
-   (THIS IS THE REAL UPGRADE)
 ========================= */
 
 function isMarketTradable(adx: number, stochK: number) {
-  // prevents chop trading
   const strongTrend = adx > 20;
 
-  // avoid extreme exhaustion zones
   const notOverbought = stochK < 80;
   const notOversold = stochK > 20;
 
@@ -46,7 +43,7 @@ export function runSignalEngine(
     );
 
     /* =========================
-       EXECUTION GATE (NEW)
+       EXECUTION GATE
     ========================= */
 
     const tradable = isMarketTradable(
@@ -54,12 +51,8 @@ export function runSignalEngine(
       signal.stochK
     );
 
-    // HARD FILTER: blocks weak SNIPERs
-    const allowSniper =
-      signal.isSniper && tradable;
-
-    const allowEarly =
-      signal.isEarly && signal.adx > 10;
+    const allowSniper = signal.isSniper && tradable;
+    const allowEarly = signal.isEarly && signal.adx > 10;
 
     const finalSignal = {
       ...signal,
@@ -85,4 +78,13 @@ export function runSignalEngine(
     signals,
     updatedAt: new Date().toISOString()
   };
+}
+
+/* =========================
+   BACKWARDS COMPATIBILITY
+   (FIXES YOUR BUILD ERROR)
+========================= */
+
+export function generateAndStoreSignals(data: any) {
+  return runSignalEngine(data);
 }
