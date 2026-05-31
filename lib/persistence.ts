@@ -70,4 +70,4 @@ export async function updateTelegramCooldown(
   console.log(
     `[PERSISTENCE] cooldown updated ${symbol} @ ${timestamp}`
   );
-}
+} 
