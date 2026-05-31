@@ -12,17 +12,18 @@ export interface Candle {
 export interface Signal {
   symbol: Symbol;
   price: number;
-  isSetupValid: boolean;  // Replaced isBuilding: deterministic setup condition (4H + 1H aligned + ADX >= threshold)
-  isSniper: boolean;
+  isSetupValid: boolean;  // Setup condition: 4H + 1H aligned
+  isSniperCandidate: boolean;  // Raw trigger indicator (informational only)
+  isSniper: boolean;  // ONLY execution flag: isSetupValid && isSniperCandidate
   bias: "Bullish" | "Bearish" | "Neutral";
   confidence: number;
   adx: number;
   stochK: number;
   stochD: number;
   reason: string;
-  stopLoss: number;
-  takeProfit: number;
-  riskRewardRatio: number;
+  stopLoss: number | null;  // Only populated if isSniper === true
+  takeProfit: number | null;  // Only populated if isSniper === true
+  riskRewardRatio: number | null;  // Only populated if isSniper === true
   updatedAt: string;
 }
 
@@ -195,6 +196,36 @@ function calculate1HConfirmation(candles: Candle[], adx: number): "Bullish" | "B
   return "Neutral";
 }
 
+// Validation: Enforce execution contract
+// If signal violates the contract, log violation (warning, not error - data still flows)
+function validateSignalOutput(signal: Signal, symbol: Symbol): void {
+  const violations: string[] = [];
+
+  // Rule 1: If isSniper === false, SL/TP MUST be null
+  if (!signal.isSniper && (signal.stopLoss !== null || signal.takeProfit !== null || signal.riskRewardRatio !== null)) {
+    violations.push(`isSniper is false but SL/TP are not null (SL=${signal.stopLoss}, TP=${signal.takeProfit}, RRR=${signal.riskRewardRatio})`);
+  }
+
+  // Rule 2: If isSetupValid === false, isSniper MUST be false
+  if (!signal.isSetupValid && signal.isSniper) {
+    violations.push(`isSetupValid is false but isSniper is true (CRITICAL: violates execution gate)`);
+  }
+
+  // Rule 3: If isSniper === true, SL/TP MUST NOT be null
+  if (signal.isSniper && (signal.stopLoss === null || signal.takeProfit === null || signal.riskRewardRatio === null)) {
+    violations.push(`isSniper is true but SL/TP are null (SL=${signal.stopLoss}, TP=${signal.takeProfit}, RRR=${signal.riskRewardRatio})`);
+  }
+
+  // Log violations
+  if (violations.length > 0) {
+    violations.forEach(v => {
+      console.warn(`[VALIDATION] ${symbol}: ${v}`);
+    });
+  } else {
+    console.log(`[VALIDATION] ${symbol}: OK - Contract enforced`);
+  }
+}
+
 export function generateSignal(
   symbol: Symbol,
   candles4H: Candle[],
@@ -212,6 +243,7 @@ export function generateSignal(
       symbol,
       price: 0,
       isSetupValid: false,
+      isSniperCandidate: false,
       isSniper: false,
       bias: "Neutral",
       confidence: 0,
@@ -219,9 +251,9 @@ export function generateSignal(
       stochK: 0,
       stochD: 0,
       reason: "Insufficient data",
-      stopLoss: 0,
-      takeProfit: 0,
-      riskRewardRatio: 0,
+      stopLoss: null,
+      takeProfit: null,
+      riskRewardRatio: null,
       updatedAt: new Date().toISOString(),
     };
   }
@@ -250,20 +282,31 @@ export function generateSignal(
   
   // ===== SETUP DETECTION (DETERMINISTIC, NOT VOLATILE) =====
   // isSetupValid is TRUE when multi-timeframe alignment is confirmed
-  // Unlike old isBuilding, this is stable and won't flicker between cron cycles
   const isSetupValidBullish = bias4H === "Bullish" && confirmation1H === "Bullish";
   const isSetupValidBearish = bias4H === "Bearish" && confirmation1H === "Bearish";
   const isSetupValid = isSetupValidBullish || isSetupValidBearish;
   
-  console.log(`[STRATEGY] ${symbol}: isSetupValid: ${isSetupValid} (Bullish=${isSetupValidBullish}, Bearish=${isSetupValidBearish})`);
+  console.log(`[STRATEGY] ${symbol}: SETUP CHECK`);
+  console.log(`[STRATEGY]   4H Bias=${bias4H}, 1H Confirmation=${confirmation1H}`);
+  console.log(`[STRATEGY]   isSetupValid: ${isSetupValid}`);
   
-  // isSniper: SETUP VALID + 15M trigger fires
-  // SNIPER is the ONLY execution event in the system
-  const isSniperBullish = isSetupValidBullish && (kCrossAboveD || stochKD.K < 50);
-  const isSniperBearish = isSetupValidBearish && (kCrossBelowD || stochKD.K > 50);
-  const isSniper = isSniperBullish || isSniperBearish;
+  // ===== TRIGGER DETECTION (RAW INDICATOR, NO EXECUTION) =====
+  // isSniperCandidate: Pure trigger condition, doesn't require setup
+  // This is informational only - actual execution requires BOTH setup and trigger
+  const isSniperCandidateBullish = kCrossAboveD || stochKD.K < 50;
+  const isSniperCandidateBearish = kCrossBelowD || stochKD.K > 50;
+  const isSniperCandidate = (isSetupValidBullish && isSniperCandidateBullish) || (isSetupValidBearish && isSniperCandidateBearish);
   
-  console.log(`[STRATEGY] ${symbol}: isSniper: ${isSniper} (trigger detected)`);
+  console.log(`[STRATEGY]   isSniperCandidate (trigger indicator): ${isSniperCandidate}`);
+  
+  // ===== EXECUTION GATE (BINARY: ON/OFF) =====
+  // isSniper = ONLY TRUE when BOTH conditions are met:
+  // 1. Setup is valid (multi-timeframe alignment confirmed)
+  // 2. Trigger is active (15M entry signal firing)
+  // NO OTHER PATH CAN SET isSniper TO TRUE
+  const isSniper = isSetupValid && isSniperCandidate;
+  
+  console.log(`[STRATEGY]   isSniper (execution approved): ${isSniper}`);
 
   // Generate reason text - simple and clean with new terminology
   let reason = "";
@@ -278,105 +321,96 @@ export function generateSignal(
     reason = `Monitoring: 4H=${bias4H}, 1H=${confirmation1H}, ADX=${adx.toFixed(1)}`;
   }
 
-  // Calculate confidence score
+  // Calculate confidence score (always runs, informational)
   let confidence = 0;
   if (bias4H !== "Neutral") confidence += 30;
   if (confirmation1H !== "Neutral") confidence += 30;
-  if (kCrossAboveD || kCrossBelowD) confidence += 20;
+  if (isSniperCandidate) confidence += 20;
   if (adx >= 20) confidence += 20;
 
-  // Calculate ATR-based stop loss and take profit
-  // Use 15M ATR for entry precision, validate with 1H ATR for regime
-  const atr15M = calculateATR(c15M, 14);
-  const atr1H = calculateATR(c1H, 14);
-  
-  // Use 15M ATR as primary, but scale with 1H volatility regime
-  // If 1H volatility is significantly higher, use that for more realistic targets
-  const atrPrimary = atr15M > 0 ? atr15M : atr1H;
-  const atrScaled = Math.max(atrPrimary, atr1H * 0.7); // At least 70% of 1H ATR
-  
-  // ATR SL distance: 1.5x ATR (minimum 0.8% of price)
-  const slDistance = Math.max(atrScaled * 1.5, currentPrice * 0.008);
-  
-  // Structural swing detection for tighter stops
-  let stopLoss = 0;
-  let takeProfit = 0;
-  let riskRewardRatio = 0;
-  
-  if (bias4H === "Bullish") {
-    // LONG trades
-    // Find recent swing low (last 10 candles) as potential tighter SL
-    const recentLows = c15M.slice(-10).map(c => c.low);
-    const swingLow = Math.min(...recentLows);
-    const slFromSwing = currentPrice - swingLow;
+  // ===== EXECUTION GATE: SL/TP CALCULATIONS ONLY ON SNIPER APPROVAL =====
+  // These ONLY execute when isSniper === true
+  // If setup is invalid or trigger hasn't fired, skip all risk calculations
+  let stopLoss: number | null = null;
+  let takeProfit: number | null = null;
+  let riskRewardRatio: number | null = null;
+
+  if (isSniper) {
+    // SNIPER EXECUTION: Calculate volatility-based risk management
+    console.log(`[STRATEGY] ${symbol}: SNIPER EXECUTION GATE OPENED - Calculating SL/TP`);
     
-    // Use whichever is WIDER (more conservative): ATR-based or swing-based
-    const finalSlDistance = Math.max(slDistance, slFromSwing);
-    stopLoss = Math.round((currentPrice - finalSlDistance) * 100) / 100;
+    // Calculate ATR-based stop loss and take profit
+    const atr15M = calculateATR(c15M, 14);
+    const atr1H = calculateATR(c1H, 14);
     
-    // TP1 = 1R (risk equal to reward)
-    // TP2 = 2R (expansion-based)
-    const tp1Distance = finalSlDistance;
-    takeProfit = Math.round((currentPrice + tp1Distance) * 100) / 100;
+    const atrPrimary = atr15M > 0 ? atr15M : atr1H;
+    const atrScaled = Math.max(atrPrimary, atr1H * 0.7);
+    const slDistance = Math.max(atrScaled * 1.5, currentPrice * 0.008);
     
-    const risk = currentPrice - stopLoss;
-    const reward = takeProfit - currentPrice;
-    riskRewardRatio = reward > 0 ? Math.round((reward / risk) * 10) / 10 : 0;
-    
-    // Determine if SL was swing-based or ATR-based
-    const slSource = slFromSwing > slDistance ? "SWING-BASED" : "ATR-BASED";
-    const tp2Distance = finalSlDistance * 2;
-    const tp2 = Math.round((currentPrice + tp2Distance) * 100) / 100;
-    
-    console.log(`[STRATEGY] ${symbol}: LONG SL/TP Calculation`);
-    console.log(`[STRATEGY]   ATR 15M: $${atr15M.toFixed(2)}, ATR 1H: $${atr1H.toFixed(2)}`);
-    console.log(`[STRATEGY]   SL Source: ${slSource}`);
-    console.log(`[STRATEGY]   ATR-based SL distance: $${slDistance.toFixed(2)} (${(slDistance / atrScaled).toFixed(2)}x ATR)`);
-    console.log(`[STRATEGY]   Swing low: $${swingLow.toFixed(2)}, swing SL distance: $${slFromSwing.toFixed(2)}`);
-    console.log(`[STRATEGY]   Final SL distance: $${finalSlDistance.toFixed(2)} (${(finalSlDistance / atrScaled).toFixed(2)}x ATR)`);
-    console.log(`[STRATEGY]   Entry: $${currentPrice.toFixed(2)}, SL: $${stopLoss.toFixed(2)}`);
-    console.log(`[STRATEGY]   TP1 (1R): $${takeProfit.toFixed(2)}, TP2 (2R): $${tp2.toFixed(2)}`);
-    console.log(`[STRATEGY]   Risk/Reward: ${riskRewardRatio}:1`);
-  } else if (bias4H === "Bearish") {
-    // SHORT trades
-    // Find recent swing high (last 10 candles) as potential tighter SL
-    const recentHighs = c15M.slice(-10).map(c => c.high);
-    const swingHigh = Math.max(...recentHighs);
-    const slFromSwing = swingHigh - currentPrice;
-    
-    // Use whichever is WIDER (more conservative): ATR-based or swing-based
-    const finalSlDistance = Math.max(slDistance, slFromSwing);
-    stopLoss = Math.round((currentPrice + finalSlDistance) * 100) / 100;
-    
-    // TP1 = 1R (risk equal to reward)
-    // TP2 = 2R (expansion-based)
-    const tp1Distance = finalSlDistance;
-    takeProfit = Math.round((currentPrice - tp1Distance) * 100) / 100;
-    
-    const risk = stopLoss - currentPrice;
-    const reward = currentPrice - takeProfit;
-    riskRewardRatio = reward > 0 ? Math.round((reward / risk) * 10) / 10 : 0;
-    
-    // Determine if SL was swing-based or ATR-based
-    const slSource = slFromSwing > slDistance ? "SWING-BASED" : "ATR-BASED";
-    const tp2Distance = finalSlDistance * 2;
-    const tp2 = Math.round((currentPrice - tp2Distance) * 100) / 100;
-    
-    console.log(`[STRATEGY] ${symbol}: SHORT SL/TP Calculation`);
-    console.log(`[STRATEGY]   ATR 15M: $${atr15M.toFixed(2)}, ATR 1H: $${atr1H.toFixed(2)}`);
-    console.log(`[STRATEGY]   SL Source: ${slSource}`);
-    console.log(`[STRATEGY]   ATR-based SL distance: $${slDistance.toFixed(2)} (${(slDistance / atrScaled).toFixed(2)}x ATR)`);
-    console.log(`[STRATEGY]   Swing high: $${swingHigh.toFixed(2)}, swing SL distance: $${slFromSwing.toFixed(2)}`);
-    console.log(`[STRATEGY]   Final SL distance: $${finalSlDistance.toFixed(2)} (${(finalSlDistance / atrScaled).toFixed(2)}x ATR)`);
-    console.log(`[STRATEGY]   Entry: $${currentPrice.toFixed(2)}, SL: $${stopLoss.toFixed(2)}`);
-    console.log(`[STRATEGY]   TP1 (1R): $${takeProfit.toFixed(2)}, TP2 (2R): $${tp2.toFixed(2)}`);
-    console.log(`[STRATEGY]   Risk/Reward: ${riskRewardRatio}:1`);
+    if (bias4H === "Bullish") {
+      // LONG trade execution
+      const recentLows = c15M.slice(-10).map(c => c.low);
+      const swingLow = Math.min(...recentLows);
+      const slFromSwing = currentPrice - swingLow;
+      const finalSlDistance = Math.max(slDistance, slFromSwing);
+      
+      stopLoss = Math.round((currentPrice - finalSlDistance) * 100) / 100;
+      const tp1Distance = finalSlDistance;
+      takeProfit = Math.round((currentPrice + tp1Distance) * 100) / 100;
+      
+      const risk = currentPrice - stopLoss;
+      const reward = takeProfit - currentPrice;
+      riskRewardRatio = reward > 0 ? Math.round((reward / risk) * 10) / 10 : 0;
+      
+      const slSource = slFromSwing > slDistance ? "SWING-BASED" : "ATR-BASED";
+      const tp2Distance = finalSlDistance * 2;
+      const tp2 = Math.round((currentPrice + tp2Distance) * 100) / 100;
+      
+      console.log(`[STRATEGY] ${symbol}: LONG SNIPER EXECUTION`);
+      console.log(`[STRATEGY]   ATR 15M: $${atr15M.toFixed(2)}, ATR 1H: $${atr1H.toFixed(2)}`);
+      console.log(`[STRATEGY]   SL Source: ${slSource}, Final SL Distance: $${finalSlDistance.toFixed(2)} (${(finalSlDistance / atrScaled).toFixed(2)}x ATR)`);
+      console.log(`[STRATEGY]   Entry: $${currentPrice.toFixed(2)}, SL: $${stopLoss.toFixed(2)}`);
+      console.log(`[STRATEGY]   TP1 (1R): $${takeProfit.toFixed(2)}, TP2 (2R): $${tp2.toFixed(2)}`);
+      console.log(`[STRATEGY]   Risk/Reward: ${riskRewardRatio}:1`);
+    } else if (bias4H === "Bearish") {
+      // SHORT trade execution
+      const recentHighs = c15M.slice(-10).map(c => c.high);
+      const swingHigh = Math.max(...recentHighs);
+      const slFromSwing = swingHigh - currentPrice;
+      const finalSlDistance = Math.max(slDistance, slFromSwing);
+      
+      stopLoss = Math.round((currentPrice + finalSlDistance) * 100) / 100;
+      const tp1Distance = finalSlDistance;
+      takeProfit = Math.round((currentPrice - tp1Distance) * 100) / 100;
+      
+      const risk = stopLoss - currentPrice;
+      const reward = currentPrice - takeProfit;
+      riskRewardRatio = reward > 0 ? Math.round((reward / risk) * 10) / 10 : 0;
+      
+      const slSource = slFromSwing > slDistance ? "SWING-BASED" : "ATR-BASED";
+      const tp2Distance = finalSlDistance * 2;
+      const tp2 = Math.round((currentPrice - tp2Distance) * 100) / 100;
+      
+      console.log(`[STRATEGY] ${symbol}: SHORT SNIPER EXECUTION`);
+      console.log(`[STRATEGY]   ATR 15M: $${atr15M.toFixed(2)}, ATR 1H: $${atr1H.toFixed(2)}`);
+      console.log(`[STRATEGY]   SL Source: ${slSource}, Final SL Distance: $${finalSlDistance.toFixed(2)} (${(finalSlDistance / atrScaled).toFixed(2)}x ATR)`);
+      console.log(`[STRATEGY]   Entry: $${currentPrice.toFixed(2)}, SL: $${stopLoss.toFixed(2)}`);
+      console.log(`[STRATEGY]   TP1 (1R): $${takeProfit.toFixed(2)}, TP2 (2R): $${tp2.toFixed(2)}`);
+      console.log(`[STRATEGY]   Risk/Reward: ${riskRewardRatio}:1`);
+    }
+  } else if (isSetupValid) {
+    // Setup valid but no trigger yet - don't calculate risk
+    console.log(`[STRATEGY] ${symbol}: Setup valid, awaiting 15M trigger - NO SL/TP calculated yet`);
+  } else {
+    // No setup - monitoring only
+    console.log(`[STRATEGY] ${symbol}: No setup detected - monitoring mode only`);
   }
 
-  return {
+  const signal: Signal = {
     symbol,
     price: Math.round(currentPrice * 100) / 100,
-    isSetupValid,  // Replaced isBuilding: deterministic setup condition
+    isSetupValid,
+    isSniperCandidate,
     isSniper,
     bias: bias4H,
     confidence: Math.min(100, confidence),
@@ -389,4 +423,9 @@ export function generateSignal(
     riskRewardRatio,
     updatedAt: new Date().toISOString(),
   };
+
+  // VALIDATION: Enforce execution contract
+  validateSignalOutput(signal, symbol);
+
+  return signal;
 }

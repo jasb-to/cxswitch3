@@ -1,6 +1,7 @@
 export interface SignalSnapshot {
   symbol: string;
-  isSetupValid: boolean;  // Replaced isBuilding: deterministic setup condition
+  isSetupValid: boolean;
+  isSniperCandidate: boolean;
   isSniper: boolean;
   confidence: number;
   price: number;
@@ -9,9 +10,9 @@ export interface SignalSnapshot {
   stochD: number;
   bias: "Bullish" | "Bearish" | "Neutral";
   reason: string;
-  stopLoss: number;
-  takeProfit: number;
-  riskRewardRatio: number;
+  stopLoss: number | null;  // Only populated if isSniper === true
+  takeProfit: number | null;  // Only populated if isSniper === true
+  riskRewardRatio: number | null;  // Only populated if isSniper === true
   updatedAt: string;
 }
 
@@ -29,7 +30,8 @@ console.log("[PERSISTENCE] In-memory storage initialized (no external DB)");
 // Store signal snapshot
 export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
   signalSnapshots.set(snapshot.symbol, snapshot);
-  console.log(`[PERSISTENCE] ${snapshot.symbol}: isSetupValid=${snapshot.isSetupValid}, isSniper=${snapshot.isSniper}, ADX=${snapshot.adx.toFixed(1)}, bias=${snapshot.bias}`);
+  const status = snapshot.isSniper ? "🟢 SNIPER" : snapshot.isSetupValid ? "🟡 SETUP_ACTIVE" : "⚪ NO_SETUP";
+  console.log(`[PERSISTENCE] ${snapshot.symbol}: ${status} | candidate=${snapshot.isSniperCandidate} | ADX=${snapshot.adx.toFixed(1)} | SL/TP=${snapshot.stopLoss !== null ? "populated" : "null"}`);
 }
 
 // Get latest signal snapshots for all symbols
