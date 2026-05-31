@@ -1,5 +1,5 @@
 import { generateAndStoreSignals } from "@/lib/signalEngine";
-import { getPersistence } from "@/lib/persistence";
+import { getLatestSignalSnapshots } from "@/lib/persistence";
 
 export const runtime = "nodejs";
 
@@ -10,56 +10,62 @@ export async function GET(request: Request) {
   // AUTH CHECK
   // =========================
   if (secret !== "abc123xyz789") {
-    console.error(`[CRON] UNAUTHORIZED: Invalid secret`);
+    console.error("[CRON] UNAUTHORIZED");
 
     return new Response(
       JSON.stringify({ success: false, error: "Unauthorized" }),
-      { status: 401, headers: { "Content-Type": "application/json" } }
+      {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      }
     );
   }
 
   const startTime = Date.now();
 
   console.log(
-    `[CRON] ════════════════════════════════════════════════════════════`
+    "[CRON] ════════════════════════════════════════════════════════════"
   );
-  console.log(`[CRON] CRON JOB STARTED at ${new Date().toLocaleString()}`);
+  console.log(`[CRON] STARTED at ${new Date().toLocaleString()}`);
   console.log(
-    `[CRON] ════════════════════════════════════════════════════════════`
+    "[CRON] ════════════════════════════════════════════════════════════"
   );
 
   try {
     // =========================
-    // LOAD MARKET DATA FIRST
+    // GET LATEST MARKET STATE
     // =========================
-    const raw = await getPersistence();
+    const latestSnapshots = await getLatestSignalSnapshots();
 
-    const engineInput = Object.entries(raw ?? {}).map(
-      ([symbol, value]: any) => ({
-        symbol,
-        candles4H: value?.candles4H ?? [],
-        candles1H: value?.candles1H ?? [],
-        candles15M: value?.candles15M ?? [],
-        price: value?.price ?? 0,
-      })
-    );
+    // =========================
+    // NORMALISE FOR ENGINE
+    // =========================
+    const engineInput = latestSnapshots.map((snap) => ({
+      symbol: snap.symbol,
+      candles4H: [], // (not wired yet)
+      candles1H: [],
+      candles15M: [],
+      price: snap.price,
+    }));
 
     // =========================
     // SAFETY CHECK
     // =========================
     if (!engineInput.length) {
-      console.log("[CRON] No data available");
+      console.log("[CRON] No snapshots available");
+
       return new Response(
         JSON.stringify({
           success: true,
           message: "No data to process",
           signalCount: 0,
-        })
+        }),
+        { headers: { "Content-Type": "application/json" } }
       );
     }
 
     // =========================
-    // ENGINE EXECUTION (FIXED)
+    // RUN ENGINE
     // =========================
     const result = await generateAndStoreSignals(engineInput);
 
@@ -69,14 +75,14 @@ export async function GET(request: Request) {
 
     const duration = Date.now() - startTime;
 
-    const msg = `CRON JOB COMPLETE in ${duration}ms: Processed ${signals.length} signals`;
+    const msg = `CRON COMPLETE in ${duration}ms: Processed ${signals.length} signals`;
 
     console.log(
-      `[CRON] ════════════════════════════════════════════════════════════`
+      "[CRON] ════════════════════════════════════════════════════════════"
     );
     console.log(`[CRON] ${msg}`);
     console.log(
-      `[CRON] ════════════════════════════════════════════════════════════`
+      "[CRON] ════════════════════════════════════════════════════════════"
     );
 
     return new Response(
@@ -87,7 +93,6 @@ export async function GET(request: Request) {
         executionTime: duration,
       }),
       {
-        status: 200,
         headers: { "Content-Type": "application/json" },
       }
     );
@@ -98,7 +103,7 @@ export async function GET(request: Request) {
       err instanceof Error ? err.message : String(err);
 
     console.error(`[CRON] FATAL ERROR after ${duration}ms: ${errorMsg}`);
-    console.error(`[CRON] Stack:`, err instanceof Error ? err.stack : "N/A");
+    console.error(err);
 
     return new Response(
       JSON.stringify({
