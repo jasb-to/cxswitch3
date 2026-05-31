@@ -40,11 +40,7 @@ export async function generateAndStoreSignals() {
 
       const price = await getCurrentPrice(symbol);
 
-      if (
-        !candles4H?.length ||
-        !candles1H?.length ||
-        !candles15M?.length
-      ) {
+      if (!candles4H?.length || !candles1H?.length || !candles15M?.length) {
         throw new Error(`Missing candle data for ${symbol}`);
       }
 
@@ -61,7 +57,7 @@ export async function generateAndStoreSignals() {
       );
 
       /* =========================
-         TELEGRAM LOGIC (SNIPER ONLY)
+         TELEGRAM ALERT LOGIC
       ========================= */
 
       if (signal.isSniper) {
