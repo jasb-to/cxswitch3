@@ -3,26 +3,25 @@
 import { useEffect, useState } from "react";
 import type { Signal } from "@/lib/strategy";
 
+type UIState = "SNIPER" | "SETUP" | "EARLY" | "NONE";
+
 export default function Home() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [loading, setLoading] = useState(true);
-  const [lastUpdate, setLastUpdate] = useState<string>("");
+  const [lastUpdate, setLastUpdate] = useState("");
 
   async function fetchSignals() {
     try {
       setLoading(true);
+
       const res = await fetch("/api/signals");
       const data = await res.json();
-      setSignals(data.signals || []);
-      
-      // Debug logging
-      console.log(`[UI] Received ${data.signals?.length || 0} signals from API:`);
-      (data.signals || []).forEach((signal: Signal) => {
-        console.log(
-          `[UI]   ${signal.symbol}: isSetupValid=${signal.isSetupValid}, isSniper=${signal.isSniper}, ADX=${signal.adx.toFixed(1)}, bias=${signal.bias}, K=${signal.stochK.toFixed(1)}`
-        );
-      });
-      
+
+      const safeSignals = data.signals || [];
+      setSignals(safeSignals);
+
+      console.log(`[UI] Signals received: ${safeSignals.length}`);
+
       setLastUpdate(new Date().toLocaleTimeString());
     } catch (err) {
       console.error("Failed to fetch signals:", err);
@@ -35,59 +34,58 @@ export default function Home() {
     try {
       const res = await fetch("/api/telegram/test", { method: "POST" });
       const data = await res.json();
-      alert(data.message || "Test alert sent!");
-    } catch (err) {
-      alert("Failed to send test alert");
-      console.error(err);
+      alert(data.message || "Test sent");
+    } catch {
+      alert("Telegram test failed");
     }
   }
 
-  // Initial load
   useEffect(() => {
     fetchSignals();
   }, []);
 
-  // Auto-refresh every 60 seconds
   useEffect(() => {
-    const interval = setInterval(fetchSignals, 60000);
-    return () => clearInterval(interval);
+    const i = setInterval(fetchSignals, 60000);
+    return () => clearInterval(i);
   }, []);
 
   return (
     <main className="min-h-screen bg-black text-white">
-      <div className="px-6 sm:px-8 md:px-10 py-12 max-w-7xl mx-auto w-full">
-        {/* Header */}
-        <div className="mb-12">
-          <h1 className="text-5xl sm:text-6xl font-bold tracking-tight mb-2">CX Switch</h1>
-          <p className="text-gray-400 text-base sm:text-lg">
-            Trade Radar • 4H Structure • 1H Confirmation • 15M Entry
+      <div className="max-w-6xl mx-auto px-6 py-10">
+        {/* HEADER */}
+        <div className="mb-10">
+          <h1 className="text-4xl font-bold">CX Switch</h1>
+          <p className="text-gray-400 mt-1">
+            Early Entry Radar • Structure → Momentum → Trigger
           </p>
         </div>
 
-        {/* Controls */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 mb-8">
+        {/* CONTROLS */}
+        <div className="flex gap-3 mb-8 items-center">
           <button
             onClick={fetchSignals}
             disabled={loading}
-            className="px-6 py-2.5 bg-white text-black rounded-lg hover:bg-gray-100 disabled:opacity-50 font-semibold transition"
+            className="px-5 py-2 bg-white text-black font-semibold rounded-lg"
           >
-            {loading ? "Scanning..." : "SCAN"}
+            {loading ? "Scanning..." : "Scan"}
           </button>
+
           <button
             onClick={testTelegram}
-            className="px-6 py-2.5 bg-gray-800 text-white rounded-lg hover:bg-gray-700 font-semibold transition border border-gray-700"
+            className="px-5 py-2 bg-gray-800 rounded-lg border border-gray-700"
           >
-            Test Telegram
+            Test
           </button>
-          <span className="text-sm text-gray-500 sm:ml-auto">
-            Last update: {lastUpdate || "—"}
+
+          <span className="text-xs text-gray-500 ml-auto">
+            {lastUpdate || "—"}
           </span>
         </div>
 
-        {/* Signals Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {signals.map((signal) => (
-            <SignalCard key={signal.symbol} signal={signal} />
+        {/* GRID */}
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-5">
+          {signals.map((s) => (
+            <SignalCard key={s.symbol} signal={s} />
           ))}
         </div>
       </div>
@@ -95,89 +93,108 @@ export default function Home() {
   );
 }
 
+/* =========================
+   CARD
+========================= */
+
 function SignalCard({ signal }: { signal: Signal }) {
-  const isSniper = signal.isSniper;
-  const isSetupValid = signal.isSetupValid;
+  const state: UIState = signal.isSniper
+    ? "SNIPER"
+    : signal.isSetupValid
+    ? "SETUP"
+    : signal.adx > 12
+    ? "EARLY"
+    : "NONE";
 
-  // State display - ONLY from engine flags, never derived
-  const borderColor = isSniper ? "border-green-500/30" : isSetupValid ? "border-yellow-500/30" : "border-gray-700";
-  const bgHighlight = isSniper ? "bg-green-500/5" : isSetupValid ? "bg-yellow-500/5" : "bg-gray-900/50";
-  const stateBadgeColor = isSniper ? "bg-green-500/20 text-green-400 border-green-500/30" : isSetupValid ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" : "bg-gray-800 text-gray-400 border-gray-700";
-  const stateEmoji = isSniper ? "🟢" : isSetupValid ? "🟡" : "⚪";
-  // Display status label based ONLY on engine flags (no derivation)
-  const stateLabel = isSniper ? "SNIPER" : isSetupValid ? "SETUP ACTIVE" : "NO SETUP";
+  const colors =
+    state === "SNIPER"
+      ? "border-green-500/40 bg-green-500/5"
+      : state === "SETUP"
+      ? "border-yellow-500/40 bg-yellow-500/5"
+      : state === "EARLY"
+      ? "border-blue-500/40 bg-blue-500/5"
+      : "border-gray-800 bg-gray-900/30";
 
-  const biasColor = signal.bias === "Bullish" ? "text-green-400" : signal.bias === "Bearish" ? "text-red-400" : "text-gray-400";
+  const badge =
+    state === "SNIPER"
+      ? "🟢 SNIPER"
+      : state === "SETUP"
+      ? "🟡 SETUP"
+      : state === "EARLY"
+      ? "🔵 EARLY"
+      : "⚪ WAIT";
+
+  const safe = (n: any) => (typeof n === "number" && isFinite(n) ? n : 0);
 
   return (
-    <div className={`border ${borderColor} ${bgHighlight} rounded-xl p-6 transition backdrop-blur-sm`}>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+    <div className={`border rounded-xl p-5 ${colors}`}>
+      {/* HEADER */}
+      <div className="flex justify-between mb-4">
         <div>
-          <h2 className="text-3xl font-bold">{signal.symbol}</h2>
-          <p className="text-gray-400 text-sm mt-1">${signal.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+          <h2 className="text-2xl font-bold">{signal.symbol}</h2>
+          <p className="text-gray-400 text-sm">
+            ${safe(signal.price).toFixed(2)}
+          </p>
         </div>
-        <div className={`px-4 py-2 rounded-lg border text-sm font-semibold ${stateBadgeColor} flex items-center gap-2`}>
-          {stateEmoji}
-          <span>{stateLabel}</span>
-        </div>
-      </div>
 
-      {/* Basic Metrics */}
-      <div className="grid grid-cols-2 gap-4 mb-6 pb-6 border-b border-gray-800">
-        <MetricBox label="Bias" value={signal.bias} color={biasColor} />
-        <MetricBox label="Confidence" value={`${signal.confidence}%`} color={signal.confidence >= 60 ? "text-green-400" : signal.confidence >= 40 ? "text-yellow-400" : "text-gray-400"} />
-      </div>
-
-      {/* Indicators */}
-      <div className="mb-6 pb-6 border-b border-gray-800">
-        <h3 className="text-xs font-semibold text-gray-300 mb-3 uppercase tracking-wide">Indicators</h3>
-        <div className="space-y-2 text-sm">
-          <div className="flex justify-between">
-            <span className="text-gray-400">ADX</span>
-            <span className="font-mono text-white">{signal.adx.toFixed(1)}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Stochastic K</span>
-            <span className="font-mono text-white">{signal.stochK.toFixed(1)}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-gray-400">Stochastic D</span>
-            <span className="font-mono text-white">{signal.stochD.toFixed(1)}</span>
-          </div>
+        <div className="text-xs px-3 py-1 border border-gray-700 rounded-lg">
+          {badge}
         </div>
       </div>
 
-      {/* Risk Management Section */}
-      <div className="mb-6 pb-6 border-b border-gray-800">
-        <h3 className="text-xs font-semibold text-gray-300 mb-3 uppercase tracking-wide">Risk Management</h3>
-        <div className="grid grid-cols-3 gap-3">
-          <div>
-            <p className="text-xs text-gray-500 mb-1">Stop Loss</p>
-            <p className="font-mono font-semibold text-red-400">${signal.stopLoss.toFixed(2)}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 mb-1">Take Profit</p>
-            <p className="font-mono font-semibold text-green-400">${signal.takeProfit.toFixed(2)}</p>
-          </div>
-          <div>
-            <p className="text-xs text-gray-500 mb-1">R/R Ratio</p>
-            <p className="font-mono font-semibold text-blue-400">{signal.riskRewardRatio.toFixed(2)}:1</p>
-          </div>
-        </div>
+      {/* CORE METRICS */}
+      <div className="space-y-2 text-sm mb-4">
+        <Row label="Bias" value={signal.bias} />
+        <Row label="Confidence" value={`${safe(signal.confidence)}%`} />
+        <Row label="ADX" value={safe(signal.adx).toFixed(1)} />
+        <Row label="Stoch" value={safe(signal.stochK).toFixed(1)} />
       </div>
 
-      {/* Reason */}
-      <p className="text-xs text-gray-400 leading-relaxed">{signal.reason}</p>
+      {/* RISK */}
+      <div className="border-t border-gray-800 pt-3 text-xs space-y-1">
+        <Row
+          label="SL"
+          value={
+            signal.stopLoss != null ? signal.stopLoss.toFixed(2) : "—"
+          }
+        />
+        <Row
+          label="TP"
+          value={
+            signal.takeProfit != null ? signal.takeProfit.toFixed(2) : "—"
+          }
+        />
+        <Row
+          label="R/R"
+          value={
+            signal.riskRewardRatio != null
+              ? signal.riskRewardRatio.toFixed(2)
+              : "—"
+          }
+        />
+      </div>
+
+      {/* REASON */}
+      <p className="text-xs text-gray-400 mt-3">{signal.reason}</p>
     </div>
   );
 }
 
-function MetricBox({ label, value, color }: { label: string; value: string; color: string }) {
+/* =========================
+   ROW
+========================= */
+
+function Row({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
   return (
-    <div>
-      <p className="text-xs text-gray-500 mb-1">{label}</p>
-      <p className={`font-mono font-semibold ${color}`}>{value}</p>
+    <div className="flex justify-between">
+      <span className="text-gray-500">{label}</span>
+      <span className="font-mono">{value}</span>
     </div>
   );
 }
