@@ -17,7 +17,9 @@ import { sendTelegramAlert } from "./telegram";
 
 const ALERT_COOLDOWN_MS = 60 * 60 * 1000;
 
-type EngineState = "EARLY" | "SETUP" | "SNIPER" | "NONE";
+/* =========================
+   ENGINE
+========================= */
 
 export async function generateAndStoreSignals() {
   const symbols: Symbol[] = ["BTC", "ETH", "SOL"];
@@ -26,38 +28,49 @@ export async function generateAndStoreSignals() {
     try {
       console.log(`\n[ENGINE] ===== ${symbol} =====`);
 
+      /* FETCH DATA */
       const [c4, c15, c5] = await Promise.all([
         getCandles4H(symbol),
         getCandles15M(symbol),
         getCandles5M(symbol),
       ]);
 
-      if (!c4.length || !c15.length || !c5.length) {
-        console.warn(`[ENGINE] ${symbol}: missing candle data`);
-        continue;
+      if (!c4?.length || !c15?.length || !c5?.length) {
+        throw new Error(`Missing candle data for ${symbol}`);
       }
 
       const price = await getCurrentPrice(symbol);
 
-      if (!price || price <= 0) {
-        console.warn(`[ENGINE] ${symbol}: invalid price`);
-        continue;
+      if (!price) {
+        throw new Error(`Invalid price for ${symbol}`);
       }
 
       const signal = generateSignal(symbol, c4, c15, c5, price);
 
-      const state = deriveEngineState(signal);
-
-      const enriched = {
-        ...signal,
-        engineState: state,
-      };
-
       /* =========================
-         TELEGRAM ONLY ON REAL BREAKOUT
+         ALERT LOGIC (STRICTLY ALIGNED)
       ========================= */
 
-      if (state === "SNIPER") {
+      let shouldAlert = false;
+      let alertType: "ENTRY" | "CONTINUATION" | "NONE" = "NONE";
+
+      // 🟡 ENTRY (SETUP = YOUR REAL TRADE)
+      if (signal.stage === "SETUP" && signal.confidence >= 60) {
+        shouldAlert = true;
+        alertType = "ENTRY";
+      }
+
+      // 🟢 SNIPER = optional follow-through alerts (low frequency)
+      if (signal.stage === "SNIPER" && signal.confidence >= 65) {
+        shouldAlert = true;
+        alertType = "CONTINUATION";
+      }
+
+      /* =========================
+         TELEGRAM COOLDOWN
+      ========================= */
+
+      if (shouldAlert) {
         const cooldown = await getTelegramCooldown(symbol);
 
         const now = Date.now();
@@ -65,59 +78,42 @@ export async function generateAndStoreSignals() {
           ? new Date(cooldown.lastAlertAt).getTime()
           : 0;
 
-        const canSend = now - last > ALERT_COOLDOWN_MS;
+        const canSend = now - last >= ALERT_COOLDOWN_MS;
 
         if (canSend) {
-          const sent = await sendTelegramAlert(enriched as any);
+          const sent = await sendTelegramAlert({
+            ...signal,
+            reason:
+              alertType === "ENTRY"
+                ? "ENTRY SIGNAL (SETUP)"
+                : "CONTINUATION (SNIPER)",
+          });
 
           if (sent) {
             await updateTelegramCooldown(symbol, new Date().toISOString());
-            console.log(`[ENGINE] ${symbol}: SNIPER ALERT SENT`);
+            console.log(
+              `[ENGINE] ${symbol}: ${alertType} ALERT SENT (${signal.stage})`
+            );
           }
         } else {
           console.log(`[ENGINE] ${symbol}: cooldown active`);
         }
+      } else {
+        console.log(
+          `[ENGINE] ${symbol}: ${signal.stage} | no alert`
+        );
       }
 
-      /* =========================
-         LOGGING
-      ========================= */
+      /* STORE SNAPSHOT */
+      await storeSignalSnapshot(signal);
 
       console.log(
-        `[ENGINE] ${symbol}: ${state} | ${signal.reason} | $${signal.price}`
+        `[ENGINE] ${symbol}: ${signal.stage} | $${signal.price}`
       );
-
-      await storeSignalSnapshot(enriched as any);
     } catch (err) {
       console.error(`[ENGINE ERROR] ${symbol}`, err);
     }
   }
 
   console.log(`[ENGINE] COMPLETE`);
-}
-
-/* =========================
-   ENGINE STATE LOGIC v2
-   (LESS NOISE, MORE STRUCTURE)
-========================= */
-
-function deriveEngineState(signal: any): EngineState {
-  const { isSetupValid, isSniper, adx, stochK, bias } = signal;
-
-  // 1. SNIPER = breakout confirmed
-  if (isSniper) return "SNIPER";
-
-  // 2. SETUP = structure + momentum alignment
-  if (isSetupValid && adx > 18) return "SETUP";
-
-  // 3. EARLY = ONLY meaningful compression + directional bias
-  const early =
-    adx > 12 &&
-    bias !== "Neutral" &&
-    ((bias === "Bullish" && stochK < 50) ||
-      (bias === "Bearish" && stochK > 50));
-
-  if (early) return "EARLY";
-
-  return "NONE";
 }
