@@ -1,23 +1,14 @@
 export interface SignalSnapshot {
   symbol: string;
-
   isSetupValid: boolean;
   isSniperCandidate: boolean;
   isSniper: boolean;
-
-  setupId: string;
-
   confidence: number;
-
   price: number;
-
   adx: number;
-
   stochK: number;
   stochD: number;
-
   bias: "Bullish" | "Bearish" | "Neutral";
-
   reason: string;
 
   stopLoss: number | null;
@@ -32,62 +23,65 @@ export interface TelegramCooldown {
   lastAlertAt: string;
 }
 
-/* =========================
-   IN-MEMORY STORAGE
-========================= */
+// =========================
+// IN-MEMORY STORAGE
+// =========================
 
 const signalSnapshots = new Map<string, SignalSnapshot>();
 const telegramCooldowns = new Map<string, TelegramCooldown>();
 
-const consumedSetups = new Set<string>();
+console.log("[PERSISTENCE] initialized (in-memory mode)");
 
-console.log("[PERSISTENCE] initialized");
+// =========================
+// SNAPSHOTS
+// =========================
 
-/* =========================
-   SNAPSHOTS
-========================= */
-
-export function storeSignalSnapshot(snapshot: SignalSnapshot) {
+export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
   signalSnapshots.set(snapshot.symbol, snapshot);
+
+  const status = snapshot.isSniper
+    ? "🟢 SNIPER"
+    : snapshot.isSetupValid
+    ? "🟡 SETUP"
+    : "⚪ NO_SETUP";
+
+  console.log(
+    `[PERSISTENCE] ${snapshot.symbol}: ${status} | candidate=${snapshot.isSniperCandidate} | ADX=${snapshot.adx.toFixed(
+      1
+    )} | SL/TP=${snapshot.stopLoss !== null ? "populated" : "null"}`
+  );
 }
 
-export function getLatestSignalSnapshots(): SignalSnapshot[] {
-  return Array.from(signalSnapshots.values());
+export async function getLatestSignalSnapshots(): Promise<SignalSnapshot[]> {
+  const snapshots = Array.from(signalSnapshots.values());
+
+  console.log(
+    `[PERSISTENCE] getLatestSignalSnapshots → ${snapshots.length} items`
+  );
+
+  return snapshots;
 }
 
-/* =========================
-   TELEGRAM COOLDOWN
-========================= */
+// =========================
+// TELEGRAM COOLDOWN
+// =========================
 
-export function getTelegramCooldown(symbol: string) {
+export async function getTelegramCooldown(
+  symbol: string
+): Promise<TelegramCooldown | null> {
   return telegramCooldowns.get(symbol) || null;
 }
 
-export function updateTelegramCooldown(symbol: string, timestamp: string) {
+export async function updateTelegramCooldown(
+  symbol: string,
+  timestamp: string
+) {
   telegramCooldowns.set(symbol, {
     symbol,
     lastAlertAt: timestamp,
   });
-}
 
-/* =========================
-   SETUP LOCK SYSTEM
-========================= */
-
-export function isSetupConsumed(setupId: string) {
-  return consumedSetups.has(setupId);
-}
-
-export function markSetupConsumed(setupId: string) {
-  consumedSetups.add(setupId);
-}
-
-/* =========================
-   OPTIONAL DEBUG RESET
-========================= */
-
-export function clearPersistence() {
-  signalSnapshots.clear();
-  telegramCooldowns.clear();
-  consumedSetups.clear();
+  console.log(
+    `[PERSISTENCE] cooldown updated ${symbol}: ${timestamp}`
+  );
 }
