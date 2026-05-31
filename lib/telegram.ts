@@ -1,5 +1,17 @@
 import { Signal } from "./strategy";
 
+function fmt(num: number | null | undefined, dp = 2) {
+  if (num === null || num === undefined || Number.isNaN(num)) return "—";
+  return num.toFixed(dp);
+}
+
+function getState(signal: Signal) {
+  if (signal.isSniper) return "SNIPER";
+  if (signal.isSetupValid) return "SETUP";
+  if (signal.adx > 18 && signal.bias !== "Neutral") return "EARLY";
+  return "WAIT";
+}
+
 export async function sendTelegramAlert(signal: Signal) {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -9,49 +21,65 @@ export async function sendTelegramAlert(signal: Signal) {
     return false;
   }
 
-  // Alert only on isSniper flag (the only execution trigger)
-  if (!signal.isSniper) {
-    console.log(`[TELEGRAM] Skipping - isSniper is false`);
+  const state = getState(signal);
+
+  // Only send meaningful events (not noise)
+  if (state === "WAIT") {
+    console.log("[TELEGRAM] Skipping WAIT state");
     return false;
   }
 
-  const emoji = signal.bias === "Bullish" ? "🟢 SNIPER LONG" : "🔴 SNIPER SHORT";
+  const emoji =
+    state === "SNIPER"
+      ? signal.bias === "Bullish"
+        ? "🟢 SNIPER LONG"
+        : "🔴 SNIPER SHORT"
+      : state === "SETUP"
+      ? "🟡 SETUP"
+      : "🟣 EARLY SIGNAL";
 
-  const message = `${emoji}
-${signal.symbol} — $${signal.price.toFixed(2)}
+  const message =
+`${emoji}
 
-**Trigger:** ${signal.reason}
-**Confidence:** ${signal.confidence}%
+${signal.symbol} — $${fmt(signal.price)}
 
-**Risk Management:**
-🔴 Stop Loss: $${signal.stopLoss.toFixed(2)}
-🟢 Take Profit: $${signal.takeProfit.toFixed(2)}
-⚖️ Risk/Reward: ${signal.riskRewardRatio.toFixed(2)}:1
+State: ${state}
+Bias: ${signal.bias}
+Confidence: ${signal.confidence}%
 
-📊 ADX: ${signal.adx.toFixed(1)} | Stoch K: ${signal.stochK.toFixed(1)} | Stoch D: ${signal.stochD.toFixed(1)}
-⏰ ${new Date().toLocaleTimeString()}`;
+Risk:
+Stop Loss: $${fmt(signal.stopLoss)}
+Take Profit: $${fmt(signal.takeProfit)}
+R/R: ${fmt(signal.riskRewardRatio)}
+
+Indicators:
+ADX: ${fmt(signal.adx, 1)}
+Stoch K: ${fmt(signal.stochK, 1)}
+Stoch D: ${fmt(signal.stochD, 1)}
+
+Time: ${new Date().toLocaleTimeString()}`;
 
   try {
     const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
         text: message,
-        parse_mode: "Markdown",
       }),
     });
 
     if (!response.ok) {
-      console.error(`[TELEGRAM] Failed to send: HTTP ${response.status}`);
+      console.error(`[TELEGRAM] Failed: HTTP ${response.status}`);
       return false;
     }
 
-    console.log(`[TELEGRAM] ✓ SNIPER alert sent for ${signal.symbol} ${signal.bias}`);
+    console.log(`[TELEGRAM] Sent ${state} alert for ${signal.symbol}`);
     return true;
   } catch (err) {
-    console.error(`[TELEGRAM] Error sending alert: ${err}`);
+    console.error("[TELEGRAM] Error:", err);
     return false;
   }
 }
@@ -60,49 +88,38 @@ export async function sendTestAlert() {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
 
-  console.log("[TELEGRAM] Test alert - checking credentials...");
-  console.log(`[TELEGRAM] Bot token exists: ${!!botToken}`);
-  console.log(`[TELEGRAM] Chat ID exists: ${!!chatId}`);
-  console.log(`[TELEGRAM] Chat ID value: ${chatId}`);
-
   if (!botToken || !chatId) {
-    console.error("[TELEGRAM] Missing credentials - bot token or chat ID not set");
-    return { success: false, message: "Telegram credentials not configured" };
+    return { success: false, message: "Missing Telegram credentials" };
   }
 
-  const message = `✅ **CX Switch - Test Alert**
+  const message =
+`✅ CX Switch Test
 
-This is a test message to verify Telegram integration is working correctly.
-
-⏰ ${new Date().toLocaleString()}`;
+Telegram integration working
+Time: ${new Date().toLocaleString()}`;
 
   try {
-    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
-    console.log("[TELEGRAM] Sending to URL: (masked for security)");
-    
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: message,
-        parse_mode: "Markdown",
-      }),
-    });
-
-    const responseText = await response.text();
-    console.log(`[TELEGRAM] Response status: ${response.status}`);
-    console.log(`[TELEGRAM] Response body: ${responseText}`);
+    const response = await fetch(
+      `https://api.telegram.org/bot${botToken}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: message,
+        }),
+      }
+    );
 
     if (!response.ok) {
-      console.error(`[TELEGRAM] Test failed with status ${response.status}: ${responseText}`);
-      return { success: false, message: `Telegram API error: ${response.status} - ${responseText}` };
+      return {
+        success: false,
+        message: `Telegram error ${response.status}`,
+      };
     }
 
-    console.log("[TELEGRAM] Test alert sent successfully");
-    return { success: true, message: "Test alert sent to Telegram!" };
+    return { success: true, message: "Test alert sent" };
   } catch (err) {
-    console.error(`[TELEGRAM] Test error: ${err}`);
-    return { success: false, message: `Error sending test alert: ${err}` };
+    return { success: false, message: String(err) };
   }
 }
