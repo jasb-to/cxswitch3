@@ -1,134 +1,88 @@
-import {
-  getCandles4H,
-  getCandles15M,
-  getCurrentPrice,
-} from "./kraken";
+import { generateSignal, Candle, Symbol } from "./strategy";
 
-import { generateSignal, Symbol } from "./strategy";
-
-import {
-  storeSignalSnapshot,
-  getTelegramCooldown,
-  updateTelegramCooldown,
-} from "./persistence";
-
-import { sendTelegramAlert } from "./telegram";
-
-const ALERT_COOLDOWN_MS = 60 * 60 * 1000;
-
-/* =========================
-   STATE MEMORY (prevents flicker)
-========================= */
-
-const lastState = new Map<
-  string,
-  { early: boolean; sniper: boolean; timestamp: number }
->();
-
-function stabilizeSignal(symbol: string, signal: any) {
-  const prev = lastState.get(symbol);
-
-  // prevent flip-flopping between EARLY/SNIPER in consecutive runs
-  if (prev) {
-    const timeSince = Date.now() - prev.timestamp;
-
-    if (timeSince < 60_000) {
-      // lock state briefly for stability window
-      signal.isEarly = prev.early;
-      signal.isSniper = prev.sniper;
-    }
-  }
-
-  lastState.set(symbol, {
-    early: signal.isEarly,
-    sniper: signal.isSniper,
-    timestamp: Date.now(),
-  });
-
-  return signal;
+export interface EngineResult {
+  signals: ReturnType<typeof generateSignal>[];
+  updatedAt: string;
 }
 
 /* =========================
-   ENGINE LOOP
+   MARKET QUALITY FILTER
+   (THIS IS THE REAL UPGRADE)
 ========================= */
 
-export async function generateAndStoreSignals() {
-  const symbols: Symbol[] = ["BTC", "ETH", "SOL"];
+function isMarketTradable(adx: number, stochK: number) {
+  // prevents chop trading
+  const strongTrend = adx > 20;
 
-  for (const symbol of symbols) {
-    try {
-      console.log(`\n[ENGINE] ===== ${symbol} =====`);
+  // avoid extreme exhaustion zones
+  const notOverbought = stochK < 80;
+  const notOversold = stochK > 20;
 
-      /* =========================
-         FETCH DATA
-      ========================= */
+  return strongTrend && notOverbought && notOversold;
+}
 
-      const [c4, c15] = await Promise.all([
-        getCandles4H(symbol),
-        getCandles15M(symbol),
-      ]);
+/* =========================
+   MAIN ENGINE
+========================= */
 
-      const price = await getCurrentPrice(symbol);
+export function runSignalEngine(
+  data: {
+    symbol: Symbol;
+    candles4H: Candle[];
+    candles1H: Candle[];
+    candles15M: Candle[];
+    price: number;
+  }[]
+): EngineResult {
+  const signals = [];
 
-      if (!c4?.length || !c15?.length || !price) {
-        throw new Error(`Missing market data for ${symbol}`);
-      }
+  for (const asset of data) {
+    const signal = generateSignal(
+      asset.symbol,
+      asset.candles4H,
+      asset.candles1H,
+      asset.candles15M,
+      asset.price
+    );
 
-      /* =========================
-         SIGNAL GENERATION
-      ========================= */
+    /* =========================
+       EXECUTION GATE (NEW)
+    ========================= */
 
-      let signal = generateSignal(symbol, c4, [], c15, price);
+    const tradable = isMarketTradable(
+      signal.adx,
+      signal.stochK
+    );
 
-      signal = stabilizeSignal(symbol, signal);
+    // HARD FILTER: blocks weak SNIPERs
+    const allowSniper =
+      signal.isSniper && tradable;
 
-      await storeSignalSnapshot(signal);
+    const allowEarly =
+      signal.isEarly && signal.adx > 10;
 
-      console.log(
-        `[ENGINE] ${symbol}: ${signal.reason} | $${signal.price}`
-      );
+    const finalSignal = {
+      ...signal,
+      isSniper: allowSniper,
+      isEarly: allowEarly,
+      isActive: allowSniper || allowEarly
+    };
 
-      /* =========================
-         TELEGRAM LOGIC (SNIPER ONLY)
-      ========================= */
+    console.log(
+      `[ENGINE] ${signal.symbol}: ${
+        allowSniper
+          ? "SNIPER"
+          : allowEarly
+          ? "EARLY"
+          : "WAIT"
+      } | ADX=${signal.adx.toFixed(1)}`
+    );
 
-      if (signal.isSniper) {
-        const cooldown = await getTelegramCooldown(symbol);
-
-        const now = Date.now();
-        const last = cooldown
-          ? new Date(cooldown.lastAlertAt).getTime()
-          : 0;
-
-        const canSend = now - last >= ALERT_COOLDOWN_MS;
-
-        if (canSend) {
-          const sent = await sendTelegramAlert(signal);
-
-          if (sent) {
-            await updateTelegramCooldown(
-              symbol,
-              new Date().toISOString()
-            );
-
-            console.log(
-              `[ENGINE] ${symbol}: SNIPER ALERT SENT`
-            );
-          } else {
-            console.log(`[ENGINE] ${symbol}: alert failed`);
-          }
-        } else {
-          console.log(`[ENGINE] ${symbol}: cooldown active`);
-        }
-      } else if (signal.isEarly) {
-        console.log(`[ENGINE] ${symbol}: EARLY setup only`);
-      } else {
-        console.log(`[ENGINE] ${symbol}: no setup`);
-      }
-    } catch (err) {
-      console.error(`[ENGINE ERROR] ${symbol}`, err);
-    }
+    signals.push(finalSignal);
   }
 
-  console.log(`[ENGINE] COMPLETE`);
+  return {
+    signals,
+    updatedAt: new Date().toISOString()
+  };
 }
