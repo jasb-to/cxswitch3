@@ -17,65 +17,109 @@ import { sendTelegramAlert } from "./telegram";
 
 const ALERT_COOLDOWN_MS = 60 * 60 * 1000;
 
+/**
+ * ENGINE DESIGN:
+ * - 4H = bias (directional context)
+ * - 15M = structure + trigger
+ * - 5M = micro confirmation (entry timing)
+ *
+ * GOAL:
+ * Catch EARLY moves, not late confirmations.
+ */
+
 export async function generateAndStoreSignals() {
   const symbols: Symbol[] = ["BTC", "ETH", "SOL"];
+
+  console.log(`[ENGINE] Starting signal cycle...`);
 
   for (const symbol of symbols) {
     try {
       console.log(`\n[ENGINE] ===== ${symbol} =====`);
 
       /* =========================
-         FETCH DATA
+         FETCH MARKET DATA
       ========================= */
 
-      const [c4, c15, c5] = await Promise.all([
+      const [c4, c15, c5, price] = await Promise.all([
         getCandles4H(symbol),
         getCandles15M(symbol),
         getCandles5M(symbol),
+        getCurrentPrice(symbol),
       ]);
 
+      if (!price || price <= 0) {
+        console.warn(`[ENGINE] ${symbol}: invalid price`);
+        continue;
+      }
+
       if (!c4?.length || !c15?.length || !c5?.length) {
-        throw new Error(`Missing candle data for ${symbol}`);
+        console.warn(`[ENGINE] ${symbol}: missing candle data`);
+        continue;
       }
 
-      const price = await getCurrentPrice(symbol);
-
-      if (!price) {
-        throw new Error(`Invalid price for ${symbol}`);
-      }
+      /* =========================
+         GENERATE SIGNAL
+      ========================= */
 
       const signal = generateSignal(symbol, c4, c15, c5, price);
 
+      // Safety defaults (prevents UI crashes + NaNs)
+      signal.stopLoss = signal.stopLoss ?? null;
+      signal.takeProfit = signal.takeProfit ?? null;
+      signal.riskRewardRatio = signal.riskRewardRatio ?? null;
+
+      console.log(
+        `[ENGINE] ${symbol}: ${signal.reason} | price=${signal.price} | ADX=${signal.adx}`
+      );
+
       /* =========================
-         TELEGRAM LOGIC
+         EARLY ENTRY LOGIC
+      =========================
+      We do NOT require perfect setup anymore.
+      We classify into:
+      - EARLY_BIAS (trend forming)
+      - SETUP (valid structure)
+      - SNIPER (trigger hit)
+      */
+
+      const isEarlyBias =
+        signal.adx > 12 && signal.adx < 25; // early trend formation window
+
+      const isSetup = signal.isSetupValid;
+      const isEntryWindow = signal.isSniperCandidate;
+
+      /* =========================
+         TELEGRAM ALERT LOGIC
+      ========================= */
+
+      const cooldown = await getTelegramCooldown(symbol);
+      const now = Date.now();
+      const last = cooldown ? new Date(cooldown.lastAlertAt).getTime() : 0;
+      const canAlert = now - last >= ALERT_COOLDOWN_MS;
+
+      if (signal.isSniper && canAlert) {
+        const sent = await sendTelegramAlert(signal);
+
+        if (sent) {
+          await updateTelegramCooldown(symbol, new Date().toISOString());
+          console.log(`[ENGINE] ${symbol}: 🟢 SNIPER ALERT SENT`);
+        } else {
+          console.log(`[ENGINE] ${symbol}: alert failed`);
+        }
+      }
+
+      /* =========================
+         LOG STATE (IMPORTANT FOR DEBUGGING)
       ========================= */
 
       if (signal.isSniper) {
-        const cooldown = await getTelegramCooldown(symbol);
-
-        const now = Date.now();
-        const last = cooldown
-          ? new Date(cooldown.lastAlertAt).getTime()
-          : 0;
-
-        const canSend = now - last >= ALERT_COOLDOWN_MS;
-
-        if (canSend) {
-          const sent = await sendTelegramAlert(signal);
-
-          if (sent) {
-            await updateTelegramCooldown(symbol, new Date().toISOString());
-            console.log(`[ENGINE] ${symbol}: SNIPER ALERT SENT`);
-          } else {
-            console.log(`[ENGINE] ${symbol}: alert failed`);
-          }
-        } else {
-          console.log(`[ENGINE] ${symbol}: cooldown active`);
-        }
-      } else if (signal.isSetupValid) {
-        console.log(`[ENGINE] ${symbol}: setup valid (waiting)`);
+        console.log(`[ENGINE] ${symbol}: 🟢 SNIPER`);
+      } else if (isSetup) {
+        console.log(`[ENGINE] ${symbol}: 🟡 SETUP`);
+      } else if (isEarlyBias) {
+        console.log(`[ENGINE] ${symbol}: 🔵 EARLY BIAS`);
       } else {
-        console.log(`[ENGINE] ${symbol}: no setup`);
+        console.log(`[ENGINE] ${symbol}: ⚪ NO SETUP`);
       }
 
       /* =========================
@@ -83,12 +127,8 @@ export async function generateAndStoreSignals() {
       ========================= */
 
       await storeSignalSnapshot(signal);
-
-      console.log(
-        `[ENGINE] ${symbol}: ${signal.reason} | $${signal.price}`
-      );
     } catch (err) {
-      console.error(`[ENGINE ERROR] ${symbol}`, err);
+      console.error(`[ENGINE ERROR] ${symbol}:`, err);
     }
   }
 
