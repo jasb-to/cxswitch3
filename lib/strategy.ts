@@ -1,3 +1,5 @@
+// strategy.ts
+
 export type Symbol = "BTC" | "ETH" | "SOL";
 
 export interface Candle {
@@ -37,40 +39,42 @@ export interface Signal {
 }
 
 /* =========================
-   ADX
+   TREND (IMPROVED ADX LOGIC)
 ========================= */
 
-function calculateADX(candles: Candle[], period = 14) {
-  if (candles.length < period + 1) return { adx: 0 };
+function calculateADX(candles: Candle[], period = 14): number {
+  if (candles.length < period + 2) return 0;
 
-  let plusDM = 0,
-    minusDM = 0,
-    tr = 0;
+  let trSum = 0;
+  let plusDM = 0;
+  let minusDM = 0;
 
-  for (let i = candles.length - period; i < candles.length; i++) {
-    const curr = candles[i];
-    const prev = candles[i - 1];
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i];
+    const p = candles[i - 1];
 
-    const up = curr.high - prev.high;
-    const down = prev.low - curr.low;
+    const upMove = c.high - p.high;
+    const downMove = p.low - c.low;
 
-    if (up > down && up > 0) plusDM += up;
-    if (down > up && down > 0) minusDM += down;
+    if (upMove > downMove && upMove > 0) plusDM += upMove;
+    if (downMove > upMove && downMove > 0) minusDM += downMove;
 
-    const tr1 = curr.high - curr.low;
-    const tr2 = Math.abs(curr.high - prev.close);
-    const tr3 = Math.abs(curr.low - prev.close);
+    const tr = Math.max(
+      c.high - c.low,
+      Math.abs(c.high - p.close),
+      Math.abs(c.low - p.close)
+    );
 
-    tr += Math.max(tr1, tr2, tr3);
+    trSum += tr;
   }
 
-  const plusDI = (plusDM / tr) * 100;
-  const minusDI = (minusDM / tr) * 100;
+  const plusDI = (plusDM / (trSum || 1)) * 100;
+  const minusDI = (minusDM / (trSum || 1)) * 100;
 
   const dx =
-    Math.abs(plusDI - minusDI) / (plusDI + minusDI || 1);
+    Math.abs(plusDI - minusDI) / ((plusDI + minusDI) || 1);
 
-  return { adx: dx * 100 };
+  return dx * 100;
 }
 
 /* =========================
@@ -78,64 +82,69 @@ function calculateADX(candles: Candle[], period = 14) {
 ========================= */
 
 function calculateStoch(candles: Candle[]) {
-  const period = 14;
-  const slice = candles.slice(-period);
+  const slice = candles.slice(-14);
 
-  const low = Math.min(...slice.map((c) => c.low));
-  const high = Math.max(...slice.map((c) => c.high));
-  const close = candles[candles.length - 1].close;
+  const low = Math.min(...slice.map(c => c.low));
+  const high = Math.max(...slice.map(c => c.high));
+  const close = slice[slice.length - 1].close;
 
-  const k = ((close - low) / (high - low || 1)) * 100;
+  const range = high - low || 1;
 
-  return { K: k, D: k };
+  const k = ((close - low) / range) * 100;
+
+  return { k, d: k };
 }
 
 /* =========================
-   4H BIAS
+   STRUCTURE (IMPORTANT FIX)
 ========================= */
 
-function calculate4HBias(candles: Candle[]) {
-  if (candles.length < 10) return "Neutral";
-
+function marketStructure(candles: Candle[]) {
   const last = candles.slice(-5);
 
-  const hh = last[4].high > last[3].high;
-  const hl = last[4].low > last[3].low;
+  const higherHighs =
+    last[4].high > last[3].high &&
+    last[3].high > last[2].high;
 
-  const lh = last[4].high < last[3].high;
-  const ll = last[4].low < last[3].low;
+  const higherLows =
+    last[4].low > last[3].low &&
+    last[3].low > last[2].low;
 
-  if (hh && hl) return "Bullish";
-  if (lh && ll) return "Bearish";
+  const lowerHighs =
+    last[4].high < last[3].high &&
+    last[3].high < last[2].high;
+
+  const lowerLows =
+    last[4].low < last[3].low &&
+    last[3].low < last[2].low;
+
+  if (higherHighs && higherLows) return "Bullish";
+  if (lowerHighs && lowerLows) return "Bearish";
 
   return "Neutral";
 }
 
 /* =========================
-   1H CONFIRMATION
+   MOMENTUM PHASE ENGINE
 ========================= */
 
-function calculate1HConfirmation(candles: Candle[], adx: number) {
-  if (adx < 15) return "Neutral";
+function momentumPhase(adx: number, stochK: number) {
+  const compression = adx < 18;
+  const building = adx >= 18 && adx < 25;
+  const expansion = adx >= 25;
 
-  const last = candles.slice(-5);
+  const oversold = stochK < 30;
+  const overbought = stochK > 70;
 
-  const bullish =
-    last[4].close > last[3].close &&
-    last[4].low > last[3].low;
+  if (compression) return "COMPRESSION";
+  if (building && (oversold || overbought)) return "BUILDUP";
+  if (expansion) return "EXPANSION";
 
-  const bearish =
-    last[4].close < last[3].close &&
-    last[4].high < last[3].high;
-
-  if (bullish) return "Bullish";
-  if (bearish) return "Bearish";
-
-  return "Neutral";
+  return "RANGE";
 }
 
 /* =========================
-   MAIN SIGNAL
+   MAIN ENGINE
 ========================= */
 
 export function generateSignal(
@@ -149,54 +158,73 @@ export function generateSignal(
   const c1 = [...candles1H].reverse();
   const c15 = [...candles15M].reverse();
 
-  const bias4H = calculate4HBias(c4);
-
-  const adx = calculateADX(c15).adx;
+  const adx = calculateADX(c15);
   const stoch = calculateStoch(c15);
 
-  const confirmation1H = calculate1HConfirmation(c1, adx);
+  const bias = marketStructure(c4);
 
-  const isSetupValid =
-    (bias4H === "Bullish" && confirmation1H === "Bullish") ||
-    (bias4H === "Bearish" && confirmation1H === "Bearish");
+  const phase = momentumPhase(adx, stoch.k);
 
-  const isBull = bias4H === "Bullish";
-  const isBear = bias4H === "Bearish";
+  /* =========================
+     STATE ENGINE (EARLY ENTRY FOCUS)
+  ========================= */
 
+  let isSetupValid = false;
+  let isSniperCandidate = false;
+  let isSniper = false;
+
+  // EARLY SETUP = structure + compression/building
+  if (bias !== "Neutral" && (phase === "COMPRESSION" || phase === "BUILDUP")) {
+    isSetupValid = true;
+  }
+
+  // CANDIDATE = expansion starting
+  if (isSetupValid && phase === "EXPANSION") {
+    isSniperCandidate = true;
+  }
+
+  // ENTRY = stoch trigger aligns with expansion
   const trigger =
-    stoch.K < 30 || stoch.K > 70;
+    (bias === "Bullish" && stoch.k < 25) ||
+    (bias === "Bearish" && stoch.k > 75);
 
-  const isSniperCandidate = isSetupValid && trigger;
+  if (isSniperCandidate && trigger) {
+    isSniper = true;
+  }
 
-  const isSniper = isSniperCandidate;
+  /* =========================
+     RISK MODEL
+  ========================= */
 
-  const setupId = `${symbol}-${bias4H}-${confirmation1H}`;
-
-  let stopLoss = null;
-  let takeProfit = null;
-  let rrr = null;
+  let stopLoss: number | null = null;
+  let takeProfit: number | null = null;
+  let rrr: number | null = null;
 
   if (isSniper) {
     const atr =
       c15.reduce((sum, c, i) => {
-        if (i === 0) return 0;
+        if (i === 0) return sum;
         return sum + Math.abs(c.high - c.low);
       }, 0) / c15.length;
 
-    const risk = atr * 1.5;
+    const risk = atr * 1.2;
 
-    if (isBull) {
+    if (bias === "Bullish") {
       stopLoss = livePrice - risk;
       takeProfit = livePrice + risk * 2;
-      rrr = 2;
-    }
-
-    if (isBear) {
+    } else if (bias === "Bearish") {
       stopLoss = livePrice + risk;
       takeProfit = livePrice - risk * 2;
-      rrr = 2;
     }
+
+    rrr = 2;
   }
+
+  const confidence =
+    (isSetupValid ? 30 : 0) +
+    (phase === "BUILDUP" ? 20 : 0) +
+    (phase === "EXPANSION" ? 30 : 0) +
+    (trigger ? 20 : 0);
 
   return {
     symbol,
@@ -206,21 +234,17 @@ export function generateSignal(
     isSniperCandidate,
     isSniper,
 
-    setupId,
+    setupId: `${symbol}-${bias}-${phase}`,
 
-    bias: bias4H,
+    bias,
 
-    confidence: isSetupValid ? 70 : 30,
+    confidence,
 
     adx,
-    stochK: stoch.K,
-    stochD: stoch.D,
+    stochK: stoch.k,
+    stochD: stoch.d,
 
-    reason: isSniper
-      ? "SNIPER"
-      : isSetupValid
-      ? "SETUP"
-      : "WAIT",
+    reason: phase,
 
     stopLoss,
     takeProfit,
