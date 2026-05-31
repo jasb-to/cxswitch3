@@ -3,8 +3,6 @@
 import { useEffect, useState } from "react";
 import type { Signal } from "@/lib/strategy";
 
-type UIState = "SNIPER" | "SETUP" | "EARLY" | "NONE";
-
 export default function Home() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [loading, setLoading] = useState(true);
@@ -12,80 +10,86 @@ export default function Home() {
 
   async function fetchSignals() {
     try {
-      setLoading(true);
-
       const res = await fetch("/api/signals");
       const data = await res.json();
 
-      const safeSignals = data.signals || [];
-      setSignals(safeSignals);
-
-      console.log(`[UI] Signals received: ${safeSignals.length}`);
-
+      setSignals(data.signals || []);
       setLastUpdate(new Date().toLocaleTimeString());
     } catch (err) {
-      console.error("Failed to fetch signals:", err);
+      console.error(err);
     } finally {
       setLoading(false);
     }
   }
 
-  async function testTelegram() {
-    try {
-      const res = await fetch("/api/telegram/test", { method: "POST" });
-      const data = await res.json();
-      alert(data.message || "Test sent");
-    } catch {
-      alert("Telegram test failed");
-    }
-  }
-
   useEffect(() => {
     fetchSignals();
+
+    const interval = setInterval(fetchSignals, 60000);
+
+    return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    const i = setInterval(fetchSignals, 60000);
-    return () => clearInterval(i);
-  }, []);
+  const activeSetups = signals.filter((s) => s.isSetupValid).length;
+  const activeEntries = signals.filter((s) => s.isSniper).length;
 
   return (
     <main className="min-h-screen bg-black text-white">
-      <div className="max-w-6xl mx-auto px-6 py-10">
+      <div className="w-full max-w-[1600px] mx-auto px-8 md:px-12 lg:px-16 py-12">
         {/* HEADER */}
-        <div className="mb-10">
-          <h1 className="text-4xl font-bold">CX Switch</h1>
-          <p className="text-gray-400 mt-1">
-            Early Entry Radar • Structure → Momentum → Trigger
+
+        <div className="border-b border-gray-800 pb-8 mb-10">
+          <h1 className="text-4xl md:text-6xl font-bold tracking-tight">
+            CX SWITCH
+          </h1>
+
+          <p className="text-gray-500 text-lg mt-3">
+            Early Trend Scanner • BTC • ETH • SOL
           </p>
         </div>
 
         {/* CONTROLS */}
-        <div className="flex gap-3 mb-8 items-center">
+
+        <div className="flex flex-wrap items-center gap-3 mb-8">
           <button
             onClick={fetchSignals}
             disabled={loading}
-            className="px-5 py-2 bg-white text-black font-semibold rounded-lg"
+            className="px-6 py-3 rounded-xl bg-white text-black font-semibold hover:bg-gray-200 transition"
           >
-            {loading ? "Scanning..." : "Scan"}
+            {loading ? "Scanning..." : "Refresh"}
           </button>
 
-          <button
-            onClick={testTelegram}
-            className="px-5 py-2 bg-gray-800 rounded-lg border border-gray-700"
-          >
-            Test
-          </button>
-
-          <span className="text-xs text-gray-500 ml-auto">
-            {lastUpdate || "—"}
+          <span className="text-sm text-gray-500 ml-auto">
+            Last Update: {lastUpdate || "--"}
           </span>
         </div>
 
-        {/* GRID */}
-        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {signals.map((s) => (
-            <SignalCard key={s.symbol} signal={s} />
+        {/* DASHBOARD STATS */}
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-10">
+          <StatCard
+            label="Assets Tracked"
+            value={signals.length.toString()}
+          />
+
+          <StatCard
+            label="Active Setups"
+            value={activeSetups.toString()}
+            valueColor="text-yellow-400"
+          />
+
+          <StatCard
+            label="Entry Signals"
+            value={activeEntries.toString()}
+            valueColor="text-green-400"
+          />
+        </div>
+
+        {/* SIGNALS */}
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {signals.map((signal) => (
+            <SignalCard key={signal.symbol} signal={signal} />
           ))}
         </div>
       </div>
@@ -93,98 +97,164 @@ export default function Home() {
   );
 }
 
-/* =========================
-   CARD
-========================= */
-
-function SignalCard({ signal }: { signal: Signal }) {
-  const state: UIState = signal.isSniper
-    ? "SNIPER"
-    : signal.isSetupValid
-    ? "SETUP"
-    : signal.adx > 12
-    ? "EARLY"
-    : "NONE";
-
-  const colors =
-    state === "SNIPER"
-      ? "border-green-500/40 bg-green-500/5"
-      : state === "SETUP"
-      ? "border-yellow-500/40 bg-yellow-500/5"
-      : state === "EARLY"
-      ? "border-blue-500/40 bg-blue-500/5"
-      : "border-gray-800 bg-gray-900/30";
-
-  const badge =
-    state === "SNIPER"
-      ? "🟢 SNIPER"
-      : state === "SETUP"
-      ? "🟡 SETUP"
-      : state === "EARLY"
-      ? "🔵 EARLY"
-      : "⚪ WAIT";
-
-  const safe = (n: any) => (typeof n === "number" && isFinite(n) ? n : 0);
-
+function StatCard({
+  label,
+  value,
+  valueColor = "text-white",
+}: {
+  label: string;
+  value: string;
+  valueColor?: string;
+}) {
   return (
-    <div className={`border rounded-xl p-5 ${colors}`}>
-      {/* HEADER */}
-      <div className="flex justify-between mb-4">
-        <div>
-          <h2 className="text-2xl font-bold">{signal.symbol}</h2>
-          <p className="text-gray-400 text-sm">
-            ${safe(signal.price).toFixed(2)}
-          </p>
-        </div>
+    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-5">
+      <p className="text-xs uppercase tracking-wider text-gray-500 mb-2">
+        {label}
+      </p>
 
-        <div className="text-xs px-3 py-1 border border-gray-700 rounded-lg">
-          {badge}
-        </div>
-      </div>
-
-      {/* CORE METRICS */}
-      <div className="space-y-2 text-sm mb-4">
-        <Row label="Bias" value={signal.bias} />
-        <Row label="Confidence" value={`${safe(signal.confidence)}%`} />
-        <Row label="ADX" value={safe(signal.adx).toFixed(1)} />
-        <Row label="Stoch" value={safe(signal.stochK).toFixed(1)} />
-      </div>
-
-      {/* RISK */}
-      <div className="border-t border-gray-800 pt-3 text-xs space-y-1">
-        <Row
-          label="SL"
-          value={
-            signal.stopLoss != null ? signal.stopLoss.toFixed(2) : "—"
-          }
-        />
-        <Row
-          label="TP"
-          value={
-            signal.takeProfit != null ? signal.takeProfit.toFixed(2) : "—"
-          }
-        />
-        <Row
-          label="R/R"
-          value={
-            signal.riskRewardRatio != null
-              ? signal.riskRewardRatio.toFixed(2)
-              : "—"
-          }
-        />
-      </div>
-
-      {/* REASON */}
-      <p className="text-xs text-gray-400 mt-3">{signal.reason}</p>
+      <p className={`text-3xl font-bold ${valueColor}`}>
+        {value}
+      </p>
     </div>
   );
 }
 
-/* =========================
-   ROW
-========================= */
+function SignalCard({ signal }: { signal: Signal }) {
+  const status = signal.isSniper
+    ? "ENTRY"
+    : signal.isSetupValid
+    ? "SETUP"
+    : "MONITOR";
 
-function Row({
+  const borderColor = signal.isSniper
+    ? "border-green-500/30"
+    : signal.isSetupValid
+    ? "border-yellow-500/30"
+    : "border-gray-800";
+
+  const statusColor = signal.isSniper
+    ? "text-green-400 bg-green-500/10"
+    : signal.isSetupValid
+    ? "text-yellow-400 bg-yellow-500/10"
+    : "text-gray-400 bg-gray-800";
+
+  const biasColor =
+    signal.bias === "Bullish"
+      ? "text-green-400"
+      : signal.bias === "Bearish"
+      ? "text-red-400"
+      : "text-gray-400";
+
+  return (
+    <div
+      className={`bg-gray-950 border ${borderColor} rounded-2xl p-6`}
+    >
+      {/* TOP */}
+
+      <div className="flex items-start justify-between mb-6">
+        <div>
+          <h2 className="text-3xl font-bold">
+            {signal.symbol}
+          </h2>
+
+          <p className="text-gray-500 mt-1">
+            $
+            {signal.price.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
+          </p>
+        </div>
+
+        <div
+          className={`px-3 py-2 rounded-lg text-xs font-semibold ${statusColor}`}
+        >
+          {status}
+        </div>
+      </div>
+
+      {/* BIAS */}
+
+      <div className="grid grid-cols-2 gap-4 mb-6">
+        <MetricBox
+          label="Bias"
+          value={signal.bias}
+          color={biasColor}
+        />
+
+        <MetricBox
+          label="Confidence"
+          value={`${signal.confidence}%`}
+          color="text-white"
+        />
+      </div>
+
+      {/* INDICATORS */}
+
+      <div className="border-t border-gray-800 pt-5 mb-5">
+        <h3 className="text-xs uppercase tracking-wider text-gray-500 mb-4">
+          Indicators
+        </h3>
+
+        <IndicatorRow
+          label="ADX"
+          value={signal.adx?.toFixed(1) ?? "--"}
+        />
+
+        <IndicatorRow
+          label="Stoch K"
+          value={signal.stochK?.toFixed(1) ?? "--"}
+        />
+
+        <IndicatorRow
+          label="Stoch D"
+          value={signal.stochD?.toFixed(1) ?? "--"}
+        />
+      </div>
+
+      {/* TRADE PLAN */}
+
+      <div className="border-t border-gray-800 pt-5 mb-5">
+        <h3 className="text-xs uppercase tracking-wider text-gray-500 mb-4">
+          Trade Plan
+        </h3>
+
+        {signal.isSniper ? (
+          <div className="space-y-3">
+            <IndicatorRow
+              label="Stop Loss"
+              value={`$${signal.stopLoss?.toFixed(2)}`}
+            />
+
+            <IndicatorRow
+              label="Take Profit"
+              value={`$${signal.takeProfit?.toFixed(2)}`}
+            />
+
+            <IndicatorRow
+              label="Risk / Reward"
+              value={`${signal.riskRewardRatio?.toFixed(2)} : 1`}
+            />
+          </div>
+        ) : (
+          <p className="text-sm text-gray-500">
+            Waiting for qualifying entry conditions.
+          </p>
+        )}
+      </div>
+
+      {/* REASON */}
+
+      <div className="border-t border-gray-800 pt-5">
+        <p className="text-sm text-gray-400">
+          {signal.reason}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function IndicatorRow({
   label,
   value,
 }: {
@@ -192,9 +262,34 @@ function Row({
   value: string;
 }) {
   return (
-    <div className="flex justify-between">
-      <span className="text-gray-500">{label}</span>
-      <span className="font-mono">{value}</span>
+    <div className="flex items-center justify-between py-1">
+      <span className="text-gray-500 text-sm">{label}</span>
+
+      <span className="font-mono text-white">
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function MetricBox({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: string;
+  color: string;
+}) {
+  return (
+    <div>
+      <p className="text-xs uppercase tracking-wider text-gray-500 mb-1">
+        {label}
+      </p>
+
+      <p className={`font-semibold ${color}`}>
+        {value}
+      </p>
     </div>
   );
 }
