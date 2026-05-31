@@ -5,54 +5,72 @@ export const runtime = "nodejs";
 
 export async function GET() {
   try {
-    // PURE PASSTHROUGH: Fetch and return snapshots without any transformation or derivation
-    // No state reconstruction, no label generation, no indicator interpretation
     const snapshots = await getLatestSignalSnapshots();
 
-    // Direct mapping - snapshot fields map 1:1 to Signal fields
-    // isSetupValid, isSniperCandidate, isSniper come ONLY from engine, never computed here
-    // SL/TP/RRR are ONLY populated when isSniper === true, otherwise null
-    const signals: Signal[] = snapshots.map((snapshot) => ({
+    const safeSnapshots = Array.isArray(snapshots) ? snapshots : [];
+
+    const signals: Signal[] = safeSnapshots.map((snapshot) => ({
       symbol: snapshot.symbol,
-      price: snapshot.price,
-      isSetupValid: snapshot.isSetupValid,
-      isSniperCandidate: snapshot.isSniperCandidate,
-      isSniper: snapshot.isSniper,
-      bias: snapshot.bias,
-      confidence: snapshot.confidence,
-      adx: snapshot.adx,
-      stochK: snapshot.stochK,
-      stochD: snapshot.stochD,
-      reason: snapshot.reason,
-      stopLoss: snapshot.stopLoss,
-      takeProfit: snapshot.takeProfit,
-      riskRewardRatio: snapshot.riskRewardRatio,
-      updatedAt: snapshot.updatedAt,
+      price: Number(snapshot.price ?? 0),
+      isSetupValid: Boolean(snapshot.isSetupValid),
+      isSniperCandidate: Boolean(snapshot.isSniperCandidate),
+      isSniper: Boolean(snapshot.isSniper),
+      bias: snapshot.bias ?? "Neutral",
+      confidence: Number(snapshot.confidence ?? 0),
+      adx: Number(snapshot.adx ?? 0),
+      stochK: Number(snapshot.stochK ?? 0),
+      stochD: Number(snapshot.stochD ?? 0),
+      reason: snapshot.reason ?? "UNKNOWN",
+      stopLoss: snapshot.stopLoss ?? null,
+      takeProfit: snapshot.takeProfit ?? null,
+      riskRewardRatio: snapshot.riskRewardRatio ?? null,
+      updatedAt: snapshot.updatedAt ?? new Date().toISOString(),
     }));
 
-    // Validation logging at API boundary
     console.log(`[API] ========== EXECUTION GATE VALIDATION ==========`);
     console.log(`[API] Returning ${signals.length} signals from persistence layer`);
-    
-    // Log full signal objects for critical symbols - check execution gate
+
+    const safeGet = (n: any, digits: number) =>
+      typeof n === "number" && !isNaN(n) ? n.toFixed(digits) : "0.00";
+
     ["BTC", "ETH", "SOL"].forEach((symbolName) => {
       const signal = signals.find((s) => s.symbol === symbolName);
-      if (signal) {
-        console.log(`[API] ${symbolName}:`);
-        console.log(`[API]   Setup: ${signal.isSetupValid}, Candidate: ${signal.isSniperCandidate}, Execution: ${signal.isSniper}`);
-        console.log(`[API]   Price: $${signal.price.toFixed(2)}, ADX: ${signal.adx.toFixed(1)}, Bias: ${signal.bias}`);
-        if (signal.isSniper) {
-          console.log(`[API]   🟢 SNIPER APPROVED - SL: $${signal.stopLoss?.toFixed(2)}, TP: $${signal.takeProfit?.toFixed(2)}, RRR: ${signal.riskRewardRatio}`);
-        } else if (signal.isSetupValid) {
-          console.log(`[API]   🟡 SETUP ACTIVE - Awaiting trigger (SL/TP: null)`);
-        } else {
-          console.log(`[API]   ⚪ MONITORING - No setup (SL/TP: null)`);
-        }
-      } else {
+
+      if (!signal) {
         console.log(`[API] ${symbolName}: NOT IN SNAPSHOTS`);
+        return;
+      }
+
+      console.log(`[API] ${symbolName}:`);
+      console.log(
+        `[API]   Setup: ${signal.isSetupValid}, Candidate: ${signal.isSniperCandidate}, Execution: ${signal.isSniper}`
+      );
+
+      console.log(
+        `[API]   Price: $${safeGet(signal.price, 2)}, ADX: ${safeGet(
+          signal.adx,
+          1
+        )}, Bias: ${signal.bias}`
+      );
+
+      if (signal.isSniper) {
+        console.log(
+          `[API]   🟢 SNIPER APPROVED - SL: $${safeGet(
+            signal.stopLoss,
+            2
+          )}, TP: $${safeGet(signal.takeProfit, 2)}, RRR: ${
+            signal.riskRewardRatio ?? 0
+          }`
+        );
+      } else if (signal.isSetupValid) {
+        console.log(
+          `[API]   🟡 SETUP ACTIVE - Awaiting trigger (SL/TP: null)`
+        );
+      } else {
+        console.log(`[API]   ⚪ MONITORING - No setup (SL/TP: null)`);
       }
     });
-    
+
     console.log(`[API] ========== END VALIDATION ==========`);
 
     return Response.json(
@@ -65,9 +83,13 @@ export async function GET() {
     );
   } catch (err) {
     console.error(`[API] Error:`, err);
+
     return Response.json(
       { error: "Failed to fetch signals", signals: [] },
-      { status: 500, headers: { "Cache-Control": "no-cache" } }
+      {
+        status: 500,
+        headers: { "Cache-Control": "no-cache" },
+      }
     );
   }
 }
