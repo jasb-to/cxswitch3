@@ -11,131 +11,71 @@ import {
   storeSignalSnapshot,
   getTelegramCooldown,
   updateTelegramCooldown,
-  isSetupConsumed,
-  markSetupConsumed,
 } from "./persistence";
 
 import { sendTelegramAlert } from "./telegram";
 
 const ALERT_COOLDOWN_MS = 60 * 60 * 1000;
 
-/* =========================
-   MAIN ENGINE
-========================= */
-
 export async function generateAndStoreSignals() {
   const symbols: Symbol[] = ["BTC", "ETH", "SOL"];
-
-  console.log(`[ENGINE] Starting cycle...`);
 
   for (const symbol of symbols) {
     try {
       console.log(`\n[ENGINE] ===== ${symbol} =====`);
 
       /* =========================
-         FETCH DATA (SAFE)
+         FETCH DATA
       ========================= */
 
-      const [candles4H, candles15M, candles5M] = await Promise.all([
+      const [c4, c15, c5] = await Promise.all([
         getCandles4H(symbol),
         getCandles15M(symbol),
         getCandles5M(symbol),
       ]);
 
-      // SAFETY GUARD (prevents .length crash)
-      if (!Array.isArray(candles4H) ||
-          !Array.isArray(candles15M) ||
-          !Array.isArray(candles5M)) {
-        throw new Error(`Invalid candle response (undefined or not array)`);
+      if (!c4?.length || !c15?.length || !c5?.length) {
+        throw new Error(`Missing candle data for ${symbol}`);
       }
-
-      if (
-        candles4H.length < 10 ||
-        candles15M.length < 10 ||
-        candles5M.length < 10
-      ) {
-        throw new Error(
-          `Insufficient candle data: 4H=${candles4H.length}, 15M=${candles15M.length}, 5M=${candles5M.length}`
-        );
-      }
-
-      /* =========================
-         LIVE PRICE
-      ========================= */
 
       const price = await getCurrentPrice(symbol);
 
-      if (!price || price <= 0) {
-        throw new Error(`Invalid live price for ${symbol}`);
+      if (!price) {
+        throw new Error(`Invalid price for ${symbol}`);
       }
 
-      /* =========================
-         SIGNAL GENERATION
-      ========================= */
-
-      const signal = generateSignal(
-        symbol,
-        candles4H,
-        candles15M, // treated as 1H fallback inside strategy if needed
-        candles15M,
-        price
-      );
+      const signal = generateSignal(symbol, c4, c15, c5, price);
 
       /* =========================
-         SNIPER EXECUTION LOGIC
+         TELEGRAM LOGIC
       ========================= */
 
       if (signal.isSniper) {
-        const alreadyConsumed = isSetupConsumed(signal.setupId);
+        const cooldown = await getTelegramCooldown(symbol);
 
-        if (alreadyConsumed) {
-          console.log(
-            `[ENGINE] ${symbol}: setup already consumed → skipping`
-          );
-        } else {
-          const cooldown = await getTelegramCooldown(symbol);
+        const now = Date.now();
+        const last = cooldown
+          ? new Date(cooldown.lastAlertAt).getTime()
+          : 0;
 
-          const now = Date.now();
-          const lastAlert = cooldown
-            ? new Date(cooldown.lastAlertAt).getTime()
-            : 0;
+        const canSend = now - last >= ALERT_COOLDOWN_MS;
 
-          const canSend =
-            now - lastAlert >= ALERT_COOLDOWN_MS;
+        if (canSend) {
+          const sent = await sendTelegramAlert(signal);
 
-          if (!canSend) {
-            const mins = Math.ceil(
-              (ALERT_COOLDOWN_MS - (now - lastAlert)) / 60000
-            );
-
-            console.log(
-              `[ENGINE] ${symbol}: cooldown active (${mins}m left)`
-            );
+          if (sent) {
+            await updateTelegramCooldown(symbol, new Date().toISOString());
+            console.log(`[ENGINE] ${symbol}: SNIPER ALERT SENT`);
           } else {
-            const sent = await sendTelegramAlert(signal);
-
-            if (sent) {
-              updateTelegramCooldown(
-                symbol,
-                new Date().toISOString()
-              );
-
-              markSetupConsumed(signal.setupId);
-
-              console.log(
-                `[ENGINE] ${symbol}: SNIPER SENT + SETUP LOCKED`
-              );
-            } else {
-              console.log(
-                `[ENGINE] ${symbol}: alert failed`
-              );
-            }
+            console.log(`[ENGINE] ${symbol}: alert failed`);
           }
+        } else {
+          console.log(`[ENGINE] ${symbol}: cooldown active`);
         }
+      } else if (signal.isSetupValid) {
+        console.log(`[ENGINE] ${symbol}: setup valid (waiting)`);
       } else {
-        console.log(
-          `[ENGINE] ${symbol}: no sniper condition`
-        );
+        console.log(`[ENGINE] ${symbol}: no setup`);
       }
 
       /* =========================
@@ -144,24 +84,13 @@ export async function generateAndStoreSignals() {
 
       await storeSignalSnapshot(signal);
 
-      /* =========================
-         OUTPUT
-      ========================= */
-
-      console.log(`[ENGINE OUTPUT] ${symbol}`);
-      console.log(`  price: $${signal.price}`);
-      console.log(`  sniper: ${signal.isSniper}`);
-      console.log(`  setup: ${signal.isSetupValid}`);
-      console.log(`  bias: ${signal.bias}`);
-      console.log(`  confidence: ${signal.confidence}`);
-      console.log(`  reason: ${signal.reason}`);
-    } catch (err) {
-      console.error(
-        `[ENGINE ERROR] ${symbol}:`,
-        err instanceof Error ? err.message : err
+      console.log(
+        `[ENGINE] ${symbol}: ${signal.reason} | $${signal.price}`
       );
+    } catch (err) {
+      console.error(`[ENGINE ERROR] ${symbol}`, err);
     }
   }
 
-  console.log(`\n[ENGINE] COMPLETE`);
+  console.log(`[ENGINE] COMPLETE`);
 }
