@@ -20,7 +20,7 @@ import { sendTelegramAlert } from "./telegram";
 const ALERT_COOLDOWN_MS = 60 * 60 * 1000;
 
 /* =========================
-   MAIN ENGINE LOOP
+   MAIN ENGINE
 ========================= */
 
 export async function generateAndStoreSignals() {
@@ -33,39 +33,56 @@ export async function generateAndStoreSignals() {
       console.log(`\n[ENGINE] ===== ${symbol} =====`);
 
       /* =========================
-         FETCH MARKET DATA
+         FETCH DATA (SAFE)
       ========================= */
 
-      const [candles4H, candles1H, candles15M] = await Promise.all([
+      const [candles4H, candles15M, candles5M] = await Promise.all([
         getCandles4H(symbol),
         getCandles15M(symbol),
         getCandles5M(symbol),
       ]);
 
-      if (!candles4H?.length || !candles1H?.length || !candles15M?.length) {
-        throw new Error("Missing candle data");
+      // SAFETY GUARD (prevents .length crash)
+      if (!Array.isArray(candles4H) ||
+          !Array.isArray(candles15M) ||
+          !Array.isArray(candles5M)) {
+        throw new Error(`Invalid candle response (undefined or not array)`);
       }
 
-      const price = await getCurrentPrice(symbol);
-
-      if (!price) {
-        throw new Error("Invalid price");
+      if (
+        candles4H.length < 10 ||
+        candles15M.length < 10 ||
+        candles5M.length < 10
+      ) {
+        throw new Error(
+          `Insufficient candle data: 4H=${candles4H.length}, 15M=${candles15M.length}, 5M=${candles5M.length}`
+        );
       }
 
       /* =========================
-         GENERATE SIGNAL
+         LIVE PRICE
+      ========================= */
+
+      const price = await getCurrentPrice(symbol);
+
+      if (!price || price <= 0) {
+        throw new Error(`Invalid live price for ${symbol}`);
+      }
+
+      /* =========================
+         SIGNAL GENERATION
       ========================= */
 
       const signal = generateSignal(
         symbol,
         candles4H,
-        candles1H,
+        candles15M, // treated as 1H fallback inside strategy if needed
         candles15M,
         price
       );
 
       /* =========================
-         SNIPER EXECUTION ONLY
+         SNIPER EXECUTION LOGIC
       ========================= */
 
       if (signal.isSniper) {
@@ -83,10 +100,10 @@ export async function generateAndStoreSignals() {
             ? new Date(cooldown.lastAlertAt).getTime()
             : 0;
 
-          const canSendAlert =
+          const canSend =
             now - lastAlert >= ALERT_COOLDOWN_MS;
 
-          if (!canSendAlert) {
+          if (!canSend) {
             const mins = Math.ceil(
               (ALERT_COOLDOWN_MS - (now - lastAlert)) / 60000
             );
@@ -122,13 +139,13 @@ export async function generateAndStoreSignals() {
       }
 
       /* =========================
-         SNAPSHOT STORAGE
+         STORE SNAPSHOT
       ========================= */
 
       await storeSignalSnapshot(signal);
 
       /* =========================
-         CLEAN OUTPUT
+         OUTPUT
       ========================= */
 
       console.log(`[ENGINE OUTPUT] ${symbol}`);
