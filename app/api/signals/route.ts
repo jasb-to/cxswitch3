@@ -10,12 +10,14 @@ export async function GET() {
     const snapshots = await getLatestSignalSnapshots();
 
     // Direct mapping - snapshot fields map 1:1 to Signal fields
-    // isSetupValid and isSniper come ONLY from engine, never computed here
+    // isSetupValid, isSniperCandidate, isSniper come ONLY from engine, never computed here
+    // SL/TP/RRR are ONLY populated when isSniper === true, otherwise null
     const signals: Signal[] = snapshots.map((snapshot) => ({
       symbol: snapshot.symbol,
       price: snapshot.price,
-      isSetupValid: snapshot.isSetupValid,  // From engine only
-      isSniper: snapshot.isSniper,          // From engine only
+      isSetupValid: snapshot.isSetupValid,
+      isSniperCandidate: snapshot.isSniperCandidate,
+      isSniper: snapshot.isSniper,
       bias: snapshot.bias,
       confidence: snapshot.confidence,
       adx: snapshot.adx,
@@ -29,33 +31,29 @@ export async function GET() {
     }));
 
     // Validation logging at API boundary
-    console.log(`[API] ========== VALIDATION LOG ==========`);
+    console.log(`[API] ========== EXECUTION GATE VALIDATION ==========`);
     console.log(`[API] Returning ${signals.length} signals from persistence layer`);
     
-    // Log full signal objects for critical symbols
+    // Log full signal objects for critical symbols - check execution gate
     ["BTC", "ETH", "SOL"].forEach((symbolName) => {
       const signal = signals.find((s) => s.symbol === symbolName);
       if (signal) {
-        console.log(`[API] ${symbolName}: {`);
-        console.log(`[API]   isSetupValid: ${signal.isSetupValid}`);
-        console.log(`[API]   isSniper: ${signal.isSniper}`);
-        console.log(`[API]   price: $${signal.price.toFixed(2)}`);
-        console.log(`[API]   adx: ${signal.adx.toFixed(1)}`);
-        console.log(`[API]   stochK: ${signal.stochK.toFixed(1)}`);
-        console.log(`[API]   stochD: ${signal.stochD.toFixed(1)}`);
-        console.log(`[API]   bias: ${signal.bias}`);
-        console.log(`[API]   confidence: ${signal.confidence}%`);
-        console.log(`[API]   stopLoss: $${signal.stopLoss.toFixed(2)}`);
-        console.log(`[API]   takeProfit: $${signal.takeProfit.toFixed(2)}`);
-        console.log(`[API]   riskRewardRatio: ${signal.riskRewardRatio.toFixed(2)}`);
-        console.log(`[API]   reason: ${signal.reason}`);
-        console.log(`[API] }`);
+        console.log(`[API] ${symbolName}:`);
+        console.log(`[API]   Setup: ${signal.isSetupValid}, Candidate: ${signal.isSniperCandidate}, Execution: ${signal.isSniper}`);
+        console.log(`[API]   Price: $${signal.price.toFixed(2)}, ADX: ${signal.adx.toFixed(1)}, Bias: ${signal.bias}`);
+        if (signal.isSniper) {
+          console.log(`[API]   🟢 SNIPER APPROVED - SL: $${signal.stopLoss?.toFixed(2)}, TP: $${signal.takeProfit?.toFixed(2)}, RRR: ${signal.riskRewardRatio}`);
+        } else if (signal.isSetupValid) {
+          console.log(`[API]   🟡 SETUP ACTIVE - Awaiting trigger (SL/TP: null)`);
+        } else {
+          console.log(`[API]   ⚪ MONITORING - No setup (SL/TP: null)`);
+        }
       } else {
         console.log(`[API] ${symbolName}: NOT IN SNAPSHOTS`);
       }
     });
     
-    console.log(`[API] ========== END VALIDATION LOG ==========`);
+    console.log(`[API] ========== END VALIDATION ==========`);
 
     return Response.json(
       { signals, updatedAt: new Date().toISOString() },
