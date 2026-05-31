@@ -1,23 +1,12 @@
-// kraken.ts
+import type { Candle, Symbol } from "./strategy";
 
-export type Symbol = "BTC" | "ETH" | "SOL";
-
-export interface Candle {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
-
-const BASE = "https://api.kraken.com/0/public";
+const KRAKEN_BASE = "https://api.kraken.com/0/public";
 
 /* =========================
-   SYMBOL MAP
+   SYMBOL MAPPING
 ========================= */
 
-function pair(symbol: Symbol) {
+function mapSymbol(symbol: Symbol) {
   switch (symbol) {
     case "BTC":
       return "XXBTZUSD";
@@ -25,26 +14,51 @@ function pair(symbol: Symbol) {
       return "XETHZUSD";
     case "SOL":
       return "SOLUSD";
+    default:
+      return "XXBTZUSD";
   }
 }
 
 /* =========================
-   CORE FETCH
+   SAFE FETCH WRAPPER
 ========================= */
 
-async function fetchOHLC(symbol: Symbol, interval: number) {
-  const res = await fetch(
-    `${BASE}/OHLC?pair=${pair(symbol)}&interval=${interval}`
-  );
+async function fetchKraken(url: string) {
+  try {
+    const res = await fetch(url);
 
-  if (!res.ok) throw new Error(`Kraken OHLC failed`);
+    if (!res.ok) {
+      console.error(`[KRAKEN] HTTP error ${res.status}`);
+      return null;
+    }
 
-  const json = await res.json();
-  const data = json.result?.[pair(symbol)];
+    const data = await res.json();
 
-  if (!data) return [];
+    if (data?.error?.length) {
+      console.error(`[KRAKEN] API error`, data.error);
+      return null;
+    }
 
-  return data.map((c: any[]) => ({
+    return data.result;
+  } catch (err) {
+    console.error(`[KRAKEN] Fetch failed`, err);
+    return null;
+  }
+}
+
+/* =========================
+   CANDLE PARSER
+========================= */
+
+function parseCandles(raw: any): Candle[] {
+  if (!raw) return [];
+
+  const key = Object.keys(raw)[0];
+  const arr = raw[key];
+
+  if (!Array.isArray(arr)) return [];
+
+  return arr.map((c: any) => ({
     time: Number(c[0]),
     open: Number(c[1]),
     high: Number(c[2]),
@@ -55,32 +69,66 @@ async function fetchOHLC(symbol: Symbol, interval: number) {
 }
 
 /* =========================
-   PUBLIC API (MATCH YOUR APP)
+   TIMEFRAMES
 ========================= */
 
-export async function getCandles5M(symbol: Symbol): Promise<Candle[]> {
-  return fetchOHLC(symbol, 5);
+export async function getCandles4H(symbol: Symbol): Promise<Candle[]> {
+  return getCandles(symbol, 240);
 }
 
 export async function getCandles15M(symbol: Symbol): Promise<Candle[]> {
-  return fetchOHLC(symbol, 15);
+  return getCandles(symbol, 15);
 }
 
-export async function getCandles4H(symbol: Symbol): Promise<Candle[]> {
-  return fetchOHLC(symbol, 240);
+export async function getCandles5M(symbol: Symbol): Promise<Candle[]> {
+  return getCandles(symbol, 5);
 }
+
+/* =========================
+   CORE CANDLE FETCH
+========================= */
+
+async function getCandles(symbol: Symbol, interval: number): Promise<Candle[]> {
+  const pair = mapSymbol(symbol);
+
+  const url = `${KRAKEN_BASE}/OHLC?pair=${pair}&interval=${interval}`;
+
+  const result = await fetchKraken(url);
+
+  const candles = parseCandles(result);
+
+  if (!candles.length) {
+    console.warn(`[KRAKEN] No candles returned for ${symbol} (${interval}m)`);
+    return [];
+  }
+
+  // Ensure sorted oldest → newest
+  return candles.sort((a, b) => a.time - b.time);
+}
+
+/* =========================
+   CURRENT PRICE (FIXED)
+========================= */
 
 export async function getCurrentPrice(symbol: Symbol): Promise<number> {
-  const res = await fetch(
-    `${BASE}/Ticker?pair=${pair(symbol)}`
-  );
+  const pair = mapSymbol(symbol);
 
-  if (!res.ok) throw new Error(`Kraken ticker failed`);
+  const url = `${KRAKEN_BASE}/Ticker?pair=${pair}`;
 
-  const json = await res.json();
-  const data = json.result?.[pair(symbol)];
+  const result = await fetchKraken(url);
 
-  if (!data?.c?.[0]) return 0;
+  if (!result) return 0;
 
-  return Number(data.c[0]);
+  const key = Object.keys(result)[0];
+
+  const price = result?.[key]?.c?.[0];
+
+  const parsed = Number(price);
+
+  if (!parsed || isNaN(parsed)) {
+    console.warn(`[KRAKEN] Invalid price for ${symbol}`);
+    return 0;
+  }
+
+  return parsed;
 }
