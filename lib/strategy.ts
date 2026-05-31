@@ -92,43 +92,55 @@ function calculateStoch(candles: Candle[]) {
 }
 
 /* =========================
-   STRUCTURE (HL / LL)
+   STRUCTURE DETECTION (FIXED)
 ========================= */
 
 function detectStructure(candles: Candle[]) {
-  const last = candles.slice(-5);
+  const last = candles.slice(-10);
 
-  const highs = last.map((c) => c.high);
-  const lows = last.map((c) => c.low);
+  const highs = last.map(c => c.high);
+  const lows = last.map(c => c.low);
 
-  const higherHighs = highs[4] > highs[3];
-  const higherLows = lows[4] > lows[3];
+  const recentHighs = highs.slice(-5);
+  const recentLows = lows.slice(-5);
 
-  const lowerHighs = highs[4] < highs[3];
-  const lowerLows = lows[4] < lows[3];
+  const higherHighTrend =
+    recentHighs[4] > recentHighs[2] &&
+    recentHighs[2] > recentHighs[0];
 
-  if (higherHighs && higherLows) return "Bullish";
-  if (lowerHighs && lowerLows) return "Bearish";
+  const higherLowTrend =
+    recentLows[4] > recentLows[2] &&
+    recentLows[2] > recentLows[0];
+
+  const lowerHighTrend =
+    recentHighs[4] < recentHighs[2] &&
+    recentHighs[2] < recentHighs[0];
+
+  const lowerLowTrend =
+    recentLows[4] < recentLows[2] &&
+    recentLows[2] < recentLows[0];
+
+  if (higherHighTrend && higherLowTrend) return "Bullish";
+  if (lowerHighTrend && lowerLowTrend) return "Bearish";
 
   return "Neutral";
 }
 
 /* =========================
-   EARLY SIGNAL (tuned)
+   EARLY SIGNAL LOGIC
 ========================= */
 
 function isEarlySignal(adx: number, stochK: number) {
-  // tuned for realistic market frequency
   return (
     adx > 10 &&
-    adx < 50 &&
-    stochK > 30 &&
-    stochK < 70
+    adx < 55 &&
+    stochK > 25 &&
+    stochK < 75
   );
 }
 
 /* =========================
-   SNIPER ENTRY (tuned breakout)
+   SNIPER BREAKOUT LOGIC
 ========================= */
 
 function isSniperEntry(structure: string, stochK: number) {
@@ -163,7 +175,7 @@ export function generateSignal(
   const early = isEarlySignal(adx, stoch.K);
   const sniper = isSniperEntry(structure, stoch.K);
 
-  const bias =
+  const bias: "Bullish" | "Bearish" | "Neutral" =
     structure === "Bullish"
       ? "Bullish"
       : structure === "Bearish"
@@ -172,9 +184,9 @@ export function generateSignal(
 
   const confidence = sniper ? 85 : early ? 55 : 20;
 
-  let stopLoss = null;
-  let takeProfit = null;
-  let rrr = null;
+  let stopLoss: number | null = null;
+  let takeProfit: number | null = null;
+  let rrr: number | null = null;
 
   if (sniper) {
     const atr =
@@ -183,19 +195,19 @@ export function generateSignal(
         return sum + Math.abs(c.high - c.low);
       }, 0) / c15.length;
 
-    const risk = atr * 1.5;
+    const risk = atr * 2.5;
 
     if (bias === "Bullish") {
       stopLoss = livePrice - risk;
-      takeProfit = livePrice + risk * 2;
+      takeProfit = livePrice + risk * 3;
     }
 
     if (bias === "Bearish") {
       stopLoss = livePrice + risk;
-      takeProfit = livePrice - risk * 2;
+      takeProfit = livePrice - risk * 3;
     }
 
-    rrr = 2;
+    rrr = 3;
   }
 
   return {
@@ -206,7 +218,7 @@ export function generateSignal(
     isSniper: sniper,
     isActive: early || sniper,
 
-    setupId: `${symbol}-${structure}-${stoch.K.toFixed(0)}`,
+    setupId: `${symbol}-${structure}-${Math.floor(stoch.K)}`,
 
     bias,
 
