@@ -1,12 +1,10 @@
 export interface SignalSnapshot {
   symbol: string;
-
-  // state machine (new model)
   isEarly: boolean;
   isSniper: boolean;
+  isActive: boolean;
 
   confidence: number;
-
   price: number;
 
   adx: number;
@@ -14,7 +12,6 @@ export interface SignalSnapshot {
   stochD: number;
 
   bias: "Bullish" | "Bearish" | "Neutral";
-
   reason: string;
 
   stopLoss: number | null;
@@ -24,64 +21,100 @@ export interface SignalSnapshot {
   updatedAt: string;
 }
 
+export interface SignalHistory {
+  symbol: string;
+  snapshots: SignalSnapshot[];
+}
+
 export interface TelegramCooldown {
   symbol: string;
   lastAlertAt: string;
 }
 
 /* =========================
-   STATE STORE
+   IN-MEMORY STORE
 ========================= */
 
-// latest snapshot per symbol (source of truth for UI)
-const signalSnapshots = new Map<string, SignalSnapshot>();
-
-// telegram cooldown tracking
+const signalHistory = new Map<string, SignalSnapshot[]>();
 const telegramCooldowns = new Map<string, TelegramCooldown>();
 
 console.log("[PERSISTENCE] initialized");
 
 /* =========================
-   SNAPSHOTS
+   SNAPSHOT STORAGE (NOW WITH HISTORY)
 ========================= */
 
 export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
-  const existing = signalSnapshots.get(snapshot.symbol);
+  const existing = signalHistory.get(snapshot.symbol) || [];
 
-  signalSnapshots.set(snapshot.symbol, snapshot);
+  const updated = [...existing, snapshot];
 
-  const state =
-    snapshot.isSniper
-      ? "🟢 SNIPER"
-      : snapshot.isEarly
-      ? "🟣 EARLY"
-      : "⚪ WAIT";
-
-  // only log transitions (reduces noise)
-  if (!existing || existing.isSniper !== snapshot.isSniper || existing.isEarly !== snapshot.isEarly) {
-    console.log(
-      `[PERSISTENCE] ${snapshot.symbol}: ${state} | price=$${snapshot.price}`
-    );
+  // keep last 50 snapshots per symbol (lightweight + enough context)
+  if (updated.length > 50) {
+    updated.shift();
   }
+
+  signalHistory.set(snapshot.symbol, updated);
+
+  const status = snapshot.isSniper
+    ? "🟢 SNIPER"
+    : snapshot.isEarly
+    ? "🟣 EARLY"
+    : "⚪ WAIT";
+
+  console.log(
+    `[PERSISTENCE] ${snapshot.symbol}: ${status} | $${snapshot.price}`
+  );
 }
 
-export async function getLatestSignalSnapshots(): Promise<SignalSnapshot[]> {
-  return Array.from(signalSnapshots.values());
+/* =========================
+   GET LATEST SNAPSHOT (UI USE)
+========================= */
+
+export async function getLatestSignalSnapshots(): Promise<
+  SignalSnapshot[]
+> {
+  const latest: SignalSnapshot[] = [];
+
+  for (const [, history] of signalHistory.entries()) {
+    if (history.length > 0) {
+      latest.push(history[history.length - 1]);
+    }
+  }
+
+  return latest;
+}
+
+/* =========================
+   OPTIONAL: FULL HISTORY (for future charting)
+========================= */
+
+export async function getSignalHistory(
+  symbol: string
+): Promise<SignalSnapshot[]> {
+  return signalHistory.get(symbol) || [];
 }
 
 /* =========================
    TELEGRAM COOLDOWN
 ========================= */
 
-export async function getTelegramCooldown(symbol: string): Promise<TelegramCooldown | null> {
+export async function getTelegramCooldown(
+  symbol: string
+): Promise<TelegramCooldown | null> {
   return telegramCooldowns.get(symbol) || null;
 }
 
-export async function updateTelegramCooldown(symbol: string, timestamp: string) {
+export async function updateTelegramCooldown(
+  symbol: string,
+  timestamp: string
+) {
   telegramCooldowns.set(symbol, {
     symbol,
     lastAlertAt: timestamp,
   });
 
-  console.log(`[PERSISTENCE] cooldown updated ${symbol}`);
+  console.log(
+    `[PERSISTENCE] cooldown updated ${symbol} @ ${timestamp}`
+  );
 }
