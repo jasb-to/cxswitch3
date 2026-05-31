@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import type { Signal } from "@/lib/strategy";
 
+type SignalState = "EARLY" | "SETUP" | "ARMED" | "SNIPER" | "WAIT";
+
 export default function Home() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [loading, setLoading] = useState(true);
@@ -10,13 +12,15 @@ export default function Home() {
 
   async function fetchSignals() {
     try {
+      setLoading(true);
+
       const res = await fetch("/api/signals");
       const data = await res.json();
 
       setSignals(data.signals || []);
       setLastUpdate(new Date().toLocaleTimeString());
     } catch (err) {
-      console.error(err);
+      console.error("Failed to fetch signals:", err);
     } finally {
       setLoading(false);
     }
@@ -28,58 +32,38 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
-  const activeSetups = signals.filter((s) => s.isSetupValid).length;
-  const activeEntries = signals.filter((s) => s.isSniper).length;
-
   return (
     <main className="min-h-screen bg-black text-white">
-      {/* SINGLE RESPONSIBLE CONTAINER (FIXES LEFT EDGE ISSUE) */}
-      <div className="mx-auto w-full max-w-[1600px] px-6 md:px-10 lg:px-16 xl:px-24 py-12">
-        
+      <div className="max-w-7xl mx-auto px-6 sm:px-10 lg:px-12 py-10">
         {/* HEADER */}
-        <header className="mb-10 border-b border-gray-800 pb-8">
-          <h1 className="text-4xl md:text-6xl font-bold tracking-tight">
-            CX SWITCH
+        <div className="mb-10">
+          <h1 className="text-4xl sm:text-5xl font-bold tracking-tight">
+            CX Switch
           </h1>
-          <p className="text-gray-500 text-lg mt-3">
-            Early Trend Scanner • 4H Structure • 1H Confirmation • 15M Entry
+          <p className="text-gray-400 mt-2">
+            Market Structure • Momentum • Execution Flow
           </p>
-        </header>
+        </div>
 
         {/* CONTROLS */}
-        <div className="flex flex-wrap items-center gap-3 mb-8">
+        <div className="flex items-center gap-3 mb-8">
           <button
             onClick={fetchSignals}
             disabled={loading}
-            className="px-6 py-3 rounded-xl bg-white text-black font-semibold hover:bg-gray-200 transition"
+            className="px-5 py-2 bg-white text-black rounded-lg font-semibold hover:bg-gray-200 transition disabled:opacity-50"
           >
             {loading ? "Scanning..." : "Refresh"}
           </button>
 
           <span className="text-sm text-gray-500 ml-auto">
-            Last update: {lastUpdate || "--"}
+            Last update: {lastUpdate || "—"}
           </span>
         </div>
 
-        {/* STATS */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
-          <StatCard label="Assets Tracked" value={signals.length} />
-          <StatCard
-            label="Active Setups"
-            value={activeSetups}
-            highlight="text-yellow-400"
-          />
-          <StatCard
-            label="Entry Signals"
-            value={activeEntries}
-            highlight="text-green-400"
-          />
-        </div>
-
-        {/* SIGNAL GRID */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* FEED */}
+        <div className="space-y-4">
           {signals.map((signal) => (
-            <SignalCard key={signal.symbol} signal={signal} />
+            <SignalRow key={signal.symbol} signal={signal} />
           ))}
         </div>
       </div>
@@ -88,153 +72,137 @@ export default function Home() {
 }
 
 /* =========================
-   STATS CARD
+   SIGNAL ROW
 ========================= */
 
-function StatCard({
-  label,
-  value,
-  highlight = "text-white",
-}: {
-  label: string;
-  value: number;
-  highlight?: string;
-}) {
-  return (
-    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6">
-      <p className="text-xs uppercase tracking-wider text-gray-500">
-        {label}
-      </p>
-      <p className={`text-3xl font-bold mt-2 ${highlight}`}>
-        {value}
-      </p>
-    </div>
-  );
-}
+function SignalRow({ signal }: { signal: Signal }) {
+  const state = resolveState(signal);
 
-/* =========================
-   SIGNAL CARD
-========================= */
+  const border =
+    state === "SNIPER"
+      ? "border-green-500/40"
+      : state === "ARMED"
+      ? "border-blue-500/30"
+      : state === "SETUP"
+      ? "border-yellow-500/30"
+      : state === "EARLY"
+      ? "border-purple-500/30"
+      : "border-gray-800";
 
-function SignalCard({ signal }: { signal: Signal }) {
-  const isEntry = signal.isSniper;
-  const isSetup = signal.isSetupValid;
+  const glow =
+    state === "SNIPER"
+      ? "shadow-[0_0_25px_rgba(34,197,94,0.08)]"
+      : "";
 
-  const status = isEntry ? "ENTRY" : isSetup ? "SETUP" : "MONITOR";
-
-  const border = isEntry
-    ? "border-green-500/30"
-    : isSetup
-    ? "border-yellow-500/30"
-    : "border-gray-800";
-
-  const badge = isEntry
-    ? "text-green-400 bg-green-500/10"
-    : isSetup
-    ? "text-yellow-400 bg-yellow-500/10"
-    : "text-gray-400 bg-gray-800";
-
-  const biasColor =
-    signal.bias === "Bullish"
-      ? "text-green-400"
-      : signal.bias === "Bearish"
-      ? "text-red-400"
-      : "text-gray-400";
+  const badge =
+    state === "SNIPER"
+      ? "bg-green-500/10 text-green-400 border-green-500/30"
+      : state === "ARMED"
+      ? "bg-blue-500/10 text-blue-400 border-blue-500/30"
+      : state === "SETUP"
+      ? "bg-yellow-500/10 text-yellow-400 border-yellow-500/30"
+      : state === "EARLY"
+      ? "bg-purple-500/10 text-purple-400 border-purple-500/30"
+      : "bg-gray-800 text-gray-400 border-gray-700";
 
   return (
-    <div className={`bg-gray-950 border ${border} rounded-2xl p-6`}>
-      
-      {/* HEADER */}
-      <div className="flex justify-between items-start mb-6">
+    <div
+      className={`border ${border} ${glow} rounded-xl p-5 bg-gray-950/30 backdrop-blur-sm transition`}
+    >
+      {/* TOP ROW */}
+      <div className="flex items-start justify-between mb-4">
         <div>
-          <h2 className="text-3xl font-bold">{signal.symbol}</h2>
-          <p className="text-gray-500 mt-1">
-            $
-            {signal.price.toLocaleString(undefined, {
+          <h2 className="text-2xl font-semibold">{signal.symbol}</h2>
+          <p className="text-gray-400 text-sm">
+            ${signal.price.toLocaleString(undefined, {
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
             })}
           </p>
         </div>
 
-        <div className={`px-3 py-2 rounded-lg text-xs font-semibold ${badge}`}>
-          {status}
+        <div className={`px-3 py-1 rounded-lg border text-xs ${badge}`}>
+          {state}
         </div>
       </div>
 
       {/* CORE METRICS */}
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        <div>
-          <p className="text-xs text-gray-500">Bias</p>
-          <p className={`font-semibold ${biasColor}`}>{signal.bias}</p>
-        </div>
-
-        <div>
-          <p className="text-xs text-gray-500">Confidence</p>
-          <p className="font-semibold">{signal.confidence}%</p>
-        </div>
+      <div className="grid grid-cols-3 gap-4 text-sm mb-4">
+        <Metric label="Bias" value={signal.bias} />
+        <Metric label="ADX" value={signal.adx.toFixed(1)} />
+        <Metric label="Confidence" value={`${signal.confidence}%`} />
       </div>
 
       {/* INDICATORS */}
-      <div className="border-t border-gray-800 pt-5 mb-5">
-        <h3 className="text-xs uppercase tracking-wider text-gray-500 mb-3">
-          Indicators
-        </h3>
+      <div className="text-xs text-gray-400 space-y-1 border-t border-gray-800 pt-3">
+        <div className="flex justify-between">
+          <span>Stoch K</span>
+          <span className="text-white">{signal.stochK.toFixed(1)}</span>
+        </div>
 
-        <Row label="ADX" value={signal.adx?.toFixed(1)} />
-        <Row label="Stoch K" value={signal.stochK?.toFixed(1)} />
-        <Row label="Stoch D" value={signal.stochD?.toFixed(1)} />
+        <div className="flex justify-between">
+          <span>Stoch D</span>
+          <span className="text-white">{signal.stochD.toFixed(1)}</span>
+        </div>
       </div>
 
-      {/* TRADE PLAN */}
-      <div className="border-t border-gray-800 pt-5 mb-5">
-        <h3 className="text-xs uppercase tracking-wider text-gray-500 mb-3">
-          Trade Plan
-        </h3>
+      {/* RISK (only if exists) */}
+      {signal.stopLoss && signal.takeProfit && (
+        <div className="mt-4 pt-3 border-t border-gray-800 grid grid-cols-3 text-xs">
+          <div>
+            <p className="text-gray-500">SL</p>
+            <p className="text-red-400">
+              ${signal.stopLoss.toFixed(2)}
+            </p>
+          </div>
 
-        {isEntry ? (
-          <>
-            <Row
-              label="Stop Loss"
-              value={`$${signal.stopLoss?.toFixed(2)}`}
-            />
-            <Row
-              label="Take Profit"
-              value={`$${signal.takeProfit?.toFixed(2)}`}
-            />
-            <Row
-              label="R / R"
-              value={`${signal.riskRewardRatio?.toFixed(2)} : 1`}
-            />
-          </>
-        ) : (
-          <p className="text-sm text-gray-500">
-            Waiting for valid entry conditions...
-          </p>
-        )}
-      </div>
+          <div>
+            <p className="text-gray-500">TP</p>
+            <p className="text-green-400">
+              ${signal.takeProfit.toFixed(2)}
+            </p>
+          </div>
 
-      {/* REASON */}
-      <p className="text-sm text-gray-400">{signal.reason}</p>
+          <div>
+            <p className="text-gray-500">R/R</p>
+            <p className="text-blue-400">
+              {signal.riskRewardRatio?.toFixed(2) ?? "—"}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 /* =========================
-   ROW COMPONENT
+   SMALL METRIC
 ========================= */
 
-function Row({
+function Metric({
   label,
   value,
 }: {
   label: string;
-  value?: string;
+  value: string;
 }) {
   return (
-    <div className="flex justify-between py-1">
-      <span className="text-gray-500 text-sm">{label}</span>
-      <span className="font-mono text-white">{value ?? "--"}</span>
+    <div>
+      <p className="text-gray-500 text-xs">{label}</p>
+      <p className="font-mono text-white">{value}</p>
     </div>
   );
+}
+
+/* =========================
+   STATE RESOLVER (UI SIDE)
+   Mirrors engine but safe for display
+========================= */
+
+function resolveState(signal: Signal): SignalState {
+  if (signal.isSniper) return "SNIPER";
+  if (signal.isSetupValid) return "SETUP";
+  if (signal.adx > 18 && signal.bias !== "Neutral")
+    return "EARLY";
+  return "WAIT";
 }
