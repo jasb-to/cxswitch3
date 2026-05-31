@@ -17,10 +17,6 @@ import { sendTelegramAlert } from "./telegram";
 
 const ALERT_COOLDOWN_MS = 60 * 60 * 1000;
 
-/* =========================
-   ENGINE
-========================= */
-
 export async function generateAndStoreSignals() {
   const symbols: Symbol[] = ["BTC", "ETH", "SOL"];
 
@@ -28,7 +24,6 @@ export async function generateAndStoreSignals() {
     try {
       console.log(`\n[ENGINE] ===== ${symbol} =====`);
 
-      /* FETCH DATA */
       const [c4, c15, c5] = await Promise.all([
         getCandles4H(symbol),
         getCandles15M(symbol),
@@ -48,29 +43,10 @@ export async function generateAndStoreSignals() {
       const signal = generateSignal(symbol, c4, c15, c5, price);
 
       /* =========================
-         ALERT LOGIC (STRICTLY ALIGNED)
+         TELEGRAM (ONLY SNIPER)
       ========================= */
 
-      let shouldAlert = false;
-      let alertType: "ENTRY" | "CONTINUATION" | "NONE" = "NONE";
-
-      // 🟡 ENTRY (SETUP = YOUR REAL TRADE)
-      if (signal.stage === "SETUP" && signal.confidence >= 60) {
-        shouldAlert = true;
-        alertType = "ENTRY";
-      }
-
-      // 🟢 SNIPER = optional follow-through alerts (low frequency)
-      if (signal.stage === "SNIPER" && signal.confidence >= 65) {
-        shouldAlert = true;
-        alertType = "CONTINUATION";
-      }
-
-      /* =========================
-         TELEGRAM COOLDOWN
-      ========================= */
-
-      if (shouldAlert) {
+      if (signal.isSniper) {
         const cooldown = await getTelegramCooldown(symbol);
 
         const now = Date.now();
@@ -81,34 +57,46 @@ export async function generateAndStoreSignals() {
         const canSend = now - last >= ALERT_COOLDOWN_MS;
 
         if (canSend) {
-          const sent = await sendTelegramAlert({
-            ...signal,
-            reason:
-              alertType === "ENTRY"
-                ? "ENTRY SIGNAL (SETUP)"
-                : "CONTINUATION (SNIPER)",
-          });
+          const sent = await sendTelegramAlert(signal as any);
 
           if (sent) {
             await updateTelegramCooldown(symbol, new Date().toISOString());
-            console.log(
-              `[ENGINE] ${symbol}: ${alertType} ALERT SENT (${signal.stage})`
-            );
+            console.log(`[ENGINE] ${symbol}: SNIPER ALERT SENT`);
           }
-        } else {
-          console.log(`[ENGINE] ${symbol}: cooldown active`);
         }
-      } else {
-        console.log(
-          `[ENGINE] ${symbol}: ${signal.stage} | no alert`
-        );
       }
 
-      /* STORE SNAPSHOT */
-      await storeSignalSnapshot(signal);
+      /* =========================
+         MAP NEW → OLD SCHEMA (CRITICAL FIX)
+      ========================= */
+
+      const snapshot = {
+        symbol: signal.symbol,
+        price: signal.price,
+
+        // backward compatibility mapping
+        isSetupValid: signal.isEarly,
+        isSniperCandidate: signal.isEarly,
+        isSniper: signal.isSniper,
+
+        bias: signal.bias,
+        confidence: signal.confidence,
+        adx: signal.adx,
+        stochK: signal.stochK,
+        stochD: signal.stochD,
+        reason: signal.reason,
+
+        stopLoss: signal.stopLoss,
+        takeProfit: signal.takeProfit,
+        riskRewardRatio: signal.riskRewardRatio,
+
+        updatedAt: signal.updatedAt,
+      };
+
+      await storeSignalSnapshot(snapshot as any);
 
       console.log(
-        `[ENGINE] ${symbol}: ${signal.stage} | $${signal.price}`
+        `[ENGINE] ${symbol}: ${signal.reason} | $${signal.price}`
       );
     } catch (err) {
       console.error(`[ENGINE ERROR] ${symbol}`, err);
