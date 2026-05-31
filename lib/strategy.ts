@@ -41,21 +41,21 @@ export interface Signal {
 ========================= */
 
 function calculateADX(candles: Candle[], period = 14) {
-  if (candles.length < period + 1) return { adx: 0 };
+  if (candles.length < period + 2) return 0;
 
-  let plusDM = 0,
-    minusDM = 0,
-    tr = 0;
+  let plusDM = 0;
+  let minusDM = 0;
+  let tr = 0;
 
   for (let i = candles.length - period; i < candles.length; i++) {
     const curr = candles[i];
     const prev = candles[i - 1];
 
-    const up = curr.high - prev.high;
-    const down = prev.low - curr.low;
+    const upMove = curr.high - prev.high;
+    const downMove = prev.low - curr.low;
 
-    if (up > down && up > 0) plusDM += up;
-    if (down > up && down > 0) minusDM += down;
+    if (upMove > downMove && upMove > 0) plusDM += upMove;
+    if (downMove > upMove && downMove > 0) minusDM += downMove;
 
     const tr1 = curr.high - curr.low;
     const tr2 = Math.abs(curr.high - prev.close);
@@ -70,7 +70,7 @@ function calculateADX(candles: Candle[], period = 14) {
   const dx =
     Math.abs(plusDI - minusDI) / ((plusDI + minusDI) || 1);
 
-  return { adx: dx * 100 };
+  return dx * 100;
 }
 
 function calculateStoch(candles: Candle[]) {
@@ -87,61 +87,81 @@ function calculateStoch(candles: Candle[]) {
 }
 
 /* =========================
-   STRUCTURE
+   STRUCTURE ENGINE (IMPORTANT FIX)
 ========================= */
 
+function getStructureLevels(candles: Candle[]) {
+  const slice = candles.slice(-20);
+
+  const swingHigh = Math.max(...slice.map((c) => c.high));
+  const swingLow = Math.min(...slice.map((c) => c.low));
+
+  return { swingHigh, swingLow };
+}
+
 function detectStructure(candles: Candle[]) {
-  const last = candles.slice(-10);
+  const last = candles.slice(-5);
 
-  const highs = last.map(c => c.high);
-  const lows = last.map(c => c.low);
+  const hh = last[4].high > last[3].high;
+  const hl = last[4].low > last[3].low;
 
-  const hh = highs[4] > highs[2] && highs[2] > highs[0];
-  const hl = lows[4] > lows[2] && lows[2] > lows[0];
-
-  const lh = highs[4] < highs[2] && highs[2] < highs[0];
-  const ll = lows[4] < lows[2] && lows[2] < lows[0];
+  const lh = last[4].high < last[3].high;
+  const ll = last[4].low < last[3].low;
 
   if (hh && hl) return "Bullish";
   if (lh && ll) return "Bearish";
-
   return "Neutral";
 }
 
 /* =========================
-   REGIME FILTER (NEW CORE FIX)
-========================= */
-
-function isValidMarket(adx: number) {
-  return adx > 15 && adx < 60;
-}
-
-/* =========================
-   EARLY
+   ENTRY LOGIC
 ========================= */
 
 function isEarlySignal(adx: number, stochK: number) {
-  return adx > 10 && adx < 60 && stochK > 25 && stochK < 75;
+  return adx > 10 && adx < 55 && stochK > 30 && stochK < 70;
 }
 
-/* =========================
-   SNIPER (FIXED)
-========================= */
-
-function isSniperEntry(structure: string, stochK: number, adx: number) {
-  if (!isValidMarket(adx)) return false;
-
-  const breakoutUp =
-    structure === "Bullish" && stochK > 55;
-
-  const breakoutDown =
-    structure === "Bearish" && stochK < 45;
+function isSniperEntry(structure: string, stochK: number) {
+  const breakoutUp = structure === "Bullish" && stochK > 55;
+  const breakoutDown = structure === "Bearish" && stochK < 45;
 
   return breakoutUp || breakoutDown;
 }
 
 /* =========================
-   MAIN
+   RISK ENGINE (FIXED PROPERLY)
+========================= */
+
+function calculateRisk(
+  bias: "Bullish" | "Bearish" | "Neutral",
+  livePrice: number,
+  swingHigh: number,
+  swingLow: number
+) {
+  const buffer = livePrice * 0.0015; // 0.15% buffer
+
+  let stopLoss = null;
+  let takeProfit = null;
+
+  if (bias === "Bullish") {
+    stopLoss = swingLow - buffer;
+    const risk = livePrice - stopLoss;
+    takeProfit = livePrice + risk * 2;
+    return { stopLoss, takeProfit, rrr: 2 };
+  }
+
+  if (bias === "Bearish") {
+    stopLoss = swingHigh + buffer;
+    const risk = stopLoss - livePrice;
+    takeProfit = livePrice - risk * 2;
+    return { stopLoss, takeProfit, rrr: 2 };
+  }
+
+  return { stopLoss: null, takeProfit: null, rrr: null };
+}
+
+/* =========================
+   MAIN ENGINE
 ========================= */
 
 export function generateSignal(
@@ -151,48 +171,43 @@ export function generateSignal(
   candles15M: Candle[],
   livePrice: number
 ): Signal {
-
   const c4 = [...candles4H].reverse();
   const c15 = [...candles15M].reverse();
 
   const structure = detectStructure(c4);
 
-  const adx = calculateADX(c15).adx;
+  const adx = calculateADX(c15);
   const stoch = calculateStoch(c15);
 
   const early = isEarlySignal(adx, stoch.K);
-  const sniper = isSniperEntry(structure, stoch.K, adx);
+  const sniper = isSniperEntry(structure, stoch.K);
 
-  const bias =
+  const bias: Signal["bias"] =
     structure === "Bullish"
       ? "Bullish"
       : structure === "Bearish"
       ? "Bearish"
       : "Neutral";
 
-  const confidence = sniper ? 90 : early ? 55 : 20;
+  const confidence = sniper ? 85 : early ? 55 : 20;
 
-  let stopLoss: number | null = null;
-  let takeProfit: number | null = null;
-  let rrr: number | null = null;
+  const { swingHigh, swingLow } = getStructureLevels(c15);
+
+  let stopLoss = null;
+  let takeProfit = null;
+  let rrr = null;
 
   if (sniper) {
-    const atr =
-      c15.reduce((sum, c) => sum + Math.abs(c.high - c.low), 0) / c15.length;
+    const risk = calculateRisk(
+      bias,
+      livePrice,
+      swingHigh,
+      swingLow
+    );
 
-    const risk = atr * 2.5;
-
-    stopLoss =
-      bias === "Bullish"
-        ? livePrice - risk
-        : livePrice + risk;
-
-    takeProfit =
-      bias === "Bullish"
-        ? livePrice + risk * 3
-        : livePrice - risk * 3;
-
-    rrr = 3;
+    stopLoss = risk.stopLoss;
+    takeProfit = risk.takeProfit;
+    rrr = risk.rrr;
   }
 
   return {
@@ -203,7 +218,7 @@ export function generateSignal(
     isSniper: sniper,
     isActive: early || sniper,
 
-    setupId: `${symbol}-${structure}-${Math.floor(stoch.K)}`,
+    setupId: `${symbol}-${structure}-${stoch.K.toFixed(0)}`,
 
     bias,
 
