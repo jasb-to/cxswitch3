@@ -37,25 +37,25 @@ export interface Signal {
 }
 
 /* =========================
-   INDICATORS
+   ADX
 ========================= */
 
 function calculateADX(candles: Candle[], period = 14) {
-  if (candles.length < period + 2) return 0;
+  if (candles.length < period + 1) return { adx: 0 };
 
-  let plusDM = 0;
-  let minusDM = 0;
-  let tr = 0;
+  let plusDM = 0,
+    minusDM = 0,
+    tr = 0;
 
   for (let i = candles.length - period; i < candles.length; i++) {
     const curr = candles[i];
     const prev = candles[i - 1];
 
-    const upMove = curr.high - prev.high;
-    const downMove = prev.low - curr.low;
+    const up = curr.high - prev.high;
+    const down = prev.low - curr.low;
 
-    if (upMove > downMove && upMove > 0) plusDM += upMove;
-    if (downMove > upMove && downMove > 0) minusDM += downMove;
+    if (up > down && up > 0) plusDM += up;
+    if (down > up && down > 0) minusDM += down;
 
     const tr1 = curr.high - curr.low;
     const tr2 = Math.abs(curr.high - prev.close);
@@ -70,8 +70,12 @@ function calculateADX(candles: Candle[], period = 14) {
   const dx =
     Math.abs(plusDI - minusDI) / ((plusDI + minusDI) || 1);
 
-  return dx * 100;
+  return { adx: dx * 100 };
 }
+
+/* =========================
+   STOCH
+========================= */
 
 function calculateStoch(candles: Candle[]) {
   const period = 14;
@@ -87,77 +91,70 @@ function calculateStoch(candles: Candle[]) {
 }
 
 /* =========================
-   STRUCTURE ENGINE (IMPORTANT FIX)
+   STRUCTURE
 ========================= */
-
-function getStructureLevels(candles: Candle[]) {
-  const slice = candles.slice(-20);
-
-  const swingHigh = Math.max(...slice.map((c) => c.high));
-  const swingLow = Math.min(...slice.map((c) => c.low));
-
-  return { swingHigh, swingLow };
-}
 
 function detectStructure(candles: Candle[]) {
   const last = candles.slice(-5);
 
-  const hh = last[4].high > last[3].high;
-  const hl = last[4].low > last[3].low;
+  const highs = last.map((c) => c.high);
+  const lows = last.map((c) => c.low);
 
-  const lh = last[4].high < last[3].high;
-  const ll = last[4].low < last[3].low;
+  const hh = highs[4] > highs[3];
+  const hl = lows[4] > lows[3];
+
+  const lh = highs[4] < highs[3];
+  const ll = lows[4] < lows[3];
 
   if (hh && hl) return "Bullish";
   if (lh && ll) return "Bearish";
+
   return "Neutral";
 }
 
 /* =========================
-   ENTRY LOGIC
+   PIVOTS (KEY UPGRADE)
 ========================= */
 
-function isEarlySignal(adx: number, stochK: number) {
-  return adx > 10 && adx < 55 && stochK > 30 && stochK < 70;
-}
+function calculatePivots(candles: Candle[]) {
+  const slice = candles.slice(-20);
 
-function isSniperEntry(structure: string, stochK: number) {
-  const breakoutUp = structure === "Bullish" && stochK > 55;
-  const breakoutDown = structure === "Bearish" && stochK < 45;
+  let highs: number[] = [];
+  let lows: number[] = [];
 
-  return breakoutUp || breakoutDown;
+  for (let i = 1; i < slice.length - 1; i++) {
+    const prev = slice[i - 1];
+    const curr = slice[i];
+    const next = slice[i + 1];
+
+    if (curr.high > prev.high && curr.high > next.high) {
+      highs.push(curr.high);
+    }
+
+    if (curr.low < prev.low && curr.low < next.low) {
+      lows.push(curr.low);
+    }
+  }
+
+  return {
+    resistance: highs.length ? Math.max(...highs) : null,
+    support: lows.length ? Math.min(...lows) : null,
+  };
 }
 
 /* =========================
-   RISK ENGINE (FIXED PROPERLY)
+   SIGNAL CONDITIONS
 ========================= */
 
-function calculateRisk(
-  bias: "Bullish" | "Bearish" | "Neutral",
-  livePrice: number,
-  swingHigh: number,
-  swingLow: number
-) {
-  const buffer = livePrice * 0.0015; // 0.15% buffer
+function isEarly(adx: number, stochK: number) {
+  return adx > 10 && adx < 50 && stochK > 30 && stochK < 70;
+}
 
-  let stopLoss = null;
-  let takeProfit = null;
-
-  if (bias === "Bullish") {
-    stopLoss = swingLow - buffer;
-    const risk = livePrice - stopLoss;
-    takeProfit = livePrice + risk * 2;
-    return { stopLoss, takeProfit, rrr: 2 };
-  }
-
-  if (bias === "Bearish") {
-    stopLoss = swingHigh + buffer;
-    const risk = stopLoss - livePrice;
-    takeProfit = livePrice - risk * 2;
-    return { stopLoss, takeProfit, rrr: 2 };
-  }
-
-  return { stopLoss: null, takeProfit: null, rrr: null };
+function isSniper(structure: string, stochK: number) {
+  return (
+    (structure === "Bullish" && stochK > 55) ||
+    (structure === "Bearish" && stochK < 45)
+  );
 }
 
 /* =========================
@@ -176,11 +173,13 @@ export function generateSignal(
 
   const structure = detectStructure(c4);
 
-  const adx = calculateADX(c15);
+  const adx = calculateADX(c15).adx;
   const stoch = calculateStoch(c15);
 
-  const early = isEarlySignal(adx, stoch.K);
-  const sniper = isSniperEntry(structure, stoch.K);
+  const pivots = calculatePivots(c15);
+
+  const early = isEarly(adx, stoch.K);
+  const sniper = isSniper(structure, stoch.K);
 
   const bias: Signal["bias"] =
     structure === "Bullish"
@@ -191,23 +190,36 @@ export function generateSignal(
 
   const confidence = sniper ? 85 : early ? 55 : 20;
 
-  const { swingHigh, swingLow } = getStructureLevels(c15);
+  const buffer = livePrice * 0.001;
 
-  let stopLoss = null;
-  let takeProfit = null;
-  let rrr = null;
+  let stopLoss: number | null = null;
+  let takeProfit: number | null = null;
+  let rrr: number | null = null;
+
+  /* =========================
+     SNIPER LOGIC (PIVOT-BASED)
+  ========================= */
 
   if (sniper) {
-    const risk = calculateRisk(
-      bias,
-      livePrice,
-      swingHigh,
-      swingLow
-    );
+    if (bias === "Bullish") {
+      stopLoss = livePrice - buffer;
 
-    stopLoss = risk.stopLoss;
-    takeProfit = risk.takeProfit;
-    rrr = risk.rrr;
+      takeProfit =
+        pivots.resistance ??
+        livePrice + (livePrice - stopLoss) * 1.8;
+
+      rrr = 1.8;
+    }
+
+    if (bias === "Bearish") {
+      stopLoss = livePrice + buffer;
+
+      takeProfit =
+        pivots.support ??
+        livePrice - (stopLoss - livePrice) * 1.8;
+
+      rrr = 1.8;
+    }
   }
 
   return {
@@ -218,7 +230,7 @@ export function generateSignal(
     isSniper: sniper,
     isActive: early || sniper,
 
-    setupId: `${symbol}-${structure}-${stoch.K.toFixed(0)}`,
+    setupId: `${symbol}-${structure}-${Math.floor(stoch.K)}`,
 
     bias,
 
