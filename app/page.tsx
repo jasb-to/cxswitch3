@@ -3,10 +3,12 @@
 import { useEffect, useState } from "react";
 import type { Signal } from "@/lib/strategy";
 
+type EngineState = "EARLY" | "SETUP" | "SNIPER" | "NONE";
+
 export default function Home() {
-  const [signals, setSignals] = useState<Signal[]>([]);
+  const [signals, setSignals] = useState<(Signal & { engineState?: EngineState })[]>([]);
   const [loading, setLoading] = useState(true);
-  const [lastUpdate, setLastUpdate] = useState<string>("");
+  const [lastUpdate, setLastUpdate] = useState("");
 
   async function fetchSignals() {
     try {
@@ -16,15 +18,6 @@ export default function Home() {
       const data = await res.json();
 
       setSignals(data.signals || []);
-
-      console.log(`[UI] Received ${data.signals?.length || 0} signals`);
-
-      (data.signals || []).forEach((signal: Signal) => {
-        console.log(
-          `[UI] ${signal.symbol}: setup=${signal.isSetupValid}, sniper=${signal.isSniper}`
-        );
-      });
-
       setLastUpdate(new Date().toLocaleTimeString());
     } catch (err) {
       console.error("Failed to fetch signals:", err);
@@ -37,10 +30,9 @@ export default function Home() {
     try {
       const res = await fetch("/api/telegram/test", { method: "POST" });
       const data = await res.json();
-      alert(data.message || "Test sent");
+      alert(data.message || "Test alert sent!");
     } catch (err) {
-      alert("Telegram test failed");
-      console.error(err);
+      alert("Failed to send test alert");
     }
   }
 
@@ -49,33 +41,34 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const interval = setInterval(fetchSignals, 60000);
+    const interval = setInterval(fetchSignals, 30000);
     return () => clearInterval(interval);
   }, []);
 
-  return (
-    <main className="min-h-screen bg-black text-white">
-      {/* FULL PAGE WRAPPER (fixes left edge issue) */}
-      <div className="w-full px-6 sm:px-10 lg:px-16 py-10 max-w-screen-2xl mx-auto">
-        
-        {/* HEADER */}
-        <div className="mb-10">
-          <h1 className="text-4xl sm:text-5xl font-bold tracking-tight">
-            CX Switch
-          </h1>
-          <p className="text-gray-400 mt-2">
-            Market Structure • Momentum • Execution Flow
-          </p>
-        </div>
+  const early = signals.filter((s) => s.engineState === "EARLY");
+  const setup = signals.filter((s) => s.engineState === "SETUP");
+  const sniper = signals.filter((s) => s.engineState === "SNIPER");
+  const none = signals.filter(
+    (s) => !s.engineState || s.engineState === "NONE"
+  );
 
-        {/* CONTROLS */}
-        <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center mb-8">
+  return (
+    <main className="min-h-screen bg-black text-white px-6 md:px-10 py-10">
+      {/* Header */}
+      <div className="mb-10">
+        <h1 className="text-4xl md:text-5xl font-bold tracking-tight">
+          CX Switch
+        </h1>
+        <p className="text-gray-400 mt-2">
+          Market Structure • Compression • Breakout Engine
+        </p>
+
+        <div className="flex gap-4 mt-6 items-center">
           <button
             onClick={fetchSignals}
-            disabled={loading}
-            className="px-5 py-2 bg-white text-black rounded-lg font-semibold hover:bg-gray-200 transition disabled:opacity-50"
+            className="px-5 py-2 bg-white text-black rounded-lg font-semibold hover:bg-gray-200 transition"
           >
-            {loading ? "Scanning..." : "Refresh"}
+            Refresh
           </button>
 
           <button
@@ -85,19 +78,70 @@ export default function Home() {
             Test Telegram
           </button>
 
-          <span className="text-sm text-gray-500 sm:ml-auto">
+          <span className="text-sm text-gray-500 ml-auto">
             Last update: {lastUpdate || "—"}
           </span>
         </div>
-
-        {/* GRID (FIXED 3 COLUMNS) */}
-        <div className="w-full grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">
-          {signals.map((signal) => (
-            <SignalCard key={signal.symbol} signal={signal} />
-          ))}
-        </div>
       </div>
+
+      {/* 3 Column Engine View */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <Column title="🟣 EARLY" subtitle="Compression forming" color="purple">
+          {early.map((s) => (
+            <SignalCard key={s.symbol} signal={s} state="EARLY" />
+          ))}
+        </Column>
+
+        <Column title="🟡 SETUP" subtitle="Structure valid" color="yellow">
+          {setup.map((s) => (
+            <SignalCard key={s.symbol} signal={s} state="SETUP" />
+          ))}
+        </Column>
+
+        <Column title="🟢 SNIPER" subtitle="Breakout active" color="green">
+          {sniper.map((s) => (
+            <SignalCard key={s.symbol} signal={s} state="SNIPER" />
+          ))}
+        </Column>
+      </div>
+
+      {/* NONE section */}
+      {none.length > 0 && (
+        <div className="mt-10 opacity-40">
+          <h2 className="text-sm text-gray-500 mb-3">NO STRUCTURE</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {none.map((s) => (
+              <SignalCard key={s.symbol} signal={s} state="NONE" />
+            ))}
+          </div>
+        </div>
+      )}
     </main>
+  );
+}
+
+/* =========================
+   COLUMN WRAPPER
+========================= */
+
+function Column({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  color: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="border border-gray-800 rounded-xl p-4 bg-gray-950/40">
+      <div className="mb-4">
+        <h2 className="text-lg font-bold">{title}</h2>
+        <p className="text-xs text-gray-500">{subtitle}</p>
+      </div>
+      <div className="space-y-4">{children}</div>
+    </div>
   );
 }
 
@@ -105,103 +149,48 @@ export default function Home() {
    SIGNAL CARD
 ========================= */
 
-function SignalCard({ signal }: { signal: Signal }) {
-  const isSniper = signal.isSniper;
-  const isSetupValid = signal.isSetupValid;
+function SignalCard({
+  signal,
+  state,
+}: {
+  signal: Signal;
+  state: string;
+}) {
+  const border =
+    state === "SNIPER"
+      ? "border-green-500/40"
+      : state === "SETUP"
+      ? "border-yellow-500/40"
+      : state === "EARLY"
+      ? "border-purple-500/40"
+      : "border-gray-800";
 
-  const borderColor = isSniper
-    ? "border-green-500/40"
-    : isSetupValid
-    ? "border-yellow-500/40"
-    : "border-gray-800";
-
-  const bg = isSniper
-    ? "bg-green-500/5"
-    : isSetupValid
-    ? "bg-yellow-500/5"
-    : "bg-gray-900/40";
-
-  const badge = isSniper
-    ? "text-green-400 border-green-500/30 bg-green-500/10"
-    : isSetupValid
-    ? "text-yellow-400 border-yellow-500/30 bg-yellow-500/10"
-    : "text-gray-400 border-gray-700 bg-gray-800/40";
-
-  const label = isSniper ? "SNIPER" : isSetupValid ? "SETUP" : "WAIT";
-
-  const safe = (v: number | null | undefined) =>
-    typeof v === "number" && !isNaN(v) ? v : 0;
+  const glow =
+    state === "SNIPER"
+      ? "shadow-green-500/10"
+      : state === "SETUP"
+      ? "shadow-yellow-500/10"
+      : "shadow-purple-500/10";
 
   return (
     <div
-      className={`w-full h-full border ${borderColor} ${bg} rounded-xl p-6 backdrop-blur-sm flex flex-col`}
+      className={`border ${border} ${glow} rounded-lg p-4 bg-black/40 backdrop-blur-sm`}
     >
-      {/* HEADER */}
-      <div className="flex justify-between items-start mb-6">
-        <div>
-          <h2 className="text-2xl font-bold">{signal.symbol}</h2>
-          <p className="text-gray-400 text-sm">
-            ${signal.price?.toFixed(2)}
-          </p>
-        </div>
-
-        <div className={`px-3 py-1 rounded-lg border text-xs ${badge}`}>
-          {label}
-        </div>
+      <div className="flex justify-between items-center mb-2">
+        <h3 className="text-xl font-bold">{signal.symbol}</h3>
+        <span className="text-xs text-gray-400">{state}</span>
       </div>
 
-      {/* METRICS */}
-      <div className="grid grid-cols-2 gap-3 mb-5">
-        <Metric label="Bias" value={signal.bias} />
-        <Metric label="Confidence" value={`${signal.confidence}%`} />
+      <p className="text-gray-300 text-sm mb-3">
+        ${signal.price?.toLocaleString?.() || "—"}
+      </p>
+
+      <div className="grid grid-cols-2 gap-2 text-xs text-gray-400">
+        <div>Bias: {signal.bias}</div>
+        <div>Conf: {signal.confidence}%</div>
+        <div>ADX: {signal.adx?.toFixed?.(1) || "0"}</div>
+        <div>K: {signal.stochK?.toFixed?.(1) || "0"}</div>
       </div>
-
-      {/* INDICATORS */}
-      <div className="space-y-2 text-sm mb-5">
-        <Row label="ADX" value={safe(signal.adx).toFixed(1)} />
-        <Row label="Stoch K" value={safe(signal.stochK).toFixed(1)} />
-        <Row label="Stoch D" value={safe(signal.stochD).toFixed(1)} />
-      </div>
-
-      {/* RISK */}
-      <div className="mt-auto pt-4 border-t border-gray-800 space-y-2 text-sm">
-        <Row
-          label="SL"
-          value={signal.stopLoss ? signal.stopLoss.toFixed(2) : "—"}
-        />
-        <Row
-          label="TP"
-          value={signal.takeProfit ? signal.takeProfit.toFixed(2) : "—"}
-        />
-        <Row
-          label="R/R"
-          value={
-            signal.riskRewardRatio ? `${signal.riskRewardRatio}:1` : "—"
-          }
-        />
-      </div>
-    </div>
-  );
-}
-
-/* =========================
-   SMALL UI COMPONENTS
-========================= */
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="bg-black/30 border border-gray-800 rounded-lg p-3">
-      <p className="text-xs text-gray-500">{label}</p>
-      <p className="font-mono text-white">{value}</p>
-    </div>
-  );
-}
-
-function Row({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex justify-between">
-      <span className="text-gray-500">{label}</span>
-      <span className="font-mono text-white">{value}</span>
     </div>
   );
 }
