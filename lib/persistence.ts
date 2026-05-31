@@ -1,87 +1,118 @@
-export interface SignalSnapshot {
-  symbol: string;
-  isSetupValid: boolean;
-  isSniperCandidate: boolean;
-  isSniper: boolean;
-  confidence: number;
-  price: number;
-  adx: number;
-  stochK: number;
-  stochD: number;
-  bias: "Bullish" | "Bearish" | "Neutral";
-  reason: string;
+import {
+  getCandles4H,
+  getCandles15M,
+  getCandles5M,
+  getCurrentPrice,
+} from "./kraken";
 
-  stopLoss: number | null;
-  takeProfit: number | null;
-  riskRewardRatio: number | null;
+import { generateSignal, Symbol } from "./strategy";
 
-  updatedAt: string;
-}
+import {
+  storeSignalSnapshot,
+  getTelegramCooldown,
+  updateTelegramCooldown,
+} from "./persistence";
 
-export interface TelegramCooldown {
-  symbol: string;
-  lastAlertAt: string;
-}
+import { sendTelegramAlert } from "./telegram";
 
-// =========================
-// IN-MEMORY STORAGE
-// =========================
+const ALERT_COOLDOWN_MS = 60 * 60 * 1000;
 
-const signalSnapshots = new Map<string, SignalSnapshot>();
-const telegramCooldowns = new Map<string, TelegramCooldown>();
+/* =========================
+   MAIN ENGINE
+========================= */
 
-console.log("[PERSISTENCE] initialized (in-memory mode)");
+export async function generateAndStoreSignals() {
+  const symbols: Symbol[] = ["BTC", "ETH", "SOL"];
 
-// =========================
-// SNAPSHOTS
-// =========================
+  for (const symbol of symbols) {
+    try {
+      console.log(`\n[ENGINE] ===== ${symbol} =====`);
 
-export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
-  signalSnapshots.set(snapshot.symbol, snapshot);
+      /* =========================
+         FETCH DATA
+      ========================= */
 
-  const status = snapshot.isSniper
-    ? "🟢 SNIPER"
-    : snapshot.isSetupValid
-    ? "🟡 SETUP"
-    : "⚪ NO_SETUP";
+      const [candles4H, candles1H, candles15M] = await Promise.all([
+        getCandles4H(symbol),
+        getCandles15M(symbol),
+        getCandles5M(symbol),
+      ]);
 
-  console.log(
-    `[PERSISTENCE] ${snapshot.symbol}: ${status} | candidate=${snapshot.isSniperCandidate} | ADX=${snapshot.adx.toFixed(
-      1
-    )} | SL/TP=${snapshot.stopLoss !== null ? "populated" : "null"}`
-  );
-}
+      const price = await getCurrentPrice(symbol);
 
-export async function getLatestSignalSnapshots(): Promise<SignalSnapshot[]> {
-  const snapshots = Array.from(signalSnapshots.values());
+      if (
+        !candles4H?.length ||
+        !candles1H?.length ||
+        !candles15M?.length
+      ) {
+        throw new Error(`Missing candle data for ${symbol}`);
+      }
 
-  console.log(
-    `[PERSISTENCE] getLatestSignalSnapshots → ${snapshots.length} items`
-  );
+      /* =========================
+         SIGNAL GENERATION
+      ========================= */
 
-  return snapshots;
-}
+      const signal = generateSignal(
+        symbol,
+        candles4H,
+        candles1H,
+        candles15M,
+        price
+      );
 
-// =========================
-// TELEGRAM COOLDOWN
-// =========================
+      /* =========================
+         TELEGRAM LOGIC (SNIPER ONLY)
+      ========================= */
 
-export async function getTelegramCooldown(
-  symbol: string
-): Promise<TelegramCooldown | null> {
-  return telegramCooldowns.get(symbol) || null;
-}
+      if (signal.isSniper) {
+        console.log(`[ENGINE] ${symbol}: SNIPER DETECTED`);
 
-export async function updateTelegramCooldown(
-  symbol: string,
-  timestamp: string
-) {
-  telegramCooldowns.set(symbol, {
-    symbol,
-    lastAlertAt: timestamp,
-  });
+        const cooldown = await getTelegramCooldown(symbol);
 
-  console.log(
-    `[PERSISTENCE] cooldown updated ${symbol}: ${timestamp}`
-  );
+        const now = Date.now();
+        const last = cooldown
+          ? new Date(cooldown.lastAlertAt).getTime()
+          : 0;
+
+        const canSend = now - last >= ALERT_COOLDOWN_MS;
+
+        if (canSend) {
+          const sent = await sendTelegramAlert(signal);
+
+          if (sent) {
+            await updateTelegramCooldown(
+              symbol,
+              new Date().toISOString()
+            );
+
+            console.log(`[ENGINE] ${symbol}: ALERT SENT`);
+          } else {
+            console.log(`[ENGINE] ${symbol}: ALERT FAILED`);
+          }
+        } else {
+          const mins = Math.ceil(
+            (ALERT_COOLDOWN_MS - (now - last)) / 60000
+          );
+
+          console.log(
+            `[ENGINE] ${symbol}: cooldown active (${mins}m)`
+          );
+        }
+      }
+
+      /* =========================
+         STORE SNAPSHOT
+      ========================= */
+
+      await storeSignalSnapshot(signal);
+
+      console.log(
+        `[ENGINE] ${symbol}: ${signal.reason} | $${signal.price}`
+      );
+    } catch (err) {
+      console.error(`[ENGINE ERROR] ${symbol}`, err);
+    }
+  }
+
+  console.log(`[ENGINE] COMPLETE`);
 }
