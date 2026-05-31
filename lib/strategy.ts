@@ -37,62 +37,47 @@ export interface Signal {
 }
 
 /* =========================
-   CORE IDEA SHIFT
-   We detect EARLY MOVE IGNITION:
-   - Compression (low ADX)
-   - Expansion starting (range break)
-   - Stoch turning from extreme
-========================= */
-
-/* =========================
-   ADX (simplified but stable)
+   BASIC INDICATORS
 ========================= */
 
 function calculateADX(candles: Candle[], period = 14) {
   if (candles.length < period + 2) return 0;
 
-  let trSum = 0;
-  let dmPlus = 0;
-  let dmMinus = 0;
+  let plusDM = 0,
+    minusDM = 0,
+    tr = 0;
 
   for (let i = candles.length - period; i < candles.length; i++) {
     const curr = candles[i];
     const prev = candles[i - 1];
 
-    const upMove = curr.high - prev.high;
-    const downMove = prev.low - curr.low;
+    const up = curr.high - prev.high;
+    const down = prev.low - curr.low;
 
-    if (upMove > downMove && upMove > 0) dmPlus += upMove;
-    if (downMove > upMove && downMove > 0) dmMinus += downMove;
+    if (up > down && up > 0) plusDM += up;
+    if (down > up && down > 0) minusDM += down;
 
-    const tr = Math.max(
-      curr.high - curr.low,
-      Math.abs(curr.high - prev.close),
-      Math.abs(curr.low - prev.close)
-    );
+    const tr1 = curr.high - curr.low;
+    const tr2 = Math.abs(curr.high - prev.close);
+    const tr3 = Math.abs(curr.low - prev.close);
 
-    trSum += tr;
+    tr += Math.max(tr1, tr2, tr3);
   }
 
-  const diPlus = (dmPlus / (trSum || 1)) * 100;
-  const diMinus = (dmMinus / (trSum || 1)) * 100;
+  const plusDI = (plusDM / (tr || 1)) * 100;
+  const minusDI = (minusDM / (tr || 1)) * 100;
 
-  const dx =
-    Math.abs(diPlus - diMinus) / ((diPlus + diMinus) || 1);
+  const dx = Math.abs(plusDI - minusDI) / (plusDI + minusDI || 1);
 
   return dx * 100;
 }
-
-/* =========================
-   STOCHASTIC (fast + responsive)
-========================= */
 
 function calculateStoch(candles: Candle[]) {
   const period = 14;
   const slice = candles.slice(-period);
 
-  const low = Math.min(...slice.map(c => c.low));
-  const high = Math.max(...slice.map(c => c.high));
+  const low = Math.min(...slice.map((c) => c.low));
+  const high = Math.max(...slice.map((c) => c.high));
   const close = candles[candles.length - 1].close;
 
   const k = ((close - low) / (high - low || 1)) * 100;
@@ -101,61 +86,97 @@ function calculateStoch(candles: Candle[]) {
 }
 
 /* =========================
-   STRUCTURE BIAS (EARLY SHIFT DETECTION)
+   STRUCTURE ENGINE
 ========================= */
 
-function calculateBias(candles: Candle[]) {
-  if (candles.length < 10) return "Neutral";
+function getSwingPoints(candles: Candle[]) {
+  const swings: { high: number; low: number }[] = [];
 
-  const recent = candles.slice(-5);
+  for (let i = 2; i < candles.length - 2; i++) {
+    const prev = candles[i - 1];
+    const curr = candles[i];
+    const next = candles[i + 1];
 
-  const higherHigh = recent[4].high > recent[2].high;
-  const higherLow = recent[4].low > recent[2].low;
+    // swing high
+    if (curr.high > prev.high && curr.high > next.high) {
+      swings.push({ high: curr.high, low: 0 });
+    }
 
-  const lowerHigh = recent[4].high < recent[2].high;
-  const lowerLow = recent[4].low < recent[2].low;
+    // swing low
+    if (curr.low < prev.low && curr.low < next.low) {
+      swings.push({ high: 0, low: curr.low });
+    }
+  }
 
-  if (higherHigh && higherLow) return "Bullish";
-  if (lowerHigh && lowerLow) return "Bearish";
+  return swings.slice(-10);
+}
+
+/* =========================
+   MARKET STRUCTURE
+========================= */
+
+function detectStructure(candles: Candle[]) {
+  const last = candles.slice(-20);
+
+  let trend: "Bullish" | "Bearish" | "Neutral" = "Neutral";
+
+  let hh = 0,
+    hl = 0,
+    lh = 0,
+    ll = 0;
+
+  for (let i = 1; i < last.length; i++) {
+    if (last[i].high > last[i - 1].high) hh++;
+    if (last[i].low > last[i - 1].low) hl++;
+
+    if (last[i].high < last[i - 1].high) lh++;
+    if (last[i].low < last[i - 1].low) ll++;
+  }
+
+  if (hh > lh && hl > ll) trend = "Bullish";
+  if (lh > hh && ll > hl) trend = "Bearish";
+
+  return { trend, hh, hl, lh, ll };
+}
+
+/* =========================
+   EXHAUSTION DETECTOR
+========================= */
+
+function detectExhaustion(structure: any, adx: number, stochK: number) {
+  const weakeningTrend = adx > 20 && adx < 30;
+
+  const overbought = stochK > 70;
+  const oversold = stochK < 30;
+
+  const structureConflict =
+    (structure.trend === "Bullish" && structure.lh > structure.hh) ||
+    (structure.trend === "Bearish" && structure.hh > structure.lh);
+
+  return weakeningTrend && (overbought || oversold || structureConflict);
+}
+
+/* =========================
+   CONFIRMATION (short TF)
+========================= */
+
+function confirmation(candles: Candle[]) {
+  const last = candles.slice(-5);
+
+  const bullish =
+    last[4].close > last[3].close && last[4].low >= last[3].low;
+
+  const bearish =
+    last[4].close < last[3].close && last[4].high <= last[3].high;
+
+  if (bullish) return "Bullish";
+  if (bearish) return "Bearish";
 
   return "Neutral";
 }
 
 /* =========================
-   EARLY ENTRY DETECTOR (KEY CHANGE)
-========================= */
-
-function detectEarlyEntry(
-  stochK: number,
-  adx: number,
-  candles: Candle[]
-) {
-  const last = candles.slice(-3);
-
-  const range = Math.max(...last.map(c => c.high)) -
-                Math.min(...last.map(c => c.low));
-
-  const avgRange =
-    candles.slice(-20).reduce((sum, c) => sum + (c.high - c.low), 0) / 20;
-
-  const isCompression = adx < 20 && range < avgRange * 0.7;
-
-  const isExpansion =
-    range > avgRange * 1.1;
-
-  const stochFromLow = stochK < 35;
-  const stochFromHigh = stochK > 65;
-
-  return {
-    isCompression,
-    isExpansion,
-    stochFromLow,
-    stochFromHigh
-  };
-}
-
-/* =========================
-   MAIN SIGNAL ENGINE
+   MAIN ENGINE
 ========================= */
 
 export function generateSignal(
@@ -165,36 +186,67 @@ export function generateSignal(
   candles15M: Candle[],
   livePrice: number
 ): Signal {
-
-  const c15 = [...candles15M].reverse();
+  const c4 = [...candles4H].reverse();
   const c1 = [...candles1H].reverse();
+  const c15 = [...candles15M].reverse();
 
-  const bias = calculateBias(c1);
+  const structure = detectStructure(c4);
   const adx = calculateADX(c15);
   const stoch = calculateStoch(c15);
+  const conf = confirmation(c1);
 
-  const early = detectEarlyEntry(stoch.K, adx, c15);
+  const isBull = structure.trend === "Bullish";
+  const isBear = structure.trend === "Bearish";
+
+  const exhaustion = detectExhaustion(structure, adx, stoch.K);
 
   /* =========================
-     EARLY ENTRY LOGIC (NEW CORE)
+     STATE MACHINE
   ========================= */
 
-  const isSetupValid =
-    early.isCompression &&
-    bias !== "Neutral";
+  let isSetupValid = false;
+  let isSniperCandidate = false;
+  let isSniper = false;
 
-  const isSniperCandidate =
-    isSetupValid &&
-    early.isExpansion;
+  let reason = "WAIT";
 
-  const isSniper =
-    isSniperCandidate &&
-    (early.stochFromLow || early.stochFromHigh);
+  /* 🟣 EARLY REVERSAL / CONTINUATION */
+  if (exhaustion) {
+    isSetupValid = true;
+    reason = "EARLY";
+  }
 
-  const setupId = `${symbol}-${bias}-${early.isCompression ? "COMP" : "NO_COMP"}`;
+  /* 🟡 STRUCTURE ALIGNED SETUP */
+  if (
+    structure.trend !== "Neutral" &&
+    conf === structure.trend
+  ) {
+    isSetupValid = true;
+    reason = exhaustion ? "EARLY+SETUP" : "SETUP";
+  }
+
+  /* 🟢 SNIPER ENTRY */
+  const trigger =
+    stoch.K < 30 || stoch.K > 70;
+
+  if (isSetupValid && trigger) {
+    isSniperCandidate = true;
+    isSniper = true;
+    reason = "SNIPER";
+  }
 
   /* =========================
-     RISK MODEL (EARLY MOVE BASED)
+     CONFIDENCE MODEL
+  ========================= */
+
+  let confidence = 25;
+
+  if (reason.includes("EARLY")) confidence = 50;
+  if (reason.includes("SETUP")) confidence = 70;
+  if (reason === "SNIPER") confidence = 90;
+
+  /* =========================
+     RISK MODEL
   ========================= */
 
   let stopLoss = null;
@@ -204,34 +256,24 @@ export function generateSignal(
   if (isSniper) {
     const atr =
       c15.reduce((sum, c, i) => {
-        if (i === 0) return sum;
+        if (i === 0) return 0;
         return sum + Math.abs(c.high - c.low);
       }, 0) / c15.length;
 
-    const risk = atr * 1.2;
+    const risk = atr * 1.5;
 
-    if (bias === "Bullish") {
+    if (isBull) {
       stopLoss = livePrice - risk;
-      takeProfit = livePrice + risk * 2.5;
+      takeProfit = livePrice + risk * 2;
     }
 
-    if (bias === "Bearish") {
+    if (isBear) {
       stopLoss = livePrice + risk;
-      takeProfit = livePrice - risk * 2.5;
+      takeProfit = livePrice - risk * 2;
     }
 
-    rrr = 2.5;
+    rrr = 2;
   }
-
-  /* =========================
-     CONFIDENCE (EARLY EDGE WEIGHTED)
-  ========================= */
-
-  const confidence =
-    isSniper ? 85 :
-    isSniperCandidate ? 70 :
-    isSetupValid ? 55 :
-    25;
 
   return {
     symbol,
@@ -241,9 +283,9 @@ export function generateSignal(
     isSniperCandidate,
     isSniper,
 
-    setupId,
+    setupId: `${symbol}-${structure.trend}`,
 
-    bias,
+    bias: structure.trend,
 
     confidence,
 
@@ -251,13 +293,7 @@ export function generateSignal(
     stochK: stoch.K,
     stochD: stoch.D,
 
-    reason: isSniper
-      ? "EARLY SNIPER ENTRY"
-      : isSniperCandidate
-      ? "BREAKOUT BUILDING"
-      : isSetupValid
-      ? "COMPRESSION ZONE"
-      : "NO EDGE",
+    reason,
 
     stopLoss,
     takeProfit,
