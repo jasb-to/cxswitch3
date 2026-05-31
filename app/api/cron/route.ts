@@ -1,4 +1,5 @@
 import { generateAndStoreSignals } from "@/lib/signalEngine";
+import { getPersistence } from "@/lib/persistence";
 
 export const runtime = "nodejs";
 
@@ -9,15 +10,11 @@ export async function GET(request: Request) {
   // AUTH CHECK
   // =========================
   if (secret !== "abc123xyz789") {
-    const msg = `[CRON] UNAUTHORIZED: Invalid secret provided`;
-    console.error(msg);
+    console.error(`[CRON] UNAUTHORIZED: Invalid secret`);
 
     return new Response(
-      JSON.stringify({ success: false, error: msg }),
-      {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      }
+      JSON.stringify({ success: false, error: "Unauthorized" }),
+      { status: 401, headers: { "Content-Type": "application/json" } }
     );
   }
 
@@ -33,12 +30,42 @@ export async function GET(request: Request) {
 
   try {
     // =========================
-    // ENGINE EXECUTION
+    // LOAD MARKET DATA FIRST
     // =========================
-    const result = await generateAndStoreSignals();
+    const raw = await getPersistence();
 
-    // 🔒 HARD GUARD: engine MUST NOT break cron
-    const signals = Array.isArray(result) ? result : [];
+    const engineInput = Object.entries(raw ?? {}).map(
+      ([symbol, value]: any) => ({
+        symbol,
+        candles4H: value?.candles4H ?? [],
+        candles1H: value?.candles1H ?? [],
+        candles15M: value?.candles15M ?? [],
+        price: value?.price ?? 0,
+      })
+    );
+
+    // =========================
+    // SAFETY CHECK
+    // =========================
+    if (!engineInput.length) {
+      console.log("[CRON] No data available");
+      return new Response(
+        JSON.stringify({
+          success: true,
+          message: "No data to process",
+          signalCount: 0,
+        })
+      );
+    }
+
+    // =========================
+    // ENGINE EXECUTION (FIXED)
+    // =========================
+    const result = await generateAndStoreSignals(engineInput);
+
+    const signals = Array.isArray(result?.signals)
+      ? result.signals
+      : [];
 
     const duration = Date.now() - startTime;
 
@@ -70,17 +97,8 @@ export async function GET(request: Request) {
     const errorMsg =
       err instanceof Error ? err.message : String(err);
 
-    console.error(
-      `[CRON] ════════════════════════════════════════════════════════════`
-    );
     console.error(`[CRON] FATAL ERROR after ${duration}ms: ${errorMsg}`);
-    console.error(
-      `[CRON] Stack:`,
-      err instanceof Error ? err.stack : "N/A"
-    );
-    console.error(
-      `[CRON] ════════════════════════════════════════════════════════════`
-    );
+    console.error(`[CRON] Stack:`, err instanceof Error ? err.stack : "N/A");
 
     return new Response(
       JSON.stringify({
