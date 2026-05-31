@@ -5,7 +5,7 @@ import {
   getCurrentPrice,
 } from "./kraken";
 
-import { generateSignal, Symbol } from "./strategy";
+import { generateSignal, Symbol, Signal } from "./strategy";
 
 import {
   storeSignalSnapshot,
@@ -15,29 +15,58 @@ import {
 
 import { sendTelegramAlert } from "./telegram";
 
+/* =========================
+   STATE MACHINE
+========================= */
+
+type SignalState =
+  | "EARLY"
+  | "SETUP"
+  | "ARMED"
+  | "SNIPER"
+  | "INVALIDATED"
+  | "WAIT";
+
+interface EngineMemory {
+  lastState: Record<string, SignalState>;
+  lastSetupId: Record<string, string>;
+}
+
+const memory: EngineMemory = {
+  lastState: {},
+  lastSetupId: {},
+};
+
 const ALERT_COOLDOWN_MS = 60 * 60 * 1000;
 
-/**
- * ENGINE DESIGN:
- * - 4H = bias (directional context)
- * - 15M = structure + trigger
- * - 5M = micro confirmation (entry timing)
- *
- * GOAL:
- * Catch EARLY moves, not late confirmations.
- */
+/* =========================
+   STATE RESOLVER
+========================= */
+
+function resolveState(signal: Signal): SignalState {
+  const trigger =
+    signal.stochK < 30 || signal.stochK > 70;
+
+  if (signal.isSniper) return "SNIPER";
+  if (signal.isSetupValid && trigger) return "ARMED";
+  if (signal.isSetupValid) return "SETUP";
+  if (signal.adx > 18 && signal.bias !== "Neutral") return "EARLY";
+  return "WAIT";
+}
+
+/* =========================
+   MAIN ENGINE
+========================= */
 
 export async function generateAndStoreSignals() {
   const symbols: Symbol[] = ["BTC", "ETH", "SOL"];
-
-  console.log(`[ENGINE] Starting signal cycle...`);
 
   for (const symbol of symbols) {
     try {
       console.log(`\n[ENGINE] ===== ${symbol} =====`);
 
       /* =========================
-         FETCH MARKET DATA
+         FETCH DATA
       ========================= */
 
       const [c4, c15, c5, price] = await Promise.all([
@@ -47,14 +76,8 @@ export async function generateAndStoreSignals() {
         getCurrentPrice(symbol),
       ]);
 
-      if (!price || price <= 0) {
-        console.warn(`[ENGINE] ${symbol}: invalid price`);
-        continue;
-      }
-
-      if (!c4?.length || !c15?.length || !c5?.length) {
-        console.warn(`[ENGINE] ${symbol}: missing candle data`);
-        continue;
+      if (!c4?.length || !c15?.length || !c5?.length || !price) {
+        throw new Error(`Missing data for ${symbol}`);
       }
 
       /* =========================
@@ -63,72 +86,79 @@ export async function generateAndStoreSignals() {
 
       const signal = generateSignal(symbol, c4, c15, c5, price);
 
-      // Safety defaults (prevents UI crashes + NaNs)
-      signal.stopLoss = signal.stopLoss ?? null;
-      signal.takeProfit = signal.takeProfit ?? null;
-      signal.riskRewardRatio = signal.riskRewardRatio ?? null;
+      const state = resolveState(signal);
+      const prevState = memory.lastState[symbol];
 
-      console.log(
-        `[ENGINE] ${symbol}: ${signal.reason} | price=${signal.price} | ADX=${signal.adx}`
-      );
+      const setupChanged =
+        memory.lastSetupId[symbol] !== signal.setupId;
 
-      /* =========================
-         EARLY ENTRY LOGIC
-      =========================
-      We do NOT require perfect setup anymore.
-      We classify into:
-      - EARLY_BIAS (trend forming)
-      - SETUP (valid structure)
-      - SNIPER (trigger hit)
-      */
+      const stateChanged = prevState !== state;
 
-      const isEarlyBias =
-        signal.adx > 12 && signal.adx < 25; // early trend formation window
-
-      const isSetup = signal.isSetupValid;
-      const isEntryWindow = signal.isSniperCandidate;
+      memory.lastState[symbol] = state;
+      memory.lastSetupId[symbol] = signal.setupId;
 
       /* =========================
-         TELEGRAM ALERT LOGIC
+         LOGIC DECISION
       ========================= */
 
-      const cooldown = await getTelegramCooldown(symbol);
-      const now = Date.now();
-      const last = cooldown ? new Date(cooldown.lastAlertAt).getTime() : 0;
-      const canAlert = now - last >= ALERT_COOLDOWN_MS;
+      console.log(
+        `[ENGINE] ${symbol}: ${prevState || "INIT"} → ${state}`
+      );
 
-      if (signal.isSniper && canAlert) {
-        const sent = await sendTelegramAlert(signal);
+      let shouldAlert = false;
 
-        if (sent) {
-          await updateTelegramCooldown(symbol, new Date().toISOString());
-          console.log(`[ENGINE] ${symbol}: 🟢 SNIPER ALERT SENT`);
+      if (state === "SNIPER") {
+        shouldAlert = stateChanged || setupChanged;
+      }
+
+      if (state === "ARMED") {
+        shouldAlert = stateChanged;
+      }
+
+      if (state === "EARLY") {
+        shouldAlert = stateChanged && setupChanged;
+      }
+
+      /* =========================
+         TELEGRAM
+      ========================= */
+
+      if (shouldAlert) {
+        const cooldown = await getTelegramCooldown(symbol);
+
+        const now = Date.now();
+        const last = cooldown
+          ? new Date(cooldown.lastAlertAt).getTime()
+          : 0;
+
+        const canSend = now - last >= ALERT_COOLDOWN_MS;
+
+        if (canSend) {
+          const sent = await sendTelegramAlert(signal);
+
+          if (sent) {
+            await updateTelegramCooldown(symbol, new Date().toISOString());
+            console.log(`[ENGINE] ${symbol}: ALERT SENT (${state})`);
+          }
         } else {
-          console.log(`[ENGINE] ${symbol}: alert failed`);
+          console.log(`[ENGINE] ${symbol}: cooldown active`);
         }
       }
 
       /* =========================
-         LOG STATE (IMPORTANT FOR DEBUGGING)
+         SNAPSHOT STORAGE
       ========================= */
 
-      if (signal.isSniper) {
-        console.log(`[ENGINE] ${symbol}: 🟢 SNIPER`);
-      } else if (isSetup) {
-        console.log(`[ENGINE] ${symbol}: 🟡 SETUP`);
-      } else if (isEarlyBias) {
-        console.log(`[ENGINE] ${symbol}: 🔵 EARLY BIAS`);
-      } else {
-        console.log(`[ENGINE] ${symbol}: ⚪ NO SETUP`);
-      }
+      await storeSignalSnapshot({
+        ...signal,
+        reason: state,
+      });
 
-      /* =========================
-         STORE SNAPSHOT
-      ========================= */
-
-      await storeSignalSnapshot(signal);
+      console.log(
+        `[ENGINE] ${symbol}: ${state} | $${signal.price}`
+      );
     } catch (err) {
-      console.error(`[ENGINE ERROR] ${symbol}:`, err);
+      console.error(`[ENGINE ERROR] ${symbol}`, err);
     }
   }
 
