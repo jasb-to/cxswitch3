@@ -32,32 +32,30 @@ export async function generateAndStoreSignals() {
         getCandles5M(symbol),
       ]);
 
-      if (!c4?.length || !c15?.length || !c5?.length) {
-        throw new Error(`Missing candle data for ${symbol}`);
+      if (!c4.length || !c15.length || !c5.length) {
+        console.warn(`[ENGINE] ${symbol}: missing candle data`);
+        continue;
       }
 
       const price = await getCurrentPrice(symbol);
 
-      if (!price) {
-        throw new Error(`Invalid price for ${symbol}`);
+      if (!price || price <= 0) {
+        console.warn(`[ENGINE] ${symbol}: invalid price`);
+        continue;
       }
 
       const signal = generateSignal(symbol, c4, c15, c5, price);
 
-      // =========================
-      // STRUCTURE STATE ENGINE
-      // =========================
+      const state = deriveEngineState(signal);
 
-      const state: EngineState = deriveState(signal);
-
-      const enrichedSignal = {
+      const enriched = {
         ...signal,
         engineState: state,
       };
 
-      // =========================
-      // TELEGRAM LOGIC
-      // =========================
+      /* =========================
+         TELEGRAM ONLY ON REAL BREAKOUT
+      ========================= */
 
       if (state === "SNIPER") {
         const cooldown = await getTelegramCooldown(symbol);
@@ -67,10 +65,10 @@ export async function generateAndStoreSignals() {
           ? new Date(cooldown.lastAlertAt).getTime()
           : 0;
 
-        const canSend = now - last >= ALERT_COOLDOWN_MS;
+        const canSend = now - last > ALERT_COOLDOWN_MS;
 
         if (canSend) {
-          const sent = await sendTelegramAlert(enrichedSignal as any);
+          const sent = await sendTelegramAlert(enriched as any);
 
           if (sent) {
             await updateTelegramCooldown(symbol, new Date().toISOString());
@@ -81,15 +79,15 @@ export async function generateAndStoreSignals() {
         }
       }
 
-      // =========================
-      // LOG STATE
-      // =========================
+      /* =========================
+         LOGGING
+      ========================= */
 
       console.log(
         `[ENGINE] ${symbol}: ${state} | ${signal.reason} | $${signal.price}`
       );
 
-      await storeSignalSnapshot(enrichedSignal as any);
+      await storeSignalSnapshot(enriched as any);
     } catch (err) {
       console.error(`[ENGINE ERROR] ${symbol}`, err);
     }
@@ -99,26 +97,27 @@ export async function generateAndStoreSignals() {
 }
 
 /* =========================
-   EARLY STRUCTURE DETECTION
-   THIS IS THE CORE IMPROVEMENT
+   ENGINE STATE LOGIC v2
+   (LESS NOISE, MORE STRUCTURE)
 ========================= */
 
-function deriveState(signal: any): EngineState {
-  const { adx, stochK, bias, isSetupValid, isSniperCandidate, isSniper } =
-    signal;
+function deriveEngineState(signal: any): EngineState {
+  const { isSetupValid, isSniper, adx, stochK, bias } = signal;
 
-  // 1. SNIPER = your existing trigger
+  // 1. SNIPER = breakout confirmed
   if (isSniper) return "SNIPER";
 
-  // 2. SETUP = bias aligned + trend strength building
+  // 2. SETUP = structure + momentum alignment
   if (isSetupValid && adx > 18) return "SETUP";
 
-  // 3. EARLY = structure forming BEFORE confirmation
-  const earlyStructure =
-    (bias === "Bullish" && adx > 12 && stochK < 45) ||
-    (bias === "Bearish" && adx > 12 && stochK > 55);
+  // 3. EARLY = ONLY meaningful compression + directional bias
+  const early =
+    adx > 12 &&
+    bias !== "Neutral" &&
+    ((bias === "Bullish" && stochK < 50) ||
+      (bias === "Bearish" && stochK > 50));
 
-  if (earlyStructure) return "EARLY";
+  if (early) return "EARLY";
 
   return "NONE";
 }
