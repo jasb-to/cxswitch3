@@ -1,9 +1,11 @@
 export interface SignalSnapshot {
   symbol: string;
 
+  // STRUCTURE STATES (NEW)
+  engineState?: "EARLY" | "SETUP" | "SNIPER" | "NONE";
+
   isSetupValid: boolean;
   isSniper: boolean;
-
   confidence: number;
 
   price: number;
@@ -13,6 +15,7 @@ export interface SignalSnapshot {
   stochD: number;
 
   bias: "Bullish" | "Bearish" | "Neutral";
+
   reason: string;
 
   stopLoss: number | null;
@@ -27,100 +30,43 @@ export interface TelegramCooldown {
   lastAlertAt: string;
 }
 
-/* =========================
-   IN-MEMORY STATE
-========================= */
-
+// In-memory storage (single source of truth)
 const signalSnapshots = new Map<string, SignalSnapshot>();
 const telegramCooldowns = new Map<string, TelegramCooldown>();
 
 console.log("[PERSISTENCE] initialized");
 
 /* =========================
-   HELPERS (SAFE NORMALISATION)
-========================= */
-
-function safeNumber(value: any, fallback = 0): number {
-  return typeof value === "number" && isFinite(value)
-    ? value
-    : fallback;
-}
-
-function safeSnapshot(snapshot: SignalSnapshot): SignalSnapshot {
-  return {
-    symbol: snapshot.symbol,
-
-    isSetupValid: !!snapshot.isSetupValid,
-    isSniper: !!snapshot.isSniper,
-
-    confidence: safeNumber(snapshot.confidence, 0),
-
-    price: safeNumber(snapshot.price, 0),
-
-    adx: safeNumber(snapshot.adx, 0),
-    stochK: safeNumber(snapshot.stochK, 0),
-    stochD: safeNumber(snapshot.stochD, 0),
-
-    bias: snapshot.bias ?? "Neutral",
-    reason: snapshot.reason ?? "UNKNOWN",
-
-    stopLoss: snapshot.stopLoss ?? null,
-    takeProfit: snapshot.takeProfit ?? null,
-    riskRewardRatio: snapshot.riskRewardRatio ?? null,
-
-    updatedAt: snapshot.updatedAt ?? new Date().toISOString(),
-  };
-}
-
-/* =========================
    SNAPSHOTS
 ========================= */
 
 export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
-  const safe = safeSnapshot(snapshot);
+  signalSnapshots.set(snapshot.symbol, snapshot);
 
-  signalSnapshots.set(safe.symbol, safe);
+  const state =
+    snapshot.engineState ??
+    (snapshot.isSniper
+      ? "SNIPER"
+      : snapshot.isSetupValid
+      ? "SETUP"
+      : "NONE");
 
-  const status = safe.isSniper
-    ? "🟢 SNIPER"
-    : safe.isSetupValid
-    ? "🟡 SETUP"
-    : "🔵 EARLY/NO_SETUP";
+  const status =
+    state === "SNIPER"
+      ? "🟢 SNIPER"
+      : state === "SETUP"
+      ? "🟡 SETUP"
+      : state === "EARLY"
+      ? "🟣 EARLY"
+      : "⚪ NONE";
 
   console.log(
-    `[PERSISTENCE] ${safe.symbol}: ${status} | price=$${safe.price}`
+    `[PERSISTENCE] ${snapshot.symbol}: ${status} | price=$${snapshot.price}`
   );
 }
 
-export async function getLatestSignalSnapshots(): Promise<
-  SignalSnapshot[]
-> {
-  const values = Array.from(signalSnapshots.values());
-
-  // IMPORTANT: always guarantee output shape stability
-  return ["BTC", "ETH", "SOL"].map((symbol) => {
-    const found = values.find((s) => s.symbol === symbol);
-
-    if (found) return safeSnapshot(found);
-
-    // fallback placeholder prevents UI crashes
-    return {
-      symbol,
-      isSetupValid: false,
-      isSniper: false,
-      confidence: 0,
-      price: 0,
-      adx: 0,
-      stochK: 0,
-      stochD: 0,
-      bias: "Neutral",
-      reason: "NO_DATA",
-      stopLoss: null,
-      takeProfit: null,
-      riskRewardRatio: null,
-      updatedAt: new Date().toISOString(),
-    };
-  });
+export async function getLatestSignalSnapshots(): Promise<SignalSnapshot[]> {
+  return Array.from(signalSnapshots.values());
 }
 
 /* =========================
@@ -130,7 +76,7 @@ export async function getLatestSignalSnapshots(): Promise<
 export async function getTelegramCooldown(
   symbol: string
 ): Promise<TelegramCooldown | null> {
-  return telegramCooldowns.get(symbol) ?? null;
+  return telegramCooldowns.get(symbol) || null;
 }
 
 export async function updateTelegramCooldown(
