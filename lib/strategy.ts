@@ -143,7 +143,7 @@ function calculatePivots(candles: Candle[]) {
 }
 
 /* =========================
-   ATR (volatility engine)
+   ATR
 ========================= */
 
 function atr(candles: Candle[]) {
@@ -167,7 +167,7 @@ function atr(candles: Candle[]) {
 }
 
 /* =========================
-   SIGNAL CONDITIONS
+   SIGNAL LOGIC
 ========================= */
 
 function isEarly(adx: number, stochK: number) {
@@ -217,41 +217,50 @@ export function generateSignal(
 
   let stopLoss: number | null = null;
   let takeProfit: number | null = null;
-  let rrr: number | null = null;
+  let riskRewardRatio: number | null = null;
 
   /* =========================
-     SNIPER LOGIC (HYBRID PIVOT + ATR)
+     SNIPER (FIXED RISK ENGINE)
   ========================= */
 
   if (sniper) {
     const risk = volatility * 1.2;
+    const R = 1.8;
+
+    const entry = livePrice;
+
+    let stop = 0;
+    let target = 0;
+
+    if (bias === "Bullish") {
+      stop = entry - risk;
+      target = entry + risk * R;
+    }
+
+    if (bias === "Bearish") {
+      stop = entry + risk;
+      target = entry - risk * R;
+    }
 
     const pivotRes = pivots.resistance;
     const pivotSup = pivots.support;
 
-    if (bias === "Bullish") {
-      stopLoss = livePrice - risk;
-
-      takeProfit =
-        pivotRes && pivotRes > livePrice
-          ? pivotRes
-          : livePrice + risk * 1.8;
-
-      rrr =
-        (takeProfit - livePrice) / (livePrice - stopLoss);
+    if (bias === "Bullish" && pivotRes && pivotRes > entry) {
+      const pivotRR = (pivotRes - entry) / risk;
+      if (pivotRR > R) target = pivotRes;
     }
 
-    if (bias === "Bearish") {
-      stopLoss = livePrice + risk;
-
-      takeProfit =
-        pivotSup && pivotSup < livePrice
-          ? pivotSup
-          : livePrice - risk * 1.8;
-
-      rrr =
-        (livePrice - takeProfit) / (stopLoss - livePrice);
+    if (bias === "Bearish" && pivotSup && pivotSup < entry) {
+      const pivotRR = (entry - pivotSup) / risk;
+      if (pivotRR > R) target = pivotSup;
     }
+
+    stopLoss = stop;
+    takeProfit = target;
+
+    riskRewardRatio = Math.abs(
+      (target - entry) / (entry - stop)
+    );
   }
 
   return {
@@ -280,7 +289,7 @@ export function generateSignal(
 
     stopLoss,
     takeProfit,
-    riskRewardRatio: rrr,
+    riskRewardRatio,
 
     updatedAt: new Date().toISOString(),
   };
