@@ -11,13 +11,13 @@ export interface Candle {
   volume: number;
 }
 
-const KRAKEN_BASE = "https://api.kraken.com/0/public";
+const BASE = "https://api.kraken.com/0/public";
 
 /* =========================
    SYMBOL MAP
 ========================= */
 
-function getKrakenPair(symbol: Symbol) {
+function pair(symbol: Symbol) {
   switch (symbol) {
     case "BTC":
       return "XXBTZUSD";
@@ -29,33 +29,22 @@ function getKrakenPair(symbol: Symbol) {
 }
 
 /* =========================
-   FETCH CANDLES
+   CORE FETCH
 ========================= */
 
-export async function fetchCandles(
-  symbol: Symbol,
-  interval: 5 | 15 | 60 | 240 = 15,
-  limit = 500
-): Promise<Candle[]> {
-  const pair = getKrakenPair(symbol);
+async function fetchOHLC(symbol: Symbol, interval: number) {
+  const res = await fetch(
+    `${BASE}/OHLC?pair=${pair(symbol)}&interval=${interval}`
+  );
 
-  const url = `${KRAKEN_BASE}/OHLC?pair=${pair}&interval=${interval}`;
-
-  const res = await fetch(url);
-
-  if (!res.ok) {
-    throw new Error(`Kraken OHLC failed: ${res.status}`);
-  }
+  if (!res.ok) throw new Error(`Kraken OHLC failed`);
 
   const json = await res.json();
+  const data = json.result?.[pair(symbol)];
 
-  const data = json.result?.[pair];
+  if (!data) return [];
 
-  if (!data || !Array.isArray(data)) {
-    throw new Error(`Invalid OHLC response for ${symbol}`);
-  }
-
-  return data.slice(-limit).map((c: any[]) => ({
+  return data.map((c: any[]) => ({
     time: Number(c[0]),
     open: Number(c[1]),
     high: Number(c[2]),
@@ -66,48 +55,32 @@ export async function fetchCandles(
 }
 
 /* =========================
-   LIVE PRICE
+   PUBLIC API (MATCH YOUR APP)
 ========================= */
 
-export async function fetchLivePrice(symbol: Symbol): Promise<number> {
-  const pair = getKrakenPair(symbol);
-
-  const url = `${KRAKEN_BASE}/Ticker?pair=${pair}`;
-
-  const res = await fetch(url);
-
-  if (!res.ok) {
-    throw new Error(`Kraken ticker failed: ${res.status}`);
-  }
-
-  const json = await res.json();
-
-  const result = json.result?.[pair];
-
-  if (!result?.c?.[0]) {
-    throw new Error(`Invalid ticker response for ${symbol}`);
-  }
-
-  return Number(result.c[0]);
+export async function getCandles5M(symbol: Symbol): Promise<Candle[]> {
+  return fetchOHLC(symbol, 5);
 }
 
-/* =========================
-   BATCH HELPER (IMPORTANT)
-========================= */
+export async function getCandles15M(symbol: Symbol): Promise<Candle[]> {
+  return fetchOHLC(symbol, 15);
+}
 
-export async function fetchMarketData(symbol: Symbol) {
-  const [c5, c15, c240, price] = await Promise.all([
-    fetchCandles(symbol, 5),
-    fetchCandles(symbol, 15),
-    fetchCandles(symbol, 240),
-    fetchLivePrice(symbol),
-  ]);
+export async function getCandles4H(symbol: Symbol): Promise<Candle[]> {
+  return fetchOHLC(symbol, 240);
+}
 
-  return {
-    symbol,
-    candles5m: c5,
-    candles15m: c15,
-    candles4h: c240,
-    price,
-  };
+export async function getCurrentPrice(symbol: Symbol): Promise<number> {
+  const res = await fetch(
+    `${BASE}/Ticker?pair=${pair(symbol)}`
+  );
+
+  if (!res.ok) throw new Error(`Kraken ticker failed`);
+
+  const json = await res.json();
+  const data = json.result?.[pair(symbol)];
+
+  if (!data?.c?.[0]) return 0;
+
+  return Number(data.c[0]);
 }
