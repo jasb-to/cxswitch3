@@ -1,11 +1,10 @@
 export interface SignalSnapshot {
   symbol: string;
 
-  // STRUCTURE STATES (NEW)
-  engineState?: "EARLY" | "SETUP" | "SNIPER" | "NONE";
-
-  isSetupValid: boolean;
+  // state machine (new model)
+  isEarly: boolean;
   isSniper: boolean;
+
   confidence: number;
 
   price: number;
@@ -30,8 +29,14 @@ export interface TelegramCooldown {
   lastAlertAt: string;
 }
 
-// In-memory storage (single source of truth)
+/* =========================
+   STATE STORE
+========================= */
+
+// latest snapshot per symbol (source of truth for UI)
 const signalSnapshots = new Map<string, SignalSnapshot>();
+
+// telegram cooldown tracking
 const telegramCooldowns = new Map<string, TelegramCooldown>();
 
 console.log("[PERSISTENCE] initialized");
@@ -41,28 +46,23 @@ console.log("[PERSISTENCE] initialized");
 ========================= */
 
 export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
+  const existing = signalSnapshots.get(snapshot.symbol);
+
   signalSnapshots.set(snapshot.symbol, snapshot);
 
   const state =
-    snapshot.engineState ??
-    (snapshot.isSniper
-      ? "SNIPER"
-      : snapshot.isSetupValid
-      ? "SETUP"
-      : "NONE");
-
-  const status =
-    state === "SNIPER"
+    snapshot.isSniper
       ? "🟢 SNIPER"
-      : state === "SETUP"
-      ? "🟡 SETUP"
-      : state === "EARLY"
+      : snapshot.isEarly
       ? "🟣 EARLY"
-      : "⚪ NONE";
+      : "⚪ WAIT";
 
-  console.log(
-    `[PERSISTENCE] ${snapshot.symbol}: ${status} | price=$${snapshot.price}`
-  );
+  // only log transitions (reduces noise)
+  if (!existing || existing.isSniper !== snapshot.isSniper || existing.isEarly !== snapshot.isEarly) {
+    console.log(
+      `[PERSISTENCE] ${snapshot.symbol}: ${state} | price=$${snapshot.price}`
+    );
+  }
 }
 
 export async function getLatestSignalSnapshots(): Promise<SignalSnapshot[]> {
@@ -73,22 +73,15 @@ export async function getLatestSignalSnapshots(): Promise<SignalSnapshot[]> {
    TELEGRAM COOLDOWN
 ========================= */
 
-export async function getTelegramCooldown(
-  symbol: string
-): Promise<TelegramCooldown | null> {
+export async function getTelegramCooldown(symbol: string): Promise<TelegramCooldown | null> {
   return telegramCooldowns.get(symbol) || null;
 }
 
-export async function updateTelegramCooldown(
-  symbol: string,
-  timestamp: string
-) {
+export async function updateTelegramCooldown(symbol: string, timestamp: string) {
   telegramCooldowns.set(symbol, {
     symbol,
     lastAlertAt: timestamp,
   });
 
-  console.log(
-    `[PERSISTENCE] cooldown updated ${symbol} @ ${timestamp}`
-  );
+  console.log(`[PERSISTENCE] cooldown updated ${symbol}`);
 }
