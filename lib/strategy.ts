@@ -9,11 +9,21 @@ export interface Candle {
   volume: number;
 }
 
+/* =========================
+   SIGNAL STAGES (REDEFINED)
+========================= */
+
+export type SignalStage =
+  | "EARLY"   // compression building
+  | "SETUP"   // ENTRY (your sniper entry)
+  | "SNIPER"  // continuation / move in progress
+  | "NONE";
+
 export interface Signal {
   symbol: Symbol;
   price: number;
 
-  stage: "EARLY" | "SETUP" | "SNIPER" | "NONE";
+  stage: SignalStage;
 
   bias: "Bullish" | "Bearish" | "Neutral";
 
@@ -36,7 +46,7 @@ export interface Signal {
 }
 
 /* =========================
-   COMPRESSION (WEDGE / SQUEEZE)
+   COMPRESSION (WEDGE BUILDING)
 ========================= */
 
 function detectCompression(candles: Candle[]) {
@@ -47,18 +57,15 @@ function detectCompression(candles: Candle[]) {
   const lows = slice.map(c => c.low);
 
   const range = Math.max(...highs) - Math.min(...lows);
+  const avg = slice.reduce((s, c) => s + c.close, 0) / slice.length;
 
-  const avgPrice =
-    slice.reduce((sum, c) => sum + c.close, 0) / slice.length;
+  const volatility = range / avg;
 
-  const volatility = range / avgPrice;
-
-  // low volatility = compression
   return volatility < 0.02;
 }
 
 /* =========================
-   TREND BIAS (HH / LL STRUCTURE)
+   BIAS (STRUCTURE DIRECTION)
 ========================= */
 
 function detectBias(candles: Candle[]): "Bullish" | "Bearish" | "Neutral" {
@@ -80,7 +87,7 @@ function detectBias(candles: Candle[]): "Bullish" | "Bearish" | "Neutral" {
 }
 
 /* =========================
-   ADX (trend strength proxy)
+   ADX (momentum expansion pressure)
 ========================= */
 
 function calculateADX(candles: Candle[]) {
@@ -106,7 +113,7 @@ function calculateADX(candles: Candle[]) {
 }
 
 /* =========================
-   STOCH (momentum positioning)
+   STOCH (timing pressure)
 ========================= */
 
 function calculateStoch(candles: Candle[]) {
@@ -123,7 +130,7 @@ function calculateStoch(candles: Candle[]) {
 }
 
 /* =========================
-   MAIN SIGNAL ENGINE (EARLY BREAKOUT FOCUS)
+   MAIN ENGINE LOGIC (REBALANCED)
 ========================= */
 
 export function generateSignal(
@@ -143,30 +150,42 @@ export function generateSignal(
   const stoch = calculateStoch(c15);
 
   const momentum = stoch.K;
-  const breakoutReady =
-    (compression && adx > 1.2) ||
-    (momentum < 35 || momentum > 65);
 
-  let stage: Signal["stage"] = "NONE";
+  const breakoutPressure =
+    momentum < 35 || momentum > 65 || adx > 1.2;
 
+  /* =========================
+     STAGE LOGIC (YOUR MODEL)
+  ========================= */
+
+  let stage: SignalStage = "NONE";
+
+  // EARLY = compression forming
   if (compression && bias !== "Neutral") {
     stage = "EARLY";
   }
 
-  if (compression && breakoutReady) {
+  // SETUP = ENTRY (YOUR SNIPER ENTRY)
+  if (compression && breakoutPressure && bias !== "Neutral") {
     stage = "SETUP";
   }
 
-  if (!compression && breakoutReady && bias !== "Neutral") {
+  // SNIPER = MOVE ALREADY RUNNING
+  if (!compression && breakoutPressure && bias !== "Neutral") {
     stage = "SNIPER";
   }
+
+  /* =========================
+     RISK MODEL
+  ========================= */
 
   let stopLoss = null;
   let takeProfit = null;
   let rrr = null;
 
-  if (stage === "SNIPER") {
-    const risk = adx * 1.5;
+  // ENTRY (SETUP) gets full risk definition
+  if (stage === "SETUP") {
+    const risk = adx * 1.3;
 
     if (bias === "Bullish") {
       stopLoss = livePrice - risk;
@@ -179,11 +198,26 @@ export function generateSignal(
     rrr = 2;
   }
 
+  // SNIPER = trailing continuation (wider targets)
+  if (stage === "SNIPER") {
+    const risk = adx * 2;
+
+    if (bias === "Bullish") {
+      stopLoss = livePrice - risk;
+      takeProfit = livePrice + risk * 3;
+    } else if (bias === "Bearish") {
+      stopLoss = livePrice + risk;
+      takeProfit = livePrice - risk * 3;
+    }
+
+    rrr = 3;
+  }
+
   const confidence =
-    stage === "SNIPER"
+    stage === "SETUP"
       ? 75
-      : stage === "SETUP"
-      ? 55
+      : stage === "SNIPER"
+      ? 60
       : stage === "EARLY"
       ? 35
       : 10;
@@ -202,16 +236,16 @@ export function generateSignal(
     stochD: stoch.D,
 
     compression,
-    breakoutReady,
+    breakoutReady: breakoutPressure,
 
     reason:
-      stage === "SNIPER"
-        ? "Breakout confirmed"
-        : stage === "SETUP"
-        ? "Compression + momentum alignment"
+      stage === "SETUP"
+        ? "ENTRY: compression breakout forming"
+        : stage === "SNIPER"
+        ? "MOVE: breakout in progress"
         : stage === "EARLY"
-        ? "Compression forming"
-        : "No structure",
+        ? "BUILDING: compression forming"
+        : "NO SETUP",
 
     stopLoss,
     takeProfit,
