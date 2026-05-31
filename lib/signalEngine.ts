@@ -1,5 +1,13 @@
 import { generateSignal, Candle, Symbol } from "./strategy";
 
+export interface EngineInput {
+  symbol: Symbol;
+  candles4H: Candle[];
+  candles1H: Candle[];
+  candles15M: Candle[];
+  price: number;
+}
+
 export interface EngineResult {
   signals: ReturnType<typeof generateSignal>[];
   updatedAt: string;
@@ -12,6 +20,7 @@ export interface EngineResult {
 function isMarketTradable(adx: number, stochK: number) {
   const strongTrend = adx > 20;
 
+  // avoid dead chop + extreme exhaustion zones
   const notOverbought = stochK < 80;
   const notOversold = stochK > 20;
 
@@ -23,15 +32,9 @@ function isMarketTradable(adx: number, stochK: number) {
 ========================= */
 
 export function runSignalEngine(
-  data: {
-    symbol: Symbol;
-    candles4H: Candle[];
-    candles1H: Candle[];
-    candles15M: Candle[];
-    price: number;
-  }[]
+  data: EngineInput[]
 ): EngineResult {
-  const signals = [];
+  const signals: ReturnType<typeof generateSignal>[] = [];
 
   for (const asset of data) {
     const signal = generateSignal(
@@ -81,10 +84,9 @@ export function runSignalEngine(
 }
 
 /* =========================
-   BACKWARDS COMPATIBILITY
-   (FIXES YOUR BUILD ERROR)
+   BACKWARD COMPATIBILITY
 ========================= */
 
-export function generateAndStoreSignals(data: any) {
+export function generateAndStoreSignals(data: EngineInput[]) {
   return runSignalEngine(data);
 }
