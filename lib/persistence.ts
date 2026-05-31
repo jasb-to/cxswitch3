@@ -5,6 +5,8 @@ export interface SignalSnapshot {
   isSniperCandidate: boolean;
   isSniper: boolean;
 
+  setupId: string;
+
   confidence: number;
 
   price: number;
@@ -30,62 +32,30 @@ export interface TelegramCooldown {
   lastAlertAt: string;
 }
 
-/* =========================
-   PURE STORAGE
-========================= */
-
 const signalSnapshots = new Map<string, SignalSnapshot>();
 const telegramCooldowns = new Map<string, TelegramCooldown>();
 
-console.log("[PERSISTENCE] initialized");
+const consumedSetups = new Set<string>();
 
-/* =========================
-   SNAPSHOTS
-========================= */
-
-export async function storeSignalSnapshot(
-  snapshot: SignalSnapshot
-): Promise<void> {
+export function storeSignalSnapshot(snapshot: SignalSnapshot) {
   signalSnapshots.set(snapshot.symbol, snapshot);
 }
 
-/* latest snapshots */
-export async function getLatestSignalSnapshots(): Promise<SignalSnapshot[]> {
-  return Array.from(signalSnapshots.values());
+export function getTelegramCooldown(symbol: string) {
+  return telegramCooldowns.get(symbol) || null;
 }
 
-/* single snapshot */
-export async function getSignalSnapshot(
-  symbol: string
-): Promise<SignalSnapshot | null> {
-  return signalSnapshots.get(symbol) ?? null;
-}
-
-/* =========================
-   TELEGRAM COOLDOWN
-========================= */
-
-export async function getTelegramCooldown(
-  symbol: string
-): Promise<TelegramCooldown | null> {
-  return telegramCooldowns.get(symbol) ?? null;
-}
-
-export async function updateTelegramCooldown(
-  symbol: string,
-  timestamp: string
-): Promise<void> {
+export function updateTelegramCooldown(symbol: string, timestamp: string) {
   telegramCooldowns.set(symbol, {
     symbol,
     lastAlertAt: timestamp,
   });
 }
 
-/* =========================
-   DEBUG (optional only)
-========================= */
+export function isSetupConsumed(setupId: string) {
+  return consumedSetups.has(setupId);
+}
 
-export function clearPersistence(): void {
-  signalSnapshots.clear();
-  telegramCooldowns.clear();
+export function markSetupConsumed(setupId: string) {
+  consumedSetups.add(setupId);
 }
