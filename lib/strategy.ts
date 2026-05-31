@@ -113,7 +113,7 @@ function detectStructure(candles: Candle[]) {
 }
 
 /* =========================
-   PIVOTS (KEY UPGRADE)
+   PIVOTS
 ========================= */
 
 function calculatePivots(candles: Candle[]) {
@@ -140,6 +140,30 @@ function calculatePivots(candles: Candle[]) {
     resistance: highs.length ? Math.max(...highs) : null,
     support: lows.length ? Math.min(...lows) : null,
   };
+}
+
+/* =========================
+   ATR (volatility engine)
+========================= */
+
+function atr(candles: Candle[]) {
+  const slice = candles.slice(-14);
+  let sum = 0;
+
+  for (let i = 1; i < slice.length; i++) {
+    const c = slice[i];
+    const p = slice[i - 1];
+
+    const tr = Math.max(
+      c.high - c.low,
+      Math.abs(c.high - p.close),
+      Math.abs(c.low - p.close)
+    );
+
+    sum += tr;
+  }
+
+  return sum / slice.length;
 }
 
 /* =========================
@@ -177,6 +201,7 @@ export function generateSignal(
   const stoch = calculateStoch(c15);
 
   const pivots = calculatePivots(c15);
+  const volatility = atr(c15);
 
   const early = isEarly(adx, stoch.K);
   const sniper = isSniper(structure, stoch.K);
@@ -190,35 +215,42 @@ export function generateSignal(
 
   const confidence = sniper ? 85 : early ? 55 : 20;
 
-  const buffer = livePrice * 0.001;
-
   let stopLoss: number | null = null;
   let takeProfit: number | null = null;
   let rrr: number | null = null;
 
   /* =========================
-     SNIPER LOGIC (PIVOT-BASED)
+     SNIPER LOGIC (HYBRID PIVOT + ATR)
   ========================= */
 
   if (sniper) {
+    const risk = volatility * 1.2;
+
+    const pivotRes = pivots.resistance;
+    const pivotSup = pivots.support;
+
     if (bias === "Bullish") {
-      stopLoss = livePrice - buffer;
+      stopLoss = livePrice - risk;
 
       takeProfit =
-        pivots.resistance ??
-        livePrice + (livePrice - stopLoss) * 1.8;
+        pivotRes && pivotRes > livePrice
+          ? pivotRes
+          : livePrice + risk * 1.8;
 
-      rrr = 1.8;
+      rrr =
+        (takeProfit - livePrice) / (livePrice - stopLoss);
     }
 
     if (bias === "Bearish") {
-      stopLoss = livePrice + buffer;
+      stopLoss = livePrice + risk;
 
       takeProfit =
-        pivots.support ??
-        livePrice - (stopLoss - livePrice) * 1.8;
+        pivotSup && pivotSup < livePrice
+          ? pivotSup
+          : livePrice - risk * 1.8;
 
-      rrr = 1.8;
+      rrr =
+        (livePrice - takeProfit) / (stopLoss - livePrice);
     }
   }
 
