@@ -37,11 +37,62 @@ export interface Signal {
 }
 
 /* =========================
-   BASIC INDICATORS
+   TREND STRUCTURE ENGINE
+   (HL / LH / compression core)
+========================= */
+
+function detectStructure(candles: Candle[]) {
+  if (candles.length < 20) {
+    return { bias: "Neutral" as const, compression: false };
+  }
+
+  const recent = candles.slice(-20);
+
+  let higherHighs = 0;
+  let higherLows = 0;
+  let lowerHighs = 0;
+  let lowerLows = 0;
+
+  for (let i = 1; i < recent.length; i++) {
+    const prev = recent[i - 1];
+    const curr = recent[i];
+
+    if (curr.high > prev.high) higherHighs++;
+    if (curr.low > prev.low) higherLows++;
+
+    if (curr.high < prev.high) lowerHighs++;
+    if (curr.low < prev.low) lowerLows++;
+  }
+
+  let bias: "Bullish" | "Bearish" | "Neutral" = "Neutral";
+
+  if (higherHighs > lowerHighs && higherLows > lowerLows) {
+    bias = "Bullish";
+  } else if (lowerHighs > higherHighs && lowerLows > higherLows) {
+    bias = "Bearish";
+  }
+
+  // compression = range tightening
+  const highs = recent.map((c) => c.high);
+  const lows = recent.map((c) => c.low);
+
+  const range = Math.max(...highs) - Math.min(...lows);
+
+  const avgBody =
+    recent.reduce((sum, c) => sum + Math.abs(c.close - c.open), 0) /
+    recent.length;
+
+  const compression = range < avgBody * 12;
+
+  return { bias, compression };
+}
+
+/* =========================
+   ADX (trend strength)
 ========================= */
 
 function calculateADX(candles: Candle[], period = 14) {
-  if (candles.length < period + 2) return 0;
+  if (candles.length < period + 1) return 0;
 
   let plusDM = 0,
     minusDM = 0,
@@ -67,10 +118,14 @@ function calculateADX(candles: Candle[], period = 14) {
   const plusDI = (plusDM / (tr || 1)) * 100;
   const minusDI = (minusDM / (tr || 1)) * 100;
 
-  const dx = Math.abs(plusDI - minusDI) / (plusDI + minusDI || 1);
+  const dx = Math.abs(plusDI - minusDI) / ((plusDI + minusDI) || 1);
 
   return dx * 100;
 }
+
+/* =========================
+   STOCHASTIC (entry timing)
+========================= */
 
 function calculateStoch(candles: Candle[]) {
   const period = 14;
@@ -86,97 +141,7 @@ function calculateStoch(candles: Candle[]) {
 }
 
 /* =========================
-   STRUCTURE ENGINE
-========================= */
-
-function getSwingPoints(candles: Candle[]) {
-  const swings: { high: number; low: number }[] = [];
-
-  for (let i = 2; i < candles.length - 2; i++) {
-    const prev = candles[i - 1];
-    const curr = candles[i];
-    const next = candles[i + 1];
-
-    // swing high
-    if (curr.high > prev.high && curr.high > next.high) {
-      swings.push({ high: curr.high, low: 0 });
-    }
-
-    // swing low
-    if (curr.low < prev.low && curr.low < next.low) {
-      swings.push({ high: 0, low: curr.low });
-    }
-  }
-
-  return swings.slice(-10);
-}
-
-/* =========================
-   MARKET STRUCTURE
-========================= */
-
-function detectStructure(candles: Candle[]) {
-  const last = candles.slice(-20);
-
-  let trend: "Bullish" | "Bearish" | "Neutral" = "Neutral";
-
-  let hh = 0,
-    hl = 0,
-    lh = 0,
-    ll = 0;
-
-  for (let i = 1; i < last.length; i++) {
-    if (last[i].high > last[i - 1].high) hh++;
-    if (last[i].low > last[i - 1].low) hl++;
-
-    if (last[i].high < last[i - 1].high) lh++;
-    if (last[i].low < last[i - 1].low) ll++;
-  }
-
-  if (hh > lh && hl > ll) trend = "Bullish";
-  if (lh > hh && ll > hl) trend = "Bearish";
-
-  return { trend, hh, hl, lh, ll };
-}
-
-/* =========================
-   EXHAUSTION DETECTOR
-========================= */
-
-function detectExhaustion(structure: any, adx: number, stochK: number) {
-  const weakeningTrend = adx > 20 && adx < 30;
-
-  const overbought = stochK > 70;
-  const oversold = stochK < 30;
-
-  const structureConflict =
-    (structure.trend === "Bullish" && structure.lh > structure.hh) ||
-    (structure.trend === "Bearish" && structure.hh > structure.lh);
-
-  return weakeningTrend && (overbought || oversold || structureConflict);
-}
-
-/* =========================
-   CONFIRMATION (short TF)
-========================= */
-
-function confirmation(candles: Candle[]) {
-  const last = candles.slice(-5);
-
-  const bullish =
-    last[4].close > last[3].close && last[4].low >= last[3].low;
-
-  const bearish =
-    last[4].close < last[3].close && last[4].high <= last[3].high;
-
-  if (bullish) return "Bullish";
-  if (bearish) return "Bearish";
-
-  return "Neutral";
-}
-
-/* =========================
-   MAIN ENGINE
+   MAIN SIGNAL ENGINE
 ========================= */
 
 export function generateSignal(
@@ -191,62 +156,39 @@ export function generateSignal(
   const c15 = [...candles15M].reverse();
 
   const structure = detectStructure(c4);
+
   const adx = calculateADX(c15);
   const stoch = calculateStoch(c15);
-  const conf = confirmation(c1);
 
-  const isBull = structure.trend === "Bullish";
-  const isBear = structure.trend === "Bearish";
-
-  const exhaustion = detectExhaustion(structure, adx, stoch.K);
+  const isTrending = adx > 15;
 
   /* =========================
-     STATE MACHINE
+     SETUP LOGIC (EARLY FILTER)
   ========================= */
 
-  let isSetupValid = false;
-  let isSniperCandidate = false;
-  let isSniper = false;
-
-  let reason = "WAIT";
-
-  /* 🟣 EARLY REVERSAL / CONTINUATION */
-  if (exhaustion) {
-    isSetupValid = true;
-    reason = "EARLY";
-  }
-
-  /* 🟡 STRUCTURE ALIGNED SETUP */
-  if (
-    structure.trend !== "Neutral" &&
-    conf === structure.trend
-  ) {
-    isSetupValid = true;
-    reason = exhaustion ? "EARLY+SETUP" : "SETUP";
-  }
-
-  /* 🟢 SNIPER ENTRY */
-  const trigger =
-    stoch.K < 30 || stoch.K > 70;
-
-  if (isSetupValid && trigger) {
-    isSniperCandidate = true;
-    isSniper = true;
-    reason = "SNIPER";
-  }
+  const isSetupValid =
+    structure.bias !== "Neutral" &&
+    isTrending &&
+    structure.compression;
 
   /* =========================
-     CONFIDENCE MODEL
+     SNIPER TRIGGER
   ========================= */
 
-  let confidence = 25;
+  const breakoutTrigger =
+    structure.bias === "Bullish"
+      ? stoch.K > 60
+      : structure.bias === "Bearish"
+      ? stoch.K < 40
+      : false;
 
-  if (reason.includes("EARLY")) confidence = 50;
-  if (reason.includes("SETUP")) confidence = 70;
-  if (reason === "SNIPER") confidence = 90;
+  const isSniperCandidate = isSetupValid && breakoutTrigger;
+  const isSniper = isSniperCandidate;
+
+  const setupId = `${symbol}-${structure.bias}`;
 
   /* =========================
-     RISK MODEL
+     RISK MODEL (simple + stable)
   ========================= */
 
   let stopLoss = null;
@@ -254,26 +196,29 @@ export function generateSignal(
   let rrr = null;
 
   if (isSniper) {
-    const atr =
-      c15.reduce((sum, c, i) => {
-        if (i === 0) return 0;
-        return sum + Math.abs(c.high - c.low);
-      }, 0) / c15.length;
+    const risk = livePrice * 0.008;
 
-    const risk = atr * 1.5;
-
-    if (isBull) {
+    if (structure.bias === "Bullish") {
       stopLoss = livePrice - risk;
       takeProfit = livePrice + risk * 2;
-    }
-
-    if (isBear) {
+    } else if (structure.bias === "Bearish") {
       stopLoss = livePrice + risk;
       takeProfit = livePrice - risk * 2;
     }
 
     rrr = 2;
   }
+
+  /* =========================
+     CONFIDENCE MODEL
+  ========================= */
+
+  let confidence = 30;
+
+  if (structure.compression) confidence += 20;
+  if (isTrending) confidence += 20;
+  if (structure.bias !== "Neutral") confidence += 20;
+  if (isSniper) confidence += 10;
 
   return {
     symbol,
@@ -283,9 +228,9 @@ export function generateSignal(
     isSniperCandidate,
     isSniper,
 
-    setupId: `${symbol}-${structure.trend}`,
+    setupId,
 
-    bias: structure.trend,
+    bias: structure.bias,
 
     confidence,
 
@@ -293,7 +238,13 @@ export function generateSignal(
     stochK: stoch.K,
     stochD: stoch.D,
 
-    reason,
+    reason: isSniper
+      ? "BREAKOUT SNIPER"
+      : isSetupValid
+      ? "COMPRESSION SETUP"
+      : structure.compression
+      ? "EARLY COMPRESSION"
+      : "NO STRUCTURE",
 
     stopLoss,
     takeProfit,
