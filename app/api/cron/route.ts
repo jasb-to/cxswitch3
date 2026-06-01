@@ -1,78 +1,49 @@
-import { generateAndStoreSignals } from "@/lib/signalEngine";
-import {
-  getCandles4H,
-  getCandles15M,
-  getCurrentPrice,
-} from "@/lib/kraken";
+import { generateSignal } from "@/lib/signalEngine";
+import { storeSignalSnapshot } from "@/lib/persistence";
 
 export const runtime = "nodejs";
 
-export async function GET(request: Request) {
-  const secret = new URL(request.url).searchParams.get("secret");
-
-  if (secret !== "abc123xyz789") {
-    return Response.json(
-      { success: false, error: "Unauthorized" },
-      { status: 401 }
-    );
-  }
-
-  const startTime = Date.now();
-
-  console.log(
-    "[CRON] ════════════════════════════════════════════════════════════"
-  );
-  console.log(`[CRON] STARTED at ${new Date().toLocaleString()}`);
-  console.log(
-    "[CRON] ════════════════════════════════════════════════════════════"
-  );
-
+export async function GET() {
   try {
-    const symbols = ["BTC", "ETH", "SOL"] as const;
+    console.log("[CRON] START");
 
-    const inputs = await Promise.all(
-      symbols.map(async (symbol) => ({
-        symbol,
+    const symbols = ["BTC", "ETH", "SOL"];
 
-        candles4H: await getCandles4H(symbol),
+    const results = [];
 
-        candles1H: [],
+    for (const symbol of symbols) {
+      // fake price feed placeholder (replace with real feed later)
+      const price =
+        symbol === "BTC"
+          ? 70000 + Math.random() * 2000
+          : symbol === "ETH"
+          ? 1900 + Math.random() * 200
+          : 80 + Math.random() * 10;
 
-        candles15M: await getCandles15M(symbol),
+      const signal = generateSignal(
+        symbol as any,
+        [],
+        [],
+        [],
+        price
+      );
 
-        price: await getCurrentPrice(symbol),
-      }))
-    );
+      console.log("[CRON SIGNAL]", signal);
 
-    const result = await generateAndStoreSignals(inputs);
+      await storeSignalSnapshot(signal);
 
-    const duration = Date.now() - startTime;
-
-    console.log(
-      `[CRON] COMPLETE in ${duration}ms | Signals: ${result.signals.length}`
-    );
+      results.push(signal);
+    }
 
     return Response.json({
       success: true,
-      signalCount: result.signals.length,
-      executionTime: duration,
+      signals: results,
     });
   } catch (err) {
-    const duration = Date.now() - startTime;
-
-    console.error(
-      `[CRON] FAILED after ${duration}ms`,
-      err
-    );
+    console.error("[CRON ERROR]", err);
 
     return Response.json(
-      {
-        success: false,
-        error:
-          err instanceof Error
-            ? err.message
-            : "Unknown error",
-      },
+      { success: false },
       { status: 500 }
     );
   }
