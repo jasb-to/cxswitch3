@@ -1,35 +1,12 @@
-import { getLivePrices } from "@/lib/prices";
-import { generateSignal } from "@/lib/signalEngine";
+import { kv } from "@vercel/kv";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  try {
-    const prices = await getLivePrices();
+  const data = await kv.get("cx:snapshots");
 
-    const symbols = ["BTC", "ETH", "SOL"];
-
-    const signals = symbols.map((symbol) => {
-      const price = prices[symbol as keyof typeof prices];
-
-      const signal = generateSignal(symbol, price);
-
-      return {
-        ...signal,
-        price,
-      };
-    });
-
-    return Response.json({
-      signals,
-      updatedAt: new Date().toISOString(),
-    });
-  } catch (err) {
-    console.error(err);
-
-    return Response.json(
-      { signals: [] },
-      { status: 500 }
-    );
-  }
+  return Response.json({
+    signals: Array.isArray(data) ? data : [],
+    updatedAt: new Date().toISOString(),
+  });
 }
