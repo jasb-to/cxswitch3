@@ -24,12 +24,10 @@ export async function GET() {
 
       await storeSignalSnapshot(full);
 
-      console.log(
-        `[CRON] ${symbol} ${signal.state} @ ${price}`
-      );
+      console.log(`[CRON] ${symbol} ${signal.state}`);
     }
 
-    // ⚠️ IMPORTANT: MUST AWAIT ALERTS
+    // MUST WAIT
     await processAlerts(signals);
 
     return Response.json({
