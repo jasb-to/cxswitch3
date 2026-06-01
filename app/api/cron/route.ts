@@ -23,7 +23,7 @@ export async function GET() {
 
       results.push(signal);
 
-      console.log("[ENGINE]", symbol, signal.reason);
+      console.log("[ENGINE]", symbol, signal.state);
     }
 
     return Response.json({
