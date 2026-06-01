@@ -1,3 +1,5 @@
+import { storeSignalSnapshot } from "@/lib/persistence";
+
 export type SignalState = "EARLY" | "SETUP" | "SNIPER" | "WAIT";
 
 export interface Signal {
@@ -27,51 +29,30 @@ export interface Signal {
 }
 
 /**
- * CORE IDEA:
- * We stop randomness deciding signals.
- * We simulate STRUCTURE FIRST → then derive state.
+ * CORE ENGINE (structure-based simulation)
  */
-
 export function generateSignal(symbol: string, price: number): Signal {
-  // -----------------------------
-  // STRUCTURE SIMULATION (lightweight proxy)
-  // -----------------------------
-  const momentum = Math.sin(Date.now() / 60000 + price) * 50 + 50; // 0–100
+  const momentum = Math.sin(Date.now() / 60000 + price) * 50 + 50;
   const volatility = Math.abs(Math.cos(Date.now() / 45000 + price)) * 100;
 
-  // -----------------------------
-  // MARKET CONDITIONS
-  // -----------------------------
   const compression = volatility < 35;
   const expansion = volatility > 70;
 
   const breakoutImpulse = momentum > 65 && expansion;
   const breakdownImpulse = momentum < 35 && expansion;
 
-  // -----------------------------
-  // STATE ENGINE (IMPORTANT)
-  // -----------------------------
   let state: SignalState = "WAIT";
 
-  if (compression) {
-    state = "EARLY";
-  }
+  if (compression) state = "EARLY";
+  if (!compression && !expansion) state = "SETUP";
 
-  if (compression && (breakoutImpulse || breakdownImpulse)) {
+  if (
+    (compression && (breakoutImpulse || breakdownImpulse)) ||
+    (!compression && expansion && (breakoutImpulse || breakdownImpulse))
+  ) {
     state = "SNIPER";
   }
 
-  if (!compression && expansion && (breakoutImpulse || breakdownImpulse)) {
-    state = "SNIPER";
-  }
-
-  if (!compression && !expansion) {
-    state = "SETUP";
-  }
-
-  // -----------------------------
-  // DERIVED INDICATORS (UI ONLY)
-  // -----------------------------
   const adx = Math.min(50, Math.max(8, volatility / 2));
   const stochK = momentum;
   const stochD = momentum * 0.9;
@@ -79,49 +60,11 @@ export function generateSignal(symbol: string, price: number): Signal {
   const isEarly = state === "EARLY";
   const isSniper = state === "SNIPER";
 
-  // -----------------------------
-  // CONFIDENCE (IMPORTANT FOR ALERTS)
-  // -----------------------------
-  let confidence = 20;
+  let confidence = state === "SNIPER" ? 85 : state === "EARLY" ? 55 : 30;
 
-  if (state === "EARLY") confidence = 55;
-  if (state === "SETUP") confidence = 35;
-  if (state === "SNIPER") confidence = 85;
-
-  // boost confidence when structure aligns
-  if (compression && momentum > 45 && momentum < 55) {
-    confidence += 10;
-  }
-
-  // -----------------------------
-  // BIAS
-  // -----------------------------
   const bias: Signal["bias"] =
     momentum > 55 ? "Bullish" : momentum < 45 ? "Bearish" : "Neutral";
 
-  // -----------------------------
-  // RISK MODEL (simple but stable)
-  // -----------------------------
-  const stopLoss =
-    state === "SNIPER"
-      ? bias === "Bullish"
-        ? price * 0.99
-        : price * 1.01
-      : null;
-
-  const takeProfit =
-    state === "SNIPER"
-      ? bias === "Bullish"
-        ? price * 1.02
-        : price * 0.98
-      : null;
-
-  const riskRewardRatio =
-    state === "SNIPER" ? 2 : null;
-
-  // -----------------------------
-  // FINAL OUTPUT
-  // -----------------------------
   return {
     symbol,
     price,
@@ -135,21 +78,66 @@ export function generateSignal(symbol: string, price: number): Signal {
     bias,
     confidence: Math.round(confidence),
 
-    adx: Math.round(adx * 10) / 10,
-    stochK: Math.round(stochK * 10) / 10,
-    stochD: Math.round(stochD * 10) / 10,
+    adx: Number(adx.toFixed(1)),
+    stochK: Number(stochK.toFixed(1)),
+    stochD: Number(stochD.toFixed(1)),
 
     reason:
       state === "SNIPER"
         ? "LIQUIDITY EXPANSION BREAKOUT"
         : state === "EARLY"
         ? "COMPRESSION BUILDING"
-        : "STRUCTURE NEUTRAL",
+        : "NO STRUCTURE",
 
-    stopLoss,
-    takeProfit,
-    riskRewardRatio,
+    stopLoss: state === "SNIPER" ? price * 0.99 : null,
+    takeProfit: state === "SNIPER" ? price * 1.02 : null,
+    riskRewardRatio: state === "SNIPER" ? 2 : null,
 
     updatedAt: new Date().toISOString(),
   };
+}
+
+/**
+ * 🔥 CRITICAL FIX:
+ * This restores your broken imports everywhere in cron + API
+ */
+export async function generateAndStoreSignals(
+  symbols: string[],
+  prices: number[]
+) {
+  const signals: Signal[] = [];
+
+  for (let i = 0; i < symbols.length; i++) {
+    const signal = generateSignal(symbols[i], prices[i]);
+
+    await storeSignalSnapshot({
+      symbol: signal.symbol,
+      price: signal.price,
+
+      state: signal.state,
+
+      isEarly: signal.isEarly,
+      isSniper: signal.isSniper,
+      isActive: signal.isActive,
+
+      bias: signal.bias,
+      confidence: signal.confidence,
+
+      adx: signal.adx,
+      stochK: signal.stochK,
+      stochD: signal.stochD,
+
+      reason: signal.reason,
+
+      stopLoss: signal.stopLoss,
+      takeProfit: signal.takeProfit,
+      riskRewardRatio: signal.riskRewardRatio,
+
+      updatedAt: signal.updatedAt,
+    });
+
+    signals.push(signal);
+  }
+
+  return signals;
 }
