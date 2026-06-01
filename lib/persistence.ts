@@ -1,3 +1,6 @@
+import { promises as fs } from "fs";
+import path from "path";
+
 export interface SignalSnapshot {
   symbol: string;
   isEarly: boolean;
@@ -21,54 +24,46 @@ export interface SignalSnapshot {
   updatedAt: string;
 }
 
+const FILE_PATH = path.join("/tmp", "signals.json");
+
 /* =========================
-   GLOBAL SINGLETON STORE
-   (CRITICAL FIX)
+   LOAD
 ========================= */
-
-const globalStore = globalThis as unknown as {
-  signalHistory?: Map<string, SignalSnapshot>;
-};
-
-if (!globalStore.signalHistory) {
-  globalStore.signalHistory = new Map();
-  console.log("[PERSISTENCE] initialized (global singleton)");
+async function load(): Promise<SignalSnapshot[]> {
+  try {
+    const data = await fs.readFile(FILE_PATH, "utf-8");
+    return JSON.parse(data);
+  } catch {
+    return [];
+  }
 }
 
-const signalHistory = globalStore.signalHistory;
+/* =========================
+   SAVE
+========================= */
+async function save(data: SignalSnapshot[]) {
+  await fs.writeFile(FILE_PATH, JSON.stringify(data, null, 2));
+}
 
 /* =========================
    STORE SNAPSHOT
 ========================= */
-
 export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
-  signalHistory.set(snapshot.symbol, snapshot);
+  const all = await load();
 
-  const status = snapshot.isSniper
-    ? "🟢 SNIPER"
-    : snapshot.isEarly
-    ? "🟣 EARLY"
-    : "⚪ WAIT";
+  const filtered = all.filter((s) => s.symbol !== snapshot.symbol);
+  filtered.push(snapshot);
+
+  await save(filtered);
 
   console.log(
-    `[PERSISTENCE] ${snapshot.symbol}: ${status} | $${snapshot.price}`
+    `[PERSISTENCE] ${snapshot.symbol} stored @ ${snapshot.price}`
   );
 }
 
 /* =========================
-   GET LATEST SNAPSHOTS
+   GET LATEST
 ========================= */
-
-export async function getLatestSignalSnapshots(): Promise<
-  SignalSnapshot[]
-> {
-  return Array.from(signalHistory.values());
-}
-
-/* =========================
-   DEBUG HELPERS
-========================= */
-
-export function getRawStoreSize() {
-  return signalHistory.size;
+export async function getLatestSignalSnapshots() {
+  return await load();
 }
