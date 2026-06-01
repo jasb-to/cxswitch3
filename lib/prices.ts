@@ -1,30 +1,37 @@
-export async function getLivePrices() {
+type PriceMap = {
+  BTC: number;
+  ETH: number;
+  SOL: number;
+};
+
+export async function getLivePrices(): Promise<PriceMap> {
   try {
-    // OKX public endpoint (stable + UK-safe)
     const res = await fetch(
-      "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
+      "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=usd",
+      {
+        headers: {
+          accept: "application/json",
+        },
+        cache: "no-store",
+      }
     );
 
-    const json = await res.json();
+    const data = await res.json();
 
-    const list = Array.isArray(json?.data) ? json.data : [];
-
-    const map: Record<string, number> = {};
-
-    for (const item of list) {
-      if (!item?.instId || !item?.last) continue;
-
-      map[item.instId] = Number(item.last);
+    // HARD SAFETY GUARDS (this prevents ALL iterable crashes)
+    if (!data || typeof data !== "object") {
+      throw new Error("Invalid CoinGecko response");
     }
 
     return {
-      BTC: map["BTC-USDT"] || 71000,
-      ETH: map["ETH-USDT"] || 2000,
-      SOL: map["SOL-USDT"] || 80,
+      BTC: Number(data.bitcoin?.usd ?? 71000),
+      ETH: Number(data.ethereum?.usd ?? 2000),
+      SOL: Number(data.solana?.usd ?? 80),
     };
   } catch (err) {
     console.error("[PRICE ERROR]", err);
 
+    // fallback safe values
     return {
       BTC: 71000,
       ETH: 2000,
