@@ -18,22 +18,20 @@ export async function GET() {
 
       const signal = generateSignal(symbol, price);
 
-      const fullSignal = {
+      const full = {
         ...signal,
         price,
-        ...buildTradeLevels(symbol, price, signal.bias),
       };
 
-      await storeSignalSnapshot(fullSignal);
+      await storeSignalSnapshot(full);
 
-      signals.push(fullSignal);
+      signals.push(full);
 
       console.log(
-        `[CRON] ${symbol} | ${signal.state} | $${price} | SL:${fullSignal.stopLoss} TP:${fullSignal.takeProfit}`
+        `[CRON] ${symbol} | ${signal.state} | $${price}`
       );
     }
 
-    // 🔥 ALERT LAYER
     const alerts = detectAlerts(signals);
 
     for (const a of alerts) {
@@ -49,7 +47,7 @@ export async function GET() {
     console.error("[CRON ERROR]", err);
 
     return Response.json(
-      { ok: false, error: "CRON_FAILED" },
+      { ok: false },
       { status: 500 }
     );
   }
