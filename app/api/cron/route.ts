@@ -1,23 +1,19 @@
 import { generateAndStoreSignals } from "@/lib/signalEngine";
-import { getLatestSignalSnapshots } from "@/lib/persistence";
+import {
+  getCandles4H,
+  getCandles15M,
+  getCurrentPrice,
+} from "@/lib/kraken";
 
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
   const secret = new URL(request.url).searchParams.get("secret");
 
-  // =========================
-  // AUTH CHECK
-  // =========================
   if (secret !== "abc123xyz789") {
-    console.error("[CRON] UNAUTHORIZED");
-
-    return new Response(
-      JSON.stringify({ success: false, error: "Unauthorized" }),
-      {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      }
+    return Response.json(
+      { success: false, error: "Unauthorized" },
+      { status: 401 }
     );
   }
 
@@ -32,89 +28,52 @@ export async function GET(request: Request) {
   );
 
   try {
-    // =========================
-    // GET LATEST MARKET STATE
-    // =========================
-    const latestSnapshots = await getLatestSignalSnapshots();
+    const symbols = ["BTC", "ETH", "SOL"] as const;
 
-    // =========================
-    // NORMALISE FOR ENGINE
-    // =========================
-    const engineInput = latestSnapshots.map((snap) => ({
-      symbol: snap.symbol,
-      candles4H: [], // (not wired yet)
-      candles1H: [],
-      candles15M: [],
-      price: snap.price,
-    }));
+    const inputs = await Promise.all(
+      symbols.map(async (symbol) => ({
+        symbol,
 
-    // =========================
-    // SAFETY CHECK
-    // =========================
-    if (!engineInput.length) {
-      console.log("[CRON] No snapshots available");
+        candles4H: await getCandles4H(symbol),
 
-      return new Response(
-        JSON.stringify({
-          success: true,
-          message: "No data to process",
-          signalCount: 0,
-        }),
-        { headers: { "Content-Type": "application/json" } }
-      );
-    }
+        candles1H: [],
 
-    // =========================
-    // RUN ENGINE
-    // =========================
-    const result = await generateAndStoreSignals(engineInput);
+        candles15M: await getCandles15M(symbol),
 
-    const signals = Array.isArray(result?.signals)
-      ? result.signals
-      : [];
+        price: await getCurrentPrice(symbol),
+      }))
+    );
+
+    const result = await generateAndStoreSignals(inputs);
 
     const duration = Date.now() - startTime;
 
-    const msg = `CRON COMPLETE in ${duration}ms: Processed ${signals.length} signals`;
-
     console.log(
-      "[CRON] ════════════════════════════════════════════════════════════"
-    );
-    console.log(`[CRON] ${msg}`);
-    console.log(
-      "[CRON] ════════════════════════════════════════════════════════════"
+      `[CRON] COMPLETE in ${duration}ms | Signals: ${result.signals.length}`
     );
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        message: msg,
-        signalCount: signals.length,
-        executionTime: duration,
-      }),
-      {
-        headers: { "Content-Type": "application/json" },
-      }
-    );
+    return Response.json({
+      success: true,
+      signalCount: result.signals.length,
+      executionTime: duration,
+    });
   } catch (err) {
     const duration = Date.now() - startTime;
 
-    const errorMsg =
-      err instanceof Error ? err.message : String(err);
+    console.error(
+      `[CRON] FAILED after ${duration}ms`,
+      err
+    );
 
-    console.error(`[CRON] FATAL ERROR after ${duration}ms: ${errorMsg}`);
-    console.error(err);
-
-    return new Response(
-      JSON.stringify({
-        success: false,
-        error: errorMsg,
-        executionTime: duration,
-      }),
+    return Response.json(
       {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      }
+        success: false,
+        error:
+          err instanceof Error
+            ? err.message
+            : "Unknown error",
+      },
+      { status: 500 }
     );
   }
 }
