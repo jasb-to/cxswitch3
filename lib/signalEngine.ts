@@ -26,101 +26,102 @@ export interface Signal {
   updatedAt: string;
 }
 
-/* =========================
-   MOCK PRICE SOURCE (TEMP)
-   Replace later with real candles
-========================= */
-function generateMockPrices(base: number): number[] {
-  const points = [];
-  let price = base;
+/**
+ * CORE IDEA:
+ * We stop randomness deciding signals.
+ * We simulate STRUCTURE FIRST → then derive state.
+ */
 
-  for (let i = 0; i < 10; i++) {
-    const drift = (Math.random() - 0.5) * 0.002; // tiny movement
-    price = price + price * drift;
-    points.push(price);
-  }
-
-  return points;
-}
-
-/* =========================
-   COMPRESSION ENGINE (CORE)
-========================= */
-function getCompressionScore(prices: number[]): number {
-  if (!prices || prices.length < 5) return 0;
-
-  const recent = prices.slice(-5);
-
-  const max = Math.max(...recent);
-  const min = Math.min(...recent);
-
-  if (max === 0) return 0;
-
-  const range = (max - min) / max;
-
-  // invert: lower range = higher compression
-  return Math.max(0, Math.min(1, 1 - range * 10));
-}
-
-/* =========================
-   MAIN SIGNAL ENGINE
-========================= */
 export function generateSignal(symbol: string, price: number): Signal {
-  const prices = generateMockPrices(price);
+  // -----------------------------
+  // STRUCTURE SIMULATION (lightweight proxy)
+  // -----------------------------
+  const momentum = Math.sin(Date.now() / 60000 + price) * 50 + 50; // 0–100
+  const volatility = Math.abs(Math.cos(Date.now() / 45000 + price)) * 100;
 
-  const compressionScore = getCompressionScore(prices);
+  // -----------------------------
+  // MARKET CONDITIONS
+  // -----------------------------
+  const compression = volatility < 35;
+  const expansion = volatility > 70;
 
-  // derived indicators (still UI only)
-  const adx = 5 + compressionScore * 50;
-  const stochK = compressionScore * 100;
-  const stochD = compressionScore * 100;
+  const breakoutImpulse = momentum > 65 && expansion;
+  const breakdownImpulse = momentum < 35 && expansion;
 
+  // -----------------------------
+  // STATE ENGINE (IMPORTANT)
+  // -----------------------------
   let state: SignalState = "WAIT";
 
-  /* =========================
-     CORE LOGIC (NO LAG INDICATORS)
-  ========================= */
-
-  if (compressionScore > 0.7) {
+  if (compression) {
     state = "EARLY";
   }
 
-  if (compressionScore > 0.85) {
+  if (compression && (breakoutImpulse || breakdownImpulse)) {
     state = "SNIPER";
   }
 
-  if (compressionScore < 0.4) {
-    state = "WAIT";
+  if (!compression && expansion && (breakoutImpulse || breakdownImpulse)) {
+    state = "SNIPER";
   }
 
-  /* =========================
-     DERIVED VALUES
-  ========================= */
+  if (!compression && !expansion) {
+    state = "SETUP";
+  }
+
+  // -----------------------------
+  // DERIVED INDICATORS (UI ONLY)
+  // -----------------------------
+  const adx = Math.min(50, Math.max(8, volatility / 2));
+  const stochK = momentum;
+  const stochD = momentum * 0.9;
 
   const isEarly = state === "EARLY";
   const isSniper = state === "SNIPER";
 
-  const confidence =
-    state === "SNIPER"
-      ? 90
-      : state === "EARLY"
-      ? 60
-      : 20;
+  // -----------------------------
+  // CONFIDENCE (IMPORTANT FOR ALERTS)
+  // -----------------------------
+  let confidence = 20;
 
+  if (state === "EARLY") confidence = 55;
+  if (state === "SETUP") confidence = 35;
+  if (state === "SNIPER") confidence = 85;
+
+  // boost confidence when structure aligns
+  if (compression && momentum > 45 && momentum < 55) {
+    confidence += 10;
+  }
+
+  // -----------------------------
+  // BIAS
+  // -----------------------------
   const bias: Signal["bias"] =
-    compressionScore > 0.6
-      ? "Bullish"
-      : compressionScore < 0.3
-      ? "Bearish"
-      : "Neutral";
+    momentum > 55 ? "Bullish" : momentum < 45 ? "Bearish" : "Neutral";
 
-  const reason =
+  // -----------------------------
+  // RISK MODEL (simple but stable)
+  // -----------------------------
+  const stopLoss =
     state === "SNIPER"
-      ? "COMPRESSION BREAKOUT IMMINENT"
-      : state === "EARLY"
-      ? "VOLATILITY SQUEEZE BUILDING"
-      : "NO STRUCTURE";
+      ? bias === "Bullish"
+        ? price * 0.99
+        : price * 1.01
+      : null;
 
+  const takeProfit =
+    state === "SNIPER"
+      ? bias === "Bullish"
+        ? price * 1.02
+        : price * 0.98
+      : null;
+
+  const riskRewardRatio =
+    state === "SNIPER" ? 2 : null;
+
+  // -----------------------------
+  // FINAL OUTPUT
+  // -----------------------------
   return {
     symbol,
     price,
@@ -132,41 +133,23 @@ export function generateSignal(symbol: string, price: number): Signal {
     isActive: isEarly || isSniper,
 
     bias,
-    confidence,
+    confidence: Math.round(confidence),
 
-    adx,
-    stochK,
-    stochD,
+    adx: Math.round(adx * 10) / 10,
+    stochK: Math.round(stochK * 10) / 10,
+    stochD: Math.round(stochD * 10) / 10,
 
-    reason,
+    reason:
+      state === "SNIPER"
+        ? "LIQUIDITY EXPANSION BREAKOUT"
+        : state === "EARLY"
+        ? "COMPRESSION BUILDING"
+        : "STRUCTURE NEUTRAL",
 
-    stopLoss: isSniper ? price * 0.99 : null,
-    takeProfit: isSniper ? price * 1.02 : null,
-    riskRewardRatio: isSniper ? 2 : null,
+    stopLoss,
+    takeProfit,
+    riskRewardRatio,
 
     updatedAt: new Date().toISOString(),
   };
-}
-
-/* =========================
-   ENGINE ENTRY (CRON)
-========================= */
-export async function generateAndStoreSignals() {
-  const symbols = ["BTC", "ETH", "SOL"];
-
-  const basePrices: Record<string, number> = {
-    BTC: 71000,
-    ETH: 1950,
-    SOL: 80,
-  };
-
-  const signals: Signal[] = symbols.map((symbol) =>
-    generateSignal(symbol, basePrices[symbol])
-  );
-
-  console.log(
-    `[ENGINE] Generated ${signals.length} compression-based signals`
-  );
-
-  return signals;
 }
