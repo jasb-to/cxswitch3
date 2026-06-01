@@ -1,15 +1,18 @@
-import { kv } from "@vercel/kv";
+import { Redis } from "@upstash/redis";
+
+// uses your existing Vercel/Upstash env vars automatically
+const redis = Redis.fromEnv();
 
 const KEY = "cx:snapshots";
 
 /**
- * Store a single signal snapshot
+ * Store signal snapshot
  */
 export async function storeSignalSnapshot(signal: any) {
   try {
     if (!signal || !signal.symbol) return;
 
-    const existing = await kv.get<any[]>(KEY);
+    const existing = await redis.get<any[]>(KEY);
 
     const safeArray = Array.isArray(existing) ? existing : [];
 
@@ -19,9 +22,9 @@ export async function storeSignalSnapshot(signal: any) {
         savedAt: new Date().toISOString(),
       },
       ...safeArray,
-    ].slice(0, 50); // keep last 50 only
+    ].slice(0, 50);
 
-    await kv.set(KEY, updated);
+    await redis.set(KEY, updated);
 
     console.log(
       `[KV] ${signal.symbol}: ${signal.state} | $${signal.price}`
@@ -35,16 +38,13 @@ export async function storeSignalSnapshot(signal: any) {
 }
 
 /**
- * Get latest snapshots for UI
+ * Read latest signals
  */
 export async function getLatestSignalSnapshots() {
   try {
-    const data = await kv.get<any[]>(KEY);
+    const data = await redis.get<any[]>(KEY);
 
-    if (!Array.isArray(data)) {
-      console.warn("[KV] No snapshot array found, returning empty list");
-      return [];
-    }
+    if (!Array.isArray(data)) return [];
 
     return data;
   } catch (err) {
@@ -54,12 +54,12 @@ export async function getLatestSignalSnapshots() {
 }
 
 /**
- * Optional helper (used if you ever reset system)
+ * Optional reset
  */
 export async function clearSignalSnapshots() {
   try {
-    await kv.del(KEY);
-    console.log("[KV] snapshots cleared");
+    await redis.del(KEY);
+    console.log("[KV] cleared");
   } catch (err) {
     console.error("[KV CLEAR ERROR]", err);
   }
