@@ -6,32 +6,41 @@ export async function processAlerts(signals: any[]) {
   if (!Array.isArray(signals)) return;
 
   for (const s of signals) {
-    if (!s?.symbol) continue;
+    const previous = lastState[s.symbol];
 
-    const prev = lastState[s.symbol];
+    if (previous !== s.state) {
+      lastState[s.symbol] = s.state;
 
-    const isNewSniper =
-      s.state === "SNIPER" && prev !== "SNIPER";
-
-    const isNewEarly =
-      s.state === "EARLY" && prev !== "EARLY";
-
-    if (isNewSniper) {
-      console.log("[ALERT] SNIPER", s.symbol);
-
-      await sendTelegram(
-        `🔥 SNIPER ALERT\n${s.symbol} @ ${s.price}\nTP: ${s.takeProfit}\nSL: ${s.stopLoss}`
+      console.log(
+        `[ALERT ENGINE] ${s.symbol}: ${previous} -> ${s.state}`
       );
+
+      if (s.state === "SNIPER") {
+        await sendTelegram(
+          [
+            "🔥 CX SWITCH SNIPER",
+            "",
+            `${s.symbol}`,
+            `Price: ${s.price}`,
+            `Bias: ${s.bias}`,
+            `Confidence: ${s.confidence}%`,
+            `TP: ${s.takeProfit ?? "-"}`,
+            `SL: ${s.stopLoss ?? "-"}`,
+          ].join("\n")
+        );
+      }
+
+      if (s.state === "EARLY") {
+        await sendTelegram(
+          [
+            "🟣 CX SWITCH EARLY",
+            "",
+            `${s.symbol}`,
+            `Price: ${s.price}`,
+            "Compression detected",
+          ].join("\n")
+        );
+      }
     }
-
-    if (isNewEarly) {
-      console.log("[ALERT] EARLY", s.symbol);
-
-      await sendTelegram(
-        `🟣 EARLY ALERT\n${s.symbol} @ ${s.price}`
-      );
-    }
-
-    lastState[s.symbol] = s.state;
   }
 }
