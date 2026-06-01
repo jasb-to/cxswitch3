@@ -1,21 +1,23 @@
-import { sendTelegram } from "@/lib/telegram";
+export async function sendTelegram(message: string) {
+  const token = process.env.TELEGRAM_BOT_TOKEN!;
+  const chatId = process.env.TELEGRAM_CHAT_ID!;
 
-export async function POST() {
-  console.log("[API] POST /api/telegram/test - Test alert requested");
+  if (!token || !chatId) {
+    console.error("[TELEGRAM] Missing env vars");
+    return;
+  }
 
   try {
-    await sendTelegram("🧪 TEST ALERT: CX Switch is working");
-
-    return Response.json({
-      success: true,
-      message: "Test alert sent",
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: message,
+        parse_mode: "HTML",
+      }),
     });
-  } catch (err) {
-    console.error("[API] Test alert failed", err);
-
-    return Response.json({
-      success: false,
-      message: "Test alert failed",
-    });
+  } catch (e) {
+    console.error("[TELEGRAM ERROR]", e);
   }
 }
