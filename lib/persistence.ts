@@ -1,66 +1,40 @@
 import { kvGet, kvSet } from "./kv";
+import type { Signal } from "./strategy";
 
-export interface SignalSnapshot {
-  symbol: string;
-  isEarly: boolean;
-  isSniper: boolean;
-  isActive: boolean;
+export async function storeSignalSnapshot(snapshot: Signal) {
+  if (!snapshot?.symbol || typeof snapshot.price !== "number") {
+    console.log("[KV REJECT]", snapshot);
+    return;
+  }
 
-  confidence: number;
-  price: number;
-
-  adx: number;
-  stochK: number;
-  stochD: number;
-
-  bias: "Bullish" | "Bearish" | "Neutral";
-  reason: string;
-
-  stopLoss: number | null;
-  takeProfit: number | null;
-  riskRewardRatio: number | null;
-
-  updatedAt: string;
-}
-
-/* =========================
-   STORE SNAPSHOT
-========================= */
-
-export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
   const key = `signals:${snapshot.symbol}`;
 
   const existing = await kvGet(key);
 
-  // Upstash returns: { result: "..." }
-  const parsedExisting = existing?.result
+  const history = existing?.result
     ? JSON.parse(existing.result)
     : [];
 
-  const updated = [...parsedExisting, snapshot];
+  history.push(snapshot);
 
-  if (updated.length > 50) updated.shift();
+  if (history.length > 50) history.shift();
 
-  await kvSet(key, JSON.stringify(updated));
+  await kvSet(key, JSON.stringify(history));
 
-  console.log(
-    `[KV] ${snapshot.symbol}: ${snapshot.price} | ${snapshot.reason}`
-  );
+  console.log("[KV WRITE]", snapshot.symbol, snapshot.price);
 }
-
-/* =========================
-   GET LATEST SNAPSHOTS
-========================= */
 
 export async function getLatestSignalSnapshots() {
   const symbols = ["BTC", "ETH", "SOL"];
 
-  const results = [];
+  const results: Signal[] = [];
 
   for (const symbol of symbols) {
     const data = await kvGet(`signals:${symbol}`);
 
-    const parsed = data?.result ? JSON.parse(data.result) : [];
+    const parsed = data?.result
+      ? JSON.parse(data.result)
+      : [];
 
     if (parsed.length > 0) {
       results.push(parsed[parsed.length - 1]);
