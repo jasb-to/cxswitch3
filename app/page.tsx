@@ -117,15 +117,16 @@ export default function Home() {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
 
           {signals.map((signal) => {
+            // ✅ FIXED: use correct backend fields only
             const state = signal.isSniper
               ? "SNIPER"
-              : signal.isSetupValid
+              : signal.isEarly
               ? "EARLY"
               : "WAIT";
 
             const stateColor = signal.isSniper
               ? "text-green-400 bg-green-500/10 border-green-500/20"
-              : signal.isSetupValid
+              : signal.isEarly
               ? "text-purple-400 bg-purple-500/10 border-purple-500/20"
               : "text-gray-400 bg-gray-800 border-gray-700";
 
@@ -153,32 +154,14 @@ export default function Home() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-4 mb-5">
-                  <Metric
-                    label="Bias"
-                    value={signal.bias}
-                  />
-
-                  <Metric
-                    label="Confidence"
-                    value={`${signal.confidence}%`}
-                  />
+                  <Metric label="Bias" value={signal.bias} />
+                  <Metric label="Confidence" value={`${signal.confidence}%`} />
                 </div>
 
                 <div className="border-t border-gray-800 pt-4 space-y-3">
-                  <Row
-                    label="ADX"
-                    value={signal.adx.toFixed(1)}
-                  />
-
-                  <Row
-                    label="Stoch K"
-                    value={signal.stochK.toFixed(1)}
-                  />
-
-                  <Row
-                    label="Stoch D"
-                    value={signal.stochD.toFixed(1)}
-                  />
+                  <Row label="ADX" value={signal.adx.toFixed(1)} />
+                  <Row label="Stoch K" value={signal.stochK.toFixed(1)} />
+                  <Row label="Stoch D" value={signal.stochD.toFixed(1)} />
                 </div>
 
                 <div className="border-t border-gray-800 mt-4 pt-4 space-y-3">
@@ -234,13 +217,8 @@ function Metric({
 }) {
   return (
     <div>
-      <p className="text-xs text-gray-500 mb-1">
-        {label}
-      </p>
-
-      <p className="font-semibold">
-        {value}
-      </p>
+      <p className="text-xs text-gray-500 mb-1">{label}</p>
+      <p className="font-semibold">{value}</p>
     </div>
   );
 }
@@ -254,13 +232,8 @@ function Row({
 }) {
   return (
     <div className="flex items-center justify-between text-sm">
-      <span className="text-gray-500">
-        {label}
-      </span>
-
-      <span className="font-mono">
-        {value}
-      </span>
+      <span className="text-gray-500">{label}</span>
+      <span className="font-mono">{value}</span>
     </div>
   );
 }
