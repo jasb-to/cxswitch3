@@ -4,19 +4,31 @@ export async function sendTelegram(message: string) {
 
   if (!token || !chatId) {
     console.error("[TELEGRAM] Missing env vars");
-    return;
+    return false;
   }
 
   try {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: message,
-      }),
-    });
+    const res = await fetch(
+      `https://api.telegram.org/bot${token}/sendMessage`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: message,
+        }),
+      }
+    );
+
+    const json = await res.json();
+
+    console.log("[TELEGRAM]", json);
+
+    return true;
   } catch (err) {
     console.error("[TELEGRAM ERROR]", err);
+    return false;
   }
 }
