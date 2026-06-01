@@ -97,19 +97,41 @@ function detectStructure(candles: Candle[]) {
 }
 
 /* =========================
-   EARLY
+   PIVOTS (NEW CORE LOGIC)
 ========================= */
-function isEarly(adx: number, k: number) {
-  return adx > 10 && adx < 50 && k > 30 && k < 70;
+function detectPivots(candles: Candle[]) {
+  if (!candles || candles.length < 10) {
+    return { high: null, low: null };
+  }
+
+  const last = candles.slice(-10);
+
+  let swingHigh = last[0].high;
+  let swingLow = last[0].low;
+
+  for (const c of last) {
+    if (c.high > swingHigh) swingHigh = c.high;
+    if (c.low < swingLow) swingLow = c.low;
+  }
+
+  return {
+    high: swingHigh,
+    low: swingLow,
+  };
 }
 
 /* =========================
-   SNIPER
+   SIGNAL LOGIC
 ========================= */
-function isSniper(structure: string, k: number) {
+function isEarly(adx: number, k: number) {
+  return adx > 8 && adx < 60 && k > 25 && k < 75;
+}
+
+function isSniper(structure: string, k: number, adx: number) {
   return (
-    (structure === "Bullish" && k > 55) ||
-    (structure === "Bearish" && k < 45)
+    adx > 20 &&
+    ((structure === "Bullish" && k > 60) ||
+      (structure === "Bearish" && k < 40))
   );
 }
 
@@ -128,7 +150,7 @@ export async function generateAndStoreSignals(
     const stoch = calculateStoch(input.candles15M || []);
 
     const early = isEarly(adx, stoch.K);
-    const sniper = isSniper(structure, stoch.K);
+    const sniper = isSniper(structure, stoch.K, adx);
 
     const bias =
       structure === "Bullish"
@@ -143,15 +165,41 @@ export async function generateAndStoreSignals(
     let takeProfit: number | null = null;
     let rrr: number | null = null;
 
+    /* =========================
+       PIVOT-BASED SL/TP LOGIC
+    ========================= */
     if (sniper) {
-      const risk = input.price * 0.0025;
+      const pivots = detectPivots(input.candles15M || []);
+
+      const atr =
+        (input.candles15M || []).reduce((sum, c, i, arr) => {
+          if (i === 0) return 0;
+          return sum + Math.abs(c.high - c.low);
+        }, 0) / (input.candles15M.length || 1);
+
+      const buffer = atr * 1.2;
 
       if (bias === "Bullish") {
-        stopLoss = input.price - risk;
-        takeProfit = input.price + risk * 2;
-      } else if (bias === "Bearish") {
-        stopLoss = input.price + risk;
-        takeProfit = input.price - risk * 2;
+        stopLoss = pivots.low ?? input.price - buffer;
+        takeProfit = pivots.high ?? input.price + buffer * 2;
+      }
+
+      if (bias === "Bearish") {
+        stopLoss = pivots.high ?? input.price + buffer;
+        takeProfit = pivots.low ?? input.price - buffer * 2;
+      }
+
+      // safety fallback
+      if (stopLoss === takeProfit) {
+        stopLoss =
+          bias === "Bullish"
+            ? input.price - buffer
+            : input.price + buffer;
+
+        takeProfit =
+          bias === "Bullish"
+            ? input.price + buffer * 2
+            : input.price - buffer * 2;
       }
 
       rrr = 2;
@@ -188,9 +236,6 @@ export async function generateAndStoreSignals(
 
     signals.push(snapshot);
 
-    // =========================
-    // 🔥 THIS FIXES YOUR SYSTEM
-    // =========================
     await storeSignalSnapshot(snapshot);
   }
 
