@@ -7,6 +7,7 @@ export default function Home() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState("");
+  const [pulseSymbol, setPulseSymbol] = useState<string | null>(null);
 
   async function fetchSignals() {
     try {
@@ -15,10 +16,27 @@ export default function Home() {
       const res = await fetch("/api/signals");
       const data = await res.json();
 
-      setSignals(data.signals || []);
+      const newSignals = data.signals || [];
+
+      // detect price movement → trigger pulse
+      if (signals.length) {
+        newSignals.forEach((n: Signal) => {
+          const old = signals.find((s) => s.symbol === n.symbol);
+
+          if (old && old.price !== n.price) {
+            setPulseSymbol(n.symbol);
+
+            setTimeout(() => {
+              setPulseSymbol(null);
+            }, 600);
+          }
+        });
+      }
+
+      setSignals(newSignals);
       setLastUpdate(new Date().toLocaleTimeString());
     } catch (err) {
-      console.error(err);
+      console.error("fetchSignals error:", err);
     } finally {
       setLoading(false);
     }
@@ -29,7 +47,7 @@ export default function Home() {
       await fetch("/api/telegram/test", { method: "POST" });
       alert("Test sent");
     } catch {
-      alert("Failed");
+      alert("Failed to send test");
     }
   }
 
@@ -41,7 +59,6 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-[#0b0f14] text-white">
-      {/* FIXED CONTAINER (no left padding drift) */}
       <div className="mx-auto w-full max-w-[1400px] px-6 lg:px-8 py-8">
 
         {/* HEADER */}
@@ -76,6 +93,30 @@ export default function Home() {
           </div>
         </div>
 
+        {/* LEGEND */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-10">
+          <div className="rounded-xl border border-purple-500/20 bg-purple-500/5 p-5">
+            <div className="text-purple-400 font-bold mb-1">🟣 EARLY</div>
+            <div className="text-sm text-gray-400">
+              Compression forming
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-yellow-500/20 bg-yellow-500/5 p-5">
+            <div className="text-yellow-400 font-bold mb-1">🟡 SETUP</div>
+            <div className="text-sm text-gray-400">
+              Structure valid
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-green-500/20 bg-green-500/5 p-5">
+            <div className="text-green-400 font-bold mb-1">🟢 SNIPER</div>
+            <div className="text-sm text-gray-400">
+              Breakout active
+            </div>
+          </div>
+        </div>
+
         {/* SIGNAL GRID */}
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
 
@@ -96,9 +137,13 @@ export default function Home() {
             return (
               <div
                 key={s.symbol}
-                className="rounded-xl border border-gray-800 bg-[#0f141b] p-5"
+                className={`rounded-xl border p-5 transition-all duration-300 ${
+                  pulseSymbol === s.symbol
+                    ? "border-white/40 bg-white/5 scale-[1.02]"
+                    : "border-gray-800 bg-[#0f141b]"
+                }`}
               >
-                {/* TOP ROW */}
+                {/* TOP */}
                 <div className="flex justify-between items-start mb-4">
                   <div>
                     <div className="text-xl font-semibold">
@@ -116,7 +161,7 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* CORE METRICS */}
+                {/* CORE */}
                 <div className="grid grid-cols-2 gap-3 text-sm mb-4">
                   <Metric label="Bias" value={s.bias} />
                   <Metric label="Confidence" value={`${s.confidence}%`} />
@@ -133,11 +178,15 @@ export default function Home() {
                 <div className="border-t border-gray-800 pt-3 mt-3 space-y-2 text-sm">
                   <Row
                     label="SL"
-                    value={s.stopLoss ? `$${s.stopLoss.toFixed(2)}` : "—"}
+                    value={
+                      s.stopLoss ? `$${s.stopLoss.toFixed(2)}` : "—"
+                    }
                   />
                   <Row
                     label="TP"
-                    value={s.takeProfit ? `$${s.takeProfit.toFixed(2)}` : "—"}
+                    value={
+                      s.takeProfit ? `$${s.takeProfit.toFixed(2)}` : "—"
+                    }
                   />
                   <Row
                     label="R/R"
