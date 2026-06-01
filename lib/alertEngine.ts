@@ -4,15 +4,15 @@ export function detectAlerts(signals: any[]) {
   const alerts: any[] = [];
 
   for (const s of signals) {
+    if (!s?.symbol) continue;
+
     const prev = lastState[s.symbol];
 
-    // 🔥 ONLY FIRE WHEN ENTERING SNIPER
     if (s.state === "SNIPER" && prev !== "SNIPER") {
       alerts.push({
         symbol: s.symbol,
         type: "SNIPER_ENTRY",
-        price: s.price,
-        message: `🔥 SNIPER ENTRY: ${s.symbol} @ ${s.price}`,
+        message: `🔥 SNIPER: ${s.symbol} @ ${s.price}`,
       });
     }
 
