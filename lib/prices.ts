@@ -1,26 +1,28 @@
 export async function getLivePrices() {
   try {
+    // OKX public API (NOT blocked in UK)
     const res = await fetch(
-      "https://api.binance.com/api/v3/ticker/price"
+      "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
     );
 
-    const data = await res.json();
+    const json = await res.json();
+
+    const data = json.data || [];
 
     const map: Record<string, number> = {};
 
     for (const item of data) {
-      map[item.symbol] = parseFloat(item.price);
+      map[item.instId] = parseFloat(item.last);
     }
 
     return {
-      BTC: map["BTCUSDT"],
-      ETH: map["ETHUSDT"],
-      SOL: map["SOLUSDT"],
+      BTC: map["BTC-USDT"],
+      ETH: map["ETH-USDT"],
+      SOL: map["SOL-USDT"],
     };
   } catch (err) {
-    console.error("[PRICE ERROR]", err);
+    console.error("[PRICE FALLBACK]", err);
 
-    // fallback only
     return {
       BTC: 71000,
       ETH: 2000,
