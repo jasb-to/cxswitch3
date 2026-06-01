@@ -17,8 +17,6 @@ export interface Signal {
   isSetup: boolean;
   isSniper: boolean;
 
-  setupId: string;
-
   bias: "Bullish" | "Bearish" | "Neutral";
 
   confidence: number;
@@ -37,91 +35,77 @@ export interface Signal {
 }
 
 /* =========================
-   ADX
+   RANGE HELPERS
 ========================= */
 
-function calculateADX(candles: Candle[], period = 14) {
-  if (candles.length < period + 1) return 0;
+function getRange(candles: Candle[]) {
+  const highs = candles.map(c => c.high);
+  const lows = candles.map(c => c.low);
 
-  let plusDM = 0;
-  let minusDM = 0;
-  let tr = 0;
+  return {
+    high: Math.max(...highs),
+    low: Math.min(...lows),
+  };
+}
 
-  for (let i = candles.length - period; i < candles.length; i++) {
-    const curr = candles[i];
-    const prev = candles[i - 1];
+/* =========================
+   COMPRESSION (EARLY)
+========================= */
 
-    const up = curr.high - prev.high;
-    const down = prev.low - curr.low;
+function isCompression(c: Candle[]) {
+  const last10 = c.slice(-10);
+  const prev10 = c.slice(-20, -10);
 
-    if (up > down && up > 0) plusDM += up;
-    if (down > up && down > 0) minusDM += down;
+  if (last10.length < 10 || prev10.length < 10) return false;
 
-    const tr1 = curr.high - curr.low;
-    const tr2 = Math.abs(curr.high - prev.close);
-    const tr3 = Math.abs(curr.low - prev.close);
+  const r1 = getRange(last10);
+  const r2 = getRange(prev10);
 
-    tr += Math.max(tr1, tr2, tr3);
+  const range1 = r1.high - r1.low;
+  const range2 = r2.high - r2.low;
+
+  return range1 < range2 * 0.8;
+}
+
+/* =========================
+   PRESSURE (SETUP)
+========================= */
+
+function detectPressure(c: Candle[]) {
+  const last5 = c.slice(-5);
+
+  const lows = last5.map(x => x.low);
+  const highs = last5.map(x => x.high);
+
+  let higherLows = true;
+  let lowerHighs = true;
+
+  for (let i = 1; i < last5.length; i++) {
+    if (lows[i] < lows[i - 1]) higherLows = false;
+    if (highs[i] > highs[i - 1]) lowerHighs = false;
   }
 
-  const plusDI = (plusDM / (tr || 1)) * 100;
-  const minusDI = (minusDM / (tr || 1)) * 100;
-
-  const dx = Math.abs(plusDI - minusDI) / ((plusDI + minusDI) || 1);
-
-  return dx * 100;
+  return {
+    bullish: higherLows,
+    bearish: lowerHighs,
+  };
 }
 
 /* =========================
-   STOCH
+   BREAKOUT (SNIPER)
 ========================= */
 
-function calculateStoch(candles: Candle[]) {
-  const slice = candles.slice(-14);
+function detectBreakout(c: Candle[]) {
+  const last20 = c.slice(-20);
+  const last = c[c.length - 1];
 
-  const low = Math.min(...slice.map(c => c.low));
-  const high = Math.max(...slice.map(c => c.high));
-  const close = candles[candles.length - 1].close;
+  const recentHigh = Math.max(...last20.map(x => x.high));
+  const recentLow = Math.min(...last20.map(x => x.low));
 
-  const k = ((close - low) / (high - low || 1)) * 100;
-
-  return { k, d: k };
-}
-
-/* =========================
-   STRUCTURE
-========================= */
-
-function detectStructure(candles: Candle[]) {
-  const last = candles.slice(-5);
-
-  const highs = last.map(c => c.high);
-  const lows = last.map(c => c.low);
-
-  if (highs[4] > highs[3] && lows[4] > lows[3]) return "Bullish";
-  if (highs[4] < highs[3] && lows[4] < lows[3]) return "Bearish";
-
-  return "Neutral";
-}
-
-/* =========================
-   STATE MACHINE (FIXED)
-========================= */
-
-function getStates(adx: number, stochK: number) {
-  const isEarly = adx > 10 && adx < 30;
-
-  const isSetup =
-    adx >= 25 &&
-    adx <= 45 &&
-    stochK > 20 &&
-    stochK < 80;
-
-  const isSniper =
-    isSetup &&
-    (stochK > 60 || stochK < 40);
-
-  return { isEarly, isSetup, isSniper };
+  return {
+    up: last.close > recentHigh,
+    down: last.close < recentLow,
+  };
 }
 
 /* =========================
@@ -135,48 +119,78 @@ export function generateSignal(
 ): Signal {
   const c = [...candles].reverse();
 
-  const structure = detectStructure(c);
+  const compression = isCompression(c);
+  const pressure = detectPressure(c);
+  const breakout = detectBreakout(c);
 
-  const adx = calculateADX(c);
-  const stoch = calculateStoch(c);
+  // =========================
+  // STATES
+  // =========================
 
-  const { isEarly, isSetup, isSniper } = getStates(adx, stoch.k);
+  const isEarly = compression;
 
-  const bias =
-    structure === "Bullish"
+  const isSetup =
+    compression && (pressure.bullish || pressure.bearish);
+
+  const isSniper =
+    isSetup && (breakout.up || breakout.down);
+
+  // =========================
+  // BIAS
+  // =========================
+
+  const bias: "Bullish" | "Bearish" | "Neutral" =
+    pressure.bullish
       ? "Bullish"
-      : structure === "Bearish"
+      : pressure.bearish
       ? "Bearish"
       : "Neutral";
 
-  const confidence = isSniper ? 85 : isSetup ? 65 : isEarly ? 45 : 20;
+  // =========================
+  // CONFIDENCE (simple, not over-engineered)
+  // =========================
 
-  let stopLoss = null;
-  let takeProfit = null;
-  let rrr = null;
+  const confidence = isSniper
+    ? 85
+    : isSetup
+    ? 65
+    : isEarly
+    ? 45
+    : 20;
 
-  /* =========================
-     STRUCTURE-BASED RISK MODEL
-  ========================= */
+  // =========================
+  // TRADE LEVELS (ONLY SETUP+)
+  // =========================
 
-  if (isSniper) {
-    const lastHigh = Math.max(...c.slice(-10).map(x => x.high));
-    const lastLow = Math.min(...c.slice(-10).map(x => x.low));
+  let stopLoss: number | null = null;
+  let takeProfit: number | null = null;
+  let rrr: number | null = null;
 
-    const buffer = (lastHigh - lastLow) * 0.1;
+  if (isSetup) {
+    const last10 = c.slice(-10);
+
+    const range =
+      Math.max(...last10.map(x => x.high)) -
+      Math.min(...last10.map(x => x.low));
+
+    const buffer = range * 0.2;
 
     if (bias === "Bullish") {
-      stopLoss = lastLow - buffer;
-      takeProfit = livePrice + (livePrice - stopLoss) * 2;
+      stopLoss = livePrice - range * 0.5;
+      takeProfit = livePrice + range;
     }
 
     if (bias === "Bearish") {
-      stopLoss = lastHigh + buffer;
-      takeProfit = livePrice - (stopLoss - livePrice) * 2;
+      stopLoss = livePrice + range * 0.5;
+      takeProfit = livePrice - range;
     }
 
     rrr = 2;
   }
+
+  // =========================
+  // OUTPUT
+  // =========================
 
   return {
     symbol,
@@ -186,23 +200,19 @@ export function generateSignal(
     isSetup,
     isSniper,
 
-    setupId: `${symbol}-${structure}-${stoch.k.toFixed(0)}`,
-
     bias,
 
     confidence,
 
-    adx,
-    stochK: stoch.k,
-    stochD: stoch.d,
+    adx: 0,
+    stochK: 0,
+    stochD: 0,
 
     reason: isSniper
-      ? "SNIPER BREAKOUT"
+      ? "BREAKOUT"
       : isSetup
-      ? "SETUP ACTIVE"
-      : isEarly
-      ? "EARLY COMPRESSION"
-      : "WAIT",
+      ? "COMPRESSION + PRESSURE"
+      : "COMPRESSION",
 
     stopLoss,
     takeProfit,
