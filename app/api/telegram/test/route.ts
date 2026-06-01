@@ -1,15 +1,26 @@
-import { sendTestAlert } from "@/lib/telegram";
+import { sendTelegram } from "@/lib/telegram";
 
 export const runtime = "nodejs";
 
 export async function POST() {
-  console.log("[API] POST /api/telegram/test - Test alert requested");
+  try {
+    await sendTelegram("✅ CX Switch Telegram Test");
 
-  const result = await sendTestAlert();
+    return Response.json({
+      ok: true,
+      message: "Test sent",
+    });
+  } catch (err) {
+    console.error(err);
 
-  console.log(
-    `[API] Test alert result: success=${result.success}, message=${result.message}`
-  );
-
-  return Response.json(result);
+    return Response.json(
+      {
+        ok: false,
+        error: String(err),
+      },
+      {
+        status: 500,
+      }
+    );
+  }
 }
