@@ -1,6 +1,3 @@
-import fs from "fs";
-import path from "path";
-
 export interface SignalSnapshot {
   symbol: string;
   isEarly: boolean;
@@ -24,61 +21,54 @@ export interface SignalSnapshot {
   updatedAt: string;
 }
 
-const FILE_PATH = path.join(process.cwd(), "signal-store.json");
-
 /* =========================
-   LOAD STORE
+   GLOBAL SINGLETON STORE
+   (CRITICAL FIX)
 ========================= */
-function loadStore(): Record<string, SignalSnapshot[]> {
-  try {
-    if (!fs.existsSync(FILE_PATH)) return {};
-    return JSON.parse(fs.readFileSync(FILE_PATH, "utf-8"));
-  } catch {
-    return {};
-  }
+
+const globalStore = globalThis as unknown as {
+  signalHistory?: Map<string, SignalSnapshot>;
+};
+
+if (!globalStore.signalHistory) {
+  globalStore.signalHistory = new Map();
+  console.log("[PERSISTENCE] initialized (global singleton)");
 }
 
-/* =========================
-   SAVE STORE
-========================= */
-function saveStore(data: Record<string, SignalSnapshot[]>) {
-  fs.writeFileSync(FILE_PATH, JSON.stringify(data, null, 2));
-}
+const signalHistory = globalStore.signalHistory;
 
 /* =========================
    STORE SNAPSHOT
 ========================= */
+
 export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
-  const store = loadStore();
+  signalHistory.set(snapshot.symbol, snapshot);
 
-  if (!store[snapshot.symbol]) {
-    store[snapshot.symbol] = [];
-  }
-
-  store[snapshot.symbol].push(snapshot);
-
-  if (store[snapshot.symbol].length > 50) {
-    store[snapshot.symbol].shift();
-  }
-
-  saveStore(store);
+  const status = snapshot.isSniper
+    ? "🟢 SNIPER"
+    : snapshot.isEarly
+    ? "🟣 EARLY"
+    : "⚪ WAIT";
 
   console.log(
-    `[PERSISTENCE] ${snapshot.symbol}: ${
-      snapshot.isSniper ? "🟢 SNIPER" : snapshot.isEarly ? "🟣 EARLY" : "⚪ WAIT"
-    } | $${snapshot.price}`
+    `[PERSISTENCE] ${snapshot.symbol}: ${status} | $${snapshot.price}`
   );
 }
 
 /* =========================
    GET LATEST SNAPSHOTS
 ========================= */
+
 export async function getLatestSignalSnapshots(): Promise<
   SignalSnapshot[]
 > {
-  const store = loadStore();
+  return Array.from(signalHistory.values());
+}
 
-  return Object.values(store)
-    .map((arr) => arr[arr.length - 1])
-    .filter(Boolean);
+/* =========================
+   DEBUG HELPERS
+========================= */
+
+export function getRawStoreSize() {
+  return signalHistory.size;
 }
