@@ -22,9 +22,9 @@ export async function sendTelegram(message: string) {
       }
     );
 
-    const json = await res.json();
+    const data = await res.json();
 
-    console.log("[TELEGRAM]", json);
+    console.log("[TELEGRAM RESPONSE]", data);
 
     return true;
   } catch (err) {
