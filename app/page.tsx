@@ -4,61 +4,81 @@ import { useEffect, useState } from "react";
 
 export default function Home() {
   const [signals, setSignals] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
 
   async function fetchSignals() {
-    try {
-      setLoading(true);
+    const res = await fetch("/api/signals");
+    const data = await res.json();
 
-      const res = await fetch("/api/signals");
-      const data = await res.json();
+    const raw = data.signals || [];
 
-      console.log("📡 RAW API RESPONSE:", data);
+    // 🔥 KEEP ONLY LATEST PER SYMBOL
+    const latestMap = new Map();
 
-      setSignals(data.signals || []);
-    } catch (err) {
-      console.error("FETCH ERROR:", err);
-    } finally {
-      setLoading(false);
+    for (const s of raw) {
+      latestMap.set(s.symbol, s);
     }
+
+    setSignals(Array.from(latestMap.values()));
   }
 
   useEffect(() => {
     fetchSignals();
+    const t = setInterval(fetchSignals, 5000);
+    return () => clearInterval(t);
   }, []);
 
   return (
-    <main style={{ padding: 20, background: "#000", color: "#fff" }}>
-      <h1>CX Switch DEBUG</h1>
+    <main style={{ padding: 24, background: "#000", color: "#fff" }}>
+      <h1 style={{ fontSize: 28, marginBottom: 20 }}>
+        CX Switch
+      </h1>
 
-      <button onClick={fetchSignals}>
-        Refresh
-      </button>
+      <div style={{ display: "grid", gap: 16 }}>
+        {signals.map((s) => {
+          const stateColor =
+            s.state === "SNIPER"
+              ? "lime"
+              : s.state === "EARLY"
+              ? "violet"
+              : "gray";
 
-      <pre style={{ marginTop: 20, color: "lime" }}>
-        {JSON.stringify(signals, null, 2)}
-      </pre>
+          return (
+            <div
+              key={s.symbol}
+              style={{
+                border: "1px solid #222",
+                padding: 16,
+                borderRadius: 12,
+              }}
+            >
+              <div style={{ fontSize: 22 }}>
+                {s.symbol} — ${s.price}
+              </div>
 
-      <hr />
+              <div style={{ color: stateColor }}>
+                {s.state}
+              </div>
 
-      <h2>Rendered Cards</h2>
+              <div>Bias: {s.bias}</div>
+              <div>Confidence: {s.confidence}%</div>
 
-      {signals?.map((s, i) => (
-        <div
-          key={i}
-          style={{
-            border: "1px solid #333",
-            marginTop: 10,
-            padding: 10,
-          }}
-        >
-          <div>{s.symbol}</div>
-          <div>Price: {s.price}</div>
-          <div>State: {s.state}</div>
-          <div>Bias: {s.bias}</div>
-          <div>Confidence: {s.confidence}</div>
-        </div>
-      ))}
+              <div>ADX: {Number(s.adx).toFixed(1)}</div>
+              <div>Stoch: {Number(s.stochK).toFixed(1)}</div>
+
+              <div style={{ marginTop: 8, opacity: 0.7 }}>
+                {s.reason}
+              </div>
+
+              {s.state === "SNIPER" && (
+                <div style={{ marginTop: 10 }}>
+                  <div>SL: {s.stopLoss}</div>
+                  <div>TP: {s.takeProfit}</div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </main>
   );
 }
