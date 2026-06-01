@@ -14,8 +14,10 @@ export interface Signal {
   price: number;
 
   isEarly: boolean;
-  isSetup: boolean;
   isSniper: boolean;
+  isActive: boolean;
+
+  setupId: string;
 
   bias: "Bullish" | "Bearish" | "Neutral";
 
@@ -35,122 +37,85 @@ export interface Signal {
 }
 
 /* =========================
-   RANGE
+   CORE: COMPRESSION ENGINE
 ========================= */
 
-function getRange(candles: Candle[]) {
-  const highs = candles.map(c => c.high);
-  const lows = candles.map(c => c.low);
+function detectCompression(candles: Candle[]) {
+  const slice = candles.slice(-20);
+
+  const highs = slice.map(c => c.high);
+  const lows = slice.map(c => c.low);
+
+  const range = Math.max(...highs) - Math.min(...lows);
+
+  const avgPrice =
+    slice.reduce((sum, c) => sum + c.close, 0) / slice.length;
+
+  const volatilityRatio = range / avgPrice;
 
   return {
-    high: Math.max(...highs),
-    low: Math.min(...lows),
+    compressed: volatilityRatio < 0.015, // tuned early squeeze
+    volatilityRatio,
   };
 }
 
 /* =========================
-   COMPRESSION
+   STRUCTURE (simple + fast)
 ========================= */
 
-function isCompression(candles: Candle[]) {
-  const last10 = candles.slice(-10);
-  const prev10 = candles.slice(-20, -10);
+function detectStructure(candles: Candle[]) {
+  const last = candles.slice(-5);
 
-  if (last10.length < 10 || prev10.length < 10) return false;
+  const highs = last.map(c => c.high);
+  const lows = last.map(c => c.low);
 
-  const r1 = getRange(last10);
-  const r2 = getRange(prev10);
+  const up = highs[4] > highs[3] && lows[4] > lows[3];
+  const down = highs[4] < highs[3] && lows[4] < lows[3];
 
-  const range1 = r1.high - r1.low;
-  const range2 = r2.high - r2.low;
-
-  return range1 < range2 * 0.8;
+  if (up) return "Bullish";
+  if (down) return "Bearish";
+  return "Neutral";
 }
 
 /* =========================
-   PRESSURE
+   MOMENTUM (lightweight, NOT primary)
 ========================= */
 
-function detectPressure(candles: Candle[]) {
-  const last5 = candles.slice(-5);
+function momentum(candles: Candle[]) {
+  const slice = candles.slice(-10);
 
-  let bullish = true;
-  let bearish = true;
+  const closes = slice.map(c => c.close);
 
-  for (let i = 1; i < last5.length; i++) {
-    if (last5[i].low < last5[i - 1].low) bullish = false;
-    if (last5[i].high > last5[i - 1].high) bearish = false;
-  }
-
-  return { bullish, bearish };
-}
-
-/* =========================
-   LIQUIDITY LEVELS
-========================= */
-
-function getLiquidityLevels(candles: Candle[]) {
-  const last20 = candles.slice(-20);
+  const change =
+    (closes[closes.length - 1] - closes[0]) / closes[0];
 
   return {
-    high: Math.max(...last20.map(x => x.high)),
-    low: Math.min(...last20.map(x => x.low)),
-  };
-}
-
-function detectLiquidityPressure(candles: Candle[]) {
-  const last = candles[candles.length - 1];
-  const levels = getLiquidityLevels(candles);
-
-  return {
-    nearHigh: last.close > levels.high * 0.995,
-    nearLow: last.close < levels.low * 1.005,
+    strength: Math.abs(change * 100),
+    direction: change > 0 ? "Bullish" : "Bearish",
   };
 }
 
 /* =========================
-   LIQUIDITY SWEEP (NEW EDGE)
+   EARLY SIGNAL (REAL EARLY)
 ========================= */
 
-function detectLiquiditySweep(candles: Candle[]) {
-  const last20 = candles.slice(-20);
-  const last = candles[candles.length - 1];
-
-  const high = Math.max(...last20.map(x => x.high));
-  const low = Math.min(...last20.map(x => x.low));
-
-  const sweepHigh = last.high > high && last.close < high;
-  const sweepLow = last.low < low && last.close > low;
-
-  return { sweepHigh, sweepLow };
+function isEarly(compression: boolean, momentumStrength: number) {
+  return compression && momentumStrength < 1.2;
 }
 
 /* =========================
-   BREAKOUT
+   SNIPER (EXPANSION EVENT)
 ========================= */
 
-function detectBreakout(candles: Candle[]) {
-  const last20 = candles.slice(-20);
-  const last = candles[candles.length - 1];
-
-  const high = Math.max(...last20.map(x => x.high));
-  const low = Math.min(...last20.map(x => x.low));
-
-  return {
-    up: last.close > high,
-    down: last.close < low,
-  };
-}
-
-/* =========================
-   EARLY SIGNAL
-========================= */
-
-function isEarlySignal(candles: Candle[]) {
+function isSniper(
+  compression: boolean,
+  momentumStrength: number,
+  structure: string
+) {
   return (
-    isCompression(candles) &&
-    (detectLiquidityPressure(candles).nearHigh ||
-      detectLiquidityPressure(candles).nearLow)
+    compression === false &&
+    momentumStrength > 1.5 &&
+    structure !== "Neutral"
   );
 }
 
@@ -160,66 +125,52 @@ function isEarlySignal(candles: Candle[]) {
 
 export function generateSignal(
   symbol: Symbol,
-  candles: Candle[],
+  candles4H: Candle[],
+  candles1H: Candle[],
+  candles15M: Candle[],
   livePrice: number
 ): Signal {
-  const c = [...candles].reverse();
+  const c = [...candles15M].reverse();
 
-  const compression = isCompression(c);
-  const pressure = detectPressure(c);
-  const breakout = detectBreakout(c);
-  const sweep = detectLiquiditySweep(c);
+  const structure = detectStructure(c);
 
-  const isEarly = isEarlySignal(c);
+  const compression = detectCompression(c);
 
-  const isSetup = compression && (pressure.bullish || pressure.bearish);
+  const mom = momentum(c);
 
-  const isSniper =
-    isSetup &&
-    (sweep.sweepHigh ||
-      sweep.sweepLow ||
-      breakout.up ||
-      breakout.down);
+  const early = isEarly(compression.compressed, mom.strength);
 
-  const bias: "Bullish" | "Bearish" | "Neutral" =
-    sweep.sweepLow
+  const sniper = isSniper(
+    compression.compressed,
+    mom.strength,
+    structure
+  );
+
+  const bias: Signal["bias"] =
+    structure === "Bullish"
       ? "Bullish"
-      : sweep.sweepHigh
-      ? "Bearish"
-      : pressure.bullish
-      ? "Bullish"
-      : pressure.bearish
+      : structure === "Bearish"
       ? "Bearish"
       : "Neutral";
 
-  const confidence = isSniper
-    ? 85
-    : isSetup
-    ? 65
-    : isEarly
-    ? 45
-    : 20;
+  const confidence = sniper ? 90 : early ? 65 : 25;
 
-  let stopLoss: number | null = null;
-  let takeProfit: number | null = null;
-  let rrr: number | null = null;
+  let stopLoss = null;
+  let takeProfit = null;
+  let rrr = null;
 
-  if (isSetup) {
-    const last10 = c.slice(-10);
+  if (sniper) {
+    const risk = livePrice * 0.01;
 
-    const range =
-      Math.max(...last10.map(x => x.high)) -
-      Math.min(...last10.map(x => x.low));
+    stopLoss =
+      bias === "Bullish"
+        ? livePrice - risk
+        : livePrice + risk;
 
-    if (bias === "Bullish") {
-      stopLoss = livePrice - range * 0.5;
-      takeProfit = livePrice + range;
-    }
-
-    if (bias === "Bearish") {
-      stopLoss = livePrice + range * 0.5;
-      takeProfit = livePrice - range;
-    }
+    takeProfit =
+      bias === "Bullish"
+        ? livePrice + risk * 2
+        : livePrice - risk * 2;
 
     rrr = 2;
   }
@@ -228,22 +179,25 @@ export function generateSignal(
     symbol,
     price: livePrice,
 
-    isEarly,
-    isSetup,
-    isSniper,
+    isEarly: early,
+    isSniper: sniper,
+    isActive: early || sniper,
+
+    setupId: `${symbol}-${structure}-${Date.now()}`,
 
     bias,
+
     confidence,
 
     adx: 0,
     stochK: 0,
     stochD: 0,
 
-    reason: isSniper
-      ? "LIQUIDITY SWEEP / BREAKOUT"
-      : isSetup
-      ? "COMPRESSION + PRESSURE"
-      : "COMPRESSION",
+    reason: sniper
+      ? "SNIPER EXPANSION"
+      : early
+      ? "COMPRESSION BUILDUP"
+      : "WAIT",
 
     stopLoss,
     takeProfit,
