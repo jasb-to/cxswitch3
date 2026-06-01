@@ -1,7 +1,7 @@
 import { getLivePrices } from "@/lib/prices";
 import { generateSignal } from "@/lib/signalEngine";
 import { storeSignalSnapshot } from "@/lib/persistence";
-import { detectAlerts } from "@/lib/alertEngine";
+import { processAlerts } from "@/lib/alertEngine";
 
 export const runtime = "nodejs";
 
@@ -18,37 +18,27 @@ export async function GET() {
 
       const signal = generateSignal(symbol, price);
 
-      const full = {
-        ...signal,
-        price,
-      };
-
-      await storeSignalSnapshot(full);
+      const full = { ...signal, price };
 
       signals.push(full);
 
+      await storeSignalSnapshot(full);
+
       console.log(
-        `[CRON] ${symbol} | ${signal.state} | $${price}`
+        `[CRON] ${symbol} ${signal.state} @ ${price}`
       );
     }
 
-    const alerts = detectAlerts(signals);
-
-    for (const a of alerts) {
-      console.log(`[ALERT] ${a.message}`);
-    }
+    // ⚠️ IMPORTANT: MUST AWAIT ALERTS
+    await processAlerts(signals);
 
     return Response.json({
       ok: true,
       signalsCount: signals.length,
-      alertsTriggered: alerts.length,
     });
   } catch (err) {
     console.error("[CRON ERROR]", err);
 
-    return Response.json(
-      { ok: false },
-      { status: 500 }
-    );
+    return Response.json({ ok: false }, { status: 500 });
   }
 }
