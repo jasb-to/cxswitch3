@@ -3,10 +3,12 @@ export type SignalState = "EARLY" | "SETUP" | "SNIPER" | "WAIT";
 export interface Signal {
   symbol: string;
   price: number;
+
   state: SignalState;
 
   isEarly: boolean;
   isSniper: boolean;
+  isActive: boolean;
 
   bias: "Bullish" | "Bearish" | "Neutral";
   confidence: number;
@@ -24,19 +26,7 @@ export interface Signal {
   updatedAt: string;
 }
 
-function volatility(symbol: string) {
-  switch (symbol) {
-    case "BTC":
-      return 0.012;
-    case "ETH":
-      return 0.018;
-    case "SOL":
-      return 0.03;
-    default:
-      return 0.02;
-  }
-}
-
+// SIMPLE deterministic structure engine
 export function generateSignal(symbol: string, price: number): Signal {
   const noise = Math.random();
 
@@ -48,51 +38,44 @@ export function generateSignal(symbol: string, price: number): Signal {
   if (compression) state = "EARLY";
   if (expansion) state = "SNIPER";
 
+  const isSniper = state === "SNIPER";
+  const isEarly = state === "EARLY";
+
+  const confidence = isSniper ? 85 : isEarly ? 55 : 20;
+
   const adx = 10 + noise * 40;
   const stochK = noise * 100;
   const stochD = noise * 100;
 
   const bias: Signal["bias"] =
-    expansion ? "Bearish" : compression ? "Bullish" : "Neutral";
-
-  const vol = volatility(symbol);
-
-  const isBullish = bias === "Bullish";
-
-  const stopLoss = isBullish
-    ? price * (1 - vol)
-    : price * (1 + vol);
-
-  const takeProfit = isBullish
-    ? price * (1 + vol * 2.2)
-    : price * (1 - vol * 2.2);
+    expansion ? "Bullish" : compression ? "Neutral" : "Neutral";
 
   return {
     symbol,
     price,
+
     state,
 
-    isEarly: state === "EARLY",
-    isSniper: state === "SNIPER",
+    isEarly,
+    isSniper,
+    isActive: isEarly || isSniper,
 
     bias,
-    confidence:
-      state === "SNIPER" ? 85 : state === "EARLY" ? 55 : 20,
+    confidence,
 
     adx,
     stochK,
     stochD,
 
-    reason:
-      state === "SNIPER"
-        ? "LIQUIDITY BREAKOUT"
-        : state === "EARLY"
-        ? "COMPRESSION"
-        : "NO STRUCTURE",
+    reason: isSniper
+      ? "LIQUIDITY EXPANSION BREAKOUT"
+      : isEarly
+      ? "COMPRESSION BUILDING"
+      : "NO STRUCTURE",
 
-    stopLoss,
-    takeProfit,
-    riskRewardRatio: 2.2,
+    stopLoss: isSniper ? price * 0.99 : null,
+    takeProfit: isSniper ? price * 1.02 : null,
+    riskRewardRatio: isSniper ? 2 : null,
 
     updatedAt: new Date().toISOString(),
   };
