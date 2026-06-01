@@ -2,24 +2,25 @@ import { sendTelegram } from "@/lib/telegram";
 
 export const runtime = "nodejs";
 
-export async function POST() {
+export async function GET() {
   try {
-    await sendTelegram("✅ CX Switch Telegram Test");
+    await sendTelegram(
+      "✅ CX SWITCH TEST ALERT\nTelegram integration working."
+    );
 
     return Response.json({
       ok: true,
-      message: "Test sent",
+      message: "Test alert sent",
     });
-  } catch (err) {
-    console.error(err);
+  } catch (err: any) {
+    console.error("[TEST ALERT ERROR]", err);
 
-    return Response.json(
-      {
-        ok: false,
-        error: String(err),
-      },
-      {
-        status: 500,
+    return Response.json({
+      ok: false,
+      error: err?.message || "unknown error",
+    });
+  }
+}
       }
     );
   }
