@@ -1,23 +1,31 @@
-let lastState: Record<string, string> = {};
+let lastAlertState: Record<string, string> = {};
 
-export function detectAlerts(signals: any[]) {
-  const alerts: any[] = [];
+import { sendTelegram } from "./telegram";
 
+export async function processAlerts(signals: any[]) {
   for (const s of signals) {
     if (!s?.symbol) continue;
 
-    const prev = lastState[s.symbol];
+    const prev = lastAlertState[s.symbol];
 
-    if (s.state === "SNIPER" && prev !== "SNIPER") {
-      alerts.push({
-        symbol: s.symbol,
-        type: "SNIPER_ENTRY",
-        message: `🔥 SNIPER: ${s.symbol} @ ${s.price}`,
-      });
+    const isNewSniper =
+      s.state === "SNIPER" && prev !== "SNIPER";
+
+    const isNewEarly =
+      s.state === "EARLY" && prev !== "EARLY";
+
+    if (isNewSniper) {
+      await sendTelegram(
+        `🔥 <b>SNIPER ALERT</b>\n${s.symbol} @ ${s.price}\nSL: ${s.stopLoss}\nTP: ${s.takeProfit}`
+      );
     }
 
-    lastState[s.symbol] = s.state;
-  }
+    if (isNewEarly) {
+      await sendTelegram(
+        `🟣 <b>EARLY ALERT</b>\n${s.symbol} @ ${s.price}\nCompression forming`
+      );
+    }
 
-  return alerts;
+    lastAlertState[s.symbol] = s.state;
+  }
 }
