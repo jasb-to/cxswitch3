@@ -35,7 +35,7 @@ export interface Signal {
 }
 
 /* =========================
-   RANGE HELPERS
+   RANGE
 ========================= */
 
 function getRange(candles: Candle[]) {
@@ -49,7 +49,7 @@ function getRange(candles: Candle[]) {
 }
 
 /* =========================
-   COMPRESSION (EARLY)
+   COMPRESSION
 ========================= */
 
 function isCompression(c: Candle[]) {
@@ -68,7 +68,32 @@ function isCompression(c: Candle[]) {
 }
 
 /* =========================
-   PRESSURE (SETUP)
+   LIQUIDITY LEVELS
+========================= */
+
+function getLiquidityLevels(c: Candle[]) {
+  const last20 = c.slice(-20);
+
+  return {
+    high: Math.max(...last20.map(x => x.high)),
+    low: Math.min(...last20.map(x => x.low)),
+  };
+}
+
+function detectLiquidityPressure(c: Candle[]) {
+  const last5 = c.slice(-5);
+  const levels = getLiquidityLevels(c);
+
+  const latest = last5[last5.length - 1];
+
+  return {
+    nearHigh: latest.close > levels.high * 0.995,
+    nearLow: latest.close < levels.low * 1.005,
+  };
+}
+
+/* =========================
+   PRESSURE
 ========================= */
 
 function detectPressure(c: Candle[]) {
@@ -77,27 +102,27 @@ function detectPressure(c: Candle[]) {
   const lows = last5.map(x => x.low);
   const highs = last5.map(x => x.high);
 
-  let higherLows = true;
-  let lowerHighs = true;
+  let bullish = true;
+  let bearish = true;
 
   for (let i = 1; i < last5.length; i++) {
-    if (lows[i] < lows[i - 1]) higherLows = false;
-    if (highs[i] > highs[i - 1]) lowerHighs = false;
+    if (lows[i] < lows[i - 1]) bullish = false;
+    if (highs[i] > highs[i - 1]) bearish = false;
   }
 
   return {
-    bullish: higherLows,
-    bearish: lowerHighs,
+    bullish,
+    bearish,
   };
 }
 
 /* =========================
-   BREAKOUT (SNIPER)
+   BREAKOUT
 ========================= */
 
 function detectBreakout(c: Candle[]) {
   const last20 = c.slice(-20);
-  const last = c[c.length - 1];
+  const last = c[last.length - 1];
 
   const recentHigh = Math.max(...last20.map(x => x.high));
   const recentLow = Math.min(...last20.map(x => x.low));
@@ -106,6 +131,15 @@ function detectBreakout(c: Candle[]) {
     up: last.close > recentHigh,
     down: last.close < recentLow,
   };
+}
+
+/* =========================
+   EARLY (UPDATED EDGE)
+========================= */
+
+function isEarlySignal(c: Candle[]) {
+  return isCompression(c) && detectLiquidityPressure(c).nearHigh
+    || isCompression(c) && detectLiquidityPressure(c).nearLow;
 }
 
 /* =========================
@@ -122,22 +156,15 @@ export function generateSignal(
   const compression = isCompression(c);
   const pressure = detectPressure(c);
   const breakout = detectBreakout(c);
+  const liquidity = detectLiquidityPressure(c);
 
-  // =========================
-  // STATES
-  // =========================
-
-  const isEarly = compression;
+  const isEarly = isEarlySignal(c);
 
   const isSetup =
     compression && (pressure.bullish || pressure.bearish);
 
   const isSniper =
     isSetup && (breakout.up || breakout.down);
-
-  // =========================
-  // BIAS
-  // =========================
 
   const bias: "Bullish" | "Bearish" | "Neutral" =
     pressure.bullish
@@ -146,10 +173,6 @@ export function generateSignal(
       ? "Bearish"
       : "Neutral";
 
-  // =========================
-  // CONFIDENCE (simple, not over-engineered)
-  // =========================
-
   const confidence = isSniper
     ? 85
     : isSetup
@@ -157,10 +180,6 @@ export function generateSignal(
     : isEarly
     ? 45
     : 20;
-
-  // =========================
-  // TRADE LEVELS (ONLY SETUP+)
-  // =========================
 
   let stopLoss: number | null = null;
   let takeProfit: number | null = null;
@@ -172,8 +191,6 @@ export function generateSignal(
     const range =
       Math.max(...last10.map(x => x.high)) -
       Math.min(...last10.map(x => x.low));
-
-    const buffer = range * 0.2;
 
     if (bias === "Bullish") {
       stopLoss = livePrice - range * 0.5;
@@ -188,10 +205,6 @@ export function generateSignal(
     rrr = 2;
   }
 
-  // =========================
-  // OUTPUT
-  // =========================
-
   return {
     symbol,
     price: livePrice,
@@ -201,7 +214,6 @@ export function generateSignal(
     isSniper,
 
     bias,
-
     confidence,
 
     adx: 0,
