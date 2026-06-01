@@ -1,4 +1,32 @@
-export function generateSignal(symbol: string, price: number) {
+export type SignalState = "EARLY" | "SETUP" | "SNIPER" | "WAIT";
+
+export interface Signal {
+  symbol: string;
+  price: number;
+
+  state: SignalState;
+
+  isEarly: boolean;
+  isSniper: boolean;
+  isActive: boolean;
+
+  bias: "Bullish" | "Bearish" | "Neutral";
+  confidence: number;
+
+  adx: number;
+  stochK: number;
+  stochD: number;
+
+  reason: string;
+
+  stopLoss: number | null;
+  takeProfit: number | null;
+  riskRewardRatio: number | null;
+
+  updatedAt: string;
+}
+
+export function generateSignal(symbol: string, price: number): Signal {
   const adx = 10 + Math.random() * 40;
   const stochK = Math.random() * 100;
   const stochD = Math.random() * 100;
@@ -6,14 +34,20 @@ export function generateSignal(symbol: string, price: number) {
   const isEarly = adx > 12 && adx < 45;
   const isSniper = adx > 30 && stochK < 40;
 
-  const bias =
-    adx > 25 ? "Bearish" : "Neutral";
+  let state: SignalState = "WAIT";
 
-  const confidence = isSniper ? 85 : isEarly ? 55 : 20;
+  if (isSniper) state = "SNIPER";
+  else if (isEarly) state = "EARLY";
+
+  const bias: Signal["bias"] = adx > 25 ? "Bearish" : "Neutral";
+
+  const confidence = state === "SNIPER" ? 85 : state === "EARLY" ? 55 : 20;
 
   return {
     symbol,
     price,
+
+    state,
 
     isEarly,
     isSniper,
@@ -26,15 +60,16 @@ export function generateSignal(symbol: string, price: number) {
     stochK,
     stochD,
 
-    reason: isSniper
-      ? "SNIPER BREAKOUT"
-      : isEarly
-      ? "EARLY COMPRESSION"
-      : "WAIT",
+    reason:
+      state === "SNIPER"
+        ? "SNIPER BREAKOUT"
+        : state === "EARLY"
+        ? "EARLY COMPRESSION"
+        : "WAIT",
 
-    stopLoss: isSniper ? price * 1.01 : null,
-    takeProfit: isSniper ? price * 0.98 : null,
-    riskRewardRatio: isSniper ? 2 : null,
+    stopLoss: state === "SNIPER" ? price * 1.01 : null,
+    takeProfit: state === "SNIPER" ? price * 0.98 : null,
+    riskRewardRatio: state === "SNIPER" ? 2 : null,
 
     updatedAt: new Date().toISOString(),
   };
