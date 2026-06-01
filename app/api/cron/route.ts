@@ -1,40 +1,49 @@
-import { generateSignal } from "@/lib/signalEngine";
-import { storeSignalSnapshot } from "@/lib/persistence";
+import { generateAndStoreSignals } from "@/lib/signalEngine";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const startTime = Date.now();
+
   try {
-    const symbols = ["BTC", "ETH", "SOL"];
+    console.log(
+      `[CRON] ════════════════════════════════════════════════════════════`
+    );
+    console.log(`[CRON] STARTED at ${new Date().toLocaleString()}`);
 
-    const results = [];
+    const result = await generateAndStoreSignals();
 
-    for (const symbol of symbols) {
-      const price =
-        symbol === "BTC"
-          ? 71000 + Math.random() * 2000
-          : symbol === "ETH"
-          ? 1950 + Math.random() * 100
-          : 80 + Math.random() * 5;
+    // ✅ HARD GUARD: NEVER trust engine output
+    const signals = Array.isArray(result)
+      ? result
+      : result && typeof result === "object"
+      ? Object.values(result)
+      : [];
 
-      const signal = generateSignal(symbol, price);
-
-      await storeSignalSnapshot(signal);
-
-      results.push(signal);
-
-      console.log("[ENGINE]", symbol, signal.state);
+    if (!Array.isArray(signals)) {
+      throw new Error("Signals normalization failed");
     }
+
+    console.log(
+      `[CRON] COMPLETE in ${Date.now() - startTime}ms | Signals: ${
+        signals.length
+      }`
+    );
 
     return Response.json({
       success: true,
-      signals: results,
+      signalsCount: signals.length,
+      updatedAt: new Date().toISOString(),
     });
   } catch (err) {
     console.error("[CRON ERROR]", err);
 
     return Response.json(
-      { success: false },
+      {
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+        signalsCount: 0,
+      },
       { status: 500 }
     );
   }
