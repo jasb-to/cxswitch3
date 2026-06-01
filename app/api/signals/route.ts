@@ -1,41 +1,28 @@
+import { getSignalHistory } from "@/lib/persistence";
+
+export const runtime = "nodejs";
+
 export async function GET() {
   try {
-    const signals = await getLatestSignalSnapshots();
+    // pull all symbols from persistence safely
+    const symbols = ["BTC", "ETH", "SOL"];
 
-    const safeSignals = (signals || [])
-      .filter(Boolean)
-      .map((s) => ({
-        symbol: s.symbol ?? "UNKNOWN",
-        price: Number(s.price ?? 0),
+    const signals = symbols
+      .map((symbol) => {
+        const history = getSignalHistory(symbol);
 
-        state: s.state ?? "WAIT",
+        if (!history || history.length === 0) return null;
 
-        isEarly: Boolean(s.isEarly),
-        isSniper: Boolean(s.isSniper),
-        isActive: Boolean(s.isActive),
-
-        bias: s.bias ?? "Neutral",
-        confidence: Number(s.confidence ?? 0),
-
-        adx: Number(s.adx ?? 0),
-        stochK: Number(s.stochK ?? 0),
-        stochD: Number(s.stochD ?? 0),
-
-        reason: s.reason ?? "",
-
-        stopLoss: s.stopLoss ?? null,
-        takeProfit: s.takeProfit ?? null,
-        riskRewardRatio: s.riskRewardRatio ?? null,
-
-        updatedAt: s.updatedAt ?? new Date().toISOString(),
-      }));
+        return history[history.length - 1];
+      })
+      .filter(Boolean);
 
     console.log(
-      `[API] Returning ${safeSignals.length} signals from persistence layer`
+      `[API] Returning ${signals.length} signals from persistence layer`
     );
 
     return Response.json({
-      signals: safeSignals,
+      signals,
       updatedAt: new Date().toISOString(),
     });
   } catch (err) {
