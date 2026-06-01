@@ -1,3 +1,5 @@
+import { kvGet, kvSet } from "./kv";
+
 export interface SignalSnapshot {
   symbol: string;
   isEarly: boolean;
@@ -21,67 +23,49 @@ export interface SignalSnapshot {
   updatedAt: string;
 }
 
-const globalAny = global as any;
-
 /* =========================
-   GLOBAL SINGLETON STORE (FIX)
-========================= */
-
-if (!globalAny.signalHistory) {
-  globalAny.signalHistory = new Map<string, SignalSnapshot[]>();
-}
-
-if (!globalAny.telegramCooldowns) {
-  globalAny.telegramCooldowns = new Map<string, any>();
-}
-
-const signalHistory: Map<string, SignalSnapshot[]> = globalAny.signalHistory;
-const telegramCooldowns: Map<string, any> = globalAny.telegramCooldowns;
-
-console.log("[PERSISTENCE] GLOBAL store initialized");
-
-/* =========================
-   SNAPSHOT STORAGE
+   STORE SNAPSHOT
 ========================= */
 
 export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
-  const existing = signalHistory.get(snapshot.symbol) || [];
+  const key = `signals:${snapshot.symbol}`;
 
-  const updated = [...existing, snapshot];
+  const existing = await kvGet(key);
+
+  // Upstash returns: { result: "..." }
+  const parsedExisting = existing?.result
+    ? JSON.parse(existing.result)
+    : [];
+
+  const updated = [...parsedExisting, snapshot];
 
   if (updated.length > 50) updated.shift();
 
-  signalHistory.set(snapshot.symbol, updated);
+  await kvSet(key, JSON.stringify(updated));
 
-  const status = snapshot.isSniper
-    ? "🟢 SNIPER"
-    : snapshot.isEarly
-    ? "🟣 EARLY"
-    : "⚪ WAIT";
-
-  console.log(`[PERSISTENCE] ${snapshot.symbol}: ${status} | $${snapshot.price}`);
+  console.log(
+    `[KV] ${snapshot.symbol}: ${snapshot.price} | ${snapshot.reason}`
+  );
 }
 
 /* =========================
-   LATEST SNAPSHOTS (UI)
+   GET LATEST SNAPSHOTS
 ========================= */
 
-export async function getLatestSignalSnapshots(): Promise<SignalSnapshot[]> {
-  const latest: SignalSnapshot[] = [];
+export async function getLatestSignalSnapshots() {
+  const symbols = ["BTC", "ETH", "SOL"];
 
-  for (const [, history] of signalHistory.entries()) {
-    if (history?.length) {
-      latest.push(history[history.length - 1]);
+  const results = [];
+
+  for (const symbol of symbols) {
+    const data = await kvGet(`signals:${symbol}`);
+
+    const parsed = data?.result ? JSON.parse(data.result) : [];
+
+    if (parsed.length > 0) {
+      results.push(parsed[parsed.length - 1]);
     }
   }
 
-  return latest;
-}
-
-/* =========================
-   OPTIONAL HISTORY
-========================= */
-
-export async function getSignalHistory(symbol: string) {
-  return signalHistory.get(symbol) || [];
+  return results;
 }
