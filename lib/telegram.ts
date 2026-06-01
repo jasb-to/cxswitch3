@@ -1,18 +1,22 @@
-import { sendTelegram } from "@/lib/telegram";
+export async function sendTelegram(message: string) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
 
-export async function fireAlert(signal: any) {
-  if (!signal) return;
+  if (!token || !chatId) {
+    console.error("[TELEGRAM] Missing env vars");
+    return;
+  }
 
-  const msg =
-    signal.state === "SNIPER"
-      ? `🔥 SNIPER ALERT\n${signal.symbol} @ ${signal.price}`
-      : signal.state === "EARLY"
-      ? `🟣 EARLY ALERT\n${signal.symbol} @ ${signal.price}`
-      : null;
-
-  if (!msg) return;
-
-  console.log("[ALERT ENGINE]", msg);
-
-  await sendTelegram(msg);
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: message,
+      }),
+    });
+  } catch (err) {
+    console.error("[TELEGRAM ERROR]", err);
+  }
 }
