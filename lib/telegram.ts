@@ -1,36 +1,25 @@
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN!;
-const CHAT_ID = process.env.TELEGRAM_CHAT_ID!;
-
 export async function sendTelegram(message: string) {
-  if (!BOT_TOKEN || !CHAT_ID) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+
+  if (!token || !chatId) {
     console.error("[TELEGRAM] Missing env vars");
     return;
   }
 
   try {
-    const res = await fetch(
-      `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          chat_id: CHAT_ID,
-          text: message,
-          parse_mode: "HTML",
-        }),
-      }
-    );
-
-    const json = await res.json();
-
-    if (!json.ok) {
-      console.error("[TELEGRAM ERROR]", json);
-    } else {
-      console.log("[TELEGRAM SENT]", message);
-    }
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: message,
+        parse_mode: "HTML",
+      }),
+    });
   } catch (err) {
-    console.error("[TELEGRAM FAILED]", err);
+    console.error("[TELEGRAM ERROR]", err);
   }
 }
