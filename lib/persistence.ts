@@ -1,6 +1,3 @@
-import { promises as fs } from "fs";
-import path from "path";
-
 export interface SignalSnapshot {
   symbol: string;
   isEarly: boolean;
@@ -24,46 +21,107 @@ export interface SignalSnapshot {
   updatedAt: string;
 }
 
-const FILE_PATH = path.join("/tmp", "signals.json");
-
-/* =========================
-   LOAD
-========================= */
-async function load(): Promise<SignalSnapshot[]> {
-  try {
-    const data = await fs.readFile(FILE_PATH, "utf-8");
-    return JSON.parse(data);
-  } catch {
-    return [];
-  }
+export interface TelegramCooldown {
+  symbol: string;
+  lastAlertAt: string;
 }
 
-/* =========================
-   SAVE
-========================= */
-async function save(data: SignalSnapshot[]) {
-  await fs.writeFile(FILE_PATH, JSON.stringify(data, null, 2));
+/* =========================================================
+   🔥 GLOBAL SINGLETON STORE (FIXS SERVERLESS ISSUE)
+========================================================= */
+
+const globalAny = global as any;
+
+if (!globalAny.signalHistory) {
+  globalAny.signalHistory = new Map<string, SignalSnapshot[]>();
 }
 
-/* =========================
+if (!globalAny.telegramCooldowns) {
+  globalAny.telegramCooldowns = new Map<string, TelegramCooldown>();
+}
+
+const signalHistory: Map<string, SignalSnapshot[]> =
+  globalAny.signalHistory;
+
+const telegramCooldowns: Map<string, TelegramCooldown> =
+  globalAny.telegramCooldowns;
+
+console.log("[PERSISTENCE] GLOBAL store initialized");
+
+/* =========================================================
    STORE SNAPSHOT
-========================= */
+========================================================= */
+
 export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
-  const all = await load();
+  const existing = signalHistory.get(snapshot.symbol) || [];
 
-  const filtered = all.filter((s) => s.symbol !== snapshot.symbol);
-  filtered.push(snapshot);
+  const updated = [...existing, snapshot];
 
-  await save(filtered);
+  if (updated.length > 50) {
+    updated.shift();
+  }
+
+  signalHistory.set(snapshot.symbol, updated);
+
+  const status = snapshot.isSniper
+    ? "🟢 SNIPER"
+    : snapshot.isEarly
+    ? "🟣 EARLY"
+    : "⚪ WAIT";
 
   console.log(
-    `[PERSISTENCE] ${snapshot.symbol} stored @ ${snapshot.price}`
+    `[PERSISTENCE] ${snapshot.symbol}: ${status} | $${snapshot.price}`
   );
 }
 
-/* =========================
-   GET LATEST
-========================= */
-export async function getLatestSignalSnapshots() {
-  return await load();
+/* =========================================================
+   GET LATEST SNAPSHOTS (UI + API USE)
+========================================================= */
+
+export async function getLatestSignalSnapshots(): Promise<
+  SignalSnapshot[]
+> {
+  const latest: SignalSnapshot[] = [];
+
+  for (const [, history] of signalHistory.entries()) {
+    if (history.length > 0) {
+      latest.push(history[history.length - 1]);
+    }
+  }
+
+  return latest;
+}
+
+/* =========================================================
+   FULL HISTORY (optional future use)
+========================================================= */
+
+export async function getSignalHistory(
+  symbol: string
+): Promise<SignalSnapshot[]> {
+  return signalHistory.get(symbol) || [];
+}
+
+/* =========================================================
+   TELEGRAM COOLDOWN
+========================================================= */
+
+export async function getTelegramCooldown(
+  symbol: string
+): Promise<TelegramCooldown | null> {
+  return telegramCooldowns.get(symbol) || null;
+}
+
+export async function updateTelegramCooldown(
+  symbol: string,
+  timestamp: string
+) {
+  telegramCooldowns.set(symbol, {
+    symbol,
+    lastAlertAt: timestamp,
+  });
+
+  console.log(
+    `[PERSISTENCE] cooldown updated ${symbol} @ ${timestamp}`
+  );
 }
