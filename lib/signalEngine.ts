@@ -26,22 +26,59 @@ export interface Signal {
   updatedAt: string;
 }
 
-export function generateSignal(symbol: string, price: number): Signal {
-  const adx = 10 + Math.random() * 40;
-  const stochK = Math.random() * 100;
-  const stochD = Math.random() * 100;
+/**
+ * 🔥 CORE CHANGE:
+ * We STOP relying on ADX/Stoch for timing.
+ * We use compression → expansion behavior instead.
+ */
 
-  const isEarly = adx > 12 && adx < 45;
-  const isSniper = adx > 30 && stochK < 40;
+export function generateSignal(symbol: string, price: number): Signal {
+  // simulate micro structure (replace later with real OHLC)
+  const volatilityNoise = Math.random();
+
+  // 🔵 COMPRESSION: low movement environment
+  const compression = volatilityNoise < 0.35;
+
+  // ⚡ EXPANSION: sudden move / breakout condition
+  const expansion = volatilityNoise > 0.75;
+
+  // 🔁 REJECTION / FAKEOUT BEHAVIOR
+  const fakeBreak = volatilityNoise > 0.75 && Math.random() > 0.5;
 
   let state: SignalState = "WAIT";
 
-  if (isSniper) state = "SNIPER";
-  else if (isEarly) state = "EARLY";
+  // =========================
+  // STATE ENGINE (IMPORTANT)
+  // =========================
 
-  const bias: Signal["bias"] = adx > 25 ? "Bearish" : "Neutral";
+  if (compression) {
+    state = "EARLY";
+  }
 
-  const confidence = state === "SNIPER" ? 85 : state === "EARLY" ? 55 : 20;
+  if (compression && expansion) {
+    state = "SNIPER";
+  }
+
+  if (expansion && !fakeBreak) {
+    state = "SNIPER";
+  }
+
+  // =========================
+  // DERIVED VALUES (UI ONLY)
+  // =========================
+
+  const adx = 10 + volatilityNoise * 40;
+  const stochK = volatilityNoise * 100;
+  const stochD = volatilityNoise * 100;
+
+  const isEarly = state === "EARLY";
+  const isSniper = state === "SNIPER";
+
+  const confidence =
+    state === "SNIPER" ? 85 : state === "EARLY" ? 55 : 20;
+
+  const bias: Signal["bias"] =
+    expansion ? "Bearish" : compression ? "Neutral" : "Neutral";
 
   return {
     symbol,
@@ -62,10 +99,10 @@ export function generateSignal(symbol: string, price: number): Signal {
 
     reason:
       state === "SNIPER"
-        ? "SNIPER BREAKOUT"
+        ? "LIQUIDITY BREAKOUT"
         : state === "EARLY"
-        ? "EARLY COMPRESSION"
-        : "WAIT",
+        ? "COMPRESSION BUILDUP"
+        : "NO STRUCTURE",
 
     stopLoss: state === "SNIPER" ? price * 1.01 : null,
     takeProfit: state === "SNIPER" ? price * 0.98 : null,
