@@ -1,16 +1,12 @@
-import { storeSignalSnapshot } from "@/lib/persistence";
-
 export type SignalState = "EARLY" | "SETUP" | "SNIPER" | "WAIT";
 
 export interface Signal {
   symbol: string;
   price: number;
-
   state: SignalState;
 
   isEarly: boolean;
   isSniper: boolean;
-  isActive: boolean;
 
   bias: "Bullish" | "Bearish" | "Neutral";
   confidence: number;
@@ -28,116 +24,76 @@ export interface Signal {
   updatedAt: string;
 }
 
-/**
- * CORE ENGINE (structure-based simulation)
- */
+function volatility(symbol: string) {
+  switch (symbol) {
+    case "BTC":
+      return 0.012;
+    case "ETH":
+      return 0.018;
+    case "SOL":
+      return 0.03;
+    default:
+      return 0.02;
+  }
+}
+
 export function generateSignal(symbol: string, price: number): Signal {
-  const momentum = Math.sin(Date.now() / 60000 + price) * 50 + 50;
-  const volatility = Math.abs(Math.cos(Date.now() / 45000 + price)) * 100;
+  const noise = Math.random();
 
-  const compression = volatility < 35;
-  const expansion = volatility > 70;
-
-  const breakoutImpulse = momentum > 65 && expansion;
-  const breakdownImpulse = momentum < 35 && expansion;
+  const compression = noise < 0.35;
+  const expansion = noise > 0.75;
 
   let state: SignalState = "WAIT";
 
   if (compression) state = "EARLY";
-  if (!compression && !expansion) state = "SETUP";
+  if (expansion) state = "SNIPER";
 
-  if (
-    (compression && (breakoutImpulse || breakdownImpulse)) ||
-    (!compression && expansion && (breakoutImpulse || breakdownImpulse))
-  ) {
-    state = "SNIPER";
-  }
-
-  const adx = Math.min(50, Math.max(8, volatility / 2));
-  const stochK = momentum;
-  const stochD = momentum * 0.9;
-
-  const isEarly = state === "EARLY";
-  const isSniper = state === "SNIPER";
-
-  let confidence = state === "SNIPER" ? 85 : state === "EARLY" ? 55 : 30;
+  const adx = 10 + noise * 40;
+  const stochK = noise * 100;
+  const stochD = noise * 100;
 
   const bias: Signal["bias"] =
-    momentum > 55 ? "Bullish" : momentum < 45 ? "Bearish" : "Neutral";
+    expansion ? "Bearish" : compression ? "Bullish" : "Neutral";
+
+  const vol = volatility(symbol);
+
+  const isBullish = bias === "Bullish";
+
+  const stopLoss = isBullish
+    ? price * (1 - vol)
+    : price * (1 + vol);
+
+  const takeProfit = isBullish
+    ? price * (1 + vol * 2.2)
+    : price * (1 - vol * 2.2);
 
   return {
     symbol,
     price,
-
     state,
 
-    isEarly,
-    isSniper,
-    isActive: isEarly || isSniper,
+    isEarly: state === "EARLY",
+    isSniper: state === "SNIPER",
 
     bias,
-    confidence: Math.round(confidence),
+    confidence:
+      state === "SNIPER" ? 85 : state === "EARLY" ? 55 : 20,
 
-    adx: Number(adx.toFixed(1)),
-    stochK: Number(stochK.toFixed(1)),
-    stochD: Number(stochD.toFixed(1)),
+    adx,
+    stochK,
+    stochD,
 
     reason:
       state === "SNIPER"
-        ? "LIQUIDITY EXPANSION BREAKOUT"
+        ? "LIQUIDITY BREAKOUT"
         : state === "EARLY"
-        ? "COMPRESSION BUILDING"
+        ? "COMPRESSION"
         : "NO STRUCTURE",
 
-    stopLoss: state === "SNIPER" ? price * 0.99 : null,
-    takeProfit: state === "SNIPER" ? price * 1.02 : null,
-    riskRewardRatio: state === "SNIPER" ? 2 : null,
+    stopLoss,
+    takeProfit,
+    riskRewardRatio: 2.2,
 
     updatedAt: new Date().toISOString(),
   };
-}
-
-/**
- * 🔥 CRITICAL FIX:
- * This restores your broken imports everywhere in cron + API
- */
-export async function generateAndStoreSignals(
-  symbols: string[],
-  prices: number[]
-) {
-  const signals: Signal[] = [];
-
-  for (let i = 0; i < symbols.length; i++) {
-    const signal = generateSignal(symbols[i], prices[i]);
-
-    await storeSignalSnapshot({
-      symbol: signal.symbol,
-      price: signal.price,
-
-      state: signal.state,
-
-      isEarly: signal.isEarly,
-      isSniper: signal.isSniper,
-      isActive: signal.isActive,
-
-      bias: signal.bias,
-      confidence: signal.confidence,
-
-      adx: signal.adx,
-      stochK: signal.stochK,
-      stochD: signal.stochD,
-
-      reason: signal.reason,
-
-      stopLoss: signal.stopLoss,
-      takeProfit: signal.takeProfit,
-      riskRewardRatio: signal.riskRewardRatio,
-
-      updatedAt: signal.updatedAt,
-    });
-
-    signals.push(signal);
-  }
-
-  return signals;
 }
