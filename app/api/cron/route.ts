@@ -1,73 +1,43 @@
-import { generateAndStoreSignals } from "@/lib/signalEngine";
+import { getLivePrices } from "@/lib/prices";
+import { generateSignal } from "@/lib/signalEngine";
+import { storeSignalSnapshot } from "@/lib/persistence";
 
 export const runtime = "nodejs";
 
-const SYMBOLS = ["BTC", "ETH", "SOL"];
-
-const PRICES: Record<string, number> = {
-  BTC: 71000,
-  ETH: 2000,
-  SOL: 80,
-};
-
 export async function GET() {
-  const start = Date.now();
-
   try {
-    console.log("══════════════════════════════════════");
-    console.log("[CRON] STARTED", new Date().toISOString());
+    const prices = await getLivePrices();
 
-    if (!Array.isArray(SYMBOLS) || SYMBOLS.length === 0) {
-      throw new Error("SYMBOLS missing or invalid");
-    }
+    const symbols = ["BTC", "ETH", "SOL"];
 
-    const prices = SYMBOLS.map((s) => PRICES[s] ?? 0);
+    const signals = [];
 
-    const signals = await generateAndStoreSignals(SYMBOLS, prices);
+    for (const symbol of symbols) {
+      const price = prices[symbol as keyof typeof prices];
 
-    // =========================
-    // 🔥 TRADE LOG OUTPUT (IMPORTANT)
-    // =========================
-    console.log("========== TRADE SIGNALS ==========");
+      const signal = generateSignal(symbol, price);
 
-    signals.forEach((s) => {
+      await storeSignalSnapshot(signal);
+
+      signals.push({
+        ...signal,
+        price, // 🔥 FORCE LIVE PRICE INTO OUTPUT
+      });
+
       console.log(
-        `[${s.symbol}] ${s.state} | $${s.price} | Bias: ${s.bias} | Conf: ${s.confidence}%`
+        `[ENGINE] ${symbol} | $${price} | ${signal.state}`
       );
-
-      if (s.state === "SNIPER") {
-        console.log(
-          `>>> TRADE SETUP: ${s.symbol}
-ENTRY: ${s.price}
-SL: ${s.stopLoss}
-TP: ${s.takeProfit}
-R/R: ${s.riskRewardRatio}
-REASON: ${s.reason}`
-        );
-      }
-    });
-
-    console.log("===================================");
-
-    const duration = Date.now() - start;
-
-    console.log(
-      `[CRON] COMPLETE in ${duration}ms | Signals: ${signals.length}`
-    );
+    }
 
     return Response.json({
       ok: true,
       signalsCount: signals.length,
-      runtimeMs: duration,
     });
-  } catch (err: any) {
-    console.error("[CRON ERROR]", err?.message || err);
+  } catch (err) {
+    console.error("[CRON ERROR]", err);
 
     return Response.json(
-      {
-        ok: false,
-        error: "CRON_FAILED",
-      },
+      { ok: false, error: "CRON_FAILED" },
       { status: 500 }
     );
   }
