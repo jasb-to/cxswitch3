@@ -1,102 +1,66 @@
-export interface SignalSnapshot {
-  symbol: string;
-  state: "EARLY" | "SETUP" | "SNIPER" | "WAIT";
-  price: number;
+import { kv } from "@vercel/kv";
 
-  isEarly: boolean;
-  isSniper: boolean;
-  isActive: boolean;
+const KEY = "cx:snapshots";
 
-  bias: "Bullish" | "Bearish" | "Neutral";
-  confidence: number;
+/**
+ * Store a single signal snapshot
+ */
+export async function storeSignalSnapshot(signal: any) {
+  try {
+    if (!signal || !signal.symbol) return;
 
-  adx: number;
-  stochK: number;
-  stochD: number;
+    const existing = await kv.get<any[]>(KEY);
 
-  reason: string;
+    const safeArray = Array.isArray(existing) ? existing : [];
 
-  stopLoss: number | null;
-  takeProfit: number | null;
-  riskRewardRatio: number | null;
+    const updated = [
+      {
+        ...signal,
+        savedAt: new Date().toISOString(),
+      },
+      ...safeArray,
+    ].slice(0, 50); // keep last 50 only
 
-  updatedAt: string;
-}
+    await kv.set(KEY, updated);
 
-/* =========================
-   IN-MEMORY STORE
-========================= */
+    console.log(
+      `[KV] ${signal.symbol}: ${signal.state} | $${signal.price}`
+    );
 
-const signalHistory = new Map<string, SignalSnapshot[]>();
-
-console.log("[PERSISTENCE] initialized");
-
-/* =========================
-   STORE SNAPSHOT
-========================= */
-
-export async function storeSignalSnapshot(snapshot: SignalSnapshot) {
-  const existing = signalHistory.get(snapshot.symbol) || [];
-
-  const updated = [...existing, snapshot];
-
-  // keep last 50
-  if (updated.length > 50) {
-    updated.shift();
+    return true;
+  } catch (err) {
+    console.error("[KV STORE ERROR]", err);
+    return false;
   }
-
-  signalHistory.set(snapshot.symbol, updated);
-
-  console.log(
-    `[PERSISTENCE] ${snapshot.symbol}: ${snapshot.state} | $${snapshot.price}`
-  );
 }
 
-/* =========================
-   GET LATEST SNAPSHOTS (API USE)
-========================= */
+/**
+ * Get latest snapshots for UI
+ */
+export async function getLatestSignalSnapshots() {
+  try {
+    const data = await kv.get<any[]>(KEY);
 
-export async function getLatestSignalSnapshots(): Promise<SignalSnapshot[]> {
-  const latest: SignalSnapshot[] = [];
-
-  for (const [, history] of signalHistory.entries()) {
-    if (history.length > 0) {
-      latest.push(history[history.length - 1]);
+    if (!Array.isArray(data)) {
+      console.warn("[KV] No snapshot array found, returning empty list");
+      return [];
     }
+
+    return data;
+  } catch (err) {
+    console.error("[KV READ ERROR]", err);
+    return [];
   }
-
-  return latest;
 }
 
-/* =========================
-   GET FULL HISTORY (ENGINE USE)
-========================= */
-
-export function getSignalHistory(symbol: string): SignalSnapshot[] {
-  return signalHistory.get(symbol) || [];
-}
-
-/* =========================
-   OPTIONAL TELEGRAM COOLDOWN (SAFE)
-========================= */
-
-const telegramCooldowns = new Map<
-  string,
-  { symbol: string; lastAlertAt: string }
->();
-
-export async function updateTelegramCooldown(
-  symbol: string,
-  timestamp: string
-) {
-  telegramCooldowns.set(symbol, {
-    symbol,
-    lastAlertAt: timestamp,
-  });
-
-  console.log(`[PERSISTENCE] cooldown updated ${symbol}`);
-}
-
-export async function getTelegramCooldown(symbol: string) {
-  return telegramCooldowns.get(symbol) || null;
+/**
+ * Optional helper (used if you ever reset system)
+ */
+export async function clearSignalSnapshots() {
+  try {
+    await kv.del(KEY);
+    console.log("[KV] snapshots cleared");
+  } catch (err) {
+    console.error("[KV CLEAR ERROR]", err);
+  }
 }
