@@ -1,4 +1,5 @@
 export type Symbol = "BTC" | "ETH" | "SOL";
+
 export type SignalState = "EARLY" | "SNIPER" | "WAIT";
 
 export interface Signal {
@@ -19,6 +20,7 @@ export interface Signal {
   takeProfit: number | null;
 
   rr: number | null;
+
   expectedMove: number;
 
   updatedAt: string;
@@ -31,57 +33,71 @@ const clamp = (n: number, min: number, max: number) =>
 
 const hash = (n: number) => Math.sin(n) * 10000;
 
-const safeMod = (n: number, m: number) => ((n % m) + m) % m;
-
-const round = (n: number | null, d = 2) =>
-  n == null ? null : Math.round(n * 10 ** d) / 10 ** d;
+const mod = (n: number) => Math.abs(n % 100);
 
 /* ---------------- CORE ---------------- */
 
 export function generateSignal(symbol: Symbol, price: number): Signal {
-  const seed = price + symbol.length * 97;
+  const seed = price + symbol.length * 91;
   const h = Math.abs(hash(seed));
-  const mod = safeMod(h, 100);
+  const m = mod(h);
 
-  const compression = mod < 38;
-  const expansion = mod > 78;
+  // ---------------- STRUCTURE ----------------
+  const compression = m < 40;
+  const expansion = m > 78;
 
   let state: SignalState = "WAIT";
   if (compression) state = "EARLY";
   if (expansion) state = "SNIPER";
 
-  const bias =
-    expansion ? (mod % 2 === 0 ? "LONG" : "SHORT") : "NEUTRAL";
+  // ---------------- BIAS ----------------
+  let bias: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
 
+  if (expansion) {
+    bias = m % 2 === 0 ? "LONG" : "SHORT";
+  } else if (compression) {
+    // EARLY now gets directional bias (IMPORTANT FIX)
+    bias = m > 50 ? "LONG" : "SHORT";
+  }
+
+  // ---------------- CONFIDENCE ----------------
   const confidence =
     state === "SNIPER"
-      ? clamp(80 + (mod % 15), 80, 95)
+      ? clamp(80 + (m % 15), 80, 95)
       : state === "EARLY"
-      ? clamp(55 + (mod % 20), 50, 78)
+      ? clamp(60 + (m % 20), 55, 80)
       : 20;
 
-  const adx = clamp(10 + (mod % 50), 10, 65);
-  const stoch = clamp(mod, 0, 100);
+  // ---------------- INDICATORS ----------------
+  const adx = clamp(15 + (m % 55), 10, 70);
+  const stoch = clamp(m, 0, 100);
 
+  // ---------------- MOVE MODEL ----------------
   const volatility = adx / 100;
 
   const expectedMove =
     state === "SNIPER"
       ? clamp(0.03 + volatility * 0.02, 0.025, 0.06)
       : state === "EARLY"
-      ? clamp(0.02 + volatility * 0.015, 0.015, 0.04)
+      ? clamp(0.02 + volatility * 0.015, 0.018, 0.045)
       : 0.01;
+
+  // ---------------- SL / TP (FIXED LOGIC) ----------------
+  const riskFactor = state === "SNIPER" ? 0.45 : 0.6;
+
+  const risk = expectedMove * riskFactor;
 
   let stopLoss: number | null = null;
   let takeProfit: number | null = null;
 
-  if (state !== "WAIT") {
-    const risk = expectedMove * (state === "EARLY" ? 0.6 : 0.45);
-
+  // 🔥 IMPORTANT: EARLY ALSO GETS SL/TP NOW
+  if (state === "EARLY" || state === "SNIPER") {
     if (bias === "LONG") {
       stopLoss = price * (1 - risk);
       takeProfit = price * (1 + expectedMove);
-    } else if (bias === "SHORT") {
+    }
+
+    if (bias === "SHORT") {
       stopLoss = price * (1 + risk);
       takeProfit = price * (1 - expectedMove);
     }
@@ -107,14 +123,14 @@ export function generateSignal(symbol: Symbol, price: number): Signal {
       state === "SNIPER"
         ? "BREAKOUT EXPANSION"
         : state === "EARLY"
-        ? "COMPRESSION BUILDING"
+        ? "STRUCTURE BUILDING"
         : "NO STRUCTURE",
 
-    stopLoss: round(stopLoss),
-    takeProfit: round(takeProfit),
+    stopLoss,
+    takeProfit,
+    rr,
 
-    rr: round(rr, 2),
-    expectedMove: round(expectedMove, 4),
+    expectedMove,
 
     updatedAt: new Date().toISOString(),
   };
