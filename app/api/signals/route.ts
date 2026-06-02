@@ -1,13 +1,13 @@
-import { getPrices } from "@/lib/prices";
+import { getLivePrices } from "@/lib/prices";
 import { generateSignal } from "@/lib/signalEngine";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  const prices = await getPrices();
+  const prices = await getLivePrices();
 
-  const signals = Object.entries(prices).map(([symbol, price]) =>
-    generateSignal(symbol, price)
+  const signals = ["BTC", "ETH", "SOL"].map((s) =>
+    generateSignal(s, prices[s])
   );
 
   return Response.json({
