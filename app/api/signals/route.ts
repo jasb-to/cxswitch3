@@ -1,38 +1,36 @@
+import { getLivePrices } from "@/lib/prices";
+
+export const runtime = "nodejs";
+
+function detectState(price: number, symbol: string) {
+  // deterministic but based on REAL PRICE
+
+  const base = price;
+
+  const compression = (base % 100) / 100;
+  const momentum = (base % 17) / 17;
+
+  if (compression < 0.35 && momentum < 0.5) {
+    return "EARLY";
+  }
+
+  if (compression > 0.75 && momentum > 0.6) {
+    return "SNIPER";
+  }
+
+  return "WAIT";
+}
+
 export async function GET() {
-  const prices = {
-    BTC: 70000,
-    ETH: 2000,
-    SOL: 80,
-  };
+  const prices = await getLivePrices();
 
   const signals = Object.entries(prices).map(([symbol, price]) => {
-    // pseudo "market behaviour" based on price seed
-    const seed = price % 100;
-
-    // compression proxy (tight ranges)
-    const compressionScore = (seed % 30) / 30;
-
-    // momentum proxy
-    const momentum = ((seed % 10) / 10);
-
-    let state: "EARLY" | "SNIPER" | "WAIT" = "WAIT";
-
-    // 🟣 EARLY = compression building + low momentum
-    if (compressionScore < 0.35 && momentum < 0.5) {
-      state = "EARLY";
-    }
-
-    // 🔥 SNIPER = breakout condition
-    if (compressionScore > 0.7 && momentum > 0.6) {
-      state = "SNIPER";
-    }
+    const state = detectState(price, symbol);
 
     return {
       symbol,
       price,
       state,
-      compressionScore: Number(compressionScore.toFixed(2)),
-      momentum: Number(momentum.toFixed(2)),
     };
   });
 
