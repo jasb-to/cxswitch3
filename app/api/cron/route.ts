@@ -6,9 +6,11 @@ export const runtime = "nodejs";
 let lastState: Record<string, string> = {};
 let lastAlertTime: Record<string, number> = {};
 
-function getState(price: number) {
-  const compression = (price % 100) / 100;
-  const momentum = (price % 17) / 17;
+function computeState(price: number) {
+  const seed = price % 1000;
+
+  const compression = (seed % 100) / 100;
+  const momentum = (seed % 37) / 37;
 
   if (compression < 0.35 && momentum < 0.5) return "EARLY";
   if (compression > 0.75 && momentum > 0.6) return "SNIPER";
@@ -20,28 +22,28 @@ export async function GET() {
   const now = Date.now();
 
   for (const [symbol, price] of Object.entries(prices)) {
-    const state = getState(price);
+    const state = computeState(price);
 
     const prev = lastState[symbol];
     const last = lastAlertTime[symbol] || 0;
 
-    const cooldown = now - last < 15000;
+    const cooldown = now - last < 30000; // 30s cooldown
 
     lastState[symbol] = state;
 
     if (cooldown) continue;
-
     if (state === prev) continue;
 
     lastAlertTime[symbol] = now;
 
-    if (state === "EARLY") {
-      await sendTelegram(`🟣 EARLY ENTRY ${symbol} @ ${price}`);
-    }
+    const msg =
+      state === "SNIPER"
+        ? `🔥 SNIPER ${symbol} @ ${price}`
+        : state === "EARLY"
+        ? `🟣 EARLY ${symbol} @ ${price}`
+        : null;
 
-    if (state === "SNIPER") {
-      await sendTelegram(`🔥 SNIPER BREAKOUT ${symbol} @ ${price}`);
-    }
+    if (msg) await sendTelegram(msg);
   }
 
   return Response.json({ ok: true });
