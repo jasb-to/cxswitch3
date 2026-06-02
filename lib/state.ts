@@ -1,11 +1,11 @@
 import type { Signal } from "./strategy";
 
-let SIGNAL_CACHE: Signal[] = [];
+let latest: Signal[] = [];
 
-export function setSignals(signals: Signal[]) {
-  SIGNAL_CACHE = signals;
+export function setSignals(s: Signal[]) {
+  latest = s;
 }
 
-export function getSignals(): Signal[] {
-  return SIGNAL_CACHE;
+export function getSignals() {
+  return latest;
 }
