@@ -1,11 +1,9 @@
-import type { Signal } from "./strategy";
+import type { Signal } from "./signalEngine";
 
-type State = {
+let state: {
   signals: Signal[];
   updatedAt: number;
-};
-
-let state: State = {
+} = {
   signals: [],
   updatedAt: 0,
 };
