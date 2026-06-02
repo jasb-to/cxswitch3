@@ -22,18 +22,21 @@ export interface Signal {
   updatedAt: string;
 }
 
-// deterministic (NO random flicker)
+// deterministic hash (stable across renders)
 function hash(n: number) {
-  return Math.sin(n) * 10000;
+  return Math.abs(Math.sin(n) * 10000);
+}
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
 }
 
 export function generateSignal(symbol: Symbol, price: number): Signal {
-  const seed = price + symbol.length * 100;
+  const seed = price * 10 + symbol.length * 1337;
+  const h = hash(seed);
 
-  const h = Math.abs(hash(seed));
-
-  const compression = h % 100 < 35;
-  const expansion = h % 100 > 75;
+  const compression = h % 100 < 38;
+  const expansion = h % 100 > 78;
 
   let state: SignalState = "WAIT";
 
@@ -44,23 +47,25 @@ export function generateSignal(symbol: Symbol, price: number): Signal {
     expansion ? "LONG" : compression ? "NEUTRAL" : "NEUTRAL";
 
   const confidence =
-    state === "SNIPER" ? 85 : state === "EARLY" ? 55 : 20;
+    state === "SNIPER" ? 88 : state === "EARLY" ? 58 : 20;
 
-  const adx = 10 + (h % 40);
-  const stoch = h % 100;
+  const adx = clamp(10 + (h % 50), 5, 60);
+  const stoch = clamp(h % 100, 0, 100);
+
+  const isLong = bias === "LONG";
 
   const stopLoss =
     state === "SNIPER"
-      ? bias === "LONG"
+      ? isLong
         ? price * 0.99
         : price * 1.01
       : null;
 
   const takeProfit =
     state === "SNIPER"
-      ? bias === "LONG"
-        ? price * 1.02
-        : price * 0.98
+      ? isLong
+        ? price * 1.025
+        : price * 0.975
       : null;
 
   return {
@@ -77,7 +82,7 @@ export function generateSignal(symbol: Symbol, price: number): Signal {
 
     reason:
       state === "SNIPER"
-        ? "LIQUIDITY EXPANSION"
+        ? "LIQUIDITY EXPANSION BREAKOUT"
         : state === "EARLY"
         ? "COMPRESSION BUILDUP"
         : "NO STRUCTURE",
