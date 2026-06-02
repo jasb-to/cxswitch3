@@ -1,24 +1,41 @@
-import { generateSignal } from "@/lib/signalEngine";
-import { processAlerts } from "@/lib/alertEngine";
-import { getLivePrices } from "@/lib/prices";
+import { sendTelegram } from "@/lib/telegram";
 
-export const runtime = "nodejs";
+const symbols = ["BTC", "ETH", "SOL"];
+
+const prices = {
+  BTC: 70000,
+  ETH: 2000,
+  SOL: 80,
+};
+
+let lastState: Record<string, string> = {};
+
+function generateSignal(symbol: string, price: number) {
+  const rand = Math.random();
+
+  return {
+    symbol,
+    price,
+    state: rand > 0.7 ? "SNIPER" : rand > 0.4 ? "EARLY" : "WAIT",
+  };
+}
 
 export async function GET() {
-  const prices = await getLivePrices();
+  for (const s of symbols) {
+    const signal = generateSignal(s, prices[s]);
 
-  const symbols = ["BTC", "ETH", "SOL"];
+    if (lastState[s] !== signal.state) {
+      lastState[s] = signal.state;
 
-  const signals = symbols.map((s) =>
-    generateSignal(s, prices[s])
-  );
+      if (signal.state === "SNIPER") {
+        await sendTelegram(`🔥 SNIPER ${s} @ ${prices[s]}`);
+      }
 
-  console.log("[CRON] signals:", signals);
+      if (signal.state === "EARLY") {
+        await sendTelegram(`🟣 EARLY ${s} @ ${prices[s]}`);
+      }
+    }
+  }
 
-  await processAlerts(signals);
-
-  return Response.json({
-    ok: true,
-    signals,
-  });
+  return Response.json({ ok: true });
 }
