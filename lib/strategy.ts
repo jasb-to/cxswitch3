@@ -41,50 +41,69 @@ const clamp = (n: number, min: number, max: number) =>
   Math.max(min, Math.min(max, n));
 
 const round = (n: number, d = 2) =>
-  Math.round(n * Math.pow(10, d)) / Math.pow(10, d);
+  Math.round(n * 10 ** d) / 10 ** d;
 
 /* ---------------- INDICATORS ---------------- */
 
 function ema(values: number[], period: number) {
   const k = 2 / (period + 1);
-  let ema = values[0];
+  let e = values[0];
+
   for (let i = 1; i < values.length; i++) {
-    ema = values[i] * k + ema * (1 - k);
+    e = values[i] * k + e * (1 - k);
   }
-  return ema;
+
+  return e;
 }
 
 function rsi(closes: number[]) {
-  let gains = 0;
-  let losses = 0;
+  let gain = 0;
+  let loss = 0;
 
   for (let i = 1; i < closes.length; i++) {
     const diff = closes[i] - closes[i - 1];
-    if (diff >= 0) gains += diff;
-    else losses -= diff;
+    if (diff > 0) gain += diff;
+    else loss -= diff;
   }
 
-  const rs = gains / (losses || 1);
+  const rs = gain / (loss || 1);
   return 100 - 100 / (1 + rs);
 }
 
-function stochK(closes: number[], period = 14) {
+function stoch(closes: number[], period = 14) {
   const slice = closes.slice(-period);
   const high = Math.max(...slice);
   const low = Math.min(...slice);
-  const close = slice[slice.length - 1];
-
-  return ((close - low) / (high - low || 1)) * 100;
+  return ((slice.at(-1)! - low) / (high - low || 1)) * 100;
 }
 
-/* ---------------- STRUCTURE ---------------- */
+/* ---------------- VOLUME SPIKE ---------------- */
 
-function detectBOS(closes: number[]) {
-  const last = closes.at(-1)!;
-  const prev = closes.at(-2)!;
+function volumeSpike(candles: Candle[]) {
+  const vols = candles.map(c => c.volume);
+  const avg = vols.reduce((a, b) => a + b, 0) / vols.length;
+  const last = vols.at(-1)!;
 
-  if (last > prev) return "BULL";
-  if (last < prev) return "BEAR";
+  return last > avg * 1.5;
+}
+
+/* ---------------- STRUCTURE (REAL BOS) ---------------- */
+
+function swingHigh(candles: Candle[]) {
+  const last = candles.at(-2);
+  const prev = candles.at(-3);
+  return last && prev && last.high > prev.high;
+}
+
+function swingLow(candles: Candle[]) {
+  const last = candles.at(-2);
+  const prev = candles.at(-3);
+  return last && prev && last.low < prev.low;
+}
+
+function BOS(candles: Candle[]) {
+  if (swingHigh(candles)) return "BULL";
+  if (swingLow(candles)) return "BEAR";
   return "NEUTRAL";
 }
 
@@ -96,84 +115,85 @@ export function generateSignal(
   candles15m: Candle[],
   candles1h: Candle[]
 ): Signal {
-  const closes15 = candles15m.map(c => c.close);
-  const closes1h = candles1h.map(c => c.close);
+  const closes = candles15m.map(c => c.close);
 
-  const r = rsi(closes15);
-  const st = stochK(closes15);
-  const bos = detectBOS(closes15);
+  const r = rsi(closes);
+  const st = stoch(closes);
+  const bos = BOS(candles15m);
+  const vol = volumeSpike(candles15m);
 
-  const ema21 = ema(closes15, 21);
-  const emaSlope = price > ema21 ? "UP" : "DOWN";
+  const ema21 = ema(closes, 21);
 
-  /* ---------------- STATE ---------------- */
+  const trend =
+    price > ema21 ? "LONG" : "SHORT";
+
+  /* ---------------- STATE MACHINE ---------------- */
 
   let state: SignalState = "WAIT";
 
   const early =
-    st < 30 && r > 45 && bos !== "NEUTRAL";
+    bos !== "NEUTRAL" &&
+    st < 30 &&
+    r > 45 &&
+    vol;
 
   const sniper =
-    st > 70 && r > 50 && bos !== "NEUTRAL" && emaSlope !== "NEUTRAL";
+    bos !== "NEUTRAL" &&
+    vol &&
+    st > 60 &&
+    r > 50 &&
+    Math.abs(price - ema21) / price > 0.01;
 
   if (sniper) state = "SNIPER";
   else if (early) state = "EARLY";
-
-  /* ---------------- BIAS ---------------- */
-
-  const bias =
-    bos === "BULL" ? "LONG"
-    : bos === "BEAR" ? "SHORT"
-    : "NEUTRAL";
 
   /* ---------------- CONFIDENCE ---------------- */
 
   const confidence =
     state === "SNIPER"
-      ? clamp(80 + Math.abs(r - 50), 80, 95)
+      ? clamp(85 + r / 10, 85, 97)
       : state === "EARLY"
-      ? clamp(55 + Math.abs(st - 30), 50, 78)
+      ? clamp(60 + st / 2, 55, 80)
       : 20;
 
-  /* ---------------- EXPECTED MOVE (REALISTIC) ---------------- */
-
-  const volatility = Math.abs(price - ema21) / price;
+  /* ---------------- EXPECTED MOVE (REALISTIC 3–5%) ---------------- */
 
   const expectedMove =
     state === "SNIPER"
-      ? clamp(volatility * 2.5, 0.025, 0.055)
+      ? clamp(0.035, 0.03, 0.055)
       : state === "EARLY"
-      ? clamp(volatility * 1.8, 0.02, 0.04)
+      ? clamp(0.025, 0.045)
       : 0.01;
 
   /* ---------------- SL / TP ---------------- */
 
-  let stopLoss = null;
-  let takeProfit = null;
-  let rr = null;
+  let sl = null;
+  let tp = null;
 
   if (state !== "WAIT") {
-    const risk = expectedMove * (state === "EARLY" ? 0.6 : 0.45);
+    const risk = expectedMove * 0.6;
 
-    if (bias === "LONG") {
-      stopLoss = price * (1 - risk);
-      takeProfit = price * (1 + expectedMove);
-    } else if (bias === "SHORT") {
-      stopLoss = price * (1 + risk);
-      takeProfit = price * (1 - expectedMove);
-    }
-
-    if (stopLoss && takeProfit) {
-      rr = Math.abs((takeProfit - price) / (price - stopLoss));
+    if (trend === "LONG") {
+      sl = price * (1 - risk);
+      tp = price * (1 + expectedMove);
+    } else {
+      sl = price * (1 + risk);
+      tp = price * (1 - expectedMove);
     }
   }
+
+  const rr =
+    sl && tp
+      ? Math.abs((tp - price) / (price - sl))
+      : null;
 
   return {
     symbol,
     price: round(price),
 
     state,
-    bias,
+    bias: bos === "BULL" ? "LONG" : bos === "BEAR" ? "SHORT" : "NEUTRAL",
+
     confidence: round(confidence),
 
     adx: round(Math.abs(price - ema21) / price * 100, 1),
@@ -182,13 +202,13 @@ export function generateSignal(
 
     reason:
       state === "SNIPER"
-        ? "BREAKOUT CONFIRMED (BOS + MOMENTUM)"
+        ? "BOS + VOLUME EXPANSION"
         : state === "EARLY"
-        ? "COMPRESSION + STRUCTURE BUILD"
+        ? "STRUCTURE + MOMENTUM BUILD"
         : "NO STRUCTURE",
 
-    stopLoss: stopLoss ? round(stopLoss, 2) : null,
-    takeProfit: takeProfit ? round(takeProfit, 2) : null,
+    stopLoss: sl ? round(sl, 2) : null,
+    takeProfit: tp ? round(tp, 2) : null,
     rr: rr ? round(rr, 2) : null,
 
     expectedMove: round(expectedMove * 100, 2),
