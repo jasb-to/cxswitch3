@@ -1,57 +1,38 @@
+import { NextResponse } from "next/server";
 import { getLivePrices } from "@/lib/prices";
-import { generateSignal, Symbol } from "@/lib/signalEngine";
+import { generateSignal } from "@/lib/strategy";
 import { setSignals } from "@/lib/state";
-import { sendTelegram } from "@/lib/telegram";
 
 export const runtime = "nodejs";
 
-let lastSnapshot: string | null = null;
+function round(n: number, decimals = 2) {
+  const f = Math.pow(10, decimals);
+  return Math.round(n * f) / f;
+}
 
 export async function GET() {
-  try {
-    const prices = await getLivePrices();
+  const prices = await getLivePrices();
 
-    const symbols = Object.keys(prices) as Symbol[];
+  const signals = Object.entries(prices).map(([symbol, price]) => {
+    const s = generateSignal(symbol as any, price);
 
-    const signals = symbols.map((symbol) =>
-      generateSignal(symbol, prices[symbol])
-    );
+    return {
+      ...s,
+      price: round(s.price),
+      adx: round(s.adx, 1),
+      stochK: round(s.stochK, 1),
+      stochD: round(s.stochD, 1),
+      stopLoss: s.stopLoss ? round(s.stopLoss) : null,
+      takeProfit: s.takeProfit ? round(s.takeProfit) : null,
+    };
+  });
 
-    setSignals(signals);
+  setSignals(signals);
 
-    const snapshot = JSON.stringify(signals);
+  console.log("[CRON] signals updated", signals.length);
 
-    // prevent spam
-    if (snapshot !== lastSnapshot) {
-      lastSnapshot = snapshot;
-
-      const sniper = signals.filter((s) => s.state === "SNIPER");
-
-      if (sniper.length) {
-        await sendTelegram(
-          sniper
-            .map(
-              (s) =>
-                `🔥 ${s.state} ${s.symbol} @ ${s.price} (TP:${s.takeProfit} SL:${s.stopLoss})`
-            )
-            .join("\n")
-        );
-      }
-    }
-
-    console.log("[CRON] updated signals");
-
-    return Response.json({
-      ok: true,
-      count: signals.length,
-      updatedAt: new Date().toISOString(),
-    });
-  } catch (err: any) {
-    console.error("[CRON ERROR]", err);
-
-    return Response.json({
-      ok: false,
-      error: err?.message || "unknown",
-    });
-  }
+  return NextResponse.json({
+    ok: true,
+    count: signals.length,
+  });
 }
