@@ -7,6 +7,6 @@ export async function GET() {
 
   return Response.json({
     signals: state.signals,
-    updatedAt: new Date(state.updatedAt).toISOString(),
+    updatedAt: state.updatedAt,
   });
 }
