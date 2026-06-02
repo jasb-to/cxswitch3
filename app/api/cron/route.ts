@@ -1,23 +1,24 @@
-import { getPrices } from "@/lib/prices";
 import { generateSignal } from "@/lib/signalEngine";
+import { processAlerts } from "@/lib/alertEngine";
+import { getLivePrices } from "@/lib/prices";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  const prices = await getPrices();
+  const prices = await getLivePrices();
 
-  const signals = Object.entries(prices).map(([symbol, price]) =>
-    generateSignal(symbol, price)
+  const symbols = ["BTC", "ETH", "SOL"];
+
+  const signals = symbols.map((s) =>
+    generateSignal(s, prices[s])
   );
 
-  console.log(
-    "[CRON]",
-    signals.map((s) => `${s.symbol}:${s.state}:${s.price}`).join(" | ")
-  );
+  console.log("[CRON] signals:", signals);
+
+  await processAlerts(signals);
 
   return Response.json({
     ok: true,
-    signalsCount: signals.length,
     signals,
   });
 }
