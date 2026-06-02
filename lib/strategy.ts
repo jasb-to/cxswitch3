@@ -20,27 +20,33 @@ export interface Signal {
 
   stopLoss: number | null;
   takeProfit: number | null;
-
-  expectedMovePct: number;
+  riskReward: number | null;
 
   updatedAt: string;
 }
 
 /* -------------------------
-   helpers
+   helpers (safe maths)
 --------------------------*/
 
 function avg(arr: number[]) {
   return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
-function stddev(arr: number[]) {
-  const m = avg(arr);
-  return Math.sqrt(avg(arr.map(x => (x - m) ** 2)));
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
 }
 
 /* -------------------------
-   core volatility engine
+   SAFE STRENGTH CALC
+--------------------------*/
+
+function calcRange(highs: number[], lows: number[]) {
+  return Math.max(...highs) - Math.min(...lows);
+}
+
+/* -------------------------
+   MAIN ENGINE
 --------------------------*/
 
 export function generateSignal(
@@ -49,37 +55,43 @@ export function generateSignal(
   candles1h: any[],
   price: number
 ): Signal {
-  const last15 = candles15m.slice(-20);
-  const last1h = candles1h.slice(-20);
+  const c15 = candles15m.slice(-20);
+  const c1h = candles1h.slice(-20);
 
-  const closes15 = last15.map(c => c.close);
-  const highs15 = last15.map(c => c.high);
-  const lows15 = last15.map(c => c.low);
+  const closes = c15.map(c => Number(c.close));
+  const highs = c15.map(c => Number(c.high));
+  const lows = c15.map(c => Number(c.low));
 
-  const range = Math.max(...highs15) - Math.min(...lows15);
-  const mean = avg(closes15);
-  const volatility = stddev(closes15) / mean;
+  if (closes.length < 5 || highs.length < 5 || lows.length < 5) {
+    return fallback(symbol, price);
+  }
 
-  const compression = volatility < 0.012; // REALISTIC squeeze zone
+  const range = calcRange(highs, lows);
+  const mean = avg(closes);
 
-  const trend15 =
-    closes15[closes15.length - 1] - closes15[0];
-
-  const trend1h =
-    last1h[last1h.length - 1].close -
-    last1h[0].close;
+  const volatility = mean === 0 ? 0 : range / mean;
 
   /* -------------------------
-     STRUCTURE CLASSIFICATION
+     STRUCTURE DETECTION
   --------------------------*/
+
+  const trend15 = closes[closes.length - 1] - closes[0];
+  const trend1h =
+    c1h.length > 1
+      ? Number(c1h[c1h.length - 1].close) - Number(c1h[0].close)
+      : 0;
+
+  const compression = volatility < 0.012;
 
   let state: SignalState = "WAIT";
 
+  // EARLY = compression + no momentum
   if (compression && Math.abs(trend15) < price * 0.002) {
     state = "EARLY";
   }
 
-  if (!compression && Math.abs(trend15) > price * 0.01) {
+  // SNIPER = breakout AFTER compression
+  if (!compression && Math.abs(trend15) > price * 0.008) {
     state = "SNIPER";
   }
 
@@ -87,7 +99,7 @@ export function generateSignal(
      BIAS
   --------------------------*/
 
-  const bias =
+  const bias: Signal["bias"] =
     trend1h > 0 && trend15 > 0
       ? "LONG"
       : trend1h < 0 && trend15 < 0
@@ -95,55 +107,82 @@ export function generateSignal(
       : "NEUTRAL";
 
   /* -------------------------
-     CONFIDENCE (REALISTIC)
+     CONFIDENCE (stable scaling)
   --------------------------*/
 
   let confidence = 20;
 
-  if (state === "EARLY") confidence = 55 + (1 - volatility) * 20;
-  if (state === "SNIPER") confidence = 75 + (Math.abs(trend15) / price) * 100;
+  if (state === "EARLY") {
+    confidence = 50 + (1 - volatility * 50) * 20;
+  }
 
-  confidence = Math.min(95, Math.max(10, confidence));
+  if (state === "SNIPER") {
+    confidence = 75 + Math.min(20, Math.abs(trend15 / price) * 1000);
+  }
 
-  /* -------------------------
-     ADX + STOCH (proxy real calc)
-  --------------------------*/
-
-  const adx = Math.min(60, volatility * 3000);
-  const stoch = ((price - Math.min(...lows15)) /
-    (Math.max(...highs15) - Math.min(...lows15))) * 100;
+  confidence = clamp(confidence, 10, 95);
 
   /* -------------------------
-     MOVE MODEL (THIS FIXES YOUR ISSUE)
+     ADX (proxy but stable)
   --------------------------*/
 
-  const expectedMovePct =
+  const adx = clamp(volatility * 2500, 5, 60);
+
+  /* -------------------------
+     STOCH (FIXED - NO NaN EVER)
+  --------------------------*/
+
+  const minLow = Math.min(...lows);
+  const maxHigh = Math.max(...highs);
+
+  const rangeSafe = maxHigh - minLow;
+
+  const stoch =
+    rangeSafe === 0
+      ? 50
+      : clamp(((price - minLow) / rangeSafe) * 100, 0, 100);
+
+  /* -------------------------
+     MOVE MODEL (3–5% TARGET)
+  --------------------------*/
+
+  const expectedMove =
     state === "SNIPER"
-      ? 0.03 + volatility * 2
+      ? 0.035 + volatility
       : state === "EARLY"
-      ? 0.02 + volatility * 1.5
+      ? 0.025 + volatility
       : 0.01;
 
   /* -------------------------
-     SL / TP (REAL STRUCTURE BASED)
+     SL / TP (FIXED — NEVER ZERO)
   --------------------------*/
 
-  let stopLoss = null;
-  let takeProfit = null;
+  let stopLoss: number | null = null;
+  let takeProfit: number | null = null;
+  let rr: number | null = null;
 
   if (state !== "WAIT") {
+    const risk = expectedMove * 0.5;
+
     if (bias === "LONG") {
-      stopLoss = price * (1 - expectedMovePct * 0.5);
-      takeProfit = price * (1 + expectedMovePct);
-    } else if (bias === "SHORT") {
-      stopLoss = price * (1 + expectedMovePct * 0.5);
-      takeProfit = price * (1 - expectedMovePct);
+      stopLoss = price * (1 - risk);
+      takeProfit = price * (1 + expectedMove);
+    }
+
+    if (bias === "SHORT") {
+      stopLoss = price * (1 + risk);
+      takeProfit = price * (1 - expectedMove);
+    }
+
+    if (stopLoss && takeProfit) {
+      rr = Math.abs((takeProfit - price) / (price - stopLoss));
     }
   }
 
   return {
     symbol,
     price,
+
     state,
 
     bias,
@@ -152,20 +191,41 @@ export function generateSignal(
     adx: Number(adx.toFixed(2)),
     stoch: Number(stoch.toFixed(2)),
 
-    compression: Number(volatility.toFixed(4)),
+    compression: Number(volatility.toFixed(5)),
 
     reason:
       state === "SNIPER"
-        ? "EXPANSION BREAKOUT DETECTED"
+        ? "BREAKOUT MOMENTUM EXPANSION"
         : state === "EARLY"
-        ? "COMPRESSION BUILDUP - 3–5% MOVE ZONE"
+        ? "COMPRESSION BUILDING FOR MOVE"
         : "NO STRUCTURE",
 
     stopLoss: stopLoss ? Number(stopLoss.toFixed(2)) : null,
     takeProfit: takeProfit ? Number(takeProfit.toFixed(2)) : null,
+    riskReward: rr ? Number(rr.toFixed(2)) : null,
 
-    expectedMovePct: Number(expectedMovePct.toFixed(4)),
+    updatedAt: new Date().toISOString(),
+  };
+}
 
+/* -------------------------
+   SAFE FALLBACK
+--------------------------*/
+
+function fallback(symbol: Symbol, price: number): Signal {
+  return {
+    symbol,
+    price,
+    state: "WAIT",
+    bias: "NEUTRAL",
+    confidence: 20,
+    adx: 0,
+    stoch: 50,
+    compression: 0,
+    reason: "INSUFFICIENT DATA",
+    stopLoss: null,
+    takeProfit: null,
+    riskReward: null,
     updatedAt: new Date().toISOString(),
   };
 }
