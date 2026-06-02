@@ -1,42 +1,46 @@
 import { NextResponse } from "next/server";
-
-import { getLivePrices } from "@/lib/prices";
+import { getCandles, getCurrentPrice } from "@/lib/kraken";
 import { generateSignal } from "@/lib/strategy";
 import { setSignals } from "@/lib/state";
-import { sendTelegramAlert } from "@/lib/telegram";
 
 export const runtime = "nodejs";
 
-const lastState: Record<string, string> = {};
-
 export async function GET() {
-  const prices = await getLivePrices();
+  const [btc15, eth15, sol15] = await Promise.all([
+    getCandles("BTC", 15),
+    getCandles("ETH", 15),
+    getCandles("SOL", 15),
+  ]);
+
+  const [btc1h, eth1h, sol1h] = await Promise.all([
+    getCandles("BTC", 60),
+    getCandles("ETH", 60),
+    getCandles("SOL", 60),
+  ]);
+
+  const [btcPrice, ethPrice, solPrice] = await Promise.all([
+    getCurrentPrice("BTC"),
+    getCurrentPrice("ETH"),
+    getCurrentPrice("SOL"),
+  ]);
 
   const signals = [
-    generateSignal("BTC", prices.BTC),
-    generateSignal("ETH", prices.ETH),
-    generateSignal("SOL", prices.SOL),
+    generateSignal("BTC", btcPrice, btc15, btc1h),
+    generateSignal("ETH", ethPrice, eth15, eth1h),
+    generateSignal("SOL", solPrice, sol15, sol1h),
   ];
 
   setSignals(signals);
 
   console.log(
     "[CRON]",
-    signals.map(s => `${s.symbol}:${s.state}:${s.confidence}`)
+    signals.map(s =>
+      `${s.symbol}:${s.state}:conf=${s.confidence}:rr=${s.rr ?? 0}`
+    )
   );
 
-  for (const s of signals) {
-    const prev = lastState[s.symbol];
-    const changed = prev !== s.state;
-
-    if (changed && s.state !== "WAIT") {
-      lastState[s.symbol] = s.state;
-
-      await sendTelegramAlert(s);
-
-      console.log(`[ALERT] ${s.symbol} → ${s.state}`);
-    }
-  }
-
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({
+    ok: true,
+    signals,
+  });
 }
