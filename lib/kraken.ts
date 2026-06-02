@@ -19,6 +19,7 @@ async function fetchKraken(url: string) {
 function parseCandles(raw: any) {
   if (!raw) return [];
   const key = Object.keys(raw)[0];
+
   return (raw[key] || []).map((c: any) => ({
     time: Number(c[0]),
     open: Number(c[1]),
@@ -30,17 +31,15 @@ function parseCandles(raw: any) {
 }
 
 export async function getCandles(symbol: Symbol, interval: number) {
-  const pair = PAIRS[symbol];
-  const url = `${BASE}/OHLC?pair=${pair}&interval=${interval}`;
+  const url = `${BASE}/OHLC?pair=${PAIRS[symbol]}&interval=${interval}`;
   const res = await fetchKraken(url);
   return parseCandles(res);
 }
 
 export async function getCurrentPrice(symbol: Symbol) {
-  const pair = PAIRS[symbol];
-  const url = `${BASE}/Ticker?pair=${pair}`;
-
+  const url = `${BASE}/Ticker?pair=${PAIRS[symbol]}`;
   const res = await fetchKraken(url);
+
   if (!res) return 0;
 
   const key = Object.keys(res)[0];
