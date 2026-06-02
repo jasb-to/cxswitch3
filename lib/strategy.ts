@@ -22,51 +22,84 @@ export interface Signal {
   updatedAt: string;
 }
 
-// deterministic hash (stable across renders)
-function hash(n: number) {
-  return Math.abs(Math.sin(n) * 10000);
+/* -----------------------------
+   UTILITIES
+----------------------------- */
+
+function avg(arr: number[]) {
+  return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
+function min(arr: number[]) {
+  return Math.min(...arr);
 }
 
-export function generateSignal(symbol: Symbol, price: number): Signal {
-  const seed = price * 10 + symbol.length * 1337;
-  const h = hash(seed);
+function max(arr: number[]) {
+  return Math.max(...arr);
+}
 
-  const compression = h % 100 < 38;
-  const expansion = h % 100 > 78;
+/* -----------------------------
+   CORE STRATEGY
+----------------------------- */
+
+export function generateSignal(
+  symbol: Symbol,
+  price: number
+): Signal {
+  const now = Date.now();
+
+  // pseudo history simulation (since you don’t pass candles yet)
+  const seed = price * 1000;
+
+  const volatility = Math.abs(Math.sin(seed)) * 100;
+
+  const compression = volatility < 25;     // tight range
+  const expansion = volatility > 70;       // breakout regime
+
+  // trend bias (fake but stable until real candles plugged in)
+  const trendScore = Math.sin(seed / 10000);
+
+  const bias: Signal["bias"] =
+    trendScore > 0.3
+      ? "LONG"
+      : trendScore < -0.3
+      ? "SHORT"
+      : "NEUTRAL";
 
   let state: SignalState = "WAIT";
 
   if (compression) state = "EARLY";
   if (expansion) state = "SNIPER";
 
-  const bias: Signal["bias"] =
-    expansion ? "LONG" : compression ? "NEUTRAL" : "NEUTRAL";
-
   const confidence =
-    state === "SNIPER" ? 88 : state === "EARLY" ? 58 : 20;
-
-  const adx = clamp(10 + (h % 50), 5, 60);
-  const stoch = clamp(h % 100, 0, 100);
-
-  const isLong = bias === "LONG";
-
-  const stopLoss =
     state === "SNIPER"
-      ? isLong
-        ? price * 0.99
-        : price * 1.01
-      : null;
+      ? 80 + Math.abs(trendScore) * 10
+      : state === "EARLY"
+      ? 55 + (1 - volatility / 100) * 20
+      : 20;
 
-  const takeProfit =
-    state === "SNIPER"
-      ? isLong
-        ? price * 1.025
-        : price * 0.975
-      : null;
+  const adx = 20 + volatility * 0.4;
+  const stoch = (volatility * 2) % 100;
+
+  /* -----------------------------
+     REALISTIC MOVE TARGETING
+     3–5% ONLY WHEN SNIPER
+  ----------------------------- */
+
+  let stopLoss: number | null = null;
+  let takeProfit: number | null = null;
+
+  if (state === "SNIPER") {
+    const move = 0.035; // ~3.5% base target
+
+    if (bias === "LONG") {
+      stopLoss = price * 0.985;
+      takeProfit = price * (1 + move);
+    } else if (bias === "SHORT") {
+      stopLoss = price * 1.015;
+      takeProfit = price * (1 - move);
+    }
+  }
 
   return {
     symbol,
@@ -75,16 +108,16 @@ export function generateSignal(symbol: Symbol, price: number): Signal {
     state,
 
     bias,
-    confidence,
+    confidence: Math.min(100, confidence),
 
     adx,
     stoch,
 
     reason:
       state === "SNIPER"
-        ? "LIQUIDITY EXPANSION BREAKOUT"
+        ? "BREAKOUT MOMENTUM EXPANSION"
         : state === "EARLY"
-        ? "COMPRESSION BUILDUP"
+        ? "COMPRESSION BUILDING FOR MOVE"
         : "NO STRUCTURE",
 
     stopLoss,
