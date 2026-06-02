@@ -8,7 +8,7 @@ export const runtime = "nodejs";
 export async function GET() {
   const symbols = ["BTC", "ETH", "SOL"] as const;
 
-  const signals = await Promise.all(
+  const results = await Promise.all(
     symbols.map(async (symbol) => {
       const [price, c15, c1h] = await Promise.all([
         getCurrentPrice(symbol),
@@ -16,18 +16,18 @@ export async function GET() {
         getCandles(symbol, 60),
       ]);
 
-      if (!price || c15.length < 20) return null;
+      if (!price || c15.length < 30) return null;
 
       return generateSignal(symbol, c15, c1h, price);
     })
   );
 
-  const cleaned = signals.filter(Boolean);
+  const cleaned = results.filter(Boolean);
 
   setSignals(cleaned as any);
 
   console.log(
-    "[CRON] signals:",
+    "[CRON]",
     cleaned.map(s => `${s.symbol}:${s.state}:${s.confidence}`)
   );
 
