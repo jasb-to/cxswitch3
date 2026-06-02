@@ -24,6 +24,10 @@ export interface Signal {
   stochK: number;
   rsi: number;
 
+  bos: boolean;
+  choch: boolean;
+  volumeSpike: boolean;
+
   structure: string;
 
   entry: number | null;
@@ -38,8 +42,12 @@ export interface Signal {
 }
 
 /* -------------------------
-   INDICATORS
+   HELPERS
 -------------------------- */
+
+function avg(arr: number[]) {
+  return arr.reduce((a, b) => a + b, 0) / arr.length;
+}
 
 function rsi(closes: number[], period = 14) {
   let gain = 0;
@@ -65,28 +73,34 @@ function stoch(candles: Candle[], period = 14) {
 }
 
 /* -------------------------
-   STRUCTURE LOGIC (REAL EDGE)
+   STRUCTURE (BOS / CHOCH)
 -------------------------- */
 
-function detectStructure(candles: Candle[]) {
+function structure(candles: Candle[]) {
+  const last = candles.at(-1)!.close;
+
   const highs = candles.slice(-20).map(c => c.high);
   const lows = candles.slice(-20).map(c => c.low);
-  const closes = candles.map(c => c.close);
 
   const resistance = Math.max(...highs);
   const support = Math.min(...lows);
 
-  const last = closes.at(-1)!;
+  const bos = last > resistance * 0.999; // breakout structure
+  const choch = last < support * 1.001;  // breakdown structure
 
-  const sweptLow = last < support * 0.998;
-  const sweptHigh = last > resistance * 1.002;
+  return { bos, choch };
+}
 
-  return {
-    resistance,
-    support,
-    sweptLow,
-    sweptHigh,
-  };
+/* -------------------------
+   VOLUME SPIKE
+-------------------------- */
+
+function volumeSpike(candles: Candle[]) {
+  const vols = candles.slice(-20).map(c => c.volume);
+  const avgVol = avg(vols);
+  const lastVol = vols.at(-1)!;
+
+  return lastVol > avgVol * 1.5;
 }
 
 /* -------------------------
@@ -103,35 +117,24 @@ export function generateSignal(
 
   const rsiVal = rsi(closes);
   const stochK = stoch(candles15m);
-
-  const structure = detectStructure(candles15m);
+  const { bos, choch } = structure(candles15m);
+  const volSpike = volumeSpike(candles15m);
 
   const emaSlope =
-    (closes.at(-1)! - closes.at(closes.length - 10)!) /
-    closes.at(-10)!;
+    (closes.at(-1)! - closes.at(-10)!) / closes.at(-10)!;
 
   /* -------------------------
-     LIQUIDITY CONDITIONS
+     STATE LOGIC (LESS RESTRICTIVE)
   -------------------------- */
 
-  const compression =
-    stochK < 35 && rsiVal > 45 && Math.abs(emaSlope) < 0.002;
-
-  const sweepReversal =
-    (structure.sweptLow && rsiVal > 50) ||
-    (structure.sweptHigh && rsiVal < 50);
-
-  const breakout =
-    stochK > 65 && rsiVal > 55 && emaSlope > 0.003;
-
-  /* -------------------------
-     STATE LOGIC (STRICT)
-  -------------------------- */
+  const compression = stochK < 40 && rsiVal > 40;
 
   let state: SignalState = "WAIT";
 
   if (compression) state = "EARLY";
-  if (breakout && sweepReversal) state = "SNIPER";
+
+  // SNIPER does NOT require everything anymore
+  if (bos || choch) state = "SNIPER";
 
   /* -------------------------
      BIAS
@@ -141,38 +144,41 @@ export function generateSignal(
     emaSlope > 0 ? "LONG" : emaSlope < 0 ? "SHORT" : "NEUTRAL";
 
   /* -------------------------
-     CONFIDENCE (FILTER HARD)
+     CONFIDENCE (NOW REALISTIC)
   -------------------------- */
 
-  const confidence =
-    state === "SNIPER"
-      ? 85 + (sweepReversal ? 10 : 0)
-      : state === "EARLY"
-      ? 55 + stochK / 5
-      : 20;
+  let confidence = 20;
+
+  if (state === "EARLY") confidence = 50 + stochK / 10;
+  if (state === "SNIPER") confidence = 70;
+
+  if (volSpike) confidence += 10;
+  if (bos) confidence += 5;
+  if (choch) confidence += 5;
+
+  confidence = Math.min(95, confidence);
 
   /* -------------------------
-     EXPECTED MOVE (REALISTIC 3–5%)
+     MOVE MODEL (3–5% STILL VALID)
   -------------------------- */
 
   const expectedMove =
     state === "SNIPER"
-      ? 0.035
+      ? 0.04
       : state === "EARLY"
-      ? 0.02
+      ? 0.025
       : 0.01;
 
   /* -------------------------
-     ENTRY / SL / TP
+     SL / TP
   -------------------------- */
 
-  let entry = price;
-  let stopLoss: number | null = null;
-  let takeProfit: number | null = null;
-  let rr: number | null = null;
+  let stopLoss = null;
+  let takeProfit = null;
+  let rr = null;
 
   if (state !== "WAIT") {
-    const risk = expectedMove * (state === "SNIPER" ? 0.4 : 0.6);
+    const risk = expectedMove * (state === "SNIPER" ? 0.45 : 0.6);
 
     if (bias === "LONG") {
       stopLoss = price * (1 - risk);
@@ -200,14 +206,18 @@ export function generateSignal(
     stochK,
     rsi: rsiVal,
 
+    bos,
+    choch,
+    volumeSpike: volSpike,
+
     structure:
       state === "SNIPER"
-        ? "LIQUIDITY SWEEP + BREAKOUT"
+        ? "BOS/CHOCH CONFIRMED"
         : state === "EARLY"
-        ? "COMPRESSION PHASE"
+        ? "ACCUMULATION"
         : "NO STRUCTURE",
 
-    entry,
+    entry: price,
     stopLoss,
     takeProfit,
     rr,
