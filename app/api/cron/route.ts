@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCandles, getCurrentPrice } from "@/lib/kraken";
 import { generateSignal } from "@/lib/strategy";
 import { setSignals } from "@/lib/state";
+import { sendAlert } from "@/lib/telegram";
 
 export const runtime = "nodejs";
 
@@ -32,12 +33,50 @@ export async function GET() {
 
   setSignals(signals);
 
-  console.log(
-    "[CRON]",
-    signals.map(s =>
-      `${s.symbol}:${s.state}:conf=${s.confidence}:rr=${s.rr ?? 0}`
-    )
-  );
+  // 🔥 FULL STRUCTURED LOG (NOT STRINGIFIED SHORT FORM)
+  console.log("[CRON] SIGNALS FULL:");
+
+  for (const s of signals) {
+    console.log({
+      symbol: s.symbol,
+      state: s.state,
+      price: s.price,
+      bias: s.bias,
+      confidence: s.confidence,
+      expectedMove: s.expectedMove,
+      stopLoss: s.stopLoss,
+      takeProfit: s.takeProfit,
+      rr: s.rr,
+      adx: s.adx,
+      stoch: s.stoch,
+      rsi: s.rsi,
+    });
+  }
+
+  // 🔥 ALERTS (FULL PAYLOAD, NOT TEXT STRINGS)
+  for (const s of signals) {
+    if (s.state === "WAIT") continue;
+
+    await sendAlert({
+      symbol: s.symbol,
+      state: s.state,
+      price: s.price,
+      bias: s.bias,
+      confidence: s.confidence,
+      expectedMove: s.expectedMove,
+      stopLoss: s.stopLoss,
+      takeProfit: s.takeProfit,
+      rr: s.rr,
+      timestamp: s.updatedAt,
+    });
+
+    console.log(`[ALERT SENT]`, {
+      symbol: s.symbol,
+      state: s.state,
+      confidence: s.confidence,
+      rr: s.rr,
+    });
+  }
 
   return NextResponse.json({
     ok: true,
