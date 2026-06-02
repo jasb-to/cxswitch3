@@ -9,58 +9,46 @@ export default function Home() {
     const res = await fetch("/api/signals");
     const data = await res.json();
 
-    const raw = Array.isArray(data?.signals) ? data.signals : [];
-
-    const latestMap = new Map();
-
-    for (const s of raw) {
-      if (s?.symbol) latestMap.set(s.symbol, s);
-    }
-
-    setSignals(Array.from(latestMap.values()));
+    setSignals(data.signals || []);
   }
 
   useEffect(() => {
     fetchSignals();
-    const t = setInterval(fetchSignals, 60000);
+    const t = setInterval(fetchSignals, 60000); // 60s (correct)
     return () => clearInterval(t);
   }, []);
 
   return (
     <main style={{ padding: 24, background: "#000", color: "#fff" }}>
-      <h1 style={{ fontSize: 28, marginBottom: 20 }}>CX Switch</h1>
+      <h1>CX Switch</h1>
 
       <div style={{ display: "grid", gap: 16 }}>
         {signals.map((s) => (
-          <div
-            key={s.symbol}
-            style={{
-              border: "1px solid #222",
-              padding: 16,
-              borderRadius: 12,
-            }}
-          >
-            <div style={{ fontSize: 22 }}>
+          <div key={s.symbol} style={{ border: "1px solid #333", padding: 12 }}>
+            <div style={{ fontSize: 20 }}>
               {s.symbol} — ${s.price}
             </div>
 
             <div>{s.state}</div>
-
             <div>Bias: {s.bias}</div>
             <div>Confidence: {s.confidence}%</div>
 
-            <div>ADX: {Number(s.adx || 0).toFixed(1)}</div>
-            <div>Stoch: {Number(s.stoch || 0).toFixed(1)}</div>
+            <div>ADX: {s.adx}</div>
+            <div>Stoch: {s.stoch}</div>
 
-            <div style={{ marginTop: 8 }}>{s.reason}</div>
+            <div>{s.reason}</div>
 
-            {s.state === "SNIPER" && (
+            {s.state !== "WAIT" && (
               <div style={{ marginTop: 10 }}>
                 <div>SL: {s.stopLoss}</div>
                 <div>TP: {s.takeProfit}</div>
                 <div>RR: {s.rr}</div>
               </div>
             )}
+
+            <div style={{ opacity: 0.6, marginTop: 6 }}>
+              {s.updatedAt}
+            </div>
           </div>
         ))}
       </div>
