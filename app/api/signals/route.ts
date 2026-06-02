@@ -1,12 +1,14 @@
-import { kv } from "@vercel/kv";
-
 export const runtime = "nodejs";
 
-export async function GET() {
-  const data = await kv.get("cx:snapshots");
+let latestSignals: any[] = [];
 
+export function setLatestSignals(signals: any[]) {
+  latestSignals = signals;
+}
+
+export async function GET() {
   return Response.json({
-    signals: Array.isArray(data) ? data : [],
+    signals: latestSignals,
     updatedAt: new Date().toISOString(),
   });
 }
