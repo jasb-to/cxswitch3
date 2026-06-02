@@ -21,13 +21,17 @@ export interface Signal {
   confidence: number;
 
   adx: number;
-  stoch: number;
+  stochK: number;
+  stochD: number;
   rsi: number;
 
   reason: string;
 
+  entry: number | null;
+
   stopLoss: number | null;
   takeProfit: number | null;
+
   rr: number | null;
 
   expectedMove: number;
@@ -38,6 +42,10 @@ export interface Signal {
 /* -------------------------
    INDICATORS
 -------------------------- */
+
+function avg(arr: number[]) {
+  return arr.reduce((a, b) => a + b, 0) / arr.length;
+}
 
 function ema(values: number[], period: number) {
   const k = 2 / (period + 1);
@@ -51,55 +59,28 @@ function ema(values: number[], period: number) {
 }
 
 function rsi(closes: number[], period = 14) {
-  if (closes.length < period + 1) return 50;
-
   let gains = 0;
   let losses = 0;
 
-  for (let i = closes.length - period; i < closes.length; i++) {
+  for (let i = 1; i < period; i++) {
     const diff = closes[i] - closes[i - 1];
     if (diff >= 0) gains += diff;
     else losses += Math.abs(diff);
   }
 
-  if (losses === 0) return 100;
-
-  const rs = gains / losses;
+  const rs = gains / (losses || 1);
   return 100 - 100 / (1 + rs);
 }
 
-function atr(candles: Candle[], period = 14) {
-  if (candles.length < period + 1) return 0;
-
-  let trs: number[] = [];
-
-  for (let i = 1; i < candles.length; i++) {
-    const c = candles[i];
-    const p = candles[i - 1];
-
-    const tr = Math.max(
-      c.high - c.low,
-      Math.abs(c.high - p.close),
-      Math.abs(c.low - p.close)
-    );
-
-    trs.push(tr);
-  }
-
-  return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
-}
-
-function stoch(candles: Candle[]) {
-  const period = 14;
+function stochastic(candles: Candle[], period = 14) {
   const slice = candles.slice(-period);
 
   const high = Math.max(...slice.map(c => c.high));
   const low = Math.min(...slice.map(c => c.low));
   const close = slice[slice.length - 1].close;
 
-  if (high === low) return 50;
-
-  return ((close - low) / (high - low)) * 100;
+  const k = ((close - low) / (high - low || 1)) * 100;
+  return k;
 }
 
 /* -------------------------
@@ -114,109 +95,83 @@ export function generateSignal(
 ): Signal {
   const closes = candles15m.map(c => c.close);
 
-  const ema21_now = ema(closes.slice(-21), 21);
-  const ema21_prev = ema(closes.slice(-22, -1), 21);
-
-  const emaSlope = ema21_now - ema21_prev;
+  const ema21 = ema(closes.slice(-21), 21);
+  const slope = (closes.at(-1)! - ema21) / ema21;
 
   const rsiVal = rsi(closes);
-  const stochVal = stoch(candles15m);
-  const atrVal = atr(candles15m);
+  const stochK = stochastic(candles15m);
+  const stochD = avg(closes.slice(-3)); // smoothed proxy
 
-  /* -------------------------
-     STATE LOGIC (REAL)
-  -------------------------- */
+  // -------------------------
+  // STRUCTURE LOGIC
+  // -------------------------
 
-  const bullishTrend = emaSlope > 0;
-  const bearishTrend = emaSlope < 0;
+  const compression =
+    stochK < 30 && rsiVal > 45 && Math.abs(slope) < 0.002;
 
-  const oversold = stochVal < 30 && rsiVal > 50;
-  const overbought = stochVal > 70 && rsiVal < 50;
+  const breakout =
+    stochK > 60 && slope > 0.003 && rsiVal > 50;
 
   let state: SignalState = "WAIT";
+  if (compression) state = "EARLY";
+  if (breakout) state = "SNIPER";
 
-  if (oversold || (bullishTrend && stochVal < 40)) {
-    state = "EARLY";
-  }
-
-  if (bullishTrend && stochVal > 55 && rsiVal > 55) {
-    state = "SNIPER";
-  }
-
-  if (bearishTrend && stochVal < 45 && rsiVal < 45) {
-    state = "SNIPER";
-  }
-
-  /* -------------------------
-     BIAS
-  -------------------------- */
+  // -------------------------
+  // BIAS
+  // -------------------------
 
   const bias: Signal["bias"] =
-    bullishTrend ? "LONG" : bearishTrend ? "SHORT" : "NEUTRAL";
+    slope > 0 ? "LONG" : slope < 0 ? "SHORT" : "NEUTRAL";
 
-  /* -------------------------
-     CONFIDENCE
-  -------------------------- */
+  // -------------------------
+  // CONFIDENCE
+  // -------------------------
 
-  let confidence =
+  const confidence =
     state === "SNIPER"
-      ? 70 + Math.min(25, Math.abs(emaSlope) * 100)
+      ? 80 + Math.min(15, Math.abs(slope) * 5000)
       : state === "EARLY"
-      ? 55 + Math.min(20, Math.abs(emaSlope) * 80)
+      ? 55 + Math.min(20, stochK / 5)
       : 20;
 
-  confidence = Math.min(95, Math.max(10, confidence));
+  // -------------------------
+  // EXPECTED MOVE (REALISTIC 3–5%)
+  // -------------------------
 
-  /* -------------------------
-     EXPECTED MOVE (3–5%)
-  -------------------------- */
-
-  const volatilityFactor = atrVal / price;
+  const volatility = Math.abs(slope) * 10;
 
   const expectedMove =
     state === "SNIPER"
-      ? Math.min(0.05, Math.max(0.03, volatilityFactor * 3))
+      ? 0.03 + volatility
       : state === "EARLY"
-      ? Math.min(0.04, Math.max(0.02, volatilityFactor * 2.2))
+      ? 0.02 + volatility / 2
       : 0.01;
 
-  /* -------------------------
-     SL / TP (REAL VOLATILITY BASED)
-  -------------------------- */
+  // -------------------------
+  // ENTRY / SL / TP
+  // -------------------------
 
+  let entry = price;
   let stopLoss: number | null = null;
   let takeProfit: number | null = null;
   let rr: number | null = null;
 
   if (state !== "WAIT") {
-    const slMult = state === "SNIPER" ? 1.2 : 1.6;
+    const risk = expectedMove * (state === "EARLY" ? 0.5 : 0.35);
 
     if (bias === "LONG") {
-      stopLoss = price - atrVal * slMult;
-      takeProfit = price + price * expectedMove;
+      stopLoss = price * (1 - risk);
+      takeProfit = price * (1 + expectedMove);
+    } else if (bias === "SHORT") {
+      stopLoss = price * (1 + risk);
+      takeProfit = price * (1 - expectedMove);
+    } else {
+      stopLoss = price * (1 - risk);
+      takeProfit = price * (1 + expectedMove);
     }
 
-    if (bias === "SHORT") {
-      stopLoss = price + atrVal * slMult;
-      takeProfit = price - price * expectedMove;
-    }
-
-    if (bias === "NEUTRAL") {
-      stopLoss = price - atrVal;
-      takeProfit = price + price * expectedMove;
-    }
-
-    rr =
-      stopLoss && takeProfit
-        ? Math.abs((takeProfit - price) / (price - stopLoss))
-        : null;
+    rr = Math.abs((takeProfit - price) / (price - stopLoss));
   }
-
-  /* -------------------------
-     ADX (proxy, no NaN)
-  -------------------------- */
-
-  const adx = Math.min(60, Math.abs(emaSlope) * 5000 + 20);
 
   return {
     symbol,
@@ -226,17 +181,19 @@ export function generateSignal(
     bias,
     confidence,
 
-    adx,
-    stoch: stochVal,
+    adx: Math.abs(slope) * 100,
+    stochK,
+    stochD,
     rsi: rsiVal,
 
     reason:
       state === "SNIPER"
-        ? "BREAKOUT CONFIRMED"
+        ? "BREAKOUT CONFIRMED STRUCTURE"
         : state === "EARLY"
-        ? "EARLY COMPRESSION SETUP"
+        ? "COMPRESSION → ACCUMULATION"
         : "NO STRUCTURE",
 
+    entry,
     stopLoss,
     takeProfit,
     rr,
