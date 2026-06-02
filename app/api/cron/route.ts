@@ -6,7 +6,7 @@ import { setSignals } from "@/lib/state";
 export const runtime = "nodejs";
 
 function round(n: number | null, d = 2) {
-  if (n === null || n === undefined) return null;
+  if (n === null || n === undefined || isNaN(n)) return null;
   const f = Math.pow(10, d);
   return Math.round(n * f) / f;
 }
@@ -29,7 +29,10 @@ export async function GET() {
 
   setSignals(signals);
 
-  console.log("[CRON] updated", signals.length);
+  console.log("[CRON] updated signals:", signals);
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({
+    ok: true,
+    count: signals.length,
+  });
 }
