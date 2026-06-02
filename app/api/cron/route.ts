@@ -5,8 +5,9 @@ import { setSignals } from "@/lib/state";
 
 export const runtime = "nodejs";
 
-function round(n: number, decimals = 2) {
-  const f = Math.pow(10, decimals);
+function round(n: number | null, d = 2) {
+  if (n === null || n === undefined) return null;
+  const f = Math.pow(10, d);
   return Math.round(n * f) / f;
 }
 
@@ -20,19 +21,15 @@ export async function GET() {
       ...s,
       price: round(s.price),
       adx: round(s.adx, 1),
-      stochK: round(s.stochK, 1),
-      stochD: round(s.stochD, 1),
-      stopLoss: s.stopLoss ? round(s.stopLoss) : null,
-      takeProfit: s.takeProfit ? round(s.takeProfit) : null,
+      stoch: round(s.stoch, 1),
+      stopLoss: round(s.stopLoss),
+      takeProfit: round(s.takeProfit),
     };
   });
 
   setSignals(signals);
 
-  console.log("[CRON] signals updated", signals.length);
+  console.log("[CRON] updated", signals.length);
 
-  return NextResponse.json({
-    ok: true,
-    count: signals.length,
-  });
+  return NextResponse.json({ ok: true });
 }
