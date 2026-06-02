@@ -1,12 +1,13 @@
+import { NextResponse } from "next/server";
 import { getSignals } from "@/lib/state";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  const state = getSignals();
+  const signals = getSignals();
 
-  return Response.json({
-    signals: state.signals,
-    updatedAt: state.updatedAt,
+  return NextResponse.json({
+    signals,
+    updatedAt: new Date().toISOString(),
   });
 }
