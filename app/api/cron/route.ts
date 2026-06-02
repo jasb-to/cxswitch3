@@ -1,25 +1,38 @@
 import { NextResponse } from "next/server";
-import { getCandles, getLivePrice } from "@/lib/kraken";
+import { getLivePrices } from "@/lib/prices";
+import { getCandles } from "@/lib/kraken";
 import { generateSignal } from "@/lib/strategy";
 import { setSignals } from "@/lib/state";
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  const symbols: any[] = ["BTC", "ETH", "SOL"];
+  const prices = await getLivePrices();
 
-  const results = await Promise.all(
-    symbols.map(async (symbol) => {
-      const candles15m = await getCandles(symbol, 15);
-      const price = await getLivePrice(symbol);
+  const [btc15, eth15, sol15] = await Promise.all([
+    getCandles("BTC", 15),
+    getCandles("ETH", 15),
+    getCandles("SOL", 15),
+  ]);
 
-      return generateSignal(symbol, candles15m, price);
-    })
+  const [btc1h, eth1h, sol1h] = await Promise.all([
+    getCandles("BTC", 60),
+    getCandles("ETH", 60),
+    getCandles("SOL", 60),
+  ]);
+
+  const signals = [
+    generateSignal("BTC", btc15, btc1h, prices.BTC),
+    generateSignal("ETH", eth15, eth1h, prices.ETH),
+    generateSignal("SOL", sol15, sol1h, prices.SOL),
+  ];
+
+  setSignals(signals);
+
+  console.log(
+    "[CRON] signals updated",
+    signals.map(s => `${s.symbol}:${s.state}`)
   );
 
-  setSignals(results);
-
-  console.log("[CRON] signals updated", results.length);
-
-  return NextResponse.json({ ok: true, signals: results });
+  return NextResponse.json({ ok: true, count: signals.length });
 }
