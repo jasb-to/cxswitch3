@@ -2,6 +2,15 @@ export type Symbol = "BTC" | "ETH" | "SOL";
 
 export type SignalState = "EARLY" | "SNIPER" | "WAIT";
 
+export interface Candle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
 export interface Signal {
   symbol: Symbol;
   price: number;
@@ -13,12 +22,12 @@ export interface Signal {
 
   adx: number;
   stoch: number;
+  rsi: number;
 
   reason: string;
 
   stopLoss: number | null;
   takeProfit: number | null;
-
   rr: number | null;
 
   expectedMove: number;
@@ -26,111 +35,163 @@ export interface Signal {
   updatedAt: string;
 }
 
-/* ---------------- utils ---------------- */
+/* ---------------- UTILS ---------------- */
 
 const clamp = (n: number, min: number, max: number) =>
   Math.max(min, Math.min(max, n));
 
-const hash = (n: number) => Math.sin(n) * 10000;
+const round = (n: number, d = 2) =>
+  Math.round(n * Math.pow(10, d)) / Math.pow(10, d);
 
-const mod = (n: number) => Math.abs(n % 100);
+/* ---------------- INDICATORS ---------------- */
+
+function ema(values: number[], period: number) {
+  const k = 2 / (period + 1);
+  let ema = values[0];
+  for (let i = 1; i < values.length; i++) {
+    ema = values[i] * k + ema * (1 - k);
+  }
+  return ema;
+}
+
+function rsi(closes: number[]) {
+  let gains = 0;
+  let losses = 0;
+
+  for (let i = 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) gains += diff;
+    else losses -= diff;
+  }
+
+  const rs = gains / (losses || 1);
+  return 100 - 100 / (1 + rs);
+}
+
+function stochK(closes: number[], period = 14) {
+  const slice = closes.slice(-period);
+  const high = Math.max(...slice);
+  const low = Math.min(...slice);
+  const close = slice[slice.length - 1];
+
+  return ((close - low) / (high - low || 1)) * 100;
+}
+
+/* ---------------- STRUCTURE ---------------- */
+
+function detectBOS(closes: number[]) {
+  const last = closes.at(-1)!;
+  const prev = closes.at(-2)!;
+
+  if (last > prev) return "BULL";
+  if (last < prev) return "BEAR";
+  return "NEUTRAL";
+}
 
 /* ---------------- CORE ---------------- */
 
-export function generateSignal(symbol: Symbol, price: number): Signal {
-  const seed = price + symbol.length * 91;
-  const h = Math.abs(hash(seed));
-  const m = mod(h);
+export function generateSignal(
+  symbol: Symbol,
+  price: number,
+  candles15m: Candle[],
+  candles1h: Candle[]
+): Signal {
+  const closes15 = candles15m.map(c => c.close);
+  const closes1h = candles1h.map(c => c.close);
 
-  // ---------------- STRUCTURE ----------------
-  const compression = m < 40;
-  const expansion = m > 78;
+  const r = rsi(closes15);
+  const st = stochK(closes15);
+  const bos = detectBOS(closes15);
+
+  const ema21 = ema(closes15, 21);
+  const emaSlope = price > ema21 ? "UP" : "DOWN";
+
+  /* ---------------- STATE ---------------- */
 
   let state: SignalState = "WAIT";
-  if (compression) state = "EARLY";
-  if (expansion) state = "SNIPER";
 
-  // ---------------- BIAS ----------------
-  let bias: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
+  const early =
+    st < 30 && r > 45 && bos !== "NEUTRAL";
 
-  if (expansion) {
-    bias = m % 2 === 0 ? "LONG" : "SHORT";
-  } else if (compression) {
-    // EARLY now gets directional bias (IMPORTANT FIX)
-    bias = m > 50 ? "LONG" : "SHORT";
-  }
+  const sniper =
+    st > 70 && r > 50 && bos !== "NEUTRAL" && emaSlope !== "NEUTRAL";
 
-  // ---------------- CONFIDENCE ----------------
+  if (sniper) state = "SNIPER";
+  else if (early) state = "EARLY";
+
+  /* ---------------- BIAS ---------------- */
+
+  const bias =
+    bos === "BULL" ? "LONG"
+    : bos === "BEAR" ? "SHORT"
+    : "NEUTRAL";
+
+  /* ---------------- CONFIDENCE ---------------- */
+
   const confidence =
     state === "SNIPER"
-      ? clamp(80 + (m % 15), 80, 95)
+      ? clamp(80 + Math.abs(r - 50), 80, 95)
       : state === "EARLY"
-      ? clamp(60 + (m % 20), 55, 80)
+      ? clamp(55 + Math.abs(st - 30), 50, 78)
       : 20;
 
-  // ---------------- INDICATORS ----------------
-  const adx = clamp(15 + (m % 55), 10, 70);
-  const stoch = clamp(m, 0, 100);
+  /* ---------------- EXPECTED MOVE (REALISTIC) ---------------- */
 
-  // ---------------- MOVE MODEL ----------------
-  const volatility = adx / 100;
+  const volatility = Math.abs(price - ema21) / price;
 
   const expectedMove =
     state === "SNIPER"
-      ? clamp(0.03 + volatility * 0.02, 0.025, 0.06)
+      ? clamp(volatility * 2.5, 0.025, 0.055)
       : state === "EARLY"
-      ? clamp(0.02 + volatility * 0.015, 0.018, 0.045)
+      ? clamp(volatility * 1.8, 0.02, 0.04)
       : 0.01;
 
-  // ---------------- SL / TP (FIXED LOGIC) ----------------
-  const riskFactor = state === "SNIPER" ? 0.45 : 0.6;
+  /* ---------------- SL / TP ---------------- */
 
-  const risk = expectedMove * riskFactor;
+  let stopLoss = null;
+  let takeProfit = null;
+  let rr = null;
 
-  let stopLoss: number | null = null;
-  let takeProfit: number | null = null;
+  if (state !== "WAIT") {
+    const risk = expectedMove * (state === "EARLY" ? 0.6 : 0.45);
 
-  // 🔥 IMPORTANT: EARLY ALSO GETS SL/TP NOW
-  if (state === "EARLY" || state === "SNIPER") {
     if (bias === "LONG") {
       stopLoss = price * (1 - risk);
       takeProfit = price * (1 + expectedMove);
-    }
-
-    if (bias === "SHORT") {
+    } else if (bias === "SHORT") {
       stopLoss = price * (1 + risk);
       takeProfit = price * (1 - expectedMove);
     }
-  }
 
-  const rr =
-    stopLoss && takeProfit
-      ? Math.abs((takeProfit - price) / (price - stopLoss))
-      : null;
+    if (stopLoss && takeProfit) {
+      rr = Math.abs((takeProfit - price) / (price - stopLoss));
+    }
+  }
 
   return {
     symbol,
-    price,
+    price: round(price),
 
     state,
     bias,
-    confidence,
+    confidence: round(confidence),
 
-    adx,
-    stoch,
+    adx: round(Math.abs(price - ema21) / price * 100, 1),
+    stoch: round(st),
+    rsi: round(r),
 
     reason:
       state === "SNIPER"
-        ? "BREAKOUT EXPANSION"
+        ? "BREAKOUT CONFIRMED (BOS + MOMENTUM)"
         : state === "EARLY"
-        ? "STRUCTURE BUILDING"
+        ? "COMPRESSION + STRUCTURE BUILD"
         : "NO STRUCTURE",
 
-    stopLoss,
-    takeProfit,
-    rr,
+    stopLoss: stopLoss ? round(stopLoss, 2) : null,
+    takeProfit: takeProfit ? round(takeProfit, 2) : null,
+    rr: rr ? round(rr, 2) : null,
 
-    expectedMove,
+    expectedMove: round(expectedMove * 100, 2),
 
     updatedAt: new Date().toISOString(),
   };
