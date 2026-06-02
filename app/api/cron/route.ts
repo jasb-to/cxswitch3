@@ -3,8 +3,6 @@ import { generateSignal } from "@/lib/signalEngine";
 
 export const runtime = "nodejs";
 
-let latestSignals: any[] = [];
-
 export async function GET() {
   const prices = await getPrices();
 
@@ -12,15 +10,14 @@ export async function GET() {
     generateSignal(symbol, price)
   );
 
-  latestSignals = signals;
-
   console.log(
     "[CRON]",
-    signals.map((s) => `${s.symbol}:${s.state} @${s.price}`).join(" | ")
+    signals.map((s) => `${s.symbol} ${s.state} $${s.price}`).join(" | ")
   );
 
   return Response.json({
     ok: true,
     signalsCount: signals.length,
+    signals,
   });
 }
