@@ -1,8 +1,8 @@
-export const KRAKEN_BASE = "https://api.kraken.com/0/public";
+const KRAKEN = "https://api.kraken.com/0/public";
 
 export type Symbol = "BTC" | "ETH" | "SOL";
 
-function mapSymbol(symbol: Symbol) {
+function pair(symbol: Symbol) {
   switch (symbol) {
     case "BTC":
       return "XXBTZUSD";
@@ -10,42 +10,60 @@ function mapSymbol(symbol: Symbol) {
       return "XETHZUSD";
     case "SOL":
       return "SOLUSD";
-    default:
-      throw new Error(`Unsupported symbol: ${symbol}`);
   }
 }
 
-async function fetchKraken(url: string) {
-  try {
-    const res = await fetch(url);
+export interface Candle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
 
-    if (!res.ok) return null;
+async function fetchJSON(url: string) {
+  const res = await fetch(url, { cache: "no-store" });
+  const data = await res.json();
 
-    const data = await res.json();
-
-    if (data?.error?.length) return null;
-
-    return data.result;
-  } catch {
+  if (data?.error?.length) {
+    console.error("[KRAKEN ERROR]", data.error);
     return null;
   }
+
+  return data.result;
 }
 
-export async function getCurrentPrice(symbol: Symbol): Promise<number> {
-  const pair = mapSymbol(symbol);
+function parseCandles(raw: any): Candle[] {
+  if (!raw) return [];
 
-  const url = `${KRAKEN_BASE}/Ticker?pair=${pair}`;
+  const key = Object.keys(raw)[0];
+  const arr = raw[key];
 
-  const result = await fetchKraken(url);
+  if (!Array.isArray(arr)) return [];
 
-  if (!result) return 0;
+  return arr.map((c: any) => ({
+    time: Number(c[0]),
+    open: Number(c[1]),
+    high: Number(c[2]),
+    low: Number(c[3]),
+    close: Number(c[4]),
+    volume: Number(c[6]),
+  }));
+}
 
-  const key = Object.keys(result)[0];
-  const price = result?.[key]?.c?.[0];
+export async function getCandles(symbol: Symbol, interval: number) {
+  const url = `${KRAKEN}/OHLC?pair=${pair(symbol)}&interval=${interval}`;
+  const raw = await fetchJSON(url);
+  return parseCandles(raw).sort((a, b) => a.time - b.time);
+}
 
-  const parsed = Number(price);
+export async function getLivePrice(symbol: Symbol) {
+  const url = `${KRAKEN}/Ticker?pair=${pair(symbol)}`;
+  const raw = await fetchJSON(url);
 
-  if (!parsed || isNaN(parsed)) return 0;
+  if (!raw) return 0;
 
-  return parsed;
+  const key = Object.keys(raw)[0];
+  return Number(raw[key]?.c?.[0] ?? 0);
 }
