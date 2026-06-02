@@ -18,7 +18,9 @@ export async function getLivePrices(): Promise<PriceMap> {
       ETH: Number(data?.ethereum?.usd ?? 2000),
       SOL: Number(data?.solana?.usd ?? 80),
     };
-  } catch {
+  } catch (e) {
+    console.error("[PRICE ERROR]", e);
+
     return {
       BTC: 70000,
       ETH: 2000,
