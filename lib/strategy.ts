@@ -1,4 +1,4 @@
-import type { Candle, Symbol } from "./kraken";
+import type { Symbol } from "./kraken";
 
 export type SignalState = "EARLY" | "SNIPER" | "WAIT";
 
@@ -22,94 +22,85 @@ export interface Signal {
   updatedAt: string;
 }
 
-/* -------------------------
-   VOLATILITY CORE
---------------------------*/
+/* =========================
+   HELPERS
+========================= */
 
-function volatility(candles: Candle[]) {
-  const slice = candles.slice(-20);
-
-  const highs = slice.map(c => c.high);
-  const lows = slice.map(c => c.low);
-
-  const range = Math.max(...highs) - Math.min(...lows);
-  const avg = slice.reduce((s, c) => s + c.close, 0) / slice.length;
-
-  return range / avg;
+function avg(arr: number[]) {
+  return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
-/* -------------------------
-   STRUCTURE
---------------------------*/
-
-function structure(candles: Candle[]) {
-  const last = candles.slice(-5);
-
-  const up = last[4].close > last[0].close;
-  const down = last[4].close < last[0].close;
-
-  if (up) return "LONG";
-  if (down) return "SHORT";
-  return "NEUTRAL";
+function range(candles: any[]) {
+  const highs = candles.map(c => c.high);
+  const lows = candles.map(c => c.low);
+  return Math.max(...highs) - Math.min(...lows);
 }
 
-/* -------------------------
-   MOMENTUM
---------------------------*/
+/* =========================
+   STRUCTURE DETECTION
+========================= */
 
-function momentum(candles: Candle[]) {
-  const c = candles.slice(-10);
-  const first = c[0].close;
-  const last = c[c.length - 1].close;
+function detectCompression(candles: any[]) {
+  const last = candles.slice(-20);
+  const avgPrice = avg(last.map(c => c.close));
 
-  return (last - first) / first;
+  const vol = range(last) / avgPrice;
+
+  return vol < 0.012; // tight squeeze for REAL early entries
 }
 
-/* -------------------------
+function momentum(candles: any[]) {
+  const last = candles.slice(-10);
+  const change =
+    (last[last.length - 1].close - last[0].close) / last[0].close;
+
+  return change * 100;
+}
+
+/* =========================
    MAIN ENGINE
---------------------------*/
+========================= */
 
 export function generateSignal(
   symbol: Symbol,
-  candles15m: Candle[],
+  candles15m: any[],
+  candles1h: any[],
   price: number
 ): Signal {
-  const vol = volatility(candles15m);
-  const struct = structure(candles15m);
+  const compression = detectCompression(candles15m);
   const mom = momentum(candles15m);
 
-  const compression = vol < 0.012;
-  const expansion = vol > 0.018;
+  const expansion = mom > 1.2;
 
   let state: SignalState = "WAIT";
-
   if (compression) state = "EARLY";
-  if (expansion && Math.abs(mom) > 0.01) state = "SNIPER";
+  if (!compression && expansion) state = "SNIPER";
 
   const bias =
-    struct === "LONG"
-      ? "LONG"
-      : struct === "SHORT"
-      ? "SHORT"
-      : "NEUTRAL";
+    expansion ? "LONG" : compression ? "NEUTRAL" : "NEUTRAL";
 
   const confidence =
-    state === "SNIPER" ? 88 :
-    state === "EARLY" ? 60 : 25;
+    state === "SNIPER" ? 88 : state === "EARLY" ? 60 : 20;
 
-  let sl: number | null = null;
-  let tp: number | null = null;
+  const adx = Math.min(50, Math.abs(mom) * 10);
+  const stoch = Math.min(100, Math.abs(mom) * 20);
 
-  // TARGET: 3–5% MOVES (REALISTIC)
-  if (state === "SNIPER") {
-    if (bias === "LONG") {
-      sl = price * 0.985;
-      tp = price * 1.045;
-    } else if (bias === "SHORT") {
-      sl = price * 1.015;
-      tp = price * 0.955;
-    }
-  }
+  // 🎯 REALISTIC MOVE TARGET: 3–5%
+  const move = state === "SNIPER" ? 0.035 : 0.02;
+
+  const stopLoss =
+    state === "SNIPER"
+      ? bias === "LONG"
+        ? price * (1 - 0.012)
+        : price * (1 + 0.012)
+      : null;
+
+  const takeProfit =
+    state === "SNIPER"
+      ? bias === "LONG"
+        ? price * (1 + move)
+        : price * (1 - move)
+      : null;
 
   return {
     symbol,
@@ -120,18 +111,18 @@ export function generateSignal(
     bias,
     confidence,
 
-    adx: Number((vol * 1000).toFixed(1)),
-    stoch: Number((mom * 100).toFixed(1)),
+    adx,
+    stoch,
 
     reason:
       state === "SNIPER"
-        ? "BREAKOUT EXPANSION"
+        ? "BREAKOUT EXPANSION (3–5% MOVE)"
         : state === "EARLY"
-        ? "COMPRESSION BUILDUP"
+        ? "LIQUIDITY SQUEEZE BUILDUP"
         : "NO STRUCTURE",
 
-    stopLoss: sl,
-    takeProfit: tp,
+    stopLoss,
+    takeProfit,
 
     updatedAt: new Date().toISOString(),
   };
