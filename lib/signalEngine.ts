@@ -1,80 +1,75 @@
-export type SignalState = "EARLY" | "SETUP" | "SNIPER" | "WAIT";
+export type Symbol = "BTC" | "ETH" | "SOL";
 
-export type Signal = {
-  symbol: "BTC" | "ETH" | "SOL";
+export interface Signal {
+  symbol: Symbol;
   price: number;
 
-  state: SignalState;
-
-  isEarly: boolean;
-  isSniper: boolean;
-  isActive: boolean;
+  state: "EARLY" | "SNIPER" | "WAIT";
 
   bias: "Bullish" | "Bearish" | "Neutral";
   confidence: number;
 
   adx: number;
-  stochK: number;
-  stochD: number;
+  stoch: number;
 
   reason: string;
 
   stopLoss: number | null;
   takeProfit: number | null;
-  riskRewardRatio: number | null;
 
   updatedAt: string;
-};
+}
 
-export function generateSignal(symbol: string, price: number): Signal {
-  const noise = Math.random();
+// SAFE MATH
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
 
-  const compression = noise < 0.35;
-  const expansion = noise > 0.75;
+// SIMPLE DETERMINISTIC ENGINE (NO RANDOM)
+export function generateSignal(symbol: Symbol, price: number): Signal {
+  const hash = price % 100;
 
-  let state: SignalState = "WAIT";
+  const isEarly = hash < 35;
+  const isSniper = hash > 80;
 
-  if (compression) state = "EARLY";
-  if (expansion) state = "SNIPER";
-
-  const isEarly = state === "EARLY";
-  const isSniper = state === "SNIPER";
-
-  const confidence = isSniper ? 85 : isEarly ? 55 : 20;
-
-  const adx = 10 + noise * 40;
-  const stochK = noise * 100;
-  const stochD = noise * 100;
+  const state = isSniper ? "SNIPER" : isEarly ? "EARLY" : "WAIT";
 
   const bias =
-    expansion ? "Bullish" : compression ? "Neutral" : "Neutral";
+    hash > 60 ? "Bullish" : hash < 30 ? "Bearish" : "Neutral";
+
+  const confidence =
+    state === "SNIPER" ? 85 : state === "EARLY" ? 55 : 20;
+
+  const adx = clamp(10 + hash * 0.4, 5, 60);
+  const stoch = clamp(hash * 1.2, 0, 100);
+
+  const stopLoss =
+    state === "SNIPER" ? Number((price * 0.99).toFixed(2)) : null;
+
+  const takeProfit =
+    state === "SNIPER" ? Number((price * 1.02).toFixed(2)) : null;
 
   return {
-    symbol: symbol as any,
+    symbol,
     price,
 
     state,
 
-    isEarly,
-    isSniper,
-    isActive: isEarly || isSniper,
-
     bias,
     confidence,
 
-    adx,
-    stochK,
-    stochD,
+    adx: Number(adx.toFixed(1)),
+    stoch: Number(stoch.toFixed(1)),
 
-    reason: isSniper
-      ? "LIQUIDITY EXPANSION BREAKOUT"
-      : isEarly
-      ? "COMPRESSION BUILDING"
-      : "NO STRUCTURE",
+    reason:
+      state === "SNIPER"
+        ? "LIQUIDITY EXPANSION"
+        : state === "EARLY"
+        ? "COMPRESSION BUILDUP"
+        : "NO STRUCTURE",
 
-    stopLoss: isSniper ? price * 0.99 : null,
-    takeProfit: isSniper ? price * 1.02 : null,
-    riskRewardRatio: isSniper ? 2 : null,
+    stopLoss,
+    takeProfit,
 
     updatedAt: new Date().toISOString(),
   };
