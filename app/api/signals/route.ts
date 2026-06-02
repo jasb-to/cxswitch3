@@ -7,7 +7,7 @@ export async function GET() {
   const signals = getSignals();
 
   return NextResponse.json({
-    signals: Array.isArray(signals) ? signals : [],
+    signals,
     updatedAt: new Date().toISOString(),
   });
 }
