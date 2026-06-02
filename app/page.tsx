@@ -6,159 +6,120 @@ export default function Home() {
   const [signals, setSignals] = useState<any[]>([]);
 
   async function fetchSignals() {
-    try {
-      const res = await fetch("/api/signals");
+    const res = await fetch("/api/signals", {
+      cache: "no-store",
+    });
 
-      if (!res.ok) return;
+    const data = await res.json();
+    const raw = data.signals || [];
 
-      const data = await res.json();
+    // keep latest per symbol (extra safety layer)
+    const latestMap = new Map();
 
-      const raw = data.signals || [];
-
-      const latestMap = new Map();
-
-      for (const s of raw) {
-        latestMap.set(s.symbol, s);
-      }
-
-      setSignals(Array.from(latestMap.values()));
-    } catch (err) {
-      console.error("[UI]", err);
+    for (const s of raw) {
+      latestMap.set(s.symbol, s);
     }
+
+    const cleaned = Array.from(latestMap.values());
+
+    setSignals(cleaned);
   }
 
   useEffect(() => {
     fetchSignals();
 
-    // refresh once per minute
+    // ✅ FIX: reduce flicker + server spam
     const t = setInterval(fetchSignals, 60000);
 
     return () => clearInterval(t);
   }, []);
 
+  function isTradable(s: any) {
+    return (
+      s &&
+      s.state !== "WAIT" &&
+      s.confidence >= 60 &&
+      s.expectedMove >= 0.02 &&
+      s.stopLoss !== null &&
+      s.takeProfit !== null
+    );
+  }
+
   return (
-    <main
-      style={{
-        padding: 24,
-        background: "#000",
-        color: "#fff",
-        minHeight: "100vh",
-      }}
-    >
-      <h1
-        style={{
-          fontSize: 32,
-          marginBottom: 24,
-          fontWeight: 700,
-        }}
-      >
+    <main style={{ padding: 24, background: "#000", color: "#fff" }}>
+      <h1 style={{ fontSize: 28, marginBottom: 20 }}>
         CX Switch
       </h1>
 
-      <div
-        style={{
-          display: "grid",
-          gap: 16,
-        }}
-      >
-        {signals.map((s) => {
-          const stateColor =
-            s.state === "SNIPER"
-              ? "#00ff66"
-              : s.state === "EARLY"
-              ? "#b14dff"
-              : "#888";
+      <div style={{ display: "grid", gap: 16 }}>
+        {signals
+          .filter(isTradable)
+          .map((s) => {
+            const stateColor =
+              s.state === "SNIPER"
+                ? "lime"
+                : s.state === "EARLY"
+                ? "violet"
+                : "gray";
 
-          return (
-            <div
-              key={s.symbol}
-              style={{
-                border: "1px solid #222",
-                borderRadius: 12,
-                padding: 16,
-                background: "#080808",
-              }}
-            >
+            return (
               <div
+                key={s.symbol}
                 style={{
-                  fontSize: 22,
-                  fontWeight: 700,
-                  marginBottom: 8,
+                  border: "1px solid #222",
+                  padding: 16,
+                  borderRadius: 12,
                 }}
               >
-                {s.symbol} — $
-                {Number(s.price).toLocaleString(undefined, {
-                  maximumFractionDigits: 2,
-                })}
-              </div>
+                <div style={{ fontSize: 22 }}>
+                  {s.symbol} — ${s.price}
+                </div>
 
-              <div
-                style={{
-                  color: stateColor,
-                  fontWeight: 700,
-                  marginBottom: 10,
-                }}
-              >
-                {s.state}
-              </div>
+                <div style={{ color: stateColor }}>
+                  {s.state}
+                </div>
 
-              <div>Bias: {s.bias}</div>
+                <div>Bias: {s.bias}</div>
+                <div>Confidence: {s.confidence.toFixed(1)}%</div>
 
-              <div>
-                Confidence: {Math.round(Number(s.confidence || 0))}%
-              </div>
+                <div>ADX: {Number(s.adx).toFixed(1)}</div>
+                <div>Stoch: {Number(s.stoch).toFixed(1)}</div>
 
-              <div>
-                ADX: {Number(s.adx || 0).toFixed(1)}
-              </div>
+                <div>RSI: {Number(s.rsi).toFixed(1)}</div>
 
-              <div>
-                Stoch: {Number(s.stochK || 0).toFixed(1)}
-              </div>
+                <div style={{ marginTop: 8, opacity: 0.7 }}>
+                  {s.reason}
+                </div>
 
-              <div
-                style={{
-                  marginTop: 10,
-                  opacity: 0.8,
-                }}
-              >
-                {s.reason}
-              </div>
-
-              {s.state === "SNIPER" && (
-                <div style={{ marginTop: 12 }}>
+                <div style={{ marginTop: 10 }}>
                   <div>
-                    SL: $
-                    {Number(s.stopLoss || 0).toLocaleString(undefined, {
-                      maximumFractionDigits: 2,
-                    })}
+                    SL:{" "}
+                    {s.stopLoss
+                      ? `$${Number(s.stopLoss).toFixed(2)}`
+                      : "-"}
                   </div>
-
                   <div>
-                    TP: $
-                    {Number(s.takeProfit || 0).toLocaleString(undefined, {
-                      maximumFractionDigits: 2,
-                    })}
+                    TP:{" "}
+                    {s.takeProfit
+                      ? `$${Number(s.takeProfit).toFixed(2)}`
+                      : "-"}
                   </div>
-
                   <div>
-                    RR: {s.riskRewardRatio ?? "-"}
+                    RR:{" "}
+                    {s.rr ? Number(s.rr).toFixed(2) : "-"}
+                  </div>
+                  <div>
+                    Expected Move:{" "}
+                    {(s.expectedMove * 100).toFixed(2)}%
                   </div>
                 </div>
-              )}
 
-              <div
-                style={{
-                  marginTop: 12,
-                  opacity: 0.5,
-                  fontSize: 12,
-                }}
-              >
-                {s.updatedAt}
+                <div style={{ marginTop: 8, opacity: 0.5 }}>
+                  {s.updatedAt}
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
       </div>
     </main>
   );
