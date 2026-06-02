@@ -10,28 +10,26 @@ const prices = {
 
 let lastState: Record<string, string> = {};
 
-function generateSignal(symbol: string, price: number) {
-  const rand = Math.random();
+function signal(price: number) {
+  const r = Math.random();
 
   return {
-    symbol,
-    price,
-    state: rand > 0.7 ? "SNIPER" : rand > 0.4 ? "EARLY" : "WAIT",
+    state: r > 0.75 ? "SNIPER" : r > 0.45 ? "EARLY" : "WAIT",
   };
 }
 
 export async function GET() {
   for (const s of symbols) {
-    const signal = generateSignal(s, prices[s]);
+    const sig = signal(prices[s]);
 
-    if (lastState[s] !== signal.state) {
-      lastState[s] = signal.state;
+    if (lastState[s] !== sig.state) {
+      lastState[s] = sig.state;
 
-      if (signal.state === "SNIPER") {
+      if (sig.state === "SNIPER") {
         await sendTelegram(`🔥 SNIPER ${s} @ ${prices[s]}`);
       }
 
-      if (signal.state === "EARLY") {
+      if (sig.state === "EARLY") {
         await sendTelegram(`🟣 EARLY ${s} @ ${prices[s]}`);
       }
     }
