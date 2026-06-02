@@ -1,50 +1,33 @@
 import { getLivePrices } from "@/lib/prices";
-import { sendTelegram } from "@/lib/telegram";
+import { generateSignal } from "@/lib/signalEngine";
+import { setSignals } from "@/lib/state";
 
 export const runtime = "nodejs";
 
-let lastState: Record<string, string> = {};
-let lastAlertTime: Record<string, number> = {};
-
-function computeState(price: number) {
-  const seed = price % 1000;
-
-  const compression = (seed % 100) / 100;
-  const momentum = (seed % 37) / 37;
-
-  if (compression < 0.35 && momentum < 0.5) return "EARLY";
-  if (compression > 0.75 && momentum > 0.6) return "SNIPER";
-  return "WAIT";
-}
+const symbols = ["BTC", "ETH", "SOL"] as const;
 
 export async function GET() {
-  const prices = await getLivePrices();
-  const now = Date.now();
+  try {
+    const prices = await getLivePrices();
 
-  for (const [symbol, price] of Object.entries(prices)) {
-    const state = computeState(price);
+    const signals = symbols.map((symbol) =>
+      generateSignal(symbol, prices[symbol])
+    );
 
-    const prev = lastState[symbol];
-    const last = lastAlertTime[symbol] || 0;
+    setSignals(signals);
 
-    const cooldown = now - last < 30000; // 30s cooldown
+    console.log("[CRON] signals updated", signals.length);
 
-    lastState[symbol] = state;
+    return Response.json({
+      ok: true,
+      count: signals.length,
+    });
+  } catch (err: any) {
+    console.error("[CRON ERROR]", err);
 
-    if (cooldown) continue;
-    if (state === prev) continue;
-
-    lastAlertTime[symbol] = now;
-
-    const msg =
-      state === "SNIPER"
-        ? `🔥 SNIPER ${symbol} @ ${price}`
-        : state === "EARLY"
-        ? `🟣 EARLY ${symbol} @ ${price}`
-        : null;
-
-    if (msg) await sendTelegram(msg);
+    return Response.json({
+      ok: false,
+      error: err?.message ?? "unknown error",
+    });
   }
-
-  return Response.json({ ok: true });
 }
