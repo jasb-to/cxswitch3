@@ -13,18 +13,12 @@ export async function getLivePrices(): Promise<PriceMap> {
 
     const data = await res.json();
 
-    const btc = Number(data?.bitcoin?.usd);
-    const eth = Number(data?.ethereum?.usd);
-    const sol = Number(data?.solana?.usd);
-
     return {
-      BTC: Number.isFinite(btc) ? btc : 70000,
-      ETH: Number.isFinite(eth) ? eth : 2000,
-      SOL: Number.isFinite(sol) ? sol : 80,
+      BTC: Number(data?.bitcoin?.usd ?? 70000),
+      ETH: Number(data?.ethereum?.usd ?? 2000),
+      SOL: Number(data?.solana?.usd ?? 80),
     };
-  } catch (err) {
-    console.error("[PRICE ERROR]", err);
-
+  } catch {
     return {
       BTC: 70000,
       ETH: 2000,
