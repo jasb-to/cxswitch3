@@ -1,43 +1,38 @@
+import { getLivePrices } from "@/lib/prices";
 import { sendTelegram } from "@/lib/telegram";
 
 export const runtime = "nodejs";
 
-const prices = {
-  BTC: 70000,
-  ETH: 2000,
-  SOL: 80,
-};
-
 let lastState: Record<string, string> = {};
 
-function getState(symbol: string, price: number) {
-  const seed = price % 100;
-
-  const compression = (seed % 30) / 30;
-  const momentum = (seed % 10) / 10;
+function detectState(price: number) {
+  const compression = (price % 100) / 100;
+  const momentum = (price % 17) / 17;
 
   if (compression < 0.35 && momentum < 0.5) return "EARLY";
-  if (compression > 0.7 && momentum > 0.6) return "SNIPER";
+  if (compression > 0.75 && momentum > 0.6) return "SNIPER";
   return "WAIT";
 }
 
 export async function GET() {
-  for (const symbol of Object.keys(prices)) {
-    const state = getState(symbol, prices[symbol]);
+  const prices = await getLivePrices();
+
+  for (const [symbol, price] of Object.entries(prices)) {
+    const state = detectState(price);
 
     const prev = lastState[symbol];
 
-    // only alert on meaningful transitions
+    // only trigger on CHANGE
     if (prev === state) continue;
 
     lastState[symbol] = state;
 
     if (state === "EARLY") {
-      await sendTelegram(`🟣 EARLY ENTRY ${symbol} @ ${prices[symbol]}`);
+      await sendTelegram(`🟣 EARLY ENTRY ${symbol} @ ${price}`);
     }
 
     if (state === "SNIPER") {
-      await sendTelegram(`🔥 SNIPER BREAKOUT ${symbol} @ ${prices[symbol]}`);
+      await sendTelegram(`🔥 SNIPER BREAKOUT ${symbol} @ ${price}`);
     }
   }
 
