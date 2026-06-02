@@ -1,26 +1,36 @@
-import type { Signal } from "./signalEngine";
+import type { Signal } from "./strategy";
 
 type State = {
-  signals: Signal[];
-  updatedAt: string | null;
+  signals: Record<string, Signal>;
+  updatedAt: number;
 };
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __CX_STATE__: State | undefined;
-}
+const globalState = globalThis as unknown as {
+  cxState?: State;
+};
 
-export const state: State =
-  global.__CX_STATE__ ?? (global.__CX_STATE__ = {
-    signals: [],
-    updatedAt: null,
-  });
+if (!globalState.cxState) {
+  globalState.cxState = {
+    signals: {},
+    updatedAt: Date.now(),
+  };
+}
 
 export function setSignals(signals: Signal[]) {
-  state.signals = signals;
-  state.updatedAt = new Date().toISOString();
+  for (const s of signals) {
+    globalState.cxState!.signals[s.symbol] = s;
+  }
+
+  globalState.cxState!.updatedAt = Date.now();
 }
 
-export function getSignals() {
-  return state;
+export function getSignals(): Signal[] {
+  return Object.values(globalState.cxState!.signals);
+}
+
+export function clearSignals() {
+  globalState.cxState = {
+    signals: {},
+    updatedAt: Date.now(),
+  };
 }
