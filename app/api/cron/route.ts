@@ -82,4 +82,4 @@ export async function GET() {
     ok: true,
     signals,
   });
-}
+} 
