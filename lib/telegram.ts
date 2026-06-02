@@ -1,31 +1,33 @@
-export async function sendTelegram(message: string) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
+const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN!;
+const TELEGRAM_CHAT = process.env.TELEGRAM_CHAT_ID!;
 
-  if (!token || !chatId) {
-    console.error("[TELEGRAM] missing env vars");
-    return false;
-  }
+export async function sendTelegramAlert(data: any) {
+  const msg = `
+📊 CX SWITCH ALERT
 
-  try {
-    const res = await fetch(
-      `https://api.telegram.org/bot${token}/sendMessage`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: message,
-        }),
-      }
-    );
+${data.symbol} — ${data.state}
+Price: ${data.price}
 
-    await res.json();
-    return true;
-  } catch (err) {
-    console.error("[TELEGRAM ERROR]", err);
-    return false;
-  }
+Bias: ${data.bias}
+Confidence: ${data.confidence}%
+
+Expected Move: ${(data.expectedMove * 100).toFixed(2)}%
+
+SL: ${data.stopLoss ?? "-"}
+TP: ${data.takeProfit ?? "-"}
+
+${new Date().toISOString()}
+`;
+
+  await fetch(
+    `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: TELEGRAM_CHAT,
+        text: msg,
+      }),
+    }
+  );
 }
