@@ -12,7 +12,7 @@ export async function GET() {
 
   console.log(
     "[CRON]",
-    signals.map((s) => `${s.symbol} ${s.state} $${s.price}`).join(" | ")
+    signals.map((s) => `${s.symbol}:${s.state}:${s.price}`).join(" | ")
   );
 
   return Response.json({
