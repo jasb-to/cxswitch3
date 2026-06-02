@@ -1,37 +1,54 @@
 import { sendTelegram } from "@/lib/telegram";
 
+export const runtime = "nodejs";
+
 const symbols = ["BTC", "ETH", "SOL"];
 
-const prices = {
+const prices: Record<string, number> = {
   BTC: 70000,
   ETH: 2000,
   SOL: 80,
 };
 
+// 🔒 persistent state in-memory (NO DB)
 let lastState: Record<string, string> = {};
+let lastAlertTime: Record<string, number> = {};
 
-function signal(price: number) {
+function generateSignal(price: number) {
   const r = Math.random();
 
-  return {
-    state: r > 0.75 ? "SNIPER" : r > 0.45 ? "EARLY" : "WAIT",
-  };
+  if (r > 0.78) return "SNIPER";
+  if (r > 0.45) return "EARLY";
+  return "WAIT";
 }
 
 export async function GET() {
-  for (const s of symbols) {
-    const sig = signal(prices[s]);
+  const now = Date.now();
 
-    if (lastState[s] !== sig.state) {
-      lastState[s] = sig.state;
+  for (const symbol of symbols) {
+    const state = generateSignal(prices[symbol]);
 
-      if (sig.state === "SNIPER") {
-        await sendTelegram(`🔥 SNIPER ${s} @ ${prices[s]}`);
-      }
+    const previous = lastState[symbol];
 
-      if (sig.state === "EARLY") {
-        await sendTelegram(`🟣 EARLY ${s} @ ${prices[s]}`);
-      }
+    // update UI state always
+    lastState[symbol] = state;
+
+    // 🔒 prevent spam (15 sec cooldown)
+    const last = lastAlertTime[symbol] || 0;
+    const cooldown = now - last < 15000;
+
+    if (cooldown) continue;
+
+    if (state === "SNIPER" && previous !== "SNIPER") {
+      lastAlertTime[symbol] = now;
+
+      await sendTelegram(`🔥 SNIPER ${symbol} @ ${prices[symbol]}`);
+    }
+
+    if (state === "EARLY" && previous !== "EARLY") {
+      lastAlertTime[symbol] = now;
+
+      await sendTelegram(`🟣 EARLY ${symbol} @ ${prices[symbol]}`);
     }
   }
 
