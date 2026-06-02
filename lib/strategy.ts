@@ -1,4 +1,4 @@
-export type Symbol = "BTC" | "ETH" | "SOL";
+import type { Candle, Symbol } from "./kraken";
 
 export type SignalState = "EARLY" | "SNIPER" | "WAIT";
 
@@ -22,82 +22,92 @@ export interface Signal {
   updatedAt: string;
 }
 
-/* -----------------------------
-   UTILITIES
------------------------------ */
+/* -------------------------
+   VOLATILITY CORE
+--------------------------*/
 
-function avg(arr: number[]) {
-  return arr.reduce((a, b) => a + b, 0) / arr.length;
+function volatility(candles: Candle[]) {
+  const slice = candles.slice(-20);
+
+  const highs = slice.map(c => c.high);
+  const lows = slice.map(c => c.low);
+
+  const range = Math.max(...highs) - Math.min(...lows);
+  const avg = slice.reduce((s, c) => s + c.close, 0) / slice.length;
+
+  return range / avg;
 }
 
-function min(arr: number[]) {
-  return Math.min(...arr);
+/* -------------------------
+   STRUCTURE
+--------------------------*/
+
+function structure(candles: Candle[]) {
+  const last = candles.slice(-5);
+
+  const up = last[4].close > last[0].close;
+  const down = last[4].close < last[0].close;
+
+  if (up) return "LONG";
+  if (down) return "SHORT";
+  return "NEUTRAL";
 }
 
-function max(arr: number[]) {
-  return Math.max(...arr);
+/* -------------------------
+   MOMENTUM
+--------------------------*/
+
+function momentum(candles: Candle[]) {
+  const c = candles.slice(-10);
+  const first = c[0].close;
+  const last = c[c.length - 1].close;
+
+  return (last - first) / first;
 }
 
-/* -----------------------------
-   CORE STRATEGY
------------------------------ */
+/* -------------------------
+   MAIN ENGINE
+--------------------------*/
 
 export function generateSignal(
   symbol: Symbol,
+  candles15m: Candle[],
   price: number
 ): Signal {
-  const now = Date.now();
+  const vol = volatility(candles15m);
+  const struct = structure(candles15m);
+  const mom = momentum(candles15m);
 
-  // pseudo history simulation (since you don’t pass candles yet)
-  const seed = price * 1000;
-
-  const volatility = Math.abs(Math.sin(seed)) * 100;
-
-  const compression = volatility < 25;     // tight range
-  const expansion = volatility > 70;       // breakout regime
-
-  // trend bias (fake but stable until real candles plugged in)
-  const trendScore = Math.sin(seed / 10000);
-
-  const bias: Signal["bias"] =
-    trendScore > 0.3
-      ? "LONG"
-      : trendScore < -0.3
-      ? "SHORT"
-      : "NEUTRAL";
+  const compression = vol < 0.012;
+  const expansion = vol > 0.018;
 
   let state: SignalState = "WAIT";
 
   if (compression) state = "EARLY";
-  if (expansion) state = "SNIPER";
+  if (expansion && Math.abs(mom) > 0.01) state = "SNIPER";
+
+  const bias =
+    struct === "LONG"
+      ? "LONG"
+      : struct === "SHORT"
+      ? "SHORT"
+      : "NEUTRAL";
 
   const confidence =
-    state === "SNIPER"
-      ? 80 + Math.abs(trendScore) * 10
-      : state === "EARLY"
-      ? 55 + (1 - volatility / 100) * 20
-      : 20;
+    state === "SNIPER" ? 88 :
+    state === "EARLY" ? 60 : 25;
 
-  const adx = 20 + volatility * 0.4;
-  const stoch = (volatility * 2) % 100;
+  let sl: number | null = null;
+  let tp: number | null = null;
 
-  /* -----------------------------
-     REALISTIC MOVE TARGETING
-     3–5% ONLY WHEN SNIPER
-  ----------------------------- */
-
-  let stopLoss: number | null = null;
-  let takeProfit: number | null = null;
-
+  // TARGET: 3–5% MOVES (REALISTIC)
   if (state === "SNIPER") {
-    const move = 0.035; // ~3.5% base target
-
     if (bias === "LONG") {
-      stopLoss = price * 0.985;
-      takeProfit = price * (1 + move);
+      sl = price * 0.985;
+      tp = price * 1.045;
     } else if (bias === "SHORT") {
-      stopLoss = price * 1.015;
-      takeProfit = price * (1 - move);
+      sl = price * 1.015;
+      tp = price * 0.955;
     }
   }
 
@@ -108,20 +118,20 @@ export function generateSignal(
     state,
 
     bias,
-    confidence: Math.min(100, confidence),
+    confidence,
 
-    adx,
-    stoch,
+    adx: Number((vol * 1000).toFixed(1)),
+    stoch: Number((mom * 100).toFixed(1)),
 
     reason:
       state === "SNIPER"
-        ? "BREAKOUT MOMENTUM EXPANSION"
+        ? "BREAKOUT EXPANSION"
         : state === "EARLY"
-        ? "COMPRESSION BUILDING FOR MOVE"
+        ? "COMPRESSION BUILDUP"
         : "NO STRUCTURE",
 
-    stopLoss,
-    takeProfit,
+    stopLoss: sl,
+    takeProfit: tp,
 
     updatedAt: new Date().toISOString(),
   };
