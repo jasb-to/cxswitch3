@@ -11,7 +11,7 @@ export async function GET() {
     return {
       symbol,
       price,
-      state: r > 0.75 ? "SNIPER" : r > 0.45 ? "EARLY" : "WAIT",
+      state: r > 0.78 ? "SNIPER" : r > 0.45 ? "EARLY" : "WAIT",
     };
   });
 
