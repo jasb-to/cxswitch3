@@ -22,13 +22,11 @@ export interface Signal {
 
   adx: number;
   stochK: number;
-  stochD: number;
   rsi: number;
 
-  reason: string;
+  structure: string;
 
   entry: number | null;
-
   stopLoss: number | null;
   takeProfit: number | null;
 
@@ -43,48 +41,56 @@ export interface Signal {
    INDICATORS
 -------------------------- */
 
-function avg(arr: number[]) {
-  return arr.reduce((a, b) => a + b, 0) / arr.length;
-}
-
-function ema(values: number[], period: number) {
-  const k = 2 / (period + 1);
-  let ema = values[0];
-
-  for (let i = 1; i < values.length; i++) {
-    ema = values[i] * k + ema * (1 - k);
-  }
-
-  return ema;
-}
-
 function rsi(closes: number[], period = 14) {
-  let gains = 0;
-  let losses = 0;
+  let gain = 0;
+  let loss = 0;
 
-  for (let i = 1; i < period; i++) {
+  for (let i = closes.length - period; i < closes.length; i++) {
     const diff = closes[i] - closes[i - 1];
-    if (diff >= 0) gains += diff;
-    else losses += Math.abs(diff);
+    if (diff >= 0) gain += diff;
+    else loss += Math.abs(diff);
   }
 
-  const rs = gains / (losses || 1);
+  const rs = gain / (loss || 1);
   return 100 - 100 / (1 + rs);
 }
 
-function stochastic(candles: Candle[], period = 14) {
+function stoch(candles: Candle[], period = 14) {
   const slice = candles.slice(-period);
-
   const high = Math.max(...slice.map(c => c.high));
   const low = Math.min(...slice.map(c => c.low));
-  const close = slice[slice.length - 1].close;
+  const close = slice.at(-1)!.close;
 
-  const k = ((close - low) / (high - low || 1)) * 100;
-  return k;
+  return ((close - low) / (high - low || 1)) * 100;
 }
 
 /* -------------------------
-   CORE STRATEGY
+   STRUCTURE LOGIC (REAL EDGE)
+-------------------------- */
+
+function detectStructure(candles: Candle[]) {
+  const highs = candles.slice(-20).map(c => c.high);
+  const lows = candles.slice(-20).map(c => c.low);
+  const closes = candles.map(c => c.close);
+
+  const resistance = Math.max(...highs);
+  const support = Math.min(...lows);
+
+  const last = closes.at(-1)!;
+
+  const sweptLow = last < support * 0.998;
+  const sweptHigh = last > resistance * 1.002;
+
+  return {
+    resistance,
+    support,
+    sweptLow,
+    sweptHigh,
+  };
+}
+
+/* -------------------------
+   MAIN ENGINE
 -------------------------- */
 
 export function generateSignal(
@@ -95,61 +101,70 @@ export function generateSignal(
 ): Signal {
   const closes = candles15m.map(c => c.close);
 
-  const ema21 = ema(closes.slice(-21), 21);
-  const slope = (closes.at(-1)! - ema21) / ema21;
-
   const rsiVal = rsi(closes);
-  const stochK = stochastic(candles15m);
-  const stochD = avg(closes.slice(-3)); // smoothed proxy
+  const stochK = stoch(candles15m);
 
-  // -------------------------
-  // STRUCTURE LOGIC
-  // -------------------------
+  const structure = detectStructure(candles15m);
+
+  const emaSlope =
+    (closes.at(-1)! - closes.at(closes.length - 10)!) /
+    closes.at(-10)!;
+
+  /* -------------------------
+     LIQUIDITY CONDITIONS
+  -------------------------- */
 
   const compression =
-    stochK < 30 && rsiVal > 45 && Math.abs(slope) < 0.002;
+    stochK < 35 && rsiVal > 45 && Math.abs(emaSlope) < 0.002;
+
+  const sweepReversal =
+    (structure.sweptLow && rsiVal > 50) ||
+    (structure.sweptHigh && rsiVal < 50);
 
   const breakout =
-    stochK > 60 && slope > 0.003 && rsiVal > 50;
+    stochK > 65 && rsiVal > 55 && emaSlope > 0.003;
+
+  /* -------------------------
+     STATE LOGIC (STRICT)
+  -------------------------- */
 
   let state: SignalState = "WAIT";
+
   if (compression) state = "EARLY";
-  if (breakout) state = "SNIPER";
+  if (breakout && sweepReversal) state = "SNIPER";
 
-  // -------------------------
-  // BIAS
-  // -------------------------
+  /* -------------------------
+     BIAS
+  -------------------------- */
 
-  const bias: Signal["bias"] =
-    slope > 0 ? "LONG" : slope < 0 ? "SHORT" : "NEUTRAL";
+  const bias =
+    emaSlope > 0 ? "LONG" : emaSlope < 0 ? "SHORT" : "NEUTRAL";
 
-  // -------------------------
-  // CONFIDENCE
-  // -------------------------
+  /* -------------------------
+     CONFIDENCE (FILTER HARD)
+  -------------------------- */
 
   const confidence =
     state === "SNIPER"
-      ? 80 + Math.min(15, Math.abs(slope) * 5000)
+      ? 85 + (sweepReversal ? 10 : 0)
       : state === "EARLY"
-      ? 55 + Math.min(20, stochK / 5)
+      ? 55 + stochK / 5
       : 20;
 
-  // -------------------------
-  // EXPECTED MOVE (REALISTIC 3–5%)
-  // -------------------------
-
-  const volatility = Math.abs(slope) * 10;
+  /* -------------------------
+     EXPECTED MOVE (REALISTIC 3–5%)
+  -------------------------- */
 
   const expectedMove =
     state === "SNIPER"
-      ? 0.03 + volatility
+      ? 0.035
       : state === "EARLY"
-      ? 0.02 + volatility / 2
+      ? 0.02
       : 0.01;
 
-  // -------------------------
-  // ENTRY / SL / TP
-  // -------------------------
+  /* -------------------------
+     ENTRY / SL / TP
+  -------------------------- */
 
   let entry = price;
   let stopLoss: number | null = null;
@@ -157,7 +172,7 @@ export function generateSignal(
   let rr: number | null = null;
 
   if (state !== "WAIT") {
-    const risk = expectedMove * (state === "EARLY" ? 0.5 : 0.35);
+    const risk = expectedMove * (state === "SNIPER" ? 0.4 : 0.6);
 
     if (bias === "LONG") {
       stopLoss = price * (1 - risk);
@@ -181,16 +196,15 @@ export function generateSignal(
     bias,
     confidence,
 
-    adx: Math.abs(slope) * 100,
+    adx: Math.abs(emaSlope) * 100,
     stochK,
-    stochD,
     rsi: rsiVal,
 
-    reason:
+    structure:
       state === "SNIPER"
-        ? "BREAKOUT CONFIRMED STRUCTURE"
+        ? "LIQUIDITY SWEEP + BREAKOUT"
         : state === "EARLY"
-        ? "COMPRESSION → ACCUMULATION"
+        ? "COMPRESSION PHASE"
         : "NO STRUCTURE",
 
     entry,
