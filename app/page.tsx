@@ -6,75 +6,156 @@ export default function Home() {
   const [signals, setSignals] = useState<any[]>([]);
 
   async function fetchSignals() {
-    const res = await fetch("/api/signals");
-    const data = await res.json();
+    try {
+      const res = await fetch("/api/signals");
 
-    const raw = data.signals || [];
+      if (!res.ok) return;
 
-    // 🔥 KEEP ONLY LATEST PER SYMBOL
-    const latestMap = new Map();
+      const data = await res.json();
 
-    for (const s of raw) {
-      latestMap.set(s.symbol, s);
+      const raw = data.signals || [];
+
+      const latestMap = new Map();
+
+      for (const s of raw) {
+        latestMap.set(s.symbol, s);
+      }
+
+      setSignals(Array.from(latestMap.values()));
+    } catch (err) {
+      console.error("[UI]", err);
     }
-
-    setSignals(Array.from(latestMap.values()));
   }
 
   useEffect(() => {
     fetchSignals();
-    const t = setInterval(fetchSignals, 5000);
+
+    // refresh once per minute
+    const t = setInterval(fetchSignals, 60000);
+
     return () => clearInterval(t);
   }, []);
 
   return (
-    <main style={{ padding: 24, background: "#000", color: "#fff" }}>
-      <h1 style={{ fontSize: 28, marginBottom: 20 }}>
+    <main
+      style={{
+        padding: 24,
+        background: "#000",
+        color: "#fff",
+        minHeight: "100vh",
+      }}
+    >
+      <h1
+        style={{
+          fontSize: 32,
+          marginBottom: 24,
+          fontWeight: 700,
+        }}
+      >
         CX Switch
       </h1>
 
-      <div style={{ display: "grid", gap: 16 }}>
+      <div
+        style={{
+          display: "grid",
+          gap: 16,
+        }}
+      >
         {signals.map((s) => {
           const stateColor =
             s.state === "SNIPER"
-              ? "lime"
+              ? "#00ff66"
               : s.state === "EARLY"
-              ? "violet"
-              : "gray";
+              ? "#b14dff"
+              : "#888";
 
           return (
             <div
               key={s.symbol}
               style={{
                 border: "1px solid #222",
-                padding: 16,
                 borderRadius: 12,
+                padding: 16,
+                background: "#080808",
               }}
             >
-              <div style={{ fontSize: 22 }}>
-                {s.symbol} — ${s.price}
+              <div
+                style={{
+                  fontSize: 22,
+                  fontWeight: 700,
+                  marginBottom: 8,
+                }}
+              >
+                {s.symbol} — $
+                {Number(s.price).toLocaleString(undefined, {
+                  maximumFractionDigits: 2,
+                })}
               </div>
 
-              <div style={{ color: stateColor }}>
+              <div
+                style={{
+                  color: stateColor,
+                  fontWeight: 700,
+                  marginBottom: 10,
+                }}
+              >
                 {s.state}
               </div>
 
               <div>Bias: {s.bias}</div>
-              <div>Confidence: {s.confidence}%</div>
 
-              <div>ADX: {Number(s.adx).toFixed(1)}</div>
-              <div>Stoch: {Number(s.stochK).toFixed(1)}</div>
+              <div>
+                Confidence: {Math.round(Number(s.confidence || 0))}%
+              </div>
 
-              <div style={{ marginTop: 8, opacity: 0.7 }}>
+              <div>
+                ADX: {Number(s.adx || 0).toFixed(1)}
+              </div>
+
+              <div>
+                Stoch: {Number(s.stochK || 0).toFixed(1)}
+              </div>
+
+              <div
+                style={{
+                  marginTop: 10,
+                  opacity: 0.8,
+                }}
+              >
                 {s.reason}
               </div>
 
               {s.state === "SNIPER" && (
-                <div style={{ marginTop: 10 }}>
-                  <div>SL: {s.stopLoss}</div>
-                  <div>TP: {s.takeProfit}</div>
+                <div style={{ marginTop: 12 }}>
+                  <div>
+                    SL: $
+                    {Number(s.stopLoss || 0).toLocaleString(undefined, {
+                      maximumFractionDigits: 2,
+                    })}
+                  </div>
+
+                  <div>
+                    TP: $
+                    {Number(s.takeProfit || 0).toLocaleString(undefined, {
+                      maximumFractionDigits: 2,
+                    })}
+                  </div>
+
+                  <div>
+                    RR: {s.riskRewardRatio ?? "-"}
+                  </div>
                 </div>
               )}
+
+              <div
+                style={{
+                  marginTop: 12,
+                  opacity: 0.5,
+                  fontSize: 12,
+                }}
+              >
+                {s.updatedAt}
+              </div>
             </div>
           );
         })}
