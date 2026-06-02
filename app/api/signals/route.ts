@@ -4,10 +4,8 @@ import { getSignals } from "@/lib/state";
 export const runtime = "nodejs";
 
 export async function GET() {
-  const signals = getSignals();
-
   return NextResponse.json({
-    signals,
+    signals: getSignals(),
     updatedAt: new Date().toISOString(),
   });
 }
