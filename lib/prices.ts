@@ -8,9 +8,5 @@ export async function getLivePrices(): Promise<Record<Symbol, number>> {
     getCurrentPrice("SOL"),
   ]);
 
-  return {
-    BTC: BTC || 0,
-    ETH: ETH || 0,
-    SOL: SOL || 0,
-  };
+  return { BTC, ETH, SOL };
 }
