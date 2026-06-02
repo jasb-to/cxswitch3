@@ -36,36 +36,34 @@ export interface Signal {
 }
 
 /* -------------------------
-   UTIL
+   UTILS
 -------------------------- */
 
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
+const clamp = (n: number, min: number, max: number) =>
+  Math.max(min, Math.min(max, n));
 
-function avg(arr: number[]) {
-  return arr.reduce((a, b) => a + b, 0) / Math.max(arr.length, 1);
-}
+const avg = (arr: number[]) =>
+  arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
 
 /* -------------------------
-   INDICATORS (NO LIBS)
+   INDICATORS
 -------------------------- */
 
 function computeRSI(closes: number[], period = 14) {
   if (closes.length < period + 1) return 50;
 
-  let gains = 0;
-  let losses = 0;
+  let gain = 0;
+  let loss = 0;
 
   for (let i = closes.length - period; i < closes.length; i++) {
     const diff = closes[i] - closes[i - 1];
-    if (diff >= 0) gains += diff;
-    else losses += Math.abs(diff);
+    if (diff >= 0) gain += diff;
+    else loss += Math.abs(diff);
   }
 
-  if (losses === 0) return 100;
+  if (loss === 0) return 100;
 
-  const rs = gains / losses;
+  const rs = gain / loss;
   return 100 - 100 / (1 + rs);
 }
 
@@ -83,7 +81,6 @@ function computeStoch(candles: Candle[]) {
 
   const k = ((close - lowest) / (highest - lowest || 1)) * 100;
 
-  // simple D = avg of last few K (approx)
   const ks = recent.map((_, i) => {
     const slice = recent.slice(0, i + 1);
     const h = Math.max(...slice.map(c => c.high));
@@ -97,14 +94,17 @@ function computeStoch(candles: Candle[]) {
   return { k, d };
 }
 
-/* -------------------------
-   STRUCTURE (BOS / CHoCH simplified)
--------------------------- */
+function volumeSpike(candles: Candle[]) {
+  if (candles.length < 20) return false;
 
-function detectStructure(candles: Candle[]) {
-  if (candles.length < 20) {
-    return { bos: false, choch: false };
-  }
+  const vols = candles.slice(-20).map(c => c.volume);
+  const avgVol = avg(vols.slice(0, -1));
+
+  return vols[vols.length - 1] > avgVol * 1.7;
+}
+
+function structure(candles: Candle[]) {
+  if (candles.length < 20) return { bosUp: false, bosDown: false };
 
   const highs = candles.slice(-20).map(c => c.high);
   const lows = candles.slice(-20).map(c => c.low);
@@ -115,31 +115,10 @@ function detectStructure(candles: Candle[]) {
   const recentLow = Math.min(...lows.slice(-5));
   const prevLow = Math.min(...lows.slice(-15, -5));
 
-  const bosUp = recentHigh > prevHigh;
-  const bosDown = recentLow < prevLow;
-
-  const choch = bosUp && bosDown;
-
   return {
-    bosUp,
-    bosDown,
-    choch,
+    bosUp: recentHigh > prevHigh,
+    bosDown: recentLow < prevLow,
   };
-}
-
-/* -------------------------
-   VOLUME SPIKE
--------------------------- */
-
-function volumeSpike(candles: Candle[]) {
-  if (candles.length < 20) return false;
-
-  const vols = candles.slice(-20).map(c => c.volume);
-  const avgVol = avg(vols.slice(0, -1));
-
-  const last = vols[vols.length - 1];
-
-  return last > avgVol * 1.8;
 }
 
 /* -------------------------
@@ -152,32 +131,48 @@ export function generateSignal(
   candles1h: Candle[],
   price: number
 ): Signal {
-  const c15 = candles15m;
-  const c1h = candles1h;
-
-  const closes = c15.map(c => c.close);
+  const closes = candles15m.map(c => c.close);
 
   const rsi = computeRSI(closes);
-  const { k, d } = computeStoch(c15);
-  const structure = detectStructure(c15);
-  const volSpike = volumeSpike(c15);
+  const { k, d } = computeStoch(candles15m);
+  const volSpike = volumeSpike(candles15m);
+  const struct = structure(candles15m);
+
+  const trend = closes.at(-1)! > avg(closes.slice(-5));
 
   /* -------------------------
-     STATE LOGIC
+     MOMENTUM SHIFT (KEY FIX)
+  -------------------------- */
+
+  const stochCrossUp = k > d && k - d > 2;
+  const stochCrossDown = d > k && d - k > 2;
+
+  const bullishPressure =
+    stochCrossUp || rsi > 48 || trend;
+
+  const bearishPressure =
+    stochCrossDown || rsi < 52 || !trend;
+
+  /* -------------------------
+     STATE
   -------------------------- */
 
   let state: SignalState = "WAIT";
 
-  const earlySetup =
-    (k < 30 && k > d && rsi > 45) ||
-    (structure.bosUp || structure.bosDown);
+  const earlyLong =
+    bullishPressure && (struct.bosUp || k > 40);
 
-  const sniperSetup =
-    volSpike &&
-    ((structure.bosUp && rsi > 55) || (structure.bosDown && rsi < 45));
+  const earlyShort =
+    bearishPressure && (struct.bosDown || k < 60);
 
-  if (sniperSetup) state = "SNIPER";
-  else if (earlySetup) state = "EARLY";
+  const sniperLong =
+    volSpike && struct.bosUp && bullishPressure;
+
+  const sniperShort =
+    volSpike && struct.bosDown && bearishPressure;
+
+  if (sniperLong || sniperShort) state = "SNIPER";
+  else if (earlyLong || earlyShort) state = "EARLY";
 
   /* -------------------------
      BIAS
@@ -185,8 +180,8 @@ export function generateSignal(
 
   let bias: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
 
-  if (structure.bosUp && rsi > 50) bias = "LONG";
-  if (structure.bosDown && rsi < 50) bias = "SHORT";
+  if (earlyLong || sniperLong) bias = "LONG";
+  if (earlyShort || sniperShort) bias = "SHORT";
 
   /* -------------------------
      CONFIDENCE
@@ -194,19 +189,21 @@ export function generateSignal(
 
   let confidence = 20;
 
-  if (state === "EARLY") confidence = 55 + (rsi > 50 ? 10 : 0);
+  if (state === "EARLY") confidence = 55 + (volSpike ? 10 : 0);
   if (state === "SNIPER") confidence = 80 + (volSpike ? 10 : 0);
 
   confidence = clamp(confidence, 20, 95);
 
   /* -------------------------
-     ADX proxy (momentum strength)
+     ADX proxy (real momentum filter)
   -------------------------- */
 
   const adx =
-    structure.bosUp || structure.bosDown
-      ? 40 + (volSpike ? 15 : 5)
-      : 20;
+    volSpike
+      ? 60
+      : struct.bosUp || struct.bosDown
+      ? 40
+      : 25;
 
   /* -------------------------
      EXPECTED MOVE (3–5%)
@@ -220,7 +217,7 @@ export function generateSignal(
       : 0.01;
 
   /* -------------------------
-     SL / TP (VOL BASED)
+     SL / TP
   -------------------------- */
 
   let stopLoss: number | null = null;
@@ -251,7 +248,7 @@ export function generateSignal(
     state === "SNIPER"
       ? "BOS + VOLUME EXPANSION CONFIRMED"
       : state === "EARLY"
-      ? "CHoCH / COMPRESSION BREAKOUT BUILDING"
+      ? "MOMENTUM SHIFT / STRUCTURE BUILD"
       : "NO STRUCTURE";
 
   return {
