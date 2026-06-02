@@ -1,16 +1,22 @@
 import type { Signal } from "./strategy";
 
-let latestSignals: Signal[] = [];
-let lastUpdated = 0;
+type State = {
+  signals: Signal[];
+  updatedAt: number;
+};
+
+let state: State = {
+  signals: [],
+  updatedAt: 0,
+};
 
 export function setSignals(signals: Signal[]) {
-  latestSignals = signals;
-  lastUpdated = Date.now();
+  state = {
+    signals,
+    updatedAt: Date.now(),
+  };
 }
 
 export function getSignals() {
-  return {
-    signals: latestSignals,
-    lastUpdated,
-  };
+  return state;
 }
