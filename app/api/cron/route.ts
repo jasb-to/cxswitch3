@@ -1,38 +1,25 @@
 import { NextResponse } from "next/server";
-import { getLivePrices } from "@/lib/prices";
+import { getCandles, getLivePrice } from "@/lib/kraken";
 import { generateSignal } from "@/lib/strategy";
 import { setSignals } from "@/lib/state";
 
 export const runtime = "nodejs";
 
-function round(n: number | null, d = 2) {
-  if (n === null || n === undefined || isNaN(n)) return null;
-  const f = Math.pow(10, d);
-  return Math.round(n * f) / f;
-}
-
 export async function GET() {
-  const prices = await getLivePrices();
+  const symbols: any[] = ["BTC", "ETH", "SOL"];
 
-  const signals = Object.entries(prices).map(([symbol, price]) => {
-    const s = generateSignal(symbol as any, price);
+  const results = await Promise.all(
+    symbols.map(async (symbol) => {
+      const candles15m = await getCandles(symbol, 15);
+      const price = await getLivePrice(symbol);
 
-    return {
-      ...s,
-      price: round(s.price),
-      adx: round(s.adx, 1),
-      stoch: round(s.stoch, 1),
-      stopLoss: round(s.stopLoss),
-      takeProfit: round(s.takeProfit),
-    };
-  });
+      return generateSignal(symbol, candles15m, price);
+    })
+  );
 
-  setSignals(signals);
+  setSignals(results);
 
-  console.log("[CRON] updated signals:", signals);
+  console.log("[CRON] signals updated", results.length);
 
-  return NextResponse.json({
-    ok: true,
-    count: signals.length,
-  });
+  return NextResponse.json({ ok: true, signals: results });
 }
