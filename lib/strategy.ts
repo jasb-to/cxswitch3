@@ -60,7 +60,7 @@ function rsi(closes: number[]) {
   return 100 - 100 / (1 + rs);
 }
 
-/* ---------------- ADX ---------------- */
+/* ---------------- ADX (momentum strength proxy) ---------------- */
 
 function adx(candles: Candle[]) {
   let plus = 0;
@@ -78,7 +78,7 @@ function adx(candles: Candle[]) {
   return (Math.abs(plus - minus) / total) * 100;
 }
 
-/* ---------------- STOCH ---------------- */
+/* ---------------- STOCHASTIC (TIMING ONLY) ---------------- */
 
 function stochKD(closes: number[], period = 14) {
   const slice = closes.slice(-period);
@@ -129,6 +129,28 @@ function BOS(candles: Candle[]) {
   return "NEUTRAL";
 }
 
+/* ---------------- EMA 21 (CORE FIX) ---------------- */
+
+function ema(values: number[], period = 21) {
+  const k = 2 / (period + 1);
+
+  let ema = values[0];
+
+  for (let i = 1; i < values.length; i++) {
+    ema = values[i] * k + ema * (1 - k);
+  }
+
+  return ema;
+}
+
+/* EMA 21 SLOPE (THIS DEFINES BIAS) */
+function emaSlope21(closes: number[]) {
+  const emaNow = ema(closes, 21);
+  const emaPrev = ema(closes.slice(0, -5), 21);
+
+  return emaNow - emaPrev;
+}
+
 /* ---------------- CORE ENGINE ---------------- */
 
 export function generateSignal(
@@ -145,43 +167,49 @@ export function generateSignal(
   const bos = BOS(candles15m);
   const vol = volumeScore(candles15m);
 
-  const ema = closes.reduce((a, b) => a + b, 0) / closes.length;
+  const ema21Slope = emaSlope21(closes);
 
-  /* ---------------- 1H TREND FILTER (FIXED BIAS ENGINE) ---------------- */
+  /* ---------------- BIAS (FIXED - NO MORE CHOP FLIPS) ---------------- */
 
-  const h1Ema =
-    candles1h.reduce((sum, c) => sum + c.close, 0) / candles1h.length;
+  const bias: "LONG" | "SHORT" | "NEUTRAL" =
+    ema21Slope > 0
+      ? "LONG"
+      : ema21Slope < 0
+      ? "SHORT"
+      : "NEUTRAL";
 
-  const h1Trend: "LONG" | "SHORT" =
-    candles1h[candles1h.length - 1].close > h1Ema ? "LONG" : "SHORT";
+  /* ---------------- TREND REGIME ---------------- */
 
-  const bias = h1Trend; // 🔥 LOCKED BIAS (NO MORE FLIPPING)
+  const trendStrength =
+    a > 25 ? "TRENDING"
+    : a > 18 ? "TRANSITION"
+    : "CHOP";
 
-  /* ---------------- STROCH CROSS (TIMING ONLY) ---------------- */
+  /* ---------------- STOCH TIMING ONLY ---------------- */
 
   const bullishCross = prevK < d && k > d;
   const bearishCross = prevK > d && k < d;
 
-  const stochTrigger = bullishCross || bearishCross;
+  const stochSignal = bullishCross || bearishCross;
 
-  /* ---------------- EARLY (TIMING ENTRY ONLY) ---------------- */
+  /* ---------------- EARLY (PULLBACK IN TREND ONLY) ---------------- */
 
   const early =
-    r > 40 &&
-    r < 70 &&
-    stochTrigger &&
+    bias !== "NEUTRAL" &&
+    trendStrength !== "CHOP" &&
+    stochSignal &&
     vol.ratio > 1.05 &&
-    a > 18;
+    r > 40 &&
+    r < 70;
 
-  /* ---------------- SNIPER (CONFIRMED IN TREND ONLY) ---------------- */
+  /* ---------------- SNIPER (CONFIRMATION STACK) ---------------- */
 
   const sniper =
     early &&
-    vol.spike &&
     a > 25 &&
-    Math.abs(price - ema) / price > 0.012 &&
+    vol.spike &&
     bos !== "NEUTRAL" &&
-    bias !== "NEUTRAL";
+    Math.abs(price - closes.reduce((a,b)=>a+b,0)/closes.length) / price > 0.01;
 
   const state: SignalState =
     sniper ? "SNIPER"
@@ -192,13 +220,14 @@ export function generateSignal(
 
   const confidence =
     state === "SNIPER"
-      ? clamp(80 + r / 10, 80, 96)
+      ? clamp(82 + r / 10, 80, 96)
       : state === "EARLY"
       ? clamp(60 + k / 2, 55, 82)
       : 20;
 
   /* ---------------- EXPECTED MOVE ---------------- */
 
+  const ema = closes.reduce((a, b) => a + b, 0) / closes.length;
   const volatility = Math.abs(price - ema) / price;
 
   const expectedMove =
@@ -208,7 +237,7 @@ export function generateSignal(
       ? clamp(volatility * 1.6, 0.02, 0.04)
       : 0.01;
 
-  /* ---------------- SL / TP ---------------- */
+  /* ---------------- SL / TP (ALWAYS FOR ALERTS) ---------------- */
 
   let sl: number | null = null;
   let tp: number | null = null;
@@ -219,7 +248,7 @@ export function generateSignal(
     if (bias === "LONG") {
       sl = price * (1 - risk);
       tp = price * (1 + expectedMove);
-    } else {
+    } else if (bias === "SHORT") {
       sl = price * (1 + risk);
       tp = price * (1 - expectedMove);
     }
@@ -246,9 +275,9 @@ export function generateSignal(
 
     reason:
       state === "SNIPER"
-        ? "SNIPER CONFIRMED (TREND + STRUCTURE + VOLUME)"
+        ? "SNIPER CONFIRMED (EMA21 TREND + STRUCTURE + VOLUME)"
         : state === "EARLY"
-        ? "EARLY FLOW ENTRY (TIMING ONLY)"
+        ? "EARLY PULLBACK ENTRY (TREND-ALIGNED)"
         : "NO STRUCTURE",
 
     stopLoss: sl ? round(sl, 2) : null,
