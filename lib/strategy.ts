@@ -60,25 +60,27 @@ function rsi(closes: number[]) {
   return 100 - 100 / (1 + rs);
 }
 
-/* ---------------- ADX (momentum proxy) ---------------- */
+/* ---------------- ADX (NORMALIZED FIX) ---------------- */
 
 function adx(candles: Candle[]) {
   let plus = 0;
   let minus = 0;
 
   for (let i = 1; i < candles.length; i++) {
-    const upMove = candles[i].high - candles[i - 1].high;
-    const downMove = candles[i - 1].low - candles[i].low;
+    const up = candles[i].high - candles[i - 1].high;
+    const down = candles[i - 1].low - candles[i].low;
 
-    if (upMove > downMove && upMove > 0) plus += upMove;
-    if (downMove > upMove && downMove > 0) minus += downMove;
+    if (up > down && up > 0) plus += up;
+    if (down > up && down > 0) minus += down;
   }
 
   const total = plus + minus || 1;
+
+  // FIX: normalize properly (0–100 scale)
   return (Math.abs(plus - minus) / total) * 100;
 }
 
-/* ---------------- STOCHASTIC ---------------- */
+/* ---------------- STOCH K / D ---------------- */
 
 function stochKD(closes: number[], period = 14) {
   const slice = closes.slice(-period);
@@ -86,8 +88,7 @@ function stochKD(closes: number[], period = 14) {
   const high = Math.max(...slice);
   const low = Math.min(...slice);
 
-  const k =
-    ((closes.at(-1)! - low) / (high - low || 1)) * 100;
+  const k = ((slice.at(-1)! - low) / (high - low || 1)) * 100;
 
   const prevSlice = closes.slice(-period - 3, -3);
 
@@ -104,17 +105,11 @@ function stochKD(closes: number[], period = 14) {
 
 /* ---------------- VOLUME ---------------- */
 
-function volumeScore(candles: Candle[]) {
+function volumeSpike(candles: Candle[]) {
   const vols = candles.map(c => c.volume);
   const avg = vols.reduce((a, b) => a + b, 0) / vols.length;
 
-  const last = vols.at(-1)!;
-  const ratio = last / (avg || 1);
-
-  return {
-    spike: ratio > 1.2,
-    ratio
-  };
+  return vols.at(-1)! > avg * 1.4;
 }
 
 /* ---------------- STRUCTURE ---------------- */
@@ -140,65 +135,73 @@ export function generateSignal(
   const closes = candles15m.map(c => c.close);
 
   const r = rsi(closes);
-  const { k, d, prevK } = stochKD(closes);
+  const { k, d } = stochKD(closes);
   const a = adx(candles15m);
   const bos = BOS(candles15m);
-  const vol = volumeScore(candles15m);
+  const vol = volumeSpike(candles15m);
 
-  const ema21 =
-    closes.reduce((a, b) => a + b, 0) / closes.length;
+  const ema =
+    closes.reduce((sum, c) => sum + c, 0) / closes.length;
 
   /* ---------------- CROSSOVER ---------------- */
 
-  const bullishCross = prevK < d && k > d;
-  const bearishCross = prevK > d && k < d;
+  const bullishCross = k > d;
+  const bearishCross = k < d;
 
-  /* ---------------- BIAS ---------------- */
+  /* ---------------- BIAS FIX (IMPORTANT) ---------------- */
 
-  const bias =
+  const structureBias =
     bos === "BULL"
       ? "LONG"
       : bos === "BEAR"
       ? "SHORT"
-      : "NEUTRAL";
+      : null;
 
-  /* ---------------- FLOW STATE ENGINE ---------------- */
+  const momentumBias =
+    r > 50
+      ? "LONG"
+      : r < 45
+      ? "SHORT"
+      : null;
 
-  // EARLY = FLOW ENTRY (NO BOS REQUIRED)
+  const bias =
+    structureBias || momentumBias || "NEUTRAL";
+
+  /* ---------------- STATE (AGGRESSIVE EARLY) ---------------- */
+
+  let state: SignalState = "WAIT";
+
   const early =
-    (r > 40 && r < 70) &&
-    (bullishCross || bearishCross) &&
-    vol.ratio > 1.05; // light activity only
+    vol &&
+    a > 15 &&
+    (bullishCross || bearishCross); // ❗ NO BOS REQUIRED
 
-  // SNIPER = EARLY + CONFIRMATION STACK
   const sniper =
-    early &&
-    a > 22 &&
-    vol.spike &&
-    (bos !== "NEUTRAL") &&
-    Math.abs(price - ema21) / price > 0.01;
+    vol &&
+    a > 25 &&
+    bos !== "NEUTRAL" &&
+    Math.abs(price - ema) / price > 0.01 &&
+    r > 50;
 
-  const state: SignalState =
-    sniper ? "SNIPER"
-    : early ? "EARLY"
-    : "WAIT";
+  if (sniper) state = "SNIPER";
+  else if (early) state = "EARLY";
 
   /* ---------------- CONFIDENCE ---------------- */
 
   const confidence =
     state === "SNIPER"
-      ? clamp(78 + r / 10, 78, 96)
+      ? clamp(75 + r / 10, 75, 95)
       : state === "EARLY"
-      ? clamp(55 + k / 2, 50, 80)
+      ? clamp(55 + a, 50, 80)
       : 20;
 
   /* ---------------- EXPECTED MOVE ---------------- */
 
-  const volatility = Math.abs(price - ema21) / price;
+  const volatility = Math.abs(price - ema) / price;
 
   const expectedMove =
     state === "SNIPER"
-      ? clamp(volatility * 2.3, 0.03, 0.06)
+      ? clamp(volatility * 2.5, 0.03, 0.06)
       : state === "EARLY"
       ? clamp(volatility * 1.6, 0.02, 0.04)
       : 0.01;
@@ -214,7 +217,7 @@ export function generateSignal(
     if (bias === "LONG") {
       sl = price * (1 - risk);
       tp = price * (1 + expectedMove);
-    } else {
+    } else if (bias === "SHORT") {
       sl = price * (1 + risk);
       tp = price * (1 - expectedMove);
     }
@@ -241,9 +244,9 @@ export function generateSignal(
 
     reason:
       state === "SNIPER"
-        ? "SNIPER CONFIRMED (FLOW + STRUCTURE + VOLUME)"
+        ? "BREAKOUT CONFIRMED"
         : state === "EARLY"
-        ? "EARLY FLOW ENTRY (MOMENTUM SHIFT)"
+        ? "AGGRESSIVE EARLY ENTRY"
         : "NO STRUCTURE",
 
     stopLoss: sl ? round(sl, 2) : null,
