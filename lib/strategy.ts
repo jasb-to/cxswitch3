@@ -78,7 +78,7 @@ function adx(candles: Candle[]) {
   return (Math.abs(plus - minus) / total) * 100;
 }
 
-/* ---------------- STOCHASTIC ---------------- */
+/* ---------------- STOCH ---------------- */
 
 function stochKD(closes: number[], period = 14) {
   const slice = closes.slice(-period);
@@ -112,8 +112,8 @@ function volumeScore(candles: Candle[]) {
   const ratio = last / (avg || 1);
 
   return {
-    spike: ratio > 1.2,
-    ratio
+    spike: ratio > 1.3,
+    ratio,
   };
 }
 
@@ -145,36 +145,44 @@ export function generateSignal(
   const bos = BOS(candles15m);
   const vol = volumeScore(candles15m);
 
-  const ema21 =
-    closes.reduce((a, b) => a + b, 0) / closes.length;
+  const ema = closes.reduce((a, b) => a + b, 0) / closes.length;
+
+  /* ---------------- TREND FILTER (IMPORTANT FIX) ---------------- */
+  const h1Trend = candles1h[candles1h.length - 1].close > ema
+    ? "LONG"
+    : "SHORT";
+
+  /* ---------------- CROSS ---------------- */
 
   const bullishCross = prevK < d && k > d;
   const bearishCross = prevK > d && k < d;
 
-  /* ---------------- BIAS (FIXED) ---------------- */
+  /* ---------------- BIAS (FIXED - NO MORE RANDOM NEUTRAL ALERTS) ---------------- */
 
-  let bias: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
+  const bias =
+    h1Trend === "LONG"
+      ? "LONG"
+      : h1Trend === "SHORT"
+      ? "SHORT"
+      : "NEUTRAL";
 
-  if (bullishCross) bias = "LONG";
-  if (bearishCross) bias = "SHORT";
-
-  if (bos === "BULL") bias = "LONG";
-  if (bos === "BEAR") bias = "SHORT";
-
-  /* ---------------- STATE ENGINE ---------------- */
+  /* ---------------- EARLY (NO BOS REQUIRED - AGGRESSIVE MODE) ---------------- */
 
   const early =
     (r > 40 && r < 70) &&
     (bullishCross || bearishCross) &&
     vol.ratio > 1.05 &&
-    bias !== "NEUTRAL";
+    a > 18;
+
+  /* ---------------- SNIPER (FULL CONFIRMATION STACK) ---------------- */
 
   const sniper =
     early &&
-    a > 22 &&
-    vol.spike &&
     bos !== "NEUTRAL" &&
-    Math.abs(price - ema21) / price > 0.01;
+    vol.spike &&
+    a > 25 &&
+    Math.abs(price - ema) / price > 0.012 &&
+    bias !== "NEUTRAL"; // CRITICAL FIX
 
   const state: SignalState =
     sniper ? "SNIPER"
@@ -185,28 +193,28 @@ export function generateSignal(
 
   const confidence =
     state === "SNIPER"
-      ? clamp(78 + r / 10, 78, 96)
+      ? clamp(80 + r / 10, 80, 96)
       : state === "EARLY"
-      ? clamp(55 + k / 2, 50, 80)
+      ? clamp(60 + k / 2, 55, 82)
       : 20;
 
   /* ---------------- EXPECTED MOVE ---------------- */
 
-  const volatility = Math.abs(price - ema21) / price;
+  const volatility = Math.abs(price - ema) / price;
 
   const expectedMove =
     state === "SNIPER"
-      ? clamp(volatility * 2.3, 0.03, 0.06)
+      ? clamp(volatility * 2.5, 0.03, 0.06)
       : state === "EARLY"
       ? clamp(volatility * 1.6, 0.02, 0.04)
       : 0.01;
 
-  /* ---------------- SL / TP ---------------- */
+  /* ---------------- SL / TP (FIXED: NEVER NULL ON ALERTS) ---------------- */
 
   let sl: number | null = null;
   let tp: number | null = null;
 
-  if (state !== "WAIT" && bias !== "NEUTRAL") {
+  if (state !== "WAIT") {
     const risk = expectedMove * 0.55;
 
     if (bias === "LONG") {
@@ -239,9 +247,9 @@ export function generateSignal(
 
     reason:
       state === "SNIPER"
-        ? "SNIPER CONFIRMED (FLOW + STRUCTURE + VOLUME)"
+        ? "SNIPER CONFIRMED (TREND + STRUCTURE + VOLUME)"
         : state === "EARLY"
-        ? `EARLY ${bias} MOMENTUM`
+        ? "EARLY FLOW ENTRY"
         : "NO STRUCTURE",
 
     stopLoss: sl ? round(sl, 2) : null,
