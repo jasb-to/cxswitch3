@@ -2,94 +2,128 @@
 
 import { useEffect, useState } from "react";
 
-export default function Home() {
-  const [signals, setSignals] = useState<any[]>([]);
+type SignalState = "EARLY" | "SNIPER" | "WAIT";
 
-  async function load() {
+interface Signal {
+  symbol: string;
+  price: number;
+
+  state: SignalState;
+
+  bias: "LONG" | "SHORT" | "NEUTRAL";
+  confidence: number;
+
+  adx: number;
+  stochK: number;
+  stochD: number;
+  rsi: number;
+
+  reason: string;
+
+  stopLoss: number | null;
+  takeProfit: number | null;
+  rr: number | null;
+
+  expectedMove: number;
+
+  updatedAt: string;
+}
+
+export default function Page() {
+  const [signals, setSignals] = useState<Signal[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  async function fetchSignals() {
     try {
-      const res = await fetch("/api/signals", { cache: "no-store" });
+      const res = await fetch("/api/cron", {
+        cache: "no-store",
+      });
+
       const data = await res.json();
-      setSignals(data.signals || []);
-    } catch (e) {
-      console.error("UI fetch error:", e);
+
+      setSignals(Array.isArray(data.signals) ? data.signals : []);
+    } catch (err) {
+      console.error("UI fetch error:", err);
+      setSignals([]);
+    } finally {
+      setLoading(false);
     }
   }
 
   useEffect(() => {
-    load();
-    const t = setInterval(load, 15000); // faster refresh for trading
-    return () => clearInterval(t);
+    fetchSignals();
+
+    const interval = setInterval(() => {
+      fetchSignals();
+    }, 15000); // faster refresh for trading UI
+
+    return () => clearInterval(interval);
   }, []);
 
+  function color(state: SignalState) {
+    if (state === "SNIPER") return "#00ff88";
+    if (state === "EARLY") return "#ffaa00";
+    return "#777";
+  }
+
   return (
-    <main style={{ padding: 20, background: "#000", color: "#fff", fontFamily: "Arial" }}>
+    <main
+      style={{
+        padding: 24,
+        background: "#0a0a0a",
+        color: "#fff",
+        fontFamily: "monospace",
+      }}
+    >
       <h1 style={{ marginBottom: 20 }}>CX Switch</h1>
+
+      {loading && <div>Loading signals...</div>}
 
       <div style={{ display: "grid", gap: 16 }}>
         {signals.map((s) => (
           <div
             key={s.symbol}
             style={{
-              border: "1px solid #333",
-              padding: 14,
+              border: "1px solid #222",
+              padding: 16,
               borderRadius: 8,
-              background: "#111",
             }}
           >
             {/* HEADER */}
-            <div style={{ fontSize: 20, fontWeight: "bold" }}>
-              {s.symbol} — ${Number(s.price).toFixed(2)}
+            <div style={{ fontSize: 18, marginBottom: 6 }}>
+              {s.symbol} — ${s.price}
             </div>
 
-            <div style={{ marginTop: 6 }}>
-              <strong>{s.state}</strong>
+            <div style={{ color: color(s.state), fontWeight: "bold" }}>
+              {s.state}
             </div>
 
+            {/* CORE METRICS */}
             <div>Bias: {s.bias}</div>
-            <div>Confidence: {Number(s.confidence).toFixed(1)}%</div>
+            <div>Confidence: {s.confidence}%</div>
 
-            <div>RSI: {Number(s.rsi).toFixed(1)}</div>
-            <div>Stoch: {Number(s.stoch).toFixed(1)}</div>
-            <div>ADX: {Number(s.adx).toFixed(1)}</div>
+            <div>RSI: {s.rsi}</div>
+            <div>
+              Stoch: {s.stochK ?? "—"} / {s.stochD ?? "—"}
+            </div>
+            <div>ADX: {s.adx}</div>
 
-            <div style={{ marginTop: 6, opacity: 0.8 }}>{s.reason}</div>
+            <div style={{ marginTop: 6, opacity: 0.8 }}>
+              {s.reason}
+            </div>
 
-            {/* TRADE BOX */}
+            {/* TRADE LEVELS */}
             {s.state !== "WAIT" && (
-              <div
-                style={{
-                  marginTop: 12,
-                  padding: 10,
-                  background: "#0a0a0a",
-                  border: "1px solid #222",
-                }}
-              >
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #222" }}>
+                <div>SL: {s.stopLoss ?? "—"}</div>
+                <div>TP: {s.takeProfit ?? "—"}</div>
+                <div>RR: {s.rr ?? "—"}</div>
                 <div>Expected Move: {s.expectedMove}%</div>
-
-                <div>
-                  SL:{" "}
-                  {s.stopLoss !== null
-                    ? Number(s.stopLoss).toFixed(2)
-                    : "-"}
-                </div>
-
-                <div>
-                  TP:{" "}
-                  {s.takeProfit !== null
-                    ? Number(s.takeProfit).toFixed(2)
-                    : "-"}
-                </div>
-
-                <div>
-                  RR:{" "}
-                  {s.rr !== null
-                    ? Number(s.rr).toFixed(2)
-                    : "-"}
-                </div>
               </div>
             )}
 
-            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.5 }}>
+            {/* TIMESTAMP */}
+            <div style={{ marginTop: 10, fontSize: 11, opacity: 0.5 }}>
               {s.updatedAt}
             </div>
           </div>
@@ -97,4 +131,4 @@ export default function Home() {
       </div>
     </main>
   );
-} 
+}
