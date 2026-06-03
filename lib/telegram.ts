@@ -22,7 +22,12 @@ SL: ${signal.stopLoss ?? "-"}
 TP: ${signal.takeProfit ?? "-"}
 RR: ${signal.rr ?? "-"}
 
-Time: ${signal.timestamp}
+ADX: ${signal.adx}
+RSI: ${signal.rsi}
+StochK: ${signal.stochK}
+StochD: ${signal.stochD}
+
+Time: ${signal.updatedAt}
 `;
 
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
