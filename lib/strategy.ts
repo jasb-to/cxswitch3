@@ -21,7 +21,8 @@ export interface Signal {
   confidence: number;
 
   adx: number;
-  stoch: number;
+  stochK: number;
+  stochD: number;
   rsi: number;
 
   reason: string;
@@ -70,40 +71,48 @@ function rsi(closes: number[]) {
   return 100 - 100 / (1 + rs);
 }
 
-function stoch(closes: number[], period = 14) {
+/* ---------------- STOCHASTIC K / D ---------------- */
+
+function stochKD(closes: number[], period = 14) {
   const slice = closes.slice(-period);
+
   const high = Math.max(...slice);
   const low = Math.min(...slice);
-  return ((slice.at(-1)! - low) / (high - low || 1)) * 100;
+
+  const k =
+    ((slice.at(-1)! - low) / (high - low || 1)) * 100;
+
+  // smoothing for D (simple moving average of K proxy)
+  const kSeries = closes.slice(-period).map((_, i, arr) => {
+    const sub = arr.slice(0, i + 1);
+    const h = Math.max(...sub);
+    const l = Math.min(...sub);
+    return ((sub.at(-1)! - l) / (h - l || 1)) * 100;
+  });
+
+  const d =
+    kSeries.slice(-3).reduce((a, b) => a + b, 0) / 3;
+
+  return { k, d };
 }
 
-/* ---------------- VOLUME SPIKE ---------------- */
+/* ---------------- VOLUME ---------------- */
 
 function volumeSpike(candles: Candle[]) {
   const vols = candles.map(c => c.volume);
   const avg = vols.reduce((a, b) => a + b, 0) / vols.length;
-  const last = vols.at(-1)!;
-
-  return last > avg * 1.5;
+  return vols.at(-1)! > avg * 1.5;
 }
 
-/* ---------------- STRUCTURE (REAL BOS) ---------------- */
-
-function swingHigh(candles: Candle[]) {
-  const last = candles.at(-2);
-  const prev = candles.at(-3);
-  return last && prev && last.high > prev.high;
-}
-
-function swingLow(candles: Candle[]) {
-  const last = candles.at(-2);
-  const prev = candles.at(-3);
-  return last && prev && last.low < prev.low;
-}
+/* ---------------- STRUCTURE (light BOS) ---------------- */
 
 function BOS(candles: Candle[]) {
-  if (swingHigh(candles)) return "BULL";
-  if (swingLow(candles)) return "BEAR";
+  const last = candles.at(-1)!;
+  const prev = candles.at(-2)!;
+  const prev2 = candles.at(-3)!;
+
+  if (last.high > prev.high && prev.high > prev2.high) return "BULL";
+  if (last.low < prev.low && prev.low < prev2.low) return "BEAR";
   return "NEUTRAL";
 }
 
@@ -118,62 +127,75 @@ export function generateSignal(
   const closes = candles15m.map(c => c.close);
 
   const r = rsi(closes);
-  const st = stoch(closes);
+  const { k, d } = stochKD(closes);
   const bos = BOS(candles15m);
   const vol = volumeSpike(candles15m);
 
   const ema21 = ema(closes, 21);
 
-  const trend =
-    price > ema21 ? "LONG" : "SHORT";
+  /* ---------------- CROSSOVER LOGIC ---------------- */
 
-  /* ---------------- STATE MACHINE ---------------- */
+  const bullishCross = k > d && k < 30;
+  const bearishCross = k < d && k > 70;
+
+  /* ---------------- STATE ---------------- */
 
   let state: SignalState = "WAIT";
 
   const early =
     bos !== "NEUTRAL" &&
-    st < 30 &&
-    r > 45 &&
-    vol;
+    vol &&
+    r > 40 &&
+    bullishCross;
 
   const sniper =
     bos !== "NEUTRAL" &&
     vol &&
-    st > 60 &&
     r > 50 &&
+    k > d &&
     Math.abs(price - ema21) / price > 0.01;
 
   if (sniper) state = "SNIPER";
   else if (early) state = "EARLY";
 
+  /* ---------------- BIAS ---------------- */
+
+  const bias =
+    bos === "BULL"
+      ? "LONG"
+      : bos === "BEAR"
+      ? "SHORT"
+      : "NEUTRAL";
+
   /* ---------------- CONFIDENCE ---------------- */
 
   const confidence =
     state === "SNIPER"
-      ? clamp(85 + r / 10, 85, 97)
+      ? clamp(80 + r / 10, 80, 97)
       : state === "EARLY"
-      ? clamp(60 + st / 2, 55, 80)
+      ? clamp(60 + k / 2, 55, 80)
       : 20;
 
-  /* ---------------- EXPECTED MOVE (REALISTIC 3–5%) ---------------- */
+  /* ---------------- EXPECTED MOVE ---------------- */
+
+  const volatility = Math.abs(price - ema21) / price;
 
   const expectedMove =
     state === "SNIPER"
-      ? clamp(0.035, 0.03, 0.055)
+      ? clamp(volatility * 2.5, 0.03, 0.055)
       : state === "EARLY"
-      ? clamp(0.025, 0.045)
+      ? clamp(volatility * 1.8, 0.02, 0.04)
       : 0.01;
 
   /* ---------------- SL / TP ---------------- */
 
-  let sl = null;
-  let tp = null;
+  let sl: number | null = null;
+  let tp: number | null = null;
 
   if (state !== "WAIT") {
     const risk = expectedMove * 0.6;
 
-    if (trend === "LONG") {
+    if (bias === "LONG") {
       sl = price * (1 - risk);
       tp = price * (1 + expectedMove);
     } else {
@@ -192,19 +214,20 @@ export function generateSignal(
     price: round(price),
 
     state,
-    bias: bos === "BULL" ? "LONG" : bos === "BEAR" ? "SHORT" : "NEUTRAL",
+    bias,
 
     confidence: round(confidence),
 
-    adx: round(Math.abs(price - ema21) / price * 100, 1),
-    stoch: round(st),
+    adx: round(volatility * 100, 1),
+    stochK: round(k),
+    stochD: round(d),
     rsi: round(r),
 
     reason:
       state === "SNIPER"
-        ? "BOS + VOLUME EXPANSION"
+        ? "BOS + VOLUME + BREAKOUT"
         : state === "EARLY"
-        ? "STRUCTURE + MOMENTUM BUILD"
+        ? "K/D CROSS + STRUCTURE BUILD"
         : "NO STRUCTURE",
 
     stopLoss: sl ? round(sl, 2) : null,
