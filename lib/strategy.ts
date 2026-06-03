@@ -36,7 +36,9 @@ export interface Signal {
   updatedAt: string;
 }
 
-/* ---------------- UTILS ---------------- */
+/* =========================================================
+   UTILS
+========================================================= */
 
 const clamp = (n: number, min: number, max: number) =>
   Math.max(min, Math.min(max, n));
@@ -44,7 +46,9 @@ const clamp = (n: number, min: number, max: number) =>
 const round = (n: number, d = 2) =>
   Math.round(n * 10 ** d) / 10 ** d;
 
-/* ---------------- RSI ---------------- */
+/* =========================================================
+   INDICATORS
+========================================================= */
 
 function rsi(closes: number[]) {
   let gain = 0;
@@ -60,36 +64,40 @@ function rsi(closes: number[]) {
   return 100 - 100 / (1 + rs);
 }
 
-/* ---------------- ADX (REALISTIC MOMENTUM INDEX) ---------------- */
-
-function adx(candles: Candle[]) {
-  let plus = 0;
-  let minus = 0;
+/**
+ * Realistic trend strength (NOT fake ADX explosion bug)
+ */
+function adxLike(candles: Candle[]) {
+  let up = 0;
+  let down = 0;
 
   for (let i = 1; i < candles.length; i++) {
     const upMove = candles[i].high - candles[i - 1].high;
     const downMove = candles[i - 1].low - candles[i].low;
 
-    if (upMove > downMove && upMove > 0) plus += upMove;
-    if (downMove > upMove && downMove > 0) minus += downMove;
+    if (upMove > downMove && upMove > 0) up += upMove;
+    if (downMove > upMove && downMove > 0) down += downMove;
   }
 
-  const total = plus + minus || 1;
-  return (Math.abs(plus - minus) / total) * 100;
+  const total = up + down || 1;
+  return (Math.abs(up - down) / total) * 100;
 }
 
-/* ---------------- STOCH K / D (FIXED SMOOTHING) ---------------- */
+/* =========================================================
+   STOCHASTIC K / D
+========================================================= */
 
-function stochKD(closes: number[], period = 21) {
+function stochKD(closes: number[], period = 14) {
   const slice = closes.slice(-period);
 
   const high = Math.max(...slice);
   const low = Math.min(...slice);
 
   const k =
-    ((closes.at(-1)! - low) / (high - low || 1)) * 100;
+    ((slice.at(-1)! - low) / (high - low || 1)) * 100;
 
   const prevSlice = closes.slice(-period - 3, -3);
+
   const prevHigh = Math.max(...prevSlice);
   const prevLow = Math.min(...prevSlice);
 
@@ -101,28 +109,115 @@ function stochKD(closes: number[], period = 21) {
   return { k, d, prevK };
 }
 
-/* ---------------- VOLUME SPIKE ---------------- */
+/* =========================================================
+   VOLUME Z SCORE (FIXED)
+========================================================= */
 
-function volumeSpike(candles: Candle[]) {
+function volumeScore(candles: Candle[]) {
   const vols = candles.map(c => c.volume);
+
   const avg = vols.reduce((a, b) => a + b, 0) / vols.length;
 
-  return vols.at(-1)! > avg * 1.4;
+  const variance =
+    vols.reduce((a, v) => a + Math.pow(v - avg, 2), 0) / vols.length;
+
+  const std = Math.sqrt(variance) || 1;
+
+  const last = vols.at(-1)!;
+
+  return (last - avg) / std;
 }
 
-/* ---------------- BOS (STRUCTURE FILTER) ---------------- */
+/* =========================================================
+   FRACTAL SWINGS (2 LEFT / 2 RIGHT)
+========================================================= */
 
-function BOS(candles: Candle[]) {
-  const last = candles.at(-1)!;
-  const prev = candles.at(-2)!;
-  const prev2 = candles.at(-3)!;
+function getSwings(candles: Candle[]) {
+  const highs: number[] = [];
+  const lows: number[] = [];
 
-  if (last.high > prev.high && prev.high > prev2.high) return "BULL";
-  if (last.low < prev.low && prev.low < prev2.low) return "BEAR";
-  return "NEUTRAL";
+  for (let i = 2; i < candles.length - 2; i++) {
+    const h = candles[i].high;
+    const l = candles[i].low;
+
+    if (
+      h > candles[i - 1].high &&
+      h > candles[i - 2].high &&
+      h > candles[i + 1].high &&
+      h > candles[i + 2].high
+    ) {
+      highs.push(h);
+    }
+
+    if (
+      l < candles[i - 1].low &&
+      l < candles[i - 2].low &&
+      l < candles[i + 1].low &&
+      l < candles[i + 2].low
+    ) {
+      lows.push(l);
+    }
+  }
+
+  return {
+    swingHigh: highs.at(-1) ?? null,
+    swingLow: lows.at(-1) ?? null,
+    prevHigh: highs.at(-2) ?? null,
+    prevLow: lows.at(-2) ?? null,
+  };
 }
 
-/* ---------------- CORE ENGINE ---------------- */
+/* =========================================================
+   BOS + CHoCH
+========================================================= */
+
+function structure(
+  candles: Candle[],
+  price: number
+) {
+  const swings = getSwings(candles);
+
+  let bos: "BULL" | "BEAR" | "NEUTRAL" = "NEUTRAL";
+  let choch: "BULL" | "BEAR" | "NONE" = "NONE";
+
+  if (swings.swingHigh && price > swings.swingHigh) {
+    bos = "BULL";
+  }
+
+  if (swings.swingLow && price < swings.swingLow) {
+    bos = "BEAR";
+  }
+
+  if (swings.prevLow && price < swings.prevLow && bos === "BULL") {
+    choch = "BEAR";
+  }
+
+  if (swings.prevHigh && price > swings.prevHigh && bos === "BEAR") {
+    choch = "BULL";
+  }
+
+  return { bos, choch };
+}
+
+/* =========================================================
+   HTF TREND (1H)
+========================================================= */
+
+function trend1H(candles: Candle[]) {
+  const closes = candles.map(c => c.close);
+
+  const first = closes[0];
+  const last = closes.at(-1)!;
+
+  if (last > first * 1.01) return "BULL";
+  if (last < first * 0.99) return "BEAR";
+
+  return "RANGE";
+}
+
+/* =========================================================
+   CORE SIGNAL ENGINE
+========================================================= */
 
 export function generateSignal(
   symbol: Symbol,
@@ -134,69 +229,100 @@ export function generateSignal(
 
   const r = rsi(closes);
   const { k, d, prevK } = stochKD(closes);
-  const a = adx(candles15m);
-  const bos = BOS(candles15m);
-  const vol = volumeSpike(candles15m);
+  const volZ = volumeScore(candles15m);
 
-  const ema21 =
-    closes.reduce((sum, c) => sum + c, 0) / closes.length;
+  const { bos, choch } = structure(candles15m, price);
+  const htf = trend1H(candles1h);
 
-  /* ---------------- CROSSOVER ---------------- */
+  const adx = adxLike(candles15m);
 
   const bullishCross = prevK < d && k > d;
   const bearishCross = prevK > d && k < d;
 
-  /* ---------------- STATE LOGIC (FIXED) ---------------- */
+  /* =========================================================
+     BIAS
+  ========================================================= */
+
+  let bias: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
+
+  if (bos === "BULL" || choch === "BULL") bias = "LONG";
+  if (bos === "BEAR" || choch === "BEAR") bias = "SHORT";
+
+  /* =========================================================
+     STATE MACHINE
+  ========================================================= */
 
   let state: SignalState = "WAIT";
 
+  const htfAlignLong = htf === "BULL" && bias === "LONG";
+  const htfAlignShort = htf === "BEAR" && bias === "SHORT";
+
   const early =
-    a > 18 &&
-    vol &&
+    Math.abs(volZ) > 0.5 &&
+    adx > 15 &&
     bullishCross &&
-    r > 42 &&
-    k < 60;
+    r > 40;
 
   const sniper =
-    a > 25 &&
-    vol &&
+    Math.abs(volZ) > 1 &&
+    adx > 25 &&
     bos !== "NEUTRAL" &&
-    r > 50 &&
-    Math.abs(price - ema21) / price > 0.012;
+    k > d &&
+    ((htfAlignLong && bias === "LONG") ||
+      (htfAlignShort && bias === "SHORT"));
 
   if (sniper) state = "SNIPER";
   else if (early) state = "EARLY";
 
-  /* ---------------- BIAS ---------------- */
+  /* =========================================================
+     CONFIDENCE (REAL SCORING MODEL)
+  ========================================================= */
 
-  const bias =
-    bos === "BULL"
-      ? "LONG"
-      : bos === "BEAR"
-      ? "SHORT"
-      : "NEUTRAL";
+  const structureScore =
+    bos !== "NEUTRAL" ? 30 : 10;
 
-  /* ---------------- CONFIDENCE ---------------- */
+  const htfScore =
+    htfAlignLong || htfAlignShort ? 25 : 5;
+
+  const momentumScore =
+    r > 45 && r < 70 ? 20 : 10;
+
+  const volumeScoreFinal =
+    Math.abs(volZ) > 1 ? 15 : 5;
+
+  const trendScore =
+    adx > 20 ? 10 : 5;
 
   const confidence =
-    state === "SNIPER"
-      ? clamp(78 + r / 8, 78, 96)
-      : state === "EARLY"
-      ? clamp(55 + k / 2, 50, 80)
+    state === "SNIPER" || state === "EARLY"
+      ? clamp(
+          structureScore +
+          htfScore +
+          momentumScore +
+          volumeScoreFinal +
+          trendScore,
+          20,
+          95
+        )
       : 20;
 
-  /* ---------------- EXPECTED MOVE ---------------- */
+  /* =========================================================
+     EXPECTED MOVE
+  ========================================================= */
 
-  const volatility = Math.abs(price - ema21) / price;
+  const volatility =
+    Math.abs(price - closes.at(-1)!) / price;
 
   const expectedMove =
     state === "SNIPER"
-      ? clamp(volatility * 2.3, 0.03, 0.06)
+      ? clamp(volatility * 2.5, 0.03, 0.06)
       : state === "EARLY"
-      ? clamp(volatility * 1.6, 0.02, 0.04)
+      ? clamp(volatility * 1.7, 0.02, 0.04)
       : 0.01;
 
-  /* ---------------- SL / TP ---------------- */
+  /* =========================================================
+     SL / TP
+  ========================================================= */
 
   let sl: number | null = null;
   let tp: number | null = null;
@@ -207,7 +333,7 @@ export function generateSignal(
     if (bias === "LONG") {
       sl = price * (1 - risk);
       tp = price * (1 + expectedMove);
-    } else {
+    } else if (bias === "SHORT") {
       sl = price * (1 + risk);
       tp = price * (1 - expectedMove);
     }
@@ -218,6 +344,10 @@ export function generateSignal(
       ? Math.abs((tp - price) / (price - sl))
       : null;
 
+  /* =========================================================
+     OUTPUT
+  ========================================================= */
+
   return {
     symbol,
     price: round(price),
@@ -227,14 +357,14 @@ export function generateSignal(
 
     confidence: round(confidence),
 
-    adx: round(a, 2),
+    adx: round(adx, 2),
     stochK: round(k),
     stochD: round(d),
     rsi: round(r),
 
     reason:
       state === "SNIPER"
-        ? "BREAKOUT CONFIRMED"
+        ? "HTF ALIGN + BOS + VOLUME BREAKOUT"
         : state === "EARLY"
         ? "STRUCTURE + MOMENTUM BUILD"
         : "NO STRUCTURE",
