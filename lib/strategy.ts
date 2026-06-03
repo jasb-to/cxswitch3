@@ -60,7 +60,25 @@ function rsi(closes: number[]) {
   return 100 - 100 / (1 + rs);
 }
 
-/* ---------------- STOCH K/D (FIXED) ---------------- */
+/* ---------------- ADX (REALISTIC MOMENTUM INDEX) ---------------- */
+
+function adx(candles: Candle[]) {
+  let plus = 0;
+  let minus = 0;
+
+  for (let i = 1; i < candles.length; i++) {
+    const upMove = candles[i].high - candles[i - 1].high;
+    const downMove = candles[i - 1].low - candles[i].low;
+
+    if (upMove > downMove && upMove > 0) plus += upMove;
+    if (downMove > upMove && downMove > 0) minus += downMove;
+  }
+
+  const total = plus + minus || 1;
+  return (Math.abs(plus - minus) / total) * 100;
+}
+
+/* ---------------- STOCH K / D (FIXED SMOOTHING) ---------------- */
 
 function stochKD(closes: number[], period = 21) {
   const slice = closes.slice(-period);
@@ -69,46 +87,42 @@ function stochKD(closes: number[], period = 21) {
   const low = Math.min(...slice);
 
   const k =
-    ((slice.at(-1)! - low) / (high - low || 1)) * 100;
+    ((closes.at(-1)! - low) / (high - low || 1)) * 100;
 
-  const prevSlice = closes.slice(-period - 1, -1);
+  const prevSlice = closes.slice(-period - 3, -3);
   const prevHigh = Math.max(...prevSlice);
   const prevLow = Math.min(...prevSlice);
 
   const prevK =
     ((prevSlice.at(-1)! - prevLow) / (prevHigh - prevLow || 1)) * 100;
 
-  const d = (k + prevK) / 2;
+  const d = (k + prevK + prevK) / 3;
 
   return { k, d, prevK };
 }
 
-/* ---------------- MOMENTUM (FAKE ADX REPLACED) ---------------- */
+/* ---------------- VOLUME SPIKE ---------------- */
 
-function momentum(candles: Candle[]) {
-  const closes = candles.map(c => c.close);
+function volumeSpike(candles: Candle[]) {
+  const vols = candles.map(c => c.volume);
+  const avg = vols.reduce((a, b) => a + b, 0) / vols.length;
 
-  let strength = 0;
-
-  for (let i = 1; i < closes.length; i++) {
-    strength += Math.abs(closes[i] - closes[i - 1]);
-  }
-
-  return (strength / closes.length) * 1000;
+  return vols.at(-1)! > avg * 1.4;
 }
 
-/* ---------------- BOS (SOFTENED) ---------------- */
+/* ---------------- BOS (STRUCTURE FILTER) ---------------- */
 
 function BOS(candles: Candle[]) {
   const last = candles.at(-1)!;
   const prev = candles.at(-2)!;
+  const prev2 = candles.at(-3)!;
 
-  if (last.high > prev.high) return "BULL";
-  if (last.low < prev.low) return "BEAR";
+  if (last.high > prev.high && prev.high > prev2.high) return "BULL";
+  if (last.low < prev.low && prev.low < prev2.low) return "BEAR";
   return "NEUTRAL";
 }
 
-/* ---------------- CORE ---------------- */
+/* ---------------- CORE ENGINE ---------------- */
 
 export function generateSignal(
   symbol: Symbol,
@@ -120,35 +134,35 @@ export function generateSignal(
 
   const r = rsi(closes);
   const { k, d, prevK } = stochKD(closes);
+  const a = adx(candles15m);
   const bos = BOS(candles15m);
-
-  const mom = momentum(candles15m);
+  const vol = volumeSpike(candles15m);
 
   const ema21 =
-    closes.reduce((a, b) => a + b, 0) / closes.length;
+    closes.reduce((sum, c) => sum + c, 0) / closes.length;
 
   /* ---------------- CROSSOVER ---------------- */
 
   const bullishCross = prevK < d && k > d;
   const bearishCross = prevK > d && k < d;
 
-  const oversold = k < 30;
-  const overbought = k > 70;
-
-  /* ---------------- STATE (FIXED LOGIC) ---------------- */
+  /* ---------------- STATE LOGIC (FIXED) ---------------- */
 
   let state: SignalState = "WAIT";
 
   const early =
+    a > 18 &&
+    vol &&
     bullishCross &&
     r > 42 &&
-    mom > 0.5;
+    k < 60;
 
   const sniper =
-    bullishCross &&
+    a > 25 &&
+    vol &&
+    bos !== "NEUTRAL" &&
     r > 50 &&
-    mom > 1.2 &&
-    bos !== "NEUTRAL";
+    Math.abs(price - ema21) / price > 0.012;
 
   if (sniper) state = "SNIPER";
   else if (early) state = "EARLY";
@@ -166,9 +180,9 @@ export function generateSignal(
 
   const confidence =
     state === "SNIPER"
-      ? clamp(75 + r / 10, 75, 95)
+      ? clamp(78 + r / 8, 78, 96)
       : state === "EARLY"
-      ? clamp(55 + k / 2, 50, 78)
+      ? clamp(55 + k / 2, 50, 80)
       : 20;
 
   /* ---------------- EXPECTED MOVE ---------------- */
@@ -177,7 +191,7 @@ export function generateSignal(
 
   const expectedMove =
     state === "SNIPER"
-      ? clamp(volatility * 2.2, 0.03, 0.06)
+      ? clamp(volatility * 2.3, 0.03, 0.06)
       : state === "EARLY"
       ? clamp(volatility * 1.6, 0.02, 0.04)
       : 0.01;
@@ -213,16 +227,16 @@ export function generateSignal(
 
     confidence: round(confidence),
 
-    adx: round(mom, 2),
+    adx: round(a, 2),
     stochK: round(k),
     stochD: round(d),
     rsi: round(r),
 
     reason:
       state === "SNIPER"
-        ? "STRONG MOMENTUM BREAKOUT"
+        ? "BREAKOUT CONFIRMED"
         : state === "EARLY"
-        ? "K/D CROSS + MOMENTUM BUILD"
+        ? "STRUCTURE + MOMENTUM BUILD"
         : "NO STRUCTURE",
 
     stopLoss: sl ? round(sl, 2) : null,
