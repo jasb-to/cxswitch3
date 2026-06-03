@@ -112,7 +112,7 @@ function volumeScore(candles: Candle[]) {
   const ratio = last / (avg || 1);
 
   return {
-    spike: ratio > 1.3,
+    spike: ratio > 1.25,
     ratio,
   };
 }
@@ -147,42 +147,41 @@ export function generateSignal(
 
   const ema = closes.reduce((a, b) => a + b, 0) / closes.length;
 
-  /* ---------------- TREND FILTER (IMPORTANT FIX) ---------------- */
-  const h1Trend = candles1h[candles1h.length - 1].close > ema
-    ? "LONG"
-    : "SHORT";
+  /* ---------------- 1H TREND FILTER (FIXED BIAS ENGINE) ---------------- */
 
-  /* ---------------- CROSS ---------------- */
+  const h1Ema =
+    candles1h.reduce((sum, c) => sum + c.close, 0) / candles1h.length;
+
+  const h1Trend: "LONG" | "SHORT" =
+    candles1h[candles1h.length - 1].close > h1Ema ? "LONG" : "SHORT";
+
+  const bias = h1Trend; // 🔥 LOCKED BIAS (NO MORE FLIPPING)
+
+  /* ---------------- STROCH CROSS (TIMING ONLY) ---------------- */
 
   const bullishCross = prevK < d && k > d;
   const bearishCross = prevK > d && k < d;
 
-  /* ---------------- BIAS (FIXED - NO MORE RANDOM NEUTRAL ALERTS) ---------------- */
+  const stochTrigger = bullishCross || bearishCross;
 
-  const bias =
-    h1Trend === "LONG"
-      ? "LONG"
-      : h1Trend === "SHORT"
-      ? "SHORT"
-      : "NEUTRAL";
-
-  /* ---------------- EARLY (NO BOS REQUIRED - AGGRESSIVE MODE) ---------------- */
+  /* ---------------- EARLY (TIMING ENTRY ONLY) ---------------- */
 
   const early =
-    (r > 40 && r < 70) &&
-    (bullishCross || bearishCross) &&
+    r > 40 &&
+    r < 70 &&
+    stochTrigger &&
     vol.ratio > 1.05 &&
     a > 18;
 
-  /* ---------------- SNIPER (FULL CONFIRMATION STACK) ---------------- */
+  /* ---------------- SNIPER (CONFIRMED IN TREND ONLY) ---------------- */
 
   const sniper =
     early &&
-    bos !== "NEUTRAL" &&
     vol.spike &&
     a > 25 &&
     Math.abs(price - ema) / price > 0.012 &&
-    bias !== "NEUTRAL"; // CRITICAL FIX
+    bos !== "NEUTRAL" &&
+    bias !== "NEUTRAL";
 
   const state: SignalState =
     sniper ? "SNIPER"
@@ -209,7 +208,7 @@ export function generateSignal(
       ? clamp(volatility * 1.6, 0.02, 0.04)
       : 0.01;
 
-  /* ---------------- SL / TP (FIXED: NEVER NULL ON ALERTS) ---------------- */
+  /* ---------------- SL / TP ---------------- */
 
   let sl: number | null = null;
   let tp: number | null = null;
@@ -249,7 +248,7 @@ export function generateSignal(
       state === "SNIPER"
         ? "SNIPER CONFIRMED (TREND + STRUCTURE + VOLUME)"
         : state === "EARLY"
-        ? "EARLY FLOW ENTRY"
+        ? "EARLY FLOW ENTRY (TIMING ONLY)"
         : "NO STRUCTURE",
 
     stopLoss: sl ? round(sl, 2) : null,
