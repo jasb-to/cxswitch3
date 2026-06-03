@@ -7,50 +7,45 @@ import { sendAlert } from "@/lib/telegram";
 export const runtime = "nodejs";
 
 export async function GET() {
-  const [btc15, eth15, sol15] = await Promise.all([
-    getCandles("BTC", 15),
-    getCandles("ETH", 15),
-    getCandles("SOL", 15),
-  ]);
+  const symbols = ["BTC", "ETH", "SOL"] as const;
 
-  const [btc1h, eth1h, sol1h] = await Promise.all([
-    getCandles("BTC", 60),
-    getCandles("ETH", 60),
-    getCandles("SOL", 60),
-  ]);
+  const candles15 = await Promise.all(
+    symbols.map(s => getCandles(s, 15))
+  );
 
-  const [btcPrice, ethPrice, solPrice] = await Promise.all([
-    getCurrentPrice("BTC"),
-    getCurrentPrice("ETH"),
-    getCurrentPrice("SOL"),
-  ]);
+  const candles1h = await Promise.all(
+    symbols.map(s => getCandles(s, 60))
+  );
 
-  const signals = [
-    generateSignal("BTC", btcPrice, btc15, btc1h),
-    generateSignal("ETH", ethPrice, eth15, eth1h),
-    generateSignal("SOL", solPrice, sol15, sol1h),
-  ];
+  const prices = await Promise.all(
+    symbols.map(s => getCurrentPrice(s))
+  );
+
+  const signals = symbols.map((s, i) =>
+    generateSignal(s, prices[i], candles15[i], candles1h[i])
+  );
 
   setSignals(signals);
 
   console.log("[CRON] FULL SIGNAL SNAPSHOT");
 
   for (const s of signals) {
-    console.log(JSON.stringify(s, null, 2));
+    console.log(s);
   }
 
   for (const s of signals) {
     if (s.state === "WAIT") continue;
 
-    await sendAlert(s);
+    await sendAlert({
+      ...s,
+      timestamp: s.updatedAt,
+    });
 
     console.log("[ALERT SENT]", {
       symbol: s.symbol,
       state: s.state,
       confidence: s.confidence,
       rr: s.rr,
-      sl: s.stopLoss,
-      tp: s.takeProfit,
     });
   }
 
