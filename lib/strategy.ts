@@ -2,9 +2,12 @@ export type Symbol = "BTC" | "ETH" | "SOL";
 
 export type SignalState = "EARLY" | "SNIPER" | "WAIT";
 
-export type SetupType = "BREAKOUT" | "PULLBACK" | "REVERSAL" | "NONE";
-
-export type MarketStructure = "UPTREND" | "DOWNTREND" | "RANGE";
+export type SetupType =
+  | "NONE"
+  | "BREAKOUT"
+  | "REVERSAL"
+  | "PULLBACK"
+  | "COMPRESSION";
 
 export interface Candle {
   time: number;
@@ -15,20 +18,27 @@ export interface Candle {
   volume: number;
 }
 
+export interface Structure {
+  trend: "BULL" | "BEAR" | "RANGE";
+  hh: boolean;
+  hl: boolean;
+  lh: boolean;
+  ll: boolean;
+}
+
 export interface Signal {
   symbol: Symbol;
   price: number;
 
   state: SignalState;
-  bias: "LONG" | "SHORT" | "NEUTRAL";
-
   setup: SetupType;
-  structure: MarketStructure;
+
+  bias: "LONG" | "SHORT" | "NEUTRAL";
 
   confidence: number;
 
+  adx: number;
   atr: number;
-
   stochK: number;
   stochD: number;
   rsi: number;
@@ -52,7 +62,7 @@ const clamp = (n: number, min: number, max: number) =>
 const round = (n: number, d = 2) =>
   Math.round(n * 10 ** d) / 10 ** d;
 
-/* ---------------- RSI ---------------- */
+/* ---------------- RSI (simple but stable) ---------------- */
 
 function rsi(closes: number[]) {
   let gain = 0;
@@ -68,10 +78,10 @@ function rsi(closes: number[]) {
   return 100 - 100 / (1 + rs);
 }
 
-/* ---------------- ATR (REAL VOLATILITY ENGINE) ---------------- */
+/* ---------------- TRUE ATR (Wilder-style approximation) ---------------- */
 
 function atr(candles: Candle[], period = 14) {
-  let trSum = 0;
+  const trs: number[] = [];
 
   for (let i = 1; i < candles.length; i++) {
     const high = candles[i].high;
@@ -84,43 +94,77 @@ function atr(candles: Candle[], period = 14) {
       Math.abs(low - prevClose)
     );
 
-    trSum += tr;
+    trs.push(tr);
   }
 
-  return trSum / Math.min(period, candles.length);
+  const slice = trs.slice(-period);
+  return slice.reduce((a, b) => a + b, 0) / slice.length;
 }
 
-/* ---------------- STRUCTURE (HH / HL MODEL) ---------------- */
+/* ---------------- ADX (trend strength ONLY proxy, acknowledged) ---------------- */
 
-function marketStructure(candles: Candle[]): MarketStructure {
-  const highs = candles.map(c => c.high);
-  const lows = candles.map(c => c.low);
+function adx(candles: Candle[]) {
+  let plus = 0;
+  let minus = 0;
 
-  const higherHighs = highs[highs.length - 1] > highs[highs.length - 3];
-  const higherLows = lows[lows.length - 1] > lows[lows.length - 3];
+  for (let i = 1; i < candles.length; i++) {
+    const upMove = candles[i].high - candles[i - 1].high;
+    const downMove = candles[i - 1].low - candles[i].low;
 
-  const lowerHighs = highs[highs.length - 1] < highs[highs.length - 3];
-  const lowerLows = lows[lows.length - 1] < lows[lows.length - 3];
+    if (upMove > downMove && upMove > 0) plus += upMove;
+    if (downMove > upMove && downMove > 0) minus += downMove;
+  }
 
-  if (higherHighs && higherLows) return "UPTREND";
-  if (lowerHighs && lowerLows) return "DOWNTREND";
-  return "RANGE";
+  const total = plus + minus || 1;
+  return (Math.abs(plus - minus) / total) * 100;
 }
 
-/* ---------------- STOCH ---------------- */
+/* ---------------- STRUCTURE ENGINE (REAL HH/HL MODEL) ---------------- */
 
-function stochKD(closes: number[]) {
-  const slice = closes.slice(-14);
+function structure(candles: Candle[]): Structure {
+  const last = candles.slice(-5);
 
-  const high = Math.max(...slice);
-  const low = Math.min(...slice);
+  const highs = last.map(c => c.high);
+  const lows = last.map(c => c.low);
 
-  const k =
-    ((closes.at(-1)! - low) / (high - low || 1)) * 100;
+  const hh = highs[4] > highs[3] && highs[3] > highs[2];
+  const hl = lows[4] > lows[3] && lows[3] > lows[2];
 
-  const d = k * 0.7 + 50 * 0.3;
+  const lh = highs[4] < highs[3] && highs[3] < highs[2];
+  const ll = lows[4] < lows[3] && lows[3] < lows[2];
 
-  return { k, d };
+  let trend: Structure["trend"] = "RANGE";
+
+  if (hh && hl) trend = "BULL";
+  if (lh && ll) trend = "BEAR";
+
+  return { trend, hh, hl, lh, ll };
+}
+
+/* ---------------- BREAKOUT DETECTION ---------------- */
+
+function breakout(candles: Candle[]) {
+  const recent = candles.slice(-20);
+  const highs = recent.map(c => c.high);
+  const lows = recent.map(c => c.low);
+
+  const rangeHigh = Math.max(...highs.slice(0, -1));
+  const rangeLow = Math.min(...lows.slice(0, -1));
+
+  const last = recent.at(-1)!;
+
+  if (last.close > rangeHigh) return "BULL";
+  if (last.close < rangeLow) return "BEAR";
+
+  return "NONE";
+}
+
+/* ---------------- REVERSAL DETECTION ---------------- */
+
+function reversal(struct: Structure, breakoutSignal: string) {
+  if (struct.trend === "BULL" && breakoutSignal === "BEAR") return true;
+  if (struct.trend === "BEAR" && breakoutSignal === "BULL") return true;
+  return false;
 }
 
 /* ---------------- VOLUME ---------------- */
@@ -132,8 +176,35 @@ function volumeScore(candles: Candle[]) {
   const last = vols.at(-1)!;
 
   return {
-    spike: last > avg * 1.2,
     ratio: last / (avg || 1),
+    spike: last > avg * 1.2,
+  };
+}
+
+/* ---------------- STOCH (TIMING ONLY) ---------------- */
+
+function stochKD(closes: number[]) {
+  const slice = closes.slice(-14);
+
+  const high = Math.max(...slice);
+  const low = Math.min(...slice);
+
+  const k = ((closes.at(-1)! - low) / (high - low || 1)) * 100;
+
+  const prevSlice = closes.slice(-17, -3);
+  const prevHigh = Math.max(...prevSlice);
+  const prevLow = Math.min(...prevSlice);
+
+  const prevK =
+    ((prevSlice.at(-1)! - prevLow) / (prevHigh - prevLow || 1)) * 100;
+
+  const d = (k + prevK + prevK) / 3;
+
+  return {
+    k,
+    d,
+    bullishCross: prevK < d && k > d,
+    bearishCross: prevK > d && k < d,
   };
 }
 
@@ -143,54 +214,73 @@ export function generateSignal(
   symbol: Symbol,
   price: number,
   candles15m: Candle[],
-  candles1h: Candle[]
+  candles1h: Candle[],
+  candles4h?: Candle[]
 ): Signal {
-
   const closes = candles15m.map(c => c.close);
 
   const r = rsi(closes);
-  const { k, d } = stochKD(closes);
+  const a = adx(candles15m);
+  const atrVal = atr(candles15m);
   const vol = volumeScore(candles15m);
 
-  const atrVal = atr(candles15m);
-  const structure = marketStructure(candles1h);
+  const struct = structure(candles4h ?? candles15m);
+  const breakoutSignal = breakout(candles15m);
 
-  /* ---------------- BIAS (STRUCTURE ONLY) ---------------- */
+  const stoch = stochKD(closes);
+
+  /* ---------------- 4H BIAS (ONLY SOURCE OF TRUTH) ---------------- */
 
   const bias: "LONG" | "SHORT" | "NEUTRAL" =
-    structure === "UPTREND"
+    struct.trend === "BULL"
       ? "LONG"
-      : structure === "DOWNTREND"
+      : struct.trend === "BEAR"
       ? "SHORT"
       : "NEUTRAL";
 
-  /* ---------------- SETUP DETECTION ---------------- */
+  /* ---------------- VOLATILITY REGIME ---------------- */
+
+  const avgRange = atrVal / price;
+
+  const regime =
+    avgRange < 0.003 ? "COMPRESSION"
+    : avgRange < 0.01 ? "NORMAL"
+    : "EXPANSION";
+
+  /* ---------------- SETUPS ---------------- */
+
+  const isBreakout =
+    breakoutSignal !== "NONE" &&
+    regime !== "COMPRESSION";
+
+  const isReversal = reversal(struct, breakoutSignal);
+
+  const isCompression =
+    regime === "COMPRESSION";
 
   const setup: SetupType =
-    vol.spike && structure !== "RANGE"
-      ? "BREAKOUT"
-      : r < 45 && structure !== "RANGE"
-      ? "PULLBACK"
-      : "NONE";
+    isReversal ? "REVERSAL"
+    : isBreakout ? "BREAKOUT"
+    : isCompression ? "COMPRESSION"
+    : "NONE";
 
-  /* ---------------- ENTRY CONDITIONS ---------------- */
+  /* ---------------- EARLY (UNIFIED SETUP LAYER) ---------------- */
 
-  const pullbackOK = r > 35 && r < 65;
-  const breakoutOK = vol.spike;
-
-  const validEntry =
-    structure !== "RANGE" &&
+  const early =
     bias !== "NEUTRAL" &&
-    (setup === "BREAKOUT" ? breakoutOK : pullbackOK);
+    setup !== "NONE" &&
+    a > 18 &&
+    r > 40 &&
+    r < 70;
 
-  /* ---------------- EARLY / SNIPER ---------------- */
-
-  const early = validEntry;
+  /* ---------------- SNIPER (FULL CONFLUENCE ONLY) ---------------- */
 
   const sniper =
     early &&
+    a > 25 &&
     vol.spike &&
-    Math.abs(k - d) > 8;
+    (stoch.bullishCross || stoch.bearishCross) &&
+    regime === "NORMAL";
 
   const state: SignalState =
     sniper ? "SNIPER"
@@ -201,19 +291,21 @@ export function generateSignal(
 
   const confidence =
     state === "SNIPER"
-      ? clamp(85 + r / 10, 80, 96)
+      ? clamp(80 + a / 10, 80, 96)
       : state === "EARLY"
-      ? clamp(60 + k / 2, 55, 82)
+      ? clamp(60 + r / 2, 55, 82)
       : 20;
 
-  /* ---------------- RISK MODEL ---------------- */
+  /* ---------------- EXPECTED MOVE ---------------- */
 
   const expectedMove =
-    state === "SNIPER"
-      ? clamp(atrVal * 1.5, 0.02, 0.06)
-      : state === "EARLY"
-      ? clamp(atrVal, 0.01, 0.04)
-      : 0.01;
+    regime === "COMPRESSION"
+      ? 0.015
+      : regime === "NORMAL"
+      ? 0.03
+      : 0.05;
+
+  /* ---------------- SL / TP ---------------- */
 
   let sl: number | null = null;
   let tp: number | null = null;
@@ -240,23 +332,22 @@ export function generateSignal(
     price: round(price),
 
     state,
-    bias,
     setup,
-    structure,
+    bias,
 
     confidence: round(confidence),
 
-    atr: round(atrVal, 2),
-
-    stochK: round(k),
-    stochD: round(d),
+    adx: round(a, 2),
+    atr: round(atrVal, 4),
+    stochK: round(stoch.k),
+    stochD: round(stoch.d),
     rsi: round(r),
 
     reason:
       state === "SNIPER"
-        ? "SNIPER (STRUCTURE + VOLUME + MOMENTUM)"
+        ? "SNIPER (4H STRUCTURE + SETUP + CONFLUENCE)"
         : state === "EARLY"
-        ? "EARLY (STRUCTURE BASED ENTRY)"
+        ? `EARLY (${setup})`
         : "NO STRUCTURE",
 
     stopLoss: sl ? round(sl, 2) : null,
