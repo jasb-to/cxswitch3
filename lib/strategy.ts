@@ -123,7 +123,6 @@ function stoch(
     rawK.push(((closes[i] - low) / (high - low || 1)) * 100);
   }
 
-  // Smooth K (SMA)
   const smoothKs: number[] = [];
   for (let i = smoothK - 1; i < rawK.length; i++) {
     smoothKs.push(
@@ -131,7 +130,6 @@ function stoch(
     );
   }
 
-  // Smooth D (SMA of smoothed K)
   const smoothDs: number[] = [];
   for (let i = smoothD - 1; i < smoothKs.length; i++) {
     smoothDs.push(
@@ -147,7 +145,7 @@ function stoch(
   };
 }
 
-/* ---------------- ADX (WILDER'S) ---------------- */
+/* ---------------- ADX (WILDER'S — NO SHADOWING) ---------------- */
 
 function adx(candles: Candle[], period = 14): number {
   if (!hasMinimumCandles(candles, period * 2)) return 0;
@@ -174,40 +172,58 @@ function adx(candles: Candle[], period = 14): number {
     minusDMs.push(downMove > upMove && downMove > 0 ? downMove : 0);
   }
 
-  // Wilder's smoothing init
-  let atr = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  let atrWilder = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
   let pDI = plusDMs.slice(0, period).reduce((a, b) => a + b, 0) / period;
   let mDI = minusDMs.slice(0, period).reduce((a, b) => a + b, 0) / period;
 
   const dxs: number[] = [];
 
   for (let i = period; i < trs.length; i++) {
-    atr = (atr * (period - 1) + trs[i]) / period;
+    atrWilder = (atrWilder * (period - 1) + trs[i]) / period;
     pDI = (pDI * (period - 1) + plusDMs[i]) / period;
     mDI = (mDI * (period - 1) + minusDMs[i]) / period;
 
-    const p = 100 * pDI / (atr || 1);
-    const m = 100 * mDI / (atr || 1);
+    const p = 100 * pDI / (atrWilder || 1);
+    const m = 100 * mDI / (atrWilder || 1);
     dxs.push(100 * Math.abs(p - m) / (p + m || 1));
   }
 
   if (dxs.length < period) return dxs.at(-1) ?? 0;
 
-  // Smooth DX into ADX
-  let adx = dxs.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  let adxValue = dxs.slice(0, period).reduce((a, b) => a + b, 0) / period;
   for (let i = period; i < dxs.length; i++) {
-    adx = (adx * (period - 1) + dxs[i]) / period;
+    adxValue = (adxValue * (period - 1) + dxs[i]) / period;
   }
 
-  return adx;
+  return adxValue;
 }
 
-/* ---------------- ROBUST STRUCTURE (5-BAR FRACTALS) ---------------- */
+/* ---------------- VOLUME ENGINE ---------------- */
 
-function getStructure(candles: Candle[], minSwings = 8): Structure {
+function volumeConfirmed(
+  candles: Candle[],
+  minRatio = 1.2
+): { confirmed: boolean; ratio: number } {
+  if (!hasMinimumCandles(candles, 21)) return { confirmed: false, ratio: 0 };
+
+  const volumes = candles.map((c) => c.volume);
+  const avgVol = volumes.slice(-21, -1).reduce((a, b) => a + b, 0) / 20;
+  const currentVol = volumes.at(-1) ?? 0;
+
+  const ratio = avgVol > 0 ? currentVol / avgVol : 0;
+  return { confirmed: ratio >= minRatio, ratio };
+}
+
+/* ---------------- STRUCTURE ENGINE (HARDENED) ---------------- */
+
+function getStructure(
+  candles: Candle[],
+  minSwings = 8,
+  minSwingDistPct = 0.003
+): Structure {
   if (!hasMinimumCandles(candles, 10)) return "RANGE";
 
-  const swings: { type: "HIGH" | "LOW"; value: number }[] = [];
+  const swings: { type: "HIGH" | "LOW"; value: number; idx: number }[] = [];
 
   for (let i = 3; i < candles.length - 3; i++) {
     const c = candles[i];
@@ -221,14 +237,28 @@ function getStructure(candles: Candle[], minSwings = 8): Structure {
         isLow = false;
     }
 
-    if (isHigh) swings.push({ type: "HIGH", value: c.high });
-    if (isLow) swings.push({ type: "LOW", value: c.low });
+    if (isHigh) swings.push({ type: "HIGH", value: c.high, idx: i });
+    if (isLow) swings.push({ type: "LOW", value: c.low, idx: i });
   }
 
   if (swings.length < minSwings) return "RANGE";
 
-  const highs = swings.filter((s) => s.type === "HIGH").map((s) => s.value);
-  const lows = swings.filter((s) => s.type === "LOW").map((s) => s.value);
+  // Filter micro-swings: require minimum distance from previous swing of same type
+  const filteredSwings: typeof swings = [];
+  for (const swing of swings) {
+    const lastSame = filteredSwings.filter((s) => s.type === swing.type).at(-1);
+    if (!lastSame) {
+      filteredSwings.push(swing);
+      continue;
+    }
+    const dist = Math.abs(swing.value - lastSame.value) / swing.value;
+    if (dist >= minSwingDistPct) {
+      filteredSwings.push(swing);
+    }
+  }
+
+  const highs = filteredSwings.filter((s) => s.type === "HIGH").map((s) => s.value);
+  const lows = filteredSwings.filter((s) => s.type === "LOW").map((s) => s.value);
 
   if (highs.length < 4 || lows.length < 4) return "RANGE";
 
@@ -245,7 +275,68 @@ function getStructure(candles: Candle[], minSwings = 8): Structure {
   return "RANGE";
 }
 
-/* ---------------- BREAKOUT (STRUCTURE-AWARE) ---------------- */
+/* ---------------- STRUCTURE STRENGTH SCORE ---------------- */
+
+function structureStrength(
+  candles: Candle[],
+  minSwingDistPct = 0.003
+): number {
+  if (!hasMinimumCandles(candles, 10)) return 0;
+
+  const swings: { type: "HIGH" | "LOW"; value: number }[] = [];
+
+  for (let i = 3; i < candles.length - 3; i++) {
+    const c = candles[i];
+    let isHigh = true;
+    let isLow = true;
+    for (let j = 1; j <= 3; j++) {
+      if (c.high <= candles[i - j].high || c.high <= candles[i + j].high)
+        isHigh = false;
+      if (c.low >= candles[i - j].low || c.low >= candles[i + j].low)
+        isLow = false;
+    }
+    if (isHigh) swings.push({ type: "HIGH", value: c.high });
+    if (isLow) swings.push({ type: "LOW", value: c.low });
+  }
+
+  const filtered: typeof swings = [];
+  for (const swing of swings) {
+    const lastSame = filtered.filter((s) => s.type === swing.type).at(-1);
+    if (!lastSame) {
+      filtered.push(swing);
+      continue;
+    }
+    const dist = Math.abs(swing.value - lastSame.value) / swing.value;
+    if (dist >= minSwingDistPct) filtered.push(swing);
+  }
+
+  const highs = filtered.filter((s) => s.type === "HIGH").map((s) => s.value);
+  const lows = filtered.filter((s) => s.type === "LOW").map((s) => s.value);
+
+  if (highs.length < 4 || lows.length < 4) return 0;
+
+  // Score: consistency of HH/HL or LL/LH
+  let hhScore = 0;
+  let hlScore = 0;
+  let lhScore = 0;
+  let llScore = 0;
+
+  for (let i = 1; i < highs.length; i++) {
+    if (highs[i] > highs[i - 1]) hhScore++;
+    else lhScore++;
+  }
+  for (let i = 1; i < lows.length; i++) {
+    if (lows[i] > lows[i - 1]) hlScore++;
+    else llScore++;
+  }
+
+  const uptrendScore = (hhScore + hlScore) / (highs.length + lows.length - 2);
+  const downtrendScore = (lhScore + llScore) / (highs.length + lows.length - 2);
+
+  return Math.max(uptrendScore, downtrendScore);
+}
+
+/* ---------------- BREAKOUT (HARDENED) ---------------- */
 
 function breakout(
   candles: Candle[],
@@ -255,7 +346,6 @@ function breakout(
   if (!hasMinimumCandles(candles, 21)) return "NONE";
 
   const lookback = 20;
-  // Use the 20 candles BEFORE the current candle to set the level
   const window = candles.slice(-lookback - 1, -1);
   const highs = window.map((c) => c.high);
   const lows = window.map((c) => c.low);
@@ -266,17 +356,31 @@ function breakout(
   const last = candles.at(-1)!;
   const prev = candles.at(-2)!;
 
-  // Confirmed close beyond level (not just wick)
   const brokeUp = last.close > resistance && prev.close <= resistance;
   const brokeDown = last.close < support && prev.close >= support;
 
+  // Wick rejection filter
+  const upperWick = last.high - Math.max(last.open, last.close);
+  const lowerWick = Math.min(last.open, last.close) - last.low;
+  const body = Math.abs(last.close - last.open);
+
+  // Volume confirmation
+  const { confirmed: volConfirmed } = volumeConfirmed(candles, 1.15);
+
   if (brokeUp) {
+    // Reject if massive upper wick (failed breakout)
+    if (upperWick > body * 2.5) return "NONE";
+    if (!volConfirmed && structure4h === "RANGE") return "NONE";
+
     if (bias === "LONG" || structure4h === "RANGE" || bias === "NEUTRAL")
       return "BREAKOUT_UP";
-    return "NONE"; // reject counter-trend breakout
+    return "NONE";
   }
 
   if (brokeDown) {
+    if (lowerWick > body * 2.5) return "NONE";
+    if (!volConfirmed && structure4h === "RANGE") return "NONE";
+
     if (bias === "SHORT" || structure4h === "RANGE" || bias === "NEUTRAL")
       return "BREAKOUT_DOWN";
     return "NONE";
@@ -299,7 +403,6 @@ function isPullback(
   if (bias === "LONG") {
     const highest = Math.max(...recent.map((c) => c.high));
     const highestIdx = recent.findIndex((c) => c.high === highest);
-    // High formed recently and price has pulled back but not broken structure
     if (highestIdx >= 8 && highestIdx < 14) {
       const priorLow = Math.min(
         ...recent.slice(0, highestIdx + 1).map((c) => c.low)
@@ -320,23 +423,35 @@ function isPullback(
   return false;
 }
 
-/* ---------------- ADAPTIVE VOLATILITY REGIME ---------------- */
+/* ---------------- ADAPTIVE VOLATILITY REGIME (DURATION FILTERED) ---------------- */
 
 function getVolatilityRegime(
   candles: Candle[],
   currentAtr: number
-): { compression: boolean; expansion: boolean } {
+): { compression: boolean; expansion: boolean; compressionDuration: number } {
   if (!hasMinimumCandles(candles, 25) || currentAtr <= 0) {
-    return { compression: false, expansion: false };
+    return { compression: false, expansion: false, compressionDuration: 0 };
   }
 
   const priorCandles = candles.slice(0, -1);
   const historicalAtr = atr(priorCandles, 20);
   const ratio = historicalAtr > 0 ? currentAtr / historicalAtr : 1;
 
+  // Count consecutive compression candles
+  let compressionDuration = 0;
+  for (let i = candles.length - 1; i >= 1; i--) {
+    const c = candles[i];
+    const p = candles[i - 1];
+    const tr = Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
+    const cRatio = historicalAtr > 0 ? tr / historicalAtr : 1;
+    if (cRatio < 0.6) compressionDuration++;
+    else break;
+  }
+
   return {
-    compression: ratio < 0.6,
+    compression: ratio < 0.6 && compressionDuration >= 2,
     expansion: ratio > 1.4,
+    compressionDuration,
   };
 }
 
@@ -380,8 +495,8 @@ export function generateSignal(
   }
 
   /* ---- MULTI-TIMEFRAME STRUCTURE ---- */
-  const structure4h = getStructure(candles4h, 8);
-  const structure1h = getStructure(candles1h, 8);
+  const structure4h = getStructure(candles4h, 8, 0.003);
+  const structure1h = getStructure(candles1h, 8, 0.003);
 
   /* ---- BIAS (4H ONLY) ---- */
   const bias =
@@ -430,13 +545,12 @@ export function generateSignal(
   }
 
   /* ---- VOLATILITY REGIME ---- */
-  const { compression, expansion } = getVolatilityRegime(candles15m, a15);
+  const { compression, expansion, compressionDuration } = getVolatilityRegime(candles15m, a15);
 
   /* ---- ENTRY VALIDATION (MULTI-TIMEFRAME) ---- */
   const stochCrossUp = s15.prevK < s15.prevD && s15.k > s15.d;
   const stochCrossDown = s15.prevK > s15.prevD && s15.k < s15.d;
 
-  // 15m entry trigger + 1h momentum confirmation
   const entryValidLong =
     bias === "LONG" &&
     r15 > 40 &&
@@ -453,21 +567,30 @@ export function generateSignal(
 
   const entryValid = entryValidLong || entryValidShort;
 
-  /* ---- TIMEFRAME ALIGNMENT ---- */
+  /* ---- STRICT TIMEFRAME ALIGNMENT ---- */
+  // 1H must CONFIRM the 4H bias, not just "not conflict"
   const timeframeAligned =
-    (bias === "LONG" && structure1h !== "DOWNTREND") ||
-    (bias === "SHORT" && structure1h !== "UPTREND") ||
+    (bias === "LONG" && structure1h === "UPTREND") ||
+    (bias === "SHORT" && structure1h === "DOWNTREND") ||
     bias === "NEUTRAL";
+
+  /* ---- STRUCTURE STRENGTH ---- */
+  const strength4h = structureStrength(candles4h, 0.003);
+  const strongStructure = strength4h >= 0.75;
+
+  /* ---- VOLUME CONFIRMATION ---- */
+  const { confirmed: volConfirmed, ratio: volRatio } = volumeConfirmed(candles15m, 1.2);
 
   /* ---- STATE MACHINE ---- */
 
-  // EARLY: specific setup forming, macro structure clear, not compressed, 1h aligned
+  // EARLY: setup forming, macro clear, not compressed, 1h CONFIRMS, RSI ok
   const early =
     bias !== "NEUTRAL" &&
     setup !== "NONE" &&
     !compression &&
     timeframeAligned &&
-    ((bias === "LONG" && r15 > 35) || (bias === "SHORT" && r15 < 65));
+    ((bias === "LONG" && r15 > 35) || (bias === "SHORT" && r15 < 65)) &&
+    (structure4h !== "RANGE" || setup === "BREAKOUT");
 
   // SNIPER: full confluence stack
   const sniper =
@@ -477,6 +600,8 @@ export function generateSignal(
     structure4h !== "RANGE" &&
     timeframeAligned &&
     adxValue > 15 &&
+    strongStructure &&
+    volConfirmed &&
     ((setup === "PULLBACK" && pullback) ||
       (setup === "BREAKOUT" && brk !== "NONE"));
 
@@ -486,18 +611,20 @@ export function generateSignal(
     : "WAIT";
 
   /* ---- CONFIDENCE ---- */
-  let confidence = state === "SNIPER" ? 85 : state === "EARLY" ? 60 : 15;
+  let confidence = state === "SNIPER" ? 85 : state === "EARLY" ? 55 : 10;
   if (timeframeAligned && state !== "WAIT") confidence += 5;
   if (expansion && state !== "WAIT") confidence += 5;
   if (adxValue > 25 && state !== "WAIT") confidence += 5;
+  if (strongStructure && state !== "WAIT") confidence += 5;
+  if (volConfirmed && state !== "WAIT") confidence += 5;
   confidence = clamp(confidence, 0, 100);
 
-  /* ---- ATR-SCALED RR MODEL ---- */
+  /* ---- ATR-SCALED RR MODEL (CAPPED) ---- */
   const atrPercent = a15 / price;
 
-  const expectedMove =
-    state === "SNIPER" ? Math.max(0.015, atrPercent * 3)
-    : state === "EARLY" ? Math.max(0.008, atrPercent * 1.8)
+  let expectedMove =
+    state === "SNIPER" ? Math.max(0.01, Math.min(0.08, atrPercent * 3))
+    : state === "EARLY" ? Math.max(0.005, Math.min(0.05, atrPercent * 1.8))
     : 0;
 
   let sl: number | null = null;
@@ -518,7 +645,9 @@ export function generateSignal(
   if (state === "SNIPER") {
     const parts: string[] = [structure4h, setup];
     if (expansion) parts.push("EXPANSION");
-    if (timeframeAligned) parts.push("1H-ALIGN");
+    if (timeframeAligned) parts.push("1H-CONFIRM");
+    if (strongStructure) parts.push(`STR ${round(strength4h * 100)}%`);
+    if (volConfirmed) parts.push(`VOL ${round(volRatio, 1)}x`);
     if (adxValue > 15) parts.push(`ADX ${round(adxValue)}`);
     reason = `SNIPER (${parts.join(" | ")})`;
   } else if (state === "EARLY") {
@@ -527,8 +656,9 @@ export function generateSignal(
     const issues: string[] = [];
     if (bias === "NEUTRAL") issues.push("NO 4H BIAS");
     if (setup === "NONE") issues.push("NO SETUP");
-    if (compression) issues.push("COMPRESSION");
+    if (compression) issues.push(`COMPRESSION ${compressionDuration}c`);
     if (!timeframeAligned) issues.push("1H-DIVERGENCE");
+    if (!strongStructure) issues.push("WEAK-STRUCTURE");
     reason = issues.length ? `WAIT (${issues.join(", ")})` : "WAIT (NO CONFLUENCE)";
   }
 
