@@ -47,6 +47,8 @@ const round = (n: number, d = 2) =>
 /* ---------------- RSI ---------------- */
 
 function rsi(closes: number[]) {
+  if (closes.length < 2) return 50;
+
   let gain = 0;
   let loss = 0;
 
@@ -60,9 +62,11 @@ function rsi(closes: number[]) {
   return 100 - 100 / (1 + rs);
 }
 
-/* ---------------- ADX ---------------- */
+/* ---------------- ADX (improved stability) ---------------- */
 
 function adx(candles: Candle[]) {
+  if (candles.length < 3) return 20;
+
   let plus = 0;
   let minus = 0;
 
@@ -78,9 +82,13 @@ function adx(candles: Candle[]) {
   return (Math.abs(plus - minus) / total) * 100;
 }
 
-/* ---------------- STOCH (TIMING ONLY) ---------------- */
+/* ---------------- STOCH (clean + safer) ---------------- */
 
 function stochKD(closes: number[], period = 14) {
+  if (closes.length < period + 2) {
+    return { k: 50, d: 50, prevK: 50 };
+  }
+
   const slice = closes.slice(-period);
 
   const high = Math.max(...slice);
@@ -105,6 +113,10 @@ function stochKD(closes: number[], period = 14) {
 /* ---------------- VOLUME ---------------- */
 
 function volumeScore(candles: Candle[]) {
+  if (candles.length < 2) {
+    return { spike: false, ratio: 1 };
+  }
+
   const vols = candles.map(c => c.volume);
   const avg = vols.reduce((a, b) => a + b, 0) / vols.length;
 
@@ -112,7 +124,7 @@ function volumeScore(candles: Candle[]) {
   const ratio = last / (avg || 1);
 
   return {
-    spike: ratio > 1.25,
+    spike: ratio > 1.3, // slightly stricter (removes chop noise)
     ratio,
   };
 }
@@ -120,6 +132,8 @@ function volumeScore(candles: Candle[]) {
 /* ---------------- STRUCTURE ---------------- */
 
 function BOS(candles: Candle[]) {
+  if (candles.length < 3) return "NEUTRAL";
+
   const last = candles.at(-1)!;
   const prev = candles.at(-2)!;
   const prev2 = candles.at(-3)!;
@@ -129,11 +143,12 @@ function BOS(candles: Candle[]) {
   return "NEUTRAL";
 }
 
-/* ---------------- EMA 21 ---------------- */
+/* ---------------- EMA ---------------- */
 
 function ema(values: number[], period = 21) {
-  const k = 2 / (period + 1);
+  if (values.length === 0) return 0;
 
+  const k = 2 / (period + 1);
   let emaVal = values[0];
 
   for (let i = 1; i < values.length; i++) {
@@ -170,7 +185,7 @@ export function generateSignal(
 
   const emaSlope = emaSlope21(closes);
 
-  /* ---------------- BIAS (EMA21 ONLY) ---------------- */
+  /* ---------------- BIAS (EMA ONLY) ---------------- */
 
   const bias: "LONG" | "SHORT" | "NEUTRAL" =
     emaSlope > 0
@@ -179,41 +194,38 @@ export function generateSignal(
       ? "SHORT"
       : "NEUTRAL";
 
-  /* ---------------- REGIME FILTER (CRITICAL FIX) ---------------- */
+  /* ---------------- REGIME ---------------- */
 
-  const trendStrength =
-    a >= 26 ? "TRENDING"
-    : a >= 20 ? "TRANSITION"
-    : "CHOP";
+  const isChop = a < 20;
+  const isTransition = a >= 20 && a < 25;
+  const isTrending = a >= 25;
 
-  const validTrend = a >= 23; // 🔥 KILLS SOL-TYPE FALSE SIGNALS
+  /* ---------------- MOMENTUM SHIFT (CRITICAL FIX) ---------------- */
 
-  /* ---------------- STOCH TIMING ---------------- */
+  const bullishShift = prevK < d && k > d && k < 80;
+  const bearishShift = prevK > d && k < d && k > 20;
 
-  const bullishCross = prevK < d && k > d;
-  const bearishCross = prevK > d && k < d;
+  const stochSignal = bullishShift || bearishShift;
 
-  const stochSignal = bullishCross || bearishCross;
-
-  /* ---------------- EARLY (ONLY IN VALID REGIME) ---------------- */
+  /* ---------------- EARLY LOGIC (FIXED CORE) ---------------- */
 
   const early =
     bias !== "NEUTRAL" &&
-    trendStrength !== "CHOP" &&
-    validTrend &&              // 🔥 KEY FIX
+    !isChop &&
     stochSignal &&
     vol.ratio > 1.05 &&
-    r > 40 &&
-    r < 70;
+    r > 38 &&
+    r < 72 &&
+    (isTransition || isTrending); // allows early reversals now
 
   /* ---------------- SNIPER ---------------- */
 
   const sniper =
     early &&
-    a > 26 &&
+    a >= 25 &&
     vol.spike &&
     bos !== "NEUTRAL" &&
-    Math.abs(price - closes.reduce((a,b)=>a+b,0)/closes.length) / price > 0.01;
+    Math.abs(price - closes.reduce((a, b) => a + b, 0) / closes.length) / price > 0.01;
 
   const state: SignalState =
     sniper ? "SNIPER"
@@ -224,9 +236,9 @@ export function generateSignal(
 
   const confidence =
     state === "SNIPER"
-      ? clamp(82 + r / 10, 80, 96)
+      ? clamp(85 + r / 12, 80, 96)
       : state === "EARLY"
-      ? clamp(60 + k / 2, 55, 82)
+      ? clamp(58 + k / 3, 55, 82)
       : 20;
 
   /* ---------------- EXPECTED MOVE ---------------- */
@@ -279,9 +291,9 @@ export function generateSignal(
 
     reason:
       state === "SNIPER"
-        ? "SNIPER CONFIRMED (EMA21 + REGIME + STRUCTURE + VOLUME)"
+        ? "SNIPER CONFIRMED (STRUCTURE + MOMENTUM + VOLUME)"
         : state === "EARLY"
-        ? "EARLY PULLBACK (REGIME FILTERED)"
+        ? "EARLY (MOMENTUM SHIFT + REGIME CONFIRMED)"
         : "NO STRUCTURE",
 
     stopLoss: sl ? round(sl, 2) : null,
