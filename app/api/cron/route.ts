@@ -17,12 +17,18 @@ export async function GET() {
     symbols.map(s => getCandles(s, 60))
   );
 
+  // FIX: Fetch 4H candles — was missing, causing undefined.length crash
+  const candles4h = await Promise.all(
+    symbols.map(s => getCandles(s, 240))
+  );
+
   const prices = await Promise.all(
     symbols.map(s => getCurrentPrice(s))
   );
 
+  // FIX: Pass all 4 candle arrays to generateSignal
   const signals = symbols.map((s, i) =>
-    generateSignal(s, prices[i], candles15[i], candles1h[i])
+    generateSignal(s, prices[i], candles15[i], candles1h[i], candles4h[i])
   );
 
   setSignals(signals);
