@@ -60,28 +60,7 @@ function rsi(closes: number[]) {
   return 100 - 100 / (1 + rs);
 }
 
-/* ---------------- MOMENTUM STRENGTH (FIXED) ---------------- */
-
-function momentumStrength(candles: Candle[]) {
-  if (candles.length < 10) return 20;
-
-  let trueRange = 0;
-  let directional = 0;
-
-  for (let i = 1; i < candles.length; i++) {
-    const up = candles[i].high - candles[i - 1].high;
-    const down = candles[i - 1].low - candles[i].low;
-
-    const move = Math.max(Math.abs(up), Math.abs(down));
-    trueRange += move;
-
-    directional += up - down;
-  }
-
-  return Math.abs(directional) / (trueRange || 1) * 100;
-}
-
-/* ---------------- ADX ---------------- */
+/* ---------------- ADX (proxy - NOT TRUE ADX) ---------------- */
 
 function adx(candles: Candle[]) {
   let plus = 0;
@@ -99,7 +78,7 @@ function adx(candles: Candle[]) {
   return (Math.abs(plus - minus) / total) * 100;
 }
 
-/* ---------------- STOCH ---------------- */
+/* ---------------- STOCH (TIMING ONLY - FIXED) ---------------- */
 
 function stochKD(closes: number[], period = 14) {
   const slice = closes.slice(-period);
@@ -120,7 +99,10 @@ function stochKD(closes: number[], period = 14) {
 
   const d = (k + prevK + prevK) / 3;
 
-  return { k, d, prevK };
+  const bullishCross = prevK < d && k > d;
+  const bearishCross = prevK > d && k < d;
+
+  return { k, d, prevK, bullishCross, bearishCross };
 }
 
 /* ---------------- VOLUME ---------------- */
@@ -133,12 +115,12 @@ function volumeScore(candles: Candle[]) {
   const ratio = last / (avg || 1);
 
   return {
-    spike: ratio > 1.25,
+    spike: ratio > 1.1,
     ratio,
   };
 }
 
-/* ---------------- STRUCTURE BREAK ---------------- */
+/* ---------------- STRUCTURE ---------------- */
 
 function BOS(candles: Candle[]) {
   const last = candles.at(-1)!;
@@ -164,39 +146,13 @@ function ema(values: number[], period = 21) {
   return emaVal;
 }
 
-/* FIXED EMA SLOPE (NO LAG BIAS BUG) */
 function emaSlope21(closes: number[]) {
-  if (closes.length < 25) return 0;
+  if (closes.length < 30) return 0;
 
   const emaNow = ema(closes, 21);
-  const emaPrev = ema(closes.slice(-10, -1), 21);
+  const emaPrev = ema(closes.slice(0, -5), 21);
 
   return emaNow - emaPrev;
-}
-
-/* ---------------- COMPRESSION / BREAKOUT / REVERSAL ---------------- */
-
-function marketStructure(closes: number[]) {
-  if (closes.length < 20) {
-    return { compression: false, breakout: false, reversal: false };
-  }
-
-  const recent = closes.slice(-10);
-  const prior = closes.slice(-20, -10);
-
-  const recentRange = Math.max(...recent) - Math.min(...recent);
-  const priorRange = Math.max(...prior) - Math.min(...prior);
-
-  const avgRange = (recentRange + priorRange) / 2;
-
-  const compression = recentRange < avgRange * 0.75;
-  const breakout = recentRange > avgRange * 1.2;
-
-  const reversal =
-    compression &&
-    Math.abs(closes.at(-1)! - closes.at(-5)!) / closes.at(-5)! > 0.01;
-
-  return { compression, breakout, reversal };
 }
 
 /* ---------------- CORE ENGINE ---------------- */
@@ -208,73 +164,67 @@ export function generateSignal(
   candles1h: Candle[]
 ): Signal {
   const closes = candles15m.map(c => c.close);
-  const closes1h = candles1h.map(c => c.close);
 
   const r = rsi(closes);
-  const { k, d, prevK } = stochKD(closes);
+  const { k, d, prevK, bullishCross, bearishCross } = stochKD(closes);
   const a = adx(candles15m);
   const bos = BOS(candles15m);
   const vol = volumeScore(candles15m);
-  const ms = marketStructure(closes);
 
   const emaSlope = emaSlope21(closes);
 
   /* ---------------- BIAS ---------------- */
 
   const bias: "LONG" | "SHORT" | "NEUTRAL" =
-    emaSlope > 0 ? "LONG"
-    : emaSlope < 0 ? "SHORT"
-    : "NEUTRAL";
-
-  /* ---------------- 1H ALIGNMENT (FIXED) ---------------- */
-
-  const h1Slope = emaSlope21(closes1h);
-
-  const higherBias =
-    h1Slope > 0 ? "LONG"
-    : h1Slope < 0 ? "SHORT"
-    : "NEUTRAL";
-
-  const aligned = higherBias === bias;
+    emaSlope > 0
+      ? "LONG"
+      : emaSlope < 0
+      ? "SHORT"
+      : "NEUTRAL";
 
   /* ---------------- REGIME ---------------- */
 
   const trendStrength =
-    a >= 26 ? "TRENDING"
-    : a >= 20 ? "TRANSITION"
+    a > 30 ? "TRENDING"
+    : a > 22 ? "TRANSITION"
     : "CHOP";
 
   const validTrend = a >= 23;
 
-  /* ---------------- STOCH ---------------- */
+  /* ---------------- STOCH (FIXED CONTEXTUAL SIGNAL) ---------------- */
 
-  const bullishCross = prevK < d && k > d;
-  const bearishCross = prevK > d && k < d;
+  const stochSignal =
+    Math.abs(k - d) > 6 &&
+    ((bias === "LONG" && bullishCross) ||
+     (bias === "SHORT" && bearishCross));
 
-  const stochSignal = bullishCross || bearishCross;
+  /* ---------------- CONFIRMATION MODEL (KEY FIX) ---------------- */
 
-  /* ---------------- EARLY SCORING SYSTEM ---------------- */
+  const momentumOK = r > 40 && r < 70;
+  const stochOK = stochSignal;
+  const volumeOK = vol.ratio > 1.1;
 
-  let earlyScore = 0;
+  const confirmationCount =
+    (momentumOK ? 1 : 0) +
+    (stochOK ? 1 : 0) +
+    (volumeOK ? 1 : 0);
 
-  if (validTrend && trendStrength !== "CHOP") earlyScore += 1;
-  if (stochSignal) earlyScore += 1;
-  if (vol.ratio > 1.05) earlyScore += 1;
-  if (aligned) earlyScore += 1;
+  /* ---------------- EARLY (FIXED LOGIC) ---------------- */
 
-  if (ms.breakout) earlyScore += 2;
-  if (ms.reversal) earlyScore += 2;
-  if (ms.compression) earlyScore += 1;
-
-  const early = earlyScore >= 3;
+  const early =
+    bias !== "NEUTRAL" &&
+    validTrend &&
+    trendStrength !== "CHOP" &&
+    confirmationCount >= 2;
 
   /* ---------------- SNIPER ---------------- */
 
   const sniper =
-    earlyScore >= 5 &&
+    early &&
     a > 26 &&
     vol.spike &&
-    bos !== "NEUTRAL";
+    bos !== "NEUTRAL" &&
+    Math.abs(price - closes.reduce((a,b)=>a+b,0)/closes.length) / price > 0.01;
 
   const state: SignalState =
     sniper ? "SNIPER"
@@ -285,16 +235,14 @@ export function generateSignal(
 
   const confidence =
     state === "SNIPER"
-      ? clamp(82 + earlyScore * 2, 80, 96)
+      ? clamp(82 + r / 10, 80, 96)
       : state === "EARLY"
-      ? clamp(55 + earlyScore * 4, 55, 85)
+      ? clamp(60 + k / 2, 55, 82)
       : 20;
 
   /* ---------------- EXPECTED MOVE ---------------- */
 
-  const emaValue =
-    closes.reduce((a, b) => a + b, 0) / closes.length;
-
+  const emaValue = closes.reduce((a, b) => a + b, 0) / closes.length;
   const volatility = Math.abs(price - emaValue) / price;
 
   const expectedMove =
@@ -342,9 +290,9 @@ export function generateSignal(
 
     reason:
       state === "SNIPER"
-        ? "SNIPER (BREAKOUT + STRUCTURE + VOLUME + ALIGNMENT)"
+        ? "SNIPER CONFIRMED (CONFIRMATION STACK + STRUCTURE)"
         : state === "EARLY"
-        ? "EARLY (COMPRESSION / BREAKOUT / REVERSAL STACK)"
+        ? "EARLY (2/3 CONFIRMATION MODEL)"
         : "NO STRUCTURE",
 
     stopLoss: sl ? round(sl, 2) : null,
