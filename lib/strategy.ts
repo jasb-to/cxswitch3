@@ -47,6 +47,8 @@ const round = (n: number, d = 2) =>
 /* ---------------- RSI ---------------- */
 
 function rsi(closes: number[]) {
+  if (closes.length < 2) return 50;
+
   let gain = 0;
   let loss = 0;
 
@@ -60,27 +62,33 @@ function rsi(closes: number[]) {
   return 100 - 100 / (1 + rs);
 }
 
-/* ---------------- ADX ---------------- */
+/* ---------------- MOMENTUM STRENGTH (SAFE ADX REPLACEMENT) ---------------- */
 
-function adx(candles: Candle[]) {
-  let plus = 0;
-  let minus = 0;
+function momentumStrength(candles: Candle[]) {
+  if (candles.length < 10) return 20;
+
+  let up = 0;
+  let down = 0;
 
   for (let i = 1; i < candles.length; i++) {
     const upMove = candles[i].high - candles[i - 1].high;
     const downMove = candles[i - 1].low - candles[i].low;
 
-    if (upMove > downMove && upMove > 0) plus += upMove;
-    if (downMove > upMove && downMove > 0) minus += downMove;
+    if (upMove > downMove && upMove > 0) up += upMove;
+    if (downMove > upMove && downMove > 0) down += downMove;
   }
 
-  const total = plus + minus || 1;
-  return (Math.abs(plus - minus) / total) * 100;
+  const total = up + down || 1;
+  return (Math.abs(up - down) / total) * 100;
 }
 
-/* ---------------- STOCH ---------------- */
+/* ---------------- STOCH (SAFE) ---------------- */
 
 function stochKD(closes: number[], period = 14) {
+  if (closes.length < period + 5) {
+    return { k: 50, d: 50, prevK: 50 };
+  }
+
   const slice = closes.slice(-period);
 
   const high = Math.max(...slice);
@@ -112,14 +120,16 @@ function volumeScore(candles: Candle[]) {
   const ratio = last / (avg || 1);
 
   return {
-    spike: ratio > 1.2,
+    spike: ratio > 1.25,
     ratio,
   };
 }
 
-/* ---------------- STRUCTURE ---------------- */
+/* ---------------- STRUCTURE BREAK (REALISTIC) ---------------- */
 
 function BOS(candles: Candle[]) {
+  if (candles.length < 4) return "NEUTRAL";
+
   const last = candles.at(-1)!;
   const prev = candles.at(-2)!;
   const prev2 = candles.at(-3)!;
@@ -133,22 +143,41 @@ function BOS(candles: Candle[]) {
 
 function ema(values: number[], period = 21) {
   const k = 2 / (period + 1);
-  let ema = values[0];
+
+  let emaVal = values[0];
 
   for (let i = 1; i < values.length; i++) {
-    ema = values[i] * k + ema * (1 - k);
+    emaVal = values[i] * k + emaVal * (1 - k);
   }
 
-  return ema;
+  return emaVal;
 }
 
 function emaSlope21(closes: number[]) {
-  if (closes.length < 30) return 0;
+  if (closes.length < 25) return 0;
 
   const emaNow = ema(closes, 21);
-  const emaPrev = ema(closes.slice(0, -5), 21);
+  const emaPrev = ema(closes.slice(0, -1), 21);
 
   return emaNow - emaPrev;
+}
+
+/* ---------------- COMPRESSION / BREAKOUT ENGINE ---------------- */
+
+function compressionExpansion(closes: number[]) {
+  if (closes.length < 20) return { compression: false, breakout: false };
+
+  const rangeNow =
+    Math.max(...closes.slice(-10)) - Math.min(...closes.slice(-10));
+
+  const rangePrev =
+    Math.max(...closes.slice(-20, -10)) -
+    Math.min(...closes.slice(-20, -10));
+
+  return {
+    compression: rangeNow < rangePrev * 0.75,
+    breakout: rangeNow > rangePrev * 1.25,
+  };
 }
 
 /* ---------------- CORE ENGINE ---------------- */
@@ -160,84 +189,77 @@ export function generateSignal(
   candles1h: Candle[]
 ): Signal {
   const closes = candles15m.map(c => c.close);
+  const closes1h = candles1h.map(c => c.close);
 
   const r = rsi(closes);
   const { k, d, prevK } = stochKD(closes);
-  const a = adx(candles15m);
-  const vol = volumeScore(candles15m);
+  const m = momentumStrength(candles15m);
   const bos = BOS(candles15m);
+  const vol = volumeScore(candles15m);
 
   const emaSlope = emaSlope21(closes);
+
+  const { compression, breakout } = compressionExpansion(closes);
+
+  /* ---------------- 1H TREND CONFIRMATION ---------------- */
+
+  const ema1h = ema(closes1h, 21);
+  const price1h = closes1h.at(-1)!;
+
+  const higherTimeframeBias: "LONG" | "SHORT" | "NEUTRAL" =
+    price1h > ema1h ? "LONG"
+    : price1h < ema1h ? "SHORT"
+    : "NEUTRAL";
 
   /* ---------------- BIAS ---------------- */
 
   const bias: "LONG" | "SHORT" | "NEUTRAL" =
-    emaSlope > 0 ? "LONG"
-    : emaSlope < 0 ? "SHORT"
-    : "NEUTRAL";
+    emaSlope > 0
+      ? "LONG"
+      : emaSlope < 0
+      ? "SHORT"
+      : "NEUTRAL";
 
-  const trendStrength =
-    a >= 26 ? "TRENDING"
-    : a >= 20 ? "TRANSITION"
-    : "CHOP";
-
-  /* ---------------- CORE SIGNAL TRIGGERS ---------------- */
+  /* ---------------- STOCH SIGNAL ---------------- */
 
   const bullishCross = prevK < d && k > d;
   const bearishCross = prevK > d && k < d;
 
   const stochSignal = bullishCross || bearishCross;
 
-  const avgPrice =
-    closes.reduce((a, b) => a + b, 0) / closes.length;
+  /* ---------------- EARLY (NOW INCLUDES ALL 3 REGIMES) ---------------- */
 
-  const compression =
-    Math.abs(price - avgPrice) / price < 0.008; // tight range
-
-  const expansion =
-    Math.abs(price - avgPrice) / price > 0.012;
-
-  /* ---------------- 1. PULLBACK ENTRY ---------------- */
-
-  const pullback =
+  const earlyPullback =
     bias !== "NEUTRAL" &&
-    trendStrength !== "CHOP" &&
     stochSignal &&
     vol.ratio > 1.05 &&
-    r > 40 &&
+    r > 35 &&
     r < 70;
 
-  /* ---------------- 2. REVERSAL ENTRY ---------------- */
-
-  const reversal =
-    trendStrength !== "TRENDING" &&
-    a < 22 &&
+  const earlyReversal =
+    m > 18 &&
     stochSignal &&
-    (r < 35 || r > 65) &&
-    bos !== "NEUTRAL" &&
+    r < 45 &&
     vol.ratio > 1.1;
 
-  /* ---------------- 3. BREAKOUT ENTRY ---------------- */
-
-  const breakout =
+  const earlyBreakout =
     compression &&
-    expansion &&
-    vol.spike &&
-    a > 18 &&
-    stochSignal;
+    breakout &&
+    vol.ratio > 1.2 &&
+    m > 22;
 
-  /* ---------------- EARLY (COMBINED ENGINE) ---------------- */
-
-  const early = pullback || reversal || breakout;
+  const early =
+    (earlyPullback || earlyReversal || earlyBreakout) &&
+    higherTimeframeBias !== "NEUTRAL";
 
   /* ---------------- SNIPER ---------------- */
 
   const sniper =
     early &&
-    a > 26 &&
+    m > 25 &&
     vol.spike &&
     bos !== "NEUTRAL" &&
-    Math.abs(price - avgPrice) / price > 0.01;
+    Math.abs(price - closes.reduce((a,b)=>a+b,0)/closes.length) / price > 0.01;
 
   const state: SignalState =
     sniper ? "SNIPER"
@@ -248,20 +270,21 @@ export function generateSignal(
 
   const confidence =
     state === "SNIPER"
-      ? clamp(82 + r / 10, 80, 96)
+      ? clamp(80 + m / 5, 80, 96)
       : state === "EARLY"
-      ? clamp(60 + k / 2, 55, 85)
+      ? clamp(55 + k / 2, 55, 82)
       : 20;
 
   /* ---------------- EXPECTED MOVE ---------------- */
 
-  const volatility = Math.abs(price - avgPrice) / price;
+  const emaValue = closes.reduce((a, b) => a + b, 0) / closes.length;
+  const volatility = Math.abs(price - emaValue) / price;
 
   const expectedMove =
     state === "SNIPER"
       ? clamp(volatility * 2.5, 0.03, 0.06)
       : state === "EARLY"
-      ? clamp(volatility * 1.8, 0.02, 0.05)
+      ? clamp(volatility * 1.7, 0.02, 0.045)
       : 0.01;
 
   /* ---------------- SL / TP ---------------- */
@@ -295,20 +318,16 @@ export function generateSignal(
 
     confidence: round(confidence),
 
-    adx: round(a, 2),
+    adx: round(m, 2),
     stochK: round(k),
     stochD: round(d),
     rsi: round(r),
 
     reason:
-      sniper
-        ? "SNIPER CONFIRMED"
-        : pullback
-        ? "EARLY PULLBACK"
-        : reversal
-        ? "EARLY REVERSAL"
-        : breakout
-        ? "EARLY BREAKOUT"
+      state === "SNIPER"
+        ? "SNIPER (STRUCTURE + VOLUME + HTF CONFIRMED)"
+        : state === "EARLY"
+        ? "EARLY (PULLBACK / REVERSAL / BREAKOUT)"
         : "NO STRUCTURE",
 
     stopLoss: sl ? round(sl, 2) : null,
