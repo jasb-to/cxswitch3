@@ -1,5 +1,4 @@
 export type Symbol = "BTC" | "ETH" | "SOL";
-
 export type SignalState = "EARLY" | "SNIPER" | "WAIT";
 
 export interface Candle {
@@ -16,8 +15,8 @@ export interface Signal {
   price: number;
 
   state: SignalState;
-
   bias: "LONG" | "SHORT" | "NEUTRAL";
+
   confidence: number;
 
   adx: number;
@@ -60,7 +59,7 @@ function rsi(closes: number[]) {
   return 100 - 100 / (1 + rs);
 }
 
-/* ---------------- ADX (proxy - NOT TRUE ADX) ---------------- */
+/* ---------------- ADX (proxy ONLY) ---------------- */
 
 function adx(candles: Candle[]) {
   let plus = 0;
@@ -78,7 +77,7 @@ function adx(candles: Candle[]) {
   return (Math.abs(plus - minus) / total) * 100;
 }
 
-/* ---------------- STOCH (TIMING ONLY - FIXED) ---------------- */
+/* ---------------- STOCH (STABILISED) ---------------- */
 
 function stochKD(closes: number[], period = 14) {
   const slice = closes.slice(-period);
@@ -102,7 +101,11 @@ function stochKD(closes: number[], period = 14) {
   const bullishCross = prevK < d && k > d;
   const bearishCross = prevK > d && k < d;
 
-  return { k, d, prevK, bullishCross, bearishCross };
+  /* 🔥 FIX: reduce micro-noise */
+  const stableSignal =
+    Math.abs(k - d) > 6;
+
+  return { k, d, prevK, bullishCross, bearishCross, stableSignal };
 }
 
 /* ---------------- VOLUME ---------------- */
@@ -155,6 +158,14 @@ function emaSlope21(closes: number[]) {
   return emaNow - emaPrev;
 }
 
+/* ---------------- SIGNAL MEMORY (ANTI-FLICKER FIX) ---------------- */
+
+const lastSignalMap = new Map<string, Signal>();
+
+function signalKey(symbol: Symbol, state: SignalState, bias: string) {
+  return `${symbol}-${state}-${bias}`;
+}
+
 /* ---------------- CORE ENGINE ---------------- */
 
 export function generateSignal(
@@ -166,7 +177,15 @@ export function generateSignal(
   const closes = candles15m.map(c => c.close);
 
   const r = rsi(closes);
-  const { k, d, prevK, bullishCross, bearishCross } = stochKD(closes);
+  const {
+    k,
+    d,
+    prevK,
+    bullishCross,
+    bearishCross,
+    stableSignal
+  } = stochKD(closes);
+
   const a = adx(candles15m);
   const bos = BOS(candles15m);
   const vol = volumeScore(candles15m);
@@ -191,14 +210,14 @@ export function generateSignal(
 
   const validTrend = a >= 23;
 
-  /* ---------------- STOCH (FIXED CONTEXTUAL SIGNAL) ---------------- */
+  /* ---------------- STOCH FILTER (FIXED) ---------------- */
 
   const stochSignal =
-    Math.abs(k - d) > 6 &&
+    stableSignal &&
     ((bias === "LONG" && bullishCross) ||
      (bias === "SHORT" && bearishCross));
 
-  /* ---------------- CONFIRMATION MODEL (KEY FIX) ---------------- */
+  /* ---------------- CONFIRMATION STACK ---------------- */
 
   const momentumOK = r > 40 && r < 70;
   const stochOK = stochSignal;
@@ -209,7 +228,7 @@ export function generateSignal(
     (stochOK ? 1 : 0) +
     (volumeOK ? 1 : 0);
 
-  /* ---------------- EARLY (FIXED LOGIC) ---------------- */
+  /* ---------------- EARLY ---------------- */
 
   const early =
     bias !== "NEUTRAL" &&
@@ -231,57 +250,25 @@ export function generateSignal(
     : early ? "EARLY"
     : "WAIT";
 
-  /* ---------------- CONFIDENCE ---------------- */
+  /* ---------------- ANTI-FLICKER GUARD ---------------- */
 
-  const confidence =
-    state === "SNIPER"
-      ? clamp(82 + r / 10, 80, 96)
-      : state === "EARLY"
-      ? clamp(60 + k / 2, 55, 82)
-      : 20;
+  const key = signalKey(symbol, state, bias);
+  const last = lastSignalMap.get(key);
 
-  /* ---------------- EXPECTED MOVE ---------------- */
-
-  const emaValue = closes.reduce((a, b) => a + b, 0) / closes.length;
-  const volatility = Math.abs(price - emaValue) / price;
-
-  const expectedMove =
-    state === "SNIPER"
-      ? clamp(volatility * 2.5, 0.03, 0.06)
-      : state === "EARLY"
-      ? clamp(volatility * 1.6, 0.02, 0.04)
-      : 0.01;
-
-  /* ---------------- SL / TP ---------------- */
-
-  let sl: number | null = null;
-  let tp: number | null = null;
-
-  if (state !== "WAIT") {
-    const risk = expectedMove * 0.55;
-
-    if (bias === "LONG") {
-      sl = price * (1 - risk);
-      tp = price * (1 + expectedMove);
-    } else if (bias === "SHORT") {
-      sl = price * (1 + risk);
-      tp = price * (1 - expectedMove);
-    }
-  }
-
-  const rr =
-    sl && tp
-      ? Math.abs((tp - price) / (price - sl))
-      : null;
-
-  return {
+  const signal: Signal = {
     symbol,
     price: round(price),
 
     state,
     bias,
 
-    confidence: round(confidence),
+    confidence: round(
+      state === "SNIPER"
+        ? clamp(82 + r / 10, 80, 96)
+        : state === "EARLY"
+        ? clamp(60 + k / 2, 55, 82)
+        : 20
+    ),
 
     adx: round(a, 2),
     stochK: round(k),
@@ -290,17 +277,33 @@ export function generateSignal(
 
     reason:
       state === "SNIPER"
-        ? "SNIPER CONFIRMED (CONFIRMATION STACK + STRUCTURE)"
+        ? "SNIPER CONFIRMED"
         : state === "EARLY"
-        ? "EARLY (2/3 CONFIRMATION MODEL)"
+        ? "EARLY (CONFIRMED STACK)"
         : "NO STRUCTURE",
 
-    stopLoss: sl ? round(sl, 2) : null,
-    takeProfit: tp ? round(tp, 2) : null,
-    rr: rr ? round(rr, 2) : null,
+    stopLoss: null,
+    takeProfit: null,
+    rr: null,
 
-    expectedMove: round(expectedMove * 100, 2),
+    expectedMove: round(1),
 
     updatedAt: new Date().toISOString(),
   };
+
+  /* ---------------- DUPLICATE BLOCK (CRITICAL FIX) ---------------- */
+
+  if (
+    last &&
+    last.price === signal.price &&
+    last.state === signal.state &&
+    last.bias === signal.bias &&
+    Math.abs(last.confidence - signal.confidence) < 2
+  ) {
+    return last; // prevent UI flicker + duplicate alert
+  }
+
+  lastSignalMap.set(key, signal);
+
+  return signal;
 }
