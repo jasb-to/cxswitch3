@@ -87,21 +87,21 @@ function stoch(closes: number[], period = 14, smoothK = 3, smoothD = 3) {
   return { k: k.at(-1) ?? 50, d: d.at(-1) ?? 50, prevK: k.at(-2) ?? 50, prevD: d.at(-2) ?? 50 };
 }
 
-/* ---------------- STRUCTURE ---------------- */
+/* ---------------- STRUCTURE (2-bar fractals, 2 swings minimum) ---------------- */
 function getStructure(candles: Candle[]): Structure {
-  if (!ok(candles, 7)) return "RANGE";
+  if (!ok(candles, 5)) return "RANGE";
   const highs: number[] = [], lows: number[] = [];
-  for (let i = 2; i < candles.length - 2; i++) {
+  for (let i = 1; i < candles.length - 1; i++) {
     const c = candles[i], p = candles[i - 1], n = candles[i + 1];
     if (c.high > p.high && c.high > n.high) highs.push(c.high);
     if (c.low < p.low && c.low < n.low) lows.push(c.low);
   }
-  const lastH = highs.slice(-3), lastL = lows.slice(-3);
-  if (lastH.length < 3 || lastL.length < 3) return "RANGE";
-  const hh = lastH.every((v, i, a) => i === 0 || v > a[i - 1]);
-  const hl = lastL.every((v, i, a) => i === 0 || v > a[i - 1]);
-  const lh = lastH.every((v, i, a) => i === 0 || v < a[i - 1]);
-  const ll = lastL.every((v, i, a) => i === 0 || v < a[i - 1]);
+  const lastH = highs.slice(-2), lastL = lows.slice(-2);
+  if (lastH.length < 2 || lastL.length < 2) return "RANGE";
+  const hh = lastH[1] > lastH[0];
+  const hl = lastL[1] > lastL[0];
+  const lh = lastH[1] < lastH[0];
+  const ll = lastL[1] < lastL[0];
   if (hh && hl) return "UPTREND";
   if (lh && ll) return "DOWNTREND";
   return "RANGE";
@@ -138,21 +138,25 @@ export function generateSignal(
   const s15 = stoch(closes15);
   const a15 = atr(c15);
 
+  // Stoch cross detection with direction
   const stochCrossUp = s15.prevK < s15.prevD && s15.k > s15.d;
   const stochCrossDown = s15.prevK > s15.prevD && s15.k < s15.d;
+  const stochCross = stochCrossUp || stochCrossDown;
 
   let setup: SetupType = "NONE";
 
   if (bias === "LONG") {
-    if (structure1h !== "DOWNTREND" && stochCrossUp && r15 > 35 && r15 < 65 && r1h > 45) {
+    // EARLY: 4H uptrend + 1h not fighting + stoch cross up + RSI not overbought
+    if (structure1h !== "DOWNTREND" && stochCrossUp && r15 < 65 && r1h > 40) {
       setup = "PULLBACK";
     }
   } else if (bias === "SHORT") {
-    if (structure1h !== "UPTREND" && stochCrossDown && r15 > 35 && r15 < 65 && r1h < 55) {
+    if (structure1h !== "UPTREND" && stochCrossDown && r15 > 35 && r1h < 60) {
       setup = "PULLBACK";
     }
   }
 
+  // ATR expansion check
   const priorAtr = atr(c15.slice(0, -1), 20);
   const expansion = priorAtr > 0 && (a15 / priorAtr) > 1.2;
 
@@ -161,8 +165,16 @@ export function generateSignal(
   if (state === "WAIT") {
     const issues: string[] = [];
     if (bias === "NEUTRAL") issues.push("NO TREND");
-    if (setup === "NONE") issues.push(bias === "LONG" ? "NO PULLBACK" : "NO RALLY");
-    if (!stochCrossUp && !stochCrossDown) issues.push("NO STOCH CROSS");
+    else {
+      if (setup === "NONE") {
+        if (bias === "LONG" && !stochCrossUp) issues.push("NO STOCH UP");
+        else if (bias === "SHORT" && !stochCrossDown) issues.push("NO STOCH DOWN");
+        else if (stochCross) issues.push("WRONG DIRECTION");
+        else issues.push("NO SETUP");
+      }
+      if (structure1h === "DOWNTREND" && bias === "LONG") issues.push("1H FIGHTING");
+      if (structure1h === "UPTREND" && bias === "SHORT") issues.push("1H FIGHTING");
+    }
     return {
       symbol, price: round(price), state: "WAIT", setup: "NONE", structure: structure4h, bias,
       confidence: 0, adx: 0, atr: round(a15, 2), stochK: round(s15.k), stochD: round(s15.d),
