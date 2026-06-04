@@ -1,6 +1,12 @@
 export type Symbol = "BTC" | "ETH" | "SOL";
 export type SignalState = "EARLY" | "SNIPER" | "WAIT";
 
+export type SetupType =
+  | "BREAKOUT"
+  | "PULLBACK"
+  | "REVERSAL"
+  | "NONE";
+
 export interface Candle {
   time: number;
   open: number;
@@ -16,6 +22,8 @@ export interface Signal {
 
   state: SignalState;
   bias: "LONG" | "SHORT" | "NEUTRAL";
+
+  setup: SetupType;
 
   confidence: number;
 
@@ -59,25 +67,44 @@ function rsi(closes: number[]) {
   return 100 - 100 / (1 + rs);
 }
 
-/* ================= ADX (proxy trend strength) ================= */
+/* ================= ADX (proxy only) ================= */
 
 function adx(candles: Candle[]) {
   let plus = 0;
   let minus = 0;
 
   for (let i = 1; i < candles.length; i++) {
-    const upMove = candles[i].high - candles[i - 1].high;
-    const downMove = candles[i - 1].low - candles[i].low;
+    const up = candles[i].high - candles[i - 1].high;
+    const down = candles[i - 1].low - candles[i].low;
 
-    if (upMove > downMove && upMove > 0) plus += upMove;
-    if (downMove > upMove && downMove > 0) minus += downMove;
+    if (up > down && up > 0) plus += up;
+    if (down > up && down > 0) minus += down;
   }
 
   const total = plus + minus || 1;
   return (Math.abs(plus - minus) / total) * 100;
 }
 
-/* ================= STOCH (signal timing only) ================= */
+/* ================= MARKET STRUCTURE (REAL FIX) ================= */
+
+function marketStructure(candles: Candle[]) {
+  const last = candles.slice(-10);
+
+  let highs = last.map(c => c.high);
+  let lows = last.map(c => c.low);
+
+  const higherHighs = highs[highs.length - 1] > highs[highs.length - 2];
+  const higherLows = lows[lows.length - 1] > lows[lows.length - 2];
+
+  const lowerHighs = highs[highs.length - 1] < highs[highs.length - 2];
+  const lowerLows = lows[lows.length - 1] < lows[lows.length - 2];
+
+  if (higherHighs && higherLows) return "UPTREND";
+  if (lowerHighs && lowerLows) return "DOWNTREND";
+  return "RANGE";
+}
+
+/* ================= STOCH ================= */
 
 function stochKD(closes: number[], period = 14) {
   const slice = closes.slice(-period);
@@ -98,12 +125,12 @@ function stochKD(closes: number[], period = 14) {
 
   const d = (k + prevK + prevK) / 3;
 
-  const bullishCross = prevK < d && k > d;
-  const bearishCross = prevK > d && k < d;
-
-  const stable = Math.abs(k - d) > 6;
-
-  return { k, d, bullishCross, bearishCross, stable };
+  return {
+    k,
+    d,
+    bullishCross: prevK < d && k > d,
+    bearishCross: prevK > d && k < d,
+  };
 }
 
 /* ================= VOLUME ================= */
@@ -121,19 +148,38 @@ function volumeScore(candles: Candle[]) {
   };
 }
 
-/* ================= STRUCTURE (simple BOS proxy) ================= */
+/* ================= SETUP CLASSIFICATION (FIXED CORE) ================= */
 
-function BOS(candles: Candle[]) {
-  const last = candles.at(-1)!;
-  const prev = candles.at(-2)!;
-  const prev2 = candles.at(-3)!;
+function classifySetup(
+  structure: string,
+  price: number,
+  recentHigh: number,
+  recentLow: number
+): SetupType {
 
-  if (last.high > prev.high && prev.high > prev2.high) return "BULL";
-  if (last.low < prev.low && prev.low < prev2.low) return "BEAR";
-  return "NEUTRAL";
+  const rangeSize = (recentHigh - recentLow) / price;
+
+  /* breakout */
+  if (rangeSize > 0.02) {
+    if (price > recentHigh) return "BREAKOUT";
+    if (price < recentLow) return "BREAKOUT";
+  }
+
+  /* pullback */
+  if (structure === "UPTREND" && price < recentHigh && price > recentLow)
+    return "PULLBACK";
+
+  if (structure === "DOWNTREND" && price < recentHigh && price > recentLow)
+    return "PULLBACK";
+
+  /* reversal */
+  if (structure === "RANGE" && rangeSize < 0.015)
+    return "REVERSAL";
+
+  return "NONE";
 }
 
-/* ================= EMA ================= */
+/* ================= EMA (bias only) ================= */
 
 function ema(values: number[], period = 21) {
   const k = 2 / (period + 1);
@@ -148,12 +194,24 @@ function ema(values: number[], period = 21) {
 }
 
 function emaSlope(closes: number[]) {
-  if (closes.length < 30) return 0;
-
   const now = ema(closes, 21);
   const prev = ema(closes.slice(0, -5), 21);
 
   return now - prev;
+}
+
+/* ================= SIGNAL MEMORY (FIXED DEDUP) ================= */
+
+const lastSignalTime = new Map<string, number>();
+
+function canEmit(symbol: Symbol, state: SignalState) {
+  const key = `${symbol}-${state}`;
+  const now = Date.now();
+  const last = lastSignalTime.get(key) || 0;
+
+  if (now - last < 60_000) return false; // 60s lock
+  lastSignalTime.set(key, now);
+  return true;
 }
 
 /* ================= CORE ENGINE ================= */
@@ -166,75 +224,85 @@ export function generateSignal(
   candles4h: Candle[]
 ): Signal {
 
-  const closes15m = candles15m.map(c => c.close);
-  const closes1h = candles1h.map(c => c.close);
-  const closes4h = candles4h.map(c => c.close);
+  const closes = candles15m.map(c => c.close);
 
-  /* ================= 4H STRUCTURE (MACRO BIAS) ================= */
-
-  const ema4h = emaSlope(closes4h);
-  const macroBias: "LONG" | "SHORT" | "NEUTRAL" =
-    ema4h > 0 ? "LONG"
-    : ema4h < 0 ? "SHORT"
-    : "NEUTRAL";
-
-  const macroValid = macroBias !== "NEUTRAL";
-
-  /* ================= 1H TREND FILTER ================= */
-
-  const ema1h = emaSlope(closes1h);
-
-  const trendOk =
-    (macroBias === "LONG" && ema1h > 0) ||
-    (macroBias === "SHORT" && ema1h < 0);
-
-  /* ================= 15M SETUP ================= */
-
-  const r = rsi(closes15m);
-  const { k, d, bullishCross, bearishCross, stable } =
-    stochKD(closes15m);
-
+  const r = rsi(closes);
+  const { k, d, bullishCross, bearishCross } = stochKD(closes);
   const a = adx(candles15m);
   const vol = volumeScore(candles15m);
-  const bos = BOS(candles15m);
 
-  const momentumOk = r > 40 && r < 70;
-  const volumeOk = vol.ratio > 1.1;
+  const structure = marketStructure(candles15m);
 
-  const stochOk =
-    stable &&
-    ((macroBias === "LONG" && bullishCross) ||
-     (macroBias === "SHORT" && bearishCross));
+  const recentHigh = Math.max(...closes.slice(-20));
+  const recentLow = Math.min(...closes.slice(-20));
 
-  const confirmations =
-    (momentumOk ? 1 : 0) +
-    (volumeOk ? 1 : 0) +
-    (stochOk ? 1 : 0);
+  const setup = classifySetup(structure, price, recentHigh, recentLow);
 
-  /* ================= CONSOLIDATION FILTER ================= */
+  /* ================= BIAS (STRUCTURE BASED FIX) ================= */
 
-  const trendingMarket = a > 23;
+  const emaDir = emaSlope(closes);
+
+  const bias: "LONG" | "SHORT" | "NEUTRAL" =
+    structure === "UPTREND" && emaDir > 0
+      ? "LONG"
+      : structure === "DOWNTREND" && emaDir < 0
+      ? "SHORT"
+      : "NEUTRAL";
+
+  /* ================= REGIME ================= */
+
+  const validTrend = a > 23 && structure !== "RANGE";
 
   /* ================= EARLY ================= */
 
   const early =
-    macroValid &&
-    trendOk &&
-    trendingMarket &&
-    confirmations >= 2;
+    bias !== "NEUTRAL" &&
+    validTrend &&
+    (
+      (setup === "PULLBACK") ||
+      (setup === "BREAKOUT") ||
+      (setup === "REVERSAL")
+    ) &&
+    vol.ratio > 1.1 &&
+    r > 40 &&
+    r < 70 &&
+    ((bias === "LONG" && bullishCross) ||
+     (bias === "SHORT" && bearishCross));
 
   /* ================= SNIPER ================= */
 
   const sniper =
     early &&
     a > 26 &&
-    vol.spike &&
-    bos !== "NEUTRAL";
+    vol.spike;
 
   const state: SignalState =
     sniper ? "SNIPER"
     : early ? "EARLY"
     : "WAIT";
+
+  /* ================= DEDUP GUARD ================= */
+
+  if (!canEmit(symbol, state)) {
+    return {
+      symbol,
+      price: round(price),
+      state: "WAIT",
+      bias,
+      setup: "NONE",
+      confidence: 20,
+      adx: round(a),
+      stochK: round(k),
+      stochD: round(d),
+      rsi: round(r),
+      reason: "COOLDOWN",
+      stopLoss: null,
+      takeProfit: null,
+      rr: null,
+      expectedMove: 1,
+      updatedAt: new Date().toISOString(),
+    };
+  }
 
   /* ================= CONFIDENCE ================= */
 
@@ -245,46 +313,14 @@ export function generateSignal(
       ? clamp(60 + k / 2, 55, 82)
       : 20;
 
-  /* ================= EXPECTED MOVE ================= */
-
-  const mean = closes15m.reduce((a, b) => a + b, 0) / closes15m.length;
-  const volatility = Math.abs(price - mean) / price;
-
-  const expectedMove =
-    state === "SNIPER"
-      ? clamp(volatility * 2.5, 0.03, 0.06)
-      : state === "EARLY"
-      ? clamp(volatility * 1.6, 0.02, 0.04)
-      : 0.01;
-
-  /* ================= RISK MODEL ================= */
-
-  let sl: number | null = null;
-  let tp: number | null = null;
-
-  if (state !== "WAIT") {
-    const risk = expectedMove * 0.55;
-
-    if (macroBias === "LONG") {
-      sl = price * (1 - risk);
-      tp = price * (1 + expectedMove);
-    } else if (macroBias === "SHORT") {
-      sl = price * (1 + risk);
-      tp = price * (1 - expectedMove);
-    }
-  }
-
-  const rr =
-    sl && tp
-      ? Math.abs((tp - price) / (price - sl))
-      : null;
-
   return {
     symbol,
     price: round(price),
 
     state,
-    bias: macroBias,
+    bias,
+
+    setup,
 
     confidence: round(confidence),
 
@@ -295,16 +331,16 @@ export function generateSignal(
 
     reason:
       state === "SNIPER"
-        ? "SNIPER (4H STRUCTURE + 1H TREND + 15M SETUP)"
+        ? `SNIPER (${setup})`
         : state === "EARLY"
-        ? "EARLY (MACRO ALIGNED + CONFIRMED STACK)"
+        ? `EARLY (${setup})`
         : "NO STRUCTURE",
 
-    stopLoss: sl ? round(sl, 2) : null,
-    takeProfit: tp ? round(tp, 2) : null,
-    rr: rr ? round(rr, 2) : null,
+    stopLoss: null,
+    takeProfit: null,
+    rr: null,
 
-    expectedMove: round(expectedMove * 100, 2),
+    expectedMove: 1,
 
     updatedAt: new Date().toISOString(),
   };
