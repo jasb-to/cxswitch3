@@ -1,7 +1,10 @@
 export type Symbol = "BTC" | "ETH" | "SOL";
+
 export type SignalState = "EARLY" | "SNIPER" | "WAIT";
 
 export type SetupType = "BREAKOUT" | "PULLBACK" | "REVERSAL" | "NONE";
+
+export type MarketStructure = "UPTREND" | "DOWNTREND" | "RANGE";
 
 export interface Candle {
   time: number;
@@ -17,12 +20,15 @@ export interface Signal {
   price: number;
 
   state: SignalState;
-  setup: SetupType;
-
   bias: "LONG" | "SHORT" | "NEUTRAL";
+
+  setup: SetupType;
+  structure: MarketStructure;
+
   confidence: number;
 
-  adx: number;
+  atr: number;
+
   stochK: number;
   stochD: number;
   rsi: number;
@@ -62,74 +68,43 @@ function rsi(closes: number[]) {
   return 100 - 100 / (1 + rs);
 }
 
-/* ---------------- ATR (REAL VOLATILITY) ---------------- */
+/* ---------------- ATR (REAL VOLATILITY ENGINE) ---------------- */
 
-function atr(candles: Candle[]) {
+function atr(candles: Candle[], period = 14) {
   let trSum = 0;
 
   for (let i = 1; i < candles.length; i++) {
-    const c = candles[i];
-    const p = candles[i - 1];
+    const high = candles[i].high;
+    const low = candles[i].low;
+    const prevClose = candles[i - 1].close;
 
     const tr = Math.max(
-      c.high - c.low,
-      Math.abs(c.high - p.close),
-      Math.abs(c.low - p.close)
+      high - low,
+      Math.abs(high - prevClose),
+      Math.abs(low - prevClose)
     );
 
     trSum += tr;
   }
 
-  return trSum / (candles.length || 1);
+  return trSum / Math.min(period, candles.length);
 }
 
-/* ---------------- IMPROVED ADX (still simplified but usable) ---------------- */
+/* ---------------- STRUCTURE (HH / HL MODEL) ---------------- */
 
-function adx(candles: Candle[]) {
-  let plusDM = 0;
-  let minusDM = 0;
+function marketStructure(candles: Candle[]): MarketStructure {
+  const highs = candles.map(c => c.high);
+  const lows = candles.map(c => c.low);
 
-  for (let i = 1; i < candles.length; i++) {
-    const up = candles[i].high - candles[i - 1].high;
-    const down = candles[i - 1].low - candles[i].low;
+  const higherHighs = highs[highs.length - 1] > highs[highs.length - 3];
+  const higherLows = lows[lows.length - 1] > lows[lows.length - 3];
 
-    if (up > down && up > 0) plusDM += up;
-    if (down > up && down > 0) minusDM += down;
-  }
+  const lowerHighs = highs[highs.length - 1] < highs[highs.length - 3];
+  const lowerLows = lows[lows.length - 1] < lows[lows.length - 3];
 
-  const total = plusDM + minusDM || 1;
-
-  return (Math.abs(plusDM - minusDM) / total) * 100;
-}
-
-/* ---------------- STRUCTURE (HH / HL / LH / LL) ---------------- */
-
-function structure(candles: Candle[]) {
-  const last = candles.slice(-5);
-
-  const highs = last.map(c => c.high);
-  const lows = last.map(c => c.low);
-
-  const higherHigh = highs[4] > highs[3] && highs[3] > highs[2];
-  const higherLow = lows[4] > lows[3] && lows[3] > lows[2];
-
-  const lowerHigh = highs[4] < highs[3] && highs[3] < highs[2];
-  const lowerLow = lows[4] < lows[3] && lows[3] < lows[2];
-
-  if (higherHigh && higherLow) return "BULL";
-  if (lowerHigh && lowerLow) return "BEAR";
+  if (higherHighs && higherLows) return "UPTREND";
+  if (lowerHighs && lowerLows) return "DOWNTREND";
   return "RANGE";
-}
-
-/* ---------------- CONSOLIDATION DETECTOR ---------------- */
-
-function isConsolidating(candles: Candle[], atrValue: number) {
-  const last = candles.slice(-10);
-  const range =
-    Math.max(...last.map(c => c.high)) -
-    Math.min(...last.map(c => c.low));
-
-  return range < atrValue * 1.2;
 }
 
 /* ---------------- STOCH ---------------- */
@@ -143,15 +118,7 @@ function stochKD(closes: number[]) {
   const k =
     ((closes.at(-1)! - low) / (high - low || 1)) * 100;
 
-  const prevSlice = closes.slice(-17, -3);
-
-  const prevHigh = Math.max(...prevSlice);
-  const prevLow = Math.min(...prevSlice);
-
-  const prevK =
-    ((prevSlice.at(-1)! - prevLow) / (prevHigh - prevLow || 1)) * 100;
-
-  const d = (k + prevK + prevK) / 3;
+  const d = k * 0.7 + 50 * 0.3;
 
   return { k, d };
 }
@@ -165,25 +132,12 @@ function volumeScore(candles: Candle[]) {
   const last = vols.at(-1)!;
 
   return {
+    spike: last > avg * 1.2,
     ratio: last / (avg || 1),
   };
 }
 
-/* ---------------- EMA ---------------- */
-
-function ema(values: number[], period = 21) {
-  const k = 2 / (period + 1);
-
-  let e = values[0];
-
-  for (let i = 1; i < values.length; i++) {
-    e = values[i] * k + e * (1 - k);
-  }
-
-  return e;
-}
-
-/* ---------------- CORE ---------------- */
+/* ---------------- CORE ENGINE ---------------- */
 
 export function generateSignal(
   symbol: Symbol,
@@ -195,86 +149,121 @@ export function generateSignal(
   const closes = candles15m.map(c => c.close);
 
   const r = rsi(closes);
-  const a = adx(candles15m);
-  const atrValue = atr(candles15m);
-
-  const struct = structure(candles1h);
-  const consolidating = isConsolidating(candles15m, atrValue);
-
+  const { k, d } = stochKD(closes);
   const vol = volumeScore(candles15m);
 
-  /* ---------------- BIAS FROM 1H STRUCTURE ---------------- */
+  const atrVal = atr(candles15m);
+  const structure = marketStructure(candles1h);
 
-  const bias =
-    struct === "BULL" ? "LONG"
-    : struct === "BEAR" ? "SHORT"
-    : "NEUTRAL";
+  /* ---------------- BIAS (STRUCTURE ONLY) ---------------- */
+
+  const bias: "LONG" | "SHORT" | "NEUTRAL" =
+    structure === "UPTREND"
+      ? "LONG"
+      : structure === "DOWNTREND"
+      ? "SHORT"
+      : "NEUTRAL";
 
   /* ---------------- SETUP DETECTION ---------------- */
 
-  let setup: SetupType = "NONE";
+  const setup: SetupType =
+    vol.spike && structure !== "RANGE"
+      ? "BREAKOUT"
+      : r < 45 && structure !== "RANGE"
+      ? "PULLBACK"
+      : "NONE";
 
-  if (!consolidating && struct !== "RANGE") {
-    setup = "BREAKOUT";
-  }
+  /* ---------------- ENTRY CONDITIONS ---------------- */
 
-  if (consolidating && struct !== "RANGE") {
-    setup = "PULLBACK";
-  }
+  const pullbackOK = r > 35 && r < 65;
+  const breakoutOK = vol.spike;
 
-  if (struct === "RANGE" && !consolidating) {
-    setup = "REVERSAL";
-  }
+  const validEntry =
+    structure !== "RANGE" &&
+    bias !== "NEUTRAL" &&
+    (setup === "BREAKOUT" ? breakoutOK : pullbackOK);
 
-  /* ---------------- FILTERS ---------------- */
+  /* ---------------- EARLY / SNIPER ---------------- */
 
-  const trendOK = a > 22;
-  const volOK = vol.ratio > 1.05;
-  const rsiOK = r > 35 && r < 70;
+  const early = validEntry;
 
-  const allowed = !consolidating && trendOK && volOK;
-
-  /* ---------------- STATE ---------------- */
+  const sniper =
+    early &&
+    vol.spike &&
+    Math.abs(k - d) > 8;
 
   const state: SignalState =
-    allowed && bias !== "NEUTRAL"
-      ? "EARLY"
-      : "WAIT";
+    sniper ? "SNIPER"
+    : early ? "EARLY"
+    : "WAIT";
 
   /* ---------------- CONFIDENCE ---------------- */
 
   const confidence =
-    state === "EARLY"
-      ? clamp(60 + a, 55, 85)
+    state === "SNIPER"
+      ? clamp(85 + r / 10, 80, 96)
+      : state === "EARLY"
+      ? clamp(60 + k / 2, 55, 82)
       : 20;
 
-  /* ---------------- OUTPUT ---------------- */
+  /* ---------------- RISK MODEL ---------------- */
+
+  const expectedMove =
+    state === "SNIPER"
+      ? clamp(atrVal * 1.5, 0.02, 0.06)
+      : state === "EARLY"
+      ? clamp(atrVal, 0.01, 0.04)
+      : 0.01;
+
+  let sl: number | null = null;
+  let tp: number | null = null;
+
+  if (state !== "WAIT") {
+    const risk = expectedMove * 0.5;
+
+    if (bias === "LONG") {
+      sl = price * (1 - risk);
+      tp = price * (1 + expectedMove);
+    } else if (bias === "SHORT") {
+      sl = price * (1 + risk);
+      tp = price * (1 - expectedMove);
+    }
+  }
+
+  const rr =
+    sl && tp
+      ? Math.abs((tp - price) / (price - sl))
+      : null;
 
   return {
     symbol,
     price: round(price),
 
     state,
-    setup,
     bias,
+    setup,
+    structure,
 
     confidence: round(confidence),
 
-    adx: round(a, 2),
-    stochK: 0,
-    stochD: 0,
+    atr: round(atrVal, 2),
+
+    stochK: round(k),
+    stochD: round(d),
     rsi: round(r),
 
     reason:
-      state === "EARLY"
-        ? `EARLY (${setup})`
+      state === "SNIPER"
+        ? "SNIPER (STRUCTURE + VOLUME + MOMENTUM)"
+        : state === "EARLY"
+        ? "EARLY (STRUCTURE BASED ENTRY)"
         : "NO STRUCTURE",
 
-    stopLoss: null,
-    takeProfit: null,
-    rr: null,
+    stopLoss: sl ? round(sl, 2) : null,
+    takeProfit: tp ? round(tp, 2) : null,
+    rr: rr ? round(rr, 2) : null,
 
-    expectedMove: consolidating ? 0.5 : 1.5,
+    expectedMove: round(expectedMove * 100, 2),
 
     updatedAt: new Date().toISOString(),
   };
