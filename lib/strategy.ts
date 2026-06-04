@@ -35,7 +35,7 @@ export interface Signal {
   updatedAt: string;
 }
 
-/* ---------------- UTILS ---------------- */
+/* ================= UTILS ================= */
 
 const clamp = (n: number, min: number, max: number) =>
   Math.max(min, Math.min(max, n));
@@ -43,7 +43,7 @@ const clamp = (n: number, min: number, max: number) =>
 const round = (n: number, d = 2) =>
   Math.round(n * 10 ** d) / 10 ** d;
 
-/* ---------------- RSI ---------------- */
+/* ================= RSI ================= */
 
 function rsi(closes: number[]) {
   let gain = 0;
@@ -59,7 +59,7 @@ function rsi(closes: number[]) {
   return 100 - 100 / (1 + rs);
 }
 
-/* ---------------- ADX (proxy ONLY) ---------------- */
+/* ================= ADX (proxy trend strength) ================= */
 
 function adx(candles: Candle[]) {
   let plus = 0;
@@ -77,7 +77,7 @@ function adx(candles: Candle[]) {
   return (Math.abs(plus - minus) / total) * 100;
 }
 
-/* ---------------- STOCH (STABILISED) ---------------- */
+/* ================= STOCH (signal timing only) ================= */
 
 function stochKD(closes: number[], period = 14) {
   const slice = closes.slice(-period);
@@ -101,14 +101,12 @@ function stochKD(closes: number[], period = 14) {
   const bullishCross = prevK < d && k > d;
   const bearishCross = prevK > d && k < d;
 
-  /* 🔥 FIX: reduce micro-noise */
-  const stableSignal =
-    Math.abs(k - d) > 6;
+  const stable = Math.abs(k - d) > 6;
 
-  return { k, d, prevK, bullishCross, bearishCross, stableSignal };
+  return { k, d, bullishCross, bearishCross, stable };
 }
 
-/* ---------------- VOLUME ---------------- */
+/* ================= VOLUME ================= */
 
 function volumeScore(candles: Candle[]) {
   const vols = candles.map(c => c.volume);
@@ -118,12 +116,12 @@ function volumeScore(candles: Candle[]) {
   const ratio = last / (avg || 1);
 
   return {
-    spike: ratio > 1.1,
+    spike: ratio > 1.15,
     ratio,
   };
 }
 
-/* ---------------- STRUCTURE ---------------- */
+/* ================= STRUCTURE (simple BOS proxy) ================= */
 
 function BOS(candles: Candle[]) {
   const last = candles.at(-1)!;
@@ -135,7 +133,7 @@ function BOS(candles: Candle[]) {
   return "NEUTRAL";
 }
 
-/* ---------------- EMA ---------------- */
+/* ================= EMA ================= */
 
 function ema(values: number[], period = 21) {
   const k = 2 / (period + 1);
@@ -149,126 +147,146 @@ function ema(values: number[], period = 21) {
   return emaVal;
 }
 
-function emaSlope21(closes: number[]) {
+function emaSlope(closes: number[]) {
   if (closes.length < 30) return 0;
 
-  const emaNow = ema(closes, 21);
-  const emaPrev = ema(closes.slice(0, -5), 21);
+  const now = ema(closes, 21);
+  const prev = ema(closes.slice(0, -5), 21);
 
-  return emaNow - emaPrev;
+  return now - prev;
 }
 
-/* ---------------- SIGNAL MEMORY (ANTI-FLICKER FIX) ---------------- */
-
-const lastSignalMap = new Map<string, Signal>();
-
-function signalKey(symbol: Symbol, state: SignalState, bias: string) {
-  return `${symbol}-${state}-${bias}`;
-}
-
-/* ---------------- CORE ENGINE ---------------- */
+/* ================= CORE ENGINE ================= */
 
 export function generateSignal(
   symbol: Symbol,
   price: number,
   candles15m: Candle[],
-  candles1h: Candle[]
+  candles1h: Candle[],
+  candles4h: Candle[]
 ): Signal {
-  const closes = candles15m.map(c => c.close);
 
-  const r = rsi(closes);
-  const {
-    k,
-    d,
-    prevK,
-    bullishCross,
-    bearishCross,
-    stableSignal
-  } = stochKD(closes);
+  const closes15m = candles15m.map(c => c.close);
+  const closes1h = candles1h.map(c => c.close);
+  const closes4h = candles4h.map(c => c.close);
+
+  /* ================= 4H STRUCTURE (MACRO BIAS) ================= */
+
+  const ema4h = emaSlope(closes4h);
+  const macroBias: "LONG" | "SHORT" | "NEUTRAL" =
+    ema4h > 0 ? "LONG"
+    : ema4h < 0 ? "SHORT"
+    : "NEUTRAL";
+
+  const macroValid = macroBias !== "NEUTRAL";
+
+  /* ================= 1H TREND FILTER ================= */
+
+  const ema1h = emaSlope(closes1h);
+
+  const trendOk =
+    (macroBias === "LONG" && ema1h > 0) ||
+    (macroBias === "SHORT" && ema1h < 0);
+
+  /* ================= 15M SETUP ================= */
+
+  const r = rsi(closes15m);
+  const { k, d, bullishCross, bearishCross, stable } =
+    stochKD(closes15m);
 
   const a = adx(candles15m);
-  const bos = BOS(candles15m);
   const vol = volumeScore(candles15m);
+  const bos = BOS(candles15m);
 
-  const emaSlope = emaSlope21(closes);
+  const momentumOk = r > 40 && r < 70;
+  const volumeOk = vol.ratio > 1.1;
 
-  /* ---------------- BIAS ---------------- */
+  const stochOk =
+    stable &&
+    ((macroBias === "LONG" && bullishCross) ||
+     (macroBias === "SHORT" && bearishCross));
 
-  const bias: "LONG" | "SHORT" | "NEUTRAL" =
-    emaSlope > 0
-      ? "LONG"
-      : emaSlope < 0
-      ? "SHORT"
-      : "NEUTRAL";
+  const confirmations =
+    (momentumOk ? 1 : 0) +
+    (volumeOk ? 1 : 0) +
+    (stochOk ? 1 : 0);
 
-  /* ---------------- REGIME ---------------- */
+  /* ================= CONSOLIDATION FILTER ================= */
 
-  const trendStrength =
-    a > 30 ? "TRENDING"
-    : a > 22 ? "TRANSITION"
-    : "CHOP";
+  const trendingMarket = a > 23;
 
-  const validTrend = a >= 23;
-
-  /* ---------------- STOCH FILTER (FIXED) ---------------- */
-
-  const stochSignal =
-    stableSignal &&
-    ((bias === "LONG" && bullishCross) ||
-     (bias === "SHORT" && bearishCross));
-
-  /* ---------------- CONFIRMATION STACK ---------------- */
-
-  const momentumOK = r > 40 && r < 70;
-  const stochOK = stochSignal;
-  const volumeOK = vol.ratio > 1.1;
-
-  const confirmationCount =
-    (momentumOK ? 1 : 0) +
-    (stochOK ? 1 : 0) +
-    (volumeOK ? 1 : 0);
-
-  /* ---------------- EARLY ---------------- */
+  /* ================= EARLY ================= */
 
   const early =
-    bias !== "NEUTRAL" &&
-    validTrend &&
-    trendStrength !== "CHOP" &&
-    confirmationCount >= 2;
+    macroValid &&
+    trendOk &&
+    trendingMarket &&
+    confirmations >= 2;
 
-  /* ---------------- SNIPER ---------------- */
+  /* ================= SNIPER ================= */
 
   const sniper =
     early &&
     a > 26 &&
     vol.spike &&
-    bos !== "NEUTRAL" &&
-    Math.abs(price - closes.reduce((a,b)=>a+b,0)/closes.length) / price > 0.01;
+    bos !== "NEUTRAL";
 
   const state: SignalState =
     sniper ? "SNIPER"
     : early ? "EARLY"
     : "WAIT";
 
-  /* ---------------- ANTI-FLICKER GUARD ---------------- */
+  /* ================= CONFIDENCE ================= */
 
-  const key = signalKey(symbol, state, bias);
-  const last = lastSignalMap.get(key);
+  const confidence =
+    state === "SNIPER"
+      ? clamp(85 + r / 10, 80, 96)
+      : state === "EARLY"
+      ? clamp(60 + k / 2, 55, 82)
+      : 20;
 
-  const signal: Signal = {
+  /* ================= EXPECTED MOVE ================= */
+
+  const mean = closes15m.reduce((a, b) => a + b, 0) / closes15m.length;
+  const volatility = Math.abs(price - mean) / price;
+
+  const expectedMove =
+    state === "SNIPER"
+      ? clamp(volatility * 2.5, 0.03, 0.06)
+      : state === "EARLY"
+      ? clamp(volatility * 1.6, 0.02, 0.04)
+      : 0.01;
+
+  /* ================= RISK MODEL ================= */
+
+  let sl: number | null = null;
+  let tp: number | null = null;
+
+  if (state !== "WAIT") {
+    const risk = expectedMove * 0.55;
+
+    if (macroBias === "LONG") {
+      sl = price * (1 - risk);
+      tp = price * (1 + expectedMove);
+    } else if (macroBias === "SHORT") {
+      sl = price * (1 + risk);
+      tp = price * (1 - expectedMove);
+    }
+  }
+
+  const rr =
+    sl && tp
+      ? Math.abs((tp - price) / (price - sl))
+      : null;
+
+  return {
     symbol,
     price: round(price),
 
     state,
-    bias,
+    bias: macroBias,
 
-    confidence: round(
-      state === "SNIPER"
-        ? clamp(82 + r / 10, 80, 96)
-        : state === "EARLY"
-        ? clamp(60 + k / 2, 55, 82)
-        : 20
-    ),
+    confidence: round(confidence),
 
     adx: round(a, 2),
     stochK: round(k),
@@ -277,33 +295,17 @@ export function generateSignal(
 
     reason:
       state === "SNIPER"
-        ? "SNIPER CONFIRMED"
+        ? "SNIPER (4H STRUCTURE + 1H TREND + 15M SETUP)"
         : state === "EARLY"
-        ? "EARLY (CONFIRMED STACK)"
+        ? "EARLY (MACRO ALIGNED + CONFIRMED STACK)"
         : "NO STRUCTURE",
 
-    stopLoss: null,
-    takeProfit: null,
-    rr: null,
+    stopLoss: sl ? round(sl, 2) : null,
+    takeProfit: tp ? round(tp, 2) : null,
+    rr: rr ? round(rr, 2) : null,
 
-    expectedMove: round(1),
+    expectedMove: round(expectedMove * 100, 2),
 
     updatedAt: new Date().toISOString(),
   };
-
-  /* ---------------- DUPLICATE BLOCK (CRITICAL FIX) ---------------- */
-
-  if (
-    last &&
-    last.price === signal.price &&
-    last.state === signal.state &&
-    last.bias === signal.bias &&
-    Math.abs(last.confidence - signal.confidence) < 2
-  ) {
-    return last; // prevent UI flicker + duplicate alert
-  }
-
-  lastSignalMap.set(key, signal);
-
-  return signal;
 }
