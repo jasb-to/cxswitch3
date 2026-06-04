@@ -60,8 +60,8 @@ const clamp = (n: number, min: number, max: number) =>
 const round = (n: number, d = 2) =>
   Math.round(n * 10 ** d) / 10 ** d;
 
-const hasMinimumCandles = (candles: Candle[], min: number) =>
-  candles.length >= min;
+const hasMinimumCandles = (candles: Candle[] | null | undefined, min: number): boolean =>
+  Array.isArray(candles) && candles.length >= min;
 
 /* ---------------- ATR (GUARDED) ---------------- */
 
@@ -84,25 +84,38 @@ function atr(candles: Candle[], period = 14): number {
   return slice.reduce((a, b) => a + b, 0) / slice.length;
 }
 
-/* ---------------- RSI (GUARDED) ---------------- */
+/* ---------------- WILDER SMOOTHED RSI ---------------- */
 
-function rsi(closes: number[]): number {
-  if (closes.length < 2) return 50;
+function wilderRsi(closes: number[], period = 14): number {
+  if (closes.length < period + 1) return 50;
 
-  let gain = 0;
-  let loss = 0;
+  let avgGain = 0;
+  let avgLoss = 0;
 
-  for (let i = 1; i < closes.length; i++) {
+  // Initial SMA
+  for (let i = 1; i <= period; i++) {
     const diff = closes[i] - closes[i - 1];
-    if (diff > 0) gain += diff;
-    else loss -= diff;
+    if (diff > 0) avgGain += diff;
+    else avgLoss -= diff;
+  }
+  avgGain /= period;
+  avgLoss /= period;
+
+  // Wilder's smoothing
+  for (let i = period + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
   }
 
-  const rs = gain / (loss || 1);
+  const rs = avgGain / (avgLoss || 1);
   return 100 - 100 / (1 + rs);
 }
 
-/* ---------------- SMOOTHED STOCHASTIC ---------------- */
+/* ---------------- SMOOTHED STOCHASTIC (STRUCTURE-TIED) ---------------- */
 
 function stoch(
   closes: number[],
@@ -145,7 +158,7 @@ function stoch(
   };
 }
 
-/* ---------------- ADX (WILDER'S — NO SHADOWING) ---------------- */
+/* ---------------- ADX (WILDER'S) ---------------- */
 
 function adx(candles: Candle[], period = 14): number {
   if (!hasMinimumCandles(candles, period * 2)) return 0;
@@ -243,7 +256,6 @@ function getStructure(
 
   if (swings.length < minSwings) return "RANGE";
 
-  // Filter micro-swings: require minimum distance from previous swing of same type
   const filteredSwings: typeof swings = [];
   for (const swing of swings) {
     const lastSame = filteredSwings.filter((s) => s.type === swing.type).at(-1);
@@ -275,13 +287,13 @@ function getStructure(
   return "RANGE";
 }
 
-/* ---------------- STRUCTURE STRENGTH SCORE ---------------- */
+/* ---------------- DIRECTION-PENALIZED STRUCTURE STRENGTH ---------------- */
 
 function structureStrength(
   candles: Candle[],
   minSwingDistPct = 0.003
-): number {
-  if (!hasMinimumCandles(candles, 10)) return 0;
+): { score: number; direction: "UP" | "DOWN" | "MIXED" } {
+  if (!hasMinimumCandles(candles, 10)) return { score: 0, direction: "MIXED" };
 
   const swings: { type: "HIGH" | "LOW"; value: number }[] = [];
 
@@ -313,27 +325,26 @@ function structureStrength(
   const highs = filtered.filter((s) => s.type === "HIGH").map((s) => s.value);
   const lows = filtered.filter((s) => s.type === "LOW").map((s) => s.value);
 
-  if (highs.length < 4 || lows.length < 4) return 0;
+  if (highs.length < 4 || lows.length < 4) return { score: 0, direction: "MIXED" };
 
-  // Score: consistency of HH/HL or LL/LH
-  let hhScore = 0;
-  let hlScore = 0;
-  let lhScore = 0;
-  let llScore = 0;
-
+  let hh = 0, hl = 0, lh = 0, ll = 0;
   for (let i = 1; i < highs.length; i++) {
-    if (highs[i] > highs[i - 1]) hhScore++;
-    else lhScore++;
+    if (highs[i] > highs[i - 1]) hh++; else lh++;
   }
   for (let i = 1; i < lows.length; i++) {
-    if (lows[i] > lows[i - 1]) hlScore++;
-    else llScore++;
+    if (lows[i] > lows[i - 1]) hl++; else ll++;
   }
 
-  const uptrendScore = (hhScore + hlScore) / (highs.length + lows.length - 2);
-  const downtrendScore = (lhScore + llScore) / (highs.length + lows.length - 2);
+  const upScore = (hh + hl) / (highs.length + lows.length - 2);
+  const downScore = (lh + ll) / (highs.length + lows.length - 2);
 
-  return Math.max(uptrendScore, downtrendScore);
+  // Direction-penalized: mixed chop scores near zero
+  const netScore = upScore - downScore;
+  const absScore = Math.abs(netScore);
+
+  if (netScore > 0.2) return { score: absScore, direction: "UP" };
+  if (netScore < -0.2) return { score: absScore, direction: "DOWN" };
+  return { score: Math.max(0, absScore - 0.3), direction: "MIXED" }; // penalize mixed
 }
 
 /* ---------------- BREAKOUT (HARDENED) ---------------- */
@@ -359,16 +370,13 @@ function breakout(
   const brokeUp = last.close > resistance && prev.close <= resistance;
   const brokeDown = last.close < support && prev.close >= support;
 
-  // Wick rejection filter
   const upperWick = last.high - Math.max(last.open, last.close);
   const lowerWick = Math.min(last.open, last.close) - last.low;
   const body = Math.abs(last.close - last.open);
 
-  // Volume confirmation
   const { confirmed: volConfirmed } = volumeConfirmed(candles, 1.15);
 
   if (brokeUp) {
-    // Reject if massive upper wick (failed breakout)
     if (upperWick > body * 2.5) return "NONE";
     if (!volConfirmed && structure4h === "RANGE") return "NONE";
 
@@ -437,7 +445,6 @@ function getVolatilityRegime(
   const historicalAtr = atr(priorCandles, 20);
   const ratio = historicalAtr > 0 ? currentAtr / historicalAtr : 1;
 
-  // Count consecutive compression candles
   let compressionDuration = 0;
   for (let i = candles.length - 1; i >= 1; i--) {
     const c = candles[i];
@@ -455,18 +462,57 @@ function getVolatilityRegime(
   };
 }
 
+/* ---------------- SYMBOL-NORMALIZED ATR BASELINE ---------------- */
+
+function getSymbolAtrBaseline(symbol: Symbol): number {
+  // Approximate historical daily ATR% for each asset
+  // Used to normalize expectedMove scaling across BTC/ETH/SOL
+  const baselines: Record<Symbol, number> = {
+    BTC: 0.025, // ~2.5% daily
+    ETH: 0.035, // ~3.5% daily
+    SOL: 0.055, // ~5.5% daily
+  };
+  return baselines[symbol] ?? 0.03;
+}
+
+/* ---------------- REGIME-AWARE EXPECTED MOVE ---------------- */
+
+function calculateExpectedMove(
+  symbol: Symbol,
+  atrPercent: number,
+  state: SignalState,
+  structure4h: Structure
+): number {
+  const baseline = getSymbolAtrBaseline(symbol);
+  const normalizedAtr = atrPercent / baseline; // 1.0 = average vol for this asset
+
+  // Regime-aware multipliers
+  const trendMultiplier = state === "SNIPER" ? 2.5 : 1.5;
+  const rangeMultiplier = state === "SNIPER" ? 1.8 : 1.0;
+
+  const multiplier = structure4h !== "RANGE" ? trendMultiplier : rangeMultiplier;
+
+  let expectedMove = atrPercent * multiplier * normalizedAtr;
+
+  // Hard caps
+  const maxMove = state === "SNIPER" ? 0.08 : 0.05;
+  const minMove = state === "SNIPER" ? 0.012 : 0.006;
+
+  return clamp(expectedMove, minMove, maxMove);
+}
+
 /* ---------------- CORE ENGINE ---------------- */
 
 export function generateSignal(
   symbol: Symbol,
   price: number,
-  candles15m: Candle[],
-  candles1h: Candle[],
-  candles4h: Candle[]
+  candles15m: Candle[] | null | undefined,
+  candles1h: Candle[] | null | undefined,
+  candles4h: Candle[] | null | undefined
 ): Signal {
   const now = new Date().toISOString();
 
-  /* ---- HARD DATA GUARD ---- */
+  /* ---- DEFENSIVE NULL/UNDEFINED GUARD ---- */
   if (
     !hasMinimumCandles(candles15m, 35) ||
     !hasMinimumCandles(candles1h, 25) ||
@@ -474,7 +520,7 @@ export function generateSignal(
   ) {
     return {
       symbol,
-      price: round(price),
+      price: round(price ?? 0),
       state: "WAIT",
       setup: "NONE",
       structure: "RANGE",
@@ -494,9 +540,13 @@ export function generateSignal(
     };
   }
 
+  const c15 = candles15m as Candle[];
+  const c1h = candles1h as Candle[];
+  const c4h = candles4h as Candle[];
+
   /* ---- MULTI-TIMEFRAME STRUCTURE ---- */
-  const structure4h = getStructure(candles4h, 8, 0.003);
-  const structure1h = getStructure(candles1h, 8, 0.003);
+  const structure4h = getStructure(c4h, 8, 0.003);
+  const structure1h = getStructure(c1h, 8, 0.003);
 
   /* ---- BIAS (4H ONLY) ---- */
   const bias =
@@ -505,23 +555,23 @@ export function generateSignal(
     : "NEUTRAL";
 
   /* ---- INDICATORS ---- */
-  const closes15m = candles15m.map((c) => c.close);
-  const closes1h = candles1h.map((c) => c.close);
+  const closes15m = c15.map((c) => c.close);
+  const closes1h = c1h.map((c) => c.close);
 
-  const r15 = rsi(closes15m);
-  const r1h = rsi(closes1h);
+  const r15 = wilderRsi(closes15m);
+  const r1h = wilderRsi(closes1h);
 
   const s15 = stoch(closes15m);
   const s1h = stoch(closes1h);
 
-  const a15 = atr(candles15m);
-  const a1h = atr(candles1h);
+  const a15 = atr(c15);
+  const a1h = atr(c1h);
 
-  const adxValue = adx(candles15m);
+  const adxValue = adx(c15);
 
   /* ---- SETUP DETECTION ---- */
-  const brk = breakout(candles15m, structure4h, bias);
-  const pullback = isPullback(candles15m, bias);
+  const brk = breakout(c15, structure4h, bias);
+  const pullback = isPullback(c15, bias);
 
   let setup: SetupType = "NONE";
 
@@ -535,55 +585,55 @@ export function generateSignal(
   } else if (pullback && bias !== "NEUTRAL" && structure4h !== "RANGE") {
     setup = "PULLBACK";
   } else if (structure4h === "RANGE" && brk === "NONE") {
-    const last20 = candles15m.slice(-20);
+    const last20 = c15.slice(-20);
     const rangeHigh = Math.max(...last20.map((c) => c.high));
     const rangeLow = Math.min(...last20.map((c) => c.low));
     const rangeMid = (rangeHigh + rangeLow) / 2;
-    const distFromMid =
-      Math.abs(candles15m.at(-1)!.close - rangeMid) / rangeMid;
+    const distFromMid = Math.abs(c15.at(-1)!.close - rangeMid) / rangeMid;
     if (distFromMid > 0.008) setup = "REVERSAL";
   }
 
   /* ---- VOLATILITY REGIME ---- */
-  const { compression, expansion, compressionDuration } = getVolatilityRegime(candles15m, a15);
+  const { compression, expansion, compressionDuration } = getVolatilityRegime(c15, a15);
 
-  /* ---- ENTRY VALIDATION (MULTI-TIMEFRAME) ---- */
+  /* ---- STRUCTURE-TIED STOCHASTIC TRIGGER ---- */
+  // Only fire in the direction of the swing structure
   const stochCrossUp = s15.prevK < s15.prevD && s15.k > s15.d;
   const stochCrossDown = s15.prevK > s15.prevD && s15.k < s15.d;
+
+  const stochAlignedLong = stochCrossUp && (structure4h === "UPTREND" || structure1h === "UPTREND");
+  const stochAlignedShort = stochCrossDown && (structure4h === "DOWNTREND" || structure1h === "DOWNTREND");
 
   const entryValidLong =
     bias === "LONG" &&
     r15 > 40 &&
     r15 < 70 &&
-    stochCrossUp &&
+    stochAlignedLong &&
     r1h > 50;
 
   const entryValidShort =
     bias === "SHORT" &&
     r15 > 30 &&
     r15 < 60 &&
-    stochCrossDown &&
+    stochAlignedShort &&
     r1h < 50;
 
   const entryValid = entryValidLong || entryValidShort;
 
   /* ---- STRICT TIMEFRAME ALIGNMENT ---- */
-  // 1H must CONFIRM the 4H bias, not just "not conflict"
   const timeframeAligned =
     (bias === "LONG" && structure1h === "UPTREND") ||
     (bias === "SHORT" && structure1h === "DOWNTREND") ||
     bias === "NEUTRAL";
 
-  /* ---- STRUCTURE STRENGTH ---- */
-  const strength4h = structureStrength(candles4h, 0.003);
-  const strongStructure = strength4h >= 0.75;
+  /* ---- DIRECTION-PENALIZED STRUCTURE STRENGTH ---- */
+  const { score: strength4h, direction: strengthDir } = structureStrength(c4h, 0.003);
+  const strongStructure = strength4h >= 0.75 && strengthDir !== "MIXED";
 
   /* ---- VOLUME CONFIRMATION ---- */
-  const { confirmed: volConfirmed, ratio: volRatio } = volumeConfirmed(candles15m, 1.2);
+  const { confirmed: volConfirmed, ratio: volRatio } = volumeConfirmed(c15, 1.2);
 
   /* ---- STATE MACHINE ---- */
-
-  // EARLY: setup forming, macro clear, not compressed, 1h CONFIRMS, RSI ok
   const early =
     bias !== "NEUTRAL" &&
     setup !== "NONE" &&
@@ -592,7 +642,6 @@ export function generateSignal(
     ((bias === "LONG" && r15 > 35) || (bias === "SHORT" && r15 < 65)) &&
     (structure4h !== "RANGE" || setup === "BREAKOUT");
 
-  // SNIPER: full confluence stack
   const sniper =
     early &&
     expansion &&
@@ -610,22 +659,9 @@ export function generateSignal(
     : early ? "EARLY"
     : "WAIT";
 
-  /* ---- CONFIDENCE ---- */
-  let confidence = state === "SNIPER" ? 85 : state === "EARLY" ? 55 : 10;
-  if (timeframeAligned && state !== "WAIT") confidence += 5;
-  if (expansion && state !== "WAIT") confidence += 5;
-  if (adxValue > 25 && state !== "WAIT") confidence += 5;
-  if (strongStructure && state !== "WAIT") confidence += 5;
-  if (volConfirmed && state !== "WAIT") confidence += 5;
-  confidence = clamp(confidence, 0, 100);
-
-  /* ---- ATR-SCALED RR MODEL (CAPPED) ---- */
+  /* ---- REGIME-AWARE, SYMBOL-NORMALIZED EXPECTED MOVE ---- */
   const atrPercent = a15 / price;
-
-  let expectedMove =
-    state === "SNIPER" ? Math.max(0.01, Math.min(0.08, atrPercent * 3))
-    : state === "EARLY" ? Math.max(0.005, Math.min(0.05, atrPercent * 1.8))
-    : 0;
+  const expectedMove = calculateExpectedMove(symbol, atrPercent, state, structure4h);
 
   let sl: number | null = null;
   let tp: number | null = null;
@@ -640,13 +676,22 @@ export function generateSignal(
 
   const rr = sl && tp ? Math.abs((tp - price) / (price - sl)) : null;
 
+  /* ---- CONFIDENCE ---- */
+  let confidence = state === "SNIPER" ? 85 : state === "EARLY" ? 55 : 10;
+  if (timeframeAligned && state !== "WAIT") confidence += 5;
+  if (expansion && state !== "WAIT") confidence += 5;
+  if (adxValue > 25 && state !== "WAIT") confidence += 5;
+  if (strongStructure && state !== "WAIT") confidence += 5;
+  if (volConfirmed && state !== "WAIT") confidence += 5;
+  confidence = clamp(confidence, 0, 100);
+
   /* ---- REASON BUILDER ---- */
   let reason = "";
   if (state === "SNIPER") {
     const parts: string[] = [structure4h, setup];
     if (expansion) parts.push("EXPANSION");
     if (timeframeAligned) parts.push("1H-CONFIRM");
-    if (strongStructure) parts.push(`STR ${round(strength4h * 100)}%`);
+    if (strongStructure) parts.push(`STR ${round(strength4h * 100)}% ${strengthDir}`);
     if (volConfirmed) parts.push(`VOL ${round(volRatio, 1)}x`);
     if (adxValue > 15) parts.push(`ADX ${round(adxValue)}`);
     reason = `SNIPER (${parts.join(" | ")})`;
@@ -658,7 +703,8 @@ export function generateSignal(
     if (setup === "NONE") issues.push("NO SETUP");
     if (compression) issues.push(`COMPRESSION ${compressionDuration}c`);
     if (!timeframeAligned) issues.push("1H-DIVERGENCE");
-    if (!strongStructure) issues.push("WEAK-STRUCTURE");
+    if (!strongStructure) issues.push(`WEAK-STR ${strengthDir}`);
+    if (strengthDir === "MIXED") issues.push("CHOP");
     reason = issues.length ? `WAIT (${issues.join(", ")})` : "WAIT (NO CONFLUENCE)";
   }
 
