@@ -30,7 +30,8 @@ export interface Signal {
   rsi: number;
   reason: string;
   stopLoss: number | null;
-  takeProfit: number | null;
+  takeProfit: number | null;      // Initial TP (1R)
+  trailStop: number | null;       // Trailing exit level
   rr: number | null;
   expectedMove: number;
   updatedAt: string;
@@ -97,11 +98,8 @@ function getStructure(candles: Candle[]): Structure {
     const c = candles[i], p1 = candles[i - 1], p2 = candles[i - 2], n1 = candles[i + 1], n2 = candles[i + 2];
     const isHigh = c.high > p1.high && c.high > p2.high && c.high > n1.high && c.high > n2.high;
     const isLow = c.low < p1.low && c.low < p2.low && c.low < n1.low && c.low < n2.low;
-    if (isHigh) {
-      highs.push(c.high);
-    } else if (isLow) {
-      lows.push(c.low);
-    }
+    if (isHigh) highs.push(c.high);
+    else if (isLow) lows.push(c.low);
   }
   const lastH = highs.slice(-3), lastL = lows.slice(-3);
   if (lastH.length < 3 || lastL.length < 3) return "RANGE";
@@ -121,11 +119,8 @@ function getLastSwingLevels(candles: Candle[]) {
     const c = candles[i], p1 = candles[i - 1], p2 = candles[i - 2], n1 = candles[i + 1], n2 = candles[i + 2];
     const isHigh = c.high > p1.high && c.high > p2.high && c.high > n1.high && c.high > n2.high;
     const isLow = c.low < p1.low && c.low < p2.low && c.low < n1.low && c.low < n2.low;
-    if (isHigh) {
-      highs.push({ value: c.high, idx: i });
-    } else if (isLow) {
-      lows.push({ value: c.low, idx: i });
-    }
+    if (isHigh) highs.push({ value: c.high, idx: i });
+    else if (isLow) lows.push({ value: c.low, idx: i });
   }
   return {
     lastHigh: highs.at(-1),
@@ -133,6 +128,32 @@ function getLastSwingLevels(candles: Candle[]) {
     priorHigh: highs.at(-2),
     priorLow: lows.at(-2),
   };
+}
+
+/* ---------------- TRAILING STOP CALCULATOR ---------------- */
+function calculateTrail(
+  candles: Candle[],
+  bias: "LONG" | "SHORT",
+  entryPrice: number,
+  initialRisk: number
+): { trailStop: number; initialTP: number } {
+  const swings = getLastSwingLevels(candles);
+  const atrValue = atr(candles, 14);
+  
+  if (bias === "LONG") {
+    // Trail below last swing low, or 1.5x ATR below entry, whichever is tighter
+    const swingTrail = swings.lastLow ? swings.lastLow.value : entryPrice - initialRisk * 2;
+    const atrTrail = entryPrice - atrValue * 1.5;
+    const trailStop = Math.max(swingTrail, atrTrail, entryPrice - initialRisk * 3); // Max 3R drawdown
+    const initialTP = entryPrice + initialRisk * 2; // 2R initial target
+    return { trailStop: round(trailStop, 2), initialTP: round(initialTP, 2) };
+  } else {
+    const swingTrail = swings.lastHigh ? swings.lastHigh.value : entryPrice + initialRisk * 2;
+    const atrTrail = entryPrice + atrValue * 1.5;
+    const trailStop = Math.min(swingTrail, atrTrail, entryPrice + initialRisk * 3);
+    const initialTP = entryPrice - initialRisk * 2;
+    return { trailStop: round(trailStop, 2), initialTP: round(initialTP, 2) };
+  }
 }
 
 export function generateSignal(
@@ -148,7 +169,7 @@ export function generateSignal(
     return {
       symbol, price: round(price ?? 0), state: "WAIT", setup: "NONE", structure: "RANGE",
       bias: "NEUTRAL", confidence: 0, adx: 0, atr: 0, stochK: 50, stochD: 50, rsi: 50,
-      reason: "INSUFFICIENT DATA", stopLoss: null, takeProfit: null, rr: null, expectedMove: 0,
+      reason: "INSUFFICIENT DATA", stopLoss: null, takeProfit: null, trailStop: null, rr: null, expectedMove: 0,
       updatedAt: now, entryTimeframe: "NONE", higherTimeframeStoch: "N/A"
     };
   }
@@ -178,19 +199,15 @@ export function generateSignal(
   const expansion1h = priorAtr1h > 0 && (a1h / priorAtr1h) > 1.2;
   const compression1h = priorAtr1h > 0 && (a1h / priorAtr1h) < 0.7;
 
-  // 1H stoch conditions
   const stoch1hCrossUp = s1h.prevK < s1h.prevD && s1h.k > s1h.d;
   const stoch1hCrossDown = s1h.prevK > s1h.prevD && s1h.k < s1h.d;
   const stoch1hExtremeLong = s1h.k < 25 && s1h.k > s1h.d;
   const stoch1hExtremeShort = s1h.k > 75 && s1h.k < s1h.d;
-  // NEW: Post-cross deep alignment (catches missed crosses)
-  const stoch1hDeepLong = s1h.k < 15 && s1h.k < s1h.d;   // deeply oversold, already fallen
-  const stoch1hDeepShort = s1h.k > 85 && s1h.k > s1h.d;  // deeply overbought, already risen
+  const stoch1hDeepLong = s1h.k < 15 && s1h.k < s1h.d;
+  const stoch1hDeepShort = s1h.k > 85 && s1h.k > s1h.d;
 
-  // 15m stoch conditions
   const stoch15CrossUp = s15.prevK < s15.prevD && s15.k > s15.d;
   const stoch15CrossDown = s15.prevK > s15.prevD && s15.k < s15.d;
-  // NEW: 15m deeply extreme (catches pinned stoch)
   const stoch15DeepLong = s15.k < 10 && s15.k < s15.d;
   const stoch15DeepShort = s15.k > 90 && s15.k > s15.d;
 
@@ -204,95 +221,52 @@ export function generateSignal(
   let primaryStochD = 50;
   let primaryRsi = 50;
 
-  /* ============================================
-     EARLY: 1H trend start or extreme reversal
-     ============================================ */
+  /* ---- EARLY: 1H trend start ---- */
   if (bias === "LONG" && structure1h !== "DOWNTREND") {
     if (stoch1hCrossUp && s1h.prevK < 35 && r1h > 45) {
-      setup = "PULLBACK";
-      entryTimeframe = "1H";
-      primaryStochK = s1h.k;
-      primaryStochD = s1h.d;
-      primaryRsi = r1h;
+      setup = "PULLBACK"; entryTimeframe = "1H";
+      primaryStochK = s1h.k; primaryStochD = s1h.d; primaryRsi = r1h;
     }
     else if ((stoch1hExtremeLong || stoch1hDeepLong) && r1h < 50 && !compression1h) {
-      setup = "PULLBACK";
-      entryTimeframe = "1H";
-      primaryStochK = s1h.k;
-      primaryStochD = s1h.d;
-      primaryRsi = r1h;
+      setup = "PULLBACK"; entryTimeframe = "1H";
+      primaryStochK = s1h.k; primaryStochD = s1h.d; primaryRsi = r1h;
     }
   } else if (bias === "SHORT" && structure1h !== "UPTREND") {
     if (stoch1hCrossDown && s1h.prevK > 65 && r1h < 55) {
-      setup = "PULLBACK";
-      entryTimeframe = "1H";
-      primaryStochK = s1h.k;
-      primaryStochD = s1h.d;
-      primaryRsi = r1h;
+      setup = "PULLBACK"; entryTimeframe = "1H";
+      primaryStochK = s1h.k; primaryStochD = s1h.d; primaryRsi = r1h;
     }
     else if ((stoch1hExtremeShort || stoch1hDeepShort) && r1h > 50 && !compression1h) {
-      setup = "PULLBACK";
-      entryTimeframe = "1H";
-      primaryStochK = s1h.k;
-      primaryStochD = s1h.d;
-      primaryRsi = r1h;
+      setup = "PULLBACK"; entryTimeframe = "1H";
+      primaryStochK = s1h.k; primaryStochD = s1h.d; primaryRsi = r1h;
     }
   }
 
-  /* ============================================
-     SNIPER: 15m pullback in confirmed 1H trend
-     ============================================ */
+  /* ---- SNIPER: 15m pullback ---- */
   if (setup === "NONE" && bias !== "NEUTRAL") {
     const trendConfirmed1h = (bias === "LONG" && s1h.k > s1h.d && s1h.k > 40) ||
                              (bias === "SHORT" && s1h.k < s1h.d && s1h.k < 60);
 
     if (trendConfirmed1h) {
-      // Cross-based SNIPER
-      if (bias === "LONG" && stoch15CrossUp && s15.prevK < 35 && r15 < 65 && r1h > 50) {
-        setup = "PULLBACK";
-        entryTimeframe = "15M";
-        primaryStochK = s15.k;
-        primaryStochD = s15.d;
-        primaryRsi = r15;
-      } else if (bias === "SHORT" && stoch15CrossDown && s15.prevK > 65 && r15 > 35 && r1h < 50) {
-        setup = "PULLBACK";
-        entryTimeframe = "15M";
-        primaryStochK = s15.k;
-        primaryStochD = s15.d;
-        primaryRsi = r15;
-      }
-      // NEW: Level-based SNIPER (deep extreme, no cross needed)
-      else if (bias === "LONG" && stoch15DeepLong && r15 < 60 && r1h > 50) {
-        setup = "PULLBACK";
-        entryTimeframe = "15M";
-        primaryStochK = s15.k;
-        primaryStochD = s15.d;
-        primaryRsi = r15;
-      } else if (bias === "SHORT" && stoch15DeepShort && r15 > 40 && r1h < 50) {
-        setup = "PULLBACK";
-        entryTimeframe = "15M";
-        primaryStochK = s15.k;
-        primaryStochD = s15.d;
-        primaryRsi = r15;
+      if (bias === "LONG" && (stoch15CrossUp || stoch15DeepLong) && r15 < 65 && r1h > 50) {
+        setup = "PULLBACK"; entryTimeframe = "15M";
+        primaryStochK = s15.k; primaryStochD = s15.d; primaryRsi = r15;
+      } else if (bias === "SHORT" && (stoch15CrossDown || stoch15DeepShort) && r15 > 35 && r1h < 50) {
+        setup = "PULLBACK"; entryTimeframe = "15M";
+        primaryStochK = s15.k; primaryStochD = s15.d; primaryRsi = r15;
       }
     }
   }
 
-  /* ============================================
-     BREAKDOWN/BREAKUP
-     ============================================ */
+  /* ---- BREAKDOWN/BREAKUP ---- */
   if (setup === "NONE" && swings4h.lastLow && swings4h.priorLow) {
     const lastLow = swings4h.lastLow.value;
     const priorLow = swings4h.priorLow.value;
     if (price4h < lastLow * 0.998 && lastLow > priorLow) {
       const broke1h = swings1h.lastLow ? price1h < swings1h.lastLow.value : false;
       if ((broke1h || r1h < 45) && structure1h === "DOWNTREND") {
-        setup = "BREAKDOWN";
-        entryBias = "SHORT";
-        entryTimeframe = "1H";
-        primaryStochK = s1h.k;
-        primaryStochD = s1h.d;
-        primaryRsi = r1h;
+        setup = "BREAKDOWN"; entryBias = "SHORT"; entryTimeframe = "1H";
+        primaryStochK = s1h.k; primaryStochD = s1h.d; primaryRsi = r1h;
       }
     }
   }
@@ -303,12 +277,8 @@ export function generateSignal(
     if (price4h > lastHigh * 1.002 && lastHigh < priorHigh) {
       const broke1h = swings1h.lastHigh ? price1h > swings1h.lastHigh.value : false;
       if ((broke1h || r1h > 55) && structure1h === "UPTREND") {
-        setup = "BREAKUP";
-        entryBias = "LONG";
-        entryTimeframe = "1H";
-        primaryStochK = s1h.k;
-        primaryStochD = s1h.d;
-        primaryRsi = r1h;
+        setup = "BREAKUP"; entryBias = "LONG"; entryTimeframe = "1H";
+        primaryStochK = s1h.k; primaryStochD = s1h.d; primaryRsi = r1h;
       }
     }
   }
@@ -339,21 +309,34 @@ export function generateSignal(
       symbol, price: round(price), state: "WAIT", setup: "NONE", structure: structure4h, bias,
       confidence: 0, adx: 0, atr: round(a15, 2), stochK: round(s15.k), stochD: round(s15.d),
       rsi: round(r15), reason: `WAIT (${issues.join(", ")})`, stopLoss: null, takeProfit: null,
-      rr: null, expectedMove: 0, updatedAt: now, entryTimeframe: "NONE",
+      trailStop: null, rr: null, expectedMove: 0, updatedAt: now, entryTimeframe: "NONE",
       higherTimeframeStoch: `1H:${round(s1h.k)}/${round(s1h.d)}`
     };
   }
 
+  /* ============================================
+     DYNAMIC SIZING: Risk-based, not time-based
+     ============================================ */
   const priceForSizing = entryTimeframe === "1H" ? price1h : price15;
   const atrForSizing = entryTimeframe === "1H" ? a1h : a15;
   const atrPct = atrForSizing / priceForSizing;
-  const expectedMove = state === "SNIPER"
-    ? Math.max(0.025, Math.min(0.05, atrPct * 2.5))
-    : Math.max(0.02, Math.min(0.04, atrPct * 2));
 
-  const sl = entryBias === "LONG" ? priceForSizing * (1 - expectedMove * 0.5) : priceForSizing * (1 + expectedMove * 0.5);
-  const tp = entryBias === "LONG" ? priceForSizing * (1 + expectedMove) : priceForSizing * (1 - expectedMove);
+  // Risk amount: 1% for EARLY, 1.5% for SNIPER, 2% for BREAKDOWN/BREAKUP
+  const riskPct = state === "SNIPER" ? 0.015 : (setup === "BREAKDOWN" || setup === "BREAKUP") ? 0.02 : 0.01;
+
+  // Stop loss: 1.5x ATR for EARLY (wider), 1x ATR for SNIPER (tighter)
+  const stopDistance = state === "EARLY" ? atrForSizing * 1.5 : atrForSizing;
+  const sl = entryBias === "LONG" ? priceForSizing - stopDistance : priceForSizing + stopDistance;
+
+  // Initial TP: 2R (twice the risk distance)
+  const riskDistance = Math.abs(priceForSizing - sl);
+  const tp = entryBias === "LONG" ? priceForSizing + riskDistance * 2 : priceForSizing - riskDistance * 2;
+
+  // Trailing stop: calculated from 1H swings
+  const { trailStop, initialTP } = calculateTrail(c1h, entryBias, priceForSizing, riskDistance);
+
   const rr = Math.abs((tp - priceForSizing) / (priceForSizing - sl));
+  const expectedMove = Math.abs((tp - priceForSizing) / priceForSizing);
 
   let confidence = state === "SNIPER" ? 85 : 70;
   if (setup === "BREAKDOWN" || setup === "BREAKUP") confidence += 5;
@@ -372,8 +355,6 @@ export function generateSignal(
     confidence, adx: 0, atr: round(a15, 2),
     stochK: round(primaryStochK), stochD: round(primaryStochD), rsi: round(primaryRsi),
     reason: `${state} ${setup} ${entryBias} | ENTRY:${entryTimeframe} | 4H:${structure4h} | 1H:${structure1h}${expansion15 ? " | 15M_EXP" : ""}${expansion1h ? " | 1H_EXP" : ""}`,
-    stopLoss: round(sl, 2), takeProfit: round(tp, 2), rr: round(rr, 2),
+    stopLoss: round(sl, 2), takeProfit: round(initialTP, 2), trailStop, rr: round(rr, 2),
     expectedMove: round(expectedMove * 100, 2), updatedAt: now, entryTimeframe,
-    higherTimeframeStoch: entryTimeframe === "15M" ? `1H:${round(s1h.k)}/${round(s1h.d)}` : `15M:${round(s15.k)}/${round(s15.d)}`
-  };
-}
+    higherTimeframeStoch
