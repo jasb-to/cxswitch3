@@ -155,23 +155,26 @@ export function generateSignal(
   const s15 = stoch(closes15);
   const a15 = atr(c15);
 
+  // Stoch cross with ZONE VALIDATION — no-man's land crosses rejected
   const stochCrossUp = s15.prevK < s15.prevD && s15.k > s15.d;
   const stochCrossDown = s15.prevK > s15.prevD && s15.k < s15.d;
 
-  // Get swing levels for breakdown detection
+  const validStochLong = stochCrossUp && (s15.prevK < 35 || s15.k < 40);
+  const validStochShort = stochCrossDown && (s15.prevK > 65 || s15.k > 60);
+
   const swings4h = getLastSwingLevels(c4h);
   const swings1h = getLastSwingLevels(c1h);
 
   let setup: SetupType = "NONE";
   let entryBias: "LONG" | "SHORT" | "NEUTRAL" = bias;
 
-  /* ---- TREND PULLBACK (existing logic) ---- */
+  /* ---- TREND PULLBACK (zone-validated stoch) ---- */
   if (bias === "LONG") {
-    if (structure1h !== "DOWNTREND" && stochCrossUp && r15 < 65 && r1h > 40) {
+    if (structure1h !== "DOWNTREND" && validStochLong && r15 < 65 && r1h > 40) {
       setup = "PULLBACK";
     }
   } else if (bias === "SHORT") {
-    if (structure1h !== "UPTREND" && stochCrossDown && r15 > 35 && r1h < 60) {
+    if (structure1h !== "UPTREND" && validStochShort && r15 > 35 && r1h < 60) {
       setup = "PULLBACK";
     }
   }
@@ -180,9 +183,7 @@ export function generateSignal(
   if (setup === "NONE" && swings4h.lastLow && swings4h.priorLow) {
     const lastLow = swings4h.lastLow.value;
     const priorLow = swings4h.priorLow.value;
-    // Price broke below last swing low AND last swing low was higher than prior (was uptrend)
     if (price < lastLow * 0.998 && lastLow > priorLow) {
-      // Confirm with momentum: 1H also broke its low or RSI < 45
       const broke1h = swings1h.lastLow ? price < swings1h.lastLow.value : false;
       if (broke1h || r1h < 45) {
         setup = "BREAKDOWN";
@@ -212,12 +213,17 @@ export function generateSignal(
   if (state === "WAIT") {
     const issues: string[] = [];
     if (bias === "NEUTRAL") {
-      // Check if we're near a breakdown/breakup but not confirmed
       if (swings4h.lastLow && price < swings4h.lastLow.value * 1.005) issues.push("NEAR BREAKDOWN");
       else if (swings4h.lastHigh && price > swings4h.lastHigh.value * 0.995) issues.push("NEAR BREAKUP");
       else issues.push("NO TREND");
     } else {
-      if (setup === "NONE") issues.push("NO SETUP");
+      if (setup === "NONE") {
+        if (bias === "LONG" && !validStochLong) issues.push(stochCrossUp ? "STOCH NO ZONE" : "NO STOCH UP");
+        else if (bias === "SHORT" && !validStochShort) issues.push(stochCrossDown ? "STOCH NO ZONE" : "NO STOCH DOWN");
+        else issues.push("NO SETUP");
+      }
+      if (structure1h === "DOWNTREND" && bias === "LONG") issues.push("1H FIGHTING");
+      if (structure1h === "UPTREND" && bias === "SHORT") issues.push("1H FIGHTING");
     }
     return {
       symbol, price: round(price), state: "WAIT", setup: "NONE", structure: structure4h, bias,
@@ -237,7 +243,7 @@ export function generateSignal(
   const rr = Math.abs((tp - price) / (price - sl));
 
   let confidence = state === "SNIPER" ? 85 : 65;
-  if (setup === "BREAKDOWN" || setup === "BREAKUP") confidence += 5; // structure break has edge
+  if (setup === "BREAKDOWN" || setup === "BREAKUP") confidence += 5;
   if (r15 > 40 && r15 < 60) confidence += 5;
   if (Math.abs(s15.k - s15.d) < 10) confidence += 5;
 
