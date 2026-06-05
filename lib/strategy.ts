@@ -153,10 +153,140 @@ export function generateSignal(
   const r15 = rsi(closes15);
   const r1h = rsi(closes1h);
   const s15 = stoch(closes15);
+  const s1h = stoch(closes1h);
   const a15 = atr(c15);
+  const a1h = atr(c1h);
 
-  // Stoch conditions
-  const stochCrossUp = s15.prevK < s15.prevD && s15.k > s15.d;
-  const stochCrossDown = s15.prevK > s15.prevD && s15.k < s15.d;
+  // 1H stoch (for EARLY trend detection)
+  const stoch1hCrossUp = s1h.prevK < s1h.prevD && s1h.k > s1h.d;
+  const stoch1hCrossDown = s1h.prevK > s1h.prevD && s1h.k < s1h.d;
+  const stoch1hExtremeLong = s1h.k < 25 && s1h.k < s1h.d;
+  const stoch1hExtremeShort = s1h.k > 75 && s1h.k > s1h.d;
 
-  // Extreme zone entries (pre-cross, for E
+  // 15m stoch (for SNIPER pullback entry)
+  const stoch15CrossUp = s15.prevK < s15.prevD && s15.k > s15.d;
+  const stoch15CrossDown = s15.prevK > s15.prevD && s15.k < s15.d;
+
+  const swings4h = getLastSwingLevels(c4h);
+  const swings1h = getLastSwingLevels(c1h);
+
+  let setup: SetupType = "NONE";
+  let entryBias: "LONG" | "SHORT" | "NEUTRAL" = bias;
+  let isEarly = false;
+
+  /* ---- EARLY: 1H stoch cross in 4H trend direction ---- */
+  if (bias === "LONG") {
+    // 1H stoch cross up from below 40 = early trend start
+    if (stoch1hCrossUp && s1h.prevK < 40 && r1h > 45 && structure1h !== "DOWNTREND") {
+      setup = "PULLBACK";
+      isEarly = true;
+    }
+    // Or 1H stoch extreme oversold in 4H uptrend = early reversal
+    else if (stoch1hExtremeLong && r1h < 50 && structure1h !== "DOWNTREND") {
+      setup = "PULLBACK";
+      isEarly = true;
+    }
+  } else if (bias === "SHORT") {
+    if (stoch1hCrossDown && s1h.prevK > 60 && r1h < 55 && structure1h !== "UPTREND") {
+      setup = "PULLBACK";
+      isEarly = true;
+    }
+    else if (stoch1hExtremeShort && r1h > 50 && structure1h !== "UPTREND") {
+      setup = "PULLBACK";
+      isEarly = true;
+    }
+  }
+
+  /* ---- SNIPER: 15m stoch cross on pullback in confirmed trend ---- */
+  // Only if 1H already aligned (not early anymore, trend confirmed)
+  if (setup === "NONE" && bias !== "NEUTRAL") {
+    const trendConfirmed = (bias === "LONG" && s1h.k > s1h.d && s1h.k > 40) ||
+                           (bias === "SHORT" && s1h.k < s1h.d && s1h.k < 60);
+    
+    if (trendConfirmed) {
+      if (bias === "LONG" && stoch15CrossUp && s15.prevK < 35 && r15 < 65) {
+        setup = "PULLBACK";
+      } else if (bias === "SHORT" && stoch15CrossDown && s15.prevK > 65 && r15 > 35) {
+        setup = "PULLBACK";
+      }
+    }
+  }
+
+  /* ---- BREAKDOWN/BREAKUP: structure break ---- */
+  if (setup === "NONE" && swings4h.lastLow && swings4h.priorLow) {
+    const lastLow = swings4h.lastLow.value;
+    const priorLow = swings4h.priorLow.value;
+    if (price < lastLow * 0.998 && lastLow > priorLow) {
+      const broke1h = swings1h.lastLow ? price < swings1h.lastLow.value : false;
+      if (broke1h || r1h < 45) {
+        setup = "BREAKDOWN";
+        entryBias = "SHORT";
+      }
+    }
+  }
+
+  if (setup === "NONE" && swings4h.lastHigh && swings4h.priorHigh) {
+    const lastHigh = swings4h.lastHigh.value;
+    const priorHigh = swings4h.priorHigh.value;
+    if (price > lastHigh * 1.002 && lastHigh < priorHigh) {
+      const broke1h = swings1h.lastHigh ? price > swings1h.lastHigh.value : false;
+      if (broke1h || r1h > 55) {
+        setup = "BREAKUP";
+        entryBias = "LONG";
+      }
+    }
+  }
+
+  const priorAtr = atr(c15.slice(0, -1), 20);
+  const expansion = priorAtr > 0 && (a15 / priorAtr) > 1.2;
+
+  const state: SignalState = (setup !== "NONE" && !isEarly && expansion) ? "SNIPER" 
+    : (setup !== "NONE") ? "EARLY" 
+    : "WAIT";
+
+  if (state === "WAIT") {
+    const issues: string[] = [];
+    if (bias === "NEUTRAL") issues.push("NO TREND");
+    else {
+      if (setup === "NONE") {
+        if (bias === "LONG") {
+          if (s1h.k < 25) issues.push("1H OVERSOLD WAIT CROSS");
+          else if (s1h.k > s1h.d) issues.push("1H STOCH UP WAIT 15M");
+          else issues.push("NO SETUP");
+        } else {
+          if (s1h.k > 75) issues.push("1H OVERBOUGHT WAIT CROSS");
+          else if (s1h.k < s1h.d) issues.push("1H STOCH DOWN WAIT 15M");
+          else issues.push("NO SETUP");
+        }
+      }
+    }
+    return {
+      symbol, price: round(price), state: "WAIT", setup: "NONE", structure: structure4h, bias,
+      confidence: 0, adx: 0, atr: round(a15, 2), stochK: round(s15.k), stochD: round(s15.d),
+      rsi: round(r15), reason: `WAIT (${issues.join(", ")})`, stopLoss: null, takeProfit: null,
+      rr: null, expectedMove: 0, updatedAt: now
+    };
+  }
+
+  const atrPct = a15 / price;
+  const expectedMove = state === "SNIPER"
+    ? Math.max(0.025, Math.min(0.05, atrPct * 2.5))
+    : Math.max(0.02, Math.min(0.04, atrPct * 2));
+
+  const sl = entryBias === "LONG" ? price * (1 - expectedMove * 0.5) : price * (1 + expectedMove * 0.5);
+  const tp = entryBias === "LONG" ? price * (1 + expectedMove) : price * (1 - expectedMove);
+  const rr = Math.abs((tp - price) / (price - sl));
+
+  let confidence = state === "SNIPER" ? 85 : 70;
+  if (setup === "BREAKDOWN" || setup === "BREAKUP") confidence += 5;
+  if (r1h > 45 && r1h < 65) confidence += 5;
+
+  return {
+    symbol, price: round(price), state, setup, structure: structure4h, bias: entryBias,
+    confidence: Math.min(confidence, 95), adx: 0, atr: round(a15, 2),
+    stochK: round(s15.k), stochD: round(s15.d), rsi: round(r15),
+    reason: `${state} ${setup} ${entryBias} | 4H:${structure4h} | 1H:${structure1h} | 1Hstoch:${round(s1h.k)}/${round(s1h.d)} | 15mstoch:${round(s15.k)}/${round(s15.d)}`,
+    stopLoss: round(sl, 2), takeProfit: round(tp, 2), rr: round(rr, 2),
+    expectedMove: round(expectedMove * 100, 2), updatedAt: now
+  };
+}
