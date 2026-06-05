@@ -179,6 +179,59 @@ function getVolatilityRegime(candles: Candle[], period = 14): { expanding: boole
   return { expanding: ratio > 1.25, compressing: ratio < 0.75 };
 }
 
+/* ---------------- MOMENTUM EXHAUSTION CHECK ---------------- */
+function checkMomentumExhaustion(
+  entryBias: "LONG" | "SHORT",
+  entryRsi: number,
+  entryStochK: number,
+  htfStochK: number
+): { blocked: boolean; penalty: number; reason: string } {
+  // HARD BLOCKS — do not enter under extreme exhaustion
+  if (entryBias === "LONG") {
+    if (entryRsi < 15 || entryStochK < 2) {
+      return { blocked: true, penalty: 0, reason: "EXTREME OVERSOLD — BOUNCE IMMINENT" };
+    }
+    if (entryRsi > 85 || entryStochK > 98) {
+      return { blocked: true, penalty: 0, reason: "EXTREME OVERBOUGHT — REVERSAL RISK" };
+    }
+    if (htfStochK > 95) {
+      return { blocked: true, penalty: 0, reason: "4H EXTREME OVERBOUGHT — WAIT PULLBACK" };
+    }
+  } else {
+    if (entryRsi > 85 || entryStochK > 98) {
+      return { blocked: true, penalty: 0, reason: "EXTREME OVERBOUGHT — DROP IMMINENT" };
+    }
+    if (entryRsi < 15 || entryStochK < 2) {
+      return { blocked: true, penalty: 0, reason: "EXTREME OVERSOLD — BOUNCE RISK" };
+    }
+    if (htfStochK < 5) {
+      return { blocked: true, penalty: 0, reason: "4H EXTREME OVERSOLD — WAIT BOUNCE" };
+    }
+  }
+
+  // SOFT PENALTIES — near-extreme conditions
+  let penalty = 0;
+  const reasons: string[] = [];
+
+  if (entryBias === "LONG") {
+    if (entryRsi < 25) { penalty += 15; reasons.push("RSI<25"); }
+    else if (entryRsi < 35) { penalty += 8; reasons.push("RSI<35"); }
+    if (entryStochK < 10) { penalty += 12; reasons.push("STOCH<10"); }
+    else if (entryStochK < 20) { penalty += 5; reasons.push("STOCH<20"); }
+    if (htfStochK > 85) { penalty += 8; reasons.push("4H STOCH>85"); }
+    else if (htfStochK > 75) { penalty += 4; reasons.push("4H STOCH>75"); }
+  } else {
+    if (entryRsi > 75) { penalty += 15; reasons.push("RSI>75"); }
+    else if (entryRsi > 65) { penalty += 8; reasons.push("RSI>65"); }
+    if (entryStochK > 90) { penalty += 12; reasons.push("STOCH>90"); }
+    else if (entryStochK > 80) { penalty += 5; reasons.push("STOCH>80"); }
+    if (htfStochK < 15) { penalty += 8; reasons.push("4H STOCH<15"); }
+    else if (htfStochK < 25) { penalty += 4; reasons.push("4H STOCH<25"); }
+  }
+
+  return { blocked: false, penalty, reason: reasons.join(", ") };
+}
+
 /* ---------------- CORE ENGINE ---------------- */
 export function generateSignal(
   symbol: Symbol,
@@ -353,6 +406,24 @@ export function generateSignal(
     : (setup !== "NONE") ? "EARLY"
     : "WAIT";
 
+  /* ---- MOMENTUM EXHAUSTION CHECK ---- */
+  if (state !== "WAIT") {
+    const htfStochK = entryTimeframe === "15M" ? s1h.k : s4h.k;
+    const exhaust = checkMomentumExhaustion(entryBias as "LONG" | "SHORT", primaryRsi, primaryStochK, htfStochK);
+    if (exhaust.blocked) {
+      // Downgrade to WAIT with reason
+      const issues: string[] = [exhaust.reason];
+      if (vol1h.expanding) issues.push("VOL EXPANDING");
+      return {
+        symbol, price: round(price), state: "WAIT", setup: "NONE", structure: structure4h, bias: entryBias,
+        confidence: 0, adx: round(primaryAdx), atr: round(a15, 2), stochK: round(primaryStochK), stochD: round(primaryStochD),
+        rsi: round(primaryRsi), reason: `WAIT (${issues.join(" | ")})`, stopLoss: null, takeProfit: null,
+        rr: null, expectedMove: 0, updatedAt: now, entryTimeframe: "NONE",
+        higherTimeframeStoch: `1H:${round(s1h.k)}/${round(s1h.d)} | 4H:${round(s4h.k)}/${round(s4h.d)}`
+      };
+    }
+  }
+
   /* ---- WAIT STATE: Detailed reasoning ---- */
   if (state === "WAIT") {
     const issues: string[] = [];
@@ -410,23 +481,19 @@ export function generateSignal(
   const expectedMove = Math.max(0.012, Math.min(0.05, atrPct * atrMultiplier));
 
   // Stop loss: tighter of ATR-based or structural, with min/max bounds
-  const minSlPct = 0.003; // 0.3% minimum stop
-  const maxSlPct = 0.02;  // 2.0% maximum stop
+  const minSlPct = 0.003;
+  const maxSlPct = 0.02;
 
   let sl: number;
   if (entryBias === "LONG") {
     const atrSl = priceForSizing * (1 - Math.max(minSlPct, Math.min(maxSlPct, expectedMove * 0.45)));
     const structuralSl = swings1h.lastLow ? swings1h.lastLow.value * 0.998 : atrSl;
-    // For LONG: higher SL = closer to entry = tighter = better R:R
     sl = Math.max(atrSl, structuralSl);
-    // But don't let structural push SL above entry (would be immediate stop)
     if (sl >= priceForSizing) sl = atrSl;
   } else {
     const atrSl = priceForSizing * (1 + Math.max(minSlPct, Math.min(maxSlPct, expectedMove * 0.45)));
     const structuralSl = swings1h.lastHigh ? swings1h.lastHigh.value * 1.002 : atrSl;
-    // For SHORT: lower SL = closer to entry = tighter = better R:R
     sl = Math.min(atrSl, structuralSl);
-    // But don't let structural push SL below entry
     if (sl <= priceForSizing) sl = atrSl;
   }
 
@@ -470,14 +537,20 @@ export function generateSignal(
     if (r4h < 50) confidence += 2;
   }
 
+  // Anti-chase: entering when lower TF is at extreme opposite
   if (entryTimeframe === "1H") {
     const chasing15m = (entryBias === "LONG" && s15.k > 80) || (entryBias === "SHORT" && s15.k < 20);
-    if (chasing15m) confidence -= 12;
+    if (chasing15m) confidence -= 15;
   }
   if (entryTimeframe === "15M") {
     const chasing1h = (entryBias === "LONG" && s1h.k > 85) || (entryBias === "SHORT" && s1h.k < 15);
-    if (chasing1h) confidence -= 8;
+    if (chasing1h) confidence -= 10;
   }
+
+  // Momentum exhaustion penalties
+  const htfStochK = entryTimeframe === "15M" ? s1h.k : s4h.k;
+  const exhaust = checkMomentumExhaustion(entryBias as "LONG" | "SHORT", primaryRsi, primaryStochK, htfStochK);
+  confidence -= exhaust.penalty;
 
   if (vol1h.compressing) confidence -= 5;
 
@@ -490,7 +563,7 @@ export function generateSignal(
   return {
     symbol, price: round(priceForSizing), state, setup, structure: structure4h, bias: entryBias,
     confidence, adx: round(primaryAdx), atr: round(a15, 2), stochK: round(primaryStochK), stochD: round(primaryStochD),
-    rsi: round(primaryRsi), reason: `${state} ${setup} ${entryBias} on ${entryTimeframe} | 4H:${structure4h} 1H:${structure1h} | ADX:${round(primaryAdx)}`,
+    rsi: round(primaryRsi), reason: `${state} ${setup} ${entryBias} on ${entryTimeframe} | 4H:${structure4h} 1H:${structure1h} | ADX:${round(primaryAdx)}${exhaust.penalty > 0 ? " | EXHAUST:" + exhaust.reason : ""}`,
     stopLoss: round(sl, 4), takeProfit: round(tp, 4), rr: round(rr, 2), expectedMove: round(expectedMove * 100, 2),
     updatedAt: now, entryTimeframe,
     higherTimeframeStoch: htStoch
