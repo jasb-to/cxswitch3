@@ -179,57 +179,41 @@ function getVolatilityRegime(candles: Candle[], period = 14): { expanding: boole
   return { expanding: ratio > 1.25, compressing: ratio < 0.75 };
 }
 
-/* ---------------- MOMENTUM EXHAUSTION CHECK ---------------- */
-function checkMomentumExhaustion(
+/* ---------------- MOMENTUM EXHAUSTION PENALTY (NO HARD BLOCKS) ---------------- */
+function getExhaustionPenalty(
   entryBias: "LONG" | "SHORT",
   entryRsi: number,
   entryStochK: number,
   htfStochK: number
-): { blocked: boolean; penalty: number; reason: string } {
-  // HARD BLOCKS — do not enter under extreme exhaustion
-  if (entryBias === "LONG") {
-    if (entryRsi < 15 || entryStochK < 2) {
-      return { blocked: true, penalty: 0, reason: "EXTREME OVERSOLD — BOUNCE IMMINENT" };
-    }
-    if (entryRsi > 85 || entryStochK > 98) {
-      return { blocked: true, penalty: 0, reason: "EXTREME OVERBOUGHT — REVERSAL RISK" };
-    }
-    if (htfStochK > 95) {
-      return { blocked: true, penalty: 0, reason: "4H EXTREME OVERBOUGHT — WAIT PULLBACK" };
-    }
-  } else {
-    if (entryRsi > 85 || entryStochK > 98) {
-      return { blocked: true, penalty: 0, reason: "EXTREME OVERBOUGHT — DROP IMMINENT" };
-    }
-    if (entryRsi < 15 || entryStochK < 2) {
-      return { blocked: true, penalty: 0, reason: "EXTREME OVERSOLD — BOUNCE RISK" };
-    }
-    if (htfStochK < 5) {
-      return { blocked: true, penalty: 0, reason: "4H EXTREME OVERSOLD — WAIT BOUNCE" };
-    }
-  }
-
-  // SOFT PENALTIES — near-extreme conditions
+): { penalty: number; tags: string[] } {
   let penalty = 0;
-  const reasons: string[] = [];
+  const tags: string[] = [];
 
   if (entryBias === "LONG") {
-    if (entryRsi < 25) { penalty += 15; reasons.push("RSI<25"); }
-    else if (entryRsi < 35) { penalty += 8; reasons.push("RSI<35"); }
-    if (entryStochK < 10) { penalty += 12; reasons.push("STOCH<10"); }
-    else if (entryStochK < 20) { penalty += 5; reasons.push("STOCH<20"); }
-    if (htfStochK > 85) { penalty += 8; reasons.push("4H STOCH>85"); }
-    else if (htfStochK > 75) { penalty += 4; reasons.push("4H STOCH>75"); }
+    if (entryRsi < 20) { penalty += 20; tags.push("RSI<20"); }
+    else if (entryRsi < 30) { penalty += 12; tags.push("RSI<30"); }
+    else if (entryRsi < 40) { penalty += 5; tags.push("RSI<40"); }
+    if (entryStochK < 5) { penalty += 15; tags.push("STOCH<5"); }
+    else if (entryStochK < 15) { penalty += 8; tags.push("STOCH<15"); }
+    else if (entryStochK < 25) { penalty += 3; tags.push("STOCH<25"); }
+    if (htfStochK < 5) { penalty += 10; tags.push("4HSTOCH<5"); }
+    else if (htfStochK < 15) { penalty += 5; tags.push("4HSTOCH<15"); }
+    if (entryRsi > 75) { penalty += 8; tags.push("RSI>75"); }
+    if (entryStochK > 90) { penalty += 8; tags.push("STOCH>90"); }
   } else {
-    if (entryRsi > 75) { penalty += 15; reasons.push("RSI>75"); }
-    else if (entryRsi > 65) { penalty += 8; reasons.push("RSI>65"); }
-    if (entryStochK > 90) { penalty += 12; reasons.push("STOCH>90"); }
-    else if (entryStochK > 80) { penalty += 5; reasons.push("STOCH>80"); }
-    if (htfStochK < 15) { penalty += 8; reasons.push("4H STOCH<15"); }
-    else if (htfStochK < 25) { penalty += 4; reasons.push("4H STOCH<25"); }
+    if (entryRsi > 80) { penalty += 20; tags.push("RSI>80"); }
+    else if (entryRsi > 70) { penalty += 12; tags.push("RSI>70"); }
+    else if (entryRsi > 60) { penalty += 5; tags.push("RSI>60"); }
+    if (entryStochK > 95) { penalty += 15; tags.push("STOCH>95"); }
+    else if (entryStochK > 85) { penalty += 8; tags.push("STOCH>85"); }
+    else if (entryStochK > 75) { penalty += 3; tags.push("STOCH>75"); }
+    if (htfStochK > 95) { penalty += 10; tags.push("4HSTOCH>95"); }
+    else if (htfStochK > 85) { penalty += 5; tags.push("4HSTOCH>85"); }
+    if (entryRsi < 25) { penalty += 8; tags.push("RSI<25"); }
+    if (entryStochK < 10) { penalty += 8; tags.push("STOCH<10"); }
   }
 
-  return { blocked: false, penalty, reason: reasons.join(", ") };
+  return { penalty, tags };
 }
 
 /* ---------------- CORE ENGINE ---------------- */
@@ -406,24 +390,6 @@ export function generateSignal(
     : (setup !== "NONE") ? "EARLY"
     : "WAIT";
 
-  /* ---- MOMENTUM EXHAUSTION CHECK ---- */
-  if (state !== "WAIT") {
-    const htfStochK = entryTimeframe === "15M" ? s1h.k : s4h.k;
-    const exhaust = checkMomentumExhaustion(entryBias as "LONG" | "SHORT", primaryRsi, primaryStochK, htfStochK);
-    if (exhaust.blocked) {
-      // Downgrade to WAIT with reason
-      const issues: string[] = [exhaust.reason];
-      if (vol1h.expanding) issues.push("VOL EXPANDING");
-      return {
-        symbol, price: round(price), state: "WAIT", setup: "NONE", structure: structure4h, bias: entryBias,
-        confidence: 0, adx: round(primaryAdx), atr: round(a15, 2), stochK: round(primaryStochK), stochD: round(primaryStochD),
-        rsi: round(primaryRsi), reason: `WAIT (${issues.join(" | ")})`, stopLoss: null, takeProfit: null,
-        rr: null, expectedMove: 0, updatedAt: now, entryTimeframe: "NONE",
-        higherTimeframeStoch: `1H:${round(s1h.k)}/${round(s1h.d)} | 4H:${round(s4h.k)}/${round(s4h.d)}`
-      };
-    }
-  }
-
   /* ---- WAIT STATE: Detailed reasoning ---- */
   if (state === "WAIT") {
     const issues: string[] = [];
@@ -439,7 +405,8 @@ export function generateSignal(
           else if (s1h.k < 40) issues.push("1H PULLBACK IN PROGRESS");
           else issues.push("1H BEARISH — WAIT CROSS");
         } else {
-          if (s1h.k > 80) issues.push("1H OVERBOUGHT — WAIT 15M PULLBACK");
+          if (s1h.k < 20) issues.push("1H OVERSOLD BOUNCE — WAIT ROLLOVER");
+          else if (s1h.k > 80) issues.push("1H OVERBOUGHT — WAIT 15M PULLBACK");
           else issues.push("1H BULLISH — WAIT 15M CONFIRMATION");
         }
         if (s15.k < s15.d) issues.push("15M BEARISH");
@@ -448,6 +415,7 @@ export function generateSignal(
         if (s1h.k > s1h.d) {
           if (s1h.k > 80) issues.push("1H OVERBOUGHT — DROP SOON");
           else if (s1h.k > 60) issues.push("1H PULLBACK IN PROGRESS");
+          else if (s1h.k < 20) issues.push("1H OVERSOLD BOUNCE — WAIT ROLLOVER");
           else issues.push("1H BULLISH — WAIT CROSS");
         } else {
           if (s1h.k < 20) issues.push("1H OVERSOLD — WAIT 15M BOUNCE");
@@ -537,7 +505,7 @@ export function generateSignal(
     if (r4h < 50) confidence += 2;
   }
 
-  // Anti-chase: entering when lower TF is at extreme opposite
+  // Anti-chase
   if (entryTimeframe === "1H") {
     const chasing15m = (entryBias === "LONG" && s15.k > 80) || (entryBias === "SHORT" && s15.k < 20);
     if (chasing15m) confidence -= 15;
@@ -547,9 +515,9 @@ export function generateSignal(
     if (chasing1h) confidence -= 10;
   }
 
-  // Momentum exhaustion penalties
+  // Momentum exhaustion penalties (SOFT ONLY — no hard blocks)
   const htfStochK = entryTimeframe === "15M" ? s1h.k : s4h.k;
-  const exhaust = checkMomentumExhaustion(entryBias as "LONG" | "SHORT", primaryRsi, primaryStochK, htfStochK);
+  const exhaust = getExhaustionPenalty(entryBias as "LONG" | "SHORT", primaryRsi, primaryStochK, htfStochK);
   confidence -= exhaust.penalty;
 
   if (vol1h.compressing) confidence -= 5;
@@ -560,10 +528,12 @@ export function generateSignal(
     ? `1H:${round(s1h.k)}/${round(s1h.d)} | 4H:${round(s4h.k)}/${round(s4h.d)}`
     : `4H:${round(s4h.k)}/${round(s4h.d)} | 1H:${round(s1h.k)}/${round(s1h.d)}`;
 
+  const exhaustStr = exhaust.tags.length > 0 ? ` | EXHAUST:${exhaust.tags.join(",")}` : "";
+
   return {
     symbol, price: round(priceForSizing), state, setup, structure: structure4h, bias: entryBias,
     confidence, adx: round(primaryAdx), atr: round(a15, 2), stochK: round(primaryStochK), stochD: round(primaryStochD),
-    rsi: round(primaryRsi), reason: `${state} ${setup} ${entryBias} on ${entryTimeframe} | 4H:${structure4h} 1H:${structure1h} | ADX:${round(primaryAdx)}${exhaust.penalty > 0 ? " | EXHAUST:" + exhaust.reason : ""}`,
+    rsi: round(primaryRsi), reason: `${state} ${setup} ${entryBias} on ${entryTimeframe} | 4H:${structure4h} 1H:${structure1h} | ADX:${round(primaryAdx)}${exhaustStr}`,
     stopLoss: round(sl, 4), takeProfit: round(tp, 4), rr: round(rr, 2), expectedMove: round(expectedMove * 100, 2),
     updatedAt: now, entryTimeframe,
     higherTimeframeStoch: htStoch
