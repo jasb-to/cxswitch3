@@ -25,15 +25,18 @@ export interface Signal {
   confidence: number;
   adx: number;
   atr: number;
-  stochK: number;
+  stochK: number;      // Primary stoch for entry (1H for EARLY, 15m for SNIPER)
   stochD: number;
-  rsi: number;
+  rsi: number;         // Primary RSI for entry
   reason: string;
   stopLoss: number | null;
   takeProfit: number | null;
   rr: number | null;
   expectedMove: number;
   updatedAt: string;
+  // Extra detail for alerts
+  entryTimeframe: "1H" | "15M" | "NONE";
+  higherTimeframeStoch: string;
 }
 
 const round = (n: number, d = 2) => Math.round(n * 10 ** d) / 10 ** d;
@@ -138,7 +141,8 @@ export function generateSignal(
     return {
       symbol, price: round(price ?? 0), state: "WAIT", setup: "NONE", structure: "RANGE",
       bias: "NEUTRAL", confidence: 0, adx: 0, atr: 0, stochK: 50, stochD: 50, rsi: 50,
-      reason: "INSUFFICIENT DATA", stopLoss: null, takeProfit: null, rr: null, expectedMove: 0, updatedAt: now
+      reason: "INSUFFICIENT DATA", stopLoss: null, takeProfit: null, rr: null, expectedMove: 0,
+      updatedAt: now, entryTimeframe: "NONE", higherTimeframeStoch: ""
     };
   }
 
@@ -157,13 +161,19 @@ export function generateSignal(
   const a15 = atr(c15);
   const a1h = atr(c1h);
 
-  // 1H stoch (for EARLY trend detection)
+  // Volatility regime
+  const priorAtr15 = atr(c15.slice(0, -1), 20);
+  const expansion15 = priorAtr15 > 0 && (a15 / priorAtr15) > 1.2;
+  const priorAtr1h = atr(c1h.slice(0, -1), 20);
+  const expansion1h = priorAtr1h > 0 && (a1h / priorAtr1h) > 1.2;
+
+  // 1H stoch conditions (for EARLY)
   const stoch1hCrossUp = s1h.prevK < s1h.prevD && s1h.k > s1h.d;
   const stoch1hCrossDown = s1h.prevK > s1h.prevD && s1h.k < s1h.d;
-  const stoch1hExtremeLong = s1h.k < 25 && s1h.k < s1h.d;
-  const stoch1hExtremeShort = s1h.k > 75 && s1h.k > s1h.d;
+  const stoch1hExtremeLong = s1h.k < 20 && s1h.k < s1h.d;
+  const stoch1hExtremeShort = s1h.k > 80 && s1h.k > s1h.d;
 
-  // 15m stoch (for SNIPER pullback entry)
+  // 15m stoch conditions (for SNIPER)
   const stoch15CrossUp = s15.prevK < s15.prevD && s15.k > s15.d;
   const stoch15CrossDown = s15.prevK > s15.prevD && s15.k < s15.d;
 
@@ -172,47 +182,76 @@ export function generateSignal(
 
   let setup: SetupType = "NONE";
   let entryBias: "LONG" | "SHORT" | "NEUTRAL" = bias;
-  let isEarly = false;
+  let entryTimeframe: "1H" | "15M" | "NONE" = "NONE";
+  let primaryStochK = 0;
+  let primaryStochD = 0;
+  let primaryRsi = 0;
 
-  /* ---- EARLY: 1H stoch cross in 4H trend direction ---- */
-  if (bias === "LONG") {
-    // 1H stoch cross up from below 40 = early trend start
-    if (stoch1hCrossUp && s1h.prevK < 40 && r1h > 45 && structure1h !== "DOWNTREND") {
+  /* ============================================
+     EARLY: 1H trend start or extreme reversal
+     ============================================ */
+  if (bias === "LONG" && structure1h !== "DOWNTREND") {
+    // 1H cross up from below 40 = early trend
+    if (stoch1hCrossUp && s1h.prevK < 40 && r1h > 45) {
       setup = "PULLBACK";
-      isEarly = true;
+      entryTimeframe = "1H";
+      primaryStochK = s1h.k;
+      primaryStochD = s1h.d;
+      primaryRsi = r1h;
     }
-    // Or 1H stoch extreme oversold in 4H uptrend = early reversal
-    else if (stoch1hExtremeLong && r1h < 50 && structure1h !== "DOWNTREND") {
+    // 1H extreme oversold = early reversal (needs some expansion)
+    else if (stoch1hExtremeLong && r1h < 50 && expansion1h) {
       setup = "PULLBACK";
-      isEarly = true;
+      entryTimeframe = "1H";
+      primaryStochK = s1h.k;
+      primaryStochD = s1h.d;
+      primaryRsi = r1h;
     }
-  } else if (bias === "SHORT") {
-    if (stoch1hCrossDown && s1h.prevK > 60 && r1h < 55 && structure1h !== "UPTREND") {
+  } else if (bias === "SHORT" && structure1h !== "UPTREND") {
+    if (stoch1hCrossDown && s1h.prevK > 60 && r1h < 55) {
       setup = "PULLBACK";
-      isEarly = true;
+      entryTimeframe = "1H";
+      primaryStochK = s1h.k;
+      primaryStochD = s1h.d;
+      primaryRsi = r1h;
     }
-    else if (stoch1hExtremeShort && r1h > 50 && structure1h !== "UPTREND") {
+    else if (stoch1hExtremeShort && r1h > 50 && expansion1h) {
       setup = "PULLBACK";
-      isEarly = true;
+      entryTimeframe = "1H";
+      primaryStochK = s1h.k;
+      primaryStochD = s1h.d;
+      primaryRsi = r1h;
     }
   }
 
-  /* ---- SNIPER: 15m stoch cross on pullback in confirmed trend ---- */
-  // Only if 1H already aligned (not early anymore, trend confirmed)
+  /* ============================================
+     SNIPER: 15m pullback in confirmed 1H trend
+     ============================================ */
+  // Only if 1H trend is already confirmed (stoch aligned with bias)
   if (setup === "NONE" && bias !== "NEUTRAL") {
-    const trendConfirmed = (bias === "LONG" && s1h.k > s1h.d && s1h.k > 40) ||
-                           (bias === "SHORT" && s1h.k < s1h.d && s1h.k < 60);
-    
-    if (trendConfirmed) {
+    const trendConfirmed1h = (bias === "LONG" && s1h.k > s1h.d && s1h.k > 40) ||
+                             (bias === "SHORT" && s1h.k < s1h.d && s1h.k < 60);
+
+    if (trendConfirmed1h) {
       if (bias === "LONG" && stoch15CrossUp && s15.prevK < 35 && r15 < 65) {
         setup = "PULLBACK";
+        entryTimeframe = "15M";
+        primaryStochK = s15.k;
+        primaryStochD = s15.d;
+        primaryRsi = r15;
       } else if (bias === "SHORT" && stoch15CrossDown && s15.prevK > 65 && r15 > 35) {
         setup = "PULLBACK";
+        entryTimeframe = "15M";
+        primaryStochK = s15.k;
+        primaryStochD = s15.d;
+        primaryRsi = r15;
       }
     }
   }
 
-  /* ---- BREAKDOWN/BREAKUP: structure break ---- */
+  /* ============================================
+     BREAKDOWN/BREAKUP: structure break
+     ============================================ */
   if (setup === "NONE" && swings4h.lastLow && swings4h.priorLow) {
     const lastLow = swings4h.lastLow.value;
     const priorLow = swings4h.priorLow.value;
@@ -221,6 +260,10 @@ export function generateSignal(
       if (broke1h || r1h < 45) {
         setup = "BREAKDOWN";
         entryBias = "SHORT";
+        entryTimeframe = "1H";
+        primaryStochK = s1h.k;
+        primaryStochD = s1h.d;
+        primaryRsi = r1h;
       }
     }
   }
@@ -233,15 +276,22 @@ export function generateSignal(
       if (broke1h || r1h > 55) {
         setup = "BREAKUP";
         entryBias = "LONG";
+        entryTimeframe = "1H";
+        primaryStochK = s1h.k;
+        primaryStochD = s1h.d;
+        primaryRsi = r1h;
       }
     }
   }
 
-  const priorAtr = atr(c15.slice(0, -1), 20);
-  const expansion = priorAtr > 0 && (a15 / priorAtr) > 1.2;
+  /* ============================================
+     STATE DETERMINATION
+     ============================================ */
+  const isEarly = entryTimeframe === "1H";
+  const isSniper = entryTimeframe === "15M";
 
-  const state: SignalState = (setup !== "NONE" && !isEarly && expansion) ? "SNIPER" 
-    : (setup !== "NONE") ? "EARLY" 
+  const state: SignalState = (setup !== "NONE" && isSniper && expansion15) ? "SNIPER"
+    : (setup !== "NONE") ? "EARLY"
     : "WAIT";
 
   if (state === "WAIT") {
@@ -250,12 +300,12 @@ export function generateSignal(
     else {
       if (setup === "NONE") {
         if (bias === "LONG") {
-          if (s1h.k < 25) issues.push("1H OVERSOLD WAIT CROSS");
-          else if (s1h.k > s1h.d) issues.push("1H STOCH UP WAIT 15M");
+          if (s1h.k < 20) issues.push("1H OVERSOLD WAIT CROSS");
+          else if (s1h.k > s1h.d) issues.push("1H TRENDING WAIT 15M PULLBACK");
           else issues.push("NO SETUP");
         } else {
-          if (s1h.k > 75) issues.push("1H OVERBOUGHT WAIT CROSS");
-          else if (s1h.k < s1h.d) issues.push("1H STOCH DOWN WAIT 15M");
+          if (s1h.k > 80) issues.push("1H OVERBOUGHT WAIT CROSS");
+          else if (s1h.k < s1h.d) issues.push("1H TRENDING WAIT 15M PULLBACK");
           else issues.push("NO SETUP");
         }
       }
@@ -264,10 +314,14 @@ export function generateSignal(
       symbol, price: round(price), state: "WAIT", setup: "NONE", structure: structure4h, bias,
       confidence: 0, adx: 0, atr: round(a15, 2), stochK: round(s15.k), stochD: round(s15.d),
       rsi: round(r15), reason: `WAIT (${issues.join(", ")})`, stopLoss: null, takeProfit: null,
-      rr: null, expectedMove: 0, updatedAt: now
+      rr: null, expectedMove: 0, updatedAt: now, entryTimeframe: "NONE",
+      higherTimeframeStoch: `1H:${round(s1h.k)}/${round(s1h.d)}`
     };
   }
 
+  /* ============================================
+     POSITION SIZING
+     ============================================ */
   const atrPct = a15 / price;
   const expectedMove = state === "SNIPER"
     ? Math.max(0.025, Math.min(0.05, atrPct * 2.5))
@@ -277,16 +331,21 @@ export function generateSignal(
   const tp = entryBias === "LONG" ? price * (1 + expectedMove) : price * (1 - expectedMove);
   const rr = Math.abs((tp - price) / (price - sl));
 
+  /* ============================================
+     CONFIDENCE
+     ============================================ */
   let confidence = state === "SNIPER" ? 85 : 70;
   if (setup === "BREAKDOWN" || setup === "BREAKUP") confidence += 5;
-  if (r1h > 45 && r1h < 65) confidence += 5;
+  if (primaryRsi > 45 && primaryRsi < 65) confidence += 5;
+  if (Math.abs(primaryStochK - primaryStochD) < 10) confidence += 5;
 
   return {
     symbol, price: round(price), state, setup, structure: structure4h, bias: entryBias,
     confidence: Math.min(confidence, 95), adx: 0, atr: round(a15, 2),
-    stochK: round(s15.k), stochD: round(s15.d), rsi: round(r15),
-    reason: `${state} ${setup} ${entryBias} | 4H:${structure4h} | 1H:${structure1h} | 1Hstoch:${round(s1h.k)}/${round(s1h.d)} | 15mstoch:${round(s15.k)}/${round(s15.d)}`,
+    stochK: round(primaryStochK), stochD: round(primaryStochD), rsi: round(primaryRsi),
+    reason: `${state} ${setup} ${entryBias} | ENTRY:${entryTimeframe} | 4H:${structure4h} | 1H:${structure1h}${expansion15 ? " | EXP" : ""}`,
     stopLoss: round(sl, 2), takeProfit: round(tp, 2), rr: round(rr, 2),
-    expectedMove: round(expectedMove * 100, 2), updatedAt: now
+    expectedMove: round(expectedMove * 100, 2), updatedAt: now, entryTimeframe,
+    higherTimeframeStoch: entryTimeframe === "15M" ? `1H:${round(s1h.k)}/${round(s1h.d)}` : `15M:${round(s15.k)}/${round(s15.d)}`
   };
 }
