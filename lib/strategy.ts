@@ -2,7 +2,7 @@ export type Symbol = "BTC" | "ETH" | "SOL";
 
 export type SignalState = "EARLY" | "SNIPER" | "WAIT";
 
-export type SetupType = "NONE" | "PULLBACK" | "BREAKOUT";
+export type SetupType = "NONE" | "PULLBACK" | "BREAKDOWN" | "BREAKUP";
 
 export type Structure = "UPTREND" | "DOWNTREND" | "RANGE";
 
@@ -87,7 +87,7 @@ function stoch(closes: number[], period = 14, smoothK = 3, smoothD = 3) {
   return { k: k.at(-1) ?? 50, d: d.at(-1) ?? 50, prevK: k.at(-2) ?? 50, prevD: d.at(-2) ?? 50 };
 }
 
-/* ---------------- STRUCTURE (2-bar fractals, 2 swings minimum) ---------------- */
+/* ---------------- STRUCTURE ---------------- */
 function getStructure(candles: Candle[]): Structure {
   if (!ok(candles, 5)) return "RANGE";
   const highs: number[] = [], lows: number[] = [];
@@ -105,6 +105,23 @@ function getStructure(candles: Candle[]): Structure {
   if (hh && hl) return "UPTREND";
   if (lh && ll) return "DOWNTREND";
   return "RANGE";
+}
+
+/* ---------------- LAST SWING LEVELS ---------------- */
+function getLastSwingLevels(candles: Candle[]) {
+  const highs: { value: number; idx: number }[] = [];
+  const lows: { value: number; idx: number }[] = [];
+  for (let i = 1; i < candles.length - 1; i++) {
+    const c = candles[i], p = candles[i - 1], n = candles[i + 1];
+    if (c.high > p.high && c.high > n.high) highs.push({ value: c.high, idx: i });
+    if (c.low < p.low && c.low < n.low) lows.push({ value: c.low, idx: i });
+  }
+  return {
+    lastHigh: highs.at(-1),
+    lastLow: lows.at(-1),
+    priorHigh: highs.at(-2),
+    priorLow: lows.at(-2),
+  };
 }
 
 /* ---------------- CORE ENGINE ---------------- */
@@ -138,15 +155,18 @@ export function generateSignal(
   const s15 = stoch(closes15);
   const a15 = atr(c15);
 
-  // Stoch cross detection with direction
   const stochCrossUp = s15.prevK < s15.prevD && s15.k > s15.d;
   const stochCrossDown = s15.prevK > s15.prevD && s15.k < s15.d;
-  const stochCross = stochCrossUp || stochCrossDown;
+
+  // Get swing levels for breakdown detection
+  const swings4h = getLastSwingLevels(c4h);
+  const swings1h = getLastSwingLevels(c1h);
 
   let setup: SetupType = "NONE";
+  let entryBias: "LONG" | "SHORT" | "NEUTRAL" = bias;
 
+  /* ---- TREND PULLBACK (existing logic) ---- */
   if (bias === "LONG") {
-    // EARLY: 4H uptrend + 1h not fighting + stoch cross up + RSI not overbought
     if (structure1h !== "DOWNTREND" && stochCrossUp && r15 < 65 && r1h > 40) {
       setup = "PULLBACK";
     }
@@ -156,7 +176,34 @@ export function generateSignal(
     }
   }
 
-  // ATR expansion check
+  /* ---- BREAKDOWN: 4H swing low broken ---- */
+  if (setup === "NONE" && swings4h.lastLow && swings4h.priorLow) {
+    const lastLow = swings4h.lastLow.value;
+    const priorLow = swings4h.priorLow.value;
+    // Price broke below last swing low AND last swing low was higher than prior (was uptrend)
+    if (price < lastLow * 0.998 && lastLow > priorLow) {
+      // Confirm with momentum: 1H also broke its low or RSI < 45
+      const broke1h = swings1h.lastLow ? price < swings1h.lastLow.value : false;
+      if (broke1h || r1h < 45) {
+        setup = "BREAKDOWN";
+        entryBias = "SHORT";
+      }
+    }
+  }
+
+  /* ---- BREAKUP: 4H swing high broken ---- */
+  if (setup === "NONE" && swings4h.lastHigh && swings4h.priorHigh) {
+    const lastHigh = swings4h.lastHigh.value;
+    const priorHigh = swings4h.priorHigh.value;
+    if (price > lastHigh * 1.002 && lastHigh < priorHigh) {
+      const broke1h = swings1h.lastHigh ? price > swings1h.lastHigh.value : false;
+      if (broke1h || r1h > 55) {
+        setup = "BREAKUP";
+        entryBias = "LONG";
+      }
+    }
+  }
+
   const priorAtr = atr(c15.slice(0, -1), 20);
   const expansion = priorAtr > 0 && (a15 / priorAtr) > 1.2;
 
@@ -164,16 +211,13 @@ export function generateSignal(
 
   if (state === "WAIT") {
     const issues: string[] = [];
-    if (bias === "NEUTRAL") issues.push("NO TREND");
-    else {
-      if (setup === "NONE") {
-        if (bias === "LONG" && !stochCrossUp) issues.push("NO STOCH UP");
-        else if (bias === "SHORT" && !stochCrossDown) issues.push("NO STOCH DOWN");
-        else if (stochCross) issues.push("WRONG DIRECTION");
-        else issues.push("NO SETUP");
-      }
-      if (structure1h === "DOWNTREND" && bias === "LONG") issues.push("1H FIGHTING");
-      if (structure1h === "UPTREND" && bias === "SHORT") issues.push("1H FIGHTING");
+    if (bias === "NEUTRAL") {
+      // Check if we're near a breakdown/breakup but not confirmed
+      if (swings4h.lastLow && price < swings4h.lastLow.value * 1.005) issues.push("NEAR BREAKDOWN");
+      else if (swings4h.lastHigh && price > swings4h.lastHigh.value * 0.995) issues.push("NEAR BREAKUP");
+      else issues.push("NO TREND");
+    } else {
+      if (setup === "NONE") issues.push("NO SETUP");
     }
     return {
       symbol, price: round(price), state: "WAIT", setup: "NONE", structure: structure4h, bias,
@@ -188,19 +232,20 @@ export function generateSignal(
     ? Math.max(0.025, Math.min(0.05, atrPct * 2.5))
     : Math.max(0.015, Math.min(0.035, atrPct * 1.8));
 
-  const sl = bias === "LONG" ? price * (1 - expectedMove * 0.5) : price * (1 + expectedMove * 0.5);
-  const tp = bias === "LONG" ? price * (1 + expectedMove) : price * (1 - expectedMove);
+  const sl = entryBias === "LONG" ? price * (1 - expectedMove * 0.5) : price * (1 + expectedMove * 0.5);
+  const tp = entryBias === "LONG" ? price * (1 + expectedMove) : price * (1 - expectedMove);
   const rr = Math.abs((tp - price) / (price - sl));
 
   let confidence = state === "SNIPER" ? 85 : 65;
+  if (setup === "BREAKDOWN" || setup === "BREAKUP") confidence += 5; // structure break has edge
   if (r15 > 40 && r15 < 60) confidence += 5;
   if (Math.abs(s15.k - s15.d) < 10) confidence += 5;
 
   return {
-    symbol, price: round(price), state, setup: "PULLBACK", structure: structure4h, bias,
+    symbol, price: round(price), state, setup, structure: structure4h, bias: entryBias,
     confidence: Math.min(confidence, 95), adx: 0, atr: round(a15, 2),
     stochK: round(s15.k), stochD: round(s15.d), rsi: round(r15),
-    reason: `${state} PULLBACK ${bias} | 4H:${structure4h} | 1H:${structure1h}${expansion ? " | EXP" : ""} | Stoch:${round(s15.k)}/${round(s15.d)}`,
+    reason: `${state} ${setup} ${entryBias} | 4H:${structure4h} | 1H:${structure1h}${expansion ? " | EXP" : ""} | Stoch:${round(s15.k)}/${round(s15.d)}`,
     stopLoss: round(sl, 2), takeProfit: round(tp, 2), rr: round(rr, 2),
     expectedMove: round(expectedMove * 100, 2), updatedAt: now
   };
