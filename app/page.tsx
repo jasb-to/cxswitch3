@@ -18,21 +18,21 @@ export default function Home() {
   }, []);
 
   const statusColor = (state: string) => {
-    if (state === "SNIPER") return "border-rose-500";
-    if (state === "EARLY") return "border-orange-500";
+    if (state === "PRIMARY") return "border-emerald-500";
+    if (state === "CHEEKY") return "border-amber-500";
     return "border-neutral-700";
   };
 
   const readiness = (c: number) => Math.min(100, Math.max(20, c || 20));
 
-  const tierBadge = (reason: string) => {
-    if (reason?.includes("4H_PRIMARY")) {
+  const tierBadge = (state: string) => {
+    if (state === "PRIMARY") {
       return { label: "PRIMARY", color: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30" };
     }
-    if (reason?.includes("1H_CHEEKY")) {
+    if (state === "CHEEKY") {
       return { label: "CHEEKY", color: "bg-amber-500/20 text-amber-400 border-amber-500/30" };
     }
-    return { label: "OTHER", color: "bg-neutral-700 text-neutral-400 border-neutral-600" };
+    return { label: "WAIT", color: "bg-neutral-700 text-neutral-400 border-neutral-600" };
   };
 
   const confidenceColor = (c: number) => {
@@ -40,6 +40,12 @@ export default function Home() {
     if (c >= 60) return "text-yellow-400";
     if (c >= 40) return "text-orange-400";
     return "text-red-400";
+  };
+
+  const barColor = (state: string) => {
+    if (state === "PRIMARY") return "bg-emerald-500";
+    if (state === "CHEEKY") return "bg-amber-500";
+    return "bg-neutral-600";
   };
 
   return (
@@ -55,7 +61,7 @@ export default function Home() {
       {/* GRID */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {signals.map((s) => {
-          const tier = tierBadge(s.reason);
+          const tier = tierBadge(s.state);
           const isWait = s.state === "WAIT";
           
           return (
@@ -138,13 +144,7 @@ export default function Home() {
 
                 <div className="w-full bg-neutral-800 h-1.5 rounded mt-2">
                   <div
-                    className={`h-1.5 rounded ${
-                      s.state === "SNIPER"
-                        ? "bg-rose-500"
-                        : s.state === "EARLY"
-                        ? "bg-orange-500"
-                        : "bg-neutral-600"
-                    }`}
+                    className={`h-1.5 rounded ${barColor(s.state)}`}
                     style={{ width: `${readiness(s.confidence)}%` }}
                   />
                 </div>
