@@ -7,10 +7,9 @@ export async function sendAlert(signal: any) {
     return;
   }
 
-  // Determine signal tier from the reason string or state
-  const isPrimary = signal.reason?.includes("4H_PRIMARY") || 
-                    (signal.state === "SNIPER" && signal.confidence >= 75);
-  const isCheeky = signal.reason?.includes("1H_CHEEKY");
+  // Signal tier — now uses clean state names
+  const isPrimary = signal.state === "PRIMARY";
+  const isCheeky = signal.state === "CHEEKY";
   
   const tierEmoji = isPrimary ? "🎯" : isCheeky ? "⚡" : "📊";
   const tierLabel = isPrimary ? "PRIMARY" : isCheeky ? "CHEEKY" : "SETUP";
@@ -20,9 +19,15 @@ export async function sendAlert(signal: any) {
                     signal.confidence >= 60 ? "🟡" :
                     signal.confidence >= 40 ? "🟠" : "🔴";
 
-  // Only alert if confidence is worth acting on
-  if (signal.confidence < 40) {
+  // Hard floors — don't spam on weak signals
+  if (signal.confidence < 50) {
     console.log("[TELEGRAM SKIP: LOW CONFIDENCE]", signal.symbol, signal.confidence);
+    return;
+  }
+
+  // Cheeky needs higher bar
+  if (isCheeky && signal.confidence < 65) {
+    console.log("[TELEGRAM SKIP: CHEEKY LOW CONF]", signal.symbol, signal.confidence);
     return;
   }
 
