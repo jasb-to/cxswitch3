@@ -1,23 +1,43 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 
 export default function Home() {
   const [signals, setSignals] = useState<any[]>([]);
   const [mounted, setMounted] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const prevSignals = useRef<any[]>([]);
 
   async function load() {
-    const res = await fetch("/api/signals", { cache: "no-store" });
-    const data = await res.json();
-    setSignals(data.signals || []);
+    // Don't clear signals while loading — keep stale data visible
+    setLoading(true);
+    try {
+      const res = await fetch("/api/signals", { cache: "no-store" });
+      const data = await res.json();
+      const newSignals = data.signals || [];
+      
+      // Only update if we actually got data
+      if (newSignals.length > 0) {
+        setSignals(newSignals);
+        prevSignals.current = newSignals;
+      }
+    } catch (err) {
+      console.error("[LOAD ERROR]", err);
+      // On error, keep previous signals — don't blank the UI
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
     setMounted(true);
-    load();
+    load(); // Initial load
     const t = setInterval(load, 60000);
     return () => clearInterval(t);
   }, []);
+
+  // Use previous signals as fallback if current is empty
+  const displaySignals = signals.length > 0 ? signals : prevSignals.current;
 
   const statusColor = (state: string) => {
     if (state === "PRIMARY") return "border-emerald-500";
@@ -55,18 +75,30 @@ export default function Home() {
       {/* HEADER */}
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">CX Switch</h1>
-        <span className="text-xs text-neutral-500">
-          {signals.length} pairs · {signals.filter(s => s.state !== "WAIT").length} active
-        </span>
+        <div className="flex items-center gap-3">
+          {loading && displaySignals.length > 0 && (
+            <span className="text-xs text-neutral-500 animate-pulse">● updating</span>
+          )}
+          <span className="text-xs text-neutral-500">
+            {displaySignals.length} pairs · {displaySignals.filter(s => s.state !== "WAIT").length} active
+          </span>
+        </div>
       </div>
 
       {/* GRID */}
-      {mounted ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {signals.map((s) => {
+      {!mounted ? (
+        <div className="text-neutral-500 text-center py-20">Loading signals...</div>
+      ) : displaySignals.length === 0 ? (
+        <div className="text-neutral-500 text-center py-20">
+          No signals yet. Waiting for cron...
+          <div className="text-xs text-neutral-600 mt-2">Check back in a few minutes</div>
+        </div>
+      ) : (
+        <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 transition-opacity duration-300 ${loading ? 'opacity-70' : 'opacity-100'}`}>
+          {displaySignals.map((s) => {
             const tier = tierBadge(s.state);
             const isWait = s.state === "WAIT";
-
+            
             return (
               <div
                 key={s.symbol}
@@ -194,8 +226,6 @@ export default function Home() {
             );
           })}
         </div>
-      ) : (
-        <div className="text-neutral-500 text-center py-20">Loading signals...</div>
       )}
     </main>
   );
