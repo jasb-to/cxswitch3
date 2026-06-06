@@ -13,7 +13,7 @@ export default function Home() {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 120000);
+    const t = setInterval(load, 60000);
     return () => clearInterval(t);
   }, []);
 
