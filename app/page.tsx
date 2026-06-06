@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 export default function Home() {
   const [signals, setSignals] = useState<any[]>([]);
+  const [mounted, setMounted] = useState(false);
 
   async function load() {
     const res = await fetch("/api/signals", { cache: "no-store" });
@@ -12,6 +13,7 @@ export default function Home() {
   }
 
   useEffect(() => {
+    setMounted(true);
     load();
     const t = setInterval(load, 60000);
     return () => clearInterval(t);
@@ -59,138 +61,142 @@ export default function Home() {
       </div>
 
       {/* GRID */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {signals.map((s) => {
-          const tier = tierBadge(s.state);
-          const isWait = s.state === "WAIT";
-          
-          return (
-            <div
-              key={s.symbol}
-              className={`bg-[#111] border-l-4 ${statusColor(
-                s.state
-              )} rounded-xl p-5 hover:brightness-110 transition`}
-            >
-              {/* TOP */}
-              <div className="flex justify-between items-center">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-xl font-bold">
-                    {s.symbol}
-                  </h2>
-                  {!isWait && (
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${tier.color}`}>
-                      {tier.label}
-                    </span>
-                  )}
-                </div>
+      {mounted ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {signals.map((s) => {
+            const tier = tierBadge(s.state);
+            const isWait = s.state === "WAIT";
 
-                <span className="text-xs px-2 py-1 rounded bg-neutral-800 text-neutral-300">
-                  {s.state}
-                </span>
-              </div>
+            return (
+              <div
+                key={s.symbol}
+                className={`bg-[#111] border-l-4 ${statusColor(
+                  s.state
+                )} rounded-xl p-5 hover:brightness-110 transition`}
+              >
+                {/* TOP */}
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-xl font-bold">
+                      {s.symbol}
+                    </h2>
+                    {!isWait && (
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded border ${tier.color}`}>
+                        {tier.label}
+                      </span>
+                    )}
+                  </div>
 
-              <div className="mt-1 text-lg font-mono text-neutral-400">
-                ${s.price}
-              </div>
-
-              {/* CORE METRICS */}
-              <div className="mt-4 space-y-1.5 text-sm text-neutral-300">
-
-                <div className="flex justify-between">
-                  <span>Bias</span>
-                  <span className={`font-medium ${s.bias === "LONG" ? "text-emerald-400" : s.bias === "SHORT" ? "text-rose-400" : "text-neutral-400"}`}>
-                    {s.bias}
+                  <span className="text-xs px-2 py-1 rounded bg-neutral-800 text-neutral-300">
+                    {s.state}
                   </span>
                 </div>
 
-                <div className="flex justify-between">
-                  <span>Confidence</span>
-                  <span className={`font-bold ${confidenceColor(s.confidence)}`}>
-                    {s.confidence}%
-                  </span>
+                <div className="mt-1 text-lg font-mono text-neutral-400">
+                  ${s.price}
                 </div>
 
-                <div className="flex justify-between">
-                  <span>RSI</span>
-                  <span className="text-white">{s.rsi}</span>
-                </div>
-
-                <div className="flex justify-between">
-                  <span>Stoch K/D</span>
-                  <span className="text-white">
-                    {s.stochK} / {s.stochD}
-                  </span>
-                </div>
-
-                <div className="flex justify-between">
-                  <span>ADX</span>
-                  <span className="text-white">{s.adx}</span>
-                </div>
-
-                <div className="pt-1">
-                  <span className="text-neutral-500 text-xs">Reason</span>
-                  <p className="text-white text-xs leading-relaxed mt-0.5 font-mono">
-                    {s.reason}
-                  </p>
-                </div>
-              </div>
-
-              {/* READINESS BAR */}
-              <div className="mt-4">
-                <div className="flex justify-between text-xs text-neutral-400">
-                  <span>READINESS</span>
-                  <span>{readiness(s.confidence)}%</span>
-                </div>
-
-                <div className="w-full bg-neutral-800 h-1.5 rounded mt-2">
-                  <div
-                    className={`h-1.5 rounded ${barColor(s.state)}`}
-                    style={{ width: `${readiness(s.confidence)}%` }}
-                  />
-                </div>
-              </div>
-
-              {/* TRADE DETAILS */}
-              {!isWait && (
-                <div className="mt-5 border-t border-neutral-700 pt-4 space-y-1.5 text-sm">
+                {/* CORE METRICS */}
+                <div className="mt-4 space-y-1.5 text-sm text-neutral-300">
 
                   <div className="flex justify-between">
-                    <span className="text-neutral-400">Entry</span>
-                    <span className="text-white font-mono">${s.price}</span>
-                  </div>
-
-                  <div className="flex justify-between">
-                    <span className="text-neutral-400">SL</span>
-                    <span className="text-rose-400 font-mono">{s.stopLoss ?? "-"}</span>
-                  </div>
-
-                  <div className="flex justify-between">
-                    <span className="text-neutral-400">TP</span>
-                    <span className="text-emerald-400 font-mono">{s.takeProfit ?? "-"}</span>
-                  </div>
-
-                  <div className="flex justify-between">
-                    <span className="text-neutral-400">RR</span>
-                    <span className={`font-mono font-bold ${(s.rr ?? 0) >= 2 ? "text-emerald-400" : "text-yellow-400"}`}>
-                      {s.rr ?? "-"}
+                    <span>Bias</span>
+                    <span className={`font-medium ${s.bias === "LONG" ? "text-emerald-400" : s.bias === "SHORT" ? "text-rose-400" : "text-neutral-400"}`}>
+                      {s.bias}
                     </span>
                   </div>
 
                   <div className="flex justify-between">
-                    <span className="text-neutral-400">Expected Move</span>
-                    <span className="text-white font-mono">{s.expectedMove}%</span>
+                    <span>Confidence</span>
+                    <span className={`font-bold ${confidenceColor(s.confidence)}`}>
+                      {s.confidence}%
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between">
+                    <span>RSI</span>
+                    <span className="text-white">{s.rsi}</span>
+                  </div>
+
+                  <div className="flex justify-between">
+                    <span>Stoch K/D</span>
+                    <span className="text-white">
+                      {s.stochK} / {s.stochD}
+                    </span>
+                  </div>
+
+                  <div className="flex justify-between">
+                    <span>ADX</span>
+                    <span className="text-white">{s.adx}</span>
+                  </div>
+
+                  <div className="pt-1">
+                    <span className="text-neutral-500 text-xs">Reason</span>
+                    <p className="text-white text-xs leading-relaxed mt-0.5 font-mono">
+                      {s.reason}
+                    </p>
                   </div>
                 </div>
-              )}
 
-              {/* TIMESTAMP */}
-              <div className="text-xs text-neutral-600 mt-4 text-right">
-                {s.updatedAt}
+                {/* READINESS BAR */}
+                <div className="mt-4">
+                  <div className="flex justify-between text-xs text-neutral-400">
+                    <span>READINESS</span>
+                    <span>{readiness(s.confidence)}%</span>
+                  </div>
+
+                  <div className="w-full bg-neutral-800 h-1.5 rounded mt-2">
+                    <div
+                      className={`h-1.5 rounded ${barColor(s.state)}`}
+                      style={{ width: `${readiness(s.confidence)}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* TRADE DETAILS */}
+                {!isWait && (
+                  <div className="mt-5 border-t border-neutral-700 pt-4 space-y-1.5 text-sm">
+
+                    <div className="flex justify-between">
+                      <span className="text-neutral-400">Entry</span>
+                      <span className="text-white font-mono">${s.price}</span>
+                    </div>
+
+                    <div className="flex justify-between">
+                      <span className="text-neutral-400">SL</span>
+                      <span className="text-rose-400 font-mono">{s.stopLoss ?? "-"}</span>
+                    </div>
+
+                    <div className="flex justify-between">
+                      <span className="text-neutral-400">TP</span>
+                      <span className="text-emerald-400 font-mono">{s.takeProfit ?? "-"}</span>
+                    </div>
+
+                    <div className="flex justify-between">
+                      <span className="text-neutral-400">RR</span>
+                      <span className={`font-mono font-bold ${(s.rr ?? 0) >= 2 ? "text-emerald-400" : "text-yellow-400"}`}>
+                        {s.rr ?? "-"}
+                      </span>
+                    </div>
+
+                    <div className="flex justify-between">
+                      <span className="text-neutral-400">Expected Move</span>
+                      <span className="text-white font-mono">{s.expectedMove}%</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* TIMESTAMP */}
+                <div className="text-xs text-neutral-600 mt-4 text-right">
+                  {s.updatedAt}
+                </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="text-neutral-500 text-center py-20">Loading signals...</div>
+      )}
     </main>
   );
 }
