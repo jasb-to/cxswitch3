@@ -128,92 +128,139 @@ function adx(candles: Candle[], period = 14): number {
   return adxVal;
 }
 
-/* ---------------- STRUCTURE (5-bar fractals, 4 swings) ---------------- */
-function getStructure(candles: Candle[]): Structure {
-  if (!ok(candles, 9)) return "RANGE";
-  const highs: number[] = [], lows: number[] = [];
-  for (let i = 2; i < candles.length - 2; i++) {
-    const c = candles[i], p1 = candles[i - 1], p2 = candles[i - 2], n1 = candles[i + 1], n2 = candles[i + 2];
-    const isHigh = c.high > p1.high && c.high > p2.high && c.high > n1.high && c.high > n2.high;
-    const isLow = c.low < p1.low && c.low < p2.low && c.low < n1.low && c.low < n2.low;
-    if (isHigh) highs.push(c.high);
-    else if (isLow) lows.push(c.low);
+/* ---------------- FRACTAL SWINGS ---------------- */
+function getSwings(candles: Candle[], lookback = 2): { highs: { value: number; idx: number }[]; lows: { value: number; idx: number }[] } {
+  const highs: { value: number; idx: number }[] = [];
+  const lows: { value: number; idx: number }[] = [];
+  for (let i = lookback; i < candles.length - lookback; i++) {
+    const c = candles[i];
+    let isHigh = true, isLow = true;
+    for (let j = 1; j <= lookback; j++) {
+      if (c.high <= candles[i - j].high || c.high <= candles[i + j].high) isHigh = false;
+      if (c.low >= candles[i - j].low || c.low >= candles[i + j].low) isLow = false;
+    }
+    if (isHigh) highs.push({ value: c.high, idx: i });
+    else if (isLow) lows.push({ value: c.low, idx: i });
   }
-  const lastH = highs.slice(-4), lastL = lows.slice(-4);
-  if (lastH.length < 4 || lastL.length < 4) return "RANGE";
-  const hh = lastH[3] > lastH[2] && lastH[2] > lastH[1];
-  const hl = lastL[3] > lastL[2] && lastL[2] > lastL[1];
-  const lh = lastH[3] < lastH[2] && lastH[2] < lastH[1];
-  const ll = lastL[3] < lastL[2] && lastL[2] < lastL[1];
+  return { highs, lows };
+}
+
+/* ---------------- STRUCTURE (3-bar fractals, 3 swings) ---------------- */
+function getStructure(candles: Candle[]): Structure {
+  const { highs, lows } = getSwings(candles, 2);
+  const lastH = highs.slice(-3), lastL = lows.slice(-3);
+  if (lastH.length < 3 || lastL.length < 3) return "RANGE";
+  const hh = lastH[2].value > lastH[1].value && lastH[1].value > lastH[0].value;
+  const hl = lastL[2].value > lastL[1].value && lastL[1].value > lastL[0].value;
+  const lh = lastH[2].value < lastH[1].value && lastH[1].value < lastH[0].value;
+  const ll = lastL[2].value < lastL[1].value && lastL[1].value < lastL[0].value;
   if (hh && hl) return "UPTREND";
   if (lh && ll) return "DOWNTREND";
   return "RANGE";
 }
 
-/* ---------------- LAST SWING LEVELS ---------------- */
-function getLastSwingLevels(candles: Candle[]) {
-  const highs: { value: number; idx: number }[] = [];
-  const lows: { value: number; idx: number }[] = [];
-  for (let i = 2; i < candles.length - 2; i++) {
-    const c = candles[i], p1 = candles[i - 1], p2 = candles[i - 2], n1 = candles[i + 1], n2 = candles[i + 2];
-    const isHigh = c.high > p1.high && c.high > p2.high && c.high > n1.high && c.high > n2.high;
-    const isLow = c.low < p1.low && c.low < p2.low && c.low < n1.low && c.low < n2.low;
-    if (isHigh) highs.push({ value: c.high, idx: i });
-    else if (isLow) lows.push({ value: c.low, idx: i });
+/* ---------------- TRENDLINE FROM SWINGS ---------------- */
+interface Trendline {
+  slope: number;
+  intercept: number;
+  startIdx: number;
+  endIdx: number;
+  touches: number;
+  type: "RESISTANCE" | "SUPPORT";
+}
+
+function fitTrendline(points: { value: number; idx: number }[]): Trendline | null {
+  if (points.length < 2) return null;
+  const n = points.length;
+  let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+  for (const p of points) {
+    sumX += p.idx;
+    sumY += p.value;
+    sumXY += p.idx * p.value;
+    sumXX += p.idx * p.idx;
   }
+  const denom = n * sumXX - sumX * sumX;
+  if (Math.abs(denom) < 1e-10) return null;
+  const slope = (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
   return {
-    lastHigh: highs.at(-1),
-    lastLow: lows.at(-1),
-    priorHigh: highs.at(-2),
-    priorLow: lows.at(-2),
+    slope, intercept,
+    startIdx: points[0].idx,
+    endIdx: points[n - 1].idx,
+    touches: n,
+    type: slope > 0 ? "SUPPORT" : "RESISTANCE"
   };
 }
 
-/* ---------------- VOLATILITY REGIME ---------------- */
-function getVolatilityRegime(candles: Candle[], period = 14): { expanding: boolean; compressing: boolean } {
-  if (!ok(candles, period * 3 + 1)) return { expanding: false, compressing: false };
-  const currentAtr = atr(candles, period);
-  const pastAtr = atr(candles.slice(0, -period), period);
-  if (pastAtr <= 0) return { expanding: false, compressing: false };
-  const ratio = currentAtr / pastAtr;
-  return { expanding: ratio > 1.25, compressing: ratio < 0.75 };
+function getTrendlines(candles: Candle[], isHighs: boolean, minTouches = 2, maxLookbackCandles = 50): Trendline[] {
+  const { highs, lows } = getSwings(candles, 2);
+  const points = isHighs ? highs : lows;
+  if (points.length < minTouches) return [];
+  
+  const recentPoints = points.filter(p => p.idx >= candles.length - maxLookbackCandles);
+  if (recentPoints.length < minTouches) return [];
+  
+  const lines: Trendline[] = [];
+  
+  // Try all combinations of 2+ recent points
+  for (let i = 0; i < recentPoints.length - 1; i++) {
+    for (let j = i + 1; j < recentPoints.length; j++) {
+      const subset = recentPoints.slice(i, j + 1);
+      const line = fitTrendline(subset);
+      if (!line) continue;
+      
+      // Count how many other points touch this line (within 0.3% tolerance)
+      let touches = 0;
+      for (const p of points) {
+        const expected = line.slope * p.idx + line.intercept;
+        const actual = p.value;
+        const tolerance = expected * 0.003;
+        if (Math.abs(actual - expected) <= tolerance) touches++;
+      }
+      
+      if (touches >= minTouches) {
+        lines.push({ ...line, touches });
+      }
+    }
+  }
+  
+  // Deduplicate: prefer more touches, then more recent
+  const unique: Trendline[] = [];
+  for (const line of lines) {
+    const isDup = unique.some(u => 
+      Math.abs(u.slope - line.slope) < 0.0001 && 
+      Math.abs(u.intercept - line.intercept) < u.intercept * 0.01
+    );
+    if (!isDup) unique.push(line);
+  }
+  
+  return unique.sort((a, b) => b.touches - a.touches || b.endIdx - a.endIdx);
 }
 
-/* ---------------- MOMENTUM EXHAUSTION PENALTY (NO HARD BLOCKS) ---------------- */
-function getExhaustionPenalty(
-  entryBias: "LONG" | "SHORT",
-  entryRsi: number,
-  entryStochK: number,
-  htfStochK: number
-): { penalty: number; tags: string[] } {
-  let penalty = 0;
-  const tags: string[] = [];
+function getActiveTrendlineValue(line: Trendline, currentIdx: number): number {
+  return line.slope * currentIdx + line.intercept;
+}
 
-  if (entryBias === "LONG") {
-    if (entryRsi < 20) { penalty += 20; tags.push("RSI<20"); }
-    else if (entryRsi < 30) { penalty += 12; tags.push("RSI<30"); }
-    else if (entryRsi < 40) { penalty += 5; tags.push("RSI<40"); }
-    if (entryStochK < 5) { penalty += 15; tags.push("STOCH<5"); }
-    else if (entryStochK < 15) { penalty += 8; tags.push("STOCH<15"); }
-    else if (entryStochK < 25) { penalty += 3; tags.push("STOCH<25"); }
-    if (htfStochK < 5) { penalty += 10; tags.push("4HSTOCH<5"); }
-    else if (htfStochK < 15) { penalty += 5; tags.push("4HSTOCH<15"); }
-    if (entryRsi > 75) { penalty += 8; tags.push("RSI>75"); }
-    if (entryStochK > 90) { penalty += 8; tags.push("STOCH>90"); }
-  } else {
-    if (entryRsi > 80) { penalty += 20; tags.push("RSI>80"); }
-    else if (entryRsi > 70) { penalty += 12; tags.push("RSI>70"); }
-    else if (entryRsi > 60) { penalty += 5; tags.push("RSI>60"); }
-    if (entryStochK > 95) { penalty += 15; tags.push("STOCH>95"); }
-    else if (entryStochK > 85) { penalty += 8; tags.push("STOCH>85"); }
-    else if (entryStochK > 75) { penalty += 3; tags.push("STOCH>75"); }
-    if (htfStochK > 95) { penalty += 10; tags.push("4HSTOCH>95"); }
-    else if (htfStochK > 85) { penalty += 5; tags.push("4HSTOCH>85"); }
-    if (entryRsi < 25) { penalty += 8; tags.push("RSI<25"); }
-    if (entryStochK < 10) { penalty += 8; tags.push("STOCH<10"); }
+function isTrendlineBroken(
+  candles: Candle[],
+  line: Trendline,
+  direction: "ABOVE" | "BELOW",
+  confirmCandles = 1
+): { broken: boolean; breakPrice: number; breakCandle: number } {
+  const lastIdx = candles.length - 1;
+  const lineValue = getActiveTrendlineValue(line, lastIdx);
+  
+  // Check last N candles for close beyond line
+  for (let i = 0; i <= confirmCandles && lastIdx - i >= 0; i++) {
+    const c = candles[lastIdx - i];
+    if (direction === "ABOVE" && c.close > lineValue * 1.001) {
+      return { broken: true, breakPrice: c.close, breakCandle: lastIdx - i };
+    }
+    if (direction === "BELOW" && c.close < lineValue * 0.999) {
+      return { broken: true, breakPrice: c.close, breakCandle: lastIdx - i };
+    }
   }
-
-  return { penalty, tags };
+  return { broken: false, breakPrice: 0, breakCandle: -1 };
 }
 
 /* ---------------- CORE ENGINE ---------------- */
@@ -226,316 +273,299 @@ export function generateSignal(
 ): Signal {
   const now = new Date().toISOString();
 
-  if (!ok(candles15m, 25) || !ok(candles1h, 30) || !ok(candles4h, 30)) {
+  if (!ok(candles1h, 50) || !ok(candles4h, 50)) {
     return {
       symbol, price: round(price ?? 0), state: "WAIT", setup: "NONE", structure: "RANGE",
       bias: "NEUTRAL", confidence: 0, adx: 0, atr: 0, stochK: 50, stochD: 50, rsi: 50,
-      reason: "INSUFFICIENT DATA", stopLoss: null, takeProfit: null, rr: null, expectedMove: 0,
+      reason: "INSUFFICIENT DATA (need 1H+4H)", stopLoss: null, takeProfit: null, rr: null, expectedMove: 0,
       updatedAt: now, entryTimeframe: "NONE", higherTimeframeStoch: "N/A"
     };
   }
 
-  const c15 = candles15m!, c1h = candles1h!, c4h = candles4h!;
+  const c1h = candles1h!, c4h = candles4h!;
 
-  const price15 = c15.at(-1)!.close;
   const price1h = c1h.at(-1)!.close;
   const price4h = c4h.at(-1)!.close;
 
   const structure4h = getStructure(c4h);
   const structure1h = getStructure(c1h);
-  const bias = structure4h === "UPTREND" ? "LONG" : structure4h === "DOWNTREND" ? "SHORT" : "NEUTRAL";
 
-  const closes15 = c15.map(c => c.close);
   const closes1h = c1h.map(c => c.close);
   const closes4h = c4h.map(c => c.close);
-  const r15 = rsi(closes15);
   const r1h = rsi(closes1h);
   const r4h = rsi(closes4h);
-  const s15 = stoch(closes15);
   const s1h = stoch(closes1h);
   const s4h = stoch(closes4h);
-  const a15 = atr(c15);
   const a1h = atr(c1h);
   const a4h = atr(c4h);
   const adx1h = adx(c1h);
   const adx4h = adx(c4h);
 
-  const vol1h = getVolatilityRegime(c1h);
-  const vol4h = getVolatilityRegime(c4h);
-
-  // 1H stoch signals
-  const stoch1hCrossUp = s1h.prevK < s1h.prevD && s1h.k > s1h.d;
-  const stoch1hCrossDown = s1h.prevK > s1h.prevD && s1h.k < s1h.d;
-  const stoch1hExtremeLong = s1h.k < 25 && s1h.k > s1h.d;
-  const stoch1hExtremeShort = s1h.k > 75 && s1h.k < s1h.d;
-  const stoch1hDeepLong = s1h.k < 15 && s1h.k < s1h.d;
-  const stoch1hDeepShort = s1h.k > 85 && s1h.k > s1h.d;
-  const stoch1hOverbought = s1h.k > 80;
-  const stoch1hOversold = s1h.k < 20;
-
-  // 15m stoch signals
-  const stoch15CrossUp = s15.prevK < s15.prevD && s15.k > s15.d;
-  const stoch15CrossDown = s15.prevK > s15.prevD && s15.k < s15.d;
-  const stoch15DeepLong = s15.k < 10 && s15.k < s15.d;
-  const stoch15DeepShort = s15.k > 90 && s15.k > s15.d;
-  const stoch15OversoldBounce = s15.k < 25 && s15.k > s15.d;
-  const stoch15OverboughtDrop = s15.k > 75 && s15.k < s15.d;
-  const stoch15OversoldCross = s15.k < 30 && stoch15CrossUp;
-  const stoch15OverboughtCross = s15.k > 70 && stoch15CrossDown;
-
-  const swings4h = getLastSwingLevels(c4h);
-  const swings1h = getLastSwingLevels(c1h);
-
-  let setup: SetupType = "NONE";
-  let entryBias: "LONG" | "SHORT" | "NEUTRAL" = bias;
-  let entryTimeframe: "1H" | "15M" | "NONE" = "NONE";
-  let primaryStochK = 50;
-  let primaryStochD = 50;
-  let primaryRsi = 50;
-  let primaryAdx = 0;
-
-  /* ---- EARLY: 1H trend start / continuation ---- */
-  if (bias === "LONG" && structure1h !== "DOWNTREND") {
-    if (stoch1hCrossUp && s1h.prevK < 40 && r1h > 40) {
-      setup = "PULLBACK"; entryTimeframe = "1H";
-      primaryStochK = s1h.k; primaryStochD = s1h.d; primaryRsi = r1h; primaryAdx = adx1h;
-    }
-    else if ((stoch1hExtremeLong || stoch1hDeepLong) && r1h < 55 && !vol1h.compressing) {
-      setup = "PULLBACK"; entryTimeframe = "1H";
-      primaryStochK = s1h.k; primaryStochD = s1h.d; primaryRsi = r1h; primaryAdx = adx1h;
-    }
-    else if (stoch1hOversold && s1h.k > s1h.d && r1h > 40 && r1h < 65) {
-      setup = "PULLBACK"; entryTimeframe = "1H";
-      primaryStochK = s1h.k; primaryStochD = s1h.d; primaryRsi = r1h; primaryAdx = adx1h;
-    }
-  } else if (bias === "SHORT" && structure1h !== "UPTREND") {
-    if (stoch1hCrossDown && s1h.prevK > 60 && r1h < 60) {
-      setup = "PULLBACK"; entryTimeframe = "1H";
-      primaryStochK = s1h.k; primaryStochD = s1h.d; primaryRsi = r1h; primaryAdx = adx1h;
-    }
-    else if ((stoch1hExtremeShort || stoch1hDeepShort) && r1h > 45 && !vol1h.compressing) {
-      setup = "PULLBACK"; entryTimeframe = "1H";
-      primaryStochK = s1h.k; primaryStochD = s1h.d; primaryRsi = r1h; primaryAdx = adx1h;
-    }
-    else if (stoch1hOverbought && s1h.k < s1h.d && r1h < 60 && r1h > 35) {
-      setup = "PULLBACK"; entryTimeframe = "1H";
-      primaryStochK = s1h.k; primaryStochD = s1h.d; primaryRsi = r1h; primaryAdx = adx1h;
-    }
-  }
-
-  /* ---- SNIPER: 15m pullback in confirmed trend ---- */
-  if (setup === "NONE" && bias !== "NEUTRAL") {
-    const trendConfirmed1h = (bias === "LONG" && s1h.k > s1h.d && s1h.k > 35) ||
-                             (bias === "SHORT" && s1h.k < s1h.d && s1h.k < 65);
-
-    if (trendConfirmed1h) {
-      if (bias === "LONG") {
-        if (stoch15CrossUp && s15.prevK < 40 && r15 < 65 && r1h > 45) {
-          setup = "PULLBACK"; entryTimeframe = "15M";
-          primaryStochK = s15.k; primaryStochD = s15.d; primaryRsi = r15; primaryAdx = adx1h;
-        }
-        else if (stoch15OversoldBounce && r15 < 60 && r1h > 45) {
-          setup = "PULLBACK"; entryTimeframe = "15M";
-          primaryStochK = s15.k; primaryStochD = s15.d; primaryRsi = r15; primaryAdx = adx1h;
-        }
-        else if (stoch15OversoldCross && r15 < 55 && r1h > 45) {
-          setup = "PULLBACK"; entryTimeframe = "15M";
-          primaryStochK = s15.k; primaryStochD = s15.d; primaryRsi = r15; primaryAdx = adx1h;
-        }
-      } else if (bias === "SHORT") {
-        if (stoch15CrossDown && s15.prevK > 60 && r15 > 35 && r1h < 55) {
-          setup = "PULLBACK"; entryTimeframe = "15M";
-          primaryStochK = s15.k; primaryStochD = s15.d; primaryRsi = r15; primaryAdx = adx1h;
-        }
-        else if (stoch15OverboughtDrop && r15 > 40 && r1h < 55) {
-          setup = "PULLBACK"; entryTimeframe = "15M";
-          primaryStochK = s15.k; primaryStochD = s15.d; primaryRsi = r15; primaryAdx = adx1h;
-        }
-        else if (stoch15OverboughtCross && r15 > 45 && r1h < 55) {
-          setup = "PULLBACK"; entryTimeframe = "15M";
-          primaryStochK = s15.k; primaryStochD = s15.d; primaryRsi = r15; primaryAdx = adx1h;
-        }
-      }
-    }
-  }
-
-  /* ---- BREAKDOWN: 4H structure break with 1H confirmation ---- */
-  if (setup === "NONE" && swings4h.lastLow && swings4h.priorLow) {
-    const lastLow = swings4h.lastLow.value;
-    const priorLow = swings4h.priorLow.value;
-    if (price4h < lastLow * 0.998 && lastLow < priorLow) {
-      const broke1h = swings1h.lastLow ? price1h < swings1h.lastLow.value : false;
-      if ((broke1h || r1h < 45) && structure1h === "DOWNTREND") {
-        setup = "BREAKDOWN"; entryBias = "SHORT"; entryTimeframe = "1H";
-        primaryStochK = s1h.k; primaryStochD = s1h.d; primaryRsi = r1h; primaryAdx = adx1h;
-      }
-    }
-  }
-
-  /* ---- BREAKUP: 4H structure break with 1H confirmation ---- */
-  if (setup === "NONE" && swings4h.lastHigh && swings4h.priorHigh) {
-    const lastHigh = swings4h.lastHigh.value;
-    const priorHigh = swings4h.priorHigh.value;
-    if (price4h > lastHigh * 1.002 && lastHigh > priorHigh) {
-      const broke1h = swings1h.lastHigh ? price1h > swings1h.lastHigh.value : false;
-      if ((broke1h || r1h > 55) && structure1h === "UPTREND") {
-        setup = "BREAKUP"; entryBias = "LONG"; entryTimeframe = "1H";
-        primaryStochK = s1h.k; primaryStochD = s1h.d; primaryRsi = r1h; primaryAdx = adx1h;
-      }
-    }
-  }
-
-  /* ---- STATE: SNIPER vs EARLY ---- */
-  const state: SignalState = (setup !== "NONE" && entryTimeframe === "15M") ? "SNIPER"
-    : (setup !== "NONE") ? "EARLY"
-    : "WAIT";
-
-  /* ---- WAIT STATE: Detailed reasoning ---- */
-  if (state === "WAIT") {
-    const issues: string[] = [];
-    if (bias === "NEUTRAL") {
-      issues.push("NO TREND");
-    } else {
-      const trendStrength = adx4h > 25 ? "STRONG" : adx4h > 15 ? "MODERATE" : "WEAK";
-      issues.push(`${trendStrength} ${bias} TREND`);
-
-      if (bias === "LONG") {
-        if (s1h.k < s1h.d) {
-          if (s1h.k < 20) issues.push("1H OVERSOLD — BOUNCE SOON");
-          else if (s1h.k < 40) issues.push("1H PULLBACK IN PROGRESS");
-          else issues.push("1H BEARISH — WAIT CROSS");
-        } else {
-          if (s1h.k < 20) issues.push("1H OVERSOLD BOUNCE — WAIT ROLLOVER");
-          else if (s1h.k > 80) issues.push("1H OVERBOUGHT — WAIT 15M PULLBACK");
-          else issues.push("1H BULLISH — WAIT 15M CONFIRMATION");
-        }
-        if (s15.k < s15.d) issues.push("15M BEARISH");
-        else issues.push("15M BULLISH");
-      } else {
-        if (s1h.k > s1h.d) {
-          if (s1h.k > 80) issues.push("1H OVERBOUGHT — DROP SOON");
-          else if (s1h.k > 60) issues.push("1H PULLBACK IN PROGRESS");
-          else if (s1h.k < 20) issues.push("1H OVERSOLD BOUNCE — WAIT ROLLOVER");
-          else issues.push("1H BULLISH — WAIT CROSS");
-        } else {
-          if (s1h.k < 20) issues.push("1H OVERSOLD — WAIT 15M BOUNCE");
-          else issues.push("1H BEARISH — WAIT 15M CONFIRMATION");
-        }
-        if (s15.k > s15.d) issues.push("15M BULLISH");
-        else issues.push("15M BEARISH");
-      }
-
-      if (vol1h.compressing) issues.push("VOL COMPRESSING");
-      if (vol1h.expanding) issues.push("VOL EXPANDING");
-    }
+  // ========== HARD CHOP FILTER ==========
+  // No trades if 4H is ranging AND ADX is weak
+  if (structure4h === "RANGE" && adx4h < 20) {
     return {
-      symbol, price: round(price), state: "WAIT", setup: "NONE", structure: structure4h, bias,
-      confidence: 0, adx: round(adx4h), atr: round(a15, 2), stochK: round(s15.k), stochD: round(s15.d),
-      rsi: round(r15), reason: `WAIT (${issues.join(" | ")})`, stopLoss: null, takeProfit: null,
-      rr: null, expectedMove: 0, updatedAt: now, entryTimeframe: "NONE",
-      higherTimeframeStoch: `1H:${round(s1h.k)}/${round(s1h.d)} | 4H:${round(s4h.k)}/${round(s4h.d)}`
+      symbol, price: round(price4h), state: "WAIT", setup: "NONE", structure: "RANGE",
+      bias: "NEUTRAL", confidence: 0, adx: round(adx4h), atr: round(a4h, 2),
+      stochK: round(s4h.k), stochD: round(s4h.d), rsi: round(r4h),
+      reason: `WAIT | 4H RANGING (ADX:${round(adx4h)}) — NO EDGE IN CHOP`,
+      stopLoss: null, takeProfit: null, rr: null, expectedMove: 0,
+      updatedAt: now, entryTimeframe: "NONE",
+      higherTimeframeStoch: `4H:${round(s4h.k)}/${round(s4h.d)} | 1H:${round(s1h.k)}/${round(s1h.d)}`
     };
   }
 
-  /* ---- SIZING: ATR-based ---- */
-  const priceForSizing = entryTimeframe === "1H" ? price1h : price15;
-  const atrForSizing = entryTimeframe === "1H" ? a1h : a15;
+  // ========== TRENDLINE DETECTION ==========
+  const resistance4h = getTrendlines(c4h, true, 2, 60);
+  const support4h = getTrendlines(c4h, false, 2, 60);
+  const resistance1h = getTrendlines(c1h, true, 2, 40);
+  const support1h = getTrendlines(c1h, false, 2, 40);
+
+  // ========== 4H PRIMARY: TRENDLINE BREAK ==========
+  let setup: SetupType = "NONE";
+  let entryBias: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
+  let entryTimeframe: "1H" | "15M" | "NONE" = "NONE";
+  let primaryRsi = r4h;
+  let primaryAdx = adx4h;
+  let primaryStochK = s4h.k;
+  let primaryStochD = s4h.d;
+  let breakLine: Trendline | null = null;
+  let breakInfo: { broken: boolean; breakPrice: number; breakCandle: number } | null = null;
+
+  // 4H RESISTANCE BREAK (LONG)
+  for (const line of resistance4h) {
+    const info = isTrendlineBroken(c4h, line, "ABOVE", 0);
+    if (info.broken) {
+      // Must have bullish structure or momentum
+      const hasMomentum = r4h > 45 || s4h.k > s4h.d;
+      const notExhausted = s4h.k < 90 && r4h < 80;
+      if (hasMomentum && notExhausted) {
+        setup = "BREAKUP";
+        entryBias = "LONG";
+        entryTimeframe = "1H"; // Entry on 1H for better fill, signal from 4H
+        breakLine = line;
+        breakInfo = info;
+        break;
+      }
+    }
+  }
+
+  // 4H SUPPORT BREAK (SHORT)
+  if (setup === "NONE") {
+    for (const line of support4h) {
+      const info = isTrendlineBroken(c4h, line, "BELOW", 0);
+      if (info.broken) {
+        const hasMomentum = r4h < 55 || s4h.k < s4h.d;
+        const notExhausted = s4h.k > 10 && r4h > 20;
+        if (hasMomentum && notExhausted) {
+          setup = "BREAKDOWN";
+          entryBias = "SHORT";
+          entryTimeframe = "1H";
+          breakLine = line;
+          breakInfo = info;
+          break;
+        }
+      }
+    }
+  }
+
+  // ========== 1H CHEEKY: TRENDLINE BREAK (only if no 4H setup) ==========
+  if (setup === "NONE") {
+    // 1H must agree with 4H bias, or 4H must be trending
+    const biasAligned4h = structure4h === "UPTREND" || structure4h === "DOWNTREND";
+    
+    for (const line of resistance1h) {
+      const info = isTrendlineBroken(c1h, line, "ABOVE", 0);
+      if (info.broken) {
+        // 4H must not be strongly bearish
+        const fourHourOk = structure4h !== "DOWNTREND" || r4h > 40;
+        const notExhausted = s1h.k < 85 && r1h < 75;
+        if (fourHourOk && notExhausted) {
+          setup = "BREAKUP";
+          entryBias = "LONG";
+          entryTimeframe = "1H";
+          primaryRsi = r1h;
+          primaryAdx = adx1h;
+          primaryStochK = s1h.k;
+          primaryStochD = s1h.d;
+          breakLine = line;
+          breakInfo = info;
+          break;
+        }
+      }
+    }
+
+    if (setup === "NONE") {
+      for (const line of support1h) {
+        const info = isTrendlineBroken(c1h, line, "BELOW", 0);
+        if (info.broken) {
+          const fourHourOk = structure4h !== "UPTREND" || r4h < 60;
+          const notExhausted = s1h.k > 15 && r1h > 25;
+          if (fourHourOk && notExhausted) {
+            setup = "BREAKDOWN";
+            entryBias = "SHORT";
+            entryTimeframe = "1H";
+            primaryRsi = r1h;
+            primaryAdx = adx1h;
+            primaryStochK = s1h.k;
+            primaryStochD = s1h.d;
+            breakLine = line;
+            breakInfo = info;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // ========== WAIT STATE ==========
+  if (setup === "NONE") {
+    const trend4h = structure4h === "UPTREND" ? "BULLISH" : structure4h === "DOWNTREND" ? "BEARISH" : "RANGING";
+    const adxDesc = adx4h > 25 ? "STRONG" : adx4h > 15 ? "MODERATE" : "WEAK";
+    
+    const has4hRes = resistance4h.length > 0;
+    const has4hSup = support4h.length > 0;
+    const has1hRes = resistance1h.length > 0;
+    const has1hSup = support1h.length > 0;
+    
+    const near4hRes = has4hRes ? getActiveTrendlineValue(resistance4h[0], c4h.length - 1) : 0;
+    const near4hSup = has4hSup ? getActiveTrendlineValue(support4h[0], c4h.length - 1) : 0;
+    const distToRes = has4hRes ? Math.abs(price4h - near4hRes) / price4h * 100 : 999;
+    const distToSup = has4hSup ? Math.abs(price4h - near4hSup) / price4h * 100 : 999;
+    
+    let waitReason = `WAIT | 4H:${trend4h}(${adxDesc})`;
+    if (distToRes < 1.5) waitReason += ` | NEAR 4H RES ${round(near4hRes)}`;
+    if (distToSup < 1.5) waitReason += ` | NEAR 4H SUP ${round(near4hSup)}`;
+    if (!has4hRes && !has4hSup) waitReason += ` | NO 4H TRENDLINES`;
+    if (has1hRes || has1hSup) waitReason += ` | 1H TLs ACTIVE`;
+
+    return {
+      symbol, price: round(price4h), state: "WAIT", setup: "NONE", structure: structure4h,
+      bias: structure4h === "UPTREND" ? "LONG" : structure4h === "DOWNTREND" ? "SHORT" : "NEUTRAL",
+      confidence: 0, adx: round(adx4h), atr: round(a4h, 2),
+      stochK: round(s4h.k), stochD: round(s4h.d), rsi: round(r4h),
+      reason: waitReason,
+      stopLoss: null, takeProfit: null, rr: null, expectedMove: 0,
+      updatedAt: now, entryTimeframe: "NONE",
+      higherTimeframeStoch: `4H:${round(s4h.k)}/${round(s4h.d)} | 1H:${round(s1h.k)}/${round(s1h.d)}`
+    };
+  }
+
+  // ========== STATE ASSIGNMENT ==========
+  // 4H breaks = SNIPER (higher confidence), 1H cheeky = EARLY
+  const state: SignalState = entryTimeframe === "1H" && breakLine && breakLine.touches >= 3 ? "SNIPER" : "EARLY";
+
+  // ========== SIZING & LEVELS ==========
+  const priceForSizing = entryTimeframe === "1H" ? price1h : price4h;
+  const atrForSizing = entryTimeframe === "1H" ? a1h : a4h;
   const atrPct = atrForSizing / priceForSizing;
 
-  const atrMultiplier = state === "SNIPER"
-    ? Math.max(2.5, Math.min(4.0, vol1h.expanding ? 3.5 : 3.0))
-    : Math.max(2.0, Math.min(3.5, vol1h.expanding ? 3.0 : 2.5));
+  // Wider stops for trendline breaks — they need room
+  const atrMultiplier = setup === "BREAKUP" || setup === "BREAKDOWN" ? 2.5 : 2.0;
+  const expectedMove = Math.max(0.015, Math.min(0.06, atrPct * atrMultiplier * 1.5));
 
-  const expectedMove = Math.max(0.012, Math.min(0.05, atrPct * atrMultiplier));
-
-  // Stop loss: tighter of ATR-based or structural, with min/max bounds
-  const minSlPct = 0.003;
-  const maxSlPct = 0.02;
+  const minSlPct = 0.005; // Wider minimum for TL breaks
+  const maxSlPct = 0.025;
 
   let sl: number;
   if (entryBias === "LONG") {
-    const atrSl = priceForSizing * (1 - Math.max(minSlPct, Math.min(maxSlPct, expectedMove * 0.45)));
-    const structuralSl = swings1h.lastLow ? swings1h.lastLow.value * 0.998 : atrSl;
-    sl = Math.max(atrSl, structuralSl);
+    // Stop below the broken trendline or ATR, whichever gives more room
+    const atrSl = priceForSizing * (1 - Math.max(minSlPct, Math.min(maxSlPct, expectedMove * 0.4)));
+    const trendlineSl = breakLine ? getActiveTrendlineValue(breakLine, c1h.length - 1) * 0.997 : atrSl;
+    sl = Math.max(atrSl, trendlineSl);
     if (sl >= priceForSizing) sl = atrSl;
   } else {
-    const atrSl = priceForSizing * (1 + Math.max(minSlPct, Math.min(maxSlPct, expectedMove * 0.45)));
-    const structuralSl = swings1h.lastHigh ? swings1h.lastHigh.value * 1.002 : atrSl;
-    sl = Math.min(atrSl, structuralSl);
+    const atrSl = priceForSizing * (1 + Math.max(minSlPct, Math.min(maxSlPct, expectedMove * 0.4)));
+    const trendlineSl = breakLine ? getActiveTrendlineValue(breakLine, c1h.length - 1) * 1.003 : atrSl;
+    sl = Math.min(atrSl, trendlineSl);
     if (sl <= priceForSizing) sl = atrSl;
   }
 
   const tp = entryBias === "LONG" ? priceForSizing * (1 + expectedMove) : priceForSizing * (1 - expectedMove);
   const rr = Math.abs((tp - priceForSizing) / (priceForSizing - sl));
 
-  /* ---- CONFIDENCE: Data-driven scoring ---- */
-  let confidence = 60;
+  // ========== CONFIDENCE ==========
+  let confidence = 50;
 
-  confidence += state === "SNIPER" ? 15 : 10;
-  if (setup === "BREAKDOWN" || setup === "BREAKUP") confidence += 8;
-  else if (setup === "PULLBACK") confidence += 5;
-
-  if (primaryAdx > 30) confidence += 10;
-  else if (primaryAdx > 20) confidence += 5;
-  else if (primaryAdx < 15) confidence -= 5;
-
-  if (entryBias === "LONG") {
-    if (primaryRsi > 50 && primaryRsi < 70) confidence += 5;
-    if (primaryRsi > 40 && primaryRsi < 80) confidence += 3;
-    if (primaryRsi < 30) confidence += 2;
-    if (primaryRsi > 80) confidence -= 8;
+  // Base by setup type
+  if (entryTimeframe === "1H" && primaryAdx === adx4h) {
+    // This is a 4H signal, entry on 1H
+    confidence += 25; // 4H primary gets big boost
   } else {
-    if (primaryRsi < 50 && primaryRsi > 30) confidence += 5;
-    if (primaryRsi < 60 && primaryRsi > 20) confidence += 3;
-    if (primaryRsi > 70) confidence += 2;
-    if (primaryRsi < 20) confidence -= 8;
+    // 1H cheeky
+    confidence += 10;
   }
 
+  if (setup === "BREAKUP" || setup === "BREAKDOWN") confidence += 10;
+
+  // ADX quality
+  if (primaryAdx > 30) confidence += 15;
+  else if (primaryAdx > 20) confidence += 8;
+  else if (primaryAdx < 15) confidence -= 15;
+
+  // 4H alignment bonus
+  if (entryBias === "LONG" && structure4h === "UPTREND") confidence += 10;
+  if (entryBias === "SHORT" && structure4h === "DOWNTREND") confidence += 10;
+  if (entryBias === "LONG" && s4h.k > s4h.d) confidence += 5;
+  if (entryBias === "SHORT" && s4h.k < s4h.d) confidence += 5;
+
+  // RSI zone
+  if (entryBias === "LONG" && primaryRsi > 45 && primaryRsi < 75) confidence += 5;
+  if (entryBias === "SHORT" && primaryRsi < 55 && primaryRsi > 25) confidence += 5;
+
+  // Trendline quality
+  if (breakLine && breakLine.touches >= 3) confidence += 8;
+  if (breakLine && breakLine.touches >= 4) confidence += 5;
+
+  // Stoch alignment
   const stochDiff = Math.abs(primaryStochK - primaryStochD);
-  if (stochDiff < 5) confidence += 5;
-  else if (stochDiff < 15) confidence += 2;
+  if (stochDiff > 5) confidence += 3; // Crossed, not flat
 
+  // Anti-exhaustion (HARD PENALTIES)
   if (entryBias === "LONG") {
-    if (s4h.k > s4h.d) confidence += 3;
-    if (s1h.k > s1h.d) confidence += 3;
-    if (r4h > 50) confidence += 2;
+    if (primaryStochK > 90) confidence -= 20;
+    if (primaryRsi > 80) confidence -= 15;
+    if (s4h.k > 90 && s4h.k > s4h.d) confidence -= 10;
   } else {
-    if (s4h.k < s4h.d) confidence += 3;
-    if (s1h.k < s1h.d) confidence += 3;
-    if (r4h < 50) confidence += 2;
+    if (primaryStochK < 10) confidence -= 20;
+    if (primaryRsi < 20) confidence -= 15;
+    if (s4h.k < 10 && s4h.k < s4h.d) confidence -= 10;
   }
 
-  // Anti-chase
-  if (entryTimeframe === "1H") {
-    const chasing15m = (entryBias === "LONG" && s15.k > 80) || (entryBias === "SHORT" && s15.k < 20);
-    if (chasing15m) confidence -= 15;
+  // 1H cheeky penalty if against 4H structure
+  if (entryTimeframe === "1H" && primaryAdx === adx1h) {
+    if (entryBias === "LONG" && structure4h === "DOWNTREND") confidence -= 15;
+    if (entryBias === "SHORT" && structure4h === "UPTREND") confidence -= 15;
   }
-  if (entryTimeframe === "15M") {
-    const chasing1h = (entryBias === "LONG" && s1h.k > 85) || (entryBias === "SHORT" && s1h.k < 15);
-    if (chasing1h) confidence -= 10;
-  }
-
-  // Momentum exhaustion penalties (SOFT ONLY — no hard blocks)
-  const htfStochK = entryTimeframe === "15M" ? s1h.k : s4h.k;
-  const exhaust = getExhaustionPenalty(entryBias as "LONG" | "SHORT", primaryRsi, primaryStochK, htfStochK);
-  confidence -= exhaust.penalty;
-
-  if (vol1h.compressing) confidence -= 5;
 
   confidence = Math.max(0, Math.min(100, confidence));
 
-  const htStoch = entryTimeframe === "15M"
-    ? `1H:${round(s1h.k)}/${round(s1h.d)} | 4H:${round(s4h.k)}/${round(s4h.d)}`
-    : `4H:${round(s4h.k)}/${round(s4h.d)} | 1H:${round(s1h.k)}/${round(s1h.d)}`;
-
-  const exhaustStr = exhaust.tags.length > 0 ? ` | EXHAUST:${exhaust.tags.join(",")}` : "";
+  // ========== REASON STRING ==========
+  const tlInfo = breakLine 
+    ? `TL(${breakLine.touches}touches,${breakLine.type},slope:${round(breakLine.slope,4)})` 
+    : "NO_TL";
+  const signalSource = primaryAdx === adx4h ? "4H_PRIMARY" : "1H_CHEEKY";
 
   return {
-    symbol, price: round(priceForSizing), state, setup, structure: structure4h, bias: entryBias,
-    confidence, adx: round(primaryAdx), atr: round(a15, 2), stochK: round(primaryStochK), stochD: round(primaryStochD),
-    rsi: round(primaryRsi), reason: `${state} ${setup} ${entryBias} on ${entryTimeframe} | 4H:${structure4h} 1H:${structure1h} | ADX:${round(primaryAdx)}${exhaustStr}`,
-    stopLoss: round(sl, 4), takeProfit: round(tp, 4), rr: round(rr, 2), expectedMove: round(expectedMove * 100, 2),
-    updatedAt: now, entryTimeframe,
-    higherTimeframeStoch: htStoch
+    symbol,
+    price: round(priceForSizing),
+    state,
+    setup,
+    structure: structure4h,
+    bias: entryBias,
+    confidence,
+    adx: round(primaryAdx),
+    atr: round(atrForSizing, 2),
+    stochK: round(primaryStochK),
+    stochD: round(primaryStochD),
+    rsi: round(primaryRsi),
+    reason: `${state} ${setup} ${entryBias} | SRC:${signalSource} | ${tlInfo} | 4H:${structure4h} 1H:${structure1h} | ADX:${round(primaryAdx)}`,
+    stopLoss: round(sl, 4),
+    takeProfit: round(tp, 4),
+    rr: round(rr, 2),
+    expectedMove: round(expectedMove * 100, 2),
+    updatedAt: now,
+    entryTimeframe,
+    higherTimeframeStoch: `4H:${round(s4h.k)}/${round(s4h.d)} | 1H:${round(s1h.k)}/${round(s1h.d)}`
   };
 }
