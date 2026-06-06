@@ -1,6 +1,6 @@
 export type Symbol = "BTC" | "ETH" | "SOL";
 
-export type SignalState = "EARLY" | "SNIPER" | "WAIT";
+export type SignalState = "PRIMARY" | "CHEEKY" | "WAIT";
 
 export type SetupType = "NONE" | "PULLBACK" | "BREAKDOWN" | "BREAKUP";
 
@@ -202,14 +202,12 @@ function getTrendlines(candles: Candle[], isHighs: boolean, minTouches = 2, maxL
   
   const lines: Trendline[] = [];
   
-  // Try all combinations of 2+ recent points
   for (let i = 0; i < recentPoints.length - 1; i++) {
     for (let j = i + 1; j < recentPoints.length; j++) {
       const subset = recentPoints.slice(i, j + 1);
       const line = fitTrendline(subset);
       if (!line) continue;
       
-      // Count how many other points touch this line (within 0.3% tolerance)
       let touches = 0;
       for (const p of points) {
         const expected = line.slope * p.idx + line.intercept;
@@ -224,7 +222,6 @@ function getTrendlines(candles: Candle[], isHighs: boolean, minTouches = 2, maxL
     }
   }
   
-  // Deduplicate: prefer more touches, then more recent
   const unique: Trendline[] = [];
   for (const line of lines) {
     const isDup = unique.some(u => 
@@ -250,7 +247,6 @@ function isTrendlineBroken(
   const lastIdx = candles.length - 1;
   const lineValue = getActiveTrendlineValue(line, lastIdx);
   
-  // Check last N candles for close beyond line
   for (let i = 0; i <= confirmCandles && lastIdx - i >= 0; i++) {
     const c = candles[lastIdx - i];
     if (direction === "ABOVE" && c.close > lineValue * 1.001) {
@@ -302,7 +298,6 @@ export function generateSignal(
   const adx4h = adx(c4h);
 
   // ========== HARD CHOP FILTER ==========
-  // No trades if 4H is ranging AND ADX is weak
   if (structure4h === "RANGE" && adx4h < 20) {
     return {
       symbol, price: round(price4h), state: "WAIT", setup: "NONE", structure: "RANGE",
@@ -331,18 +326,19 @@ export function generateSignal(
   let primaryStochD = s4h.d;
   let breakLine: Trendline | null = null;
   let breakInfo: { broken: boolean; breakPrice: number; breakCandle: number } | null = null;
+  let signalSource: "4H_PRIMARY" | "1H_CHEEKY" | "NONE" = "NONE";
 
   // 4H RESISTANCE BREAK (LONG)
   for (const line of resistance4h) {
     const info = isTrendlineBroken(c4h, line, "ABOVE", 0);
     if (info.broken) {
-      // Must have bullish structure or momentum
       const hasMomentum = r4h > 45 || s4h.k > s4h.d;
       const notExhausted = s4h.k < 90 && r4h < 80;
       if (hasMomentum && notExhausted) {
         setup = "BREAKUP";
         entryBias = "LONG";
-        entryTimeframe = "1H"; // Entry on 1H for better fill, signal from 4H
+        entryTimeframe = "1H";
+        signalSource = "4H_PRIMARY";
         breakLine = line;
         breakInfo = info;
         break;
@@ -361,6 +357,7 @@ export function generateSignal(
           setup = "BREAKDOWN";
           entryBias = "SHORT";
           entryTimeframe = "1H";
+          signalSource = "4H_PRIMARY";
           breakLine = line;
           breakInfo = info;
           break;
@@ -371,13 +368,9 @@ export function generateSignal(
 
   // ========== 1H CHEEKY: TRENDLINE BREAK (only if no 4H setup) ==========
   if (setup === "NONE") {
-    // 1H must agree with 4H bias, or 4H must be trending
-    const biasAligned4h = structure4h === "UPTREND" || structure4h === "DOWNTREND";
-    
     for (const line of resistance1h) {
       const info = isTrendlineBroken(c1h, line, "ABOVE", 0);
       if (info.broken) {
-        // 4H must not be strongly bearish
         const fourHourOk = structure4h !== "DOWNTREND" || r4h > 40;
         const notExhausted = s1h.k < 85 && r1h < 75;
         if (fourHourOk && notExhausted) {
@@ -388,6 +381,7 @@ export function generateSignal(
           primaryAdx = adx1h;
           primaryStochK = s1h.k;
           primaryStochD = s1h.d;
+          signalSource = "1H_CHEEKY";
           breakLine = line;
           breakInfo = info;
           break;
@@ -409,6 +403,7 @@ export function generateSignal(
             primaryAdx = adx1h;
             primaryStochK = s1h.k;
             primaryStochD = s1h.d;
+            signalSource = "1H_CHEEKY";
             breakLine = line;
             breakInfo = info;
             break;
@@ -452,24 +447,22 @@ export function generateSignal(
   }
 
   // ========== STATE ASSIGNMENT ==========
-  // 4H breaks = SNIPER (higher confidence), 1H cheeky = EARLY
-  const state: SignalState = entryTimeframe === "1H" && breakLine && breakLine.touches >= 3 ? "SNIPER" : "EARLY";
+  // 4H breaks = PRIMARY, 1H cheeky = CHEEKY
+  const state: SignalState = signalSource === "4H_PRIMARY" ? "PRIMARY" : "CHEEKY";
 
   // ========== SIZING & LEVELS ==========
   const priceForSizing = entryTimeframe === "1H" ? price1h : price4h;
   const atrForSizing = entryTimeframe === "1H" ? a1h : a4h;
   const atrPct = atrForSizing / priceForSizing;
 
-  // Wider stops for trendline breaks — they need room
   const atrMultiplier = setup === "BREAKUP" || setup === "BREAKDOWN" ? 2.5 : 2.0;
   const expectedMove = Math.max(0.015, Math.min(0.06, atrPct * atrMultiplier * 1.5));
 
-  const minSlPct = 0.005; // Wider minimum for TL breaks
+  const minSlPct = 0.005;
   const maxSlPct = 0.025;
 
   let sl: number;
   if (entryBias === "LONG") {
-    // Stop below the broken trendline or ATR, whichever gives more room
     const atrSl = priceForSizing * (1 - Math.max(minSlPct, Math.min(maxSlPct, expectedMove * 0.4)));
     const trendlineSl = breakLine ? getActiveTrendlineValue(breakLine, c1h.length - 1) * 0.997 : atrSl;
     sl = Math.max(atrSl, trendlineSl);
@@ -487,41 +480,32 @@ export function generateSignal(
   // ========== CONFIDENCE ==========
   let confidence = 50;
 
-  // Base by setup type
-  if (entryTimeframe === "1H" && primaryAdx === adx4h) {
-    // This is a 4H signal, entry on 1H
-    confidence += 25; // 4H primary gets big boost
+  if (signalSource === "4H_PRIMARY") {
+    confidence += 25;
   } else {
-    // 1H cheeky
     confidence += 10;
   }
 
   if (setup === "BREAKUP" || setup === "BREAKDOWN") confidence += 10;
 
-  // ADX quality
   if (primaryAdx > 30) confidence += 15;
   else if (primaryAdx > 20) confidence += 8;
   else if (primaryAdx < 15) confidence -= 15;
 
-  // 4H alignment bonus
   if (entryBias === "LONG" && structure4h === "UPTREND") confidence += 10;
   if (entryBias === "SHORT" && structure4h === "DOWNTREND") confidence += 10;
   if (entryBias === "LONG" && s4h.k > s4h.d) confidence += 5;
   if (entryBias === "SHORT" && s4h.k < s4h.d) confidence += 5;
 
-  // RSI zone
   if (entryBias === "LONG" && primaryRsi > 45 && primaryRsi < 75) confidence += 5;
   if (entryBias === "SHORT" && primaryRsi < 55 && primaryRsi > 25) confidence += 5;
 
-  // Trendline quality
   if (breakLine && breakLine.touches >= 3) confidence += 8;
   if (breakLine && breakLine.touches >= 4) confidence += 5;
 
-  // Stoch alignment
   const stochDiff = Math.abs(primaryStochK - primaryStochD);
-  if (stochDiff > 5) confidence += 3; // Crossed, not flat
+  if (stochDiff > 5) confidence += 3;
 
-  // Anti-exhaustion (HARD PENALTIES)
   if (entryBias === "LONG") {
     if (primaryStochK > 90) confidence -= 20;
     if (primaryRsi > 80) confidence -= 15;
@@ -532,8 +516,7 @@ export function generateSignal(
     if (s4h.k < 10 && s4h.k < s4h.d) confidence -= 10;
   }
 
-  // 1H cheeky penalty if against 4H structure
-  if (entryTimeframe === "1H" && primaryAdx === adx1h) {
+  if (signalSource === "1H_CHEEKY") {
     if (entryBias === "LONG" && structure4h === "DOWNTREND") confidence -= 15;
     if (entryBias === "SHORT" && structure4h === "UPTREND") confidence -= 15;
   }
@@ -544,7 +527,6 @@ export function generateSignal(
   const tlInfo = breakLine 
     ? `TL(${breakLine.touches}touches,${breakLine.type},slope:${round(breakLine.slope,4)})` 
     : "NO_TL";
-  const signalSource = primaryAdx === adx4h ? "4H_PRIMARY" : "1H_CHEEKY";
 
   return {
     symbol,
