@@ -1,43 +1,51 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
+
+const STORAGE_KEY = "cx_signals_cache";
 
 export default function Home() {
-  const [signals, setSignals] = useState<any[]>([]);
+  // Load from localStorage on mount, fallback to []
+  const [signals, setSignals] = useState<any[]>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const cached = localStorage.getItem(STORAGE_KEY);
+        return cached ? JSON.parse(cached) : [];
+      } catch { return []; }
+    }
+    return [];
+  });
+  
   const [mounted, setMounted] = useState(false);
   const [loading, setLoading] = useState(true);
-  const prevSignals = useRef<any[]>([]);
+  const [lastFetch, setLastFetch] = useState<string | null>(null);
 
-  async function load() {
-    // Don't clear signals while loading — keep stale data visible
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await fetch("/api/signals", { cache: "no-store" });
       const data = await res.json();
       const newSignals = data.signals || [];
       
-      // Only update if we actually got data
       if (newSignals.length > 0) {
         setSignals(newSignals);
-        prevSignals.current = newSignals;
+        setLastFetch(data.updatedAt || new Date().toISOString());
+        // Persist to localStorage
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(newSignals));
       }
     } catch (err) {
       console.error("[LOAD ERROR]", err);
-      // On error, keep previous signals — don't blank the UI
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     setMounted(true);
-    load(); // Initial load
+    load();
     const t = setInterval(load, 60000);
     return () => clearInterval(t);
-  }, []);
-
-  // Use previous signals as fallback if current is empty
-  const displaySignals = signals.length > 0 ? signals : prevSignals.current;
+  }, [load]);
 
   const statusColor = (state: string) => {
     if (state === "PRIMARY") return "border-emerald-500";
@@ -70,32 +78,30 @@ export default function Home() {
     return "bg-neutral-600";
   };
 
+  const hasSignals = signals.length > 0;
+
   return (
     <main className="min-h-screen bg-black text-white px-4 sm:px-6 lg:px-10 py-8">
       {/* HEADER */}
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">CX Switch</h1>
         <div className="flex items-center gap-3">
-          {loading && displaySignals.length > 0 && (
+          {loading && hasSignals && (
             <span className="text-xs text-neutral-500 animate-pulse">● updating</span>
           )}
           <span className="text-xs text-neutral-500">
-            {displaySignals.length} pairs · {displaySignals.filter(s => s.state !== "WAIT").length} active
+            {signals.length} pairs · {signals.filter(s => s.state !== "WAIT").length} active
+            {lastFetch && ` · ${new Date(lastFetch).toLocaleTimeString()}`}
           </span>
         </div>
       </div>
 
       {/* GRID */}
       {!mounted ? (
-        <div className="text-neutral-500 text-center py-20">Loading signals...</div>
-      ) : displaySignals.length === 0 ? (
-        <div className="text-neutral-500 text-center py-20">
-          No signals yet. Waiting for cron...
-          <div className="text-xs text-neutral-600 mt-2">Check back in a few minutes</div>
-        </div>
-      ) : (
+        <div className="text-neutral-500 text-center py-20">Loading...</div>
+      ) : hasSignals ? (
         <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 transition-opacity duration-300 ${loading ? 'opacity-70' : 'opacity-100'}`}>
-          {displaySignals.map((s) => {
+          {signals.map((s) => {
             const tier = tierBadge(s.state);
             const isWait = s.state === "WAIT";
             
@@ -109,16 +115,13 @@ export default function Home() {
                 {/* TOP */}
                 <div className="flex justify-between items-center">
                   <div className="flex items-center gap-2">
-                    <h2 className="text-xl font-bold">
-                      {s.symbol}
-                    </h2>
+                    <h2 className="text-xl font-bold">{s.symbol}</h2>
                     {!isWait && (
                       <span className={`text-[10px] px-1.5 py-0.5 rounded border ${tier.color}`}>
                         {tier.label}
                       </span>
                     )}
                   </div>
-
                   <span className="text-xs px-2 py-1 rounded bg-neutral-800 text-neutral-300">
                     {s.state}
                   </span>
@@ -130,7 +133,6 @@ export default function Home() {
 
                 {/* CORE METRICS */}
                 <div className="mt-4 space-y-1.5 text-sm text-neutral-300">
-
                   <div className="flex justify-between">
                     <span>Bias</span>
                     <span className={`font-medium ${s.bias === "LONG" ? "text-emerald-400" : s.bias === "SHORT" ? "text-rose-400" : "text-neutral-400"}`}>
@@ -152,9 +154,7 @@ export default function Home() {
 
                   <div className="flex justify-between">
                     <span>Stoch K/D</span>
-                    <span className="text-white">
-                      {s.stochK} / {s.stochD}
-                    </span>
+                    <span className="text-white">{s.stochK} / {s.stochD}</span>
                   </div>
 
                   <div className="flex justify-between">
@@ -176,7 +176,6 @@ export default function Home() {
                     <span>READINESS</span>
                     <span>{readiness(s.confidence)}%</span>
                   </div>
-
                   <div className="w-full bg-neutral-800 h-1.5 rounded mt-2">
                     <div
                       className={`h-1.5 rounded ${barColor(s.state)}`}
@@ -188,29 +187,24 @@ export default function Home() {
                 {/* TRADE DETAILS */}
                 {!isWait && (
                   <div className="mt-5 border-t border-neutral-700 pt-4 space-y-1.5 text-sm">
-
                     <div className="flex justify-between">
                       <span className="text-neutral-400">Entry</span>
                       <span className="text-white font-mono">${s.price}</span>
                     </div>
-
                     <div className="flex justify-between">
                       <span className="text-neutral-400">SL</span>
                       <span className="text-rose-400 font-mono">{s.stopLoss ?? "-"}</span>
                     </div>
-
                     <div className="flex justify-between">
                       <span className="text-neutral-400">TP</span>
                       <span className="text-emerald-400 font-mono">{s.takeProfit ?? "-"}</span>
                     </div>
-
                     <div className="flex justify-between">
                       <span className="text-neutral-400">RR</span>
                       <span className={`font-mono font-bold ${(s.rr ?? 0) >= 2 ? "text-emerald-400" : "text-yellow-400"}`}>
                         {s.rr ?? "-"}
                       </span>
                     </div>
-
                     <div className="flex justify-between">
                       <span className="text-neutral-400">Expected Move</span>
                       <span className="text-white font-mono">{s.expectedMove}%</span>
@@ -225,6 +219,11 @@ export default function Home() {
               </div>
             );
           })}
+        </div>
+      ) : (
+        <div className="text-neutral-500 text-center py-20">
+          No signals yet. Waiting for cron...
+          <div className="text-xs text-neutral-600 mt-2">Last check: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "never"}</div>
         </div>
       )}
     </main>
