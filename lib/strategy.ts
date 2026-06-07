@@ -24,6 +24,10 @@ export interface Signal {
   timestamp: number;
   structure: Structure;
   adx: number;
+  rsi: number;
+  stochK: number;
+  stochD: number;
+  expectedMove: number;
   candles1h: Candle[];
   candles4h: Candle[];
 }
@@ -189,6 +193,39 @@ function calcADX(candles: Candle[], period = 14): number {
   return dx;
 }
 
+function calcRSI(candles: Candle[], period = 14): number {
+  if (candles.length < period + 1) return 50;
+  let gains = 0, losses = 0;
+  for (let i = candles.length - period; i < candles.length; i++) {
+    const change = candles[i].close - candles[i - 1].close;
+    if (change > 0) gains += change;
+    else losses += Math.abs(change);
+  }
+  const avgGain = gains / period;
+  const avgLoss = losses / period;
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
+}
+
+function calcStochastic(candles: Candle[], kPeriod = 14, dPeriod = 3): { k: number; d: number } {
+  if (candles.length < kPeriod + dPeriod) return { k: 50, d: 50 };
+
+  const kValues: number[] = [];
+  for (let i = candles.length - kPeriod - dPeriod + 1; i <= candles.length - kPeriod; i++) {
+    const slice = candles.slice(i, i + kPeriod);
+    const lowest = Math.min(...slice.map(c => c.low));
+    const highest = Math.max(...slice.map(c => c.high));
+    const current = candles[i + kPeriod - 1].close;
+    const k = highest === lowest ? 50 : ((current - lowest) / (highest - lowest)) * 100;
+    kValues.push(k);
+  }
+
+  const k = kValues[kValues.length - 1];
+  const d = kValues.reduce((a, b) => a + b, 0) / kValues.length;
+  return { k, d };
+}
+
 function calcATR(candles: Candle[], period = 14): number {
   if (candles.length < period + 1) return 0;
   let sum = 0;
@@ -260,6 +297,8 @@ export async function generateSignal(
   const price = current1h.close;
   const structure = getStructure(candles4h);
   const adx = calcADX(candles4h, 14);
+  const rsi = calcRSI(candles1h, 14);
+  const stoch = calcStochastic(candles1h, 14, 3);
 
   const highs = swingHighs(candles1h, 3);
   const lows = swingLows(candles1h, 3);
@@ -272,10 +311,9 @@ export async function generateSignal(
   for (const line of resistance) {
     if (isTrendlineExpired(line, candles1h.length - 1)) continue;
     const linePrice = line.slope * (candles1h.length - 1) + line.intercept;
-    const prevPrice = line.slope * (candles1h.length - 2) + line.intercept;
     const prevCandle = candles1h[candles1h.length - 2];
 
-    if (prevCandle.high > prevPrice && current1h.close < linePrice) {
+    if (prevCandle.high > linePrice && current1h.close < linePrice) {
       const { stop, target, rr } = findStopAndTarget(candles1h, "SHORT", price, structure);
       const confidence = calcConfidence("SHORT", structure, adx, rr, line.touches.length, true);
 
@@ -283,10 +321,12 @@ export async function generateSignal(
         const score = confidence * rr;
         if (score > bestScore) {
           bestScore = score;
+          const expectedMove = ((target - price) / price) * 100;
           bestSignal = {
             pair, direction: "SHORT", type: "PRIMARY", confidence, entry: price, stop, target, rr,
-            reason: `BREAKDOWN below resistance (slope:${line.slope.toFixed(4)}, touches:${line.touches.length})`,
-            timestamp: Date.now(), structure, adx, candles1h, candles4h,
+            reason: `BREAKDOWN SHORT | SRC:1H_PRIMARY | TL(${line.touches.length}touches,RESISTANCE,slope:${line.slope.toFixed(4)},age:${candles1h.length - 1 - line.endIdx}bars) | 4H:${structure} 1H:${getStructure(candles1h)} | ADX:${adx.toFixed(1)}`,
+            timestamp: Date.now(), structure, adx, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
+            candles1h, candles4h,
           };
         }
       }
@@ -306,10 +346,12 @@ export async function generateSignal(
         const score = confidence * rr;
         if (score > bestScore) {
           bestScore = score;
+          const expectedMove = ((target - price) / price) * 100;
           bestSignal = {
             pair, direction: "LONG", type: "PRIMARY", confidence, entry: price, stop, target, rr,
-            reason: `BREAKUP above support (slope:${line.slope.toFixed(4)}, touches:${line.touches.length})`,
-            timestamp: Date.now(), structure, adx, candles1h, candles4h,
+            reason: `BREAKUP LONG | SRC:1H_PRIMARY | TL(${line.touches.length}touches,SUPPORT,slope:${line.slope.toFixed(4)},age:${candles1h.length - 1 - line.endIdx}bars) | 4H:${structure} 1H:${getStructure(candles1h)} | ADX:${adx.toFixed(1)}`,
+            timestamp: Date.now(), structure, adx, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
+            candles1h, candles4h,
           };
         }
       }
@@ -324,20 +366,24 @@ export async function generateSignal(
       const { stop, target, rr } = findStopAndTarget(candles1h, "SHORT", price, structure);
       const confidence = calcConfidence("SHORT", structure, adx, rr, 0, false);
       if (confidence >= 50 && rr >= 1.5) {
+        const expectedMove = ((price - target) / price) * 100;
         bestSignal = {
           pair, direction: "SHORT", type: "CHEEKY", confidence, entry: price, stop, target, rr,
-          reason: `CHEEKY SHORT at range high (range: ${rangeLow.toFixed(2)}-${rangeHigh.toFixed(2)})`,
-          timestamp: Date.now(), structure, adx, candles1h, candles4h,
+          reason: `CHEEKY SHORT | SRC:RANGE_EXTREME | range:${rangeLow.toFixed(2)}-${rangeHigh.toFixed(2)} | 4H:RANGE 1H:${getStructure(candles1h)} | ADX:${adx.toFixed(1)}`,
+          timestamp: Date.now(), structure, adx, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
+          candles1h, candles4h,
         };
       }
     } else if (price < rangeLow + (rangeHigh - rangeLow) * 0.1) {
       const { stop, target, rr } = findStopAndTarget(candles1h, "LONG", price, structure);
       const confidence = calcConfidence("LONG", structure, adx, rr, 0, false);
       if (confidence >= 50 && rr >= 1.5) {
+        const expectedMove = ((target - price) / price) * 100;
         bestSignal = {
           pair, direction: "LONG", type: "CHEEKY", confidence, entry: price, stop, target, rr,
-          reason: `CHEEKY LONG at range low (range: ${rangeLow.toFixed(2)}-${rangeHigh.toFixed(2)})`,
-          timestamp: Date.now(), structure, adx, candles1h, candles4h,
+          reason: `CHEEKY LONG | SRC:RANGE_EXTREME | range:${rangeLow.toFixed(2)}-${rangeHigh.toFixed(2)} | 4H:RANGE 1H:${getStructure(candles1h)} | ADX:${adx.toFixed(1)}`,
+          timestamp: Date.now(), structure, adx, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
+          candles1h, candles4h,
         };
       }
     }
