@@ -34,8 +34,17 @@ function isThrottled(signal: any): boolean {
 }
 
 export async function GET(request: Request) {
+  // Check auth: header OR query param (Vercel cron uses query param)
+  const url = new URL(request.url);
+  const querySecret = url.searchParams.get("secret");
   const authHeader = request.headers.get("authorization");
-  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+
+  const isAuthorized = 
+    !process.env.CRON_SECRET || 
+    querySecret === process.env.CRON_SECRET ||
+    authHeader === `Bearer ${process.env.CRON_SECRET}`;
+
+  if (!isAuthorized) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -44,8 +53,8 @@ export async function GET(request: Request) {
 
   for (const pair of PAIRS) {
     try {
-      const candles1h = await getCandles(pair, 60);   // 60 = 1h in minutes
-      const candles4h = await getCandles(pair, 240);    // 240 = 4h in minutes
+      const candles1h = await getCandles(pair, 60);
+      const candles4h = await getCandles(pair, 240);
 
       if (!candles1h || !candles4h || candles1h.length < 50 || candles4h.length < 50) {
         console.warn(`Insufficient data for ${pair}`);
