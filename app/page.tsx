@@ -46,12 +46,10 @@ export default function Dashboard() {
         const marketMap: Record<string, MarketData> = {};
         let latestTimestamp = 0;
 
-        // Process market data (always present)
         for (const md of data.marketData || []) {
           marketMap[md.pair] = md;
         }
 
-        // Process signals (only when trade exists)
         for (const pair of PAIRS) {
           const signal = data.signals?.find((s: Signal) => s.pair === pair);
           signalMap[pair] = signal || null;
@@ -127,7 +125,6 @@ export default function Dashboard() {
                     : "border-gray-600 bg-gray-800"
                 }`}
               >
-                {/* Header */}
                 <div className="flex justify-between items-start mb-4">
                   <div>
                     <h2 className="text-xl font-bold">{pair}/USD</h2>
@@ -148,7 +145,6 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                {/* Market Data — always shown */}
                 {market && (
                   <div className="grid grid-cols-2 gap-2 mb-4 p-3 bg-gray-900/50 rounded">
                     <div className="flex justify-between">
@@ -170,7 +166,6 @@ export default function Dashboard() {
                   </div>
                 )}
 
-                {/* Trade Signal — only when active */}
                 {hasSignal ? (
                   <div className="space-y-2 border-t border-gray-700 pt-4">
                     <div className="flex justify-between">
@@ -201,8 +196,8 @@ export default function Dashboard() {
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-400">Expected Move</span>
-                      <span className={`font-bold ${signal.expectedMove >= 0 ? "text-green-400" : "text-red-400"}`}>
-                        {signal.expectedMove >= 0 ? "+" : ""}{signal.expectedMove.toFixed(2)}%
+                      <span className={`font-bold ${signal.direction === "LONG" ? "text-green-400" : "text-red-400"}`}>
+                        {signal.direction === "LONG" ? "+" : "-"}{Math.abs(signal.expectedMove).toFixed(2)}%
                       </span>
                     </div>
                     <div className="mt-3 pt-3 border-t border-gray-700">
@@ -230,6 +225,8 @@ export default function Dashboard() {
             <li>• Cron runs every hour — market data always displayed</li>
             <li>• Trade signals appear only on valid trendline breaks</li>
             <li>• PRIMARY: 4h cooldown | CHEEKY: 8h cooldown</li>
+            <li>• Anti-whipsaw: opposite direction blocked for 2h</li>
+            <li>• Trendlines need 10+ bars age for PRIMARY signals</li>
             <li>• Need 60%+ confidence and 1.5+ R:R</li>
           </ul>
         </div>
