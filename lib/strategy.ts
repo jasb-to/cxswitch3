@@ -167,9 +167,10 @@ interface Trendline {
   endIdx: number;
   touches: number;
   type: "RESISTANCE" | "SUPPORT";
+  createdAt: number; // candle index when line was first fitted
 }
 
-function fitTrendline(points: { value: number; idx: number }[]): Trendline | null {
+function fitTrendline(points: { value: number; idx: number }[], createdAt: number): Trendline | null {
   if (points.length < 2) return null;
   const n = points.length;
   let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
@@ -188,7 +189,8 @@ function fitTrendline(points: { value: number; idx: number }[]): Trendline | nul
     startIdx: points[0].idx,
     endIdx: points[n - 1].idx,
     touches: n,
-    type: slope > 0 ? "SUPPORT" : "RESISTANCE"
+    type: slope > 0 ? "SUPPORT" : "RESISTANCE",
+    createdAt
   };
 }
 
@@ -196,18 +198,18 @@ function getTrendlines(candles: Candle[], isHighs: boolean, minTouches = 2, maxL
   const { highs, lows } = getSwings(candles, 2);
   const points = isHighs ? highs : lows;
   if (points.length < minTouches) return [];
-  
+
   const recentPoints = points.filter(p => p.idx >= candles.length - maxLookbackCandles);
   if (recentPoints.length < minTouches) return [];
-  
+
   const lines: Trendline[] = [];
-  
+
   for (let i = 0; i < recentPoints.length - 1; i++) {
     for (let j = i + 1; j < recentPoints.length; j++) {
       const subset = recentPoints.slice(i, j + 1);
-      const line = fitTrendline(subset);
+      const line = fitTrendline(subset, candles.length - maxLookbackCandles);
       if (!line) continue;
-      
+
       let touches = 0;
       for (const p of points) {
         const expected = line.slope * p.idx + line.intercept;
@@ -215,13 +217,13 @@ function getTrendlines(candles: Candle[], isHighs: boolean, minTouches = 2, maxL
         const tolerance = expected * 0.003;
         if (Math.abs(actual - expected) <= tolerance) touches++;
       }
-      
+
       if (touches >= minTouches) {
         lines.push({ ...line, touches });
       }
     }
   }
-  
+
   const unique: Trendline[] = [];
   for (const line of lines) {
     const isDup = unique.some(u => 
@@ -230,7 +232,7 @@ function getTrendlines(candles: Candle[], isHighs: boolean, minTouches = 2, maxL
     );
     if (!isDup) unique.push(line);
   }
-  
+
   return unique.sort((a, b) => b.touches - a.touches || b.endIdx - a.endIdx);
 }
 
@@ -246,7 +248,7 @@ function isTrendlineBroken(
 ): { broken: boolean; breakPrice: number; breakCandle: number } {
   const lastIdx = candles.length - 1;
   const lineValue = getActiveTrendlineValue(line, lastIdx);
-  
+
   for (let i = 0; i <= confirmCandles && lastIdx - i >= 0; i++) {
     const c = candles[lastIdx - i];
     if (direction === "ABOVE" && c.close > lineValue * 1.001) {
@@ -257,6 +259,67 @@ function isTrendlineBroken(
     }
   }
   return { broken: false, breakPrice: 0, breakCandle: -1 };
+}
+
+function isTrendlineExpired(line: Trendline, currentCandleCount: number, maxAgeCandles = 80): boolean {
+  // Trendline expires if it was created too long ago
+  const age = currentCandleCount - line.createdAt;
+  return age > maxAgeCandles;
+}
+
+/* ---------------- SIGNAL DEDUPLICATION (prevent churn) ---------------- */
+interface ActiveSignal {
+  symbol: Symbol;
+  setup: SetupType;
+  bias: "LONG" | "SHORT";
+  trendlineSlope: number;
+  trendlineTouches: number;
+  entryPrice: number;
+  timestamp: number;
+}
+
+const activeSignals: Map<string, ActiveSignal> = new Map();
+
+function getSignalKey(symbol: Symbol, setup: SetupType, bias: string, slope: number): string {
+  return `${symbol}:${setup}:${bias}:slope${round(slope, 2)}`;
+}
+
+function isChurn(symbol: Symbol, setup: SetupType, bias: "LONG" | "SHORT", line: Trendline | null, price: number): boolean {
+  if (!line) return false;
+
+  const key = getSignalKey(symbol, setup, bias, line.slope);
+  const existing = activeSignals.get(key);
+
+  if (!existing) return false;
+
+  const priceMove = Math.abs(price - existing.entryPrice) / existing.entryPrice;
+  const timeSince = Date.now() - existing.timestamp;
+  const minTimeBetween = 4 * 60 * 60 * 1000; // 4 hours minimum
+
+  if (timeSince < minTimeBetween && priceMove < 0.02) {
+    return true;
+  }
+
+  return false;
+}
+
+function recordSignal(symbol: Symbol, setup: SetupType, bias: "LONG" | "SHORT", line: Trendline | null, price: number) {
+  if (!line) return;
+  const key = getSignalKey(symbol, setup, bias, line.slope);
+  activeSignals.set(key, {
+    symbol, setup, bias,
+    trendlineSlope: line.slope,
+    trendlineTouches: line.touches,
+    entryPrice: price,
+    timestamp: Date.now()
+  });
+}
+
+function cleanupOldSignals() {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  for (const [key, sig] of activeSignals) {
+    if (sig.timestamp < cutoff) activeSignals.delete(key);
+  }
 }
 
 /* ---------------- CORE ENGINE ---------------- */
@@ -311,10 +374,10 @@ export function generateSignal(
   }
 
   // ========== TRENDLINE DETECTION ==========
-  const resistance4h = getTrendlines(c4h, true, 2, 60);
-  const support4h = getTrendlines(c4h, false, 2, 60);
-  const resistance1h = getTrendlines(c1h, true, 2, 40);
-  const support1h = getTrendlines(c1h, false, 2, 40);
+  const resistance4h = getTrendlines(c4h, true, 2, 60).filter(l => !isTrendlineExpired(l, c4h.length, 80));
+  const support4h = getTrendlines(c4h, false, 2, 60).filter(l => !isTrendlineExpired(l, c4h.length, 80));
+  const resistance1h = getTrendlines(c1h, true, 2, 40).filter(l => !isTrendlineExpired(l, c1h.length, 60));
+  const support1h = getTrendlines(c1h, false, 2, 40).filter(l => !isTrendlineExpired(l, c1h.length, 60));
 
   // ========== 4H PRIMARY: TRENDLINE BREAK ==========
   let setup: SetupType = "NONE";
@@ -417,17 +480,17 @@ export function generateSignal(
   if (setup === "NONE") {
     const trend4h = structure4h === "UPTREND" ? "BULLISH" : structure4h === "DOWNTREND" ? "BEARISH" : "RANGING";
     const adxDesc = adx4h > 25 ? "STRONG" : adx4h > 15 ? "MODERATE" : "WEAK";
-    
+
     const has4hRes = resistance4h.length > 0;
     const has4hSup = support4h.length > 0;
     const has1hRes = resistance1h.length > 0;
     const has1hSup = support1h.length > 0;
-    
+
     const near4hRes = has4hRes ? getActiveTrendlineValue(resistance4h[0], c4h.length - 1) : 0;
     const near4hSup = has4hSup ? getActiveTrendlineValue(support4h[0], c4h.length - 1) : 0;
     const distToRes = has4hRes ? Math.abs(price4h - near4hRes) / price4h * 100 : 999;
     const distToSup = has4hSup ? Math.abs(price4h - near4hSup) / price4h * 100 : 999;
-    
+
     let waitReason = `WAIT | 4H:${trend4h}(${adxDesc})`;
     if (distToRes < 1.5) waitReason += ` | NEAR 4H RES ${round(near4hRes)}`;
     if (distToSup < 1.5) waitReason += ` | NEAR 4H SUP ${round(near4hSup)}`;
@@ -446,29 +509,51 @@ export function generateSignal(
     };
   }
 
+  // ========== ANTI-CHURN CHECK ==========
+  const priceForSizing = entryTimeframe === "1H" ? price1h : price4h;
+
+  if (isChurn(symbol, setup, entryBias, breakLine, priceForSizing)) {
+    return {
+      symbol, price: round(price4h), state: "WAIT", setup: "NONE", structure: structure4h,
+      bias: entryBias, confidence: 0, adx: round(adx4h), atr: round(a4h, 2),
+      stochK: round(s4h.k), stochD: round(s4h.d), rsi: round(r4h),
+      reason: `WAIT | SAME TRENDLINE ACTIVE (slope:${breakLine ? round(breakLine.slope, 2) : "N/A"}) — NO CHURN`,
+      stopLoss: null, takeProfit: null, rr: null, expectedMove: 0,
+      updatedAt: now, entryTimeframe: "NONE",
+      higherTimeframeStoch: `4H:${round(s4h.k)}/${round(s4h.d)} | 1H:${round(s1h.k)}/${round(s1h.d)}`
+    };
+  }
+
+  // Record this signal to prevent future churn
+  recordSignal(symbol, setup, entryBias, breakLine, priceForSizing);
+  cleanupOldSignals();
+
   // ========== STATE ASSIGNMENT ==========
-  // 4H breaks = PRIMARY, 1H cheeky = CHEEKY
   const state: SignalState = signalSource === "4H_PRIMARY" ? "PRIMARY" : "CHEEKY";
 
-  // ========== SIZING & LEVELS ==========
-  const priceForSizing = entryTimeframe === "1H" ? price1h : price4h;
+  // ========== ADAPTIVE SIZING FOR RANGE MARKETS ==========
   const atrForSizing = entryTimeframe === "1H" ? a1h : a4h;
   const atrPct = atrForSizing / priceForSizing;
 
-  const atrMultiplier = setup === "BREAKUP" || setup === "BREAKDOWN" ? 2.5 : 2.0;
-  const expectedMove = Math.max(0.015, Math.min(0.06, atrPct * atrMultiplier * 1.5));
+  const isRanging = structure4h === "RANGE";
+  const adxExpansion = primaryAdx > 50 ? 1.5 : 1.0;
+  const rangePenalty = isRanging ? 0.7 : 1.0;
+  const atrMultiplier = 2.5;
+
+  // Wider stops in high-ADX range, tighter targets
+  const expectedMove = Math.max(0.02, Math.min(0.08, atrPct * atrMultiplier * 1.5 * adxExpansion * rangePenalty));
 
   const minSlPct = 0.005;
   const maxSlPct = 0.025;
 
   let sl: number;
   if (entryBias === "LONG") {
-    const atrSl = priceForSizing * (1 - Math.max(minSlPct, Math.min(maxSlPct, expectedMove * 0.4)));
+    const atrSl = priceForSizing * (1 - Math.max(minSlPct, Math.min(maxSlPct, expectedMove * 0.45)));
     const trendlineSl = breakLine ? getActiveTrendlineValue(breakLine, c1h.length - 1) * 0.997 : atrSl;
     sl = Math.max(atrSl, trendlineSl);
     if (sl >= priceForSizing) sl = atrSl;
   } else {
-    const atrSl = priceForSizing * (1 + Math.max(minSlPct, Math.min(maxSlPct, expectedMove * 0.4)));
+    const atrSl = priceForSizing * (1 + Math.max(minSlPct, Math.min(maxSlPct, expectedMove * 0.45)));
     const trendlineSl = breakLine ? getActiveTrendlineValue(breakLine, c1h.length - 1) * 1.003 : atrSl;
     sl = Math.min(atrSl, trendlineSl);
     if (sl <= priceForSizing) sl = atrSl;
@@ -480,11 +565,8 @@ export function generateSignal(
   // ========== CONFIDENCE ==========
   let confidence = 50;
 
-  if (signalSource === "4H_PRIMARY") {
-    confidence += 25;
-  } else {
-    confidence += 10;
-  }
+  if (signalSource === "4H_PRIMARY") confidence += 25;
+  else confidence += 10;
 
   if (setup === "BREAKUP" || setup === "BREAKDOWN") confidence += 10;
 
@@ -525,7 +607,7 @@ export function generateSignal(
 
   // ========== REASON STRING ==========
   const tlInfo = breakLine 
-    ? `TL(${breakLine.touches}touches,${breakLine.type},slope:${round(breakLine.slope,4)})` 
+    ? `TL(${breakLine.touches}touches,${breakLine.type},slope:${round(breakLine.slope,4)},age:${c4h.length - breakLine.createdAt}bars)` 
     : "NO_TL";
 
   return {
