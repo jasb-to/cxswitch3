@@ -8,6 +8,7 @@ const PAIRS = ["BTC", "ETH", "SOL"] as const;
 
 const lastAlertTime = new Map<string, number>();
 const lastSignalHash = new Map<string, string>();
+const lastDirection = new Map<string, Direction>(); // NEW: track last direction per pair
 
 function hashSignal(signal: any): string {
   if (!signal || !signal.reason) return "invalid";
@@ -26,6 +27,19 @@ function isThrottled(signal: any): boolean {
   if (lastHash === hash && lastTime && now - lastTime < cooldown) return true;
   lastSignalHash.set(key, hash);
   lastAlertTime.set(key, now);
+  return false;
+}
+
+function isWhipsaw(signal: any): boolean {
+  // NEW: Block opposite direction within 2 hours
+  const key = signal?.pair;
+  if (!key) return false;
+  const lastDir = lastDirection.get(key);
+  if (!lastDir) return false;
+  if (lastDir !== signal.direction) {
+    console.log(`[WHIPSAW] ${key}: last was ${lastDir}, now ${signal.direction} — BLOCKED`);
+    return true;
+  }
   return false;
 }
 
@@ -87,22 +101,18 @@ export async function GET(request: Request) {
 
       const result = await generateSignal(pair, candles1h, candles4h);
 
-      // Defensive: handle both old return shape (Signal | null) and new ({ signal, market })
       let signal: any = null;
       let market: any = null;
 
       if (result && typeof result === "object") {
         if ("signal" in result && "market" in result) {
-          // New shape: { signal, market }
           signal = result.signal;
           market = result.market;
         } else if ("pair" in result) {
-          // Old shape: Signal object directly (or null)
           signal = result;
         }
       }
 
-      // Always save market data if available
       if (market) {
         marketDataList.push(market);
       }
@@ -115,6 +125,13 @@ export async function GET(request: Request) {
 
       console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} conf=${signal.confidence}%`);
       signals.push(signal);
+
+      // NEW: Check whipsaw before throttle
+      if (isWhipsaw(signal)) {
+        console.log(`[ALERT] ${pair} — BLOCKED (whipsaw protection)`);
+        alerts.push({ pair, status: "whipsaw_blocked", direction: signal.direction });
+        continue;
+      }
 
       if (!isThrottled(signal)) {
         console.log(`[ALERT] ${pair} — sending alert...`);
@@ -142,6 +159,7 @@ export async function GET(request: Request) {
         try {
           await sendAlert(alertPayload);
           console.log(`[ALERT] ${pair} — SENT`);
+          lastDirection.set(pair, signal.direction); // NEW: record direction
           alerts.push({ pair, status: "sent" });
         } catch (alertErr) {
           console.error(`[ALERT] ${pair} — FAILED:`, alertErr);
