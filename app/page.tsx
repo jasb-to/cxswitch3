@@ -1,121 +1,112 @@
 import { NextResponse } from "next/server";
 import { getCandles, getCurrentPrice } from "@/lib/kraken";
-import { generateSignal } from "@lib/strategy";
+import { generateSignal } from "@/lib/strategy";
 import { setSignals } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
-export const runtime = "nodejs";
+const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD"];
 
-// Throttle config — adaptive by signal quality
-const PRIMARY_COOLDOWN_MS = 4 * 60 * 60 * 1000;  // 4 hours for primary
-const CHEEKY_COOLDOWN_MS = 8 * 60 * 60 * 1000;   // 8 hours for cheeky
+// Module-level throttle state (persists on warm starts)
+const lastAlertTime = new Map<string, number>();
+const lastSignalHash = new Map<string, string>();
 
-const lastAlertTime: Record<string, number> = {};
-const lastSignalHash: Record<string, string> = {};
-
-function hashSignal(s: any): string {
-  // Hash includes trendline slope to catch same-line re-entries
-  const slopeMatch = s.reason?.match(/slope:([\d.-]+)/);
-  const slope = slopeMatch ? slopeMatch[1] : "no-tl";
-  return `${s.symbol}:${s.setup}:${s.bias}:${s.state}:${slope}`;
+function hashSignal(signal: any): string {
+  // Hash includes pair, direction, type, and slope from reason
+  const slopeMatch = signal.reason.match(/slope:([-\d.]+)/);
+  const slope = slopeMatch ? slopeMatch[1] : "none";
+  return `${signal.pair}:${signal.direction}:${signal.type}:slope${slope}`;
 }
 
-function shouldThrottle(symbol: string, signal: any): { throttled: boolean; reason: string } {
+function isThrottled(signal: any): boolean {
+  const hash = hashSignal(signal);
+  const key = signal.pair;
   const now = Date.now();
-  const lastTime = lastAlertTime[symbol];
-  const lastHash = lastSignalHash[symbol];
-  const currentHash = hashSignal(signal);
-  const isSameHash = lastHash === currentHash;
-  const isPrimary = signal.state === "PRIMARY";
-  const cooldown = isPrimary ? PRIMARY_COOLDOWN_MS : CHEEKY_COOLDOWN_MS;
+  const cooldown = signal.type === "PRIMARY" ? 4 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000; // 4h / 8h
 
-  // Different setup = always allow
-  if (!isSameHash) {
-    return { throttled: false, reason: "NEW_SETUP" };
+  const lastHash = lastSignalHash.get(key);
+  const lastTime = lastAlertTime.get(key);
+
+  if (lastHash === hash && lastTime && now - lastTime < cooldown) {
+    return true; // Same trendline, still in cooldown
   }
 
-  // Same setup — check cooldown
-  if (lastTime && (now - lastTime) < cooldown) {
-    return { 
-      throttled: true, 
-      reason: `SAME_SETUP (${Math.round((now - lastTime) / 60000)}m ago, need ${Math.round(cooldown / 3600000)}h)` 
-    };
-  }
-
-  return { throttled: false, reason: "COOLDOWN_EXPIRED" };
+  // Update throttle state
+  lastSignalHash.set(key, hash);
+  lastAlertTime.set(key, now);
+  return false;
 }
 
-function recordAlert(symbol: string, signal: any) {
-  lastAlertTime[symbol] = Date.now();
-  lastSignalHash[symbol] = hashSignal(signal);
+export async function GET(request: Request) {
+  // Verify cron secret if configured
+  const authHeader = request.headers.get("authorization");
+  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const signals = [];
+  const alerts = [];
+
+  for (const pair of PAIRS) {
+    try {
+      const candles1h = await getCandles(pair, "1h", 100);
+      const candles4h = await getCandles(pair, "4h", 100);
+
+      if (!candles1h || !candles4h || candles1h.length < 50 || candles4h.length < 50) {
+        console.warn(`Insufficient data for ${pair}`);
+        continue;
+      }
+
+      const signal = await generateSignal(pair, candles1h, candles4h);
+
+      if (signal) {
+        signals.push(signal);
+
+        if (!isThrottled(signal)) {
+          const alertText = formatAlert(signal);
+          await sendAlert(alertText);
+          alerts.push({ pair, type: signal.type, direction: signal.direction, status: "sent" });
+        } else {
+          alerts.push({ 
+            pair, 
+            type: signal.type, 
+            direction: signal.direction, 
+            status: "throttled",
+            reason: "Same trendline within cooldown"
+          });
+        }
+      }
+    } catch (err) {
+      console.error(`Error processing ${pair}:`, err);
+      alerts.push({ pair, error: err instanceof Error ? err.message : "Unknown error" });
+    }
+  }
+
+  // Persist signals to state (for UI)
+  await setSignals(signals);
+
+  return NextResponse.json({
+    success: true,
+    timestamp: new Date().toISOString(),
+    signals: signals.length,
+    alerts: alerts,
+  });
 }
 
-export async function GET() {
-  const symbols = ["BTC", "ETH", "SOL"] as const;
+function formatAlert(signal: any): string {
+  const emoji = signal.direction === "LONG" ? "🟢" : "🔴";
+  const typeEmoji = signal.type === "PRIMARY" ? "⭐" : "👀";
+  return `
+${emoji} ${typeEmoji} <b>${signal.pair} ${signal.direction} ${signal.type}</b>
 
-  const candles1h = await Promise.all(
-    symbols.map(s => getCandles(s, 60))
-  );
+📊 Confidence: <b>${signal.confidence}%</b>
+📈 Entry: <b>${signal.entry.toFixed(2)}</b>
+🛑 Stop: <b>${signal.stop.toFixed(2)}</b> (${((Math.abs(signal.stop - signal.entry) / signal.entry) * 100).toFixed(1)}%)
+🎯 Target: <b>${signal.target.toFixed(2)}</b> (${((Math.abs(signal.target - signal.entry) / signal.entry) * 100).toFixed(1)}%)
+⚖️ R:R: <b>${signal.rr.toFixed(2)}</b>
+📐 Structure: <b>${signal.structure}</b> | ADX: <b>${signal.adx.toFixed(1)}</b>
 
-  const candles4h = await Promise.all(
-    symbols.map(s => getCandles(s, 240))
-  );
+📝 ${signal.reason}
 
-  const prices = await Promise.all(
-    symbols.map(s => getCurrentPrice(s))
-  );
-
-  const signals = symbols.map((s, i) =>
-    generateSignal(s, prices[i], null, candles1h[i], candles4h[i])
-  );
-
-  setSignals(signals);
-
-  console.log("[CRON] SIGNAL SNAPSHOT", new Date().toISOString());
-
-  for (const s of signals) {
-    const tier = s.state === "PRIMARY" ? "PRIMARY" : s.state === "CHEEKY" ? "CHEEKY" : "OTHER";
-    console.log(
-      `[${s.symbol}] ${s.state} | ${s.setup} ${s.bias} | ${tier} | conf:${s.confidence} | rr:${s.rr}`
-    );
-  }
-
-  for (const s of signals) {
-    if (s.state === "WAIT") continue;
-
-    // Hard confidence floors
-    if (s.confidence < 50) {
-      console.log("[SKIP LOW CONF]", s.symbol, s.confidence);
-      continue;
-    }
-
-    const isCheeky = s.state === "CHEEKY";
-    if (isCheeky && s.confidence < 65) {
-      console.log("[SKIP CHEEKY LOW CONF]", s.symbol, s.confidence);
-      continue;
-    }
-
-    const throttle = shouldThrottle(s.symbol, s);
-    if (throttle.throttled) {
-      console.log("[THROTTLED]", s.symbol, throttle.reason);
-      continue;
-    }
-
-    await sendAlert({
-      ...s,
-      timestamp: s.updatedAt,
-    });
-
-    recordAlert(s.symbol, s);
-
-    console.log("[ALERT SENT]", {
-      symbol: s.symbol,
-      tier: isCheeky ? "CHEEKY" : "PRIMARY",
-      confidence: s.confidence,
-      rr: s.rr,
-      reason: throttle.reason,
-    });
-  }
-
-  return NextResponse.json({ ok: true, signals });
+⏰ ${new Date(signal.timestamp).toUTCString()}
+  `.trim();
 }
