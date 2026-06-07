@@ -2,34 +2,60 @@ import { Signal } from "./strategy";
 import fs from "fs";
 import path from "path";
 
-const CACHE_FILE = path.join("/tmp", "cx_signals.json");
+const SIGNALS_CACHE = path.join("/tmp", "cx_signals.json");
+const MARKET_CACHE = path.join("/tmp", "cx_market.json");
 
 let signals: Signal[] = [];
+let marketData: any[] = [];
 
-// Load from file on module init
+// Load signals from file on module init
 try {
-  if (fs.existsSync(CACHE_FILE)) {
-    const raw = fs.readFileSync(CACHE_FILE, "utf-8");
+  if (fs.existsSync(SIGNALS_CACHE)) {
+    const raw = fs.readFileSync(SIGNALS_CACHE, "utf-8");
     const parsed = JSON.parse(raw);
     signals = Array.isArray(parsed) ? parsed : [];
     console.log("[STATE] Loaded", signals.length, "signals from /tmp cache");
   }
 } catch (err) {
-  console.error("[STATE] Cache load failed:", err);
+  console.error("[STATE] Signals cache load failed:", err);
   signals = [];
+}
+
+// Load market data from file on module init
+try {
+  if (fs.existsSync(MARKET_CACHE)) {
+    const raw = fs.readFileSync(MARKET_CACHE, "utf-8");
+    const parsed = JSON.parse(raw);
+    marketData = Array.isArray(parsed) ? parsed : [];
+    console.log("[STATE] Loaded", marketData.length, "market entries from /tmp cache");
+  }
+} catch (err) {
+  console.error("[STATE] Market cache load failed:", err);
+  marketData = [];
 }
 
 export function setSignals(data: Signal[]) {
   signals = Array.isArray(data) ? data : [];
-  
-  // Persist to /tmp
   try {
-    fs.writeFileSync(CACHE_FILE, JSON.stringify(signals));
+    fs.writeFileSync(SIGNALS_CACHE, JSON.stringify(signals));
   } catch (err) {
-    console.error("[STATE] Cache write failed:", err);
+    console.error("[STATE] Signals cache write failed:", err);
   }
 }
 
 export function getSignals() {
   return signals;
+}
+
+export function setMarketData(data: any[]) {
+  marketData = Array.isArray(data) ? data : [];
+  try {
+    fs.writeFileSync(MARKET_CACHE, JSON.stringify(marketData));
+  } catch (err) {
+    console.error("[STATE] Market cache write failed:", err);
+  }
+}
+
+export function getMarketData() {
+  return marketData;
 }
