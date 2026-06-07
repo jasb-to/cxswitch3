@@ -8,7 +8,10 @@ const PAIRS = ["BTC", "ETH", "SOL"] as const;
 
 const lastAlertTime = new Map<string, number>();
 const lastSignalHash = new Map<string, string>();
-const lastDirection = new Map<string, Direction>(); // NEW: track last direction per pair
+const lastDirection = new Map<string, string>();
+
+// FIX #5: Track which direction already fired this run
+let firedThisRun: Record<string, boolean> = {};
 
 function hashSignal(signal: any): string {
   if (!signal || !signal.reason) return "invalid";
@@ -31,13 +34,22 @@ function isThrottled(signal: any): boolean {
 }
 
 function isWhipsaw(signal: any): boolean {
-  // NEW: Block opposite direction within 2 hours
   const key = signal?.pair;
   if (!key) return false;
   const lastDir = lastDirection.get(key);
-  if (!lastDir) return false;
-  if (lastDir !== signal.direction) {
+  if (lastDir && lastDir !== signal.direction) {
     console.log(`[WHIPSAW] ${key}: last was ${lastDir}, now ${signal.direction} — BLOCKED`);
+    return true;
+  }
+  return false;
+}
+
+// FIX #5: Check if another pair already fired same direction this run
+function isCorrelationBlocked(signal: any): boolean {
+  const dir = signal?.direction;
+  if (!dir) return false;
+  if (firedThisRun[dir]) {
+    console.log(`[CORRELATION] ${signal.pair} ${dir} blocked — ${dir} already fired this run`);
     return true;
   }
   return false;
@@ -65,6 +77,9 @@ function roundExpectedMove(n: number): number {
 export async function GET(request: Request) {
   console.log("========================================");
   console.log(`[CRON] Started at ${new Date().toISOString()}`);
+
+  // FIX #5: Reset correlation tracker each run
+  firedThisRun = {};
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -123,13 +138,18 @@ export async function GET(request: Request) {
         continue;
       }
 
-      console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} conf=${signal.confidence}%`);
+      console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} conf=${signal.confidence}% ADX=${signal.adx.toFixed(1)}`);
       signals.push(signal);
 
-      // NEW: Check whipsaw before throttle
       if (isWhipsaw(signal)) {
         console.log(`[ALERT] ${pair} — BLOCKED (whipsaw protection)`);
         alerts.push({ pair, status: "whipsaw_blocked", direction: signal.direction });
+        continue;
+      }
+
+      // FIX #5: Correlation check
+      if (isCorrelationBlocked(signal)) {
+        alerts.push({ pair, status: "correlation_blocked", direction: signal.direction });
         continue;
       }
 
@@ -159,7 +179,8 @@ export async function GET(request: Request) {
         try {
           await sendAlert(alertPayload);
           console.log(`[ALERT] ${pair} — SENT`);
-          lastDirection.set(pair, signal.direction); // NEW: record direction
+          lastDirection.set(pair, signal.direction);
+          firedThisRun[signal.direction] = true; // FIX #5: Mark direction as fired
           alerts.push({ pair, status: "sent" });
         } catch (alertErr) {
           console.error(`[ALERT] ${pair} — FAILED:`, alertErr);
