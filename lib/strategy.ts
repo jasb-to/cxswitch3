@@ -326,6 +326,11 @@ export async function generateSignal(
 
   for (const line of resistance) {
     if (isTrendlineExpired(line, candles1h.length - 1)) continue;
+
+    // NEW: Minimum trendline age for PRIMARY (10 bars = ~10 hours on 1H)
+    const lineAge = candles1h.length - 1 - line.endIdx;
+    if (lineAge < 10) continue;
+
     const linePrice = line.slope * (candles1h.length - 1) + line.intercept;
     const prevCandle = candles1h[candles1h.length - 2];
 
@@ -340,7 +345,7 @@ export async function generateSignal(
           const expectedMove = ((price - target) / price) * 100;
           bestSignal = {
             pair, direction: "SHORT", type: "PRIMARY", confidence, entry: price, stop, target, rr,
-            reason: `BREAKDOWN SHORT | SRC:1H_PRIMARY | TL(${line.touches.length}touches,RESISTANCE,slope:${line.slope.toFixed(4)},age:${candles1h.length - 1 - line.endIdx}bars) | 4H:${structure} 1H:${getStructure(candles1h)} | ADX:${adx.toFixed(1)}`,
+            reason: `BREAKDOWN SHORT | SRC:1H_PRIMARY | TL(${line.touches.length}touches,RESISTANCE,slope:${line.slope.toFixed(4)},age:${lineAge}bars) | 4H:${structure} 1H:${getStructure(candles1h)} | ADX:${adx.toFixed(1)}`,
             timestamp: Date.now(), structure, adx, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
             candles1h, candles4h,
           };
@@ -351,6 +356,11 @@ export async function generateSignal(
 
   for (const line of support) {
     if (isTrendlineExpired(line, candles1h.length - 1)) continue;
+
+    // NEW: Minimum trendline age for PRIMARY
+    const lineAge = candles1h.length - 1 - line.endIdx;
+    if (lineAge < 10) continue;
+
     const linePrice = line.slope * (candles1h.length - 1) + line.intercept;
     const prevCandle = candles1h[candles1h.length - 2];
 
@@ -365,7 +375,7 @@ export async function generateSignal(
           const expectedMove = ((target - price) / price) * 100;
           bestSignal = {
             pair, direction: "LONG", type: "PRIMARY", confidence, entry: price, stop, target, rr,
-            reason: `BREAKUP LONG | SRC:1H_PRIMARY | TL(${line.touches.length}touches,SUPPORT,slope:${line.slope.toFixed(4)},age:${candles1h.length - 1 - line.endIdx}bars) | 4H:${structure} 1H:${getStructure(candles1h)} | ADX:${adx.toFixed(1)}`,
+            reason: `BREAKUP LONG | SRC:1H_PRIMARY | TL(${line.touches.length}touches,SUPPORT,slope:${line.slope.toFixed(4)},age:${lineAge}bars) | 4H:${structure} 1H:${getStructure(candles1h)} | ADX:${adx.toFixed(1)}`,
             timestamp: Date.now(), structure, adx, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
             candles1h, candles4h,
           };
