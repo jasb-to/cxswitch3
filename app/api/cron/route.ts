@@ -4,15 +4,13 @@ import { generateSignal } from "@/lib/strategy";
 import { setSignals } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
-const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD"];
+const PAIRS = ["BTC", "ETH", "SOL"] as const;
 
-// Module-level throttle state (persists on warm starts)
 const lastAlertTime = new Map<string, number>();
 const lastSignalHash = new Map<string, string>();
 
 function hashSignal(signal: any): string {
-  // Hash includes pair, direction, type, and slope from reason
-  const slopeMatch = signal.reason.match(/slope:([-\d.]+)/);
+  const slopeMatch = signal.reason.match(/slope:([\d\.]+)/);
   const slope = slopeMatch ? slopeMatch[1] : "none";
   return `${signal.pair}:${signal.direction}:${signal.type}:slope${slope}`;
 }
@@ -21,23 +19,21 @@ function isThrottled(signal: any): boolean {
   const hash = hashSignal(signal);
   const key = signal.pair;
   const now = Date.now();
-  const cooldown = signal.type === "PRIMARY" ? 4 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000; // 4h / 8h
+  const cooldown = signal.type === "PRIMARY" ? 4 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000;
 
   const lastHash = lastSignalHash.get(key);
   const lastTime = lastAlertTime.get(key);
 
   if (lastHash === hash && lastTime && now - lastTime < cooldown) {
-    return true; // Same trendline, still in cooldown
+    return true;
   }
 
-  // Update throttle state
   lastSignalHash.set(key, hash);
   lastAlertTime.set(key, now);
   return false;
 }
 
 export async function GET(request: Request) {
-  // Verify cron secret if configured
   const authHeader = request.headers.get("authorization");
   if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -48,8 +44,8 @@ export async function GET(request: Request) {
 
   for (const pair of PAIRS) {
     try {
-      const candles1h = await getCandles(pair, "1h", 100);
-      const candles4h = await getCandles(pair, "4h", 100);
+      const candles1h = await getCandles(pair, 60);   // 60 = 1h in minutes
+      const candles4h = await getCandles(pair, 240);    // 240 = 4h in minutes
 
       if (!candles1h || !candles4h || candles1h.length < 50 || candles4h.length < 50) {
         console.warn(`Insufficient data for ${pair}`);
@@ -67,10 +63,7 @@ export async function GET(request: Request) {
           alerts.push({ pair, type: signal.type, direction: signal.direction, status: "sent" });
         } else {
           alerts.push({ 
-            pair, 
-            type: signal.type, 
-            direction: signal.direction, 
-            status: "throttled",
+            pair, type: signal.type, direction: signal.direction, status: "throttled",
             reason: "Same trendline within cooldown"
           });
         }
@@ -81,22 +74,20 @@ export async function GET(request: Request) {
     }
   }
 
-  // Persist signals to state (for UI)
   await setSignals(signals);
 
   return NextResponse.json({
     success: true,
     timestamp: new Date().toISOString(),
     signals: signals.length,
-    alerts: alerts,
+    alerts,
   });
 }
 
 function formatAlert(signal: any): string {
   const emoji = signal.direction === "LONG" ? "🟢" : "🔴";
   const typeEmoji = signal.type === "PRIMARY" ? "⭐" : "👀";
-  return `
-${emoji} ${typeEmoji} <b>${signal.pair} ${signal.direction} ${signal.type}</b>
+  return `${emoji} ${typeEmoji} <b>${signal.pair} ${signal.direction} ${signal.type}</b>
 
 📊 Confidence: <b>${signal.confidence}%</b>
 📈 Entry: <b>${signal.entry.toFixed(2)}</b>
@@ -107,6 +98,5 @@ ${emoji} ${typeEmoji} <b>${signal.pair} ${signal.direction} ${signal.type}</b>
 
 📝 ${signal.reason}
 
-⏰ ${new Date(signal.timestamp).toUTCString()}
-  `.trim();
+⏰ ${new Date(signal.timestamp).toUTCString()}`.trim();
 }
