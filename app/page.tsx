@@ -1,112 +1,173 @@
-import { NextResponse } from "next/server";
-import { getCandles, getCurrentPrice } from "@/lib/kraken";
-import { generateSignal } from "@/lib/strategy";
-import { setSignals } from "@/lib/state";
-import { sendAlert } from "@/lib/telegram";
+"use client";
 
-const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD"];
+import { useEffect, useState } from "react";
 
-// Module-level throttle state (persists on warm starts)
-const lastAlertTime = new Map<string, number>();
-const lastSignalHash = new Map<string, string>();
-
-function hashSignal(signal: any): string {
-  // Hash includes pair, direction, type, and slope from reason
-  const slopeMatch = signal.reason.match(/slope:([-\d.]+)/);
-  const slope = slopeMatch ? slopeMatch[1] : "none";
-  return `${signal.pair}:${signal.direction}:${signal.type}:slope${slope}`;
+interface Signal {
+  pair: string;
+  direction: "LONG" | "SHORT";
+  type: "PRIMARY" | "CHEEKY";
+  confidence: number;
+  entry: number;
+  stop: number;
+  target: number;
+  rr: number;
+  reason: string;
+  timestamp: number;
+  structure: string;
+  adx: number;
 }
 
-function isThrottled(signal: any): boolean {
-  const hash = hashSignal(signal);
-  const key = signal.pair;
-  const now = Date.now();
-  const cooldown = signal.type === "PRIMARY" ? 4 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000; // 4h / 8h
+const PAIRS = ["BTC", "ETH", "SOL"];
+const STALE_THRESHOLD = 70 * 60 * 1000;
 
-  const lastHash = lastSignalHash.get(key);
-  const lastTime = lastAlertTime.get(key);
+export default function Dashboard() {
+  const [signals, setSignals] = useState<Record<string, Signal | null>>({});
+  const [lastUpdate, setLastUpdate] = useState<number>(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  if (lastHash === hash && lastTime && now - lastTime < cooldown) {
-    return true; // Same trendline, still in cooldown
-  }
+  useEffect(() => {
+    async function fetchSignals() {
+      try {
+        const res = await fetch("/api/signals");
+        if (!res.ok) throw new Error("Failed to fetch signals");
+        const data = await res.json();
 
-  // Update throttle state
-  lastSignalHash.set(key, hash);
-  lastAlertTime.set(key, now);
-  return false;
-}
+        const signalMap: Record<string, Signal | null> = {};
+        let latestTimestamp = 0;
 
-export async function GET(request: Request) {
-  // Verify cron secret if configured
-  const authHeader = request.headers.get("authorization");
-  if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const signals = [];
-  const alerts = [];
-
-  for (const pair of PAIRS) {
-    try {
-      const candles1h = await getCandles(pair, "1h", 100);
-      const candles4h = await getCandles(pair, "4h", 100);
-
-      if (!candles1h || !candles4h || candles1h.length < 50 || candles4h.length < 50) {
-        console.warn(`Insufficient data for ${pair}`);
-        continue;
-      }
-
-      const signal = await generateSignal(pair, candles1h, candles4h);
-
-      if (signal) {
-        signals.push(signal);
-
-        if (!isThrottled(signal)) {
-          const alertText = formatAlert(signal);
-          await sendAlert(alertText);
-          alerts.push({ pair, type: signal.type, direction: signal.direction, status: "sent" });
-        } else {
-          alerts.push({ 
-            pair, 
-            type: signal.type, 
-            direction: signal.direction, 
-            status: "throttled",
-            reason: "Same trendline within cooldown"
-          });
+        for (const pair of PAIRS) {
+          const signal = data.signals?.find((s: Signal) => s.pair === pair);
+          signalMap[pair] = signal || null;
+          if (signal?.timestamp > latestTimestamp) {
+            latestTimestamp = signal.timestamp;
+          }
         }
+
+        setSignals(signalMap);
+        setLastUpdate(latestTimestamp);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Unknown error");
+      } finally {
+        setLoading(false);
       }
-    } catch (err) {
-      console.error(`Error processing ${pair}:`, err);
-      alerts.push({ pair, error: err instanceof Error ? err.message : "Unknown error" });
     }
+
+    fetchSignals();
+    const interval = setInterval(fetchSignals, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const now = Date.now();
+  const isStale = now - lastUpdate > STALE_THRESHOLD;
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
+        <div className="text-xl">Loading signals...</div>
+      </div>
+    );
   }
 
-  // Persist signals to state (for UI)
-  await setSignals(signals);
+  if (error) {
+    return (
+      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
+        <div className="text-xl text-red-400">Error: {error}</div>
+      </div>
+    );
+  }
 
-  return NextResponse.json({
-    success: true,
-    timestamp: new Date().toISOString(),
-    signals: signals.length,
-    alerts: alerts,
-  });
-}
+  return (
+    <div className="min-h-screen bg-gray-900 text-white p-6">
+      <div className="max-w-6xl mx-auto">
+        <div className="flex justify-between items-center mb-8">
+          <h1 className="text-3xl font-bold">Trendline Break Signals</h1>
+          <div className="flex items-center gap-4">
+            {isStale && (
+              <span className="px-3 py-1 bg-yellow-600 rounded text-sm">
+                ⚠️ Stale data
+              </span>
+            )}
+            <span className="text-sm text-gray-400">
+              {lastUpdate ? new Date(lastUpdate).toLocaleTimeString() : "No data"}
+            </span>
+          </div>
+        </div>
 
-function formatAlert(signal: any): string {
-  const emoji = signal.direction === "LONG" ? "🟢" : "🔴";
-  const typeEmoji = signal.type === "PRIMARY" ? "⭐" : "👀";
-  return `
-${emoji} ${typeEmoji} <b>${signal.pair} ${signal.direction} ${signal.type}</b>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {PAIRS.map((pair) => {
+            const signal = signals[pair];
+            const pairStale = !signal || (now - signal.timestamp > STALE_THRESHOLD);
 
-📊 Confidence: <b>${signal.confidence}%</b>
-📈 Entry: <b>${signal.entry.toFixed(2)}</b>
-🛑 Stop: <b>${signal.stop.toFixed(2)}</b> (${((Math.abs(signal.stop - signal.entry) / signal.entry) * 100).toFixed(1)}%)
-🎯 Target: <b>${signal.target.toFixed(2)}</b> (${((Math.abs(signal.target - signal.entry) / signal.entry) * 100).toFixed(1)}%)
-⚖️ R:R: <b>${signal.rr.toFixed(2)}</b>
-📐 Structure: <b>${signal.structure}</b> | ADX: <b>${signal.adx.toFixed(1)}</b>
+            return (
+              <div
+                key={pair}
+                className={`rounded-lg p-6 border-2 ${
+                  pairStale
+                    ? "border-gray-600 bg-gray-800 opacity-60"
+                    : signal?.direction === "LONG"
+                    ? "border-green-500 bg-green-900/20"
+                    : "border-red-500 bg-red-900/20"
+                }`}
+              >
+                <div className="flex justify-between items-start mb-4">
+                  <h2 className="text-xl font-bold">{pair}/USD</h2>
+                  {signal ? (
+                    <span className={`px-2 py-1 rounded text-sm font-bold ${
+                      signal.type === "PRIMARY" ? "bg-yellow-500 text-black" : "bg-purple-500 text-white"
+                    }`}>
+                      {signal.type}
+                    </span>
+                  ) : (
+                    <span className="px-2 py-1 rounded text-sm bg-gray-600 text-gray-300">WAIT</span>
+                  )}
+                </div>
 
-📝 ${signal.reason}
-
-⏰ ${new Date(signal.timestamp).toUTCString()}
-  `.trim();
+                {signal && !pairStale ? (
+                  <div className="space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Direction</span>
+                      <span className={`font-bold ${signal.direction === "LONG" ? "text-green-400" : "text-red-400"}`}>
+                        {signal.direction}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Confidence</span>
+                      <span className="font-bold">{signal.confidence}%</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Entry</span>
+                      <span className="font-mono">${signal.entry.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Stop</span>
+                      <span className="font-mono text-red-400">${signal.stop.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Target</span>
+                      <span className="font-mono text-green-400">${signal.target.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">R:R</span>
+                      <span className="font-bold">{signal.rr.toFixed(2)}</span>
+                    </div>
+                    <div className="mt-4 pt-4 border-t border-gray-700">
+                      <p className="text-sm text-gray-300">{signal.reason}</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-center py-8">
+                    <div className="text-4xl mb-2">⏳</div>
+                    <p className="text-gray-400">
+                      {pairStale && signal ? "Signal expired" : "No active signal"}
+                    </p>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
 }
