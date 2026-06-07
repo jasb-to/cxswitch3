@@ -11,8 +11,17 @@ export interface Candle {
   volume: number;
 }
 
-export interface Signal {
+export interface MarketData {
   pair: string;
+  price: number;
+  structure: Structure;
+  adx: number;
+  rsi: number;
+  stochK: number;
+  stochD: number;
+}
+
+export interface Signal extends MarketData {
   direction: Direction;
   type: SignalType;
   confidence: number;
@@ -22,11 +31,6 @@ export interface Signal {
   rr: number;
   reason: string;
   timestamp: number;
-  structure: Structure;
-  adx: number;
-  rsi: number;
-  stochK: number;
-  stochD: number;
   expectedMove: number;
   candles1h: Candle[];
   candles4h: Candle[];
@@ -290,15 +294,27 @@ export async function generateSignal(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[]
-): Promise<Signal | null> {
-  if (candles1h.length < 50 || candles4h.length < 50) return null;
-
+): Promise<{ signal: Signal | null; market: MarketData }> {
   const current1h = candles1h[candles1h.length - 1];
   const price = current1h.close;
   const structure = getStructure(candles4h);
   const adx = calcADX(candles4h, 14);
   const rsi = calcRSI(candles1h, 14);
   const stoch = calcStochastic(candles1h, 14, 3);
+
+  const market: MarketData = {
+    pair,
+    price,
+    structure,
+    adx,
+    rsi,
+    stochK: stoch.k,
+    stochD: stoch.d,
+  };
+
+  if (candles1h.length < 50 || candles4h.length < 50) {
+    return { signal: null, market };
+  }
 
   const highs = swingHighs(candles1h, 3);
   const lows = swingLows(candles1h, 3);
@@ -321,7 +337,7 @@ export async function generateSignal(
         const score = confidence * rr;
         if (score > bestScore) {
           bestScore = score;
-          const expectedMove = ((target - price) / price) * 100;
+          const expectedMove = ((price - target) / price) * 100;
           bestSignal = {
             pair, direction: "SHORT", type: "PRIMARY", confidence, entry: price, stop, target, rr,
             reason: `BREAKDOWN SHORT | SRC:1H_PRIMARY | TL(${line.touches.length}touches,RESISTANCE,slope:${line.slope.toFixed(4)},age:${candles1h.length - 1 - line.endIdx}bars) | 4H:${structure} 1H:${getStructure(candles1h)} | ADX:${adx.toFixed(1)}`,
@@ -389,5 +405,5 @@ export async function generateSignal(
     }
   }
 
-  return bestSignal;
+  return { signal: bestSignal, market };
 }
