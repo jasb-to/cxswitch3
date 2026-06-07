@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCandles, getCurrentPrice } from "@/lib/kraken";
-import { generateSignal } from "@/lib/strategy";
+import { generateSignal } from "@lib/strategy";
 import { setSignals } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
@@ -9,19 +9,15 @@ export const runtime = "nodejs";
 // Throttle config — adaptive by signal quality
 const PRIMARY_COOLDOWN_MS = 4 * 60 * 60 * 1000;  // 4 hours for primary
 const CHEEKY_COOLDOWN_MS = 8 * 60 * 60 * 1000;   // 8 hours for cheeky
-const SAME_HASH_COOLDOWN_MS = 60 * 60 * 1000;    // 1 hour if exact same setup repeats
 
 const lastAlertTime: Record<string, number> = {};
 const lastSignalHash: Record<string, string> = {};
-const lastSignalState: Record<string, { state: string; setup: string; bias: string; timestamp: number }> = {};
 
 function hashSignal(s: any): string {
-  return `${s.setup}:${s.bias}:${s.entryTimeframe}:${s.reason?.includes("slope:") ? s.reason.match(/slope:([\d.-]+)/)?.[1] : "no-tl"}`;
-}
-
-function getCooldown(state: string, isSameHash: boolean): number {
-  if (isSameHash) return SAME_HASH_COOLDOWN_MS;
-  return state === "PRIMARY" ? PRIMARY_COOLDOWN_MS : CHEEKY_COOLDOWN_MS;
+  // Hash includes trendline slope to catch same-line re-entries
+  const slopeMatch = s.reason?.match(/slope:([\d.-]+)/);
+  const slope = slopeMatch ? slopeMatch[1] : "no-tl";
+  return `${s.symbol}:${s.setup}:${s.bias}:${s.state}:${slope}`;
 }
 
 function shouldThrottle(symbol: string, signal: any): { throttled: boolean; reason: string } {
@@ -30,18 +26,19 @@ function shouldThrottle(symbol: string, signal: any): { throttled: boolean; reas
   const lastHash = lastSignalHash[symbol];
   const currentHash = hashSignal(signal);
   const isSameHash = lastHash === currentHash;
+  const isPrimary = signal.state === "PRIMARY";
+  const cooldown = isPrimary ? PRIMARY_COOLDOWN_MS : CHEEKY_COOLDOWN_MS;
 
-  // Always allow if genuinely new setup (different hash)
+  // Different setup = always allow
   if (!isSameHash) {
     return { throttled: false, reason: "NEW_SETUP" };
   }
 
-  // Same hash — check cooldown
-  const cooldown = getCooldown(signal.state, isSameHash);
+  // Same setup — check cooldown
   if (lastTime && (now - lastTime) < cooldown) {
     return { 
       throttled: true, 
-      reason: `SAME_SETUP (${Math.round((now - lastTime) / 60000)}m ago, cooldown ${cooldown / 3600000}h)` 
+      reason: `SAME_SETUP (${Math.round((now - lastTime) / 60000)}m ago, need ${Math.round(cooldown / 3600000)}h)` 
     };
   }
 
@@ -51,12 +48,6 @@ function shouldThrottle(symbol: string, signal: any): { throttled: boolean; reas
 function recordAlert(symbol: string, signal: any) {
   lastAlertTime[symbol] = Date.now();
   lastSignalHash[symbol] = hashSignal(signal);
-  lastSignalState[symbol] = { 
-    state: signal.state, 
-    setup: signal.setup, 
-    bias: signal.bias, 
-    timestamp: Date.now() 
-  };
 }
 
 export async function GET() {
@@ -83,8 +74,7 @@ export async function GET() {
   console.log("[CRON] SIGNAL SNAPSHOT", new Date().toISOString());
 
   for (const s of signals) {
-    const tier = s.reason?.includes("4H_PRIMARY") ? "PRIMARY" :
-                 s.reason?.includes("1H_CHEEKY") ? "CHEEKY" : "OTHER";
+    const tier = s.state === "PRIMARY" ? "PRIMARY" : s.state === "CHEEKY" ? "CHEEKY" : "OTHER";
     console.log(
       `[${s.symbol}] ${s.state} | ${s.setup} ${s.bias} | ${tier} | conf:${s.confidence} | rr:${s.rr}`
     );
@@ -99,7 +89,7 @@ export async function GET() {
       continue;
     }
 
-    const isCheeky = s.reason?.includes("1H_CHEEKY");
+    const isCheeky = s.state === "CHEEKY";
     if (isCheeky && s.confidence < 65) {
       console.log("[SKIP CHEEKY LOW CONF]", s.symbol, s.confidence);
       continue;
@@ -123,7 +113,7 @@ export async function GET() {
       tier: isCheeky ? "CHEEKY" : "PRIMARY",
       confidence: s.confidence,
       rr: s.rr,
-      throttleReason: throttle.reason,
+      reason: throttle.reason,
     });
   }
 
