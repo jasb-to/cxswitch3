@@ -1,40 +1,77 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 
 const STORAGE_KEY = "cx_signals_cache";
+const MAX_STALE_MINUTES = 90; // Don't show signals older than 90 minutes
+
+function isStale(timestamp: string): boolean {
+  const signalTime = new Date(timestamp).getTime();
+  const now = Date.now();
+  const ageMinutes = (now - signalTime) / 60000;
+  return ageMinutes > MAX_STALE_MINUTES;
+}
+
+function getCachedSignals(): any[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const cached = localStorage.getItem(STORAGE_KEY);
+    if (!cached) return [];
+    const parsed = JSON.parse(cached);
+    if (!Array.isArray(parsed)) return [];
+    // Only return cached if not stale
+    const fresh = parsed.filter((s: any) => s.updatedAt && !isStale(s.updatedAt));
+    return fresh;
+  } catch { return []; }
+}
+
+function saveSignals(signals: any[]) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(signals));
+  } catch { /* ignore */ }
+}
 
 export default function Home() {
-  // Load from localStorage on mount, fallback to []
-  const [signals, setSignals] = useState<any[]>(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const cached = localStorage.getItem(STORAGE_KEY);
-        return cached ? JSON.parse(cached) : [];
-      } catch { return []; }
-    }
-    return [];
-  });
-  
+  const [signals, setSignals] = useState<any[]>([]);
   const [mounted, setMounted] = useState(false);
   const [loading, setLoading] = useState(true);
   const [lastFetch, setLastFetch] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const res = await fetch("/api/signals", { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const newSignals = data.signals || [];
-      
+
       if (newSignals.length > 0) {
         setSignals(newSignals);
         setLastFetch(data.updatedAt || new Date().toISOString());
-        // Persist to localStorage
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(newSignals));
+        saveSignals(newSignals);
+      } else {
+        // API returned empty — try cache
+        const cached = getCachedSignals();
+        if (cached.length > 0) {
+          setSignals(cached);
+          setLastFetch("cached fallback");
+        } else {
+          setSignals([]);
+          setLastFetch(null);
+        }
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("[LOAD ERROR]", err);
+      setError(err.message);
+      // On error, use cache
+      const cached = getCachedSignals();
+      if (cached.length > 0) {
+        setSignals(cached);
+        setLastFetch("cached fallback (error)");
+      }
     } finally {
       setLoading(false);
     }
@@ -42,7 +79,13 @@ export default function Home() {
 
   useEffect(() => {
     setMounted(true);
-    load();
+    // On first mount: try cache immediately for instant render, then fetch fresh
+    const cached = getCachedSignals();
+    if (cached.length > 0) {
+      setSignals(cached);
+      setLastFetch("cached (refreshing...)");
+    }
+    load(); // Then fetch fresh
     const t = setInterval(load, 60000);
     return () => clearInterval(t);
   }, [load]);
@@ -79,6 +122,7 @@ export default function Home() {
   };
 
   const hasSignals = signals.length > 0;
+  const allStale = hasSignals && signals.every((s: any) => isStale(s.updatedAt));
 
   return (
     <main className="min-h-screen bg-black text-white px-4 sm:px-6 lg:px-10 py-8">
@@ -89,28 +133,36 @@ export default function Home() {
           {loading && hasSignals && (
             <span className="text-xs text-neutral-500 animate-pulse">● updating</span>
           )}
+          {allStale && (
+            <span className="text-xs text-red-400">⚠ STALE DATA</span>
+          )}
           <span className="text-xs text-neutral-500">
-            {signals.length} pairs · {signals.filter(s => s.state !== "WAIT").length} active
-            {lastFetch && ` · ${new Date(lastFetch).toLocaleTimeString()}`}
+            {signals.length} pairs · {signals.filter((s: any) => s.state !== "WAIT").length} active
+            {lastFetch && ` · ${typeof lastFetch === "string" && lastFetch.includes("T") ? new Date(lastFetch).toLocaleTimeString() : lastFetch}`}
           </span>
         </div>
       </div>
+
+      {error && (
+        <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded text-red-400 text-sm">
+          Error: {error}. Showing cached data if available.
+        </div>
+      )}
 
       {/* GRID */}
       {!mounted ? (
         <div className="text-neutral-500 text-center py-20">Loading...</div>
       ) : hasSignals ? (
         <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 transition-opacity duration-300 ${loading ? 'opacity-70' : 'opacity-100'}`}>
-          {signals.map((s) => {
+          {signals.map((s: any) => {
             const tier = tierBadge(s.state);
             const isWait = s.state === "WAIT";
-            
+            const signalStale = isStale(s.updatedAt);
+
             return (
               <div
                 key={s.symbol}
-                className={`bg-[#111] border-l-4 ${statusColor(
-                  s.state
-                )} rounded-xl p-5 hover:brightness-110 transition`}
+                className={`bg-[#111] border-l-4 ${statusColor(s.state)} rounded-xl p-5 hover:brightness-110 transition ${signalStale ? 'opacity-50' : ''}`}
               >
                 {/* TOP */}
                 <div className="flex justify-between items-center">
@@ -119,6 +171,11 @@ export default function Home() {
                     {!isWait && (
                       <span className={`text-[10px] px-1.5 py-0.5 rounded border ${tier.color}`}>
                         {tier.label}
+                      </span>
+                    )}
+                    {signalStale && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 border-red-500/30">
+                        STALE
                       </span>
                     )}
                   </div>
@@ -139,29 +196,24 @@ export default function Home() {
                       {s.bias}
                     </span>
                   </div>
-
                   <div className="flex justify-between">
                     <span>Confidence</span>
                     <span className={`font-bold ${confidenceColor(s.confidence)}`}>
                       {s.confidence}%
                     </span>
                   </div>
-
                   <div className="flex justify-between">
                     <span>RSI</span>
                     <span className="text-white">{s.rsi}</span>
                   </div>
-
                   <div className="flex justify-between">
                     <span>Stoch K/D</span>
                     <span className="text-white">{s.stochK} / {s.stochD}</span>
                   </div>
-
                   <div className="flex justify-between">
                     <span>ADX</span>
                     <span className="text-white">{s.adx}</span>
                   </div>
-
                   <div className="pt-1">
                     <span className="text-neutral-500 text-xs">Reason</span>
                     <p className="text-white text-xs leading-relaxed mt-0.5 font-mono">
@@ -177,10 +229,7 @@ export default function Home() {
                     <span>{readiness(s.confidence)}%</span>
                   </div>
                   <div className="w-full bg-neutral-800 h-1.5 rounded mt-2">
-                    <div
-                      className={`h-1.5 rounded ${barColor(s.state)}`}
-                      style={{ width: `${readiness(s.confidence)}%` }}
-                    />
+                    <div className={`h-1.5 rounded ${barColor(s.state)}`} style={{ width: `${readiness(s.confidence)}%` }} />
                   </div>
                 </div>
 
@@ -215,6 +264,7 @@ export default function Home() {
                 {/* TIMESTAMP */}
                 <div className="text-xs text-neutral-600 mt-4 text-right">
                   {s.updatedAt}
+                  {signalStale && <span className="text-red-400 ml-2">(stale)</span>}
                 </div>
               </div>
             );
@@ -223,7 +273,9 @@ export default function Home() {
       ) : (
         <div className="text-neutral-500 text-center py-20">
           No signals yet. Waiting for cron...
-          <div className="text-xs text-neutral-600 mt-2">Last check: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "never"}</div>
+          <div className="text-xs text-neutral-600 mt-2">
+            Cron runs hourly. Last check: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "never"}
+          </div>
         </div>
       )}
     </main>
