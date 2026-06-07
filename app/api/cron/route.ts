@@ -10,6 +10,7 @@ const lastAlertTime = new Map<string, number>();
 const lastSignalHash = new Map<string, string>();
 
 function hashSignal(signal: any): string {
+  if (!signal || !signal.reason) return "invalid";
   const slopeMatch = signal.reason.match(/slope:([\d\.]+)/);
   const slope = slopeMatch ? slopeMatch[1] : "none";
   return `${signal.pair}:${signal.direction}:${signal.type}:slope${slope}`;
@@ -17,9 +18,9 @@ function hashSignal(signal: any): string {
 
 function isThrottled(signal: any): boolean {
   const hash = hashSignal(signal);
-  const key = signal.pair;
+  const key = signal?.pair || "unknown";
   const now = Date.now();
-  const cooldown = signal.type === "PRIMARY" ? 4 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000;
+  const cooldown = signal?.type === "PRIMARY" ? 4 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000;
   const lastHash = lastSignalHash.get(key);
   const lastTime = lastAlertTime.get(key);
   if (lastHash === hash && lastTime && now - lastTime < cooldown) return true;
@@ -66,9 +67,9 @@ export async function GET(request: Request) {
   }
   console.log(`[AUTH] PASSED`);
 
-  const signals = [];
-  const marketDataList = [];
-  const alerts = [];
+  const signals: any[] = [];
+  const marketDataList: any[] = [];
+  const alerts: any[] = [];
 
   for (const pair of PAIRS) {
     console.log(`[PAIR] ${pair} — fetching candles...`);
@@ -84,14 +85,31 @@ export async function GET(request: Request) {
         continue;
       }
 
-      const { signal, market } = await generateSignal(pair, candles1h, candles4h);
+      const result = await generateSignal(pair, candles1h, candles4h);
 
-      // Always save market data
-      marketDataList.push(market);
+      // Defensive: handle both old return shape (Signal | null) and new ({ signal, market })
+      let signal: any = null;
+      let market: any = null;
 
-      if (!signal) {
-        console.log(`[PAIR] ${pair} — NO SIGNAL (market: $${market.price}, ${market.structure}, ADX:${market.adx.toFixed(1)})`);
-        alerts.push({ pair, status: "no_signal", market });
+      if (result && typeof result === "object") {
+        if ("signal" in result && "market" in result) {
+          // New shape: { signal, market }
+          signal = result.signal;
+          market = result.market;
+        } else if ("pair" in result) {
+          // Old shape: Signal object directly (or null)
+          signal = result;
+        }
+      }
+
+      // Always save market data if available
+      if (market) {
+        marketDataList.push(market);
+      }
+
+      if (!signal || !signal.pair) {
+        console.log(`[PAIR] ${pair} — NO SIGNAL`);
+        alerts.push({ pair, status: "no_signal" });
         continue;
       }
 
@@ -101,7 +119,6 @@ export async function GET(request: Request) {
       if (!isThrottled(signal)) {
         console.log(`[ALERT] ${pair} — sending alert...`);
 
-        // Round all numbers for clean Telegram output
         const alertPayload = {
           symbol: signal.pair,
           state: signal.type,
@@ -141,8 +158,8 @@ export async function GET(request: Request) {
   }
 
   console.log(`[STATE] Saving ${signals.length} signals, ${marketDataList.length} market data...`);
-  await setSignals(signals);
-  await setMarketData(marketDataList);
+  setSignals(signals);
+  setMarketData(marketDataList);
   console.log(`[CRON] Done. signals=${signals.length}, marketData=${marketDataList.length}`);
   console.log("========================================");
 
