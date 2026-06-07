@@ -174,27 +174,49 @@ function getStructure(candles: Candle[]): Structure {
   return "RANGE";
 }
 
+// FIX #2: True Wilder's ADX with smoothing
 function calcADX(candles: Candle[], period = 14): number {
-  if (candles.length < period + 1) return 0;
-  let trSum = 0, plusDMSum = 0, minusDMSum = 0;
+  if (candles.length < period * 2 + 1) return 0;
 
-  for (let i = 1; i <= period; i++) {
+  const tr: number[] = [];
+  const plusDM: number[] = [];
+  const minusDM: number[] = [];
+
+  for (let i = 1; i < candles.length; i++) {
     const prev = candles[i - 1];
     const curr = candles[i];
-    const tr = Math.max(curr.high - curr.low, Math.abs(curr.high - prev.close), Math.abs(curr.low - prev.close));
-    const plusDM = curr.high - prev.high > prev.low - curr.low ? Math.max(curr.high - prev.high, 0) : 0;
-    const minusDM = prev.low - curr.low > curr.high - prev.high ? Math.max(prev.low - curr.low, 0) : 0;
-    trSum += tr;
-    plusDMSum += plusDM;
-    minusDMSum += minusDM;
+    tr.push(Math.max(curr.high - curr.low, Math.abs(curr.high - prev.close), Math.abs(curr.low - prev.close)));
+    plusDM.push(curr.high - prev.high > prev.low - curr.low ? Math.max(curr.high - prev.high, 0) : 0);
+    minusDM.push(prev.low - curr.low > curr.high - prev.high ? Math.max(prev.low - curr.low, 0) : 0);
   }
 
-  const atr = trSum / period;
-  if (atr === 0) return 0;
-  const plusDI = 100 * (plusDMSum / period) / atr;
-  const minusDI = 100 * (minusDMSum / period) / atr;
-  const dx = Math.abs(plusDI - minusDI) / (plusDI + minusDI) * 100;
-  return dx;
+  // Wilder's smoothing
+  let atr = tr.slice(0, period).reduce((a, b) => a + b, 0);
+  let plusDI_sum = plusDM.slice(0, period).reduce((a, b) => a + b, 0);
+  let minusDI_sum = minusDM.slice(0, period).reduce((a, b) => a + b, 0);
+
+  let dxValues: number[] = [];
+
+  for (let i = period; i < tr.length; i++) {
+    atr = atr - (atr / period) + tr[i];
+    plusDI_sum = plusDI_sum - (plusDI_sum / period) + plusDM[i];
+    minusDI_sum = minusDI_sum - (minusDI_sum / period) + minusDM[i];
+
+    const plusDI = 100 * (plusDI_sum / atr);
+    const minusDI = 100 * (minusDI_sum / atr);
+    const dx = (Math.abs(plusDI - minusDI) / (plusDI + minusDI)) * 100;
+    dxValues.push(dx);
+  }
+
+  if (dxValues.length < period) return 0;
+
+  // Smooth DX into ADX
+  let adx = dxValues.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < dxValues.length; i++) {
+    adx = ((adx * (period - 1)) + dxValues[i]) / period;
+  }
+
+  return adx;
 }
 
 function calcRSI(candles: Candle[], period = 14): number {
@@ -242,19 +264,20 @@ function calcATR(candles: Candle[], period = 14): number {
   return sum / period;
 }
 
+// FIX #1: Wider stops — 2.5× ATR instead of 1.5×
 function findStopAndTarget(candles: Candle[], direction: Direction, entry: number, structure: Structure) {
   const atr = calcATR(candles, 14);
   let stop: number, target: number;
 
   if (direction === "LONG") {
     const lows = swingLows(candles, 3);
-    const recentLow = lows.length > 0 ? lows[lows.length - 1].price : entry - atr * 1.5;
-    stop = Math.min(entry - atr * 1.5, recentLow - atr * 0.3);
+    const recentLow = lows.length > 0 ? lows[lows.length - 1].price : entry - atr * 2.5;
+    stop = Math.min(entry - atr * 2.5, recentLow - atr * 0.5);
     target = entry + (entry - stop) * 2.5;
   } else {
     const highs = swingHighs(candles, 3);
-    const recentHigh = highs.length > 0 ? highs[highs.length - 1].price : entry + atr * 1.5;
-    stop = Math.max(entry + atr * 1.5, recentHigh + atr * 0.3);
+    const recentHigh = highs.length > 0 ? highs[highs.length - 1].price : entry + atr * 2.5;
+    stop = Math.max(entry + atr * 2.5, recentHigh + atr * 0.5);
     target = entry - (stop - entry) * 2.5;
   }
 
@@ -333,12 +356,13 @@ export async function generateSignal(
     const linePrice = line.slope * (candles1h.length - 1) + line.intercept;
     const prevCandle = candles1h[candles1h.length - 2];
 
-    if (prevCandle.high > linePrice && current1h.close < linePrice) {
+    // FIX #4: Candle close confirmation — prev candle must be fully above line
+    if (prevCandle.close > linePrice && current1h.close < linePrice) {
       const { stop, target, rr } = findStopAndTarget(candles1h, "SHORT", price, structure);
       const confidence = calcConfidence("SHORT", structure, adx, rr, line.touches.length, true);
 
-      // PRIMARY requires ADX >= 20 (trend strength)
-      if (confidence >= 60 && rr >= 1.5 && adx >= 20) {
+      // FIX #2: PRIMARY requires ADX > 25 (not 20)
+      if (confidence >= 60 && rr >= 1.5 && adx > 25) {
         const score = confidence * rr;
         if (score > bestScore) {
           bestScore = score;
@@ -363,12 +387,13 @@ export async function generateSignal(
     const linePrice = line.slope * (candles1h.length - 1) + line.intercept;
     const prevCandle = candles1h[candles1h.length - 2];
 
-    if (prevCandle.low < linePrice && current1h.close > linePrice) {
+    // FIX #4: Candle close confirmation
+    if (prevCandle.close < linePrice && current1h.close > linePrice) {
       const { stop, target, rr } = findStopAndTarget(candles1h, "LONG", price, structure);
       const confidence = calcConfidence("LONG", structure, adx, rr, line.touches.length, true);
 
-      // PRIMARY requires ADX >= 20 (trend strength)
-      if (confidence >= 60 && rr >= 1.5 && adx >= 20) {
+      // FIX #2: PRIMARY requires ADX > 25
+      if (confidence >= 60 && rr >= 1.5 && adx > 25) {
         const score = confidence * rr;
         if (score > bestScore) {
           bestScore = score;
