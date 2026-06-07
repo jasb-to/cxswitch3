@@ -26,8 +26,19 @@ interface Signal extends MarketData {
 }
 
 const PAIRS = ["BTC", "ETH", "SOL"];
-const SIGNAL_STALE_MS = 4 * 60 * 60 * 1000; // 4 hours — signals expire
-const MARKET_STALE_MS = 70 * 60 * 1000; // 70 min — market data expires
+const SIGNAL_STALE_MS = 4 * 60 * 60 * 1000;
+const MARKET_STALE_MS = 70 * 60 * 1000;
+
+// FIX #3: Account settings for position sizing
+const ACCOUNT_BALANCE = 700; // Your current balance
+const RISK_PER_TRADE = 0.02; // 2% risk per trade
+
+function calcPositionSize(entry: number, stop: number, direction: "LONG" | "SHORT"): number {
+  const stopDistance = Math.abs(entry - stop) / entry;
+  const riskAmount = ACCOUNT_BALANCE * RISK_PER_TRADE;
+  const positionSize = riskAmount / stopDistance;
+  return Math.round(positionSize);
+}
 
 export default function Dashboard() {
   const [signals, setSignals] = useState<Record<string, Signal | null>>({});
@@ -38,7 +49,6 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [fetchCount, setFetchCount] = useState(0);
 
-  // Keep a ref of the best signals we've seen so UI doesn't flicker to WAIT
   const bestSignalsRef = useRef<Record<string, Signal | null>>({});
 
   useEffect(() => {
@@ -54,7 +64,6 @@ export default function Dashboard() {
         let latestSignalTs = 0;
         let latestMarketTs = 0;
 
-        // Process market data (always update if present)
         for (const md of data.marketData || []) {
           if (md && md.pair) {
             newMarketMap[md.pair] = md;
@@ -62,19 +71,14 @@ export default function Dashboard() {
           }
         }
 
-        // Process signals — merge with cached, don't clear on empty
         for (const pair of PAIRS) {
           const incoming = data.signals?.find((s: Signal) => s.pair === pair);
 
           if (incoming) {
-            // New signal arrived — update
             newSignalMap[pair] = incoming;
             bestSignalsRef.current[pair] = incoming;
-            if (incoming.timestamp > latestSignalTs) {
-              latestSignalTs = incoming.timestamp;
-            }
+            if (incoming.timestamp > latestSignalTs) latestSignalTs = incoming.timestamp;
           } else {
-            // No new signal — check if we have a cached one that's not too old
             const cached = bestSignalsRef.current[pair];
             if (cached && now - cached.timestamp < SIGNAL_STALE_MS) {
               newSignalMap[pair] = cached;
@@ -87,16 +91,12 @@ export default function Dashboard() {
 
         setSignals(newSignalMap);
 
-        // Only update market data if we got fresh data, otherwise keep old
         if (Object.keys(newMarketMap).length > 0) {
           setMarketData(prev => ({ ...prev, ...newMarketMap }));
           setLastMarketUpdate(now);
         }
 
-        if (latestSignalTs > 0) {
-          setLastSignalUpdate(latestSignalTs);
-        }
-
+        if (latestSignalTs > 0) setLastSignalUpdate(latestSignalTs);
         setFetchCount(c => c + 1);
       } catch (err) {
         console.error("[UI] Fetch error:", err);
@@ -107,7 +107,7 @@ export default function Dashboard() {
     }
 
     fetchData();
-    const interval = setInterval(fetchData, 30000); // Refresh every 30s
+    const interval = setInterval(fetchData, 30000);
     return () => clearInterval(interval);
   }, []);
 
@@ -145,12 +145,38 @@ export default function Dashboard() {
           </div>
         </div>
 
+        {/* FIX #3: Account summary */}
+        <div className="mb-6 p-4 bg-gray-800 rounded-lg border border-gray-700">
+          <div className="flex justify-between items-center">
+            <div>
+              <span className="text-gray-400 text-sm">Account</span>
+              <p className="text-2xl font-bold">${ACCOUNT_BALANCE.toLocaleString()}</p>
+            </div>
+            <div>
+              <span className="text-gray-400 text-sm">Risk/Trade</span>
+              <p className="text-xl font-bold text-yellow-400">{(RISK_PER_TRADE * 100).toFixed(0)}%</p>
+            </div>
+            <div>
+              <span className="text-gray-400 text-sm">Max Risk</span>
+              <p className="text-xl font-bold text-red-400">${(ACCOUNT_BALANCE * RISK_PER_TRADE).toFixed(0)}</p>
+            </div>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {PAIRS.map((pair) => {
             const signal = signals[pair];
             const market = marketData[pair];
             const hasSignal = !!signal;
             const signalFresh = signal && (now - signal.timestamp < SIGNAL_STALE_MS);
+
+            // FIX #3: Calculate position size
+            const positionSize = hasSignal && signalFresh 
+              ? calcPositionSize(signal.entry, signal.stop, signal.direction)
+              : 0;
+            const stopPercent = hasSignal && signalFresh
+              ? (Math.abs(signal.stop - signal.entry) / signal.entry * 100).toFixed(2)
+              : "0";
 
             return (
               <div
@@ -163,7 +189,6 @@ export default function Dashboard() {
                     : "border-gray-600 bg-gray-800"
                 }`}
               >
-                {/* Header */}
                 <div className="flex justify-between items-start mb-4">
                   <div>
                     <h2 className="text-xl font-bold">{pair}/USD</h2>
@@ -188,7 +213,6 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                {/* Market Data */}
                 {market ? (
                   <div className="grid grid-cols-2 gap-2 mb-4 p-3 bg-gray-900/50 rounded">
                     <div className="flex justify-between">
@@ -217,7 +241,6 @@ export default function Dashboard() {
                   </div>
                 )}
 
-                {/* Trade Signal */}
                 {hasSignal && signalFresh ? (
                   <div className="space-y-2 border-t border-gray-700 pt-4">
                     <div className="flex justify-between">
@@ -230,12 +253,18 @@ export default function Dashboard() {
                       <span className="text-gray-400">Confidence</span>
                       <span className="font-bold">{signal.confidence}%</span>
                     </div>
+
+                    {/* FIX #3: Position sizing */}
+                    <div className="flex justify-between bg-gray-900/70 p-2 rounded">
+                      <span className="text-gray-400">Position Size</span>
+                      <span className="font-bold text-yellow-400">${positionSize.toLocaleString()}</span>
+                    </div>
                     <div className="flex justify-between">
                       <span className="text-gray-400">Entry</span>
                       <span className="font-mono">${signal.entry.toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Stop</span>
+                      <span className="text-gray-400">Stop ({stopPercent}%)</span>
                       <span className="font-mono text-red-400">${signal.stop.toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between">
@@ -282,9 +311,9 @@ export default function Dashboard() {
           <ul className="text-sm text-gray-400 space-y-1">
             <li>• Cron runs every hour — market data always displayed</li>
             <li>• Trade signals cached in UI for 4h (survives serverless cold starts)</li>
-            <li>• PRIMARY: 4h cooldown | CHEEKY: 8h cooldown</li>
-            <li>• Anti-whipsaw: opposite direction blocked for 2h</li>
-            <li>• Trendlines need 10+ bars age for PRIMARY signals</li>
+            <li>• Stops: 2.5× ATR | PRIMARY: ADX &gt; 25 | Close confirmation required</li>
+            <li>• Max 1 signal per direction per run (correlation protection)</li>
+            <li>• Position size: Risk {(RISK_PER_TRADE * 100).toFixed(0)}% = ${(ACCOUNT_BALANCE * RISK_PER_TRADE).toFixed(0)} per trade</li>
           </ul>
         </div>
       </div>
