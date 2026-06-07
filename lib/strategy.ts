@@ -327,7 +327,6 @@ export async function generateSignal(
   for (const line of resistance) {
     if (isTrendlineExpired(line, candles1h.length - 1)) continue;
 
-    // NEW: Minimum trendline age for PRIMARY (10 bars = ~10 hours on 1H)
     const lineAge = candles1h.length - 1 - line.endIdx;
     if (lineAge < 10) continue;
 
@@ -338,7 +337,8 @@ export async function generateSignal(
       const { stop, target, rr } = findStopAndTarget(candles1h, "SHORT", price, structure);
       const confidence = calcConfidence("SHORT", structure, adx, rr, line.touches.length, true);
 
-      if (confidence >= 60 && rr >= 1.5) {
+      // PRIMARY requires ADX >= 20 (trend strength)
+      if (confidence >= 60 && rr >= 1.5 && adx >= 20) {
         const score = confidence * rr;
         if (score > bestScore) {
           bestScore = score;
@@ -357,7 +357,6 @@ export async function generateSignal(
   for (const line of support) {
     if (isTrendlineExpired(line, candles1h.length - 1)) continue;
 
-    // NEW: Minimum trendline age for PRIMARY
     const lineAge = candles1h.length - 1 - line.endIdx;
     if (lineAge < 10) continue;
 
@@ -368,7 +367,8 @@ export async function generateSignal(
       const { stop, target, rr } = findStopAndTarget(candles1h, "LONG", price, structure);
       const confidence = calcConfidence("LONG", structure, adx, rr, line.touches.length, true);
 
-      if (confidence >= 60 && rr >= 1.5) {
+      // PRIMARY requires ADX >= 20 (trend strength)
+      if (confidence >= 60 && rr >= 1.5 && adx >= 20) {
         const score = confidence * rr;
         if (score > bestScore) {
           bestScore = score;
