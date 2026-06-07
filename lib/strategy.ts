@@ -167,7 +167,7 @@ interface Trendline {
   endIdx: number;
   touches: number;
   type: "RESISTANCE" | "SUPPORT";
-  createdAt: number; // candle index when line was first fitted
+  createdAt: number;
 }
 
 function fitTrendline(points: { value: number; idx: number }[], createdAt: number): Trendline | null {
@@ -262,7 +262,6 @@ function isTrendlineBroken(
 }
 
 function isTrendlineExpired(line: Trendline, currentCandleCount: number, maxAgeCandles = 80): boolean {
-  // Trendline expires if it was created too long ago
   const age = currentCandleCount - line.createdAt;
   return age > maxAgeCandles;
 }
@@ -524,7 +523,6 @@ export function generateSignal(
     };
   }
 
-  // Record this signal to prevent future churn
   recordSignal(symbol, setup, entryBias, breakLine, priceForSizing);
   cleanupOldSignals();
 
@@ -540,7 +538,6 @@ export function generateSignal(
   const rangePenalty = isRanging ? 0.7 : 1.0;
   const atrMultiplier = 2.5;
 
-  // Wider stops in high-ADX range, tighter targets
   const expectedMove = Math.max(0.02, Math.min(0.08, atrPct * atrMultiplier * 1.5 * adxExpansion * rangePenalty));
 
   const minSlPct = 0.005;
