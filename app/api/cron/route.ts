@@ -6,40 +6,62 @@ import { sendAlert } from "@/lib/telegram";
 
 export const runtime = "nodejs";
 
-// Throttle config — aligned with 1H candle closes
-const ALERT_COOLDOWN_MS = 60 * 60 * 1000; // 60 min minimum between alerts per symbol
+// Throttle config — adaptive by signal quality
+const PRIMARY_COOLDOWN_MS = 4 * 60 * 60 * 1000;  // 4 hours for primary
+const CHEEKY_COOLDOWN_MS = 8 * 60 * 60 * 1000;   // 8 hours for cheeky
+const SAME_HASH_COOLDOWN_MS = 60 * 60 * 1000;    // 1 hour if exact same setup repeats
 
 const lastAlertTime: Record<string, number> = {};
 const lastSignalHash: Record<string, string> = {};
+const lastSignalState: Record<string, { state: string; setup: string; bias: string; timestamp: number }> = {};
 
 function hashSignal(s: any): string {
-  return `${s.setup}:${s.bias}:${s.entryTimeframe}`;
+  return `${s.setup}:${s.bias}:${s.entryTimeframe}:${s.reason?.includes("slope:") ? s.reason.match(/slope:([\d.-]+)/)?.[1] : "no-tl"}`;
 }
 
-function shouldThrottle(symbol: string, signal: any): boolean {
+function getCooldown(state: string, isSameHash: boolean): number {
+  if (isSameHash) return SAME_HASH_COOLDOWN_MS;
+  return state === "PRIMARY" ? PRIMARY_COOLDOWN_MS : CHEEKY_COOLDOWN_MS;
+}
+
+function shouldThrottle(symbol: string, signal: any): { throttled: boolean; reason: string } {
   const now = Date.now();
   const lastTime = lastAlertTime[symbol];
   const lastHash = lastSignalHash[symbol];
   const currentHash = hashSignal(signal);
+  const isSameHash = lastHash === currentHash;
 
-  // Always alert if it's a genuinely new setup (different hash)
-  if (lastHash !== currentHash) return false;
+  // Always allow if genuinely new setup (different hash)
+  if (!isSameHash) {
+    return { throttled: false, reason: "NEW_SETUP" };
+  }
 
-  // Same setup repeating — throttle
-  if (lastTime && (now - lastTime) < ALERT_COOLDOWN_MS) return true;
+  // Same hash — check cooldown
+  const cooldown = getCooldown(signal.state, isSameHash);
+  if (lastTime && (now - lastTime) < cooldown) {
+    return { 
+      throttled: true, 
+      reason: `SAME_SETUP (${Math.round((now - lastTime) / 60000)}m ago, cooldown ${cooldown / 3600000}h)` 
+    };
+  }
 
-  return false;
+  return { throttled: false, reason: "COOLDOWN_EXPIRED" };
 }
 
 function recordAlert(symbol: string, signal: any) {
   lastAlertTime[symbol] = Date.now();
   lastSignalHash[symbol] = hashSignal(signal);
+  lastSignalState[symbol] = { 
+    state: signal.state, 
+    setup: signal.setup, 
+    bias: signal.bias, 
+    timestamp: Date.now() 
+  };
 }
 
 export async function GET() {
   const symbols = ["BTC", "ETH", "SOL"] as const;
 
-  // Drop 15M — not used anymore
   const candles1h = await Promise.all(
     symbols.map(s => getCandles(s, 60))
   );
@@ -52,7 +74,6 @@ export async function GET() {
     symbols.map(s => getCurrentPrice(s))
   );
 
-  // Pass null for 15M since it's no longer used
   const signals = symbols.map((s, i) =>
     generateSignal(s, prices[i], null, candles1h[i], candles4h[i])
   );
@@ -72,21 +93,21 @@ export async function GET() {
   for (const s of signals) {
     if (s.state === "WAIT") continue;
 
-    // Confidence floor — don't even consider low-confidence signals
+    // Hard confidence floors
     if (s.confidence < 50) {
       console.log("[SKIP LOW CONF]", s.symbol, s.confidence);
       continue;
     }
 
-    // Cheeky trades need higher bar
     const isCheeky = s.reason?.includes("1H_CHEEKY");
     if (isCheeky && s.confidence < 65) {
       console.log("[SKIP CHEEKY LOW CONF]", s.symbol, s.confidence);
       continue;
     }
 
-    if (shouldThrottle(s.symbol, s)) {
-      console.log("[THROTTLED]", s.symbol, hashSignal(s));
+    const throttle = shouldThrottle(s.symbol, s);
+    if (throttle.throttled) {
+      console.log("[THROTTLED]", s.symbol, throttle.reason);
       continue;
     }
 
@@ -102,6 +123,7 @@ export async function GET() {
       tier: isCheeky ? "CHEEKY" : "PRIMARY",
       confidence: s.confidence,
       rr: s.rr,
+      throttleReason: throttle.reason,
     });
   }
 
