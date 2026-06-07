@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCandles, getCurrentPrice } from "@/lib/kraken";
 import { generateSignal } from "@/lib/strategy";
-import { setSignals } from "@/lib/state";
+import { setSignals, setMarketData } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL"] as const;
@@ -28,6 +28,25 @@ function isThrottled(signal: any): boolean {
   return false;
 }
 
+function roundPrice(n: number): number {
+  if (n >= 10000) return Math.round(n);
+  if (n >= 1000) return Math.round(n * 10) / 10;
+  if (n >= 100) return Math.round(n * 100) / 100;
+  return Math.round(n * 1000) / 1000;
+}
+
+function roundIndicator(n: number): number {
+  return Math.round(n * 10) / 10;
+}
+
+function roundRR(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function roundExpectedMove(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 export async function GET(request: Request) {
   console.log("========================================");
   console.log(`[CRON] Started at ${new Date().toISOString()}`);
@@ -48,6 +67,7 @@ export async function GET(request: Request) {
   console.log(`[AUTH] PASSED`);
 
   const signals = [];
+  const marketDataList = [];
   const alerts = [];
 
   for (const pair of PAIRS) {
@@ -64,11 +84,14 @@ export async function GET(request: Request) {
         continue;
       }
 
-      const signal = await generateSignal(pair, candles1h, candles4h);
+      const { signal, market } = await generateSignal(pair, candles1h, candles4h);
+
+      // Always save market data
+      marketDataList.push(market);
 
       if (!signal) {
-        console.log(`[PAIR] ${pair} — NO SIGNAL`);
-        alerts.push({ pair, status: "no_signal" });
+        console.log(`[PAIR] ${pair} — NO SIGNAL (market: $${market.price}, ${market.structure}, ADX:${market.adx.toFixed(1)})`);
+        alerts.push({ pair, status: "no_signal", market });
         continue;
       }
 
@@ -78,21 +101,21 @@ export async function GET(request: Request) {
       if (!isThrottled(signal)) {
         console.log(`[ALERT] ${pair} — sending alert...`);
 
-        // Map generateSignal fields -> sendAlert expected fields
+        // Round all numbers for clean Telegram output
         const alertPayload = {
           symbol: signal.pair,
           state: signal.type,
-          price: signal.entry,
+          price: roundPrice(signal.entry),
           bias: signal.direction,
           confidence: signal.confidence,
-          stopLoss: signal.stop,
-          takeProfit: signal.target,
-          rr: signal.rr,
-          adx: signal.adx,
-          rsi: signal.rsi,
-          stochK: signal.stochK,
-          stochD: signal.stochD,
-          expectedMove: signal.expectedMove,
+          stopLoss: roundPrice(signal.stop),
+          takeProfit: roundPrice(signal.target),
+          rr: roundRR(signal.rr),
+          adx: roundIndicator(signal.adx),
+          rsi: roundIndicator(signal.rsi),
+          stochK: roundIndicator(signal.stochK),
+          stochD: roundIndicator(signal.stochD),
+          expectedMove: roundExpectedMove(signal.expectedMove),
           reason: signal.reason,
           updatedAt: new Date(signal.timestamp).toISOString(),
         };
@@ -117,15 +140,17 @@ export async function GET(request: Request) {
     }
   }
 
-  console.log(`[STATE] Saving ${signals.length} signals...`);
+  console.log(`[STATE] Saving ${signals.length} signals, ${marketDataList.length} market data...`);
   await setSignals(signals);
-  console.log(`[CRON] Done. signals=${signals.length}`);
+  await setMarketData(marketDataList);
+  console.log(`[CRON] Done. signals=${signals.length}, marketData=${marketDataList.length}`);
   console.log("========================================");
 
   return NextResponse.json({
     success: true,
     timestamp: new Date().toISOString(),
     signals: signals.length,
+    marketData: marketDataList.length,
     alerts,
   });
 }
