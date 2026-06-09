@@ -40,15 +40,15 @@ function calcPositionSize(entry: number, stop: number, direction: "LONG" | "SHOR
 }
 
 export default function Dashboard() {
-  const [signals, setSignals] = useState<<Record<string, Signal | null>>({});
-  const [marketData, setMarketData] = useState<<Record<string, MarketData>>({});
+  const [signals, setSignals] = useState<Record<string, Signal | null>>({});
+  const [marketData, setMarketData] = useState<Record<string, MarketData>>({});
   const [lastSignalUpdate, setLastSignalUpdate] = useState<number>(0);
   const [lastMarketUpdate, setLastMarketUpdate] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fetchCount, setFetchCount] = useState(0);
 
-  const bestSignalsRef = useRef<<Record<string, Signal | null>>({});
+  const bestSignalsRef = useRef<Record<string, Signal | null>>({});
 
   useEffect(() => {
     async function fetchData() {
@@ -63,7 +63,6 @@ export default function Dashboard() {
         let latestSignalTs = 0;
         let latestMarketTs = 0;
 
-        // Pull market data from API (should be cached from last cron)
         for (const md of data.marketData || []) {
           if (md && md.pair) {
             newMarketMap[md.pair] = md;
@@ -211,7 +210,6 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                {/* Market data ALWAYS visible — even in WAIT state */}
                 {market ? (
                   <div className="grid grid-cols-2 gap-2 mb-4 p-3 bg-gray-900/50 rounded">
                     <div className="flex justify-between">
