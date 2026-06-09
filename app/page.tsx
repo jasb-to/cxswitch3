@@ -29,9 +29,8 @@ const PAIRS = ["BTC", "ETH", "SOL"];
 const SIGNAL_STALE_MS = 4 * 60 * 60 * 1000;
 const MARKET_STALE_MS = 70 * 60 * 1000;
 
-// FIX #3: Account settings for position sizing
-const ACCOUNT_BALANCE = 700; // Your current balance
-const RISK_PER_TRADE = 0.02; // 2% risk per trade
+const ACCOUNT_BALANCE = 700;
+const RISK_PER_TRADE = 0.02;
 
 function calcPositionSize(entry: number, stop: number, direction: "LONG" | "SHORT"): number {
   const stopDistance = Math.abs(entry - stop) / entry;
@@ -41,15 +40,15 @@ function calcPositionSize(entry: number, stop: number, direction: "LONG" | "SHOR
 }
 
 export default function Dashboard() {
-  const [signals, setSignals] = useState<Record<string, Signal | null>>({});
-  const [marketData, setMarketData] = useState<Record<string, MarketData>>({});
+  const [signals, setSignals] = useState<<Record<string, Signal | null>>({});
+  const [marketData, setMarketData] = useState<<Record<string, MarketData>>({});
   const [lastSignalUpdate, setLastSignalUpdate] = useState<number>(0);
   const [lastMarketUpdate, setLastMarketUpdate] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [fetchCount, setFetchCount] = useState(0);
 
-  const bestSignalsRef = useRef<Record<string, Signal | null>>({});
+  const bestSignalsRef = useRef<<Record<string, Signal | null>>({});
 
   useEffect(() => {
     async function fetchData() {
@@ -145,7 +144,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* FIX #3: Account summary */}
         <div className="mb-6 p-4 bg-gray-800 rounded-lg border border-gray-700">
           <div className="flex justify-between items-center">
             <div>
@@ -170,7 +168,6 @@ export default function Dashboard() {
             const hasSignal = !!signal;
             const signalFresh = signal && (now - signal.timestamp < SIGNAL_STALE_MS);
 
-            // FIX #3: Calculate position size
             const positionSize = hasSignal && signalFresh 
               ? calcPositionSize(signal.entry, signal.stop, signal.direction)
               : 0;
@@ -213,6 +210,7 @@ export default function Dashboard() {
                   )}
                 </div>
 
+                {/* KEY FIX: Market data ALWAYS shown, not just when signal exists */}
                 {market ? (
                   <div className="grid grid-cols-2 gap-2 mb-4 p-3 bg-gray-900/50 rounded">
                     <div className="flex justify-between">
@@ -253,8 +251,6 @@ export default function Dashboard() {
                       <span className="text-gray-400">Confidence</span>
                       <span className="font-bold">{signal.confidence}%</span>
                     </div>
-
-                    {/* FIX #3: Position sizing */}
                     <div className="flex justify-between bg-gray-900/70 p-2 rounded">
                       <span className="text-gray-400">Position Size</span>
                       <span className="font-bold text-yellow-400">${positionSize.toLocaleString()}</span>
