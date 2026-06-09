@@ -174,7 +174,6 @@ function getStructure(candles: Candle[]): Structure {
   return "RANGE";
 }
 
-// FIX #2: True Wilder's ADX with smoothing
 function calcADX(candles: Candle[], period = 14): number {
   if (candles.length < period * 2 + 1) return 0;
 
@@ -190,7 +189,6 @@ function calcADX(candles: Candle[], period = 14): number {
     minusDM.push(prev.low - curr.low > curr.high - prev.high ? Math.max(prev.low - curr.low, 0) : 0);
   }
 
-  // Wilder's smoothing
   let atr = tr.slice(0, period).reduce((a, b) => a + b, 0);
   let plusDI_sum = plusDM.slice(0, period).reduce((a, b) => a + b, 0);
   let minusDI_sum = minusDM.slice(0, period).reduce((a, b) => a + b, 0);
@@ -210,7 +208,6 @@ function calcADX(candles: Candle[], period = 14): number {
 
   if (dxValues.length < period) return 0;
 
-  // Smooth DX into ADX
   let adx = dxValues.slice(0, period).reduce((a, b) => a + b, 0) / period;
   for (let i = period; i < dxValues.length; i++) {
     adx = ((adx * (period - 1)) + dxValues[i]) / period;
@@ -264,7 +261,6 @@ function calcATR(candles: Candle[], period = 14): number {
   return sum / period;
 }
 
-// FIX #1: Wider stops — 2.5× ATR instead of 1.5×
 function findStopAndTarget(candles: Candle[], direction: Direction, entry: number, structure: Structure) {
   const atr = calcATR(candles, 14);
   let stop: number, target: number;
@@ -285,9 +281,65 @@ function findStopAndTarget(candles: Candle[], direction: Direction, entry: numbe
   return { stop, target, rr };
 }
 
-function calcConfidence(direction: Direction, structure: Structure, adx: number, rr: number, touches: number, isBreakout: boolean): number {
+// ─── NEW: 4H trendline break detection ───
+function detect4HTrendlineBreak(
+  candles: Candle[],
+  direction: Direction
+): { broke: boolean; line: Trendline | null; linePrice: number; lineAge: number } {
+  const highs = swingHighs(candles, 3);
+  const lows = swingLows(candles, 3);
+  const resistance = findTrendlines(candles, highs, false);
+  const support = findTrendlines(candles, lows, true);
+  const currentIdx = candles.length - 1;
+  const current = candles[currentIdx];
+  const prev = candles[currentIdx - 1];
+
+  if (direction === "LONG") {
+    for (const line of support) {
+      if (isTrendlineExpired(line, currentIdx)) continue;
+      const lineAge = currentIdx - line.endIdx;
+      if (lineAge < 5) continue;
+      const lp = line.slope * currentIdx + line.intercept;
+      if (prev.close < lp && current.close > lp) {
+        return { broke: true, line, linePrice: lp, lineAge };
+      }
+    }
+  } else {
+    for (const line of resistance) {
+      if (isTrendlineExpired(line, currentIdx)) continue;
+      const lineAge = currentIdx - line.endIdx;
+      if (lineAge < 5) continue;
+      const lp = line.slope * currentIdx + line.intercept;
+      if (prev.close > lp && current.close < lp) {
+        return { broke: true, line, linePrice: lp, lineAge };
+      }
+    }
+  }
+  return { broke: false, line: null, linePrice: 0, lineAge: 0 };
+}
+
+// ─── NEW: Check if 1H break aligns with 4H context ───
+function is4HAligned(direction: Direction, structure4h: Structure, broke4h: boolean): boolean {
+  if (broke4h) return true; // 4H trendline break overrides everything
+  if (structure4h === "RANGE") return true; // Range = neutral, 1H break is valid
+  if (direction === "LONG" && structure4h === "UPTREND") return true;
+  if (direction === "SHORT" && structure4h === "DOWNTREND") return true;
+  return false;
+}
+
+function calcConfidence(
+  direction: Direction,
+  structure: Structure,
+  adx: number,
+  rr: number,
+  touches: number,
+  isBreakout: boolean,
+  is4HBreak: boolean,
+  isAligned: boolean
+): number {
   let score = 50;
 
+  // Structure alignment
   if ((direction === "LONG" && structure === "UPTREND") || (direction === "SHORT" && structure === "DOWNTREND")) {
     score += 20;
   } else if (structure === "RANGE") {
@@ -295,6 +347,12 @@ function calcConfidence(direction: Direction, structure: Structure, adx: number,
   } else {
     score -= 15;
   }
+
+  // 4H trendline break is the strongest signal
+  if (is4HBreak) score += 25;
+
+  // Counter-trend 1H breaks get heavily penalized
+  if (!isAligned && !is4HBreak) score -= 30;
 
   if (adx > 30) score += 15;
   else if (adx > 20) score += 10;
@@ -320,16 +378,18 @@ export async function generateSignal(
 ): Promise<{ signal: Signal | null; market: MarketData }> {
   const current1h = candles1h[candles1h.length - 1];
   const price = current1h.close;
-  const structure = getStructure(candles4h);
-  const adx = calcADX(candles4h, 14);
+  const structure4h = getStructure(candles4h);
+  const structure1h = getStructure(candles1h);
+  const adx4h = calcADX(candles4h, 14);
+  const adx1h = calcADX(candles1h, 14);
   const rsi = calcRSI(candles1h, 14);
   const stoch = calcStochastic(candles1h, 14, 3);
 
   const market: MarketData = {
     pair,
     price,
-    structure,
-    adx,
+    structure: structure4h,
+    adx: adx4h,
     rsi,
     stochK: stoch.k,
     stochD: stoch.d,
@@ -339,15 +399,59 @@ export async function generateSignal(
     return { signal: null, market };
   }
 
-  const highs = swingHighs(candles1h, 3);
-  const lows = swingLows(candles1h, 3);
-  const resistance = findTrendlines(candles1h, highs, false);
-  const support = findTrendlines(candles1h, lows, true);
+  // ─── Detect 4H trendline breaks first ───
+  const break4hLong = detect4HTrendlineBreak(candles4h, "LONG");
+  const break4hShort = detect4HTrendlineBreak(candles4h, "SHORT");
+
+  const highs1h = swingHighs(candles1h, 3);
+  const lows1h = swingLows(candles1h, 3);
+  const resistance1h = findTrendlines(candles1h, highs1h, false);
+  const support1h = findTrendlines(candles1h, lows1h, true);
 
   let bestSignal: Signal | null = null;
   let bestScore = 0;
 
-  for (const line of resistance) {
+  // ─── 4H RESISTANCE BREAKDOWN → PRIMARY SHORT ───
+  if (break4hShort.broke && break4hShort.line) {
+    const line = break4hShort.line;
+    const { stop, target, rr } = findStopAndTarget(candles4h, "SHORT", price, structure4h);
+    const confidence = calcConfidence("SHORT", structure4h, adx4h, rr, line.touches.length, true, true, true);
+
+    if (confidence >= 65 && rr >= 1.5 && adx4h > 20) {
+      const expectedMove = ((price - target) / price) * 100;
+      bestSignal = {
+        pair, direction: "SHORT", type: "PRIMARY", confidence, entry: price, stop, target, rr,
+        reason: `BREAKDOWN SHORT | SRC:4H_PRIMARY | TL(${line.touches.length}touches,RESISTANCE,slope:${line.slope.toFixed(4)},age:${break4hShort.lineAge}bars) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)}`,
+        timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
+        candles1h, candles4h,
+      };
+      bestScore = confidence * rr;
+    }
+  }
+
+  // ─── 4H SUPPORT BREAKUP → PRIMARY LONG ───
+  if (break4hLong.broke && break4hLong.line) {
+    const line = break4hLong.line;
+    const { stop, target, rr } = findStopAndTarget(candles4h, "LONG", price, structure4h);
+    const confidence = calcConfidence("LONG", structure4h, adx4h, rr, line.touches.length, true, true, true);
+
+    if (confidence >= 65 && rr >= 1.5 && adx4h > 20) {
+      const score = confidence * rr;
+      if (score > bestScore) {
+        const expectedMove = ((target - price) / price) * 100;
+        bestSignal = {
+          pair, direction: "LONG", type: "PRIMARY", confidence, entry: price, stop, target, rr,
+          reason: `BREAKUP LONG | SRC:4H_PRIMARY | TL(${line.touches.length}touches,SUPPORT,slope:${line.slope.toFixed(4)},age:${break4hLong.lineAge}bars) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)}`,
+          timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
+          candles1h, candles4h,
+        };
+        bestScore = score;
+      }
+    }
+  }
+
+  // ─── 1H RESISTANCE BREAKDOWN ───
+  for (const line of resistance1h) {
     if (isTrendlineExpired(line, candles1h.length - 1)) continue;
 
     const lineAge = candles1h.length - 1 - line.endIdx;
@@ -356,21 +460,24 @@ export async function generateSignal(
     const linePrice = line.slope * (candles1h.length - 1) + line.intercept;
     const prevCandle = candles1h[candles1h.length - 2];
 
-    // FIX #4: Candle close confirmation — prev candle must be fully above line
     if (prevCandle.close > linePrice && current1h.close < linePrice) {
-      const { stop, target, rr } = findStopAndTarget(candles1h, "SHORT", price, structure);
-      const confidence = calcConfidence("SHORT", structure, adx, rr, line.touches.length, true);
+      const aligned = is4HAligned("SHORT", structure4h, break4hShort.broke);
+      const { stop, target, rr } = findStopAndTarget(candles1h, "SHORT", price, structure4h);
+      const confidence = calcConfidence("SHORT", structure4h, adx4h, rr, line.touches.length, true, break4hShort.broke, aligned);
 
-      // FIX #2: PRIMARY requires ADX > 25 (not 20)
-      if (confidence >= 60 && rr >= 1.5 && adx > 25) {
+      // PRIMARY only if 4H aligned OR 4H also breaking
+      const isPrimary = aligned && confidence >= 60 && rr >= 1.5 && adx4h > 25;
+      const isCheeky = !aligned && confidence >= 45 && rr >= 1.5;
+
+      if (isPrimary || isCheeky) {
         const score = confidence * rr;
         if (score > bestScore) {
           bestScore = score;
           const expectedMove = ((price - target) / price) * 100;
           bestSignal = {
-            pair, direction: "SHORT", type: "PRIMARY", confidence, entry: price, stop, target, rr,
-            reason: `BREAKDOWN SHORT | SRC:1H_PRIMARY | TL(${line.touches.length}touches,RESISTANCE,slope:${line.slope.toFixed(4)},age:${lineAge}bars) | 4H:${structure} 1H:${getStructure(candles1h)} | ADX:${adx.toFixed(1)}`,
-            timestamp: Date.now(), structure, adx, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
+            pair, direction: "SHORT", type: isPrimary ? "PRIMARY" : "CHEEKY", confidence, entry: price, stop, target, rr,
+            reason: `${isPrimary ? "BREAKDOWN" : "CHEEKY"} SHORT | SRC:1H_${isPrimary ? "PRIMARY" : "COUNTER"} | TL(${line.touches.length}touches,RESISTANCE,slope:${line.slope.toFixed(4)},age:${lineAge}bars) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | 4H_ALIGN:${aligned}`,
+            timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
             candles1h, candles4h,
           };
         }
@@ -378,7 +485,8 @@ export async function generateSignal(
     }
   }
 
-  for (const line of support) {
+  // ─── 1H SUPPORT BREAKUP ───
+  for (const line of support1h) {
     if (isTrendlineExpired(line, candles1h.length - 1)) continue;
 
     const lineAge = candles1h.length - 1 - line.endIdx;
@@ -387,21 +495,24 @@ export async function generateSignal(
     const linePrice = line.slope * (candles1h.length - 1) + line.intercept;
     const prevCandle = candles1h[candles1h.length - 2];
 
-    // FIX #4: Candle close confirmation
     if (prevCandle.close < linePrice && current1h.close > linePrice) {
-      const { stop, target, rr } = findStopAndTarget(candles1h, "LONG", price, structure);
-      const confidence = calcConfidence("LONG", structure, adx, rr, line.touches.length, true);
+      const aligned = is4HAligned("LONG", structure4h, break4hLong.broke);
+      const { stop, target, rr } = findStopAndTarget(candles1h, "LONG", price, structure4h);
+      const confidence = calcConfidence("LONG", structure4h, adx4h, rr, line.touches.length, true, break4hLong.broke, aligned);
 
-      // FIX #2: PRIMARY requires ADX > 25
-      if (confidence >= 60 && rr >= 1.5 && adx > 25) {
+      // PRIMARY only if 4H aligned OR 4H also breaking
+      const isPrimary = aligned && confidence >= 60 && rr >= 1.5 && adx4h > 25;
+      const isCheeky = !aligned && confidence >= 45 && rr >= 1.5;
+
+      if (isPrimary || isCheeky) {
         const score = confidence * rr;
         if (score > bestScore) {
           bestScore = score;
           const expectedMove = ((target - price) / price) * 100;
           bestSignal = {
-            pair, direction: "LONG", type: "PRIMARY", confidence, entry: price, stop, target, rr,
-            reason: `BREAKUP LONG | SRC:1H_PRIMARY | TL(${line.touches.length}touches,SUPPORT,slope:${line.slope.toFixed(4)},age:${lineAge}bars) | 4H:${structure} 1H:${getStructure(candles1h)} | ADX:${adx.toFixed(1)}`,
-            timestamp: Date.now(), structure, adx, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
+            pair, direction: "LONG", type: isPrimary ? "PRIMARY" : "CHEEKY", confidence, entry: price, stop, target, rr,
+            reason: `${isPrimary ? "BREAKUP" : "CHEEKY"} LONG | SRC:1H_${isPrimary ? "PRIMARY" : "COUNTER"} | TL(${line.touches.length}touches,SUPPORT,slope:${line.slope.toFixed(4)},age:${lineAge}bars) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | 4H_ALIGN:${aligned}`,
+            timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
             candles1h, candles4h,
           };
         }
@@ -409,31 +520,32 @@ export async function generateSignal(
     }
   }
 
-  if (!bestSignal && structure === "RANGE" && adx < 20) {
+  // ─── RANGE CHEEKY (unchanged logic) ───
+  if (!bestSignal && structure4h === "RANGE" && adx4h < 20) {
     const rangeHigh = Math.max(...candles4h.slice(-20).map((c) => c.high));
     const rangeLow = Math.min(...candles4h.slice(-20).map((c) => c.low));
 
     if (price > rangeHigh - (rangeHigh - rangeLow) * 0.1) {
-      const { stop, target, rr } = findStopAndTarget(candles1h, "SHORT", price, structure);
-      const confidence = calcConfidence("SHORT", structure, adx, rr, 0, false);
+      const { stop, target, rr } = findStopAndTarget(candles1h, "SHORT", price, structure4h);
+      const confidence = calcConfidence("SHORT", structure4h, adx4h, rr, 0, false, false, true);
       if (confidence >= 50 && rr >= 1.5) {
         const expectedMove = ((price - target) / price) * 100;
         bestSignal = {
           pair, direction: "SHORT", type: "CHEEKY", confidence, entry: price, stop, target, rr,
-          reason: `CHEEKY SHORT | SRC:RANGE_EXTREME | range:${rangeLow.toFixed(2)}-${rangeHigh.toFixed(2)} | 4H:RANGE 1H:${getStructure(candles1h)} | ADX:${adx.toFixed(1)}`,
-          timestamp: Date.now(), structure, adx, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
+          reason: `CHEEKY SHORT | SRC:RANGE_EXTREME | range:${rangeLow.toFixed(2)}-${rangeHigh.toFixed(2)} | 4H:RANGE 1H:${structure1h} | ADX:${adx4h.toFixed(1)}`,
+          timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
           candles1h, candles4h,
         };
       }
     } else if (price < rangeLow + (rangeHigh - rangeLow) * 0.1) {
-      const { stop, target, rr } = findStopAndTarget(candles1h, "LONG", price, structure);
-      const confidence = calcConfidence("LONG", structure, adx, rr, 0, false);
+      const { stop, target, rr } = findStopAndTarget(candles1h, "LONG", price, structure4h);
+      const confidence = calcConfidence("LONG", structure4h, adx4h, rr, 0, false, false, true);
       if (confidence >= 50 && rr >= 1.5) {
         const expectedMove = ((target - price) / price) * 100;
         bestSignal = {
           pair, direction: "LONG", type: "CHEEKY", confidence, entry: price, stop, target, rr,
-          reason: `CHEEKY LONG | SRC:RANGE_EXTREME | range:${rangeLow.toFixed(2)}-${rangeHigh.toFixed(2)} | 4H:RANGE 1H:${getStructure(candles1h)} | ADX:${adx.toFixed(1)}`,
-          timestamp: Date.now(), structure, adx, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
+          reason: `CHEEKY LONG | SRC:RANGE_EXTREME | range:${rangeLow.toFixed(2)}-${rangeHigh.toFixed(2)} | 4H:RANGE 1H:${structure1h} | ADX:${adx4h.toFixed(1)}`,
+          timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
           candles1h, candles4h,
         };
       }
