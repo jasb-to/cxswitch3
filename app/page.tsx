@@ -10,6 +10,7 @@ interface MarketData {
   rsi: number;
   stochK: number;
   stochD: number;
+  timestamp: number;
 }
 
 interface Signal extends MarketData {
@@ -21,7 +22,6 @@ interface Signal extends MarketData {
   target: number;
   rr: number;
   reason: string;
-  timestamp: number;
   expectedMove: number;
 }
 
@@ -63,6 +63,7 @@ export default function Dashboard() {
         let latestSignalTs = 0;
         let latestMarketTs = 0;
 
+        // Pull market data from API (should be cached from last cron)
         for (const md of data.marketData || []) {
           if (md && md.pair) {
             newMarketMap[md.pair] = md;
@@ -210,7 +211,7 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                {/* KEY FIX: Market data ALWAYS shown, not just when signal exists */}
+                {/* Market data ALWAYS visible — even in WAIT state */}
                 {market ? (
                   <div className="grid grid-cols-2 gap-2 mb-4 p-3 bg-gray-900/50 rounded">
                     <div className="flex justify-between">
