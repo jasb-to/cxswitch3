@@ -25,6 +25,8 @@ function roundExpectedMove(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+export const dynamic = "force-dynamic";
+
 export async function GET(request: Request) {
   console.log("========================================");
   console.log(`[CRON] Started at ${new Date().toISOString()}`);
@@ -34,7 +36,6 @@ export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization");
 
   const isAuthorized = 
-    !process.env.CRON_SECRET || 
     querySecret === process.env.CRON_SECRET ||
     authHeader === `Bearer ${process.env.CRON_SECRET}`;
 
@@ -44,7 +45,6 @@ export async function GET(request: Request) {
   }
   console.log(`[AUTH] PASSED`);
 
-  // Load active trades from KV for cooldown checks
   const activeTrades = await getActiveTrades();
   console.log(`[STATE] Loaded active trades:`, Object.keys(activeTrades).join(", ") || "none");
 
@@ -66,7 +66,6 @@ export async function GET(request: Request) {
         continue;
       }
 
-      // Pass activeTrades to strategy for cooldown logic
       const result = await generateSignal(pair, candles1h, candles4h, activeTrades);
 
       let signal: any = null;
@@ -94,7 +93,6 @@ export async function GET(request: Request) {
       console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} conf=${signal.confidence}% ADX=${signal.adx.toFixed(1)}`);
       signals.push(signal);
 
-      // Send alert
       console.log(`[ALERT] ${pair} — sending alert...`);
 
       const alertPayload = {
@@ -121,7 +119,6 @@ export async function GET(request: Request) {
         await sendAlert(alertPayload);
         console.log(`[ALERT] ${pair} — SENT`);
 
-        // Track this trade in KV for 4h cooldown
         activeTrades[pair] = {
           direction: signal.direction,
           timestamp: Date.now(),
