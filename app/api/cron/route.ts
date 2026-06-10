@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
-import { getCandles, getCurrentPrice } from "@/lib/kraken";
+import { getCandles } from "@/lib/kraken";
 import { generateSignal } from "@/lib/strategy";
 import { setSignals, setMarketData, getActiveTrades, setActiveTrades } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL"] as const;
 
-// FIX: Remove in-memory throttling — KV handles cooldown via activeTrades
+// Track which direction fired this run
+let firedThisRun: Set<string> = new Set();
+
 function roundPrice(n: number): number {
   if (n >= 10000) return Math.round(n);
   if (n >= 1000) return Math.round(n * 10) / 10;
@@ -29,6 +31,9 @@ function roundExpectedMove(n: number): number {
 export async function GET(request: Request) {
   console.log("========================================");
   console.log(`[CRON] Started at ${new Date().toISOString()}`);
+
+  // Reset correlation tracker each run
+  firedThisRun = new Set();
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -92,10 +97,17 @@ export async function GET(request: Request) {
         continue;
       }
 
+      // CORRELATION GUARD: Only one direction per run
+      if (firedThisRun.has(signal.direction)) {
+        console.log(`[CORRELATION] ${pair} ${signal.direction} blocked — ${signal.direction} already fired this run`);
+        alerts.push({ pair, status: "correlation_blocked", direction: signal.direction });
+        continue;
+      }
+
       console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} conf=${signal.confidence}% ADX=${signal.adx.toFixed(1)}`);
       signals.push(signal);
 
-      // Send alert for all signals (KV cooldown prevents duplicates)
+      // Send alert
       console.log(`[ALERT] ${pair} — sending alert...`);
 
       const alertPayload = {
@@ -121,14 +133,17 @@ export async function GET(request: Request) {
       try {
         await sendAlert(alertPayload);
         console.log(`[ALERT] ${pair} — SENT`);
-        
+
         // Track this trade in KV for 4h cooldown
         activeTrades[pair] = {
           trendlineKey: signal.trendlineKey,
           timestamp: Date.now(),
           direction: signal.direction,
         };
-        
+
+        // Mark direction as fired this run
+        firedThisRun.add(signal.direction);
+
         alerts.push({ pair, status: "sent" });
       } catch (alertErr) {
         console.error(`[ALERT] ${pair} — FAILED:`, alertErr);
