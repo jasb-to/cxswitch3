@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 
 interface MarketData {
   pair: string;
@@ -10,7 +10,6 @@ interface MarketData {
   rsi: number;
   stochK: number;
   stochD: number;
-  timestamp: number;
 }
 
 interface Signal extends MarketData {
@@ -22,6 +21,7 @@ interface Signal extends MarketData {
   target: number;
   rr: number;
   reason: string;
+  timestamp: number;
   expectedMove: number;
 }
 
@@ -29,7 +29,7 @@ const PAIRS = ["BTC", "ETH", "SOL"];
 const SIGNAL_STALE_MS = 4 * 60 * 60 * 1000;
 const MARKET_STALE_MS = 70 * 60 * 1000;
 
-const ACCOUNT_BALANCE = 700;
+const ACCOUNT_BALANCE = 850;
 const RISK_PER_TRADE = 0.02;
 
 function calcPositionSize(entry: number, stop: number, direction: "LONG" | "SHORT"): number {
@@ -48,8 +48,6 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [fetchCount, setFetchCount] = useState(0);
 
-  const bestSignalsRef = useRef<Record<string, Signal | null>>({});
-
   useEffect(() => {
     async function fetchData() {
       try {
@@ -61,40 +59,28 @@ export default function Dashboard() {
         const newSignalMap: Record<string, Signal | null> = {};
         const newMarketMap: Record<string, MarketData> = {};
         let latestSignalTs = 0;
-        let latestMarketTs = 0;
 
         for (const md of data.marketData || []) {
           if (md && md.pair) {
             newMarketMap[md.pair] = md;
-            if (md.timestamp > latestMarketTs) latestMarketTs = md.timestamp;
           }
         }
 
         for (const pair of PAIRS) {
           const incoming = data.signals?.find((s: Signal) => s.pair === pair);
-
-          if (incoming) {
+          if (incoming && now - incoming.timestamp < SIGNAL_STALE_MS) {
             newSignalMap[pair] = incoming;
-            bestSignalsRef.current[pair] = incoming;
             if (incoming.timestamp > latestSignalTs) latestSignalTs = incoming.timestamp;
           } else {
-            const cached = bestSignalsRef.current[pair];
-            if (cached && now - cached.timestamp < SIGNAL_STALE_MS) {
-              newSignalMap[pair] = cached;
-            } else {
-              newSignalMap[pair] = null;
-              bestSignalsRef.current[pair] = null;
-            }
+            newSignalMap[pair] = null;
           }
         }
 
         setSignals(newSignalMap);
-
         if (Object.keys(newMarketMap).length > 0) {
-          setMarketData(prev => ({ ...prev, ...newMarketMap }));
+          setMarketData(newMarketMap);
           setLastMarketUpdate(now);
         }
-
         if (latestSignalTs > 0) setLastSignalUpdate(latestSignalTs);
         setFetchCount(c => c + 1);
       } catch (err) {
