@@ -8,10 +8,8 @@ export async function GET() {
   const signals = await getSignals();
   const marketData = await getMarketData();
 
-  console.log("[API] Raw signals from state:", JSON.stringify(signals, null, 2));
-  console.log("[API] Signals count:", signals?.length);
-  console.log("[API] First signal pair:", signals?.[0]?.pair);
-  console.log("[API] First signal timestamp:", signals?.[0]?.timestamp);
+  console.log("[API] Raw signals count:", signals?.length);
+  console.log("[API] Raw signals:", JSON.stringify(signals, null, 2));
 
   const enriched = (Array.isArray(signals) ? signals : []).map((s: any) => {
     const isPrimary = s.type === "PRIMARY";
