@@ -51,7 +51,7 @@ export async function getMarketData(): Promise<any[]> {
   }
 }
 
-export async function getActiveTrades(): Promise<Record<string, { trendlineKey: string; timestamp: number; direction: string }>> {
+export async function getActiveTrades(): Promise<Record<string, { direction: string; timestamp: number }>> {
   try {
     const data = await redis.get(ACTIVE_TRADES_KEY);
     if (!data) return {};
@@ -68,10 +68,4 @@ export async function setActiveTrades(trades: Record<string, any>) {
   } catch (err) {
     console.error("[STATE] Active trades KV write failed:", err);
   }
-}
-
-export async function clearActiveTrade(pair: string) {
-  const trades = await getActiveTrades();
-  delete trades[pair];
-  await setActiveTrades(trades);
 }
