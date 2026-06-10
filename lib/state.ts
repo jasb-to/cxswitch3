@@ -1,52 +1,77 @@
+import { Redis } from "@upstash/redis";
 import { Signal } from "./strategy";
-import fs from "fs";
-import path from "path";
 
-const SIGNALS_CACHE = path.join("/tmp", "cx_signals.json");
-const MARKET_CACHE = path.join("/tmp", "cx_market.json");
+const redis = Redis.fromEnv();
 
-export function setSignals(data: Signal[]) {
+const SIGNALS_KEY = "cx_signals_v2";
+const MARKET_KEY = "cx_market_v2";
+const ACTIVE_TRADES_KEY = "cx_active_trades";
+
+export async function setSignals(data: Signal[]) {
   const signals = Array.isArray(data) ? data : [];
   try {
-    fs.writeFileSync(SIGNALS_CACHE, JSON.stringify(signals));
-    console.log("[STATE] Saved", signals.length, "signals to /tmp");
+    await redis.set(SIGNALS_KEY, JSON.stringify(signals));
+    console.log("[STATE] Saved", signals.length, "signals to KV");
   } catch (err) {
-    console.error("[STATE] Signals cache write failed:", err);
+    console.error("[STATE] Signals KV write failed:", err);
   }
 }
 
-export function getSignals(): Signal[] {
+export async function getSignals(): Promise<Signal[]> {
   try {
-    if (fs.existsSync(SIGNALS_CACHE)) {
-      const raw = fs.readFileSync(SIGNALS_CACHE, "utf-8");
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
-    }
+    const data = await redis.get(SIGNALS_KEY);
+    if (!data) return [];
+    const parsed = typeof data === "string" ? JSON.parse(data) : data;
+    return Array.isArray(parsed) ? parsed : [];
   } catch (err) {
-    console.error("[STATE] Signals cache read failed:", err);
+    console.error("[STATE] Signals KV read failed:", err);
+    return [];
   }
-  return [];
 }
 
-export function setMarketData(data: any[]) {
+export async function setMarketData(data: any[]) {
   const marketData = Array.isArray(data) ? data : [];
   try {
-    fs.writeFileSync(MARKET_CACHE, JSON.stringify(marketData));
-    console.log("[STATE] Saved", marketData.length, "market entries to /tmp");
+    await redis.set(MARKET_KEY, JSON.stringify(marketData));
+    console.log("[STATE] Saved", marketData.length, "market entries to KV");
   } catch (err) {
-    console.error("[STATE] Market cache write failed:", err);
+    console.error("[STATE] Market KV write failed:", err);
   }
 }
 
-export function getMarketData(): any[] {
+export async function getMarketData(): Promise<any[]> {
   try {
-    if (fs.existsSync(MARKET_CACHE)) {
-      const raw = fs.readFileSync(MARKET_CACHE, "utf-8");
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
-    }
+    const data = await redis.get(MARKET_KEY);
+    if (!data) return [];
+    const parsed = typeof data === "string" ? JSON.parse(data) : data;
+    return Array.isArray(parsed) ? parsed : [];
   } catch (err) {
-    console.error("[STATE] Market cache read failed:", err);
+    console.error("[STATE] Market KV read failed:", err);
+    return [];
   }
-  return [];
+}
+
+export async function getActiveTrades(): Promise<Record<string, { trendlineKey: string; timestamp: number; direction: string }>> {
+  try {
+    const data = await redis.get(ACTIVE_TRADES_KEY);
+    if (!data) return {};
+    return typeof data === "string" ? JSON.parse(data) : (data || {});
+  } catch (err) {
+    console.error("[STATE] Active trades KV read failed:", err);
+    return {};
+  }
+}
+
+export async function setActiveTrades(trades: Record<string, any>) {
+  try {
+    await redis.set(ACTIVE_TRADES_KEY, JSON.stringify(trades));
+  } catch (err) {
+    console.error("[STATE] Active trades KV write failed:", err);
+  }
+}
+
+export async function clearActiveTrade(pair: string) {
+  const trades = await getActiveTrades();
+  delete trades[pair];
+  await setActiveTrades(trades);
 }
