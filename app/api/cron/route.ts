@@ -120,14 +120,13 @@ export async function GET(request: Request) {
       try {
         await sendAlert(alertPayload);
         console.log(`[ALERT] ${pair} — SENT`);
-        
+
         // Track this trade in KV for 4h cooldown
         activeTrades[pair] = {
-          trendlineKey: signal.trendlineKey,
-          timestamp: Date.now(),
           direction: signal.direction,
+          timestamp: Date.now(),
         };
-        
+
         alerts.push({ pair, status: "sent" });
       } catch (alertErr) {
         console.error(`[ALERT] ${pair} — FAILED:`, alertErr);
