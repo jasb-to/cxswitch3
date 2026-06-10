@@ -10,7 +10,7 @@ const ACTIVE_TRADES_KEY = "cx_active_trades";
 export async function setSignals(data: Signal[]) {
   const signals = Array.isArray(data) ? data : [];
   try {
-    await redis.set(SIGNALS_KEY, JSON.stringify(signals));
+    await redis.set(SIGNALS_KEY, signals);
     console.log("[STATE] Saved", signals.length, "signals to KV");
   } catch (err) {
     console.error("[STATE] Signals KV write failed:", err);
@@ -32,7 +32,7 @@ export async function getSignals(): Promise<Signal[]> {
 export async function setMarketData(data: any[]) {
   const marketData = Array.isArray(data) ? data : [];
   try {
-    await redis.set(MARKET_KEY, JSON.stringify(marketData));
+    await redis.set(MARKET_KEY, marketData);
     console.log("[STATE] Saved", marketData.length, "market entries to KV");
   } catch (err) {
     console.error("[STATE] Market KV write failed:", err);
@@ -64,7 +64,7 @@ export async function getActiveTrades(): Promise<Record<string, { direction: str
 
 export async function setActiveTrades(trades: Record<string, any>) {
   try {
-    await redis.set(ACTIVE_TRADES_KEY, JSON.stringify(trades));
+    await redis.set(ACTIVE_TRADES_KEY, trades);
   } catch (err) {
     console.error("[STATE] Active trades KV write failed:", err);
   }
