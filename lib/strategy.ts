@@ -114,7 +114,7 @@ function linearRegression(points: { x: number; y: number }[]) {
 function findTrendlines(candles: Candle[], swings: SwingPoint[], isSupport: boolean): Trendline[] {
   const lines: Trendline[] = [];
   const minTouches = 2;
-  const maxAge = 60; // Reduced from 80 — old lines are unreliable
+  const maxAge = 60;
 
   for (let i = 0; i < swings.length; i++) {
     for (let j = i + 1; j < swings.length; j++) {
@@ -262,15 +262,16 @@ function calcATR(candles: Candle[], period = 14): number {
   return sum / period;
 }
 
-// ─── NEW: Chop-aware targets ───
+// ─── CHOP-AWARE STOPS & TARGETS ───
+// In chop (RANGE + ADX < 28): tighter stops (2.0× ATR), smaller targets (1.5× ATR)
+// In trend: wider stops (2.5× ATR), bigger targets (2.5× ATR)
 function findStopAndTarget(candles: Candle[], direction: Direction, entry: number, structure: Structure, adx: number) {
   const atr = calcATR(candles, 14);
   let stop: number, target: number;
-  
-  // In chop (ADX < 28 + RANGE), use tighter targets
+
   const isChop = structure === "RANGE" && adx < 28;
   const targetMult = isChop ? 1.5 : 2.5;
-  const stopMult = isChop ? 2.0 : 2.5; // Tighter stops in chop too
+  const stopMult = isChop ? 2.0 : 2.5;
 
   if (direction === "LONG") {
     const lows = swingLows(candles, 3);
@@ -288,37 +289,31 @@ function findStopAndTarget(candles: Candle[], direction: Direction, entry: numbe
   return { stop, target, rr, isChop };
 }
 
-// ─── NEW: Momentum alignment check ───
-// For LONG: want stoch rising from below 60, not falling from above 70
-// For SHORT: want stoch falling from above 40, not rising from below 30
+// ─── MOMENTUM ALIGNMENT ───
+// For LONG: stoch rising (K > D), not extremely overbought
+// For SHORT: stoch falling (K < D), not extremely oversold
 function isMomentumAligned(direction: Direction, stochK: number, stochD: number, rsi: number): boolean {
   if (direction === "LONG") {
-    // Stoch should be rising (K > D) and not deep overbought
     if (stochK < stochD) return false; // falling momentum
     if (stochK > 85 && stochD > 80) return false; // extremely overbought
-    if (rsi > 70) return false; // RSI overbought
+    if (rsi > 70) return false;
     return true;
   } else {
-    // Stoch should be falling (K < D) and not deep oversold
     if (stochK > stochD) return false; // rising momentum
     if (stochK < 15 && stochD < 20) return false; // extremely oversold
-    if (rsi < 30) return false; // RSI oversold
+    if (rsi < 30) return false;
     return true;
   }
 }
 
-// ─── NEW: 1H confirmation check ───
+// ─── 1H CONFIRMATION ───
 // After 4H break, 1H should be moving in same direction
 function is1HConfirming(direction: Direction, candles1h: Candle[]): boolean {
-  const len = candles1h.length;
-  // Check last 3 candles on 1H
   const recent = candles1h.slice(-3);
   if (direction === "LONG") {
-    // At least 2 of last 3 candles should be bullish
     const bullish = recent.filter(c => c.close > c.open).length;
     return bullish >= 2;
   } else {
-    // At least 2 of last 3 candles should be bearish
     const bearish = recent.filter(c => c.close < c.open).length;
     return bearish >= 2;
   }
@@ -332,7 +327,7 @@ export async function generateSignal(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
-  activeTrades: Record<string, { trendlineKey: string; timestamp: number }> = {}
+  activeTrades: Record<string, { trendlineKey: string; timestamp: number; direction: string }> = {}
 ): Promise<{ signal: Signal | null; market: MarketData }> {
   const current4h = candles4h[candles4h.length - 1];
   const prev4h = candles4h[candles4h.length - 2];
@@ -357,13 +352,10 @@ export async function generateSignal(
     return { signal: null, market };
   }
 
-  // ─── CHOP FILTER: No PRIMARY trades in heavy chop ───
+  // ─── CHOP FILTER ───
   const isChop = structure4h === "RANGE" && adx4h < 25;
   if (isChop) {
-    return { 
-      signal: null, 
-      market 
-    };
+    return { signal: null, market };
   }
 
   const highs4h = swingHighs(candles4h, 3);
@@ -374,33 +366,32 @@ export async function generateSignal(
   let bestSignal: Signal | null = null;
   let bestScore = 0;
 
-  // ─── 4H RESISTANCE BREAKDOWN → PRIMARY SHORT ───
+  // ─── 4H RESISTANCE BREAKDOWN → SHORT ───
   for (const line of resistance4h) {
     if (isTrendlineExpired(line, candles4h.length - 1)) continue;
-    
+
     const lineAge = candles4h.length - 1 - line.endIdx;
-    if (lineAge < 3) continue; // Too fresh, need confirmation
+    if (lineAge < 3) continue;
 
     const linePrice = line.slope * (candles4h.length - 1) + line.intercept;
     const trendlineKey = getTrendlineKey(pair, line);
 
-    // Check cooldown
+    // Cooldown check
     const existing = activeTrades[pair];
     if (existing && existing.trendlineKey === trendlineKey && Date.now() - existing.timestamp < 4 * 60 * 60 * 1000) {
       continue;
     }
 
-    // 4H close confirmation: prev candle above line, current below
+    // 4H close confirmation
     if (prev4h.close > linePrice && current4h.close < linePrice) {
-      // 1H confirmation: 1H should be bearish
+      // 1H confirmation
       if (!is1HConfirming("SHORT", candles1h)) continue;
-      
-      // Momentum alignment: don't short into rising stoch
+
+      // Momentum alignment
       if (!isMomentumAligned("SHORT", stoch.k, stoch.d, rsi)) continue;
 
       const { stop, target, rr, isChop: chopFlag } = findStopAndTarget(candles4h, "SHORT", price, structure4h, adx4h);
-      
-      // In chop, only CHEEKY; in trend, PRIMARY
+
       const type: SignalType = chopFlag ? "CHEEKY" : "PRIMARY";
       const minConf = chopFlag ? 50 : 65;
       const minRR = chopFlag ? 1.2 : 1.5;
@@ -423,17 +414,17 @@ export async function generateSignal(
     }
   }
 
-  // ─── 4H SUPPORT BREAKUP → PRIMARY LONG ───
+  // ─── 4H SUPPORT BREAKUP → LONG ───
   for (const line of support4h) {
     if (isTrendlineExpired(line, candles4h.length - 1)) continue;
-    
+
     const lineAge = candles4h.length - 1 - line.endIdx;
     if (lineAge < 3) continue;
 
     const linePrice = line.slope * (candles4h.length - 1) + line.intercept;
     const trendlineKey = getTrendlineKey(pair, line);
 
-    // Check cooldown
+    // Cooldown check
     const existing = activeTrades[pair];
     if (existing && existing.trendlineKey === trendlineKey && Date.now() - existing.timestamp < 4 * 60 * 60 * 1000) {
       continue;
@@ -441,14 +432,14 @@ export async function generateSignal(
 
     // 4H close confirmation
     if (prev4h.close < linePrice && current4h.close > linePrice) {
-      // 1H confirmation: 1H should be bullish
+      // 1H confirmation
       if (!is1HConfirming("LONG", candles1h)) continue;
-      
-      // Momentum alignment: don't long into falling stoch
+
+      // Momentum alignment
       if (!isMomentumAligned("LONG", stoch.k, stoch.d, rsi)) continue;
 
       const { stop, target, rr, isChop: chopFlag } = findStopAndTarget(candles4h, "LONG", price, structure4h, adx4h);
-      
+
       const type: SignalType = chopFlag ? "CHEEKY" : "PRIMARY";
       const minConf = chopFlag ? 50 : 65;
       const minRR = chopFlag ? 1.2 : 1.5;
