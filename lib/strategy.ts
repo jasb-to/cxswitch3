@@ -34,7 +34,6 @@ export interface Signal extends MarketData {
   expectedMove: number;
   candles1h: Candle[];
   candles4h: Candle[];
-  trendlineKey: string;
 }
 
 interface Trendline {
@@ -263,8 +262,6 @@ function calcATR(candles: Candle[], period = 14): number {
 }
 
 // ─── CHOP-AWARE STOPS & TARGETS ───
-// In chop (RANGE + ADX < 28): tighter stops (2.0× ATR), smaller targets (1.5× ATR)
-// In trend: wider stops (2.5× ATR), bigger targets (2.5× ATR)
 function findStopAndTarget(candles: Candle[], direction: Direction, entry: number, structure: Structure, adx: number) {
   const atr = calcATR(candles, 14);
   let stop: number, target: number;
@@ -290,24 +287,21 @@ function findStopAndTarget(candles: Candle[], direction: Direction, entry: numbe
 }
 
 // ─── MOMENTUM ALIGNMENT ───
-// For LONG: stoch rising (K > D), not extremely overbought
-// For SHORT: stoch falling (K < D), not extremely oversold
 function isMomentumAligned(direction: Direction, stochK: number, stochD: number, rsi: number): boolean {
   if (direction === "LONG") {
-    if (stochK < stochD) return false; // falling momentum
-    if (stochK > 85 && stochD > 80) return false; // extremely overbought
+    if (stochK < stochD) return false;
+    if (stochK > 85 && stochD > 80) return false;
     if (rsi > 70) return false;
     return true;
   } else {
-    if (stochK > stochD) return false; // rising momentum
-    if (stochK < 15 && stochD < 20) return false; // extremely oversold
+    if (stochK > stochD) return false;
+    if (stochK < 15 && stochD < 20) return false;
     if (rsi < 30) return false;
     return true;
   }
 }
 
 // ─── 1H CONFIRMATION ───
-// After 4H break, 1H should be moving in same direction
 function is1HConfirming(direction: Direction, candles1h: Candle[]): boolean {
   const recent = candles1h.slice(-3);
   if (direction === "LONG") {
@@ -319,15 +313,21 @@ function is1HConfirming(direction: Direction, candles1h: Candle[]): boolean {
   }
 }
 
-function getTrendlineKey(pair: string, line: Trendline): string {
-  return `${pair}_${line.isSupport ? "S" : "R"}_${line.slope.toFixed(4)}_${line.intercept.toFixed(2)}`;
+// ─── PAIR-LEVEL COOLDOWN ───
+// Block same-direction signal on same pair for 4 hours
+function isOnCooldown(pair: string, direction: Direction, activeTrades: Record<string, { direction: string; timestamp: number }>): boolean {
+  const existing = activeTrades[pair];
+  if (!existing) return false;
+  if (existing.direction !== direction) return false;
+  const hoursSince = (Date.now() - existing.timestamp) / (1000 * 60 * 60);
+  return hoursSince < 4;
 }
 
 export async function generateSignal(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
-  activeTrades: Record<string, { trendlineKey: string; timestamp: number; direction: string }> = {}
+  activeTrades: Record<string, { direction: string; timestamp: number }> = {}
 ): Promise<{ signal: Signal | null; market: MarketData }> {
   const current4h = candles4h[candles4h.length - 1];
   const prev4h = candles4h[candles4h.length - 2];
@@ -374,16 +374,12 @@ export async function generateSignal(
     if (lineAge < 3) continue;
 
     const linePrice = line.slope * (candles4h.length - 1) + line.intercept;
-    const trendlineKey = getTrendlineKey(pair, line);
-
-    // Cooldown check
-    const existing = activeTrades[pair];
-    if (existing && existing.trendlineKey === trendlineKey && Date.now() - existing.timestamp < 4 * 60 * 60 * 1000) {
-      continue;
-    }
 
     // 4H close confirmation
     if (prev4h.close > linePrice && current4h.close < linePrice) {
+      // Pair-level cooldown
+      if (isOnCooldown(pair, "SHORT", activeTrades)) continue;
+
       // 1H confirmation
       if (!is1HConfirming("SHORT", candles1h)) continue;
 
@@ -407,7 +403,7 @@ export async function generateSignal(
             pair, direction: "SHORT", type, confidence, entry: price, stop, target, rr,
             reason: `BREAKDOWN SHORT | SRC:4H_${type} | TL(${line.touches.length}touches,RESISTANCE,slope:${line.slope.toFixed(4)},age:${lineAge}bars) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch:${stoch.k.toFixed(1)}/${stoch.d.toFixed(1)}`,
             timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
-            candles1h, candles4h, trendlineKey,
+            candles1h, candles4h,
           };
         }
       }
@@ -422,16 +418,12 @@ export async function generateSignal(
     if (lineAge < 3) continue;
 
     const linePrice = line.slope * (candles4h.length - 1) + line.intercept;
-    const trendlineKey = getTrendlineKey(pair, line);
-
-    // Cooldown check
-    const existing = activeTrades[pair];
-    if (existing && existing.trendlineKey === trendlineKey && Date.now() - existing.timestamp < 4 * 60 * 60 * 1000) {
-      continue;
-    }
 
     // 4H close confirmation
     if (prev4h.close < linePrice && current4h.close > linePrice) {
+      // Pair-level cooldown
+      if (isOnCooldown(pair, "LONG", activeTrades)) continue;
+
       // 1H confirmation
       if (!is1HConfirming("LONG", candles1h)) continue;
 
@@ -455,7 +447,7 @@ export async function generateSignal(
             pair, direction: "LONG", type, confidence, entry: price, stop, target, rr,
             reason: `BREAKUP LONG | SRC:4H_${type} | TL(${line.touches.length}touches,SUPPORT,slope:${line.slope.toFixed(4)},age:${lineAge}bars) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch:${stoch.k.toFixed(1)}/${stoch.d.toFixed(1)}`,
             timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
-            candles1h, candles4h, trendlineKey,
+            candles1h, candles4h,
           };
         }
       }
