@@ -4,8 +4,8 @@ import { getSignals, getMarketData } from "@/lib/state";
 export const runtime = "nodejs";
 
 export async function GET() {
-  const signals = getSignals();
-  const marketData = getMarketData();
+  const signals = await getSignals();
+  const marketData = await getMarketData();
 
   const enriched = (Array.isArray(signals) ? signals : []).map((s: any) => {
     const isPrimary = s.type === "PRIMARY";
@@ -23,7 +23,7 @@ export async function GET() {
 
   return NextResponse.json({
     signals: enriched,
-    marketData: marketData || [],
+    marketData: Array.isArray(marketData) ? marketData : [],
     updatedAt: new Date().toISOString(),
   });
 }
