@@ -314,13 +314,9 @@ function is1HConfirming(direction: Direction, candles1h: Candle[]): boolean {
 }
 
 // ─── PAIR-LEVEL COOLDOWN ───
-// Block same-direction signal on same pair for 4 hours
+// TEMPORARILY DISABLED for pipeline testing
 function isOnCooldown(pair: string, direction: Direction, activeTrades: Record<string, { direction: string; timestamp: number }>): boolean {
-  const existing = activeTrades[pair];
-  if (!existing) return false;
-  if (existing.direction !== direction) return false;
-  const hoursSince = (Date.now() - existing.timestamp) / (1000 * 60 * 60);
-  return hoursSince < 4;
+  return false;
 }
 
 export async function generateSignal(
