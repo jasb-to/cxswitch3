@@ -7,11 +7,19 @@ const SIGNALS_KEY = "cx_signals_v2";
 const MARKET_KEY = "cx_market_v2";
 const ACTIVE_TRADES_KEY = "cx_active_trades";
 
+// Strip heavy candle arrays before saving to KV
+function stripCandles(signal: Signal): Omit<Signal, "candles1h" | "candles4h"> {
+  const { candles1h, candles4h, ...rest } = signal;
+  return rest;
+}
+
 export async function setSignals(data: Signal[]) {
   const signals = Array.isArray(data) ? data : [];
   try {
-    await redis.set(SIGNALS_KEY, signals);
-    console.log("[STATE] Saved", signals.length, "signals to KV");
+    // Strip candles to stay under KV size limits
+    const leanSignals = signals.map(stripCandles);
+    await redis.set(SIGNALS_KEY, leanSignals);
+    console.log("[STATE] Saved", leanSignals.length, "signals to KV");
   } catch (err) {
     console.error("[STATE] Signals KV write failed:", err);
   }
