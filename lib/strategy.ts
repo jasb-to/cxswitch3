@@ -1,4 +1,7 @@
-// strategy.ts — Complete rewrite
+// lib/strategy.ts
+// ============================================================
+// CX Switch — Trendline Break Strategy (Rewrite v2)
+// Compatible with existing state.ts, cron/route.ts, signals/route.ts, telegram.ts, page.tsx
 // ============================================================
 
 export type Structure = "UPTREND" | "DOWNTREND" | "RANGE";
@@ -46,10 +49,10 @@ interface Trendline {
   intercept: number;
   startIdx: number;
   endIdx: number;
-  touches: number[];      // indices of candles that touched
+  touches: number[];
   touchTypes: ("wick" | "body")[];
   isSupport: boolean;
-  strength: number;       // 0-100 score
+  strength: number;
 }
 
 interface SwingPoint {
