@@ -1,7 +1,5 @@
-// lib/strategy.ts — v4
-// ============================================================
-// CX Switch — Trendline Break Strategy (Rewrite v4)
-// Key fix: Extended break lookback + visual trendline matching
+// lib/strategy.ts — v5
+// Key fix: Freshness-first trendline selection + tight crossLag limits
 // ============================================================
 
 export type Structure = "UPTREND" | "DOWNTREND" | "RANGE";
@@ -78,7 +76,7 @@ interface DebugInfo {
   chandelierLong: string;
   chandelierShort: string;
   chandelierSlope: string;
-  trendlinesFound: { resistance: number; support: number; activeSupport: number; activeResistance: number };
+  trendlinesFound: { resistance: number; support: number; freshSupport: number; freshResistance: number };
   blocks: string[];
   linesChecked: number;
   breaksDetected: { long: number; short: number };
@@ -86,7 +84,7 @@ interface DebugInfo {
 }
 
 // ============================================================
-// SWING DETECTION — TUNABLE
+// SWING DETECTION
 // ============================================================
 
 function swingHighs(candles: Candle[], lookback = 3): SwingPoint[] {
@@ -153,24 +151,24 @@ function linearRegression(points: { x: number; y: number }[]) {
 }
 
 // ============================================================
-// TRENDLINE DETECTION v4 — VISUAL MATCHING
+// TRENDLINE DETECTION v5 — FRESHNESS-FIRST
 // ============================================================
 
 function findTrendlines(candles: Candle[], swings: SwingPoint[], isSupport: boolean): Trendline[] {
   const lines: Trendline[] = [];
-  const maxAge = 50; // Slightly tighter
+  const maxAge = 30; // Tighter: max 5 days on 4H
   const tolerance = 0.004;
 
   for (let i = 0; i < swings.length; i++) {
     for (let j = i + 1; j < swings.length; j++) {
       const p1 = swings[i];
       const p2 = swings[j];
-      if (p2.idx - p1.idx < 6) continue;
+      if (p2.idx - p1.idx < 5) continue; // Min 5 candles
       if (p2.idx - p1.idx > maxAge) break;
 
       const points = [{ x: p1.idx, y: p1.price }, { x: p2.idx, y: p2.price }];
       const { slope, intercept, r2 } = linearRegression(points);
-      if (r2 < 0.75) continue; // Even looser for visual lines
+      if (r2 < 0.80) continue;
 
       const touches: number[] = [p1.idx, p2.idx];
       const touchTypes: ("wick" | "body" | "close")[] = ["wick", "wick"];
@@ -205,19 +203,20 @@ function findTrendlines(candles: Candle[], swings: SwingPoint[], isSupport: bool
       const span = p2.idx - p1.idx;
       const recency = candles.length - 1 - p2.idx;
       
-      // Visual trendline score: prioritize recent, clean, 2-3 touch lines
-      // Your chart lines have 2-3 touches, span ~10-20 candles, recent end
-      const recencyBonus = recency < 5 ? 30 : recency < 10 ? 15 : 0;
-      const spanScore = span >= 8 && span <= 25 ? 20 : span > 25 ? 10 : 0;
-      const touchScore = touches.length === 3 ? 25 : touches.length === 2 ? 15 : touches.length * 8;
-      const wickBonus = wickCount >= 2 ? 15 : 0;
+      // FRESHNESS-FIRST scoring
+      // Your chart lines: 2-3 touches, span 8-20, recency 0-3
+      const recencyScore = recency === 0 ? 50 : recency <= 2 ? 35 : recency <= 5 ? 15 : 0;
+      const spanScore = span >= 8 && span <= 20 ? 25 : span > 20 && span <= 30 ? 15 : span < 8 ? 5 : 0;
+      const touchScore = touches.length === 3 ? 20 : touches.length === 2 ? 10 : touches.length * 5;
+      const wickBonus = wickCount >= 2 ? 10 : 0;
       
       const strength = Math.min(100,
-        touchScore + spanScore + recencyBonus + wickBonus + (r2 * 10)
+        recencyScore + spanScore + touchScore + wickBonus + (r2 * 10)
       );
 
-      // Accept 2-touch lines if they're recent and have good span
-      const hasQuality = touches.length >= 2 && span >= 6 && recency <= 15;
+      // MUST be recent to be considered
+      const isFresh = recency <= 5;
+      const hasQuality = touches.length >= 2 && span >= 5 && isFresh;
       
       if (hasQuality) {
         lines.push({ 
@@ -228,7 +227,6 @@ function findTrendlines(candles: Candle[], swings: SwingPoint[], isSupport: bool
     }
   }
 
-  // Deduplicate
   const unique: Trendline[] = [];
   for (const line of lines) {
     const isDup = unique.some((u) => {
@@ -244,44 +242,51 @@ function findTrendlines(candles: Candle[], swings: SwingPoint[], isSupport: bool
 }
 
 function isTrendlineExpired(line: Trendline, currentIdx: number): boolean {
-  return currentIdx - line.endIdx > 30; // Tighter: 30 candles = 5 days on 4H
+  return currentIdx - line.endIdx > 8; // Very tight: 32h max
 }
 
-// Get ACTIVE trendlines — price is near them OR recently crossed them
-function getActiveTrendlines(lines: Trendline[], candles: Candle[], maxLines: number = 8): Trendline[] {
+// Get FRESH trendlines — ended recently, price near or just crossed
+function getFreshTrendlines(lines: Trendline[], candles: Candle[], maxLines: number = 5): Trendline[] {
   const currentIdx = candles.length - 1;
   const currentPrice = candles[currentIdx].close;
   const atr = calcATR(candles, 14);
   
   return lines
     .filter(line => {
+      // Must have ended very recently
+      if (line.recency > 5) return false;
+      
       const linePrice = line.slope * currentIdx + line.intercept;
       const distance = Math.abs(currentPrice - linePrice);
       const distancePct = distance / currentPrice;
       
-      // Active if:
-      // 1. Price is within 4× ATR of line (about to break or just broke)
-      // 2. OR price crossed the line in last 6 candles
-      // 3. OR line ended very recently (within 3 candles)
-      const nearLine = distance < (4 * atr) || distancePct < 0.04;
+      // Near line (about to break or just broke)
+      const nearLine = distance < (3 * atr) || distancePct < 0.03;
       
-      let recentlyCrossed = false;
-      for (let i = currentIdx; i > Math.max(1, currentIdx - 6); i--) {
-        const prevPrice = candles[i-1].close;
-        const currPrice = candles[i].close;
-        const prevLinePrice = line.slope * (i-1) + line.intercept;
-        const currLinePrice = line.slope * i + line.intercept;
-        
-        if (line.isSupport) {
-          if (prevPrice < prevLinePrice && currPrice > currLinePrice) recentlyCrossed = true;
-        } else {
-          if (prevPrice > prevLinePrice && currPrice < currLinePrice) recentlyCrossed = true;
+      // Or already broke and within follow-through window
+      let recentlyBroke = false;
+      if (line.isSupport && currentPrice > linePrice) {
+        // Check if cross was within last 2 candles
+        for (let i = currentIdx; i > Math.max(1, currentIdx - 3); i--) {
+          const prevLinePrice = line.slope * (i-1) + line.intercept;
+          const currLinePrice = line.slope * i + line.intercept;
+          if (candles[i-1].close < prevLinePrice && candles[i].close > currLinePrice) {
+            recentlyBroke = true;
+            break;
+          }
+        }
+      } else if (!line.isSupport && currentPrice < linePrice) {
+        for (let i = currentIdx; i > Math.max(1, currentIdx - 3); i--) {
+          const prevLinePrice = line.slope * (i-1) + line.intercept;
+          const currLinePrice = line.slope * i + line.intercept;
+          if (candles[i-1].close > prevLinePrice && candles[i].close < currLinePrice) {
+            recentlyBroke = true;
+            break;
+          }
         }
       }
       
-      const veryRecent = line.recency <= 3;
-      
-      return nearLine || recentlyCrossed || veryRecent;
+      return nearLine || recentlyBroke;
     })
     .slice(0, maxLines);
 }
@@ -521,17 +526,16 @@ function isOnCooldown(pair: string, direction: Direction, activeTrades: Record<s
   return hoursSince < 3;
 }
 
-// ─── BREAK DETECTION v4 — EXTENDED LOOKBACK + POST-BREAK ───
+// ─── BREAK DETECTION v5 — TIGHT + FRESHNESS ───
 function findBreak(
   candles: Candle[],
   line: Trendline,
-  direction: "LONG" | "SHORT",
-  maxLookback: number = 8
-): { found: boolean; crossIdx: number; crossPrice: number; crossLag: number; isPostBreak: boolean } {
+  direction: "LONG" | "SHORT"
+): { found: boolean; crossIdx: number; crossPrice: number; crossLag: number } {
   const currentIdx = candles.length - 1;
   
-  // First: check for recent cross (within maxLookback)
-  for (let i = currentIdx; i > Math.max(1, currentIdx - maxLookback); i--) {
+  // ONLY check last 2 candles for fresh breaks
+  for (let i = currentIdx; i > Math.max(1, currentIdx - 2); i--) {
     const candle = candles[i];
     const prevCandle = candles[i - 1];
     const linePrice = line.slope * i + line.intercept;
@@ -540,53 +544,27 @@ function findBreak(
     if (direction === "LONG") {
       const prevBelow = prevCandle.close < prevLinePrice;
       const currAbove = candle.close > linePrice;
-      const wasNearLine = Math.abs(prevCandle.close - prevLinePrice) / prevLinePrice < 0.01;
+      const wasNearLine = Math.abs(prevCandle.close - prevLinePrice) / prevLinePrice < 0.012;
       
       if ((prevBelow && currAbove) || (wasNearLine && currAbove)) {
-        return { found: true, crossIdx: i, crossPrice: candle.close, crossLag: currentIdx - i, isPostBreak: false };
+        return { found: true, crossIdx: i, crossPrice: candle.close, crossLag: currentIdx - i };
       }
     } else {
       const prevAbove = prevCandle.close > prevLinePrice;
       const currBelow = candle.close < linePrice;
-      const wasNearLine = Math.abs(prevCandle.close - prevLinePrice) / prevLinePrice < 0.01;
+      const wasNearLine = Math.abs(prevCandle.close - prevLinePrice) / prevLinePrice < 0.012;
       
       if ((prevAbove && currBelow) || (wasNearLine && currBelow)) {
-        return { found: true, crossIdx: i, crossPrice: candle.close, crossLag: currentIdx - i, isPostBreak: false };
+        return { found: true, crossIdx: i, crossPrice: candle.close, crossLag: currentIdx - i };
       }
     }
   }
   
-  // Second: check if we're in post-break follow-through
-  // Price is on the correct side of line, line is still relevant, break was recent enough
-  const currentLinePrice = line.slope * currentIdx + line.intercept;
-  const currentPrice = candles[currentIdx].close;
-  
-  if (direction === "LONG" && currentPrice > currentLinePrice) {
-    // Find when price first crossed above
-    for (let i = currentIdx - 1; i > Math.max(0, currentIdx - maxLookback - 4); i--) {
-      const prevLinePrice = line.slope * (i-1) + line.intercept;
-      const currLinePrice = line.slope * i + line.intercept;
-      if (candles[i-1].close < prevLinePrice && candles[i].close > currLinePrice) {
-        return { found: true, crossIdx: i, crossPrice: candles[i].close, crossLag: currentIdx - i, isPostBreak: true };
-      }
-    }
-  }
-  
-  if (direction === "SHORT" && currentPrice < currentLinePrice) {
-    for (let i = currentIdx - 1; i > Math.max(0, currentIdx - maxLookback - 4); i--) {
-      const prevLinePrice = line.slope * (i-1) + line.intercept;
-      const currLinePrice = line.slope * i + line.intercept;
-      if (candles[i-1].close > prevLinePrice && candles[i].close < currLinePrice) {
-        return { found: true, crossIdx: i, crossPrice: candles[i].close, crossLag: currentIdx - i, isPostBreak: true };
-      }
-    }
-  }
-  
-  return { found: false, crossIdx: -1, crossPrice: 0, crossLag: 0, isPostBreak: false };
+  return { found: false, crossIdx: -1, crossPrice: 0, crossLag: 0 };
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATOR v4
+// MAIN SIGNAL GENERATOR v5
 // ============================================================
 
 export async function generateSignal(
@@ -635,7 +613,7 @@ export async function generateSignal(
     chandelierLong: chandelier.long.toFixed(2),
     chandelierShort: chandelier.short.toFixed(2),
     chandelierSlope: chandelier.slope.toFixed(4),
-    trendlinesFound: { resistance: 0, support: 0, activeSupport: 0, activeResistance: 0 },
+    trendlinesFound: { resistance: 0, support: 0, freshSupport: 0, freshResistance: 0 },
     blocks: [],
     linesChecked: 0,
     breaksDetected: { long: 0, short: 0 },
@@ -648,9 +626,9 @@ export async function generateSignal(
     return { signal: null, market, debug: debugInfo };
   }
 
-  const isDeepChop = structure4h === "RANGE" && adx4h < 15; // Even looser
+  const isDeepChop = structure4h === "RANGE" && adx4h < 15;
   
-  const highs4h = swingHighs(candles4h, 3); // Back to 3 for more swing points
+  const highs4h = swingHighs(candles4h, 3);
   const lows4h = swingLows(candles4h, 3);
   const resistance4h = findTrendlines(candles4h, highs4h, false);
   const support4h = findTrendlines(candles4h, lows4h, true);
@@ -658,26 +636,26 @@ export async function generateSignal(
   debugInfo.trendlinesFound.resistance = resistance4h.length;
   debugInfo.trendlinesFound.support = support4h.length;
 
-  // Get ACTIVE trendlines — near price or recently crossed
-  const activeResistance = getActiveTrendlines(resistance4h, candles4h, 8);
-  const activeSupport = getActiveTrendlines(support4h, candles4h, 8);
+  // Get ONLY fresh trendlines
+  const freshResistance = getFreshTrendlines(resistance4h, candles4h, 5);
+  const freshSupport = getFreshTrendlines(support4h, candles4h, 5);
   
-  debugInfo.trendlinesFound.activeResistance = activeResistance.length;
-  debugInfo.trendlinesFound.activeSupport = activeSupport.length;
+  debugInfo.trendlinesFound.freshResistance = freshResistance.length;
+  debugInfo.trendlinesFound.freshSupport = freshSupport.length;
   
-  if (activeSupport.length > 0) {
-    const top = activeSupport[0];
+  if (freshSupport.length > 0) {
+    const top = freshSupport[0];
     const linePrice = top.slope * (candles4h.length - 1) + top.intercept;
     debugInfo.topLines.support = `strength:${top.strength.toFixed(0)},touches:${top.touches.length},span:${top.span},recency:${top.recency},price:${linePrice.toFixed(2)},dist:${((price-linePrice)/price*100).toFixed(2)}%`;
   }
-  if (activeResistance.length > 0) {
-    const top = activeResistance[0];
+  if (freshResistance.length > 0) {
+    const top = freshResistance[0];
     const linePrice = top.slope * (candles4h.length - 1) + top.intercept;
     debugInfo.topLines.resistance = `strength:${top.strength.toFixed(0)},touches:${top.touches.length},span:${top.span},recency:${top.recency},price:${linePrice.toFixed(2)},dist:${((price-linePrice)/price*100).toFixed(2)}%`;
   }
 
-  if (isDeepChop && activeResistance.length === 0 && activeSupport.length === 0) {
-    debugInfo.blocks.push("deep_chop_no_active_trendlines");
+  if (isDeepChop && freshResistance.length === 0 && freshSupport.length === 0) {
+    debugInfo.blocks.push("deep_chop_no_fresh_trendlines");
     console.log(`[DEBUG] ${pair}:`, JSON.stringify(debugInfo));
     return { signal: null, market, debug: debugInfo };
   }
@@ -686,15 +664,21 @@ export async function generateSignal(
   let bestScore = 0;
 
   // ─── 4H RESISTANCE BREAKDOWN → SHORT ───
-  for (const line of activeResistance) {
+  for (const line of freshResistance) {
     if (isTrendlineExpired(line, candles4h.length - 1)) continue;
 
     debugInfo.linesChecked++;
 
-    const breakInfo = findBreak(candles4h, line, "SHORT", 8);
+    const breakInfo = findBreak(candles4h, line, "SHORT");
     
     if (!breakInfo.found) {
-      debugInfo.blocks.push(`no_cross_resistance(strength:${line.strength.toFixed(0)},recency:${line.recency})`);
+      debugInfo.blocks.push(`no_fresh_cross_resistance(strength:${line.strength.toFixed(0)},recency:${line.recency})`);
+      continue;
+    }
+    
+    // CRITICAL: Reject stale breaks
+    if (breakInfo.crossLag > 1) {
+      debugInfo.blocks.push(`stale_break_short(crossLag:${breakInfo.crossLag})`);
       continue;
     }
     
@@ -727,9 +711,12 @@ export async function generateSignal(
 
     const { stop, target, rr, isChop: chopFlag } = findStopAndTarget(candles4h, "SHORT", price, structure4h, adx4h);
     const type: SignalType = chopFlag ? "CHEEKY" : "PRIMARY";
-    const minConf = chopFlag ? 50 : 60;
+    
+    // Freshness bonus: crossLag 0 = +15, crossLag 1 = +5
+    const freshnessBonus = breakInfo.crossLag === 0 ? 15 : 5;
+    const minConf = chopFlag ? 55 : 65;
     const minRR = chopFlag ? 1.2 : 1.5;
-    const confidence = Math.min(100, 70 + (line.touches.length * 5) + (line.strength * 0.1) + (adx4h > 25 ? 10 : 0));
+    const confidence = Math.min(100, 55 + (line.touches.length * 4) + freshnessBonus + (line.strength * 0.1) + (adx4h > 25 ? 10 : 0));
 
     if (confidence >= minConf && rr >= minRR) {
       const expectedMove = ((price - target) / price) * 100;
@@ -743,7 +730,7 @@ export async function generateSignal(
         bestScore = score;
         bestSignal = {
           pair, direction: "SHORT", type, confidence, entry: price, stop, target, rr,
-          reason: `BREAKDOWN SHORT${breakInfo.isPostBreak ? "_FOLLOW" : ""} | SRC:4H_${type} | TL(${line.touches.length}touches,${line.touchTypes.filter(t=>t==="wick").length}wicks,RESISTANCE,slope:${line.slope.toFixed(4)},span:${line.span},recency:${line.recency},strength:${line.strength.toFixed(0)},crossLag:${breakInfo.crossLag}) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch4H:${stoch4h.k.toFixed(1)}/${stoch4h.d.toFixed(1)} | Chandelier:${chandelier.short.toFixed(2)}`,
+          reason: `BREAKDOWN SHORT | SRC:4H_${type} | FRESH(crossLag:${breakInfo.crossLag}) | TL(${line.touches.length}touches,${line.touchTypes.filter(t=>t==="wick").length}wicks,RESISTANCE,slope:${line.slope.toFixed(4)},span:${line.span},recency:${line.recency},strength:${line.strength.toFixed(0)}) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch4H:${stoch4h.k.toFixed(1)}/${stoch4h.d.toFixed(1)} | Chandelier:${chandelier.short.toFixed(2)}`,
           timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d, expectedMove,
           candles1h, candles4h,
         };
@@ -752,15 +739,21 @@ export async function generateSignal(
   }
 
   // ─── 4H SUPPORT BREAKUP → LONG ───
-  for (const line of activeSupport) {
+  for (const line of freshSupport) {
     if (isTrendlineExpired(line, candles4h.length - 1)) continue;
 
     debugInfo.linesChecked++;
 
-    const breakInfo = findBreak(candles4h, line, "LONG", 8);
+    const breakInfo = findBreak(candles4h, line, "LONG");
     
     if (!breakInfo.found) {
-      debugInfo.blocks.push(`no_cross_support(strength:${line.strength.toFixed(0)},recency:${line.recency})`);
+      debugInfo.blocks.push(`no_fresh_cross_support(strength:${line.strength.toFixed(0)},recency:${line.recency})`);
+      continue;
+    }
+    
+    // CRITICAL: Reject stale breaks
+    if (breakInfo.crossLag > 1) {
+      debugInfo.blocks.push(`stale_break_long(crossLag:${breakInfo.crossLag})`);
       continue;
     }
     
@@ -793,9 +786,11 @@ export async function generateSignal(
 
     const { stop, target, rr, isChop: chopFlag } = findStopAndTarget(candles4h, "LONG", price, structure4h, adx4h);
     const type: SignalType = chopFlag ? "CHEEKY" : "PRIMARY";
-    const minConf = chopFlag ? 50 : 60;
+    
+    const freshnessBonus = breakInfo.crossLag === 0 ? 15 : 5;
+    const minConf = chopFlag ? 55 : 65;
     const minRR = chopFlag ? 1.2 : 1.5;
-    const confidence = Math.min(100, 70 + (line.touches.length * 5) + (line.strength * 0.1) + (adx4h > 25 ? 10 : 0));
+    const confidence = Math.min(100, 55 + (line.touches.length * 4) + freshnessBonus + (line.strength * 0.1) + (adx4h > 25 ? 10 : 0));
 
     if (confidence >= minConf && rr >= minRR) {
       const expectedMove = ((target - price) / price) * 100;
@@ -809,7 +804,7 @@ export async function generateSignal(
         bestScore = score;
         bestSignal = {
           pair, direction: "LONG", type, confidence, entry: price, stop, target, rr,
-          reason: `BREAKUP LONG${breakInfo.isPostBreak ? "_FOLLOW" : ""} | SRC:4H_${type} | TL(${line.touches.length}touches,${line.touchTypes.filter(t=>t==="wick").length}wicks,SUPPORT,slope:${line.slope.toFixed(4)},span:${line.span},recency:${line.recency},strength:${line.strength.toFixed(0)},crossLag:${breakInfo.crossLag}) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch4H:${stoch4h.k.toFixed(1)}/${stoch4h.d.toFixed(1)} | Chandelier:${chandelier.long.toFixed(2)}`,
+          reason: `BREAKUP LONG | SRC:4H_${type} | FRESH(crossLag:${breakInfo.crossLag}) | TL(${line.touches.length}touches,${line.touchTypes.filter(t=>t==="wick").length}wicks,SUPPORT,slope:${line.slope.toFixed(4)},span:${line.span},recency:${line.recency},strength:${line.strength.toFixed(0)}) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch4H:${stoch4h.k.toFixed(1)}/${stoch4h.d.toFixed(1)} | Chandelier:${chandelier.long.toFixed(2)}`,
           timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d, expectedMove,
           candles1h, candles4h,
         };
@@ -821,9 +816,9 @@ export async function generateSignal(
     if (bestScore > 0) {
       debugInfo.blocks.push(`score_too_low(${bestScore.toFixed(1)})`);
     } else if (debugInfo.breaksDetected.long === 0 && debugInfo.breaksDetected.short === 0) {
-      debugInfo.blocks.push("no_break_detected");
+      debugInfo.blocks.push("no_fresh_break_detected");
     } else {
-      debugInfo.blocks.push("all_breaks_filtered");
+      debugInfo.blocks.push("all_fresh_breaks_filtered");
     }
   }
 
