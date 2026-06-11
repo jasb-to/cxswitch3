@@ -1,5 +1,5 @@
-// lib/strategy.ts — v7
-// Key fixes: Shorter cooldown + per-trendline cooldown + tighter lastTouch + better line selection
+// lib/strategy.ts — v7b
+// Key fixes: Broken-line freshness + 30min cooldown + cron cooldown handling
 // ============================================================
 
 export type Structure = "UPTREND" | "DOWNTREND" | "RANGE";
@@ -151,12 +151,12 @@ function linearRegression(points: { x: number; y: number }[]) {
 }
 
 // ============================================================
-// TRENDLINE DETECTION v7 — TIGHT LAST TOUCH
+// TRENDLINE DETECTION v7b
 // ============================================================
 
 function findTrendlines(candles: Candle[], swings: SwingPoint[], isSupport: boolean): Trendline[] {
   const lines: Trendline[] = [];
-  const maxAge = 40;
+  const maxAge = 50;
   const tolerance = 0.004;
 
   for (let i = 0; i < swings.length; i++) {
@@ -204,9 +204,8 @@ function findTrendlines(candles: Candle[], swings: SwingPoint[], isSupport: bool
       const lastTouchIdx = Math.max(...touches);
       const trueRecency = candles.length - 1 - lastTouchIdx;
       
-      // Heavily weight VERY recent last touch
-      const recencyScore = trueRecency === 0 ? 50 : trueRecency <= 1 ? 40 : trueRecency <= 2 ? 25 : trueRecency <= 4 ? 10 : 0;
-      const spanScore = span >= 8 && span <= 25 ? 20 : span > 25 ? 10 : span < 8 ? 5 : 0;
+      const recencyScore = trueRecency <= 2 ? 40 : trueRecency <= 5 ? 25 : trueRecency <= 10 ? 10 : 0;
+      const spanScore = span >= 8 && span <= 30 ? 20 : span > 30 ? 10 : span < 8 ? 5 : 0;
       const touchScore = touches.length >= 3 ? 20 : touches.length === 2 ? 10 : touches.length * 5;
       const wickBonus = wickCount >= 2 ? 10 : 0;
       
@@ -214,8 +213,7 @@ function findTrendlines(candles: Candle[], swings: SwingPoint[], isSupport: bool
         recencyScore + spanScore + touchScore + wickBonus + (r2 * 8)
       );
 
-      // MUST have been touched very recently
-      const isFresh = trueRecency <= 4; // Last touch within 16 hours on 4H
+      const isFresh = trueRecency <= 10; // Last touch within 40h
       const hasQuality = touches.length >= 2 && span >= 5 && isFresh;
       
       if (hasQuality) {
@@ -242,34 +240,53 @@ function findTrendlines(candles: Candle[], swings: SwingPoint[], isSupport: bool
 }
 
 function isTrendlineExpired(line: Trendline, currentIdx: number): boolean {
-  return currentIdx - line.lastTouchIdx > 6; // 24h max
+  return currentIdx - line.lastTouchIdx > 12; // 48h max
 }
 
-// Get VERY fresh trendlines — last touch within 3 candles (12h)
-function getFreshTrendlines(lines: Trendline[], candles: Candle[], maxLines: number = 5): Trendline[] {
+// Get fresh trendlines — considers recent breaks, not just recent touches
+function getFreshTrendlines(lines: Trendline[], candles: Candle[], maxLines: number = 6): Trendline[] {
   const currentIdx = candles.length - 1;
   const currentPrice = candles[currentIdx].close;
   const atr = calcATR(candles, 14);
   
   return lines
     .filter(line => {
-      // CRITICAL: Last touch must be VERY recent
-      if (currentIdx - line.lastTouchIdx > 3) return false; // 12h max
-      
       const linePrice = line.slope * currentIdx + line.intercept;
       const distance = Math.abs(currentPrice - linePrice);
       const distancePct = distance / currentPrice;
       
-      // Price within 3× ATR or 3% of line
+      // Check if recently broken (within last 4 candles = 16h)
+      let recentlyBroken = false;
+      let breakRecency = 999;
+      
+      if (line.isSupport && currentPrice > linePrice) {
+        for (let i = currentIdx; i > Math.max(1, currentIdx - 4); i--) {
+          const prevLinePrice = line.slope * (i-1) + line.intercept;
+          const currLinePrice = line.slope * i + line.intercept;
+          if (candles[i-1].close < prevLinePrice && candles[i].close > currLinePrice) {
+            recentlyBroken = true;
+            breakRecency = currentIdx - i;
+            break;
+          }
+        }
+      } else if (!line.isSupport && currentPrice < linePrice) {
+        for (let i = currentIdx; i > Math.max(1, currentIdx - 4); i--) {
+          const prevLinePrice = line.slope * (i-1) + line.intercept;
+          const currLinePrice = line.slope * i + line.intercept;
+          if (candles[i-1].close > prevLinePrice && candles[i].close < currLinePrice) {
+            recentlyBroken = true;
+            breakRecency = currentIdx - i;
+            break;
+          }
+        }
+      }
+      
+      // Fresh if: recently broken (within 3 candles) OR last touch recent OR near price
       const nearLine = distance < (3 * atr) || distancePct < 0.03;
+      const lastTouchRecent = currentIdx - line.lastTouchIdx <= 8; // 32h
+      const recentlyCrossed = recentlyBroken && breakRecency <= 3; // 12h
       
-      // For support: price at or above
-      // For resistance: price at or below  
-      const onCorrectSide = line.isSupport 
-        ? currentPrice >= linePrice - (1.5 * atr)
-        : currentPrice <= linePrice + (1.5 * atr);
-      
-      return nearLine || onCorrectSide;
+      return nearLine || lastTouchRecent || recentlyCrossed;
     })
     .slice(0, maxLines);
 }
@@ -500,32 +517,16 @@ function is1HConfirming(direction: Direction, candles1h: Candle[]): boolean {
   }
 }
 
-// ─── COOLDOWN v7 — PER-TRENDLINE + SHORTER ───
-function isOnCooldown(
-  pair: string, 
-  direction: Direction, 
-  line: Trendline,
-  activeTrades: Record<string, { direction: string; timestamp: number; lineSignature?: string }>
-): boolean {
+// ─── COOLDOWN v7b — 30 MINUTES ───
+function isOnCooldown(pair: string, direction: Direction, activeTrades: Record<string, any>): boolean {
   const existing = activeTrades[pair];
   if (!existing) return false;
-  
-  // Different direction = always allow
   if (existing.direction !== direction) return false;
-  
-  // Same trendline signature = longer cooldown (2h)
-  const lineSig = `${line.slope.toFixed(6)}_${line.intercept.toFixed(2)}`;
-  if (existing.lineSignature === lineSig) {
-    const hoursSince = (Date.now() - existing.timestamp) / (1000 * 60 * 60);
-    return hoursSince < 2;
-  }
-  
-  // Different trendline = shorter cooldown (45 min)
-  const hoursSince = (Date.now() - existing.timestamp) / (1000 * 60 * 60);
-  return hoursSince < 0.75;
+  const minutesSince = (Date.now() - existing.timestamp) / (1000 * 60);
+  return minutesSince < 30; // 30 min cooldown
 }
 
-// ─── BREAK DETECTION v7 ───
+// ─── BREAK DETECTION v7b ───
 function findBreak(
   candles: Candle[],
   line: Trendline,
@@ -562,14 +563,14 @@ function findBreak(
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATOR v7
+// MAIN SIGNAL GENERATOR v7b
 // ============================================================
 
 export async function generateSignal(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
-  activeTrades: Record<string, { direction: string; timestamp: number; lineSignature?: string }> = {}
+  activeTrades: Record<string, any> = {}
 ): Promise<{ signal: Signal | null; market: MarketData; debug?: DebugInfo }> {
   
   const current4h = candles4h[candles4h.length - 1];
@@ -634,8 +635,8 @@ export async function generateSignal(
   debugInfo.trendlinesFound.resistance = resistance4h.length;
   debugInfo.trendlinesFound.support = support4h.length;
 
-  const freshResistance = getFreshTrendlines(resistance4h, candles4h, 5);
-  const freshSupport = getFreshTrendlines(support4h, candles4h, 5);
+  const freshResistance = getFreshTrendlines(resistance4h, candles4h, 6);
+  const freshSupport = getFreshTrendlines(support4h, candles4h, 6);
   const allFreshLines = [...freshResistance, ...freshSupport].sort((a, b) => b.strength - a.strength);
   
   debugInfo.trendlinesFound.freshLines = allFreshLines.length;
@@ -660,7 +661,6 @@ export async function generateSignal(
   let bestSignal: Signal | null = null;
   let bestScore = 0;
 
-  // ─── CHECK ALL FRESH LINES FOR BREAKS ───
   for (const line of allFreshLines) {
     if (isTrendlineExpired(line, candles4h.length - 1)) continue;
 
@@ -717,7 +717,7 @@ export async function generateSignal(
         continue;
       }
       
-      if (isOnCooldown(pair, direction, line, activeTrades)) {
+      if (isOnCooldown(pair, direction, activeTrades)) {
         debugInfo.blocks.push("cooldown");
         continue;
       }
