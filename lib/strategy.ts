@@ -112,19 +112,19 @@ function linearRegression(points: { x: number; y: number }[]) {
 
 function findTrendlines(candles: Candle[], swings: SwingPoint[], isSupport: boolean): Trendline[] {
   const lines: Trendline[] = [];
-  const minTouches = 2;
+  const minTouches = 3;
   const maxAge = 60;
 
   for (let i = 0; i < swings.length; i++) {
     for (let j = i + 1; j < swings.length; j++) {
       const p1 = swings[i];
       const p2 = swings[j];
-      if (p2.idx - p1.idx < 5) continue;
+      if (p2.idx - p1.idx < 8) continue;
       if (p2.idx - p1.idx > maxAge) break;
 
       const points = [{ x: p1.idx, y: p1.price }, { x: p2.idx, y: p2.price }];
       const { slope, intercept, r2 } = linearRegression(points);
-      if (r2 < 0.85) continue;
+      if (r2 < 0.90) continue;
 
       const touches: number[] = [p1.idx, p2.idx];
       for (let k = p1.idx + 1; k < p2.idx; k++) {
@@ -153,7 +153,7 @@ function findTrendlines(candles: Candle[], swings: SwingPoint[], isSupport: bool
 }
 
 function isTrendlineExpired(line: Trendline, currentIdx: number): boolean {
-  return currentIdx - line.endIdx > 60;
+  return currentIdx - line.endIdx > 40;
 }
 
 function getStructure(candles: Candle[]): Structure {
@@ -261,6 +261,28 @@ function calcATR(candles: Candle[], period = 14): number {
   return sum / period;
 }
 
+// ─── CHANDELIER EXIT ───
+// Volatility-based trailing stop using ATR
+function calcChandelierExit(candles: Candle[], period = 22, atrMult = 3): { long: number; short: number; slope: number } {
+  const atr = calcATR(candles, period);
+  const highest = Math.max(...candles.slice(-period).map(c => c.high));
+  const lowest = Math.min(...candles.slice(-period).map(c => c.low));
+  const longExit = highest - atr * atrMult;
+  const shortExit = lowest + atr * atrMult;
+
+  // Calculate slope over last 10 bars
+  const recent = candles.slice(-10);
+  const xMean = (recent.length - 1) / 2;
+  let num = 0, den = 0;
+  for (let i = 0; i < recent.length; i++) {
+    num += (i - xMean) * recent[i].close;
+    den += Math.pow(i - xMean, 2);
+  }
+  const slope = den > 0 ? num / den : 0;
+
+  return { long: longExit, short: shortExit, slope };
+}
+
 // ─── CHOP-AWARE STOPS & TARGETS ───
 function findStopAndTarget(candles: Candle[], direction: Direction, entry: number, structure: Structure, adx: number) {
   const atr = calcATR(candles, 14);
@@ -301,6 +323,29 @@ function isMomentumAligned(direction: Direction, stochK: number, stochD: number,
   }
 }
 
+// ─── EMBEDDED STOCH CHECK ───
+// For SHORT: K must have been > 80 recently (embedded overbought)
+// For LONG: K must have been < 20 recently (embedded oversold)
+function wasStochEmbedded(direction: Direction, candles1h: Candle[]): boolean {
+  const recent = candles1h.slice(-10);
+  const stochs = recent.map((_, i) => {
+    if (i < 13) return null;
+    const slice = recent.slice(i - 13, i + 1);
+    const lowest = Math.min(...slice.map(c => c.low));
+    const highest = Math.max(...slice.map(c => c.high));
+    const current = slice[slice.length - 1].close;
+    return highest === lowest ? 50 : ((current - lowest) / (highest - lowest)) * 100;
+  }).filter((x): x is number => x !== null);
+
+  if (stochs.length < 3) return false;
+
+  if (direction === "SHORT") {
+    return stochs.some(k => k > 80);
+  } else {
+    return stochs.some(k => k < 20);
+  }
+}
+
 // ─── 1H CONFIRMATION ───
 function is1HConfirming(direction: Direction, candles1h: Candle[]): boolean {
   const recent = candles1h.slice(-3);
@@ -314,13 +359,12 @@ function is1HConfirming(direction: Direction, candles1h: Candle[]): boolean {
 }
 
 // ─── PAIR-LEVEL COOLDOWN ───
-// Block same-direction signal on same pair for 4 hours
 function isOnCooldown(pair: string, direction: Direction, activeTrades: Record<string, { direction: string; timestamp: number }>): boolean {
   const existing = activeTrades[pair];
   if (!existing) return false;
   if (existing.direction !== direction) return false;
   const hoursSince = (Date.now() - existing.timestamp) / (1000 * 60 * 60);
-  return hoursSince < 4;
+  return hoursSince < 3;
 }
 
 export async function generateSignal(
@@ -358,6 +402,9 @@ export async function generateSignal(
     return { signal: null, market };
   }
 
+  // ─── CHANDELIER EXIT FILTER ───
+  const chandelier = calcChandelierExit(candles4h, 22, 3);
+
   const highs4h = swingHighs(candles4h, 3);
   const lows4h = swingLows(candles4h, 3);
   const resistance4h = findTrendlines(candles4h, highs4h, false);
@@ -377,6 +424,12 @@ export async function generateSignal(
 
     // 4H close confirmation
     if (prev4h.close > linePrice && current4h.close < linePrice) {
+      // Chandelier filter: price must be below short exit (chandelier acting as resistance ceiling)
+      if (price > chandelier.short) continue;
+
+      // Chandelier slope: must be flat or down for shorts
+      if (chandelier.slope > 0.05) continue;
+
       // Pair-level cooldown
       if (isOnCooldown(pair, "SHORT", activeTrades)) continue;
 
@@ -385,6 +438,9 @@ export async function generateSignal(
 
       // Momentum alignment
       if (!isMomentumAligned("SHORT", stoch.k, stoch.d, rsi)) continue;
+
+      // Embedded stoch: must have been overbought recently
+      if (!wasStochEmbedded("SHORT", candles1h)) continue;
 
       const { stop, target, rr, isChop: chopFlag } = findStopAndTarget(candles4h, "SHORT", price, structure4h, adx4h);
 
@@ -395,13 +451,15 @@ export async function generateSignal(
       const confidence = Math.min(100, 70 + (line.touches.length * 5) + (adx4h > 25 ? 10 : 0));
 
       if (confidence >= minConf && rr >= minRR) {
+        const expectedMove = ((price - target) / price) * 100;
+        if (expectedMove < 5) continue;
+
         const score = confidence * rr;
         if (score > bestScore) {
           bestScore = score;
-          const expectedMove = ((price - target) / price) * 100;
           bestSignal = {
             pair, direction: "SHORT", type, confidence, entry: price, stop, target, rr,
-            reason: `BREAKDOWN SHORT | SRC:4H_${type} | TL(${line.touches.length}touches,RESISTANCE,slope:${line.slope.toFixed(4)},age:${lineAge}bars) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch:${stoch.k.toFixed(1)}/${stoch.d.toFixed(1)}`,
+            reason: `BREAKDOWN SHORT | SRC:4H_${type} | TL(${line.touches.length}touches,RESISTANCE,slope:${line.slope.toFixed(4)},age:${lineAge}bars) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch:${stoch.k.toFixed(1)}/${stoch.d.toFixed(1)} | Chandelier:${chandelier.short.toFixed(2)}`,
             timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
             candles1h, candles4h,
           };
@@ -421,6 +479,12 @@ export async function generateSignal(
 
     // 4H close confirmation
     if (prev4h.close < linePrice && current4h.close > linePrice) {
+      // Chandelier filter: price must be above long exit (chandelier acting as support floor)
+      if (price < chandelier.long) continue;
+
+      // Chandelier slope: must be flat or up for longs
+      if (chandelier.slope < -0.05) continue;
+
       // Pair-level cooldown
       if (isOnCooldown(pair, "LONG", activeTrades)) continue;
 
@@ -429,6 +493,9 @@ export async function generateSignal(
 
       // Momentum alignment
       if (!isMomentumAligned("LONG", stoch.k, stoch.d, rsi)) continue;
+
+      // Embedded stoch: must have been oversold recently
+      if (!wasStochEmbedded("LONG", candles1h)) continue;
 
       const { stop, target, rr, isChop: chopFlag } = findStopAndTarget(candles4h, "LONG", price, structure4h, adx4h);
 
@@ -439,13 +506,15 @@ export async function generateSignal(
       const confidence = Math.min(100, 70 + (line.touches.length * 5) + (adx4h > 25 ? 10 : 0));
 
       if (confidence >= minConf && rr >= minRR) {
+        const expectedMove = ((target - price) / price) * 100;
+        if (expectedMove < 5) continue;
+
         const score = confidence * rr;
         if (score > bestScore) {
           bestScore = score;
-          const expectedMove = ((target - price) / price) * 100;
           bestSignal = {
             pair, direction: "LONG", type, confidence, entry: price, stop, target, rr,
-            reason: `BREAKUP LONG | SRC:4H_${type} | TL(${line.touches.length}touches,SUPPORT,slope:${line.slope.toFixed(4)},age:${lineAge}bars) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch:${stoch.k.toFixed(1)}/${stoch.d.toFixed(1)}`,
+            reason: `BREAKUP LONG | SRC:4H_${type} | TL(${line.touches.length}touches,SUPPORT,slope:${line.slope.toFixed(4)},age:${lineAge}bars) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch:${stoch.k.toFixed(1)}/${stoch.d.toFixed(1)} | Chandelier:${chandelier.long.toFixed(2)}`,
             timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi, stochK: stoch.k, stochD: stoch.d, expectedMove,
             candles1h, candles4h,
           };
