@@ -1,5 +1,5 @@
-// lib/strategy.ts — v11
-// Key fixes: Per-candle line price in position path + looser consistent-side check + cooldown debug
+// lib/strategy.ts — v12
+// Key fixes: Max 5% stop for CHEEKY + reduced position penalty + structure alignment bonus + per-candle line prices
 // ============================================================
 
 export type Structure = "UPTREND" | "DOWNTREND" | "RANGE";
@@ -160,7 +160,7 @@ function linearRegression(points: { x: number; y: number }[]) {
 }
 
 // ============================================================
-// TRENDLINE DETECTION v11
+// TRENDLINE DETECTION v12
 // ============================================================
 
 function findTrendlines(candles: Candle[], swings: SwingPoint[], isSupport: boolean): Trendline[] {
@@ -443,7 +443,7 @@ function calcChandelierExit(candles: Candle[], period = 22, atrMult = 3): { long
   return { long: longExit, short: shortExit, slope };
 }
 
-// ─── STOPS & TARGETS v11 ───
+// ─── STOPS & TARGETS v12 ───
 function findStopAndTarget(candles: Candle[], direction: Direction, entry: number, structure: Structure, adx: number) {
   const atr = calcATR(candles, 14);
   let stop: number, target: number;
@@ -462,6 +462,18 @@ function findStopAndTarget(candles: Candle[], direction: Direction, entry: numbe
     const recentHigh = highs.length > 0 ? highs[highs.length - 1].price : entry + atr * stopMult;
     stop = Math.max(entry + atr * stopMult, recentHigh + atr * 0.3);
     target = entry - (stop - entry) * targetMult;
+  }
+
+  // v12: Cap CHEEKY stop at 5% from entry
+  const stopPct = Math.abs(stop - entry) / entry;
+  if (isChop && stopPct > 0.05) {
+    if (direction === "LONG") {
+      stop = entry * 0.95;
+      target = entry + (entry - stop) * targetMult;
+    } else {
+      stop = entry * 1.05;
+      target = entry - (stop - entry) * targetMult;
+    }
   }
 
   const rr = Math.abs(target - entry) / Math.abs(entry - stop);
@@ -512,7 +524,7 @@ function wasStochEmbedded(direction: Direction, candles1h: Candle[]): boolean {
   }
 }
 
-// ─── 1H CONFIRMATION — SOFT FILTER v11 ───
+// ─── 1H CONFIRMATION — SOFT FILTER v12 ───
 function get1HConfirmScore(direction: Direction, candles1h: Candle[]): number {
   const recent = candles1h.slice(-5);
   if (direction === "LONG") {
@@ -530,7 +542,7 @@ function get1HConfirmScore(direction: Direction, candles1h: Candle[]): number {
   }
 }
 
-// ─── COOLDOWN v11 — 30 MINUTES ───
+// ─── COOLDOWN v12 — 30 MINUTES ───
 function isOnCooldown(pair: string, direction: Direction, activeTrades: Record<string, any>): boolean {
   const existing = activeTrades[pair];
   if (!existing) return false;
@@ -539,7 +551,7 @@ function isOnCooldown(pair: string, direction: Direction, activeTrades: Record<s
   return minutesSince < 30;
 }
 
-// ─── BREAK DETECTION v11 — THREE PATHS WITH PER-CANDLE LINE PRICES ───
+// ─── BREAK DETECTION v12 — THREE PATHS WITH PER-CANDLE LINE PRICES ───
 function findBreak(
   candles: Candle[],
   line: Trendline,
@@ -549,10 +561,9 @@ function findBreak(
   const currentPrice = candles[currentIdx].close;
   const currentLinePrice = line.slope * currentIdx + line.intercept;
 
-  // Helper: get line price at a specific candle index
   const linePriceAt = (idx: number) => line.slope * idx + line.intercept;
 
-  // PATH 1: Fresh cross — price was on one side, now on the other (within last 5 candles)
+  // PATH 1: Fresh cross
   for (let i = currentIdx; i > Math.max(1, currentIdx - 5); i--) {
     const candle = candles[i];
     const prevCandle = candles[i - 1];
@@ -578,7 +589,7 @@ function findBreak(
     }
   }
 
-  // PATH 2: Retest — price already on correct side, had a recent retest (wick touch or close near line)
+  // PATH 2: Retest
   if (direction === "LONG" && currentPrice > currentLinePrice) {
     for (let i = currentIdx - 1; i > Math.max(0, currentIdx - 6); i--) {
       const retestLinePrice = linePriceAt(i);
@@ -586,7 +597,6 @@ function findBreak(
       const nearLine = Math.abs(candle.close - retestLinePrice) / retestLinePrice < 0.005;
       const wickTouch = candle.low <= retestLinePrice * 1.005;
       if (nearLine || wickTouch) {
-        // Check recovery: all candles after retest must be above their respective line prices
         const recovered = candles.slice(i + 1).every((c, offset) => {
           const idx = i + 1 + offset;
           return c.close > linePriceAt(idx);
@@ -614,14 +624,12 @@ function findBreak(
     }
   }
 
-  // PATH 3: Position — price is clearly on the correct side of a fresh line, no recent cross needed
+  // PATH 3: Position
   const lineAge = currentIdx - line.lastTouchIdx;
   const onCorrectSide = direction === "LONG" ? currentPrice > currentLinePrice : currentPrice < currentLinePrice;
   const notTooFar = Math.abs(currentPrice - currentLinePrice) / currentLinePrice < 0.05;
 
   if (onCorrectSide && notTooFar && lineAge <= 10) {
-    // v11: Use per-candle line prices for consistent-side check
-    // Require 2 of last 3 candles to be on correct side (looser than "every")
     const last3 = candles.slice(-3);
     let correctCount = 0;
     for (let offset = 0; offset < last3.length; offset++) {
@@ -639,7 +647,7 @@ function findBreak(
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATOR v11
+// MAIN SIGNAL GENERATOR v12
 // ============================================================
 
 export async function generateSignal(
@@ -795,7 +803,6 @@ export async function generateSignal(
         continue;
       }
 
-      // v11: detailed cooldown logging
       const existing = activeTrades[pair];
       if (existing) {
         const minutesSince = (Date.now() - existing.timestamp) / (1000 * 60);
@@ -823,13 +830,25 @@ export async function generateSignal(
       const { stop, target, rr, isChop: chopFlag } = findStopAndTarget(candles4h, direction, price, structure4h, adx4h);
       const type: SignalType = chopFlag ? "CHEEKY" : "PRIMARY";
 
+      // v12: Skip CHEEKY with stop > 5%
+      const stopPct = Math.abs(stop - price) / price;
+      if (chopFlag && stopPct > 0.05) {
+        debugInfo.blocks.push(`cheeky_stop_too_wide(${stopPct.toFixed(3)}>0.05)`);
+        continue;
+      }
+
       const freshnessBonus = breakInfo.crossLag === 0 ? 15 : breakInfo.crossLag === 1 ? 5 : 0;
-      const positionPenalty = breakInfo.breakType === "position" ? -8 : 0;
-      const retestPenalty = breakInfo.breakType === "retest" ? -5 : 0;
+      const positionPenalty = breakInfo.breakType === "position" ? -5 : 0; // v12: was -8
+      const retestPenalty = breakInfo.breakType === "retest" ? -3 : 0; // v12: was -5
+
+      // v12: structure alignment bonus
+      const aligned1H = (direction === "LONG" && structure1h === "UPTREND") || (direction === "SHORT" && structure1h === "DOWNTREND");
+      const alignBonus = aligned1H ? 5 : 0;
+
       const minConf = chopFlag ? 55 : 65;
       const minRR = chopFlag ? 1.2 : 1.5;
 
-      let confidence = Math.min(100, 55 + (line.touches.length * 4) + freshnessBonus + positionPenalty + retestPenalty + (line.strength * 0.1) + (adx4h > 25 ? 10 : 0));
+      let confidence = Math.min(100, 55 + (line.touches.length * 4) + freshnessBonus + positionPenalty + retestPenalty + alignBonus + (line.strength * 0.1) + (adx4h > 25 ? 10 : 0));
       confidence = Math.round(confidence * (0.5 + 0.5 * confirmScore));
 
       if (confidence >= minConf && rr >= minRR) {
@@ -848,7 +867,7 @@ export async function generateSignal(
           const lineType = line.isSupport ? "SUPPORT" : "RESISTANCE";
           bestSignal = {
             pair, direction, type, confidence, entry: price, stop, target, rr,
-            reason: `${direction === "LONG" ? "BREAKUP" : "BREAKDOWN"} ${direction} | SRC:4H_${type} | ${breakInfo.breakType.toUpperCase()}(crossLag:${breakInfo.crossLag}) | TL(${line.touches.length}touches,${line.touchTypes.filter(t=>t==="wick").length}wicks,${lineType},slope:${line.slope.toFixed(4)},span:${line.span},lastTouch:${line.lastTouchIdx},strength:${line.strength.toFixed(0)}) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch4H:${stoch4h.k.toFixed(1)}/${stoch4h.d.toFixed(1)} | Chandelier:${direction === "LONG" ? chandelier.long.toFixed(2) : chandelier.short.toFixed(2)} | 1HConfirm:${(confirmScore*100).toFixed(0)}%`,
+            reason: `${direction === "LONG" ? "BREAKUP" : "BREAKDOWN"} ${direction} | SRC:4H_${type} | ${breakInfo.breakType.toUpperCase()}(crossLag:${breakInfo.crossLag}) | TL(${line.touches.length}touches,${line.touchTypes.filter(t=>t==="wick").length}wicks,${lineType},slope:${line.slope.toFixed(4)},span:${line.span},lastTouch:${line.lastTouchIdx},strength:${line.strength.toFixed(0)}) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch4H:${stoch4h.k.toFixed(1)}/${stoch4h.d.toFixed(1)} | Chandelier:${direction === "LONG" ? chandelier.long.toFixed(2) : chandelier.short.toFixed(2)} | 1HConfirm:${(confirmScore*100).toFixed(0)}%${aligned1H ? " | 1H_ALIGN" : ""}`,
             timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d, expectedMove,
             candles1h, candles4h,
           };
