@@ -1,3 +1,4 @@
+// app/api/cron/route.ts
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
 import { generateSignal } from "@/lib/strategy";
@@ -5,6 +6,7 @@ import { setSignals, setMarketData, getActiveTrades, setActiveTrades } from "@/l
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL"] as const;
+const COOLDOWN_MINUTES = 30;
 
 function roundPrice(n: number): number {
   if (n >= 10000) return Math.round(n);
@@ -25,6 +27,12 @@ function roundExpectedMove(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+function isOnCooldown(trade: { direction: string; timestamp: number } | undefined): boolean {
+  if (!trade) return false;
+  const minutesSince = (Date.now() - trade.timestamp) / (1000 * 60);
+  return minutesSince < COOLDOWN_MINUTES;
+}
+
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
@@ -34,6 +42,7 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
   const authHeader = request.headers.get("authorization");
+  const resetCooldown = url.searchParams.get("reset") === "true";
 
   const isAuthorized = 
     querySecret === process.env.CRON_SECRET ||
@@ -45,8 +54,15 @@ export async function GET(request: Request) {
   }
   console.log(`[AUTH] PASSED`);
 
-  const activeTrades = await getActiveTrades();
-  console.log(`[STATE] Loaded active trades:`, Object.keys(activeTrades).join(", ") || "none");
+  let activeTrades = await getActiveTrades();
+  
+  if (resetCooldown) {
+    console.log(`[STATE] Resetting all cooldowns`);
+    activeTrades = {};
+    await setActiveTrades({});
+  }
+  
+  console.log(`[STATE] Active trades:`, Object.keys(activeTrades).join(", ") || "none");
 
   const signals: any[] = [];
   const marketDataList: any[] = [];
@@ -87,6 +103,14 @@ export async function GET(request: Request) {
       if (!signal || !signal.pair) {
         console.log(`[PAIR] ${pair} — NO SIGNAL`);
         alerts.push({ pair, status: "no_signal" });
+        continue;
+      }
+
+      // Check cooldown before alerting
+      const existingTrade = activeTrades[pair];
+      if (isOnCooldown(existingTrade) && existingTrade?.direction === signal.direction) {
+        console.log(`[PAIR] ${pair} — COOLDOWN: ${signal.direction} active for ${((Date.now() - existingTrade.timestamp) / 60000).toFixed(1)} min`);
+        alerts.push({ pair, status: "cooldown", direction: signal.direction });
         continue;
       }
 
