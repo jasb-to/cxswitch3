@@ -825,3 +825,4 @@ export async function generateSignal(
   console.log(`[DEBUG] ${pair}:`, JSON.stringify(debugInfo));
   return { signal: bestSignal, market, debug: debugInfo };
 }
+ 
