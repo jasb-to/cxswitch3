@@ -1,5 +1,5 @@
-// lib/strategy.ts — v12
-// Key fixes: Max 5% stop for CHEEKY + reduced position penalty + structure alignment bonus + per-candle line prices
+// lib/strategy.ts — v13
+// Key fixes: Stale active trade threshold (2h) + reduced position penalty + structure alignment bonus + per-candle line prices
 // ============================================================
 
 export type Structure = "UPTREND" | "DOWNTREND" | "RANGE";
@@ -160,7 +160,7 @@ function linearRegression(points: { x: number; y: number }[]) {
 }
 
 // ============================================================
-// TRENDLINE DETECTION v12
+// TRENDLINE DETECTION v13
 // ============================================================
 
 function findTrendlines(candles: Candle[], swings: SwingPoint[], isSupport: boolean): Trendline[] {
@@ -443,7 +443,7 @@ function calcChandelierExit(candles: Candle[], period = 22, atrMult = 3): { long
   return { long: longExit, short: shortExit, slope };
 }
 
-// ─── STOPS & TARGETS v12 ───
+// ─── STOPS & TARGETS v13 ───
 function findStopAndTarget(candles: Candle[], direction: Direction, entry: number, structure: Structure, adx: number) {
   const atr = calcATR(candles, 14);
   let stop: number, target: number;
@@ -462,18 +462,6 @@ function findStopAndTarget(candles: Candle[], direction: Direction, entry: numbe
     const recentHigh = highs.length > 0 ? highs[highs.length - 1].price : entry + atr * stopMult;
     stop = Math.max(entry + atr * stopMult, recentHigh + atr * 0.3);
     target = entry - (stop - entry) * targetMult;
-  }
-
-  // v12: Cap CHEEKY stop at 5% from entry
-  const stopPct = Math.abs(stop - entry) / entry;
-  if (isChop && stopPct > 0.05) {
-    if (direction === "LONG") {
-      stop = entry * 0.95;
-      target = entry + (entry - stop) * targetMult;
-    } else {
-      stop = entry * 1.05;
-      target = entry - (stop - entry) * targetMult;
-    }
   }
 
   const rr = Math.abs(target - entry) / Math.abs(entry - stop);
@@ -524,7 +512,7 @@ function wasStochEmbedded(direction: Direction, candles1h: Candle[]): boolean {
   }
 }
 
-// ─── 1H CONFIRMATION — SOFT FILTER v12 ───
+// ─── 1H CONFIRMATION — SOFT FILTER v13 ───
 function get1HConfirmScore(direction: Direction, candles1h: Candle[]): number {
   const recent = candles1h.slice(-5);
   if (direction === "LONG") {
@@ -542,16 +530,27 @@ function get1HConfirmScore(direction: Direction, candles1h: Candle[]): number {
   }
 }
 
-// ─── COOLDOWN v12 — 30 MINUTES ───
-function isOnCooldown(pair: string, direction: Direction, activeTrades: Record<string, any>): boolean {
+// ─── COOLDOWN v13 — 30 MINUTES WITH STALE THRESHOLD ───
+function isOnCooldown(pair: string, direction: Direction, activeTrades: Record<string, any>): { onCooldown: boolean; reason: string } {
   const existing = activeTrades[pair];
-  if (!existing) return false;
-  if (existing.direction !== direction) return false;
+  if (!existing) return { onCooldown: false, reason: "none" };
+  if (existing.direction !== direction) return { onCooldown: false, reason: "direction_flip" };
+
   const minutesSince = (Date.now() - existing.timestamp) / (1000 * 60);
-  return minutesSince < 30;
+
+  // v13: If active trade is older than 2 hours, treat as stale (ghost cooldown)
+  if (minutesSince > 120) {
+    return { onCooldown: false, reason: `stale(${minutesSince.toFixed(0)}min>120)` };
+  }
+
+  if (minutesSince < 30) {
+    return { onCooldown: true, reason: `cooldown(${minutesSince.toFixed(1)}min<30)` };
+  }
+
+  return { onCooldown: false, reason: `expired(${minutesSince.toFixed(1)}min>=30)` };
 }
 
-// ─── BREAK DETECTION v12 — THREE PATHS WITH PER-CANDLE LINE PRICES ───
+// ─── BREAK DETECTION v13 — THREE PATHS WITH PER-CANDLE LINE PRICES ───
 function findBreak(
   candles: Candle[],
   line: Trendline,
@@ -647,7 +646,7 @@ function findBreak(
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATOR v12
+// MAIN SIGNAL GENERATOR v13
 // ============================================================
 
 export async function generateSignal(
@@ -803,13 +802,11 @@ export async function generateSignal(
         continue;
       }
 
-      const existing = activeTrades[pair];
-      if (existing) {
-        const minutesSince = (Date.now() - existing.timestamp) / (1000 * 60);
-        if (existing.direction === direction && minutesSince < 30) {
-          debugInfo.blocks.push(`cooldown(${minutesSince.toFixed(1)}min<30)`);
-          continue;
-        }
+      // v13: cooldown with stale threshold
+      const cooldownCheck = isOnCooldown(pair, direction, activeTrades);
+      if (cooldownCheck.onCooldown) {
+        debugInfo.blocks.push(cooldownCheck.reason);
+        continue;
       }
 
       const confirmScore = get1HConfirmScore(direction, candles1h);
@@ -830,18 +827,10 @@ export async function generateSignal(
       const { stop, target, rr, isChop: chopFlag } = findStopAndTarget(candles4h, direction, price, structure4h, adx4h);
       const type: SignalType = chopFlag ? "CHEEKY" : "PRIMARY";
 
-      // v12: Skip CHEEKY with stop > 5%
-      const stopPct = Math.abs(stop - price) / price;
-      if (chopFlag && stopPct > 0.05) {
-        debugInfo.blocks.push(`cheeky_stop_too_wide(${stopPct.toFixed(3)}>0.05)`);
-        continue;
-      }
-
       const freshnessBonus = breakInfo.crossLag === 0 ? 15 : breakInfo.crossLag === 1 ? 5 : 0;
-      const positionPenalty = breakInfo.breakType === "position" ? -5 : 0; // v12: was -8
-      const retestPenalty = breakInfo.breakType === "retest" ? -3 : 0; // v12: was -5
+      const positionPenalty = breakInfo.breakType === "position" ? -5 : 0;
+      const retestPenalty = breakInfo.breakType === "retest" ? -3 : 0;
 
-      // v12: structure alignment bonus
       const aligned1H = (direction === "LONG" && structure1h === "UPTREND") || (direction === "SHORT" && structure1h === "DOWNTREND");
       const alignBonus = aligned1H ? 5 : 0;
 
