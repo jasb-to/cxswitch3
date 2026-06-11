@@ -262,7 +262,6 @@ function calcATR(candles: Candle[], period = 14): number {
 }
 
 // ─── CHANDELIER EXIT ───
-// Volatility-based trailing stop using ATR
 function calcChandelierExit(candles: Candle[], period = 22, atrMult = 3): { long: number; short: number; slope: number } {
   const atr = calcATR(candles, period);
   const highest = Math.max(...candles.slice(-period).map(c => c.high));
@@ -270,7 +269,6 @@ function calcChandelierExit(candles: Candle[], period = 22, atrMult = 3): { long
   const longExit = highest - atr * atrMult;
   const shortExit = lowest + atr * atrMult;
 
-  // Calculate slope over last 10 bars
   const recent = candles.slice(-10);
   const xMean = (recent.length - 1) / 2;
   let num = 0, den = 0;
@@ -324,8 +322,6 @@ function isMomentumAligned(direction: Direction, stochK: number, stochD: number,
 }
 
 // ─── EMBEDDED STOCH CHECK ───
-// For SHORT: K must have been > 80 recently (embedded overbought)
-// For LONG: K must have been < 20 recently (embedded oversold)
 function wasStochEmbedded(direction: Direction, candles1h: Candle[]): boolean {
   const recent = candles1h.slice(-10);
   const stochs = recent.map((_, i) => {
@@ -372,7 +368,7 @@ export async function generateSignal(
   candles1h: Candle[],
   candles4h: Candle[],
   activeTrades: Record<string, { direction: string; timestamp: number }> = {}
-): Promise<{ signal: Signal | null; market: MarketData }> {
+): Promise<{ signal: Signal | null; market: MarketData; debug?: any }> {
   const current4h = candles4h[candles4h.length - 1];
   const prev4h = candles4h[candles4h.length - 2];
   const price = current4h.close;
@@ -392,23 +388,45 @@ export async function generateSignal(
     stochD: stoch.d,
   };
 
+  // ─── DEBUG LOGGING ───
+  const chandelier = calcChandelierExit(candles4h, 22, 3);
+  const debugInfo = {
+    pair,
+    price,
+    structure4h,
+    structure1h,
+    adx4h: adx4h.toFixed(1),
+    rsi: rsi.toFixed(1),
+    stochK: stoch.k.toFixed(1),
+    stochD: stoch.d.toFixed(1),
+    chandelierLong: chandelier.long.toFixed(2),
+    chandelierShort: chandelier.short.toFixed(2),
+    chandelierSlope: chandelier.slope.toFixed(4),
+    trendlinesFound: { resistance: 0, support: 0 },
+    blocks: [] as string[],
+  };
+
   if (candles1h.length < 50 || candles4h.length < 50) {
-    return { signal: null, market };
+    debugInfo.blocks.push("insufficient_candles");
+    console.log(`[DEBUG] ${pair}:`, JSON.stringify(debugInfo));
+    return { signal: null, market, debug: debugInfo };
   }
 
   // ─── CHOP FILTER ───
   const isChop = structure4h === "RANGE" && adx4h < 25;
   if (isChop) {
-    return { signal: null, market };
+    debugInfo.blocks.push("chop_filter");
+    console.log(`[DEBUG] ${pair}:`, JSON.stringify(debugInfo));
+    return { signal: null, market, debug: debugInfo };
   }
-
-  // ─── CHANDELIER EXIT FILTER ───
-  const chandelier = calcChandelierExit(candles4h, 22, 3);
 
   const highs4h = swingHighs(candles4h, 3);
   const lows4h = swingLows(candles4h, 3);
   const resistance4h = findTrendlines(candles4h, highs4h, false);
   const support4h = findTrendlines(candles4h, lows4h, true);
+
+  debugInfo.trendlinesFound.resistance = resistance4h.length;
+  debugInfo.trendlinesFound.support = support4h.length;
 
   let bestSignal: Signal | null = null;
   let bestScore = 0;
@@ -422,37 +440,44 @@ export async function generateSignal(
 
     const linePrice = line.slope * (candles4h.length - 1) + line.intercept;
 
-    // 4H close confirmation
     if (prev4h.close > linePrice && current4h.close < linePrice) {
-      // Chandelier filter: price must be below short exit (chandelier acting as resistance ceiling)
-      if (price > chandelier.short) continue;
-
-      // Chandelier slope: must be flat or down for shorts
-      if (chandelier.slope > 0.05) continue;
-
-      // Pair-level cooldown
-      if (isOnCooldown(pair, "SHORT", activeTrades)) continue;
-
-      // 1H confirmation
-      if (!is1HConfirming("SHORT", candles1h)) continue;
-
-      // Momentum alignment
-      if (!isMomentumAligned("SHORT", stoch.k, stoch.d, rsi)) continue;
-
-      // Embedded stoch: must have been overbought recently
-      if (!wasStochEmbedded("SHORT", candles1h)) continue;
+      if (price > chandelier.short) {
+        debugInfo.blocks.push(`short_chandelier_block(price:${price.toFixed(2)}>short:${chandelier.short.toFixed(2)})`);
+        continue;
+      }
+      if (chandelier.slope > 0.05) {
+        debugInfo.blocks.push(`short_slope_block(${chandelier.slope.toFixed(4)}>0.05)`);
+        continue;
+      }
+      if (isOnCooldown(pair, "SHORT", activeTrades)) {
+        debugInfo.blocks.push("cooldown");
+        continue;
+      }
+      if (!is1HConfirming("SHORT", candles1h)) {
+        debugInfo.blocks.push("1h_confirm");
+        continue;
+      }
+      if (!isMomentumAligned("SHORT", stoch.k, stoch.d, rsi)) {
+        debugInfo.blocks.push("momentum");
+        continue;
+      }
+      if (!wasStochEmbedded("SHORT", candles1h)) {
+        debugInfo.blocks.push("stoch_embed");
+        continue;
+      }
 
       const { stop, target, rr, isChop: chopFlag } = findStopAndTarget(candles4h, "SHORT", price, structure4h, adx4h);
-
       const type: SignalType = chopFlag ? "CHEEKY" : "PRIMARY";
       const minConf = chopFlag ? 50 : 65;
       const minRR = chopFlag ? 1.2 : 1.5;
-
       const confidence = Math.min(100, 70 + (line.touches.length * 5) + (adx4h > 25 ? 10 : 0));
 
       if (confidence >= minConf && rr >= minRR) {
         const expectedMove = ((price - target) / price) * 100;
-        if (expectedMove < 5) continue;
+        if (expectedMove < 5) {
+          debugInfo.blocks.push(`expected_move(${expectedMove.toFixed(2)}<5)`);
+          continue;
+        }
 
         const score = confidence * rr;
         if (score > bestScore) {
@@ -477,37 +502,44 @@ export async function generateSignal(
 
     const linePrice = line.slope * (candles4h.length - 1) + line.intercept;
 
-    // 4H close confirmation
     if (prev4h.close < linePrice && current4h.close > linePrice) {
-      // Chandelier filter: price must be above long exit (chandelier acting as support floor)
-      if (price < chandelier.long) continue;
-
-      // Chandelier slope: must be flat or up for longs
-      if (chandelier.slope < -0.05) continue;
-
-      // Pair-level cooldown
-      if (isOnCooldown(pair, "LONG", activeTrades)) continue;
-
-      // 1H confirmation
-      if (!is1HConfirming("LONG", candles1h)) continue;
-
-      // Momentum alignment
-      if (!isMomentumAligned("LONG", stoch.k, stoch.d, rsi)) continue;
-
-      // Embedded stoch: must have been oversold recently
-      if (!wasStochEmbedded("LONG", candles1h)) continue;
+      if (price < chandelier.long) {
+        debugInfo.blocks.push(`long_chandelier_block(price:${price.toFixed(2)}<long:${chandelier.long.toFixed(2)})`);
+        continue;
+      }
+      if (chandelier.slope < -0.05) {
+        debugInfo.blocks.push(`long_slope_block(${chandelier.slope.toFixed(4)}<-0.05)`);
+        continue;
+      }
+      if (isOnCooldown(pair, "LONG", activeTrades)) {
+        debugInfo.blocks.push("cooldown");
+        continue;
+      }
+      if (!is1HConfirming("LONG", candles1h)) {
+        debugInfo.blocks.push("1h_confirm");
+        continue;
+      }
+      if (!isMomentumAligned("LONG", stoch.k, stoch.d, rsi)) {
+        debugInfo.blocks.push("momentum");
+        continue;
+      }
+      if (!wasStochEmbedded("LONG", candles1h)) {
+        debugInfo.blocks.push("stoch_embed");
+        continue;
+      }
 
       const { stop, target, rr, isChop: chopFlag } = findStopAndTarget(candles4h, "LONG", price, structure4h, adx4h);
-
       const type: SignalType = chopFlag ? "CHEEKY" : "PRIMARY";
       const minConf = chopFlag ? 50 : 65;
       const minRR = chopFlag ? 1.2 : 1.5;
-
       const confidence = Math.min(100, 70 + (line.touches.length * 5) + (adx4h > 25 ? 10 : 0));
 
       if (confidence >= minConf && rr >= minRR) {
         const expectedMove = ((target - price) / price) * 100;
-        if (expectedMove < 5) continue;
+        if (expectedMove < 5) {
+          debugInfo.blocks.push(`expected_move(${expectedMove.toFixed(2)}<5)`);
+          continue;
+        }
 
         const score = confidence * rr;
         if (score > bestScore) {
@@ -523,5 +555,10 @@ export async function generateSignal(
     }
   }
 
-  return { signal: bestSignal, market };
+  if (!bestSignal) {
+    debugInfo.blocks.push(bestScore > 0 ? "score_too_low" : "no_break");
+  }
+
+  console.log(`[DEBUG] ${pair}:`, JSON.stringify(debugInfo));
+  return { signal: bestSignal, market, debug: debugInfo };
 }
