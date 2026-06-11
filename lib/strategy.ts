@@ -1,5 +1,5 @@
-// lib/strategy.ts — v10
-// Key fixes: Price-position-aware break detection + no stale cross requirement for fresh lines
+// lib/strategy.ts — v11
+// Key fixes: Per-candle line price in position path + looser consistent-side check + cooldown debug
 // ============================================================
 
 export type Structure = "UPTREND" | "DOWNTREND" | "RANGE";
@@ -160,7 +160,7 @@ function linearRegression(points: { x: number; y: number }[]) {
 }
 
 // ============================================================
-// TRENDLINE DETECTION v10
+// TRENDLINE DETECTION v11
 // ============================================================
 
 function findTrendlines(candles: Candle[], swings: SwingPoint[], isSupport: boolean): Trendline[] {
@@ -443,7 +443,7 @@ function calcChandelierExit(candles: Candle[], period = 22, atrMult = 3): { long
   return { long: longExit, short: shortExit, slope };
 }
 
-// ─── STOPS & TARGETS v10 ───
+// ─── STOPS & TARGETS v11 ───
 function findStopAndTarget(candles: Candle[], direction: Direction, entry: number, structure: Structure, adx: number) {
   const atr = calcATR(candles, 14);
   let stop: number, target: number;
@@ -512,7 +512,7 @@ function wasStochEmbedded(direction: Direction, candles1h: Candle[]): boolean {
   }
 }
 
-// ─── 1H CONFIRMATION — SOFT FILTER v10 ───
+// ─── 1H CONFIRMATION — SOFT FILTER v11 ───
 function get1HConfirmScore(direction: Direction, candles1h: Candle[]): number {
   const recent = candles1h.slice(-5);
   if (direction === "LONG") {
@@ -530,7 +530,7 @@ function get1HConfirmScore(direction: Direction, candles1h: Candle[]): number {
   }
 }
 
-// ─── COOLDOWN v10 — 30 MINUTES ───
+// ─── COOLDOWN v11 — 30 MINUTES ───
 function isOnCooldown(pair: string, direction: Direction, activeTrades: Record<string, any>): boolean {
   const existing = activeTrades[pair];
   if (!existing) return false;
@@ -539,7 +539,7 @@ function isOnCooldown(pair: string, direction: Direction, activeTrades: Record<s
   return minutesSince < 30;
 }
 
-// ─── BREAK DETECTION v10 — THREE PATHS ───
+// ─── BREAK DETECTION v11 — THREE PATHS WITH PER-CANDLE LINE PRICES ───
 function findBreak(
   candles: Candle[],
   line: Trendline,
@@ -547,14 +547,17 @@ function findBreak(
 ): BreakInfo {
   const currentIdx = candles.length - 1;
   const currentPrice = candles[currentIdx].close;
-  const linePrice = line.slope * currentIdx + line.intercept;
+  const currentLinePrice = line.slope * currentIdx + line.intercept;
+
+  // Helper: get line price at a specific candle index
+  const linePriceAt = (idx: number) => line.slope * idx + line.intercept;
 
   // PATH 1: Fresh cross — price was on one side, now on the other (within last 5 candles)
   for (let i = currentIdx; i > Math.max(1, currentIdx - 5); i--) {
     const candle = candles[i];
     const prevCandle = candles[i - 1];
-    const currLinePrice = line.slope * i + line.intercept;
-    const prevLinePrice = line.slope * (i - 1) + line.intercept;
+    const currLinePrice = linePriceAt(i);
+    const prevLinePrice = linePriceAt(i - 1);
 
     if (direction === "LONG") {
       const prevBelow = prevCandle.close < prevLinePrice;
@@ -576,27 +579,34 @@ function findBreak(
   }
 
   // PATH 2: Retest — price already on correct side, had a recent retest (wick touch or close near line)
-  if (direction === "LONG" && currentPrice > linePrice) {
+  if (direction === "LONG" && currentPrice > currentLinePrice) {
     for (let i = currentIdx - 1; i > Math.max(0, currentIdx - 6); i--) {
-      const retestLinePrice = line.slope * i + line.intercept;
+      const retestLinePrice = linePriceAt(i);
       const candle = candles[i];
       const nearLine = Math.abs(candle.close - retestLinePrice) / retestLinePrice < 0.005;
       const wickTouch = candle.low <= retestLinePrice * 1.005;
       if (nearLine || wickTouch) {
-        const recovered = candles.slice(i + 1).every(c => c.close > retestLinePrice);
+        // Check recovery: all candles after retest must be above their respective line prices
+        const recovered = candles.slice(i + 1).every((c, offset) => {
+          const idx = i + 1 + offset;
+          return c.close > linePriceAt(idx);
+        });
         if (recovered) {
           return { found: true, crossIdx: i, crossPrice: candle.close, crossLag: currentIdx - i, breakType: "retest" };
         }
       }
     }
-  } else if (direction === "SHORT" && currentPrice < linePrice) {
+  } else if (direction === "SHORT" && currentPrice < currentLinePrice) {
     for (let i = currentIdx - 1; i > Math.max(0, currentIdx - 6); i--) {
-      const retestLinePrice = line.slope * i + line.intercept;
+      const retestLinePrice = linePriceAt(i);
       const candle = candles[i];
       const nearLine = Math.abs(candle.close - retestLinePrice) / retestLinePrice < 0.005;
       const wickTouch = candle.high >= retestLinePrice * 0.995;
       if (nearLine || wickTouch) {
-        const recovered = candles.slice(i + 1).every(c => c.close < retestLinePrice);
+        const recovered = candles.slice(i + 1).every((c, offset) => {
+          const idx = i + 1 + offset;
+          return c.close < linePriceAt(idx);
+        });
         if (recovered) {
           return { found: true, crossIdx: i, crossPrice: candle.close, crossLag: currentIdx - i, breakType: "retest" };
         }
@@ -605,17 +615,22 @@ function findBreak(
   }
 
   // PATH 3: Position — price is clearly on the correct side of a fresh line, no recent cross needed
-  // This catches breaks that happened 6+ candles ago but the line is still valid and price hasn't reversed
   const lineAge = currentIdx - line.lastTouchIdx;
-  const onCorrectSide = direction === "LONG" ? currentPrice > linePrice : currentPrice < linePrice;
-  const notTooFar = Math.abs(currentPrice - linePrice) / linePrice < 0.05; // within 5%
+  const onCorrectSide = direction === "LONG" ? currentPrice > currentLinePrice : currentPrice < currentLinePrice;
+  const notTooFar = Math.abs(currentPrice - currentLinePrice) / currentLinePrice < 0.05;
 
   if (onCorrectSide && notTooFar && lineAge <= 10) {
-    // Verify price has been on this side for at least 3 candles (not a fresh wick spike)
-    const consistentSide = candles.slice(-3).every(c => 
-      direction === "LONG" ? c.close > linePrice : c.close < linePrice
-    );
-    if (consistentSide) {
+    // v11: Use per-candle line prices for consistent-side check
+    // Require 2 of last 3 candles to be on correct side (looser than "every")
+    const last3 = candles.slice(-3);
+    let correctCount = 0;
+    for (let offset = 0; offset < last3.length; offset++) {
+      const idx = currentIdx - 2 + offset;
+      const lp = linePriceAt(idx);
+      if (direction === "LONG" && last3[offset].close > lp) correctCount++;
+      if (direction === "SHORT" && last3[offset].close < lp) correctCount++;
+    }
+    if (correctCount >= 2) {
       return { found: true, crossIdx: currentIdx - 3, crossPrice: candles[currentIdx - 3].close, crossLag: 3, breakType: "position" };
     }
   }
@@ -624,7 +639,7 @@ function findBreak(
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATOR v10
+// MAIN SIGNAL GENERATOR v11
 // ============================================================
 
 export async function generateSignal(
@@ -748,7 +763,6 @@ export async function generateSignal(
         continue;
       }
 
-      // v10: stale threshold depends on break type
       const maxLag = breakInfo.breakType === "position" ? 3 : breakInfo.breakType === "retest" ? 4 : 3;
       if (breakInfo.crossLag > maxLag) {
         debugInfo.blocks.push(`stale_${direction.toLowerCase()}(crossLag:${breakInfo.crossLag},type:${breakInfo.breakType})`);
@@ -781,9 +795,14 @@ export async function generateSignal(
         continue;
       }
 
-      if (isOnCooldown(pair, direction, activeTrades)) {
-        debugInfo.blocks.push("cooldown");
-        continue;
+      // v11: detailed cooldown logging
+      const existing = activeTrades[pair];
+      if (existing) {
+        const minutesSince = (Date.now() - existing.timestamp) / (1000 * 60);
+        if (existing.direction === direction && minutesSince < 30) {
+          debugInfo.blocks.push(`cooldown(${minutesSince.toFixed(1)}min<30)`);
+          continue;
+        }
       }
 
       const confirmScore = get1HConfirmScore(direction, candles1h);
