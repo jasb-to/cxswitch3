@@ -116,7 +116,7 @@ function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
 }
 
 // ============================================================
-// INDICATORS (minimal, used for MarketData compatibility)
+// INDICATORS (minimal, for MarketData compatibility)
 // ============================================================
 
 function calcADX(candles: Candle[], period = 14): number {
@@ -221,7 +221,7 @@ function detectLiquiditySweep(candles: Candle[]): SweepResult | null {
   const prev = candles[candles.length - 2];
 
   const lastLow = lows[lows.length - 1];
-
+  
   if (current.low < lastLow.price && current.close > lastLow.price && prev.close > lastLow.price) {
     const wickDepth = (lastLow.price - current.low) / lastLow.price;
     if (wickDepth > 0.001) {
@@ -237,7 +237,7 @@ function detectLiquiditySweep(candles: Candle[]): SweepResult | null {
   }
 
   const lastHigh = highs[highs.length - 1];
-
+  
   if (current.high > lastHigh.price && current.close < lastHigh.price && prev.close < lastHigh.price) {
     const wickDepth = (current.high - lastHigh.price) / lastHigh.price;
     if (wickDepth > 0.001) {
@@ -304,7 +304,7 @@ interface FVGResult {
 
 function detectFVG(candles: Candle[], direction: "LONG" | "SHORT"): FVGResult | null {
   if (candles.length < 3) return null;
-
+  
   for (let i = candles.length - 3; i >= Math.max(0, candles.length - 8); i--) {
     if (i + 2 >= candles.length) continue;
     const c1 = candles[i];
@@ -346,13 +346,13 @@ export function generateSignal(
   candles4h: Candle[],
   _activeTrades?: Record<string, any>
 ): { signal: Signal | null; market: MarketData; debug?: string[] } {
-
+  
   const price = candles1h[candles1h.length - 1].close;
   const structure4h = getStructure(candles4h);
   const structure1h = getStructure(candles1h);
   const roc1h = calcROC(candles1h, 3);
   const atr1h = calcATR(candles1h, 14);
-
+  
   const adx4h = calcADX(candles4h, 14);
   const rsi1h = calcRSI(candles1h, 14);
   const stoch1h = calcStochastic(candles1h, 14, 3);
@@ -369,18 +369,16 @@ export function generateSignal(
     return { signal: null, market, debug };
   }
 
-  // ─── STEP 1: Detect Liquidity Sweep on 1H ───
   const sweep = detectLiquiditySweep(candles1h);
-
+  
   if (!sweep) {
     debug.push("no_liquidity_sweep");
   } else {
     debug.push(`sweep_${sweep.direction.toLowerCase()}_level:${sweep.sweepLevel.toFixed(2)}_wick:${sweep.wickExtreme.toFixed(2)}`);
   }
 
-  // ─── STEP 2: 4H Bias Filter ───
   let bias: "LONG" | "SHORT" | "NONE" = "NONE";
-
+  
   if (structure4h === "UPTREND") {
     bias = "LONG";
     debug.push("4h_bias_long");
@@ -404,25 +402,24 @@ export function generateSignal(
     }
   }
 
-  // ─── STEP 3: PRIMARY SIGNAL — Sweep + CHoCH ───
   if (sweep && sweep.direction === bias) {
     const choch = detectCHOCH(candles1h, sweep);
-
+    
     if (choch && choch.found) {
       debug.push(`choch_${choch.direction.toLowerCase()}_break:${choch.breakLevel.toFixed(2)}`);
-
+      
       const momentumOK = sweep.direction === "LONG" ? roc1h > -0.5 : roc1h < 0.5;
-
+      
       if (!momentumOK) {
         debug.push(`momentum_fail(roc:${roc1h.toFixed(2)})`);
       } else {
         debug.push(`momentum_ok(roc:${roc1h.toFixed(2)})`);
-
+        
         const stopPct = 0.02;
         const targetPct = 0.04;
-
+        
         let entry: number, stop: number, target: number;
-
+        
         if (sweep.direction === "LONG") {
           entry = price;
           stop = Math.min(sweep.wickExtreme * 0.998, entry * (1 - stopPct));
@@ -436,18 +433,18 @@ export function generateSignal(
           const minStop = entry * 1.015;
           if (stop < minStop) stop = minStop;
         }
-
+        
         const actualStopPct = Math.abs(entry - stop) / entry;
         const actualTargetPct = Math.abs(target - entry) / entry;
         const rr = actualTargetPct / actualStopPct;
-
+        
         let confidence = 70;
         if (structure4h === structure1h) confidence += 10;
         if (Math.abs(roc1h) > 0.5) confidence += 10;
         confidence = Math.min(95, confidence);
-
+        
         const expectedMove = actualTargetPct * 100;
-
+        
         if (rr >= 1.5 && expectedMove >= 3.0) {
           const signal: Signal = {
             pair, direction: sweep.direction, entry, stop, target, confidence,
@@ -467,36 +464,35 @@ export function generateSignal(
     }
   }
 
-  // ─── STEP 4: SECONDARY SIGNAL — FVG Retest in Trend ───
   if (bias !== "NONE") {
     const fvg4h = detectFVG(candles4h, bias);
-
+    
     if (fvg4h && fvg4h.found) {
       debug.push(`fvg4h_${bias.toLowerCase()}_top:${fvg4h.top.toFixed(2)}_bottom:${fvg4h.bottom.toFixed(2)}`);
-
+      
       const inFVG = bias === "LONG" 
         ? (price <= fvg4h.top && price >= fvg4h.bottom)
         : (price >= fvg4h.bottom && price <= fvg4h.top);
-
+      
       const nearFVG = Math.abs(price - fvg4h.midpoint) / price < 0.005;
-
+      
       if (inFVG || nearFVG) {
         debug.push(`price_in_fvg_zone:${inFVG}_near:${nearFVG}`);
-
+        
         const current1h = candles1h[candles1h.length - 1];
         const rejection = bias === "LONG" 
           ? current1h.close > current1h.open && current1h.low <= fvg4h.top
           : current1h.close < current1h.open && current1h.high >= fvg4h.bottom;
-
+        
         if (rejection) {
           debug.push("1h_rejection_in_fvg");
-
+          
           const stopPct = 0.02;
           const targetPct = 0.04;
-
+          
           let entry = price;
           let stop: number, target: number;
-
+          
           if (bias === "LONG") {
             stop = Math.min(fvg4h.bottom * 0.998, entry * (1 - stopPct));
             target = entry * (1 + targetPct);
@@ -508,18 +504,18 @@ export function generateSignal(
             const minStop = entry * 1.015;
             if (stop < minStop) stop = minStop;
           }
-
+          
           const actualStopPct = Math.abs(entry - stop) / entry;
           const actualTargetPct = Math.abs(target - entry) / entry;
           const rr = actualTargetPct / actualStopPct;
-
+          
           let confidence = 65;
           if (inFVG) confidence += 10;
           if (structure1h === structure4h) confidence += 10;
           confidence = Math.min(90, confidence);
-
+          
           const expectedMove = actualTargetPct * 100;
-
+          
           if (rr >= 1.5 && expectedMove >= 3.0) {
             const signal: Signal = {
               pair, direction: bias, entry, stop, target, confidence,
