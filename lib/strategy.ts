@@ -446,7 +446,8 @@ export function generateSignal(
         ? (price <= fvg4h.top && price >= fvg4h.bottom)
         : (price >= fvg4h.bottom && price <= fvg4h.top);
       
-      const nearFVG = Math.abs(price - fvg4h.midpoint) / price < 0.005;
+      // FIX A: Widened from 0.5% to 1.0% for FVG proximity
+      const nearFVG = Math.abs(price - fvg4h.midpoint) / price < 0.01;
       
       if (inFVG || nearFVG) {
         debug.push(`price_in_fvg_zone:${inFVG}_near:${nearFVG}`);
@@ -517,7 +518,12 @@ export function generateSignal(
 export function isSignalStillValid(signal: Signal, currentPrice: number): boolean {
   if (signal.direction === "LONG" && currentPrice < signal.stop * 1.005) return false;
   if (signal.direction === "SHORT" && currentPrice > signal.stop * 0.995) return false;
+  
   const ageHours = (Date.now() - signal.timestamp) / (1000 * 60 * 60);
-  if (ageHours > 6) return false;
+  
+  // FIX D: EARLY signals expire after 2h, SWEEP signals keep 6h
+  const maxAge = signal.type === "EARLY" ? 2 : 6;
+  if (ageHours > maxAge) return false;
+  
   return true;
 }
