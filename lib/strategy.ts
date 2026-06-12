@@ -1,5 +1,7 @@
-// lib/strategy.ts — v12
-// Key fixes: No cooldown, auto-clear stopped trades, danger zone only in weak chop, quality score gates
+// lib/strategy.ts — v13
+// Fixed 2.5% SL / 5% TP (no more ATR-based stops)
+// Remove active trade blocking — manual close, system doesn't care
+// No cooldown — if a new signal is better, it replaces the old one
 // ============================================================
 
 export type Structure = "UPTREND" | "DOWNTREND" | "RANGE";
@@ -91,7 +93,6 @@ interface DebugInfo {
   topLines: { support: string; resistance: string };
   softFilters: string[];
   qualityScores: string[];
-  activeTradeStatus: string;
 }
 
 // ============================================================
@@ -406,73 +407,36 @@ function calcChandelierExit(candles: Candle[], period = 22, atrMult = 3): { long
 }
 
 // ============================================================
-// STOPS & TARGETS v12
+// STOPS & TARGETS v13 — FIXED 2.5% SL / 5% TP
 // ============================================================
 
 function findStopAndTarget(candles: Candle[], direction: Direction, entry: number, structure: Structure, adx: number) {
-  const atr = calcATR(candles, 14);
-  let stop: number, target: number;
-  const isChop = structure === "RANGE" && adx < 25;
+  // v13: Fixed 2.5% SL / 5% TP — no more ATR-based stops
+  const stopPct = 0.025; // 2.5%
+  const targetPct = 0.05; // 5%
+  const rr = targetPct / stopPct; // 2.0
 
-  const targetMult = isChop ? 2.0 : 3.0;
-  const stopMult = isChop ? 1.5 : 2.0;
+  let stop: number, target: number;
 
   if (direction === "LONG") {
-    const lows = swingLows(candles, 3);
-    const recentLow = lows.length > 0 ? lows[lows.length - 1].price : entry - atr * stopMult;
-    stop = Math.min(entry - atr * stopMult, recentLow - atr * 0.2);
-    target = entry + (entry - stop) * targetMult;
+    stop = entry * (1 - stopPct);
+    target = entry * (1 + targetPct);
   } else {
-    const highs = swingHighs(candles, 3);
-    const recentHigh = highs.length > 0 ? highs[highs.length - 1].price : entry + atr * stopMult;
-    stop = Math.max(entry + atr * stopMult, recentHigh + atr * 0.2);
-    target = entry - (stop - entry) * targetMult;
+    stop = entry * (1 + stopPct);
+    target = entry * (1 - targetPct);
   }
 
-  const rr = Math.abs(target - entry) / Math.abs(entry - stop);
-  return { stop, target, rr, isChop };
+  const isChop = structure === "RANGE" && adx < 25;
+  const type: SignalType = isChop ? "CHEEKY" : "PRIMARY";
+
+  return { stop, target, rr, type, isChop };
 }
 
 // ============================================================
-// ACTIVE TRADE MANAGEMENT v12
+// REVERSAL DETECTION v13
 // ============================================================
 
-// v12: Check if active trade is still valid (not stopped out)
-function isActiveTradeValid(pair: string, direction: Direction, activeTrades: Record<string, any>, currentPrice: number): { valid: boolean; status: string } {
-  const trade = activeTrades[pair];
-  if (!trade) return { valid: false, status: "none" };
-  if (trade.direction !== direction) return { valid: false, status: "opposite_direction" };
-
-  // Check if price hit stop
-  if (direction === "LONG" && currentPrice <= trade.stop) {
-    return { valid: false, status: `stopped_out_long(price:${currentPrice.toFixed(0)}<=stop:${trade.stop.toFixed(0)})` };
-  }
-  if (direction === "SHORT" && currentPrice >= trade.stop) {
-    return { valid: false, status: `stopped_out_short(price:${currentPrice.toFixed(0)}>=stop:${trade.stop.toFixed(0)})` };
-  }
-
-  // Check if trade is very old (8+ hours = probably manually closed)
-  const hoursSince = (Date.now() - trade.timestamp) / (1000 * 60 * 60);
-  if (hoursSince > 8) {
-    return { valid: false, status: `expired(${hoursSince.toFixed(1)}h)` };
-  }
-
-  // Check if price hit target (take profit)
-  if (direction === "LONG" && currentPrice >= trade.target) {
-    return { valid: false, status: `target_hit_long(price:${currentPrice.toFixed(0)}>=target:${trade.target.toFixed(0)})` };
-  }
-  if (direction === "SHORT" && currentPrice <= trade.target) {
-    return { valid: false, status: `target_hit_short(price:${currentPrice.toFixed(0)}<=target:${trade.target.toFixed(0)})` };
-  }
-
-  return { valid: true, status: `active(${hoursSince.toFixed(1)}h)` };
-}
-
-// ============================================================
-// REVERSAL DETECTION v12
-// ============================================================
-
-// v12: Danger zone ONLY in weak chop (ADX < 18, RANGE)
+// v13: Danger zone ONLY in weak chop (ADX < 18, RANGE)
 function isInDangerZone(direction: Direction, stoch1hK: number, stoch4hK: number, adx: number, structure: Structure): { danger: boolean; reason: string } {
   const isWeakChop = adx < 18 && structure === "RANGE";
 
@@ -619,7 +583,7 @@ function findBreak(candles: Candle[], line: Trendline, direction: "LONG" | "SHOR
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATOR v12
+// MAIN SIGNAL GENERATOR v13
 // ============================================================
 
 export async function generateSignal(
@@ -647,9 +611,8 @@ export async function generateSignal(
 
   const chandelier = calcChandelierExit(candles4h, 22, 3);
 
-  // v12: Check active trade status
-  const longTradeStatus = isActiveTradeValid(pair, "LONG", activeTrades, price);
-  const shortTradeStatus = isActiveTradeValid(pair, "SHORT", activeTrades, price);
+  // v13: No active trade blocking — manual close, system doesn't care
+  // activeTrades param kept for API compatibility but ignored
 
   const debugInfo: DebugInfo = {
     pair, price, structure4h, structure1h,
@@ -663,7 +626,6 @@ export async function generateSignal(
     breaksDetected: { longSupport: 0, longResistance: 0, shortSupport: 0, shortResistance: 0 },
     topLines: { support: "none", resistance: "none" },
     softFilters: [], qualityScores: [],
-    activeTradeStatus: `LONG:${longTradeStatus.status}|SHORT:${shortTradeStatus.status}`,
   };
 
   if (candles1h.length < 50 || candles4h.length < 50) {
@@ -724,12 +686,8 @@ export async function generateSignal(
     }
 
     for (const direction of possibleDirections) {
-      // v12: Check if active trade blocks this direction
-      const tradeStatus = direction === "LONG" ? longTradeStatus : shortTradeStatus;
-      if (tradeStatus.valid) {
-        debugInfo.blocks.push(`active_${direction.toLowerCase()}_trade(${tradeStatus.status})`);
-        continue;
-      }
+      // v13: No active trade blocking — manual close, system doesn't care
+      // Skipping all active trade checks
 
       const breakInfo = findBreak(candles4h, line, direction);
 
@@ -771,7 +729,7 @@ export async function generateSignal(
         continue;
       }
 
-      // v12: Danger zone — only in weak chop
+      // v13: Danger zone — only in weak chop
       const danger = isInDangerZone(direction, stoch1h.k, stoch4h.k, adx4h, structure4h);
       if (danger.danger) {
         debugInfo.blocks.push(danger.reason);
@@ -791,9 +749,8 @@ export async function generateSignal(
         debugInfo.softFilters.push(`1h_weak(confirm:${confirmScore.toFixed(1)})`);
       }
 
-      // Calculate stops & targets
-      const { stop, target, rr, isChop: chopFlag } = findStopAndTarget(candles4h, direction, breakInfo.crossPrice, structure4h, adx4h);
-      const type: SignalType = chopFlag ? "CHEEKY" : "PRIMARY";
+      // v13: Fixed 2.5% SL / 5% TP
+      const { stop, target, rr, type, isChop: chopFlag } = findStopAndTarget(candles4h, direction, breakInfo.crossPrice, structure4h, adx4h);
 
       // Quality score components
       const freshnessBonus = breakInfo.crossLag === 0 ? 20 : breakInfo.crossLag === 1 ? 10 : 0;
@@ -827,7 +784,7 @@ export async function generateSignal(
         const breakType = breakInfo.isRetest ? "RETEST" : "FRESH";
         const candidateSignal: Signal = {
           pair, direction, type, confidence, entry: breakInfo.crossPrice, stop, target, rr,
-          reason: `${direction === "LONG" ? "BREAKUP" : "BREAKDOWN"} ${direction} | SRC:4H_${type} | ${breakType}(crossLag:${breakInfo.crossLag}) | TL(${line.touches.length}touches,${lineType},strength:${line.strength.toFixed(0)}) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch1H:${stoch1h.k.toFixed(1)}/${stoch1h.d.toFixed(1)} | Stoch4H:${stoch4h.k.toFixed(1)}/${stoch4h.d.toFixed(1)} | 1HConfirm:${(confirmScore*100).toFixed(0)}% | Quality:${qualityScore.toFixed(1)}`,
+          reason: `${direction === "LONG" ? "BREAKUP" : "BREAKDOWN"} ${direction} | SRC:4H_${type} | ${breakType}(crossLag:${breakInfo.crossLag}) | TL(${line.touches.length}touches,${lineType},strength:${line.strength.toFixed(0)}) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch1H:${stoch1h.k.toFixed(1)}/${stoch1h.d.toFixed(1)} | Stoch4H:${stoch4h.k.toFixed(1)}/${stoch4h.d.toFixed(1)} | 1HConfirm:${(confirmScore*100).toFixed(0)}% | Quality:${qualityScore.toFixed(1)} | FixedSL:2.5% | FixedTP:5%`,
           timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d, expectedMove,
           candles1h, candles4h,
         };
