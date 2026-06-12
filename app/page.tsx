@@ -14,7 +14,7 @@ interface MarketData {
 
 interface Signal extends MarketData {
   direction: "LONG" | "SHORT";
-  type: "PRIMARY" | "CHEEKY";
+  type: "SWEEP" | "EARLY";
   confidence: number;
   entry: number;
   stop: number;
@@ -26,7 +26,7 @@ interface Signal extends MarketData {
 }
 
 const PAIRS = ["BTC", "ETH", "SOL"];
-const SIGNAL_STALE_MS = 4 * 60 * 60 * 1000;
+const SIGNAL_STALE_MS = 6 * 60 * 60 * 1000;
 const MARKET_STALE_MS = 70 * 60 * 1000;
 
 const ACCOUNT_BALANCE = 850;
@@ -40,8 +40,8 @@ function calcPositionSize(entry: number, stop: number, direction: "LONG" | "SHOR
 }
 
 export default function Dashboard() {
-  const [signals, setSignals] = useState<Record<string, Signal | null>>({});
-  const [marketData, setMarketData] = useState<Record<string, MarketData>>({});
+  const [signals, setSignals] = useState<<Record<string, Signal | null>>({});
+  const [marketData, setMarketData] = useState<<Record<string, MarketData>>({});
   const [lastSignalUpdate, setLastSignalUpdate] = useState<number>(0);
   const [lastMarketUpdate, setLastMarketUpdate] = useState<number>(0);
   const [loading, setLoading] = useState(true);
@@ -119,7 +119,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-6xl mx-auto">
         <div className="flex justify-between items-center mb-8">
-          <h1 className="text-3xl font-bold">CX Switch — Trendline Breaks</h1>
+          <h1 className="text-3xl font-bold">CX Switch — THE TRAP</h1>
           <div className="flex items-center gap-4">
             {marketStale && (
               <span className="px-3 py-1 bg-yellow-600 rounded text-sm">⚠️ Stale market data</span>
@@ -187,7 +187,7 @@ export default function Dashboard() {
                   </div>
                   {hasSignal && signalFresh ? (
                     <span className={`px-2 py-1 rounded text-sm font-bold ${
-                      signal.type === "PRIMARY" ? "bg-yellow-500 text-black" : "bg-purple-500 text-white"
+                      signal.type === "SWEEP" ? "bg-yellow-500 text-black" : "bg-purple-500 text-white"
                     }`}>
                       {signal.type}
                     </span>
@@ -278,8 +278,8 @@ export default function Dashboard() {
                   </div>
                 ) : (
                   <div className="text-center py-4 border-t border-gray-700">
-                    <p className="text-gray-400 text-sm">No active trendline break</p>
-                    <p className="text-xs text-gray-500 mt-1">Monitoring for setup...</p>
+                    <p className="text-gray-400 text-sm">No active sweep or FVG</p>
+                    <p className="text-xs text-gray-500 mt-1">Monitoring for liquidity trap...</p>
                   </div>
                 )}
               </div>
@@ -288,12 +288,13 @@ export default function Dashboard() {
         </div>
 
         <div className="mt-8 p-4 bg-gray-800 rounded-lg">
-          <h3 className="font-bold mb-2">How it works</h3>
+          <h3 className="font-bold mb-2">How it works — v14 THE TRAP</h3>
           <ul className="text-sm text-gray-400 space-y-1">
             <li>• Cron runs every hour — market data always displayed</li>
-            <li>• Trade signals cached in UI for 4h (survives serverless cold starts)</li>
-            <li>• Stops: 2.5× ATR | PRIMARY: ADX &gt; 25 | Close confirmation required</li>
-            <li>• Max 1 signal per direction per run (correlation protection)</li>
+            <li>• SWEEP: Liquidity sweep + CHoCH confirmation — high confidence, quick 3-4%</li>
+            <li>• EARLY: FVG retest in trend — ride the full move, 4-5%</li>
+            <li>• Fixed stops: 2% SL / 4% TP — no more ATR-based guesswork</li>
+            <li>• Non-lagging indicators: pure price action, no trendline lag</li>
             <li>• Position size: Risk {(RISK_PER_TRADE * 100).toFixed(0)}% = ${(ACCOUNT_BALANCE * RISK_PER_TRADE).toFixed(0)} per trade</li>
           </ul>
         </div>
