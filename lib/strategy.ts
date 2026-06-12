@@ -1,7 +1,11 @@
-// lib/strategy.ts — v13
+// lib/strategy.ts — v13b
 // Fixed 2.5% SL / 5% TP (no more ATR-based stops)
 // Remove active trade blocking — manual close, system doesn't care
 // No cooldown — if a new signal is better, it replaces the old one
+// v13b additions:
+//   - Stoch4H overbought (>80 LONG) / oversold (<20 SHORT) filter
+//   - Quality score floor: 4.0 for PRIMARY, 2.5 for CHEEKY
+//   - 1H confirmation minimum: 60% (3/5 candles)
 // ============================================================
 
 export type Structure = "UPTREND" | "DOWNTREND" | "RANGE";
@@ -407,11 +411,10 @@ function calcChandelierExit(candles: Candle[], period = 22, atrMult = 3): { long
 }
 
 // ============================================================
-// STOPS & TARGETS v13 — FIXED 2.5% SL / 5% TP
+// STOPS & TARGETS v13b — FIXED 2.5% SL / 5% TP
 // ============================================================
 
 function findStopAndTarget(candles: Candle[], direction: Direction, entry: number, structure: Structure, adx: number) {
-  // v13: Fixed 2.5% SL / 5% TP — no more ATR-based stops
   const stopPct = 0.025; // 2.5%
   const targetPct = 0.05; // 5%
   const rr = targetPct / stopPct; // 2.0
@@ -433,10 +436,21 @@ function findStopAndTarget(candles: Candle[], direction: Direction, entry: numbe
 }
 
 // ============================================================
-// REVERSAL DETECTION v13
+// REVERSAL DETECTION v13b
 // ============================================================
 
-// v13: Danger zone ONLY in weak chop (ADX < 18, RANGE)
+// v13b: Stoch4H overbought/oversold filter — HARD block, not just danger zone
+function isStoch4HOverboughtOversold(direction: Direction, stoch4hK: number): { blocked: boolean; reason: string } {
+  if (direction === "LONG" && stoch4hK > 80) {
+    return { blocked: true, reason: `stoch4h_overbought(${stoch4hK.toFixed(1)}>80)` };
+  }
+  if (direction === "SHORT" && stoch4hK < 20) {
+    return { blocked: true, reason: `stoch4h_oversold(${stoch4hK.toFixed(1)}<20)` };
+  }
+  return { blocked: false, reason: "ok" };
+}
+
+// Danger zone ONLY in weak chop (ADX < 18, RANGE)
 function isInDangerZone(direction: Direction, stoch1hK: number, stoch4hK: number, adx: number, structure: Structure): { danger: boolean; reason: string } {
   const isWeakChop = adx < 18 && structure === "RANGE";
 
@@ -490,21 +504,17 @@ function checkRSIDivergence(direction: Direction, candles: Candle[]): { divergin
   return { diverging: false, reason: "no_divergence" };
 }
 
-// 1H confirmation score
-function get1HConfirmScore(direction: Direction, candles1h: Candle[]): number {
+// v13b: 1H confirmation — HARD minimum 60% (3/5 candles)
+function get1HConfirmScore(direction: Direction, candles1h: Candle[]): { score: number; passed: boolean } {
   const recent = candles1h.slice(-5);
   if (direction === "LONG") {
     const bullish = recent.filter(c => c.close > c.open).length;
-    if (bullish >= 4) return 1.0;
-    if (bullish === 3) return 0.6;
-    if (bullish === 2) return 0.3;
-    return 0.0;
+    const score = bullish >= 4 ? 1.0 : bullish === 3 ? 0.6 : bullish === 2 ? 0.3 : 0.0;
+    return { score, passed: bullish >= 3 };
   } else {
     const bearish = recent.filter(c => c.close < c.open).length;
-    if (bearish >= 4) return 1.0;
-    if (bearish === 3) return 0.6;
-    if (bearish === 2) return 0.3;
-    return 0.0;
+    const score = bearish >= 4 ? 1.0 : bearish === 3 ? 0.6 : bearish === 2 ? 0.3 : 0.0;
+    return { score, passed: bearish >= 3 };
   }
 }
 
@@ -583,7 +593,7 @@ function findBreak(candles: Candle[], line: Trendline, direction: "LONG" | "SHOR
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATOR v13
+// MAIN SIGNAL GENERATOR v13b
 // ============================================================
 
 export async function generateSignal(
@@ -610,9 +620,6 @@ export async function generateSignal(
   };
 
   const chandelier = calcChandelierExit(candles4h, 22, 3);
-
-  // v13: No active trade blocking — manual close, system doesn't care
-  // activeTrades param kept for API compatibility but ignored
 
   const debugInfo: DebugInfo = {
     pair, price, structure4h, structure1h,
@@ -686,9 +693,6 @@ export async function generateSignal(
     }
 
     for (const direction of possibleDirections) {
-      // v13: No active trade blocking — manual close, system doesn't care
-      // Skipping all active trade checks
-
       const breakInfo = findBreak(candles4h, line, direction);
 
       if (!breakInfo.found) {
@@ -729,7 +733,14 @@ export async function generateSignal(
         continue;
       }
 
-      // v13: Danger zone — only in weak chop
+      // v13b: Stoch4H overbought/oversold — HARD block
+      const stochBlock = isStoch4HOverboughtOversold(direction, stoch4h.k);
+      if (stochBlock.blocked) {
+        debugInfo.blocks.push(stochBlock.reason);
+        continue;
+      }
+
+      // Danger zone — only in weak chop
       const danger = isInDangerZone(direction, stoch1h.k, stoch4h.k, adx4h, structure4h);
       if (danger.danger) {
         debugInfo.blocks.push(danger.reason);
@@ -743,13 +754,17 @@ export async function generateSignal(
         continue;
       }
 
-      // 1H confirmation (soft filter)
-      const confirmScore = get1HConfirmScore(direction, candles1h);
-      if (confirmScore < 0.3) {
-        debugInfo.softFilters.push(`1h_weak(confirm:${confirmScore.toFixed(1)})`);
+      // v13b: 1H confirmation — HARD minimum 60% (3/5 candles)
+      const confirm = get1HConfirmScore(direction, candles1h);
+      if (!confirm.passed) {
+        debugInfo.blocks.push(`1h_confirm_fail(${direction.toLowerCase()}:${(confirm.score*100).toFixed(0)}%<60%)`);
+        continue;
+      }
+      if (confirm.score < 1.0) {
+        debugInfo.softFilters.push(`1h_partial(confirm:${(confirm.score*100).toFixed(0)}%)`);
       }
 
-      // v13: Fixed 2.5% SL / 5% TP
+      // v13b: Fixed 2.5% SL / 5% TP
       const { stop, target, rr, type, isChop: chopFlag } = findStopAndTarget(candles4h, direction, breakInfo.crossPrice, structure4h, adx4h);
 
       // Quality score components
@@ -759,7 +774,7 @@ export async function generateSignal(
       const stochRoomBonus = direction === "LONG" && stoch1h.k < 70 ? 5 : direction === "SHORT" && stoch1h.k > 30 ? 5 : 0;
 
       let confidence = Math.min(100, 55 + (line.touches.length * 4) + freshnessBonus + retestPenalty + confluenceBonus + stochRoomBonus + (line.strength * 0.15) + (adx4h > 25 ? 12 : 0));
-      confidence = Math.round(confidence * (0.5 + 0.5 * confirmScore));
+      confidence = Math.round(confidence * (0.5 + 0.5 * confirm.score));
 
       const minConf = chopFlag ? 50 : 60;
       const minRR = chopFlag ? 1.3 : 1.8;
@@ -784,7 +799,7 @@ export async function generateSignal(
         const breakType = breakInfo.isRetest ? "RETEST" : "FRESH";
         const candidateSignal: Signal = {
           pair, direction, type, confidence, entry: breakInfo.crossPrice, stop, target, rr,
-          reason: `${direction === "LONG" ? "BREAKUP" : "BREAKDOWN"} ${direction} | SRC:4H_${type} | ${breakType}(crossLag:${breakInfo.crossLag}) | TL(${line.touches.length}touches,${lineType},strength:${line.strength.toFixed(0)}) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch1H:${stoch1h.k.toFixed(1)}/${stoch1h.d.toFixed(1)} | Stoch4H:${stoch4h.k.toFixed(1)}/${stoch4h.d.toFixed(1)} | 1HConfirm:${(confirmScore*100).toFixed(0)}% | Quality:${qualityScore.toFixed(1)} | FixedSL:2.5% | FixedTP:5%`,
+          reason: `${direction === "LONG" ? "BREAKUP" : "BREAKDOWN"} ${direction} | SRC:4H_${type} | ${breakType}(crossLag:${breakInfo.crossLag}) | TL(${line.touches.length}touches,${lineType},strength:${line.strength.toFixed(0)}) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch1H:${stoch1h.k.toFixed(1)}/${stoch1h.d.toFixed(1)} | Stoch4H:${stoch4h.k.toFixed(1)}/${stoch4h.d.toFixed(1)} | 1HConfirm:${(confirm.score*100).toFixed(0)}% | Quality:${qualityScore.toFixed(1)} | FixedSL:2.5% | FixedTP:5%`,
           timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d, expectedMove,
           candles1h, candles4h,
         };
@@ -802,7 +817,8 @@ export async function generateSignal(
     candidates.sort((a, b) => b.score - a.score);
     const best = candidates[0];
 
-    const minQualityScore = best.signal.type === "CHEEKY" ? 2.0 : 3.0;
+    // v13b: Quality score floor bumped
+    const minQualityScore = best.signal.type === "CHEEKY" ? 2.5 : 4.0;
 
     if (best.score >= minQualityScore) {
       bestSignal = best.signal;
