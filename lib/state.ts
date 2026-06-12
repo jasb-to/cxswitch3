@@ -19,14 +19,14 @@ export async function setSignals(signals: any[]) {
     const existing = await getSignals();
     const sixHoursAgo = Date.now() - (6 * 60 * 60 * 1000);
     const freshExisting = existing.filter((s: any) => s.timestamp > sixHoursAgo);
-
+    
     const merged: any[] = [...freshExisting];
     for (const s of incoming) {
       const idx = merged.findIndex((x: any) => x.pair === s.pair);
       if (idx >= 0) merged[idx] = s;
       else merged.push(s);
     }
-
+    
     await redis.set(SIGNALS_KEY, merged, { ex: SIGNALS_TTL });
     console.log("[STATE] Saved", merged.length, "signals to KV (merged)");
   } catch (err) {
@@ -68,7 +68,7 @@ export async function getMarketData(): Promise<any[]> {
   }
 }
 
-export async function getActiveTrades(): Promise<Record<string, any>> {
+export async function getActiveTrades(): Promise<<Record<string, any>> {
   try {
     const data = await redis.get(ACTIVE_TRADES_KEY);
     if (!data) return {};
