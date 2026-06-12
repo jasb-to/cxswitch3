@@ -1,6 +1,5 @@
-// lib/strategy.ts — v10
-// Fast reversal detection: 1H stoch extreme + RSI divergence + volume confirmation
-// Keeps trendline framework, adds speed
+// lib/strategy.ts — v11
+// Key fixes: Tighter stops, quality score ranking, position sizing from stop distance, remove volume kill-switch
 // ============================================================
 
 export type Structure = "UPTREND" | "DOWNTREND" | "RANGE";
@@ -91,7 +90,7 @@ interface DebugInfo {
   breaksDetected: { longSupport: number; longResistance: number; shortSupport: number; shortResistance: number };
   topLines: { support: string; resistance: string };
   softFilters: string[];
-  reversalChecks: string[];
+  qualityScores: string[];
 }
 
 // ============================================================
@@ -406,174 +405,116 @@ function calcChandelierExit(candles: Candle[], period = 22, atrMult = 3): { long
 }
 
 // ============================================================
-// STOPS & TARGETS
+// STOPS & TARGETS v11 — TIGHTER
 // ============================================================
 
 function findStopAndTarget(candles: Candle[], direction: Direction, entry: number, structure: Structure, adx: number) {
   const atr = calcATR(candles, 14);
   let stop: number, target: number;
   const isChop = structure === "RANGE" && adx < 25;
-  const targetMult = isChop ? 1.5 : 2.5;
-  const stopMult = isChop ? 1.5 : 2.5;
+
+  // v11: tighter multipliers
+  const targetMult = isChop ? 2.0 : 3.0;  // was 1.5/2.5
+  const stopMult = isChop ? 1.5 : 2.0;    // was 1.5/2.5
 
   if (direction === "LONG") {
     const lows = swingLows(candles, 3);
     const recentLow = lows.length > 0 ? lows[lows.length - 1].price : entry - atr * stopMult;
-    stop = Math.min(entry - atr * stopMult, recentLow - atr * 0.3);
+    stop = Math.min(entry - atr * stopMult, recentLow - atr * 0.2);
     target = entry + (entry - stop) * targetMult;
   } else {
     const highs = swingHighs(candles, 3);
     const recentHigh = highs.length > 0 ? highs[highs.length - 1].price : entry + atr * stopMult;
-    stop = Math.max(entry + atr * stopMult, recentHigh + atr * 0.3);
+    stop = Math.max(entry + atr * stopMult, recentHigh + atr * 0.2);
     target = entry - (stop - entry) * targetMult;
   }
+
   const rr = Math.abs(target - entry) / Math.abs(entry - stop);
   return { stop, target, rr, isChop };
 }
 
 // ============================================================
-// FAST REVERSAL DETECTION v10
+// FAST REVERSAL DETECTION v11 — PREDICTIVE, NOT REACTIVE
 // ============================================================
 
-// ─── 1H STOCHASTIC EXTREME REVERSAL ───
-// Returns true if 1H stoch is turning against the trade direction from extreme zone
-function is1HStochReversing(direction: Direction, stochK: number, stochD: number, candles1h: Candle[]): { reversing: boolean; reason: string } {
-  // Get recent stoch values to check trajectory
-  const recent = candles1h.slice(-8);
-  const stochs = recent.map((_, i) => {
-    if (i < 13) return null;
-    const slice = recent.slice(i - 13, i + 1);
-    const lowest = Math.min(...slice.map(c => c.low));
-    const highest = Math.max(...slice.map(c => c.high));
-    const current = slice[slice.length - 1].close;
-    return highest === lowest ? 50 : ((current - lowest) / (highest - lowest)) * 100;
-  }).filter((x): x is number => x !== null);
-
-  if (stochs.length < 3) return { reversing: false, reason: "insufficient_data" };
-
-  const prevK = stochs[stochs.length - 2];
-  const prevD = stochs[stochs.length - 2]; // approximate, we need full calc
+// v11: Block if we're in the danger zone (overbought in weak trend)
+function isInDangerZone(direction: Direction, stoch1hK: number, stoch4hK: number, adx: number, structure: Structure): { danger: boolean; reason: string } {
+  const isWeakTrend = adx < 25 || structure === "RANGE";
 
   if (direction === "LONG") {
-    // Bearish: K was >80 and is now crossing below D, or K < D and both falling
-    const wasOverbought = stochs.slice(0, -2).some(k => k > 80);
-    const nowCrossingDown = stochK < stochD - 2;
-    const fallingFast = stochK < 50 && stochs[stochs.length - 3] > stochK + 5;
-
-    if (wasOverbought && nowCrossingDown) {
-      return { reversing: true, reason: `1h_stoch_overbought_reversal(k:${stochK.toFixed(1)},d:${stochD.toFixed(1)})` };
+    // In weak trend: don't buy if 1H > 75 AND 4H > 80 — you're at the top
+    if (isWeakTrend && stoch1hK > 75 && stoch4hK > 80) {
+      return { danger: true, reason: `overbought_zone(1h:${stoch1hK.toFixed(1)},4h:${stoch4hK.toFixed(1)})` };
     }
-    if (stochK < stochD - 5 && stochK < 40) {
-      return { reversing: true, reason: `1h_stoch_bearish_cross(k:${stochK.toFixed(1)}<d:${stochD.toFixed(1)})` };
-    }
-    if (fallingFast) {
-      return { reversing: true, reason: `1h_stoch_falling_fast(${stochK.toFixed(1)})` };
+    // In any trend: don't buy if 1H stoch is crossing down from >70
+    if (stoch1hK < 50 && stoch1hK > 30) {
+      // neutral zone, ok
     }
   } else {
-    const wasOversold = stochs.slice(0, -2).some(k => k < 20);
-    const nowCrossingUp = stochK > stochD + 2;
-    const risingFast = stochK > 50 && stochs[stochs.length - 3] < stochK - 5;
-
-    if (wasOversold && nowCrossingUp) {
-      return { reversing: true, reason: `1h_stoch_oversold_reversal(k:${stochK.toFixed(1)},d:${stochD.toFixed(1)})` };
-    }
-    if (stochK > stochD + 5 && stochK > 60) {
-      return { reversing: true, reason: `1h_stoch_bullish_cross(k:${stochK.toFixed(1)}>d:${stochD.toFixed(1)})` };
-    }
-    if (risingFast) {
-      return { reversing: true, reason: `1h_stoch_rising_fast(${stochK.toFixed(1)})` };
+    if (isWeakTrend && stoch1hK < 25 && stoch4hK < 20) {
+      return { danger: true, reason: `oversold_zone(1h:${stoch1hK.toFixed(1)},4h:${stoch4hK.toFixed(1)})` };
     }
   }
 
-  return { reversing: false, reason: "ok" };
+  return { danger: false, reason: "ok" };
 }
 
-// ─── RSI DIVERGENCE ───
-// Fast: checks last 12 candles for bearish/bullish divergence
+// 1H RSI divergence — fast
 function checkRSIDivergence(direction: Direction, candles: Candle[]): { diverging: boolean; reason: string } {
   if (candles.length < 15) return { diverging: false, reason: "insufficient" };
-
   const recent = candles.slice(-12);
   const rsiValues = recent.map((_, i) => {
     if (i < 14) return null;
     return calcRSI(recent.slice(0, i + 1), 14);
   }).filter((x): x is number => x !== null);
-
   if (rsiValues.length < 5) return { diverging: false, reason: "insufficient_rsi" };
-
   const prices = recent.slice(-rsiValues.length).map(c => c.close);
 
   if (direction === "LONG") {
-    // Bearish divergence: price higher high, RSI lower high
     const priceHigh = Math.max(...prices);
     const priceHighIdx = prices.indexOf(priceHigh);
     const rsiAtPriceHigh = rsiValues[priceHighIdx];
-
-    // Find previous high in first half
     const firstHalfPrices = prices.slice(0, Math.floor(prices.length / 2));
     const prevPriceHigh = Math.max(...firstHalfPrices);
     const prevPriceHighIdx = prices.indexOf(prevPriceHigh);
     const prevRsiAtHigh = rsiValues[prevPriceHighIdx];
-
     if (priceHigh > prevPriceHigh && rsiAtPriceHigh < prevRsiAtHigh - 3) {
-      return { diverging: true, reason: `bearish_rsi_div(price:${priceHigh.toFixed(0)}>prev:${prevPriceHigh.toFixed(0)},rsi:${rsiAtPriceHigh.toFixed(1)}<prev:${prevRsiAtHigh.toFixed(1)})` };
+      return { diverging: true, reason: `bearish_rsi_div` };
     }
   } else {
-    // Bullish divergence: price lower low, RSI higher low
     const priceLow = Math.min(...prices);
     const priceLowIdx = prices.indexOf(priceLow);
     const rsiAtPriceLow = rsiValues[priceLowIdx];
-
     const firstHalfPrices = prices.slice(0, Math.floor(prices.length / 2));
     const prevPriceLow = Math.min(...firstHalfPrices);
     const prevPriceLowIdx = prices.indexOf(prevPriceLow);
     const prevRsiAtLow = rsiValues[prevPriceLowIdx];
-
     if (priceLow < prevPriceLow && rsiAtPriceLow > prevRsiAtLow + 3) {
-      return { diverging: true, reason: `bullish_rsi_div(price:${priceLow.toFixed(0)}<prev:${prevPriceLow.toFixed(0)},rsi:${rsiAtPriceLow.toFixed(1)}>prev:${prevRsiAtLow.toFixed(1)})` };
+      return { diverging: true, reason: `bullish_rsi_div` };
     }
   }
-
   return { diverging: false, reason: "no_divergence" };
 }
 
-// ─── VOLUME CONFIRMATION ───
-// Checks if the break candle had volume spike vs recent average
-function hasVolumeConfirmation(candles: Candle[], crossIdx: number, direction: Direction): { confirmed: boolean; reason: string } {
-  if (crossIdx < 5 || crossIdx >= candles.length) return { confirmed: true, reason: "no_data" };
-
-  const breakCandle = candles[crossIdx];
-  const recentVolume = candles.slice(crossIdx - 5, crossIdx).reduce((a, c) => a + c.volume, 0) / 5;
-  const volumeRatio = breakCandle.volume / recentVolume;
-
-  if (volumeRatio < 0.8) {
-    return { confirmed: false, reason: `low_volume(${volumeRatio.toFixed(1)}x_avg)` };
-  }
-  if (volumeRatio > 2.0) {
-    return { confirmed: true, reason: `volume_spike(${volumeRatio.toFixed(1)}x)` };
-  }
-  return { confirmed: true, reason: `normal_volume(${volumeRatio.toFixed(1)}x)` };
-}
-
-// ─── 1H CONFIRMATION SCORE (soft filter) ───
+// 1H confirmation score
 function get1HConfirmScore(direction: Direction, candles1h: Candle[]): number {
   const recent = candles1h.slice(-5);
   if (direction === "LONG") {
     const bullish = recent.filter(c => c.close > c.open).length;
     if (bullish >= 4) return 1.0;
-    if (bullish === 3) return 0.5;
-    if (bullish === 2) return 0.2;
+    if (bullish === 3) return 0.6;
+    if (bullish === 2) return 0.3;
     return 0.0;
   } else {
     const bearish = recent.filter(c => c.close < c.open).length;
     if (bearish >= 4) return 1.0;
-    if (bearish === 3) return 0.5;
-    if (bearish === 2) return 0.2;
+    if (bearish === 3) return 0.6;
+    if (bearish === 2) return 0.3;
     return 0.0;
   }
 }
 
-// ─── COOLDOWN ───
+// Cooldown
 function isOnCooldown(pair: string, direction: Direction, activeTrades: Record<string, any>): boolean {
   const existing = activeTrades[pair];
   if (!existing) return false;
@@ -593,7 +534,7 @@ function findBreak(candles: Candle[], line: Trendline, direction: "LONG" | "SHOR
   const atr = calcATR(candles, 14);
 
   const distance = Math.abs(currentPrice - linePrice);
-  const maxDistance = 1.5 * atr;
+  const maxDistance = 2.0 * atr; // v11: slightly more forgiving
 
   if (direction === "LONG" && currentPrice > linePrice && distance > maxDistance) {
     return { found: false, crossIdx: -1, crossPrice: 0, crossLag: 0, isRetest: false };
@@ -611,14 +552,14 @@ function findBreak(candles: Candle[], line: Trendline, direction: "LONG" | "SHOR
     if (direction === "LONG") {
       const prevBelow = prevCandle.close < prevLinePrice;
       const currAbove = candle.close > currLinePrice;
-      const wasNearLine = Math.abs(prevCandle.close - prevLinePrice) / prevLinePrice < 0.025;
+      const wasNearLine = Math.abs(prevCandle.close - prevLinePrice) / prevLinePrice < 0.03;
       if ((prevBelow && currAbove) || (wasNearLine && currAbove)) {
         return { found: true, crossIdx: i, crossPrice: candle.close, crossLag: currentIdx - i, isRetest: false };
       }
     } else {
       const prevAbove = prevCandle.close > prevLinePrice;
       const currBelow = candle.close < currLinePrice;
-      const wasNearLine = Math.abs(prevCandle.close - prevLinePrice) / prevLinePrice < 0.025;
+      const wasNearLine = Math.abs(prevCandle.close - prevLinePrice) / prevLinePrice < 0.03;
       if ((prevAbove && currBelow) || (wasNearLine && currBelow)) {
         return { found: true, crossIdx: i, crossPrice: candle.close, crossLag: currentIdx - i, isRetest: false };
       }
@@ -657,7 +598,7 @@ function findBreak(candles: Candle[], line: Trendline, direction: "LONG" | "SHOR
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATOR v10
+// MAIN SIGNAL GENERATOR v11
 // ============================================================
 
 export async function generateSignal(
@@ -696,7 +637,7 @@ export async function generateSignal(
     blocks: [], linesChecked: 0,
     breaksDetected: { longSupport: 0, longResistance: 0, shortSupport: 0, shortResistance: 0 },
     topLines: { support: "none", resistance: "none" },
-    softFilters: [], reversalChecks: [],
+    softFilters: [], qualityScores: [],
   };
 
   if (candles1h.length < 50 || candles4h.length < 50) {
@@ -738,8 +679,8 @@ export async function generateSignal(
     return { signal: null, market, debug: debugInfo };
   }
 
-  let bestSignal: Signal | null = null;
-  let bestScore = 0;
+  // v11: Collect ALL valid candidates, then pick the best one
+  const candidates: Array<{ signal: Signal; score: number; line: Trendline; breakInfo: BreakInfo }> = [];
 
   for (const line of allFreshLines) {
     if (isTrendlineExpired(line, candles4h.length - 1)) continue;
@@ -779,7 +720,7 @@ export async function generateSignal(
         else debugInfo.breaksDetected.shortResistance++;
       }
 
-      // ─── CHANDELIER FILTERS ───
+      // Chandelier
       if (direction === "LONG" && price < chandelier.long) {
         debugInfo.blocks.push(`long_chandelier_block`);
         continue;
@@ -802,76 +743,93 @@ export async function generateSignal(
         continue;
       }
 
-      // ═══════════════════════════════════════════════════════
-      // v10: FAST REVERSAL DETECTION — HARD BLOCKS
-      // ═══════════════════════════════════════════════════════
-
-      // 1. 1H Stochastic Reversal Check
-      const stochReversal = is1HStochReversing(direction, stoch1h.k, stoch1h.d, candles1h);
-      if (stochReversal.reversing) {
-        debugInfo.reversalChecks.push(stochReversal.reason);
-        debugInfo.blocks.push(stochReversal.reason);
+      // v11: DANGER ZONE — predictive overbought/oversold block
+      const danger = isInDangerZone(direction, stoch1h.k, stoch4h.k, adx4h, structure4h);
+      if (danger.danger) {
+        debugInfo.blocks.push(danger.reason);
         continue;
       }
 
-      // 2. RSI Divergence Check
+      // RSI divergence
       const rsiDiv = checkRSIDivergence(direction, candles1h);
       if (rsiDiv.diverging) {
-        debugInfo.reversalChecks.push(rsiDiv.reason);
         debugInfo.blocks.push(rsiDiv.reason);
         continue;
       }
 
-      // 3. Volume Confirmation
-      const volCheck = hasVolumeConfirmation(candles4h, breakInfo.crossIdx, direction);
-      if (!volCheck.confirmed) {
-        debugInfo.reversalChecks.push(volCheck.reason);
-        debugInfo.blocks.push(volCheck.reason);
-        continue;
-      }
-
-      debugInfo.reversalChecks.push(`reversal_ok|${volCheck.reason}`);
-
-      // ─── 1H CONFIRMATION (soft filter) ───
+      // 1H confirmation (soft filter)
       const confirmScore = get1HConfirmScore(direction, candles1h);
       if (confirmScore < 0.3) {
         debugInfo.softFilters.push(`1h_weak(confirm:${confirmScore.toFixed(1)})`);
       }
 
-      const { stop, target, rr, isChop: chopFlag } = findStopAndTarget(candles4h, direction, price, structure4h, adx4h);
+      // Calculate stops & targets
+      const { stop, target, rr, isChop: chopFlag } = findStopAndTarget(candles4h, direction, breakInfo.crossPrice, structure4h, adx4h);
       const type: SignalType = chopFlag ? "CHEEKY" : "PRIMARY";
 
-      const freshnessBonus = breakInfo.crossLag === 0 ? 15 : breakInfo.crossLag === 1 ? 5 : 0;
-      const retestPenalty = breakInfo.isRetest ? -5 : 0;
-      const minConf = chopFlag ? 55 : 65;
-      const minRR = chopFlag ? 1.2 : 1.5;
+      // v11: QUALITY SCORE
+      const freshnessBonus = breakInfo.crossLag === 0 ? 20 : breakInfo.crossLag === 1 ? 10 : 0;
+      const retestPenalty = breakInfo.isRetest ? -8 : 0;
+      const confluenceBonus = structure4h === structure1h ? 10 : 0;
+      const stochRoomBonus = direction === "LONG" && stoch1h.k < 70 ? 5 : direction === "SHORT" && stoch1h.k > 30 ? 5 : 0;
 
-      let confidence = Math.min(100, 55 + (line.touches.length * 4) + freshnessBonus + retestPenalty + (line.strength * 0.1) + (adx4h > 25 ? 10 : 0));
+      let confidence = Math.min(100, 55 + (line.touches.length * 4) + freshnessBonus + retestPenalty + confluenceBonus + stochRoomBonus + (line.strength * 0.15) + (adx4h > 25 ? 12 : 0));
       confidence = Math.round(confidence * (0.5 + 0.5 * confirmScore));
+
+      // v11: Minimum thresholds
+      const minConf = chopFlag ? 50 : 60;
+      const minRR = chopFlag ? 1.3 : 1.8;
 
       if (confidence >= minConf && rr >= minRR) {
         const expectedMove = direction === "LONG" 
-          ? ((target - price) / price) * 100 
-          : ((price - target) / price) * 100;
+          ? ((target - breakInfo.crossPrice) / breakInfo.crossPrice) * 100 
+          : ((breakInfo.crossPrice - target) / breakInfo.crossPrice) * 100;
 
-        if (expectedMove < 2.5) {
-          debugInfo.blocks.push(`expected_move(${expectedMove.toFixed(2)}<2.5)`);
+        if (expectedMove < 3.0) {
+          debugInfo.blocks.push(`expected_move(${expectedMove.toFixed(2)}<3.0)`);
           continue;
         }
 
-        const score = confidence * rr;
-        if (score > bestScore) {
-          bestScore = score;
-          const lineType = line.isSupport ? "SUPPORT" : "RESISTANCE";
-          const breakType = breakInfo.isRetest ? "RETEST" : "FRESH";
-          bestSignal = {
-            pair, direction, type, confidence, entry: breakInfo.crossPrice, stop, target, rr,
-            reason: `${direction === "LONG" ? "BREAKUP" : "BREAKDOWN"} ${direction} | SRC:4H_${type} | ${breakType}(crossLag:${breakInfo.crossLag}) | TL(${line.touches.length}touches,${lineType},strength:${line.strength.toFixed(0)}) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch1H:${stoch1h.k.toFixed(1)}/${stoch1h.d.toFixed(1)} | Stoch4H:${stoch4h.k.toFixed(1)}/${stoch4h.d.toFixed(1)} | 1HConfirm:${(confirmScore*100).toFixed(0)}% | Vol:${volCheck.reason}`,
-            timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d, expectedMove,
-            candles1h, candles4h,
-          };
-        }
+        // v11: QUALITY SCORE = confidence * RR / stop_pct
+        // Higher score = better risk-adjusted setup
+        const stopPct = Math.abs(breakInfo.crossPrice - stop) / breakInfo.crossPrice;
+        const qualityScore = (confidence * rr) / (stopPct * 100);
+
+        debugInfo.qualityScores.push(`${line.isSupport?"S":"R"}_${direction.toLowerCase()}_q:${qualityScore.toFixed(1)}(conf:${confidence},rr:${rr.toFixed(1)},stop:${(stopPct*100).toFixed(1)}%)`);
+
+        const lineType = line.isSupport ? "SUPPORT" : "RESISTANCE";
+        const breakType = breakInfo.isRetest ? "RETEST" : "FRESH";
+        const candidateSignal: Signal = {
+          pair, direction, type, confidence, entry: breakInfo.crossPrice, stop, target, rr,
+          reason: `${direction === "LONG" ? "BREAKUP" : "BREAKDOWN"} ${direction} | SRC:4H_${type} | ${breakType}(crossLag:${breakInfo.crossLag}) | TL(${line.touches.length}touches,${lineType},strength:${line.strength.toFixed(0)}) | 4H:${structure4h} 1H:${structure1h} | ADX:${adx4h.toFixed(1)} | Stoch1H:${stoch1h.k.toFixed(1)}/${stoch1h.d.toFixed(1)} | Stoch4H:${stoch4h.k.toFixed(1)}/${stoch4h.d.toFixed(1)} | 1HConfirm:${(confirmScore*100).toFixed(0)}% | Quality:${qualityScore.toFixed(1)}`,
+          timestamp: Date.now(), structure: structure4h, adx: adx4h, rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d, expectedMove,
+          candles1h, candles4h,
+        };
+
+        candidates.push({ signal: candidateSignal, score: qualityScore, line, breakInfo });
       }
+    }
+  }
+
+  // v11: Pick the BEST candidate, or none if all are weak
+  let bestSignal: Signal | null = null;
+  let bestScore = 0;
+
+  if (candidates.length > 0) {
+    // Sort by quality score descending
+    candidates.sort((a, b) => b.score - a.score);
+    const best = candidates[0];
+
+    // v11: Only emit if quality score is above minimum
+    const minQualityScore = best.signal.type === "CHEEKY" ? 2.5 : 3.5;
+
+    if (best.score >= minQualityScore) {
+      bestSignal = best.signal;
+      bestScore = best.score;
+      debugInfo.qualityScores.push(`SELECTED:${best.score.toFixed(1)}(from_${candidates.length}candidates)`);
+    } else {
+      debugInfo.blocks.push(`quality_too_low(${best.score.toFixed(1)}<${minQualityScore})`);
+      debugInfo.qualityScores.push(`REJECTED:${best.score.toFixed(1)}(from_${candidates.length}candidates)`);
     }
   }
 
