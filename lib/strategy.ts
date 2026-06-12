@@ -1,5 +1,5 @@
-// lib/strategy.ts — v14 "THE TRAP"
-// Liquidity Sweep + CHoCH + FVG Retest
+// lib/strategy.ts — v14 "THE TRAP" (Early Entry Edition)
+// Liquidity Sweep + FVG Retest — maximizes early entry profit
 // Non-lagging, price-action only
 // ============================================================
 
@@ -202,11 +202,11 @@ function detectLiquiditySweep(candles: Candle[]): SweepResult | null {
   if (highs.length < 2 || lows.length < 2) return null;
 
   const current = candles[candles.length - 1];
-  const prev = candles[candles.length - 2];
 
   const lastLow = lows[lows.length - 1];
   
-  if (current.low < lastLow.price && current.close > lastLow.price && prev.close > lastLow.price) {
+  // v14 Early: removed prev.close check — catch the sweep as it happens
+  if (current.low < lastLow.price && current.close > lastLow.price) {
     const wickDepth = (lastLow.price - current.low) / lastLow.price;
     if (wickDepth > 0.001) {
       return {
@@ -222,7 +222,7 @@ function detectLiquiditySweep(candles: Candle[]): SweepResult | null {
 
   const lastHigh = highs[highs.length - 1];
   
-  if (current.high > lastHigh.price && current.close < lastHigh.price && prev.close < lastHigh.price) {
+  if (current.high > lastHigh.price && current.close < lastHigh.price) {
     const wickDepth = (current.high - lastHigh.price) / lastHigh.price;
     if (wickDepth > 0.001) {
       return {
@@ -281,7 +281,8 @@ interface FVGResult {
 function detectFVG(candles: Candle[], direction: "LONG" | "SHORT"): FVGResult | null {
   if (candles.length < 3) return null;
   
-  for (let i = candles.length - 3; i >= Math.max(0, candles.length - 8); i--) {
+  // v14 Early: widened lookback from 8 to 20 candles (80h on 4H)
+  for (let i = candles.length - 3; i >= Math.max(0, candles.length - 20); i--) {
     if (i + 2 >= candles.length) continue;
     const c1 = candles[i];
     const c2 = candles[i + 1];
@@ -349,6 +350,7 @@ export function generateSignal(
     debug.push(`sweep_${sweep.direction.toLowerCase()}_level:${sweep.sweepLevel.toFixed(2)}_wick:${sweep.wickExtreme.toFixed(2)}`);
   }
 
+  // v14 Early: determine bias from structure OR range position
   let bias: "LONG" | "SHORT" | "NONE" = "NONE";
   
   if (structure4h === "UPTREND") {
@@ -358,6 +360,7 @@ export function generateSignal(
     bias = "SHORT";
     debug.push("4h_bias_short");
   } else {
+    // In RANGE, check which side of range we're on
     const highs4h = swingHighs(candles4h, 5);
     const lows4h = swingLows(candles4h, 5);
     if (highs4h.length >= 2 && lows4h.length >= 2) {
@@ -374,68 +377,71 @@ export function generateSignal(
     }
   }
 
+  // ─── STEP 1: SWEEP SIGNAL (Early Entry) ───
+  // v14 Early: enter on sweep detection, CHoCH is bonus not requirement
   if (sweep && sweep.direction === bias) {
     const choch = detectCHOCH(candles1h, sweep);
     
     if (choch && choch.found) {
       debug.push(`choch_${choch.direction.toLowerCase()}_break:${choch.breakLevel.toFixed(2)}`);
-      
-      const momentumOK = sweep.direction === "LONG" ? roc1h > -0.5 : roc1h < 0.5;
-      
-      if (!momentumOK) {
-        debug.push(`momentum_fail(roc:${roc1h.toFixed(2)})`);
-      } else {
-        debug.push(`momentum_ok(roc:${roc1h.toFixed(2)})`);
-        
-        const stopPct = 0.02;
-        const targetPct = 0.04;
-        
-        let entry: number, stop: number, target: number;
-        
-        if (sweep.direction === "LONG") {
-          entry = price;
-          stop = Math.min(sweep.wickExtreme * 0.998, entry * (1 - stopPct));
-          target = entry * (1 + targetPct);
-          const minStop = entry * 0.985;
-          if (stop > minStop) stop = minStop;
-        } else {
-          entry = price;
-          stop = Math.max(sweep.wickExtreme * 1.002, entry * (1 + stopPct));
-          target = entry * (1 - targetPct);
-          const minStop = entry * 1.015;
-          if (stop < minStop) stop = minStop;
-        }
-        
-        const actualStopPct = Math.abs(entry - stop) / entry;
-        const actualTargetPct = Math.abs(target - entry) / entry;
-        const rr = actualTargetPct / actualStopPct;
-        
-        let confidence = 70;
-        if (structure4h === structure1h) confidence += 10;
-        if (Math.abs(roc1h) > 0.5) confidence += 10;
-        confidence = Math.min(95, confidence);
-        
-        const expectedMove = actualTargetPct * 100;
-        
-        if (rr >= 1.5 && expectedMove >= 3.0) {
-          const signal: Signal = {
-            pair, direction: sweep.direction, entry, stop, target, confidence,
-            type: "SWEEP",
-            reason: `SWEEP+CHoCH ${sweep.direction} | 4H:${structure4h} 1H:${structure1h} | Sweep:${sweep.sweepLevel.toFixed(2)} Wick:${sweep.wickExtreme.toFixed(2)} | CHoCH:${choch.breakLevel.toFixed(2)} | ROC:${roc1h.toFixed(2)} | Conf:${confidence}`,
-            timestamp: Date.now(), expectedMove,
-            adx: adx4h, rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d, rr,
-          };
-          debug.push(`SIGNAL_${sweep.direction}_SWEEP+CHoCH_conf:${confidence}_rr:${rr.toFixed(2)}`);
-          return { signal, market, debug };
-        } else {
-          debug.push(`rr_too_low(${rr.toFixed(2)}<<1.5)`);
-        }
-      }
+    }
+    
+    const momentumOK = sweep.direction === "LONG" ? roc1h > -0.5 : roc1h < 0.5;
+    
+    if (!momentumOK) {
+      debug.push(`momentum_fail(roc:${roc1h.toFixed(2)})`);
     } else {
-      debug.push("no_choch_confirmation");
+      debug.push(`momentum_ok(roc:${roc1h.toFixed(2)})`);
+      
+      const stopPct = 0.02;
+      const targetPct = 0.04;
+      
+      let entry: number, stop: number, target: number;
+      
+      if (sweep.direction === "LONG") {
+        entry = price;
+        stop = Math.min(sweep.wickExtreme * 0.998, entry * (1 - stopPct));
+        target = entry * (1 + targetPct);
+        const minStop = entry * 0.985;
+        if (stop > minStop) stop = minStop;
+      } else {
+        entry = price;
+        stop = Math.max(sweep.wickExtreme * 1.002, entry * (1 + stopPct));
+        target = entry * (1 - targetPct);
+        const minStop = entry * 1.015;
+        if (stop < minStop) stop = minStop;
+      }
+      
+      const actualStopPct = Math.abs(entry - stop) / entry;
+      const actualTargetPct = Math.abs(target - entry) / entry;
+      const rr = actualTargetPct / actualStopPct;
+      
+      // v14 Early: higher confidence for CHoCH-confirmed sweeps
+      let confidence = choch && choch.found ? 80 : 70;
+      if (structure4h === structure1h) confidence += 5;
+      if (Math.abs(roc1h) > 0.5) confidence += 5;
+      confidence = Math.min(95, confidence);
+      
+      const expectedMove = actualTargetPct * 100;
+      
+      if (rr >= 1.5 && expectedMove >= 3.0) {
+        const chochTag = choch && choch.found ? "+CHoCH" : "(early)";
+        const signal: Signal = {
+          pair, direction: sweep.direction, entry, stop, target, confidence,
+          type: "SWEEP",
+          reason: `SWEEP${chochTag} ${sweep.direction} | 4H:${structure4h} 1H:${structure1h} | Sweep:${sweep.sweepLevel.toFixed(2)} Wick:${sweep.wickExtreme.toFixed(2)} | ROC:${roc1h.toFixed(2)} | Conf:${confidence}`,
+          timestamp: Date.now(), expectedMove,
+          adx: adx4h, rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d, rr,
+        };
+        debug.push(`SIGNAL_${sweep.direction}_SWEEP${chochTag}_conf:${confidence}_rr:${rr.toFixed(2)}`);
+        return { signal, market, debug };
+      } else {
+        debug.push(`rr_too_low(${rr.toFixed(2)}<<1.5)`);
+      }
     }
   }
 
+  // ─── STEP 2: FVG SIGNAL (Early Entry in Trend) ───
   if (bias !== "NONE") {
     const fvg4h = detectFVG(candles4h, bias);
     
