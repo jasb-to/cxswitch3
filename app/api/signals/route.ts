@@ -1,5 +1,8 @@
+// app/api/signals/route.ts — v14
+// ============================================================
+
 import { NextResponse } from "next/server";
-import { getSignals, getMarketData } from "@/lib/state";
+import { getSignals, getMarketData } from "@/lib/state-v14";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -9,18 +12,17 @@ export async function GET() {
   const marketData = await getMarketData();
 
   console.log("[API] Raw signals count:", signals?.length);
-  console.log("[API] Raw signals:", JSON.stringify(signals, null, 2));
 
   const enriched = (Array.isArray(signals) ? signals : []).map((s: any) => {
-    const isPrimary = s.type === "PRIMARY";
-    const isCheeky = s.type === "CHEEKY";
+    const isSweep = s.type === "SWEEP";
+    const isFVG = s.type === "FVG";
 
     return {
       ...s,
       meta: {
-        tier: isPrimary ? "PRIMARY" : isCheeky ? "CHEEKY" : "OTHER",
-        quality: s.confidence >= 80 ? "A" : s.confidence >= 65 ? "B" : s.confidence >= 50 ? "C" : "D",
-        actionable: s.confidence >= 50 && (isPrimary || (isCheeky && s.confidence >= 65)),
+        tier: isSweep ? "SWEEP" : isFVG ? "EARLY" : "OTHER",
+        quality: s.confidence >= 85 ? "A" : s.confidence >= 70 ? "B" : s.confidence >= 55 ? "C" : "D",
+        actionable: s.confidence >= 60,
       }
     };
   });
