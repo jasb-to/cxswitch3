@@ -68,7 +68,7 @@ export async function getMarketData(): Promise<any[]> {
   }
 }
 
-export async function getActiveTrades(): Promise<<Record<string, any>> {
+export async function getActiveTrades(): Promise<Record<string, any>> {
   try {
     const data = await redis.get(ACTIVE_TRADES_KEY);
     if (!data) return {};
