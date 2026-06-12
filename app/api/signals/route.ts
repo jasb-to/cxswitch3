@@ -2,7 +2,7 @@
 // ============================================================
 
 import { NextResponse } from "next/server";
-import { getSignals, getMarketData } from "@/lib/state-v14";
+import { getSignals, getMarketData } from "@/lib/state";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,12 +15,12 @@ export async function GET() {
 
   const enriched = (Array.isArray(signals) ? signals : []).map((s: any) => {
     const isSweep = s.type === "SWEEP";
-    const isFVG = s.type === "FVG";
+    const isEarly = s.type === "EARLY";
 
     return {
       ...s,
       meta: {
-        tier: isSweep ? "SWEEP" : isFVG ? "EARLY" : "OTHER",
+        tier: isSweep ? "SWEEP" : isEarly ? "EARLY" : "OTHER",
         quality: s.confidence >= 85 ? "A" : s.confidence >= 70 ? "B" : s.confidence >= 55 ? "C" : "D",
         actionable: s.confidence >= 60,
       }
