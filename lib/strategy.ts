@@ -19,7 +19,7 @@ export interface Signal {
   stop: number;
   target: number;
   confidence: number;
-  type: "SWEEP" | "FVG" | "EARLY";
+  type: "SWEEP" | "EARLY";
   reason: string;
   timestamp: number;
   expectedMove: number;
@@ -41,10 +41,6 @@ export interface MarketData {
   stochK: number;
   stochD: number;
 }
-
-// ============================================================
-// SWING POINTS
-// ============================================================
 
 interface SwingPoint {
   idx: number;
@@ -84,10 +80,6 @@ function swingLows(candles: Candle[], lookback = 3): SwingPoint[] {
   return lows;
 }
 
-// ============================================================
-// STRUCTURE
-// ============================================================
-
 function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
   const highs = swingHighs(candles, 5);
   const lows = swingLows(candles, 5);
@@ -114,10 +106,6 @@ function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
   }
   return "RANGE";
 }
-
-// ============================================================
-// INDICATORS (minimal, for MarketData compatibility)
-// ============================================================
 
 function calcADX(candles: Candle[], period = 14): number {
   if (candles.length < period * 2 + 1) return 0;
@@ -199,10 +187,6 @@ function calcROC(candles: Candle[], period = 3): number {
   return ((current - past) / past) * 100;
 }
 
-// ============================================================
-// LIQUIDITY SWEEP
-// ============================================================
-
 interface SweepResult {
   found: boolean;
   direction: "LONG" | "SHORT";
@@ -255,10 +239,6 @@ function detectLiquiditySweep(candles: Candle[]): SweepResult | null {
   return null;
 }
 
-// ============================================================
-// CHANGE OF CHARACTER (CHoCH)
-// ============================================================
-
 interface CHoCHResult {
   found: boolean;
   direction: "LONG" | "SHORT";
@@ -289,10 +269,6 @@ function detectCHOCH(candles: Candle[], sweep: SweepResult): CHoCHResult | null 
 
   return null;
 }
-
-// ============================================================
-// FAIR VALUE GAP (FVG)
-// ============================================================
 
 interface FVGResult {
   found: boolean;
@@ -335,10 +311,6 @@ function detectFVG(candles: Candle[], direction: "LONG" | "SHORT"): FVGResult | 
   }
   return null;
 }
-
-// ============================================================
-// MAIN SIGNAL GENERATOR
-// ============================================================
 
 export function generateSignal(
   pair: string,
@@ -456,7 +428,7 @@ export function generateSignal(
           debug.push(`SIGNAL_${sweep.direction}_SWEEP+CHoCH_conf:${confidence}_rr:${rr.toFixed(2)}`);
           return { signal, market, debug };
         } else {
-          debug.push(`rr_too_low(${rr.toFixed(2)}<1.5)`);
+          debug.push(`rr_too_low(${rr.toFixed(2)}<<1.5)`);
         }
       }
     } else {
