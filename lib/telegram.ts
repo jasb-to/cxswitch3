@@ -1,3 +1,7 @@
+// lib/telegram-v14.ts
+// Clean alerts for v14 strategy
+// ============================================================
+
 export async function sendAlert(signal: any) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -7,27 +11,21 @@ export async function sendAlert(signal: any) {
     return;
   }
 
-  // Signal tier — now uses clean state names
-  const isPrimary = signal.state === "PRIMARY";
-  const isCheeky = signal.state === "CHEEKY";
-  
-  const tierEmoji = isPrimary ? "🎯" : isCheeky ? "⚡" : "📊";
-  const tierLabel = isPrimary ? "PRIMARY" : isCheeky ? "CHEEKY" : "SETUP";
+  // Signal tier
+  const isSweep = signal.state === "SWEEP";
+  const isFVG = signal.state === "FVG";
+
+  const tierEmoji = isSweep ? "🎯" : isFVG ? "⚡" : "📊";
+  const tierLabel = isSweep ? "SWEEP" : isFVG ? "EARLY" : "SETUP";
 
   // Color-code confidence
-  const confEmoji = signal.confidence >= 80 ? "🟢" :
-                    signal.confidence >= 60 ? "🟡" :
-                    signal.confidence >= 40 ? "🟠" : "🔴";
+  const confEmoji = signal.confidence >= 85 ? "🟢" :
+                    signal.confidence >= 70 ? "🟡" :
+                    signal.confidence >= 55 ? "🟠" : "🔴";
 
-  // Hard floors — don't spam on weak signals
-  if (signal.confidence < 50) {
+  // Hard floor — only alert on quality
+  if (signal.confidence < 60) {
     console.log("[TELEGRAM SKIP: LOW CONFIDENCE]", signal.symbol, signal.confidence);
-    return;
-  }
-
-  // Cheeky needs higher bar
-  if (isCheeky && signal.confidence < 65) {
-    console.log("[TELEGRAM SKIP: CHEEKY LOW CONF]", signal.symbol, signal.confidence);
     return;
   }
 
@@ -45,11 +43,6 @@ Expected Move: ${signal.expectedMove}%
 SL: ${signal.stopLoss ?? "-"}
 TP: ${signal.takeProfit ?? "-"}
 RR: ${signal.rr ?? "-"}
-
-ADX: ${signal.adx}
-RSI: ${signal.rsi}
-StochK: ${signal.stochK}
-StochD: ${signal.stochD}
 
 ${signal.reason}
 
