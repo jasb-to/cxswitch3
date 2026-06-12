@@ -12,7 +12,7 @@ export async function sendAlert(signal: any) {
 
   const isSweep = signal.state === "SWEEP";
   const isEarly = signal.state === "EARLY";
-
+  
   const tierEmoji = isSweep ? "🎯" : isEarly ? "⚡" : "📊";
   const tierLabel = isSweep ? "SWEEP" : isEarly ? "EARLY" : "SETUP";
 
