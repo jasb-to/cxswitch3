@@ -205,10 +205,10 @@ function detectLiquiditySweep(candles: Candle[]): SweepResult | null {
 
   const lastLow = lows[lows.length - 1];
   
-  // v14 Early: removed prev.close check — catch the sweep as it happens
+  // 0.3% min wick depth — real liquidity grab, not noise
   if (current.low < lastLow.price && current.close > lastLow.price) {
     const wickDepth = (lastLow.price - current.low) / lastLow.price;
-    if (wickDepth > 0.001) {
+    if (wickDepth > 0.003) {
       return {
         found: true,
         direction: "LONG",
@@ -224,7 +224,7 @@ function detectLiquiditySweep(candles: Candle[]): SweepResult | null {
   
   if (current.high > lastHigh.price && current.close < lastHigh.price) {
     const wickDepth = (current.high - lastHigh.price) / lastHigh.price;
-    if (wickDepth > 0.001) {
+    if (wickDepth > 0.003) {
       return {
         found: true,
         direction: "SHORT",
@@ -281,8 +281,8 @@ interface FVGResult {
 function detectFVG(candles: Candle[], direction: "LONG" | "SHORT"): FVGResult | null {
   if (candles.length < 3) return null;
   
-  // v14 Early: widened lookback from 8 to 20 candles (80h on 4H)
-  for (let i = candles.length - 3; i >= Math.max(0, candles.length - 20); i--) {
+  // 15 candles = 60h on 4H, recent enough to be relevant
+  for (let i = candles.length - 3; i >= Math.max(0, candles.length - 15); i--) {
     if (i + 2 >= candles.length) continue;
     const c1 = candles[i];
     const c2 = candles[i + 1];
@@ -350,7 +350,6 @@ export function generateSignal(
     debug.push(`sweep_${sweep.direction.toLowerCase()}_level:${sweep.sweepLevel.toFixed(2)}_wick:${sweep.wickExtreme.toFixed(2)}`);
   }
 
-  // v14 Early: determine bias from structure OR range position
   let bias: "LONG" | "SHORT" | "NONE" = "NONE";
   
   if (structure4h === "UPTREND") {
@@ -360,7 +359,6 @@ export function generateSignal(
     bias = "SHORT";
     debug.push("4h_bias_short");
   } else {
-    // In RANGE, check which side of range we're on
     const highs4h = swingHighs(candles4h, 5);
     const lows4h = swingLows(candles4h, 5);
     if (highs4h.length >= 2 && lows4h.length >= 2) {
@@ -377,8 +375,6 @@ export function generateSignal(
     }
   }
 
-  // ─── STEP 1: SWEEP SIGNAL (Early Entry) ───
-  // v14 Early: enter on sweep detection, CHoCH is bonus not requirement
   if (sweep && sweep.direction === bias) {
     const choch = detectCHOCH(candles1h, sweep);
     
@@ -416,7 +412,6 @@ export function generateSignal(
       const actualTargetPct = Math.abs(target - entry) / entry;
       const rr = actualTargetPct / actualStopPct;
       
-      // v14 Early: higher confidence for CHoCH-confirmed sweeps
       let confidence = choch && choch.found ? 80 : 70;
       if (structure4h === structure1h) confidence += 5;
       if (Math.abs(roc1h) > 0.5) confidence += 5;
@@ -441,7 +436,6 @@ export function generateSignal(
     }
   }
 
-  // ─── STEP 2: FVG SIGNAL (Early Entry in Trend) ───
   if (bias !== "NONE") {
     const fvg4h = detectFVG(candles4h, bias);
     
