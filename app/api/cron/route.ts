@@ -1,13 +1,11 @@
 // app/api/cron/route.ts — v14 "THE TRAP"
-// Liquidity Sweep + CHoCH + FVG Retest strategy
-// No cooldowns, no active trade blocking, manual management only
 // ============================================================
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid } from "@/lib/strategy-v14";
-import { setSignals, setMarketData, getSignals, getMarketData } from "@/lib/state-v14";
-import { sendAlert } from "@/lib/telegram-v14";
+import { generateSignal, isSignalStillValid } from "@/lib/strategy";
+import { setSignals, setMarketData, getSignals, getMarketData, getActiveTrades, setActiveTrades } from "@/lib/state";
+import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL"] as const;
 
@@ -35,6 +33,7 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
   const authHeader = request.headers.get("authorization");
+  const resetCooldown = url.searchParams.get("reset") === "true";
 
   const isAuthorized = 
     querySecret === process.env.CRON_SECRET ||
@@ -46,9 +45,21 @@ export async function GET(request: Request) {
   }
   console.log(`[AUTH] PASSED`);
 
-  // Get existing signals to check validity
+  let activeTrades = await getActiveTrades();
+  
+  if (resetCooldown) {
+    console.log(`[STATE] Resetting all cooldowns`);
+    activeTrades = {};
+    await setActiveTrades({});
+  }
+  
+  console.log(`[STATE] Active trades:`, Object.keys(activeTrades).join(", ") || "none");
+
   const existingSignals = await getSignals();
-  const validSignals = existingSignals.filter(s => isSignalStillValid(s, 0)); // price check done per-pair
+  const validSignals = existingSignals.filter(s => {
+    const ageHours = (Date.now() - s.timestamp) / (1000 * 60 * 60);
+    return ageHours < 6;
+  });
   console.log(`[STATE] Existing valid signals: ${validSignals.length}`);
 
   const newSignals: any[] = [];
@@ -70,8 +81,7 @@ export async function GET(request: Request) {
       }
 
       const currentPrice = candles1h[candles1h.length - 1].close;
-
-      // Check if existing signal for this pair is still valid
+      
       const existingForPair = validSignals.find(s => s.pair === pair);
       if (existingForPair && isSignalStillValid(existingForPair, currentPrice)) {
         console.log(`[PAIR] ${pair} — Existing signal still valid (${existingForPair.type}), skipping`);
@@ -79,10 +89,10 @@ export async function GET(request: Request) {
         continue;
       }
 
-      const result = generateSignal(pair, candles1h, candles4h);
+      const result = generateSignal(pair, candles1h, candles4h, activeTrades);
       const signal = result.signal;
       const market = result.market;
-      const debug = result.debug;
+      const debug = result.debug || [];
 
       console.log(`[DEBUG] ${pair}: ${debug.join(" | ")}`);
 
@@ -103,13 +113,17 @@ export async function GET(request: Request) {
 
       const alertPayload = {
         symbol: signal.pair,
-        state: signal.type, // "SWEEP" or "FVG"
+        state: signal.type,
         price: roundPrice(signal.entry),
         bias: signal.direction,
         confidence: signal.confidence,
         stopLoss: roundPrice(signal.stop),
         takeProfit: roundPrice(signal.target),
-        rr: roundRR(Math.abs(signal.target - signal.entry) / Math.abs(signal.entry - signal.stop)),
+        rr: roundRR(signal.rr),
+        adx: roundIndicator(signal.adx),
+        rsi: roundIndicator(signal.rsi),
+        stochK: roundIndicator(signal.stochK),
+        stochD: roundIndicator(signal.stochD),
         expectedMove: roundIndicator(signal.expectedMove),
         reason: signal.reason,
         updatedAt: new Date(signal.timestamp).toISOString(),
@@ -120,6 +134,12 @@ export async function GET(request: Request) {
       try {
         await sendAlert(alertPayload);
         console.log(`[ALERT] ${pair} — SENT`);
+        
+        activeTrades[pair] = {
+          direction: signal.direction,
+          timestamp: Date.now(),
+        };
+        
         alerts.push({ pair, status: "sent", type: signal.type });
       } catch (alertErr) {
         console.error(`[ALERT] ${pair} — FAILED:`, alertErr);
@@ -132,7 +152,6 @@ export async function GET(request: Request) {
     }
   }
 
-  // Merge: new signals overwrite existing for same pair
   const mergedSignals = [...validSignals];
   for (const s of newSignals) {
     const idx = mergedSignals.findIndex((x: any) => x.pair === s.pair);
@@ -140,13 +159,13 @@ export async function GET(request: Request) {
     else mergedSignals.push(s);
   }
 
-  // Clean expired signals
   const sixHoursAgo = Date.now() - (6 * 60 * 60 * 1000);
   const finalSignals = mergedSignals.filter(s => s.timestamp > sixHoursAgo);
 
   console.log(`[STATE] Saving ${finalSignals.length} signals, ${marketDataList.length} market data...`);
   await setSignals(finalSignals);
   await setMarketData(marketDataList);
+  await setActiveTrades(activeTrades);
   console.log(`[CRON] Done. signals=${finalSignals.length}, marketData=${marketDataList.length}`);
   console.log("========================================");
 
