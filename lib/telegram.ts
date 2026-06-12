@@ -1,5 +1,4 @@
-// lib/telegram-v14.ts
-// Clean alerts for v14 strategy
+// lib/telegram.ts — v14 alerts
 // ============================================================
 
 export async function sendAlert(signal: any) {
@@ -11,19 +10,16 @@ export async function sendAlert(signal: any) {
     return;
   }
 
-  // Signal tier
   const isSweep = signal.state === "SWEEP";
-  const isFVG = signal.state === "FVG";
+  const isEarly = signal.state === "EARLY";
 
-  const tierEmoji = isSweep ? "🎯" : isFVG ? "⚡" : "📊";
-  const tierLabel = isSweep ? "SWEEP" : isFVG ? "EARLY" : "SETUP";
+  const tierEmoji = isSweep ? "🎯" : isEarly ? "⚡" : "📊";
+  const tierLabel = isSweep ? "SWEEP" : isEarly ? "EARLY" : "SETUP";
 
-  // Color-code confidence
   const confEmoji = signal.confidence >= 85 ? "🟢" :
                     signal.confidence >= 70 ? "🟡" :
                     signal.confidence >= 55 ? "🟠" : "🔴";
 
-  // Hard floor — only alert on quality
   if (signal.confidence < 60) {
     console.log("[TELEGRAM SKIP: LOW CONFIDENCE]", signal.symbol, signal.confidence);
     return;
@@ -43,6 +39,11 @@ Expected Move: ${signal.expectedMove}%
 SL: ${signal.stopLoss ?? "-"}
 TP: ${signal.takeProfit ?? "-"}
 RR: ${signal.rr ?? "-"}
+
+ADX: ${signal.adx ?? "-"}
+RSI: ${signal.rsi ?? "-"}
+StochK: ${signal.stochK ?? "-"}
+StochD: ${signal.stochD ?? "-"}
 
 ${signal.reason}
 
