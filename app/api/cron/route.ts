@@ -56,10 +56,14 @@ export async function GET(request: Request) {
   console.log(`[STATE] Active trades:`, Object.keys(activeTrades).join(", ") || "none");
 
   const existingSignals = await getSignals();
-  const validSignals = existingSignals.filter(s => {
+  
+  // Respect per-type expiry: EARLY = 2h, SWEEP = 6h
+  const validSignals = existingSignals.filter((s: any) => {
     const ageHours = (Date.now() - s.timestamp) / (1000 * 60 * 60);
-    return ageHours < 6;
+    const maxAge = s.type === "EARLY" ? 2 : 6;
+    return ageHours < maxAge;
   });
+  
   console.log(`[STATE] Existing valid signals: ${validSignals.length}`);
 
   const newSignals: any[] = [];
@@ -159,8 +163,12 @@ export async function GET(request: Request) {
     else mergedSignals.push(s);
   }
 
-  const sixHoursAgo = Date.now() - (6 * 60 * 60 * 1000);
-  const finalSignals = mergedSignals.filter(s => s.timestamp > sixHoursAgo);
+  // Respect per-type expiry: EARLY = 2h, SWEEP = 6h
+  const finalSignals = mergedSignals.filter((s: any) => {
+    const ageHours = (Date.now() - s.timestamp) / (1000 * 60 * 60);
+    const maxAge = s.type === "EARLY" ? 2 : 6;
+    return ageHours < maxAge;
+  });
 
   console.log(`[STATE] Saving ${finalSignals.length} signals, ${marketDataList.length} market data...`);
   await setSignals(finalSignals);
