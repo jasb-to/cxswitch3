@@ -17,8 +17,14 @@ export async function setSignals(signals: any[]) {
   const incoming = Array.isArray(signals) ? signals : [];
   try {
     const existing = await getSignals();
-    const sixHoursAgo = Date.now() - (6 * 60 * 60 * 1000);
-    const freshExisting = existing.filter((s: any) => s.timestamp > sixHoursAgo);
+    const now = Date.now();
+    
+    // Respect per-type expiry: EARLY = 2h, SWEEP = 6h
+    const freshExisting = existing.filter((s: any) => {
+      const ageHours = (now - s.timestamp) / (1000 * 60 * 60);
+      const maxAge = s.type === "EARLY" ? 2 : 6;
+      return ageHours < maxAge;
+    });
     
     const merged: any[] = [...freshExisting];
     for (const s of incoming) {
@@ -68,7 +74,7 @@ export async function getMarketData(): Promise<any[]> {
   }
 }
 
-export async function getActiveTrades(): Promise<Record<string, any>> {
+export async function getActiveTrades(): Promise<<Record<string, any>> {
   try {
     const data = await redis.get(ACTIVE_TRADES_KEY);
     if (!data) return {};
