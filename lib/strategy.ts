@@ -1,5 +1,5 @@
-// lib/strategy.ts — v14 "THE TRAP" (Aggressive Edition)
-// Liquidity Sweep + FVG Retest — maximizes entry frequency
+// lib/strategy.ts — v14 "THE TRAP" (Corrected Edition)
+// Liquidity Sweep + FVG Retest — price must be on correct side of FVG
 // Non-lagging, price-action only
 // ============================================================
 
@@ -83,8 +83,7 @@ function swingLows(candles: Candle[], lookback = 3): SwingPoint[] {
 function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
   const highs = swingHighs(candles, 5);
   const lows = swingLows(candles, 5);
-if (highs.length < 2 || lows.length < 2) return "RANGE";
-
+  if (highs.length < 2 || lows.length < 2) return "RANGE";
 
   const recentHighs = highs.slice(-3);
   const recentLows = lows.slice(-3);
@@ -542,18 +541,27 @@ export function generateSignal(
           ? (price <= fvg4h.top && price >= fvg4h.bottom)
           : (price >= fvg4h.bottom && price <= fvg4h.top);
         
-        // LOOSENED: Wider threshold — 5x FVG height or 1% of price
+        // Wider threshold — 5x FVG height or 1% of price
         const fvgHeight = Math.abs(fvg4h.top - fvg4h.bottom);
         const nearThreshold = Math.max(fvgHeight * 5, price * 0.01);
         const nearFVG = Math.abs(price - fvg4h.midpoint) < nearThreshold;
         
-        // LOOSENED: Removed "correct side" check — just needs to be near FVG
-        const approaching = true;
+        // CORRECTED: Price must be on the correct side of the FVG
+        // LONG: Price must be at or below FVG bottom (ready to bounce up into it)
+        // SHORT: Price must be at or above FVG top (ready to reject back down)
+        let approaching = false;
+        if (bias === "LONG") {
+          approaching = price <= fvg4h.bottom;
+          debug.push(`correct_side_check:long_price=${price.toFixed(2)}_fvg_bottom=${fvg4h.bottom.toFixed(2)}_approaching=${approaching}`);
+        } else {
+          approaching = price >= fvg4h.top;
+          debug.push(`correct_side_check:short_price=${price.toFixed(2)}_fvg_top=${fvg4h.top.toFixed(2)}_approaching=${approaching}`);
+        }
         
-        if (inFVG || nearFVG) {
-          debug.push(`price_in_fvg_zone:${inFVG}_near:${nearFVG}`);
+        if ((inFVG || nearFVG) && approaching) {
+          debug.push(`price_in_fvg_zone:${inFVG}_near:${nearFVG}_approaching:${approaching}`);
           
-          // FIXED: Rejection check — any bullish/bearish candle in last 3 hours
+          // LOOSENED: Rejection check — any bullish/bearish candle in last 3 hours
           // Removed FVG-level interaction requirement
           let rejection = false;
           for (let i = 1; i <= 3; i++) {
@@ -621,7 +629,11 @@ export function generateSignal(
             debug.push("no_1h_momentum");
           }
         } else {
-          debug.push(`price_not_near_fvg(price:${price.toFixed(2)}_mid:${fvg4h.midpoint.toFixed(2)}_threshold:${nearThreshold.toFixed(2)})`);
+          if (!approaching) {
+            debug.push(`price_wrong_side_for_${bias.toLowerCase()}(price:${price.toFixed(2)}_fvg_top:${fvg4h.top.toFixed(2)}_fvg_bottom:${fvg4h.bottom.toFixed(2)})`);
+          } else {
+            debug.push(`price_not_near_fvg(price:${price.toFixed(2)}_mid:${fvg4h.midpoint.toFixed(2)}_threshold:${nearThreshold.toFixed(2)})`);
+          }
         }
       }
     } else {
