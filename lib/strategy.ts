@@ -276,6 +276,7 @@ interface FVGResult {
   top: number;
   bottom: number;
   midpoint: number;
+  idx: number; // candle index where FVG formed
 }
 
 function detectFVG(candles: Candle[], direction: "LONG" | "SHORT"): FVGResult | null {
@@ -295,7 +296,8 @@ function detectFVG(candles: Candle[], direction: "LONG" | "SHORT"): FVGResult | 
           direction: "LONG",
           top: c3.low,
           bottom: c1.high,
-          midpoint: (c3.low + c1.high) / 2
+          midpoint: (c3.low + c1.high) / 2,
+          idx: i
         };
       }
     } else {
@@ -305,12 +307,31 @@ function detectFVG(candles: Candle[], direction: "LONG" | "SHORT"): FVGResult | 
           direction: "SHORT",
           top: c1.low,
           bottom: c3.high,
-          midpoint: (c1.low + c3.high) / 2
+          midpoint: (c1.low + c3.high) / 2,
+          idx: i
         };
       }
     }
   }
   return null;
+}
+
+// Check if FVG has been filled/invalidated since it formed
+function isFVGValid(fvg: FVGResult, candles: Candle[], currentIdx: number): boolean {
+  // Check all candles after the FVG formation (from idx+3 to current)
+  for (let i = fvg.idx + 3; i <= currentIdx; i++) {
+    if (i >= candles.length) break;
+    const c = candles[i];
+    
+    if (fvg.direction === "LONG") {
+      // For LONG FVG: if price traded below the bottom, it's filled/invalidated
+      if (c.low <= fvg.bottom) return false;
+    } else {
+      // For SHORT FVG: if price traded above the top, it's filled/invalidated
+      if (c.high >= fvg.top) return false;
+    }
+  }
+  return true;
 }
 
 export function generateSignal(
@@ -442,69 +463,90 @@ export function generateSignal(
     if (fvg4h && fvg4h.found) {
       debug.push(`fvg4h_${bias.toLowerCase()}_top:${fvg4h.top.toFixed(2)}_bottom:${fvg4h.bottom.toFixed(2)}`);
       
-      const inFVG = bias === "LONG" 
-        ? (price <= fvg4h.top && price >= fvg4h.bottom)
-        : (price >= fvg4h.bottom && price <= fvg4h.top);
+      // Check if FVG is still valid (unfilled)
+      const current4hIdx = candles4h.length - 1;
+      const fvgValid = isFVGValid(fvg4h, candles4h, current4hIdx);
       
-      // FIX A: Widened from 0.5% to 1.0% for FVG proximity
-      const nearFVG = Math.abs(price - fvg4h.midpoint) / price < 0.01;
-      
-      if (inFVG || nearFVG) {
-        debug.push(`price_in_fvg_zone:${inFVG}_near:${nearFVG}`);
+      if (!fvgValid) {
+        debug.push("fvg_filled_invalidated");
+      } else {
+        debug.push("fvg_unfilled_valid");
         
-        const current1h = candles1h[candles1h.length - 1];
-        const rejection = bias === "LONG" 
-          ? current1h.close > current1h.open && current1h.low <= fvg4h.top
-          : current1h.close < current1h.open && current1h.high >= fvg4h.bottom;
+        const inFVG = bias === "LONG" 
+          ? (price <= fvg4h.top && price >= fvg4h.bottom)
+          : (price >= fvg4h.bottom && price <= fvg4h.top);
         
-        if (rejection) {
-          debug.push("1h_rejection_in_fvg");
+        // FIX: Near threshold relative to FVG height, not price
+        const fvgHeight = Math.abs(fvg4h.top - fvg4h.bottom);
+        const nearThreshold = Math.max(fvgHeight * 3, price * 0.005); // 3x FVG height or 0.5%, whichever is larger
+        const nearFVG = Math.abs(price - fvg4h.midpoint) < nearThreshold;
+        
+        // FIX: Price must be approaching FVG, not leaving it
+        const approaching = bias === "LONG" 
+          ? price <= fvg4h.top + nearThreshold // Price is at or below FVG top (approaching from below)
+          : price >= fvg4h.bottom - nearThreshold; // Price is at or above FVG bottom (approaching from above)
+        
+        if ((inFVG || nearFVG) && approaching) {
+          debug.push(`price_in_fvg_zone:${inFVG}_near:${nearFVG}_approaching:${approaching}`);
           
-          const stopPct = 0.02;
-          const targetPct = 0.04;
+          const current1h = candles1h[candles1h.length - 1];
+          const rejection = bias === "LONG" 
+            ? current1h.close > current1h.open && current1h.low <= fvg4h.top
+            : current1h.close < current1h.open && current1h.high >= fvg4h.bottom;
           
-          let entry = price;
-          let stop: number, target: number;
-          
-          if (bias === "LONG") {
-            stop = Math.min(fvg4h.bottom * 0.998, entry * (1 - stopPct));
-            target = entry * (1 + targetPct);
-            const minStop = entry * 0.985;
-            if (stop > minStop) stop = minStop;
+          if (rejection) {
+            debug.push("1h_rejection_in_fvg");
+            
+            const stopPct = 0.02;
+            const targetPct = 0.04;
+            
+            let entry = price;
+            let stop: number, target: number;
+            
+            if (bias === "LONG") {
+              stop = Math.min(fvg4h.bottom * 0.998, entry * (1 - stopPct));
+              target = entry * (1 + targetPct);
+              const minStop = entry * 0.985;
+              if (stop > minStop) stop = minStop;
+            } else {
+              stop = Math.max(fvg4h.top * 1.002, entry * (1 + stopPct));
+              target = entry * (1 - targetPct);
+              const minStop = entry * 1.015;
+              if (stop < minStop) stop = minStop;
+            }
+            
+            const actualStopPct = Math.abs(entry - stop) / entry;
+            const actualTargetPct = Math.abs(target - entry) / entry;
+            const rr = actualTargetPct / actualStopPct;
+            
+            let confidence = 65;
+            if (inFVG) confidence += 10;
+            if (structure1h === structure4h) confidence += 10;
+            confidence = Math.min(90, confidence);
+            
+            const expectedMove = actualTargetPct * 100;
+            
+            if (rr >= 1.5 && expectedMove >= 3.0) {
+              const signal: Signal = {
+                pair, direction: bias, entry, stop, target, confidence,
+                type: "EARLY",
+                reason: `FVG_RETEST ${bias} | 4H:${structure4h} 1H:${structure1h} | FVG:${fvg4h.bottom.toFixed(2)}-${fvg4h.top.toFixed(2)} | ROC:${roc1h.toFixed(2)} | Conf:${confidence}`,
+                timestamp: Date.now(), expectedMove,
+                adx: adx4h, rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d, rr,
+              };
+              debug.push(`SIGNAL_${bias}_EARLY(FVG)_conf:${confidence}_rr:${rr.toFixed(2)}`);
+              return { signal, market, debug };
+            }
           } else {
-            stop = Math.max(fvg4h.top * 1.002, entry * (1 + stopPct));
-            target = entry * (1 - targetPct);
-            const minStop = entry * 1.015;
-            if (stop < minStop) stop = minStop;
-          }
-          
-          const actualStopPct = Math.abs(entry - stop) / entry;
-          const actualTargetPct = Math.abs(target - entry) / entry;
-          const rr = actualTargetPct / actualStopPct;
-          
-          let confidence = 65;
-          if (inFVG) confidence += 10;
-          if (structure1h === structure4h) confidence += 10;
-          confidence = Math.min(90, confidence);
-          
-          const expectedMove = actualTargetPct * 100;
-          
-          if (rr >= 1.5 && expectedMove >= 3.0) {
-            const signal: Signal = {
-              pair, direction: bias, entry, stop, target, confidence,
-              type: "EARLY",
-              reason: `FVG_RETEST ${bias} | 4H:${structure4h} 1H:${structure1h} | FVG:${fvg4h.bottom.toFixed(2)}-${fvg4h.top.toFixed(2)} | ROC:${roc1h.toFixed(2)} | Conf:${confidence}`,
-              timestamp: Date.now(), expectedMove,
-              adx: adx4h, rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d, rr,
-            };
-            debug.push(`SIGNAL_${bias}_EARLY(FVG)_conf:${confidence}_rr:${rr.toFixed(2)}`);
-            return { signal, market, debug };
+            debug.push("no_1h_rejection_in_fvg");
           }
         } else {
-          debug.push("no_1h_rejection_in_fvg");
+          if (!approaching) {
+            debug.push(`price_not_approaching_fvg(price:${price.toFixed(2)}_mid:${fvg4h.midpoint.toFixed(2)}_direction:${bias})`);
+          } else {
+            debug.push(`price_not_near_fvg(price:${price.toFixed(2)}_mid:${fvg4h.midpoint.toFixed(2)}_threshold:${nearThreshold.toFixed(2)})`);
+          }
         }
-      } else {
-        debug.push(`price_not_near_fvg(price:${price.toFixed(2)}_mid:${fvg4h.midpoint.toFixed(2)})`);
       }
     } else {
       debug.push(`no_fvg4h_${bias.toLowerCase()}`);
@@ -521,7 +563,7 @@ export function isSignalStillValid(signal: Signal, currentPrice: number): boolea
   
   const ageHours = (Date.now() - signal.timestamp) / (1000 * 60 * 60);
   
-  // FIX D: EARLY signals expire after 2h, SWEEP signals keep 6h
+  // EARLY signals expire after 2h, SWEEP signals keep 6h
   const maxAge = signal.type === "EARLY" ? 2 : 6;
   if (ageHours > maxAge) return false;
   
