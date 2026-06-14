@@ -13,13 +13,11 @@ export async function GET() {
   const signals = await getSignals();
   const marketData = await getMarketData();
 
-  // Build price lookup from market data
   const currentPrices: Record<string, number> = {};
   for (const m of marketData) {
     if (m.pair && m.price) currentPrices[m.pair] = m.price;
   }
 
-  // Filter expired signals before enriching
   const validSignals = (Array.isArray(signals) ? signals : []).filter((s: any) => {
     const price = currentPrices[s.pair];
     if (!price) {
@@ -33,7 +31,6 @@ export async function GET() {
   console.log("[API] Raw signals count:", signals?.length);
   console.log("[API] Valid signals count:", validSignals?.length);
 
-  // Fetch 1H and 4H candles for hold analysis
   const enriched = await Promise.all(validSignals.map(async (s: any) => {
     const isSweep = s.type === "SWEEP";
     const isEarly = s.type === "EARLY";
