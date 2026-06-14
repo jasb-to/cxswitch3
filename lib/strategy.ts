@@ -205,7 +205,6 @@ function detectLiquiditySweep(candles: Candle[]): SweepResult | null {
 
   const lastLow = lows[lows.length - 1];
   
-  // 0.3% min wick depth — real liquidity grab, not noise
   if (current.low < lastLow.price && current.close > lastLow.price) {
     const wickDepth = (lastLow.price - current.low) / lastLow.price;
     if (wickDepth > 0.003) {
@@ -276,13 +275,12 @@ interface FVGResult {
   top: number;
   bottom: number;
   midpoint: number;
-  idx: number; // candle index where FVG formed
+  idx: number;
 }
 
 function detectFVG(candles: Candle[], direction: "LONG" | "SHORT"): FVGResult | null {
   if (candles.length < 3) return null;
   
-  // 15 candles = 60h on 4H, recent enough to be relevant
   for (let i = candles.length - 3; i >= Math.max(0, candles.length - 15); i--) {
     if (i + 2 >= candles.length) continue;
     const c1 = candles[i];
@@ -316,22 +314,89 @@ function detectFVG(candles: Candle[], direction: "LONG" | "SHORT"): FVGResult | 
   return null;
 }
 
-// Check if FVG has been filled/invalidated since it formed
 function isFVGValid(fvg: FVGResult, candles: Candle[], currentIdx: number): boolean {
-  // Check all candles after the FVG formation (from idx+3 to current)
   for (let i = fvg.idx + 3; i <= currentIdx; i++) {
     if (i >= candles.length) break;
     const c = candles[i];
     
     if (fvg.direction === "LONG") {
-      // For LONG FVG: if price traded below the bottom, it's filled/invalidated
       if (c.low <= fvg.bottom) return false;
     } else {
-      // For SHORT FVG: if price traded above the top, it's filled/invalidated
       if (c.high >= fvg.top) return false;
     }
   }
   return true;
+}
+
+export interface HoldResult {
+  shouldHold: boolean;
+  reason: string;
+  trailingStop: number | null;
+  trendHealth: "STRONG" | "MODERATE" | "WEAK";
+}
+
+export function shouldHold(
+  signal: Signal,
+  candles4h: Candle[],
+  candles1h: Candle[],
+  currentPrice: number
+): HoldResult {
+  const structure4h = getStructure(candles4h);
+  const adx4h = calcADX(candles4h, 14);
+  const stoch1h = calcStochastic(candles1h, 14, 3);
+  
+  const structureValid = signal.direction === "LONG" 
+    ? structure4h === "UPTREND" || structure4h === "RANGE"
+    : structure4h === "DOWNTREND" || structure4h === "RANGE";
+  
+  let trendHealth: "STRONG" | "MODERATE" | "WEAK";
+  if (adx4h > 20) trendHealth = "STRONG";
+  else if (adx4h > 15) trendHealth = "MODERATE";
+  else trendHealth = "WEAK";
+  
+  const atr4h = calcATR(candles4h, 14);
+  const trailDistance = atr4h * 2;
+  
+  let trailingStop: number | null = null;
+  
+  if (signal.direction === "LONG" && stoch1h.k > 80) {
+    trailingStop = Math.max(signal.entry * 1.002, currentPrice - trailDistance);
+  } else if (signal.direction === "SHORT" && stoch1h.k < 20) {
+    trailingStop = Math.min(signal.entry * 0.998, currentPrice + trailDistance);
+  }
+  
+  const hardExit = !structureValid || trendHealth === "WEAK";
+  
+  if (hardExit) {
+    return {
+      shouldHold: false,
+      reason: `4H ${structure4h} invalidates ${signal.direction}. ADX ${adx4h.toFixed(1)}`,
+      trailingStop: null,
+      trendHealth
+    };
+  }
+  
+  if (trailingStop !== null) {
+    const inProfit = signal.direction === "LONG" 
+      ? currentPrice > signal.entry * 1.005
+      : currentPrice < signal.entry * 0.995;
+    
+    if (inProfit) {
+      return {
+        shouldHold: true,
+        reason: `1H Stoch extreme (${stoch1h.k.toFixed(1)}). Trail at $${trailingStop.toFixed(2)}. Ignore noise.`,
+        trailingStop,
+        trendHealth
+      };
+    }
+  }
+  
+  return {
+    shouldHold: true,
+    reason: `4H ${structure4h} intact. ADX ${adx4h.toFixed(1)}. Hold for ${signal.target.toFixed(2)}.`,
+    trailingStop: null,
+    trendHealth
+  };
 }
 
 export function generateSignal(
@@ -410,7 +475,7 @@ export function generateSignal(
     } else {
       debug.push(`momentum_ok(roc:${roc1h.toFixed(2)})`);
       
-      const stopPct = 0.02;
+      const stopPct = 0.025;
       const targetPct = 0.04;
       
       let entry: number, stop: number, target: number;
@@ -463,7 +528,6 @@ export function generateSignal(
     if (fvg4h && fvg4h.found) {
       debug.push(`fvg4h_${bias.toLowerCase()}_top:${fvg4h.top.toFixed(2)}_bottom:${fvg4h.bottom.toFixed(2)}`);
       
-      // Check if FVG is still valid (unfilled)
       const current4hIdx = candles4h.length - 1;
       const fvgValid = isFVGValid(fvg4h, candles4h, current4hIdx);
       
@@ -476,15 +540,13 @@ export function generateSignal(
           ? (price <= fvg4h.top && price >= fvg4h.bottom)
           : (price >= fvg4h.bottom && price <= fvg4h.top);
         
-        // FIX: Near threshold relative to FVG height, not price
         const fvgHeight = Math.abs(fvg4h.top - fvg4h.bottom);
-        const nearThreshold = Math.max(fvgHeight * 3, price * 0.005); // 3x FVG height or 0.5%, whichever is larger
+        const nearThreshold = Math.max(fvgHeight * 3, price * 0.005);
         const nearFVG = Math.abs(price - fvg4h.midpoint) < nearThreshold;
         
-        // FIX: Price must be approaching FVG, not leaving it
         const approaching = bias === "LONG" 
-          ? price <= fvg4h.top + nearThreshold // Price is at or below FVG top (approaching from below)
-          : price >= fvg4h.bottom - nearThreshold; // Price is at or above FVG bottom (approaching from above)
+          ? price <= fvg4h.top + nearThreshold
+          : price >= fvg4h.bottom - nearThreshold;
         
         if ((inFVG || nearFVG) && approaching) {
           debug.push(`price_in_fvg_zone:${inFVG}_near:${nearFVG}_approaching:${approaching}`);
@@ -497,7 +559,7 @@ export function generateSignal(
           if (rejection) {
             debug.push("1h_rejection_in_fvg");
             
-            const stopPct = 0.02;
+            const stopPct = 0.025;
             const targetPct = 0.04;
             
             let entry = price;
@@ -563,7 +625,6 @@ export function isSignalStillValid(signal: Signal, currentPrice: number): boolea
   
   const ageHours = (Date.now() - signal.timestamp) / (1000 * 60 * 60);
   
-  // EARLY signals expire after 2h, SWEEP signals keep 6h
   const maxAge = signal.type === "EARLY" ? 2 : 6;
   if (ageHours > maxAge) return false;
   
