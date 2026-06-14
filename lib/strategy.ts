@@ -276,46 +276,74 @@ interface FVGResult {
   bottom: number;
   midpoint: number;
   idx: number;
+  age: number; // candles since formation
+  filled: boolean;
 }
 
 function detectFVG(candles: Candle[], direction: "LONG" | "SHORT"): FVGResult | null {
   if (candles.length < 3) return null;
   
-  // 8 candles = 32h on 4H, recent enough to be actionable
-  for (let i = candles.length - 3; i >= Math.max(0, candles.length - 8); i--) {
+  // Look back 16 candles (64h on 4H) for fresh unfilled FVGs
+  // But prioritize recent ones — check from newest to oldest
+  const maxLookback = 16;
+  const startIdx = Math.max(0, candles.length - 3);
+  const endIdx = Math.max(0, candles.length - maxLookback);
+  
+  for (let i = startIdx; i >= endIdx; i--) {
     if (i + 2 >= candles.length) continue;
     const c1 = candles[i];
     const c2 = candles[i + 1];
     const c3 = candles[i + 2];
 
+    let fvg: FVGResult | null = null;
+
     if (direction === "LONG") {
       if (c1.high < c3.low && c3.close > c1.close) {
-        return {
+        fvg = {
           found: true,
           direction: "LONG",
           top: c3.low,
           bottom: c1.high,
           midpoint: (c3.low + c1.high) / 2,
-          idx: i
+          idx: i,
+          age: candles.length - 1 - (i + 2),
+          filled: false
         };
       }
     } else {
       if (c1.low > c3.high && c3.close < c1.close) {
-        return {
+        fvg = {
           found: true,
           direction: "SHORT",
           top: c1.low,
           bottom: c3.high,
           midpoint: (c1.low + c3.high) / 2,
-          idx: i
+          idx: i,
+          age: candles.length - 1 - (i + 2),
+          filled: false
         };
       }
+    }
+
+    if (fvg) {
+      // Check if filled between formation and now
+      const currentIdx = candles.length - 1;
+      const isValid = isFVGValid(fvg, candles, currentIdx);
+      if (!isValid) {
+        fvg.filled = true;
+        continue; // Skip this one, check older
+      }
+      // Found a valid unfilled FVG — return the freshest one
+      return fvg;
     }
   }
   return null;
 }
 
 function isFVGValid(fvg: FVGResult, candles: Candle[], currentIdx: number): boolean {
+  // FVG must be fresh — max 12 candles old (48h on 4H)
+  if (fvg.age > 12) return false;
+  
   for (let i = fvg.idx + 3; i <= currentIdx; i++) {
     if (i >= candles.length) break;
     const c = candles[i];
@@ -527,13 +555,13 @@ export function generateSignal(
     const fvg4h = detectFVG(candles4h, bias);
     
     if (fvg4h && fvg4h.found) {
-      debug.push(`fvg4h_${bias.toLowerCase()}_top:${fvg4h.top.toFixed(2)}_bottom:${fvg4h.bottom.toFixed(2)}`);
+      debug.push(`fvg4h_${bias.toLowerCase()}_top:${fvg4h.top.toFixed(2)}_bottom:${fvg4h.bottom.toFixed(2)}_age:${fvg4h.age}h`);
       
       const current4hIdx = candles4h.length - 1;
       const fvgValid = isFVGValid(fvg4h, candles4h, current4hIdx);
       
       if (!fvgValid) {
-        debug.push("fvg_filled_invalidated");
+        debug.push("fvg_filled_or_stale");
       } else {
         debug.push("fvg_unfilled_valid");
         
@@ -562,19 +590,16 @@ export function generateSignal(
           debug.push(`price_in_fvg_zone:${inFVG}_near:${nearFVG}_approaching:${approaching}`);
           
           // LOOSENED: Rejection check — any bullish/bearish candle in last 3 hours
-          // Removed FVG-level interaction requirement
           let rejection = false;
           for (let i = 1; i <= 3; i++) {
             if (candles1h.length < i) break;
             const c = candles1h[candles1h.length - i];
             if (bias === "LONG") {
-              // Any bullish candle = close > open
               if (c.close > c.open) {
                 rejection = true;
                 break;
               }
             } else {
-              // Any bearish candle = close < open
               if (c.close < c.open) {
                 rejection = true;
                 break;
@@ -610,7 +635,10 @@ export function generateSignal(
             let confidence = 65;
             if (inFVG) confidence += 10;
             if (structure1h === structure4h) confidence += 10;
-            confidence = Math.min(90, confidence);
+            // Penalize older FVGs
+            if (fvg4h.age <= 4) confidence += 5;
+            else if (fvg4h.age >= 8) confidence -= 5;
+            confidence = Math.min(90, Math.max(50, confidence));
             
             const expectedMove = actualTargetPct * 100;
             
@@ -618,7 +646,7 @@ export function generateSignal(
               const signal: Signal = {
                 pair, direction: bias, entry, stop, target, confidence,
                 type: "EARLY",
-                reason: `FVG_RETEST ${bias} | 4H:${structure4h} 1H:${structure1h} | FVG:${fvg4h.bottom.toFixed(2)}-${fvg4h.top.toFixed(2)} | ROC:${roc1h.toFixed(2)} | Conf:${confidence}`,
+                reason: `FVG_RETEST ${bias} | 4H:${structure4h} 1H:${structure1h} | FVG:${fvg4h.bottom.toFixed(2)}-${fvg4h.top.toFixed(2)} | Age:${fvg4h.age}h | ROC:${roc1h.toFixed(2)} | Conf:${confidence}`,
                 timestamp: Date.now(), expectedMove,
                 adx: adx4h, rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d, rr,
               };
@@ -637,7 +665,7 @@ export function generateSignal(
         }
       }
     } else {
-      debug.push(`no_fvg4h_${bias.toLowerCase()}`);
+      debug.push(`no_valid_fvg4h_${bias.toLowerCase()}`);
     }
   }
 
