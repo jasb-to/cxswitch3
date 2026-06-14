@@ -12,6 +12,13 @@ interface MarketData {
   stochD: number;
 }
 
+interface HoldAdvice {
+  shouldHold: boolean;
+  reason: string;
+  trailingStop: number | null;
+  trendHealth: "STRONG" | "MODERATE" | "WEAK";
+}
+
 interface Signal extends MarketData {
   direction: "LONG" | "SHORT";
   type: "SWEEP" | "EARLY";
@@ -23,6 +30,7 @@ interface Signal extends MarketData {
   reason: string;
   timestamp: number;
   expectedMove: number;
+  holdAdvice?: HoldAdvice;
 }
 
 const PAIRS = ["BTC", "ETH", "SOL"];
@@ -40,8 +48,8 @@ function calcPositionSize(entry: number, stop: number, direction: "LONG" | "SHOR
 }
 
 export default function Dashboard() {
-  const [signals, setSignals] = useState<Record<string, Signal | null>>({});
-  const [marketData, setMarketData] = useState<Record<string, MarketData>>({});
+  const [signals, setSignals] = useState<<Record<string, Signal | null>>({});
+  const [marketData, setMarketData] = useState<<Record<string, MarketData>>({});
   const [lastSignalUpdate, setLastSignalUpdate] = useState<number>(0);
   const [lastMarketUpdate, setLastMarketUpdate] = useState<number>(0);
   const [loading, setLoading] = useState(true);
@@ -245,9 +253,17 @@ export default function Dashboard() {
                       <span className="font-mono">${signal.entry.toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Stop ({stopPercent}%)</span>
+                      <span className="text-gray-400">Original Stop ({stopPercent}%)</span>
                       <span className="font-mono text-red-400">${signal.stop.toFixed(2)}</span>
                     </div>
+                    
+                    {signal.holdAdvice?.trailingStop && (
+                      <div className="flex justify-between bg-yellow-900/30 p-2 rounded border border-yellow-600">
+                        <span className="text-yellow-400 font-bold">🔒 Trailing Stop</span>
+                        <span className="font-mono text-yellow-400">${signal.holdAdvice.trailingStop.toFixed(2)}</span>
+                      </div>
+                    )}
+                    
                     <div className="flex justify-between">
                       <span className="text-gray-400">Target</span>
                       <span className="font-mono text-green-400">${signal.target.toFixed(2)}</span>
@@ -262,6 +278,30 @@ export default function Dashboard() {
                         {signal.direction === "LONG" ? "+" : "-"}{Math.abs(signal.expectedMove).toFixed(2)}%
                       </span>
                     </div>
+                    
+                    {signal.holdAdvice && (
+                      <div className={`mt-3 p-3 rounded border ${
+                        signal.holdAdvice.trendHealth === "STRONG" ? "bg-green-900/30 border-green-600" :
+                        signal.holdAdvice.trendHealth === "MODERATE" ? "bg-yellow-900/30 border-yellow-600" :
+                        "bg-red-900/30 border-red-600"
+                      }`}>
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-sm font-bold">4H Trend Health</span>
+                          <span className={`text-sm font-bold ${
+                            signal.holdAdvice.trendHealth === "STRONG" ? "text-green-400" :
+                            signal.holdAdvice.trendHealth === "MODERATE" ? "text-yellow-400" :
+                            "text-red-400"
+                          }`}>{signal.holdAdvice.trendHealth}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm font-bold">
+                            {signal.holdAdvice.shouldHold ? "✅ HOLD" : "❌ EXIT"}
+                          </span>
+                          <span className="text-xs text-gray-300">{signal.holdAdvice.reason}</span>
+                        </div>
+                      </div>
+                    )}
+                    
                     <div className="mt-3 pt-3 border-t border-gray-700">
                       <p className="text-xs text-gray-300 leading-relaxed">{signal.reason}</p>
                     </div>
@@ -293,8 +333,10 @@ export default function Dashboard() {
             <li>• Cron runs every hour — market data always displayed</li>
             <li>• SWEEP: Liquidity sweep + CHoCH confirmation — high confidence, quick 3-4%</li>
             <li>• EARLY: FVG retest in trend — ride the full move, 4-5%</li>
-            <li>• Fixed stops: 2% SL / 4% TP — no more ATR-based guesswork</li>
-            <li>• Non-lagging indicators: pure price action, no trendline lag</li>
+            <li>• Stops: 2.5% SL / 4% TP — widened for 4H holds, no more 1H wick kills</li>
+            <li>• HOLD advice: Ignore 1H stoch noise when 4H trend is STRONG</li>
+            <li>• Trailing stop: Locks in profit when 1H stoch hits extreme</li>
+            <li>• Hard exit: Only on 4H structure break or 4% TP hit</li>
             <li>• Position size: Risk {(RISK_PER_TRADE * 100).toFixed(0)}% = ${(ACCOUNT_BALANCE * RISK_PER_TRADE).toFixed(0)} per trade</li>
           </ul>
         </div>
