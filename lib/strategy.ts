@@ -83,7 +83,7 @@ function swingLows(candles: Candle[], lookback = 3): SwingPoint[] {
 function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
   const highs = swingHighs(candles, 5);
   const lows = swingLows(candles, 5);
-  if (highs.length < 2 || lows.length < 2) return "RANGE";
+  if (highs.length < < 2 || lows.length < 2) return "RANGE";
 
   const recentHighs = highs.slice(-3);
   const recentLows = lows.slice(-3);
@@ -281,7 +281,7 @@ interface FVGResult {
 function detectFVG(candles: Candle[], direction: "LONG" | "SHORT"): FVGResult | null {
   if (candles.length < 3) return null;
   
-  // TIGHTENED: 8 candles = 32h on 4H, recent enough to be actionable
+  // 8 candles = 32h on 4H, recent enough to be actionable
   for (let i = candles.length - 3; i >= Math.max(0, candles.length - 8); i--) {
     if (i + 2 >= candles.length) continue;
     const c1 = candles[i];
@@ -552,18 +552,21 @@ export function generateSignal(
         if (inFVG || nearFVG) {
           debug.push(`price_in_fvg_zone:${inFVG}_near:${nearFVG}`);
           
-          // LOOSENED: Rejection check — look at last 3 candles for any sign, not just current
+          // FIXED: Rejection check — any bullish/bearish candle in last 3 hours
+          // Removed FVG-level interaction requirement
           let rejection = false;
           for (let i = 1; i <= 3; i++) {
             if (candles1h.length < i) break;
             const c = candles1h[candles1h.length - i];
             if (bias === "LONG") {
-              if (c.close > c.open && c.low <= fvg4h.top) {
+              // Any bullish candle = close > open
+              if (c.close > c.open) {
                 rejection = true;
                 break;
               }
             } else {
-              if (c.close < c.open && c.high >= fvg4h.bottom) {
+              // Any bearish candle = close < open
+              if (c.close < c.open) {
                 rejection = true;
                 break;
               }
@@ -571,7 +574,7 @@ export function generateSignal(
           }
           
           if (rejection) {
-            debug.push("1h_rejection_in_fvg");
+            debug.push("1h_momentum_aligned");
             
             const stopPct = 0.02;
             const targetPct = 0.04;
@@ -614,7 +617,7 @@ export function generateSignal(
               return { signal, market, debug };
             }
           } else {
-            debug.push("no_1h_rejection_in_fvg");
+            debug.push("no_1h_momentum");
           }
         } else {
           debug.push(`price_not_near_fvg(price:${price.toFixed(2)}_mid:${fvg4h.midpoint.toFixed(2)}_threshold:${nearThreshold.toFixed(2)})`);
