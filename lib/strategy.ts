@@ -1,4 +1,4 @@
-// lib/strategy.ts — v14 "THE TRAP" (Corrected Edition)
+// lib/strategy.ts — v14 "THE TRAP" (Fixed Edition)
 // Liquidity Sweep + FVG Retest — price must be on correct side of FVG
 // Non-lagging, price-action only
 // ============================================================
@@ -201,37 +201,39 @@ function detectLiquiditySweep(candles: Candle[]): SweepResult | null {
   const lows = swingLows(candles, 3);
   if (highs.length < 2 || lows.length < 2) return null;
 
-  const current = candles[candles.length - 1];
+  // Check last 3 candles for sweep (not just current) — catches sweeps from recent price action
+  for (let offset = 0; offset <= 2; offset++) {
+    if (candles.length - 1 - offset < 0) break;
+    const current = candles[candles.length - 1 - offset];
 
-  const lastLow = lows[lows.length - 1];
-  
-  if (current.low < lastLow.price && current.close > lastLow.price) {
-    const wickDepth = (lastLow.price - current.low) / lastLow.price;
-    if (wickDepth > 0.003) {
-      return {
-        found: true,
-        direction: "LONG",
-        sweepLevel: lastLow.price,
-        wickExtreme: current.low,
-        rejectionClose: current.close,
-        recency: 0
-      };
+    const lastLow = lows[lows.length - 1];
+    if (current.low < lastLow.price && current.close > lastLow.price) {
+      const wickDepth = (lastLow.price - current.low) / lastLow.price;
+      if (wickDepth > 0.003) {
+        return {
+          found: true,
+          direction: "LONG",
+          sweepLevel: lastLow.price,
+          wickExtreme: current.low,
+          rejectionClose: current.close,
+          recency: offset
+        };
+      }
     }
-  }
 
-  const lastHigh = highs[highs.length - 1];
-  
-  if (current.high > lastHigh.price && current.close < lastHigh.price) {
-    const wickDepth = (current.high - lastHigh.price) / lastHigh.price;
-    if (wickDepth > 0.003) {
-      return {
-        found: true,
-        direction: "SHORT",
-        sweepLevel: lastHigh.price,
-        wickExtreme: current.high,
-        rejectionClose: current.close,
-        recency: 0
-      };
+    const lastHigh = highs[highs.length - 1];
+    if (current.high > lastHigh.price && current.close < lastHigh.price) {
+      const wickDepth = (current.high - lastHigh.price) / lastHigh.price;
+      if (wickDepth > 0.003) {
+        return {
+          found: true,
+          direction: "SHORT",
+          sweepLevel: lastHigh.price,
+          wickExtreme: current.high,
+          rejectionClose: current.close,
+          recency: offset
+        };
+      }
     }
   }
 
@@ -276,7 +278,7 @@ interface FVGResult {
   bottom: number;
   midpoint: number;
   idx: number;
-  age: number; // candles since formation
+  age: number;
   filled: boolean;
 }
 
@@ -284,7 +286,7 @@ function detectFVG(candles: Candle[], direction: "LONG" | "SHORT"): FVGResult | 
   if (candles.length < 3) return null;
   
   // Look back 16 candles (64h on 4H) for fresh unfilled FVGs
-  // But prioritize recent ones — check from newest to oldest
+  // Check from newest to oldest, return first valid unfilled one
   const maxLookback = 16;
   const startIdx = Math.max(0, candles.length - 3);
   const endIdx = Math.max(0, candles.length - maxLookback);
@@ -326,14 +328,12 @@ function detectFVG(candles: Candle[], direction: "LONG" | "SHORT"): FVGResult | 
     }
 
     if (fvg) {
-      // Check if filled between formation and now
       const currentIdx = candles.length - 1;
       const isValid = isFVGValid(fvg, candles, currentIdx);
       if (!isValid) {
         fvg.filled = true;
-        continue; // Skip this one, check older
+        continue;
       }
-      // Found a valid unfilled FVG — return the freshest one
       return fvg;
     }
   }
@@ -384,14 +384,19 @@ export function shouldHold(
   else trendHealth = "WEAK";
   
   const atr4h = calcATR(candles4h, 14);
-  const trailDistance = atr4h * 2;
+  const trailDistance = atr4h * 1.5; // Tighter trail (was 2x)
   
   let trailingStop: number | null = null;
   
   if (signal.direction === "LONG" && stoch1h.k > 80) {
-    trailingStop = Math.max(signal.entry * 1.002, currentPrice - trailDistance);
+    // Trail from highest recent price, not just current
+    const recentHighs = candles1h.slice(-12).map(c => c.high);
+    const highestRecent = Math.max(...recentHighs);
+    trailingStop = Math.max(signal.entry * 1.002, highestRecent - trailDistance);
   } else if (signal.direction === "SHORT" && stoch1h.k < 20) {
-    trailingStop = Math.min(signal.entry * 0.998, currentPrice + trailDistance);
+    const recentLows = candles1h.slice(-12).map(c => c.low);
+    const lowestRecent = Math.min(...recentLows);
+    trailingStop = Math.min(signal.entry * 0.998, lowestRecent + trailDistance);
   }
   
   const hardExit = !structureValid || trendHealth === "WEAK";
@@ -462,7 +467,7 @@ export function generateSignal(
   if (!sweep) {
     debug.push("no_liquidity_sweep");
   } else {
-    debug.push(`sweep_${sweep.direction.toLowerCase()}_level:${sweep.sweepLevel.toFixed(2)}_wick:${sweep.wickExtreme.toFixed(2)}`);
+    debug.push(`sweep_${sweep.direction.toLowerCase()}_level:${sweep.sweepLevel.toFixed(2)}_wick:${sweep.wickExtreme.toFixed(2)}_recency:${sweep.recency}h`);
   }
 
   let bias: "LONG" | "SHORT" | "NONE" = "NONE";
@@ -511,16 +516,20 @@ export function generateSignal(
       
       if (sweep.direction === "LONG") {
         entry = price;
-        stop = Math.min(sweep.wickExtreme * 0.998, entry * (1 - stopPct));
+        // FIXED: Math.max for TIGHTER stop (was Math.min)
+        stop = Math.max(sweep.wickExtreme * 0.998, entry * (1 - stopPct));
         target = entry * (1 + targetPct);
+        // FIXED: Prevent stop too close to entry (was backwards)
         const minStop = entry * 0.985;
-        if (stop > minStop) stop = minStop;
+        if (stop < minStop) stop = minStop;
       } else {
         entry = price;
-        stop = Math.max(sweep.wickExtreme * 1.002, entry * (1 + stopPct));
+        // FIXED: Math.min for TIGHTER stop (was Math.max)
+        stop = Math.min(sweep.wickExtreme * 1.002, entry * (1 + stopPct));
         target = entry * (1 - targetPct);
+        // FIXED: Prevent stop too close to entry (was backwards)
         const minStop = entry * 1.015;
-        if (stop < minStop) stop = minStop;
+        if (stop > minStop) stop = minStop;
       }
       
       const actualStopPct = Math.abs(entry - stop) / entry;
@@ -569,27 +578,23 @@ export function generateSignal(
           ? (price <= fvg4h.top && price >= fvg4h.bottom)
           : (price >= fvg4h.bottom && price <= fvg4h.top);
         
-        // Wider threshold — 5x FVG height or 1% of price
         const fvgHeight = Math.abs(fvg4h.top - fvg4h.bottom);
         const nearThreshold = Math.max(fvgHeight * 5, price * 0.01);
         const nearFVG = Math.abs(price - fvg4h.midpoint) < nearThreshold;
         
         // CORRECTED: Price must be on the correct side of the FVG
-        // LONG: Price must be at or below FVG bottom (ready to bounce up into it)
-        // SHORT: Price must be at or above FVG top (ready to reject back down)
         let approaching = false;
         if (bias === "LONG") {
           approaching = price <= fvg4h.bottom;
-          debug.push(`correct_side_check:long_price=${price.toFixed(2)}_fvg_bottom=${fvg4h.bottom.toFixed(2)}_approaching=${approaching}`);
+          debug.push(`correct_side:long_price=${price.toFixed(2)}_fvg_bottom=${fvg4h.bottom.toFixed(2)}_approaching=${approaching}`);
         } else {
           approaching = price >= fvg4h.top;
-          debug.push(`correct_side_check:short_price=${price.toFixed(2)}_fvg_top=${fvg4h.top.toFixed(2)}_approaching=${approaching}`);
+          debug.push(`correct_side:short_price=${price.toFixed(2)}_fvg_top=${fvg4h.top.toFixed(2)}_approaching=${approaching}`);
         }
         
         if ((inFVG || nearFVG) && approaching) {
-          debug.push(`price_in_fvg_zone:${inFVG}_near:${nearFVG}_approaching:${approaching}`);
+          debug.push(`price_in_zone:inFVG=${inFVG}_near=${nearFVG}_approaching=${approaching}`);
           
-          // LOOSENED: Rejection check — any bullish/bearish candle in last 3 hours
           let rejection = false;
           for (let i = 1; i <= 3; i++) {
             if (candles1h.length < i) break;
@@ -617,15 +622,21 @@ export function generateSignal(
             let stop: number, target: number;
             
             if (bias === "LONG") {
-              stop = Math.min(fvg4h.bottom * 0.998, entry * (1 - stopPct));
+              entry = price;
+              // FIXED: Math.max for TIGHTER stop (was Math.min)
+              stop = Math.max(fvg4h.bottom * 0.998, entry * (1 - stopPct));
               target = entry * (1 + targetPct);
+              // FIXED: Prevent stop too close to entry (was backwards)
               const minStop = entry * 0.985;
-              if (stop > minStop) stop = minStop;
-            } else {
-              stop = Math.max(fvg4h.top * 1.002, entry * (1 + stopPct));
-              target = entry * (1 - targetPct);
-              const minStop = entry * 1.015;
               if (stop < minStop) stop = minStop;
+            } else {
+              entry = price;
+              // FIXED: Math.min for TIGHTER stop (was Math.max)
+              stop = Math.min(fvg4h.top * 1.002, entry * (1 + stopPct));
+              target = entry * (1 - targetPct);
+              // FIXED: Prevent stop too close to entry (was backwards)
+              const minStop = entry * 1.015;
+              if (stop > minStop) stop = minStop;
             }
             
             const actualStopPct = Math.abs(entry - stop) / entry;
@@ -635,7 +646,6 @@ export function generateSignal(
             let confidence = 65;
             if (inFVG) confidence += 10;
             if (structure1h === structure4h) confidence += 10;
-            // Penalize older FVGs
             if (fvg4h.age <= 4) confidence += 5;
             else if (fvg4h.age >= 8) confidence -= 5;
             confidence = Math.min(90, Math.max(50, confidence));
@@ -658,7 +668,7 @@ export function generateSignal(
           }
         } else {
           if (!approaching) {
-            debug.push(`price_wrong_side_for_${bias.toLowerCase()}(price:${price.toFixed(2)}_fvg_top:${fvg4h.top.toFixed(2)}_fvg_bottom:${fvg4h.bottom.toFixed(2)})`);
+            debug.push(`price_wrong_side_${bias.toLowerCase()}(price:${price.toFixed(2)}_fvg_top:${fvg4h.top.toFixed(2)}_fvg_bottom:${fvg4h.bottom.toFixed(2)})`);
           } else {
             debug.push(`price_not_near_fvg(price:${price.toFixed(2)}_mid:${fvg4h.midpoint.toFixed(2)}_threshold:${nearThreshold.toFixed(2)})`);
           }
