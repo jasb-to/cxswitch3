@@ -83,7 +83,8 @@ function swingLows(candles: Candle[], lookback = 3): SwingPoint[] {
 function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
   const highs = swingHighs(candles, 5);
   const lows = swingLows(candles, 5);
-  if (highs.length < < 2 || lows.length < 2) return "RANGE";
+if (highs.length < 2 || lows.length < 2) return "RANGE";
+
 
   const recentHighs = highs.slice(-3);
   const recentLows = lows.slice(-3);
