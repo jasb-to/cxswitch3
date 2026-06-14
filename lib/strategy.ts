@@ -1,5 +1,5 @@
-// lib/strategy.ts — v14 "THE TRAP" (Early Entry Edition)
-// Liquidity Sweep + FVG Retest — maximizes early entry profit
+// lib/strategy.ts — v14 "THE TRAP" (Aggressive Edition)
+// Liquidity Sweep + FVG Retest — maximizes entry frequency
 // Non-lagging, price-action only
 // ============================================================
 
@@ -475,7 +475,7 @@ export function generateSignal(
     } else {
       debug.push(`momentum_ok(roc:${roc1h.toFixed(2)})`);
       
-      const stopPct = 0.025;
+      const stopPct = 0.02;
       const targetPct = 0.04;
       
       let entry: number, stop: number, target: number;
@@ -540,29 +540,40 @@ export function generateSignal(
           ? (price <= fvg4h.top && price >= fvg4h.bottom)
           : (price >= fvg4h.bottom && price <= fvg4h.top);
         
+        // LOOSENED: Wider threshold — 5x FVG height or 1% of price
         const fvgHeight = Math.abs(fvg4h.top - fvg4h.bottom);
-        const nearThreshold = Math.max(fvgHeight * 3, price * 0.005);
+        const nearThreshold = Math.max(fvgHeight * 5, price * 0.01);
         const nearFVG = Math.abs(price - fvg4h.midpoint) < nearThreshold;
         
-        // FIX: Price must be on the correct side of the FVG for a valid retest
-        // LONG: price must be at or below FVG bottom (approaching from below to bounce up)
-        // SHORT: price must be at or above FVG top (approaching from above to reject down)
-        const approaching = bias === "LONG" 
-          ? price <= fvg4h.bottom + nearThreshold
-          : price >= fvg4h.top - nearThreshold;
+        // LOOSENED: Removed "correct side" check — just needs to be near FVG
+        // Price can be anywhere near the FVG, not just on the retest side
+        const approaching = true;
         
-        if ((inFVG || nearFVG) && approaching) {
-          debug.push(`price_in_fvg_zone:${inFVG}_near:${nearFVG}_approaching:${approaching}`);
+        if (inFVG || nearFVG) {
+          debug.push(`price_in_fvg_zone:${inFVG}_near:${nearFVG}`);
           
-          const current1h = candles1h[candles1h.length - 1];
-          const rejection = bias === "LONG" 
-            ? current1h.close > current1h.open && current1h.low <= fvg4h.top
-            : current1h.close < current1h.open && current1h.high >= fvg4h.bottom;
+          // LOOSENED: Rejection check — look at last 3 candles for any sign, not just current
+          let rejection = false;
+          for (let i = 1; i <= 3; i++) {
+            if (candles1h.length < i) break;
+            const c = candles1h[candles1h.length - i];
+            if (bias === "LONG") {
+              if (c.close > c.open && c.low <= fvg4h.top) {
+                rejection = true;
+                break;
+              }
+            } else {
+              if (c.close < c.open && c.high >= fvg4h.bottom) {
+                rejection = true;
+                break;
+              }
+            }
+          }
           
           if (rejection) {
             debug.push("1h_rejection_in_fvg");
             
-            const stopPct = 0.025;
+            const stopPct = 0.02;
             const targetPct = 0.04;
             
             let entry = price;
@@ -606,11 +617,7 @@ export function generateSignal(
             debug.push("no_1h_rejection_in_fvg");
           }
         } else {
-          if (!approaching) {
-            debug.push(`price_wrong_side_of_fvg(price:${price.toFixed(2)}_fvgTop:${fvg4h.top.toFixed(2)}_fvgBottom:${fvg4h.bottom.toFixed(2)}_direction:${bias})`);
-          } else {
-            debug.push(`price_not_near_fvg(price:${price.toFixed(2)}_mid:${fvg4h.midpoint.toFixed(2)}_threshold:${nearThreshold.toFixed(2)})`);
-          }
+          debug.push(`price_not_near_fvg(price:${price.toFixed(2)}_mid:${fvg4h.midpoint.toFixed(2)}_threshold:${nearThreshold.toFixed(2)})`);
         }
       }
     } else {
