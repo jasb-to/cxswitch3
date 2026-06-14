@@ -544,9 +544,12 @@ export function generateSignal(
         const nearThreshold = Math.max(fvgHeight * 3, price * 0.005);
         const nearFVG = Math.abs(price - fvg4h.midpoint) < nearThreshold;
         
+        // FIX: Price must be on the correct side of the FVG for a valid retest
+        // LONG: price must be at or below FVG bottom (approaching from below to bounce up)
+        // SHORT: price must be at or above FVG top (approaching from above to reject down)
         const approaching = bias === "LONG" 
-          ? price <= fvg4h.top + nearThreshold
-          : price >= fvg4h.bottom - nearThreshold;
+          ? price <= fvg4h.bottom + nearThreshold
+          : price >= fvg4h.top - nearThreshold;
         
         if ((inFVG || nearFVG) && approaching) {
           debug.push(`price_in_fvg_zone:${inFVG}_near:${nearFVG}_approaching:${approaching}`);
@@ -604,7 +607,7 @@ export function generateSignal(
           }
         } else {
           if (!approaching) {
-            debug.push(`price_not_approaching_fvg(price:${price.toFixed(2)}_mid:${fvg4h.midpoint.toFixed(2)}_direction:${bias})`);
+            debug.push(`price_wrong_side_of_fvg(price:${price.toFixed(2)}_fvgTop:${fvg4h.top.toFixed(2)}_fvgBottom:${fvg4h.bottom.toFixed(2)}_direction:${bias})`);
           } else {
             debug.push(`price_not_near_fvg(price:${price.toFixed(2)}_mid:${fvg4h.midpoint.toFixed(2)}_threshold:${nearThreshold.toFixed(2)})`);
           }
