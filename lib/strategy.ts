@@ -1,6 +1,6 @@
-// lib/strategy.ts — v14 "THE TRAP" (Fixed Edition)
-// Liquidity Sweep + FVG Retest — price must be on correct side of FVG
-// Non-lagging, price-action only
+// lib/strategy.ts — v15 "BREAKOUT" 
+// 4H Trend + 1H Breakout — momentum entries only
+// Fixed risk, ATR-based stops, 4h cooldown
 // ============================================================
 
 export interface Candle {
@@ -19,7 +19,7 @@ export interface Signal {
   stop: number;
   target: number;
   confidence: number;
-  type: "SWEEP" | "EARLY";
+  type: "BREAKOUT";
   reason: string;
   timestamp: number;
   expectedMove: number;
@@ -48,6 +48,8 @@ interface SwingPoint {
   type: "high" | "low";
 }
 
+// ─── Helpers ───
+
 function swingHighs(candles: Candle[], lookback = 3): SwingPoint[] {
   const highs: SwingPoint[] = [];
   for (let i = lookback; i < candles.length - lookback; i++) {
@@ -55,8 +57,7 @@ function swingHighs(candles: Candle[], lookback = 3): SwingPoint[] {
     let isHigh = true;
     for (let j = 1; j <= lookback; j++) {
       if (candles[i - j].high >= c.high || candles[i + j].high >= c.high) {
-        isHigh = false;
-        break;
+        isHigh = false; break;
       }
     }
     if (isHigh) highs.push({ idx: i, price: c.high, type: "high" });
@@ -71,8 +72,7 @@ function swingLows(candles: Candle[], lookback = 3): SwingPoint[] {
     let isLow = true;
     for (let j = 1; j <= lookback; j++) {
       if (candles[i - j].low <= c.low || candles[i + j].low <= c.low) {
-        isLow = false;
-        break;
+        isLow = false; break;
       }
     }
     if (isLow) lows.push({ idx: i, price: c.low, type: "low" });
@@ -187,181 +187,101 @@ function calcROC(candles: Candle[], period = 3): number {
   return ((current - past) / past) * 100;
 }
 
-interface SweepResult {
+// ─── Breakout Detection ───
+
+interface BreakoutResult {
   found: boolean;
   direction: "LONG" | "SHORT";
-  sweepLevel: number;
-  wickExtreme: number;
-  rejectionClose: number;
-  recency: number;
+  breakLevel: number;
+  candleRange: number;
+  candleBody: number;
+  bodyPct: number;
 }
 
-function detectLiquiditySweep(candles: Candle[]): SweepResult | null {
+function detectBreakout(candles: Candle[], minRangeMult = 1.2, minBodyPct = 0.5): BreakoutResult | null {
+  if (candles.length < 10) return null;
+
   const highs = swingHighs(candles, 3);
   const lows = swingLows(candles, 3);
   if (highs.length < 2 || lows.length < 2) return null;
 
-  // Check last 3 candles for sweep (not just current) — catches sweeps from recent price action
-  for (let offset = 0; offset <= 2; offset++) {
-    if (candles.length - 1 - offset < 0) break;
-    const current = candles[candles.length - 1 - offset];
-
-    const lastLow = lows[lows.length - 1];
-    if (current.low < lastLow.price && current.close > lastLow.price) {
-      const wickDepth = (lastLow.price - current.low) / lastLow.price;
-      if (wickDepth > 0.003) {
-        return {
-          found: true,
-          direction: "LONG",
-          sweepLevel: lastLow.price,
-          wickExtreme: current.low,
-          rejectionClose: current.close,
-          recency: offset
-        };
-      }
-    }
-
-    const lastHigh = highs[highs.length - 1];
-    if (current.high > lastHigh.price && current.close < lastHigh.price) {
-      const wickDepth = (current.high - lastHigh.price) / lastHigh.price;
-      if (wickDepth > 0.003) {
-        return {
-          found: true,
-          direction: "SHORT",
-          sweepLevel: lastHigh.price,
-          wickExtreme: current.high,
-          rejectionClose: current.close,
-          recency: offset
-        };
-      }
-    }
-  }
-
-  return null;
-}
-
-interface CHoCHResult {
-  found: boolean;
-  direction: "LONG" | "SHORT";
-  breakLevel: number;
-}
-
-function detectCHOCH(candles: Candle[], sweep: SweepResult): CHoCHResult | null {
-  const highs = swingHighs(candles, 3);
-  const lows = swingLows(candles, 3);
   const current = candles[candles.length - 1];
   const prev = candles[candles.length - 2];
+  const atr = calcATR(candles.slice(-20), 14);
 
-  if (sweep.direction === "LONG") {
-    const recentHighs = highs.slice(-3);
-    if (recentHighs.length < 2) return null;
-    const priorHigh = recentHighs[recentHighs.length - 2];
-    if (current.close > priorHigh.price && prev.close <= priorHigh.price) {
-      return { found: true, direction: "LONG", breakLevel: priorHigh.price };
-    }
-  } else {
-    const recentLows = lows.slice(-3);
-    if (recentLows.length < 2) return null;
-    const priorLow = recentLows[recentLows.length - 2];
-    if (current.close < priorLow.price && prev.close >= priorLow.price) {
-      return { found: true, direction: "SHORT", breakLevel: priorLow.price };
-    }
+  const candleRange = current.high - current.low;
+  const candleBody = Math.abs(current.close - current.open);
+  const bodyPct = candleRange > 0 ? candleBody / candleRange : 0;
+
+  // Must be a strong candle (not a doji/fakeout)
+  if (candleRange < atr * minRangeMult) return null;
+  if (bodyPct < minBodyPct) return null;
+
+  // LONG breakout: close above recent swing high, previous close was below
+  const lastHigh = highs[highs.length - 1];
+  if (current.close > lastHigh.price && prev.close <= lastHigh.price) {
+    return {
+      found: true,
+      direction: "LONG",
+      breakLevel: lastHigh.price,
+      candleRange,
+      candleBody,
+      bodyPct
+    };
+  }
+
+  // SHORT breakout: close below recent swing low, previous close was above
+  const lastLow = lows[lows.length - 1];
+  if (current.close < lastLow.price && prev.close >= lastLow.price) {
+    return {
+      found: true,
+      direction: "SHORT",
+      breakLevel: lastLow.price,
+      candleRange,
+      candleBody,
+      bodyPct
+    };
   }
 
   return null;
 }
 
-interface FVGResult {
-  found: boolean;
+// ─── Trend Health ───
+
+function trendHealth(adx: number, structure: string): "STRONG" | "MODERATE" | "WEAK" | "NONE" {
+  if (adx < 15 || structure === "RANGE") return "NONE";
+  if (adx > 25) return "STRONG";
+  if (adx > 18) return "MODERATE";
+  return "WEAK";
+}
+
+// ─── Cooldown Check ───
+
+export interface CooldownState {
+  pair: string;
   direction: "LONG" | "SHORT";
-  top: number;
-  bottom: number;
-  midpoint: number;
-  idx: number;
-  age: number;
-  filled: boolean;
+  timestamp: number;
 }
 
-function detectFVG(candles: Candle[], direction: "LONG" | "SHORT"): FVGResult | null {
-  if (candles.length < 3) return null;
-  
-  // Look back 16 candles (64h on 4H) for fresh unfilled FVGs
-  // Check from newest to oldest, return first valid unfilled one
-  const maxLookback = 16;
-  const startIdx = Math.max(0, candles.length - 3);
-  const endIdx = Math.max(0, candles.length - maxLookback);
-  
-  for (let i = startIdx; i >= endIdx; i--) {
-    if (i + 2 >= candles.length) continue;
-    const c1 = candles[i];
-    const c2 = candles[i + 1];
-    const c3 = candles[i + 2];
-
-    let fvg: FVGResult | null = null;
-
-    if (direction === "LONG") {
-      if (c1.high < c3.low && c3.close > c1.close) {
-        fvg = {
-          found: true,
-          direction: "LONG",
-          top: c3.low,
-          bottom: c1.high,
-          midpoint: (c3.low + c1.high) / 2,
-          idx: i,
-          age: candles.length - 1 - (i + 2),
-          filled: false
-        };
-      }
-    } else {
-      if (c1.low > c3.high && c3.close < c1.close) {
-        fvg = {
-          found: true,
-          direction: "SHORT",
-          top: c1.low,
-          bottom: c3.high,
-          midpoint: (c1.low + c3.high) / 2,
-          idx: i,
-          age: candles.length - 1 - (i + 2),
-          filled: false
-        };
-      }
-    }
-
-    if (fvg) {
-      const currentIdx = candles.length - 1;
-      const isValid = isFVGValid(fvg, candles, currentIdx);
-      if (!isValid) {
-        fvg.filled = true;
-        continue;
-      }
-      return fvg;
-    }
-  }
-  return null;
+export function isOnCooldown(
+  pair: string,
+  direction: "LONG" | "SHORT",
+  cooldowns: CooldownState[],
+  cooldownMs = 4 * 60 * 60 * 1000 // 4 hours
+): boolean {
+  const now = Date.now();
+  return cooldowns.some(
+    c => c.pair === pair && c.direction === direction && (now - c.timestamp) < cooldownMs
+  );
 }
 
-function isFVGValid(fvg: FVGResult, candles: Candle[], currentIdx: number): boolean {
-  // FVG must be fresh — max 12 candles old (48h on 4H)
-  if (fvg.age > 12) return false;
-  
-  for (let i = fvg.idx + 3; i <= currentIdx; i++) {
-    if (i >= candles.length) break;
-    const c = candles[i];
-    
-    if (fvg.direction === "LONG") {
-      if (c.low <= fvg.bottom) return false;
-    } else {
-      if (c.high >= fvg.top) return false;
-    }
-  }
-  return true;
-}
+// ─── Hold Logic ───
 
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
   trailingStop: number | null;
-  trendHealth: "STRONG" | "MODERATE" | "WEAK";
+  trendHealth: "STRONG" | "MODERATE" | "WEAK" | "NONE";
 }
 
 export function shouldHold(
@@ -372,80 +292,75 @@ export function shouldHold(
 ): HoldResult {
   const structure4h = getStructure(candles4h);
   const adx4h = calcADX(candles4h, 14);
-  const stoch1h = calcStochastic(candles1h, 14, 3);
-  
+  const health = trendHealth(adx4h, structure4h);
+
   const structureValid = signal.direction === "LONG" 
     ? structure4h === "UPTREND" || structure4h === "RANGE"
     : structure4h === "DOWNTREND" || structure4h === "RANGE";
-  
-  let trendHealth: "STRONG" | "MODERATE" | "WEAK";
-  if (adx4h > 20) trendHealth = "STRONG";
-  else if (adx4h > 15) trendHealth = "MODERATE";
-  else trendHealth = "WEAK";
-  
-  const atr4h = calcATR(candles4h, 14);
-  const trailDistance = atr4h * 1.5; // Tighter trail (was 2x)
-  
-  let trailingStop: number | null = null;
-  
-  if (signal.direction === "LONG" && stoch1h.k > 80) {
-    // Trail from highest recent price, not just current
-    const recentHighs = candles1h.slice(-12).map(c => c.high);
-    const highestRecent = Math.max(...recentHighs);
-    trailingStop = Math.max(signal.entry * 1.002, highestRecent - trailDistance);
-  } else if (signal.direction === "SHORT" && stoch1h.k < 20) {
-    const recentLows = candles1h.slice(-12).map(c => c.low);
-    const lowestRecent = Math.min(...recentLows);
-    trailingStop = Math.min(signal.entry * 0.998, lowestRecent + trailDistance);
-  }
-  
-  const hardExit = !structureValid || trendHealth === "WEAK";
-  
-  if (hardExit) {
+
+  // Hard exit if trend dies or flips against us
+  if (!structureValid || health === "NONE") {
     return {
       shouldHold: false,
       reason: `4H ${structure4h} invalidates ${signal.direction}. ADX ${adx4h.toFixed(1)}`,
       trailingStop: null,
-      trendHealth
+      trendHealth: health
     };
   }
-  
-  if (trailingStop !== null) {
-    const inProfit = signal.direction === "LONG" 
-      ? currentPrice > signal.entry * 1.005
-      : currentPrice < signal.entry * 0.995;
-    
-    if (inProfit) {
-      return {
-        shouldHold: true,
-        reason: `1H Stoch extreme (${stoch1h.k.toFixed(1)}). Trail at $${trailingStop.toFixed(2)}. Ignore noise.`,
-        trailingStop,
-        trendHealth
-      };
-    }
+
+  // Trailing stop: 2x ATR(1H) from recent extreme
+  const atr1h = calcATR(candles1h, 14);
+  const trailDistance = atr1h * 2;
+
+  let trailingStop: number | null = null;
+
+  if (signal.direction === "LONG") {
+    const recentLows = candles1h.slice(-8).map(c => c.low);
+    const lowestRecent = Math.min(...recentLows);
+    trailingStop = Math.max(signal.stop, lowestRecent - trailDistance);
+  } else {
+    const recentHighs = candles1h.slice(-8).map(c => c.high);
+    const highestRecent = Math.max(...recentHighs);
+    trailingStop = Math.min(signal.stop, highestRecent + trailDistance);
   }
-  
+
+  // Only trail if in profit
+  const inProfit = signal.direction === "LONG" 
+    ? currentPrice > signal.entry * 1.008
+    : currentPrice < signal.entry * 0.992;
+
+  if (inProfit && trailingStop !== null) {
+    return {
+      shouldHold: true,
+      reason: `In profit. Trail at $${trailingStop.toFixed(2)}. Health: ${health}`,
+      trailingStop,
+      trendHealth: health
+    };
+  }
+
   return {
     shouldHold: true,
     reason: `4H ${structure4h} intact. ADX ${adx4h.toFixed(1)}. Hold for ${signal.target.toFixed(2)}.`,
     trailingStop: null,
-    trendHealth
+    trendHealth: health
   };
 }
+
+// ─── Main Signal Generator ───
 
 export function generateSignal(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
-  _activeTrades?: Record<string, any>
-): { signal: Signal | null; market: MarketData; debug?: string[] } {
-  
+  cooldowns: CooldownState[] = []
+): { signal: Signal | null; market: MarketData; debug: string[] } {
+
   const price = candles1h[candles1h.length - 1].close;
   const structure4h = getStructure(candles4h);
   const structure1h = getStructure(candles1h);
   const roc1h = calcROC(candles1h, 3);
   const atr1h = calcATR(candles1h, 14);
-  
+
   const adx4h = calcADX(candles4h, 14);
   const rsi1h = calcRSI(candles1h, 14);
   const stoch1h = calcStochastic(candles1h, 14, 3);
@@ -462,235 +377,119 @@ export function generateSignal(
     return { signal: null, market, debug };
   }
 
-  const sweep = detectLiquiditySweep(candles1h);
-  
-  if (!sweep) {
-    debug.push("no_liquidity_sweep");
+  // ── Filter 1: Trend must exist ──
+  const health = trendHealth(adx4h, structure4h);
+  debug.push(`4h_structure:${structure4h}_health:${health}_adx:${adx4h.toFixed(1)}`);
+
+  if (health === "NONE") {
+    debug.push("no_trend_chop");
+    return { signal: null, market, debug };
+  }
+
+  // ── Filter 2: 1H breakout ──
+  const breakout = detectBreakout(candles1h);
+
+  if (!breakout || !breakout.found) {
+    debug.push("no_breakout");
+    return { signal: null, market, debug };
+  }
+
+  debug.push(`breakout_${breakout.direction.toLowerCase()}_level:${breakout.breakLevel.toFixed(2)}_range:${breakout.candleRange.toFixed(2)}_body:${(breakout.bodyPct*100).toFixed(0)}%`);
+
+  // ── Filter 3: Breakout must align with 4H trend ──
+  const trendAligned = 
+    (breakout.direction === "LONG" && structure4h === "UPTREND") ||
+    (breakout.direction === "SHORT" && structure4h === "DOWNTREND");
+
+  if (!trendAligned) {
+    debug.push(`trend_mismatch:4h_${structure4h}_breakout_${breakout.direction}`);
+    return { signal: null, market, debug };
+  }
+
+  debug.push("trend_aligned");
+
+  // ── Filter 4: Cooldown ──
+  if (isOnCooldown(pair, breakout.direction, cooldowns)) {
+    debug.push(`cooldown_active:${breakout.direction}`);
+    return { signal: null, market, debug };
+  }
+
+  debug.push("cooldown_clear");
+
+  // ── Filter 5: Momentum check ──
+  const momentumOK = breakout.direction === "LONG" ? roc1h > -0.3 : roc1h < 0.3;
+  if (!momentumOK) {
+    debug.push(`momentum_weak:roc_${roc1h.toFixed(2)}`);
+    return { signal: null, market, debug };
+  }
+
+  debug.push(`momentum_ok:roc_${roc1h.toFixed(2)}`);
+
+  // ── Build Signal ──
+  const entry = price;
+  const stopDistance = atr1h * 1.5;
+
+  let stop: number, target: number;
+
+  if (breakout.direction === "LONG") {
+    stop = entry - stopDistance;
+    target = entry + (stopDistance * 2); // 2:1 minimum
   } else {
-    debug.push(`sweep_${sweep.direction.toLowerCase()}_level:${sweep.sweepLevel.toFixed(2)}_wick:${sweep.wickExtreme.toFixed(2)}_recency:${sweep.recency}h`);
+    stop = entry + stopDistance;
+    target = entry - (stopDistance * 2);
   }
 
-  let bias: "LONG" | "SHORT" | "NONE" = "NONE";
-  
-  if (structure4h === "UPTREND") {
-    bias = "LONG";
-    debug.push("4h_bias_long");
-  } else if (structure4h === "DOWNTREND") {
-    bias = "SHORT";
-    debug.push("4h_bias_short");
-  } else {
-    const highs4h = swingHighs(candles4h, 5);
-    const lows4h = swingLows(candles4h, 5);
-    if (highs4h.length >= 2 && lows4h.length >= 2) {
-      const rangeHigh = highs4h[highs4h.length - 1].price;
-      const rangeLow = lows4h[lows4h.length - 1].price;
-      const mid = (rangeHigh + rangeLow) / 2;
-      if (price < mid) {
-        bias = "LONG";
-        debug.push("4h_range_bottom_bias_long");
-      } else {
-        bias = "SHORT";
-        debug.push("4h_range_top_bias_short");
-      }
-    }
+  const actualStopPct = Math.abs(entry - stop) / entry;
+  const actualTargetPct = Math.abs(target - entry) / entry;
+  const rr = actualTargetPct / actualStopPct;
+
+  // Confidence: trend strength + structure alignment + momentum + candle quality
+  let confidence = 60;
+  if (health === "STRONG") confidence += 15;
+  else if (health === "MODERATE") confidence += 10;
+  if (structure1h === structure4h) confidence += 10;
+  if (breakout.bodyPct > 0.7) confidence += 5;
+  if (Math.abs(roc1h) > 0.5) confidence += 5;
+  confidence = Math.min(95, confidence);
+
+  const expectedMove = actualTargetPct * 100;
+
+  // Only fire if R:R is acceptable
+  if (rr < 1.5 || expectedMove < 2.5) {
+    debug.push(`rr_too_low:${rr.toFixed(2)}_move:${expectedMove.toFixed(2)}%`);
+    return { signal: null, market, debug };
   }
 
-  if (sweep && sweep.direction === bias) {
-    const choch = detectCHOCH(candles1h, sweep);
-    
-    if (choch && choch.found) {
-      debug.push(`choch_${choch.direction.toLowerCase()}_break:${choch.breakLevel.toFixed(2)}`);
-    }
-    
-    const momentumOK = sweep.direction === "LONG" ? roc1h > -0.5 : roc1h < 0.5;
-    
-    if (!momentumOK) {
-      debug.push(`momentum_fail(roc:${roc1h.toFixed(2)})`);
-    } else {
-      debug.push(`momentum_ok(roc:${roc1h.toFixed(2)})`);
-      
-      const stopPct = 0.02;
-      const targetPct = 0.04;
-      
-      let entry: number, stop: number, target: number;
-      
-      if (sweep.direction === "LONG") {
-        entry = price;
-        // FIXED: Math.max for TIGHTER stop (was Math.min)
-        stop = Math.max(sweep.wickExtreme * 0.998, entry * (1 - stopPct));
-        target = entry * (1 + targetPct);
-        // FIXED: Prevent stop too close to entry (was backwards)
-        const minStop = entry * 0.985;
-        if (stop < minStop) stop = minStop;
-      } else {
-        entry = price;
-        // FIXED: Math.min for TIGHTER stop (was Math.max)
-        stop = Math.min(sweep.wickExtreme * 1.002, entry * (1 + stopPct));
-        target = entry * (1 - targetPct);
-        // FIXED: Prevent stop too close to entry (was backwards)
-        const minStop = entry * 1.015;
-        if (stop > minStop) stop = minStop;
-      }
-      
-      const actualStopPct = Math.abs(entry - stop) / entry;
-      const actualTargetPct = Math.abs(target - entry) / entry;
-      const rr = actualTargetPct / actualStopPct;
-      
-      let confidence = choch && choch.found ? 80 : 70;
-      if (structure4h === structure1h) confidence += 5;
-      if (Math.abs(roc1h) > 0.5) confidence += 5;
-      confidence = Math.min(95, confidence);
-      
-      const expectedMove = actualTargetPct * 100;
-      
-      if (rr >= 1.5 && expectedMove >= 3.0) {
-        const chochTag = choch && choch.found ? "+CHoCH" : "(early)";
-        const signal: Signal = {
-          pair, direction: sweep.direction, entry, stop, target, confidence,
-          type: "SWEEP",
-          reason: `SWEEP${chochTag} ${sweep.direction} | 4H:${structure4h} 1H:${structure1h} | Sweep:${sweep.sweepLevel.toFixed(2)} Wick:${sweep.wickExtreme.toFixed(2)} | ROC:${roc1h.toFixed(2)} | Conf:${confidence}`,
-          timestamp: Date.now(), expectedMove,
-          adx: adx4h, rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d, rr,
-        };
-        debug.push(`SIGNAL_${sweep.direction}_SWEEP${chochTag}_conf:${confidence}_rr:${rr.toFixed(2)}`);
-        return { signal, market, debug };
-      } else {
-        debug.push(`rr_too_low(${rr.toFixed(2)}<<1.5)`);
-      }
-    }
-  }
+  const signal: Signal = {
+    pair,
+    direction: breakout.direction,
+    entry,
+    stop,
+    target,
+    confidence,
+    type: "BREAKOUT",
+    reason: `BREAKOUT ${breakout.direction} | 4H:${structure4h} 1H:${structure1h} | Break:${breakout.breakLevel.toFixed(2)} | Range:${breakout.candleRange.toFixed(2)} | Body:${(breakout.bodyPct*100).toFixed(0)}% | ROC:${roc1h.toFixed(2)} | Conf:${confidence}`,
+    timestamp: Date.now(),
+    expectedMove,
+    adx: adx4h,
+    rsi: rsi1h,
+    stochK: stoch1h.k,
+    stochD: stoch1h.d,
+    rr,
+  };
 
-  if (bias !== "NONE") {
-    const fvg4h = detectFVG(candles4h, bias);
-    
-    if (fvg4h && fvg4h.found) {
-      debug.push(`fvg4h_${bias.toLowerCase()}_top:${fvg4h.top.toFixed(2)}_bottom:${fvg4h.bottom.toFixed(2)}_age:${fvg4h.age}h`);
-      
-      const current4hIdx = candles4h.length - 1;
-      const fvgValid = isFVGValid(fvg4h, candles4h, current4hIdx);
-      
-      if (!fvgValid) {
-        debug.push("fvg_filled_or_stale");
-      } else {
-        debug.push("fvg_unfilled_valid");
-        
-        const inFVG = bias === "LONG" 
-          ? (price <= fvg4h.top && price >= fvg4h.bottom)
-          : (price >= fvg4h.bottom && price <= fvg4h.top);
-        
-        const fvgHeight = Math.abs(fvg4h.top - fvg4h.bottom);
-        const nearThreshold = Math.max(fvgHeight * 5, price * 0.01);
-        const nearFVG = Math.abs(price - fvg4h.midpoint) < nearThreshold;
-        
-        // CORRECTED: Price must be on the correct side of the FVG
-        let approaching = false;
-        if (bias === "LONG") {
-          approaching = price <= fvg4h.bottom;
-          debug.push(`correct_side:long_price=${price.toFixed(2)}_fvg_bottom=${fvg4h.bottom.toFixed(2)}_approaching=${approaching}`);
-        } else {
-          approaching = price >= fvg4h.top;
-          debug.push(`correct_side:short_price=${price.toFixed(2)}_fvg_top=${fvg4h.top.toFixed(2)}_approaching=${approaching}`);
-        }
-        
-        if ((inFVG || nearFVG) && approaching) {
-          debug.push(`price_in_zone:inFVG=${inFVG}_near=${nearFVG}_approaching=${approaching}`);
-          
-          let rejection = false;
-          for (let i = 1; i <= 3; i++) {
-            if (candles1h.length < i) break;
-            const c = candles1h[candles1h.length - i];
-            if (bias === "LONG") {
-              if (c.close > c.open) {
-                rejection = true;
-                break;
-              }
-            } else {
-              if (c.close < c.open) {
-                rejection = true;
-                break;
-              }
-            }
-          }
-          
-          if (rejection) {
-            debug.push("1h_momentum_aligned");
-            
-            const stopPct = 0.02;
-            const targetPct = 0.04;
-            
-            let entry = price;
-            let stop: number, target: number;
-            
-            if (bias === "LONG") {
-              entry = price;
-              // FIXED: Math.max for TIGHTER stop (was Math.min)
-              stop = Math.max(fvg4h.bottom * 0.998, entry * (1 - stopPct));
-              target = entry * (1 + targetPct);
-              // FIXED: Prevent stop too close to entry (was backwards)
-              const minStop = entry * 0.985;
-              if (stop < minStop) stop = minStop;
-            } else {
-              entry = price;
-              // FIXED: Math.min for TIGHTER stop (was Math.max)
-              stop = Math.min(fvg4h.top * 1.002, entry * (1 + stopPct));
-              target = entry * (1 - targetPct);
-              // FIXED: Prevent stop too close to entry (was backwards)
-              const minStop = entry * 1.015;
-              if (stop > minStop) stop = minStop;
-            }
-            
-            const actualStopPct = Math.abs(entry - stop) / entry;
-            const actualTargetPct = Math.abs(target - entry) / entry;
-            const rr = actualTargetPct / actualStopPct;
-            
-            let confidence = 65;
-            if (inFVG) confidence += 10;
-            if (structure1h === structure4h) confidence += 10;
-            if (fvg4h.age <= 4) confidence += 5;
-            else if (fvg4h.age >= 8) confidence -= 5;
-            confidence = Math.min(90, Math.max(50, confidence));
-            
-            const expectedMove = actualTargetPct * 100;
-            
-            if (rr >= 1.5 && expectedMove >= 3.0) {
-              const signal: Signal = {
-                pair, direction: bias, entry, stop, target, confidence,
-                type: "EARLY",
-                reason: `FVG_RETEST ${bias} | 4H:${structure4h} 1H:${structure1h} | FVG:${fvg4h.bottom.toFixed(2)}-${fvg4h.top.toFixed(2)} | Age:${fvg4h.age}h | ROC:${roc1h.toFixed(2)} | Conf:${confidence}`,
-                timestamp: Date.now(), expectedMove,
-                adx: adx4h, rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d, rr,
-              };
-              debug.push(`SIGNAL_${bias}_EARLY(FVG)_conf:${confidence}_rr:${rr.toFixed(2)}`);
-              return { signal, market, debug };
-            }
-          } else {
-            debug.push("no_1h_momentum");
-          }
-        } else {
-          if (!approaching) {
-            debug.push(`price_wrong_side_${bias.toLowerCase()}(price:${price.toFixed(2)}_fvg_top:${fvg4h.top.toFixed(2)}_fvg_bottom:${fvg4h.bottom.toFixed(2)})`);
-          } else {
-            debug.push(`price_not_near_fvg(price:${price.toFixed(2)}_mid:${fvg4h.midpoint.toFixed(2)}_threshold:${nearThreshold.toFixed(2)})`);
-          }
-        }
-      }
-    } else {
-      debug.push(`no_valid_fvg4h_${bias.toLowerCase()}`);
-    }
-  }
-
-  debug.push("no_signal");
-  return { signal: null, market, debug };
+  debug.push(`SIGNAL_${breakout.direction}_conf:${confidence}_rr:${rr.toFixed(2)}_stop:${actualStopPct.toFixed(2)}%`);
+  return { signal, market, debug };
 }
 
 export function isSignalStillValid(signal: Signal, currentPrice: number): boolean {
-  if (signal.direction === "LONG" && currentPrice < signal.stop * 1.005) return false;
-  if (signal.direction === "SHORT" && currentPrice > signal.stop * 0.995) return false;
-  
+  // Hard stop breach (no buffer — hit stop = invalid)
+  if (signal.direction === "LONG" && currentPrice < signal.stop) return false;
+  if (signal.direction === "SHORT" && currentPrice > signal.stop) return false;
+
+  // Time decay: 8h for breakouts
   const ageHours = (Date.now() - signal.timestamp) / (1000 * 60 * 60);
-  
-  const maxAge = signal.type === "EARLY" ? 2 : 6;
-  if (ageHours > maxAge) return false;
-  
+  if (ageHours > 8) return false;
+
   return true;
 }
