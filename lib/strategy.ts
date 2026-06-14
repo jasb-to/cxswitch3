@@ -281,7 +281,8 @@ interface FVGResult {
 function detectFVG(candles: Candle[], direction: "LONG" | "SHORT"): FVGResult | null {
   if (candles.length < 3) return null;
   
-  for (let i = candles.length - 3; i >= Math.max(0, candles.length - 15); i--) {
+  // TIGHTENED: 8 candles = 32h on 4H, recent enough to be actionable
+  for (let i = candles.length - 3; i >= Math.max(0, candles.length - 8); i--) {
     if (i + 2 >= candles.length) continue;
     const c1 = candles[i];
     const c2 = candles[i + 1];
@@ -546,7 +547,6 @@ export function generateSignal(
         const nearFVG = Math.abs(price - fvg4h.midpoint) < nearThreshold;
         
         // LOOSENED: Removed "correct side" check — just needs to be near FVG
-        // Price can be anywhere near the FVG, not just on the retest side
         const approaching = true;
         
         if (inFVG || nearFVG) {
