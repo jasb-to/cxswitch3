@@ -1,4 +1,4 @@
-// lib/strategy.ts — v19 "MULTI-SETUP + CONTINUATION"
+// lib/strategy.ts — v19.1 "MULTI-SETUP + CONTINUATION"
 // 4H Trend + 1H Breakout / Pullback / Continuation / Reversal
 // Catches grinding trends, continuations, and range extremes
 // ============================================================
@@ -279,6 +279,7 @@ function detectSetups(
         debug.breakout = "LONG_not_fresh";
       }
     } else if (current.close < boxBottom / 1.001) {
+      // SHORT breakout: price must have been above boxBottom recently (symmetric to LONG check)
       let fresh = false;
       for (let i = 2; i <= 7; i++) {
         if (candles1h.length < i) break;
@@ -313,7 +314,9 @@ function detectSetups(
     const recent10 = candles1h.slice(-11, -1);
     const recentHigh = Math.max(...recent10.map(c => c.high));
     const recentLow = Math.min(...recent10.map(c => c.low));
-    const retrace = (recentHigh - recentLow) / recentHigh;
+    const range = recentHigh - recentLow;
+    // True retracement: how far price pulled back from the high, relative to the full range
+    const retrace = range > 0 ? (recentHigh - current.close) / range : 0;
 
     if (trendDir === "LONG") {
       // Price pulled back from recent high, now bouncing
@@ -374,10 +377,10 @@ function detectSetups(
       const notExtended = current.close < boxTop * 1.02; // Not parabolic
 
       if (bullish && momentum && notExtended) {
-        // FIX #2: CONTINUATION stop logic — use Math.min for LONG (wider stop)
+        // CORRECT: wider stop = further from price (lower for LONG)
         const stop = current.close - atr1h * 1.5;
         const minStop = current.close * 0.992;
-        const finalStop = Math.min(stop, minStop);
+        const finalStop = Math.max(stop, minStop);
         const target = current.close + (current.close - finalStop) * 2;
         candidates.push({
           found: true, type: "CONTINUATION", direction: "LONG",
@@ -395,10 +398,10 @@ function detectSetups(
       const notExtended = current.close > boxBottom / 1.02;
 
       if (bearish && momentum && notExtended) {
-        // FIX #2: CONTINUATION stop logic — use Math.max for SHORT (wider stop)
+        // CORRECT: wider stop = further from price (higher for SHORT)
         const stop = current.close + atr1h * 1.5;
         const minStop = current.close * 1.008;
-        const finalStop = Math.max(stop, minStop);
+        const finalStop = Math.min(stop, minStop);
         const target = current.close - (finalStop - current.close) * 2;
         candidates.push({
           found: true, type: "CONTINUATION", direction: "SHORT",
@@ -502,9 +505,10 @@ export interface CooldownState {
 }
 
 function getSignalHash(pair: string, direction: "LONG" | "SHORT", entry: number, atr: number): string {
-  // FIX #4: Guard against ATR≈0 causing Infinity
+  // Guard against ATR≈0 causing Infinity
   const safeAtr = Math.max(atr, entry * 0.001);
-  const entryBucket = Math.floor(entry / safeAtr);
+  // Tighter granularity: half-ATR buckets for better dedupe precision
+  const entryBucket = Math.floor(entry / (safeAtr * 0.5));
   return `${pair}:${direction}:${entryBucket}`;
 }
 
