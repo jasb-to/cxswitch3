@@ -1,6 +1,6 @@
-// lib/strategy.ts — v16 "BOX BREAKOUT"
+// lib/strategy.ts — v16.1 "BOX BREAKOUT" (AUDIT FIXED)
 // 4H Trend + 1H Rolling Box Breakout — catches grinding trends
-// Fixed risk, ATR-based stops, 4h cooldown
+// Fixed risk, ATR-based stops, 4h cooldown, volume confirmation
 // ============================================================
 
 export interface Candle {
@@ -80,6 +80,7 @@ function swingLows(candles: Candle[], lookback = 3): SwingPoint[] {
   return lows;
 }
 
+// FIX 4: Removed slope fallback — only fractal structure
 function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
   const highs = swingHighs(candles, 5);
   const lows = swingLows(candles, 5);
@@ -96,14 +97,6 @@ function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
   if (higherHighs && higherLows) return "UPTREND";
   if (lowerHighs && lowerLows) return "DOWNTREND";
 
-  const recent = candles.slice(-20);
-  if (recent.length >= 10) {
-    const firstHalf = recent.slice(0, 10).reduce((a, c) => a + c.close, 0) / 10;
-    const secondHalf = recent.slice(-10).reduce((a, c) => a + c.close, 0) / 10;
-    const slope = (secondHalf - firstHalf) / firstHalf;
-    if (slope > 0.015) return "UPTREND";
-    if (slope < -0.015) return "DOWNTREND";
-  }
   return "RANGE";
 }
 
@@ -188,7 +181,7 @@ function calcROC(candles: Candle[], period = 3): number {
 }
 
 // ─── Box Breakout Detection ───
-// Rolling Donchian-style breakout with momentum filter
+// Rolling Donchian-style breakout with momentum + volume filter
 
 interface BoxBreakoutResult {
   found: boolean;
@@ -200,15 +193,17 @@ interface BoxBreakoutResult {
   candleBody: number;
   bodyPct: number;
   fresh: boolean;
+  volumeOK: boolean;
 }
 
 function detectBoxBreakout(
   candles: Candle[],
   boxPeriod = 12,
   minBodyPct = 0.5,
-  breakBuffer = 1.001
+  breakBuffer = 1.001,
+  freshWindow = 6
 ): BoxBreakoutResult | null {
-  if (candles.length < boxPeriod + 5) return null;
+  if (candles.length < boxPeriod + freshWindow + 2) return null;
 
   const current = candles[candles.length - 1];
   const atr = calcATR(candles.slice(-20), 14);
@@ -227,11 +222,15 @@ function detectBoxBreakout(
   if (candleRange < atr * 0.5) return null; // Not a dead candle
   if (bodyPct < minBodyPct) return null; // Not a doji
 
+  // FIX 7: Volume confirmation — current volume > 1.2x average of last 20 candles
+  const avgVolume = candles.slice(-21, -1).reduce((sum, c) => sum + c.volume, 0) / 20;
+  const volumeOK = current.volume > avgVolume * 1.2;
+
   // LONG breakout: close above box top
   if (current.close > boxTop * breakBuffer) {
-    // Fresh: at least 1 of last 3 candles was inside or below the box
+    // FIX 3: Fresh check — at least 1 of last N candles was inside or below box
     let fresh = false;
-    for (let i = 2; i <= 4; i++) {
+    for (let i = 2; i <= freshWindow + 1; i++) {
       if (candles.length < i) break;
       const c = candles[candles.length - i];
       if (c.close <= boxTop) {
@@ -249,14 +248,15 @@ function detectBoxBreakout(
       candleRange,
       candleBody,
       bodyPct,
-      fresh
+      fresh,
+      volumeOK
     };
   }
 
   // SHORT breakout: close below box bottom
   if (current.close < boxBottom / breakBuffer) {
     let fresh = false;
-    for (let i = 2; i <= 4; i++) {
+    for (let i = 2; i <= freshWindow + 1; i++) {
       if (candles.length < i) break;
       const c = candles[candles.length - i];
       if (c.close >= boxBottom) {
@@ -274,7 +274,8 @@ function detectBoxBreakout(
       candleRange,
       candleBody,
       bodyPct,
-      fresh
+      fresh,
+      volumeOK
     };
   }
 
@@ -290,12 +291,20 @@ function trendHealth(adx: number, structure: string): "STRONG" | "MODERATE" | "W
   return "WEAK";
 }
 
-// ─── Cooldown Check ───
+// ─── Cooldown + Duplicate Suppression ───
 
 export interface CooldownState {
   pair: string;
   direction: "LONG" | "SHORT";
   timestamp: number;
+}
+
+// FIX 8: Signal hash for duplicate suppression
+function getSignalHash(pair: string, direction: "LONG" | "SHORT", entry: number, atr: number): string {
+  // Hash by pair + direction + entry rounded to nearest ATR
+  // This prevents re-firing on the same move
+  const entryBucket = Math.floor(entry / atr);
+  return `${pair}:${direction}:${entryBucket}`;
 }
 
 export function isOnCooldown(
@@ -310,7 +319,18 @@ export function isOnCooldown(
   );
 }
 
+// FIX 8: Check for duplicate signal (same hash within 6h)
+export function isDuplicateSignal(
+  hash: string,
+  recentHashes: { hash: string; timestamp: number }[],
+  ttlMs = 6 * 60 * 60 * 1000 // 6 hours
+): boolean {
+  const now = Date.now();
+  return recentHashes.some(h => h.hash === hash && (now - h.timestamp) < ttlMs);
+}
+
 // ─── Hold Logic ───
+// FIX 6: Only hold if structure matches direction
 
 export interface HoldResult {
   shouldHold: boolean;
@@ -329,11 +349,11 @@ export function shouldHold(
   const adx4h = calcADX(candles4h, 14);
   const health = trendHealth(adx4h, structure4h);
 
+  // FIX 6: Hard exit if structure flips against position
   const structureValid = signal.direction === "LONG" 
-    ? structure4h === "UPTREND" || structure4h === "RANGE"
-    : structure4h === "DOWNTREND" || structure4h === "RANGE";
+    ? structure4h === "UPTREND"
+    : structure4h === "DOWNTREND";
 
-  // Hard exit if trend dies or flips against us
   if (!structureValid || health === "NONE") {
     return {
       shouldHold: false,
@@ -387,7 +407,8 @@ export function generateSignal(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
-  cooldowns: CooldownState[] = []
+  cooldowns: CooldownState[] = [],
+  recentHashes: { hash: string; timestamp: number }[] = []
 ): { signal: Signal | null; market: MarketData; debug: string[] } {
 
   const price = candles1h[candles1h.length - 1].close;
@@ -429,7 +450,13 @@ export function generateSignal(
     return { signal: null, market, debug };
   }
 
-  debug.push(`breakout_${breakout.direction.toLowerCase()}_box:${breakout.boxBottom.toFixed(2)}-${breakout.boxTop.toFixed(2)}_height:${breakout.boxHeight.toFixed(2)}_body:${(breakout.bodyPct*100).toFixed(0)}%_fresh:${breakout.fresh}`);
+  debug.push(`breakout_${breakout.direction.toLowerCase()}_box:${breakout.boxBottom.toFixed(2)}-${breakout.boxTop.toFixed(2)}_height:${breakout.boxHeight.toFixed(2)}_body:${(breakout.bodyPct*100).toFixed(0)}%_fresh:${breakout.fresh}_vol:${breakout.volumeOK}`);
+
+  // FIX 7: Volume gate — reject if volume too low
+  if (!breakout.volumeOK) {
+    debug.push("volume_too_low");
+    return { signal: null, market, debug };
+  }
 
   // ── Filter 3: Breakout must align with 4H trend ──
   const trendAligned = 
@@ -451,8 +478,18 @@ export function generateSignal(
 
   debug.push("cooldown_clear");
 
+  // FIX 8: Duplicate suppression
+  const signalHash = getSignalHash(pair, breakout.direction, price, atr1h);
+  if (isDuplicateSignal(signalHash, recentHashes)) {
+    debug.push(`duplicate_signal:${signalHash}`);
+    return { signal: null, market, debug };
+  }
+
+  debug.push("hash_unique");
+
   // ── Filter 5: Momentum check ──
-  const momentumOK = breakout.direction === "LONG" ? roc1h > -0.3 : roc1h < 0.3;
+  // FIX 1: Require positive momentum for LONG, negative for SHORT
+  const momentumOK = breakout.direction === "LONG" ? roc1h > 0.2 : roc1h < -0.2;
   if (!momentumOK) {
     debug.push(`momentum_weak:roc_${roc1h.toFixed(2)}`);
     return { signal: null, market, debug };
@@ -463,20 +500,21 @@ export function generateSignal(
   // ── Build Signal ──
   const entry = price;
 
-  // Stop = box bottom for LONG, box top for SHORT (tight, logical)
-  // But minimum 1x ATR to avoid noise stops
+  // FIX 2: Stop placement — use the MORE PROTECTIVE (tighter) of structure or ATR
+  // For LONG: higher stop = tighter = better
+  // Math.max(boxBottom, entry - atr1h) gives the HIGHER value = tighter stop
   let stop: number, target: number;
 
   if (breakout.direction === "LONG") {
-    stop = Math.min(breakout.boxBottom, entry - atr1h);
-    // Ensure stop is not too close (minimum 0.8% risk)
+    stop = Math.max(breakout.boxBottom, entry - atr1h);
+    // Ensure minimum stop distance (0.8% max risk)
     const minStop = entry * 0.992;
-    if (stop > minStop) stop = minStop;
+    if (stop < minStop) stop = minStop;
     target = entry + (entry - stop) * 2; // 2:1 R:R
   } else {
-    stop = Math.max(breakout.boxTop, entry + atr1h);
+    stop = Math.min(breakout.boxTop, entry + atr1h);
     const minStop = entry * 1.008;
-    if (stop < minStop) stop = minStop;
+    if (stop > minStop) stop = minStop;
     target = entry - (stop - entry) * 2;
   }
 
@@ -484,19 +522,21 @@ export function generateSignal(
   const actualTargetPct = Math.abs(target - entry) / entry;
   const rr = actualTargetPct / actualStopPct;
 
-  // Confidence: trend strength + box tightness + freshness + momentum
+  // FIX 5: Confidence — penalize weak ADX
   let confidence = 60;
   if (health === "STRONG") confidence += 15;
   else if (health === "MODERATE") confidence += 10;
   if (structure1h === structure4h) confidence += 10;
   if (breakout.fresh) confidence += 10;
   else confidence -= 5;
-  // Tight box = better setup (consolidation before explosion)
+  // Tight box = better setup
   const boxHeightPct = breakout.boxHeight / entry;
-  if (boxHeightPct < 0.02) confidence += 5; // Tight box < 2%
-  else if (boxHeightPct > 0.05) confidence -= 5; // Wide box > 5%
+  if (boxHeightPct < 0.02) confidence += 5;
+  else if (boxHeightPct > 0.05) confidence -= 5;
   if (breakout.bodyPct > 0.7) confidence += 5;
   if (Math.abs(roc1h) > 0.5) confidence += 5;
+  // FIX 5: Penalize weak trend strength
+  if (adx4h < 22) confidence -= 10;
   confidence = Math.min(95, Math.max(50, confidence));
 
   const expectedMove = actualTargetPct * 100;
@@ -515,7 +555,7 @@ export function generateSignal(
     target,
     confidence,
     type: "BREAKOUT",
-    reason: `BOX_BREAKOUT ${breakout.direction} | 4H:${structure4h} 1H:${structure1h} | Box:${breakout.boxBottom.toFixed(2)}-${breakout.boxTop.toFixed(2)} | Height:${(boxHeightPct*100).toFixed(1)}% | Fresh:${breakout.fresh} | Body:${(breakout.bodyPct*100).toFixed(0)}% | ROC:${roc1h.toFixed(2)} | Conf:${confidence}`,
+    reason: `BOX_BREAKOUT ${breakout.direction} | 4H:${structure4h} 1H:${structure1h} | Box:${breakout.boxBottom.toFixed(2)}-${breakout.boxTop.toFixed(2)} | Height:${(boxHeightPct*100).toFixed(1)}% | Fresh:${breakout.fresh} | Vol:${breakout.volumeOK} | Body:${(breakout.bodyPct*100).toFixed(0)}% | ROC:${roc1h.toFixed(2)} | ADX:${adx4h.toFixed(1)} | Conf:${confidence}`,
     timestamp: Date.now(),
     expectedMove,
     adx: adx4h,
@@ -525,7 +565,7 @@ export function generateSignal(
     rr,
   };
 
-  debug.push(`SIGNAL_${breakout.direction}_conf:${confidence}_rr:${rr.toFixed(2)}_stop:${actualStopPct.toFixed(2)}%_box:${(boxHeightPct*100).toFixed(1)}%`);
+  debug.push(`SIGNAL_${breakout.direction}_conf:${confidence}_rr:${rr.toFixed(2)}_stop:${actualStopPct.toFixed(2)}%_box:${(boxHeightPct*100).toFixed(1)}%_hash:${signalHash}`);
   return { signal, market, debug };
 }
 
