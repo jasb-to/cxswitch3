@@ -187,7 +187,7 @@ function calcROC(candles: Candle[], period = 3): number {
   return ((current - past) / past) * 100;
 }
 
-// ─── Breakout Detection ───
+// ─── Breakout Detection (Loosened) ───
 
 interface BreakoutResult {
   found: boolean;
@@ -196,6 +196,7 @@ interface BreakoutResult {
   candleRange: number;
   candleBody: number;
   bodyPct: number;
+  fresh: boolean;
 }
 
 function detectBreakout(candles: Candle[], minRangeMult = 1.2, minBodyPct = 0.5): BreakoutResult | null {
@@ -206,7 +207,6 @@ function detectBreakout(candles: Candle[], minRangeMult = 1.2, minBodyPct = 0.5)
   if (highs.length < 2 || lows.length < 2) return null;
 
   const current = candles[candles.length - 1];
-  const prev = candles[candles.length - 2];
   const atr = calcATR(candles.slice(-20), 14);
 
   const candleRange = current.high - current.low;
@@ -217,29 +217,54 @@ function detectBreakout(candles: Candle[], minRangeMult = 1.2, minBodyPct = 0.5)
   if (candleRange < atr * minRangeMult) return null;
   if (bodyPct < minBodyPct) return null;
 
-  // LONG breakout: close above recent swing high, previous close was below
+  // LONG breakout: close above recent swing high with 0.2% buffer
   const lastHigh = highs[highs.length - 1];
-  if (current.close > lastHigh.price && prev.close <= lastHigh.price) {
+  const breakBuffer = 1.002;
+
+  if (current.close > lastHigh.price * breakBuffer) {
+    // Check if this is a FRESH breakout (not already extended)
+    // At least 1 of last 3 candles was below the high
+    let fresh = false;
+    for (let i = 2; i <= 4; i++) {
+      if (candles.length < i) break;
+      if (candles[candles.length - i].close <= lastHigh.price) {
+        fresh = true;
+        break;
+      }
+    }
+
     return {
       found: true,
       direction: "LONG",
       breakLevel: lastHigh.price,
       candleRange,
       candleBody,
-      bodyPct
+      bodyPct,
+      fresh
     };
   }
 
-  // SHORT breakout: close below recent swing low, previous close was above
+  // SHORT breakout: close below recent swing low with 0.2% buffer
   const lastLow = lows[lows.length - 1];
-  if (current.close < lastLow.price && prev.close >= lastLow.price) {
+
+  if (current.close < lastLow.price / breakBuffer) {
+    let fresh = false;
+    for (let i = 2; i <= 4; i++) {
+      if (candles.length < i) break;
+      if (candles[candles.length - i].close >= lastLow.price) {
+        fresh = true;
+        break;
+      }
+    }
+
     return {
       found: true,
       direction: "SHORT",
       breakLevel: lastLow.price,
       candleRange,
       candleBody,
-      bodyPct
+      bodyPct,
+      fresh
     };
   }
 
@@ -394,7 +419,7 @@ export function generateSignal(
     return { signal: null, market, debug };
   }
 
-  debug.push(`breakout_${breakout.direction.toLowerCase()}_level:${breakout.breakLevel.toFixed(2)}_range:${breakout.candleRange.toFixed(2)}_body:${(breakout.bodyPct*100).toFixed(0)}%`);
+  debug.push(`breakout_${breakout.direction.toLowerCase()}_level:${breakout.breakLevel.toFixed(2)}_range:${breakout.candleRange.toFixed(2)}_body:${(breakout.bodyPct*100).toFixed(0)}%_fresh:${breakout.fresh}`);
 
   // ── Filter 3: Breakout must align with 4H trend ──
   const trendAligned = 
@@ -443,14 +468,16 @@ export function generateSignal(
   const actualTargetPct = Math.abs(target - entry) / entry;
   const rr = actualTargetPct / actualStopPct;
 
-  // Confidence: trend strength + structure alignment + momentum + candle quality
+  // Confidence: trend strength + structure alignment + momentum + candle quality + freshness
   let confidence = 60;
   if (health === "STRONG") confidence += 15;
   else if (health === "MODERATE") confidence += 10;
   if (structure1h === structure4h) confidence += 10;
   if (breakout.bodyPct > 0.7) confidence += 5;
   if (Math.abs(roc1h) > 0.5) confidence += 5;
-  confidence = Math.min(95, confidence);
+  if (breakout.fresh) confidence += 5; // Fresh breakout (not extended)
+  else confidence -= 5; // Extended breakout, lower confidence
+  confidence = Math.min(95, Math.max(50, confidence));
 
   const expectedMove = actualTargetPct * 100;
 
@@ -468,7 +495,7 @@ export function generateSignal(
     target,
     confidence,
     type: "BREAKOUT",
-    reason: `BREAKOUT ${breakout.direction} | 4H:${structure4h} 1H:${structure1h} | Break:${breakout.breakLevel.toFixed(2)} | Range:${breakout.candleRange.toFixed(2)} | Body:${(breakout.bodyPct*100).toFixed(0)}% | ROC:${roc1h.toFixed(2)} | Conf:${confidence}`,
+    reason: `BREAKOUT ${breakout.direction} | 4H:${structure4h} 1H:${structure1h} | Break:${breakout.breakLevel.toFixed(2)} | Range:${breakout.candleRange.toFixed(2)} | Body:${(breakout.bodyPct*100).toFixed(0)}% | Fresh:${breakout.fresh} | ROC:${roc1h.toFixed(2)} | Conf:${confidence}`,
     timestamp: Date.now(),
     expectedMove,
     adx: adx4h,
