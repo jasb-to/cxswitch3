@@ -16,12 +16,12 @@ interface HoldAdvice {
   shouldHold: boolean;
   reason: string;
   trailingStop: number | null;
-  trendHealth: "STRONG" | "MODERATE" | "WEAK";
+  trendHealth: "STRONG" | "MODERATE" | "WEAK" | "NONE";
 }
 
 interface Signal extends MarketData {
   direction: "LONG" | "SHORT";
-  type: "SWEEP" | "EARLY";
+  type: "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL" | "SWEEP" | "EARLY";
   confidence: number;
   entry: number;
   stop: number;
@@ -195,7 +195,11 @@ export default function Dashboard() {
                   </div>
                   {hasSignal && signalFresh ? (
                     <span className={`px-2 py-1 rounded text-sm font-bold ${
-                      signal.type === "SWEEP" ? "bg-yellow-500 text-black" : "bg-purple-500 text-white"
+                      signal.type === "BREAKOUT" ? "bg-orange-500 text-white" :
+                      signal.type === "PULLBACK" ? "bg-blue-500 text-white" :
+                      signal.type === "CONTINUATION" ? "bg-cyan-500 text-black" :
+                      signal.type === "REVERSAL" ? "bg-purple-500 text-white" :
+                      signal.type === "SWEEP" ? "bg-yellow-500 text-black" : "bg-gray-500 text-white"
                     }`}>
                       {signal.type}
                     </span>
@@ -313,13 +317,13 @@ export default function Dashboard() {
                   <div className="text-center py-4 border-t border-gray-700">
                     <p className="text-yellow-400 text-sm">⏳ Signal expired — waiting for new setup</p>
                     <p className="text-xs text-gray-500 mt-1">
-                      Last: {signal?.direction} @ ${signal?.entry?.toFixed(2)} ({new Date(signal!.timestamp).toLocaleTimeString()})
+                      Last: {signal?.type} {signal?.direction} @ ${signal?.entry?.toFixed(2)} ({new Date(signal!.timestamp).toLocaleTimeString()})
                     </p>
                   </div>
                 ) : (
                   <div className="text-center py-4 border-t border-gray-700">
-                    <p className="text-gray-400 text-sm">No active sweep or FVG</p>
-                    <p className="text-xs text-gray-500 mt-1">Monitoring for liquidity trap...</p>
+                    <p className="text-gray-400 text-sm">No active setup</p>
+                    <p className="text-xs text-gray-500 mt-1">Monitoring 4H trend + 1H multi-setup...</p>
                   </div>
                 )}
               </div>
@@ -328,15 +332,16 @@ export default function Dashboard() {
         </div>
 
         <div className="mt-8 p-4 bg-gray-800 rounded-lg">
-          <h3 className="font-bold mb-2">How it works — v14 THE TRAP</h3>
+          <h3 className="font-bold mb-2">How it works — v20 MULTI-SETUP</h3>
           <ul className="text-sm text-gray-400 space-y-1">
-            <li>• Cron runs every hour — market data always displayed</li>
-            <li>• SWEEP: Liquidity sweep + CHoCH confirmation — high confidence, quick 3-4%</li>
-            <li>• EARLY: FVG retest in trend — ride the full move, 4-5%</li>
-            <li>• Stops: 2.5% SL / 4% TP — widened for 4H holds, no more 1H wick kills</li>
-            <li>• HOLD advice: Ignore 1H stoch noise when 4H trend is STRONG</li>
-            <li>• Trailing stop: Locks in profit when 1H stoch hits extreme</li>
-            <li>• Hard exit: Only on 4H structure break or 4% TP hit</li>
+            <li>• Cron runs every 30 min — 4H trend + 1H multi-setup detection</li>
+            <li>• BREAKOUT: Box break with freshness — 1.5x ATR min move</li>
+            <li>• PULLBACK: Trend retrace + bounce — 1x ATR min move</li>
+            <li>• CONTINUATION: Grind momentum — 1x ATR, wider ATR stop</li>
+            <li>• REVERSAL: Range extreme + oversold/overbought — 1.2x ATR</li>
+            <li>• ADX slope: Early trend detection (RANGE→TREND transitions)</li>
+            <li>• Best setup wins by confidence + RR score, not confidence alone</li>
+            <li>• 4H cooldown + ATR-normalized hash dedupe prevents spam</li>
             <li>• Position size: Risk {(RISK_PER_TRADE * 100).toFixed(0)}% = ${(ACCOUNT_BALANCE * RISK_PER_TRADE).toFixed(0)} per trade</li>
           </ul>
         </div>
