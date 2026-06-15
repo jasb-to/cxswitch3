@@ -1,4 +1,4 @@
-// lib/strategy.ts — v20.2 "MULTI-SETUP + PER-TYPE COOLDOWN + EXTENDED BREAKOUT GUARD"
+// lib/strategy.ts — v20.3 "MULTI-SETUP + TARGET HIT DETECTION"
 // 4H Trend + 1H Breakout / Pullback / Continuation / Reversal
 // Catches grinding trends, continuations, and range extremes
 // ============================================================
@@ -753,9 +753,15 @@ export function generateSignal(
 }
 
 export function isSignalStillValid(signal: Signal, currentPrice: number): boolean {
+  // Stop loss hit
   if (signal.direction === "LONG" && currentPrice < signal.stop) return false;
   if (signal.direction === "SHORT" && currentPrice > signal.stop) return false;
 
+  // TARGET HIT — signal is complete, take profit
+  if (signal.direction === "LONG" && currentPrice >= signal.target) return false;
+  if (signal.direction === "SHORT" && currentPrice <= signal.target) return false;
+
+  // Age expiry
   const ageHours = (Date.now() - signal.timestamp) / (1000 * 60 * 60);
   const maxAge = signal.type === "REVERSAL" ? 4 : 8;
   if (ageHours > maxAge) return false;
