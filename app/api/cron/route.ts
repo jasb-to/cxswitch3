@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v20 "MULTI-SETUP"
+// app/api/cron/route.ts — v20.1 "TARGET HIT INVALIDATION"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -86,6 +86,16 @@ export async function GET(request: Request) {
 
       const currentPrice = candles1h[candles1h.length - 1].close;
       
+      // Check if existing signal hit target or stop — remove if invalid
+      const existingIdx = validSignals.findIndex(s => s.pair === pair);
+      const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
+      
+      if (existingForPair && !isSignalStillValid(existingForPair, currentPrice)) {
+        console.log(`[PAIR] ${pair} — Existing signal INVALID (target=${existingForPair.target.toFixed(2)} hit or stop=${existingForPair.stop.toFixed(2)} hit at price=${currentPrice.toFixed(2)}), removing`);
+        validSignals.splice(existingIdx, 1);
+        alerts.push({ pair, status: "existing_invalid", reason: "target_or_stop_hit" });
+      }
+      
       // ALWAYS generate market data from current candles
       const result = generateSignal(pair, candles1h, candles4h, activeTrades);
       const market = result.market;
@@ -94,7 +104,6 @@ export async function GET(request: Request) {
         marketDataList.push(market);
       }
 
-      const existingForPair = validSignals.find(s => s.pair === pair);
       if (existingForPair && isSignalStillValid(existingForPair, currentPrice)) {
         console.log(`[PAIR] ${pair} — Existing signal still valid (${existingForPair.type}), skipping`);
         alerts.push({ pair, status: "existing_valid", type: existingForPair.type });
