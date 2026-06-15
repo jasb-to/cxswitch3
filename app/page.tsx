@@ -12,6 +12,13 @@ interface MarketData {
   stochD?: number;
 }
 
+interface HoldAdvice {
+  shouldHold: boolean;
+  reason: string;
+  trailingStop: number | null;
+  trendHealth: "STRONG" | "MODERATE" | "WEAK" | "NONE";
+}
+
 interface Signal {
   pair: string;
   direction: "LONG" | "SHORT";
@@ -28,6 +35,7 @@ interface Signal {
   rsi?: number;
   stochK?: number;
   stochD?: number;
+  holdAdvice?: HoldAdvice;
 }
 
 const PAIRS = ["BTC", "ETH", "SOL"];
@@ -68,6 +76,16 @@ function getTypeColor(type: string) {
     case "SWEEP": return "bg-yellow-500 text-black";
     case "EARLY": return "bg-pink-500 text-white";
     default: return "bg-gray-600 text-gray-300";
+  }
+}
+
+function getHealthColor(health: string) {
+  switch (health) {
+    case "STRONG": return "text-green-400 border-green-600 bg-green-900/30";
+    case "MODERATE": return "text-yellow-400 border-yellow-600 bg-yellow-900/30";
+    case "WEAK": return "text-orange-400 border-orange-600 bg-orange-900/30";
+    case "NONE": return "text-red-400 border-red-600 bg-red-900/30";
+    default: return "text-gray-400 border-gray-600 bg-gray-900/30";
   }
 }
 
@@ -126,7 +144,7 @@ export default function Dashboard() {
 
         {/* HEADER */}
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-bold">CX Switch v20</h1>
+          <h1 className="text-2xl font-bold">CX Switch v3</h1>
           <div className="text-xs text-gray-400">
             Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
           </div>
@@ -281,6 +299,28 @@ export default function Dashboard() {
                         {units} units ≈ {money(notional)}
                       </span>
                     </div>
+
+                    {/* HOLD ADVICE */}
+                    {signal.holdAdvice && (
+                      <div className={`mt-3 p-3 rounded border ${getHealthColor(signal.holdAdvice.trendHealth)}`}>
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-sm font-bold">4H Trend Health</span>
+                          <span className="text-sm font-bold">{signal.holdAdvice.trendHealth}</span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm font-bold">
+                            {signal.holdAdvice.shouldHold ? "✅ HOLD" : "❌ EXIT"}
+                          </span>
+                        </div>
+                        {signal.holdAdvice.trailingStop && (
+                          <div className="flex justify-between items-center mt-1 pt-1 border-t border-white/10">
+                            <span className="text-xs">🔒 Trail</span>
+                            <span className="text-xs font-mono">{money(signal.holdAdvice.trailingStop)}</span>
+                          </div>
+                        )}
+                        <p className="text-xs mt-1 opacity-80">{signal.holdAdvice.reason}</p>
+                      </div>
+                    )}
 
                     <div className="mt-3 pt-3 border-t border-gray-700">
                       <p className="text-xs text-gray-400 leading-relaxed">{signal.reason}</p>
