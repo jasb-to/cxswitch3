@@ -38,17 +38,6 @@ interface Signal {
   holdAdvice?: HoldAdvice;
 }
 
-interface LivePrice {
-  pair: string;
-  price: number;
-  change24h: number;
-  change24hPercent: number;
-  high24h: number;
-  low24h: number;
-  volume24h: number;
-  lastUpdated: number;
-}
-
 const PAIRS = ["BTC", "ETH", "SOL"];
 const SIGNAL_STALE_MS = 6 * 60 * 60 * 1000;
 
@@ -100,23 +89,22 @@ function getHealthColor(health: string) {
   }
 }
 
-async function fetchLivePrice(symbol: string): Promise<LivePrice | null> {
+const KRAKEN_PAIRS: Record<string, string> = {
+  BTC: "XBTUSD",
+  ETH: "ETHUSD",
+  SOL: "SOLUSD",
+};
+
+async function fetchKrakenPrice(pair: string): Promise<number | null> {
   try {
-    const res = await fetch(`https://api.mexc.com/api/v3/ticker/24hr?symbol=${symbol}USDT`, {
+    const krakenPair = KRAKEN_PAIRS[pair];
+    const res = await fetch(`https://api.kraken.com/0/public/Ticker?pair=${krakenPair}`, {
       cache: "no-store",
     });
-    if (!res.ok) return null;
     const data = await res.json();
-    return {
-      pair: symbol,
-      price: parseFloat(data.lastPrice),
-      change24h: parseFloat(data.priceChange),
-      change24hPercent: parseFloat(data.priceChangePercent),
-      high24h: parseFloat(data.highPrice),
-      low24h: parseFloat(data.lowPrice),
-      volume24h: parseFloat(data.volume),
-      lastUpdated: Date.now(),
-    };
+    if (data.error?.length) return null;
+    const ticker = data.result[Object.keys(data.result)[0]];
+    return parseFloat(ticker.c[0]); // last trade price
   } catch {
     return null;
   }
@@ -125,7 +113,7 @@ async function fetchLivePrice(symbol: string): Promise<LivePrice | null> {
 export default function Dashboard() {
   const [signals, setSignals] = useState<Record<string, Signal | null>>({});
   const [market, setMarket] = useState<Record<string, MarketData>>({});
-  const [livePrices, setLivePrices] = useState<Record<string, LivePrice>>({});
+  const [livePrices, setLivePrices] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [fetchCount, setFetchCount] = useState(0);
   const [lastFetch, setLastFetch] = useState<number>(0);
@@ -133,6 +121,7 @@ export default function Dashboard() {
   useEffect(() => {
     async function load() {
       try {
+        // 1. Fetch signals + market data from backend (KV)
         const res = await fetch("/api/signals");
         const data = await res.json();
 
@@ -151,11 +140,12 @@ export default function Dashboard() {
         setSignals(sigMap);
         setMarket(mktMap);
 
-        const liveMap: Record<string, LivePrice> = {};
+        // 2. Fetch LIVE prices from Kraken (browser-side, every 30s)
+        const liveMap: Record<string, number> = {};
         await Promise.all(
           PAIRS.map(async (pair) => {
-            const live = await fetchLivePrice(pair);
-            if (live) liveMap[pair] = live;
+            const price = await fetchKrakenPrice(pair);
+            if (price) liveMap[pair] = price;
           })
         );
         setLivePrices(liveMap);
@@ -186,7 +176,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-6xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-bold">CX Switch v3 — LIVE</h1>
+          <h1 className="text-2xl font-bold">CX Switch v20 — LIVE</h1>
           <div className="text-xs text-gray-400">
             Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
           </div>
@@ -213,14 +203,15 @@ export default function Dashboard() {
           {PAIRS.map((pair) => {
             const signal = signals[pair];
             const m = market[pair];
-            const live = livePrices[pair];
+            const livePrice = livePrices[pair];
             const now = Date.now();
 
             const hasSignal = !!signal;
             const signalFresh = signal && (now - signal.timestamp < SIGNAL_STALE_MS);
 
-            const currentPrice = live?.price ?? m?.price ?? signal?.entry;
-            const priceLive = !!live?.price;
+            // LIVE PRICE: Kraken first, then backend market, then signal entry
+            const currentPrice = livePrice ?? m?.price ?? signal?.entry;
+            const priceLive = !!livePrice;
 
             const structure = m?.structure ?? signal?.reason?.match(/4H:(\w+)/)?.[1] ?? "—";
 
@@ -266,11 +257,6 @@ export default function Dashboard() {
                         </span>
                       )}
                     </div>
-                    {live && (
-                      <div className={`text-xs font-mono ${live.change24hPercent >= 0 ? "text-green-400" : "text-red-400"}`}>
-                        24h: {live.change24hPercent >= 0 ? "+" : ""}{live.change24hPercent.toFixed(2)}% | H: {money(live.high24h)} L: {money(live.low24h)}
-                      </div>
-                    )}
                   </div>
 
                   {hasSignal && signalFresh ? (
