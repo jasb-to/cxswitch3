@@ -1,4 +1,4 @@
-// lib/strategy.ts — v20 "MULTI-SETUP + CONTINUATION"
+// lib/strategy.ts — v20.1 "MULTI-SETUP + CONTINUATION"
 // 4H Trend + 1H Breakout / Pullback / Continuation / Reversal
 // Catches grinding trends, continuations, and range extremes
 // ============================================================
@@ -670,7 +670,7 @@ export function generateSignal(
 
   // ── Filter 1: Trend ──
   const health = trendHealth(adx4h, adxSlope4h, structure4h);
-  debug.push(`4h_structure:${structure4h}_health:${health}_adx:${adx4h.toFixed(1)}`);
+  debug.push(`4h_structure:${structure4h}_health:${health}_adx:${adx4h.toFixed(1)}_slope:${adxSlope4h.toFixed(2)}`);
 
   // ── Detect all setups ──
   const { result: setup, debug: setupDebug } = detectSetups(candles1h, candles4h, structure4h, adx4h, rsi1h, stoch1h);
@@ -705,16 +705,18 @@ export function generateSignal(
   const rr = Math.abs(setup.target - setup.entry) / Math.abs(setup.entry - setup.stop);
   const expectedMove = (Math.abs(setup.target - setup.entry) / setup.entry) * 100;
 
-  // FIX #1: Per-setup-type expectedMove threshold
+  // Volatility-normalized expectedMove: ATR-based threshold per setup type
+  // ATR% = (ATR / price) * 100 — gives context-aware minimum move
+  const atrPercent = (atr1h / price) * 100;
   const minMove =
     setup.type === "BREAKOUT"
-      ? 2.0
+      ? Math.max(1.5, atrPercent * 1.5)  // Breakout needs 1.5x ATR expansion, min 1.5%
       : setup.type === "REVERSAL"
-      ? 1.5
-      : 0.8; // PULLBACK and CONTINUATION
+      ? Math.max(1.0, atrPercent * 1.2)  // Reversal needs 1.2x ATR, min 1.0%
+      : Math.max(0.5, atrPercent * 1.0);  // Pullback/continuation needs 1x ATR, min 0.5%
 
   if (rr < 1.5 || expectedMove < minMove) {
-    debug.push(`rr_too_low:${rr.toFixed(2)}_move:${expectedMove.toFixed(2)}%_min:${minMove}%`);
+    debug.push(`rr_too_low:${rr.toFixed(2)}_move:${expectedMove.toFixed(2)}%_min:${minMove.toFixed(2)}%_atr:${atrPercent.toFixed(2)}%`);
     return { signal: null, market, debug };
   }
 
