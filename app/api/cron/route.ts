@@ -1,10 +1,10 @@
-// app/api/cron/route.ts — v14 "THE TRAP"
+// app/api/cron/route.ts — v20 "MULTI-SETUP"
 // ============================================================
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
 import { generateSignal, isSignalStillValid } from "@/lib/strategy";
-import { setSignals, setMarketData, getSignals, getMarketData, getActiveTrades, setActiveTrades } from "@/lib/state";
+import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL"] as const;
@@ -57,10 +57,10 @@ export async function GET(request: Request) {
 
   const existingSignals = await getSignals();
   
-  // Respect per-type expiry: EARLY = 2h, SWEEP = 6h
+  // Respect per-type expiry: REVERSAL = 4h, others = 8h
   const validSignals = existingSignals.filter((s: any) => {
     const ageHours = (Date.now() - s.timestamp) / (1000 * 60 * 60);
-    const maxAge = s.type === "EARLY" ? 2 : 6;
+    const maxAge = s.type === "REVERSAL" ? 4 : 8;
     return ageHours < maxAge;
   });
   
@@ -86,6 +86,14 @@ export async function GET(request: Request) {
 
       const currentPrice = candles1h[candles1h.length - 1].close;
       
+      // ALWAYS generate market data from current candles
+      const result = generateSignal(pair, candles1h, candles4h, activeTrades);
+      const market = result.market;
+      
+      if (market) {
+        marketDataList.push(market);
+      }
+
       const existingForPair = validSignals.find(s => s.pair === pair);
       if (existingForPair && isSignalStillValid(existingForPair, currentPrice)) {
         console.log(`[PAIR] ${pair} — Existing signal still valid (${existingForPair.type}), skipping`);
@@ -93,16 +101,10 @@ export async function GET(request: Request) {
         continue;
       }
 
-      const result = generateSignal(pair, candles1h, candles4h, activeTrades);
       const signal = result.signal;
-      const market = result.market;
       const debug = result.debug || [];
 
       console.log(`[DEBUG] ${pair}: ${debug.join(" | ")}`);
-
-      if (market) {
-        marketDataList.push(market);
-      }
 
       if (!signal) {
         console.log(`[PAIR] ${pair} — NO SIGNAL`);
@@ -163,10 +165,10 @@ export async function GET(request: Request) {
     else mergedSignals.push(s);
   }
 
-  // Respect per-type expiry: EARLY = 2h, SWEEP = 6h
+  // Respect per-type expiry: REVERSAL = 4h, others = 8h
   const finalSignals = mergedSignals.filter((s: any) => {
     const ageHours = (Date.now() - s.timestamp) / (1000 * 60 * 60);
-    const maxAge = s.type === "EARLY" ? 2 : 6;
+    const maxAge = s.type === "REVERSAL" ? 4 : 8;
     return ageHours < maxAge;
   });
 
