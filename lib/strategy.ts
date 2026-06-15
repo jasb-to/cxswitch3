@@ -767,4 +767,4 @@ export function isSignalStillValid(signal: Signal, currentPrice: number): boolea
   if (ageHours > maxAge) return false;
 
   return true;
-}
+} 
