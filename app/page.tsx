@@ -24,19 +24,26 @@ interface Signal {
   reason: string;
   timestamp: number;
   expectedMove: number;
+  adx?: number;
+  rsi?: number;
+  stochK?: number;
+  stochD?: number;
 }
 
 const PAIRS = ["BTC", "ETH", "SOL"];
+const SIGNAL_STALE_MS = 6 * 60 * 60 * 1000;
 
 const ACCOUNT_BALANCE = 850;
 const RISK_PER_TRADE = 0.02;
 
-const money = (n: number) =>
-  new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 2,
-  }).format(n);
+const money = (n?: number) =>
+  typeof n === "number" && isFinite(n)
+    ? new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        maximumFractionDigits: n >= 1000 ? 0 : 2,
+      }).format(n)
+    : "—";
 
 const round = (n?: number, d = 2) =>
   typeof n === "number" && isFinite(n)
@@ -44,10 +51,24 @@ const round = (n?: number, d = 2) =>
     : undefined;
 
 function calcPositionSize(entry: number, stop: number) {
-  const risk = ACCOUNT_BALANCE * RISK_PER_TRADE;
+  const risk = ACCOUNT_BALANCE * RISK_PER_TRADE; // $17
   const dist = Math.abs(entry - stop);
-  if (!dist) return 0;
-  return Math.round(risk / dist);
+  if (!dist || dist <= 0) return { units: 0, notional: 0 };
+  const units = risk / dist;
+  const notional = units * entry;
+  return { units: Math.round(units), notional: Math.round(notional) };
+}
+
+function getTypeColor(type: string) {
+  switch (type) {
+    case "BREAKOUT": return "bg-orange-500 text-white";
+    case "PULLBACK": return "bg-blue-500 text-white";
+    case "CONTINUATION": return "bg-cyan-500 text-black";
+    case "REVERSAL": return "bg-purple-500 text-white";
+    case "SWEEP": return "bg-yellow-500 text-black";
+    case "EARLY": return "bg-pink-500 text-white";
+    default: return "bg-gray-600 text-gray-300";
+  }
 }
 
 export default function Dashboard() {
@@ -55,6 +76,7 @@ export default function Dashboard() {
   const [market, setMarket] = useState<Record<string, MarketData>>({});
   const [loading, setLoading] = useState(true);
   const [fetchCount, setFetchCount] = useState(0);
+  const [lastFetch, setLastFetch] = useState<number>(0);
 
   useEffect(() => {
     async function load() {
@@ -70,13 +92,14 @@ export default function Dashboard() {
         }
 
         for (const p of PAIRS) {
-          sigMap[p] =
-            data.signals?.find((s: Signal) => s.pair === p) || null;
+          const s = data.signals?.find((sig: Signal) => sig.pair === p);
+          sigMap[p] = s || null;
         }
 
         setSignals(sigMap);
         setMarket(mktMap);
         setFetchCount((c) => c + 1);
+        setLastFetch(Date.now());
       } catch (e) {
         console.error(e);
       } finally {
@@ -101,10 +124,29 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-6xl mx-auto">
 
-        <div className="flex justify-between mb-6">
-          <h1 className="text-2xl font-bold">CX Switch v3</h1>
+        {/* HEADER */}
+        <div className="flex justify-between items-center mb-6">
+          <h1 className="text-2xl font-bold">CX Switch v20</h1>
           <div className="text-xs text-gray-400">
-            Fetches: {fetchCount}
+            Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
+          </div>
+        </div>
+
+        {/* ACCOUNT SUMMARY */}
+        <div className="mb-6 p-4 bg-gray-800 rounded-lg border border-gray-700">
+          <div className="flex justify-between items-center">
+            <div>
+              <span className="text-gray-400 text-sm">Account</span>
+              <p className="text-2xl font-bold">{money(ACCOUNT_BALANCE)}</p>
+            </div>
+            <div>
+              <span className="text-gray-400 text-sm">Risk/Trade</span>
+              <p className="text-xl font-bold text-yellow-400">{(RISK_PER_TRADE * 100).toFixed(0)}%</p>
+            </div>
+            <div>
+              <span className="text-gray-400 text-sm">Max Risk</span>
+              <p className="text-xl font-bold text-red-400">{money(ACCOUNT_BALANCE * RISK_PER_TRADE)}</p>
+            </div>
           </div>
         </div>
 
@@ -113,87 +155,135 @@ export default function Dashboard() {
           {PAIRS.map((pair) => {
             const signal = signals[pair];
             const m = market[pair];
+            const now = Date.now();
 
             const hasSignal = !!signal;
+            const signalFresh = signal && (now - signal.timestamp < SIGNAL_STALE_MS);
 
-            // 🔥 SIGNAL IS SOURCE OF TRUTH
+            // Price: signal entry if no market data, otherwise market price
             const price = m?.price ?? signal?.entry;
-            const structure = m?.structure ?? signal?.type ?? "—";
-            const adx = m?.adx;
-            const rsi = m?.rsi;
-            const stoch = m ? `${round(m.stochK)}/${round(m.stochD)}` : "—";
+
+            // Structure: from market data (4H structure), NOT signal type
+            const structure = m?.structure ?? signal?.reason?.match(/4H:(\w+)/)?.[1] ?? "—";
+
+            // Indicators: prefer market data, fallback to signal-stored values
+            const adx = m?.adx ?? signal?.adx;
+            const rsi = m?.rsi ?? signal?.rsi;
+            const stochK = m?.stochK ?? signal?.stochK;
+            const stochD = m?.stochD ?? signal?.stochD;
+            const stoch = stochK !== undefined && stochD !== undefined
+              ? `${round(stochK)}/${round(stochD)}`
+              : "—";
 
             const entry = signal?.entry ?? 0;
             const stop = signal?.stop ?? 0;
             const target = signal?.target ?? 0;
 
-            const size = signal ? calcPositionSize(entry, stop) : 0;
+            const { units, notional } = signal ? calcPositionSize(entry, stop) : { units: 0, notional: 0 };
 
             return (
-              <div key={pair} className="bg-gray-800 p-5 rounded-lg">
-
+              <div
+                key={pair}
+                className={`rounded-lg p-5 border-2 transition-all ${
+                  hasSignal && signalFresh
+                    ? signal?.direction === "LONG"
+                      ? "border-green-500 bg-green-900/10"
+                      : "border-red-500 bg-red-900/10"
+                    : "border-gray-700 bg-gray-800"
+                }`}
+              >
                 {/* HEADER */}
-                <div className="flex justify-between">
+                <div className="flex justify-between items-start mb-4">
                   <div>
-                    <div className="font-bold">{pair}/USD</div>
-                    <div className="text-xl font-mono">
-                      {price ? money(price) : "—"}
-                    </div>
+                    <div className="font-bold text-lg">{pair}/USD</div>
+                    <div className="text-2xl font-mono">{money(price)}</div>
                   </div>
 
-                  <div className="px-2 py-1 bg-gray-700 rounded text-sm">
-                    {signal ? signal.type : "WAIT"}
-                  </div>
-                </div>
-
-                {/* MARKET (FIXED FALLBACKS) */}
-                <div className="mt-3 text-sm space-y-1 text-gray-300">
-                  <div>Structure: {structure}</div>
-                  <div>ADX: {adx !== undefined ? round(adx) : "—"}</div>
-                  <div>RSI: {rsi !== undefined ? round(rsi) : "—"}</div>
-                  <div>Stoch: {stoch}</div>
-                </div>
-
-                {/* SIGNAL ALWAYS COMPLETE */}
-                {signal ? (
-                  <div className="mt-4 border-t border-gray-700 pt-4 space-y-2">
-
-                    <div className="flex justify-between">
-                      <span>Direction</span>
-                      <span className={signal.direction === "LONG" ? "text-green-400" : "text-red-400"}>
+                  {hasSignal && signalFresh ? (
+                    <div className="flex flex-col items-end gap-1">
+                      <span className={`px-2 py-1 rounded text-xs font-bold ${getTypeColor(signal.type)}`}>
+                        {signal.type}
+                      </span>
+                      <span className={`text-xs font-bold ${signal.direction === "LONG" ? "text-green-400" : "text-red-400"}`}>
                         {signal.direction}
                       </span>
                     </div>
+                  ) : hasSignal && !signalFresh ? (
+                    <span className="px-2 py-1 rounded text-xs bg-yellow-600 text-white">EXPIRED</span>
+                  ) : (
+                    <span className="px-2 py-1 rounded text-xs bg-gray-600 text-gray-300">WAIT</span>
+                  )}
+                </div>
+
+                {/* MARKET DATA */}
+                <div className="mb-4 p-3 bg-gray-900/50 rounded text-sm space-y-1">
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Structure</span>
+                    <span className={`font-medium ${
+                      structure === "UPTREND" ? "text-green-400" :
+                      structure === "DOWNTREND" ? "text-red-400" :
+                      structure === "RANGE" ? "text-yellow-400" : "text-gray-300"
+                    }`}>{structure}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">ADX</span>
+                    <span className="font-medium">{adx !== undefined ? round(adx) : "—"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">RSI</span>
+                    <span className="font-medium">{rsi !== undefined ? round(rsi) : "—"}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Stoch K/D</span>
+                    <span className="font-medium">{stoch}</span>
+                  </div>
+                </div>
+
+                {/* SIGNAL DETAILS */}
+                {hasSignal && signalFresh ? (
+                  <div className="space-y-2 border-t border-gray-700 pt-4 text-sm">
 
                     <div className="flex justify-between">
-                      <span>Confidence</span>
-                      <span>{round(signal.confidence)}%</span>
+                      <span className="text-gray-400">Confidence</span>
+                      <span className="font-bold">{round(signal.confidence)}%</span>
                     </div>
 
                     <div className="flex justify-between">
-                      <span>Entry</span>
-                      <span>{money(entry)}</span>
+                      <span className="text-gray-400">Entry</span>
+                      <span className="font-mono">{money(entry)}</span>
                     </div>
 
                     <div className="flex justify-between">
-                      <span>Stop</span>
-                      <span className="text-red-400">{money(stop)}</span>
+                      <span className="text-gray-400">Stop</span>
+                      <span className="font-mono text-red-400">{money(stop)}</span>
                     </div>
 
                     <div className="flex justify-between">
-                      <span>Target</span>
-                      <span className="text-green-400">{money(target)}</span>
+                      <span className="text-gray-400">Target</span>
+                      <span className="font-mono text-green-400">{money(target)}</span>
                     </div>
 
-                    <div className="flex justify-between bg-gray-900 p-2 rounded">
-                      <span>Position Size</span>
-                      <span className="text-yellow-400">
-                        ${size.toLocaleString()}
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">R:R</span>
+                      <span className="font-bold">{round(signal.rr)}</span>
+                    </div>
+
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Expected Move</span>
+                      <span className={`font-bold ${signal.direction === "LONG" ? "text-green-400" : "text-red-400"}`}>
+                        {signal.direction === "LONG" ? "+" : "—"}{round(Math.abs(signal.expectedMove))}%
                       </span>
                     </div>
 
-                    <div className="text-xs text-gray-400">
-                      {signal.reason}
+                    <div className="flex justify-between bg-gray-900 p-2 rounded">
+                      <span className="text-gray-400">Position</span>
+                      <span className="text-yellow-400 font-bold">
+                        {units} units ≈ {money(notional)}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 pt-3 border-t border-gray-700">
+                      <p className="text-xs text-gray-400 leading-relaxed">{signal.reason}</p>
                     </div>
 
                     <div className="text-xs text-gray-500">
@@ -201,9 +291,17 @@ export default function Dashboard() {
                     </div>
 
                   </div>
+                ) : hasSignal && !signalFresh ? (
+                  <div className="mt-4 text-center border-t border-gray-700 pt-4">
+                    <p className="text-yellow-400 text-sm">⏳ Signal expired</p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Last: {signal?.type} {signal?.direction} @ {money(signal?.entry)} ({new Date(signal!.timestamp).toLocaleTimeString()})
+                    </p>
+                  </div>
                 ) : (
-                  <div className="mt-4 text-gray-500 text-sm border-t border-gray-700 pt-4">
-                    No active setup — monitoring 4H + 1H structure
+                  <div className="mt-4 text-gray-500 text-sm border-t border-gray-700 pt-4 text-center">
+                    <p>No active setup</p>
+                    <p className="text-xs text-gray-600 mt-1">Monitoring 4H trend + 1H multi-setup</p>
                   </div>
                 )}
 
