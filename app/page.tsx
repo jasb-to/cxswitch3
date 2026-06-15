@@ -38,6 +38,17 @@ interface Signal {
   holdAdvice?: HoldAdvice;
 }
 
+interface LivePrice {
+  pair: string;
+  price: number;
+  change24h: number;
+  change24hPercent: number;
+  high24h: number;
+  low24h: number;
+  volume24h: number;
+  lastUpdated: number;
+}
+
 const PAIRS = ["BTC", "ETH", "SOL"];
 const SIGNAL_STALE_MS = 6 * 60 * 60 * 1000;
 
@@ -59,7 +70,7 @@ const round = (n?: number, d = 2) =>
     : undefined;
 
 function calcPositionSize(entry: number, stop: number) {
-  const risk = ACCOUNT_BALANCE * RISK_PER_TRADE; // $17
+  const risk = ACCOUNT_BALANCE * RISK_PER_TRADE;
   const dist = Math.abs(entry - stop);
   if (!dist || dist <= 0) return { units: 0, notional: 0 };
   const units = risk / dist;
@@ -89,9 +100,32 @@ function getHealthColor(health: string) {
   }
 }
 
+async function fetchLivePrice(symbol: string): Promise<LivePrice | null> {
+  try {
+    const res = await fetch(`https://api.mexc.com/api/v3/ticker/24hr?symbol=${symbol}USDT`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return {
+      pair: symbol,
+      price: parseFloat(data.lastPrice),
+      change24h: parseFloat(data.priceChange),
+      change24hPercent: parseFloat(data.priceChangePercent),
+      high24h: parseFloat(data.highPrice),
+      low24h: parseFloat(data.lowPrice),
+      volume24h: parseFloat(data.volume),
+      lastUpdated: Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export default function Dashboard() {
   const [signals, setSignals] = useState<Record<string, Signal | null>>({});
   const [market, setMarket] = useState<Record<string, MarketData>>({});
+  const [livePrices, setLivePrices] = useState<Record<string, LivePrice>>({});
   const [loading, setLoading] = useState(true);
   const [fetchCount, setFetchCount] = useState(0);
   const [lastFetch, setLastFetch] = useState<number>(0);
@@ -116,6 +150,16 @@ export default function Dashboard() {
 
         setSignals(sigMap);
         setMarket(mktMap);
+
+        const liveMap: Record<string, LivePrice> = {};
+        await Promise.all(
+          PAIRS.map(async (pair) => {
+            const live = await fetchLivePrice(pair);
+            if (live) liveMap[pair] = live;
+          })
+        );
+        setLivePrices(liveMap);
+
         setFetchCount((c) => c + 1);
         setLastFetch(Date.now());
       } catch (e) {
@@ -141,16 +185,13 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-6xl mx-auto">
-
-        {/* HEADER */}
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-bold">CX Switch v3</h1>
+          <h1 className="text-2xl font-bold">CX Switch v3 — LIVE</h1>
           <div className="text-xs text-gray-400">
             Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
           </div>
         </div>
 
-        {/* ACCOUNT SUMMARY */}
         <div className="mb-6 p-4 bg-gray-800 rounded-lg border border-gray-700">
           <div className="flex justify-between items-center">
             <div>
@@ -169,22 +210,20 @@ export default function Dashboard() {
         </div>
 
         <div className="grid md:grid-cols-3 gap-6">
-
           {PAIRS.map((pair) => {
             const signal = signals[pair];
             const m = market[pair];
+            const live = livePrices[pair];
             const now = Date.now();
 
             const hasSignal = !!signal;
             const signalFresh = signal && (now - signal.timestamp < SIGNAL_STALE_MS);
 
-            // Price: signal entry if no market data, otherwise market price
-            const price = m?.price ?? signal?.entry;
+            const currentPrice = live?.price ?? m?.price ?? signal?.entry;
+            const priceLive = !!live?.price;
 
-            // Structure: from market data (4H structure), NOT signal type
             const structure = m?.structure ?? signal?.reason?.match(/4H:(\w+)/)?.[1] ?? "—";
 
-            // Indicators: prefer market data, fallback to signal-stored values
             const adx = m?.adx ?? signal?.adx;
             const rsi = m?.rsi ?? signal?.rsi;
             const stochK = m?.stochK ?? signal?.stochK;
@@ -199,6 +238,12 @@ export default function Dashboard() {
 
             const { units, notional } = signal ? calcPositionSize(entry, stop) : { units: 0, notional: 0 };
 
+            const unrealizedPnL = hasSignal && signalFresh && currentPrice && entry
+              ? signal.direction === "LONG"
+                ? ((currentPrice - entry) / entry) * 100
+                : ((entry - currentPrice) / entry) * 100
+              : 0;
+
             return (
               <div
                 key={pair}
@@ -210,11 +255,22 @@ export default function Dashboard() {
                     : "border-gray-700 bg-gray-800"
                 }`}
               >
-                {/* HEADER */}
                 <div className="flex justify-between items-start mb-4">
                   <div>
                     <div className="font-bold text-lg">{pair}/USD</div>
-                    <div className="text-2xl font-mono">{money(price)}</div>
+                    <div className="flex items-center gap-2">
+                      <div className="text-2xl font-mono">{money(currentPrice)}</div>
+                      {priceLive && (
+                        <span className="text-xs bg-green-600/50 text-green-300 px-1.5 py-0.5 rounded animate-pulse">
+                          LIVE
+                        </span>
+                      )}
+                    </div>
+                    {live && (
+                      <div className={`text-xs font-mono ${live.change24hPercent >= 0 ? "text-green-400" : "text-red-400"}`}>
+                        24h: {live.change24hPercent >= 0 ? "+" : ""}{live.change24hPercent.toFixed(2)}% | H: {money(live.high24h)} L: {money(live.low24h)}
+                      </div>
+                    )}
                   </div>
 
                   {hasSignal && signalFresh ? (
@@ -233,7 +289,6 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                {/* MARKET DATA */}
                 <div className="mb-4 p-3 bg-gray-900/50 rounded text-sm space-y-1">
                   <div className="flex justify-between">
                     <span className="text-gray-400">Structure</span>
@@ -257,9 +312,16 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {/* SIGNAL DETAILS */}
                 {hasSignal && signalFresh ? (
                   <div className="space-y-2 border-t border-gray-700 pt-4 text-sm">
+                    {currentPrice && entry && (
+                      <div className="flex justify-between bg-gray-900 p-2 rounded">
+                        <span className="text-gray-400">Unrealized P&L</span>
+                        <span className={`font-bold ${unrealizedPnL >= 0 ? "text-green-400" : "text-red-400"}`}>
+                          {unrealizedPnL >= 0 ? "+" : ""}{unrealizedPnL.toFixed(2)}%
+                        </span>
+                      </div>
+                    )}
 
                     <div className="flex justify-between">
                       <span className="text-gray-400">Confidence</span>
@@ -300,7 +362,6 @@ export default function Dashboard() {
                       </span>
                     </div>
 
-                    {/* HOLD ADVICE */}
                     {signal.holdAdvice && (
                       <div className={`mt-3 p-3 rounded border ${getHealthColor(signal.holdAdvice.trendHealth)}`}>
                         <div className="flex justify-between items-center mb-1">
@@ -329,7 +390,6 @@ export default function Dashboard() {
                     <div className="text-xs text-gray-500">
                       {new Date(signal.timestamp).toLocaleString()}
                     </div>
-
                   </div>
                 ) : hasSignal && !signalFresh ? (
                   <div className="mt-4 text-center border-t border-gray-700 pt-4">
@@ -344,11 +404,9 @@ export default function Dashboard() {
                     <p className="text-xs text-gray-600 mt-1">Monitoring 4H trend + 1H multi-setup</p>
                   </div>
                 )}
-
               </div>
             );
           })}
-
         </div>
       </div>
     </div>
