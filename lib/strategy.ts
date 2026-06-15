@@ -1,13 +1,16 @@
-// lib/strategy.ts — v20.3 "MULTI-SETUP + TARGET HIT DETECTION"
+// lib/strategy.ts — v20.4 "PULLBACK TIMING FIX"
 // 4H Trend + 1H Breakout / Pullback / Continuation / Reversal
 // Catches grinding trends, continuations, and range extremes
 // ============================================================
-// v19 FIXES:
-// 1. expectedMove threshold lowered per setup type (0.8% for CONTINUATION/PULLBACK)
-// 2. CONTINUATION stop logic fixed — use Math.max for LONG, Math.min for SHORT
-// 3. Candidate selection scores by confidence + reward, not confidence alone
-// 4. getSignalHash guards against ATR≈0 with safeAtr
-// 5. ADX calc guards against plusDI + minusDI === 0
+// v20.4 FIXES:
+// 1. PULLBACK retrace threshold increased (0.3% → 2.5%)
+// 2. PULLBACK now requires price near recent low (bottom 35% of range)
+// 3. PULLBACK requires strong bounce recovery (40% of pullback depth)
+// 4. expectedMove threshold lowered per setup type (0.8% for CONTINUATION/PULLBACK)
+// 5. CONTINUATION stop logic fixed — use Math.max for LONG, Math.min for SHORT
+// 6. Candidate selection scores by confidence + reward, not confidence alone
+// 7. getSignalHash guards against ATR≈0 with safeAtr
+// 8. ADX calc guards against plusDI + minusDI === 0
 
 export interface Candle {
   time: number;
@@ -137,7 +140,6 @@ function calcADX(candles: Candle[], period = 14): { adx: number; slope: number }
     adx = ((adx * (period - 1)) + dxValues[i]) / period;
     adxHistory.push(adx);
   }
-  // ADX slope: rate of change over last 3 periods for early trend detection
   const slope = adxHistory.length >= 4
     ? (adxHistory[adxHistory.length - 1] - adxHistory[adxHistory.length - 4]) / 3
     : 0;
@@ -198,7 +200,6 @@ function avgVolume(candles: Candle[], period = 20): number {
 }
 
 // ─── Setup Detection ───
-// All setups checked independently, returns best match
 
 interface SetupResult {
   found: boolean;
@@ -261,9 +262,7 @@ function detectSetups(
   const boxHeight = boxTop - boxBottom;
 
   if (candleRange >= atr1h * 0.5 && bodyPct >= 0.5) {
-    // LONG breakout
     if (current.close > boxTop * 1.001) {
-      // LONG breakout: price must have been AT OR BELOW boxTop recently (inside or below range)
       let fresh = false;
       for (let i = 2; i <= 7; i++) {
         if (candles1h.length < i) break;
@@ -285,13 +284,11 @@ function detectSetups(
         debug.breakout = "LONG_not_fresh";
       }
     } else if (current.close < boxBottom / 1.001) {
-      // SHORT breakout: price must have been AT OR ABOVE boxBottom recently (inside or above range)
       let fresh = false;
       for (let i = 2; i <= 7; i++) {
         if (candles1h.length < i) break;
         if (candles1h[candles1h.length - i].close >= boxBottom) { fresh = true; break; }
       }
-      // Penalize breakout at extended levels
       const boxHeight = boxTop - boxBottom;
       const extension = boxHeight > 0 ? (boxTop - current.close) / boxHeight : 1;
       const notExtended = extension < 1.5;
@@ -322,26 +319,33 @@ function detectSetups(
   }
 
   // ─── SETUP 2: PULLBACK ───
-  // Simpler: in trend, price pulled back from recent extreme, now resuming
+  // v20.4 FIX: Tighter retrace thresholds + nearLow + strongBounce
   if (adx4h > 20 && (structure4h === "UPTREND" || structure4h === "DOWNTREND")) {
     const trendDir = structure4h === "UPTREND" ? "LONG" : "SHORT";
     const recent10 = candles1h.slice(-11, -1);
     const recentHigh = Math.max(...recent10.map(c => c.high));
     const recentLow = Math.min(...recent10.map(c => c.low));
     const range = recentHigh - recentLow;
-    // True retracement: how far price pulled back from the high, relative to the full range
     const retrace = range > 0 ? (recentHigh - current.close) / range : 0;
 
     if (trendDir === "LONG") {
-      // Price pulled back from recent high, now bouncing
       const pulledBack = current.close < recentHigh && current.close > recentLow;
       const bouncing = current.close > current.open && bodyPct > 0.5;
       const momentum = roc1h > 0.1;
-
-      // Relaxed gating: strong momentum OR decent retrace + candle confirmation
       const strongMomentum = roc1h > 0.25;
-      const validPullback = (pulledBack && bouncing && momentum && retrace > 0.003) ||
-                            (pulledBack && bouncing && strongMomentum && retrace > 0.001);
+
+      // v20.4: Price must be near the bottom of the retrace range (bottom 35%)
+      const nearLow = range > 0 ? (current.close - recentLow) / range < 0.35 : false;
+
+      // v20.4: Bounce must recover at least 40% of the pullback depth
+      const pullbackDepth = recentHigh - current.low;
+      const bounceRecovery = current.close - current.low;
+      const strongBounce = pullbackDepth > 0 ? bounceRecovery / pullbackDepth > 0.4 : false;
+
+      // v20.4: Tighter retrace thresholds (2.5% / 1.5% instead of 0.3% / 0.1%)
+      const validPullback = (pulledBack && bouncing && momentum && retrace > 0.025 && nearLow && strongBounce) ||
+                            (pulledBack && bouncing && strongMomentum && retrace > 0.015 && nearLow && strongBounce);
+
       if (validPullback) {
         const stop = Math.max(recentLow * 0.998, current.close - atr1h);
         const minStop = current.close * 0.992;
@@ -351,21 +355,30 @@ function detectSetups(
           found: true, type: "PULLBACK", direction: "LONG",
           entry: current.close, stop: finalStop, target,
           confidence: 65 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0) + (strongMomentum ? 5 : 0),
-          details: `retrace:${(retrace*100).toFixed(2)}% high:${recentHigh.toFixed(2)} low:${recentLow.toFixed(2)} vol:${volOK}`
+          details: `retrace:${(retrace*100).toFixed(2)}% high:${recentHigh.toFixed(2)} low:${recentLow.toFixed(2)} vol:${volOK} nearLow:${nearLow} bounce:${strongBounce}`
         });
         debug.pullback = "LONG_bounce";
       } else {
-        debug.pullback = `LONG_pulled:${pulledBack}_bounce:${bouncing}_mom:${momentum}_retrace:${(retrace*100).toFixed(2)}%`;
+        debug.pullback = `LONG_pulled:${pulledBack}_bounce:${bouncing}_mom:${momentum}_retrace:${(retrace*100).toFixed(2)}%_nearLow:${nearLow}_strongBounce:${strongBounce}`;
       }
     } else {
       const pulledBack = current.close > recentLow && current.close < recentHigh;
       const rejecting = current.close < current.open && bodyPct > 0.5;
       const momentum = roc1h < -0.1;
-
-      // Relaxed gating: strong momentum OR decent retrace + candle confirmation
       const strongMomentum = roc1h < -0.25;
-      const validPullback = (pulledBack && rejecting && momentum && retrace > 0.003) ||
-                            (pulledBack && rejecting && strongMomentum && retrace > 0.001);
+
+      // v20.4: Price must be near the top of the retrace range (top 35%)
+      const nearHigh = range > 0 ? (recentHigh - current.close) / range < 0.35 : false;
+
+      // v20.4: Rejection must recover at least 40% of the pullback depth
+      const pullbackDepth = current.high - recentLow;
+      const rejectionRecovery = current.high - current.close;
+      const strongReject = pullbackDepth > 0 ? rejectionRecovery / pullbackDepth > 0.4 : false;
+
+      // v20.4: Tighter retrace thresholds
+      const validPullback = (pulledBack && rejecting && momentum && retrace > 0.025 && nearHigh && strongReject) ||
+                            (pulledBack && rejecting && strongMomentum && retrace > 0.015 && nearHigh && strongReject);
+
       if (validPullback) {
         const stop = Math.min(recentHigh * 1.002, current.close + atr1h);
         const minStop = current.close * 1.008;
@@ -375,11 +388,11 @@ function detectSetups(
           found: true, type: "PULLBACK", direction: "SHORT",
           entry: current.close, stop: finalStop, target,
           confidence: 65 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0) + (strongMomentum ? 5 : 0),
-          details: `retrace:${(retrace*100).toFixed(2)}% high:${recentHigh.toFixed(2)} low:${recentLow.toFixed(2)} vol:${volOK}`
+          details: `retrace:${(retrace*100).toFixed(2)}% high:${recentHigh.toFixed(2)} low:${recentLow.toFixed(2)} vol:${volOK} nearHigh:${nearHigh} reject:${strongReject}`
         });
         debug.pullback = "SHORT_reject";
       } else {
-        debug.pullback = `SHORT_pulled:${pulledBack}_reject:${rejecting}_mom:${momentum}_retrace:${(retrace*100).toFixed(2)}%`;
+        debug.pullback = `SHORT_pulled:${pulledBack}_reject:${rejecting}_mom:${momentum}_retrace:${(retrace*100).toFixed(2)}%_nearHigh:${nearHigh}_strongReject:${strongReject}`;
       }
     }
   } else {
@@ -387,19 +400,15 @@ function detectSetups(
   }
 
   // ─── SETUP 3: CONTINUATION ───
-  // Pure trend momentum — catches grinding moves
-  // Fires when trend is strong and price keeps moving with momentum
   if (adx4h > 25 && (structure4h === "UPTREND" || structure4h === "DOWNTREND")) {
     const trendDir = structure4h === "UPTREND" ? "LONG" : "SHORT";
 
     if (trendDir === "LONG") {
-      // Strong uptrend + bullish candle + positive momentum
       const bullish = current.close > current.open && bodyPct > 0.5;
-      const momentum = roc1h > 0.08; // Lowered for slow grind trends
-      const notExtended = current.close < boxTop * 1.02; // Not parabolic
+      const momentum = roc1h > 0.08;
+      const notExtended = current.close < boxTop * 1.02;
 
       if (bullish && momentum && notExtended) {
-        // CORRECT: wider stop = further from price (lower for LONG)
         const stop = current.close - atr1h * 1.5;
         const minStop = current.close * 0.992;
         const finalStop = Math.max(stop, minStop);
@@ -416,11 +425,10 @@ function detectSetups(
       }
     } else {
       const bearish = current.close < current.open && bodyPct > 0.5;
-      const momentum = roc1h < -0.08; // Lowered for slow grind trends
+      const momentum = roc1h < -0.08;
       const notExtended = current.close > boxBottom / 1.02;
 
       if (bearish && momentum && notExtended) {
-        // CORRECT: wider stop = further from price (higher for SHORT)
         const stop = current.close + atr1h * 1.5;
         const minStop = current.close * 1.008;
         const finalStop = Math.min(stop, minStop);
@@ -492,12 +500,10 @@ function detectSetups(
     debug.reversal = `not_range:structure_${structure4h}_adx_${adx4h.toFixed(1)}`;
   }
 
-  // Return best candidate by quality score, or null
   if (candidates.length === 0) {
     return { result: null, debug };
   }
 
-  // FIX #3: Score by confidence + reward, not confidence alone
   candidates.sort((a, b) => {
     const rrA = Math.abs(a.target - a.entry) / Math.abs(a.entry - a.stop);
     const rrB = Math.abs(b.target - b.entry) / Math.abs(b.entry - b.stop);
@@ -512,7 +518,6 @@ function detectSetups(
 // ─── Trend Health ───
 
 function trendHealth(adx: number, adxSlope: number, structure: string): "STRONG" | "MODERATE" | "WEAK" | "NONE" {
-  // Early trend detection: rising ADX with slope > 0.5 signals transition from RANGE → TREND
   const earlyTrend = adxSlope > 0.5 && adx > 18;
   if ((adx < 15 && !earlyTrend) || structure === "RANGE") return "NONE";
   if (adx > 25 || (earlyTrend && adx > 20)) return "STRONG";
@@ -525,14 +530,12 @@ function trendHealth(adx: number, adxSlope: number, structure: string): "STRONG"
 export interface CooldownState {
   pair: string;
   direction: "LONG" | "SHORT";
-  type: string;  // per-setup-type cooldown
+  type: string;
   timestamp: number;
 }
 
 function getSignalHash(pair: string, direction: "LONG" | "SHORT", type: string, entry: number, atr: number): string {
-  // Guard against ATR≈0 causing Infinity
   const safeAtr = Math.max(atr, entry * 0.001);
-  // Tighter granularity: half-ATR buckets for better dedupe precision
   const entryBucket = Math.floor(entry / (safeAtr * 0.5));
   return `${pair}:${direction}:${type}:${entryBucket}`;
 }
@@ -642,7 +645,6 @@ export function generateSignal(
 
   const debug: string[] = [];
 
-  // ── DEFENSIVE: Validate inputs ──
   if (!Array.isArray(candles1h) || !Array.isArray(candles4h)) {
     debug.push("invalid_candle_arrays");
     return { signal: null, market: { pair, price: 0, structure: "RANGE", adx: 0, rsi: 50, stochK: 50, stochD: 50 }, debug };
@@ -678,14 +680,11 @@ export function generateSignal(
     rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d,
   };
 
-  // ── Filter 1: Trend ──
   const health = trendHealth(adx4h, adxSlope4h, structure4h);
   debug.push(`4h_structure:${structure4h}_health:${health}_adx:${adx4h.toFixed(1)}_slope:${adxSlope4h.toFixed(2)}`);
 
-  // ── Detect all setups ──
   const { result: setup, debug: setupDebug } = detectSetups(candles1h, candles4h, structure4h, adx4h, rsi1h, stoch1h);
 
-  // DETAILED DEBUG: Show why each setup failed
   debug.push(`breakout:${setupDebug.breakout}`);
   debug.push(`pullback:${setupDebug.pullback}`);
   debug.push(`continuation:${setupDebug.continuation}`);
@@ -698,32 +697,27 @@ export function generateSignal(
 
   debug.push(`setup:${setup.type}_${setup.direction.toLowerCase()}_conf:${setup.confidence}_${setup.details}`);
 
-  // ── Filter 2: Cooldown (per setup type) ──
   if (isOnCooldown(pair, setup.direction, setup.type, safeCooldowns)) {
     debug.push(`cooldown_active:${setup.direction}_${setup.type}`);
     return { signal: null, market, debug };
   }
 
-  // ── Filter 3: Duplicate suppression ──
   const signalHash = getSignalHash(pair, setup.direction, setup.type, setup.entry, atr1h);
   if (isDuplicateSignal(signalHash, safeHashes)) {
     debug.push(`duplicate_signal:${signalHash}`);
     return { signal: null, market, debug };
   }
 
-  // ── Build Signal ──
   const rr = Math.abs(setup.target - setup.entry) / Math.abs(setup.entry - setup.stop);
   const expectedMove = (Math.abs(setup.target - setup.entry) / setup.entry) * 100;
 
-  // Volatility-normalized expectedMove: ATR-based threshold per setup type
-  // ATR% = (ATR / price) * 100 — gives context-aware minimum move
   const atrPercent = (atr1h / price) * 100;
   const minMove =
     setup.type === "BREAKOUT"
-      ? Math.max(1.5, atrPercent * 1.5)  // Breakout needs 1.5x ATR expansion, min 1.5%
+      ? Math.max(1.5, atrPercent * 1.5)
       : setup.type === "REVERSAL"
-      ? Math.max(1.0, atrPercent * 1.2)  // Reversal needs 1.2x ATR, min 1.0%
-      : Math.max(0.5, atrPercent * 1.0);  // Pullback/continuation needs 1x ATR, min 0.5%
+      ? Math.max(1.0, atrPercent * 1.2)
+      : Math.max(0.5, atrPercent * 1.0);
 
   if (rr < 1.5 || expectedMove < minMove) {
     debug.push(`rr_too_low:${rr.toFixed(2)}_move:${expectedMove.toFixed(2)}%_min:${minMove.toFixed(2)}%_atr:${atrPercent.toFixed(2)}%`);
@@ -753,18 +747,15 @@ export function generateSignal(
 }
 
 export function isSignalStillValid(signal: Signal, currentPrice: number): boolean {
-  // Stop loss hit
   if (signal.direction === "LONG" && currentPrice < signal.stop) return false;
   if (signal.direction === "SHORT" && currentPrice > signal.stop) return false;
 
-  // TARGET HIT — signal is complete, take profit
   if (signal.direction === "LONG" && currentPrice >= signal.target) return false;
   if (signal.direction === "SHORT" && currentPrice <= signal.target) return false;
 
-  // Age expiry
   const ageHours = (Date.now() - signal.timestamp) / (1000 * 60 * 60);
   const maxAge = signal.type === "REVERSAL" ? 4 : 8;
   if (ageHours > maxAge) return false;
 
   return true;
-} 
+}
