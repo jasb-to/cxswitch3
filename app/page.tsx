@@ -1,28 +1,21 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 interface MarketData {
   pair: string;
-  price: number;
-  structure: string;
-  adx: number;
-  rsi: number;
-  stochK: number;
-  stochD: number;
-}
-
-interface HoldAdvice {
-  shouldHold: boolean;
-  reason: string;
-  trailingStop: number | null;
-  trendHealth: "STRONG" | "MODERATE" | "WEAK" | "NONE";
+  price?: number;
+  structure?: string;
+  adx?: number;
+  rsi?: number;
+  stochK?: number;
+  stochD?: number;
 }
 
 interface Signal {
   pair: string;
   direction: "LONG" | "SHORT";
-  type: "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL" | "SWEEP" | "EARLY";
+  type: string;
   confidence: number;
   entry: number;
   stop: number;
@@ -31,7 +24,6 @@ interface Signal {
   reason: string;
   timestamp: number;
   expectedMove: number;
-  holdAdvice?: HoldAdvice;
 }
 
 const PAIRS = ["BTC", "ETH", "SOL"];
@@ -46,25 +38,23 @@ const money = (n: number) =>
     maximumFractionDigits: 2,
   }).format(n);
 
-const round = (n: number, d = 2) => {
-  if (!isFinite(n)) return 0;
-  const m = Math.pow(10, d);
-  return Math.round(n * m) / m;
-};
+const round = (n?: number, d = 2) =>
+  typeof n === "number" && isFinite(n)
+    ? Math.round(n * Math.pow(10, d)) / Math.pow(10, d)
+    : undefined;
 
-function calcPositionSize(entry: number, stop: number): number {
-  const riskAmount = ACCOUNT_BALANCE * RISK_PER_TRADE;
-  const stopDistance = Math.abs(entry - stop);
-  if (stopDistance === 0) return 0;
-  return Math.round(riskAmount / stopDistance);
+function calcPositionSize(entry: number, stop: number) {
+  const risk = ACCOUNT_BALANCE * RISK_PER_TRADE;
+  const dist = Math.abs(entry - stop);
+  if (!dist) return 0;
+  return Math.round(risk / dist);
 }
 
 export default function Dashboard() {
   const [signals, setSignals] = useState<Record<string, Signal | null>>({});
-  const [marketData, setMarketData] = useState<Record<string, MarketData>>({});
-  const [fetchCount, setFetchCount] = useState(0);
-  const [lastUpdate, setLastUpdate] = useState(0);
+  const [market, setMarket] = useState<Record<string, MarketData>>({});
   const [loading, setLoading] = useState(true);
+  const [fetchCount, setFetchCount] = useState(0);
 
   useEffect(() => {
     async function load() {
@@ -72,22 +62,21 @@ export default function Dashboard() {
         const res = await fetch("/api/signals");
         const data = await res.json();
 
-        const signalMap: Record<string, Signal | null> = {};
-        const marketMap: Record<string, MarketData> = {};
+        const sigMap: Record<string, Signal | null> = {};
+        const mktMap: Record<string, MarketData> = {};
 
         for (const m of data.marketData || []) {
-          if (m?.pair) marketMap[m.pair] = m;
+          if (m?.pair) mktMap[m.pair] = m;
         }
 
         for (const p of PAIRS) {
-          const sig = data.signals?.find((s: Signal) => s.pair === p);
-          signalMap[p] = sig || null;
+          sigMap[p] =
+            data.signals?.find((s: Signal) => s.pair === p) || null;
         }
 
-        setSignals(signalMap);
-        setMarketData(marketMap);
+        setSignals(sigMap);
+        setMarket(mktMap);
         setFetchCount((c) => c + 1);
-        setLastUpdate(Date.now());
       } catch (e) {
         console.error(e);
       } finally {
@@ -99,11 +88,6 @@ export default function Dashboard() {
     const i = setInterval(load, 30000);
     return () => clearInterval(i);
   }, []);
-
-  const fmtPrice = (n?: number) =>
-    n ? money(round(n, 2)) : "—";
-
-  const now = Date.now();
 
   if (loading) {
     return (
@@ -117,64 +101,62 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-6xl mx-auto">
 
-        {/* HEADER */}
         <div className="flex justify-between mb-6">
           <h1 className="text-2xl font-bold">CX Switch v3</h1>
           <div className="text-xs text-gray-400">
-            Fetches: {fetchCount} | Last:{" "}
-            {lastUpdate ? new Date(lastUpdate).toLocaleTimeString() : "never"}
+            Fetches: {fetchCount}
           </div>
         </div>
 
-        {/* CARDS */}
         <div className="grid md:grid-cols-3 gap-6">
 
           {PAIRS.map((pair) => {
             const signal = signals[pair];
-            const market = marketData[pair];
+            const m = market[pair];
 
             const hasSignal = !!signal;
 
-            const entry = signal ? round(signal.entry) : 0;
-            const stop = signal ? round(signal.stop) : 0;
-            const target = signal ? round(signal.target) : 0;
+            // 🔥 SIGNAL IS SOURCE OF TRUTH
+            const price = m?.price ?? signal?.entry;
+            const structure = m?.structure ?? signal?.type ?? "—";
+            const adx = m?.adx;
+            const rsi = m?.rsi;
+            const stoch = m ? `${round(m.stochK)}/${round(m.stochD)}` : "—";
 
-            const positionSize =
-              signal ? calcPositionSize(entry, stop) : 0;
+            const entry = signal?.entry ?? 0;
+            const stop = signal?.stop ?? 0;
+            const target = signal?.target ?? 0;
+
+            const size = signal ? calcPositionSize(entry, stop) : 0;
 
             return (
-              <div key={pair} className="bg-gray-800 p-5 rounded-lg border border-gray-700">
+              <div key={pair} className="bg-gray-800 p-5 rounded-lg">
 
-                {/* TOP */}
+                {/* HEADER */}
                 <div className="flex justify-between">
                   <div>
-                    <div className="text-lg font-bold">{pair}/USD</div>
+                    <div className="font-bold">{pair}/USD</div>
                     <div className="text-xl font-mono">
-                      {fmtPrice(market?.price)}
+                      {price ? money(price) : "—"}
                     </div>
                   </div>
 
-                  <div className="text-sm px-2 py-1 bg-gray-700 rounded">
+                  <div className="px-2 py-1 bg-gray-700 rounded text-sm">
                     {signal ? signal.type : "WAIT"}
                   </div>
                 </div>
 
-                {/* MARKET */}
-                <div className="mt-4 text-sm text-gray-300 space-y-1">
-                  <div>Structure: {market?.structure ?? "—"}</div>
-                  <div>ADX: {market ? round(market.adx) : "—"}</div>
-                  <div>RSI: {market ? round(market.rsi) : "—"}</div>
-                  <div>
-                    Stoch:{" "}
-                    {market
-                      ? `${round(market.stochK)}/${round(market.stochD)}`
-                      : "—"}
-                  </div>
+                {/* MARKET (FIXED FALLBACKS) */}
+                <div className="mt-3 text-sm space-y-1 text-gray-300">
+                  <div>Structure: {structure}</div>
+                  <div>ADX: {adx !== undefined ? round(adx) : "—"}</div>
+                  <div>RSI: {rsi !== undefined ? round(rsi) : "—"}</div>
+                  <div>Stoch: {stoch}</div>
                 </div>
 
-                {/* SIGNAL (ALWAYS SHOW IF EXISTS) */}
+                {/* SIGNAL ALWAYS COMPLETE */}
                 {signal ? (
-                  <div className="mt-5 border-t border-gray-700 pt-4 space-y-2">
+                  <div className="mt-4 border-t border-gray-700 pt-4 space-y-2">
 
                     <div className="flex justify-between">
                       <span>Direction</span>
@@ -203,28 +185,24 @@ export default function Dashboard() {
                       <span className="text-green-400">{money(target)}</span>
                     </div>
 
-                    <div className="flex justify-between">
-                      <span>R:R</span>
-                      <span>{round(signal.rr, 2)}</span>
-                    </div>
-
                     <div className="flex justify-between bg-gray-900 p-2 rounded">
                       <span>Position Size</span>
                       <span className="text-yellow-400">
-                        ${positionSize.toLocaleString()}
+                        ${size.toLocaleString()}
                       </span>
                     </div>
 
-                    <div className="text-xs text-gray-400 mt-2">
+                    <div className="text-xs text-gray-400">
                       {signal.reason}
                     </div>
 
                     <div className="text-xs text-gray-500">
                       {new Date(signal.timestamp).toLocaleString()}
                     </div>
+
                   </div>
                 ) : (
-                  <div className="mt-5 text-gray-500 text-sm border-t border-gray-700 pt-4">
+                  <div className="mt-4 text-gray-500 text-sm border-t border-gray-700 pt-4">
                     No active setup — monitoring 4H + 1H structure
                   </div>
                 )}
@@ -234,12 +212,6 @@ export default function Dashboard() {
           })}
 
         </div>
-
-        {/* FOOTER */}
-        <div className="mt-8 text-xs text-gray-500">
-          Risk per trade: {(RISK_PER_TRADE * 100).toFixed(0)}% • Account: {money(ACCOUNT_BALANCE)}
-        </div>
-
       </div>
     </div>
   );
