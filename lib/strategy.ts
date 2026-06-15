@@ -1,4 +1,4 @@
-// lib/strategy.ts — v19.1 "MULTI-SETUP + CONTINUATION"
+// lib/strategy.ts — v20 "MULTI-SETUP + CONTINUATION"
 // 4H Trend + 1H Breakout / Pullback / Continuation / Reversal
 // Catches grinding trends, continuations, and range extremes
 // ============================================================
@@ -105,8 +105,8 @@ function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
   return "RANGE";
 }
 
-function calcADX(candles: Candle[], period = 14): number {
-  if (candles.length < period * 2 + 1) return 0;
+function calcADX(candles: Candle[], period = 14): { adx: number; slope: number } {
+  if (candles.length < period * 2 + 1) return { adx: 0, slope: 0 };
   const tr: number[] = [];
   const plusDM: number[] = [];
   const minusDM: number[] = [];
@@ -126,17 +126,22 @@ function calcADX(candles: Candle[], period = 14): number {
     minusDI_sum = minusDI_sum - (minusDI_sum / period) + minusDM[i];
     const plusDI = 100 * (plusDI_sum / atr);
     const minusDI = 100 * (minusDI_sum / atr);
-    // FIX #5: Guard against division by zero in ADX
     const denom = plusDI + minusDI;
     const dx = denom === 0 ? 0 : (Math.abs(plusDI - minusDI) / denom) * 100;
     dxValues.push(dx);
   }
-  if (dxValues.length < period) return 0;
+  if (dxValues.length < period) return { adx: 0, slope: 0 };
   let adx = dxValues.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  const adxHistory: number[] = [adx];
   for (let i = period; i < dxValues.length; i++) {
     adx = ((adx * (period - 1)) + dxValues[i]) / period;
+    adxHistory.push(adx);
   }
-  return adx;
+  // ADX slope: rate of change over last 3 periods for early trend detection
+  const slope = adxHistory.length >= 4
+    ? (adxHistory[adxHistory.length - 1] - adxHistory[adxHistory.length - 4]) / 3
+    : 0;
+  return { adx, slope };
 }
 
 function calcRSI(candles: Candle[], period = 14): number {
@@ -258,6 +263,7 @@ function detectSetups(
   if (candleRange >= atr1h * 0.5 && bodyPct >= 0.5) {
     // LONG breakout
     if (current.close > boxTop * 1.001) {
+      // LONG breakout: price must have been AT OR BELOW boxTop recently (inside or below range)
       let fresh = false;
       for (let i = 2; i <= 7; i++) {
         if (candles1h.length < i) break;
@@ -279,7 +285,7 @@ function detectSetups(
         debug.breakout = "LONG_not_fresh";
       }
     } else if (current.close < boxBottom / 1.001) {
-      // SHORT breakout: price must have been above boxBottom recently (symmetric to LONG check)
+      // SHORT breakout: price must have been AT OR ABOVE boxBottom recently (inside or above range)
       let fresh = false;
       for (let i = 2; i <= 7; i++) {
         if (candles1h.length < i) break;
@@ -324,7 +330,11 @@ function detectSetups(
       const bouncing = current.close > current.open && bodyPct > 0.5;
       const momentum = roc1h > 0.1;
 
-      if (pulledBack && bouncing && momentum && retrace > 0.003) {
+      // Relaxed gating: strong momentum OR decent retrace + candle confirmation
+      const strongMomentum = roc1h > 0.25;
+      const validPullback = (pulledBack && bouncing && momentum && retrace > 0.003) ||
+                            (pulledBack && bouncing && strongMomentum && retrace > 0.001);
+      if (validPullback) {
         const stop = Math.max(recentLow * 0.998, current.close - atr1h);
         const minStop = current.close * 0.992;
         const finalStop = stop < minStop ? minStop : stop;
@@ -332,7 +342,7 @@ function detectSetups(
         candidates.push({
           found: true, type: "PULLBACK", direction: "LONG",
           entry: current.close, stop: finalStop, target,
-          confidence: 65 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0),
+          confidence: 65 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0) + (strongMomentum ? 5 : 0),
           details: `retrace:${(retrace*100).toFixed(2)}% high:${recentHigh.toFixed(2)} low:${recentLow.toFixed(2)} vol:${volOK}`
         });
         debug.pullback = "LONG_bounce";
@@ -344,7 +354,11 @@ function detectSetups(
       const rejecting = current.close < current.open && bodyPct > 0.5;
       const momentum = roc1h < -0.1;
 
-      if (pulledBack && rejecting && momentum && retrace > 0.003) {
+      // Relaxed gating: strong momentum OR decent retrace + candle confirmation
+      const strongMomentum = roc1h < -0.25;
+      const validPullback = (pulledBack && rejecting && momentum && retrace > 0.003) ||
+                            (pulledBack && rejecting && strongMomentum && retrace > 0.001);
+      if (validPullback) {
         const stop = Math.min(recentHigh * 1.002, current.close + atr1h);
         const minStop = current.close * 1.008;
         const finalStop = stop > minStop ? minStop : stop;
@@ -352,7 +366,7 @@ function detectSetups(
         candidates.push({
           found: true, type: "PULLBACK", direction: "SHORT",
           entry: current.close, stop: finalStop, target,
-          confidence: 65 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0),
+          confidence: 65 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0) + (strongMomentum ? 5 : 0),
           details: `retrace:${(retrace*100).toFixed(2)}% high:${recentHigh.toFixed(2)} low:${recentLow.toFixed(2)} vol:${volOK}`
         });
         debug.pullback = "SHORT_reject";
@@ -373,7 +387,7 @@ function detectSetups(
     if (trendDir === "LONG") {
       // Strong uptrend + bullish candle + positive momentum
       const bullish = current.close > current.open && bodyPct > 0.5;
-      const momentum = roc1h > 0.15;
+      const momentum = roc1h > 0.08; // Lowered for slow grind trends
       const notExtended = current.close < boxTop * 1.02; // Not parabolic
 
       if (bullish && momentum && notExtended) {
@@ -394,7 +408,7 @@ function detectSetups(
       }
     } else {
       const bearish = current.close < current.open && bodyPct > 0.5;
-      const momentum = roc1h < -0.15;
+      const momentum = roc1h < -0.08; // Lowered for slow grind trends
       const notExtended = current.close > boxBottom / 1.02;
 
       if (bearish && momentum && notExtended) {
@@ -489,10 +503,12 @@ function detectSetups(
 
 // ─── Trend Health ───
 
-function trendHealth(adx: number, structure: string): "STRONG" | "MODERATE" | "WEAK" | "NONE" {
-  if (adx < 15 || structure === "RANGE") return "NONE";
-  if (adx > 25) return "STRONG";
-  if (adx > 18) return "MODERATE";
+function trendHealth(adx: number, adxSlope: number, structure: string): "STRONG" | "MODERATE" | "WEAK" | "NONE" {
+  // Early trend detection: rising ADX with slope > 0.5 signals transition from RANGE → TREND
+  const earlyTrend = adxSlope > 0.5 && adx > 18;
+  if ((adx < 15 && !earlyTrend) || structure === "RANGE") return "NONE";
+  if (adx > 25 || (earlyTrend && adx > 20)) return "STRONG";
+  if (adx > 18 || earlyTrend) return "MODERATE";
   return "WEAK";
 }
 
@@ -549,8 +565,8 @@ export function shouldHold(
   currentPrice: number
 ): HoldResult {
   const structure4h = getStructure(candles4h);
-  const adx4h = calcADX(candles4h, 14);
-  const health = trendHealth(adx4h, structure4h);
+  const { adx: adx4h, slope: adxSlope4h } = calcADX(candles4h, 14);
+  const health = trendHealth(adx4h, adxSlope4h, structure4h);
 
   let structureValid = true;
   if (signal.type !== "REVERSAL") {
@@ -642,7 +658,7 @@ export function generateSignal(
 
   const price = candles1h[candles1h.length - 1].close;
   const structure4h = getStructure(candles4h);
-  const adx4h = calcADX(candles4h, 14);
+  const { adx: adx4h, slope: adxSlope4h } = calcADX(candles4h, 14);
   const rsi1h = calcRSI(candles1h, 14);
   const stoch1h = calcStochastic(candles1h, 14, 3);
   const atr1h = calcATR(candles1h, 14);
@@ -653,7 +669,7 @@ export function generateSignal(
   };
 
   // ── Filter 1: Trend ──
-  const health = trendHealth(adx4h, structure4h);
+  const health = trendHealth(adx4h, adxSlope4h, structure4h);
   debug.push(`4h_structure:${structure4h}_health:${health}_adx:${adx4h.toFixed(1)}`);
 
   // ── Detect all setups ──
