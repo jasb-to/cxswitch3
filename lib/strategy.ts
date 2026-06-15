@@ -1,4 +1,4 @@
-// lib/strategy.ts — v20.1 "MULTI-SETUP + CONTINUATION"
+// lib/strategy.ts — v20.2 "MULTI-SETUP + PER-TYPE COOLDOWN + EXTENDED BREAKOUT GUARD"
 // 4H Trend + 1H Breakout / Pullback / Continuation / Reversal
 // Catches grinding trends, continuations, and range extremes
 // ============================================================
@@ -291,18 +291,26 @@ function detectSetups(
         if (candles1h.length < i) break;
         if (candles1h[candles1h.length - i].close >= boxBottom) { fresh = true; break; }
       }
-      if (fresh) {
+      // Penalize breakout at extended levels
+      const boxHeight = boxTop - boxBottom;
+      const extension = boxHeight > 0 ? (boxTop - current.close) / boxHeight : 1;
+      const notExtended = extension < 1.5;
+
+      if (fresh && notExtended) {
         const stop = Math.min(boxTop, current.close + atr1h);
         const minStop = current.close * 1.008;
         const finalStop = stop > minStop ? minStop : stop;
         const target = current.close - (finalStop - current.close) * 2;
+        const extendedPenalty = extension > 1.2 ? -10 : 0;
         candidates.push({
           found: true, type: "BREAKOUT", direction: "SHORT",
           entry: current.close, stop: finalStop, target,
-          confidence: 70 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0),
-          details: `box:${boxBottom.toFixed(2)}-${boxTop.toFixed(2)} vol:${volOK}`
+          confidence: 70 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0) + extendedPenalty,
+          details: `box:${boxBottom.toFixed(2)}-${boxTop.toFixed(2)} vol:${volOK} ext:${extension.toFixed(2)}`
         });
         debug.breakout = "SHORT_fresh";
+      } else if (fresh && !notExtended) {
+        debug.breakout = `SHORT_extended:${extension.toFixed(2)}`;
       } else {
         debug.breakout = "SHORT_not_fresh";
       }
@@ -517,26 +525,28 @@ function trendHealth(adx: number, adxSlope: number, structure: string): "STRONG"
 export interface CooldownState {
   pair: string;
   direction: "LONG" | "SHORT";
+  type: string;  // per-setup-type cooldown
   timestamp: number;
 }
 
-function getSignalHash(pair: string, direction: "LONG" | "SHORT", entry: number, atr: number): string {
+function getSignalHash(pair: string, direction: "LONG" | "SHORT", type: string, entry: number, atr: number): string {
   // Guard against ATR≈0 causing Infinity
   const safeAtr = Math.max(atr, entry * 0.001);
   // Tighter granularity: half-ATR buckets for better dedupe precision
   const entryBucket = Math.floor(entry / (safeAtr * 0.5));
-  return `${pair}:${direction}:${entryBucket}`;
+  return `${pair}:${direction}:${type}:${entryBucket}`;
 }
 
 export function isOnCooldown(
   pair: string,
   direction: "LONG" | "SHORT",
+  type: string,
   cooldowns: CooldownState[],
   cooldownMs = 4 * 60 * 60 * 1000
 ): boolean {
   const now = Date.now();
   return cooldowns.some(
-    c => c.pair === pair && c.direction === direction && (now - c.timestamp) < cooldownMs
+    c => c.pair === pair && c.direction === direction && c.type === type && (now - c.timestamp) < cooldownMs
   );
 }
 
@@ -688,14 +698,14 @@ export function generateSignal(
 
   debug.push(`setup:${setup.type}_${setup.direction.toLowerCase()}_conf:${setup.confidence}_${setup.details}`);
 
-  // ── Filter 2: Cooldown ──
-  if (isOnCooldown(pair, setup.direction, safeCooldowns)) {
-    debug.push(`cooldown_active:${setup.direction}`);
+  // ── Filter 2: Cooldown (per setup type) ──
+  if (isOnCooldown(pair, setup.direction, setup.type, safeCooldowns)) {
+    debug.push(`cooldown_active:${setup.direction}_${setup.type}`);
     return { signal: null, market, debug };
   }
 
   // ── Filter 3: Duplicate suppression ──
-  const signalHash = getSignalHash(pair, setup.direction, setup.entry, atr1h);
+  const signalHash = getSignalHash(pair, setup.direction, setup.type, setup.entry, atr1h);
   if (isDuplicateSignal(signalHash, safeHashes)) {
     debug.push(`duplicate_signal:${signalHash}`);
     return { signal: null, market, debug };
