@@ -1,7 +1,13 @@
-// lib/strategy.ts — v18 "MULTI-SETUP + CONTINUATION"
+// lib/strategy.ts — v19 "MULTI-SETUP + CONTINUATION"
 // 4H Trend + 1H Breakout / Pullback / Continuation / Reversal
 // Catches grinding trends, continuations, and range extremes
 // ============================================================
+// v19 FIXES:
+// 1. expectedMove threshold lowered per setup type (0.8% for CONTINUATION/PULLBACK)
+// 2. CONTINUATION stop logic fixed — use Math.max for LONG, Math.min for SHORT
+// 3. Candidate selection scores by confidence + reward, not confidence alone
+// 4. getSignalHash guards against ATR≈0 with safeAtr
+// 5. ADX calc guards against plusDI + minusDI === 0
 
 export interface Candle {
   time: number;
@@ -120,7 +126,9 @@ function calcADX(candles: Candle[], period = 14): number {
     minusDI_sum = minusDI_sum - (minusDI_sum / period) + minusDM[i];
     const plusDI = 100 * (plusDI_sum / atr);
     const minusDI = 100 * (minusDI_sum / atr);
-    const dx = (Math.abs(plusDI - minusDI) / (plusDI + minusDI)) * 100;
+    // FIX #5: Guard against division by zero in ADX
+    const denom = plusDI + minusDI;
+    const dx = denom === 0 ? 0 : (Math.abs(plusDI - minusDI) / denom) * 100;
     dxValues.push(dx);
   }
   if (dxValues.length < period) return 0;
@@ -354,7 +362,7 @@ function detectSetups(
   }
 
   // ─── SETUP 3: CONTINUATION ───
-  // NEW: Pure trend momentum — catches grinding moves
+  // Pure trend momentum — catches grinding moves
   // Fires when trend is strong and price keeps moving with momentum
   if (adx4h > 25 && (structure4h === "UPTREND" || structure4h === "DOWNTREND")) {
     const trendDir = structure4h === "UPTREND" ? "LONG" : "SHORT";
@@ -366,9 +374,10 @@ function detectSetups(
       const notExtended = current.close < boxTop * 1.02; // Not parabolic
 
       if (bullish && momentum && notExtended) {
+        // FIX #2: CONTINUATION stop logic — use Math.min for LONG (wider stop)
         const stop = current.close - atr1h * 1.5;
         const minStop = current.close * 0.992;
-        const finalStop = stop < minStop ? minStop : stop;
+        const finalStop = Math.min(stop, minStop);
         const target = current.close + (current.close - finalStop) * 2;
         candidates.push({
           found: true, type: "CONTINUATION", direction: "LONG",
@@ -386,9 +395,10 @@ function detectSetups(
       const notExtended = current.close > boxBottom / 1.02;
 
       if (bearish && momentum && notExtended) {
+        // FIX #2: CONTINUATION stop logic — use Math.max for SHORT (wider stop)
         const stop = current.close + atr1h * 1.5;
         const minStop = current.close * 1.008;
-        const finalStop = stop > minStop ? minStop : stop;
+        const finalStop = Math.max(stop, minStop);
         const target = current.close - (finalStop - current.close) * 2;
         candidates.push({
           found: true, type: "CONTINUATION", direction: "SHORT",
@@ -457,12 +467,20 @@ function detectSetups(
     debug.reversal = `not_range:structure_${structure4h}_adx_${adx4h.toFixed(1)}`;
   }
 
-  // Return highest confidence candidate, or null
+  // Return best candidate by quality score, or null
   if (candidates.length === 0) {
     return { result: null, debug };
   }
 
-  candidates.sort((a, b) => b.confidence - a.confidence);
+  // FIX #3: Score by confidence + reward, not confidence alone
+  candidates.sort((a, b) => {
+    const rrA = Math.abs(a.target - a.entry) / Math.abs(a.entry - a.stop);
+    const rrB = Math.abs(b.target - b.entry) / Math.abs(b.entry - b.stop);
+    const scoreA = a.confidence + rrA * 10;
+    const scoreB = b.confidence + rrB * 10;
+    return scoreB - scoreA;
+  });
+
   return { result: candidates[0], debug };
 }
 
@@ -484,7 +502,9 @@ export interface CooldownState {
 }
 
 function getSignalHash(pair: string, direction: "LONG" | "SHORT", entry: number, atr: number): string {
-  const entryBucket = Math.floor(entry / atr);
+  // FIX #4: Guard against ATR≈0 causing Infinity
+  const safeAtr = Math.max(atr, entry * 0.001);
+  const entryBucket = Math.floor(entry / safeAtr);
   return `${pair}:${direction}:${entryBucket}`;
 }
 
@@ -665,8 +685,16 @@ export function generateSignal(
   const rr = Math.abs(setup.target - setup.entry) / Math.abs(setup.entry - setup.stop);
   const expectedMove = (Math.abs(setup.target - setup.entry) / setup.entry) * 100;
 
-  if (rr < 1.5 || expectedMove < 2.0) {
-    debug.push(`rr_too_low:${rr.toFixed(2)}_move:${expectedMove.toFixed(2)}%`);
+  // FIX #1: Per-setup-type expectedMove threshold
+  const minMove =
+    setup.type === "BREAKOUT"
+      ? 2.0
+      : setup.type === "REVERSAL"
+      ? 1.5
+      : 0.8; // PULLBACK and CONTINUATION
+
+  if (rr < 1.5 || expectedMove < minMove) {
+    debug.push(`rr_too_low:${rr.toFixed(2)}_move:${expectedMove.toFixed(2)}%_min:${minMove}%`);
     return { signal: null, market, debug };
   }
 
