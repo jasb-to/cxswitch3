@@ -104,7 +104,7 @@ async function fetchKrakenPrice(pair: string): Promise<number | null> {
     const data = await res.json();
     if (data.error?.length) return null;
     const ticker = data.result[Object.keys(data.result)[0]];
-    return parseFloat(ticker.c[0]); // last trade price
+    return parseFloat(ticker.c[0]);
   } catch {
     return null;
   }
@@ -116,12 +116,13 @@ export default function Dashboard() {
   const [livePrices, setLivePrices] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [fetchCount, setFetchCount] = useState(0);
-  const [lastFetch, setLastFetch] = useState<number>(0);
+  const [lastSignalFetch, setLastSignalFetch] = useState<number>(0);
+  const [lastPriceFetch, setLastPriceFetch] = useState<number>(0);
 
+  // 1. Fetch signals + market data from backend every 30s
   useEffect(() => {
-    async function load() {
+    async function loadSignals() {
       try {
-        // 1. Fetch signals + market data from backend (KV)
         const res = await fetch("/api/signals");
         const data = await res.json();
 
@@ -139,19 +140,8 @@ export default function Dashboard() {
 
         setSignals(sigMap);
         setMarket(mktMap);
-
-        // 2. Fetch LIVE prices from Kraken (browser-side, every 30s)
-        const liveMap: Record<string, number> = {};
-        await Promise.all(
-          PAIRS.map(async (pair) => {
-            const price = await fetchKrakenPrice(pair);
-            if (price) liveMap[pair] = price;
-          })
-        );
-        setLivePrices(liveMap);
-
         setFetchCount((c) => c + 1);
-        setLastFetch(Date.now());
+        setLastSignalFetch(Date.now());
       } catch (e) {
         console.error(e);
       } finally {
@@ -159,8 +149,27 @@ export default function Dashboard() {
       }
     }
 
-    load();
-    const i = setInterval(load, 30000);
+    loadSignals();
+    const i = setInterval(loadSignals, 30000);
+    return () => clearInterval(i);
+  }, []);
+
+  // 2. Fetch LIVE prices from Kraken every 10s (independent of signals)
+  useEffect(() => {
+    async function loadPrices() {
+      const liveMap: Record<string, number> = {};
+      await Promise.all(
+        PAIRS.map(async (pair) => {
+          const price = await fetchKrakenPrice(pair);
+          if (price) liveMap[pair] = price;
+        })
+      );
+      setLivePrices(liveMap);
+      setLastPriceFetch(Date.now());
+    }
+
+    loadPrices();
+    const i = setInterval(loadPrices, 10000);
     return () => clearInterval(i);
   }, []);
 
@@ -178,7 +187,7 @@ export default function Dashboard() {
         <div className="flex justify-between items-center mb-6">
           <h1 className="text-2xl font-bold">CX Switch v20 — LIVE</h1>
           <div className="text-xs text-gray-400">
-            Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
+            Fetches: {fetchCount} | Signals: {lastSignalFetch ? new Date(lastSignalFetch).toLocaleTimeString() : "—"} | Price: {lastPriceFetch ? new Date(lastPriceFetch).toLocaleTimeString() : "—"}
           </div>
         </div>
 
@@ -235,17 +244,34 @@ export default function Dashboard() {
                 : ((entry - currentPrice) / entry) * 100
               : 0;
 
+            // TARGET HIT detection
+            const targetHit = hasSignal && signalFresh && currentPrice && target
+              ? signal.direction === "LONG"
+                ? currentPrice >= target
+                : currentPrice <= target
+              : false;
+
+            // STOP HIT detection
+            const stopHit = hasSignal && signalFresh && currentPrice && stop
+              ? signal.direction === "LONG"
+                ? currentPrice <= stop
+                : currentPrice >= stop
+              : false;
+
             return (
               <div
                 key={pair}
                 className={`rounded-lg p-5 border-2 transition-all ${
-                  hasSignal && signalFresh
+                  targetHit
+                    ? "border-purple-500 bg-purple-900/10"
+                    : stopHit
+                    ? "border-red-500 bg-red-900/10"
+                    : hasSignal && signalFresh
                     ? signal?.direction === "LONG"
                       ? "border-green-500 bg-green-900/10"
                       : "border-red-500 bg-red-900/10"
                     : "border-gray-700 bg-gray-800"
-                }`}
-              >
+                }`}>
                 <div className="flex justify-between items-start mb-4">
                   <div>
                     <div className="font-bold text-lg">{pair}/USD</div>
@@ -259,7 +285,11 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {hasSignal && signalFresh ? (
+                  {targetHit ? (
+                    <span className="px-2 py-1 rounded text-xs bg-purple-500 text-white font-bold">🎯 TARGET HIT</span>
+                  ) : stopHit ? (
+                    <span className="px-2 py-1 rounded text-xs bg-red-500 text-white font-bold">🛑 STOP HIT</span>
+                  ) : hasSignal && signalFresh ? (
                     <div className="flex flex-col items-end gap-1">
                       <span className={`px-2 py-1 rounded text-xs font-bold ${getTypeColor(signal.type)}`}>
                         {signal.type}
@@ -300,7 +330,21 @@ export default function Dashboard() {
 
                 {hasSignal && signalFresh ? (
                   <div className="space-y-2 border-t border-gray-700 pt-4 text-sm">
-                    {currentPrice && entry && (
+                    {targetHit && (
+                      <div className="bg-purple-900/50 border border-purple-500 p-3 rounded text-center">
+                        <p className="text-purple-300 font-bold text-lg">🎯 TARGET HIT</p>
+                        <p className="text-purple-400 text-xs">Take profit now or let it run</p>
+                      </div>
+                    )}
+
+                    {stopHit && (
+                      <div className="bg-red-900/50 border border-red-500 p-3 rounded text-center">
+                        <p className="text-red-300 font-bold text-lg">🛑 STOP HIT</p>
+                        <p className="text-red-400 text-xs">Exit position</p>
+                      </div>
+                    )}
+
+                    {!targetHit && !stopHit && currentPrice && entry && (
                       <div className="flex justify-between bg-gray-900 p-2 rounded">
                         <span className="text-gray-400">Unrealized P&L</span>
                         <span className={`font-bold ${unrealizedPnL >= 0 ? "text-green-400" : "text-red-400"}`}>
@@ -348,7 +392,7 @@ export default function Dashboard() {
                       </span>
                     </div>
 
-                    {signal.holdAdvice && (
+                    {signal.holdAdvice && !targetHit && !stopHit && (
                       <div className={`mt-3 p-3 rounded border ${getHealthColor(signal.holdAdvice.trendHealth)}`}>
                         <div className="flex justify-between items-center mb-1">
                           <span className="text-sm font-bold">4H Trend Health</span>
