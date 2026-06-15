@@ -199,7 +199,7 @@ interface BreakoutResult {
   fresh: boolean;
 }
 
-function detectBreakout(candles: Candle[], minRangeMult = 1.2, minBodyPct = 0.5): BreakoutResult | null {
+function detectBreakout(candles: Candle[], minRangeMult = 0.8, minBodyPct = 0.5): BreakoutResult | null {
   if (candles.length < 10) return null;
 
   const highs = swingHighs(candles, 3);
@@ -270,7 +270,6 @@ function detectBreakout(candles: Candle[], minRangeMult = 1.2, minBodyPct = 0.5)
 
   return null;
 }
-
 // ─── Trend Health ───
 
 function trendHealth(adx: number, structure: string): "STRONG" | "MODERATE" | "WEAK" | "NONE" {
