@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 interface MarketData {
   pair: string;
@@ -19,7 +19,8 @@ interface HoldAdvice {
   trendHealth: "STRONG" | "MODERATE" | "WEAK" | "NONE";
 }
 
-interface Signal extends MarketData {
+interface Signal {
+  pair: string;
   direction: "LONG" | "SHORT";
   type: "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL" | "SWEEP" | "EARLY";
   confidence: number;
@@ -35,92 +36,79 @@ interface Signal extends MarketData {
 
 const PAIRS = ["BTC", "ETH", "SOL"];
 
-const SIGNAL_STALE_MS = 6 * 60 * 60 * 1000;
-const MARKET_STALE_MS = 70 * 60 * 1000;
+const ACCOUNT_BALANCE = 850;
+const RISK_PER_TRADE = 0.02;
 
-/* -----------------------------
-   FORMAT HELPERS
-------------------------------*/
-function fmtPrice(n: number) {
-  return `$${Number(n.toFixed(2)).toLocaleString()}`;
+const money = (n: number) =>
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 2,
+  }).format(n);
+
+const round = (n: number, d = 2) => {
+  if (!isFinite(n)) return 0;
+  const m = Math.pow(10, d);
+  return Math.round(n * m) / m;
+};
+
+function calcPositionSize(entry: number, stop: number): number {
+  const riskAmount = ACCOUNT_BALANCE * RISK_PER_TRADE;
+  const stopDistance = Math.abs(entry - stop);
+  if (stopDistance === 0) return 0;
+  return Math.round(riskAmount / stopDistance);
 }
 
-function fmtNum(n: number) {
-  return Number(n.toFixed(2));
-}
-
-function fmtInd(n: number) {
-  return Number(n.toFixed(1));
-}
-
-/* -----------------------------
-   MAIN DASHBOARD
-------------------------------*/
 export default function Dashboard() {
   const [signals, setSignals] = useState<Record<string, Signal | null>>({});
   const [marketData, setMarketData] = useState<Record<string, MarketData>>({});
-  const [lastMarketUpdate, setLastMarketUpdate] = useState<number>(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [fetchCount, setFetchCount] = useState(0);
+  const [lastUpdate, setLastUpdate] = useState(0);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    async function fetchData() {
+    async function load() {
       try {
         const res = await fetch("/api/signals");
-        if (!res.ok) throw new Error("Failed to fetch");
-
         const data = await res.json();
-        const now = Date.now();
 
-        const newSignals: Record<string, Signal | null> = {};
-        const newMarket: Record<string, MarketData> = {};
+        const signalMap: Record<string, Signal | null> = {};
+        const marketMap: Record<string, MarketData> = {};
 
-        for (const md of data.marketData || []) {
-          if (md?.pair) newMarket[md.pair] = md;
+        for (const m of data.marketData || []) {
+          if (m?.pair) marketMap[m.pair] = m;
         }
 
-        for (const pair of PAIRS) {
-          const sig = data.signals?.find((s: Signal) => s.pair === pair);
-
-          if (sig && now - sig.timestamp < SIGNAL_STALE_MS) {
-            newSignals[pair] = sig;
-          } else {
-            newSignals[pair] = null;
-          }
+        for (const p of PAIRS) {
+          const sig = data.signals?.find((s: Signal) => s.pair === p);
+          signalMap[p] = sig || null;
         }
 
-        setSignals(newSignals);
-        setMarketData(newMarket);
-        setLastMarketUpdate(now);
+        setSignals(signalMap);
+        setMarketData(marketMap);
         setFetchCount((c) => c + 1);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Unknown error");
+        setLastUpdate(Date.now());
+      } catch (e) {
+        console.error(e);
       } finally {
         setLoading(false);
       }
     }
 
-    fetchData();
-    const interval = setInterval(fetchData, 30000);
-    return () => clearInterval(interval);
+    load();
+    const i = setInterval(load, 30000);
+    return () => clearInterval(i);
   }, []);
 
-  const now = Date.now();
-  const marketStale = now - lastMarketUpdate > MARKET_STALE_MS;
+  const fmtPrice = (n?: number) =>
+    n ? money(round(n, 2)) : "—";
 
-  if (loading && fetchCount === 0) {
+  const now = Date.now();
+
+  if (loading) {
     return (
       <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
-        Loading signals...
-      </div>
-    );
-  }
-
-  if (error && fetchCount === 0) {
-    return (
-      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center text-red-400">
-        Error: {error}
+        Loading...
       </div>
     );
   }
@@ -130,121 +118,128 @@ export default function Dashboard() {
       <div className="max-w-6xl mx-auto">
 
         {/* HEADER */}
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-3xl font-bold">CX Switch</h1>
-
-          <div className="text-xs text-gray-500">
+        <div className="flex justify-between mb-6">
+          <h1 className="text-2xl font-bold">CX Switch v3</h1>
+          <div className="text-xs text-gray-400">
             Fetches: {fetchCount} | Last:{" "}
-            {lastMarketUpdate
-              ? new Date(lastMarketUpdate).toLocaleTimeString()
-              : "never"}
+            {lastUpdate ? new Date(lastUpdate).toLocaleTimeString() : "never"}
           </div>
         </div>
 
-        {/* SPACER (replaces removed account panel) */}
-        <div className="h-24 mb-6" />
+        {/* CARDS */}
+        <div className="grid md:grid-cols-3 gap-6">
 
-        {/* GRID */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {PAIRS.map((pair) => {
             const signal = signals[pair];
             const market = marketData[pair];
-            const active = !!signal;
+
+            const hasSignal = !!signal;
+
+            const entry = signal ? round(signal.entry) : 0;
+            const stop = signal ? round(signal.stop) : 0;
+            const target = signal ? round(signal.target) : 0;
+
+            const positionSize =
+              signal ? calcPositionSize(entry, stop) : 0;
 
             return (
-              <div
-                key={pair}
-                className="rounded-lg p-6 border bg-gray-800 border-gray-700"
-              >
+              <div key={pair} className="bg-gray-800 p-5 rounded-lg border border-gray-700">
+
                 {/* TOP */}
-                <div className="flex justify-between items-start">
+                <div className="flex justify-between">
                   <div>
-                    <h2 className="text-xl font-bold">{pair}/USD</h2>
-                    <p className="text-2xl font-mono mt-1">
-                      {market ? fmtPrice(market.price) : "—"}
-                    </p>
+                    <div className="text-lg font-bold">{pair}/USD</div>
+                    <div className="text-xl font-mono">
+                      {fmtPrice(market?.price)}
+                    </div>
                   </div>
 
-                  <span className="px-2 py-1 text-xs rounded bg-gray-700 text-gray-300">
-                    {active ? signal!.type : "WAIT"}
-                  </span>
+                  <div className="text-sm px-2 py-1 bg-gray-700 rounded">
+                    {signal ? signal.type : "WAIT"}
+                  </div>
                 </div>
 
                 {/* MARKET */}
-                <div className="mt-4 p-3 bg-gray-900/50 rounded text-sm">
-                  {market ? (
-                    <>
-                      <div>Structure: {market.structure}</div>
-                      <div>ADX: {fmtInd(market.adx)}</div>
-                      <div>RSI: {fmtInd(market.rsi)}</div>
-                      <div>Stoch: {fmtInd(market.stochK)}/{fmtInd(market.stochD)}</div>
-                    </>
-                  ) : (
-                    <div className="text-gray-500">No market data</div>
-                  )}
+                <div className="mt-4 text-sm text-gray-300 space-y-1">
+                  <div>Structure: {market?.structure ?? "—"}</div>
+                  <div>ADX: {market ? round(market.adx) : "—"}</div>
+                  <div>RSI: {market ? round(market.rsi) : "—"}</div>
+                  <div>
+                    Stoch:{" "}
+                    {market
+                      ? `${round(market.stochK)}/${round(market.stochD)}`
+                      : "—"}
+                  </div>
                 </div>
 
-                {/* SIGNAL */}
-                {active ? (
-                  <div className="mt-4 border-t border-gray-700 pt-4 space-y-2 text-sm">
+                {/* SIGNAL (ALWAYS SHOW IF EXISTS) */}
+                {signal ? (
+                  <div className="mt-5 border-t border-gray-700 pt-4 space-y-2">
 
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Direction</span>
-                      <span className={signal!.direction === "LONG" ? "text-green-400 font-bold" : "text-red-400 font-bold"}>
-                        {signal!.direction}
+                      <span>Direction</span>
+                      <span className={signal.direction === "LONG" ? "text-green-400" : "text-red-400"}>
+                        {signal.direction}
                       </span>
                     </div>
 
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Confidence</span>
-                      <span>{fmtInd(signal!.confidence)}%</span>
+                      <span>Confidence</span>
+                      <span>{round(signal.confidence)}%</span>
                     </div>
 
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Entry</span>
-                      <span>{fmtPrice(signal!.entry)}</span>
+                      <span>Entry</span>
+                      <span>{money(entry)}</span>
                     </div>
 
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Stop</span>
-                      <span className="text-red-400">{fmtPrice(signal!.stop)}</span>
+                      <span>Stop</span>
+                      <span className="text-red-400">{money(stop)}</span>
                     </div>
 
                     <div className="flex justify-between">
-                      <span className="text-gray-400">Target</span>
-                      <span className="text-green-400">{fmtPrice(signal!.target)}</span>
+                      <span>Target</span>
+                      <span className="text-green-400">{money(target)}</span>
                     </div>
 
                     <div className="flex justify-between">
-                      <span className="text-gray-400">R:R</span>
-                      <span>{fmtNum(signal!.rr)}</span>
+                      <span>R:R</span>
+                      <span>{round(signal.rr, 2)}</span>
                     </div>
 
-                    <div className="flex justify-between">
-                      <span className="text-gray-400">Expected</span>
-                      <span>
-                        {signal!.direction === "LONG" ? "+" : "-"}
-                        {fmtInd(signal!.expectedMove)}%
+                    <div className="flex justify-between bg-gray-900 p-2 rounded">
+                      <span>Position Size</span>
+                      <span className="text-yellow-400">
+                        ${positionSize.toLocaleString()}
                       </span>
                     </div>
 
                     <div className="text-xs text-gray-400 mt-2">
-                      {signal!.reason}
+                      {signal.reason}
                     </div>
 
                     <div className="text-xs text-gray-500">
-                      {new Date(signal!.timestamp).toLocaleString()}
+                      {new Date(signal.timestamp).toLocaleString()}
                     </div>
                   </div>
                 ) : (
-                  <div className="mt-4 border-t border-gray-700 pt-4 text-sm text-gray-400">
+                  <div className="mt-5 text-gray-500 text-sm border-t border-gray-700 pt-4">
                     No active setup — monitoring 4H + 1H structure
                   </div>
                 )}
+
               </div>
             );
           })}
+
         </div>
+
+        {/* FOOTER */}
+        <div className="mt-8 text-xs text-gray-500">
+          Risk per trade: {(RISK_PER_TRADE * 100).toFixed(0)}% • Account: {money(ACCOUNT_BALANCE)}
+        </div>
+
       </div>
     </div>
   );
