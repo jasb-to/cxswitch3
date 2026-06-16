@@ -1,17 +1,49 @@
-// lib/state.ts — v14 KV storage
+// lib/state.ts — v20.2 KV storage
 // ============================================================
 
 import { Redis } from "@upstash/redis";
 
 const redis = Redis.fromEnv();
 
+// ─── Keys ──────────────────────────────────────────────────
+
 const SIGNALS_KEY = "cx_signals_v14";
 const MARKET_KEY = "cx_market_v14";
 const ACTIVE_TRADES_KEY = "cx_active_trades_v14";
+const LAST_CRON_RUN_KEY = "cx_last_cron_run_v14";
+
+// ─── TTLs ───────────────────────────────────────────────────
 
 const SIGNALS_TTL = 6 * 60 * 60;
 const MARKET_TTL = 4 * 60 * 60;
 const ACTIVE_TRADES_TTL = 24 * 60 * 60;
+const LAST_CRON_RUN_TTL = 24 * 60 * 60;
+
+// ─── Helpers ───────────────────────────────────────────────
+
+function safeParseArray(data: unknown): any[] {
+  if (!data) return [];
+  const parsed = typeof data === "string" ? JSON.parse(data) : data;
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function safeParseObject(data: unknown): Record<string, any> {
+  if (!data) return {};
+  return typeof data === "string" ? JSON.parse(data) : (data || {});
+}
+
+function getSignalMaxAgeHours(signal: any): number {
+  if (signal.type === "EARLY") return 2;
+  if (signal.type === "REVERSAL") return 4;
+  return 6;
+}
+
+function isSignalExpired(signal: any): boolean {
+  const ageHours = (Date.now() - signal.timestamp) / (1000 * 60 * 60);
+  return ageHours >= getSignalMaxAgeHours(signal);
+}
+
+// ─── Signals ─────────────────────────────────────────────────
 
 export async function setSignals(signals: any[]) {
   const incoming = Array.isArray(signals) ? signals : [];
@@ -19,11 +51,10 @@ export async function setSignals(signals: any[]) {
     const existing = await getSignals();
     const now = Date.now();
     
-    // Respect per-type expiry: EARLY = 2h, SWEEP = 6h
+    // Respect per-type expiry
     const freshExisting = existing.filter((s: any) => {
       const ageHours = (now - s.timestamp) / (1000 * 60 * 60);
-      const maxAge = s.type === "EARLY" ? 2 : 6;
-      return ageHours < maxAge;
+      return ageHours < getSignalMaxAgeHours(s);
     });
     
     const merged: any[] = [...freshExisting];
@@ -43,14 +74,14 @@ export async function setSignals(signals: any[]) {
 export async function getSignals(): Promise<any[]> {
   try {
     const data = await redis.get(SIGNALS_KEY);
-    if (!data) return [];
-    const parsed = typeof data === "string" ? JSON.parse(data) : data;
-    return Array.isArray(parsed) ? parsed : [];
+    return safeParseArray(data);
   } catch (err) {
     console.error("[STATE] Signals KV read failed:", err);
     return [];
   }
 }
+
+// ─── Market Data ─────────────────────────────────────────────
 
 export async function setMarketData(data: any[]) {
   const marketData = Array.isArray(data) ? data : [];
@@ -65,20 +96,19 @@ export async function setMarketData(data: any[]) {
 export async function getMarketData(): Promise<any[]> {
   try {
     const data = await redis.get(MARKET_KEY);
-    if (!data) return [];
-    const parsed = typeof data === "string" ? JSON.parse(data) : data;
-    return Array.isArray(parsed) ? parsed : [];
+    return safeParseArray(data);
   } catch (err) {
     console.error("[STATE] Market KV read failed:", err);
     return [];
   }
 }
 
+// ─── Active Trades ───────────────────────────────────────────
+
 export async function getActiveTrades(): Promise<Record<string, any>> {
   try {
     const data = await redis.get(ACTIVE_TRADES_KEY);
-    if (!data) return {};
-    return typeof data === "string" ? JSON.parse(data) : (data || {});
+    return safeParseObject(data);
   } catch (err) {
     console.error("[STATE] Active trades KV read failed:", err);
     return {};
@@ -93,11 +123,33 @@ export async function setActiveTrades(trades: Record<string, any>) {
   }
 }
 
+// ─── Cron Rate Limit ─────────────────────────────────────────
+
+export async function getLastCronRun(): Promise<number> {
+  try {
+    const data = await redis.get(LAST_CRON_RUN_KEY);
+    return data ? Number(data) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export async function setLastCronRun(timestamp: number): Promise<void> {
+  try {
+    await redis.set(LAST_CRON_RUN_KEY, timestamp, { ex: LAST_CRON_RUN_TTL });
+  } catch (err) {
+    console.error("[STATE] Last cron run KV write failed:", err);
+  }
+}
+
+// ─── Reset ───────────────────────────────────────────────────
+
 export async function resetAll() {
   try {
     await redis.del(SIGNALS_KEY);
     await redis.del(MARKET_KEY);
     await redis.del(ACTIVE_TRADES_KEY);
+    await redis.del(LAST_CRON_RUN_KEY);
     console.log("[STATE] All KV data reset");
   } catch (err) {
     console.error("[STATE] Reset failed:", err);
