@@ -1,16 +1,12 @@
-// lib/strategy.ts — v20.4 "PULLBACK TIMING FIX"
+// lib/strategy.ts — v20.5 "BTC GRIND MODE"
 // 4H Trend + 1H Breakout / Pullback / Continuation / Reversal
-// Catches grinding trends, continuations, and range extremes
+// BTC-specific loosened thresholds for grinding trends
 // ============================================================
-// v20.4 FIXES:
-// 1. PULLBACK retrace threshold increased (0.3% → 2.5%)
-// 2. PULLBACK now requires price near recent low (bottom 35% of range)
-// 3. PULLBACK requires strong bounce recovery (40% of pullback depth)
-// 4. expectedMove threshold lowered per setup type (0.8% for CONTINUATION/PULLBACK)
-// 5. CONTINUATION stop logic fixed — use Math.max for LONG, Math.min for SHORT
-// 6. Candidate selection scores by confidence + reward, not confidence alone
-// 7. getSignalHash guards against ATR≈0 with safeAtr
-// 8. ADX calc guards against plusDI + minusDI === 0
+// v20.5 FIXES:
+// 1. BTC BREAKOUT: body threshold 35% (was 50%), range 0.3×ATR (was 0.5×)
+// 2. BTC CONTINUATION: grindMode for weak candles in strong trends
+// 3. BTC PULLBACK: 20-candle lookback (was 10) for slower moves
+// 4. All debug strings show isBTC/grindMode flags
 
 export interface Candle {
   time: number;
@@ -220,6 +216,7 @@ interface SetupDebug {
 }
 
 function detectSetups(
+  pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
   structure4h: string,
@@ -233,6 +230,9 @@ function detectSetups(
       debug: { breakout: "insufficient_candles", pullback: "insufficient_candles", continuation: "insufficient_candles", reversal: "insufficient_candles" }
     };
   }
+
+  // v20.5: BTC-specific flag
+  const isBTC = pair === "BTC" || pair === "BTC/USD" || pair === "BTCUSDT";
 
   const current = candles1h[candles1h.length - 1];
   const prev = candles1h[candles1h.length - 2];
@@ -261,7 +261,11 @@ function detectSetups(
   const boxBottom = Math.min(...boxCandles.map(c => c.low));
   const boxHeight = boxTop - boxBottom;
 
-  if (candleRange >= atr1h * 0.5 && bodyPct >= 0.5) {
+  // v20.5: BTC-specific thresholds
+  const minBodyPct = isBTC ? 0.35 : 0.5;
+  const minRangeMult = isBTC ? 0.3 : 0.5;
+
+  if (candleRange >= atr1h * minRangeMult && bodyPct >= minBodyPct) {
     if (current.close > boxTop * 1.001) {
       let fresh = false;
       for (let i = 2; i <= 7; i++) {
@@ -277,7 +281,7 @@ function detectSetups(
           found: true, type: "BREAKOUT", direction: "LONG",
           entry: current.close, stop: finalStop, target,
           confidence: 70 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0),
-          details: `box:${boxBottom.toFixed(2)}-${boxTop.toFixed(2)} vol:${volOK}`
+          details: `box:${boxBottom.toFixed(2)}-${boxTop.toFixed(2)} vol:${volOK} btc:${isBTC}`
         });
         debug.breakout = "LONG_fresh";
       } else {
@@ -289,7 +293,6 @@ function detectSetups(
         if (candles1h.length < i) break;
         if (candles1h[candles1h.length - i].close >= boxBottom) { fresh = true; break; }
       }
-      const boxHeight = boxTop - boxBottom;
       const extension = boxHeight > 0 ? (boxTop - current.close) / boxHeight : 1;
       const notExtended = extension < 1.5;
 
@@ -303,7 +306,7 @@ function detectSetups(
           found: true, type: "BREAKOUT", direction: "SHORT",
           entry: current.close, stop: finalStop, target,
           confidence: 70 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0) + extendedPenalty,
-          details: `box:${boxBottom.toFixed(2)}-${boxTop.toFixed(2)} vol:${volOK} ext:${extension.toFixed(2)}`
+          details: `box:${boxBottom.toFixed(2)}-${boxTop.toFixed(2)} vol:${volOK} ext:${extension.toFixed(2)} btc:${isBTC}`
         });
         debug.breakout = "SHORT_fresh";
       } else if (fresh && !notExtended) {
@@ -315,16 +318,17 @@ function detectSetups(
       debug.breakout = `no_break:close_${current.close.toFixed(2)}_box_${boxBottom.toFixed(2)}-${boxTop.toFixed(2)}`;
     }
   } else {
-    debug.breakout = `weak_candle:range_${candleRange.toFixed(2)}_atr_${atr1h.toFixed(2)}_body_${(bodyPct*100).toFixed(0)}%`;
+    debug.breakout = `weak_candle:range_${candleRange.toFixed(2)}_atr_${atr1h.toFixed(2)}_body_${(bodyPct*100).toFixed(0)}%_minBody_${(minBodyPct*100).toFixed(0)}%_btc:${isBTC}`;
   }
 
   // ─── SETUP 2: PULLBACK ───
-  // v20.4 FIX: Tighter retrace thresholds + nearLow + strongBounce
+  // v20.5: BTC uses 20-candle lookback for slower moves
   if (adx4h > 20 && (structure4h === "UPTREND" || structure4h === "DOWNTREND")) {
     const trendDir = structure4h === "UPTREND" ? "LONG" : "SHORT";
-    const recent10 = candles1h.slice(-11, -1);
-    const recentHigh = Math.max(...recent10.map(c => c.high));
-    const recentLow = Math.min(...recent10.map(c => c.low));
+    const lookback = isBTC ? 20 : 10;
+    const recentN = candles1h.slice(-lookback - 1, -1);
+    const recentHigh = Math.max(...recentN.map(c => c.high));
+    const recentLow = Math.min(...recentN.map(c => c.low));
     const range = recentHigh - recentLow;
     const retrace = range > 0 ? (recentHigh - current.close) / range : 0;
 
@@ -355,11 +359,11 @@ function detectSetups(
           found: true, type: "PULLBACK", direction: "LONG",
           entry: current.close, stop: finalStop, target,
           confidence: 65 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0) + (strongMomentum ? 5 : 0),
-          details: `retrace:${(retrace*100).toFixed(2)}% high:${recentHigh.toFixed(2)} low:${recentLow.toFixed(2)} vol:${volOK} nearLow:${nearLow} bounce:${strongBounce}`
+          details: `retrace:${(retrace*100).toFixed(2)}% high:${recentHigh.toFixed(2)} low:${recentLow.toFixed(2)} vol:${volOK} nearLow:${nearLow} bounce:${strongBounce} lookback:${lookback}`
         });
         debug.pullback = "LONG_bounce";
       } else {
-        debug.pullback = `LONG_pulled:${pulledBack}_bounce:${bouncing}_mom:${momentum}_retrace:${(retrace*100).toFixed(2)}%_nearLow:${nearLow}_strongBounce:${strongBounce}`;
+        debug.pullback = `LONG_pulled:${pulledBack}_bounce:${bouncing}_mom:${momentum}_retrace:${(retrace*100).toFixed(2)}%_nearLow:${nearLow}_strongBounce:${strongBounce}_lookback:${lookback}`;
       }
     } else {
       const pulledBack = current.close > recentLow && current.close < recentHigh;
@@ -367,15 +371,12 @@ function detectSetups(
       const momentum = roc1h < -0.1;
       const strongMomentum = roc1h < -0.25;
 
-      // v20.4: Price must be near the top of the retrace range (top 35%)
       const nearHigh = range > 0 ? (recentHigh - current.close) / range < 0.35 : false;
 
-      // v20.4: Rejection must recover at least 40% of the pullback depth
       const pullbackDepth = current.high - recentLow;
       const rejectionRecovery = current.high - current.close;
       const strongReject = pullbackDepth > 0 ? rejectionRecovery / pullbackDepth > 0.4 : false;
 
-      // v20.4: Tighter retrace thresholds
       const validPullback = (pulledBack && rejecting && momentum && retrace > 0.025 && nearHigh && strongReject) ||
                             (pulledBack && rejecting && strongMomentum && retrace > 0.015 && nearHigh && strongReject);
 
@@ -388,11 +389,11 @@ function detectSetups(
           found: true, type: "PULLBACK", direction: "SHORT",
           entry: current.close, stop: finalStop, target,
           confidence: 65 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0) + (strongMomentum ? 5 : 0),
-          details: `retrace:${(retrace*100).toFixed(2)}% high:${recentHigh.toFixed(2)} low:${recentLow.toFixed(2)} vol:${volOK} nearHigh:${nearHigh} reject:${strongReject}`
+          details: `retrace:${(retrace*100).toFixed(2)}% high:${recentHigh.toFixed(2)} low:${recentLow.toFixed(2)} vol:${volOK} nearHigh:${nearHigh} reject:${strongReject} lookback:${lookback}`
         });
         debug.pullback = "SHORT_reject";
       } else {
-        debug.pullback = `SHORT_pulled:${pulledBack}_reject:${rejecting}_mom:${momentum}_retrace:${(retrace*100).toFixed(2)}%_nearHigh:${nearHigh}_strongReject:${strongReject}`;
+        debug.pullback = `SHORT_pulled:${pulledBack}_reject:${rejecting}_mom:${momentum}_retrace:${(retrace*100).toFixed(2)}%_nearHigh:${nearHigh}_strongReject:${strongReject}_lookback:${lookback}`;
       }
     }
   } else {
@@ -400,48 +401,55 @@ function detectSetups(
   }
 
   // ─── SETUP 3: CONTINUATION ───
+  // v20.5: BTC grindMode for weak candles in strong trends
   if (adx4h > 25 && (structure4h === "UPTREND" || structure4h === "DOWNTREND")) {
     const trendDir = structure4h === "UPTREND" ? "LONG" : "SHORT";
 
     if (trendDir === "LONG") {
-      const bullish = current.close > current.open && bodyPct > 0.5;
+      // v20.5: grindMode for BTC — catches grinding uptrends with weak candles
+      const grindMode = isBTC && adx4h > 28 && adxSlope4h > 0.3 && bodyPct > 0.3 && roc1h > 0.05;
+      const bullish = (current.close > current.open && bodyPct > 0.5) || grindMode;
       const momentum = roc1h > 0.08;
       const notExtended = current.close < boxTop * 1.02;
 
       if (bullish && momentum && notExtended) {
-        const stop = current.close - atr1h * 1.5;
+        // v20.5: BTC gets slightly wider stop for grind mode
+        const stopMult = isBTC ? 2.0 : 1.5;
+        const stop = current.close - atr1h * stopMult;
         const minStop = current.close * 0.992;
         const finalStop = Math.max(stop, minStop);
         const target = current.close + (current.close - finalStop) * 2;
         candidates.push({
           found: true, type: "CONTINUATION", direction: "LONG",
           entry: current.close, stop: finalStop, target,
-          confidence: 60 + (volOK ? 5 : 0) + (bodyPct > 0.7 ? 5 : 0),
-          details: `grind_up:roc_${roc1h.toFixed(2)} body_${(bodyPct*100).toFixed(0)}% vol:${volOK}`
+          confidence: 60 + (volOK ? 5 : 0) + (bodyPct > 0.7 ? 5 : 0) + (grindMode ? 3 : 0),
+          details: `grind_up:roc_${roc1h.toFixed(2)} body_${(bodyPct*100).toFixed(0)}% vol:${volOK} grind:${grindMode} btc:${isBTC}`
         });
         debug.continuation = "LONG_momentum";
       } else {
-        debug.continuation = `LONG_bull:${bullish}_mom:${momentum}_ext:${!notExtended}_roc_${roc1h.toFixed(2)}`;
+        debug.continuation = `LONG_bull:${bullish}_mom:${momentum}_ext:${!notExtended}_roc_${roc1h.toFixed(2)}_grind:${grindMode}_btc:${isBTC}`;
       }
     } else {
-      const bearish = current.close < current.open && bodyPct > 0.5;
+      const grindMode = isBTC && adx4h > 28 && adxSlope4h < -0.3 && bodyPct > 0.3 && roc1h < -0.05;
+      const bearish = (current.close < current.open && bodyPct > 0.5) || grindMode;
       const momentum = roc1h < -0.08;
       const notExtended = current.close > boxBottom / 1.02;
 
       if (bearish && momentum && notExtended) {
-        const stop = current.close + atr1h * 1.5;
+        const stopMult = isBTC ? 2.0 : 1.5;
+        const stop = current.close + atr1h * stopMult;
         const minStop = current.close * 1.008;
         const finalStop = Math.min(stop, minStop);
         const target = current.close - (finalStop - current.close) * 2;
         candidates.push({
           found: true, type: "CONTINUATION", direction: "SHORT",
           entry: current.close, stop: finalStop, target,
-          confidence: 60 + (volOK ? 5 : 0) + (bodyPct > 0.7 ? 5 : 0),
-          details: `grind_down:roc_${roc1h.toFixed(2)} body_${(bodyPct*100).toFixed(0)}% vol:${volOK}`
+          confidence: 60 + (volOK ? 5 : 0) + (bodyPct > 0.7 ? 5 : 0) + (grindMode ? 3 : 0),
+          details: `grind_down:roc_${roc1h.toFixed(2)} body_${(bodyPct*100).toFixed(0)}% vol:${volOK} grind:${grindMode} btc:${isBTC}`
         });
         debug.continuation = "SHORT_momentum";
       } else {
-        debug.continuation = `SHORT_bear:${bearish}_mom:${momentum}_ext:${!notExtended}_roc_${roc1h.toFixed(2)}`;
+        debug.continuation = `SHORT_bear:${bearish}_mom:${momentum}_ext:${!notExtended}_roc_${roc1h.toFixed(2)}_grind:${grindMode}_btc:${isBTC}`;
       }
     }
   } else {
@@ -683,7 +691,8 @@ export function generateSignal(
   const health = trendHealth(adx4h, adxSlope4h, structure4h);
   debug.push(`4h_structure:${structure4h}_health:${health}_adx:${adx4h.toFixed(1)}_slope:${adxSlope4h.toFixed(2)}`);
 
-  const { result: setup, debug: setupDebug } = detectSetups(candles1h, candles4h, structure4h, adx4h, rsi1h, stoch1h);
+  // v20.5: Pass pair to detectSetups for BTC-specific logic
+  const { result: setup, debug: setupDebug } = detectSetups(pair, candles1h, candles4h, structure4h, adx4h, rsi1h, stoch1h);
 
   debug.push(`breakout:${setupDebug.breakout}`);
   debug.push(`pullback:${setupDebug.pullback}`);
