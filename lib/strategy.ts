@@ -1,13 +1,14 @@
-// lib/strategy.ts — v20.5.1 "BTC GRIND MODE — adxSlope fix"
-// 4H Trend + 1H Breakout / Pullback / Continuation / Reversal
-// BTC-specific loosened thresholds for grinding trends
+// lib/strategy.ts — v20.6 "TRENDBREAK + EARLY SHORT"
+// 4H Trend + 1H Breakout / Pullback / Continuation / Reversal / Breakdown
+// Aggressive early trend reversal detection
 // ============================================================
-// v20.5.1 FIX:
-// 1. adxSlope4h now properly passed into detectSetups
-// 2. BTC BREAKOUT: body threshold 35% (was 50%), range 0.3×ATR (was 0.5×)
-// 3. BTC CONTINUATION: grindMode for weak candles in strong trends
-// 4. BTC PULLBACK: 20-candle lookback (was 10) for slower moves
-// 5. All debug strings show isBTC/grindMode flags
+// v20.6 FIXES:
+// 1. swing lookback reduced 5→3 for faster structure flips
+// 2. detectTrendBreak: early warning when price breaks key swing levels
+// 3. SETUP 5: BREAKDOWN — short on lower low in uptrend
+// 4. SETUP 6: BREAKUP — long on higher high in downtrend  
+// 5. shouldHold exits early on trendBreak mismatch
+// 6. BTC-specific thresholds retained from v20.5
 
 export interface Candle {
   time: number;
@@ -25,7 +26,7 @@ export interface Signal {
   stop: number;
   target: number;
   confidence: number;
-  type: "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL";
+  type: "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL" | "BREAKDOWN" | "BREAKUP";
   reason: string;
   timestamp: number;
   expectedMove: number;
@@ -86,9 +87,10 @@ function swingLows(candles: Candle[], lookback = 3): SwingPoint[] {
   return lows;
 }
 
+// v20.6: Faster structure detection (lookback 3 instead of 5)
 function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
-  const highs = swingHighs(candles, 5);
-  const lows = swingLows(candles, 5);
+  const highs = swingHighs(candles, 3);
+  const lows = swingLows(candles, 3);
   if (highs.length < 2 || lows.length < 2) return "RANGE";
 
   const recentHighs = highs.slice(-3);
@@ -103,6 +105,44 @@ function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
   if (lowerHighs && lowerLows) return "DOWNTREND";
 
   return "RANGE";
+}
+
+// v20.6: Early trend break detection
+function detectTrendBreak(candles: Candle[], structure: string): { broken: boolean; direction: "LONG" | "SHORT" | null; lastSwingPrice: number } {
+  if (structure !== "UPTREND" && structure !== "DOWNTREND") {
+    return { broken: false, direction: null, lastSwingPrice: 0 };
+  }
+
+  const highs = swingHighs(candles, 3);
+  const lows = swingLows(candles, 3);
+  const current = candles[candles.length - 1].close;
+
+  if (structure === "UPTREND" && lows.length >= 2) {
+    const lastSwingLow = lows[lows.length - 1].price;
+    const prevSwingLow = lows[lows.length - 2].price;
+    // Price broke below last swing low OR made a lower low
+    const brokeBelow = current < lastSwingLow * 0.998;
+    const lowerLow = lastSwingLow < prevSwingLow * 0.995;
+    return {
+      broken: brokeBelow || lowerLow,
+      direction: "SHORT",
+      lastSwingPrice: lastSwingLow
+    };
+  }
+
+  if (structure === "DOWNTREND" && highs.length >= 2) {
+    const lastSwingHigh = highs[highs.length - 1].price;
+    const prevSwingHigh = highs[highs.length - 2].price;
+    const brokeAbove = current > lastSwingHigh * 1.002;
+    const higherHigh = lastSwingHigh > prevSwingHigh * 1.005;
+    return {
+      broken: brokeAbove || higherHigh,
+      direction: "LONG",
+      lastSwingPrice: lastSwingHigh
+    };
+  }
+
+  return { broken: false, direction: null, lastSwingPrice: 0 };
 }
 
 function calcADX(candles: Candle[], period = 14): { adx: number; slope: number } {
@@ -200,7 +240,7 @@ function avgVolume(candles: Candle[], period = 20): number {
 
 interface SetupResult {
   found: boolean;
-  type: "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL";
+  type: "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL" | "BREAKDOWN" | "BREAKUP";
   direction: "LONG" | "SHORT";
   entry: number;
   stop: number;
@@ -214,9 +254,9 @@ interface SetupDebug {
   pullback: string;
   continuation: string;
   reversal: string;
+  breakdown: string;
 }
 
-// v20.5.1: adxSlope4h now properly passed in
 function detectSetups(
   pair: string,
   candles1h: Candle[],
@@ -225,16 +265,16 @@ function detectSetups(
   adx4h: number,
   adxSlope4h: number,
   rsi1h: number,
-  stoch1h: { k: number; d: number }
+  stoch1h: { k: number; d: number },
+  trendBreak: { broken: boolean; direction: "LONG" | "SHORT" | null; lastSwingPrice: number }
 ): { result: SetupResult | null; debug: SetupDebug } {
   if (candles1h.length < 30) {
     return {
       result: null,
-      debug: { breakout: "insufficient_candles", pullback: "insufficient_candles", continuation: "insufficient_candles", reversal: "insufficient_candles" }
+      debug: { breakout: "insufficient_candles", pullback: "insufficient_candles", continuation: "insufficient_candles", reversal: "insufficient_candles", breakdown: "insufficient_candles" }
     };
   }
 
-  // v20.5: BTC-specific flag
   const isBTC = pair === "BTC" || pair === "BTC/USD" || pair === "BTCUSDT";
 
   const current = candles1h[candles1h.length - 1];
@@ -252,7 +292,8 @@ function detectSetups(
     breakout: "not_triggered",
     pullback: "not_triggered",
     continuation: "not_triggered",
-    reversal: "not_triggered"
+    reversal: "not_triggered",
+    breakdown: "not_triggered"
   };
 
   const candidates: SetupResult[] = [];
@@ -264,7 +305,6 @@ function detectSetups(
   const boxBottom = Math.min(...boxCandles.map(c => c.low));
   const boxHeight = boxTop - boxBottom;
 
-  // v20.5: BTC-specific thresholds
   const minBodyPct = isBTC ? 0.35 : 0.5;
   const minRangeMult = isBTC ? 0.3 : 0.5;
 
@@ -325,7 +365,6 @@ function detectSetups(
   }
 
   // ─── SETUP 2: PULLBACK ───
-  // v20.5: BTC uses 20-candle lookback for slower moves
   if (adx4h > 20 && (structure4h === "UPTREND" || structure4h === "DOWNTREND")) {
     const trendDir = structure4h === "UPTREND" ? "LONG" : "SHORT";
     const lookback = isBTC ? 20 : 10;
@@ -341,15 +380,12 @@ function detectSetups(
       const momentum = roc1h > 0.1;
       const strongMomentum = roc1h > 0.25;
 
-      // v20.4: Price must be near the bottom of the retrace range (bottom 35%)
       const nearLow = range > 0 ? (current.close - recentLow) / range < 0.35 : false;
 
-      // v20.4: Bounce must recover at least 40% of the pullback depth
       const pullbackDepth = recentHigh - current.low;
       const bounceRecovery = current.close - current.low;
-      const strongBounce = pullbackDepth > 0 ? bounceRecovery / pullbackDepth > 0.4 : false;
+      const strongBounce = pullbackDepth > 0 ? bounceRecovery / pullbackDepth > (isBTC ? 0.25 : 0.4) : false;
 
-      // v20.4: Tighter retrace thresholds (2.5% / 1.5% instead of 0.3% / 0.1%)
       const validPullback = (pulledBack && bouncing && momentum && retrace > 0.025 && nearLow && strongBounce) ||
                             (pulledBack && bouncing && strongMomentum && retrace > 0.015 && nearLow && strongBounce);
 
@@ -378,7 +414,7 @@ function detectSetups(
 
       const pullbackDepth = current.high - recentLow;
       const rejectionRecovery = current.high - current.close;
-      const strongReject = pullbackDepth > 0 ? rejectionRecovery / pullbackDepth > 0.4 : false;
+      const strongReject = pullbackDepth > 0 ? rejectionRecovery / pullbackDepth > (isBTC ? 0.25 : 0.4) : false;
 
       const validPullback = (pulledBack && rejecting && momentum && retrace > 0.025 && nearHigh && strongReject) ||
                             (pulledBack && rejecting && strongMomentum && retrace > 0.015 && nearHigh && strongReject);
@@ -404,19 +440,16 @@ function detectSetups(
   }
 
   // ─── SETUP 3: CONTINUATION ───
-  // v20.5: BTC grindMode for weak candles in strong trends
   if (adx4h > 25 && (structure4h === "UPTREND" || structure4h === "DOWNTREND")) {
     const trendDir = structure4h === "UPTREND" ? "LONG" : "SHORT";
 
     if (trendDir === "LONG") {
-      // v20.5: grindMode for BTC — catches grinding uptrends with weak candles
-      const grindMode = isBTC && adx4h > 28 && adxSlope4h > 0.3 && bodyPct > 0.3 && roc1h > 0.05;
+      const grindMode = isBTC && adx4h > 28 && adxSlope4h > 0.15 && bodyPct > 0.25 && roc1h > 0.03;
       const bullish = (current.close > current.open && bodyPct > 0.5) || grindMode;
       const momentum = roc1h > 0.08;
       const notExtended = current.close < boxTop * 1.02;
 
       if (bullish && momentum && notExtended) {
-        // v20.5: BTC gets slightly wider stop for grind mode
         const stopMult = isBTC ? 2.0 : 1.5;
         const stop = current.close - atr1h * stopMult;
         const minStop = current.close * 0.992;
@@ -433,7 +466,7 @@ function detectSetups(
         debug.continuation = `LONG_bull:${bullish}_mom:${momentum}_ext:${!notExtended}_roc_${roc1h.toFixed(2)}_grind:${grindMode}_btc:${isBTC}`;
       }
     } else {
-      const grindMode = isBTC && adx4h > 28 && adxSlope4h < -0.3 && bodyPct > 0.3 && roc1h < -0.05;
+      const grindMode = isBTC && adx4h > 28 && adxSlope4h < -0.15 && bodyPct > 0.25 && roc1h < -0.03;
       const bearish = (current.close < current.open && bodyPct > 0.5) || grindMode;
       const momentum = roc1h < -0.08;
       const notExtended = current.close > boxBottom / 1.02;
@@ -461,8 +494,8 @@ function detectSetups(
 
   // ─── SETUP 4: REVERSAL ───
   if (structure4h === "RANGE" && adx4h < 20) {
-    const highs4h = swingHighs(candles4h, 5);
-    const lows4h = swingLows(candles4h, 5);
+    const highs4h = swingHighs(candles4h, 3);
+    const lows4h = swingLows(candles4h, 3);
 
     if (highs4h.length >= 2 && lows4h.length >= 2) {
       const rangeHigh = highs4h[highs4h.length - 1].price;
@@ -509,6 +542,49 @@ function detectSetups(
     }
   } else {
     debug.reversal = `not_range:structure_${structure4h}_adx_${adx4h.toFixed(1)}`;
+  }
+
+  // ─── SETUP 5: BREAKDOWN (v20.6 — early short on trend break) ───
+  if (trendBreak.broken && trendBreak.direction === "SHORT" && adx4h > 20) {
+    const bearish = current.close < current.open && bodyPct > 0.3;
+    const momentum = roc1h < -0.05;
+    
+    if (bearish && momentum) {
+      const stop = Math.max(trendBreak.lastSwingPrice, current.close + atr1h * 1.5);
+      const minStop = current.close * 1.008;
+      const finalStop = stop > minStop ? stop : minStop;
+      const target = current.close - (finalStop - current.close) * 1.5;
+      candidates.push({
+        found: true, type: "BREAKDOWN", direction: "SHORT",
+        entry: current.close, stop: finalStop, target,
+        confidence: 55 + (volOK ? 5 : 0) + (adx4h > 25 ? 5 : 0),
+        details: `breakdown:lastSwing_${trendBreak.lastSwingPrice.toFixed(2)} roc_${roc1h.toFixed(2)} vol:${volOK}`
+      });
+      debug.breakdown = "SHORT_breakdown";
+    } else {
+      debug.breakdown = `SHORT_bear:${bearish}_mom:${momentum}_roc_${roc1h.toFixed(2)}`;
+    }
+  } else if (trendBreak.broken && trendBreak.direction === "LONG" && adx4h > 20) {
+    const bullish = current.close > current.open && bodyPct > 0.3;
+    const momentum = roc1h > 0.05;
+    
+    if (bullish && momentum) {
+      const stop = Math.min(trendBreak.lastSwingPrice, current.close - atr1h * 1.5);
+      const minStop = current.close * 0.992;
+      const finalStop = stop < minStop ? stop : minStop;
+      const target = current.close + (current.close - finalStop) * 1.5;
+      candidates.push({
+        found: true, type: "BREAKUP", direction: "LONG",
+        entry: current.close, stop: finalStop, target,
+        confidence: 55 + (volOK ? 5 : 0) + (adx4h > 25 ? 5 : 0),
+        details: `breakup:lastSwing_${trendBreak.lastSwingPrice.toFixed(2)} roc_${roc1h.toFixed(2)} vol:${volOK}`
+      });
+      debug.breakdown = "LONG_breakup";
+    } else {
+      debug.breakdown = `LONG_bull:${bullish}_mom:${momentum}_roc_${roc1h.toFixed(2)}`;
+    }
+  } else {
+    debug.breakdown = `no_break:trendBreak_${trendBreak.broken}_dir_${trendBreak.direction}_adx_${adx4h.toFixed(1)}`;
   }
 
   if (candidates.length === 0) {
@@ -592,8 +668,19 @@ export function shouldHold(
   const { adx: adx4h, slope: adxSlope4h } = calcADX(candles4h, 14);
   const health = trendHealth(adx4h, adxSlope4h, structure4h);
 
+  // v20.6: Check for trend break — exit early if price broke key level against position
+  const trendBreak = detectTrendBreak(candles4h, structure4h);
+  if (trendBreak.broken && trendBreak.direction !== signal.direction) {
+    return {
+      shouldHold: false,
+      reason: `TREND BREAK: Price broke ${trendBreak.direction === "SHORT" ? "below" : "above"} last swing. Exit ${signal.direction}.`,
+      trailingStop: null,
+      trendHealth: health
+    };
+  }
+
   let structureValid = true;
-  if (signal.type !== "REVERSAL") {
+  if (signal.type !== "REVERSAL" && signal.type !== "BREAKDOWN" && signal.type !== "BREAKUP") {
     structureValid = signal.direction === "LONG"
       ? structure4h === "UPTREND"
       : structure4h === "DOWNTREND";
@@ -686,23 +773,26 @@ export function generateSignal(
   const stoch1h = calcStochastic(candles1h, 14, 3);
   const atr1h = calcATR(candles1h, 14);
 
+  // v20.6: Detect trend break early
+  const trendBreak = detectTrendBreak(candles4h, structure4h);
+
   const market: MarketData = {
     pair, price, structure: structure4h, adx: adx4h,
     rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d,
   };
 
   const health = trendHealth(adx4h, adxSlope4h, structure4h);
-  debug.push(`4h_structure:${structure4h}_health:${health}_adx:${adx4h.toFixed(1)}_slope:${adxSlope4h.toFixed(2)}`);
+  debug.push(`4h_structure:${structure4h}_health:${health}_adx:${adx4h.toFixed(1)}_slope:${adxSlope4h.toFixed(2)}_trendBreak:${trendBreak.broken}_${trendBreak.direction}`);
 
-  // v20.5.1: Pass adxSlope4h to detectSetups
   const { result: setup, debug: setupDebug } = detectSetups(
-    pair, candles1h, candles4h, structure4h, adx4h, adxSlope4h, rsi1h, stoch1h
+    pair, candles1h, candles4h, structure4h, adx4h, adxSlope4h, rsi1h, stoch1h, trendBreak
   );
 
   debug.push(`breakout:${setupDebug.breakout}`);
   debug.push(`pullback:${setupDebug.pullback}`);
   debug.push(`continuation:${setupDebug.continuation}`);
   debug.push(`reversal:${setupDebug.reversal}`);
+  debug.push(`breakdown:${setupDebug.breakdown}`);
 
   if (!setup || !setup.found) {
     debug.push("no_setup");
@@ -729,7 +819,7 @@ export function generateSignal(
   const minMove =
     setup.type === "BREAKOUT"
       ? Math.max(1.5, atrPercent * 1.5)
-      : setup.type === "REVERSAL"
+      : setup.type === "REVERSAL" || setup.type === "BREAKDOWN" || setup.type === "BREAKUP"
       ? Math.max(1.0, atrPercent * 1.2)
       : Math.max(0.5, atrPercent * 1.0);
 
