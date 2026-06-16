@@ -1,14 +1,11 @@
-// lib/strategy.ts — v20.6 "TRENDBREAK + EARLY SHORT"
+// lib/strategy.ts — v20.6.1 "TRENDBREAK FIX — Recent Range"
 // 4H Trend + 1H Breakout / Pullback / Continuation / Reversal / Breakdown
-// Aggressive early trend reversal detection
+// detectTrendBreak now uses recent 20-candle range instead of formal swing points
 // ============================================================
-// v20.6 FIXES:
-// 1. swing lookback reduced 5→3 for faster structure flips
-// 2. detectTrendBreak: early warning when price breaks key swing levels
-// 3. SETUP 5: BREAKDOWN — short on lower low in uptrend
-// 4. SETUP 6: BREAKUP — long on higher high in downtrend  
-// 5. shouldHold exits early on trendBreak mismatch
-// 6. BTC-specific thresholds retained from v20.5
+// v20.6.1 FIX:
+// 1. detectTrendBreak: uses recent 20-candle range (bottom/top 25%) instead of swingLows/swingHighs
+// 2. Catches grinding breakdowns where formal swing lows are too far away
+// 3. Retains all v20.6 features: fast structure (lookback 3), BREAKDOWN/BREAKUP setups, BTC thresholds
 
 export interface Candle {
   time: number;
@@ -87,7 +84,6 @@ function swingLows(candles: Candle[], lookback = 3): SwingPoint[] {
   return lows;
 }
 
-// v20.6: Faster structure detection (lookback 3 instead of 5)
 function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
   const highs = swingHighs(candles, 3);
   const lows = swingLows(candles, 3);
@@ -107,38 +103,40 @@ function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
   return "RANGE";
 }
 
-// v20.6: Early trend break detection
-function detectTrendBreak(candles: Candle[], structure: string): { broken: boolean; direction: "LONG" | "SHORT" | null; lastSwingPrice: number } {
+// v20.6.1 FIX: detectTrendBreak uses recent 20-candle range instead of formal swing points
+function detectTrendBreak(
+  candles: Candle[],
+  structure: string
+): { broken: boolean; direction: "LONG" | "SHORT" | null; lastSwingPrice: number } {
   if (structure !== "UPTREND" && structure !== "DOWNTREND") {
     return { broken: false, direction: null, lastSwingPrice: 0 };
   }
 
-  const highs = swingHighs(candles, 3);
-  const lows = swingLows(candles, 3);
   const current = candles[candles.length - 1].close;
+  const recent20 = candles.slice(-20);
+  const recentHigh = Math.max(...recent20.map((c) => c.high));
+  const recentLow = Math.min(...recent20.map((c) => c.low));
+  const range = recentHigh - recentLow;
 
-  if (structure === "UPTREND" && lows.length >= 2) {
-    const lastSwingLow = lows[lows.length - 1].price;
-    const prevSwingLow = lows[lows.length - 2].price;
-    // Price broke below last swing low OR made a lower low
-    const brokeBelow = current < lastSwingLow * 0.998;
-    const lowerLow = lastSwingLow < prevSwingLow * 0.995;
+  if (structure === "UPTREND") {
+    // Breakdown: price in bottom 25% of recent 20-candle range
+    const breakLevel = recentLow + range * 0.25;
+    const brokeBelow = current < breakLevel;
     return {
-      broken: brokeBelow || lowerLow,
+      broken: brokeBelow,
       direction: "SHORT",
-      lastSwingPrice: lastSwingLow
+      lastSwingPrice: recentLow,
     };
   }
 
-  if (structure === "DOWNTREND" && highs.length >= 2) {
-    const lastSwingHigh = highs[highs.length - 1].price;
-    const prevSwingHigh = highs[highs.length - 2].price;
-    const brokeAbove = current > lastSwingHigh * 1.002;
-    const higherHigh = lastSwingHigh > prevSwingHigh * 1.005;
+  if (structure === "DOWNTREND") {
+    // Breakup: price in top 25% of recent 20-candle range
+    const breakLevel = recentHigh - range * 0.25;
+    const brokeAbove = current > breakLevel;
     return {
-      broken: brokeAbove || higherHigh,
+      broken: brokeAbove,
       direction: "LONG",
-      lastSwingPrice: lastSwingHigh
+      lastSwingPrice: recentHigh,
     };
   }
 
@@ -202,8 +200,8 @@ function calcStochastic(candles: Candle[], kPeriod = 14, dPeriod = 3): { k: numb
   const kValues: number[] = [];
   for (let i = candles.length - kPeriod - dPeriod + 1; i <= candles.length - kPeriod; i++) {
     const slice = candles.slice(i, i + kPeriod);
-    const lowest = Math.min(...slice.map(c => c.low));
-    const highest = Math.max(...slice.map(c => c.high));
+    const lowest = Math.min(...slice.map((c) => c.low));
+    const highest = Math.max(...slice.map((c) => c.high));
     const current = candles[i + kPeriod - 1].close;
     const k = highest === lowest ? 50 : ((current - lowest) / (highest - lowest)) * 100;
     kValues.push(k);
@@ -301,8 +299,8 @@ function detectSetups(
   // ─── SETUP 1: BREAKOUT ───
   const boxPeriod = 12;
   const boxCandles = candles1h.slice(-boxPeriod - 1, -1);
-  const boxTop = Math.max(...boxCandles.map(c => c.high));
-  const boxBottom = Math.min(...boxCandles.map(c => c.low));
+  const boxTop = Math.max(...boxCandles.map((c) => c.high));
+  const boxBottom = Math.min(...boxCandles.map((c) => c.low));
   const boxHeight = boxTop - boxBottom;
 
   const minBodyPct = isBTC ? 0.35 : 0.5;
@@ -369,8 +367,8 @@ function detectSetups(
     const trendDir = structure4h === "UPTREND" ? "LONG" : "SHORT";
     const lookback = isBTC ? 20 : 10;
     const recentN = candles1h.slice(-lookback - 1, -1);
-    const recentHigh = Math.max(...recentN.map(c => c.high));
-    const recentLow = Math.min(...recentN.map(c => c.low));
+    const recentHigh = Math.max(...recentN.map((c) => c.high));
+    const recentLow = Math.min(...recentN.map((c) => c.low));
     const range = recentHigh - recentLow;
     const retrace = range > 0 ? (recentHigh - current.close) / range : 0;
 
@@ -544,11 +542,11 @@ function detectSetups(
     debug.reversal = `not_range:structure_${structure4h}_adx_${adx4h.toFixed(1)}`;
   }
 
-  // ─── SETUP 5: BREAKDOWN (v20.6 — early short on trend break) ───
+  // ─── SETUP 5: BREAKDOWN (early short on trend break) ───
   if (trendBreak.broken && trendBreak.direction === "SHORT" && adx4h > 20) {
     const bearish = current.close < current.open && bodyPct > 0.3;
     const momentum = roc1h < -0.05;
-    
+
     if (bearish && momentum) {
       const stop = Math.max(trendBreak.lastSwingPrice, current.close + atr1h * 1.5);
       const minStop = current.close * 1.008;
@@ -567,7 +565,7 @@ function detectSetups(
   } else if (trendBreak.broken && trendBreak.direction === "LONG" && adx4h > 20) {
     const bullish = current.close > current.open && bodyPct > 0.3;
     const momentum = roc1h > 0.05;
-    
+
     if (bullish && momentum) {
       const stop = Math.min(trendBreak.lastSwingPrice, current.close - atr1h * 1.5);
       const minStop = current.close * 0.992;
@@ -636,7 +634,7 @@ export function isOnCooldown(
 ): boolean {
   const now = Date.now();
   return cooldowns.some(
-    c => c.pair === pair && c.direction === direction && c.type === type && (now - c.timestamp) < cooldownMs
+    (c) => c.pair === pair && c.direction === direction && c.type === type && (now - c.timestamp) < cooldownMs
   );
 }
 
@@ -646,7 +644,7 @@ export function isDuplicateSignal(
   ttlMs = 6 * 60 * 60 * 1000
 ): boolean {
   const now = Date.now();
-  return recentHashes.some(h => h.hash === hash && (now - h.timestamp) < ttlMs);
+  return recentHashes.some((h) => h.hash === hash && (now - h.timestamp) < ttlMs);
 }
 
 // ─── Hold Logic ───
@@ -673,7 +671,7 @@ export function shouldHold(
   if (trendBreak.broken && trendBreak.direction !== signal.direction) {
     return {
       shouldHold: false,
-      reason: `TREND BREAK: Price broke ${trendBreak.direction === "SHORT" ? "below" : "above"} last swing. Exit ${signal.direction}.`,
+      reason: `TREND BREAK: Price broke ${trendBreak.direction === "SHORT" ? "below" : "above"} recent range. Exit ${signal.direction}.`,
       trailingStop: null,
       trendHealth: health
     };
@@ -701,11 +699,11 @@ export function shouldHold(
   let trailingStop: number | null = null;
 
   if (signal.direction === "LONG") {
-    const recentLows = candles1h.slice(-8).map(c => c.low);
+    const recentLows = candles1h.slice(-8).map((c) => c.low);
     const lowestRecent = Math.min(...recentLows);
     trailingStop = Math.max(signal.stop, lowestRecent - trailDistance);
   } else {
-    const recentHighs = candles1h.slice(-8).map(c => c.high);
+    const recentHighs = candles1h.slice(-8).map((c) => c.high);
     const highestRecent = Math.max(...recentHighs);
     trailingStop = Math.min(signal.stop, highestRecent + trailDistance);
   }
@@ -753,7 +751,7 @@ export function generateSignal(
     return { signal: null, market: { pair, price: 0, structure: "RANGE", adx: 0, rsi: 50, stochK: 50, stochD: 50 }, debug };
   }
 
-  const validCandles = candles1h.every(c =>
+  const validCandles = candles1h.every((c) =>
     c && typeof c.close === 'number' && typeof c.high === 'number' &&
     typeof c.low === 'number' && typeof c.open === 'number' &&
     typeof c.volume === 'number'
@@ -773,7 +771,7 @@ export function generateSignal(
   const stoch1h = calcStochastic(candles1h, 14, 3);
   const atr1h = calcATR(candles1h, 14);
 
-  // v20.6: Detect trend break early
+  // v20.6: Detect trend break early using recent 20-candle range
   const trendBreak = detectTrendBreak(candles4h, structure4h);
 
   const market: MarketData = {
