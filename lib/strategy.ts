@@ -1,12 +1,11 @@
-// lib/strategy.ts — v20.6.2 "BREAKDOWN BODY FIX + TRENDBREAK SENSITIVITY"
+// lib/strategy.ts — v20.6.3 "TRENDBREAK WINDOW FIX"
 // 4H Trend + 1H Breakout / Pullback / Continuation / Reversal / Breakdown
-// v20.6.2: BREAKDOWN/BREAKUP removed bodyPct requirement, trendBreak threshold 35% (was 25%)
+// v20.6.3: detectTrendBreak uses 10-candle window (was 20) for relevant recent range
 // ============================================================
-// v20.6.2 FIXES:
-// 1. BREAKDOWN: removed bodyPct > 0.3 requirement — any bearish close works
-// 2. BREAKUP: removed bodyPct > 0.3 requirement — any bullish close works
-// 3. detectTrendBreak: threshold 35% (was 25%) for earlier detection
-// 4. Retains all v20.6.1 features
+// v20.6.3 FIXES:
+// 1. detectTrendBreak: 10-candle window (was 20) — avoids including origin of move
+// 2. Retains v20.6.2: BREAKDOWN/BREAKUP no bodyPct requirement
+// 3. Retains v20.6.2: trendBreak threshold 35%
 
 export interface Candle {
   time: number;
@@ -104,7 +103,7 @@ function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
   return "RANGE";
 }
 
-// v20.6.2: detectTrendBreak threshold increased to 35% (was 25%) for earlier detection
+// v20.6.3: detectTrendBreak uses 10-candle window (was 20) for relevant recent range
 function detectTrendBreak(
   candles: Candle[],
   structure: string
@@ -114,13 +113,13 @@ function detectTrendBreak(
   }
 
   const current = candles[candles.length - 1].close;
-  const recent20 = candles.slice(-20);
-  const recentHigh = Math.max(...recent20.map((c) => c.high));
-  const recentLow = Math.min(...recent20.map((c) => c.low));
+  // v20.6.3: 10 candles instead of 20 — captures just the recent pullback, not origin of move
+  const recentWindow = candles.slice(-10);
+  const recentHigh = Math.max(...recentWindow.map((c) => c.high));
+  const recentLow = Math.min(...recentWindow.map((c) => c.low));
   const range = recentHigh - recentLow;
 
   if (structure === "UPTREND") {
-    // v20.6.2: Breakdown at bottom 35% of recent range (was 25%)
     const breakLevel = recentLow + range * 0.35;
     const brokeBelow = current < breakLevel;
     return {
@@ -131,7 +130,6 @@ function detectTrendBreak(
   }
 
   if (structure === "DOWNTREND") {
-    // v20.6.2: Breakup at top 35% of recent range (was 25%)
     const breakLevel = recentHigh - range * 0.35;
     const brokeAbove = current > breakLevel;
     return {
@@ -543,9 +541,8 @@ function detectSetups(
     debug.reversal = `not_range:structure_${structure4h}_adx_${adx4h.toFixed(1)}`;
   }
 
-  // ─── SETUP 5: BREAKDOWN (v20.6.2 — removed bodyPct requirement) ───
+  // ─── SETUP 5: BREAKDOWN (v20.6.2 — no bodyPct requirement) ───
   if (trendBreak.broken && trendBreak.direction === "SHORT" && adx4h > 20) {
-    // v20.6.2: Any bearish close works, no bodyPct minimum
     const bearish = current.close < current.open;
     const momentum = roc1h < -0.05;
 
@@ -565,7 +562,6 @@ function detectSetups(
       debug.breakdown = `SHORT_bear:${bearish}_mom:${momentum}_roc_${roc1h.toFixed(2)}`;
     }
   } else if (trendBreak.broken && trendBreak.direction === "LONG" && adx4h > 20) {
-    // v20.6.2: Any bullish close works, no bodyPct minimum
     const bullish = current.close > current.open;
     const momentum = roc1h > 0.05;
 
@@ -669,7 +665,6 @@ export function shouldHold(
   const { adx: adx4h, slope: adxSlope4h } = calcADX(candles4h, 14);
   const health = trendHealth(adx4h, adxSlope4h, structure4h);
 
-  // v20.6: Check for trend break — exit early if price broke key level against position
   const trendBreak = detectTrendBreak(candles4h, structure4h);
   if (trendBreak.broken && trendBreak.direction !== signal.direction) {
     return {
@@ -774,7 +769,6 @@ export function generateSignal(
   const stoch1h = calcStochastic(candles1h, 14, 3);
   const atr1h = calcATR(candles1h, 14);
 
-  // v20.6: Detect trend break early using recent 20-candle range
   const trendBreak = detectTrendBreak(candles4h, structure4h);
 
   const market: MarketData = {
