@@ -1,12 +1,13 @@
-// lib/strategy.ts — v20.5 "BTC GRIND MODE"
+// lib/strategy.ts — v20.5.1 "BTC GRIND MODE — adxSlope fix"
 // 4H Trend + 1H Breakout / Pullback / Continuation / Reversal
 // BTC-specific loosened thresholds for grinding trends
 // ============================================================
-// v20.5 FIXES:
-// 1. BTC BREAKOUT: body threshold 35% (was 50%), range 0.3×ATR (was 0.5×)
-// 2. BTC CONTINUATION: grindMode for weak candles in strong trends
-// 3. BTC PULLBACK: 20-candle lookback (was 10) for slower moves
-// 4. All debug strings show isBTC/grindMode flags
+// v20.5.1 FIX:
+// 1. adxSlope4h now properly passed into detectSetups
+// 2. BTC BREAKOUT: body threshold 35% (was 50%), range 0.3×ATR (was 0.5×)
+// 3. BTC CONTINUATION: grindMode for weak candles in strong trends
+// 4. BTC PULLBACK: 20-candle lookback (was 10) for slower moves
+// 5. All debug strings show isBTC/grindMode flags
 
 export interface Candle {
   time: number;
@@ -215,12 +216,14 @@ interface SetupDebug {
   reversal: string;
 }
 
+// v20.5.1: adxSlope4h now properly passed in
 function detectSetups(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
   structure4h: string,
   adx4h: number,
+  adxSlope4h: number,
   rsi1h: number,
   stoch1h: { k: number; d: number }
 ): { result: SetupResult | null; debug: SetupDebug } {
@@ -691,8 +694,10 @@ export function generateSignal(
   const health = trendHealth(adx4h, adxSlope4h, structure4h);
   debug.push(`4h_structure:${structure4h}_health:${health}_adx:${adx4h.toFixed(1)}_slope:${adxSlope4h.toFixed(2)}`);
 
-  // v20.5: Pass pair to detectSetups for BTC-specific logic
-  const { result: setup, debug: setupDebug } = detectSetups(pair, candles1h, candles4h, structure4h, adx4h, rsi1h, stoch1h);
+  // v20.5.1: Pass adxSlope4h to detectSetups
+  const { result: setup, debug: setupDebug } = detectSetups(
+    pair, candles1h, candles4h, structure4h, adx4h, adxSlope4h, rsi1h, stoch1h
+  );
 
   debug.push(`breakout:${setupDebug.breakout}`);
   debug.push(`pullback:${setupDebug.pullback}`);
