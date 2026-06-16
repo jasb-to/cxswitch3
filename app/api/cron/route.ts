@@ -255,4 +255,4 @@ export async function GET(request: Request) {
     exited: exitedSignals.length,
     alerts,
   });
-}
+} 
