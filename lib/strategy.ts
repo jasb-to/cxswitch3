@@ -1,11 +1,12 @@
-// lib/strategy.ts — v20.6.1 "TRENDBREAK FIX — Recent Range"
+// lib/strategy.ts — v20.6.2 "BREAKDOWN BODY FIX + TRENDBREAK SENSITIVITY"
 // 4H Trend + 1H Breakout / Pullback / Continuation / Reversal / Breakdown
-// detectTrendBreak now uses recent 20-candle range instead of formal swing points
+// v20.6.2: BREAKDOWN/BREAKUP removed bodyPct requirement, trendBreak threshold 35% (was 25%)
 // ============================================================
-// v20.6.1 FIX:
-// 1. detectTrendBreak: uses recent 20-candle range (bottom/top 25%) instead of swingLows/swingHighs
-// 2. Catches grinding breakdowns where formal swing lows are too far away
-// 3. Retains all v20.6 features: fast structure (lookback 3), BREAKDOWN/BREAKUP setups, BTC thresholds
+// v20.6.2 FIXES:
+// 1. BREAKDOWN: removed bodyPct > 0.3 requirement — any bearish close works
+// 2. BREAKUP: removed bodyPct > 0.3 requirement — any bullish close works
+// 3. detectTrendBreak: threshold 35% (was 25%) for earlier detection
+// 4. Retains all v20.6.1 features
 
 export interface Candle {
   time: number;
@@ -103,7 +104,7 @@ function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
   return "RANGE";
 }
 
-// v20.6.1 FIX: detectTrendBreak uses recent 20-candle range instead of formal swing points
+// v20.6.2: detectTrendBreak threshold increased to 35% (was 25%) for earlier detection
 function detectTrendBreak(
   candles: Candle[],
   structure: string
@@ -119,8 +120,8 @@ function detectTrendBreak(
   const range = recentHigh - recentLow;
 
   if (structure === "UPTREND") {
-    // Breakdown: price in bottom 25% of recent 20-candle range
-    const breakLevel = recentLow + range * 0.25;
+    // v20.6.2: Breakdown at bottom 35% of recent range (was 25%)
+    const breakLevel = recentLow + range * 0.35;
     const brokeBelow = current < breakLevel;
     return {
       broken: brokeBelow,
@@ -130,8 +131,8 @@ function detectTrendBreak(
   }
 
   if (structure === "DOWNTREND") {
-    // Breakup: price in top 25% of recent 20-candle range
-    const breakLevel = recentHigh - range * 0.25;
+    // v20.6.2: Breakup at top 35% of recent range (was 25%)
+    const breakLevel = recentHigh - range * 0.35;
     const brokeAbove = current > breakLevel;
     return {
       broken: brokeAbove,
@@ -542,9 +543,10 @@ function detectSetups(
     debug.reversal = `not_range:structure_${structure4h}_adx_${adx4h.toFixed(1)}`;
   }
 
-  // ─── SETUP 5: BREAKDOWN (early short on trend break) ───
+  // ─── SETUP 5: BREAKDOWN (v20.6.2 — removed bodyPct requirement) ───
   if (trendBreak.broken && trendBreak.direction === "SHORT" && adx4h > 20) {
-    const bearish = current.close < current.open && bodyPct > 0.3;
+    // v20.6.2: Any bearish close works, no bodyPct minimum
+    const bearish = current.close < current.open;
     const momentum = roc1h < -0.05;
 
     if (bearish && momentum) {
@@ -563,7 +565,8 @@ function detectSetups(
       debug.breakdown = `SHORT_bear:${bearish}_mom:${momentum}_roc_${roc1h.toFixed(2)}`;
     }
   } else if (trendBreak.broken && trendBreak.direction === "LONG" && adx4h > 20) {
-    const bullish = current.close > current.open && bodyPct > 0.3;
+    // v20.6.2: Any bullish close works, no bodyPct minimum
+    const bullish = current.close > current.open;
     const momentum = roc1h > 0.05;
 
     if (bullish && momentum) {
