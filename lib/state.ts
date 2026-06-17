@@ -19,6 +19,10 @@ const MARKET_TTL = 4 * 60 * 60;
 const ACTIVE_TRADES_TTL = 24 * 60 * 60;
 const LAST_CRON_RUN_TTL = 24 * 60 * 60;
 
+// ─── Constants ───────────────────────────────────────────────
+
+const CURRENT_SIGNAL_VERSION = 2;
+
 // ─── Helpers ───────────────────────────────────────────────
 
 function safeParseArray(data: unknown): any[] {
@@ -51,8 +55,13 @@ export async function setSignals(signals: any[]) {
     const existing = await getSignals();
     const now = Date.now();
     
-    // Respect per-type expiry
+    // Filter: remove expired AND reject old-version signals (no id or wrong version)
     const freshExisting = existing.filter((s: any) => {
+      if (!s.id || s.version !== CURRENT_SIGNAL_VERSION) {
+        console.log(`[STATE] Purging old-format signal for ${s.pair || "unknown"} (id=${s.id}, version=${s.version})`);
+        return false;
+      }
+      
       const ageHours = (now - s.timestamp) / (1000 * 60 * 60);
       return ageHours < getSignalMaxAgeHours(s);
     });
