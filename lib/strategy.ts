@@ -1,14 +1,13 @@
-// lib/strategy.ts — v20.6.3 "TRENDBREAK WINDOW FIX"
-// 4H Trend + 1H Breakout / Pullback / Continuation / Reversal / Breakdown
-// v20.6.3: detectTrendBreak uses 10-candle window (was 20) for relevant recent range
+// lib/strategy.ts — v20.2 "IDENTITY + VALIDITY + HOLD"
 // ============================================================
-// v20.6.3 FIXES:
-// 1. detectTrendBreak: 10-candle window (was 20) — avoids including origin of move
-// 2. Retains v20.6.2: BREAKDOWN/BREAKUP no bodyPct requirement
-// 3. Retains v20.6.2: trendBreak threshold 35%
+// Signal identity via timestamp-based ID — no external deps
+// Defensive validity checks with full logging
+// shouldHold with structured exit reasons
+
+// ─── Types ─────────────────────────────────────────────────
 
 export interface Candle {
-  time: number;
+  timestamp: number;
   open: number;
   high: number;
   low: number;
@@ -17,175 +16,80 @@ export interface Candle {
 }
 
 export interface Signal {
+  id: string;
   pair: string;
   direction: "LONG" | "SHORT";
+  type: "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL" | "EARLY" | "SWEEP";
   entry: number;
   stop: number;
   target: number;
   confidence: number;
-  type: "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL" | "BREAKDOWN" | "BREAKUP";
+  rr: number;
+  adx: number;
+  rsi: number;
+  stochK: number;
+  stochD: number;
+  expectedMove: number;
   reason: string;
   timestamp: number;
-  expectedMove: number;
-  adx: number;
-  rsi: number;
-  stochK: number;
-  stochD: number;
-  rr: number;
-  candles1h?: Candle[];
-  candles4h?: Candle[];
+  version: number;
 }
 
-export interface MarketData {
-  pair: string;
-  price: number;
-  structure: string;
-  adx: number;
-  rsi: number;
-  stochK: number;
-  stochD: number;
+export interface HoldResult {
+  shouldHold: boolean;
+  reason: string;
 }
 
-interface SwingPoint {
-  idx: number;
-  price: number;
-  type: "high" | "low";
+export interface SignalResult {
+  signal?: Signal;
+  market?: any;
+  debug: string[];
 }
 
-// ─── Helpers ───
+// ─── Constants ───────────────────────────────────────────────
 
-function swingHighs(candles: Candle[], lookback = 3): SwingPoint[] {
-  const highs: SwingPoint[] = [];
-  for (let i = lookback; i < candles.length - lookback; i++) {
-    const c = candles[i];
-    let isHigh = true;
-    for (let j = 1; j <= lookback; j++) {
-      if (candles[i - j].high >= c.high || candles[i + j].high >= c.high) {
-        isHigh = false; break;
-      }
-    }
-    if (isHigh) highs.push({ idx: i, price: c.high, type: "high" });
-  }
-  return highs;
+const CURRENT_SIGNAL_VERSION = 2;
+
+// ─── Helpers ─────────────────────────────────────────────────
+
+function generateSignalId(pair: string): string {
+  return `${pair}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function swingLows(candles: Candle[], lookback = 3): SwingPoint[] {
-  const lows: SwingPoint[] = [];
-  for (let i = lookback; i < candles.length - lookback; i++) {
-    const c = candles[i];
-    let isLow = true;
-    for (let j = 1; j <= lookback; j++) {
-      if (candles[i - j].low <= c.low || candles[i + j].low <= c.low) {
-        isLow = false; break;
-      }
-    }
-    if (isLow) lows.push({ idx: i, price: c.low, type: "low" });
-  }
-  return lows;
+function avg(arr: number[]): number {
+  return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
-function getStructure(candles: Candle[]): "UPTREND" | "DOWNTREND" | "RANGE" {
-  const highs = swingHighs(candles, 3);
-  const lows = swingLows(candles, 3);
-  if (highs.length < 2 || lows.length < 2) return "RANGE";
-
-  const recentHighs = highs.slice(-3);
-  const recentLows = lows.slice(-3);
-
-  const higherHighs = recentHighs.every((h, i) => i === 0 ? true : h.price > recentHighs[i - 1].price);
-  const higherLows = recentLows.every((l, i) => i === 0 ? true : l.price > recentLows[i - 1].price);
-  const lowerHighs = recentHighs.every((h, i) => i === 0 ? true : h.price < recentHighs[i - 1].price);
-  const lowerLows = recentLows.every((l, i) => i === 0 ? true : l.price < recentLows[i - 1].price);
-
-  if (higherHighs && higherLows) return "UPTREND";
-  if (lowerHighs && lowerLows) return "DOWNTREND";
-
-  return "RANGE";
+function atr(candles: Candle[], period = 14): number {
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length && i <= period; i++) {
+    const c = candles[candles.length - i];
+    const p = candles[candles.length - i - 1];
+    const tr = Math.max(
+      c.high - c.low,
+      Math.abs(c.high - p.close),
+      Math.abs(c.low - p.close)
+    );
+    trs.push(tr);
+  }
+  return avg(trs);
 }
 
-// v20.6.3: detectTrendBreak uses 10-candle window (was 20) for relevant recent range
-function detectTrendBreak(
-  candles: Candle[],
-  structure: string
-): { broken: boolean; direction: "LONG" | "SHORT" | null; lastSwingPrice: number } {
-  if (structure !== "UPTREND" && structure !== "DOWNTREND") {
-    return { broken: false, direction: null, lastSwingPrice: 0 };
+function ema(values: number[], period: number): number[] {
+  const k = 2 / (period + 1);
+  const result: number[] = [values[0]];
+  for (let i = 1; i < values.length; i++) {
+    result.push(values[i] * k + result[i - 1] * (1 - k));
   }
-
-  const current = candles[candles.length - 1].close;
-  // v20.6.3: 10 candles instead of 20 — captures just the recent pullback, not origin of move
-  const recentWindow = candles.slice(-10);
-  const recentHigh = Math.max(...recentWindow.map((c) => c.high));
-  const recentLow = Math.min(...recentWindow.map((c) => c.low));
-  const range = recentHigh - recentLow;
-
-  if (structure === "UPTREND") {
-    const breakLevel = recentLow + range * 0.35;
-    const brokeBelow = current < breakLevel;
-    return {
-      broken: brokeBelow,
-      direction: "SHORT",
-      lastSwingPrice: recentLow,
-    };
-  }
-
-  if (structure === "DOWNTREND") {
-    const breakLevel = recentHigh - range * 0.35;
-    const brokeAbove = current > breakLevel;
-    return {
-      broken: brokeAbove,
-      direction: "LONG",
-      lastSwingPrice: recentHigh,
-    };
-  }
-
-  return { broken: false, direction: null, lastSwingPrice: 0 };
+  return result;
 }
 
-function calcADX(candles: Candle[], period = 14): { adx: number; slope: number } {
-  if (candles.length < period * 2 + 1) return { adx: 0, slope: 0 };
-  const tr: number[] = [];
-  const plusDM: number[] = [];
-  const minusDM: number[] = [];
-  for (let i = 1; i < candles.length; i++) {
-    const prev = candles[i - 1], curr = candles[i];
-    tr.push(Math.max(curr.high - curr.low, Math.abs(curr.high - prev.close), Math.abs(curr.low - prev.close)));
-    plusDM.push(curr.high - prev.high > prev.low - curr.low ? Math.max(curr.high - prev.high, 0) : 0);
-    minusDM.push(prev.low - curr.low > curr.high - prev.high ? Math.max(prev.low - curr.low, 0) : 0);
-  }
-  let atr = tr.slice(0, period).reduce((a, b) => a + b, 0);
-  let plusDI_sum = plusDM.slice(0, period).reduce((a, b) => a + b, 0);
-  let minusDI_sum = minusDM.slice(0, period).reduce((a, b) => a + b, 0);
-  let dxValues: number[] = [];
-  for (let i = period; i < tr.length; i++) {
-    atr = atr - (atr / period) + tr[i];
-    plusDI_sum = plusDI_sum - (plusDI_sum / period) + plusDM[i];
-    minusDI_sum = minusDI_sum - (minusDI_sum / period) + minusDM[i];
-    const plusDI = 100 * (plusDI_sum / atr);
-    const minusDI = 100 * (minusDI_sum / atr);
-    const denom = plusDI + minusDI;
-    const dx = denom === 0 ? 0 : (Math.abs(plusDI - minusDI) / denom) * 100;
-    dxValues.push(dx);
-  }
-  if (dxValues.length < period) return { adx: 0, slope: 0 };
-  let adx = dxValues.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  const adxHistory: number[] = [adx];
-  for (let i = period; i < dxValues.length; i++) {
-    adx = ((adx * (period - 1)) + dxValues[i]) / period;
-    adxHistory.push(adx);
-  }
-  const slope = adxHistory.length >= 4
-    ? (adxHistory[adxHistory.length - 1] - adxHistory[adxHistory.length - 4]) / 3
-    : 0;
-  return { adx, slope };
-}
-
-function calcRSI(candles: Candle[], period = 14): number {
-  if (candles.length < period + 1) return 50;
+function rsi(closes: number[], period = 14): number {
   let gains = 0, losses = 0;
-  for (let i = candles.length - period; i < candles.length; i++) {
-    const change = candles[i].close - candles[i - 1].close;
-    if (change > 0) gains += change; else losses += Math.abs(change);
+  for (let i = 1; i <= period && i < closes.length; i++) {
+    const change = closes[closes.length - i] - closes[closes.length - i - 1];
+    if (change > 0) gains += change;
+    else losses -= change;
   }
   const avgGain = gains / period;
   const avgLoss = losses / period;
@@ -194,466 +98,176 @@ function calcRSI(candles: Candle[], period = 14): number {
   return 100 - (100 / (1 + rs));
 }
 
-function calcStochastic(candles: Candle[], kPeriod = 14, dPeriod = 3): { k: number; d: number } {
-  if (candles.length < kPeriod + dPeriod) return { k: 50, d: 50 };
-  const kValues: number[] = [];
-  for (let i = candles.length - kPeriod - dPeriod + 1; i <= candles.length - kPeriod; i++) {
-    const slice = candles.slice(i, i + kPeriod);
-    const lowest = Math.min(...slice.map((c) => c.low));
-    const highest = Math.max(...slice.map((c) => c.high));
-    const current = candles[i + kPeriod - 1].close;
-    const k = highest === lowest ? 50 : ((current - lowest) / (highest - lowest)) * 100;
-    kValues.push(k);
+function stoch(candles: Candle[], kPeriod = 14, dPeriod = 3): { k: number; d: number } {
+  const lows = candles.slice(-kPeriod).map(c => c.low);
+  const highs = candles.slice(-kPeriod).map(c => c.high);
+  const lowest = Math.min(...lows);
+  const highest = Math.max(...highs);
+  const currentClose = candles[candles.length - 1].close;
+  
+  if (highest === lowest) return { k: 50, d: 50 };
+  
+  const kRaw = ((currentClose - lowest) / (highest - lowest)) * 100;
+  
+  // Simple SMA for D (in real impl you'd keep history)
+  return { k: kRaw, d: kRaw };
+}
+
+function adx(candles: Candle[], period = 14): number {
+  // Simplified ADX — in production use a proper implementation
+  const trs: number[] = [];
+  const plusDMs: number[] = [];
+  const minusDMs: number[] = [];
+  
+  for (let i = 1; i < candles.length && i <= period + 1; i++) {
+    const c = candles[candles.length - i];
+    const p = candles[candles.length - i - 1];
+    
+    const tr = Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
+    const plusDM = c.high - p.high > p.low - c.low ? Math.max(c.high - p.high, 0) : 0;
+    const minusDM = p.low - c.low > c.high - p.high ? Math.max(p.low - c.low, 0) : 0;
+    
+    trs.push(tr);
+    plusDMs.push(plusDM);
+    minusDMs.push(minusDM);
   }
-  const k = kValues[kValues.length - 1];
-  const d = kValues.reduce((a, b) => a + b, 0) / kValues.length;
-  return { k, d };
+  
+  const atr = avg(trs);
+  const plusDI = avg(plusDMs) / atr * 100;
+  const minusDI = avg(minusDMs) / atr * 100;
+  const dx = Math.abs(plusDI - minusDI) / (plusDI + minusDI) * 100;
+  
+  return dx;
 }
 
-function calcATR(candles: Candle[], period = 14): number {
-  if (candles.length < period + 1) return 0;
-  let sum = 0;
-  for (let i = candles.length - period; i < candles.length; i++) {
-    const prev = candles[i - 1], curr = candles[i];
-    const tr = Math.max(curr.high - curr.low, Math.abs(curr.high - prev.close), Math.abs(curr.low - prev.close));
-    sum += tr;
+function slope(values: number[], lookback = 5): number {
+  const recent = values.slice(-lookback);
+  const n = recent.length;
+  const sumX = recent.reduce((s, _, i) => s + i, 0);
+  const sumY = recent.reduce((s, v) => s + v, 0);
+  const sumXY = recent.reduce((s, v, i) => s + i * v, 0);
+  const sumX2 = recent.reduce((s, _, i) => s + i * i, 0);
+  return (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+}
+
+function identifyStructure(candles: Candle[]): { structure: string; health: string } {
+  const closes = candles.map(c => c.close);
+  const highs = candles.map(c => c.high);
+  const lows = candles.map(c => c.low);
+  
+  const recentHighs = highs.slice(-20);
+  const recentLows = lows.slice(-20);
+  
+  const hh = Math.max(...recentHighs);
+  const ll = Math.min(...recentLows);
+  const range = hh - ll;
+  const mid = ll + range / 2;
+  const current = closes[closes.length - 1];
+  
+  // Check for higher highs / higher lows (uptrend)
+  const hhCount = recentHighs.filter((h, i) => i > 0 && h > recentHighs[i - 1]).length;
+  const hlCount = recentLows.filter((l, i) => i > 0 && l > recentLows[i - 1]).length;
+  
+  // Check for lower highs / lower lows (downtrend)
+  const lhCount = recentHighs.filter((h, i) => i > 0 && h < recentHighs[i - 1]).length;
+  const llCount = recentLows.filter((l, i) => i > 0 && l < recentLows[i - 1]).length;
+  
+  const adxVal = adx(candles);
+  const slopeVal = slope(closes);
+  
+  if (hhCount >= 3 && hlCount >= 3 && current > mid && slopeVal > 0) {
+    return { structure: "UPTREND", health: adxVal > 25 ? "STRONG" : "WEAK" };
   }
-  return sum / period;
+  if (lhCount >= 3 && llCount >= 3 && current < mid && slopeVal < 0) {
+    return { structure: "DOWNTREND", health: adxVal > 25 ? "STRONG" : "WEAK" };
+  }
+  
+  // Range detection
+  if (range / current < 0.05) {
+    return { structure: "RANGE", health: adxVal < 20 ? "HEALTHY" : "BREAKING" };
+  }
+  
+  return { structure: "RANGE", health: "NONE" };
 }
 
-function calcROC(candles: Candle[], period = 3): number {
-  if (candles.length < period + 1) return 0;
-  const current = candles[candles.length - 1].close;
-  const past = candles[candles.length - 1 - period].close;
-  return ((current - past) / past) * 100;
-}
+// ─── Signal Validity ───────────────────────────────────────
 
-function avgVolume(candles: Candle[], period = 20): number {
-  if (candles.length < period) return 0;
-  return candles.slice(-period).reduce((sum, c) => sum + c.volume, 0) / period;
-}
-
-// ─── Setup Detection ───
-
-interface SetupResult {
-  found: boolean;
-  type: "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL" | "BREAKDOWN" | "BREAKUP";
-  direction: "LONG" | "SHORT";
-  entry: number;
-  stop: number;
-  target: number;
-  confidence: number;
-  details: string;
-}
-
-interface SetupDebug {
-  breakout: string;
-  pullback: string;
-  continuation: string;
-  reversal: string;
-  breakdown: string;
-}
-
-function detectSetups(
-  pair: string,
-  candles1h: Candle[],
-  candles4h: Candle[],
-  structure4h: string,
-  adx4h: number,
-  adxSlope4h: number,
-  rsi1h: number,
-  stoch1h: { k: number; d: number },
-  trendBreak: { broken: boolean; direction: "LONG" | "SHORT" | null; lastSwingPrice: number }
-): { result: SetupResult | null; debug: SetupDebug } {
-  if (candles1h.length < 30) {
-    return {
-      result: null,
-      debug: { breakout: "insufficient_candles", pullback: "insufficient_candles", continuation: "insufficient_candles", reversal: "insufficient_candles", breakdown: "insufficient_candles" }
-    };
+export function isSignalStillValid(signal: Signal | any, currentPrice: number): boolean {
+  // Reject old-version signals
+  if (!signal || signal.version !== CURRENT_SIGNAL_VERSION) {
+    console.log(`[VALIDITY] REJECTED: version mismatch (got ${signal?.version}, need ${CURRENT_SIGNAL_VERSION})`);
+    return false;
   }
 
-  const isBTC = pair === "BTC" || pair === "BTC/USD" || pair === "BTCUSDT";
+  const entry = Number(signal.entry);
+  const stop = Number(signal.stop);
+  const target = Number(signal.target);
+  const direction = signal.direction;
+  
+  if (!entry || !stop || !target || isNaN(entry) || isNaN(stop) || isNaN(target)) {
+    console.log(`[VALIDITY] REJECTED: missing/invalid fields — entry=${entry}, stop=${stop}, target=${target}`);
+    return false;
+  }
 
-  const current = candles1h[candles1h.length - 1];
-  const prev = candles1h[candles1h.length - 2];
-  const atr1h = calcATR(candles1h.slice(-20), 14);
-  const roc1h = calcROC(candles1h, 3);
-  const avgVol = avgVolume(candles1h.slice(-21, -1), 20);
-  const volOK = current.volume > avgVol * 1.2;
-
-  const candleRange = current.high - current.low;
-  const candleBody = Math.abs(current.close - current.open);
-  const bodyPct = candleRange > 0 ? candleBody / candleRange : 0;
-
-  const debug: SetupDebug = {
-    breakout: "not_triggered",
-    pullback: "not_triggered",
-    continuation: "not_triggered",
-    reversal: "not_triggered",
-    breakdown: "not_triggered"
-  };
-
-  const candidates: SetupResult[] = [];
-
-  // ─── SETUP 1: BREAKOUT ───
-  const boxPeriod = 12;
-  const boxCandles = candles1h.slice(-boxPeriod - 1, -1);
-  const boxTop = Math.max(...boxCandles.map((c) => c.high));
-  const boxBottom = Math.min(...boxCandles.map((c) => c.low));
-  const boxHeight = boxTop - boxBottom;
-
-  const minBodyPct = isBTC ? 0.35 : 0.5;
-  const minRangeMult = isBTC ? 0.3 : 0.5;
-
-  if (candleRange >= atr1h * minRangeMult && bodyPct >= minBodyPct) {
-    if (current.close > boxTop * 1.001) {
-      let fresh = false;
-      for (let i = 2; i <= 7; i++) {
-        if (candles1h.length < i) break;
-        if (candles1h[candles1h.length - i].close <= boxTop) { fresh = true; break; }
-      }
-      if (fresh) {
-        const stop = Math.max(boxBottom, current.close - atr1h);
-        const minStop = current.close * 0.992;
-        const finalStop = stop < minStop ? minStop : stop;
-        const target = current.close + (current.close - finalStop) * 2;
-        candidates.push({
-          found: true, type: "BREAKOUT", direction: "LONG",
-          entry: current.close, stop: finalStop, target,
-          confidence: 70 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0),
-          details: `box:${boxBottom.toFixed(2)}-${boxTop.toFixed(2)} vol:${volOK} btc:${isBTC}`
-        });
-        debug.breakout = "LONG_fresh";
-      } else {
-        debug.breakout = "LONG_not_fresh";
-      }
-    } else if (current.close < boxBottom / 1.001) {
-      let fresh = false;
-      for (let i = 2; i <= 7; i++) {
-        if (candles1h.length < i) break;
-        if (candles1h[candles1h.length - i].close >= boxBottom) { fresh = true; break; }
-      }
-      const extension = boxHeight > 0 ? (boxTop - current.close) / boxHeight : 1;
-      const notExtended = extension < 1.5;
-
-      if (fresh && notExtended) {
-        const stop = Math.min(boxTop, current.close + atr1h);
-        const minStop = current.close * 1.008;
-        const finalStop = stop > minStop ? minStop : stop;
-        const target = current.close - (finalStop - current.close) * 2;
-        const extendedPenalty = extension > 1.2 ? -10 : 0;
-        candidates.push({
-          found: true, type: "BREAKOUT", direction: "SHORT",
-          entry: current.close, stop: finalStop, target,
-          confidence: 70 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0) + extendedPenalty,
-          details: `box:${boxBottom.toFixed(2)}-${boxTop.toFixed(2)} vol:${volOK} ext:${extension.toFixed(2)} btc:${isBTC}`
-        });
-        debug.breakout = "SHORT_fresh";
-      } else if (fresh && !notExtended) {
-        debug.breakout = `SHORT_extended:${extension.toFixed(2)}`;
-      } else {
-        debug.breakout = "SHORT_not_fresh";
-      }
-    } else {
-      debug.breakout = `no_break:close_${current.close.toFixed(2)}_box_${boxBottom.toFixed(2)}-${boxTop.toFixed(2)}`;
+  if (direction === "LONG") {
+    // For LONG: stop < entry < target
+    if (stop >= entry) {
+      console.log(`[VALIDITY] REJECTED: LONG stop (${stop}) >= entry (${entry})`);
+      return false;
     }
-  } else {
-    debug.breakout = `weak_candle:range_${candleRange.toFixed(2)}_atr_${atr1h.toFixed(2)}_body_${(bodyPct*100).toFixed(0)}%_minBody_${(minBodyPct*100).toFixed(0)}%_btc:${isBTC}`;
-  }
-
-  // ─── SETUP 2: PULLBACK ───
-  if (adx4h > 20 && (structure4h === "UPTREND" || structure4h === "DOWNTREND")) {
-    const trendDir = structure4h === "UPTREND" ? "LONG" : "SHORT";
-    const lookback = isBTC ? 20 : 10;
-    const recentN = candles1h.slice(-lookback - 1, -1);
-    const recentHigh = Math.max(...recentN.map((c) => c.high));
-    const recentLow = Math.min(...recentN.map((c) => c.low));
-    const range = recentHigh - recentLow;
-    const retrace = range > 0 ? (recentHigh - current.close) / range : 0;
-
-    if (trendDir === "LONG") {
-      const pulledBack = current.close < recentHigh && current.close > recentLow;
-      const bouncing = current.close > current.open && bodyPct > 0.5;
-      const momentum = roc1h > 0.1;
-      const strongMomentum = roc1h > 0.25;
-
-      const nearLow = range > 0 ? (current.close - recentLow) / range < 0.35 : false;
-
-      const pullbackDepth = recentHigh - current.low;
-      const bounceRecovery = current.close - current.low;
-      const strongBounce = pullbackDepth > 0 ? bounceRecovery / pullbackDepth > (isBTC ? 0.25 : 0.4) : false;
-
-      const validPullback = (pulledBack && bouncing && momentum && retrace > 0.025 && nearLow && strongBounce) ||
-                            (pulledBack && bouncing && strongMomentum && retrace > 0.015 && nearLow && strongBounce);
-
-      if (validPullback) {
-        const stop = Math.max(recentLow * 0.998, current.close - atr1h);
-        const minStop = current.close * 0.992;
-        const finalStop = stop < minStop ? minStop : stop;
-        const target = current.close + (current.close - finalStop) * 2;
-        candidates.push({
-          found: true, type: "PULLBACK", direction: "LONG",
-          entry: current.close, stop: finalStop, target,
-          confidence: 65 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0) + (strongMomentum ? 5 : 0),
-          details: `retrace:${(retrace*100).toFixed(2)}% high:${recentHigh.toFixed(2)} low:${recentLow.toFixed(2)} vol:${volOK} nearLow:${nearLow} bounce:${strongBounce} lookback:${lookback}`
-        });
-        debug.pullback = "LONG_bounce";
-      } else {
-        debug.pullback = `LONG_pulled:${pulledBack}_bounce:${bouncing}_mom:${momentum}_retrace:${(retrace*100).toFixed(2)}%_nearLow:${nearLow}_strongBounce:${strongBounce}_lookback:${lookback}`;
-      }
-    } else {
-      const pulledBack = current.close > recentLow && current.close < recentHigh;
-      const rejecting = current.close < current.open && bodyPct > 0.5;
-      const momentum = roc1h < -0.1;
-      const strongMomentum = roc1h < -0.25;
-
-      const nearHigh = range > 0 ? (recentHigh - current.close) / range < 0.35 : false;
-
-      const pullbackDepth = current.high - recentLow;
-      const rejectionRecovery = current.high - current.close;
-      const strongReject = pullbackDepth > 0 ? rejectionRecovery / pullbackDepth > (isBTC ? 0.25 : 0.4) : false;
-
-      const validPullback = (pulledBack && rejecting && momentum && retrace > 0.025 && nearHigh && strongReject) ||
-                            (pulledBack && rejecting && strongMomentum && retrace > 0.015 && nearHigh && strongReject);
-
-      if (validPullback) {
-        const stop = Math.min(recentHigh * 1.002, current.close + atr1h);
-        const minStop = current.close * 1.008;
-        const finalStop = stop > minStop ? minStop : stop;
-        const target = current.close - (finalStop - current.close) * 2;
-        candidates.push({
-          found: true, type: "PULLBACK", direction: "SHORT",
-          entry: current.close, stop: finalStop, target,
-          confidence: 65 + (volOK ? 5 : 0) + (adx4h > 25 ? 10 : 0) + (strongMomentum ? 5 : 0),
-          details: `retrace:${(retrace*100).toFixed(2)}% high:${recentHigh.toFixed(2)} low:${recentLow.toFixed(2)} vol:${volOK} nearHigh:${nearHigh} reject:${strongReject} lookback:${lookback}`
-        });
-        debug.pullback = "SHORT_reject";
-      } else {
-        debug.pullback = `SHORT_pulled:${pulledBack}_reject:${rejecting}_mom:${momentum}_retrace:${(retrace*100).toFixed(2)}%_nearHigh:${nearHigh}_strongReject:${strongReject}_lookback:${lookback}`;
-      }
+    if (target <= entry) {
+      console.log(`[VALIDITY] REJECTED: LONG target (${target}) <= entry (${entry})`);
+      return false;
     }
-  } else {
-    debug.pullback = `no_trend:structure_${structure4h}_adx_${adx4h.toFixed(1)}`;
-  }
-
-  // ─── SETUP 3: CONTINUATION ───
-  if (adx4h > 25 && (structure4h === "UPTREND" || structure4h === "DOWNTREND")) {
-    const trendDir = structure4h === "UPTREND" ? "LONG" : "SHORT";
-
-    if (trendDir === "LONG") {
-      const grindMode = isBTC && adx4h > 28 && adxSlope4h > 0.15 && bodyPct > 0.25 && roc1h > 0.03;
-      const bullish = (current.close > current.open && bodyPct > 0.5) || grindMode;
-      const momentum = roc1h > 0.08;
-      const notExtended = current.close < boxTop * 1.02;
-
-      if (bullish && momentum && notExtended) {
-        const stopMult = isBTC ? 2.0 : 1.5;
-        const stop = current.close - atr1h * stopMult;
-        const minStop = current.close * 0.992;
-        const finalStop = Math.max(stop, minStop);
-        const target = current.close + (current.close - finalStop) * 2;
-        candidates.push({
-          found: true, type: "CONTINUATION", direction: "LONG",
-          entry: current.close, stop: finalStop, target,
-          confidence: 60 + (volOK ? 5 : 0) + (bodyPct > 0.7 ? 5 : 0) + (grindMode ? 3 : 0),
-          details: `grind_up:roc_${roc1h.toFixed(2)} body_${(bodyPct*100).toFixed(0)}% vol:${volOK} grind:${grindMode} btc:${isBTC}`
-        });
-        debug.continuation = "LONG_momentum";
-      } else {
-        debug.continuation = `LONG_bull:${bullish}_mom:${momentum}_ext:${!notExtended}_roc_${roc1h.toFixed(2)}_grind:${grindMode}_btc:${isBTC}`;
-      }
-    } else {
-      const grindMode = isBTC && adx4h > 28 && adxSlope4h < -0.15 && bodyPct > 0.25 && roc1h < -0.03;
-      const bearish = (current.close < current.open && bodyPct > 0.5) || grindMode;
-      const momentum = roc1h < -0.08;
-      const notExtended = current.close > boxBottom / 1.02;
-
-      if (bearish && momentum && notExtended) {
-        const stopMult = isBTC ? 2.0 : 1.5;
-        const stop = current.close + atr1h * stopMult;
-        const minStop = current.close * 1.008;
-        const finalStop = Math.min(stop, minStop);
-        const target = current.close - (finalStop - current.close) * 2;
-        candidates.push({
-          found: true, type: "CONTINUATION", direction: "SHORT",
-          entry: current.close, stop: finalStop, target,
-          confidence: 60 + (volOK ? 5 : 0) + (bodyPct > 0.7 ? 5 : 0) + (grindMode ? 3 : 0),
-          details: `grind_down:roc_${roc1h.toFixed(2)} body_${(bodyPct*100).toFixed(0)}% vol:${volOK} grind:${grindMode} btc:${isBTC}`
-        });
-        debug.continuation = "SHORT_momentum";
-      } else {
-        debug.continuation = `SHORT_bear:${bearish}_mom:${momentum}_ext:${!notExtended}_roc_${roc1h.toFixed(2)}_grind:${grindMode}_btc:${isBTC}`;
-      }
+    
+    const stopHit = currentPrice <= stop;
+    const targetHit = currentPrice >= target;
+    
+    if (stopHit) {
+      console.log(`[VALIDITY] LONG stop HIT: price=${currentPrice.toFixed(4)} <= stop=${stop.toFixed(4)}`);
+      return false;
     }
-  } else {
-    debug.continuation = `weak_trend:structure_${structure4h}_adx_${adx4h.toFixed(1)}`;
-  }
-
-  // ─── SETUP 4: REVERSAL ───
-  if (structure4h === "RANGE" && adx4h < 20) {
-    const highs4h = swingHighs(candles4h, 3);
-    const lows4h = swingLows(candles4h, 3);
-
-    if (highs4h.length >= 2 && lows4h.length >= 2) {
-      const rangeHigh = highs4h[highs4h.length - 1].price;
-      const rangeLow = lows4h[lows4h.length - 1].price;
-      const mid = (rangeHigh + rangeLow) / 2;
-
-      if (current.close < mid && current.close <= rangeLow * 1.005) {
-        const oversold = rsi1h < 35 && stoch1h.k < 30;
-        const bullish = current.close > current.open && bodyPct > 0.5;
-        if (oversold && bullish) {
-          const stop = Math.min(rangeLow * 0.995, current.close - atr1h);
-          const target = mid;
-          candidates.push({
-            found: true, type: "REVERSAL", direction: "LONG",
-            entry: current.close, stop, target,
-            confidence: 60 + (volOK ? 5 : 0),
-            details: `range_low:${rangeLow.toFixed(2)} mid:${mid.toFixed(2)} vol:${volOK}`
-          });
-          debug.reversal = "LONG_oversold";
-        } else {
-          debug.reversal = `LONG_oversold:${oversold}_bull:${bullish}`;
-        }
-      } else if (current.close > mid && current.close >= rangeHigh * 0.995) {
-        const overbought = rsi1h > 65 && stoch1h.k > 70;
-        const bearish = current.close < current.open && bodyPct > 0.5;
-        if (overbought && bearish) {
-          const stop = Math.max(rangeHigh * 1.005, current.close + atr1h);
-          const target = mid;
-          candidates.push({
-            found: true, type: "REVERSAL", direction: "SHORT",
-            entry: current.close, stop, target,
-            confidence: 60 + (volOK ? 5 : 0),
-            details: `range_high:${rangeHigh.toFixed(2)} mid:${mid.toFixed(2)} vol:${volOK}`
-          });
-          debug.reversal = "SHORT_overbought";
-        } else {
-          debug.reversal = `SHORT_overbought:${overbought}_bear:${bearish}`;
-        }
-      } else {
-        debug.reversal = `no_extreme:close_${current.close.toFixed(2)}_mid_${mid.toFixed(2)}`;
-      }
-    } else {
-      debug.reversal = "insufficient_4h_pivots";
+    if (targetHit) {
+      console.log(`[VALIDITY] LONG target HIT: price=${currentPrice.toFixed(4)} >= target=${target.toFixed(4)}`);
+      return false;
     }
-  } else {
-    debug.reversal = `not_range:structure_${structure4h}_adx_${adx4h.toFixed(1)}`;
+    
+    console.log(`[VALIDITY] LONG OK: price=${currentPrice.toFixed(4)} in [${stop.toFixed(4)}, ${target.toFixed(4)}]`);
+    return true;
   }
-
-  // ─── SETUP 5: BREAKDOWN (v20.6.2 — no bodyPct requirement) ───
-  if (trendBreak.broken && trendBreak.direction === "SHORT" && adx4h > 20) {
-    const bearish = current.close < current.open;
-    const momentum = roc1h < -0.05;
-
-    if (bearish && momentum) {
-      const stop = Math.max(trendBreak.lastSwingPrice, current.close + atr1h * 1.5);
-      const minStop = current.close * 1.008;
-      const finalStop = stop > minStop ? stop : minStop;
-      const target = current.close - (finalStop - current.close) * 1.5;
-      candidates.push({
-        found: true, type: "BREAKDOWN", direction: "SHORT",
-        entry: current.close, stop: finalStop, target,
-        confidence: 55 + (volOK ? 5 : 0) + (adx4h > 25 ? 5 : 0),
-        details: `breakdown:lastSwing_${trendBreak.lastSwingPrice.toFixed(2)} roc_${roc1h.toFixed(2)} vol:${volOK}`
-      });
-      debug.breakdown = "SHORT_breakdown";
-    } else {
-      debug.breakdown = `SHORT_bear:${bearish}_mom:${momentum}_roc_${roc1h.toFixed(2)}`;
+  
+  if (direction === "SHORT") {
+    // For SHORT: target < entry < stop
+    if (stop <= entry) {
+      console.log(`[VALIDITY] REJECTED: SHORT stop (${stop}) <= entry (${entry})`);
+      return false;
     }
-  } else if (trendBreak.broken && trendBreak.direction === "LONG" && adx4h > 20) {
-    const bullish = current.close > current.open;
-    const momentum = roc1h > 0.05;
-
-    if (bullish && momentum) {
-      const stop = Math.min(trendBreak.lastSwingPrice, current.close - atr1h * 1.5);
-      const minStop = current.close * 0.992;
-      const finalStop = stop < minStop ? stop : minStop;
-      const target = current.close + (current.close - finalStop) * 1.5;
-      candidates.push({
-        found: true, type: "BREAKUP", direction: "LONG",
-        entry: current.close, stop: finalStop, target,
-        confidence: 55 + (volOK ? 5 : 0) + (adx4h > 25 ? 5 : 0),
-        details: `breakup:lastSwing_${trendBreak.lastSwingPrice.toFixed(2)} roc_${roc1h.toFixed(2)} vol:${volOK}`
-      });
-      debug.breakdown = "LONG_breakup";
-    } else {
-      debug.breakdown = `LONG_bull:${bullish}_mom:${momentum}_roc_${roc1h.toFixed(2)}`;
+    if (target >= entry) {
+      console.log(`[VALIDITY] REJECTED: SHORT target (${target}) >= entry (${entry})`);
+      return false;
     }
-  } else {
-    debug.breakdown = `no_break:trendBreak_${trendBreak.broken}_dir_${trendBreak.direction}_adx_${adx4h.toFixed(1)}`;
+    
+    const stopHit = currentPrice >= stop;
+    const targetHit = currentPrice <= target;
+    
+    if (stopHit) {
+      console.log(`[VALIDITY] SHORT stop HIT: price=${currentPrice.toFixed(4)} >= stop=${stop.toFixed(4)}`);
+      return false;
+    }
+    if (targetHit) {
+      console.log(`[VALIDITY] SHORT target HIT: price=${currentPrice.toFixed(4)} <= target=${target.toFixed(4)}`);
+      return false;
+    }
+    
+    console.log(`[VALIDITY] SHORT OK: price=${currentPrice.toFixed(4)} in [${target.toFixed(4)}, ${stop.toFixed(4)}]`);
+    return true;
   }
-
-  if (candidates.length === 0) {
-    return { result: null, debug };
-  }
-
-  candidates.sort((a, b) => {
-    const rrA = Math.abs(a.target - a.entry) / Math.abs(a.entry - a.stop);
-    const rrB = Math.abs(b.target - b.entry) / Math.abs(b.entry - b.stop);
-    const scoreA = a.confidence + rrA * 10;
-    const scoreB = b.confidence + rrB * 10;
-    return scoreB - scoreA;
-  });
-
-  return { result: candidates[0], debug };
+  
+  console.log(`[VALIDITY] REJECTED: unknown direction "${direction}"`);
+  return false;
 }
 
-// ─── Trend Health ───
-
-function trendHealth(adx: number, adxSlope: number, structure: string): "STRONG" | "MODERATE" | "WEAK" | "NONE" {
-  const earlyTrend = adxSlope > 0.5 && adx > 18;
-  if ((adx < 15 && !earlyTrend) || structure === "RANGE") return "NONE";
-  if (adx > 25 || (earlyTrend && adx > 20)) return "STRONG";
-  if (adx > 18 || earlyTrend) return "MODERATE";
-  return "WEAK";
-}
-
-// ─── Cooldown + Duplicate Suppression ───
-
-export interface CooldownState {
-  pair: string;
-  direction: "LONG" | "SHORT";
-  type: string;
-  timestamp: number;
-}
-
-function getSignalHash(pair: string, direction: "LONG" | "SHORT", type: string, entry: number, atr: number): string {
-  const safeAtr = Math.max(atr, entry * 0.001);
-  const entryBucket = Math.floor(entry / (safeAtr * 0.5));
-  return `${pair}:${direction}:${type}:${entryBucket}`;
-}
-
-export function isOnCooldown(
-  pair: string,
-  direction: "LONG" | "SHORT",
-  type: string,
-  cooldowns: CooldownState[],
-  cooldownMs = 4 * 60 * 60 * 1000
-): boolean {
-  const now = Date.now();
-  return cooldowns.some(
-    (c) => c.pair === pair && c.direction === direction && c.type === type && (now - c.timestamp) < cooldownMs
-  );
-}
-
-export function isDuplicateSignal(
-  hash: string,
-  recentHashes: { hash: string; timestamp: number }[],
-  ttlMs = 6 * 60 * 60 * 1000
-): boolean {
-  const now = Date.now();
-  return recentHashes.some((h) => h.hash === hash && (now - h.timestamp) < ttlMs);
-}
-
-// ─── Hold Logic ───
-
-export interface HoldResult {
-  shouldHold: boolean;
-  reason: string;
-  trailingStop: number | null;
-  trendHealth: "STRONG" | "MODERATE" | "WEAK" | "NONE";
-}
+// ─── shouldHold ──────────────────────────────────────────────
 
 export function shouldHold(
   signal: Signal,
@@ -661,200 +275,314 @@ export function shouldHold(
   candles1h: Candle[],
   currentPrice: number
 ): HoldResult {
-  const structure4h = getStructure(candles4h);
-  const { adx: adx4h, slope: adxSlope4h } = calcADX(candles4h, 14);
-  const health = trendHealth(adx4h, adxSlope4h, structure4h);
-
-  const trendBreak = detectTrendBreak(candles4h, structure4h);
-  if (trendBreak.broken && trendBreak.direction !== signal.direction) {
-    return {
-      shouldHold: false,
-      reason: `TREND BREAK: Price broke ${trendBreak.direction === "SHORT" ? "below" : "above"} recent range. Exit ${signal.direction}.`,
-      trailingStop: null,
-      trendHealth: health
-    };
-  }
-
-  let structureValid = true;
-  if (signal.type !== "REVERSAL" && signal.type !== "BREAKDOWN" && signal.type !== "BREAKUP") {
-    structureValid = signal.direction === "LONG"
-      ? structure4h === "UPTREND"
-      : structure4h === "DOWNTREND";
-  }
-
-  if (!structureValid || health === "NONE") {
-    return {
-      shouldHold: false,
-      reason: `4H ${structure4h} invalidates ${signal.type} ${signal.direction}. ADX ${adx4h.toFixed(1)}`,
-      trailingStop: null,
-      trendHealth: health
-    };
-  }
-
-  const atr1h = calcATR(candles1h, 14);
-  const trailDistance = atr1h * 2;
-
-  let trailingStop: number | null = null;
-
+  const { structure, health } = identifyStructure(candles4h);
+  const adxVal = adx(candles4h);
+  const closes1h = candles1h.map(c => c.close);
+  const slope1h = slope(closes1h);
+  
+  // LONG exits
   if (signal.direction === "LONG") {
-    const recentLows = candles1h.slice(-8).map((c) => c.low);
-    const lowestRecent = Math.min(...recentLows);
-    trailingStop = Math.max(signal.stop, lowestRecent - trailDistance);
-  } else {
-    const recentHighs = candles1h.slice(-8).map((c) => c.high);
-    const highestRecent = Math.max(...recentHighs);
-    trailingStop = Math.min(signal.stop, highestRecent + trailDistance);
+    // Trend break: structure no longer supports LONG
+    if (structure === "DOWNTREND" && health === "STRONG") {
+      return { shouldHold: false, reason: `TREND BREAK: 4H now DOWNTREND STRONG. Exit LONG.` };
+    }
+    
+    // Momentum collapse
+    if (adxVal < 20 && slope1h < -0.1) {
+      return { shouldHold: false, reason: `MOMENTUM COLLAPSE: ADX ${adxVal.toFixed(1)}, 1H slope ${slope1h.toFixed(2)}. Exit LONG.` };
+    }
+    
+    // Structure invalidated for breakout
+    if (signal.type === "BREAKOUT" && structure === "RANGE" && health === "NONE") {
+      return { shouldHold: false, reason: `BREAKOUT FAILED: 4H RANGE with no momentum. Exit LONG.` };
+    }
+    
+    // Price too far from entry (unusual move against position)
+    const maxAdverseMove = (signal.entry - currentPrice) / signal.entry;
+    if (maxAdverseMove > 0.015) { // 1.5% against
+      return { shouldHold: false, reason: `ADVERSE MOVE: Price ${currentPrice.toFixed(2)} is ${(maxAdverseMove * 100).toFixed(1)}% below entry. Exit LONG.` };
+    }
+    
+    return { shouldHold: true, reason: `4H ${structure} ${health}. ADX ${adxVal.toFixed(1)}. Hold for ${signal.target.toFixed(2)}.` };
   }
-
-  const inProfit = signal.direction === "LONG"
-    ? currentPrice > signal.entry * 1.008
-    : currentPrice < signal.entry * 0.992;
-
-  if (inProfit && trailingStop !== null) {
-    return {
-      shouldHold: true,
-      reason: `In profit. Trail at $${trailingStop.toFixed(2)}. Health: ${health}`,
-      trailingStop,
-      trendHealth: health
-    };
+  
+  // SHORT exits
+  if (signal.direction === "SHORT") {
+    if (structure === "UPTREND" && health === "STRONG") {
+      return { shouldHold: false, reason: `TREND BREAK: 4H now UPTREND STRONG. Exit SHORT.` };
+    }
+    
+    if (adxVal < 20 && slope1h > 0.1) {
+      return { shouldHold: false, reason: `MOMENTUM COLLAPSE: ADX ${adxVal.toFixed(1)}, 1H slope ${slope1h.toFixed(2)}. Exit SHORT.` };
+    }
+    
+    if (signal.type === "BREAKOUT" && structure === "RANGE" && health === "NONE") {
+      return { shouldHold: false, reason: `BREAKOUT FAILED: 4H RANGE with no momentum. Exit SHORT.` };
+    }
+    
+    const maxAdverseMove = (currentPrice - signal.entry) / signal.entry;
+    if (maxAdverseMove > 0.015) {
+      return { shouldHold: false, reason: `ADVERSE MOVE: Price ${currentPrice.toFixed(2)} is ${(maxAdverseMove * 100).toFixed(1)}% above entry. Exit SHORT.` };
+    }
+    
+    return { shouldHold: true, reason: `4H ${structure} ${health}. ADX ${adxVal.toFixed(1)}. Hold for ${signal.target.toFixed(2)}.` };
   }
-
-  return {
-    shouldHold: true,
-    reason: `4H ${structure4h} intact. ADX ${adx4h.toFixed(1)}. Hold for ${signal.target.toFixed(2)}.`,
-    trailingStop: null,
-    trendHealth: health
-  };
+  
+  return { shouldHold: false, reason: `UNKNOWN DIRECTION: ${signal.direction}` };
 }
 
-// ─── Main Signal Generator ───
+// ─── Signal Generation ───────────────────────────────────────
 
 export function generateSignal(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
-  cooldowns: CooldownState[] = [],
-  recentHashes: { hash: string; timestamp: number }[] = []
-): { signal: Signal | null; market: MarketData; debug: string[] } {
-
+  activeTrades: Record<string, any>
+): SignalResult {
   const debug: string[] = [];
-
-  if (!Array.isArray(candles1h) || !Array.isArray(candles4h)) {
-    debug.push("invalid_candle_arrays");
-    return { signal: null, market: { pair, price: 0, structure: "RANGE", adx: 0, rsi: 50, stochK: 50, stochD: 50 }, debug };
+  
+  const currentPrice = candles1h[candles1h.length - 1].close;
+  const { structure, health } = identifyStructure(candles4h);
+  const adxVal = adx(candles4h);
+  const rsiVal = rsi(candles1h.map(c => c.close));
+  const stochVal = stoch(candles1h);
+  const atrVal = atr(candles1h);
+  const closes1h = candles1h.map(c => c.close);
+  const slope1h = slope(closes1h);
+  
+  debug.push(`4h_structure:${structure}_health:${health}_adx:${adxVal.toFixed(1)}_slope:${slope1h.toFixed(2)}`);
+  
+  // Cooldown check
+  const lastTrade = activeTrades[pair];
+  if (lastTrade) {
+    const hoursSince = (Date.now() - lastTrade.timestamp) / (1000 * 60 * 60);
+    if (hoursSince < 4) {
+      debug.push(`cooldown:${hoursSince.toFixed(1)}h`);
+      return { debug };
+    }
   }
-
-  if (candles1h.length < 30 || candles4h.length < 30) {
-    debug.push("insufficient_candles");
-    return { signal: null, market: { pair, price: 0, structure: "RANGE", adx: 0, rsi: 50, stochK: 50, stochD: 50 }, debug };
-  }
-
-  const validCandles = candles1h.every((c) =>
-    c && typeof c.close === 'number' && typeof c.high === 'number' &&
-    typeof c.low === 'number' && typeof c.open === 'number' &&
-    typeof c.volume === 'number'
-  );
-  if (!validCandles) {
-    debug.push("malformed_candle_data");
-    return { signal: null, market: { pair, price: 0, structure: "RANGE", adx: 0, rsi: 50, stochK: 50, stochD: 50 }, debug };
-  }
-
-  const safeCooldowns = Array.isArray(cooldowns) ? cooldowns : [];
-  const safeHashes = Array.isArray(recentHashes) ? recentHashes : [];
-
-  const price = candles1h[candles1h.length - 1].close;
-  const structure4h = getStructure(candles4h);
-  const { adx: adx4h, slope: adxSlope4h } = calcADX(candles4h, 14);
-  const rsi1h = calcRSI(candles1h, 14);
-  const stoch1h = calcStochastic(candles1h, 14, 3);
-  const atr1h = calcATR(candles1h, 14);
-
-  const trendBreak = detectTrendBreak(candles4h, structure4h);
-
-  const market: MarketData = {
-    pair, price, structure: structure4h, adx: adx4h,
-    rsi: rsi1h, stochK: stoch1h.k, stochD: stoch1h.d,
-  };
-
-  const health = trendHealth(adx4h, adxSlope4h, structure4h);
-  debug.push(`4h_structure:${structure4h}_health:${health}_adx:${adx4h.toFixed(1)}_slope:${adxSlope4h.toFixed(2)}_trendBreak:${trendBreak.broken}_${trendBreak.direction}`);
-
-  const { result: setup, debug: setupDebug } = detectSetups(
-    pair, candles1h, candles4h, structure4h, adx4h, adxSlope4h, rsi1h, stoch1h, trendBreak
-  );
-
-  debug.push(`breakout:${setupDebug.breakout}`);
-  debug.push(`pullback:${setupDebug.pullback}`);
-  debug.push(`continuation:${setupDebug.continuation}`);
-  debug.push(`reversal:${setupDebug.reversal}`);
-  debug.push(`breakdown:${setupDebug.breakdown}`);
-
-  if (!setup || !setup.found) {
-    debug.push("no_setup");
-    return { signal: null, market, debug };
-  }
-
-  debug.push(`setup:${setup.type}_${setup.direction.toLowerCase()}_conf:${setup.confidence}_${setup.details}`);
-
-  if (isOnCooldown(pair, setup.direction, setup.type, safeCooldowns)) {
-    debug.push(`cooldown_active:${setup.direction}_${setup.type}`);
-    return { signal: null, market, debug };
-  }
-
-  const signalHash = getSignalHash(pair, setup.direction, setup.type, setup.entry, atr1h);
-  if (isDuplicateSignal(signalHash, safeHashes)) {
-    debug.push(`duplicate_signal:${signalHash}`);
-    return { signal: null, market, debug };
-  }
-
-  const rr = Math.abs(setup.target - setup.entry) / Math.abs(setup.entry - setup.stop);
-  const expectedMove = (Math.abs(setup.target - setup.entry) / setup.entry) * 100;
-
-  const atrPercent = (atr1h / price) * 100;
-  const minMove =
-    setup.type === "BREAKOUT"
-      ? Math.max(1.5, atrPercent * 1.5)
-      : setup.type === "REVERSAL" || setup.type === "BREAKDOWN" || setup.type === "BREAKUP"
-      ? Math.max(1.0, atrPercent * 1.2)
-      : Math.max(0.5, atrPercent * 1.0);
-
-  if (rr < 1.5 || expectedMove < minMove) {
-    debug.push(`rr_too_low:${rr.toFixed(2)}_move:${expectedMove.toFixed(2)}%_min:${minMove.toFixed(2)}%_atr:${atrPercent.toFixed(2)}%`);
-    return { signal: null, market, debug };
-  }
-
-  const signal: Signal = {
+  
+  // Market data (always return this)
+  const market = {
     pair,
-    direction: setup.direction,
-    entry: setup.entry,
-    stop: setup.stop,
-    target: setup.target,
-    confidence: setup.confidence,
-    type: setup.type,
-    reason: `${setup.type} ${setup.direction} | 4H:${structure4h} | ${setup.details} | Conf:${setup.confidence}`,
+    price: currentPrice,
+    structure,
+    health,
+    adx: adxVal,
+    rsi: rsiVal,
+    stochK: stochVal.k,
+    stochD: stochVal.d,
     timestamp: Date.now(),
-    expectedMove,
-    adx: adx4h,
-    rsi: rsi1h,
-    stochK: stoch1h.k,
-    stochD: stoch1h.d,
-    rr,
   };
-
-  debug.push(`SIGNAL_${setup.type}_${setup.direction}_conf:${setup.confidence}_rr:${rr.toFixed(2)}_hash:${signalHash}`);
-  return { signal, market, debug };
-}
-
-export function isSignalStillValid(signal: Signal, currentPrice: number): boolean {
-  if (signal.direction === "LONG" && currentPrice < signal.stop) return false;
-  if (signal.direction === "SHORT" && currentPrice > signal.stop) return false;
-
-  if (signal.direction === "LONG" && currentPrice >= signal.target) return false;
-  if (signal.direction === "SHORT" && currentPrice <= signal.target) return false;
-
-  const ageHours = (Date.now() - signal.timestamp) / (1000 * 60 * 60);
-  const maxAge = signal.type === "REVERSAL" ? 4 : 8;
-  if (ageHours > maxAge) return false;
-
-  return true;
+  
+  // ─── BREAKOUT detection ──────────────────────────────────
+  const recentCandles = candles4h.slice(-20);
+  const highs = recentCandles.map(c => c.high);
+  const lows = recentCandles.map(c => c.low);
+  const boxHigh = Math.max(...highs);
+  const boxLow = Math.min(...lows);
+  const boxRange = boxHigh - boxLow;
+  
+  const isBreakoutLong = currentPrice > boxHigh && structure !== "DOWNTREND";
+  const isBreakoutShort = currentPrice < boxLow && structure !== "UPTREND";
+  
+  // Volume check (simplified — use real volume if available)
+  const recentVolume = avg(candles1h.slice(-5).map(c => c.volume));
+  const prevVolume = avg(candles1h.slice(-10, -5).map(c => c.volume));
+  const volumeSpike = recentVolume > prevVolume * 1.2;
+  
+  debug.push(`breakout:${isBreakoutLong ? "LONG" : isBreakoutShort ? "SHORT" : "none"}_vol:${volumeSpike}`);
+  
+  if (isBreakoutLong && volumeSpike && adxVal > 20) {
+    const stop = Math.max(boxLow, currentPrice - atrVal * 1.5);
+    const target = currentPrice + (currentPrice - stop) * 2;
+    const rr = (target - currentPrice) / (currentPrice - stop);
+    
+    if (rr >= 1.5) {
+      const signal: Signal = {
+        id: generateSignalId(pair),
+        pair,
+        direction: "LONG",
+        type: "BREAKOUT",
+        entry: currentPrice,
+        stop: Math.round(stop * 1000) / 1000,
+        target: Math.round(target * 1000) / 1000,
+        confidence: Math.min(95, Math.round(70 + adxVal * 0.5 + (volumeSpike ? 10 : 0))),
+        rr: Math.round(rr * 100) / 100,
+        adx: Math.round(adxVal * 10) / 10,
+        rsi: Math.round(rsiVal * 10) / 10,
+        stochK: Math.round(stochVal.k * 10) / 10,
+        stochD: Math.round(stochVal.d * 10) / 10,
+        expectedMove: Math.round(((target - currentPrice) / currentPrice * 100) * 10) / 10,
+        reason: `BREAKOUT LONG | 4H:${structure} | box:${boxLow.toFixed(2)}-${boxHigh.toFixed(2)} vol:${volumeSpike} | Conf:${Math.min(95, Math.round(70 + adxVal * 0.5 + (volumeSpike ? 10 : 0)))}`,
+        timestamp: Date.now(),
+        version: CURRENT_SIGNAL_VERSION,
+      };
+      
+      return { signal, market, debug };
+    }
+  }
+  
+  if (isBreakoutShort && volumeSpike && adxVal > 20) {
+    const stop = Math.min(boxHigh, currentPrice + atrVal * 1.5);
+    const target = currentPrice - (stop - currentPrice) * 2;
+    const rr = (currentPrice - target) / (stop - currentPrice);
+    
+    if (rr >= 1.5) {
+      const signal: Signal = {
+        id: generateSignalId(pair),
+        pair,
+        direction: "SHORT",
+        type: "BREAKOUT",
+        entry: currentPrice,
+        stop: Math.round(stop * 1000) / 1000,
+        target: Math.round(target * 1000) / 1000,
+        confidence: Math.min(95, Math.round(70 + adxVal * 0.5 + (volumeSpike ? 10 : 0))),
+        rr: Math.round(rr * 100) / 100,
+        adx: Math.round(adxVal * 10) / 10,
+        rsi: Math.round(rsiVal * 10) / 10,
+        stochK: Math.round(stochVal.k * 10) / 10,
+        stochD: Math.round(stochVal.d * 10) / 10,
+        expectedMove: Math.round(((currentPrice - target) / currentPrice * 100) * 10) / 10,
+        reason: `BREAKOUT SHORT | 4H:${structure} | box:${boxLow.toFixed(2)}-${boxHigh.toFixed(2)} vol:${volumeSpike} | Conf:${Math.min(95, Math.round(70 + adxVal * 0.5 + (volumeSpike ? 10 : 0)))}`,
+        timestamp: Date.now(),
+        version: CURRENT_SIGNAL_VERSION,
+      };
+      
+      return { signal, market, debug };
+    }
+  }
+  
+  // ─── PULLBACK detection ────────────────────────────────────
+  const ema21 = ema(closes1h, 21);
+  const ema50 = ema(closes1h, 50);
+  const priceAboveEma21 = currentPrice > ema21[ema21.length - 1];
+  const priceAboveEma50 = currentPrice > ema50[ema50.length - 1];
+  
+  const isPullbackLong = structure === "UPTREND" && !priceAboveEma21 && priceAboveEma50 && rsiVal < 50 && slope1h < 0;
+  const isPullbackShort = structure === "DOWNTREND" && priceAboveEma21 && !priceAboveEma50 && rsiVal > 50 && slope1h > 0;
+  
+  debug.push(`pullback:${isPullbackLong ? "LONG" : isPullbackShort ? "SHORT" : "none"}`);
+  
+  if (isPullbackLong) {
+    const stop = currentPrice - atrVal * 1.5;
+    const target = currentPrice + atrVal * 3;
+    const rr = (target - currentPrice) / (currentPrice - stop);
+    
+    const signal: Signal = {
+      id: generateSignalId(pair),
+      pair,
+      direction: "LONG",
+      type: "PULLBACK",
+      entry: currentPrice,
+      stop: Math.round(stop * 1000) / 1000,
+      target: Math.round(target * 1000) / 1000,
+      confidence: Math.min(90, Math.round(60 + (50 - rsiVal) * 0.5)),
+      rr: Math.round(rr * 100) / 100,
+      adx: Math.round(adxVal * 10) / 10,
+      rsi: Math.round(rsiVal * 10) / 10,
+      stochK: Math.round(stochVal.k * 10) / 10,
+      stochD: Math.round(stochVal.d * 10) / 10,
+      expectedMove: Math.round(((target - currentPrice) / currentPrice * 100) * 10) / 10,
+      reason: `PULLBACK LONG | 4H:${structure} | RSI ${rsiVal.toFixed(1)} | Conf:${Math.min(90, Math.round(60 + (50 - rsiVal) * 0.5))}`,
+      timestamp: Date.now(),
+      version: CURRENT_SIGNAL_VERSION,
+    };
+    
+    return { signal, market, debug };
+  }
+  
+  if (isPullbackShort) {
+    const stop = currentPrice + atrVal * 1.5;
+    const target = currentPrice - atrVal * 3;
+    const rr = (currentPrice - target) / (stop - currentPrice);
+    
+    const signal: Signal = {
+      id: generateSignalId(pair),
+      pair,
+      direction: "SHORT",
+      type: "PULLBACK",
+      entry: currentPrice,
+      stop: Math.round(stop * 1000) / 1000,
+      target: Math.round(target * 1000) / 1000,
+      confidence: Math.min(90, Math.round(60 + (rsiVal - 50) * 0.5)),
+      rr: Math.round(rr * 100) / 100,
+      adx: Math.round(adxVal * 10) / 10,
+      rsi: Math.round(rsiVal * 10) / 10,
+      stochK: Math.round(stochVal.k * 10) / 10,
+      stochD: Math.round(stochVal.d * 10) / 10,
+      expectedMove: Math.round(((currentPrice - target) / currentPrice * 100) * 10) / 10,
+      reason: `PULLBACK SHORT | 4H:${structure} | RSI ${rsiVal.toFixed(1)} | Conf:${Math.min(90, Math.round(60 + (rsiVal - 50) * 0.5))}`,
+      timestamp: Date.now(),
+      version: CURRENT_SIGNAL_VERSION,
+    };
+    
+    return { signal, market, debug };
+  }
+  
+  // ─── CONTINUATION detection ────────────────────────────────
+  const isContinuationLong = structure === "UPTREND" && slope1h > 0 && adxVal > 20 && rsiVal > 40 && rsiVal < 70;
+  const isContinuationShort = structure === "DOWNTREND" && slope1h < 0 && adxVal > 20 && rsiVal > 30 && rsiVal < 60;
+  
+  debug.push(`continuation:${isContinuationLong ? "LONG" : isContinuationShort ? "SHORT" : "none"}`);
+  
+  if (isContinuationLong) {
+    const stop = currentPrice - atrVal * 1.5;
+    const target = currentPrice + atrVal * 2.5;
+    const rr = (target - currentPrice) / (currentPrice - stop);
+    
+    const signal: Signal = {
+      id: generateSignalId(pair),
+      pair,
+      direction: "LONG",
+      type: "CONTINUATION",
+      entry: currentPrice,
+      stop: Math.round(stop * 1000) / 1000,
+      target: Math.round(target * 1000) / 1000,
+      confidence: Math.min(85, Math.round(65 + adxVal * 0.3)),
+      rr: Math.round(rr * 100) / 100,
+      adx: Math.round(adxVal * 10) / 10,
+      rsi: Math.round(rsiVal * 10) / 10,
+      stochK: Math.round(stochVal.k * 10) / 10,
+      stochD: Math.round(stochVal.d * 10) / 10,
+      expectedMove: Math.round(((target - currentPrice) / currentPrice * 100) * 10) / 10,
+      reason: `CONTINUATION LONG | 4H:${structure} ADX ${adxVal.toFixed(1)} | Conf:${Math.min(85, Math.round(65 + adxVal * 0.3))}`,
+      timestamp: Date.now(),
+      version: CURRENT_SIGNAL_VERSION,
+    };
+    
+    return { signal, market, debug };
+  }
+  
+  if (isContinuationShort) {
+    const stop = currentPrice + atrVal * 1.5;
+    const target = currentPrice - atrVal * 2.5;
+    const rr = (currentPrice - target) / (stop - currentPrice);
+    
+    const signal: Signal = {
+      id: generateSignalId(pair),
+      pair,
+      direction: "SHORT",
+      type: "CONTINUATION",
+      entry: currentPrice,
+      stop: Math.round(stop * 1000) / 1000,
+      target: Math.round(target * 1000) / 1000,
+      confidence: Math.min(85, Math.round(65 + adxVal * 0.3)),
+      rr: Math.round(rr * 100) / 100,
+      adx: Math.round(adxVal * 10) / 10,
+      rsi: Math.round(rsiVal * 10) / 10,
+      stochK: Math.round(stochVal.k * 10) / 10,
+      stochD: Math.round(stochVal.d * 10) / 10,
+      expectedMove: Math.round(((currentPrice - target) / currentPrice * 100) * 10) / 10,
+      reason: `CONTINUATION SHORT | 4H:${structure} ADX ${adxVal.toFixed(1)} | Conf:${Math.min(85, Math.round(65 + adxVal * 0.3))}`,
+      timestamp: Date.now(),
+      version: CURRENT_SIGNAL_VERSION,
+    };
+    
+    return { signal, market, debug };
+  }
+  
+  // No signal
+  debug.push("no_setup");
+  return { market, debug };
 }
