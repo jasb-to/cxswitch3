@@ -3,6 +3,7 @@
 // Signal identity via timestamp-based ID — no external deps
 // Defensive validity checks with full logging
 // shouldHold with structured exit reasons
+// MARKET DATA ALWAYS RETURNED (even on cooldown / no signal)
 
 // ─── Types ─────────────────────────────────────────────────
 
@@ -109,12 +110,10 @@ function stoch(candles: Candle[], kPeriod = 14, dPeriod = 3): { k: number; d: nu
   
   const kRaw = ((currentClose - lowest) / (highest - lowest)) * 100;
   
-  // Simple SMA for D (in real impl you'd keep history)
   return { k: kRaw, d: kRaw };
 }
 
 function adx(candles: Candle[], period = 14): number {
-  // Simplified ADX — in production use a proper implementation
   const trs: number[] = [];
   const plusDMs: number[] = [];
   const minusDMs: number[] = [];
@@ -164,11 +163,8 @@ function identifyStructure(candles: Candle[]): { structure: string; health: stri
   const mid = ll + range / 2;
   const current = closes[closes.length - 1];
   
-  // Check for higher highs / higher lows (uptrend)
   const hhCount = recentHighs.filter((h, i) => i > 0 && h > recentHighs[i - 1]).length;
   const hlCount = recentLows.filter((l, i) => i > 0 && l > recentLows[i - 1]).length;
-  
-  // Check for lower highs / lower lows (downtrend)
   const lhCount = recentHighs.filter((h, i) => i > 0 && h < recentHighs[i - 1]).length;
   const llCount = recentLows.filter((l, i) => i > 0 && l < recentLows[i - 1]).length;
   
@@ -182,7 +178,6 @@ function identifyStructure(candles: Candle[]): { structure: string; health: stri
     return { structure: "DOWNTREND", health: adxVal > 25 ? "STRONG" : "WEAK" };
   }
   
-  // Range detection
   if (range / current < 0.05) {
     return { structure: "RANGE", health: adxVal < 20 ? "HEALTHY" : "BREAKING" };
   }
@@ -193,7 +188,6 @@ function identifyStructure(candles: Candle[]): { structure: string; health: stri
 // ─── Signal Validity ───────────────────────────────────────
 
 export function isSignalStillValid(signal: Signal | any, currentPrice: number): boolean {
-  // Reject old-version signals
   if (!signal || signal.version !== CURRENT_SIGNAL_VERSION) {
     console.log(`[VALIDITY] REJECTED: version mismatch (got ${signal?.version}, need ${CURRENT_SIGNAL_VERSION})`);
     return false;
@@ -210,7 +204,6 @@ export function isSignalStillValid(signal: Signal | any, currentPrice: number): 
   }
 
   if (direction === "LONG") {
-    // For LONG: stop < entry < target
     if (stop >= entry) {
       console.log(`[VALIDITY] REJECTED: LONG stop (${stop}) >= entry (${entry})`);
       return false;
@@ -237,7 +230,6 @@ export function isSignalStillValid(signal: Signal | any, currentPrice: number): 
   }
   
   if (direction === "SHORT") {
-    // For SHORT: target < entry < stop
     if (stop <= entry) {
       console.log(`[VALIDITY] REJECTED: SHORT stop (${stop}) <= entry (${entry})`);
       return false;
@@ -280,33 +272,27 @@ export function shouldHold(
   const closes1h = candles1h.map(c => c.close);
   const slope1h = slope(closes1h);
   
-  // LONG exits
   if (signal.direction === "LONG") {
-    // Trend break: structure no longer supports LONG
     if (structure === "DOWNTREND" && health === "STRONG") {
       return { shouldHold: false, reason: `TREND BREAK: 4H now DOWNTREND STRONG. Exit LONG.` };
     }
     
-    // Momentum collapse
     if (adxVal < 20 && slope1h < -0.1) {
       return { shouldHold: false, reason: `MOMENTUM COLLAPSE: ADX ${adxVal.toFixed(1)}, 1H slope ${slope1h.toFixed(2)}. Exit LONG.` };
     }
     
-    // Structure invalidated for breakout
     if (signal.type === "BREAKOUT" && structure === "RANGE" && health === "NONE") {
       return { shouldHold: false, reason: `BREAKOUT FAILED: 4H RANGE with no momentum. Exit LONG.` };
     }
     
-    // Price too far from entry (unusual move against position)
     const maxAdverseMove = (signal.entry - currentPrice) / signal.entry;
-    if (maxAdverseMove > 0.015) { // 1.5% against
+    if (maxAdverseMove > 0.015) {
       return { shouldHold: false, reason: `ADVERSE MOVE: Price ${currentPrice.toFixed(2)} is ${(maxAdverseMove * 100).toFixed(1)}% below entry. Exit LONG.` };
     }
     
     return { shouldHold: true, reason: `4H ${structure} ${health}. ADX ${adxVal.toFixed(1)}. Hold for ${signal.target.toFixed(2)}.` };
   }
   
-  // SHORT exits
   if (signal.direction === "SHORT") {
     if (structure === "UPTREND" && health === "STRONG") {
       return { shouldHold: false, reason: `TREND BREAK: 4H now UPTREND STRONG. Exit SHORT.` };
@@ -352,17 +338,7 @@ export function generateSignal(
   
   debug.push(`4h_structure:${structure}_health:${health}_adx:${adxVal.toFixed(1)}_slope:${slope1h.toFixed(2)}`);
   
-  // Cooldown check
-  const lastTrade = activeTrades[pair];
-  if (lastTrade) {
-    const hoursSince = (Date.now() - lastTrade.timestamp) / (1000 * 60 * 60);
-    if (hoursSince < 4) {
-      debug.push(`cooldown:${hoursSince.toFixed(1)}h`);
-      return { debug };
-    }
-  }
-  
-  // Market data (always return this)
+  // ─── MARKET DATA: ALWAYS BUILD FIRST ─────────────────────
   const market = {
     pair,
     price: currentPrice,
@@ -375,18 +351,26 @@ export function generateSignal(
     timestamp: Date.now(),
   };
   
+  // ─── Cooldown check ────────────────────────────────────────
+  const lastTrade = activeTrades[pair];
+  if (lastTrade) {
+    const hoursSince = (Date.now() - lastTrade.timestamp) / (1000 * 60 * 60);
+    if (hoursSince < 4) {
+      debug.push(`cooldown:${hoursSince.toFixed(1)}h`);
+      return { market, debug };  // ← NOW RETURNS MARKET
+    }
+  }
+  
   // ─── BREAKOUT detection ──────────────────────────────────
   const recentCandles = candles4h.slice(-20);
   const highs = recentCandles.map(c => c.high);
   const lows = recentCandles.map(c => c.low);
   const boxHigh = Math.max(...highs);
   const boxLow = Math.min(...lows);
-  const boxRange = boxHigh - boxLow;
   
   const isBreakoutLong = currentPrice > boxHigh && structure !== "DOWNTREND";
   const isBreakoutShort = currentPrice < boxLow && structure !== "UPTREND";
   
-  // Volume check (simplified — use real volume if available)
   const recentVolume = avg(candles1h.slice(-5).map(c => c.volume));
   const prevVolume = avg(candles1h.slice(-10, -5).map(c => c.volume));
   const volumeSpike = recentVolume > prevVolume * 1.2;
