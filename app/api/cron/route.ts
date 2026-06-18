@@ -1,21 +1,19 @@
-// app/api/cron/route.ts — v21.0 "VOLUME + STOCH TURN"
+// app/api/cron/route.ts — v21.1 "AWAIT FIX + REDIS WIRED"
 // ============================================================
-// Changes from v20.2:
-// 1. Fetches 15m candles for Stoch cross timing
-// 2. Passes candles15m to generateSignal
-// 3. Monitoring state tracking for warm-up signals
-// 4. Signal entry at turn, not mid-pullback
+// Fixes:
+// 1. Await generateSignal (now async)
+// 2. Await getMonitorState/clearMonitorState (now async)
+// 3. Wire Redis client before signal generation
+// 4. 15m cron interval
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid, shouldHold, getMonitorState, clearMonitorState } from "@/lib/strategy";
-import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun } from "@/lib/state";
+import { generateSignal, isSignalStillValid, shouldHold, getMonitorState, clearMonitorState, setRedisClient } from "@/lib/strategy";
+import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, redis } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL"] as const;
-const MIN_CRON_INTERVAL_MS = 5 * 60 * 1000;
-
-// ─── Helpers ─────────────────────────────────────────────────
+const MIN_CRON_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
 
 function roundPrice(n: number): number {
   if (n >= 10000) return Math.round(n);
@@ -41,8 +39,6 @@ function isSignalExpired(signal: any): boolean {
   return ageHours >= getSignalMaxAgeHours(signal);
 }
 
-// ─── Main Handler ────────────────────────────────────────────
-
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
@@ -56,7 +52,6 @@ export async function GET(request: Request) {
   const resetCooldown = url.searchParams.get("reset") === "true";
   const forceRun = url.searchParams.get("force") === "true";
 
-  // ─── Auth ──────────────────────────────────────────────────
   const isAuthorized = 
     querySecret === process.env.CRON_SECRET ||
     authHeader === `Bearer ${process.env.CRON_SECRET}`;
@@ -67,7 +62,6 @@ export async function GET(request: Request) {
   }
   console.log(`[AUTH] PASSED`);
 
-  // ─── Rate Limit ────────────────────────────────────────────
   const lastRun = await getLastCronRun();
   const timeSinceLastRun = runStart - lastRun;
   
@@ -83,7 +77,9 @@ export async function GET(request: Request) {
 
   await setLastCronRun(runStart);
 
-  // ─── State Init ────────────────────────────────────────────
+  // ─── Wire Redis client for monitor state ───────────────────
+  setRedisClient(redis);
+
   let activeTrades = await getActiveTrades();
   
   if (resetCooldown) {
@@ -104,67 +100,58 @@ export async function GET(request: Request) {
   const alerts: any[] = [];
   const exitedSignals: any[] = [];
 
-  // ─── Per-Pair Loop ─────────────────────────────────────────
   for (const pair of PAIRS) {
     console.log(`[PAIR] ${pair} — fetching candles...`);
     
     try {
-      // ─── FETCH ALL TIMEFRAMES ──────────────────────────────
       const [candles1h, candles4h, candles15m] = await Promise.all([
         getCandles(pair, 60),
         getCandles(pair, 240),
-        getCandles(pair, 15)   // NEW: 15m for Stoch timing
+        getCandles(pair, 15)
       ]);
 
       console.log(`[PAIR] ${pair} — 1H: ${candles1h?.length ?? 0}, 4H: ${candles4h?.length ?? 0}, 15m: ${candles15m?.length ?? 0}`);
 
       if (!candles1h || !candles4h || !candles15m || 
           candles1h.length < 30 || candles4h.length < 30 || candles15m.length < 50) {
-        console.log(`[PAIR] ${pair} — SKIP: insufficient candles (need 30/30/50, got ${candles1h?.length ?? 0}/${candles4h?.length ?? 0}/${candles15m?.length ?? 0})`);
+        console.log(`[PAIR] ${pair} — SKIP: insufficient candles`);
         alerts.push({ pair, status: "skip", reason: "insufficient_candles" });
         continue;
       }
 
       const currentPrice = candles1h[candles1h.length - 1].close;
       
-      // ─── Check Existing Signal ───────────────────────────────
       const existingIdx = validSignals.findIndex(s => s.pair === pair);
       const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
       
       if (existingForPair) {
-        // Check 1: Stop/Target hit
         if (!isSignalStillValid(existingForPair, currentPrice)) {
-          console.log(`[PAIR] ${pair} — Existing signal INVALID (target=${roundPrice(existingForPair.target)} hit or stop=${roundPrice(existingForPair.stop)} hit at price=${roundPrice(currentPrice)}), removing`);
+          console.log(`[PAIR] ${pair} — Existing signal INVALID, removing`);
           validSignals.splice(existingIdx, 1);
-          clearMonitorState(`${pair}_LONG`);
-          clearMonitorState(`${pair}_SHORT`);
+          await clearMonitorState(pair);
           alerts.push({ pair, status: "existing_invalid", reason: "target_or_stop_hit" });
-        } 
-        // Check 2: shouldHold exit
-        else {
+        } else {
           const holdResult = shouldHold(existingForPair, candles4h, candles1h, currentPrice);
           if (!holdResult.shouldHold) {
             console.log(`[PAIR] ${pair} — HOLD EXIT: ${holdResult.reason}`);
             validSignals.splice(existingIdx, 1);
-            clearMonitorState(`${pair}_LONG`);
-            clearMonitorState(`${pair}_SHORT`);
+            await clearMonitorState(pair);
             exitedSignals.push({ pair, reason: holdResult.reason, signal: existingForPair });
             alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
           } else {
             console.log(`[PAIR] ${pair} — Existing signal still valid (${existingForPair.type}), skipping`);
             alerts.push({ pair, status: "existing_valid", type: existingForPair.type, holdReason: holdResult.reason });
             
-            // Still generate market data
-            const result = generateSignal(pair, candles1h, candles4h, candles15m, activeTrades);
+            // AWAIT generateSignal for market data
+            const result = await generateSignal(pair, candles1h, candles4h, candles15m, activeTrades);
             if (result.market) marketDataList.push(result.market);
             continue;
           }
         }
       }
 
-      // ─── Generate New Signal ─────────────────────────────────
-      // NEW: Pass candles15m for Stoch cross + volume timing
-      const result = generateSignal(pair, candles1h, candles4h, candles15m, activeTrades);
+      // ─── AWAIT generateSignal (now async) ───────────────────
+      const result = await generateSignal(pair, candles1h, candles4h, candles15m, activeTrades);
       const market = result.market;
       const debug = result.debug || [];
       
@@ -172,14 +159,10 @@ export async function GET(request: Request) {
         marketDataList.push(market);
       }
 
-      // Log monitor state if present
-      const monitorLong = getMonitorState(`${pair}_LONG`);
-      const monitorShort = getMonitorState(`${pair}_SHORT`);
-      if (monitorLong) {
-        console.log(`[MONITOR] ${pair} LONG: ${monitorLong.reason} K=${monitorLong.stochK.toFixed(1)} age=${((Date.now()-monitorLong.startedAt)/60000).toFixed(1)}min`);
-      }
-      if (monitorShort) {
-        console.log(`[MONITOR] ${pair} SHORT: ${monitorShort.reason} K=${monitorShort.stochK.toFixed(1)} age=${((Date.now()-monitorShort.startedAt)/60000).toFixed(1)}min`);
+      // AWAIT monitor state
+      const monitorState = await getMonitorState(pair);
+      if (monitorState) {
+        console.log(`[MONITOR] ${pair}: ${monitorState.direction} ${monitorState.reason} K=${monitorState.stochK.toFixed(1)} age=${((Date.now()-monitorState.startedAt)/60000).toFixed(1)}min`);
       }
 
       if (!result.signal) {
@@ -191,9 +174,6 @@ export async function GET(request: Request) {
       const signal = result.signal;
       console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} entry=${roundPrice(signal.entry)} conf=${signal.confidence}%`);
       newSignals.push(signal);
-
-      // ─── Send Alert ──────────────────────────────────────────
-      console.log(`[ALERT] ${pair} — sending alert...`);
 
       const alertPayload = {
         symbol: signal.pair,
@@ -212,8 +192,6 @@ export async function GET(request: Request) {
         reason: signal.reason,
         updatedAt: new Date(signal.timestamp).toISOString(),
       };
-
-      console.log(`[ALERT] Payload:`, JSON.stringify(alertPayload, null, 2));
 
       try {
         await sendAlert(alertPayload);
@@ -236,7 +214,6 @@ export async function GET(request: Request) {
     }
   }
 
-  // ─── Merge & Final Filter ──────────────────────────────────
   const mergedSignals = [...validSignals];
   for (const s of newSignals) {
     const idx = mergedSignals.findIndex((x: any) => x.pair === s.pair);
@@ -246,7 +223,6 @@ export async function GET(request: Request) {
 
   const finalSignals = mergedSignals.filter((s: any) => !isSignalExpired(s));
 
-  // ─── Persist State ─────────────────────────────────────────
   console.log(`[STATE] Saving ${finalSignals.length} signals, ${marketDataList.length} market data...`);
   console.log(`[STATE] Exited signals: ${exitedSignals.length}`);
   
