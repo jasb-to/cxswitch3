@@ -113,7 +113,7 @@ export async function getMarketData(): Promise<any[]> {
 
 // ─── Active Trades ───────────────────────────────────────────
 
-export async function getActiveTrades(): Promise<<Record<string, any>> {
+export async function getActiveTrades(): Promise<Record<string, any>> {
   try {
     const data = await redis.get(ACTIVE_TRADES_KEY);
     return safeParseObject(data);
@@ -162,4 +162,4 @@ export async function resetAll() {
   } catch (err) {
     console.error("[STATE] Reset failed:", err);
   }
-} 
+}
