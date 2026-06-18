@@ -1,21 +1,19 @@
-// app/api/cron/route.ts — v20.2 "RATE LIMIT + HOLD EXIT"
+// app/api/cron/route.ts — v21.0 "VOLUME + STOCH TURN"
 // ============================================================
-// v20.2 FIXES:
-// 1. Rate limit: minimum 5 min between runs (configurable via MIN_CRON_INTERVAL_MS)
-// 2. shouldHold check on every run for existing signals
-// 3. Early exit: removes signals from KV immediately when shouldHold returns false
-// 4. Returns 429 if called too frequently
-// 5. Market data always generated for up-to-date UI
-// 6. ?force=true bypasses rate limit for manual testing
+// Changes from v20.2:
+// 1. Fetches 15m candles for Stoch cross timing
+// 2. Passes candles15m to generateSignal
+// 3. Monitoring state tracking for warm-up signals
+// 4. Signal entry at turn, not mid-pullback
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid, shouldHold } from "@/lib/strategy";
+import { generateSignal, isSignalStillValid, shouldHold, getMonitorState, clearMonitorState } from "@/lib/strategy";
 import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL"] as const;
-const MIN_CRON_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes minimum between runs
+const MIN_CRON_INTERVAL_MS = 5 * 60 * 1000;
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -83,7 +81,6 @@ export async function GET(request: Request) {
     }, { status: 429 });
   }
 
-  // Update last run time immediately (even if later errors occur)
   await setLastCronRun(runStart);
 
   // ─── State Init ────────────────────────────────────────────
@@ -99,7 +96,6 @@ export async function GET(request: Request) {
 
   const existingSignals = await getSignals();
   
-  // Filter expired signals upfront
   let validSignals = existingSignals.filter((s: any) => !isSignalExpired(s));
   console.log(`[STATE] Existing valid signals: ${validSignals.length} (filtered ${existingSignals.length - validSignals.length} expired)`);
 
@@ -113,15 +109,18 @@ export async function GET(request: Request) {
     console.log(`[PAIR] ${pair} — fetching candles...`);
     
     try {
-      const [candles1h, candles4h] = await Promise.all([
+      // ─── FETCH ALL TIMEFRAMES ──────────────────────────────
+      const [candles1h, candles4h, candles15m] = await Promise.all([
         getCandles(pair, 60),
-        getCandles(pair, 240)
+        getCandles(pair, 240),
+        getCandles(pair, 15)   // NEW: 15m for Stoch timing
       ]);
 
-      console.log(`[PAIR] ${pair} — 1H: ${candles1h?.length ?? 0}, 4H: ${candles4h?.length ?? 0}`);
+      console.log(`[PAIR] ${pair} — 1H: ${candles1h?.length ?? 0}, 4H: ${candles4h?.length ?? 0}, 15m: ${candles15m?.length ?? 0}`);
 
-      if (!candles1h || !candles4h || candles1h.length < 30 || candles4h.length < 30) {
-        console.log(`[PAIR] ${pair} — SKIP: insufficient candles`);
+      if (!candles1h || !candles4h || !candles15m || 
+          candles1h.length < 30 || candles4h.length < 30 || candles15m.length < 50) {
+        console.log(`[PAIR] ${pair} — SKIP: insufficient candles (need 30/30/50, got ${candles1h?.length ?? 0}/${candles4h?.length ?? 0}/${candles15m?.length ?? 0})`);
         alerts.push({ pair, status: "skip", reason: "insufficient_candles" });
         continue;
       }
@@ -137,22 +136,26 @@ export async function GET(request: Request) {
         if (!isSignalStillValid(existingForPair, currentPrice)) {
           console.log(`[PAIR] ${pair} — Existing signal INVALID (target=${roundPrice(existingForPair.target)} hit or stop=${roundPrice(existingForPair.stop)} hit at price=${roundPrice(currentPrice)}), removing`);
           validSignals.splice(existingIdx, 1);
+          clearMonitorState(`${pair}_LONG`);
+          clearMonitorState(`${pair}_SHORT`);
           alerts.push({ pair, status: "existing_invalid", reason: "target_or_stop_hit" });
         } 
-        // Check 2: shouldHold exit (trendBreak, structure invalid, etc.)
+        // Check 2: shouldHold exit
         else {
           const holdResult = shouldHold(existingForPair, candles4h, candles1h, currentPrice);
           if (!holdResult.shouldHold) {
             console.log(`[PAIR] ${pair} — HOLD EXIT: ${holdResult.reason}`);
             validSignals.splice(existingIdx, 1);
+            clearMonitorState(`${pair}_LONG`);
+            clearMonitorState(`${pair}_SHORT`);
             exitedSignals.push({ pair, reason: holdResult.reason, signal: existingForPair });
             alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
           } else {
             console.log(`[PAIR] ${pair} — Existing signal still valid (${existingForPair.type}), skipping`);
             alerts.push({ pair, status: "existing_valid", type: existingForPair.type, holdReason: holdResult.reason });
             
-            // Still generate market data even when skipping signal generation
-            const result = generateSignal(pair, candles1h, candles4h, activeTrades);
+            // Still generate market data
+            const result = generateSignal(pair, candles1h, candles4h, candles15m, activeTrades);
             if (result.market) marketDataList.push(result.market);
             continue;
           }
@@ -160,7 +163,8 @@ export async function GET(request: Request) {
       }
 
       // ─── Generate New Signal ─────────────────────────────────
-      const result = generateSignal(pair, candles1h, candles4h, activeTrades);
+      // NEW: Pass candles15m for Stoch cross + volume timing
+      const result = generateSignal(pair, candles1h, candles4h, candles15m, activeTrades);
       const market = result.market;
       const debug = result.debug || [];
       
@@ -168,14 +172,24 @@ export async function GET(request: Request) {
         marketDataList.push(market);
       }
 
+      // Log monitor state if present
+      const monitorLong = getMonitorState(`${pair}_LONG`);
+      const monitorShort = getMonitorState(`${pair}_SHORT`);
+      if (monitorLong) {
+        console.log(`[MONITOR] ${pair} LONG: ${monitorLong.reason} K=${monitorLong.stochK.toFixed(1)} age=${((Date.now()-monitorLong.startedAt)/60000).toFixed(1)}min`);
+      }
+      if (monitorShort) {
+        console.log(`[MONITOR] ${pair} SHORT: ${monitorShort.reason} K=${monitorShort.stochK.toFixed(1)} age=${((Date.now()-monitorShort.startedAt)/60000).toFixed(1)}min`);
+      }
+
       if (!result.signal) {
-        console.log(`[PAIR] ${pair} — NO SIGNAL`);
+        console.log(`[PAIR] ${pair} — NO SIGNAL (${debug.join(" | ")})`);
         alerts.push({ pair, status: "no_signal", debug: debug.join(" | ") });
         continue;
       }
 
       const signal = result.signal;
-      console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} conf=${signal.confidence}%`);
+      console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} entry=${roundPrice(signal.entry)} conf=${signal.confidence}%`);
       newSignals.push(signal);
 
       // ─── Send Alert ──────────────────────────────────────────
@@ -255,4 +269,4 @@ export async function GET(request: Request) {
     exited: exitedSignals.length,
     alerts,
   });
-} 
+}
