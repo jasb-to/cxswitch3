@@ -1,8 +1,5 @@
-// lib/strategy.ts — v21.8 "OVERSOLD CONTINUATION + MONITOR FIX"
+// lib/strategy.ts — v21.9 "DEEP OVERSOLD + MONITOR PERSISTENCE"
 // ============================================================
-// FIX: setex → set with { ex: } for Upstash Redis
-// FIX: Don't clear monitor on stoch_not_ready — only on expiry/direction-change/signal
-// NEW: oversold_rollover (SHORT) and overbought_rollover (LONG) for strong trend continuation
 // 4H trend for direction, 15m Stoch K/D cross + volume for entry timing
 // Redis-backed monitoring state (survives 15m cron intervals)
 // MARKET DATA ALWAYS RETURNED
@@ -334,7 +331,7 @@ function priceConfirmsReversal(candles: Candle[], direction: "LONG" | "SHORT"): 
 }
 
 // ─── Stoch Momentum Gate ─────────────────────────────────────
-// NEW: oversold_rollover (SHORT) and overbought_rollover (LONG) for strong trend continuation
+// NEW: deep_oversold (SHORT) and deep_overbought (LONG) for strong trend continuation
 
 function stochMomentumGate(candles: Candle[], direction: "LONG" | "SHORT", overboughtThreshold = 80, oversoldThreshold = 20): {
   ready: boolean;
@@ -352,11 +349,13 @@ function stochMomentumGate(candles: Candle[], direction: "LONG" | "SHORT", overb
     const crossingUp = cross.crossedUp;
     const belowD = cross.k < cross.d;
     const overboughtRollover = cross.prevK > 70 && cross.k < cross.prevK && cross.k > cross.d;
+    const deepOverbought = cross.k > 80 && cross.k > cross.d;
     
     if (crossingUp) return { ready: true, crossed: true, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "k_crossed_above_d" };
     if (wasOversold && cross.k > cross.d) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "oversold_recovery" };
     if (belowD && cross.k < 40) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "building_bullish_momentum" };
     if (overboughtRollover) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "overbought_rollover" };
+    if (deepOverbought) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "deep_overbought" };
     return { ready: false, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: `k=${cross.k.toFixed(1)}_d=${cross.d.toFixed(1)}_prevK=${cross.prevK.toFixed(1)}_prevD=${cross.prevD.toFixed(1)}_not_ready` };
   }
   
@@ -365,11 +364,13 @@ function stochMomentumGate(candles: Candle[], direction: "LONG" | "SHORT", overb
     const crossingDown = cross.crossedDown;
     const aboveD = cross.k > cross.d;
     const oversoldRollover = cross.prevK < 30 && cross.k > cross.prevK && cross.k < cross.d;
+    const deepOversold = cross.k < 20 && cross.k < cross.d;
     
     if (crossingDown) return { ready: true, crossed: true, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "k_crossed_below_d" };
     if (wasOverbought && cross.k < cross.d) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "overbought_reversal" };
     if (aboveD && cross.k > 60) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "building_bearish_momentum" };
     if (oversoldRollover) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "oversold_rollover" };
+    if (deepOversold) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "deep_oversold" };
     return { ready: false, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: `k=${cross.k.toFixed(1)}_d=${cross.d.toFixed(1)}_prevK=${cross.prevK.toFixed(1)}_prevD=${cross.prevD.toFixed(1)}_not_ready` };
   }
   
@@ -642,8 +643,6 @@ export async function generateSignal(
   
   const existingMonitor = await getMonitorState(pair);
   
-  // FIX: Don't clear monitor just because stoch isn't ready on this candle.
-  // Monitor persists until: expiry, direction change, or signal generation.
   if (!stoch15.ready) {
     if (existingMonitor) {
       const monitorAge = (Date.now() - existingMonitor.startedAt) / (1000 * 60);
