@@ -1,14 +1,18 @@
-// app/api/cron/route.ts — v21.3 "USE EXISTING REDIS CLIENT"
+// app/api/cron/route.ts — v21.4 "REDIS FROM ENV"
 // ============================================================
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
 import { generateSignal, isSignalStillValid, shouldHold, getMonitorState, clearMonitorState, setRedisClient } from "@/lib/strategy";
-import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, redis } from "@/lib/state";
+import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun } from "@/lib/state";
+import { Redis } from "@upstash/redis";
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL"] as const;
 const MIN_CRON_INTERVAL_MS = 15 * 60 * 1000;
+
+// Create Upstash Redis client directly (same as state.ts)
+const redis = Redis.fromEnv();
 
 function roundPrice(n: number): number {
   if (n >= 10000) return Math.round(n);
@@ -72,9 +76,9 @@ export async function GET(request: Request) {
 
   await setLastCronRun(runStart);
 
-  // FIX: Use the existing redis client from state.ts (Redis.fromEnv())
+  // Wire the Redis client for monitor state persistence
   setRedisClient(redis);
-  console.log(`[REDIS] Client wired from state.ts`);
+  console.log(`[REDIS] Client wired`);
 
   let activeTrades = await getActiveTrades();
   
