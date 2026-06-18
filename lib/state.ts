@@ -1,4 +1,4 @@
-// lib/state.ts — v20.3 "FULL EXPORTS RESTORED"
+// lib/state.ts — v20.4 "FIXED: Version Sync + Signal History + Stopped Out Tracking"
 // ============================================================
 
 import { Redis } from "@upstash/redis";
@@ -11,6 +11,7 @@ const SIGNALS_KEY = "cx_signals_v14";
 const MARKET_KEY = "cx_market_v14";
 const ACTIVE_TRADES_KEY = "cx_active_trades_v14";
 const LAST_CRON_RUN_KEY = "cx_last_cron_run_v14";
+const SIGNAL_HISTORY_KEY = "cx_signal_history_v14";  // NEW: tracks exited signals for UI
 
 // ─── TTLs ───────────────────────────────────────────────────
 
@@ -18,9 +19,10 @@ const SIGNALS_TTL = 6 * 60 * 60;
 const MARKET_TTL = 4 * 60 * 60;
 const ACTIVE_TRADES_TTL = 24 * 60 * 60;
 const LAST_CRON_RUN_TTL = 24 * 60 * 60;
+const SIGNAL_HISTORY_TTL = 48 * 60 * 60;  // Keep history for 48h
 
 // ─── Constants ───────────────────────────────────────────────
-
+// CRITICAL FIX: Must match lib/strategy.ts CURRENT_SIGNAL_VERSION
 const CURRENT_SIGNAL_VERSION = 2;
 
 // ─── Helpers ───────────────────────────────────────────────
@@ -54,24 +56,25 @@ export async function setSignals(signals: any[]) {
   try {
     const existing = await getSignals();
     const now = Date.now();
-    
+
     const freshExisting = existing.filter((s: any) => {
+      // FIX: Use the same version constant as strategy.ts
       if (!s.id || s.version !== CURRENT_SIGNAL_VERSION) {
-        console.log(`[STATE] Purging old-format signal for ${s.pair || "unknown"} (id=${s.id}, version=${s.version})`);
+        console.log(`[STATE] Purging old-format signal for ${s.pair || "unknown"} (id=${s.id}, version=${s.version}, need=${CURRENT_SIGNAL_VERSION})`);
         return false;
       }
-      
+
       const ageHours = (now - s.timestamp) / (1000 * 60 * 60);
       return ageHours < getSignalMaxAgeHours(s);
     });
-    
+
     const merged: any[] = [...freshExisting];
     for (const s of incoming) {
       const idx = merged.findIndex((x: any) => x.pair === s.pair);
       if (idx >= 0) merged[idx] = s;
       else merged.push(s);
     }
-    
+
     await redis.set(SIGNALS_KEY, merged, { ex: SIGNALS_TTL });
     console.log("[STATE] Saved", merged.length, "signals to KV (merged)");
   } catch (err) {
@@ -86,6 +89,47 @@ export async function getSignals(): Promise<any[]> {
   } catch (err) {
     console.error("[STATE] Signals KV read failed:", err);
     return [];
+  }
+}
+
+// ─── NEW: Signal History (for STOPPED OUT / TP HIT banners) ──
+
+export async function addSignalToHistory(signal: any, exitReason: "stop_hit" | "target_hit" | "expired" | "hold_exit", exitPrice?: number) {
+  try {
+    const history = await getSignalHistory();
+    const entry = {
+      ...signal,
+      exitedAt: Date.now(),
+      exitReason,
+      exitPrice: exitPrice || null,
+    };
+
+    // Remove any existing entry for this pair, keep only last 10 per pair
+    const filtered = history.filter((h: any) => h.pair !== signal.pair);
+    filtered.push(entry);
+
+    await redis.set(SIGNAL_HISTORY_KEY, filtered.slice(-30), { ex: SIGNAL_HISTORY_TTL });
+    console.log(`[STATE] Added ${signal.pair} to history: ${exitReason}`);
+  } catch (err) {
+    console.error("[STATE] History write failed:", err);
+  }
+}
+
+export async function getSignalHistory(): Promise<any[]> {
+  try {
+    const data = await redis.get(SIGNAL_HISTORY_KEY);
+    return safeParseArray(data);
+  } catch (err) {
+    console.error("[STATE] History read failed:", err);
+    return [];
+  }
+}
+
+export async function clearSignalHistory(): Promise<void> {
+  try {
+    await redis.del(SIGNAL_HISTORY_KEY);
+  } catch (err) {
+    console.error("[STATE] History clear failed:", err);
   }
 }
 
@@ -112,6 +156,7 @@ export async function getMarketData(): Promise<any[]> {
 }
 
 // ─── Active Trades ───────────────────────────────────────────
+// FIX: Now stores full signal data so isSignalStillValid can work
 
 export async function getActiveTrades(): Promise<Record<string, any>> {
   try {
@@ -158,6 +203,7 @@ export async function resetAll() {
     await redis.del(MARKET_KEY);
     await redis.del(ACTIVE_TRADES_KEY);
     await redis.del(LAST_CRON_RUN_KEY);
+    await redis.del(SIGNAL_HISTORY_KEY);
     console.log("[STATE] All KV data reset");
   } catch (err) {
     console.error("[STATE] Reset failed:", err);
