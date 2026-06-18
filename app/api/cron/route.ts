@@ -200,4 +200,11 @@ export async function GET(request: Request) {
 
   console.log(`[STATE] Saving ${finalSignals.length} signals, ${marketDataList.length} market data...`);
   console.log(`[STATE] Exited signals: ${exitedSignals.length}`);
-  await Promise.all([setSignals(finalSignals), set
+  await Promise.all([setSignals(finalSignals), setMarketData(marketDataList), setActiveTrades(activeTrades)]);
+
+  const runDuration = Date.now() - runStart;
+  console.log(`[CRON] Done in ${runDuration}ms. signals=${finalSignals.length}, marketData=${marketDataList.length}, exited=${exitedSignals.length}`);
+  console.log("========================================");
+
+  return NextResponse.json({ success: true, skipped: false, timestamp: new Date().toISOString(), durationMs: runDuration, signals: finalSignals.length, marketData: marketDataList.length, exited: exitedSignals.length, alerts });
+}
