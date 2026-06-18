@@ -3,7 +3,7 @@
 
 import { Redis } from "@upstash/redis";
 
-const redis = Redis.fromEnv();
+export const redis = Redis.fromEnv();
 
 // ─── Keys ──────────────────────────────────────────────────
 
@@ -55,7 +55,6 @@ export async function setSignals(signals: any[]) {
     const existing = await getSignals();
     const now = Date.now();
     
-    // Filter: remove expired AND reject old-version signals (no id or wrong version)
     const freshExisting = existing.filter((s: any) => {
       if (!s.id || s.version !== CURRENT_SIGNAL_VERSION) {
         console.log(`[STATE] Purging old-format signal for ${s.pair || "unknown"} (id=${s.id}, version=${s.version})`);
@@ -114,7 +113,7 @@ export async function getMarketData(): Promise<any[]> {
 
 // ─── Active Trades ───────────────────────────────────────────
 
-export async function getActiveTrades(): Promise<Record<string, any>> {
+export async function getActiveTrades(): Promise<<Record<string, any>> {
   try {
     const data = await redis.get(ACTIVE_TRADES_KEY);
     return safeParseObject(data);
