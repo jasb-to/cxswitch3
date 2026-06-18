@@ -1,5 +1,4 @@
-
-script_content = '''// lib/strategy.ts — v21.4 "FULL FIX"
+// lib/strategy.ts — v21.4 "FULL FIX"
 // ============================================================
 // 4H trend for direction, 15m Stoch K/D cross + volume for entry timing
 // Redis-backed monitoring state (survives 15m cron intervals)
@@ -767,23 +766,3 @@ export async function generateSignal(
   
   return { signal, market, debug };
 }
-'''
-
-# Find lines with the extra < issue (Promise<<)
-lines = script_content.split('\n')
-issues = []
-for i, line in enumerate(lines, 1):
-    if 'Promise<<' in line:
-        issues.append((i, line.strip()))
-
-print("Lines with extra `<` in `Promise<<`:")
-for line_num, line_content in issues:
-    print(f"  Line {line_num}: {line_content}")
-
-# Also check for any other double-angle issues
-print("\nAll occurrences of `<<` in the file:")
-for i, line in enumerate(lines, 1):
-    if '<<' in line and 'Promise' not in line:
-        print(f"  Line {i}: {line.strip()}")
-    elif 'Promise<<' in line:
-        print(f"  Line {i}: {line.strip()}")
