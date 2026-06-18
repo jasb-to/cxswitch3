@@ -36,20 +36,17 @@ export async function GET() {
   const enriched = await Promise.all(validSignals.map(async (s: any) => {
     const isSweep = s.type === "SWEEP";
     const isEarly = s.type === "EARLY";
-
     let holdAdvice = null;
     try {
       const candles1h = await getCandles(s.pair, 60);
       const candles4h = await getCandles(s.pair, 240);
       const price = currentPrices[s.pair] || s.entry;
-
       if (candles1h && candles4h && candles1h.length > 30 && candles4h.length > 30) {
         holdAdvice = shouldHold(s, candles4h, candles1h, price);
       }
     } catch (err) {
       console.error(`[API] Hold analysis failed for ${s.pair}:`, err);
     }
-
     return {
       ...s,
       meta: {
