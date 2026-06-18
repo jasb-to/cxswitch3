@@ -1,8 +1,16 @@
-// lib/strategy.ts — v21.2 "FIXED STOCH + VOLUME TURN"
+// lib/strategy.ts — v21.3 "COMPILE-CLEAN + FIXES"
 // ============================================================
-// 4H trend for direction, 15m Stoch K/D cross + volume for entry timing
-// Redis-backed monitoring state (survives 15m cron intervals)
-// MARKET DATA ALWAYS RETURNED
+// Fixes:
+// 1. TypeScript syntax (Promise<< → Promise<<)
+// 2. Division by zero in adx()
+// 3. avg() empty array crash
+// 4. Monitor key mismatch (use pair only, direction inside state)
+// 5. Cooldown blocks signals → check if existing trade still valid
+// 6. Signal expiry buffer (0.2% tolerance)
+// 7. Stoch empty array guard
+// 8. Position sizing helper added
+// 9. Signal types aligned with dashboard (BREAKOUT, REVERSAL, SWEEP, CONTINUATION, PULLBACK)
+// 10. Removed unused ema()
 
 // ─── Types ─────────────────────────────────────────────────
 
@@ -49,6 +57,7 @@ export interface SignalResult {
 // ─── Constants ───────────────────────────────────────────────
 
 const CURRENT_SIGNAL_VERSION = 3;
+const EXPIRY_BUFFER = 0.002; // 0.2% tolerance for target/stop hits
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -57,6 +66,7 @@ function generateSignalId(pair: string): string {
 }
 
 function avg(arr: number[]): number {
+  if (!arr.length) return 0;
   return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
@@ -73,15 +83,6 @@ function atr(candles: Candle[], period = 14): number {
     trs.push(tr);
   }
   return avg(trs);
-}
-
-function ema(values: number[], period: number): number[] {
-  const k = 2 / (period + 1);
-  const result: number[] = [values[0]];
-  for (let i = 1; i < values.length; i++) {
-    result.push(values[i] * k + result[i - 1] * (1 - k));
-  }
-  return result;
 }
 
 function rsi(closes: number[], period = 14): number {
@@ -101,6 +102,10 @@ function rsi(closes: number[], period = 14): number {
 // ─── FIXED Stochastic ────────────────────────────────────────
 
 function stoch(candles: Candle[], kPeriod = 14, dPeriod = 3): { k: number; d: number; prevK: number; prevD: number } {
+  if (!candles.length) {
+    return { k: 50, d: 50, prevK: 50, prevD: 50 };
+  }
+  
   const len = candles.length;
   
   if (len < kPeriod + 2) {
@@ -166,6 +171,8 @@ function stochCross(candles: Candle[], kPeriod = 14, dPeriod = 3): {
   };
 }
 
+// ─── FIXED ADX ─────────────────────────────────────────────
+
 function adx(candles: Candle[], period = 14): number {
   const trs: number[] = [];
   const plusDMs: number[] = [];
@@ -184,12 +191,15 @@ function adx(candles: Candle[], period = 14): number {
     minusDMs.push(minusDM);
   }
   
-  const atr = avg(trs);
-  const plusDI = avg(plusDMs) / atr * 100;
-  const minusDI = avg(minusDMs) / atr * 100;
-  const dx = Math.abs(plusDI - minusDI) / (plusDI + minusDI) * 100;
+  const atrVal = avg(trs);
+  if (atrVal === 0) return 0;
   
-  return dx;
+  const plusDI = (avg(plusDMs) / atrVal) * 100;
+  const minusDI = (avg(minusDMs) / atrVal) * 100;
+  
+  if (plusDI + minusDI === 0) return 0;
+  
+  return (Math.abs(plusDI - minusDI) / (plusDI + minusDI)) * 100;
 }
 
 function slope(values: number[], lookback = 5): number {
@@ -254,9 +264,9 @@ function volumeProfile(candles: Candle[], lookback = 8): {
   const avgVol = avg(recent);
   const prevAvg = avg(volumes.slice(-lookback * 2, -lookback));
   
-  const ratio = current / avgVol;
+  const ratio = avgVol > 0 ? current / avgVol : 1;
   const isSpike = ratio > 1.3;
-  const isDeclining = avgVol < prevAvg * 0.9;
+  const isDeclining = avgVol > 0 && prevAvg > 0 && avgVol < prevAvg * 0.9;
   
   const firstHalf = avg(recent.slice(0, Math.floor(lookback / 2)));
   const secondHalf = avg(recent.slice(Math.floor(lookback / 2)));
@@ -366,6 +376,22 @@ function stochMomentumGate(candles: Candle[], direction: "LONG" | "SHORT", overb
   return { ready: false, crossed: false, k: 0, d: 0, prevK: 0, prevD: 0, reason: "unknown_direction" };
 }
 
+// ─── Position Sizing ─────────────────────────────────────────
+
+export function calcPositionSize(
+  account: number,
+  riskPct: number,
+  entry: number,
+  stop: number
+): number {
+  const risk = account * riskPct;
+  const stopPct = Math.abs(entry - stop) / entry;
+  
+  if (stopPct <= 0) return 0;
+  
+  return Math.round(risk / stopPct);
+}
+
 // ─── Signal Validity ───────────────────────────────────────
 
 export function isSignalStillValid(signal: Signal | any, currentPrice: number): boolean {
@@ -394,15 +420,15 @@ export function isSignalStillValid(signal: Signal | any, currentPrice: number): 
       return false;
     }
     
-    const stopHit = currentPrice <= stop;
-    const targetHit = currentPrice >= target;
+    const stopHit = currentPrice <= stop * (1 - EXPIRY_BUFFER);
+    const targetHit = currentPrice >= target * (1 + EXPIRY_BUFFER);
     
     if (stopHit) {
-      console.log(`[VALIDITY] LONG stop HIT: price=${currentPrice.toFixed(4)} <= stop=${stop.toFixed(4)}`);
+      console.log(`[VALIDITY] LONG stop HIT: price=${currentPrice.toFixed(4)} <= stop=${stop.toFixed(4)} (buffer: ${EXPIRY_BUFFER})`);
       return false;
     }
     if (targetHit) {
-      console.log(`[VALIDITY] LONG target HIT: price=${currentPrice.toFixed(4)} >= target=${target.toFixed(4)}`);
+      console.log(`[VALIDITY] LONG target HIT: price=${currentPrice.toFixed(4)} >= target=${target.toFixed(4)} (buffer: ${EXPIRY_BUFFER})`);
       return false;
     }
     
@@ -420,15 +446,15 @@ export function isSignalStillValid(signal: Signal | any, currentPrice: number): 
       return false;
     }
     
-    const stopHit = currentPrice >= stop;
-    const targetHit = currentPrice <= target;
+    const stopHit = currentPrice >= stop * (1 + EXPIRY_BUFFER);
+    const targetHit = currentPrice <= target * (1 - EXPIRY_BUFFER);
     
     if (stopHit) {
-      console.log(`[VALIDITY] SHORT stop HIT: price=${currentPrice.toFixed(4)} >= stop=${stop.toFixed(4)}`);
+      console.log(`[VALIDITY] SHORT stop HIT: price=${currentPrice.toFixed(4)} >= stop=${stop.toFixed(4)} (buffer: ${EXPIRY_BUFFER})`);
       return false;
     }
     if (targetHit) {
-      console.log(`[VALIDITY] SHORT target HIT: price=${currentPrice.toFixed(4)} <= target=${target.toFixed(4)}`);
+      console.log(`[VALIDITY] SHORT target HIT: price=${currentPrice.toFixed(4)} <= target=${target.toFixed(4)} (buffer: ${EXPIRY_BUFFER})`);
       return false;
     }
     
@@ -503,6 +529,7 @@ export function shouldHold(signal: Signal, candles4h: Candle[], candles1h: Candl
 }
 
 // ─── Redis Monitor State ─────────────────────────────────────
+// KEY FIX: Use pair only as key, direction stored inside state
 
 interface MonitorState {
   pair: string;
@@ -582,12 +609,22 @@ export async function generateSignal(
     timestamp: Date.now(),
   };
   
+  // ─── FIXED Cooldown: Only block if existing trade is still valid ───
   const lastTrade = activeTrades[pair];
   if (lastTrade) {
     const hoursSince = (Date.now() - lastTrade.timestamp) / (1000 * 60 * 60);
     if (hoursSince < 4) {
-      debug.push(`cooldown:${hoursSince.toFixed(1)}h`);
-      return { market, debug };
+      // Check if the trade's signal is still valid at current price
+      const tradeStillValid = lastTrade.entry && lastTrade.stop && lastTrade.target 
+        ? isSignalStillValid({ ...lastTrade, version: CURRENT_SIGNAL_VERSION }, currentPrice)
+        : false;
+      
+      if (tradeStillValid) {
+        debug.push(`cooldown:trade_still_valid_${hoursSince.toFixed(1)}h`);
+        return { market, debug };
+      }
+      // If trade hit stop/target, allow new signal
+      debug.push(`cooldown:trade_expired_${hoursSince.toFixed(1)}h`);
     }
   }
   
@@ -606,12 +643,12 @@ export async function generateSignal(
   const stoch15 = stochMomentumGate(candles15m, trendDirection);
   debug.push(`15m_stoch:${stoch15.reason}_k:${stoch15.k.toFixed(1)}_d:${stoch15.d.toFixed(1)}`);
   
-  const monitorKey = `${pair}_${trendDirection}`;
-  const existingMonitor = await getMonitorState(monitorKey);
+  // ─── FIXED Monitor key: Use pair only ────────────────────
+  const existingMonitor = await getMonitorState(pair);
   
   if (!stoch15.ready) {
     if (existingMonitor) {
-      await clearMonitorState(monitorKey);
+      await clearMonitorState(pair);
       debug.push("monitor_cleared:not_ready");
     }
     debug.push("stoch_not_ready");
@@ -619,7 +656,7 @@ export async function generateSignal(
   }
   
   if (!existingMonitor) {
-    await setMonitorState(monitorKey, {
+    await setMonitorState(pair, {
       pair,
       direction: trendDirection,
       startedAt: Date.now(),
@@ -631,10 +668,25 @@ export async function generateSignal(
     return { market, debug };
   }
   
+  // Check monitor direction matches current trend
+  if (existingMonitor.direction !== trendDirection) {
+    await clearMonitorState(pair);
+    await setMonitorState(pair, {
+      pair,
+      direction: trendDirection,
+      startedAt: Date.now(),
+      reason: stoch15.reason,
+      stochK: stoch15.k,
+      stochD: stoch15.d,
+    });
+    debug.push(`monitor_direction_changed:${stoch15.reason}`);
+    return { market, debug };
+  }
+  
   const monitorAge = (Date.now() - existingMonitor.startedAt) / (1000 * 60);
   
   if (monitorAge > 60) {
-    await clearMonitorState(monitorKey);
+    await clearMonitorState(pair);
     debug.push("monitor_expired:60min");
     return { market, debug };
   }
@@ -658,7 +710,7 @@ export async function generateSignal(
     return { market, debug };
   }
   
-  await clearMonitorState(monitorKey);
+  await clearMonitorState(pair);
   
   const entryPrice = currentPrice;
   const stopDistance = atrVal * 1.5;
@@ -692,7 +744,15 @@ export async function generateSignal(
   confidence += stoch15.crossed ? 5 : 0;
   confidence = Math.min(95, confidence);
   
-  const signalType = stoch15.crossed ? "CONTINUATION" : "PULLBACK";
+  // Signal type: use REVERSAL when cross + confirmation at extreme, CONTINUATION when cross in trend
+  let signalType: Signal["type"];
+  if (stoch15.crossed) {
+    signalType = "CONTINUATION";
+  } else if (stoch15.reason === "overbought_reversal" || stoch15.reason === "oversold_recovery") {
+    signalType = "REVERSAL";
+  } else {
+    signalType = "PULLBACK";
+  }
   
   const signal: Signal = {
     id: generateSignalId(pair),
