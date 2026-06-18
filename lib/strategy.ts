@@ -568,7 +568,7 @@ export async function generateSignal(
   candles4h: Candle[],
   candles15m: Candle[],
   activeTrades: Record<string, any>
-): Promise<<SignalResult> {
+): Promise<SignalResult> {
   const debug: string[] = [];
   
   const currentPrice = candles1h[candles1h.length - 1].close;
