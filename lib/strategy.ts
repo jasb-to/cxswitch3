@@ -1,10 +1,5 @@
-// lib/strategy.ts — v22.0 "FIXED: Version Sync + 15m Entry + Active Trade Cooldown + Monitor TTL"
+// lib/strategy.ts — v22.1 "FIXED: 1.5% SL / 4% TP + Monitor Persistence + Version Sync"
 // ============================================================
-// 4H trend for direction, 15m Stoch K/D cross + volume for entry timing
-// Redis-backed monitoring state (survives 15m cron intervals)
-// MARKET DATA ALWAYS RETURNED
-
-// ─── Types ─────────────────────────────────────────────────
 
 export interface Candle {
   timestamp: number;
@@ -46,20 +41,12 @@ export interface SignalResult {
   debug: string[];
 }
 
-// ─── Constants ───────────────────────────────────────────────
-// CRITICAL FIX: Must match lib/state.ts CURRENT_SIGNAL_VERSION
+// CRITICAL: Must match lib/state.ts
 export const CURRENT_SIGNAL_VERSION = 2;
 const EXPIRY_BUFFER = 0.002;
-
-// Monitor TTL: 15m candles need longer persistence than 1H
-// 15m = 4 candles per hour. Give it 2 hours (8 candles) to form a cross
-const MONITOR_MAX_AGE_MIN = 120;  // was 60, now 120 for 15m timeframe
-const MONITOR_MIN_AGE_MIN = 2;   // minimum time before signal can fire (let cross develop)
-
-// Active trade cooldown: how long after a signal before we can generate a new one
-const ACTIVE_TRADE_COOLDOWN_HOURS = 1;  // was 4, reduced for 15m entries
-
-// ─── Helpers ─────────────────────────────────────────────────
+const MONITOR_MAX_AGE_MIN = 120;
+const MONITOR_MIN_AGE_MIN = 2;
+const ACTIVE_TRADE_COOLDOWN_HOURS = 1;
 
 function generateSignalId(pair: string): string {
   return `${pair}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -75,11 +62,7 @@ function atr(candles: Candle[], period = 14): number {
   for (let i = 1; i < candles.length && i <= period; i++) {
     const c = candles[candles.length - i];
     const p = candles[candles.length - i - 1];
-    const tr = Math.max(
-      c.high - c.low,
-      Math.abs(c.high - p.close),
-      Math.abs(c.low - p.close)
-    );
+    const tr = Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
     trs.push(tr);
   }
   return avg(trs);
@@ -99,106 +82,52 @@ function rsi(closes: number[], period = 14): number {
   return 100 - (100 / (1 + rs));
 }
 
-// ─── FIXED Stochastic ────────────────────────────────────────
-
 function stoch(candles: Candle[], kPeriod = 14, dPeriod = 3): { k: number; d: number; prevK: number; prevD: number } {
-  if (!candles.length) {
-    return { k: 50, d: 50, prevK: 50, prevD: 50 };
-  }
-
+  if (!candles.length) return { k: 50, d: 50, prevK: 50, prevD: 50 };
   const len = candles.length;
-
   if (len < kPeriod + 2) {
     const window = candles.slice(-Math.min(kPeriod, len));
-    const lows = window.map(c => c.low);
-    const highs = window.map(c => c.high);
-    const lowest = Math.min(...lows);
-    const highest = Math.max(...highs);
+    const lowest = Math.min(...window.map(c => c.low));
+    const highest = Math.max(...window.map(c => c.high));
     const close = candles[len - 1].close;
-
     const k = highest === lowest ? 50 : ((close - lowest) / (highest - lowest)) * 100;
     return { k: Math.round(k * 10) / 10, d: Math.round(k * 10) / 10, prevK: Math.round(k * 10) / 10, prevD: Math.round(k * 10) / 10 };
   }
-
   const kValues: number[] = [];
   for (let i = kPeriod - 1; i < len; i++) {
     const window = candles.slice(i - kPeriod + 1, i + 1);
-    const lows = window.map(c => c.low);
-    const highs = window.map(c => c.high);
-    const lowest = Math.min(...lows);
-    const highest = Math.max(...highs);
+    const lowest = Math.min(...window.map(c => c.low));
+    const highest = Math.max(...window.map(c => c.high));
     const close = candles[i].close;
-
-    if (highest === lowest) {
-      kValues.push(50);
-    } else {
-      kValues.push(((close - lowest) / (highest - lowest)) * 100);
-    }
+    kValues.push(highest === lowest ? 50 : ((close - lowest) / (highest - lowest)) * 100);
   }
-
   const currentK = kValues[kValues.length - 1];
   const dWindow = kValues.slice(-dPeriod);
   const currentD = avg(dWindow);
-
   const prevK = kValues.length > 1 ? kValues[kValues.length - 2] : currentK;
   const prevDWindow = kValues.slice(-dPeriod - 1, -1);
   const prevD = prevDWindow.length === dPeriod ? avg(prevDWindow) : currentD;
-
-  return {
-    k: Math.round(currentK * 10) / 10,
-    d: Math.round(currentD * 10) / 10,
-    prevK: Math.round(prevK * 10) / 10,
-    prevD: Math.round(prevD * 10) / 10,
-  };
+  return { k: Math.round(currentK * 10) / 10, d: Math.round(currentD * 10) / 10, prevK: Math.round(prevK * 10) / 10, prevD: Math.round(prevD * 10) / 10 };
 }
 
-function stochCross(candles: Candle[], kPeriod = 14, dPeriod = 3): { 
-  crossedUp: boolean; 
-  crossedDown: boolean; 
-  k: number; 
-  d: number; 
-  prevK: number; 
-  prevD: number 
-} {
+function stochCross(candles: Candle[], kPeriod = 14, dPeriod = 3) {
   const s = stoch(candles, kPeriod, dPeriod);
-  return {
-    crossedUp: s.prevK <= s.prevD && s.k > s.d,
-    crossedDown: s.prevK >= s.prevD && s.k < s.d,
-    k: s.k,
-    d: s.d,
-    prevK: s.prevK,
-    prevD: s.prevD,
-  };
+  return { crossedUp: s.prevK <= s.prevD && s.k > s.d, crossedDown: s.prevK >= s.prevD && s.k < s.d, k: s.k, d: s.d, prevK: s.prevK, prevD: s.prevD };
 }
-
-// ─── FIXED ADX ─────────────────────────────────────────────
 
 function adx(candles: Candle[], period = 14): number {
-  const trs: number[] = [];
-  const plusDMs: number[] = [];
-  const minusDMs: number[] = [];
-
+  const trs: number[] = [], plusDMs: number[] = [], minusDMs: number[] = [];
   for (let i = 1; i < candles.length && i <= period + 1; i++) {
-    const c = candles[candles.length - i];
-    const p = candles[candles.length - i - 1];
-
-    const tr = Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
-    const plusDM = c.high - p.high > p.low - c.low ? Math.max(c.high - p.high, 0) : 0;
-    const minusDM = p.low - c.low > c.high - p.high ? Math.max(p.low - c.low, 0) : 0;
-
-    trs.push(tr);
-    plusDMs.push(plusDM);
-    minusDMs.push(minusDM);
+    const c = candles[candles.length - i], p = candles[candles.length - i - 1];
+    trs.push(Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close)));
+    plusDMs.push(c.high - p.high > p.low - c.low ? Math.max(c.high - p.high, 0) : 0);
+    minusDMs.push(p.low - c.low > c.high - p.high ? Math.max(p.low - c.low, 0) : 0);
   }
-
   const atrVal = avg(trs);
   if (atrVal === 0) return 0;
-
   const plusDI = (avg(plusDMs) / atrVal) * 100;
   const minusDI = (avg(minusDMs) / atrVal) * 100;
-
   if (plusDI + minusDI === 0) return 0;
-
   return (Math.abs(plusDI - minusDI) / (plusDI + minusDI)) * 100;
 }
 
@@ -216,266 +145,150 @@ function identifyStructure(candles: Candle[]): { structure: string; health: stri
   const closes = candles.map(c => c.close);
   const highs = candles.map(c => c.high);
   const lows = candles.map(c => c.low);
-
   const recentHighs = highs.slice(-20);
   const recentLows = lows.slice(-20);
-
   const hh = Math.max(...recentHighs);
   const ll = Math.min(...recentLows);
   const range = hh - ll;
   const mid = ll + range / 2;
   const current = closes[closes.length - 1];
-
   const hhCount = recentHighs.filter((h, i) => i > 0 && h > recentHighs[i - 1]).length;
   const hlCount = recentLows.filter((l, i) => i > 0 && l > recentLows[i - 1]).length;
   const lhCount = recentHighs.filter((h, i) => i > 0 && h < recentHighs[i - 1]).length;
   const llCount = recentLows.filter((l, i) => i > 0 && l < recentLows[i - 1]).length;
-
   const adxVal = adx(candles);
   const slopeVal = slope(closes);
-
-  if (hhCount >= 3 && hlCount >= 3 && current > mid && slopeVal > 0) {
-    return { structure: "UPTREND", health: adxVal > 25 ? "STRONG" : "WEAK" };
-  }
-  if (lhCount >= 3 && llCount >= 3 && current < mid && slopeVal < 0) {
-    return { structure: "DOWNTREND", health: adxVal > 25 ? "STRONG" : "WEAK" };
-  }
-
-  if (range / current < 0.05) {
-    return { structure: "RANGE", health: adxVal < 20 ? "HEALTHY" : "BREAKING" };
-  }
-
+  if (hhCount >= 3 && hlCount >= 3 && current > mid && slopeVal > 0) return { structure: "UPTREND", health: adxVal > 25 ? "STRONG" : "WEAK" };
+  if (lhCount >= 3 && llCount >= 3 && current < mid && slopeVal < 0) return { structure: "DOWNTREND", health: adxVal > 25 ? "STRONG" : "WEAK" };
+  if (range / current < 0.05) return { structure: "RANGE", health: adxVal < 20 ? "HEALTHY" : "BREAKING" };
   return { structure: "RANGE", health: "NONE" };
 }
 
-// ─── Volume Analysis ─────────────────────────────────────────
-
-function volumeProfile(candles: Candle[], lookback = 8): {
-  avgVolume: number;
-  currentVolume: number;
-  ratio: number;
-  isSpike: boolean;
-  isDeclining: boolean;
-  trend: "rising" | "falling" | "flat";
-} {
+function volumeProfile(candles: Candle[], lookback = 8) {
   const volumes = candles.map(c => c.volume);
   const current = volumes[volumes.length - 1];
   const recent = volumes.slice(-lookback);
   const avgVol = avg(recent);
   const prevAvg = avg(volumes.slice(-lookback * 2, -lookback));
-
   const ratio = avgVol > 0 ? current / avgVol : 1;
-  const isSpike = ratio > 1.3;
-  const isDeclining = avgVol > 0 && prevAvg > 0 && avgVol < prevAvg * 0.9;
-
   const firstHalf = avg(recent.slice(0, Math.floor(lookback / 2)));
   const secondHalf = avg(recent.slice(Math.floor(lookback / 2)));
   const trend = secondHalf > firstHalf * 1.1 ? "rising" : secondHalf < firstHalf * 0.9 ? "falling" : "flat";
-
-  return {
-    avgVolume: avgVol,
-    currentVolume: current,
-    ratio,
-    isSpike,
-    isDeclining,
-    trend,
-  };
+  return { avgVolume: avgVol, currentVolume: current, ratio, isSpike: ratio > 1.3, isDeclining: avgVol > 0 && prevAvg > 0 && avgVol < prevAvg * 0.9, trend };
 }
 
-function volumeConfirmsReversal(candles: Candle[], direction: "LONG" | "SHORT"): { confirmed: boolean; reason: string } {
+function volumeConfirmsReversal(candles: Candle[], direction: "LONG" | "SHORT") {
   const vol = volumeProfile(candles, 8);
   const current = candles[candles.length - 1];
-
   const isGreen = current.close > current.open;
   const isRed = current.close < current.open;
-
   if (direction === "LONG") {
     if (vol.isSpike && isGreen) return { confirmed: true, reason: `volume_spike_green_${vol.ratio.toFixed(2)}x` };
     if (vol.isDeclining && isGreen) return { confirmed: true, reason: `volume_exhaustion_green` };
     if (vol.ratio > 1.1 && isGreen) return { confirmed: true, reason: `volume_above_avg_${vol.ratio.toFixed(2)}x` };
     return { confirmed: false, reason: `volume_weak_${vol.ratio.toFixed(2)}x_${isGreen ? "green" : "red"}` };
   }
-
   if (direction === "SHORT") {
     if (vol.isSpike && isRed) return { confirmed: true, reason: `volume_spike_red_${vol.ratio.toFixed(2)}x` };
     if (vol.isDeclining && isRed) return { confirmed: true, reason: `volume_exhaustion_red` };
     if (vol.ratio > 1.1 && isRed) return { confirmed: true, reason: `volume_above_avg_${vol.ratio.toFixed(2)}x` };
     return { confirmed: false, reason: `volume_weak_${vol.ratio.toFixed(2)}x_${isRed ? "red" : "green"}` };
   }
-
   return { confirmed: false, reason: "unknown_direction" };
 }
 
-// ─── Price Behavior ─────────────────────────────────────────
-
-function priceConfirmsReversal(candles: Candle[], direction: "LONG" | "SHORT"): { confirmed: boolean; reason: string; wickRatio: number } {
+function priceConfirmsReversal(candles: Candle[], direction: "LONG" | "SHORT") {
   const current = candles[candles.length - 1];
   const prev = candles[candles.length - 2];
   const body = Math.abs(current.close - current.open);
   const upperWick = current.high - Math.max(current.open, current.close);
   const lowerWick = Math.min(current.open, current.close) - current.low;
   const totalRange = current.high - current.low;
-
   const wickRatio = totalRange > 0 ? (direction === "LONG" ? lowerWick : upperWick) / totalRange : 0;
-
   const isLowerHigh = current.high < prev.high;
   const isHigherLow = current.low > prev.low;
-
   if (direction === "LONG") {
     if (lowerWick > body * 1.5) return { confirmed: true, reason: `lower_wick_rejection_${wickRatio.toFixed(2)}`, wickRatio };
     if (isHigherLow && current.close > current.open) return { confirmed: true, reason: `higher_low_green`, wickRatio };
     if (wickRatio > 0.3) return { confirmed: true, reason: `decent_lower_wick_${wickRatio.toFixed(2)}`, wickRatio };
     return { confirmed: false, reason: `no_reversal_signs_wick_${wickRatio.toFixed(2)}`, wickRatio };
   }
-
   if (direction === "SHORT") {
     if (upperWick > body * 1.5) return { confirmed: true, reason: `upper_wick_rejection_${wickRatio.toFixed(2)}`, wickRatio };
     if (isLowerHigh && current.close < current.open) return { confirmed: true, reason: `lower_high_red`, wickRatio };
     if (wickRatio > 0.3) return { confirmed: true, reason: `decent_upper_wick_${wickRatio.toFixed(2)}`, wickRatio };
     return { confirmed: false, reason: `no_reversal_signs_wick_${wickRatio.toFixed(2)}`, wickRatio };
   }
-
   return { confirmed: false, reason: "unknown_direction", wickRatio: 0 };
 }
 
-// ─── Stoch Momentum Gate ─────────────────────────────────────
-// For 15m entry: more responsive, tighter thresholds
-
-function stochMomentumGate(candles: Candle[], direction: "LONG" | "SHORT", overboughtThreshold = 80, oversoldThreshold = 20): {
-  ready: boolean;
-  crossed: boolean;
-  k: number;
-  d: number;
-  prevK: number;
-  prevD: number;
-  reason: string;
-} {
+function stochMomentumGate(candles: Candle[], direction: "LONG" | "SHORT", overboughtThreshold = 80, oversoldThreshold = 20) {
   const cross = stochCross(candles, 14, 3);
-
   if (direction === "LONG") {
     const wasOversold = cross.prevK < oversoldThreshold || cross.prevD < oversoldThreshold;
     const crossingUp = cross.crossedUp;
     const belowD = cross.k < cross.d;
     const overboughtRollover = cross.prevK > 70 && cross.k < cross.prevK && cross.k > cross.d;
     const deepOverbought = cross.k > 80 && cross.k > cross.d;
-
     if (crossingUp) return { ready: true, crossed: true, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "k_crossed_above_d" };
     if (wasOversold && cross.k > cross.d) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "oversold_recovery" };
     if (belowD && cross.k < 40) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "building_bullish_momentum" };
     if (overboughtRollover) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "overbought_rollover" };
     if (deepOverbought) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "deep_overbought" };
-    return { ready: false, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: `k=${cross.k.toFixed(1)}_d=${cross.d.toFixed(1)}_prevK=${cross.prevK.toFixed(1)}_prevD=${cross.prevD.toFixed(1)}_not_ready` };
+    return { ready: false, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: `k=${cross.k.toFixed(1)}_d=${cross.d.toFixed(1)}_not_ready` };
   }
-
   if (direction === "SHORT") {
     const wasOverbought = cross.prevK > overboughtThreshold || cross.prevD > overboughtThreshold;
     const crossingDown = cross.crossedDown;
     const aboveD = cross.k > cross.d;
     const oversoldRollover = cross.prevK < 30 && cross.k > cross.prevK && cross.k < cross.d;
     const deepOversold = cross.k < 20 && cross.k < cross.d;
-
     if (crossingDown) return { ready: true, crossed: true, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "k_crossed_below_d" };
     if (wasOverbought && cross.k < cross.d) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "overbought_reversal" };
     if (aboveD && cross.k > 60) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "building_bearish_momentum" };
     if (oversoldRollover) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "oversold_rollover" };
     if (deepOversold) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "deep_oversold" };
-    return { ready: false, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: `k=${cross.k.toFixed(1)}_d=${cross.d.toFixed(1)}_prevK=${cross.prevK.toFixed(1)}_prevD=${cross.prevD.toFixed(1)}_not_ready` };
+    return { ready: false, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: `k=${cross.k.toFixed(1)}_d=${cross.d.toFixed(1)}_not_ready` };
   }
-
   return { ready: false, crossed: false, k: 0, d: 0, prevK: 0, prevD: 0, reason: "unknown_direction" };
 }
 
-// ─── Position Sizing ─────────────────────────────────────────
-
-export function calcPositionSize(
-  account: number,
-  riskPct: number,
-  entry: number,
-  stop: number
-): number {
+export function calcPositionSize(account: number, riskPct: number, entry: number, stop: number): number {
   const risk = account * riskPct;
   const stopPct = Math.abs(entry - stop) / entry;
-
   if (stopPct <= 0) return 0;
-
   return Math.round(risk / stopPct);
 }
-
-// ─── Signal Validity ───────────────────────────────────────
 
 export function isSignalStillValid(signal: Signal | any, currentPrice: number): boolean {
   if (!signal || signal.version !== CURRENT_SIGNAL_VERSION) {
     console.log(`[VALIDITY] REJECTED: version mismatch (got ${signal?.version}, need ${CURRENT_SIGNAL_VERSION})`);
     return false;
   }
-
   const entry = Number(signal.entry);
   const stop = Number(signal.stop);
   const target = Number(signal.target);
   const direction = signal.direction;
-
   if (!entry || !stop || !target || isNaN(entry) || isNaN(stop) || isNaN(target)) {
-    console.log(`[VALIDITY] REJECTED: missing/invalid fields — entry=${entry}, stop=${stop}, target=${target}`);
+    console.log(`[VALIDITY] REJECTED: missing fields entry=${entry}, stop=${stop}, target=${target}`);
     return false;
   }
-
   if (direction === "LONG") {
-    if (stop >= entry) {
-      console.log(`[VALIDITY] REJECTED: LONG stop (${stop}) >= entry (${entry})`);
-      return false;
-    }
-    if (target <= entry) {
-      console.log(`[VALIDITY] REJECTED: LONG target (${target}) <= entry (${entry})`);
-      return false;
-    }
-
-    const stopHit = currentPrice <= stop * (1 - EXPIRY_BUFFER);
-    const targetHit = currentPrice >= target * (1 + EXPIRY_BUFFER);
-
-    if (stopHit) {
-      console.log(`[VALIDITY] LONG stop HIT: price=${currentPrice.toFixed(4)} <= stop=${stop.toFixed(4)} (buffer: ${EXPIRY_BUFFER})`);
-      return false;
-    }
-    if (targetHit) {
-      console.log(`[VALIDITY] LONG target HIT: price=${currentPrice.toFixed(4)} >= target=${target.toFixed(4)} (buffer: ${EXPIRY_BUFFER})`);
-      return false;
-    }
-
-    console.log(`[VALIDITY] LONG OK: price=${currentPrice.toFixed(4)} in [${stop.toFixed(4)}, ${target.toFixed(4)}]`);
+    if (stop >= entry) { console.log(`[VALIDITY] REJECTED: LONG stop ${stop} >= entry ${entry}`); return false; }
+    if (target <= entry) { console.log(`[VALIDITY] REJECTED: LONG target ${target} <= entry ${entry}`); return false; }
+    if (currentPrice <= stop * (1 - EXPIRY_BUFFER)) { console.log(`[VALIDITY] LONG stop HIT: ${currentPrice.toFixed(4)} <= ${stop.toFixed(4)}`); return false; }
+    if (currentPrice >= target * (1 + EXPIRY_BUFFER)) { console.log(`[VALIDITY] LONG target HIT: ${currentPrice.toFixed(4)} >= ${target.toFixed(4)}`); return false; }
     return true;
   }
-
   if (direction === "SHORT") {
-    if (stop <= entry) {
-      console.log(`[VALIDITY] REJECTED: SHORT stop (${stop}) <= entry (${entry})`);
-      return false;
-    }
-    if (target >= entry) {
-      console.log(`[VALIDITY] REJECTED: SHORT target (${target}) >= entry (${entry})`);
-      return false;
-    }
-
-    const stopHit = currentPrice >= stop * (1 + EXPIRY_BUFFER);
-    const targetHit = currentPrice <= target * (1 - EXPIRY_BUFFER);
-
-    if (stopHit) {
-      console.log(`[VALIDITY] SHORT stop HIT: price=${currentPrice.toFixed(4)} >= stop=${stop.toFixed(4)} (buffer: ${EXPIRY_BUFFER})`);
-      return false;
-    }
-    if (targetHit) {
-      console.log(`[VALIDITY] SHORT target HIT: price=${currentPrice.toFixed(4)} <= target=${target.toFixed(4)} (buffer: ${EXPIRY_BUFFER})`);
-      return false;
-    }
-
-    console.log(`[VALIDITY] SHORT OK: price=${currentPrice.toFixed(4)} in [${target.toFixed(4)}, ${stop.toFixed(4)}]`);
+    if (stop <= entry) { console.log(`[VALIDITY] REJECTED: SHORT stop ${stop} <= entry ${entry}`); return false; }
+    if (target >= entry) { console.log(`[VALIDITY] REJECTED: SHORT target ${target} >= entry ${entry}`); return false; }
+    if (currentPrice >= stop * (1 + EXPIRY_BUFFER)) { console.log(`[VALIDITY] SHORT stop HIT: ${currentPrice.toFixed(4)} >= ${stop.toFixed(4)}`); return false; }
+    if (currentPrice <= target * (1 - EXPIRY_BUFFER)) { console.log(`[VALIDITY] SHORT target HIT: ${currentPrice.toFixed(4)} <= ${target.toFixed(4)}`); return false; }
     return true;
   }
-
-  console.log(`[VALIDITY] REJECTED: unknown direction "${direction}"`);
   return false;
 }
-
-// ─── shouldHold ──────────────────────────────────────────────
 
 export function shouldHold(signal: Signal, candles4h: Candle[], candles1h: Candle[], currentPrice: number): HoldResult {
   const { structure, health } = identifyStructure(candles4h);
@@ -483,62 +296,26 @@ export function shouldHold(signal: Signal, candles4h: Candle[], candles1h: Candl
   const closes1h = candles1h.map(c => c.close);
   const slope1h = slope(closes1h);
   const stoch15m = stoch(candles1h, 14, 3);
-
   if (signal.direction === "LONG") {
-    if (structure === "DOWNTREND" && health === "STRONG") {
-      return { shouldHold: false, reason: `TREND BREAK: 4H now DOWNTREND STRONG. Exit LONG.` };
-    }
-
-    if (adxVal < 20 && slope1h < -0.1) {
-      return { shouldHold: false, reason: `MOMENTUM COLLAPSE: ADX ${adxVal.toFixed(1)}, 1H slope ${slope1h.toFixed(2)}. Exit LONG.` };
-    }
-
-    if (stoch15m.k > 80 && stoch15m.k < stoch15m.d) {
-      return { shouldHold: false, reason: `STOCH ROLLOVER: K=${stoch15m.k.toFixed(1)} crossed below D=${stoch15m.d.toFixed(1)}. Exit LONG.` };
-    }
-
-    if (signal.type === "BREAKOUT" && structure === "RANGE" && health === "NONE") {
-      return { shouldHold: false, reason: `BREAKOUT FAILED: 4H RANGE with no momentum. Exit LONG.` };
-    }
-
+    if (structure === "DOWNTREND" && health === "STRONG") return { shouldHold: false, reason: `TREND BREAK: 4H DOWNTREND STRONG. Exit LONG.` };
+    if (adxVal < 20 && slope1h < -0.1) return { shouldHold: false, reason: `MOMENTUM COLLAPSE: ADX ${adxVal.toFixed(1)}, 1H slope ${slope1h.toFixed(2)}. Exit LONG.` };
+    if (stoch15m.k > 80 && stoch15m.k < stoch15m.d) return { shouldHold: false, reason: `STOCH ROLLOVER: K=${stoch15m.k.toFixed(1)} < D=${stoch15m.d.toFixed(1)}. Exit LONG.` };
+    if (signal.type === "BREAKOUT" && structure === "RANGE" && health === "NONE") return { shouldHold: false, reason: `BREAKOUT FAILED: 4H RANGE no momentum. Exit LONG.` };
     const maxAdverseMove = (signal.entry - currentPrice) / signal.entry;
-    if (maxAdverseMove > 0.015) {
-      return { shouldHold: false, reason: `ADVERSE MOVE: Price ${currentPrice.toFixed(2)} is ${(maxAdverseMove * 100).toFixed(1)}% below entry. Exit LONG.` };
-    }
-
+    if (maxAdverseMove > 0.015) return { shouldHold: false, reason: `ADVERSE MOVE: Price ${currentPrice.toFixed(2)} is ${(maxAdverseMove * 100).toFixed(1)}% below entry. Exit LONG.` };
     return { shouldHold: true, reason: `4H ${structure} ${health}. ADX ${adxVal.toFixed(1)}. Stoch K=${stoch15m.k.toFixed(1)}. Hold for ${signal.target.toFixed(2)}.` };
   }
-
   if (signal.direction === "SHORT") {
-    if (structure === "UPTREND" && health === "STRONG") {
-      return { shouldHold: false, reason: `TREND BREAK: 4H now UPTREND STRONG. Exit SHORT.` };
-    }
-
-    if (adxVal < 20 && slope1h > 0.1) {
-      return { shouldHold: false, reason: `MOMENTUM COLLAPSE: ADX ${adxVal.toFixed(1)}, 1H slope ${slope1h.toFixed(2)}. Exit SHORT.` };
-    }
-
-    if (stoch15m.k < 20 && stoch15m.k > stoch15m.d) {
-      return { shouldHold: false, reason: `STOCH BOUNCE: K=${stoch15m.k.toFixed(1)} crossed above D=${stoch15m.d.toFixed(1)}. Exit SHORT.` };
-    }
-
-    if (signal.type === "BREAKOUT" && structure === "RANGE" && health === "NONE") {
-      return { shouldHold: false, reason: `BREAKOUT FAILED: 4H RANGE with no momentum. Exit SHORT.` };
-    }
-
+    if (structure === "UPTREND" && health === "STRONG") return { shouldHold: false, reason: `TREND BREAK: 4H UPTREND STRONG. Exit SHORT.` };
+    if (adxVal < 20 && slope1h > 0.1) return { shouldHold: false, reason: `MOMENTUM COLLAPSE: ADX ${adxVal.toFixed(1)}, 1H slope ${slope1h.toFixed(2)}. Exit SHORT.` };
+    if (stoch15m.k < 20 && stoch15m.k > stoch15m.d) return { shouldHold: false, reason: `STOCH BOUNCE: K=${stoch15m.k.toFixed(1)} > D=${stoch15m.d.toFixed(1)}. Exit SHORT.` };
+    if (signal.type === "BREAKOUT" && structure === "RANGE" && health === "NONE") return { shouldHold: false, reason: `BREAKOUT FAILED: 4H RANGE no momentum. Exit SHORT.` };
     const maxAdverseMove = (currentPrice - signal.entry) / signal.entry;
-    if (maxAdverseMove > 0.015) {
-      return { shouldHold: false, reason: `ADVERSE MOVE: Price ${currentPrice.toFixed(2)} is ${(maxAdverseMove * 100).toFixed(1)}% above entry. Exit SHORT.` };
-    }
-
+    if (maxAdverseMove > 0.015) return { shouldHold: false, reason: `ADVERSE MOVE: Price ${currentPrice.toFixed(2)} is ${(maxAdverseMove * 100).toFixed(1)}% above entry. Exit SHORT.` };
     return { shouldHold: true, reason: `4H ${structure} ${health}. ADX ${adxVal.toFixed(1)}. Stoch K=${stoch15m.k.toFixed(1)}. Hold for ${signal.target.toFixed(2)}.` };
   }
-
   return { shouldHold: false, reason: `UNKNOWN DIRECTION: ${signal.direction}` };
 }
-
-// ─── Redis Monitor State ─────────────────────────────────────
-// FIX: Upstash Redis uses .set(key, value, { ex: seconds }) not .setex()
 
 interface MonitorState {
   pair: string;
@@ -547,13 +324,11 @@ interface MonitorState {
   reason: string;
   stochK: number;
   stochD: number;
+  hasCrossed?: boolean;
 }
 
 let _redisClient: any = null;
-
-export function setRedisClient(client: any): void {
-  _redisClient = client;
-}
+export function setRedisClient(client: any): void { _redisClient = client; }
 
 export async function getMonitorState(pair: string): Promise<MonitorState | undefined> {
   if (!_redisClient) return undefined;
@@ -584,8 +359,6 @@ export async function clearMonitorState(pair: string): Promise<void> {
   }
 }
 
-// ─── Signal Generation ───────────────────────────────────────
-
 export async function generateSignal(
   pair: string,
   candles1h: Candle[],
@@ -594,7 +367,6 @@ export async function generateSignal(
   activeTrades: Record<string, any>
 ): Promise<SignalResult> {
   const debug: string[] = [];
-
   const currentPrice = candles1h[candles1h.length - 1].close;
   const { structure, health } = identifyStructure(candles4h);
   const adxVal = adx(candles4h);
@@ -607,62 +379,40 @@ export async function generateSignal(
   debug.push(`4h_structure:${structure}_health:${health}_adx:${adxVal.toFixed(1)}_slope:${slope1h.toFixed(2)}`);
 
   const market = {
-    pair,
-    price: currentPrice,
-    structure,
-    health,
-    adx: adxVal,
-    rsi: rsiVal,
-    stochK: stoch1h.k,
-    stochD: stoch1h.d,
+    pair, price: currentPrice, structure, health,
+    adx: adxVal, rsi: rsiVal,
+    stochK: stoch1h.k, stochD: stoch1h.d,
     timestamp: Date.now(),
   };
 
-  // ─── FIX: Active Trade Cooldown ──────────────────────────
-  // activeTrades stores { direction, timestamp, entry?, stop?, target? }
-  // We check if the LAST SIGNAL (not just any trade) is still valid
   const lastTrade = activeTrades[pair];
   if (lastTrade) {
     const hoursSince = (Date.now() - lastTrade.timestamp) / (1000 * 60 * 60);
-
-    // Only block if within cooldown window
     if (hoursSince < ACTIVE_TRADE_COOLDOWN_HOURS) {
-      // Check if the last signal has actual levels to validate
       if (lastTrade.entry && lastTrade.stop && lastTrade.target) {
-        const tradeStillValid = isSignalStillValid(
-          { ...lastTrade, version: CURRENT_SIGNAL_VERSION }, 
-          currentPrice
-        );
-
+        const tradeStillValid = isSignalStillValid({ ...lastTrade, version: CURRENT_SIGNAL_VERSION }, currentPrice);
         if (tradeStillValid) {
           debug.push(`cooldown:signal_still_valid_${hoursSince.toFixed(1)}h`);
           return { market, debug };
         }
-        // Signal hit SL/TP -> clear it and allow new signal
         debug.push(`cooldown:signal_exited_${hoursSince.toFixed(1)}h`);
-        // Don't return here — let it continue to generate a new signal
       } else {
-        // No levels stored — just apply time-based cooldown
         debug.push(`cooldown:time_based_${hoursSince.toFixed(1)}h`);
         return { market, debug };
       }
     }
-    // Cooldown expired — allow new signal
   }
 
   const trendDirection = structure === "UPTREND" ? "LONG" : structure === "DOWNTREND" ? "SHORT" : null;
-
   if (!trendDirection) {
     debug.push("no_trend:range");
     return { market, debug };
   }
-
   if (adxVal < 20) {
     debug.push(`weak_trend:adx_${adxVal.toFixed(1)}`);
     return { market, debug };
   }
 
-  // ─── FIX: Use 15m candles for entry timing ───────────────
   const stoch15 = stochMomentumGate(candles15m, trendDirection);
   debug.push(`15m_stoch:${stoch15.reason}_k:${stoch15.k.toFixed(1)}_d:${stoch15.d.toFixed(1)}`);
 
@@ -674,8 +424,11 @@ export async function generateSignal(
       if (monitorAge > MONITOR_MAX_AGE_MIN) {
         await clearMonitorState(pair);
         debug.push(`monitor_expired:${MONITOR_MAX_AGE_MIN}min`);
+      } else if (existingMonitor.direction !== trendDirection) {
+        await clearMonitorState(pair);
+        debug.push(`monitor_direction_changed:${existingMonitor.direction}_to_${trendDirection}`);
       } else {
-        debug.push(`monitor_persisting:${existingMonitor.reason}_age:${monitorAge.toFixed(1)}min`);
+        debug.push(`monitor_persisting:${existingMonitor.reason}_age:${monitorAge.toFixed(1)}min_stoch_not_ready`);
       }
     }
     debug.push("stoch_not_ready");
@@ -684,61 +437,60 @@ export async function generateSignal(
 
   if (!existingMonitor) {
     await setMonitorState(pair, {
-      pair,
-      direction: trendDirection,
-      startedAt: Date.now(),
-      reason: stoch15.reason,
-      stochK: stoch15.k,
-      stochD: stoch15.d,
+      pair, direction: trendDirection, startedAt: Date.now(),
+      reason: stoch15.reason, stochK: stoch15.k, stochD: stoch15.d,
+      hasCrossed: stoch15.crossed,
     });
-    debug.push(`monitor_started:${stoch15.reason}`);
+    debug.push(`monitor_started:${stoch15.reason}_k:${stoch15.k.toFixed(1)}_d:${stoch15.d.toFixed(1)}`);
     return { market, debug };
   }
 
   if (existingMonitor.direction !== trendDirection) {
     await clearMonitorState(pair);
     await setMonitorState(pair, {
-      pair,
-      direction: trendDirection,
-      startedAt: Date.now(),
-      reason: stoch15.reason,
-      stochK: stoch15.k,
-      stochD: stoch15.d,
+      pair, direction: trendDirection, startedAt: Date.now(),
+      reason: stoch15.reason, stochK: stoch15.k, stochD: stoch15.d,
+      hasCrossed: stoch15.crossed,
     });
-    debug.push(`monitor_direction_changed:${stoch15.reason}`);
+    debug.push(`monitor_direction_changed:${existingMonitor.direction}_to_${trendDirection}`);
     return { market, debug };
   }
 
   const monitorAge = (Date.now() - existingMonitor.startedAt) / (1000 * 60);
-
   if (monitorAge > MONITOR_MAX_AGE_MIN) {
     await clearMonitorState(pair);
     debug.push(`monitor_expired:${MONITOR_MAX_AGE_MIN}min`);
     return { market, debug };
   }
 
-  // ─── FIX: Minimum monitor age before signal fires ────────
-  // This prevents entering on the very first 15m candle after stoch turns ready
-  // Let the setup develop for at least 2 candles (30 min)
   if (monitorAge < MONITOR_MIN_AGE_MIN) {
     debug.push(`monitor_young:${monitorAge.toFixed(1)}min_need_${MONITOR_MIN_AGE_MIN}min`);
     return { market, debug };
   }
 
+  if (stoch15.crossed && !existingMonitor.hasCrossed) {
+    await setMonitorState(pair, {
+      ...existingMonitor,
+      reason: stoch15.reason, stochK: stoch15.k, stochD: stoch15.d,
+      hasCrossed: true,
+    });
+    debug.push(`monitor_crossed:${stoch15.reason}_k:${stoch15.k.toFixed(1)}_d:${stoch15.d.toFixed(1)}`);
+  } else {
+    debug.push(`monitor_persisting:${existingMonitor.reason}_age:${monitorAge.toFixed(1)}min_curr:${stoch15.reason}`);
+  }
+
   const volConfirm = volumeConfirmsReversal(candles15m, trendDirection);
   const priceConfirm = priceConfirmsReversal(candles15m, trendDirection);
-
   debug.push(`vol:${volConfirm.reason}`);
   debug.push(`price:${priceConfirm.reason}_wick:${priceConfirm.wickRatio.toFixed(2)}`);
 
-  const hasCross = stoch15.crossed;
+  const hasCross = stoch15.crossed || existingMonitor.hasCrossed;
   const hasConfirmation = volConfirm.confirmed || priceConfirm.confirmed;
 
   if (!hasCross && !hasConfirmation) {
     debug.push("waiting:cross_or_confirmation");
     return { market, debug };
   }
-
   if (!hasCross && monitorAge < 10) {
     debug.push("waiting_for_cross");
     return { market, debug };
@@ -747,7 +499,8 @@ export async function generateSignal(
   await clearMonitorState(pair);
 
   const entryPrice = currentPrice;
-  const stopDistance = atrVal * 1.5;
+  const SL_PCT = 0.015;
+  const TP_PCT = 0.04;
 
   let stop: number;
   let target: number;
@@ -755,15 +508,15 @@ export async function generateSignal(
   let expectedMove: number;
 
   if (trendDirection === "LONG") {
-    stop = Math.max(entryPrice - stopDistance, candles15m[candles15m.length - 1].low * 0.998);
-    target = entryPrice + (entryPrice - stop) * 2;
+    stop = entryPrice * (1 - SL_PCT);
+    target = entryPrice * (1 + TP_PCT);
     rr = (target - entryPrice) / (entryPrice - stop);
-    expectedMove = ((target - entryPrice) / entryPrice) * 100;
+    expectedMove = TP_PCT * 100;
   } else {
-    stop = Math.min(entryPrice + stopDistance, candles15m[candles15m.length - 1].high * 1.002);
-    target = entryPrice - (stop - entryPrice) * 2;
+    stop = entryPrice * (1 + SL_PCT);
+    target = entryPrice * (1 - TP_PCT);
     rr = (entryPrice - target) / (stop - entryPrice);
-    expectedMove = ((entryPrice - target) / entryPrice) * 100;
+    expectedMove = TP_PCT * 100;
   }
 
   if (rr < 1.5) {
@@ -779,19 +532,13 @@ export async function generateSignal(
   confidence = Math.min(95, confidence);
 
   let signalType: Signal["type"];
-  if (stoch15.crossed) {
-    signalType = "CONTINUATION";
-  } else if (stoch15.reason === "overbought_reversal" || stoch15.reason === "oversold_recovery") {
-    signalType = "REVERSAL";
-  } else {
-    signalType = "PULLBACK";
-  }
+  if (stoch15.crossed) signalType = "CONTINUATION";
+  else if (stoch15.reason === "overbought_reversal" || stoch15.reason === "oversold_recovery") signalType = "REVERSAL";
+  else signalType = "PULLBACK";
 
   const signal: Signal = {
     id: generateSignalId(pair),
-    pair,
-    direction: trendDirection,
-    type: signalType,
+    pair, direction: trendDirection, type: signalType,
     entry: Math.round(entryPrice * 1000) / 1000,
     stop: Math.round(stop * 1000) / 1000,
     target: Math.round(target * 1000) / 1000,
@@ -808,6 +555,5 @@ export async function generateSignal(
   };
 
   debug.push(`SIGNAL:${signalType}_${trendDirection}_entry:${signal.entry}_rr:${signal.rr}`);
-
   return { signal, market, debug };
 }
