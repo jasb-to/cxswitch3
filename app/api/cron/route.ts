@@ -1,16 +1,15 @@
-// app/api/cron/route.ts — v21.6 "IDEMPOTENT RATE LIMIT"
+// app/api/cron/route.ts — v22.0 "FIXED: Version Sync + History Tracking + Active Trade Levels"
 // ============================================================
-// Returns 200 OK instead of 429 when run too soon — prevents
-// cron-job.org from marking it as failed and retrying aggressively
+// Returns 200 OK instead of 429 when run too soon
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
 import { generateSignal, isSignalStillValid, shouldHold, getMonitorState, clearMonitorState, setRedisClient } from "@/lib/strategy";
-import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, redis } from "@/lib/state";
+import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, redis, addSignalToHistory } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL"] as const;
-const MIN_CRON_INTERVAL_MS = 14 * 60 * 1000; // 14 min buffer (cron-job.org drifts)
+const MIN_CRON_INTERVAL_MS = 14 * 60 * 1000;
 
 function roundPrice(n: number): number {
   if (n >= 10000) return Math.round(n);
@@ -61,8 +60,7 @@ export async function GET(request: Request) {
 
   const lastRun = await getLastCronRun();
   const timeSinceLastRun = runStart - lastRun;
-  
-  // FIX: Return 200 OK instead of 429 — cron-job.org treats 429 as failure
+
   if (!forceRun && timeSinceLastRun < MIN_CRON_INTERVAL_MS) {
     const waitSeconds = Math.ceil((MIN_CRON_INTERVAL_MS - timeSinceLastRun) / 1000);
     console.log(`[RATE LIMIT] Skipping — last run ${(timeSinceLastRun/1000).toFixed(0)}s ago. Next in ${waitSeconds}s.`);
@@ -82,17 +80,17 @@ export async function GET(request: Request) {
   console.log(`[REDIS] Client wired`);
 
   let activeTrades = await getActiveTrades();
-  
+
   if (resetCooldown) {
     console.log(`[STATE] Resetting all cooldowns`);
     activeTrades = {};
     await setActiveTrades({});
   }
-  
+
   console.log(`[STATE] Active trades:`, Object.keys(activeTrades).join(", ") || "none");
 
   const existingSignals = await getSignals();
-  
+
   let validSignals = existingSignals.filter((s: any) => !isSignalExpired(s));
   console.log(`[STATE] Existing valid signals: ${validSignals.length} (filtered ${existingSignals.length - validSignals.length} expired)`);
 
@@ -103,7 +101,7 @@ export async function GET(request: Request) {
 
   for (const pair of PAIRS) {
     console.log(`[PAIR] ${pair} — fetching candles...`);
-    
+
     try {
       const [candles1h, candles4h, candles15m] = await Promise.all([
         getCandles(pair, 60),
@@ -121,20 +119,51 @@ export async function GET(request: Request) {
       }
 
       const currentPrice = candles1h[candles1h.length - 1].close;
-      
+
       const existingIdx = validSignals.findIndex(s => s.pair === pair);
       const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
-      
+
+      // ─── FIX: Check existing signal validity FIRST ─────────
       if (existingForPair) {
         if (!isSignalStillValid(existingForPair, currentPrice)) {
           console.log(`[PAIR] ${pair} — Existing signal INVALID, removing`);
+
+          // Determine exit reason for history
+          const entry = Number(existingForPair.entry);
+          const stop = Number(existingForPair.stop);
+          const target = Number(existingForPair.target);
+          let exitReason = "expired";
+
+          if (existingForPair.direction === "LONG") {
+            if (currentPrice <= stop * (1 - 0.002)) exitReason = "stop_hit";
+            else if (currentPrice >= target * (1 + 0.002)) exitReason = "target_hit";
+          } else {
+            if (currentPrice >= stop * (1 + 0.002)) exitReason = "stop_hit";
+            else if (currentPrice <= target * (1 - 0.002)) exitReason = "target_hit";
+          }
+
+          // Add to history so UI can show STOPPED OUT / TARGET HIT banner
+          await addSignalToHistory(existingForPair, exitReason as any, currentPrice);
+
+          // Clear from active trades so new signals can generate
+          if (activeTrades[pair]) {
+            delete activeTrades[pair];
+          }
+
           validSignals.splice(existingIdx, 1);
           await clearMonitorState(pair);
-          alerts.push({ pair, status: "existing_invalid", reason: "target_or_stop_hit" });
+          alerts.push({ pair, status: "existing_invalid", reason: exitReason });
         } else {
           const holdResult = shouldHold(existingForPair, candles4h, candles1h, currentPrice);
           if (!holdResult.shouldHold) {
             console.log(`[PAIR] ${pair} — HOLD EXIT: ${holdResult.reason}`);
+
+            await addSignalToHistory(existingForPair, "hold_exit", currentPrice);
+
+            if (activeTrades[pair]) {
+              delete activeTrades[pair];
+            }
+
             validSignals.splice(existingIdx, 1);
             await clearMonitorState(pair);
             exitedSignals.push({ pair, reason: holdResult.reason, signal: existingForPair });
@@ -142,7 +171,7 @@ export async function GET(request: Request) {
           } else {
             console.log(`[PAIR] ${pair} — Existing signal still valid (${existingForPair.type}), skipping`);
             alerts.push({ pair, status: "existing_valid", type: existingForPair.type, holdReason: holdResult.reason });
-            
+
             const result = await generateSignal(pair, candles1h, candles4h, candles15m, activeTrades);
             if (result.market) marketDataList.push(result.market);
             continue;
@@ -153,7 +182,7 @@ export async function GET(request: Request) {
       const result = await generateSignal(pair, candles1h, candles4h, candles15m, activeTrades);
       const market = result.market;
       const debug = result.debug || [];
-      
+
       if (market) {
         marketDataList.push(market);
       }
@@ -200,12 +229,18 @@ export async function GET(request: Request) {
       try {
         await sendAlert(alertPayload);
         console.log(`[ALERT] ${pair} — SENT`);
-        
+
+        // FIX: Store FULL signal in activeTrades so isSignalStillValid works
         activeTrades[pair] = {
           direction: signal.direction,
           timestamp: Date.now(),
+          entry: signal.entry,
+          stop: signal.stop,
+          target: signal.target,
+          type: signal.type,
+          id: signal.id,
         };
-        
+
         alerts.push({ pair, status: "sent", type: signal.type });
       } catch (alertErr) {
         console.error(`[ALERT] ${pair} — FAILED:`, alertErr);
@@ -229,7 +264,7 @@ export async function GET(request: Request) {
 
   console.log(`[STATE] Saving ${finalSignals.length} signals, ${marketDataList.length} market data...`);
   console.log(`[STATE] Exited signals: ${exitedSignals.length}`);
-  
+
   await Promise.all([
     setSignals(finalSignals),
     setMarketData(marketDataList),
