@@ -531,7 +531,7 @@ export function setRedisClient(client: any): void {
   _redisClient = client;
 }
 
-export async function getMonitorState(pair: string): Promise<<MonitorState | undefined> {
+export async function getMonitorState(pair: string): Promise<MonitorState | undefined> {
   if (!_redisClient) return undefined;
   try {
     const data = await _redisClient.get(`cxswitch:monitor:${pair}`);
