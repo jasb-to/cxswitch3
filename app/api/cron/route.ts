@@ -1,19 +1,15 @@
 // app/api/cron/route.ts — v21.1 "AWAIT FIX + REDIS WIRED"
 // ============================================================
-// Fixes:
-// 1. Await generateSignal (now async)
-// 2. Await getMonitorState/clearMonitorState (now async)
-// 3. Wire Redis client before signal generation
-// 4. 15m cron interval
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
 import { generateSignal, isSignalStillValid, shouldHold, getMonitorState, clearMonitorState, setRedisClient } from "@/lib/strategy";
-import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, redis } from "@/lib/state";
+import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun } from "@/lib/state";
+import { redis } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL"] as const;
-const MIN_CRON_INTERVAL_MS = 15 * 60 * 1000; // 15 minutes
+const MIN_CRON_INTERVAL_MS = 15 * 60 * 1000;
 
 function roundPrice(n: number): number {
   if (n >= 10000) return Math.round(n);
@@ -77,7 +73,6 @@ export async function GET(request: Request) {
 
   await setLastCronRun(runStart);
 
-  // ─── Wire Redis client for monitor state ───────────────────
   setRedisClient(redis);
 
   let activeTrades = await getActiveTrades();
@@ -142,7 +137,6 @@ export async function GET(request: Request) {
             console.log(`[PAIR] ${pair} — Existing signal still valid (${existingForPair.type}), skipping`);
             alerts.push({ pair, status: "existing_valid", type: existingForPair.type, holdReason: holdResult.reason });
             
-            // AWAIT generateSignal for market data
             const result = await generateSignal(pair, candles1h, candles4h, candles15m, activeTrades);
             if (result.market) marketDataList.push(result.market);
             continue;
@@ -150,7 +144,6 @@ export async function GET(request: Request) {
         }
       }
 
-      // ─── AWAIT generateSignal (now async) ───────────────────
       const result = await generateSignal(pair, candles1h, candles4h, candles15m, activeTrades);
       const market = result.market;
       const debug = result.debug || [];
@@ -159,7 +152,6 @@ export async function GET(request: Request) {
         marketDataList.push(market);
       }
 
-      // AWAIT monitor state
       const monitorState = await getMonitorState(pair);
       if (monitorState) {
         console.log(`[MONITOR] ${pair}: ${monitorState.direction} ${monitorState.reason} K=${monitorState.stochK.toFixed(1)} age=${((Date.now()-monitorState.startedAt)/60000).toFixed(1)}min`);
