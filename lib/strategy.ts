@@ -1,6 +1,9 @@
-// lib/strategy.ts — v21.4 "BUILD CLEAN"
+
+script_content = '''// lib/strategy.ts — v21.4 "FULL FIX"
 // ============================================================
-// All fixes applied, syntax errors corrected
+// 4H trend for direction, 15m Stoch K/D cross + volume for entry timing
+// Redis-backed monitoring state (survives 15m cron intervals)
+// MARKET DATA ALWAYS RETURNED
 
 // ─── Types ─────────────────────────────────────────────────
 
@@ -89,6 +92,8 @@ function rsi(closes: number[], period = 14): number {
   return 100 - (100 / (1 + rs));
 }
 
+// ─── FIXED Stochastic ────────────────────────────────────────
+
 function stoch(candles: Candle[], kPeriod = 14, dPeriod = 3): { k: number; d: number; prevK: number; prevD: number } {
   if (!candles.length) {
     return { k: 50, d: 50, prevK: 50, prevD: 50 };
@@ -158,6 +163,8 @@ function stochCross(candles: Candle[], kPeriod = 14, dPeriod = 3): {
     prevD: s.prevD,
   };
 }
+
+// ─── FIXED ADX ─────────────────────────────────────────────
 
 function adx(candles: Candle[], period = 14): number {
   const trs: number[] = [];
@@ -515,6 +522,7 @@ export function shouldHold(signal: Signal, candles4h: Candle[], candles1h: Candl
 }
 
 // ─── Redis Monitor State ─────────────────────────────────────
+// FIX: Upstash Redis auto-parses JSON — no manual JSON.parse/stringify
 
 interface MonitorState {
   pair: string;
@@ -535,7 +543,8 @@ export async function getMonitorState(pair: string): Promise<MonitorState | unde
   if (!_redisClient) return undefined;
   try {
     const data = await _redisClient.get(`cxswitch:monitor:${pair}`);
-    return data ? JSON.parse(data) : undefined;
+    // Upstash Redis already parses JSON — return as-is
+    return data as MonitorState | undefined;
   } catch (err) {
     console.error(`[MONITOR] Redis get failed for ${pair}:`, err);
     return undefined;
@@ -545,7 +554,8 @@ export async function getMonitorState(pair: string): Promise<MonitorState | unde
 export async function setMonitorState(pair: string, state: MonitorState): Promise<void> {
   if (!_redisClient) return;
   try {
-    await _redisClient.setex(`cxswitch:monitor:${pair}`, 3600, JSON.stringify(state));
+    // Upstash Redis handles JSON serialization — pass object directly
+    await _redisClient.setex(`cxswitch:monitor:${pair}`, 3600, state);
   } catch (err) {
     console.error(`[MONITOR] Redis set failed for ${pair}:`, err);
   }
@@ -757,3 +767,23 @@ export async function generateSignal(
   
   return { signal, market, debug };
 }
+'''
+
+# Find lines with the extra < issue (Promise<<)
+lines = script_content.split('\n')
+issues = []
+for i, line in enumerate(lines, 1):
+    if 'Promise<<' in line:
+        issues.append((i, line.strip()))
+
+print("Lines with extra `<` in `Promise<<`:")
+for line_num, line_content in issues:
+    print(f"  Line {line_num}: {line_content}")
+
+# Also check for any other double-angle issues
+print("\nAll occurrences of `<<` in the file:")
+for i, line in enumerate(lines, 1):
+    if '<<' in line and 'Promise' not in line:
+        print(f"  Line {i}: {line.strip()}")
+    elif 'Promise<<' in line:
+        print(f"  Line {i}: {line.strip()}")
