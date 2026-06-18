@@ -183,9 +183,9 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-6xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-bold">CX Switch v22 — LIVE</h1>
+          <h1 className="text-2xl font-bold">CX Switch v22 -- LIVE</h1>
           <div className="text-xs text-gray-400">
-            Fetches: {fetchCount} | Signals: {lastSignalFetch ? new Date(lastSignalFetch).toLocaleTimeString() : "—"} | Price: {lastPriceFetch ? new Date(lastPriceFetch).toLocaleTimeString() : "—"}
+            Fetches: {fetchCount} | Signals: {lastSignalFetch ? new Date(lastSignalFetch).toLocaleTimeString() : "--"} | Price: {lastPriceFetch ? new Date(lastPriceFetch).toLocaleTimeString() : "--"}
           </div>
         </div>
 
@@ -208,12 +208,12 @@ export default function Dashboard() {
             const signalFresh = signal && (now - signal.timestamp < SIGNAL_STALE_MS);
             const currentPrice = livePrice ?? m?.price ?? signal?.entry;
             const priceLive = !!livePrice;
-            const structure = m?.structure ?? signal?.reason?.match(/4H:(\w+)/)?.[1] ?? "—";
+            const structure = m?.structure ?? signal?.reason?.match(/4H:(\w+)/)?.[1] ?? "--";
             const adx = m?.adx ?? signal?.adx;
             const rsi = m?.rsi ?? signal?.rsi;
             const stochK = m?.stochK ?? signal?.stochK;
             const stochD = m?.stochD ?? signal?.stochD;
-            const stoch = stochK !== undefined && stochD !== undefined ? `${round(stochK)}/${round(stochD)}` : "—";
+            const stoch = stochK !== undefined && stochD !== undefined ? `${round(stochK)}/${round(stochD)}` : "--";
             const entry = signal?.entry ?? 0;
             const stop = signal?.stop ?? 0;
             const target = signal?.target ?? 0;
@@ -285,8 +285,8 @@ export default function Dashboard() {
                     <span className="text-gray-400">Structure</span>
                     <span className={`font-medium ${structure === "UPTREND" ? "text-green-400" : structure === "DOWNTREND" ? "text-red-400" : structure === "RANGE" ? "text-yellow-400" : "text-gray-300"}`}>{structure}</span>
                   </div>
-                  <div className="flex justify-between"><span className="text-gray-400">ADX</span><span className="font-medium">{adx !== undefined ? round(adx) : "—"}</span></div>
-                  <div className="flex justify-between"><span className="text-gray-400">RSI</span><span className="font-medium">{rsi !== undefined ? round(rsi) : "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-400">ADX</span><span className="font-medium">{adx !== undefined ? round(adx) : "--"}</span></div>
+                  <div className="flex justify-between"><span className="text-gray-400">RSI</span><span className="font-medium">{rsi !== undefined ? round(rsi) : "--"}</span></div>
                   <div className="flex justify-between"><span className="text-gray-400">Stoch K/D</span><span className="font-medium">{stoch}</span></div>
                 </div>
 
@@ -300,4 +300,78 @@ export default function Dashboard() {
                     <div className="flex justify-between"><span className="text-gray-400">Exit Price</span><span className="font-mono">{money(hist.exitPrice || hist.stop)}</span></div>
                     <div className="flex justify-between">
                       <span className="text-gray-400">Result</span>
-                      <span className={`font-bold ${hist.exitReason === "target_hit" ? "text-purple-400"
+                      <span className={`font-bold ${hist.exitReason === "target_hit" ? "text-purple-400" : hist.exitReason === "stop_hit" ? "text-red-400" : hist.exitReason === "hold_exit" ? "text-yellow-400" : "text-gray-400"}`}>
+                        {hist.exitReason === "target_hit" ? "🎯 Target Hit" : hist.exitReason === "stop_hit" ? "🛑 Stopped" : hist.exitReason === "hold_exit" ? "⚠️ Hold Exit" : hist.exitReason === "expired" ? "⏰ Expired" : hist.exitReason}
+                      </span>
+                    </div>
+                    <div className="flex justify-between"><span className="text-gray-400">Time</span><span className="text-gray-500">{new Date(hist.exitedAt).toLocaleTimeString()}</span></div>
+                  </div>
+                )}
+
+                {hasSignal && signalFresh && (
+                  <div className="mb-4 space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">Entry</span>
+                      <span className="font-mono">{money(signal.entry)}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">Stop</span>
+                      <span className="font-mono text-red-400">{money(signal.stop)}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">Target</span>
+                      <span className="font-mono text-purple-400">{money(signal.target)}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">R:R</span>
+                      <span className="font-mono text-yellow-400">{signal.rr?.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">Confidence</span>
+                      <span className="font-mono">{signal.confidence}%</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-400">Position</span>
+                      <span className="font-mono">{units} units ≈ {money(notional)}</span>
+                    </div>
+                    {unrealizedPnL !== 0 && (
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-400">Unrealized P&L</span>
+                        <span className={`font-mono font-bold ${unrealizedPnL > 0 ? "text-green-400" : "text-red-400"}`}>
+                          {unrealizedPnL > 0 ? "+" : ""}{unrealizedPnL.toFixed(2)}%
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {signal?.holdAdvice && hasSignal && signalFresh && (
+                  <div className={`mb-4 p-3 rounded border text-sm ${getHealthColor(signal.holdAdvice.trendHealth)}`}>
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="font-bold">Hold Advice</span>
+                      <span className="text-xs uppercase tracking-wider">{signal.holdAdvice.trendHealth}</span>
+                    </div>
+                    <p className="text-xs opacity-90">{signal.holdAdvice.reason}</p>
+                    {signal.holdAdvice.trailingStop && (
+                      <div className="flex justify-between mt-1 text-xs">
+                        <span>Trailing Stop</span>
+                        <span className="font-mono">{money(signal.holdAdvice.trailingStop)}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {hasSignal && signalFresh && (
+                  <div className="text-xs text-gray-500 border-t border-gray-700 pt-3">
+                    <p className="mb-1"><span className="text-gray-400">Reason:</span> {signal.reason}</p>
+                    <p><span className="text-gray-400">Expected:</span> {signal.expectedMove?.toFixed(1)}% move</p>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
