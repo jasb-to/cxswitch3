@@ -38,8 +38,22 @@ interface Signal {
   holdAdvice?: HoldAdvice;
 }
 
+interface SignalHistory {
+  pair: string;
+  direction: "LONG" | "SHORT";
+  type: string;
+  entry: number;
+  stop: number;
+  target: number;
+  confidence: number;
+  exitedAt: number;
+  exitReason: "stop_hit" | "target_hit" | "expired" | "hold_exit";
+  exitPrice: number | null;
+}
+
 const PAIRS = ["BTC", "ETH", "SOL"];
 const SIGNAL_STALE_MS = 6 * 60 * 60 * 1000;
+const HISTORY_DISPLAY_MS = 2 * 60 * 60 * 1000; // Show history for 2 hours
 
 const ACCOUNT_BALANCE = 850;
 const RISK_PER_TRADE = 0.02;
@@ -113,13 +127,14 @@ async function fetchKrakenPrice(pair: string): Promise<number | null> {
 export default function Dashboard() {
   const [signals, setSignals] = useState<Record<string, Signal | null>>({});
   const [market, setMarket] = useState<Record<string, MarketData>>({});
+  const [history, setHistory] = useState<Record<string, SignalHistory>>({});
   const [livePrices, setLivePrices] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [fetchCount, setFetchCount] = useState(0);
   const [lastSignalFetch, setLastSignalFetch] = useState<number>(0);
   const [lastPriceFetch, setLastPriceFetch] = useState<number>(0);
 
-  // 1. Fetch signals + market data from backend every 30s
+  // 1. Fetch signals + market data + history from backend every 30s
   useEffect(() => {
     async function loadSignals() {
       try {
@@ -128,6 +143,7 @@ export default function Dashboard() {
 
         const sigMap: Record<string, Signal | null> = {};
         const mktMap: Record<string, MarketData> = {};
+        const histMap: Record<string, SignalHistory> = {};
 
         for (const m of data.marketData || []) {
           if (m?.pair) mktMap[m.pair] = m;
@@ -138,8 +154,19 @@ export default function Dashboard() {
           sigMap[p] = s || null;
         }
 
+        // Process history — keep only recent exits per pair
+        for (const h of data.history || []) {
+          if (h?.pair) {
+            const age = Date.now() - h.exitedAt;
+            if (age < HISTORY_DISPLAY_MS) {
+              histMap[h.pair] = h;
+            }
+          }
+        }
+
         setSignals(sigMap);
         setMarket(mktMap);
+        setHistory(histMap);
         setFetchCount((c) => c + 1);
         setLastSignalFetch(Date.now());
       } catch (e) {
@@ -185,7 +212,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-6xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-bold">CX Switch v20 — LIVE</h1>
+          <h1 className="text-2xl font-bold">CX Switch v22 — LIVE</h1>
           <div className="text-xs text-gray-400">
             Fetches: {fetchCount} | Signals: {lastSignalFetch ? new Date(lastSignalFetch).toLocaleTimeString() : "—"} | Price: {lastPriceFetch ? new Date(lastPriceFetch).toLocaleTimeString() : "—"}
           </div>
@@ -212,6 +239,7 @@ export default function Dashboard() {
           {PAIRS.map((pair) => {
             const signal = signals[pair];
             const m = market[pair];
+            const hist = history[pair];
             const livePrice = livePrices[pair];
             const now = Date.now();
 
@@ -244,34 +272,61 @@ export default function Dashboard() {
                 : ((entry - currentPrice) / entry) * 100
               : 0;
 
-            // TARGET HIT detection
+            // TARGET HIT detection (live)
             const targetHit = hasSignal && signalFresh && currentPrice && target
               ? signal.direction === "LONG"
                 ? currentPrice >= target
                 : currentPrice <= target
               : false;
 
-            // STOP HIT detection
+            // STOP HIT detection (live)
             const stopHit = hasSignal && signalFresh && currentPrice && stop
               ? signal.direction === "LONG"
                 ? currentPrice <= stop
                 : currentPrice >= stop
               : false;
 
+            // HISTORY: Check if we have a recent stopped out / target hit signal
+            const hasHistory = !!hist;
+            const historyStopHit = hasHistory && hist.exitReason === "stop_hit";
+            const historyTargetHit = hasHistory && hist.exitReason === "target_hit";
+            const historyHoldExit = hasHistory && hist.exitReason === "hold_exit";
+
+            // Determine card border color
+            let borderClass = "border-gray-700 bg-gray-800";
+            let bannerText: string | null = null;
+            let bannerClass = "";
+
+            if (targetHit || historyTargetHit) {
+              borderClass = "border-purple-500 bg-purple-900/10";
+              bannerText = "🎯 TARGET HIT";
+              bannerClass = "bg-purple-500 text-white";
+            } else if (stopHit || historyStopHit) {
+              borderClass = "border-red-500 bg-red-900/10";
+              bannerText = "🛑 STOPPED OUT";
+              bannerClass = "bg-red-500 text-white";
+            } else if (historyHoldExit) {
+              borderClass = "border-yellow-500 bg-yellow-900/10";
+              bannerText = "⚠️ HOLD EXIT";
+              bannerClass = "bg-yellow-500 text-black";
+            } else if (hasSignal && signalFresh) {
+              borderClass = signal?.direction === "LONG"
+                ? "border-green-500 bg-green-900/10"
+                : "border-red-500 bg-red-900/10";
+            }
+
             return (
               <div
                 key={pair}
-                className={`rounded-lg p-5 border-2 transition-all ${
-                  targetHit
-                    ? "border-purple-500 bg-purple-900/10"
-                    : stopHit
-                    ? "border-red-500 bg-red-900/10"
-                    : hasSignal && signalFresh
-                    ? signal?.direction === "LONG"
-                      ? "border-green-500 bg-green-900/10"
-                      : "border-red-500 bg-red-900/10"
-                    : "border-gray-700 bg-gray-800"
-                }`}>
+                className={`rounded-lg p-5 border-2 transition-all ${borderClass}`}>
+
+                {/* Banner across top */}
+                {bannerText && (
+                  <div className={`mb-4 py-2 px-3 rounded text-center font-bold text-sm ${bannerClass}`}>
+                    {bannerText}
+                  </div>
+                )}
+
                 <div className="flex justify-between items-start mb-4">
                   <div>
                     <div className="font-bold text-lg">{pair}/USD</div>
@@ -285,11 +340,7 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {targetHit ? (
-                    <span className="px-2 py-1 rounded text-xs bg-purple-500 text-white font-bold">🎯 TARGET HIT</span>
-                  ) : stopHit ? (
-                    <span className="px-2 py-1 rounded text-xs bg-red-500 text-white font-bold">🛑 STOP HIT</span>
-                  ) : hasSignal && signalFresh ? (
+                  {hasSignal && signalFresh ? (
                     <div className="flex flex-col items-end gap-1">
                       <span className={`px-2 py-1 rounded text-xs font-bold ${getTypeColor(signal.type)}`}>
                         {signal.type}
@@ -327,6 +378,40 @@ export default function Dashboard() {
                     <span className="font-medium">{stoch}</span>
                   </div>
                 </div>
+
+                {/* HISTORY DISPLAY */}
+                {hasHistory && !hasSignal && (
+                  <div className="mb-4 p-3 bg-gray-900/50 rounded text-sm space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Last Signal</span>
+                      <span className={`font-bold ${hist.direction === "LONG" ? "text-green-400" : "text-red-400"}`}>
+                        {hist.type} {hist.direction}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Entry</span>
+                      <span className="font-mono">{money(hist.entry)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Exit Price</span>
+                      <span className="font-mono">{money(hist.exitPrice || hist.stop)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Result</span>
+                      <span className={`font-bold ${
+                        hist.exitReason === "target_hit" ? "text-purple-400" :
+                        hist.exitReason === "stop_hit" ? "text-red-400" :
+                        "text-yellow-400"
+                      }`}>
+                        {hist.exitReason === "target_hit" ? "+" : hist.exitReason === "stop_hit" ? "−" : "~"}
+                        {Math.abs(((hist.exitPrice || hist.stop) - hist.entry) / hist.entry * 100).toFixed(2)}%
+                      </span>
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      Exited: {new Date(hist.exitedAt).toLocaleTimeString()}
+                    </div>
+                  </div>
+                )}
 
                 {hasSignal && signalFresh ? (
                   <div className="space-y-2 border-t border-gray-700 pt-4 text-sm">
@@ -428,10 +513,10 @@ export default function Dashboard() {
                       Last: {signal?.type} {signal?.direction} @ {money(signal?.entry)} ({new Date(signal!.timestamp).toLocaleTimeString()})
                     </p>
                   </div>
-                ) : (
+                ) : !hasHistory && (
                   <div className="mt-4 text-gray-500 text-sm border-t border-gray-700 pt-4 text-center">
                     <p>No active setup</p>
-                    <p className="text-xs text-gray-600 mt-1">Monitoring 4H trend + 1H multi-setup</p>
+                    <p className="text-xs text-gray-600 mt-1">Monitoring 4H trend + 15m multi-setup</p>
                   </div>
                 )}
               </div>
