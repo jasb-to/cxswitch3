@@ -1,5 +1,7 @@
-// lib/strategy.ts — v21.4 "FULL FIX"
+// lib/strategy.ts — v21.7 "MONITOR PERSISTENCE FIX"
 // ============================================================
+// FIX: setex → set with { ex: } for Upstash Redis
+// FIX: Don't clear monitor on stoch_not_ready — only on expiry/direction-change/signal
 // 4H trend for direction, 15m Stoch K/D cross + volume for entry timing
 // Redis-backed monitoring state (survives 15m cron intervals)
 // MARKET DATA ALWAYS RETURNED
@@ -521,7 +523,7 @@ export function shouldHold(signal: Signal, candles4h: Candle[], candles1h: Candl
 }
 
 // ─── Redis Monitor State ─────────────────────────────────────
-// FIX: Upstash Redis auto-parses JSON — no manual JSON.parse/stringify
+// FIX: Upstash Redis uses .set(key, value, { ex: seconds }) not .setex()
 
 interface MonitorState {
   pair: string;
@@ -542,7 +544,6 @@ export async function getMonitorState(pair: string): Promise<MonitorState | unde
   if (!_redisClient) return undefined;
   try {
     const data = await _redisClient.get(`cxswitch:monitor:${pair}`);
-    // Upstash Redis already parses JSON — return as-is
     return data as MonitorState | undefined;
   } catch (err) {
     console.error(`[MONITOR] Redis get failed for ${pair}:`, err);
@@ -553,8 +554,8 @@ export async function getMonitorState(pair: string): Promise<MonitorState | unde
 export async function setMonitorState(pair: string, state: MonitorState): Promise<void> {
   if (!_redisClient) return;
   try {
-    // Upstash Redis handles JSON serialization — pass object directly
-    await _redisClient.setex(`cxswitch:monitor:${pair}`, 3600, state);
+    // FIX: Upstash Redis .set() with { ex: } option
+    await _redisClient.set(`cxswitch:monitor:${pair}`, state, { ex: 3600 });
   } catch (err) {
     console.error(`[MONITOR] Redis set failed for ${pair}:`, err);
   }
@@ -636,10 +637,17 @@ export async function generateSignal(
   
   const existingMonitor = await getMonitorState(pair);
   
+  // FIX: Don't clear monitor just because stoch isn't ready on this candle.
+  // Monitor persists until: expiry, direction change, or signal generation.
   if (!stoch15.ready) {
     if (existingMonitor) {
-      await clearMonitorState(pair);
-      debug.push("monitor_cleared:not_ready");
+      const monitorAge = (Date.now() - existingMonitor.startedAt) / (1000 * 60);
+      if (monitorAge > 60) {
+        await clearMonitorState(pair);
+        debug.push("monitor_expired:60min");
+      } else {
+        debug.push(`monitor_persisting:${existingMonitor.reason}_age:${monitorAge.toFixed(1)}min`);
+      }
     }
     debug.push("stoch_not_ready");
     return { market, debug };
