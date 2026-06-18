@@ -1,5 +1,7 @@
-// app/api/cron/route.ts — v21.5 "IMPORT REDIS FROM STATE"
+// app/api/cron/route.ts — v21.6 "IDEMPOTENT RATE LIMIT"
 // ============================================================
+// Returns 200 OK instead of 429 when run too soon — prevents
+// cron-job.org from marking it as failed and retrying aggressively
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
@@ -8,7 +10,7 @@ import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL"] as const;
-const MIN_CRON_INTERVAL_MS = 15 * 60 * 1000;
+const MIN_CRON_INTERVAL_MS = 14 * 60 * 1000; // 14 min buffer (cron-job.org drifts)
 
 function roundPrice(n: number): number {
   if (n >= 10000) return Math.round(n);
@@ -60,14 +62,18 @@ export async function GET(request: Request) {
   const lastRun = await getLastCronRun();
   const timeSinceLastRun = runStart - lastRun;
   
+  // FIX: Return 200 OK instead of 429 — cron-job.org treats 429 as failure
   if (!forceRun && timeSinceLastRun < MIN_CRON_INTERVAL_MS) {
     const waitSeconds = Math.ceil((MIN_CRON_INTERVAL_MS - timeSinceLastRun) / 1000);
-    console.log(`[RATE LIMIT] Too soon. Last run ${(timeSinceLastRun/1000).toFixed(0)}s ago. Wait ${waitSeconds}s.`);
+    console.log(`[RATE LIMIT] Skipping — last run ${(timeSinceLastRun/1000).toFixed(0)}s ago. Next in ${waitSeconds}s.`);
     return NextResponse.json({ 
-      error: "Rate limited", 
+      success: true,
+      skipped: true,
+      reason: "rate_limited",
       retryAfter: waitSeconds,
-      lastRun: new Date(lastRun).toISOString()
-    }, { status: 429 });
+      lastRun: new Date(lastRun).toISOString(),
+      message: `Already ran ${(timeSinceLastRun/1000).toFixed(0)}s ago. Waiting ${waitSeconds}s.`
+    });
   }
 
   await setLastCronRun(runStart);
@@ -236,6 +242,7 @@ export async function GET(request: Request) {
 
   return NextResponse.json({
     success: true,
+    skipped: false,
     timestamp: new Date().toISOString(),
     durationMs: runDuration,
     signals: finalSignals.length,
