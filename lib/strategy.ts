@@ -1,16 +1,6 @@
-// lib/strategy.ts — v21.3 "COMPILE-CLEAN + FIXES"
+// lib/strategy.ts — v21.4 "BUILD CLEAN"
 // ============================================================
-// Fixes:
-// 1. TypeScript syntax (Promise<< → Promise<<)
-// 2. Division by zero in adx()
-// 3. avg() empty array crash
-// 4. Monitor key mismatch (use pair only, direction inside state)
-// 5. Cooldown blocks signals → check if existing trade still valid
-// 6. Signal expiry buffer (0.2% tolerance)
-// 7. Stoch empty array guard
-// 8. Position sizing helper added
-// 9. Signal types aligned with dashboard (BREAKOUT, REVERSAL, SWEEP, CONTINUATION, PULLBACK)
-// 10. Removed unused ema()
+// All fixes applied, syntax errors corrected
 
 // ─── Types ─────────────────────────────────────────────────
 
@@ -57,7 +47,7 @@ export interface SignalResult {
 // ─── Constants ───────────────────────────────────────────────
 
 const CURRENT_SIGNAL_VERSION = 3;
-const EXPIRY_BUFFER = 0.002; // 0.2% tolerance for target/stop hits
+const EXPIRY_BUFFER = 0.002;
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -98,8 +88,6 @@ function rsi(closes: number[], period = 14): number {
   const rs = avgGain / avgLoss;
   return 100 - (100 / (1 + rs));
 }
-
-// ─── FIXED Stochastic ────────────────────────────────────────
 
 function stoch(candles: Candle[], kPeriod = 14, dPeriod = 3): { k: number; d: number; prevK: number; prevD: number } {
   if (!candles.length) {
@@ -170,8 +158,6 @@ function stochCross(candles: Candle[], kPeriod = 14, dPeriod = 3): {
     prevD: s.prevD,
   };
 }
-
-// ─── FIXED ADX ─────────────────────────────────────────────
 
 function adx(candles: Candle[], period = 14): number {
   const trs: number[] = [];
@@ -529,7 +515,6 @@ export function shouldHold(signal: Signal, candles4h: Candle[], candles1h: Candl
 }
 
 // ─── Redis Monitor State ─────────────────────────────────────
-// KEY FIX: Use pair only as key, direction stored inside state
 
 interface MonitorState {
   pair: string;
@@ -609,12 +594,10 @@ export async function generateSignal(
     timestamp: Date.now(),
   };
   
-  // ─── FIXED Cooldown: Only block if existing trade is still valid ───
   const lastTrade = activeTrades[pair];
   if (lastTrade) {
     const hoursSince = (Date.now() - lastTrade.timestamp) / (1000 * 60 * 60);
     if (hoursSince < 4) {
-      // Check if the trade's signal is still valid at current price
       const tradeStillValid = lastTrade.entry && lastTrade.stop && lastTrade.target 
         ? isSignalStillValid({ ...lastTrade, version: CURRENT_SIGNAL_VERSION }, currentPrice)
         : false;
@@ -623,7 +606,6 @@ export async function generateSignal(
         debug.push(`cooldown:trade_still_valid_${hoursSince.toFixed(1)}h`);
         return { market, debug };
       }
-      // If trade hit stop/target, allow new signal
       debug.push(`cooldown:trade_expired_${hoursSince.toFixed(1)}h`);
     }
   }
@@ -643,7 +625,6 @@ export async function generateSignal(
   const stoch15 = stochMomentumGate(candles15m, trendDirection);
   debug.push(`15m_stoch:${stoch15.reason}_k:${stoch15.k.toFixed(1)}_d:${stoch15.d.toFixed(1)}`);
   
-  // ─── FIXED Monitor key: Use pair only ────────────────────
   const existingMonitor = await getMonitorState(pair);
   
   if (!stoch15.ready) {
@@ -668,7 +649,6 @@ export async function generateSignal(
     return { market, debug };
   }
   
-  // Check monitor direction matches current trend
   if (existingMonitor.direction !== trendDirection) {
     await clearMonitorState(pair);
     await setMonitorState(pair, {
@@ -744,7 +724,6 @@ export async function generateSignal(
   confidence += stoch15.crossed ? 5 : 0;
   confidence = Math.min(95, confidence);
   
-  // Signal type: use REVERSAL when cross + confirmation at extreme, CONTINUATION when cross in trend
   let signalType: Signal["type"];
   if (stoch15.crossed) {
     signalType = "CONTINUATION";
