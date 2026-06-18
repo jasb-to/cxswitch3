@@ -1,7 +1,8 @@
-// lib/strategy.ts — v21.7 "MONITOR PERSISTENCE FIX"
+// lib/strategy.ts — v21.8 "OVERSOLD CONTINUATION + MONITOR FIX"
 // ============================================================
 // FIX: setex → set with { ex: } for Upstash Redis
 // FIX: Don't clear monitor on stoch_not_ready — only on expiry/direction-change/signal
+// NEW: oversold_rollover (SHORT) and overbought_rollover (LONG) for strong trend continuation
 // 4H trend for direction, 15m Stoch K/D cross + volume for entry timing
 // Redis-backed monitoring state (survives 15m cron intervals)
 // MARKET DATA ALWAYS RETURNED
@@ -333,6 +334,7 @@ function priceConfirmsReversal(candles: Candle[], direction: "LONG" | "SHORT"): 
 }
 
 // ─── Stoch Momentum Gate ─────────────────────────────────────
+// NEW: oversold_rollover (SHORT) and overbought_rollover (LONG) for strong trend continuation
 
 function stochMomentumGate(candles: Candle[], direction: "LONG" | "SHORT", overboughtThreshold = 80, oversoldThreshold = 20): {
   ready: boolean;
@@ -349,22 +351,26 @@ function stochMomentumGate(candles: Candle[], direction: "LONG" | "SHORT", overb
     const wasOversold = cross.prevK < oversoldThreshold || cross.prevD < oversoldThreshold;
     const crossingUp = cross.crossedUp;
     const belowD = cross.k < cross.d;
+    const overboughtRollover = cross.prevK > 70 && cross.k < cross.prevK && cross.k > cross.d;
     
     if (crossingUp) return { ready: true, crossed: true, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "k_crossed_above_d" };
     if (wasOversold && cross.k > cross.d) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "oversold_recovery" };
     if (belowD && cross.k < 40) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "building_bullish_momentum" };
-    return { ready: false, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: `k=${cross.k.toFixed(1)}_d=${cross.d.toFixed(1)}_not_ready` };
+    if (overboughtRollover) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "overbought_rollover" };
+    return { ready: false, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: `k=${cross.k.toFixed(1)}_d=${cross.d.toFixed(1)}_prevK=${cross.prevK.toFixed(1)}_prevD=${cross.prevD.toFixed(1)}_not_ready` };
   }
   
   if (direction === "SHORT") {
     const wasOverbought = cross.prevK > overboughtThreshold || cross.prevD > overboughtThreshold;
     const crossingDown = cross.crossedDown;
     const aboveD = cross.k > cross.d;
+    const oversoldRollover = cross.prevK < 30 && cross.k > cross.prevK && cross.k < cross.d;
     
     if (crossingDown) return { ready: true, crossed: true, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "k_crossed_below_d" };
     if (wasOverbought && cross.k < cross.d) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "overbought_reversal" };
     if (aboveD && cross.k > 60) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "building_bearish_momentum" };
-    return { ready: false, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: `k=${cross.k.toFixed(1)}_d=${cross.d.toFixed(1)}_not_ready` };
+    if (oversoldRollover) return { ready: true, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: "oversold_rollover" };
+    return { ready: false, crossed: false, k: cross.k, d: cross.d, prevK: cross.prevK, prevD: cross.prevD, reason: `k=${cross.k.toFixed(1)}_d=${cross.d.toFixed(1)}_prevK=${cross.prevK.toFixed(1)}_prevD=${cross.prevD.toFixed(1)}_not_ready` };
   }
   
   return { ready: false, crossed: false, k: 0, d: 0, prevK: 0, prevD: 0, reason: "unknown_direction" };
@@ -554,7 +560,6 @@ export async function getMonitorState(pair: string): Promise<MonitorState | unde
 export async function setMonitorState(pair: string, state: MonitorState): Promise<void> {
   if (!_redisClient) return;
   try {
-    // FIX: Upstash Redis .set() with { ex: } option
     await _redisClient.set(`cxswitch:monitor:${pair}`, state, { ex: 3600 });
   } catch (err) {
     console.error(`[MONITOR] Redis set failed for ${pair}:`, err);
