@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 interface Signal {
   pair: string;
   direction: "LONG" | "SHORT";
-  type: string;
+  type: "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL";
   confidence: number;
   entry: number;
   stop: number;
@@ -13,6 +13,7 @@ interface Signal {
   rr: number;
   timestamp: number;
   expectedMove: number;
+  version: number;
 }
 
 interface SignalHistory {
