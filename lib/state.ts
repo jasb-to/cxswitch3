@@ -1,4 +1,4 @@
-// lib/state.ts — v23.0 "FIXED: v23 Signal types + version 3"
+// lib/state.ts — v23.1 "FIXED: Early Entry + v23 Signal types + version 3"
 // ============================================================
 
 import { Redis } from "@upstash/redis";
@@ -20,7 +20,7 @@ const SIGNAL_HISTORY_TTL = 48 * 60 * 60;
 // CRITICAL: Must match lib/strategy.ts CURRENT_SIGNAL_VERSION
 export const CURRENT_SIGNAL_VERSION = 3;
 
-export type SignalType = "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL";
+export type SignalType = "EARLY" | "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL";
 
 export interface Signal {
   id: string;
@@ -66,6 +66,7 @@ function safeParseObject(data: unknown): Record<string, any> {
 }
 
 function getSignalMaxAgeHours(signal: any): number {
+  if (signal.type === "EARLY") return 3;      // Early signals expire faster — they're pre-breakout
   if (signal.type === "BREAKOUT") return 6;
   if (signal.type === "PULLBACK") return 4;
   if (signal.type === "REVERSAL") return 4;
