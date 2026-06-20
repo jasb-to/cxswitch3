@@ -1,9 +1,9 @@
-// app/api/cron/route.ts — v22.0 "FIXED: History Tracking + Full Active Trade Data"
+// app/api/cron/route.ts — v23 "FIXED: Removed monitor state, updated generateSignal signature"
 // ============================================================
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid, shouldHold, getMonitorState, clearMonitorState, setRedisClient } from "@/lib/strategy";
+import { generateSignal, isSignalStillValid, shouldHold } from "@/lib/strategy";
 import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, redis, addSignalToHistory } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
@@ -63,8 +63,7 @@ export async function GET(request: Request) {
   }
 
   await setLastCronRun(runStart);
-  setRedisClient(redis);
-  console.log(`[REDIS] Client wired`);
+  console.log(`[REDIS] Client ready`);
 
   let activeTrades = await getActiveTrades();
   if (resetCooldown) {
@@ -115,7 +114,6 @@ export async function GET(request: Request) {
           await addSignalToHistory(existingForPair, exitReason, currentPrice);
           if (activeTrades[pair]) delete activeTrades[pair];
           validSignals.splice(existingIdx, 1);
-          await clearMonitorState(pair);
           alerts.push({ pair, status: "existing_invalid", reason: exitReason });
         } else {
           const holdResult = shouldHold(existingForPair, candles4h, candles1h, currentPrice);
@@ -124,31 +122,23 @@ export async function GET(request: Request) {
             await addSignalToHistory(existingForPair, "hold_exit", currentPrice);
             if (activeTrades[pair]) delete activeTrades[pair];
             validSignals.splice(existingIdx, 1);
-            await clearMonitorState(pair);
             exitedSignals.push({ pair, reason: holdResult.reason, signal: existingForPair });
             alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
           } else {
             console.log(`[PAIR] ${pair} — Existing signal still valid (${existingForPair.type}), skipping`);
             alerts.push({ pair, status: "existing_valid", type: existingForPair.type, holdReason: holdResult.reason });
-            const result = await generateSignal(pair, candles1h, candles4h, candles15m, activeTrades);
+            const result = await generateSignal(pair, candles1h, candles4h, candles15m);
             if (result.market) marketDataList.push(result.market);
             continue;
           }
         }
       }
 
-      const result = await generateSignal(pair, candles1h, candles4h, candles15m, activeTrades);
+      // v23: generateSignal no longer takes activeTrades
+      const result = await generateSignal(pair, candles1h, candles4h, candles15m);
       const market = result.market;
       const debug = result.debug || [];
       if (market) marketDataList.push(market);
-
-      const monitorState = await getMonitorState(pair);
-      if (monitorState) {
-        const ageMin = (Date.now() - monitorState.startedAt) / 60000;
-        console.log(`[MONITOR] ${pair}: ${monitorState.direction} | ${monitorState.reason} | K=${monitorState.stochK.toFixed(1)} D=${monitorState.stochD.toFixed(1)} | age=${ageMin.toFixed(1)}min`);
-      } else {
-        console.log(`[MONITOR] ${pair}: no state`);
-      }
 
       if (!result.signal) {
         console.log(`[PAIR] ${pair} — NO SIGNAL (${debug.join(" | ")})`);
@@ -158,7 +148,6 @@ export async function GET(request: Request) {
 
       const signal = result.signal;
       console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} entry=${roundPrice(signal.entry)} conf=${signal.confidence}%`);
-      await clearMonitorState(pair);
       newSignals.push(signal);
 
       const alertPayload = {
