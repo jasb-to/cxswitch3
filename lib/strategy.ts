@@ -1,4 +1,4 @@
-// lib/strategy.ts — v23.0 "Trendline Break + 15m Retest + Price Action"
+// lib/strategy.ts — v23.1 "Early Entry + Breakout + Position Building"
 // ============================================================
 
 export interface Candle {
@@ -14,7 +14,7 @@ export interface Signal {
   id: string;
   pair: string;
   direction: "LONG" | "SHORT";
-  type: "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL";
+  type: "EARLY" | "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL";
   entry: number;
   stop: number;
   target: number;
@@ -142,6 +142,84 @@ function detectTrend(candles: Candle[]): TrendResult {
   return { direction: null, swing1: 0, swing2: 0, adx: adxVal, health: "NONE" };
 }
 
+// --- EARLY ENTRY DETECTION ---
+interface EarlySignal {
+  valid: boolean;
+  type: string;
+  confidence: number;
+}
+
+function detectEarlyEntry(candles1h: Candle[], candles15m: Candle[], trend: TrendResult): EarlySignal {
+  const len1h = candles1h.length;
+  const len15m = candles15m.length;
+  if (len1h < 20 || len15m < 20) return { valid: false, type: "insufficient_data", confidence: 0 };
+
+  const recent1h = candles1h.slice(-6);
+  const recent15m = candles15m.slice(-8);
+  const closes1h = candles1h.map(c => c.close);
+  const rsi1h = rsi(closes1h);
+  const stoch15 = stoch(candles15m);
+  const currentPrice = candles1h[len1h - 1].close;
+
+  const last1h = candles1h[len1h - 1];
+  const prev1h = candles1h[len1h - 2];
+  const prevLow = Math.min(...candles1h.slice(-4, -1).map(c => c.low));
+  const prevHigh = Math.max(...candles1h.slice(-4, -1).map(c => c.high));
+
+  let sweepDetected = false;
+  let divergenceDetected = false;
+  let volumeSpike = false;
+  let momentumCandle = false;
+
+  const recentVol = recent1h.map(c => c.volume);
+  const avgVol = avg(recentVol.slice(0, -1));
+  if (avgVol > 0 && recentVol[recentVol.length - 1] > avgVol * 1.5) volumeSpike = true;
+
+  if (trend.direction === "LONG") {
+    const wickLow = Math.min(last1h.low, prev1h.low);
+    if (wickLow < prevLow * 1.002 && last1h.close > prevLow) {
+      sweepDetected = true;
+    }
+    const priceLL = last1h.low < prev1h.low;
+    const rsiHL = rsi1h > 30 && rsi1h > rsi(candles1h.slice(0, -1).map(c => c.close));
+    if (priceLL && rsiHL) divergenceDetected = true;
+    const body = last1h.close - last1h.open;
+    const range = last1h.high - last1h.low;
+    if (body > 0 && body / range > 0.6) momentumCandle = true;
+
+    const score = (sweepDetected ? 30 : 0) + (divergenceDetected ? 25 : 0) + 
+                  (volumeSpike ? 20 : 0) + (momentumCandle ? 15 : 0) +
+                  (stoch15.k < 30 ? 10 : 0);
+
+    if (score >= 40) {
+      return { valid: true, type: `sweep${divergenceDetected ? "_div" : ""}${volumeSpike ? "_vol" : ""}`, confidence: Math.min(75, score) };
+    }
+  }
+
+  if (trend.direction === "SHORT") {
+    const wickHigh = Math.max(last1h.high, prev1h.high);
+    if (wickHigh > prevHigh * 0.998 && last1h.close < prevHigh) {
+      sweepDetected = true;
+    }
+    const priceHH = last1h.high > prev1h.high;
+    const rsiLH = rsi1h < 70 && rsi1h < rsi(candles1h.slice(0, -1).map(c => c.close));
+    if (priceHH && rsiLH) divergenceDetected = true;
+    const body = last1h.open - last1h.close;
+    const range = last1h.high - last1h.low;
+    if (body > 0 && body / range > 0.6) momentumCandle = true;
+
+    const score = (sweepDetected ? 30 : 0) + (divergenceDetected ? 25 : 0) + 
+                  (volumeSpike ? 20 : 0) + (momentumCandle ? 15 : 0) +
+                  (stoch15.k > 70 ? 10 : 0);
+
+    if (score >= 40) {
+      return { valid: true, type: `sweep${divergenceDetected ? "_div" : ""}${volumeSpike ? "_vol" : ""}`, confidence: Math.min(75, score) };
+    }
+  }
+
+  return { valid: false, type: "no_early_setup", confidence: 0 };
+}
+
 // --- PRICE ACTION ---
 interface PriceAction {
   valid: boolean;
@@ -197,6 +275,54 @@ export async function generateSignal(
     timestamp: Date.now(),
   };
   
+  // === EARLY ENTRY CHECK ===
+  if (trend.direction && trend.adx >= ADX_MIN) {
+    const early = detectEarlyEntry(candles1h, candles15m, trend);
+    if (early.valid) {
+      debug.push(`EARLY:${early.type}_conf:${early.confidence}`);
+      
+      const entryPrice = candles1h[candles1h.length - 1].close;
+      let stop: number, target: number, rr: number;
+      
+      if (trend.direction === "LONG") {
+        stop = entryPrice * (1 - SL_PCT);
+        target = entryPrice * (1 + TP_PCT);
+        rr = (target - entryPrice) / (entryPrice - stop);
+      } else {
+        stop = entryPrice * (1 + SL_PCT);
+        target = entryPrice * (1 - TP_PCT);
+        rr = (entryPrice - target) / (stop - entryPrice);
+      }
+      
+      if (rr >= 1.5) {
+        const rsiVal = rsi(candles1h.map(c => c.close));
+        const stoch15 = stoch(candles15m, 14, 3);
+        
+        const signal: Signal = {
+          id: generateSignalId(pair),
+          pair, direction: trend.direction, type: "EARLY",
+          entry: Math.round(entryPrice * 100) / 100,
+          stop: Math.round(stop * 100) / 100,
+          target: Math.round(target * 100) / 100,
+          confidence: early.confidence,
+          rr: Math.round(rr * 100) / 100,
+          adx: Math.round(trend.adx * 10) / 10,
+          rsi: Math.round(rsiVal * 10) / 10,
+          stochK: stoch15.k,
+          stochD: stoch15.d,
+          expectedMove: TP_PCT * 100,
+          reason: `${trend.direction} EARLY | ${early.type} | 4H:${trend.direction} ${trend.health} ADX ${trend.adx.toFixed(1)} | Conf:${early.confidence} | Add on retest`,
+          timestamp: Date.now(),
+          version: CURRENT_SIGNAL_VERSION,
+        };
+        
+        debug.push(`SIGNAL:EARLY_${trend.direction}_entry:${signal.entry}_rr:${signal.rr}`);
+        return { signal, market, debug };
+      }
+    }
+  }
+  
+  // === STANDARD BREAKOUT/RETEST LOGIC ===
   if (!trend.direction) {
     debug.push("no_trend:range_or_choppy");
     return { market, debug };
@@ -206,7 +332,6 @@ export async function generateSignal(
     return { market, debug };
   }
   
-  // 4H break check
   const last4h = candles4h[candles4h.length - 1];
   const trendlineNow = trend.swing2;
   let breakConfirmed = false;
@@ -237,7 +362,6 @@ export async function generateSignal(
     return { market, debug };
   }
   
-  // 15m retest + price action
   const pa = checkPriceAction(candles15m, trend.direction, trendlineNow);
   debug.push(`15m_retest:${pa.type}`);
   
