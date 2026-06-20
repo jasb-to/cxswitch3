@@ -1,4 +1,4 @@
-// lib/strategy.ts — v22.1 "FIXED: 1.5% SL / 4% TP + Monitor Persistence + Version Sync"
+// lib/strategy.ts — v22.2 "FASTER: 8-candle lookback + tighter slope exits"
 // ============================================================
 
 export interface Candle {
@@ -145,8 +145,8 @@ function identifyStructure(candles: Candle[]): { structure: string; health: stri
   const closes = candles.map(c => c.close);
   const highs = candles.map(c => c.high);
   const lows = candles.map(c => c.low);
-  const recentHighs = highs.slice(-20);
-  const recentLows = lows.slice(-20);
+  const recentHighs = highs.slice(-8);
+  const recentLows = lows.slice(-8);
   const hh = Math.max(...recentHighs);
   const ll = Math.min(...recentLows);
   const range = hh - ll;
@@ -298,7 +298,7 @@ export function shouldHold(signal: Signal, candles4h: Candle[], candles1h: Candl
   const stoch15m = stoch(candles1h, 14, 3);
   if (signal.direction === "LONG") {
     if (structure === "DOWNTREND" && health === "STRONG") return { shouldHold: false, reason: `TREND BREAK: 4H DOWNTREND STRONG. Exit LONG.` };
-    if (adxVal < 20 && slope1h < -0.1) return { shouldHold: false, reason: `MOMENTUM COLLAPSE: ADX ${adxVal.toFixed(1)}, 1H slope ${slope1h.toFixed(2)}. Exit LONG.` };
+    if (adxVal < 25 && slope1h < -0.05) return { shouldHold: false, reason: `MOMENTUM COLLAPSE: ADX ${adxVal.toFixed(1)}, 1H slope ${slope1h.toFixed(2)}. Exit LONG.` };
     if (stoch15m.k > 80 && stoch15m.k < stoch15m.d) return { shouldHold: false, reason: `STOCH ROLLOVER: K=${stoch15m.k.toFixed(1)} < D=${stoch15m.d.toFixed(1)}. Exit LONG.` };
     if (signal.type === "BREAKOUT" && structure === "RANGE" && health === "NONE") return { shouldHold: false, reason: `BREAKOUT FAILED: 4H RANGE no momentum. Exit LONG.` };
     const maxAdverseMove = (signal.entry - currentPrice) / signal.entry;
@@ -307,7 +307,7 @@ export function shouldHold(signal: Signal, candles4h: Candle[], candles1h: Candl
   }
   if (signal.direction === "SHORT") {
     if (structure === "UPTREND" && health === "STRONG") return { shouldHold: false, reason: `TREND BREAK: 4H UPTREND STRONG. Exit SHORT.` };
-    if (adxVal < 20 && slope1h > 0.1) return { shouldHold: false, reason: `MOMENTUM COLLAPSE: ADX ${adxVal.toFixed(1)}, 1H slope ${slope1h.toFixed(2)}. Exit SHORT.` };
+    if (adxVal < 25 && slope1h > 0.05) return { shouldHold: false, reason: `MOMENTUM COLLAPSE: ADX ${adxVal.toFixed(1)}, 1H slope ${slope1h.toFixed(2)}. Exit SHORT.` };
     if (stoch15m.k < 20 && stoch15m.k > stoch15m.d) return { shouldHold: false, reason: `STOCH BOUNCE: K=${stoch15m.k.toFixed(1)} > D=${stoch15m.d.toFixed(1)}. Exit SHORT.` };
     if (signal.type === "BREAKOUT" && structure === "RANGE" && health === "NONE") return { shouldHold: false, reason: `BREAKOUT FAILED: 4H RANGE no momentum. Exit SHORT.` };
     const maxAdverseMove = (currentPrice - signal.entry) / signal.entry;
@@ -549,7 +549,7 @@ export async function generateSignal(
     stochK: Math.round(stoch15.k * 10) / 10,
     stochD: Math.round(stoch15.d * 10) / 10,
     expectedMove: Math.round(expectedMove * 10) / 10,
-    reason: `${signalType} ${trendDirection} | 4H:${structure} ADX ${adxVal.toFixed(1)} | 15m Stoch:${stoch15.reason} | Vol:${volConfirm.reason} | Price:${priceConfirm.reason} | Conf:${confidence}`,
+    reason: `${signalType} ${trendDirection} | 4H:${structure} ${health} ADX ${adxVal.toFixed(1)} | 15m Stoch:${stoch15.reason} | Vol:${volConfirm.reason} | Price:${priceConfirm.reason} | Conf:${confidence}`,
     timestamp: Date.now(),
     version: CURRENT_SIGNAL_VERSION,
   };
