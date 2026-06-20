@@ -1,4 +1,4 @@
-// lib/state.ts — v20.4 "FIXED: Version Sync + Signal History"
+// lib/state.ts — v23 "FIXED: Clean Signal + SignalType exports for v23 strategy"
 // ============================================================
 
 import { Redis } from "@upstash/redis";
@@ -19,6 +19,28 @@ const SIGNAL_HISTORY_TTL = 48 * 60 * 60;
 
 // CRITICAL: Must match lib/strategy.ts
 const CURRENT_SIGNAL_VERSION = 2;
+
+export type SignalType = "SWEEP" | "EARLY" | "REVERSAL" | "OTHER";
+
+export interface Signal {
+  id: string;
+  pair: string;
+  direction: "LONG" | "SHORT";
+  type: SignalType;
+  confidence: number;
+  entry: number;
+  stop: number;
+  target: number;
+  rr: number;
+  timestamp: number;
+  adx: number;
+  rsi: number;
+  stochK: number;
+  stochD: number;
+  expectedMove: number;
+  reason: string;
+  version: number;
+}
 
 function safeParseArray(data: unknown): any[] {
   if (!data) return [];
