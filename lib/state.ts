@@ -1,15 +1,15 @@
-// lib/state.ts — v23 "FIXED: Clean Signal + SignalType exports for v23 strategy"
+// lib/state.ts — v23.0 "FIXED: v23 Signal types + version 3"
 // ============================================================
 
 import { Redis } from "@upstash/redis";
 
 export const redis = Redis.fromEnv();
 
-const SIGNALS_KEY = "cx_signals_v14";
-const MARKET_KEY = "cx_market_v14";
-const ACTIVE_TRADES_KEY = "cx_active_trades_v14";
-const LAST_CRON_RUN_KEY = "cx_last_cron_run_v14";
-const SIGNAL_HISTORY_KEY = "cx_signal_history_v14";
+const SIGNALS_KEY = "cx_signals_v15";
+const MARKET_KEY = "cx_market_v15";
+const ACTIVE_TRADES_KEY = "cx_active_trades_v15";
+const LAST_CRON_RUN_KEY = "cx_last_cron_run_v15";
+const SIGNAL_HISTORY_KEY = "cx_signal_history_v15";
 
 const SIGNALS_TTL = 6 * 60 * 60;
 const MARKET_TTL = 4 * 60 * 60;
@@ -17,10 +17,10 @@ const ACTIVE_TRADES_TTL = 24 * 60 * 60;
 const LAST_CRON_RUN_TTL = 24 * 60 * 60;
 const SIGNAL_HISTORY_TTL = 48 * 60 * 60;
 
-// CRITICAL: Must match lib/strategy.ts
-const CURRENT_SIGNAL_VERSION = 2;
+// CRITICAL: Must match lib/strategy.ts CURRENT_SIGNAL_VERSION
+export const CURRENT_SIGNAL_VERSION = 3;
 
-export type SignalType = "SWEEP" | "EARLY" | "REVERSAL" | "OTHER";
+export type SignalType = "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL";
 
 export interface Signal {
   id: string;
@@ -42,6 +42,18 @@ export interface Signal {
   version: number;
 }
 
+export interface SignalHistory {
+  pair: string;
+  direction: "LONG" | "SHORT";
+  type: string;
+  entry: number;
+  stop: number;
+  target: number;
+  exitedAt: number;
+  exitReason: "stop_hit" | "target_hit" | "expired" | "hold_exit";
+  exitPrice: number | null;
+}
+
 function safeParseArray(data: unknown): any[] {
   if (!data) return [];
   const parsed = typeof data === "string" ? JSON.parse(data) : data;
@@ -54,7 +66,8 @@ function safeParseObject(data: unknown): Record<string, any> {
 }
 
 function getSignalMaxAgeHours(signal: any): number {
-  if (signal.type === "EARLY") return 2;
+  if (signal.type === "BREAKOUT") return 6;
+  if (signal.type === "PULLBACK") return 4;
   if (signal.type === "REVERSAL") return 4;
   return 6;
 }
