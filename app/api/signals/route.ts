@@ -1,4 +1,4 @@
-// app/api/signals/route.ts — v23 "FIXED: v23 strategy compatibility"
+// app/api/signals/route.ts — v23 "FIXED: v23 strategy compatibility + Confidence Score"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -51,7 +51,7 @@ export async function GET() {
       ...s,
       meta: {
         tier: isBreakout ? "BREAKOUT" : isPullback ? "PULLBACK" : "OTHER",
-        quality: s.confidence >= 85 ? "A" : s.confidence >= 70 ? "B" : s.confidence >= 55 ? "C" : "D",
+        confidenceScore: s.confidence,  // 0-100 score instead of A/B/C/D
         actionable: s.confidence >= 60,
       },
       holdAdvice
