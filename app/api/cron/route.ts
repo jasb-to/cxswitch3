@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v23 "FIXED: Removed monitor state, updated generateSignal signature"
+// app/api/cron/route.ts — v23.0 "FIXED: v23 strategy compatibility"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -26,7 +26,10 @@ function roundRR(n: number): number {
 }
 
 function getSignalMaxAgeHours(signal: any): number {
-  return signal.type === "REVERSAL" ? 4 : 8;
+  if (signal.type === "BREAKOUT") return 6;
+  if (signal.type === "PULLBACK") return 4;
+  if (signal.type === "REVERSAL") return 4;
+  return 6;
 }
 
 function isSignalExpired(signal: any): boolean {
@@ -116,7 +119,8 @@ export async function GET(request: Request) {
           validSignals.splice(existingIdx, 1);
           alerts.push({ pair, status: "existing_invalid", reason: exitReason });
         } else {
-          const holdResult = shouldHold(existingForPair, candles4h, candles1h, currentPrice);
+          // v23: shouldHold only takes (signal, candles4h, currentPrice)
+          const holdResult = shouldHold(existingForPair, candles4h, currentPrice);
           if (!holdResult.shouldHold) {
             console.log(`[PAIR] ${pair} — HOLD EXIT: ${holdResult.reason}`);
             await addSignalToHistory(existingForPair, "hold_exit", currentPrice);
@@ -127,6 +131,7 @@ export async function GET(request: Request) {
           } else {
             console.log(`[PAIR] ${pair} — Existing signal still valid (${existingForPair.type}), skipping`);
             alerts.push({ pair, status: "existing_valid", type: existingForPair.type, holdReason: holdResult.reason });
+            // v23: generateSignal no longer takes activeTrades
             const result = await generateSignal(pair, candles1h, candles4h, candles15m);
             if (result.market) marketDataList.push(result.market);
             continue;
@@ -134,7 +139,7 @@ export async function GET(request: Request) {
         }
       }
 
-      // v23: generateSignal no longer takes activeTrades
+      // v23: generateSignal(pair, candles1h, candles4h, candles15m) — no activeTrades
       const result = await generateSignal(pair, candles1h, candles4h, candles15m);
       const market = result.market;
       const debug = result.debug || [];
