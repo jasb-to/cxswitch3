@@ -21,7 +21,7 @@ interface Signal {
   stochD?: number;
   meta?: {
     tier: string;
-    quality: string;
+    confidenceScore: number;
     actionable: boolean;
   };
   holdAdvice?: {
@@ -94,6 +94,22 @@ function getHealthBg(health: string): string {
   if (health === "STRONG") return "bg-green-500/20 border-green-500/50";
   if (health === "WEAK") return "bg-yellow-500/20 border-yellow-500/50";
   return "bg-gray-500/20 border-gray-500/50";
+}
+
+function getConfidenceColor(score: number): string {
+  if (score >= 80) return "text-emerald-400";
+  if (score >= 60) return "text-green-400";
+  if (score >= 40) return "text-yellow-400";
+  if (score >= 20) return "text-orange-400";
+  return "text-red-400";
+}
+
+function getConfidenceBarColor(score: number): string {
+  if (score >= 80) return "bg-emerald-500";
+  if (score >= 60) return "bg-green-500";
+  if (score >= 40) return "bg-yellow-500";
+  if (score >= 20) return "bg-orange-500";
+  return "bg-red-500";
 }
 
 export default function Dashboard() {
@@ -235,6 +251,8 @@ export default function Dashboard() {
               statusBadge = "WAIT";
             }
 
+            const confScore = signal?.meta?.confidenceScore ?? signal?.confidence ?? 0;
+
             return (
               <div key={pair} className={`rounded-lg p-5 border-2 transition-all ${borderClass}`}>
                 {bannerText && (
@@ -365,19 +383,31 @@ export default function Dashboard() {
                       <span className="font-mono text-yellow-400">{signal.rr?.toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between text-sm">
-                      <span className="text-gray-400">Confidence</span>
+                      <span className="text-gray-400">Strategy Conf</span>
                       <span className="font-mono">{signal.confidence}%</span>
                     </div>
-                    {signal.meta && (
-                      <div className="flex justify-between text-sm">
-                        <span className="text-gray-400">Quality</span>
-                        <span className={`font-mono font-bold ${
-                          signal.meta.quality === "A" ? "text-purple-400" :
-                          signal.meta.quality === "B" ? "text-green-400" :
-                          signal.meta.quality === "C" ? "text-yellow-400" : "text-red-400"
-                        }`}>{signal.meta.quality}</span>
+
+                    <div className="pt-1">
+                      <div className="flex justify-between text-sm mb-1">
+                        <span className="text-gray-400">Confidence Score</span>
+                        <span className={`font-mono font-bold ${getConfidenceColor(confScore)}`}>
+                          {confScore.toFixed(0)}/100
+                        </span>
                       </div>
-                    )}
+                      <div className="h-2.5 bg-gray-700 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all ${getConfidenceBarColor(confScore)}`}
+                          style={{ width: `${Math.min(100, Math.max(0, confScore))}%` }}
+                        />
+                      </div>
+                      <div className="text-[10px] text-gray-500 mt-1 text-right">
+                        {confScore >= 80 ? "Excellent — High conviction trade" :
+                         confScore >= 60 ? "Good — Solid setup" :
+                         confScore >= 40 ? "Fair — Manage risk carefully" :
+                         confScore >= 20 ? "Weak — Consider skipping" : "Poor — Avoid"}
+                      </div>
+                    </div>
+
                     <div className="flex justify-between text-sm">
                       <span className="text-gray-400">Age</span>
                       <span className="font-mono text-gray-300">{timeAgo(signal.timestamp)}</span>
