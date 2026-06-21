@@ -162,4 +162,4 @@ export async function GET(request: Request) {
   console.log("========================================");
 
   return NextResponse.json({ success: true, signals: merged.length, marketData: marketDataList.length, exited: preExited.length, alerts });
-}
+} 
