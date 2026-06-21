@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v23.4 "FIXED: EARLY TTL + shouldHold + Alert Flow + Entry Logic"
+// app/api/cron/route.ts — v23.5 "FIXED: BREAKOUT + EARLY TTL + No Cache + Alert Flow"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -26,6 +26,7 @@ function roundRR(n: number): number {
 }
 
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export async function GET(request: Request) {
   const runStart = Date.now();
@@ -118,7 +119,6 @@ export async function GET(request: Request) {
           validSignals.splice(existingIdx, 1);
           exitedSignals.push({ signal: existingForPair, reason: validity.reason });
           alerts.push({ pair, status: "existing_invalid", reason: validity.reason });
-          // FALL THROUGH to generate new signal
         } else {
           const holdResult = shouldHold(existingForPair, candles4h, currentPrice, runStart);
           if (!holdResult.shouldHold) {
@@ -128,7 +128,6 @@ export async function GET(request: Request) {
             validSignals.splice(existingIdx, 1);
             exitedSignals.push({ signal: existingForPair, reason: holdResult.reason });
             alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
-            // FALL THROUGH to generate new signal
           } else {
             console.log(`[PAIR] ${pair} — Existing signal still valid (${existingForPair.type}), skipping`);
             alerts.push({ pair, status: "existing_valid", type: existingForPair.type, holdReason: holdResult.reason });
@@ -139,7 +138,7 @@ export async function GET(request: Request) {
         }
       }
 
-      // Generate new signal
+      // Generate new signal (either no existing, or existing was invalidated)
       const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
       const market = result.market;
       const debug = result.debug || [];
