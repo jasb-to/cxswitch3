@@ -1,4 +1,4 @@
-// lib/strategy.ts — v24.3 "Structure-Based 1H Scalp: 4H Override + Reversal Candles"
+// lib/strategy.ts — v24.4 "Structure-Based 1H Scalp: 4H Override + Reversal Candles"
 // ============================================================
 
 export interface Candle {
@@ -112,10 +112,8 @@ function isHammer(c: Candle, direction: "LONG" | "SHORT"): boolean {
   const upperWick = c.high - Math.max(c.open, c.close);
   
   if (direction === "LONG") {
-    // Long lower wick, small body at top
     return lowerWick > body * 2 && upperWick < body * 0.5 && c.close > c.open;
   } else {
-    // Long upper wick, small body at bottom
     return upperWick > body * 2 && lowerWick < body * 0.5 && c.close < c.open;
   }
 }
@@ -230,7 +228,7 @@ function trigger15M(candles: Candle[], direction: "LONG" | "SHORT"): {
     }
     
     // Pattern 2: Deep oversold reversal (hammer or engulfing)
-    const deepOversold = stoch15.k < 15 && stoch15.d < 20;
+    const deepOversold = stoch15.k < 20 && stoch15.d < 25;
     const reversalCandle = isHammer(last, "LONG") || isEngulfing(prev, last, "LONG");
     const priceBounce = last.close > last.open && last.close > prev.close;
     
@@ -238,8 +236,8 @@ function trigger15M(candles: Candle[], direction: "LONG" | "SHORT"): {
       return { triggered: true, type: "deep oversold reversal", sweepLow: last.low };
     }
     
-    // Pattern 3: Stoch bounce from extreme (K was < 10, now curling up with D following)
-    const stochBounce = stoch15.k < 15 && stoch15.k > stoch15.d && prev.close < last.close;
+    // Pattern 3: Stoch bounce from extreme (K was < 15, now curling up with D following)
+    const stochBounce = stoch15.k < 20 && stoch15.k > stoch15.d && prev.close < last.close;
     if (swept && stochBounce && last.close > last.open) {
       return { triggered: true, type: "stoch oversold bounce", sweepLow: last.low };
     }
@@ -254,7 +252,7 @@ function trigger15M(candles: Candle[], direction: "LONG" | "SHORT"): {
       return { triggered: true, type: "sweep + 8/21 cross down", sweepHigh: last.high };
     }
     
-    const deepOverbought = stoch15.k > 85 && stoch15.d > 80;
+    const deepOverbought = stoch15.k > 80 && stoch15.d > 75;
     const reversalCandle = isHammer(last, "SHORT") || isEngulfing(prev, last, "SHORT");
     const priceDrop = last.close < last.open && last.close < prev.close;
     
@@ -262,7 +260,7 @@ function trigger15M(candles: Candle[], direction: "LONG" | "SHORT"): {
       return { triggered: true, type: "deep overbought reversal", sweepHigh: last.high };
     }
     
-    const stochBounce = stoch15.k > 85 && stoch15.k < stoch15.d && prev.close > last.close;
+    const stochBounce = stoch15.k > 80 && stoch15.k < stoch15.d && prev.close > last.close;
     if (swept && stochBounce && last.close < last.open) {
       return { triggered: true, type: "stoch overbought bounce", sweepHigh: last.high };
     }
@@ -286,7 +284,6 @@ function getStructureLevels(
     const nextResistance = highs.find(h => h > entry);
     if (!nextResistance) return null;
     
-    // Wider SL for deep sweeps (volatility buffer)
     const deepSweep = sweepLow && sweepLow < entry * 0.99;
     const sl = sweepLow 
       ? Math.min(sweepLow * 0.998, deepSweep ? entry * 0.97 : entry * 0.985)
@@ -352,10 +349,15 @@ export function generateSignal(
   const c1h = confirm1H(candles1h, t4h.direction);
   debug.push(`1H: ${c1h.confirms ? "CONFIRMS" : "REJECTS"} | ADX: ${c1h.adx.toFixed(1)}`);
   
-  // 4H OVERRIDE: If 4H is STRONG and 15M shows deep reversal, bypass 1H filter
+  // Check 15M trigger FIRST, then decide if 1H override applies
   const t15m = trigger15M(candles15m, t4h.direction);
-  const isOverride = t4h.strength === "STRONG" && t4h.adx > 60 && t15m.triggered && 
-    (t15m.type.includes("oversold") || t15m.type.includes("overbought"));
+  
+  // 4H OVERRIDE: If 4H is STRONG and 15M shows deep reversal, bypass 1H filter
+  // RELAXED: ADX > 40 (not 60) for STRONG, or ADX > 25 for MEDIUM with very deep oversold
+  const isDeepOversold = t4h.direction === "LONG" 
+    ? t15m.type.includes("oversold") 
+    : t15m.type.includes("overbought");
+  const isOverride = t4h.strength === "STRONG" && t4h.adx > 40 && t15m.triggered && isDeepOversold;
   
   if (!c1h.confirms && !isOverride) {
     debug.push("1H does not confirm");
@@ -382,14 +384,14 @@ export function generateSignal(
   const rsi1h = rsi(candles1h.map(c => c.close));
   const stoch15 = stoch(candles15m);
   
-  // Confidence: full alignment = 75, 4H override = 60-65, partial = 55
-  let confidence = 55;
+  // Confidence: full alignment = 75, 4H override = 55-60, partial = 50
+  let confidence = 50;
   if (t4h.strength === "STRONG" && c1h.confirms && c1h.adx > 30) {
     confidence = 75;
   } else if (t4h.strength === "STRONG" && c1h.confirms) {
     confidence = 65;
   } else if (isOverride) {
-    confidence = 60;
+    confidence = 55;
   }
   
   const signal: Signal = {
@@ -508,6 +510,7 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
                         (signal.direction === "SHORT" && t4h.direction === "LONG");
   
   if (trendReversed) return { shouldHold: false, reason: "trend_reversed" };
+  if (!t4h.direction || t4h.strength === "WEAK") return { shouldHold: false, reason: "trend_weak" };
   
   const validity = isSignalStillValid(signal, currentPrice, now);
   return { shouldHold: validity.valid, reason: validity.reason };
