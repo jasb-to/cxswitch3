@@ -1,4 +1,4 @@
-// lib/strategy.ts — v23.3 "FIXED: EARLY TTL + Signal Expiry + Alert Flow"
+// lib/strategy.ts — v23.3 "FIXED: EARLY TTL + Signal Expiry + shouldHold API"
 // ============================================================
 
 export interface Candle {
@@ -45,9 +45,7 @@ const TREND_LOOKBACK = 20;
 const ADX_MIN = 20;
 
 // --- TTL CONFIGURATION ---
-// EARLY signals expire after 1 hour — they are setup zones, not active trades
 const EARLY_TTL_MS = 60 * 60 * 1000;        // 1 hour
-// Other signal types expire after 48 hours
 const DEFAULT_TTL_MS = 48 * 60 * 60 * 1000;  // 48 hours
 
 function generateSignalId(pair: string): string {
@@ -64,11 +62,8 @@ function rsi(closes: number[], period: number = 14): number {
   let losses = 0;
   for (let i = 1; i <= period && i < closes.length; i++) {
     const change = closes[closes.length - i] - closes[closes.length - i - 1];
-    if (change > 0) {
-      gains += change;
-    } else {
-      losses -= change;
-    }
+    if (change > 0) gains += change;
+    else losses -= change;
   }
   const avgGain = gains / period;
   const avgLoss = losses / period;
@@ -82,8 +77,8 @@ function stoch(candles: Candle[], kPeriod: number = 14, dPeriod: number = 3): { 
   const kValues: number[] = [];
   for (let i = kPeriod - 1; i < len; i++) {
     const window = candles.slice(i - kPeriod + 1, i + 1);
-    const lowest = Math.min(...window.map((c) => c.low));
-    const highest = Math.max(...window.map((c) => c.high));
+    const lowest = Math.min(...window.map(c => c.low));
+    const highest = Math.max(...window.map(c => c.high));
     const close = candles[i].close;
     kValues.push(highest === lowest ? 50 : ((close - lowest) / (highest - lowest)) * 100);
   }
@@ -129,9 +124,7 @@ function findSwingHighs(candles: Candle[], lookback: number): number[] {
     const p2 = candles[candles.length - i + 1];
     const n1 = candles[candles.length - 2 - i];
     const n2 = candles[candles.length - 3 - i];
-    if (c.high > p1.high && c.high > p2.high && c.high > n1.high && c.high > n2.high) {
-      swings.push(c.high);
-    }
+    if (c.high > p1.high && c.high > p2.high && c.high > n1.high && c.high > n2.high) swings.push(c.high);
   }
   return swings.reverse();
 }
@@ -144,16 +137,14 @@ function findSwingLows(candles: Candle[], lookback: number): number[] {
     const p2 = candles[candles.length - i + 1];
     const n1 = candles[candles.length - 2 - i];
     const n2 = candles[candles.length - 3 - i];
-    if (c.low < p1.low && c.low < p2.low && c.low < n1.low && c.low < n2.low) {
-      swings.push(c.low);
-    }
+    if (c.low < p1.low && c.low < p2.low && c.low < n1.low && c.low < n2.low) swings.push(c.low);
   }
   return swings.reverse();
 }
 
 function detectTrend(candles: Candle[]): TrendResult {
   const adxVal = adx(candles);
-  const closes = candles.map((c) => c.close);
+  const closes = candles.map(c => c.close);
   const lastClose = closes[closes.length - 1];
   const avgClose = avg(closes.slice(-20));
 
@@ -167,22 +158,10 @@ function detectTrend(candles: Candle[]): TrendResult {
     const lowerLows = ll[ll.length - 1] < ll[ll.length - 2];
 
     if (higherHighs && higherLows && lastClose > avgClose) {
-      return {
-        direction: "LONG",
-        swing1: ll[ll.length - 2],
-        swing2: ll[ll.length - 1],
-        adx: adxVal,
-        health: adxVal > 25 ? "STRONG" : "WEAK",
-      };
+      return { direction: "LONG", swing1: ll[ll.length - 2], swing2: ll[ll.length - 1], adx: adxVal, health: adxVal > 25 ? "STRONG" : "WEAK" };
     }
     if (lowerHighs && lowerLows && lastClose < avgClose) {
-      return {
-        direction: "SHORT",
-        swing1: hh[hh.length - 2],
-        swing2: hh[hh.length - 1],
-        adx: adxVal,
-        health: adxVal > 25 ? "STRONG" : "WEAK",
-      };
+      return { direction: "SHORT", swing1: hh[hh.length - 2], swing2: hh[hh.length - 1], adx: adxVal, health: adxVal > 25 ? "STRONG" : "WEAK" };
     }
   }
 
@@ -193,22 +172,10 @@ function detectTrend(candles: Candle[]): TrendResult {
 
   if (Math.abs(slope) > 0.01 && adxVal > ADX_MIN) {
     if (slope > 0 && lastClose > avgClose) {
-      return {
-        direction: "LONG",
-        swing1: Math.min(...recent20),
-        swing2: Math.min(...recent20.slice(-10)),
-        adx: adxVal,
-        health: adxVal > 25 ? "STRONG" : "WEAK",
-      };
+      return { direction: "LONG", swing1: Math.min(...recent20), swing2: Math.min(...recent20.slice(-10)), adx: adxVal, health: adxVal > 25 ? "STRONG" : "WEAK" };
     }
     if (slope < 0 && lastClose < avgClose) {
-      return {
-        direction: "SHORT",
-        swing1: Math.max(...recent20),
-        swing2: Math.max(...recent20.slice(-10)),
-        adx: adxVal,
-        health: adxVal > 25 ? "STRONG" : "WEAK",
-      };
+      return { direction: "SHORT", swing1: Math.max(...recent20), swing2: Math.max(...recent20.slice(-10)), adx: adxVal, health: adxVal > 25 ? "STRONG" : "WEAK" };
     }
   }
 
@@ -225,111 +192,62 @@ interface EarlySignal {
 function detectEarlyEntry(candles1h: Candle[], candles15m: Candle[], trend: TrendResult): EarlySignal {
   const len1h = candles1h.length;
   const len15m = candles15m.length;
-  if (len1h < 20 || len15m < 20) {
-    return { valid: false, type: "insufficient_data", confidence: 0 };
-  }
+  if (len1h < 20 || len15m < 20) return { valid: false, type: "insufficient_data", confidence: 0 };
 
   const recent1h = candles1h.slice(-6);
-  const closes1h = candles1h.map((c) => c.close);
+  const closes1h = candles1h.map(c => c.close);
   const rsi1h = rsi(closes1h);
   const stoch15 = stoch(candles15m);
   const currentPrice = candles1h[len1h - 1].close;
 
   const last1h = candles1h[len1h - 1];
   const prev1h = candles1h[len1h - 2];
-  const prevLow = Math.min(...candles1h.slice(-6, -1).map((c) => c.low));
-  const prevHigh = Math.max(...candles1h.slice(-6, -1).map((c) => c.high));
+  const prevLow = Math.min(...candles1h.slice(-6, -1).map(c => c.low));
+  const prevHigh = Math.max(...candles1h.slice(-6, -1).map(c => c.high));
 
   let sweepDetected = false;
   let divergenceDetected = false;
   let volumeSpike = false;
   let momentumCandle = false;
 
-  const recentVol = recent1h.map((c) => c.volume);
+  const recentVol = recent1h.map(c => c.volume);
   const avgVol = avg(recentVol.slice(0, -1));
-  if (avgVol > 0 && recentVol[recentVol.length - 1] > avgVol * 1.3) {
-    volumeSpike = true;
-  }
+  if (avgVol > 0 && recentVol[recentVol.length - 1] > avgVol * 1.3) volumeSpike = true;
 
   if (trend.direction === "LONG") {
     const wickLow = Math.min(last1h.low, prev1h.low);
-    if (wickLow < prevLow * 1.001 && last1h.close > prevLow) {
-      sweepDetected = true;
-    }
-    const recentCloses = closes1h.slice(-10);
-    const recentLows = candles1h.slice(-10).map((c) => c.low);
+    if (wickLow < prevLow * 1.001 && last1h.close > prevLow) sweepDetected = true;
+
+    const recentLows = candles1h.slice(-10).map(c => c.low);
     const lowestPriceIdx = recentLows.indexOf(Math.min(...recentLows));
     const lowestRsi = rsi(closes1h.slice(0, -(10 - lowestPriceIdx)));
-    const currentRsi = rsi1h;
-    if (
-      lowestPriceIdx >= 0 &&
-      recentLows[lowestPriceIdx] < recentLows[recentLows.length - 1] &&
-      lowestRsi < currentRsi &&
-      currentRsi > 30
-    ) {
+    if (lowestPriceIdx >= 0 && recentLows[lowestPriceIdx] < recentLows[recentLows.length - 1] && lowestRsi < rsi1h && rsi1h > 30) {
       divergenceDetected = true;
     }
     const body = last1h.close - last1h.open;
     const range = last1h.high - last1h.low;
-    if (body > 0 && range > 0 && body / range > 0.5) {
-      momentumCandle = true;
-    }
+    if (body > 0 && range > 0 && body / range > 0.5) momentumCandle = true;
 
-    const score =
-      (sweepDetected ? 30 : 0) +
-      (divergenceDetected ? 25 : 0) +
-      (volumeSpike ? 20 : 0) +
-      (momentumCandle ? 15 : 0) +
-      (stoch15.k < 35 ? 10 : 0) +
-      (trend.adx > 25 ? 10 : 0);
-
-    if (score >= 35) {
-      return {
-        valid: true,
-        type: `sweep${divergenceDetected ? "_div" : ""}${volumeSpike ? "_vol" : ""}`,
-        confidence: Math.min(80, score),
-      };
-    }
+    const score = (sweepDetected ? 30 : 0) + (divergenceDetected ? 25 : 0) + (volumeSpike ? 20 : 0) + (momentumCandle ? 15 : 0) + (stoch15.k < 35 ? 10 : 0) + (trend.adx > 25 ? 10 : 0);
+    if (score >= 35) return { valid: true, type: `sweep${divergenceDetected ? "_div" : ""}${volumeSpike ? "_vol" : ""}`, confidence: Math.min(80, score) };
   }
 
   if (trend.direction === "SHORT") {
     const wickHigh = Math.max(last1h.high, prev1h.high);
-    if (wickHigh > prevHigh * 0.999 && last1h.close < prevHigh) {
-      sweepDetected = true;
-    }
-    const recentHighs = candles1h.slice(-10).map((c) => c.high);
+    if (wickHigh > prevHigh * 0.999 && last1h.close < prevHigh) sweepDetected = true;
+
+    const recentHighs = candles1h.slice(-10).map(c => c.high);
     const highestPriceIdx = recentHighs.indexOf(Math.max(...recentHighs));
     const highestRsi = rsi(closes1h.slice(0, -(10 - highestPriceIdx)));
-    const currentRsi = rsi1h;
-    if (
-      highestPriceIdx >= 0 &&
-      recentHighs[highestPriceIdx] > recentHighs[recentHighs.length - 1] &&
-      highestRsi > currentRsi &&
-      currentRsi < 70
-    ) {
+    if (highestPriceIdx >= 0 && recentHighs[highestPriceIdx] > recentHighs[recentHighs.length - 1] && highestRsi > rsi1h && rsi1h < 70) {
       divergenceDetected = true;
     }
     const body = last1h.open - last1h.close;
     const range = last1h.high - last1h.low;
-    if (body > 0 && range > 0 && body / range > 0.5) {
-      momentumCandle = true;
-    }
+    if (body > 0 && range > 0 && body / range > 0.5) momentumCandle = true;
 
-    const score =
-      (sweepDetected ? 30 : 0) +
-      (divergenceDetected ? 25 : 0) +
-      (volumeSpike ? 20 : 0) +
-      (momentumCandle ? 15 : 0) +
-      (stoch15.k > 65 ? 10 : 0) +
-      (trend.adx > 25 ? 10 : 0);
-
-    if (score >= 35) {
-      return {
-        valid: true,
-        type: `sweep${divergenceDetected ? "_div" : ""}${volumeSpike ? "_vol" : ""}`,
-        confidence: Math.min(80, score),
-      };
-    }
+    const score = (sweepDetected ? 30 : 0) + (divergenceDetected ? 25 : 0) + (volumeSpike ? 20 : 0) + (momentumCandle ? 15 : 0) + (stoch15.k > 65 ? 10 : 0) + (trend.adx > 25 ? 10 : 0);
+    if (score >= 35) return { valid: true, type: `sweep${divergenceDetected ? "_div" : ""}${volumeSpike ? "_vol" : ""}`, confidence: Math.min(80, score) };
   }
 
   return { valid: false, type: "no_early_setup", confidence: 0 };
@@ -344,7 +262,6 @@ interface PriceAction {
 function checkPriceAction(candles: Candle[], direction: "LONG" | "SHORT", trendlinePrice: number): PriceAction {
   const c = candles[candles.length - 1];
   const p = candles[candles.length - 2];
-
   const body = Math.abs(c.close - c.open);
   const upperWick = c.high - Math.max(c.open, c.close);
   const lowerWick = Math.min(c.open, c.close) - c.low;
@@ -376,8 +293,7 @@ export function generateSignal(
   candles1h: Candle[],
   candles4h: Candle[],
   candles15m: Candle[],
-  currentPrice: number,
-  existingSignal?: Signal
+  currentPrice?: number
 ): SignalResult {
   const debug: string[] = [];
 
@@ -407,32 +323,29 @@ export function generateSignal(
     return { debug };
   }
 
-  // Determine entry, stop, target based on trend and early type
   const direction = trend.direction;
   const isLong = direction === "LONG";
-
   const swing1 = trend.swing1;
   const swing2 = trend.swing2;
+  const price = currentPrice ?? candles1h[candles1h.length - 1].close;
 
   let entry: number;
   let stop: number;
   let target: number;
 
   if (isLong) {
-    entry = Math.min(currentPrice, swing2 * 1.002);
+    entry = Math.min(price, swing2 * 1.002);
     stop = Math.min(swing1 * 0.998, entry * (1 - SL_PCT));
     target = entry * (1 + TP_PCT);
   } else {
-    entry = Math.max(currentPrice, swing2 * 0.998);
+    entry = Math.max(price, swing2 * 0.998);
     stop = Math.max(swing1 * 1.002, entry * (1 + SL_PCT));
     target = entry * (1 - TP_PCT);
   }
 
   const rr = Math.abs((target - entry) / (entry - stop));
   const expectedMove = Math.abs((target - entry) / entry) * 100;
-
-  const closes1h = candles1h.map((c) => c.close);
-  const rsi1h = rsi(closes1h);
+  const rsi1h = rsi(candles1h.map(c => c.close));
   const stoch15 = stoch(candles15m);
 
   const signal: Signal = {
@@ -455,12 +368,22 @@ export function generateSignal(
     version: CURRENT_SIGNAL_VERSION,
   };
 
-  debug.push(`Generated ${direction} EARLY signal | Entry: ${signal.entry} | Stop: ${signal.stop} | Target: ${signal.target} | RR: ${signal.rr}`);
+  const market = {
+    pair,
+    price: Math.round(price * 100) / 100,
+    timestamp: Date.now(),
+    trend: `${direction} ${trend.health}`,
+    adx: signal.adx,
+    rsi: signal.rsi,
+    stochK: signal.stochK,
+    stochD: signal.stochD,
+  };
 
-  return { signal, debug };
+  debug.push(`Generated ${direction} EARLY | Entry: ${signal.entry} | Stop: ${signal.stop} | Target: ${signal.target} | RR: ${signal.rr}`);
+  return { signal, market, debug };
 }
 
-// --- SIGNAL VALIDITY CHECK (FIXED: respects EARLY 1h TTL) ---
+// --- SIGNAL VALIDITY CHECK ---
 export interface ValidityCheck {
   valid: boolean;
   reason: string;
@@ -470,12 +393,11 @@ export interface ValidityCheck {
 export function isSignalStillValid(signal: Signal, currentPrice: number, now: number = Date.now()): ValidityCheck {
   const ageMs = now - signal.timestamp;
 
-  // EARLY signals expire after 1 hour — they are anticipation setups, not active positions
+  // EARLY signals expire after 1 hour
   if (signal.type === "EARLY") {
     if (ageMs > EARLY_TTL_MS) {
       return { valid: false, reason: "expired_early_ttl", exited: true };
     }
-    // EARLY signals also invalidate if price moves past entry (missed the setup)
     if (signal.direction === "LONG" && currentPrice > signal.entry * 1.001) {
       return { valid: false, reason: "missed_long_entry", exited: true };
     }
@@ -484,12 +406,10 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
     }
   }
 
-  // Default TTL for all signal types
   if (ageMs > DEFAULT_TTL_MS) {
     return { valid: false, reason: "expired_default_ttl", exited: true };
   }
 
-  // Stop loss hit
   if (signal.direction === "LONG" && currentPrice <= signal.stop) {
     return { valid: false, reason: "stop_loss_hit", exited: true };
   }
@@ -497,7 +417,6 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
     return { valid: false, reason: "stop_loss_hit", exited: true };
   }
 
-  // Target hit
   if (signal.direction === "LONG" && currentPrice >= signal.target) {
     return { valid: false, reason: "target_hit", exited: true };
   }
@@ -508,11 +427,40 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
   return { valid: true, reason: "active", exited: false };
 }
 
+// --- shouldHold: used by cron + UI. Returns { shouldHold, reason } for backward compat ---
+export interface HoldResult {
+  shouldHold: boolean;
+  reason: string;
+}
+
+export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, now?: number): HoldResult {
+  // Trend health check: if trend reversed, don't hold
+  const trend = detectTrend(candles4h);
+  const trendReversed = (signal.direction === "LONG" && trend.direction === "SHORT") ||
+                        (signal.direction === "SHORT" && trend.direction === "LONG");
+
+  if (trendReversed) {
+    return { shouldHold: false, reason: "trend_reversed" };
+  }
+
+  if (trend.health === "NONE" || trend.adx < 20) {
+    return { shouldHold: false, reason: "trend_weak" };
+  }
+
+  // Delegate to main validity check
+  const validity = isSignalStillValid(signal, currentPrice, now);
+  return {
+    shouldHold: validity.valid,
+    reason: validity.reason,
+  };
+}
+
 // --- CRON HELPERS ---
-export function filterExpiredSignals(signals: Signal[], currentPrices: Record<string, number>, now?: number): {
-  active: Signal[];
-  exited: { signal: Signal; reason: string }[];
-} {
+export function filterExpiredSignals(
+  signals: Signal[],
+  currentPrices: Record<string, number>,
+  now?: number
+): { active: Signal[]; exited: { signal: Signal; reason: string }[] } {
   const active: Signal[] = [];
   const exited: { signal: Signal; reason: string }[] = [];
 
