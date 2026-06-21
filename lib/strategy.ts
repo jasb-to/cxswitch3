@@ -108,7 +108,7 @@ function findSwingLows(candles: Candle[], lookback: number): number[] {
   const lows: number[] = [];
   for (let i = 2; i < candles.length - 2 && lows.length < lookback; i++) {
     const c = candles[candles.length - 1 - i];
-n    const p1 = candles[candles.length - i];
+    const p1 = candles[candles.length - i];
     const p2 = candles[candles.length - i + 1];
     const n1 = candles[candles.length - 2 - i];
     const n2 = candles[candles.length - 3 - i];
