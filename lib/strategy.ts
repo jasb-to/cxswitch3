@@ -1,4 +1,4 @@
-// lib/strategy.ts — v25 "Momentum Lead: Fast Trend + Immediate Entry" 
+// lib/strategy.ts — v25.1 "Momentum Lead: Fast Trend + Immediate Entry"
 // ============================================================
 
 export interface Candle {
@@ -102,9 +102,8 @@ function momentumTrend(candles: Candle[]): { direction: "LONG" | "SHORT" | null;
   const adxVal = adx(candles);
   
   const direction = netMove > 0 ? "LONG" : netMove < 0 ? "SHORT" : null;
-  const momentum = Math.abs(netMove) / avgBody; // How many avg candles worth of move
+  const momentum = avgBody === 0 ? 0 : Math.abs(netMove) / avgBody;
   
-  // Strength: ADX + momentum magnitude
   const strength = adxVal > 40 && momentum > 1.5 ? "STRONG" : 
                    adxVal > 25 && momentum > 1 ? "MEDIUM" : "WEAK";
   
@@ -117,60 +116,58 @@ function confirm1H(candles: Candle[], direction4h: "LONG" | "SHORT"): { confirms
   const rsiVal = rsi(candles.map(c => c.close));
   
   const aligns = m1h.direction === direction4h;
-  
-  // Block if RSI is extreme against the trade
   const rsiBlocked = direction4h === "LONG" ? rsiVal > 75 : rsiVal < 25;
   
   return { confirms: aligns && !rsiBlocked && m1h.strength !== "WEAK", adx: m1h.adx, rsi: rsiVal };
 }
 
-// --- 15M TRIGGER: Stoch cross OR RSI extreme exit ---
+// --- 15M TRIGGER: Stoch cross OR position + candle direction ---
 function trigger15M(candles: Candle[], direction: "LONG" | "SHORT"): { 
   triggered: boolean; 
   type: string;
 } {
   const len = candles.length;
+  if (len < 3) return { triggered: false, type: "no setup" };
+  
   const last = candles[len - 1];
   const prev = candles[len - 2];
   const stoch15 = stoch(candles);
+  const prevStoch = stoch(candles.slice(0, -1));
   const rsi15 = rsi(candles.map(c => c.close), 14);
   
-  // Stoch cross in direction
-  const stochCrossLong = stoch15.k > stoch15.d && (stoch(candles.slice(0, -1)).k <= stoch(candles.slice(0, -1)).d);
-  const stochCrossShort = stoch15.k < stoch15.d && (stoch(candles.slice(0, -1)).k >= stoch(candles.slice(0, -1)).d);
-  
-  // RSI extreme exit (bounce signal)
-  const rsiBounceLong = rsi15 < 35 && last.close > last.open;
-  const rsiBounceShort = rsi15 > 65 && last.close < last.open;
-  
   if (direction === "LONG") {
-    if (stochCrossLong && stoch15.k < 60) {
-      return { triggered: true, type: "stoch cross up" };
-    }
-    if (rsiBounceLong) {
-      return { triggered: true, type: "rsi extreme bounce" };
-    }
+    const crossUp = stoch15.k > stoch15.d && prevStoch.k <= prevStoch.d;
+    const oversoldBounce = stoch15.k < 25 && stoch15.k > stoch15.d && last.close > last.open;
+    const rsiBounce = rsi15 < 35 && last.close > last.open && last.close > prev.close;
+    const momentumLong = last.close > last.open && last.close > prev.close && stoch15.k < 50;
+    
+    if (crossUp) return { triggered: true, type: "stoch cross up" };
+    if (oversoldBounce) return { triggered: true, type: "oversold bounce" };
+    if (rsiBounce) return { triggered: true, type: "rsi bounce" };
+    if (momentumLong) return { triggered: true, type: "momentum long" };
   }
   
   if (direction === "SHORT") {
-    if (stochCrossShort && stoch15.k > 40) {
-      return { triggered: true, type: "stoch cross down" };
-    }
-    if (rsiBounceShort) {
-      return { triggered: true, type: "rsi extreme bounce" };
-    }
+    const crossDown = stoch15.k < stoch15.d && prevStoch.k >= prevStoch.d;
+    const overboughtDrop = stoch15.k > 75 && stoch15.k < stoch15.d && last.close < last.open;
+    const rsiDrop = rsi15 > 65 && last.close < last.open && last.close < prev.close;
+    const momentumShort = last.close < last.open && last.close < prev.close && stoch15.k > 50;
+    
+    if (crossDown) return { triggered: true, type: "stoch cross down" };
+    if (overboughtDrop) return { triggered: true, type: "overbought drop" };
+    if (rsiDrop) return { triggered: true, type: "rsi drop" };
+    if (momentumShort) return { triggered: true, type: "momentum short" };
   }
   
   return { triggered: false, type: "no setup" };
 }
 
-// --- ATR-based SL/TP (fast, no structure lag) ---
+// --- ATR-based SL/TP ---
 function getLevels(
   candles1h: Candle[],
   direction: "LONG" | "SHORT",
   entry: number
 ): { tp: number; sl: number; rr: number } | null {
-  // ATR from last 14 1H candles
   const atrs: number[] = [];
   for (let i = candles1h.length - 14; i < candles1h.length; i++) {
     atrs.push(candles1h[i].high - candles1h[i].low);
@@ -222,10 +219,9 @@ export function generateSignal(
   const c1h = confirm1H(candles1h, t4h.direction);
   debug.push(`1H: ${c1h.confirms ? "CONFIRMS" : "REJECTS"} | ADX: ${c1h.adx.toFixed(1)} | RSI: ${c1h.rsi.toFixed(1)}`);
   
-  // 4H OVERRIDE: If 4H STRONG + deep stoch, bypass 1H
   const t15m = trigger15M(candles15m, t4h.direction);
   const stoch15 = stoch(candles15m);
-  const deepExtreme = t4h.direction === "LONG" ? stoch15.k < 15 : stoch15.k > 85;
+  const deepExtreme = t4h.direction === "LONG" ? stoch15.k < 20 : stoch15.k > 80;
   const isOverride = t4h.strength === "STRONG" && deepExtreme && t15m.triggered;
   
   if (!c1h.confirms && !isOverride) {
