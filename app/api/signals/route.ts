@@ -1,4 +1,4 @@
-// app/api/signals/route.ts — v23.3 "FIXED: Confidence Score + Freshness Gate + shouldHold"
+// app/api/signals/route.ts — v23.4 "FIXED: Confidence Score + Freshness Gate + shouldHold"
 // ============================================================
 
 import { NextResponse } from "next/server";
