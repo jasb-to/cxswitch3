@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v23.5 "FIXED: BREAKOUT + EARLY TTL + No Cache + Alert Flow"
+// app/api/cron/route.ts — v24.1 "Simple: Structure Scalp"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -17,14 +17,6 @@ function roundPrice(n: number): number {
   return Math.round(n * 1000) / 1000;
 }
 
-function roundIndicator(n: number): number {
-  return Math.round(n * 10) / 10;
-}
-
-function roundRR(n: number): number {
-  return Math.round(n * 100) / 100;
-}
-
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
@@ -36,33 +28,20 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
   const authHeader = request.headers.get("authorization");
-  const resetCooldown = url.searchParams.get("reset") === "true";
   const forceRun = url.searchParams.get("force") === "true";
 
   const isAuthorized = querySecret === process.env.CRON_SECRET || authHeader === `Bearer ${process.env.CRON_SECRET}`;
   if (!isAuthorized) {
-    console.log(`[AUTH] FAILED`);
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  console.log(`[AUTH] PASSED`);
 
   const lastRun = await getLastCronRun();
-  const timeSinceLastRun = runStart - lastRun;
-  if (!forceRun && timeSinceLastRun < MIN_CRON_INTERVAL_MS) {
-    const waitSeconds = Math.ceil((MIN_CRON_INTERVAL_MS - timeSinceLastRun) / 1000);
-    console.log(`[RATE LIMIT] Skipping — last run ${(timeSinceLastRun/1000).toFixed(0)}s ago. Next in ${waitSeconds}s.`);
-    return NextResponse.json({ success: true, skipped: true, reason: "rate_limited", retryAfter: waitSeconds, lastRun: new Date(lastRun).toISOString() });
+  if (!forceRun && (runStart - lastRun) < MIN_CRON_INTERVAL_MS) {
+    return NextResponse.json({ success: true, skipped: true, reason: "rate_limited" });
   }
-
   await setLastCronRun(runStart);
-  console.log(`[REDIS] Client ready`);
 
   let activeTrades = await getActiveTrades();
-  if (resetCooldown) {
-    console.log(`[STATE] Resetting all cooldowns`);
-    activeTrades = {};
-    await setActiveTrades({});
-  }
   console.log(`[STATE] Active trades:`, Object.keys(activeTrades).join(", ") || "none");
 
   const existingSignals = await getSignals();
@@ -71,14 +50,12 @@ export async function GET(request: Request) {
   for (const pair of PAIRS) {
     try {
       const candles = await getCandles(pair, 60);
-      if (candles && candles.length > 0) currentPrices[pair] = candles[candles.length - 1].close;
-    } catch (e) {
-      console.log(`[PRICE] ${pair} — failed to fetch price`);
-    }
+      if (candles?.length) currentPrices[pair] = candles[candles.length - 1].close;
+    } catch (e) { console.log(`[PRICE] ${pair} — failed`); }
   }
 
   const { active: validSignals, exited: preExited } = filterExpiredSignals(existingSignals, currentPrices, runStart);
-  console.log(`[STATE] Existing valid signals: ${validSignals.length} (filtered ${preExited.length} expired)`);
+  console.log(`[STATE] Valid: ${validSignals.length}, Expired: ${preExited.length}`);
 
   for (const { signal, reason } of preExited) {
     console.log(`[EXIT] ${signal.pair} — ${reason}`);
@@ -89,18 +66,14 @@ export async function GET(request: Request) {
   const newSignals: any[] = [];
   const marketDataList: any[] = [];
   const alerts: any[] = [];
-  const exitedSignals: any[] = [...preExited];
 
   for (const pair of PAIRS) {
-    console.log(`[PAIR] ${pair} — fetching candles...`);
     try {
       const [candles1h, candles4h, candles15m] = await Promise.all([
         getCandles(pair, 60), getCandles(pair, 240), getCandles(pair, 15)
       ]);
-      console.log(`[PAIR] ${pair} — 1H: ${candles1h?.length ?? 0}, 4H: ${candles4h?.length ?? 0}, 15m: ${candles15m?.length ?? 0}`);
 
-      if (!candles1h || !candles4h || !candles15m || candles1h.length < 30 || candles4h.length < 30 || candles15m.length < 50) {
-        console.log(`[PAIR] ${pair} — SKIP: insufficient candles`);
+      if (!candles1h || !candles4h || !candles15m || candles1h.length < 50 || candles4h.length < 30 || candles15m.length < 50) {
         alerts.push({ pair, status: "skip", reason: "insufficient_candles" });
         continue;
       }
@@ -111,14 +84,12 @@ export async function GET(request: Request) {
 
       if (existingForPair) {
         const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
-
         if (!validity.valid) {
-          console.log(`[PAIR] ${pair} — Existing signal INVALID: ${validity.reason}`);
+          console.log(`[PAIR] ${pair} — INVALID: ${validity.reason}`);
           await addSignalToHistory(existingForPair, validity.reason as any, currentPrice);
           if (activeTrades[pair]) delete activeTrades[pair];
           validSignals.splice(existingIdx, 1);
-          exitedSignals.push({ signal: existingForPair, reason: validity.reason });
-          alerts.push({ pair, status: "existing_invalid", reason: validity.reason });
+          alerts.push({ pair, status: "expired", reason: validity.reason });
         } else {
           const holdResult = shouldHold(existingForPair, candles4h, currentPrice, runStart);
           if (!holdResult.shouldHold) {
@@ -126,11 +97,9 @@ export async function GET(request: Request) {
             await addSignalToHistory(existingForPair, "hold_exit", currentPrice);
             if (activeTrades[pair]) delete activeTrades[pair];
             validSignals.splice(existingIdx, 1);
-            exitedSignals.push({ signal: existingForPair, reason: holdResult.reason });
             alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
           } else {
-            console.log(`[PAIR] ${pair} — Existing signal still valid (${existingForPair.type}), skipping`);
-            alerts.push({ pair, status: "existing_valid", type: existingForPair.type, holdReason: holdResult.reason });
+            console.log(`[PAIR] ${pair} — Still valid, skipping`);
             const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
             if (result.market) marketDataList.push(result.market);
             continue;
@@ -138,86 +107,55 @@ export async function GET(request: Request) {
         }
       }
 
-      // Generate new signal (either no existing, or existing was invalidated)
       const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
-      const market = result.market;
-      const debug = result.debug || [];
-      if (market) marketDataList.push(market);
+      if (result.market) marketDataList.push(result.market);
 
       if (!result.signal) {
-        console.log(`[PAIR] ${pair} — NO SIGNAL (${debug.join(" | ")})`);
-        alerts.push({ pair, status: "no_signal", debug: debug.join(" | ") });
+        console.log(`[PAIR] ${pair} — NO SIGNAL (${result.debug?.join(" | ")})`);
+        alerts.push({ pair, status: "no_signal", debug: result.debug?.join(" | ") });
         continue;
       }
 
       const signal = result.signal;
-      console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} entry=${roundPrice(signal.entry)} conf=${signal.confidence}%`);
+      console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`);
       newSignals.push(signal);
 
-      const alertPayload = {
-        symbol: signal.pair,
-        state: signal.type,
-        price: roundPrice(signal.entry),
-        bias: signal.direction,
-        confidence: signal.confidence,
-        stopLoss: roundPrice(signal.stop),
-        takeProfit: roundPrice(signal.target),
-        rr: roundRR(signal.rr),
-        adx: roundIndicator(signal.adx),
-        rsi: roundIndicator(signal.rsi),
-        stochK: roundIndicator(signal.stochK),
-        stochD: roundIndicator(signal.stochD),
-        expectedMove: roundIndicator(signal.expectedMove),
-        reason: signal.reason,
-        updatedAt: new Date(signal.timestamp).toISOString(),
-      };
-
       try {
-        await sendAlert(alertPayload);
+        await sendAlert({
+          symbol: signal.pair,
+          state: "NEW_SIGNAL",
+          price: roundPrice(signal.entry),
+          bias: signal.direction,
+          confidence: signal.confidence,
+          stopLoss: roundPrice(signal.stop),
+          takeProfit: roundPrice(signal.target),
+          rr: signal.rr,
+          reason: signal.reason,
+          updatedAt: new Date(signal.timestamp).toISOString(),
+        });
         console.log(`[ALERT] ${pair} — SENT`);
-        activeTrades[pair] = {
-          direction: signal.direction,
-          timestamp: Date.now(),
-          entry: signal.entry,
-          stop: signal.stop,
-          target: signal.target,
-          type: signal.type,
-          id: signal.id,
-        };
-        alerts.push({ pair, status: "sent", type: signal.type });
-      } catch (alertErr) {
-        console.error(`[ALERT] ${pair} — FAILED:`, alertErr);
-        alerts.push({ pair, status: "alert_failed", error: String(alertErr) });
+        activeTrades[pair] = { direction: signal.direction, timestamp: Date.now(), entry: signal.entry, stop: signal.stop, target: signal.target, id: signal.id };
+        alerts.push({ pair, status: "sent" });
+      } catch (err) {
+        console.error(`[ALERT] ${pair} — FAILED:`, err);
+        alerts.push({ pair, status: "alert_failed", error: String(err) });
       }
     } catch (err) {
       console.error(`[PAIR] ${pair} — ERROR:`, err);
-      alerts.push({ pair, status: "error", error: err instanceof Error ? err.message : "Unknown" });
+      alerts.push({ pair, status: "error", error: String(err) });
     }
   }
 
-  const mergedSignals = [...validSignals];
+  const merged = [...validSignals];
   for (const s of newSignals) {
-    const idx = mergedSignals.findIndex((x: any) => x.pair === s.pair);
-    if (idx >= 0) mergedSignals[idx] = s;
-    else mergedSignals.push(s);
+    const idx = merged.findIndex((x: any) => x.pair === s.pair);
+    if (idx >= 0) merged[idx] = s; else merged.push(s);
   }
 
-  console.log(`[STATE] Saving ${mergedSignals.length} signals, ${marketDataList.length} market data...`);
-  console.log(`[STATE] Exited signals this run: ${exitedSignals.length}`);
-  await Promise.all([setSignals(mergedSignals), setMarketData(marketDataList), setActiveTrades(activeTrades)]);
+  await Promise.all([setSignals(merged), setMarketData(marketDataList), setActiveTrades(activeTrades)]);
 
-  const runDuration = Date.now() - runStart;
-  console.log(`[CRON] Done in ${runDuration}ms. signals=${mergedSignals.length}, marketData=${marketDataList.length}, exited=${exitedSignals.length}`);
+  console.log(`[CRON] Done. signals=${merged.length}, marketData=${marketDataList.length}, exited=${preExited.length}`);
   console.log("========================================");
 
-  return NextResponse.json({
-    success: true,
-    skipped: false,
-    timestamp: new Date().toISOString(),
-    durationMs: runDuration,
-    signals: mergedSignals.length,
-    marketData: marketDataList.length,
-    exited: exitedSignals.length,
-    alerts,
-  });
+  return NextResponse.json({ success: true, signals: merged.length, marketData: marketDataList.length, exited: preExited.length, alerts });
 }
