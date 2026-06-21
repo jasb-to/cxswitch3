@@ -1,4 +1,4 @@
-// lib/telegram.ts — v14 alerts
+// lib/telegram.ts — v15 alerts
 // ============================================================
 
 export async function sendAlert(signal: any) {
@@ -12,9 +12,11 @@ export async function sendAlert(signal: any) {
 
   const isSweep = signal.state === "SWEEP";
   const isEarly = signal.state === "EARLY";
+  const isMomentum = signal.state === "MOMENTUM";
+  const isReversal = signal.state === "REVERSAL";
   
-  const tierEmoji = isSweep ? "🎯" : isEarly ? "⚡" : "📊";
-  const tierLabel = isSweep ? "SWEEP" : isEarly ? "EARLY" : "SETUP";
+  const tierEmoji = isSweep ? "🎯" : isEarly ? "⚡" : isMomentum ? "🔥" : isReversal ? "🔄" : "📊";
+  const tierLabel = isSweep ? "SWEEP" : isEarly ? "EARLY" : isMomentum ? "MOMENTUM" : isReversal ? "REVERSAL" : "SETUP";
 
   const confEmoji = signal.confidence >= 85 ? "🟢" :
                     signal.confidence >= 70 ? "🟡" :
@@ -34,7 +36,7 @@ Price: ${signal.price}
 Bias: ${signal.bias}
 ${confEmoji} Confidence: ${signal.confidence}%
 
-Expected Move: ${signal.expectedMove}%
+Expected Move: ${signal.expectedMove ?? "-"}%
 
 SL: ${signal.stopLoss ?? "-"}
 TP: ${signal.takeProfit ?? "-"}
