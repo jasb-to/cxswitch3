@@ -1,4 +1,4 @@
-// lib/strategy.ts — v23.3 "FIXED: EARLY TTL + Signal Expiry + shouldHold API"
+// lib/strategy.ts — v23.4 "FIXED: EARLY Entry Logic + TTL + shouldHold"
 // ============================================================
 
 export interface Candle {
@@ -198,7 +198,6 @@ function detectEarlyEntry(candles1h: Candle[], candles15m: Candle[], trend: Tren
   const closes1h = candles1h.map(c => c.close);
   const rsi1h = rsi(closes1h);
   const stoch15 = stoch(candles15m);
-  const currentPrice = candles1h[len1h - 1].close;
 
   const last1h = candles1h[len1h - 1];
   const prev1h = candles1h[len1h - 2];
@@ -333,12 +332,20 @@ export function generateSignal(
   let stop: number;
   let target: number;
 
+  // FIXED: EARLY entry should be AT the retest level (swing2), not below current price
+  // For LONG: we want to enter on a pullback TO the trendline/swing level
+  // Entry = current price if we're at the level, or the level itself if price hasn't reached it yet
   if (isLong) {
-    entry = Math.min(price, swing2 * 1.002);
+    // Entry at the higher of (swing2 retest level, current price if already there)
+    // But for EARLY, we anticipate price will come down to swing2
+    entry = Math.max(price * 0.998, swing2);
+    // Cap entry so it's not above current price by too much (max 0.5% above)
+    if (entry > price * 1.005) entry = price * 1.005;
     stop = Math.min(swing1 * 0.998, entry * (1 - SL_PCT));
     target = entry * (1 + TP_PCT);
   } else {
-    entry = Math.max(price, swing2 * 0.998);
+    entry = Math.min(price * 1.002, swing2);
+    if (entry < price * 0.995) entry = price * 0.995;
     stop = Math.max(swing1 * 1.002, entry * (1 + SL_PCT));
     target = entry * (1 - TP_PCT);
   }
@@ -398,11 +405,20 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
     if (ageMs > EARLY_TTL_MS) {
       return { valid: false, reason: "expired_early_ttl", exited: true };
     }
-    if (signal.direction === "LONG" && currentPrice > signal.entry * 1.001) {
+    // For LONG EARLY: invalidate if price drops below stop (too deep) or goes well above entry (missed)
+    // Allow 0.3% buffer above entry — if price shoots past, setup is missed
+    if (signal.direction === "LONG" && currentPrice > signal.entry * 1.003) {
       return { valid: false, reason: "missed_long_entry", exited: true };
     }
-    if (signal.direction === "SHORT" && currentPrice < signal.entry * 0.999) {
+    if (signal.direction === "SHORT" && currentPrice < signal.entry * 0.997) {
       return { valid: false, reason: "missed_short_entry", exited: true };
+    }
+    // Also invalidate if we hit stop before entry
+    if (signal.direction === "LONG" && currentPrice <= signal.stop) {
+      return { valid: false, reason: "stop_loss_hit", exited: true };
+    }
+    if (signal.direction === "SHORT" && currentPrice >= signal.stop) {
+      return { valid: false, reason: "stop_loss_hit", exited: true };
     }
   }
 
@@ -427,14 +443,13 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
   return { valid: true, reason: "active", exited: false };
 }
 
-// --- shouldHold: used by cron + UI. Returns { shouldHold, reason } for backward compat ---
+// --- shouldHold: used by cron + UI. Returns { shouldHold, reason } ---
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
 }
 
 export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, now?: number): HoldResult {
-  // Trend health check: if trend reversed, don't hold
   const trend = detectTrend(candles4h);
   const trendReversed = (signal.direction === "LONG" && trend.direction === "SHORT") ||
                         (signal.direction === "SHORT" && trend.direction === "LONG");
@@ -447,7 +462,6 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
     return { shouldHold: false, reason: "trend_weak" };
   }
 
-  // Delegate to main validity check
   const validity = isSignalStillValid(signal, currentPrice, now);
   return {
     shouldHold: validity.valid,
