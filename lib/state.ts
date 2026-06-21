@@ -1,4 +1,4 @@
-// lib/state.ts — v23.1 "FIXED: Early Entry + v23 Signal types + version 3"
+// lib/state.ts — v23.2 "FIXED: Early TTL 1h + freshness gate"
 // ============================================================
 
 import { Redis } from "@upstash/redis";
@@ -66,7 +66,7 @@ function safeParseObject(data: unknown): Record<string, any> {
 }
 
 function getSignalMaxAgeHours(signal: any): number {
-  if (signal.type === "EARLY") return 3;      // Early signals expire faster — they're pre-breakout
+  if (signal.type === "EARLY") return 1;      // EARLY: 1 hour max
   if (signal.type === "BREAKOUT") return 6;
   if (signal.type === "PULLBACK") return 4;
   if (signal.type === "REVERSAL") return 4;
