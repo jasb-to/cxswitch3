@@ -1,9 +1,9 @@
-// app/api/signals/route.ts — v24.1 "Simple UI"
+// app/api/signals/route.ts — v24.2 "Simple UI"
 // ============================================================
 
 import { NextResponse } from "next/server";
 import { getSignals, getMarketData, getSignalHistory } from "@/lib/state";
-import { isSignalStillValid, shouldHold } from "@/lib/strategy";
+import { isSignalStillValid, shouldHold, getMarketSnapshot } from "@/lib/strategy";
 import { getCandles } from "@/lib/kraken";
 
 export const runtime = "nodejs";
@@ -11,13 +11,32 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET() {
-  const signals = await getSignals();
-  const marketData = await getMarketData();
+  let signals = await getSignals();
+  let marketData = await getMarketData();
   const history = await getSignalHistory();
 
   const currentPrices: Record<string, number> = {};
-  for (const m of marketData) {
-    if (m.pair && m.price) currentPrices[m.pair] = m.price;
+
+  // Fallback: generate market data if KV is empty
+  if (!marketData || marketData.length === 0) {
+    const freshMarket: any[] = [];
+    for (const pair of ["BTC", "ETH", "SOL"]) {
+      try {
+        const [candles1h, candles4h, candles15m] = await Promise.all([
+          getCandles(pair, 60), getCandles(pair, 240), getCandles(pair, 15)
+        ]);
+        if (candles1h?.length && candles4h?.length && candles15m?.length) {
+          const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+          freshMarket.push(snapshot);
+          currentPrices[pair] = snapshot.price;
+        }
+      } catch (e) {}
+    }
+    marketData = freshMarket;
+  } else {
+    for (const m of marketData) {
+      if (m.pair && m.price) currentPrices[m.pair] = m.price;
+    }
   }
 
   const validSignals = (Array.isArray(signals) ? signals : []).filter((s: any) => {
