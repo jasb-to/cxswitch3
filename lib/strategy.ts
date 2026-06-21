@@ -1,4 +1,4 @@
-// lib/strategy.ts — v23.1 "Early Entry + Breakout + Position Building"
+// lib/strategy.ts — v23.2 "FIXED: Trend Detection + Early Entry + Position Building"
 // ============================================================
 
 export interface Candle {
@@ -41,7 +41,7 @@ const SL_PCT = 0.015;
 const TP_PCT = 0.04;
 const RETEST_BUFFER = 0.003;
 const MAX_RETEST_HOURS = 3;
-const TREND_LOOKBACK = 8;
+const TREND_LOOKBACK = 20;
 const ADX_MIN = 20;
 
 function generateSignalId(pair: string): string {
@@ -99,7 +99,7 @@ function adx(candles: Candle[], period = 14): number {
   return (Math.abs(plusDI - minusDI) / (plusDI + minusDI)) * 100;
 }
 
-// --- TREND DETECTION ---
+// --- TREND DETECTION — FIXED ---
 interface TrendResult {
   direction: "LONG" | "SHORT" | null;
   swing1: number;
@@ -108,22 +108,44 @@ interface TrendResult {
   health: string;
 }
 
-function detectTrend(candles: Candle[]): TrendResult {
-  const len = candles.length;
-  const recent = candles.slice(-TREND_LOOKBACK);
-  const highs = recent.map(c => c.high);
-  const lows = recent.map(c => c.low);
-  const closes = recent.map(c => c.close);
-  
-  const hh: number[] = [];
-  const ll: number[] = [];
-  for (let i = 1; i < recent.length - 1; i++) {
-    if (recent[i].high > recent[i-1].high && recent[i].high > recent[i+1].high) hh.push(recent[i].high);
-    if (recent[i].low < recent[i-1].low && recent[i].low < recent[i+1].low) ll.push(recent[i].low);
+function findSwingHighs(candles: Candle[], lookback: number): number[] {
+  const swings: number[] = [];
+  for (let i = 2; i < candles.length - 2 && swings.length < lookback; i++) {
+    const c = candles[candles.length - 1 - i];
+    const p1 = candles[candles.length - i];
+    const p2 = candles[candles.length - i + 1];
+    const n1 = candles[candles.length - 2 - i];
+    const n2 = candles[candles.length - 3 - i];
+    if (c.high > p1.high && c.high > p2.high && c.high > n1.high && c.high > n2.high) {
+      swings.push(c.high);
+    }
   }
-  
+  return swings.reverse();
+}
+
+function findSwingLows(candles: Candle[], lookback: number): number[] {
+  const swings: number[] = [];
+  for (let i = 2; i < candles.length - 2 && swings.length < lookback; i++) {
+    const c = candles[candles.length - 1 - i];
+    const p1 = candles[candles.length - i];
+    const p2 = candles[candles.length - i + 1];
+    const n1 = candles[candles.length - 2 - i];
+    const n2 = candles[candles.length - 3 - i];
+    if (c.low < p1.low && c.low < p2.low && c.low < n1.low && c.low < n2.low) {
+      swings.push(c.low);
+    }
+  }
+  return swings.reverse();
+}
+
+function detectTrend(candles: Candle[]): TrendResult {
   const adxVal = adx(candles);
+  const closes = candles.map(c => c.close);
   const lastClose = closes[closes.length - 1];
+  const avgClose = avg(closes.slice(-20));
+  
+  const hh = findSwingHighs(candles, 4);
+  const ll = findSwingLows(candles, 4);
   
   if (hh.length >= 2 && ll.length >= 2) {
     const higherHighs = hh[hh.length-1] > hh[hh.length-2];
@@ -131,11 +153,26 @@ function detectTrend(candles: Candle[]): TrendResult {
     const lowerHighs = hh[hh.length-1] < hh[hh.length-2];
     const lowerLows = ll[ll.length-1] < ll[ll.length-2];
     
-    if (higherHighs && higherLows && lastClose > avg(closes)) {
+    if (higherHighs && higherLows && lastClose > avgClose) {
       return { direction: "LONG", swing1: ll[ll.length-2], swing2: ll[ll.length-1], adx: adxVal, health: adxVal > 25 ? "STRONG" : "WEAK" };
     }
-    if (lowerHighs && lowerLows && lastClose < avg(closes)) {
+    if (lowerHighs && lowerLows && lastClose < avgClose) {
       return { direction: "SHORT", swing1: hh[hh.length-2], swing2: hh[hh.length-1], adx: adxVal, health: adxVal > 25 ? "STRONG" : "WEAK" };
+    }
+  }
+  
+  // Fallback: Use slope of recent closes if no clear swings
+  const recent20 = closes.slice(-20);
+  const first10 = avg(recent20.slice(0, 10));
+  const last10 = avg(recent20.slice(-10));
+  const slope = (last10 - first10) / first10;
+  
+  if (Math.abs(slope) > 0.01 && adxVal > ADX_MIN) {
+    if (slope > 0 && lastClose > avgClose) {
+      return { direction: "LONG", swing1: Math.min(...recent20), swing2: Math.min(...recent20.slice(-10)), adx: adxVal, health: adxVal > 25 ? "STRONG" : "WEAK" };
+    }
+    if (slope < 0 && lastClose < avgClose) {
+      return { direction: "SHORT", swing1: Math.max(...recent20), swing2: Math.max(...recent20.slice(-10)), adx: adxVal, health: adxVal > 25 ? "STRONG" : "WEAK" };
     }
   }
   
@@ -155,7 +192,6 @@ function detectEarlyEntry(candles1h: Candle[], candles15m: Candle[], trend: Tren
   if (len1h < 20 || len15m < 20) return { valid: false, type: "insufficient_data", confidence: 0 };
 
   const recent1h = candles1h.slice(-6);
-  const recent15m = candles15m.slice(-8);
   const closes1h = candles1h.map(c => c.close);
   const rsi1h = rsi(closes1h);
   const stoch15 = stoch(candles15m);
@@ -163,8 +199,8 @@ function detectEarlyEntry(candles1h: Candle[], candles15m: Candle[], trend: Tren
 
   const last1h = candles1h[len1h - 1];
   const prev1h = candles1h[len1h - 2];
-  const prevLow = Math.min(...candles1h.slice(-4, -1).map(c => c.low));
-  const prevHigh = Math.max(...candles1h.slice(-4, -1).map(c => c.high));
+  const prevLow = Math.min(...candles1h.slice(-6, -1).map(c => c.low));
+  const prevHigh = Math.max(...candles1h.slice(-6, -1).map(c => c.high));
 
   let sweepDetected = false;
   let divergenceDetected = false;
@@ -173,47 +209,56 @@ function detectEarlyEntry(candles1h: Candle[], candles15m: Candle[], trend: Tren
 
   const recentVol = recent1h.map(c => c.volume);
   const avgVol = avg(recentVol.slice(0, -1));
-  if (avgVol > 0 && recentVol[recentVol.length - 1] > avgVol * 1.5) volumeSpike = true;
+  if (avgVol > 0 && recentVol[recentVol.length - 1] > avgVol * 1.3) volumeSpike = true;
 
   if (trend.direction === "LONG") {
     const wickLow = Math.min(last1h.low, prev1h.low);
-    if (wickLow < prevLow * 1.002 && last1h.close > prevLow) {
+    if (wickLow < prevLow * 1.001 && last1h.close > prevLow) {
       sweepDetected = true;
     }
-    const priceLL = last1h.low < prev1h.low;
-    const rsiHL = rsi1h > 30 && rsi1h > rsi(candles1h.slice(0, -1).map(c => c.close));
-    if (priceLL && rsiHL) divergenceDetected = true;
+    const recentCloses = closes1h.slice(-10);
+    const recentLows = candles1h.slice(-10).map(c => c.low);
+    const lowestPriceIdx = recentLows.indexOf(Math.min(...recentLows));
+    const lowestRsi = rsi(closes1h.slice(0, -(10 - lowestPriceIdx)));
+    const currentRsi = rsi1h;
+    if (lowestPriceIdx >= 0 && recentLows[lowestPriceIdx] < recentLows[recentLows.length - 1] && lowestRsi < currentRsi && currentRsi > 30) {
+      divergenceDetected = true;
+    }
     const body = last1h.close - last1h.open;
     const range = last1h.high - last1h.low;
-    if (body > 0 && body / range > 0.6) momentumCandle = true;
+    if (body > 0 && range > 0 && body / range > 0.5) momentumCandle = true;
 
     const score = (sweepDetected ? 30 : 0) + (divergenceDetected ? 25 : 0) + 
                   (volumeSpike ? 20 : 0) + (momentumCandle ? 15 : 0) +
-                  (stoch15.k < 30 ? 10 : 0);
+                  (stoch15.k < 35 ? 10 : 0) + (trend.adx > 25 ? 10 : 0);
 
-    if (score >= 40) {
-      return { valid: true, type: `sweep${divergenceDetected ? "_div" : ""}${volumeSpike ? "_vol" : ""}`, confidence: Math.min(75, score) };
+    if (score >= 35) {
+      return { valid: true, type: `sweep${divergenceDetected ? "_div" : ""}${volumeSpike ? "_vol" : ""}`, confidence: Math.min(80, score) };
     }
   }
 
   if (trend.direction === "SHORT") {
     const wickHigh = Math.max(last1h.high, prev1h.high);
-    if (wickHigh > prevHigh * 0.998 && last1h.close < prevHigh) {
+    if (wickHigh > prevHigh * 0.999 && last1h.close < prevHigh) {
       sweepDetected = true;
     }
-    const priceHH = last1h.high > prev1h.high;
-    const rsiLH = rsi1h < 70 && rsi1h < rsi(candles1h.slice(0, -1).map(c => c.close));
-    if (priceHH && rsiLH) divergenceDetected = true;
+    const recentHighs = candles1h.slice(-10).map(c => c.high);
+    const highestPriceIdx = recentHighs.indexOf(Math.max(...recentHighs));
+    const highestRsi = rsi(closes1h.slice(0, -(10 - highestPriceIdx)));
+    const currentRsi = rsi1h;
+    if (highestPriceIdx >= 0 && recentHighs[highestPriceIdx] > recentHighs[recentHighs.length - 1] && highestRsi > currentRsi && currentRsi < 70) {
+      divergenceDetected = true;
+    }
     const body = last1h.open - last1h.close;
     const range = last1h.high - last1h.low;
-    if (body > 0 && body / range > 0.6) momentumCandle = true;
+    if (body > 0 && range > 0 && body / range > 0.5) momentumCandle = true;
 
     const score = (sweepDetected ? 30 : 0) + (divergenceDetected ? 25 : 0) + 
                   (volumeSpike ? 20 : 0) + (momentumCandle ? 15 : 0) +
-                  (stoch15.k > 70 ? 10 : 0);
+                  (stoch15.k > 65 ? 10 : 0) + (trend.adx > 25 ? 10 : 0);
 
-    if (score >= 40) {
-      return { valid: true, type: `sweep${divergenceDetected ? "_div" : ""}${volumeSpike ? "_vol" : ""}`, confidence: Math.min(75, score) };
+    if (score >= 35) {
+      return { valid: true, type: `sweep${divergenceDetected ? "_div" : ""}${volumeSpike ? "_vol" : ""}`, confidence: Math.min(80, score) };
     }
   }
 
