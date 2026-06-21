@@ -236,7 +236,7 @@ function trigger15M(candles: Candle[], direction: "LONG" | "SHORT"): {
       return { triggered: true, type: "deep oversold reversal", sweepLow: last.low };
     }
     
-    // Pattern 3: Stoch bounce from extreme (K was < 15, now curling up with D following)
+    // Pattern 3: Stoch bounce from extreme (K was < 20, now curling up with D following)
     const stochBounce = stoch15.k < 20 && stoch15.k > stoch15.d && prev.close < last.close;
     if (swept && stochBounce && last.close > last.open) {
       return { triggered: true, type: "stoch oversold bounce", sweepLow: last.low };
@@ -384,7 +384,7 @@ export function generateSignal(
   const rsi1h = rsi(candles1h.map(c => c.close));
   const stoch15 = stoch(candles15m);
   
-  // Confidence: full alignment = 75, 4H override = 55-60, partial = 50
+  // Confidence: full alignment = 75, 4H override = 55, partial = 50
   let confidence = 50;
   if (t4h.strength === "STRONG" && c1h.confirms && c1h.adx > 30) {
     confidence = 75;
