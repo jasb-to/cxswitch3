@@ -1,4 +1,4 @@
-// app/api/signals/route.ts — v23 "FIXED: v23 strategy compatibility + Confidence Score"
+// app/api/signals/route.ts — v23.2 "FIXED: Confidence Score + Freshness Gate"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -8,6 +8,8 @@ import { getCandles } from "@/lib/kraken";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const EARLY_FRESHNESS_MIN = 30; // EARLY signals only actionable within 30 min
 
 export async function GET() {
   const signals = await getSignals();
@@ -23,7 +25,7 @@ export async function GET() {
     const price = currentPrices[s.pair];
     if (!price) {
       const ageHours = (Date.now() - s.timestamp) / (1000 * 60 * 60);
-      const maxAge = s.type === "PULLBACK" ? 2 : 6;
+      const maxAge = s.type === "EARLY" ? 1 : s.type === "PULLBACK" ? 2 : 6;
       return ageHours < maxAge;
     }
     return isSignalStillValid(s, price);
@@ -36,23 +38,31 @@ export async function GET() {
   const enriched = await Promise.all(validSignals.map(async (s: any) => {
     const isBreakout = s.type === "BREAKOUT";
     const isPullback = s.type === "PULLBACK";
+    const isEarly = s.type === "EARLY";
+    
+    // Freshness gate: EARLY signals expire for new entries after 30 min
+    const ageMin = (Date.now() - s.timestamp) / (1000 * 60);
+    const isFresh = !isEarly || ageMin <= EARLY_FRESHNESS_MIN;
+    
     let holdAdvice = null;
     try {
       const candles4h = await getCandles(s.pair, 240);
       const price = currentPrices[s.pair] || s.entry;
       if (candles4h && candles4h.length > 30) {
-        // v23: shouldHold only takes (signal, candles4h, currentPrice)
         holdAdvice = shouldHold(s, candles4h, price);
       }
     } catch (err) {
       console.error(`[API] Hold analysis failed for ${s.pair}:`, err);
     }
+    
     return {
       ...s,
       meta: {
-        tier: isBreakout ? "BREAKOUT" : isPullback ? "PULLBACK" : "OTHER",
-        confidenceScore: s.confidence,  // 0-100 score instead of A/B/C/D
-        actionable: s.confidence >= 60,
+        tier: isBreakout ? "BREAKOUT" : isPullback ? "PULLBACK" : isEarly ? "EARLY" : "OTHER",
+        confidenceScore: s.confidence,
+        actionable: s.confidence >= 60 && isFresh, // Only actionable if fresh + high confidence
+        fresh: isFresh,
+        ageMinutes: Math.round(ageMin),
       },
       holdAdvice
     };
