@@ -1,4 +1,4 @@
-// lib/strategy.ts — v23.2 "FIXED: Trend Detection + Early Entry + Position Building"
+// lib/strategy.ts — v23.2 "FIXED: Trend Detection + Early Entry + Freshness Gate"
 // ============================================================
 
 export interface Candle {
@@ -43,6 +43,7 @@ const RETEST_BUFFER = 0.003;
 const MAX_RETEST_HOURS = 3;
 const TREND_LOOKBACK = 20;
 const ADX_MIN = 20;
+const EARLY_FRESHNESS_MIN = 30; // EARLY signals expire after 30 min for new entries
 
 function generateSignalId(pair: string): string {
   return `${pair}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -99,7 +100,7 @@ function adx(candles: Candle[], period = 14): number {
   return (Math.abs(plusDI - minusDI) / (plusDI + minusDI)) * 100;
 }
 
-// --- TREND DETECTION — FIXED ---
+// --- TREND DETECTION ---
 interface TrendResult {
   direction: "LONG" | "SHORT" | null;
   swing1: number;
@@ -161,7 +162,7 @@ function detectTrend(candles: Candle[]): TrendResult {
     }
   }
   
-  // Fallback: Use slope of recent closes if no clear swings
+  // Fallback: Use slope of recent closes
   const recent20 = closes.slice(-20);
   const first10 = avg(recent20.slice(0, 10));
   const last10 = avg(recent20.slice(-10));
@@ -174,6 +175,7 @@ function detectTrend(candles: Candle[]): TrendResult {
     if (slope < 0 && lastClose < avgClose) {
       return { direction: "SHORT", swing1: Math.max(...recent20), swing2: Math.max(...recent20.slice(-10)), adx: adxVal, health: adxVal > 25 ? "STRONG" : "WEAK" };
     }
+  }
   }
   
   return { direction: null, swing1: 0, swing2: 0, adx: adxVal, health: "NONE" };
