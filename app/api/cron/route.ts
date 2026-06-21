@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v23.3 "FIXED: EARLY TTL + shouldHold + Alert Flow"
+// app/api/cron/route.ts — v23.4 "FIXED: EARLY TTL + shouldHold + Alert Flow + Entry Logic"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -64,11 +64,9 @@ export async function GET(request: Request) {
   }
   console.log(`[STATE] Active trades:`, Object.keys(activeTrades).join(", ") || "none");
 
-  // Use centralized filterExpiredSignals instead of inline logic
   const existingSignals = await getSignals();
   const currentPrices: Record<string, number> = {};
 
-  // Pre-fetch prices for all pairs
   for (const pair of PAIRS) {
     try {
       const candles = await getCandles(pair, 60);
@@ -81,7 +79,6 @@ export async function GET(request: Request) {
   const { active: validSignals, exited: preExited } = filterExpiredSignals(existingSignals, currentPrices, runStart);
   console.log(`[STATE] Existing valid signals: ${validSignals.length} (filtered ${preExited.length} expired)`);
 
-  // Log pre-exited signals
   for (const { signal, reason } of preExited) {
     console.log(`[EXIT] ${signal.pair} — ${reason}`);
     await addSignalToHistory(signal, reason as any, currentPrices[signal.pair] || signal.entry);
@@ -112,7 +109,6 @@ export async function GET(request: Request) {
       const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
 
       if (existingForPair) {
-        // Check main validity first (TTL, stop, target)
         const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
 
         if (!validity.valid) {
@@ -122,9 +118,8 @@ export async function GET(request: Request) {
           validSignals.splice(existingIdx, 1);
           exitedSignals.push({ signal: existingForPair, reason: validity.reason });
           alerts.push({ pair, status: "existing_invalid", reason: validity.reason });
-          // FALL THROUGH to generate new signal below
+          // FALL THROUGH to generate new signal
         } else {
-          // Still valid — check trend-based hold
           const holdResult = shouldHold(existingForPair, candles4h, currentPrice, runStart);
           if (!holdResult.shouldHold) {
             console.log(`[PAIR] ${pair} — HOLD EXIT: ${holdResult.reason}`);
@@ -133,11 +128,10 @@ export async function GET(request: Request) {
             validSignals.splice(existingIdx, 1);
             exitedSignals.push({ signal: existingForPair, reason: holdResult.reason });
             alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
-            // FALL THROUGH to generate new signal below
+            // FALL THROUGH to generate new signal
           } else {
             console.log(`[PAIR] ${pair} — Existing signal still valid (${existingForPair.type}), skipping`);
             alerts.push({ pair, status: "existing_valid", type: existingForPair.type, holdReason: holdResult.reason });
-            // Refresh market data even when skipping
             const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
             if (result.market) marketDataList.push(result.market);
             continue;
@@ -145,7 +139,7 @@ export async function GET(request: Request) {
         }
       }
 
-      // Generate new signal (either no existing, or existing was invalidated)
+      // Generate new signal
       const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
       const market = result.market;
       const debug = result.debug || [];
@@ -202,7 +196,6 @@ export async function GET(request: Request) {
     }
   }
 
-  // Merge: new signals replace old ones for same pair
   const mergedSignals = [...validSignals];
   for (const s of newSignals) {
     const idx = mergedSignals.findIndex((x: any) => x.pair === s.pair);
