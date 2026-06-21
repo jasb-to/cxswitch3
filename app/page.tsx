@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 interface Signal {
   pair: string;
   direction: "LONG" | "SHORT";
-  type: "EARLY" | "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL";
+  type: string;
   confidence: number;
   entry: number;
   stop: number;
@@ -13,42 +13,22 @@ interface Signal {
   rr: number;
   timestamp: number;
   expectedMove: number;
-  version: number;
-  reason?: string;
   adx?: number;
   rsi?: number;
   stochK?: number;
   stochD?: number;
+  reason?: string;
   meta?: {
-    tier: string;
-    confidenceScore: number;
-    actionable: boolean;
-    fresh: boolean;
+    status: string;
     ageMinutes: number;
+    actionable: boolean;
   };
-  holdAdvice?: {
-    shouldHold: boolean;
-    reason: string;
-  } | null;
-}
-
-interface SignalHistory {
-  pair: string;
-  direction: "LONG" | "SHORT";
-  type: string;
-  entry: number;
-  stop: number;
-  target: number;
-  exitedAt: number;
-  exitReason: "stop_hit" | "target_hit" | "expired" | "hold_exit";
-  exitPrice: number | null;
 }
 
 interface MarketData {
   pair: string;
   price: number;
-  structure: string;
-  health: string;
+  trend: string;
   adx: number;
   rsi: number;
   stochK: number;
@@ -57,8 +37,6 @@ interface MarketData {
 }
 
 const PAIRS = ["BTC", "ETH", "SOL"];
-const SIGNAL_STALE_MS = 48 * 60 * 60 * 1000;
-const HISTORY_DISPLAY_MS = 24 * 60 * 60 * 1000;
 
 const money = (n?: number) =>
   typeof n === "number" && isFinite(n)
@@ -86,39 +64,10 @@ function timeAgo(ts: number): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-function getHealthColor(health: string): string {
-  if (health === "STRONG") return "text-green-400";
-  if (health === "WEAK") return "text-yellow-400";
-  return "text-gray-400";
-}
-
-function getHealthBg(health: string): string {
-  if (health === "STRONG") return "bg-green-500/20 border-green-500/50";
-  if (health === "WEAK") return "bg-yellow-500/20 border-yellow-500/50";
-  return "bg-gray-500/20 border-gray-500/50";
-}
-
-function getConfidenceColor(score: number): string {
-  if (score >= 80) return "text-emerald-400";
-  if (score >= 60) return "text-green-400";
-  if (score >= 40) return "text-yellow-400";
-  if (score >= 20) return "text-orange-400";
-  return "text-red-400";
-}
-
-function getConfidenceBarColor(score: number): string {
-  if (score >= 80) return "bg-emerald-500";
-  if (score >= 60) return "bg-green-500";
-  if (score >= 40) return "bg-yellow-500";
-  if (score >= 20) return "bg-orange-500";
-  return "bg-red-500";
-}
-
 export default function Dashboard() {
   const [signals, setSignals] = useState<Record<string, Signal | null>>({});
-  const [history, setHistory] = useState<Record<string, SignalHistory>>({});
-  const [livePrices, setLivePrices] = useState<Record<string, number>>({});
   const [marketData, setMarketData] = useState<Record<string, MarketData>>({});
+  const [livePrices, setLivePrices] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [fetchCount, setFetchCount] = useState(0);
   const [lastFetch, setLastFetch] = useState<number>(0);
@@ -126,25 +75,20 @@ export default function Dashboard() {
   useEffect(() => {
     async function load() {
       try {
-        const res = await fetch("/api/signals");
+        const res = await fetch("/api/signals", { cache: "no-store" });
         const data = await res.json();
         const sigMap: Record<string, Signal | null> = {};
-        const histMap: Record<string, SignalHistory> = {};
         const mktMap: Record<string, MarketData> = {};
 
         for (const p of PAIRS) {
           const s = data.signals?.find((sig: Signal) => sig.pair === p);
           sigMap[p] = s || null;
         }
-        for (const h of data.history || []) {
-          if (h?.pair && (Date.now() - h.exitedAt) < HISTORY_DISPLAY_MS) histMap[h.pair] = h;
-        }
         for (const m of data.marketData || []) {
           if (m?.pair) mktMap[m.pair] = m;
         }
 
         setSignals(sigMap);
-        setHistory(histMap);
         setMarketData(mktMap);
         setFetchCount(c => c + 1);
         setLastFetch(Date.now());
@@ -178,7 +122,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-6xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-bold">CX Switch v23</h1>
+          <h1 className="text-2xl font-bold">CX Switch v24</h1>
           <div className="text-xs text-gray-400">
             Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
           </div>
@@ -187,83 +131,80 @@ export default function Dashboard() {
         <div className="grid md:grid-cols-3 gap-6">
           {PAIRS.map((pair) => {
             const signal = signals[pair];
-            const hist = history[pair];
             const mkt = marketData[pair];
             const livePrice = livePrices[pair];
-            const now = Date.now();
+            const currentPrice = livePrice ?? mkt?.price ?? 0;
             const hasSignal = !!signal;
-            const signalFresh = signal && (now - signal.timestamp < SIGNAL_STALE_MS);
-            const currentPrice = livePrice ?? mkt?.price ?? signal?.entry;
-            const priceLive = !!livePrice;
+            const status = signal?.meta?.status || "WAITING";
+
+            // Determine card state
+            let borderClass = "border-gray-700 bg-gray-800";
+            let bannerText = "";
+            let bannerClass = "";
+            let statusBadge = "";
+
+            if (hasSignal) {
+              if (status === "TP_HIT") {
+                borderClass = "border-purple-500 bg-purple-900/10";
+                bannerText = "🎯 TARGET HIT — CLOSED";
+                bannerClass = "bg-purple-500 text-white";
+                statusBadge = "TP HIT";
+              } else if (status === "SL_HIT") {
+                borderClass = "border-red-500 bg-red-900/10";
+                bannerText = "🛑 STOP HIT — CLOSED";
+                bannerClass = "bg-red-500 text-white";
+                statusBadge = "SL HIT";
+              } else if (status === "ACTIVE") {
+                borderClass = signal.direction === "LONG" ? "border-green-500 bg-green-900/10" : "border-red-500 bg-red-900/10";
+                const age = signal.meta?.ageMinutes ?? 0;
+                if (age > 120) {
+                  bannerText = `⏰ STALE — ${age}m old. Wait for fresh signal.`;
+                  bannerClass = "bg-gray-600 text-white";
+                  statusBadge = "STALE";
+                } else if (!signal.meta?.actionable) {
+                  bannerText = `⚠️ Low confidence (${signal.confidence}%). Skip or reduce size.`;
+                  bannerClass = "bg-yellow-500 text-black";
+                  statusBadge = "LOW CONF";
+                } else {
+                  statusBadge = "ACTIVE";
+                }
+              }
+            } else {
+              // No signal — show trend status
+              if (mkt) {
+                const trendDir = mkt.trend?.split(" ")[0];
+                const trendHealth = mkt.trend?.split(" ")[1];
+                if (trendHealth === "STRONG") {
+                  bannerText = `⏳ ${trendDir} STRONG — Waiting for 15M sweep`;
+                  bannerClass = "bg-blue-600/50 text-blue-200";
+                } else if (trendHealth === "MEDIUM") {
+                  bannerText = `⏳ ${trendDir} MEDIUM — Watching for setup`;
+                  bannerClass = "bg-yellow-600/30 text-yellow-200";
+                } else {
+                  bannerText = "⏳ No trend — Waiting";
+                  bannerClass = "bg-gray-600/50 text-gray-300";
+                }
+              } else {
+                bannerText = "⏳ Loading market data...";
+                bannerClass = "bg-gray-600/50 text-gray-300";
+              }
+              statusBadge = "WAITING";
+            }
+
             const entry = signal?.entry ?? 0;
             const stop = signal?.stop ?? 0;
             const target = signal?.target ?? 0;
-            const isActionable = signal?.meta?.actionable ?? false;
-            const isFresh = signal?.meta?.fresh ?? true;
 
-            const unrealizedPnL = hasSignal && signalFresh && currentPrice && entry
-              ? signal.direction === "LONG" ? ((currentPrice - entry) / entry) * 100 : ((entry - currentPrice) / entry) * 100
-              : 0;
-            const targetHit = hasSignal && signalFresh && currentPrice && target
-              ? signal.direction === "LONG" ? currentPrice >= target : currentPrice <= target
-              : false;
-            const stopHit = hasSignal && signalFresh && currentPrice && stop
-              ? signal.direction === "LONG" ? currentPrice <= stop : currentPrice >= stop
-              : false;
-            const hasHistory = !!hist;
-
-            const progress = hasSignal && signalFresh && entry && target && stop
+            // Progress to target
+            const progress = hasSignal && status === "ACTIVE" && entry && target && stop && currentPrice
               ? signal.direction === "LONG"
                 ? Math.max(0, Math.min(100, ((currentPrice - entry) / (target - entry)) * 100))
                 : Math.max(0, Math.min(100, ((entry - currentPrice) / (entry - target)) * 100))
               : 0;
 
-            let borderClass = "border-gray-700 bg-gray-800";
-            let bannerText: string | null = null;
-            let bannerClass = "";
-            let statusBadge = "";
-
-            if (targetHit) {
-              borderClass = "border-purple-500 bg-purple-900/10";
-              bannerText = "🎯 TARGET HIT — TAKE PROFIT";
-              bannerClass = "bg-purple-500 text-white";
-              statusBadge = "TAKE PROFIT";
-            } else if (stopHit) {
-              borderClass = "border-red-500 bg-red-900/10";
-              bannerText = "🛑 STOPPED OUT — EXIT NOW";
-              bannerClass = "bg-red-500 text-white";
-              statusBadge = "EXIT";
-            } else if (hasSignal && signalFresh) {
-              borderClass = signal.direction === "LONG" ? "border-green-500 bg-green-900/10" : "border-red-500 bg-red-900/10";
-              if (!isFresh) {
-                bannerText = `⏰ STALE — ${signal.meta?.ageMinutes}m old. Wait for fresh signal.`;
-                bannerClass = "bg-gray-600 text-white";
-                statusBadge = "STALE";
-              } else if (!isActionable) {
-                bannerText = `⚠️ Low confidence (${signal.confidence}%). Skip or reduce size.`;
-                bannerClass = "bg-yellow-500 text-black";
-                statusBadge = "LOW CONF";
-              } else if (signal.holdAdvice) {
-                if (signal.holdAdvice.shouldHold) {
-                  statusBadge = "HOLD ✓";
-                } else {
-                  bannerText = `⚠️ ${signal.holdAdvice.reason}`;
-                  bannerClass = "bg-yellow-500 text-black";
-                  statusBadge = "EXIT";
-                }
-              } else {
-                statusBadge = "ACTIVE";
-              }
-            } else if (hasHistory && !hasSignal) {
-              borderClass = "border-yellow-500 bg-yellow-900/10";
-              bannerText = hist.exitReason === "target_hit" ? "🎯 TARGET HIT" : hist.exitReason === "stop_hit" ? "🛑 STOPPED" : "⚠️ HOLD EXIT";
-              bannerClass = hist.exitReason === "target_hit" ? "bg-purple-500 text-white" : hist.exitReason === "stop_hit" ? "bg-red-500 text-white" : "bg-yellow-500 text-black";
-              statusBadge = "CLOSED";
-            } else {
-              statusBadge = "WAIT";
-            }
-
-            const confScore = signal?.meta?.confidenceScore ?? signal?.confidence ?? 0;
+            const unrealizedPnL = hasSignal && status === "ACTIVE" && currentPrice && entry
+              ? signal.direction === "LONG" ? ((currentPrice - entry) / entry) * 100 : ((entry - currentPrice) / entry) * 100
+              : 0;
 
             return (
               <div key={pair} className={`rounded-lg p-5 border-2 transition-all ${borderClass}`}>
@@ -276,11 +217,11 @@ export default function Dashboard() {
                     <div className="font-bold text-lg">{pair}/USD</div>
                     <div className="flex items-center gap-2">
                       <div className="text-2xl font-mono">{money(currentPrice)}</div>
-                      {priceLive && <span className="text-xs bg-green-600/50 text-green-300 px-1.5 py-0.5 rounded animate-pulse">LIVE</span>}
+                      {livePrice && <span className="text-xs bg-green-600/50 text-green-300 px-1.5 py-0.5 rounded animate-pulse">LIVE</span>}
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-1">
-                    {hasSignal && signalFresh ? (
+                    {hasSignal ? (
                       <>
                         <span className={`px-2 py-1 rounded text-xs font-bold ${signal.direction === "LONG" ? "bg-green-600 text-white" : "bg-red-600 text-white"}`}>
                           {signal.type}
@@ -289,8 +230,9 @@ export default function Dashboard() {
                           {signal.direction}
                         </span>
                         <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
-                          statusBadge === "HOLD ✓" ? "bg-green-500/30 text-green-300" :
-                          statusBadge === "EXIT" ? "bg-red-500/30 text-red-300" :
+                          statusBadge === "ACTIVE" ? "bg-green-500/30 text-green-300" :
+                          statusBadge === "TP HIT" ? "bg-purple-500/30 text-purple-300" :
+                          statusBadge === "SL HIT" ? "bg-red-500/30 text-red-300" :
                           statusBadge === "STALE" ? "bg-gray-500/30 text-gray-300" :
                           statusBadge === "LOW CONF" ? "bg-yellow-500/30 text-yellow-300" :
                           "bg-blue-500/30 text-blue-300"
@@ -298,146 +240,125 @@ export default function Dashboard() {
                           {statusBadge}
                         </span>
                       </>
-                    ) : hasSignal && !signalFresh ? (
-                      <span className="px-2 py-1 rounded text-xs bg-yellow-600 text-white">EXPIRED</span>
-                    ) : hasHistory ? (
-                      <span className="px-2 py-1 rounded text-xs bg-gray-600 text-gray-300">CLOSED</span>
                     ) : (
-                      <span className="px-2 py-1 rounded text-xs bg-gray-600 text-gray-300">WAIT</span>
+                      <span className="px-2 py-1 rounded text-xs bg-gray-600 text-gray-300">WAITING</span>
                     )}
                   </div>
                 </div>
 
-                {hasSignal && signalFresh && signal.holdAdvice && isFresh && isActionable && (
-                  <div className={`mb-3 p-2 rounded border text-xs font-semibold ${
-                    signal.holdAdvice.shouldHold
-                      ? "bg-green-500/10 border-green-500/30 text-green-300"
-                      : "bg-red-500/10 border-red-500/30 text-red-300"
-                  }`}>
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">{signal.holdAdvice.shouldHold ? "✅" : "❌"}</span>
-                      <span>{signal.holdAdvice.reason}</span>
-                    </div>
-                  </div>
-                )}
-
+                {/* Market Context */}
                 {mkt && (
-                  <div className={`mb-3 p-2 rounded border text-xs ${getHealthBg(mkt.health)}`}>
+                  <div className="mb-3 p-2 rounded border bg-gray-800/50 border-gray-600/50">
                     <div className="flex justify-between items-center">
                       <span className="text-gray-400">4H Trend:</span>
-                      <span className={`font-bold ${getHealthColor(mkt.health)}`}>
-                        {mkt.structure} {mkt.health}
+                      <span className={`font-bold ${mkt.trend?.includes("STRONG") ? "text-green-400" : mkt.trend?.includes("MEDIUM") ? "text-yellow-400" : "text-gray-400"}`}>
+                        {mkt.trend}
                       </span>
                     </div>
-                    <div className="flex justify-between mt-1">
+                    <div className="flex justify-between mt-1 text-xs">
                       <span className="text-gray-500">ADX: {mkt.adx?.toFixed(1)}</span>
                       <span className="text-gray-500">RSI: {mkt.rsi?.toFixed(1)}</span>
                     </div>
-                    <div className="flex justify-between">
+                    <div className="flex justify-between text-xs">
                       <span className="text-gray-500">Stoch K: {mkt.stochK?.toFixed(1)}</span>
                       <span className="text-gray-500">D: {mkt.stochD?.toFixed(1)}</span>
                     </div>
                   </div>
                 )}
 
-                {hasSignal && signalFresh && !targetHit && !stopHit && (
-                  <div className="mb-3">
-                    <div className="flex justify-between text-xs text-gray-400 mb-1">
-                      <span>Entry</span>
-                      <span className={unrealizedPnL > 0 ? "text-green-400" : unrealizedPnL < 0 ? "text-red-400" : "text-gray-400"}>
-                        {unrealizedPnL > 0 ? "+" : ""}{unrealizedPnL.toFixed(2)}%
-                      </span>
-                      <span>Target</span>
-                    </div>
-                    <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all ${
-                          unrealizedPnL > 0 ? "bg-green-500" : "bg-red-500"
-                        }`}
-                        style={{ width: `${progress}%` }}
-                      />
-                    </div>
-                    <div className="flex justify-between text-[10px] text-gray-500 mt-1">
-                      <span>{money(entry)}</span>
-                      <span>{money(target)}</span>
-                    </div>
-                  </div>
-                )}
-
-                {hasHistory && !hasSignal && (
-                  <div className="mb-4 p-3 bg-gray-900/50 rounded text-sm space-y-2">
-                    <div className="flex justify-between">
-                      <span className="text-gray-400">Last Signal</span>
-                      <span className={`font-bold ${hist.direction === "LONG" ? "text-green-400" : "text-red-400"}`}>
-                        {hist.type} {hist.direction}
-                      </span>
-                    </div>
-                    <div className="flex justify-between"><span className="text-gray-400">Entry</span><span className="font-mono">{money(hist.entry)}</span></div>
-                    <div className="flex justify-between"><span className="text-gray-400">Exit</span><span className="font-mono">{money(hist.exitPrice || hist.stop)}</span></div>
-                    <div className="flex justify-between"><span className="text-gray-400">Time</span><span className="text-gray-500">{new Date(hist.exitedAt).toLocaleTimeString()}</span></div>
-                  </div>
-                )}
-
-                {hasSignal && signalFresh && (
-                  <div className="mb-4 space-y-2">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-gray-400">Entry</span>
-                      <span className="font-mono">{money(signal.entry)}</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-gray-400">Stop</span>
-                      <span className="font-mono text-red-400">{money(signal.stop)}</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-gray-400">Target</span>
-                      <span className="font-mono text-purple-400">{money(signal.target)}</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-gray-400">R:R</span>
-                      <span className="font-mono text-yellow-400">{signal.rr?.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-gray-400">Strategy Conf</span>
-                      <span className="font-mono">{signal.confidence}%</span>
-                    </div>
-
-                    <div className="pt-1">
-                      <div className="flex justify-between text-sm mb-1">
-                        <span className="text-gray-400">Confidence Score</span>
-                        <span className={`font-mono font-bold ${getConfidenceColor(confScore)}`}>
-                          {confScore.toFixed(0)}/100
+                {/* Active Signal Details */}
+                {hasSignal && status === "ACTIVE" && (
+                  <>
+                    {/* Progress Bar */}
+                    <div className="mb-3">
+                      <div className="flex justify-between text-xs text-gray-400 mb-1">
+                        <span>Entry</span>
+                        <span className={unrealizedPnL > 0 ? "text-green-400" : unrealizedPnL < 0 ? "text-red-400" : "text-gray-400"}>
+                          {unrealizedPnL > 0 ? "+" : ""}{unrealizedPnL.toFixed(2)}%
                         </span>
+                        <span>Target</span>
                       </div>
-                      <div className="h-2.5 bg-gray-700 rounded-full overflow-hidden">
+                      <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
                         <div
-                          className={`h-full rounded-full transition-all ${getConfidenceBarColor(confScore)}`}
-                          style={{ width: `${Math.min(100, Math.max(0, confScore))}%` }}
+                          className={`h-full rounded-full transition-all ${unrealizedPnL > 0 ? "bg-green-500" : "bg-red-500"}`}
+                          style={{ width: `${progress}%` }}
                         />
                       </div>
-                      <div className="text-[10px] text-gray-500 mt-1 text-right">
-                        {confScore >= 80 ? "Excellent — High conviction trade" :
-                         confScore >= 60 ? "Good — Solid setup" :
-                         confScore >= 40 ? "Fair — Manage risk carefully" :
-                         confScore >= 20 ? "Weak — Consider skipping" : "Poor — Avoid"}
+                      <div className="flex justify-between text-[10px] text-gray-500 mt-1">
+                        <span>{money(entry)}</span>
+                        <span>{money(target)}</span>
                       </div>
                     </div>
 
-                    <div className="flex justify-between text-sm">
-                      <span className="text-gray-400">Age</span>
-                      <span className="font-mono text-gray-300">{timeAgo(signal.timestamp)}</span>
+                    {/* Levels */}
+                    <div className="mb-4 space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-400">Entry</span>
+                        <span className="font-mono">{money(signal.entry)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-400">Stop</span>
+                        <span className="font-mono text-red-400">{money(signal.stop)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-400">Target</span>
+                        <span className="font-mono text-purple-400">{money(signal.target)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-400">R:R</span>
+                        <span className="font-mono text-yellow-400">{signal.rr?.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-400">Confidence</span>
+                        <span className={`font-mono font-bold ${signal.confidence >= 60 ? "text-green-400" : signal.confidence >= 40 ? "text-yellow-400" : "text-red-400"}`}>
+                          {signal.confidence}%
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-400">Age</span>
+                        <span className="font-mono text-gray-300">{timeAgo(signal.timestamp)}</span>
+                      </div>
                     </div>
+
+                    {/* Reason */}
+                    {signal.reason && (
+                      <div className="text-xs text-gray-500 border-t border-gray-700 pt-3 mb-2">
+                        <p className="leading-relaxed">{signal.reason}</p>
+                      </div>
+                    )}
+
+                    <div className="text-xs text-gray-500">
+                      <p><span className="text-gray-400">Expected:</span> {signal.expectedMove?.toFixed(1)}% move</p>
+                    </div>
+                  </>
+                )}
+
+                {/* Closed Signal Summary */}
+                {(status === "TP_HIT" || status === "SL_HIT") && (
+                  <div className="mb-4 p-3 bg-gray-900/50 rounded text-sm space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Result</span>
+                      <span className={`font-bold ${status === "TP_HIT" ? "text-purple-400" : "text-red-400"}`}>
+                        {status === "TP_HIT" ? "TAKE PROFIT" : "STOP LOSS"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between"><span className="text-gray-400">Entry</span><span className="font-mono">{money(signal.entry)}</span></div>
+                    <div className="flex justify-between"><span className="text-gray-400">Exit</span><span className="font-mono">{money(currentPrice)}</span></div>
+                    <div className="flex justify-between"><span className="text-gray-400">Age at close</span><span className="text-gray-500">{timeAgo(signal.timestamp)}</span></div>
                   </div>
                 )}
 
-                {hasSignal && signalFresh && signal.reason && (
-                  <div className="text-xs text-gray-500 border-t border-gray-700 pt-3 mb-2">
-                    <p className="leading-relaxed">{signal.reason}</p>
-                  </div>
-                )}
-
-                {hasSignal && signalFresh && (
-                  <div className="text-xs text-gray-500">
-                    <p><span className="text-gray-400">Expected:</span> {signal.expectedMove?.toFixed(1)}% move</p>
+                {/* Waiting State */}
+                {!hasSignal && mkt && (
+                  <div className="text-sm text-gray-500 space-y-1">
+                    <p>Waiting for setup:</p>
+                    <ul className="list-disc list-inside text-xs space-y-0.5">
+                      <li className={mkt.trend?.includes("LONG") || mkt.trend?.includes("SHORT") ? "text-green-400" : "text-gray-500"}>
+                        4H Trend: {mkt.trend || "None"}
+                      </li>
+                      <li className="text-gray-500">1H Confirmation: Checking...</li>
+                      <li className="text-gray-500">15M Sweep: Waiting...</li>
+                    </ul>
                   </div>
                 )}
               </div>
@@ -447,4 +368,4 @@ export default function Dashboard() {
       </div>
     </div>
   );
-} 
+}
