@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v24.2 "Simple: Structure Scalp"
+// app/api/cron/route.ts — v25.1 "Momentum Lead: Fast Trend + Immediate Entry"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -73,7 +73,7 @@ export async function GET(request: Request) {
         getCandles(pair, 60), getCandles(pair, 240), getCandles(pair, 15)
       ]);
 
-      if (!candles1h || !candles4h || !candles15m || candles1h.length < 50 || candles4h.length < 30 || candles15m.length < 50) {
+      if (!candles1h || !candles4h || !candles15m || candles1h.length < 20 || candles4h.length < 10 || candles15m.length < 20) {
         alerts.push({ pair, status: "skip", reason: "insufficient_candles" });
         continue;
       }
@@ -127,13 +127,18 @@ export async function GET(request: Request) {
       try {
         await sendAlert({
           symbol: signal.pair,
-          state: "NEW_SIGNAL",
+          state: signal.type,
           price: roundPrice(signal.entry),
           bias: signal.direction,
           confidence: signal.confidence,
           stopLoss: roundPrice(signal.stop),
           takeProfit: roundPrice(signal.target),
           rr: signal.rr,
+          expectedMove: signal.expectedMove,
+          adx: signal.adx,
+          rsi: signal.rsi,
+          stochK: signal.stochK,
+          stochD: signal.stochD,
           reason: signal.reason,
           updatedAt: new Date(signal.timestamp).toISOString(),
         });
@@ -162,4 +167,4 @@ export async function GET(request: Request) {
   console.log("========================================");
 
   return NextResponse.json({ success: true, signals: merged.length, marketData: marketDataList.length, exited: preExited.length, alerts });
-} 
+}
