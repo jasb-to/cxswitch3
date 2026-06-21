@@ -1,4 +1,4 @@
-// app/api/signals/route.ts — v23.2 "FIXED: Confidence Score + Freshness Gate"
+// app/api/signals/route.ts — v23.3 "FIXED: Confidence Score + Freshness Gate + shouldHold"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -28,7 +28,7 @@ export async function GET() {
       const maxAge = s.type === "EARLY" ? 1 : s.type === "PULLBACK" ? 2 : 6;
       return ageHours < maxAge;
     }
-    return isSignalStillValid(s, price);
+    return isSignalStillValid(s, price).valid;
   });
 
   console.log("[API] Raw signals count:", signals?.length);
@@ -76,4 +76,3 @@ export async function GET() {
     updatedAt: new Date().toISOString(),
   });
 }
- 
