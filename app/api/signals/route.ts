@@ -9,7 +9,7 @@ import { getCandles } from "@/lib/kraken";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const EARLY_FRESHNESS_MIN = 30; // EARLY signals only actionable within 30 min
+const EARLY_FRESHNESS_MIN = 30;
 
 export async function GET() {
   const signals = await getSignals();
@@ -39,11 +39,10 @@ export async function GET() {
     const isBreakout = s.type === "BREAKOUT";
     const isPullback = s.type === "PULLBACK";
     const isEarly = s.type === "EARLY";
-    
-    // Freshness gate: EARLY signals expire for new entries after 30 min
+
     const ageMin = (Date.now() - s.timestamp) / (1000 * 60);
     const isFresh = !isEarly || ageMin <= EARLY_FRESHNESS_MIN;
-    
+
     let holdAdvice = null;
     try {
       const candles4h = await getCandles(s.pair, 240);
@@ -54,13 +53,13 @@ export async function GET() {
     } catch (err) {
       console.error(`[API] Hold analysis failed for ${s.pair}:`, err);
     }
-    
+
     return {
       ...s,
       meta: {
         tier: isBreakout ? "BREAKOUT" : isPullback ? "PULLBACK" : isEarly ? "EARLY" : "OTHER",
         confidenceScore: s.confidence,
-        actionable: s.confidence >= 60 && isFresh, // Only actionable if fresh + high confidence
+        actionable: s.confidence >= 60 && isFresh,
         fresh: isFresh,
         ageMinutes: Math.round(ageMin),
       },
@@ -77,3 +76,4 @@ export async function GET() {
     updatedAt: new Date().toISOString(),
   });
 }
+ 
