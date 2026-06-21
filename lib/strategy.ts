@@ -1,4 +1,4 @@
-// lib/strategy.ts — v24.1 "Structure-Based 1H Scalp: Real TP/SL + Momentum + Trend"
+// lib/strategy.ts — v24.2 "Structure-Based 1H Scalp: Real TP/SL + Momentum + Trend"
 // ============================================================
 
 export interface Candle {
@@ -108,7 +108,7 @@ function findSwingLows(candles: Candle[], lookback: number): number[] {
   const lows: number[] = [];
   for (let i = 2; i < candles.length - 2 && lows.length < lookback; i++) {
     const c = candles[candles.length - 1 - i];
-    const p1 = candles[candles.length - i];
+n    const p1 = candles[candles.length - i];
     const p2 = candles[candles.length - i + 1];
     const n1 = candles[candles.length - 2 - i];
     const n2 = candles[candles.length - 3 - i];
@@ -163,8 +163,8 @@ function confirm1H(candles: Candle[], direction4h: "LONG" | "SHORT"): { confirms
   return { confirms: aligns && adxVal > 20, adx: adxVal };
 }
 
-// --- 5M TRIGGER: Sweep + 8/21 cross ---
-function trigger5M(candles: Candle[], direction: "LONG" | "SHORT"): { 
+// --- 15M TRIGGER: Sweep + 8/21 cross ---
+function trigger15M(candles: Candle[], direction: "LONG" | "SHORT"): { 
   triggered: boolean; 
   type: string; 
   sweepLow?: number; 
@@ -184,24 +184,24 @@ function trigger5M(candles: Candle[], direction: "LONG" | "SHORT"): {
   const recentHighs = candles.slice(-20).map(c => c.high);
   
   if (direction === "LONG") {
-    const last5m = candles[candles.length - 1];
+    const last15m = candles[candles.length - 1];
     const prevLow = Math.min(...recentLows.slice(0, -1));
-    const swept = last5m.low < prevLow * 1.001 && last5m.close > prevLow;
+    const swept = last15m.low < prevLow * 1.001 && last15m.close > prevLow;
     const crossed = prev8 <= prev21 && last8 > last21;
     
     if (swept && crossed) {
-      return { triggered: true, type: "sweep + 8/21 cross up", sweepLow: last5m.low };
+      return { triggered: true, type: "sweep + 8/21 cross up", sweepLow: last15m.low };
     }
   }
   
   if (direction === "SHORT") {
-    const last5m = candles[candles.length - 1];
+    const last15m = candles[candles.length - 1];
     const prevHigh = Math.max(...recentHighs.slice(0, -1));
-    const swept = last5m.high > prevHigh * 0.999 && last5m.close < prevHigh;
+    const swept = last15m.high > prevHigh * 0.999 && last15m.close < prevHigh;
     const crossed = prev8 >= prev21 && last8 < last21;
     
     if (swept && crossed) {
-      return { triggered: true, type: "sweep + 8/21 cross down", sweepHigh: last5m.high };
+      return { triggered: true, type: "sweep + 8/21 cross down", sweepHigh: last15m.high };
     }
   }
   
@@ -287,17 +287,16 @@ export function generateSignal(
     return { debug };
   }
   
-  // Use 15m as 5M proxy (Kraken doesn't have 5m, 15m is closest)
-  const t5m = trigger5M(candles15m, t4h.direction);
-  debug.push(`15M: ${t5m.triggered ? t5m.type.toUpperCase() : "NO SETUP"}`);
+  const t15m = trigger15M(candles15m, t4h.direction);
+  debug.push(`Entry TF: ${t15m.triggered ? t15m.type.toUpperCase() : "NO SETUP"}`);
   
-  if (!t5m.triggered) {
-    debug.push("No 15M trigger");
+  if (!t15m.triggered) {
+    debug.push("No Entry TF trigger");
     return { debug };
   }
   
   const price = currentPrice ?? candles15m[candles15m.length - 1].close;
-  const levels = getStructureLevels(candles1h, t4h.direction, price, t5m.sweepLow, t5m.sweepHigh);
+  const levels = getStructureLevels(candles1h, t4h.direction, price, t15m.sweepLow, t15m.sweepHigh);
   
   if (!levels) {
     debug.push("No valid structure levels (R:R < 1.5 or no swing high/low)");
@@ -324,7 +323,7 @@ export function generateSignal(
     stochK: stoch15.k,
     stochD: stoch15.d,
     expectedMove: Math.round(((levels.tp - price) / price) * 1000) / 10,
-    reason: `${t4h.direction} EARLY | ${levels.structure} | 4H:${t4h.direction} ${t4h.strength} ADX ${t4h.adx.toFixed(1)} | 1H confirms | 15M ${t5m.type} | RR ${levels.rr}`,
+    reason: `${t4h.direction} EARLY | ${levels.structure} | 4H:${t4h.direction} ${t4h.strength} ADX ${t4h.adx.toFixed(1)} | 1H confirms | Entry TF ${t15m.type} | RR ${levels.rr}`,
     timestamp: Date.now(),
     version: CURRENT_SIGNAL_VERSION,
   };
@@ -343,6 +342,31 @@ export function generateSignal(
   debug.push(`SIGNAL: ${signal.direction} ${signal.entry} | TP ${signal.target} | SL ${signal.stop} | RR ${signal.rr}`);
   
   return { signal, market, debug };
+}
+
+// --- MARKET SNAPSHOT (for when no signal) ---
+export function getMarketSnapshot(
+  pair: string,
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candles15m: Candle[]
+): any {
+  const t4h = trend4H(candles4h);
+  const c1h = t4h.direction ? confirm1H(candles1h, t4h.direction) : { confirms: false, adx: 0 };
+  const stoch15 = stoch(candles15m);
+  const price = candles1h[candles1h.length - 1].close;
+
+  return {
+    pair,
+    price: Math.round(price * 100) / 100,
+    timestamp: Date.now(),
+    trend: t4h.direction ? `${t4h.direction} ${t4h.strength}` : "NONE",
+    adx: Math.round(t4h.adx * 10) / 10,
+    rsi: Math.round(rsi(candles1h.map(c => c.close)) * 10) / 10,
+    stochK: stoch15.k,
+    stochD: stoch15.d,
+    confirm1h: c1h.confirms,
+  };
 }
 
 // --- VALIDITY CHECK (for cron + UI) ---
