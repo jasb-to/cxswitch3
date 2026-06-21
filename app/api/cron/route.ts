@@ -1,9 +1,9 @@
-// app/api/cron/route.ts — v24.1 "Simple: Structure Scalp"
+// app/api/cron/route.ts — v24.2 "Simple: Structure Scalp"
 // ============================================================
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals } from "@/lib/strategy";
+import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot } from "@/lib/strategy";
 import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
@@ -101,14 +101,18 @@ export async function GET(request: Request) {
           } else {
             console.log(`[PAIR] ${pair} — Still valid, skipping`);
             const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
-            if (result.market) marketDataList.push(result.market);
+            let market = result.market;
+            if (!market) market = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+            if (market) marketDataList.push(market);
             continue;
           }
         }
       }
 
       const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
-      if (result.market) marketDataList.push(result.market);
+      let market = result.market;
+      if (!market) market = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+      if (market) marketDataList.push(market);
 
       if (!result.signal) {
         console.log(`[PAIR] ${pair} — NO SIGNAL (${result.debug?.join(" | ")})`);
