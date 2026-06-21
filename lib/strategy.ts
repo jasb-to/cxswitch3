@@ -1,4 +1,4 @@
-// lib/strategy.ts — v25 "Momentum Lead: Fast Trend + Immediate Entry"
+// lib/strategy.ts — v25 "Momentum Lead: Fast Trend + Immediate Entry" 
 // ============================================================
 
 export interface Candle {
