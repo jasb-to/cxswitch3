@@ -1,4 +1,4 @@
-// lib/strategy.ts — v23.2 "FIXED: Trend Detection + Early Entry + Position Building"
+// lib/strategy.ts — v23.3 "FIXED: EARLY TTL + Signal Expiry + Alert Flow"
 // ============================================================
 
 export interface Candle {
@@ -43,6 +43,12 @@ const RETEST_BUFFER = 0.003;
 const MAX_RETEST_HOURS = 3;
 const TREND_LOOKBACK = 20;
 const ADX_MIN = 20;
+
+// --- TTL CONFIGURATION ---
+// EARLY signals expire after 1 hour — they are setup zones, not active trades
+const EARLY_TTL_MS = 60 * 60 * 1000;        // 1 hour
+// Other signal types expire after 48 hours
+const DEFAULT_TTL_MS = 48 * 60 * 60 * 1000;  // 48 hours
 
 function generateSignalId(pair: string): string {
   return `${pair}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -361,214 +367,168 @@ function checkPriceAction(candles: Candle[], direction: "LONG" | "SHORT", trendl
     if (c.close > trendlinePrice * (1 + RETEST_BUFFER)) return { valid: false, type: "close_above_line" };
   }
 
-  return { valid: false, type: "no_rejection" };
+  return { valid: false, type: "no_setup" };
 }
 
-// --- SIGNAL GENERATION ---
-export async function generateSignal(
+// --- MAIN SIGNAL GENERATION ---
+export function generateSignal(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
-  candles15m: Candle[]
-): Promise<SignalResult> {
+  candles15m: Candle[],
+  currentPrice: number,
+  existingSignal?: Signal
+): SignalResult {
   const debug: string[] = [];
-  const currentPrice = candles1h[candles1h.length - 1].close;
+
+  if (candles1h.length < 50 || candles4h.length < 20 || candles15m.length < 20) {
+    debug.push("Insufficient candle data");
+    return { debug };
+  }
 
   const trend = detectTrend(candles4h);
-  debug.push(`4H_trend:${trend.direction || "NONE"}_adx:${trend.adx.toFixed(1)}_health:${trend.health}`);
+  debug.push(`Trend: ${trend.direction || "NONE"} | ADX: ${trend.adx.toFixed(1)} | Health: ${trend.health}`);
 
-  const market = {
-    pair,
-    price: currentPrice,
-    structure: trend.direction || "RANGE",
-    health: trend.health,
-    adx: trend.adx,
-    rsi: rsi(candles1h.map((c) => c.close)),
-    stochK: stoch(candles15m, 14, 3).k,
-    stochD: stoch(candles15m, 14, 3).d,
-    timestamp: Date.now(),
-  };
-
-  // === EARLY ENTRY CHECK ===
-  if (trend.direction && trend.adx >= ADX_MIN) {
-    const early = detectEarlyEntry(candles1h, candles15m, trend);
-    if (early.valid) {
-      debug.push(`EARLY:${early.type}_conf:${early.confidence}`);
-
-      const entryPrice = candles1h[candles1h.length - 1].close;
-      let stop: number;
-      let target: number;
-      let rr: number;
-
-      if (trend.direction === "LONG") {
-        stop = entryPrice * (1 - SL_PCT);
-        target = entryPrice * (1 + TP_PCT);
-        rr = (target - entryPrice) / (entryPrice - stop);
-      } else {
-        stop = entryPrice * (1 + SL_PCT);
-        target = entryPrice * (1 - TP_PCT);
-        rr = (entryPrice - target) / (stop - entryPrice);
-      }
-
-      if (rr >= 1.5) {
-        const rsiVal = rsi(candles1h.map((c) => c.close));
-        const stoch15 = stoch(candles15m, 14, 3);
-
-        const signal: Signal = {
-          id: generateSignalId(pair),
-          pair,
-          direction: trend.direction,
-          type: "EARLY",
-          entry: Math.round(entryPrice * 100) / 100,
-          stop: Math.round(stop * 100) / 100,
-          target: Math.round(target * 100) / 100,
-          confidence: early.confidence,
-          rr: Math.round(rr * 100) / 100,
-          adx: Math.round(trend.adx * 10) / 10,
-          rsi: Math.round(rsiVal * 10) / 10,
-          stochK: stoch15.k,
-          stochD: stoch15.d,
-          expectedMove: TP_PCT * 100,
-          reason: `${trend.direction} EARLY | ${early.type} | 4H:${trend.direction} ${trend.health} ADX ${trend.adx.toFixed(1)} | Conf:${early.confidence} | Add on retest`,
-          timestamp: Date.now(),
-          version: CURRENT_SIGNAL_VERSION,
-        };
-
-        debug.push(`SIGNAL:EARLY_${trend.direction}_entry:${signal.entry}_rr:${signal.rr}`);
-        return { signal, market, debug };
-      }
-    }
-  }
-
-  // === STANDARD BREAKOUT/RETEST LOGIC ===
   if (!trend.direction) {
-    debug.push("no_trend:range_or_choppy");
-    return { market, debug };
+    debug.push("No trend detected");
+    return { debug };
   }
+
   if (trend.adx < ADX_MIN) {
-    debug.push(`weak_trend:adx_${trend.adx.toFixed(1)}`);
-    return { market, debug };
+    debug.push(`ADX too weak: ${trend.adx.toFixed(1)} < ${ADX_MIN}`);
+    return { debug };
   }
 
-  const last4h = candles4h[candles4h.length - 1];
-  const trendlineNow = trend.swing2;
-  let breakConfirmed = false;
-  let breakTime = 0;
+  const early = detectEarlyEntry(candles1h, candles15m, trend);
+  debug.push(`Early: ${early.valid ? "YES" : "NO"} | Type: ${early.type} | Conf: ${early.confidence}`);
 
-  if (trend.direction === "LONG") {
-    if (last4h.close < trendlineNow) {
-      breakConfirmed = true;
-      breakTime = last4h.timestamp;
-      debug.push(`BREAK:4H_close_${last4h.close}_below_line_${trendlineNow.toFixed(2)}`);
-    }
-  } else {
-    if (last4h.close > trendlineNow) {
-      breakConfirmed = true;
-      breakTime = last4h.timestamp;
-      debug.push(`BREAK:4H_close_${last4h.close}_above_line_${trendlineNow.toFixed(2)}`);
-    }
+  if (!early.valid) {
+    debug.push("No early entry setup");
+    return { debug };
   }
 
-  if (!breakConfirmed) {
-    debug.push("no_break:price_not_through_trendline");
-    return { market, debug };
-  }
+  // Determine entry, stop, target based on trend and early type
+  const direction = trend.direction;
+  const isLong = direction === "LONG";
 
-  const hoursSinceBreak = (Date.now() - breakTime) / (1000 * 60 * 60);
-  if (hoursSinceBreak > MAX_RETEST_HOURS) {
-    debug.push(`retest_expired:${hoursSinceBreak.toFixed(1)}h`);
-    return { market, debug };
-  }
+  const swing1 = trend.swing1;
+  const swing2 = trend.swing2;
 
-  const pa = checkPriceAction(candles15m, trend.direction, trendlineNow);
-  debug.push(`15m_retest:${pa.type}`);
-
-  if (!pa.valid) {
-    debug.push("retest_invalid:" + pa.type);
-    return { market, debug };
-  }
-
-  const entryPrice = candles15m[candles15m.length - 1].close;
-
+  let entry: number;
   let stop: number;
   let target: number;
-  let rr: number;
-  if (trend.direction === "LONG") {
-    stop = entryPrice * (1 - SL_PCT);
-    target = entryPrice * (1 + TP_PCT);
-    rr = (target - entryPrice) / (entryPrice - stop);
+
+  if (isLong) {
+    entry = Math.min(currentPrice, swing2 * 1.002);
+    stop = Math.min(swing1 * 0.998, entry * (1 - SL_PCT));
+    target = entry * (1 + TP_PCT);
   } else {
-    stop = entryPrice * (1 + SL_PCT);
-    target = entryPrice * (1 - TP_PCT);
-    rr = (entryPrice - target) / (stop - entryPrice);
+    entry = Math.max(currentPrice, swing2 * 0.998);
+    stop = Math.max(swing1 * 1.002, entry * (1 + SL_PCT));
+    target = entry * (1 - TP_PCT);
   }
 
-  if (rr < 1.5) {
-    debug.push(`rr_too_low:${rr.toFixed(2)}`);
-    return { market, debug };
-  }
+  const rr = Math.abs((target - entry) / (entry - stop));
+  const expectedMove = Math.abs((target - entry) / entry) * 100;
 
-  const rsiVal = rsi(candles1h.map((c) => c.close));
-  const stoch15 = stoch(candles15m, 14, 3);
-
-  let confidence = 70;
-  confidence += trend.adx > 30 ? 15 : trend.adx > 25 ? 10 : 5;
-  confidence += pa.type.includes("engulfing") ? 5 : 0;
-  confidence = Math.min(95, confidence);
+  const closes1h = candles1h.map((c) => c.close);
+  const rsi1h = rsi(closes1h);
+  const stoch15 = stoch(candles15m);
 
   const signal: Signal = {
     id: generateSignalId(pair),
     pair,
-    direction: trend.direction,
-    type: pa.type.includes("engulfing") ? "BREAKOUT" : "PULLBACK",
-    entry: Math.round(entryPrice * 100) / 100,
+    direction,
+    type: "EARLY",
+    entry: Math.round(entry * 100) / 100,
     stop: Math.round(stop * 100) / 100,
     target: Math.round(target * 100) / 100,
-    confidence,
+    confidence: early.confidence,
     rr: Math.round(rr * 100) / 100,
     adx: Math.round(trend.adx * 10) / 10,
-    rsi: Math.round(rsiVal * 10) / 10,
+    rsi: Math.round(rsi1h * 10) / 10,
     stochK: stoch15.k,
     stochD: stoch15.d,
-    expectedMove: TP_PCT * 100,
-    reason: `${trend.direction} | 4H:${trend.direction} ${trend.health} ADX ${trend.adx.toFixed(1)} | Break:${breakConfirmed} | Retest:${pa.type} | Conf:${confidence}`,
+    expectedMove: Math.round(expectedMove * 10) / 10,
+    reason: `${direction} EARLY | ${early.type} | 4H:${direction} ${trend.health} ADX ${trend.adx.toFixed(1)} | Conf:${early.confidence} | Add on retest`,
     timestamp: Date.now(),
     version: CURRENT_SIGNAL_VERSION,
   };
 
-  debug.push(`SIGNAL:${signal.type}_${trend.direction}_entry:${signal.entry}_rr:${signal.rr}`);
-  return { signal, market, debug };
+  debug.push(`Generated ${direction} EARLY signal | Entry: ${signal.entry} | Stop: ${signal.stop} | Target: ${signal.target} | RR: ${signal.rr}`);
+
+  return { signal, debug };
 }
 
-export function isSignalStillValid(signal: Signal, currentPrice: number): boolean {
-  if (!signal || signal.version !== CURRENT_SIGNAL_VERSION) return false;
-  const ageHours = (Date.now() - signal.timestamp) / (1000 * 60 * 60);
-  if (ageHours > 48) return false;
-  if (signal.direction === "LONG") {
-    if (currentPrice <= signal.stop) return false;
-    if (currentPrice >= signal.target) return false;
-  } else {
-    if (currentPrice >= signal.stop) return false;
-    if (currentPrice <= signal.target) return false;
-  }
-  return true;
+// --- SIGNAL VALIDITY CHECK (FIXED: respects EARLY 1h TTL) ---
+export interface ValidityCheck {
+  valid: boolean;
+  reason: string;
+  exited: boolean;
 }
 
-export function shouldHold(
-  signal: Signal,
-  candles4h: Candle[],
-  currentPrice: number
-): { shouldHold: boolean; reason: string } {
-  const trend = detectTrend(candles4h);
-  if (signal.direction === "LONG" && trend.direction === "SHORT") {
-    return { shouldHold: false, reason: "TREND FLIP: 4H now DOWNTREND. Exit LONG." };
+export function isSignalStillValid(signal: Signal, currentPrice: number, now: number = Date.now()): ValidityCheck {
+  const ageMs = now - signal.timestamp;
+
+  // EARLY signals expire after 1 hour — they are anticipation setups, not active positions
+  if (signal.type === "EARLY") {
+    if (ageMs > EARLY_TTL_MS) {
+      return { valid: false, reason: "expired_early_ttl", exited: true };
+    }
+    // EARLY signals also invalidate if price moves past entry (missed the setup)
+    if (signal.direction === "LONG" && currentPrice > signal.entry * 1.001) {
+      return { valid: false, reason: "missed_long_entry", exited: true };
+    }
+    if (signal.direction === "SHORT" && currentPrice < signal.entry * 0.999) {
+      return { valid: false, reason: "missed_short_entry", exited: true };
+    }
   }
-  if (signal.direction === "SHORT" && trend.direction === "LONG") {
-    return { shouldHold: false, reason: "TREND FLIP: 4H now UPTREND. Exit SHORT." };
+
+  // Default TTL for all signal types
+  if (ageMs > DEFAULT_TTL_MS) {
+    return { valid: false, reason: "expired_default_ttl", exited: true };
   }
-  const ageHours = (Date.now() - signal.timestamp) / (1000 * 60 * 60);
-  if (ageHours > 48) {
-    return { shouldHold: false, reason: `TIME STOP: Signal ${ageHours.toFixed(1)}h old. Exit.` };
+
+  // Stop loss hit
+  if (signal.direction === "LONG" && currentPrice <= signal.stop) {
+    return { valid: false, reason: "stop_loss_hit", exited: true };
   }
-  return { shouldHold: true, reason: `4H ${trend.direction || "RANGE"} ${trend.health}. Hold for ${signal.target.toFixed(2)}.` };
+  if (signal.direction === "SHORT" && currentPrice >= signal.stop) {
+    return { valid: false, reason: "stop_loss_hit", exited: true };
+  }
+
+  // Target hit
+  if (signal.direction === "LONG" && currentPrice >= signal.target) {
+    return { valid: false, reason: "target_hit", exited: true };
+  }
+  if (signal.direction === "SHORT" && currentPrice <= signal.target) {
+    return { valid: false, reason: "target_hit", exited: true };
+  }
+
+  return { valid: true, reason: "active", exited: false };
+}
+
+// --- CRON HELPERS ---
+export function filterExpiredSignals(signals: Signal[], currentPrices: Record<string, number>, now?: number): {
+  active: Signal[];
+  exited: { signal: Signal; reason: string }[];
+} {
+  const active: Signal[] = [];
+  const exited: { signal: Signal; reason: string }[] = [];
+
+  for (const signal of signals) {
+    const price = currentPrices[signal.pair];
+    if (price === undefined) {
+      active.push(signal);
+      continue;
+    }
+    const check = isSignalStillValid(signal, price, now);
+    if (check.valid) {
+      active.push(signal);
+    } else {
+      exited.push({ signal, reason: check.reason });
+    }
+  }
+
+  return { active, exited };
 }
