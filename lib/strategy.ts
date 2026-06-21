@@ -1,4 +1,4 @@
-// lib/strategy.ts — v23.4 "FIXED: EARLY Entry Logic + TTL + shouldHold"
+// lib/strategy.ts — v23.5 "FIXED: BREAKOUT + EARLY TTL + shouldHold + No Cache Issues"
 // ============================================================
 
 export interface Candle {
@@ -43,9 +43,11 @@ const RETEST_BUFFER = 0.003;
 const MAX_RETEST_HOURS = 3;
 const TREND_LOOKBACK = 20;
 const ADX_MIN = 20;
+const BREAKOUT_ADX_MIN = 50;
 
 // --- TTL CONFIGURATION ---
 const EARLY_TTL_MS = 60 * 60 * 1000;        // 1 hour
+const BREAKOUT_TTL_MS = 6 * 60 * 60 * 1000;  // 6 hours
 const DEFAULT_TTL_MS = 48 * 60 * 60 * 1000;  // 48 hours
 
 function generateSignalId(pair: string): string {
@@ -252,6 +254,64 @@ function detectEarlyEntry(candles1h: Candle[], candles15m: Candle[], trend: Tren
   return { valid: false, type: "no_early_setup", confidence: 0 };
 }
 
+// --- BREAKOUT DETECTION (NEW) ---
+interface BreakoutSignal {
+  valid: boolean;
+  confidence: number;
+}
+
+function detectBreakout(candles1h: Candle[], candles4h: Candle[], trend: TrendResult): BreakoutSignal {
+  const len1h = candles1h.length;
+  if (len1h < 20) return { valid: false, confidence: 0 };
+
+  // Need strong trend
+  if (trend.adx < BREAKOUT_ADX_MIN || trend.health !== "STRONG") {
+    return { valid: false, confidence: 0 };
+  }
+
+  const last1h = candles1h[len1h - 1];
+  const prev1h = candles1h[len1h - 2];
+  const recent4h = candles4h.slice(-4);
+
+  // Find recent swing high/low for breakout level
+  const recentHighs = candles1h.slice(-20).map(c => c.high);
+  const recentLows = candles1h.slice(-20).map(c => c.low);
+  const swingHigh = Math.max(...recentHighs.slice(0, -1)); // exclude last candle
+  const swingLow = Math.min(...recentLows.slice(0, -1));
+
+  let breakoutDetected = false;
+  let volumeConfirm = false;
+  let momentumConfirm = false;
+
+  const recentVol = candles1h.slice(-3).map(c => c.volume);
+  const avgVol = avg(candles1h.slice(-10, -3).map(c => c.volume));
+  if (avgVol > 0 && recentVol[recentVol.length - 1] > avgVol * 1.2) volumeConfirm = true;
+
+  if (trend.direction === "LONG") {
+    // Breakout above recent swing high
+    if (last1h.close > swingHigh * 1.001 && last1h.close > prev1h.high) breakoutDetected = true;
+    // Momentum: strong bullish body
+    const body = last1h.close - last1h.open;
+    const range = last1h.high - last1h.low;
+    if (body > 0 && range > 0 && body / range > 0.6) momentumConfirm = true;
+
+    const score = (breakoutDetected ? 40 : 0) + (volumeConfirm ? 25 : 0) + (momentumConfirm ? 20 : 0) + (trend.adx > 60 ? 15 : 0);
+    if (score >= 50) return { valid: true, confidence: Math.min(85, score) };
+  }
+
+  if (trend.direction === "SHORT") {
+    if (last1h.close < swingLow * 0.999 && last1h.close < prev1h.low) breakoutDetected = true;
+    const body = last1h.open - last1h.close;
+    const range = last1h.high - last1h.low;
+    if (body > 0 && range > 0 && body / range > 0.6) momentumConfirm = true;
+
+    const score = (breakoutDetected ? 40 : 0) + (volumeConfirm ? 25 : 0) + (momentumConfirm ? 20 : 0) + (trend.adx > 60 ? 15 : 0);
+    if (score >= 50) return { valid: true, confidence: Math.min(85, score) };
+  }
+
+  return { valid: false, confidence: 0 };
+}
+
 // --- PRICE ACTION ---
 interface PriceAction {
   valid: boolean;
@@ -314,15 +374,39 @@ export function generateSignal(
     return { debug };
   }
 
+  // Try EARLY first (higher priority — better R:R)
   const early = detectEarlyEntry(candles1h, candles15m, trend);
   debug.push(`Early: ${early.valid ? "YES" : "NO"} | Type: ${early.type} | Conf: ${early.confidence}`);
 
-  if (!early.valid) {
-    debug.push("No early entry setup");
-    return { debug };
+  if (early.valid) {
+    return buildSignal(pair, candles1h, candles4h, candles15m, trend, early.confidence, "EARLY", early.type, currentPrice, debug);
   }
 
-  const direction = trend.direction;
+  // Fallback to BREAKOUT if trend is strong and pushing
+  const breakout = detectBreakout(candles1h, candles4h, trend);
+  debug.push(`Breakout: ${breakout.valid ? "YES" : "NO"} | Conf: ${breakout.confidence}`);
+
+  if (breakout.valid) {
+    return buildSignal(pair, candles1h, candles4h, candles15m, trend, breakout.confidence, "BREAKOUT", "momentum_break", currentPrice, debug);
+  }
+
+  debug.push("No early entry setup, no breakout");
+  return { debug };
+}
+
+function buildSignal(
+  pair: string,
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candles15m: Candle[],
+  trend: TrendResult,
+  confidence: number,
+  type: "EARLY" | "BREAKOUT",
+  subType: string,
+  currentPrice?: number,
+  debug?: string[]
+): SignalResult {
+  const direction = trend.direction!;
   const isLong = direction === "LONG";
   const swing1 = trend.swing1;
   const swing2 = trend.swing2;
@@ -332,22 +416,29 @@ export function generateSignal(
   let stop: number;
   let target: number;
 
-  // FIXED: EARLY entry should be AT the retest level (swing2), not below current price
-  // For LONG: we want to enter on a pullback TO the trendline/swing level
-  // Entry = current price if we're at the level, or the level itself if price hasn't reached it yet
-  if (isLong) {
-    // Entry at the higher of (swing2 retest level, current price if already there)
-    // But for EARLY, we anticipate price will come down to swing2
-    entry = Math.max(price * 0.998, swing2);
-    // Cap entry so it's not above current price by too much (max 0.5% above)
-    if (entry > price * 1.005) entry = price * 1.005;
-    stop = Math.min(swing1 * 0.998, entry * (1 - SL_PCT));
-    target = entry * (1 + TP_PCT);
+  if (type === "EARLY") {
+    if (isLong) {
+      entry = Math.max(price * 0.998, swing2);
+      if (entry > price * 1.005) entry = price * 1.005;
+      stop = Math.min(swing1 * 0.998, entry * (1 - SL_PCT));
+      target = entry * (1 + TP_PCT);
+    } else {
+      entry = Math.min(price * 1.002, swing2);
+      if (entry < price * 0.995) entry = price * 0.995;
+      stop = Math.max(swing1 * 1.002, entry * (1 + SL_PCT));
+      target = entry * (1 - TP_PCT);
+    }
   } else {
-    entry = Math.min(price * 1.002, swing2);
-    if (entry < price * 0.995) entry = price * 0.995;
-    stop = Math.max(swing1 * 1.002, entry * (1 + SL_PCT));
-    target = entry * (1 - TP_PCT);
+    // BREAKOUT: enter at current price or slight pullback
+    if (isLong) {
+      entry = price;
+      stop = Math.max(price * (1 - SL_PCT), swing2 * 0.995);
+      target = entry * (1 + TP_PCT);
+    } else {
+      entry = price;
+      stop = Math.min(price * (1 + SL_PCT), swing2 * 1.005);
+      target = entry * (1 - TP_PCT);
+    }
   }
 
   const rr = Math.abs((target - entry) / (entry - stop));
@@ -359,18 +450,18 @@ export function generateSignal(
     id: generateSignalId(pair),
     pair,
     direction,
-    type: "EARLY",
+    type,
     entry: Math.round(entry * 100) / 100,
     stop: Math.round(stop * 100) / 100,
     target: Math.round(target * 100) / 100,
-    confidence: early.confidence,
+    confidence,
     rr: Math.round(rr * 100) / 100,
     adx: Math.round(trend.adx * 10) / 10,
     rsi: Math.round(rsi1h * 10) / 10,
     stochK: stoch15.k,
     stochD: stoch15.d,
     expectedMove: Math.round(expectedMove * 10) / 10,
-    reason: `${direction} EARLY | ${early.type} | 4H:${direction} ${trend.health} ADX ${trend.adx.toFixed(1)} | Conf:${early.confidence} | Add on retest`,
+    reason: `${direction} ${type} | ${subType} | 4H:${direction} ${trend.health} ADX ${trend.adx.toFixed(1)} | Conf:${confidence} | ${type === "EARLY" ? "Add on retest" : "Ride momentum"}`,
     timestamp: Date.now(),
     version: CURRENT_SIGNAL_VERSION,
   };
@@ -386,8 +477,9 @@ export function generateSignal(
     stochD: signal.stochD,
   };
 
-  debug.push(`Generated ${direction} EARLY | Entry: ${signal.entry} | Stop: ${signal.stop} | Target: ${signal.target} | RR: ${signal.rr}`);
-  return { signal, market, debug };
+  const d = debug || [];
+  d.push(`Generated ${direction} ${type} | Entry: ${signal.entry} | Stop: ${signal.stop} | Target: ${signal.target} | RR: ${signal.rr}`);
+  return { signal, market, debug: d };
 }
 
 // --- SIGNAL VALIDITY CHECK ---
@@ -400,50 +492,33 @@ export interface ValidityCheck {
 export function isSignalStillValid(signal: Signal, currentPrice: number, now: number = Date.now()): ValidityCheck {
   const ageMs = now - signal.timestamp;
 
-  // EARLY signals expire after 1 hour
   if (signal.type === "EARLY") {
-    if (ageMs > EARLY_TTL_MS) {
-      return { valid: false, reason: "expired_early_ttl", exited: true };
-    }
-    // For LONG EARLY: invalidate if price drops below stop (too deep) or goes well above entry (missed)
-    // Allow 0.3% buffer above entry — if price shoots past, setup is missed
-    if (signal.direction === "LONG" && currentPrice > signal.entry * 1.003) {
-      return { valid: false, reason: "missed_long_entry", exited: true };
-    }
-    if (signal.direction === "SHORT" && currentPrice < signal.entry * 0.997) {
-      return { valid: false, reason: "missed_short_entry", exited: true };
-    }
-    // Also invalidate if we hit stop before entry
-    if (signal.direction === "LONG" && currentPrice <= signal.stop) {
-      return { valid: false, reason: "stop_loss_hit", exited: true };
-    }
-    if (signal.direction === "SHORT" && currentPrice >= signal.stop) {
-      return { valid: false, reason: "stop_loss_hit", exited: true };
-    }
+    if (ageMs > EARLY_TTL_MS) return { valid: false, reason: "expired_early_ttl", exited: true };
+    if (signal.direction === "LONG" && currentPrice > signal.entry * 1.003) return { valid: false, reason: "missed_long_entry", exited: true };
+    if (signal.direction === "SHORT" && currentPrice < signal.entry * 0.997) return { valid: false, reason: "missed_short_entry", exited: true };
+    if (signal.direction === "LONG" && currentPrice <= signal.stop) return { valid: false, reason: "stop_loss_hit", exited: true };
+    if (signal.direction === "SHORT" && currentPrice >= signal.stop) return { valid: false, reason: "stop_loss_hit", exited: true };
   }
 
-  if (ageMs > DEFAULT_TTL_MS) {
-    return { valid: false, reason: "expired_default_ttl", exited: true };
+  if (signal.type === "BREAKOUT") {
+    if (ageMs > BREAKOUT_TTL_MS) return { valid: false, reason: "expired_breakout_ttl", exited: true };
+    // Breakout signals: invalidate if trend reverses (price back below/above swing)
+    if (signal.direction === "LONG" && currentPrice < signal.stop) return { valid: false, reason: "breakout_failed", exited: true };
+    if (signal.direction === "SHORT" && currentPrice > signal.stop) return { valid: false, reason: "breakout_failed", exited: true };
   }
 
-  if (signal.direction === "LONG" && currentPrice <= signal.stop) {
-    return { valid: false, reason: "stop_loss_hit", exited: true };
-  }
-  if (signal.direction === "SHORT" && currentPrice >= signal.stop) {
-    return { valid: false, reason: "stop_loss_hit", exited: true };
-  }
+  if (ageMs > DEFAULT_TTL_MS) return { valid: false, reason: "expired_default_ttl", exited: true };
 
-  if (signal.direction === "LONG" && currentPrice >= signal.target) {
-    return { valid: false, reason: "target_hit", exited: true };
-  }
-  if (signal.direction === "SHORT" && currentPrice <= signal.target) {
-    return { valid: false, reason: "target_hit", exited: true };
-  }
+  if (signal.direction === "LONG" && currentPrice <= signal.stop) return { valid: false, reason: "stop_loss_hit", exited: true };
+  if (signal.direction === "SHORT" && currentPrice >= signal.stop) return { valid: false, reason: "stop_loss_hit", exited: true };
+
+  if (signal.direction === "LONG" && currentPrice >= signal.target) return { valid: false, reason: "target_hit", exited: true };
+  if (signal.direction === "SHORT" && currentPrice <= signal.target) return { valid: false, reason: "target_hit", exited: true };
 
   return { valid: true, reason: "active", exited: false };
 }
 
-// --- shouldHold: used by cron + UI. Returns { shouldHold, reason } ---
+// --- shouldHold: used by cron + UI ---
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
@@ -454,19 +529,11 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
   const trendReversed = (signal.direction === "LONG" && trend.direction === "SHORT") ||
                         (signal.direction === "SHORT" && trend.direction === "LONG");
 
-  if (trendReversed) {
-    return { shouldHold: false, reason: "trend_reversed" };
-  }
-
-  if (trend.health === "NONE" || trend.adx < 20) {
-    return { shouldHold: false, reason: "trend_weak" };
-  }
+  if (trendReversed) return { shouldHold: false, reason: "trend_reversed" };
+  if (trend.health === "NONE" || trend.adx < 20) return { shouldHold: false, reason: "trend_weak" };
 
   const validity = isSignalStillValid(signal, currentPrice, now);
-  return {
-    shouldHold: validity.valid,
-    reason: validity.reason,
-  };
+  return { shouldHold: validity.valid, reason: validity.reason };
 }
 
 // --- CRON HELPERS ---
@@ -485,11 +552,8 @@ export function filterExpiredSignals(
       continue;
     }
     const check = isSignalStillValid(signal, price, now);
-    if (check.valid) {
-      active.push(signal);
-    } else {
-      exited.push({ signal, reason: check.reason });
-    }
+    if (check.valid) active.push(signal);
+    else exited.push({ signal, reason: check.reason });
   }
 
   return { active, exited };
