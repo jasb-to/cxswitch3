@@ -14,16 +14,20 @@ export interface Signal {
   id: string;
   pair: string;
   direction: "LONG" | "SHORT";
+  type: "EARLY" | "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL";
   entry: number;
   stop: number;
   target: number;
-  rr: number;
   confidence: number;
-  trend4h: string;
-  confirm1h: boolean;
-  trigger5m: string;
-  structure: string;    // "sweep_of_low" | "break_of_structure" etc
+  rr: number;
+  adx: number;
+  rsi: number;
+  stochK: number;
+  stochD: number;
+  expectedMove: number;
+  reason: string;
   timestamp: number;
+  version: number;
 }
 
 export interface SignalResult {
@@ -32,6 +36,7 @@ export interface SignalResult {
   debug: string[];
 }
 
+export const CURRENT_SIGNAL_VERSION = 4;
 const MIN_RR = 1.5;
 
 function ema(closes: number[], period: number): number[] {
@@ -46,6 +51,37 @@ function ema(closes: number[], period: number): number[] {
 function avg(arr: number[]): number {
   if (!arr.length) return 0;
   return arr.reduce((a, b) => a + b, 0) / arr.length;
+}
+
+function rsi(closes: number[], period: number = 14): number {
+  let gains = 0;
+  let losses = 0;
+  for (let i = 1; i <= period && i < closes.length; i++) {
+    const change = closes[closes.length - i] - closes[closes.length - i - 1];
+    if (change > 0) gains += change;
+    else losses -= change;
+  }
+  const avgGain = gains / period;
+  const avgLoss = losses / period;
+  if (avgLoss === 0) return 100;
+  return 100 - (100 / (1 + avgGain / avgLoss));
+}
+
+function stoch(candles: Candle[], kPeriod: number = 14, dPeriod: number = 3): { k: number; d: number } {
+  if (!candles.length) return { k: 50, d: 50 };
+  const len = candles.length;
+  const kValues: number[] = [];
+  for (let i = kPeriod - 1; i < len; i++) {
+    const window = candles.slice(i - kPeriod + 1, i + 1);
+    const lowest = Math.min(...window.map(c => c.low));
+    const highest = Math.max(...window.map(c => c.high));
+    const close = candles[i].close;
+    kValues.push(highest === lowest ? 50 : ((close - lowest) / (highest - lowest)) * 100);
+  }
+  const currentK = kValues[kValues.length - 1];
+  const dWindow = kValues.slice(-dPeriod);
+  const currentD = avg(dWindow);
+  return { k: Math.round(currentK * 10) / 10, d: Math.round(currentD * 10) / 10 };
 }
 
 function adx(candles: Candle[], period: number = 14): number {
@@ -144,14 +180,10 @@ function trigger5M(candles: Candle[], direction: "LONG" | "SHORT"): {
   const prev8 = ema8[len - 2];
   const prev21 = ema21[len - 2];
   
-  // Recent 5M structure
   const recentLows = candles.slice(-20).map(c => c.low);
   const recentHighs = candles.slice(-20).map(c => c.high);
-  const swingLows = findSwingLows(candles, 3);
-  const swingHighs = findSwingHighs(candles, 3);
   
   if (direction === "LONG") {
-    // Need: price swept a recent low, then 8/21 cross up
     const last5m = candles[candles.length - 1];
     const prevLow = Math.min(...recentLows.slice(0, -1));
     const swept = last5m.low < prevLow * 1.001 && last5m.close > prevLow;
@@ -188,15 +220,13 @@ function getStructureLevels(
   const lows = findSwingLows(candles1h, 5);
   
   if (direction === "LONG") {
-    // TP = next 1H swing high (resistance)
     const nextResistance = highs.find(h => h > entry);
     if (!nextResistance) return null;
     
-    // SL = below the sweep low, or below recent 1H low if no sweep
     const sl = sweepLow ? Math.min(sweepLow * 0.998, entry * 0.985) : lows[lows.length - 1] * 0.998;
     
     const rr = (nextResistance - entry) / (entry - sl);
-    if (rr < MIN_RR) return null; // Skip if R:R too low
+    if (rr < MIN_RR) return null;
     
     return {
       tp: Math.round(nextResistance * 100) / 100,
@@ -229,19 +259,18 @@ function getStructureLevels(
 // --- MAIN SIGNAL GENERATION ---
 export function generateSignal(
   pair: string,
-  candles5m: Candle[],
   candles1h: Candle[],
   candles4h: Candle[],
+  candles15m: Candle[],
   currentPrice?: number
 ): SignalResult {
   const debug: string[] = [];
   
-  if (candles5m.length < 50 || candles1h.length < 50 || candles4h.length < 30) {
+  if (candles1h.length < 50 || candles4h.length < 30 || candles15m.length < 50) {
     debug.push("Insufficient candle data");
     return { debug };
   }
   
-  // Step 1: 4H Trend
   const t4h = trend4H(candles4h);
   debug.push(`4H: ${t4h.direction || "NONE"} ${t4h.strength} | ADX: ${t4h.adx.toFixed(1)}`);
   
@@ -250,7 +279,6 @@ export function generateSignal(
     return { debug };
   }
   
-  // Step 2: 1H Confirmation
   const c1h = confirm1H(candles1h, t4h.direction);
   debug.push(`1H: ${c1h.confirms ? "CONFIRMS" : "REJECTS"} | ADX: ${c1h.adx.toFixed(1)}`);
   
@@ -259,24 +287,17 @@ export function generateSignal(
     return { debug };
   }
   
-  // Step 3: 5M Trigger
-  const t5m = trigger5M(candles5m, t4h.direction);
-  debug.push(`5M: ${t5m.triggered ? t5m.type.toUpperCase() : "NO SETUP"}`);
+  // Use 15m as 5M proxy (Kraken doesn't have 5m, 15m is closest)
+  const t5m = trigger5M(candles15m, t4h.direction);
+  debug.push(`15M: ${t5m.triggered ? t5m.type.toUpperCase() : "NO SETUP"}`);
   
   if (!t5m.triggered) {
-    debug.push("No 5M trigger");
+    debug.push("No 15M trigger");
     return { debug };
   }
   
-  // Step 4: Structure TP/SL
-  const price = currentPrice ?? candles5m[candles5m.length - 1].close;
-  const levels = getStructureLevels(
-    candles1h,
-    t4h.direction,
-    price,
-    t5m.sweepLow,
-    t5m.sweepHigh
-  );
+  const price = currentPrice ?? candles15m[candles15m.length - 1].close;
+  const levels = getStructureLevels(candles1h, t4h.direction, price, t5m.sweepLow, t5m.sweepHigh);
   
   if (!levels) {
     debug.push("No valid structure levels (R:R < 1.5 or no swing high/low)");
@@ -285,44 +306,130 @@ export function generateSignal(
   
   debug.push(`Structure: ${levels.structure} | TP: ${levels.tp} | SL: ${levels.sl} | RR: ${levels.rr}`);
   
+  const rsi1h = rsi(candles1h.map(c => c.close));
+  const stoch15 = stoch(candles15m);
+  
   const signal: Signal = {
     id: `${pair}_${Date.now()}`,
     pair,
     direction: t4h.direction,
+    type: "EARLY",
     entry: Math.round(price * 100) / 100,
     stop: levels.sl,
     target: levels.tp,
-    rr: levels.rr,
     confidence: t4h.strength === "STRONG" && c1h.adx > 30 ? 75 : t4h.strength === "STRONG" ? 65 : 55,
-    trend4h: `${t4h.direction} ${t4h.strength}`,
-    confirm1h: c1h.confirms,
-    trigger5m: t5m.type,
-    structure: levels.structure,
+    rr: levels.rr,
+    adx: Math.round(t4h.adx * 10) / 10,
+    rsi: Math.round(rsi1h * 10) / 10,
+    stochK: stoch15.k,
+    stochD: stoch15.d,
+    expectedMove: Math.round(((levels.tp - price) / price) * 1000) / 10,
+    reason: `${t4h.direction} EARLY | ${levels.structure} | 4H:${t4h.direction} ${t4h.strength} ADX ${t4h.adx.toFixed(1)} | 1H confirms | 15M ${t5m.type} | RR ${levels.rr}`,
     timestamp: Date.now(),
+    version: CURRENT_SIGNAL_VERSION,
   };
   
   const market = {
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
-    trend4h: signal.trend4h,
+    trend: `${t4h.direction} ${t4h.strength}`,
+    adx: signal.adx,
+    rsi: signal.rsi,
+    stochK: signal.stochK,
+    stochD: signal.stochD,
   };
   
-  debug.push(`✅ SIGNAL: ${signal.direction} ${signal.entry} | TP ${signal.target} (+${((signal.target/signal.entry-1)*100).toFixed(1)}%) | SL ${signal.stop} (-${((1-signal.stop/signal.entry)*100).toFixed(1)}%) | RR ${signal.rr}`);
+  debug.push(`SIGNAL: ${signal.direction} ${signal.entry} | TP ${signal.target} | SL ${signal.stop} | RR ${signal.rr}`);
   
   return { signal, market, debug };
 }
 
-// --- SIMPLE VALIDITY: Between SL and TP? ---
-export function isSignalStillValid(signal: Signal, currentPrice: number): boolean {
-  if (signal.direction === "LONG") {
-    return currentPrice > signal.stop && currentPrice < signal.target;
-  }
-  return currentPrice < signal.stop && currentPrice > signal.target;
+// --- VALIDITY CHECK (for cron + UI) ---
+export interface ValidityCheck {
+  valid: boolean;
+  reason: string;
+  exited: boolean;
 }
 
-// --- TRADE STATUS: Active, TP, SL, or Manual Close ---
-export type TradeStatus = "ACTIVE" | "TP_HIT" | "SL_HIT" | "MANUAL_CLOSE";
+export function isSignalStillValid(signal: Signal, currentPrice: number, now: number = Date.now()): ValidityCheck {
+  const ageMs = now - signal.timestamp;
+  
+  // 3 hour soft max for EARLY
+  if (ageMs > 3 * 60 * 60 * 1000) {
+    return { valid: false, reason: "expired_ttl", exited: true };
+  }
+  
+  // Missed entry: price ran past by 0.8%
+  if (signal.direction === "LONG" && currentPrice > signal.entry * 1.008) {
+    return { valid: false, reason: "missed_entry", exited: true };
+  }
+  if (signal.direction === "SHORT" && currentPrice < signal.entry * 0.992) {
+    return { valid: false, reason: "missed_entry", exited: true };
+  }
+  
+  // SL hit
+  if (signal.direction === "LONG" && currentPrice <= signal.stop) {
+    return { valid: false, reason: "sl_hit", exited: true };
+  }
+  if (signal.direction === "SHORT" && currentPrice >= signal.stop) {
+    return { valid: false, reason: "sl_hit", exited: true };
+  }
+  
+  // TP hit
+  if (signal.direction === "LONG" && currentPrice >= signal.target) {
+    return { valid: false, reason: "tp_hit", exited: true };
+  }
+  if (signal.direction === "SHORT" && currentPrice <= signal.target) {
+    return { valid: false, reason: "tp_hit", exited: true };
+  }
+  
+  return { valid: true, reason: "active", exited: false };
+}
+
+// --- shouldHold: backward compat for routes ---
+export interface HoldResult {
+  shouldHold: boolean;
+  reason: string;
+}
+
+export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, now?: number): HoldResult {
+  const t4h = trend4H(candles4h);
+  const trendReversed = (signal.direction === "LONG" && t4h.direction === "SHORT") ||
+                        (signal.direction === "SHORT" && t4h.direction === "LONG");
+  
+  if (trendReversed) return { shouldHold: false, reason: "trend_reversed" };
+  if (t4h.health === "NONE" || t4h.adx < 20) return { shouldHold: false, reason: "trend_weak" };
+  
+  const validity = isSignalStillValid(signal, currentPrice, now);
+  return { shouldHold: validity.valid, reason: validity.reason };
+}
+
+// --- filterExpiredSignals: backward compat for cron ---
+export function filterExpiredSignals(
+  signals: Signal[],
+  currentPrices: Record<string, number>,
+  now?: number
+): { active: Signal[]; exited: { signal: Signal; reason: string }[] } {
+  const active: Signal[] = [];
+  const exited: { signal: Signal; reason: string }[] = [];
+  
+  for (const signal of signals) {
+    const price = currentPrices[signal.pair];
+    if (price === undefined) {
+      active.push(signal);
+      continue;
+    }
+    const check = isSignalStillValid(signal, price, now);
+    if (check.valid) active.push(signal);
+    else exited.push({ signal, reason: check.reason });
+  }
+  
+  return { active, exited };
+}
+
+// --- checkTradeStatus: simple ACTIVE / TP / SL ---
+export type TradeStatus = "ACTIVE" | "TP_HIT" | "SL_HIT" | "EXPIRED";
 
 export function checkTradeStatus(signal: Signal, currentPrice: number): TradeStatus {
   if (signal.direction === "LONG") {
