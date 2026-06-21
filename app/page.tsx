@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 interface Signal {
   pair: string;
   direction: "LONG" | "SHORT";
-  type: "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL";
+  type: "EARLY" | "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL";
   confidence: number;
   entry: number;
   stop: number;
@@ -23,6 +23,8 @@ interface Signal {
     tier: string;
     confidenceScore: number;
     actionable: boolean;
+    fresh: boolean;
+    ageMinutes: number;
   };
   holdAdvice?: {
     shouldHold: boolean;
@@ -196,6 +198,8 @@ export default function Dashboard() {
             const entry = signal?.entry ?? 0;
             const stop = signal?.stop ?? 0;
             const target = signal?.target ?? 0;
+            const isActionable = signal?.meta?.actionable ?? false;
+            const isFresh = signal?.meta?.fresh ?? true;
 
             const unrealizedPnL = hasSignal && signalFresh && currentPrice && entry
               ? signal.direction === "LONG" ? ((currentPrice - entry) / entry) * 100 : ((entry - currentPrice) / entry) * 100
@@ -231,7 +235,15 @@ export default function Dashboard() {
               statusBadge = "EXIT";
             } else if (hasSignal && signalFresh) {
               borderClass = signal.direction === "LONG" ? "border-green-500 bg-green-900/10" : "border-red-500 bg-red-900/10";
-              if (signal.holdAdvice) {
+              if (!isFresh) {
+                bannerText = `⏰ STALE — ${signal.meta?.ageMinutes}m old. Wait for fresh signal.`;
+                bannerClass = "bg-gray-600 text-white";
+                statusBadge = "STALE";
+              } else if (!isActionable) {
+                bannerText = `⚠️ Low confidence (${signal.confidence}%). Skip or reduce size.`;
+                bannerClass = "bg-yellow-500 text-black";
+                statusBadge = "LOW CONF";
+              } else if (signal.holdAdvice) {
                 if (signal.holdAdvice.shouldHold) {
                   statusBadge = "HOLD ✓";
                 } else {
@@ -279,6 +291,8 @@ export default function Dashboard() {
                         <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
                           statusBadge === "HOLD ✓" ? "bg-green-500/30 text-green-300" :
                           statusBadge === "EXIT" ? "bg-red-500/30 text-red-300" :
+                          statusBadge === "STALE" ? "bg-gray-500/30 text-gray-300" :
+                          statusBadge === "LOW CONF" ? "bg-yellow-500/30 text-yellow-300" :
                           "bg-blue-500/30 text-blue-300"
                         }`}>
                           {statusBadge}
@@ -294,7 +308,7 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {hasSignal && signalFresh && signal.holdAdvice && (
+                {hasSignal && signalFresh && signal.holdAdvice && isFresh && isActionable && (
                   <div className={`mb-3 p-2 rounded border text-xs font-semibold ${
                     signal.holdAdvice.shouldHold
                       ? "bg-green-500/10 border-green-500/30 text-green-300"
