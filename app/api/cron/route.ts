@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v28 "Trendline Break: StochRSI Timing"
+// app/api/cron/route.ts — v28 "Trendline Break: StochRSI Timing + Position Build"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -49,8 +49,7 @@ export async function GET(request: Request) {
 
   for (const pair of PAIRS) {
     try {
-      // FIX: Fetch enough 4H candles for 1D aggregation (need 120+ = 20 days)
-      const candles = await getCandles(pair, 240);
+      const candles = await getCandles(pair as any, 240);
       if (candles?.length) currentPrices[pair] = candles[candles.length - 1].close;
     } catch (e) { console.log(`[PRICE] ${pair} — failed`); }
   }
@@ -70,15 +69,12 @@ export async function GET(request: Request) {
 
   for (const pair of PAIRS) {
     try {
-      // FIX: Fetch more candles for v28 strategy
-      // 4H needs 120+ candles (20+ days), 1H needs 60+, 15M needs 60+
       const [candles1h, candles4h, candles15m] = await Promise.all([
-        getCandles(pair, 60),      // 60 1H candles = 2.5 days
-        getCandles(pair, 240, 150), // 150 4H candles = 25 days
-        getCandles(pair, 15, 60)   // 60 15M candles = 15 hours
+        getCandles(pair as any, 60),
+        getCandles(pair as any, 240),
+        getCandles(pair as any, 15)
       ]);
 
-      // FIX: Check 4H candle count specifically (needs 30+ for strategy)
       if (!candles1h || !candles4h || !candles15m || candles4h.length < 30) {
         console.log(`[PAIR] ${pair} — NO SIGNAL (Insufficient candle data: 1H=${candles1h?.length}, 4H=${candles4h?.length}, 15M=${candles15m?.length})`);
         alerts.push({ pair, status: "skip", reason: "insufficient_candles", counts: { h1: candles1h?.length, h4: candles4h?.length, m15: candles15m?.length } });
@@ -107,7 +103,6 @@ export async function GET(request: Request) {
             alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
           } else {
             console.log(`[PAIR] ${pair} — Still valid, skipping`);
-            // FIX: Still update market snapshot even when skipping
             const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
             let market = result.market;
             if (!market) market = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
@@ -117,7 +112,6 @@ export async function GET(request: Request) {
         }
       }
 
-      // FIX: Use generateSignal directly (not compat wrapper) since we have currentPrice
       const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
       let market = result.market;
       if (!market) market = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
