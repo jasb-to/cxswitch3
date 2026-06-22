@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v25.1 "Momentum Lead: Fast Trend + Immediate Entry"
+// app/api/cron/route.ts — v28 "Trendline Break: StochRSI Timing"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -49,7 +49,8 @@ export async function GET(request: Request) {
 
   for (const pair of PAIRS) {
     try {
-      const candles = await getCandles(pair, 60);
+      // FIX: Fetch enough 4H candles for 1D aggregation (need 120+ = 20 days)
+      const candles = await getCandles(pair, 240);
       if (candles?.length) currentPrices[pair] = candles[candles.length - 1].close;
     } catch (e) { console.log(`[PRICE] ${pair} — failed`); }
   }
@@ -69,16 +70,22 @@ export async function GET(request: Request) {
 
   for (const pair of PAIRS) {
     try {
+      // FIX: Fetch more candles for v28 strategy
+      // 4H needs 120+ candles (20+ days), 1H needs 60+, 15M needs 60+
       const [candles1h, candles4h, candles15m] = await Promise.all([
-        getCandles(pair, 60), getCandles(pair, 240), getCandles(pair, 15)
+        getCandles(pair, 60),      // 60 1H candles = 2.5 days
+        getCandles(pair, 240, 150), // 150 4H candles = 25 days
+        getCandles(pair, 15, 60)   // 60 15M candles = 15 hours
       ]);
 
-      if (!candles1h || !candles4h || !candles15m || candles1h.length < 20 || candles4h.length < 10 || candles15m.length < 20) {
-        alerts.push({ pair, status: "skip", reason: "insufficient_candles" });
+      // FIX: Check 4H candle count specifically (needs 30+ for strategy)
+      if (!candles1h || !candles4h || !candles15m || candles4h.length < 30) {
+        console.log(`[PAIR] ${pair} — NO SIGNAL (Insufficient candle data: 1H=${candles1h?.length}, 4H=${candles4h?.length}, 15M=${candles15m?.length})`);
+        alerts.push({ pair, status: "skip", reason: "insufficient_candles", counts: { h1: candles1h?.length, h4: candles4h?.length, m15: candles15m?.length } });
         continue;
       }
 
-      const currentPrice = candles1h[candles1h.length - 1].close;
+      const currentPrice = candles4h[candles4h.length - 1].close;
       const existingIdx = validSignals.findIndex(s => s.pair === pair);
       const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
 
@@ -100,6 +107,7 @@ export async function GET(request: Request) {
             alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
           } else {
             console.log(`[PAIR] ${pair} — Still valid, skipping`);
+            // FIX: Still update market snapshot even when skipping
             const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
             let market = result.market;
             if (!market) market = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
@@ -109,6 +117,7 @@ export async function GET(request: Request) {
         }
       }
 
+      // FIX: Use generateSignal directly (not compat wrapper) since we have currentPrice
       const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
       let market = result.market;
       if (!market) market = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
@@ -121,13 +130,13 @@ export async function GET(request: Request) {
       }
 
       const signal = result.signal;
-      console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`);
+      console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} ${signal.scale || ""} ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`);
       newSignals.push(signal);
 
       try {
         await sendAlert({
           symbol: signal.pair,
-          state: signal.type,
+          state: `${signal.type} ${signal.scale || ""}`,
           price: roundPrice(signal.entry),
           bias: signal.direction,
           confidence: signal.confidence,
@@ -143,7 +152,7 @@ export async function GET(request: Request) {
           updatedAt: new Date(signal.timestamp).toISOString(),
         });
         console.log(`[ALERT] ${pair} — SENT`);
-        activeTrades[pair] = { direction: signal.direction, timestamp: Date.now(), entry: signal.entry, stop: signal.stop, target: signal.target, id: signal.id };
+        activeTrades[pair] = { direction: signal.direction, timestamp: Date.now(), entry: signal.entry, stop: signal.stop, target: signal.target, id: signal.id, scale: signal.scale };
         alerts.push({ pair, status: "sent" });
       } catch (err) {
         console.error(`[ALERT] ${pair} — FAILED:`, err);
