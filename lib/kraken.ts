@@ -19,13 +19,12 @@ async function fetchKraken(url: string) {
 function parseCandles(raw: any) {
   if (!raw) return [];
   
-  // FIX: Skip "last" key, find actual pair key
   const keys = Object.keys(raw).filter(k => k !== "last");
   if (keys.length === 0) return [];
   const key = keys[0];
 
   return (raw[key] || []).map((c: any) => ({
-    timestamp: Number(c[0]) * 1000,  // FIX: convert to milliseconds for consistency
+    timestamp: Number(c[0]) * 1000,
     open: Number(c[1]),
     high: Number(c[2]),
     low: Number(c[3]),
@@ -34,23 +33,10 @@ function parseCandles(raw: any) {
   }));
 }
 
-// FIX: Add count parameter to fetch more historical candles
-export async function getCandles(symbol: Symbol, interval: number, count?: number) {
-  let url = `${BASE}/OHLC?pair=${PAIRS[symbol]}&interval=${interval}`;
-  
-  // If count specified, calculate 'since' to fetch enough history
-  // Kraken returns up to 720 candles, so we use 'since' to ensure we get full history
-  if (count && count > 720) {
-    // Kraken max is 720, so we can't get more than that in one call
-    // But we can use 'since' to shift the window if needed
-    const since = Math.floor(Date.now() / 1000) - (count * interval * 60);
-    url += `&since=${since}`;
-  }
-  
+export async function getCandles(symbol: Symbol, interval: number) {
+  const url = `${BASE}/OHLC?pair=${PAIRS[symbol]}&interval=${interval}`;
   const res = await fetchKraken(url);
   const candles = parseCandles(res);
-  
-  // Sort by timestamp ascending (oldest first) — strategy expects this
   return candles.sort((a, b) => a.timestamp - b.timestamp);
 }
 
