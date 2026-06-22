@@ -5,7 +5,8 @@ import { useEffect, useState } from "react";
 interface Signal {
   pair: string;
   direction: "LONG" | "SHORT";
-  type: string;
+  type: "ACCUMULATE" | "BREAKOUT" | "EXIT";
+  scale: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
   confidence: number;
   entry: number;
   stop: number;
@@ -18,11 +19,7 @@ interface Signal {
   stochK?: number;
   stochD?: number;
   reason?: string;
-  meta?: {
-    status: string;
-    ageMinutes: number;
-    actionable: boolean;
-  };
+  version?: number;
 }
 
 interface MarketData {
@@ -34,7 +31,10 @@ interface MarketData {
   stochK: number;
   stochD: number;
   timestamp: number;
-  confirm1h?: boolean;
+  trendlinePrice?: number;
+  distToTrendline?: number;
+  ema8?: number;
+  ema21?: number;
 }
 
 const PAIRS = ["BTC", "ETH", "SOL"];
@@ -76,6 +76,58 @@ function timeAgo(ts: number): string {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h ${mins % 60}m ago`;
   return `${Math.floor(hrs / 24)}d ago`;
+}
+
+// Compute signal status from validity + price
+function getSignalStatus(signal: Signal, currentPrice: number): { status: string; actionable: boolean; ageMinutes: number } {
+  const ageMinutes = Math.floor((Date.now() - signal.timestamp) / 60000);
+  
+  if (signal.direction === "LONG") {
+    if (currentPrice >= signal.target) return { status: "TP_HIT", actionable: false, ageMinutes };
+    if (currentPrice <= signal.stop) return { status: "SL_HIT", actionable: false, ageMinutes };
+  } else {
+    if (currentPrice <= signal.target) return { status: "TP_HIT", actionable: false, ageMinutes };
+    if (currentPrice >= signal.stop) return { status: "SL_HIT", actionable: false, ageMinutes };
+  }
+  
+  const maxAge = signal.type === "ACCUMULATE" ? 24 * 60 : 4 * 60; // minutes
+  if (ageMinutes > maxAge) return { status: "EXPIRED", actionable: false, ageMinutes };
+  
+  const entryBuffer = signal.type === "ACCUMULATE" ? 1.02 : 1.005;
+  if (signal.direction === "LONG" && currentPrice > signal.entry * entryBuffer) {
+    return { status: "MISSED", actionable: false, ageMinutes };
+  }
+  if (signal.direction === "SHORT" && currentPrice < signal.entry * (2 - entryBuffer)) {
+    return { status: "MISSED", actionable: false, ageMinutes };
+  }
+  
+  const actionable = signal.confidence >= 50 && ageMinutes < 120;
+  return { status: "ACTIVE", actionable, ageMinutes };
+}
+
+// Scale badge color
+function scaleBadgeClass(scale: string | null): string {
+  switch (scale) {
+    case "ENTRY_1": return "bg-blue-500/20 text-blue-300 border-blue-500/30";
+    case "ENTRY_2": return "bg-indigo-500/20 text-indigo-300 border-indigo-500/30";
+    case "ADD": return "bg-purple-500/20 text-purple-300 border-purple-500/30";
+    default: return "bg-gray-500/20 text-gray-300";
+  }
+}
+
+// Scale display name
+function scaleName(scale: string | null): string {
+  switch (scale) {
+    case "ENTRY_1": return "ENTRY 1";
+    case "ENTRY_2": return "ENTRY 2";
+    case "ADD": return "ADD";
+    default: return signalTypeName(scale);
+  }
+}
+
+function signalTypeName(type: string | null): string {
+  if (!type) return "NONE";
+  return type;
 }
 
 export default function Dashboard() {
@@ -136,7 +188,7 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
-        <div className="text-lg">Loading CX Switch...</div>
+        <div className="text-lg">Loading CX Switch v28...</div>
       </div>
     );
   }
@@ -145,7 +197,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-6xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-bold">CX Switch v24</h1>
+          <h1 className="text-2xl font-bold">CX Switch v28</h1>
           <div className="text-xs text-gray-400">
             Fetches: {fetchCount} | Last:{" "}
             {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
@@ -159,14 +211,16 @@ export default function Dashboard() {
             const livePrice = livePrices[pair];
             const currentPrice = livePrice ?? mkt?.price ?? 0;
             const hasSignal = !!signal;
-            const status = signal?.meta?.status || "WAITING";
+            
+            const meta = hasSignal ? getSignalStatus(signal, currentPrice) : null;
+            const status = meta?.status || "WAITING";
 
             let borderClass = "border-gray-700 bg-gray-800";
             let bannerText = "";
             let bannerClass = "";
             let statusBadge = "";
 
-            if (hasSignal) {
+            if (hasSignal && meta) {
               if (status === "TP_HIT") {
                 borderClass = "border-purple-500 bg-purple-900/10";
                 bannerText = "🎯 TARGET HIT — CLOSED";
@@ -177,17 +231,26 @@ export default function Dashboard() {
                 bannerText = "🛑 STOP HIT — CLOSED";
                 bannerClass = "bg-red-500 text-white";
                 statusBadge = "SL HIT";
+              } else if (status === "EXPIRED") {
+                borderClass = "border-gray-600 bg-gray-800/50";
+                bannerText = "⏰ EXPIRED — Signal too old";
+                bannerClass = "bg-gray-600 text-white";
+                statusBadge = "EXPIRED";
+              } else if (status === "MISSED") {
+                borderClass = "border-yellow-600 bg-yellow-900/10";
+                bannerText = "⚠️ MISSED — Price moved past entry zone";
+                bannerClass = "bg-yellow-600 text-white";
+                statusBadge = "MISSED";
               } else if (status === "ACTIVE") {
                 borderClass =
                   signal.direction === "LONG"
                     ? "border-green-500 bg-green-900/10"
                     : "border-red-500 bg-red-900/10";
-                const age = signal.meta?.ageMinutes ?? 0;
-                if (age > 120) {
-                  bannerText = `⏰ STALE — ${age}m old. Wait for fresh signal.`;
+                if (meta.ageMinutes > 120) {
+                  bannerText = `⏰ STALE — ${meta.ageMinutes}m old. Wait for fresh signal.`;
                   bannerClass = "bg-gray-600 text-white";
                   statusBadge = "STALE";
-                } else if (!signal.meta?.actionable) {
+                } else if (!meta.actionable) {
                   bannerText = `⚠️ Low confidence (${signal.confidence}%). Skip or reduce size.`;
                   bannerClass = "bg-yellow-500 text-black";
                   statusBadge = "LOW CONF";
@@ -200,7 +263,7 @@ export default function Dashboard() {
                 const trendDir = mkt.trend?.split(" ")[0];
                 const trendHealth = mkt.trend?.split(" ")[1];
                 if (trendHealth === "STRONG") {
-                  bannerText = `⏳ ${trendDir} STRONG — Waiting for 15M sweep`;
+                  bannerText = `⏳ ${trendDir} STRONG — Watching for setup`;
                   bannerClass = "bg-blue-600/50 text-blue-200";
                 } else if (trendHealth === "MEDIUM") {
                   bannerText = `⏳ ${trendDir} MEDIUM — Watching for setup`;
@@ -246,6 +309,17 @@ export default function Dashboard() {
                   : ((entry - currentPrice) / entry) * 100
                 : 0;
 
+            // Position building progress
+            const scaleProgress = signal?.scale
+              ? signal.scale === "ENTRY_1"
+                ? 33
+                : signal.scale === "ENTRY_2"
+                ? 66
+                : signal.scale === "ADD"
+                ? 100
+                : 0
+              : 0;
+
             return (
               <div
                 key={pair}
@@ -276,14 +350,11 @@ export default function Dashboard() {
                   <div className="flex flex-col items-end gap-1">
                     {hasSignal ? (
                       <>
+                        {/* Scale badge */}
                         <span
-                          className={`px-2 py-1 rounded text-xs font-bold ${
-                            signal.direction === "LONG"
-                              ? "bg-green-500/20 text-green-300"
-                              : "bg-red-500/20 text-red-300"
-                          }`}
+                          className={`px-2 py-1 rounded text-xs font-bold border ${scaleBadgeClass(signal.scale)}`}
                         >
-                          {signal.type}
+                          {scaleName(signal.scale)}
                         </span>
                         <span
                           className={`text-xs font-bold ${
@@ -302,6 +373,10 @@ export default function Dashboard() {
                               ? "bg-purple-500/30 text-purple-300"
                               : statusBadge === "SL HIT"
                               ? "bg-red-500/30 text-red-300"
+                              : statusBadge === "EXPIRED"
+                              ? "bg-gray-500/30 text-gray-300"
+                              : statusBadge === "MISSED"
+                              ? "bg-yellow-500/30 text-yellow-300"
                               : statusBadge === "STALE"
                               ? "bg-gray-500/30 text-gray-300"
                               : statusBadge === "LOW CONF"
@@ -337,6 +412,32 @@ export default function Dashboard() {
                         {mkt.trend}
                       </span>
                     </div>
+                    
+                    {/* Trendline info */}
+                    {mkt.trendlinePrice !== undefined && (
+                      <div className="flex justify-between mt-1 text-xs">
+                        <span className="text-gray-500">Trendline</span>
+                        <span className="text-gray-400 font-mono">
+                          {money(mkt.trendlinePrice)} 
+                          {mkt.distToTrendline !== undefined && (
+                            <span className={`ml-1 ${Math.abs(mkt.distToTrendline) < 1.2 ? "text-green-400" : "text-gray-500"}`}>
+                              ({mkt.distToTrendline > 0 ? "+" : ""}{mkt.distToTrendline?.toFixed(2)}%)
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    )}
+                    
+                    {/* EMA alignment */}
+                    {mkt.ema8 !== undefined && mkt.ema21 !== undefined && (
+                      <div className="flex justify-between text-xs">
+                        <span className="text-gray-500">EMA 8/21</span>
+                        <span className={`font-mono ${mkt.price > mkt.ema8 && mkt.price > mkt.ema21 ? "text-green-400" : mkt.price < mkt.ema8 && mkt.price < mkt.ema21 ? "text-red-400" : "text-yellow-400"}`}>
+                          {money(mkt.ema8)} / {money(mkt.ema21)}
+                        </span>
+                      </div>
+                    )}
+                    
                     <div className="flex justify-between mt-1 text-xs">
                       <span className="text-gray-500">
                         ADX: {mkt.adx?.toFixed(1)}
@@ -359,7 +460,28 @@ export default function Dashboard() {
                 {/* Active Signal Details */}
                 {hasSignal && status === "ACTIVE" && (
                   <>
-                    {/* Progress Bar */}
+                    {/* Position Building Progress */}
+                    {signal.scale && (
+                      <div className="mb-3">
+                        <div className="flex justify-between text-xs text-gray-400 mb-1">
+                          <span>Position Build</span>
+                          <span className="text-purple-400">{signal.scale}</span>
+                        </div>
+                        <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full bg-purple-500 transition-all"
+                            style={{ width: `${scaleProgress}%` }}
+                          />
+                        </div>
+                        <div className="flex justify-between text-[10px] text-gray-500 mt-1">
+                          <span>ENTRY 1</span>
+                          <span>ENTRY 2</span>
+                          <span>ADD</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Trade Progress */}
                     <div className="mb-3">
                       <div className="flex justify-between text-xs text-gray-400 mb-1">
                         <span>Entry</span>
@@ -437,6 +559,14 @@ export default function Dashboard() {
                           {timeAgo(signal.timestamp)}
                         </span>
                       </div>
+                      {signal.version && (
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-400">Version</span>
+                          <span className="font-mono text-gray-500">
+                            v{signal.version}
+                          </span>
+                        </div>
+                      )}
                     </div>
 
                     {/* Reason */}
@@ -455,8 +585,8 @@ export default function Dashboard() {
                   </>
                 )}
 
-                {/* Closed Signal Summary */}
-                {(status === "TP_HIT" || status === "SL_HIT") && (
+                {/* Closed/Expired Signal Summary */}
+                {(status === "TP_HIT" || status === "SL_HIT" || status === "EXPIRED" || status === "MISSED") && (
                   <div className="mb-4 p-3 bg-gray-900/50 rounded text-sm space-y-2">
                     <div className="flex justify-between">
                       <span className="text-gray-400">Result</span>
@@ -464,30 +594,50 @@ export default function Dashboard() {
                         className={`font-bold ${
                           status === "TP_HIT"
                             ? "text-purple-400"
-                            : "text-red-400"
+                            : status === "SL_HIT"
+                            ? "text-red-400"
+                            : status === "EXPIRED"
+                            ? "text-gray-400"
+                            : "text-yellow-400"
                         }`}
                       >
-                        {status === "TP_HIT" ? "TAKE PROFIT" : "STOP LOSS"}
+                        {status === "TP_HIT" ? "TAKE PROFIT" : status === "SL_HIT" ? "STOP LOSS" : status === "EXPIRED" ? "EXPIRED" : "MISSED ENTRY"}
                       </span>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-gray-400">Entry</span>
                       <span className="font-mono">{money(signal?.entry)}</span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-400">Exit</span>
-                      <span className="font-mono">
-                        {money(
-                          status === "TP_HIT" ? signal?.target : signal?.stop
-                        )}
-                      </span>
-                    </div>
+                    {status === "TP_HIT" && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-400">Exit</span>
+                        <span className="font-mono text-purple-400">
+                          {money(signal?.target)}
+                        </span>
+                      </div>
+                    )}
+                    {status === "SL_HIT" && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-400">Exit</span>
+                        <span className="font-mono text-red-400">
+                          {money(signal?.stop)}
+                        </span>
+                      </div>
+                    )}
                     <div className="flex justify-between">
                       <span className="text-gray-400">R:R</span>
                       <span className="font-mono text-yellow-400">
                         {signal?.rr?.toFixed(2)}
                       </span>
                     </div>
+                    {signal?.scale && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-400">Scale</span>
+                        <span className="font-mono text-purple-400">
+                          {scaleName(signal.scale)}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -507,9 +657,11 @@ export default function Dashboard() {
                         4H Trend: {mkt.trend || "None"}
                       </li>
                       <li className="text-gray-500">
-                        1H Confirmation: Checking...
+                        Trendline approach: Watching...
                       </li>
-                      <li className="text-gray-500">15M Sweep: Waiting...</li>
+                      <li className="text-gray-500">
+                        StochRSI extreme: Waiting...
+                      </li>
                     </ul>
                   </div>
                 )}
