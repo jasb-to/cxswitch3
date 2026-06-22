@@ -1,4 +1,4 @@
-// lib/strategy.ts — v25.1 "Momentum Lead: Fast Trend + Immediate Entry"
+// lib/strategy.ts — v26 "Trend Pullback: 1D Trend + 4H EMA21 Entry"
 // ============================================================
 
 export interface Candle {
@@ -14,7 +14,7 @@ export interface Signal {
   id: string;
   pair: string;
   direction: "LONG" | "SHORT";
-  type: "MOMENTUM" | "REVERSAL" | "CONTINUATION";
+  type: "PULLBACK";
   entry: number;
   stop: number;
   target: number;
@@ -36,8 +36,17 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 25;
-const MIN_RR = 1.3;
+export const CURRENT_SIGNAL_VERSION = 26;
+const MIN_RR = 2.0;
+
+function ema(closes: number[], period: number): number[] {
+  const k = 2 / (period + 1);
+  const ema: number[] = [closes[0]];
+  for (let i = 1; i < closes.length; i++) {
+    ema.push(closes[i] * k + ema[i - 1] * (1 - k));
+  }
+  return ema;
+}
 
 function avg(arr: number[]): number {
   if (!arr.length) return 0;
@@ -94,97 +103,111 @@ function adx(candles: Candle[], period: number = 14): number {
   return (Math.abs(plusDI - minusDI) / (plusDI + minusDI)) * 100;
 }
 
-// --- MOMENTUM TREND: Last 3 candles net movement ---
-function momentumTrend(candles: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string; adx: number; momentum: number } {
+// --- 1D TREND: Higher highs/lows or EMA 8/21 ---
+function trend1D(candles: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string } {
+  const closes = candles.map(c => c.close);
+  const ema8 = ema(closes, 8);
+  const ema21 = ema(closes, 21);
+  const last8 = ema8[ema8.length - 1];
+  const last21 = ema21[ema21.length - 1];
+  
+  // Simple: EMA 8/21 + last 3 candles for confirmation
   const last3 = candles.slice(-3);
   const netMove = last3.reduce((sum, c) => sum + (c.close - c.open), 0);
-  const avgBody = avg(last3.map(c => Math.abs(c.close - c.open)));
-  const adxVal = adx(candles);
   
-  const direction = netMove > 0 ? "LONG" : netMove < 0 ? "SHORT" : null;
-  const momentum = avgBody === 0 ? 0 : Math.abs(netMove) / avgBody;
+  const direction = last8 > last21 ? "LONG" : last8 < last21 ? "SHORT" : null;
+  const aligned = direction === "LONG" ? netMove > 0 : netMove < 0;
   
-  const strength = adxVal > 40 && momentum > 1.5 ? "STRONG" : 
-                   adxVal > 25 && momentum > 1 ? "MEDIUM" : "WEAK";
+  const strength = aligned ? "STRONG" : "WEAK";
   
-  return { direction, strength, adx: adxVal, momentum: Math.round(momentum * 100) / 100 };
+  return { direction, strength };
 }
 
-// --- 1H CONFIRMATION: Momentum aligns + RSI not extreme ---
-function confirm1H(candles: Candle[], direction4h: "LONG" | "SHORT"): { confirms: boolean; adx: number; rsi: number } {
-  const m1h = momentumTrend(candles);
-  const rsiVal = rsi(candles.map(c => c.close));
+// --- 4H PULLBACK: Price near EMA21 in trend direction ---
+function checkPullback(
+  candles4h: Candle[],
+  direction: "LONG" | "SHORT"
+): { isPullback: boolean; ema21: number; distance: number; swingLow?: number; swingHigh?: number } {
+  const closes = candles4h.map(c => c.close);
+  const lows = candles4h.map(c => c.low);
+  const highs = candles4h.map(c => c.high);
+  const ema21 = ema(closes, 21);
+  const lastEma = ema21[ema21.length - 1];
+  const price = closes[closes.length - 1];
   
-  const aligns = m1h.direction === direction4h;
-  const rsiBlocked = direction4h === "LONG" ? rsiVal > 75 : rsiVal < 25;
+  // Find recent swing low (for LONG) or swing high (for SHORT)
+  const recentLows = lows.slice(-20);
+  const recentHighs = highs.slice(-20);
+  const swingLow = Math.min(...recentLows);
+  const swingHigh = Math.max(...recentHighs);
   
-  return { confirms: aligns && !rsiBlocked && m1h.strength !== "WEAK", adx: m1h.adx, rsi: rsiVal };
-}
-
-// --- 15M TRIGGER: Stoch cross OR position + candle direction ---
-function trigger15M(candles: Candle[], direction: "LONG" | "SHORT"): { 
-  triggered: boolean; 
-  type: string;
-} {
-  const len = candles.length;
-  if (len < 3) return { triggered: false, type: "no setup" };
-  
-  const last = candles[len - 1];
-  const prev = candles[len - 2];
-  const stoch15 = stoch(candles);
-  const prevStoch = stoch(candles.slice(0, -1));
-  const rsi15 = rsi(candles.map(c => c.close), 14);
+  const dist = Math.abs(price - lastEma) / lastEma;
   
   if (direction === "LONG") {
-    const crossUp = stoch15.k > stoch15.d && prevStoch.k <= prevStoch.d;
-    const oversoldBounce = stoch15.k < 25 && stoch15.k > stoch15.d && last.close > last.open;
-    const rsiBounce = rsi15 < 35 && last.close > last.open && last.close > prev.close;
-    const momentumLong = last.close > last.open && last.close > prev.close && stoch15.k < 50;
-    
-    if (crossUp) return { triggered: true, type: "stoch cross up" };
-    if (oversoldBounce) return { triggered: true, type: "oversold bounce" };
-    if (rsiBounce) return { triggered: true, type: "rsi bounce" };
-    if (momentumLong) return { triggered: true, type: "momentum long" };
+    // Price near or below EMA21 but above swing low
+    const nearEma = price <= lastEma * 1.005; // Within 0.5% above or below
+    const aboveStructure = price > swingLow * 1.01; // Above recent low
+    return { isPullback: nearEma && aboveStructure, ema21: lastEma, distance: dist, swingLow };
   }
   
   if (direction === "SHORT") {
-    const crossDown = stoch15.k < stoch15.d && prevStoch.k >= prevStoch.d;
-    const overboughtDrop = stoch15.k > 75 && stoch15.k < stoch15.d && last.close < last.open;
-    const rsiDrop = rsi15 > 65 && last.close < last.open && last.close < prev.close;
-    const momentumShort = last.close < last.open && last.close < prev.close && stoch15.k > 50;
-    
-    if (crossDown) return { triggered: true, type: "stoch cross down" };
-    if (overboughtDrop) return { triggered: true, type: "overbought drop" };
-    if (rsiDrop) return { triggered: true, type: "rsi drop" };
-    if (momentumShort) return { triggered: true, type: "momentum short" };
+    const nearEma = price >= lastEma * 0.995;
+    const belowStructure = price < swingHigh * 0.99;
+    return { isPullback: nearEma && belowStructure, ema21: lastEma, distance: dist, swingHigh };
   }
   
-  return { triggered: false, type: "no setup" };
+  return { isPullback: false, ema21: lastEma, distance: dist };
 }
 
-// --- ATR-based SL/TP ---
+// --- 4H TRIGGER: Candle confirming direction off EMA21 ---
+function trigger4H(candles: Candle[], direction: "LONG" | "SHORT"): boolean {
+  const last = candles[candles.length - 1];
+  const prev = candles[candles.length - 2];
+  
+  if (direction === "LONG") {
+    // Bullish candle after touch/break of EMA21
+    return last.close > last.open && last.close > prev.close;
+  }
+  
+  if (direction === "SHORT") {
+    // Bearish candle after touch/break of EMA21
+    return last.close < last.open && last.close < prev.close;
+  }
+  
+  return false;
+}
+
+// --- LEVELS: Swing-based TP, wide SL ---
 function getLevels(
-  candles1h: Candle[],
+  candles4h: Candle[],
   direction: "LONG" | "SHORT",
-  entry: number
+  entry: number,
+  swingLow?: number,
+  swingHigh?: number
 ): { tp: number; sl: number; rr: number } | null {
+  const highs = candles4h.map(c => c.high).slice(-20);
+  const lows = candles4h.map(c => c.low).slice(-20);
+  
+  // ATR for SL width
   const atrs: number[] = [];
-  for (let i = candles1h.length - 14; i < candles1h.length; i++) {
-    atrs.push(candles1h[i].high - candles1h[i].low);
+  for (let i = candles4h.length - 14; i < candles4h.length; i++) {
+    atrs.push(candles4h[i].high - candles4h[i].low);
   }
   const atr = avg(atrs);
   
   if (direction === "LONG") {
-    const sl = entry - atr * 1.5;
-    const tp = entry + atr * 2.5;
+    const sl = swingLow ? Math.min(swingLow * 0.998, entry - atr * 2) : entry - atr * 3;
+    const nextHigh = Math.max(...highs);
+    const tp = nextHigh > entry ? nextHigh : entry + atr * 4;
     const rr = (tp - entry) / (entry - sl);
     if (rr < MIN_RR) return null;
     return { tp: Math.round(tp * 100) / 100, sl: Math.round(sl * 100) / 100, rr: Math.round(rr * 100) / 100 };
   }
   
   if (direction === "SHORT") {
-    const sl = entry + atr * 1.5;
-    const tp = entry - atr * 2.5;
+    const sl = swingHigh ? Math.max(swingHigh * 1.002, entry + atr * 2) : entry + atr * 3;
+    const nextLow = Math.min(...lows);
+    const tp = nextLow < entry ? nextLow : entry - atr * 4;
     const rr = (entry - tp) / (sl - entry);
     if (rr < MIN_RR) return null;
     return { tp: Math.round(tp * 100) / 100, sl: Math.round(sl * 100) / 100, rr: Math.round(rr * 100) / 100 };
@@ -193,7 +216,7 @@ function getLevels(
   return null;
 }
 
-// --- MAIN SIGNAL GENERATION ---
+// --- MAIN SIGNAL ---
 export function generateSignal(
   pair: string,
   candles1h: Candle[],
@@ -203,76 +226,69 @@ export function generateSignal(
 ): SignalResult {
   const debug: string[] = [];
   
-  if (candles1h.length < 20 || candles4h.length < 10 || candles15m.length < 20) {
+  // Need 1D candles — use 4H aggregated or fetch separately
+  // For now, use 4H as proxy if insufficient 1D
+  const candles1d = candles4h.length >= 42 ? candles4h.filter((_, i) => i % 6 === 0) : candles4h;
+  
+  if (candles1d.length < 10 || candles4h.length < 30) {
     debug.push("Insufficient candle data");
     return { debug };
   }
   
-  const t4h = momentumTrend(candles4h);
-  debug.push(`4H: ${t4h.direction || "NONE"} ${t4h.strength} | ADX: ${t4h.adx.toFixed(1)} | Mom: ${t4h.momentum}`);
+  const t1d = trend1D(candles1d);
+  debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength}`);
   
-  if (!t4h.direction || t4h.strength === "WEAK") {
-    debug.push("4H momentum weak or unclear");
+  if (!t1d.direction) {
+    debug.push("1D trend unclear");
     return { debug };
   }
   
-  const c1h = confirm1H(candles1h, t4h.direction);
-  debug.push(`1H: ${c1h.confirms ? "CONFIRMS" : "REJECTS"} | ADX: ${c1h.adx.toFixed(1)} | RSI: ${c1h.rsi.toFixed(1)}`);
+  const pullback = checkPullback(candles4h, t1d.direction);
+  debug.push(`4H: EMA21 ${pullback.ema21.toFixed(1)} | Price ${pullback.distance.toFixed(3)} from EMA | Pullback: ${pullback.isPullback}`);
   
-  const t15m = trigger15M(candles15m, t4h.direction);
-  const stoch15 = stoch(candles15m);
-  const deepExtreme = t4h.direction === "LONG" ? stoch15.k < 20 : stoch15.k > 80;
-  const isOverride = t4h.strength === "STRONG" && deepExtreme && t15m.triggered;
-  
-  if (!c1h.confirms && !isOverride) {
-    debug.push("1H does not confirm");
+  if (!pullback.isPullback) {
+    debug.push("Not at pullback zone");
     return { debug };
   }
   
-  debug.push(`Entry TF: ${t15m.triggered ? t15m.type.toUpperCase() : "NO SETUP"}${isOverride ? " [4H OVERRIDE]" : ""}`);
+  const triggered = trigger4H(candles4h, t1d.direction);
+  debug.push(`Trigger: ${triggered ? "CONFIRMED" : "WAITING"}`);
   
-  if (!t15m.triggered) {
-    debug.push("No Entry TF trigger");
+  if (!triggered) {
+    debug.push("No confirming candle");
     return { debug };
   }
   
-  const price = currentPrice ?? candles15m[candles15m.length - 1].close;
-  const levels = getLevels(candles1h, t4h.direction, price);
+  const price = currentPrice ?? candles4h[candles4h.length - 1].close;
+  const levels = getLevels(candles4h, t1d.direction, price, pullback.swingLow, pullback.swingHigh);
   
   if (!levels) {
-    debug.push("No valid levels (R:R < 1.3)");
+    debug.push("No valid levels (R:R < 2.0)");
     return { debug };
   }
   
   debug.push(`Levels: TP ${levels.tp} | SL ${levels.sl} | RR ${levels.rr}`);
   
-  const rsi1h = rsi(candles1h.map(c => c.close));
-  
-  let confidence = 55;
-  if (t4h.strength === "STRONG" && c1h.confirms) {
-    confidence = 80;
-  } else if (t4h.strength === "STRONG" && isOverride) {
-    confidence = 65;
-  } else if (c1h.confirms) {
-    confidence = 70;
-  }
+  const rsi4h = rsi(candles4h.map(c => c.close));
+  const stoch4h = stoch(candles4h);
+  const adx4h = adx(candles4h);
   
   const signal: Signal = {
     id: `${pair}_${Date.now()}`,
     pair,
-    direction: t4h.direction,
-    type: isOverride ? "REVERSAL" : "MOMENTUM",
+    direction: t1d.direction,
+    type: "PULLBACK",
     entry: Math.round(price * 100) / 100,
     stop: levels.sl,
     target: levels.tp,
-    confidence,
+    confidence: t1d.strength === "STRONG" ? 75 : 60,
     rr: levels.rr,
-    adx: Math.round(t4h.adx * 10) / 10,
-    rsi: Math.round(rsi1h * 10) / 10,
-    stochK: stoch15.k,
-    stochD: stoch15.d,
+    adx: Math.round(adx4h * 10) / 10,
+    rsi: Math.round(rsi4h * 10) / 10,
+    stochK: stoch4h.k,
+    stochD: stoch4h.d,
     expectedMove: Math.round(((levels.tp - price) / price) * 1000) / 10,
-    reason: `${t4h.direction} ${isOverride ? "REVERSAL" : "MOMENTUM"} | 4H:${t4h.direction} ${t4h.strength} Mom${t4h.momentum} | ${c1h.confirms ? "1H confirms" : "1H REJECTS — OVERRIDE"} | ${t15m.type} | RR ${levels.rr}`,
+    reason: `${t1d.direction} PULLBACK | 1D ${t1d.strength} | 4H EMA21 touch | Swing ${t1d.direction === "LONG" ? "low" : "high"} | RR ${levels.rr}`,
     timestamp: Date.now(),
     version: CURRENT_SIGNAL_VERSION,
   };
@@ -281,14 +297,14 @@ export function generateSignal(
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
-    trend: `${t4h.direction} ${t4h.strength}`,
+    trend: `${t1d.direction} ${t1d.strength}`,
     adx: signal.adx,
     rsi: signal.rsi,
     stochK: signal.stochK,
     stochD: signal.stochD,
   };
   
-  debug.push(`SIGNAL: ${signal.direction} ${signal.entry} | TP ${signal.target} | SL ${signal.stop} | RR ${signal.rr} | CONF ${confidence}%`);
+  debug.push(`SIGNAL: ${signal.direction} ${signal.entry} | TP ${signal.target} | SL ${signal.stop} | RR ${signal.rr}`);
   
   return { signal, market, debug };
 }
@@ -300,25 +316,26 @@ export function getMarketSnapshot(
   candles4h: Candle[],
   candles15m: Candle[]
 ): any {
-  const t4h = momentumTrend(candles4h);
-  const c1h = t4h.direction ? confirm1H(candles1h, t4h.direction) : { confirms: false, adx: 0, rsi: 50 };
-  const stoch15 = stoch(candles15m);
-  const price = candles1h[candles1h.length - 1].close;
+  const candles1d = candles4h.length >= 42 ? candles4h.filter((_, i) => i % 6 === 0) : candles4h;
+  const t1d = trend1D(candles1d);
+  const pullback = t1d.direction ? checkPullback(candles4h, t1d.direction) : { isPullback: false, ema21: 0, distance: 0 };
+  const stoch4h = stoch(candles4h);
+  const price = candles4h[candles4h.length - 1].close;
 
   return {
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
-    trend: t4h.direction ? `${t4h.direction} ${t4h.strength}` : "NONE",
-    adx: Math.round(t4h.adx * 10) / 10,
-    rsi: Math.round(rsi(candles1h.map(c => c.close)) * 10) / 10,
-    stochK: stoch15.k,
-    stochD: stoch15.d,
-    confirm1h: c1h.confirms,
+    trend: t1d.direction ? `${t1d.direction} ${t1d.strength}` : "NONE",
+    adx: Math.round(adx(candles4h) * 10) / 10,
+    rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
+    stochK: stoch4h.k,
+    stochD: stoch4h.d,
+    confirm1h: pullback.isPullback,
   };
 }
 
-// --- VALIDITY CHECK ---
+// --- VALIDITY ---
 export interface ValidityCheck {
   valid: boolean;
   reason: string;
@@ -327,16 +344,17 @@ export interface ValidityCheck {
 
 export function isSignalStillValid(signal: Signal, currentPrice: number, now: number = Date.now()): ValidityCheck {
   const ageMs = now - signal.timestamp;
-  const maxAge = signal.type === "REVERSAL" ? 2 * 60 * 60 * 1000 : 2.5 * 60 * 60 * 1000;
+  const maxAge = 12 * 60 * 60 * 1000; // 12 hours for pullbacks
   
   if (ageMs > maxAge) {
     return { valid: false, reason: "expired_ttl", exited: true };
   }
   
-  if (signal.direction === "LONG" && currentPrice > signal.entry * 1.005) {
+  // Wide missed entry: 1.5%
+  if (signal.direction === "LONG" && currentPrice > signal.entry * 1.015) {
     return { valid: false, reason: "missed_entry", exited: true };
   }
-  if (signal.direction === "SHORT" && currentPrice < signal.entry * 0.995) {
+  if (signal.direction === "SHORT" && currentPrice < signal.entry * 0.985) {
     return { valid: false, reason: "missed_entry", exited: true };
   }
   
@@ -364,12 +382,11 @@ export interface HoldResult {
 }
 
 export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, now?: number): HoldResult {
-  const t4h = momentumTrend(candles4h);
-  const trendReversed = (signal.direction === "LONG" && t4h.direction === "SHORT") ||
-                        (signal.direction === "SHORT" && t4h.direction === "LONG");
+  const t1d = trend1D(candles4h.length >= 42 ? candles4h.filter((_, i) => i % 6 === 0) : candles4h);
+  const trendReversed = (signal.direction === "LONG" && t1d.direction === "SHORT") ||
+                        (signal.direction === "SHORT" && t1d.direction === "LONG");
   
-  if (trendReversed) return { shouldHold: false, reason: "momentum_reversed" };
-  if (!t4h.direction || t4h.strength === "WEAK") return { shouldHold: false, reason: "momentum_weak" };
+  if (trendReversed) return { shouldHold: false, reason: "trend_reversed" };
   
   const validity = isSignalStillValid(signal, currentPrice, now);
   return { shouldHold: validity.valid, reason: validity.reason };
