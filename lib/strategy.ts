@@ -1,6 +1,8 @@
 // lib/strategy.ts — v28 "Trendline Break: StochRSI Timing + Position Build"
 // ============================================================
 // Architecture: stateful trendline, hysteresis bands, TV-exact StochRSI
+// EXIT: Stoch extreme opposite (matches chart)
+// ALERTS: ENTRY_1 and ADD only (ENTRY_2 is internal, no alert)
 
 export interface Candle {
   timestamp: number;
@@ -82,13 +84,12 @@ function rsiSeries(closes: number[], period: number = 14): number[] {
   return series;
 }
 
-// --- STOCHRSI (TradingView exact: %K = raw stoch of RSI, %D = SMA(3) of %K) ---
+// --- STOCHRSI (TradingView exact) ---
 function stochRsi(closes: number[], rsiPeriod: number = 14, stochPeriod: number = 14, kSmooth: number = 3, dSmooth: number = 3): { k: number; d: number } {
   const rsiValues = rsiSeries(closes, rsiPeriod);
   
   if (rsiValues.length < stochPeriod + kSmooth - 1) return { k: 50, d: 50 };
   
-  // Raw %K of RSI
   const rawK: number[] = [];
   for (let i = stochPeriod - 1; i < rsiValues.length; i++) {
     const window = rsiValues.slice(i - stochPeriod + 1, i + 1);
@@ -101,7 +102,6 @@ function stochRsi(closes: number[], rsiPeriod: number = 14, stochPeriod: number 
     }
   }
   
-  // %K = SMA(kSmooth) of rawK
   const kValues: number[] = [];
   for (let i = kSmooth - 1; i < rawK.length; i++) {
     kValues.push(avg(rawK.slice(i - kSmooth + 1, i + 1)));
@@ -215,25 +215,21 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   const recentPivots = pivots.slice(-5);
   const now = candles[candles.length - 1].timestamp;
   
-  // Check existing state
   const existing = trendlineStore.get(pair);
-  const maxAge = 7 * 24 * 60 * 60 * 1000; // 7 days
+  const maxAge = 7 * 24 * 60 * 60 * 1000;
   
   if (existing && existing.direction === direction && (now - existing.lastUpdated) < maxAge) {
-    // Validate existing against new pivots — if new pivots deviate >2%, recompute
     const lastPivot = recentPivots[recentPivots.length - 1];
     const projectedPrice = existing.slope * lastPivot.index + existing.intercept;
     const deviation = Math.abs(lastPivot.price - projectedPrice) / projectedPrice;
     
     if (deviation < 0.02) {
-      // Use existing trendline, project to current candle
       const currentIndex = len - 1;
       const price = existing.slope * currentIndex + existing.intercept;
-      return { price, r2: 0.85, age: now - existing.lastUpdated }; // r2 assumed stable
+      return { price, r2: 0.85, age: now - existing.lastUpdated };
     }
   }
   
-  // Recompute from recent pivots
   const n = recentPivots.length;
   const sumX = recentPivots.reduce((s, p) => s + p.index, 0);
   const sumY = recentPivots.reduce((s, p) => s + p.price, 0);
@@ -243,13 +239,11 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
   const intercept = (sumY - slope * sumX) / n;
   
-  // R²
   const yMean = sumY / n;
   const ssTotal = recentPivots.reduce((s, p) => s + Math.pow(p.price - yMean, 2), 0);
   const ssResidual = recentPivots.reduce((s, p) => s + Math.pow(p.price - (slope * p.index + intercept), 2), 0);
   const r2 = ssTotal === 0 ? 0 : 1 - (ssResidual / ssTotal);
   
-  // Store
   trendlineStore.set(pair, {
     slope,
     intercept,
@@ -324,7 +318,7 @@ function getHysteresis(pair: string, now: number): HysteresisState {
 }
 
 function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price: number, now: number): void {
-  const lockDuration = type === "ADD" ? 4 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000; // 4h for ADD, 24h for entries
+  const lockDuration = type === "ADD" ? 4 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
   hysteresisStore.set(pair, {
     lastSignalType: type,
     lastSignalPrice: price,
@@ -342,7 +336,6 @@ export function generateSignal(
 ): SignalResult {
   const debug: string[] = [];
   
-  // Validate sorted
   for (let i = 1; i < candles4h.length; i++) {
     if (candles4h[i].timestamp < candles4h[i-1].timestamp) {
       debug.push("Candles not sorted");
@@ -387,11 +380,6 @@ export function generateSignal(
   const ema8_4h = ema(closes4h, 8);
   const ema21_4h = ema(closes4h, 21);
   
-  // Check hysteresis
-  const now = Date.now();
-  const hyst = getHysteresis(pair, now);
-  
-  // Raw conditions
   const nearTrendline = Math.abs(dist) < 0.012;
   const stochExtreme = t1d.direction === "LONG" ? stoch.k < 20 : stoch.k > 80;
   const stochTurning = t1d.direction === "LONG" ? stoch.k > stoch.d : stoch.k < stoch.d;
@@ -423,33 +411,25 @@ export function generateSignal(
   }
   
   // Apply hysteresis
+  const now = Date.now();
+  const hyst = getHysteresis(pair, now);
+  
   let finalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
   
   if (hyst.lastSignalType === "ADD") {
-    // ADD is terminal — no downgrade
     finalType = "ADD";
   } else if (hyst.lastSignalType === "ENTRY_2") {
-    // Can upgrade to ADD, otherwise hold ENTRY_2
-    if (rawType === "ADD") {
-      finalType = "ADD";
-    } else {
-      finalType = "ENTRY_2";
-    }
+    if (rawType === "ADD") finalType = "ADD";
+    else finalType = "ENTRY_2";
   } else if (hyst.lastSignalType === "ENTRY_1") {
-    // Can upgrade to ENTRY_2 or ADD
-    if (rawType === "ADD") {
-      finalType = "ADD";
-    } else if (rawType === "ENTRY_2") {
-      finalType = "ENTRY_2";
-    } else {
-      finalType = "ENTRY_1";
-    }
+    if (rawType === "ADD") finalType = "ADD";
+    else if (rawType === "ENTRY_2") finalType = "ENTRY_2";
+    else finalType = "ENTRY_1";
   } else {
-    // No prior signal — use raw
     finalType = rawType;
   }
   
-  // Price hysteresis: only re-evaluate if price moved >0.5% from last signal price
+  // Price hysteresis
   if (hyst.lastSignalType && finalType === hyst.lastSignalType) {
     const priceMove = Math.abs(price - hyst.lastSignalPrice) / hyst.lastSignalPrice;
     if (priceMove < HYSTERESIS_BAND) {
@@ -637,6 +617,7 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
 }
 
 // --- shouldHold ---
+// FIX #1: Exit on Stoch extreme opposite (matches chart)
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
@@ -657,20 +638,16 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
     }
   }
   
+  // FIX #1: Exit when Stoch hits extreme opposite (chart behavior)
   const closes4h = candles4h.map(c => c.close);
-  const ema21_4h = ema(closes4h, 21);
   const stoch = stochRsi(closes4h);
   
-  const belowEMA21 = signal.direction === "LONG" 
-    ? currentPrice < ema21_4h[ema21_4h.length - 1]
-    : currentPrice > ema21_4h[ema21_4h.length - 1];
+  const stochExtremeOpposite = signal.direction === "LONG" 
+    ? stoch.k < 20   // was long, now oversold = exit
+    : stoch.k > 80;  // was short, now overbought = exit
   
-  const stochCrossed = signal.direction === "LONG"
-    ? stoch.k < stoch.d
-    : stoch.k > stoch.d;
-  
-  if (belowEMA21 && stochCrossed) {
-    return { shouldHold: false, reason: "trailing_exit_ema21_stoch" };
+  if (stochExtremeOpposite) {
+    return { shouldHold: false, reason: "stoch_extreme_opposite_exit" };
   }
   
   const validity = isSignalStillValid(signal, currentPrice, now);
@@ -741,6 +718,7 @@ export function setRedisClient(_: any): void {
   return;
 }
 
+// FIX #2: Only alert on ENTRY_1 and ADD. ENTRY_2 is internal (no alert).
 export async function generateSignalCompat(
   pair: string,
   candles1h: Candle[],
@@ -749,7 +727,14 @@ export async function generateSignalCompat(
   activeTrades?: Record<string, any>,
   currentPrice?: number
 ): Promise<SignalResult> {
-  return generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
+  const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
+  
+  // Suppress ENTRY_2 alerts — return signal without alerting
+  if (result.signal?.scale === "ENTRY_2") {
+    return { ...result, signal: undefined }; // No alert, but market data still returned
+  }
+  
+  return result;
 }
 
 export function isSignalStillValidBool(signal: Signal, currentPrice: number): boolean {
