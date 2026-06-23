@@ -59,28 +59,74 @@ function avg(arr: number[]): number {
   return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
-// --- RSI (TradingView exact) ---
+// --- RSI (TradingView exact — Wilder smoothed) ---
 function rsi(closes: number[], period: number = 14): number {
-  let gains = 0;
-  let losses = 0;
-  for (let i = 1; i <= period && i < closes.length; i++) {
-    const change = closes[closes.length - i] - closes[closes.length - i - 1];
-    if (change > 0) gains += change;
-    else losses += Math.abs(change);
+  if (closes.length < period + 1) return 50;
+  
+  let avgGain = 0;
+  let avgLoss = 0;
+  
+  // First average — simple mean of first `period` changes
+  for (let i = 1; i <= period; i++) {
+    const change = closes[i] - closes[i - 1];
+    if (change > 0) avgGain += change;
+    else avgLoss += Math.abs(change);
   }
-  const avgGain = gains / period;
-  const avgLoss = losses / period;
+  avgGain /= period;
+  avgLoss /= period;
+  
+  // Wilder smoothing for remaining bars
+  for (let i = period + 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1];
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? Math.abs(change) : 0;
+    
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+  }
+  
   if (avgLoss === 0) return 100;
-  return 100 - (100 / (1 + avgGain / avgLoss));
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
 }
 
-// --- RSI SERIES (precomputed, non-overlapping) ---
+// --- RSI SERIES (precomputed with Wilder smoothing) ---
 function rsiSeries(closes: number[], period: number = 14): number[] {
+  if (closes.length < period + 1) return [];
+  
   const series: number[] = [];
-  for (let i = period; i < closes.length; i++) {
-    const window = closes.slice(i - period + 1, i + 1);
-    series.push(rsi(window, period));
+  let avgGain = 0;
+  let avgLoss = 0;
+  
+  // First RSI point
+  for (let i = 1; i <= period; i++) {
+    const change = closes[i] - closes[i - 1];
+    if (change > 0) avgGain += change;
+    else avgLoss += Math.abs(change);
   }
+  avgGain /= period;
+  avgLoss /= period;
+  
+  const firstRs = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
+  series.push(Math.round(firstRs * 10) / 10);
+  
+  // Subsequent points with Wilder smoothing
+  for (let i = period + 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1];
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? Math.abs(change) : 0;
+    
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    
+    if (avgLoss === 0) {
+      series.push(100);
+    } else {
+      const rs = avgGain / avgLoss;
+      series.push(Math.round((100 - (100 / (1 + rs))) * 10) / 10);
+    }
+  }
+  
   return series;
 }
 
