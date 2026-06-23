@@ -1,4 +1,4 @@
-// lib/telegram.ts — v15 alerts
+// lib/telegram.ts — v16 simplified alerts
 // ============================================================
 
 export async function sendAlert(signal: any) {
@@ -10,47 +10,20 @@ export async function sendAlert(signal: any) {
     return;
   }
 
-  const isSweep = signal.state === "SWEEP";
-  const isEarly = signal.state === "EARLY";
-  const isMomentum = signal.state === "MOMENTUM";
-  const isReversal = signal.state === "REVERSAL";
-  
-  const tierEmoji = isSweep ? "🎯" : isEarly ? "⚡" : isMomentum ? "🔥" : isReversal ? "🔄" : "📊";
-  const tierLabel = isSweep ? "SWEEP" : isEarly ? "EARLY" : isMomentum ? "MOMENTUM" : isReversal ? "REVERSAL" : "SETUP";
-
-  const confEmoji = signal.confidence >= 85 ? "🟢" :
-                    signal.confidence >= 70 ? "🟡" :
-                    signal.confidence >= 55 ? "🟠" : "🔴";
-
+  // Skip low confidence (same threshold as before)
   if (signal.confidence < 60) {
     console.log("[TELEGRAM SKIP: LOW CONFIDENCE]", signal.symbol, signal.confidence);
     return;
   }
 
-  const text = `
-${tierEmoji} CX SWITCH — ${tierLabel}
+  const dirEmoji = signal.bias === "LONG" ? "🟢" : "🔴";
+  const confColor = signal.confidence >= 85 ? "🟢" :
+                    signal.confidence >= 70 ? "🟡" :
+                    signal.confidence >= 55 ? "🟠" : "🔴";
 
-${signal.symbol} — ${signal.state}
-Price: ${signal.price}
-
-Bias: ${signal.bias}
-${confEmoji} Confidence: ${signal.confidence}%
-
-Expected Move: ${signal.expectedMove ?? "-"}%
-
-SL: ${signal.stopLoss ?? "-"}
-TP: ${signal.takeProfit ?? "-"}
-RR: ${signal.rr ?? "-"}
-
-ADX: ${signal.adx ?? "-"}
-RSI: ${signal.rsi ?? "-"}
-StochK: ${signal.stochK ?? "-"}
-StochD: ${signal.stochD ?? "-"}
-
-${signal.reason}
-
-Time: ${signal.updatedAt}
-`;
+  const text = `${dirEmoji} ${signal.symbol} ${signal.bias} ${signal.state} — ${confColor} ${signal.confidence}%
+Entry: ${signal.price} | Stop: ${signal.stopLoss} | Target: ${signal.takeProfit}
+RR ${signal.rr} | ${signal.reason}`;
 
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
@@ -58,6 +31,7 @@ Time: ${signal.updatedAt}
     body: JSON.stringify({
       chat_id: chatId,
       text,
+      parse_mode: "HTML",  // optional: enables bold/italic if you want later
     }),
   });
 }
