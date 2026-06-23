@@ -114,8 +114,6 @@ function getSignalStatus(signal: Signal, currentPrice: number): {
   return { status: "ACTIVE", pnl, ageMinutes, ttlRemaining: formatTtl(ageMinutes, maxAge) };
 }
 
-// ─── Parse trend string "SHORT MEDIUM" into {direction, strength} ─────
-
 function parseTrend(trend?: string): { direction?: string; strength?: string; full: string } {
   if (!trend) return { full: "—" };
   const parts = trend.split(" ");
@@ -237,7 +235,6 @@ function SignalCard({ signal, market, livePrice }: {
       {/* Market context */}
       {market && (
         <div className="text-xs space-y-2 text-slate-500 border-t border-slate-700/50 pt-3">
-          {/* Trend: "1D: SHORT (MEDIUM)" format */}
           <div className="flex justify-between items-center">
             <span className="text-slate-400">1D Trend</span>
             <span className={`font-bold ${
@@ -433,30 +430,28 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white p-6">
-      {/* Added max-w with padding so content isn't flush left */}
-      <div className="max-w-7xl mx-auto px-5">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-2xl font-bold">CX Switch v28</h1>
-          <div className="text-xs text-slate-500">
-            Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
-          </div>
+    <div>
+      {/* Header — no extra padding, layout.tsx handles it */}
+      <div className="flex justify-between items-center mb-8">
+        <h1 className="text-2xl font-bold">CX Switch v28</h1>
+        <div className="text-xs text-slate-500">
+          Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
         </div>
+      </div>
 
-        {/* Increased gap from gap-4 to gap-6 for breathing room */}
-        <div className="grid md:grid-cols-3 gap-6">
-          {PAIRS.map((pair) => {
-            const signal = signals[pair];
-            const mkt = marketData[pair];
-            const livePrice = livePrices[pair];
+      {/* Cards — gap-6 for breathing room */}
+      <div className="grid md:grid-cols-3 gap-6">
+        {PAIRS.map((pair) => {
+          const signal = signals[pair];
+          const mkt = marketData[pair];
+          const livePrice = livePrices[pair];
 
-            return signal ? (
-              <SignalCard key={pair} signal={signal} market={mkt} livePrice={livePrice} />
-            ) : (
-              <WaitingCard key={pair} pair={pair} market={mkt} livePrice={livePrice} />
-            );
-          })}
-        </div>
+          return signal ? (
+            <SignalCard key={pair} signal={signal} market={mkt} livePrice={livePrice} />
+          ) : (
+            <WaitingCard key={pair} pair={pair} market={mkt} livePrice={livePrice} />
+          );
+        })}
       </div>
     </div>
   );
