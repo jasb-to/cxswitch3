@@ -13,9 +13,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="bg-black text-white antialiased min-h-screen">
-        {/* Global app container fixes left/right edge issue */}
-        <div className="w-full px-6 sm:px-8 lg:px-12">
+      <body className="bg-slate-950 text-white antialiased min-h-screen">
+        {/* Global app container — controls ALL left/right spacing */}
+        <div className="w-full px-6 sm:px-8 lg:px-12 py-6">
           <div className="mx-auto max-w-7xl">
             {children}
           </div>
@@ -24,4 +24,3 @@ export default function RootLayout({
     </html>
   );
 }
- 
