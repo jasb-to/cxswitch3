@@ -152,7 +152,21 @@ function SignalCard({ signal, market, livePrice }: {
 }) {
   const currentPrice = livePrice ?? market?.price ?? 0;
   const meta = getSignalStatus(signal, currentPrice);
-  const trend = parseTrend(market?.trend);
+  const trend1d = parseTrend(market?.trend);
+
+  // Derive 4H trend from EMAs
+  const ema8 = market?.ema8;
+  const ema21 = market?.ema21;
+  const price = market?.price ?? currentPrice;
+  let trend4hDir: string | null = null;
+  let trend4hStrength: string = "WEAK";
+  
+  if (ema8 !== undefined && ema21 !== undefined) {
+    trend4hDir = price > ema8 && price > ema21 ? "LONG" : price < ema8 && price < ema21 ? "SHORT" : null;
+    const spread = Math.abs(ema8 - ema21) / ema21;
+    trend4hStrength = spread > 0.02 ? "STRONG" : spread > 0.01 ? "MEDIUM" : "WEAK";
+  }
+  const trend4h = trend4hDir ? `${trend4hDir} (${trend4hStrength})` : "MIXED";
 
   const dirColor = signal.direction === "LONG" ? "green" : "red";
   const confColor = signal.confidence >= 70 ? "green" : signal.confidence >= 50 ? "yellow" : "red";
@@ -225,17 +239,30 @@ function SignalCard({ signal, market, livePrice }: {
         <span>Expected <span className="font-mono text-slate-300">{signal.expectedMove.toFixed(2)}%</span></span>
       </div>
 
-      {/* Market context — live data, not frozen signal reason */}
+      {/* Market context — 4H trend + 1D trend, text-sm */}
       {market && (
-        <div className="text-xs space-y-2 text-slate-500 border-t border-slate-700/50 pt-3">
+        <div className="text-sm space-y-2 text-slate-500 border-t border-slate-700/50 pt-3">
+          {/* 4H Trend */}
+          <div className="flex justify-between items-center">
+            <span className="text-slate-400">4H Trend</span>
+            <span className={`font-bold ${
+              trend4hStrength === "STRONG" ? "text-emerald-400" :
+              trend4hStrength === "MEDIUM" ? "text-yellow-400" :
+              "text-slate-400"
+            }`}>
+              {trend4h}
+            </span>
+          </div>
+
+          {/* 1D Trend */}
           <div className="flex justify-between items-center">
             <span className="text-slate-400">1D Trend</span>
             <span className={`font-bold ${
-              trend.strength === "STRONG" ? "text-emerald-400" :
-              trend.strength === "MEDIUM" ? "text-yellow-400" :
+              trend1d.strength === "STRONG" ? "text-emerald-400" :
+              trend1d.strength === "MEDIUM" ? "text-yellow-400" :
               "text-slate-400"
             }`}>
-              {trend.direction || "—"} <span className="text-slate-500 font-normal">({trend.strength || "—"})</span>
+              {trend1d.direction || "—"} <span className="text-slate-500 font-normal">({trend1d.strength || "—"})</span>
             </span>
           </div>
 
@@ -273,7 +300,21 @@ function WaitingCard({ pair, market, livePrice }: {
   livePrice: number | undefined;
 }) {
   const currentPrice = livePrice ?? market?.price ?? 0;
-  const trend = parseTrend(market?.trend);
+  const trend1d = parseTrend(market?.trend);
+
+  // Derive 4H trend from EMAs
+  const ema8 = market?.ema8;
+  const ema21 = market?.ema21;
+  const price = market?.price ?? currentPrice;
+  let trend4hDir: string | null = null;
+  let trend4hStrength: string = "WEAK";
+  
+  if (ema8 !== undefined && ema21 !== undefined) {
+    trend4hDir = price > ema8 && price > ema21 ? "LONG" : price < ema8 && price < ema21 ? "SHORT" : null;
+    const spread = Math.abs(ema8 - ema21) / ema21;
+    trend4hStrength = spread > 0.02 ? "STRONG" : spread > 0.01 ? "MEDIUM" : "WEAK";
+  }
+  const trend4h = trend4hDir ? `${trend4hDir} (${trend4hStrength})` : "MIXED";
 
   return (
     <div className="rounded-xl border border-slate-700 bg-slate-900/50 p-5 space-y-4">
@@ -293,15 +334,28 @@ function WaitingCard({ pair, market, livePrice }: {
       </div>
 
       {market && (
-        <div className="text-xs space-y-2 text-slate-500">
+        <div className="text-sm space-y-2 text-slate-500">
+          {/* 4H Trend */}
+          <div className="flex justify-between items-center">
+            <span className="text-slate-400">4H Trend</span>
+            <span className={`font-bold ${
+              trend4hStrength === "STRONG" ? "text-emerald-400" :
+              trend4hStrength === "MEDIUM" ? "text-yellow-400" :
+              "text-slate-400"
+            }`}>
+              {trend4h}
+            </span>
+          </div>
+
+          {/* 1D Trend */}
           <div className="flex justify-between items-center">
             <span className="text-slate-400">1D Trend</span>
             <span className={`font-bold ${
-              trend.strength === "STRONG" ? "text-emerald-400" :
-              trend.strength === "MEDIUM" ? "text-yellow-400" :
+              trend1d.strength === "STRONG" ? "text-emerald-400" :
+              trend1d.strength === "MEDIUM" ? "text-yellow-400" :
               "text-slate-400"
             }`}>
-              {trend.direction || "—"} <span className="text-slate-500 font-normal">({trend.strength || "—"})</span>
+              {trend1d.direction || "—"} <span className="text-slate-500 font-normal">({trend1d.strength || "—"})</span>
             </span>
           </div>
 
