@@ -225,14 +225,7 @@ function SignalCard({ signal, market, livePrice }: {
         <span>Expected <span className="font-mono text-slate-300">{signal.expectedMove.toFixed(2)}%</span></span>
       </div>
 
-      {/* Why */}
-      {signal.reason && (
-        <div className="text-xs text-slate-500 border-t border-slate-700/50 pt-3 leading-relaxed">
-          {signal.reason}
-        </div>
-      )}
-
-      {/* Market context */}
+      {/* Market context — live data, not frozen signal reason */}
       {market && (
         <div className="text-xs space-y-2 text-slate-500 border-t border-slate-700/50 pt-3">
           <div className="flex justify-between items-center">
@@ -431,7 +424,6 @@ export default function Dashboard() {
 
   return (
     <div>
-      {/* Header — no extra padding, layout.tsx handles it */}
       <div className="flex justify-between items-center mb-8">
         <h1 className="text-2xl font-bold">CX Switch v28</h1>
         <div className="text-xs text-slate-500">
@@ -439,7 +431,6 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Cards — gap-6 for breathing room */}
       <div className="grid md:grid-cols-3 gap-6">
         {PAIRS.map((pair) => {
           const signal = signals[pair];
