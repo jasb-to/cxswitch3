@@ -33,7 +33,7 @@ interface MarketData {
   ema21?: number;
 }
 
-const PAIRS = ["BTC", "ETH", "SOL"];
+const PAIRS = ["BTC", "ETH", "SOL", "HYPE"];
 
 const money = (n?: number) =>
   typeof n === "number" && isFinite(n)
@@ -48,6 +48,7 @@ const KRAKEN_PAIRS: Record<string, string> = {
   BTC: "XBTUSD",
   ETH: "ETHUSD",
   SOL: "SOLUSD",
+  HYPE: "HYPEUSDT",
 };
 
 async function fetchKrakenPrice(pair: string): Promise<number | null> {
@@ -485,8 +486,8 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Cards grid with more spacing */}
-      <div className="grid md:grid-cols-3 gap-6">
+      {/* Cards grid: 2 columns × 2 rows */}
+      <div className="grid md:grid-cols-2 gap-6">
         {PAIRS.map((pair) => {
           const signal = signals[pair];
           const mkt = marketData[pair];
