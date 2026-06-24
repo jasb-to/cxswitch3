@@ -3,7 +3,7 @@
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot } from "@/lib/strategy";
+import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot, loadTrendlinesFromKV, saveTrendlinesToKV, loadHysteresisFromKV, saveHysteresisToKV } from "@/lib/strategy";
 import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
@@ -40,6 +40,10 @@ export async function GET(request: Request) {
     return NextResponse.json({ success: true, skipped: true, reason: "rate_limited" });
   }
   await setLastCronRun(runStart);
+
+  // Load persisted state (serverless-safe)
+  await loadTrendlinesFromKV();
+  await loadHysteresisFromKV();
 
   let activeTrades = await getActiveTrades();
   console.log(`[STATE] Active trades:`, Object.keys(activeTrades).join(", ") || "none");
@@ -163,6 +167,10 @@ export async function GET(request: Request) {
     const idx = merged.findIndex((x: any) => x.pair === s.pair);
     if (idx >= 0) merged[idx] = s; else merged.push(s);
   }
+
+  // Persist state for next serverless invocation
+  await saveTrendlinesToKV();
+  await saveHysteresisToKV();
 
   await Promise.all([setSignals(merged), setMarketData(marketDataList), setActiveTrades(activeTrades)]);
 
