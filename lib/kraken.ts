@@ -1,9 +1,13 @@
-export type Symbol = "BTC" | "ETH" | "SOL";
+// lib/kraken.ts
+// ============================================================
+
+export type Symbol = "BTC" | "ETH" | "SOL" | "HYPE";
 
 const PAIRS: Record<Symbol, string> = {
   BTC: "XXBTZUSD",
   ETH: "XETHZUSD",
   SOL: "SOLUSD",
+  HYPE: "HYPEUSDT",
 };
 
 const BASE = "https://api.kraken.com/0/public";
