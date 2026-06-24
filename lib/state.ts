@@ -18,7 +18,7 @@ const LAST_CRON_RUN_TTL = 24 * 60 * 60;
 const SIGNAL_HISTORY_TTL = 48 * 60 * 60;
 
 // CRITICAL: Must match lib/strategy.ts CURRENT_SIGNAL_VERSION
-export const CURRENT_SIGNAL_VERSION = 3;
+export const CURRENT_SIGNAL_VERSION = 28;
 
 export type SignalType = "EARLY" | "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL";
 
