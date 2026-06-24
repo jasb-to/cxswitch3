@@ -123,27 +123,30 @@ function parseTrend(trend?: string): { direction?: string; strength?: string; fu
   return { full: trend };
 }
 
-function Badge({ children, color }: { children: React.ReactNode; color: string }) {
-  const colors: Record<string, string> = {
-    green: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
-    red: "bg-rose-500/20 text-rose-400 border-rose-500/30",
-    purple: "bg-purple-500/20 text-purple-300 border-purple-500/30",
-    blue: "bg-blue-500/20 text-blue-300 border-blue-500/30",
-    yellow: "bg-yellow-500/20 text-yellow-300 border-yellow-500/30",
-    gray: "bg-slate-600/20 text-slate-400 border-slate-600/30",
+// ─── Status Badge (like reference image) ─────────────────────────────
+
+function StatusBadge({ status, direction }: { status: string; direction: "LONG" | "SHORT" }) {
+  const configs: Record<string, { bg: string; text: string; label: string }> = {
+    ACTIVE_LONG: { bg: "bg-emerald-500", text: "text-white", label: "ACTIVE" },
+    ACTIVE_SHORT: { bg: "bg-rose-500", text: "text-white", label: "ACTIVE" },
+    TP_HIT: { bg: "bg-purple-500", text: "text-white", label: "TP HIT" },
+    SL_HIT: { bg: "bg-red-600", text: "text-white", label: "SL HIT" },
+    EXPIRED: { bg: "bg-slate-600", text: "text-white", label: "EXPIRED" },
+    MISSED: { bg: "bg-yellow-600", text: "text-white", label: "MISSED" },
+    WAITING: { bg: "bg-slate-700", text: "text-slate-300", label: "BUILDING" },
   };
+
+  const key = status === "ACTIVE" ? `ACTIVE_${direction}` : status;
+  const config = configs[key] || configs.WAITING;
+
   return (
-    <span className={`px-2 py-0.5 rounded text-xs font-bold border ${colors[color] || colors.gray}`}>
-      {children}
+    <span className={`px-4 py-1.5 rounded-lg text-sm font-bold ${config.bg} ${config.text}`}>
+      {config.label}
     </span>
   );
 }
 
-function LiveBadge() {
-  return <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse inline-block ml-1" />;
-}
-
-// ─── Signal Card ─────────────────────────────────────────────────────
+// ─── Signal Card (reference image style) ───────────────────────────────
 
 function SignalCard({ signal, market, livePrice }: {
   signal: Signal;
@@ -154,7 +157,6 @@ function SignalCard({ signal, market, livePrice }: {
   const meta = getSignalStatus(signal, currentPrice);
   const trend1d = parseTrend(market?.trend);
 
-  // Derive 4H trend from EMAs
   const ema8 = market?.ema8;
   const ema21 = market?.ema21;
   const price = market?.price ?? currentPrice;
@@ -168,32 +170,86 @@ function SignalCard({ signal, market, livePrice }: {
   }
   const trend4h = trend4hDir ? `${trend4hDir} (${trend4hStrength})` : "MIXED";
 
-  const dirColor = signal.direction === "LONG" ? "green" : "red";
-  const confColor = signal.confidence >= 70 ? "green" : signal.confidence >= 50 ? "yellow" : "red";
-  const ttlColor = meta.ttlRemaining.includes("0m") ? "red" : meta.ttlRemaining.includes("h") ? "gray" : "yellow";
+  const confColor = signal.confidence >= 70 ? "text-emerald-400" : signal.confidence >= 50 ? "text-yellow-400" : "text-rose-400";
 
   return (
-    <div className="rounded-xl border border-slate-700 bg-slate-900/80 p-5 space-y-4">
-      {/* Header */}
+    <div className="rounded-2xl border border-slate-700/50 bg-slate-900/60 p-6 space-y-5 backdrop-blur-sm">
+      {/* Header with symbol and status */}
       <div className="flex justify-between items-start">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="text-xl font-bold text-white">{signal.pair}/USD</span>
-            {livePrice && <LiveBadge />}
-          </div>
-          <div className="text-3xl font-mono text-white mt-2">{money(currentPrice)}</div>
+          <h2 className="text-2xl font-bold text-white tracking-tight">{signal.pair}</h2>
+          <p className="text-slate-400 text-sm mt-1">Price: {money(currentPrice)}</p>
         </div>
-        <div className="flex flex-col items-end gap-1.5">
-          <Badge color={dirColor}>{signal.direction}</Badge>
-          <Badge color="purple">{signal.scale || "SIGNAL"}</Badge>
+        <StatusBadge status={meta.status} direction={signal.direction} />
+      </div>
+
+      {/* Two column layout for trends */}
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">4H Trend</p>
+          <p className={`text-sm font-semibold ${
+            trend4h.includes("SHORT") ? "text-rose-400" : 
+            trend4h.includes("LONG") ? "text-emerald-400" : "text-yellow-400"
+          }`}>
+            {trend4h}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">1D Trend</p>
+          <p className={`text-sm font-semibold ${
+            trend1d.direction === "SHORT" ? "text-rose-400" : 
+            trend1d.direction === "LONG" ? "text-emerald-400" : "text-slate-400"
+          }`}>
+            {trend1d.direction || "—"} <span className="text-slate-500 font-normal">({trend1d.strength || "—"})</span>
+          </p>
         </div>
       </div>
 
-      {/* Meta badges */}
-      <div className="flex flex-wrap gap-2">
-        <Badge color={confColor}>CONFIDENCE {signal.confidence}%</Badge>
-        <Badge color={ttlColor}>TTL {meta.ttlRemaining}</Badge>
-        <Badge color="gray">{timeAgo(signal.timestamp)} old</Badge>
+      {/* Readiness / Confidence bar */}
+      <div>
+        <div className="flex justify-between items-center mb-2">
+          <span className="text-xs text-slate-500 uppercase tracking-wider">Confidence</span>
+          <span className={`text-sm font-bold ${confColor}`}>{signal.confidence}%</span>
+        </div>
+        <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
+          <div 
+            className={`h-full rounded-full transition-all duration-500 ${
+              signal.confidence >= 70 ? "bg-emerald-500" : 
+              signal.confidence >= 50 ? "bg-yellow-500" : "bg-rose-500"
+            }`}
+            style={{ width: `${signal.confidence}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Divider */}
+      <div className="border-t border-slate-700/50 pt-4">
+        <p className="text-xs text-slate-500 uppercase tracking-wider mb-3">Trade Setup</p>
+        
+        <div className="space-y-3">
+          <div className="flex justify-between">
+            <span className="text-slate-400 text-sm">Direction</span>
+            <span className={`font-bold ${signal.direction === "LONG" ? "text-emerald-400" : "text-rose-400"}`}>
+              {signal.direction}
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400 text-sm">Entry</span>
+            <span className="font-mono text-white font-semibold">{money(signal.entry)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400 text-sm">Stop</span>
+            <span className="font-mono text-rose-400 font-semibold">{money(signal.stop)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400 text-sm">Target</span>
+            <span className="font-mono text-emerald-400 font-semibold">{money(signal.target)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400 text-sm">R:R</span>
+            <span className="font-mono text-yellow-400 font-bold">{signal.rr.toFixed(2)}</span>
+          </div>
+        </div>
       </div>
 
       {/* P&L */}
@@ -217,55 +273,19 @@ function SignalCard({ signal, market, livePrice }: {
         </div>
       )}
 
-      {/* Prices */}
-      <div className="grid grid-cols-3 gap-4 text-sm">
-        <div>
-          <div className="text-slate-500 text-xs mb-1">Entry</div>
-          <div className="font-mono text-white text-base">{money(signal.entry)}</div>
-        </div>
-        <div>
-          <div className="text-slate-500 text-xs mb-1">Stop</div>
-          <div className="font-mono text-rose-400 text-base">{money(signal.stop)}</div>
-        </div>
-        <div>
-          <div className="text-slate-500 text-xs mb-1">Target</div>
-          <div className="font-mono text-emerald-400 text-base">{money(signal.target)}</div>
-        </div>
+      {/* TTL and Age */}
+      <div className="flex gap-3 text-xs">
+        <span className="px-2 py-1 rounded bg-slate-800 text-slate-400">
+          TTL {meta.ttlRemaining}
+        </span>
+        <span className="px-2 py-1 rounded bg-slate-800 text-slate-400">
+          {timeAgo(signal.timestamp)} old
+        </span>
       </div>
 
-      {/* RR & Expected */}
-      <div className="flex justify-between text-sm text-slate-400 pt-1">
-        <span>R:R <span className="font-mono text-yellow-400 font-bold">{signal.rr.toFixed(2)}</span></span>
-        <span>Expected <span className="font-mono text-slate-300">{signal.expectedMove.toFixed(2)}%</span></span>
-      </div>
-
-      {/* Market context — 4H trend + 1D trend, text-sm */}
+      {/* Market context */}
       {market && (
-        <div className="text-sm space-y-2 text-slate-500 border-t border-slate-700/50 pt-3">
-          {/* 4H Trend */}
-          <div className="flex justify-between items-center">
-            <span className="text-slate-400">4H Trend</span>
-            <span className={`font-bold ${
-              trend4hStrength === "STRONG" ? "text-emerald-400" :
-              trend4hStrength === "MEDIUM" ? "text-yellow-400" :
-              "text-slate-400"
-            }`}>
-              {trend4h}
-            </span>
-          </div>
-
-          {/* 1D Trend */}
-          <div className="flex justify-between items-center">
-            <span className="text-slate-400">1D Trend</span>
-            <span className={`font-bold ${
-              trend1d.strength === "STRONG" ? "text-emerald-400" :
-              trend1d.strength === "MEDIUM" ? "text-yellow-400" :
-              "text-slate-400"
-            }`}>
-              {trend1d.direction || "—"} <span className="text-slate-500 font-normal">({trend1d.strength || "—"})</span>
-            </span>
-          </div>
-
+        <div className="text-sm space-y-2 text-slate-500 border-t border-slate-700/50 pt-4">
           {market.distToTrendline !== undefined && (
             <div className="flex justify-between items-center">
               <span className="text-slate-400">Trendline</span>
@@ -292,7 +312,7 @@ function SignalCard({ signal, market, livePrice }: {
   );
 }
 
-// ─── Waiting Card ──────────────────────────────────────────────────────
+// ─── Waiting Card (reference image style) ──────────────────────────────
 
 function WaitingCard({ pair, market, livePrice }: {
   pair: string;
@@ -302,7 +322,6 @@ function WaitingCard({ pair, market, livePrice }: {
   const currentPrice = livePrice ?? market?.price ?? 0;
   const trend1d = parseTrend(market?.trend);
 
-  // Derive 4H trend from EMAs
   const ema8 = market?.ema8;
   const ema21 = market?.ema21;
   const price = market?.price ?? currentPrice;
@@ -317,94 +336,72 @@ function WaitingCard({ pair, market, livePrice }: {
   const trend4h = trend4hDir ? `${trend4hDir} (${trend4hStrength})` : "MIXED";
 
   return (
-    <div className="rounded-xl border border-slate-700 bg-slate-900/50 p-5 space-y-4">
+    <div className="rounded-2xl border border-slate-700/50 bg-slate-900/40 p-6 space-y-5 backdrop-blur-sm">
+      {/* Header */}
       <div className="flex justify-between items-start">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="text-xl font-bold text-slate-300">{pair}/USD</span>
-            {livePrice && <LiveBadge />}
-          </div>
-          <div className="text-3xl font-mono text-slate-300 mt-2">{money(currentPrice)}</div>
+          <h2 className="text-2xl font-bold text-slate-300 tracking-tight">{pair}</h2>
+          <p className="text-slate-500 text-sm mt-1">Price: {money(currentPrice)}</p>
         </div>
-        <Badge color="gray">NO SIGNAL</Badge>
+        <StatusBadge status="WAITING" direction="LONG" />
       </div>
 
-      <div className="text-sm text-slate-500">
-        Waiting for setup...
+      {/* Two column layout */}
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">4H Trend</p>
+          <p className={`text-sm font-semibold ${
+            trend4h.includes("SHORT") ? "text-rose-400/60" : 
+            trend4h.includes("LONG") ? "text-emerald-400/60" : "text-yellow-400/60"
+          }`}>
+            {trend4h}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">1D Trend</p>
+          <p className={`text-sm font-semibold ${
+            trend1d.direction === "SHORT" ? "text-rose-400/60" : 
+            trend1d.direction === "LONG" ? "text-emerald-400/60" : "text-slate-500"
+          }`}>
+            {trend1d.direction || "—"} <span className="text-slate-600 font-normal">({trend1d.strength || "—"})</span>
+          </p>
+        </div>
       </div>
 
+      {/* Readiness bar */}
+      <div>
+        <div className="flex justify-between items-center mb-2">
+          <span className="text-xs text-slate-500 uppercase tracking-wider">Readiness</span>
+          <span className="text-sm font-bold text-slate-500">Waiting...</span>
+        </div>
+        <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
+          <div className="h-full w-0 bg-slate-600 rounded-full" />
+        </div>
+      </div>
+
+      {/* Market context */}
       {market && (
-        <div className="text-sm space-y-2 text-slate-500">
-          {/* 4H Trend */}
-          <div className="flex justify-between items-center">
-            <span className="text-slate-400">4H Trend</span>
-            <span className={`font-bold ${
-              trend4hStrength === "STRONG" ? "text-emerald-400" :
-              trend4hStrength === "MEDIUM" ? "text-yellow-400" :
-              "text-slate-400"
-            }`}>
-              {trend4h}
-            </span>
-          </div>
-
-          {/* 1D Trend */}
-          <div className="flex justify-between items-center">
-            <span className="text-slate-400">1D Trend</span>
-            <span className={`font-bold ${
-              trend1d.strength === "STRONG" ? "text-emerald-400" :
-              trend1d.strength === "MEDIUM" ? "text-yellow-400" :
-              "text-slate-400"
-            }`}>
-              {trend1d.direction || "—"} <span className="text-slate-500 font-normal">({trend1d.strength || "—"})</span>
-            </span>
-          </div>
-
+        <div className="text-sm space-y-2 text-slate-600 border-t border-slate-800/50 pt-4">
           {market.distToTrendline !== undefined && (
             <div className="flex justify-between items-center">
-              <span className="text-slate-400">Trendline</span>
-              <span className={Math.abs(market.distToTrendline) < 1.2 ? "text-emerald-400" : Math.abs(market.distToTrendline) < 3 ? "text-yellow-400" : "text-slate-400"}>
+              <span className="text-slate-500">Trendline</span>
+              <span className={Math.abs(market.distToTrendline) < 1.2 ? "text-emerald-400/60" : Math.abs(market.distToTrendline) < 3 ? "text-yellow-400/60" : "text-slate-500"}>
                 {market.distToTrendline > 0 ? "+" : ""}{market.distToTrendline.toFixed(2)}%
-                {Math.abs(market.distToTrendline) < 1.2 ? " ✓ near" : Math.abs(market.distToTrendline) < 3 ? " ○ approaching" : " ✗ far"}
               </span>
             </div>
           )}
 
           <div className="flex justify-between items-center">
-            <span className="text-slate-400">Stoch K/D</span>
-            <span>
-              {market.stochK?.toFixed(1) ?? "—"} / {market.stochD?.toFixed(1) ?? "—"}
-              {market.stochK !== undefined && market.stochD !== undefined && (
-                market.stochK < 20 ? " (oversold)" :
-                market.stochK > 80 ? " (overbought)" :
-                market.stochK > market.stochD ? " ↑" :
-                market.stochK < market.stochD ? " ↓" :
-                ""
-              )}
-            </span>
+            <span className="text-slate-500">Stoch K/D</span>
+            <span className="font-mono">{market.stochK?.toFixed(1) ?? "—"} / {market.stochD?.toFixed(1) ?? "—"}</span>
           </div>
 
           <div className="flex justify-between items-center">
-            <span className="text-slate-400">ADX</span>
-            <span className={market.adx > 25 ? "text-emerald-400" : market.adx > 20 ? "text-yellow-400" : "text-slate-400"}>
+            <span className="text-slate-500">ADX</span>
+            <span className={market.adx > 25 ? "text-emerald-400/60" : market.adx > 20 ? "text-yellow-400/60" : "text-slate-500"}>
               {market.adx?.toFixed(1) ?? "—"}
-              {market.adx > 25 ? " strong" : market.adx > 20 ? " moderate" : " weak"}
             </span>
           </div>
-
-          {market.ema8 !== undefined && market.ema21 !== undefined && (
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400">EMA 8/21</span>
-              <span className={
-                market.price > market.ema8 && market.price > market.ema21 ? "text-emerald-400" :
-                market.price < market.ema8 && market.price < market.ema21 ? "text-rose-400" :
-                "text-yellow-400"
-              }>
-                {market.price > market.ema8 && market.price > market.ema21 ? "above both" :
-                 market.price < market.ema8 && market.price < market.ema21 ? "below both" :
-                 "mixed"}
-              </span>
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -477,14 +474,18 @@ export default function Dashboard() {
   }
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-2xl font-bold">CX Switch v28</h1>
-        <div className="text-xs text-slate-500">
-          Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
+    <div className="space-y-8">
+      {/* Header */}
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-bold text-white tracking-tight">CX Switch v28</h1>
+          <p className="text-slate-500 text-sm mt-1">
+            Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
+          </p>
         </div>
       </div>
 
+      {/* Cards grid with more spacing */}
       <div className="grid md:grid-cols-3 gap-6">
         {PAIRS.map((pair) => {
           const signal = signals[pair];
