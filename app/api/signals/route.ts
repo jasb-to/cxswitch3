@@ -1,4 +1,4 @@
-// app/api/signals/route.ts — v24.2 "Simple UI"
+// app/api/signals/route.ts — v24.2 "Simple UI" + HYPE
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -10,6 +10,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+// All tracked pairs — single source of truth
+const TRACKED_PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
+
 export async function GET() {
   let signals = await getSignals();
   let marketData = await getMarketData();
@@ -20,7 +23,7 @@ export async function GET() {
   // Fallback: generate market data if KV is empty
   if (!marketData || marketData.length === 0) {
     const freshMarket: any[] = [];
-    for (const pair of ["BTC", "ETH", "SOL"]) {
+    for (const pair of TRACKED_PAIRS) {
       try {
         const [candles1h, candles4h, candles15m] = await Promise.all([
           getCandles(pair, 60), getCandles(pair, 240), getCandles(pair, 15)
