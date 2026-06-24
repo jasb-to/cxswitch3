@@ -7,7 +7,7 @@ import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, g
 import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
-const PAIRS = ["BTC", "ETH", "SOL"] as const;
+const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
 const MIN_CRON_INTERVAL_MS = 14 * 60 * 1000;
 
 function roundPrice(n: number): number {
