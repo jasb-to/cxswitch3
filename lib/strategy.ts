@@ -4,6 +4,8 @@
 // EXIT: Stoch extreme opposite (matches chart)
 // ALERTS: ENTRY_1 and ADD only (ENTRY_2 is internal, no alert)
 
+import { getHysteresisState, setHysteresisState, getTrendlineState, setTrendlineState } from "@/lib/state";
+
 export interface Candle {
   timestamp: number;
   open: number;
@@ -54,6 +56,24 @@ interface TrendlineState {
 
 const trendlineStore: Map<string, TrendlineState> = new Map();
 
+// --- KV PERSISTENCE (serverless-safe) ---
+
+export async function loadTrendlinesFromKV(): Promise<void> {
+  const state = await getTrendlineState();
+  trendlineStore.clear();
+  for (const [pair, data] of Object.entries(state)) {
+    trendlineStore.set(pair, data as TrendlineState);
+  }
+}
+
+export async function saveTrendlinesToKV(): Promise<void> {
+  const state: Record<string, any> = {};
+  for (const [pair, data] of trendlineStore.entries()) {
+    state[pair] = data;
+  }
+  await setTrendlineState(state);
+}
+
 function avg(arr: number[]): number {
   if (!arr.length) return 0;
   return arr.reduce((a, b) => a + b, 0) / arr.length;
@@ -66,7 +86,6 @@ function rsi(closes: number[], period: number = 14): number {
   let avgGain = 0;
   let avgLoss = 0;
   
-  // First average — simple mean of first `period` changes
   for (let i = 1; i <= period; i++) {
     const change = closes[i] - closes[i - 1];
     if (change > 0) avgGain += change;
@@ -75,7 +94,6 @@ function rsi(closes: number[], period: number = 14): number {
   avgGain /= period;
   avgLoss /= period;
   
-  // Wilder smoothing for remaining bars
   for (let i = period + 1; i < closes.length; i++) {
     const change = closes[i] - closes[i - 1];
     const gain = change > 0 ? change : 0;
@@ -98,7 +116,6 @@ function rsiSeries(closes: number[], period: number = 14): number[] {
   let avgGain = 0;
   let avgLoss = 0;
   
-  // First RSI point
   for (let i = 1; i <= period; i++) {
     const change = closes[i] - closes[i - 1];
     if (change > 0) avgGain += change;
@@ -110,7 +127,6 @@ function rsiSeries(closes: number[], period: number = 14): number[] {
   const firstRs = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
   series.push(Math.round(firstRs * 10) / 10);
   
-  // Subsequent points with Wilder smoothing
   for (let i = period + 1; i < closes.length; i++) {
     const change = closes[i] - closes[i - 1];
     const gain = change > 0 ? change : 0;
@@ -354,6 +370,25 @@ interface HysteresisState {
 }
 
 const hysteresisStore: Map<string, HysteresisState> = new Map();
+
+// --- KV PERSISTENCE (serverless-safe) ---
+
+export async function loadHysteresisFromKV(): Promise<void> {
+  const state = await getHysteresisState();
+  hysteresisStore.clear();
+  for (const [pair, data] of Object.entries(state)) {
+    hysteresisStore.set(pair, data as HysteresisState);
+  }
+}
+
+export async function saveHysteresisToKV(): Promise<void> {
+  const state: Record<string, any> = {};
+  for (const [pair, data] of hysteresisStore.entries()) {
+    state[pair] = data;
+  }
+  await setHysteresisState(state);
+}
+
 const HYSTERESIS_BAND = 0.005; // 0.5%
 
 function getHysteresis(pair: string, now: number): HysteresisState {
@@ -581,7 +616,7 @@ export function generateSignal(
     stochK: signal.stochK,
     stochD: signal.stochD,
     trendlinePrice: Math.round(tlPrice * 100) / 100,
-    distToTrendline: Math.round(dist * 10000) / 100,
+    distToTrendline: Math.round(Math.abs(dist) * 10000) / 100,
     ema8: Math.round(ema8_4h[ema8_4h.length - 1] * 100) / 100,
     ema21: Math.round(ema21_4h[ema21_4h.length - 1] * 100) / 100,
   };
@@ -777,7 +812,7 @@ export async function generateSignalCompat(
   
   // Suppress ENTRY_2 alerts — return signal without alerting
   if (result.signal?.scale === "ENTRY_2") {
-    return { ...result, signal: undefined }; // No alert, but market data still returned
+    return { ...result, signal: undefined };
   }
   
   return result;
