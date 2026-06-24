@@ -7,7 +7,7 @@ const PAIRS: Record<Symbol, string> = {
   BTC: "XXBTZUSD",
   ETH: "XETHZUSD",
   SOL: "SOLUSD",
-  HYPE: "HYPEZUSD",
+  HYPE: "HYPEUSD",
 };
 
 const BASE = "https://api.kraken.com/0/public";
