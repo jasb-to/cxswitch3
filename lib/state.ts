@@ -1,4 +1,4 @@
-// lib/state.ts — v23.2 "FIXED: Early TTL 1h + freshness gate"
+// lib/state.ts — v23.2 "FIXED: Early TTL 1h + freshness gate + KV persistence"
 // ============================================================
 
 import { Redis } from "@upstash/redis";
@@ -10,6 +10,8 @@ const MARKET_KEY = "cx_market_v15";
 const ACTIVE_TRADES_KEY = "cx_active_trades_v15";
 const LAST_CRON_RUN_KEY = "cx_last_cron_run_v15";
 const SIGNAL_HISTORY_KEY = "cx_signal_history_v15";
+const HYSTERESIS_KEY = "cx_hysteresis_v15";
+const TRENDLINE_KEY = "cx_trendline_v15";
 
 const SIGNALS_TTL = 6 * 60 * 60;
 const MARKET_TTL = 4 * 60 * 60;
@@ -66,7 +68,7 @@ function safeParseObject(data: unknown): Record<string, any> {
 }
 
 function getSignalMaxAgeHours(signal: any): number {
-  if (signal.type === "EARLY") return 1;      // EARLY: 1 hour max
+  if (signal.type === "EARLY") return 1;
   if (signal.type === "BREAKOUT") return 6;
   if (signal.type === "PULLBACK") return 4;
   if (signal.type === "REVERSAL") return 4;
@@ -200,6 +202,42 @@ export async function setLastCronRun(timestamp: number): Promise<void> {
   }
 }
 
+export async function getHysteresisState(): Promise<Record<string, any>> {
+  try {
+    const data = await redis.get(HYSTERESIS_KEY);
+    return safeParseObject(data);
+  } catch (err) {
+    console.error("[STATE] Hysteresis KV read failed:", err);
+    return {};
+  }
+}
+
+export async function setHysteresisState(state: Record<string, any>): Promise<void> {
+  try {
+    await redis.set(HYSTERESIS_KEY, state, { ex: ACTIVE_TRADES_TTL });
+  } catch (err) {
+    console.error("[STATE] Hysteresis KV write failed:", err);
+  }
+}
+
+export async function getTrendlineState(): Promise<Record<string, any>> {
+  try {
+    const data = await redis.get(TRENDLINE_KEY);
+    return safeParseObject(data);
+  } catch (err) {
+    console.error("[STATE] Trendline KV read failed:", err);
+    return {};
+  }
+}
+
+export async function setTrendlineState(state: Record<string, any>): Promise<void> {
+  try {
+    await redis.set(TRENDLINE_KEY, state, { ex: ACTIVE_TRADES_TTL });
+  } catch (err) {
+    console.error("[STATE] Trendline KV write failed:", err);
+  }
+}
+
 export async function resetAll() {
   try {
     await redis.del(SIGNALS_KEY);
@@ -207,6 +245,8 @@ export async function resetAll() {
     await redis.del(ACTIVE_TRADES_KEY);
     await redis.del(LAST_CRON_RUN_KEY);
     await redis.del(SIGNAL_HISTORY_KEY);
+    await redis.del(HYSTERESIS_KEY);
+    await redis.del(TRENDLINE_KEY);
     console.log("[STATE] All KV data reset");
   } catch (err) {
     console.error("[STATE] Reset failed:", err);
