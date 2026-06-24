@@ -48,7 +48,7 @@ const KRAKEN_PAIRS: Record<string, string> = {
   BTC: "XBTUSD",
   ETH: "ETHUSD",
   SOL: "SOLUSD",
-  HYPE: "HYPEUSDT",
+  HYPE: "HYPEZUSD",
 };
 
 async function fetchKrakenPrice(pair: string): Promise<number | null> {
