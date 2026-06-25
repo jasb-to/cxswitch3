@@ -1,4 +1,4 @@
-// lib/strategy.ts — v28 "Trendline Break: StochRSI Timing + Position Build"
+// lib/strategy.ts — v28.1 "Trendline Break: StochRSI Timing + Position Build"
 // ============================================================
 // Architecture: stateful trendline, hysteresis bands, TV-exact StochRSI
 // EXIT: Stoch extreme opposite (matches chart)
@@ -698,7 +698,8 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
 }
 
 // --- shouldHold ---
-// FIX #1: Exit on Stoch extreme opposite (matches chart)
+// FIXED: Exit on Stoch extreme OPPOSITE to position direction
+// LONG exits when OVERBOUGHT (K > 80), SHORT exits when OVERSOLD (K < 20)
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
@@ -719,13 +720,13 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
     }
   }
   
-  // FIX #1: Exit when Stoch hits extreme opposite (chart behavior)
+  // FIXED: Exit when Stoch hits extreme opposite to position
   const closes4h = candles4h.map(c => c.close);
   const stoch = stochRsi(closes4h);
   
   const stochExtremeOpposite = signal.direction === "LONG" 
-    ? stoch.k < 20   // was long, now oversold = exit
-    : stoch.k > 80;  // was short, now overbought = exit
+    ? stoch.k > 80   // LONG exit: overbought (momentum exhausted)
+    : stoch.k < 20;  // SHORT exit: oversold (momentum exhausted)
   
   if (stochExtremeOpposite) {
     return { shouldHold: false, reason: "stoch_extreme_opposite_exit" };
