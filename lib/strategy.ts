@@ -1,5 +1,6 @@
-// lib/strategy.ts — v28.1 "Trendline Break: StochRSI Timing + Position Build"
+// lib/strategy.ts — v28.2 "Trendline Break: StochRSI Timing + Position Build"
 // ============================================================
+// FIX: ADD signals now blocked at Stoch extremes (no buying tops, no selling bottoms)
 // Architecture: stateful trendline, hysteresis bands, TV-exact StochRSI
 // EXIT: Stoch extreme opposite (matches chart)
 // ALERTS: ENTRY_1 and ADD only (ENTRY_2 is internal, no alert)
@@ -478,6 +479,9 @@ export function generateSignal(
   const adxVal = adx(candles4h);
   const adxStrong = adxVal > 20;
   
+  // FIX v28.2: Block ADD signals at Stoch extremes (no buying tops, no selling bottoms)
+  const stochNotExtreme = t1d.direction === "LONG" ? stoch.k < 80 : stoch.k > 20;
+  
   // Determine raw signal type
   let rawType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
   
@@ -485,7 +489,7 @@ export function generateSignal(
     rawType = "ENTRY_1";
   } else if (nearTrendline && stochTurning && !stochExtreme) {
     rawType = "ENTRY_2";
-  } else if (beyondTrendline && confirming && emaAligned) {
+  } else if (beyondTrendline && confirming && emaAligned && stochNotExtreme) {
     if (volUp || stochMomentum || adxStrong) {
       rawType = "ADD";
     }
@@ -525,6 +529,7 @@ export function generateSignal(
     else if (beyondTrendline) stateParts.push("beyond TL");
     else stateParts.push("far from TL");
     stateParts.push(`Stoch K${stoch.k} D${stoch.d}`);
+    if (!stochNotExtreme) stateParts.push("Stoch extreme");
     stateParts.push("No signal");
     debug.push(`State: ${stateParts.join(" | ")}`);
     return { debug };
