@@ -776,3 +776,179 @@ export function getMarketSnapshot(
     ema21: Math.round(ema(candles4h.map(c => c.close), 21).slice(-1)[0] * 100) / 100,
   };
 }
+
+// --- VALIDITY ---
+export interface ValidityCheck {
+  valid: boolean;
+  reason: string;
+  exited: boolean;
+}
+
+export function isSignalStillValid(signal: Signal, currentPrice: number, now: number = Date.now()): ValidityCheck {
+  const ageMs = now - signal.timestamp;
+  
+  const maxAge = signal.type === "ACCUMULATE" ? 24 * 60 * 60 * 1000 : 4 * 60 * 60 * 1000;
+  
+  if (ageMs > maxAge) {
+    return { valid: false, reason: "expired_ttl", exited: true };
+  }
+  
+  const entryBuffer = signal.type === "ACCUMULATE" ? 1.02 : 1.005;
+  if (signal.direction === "LONG" && currentPrice > signal.entry * entryBuffer) {
+    return { valid: false, reason: "missed_entry", exited: true };
+  }
+  if (signal.direction === "SHORT" && currentPrice < signal.entry * (2 - entryBuffer)) {
+    return { valid: false, reason: "missed_entry", exited: true };
+  }
+  
+  if (signal.direction === "LONG" && currentPrice <= signal.stop) {
+    return { valid: false, reason: "sl_hit", exited: true };
+  }
+  if (signal.direction === "SHORT" && currentPrice >= signal.stop) {
+    return { valid: false, reason: "sl_hit", exited: true };
+  }
+  
+  if (signal.direction === "LONG" && currentPrice >= signal.target) {
+    return { valid: false, reason: "tp_hit", exited: true };
+  }
+  if (signal.direction === "SHORT" && currentPrice <= signal.target) {
+    return { valid: false, reason: "tp_hit", exited: true };
+  }
+  
+  return { valid: true, reason: "active", exited: false };
+}
+
+// --- shouldHold ---
+// FIXED: Exit on Stoch extreme OPPOSITE to position direction
+// LONG exits when OVERBOUGHT (K > 80), SHORT exits when OVERSOLD (K < 20)
+export interface HoldResult {
+  shouldHold: boolean;
+  reason: string;
+}
+
+export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, now?: number): HoldResult {
+  const candles1d = aggregateTo1D(candles4h);
+  const t1d = trend1D(candles1d);
+  const trendReversed = (signal.direction === "LONG" && t1d.direction === "SHORT") ||
+                        (signal.direction === "SHORT" && t1d.direction === "LONG");
+  
+  if (trendReversed) {
+    const inProfit = signal.direction === "LONG" 
+      ? currentPrice > signal.entry 
+      : currentPrice < signal.entry;
+    if (!inProfit) {
+      return { shouldHold: false, reason: "trend_reversed_unprofitable" };
+    }
+  }
+  
+  // FIXED: Exit when Stoch hits extreme opposite to position
+  const closes4h = candles4h.map(c => c.close);
+  const stoch = stochRsi(closes4h);
+  
+  const stochExtremeOpposite = signal.direction === "LONG" 
+    ? stoch.k > 80   // LONG exit: overbought (momentum exhausted)
+    : stoch.k < 20;  // SHORT exit: oversold (momentum exhausted)
+  
+  if (stochExtremeOpposite) {
+    return { shouldHold: false, reason: "stoch_extreme_opposite_exit" };
+  }
+  
+  const validity = isSignalStillValid(signal, currentPrice, now);
+  return { shouldHold: validity.valid, reason: validity.reason };
+}
+
+// --- filterExpiredSignals ---
+export function filterExpiredSignals(
+  signals: Signal[],
+  currentPrices: Record<string, number>,
+  now?: number
+): { active: Signal[]; exited: { signal: Signal; reason: string }[] } {
+  const active: Signal[] = [];
+  const exited: { signal: Signal; reason: string }[] = [];
+  
+  for (const signal of signals) {
+    const price = currentPrices[signal.pair];
+    if (price === undefined) {
+      active.push(signal);
+      continue;
+    }
+    const check = isSignalStillValid(signal, price, now);
+    if (check.valid) active.push(signal);
+    else exited.push({ signal, reason: check.reason });
+  }
+  
+  return { active, exited };
+}
+
+// --- checkTradeStatus ---
+export type TradeStatus = "ACTIVE" | "TP_HIT" | "SL_HIT" | "EXPIRED";
+
+export function checkTradeStatus(signal: Signal, currentPrice: number, now: number = Date.now()): TradeStatus {
+  const validity = isSignalStillValid(signal, currentPrice, now);
+  
+  if (!validity.valid && validity.reason === "expired_ttl") {
+    return "EXPIRED";
+  }
+  
+  if (signal.direction === "LONG") {
+    if (currentPrice >= signal.target) return "TP_HIT";
+    if (currentPrice <= signal.stop) return "SL_HIT";
+  } else {
+    if (currentPrice <= signal.target) return "TP_HIT";
+    if (currentPrice >= signal.stop) return "SL_HIT";
+  }
+  
+  return "ACTIVE";
+}
+
+// ============================================================
+// v28 COMPATIBILITY LAYER (DO NOT REMOVE)
+// ============================================================
+
+export async function getMonitorState(pair: string): Promise<any | undefined> {
+  return undefined;
+}
+
+export async function clearMonitorState(pair: string): Promise<void> {
+  return;
+}
+
+export async function setMonitorState(pair: string, state: any): Promise<void> {
+  return;
+}
+
+export function setRedisClient(_: any): void {
+  return;
+}
+
+// FIX #2: Only alert on ENTRY_1 and ADD. ENTRY_2 is internal (no alert).
+export async function generateSignalCompat(
+  pair: string,
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candles15m: Candle[],
+  activeTrades?: Record<string, any>,
+  currentPrice?: number
+): Promise<SignalResult> {
+  const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
+  
+  // Suppress ENTRY_2 alerts — return signal without alerting
+  if (result.signal?.scale === "ENTRY_2") {
+    return { ...result, signal: undefined };
+  }
+  
+  return result;
+}
+
+export function isSignalStillValidBool(signal: Signal, currentPrice: number): boolean {
+  return isSignalStillValid(signal, currentPrice).valid;
+}
+
+export function shouldHoldCompat(
+  signal: Signal,
+  candles4h: Candle[],
+  candles1h: Candle[],
+  currentPrice: number
+): HoldResult {
+  return shouldHold(signal, candles4h, currentPrice);
+}
