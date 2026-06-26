@@ -1,9 +1,7 @@
-// lib/strategy.ts — v28.2 "Trendline Break: StochRSI Timing + Position Build"
+// lib/strategy.ts — v28.3 "Pivot Targets + Stoch Extreme Block"
 // ============================================================
-// FIX: ADD signals now blocked at Stoch extremes (no buying tops, no selling bottoms)
-// Architecture: stateful trendline, hysteresis bands, TV-exact StochRSI
-// EXIT: Stoch extreme opposite (matches chart)
-// ALERTS: ENTRY_1 and ADD only (ENTRY_2 is internal, no alert)
+// FIX: All signal types now use swing high/low pivots as primary targets
+// FIX: ADD signals blocked at Stoch extremes (no buying tops/selling bottoms)
 
 import { getHysteresisState, setHysteresisState, getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -267,6 +265,29 @@ function findPivots(candles: Candle[], direction: "LONG" | "SHORT"): { index: nu
   return pivots;
 }
 
+// --- FIND ALL SWING HIGHS/LOWS (for targets) ---
+function findSwingHighs(candles: Candle[]): { price: number; index: number }[] {
+  const highs: { price: number; index: number }[] = [];
+  for (let i = 3; i < candles.length - 3; i++) {
+    const c = candles[i];
+    if (c.high > candles[i-1].high && c.high > candles[i-2].high && c.high > candles[i+1].high && c.high > candles[i+2].high) {
+      highs.push({ price: c.high, index: i });
+    }
+  }
+  return highs;
+}
+
+function findSwingLows(candles: Candle[]): { price: number; index: number }[] {
+  const lows: { price: number; index: number }[] = [];
+  for (let i = 3; i < candles.length - 3; i++) {
+    const c = candles[i];
+    if (c.low < candles[i-1].low && c.low < candles[i-2].low && c.low < candles[i+1].low && c.low < candles[i+2].low) {
+      lows.push({ price: c.low, index: i });
+    }
+  }
+  return lows;
+}
+
 // --- STATEFUL TRENDLINE ---
 function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number; age: number } | null {
   const len = candles.length;
@@ -406,6 +427,58 @@ function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price:
     lastSignalPrice: price,
     lockUntil: now + lockDuration,
   });
+}
+
+// --- PIVOT-BASED TARGET CALCULATION ---
+function getPivotTarget(
+  candles4h: Candle[],
+  direction: "LONG" | "SHORT",
+  entry: number,
+  sl: number,
+  minRR: number = MIN_RR
+): { target: number; source: string } | null {
+  const swingHighs = findSwingHighs(candles4h);
+  const swingLows = findSwingLows(candles4h);
+  
+  if (direction === "LONG") {
+    // Find nearest swing high above entry
+    const validHighs = swingHighs.filter(h => h.price > entry).sort((a, b) => a.price - b.price);
+    if (validHighs.length > 0) {
+      const nearestHigh = validHighs[0].price;
+      const rr = (nearestHigh - entry) / (entry - sl);
+      if (rr >= minRR) {
+        return { target: nearestHigh, source: "pivot_high" };
+      }
+    }
+    // Fallback: next swing high or ATR×3
+    const nextHigh = swingHighs.length > 0 ? Math.max(...swingHighs.map(h => h.price)) : 0;
+    if (nextHigh > entry) {
+      const rr = (nextHigh - entry) / (entry - sl);
+      if (rr >= minRR * 0.8) { // Allow slightly lower RR for extended pivot
+        return { target: nextHigh, source: "extended_pivot_high" };
+      }
+    }
+  } else {
+    // Find nearest swing low below entry
+    const validLows = swingLows.filter(l => l.price < entry).sort((a, b) => b.price - a.price);
+    if (validLows.length > 0) {
+      const nearestLow = validLows[0].price;
+      const rr = (entry - nearestLow) / (sl - entry);
+      if (rr >= minRR) {
+        return { target: nearestLow, source: "pivot_low" };
+      }
+    }
+    // Fallback: next swing low or ATR×3
+    const nextLow = swingLows.length > 0 ? Math.min(...swingLows.map(l => l.price)) : Infinity;
+    if (nextLow < entry) {
+      const rr = (entry - nextLow) / (sl - entry);
+      if (rr >= minRR * 0.8) {
+        return { target: nextLow, source: "extended_pivot_low" };
+      }
+    }
+  }
+  
+  return null;
 }
 
 // --- MAIN SIGNAL ---
@@ -553,6 +626,7 @@ export function generateSignal(
   let type: "ACCUMULATE" | "BREAKOUT";
   let confidence: number;
   let expectedMove: number;
+  let targetSource: string = "atr_fallback";
   
   if (finalType === "ENTRY_1" || finalType === "ENTRY_2") {
     type = "ACCUMULATE";
@@ -560,7 +634,17 @@ export function generateSignal(
     sl = t1d.direction === "LONG" 
       ? Math.min(swingLow, entry - atrVal * 2) 
       : Math.max(swingHigh, entry + atrVal * 2);
-    tp = t1d.direction === "LONG" ? entry + atrVal * 5 : entry - atrVal * 5;
+    
+    // FIX v28.3: Pivot-based targets for ACCUMULATE
+    const pivotTarget = getPivotTarget(candles4h, t1d.direction, entry, sl);
+    if (pivotTarget) {
+      tp = pivotTarget.target;
+      targetSource = pivotTarget.source;
+    } else {
+      tp = t1d.direction === "LONG" ? entry + atrVal * 3 : entry - atrVal * 3;
+      targetSource = "atr_x3";
+    }
+    
     confidence = finalType === "ENTRY_1" ? 50 : 60;
     expectedMove = Math.abs(tp - entry) / entry * 100;
   } else {
@@ -570,13 +654,20 @@ export function generateSignal(
       ? Math.min(tlPrice * 0.995, entry - atrVal * 1.5) 
       : Math.max(tlPrice * 1.005, entry + atrVal * 1.5);
     
-    const minTarget = t1d.direction === "LONG"
-      ? entry + (entry - sl) * MIN_RR
-      : entry - (sl - entry) * MIN_RR;
-    
-    tp = t1d.direction === "LONG" 
-      ? Math.max(swingHigh, minTarget) 
-      : Math.min(swingLow, minTarget);
+    // FIX v28.3: Pivot-based targets for BREAKOUT
+    const pivotTarget = getPivotTarget(candles4h, t1d.direction, entry, sl);
+    if (pivotTarget) {
+      tp = pivotTarget.target;
+      targetSource = pivotTarget.source;
+    } else {
+      const minTarget = t1d.direction === "LONG"
+        ? entry + (entry - sl) * MIN_RR
+        : entry - (sl - entry) * MIN_RR;
+      tp = t1d.direction === "LONG" 
+        ? Math.max(swingHigh, minTarget) 
+        : Math.min(swingLow, minTarget);
+      targetSource = "swing_or_minRR";
+    }
     
     confidence = 85;
     expectedMove = Math.abs(tp - entry) / entry * 100;
@@ -584,7 +675,7 @@ export function generateSignal(
   
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
   if (rr < MIN_RR) {
-    debug.push(`R:R ${rr.toFixed(2)} < ${MIN_RR}`);
+    debug.push(`R:R ${rr.toFixed(2)} < ${MIN_RR} (target: ${targetSource})`);
     return { debug };
   }
   
@@ -606,7 +697,7 @@ export function generateSignal(
     stochK: stoch.k,
     stochD: stoch.d,
     expectedMove: Math.round(expectedMove * 10) / 10,
-    reason: `${t1d.direction} ${type} ${finalType} | 1D ${t1d.strength} | Stoch K${stoch.k} D${stoch.d} | ${finalType === "ADD" ? "Break+EMA" + (volUp ? "+Vol" : "") + (stochMomentum ? "+Stoch" : "") + (adxStrong ? "+ADX" : "") : "TL approach"} | RR ${rr.toFixed(2)}`,
+    reason: `${t1d.direction} ${type} ${finalType} | 1D ${t1d.strength} | Stoch K${stoch.k} D${stoch.d} | ${finalType === "ADD" ? "Break+EMA" + (volUp ? "+Vol" : "") + (stochMomentum ? "+Stoch" : "") + (adxStrong ? "+ADX" : "") : "TL approach"} | TP:${targetSource} | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
   };
@@ -626,7 +717,7 @@ export function generateSignal(
     ema21: Math.round(ema21_4h[ema21_4h.length - 1] * 100) / 100,
   };
   
-  debug.push(`SIGNAL: ${type} ${finalType} ${signal.direction} ${signal.entry} | TP ${signal.target} | SL ${signal.stop} | RR ${signal.rr}`);
+  debug.push(`SIGNAL: ${type} ${finalType} ${signal.direction} ${signal.entry} | TP ${signal.target} (${targetSource}) | SL ${signal.stop} | RR ${signal.rr}`);
   
   return { signal, market, debug };
 }
