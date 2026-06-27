@@ -1,4 +1,4 @@
-// app/api/signals/route.ts — v24.2 "Simple UI" + HYPE
+// app/api/signals/route.ts — v30.1 "Clean Slate UI"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -10,7 +10,6 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-// All tracked pairs — single source of truth
 const TRACKED_PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
 
 export async function GET() {
@@ -25,11 +24,9 @@ export async function GET() {
     const freshMarket: any[] = [];
     for (const pair of TRACKED_PAIRS) {
       try {
-        const [candles1h, candles4h, candles15m] = await Promise.all([
-          getCandles(pair, 60), getCandles(pair, 240), getCandles(pair, 15)
-        ]);
-        if (candles1h?.length && candles4h?.length && candles15m?.length) {
-          const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+        const candles4h = await getCandles(pair, 240);
+        if (candles4h?.length) {
+          const snapshot = getMarketSnapshot(pair, candles4h);
           freshMarket.push(snapshot);
           currentPrices[pair] = snapshot.price;
         }
