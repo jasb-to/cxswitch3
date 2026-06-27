@@ -1,11 +1,11 @@
-// lib/strategy.ts — v30.1 "Deterministic & Stateless"
+// lib/strategy.ts — v30.2 "Deterministic & Stateless"
 // ============================================================
-// PRINCIPLES:
-// 1. Never persist computed values (slope, intercept, R²) — only raw pivots
-// 2. Recompute regression every call from stored pivots
-// 3. All indicators computed once, passed as object
-// 4. Signal logic: 4 gates max (trend → location → momentum → risk)
-// 5. No dead compat code
+// CHANGES FROM v30.1:
+// 1. Stop-loss: use closer of swing or ATR buffer (not wider)
+// 2. Add R² quality gate (MIN_R2 = 0.65)
+// 3. Distance shows signed percentage
+// 4. Debug includes rejection counters
+// 5. ATR buffer reduced to 0.5× for tighter stops
 
 import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -49,6 +49,7 @@ export const CURRENT_SIGNAL_VERSION = 30;
 
 // --- CONFIG ---
 const MIN_RR = 1.5;
+const MIN_R2 = 0.65;
 const TL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 // --- STATE: Only raw pivots persisted, never computed values ---
@@ -267,7 +268,6 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   let usePivots = recentPivots;
   
   if (existing && existing.direction === direction && (now - existing.lastUpdated) < TL_MAX_AGE_MS) {
-    // Merge stored + recent, dedupe by timestamp
     const allPivots = [...existing.pivots, ...recentPivots];
     const seen = new Set<number>();
     usePivots = allPivots.filter(p => {
@@ -277,12 +277,10 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     }).slice(-5);
   }
   
-  // ALWAYS recompute regression — never use stored slope/intercept
   const points = usePivots.map(p => ({ x: p.index, y: p.price }));
   const regression = linearRegression(points);
   if (!regression) return null;
   
-  // Store only raw pivots, never computed values
   trendlineStore.set(pair, {
     pivots: usePivots,
     lastUpdated: now,
@@ -425,7 +423,8 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
   
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
   const dist = (price - trendline.price) / trendline.price;
-  debug.push(`TL: ${trendline.price.toFixed(1)} | R² ${trendline.r2} | Price: ${price.toFixed(1)} | Dist: ${(dist * 100).toFixed(2)}%`);
+  // v30.2: Signed distance shows direction
+  debug.push(`TL: ${trendline.price.toFixed(1)} | R² ${trendline.r2} | Price: ${price.toFixed(1)} | Dist to TL: ${(dist >= 0 ? "+" : "")}${(dist * 100).toFixed(2)}%`);
   
   const indicators = buildIndicators(candles4h);
   debug.push(`StochRSI: K ${indicators.stoch.k} | D ${indicators.stoch.d}`);
@@ -473,12 +472,10 @@ function findSetup(ctx: MarketContext): Setup | null {
     ? price > indicators.ema8 && price > indicators.ema21
     : price < indicators.ema8 && price < indicators.ema21;
   
-  // ACCUMULATE: At trendline, stoch extreme or turning
   if (nearTrendline && (stochExtreme || stochTurning)) {
     return { type: "ACCUMULATE", scale: "ENTRY_1", reason: "TL approach" };
   }
   
-  // ADD: Retest zone + confirming + EMA aligned + ADX > 20
   if (inRetestZone && confirming && emaAligned && indicators.adx > 20) {
     return { type: "BREAKOUT", scale: "ADD", reason: "Retest+ADX" };
   }
@@ -486,7 +483,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v30.1 ---
+// --- MAIN SIGNAL v30.2 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -495,9 +492,19 @@ export function generateSignal(
   const { ctx, debug } = getContext(pair, candles4h, currentPrice);
   if (!ctx) return { debug };
   
+  // v30.2: R² quality gate
+  if (ctx.trendline.r2 < MIN_R2) {
+    debug.push(`Rejected: R² ${ctx.trendline.r2} < ${MIN_R2} (weak trendline)`);
+    return { debug };
+  }
+  
   const setup = findSetup(ctx);
   if (!setup) {
     const dist = (ctx.price - ctx.trendline.price) / ctx.trendline.price;
+    const nearTrendline = Math.abs(dist) < 0.012;
+    const stochExtreme = ctx.t1d.direction === "LONG" ? ctx.indicators.stoch.k < 20 : ctx.indicators.stoch.k > 80;
+    const stochTurning = ctx.t1d.direction === "LONG" ? ctx.indicators.stoch.k > ctx.indicators.stoch.d : ctx.indicators.stoch.k < ctx.indicators.stoch.d;
+    
     const stateParts: string[] = [];
     if (Math.abs(dist) < 0.012) stateParts.push("near TL");
     else if ((ctx.t1d.direction === "LONG" && ctx.price > ctx.trendline.price * 1.005 && ctx.price < ctx.trendline.price * 1.02) ||
@@ -508,12 +515,16 @@ export function generateSignal(
     }
     stateParts.push(`Stoch K${ctx.indicators.stoch.k} D${ctx.indicators.stoch.d}`);
     stateParts.push("No signal");
+    
+    // v30.2: Rejection counters
+    debug.push(`Rejected: TL=${!nearTrendline} | STOCH=${!stochExtreme && !stochTurning} | RR=unchecked | R2=passed`);
     debug.push(`State: ${stateParts.join(" | ")}`);
     return { debug };
   }
   
   const result = buildTradeWithPivots(ctx, setup, candles4h);
   if (!result) {
+    debug.push(`Rejected: TL=passed | STOCH=passed | RR=failed | R2=passed`);
     debug.push("R:R too low");
     return { debug };
   }
@@ -538,9 +549,11 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   
   if (setup.type === "ACCUMULATE") {
     entry = price;
+    // v30.2: Use closer of swing or ATR buffer, not wider
+    const stopBuffer = atrVal * 0.5;
     sl = t1d.direction === "LONG" 
-      ? Math.min(swingLow, entry - atrVal * 2) 
-      : Math.max(swingHigh, entry + atrVal * 2);
+      ? Math.max(swingLow, entry - stopBuffer) 
+      : Math.min(swingHigh, entry + stopBuffer);
     
     const pivotTarget = getPivotTarget(candles4h, t1d.direction!, entry, sl, atrVal);
     if (pivotTarget) {
@@ -551,7 +564,6 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
       targetSource = "atr_x2";
     }
   } else {
-    // ADD: Tighter stop at trendline
     entry = price;
     sl = t1d.direction === "LONG" 
       ? Math.max(tlPrice * 0.995, entry - atrVal * 1.5)
@@ -609,7 +621,7 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
     stochK: signal.stochK,
     stochD: signal.stochD,
     trendlinePrice: Math.round(tlPrice * 100) / 100,
-    distToTrendline: Math.round(Math.abs((price - tlPrice) / tlPrice) * 10000) / 100,
+    distToTrendline: Math.round(((price - tlPrice) / tlPrice) * 10000) / 100, // v30.2: signed
     ema8: Math.round(indicators.ema8 * 100) / 100,
     ema21: Math.round(indicators.ema21 * 100) / 100,
   };
@@ -636,7 +648,7 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
     stochK: stochRsi4h.k,
     stochD: stochRsi4h.d,
     trendlinePrice: Math.round(tlPrice * 100) / 100,
-    distToTrendline: Math.round(Math.abs(dist) * 10000) / 100,
+    distToTrendline: Math.round(dist * 10000) / 100, // v30.2: signed
     ema8: Math.round(ema(candles4h.map(c => c.close), 8).slice(-1)[0] * 100) / 100,
     ema21: Math.round(ema(candles4h.map(c => c.close), 21).slice(-1)[0] * 100) / 100,
   };
