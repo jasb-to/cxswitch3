@@ -1,10 +1,10 @@
-// app/api/cron/route.ts — v30.1 "Clean Slate Cron"
+// app/api/cron/route.ts — v30.2 "Diagnostic Logging"
 // ============================================================
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
 import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot, loadTrendlinesFromKV, saveTrendlinesToKV } from "@/lib/strategy";
-import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory } from "@/lib/state";
+import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory, setCronLog, getCronLogs } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
@@ -22,8 +22,17 @@ export const revalidate = 0;
 
 export async function GET(request: Request) {
   const runStart = Date.now();
-  console.log("========================================");
-  console.log(`[CRON] Started at ${new Date(runStart).toISOString()}`);
+  const runId = `${runStart}-${Math.random().toString(36).slice(2, 8)}`;
+  const logs: string[] = [];
+  
+  const log = (msg: string) => {
+    const line = `[${new Date().toISOString()}] ${msg}`;
+    logs.push(line);
+    console.log(line);
+  };
+
+  log("========================================");
+  log(`[CRON] Started runId=${runId}`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -32,36 +41,52 @@ export async function GET(request: Request) {
 
   const isAuthorized = querySecret === process.env.CRON_SECRET || authHeader === `Bearer ${process.env.CRON_SECRET}`;
   if (!isAuthorized) {
+    log("[CRON] Unauthorized");
+    await persistLog(runId, logs, "unauthorized");
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const lastRun = await getLastCronRun();
   if (!forceRun && (runStart - lastRun) < MIN_CRON_INTERVAL_MS) {
+    log(`[CRON] Rate limited, lastRun=${lastRun}, diff=${runStart - lastRun}ms`);
+    await persistLog(runId, logs, "rate_limited");
     return NextResponse.json({ success: true, skipped: true, reason: "rate_limited" });
   }
   await setLastCronRun(runStart);
+  log(`[CRON] lastRun set, force=${forceRun}`);
 
   // Load persisted state (serverless-safe)
+  log("[CRON] Loading trendlines from KV...");
   await loadTrendlinesFromKV();
+  log("[CRON] Trendlines loaded");
 
   let activeTrades = await getActiveTrades();
-  console.log(`[STATE] Active trades:`, Object.keys(activeTrades).join(", ") || "none");
+  log(`[STATE] Active trades: ${Object.keys(activeTrades).join(", ") || "none"}`);
 
   const existingSignals = await getSignals();
   const currentPrices: Record<string, number> = {};
 
+  log("[CRON] Fetching current prices...");
   for (const pair of PAIRS) {
     try {
       const candles = await getCandles(pair as any, 240);
-      if (candles?.length) currentPrices[pair] = candles[candles.length - 1].close;
-    } catch (e) { console.log(`[PRICE] ${pair} — failed`); }
+      if (candles?.length) {
+        currentPrices[pair] = candles[candles.length - 1].close;
+        log(`[PRICE] ${pair} = ${currentPrices[pair]}`);
+      } else {
+        log(`[PRICE] ${pair} — no candles returned`);
+      }
+    } catch (e: any) {
+      log(`[PRICE] ${pair} — ERROR: ${e.message}`);
+    }
   }
 
+  log(`[CRON] Filtering ${existingSignals.length} existing signals...`);
   const { active: validSignals, exited: preExited } = filterExpiredSignals(existingSignals, currentPrices, runStart);
-  console.log(`[STATE] Valid: ${validSignals.length}, Expired: ${preExited.length}`);
+  log(`[STATE] Valid: ${validSignals.length}, Expired: ${preExited.length}`);
 
   for (const { signal, reason } of preExited) {
-    console.log(`[EXIT] ${signal.pair} — ${reason}`);
+    log(`[EXIT] ${signal.pair} — ${reason}`);
     await addSignalToHistory(signal, reason as any, currentPrices[signal.pair] || signal.entry);
     if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
   }
@@ -71,15 +96,18 @@ export async function GET(request: Request) {
   const alerts: any[] = [];
 
   for (const pair of PAIRS) {
+    log(`[PAIR] ${pair} — starting processing`);
     try {
+      log(`[FETCH] ${pair} — requesting 1H/4H/15M candles`);
       const [candles1h, candles4h, candles15m] = await Promise.all([
         getCandles(pair as any, 60),
         getCandles(pair as any, 240),
         getCandles(pair as any, 15)
       ]);
+      log(`[FETCH] ${pair} — received: 1H=${candles1h?.length}, 4H=${candles4h?.length}, 15M=${candles15m?.length}`);
 
       if (!candles1h || !candles4h || !candles15m || candles4h.length < 30) {
-        console.log(`[PAIR] ${pair} — NO SIGNAL (Insufficient candle data: 1H=${candles1h?.length}, 4H=${candles4h?.length}, 15M=${candles15m?.length})`);
+        log(`[PAIR] ${pair} — SKIP: insufficient candles`);
         alerts.push({ pair, status: "skip", reason: "insufficient_candles", counts: { h1: candles1h?.length, h4: candles4h?.length, m15: candles15m?.length } });
         continue;
       }
@@ -89,9 +117,10 @@ export async function GET(request: Request) {
       const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
 
       if (existingForPair) {
+        log(`[PAIR] ${pair} — has existing signal ${existingForPair.id}`);
         const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
         if (!validity.valid) {
-          console.log(`[PAIR] ${pair} — INVALID: ${validity.reason}`);
+          log(`[PAIR] ${pair} — INVALID: ${validity.reason}`);
           await addSignalToHistory(existingForPair, validity.reason as any, currentPrice);
           if (activeTrades[pair]) delete activeTrades[pair];
           validSignals.splice(existingIdx, 1);
@@ -99,13 +128,13 @@ export async function GET(request: Request) {
         } else {
           const holdResult = shouldHold(existingForPair, candles4h, currentPrice, runStart);
           if (!holdResult.shouldHold) {
-            console.log(`[PAIR] ${pair} — HOLD EXIT: ${holdResult.reason}`);
+            log(`[PAIR] ${pair} — HOLD EXIT: ${holdResult.reason}`);
             await addSignalToHistory(existingForPair, "hold_exit", currentPrice);
             if (activeTrades[pair]) delete activeTrades[pair];
             validSignals.splice(existingIdx, 1);
             alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
           } else {
-            console.log(`[PAIR] ${pair} — Still valid, skipping`);
+            log(`[PAIR] ${pair} — Still valid, skipping generation`);
             const result = generateSignal(pair, candles4h, currentPrice);
             let market = result.market;
             if (!market) market = getMarketSnapshot(pair, candles4h);
@@ -115,19 +144,20 @@ export async function GET(request: Request) {
         }
       }
 
+      log(`[PAIR] ${pair} — generating signal...`);
       const result = generateSignal(pair, candles4h, currentPrice);
       let market = result.market;
       if (!market) market = getMarketSnapshot(pair, candles4h);
       if (market) marketDataList.push(market);
 
       if (!result.signal) {
-        console.log(`[PAIR] ${pair} — NO SIGNAL (${result.debug?.join(" | ")})`);
+        log(`[PAIR] ${pair} — NO SIGNAL (${result.debug?.join(" | ")})`);
         alerts.push({ pair, status: "no_signal", debug: result.debug?.join(" | ") });
         continue;
       }
 
       const signal = result.signal;
-      console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} ${signal.scale || ""} ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`);
+      log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} ${signal.scale || ""} entry=${signal.entry} TP=${signal.target} SL=${signal.stop} RR=${signal.rr}`);
       newSignals.push(signal);
 
       try {
@@ -148,32 +178,55 @@ export async function GET(request: Request) {
           reason: signal.reason,
           updatedAt: new Date(signal.timestamp).toISOString(),
         });
-        console.log(`[ALERT] ${pair} — SENT`);
+        log(`[ALERT] ${pair} — SENT`);
         activeTrades[pair] = { direction: signal.direction, timestamp: Date.now(), entry: signal.entry, stop: signal.stop, target: signal.target, id: signal.id, scale: signal.scale };
         alerts.push({ pair, status: "sent" });
-      } catch (err) {
-        console.error(`[ALERT] ${pair} — FAILED:`, err);
-        alerts.push({ pair, status: "alert_failed", error: String(err) });
+      } catch (err: any) {
+        log(`[ALERT] ${pair} — FAILED: ${err.message}`);
+        alerts.push({ pair, status: "alert_failed", error: err.message });
       }
-    } catch (err) {
-      console.error(`[PAIR] ${pair} — ERROR:`, err);
-      alerts.push({ pair, status: "error", error: String(err) });
+    } catch (err: any) {
+      log(`[PAIR] ${pair} — ERROR: ${err.message}`);
+      alerts.push({ pair, status: "error", error: err.message });
     }
   }
 
+  log("[CRON] Merging signals...");
   const merged = [...validSignals];
   for (const s of newSignals) {
     const idx = merged.findIndex((x: any) => x.pair === s.pair);
     if (idx >= 0) merged[idx] = s; else merged.push(s);
   }
 
-  // Persist state for next serverless invocation
+  log("[CRON] Saving trendlines to KV...");
   await saveTrendlinesToKV();
 
+  log("[CRON] Persisting state...");
   await Promise.all([setSignals(merged), setMarketData(marketDataList), setActiveTrades(activeTrades)]);
 
-  console.log(`[CRON] Done. signals=${merged.length}, marketData=${marketDataList.length}, exited=${preExited.length}`);
-  console.log("========================================");
+  log(`[CRON] Done. signals=${merged.length}, marketData=${marketDataList.length}, exited=${preExited.length}`);
+  log("========================================");
 
-  return NextResponse.json({ success: true, signals: merged.length, marketData: marketDataList.length, exited: preExited.length, alerts });
+  const response = { success: true, signals: merged.length, marketData: marketDataList.length, exited: preExited.length, alerts, runId };
+  await persistLog(runId, logs, "complete", response);
+  return NextResponse.json(response);
+}
+
+// Persist full log to KV for diagnostic visibility
+async function persistLog(runId: string, logs: string[], status: string, response?: any) {
+  try {
+    const existing = await getCronLogs();
+    const entry = {
+      runId,
+      time: new Date().toISOString(),
+      status,
+      logCount: logs.length,
+      logs: logs.slice(-50), // keep last 50 lines
+      response: response ? JSON.stringify(response) : undefined,
+    };
+    const updated = [entry, ...(existing || [])].slice(0, 20); // keep last 20 runs
+    await setCronLogs(updated);
+  } catch (e) {
+    console.error("[CRON] Failed to persist log:", e);
+  }
 }
