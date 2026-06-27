@@ -1,11 +1,12 @@
-// lib/strategy.ts — v30.4 "Deterministic & Stateless"
+// lib/strategy.ts — v30.5 "Deterministic & Stateless"
 // ============================================================
-// CHANGES FROM v30.3:
-// 1. Hybrid 1D trend: Structure (HH/HL) determines direction, EMA confirms strength
+// CHANGES FROM v30.4:
+// 1. Three-tier strength system:
+//    WEAK: HH/HL or LH/LL structure detected
+//    MEDIUM: Structure + EMA curl (8 EMA turning toward 21 EMA)
+//    STRONG: Structure + EMA cross confirmed (8 > 21 for LONG, etc.)
 // 2. No structure = no trade (direction: null)
-// 3. Structure + EMA aligned = STRONG
-// 4. Structure + EMA not aligned = WEAK (early, tentative)
-// 5. Keep all v30.3 fixes: wider stops, correct side entry, min 60 confidence
+// 3. All v30.3 fixes preserved: wider stops, correct side entry, min 60 confidence
 
 import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -294,7 +295,10 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   };
 }
 
-// --- 1D TREND: Structure determines direction, EMA confirms strength ---
+// --- 1D TREND: Three-tier strength ---
+// WEAK: Structure only (HH/HL or LH/LL)
+// MEDIUM: Structure + EMA curl (8 EMA turning toward 21 EMA)
+// STRONG: Structure + EMA cross confirmed
 function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string } {
   const len = candles1d.length;
   if (len < 25) return { direction: null, strength: "WEAK" };
@@ -303,42 +307,56 @@ function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; str
   const highs = candles1d.map(c => c.high);
   const lows = candles1d.map(c => c.low);
   
-  // EMA for confirmation
-  const ema8 = ema(closes, 8);
-  const ema21 = ema(closes, 21);
-  const emaLong = ema8[ema8.length - 1] > ema21[ema21.length - 1];
+  // EMA calculations
+  const ema8Arr = ema(closes, 8);
+  const ema21Arr = ema(closes, 21);
+  const ema8Now = ema8Arr[ema8Arr.length - 1];
+  const ema21Now = ema21Arr[ema21Arr.length - 1];
+  const ema8Prev = ema8Arr[ema8Arr.length - 3]; // 2 days ago
+  const ema21Prev = ema21Arr[ema21Arr.length - 3];
+  
+  const emaCrossLong = ema8Now > ema21Now;
+  const emaCrossShort = ema8Now < ema21Now;
+  
+  // EMA curl: 8 EMA turning toward 21 EMA (getting closer to crossing)
+  const emaCurlLong = ema8Now > ema8Prev && (ema21Now - ema8Now) < (ema21Prev - ema8Prev);
+  const emaCurlShort = ema8Now < ema8Prev && (ema8Now - ema21Now) < (ema8Prev - ema21Prev);
   
   // --- STRUCTURE DETECTION ---
-  // Need at least 10 days for structure check
   if (len < 10) return { direction: null, strength: "WEAK" };
   
   const recentHighs = highs.slice(-10);
   const recentLows = lows.slice(-10);
   
-  // Higher lows: last 3 lows are rising (each higher than previous)
+  // Higher lows: last 3 lows rising
   const higherLows = recentLows[7] < recentLows[8] && recentLows[8] < recentLows[9];
-  // Lower highs: last 3 highs are falling
+  // Lower highs: last 3 highs falling
   const lowerHighs = recentHighs[7] > recentHighs[8] && recentHighs[8] > recentHighs[9];
   
-  // Break of recent swing high/low (before last 3 bars)
+  // Break of swing high/low (before last 3 bars)
   const swingHigh = Math.max(...recentHighs.slice(0, 7));
   const swingLow = Math.min(...recentLows.slice(0, 7));
   const brokeHigh = recentHighs[9] > swingHigh;
   const brokeLow = recentLows[9] < swingLow;
   
-  // Structure-based direction
+  // Structure direction
   const structureLong = higherLows && brokeHigh;
   const structureShort = lowerHighs && brokeLow;
   
-  // --- HYBRID LOGIC: Structure = direction, EMA = strength ---
+  // --- THREE-TIER STRENGTH ---
   if (structureLong) {
-    return { direction: "LONG", strength: emaLong ? "STRONG" : "WEAK" };
-  }
-  if (structureShort) {
-    return { direction: "SHORT", strength: !emaLong ? "STRONG" : "WEAK" };
+    if (emaCrossLong) return { direction: "LONG", strength: "STRONG" };
+    if (emaCurlLong) return { direction: "LONG", strength: "MEDIUM" };
+    return { direction: "LONG", strength: "WEAK" };
   }
   
-  // No clear structure = no trade
+  if (structureShort) {
+    if (emaCrossShort) return { direction: "SHORT", strength: "STRONG" };
+    if (emaCurlShort) return { direction: "SHORT", strength: "MEDIUM" };
+    return { direction: "SHORT", strength: "WEAK" };
+  }
+  
+  // No structure = no trade
   return { direction: null, strength: "NONE" };
 }
 
@@ -528,7 +546,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v30.4 ---
+// --- MAIN SIGNAL v30.5 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -636,9 +654,9 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
   if (rr < MIN_RR) return null;
   
-  // v30.4: Confidence based on strength + setup type
+  // v30.5: Confidence based on strength tier
   const confidence = setup.type === "ACCUMULATE" 
-    ? (t1d.strength === "STRONG" ? 70 : setup.reason === "TL+stoch_turn" ? 65 : 60)
+    ? (t1d.strength === "STRONG" ? 75 : t1d.strength === "MEDIUM" ? 65 : 60)
     : 85;
   
   const expectedMove = Math.abs(tp - entry) / entry * 100;
