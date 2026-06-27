@@ -251,4 +251,26 @@ export async function resetAll() {
   } catch (err) {
     console.error("[STATE] Reset failed:", err);
   }
+  
+}
+
+const CRON_LOGS_KEY = "cx_cron_logs_v15";
+const CRON_LOGS_TTL = 24 * 60 * 60;
+
+export async function getCronLogs(): Promise<any[]> {
+  try {
+    const data = await redis.get(CRON_LOGS_KEY);
+    return safeParseArray(data);
+  } catch (err) {
+    console.error("[STATE] Cron logs KV read failed:", err);
+    return [];
+  }
+}
+
+export async function setCronLogs(logs: any[]): Promise<void> {
+  try {
+    await redis.set(CRON_LOGS_KEY, logs, { ex: CRON_LOGS_TTL });
+  } catch (err) {
+    console.error("[STATE] Cron logs KV write failed:", err);
+  }
 }
