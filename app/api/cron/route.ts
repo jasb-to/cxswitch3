@@ -4,7 +4,7 @@
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
 import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot, loadTrendlinesFromKV, saveTrendlinesToKV } from "@/lib/strategy";
-import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory, setCronLog, getCronLogs } from "@/lib/state";
+import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory, setCronLogs, getCronLogs } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
@@ -221,10 +221,10 @@ async function persistLog(runId: string, logs: string[], status: string, respons
       time: new Date().toISOString(),
       status,
       logCount: logs.length,
-      logs: logs.slice(-50), // keep last 50 lines
+      logs: logs.slice(-50),
       response: response ? JSON.stringify(response) : undefined,
     };
-    const updated = [entry, ...(existing || [])].slice(0, 20); // keep last 20 runs
+    const updated = [entry, ...(existing || [])].slice(0, 20);
     await setCronLogs(updated);
   } catch (e) {
     console.error("[CRON] Failed to persist log:", e);
