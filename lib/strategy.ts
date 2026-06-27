@@ -1,12 +1,11 @@
-// lib/strategy.ts — v30.6 "Deterministic & Stateless"
+// lib/strategy.ts — v30.7 "Relaxed Structure Detection"
 // ============================================================
 // CHANGES FROM v30.5:
-// 1. Relaxed structure detection: 2 of 3 conditions needed
-//    - Higher/lower low (2-bar check)
-//    - Break of 5-day high/low
-//    - 3 of 5 closes higher/lower
-// 2. EMA curl uses 3-day lookback (was 2-day)
-// 3. All other v30.5 logic preserved
+// 1. Relaxed structure: higherLow/lowerHigh alone gives WEAK direction
+// 2. Confirmations (broke5DayHigh/Low, higher/lowerCloses, EMA curl) upgrade strength
+// 3. STRONG: EMA cross + 2+ confirmations | MEDIUM: EMA cross OR 1+ confirmation
+// 4. Slice(-7) instead of slice(-10) for tighter recent price action
+// 5. All v30.5 fixes preserved: wider stops, correct side entry, min 60 confidence
 
 import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -295,10 +294,10 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   };
 }
 
-// --- 1D TREND: Three-tier strength with relaxed structure ---
-// WEAK: 2 of 3 structure conditions met
-// MEDIUM: Structure + EMA curl (8 EMA turning toward 21 EMA)
-// STRONG: Structure + EMA cross confirmed
+// --- 1D TREND: Relaxed three-tier strength ---
+// WEAK: higherLow / lowerHigh detected (base structure)
+// MEDIUM: Base + EMA cross OR 1+ confirmation
+// STRONG: EMA cross + 2+ confirmations
 function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string } {
   const len = candles1d.length;
   if (len < 25) return { direction: null, strength: "WEAK" };
@@ -318,49 +317,44 @@ function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; str
   const emaCrossLong = ema8Now > ema21Now;
   const emaCrossShort = ema8Now < ema21Now;
   
-  // EMA curl: 8 EMA turning toward 21 EMA over last 3 days
+  // EMA curl: 8 EMA turning toward 21 EMA (getting closer to crossing)
   const emaCurlLong = ema8Now > ema8Prev3 && (ema21Now - ema8Now) < (ema21Prev3 - ema8Prev3);
   const emaCurlShort = ema8Now < ema8Prev3 && (ema8Now - ema21Now) < (ema8Prev3 - ema21Prev3);
   
-  // --- RELAXED STRUCTURE DETECTION ---
   if (len < 7) return { direction: null, strength: "WEAK" };
   
   const recentHighs = highs.slice(-7);
   const recentLows = lows.slice(-7);
   const recentCloses = closes.slice(-7);
   
-  // Condition 1: Higher/lower low (2-bar check)
+  // Base structure: just 2 consecutive bars for higher low / lower high
   const higherLow = recentLows[5] < recentLows[6];
   const lowerHigh = recentHighs[5] > recentHighs[6];
   
-  // Condition 2: Break of 5-day high/low
+  // Break of 5-day high/low (before last 2 bars)
   const fiveDayHigh = Math.max(...recentHighs.slice(0, 5));
   const fiveDayLow = Math.min(...recentLows.slice(0, 5));
   const broke5DayHigh = recentHighs[6] > fiveDayHigh;
   const broke5DayLow = recentLows[6] < fiveDayLow;
   
-  // Condition 3: 3 of last 5 closes higher/lower
+  // Close momentum: 3+ of last 5 closes moving in direction
   const last5Closes = recentCloses.slice(-5);
   const higherCloses = last5Closes.filter((c, i, arr) => i > 0 && c > arr[i-1]).length >= 3;
   const lowerCloses = last5Closes.filter((c, i, arr) => i > 0 && c < arr[i-1]).length >= 3;
   
-  // Structure: need 2 of 3 conditions
-  const longConditions = [higherLow, broke5DayHigh, higherCloses].filter(Boolean).length;
-  const shortConditions = [lowerHigh, broke5DayLow, lowerCloses].filter(Boolean).length;
+  // --- RELAXED STRUCTURE: base + confirmations ---
+  const longConfirmations = [broke5DayHigh, higherCloses, emaCurlLong].filter(Boolean).length;
+  const shortConfirmations = [broke5DayLow, lowerCloses, emaCurlShort].filter(Boolean).length;
   
-  const longStructure = longConditions >= 2;
-  const shortStructure = shortConditions >= 2;
-  
-  // --- THREE-TIER STRENGTH ---
-  if (longStructure) {
-    if (emaCrossLong) return { direction: "LONG", strength: "STRONG" };
-    if (emaCurlLong) return { direction: "LONG", strength: "MEDIUM" };
+  if (higherLow) {
+    if (emaCrossLong && longConfirmations >= 2) return { direction: "LONG", strength: "STRONG" };
+    if (emaCrossLong || longConfirmations >= 1) return { direction: "LONG", strength: "MEDIUM" };
     return { direction: "LONG", strength: "WEAK" };
   }
   
-  if (shortStructure) {
-    if (emaCrossShort) return { direction: "SHORT", strength: "STRONG" };
-    if (emaCurlShort) return { direction: "SHORT", strength: "MEDIUM" };
+  if (lowerHigh) {
+    if (emaCrossShort && shortConfirmations >= 2) return { direction: "SHORT", strength: "STRONG" };
+    if (emaCrossShort || shortConfirmations >= 1) return { direction: "SHORT", strength: "MEDIUM" };
     return { direction: "SHORT", strength: "WEAK" };
   }
   
@@ -554,7 +548,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v30.6 ---
+// --- MAIN SIGNAL v30.7 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -662,7 +656,7 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
   if (rr < MIN_RR) return null;
   
-  // v30.6: Confidence based on strength tier
+  // v30.7: Confidence based on strength tier
   const confidence = setup.type === "ACCUMULATE" 
     ? (t1d.strength === "STRONG" ? 75 : t1d.strength === "MEDIUM" ? 65 : 60)
     : 85;
