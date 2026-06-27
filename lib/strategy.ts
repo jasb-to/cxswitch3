@@ -486,96 +486,6 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- TRADE BUILDER ---
-function buildTrade(ctx: MarketContext, setup: Setup): { signal: Signal; market: any } | null {
-  const { pair, price, now, t1d, trendline, indicators } = ctx;
-  const tlPrice = trendline.price;
-  const atrVal = indicators.atr;
-  
-  const swingLows = ctx.last.low; // Use recent swing from candles
-  const swingHighs = ctx.last.high;
-  
-  // Get proper swing levels from full history
-  // (simplified — in real code pass candles to this function)
-  const recentLows = [ctx.last.low, ctx.prev.low];
-  const recentHighs = [ctx.last.high, ctx.prev.high];
-  const swingLow = Math.min(...recentLows);
-  const swingHigh = Math.max(...recentHighs);
-  
-  let entry: number, sl: number, tp: number, targetSource: string;
-  
-  if (setup.type === "ACCUMULATE") {
-    entry = price;
-    sl = t1d.direction === "LONG" 
-      ? Math.min(swingLow, entry - atrVal * 2) 
-      : Math.max(swingHigh, entry + atrVal * 2);
-    
-    // Need full candles for pivot search — pass them in
-    // For now, use ATR fallback
-    tp = t1d.direction === "LONG" ? entry + atrVal * 2 : entry - atrVal * 2;
-    targetSource = "atr_x2";
-  } else {
-    // ADD: Stop at trendline (tighter)
-    entry = price;
-    sl = t1d.direction === "LONG" 
-      ? Math.max(tlPrice * 0.995, entry - atrVal * 1.5)  // Tighter stop
-      : Math.min(tlPrice * 1.005, entry + atrVal * 1.5); // Tighter stop
-    
-    // Need full candles for pivot search
-    const minTarget = t1d.direction === "LONG"
-      ? entry + (entry - sl) * MIN_RR
-      : entry - (sl - entry) * MIN_RR;
-    tp = t1d.direction === "LONG" 
-      ? Math.max(swingHigh, minTarget) 
-      : Math.min(swingLow, minTarget);
-    targetSource = "swing_or_minRR";
-  }
-  
-  const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
-  if (rr < MIN_RR) return null;
-  
-  const confidence = setup.type === "ACCUMULATE" ? (indicators.stoch.k < 20 || indicators.stoch.k > 80 ? 50 : 60) : 85;
-  const expectedMove = Math.abs(tp - entry) / entry * 100;
-  
-  const signal: Signal = {
-    id: `${pair}_${now}`,
-    pair,
-    direction: t1d.direction!,
-    type: setup.type,
-    scale: setup.scale,
-    entry: Math.round(entry * 100) / 100,
-    stop: Math.round(sl * 100) / 100,
-    target: Math.round(tp * 100) / 100,
-    confidence,
-    rr: Math.round(rr * 100) / 100,
-    adx: Math.round(indicators.adx * 10) / 10,
-    rsi: Math.round(indicators.rsi * 10) / 10,
-    stochK: indicators.stoch.k,
-    stochD: indicators.stoch.d,
-    expectedMove: Math.round(expectedMove * 10) / 10,
-    reason: `${t1d.direction} ${setup.type} ${setup.scale} | 1D ${t1d.strength} | Stoch K${indicators.stoch.k} D${indicators.stoch.d} | ${setup.reason} | TP:${targetSource} | RR ${rr.toFixed(2)}`,
-    timestamp: now,
-    version: CURRENT_SIGNAL_VERSION,
-  };
-  
-  const market = {
-    pair,
-    price: Math.round(price * 100) / 100,
-    timestamp: now,
-    trend: `${t1d.direction} ${t1d.strength}`,
-    adx: signal.adx,
-    rsi: signal.rsi,
-    stochK: signal.stochK,
-    stochD: signal.stochD,
-    trendlinePrice: Math.round(tlPrice * 100) / 100,
-    distToTrendline: Math.round(Math.abs((price - tlPrice) / tlPrice) * 10000) / 100,
-    ema8: Math.round(indicators.ema8 * 100) / 100,
-    ema21: Math.round(indicators.ema21 * 100) / 100,
-  };
-  
-  return { signal, market };
-}
-
 // --- MAIN SIGNAL v30.1 ---
 export function generateSignal(
   pair: string,
@@ -602,7 +512,6 @@ export function generateSignal(
     return { debug };
   }
   
-  // Need candles for pivot targets — pass to buildTrade
   const result = buildTradeWithPivots(ctx, setup, candles4h);
   if (!result) {
     debug.push("R:R too low");
