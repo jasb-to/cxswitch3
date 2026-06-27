@@ -1,9 +1,9 @@
-// app/api/cron/route.ts — v28 "Trendline Break: StochRSI Timing + Position Build"
+// app/api/cron/route.ts — v30.1 "Clean Slate Cron"
 // ============================================================
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot, loadTrendlinesFromKV, saveTrendlinesToKV, loadHysteresisFromKV, saveHysteresisToKV } from "@/lib/strategy";
+import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot, loadTrendlinesFromKV, saveTrendlinesToKV } from "@/lib/strategy";
 import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
@@ -43,7 +43,6 @@ export async function GET(request: Request) {
 
   // Load persisted state (serverless-safe)
   await loadTrendlinesFromKV();
-  await loadHysteresisFromKV();
 
   let activeTrades = await getActiveTrades();
   console.log(`[STATE] Active trades:`, Object.keys(activeTrades).join(", ") || "none");
@@ -107,18 +106,18 @@ export async function GET(request: Request) {
             alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
           } else {
             console.log(`[PAIR] ${pair} — Still valid, skipping`);
-            const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
+            const result = generateSignal(pair, candles4h, currentPrice);
             let market = result.market;
-            if (!market) market = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+            if (!market) market = getMarketSnapshot(pair, candles4h);
             if (market) marketDataList.push(market);
             continue;
           }
         }
       }
 
-      const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
+      const result = generateSignal(pair, candles4h, currentPrice);
       let market = result.market;
-      if (!market) market = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+      if (!market) market = getMarketSnapshot(pair, candles4h);
       if (market) marketDataList.push(market);
 
       if (!result.signal) {
@@ -170,7 +169,6 @@ export async function GET(request: Request) {
 
   // Persist state for next serverless invocation
   await saveTrendlinesToKV();
-  await saveHysteresisToKV();
 
   await Promise.all([setSignals(merged), setMarketData(marketDataList), setActiveTrades(activeTrades)]);
 
