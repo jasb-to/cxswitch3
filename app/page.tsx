@@ -22,6 +22,7 @@ interface MarketData {
   pair: string;
   price: number;
   trend: string;
+  trend4h?: string;  // NEW: from backend
   adx: number;
   rsi: number;
   stochK: number;
