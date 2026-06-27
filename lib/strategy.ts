@@ -1,11 +1,11 @@
-// lib/strategy.ts — v30.3 "Deterministic & Stateless"
+// lib/strategy.ts — v30.4 "Deterministic & Stateless"
 // ============================================================
-// CHANGES FROM v30.2:
-// 1. Stop-loss: revert to wider stops (ATR × 1.5), use farther of swing or buffer
-// 2. Entry: must be on correct side of trendline (SHORT above, LONG below)
-// 3. Stoch turning required for ACCUMULATE (not just extreme)
-// 4. Confidence: minimum 60 for all signals
-// 5. Extreme stoch only fires if price is exactly at trendline ±0.3%
+// CHANGES FROM v30.3:
+// 1. Hybrid 1D trend: Structure (HH/HL) determines direction, EMA confirms strength
+// 2. No structure = no trade (direction: null)
+// 3. Structure + EMA aligned = STRONG
+// 4. Structure + EMA not aligned = WEAK (early, tentative)
+// 5. Keep all v30.3 fixes: wider stops, correct side entry, min 60 confidence
 
 import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -294,20 +294,52 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   };
 }
 
-// --- 1D TREND ---
+// --- 1D TREND: Structure determines direction, EMA confirms strength ---
 function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string } {
   const len = candles1d.length;
   if (len < 25) return { direction: null, strength: "WEAK" };
+  
   const closes = candles1d.map(c => c.close);
+  const highs = candles1d.map(c => c.high);
+  const lows = candles1d.map(c => c.low);
+  
+  // EMA for confirmation
   const ema8 = ema(closes, 8);
   const ema21 = ema(closes, 21);
-  const direction = ema8[ema8.length - 1] > ema21[ema21.length - 1] ? "LONG" : "SHORT";
-  const highs = candles1d.slice(-20).map(c => c.high);
-  const lows = candles1d.slice(-20).map(c => c.low);
-  const hh = highs[highs.length - 1] > Math.max(...highs.slice(0, -1));
-  const ll = lows[lows.length - 1] < Math.min(...lows.slice(0, -1));
-  const strength = (direction === "LONG" && hh) || (direction === "SHORT" && ll) ? "STRONG" : "MEDIUM";
-  return { direction, strength };
+  const emaLong = ema8[ema8.length - 1] > ema21[ema21.length - 1];
+  
+  // --- STRUCTURE DETECTION ---
+  // Need at least 10 days for structure check
+  if (len < 10) return { direction: null, strength: "WEAK" };
+  
+  const recentHighs = highs.slice(-10);
+  const recentLows = lows.slice(-10);
+  
+  // Higher lows: last 3 lows are rising (each higher than previous)
+  const higherLows = recentLows[7] < recentLows[8] && recentLows[8] < recentLows[9];
+  // Lower highs: last 3 highs are falling
+  const lowerHighs = recentHighs[7] > recentHighs[8] && recentHighs[8] > recentHighs[9];
+  
+  // Break of recent swing high/low (before last 3 bars)
+  const swingHigh = Math.max(...recentHighs.slice(0, 7));
+  const swingLow = Math.min(...recentLows.slice(0, 7));
+  const brokeHigh = recentHighs[9] > swingHigh;
+  const brokeLow = recentLows[9] < swingLow;
+  
+  // Structure-based direction
+  const structureLong = higherLows && brokeHigh;
+  const structureShort = lowerHighs && brokeLow;
+  
+  // --- HYBRID LOGIC: Structure = direction, EMA = strength ---
+  if (structureLong) {
+    return { direction: "LONG", strength: emaLong ? "STRONG" : "WEAK" };
+  }
+  if (structureShort) {
+    return { direction: "SHORT", strength: !emaLong ? "STRONG" : "WEAK" };
+  }
+  
+  // No clear structure = no trade
+  return { direction: null, strength: "NONE" };
 }
 
 // --- PIVOT TARGETS ---
@@ -410,7 +442,7 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
   debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength}`);
   
   if (!t1d.direction) {
-    debug.push("1D trend unclear");
+    debug.push("1D trend unclear (no structure)");
     return { ctx: null, debug };
   }
   
@@ -456,21 +488,18 @@ function findSetup(ctx: MarketContext): Setup | null {
   
   const nearTrendline = Math.abs(dist) < 0.012;
   
-  // v30.3: Stoch turning is the primary early entry signal
   const stochTurning = t1d.direction === "LONG" 
-    ? indicators.stoch.k > indicators.stoch.d   // K crossing above D = momentum up
-    : indicators.stoch.k < indicators.stoch.d;   // K crossing below D = momentum down
+    ? indicators.stoch.k > indicators.stoch.d
+    : indicators.stoch.k < indicators.stoch.d;
   
-  // v30.3: Extreme stoch only valid if price is exactly at trendline (±0.3%)
   const atTrendlineExact = Math.abs(dist) < 0.003;
   const stochExtreme = t1d.direction === "LONG" 
     ? indicators.stoch.k < 20 
     : indicators.stoch.k > 80;
   
-  // v30.3: Must be on correct side of trendline
   const correctSide = t1d.direction === "LONG" 
-    ? price <= tlPrice * 1.005   // At or slightly below TL for LONG
-    : price >= tlPrice * 0.995;  // At or slightly above TL for SHORT
+    ? price <= tlPrice * 1.005
+    : price >= tlPrice * 0.995;
   
   const inRetestZone = t1d.direction === "LONG"
     ? price > tlPrice * 1.005 && price < tlPrice * 1.02 && dist > 0
@@ -484,8 +513,6 @@ function findSetup(ctx: MarketContext): Setup | null {
     ? price > indicators.ema8 && price > indicators.ema21
     : price < indicators.ema8 && price < indicators.ema21;
   
-  // v30.3: ACCUMULATE requires turning stoch + correct side + near TL
-  // OR extreme stoch + exactly at trendline
   if (nearTrendline && correctSide && stochTurning) {
     return { type: "ACCUMULATE", scale: "ENTRY_1", reason: "TL+stoch_turn" };
   }
@@ -501,7 +528,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v30.3 ---
+// --- MAIN SIGNAL v30.4 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -572,11 +599,10 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   
   if (setup.type === "ACCUMULATE") {
     entry = price;
-    // v30.3: Wider stops — use farther of swing or ATR × 1.5
     const stopBuffer = atrVal * 1.5;
     sl = t1d.direction === "LONG" 
-      ? Math.min(swingLow, entry - stopBuffer)   // Farther stop for LONG
-      : Math.max(swingHigh, entry + stopBuffer); // Farther stop for SHORT
+      ? Math.min(swingLow, entry - stopBuffer)
+      : Math.max(swingHigh, entry + stopBuffer);
     
     const pivotTarget = getPivotTarget(candles4h, t1d.direction!, entry, sl, atrVal);
     if (pivotTarget) {
@@ -610,9 +636,9 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
   if (rr < MIN_RR) return null;
   
-  // v30.3: Minimum 60 confidence for all signals
+  // v30.4: Confidence based on strength + setup type
   const confidence = setup.type === "ACCUMULATE" 
-    ? (setup.reason === "TL+stoch_turn" ? 65 : 60)  // Turning gets 65, extreme gets 60
+    ? (t1d.strength === "STRONG" ? 70 : setup.reason === "TL+stoch_turn" ? 65 : 60)
     : 85;
   
   const expectedMove = Math.abs(tp - entry) / entry * 100;
