@@ -1,9 +1,10 @@
-// lib/strategy.ts — v29 "Simplified: Buy Low, Sell High, Add on Retest"
+// lib/strategy.ts — v30 "Clean Slate"
 // ============================================================
-// STRIP: Removed hysteresis, ADD chasing logic, complex target fallbacks
-// KEEP: Trendline accumulation, pivot targets, stoch exit
+// STRIP: Hysteresis, ENTRY_2, monitor state, compat layer, dead inputs
+// KEEP: 1D trend, trendline, pivot targets, stoch exit
+// FIX: State respects market, trendline validates 3+ pivots, no RR fighting
 
-import { getHysteresisState, setHysteresisState, getTrendlineState, setTrendlineState } from "@/lib/state";
+import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
 export interface Candle {
   timestamp: number;
@@ -18,8 +19,8 @@ export interface Signal {
   id: string;
   pair: string;
   direction: "LONG" | "SHORT";
-  type: "ACCUMULATE" | "BREAKOUT" | "EXIT";
-  scale: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
+  type: "ACCUMULATE" | "BREAKOUT";
+  scale: "ENTRY_1" | "ADD";
   entry: number;
   stop: number;
   target: number;
@@ -41,7 +42,7 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 29;
+export const CURRENT_SIGNAL_VERSION = 30;
 const MIN_RR = 1.5;
 
 // --- STATEFUL TRENDLINE STORE ---
@@ -216,7 +217,7 @@ function findSwingLows(candles: Candle[]): { price: number; index: number }[] {
   return lows;
 }
 
-// --- STATEFUL TRENDLINE ---
+// --- STATEFUL TRENDLINE (v30: 3+ pivot agreement) ---
 function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number; age: number } | null {
   const len = candles.length;
   if (len < 20) return null;
@@ -226,22 +227,27 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   const now = candles[candles.length - 1].timestamp;
   const existing = trendlineStore.get(pair);
   const maxAge = 7 * 24 * 60 * 60 * 1000;
+  
   if (existing && existing.direction === direction && (now - existing.lastUpdated) < maxAge) {
-    const lastPivot = recentPivots[recentPivots.length - 1];
-    const projectedPrice = existing.slope * lastPivot.index + existing.intercept;
-    const deviation = Math.abs(lastPivot.price - projectedPrice) / projectedPrice;
-    if (deviation < 0.02) {
+    // v30: Require 3+ pivot agreement, not just latest
+    const agreement = recentPivots.filter(p => {
+      const projected = existing.slope * p.index + existing.intercept;
+      return Math.abs(p.price - projected) / p.price < 0.02;
+    }).length;
+    if (agreement >= 3) {
       const currentIndex = len - 1;
-      const price = existing.slope * currentIndex + existing.intercept;
-      return { price, r2: 0.85, age: now - existing.lastUpdated };
+      return { price: existing.slope * currentIndex + existing.intercept, r2: 0.85, age: now - existing.lastUpdated };
     }
   }
+  
   const n = recentPivots.length;
   const sumX = recentPivots.reduce((s, p) => s + p.index, 0);
   const sumY = recentPivots.reduce((s, p) => s + p.price, 0);
   const sumXY = recentPivots.reduce((s, p) => s + p.index * p.price, 0);
   const sumX2 = recentPivots.reduce((s, p) => s + p.index * p.index, 0);
-  const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+  const denom = n * sumX2 - sumX * sumX;
+  if (Math.abs(denom) < 1e-9) return null;
+  const slope = (n * sumXY - sumX * sumY) / denom;
   const intercept = (sumY - slope * sumX) / n;
   const yMean = sumY / n;
   const ssTotal = recentPivots.reduce((s, p) => s + Math.pow(p.price - yMean, 2), 0);
@@ -285,53 +291,14 @@ function atr(candles: Candle[], period: number = 14): number {
   return avg(trs);
 }
 
-// --- HYSTERESIS (simplified) ---
-interface HysteresisState {
-  lastSignalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
-  lastSignalPrice: number;
-  lockUntil: number;
-}
-
-const hysteresisStore: Map<string, HysteresisState> = new Map();
-
-export async function loadHysteresisFromKV(): Promise<void> {
-  const state = await getHysteresisState();
-  hysteresisStore.clear();
-  for (const [pair, data] of Object.entries(state)) {
-    hysteresisStore.set(pair, data as HysteresisState);
-  }
-}
-
-export async function saveHysteresisToKV(): Promise<void> {
-  const state: Record<string, any> = {};
-  for (const [pair, data] of hysteresisStore.entries()) {
-    state[pair] = data;
-  }
-  await setHysteresisState(state);
-}
-
-const HYSTERESIS_BAND = 0.005;
-
-function getHysteresis(pair: string, now: number): HysteresisState {
-  const state = hysteresisStore.get(pair);
-  if (!state || now > state.lockUntil) return { lastSignalType: null, lastSignalPrice: 0, lockUntil: 0 };
-  return state;
-}
-
-function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price: number, now: number): void {
-  const lockDuration = type === "ADD" ? 4 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
-  hysteresisStore.set(pair, { lastSignalType: type, lastSignalPrice: price, lockUntil: now + lockDuration });
-}
-
-// --- PIVOT TARGETS (1.2 RR min, ATRx2 fallback) ---
+// --- PIVOT TARGETS (v30: unified MIN_RR) ---
 function getPivotTarget(
   candles4h: Candle[],
   direction: "LONG" | "SHORT",
   entry: number,
   sl: number,
   atrVal: number,
-  minRR: number = 1.2,
-  fallbackRR: number = 1.5
+  minRR: number = MIN_RR
 ): { target: number; source: string } | null {
   const swingHighs = findSwingHighs(candles4h);
   const swingLows = findSwingLows(candles4h);
@@ -349,7 +316,7 @@ function getPivotTarget(
     }
     const atrTarget = entry + atrVal * 2;
     const atrRR = (atrTarget - entry) / (entry - sl);
-    if (atrRR >= fallbackRR) return { target: atrTarget, source: "atr_x2" };
+    if (atrRR >= minRR) return { target: atrTarget, source: "atr_x2" };
   } else {
     const validLows = swingLows.filter(l => l.price < entry).sort((a, b) => b.price - a.price);
     for (const low of validLows) {
@@ -363,17 +330,15 @@ function getPivotTarget(
     }
     const atrTarget = entry - atrVal * 2;
     const atrRR = (entry - atrTarget) / (sl - entry);
-    if (atrRR >= fallbackRR) return { target: atrTarget, source: "atr_x2" };
+    if (atrRR >= minRR) return { target: atrTarget, source: "atr_x2" };
   }
   return null;
 }
 
-// --- MAIN SIGNAL v29 ---
+// --- MAIN SIGNAL v30 ---
 export function generateSignal(
   pair: string,
-  candles1h: Candle[],
   candles4h: Candle[],
-  candles15m: Candle[],
   currentPrice?: number
 ): SignalResult {
   const debug: string[] = [];
@@ -410,26 +375,28 @@ export function generateSignal(
   
   debug.push(`TL: ${tlPrice.toFixed(1)} | R² ${trendline.r2} | Price: ${price.toFixed(1)} | Dist: ${(dist * 100).toFixed(2)}%`);
   
-  const stoch = stochRsi(candles4h.map(c => c.close));
+  // --- INDICATORS (computed once) ---
+  const closes4h = candles4h.map(c => c.close);
+  const stoch = stochRsi(closes4h);
+  const rsi4h = rsi(closes4h);
+  const adxVal = adx(candles4h);
+  const ema8_4h = ema(closes4h, 8);
+  const ema21_4h = ema(closes4h, 21);
+  const atrVal = atr(candles4h, 14);
+  
   debug.push(`StochRSI: K ${stoch.k} | D ${stoch.d}`);
   
   const last = candles4h[candles4h.length - 1];
   const prev = candles4h[candles4h.length - 2];
   
-  const closes4h = candles4h.map(c => c.close);
-  const ema8_4h = ema(closes4h, 8);
-  const ema21_4h = ema(closes4h, 21);
+  // --- v30 ENTRY LOGIC ---
   
-  // --- v29 SIMPLIFIED ENTRY LOGIC ---
-  
-  // ACCUMULATE: Near trendline, Stoch extreme (buy low/sell high)
+  // ACCUMULATE: Near trendline, Stoch extreme or turning
   const nearTrendline = Math.abs(dist) < 0.012;
   const stochExtreme = t1d.direction === "LONG" ? stoch.k < 20 : stoch.k > 80;
   const stochTurning = t1d.direction === "LONG" ? stoch.k > stoch.d : stoch.k < stoch.d;
   
-  // ADD: Retest of broken trendline (price broke through, now pulling back to it)
-  // LONG: price was above TL, now retesting from above (0.5% to 2% above)
-  // SHORT: price was below TL, now retesting from below (0.5% to 2% below)
+  // ADD: Retest zone — price broke TL, now pulling back to it
   const inRetestZone = t1d.direction === "LONG"
     ? price > tlPrice * 1.005 && price < tlPrice * 1.02 && dist > 0
     : price < tlPrice * 0.995 && price > tlPrice * 0.98 && dist < 0;
@@ -444,50 +411,23 @@ export function generateSignal(
     : price < ema8_4h[ema8_4h.length - 1] && price < ema21_4h[ema21_4h.length - 1];
   
   const stochMomentum = t1d.direction === "LONG" ? stoch.k > stoch.d : stoch.k < stoch.d;
-  const adxVal = adx(candles4h);
-  const adxStrong = adxVal > 20;
   const stochNotExtreme = t1d.direction === "LONG" ? stoch.k < 80 : stoch.k > 20;
   
   // Determine signal type
-  let rawType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
+  let signalType: "ACCUMULATE" | "BREAKOUT" | null = null;
+  let scale: "ENTRY_1" | "ADD" | null = null;
   
-  if (nearTrendline && stochExtreme) {
-    rawType = "ENTRY_1";  // Buy the extreme at trendline
-  } else if (nearTrendline && stochTurning && stoch.k > 10 && stoch.k < 90) {
-    rawType = "ENTRY_2";  // Early entry as momentum turns
+  if (nearTrendline && (stochExtreme || stochTurning)) {
+    signalType = "ACCUMULATE";
+    scale = "ENTRY_1";
   } else if (inRetestZone && confirming && emaAligned && stochNotExtreme && stochMomentum) {
-    if (volUp || adxStrong) {
-      rawType = "ADD";  // Add on retest after breakout
+    if (volUp || adxVal > 20) {
+      signalType = "BREAKOUT";
+      scale = "ADD";
     }
   }
   
-  // Hysteresis
-  const now = Date.now();
-  const hyst = getHysteresis(pair, now);
-  
-  let finalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
-  
-  if (hyst.lastSignalType === "ADD") {
-    finalType = "ADD";
-  } else if (hyst.lastSignalType === "ENTRY_2") {
-    finalType = rawType === "ADD" ? "ADD" : "ENTRY_2";
-  } else if (hyst.lastSignalType === "ENTRY_1") {
-    if (rawType === "ADD") finalType = "ADD";
-    else if (rawType === "ENTRY_2") finalType = "ENTRY_2";
-    else finalType = "ENTRY_1";
-  } else {
-    finalType = rawType;
-  }
-  
-  if (hyst.lastSignalType && finalType === hyst.lastSignalType) {
-    const priceMove = Math.abs(price - hyst.lastSignalPrice) / hyst.lastSignalPrice;
-    if (priceMove < HYSTERESIS_BAND) {
-      debug.push(`Hysteresis lock: ${finalType} | move ${(priceMove * 100).toFixed(2)}% < ${(HYSTERESIS_BAND * 100).toFixed(2)}%`);
-      return { debug };
-    }
-  }
-  
-  if (!finalType) {
+  if (!signalType || !scale) {
     const stateParts: string[] = [];
     if (nearTrendline) stateParts.push("near TL");
     else if (inRetestZone) stateParts.push("retest zone");
@@ -498,23 +438,15 @@ export function generateSignal(
     return { debug };
   }
   
-  if (finalType !== hyst.lastSignalType) {
-    setHysteresis(pair, finalType, price, now);
-  }
-  
   // --- LEVELS ---
-  const atrVal = atr(candles4h, 14);
   const swingLows = candles4h.map(c => c.low).slice(-20);
   const swingHighs = candles4h.map(c => c.high).slice(-20);
   const swingLow = Math.min(...swingLows);
   const swingHigh = Math.max(...swingHighs);
   
-  let entry: number, sl: number, tp: number, type: "ACCUMULATE" | "BREAKOUT";
-  let confidence: number, expectedMove: number, targetSource: string = "atr_fallback";
+  let entry: number, sl: number, tp: number, targetSource: string;
   
-  if (finalType === "ENTRY_1" || finalType === "ENTRY_2") {
-    // ACCUMULATE: Stop at swing low/high or ATR×2
-    type = "ACCUMULATE";
+  if (signalType === "ACCUMULATE") {
     entry = price;
     sl = t1d.direction === "LONG" 
       ? Math.min(swingLow, entry - atrVal * 2) 
@@ -528,21 +460,18 @@ export function generateSignal(
       tp = t1d.direction === "LONG" ? entry + atrVal * 2 : entry - atrVal * 2;
       targetSource = "atr_x2";
     }
-    confidence = finalType === "ENTRY_1" ? 50 : 60;
   } else {
-    // ADD: Stop at trendline (the retest level) — tighter, better R:R
-    type = "BREAKOUT";
+    // BREAKOUT/ADD: Stop at trendline (retest level)
     entry = price;
     sl = t1d.direction === "LONG" 
-      ? Math.min(tlPrice * 0.995, entry - atrVal * 1.5)   // Stop at trendline or ATR, whichever is tighter (higher for LONG)
-      : Math.max(tlPrice * 1.005, entry + atrVal * 1.5);  // Stop at trendline or ATR, whichever is tighter (lower for SHORT)
+      ? tlPrice * 0.995  // Just below trendline
+      : tlPrice * 1.005; // Just above trendline
     
     const pivotTarget = getPivotTarget(candles4h, t1d.direction, entry, sl, atrVal);
     if (pivotTarget) {
       tp = pivotTarget.target;
       targetSource = pivotTarget.source;
     } else {
-      // Fallback: next swing high/low or MIN_RR
       const minTarget = t1d.direction === "LONG"
         ? entry + (entry - sl) * MIN_RR
         : entry - (sl - entry) * MIN_RR;
@@ -551,10 +480,7 @@ export function generateSignal(
         : Math.min(swingLow, minTarget);
       targetSource = "swing_or_minRR";
     }
-    confidence = 85;
   }
-  
-  expectedMove = Math.abs(tp - entry) / entry * 100;
   
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
   if (rr < MIN_RR) {
@@ -562,14 +488,17 @@ export function generateSignal(
     return { debug };
   }
   
-  const rsi4h = rsi(candles4h.map(c => c.close));
+  const confidence = signalType === "ACCUMULATE" ? (stochExtreme ? 50 : 60) : 85;
+  const expectedMove = Math.abs(tp - entry) / entry * 100;
+  
+  const now = candles4h[candles4h.length - 1].timestamp;
   
   const signal: Signal = {
-    id: `${pair}_${Date.now()}`,
+    id: `${pair}_${now}`,
     pair,
     direction: t1d.direction,
-    type,
-    scale: finalType,
+    type: signalType,
+    scale,
     entry: Math.round(entry * 100) / 100,
     stop: Math.round(sl * 100) / 100,
     target: Math.round(tp * 100) / 100,
@@ -580,7 +509,7 @@ export function generateSignal(
     stochK: stoch.k,
     stochD: stoch.d,
     expectedMove: Math.round(expectedMove * 10) / 10,
-    reason: `${t1d.direction} ${type} ${finalType} | 1D ${t1d.strength} | Stoch K${stoch.k} D${stoch.d} | ${finalType === "ADD" ? "Retest" + (volUp ? "+Vol" : "") + (stochMomentum ? "+Stoch" : "") + (adxStrong ? "+ADX" : "") : "TL approach"} | TP:${targetSource} | RR ${rr.toFixed(2)}`,
+    reason: `${t1d.direction} ${signalType} ${scale} | 1D ${t1d.strength} | Stoch K${stoch.k} D${stoch.d} | ${scale === "ADD" ? "Retest" + (volUp ? "+Vol" : "") + (stochMomentum ? "+Stoch" : "") : "TL approach"} | TP:${targetSource} | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
   };
@@ -600,7 +529,7 @@ export function generateSignal(
     ema21: Math.round(ema21_4h[ema21_4h.length - 1] * 100) / 100,
   };
   
-  debug.push(`SIGNAL: ${type} ${finalType} ${signal.direction} ${signal.entry} | TP ${signal.target} (${targetSource}) | SL ${signal.stop} | RR ${signal.rr}`);
+  debug.push(`SIGNAL: ${signalType} ${scale} ${signal.direction} ${signal.entry} | TP ${signal.target} (${targetSource}) | SL ${signal.stop} | RR ${signal.rr}`);
   
   return { signal, market, debug };
 }
@@ -608,9 +537,7 @@ export function generateSignal(
 // --- MARKET SNAPSHOT ---
 export function getMarketSnapshot(
   pair: string,
-  candles1h: Candle[],
-  candles4h: Candle[],
-  candles15m: Candle[]
+  candles4h: Candle[]
 ): any {
   const candles1d = aggregateTo1D(candles4h);
   const t1d = trend1D(candles1d);
@@ -718,7 +645,7 @@ export function checkTradeStatus(signal: Signal, currentPrice: number, now: numb
 }
 
 // ============================================================
-// v28 COMPATIBILITY LAYER
+// COMPATIBILITY LAYER (minimal)
 // ============================================================
 
 export async function getMonitorState(pair: string): Promise<any | undefined> { return undefined; }
@@ -734,9 +661,7 @@ export async function generateSignalCompat(
   activeTrades?: Record<string, any>,
   currentPrice?: number
 ): Promise<SignalResult> {
-  const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
-  if (result.signal?.scale === "ENTRY_2") return { ...result, signal: undefined };
-  return result;
+  return generateSignal(pair, candles4h, currentPrice);
 }
 
 export function isSignalStillValidBool(signal: Signal, currentPrice: number): boolean {
