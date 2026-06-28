@@ -1,4 +1,4 @@
-// lib/strategy.ts — v31.3 "Unified Structure Detection"
+// lib/strategy.ts — v31.4 "Unified Structure Detection"
 // ============================================================
 // 1D and 4H both use same higherLow/lowerHigh + confirmation logic
 // 4H is more sensitive (fewer bars, tighter thresholds)
@@ -624,7 +624,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v31.3 ---
+// --- MAIN SIGNAL v31.4 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -786,7 +786,7 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
   const price = candles4h[candles4h.length - 1].close;
   const trendline = t1d.direction ? getTrendline(pair, candles4h, t1d.direction) : null;
   const tlPrice = trendline ? trendline.price : 0;
-  const dist = trendline ? (price - tlPrice) / tlPrice : 1;
+  const dist = trendline ? (price - tlPrice) / tlPrice : null;
   const now = candles4h[candles4h.length - 1].timestamp;
   return {
     pair,
@@ -799,7 +799,7 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
     stochK: stochRsi4h.k,
     stochD: stochRsi4h.d,
     trendlinePrice: Math.round(tlPrice * 100) / 100,
-    distToTrendline: Math.round(dist * 10000) / 100,
+    distToTrendline: dist !== null ? Math.round(dist * 10000) / 100 : null,
     ema8: Math.round(ema(candles4h.map(c => c.close), 8).slice(-1)[0] * 100) / 100,
     ema21: Math.round(ema(candles4h.map(c => c.close), 21).slice(-1)[0] * 100) / 100,
   };
