@@ -1,21 +1,10 @@
-// lib/strategy.ts — v31.0 "Simplified: Trend → Location → Trigger"
+// lib/strategy.ts — v31.1 "Simplified + Exhaustion Guard"
 // ============================================================
-// CHANGES FROM v30.3:
-// 1. TREND: Single source of truth — 1D EMA 8/21 only
-//    - Removed 4H direction filtering
-//    - Removed HH/HL swing structure logic
-//    - Removed trendline direction state (trendline is location-only)
-// 2. TRENDLINE: Pure location tool, never decides direction
-//    - Removed persisted trendline direction state
-//    - Lowered R² filter: 0.65 → 0.30 (only reject extremely poor fits)
-//    - ±1.5% accumulation zone, ±2% retest zone
-// 3. ENTRIES simplified:
-//    - ACCUMULATE: near TL + stoch turning (K>D LONG / K<D SHORT)
-//    - BREAKOUT: retest + confirming candle + ADX>20
-//    - Removed "correct side" hard gate (trend already decides direction)
-//    - Removed stoch extreme standalone trigger
-// 4. STATE: KV persistence removed for trendlines, kept for signals only
-// 5. Philosophy: Trend decides direction. Trendline decides location. Stoch decides timing.
+// CHANGES FROM v31.0:
+// 1. Added trend exhaustion detection to prevent entries at trend ends
+// 2. Four checks: EMA spread, price vs EMA8, ADX extreme, stoch extreme
+// 3. Exhaustion blocks ALL new entries (accumulate + breakout)
+// 4. Existing positions still managed by shouldHold (trend reversal exit)
 
 export interface Candle {
   timestamp: number;
@@ -57,13 +46,9 @@ export const CURRENT_SIGNAL_VERSION = 31;
 
 // --- CONFIG ---
 const MIN_RR = 1.5;
-const MIN_R2 = 0.30;           // v31: only reject extremely poor fits
-const TL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-const ACCUM_ZONE = 0.015;      // ±1.5% of trendline
-const RETEST_ZONE = 0.02;      // ±2% of trendline
-
-// --- STATE: Removed. Trendlines are computed fresh each run. ---
-// No persisted trendline state. No KV load/save for trendlines.
+const MIN_R2 = 0.30;
+const ACCUM_ZONE = 0.015;
+const RETEST_ZONE = 0.02;
 
 // --- MATH UTILS ---
 function avg(arr: number[]): number {
@@ -206,7 +191,7 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// --- PIVOTS: Used for trendline regression and targets ---
+// --- PIVOTS ---
 function findPivots(candles: Candle[], direction: "LONG" | "SHORT"): { index: number; price: number; timestamp: number }[] {
   const pivots: { index: number; price: number; timestamp: number }[] = [];
   for (let i = 3; i < candles.length - 3; i++) {
@@ -241,14 +226,11 @@ function findSwingLows(candles: Candle[]): { price: number; index: number }[] {
   return lows;
 }
 
-// --- TRENDLINE: Stateless regression, direction-agnostic ---
-// v31: Trendline is location-only. We compute TWO trendlines (LONG pivots and SHORT pivots)
-// and pick the one with better R². The trendline NEVER decides direction — EMA does.
+// --- TRENDLINE: Stateless, direction-agnostic ---
 function getTrendline(pair: string, candles: Candle[]): { price: number; r2: number; type: "support" | "resistance" } | null {
   const len = candles.length;
   if (len < 20) return null;
 
-  // Compute both support (swing lows) and resistance (swing highs) trendlines
   const longPivots = findPivots(candles, "LONG");
   const shortPivots = findPivots(candles, "SHORT");
 
@@ -286,7 +268,6 @@ function getTrendline(pair: string, candles: Candle[]): { price: number; r2: num
 }
 
 // --- 1D TREND: Single source of truth ---
-// v31: EMA 8/21 crossover ONLY. No HH/HL. No swing structure.
 function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null } {
   const len = candles1d.length;
   if (len < 25) return { direction: null };
@@ -295,6 +276,57 @@ function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null } {
   const ema21 = ema(closes, 21);
   const direction = ema8[ema8.length - 1] > ema21[ema21.length - 1] ? "LONG" : "SHORT";
   return { direction };
+}
+
+// --- TREND EXHAUSTION: v31.1 Prevent entries at trend ends ---
+interface ExhaustionCheck {
+  exhausted: boolean;
+  reason: string;
+}
+
+function checkTrendExhaustion(
+  candles1d: Candle[],
+  direction: "LONG" | "SHORT",
+  indicators: Indicators
+): ExhaustionCheck {
+  const len = candles1d.length;
+  if (len < 25) return { exhausted: false, reason: "insufficient_data" };
+
+  const closes = candles1d.map(c => c.close);
+  const ema8Arr = ema(closes, 8);
+  const ema21Arr = ema(closes, 21);
+  const currentPrice = candles1d[len - 1].close;
+  const atr1d = atr(candles1d, 14);
+
+  const ema8 = ema8Arr[ema8Arr.length - 1];
+  const ema21 = ema21Arr[ema21Arr.length - 1];
+  const emaSpread = Math.abs(ema8 - ema21) / ema21;
+
+  // 1. EMA divergence > 3%
+  if (emaSpread > 0.03) {
+    return { exhausted: true, reason: `EMA_spread_${(emaSpread * 100).toFixed(1)}%` };
+  }
+
+  // 2. Price > 2 ATR beyond EMA8
+  const distFromEma8 = Math.abs(currentPrice - ema8) / atr1d;
+  if (distFromEma8 > 2.0) {
+    return { exhausted: true, reason: `price_${distFromEma8.toFixed(1)}x_ATR_beyond_EMA8` };
+  }
+
+  // 3. ADX > 40 (extreme strength = likely peak)
+  if (indicators.adx > 40) {
+    return { exhausted: true, reason: `ADX_extreme_${indicators.adx}` };
+  }
+
+  // 4. Stoch extreme
+  if (direction === "LONG" && indicators.stoch.k > 90) {
+    return { exhausted: true, reason: `stoch_overbought_${indicators.stoch.k}` };
+  }
+  if (direction === "SHORT" && indicators.stoch.k < 10) {
+    return { exhausted: true, reason: `stoch_oversold_${indicators.stoch.k}` };
+  }
+
+  return { exhausted: false, reason: "trend_healthy" };
 }
 
 // --- PIVOT TARGETS ---
@@ -371,6 +403,7 @@ interface MarketContext {
   price: number;
   now: number;
   trend: { direction: "LONG" | "SHORT" | null };
+  exhaustion: ExhaustionCheck;
   trendline: { price: number; r2: number; type: "support" | "resistance" } | null;
   indicators: Indicators;
   last: Candle;
@@ -401,6 +434,16 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
     return { ctx: null, debug };
   }
 
+  const indicators = buildIndicators(candles4h);
+
+  // v31.1: Exhaustion check BEFORE location/trigger
+  const exhaustion = checkTrendExhaustion(candles1d, trend.direction, indicators);
+  debug.push(`Exhaustion: ${exhaustion.exhausted ? "YES" : "NO"} (${exhaustion.reason})`);
+  if (exhaustion.exhausted) {
+    debug.push(`Rejected: trend_exhaustion — ${exhaustion.reason}`);
+    return { ctx: null, debug };
+  }
+
   const trendline = getTrendline(pair, candles4h);
   if (!trendline) {
     debug.push("No trendline");
@@ -410,8 +453,6 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
   const dist = (price - trendline.price) / trendline.price;
   debug.push(`TL: ${trendline.price.toFixed(1)} | R² ${trendline.r2} | Type: ${trendline.type} | Price: ${price.toFixed(1)} | Dist: ${(dist >= 0 ? "+" : "")}${(dist * 100).toFixed(2)}%`);
-
-  const indicators = buildIndicators(candles4h);
   debug.push(`StochRSI: K ${indicators.stoch.k} | D ${indicators.stoch.d} | ADX ${indicators.adx}`);
 
   return {
@@ -420,6 +461,7 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
       price,
       now: candles4h[candles4h.length - 1].timestamp,
       trend,
+      exhaustion,
       trendline,
       indicators,
       last: candles4h[candles4h.length - 1],
@@ -430,7 +472,6 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
 }
 
 // --- SETUP FINDER ---
-// v31: Simplified. Trend decides direction. Trendline decides location. Stoch decides timing.
 interface Setup {
   type: "ACCUMULATE" | "BREAKOUT";
   scale: "ENTRY_1" | "ADD";
@@ -442,26 +483,22 @@ function findSetup(ctx: MarketContext): Setup | null {
   const tlPrice = trendline.price;
   const dist = (price - tlPrice) / tlPrice;
 
-  const inAccumZone = Math.abs(dist) <= ACCUM_ZONE;     // ±1.5%
-  const inRetestZone = Math.abs(dist) <= RETEST_ZONE;   // ±2%
-  const beyondAccum = Math.abs(dist) > ACCUM_ZONE;      // outside 1.5%
+  const inAccumZone = Math.abs(dist) <= ACCUM_ZONE;
+  const inRetestZone = Math.abs(dist) <= RETEST_ZONE && Math.abs(dist) > ACCUM_ZONE;
+  const beyondAccum = Math.abs(dist) > ACCUM_ZONE;
 
-  // Stoch turning: momentum alignment with trend
   const stochTurning = trend.direction === "LONG"
-    ? indicators.stoch.k > indicators.stoch.d   // K crossing above D = up momentum
-    : indicators.stoch.k < indicators.stoch.d;   // K crossing below D = down momentum
+    ? indicators.stoch.k > indicators.stoch.d
+    : indicators.stoch.k < indicators.stoch.d;
 
-  // Confirming candle: price action in trend direction
   const confirming = trend.direction === "LONG"
     ? last.close > last.open && last.close > prev.close
     : last.close < last.open && last.close < prev.close;
 
-  // ACCUMULATE: near trendline + stoch turning
   if (inAccumZone && stochTurning) {
     return { type: "ACCUMULATE", scale: "ENTRY_1", reason: "TL_accum+stoch_turn" };
   }
 
-  // BREAKOUT: retest (just outside accum zone, within retest zone) + confirming + ADX>20
   if (beyondAccum && inRetestZone && confirming && indicators.adx > 20) {
     return { type: "BREAKOUT", scale: "ADD", reason: "TL_retest+confirm+ADX" };
   }
@@ -469,7 +506,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v31.0 ---
+// --- MAIN SIGNAL v31.1 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -517,7 +554,7 @@ export function generateSignal(
   return { signal: result.signal, market: result.market, debug };
 }
 
-// Build trade with full candle access for pivot targets
+// Build trade
 function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candle[]): { signal: Signal; market: any } | null {
   const { pair, price, now, trend, trendline, indicators } = ctx;
   const tlPrice = trendline.price;
@@ -532,7 +569,6 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
 
   if (setup.type === "ACCUMULATE") {
     entry = price;
-    // ATR × 1.5 stop, using farther of swing or buffer
     const stopBuffer = atrVal * 1.5;
     sl = trend.direction === "LONG"
       ? Math.min(swingLow, entry - stopBuffer)
@@ -589,7 +625,7 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
     stochK: indicators.stoch.k,
     stochD: indicators.stoch.d,
     expectedMove: Math.round(expectedMove * 10) / 10,
-    reason: `${trend.direction} ${setup.type} ${setup.scale} | 1D EMA | Stoch K${indicators.stoch.k} D${indicators.stoch.d} | ${setup.reason} | TP:${targetSource} | RR ${rr.toFixed(2)}`,
+    reason: `${trend.direction} ${setup.type} ${setup.scale} | 1D EMA | Exhaustion:${ctx.exhaustion.reason} | Stoch K${indicators.stoch.k} D${indicators.stoch.d} | ${setup.reason} | TP:${targetSource} | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
   };
@@ -599,6 +635,7 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
     price: Math.round(price * 100) / 100,
     timestamp: now,
     trend: trend.direction,
+    exhaustion: ctx.exhaustion.exhausted ? ctx.exhaustion.reason : "healthy",
     adx: signal.adx,
     rsi: signal.rsi,
     stochK: signal.stochK,
@@ -621,11 +658,19 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
   const trendline = getTrendline(pair, candles4h);
   const tlPrice = trendline ? trendline.price : 0;
   const dist = trendline ? (price - tlPrice) / tlPrice : 1;
+
+  let exhaustion: ExhaustionCheck = { exhausted: false, reason: "no_trend" };
+  if (trend.direction && candles1d.length >= 25) {
+    const indicators = buildIndicators(candles4h);
+    exhaustion = checkTrendExhaustion(candles1d, trend.direction, indicators);
+  }
+
   return {
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
     trend: trend.direction || "NONE",
+    exhaustion: exhaustion.exhausted ? exhaustion.reason : "healthy",
     adx: Math.round(adx(candles4h) * 10) / 10,
     rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
     stochK: stochRsi4h.k,
