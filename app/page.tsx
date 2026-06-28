@@ -22,14 +22,14 @@ interface MarketData {
   pair: string;
   price: number;
   trend: string;
-  trend4h?: string;  // NEW: from backend
+  trend4h?: string;
   adx: number;
   rsi: number;
   stochK: number;
   stochD: number;
   timestamp: number;
   trendlinePrice?: number;
-  distToTrendline?: number;
+  distToTrendline?: number | null;
   ema8?: number;
   ema21?: number;
 }
@@ -125,7 +125,7 @@ function parseTrend(trend?: string): { direction?: string; strength?: string; fu
   return { full: trend };
 }
 
-// ─── Status Badge (like reference image) ─────────────────────────────
+// ─── Status Badge ──────────────────────────────────────────────────────
 
 function StatusBadge({ status, direction }: { status: string; direction: "LONG" | "SHORT" }) {
   const configs: Record<string, { bg: string; text: string; label: string }> = {
@@ -148,7 +148,14 @@ function StatusBadge({ status, direction }: { status: string; direction: "LONG" 
   );
 }
 
-// ─── Signal Card (reference image style) ───────────────────────────────
+// ─── Helper: safe trendline distance display ──────────────────────────
+function formatDist(dist: number | null | undefined): string {
+  if (dist === null || dist === undefined) return "—";
+  const sign = dist > 0 ? "+" : "";
+  return `${sign}${dist.toFixed(2)}%`;
+}
+
+// ─── Signal Card ───────────────────────────────────────────────────────
 
 function SignalCard({ signal, market, livePrice }: {
   signal: Signal;
@@ -164,7 +171,7 @@ function SignalCard({ signal, market, livePrice }: {
   const price = market?.price ?? currentPrice;
   let trend4hDir: string | null = null;
   let trend4hStrength: string = "WEAK";
-  
+
   if (ema8 !== undefined && ema21 !== undefined) {
     trend4hDir = price > ema8 && price > ema21 ? "LONG" : price < ema8 && price < ema21 ? "SHORT" : null;
     const spread = Math.abs(ema8 - ema21) / ema21;
@@ -176,7 +183,7 @@ function SignalCard({ signal, market, livePrice }: {
 
   return (
     <div className="rounded-2xl border border-slate-700/50 bg-slate-900/60 p-6 space-y-5 backdrop-blur-sm">
-      {/* Header with symbol and status */}
+      {/* Header */}
       <div className="flex justify-between items-start">
         <div>
           <h2 className="text-2xl font-bold text-white tracking-tight">{signal.pair}</h2>
@@ -185,7 +192,7 @@ function SignalCard({ signal, market, livePrice }: {
         <StatusBadge status={meta.status} direction={signal.direction} />
       </div>
 
-      {/* Two column layout for trends */}
+      {/* Trends */}
       <div className="grid grid-cols-2 gap-4">
         <div>
           <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">4H Trend</p>
@@ -207,7 +214,7 @@ function SignalCard({ signal, market, livePrice }: {
         </div>
       </div>
 
-      {/* Readiness / Confidence bar */}
+      {/* Confidence */}
       <div>
         <div className="flex justify-between items-center mb-2">
           <span className="text-xs text-slate-500 uppercase tracking-wider">Confidence</span>
@@ -224,10 +231,9 @@ function SignalCard({ signal, market, livePrice }: {
         </div>
       </div>
 
-      {/* Divider */}
+      {/* Trade Setup */}
       <div className="border-t border-slate-700/50 pt-4">
         <p className="text-xs text-slate-500 uppercase tracking-wider mb-3">Trade Setup</p>
-        
         <div className="space-y-3">
           <div className="flex justify-between">
             <span className="text-slate-400 text-sm">Direction</span>
@@ -275,7 +281,7 @@ function SignalCard({ signal, market, livePrice }: {
         </div>
       )}
 
-      {/* TTL and Age */}
+      {/* TTL */}
       <div className="flex gap-3 text-xs">
         <span className="px-2 py-1 rounded bg-slate-800 text-slate-400">
           TTL {meta.ttlRemaining}
@@ -288,14 +294,12 @@ function SignalCard({ signal, market, livePrice }: {
       {/* Market context */}
       {market && (
         <div className="text-sm space-y-2 text-slate-500 border-t border-slate-700/50 pt-4">
-          {market.distToTrendline !== undefined && (
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400">Trendline</span>
-              <span className={Math.abs(market.distToTrendline) < 1.2 ? "text-emerald-400" : Math.abs(market.distToTrendline) < 3 ? "text-yellow-400" : "text-slate-400"}>
-                {money(market.trendlinePrice)} <span className="text-slate-500">({market.distToTrendline > 0 ? "+" : ""}{market.distToTrendline.toFixed(2)}%)</span>
-              </span>
-            </div>
-          )}
+          <div className="flex justify-between items-center">
+            <span className="text-slate-400">Trendline</span>
+            <span className={typeof market.distToTrendline === "number" && Math.abs(market.distToTrendline) < 1.2 ? "text-emerald-400" : typeof market.distToTrendline === "number" && Math.abs(market.distToTrendline) < 3 ? "text-yellow-400" : "text-slate-400"}>
+              {money(market.trendlinePrice)} <span className="text-slate-500">({formatDist(market.distToTrendline)})</span>
+            </span>
+          </div>
 
           <div className="flex justify-between items-center">
             <span className="text-slate-400">Stoch K/D</span>
@@ -314,7 +318,7 @@ function SignalCard({ signal, market, livePrice }: {
   );
 }
 
-// ─── Waiting Card (reference image style) ──────────────────────────────
+// ─── Waiting Card ──────────────────────────────────────────────────────
 
 function WaitingCard({ pair, market, livePrice }: {
   pair: string;
@@ -329,7 +333,7 @@ function WaitingCard({ pair, market, livePrice }: {
   const price = market?.price ?? currentPrice;
   let trend4hDir: string | null = null;
   let trend4hStrength: string = "WEAK";
-  
+
   if (ema8 !== undefined && ema21 !== undefined) {
     trend4hDir = price > ema8 && price > ema21 ? "LONG" : price < ema8 && price < ema21 ? "SHORT" : null;
     const spread = Math.abs(ema8 - ema21) / ema21;
@@ -348,7 +352,7 @@ function WaitingCard({ pair, market, livePrice }: {
         <StatusBadge status="WAITING" direction="LONG" />
       </div>
 
-      {/* Two column layout */}
+      {/* Trends */}
       <div className="grid grid-cols-2 gap-4">
         <div>
           <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">4H Trend</p>
@@ -370,7 +374,7 @@ function WaitingCard({ pair, market, livePrice }: {
         </div>
       </div>
 
-      {/* Readiness bar */}
+      {/* Readiness */}
       <div>
         <div className="flex justify-between items-center mb-2">
           <span className="text-xs text-slate-500 uppercase tracking-wider">Readiness</span>
@@ -384,14 +388,12 @@ function WaitingCard({ pair, market, livePrice }: {
       {/* Market context */}
       {market && (
         <div className="text-sm space-y-2 text-slate-600 border-t border-slate-800/50 pt-4">
-          {market.distToTrendline !== undefined && (
-            <div className="flex justify-between items-center">
-              <span className="text-slate-500">Trendline</span>
-              <span className={Math.abs(market.distToTrendline) < 1.2 ? "text-emerald-400/60" : Math.abs(market.distToTrendline) < 3 ? "text-yellow-400/60" : "text-slate-500"}>
-                {market.distToTrendline > 0 ? "+" : ""}{market.distToTrendline.toFixed(2)}%
-              </span>
-            </div>
-          )}
+          <div className="flex justify-between items-center">
+            <span className="text-slate-500">Trendline</span>
+            <span className={typeof market.distToTrendline === "number" && Math.abs(market.distToTrendline) < 1.2 ? "text-emerald-400/60" : typeof market.distToTrendline === "number" && Math.abs(market.distToTrendline) < 3 ? "text-yellow-400/60" : "text-slate-500"}>
+              {formatDist(market.distToTrendline)}
+            </span>
+          </div>
 
           <div className="flex justify-between items-center">
             <span className="text-slate-500">Stoch K/D</span>
@@ -487,7 +489,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Cards grid: 2 columns × 2 rows */}
+      {/* Cards grid */}
       <div className="grid md:grid-cols-2 gap-6">
         {PAIRS.map((pair) => {
           const signal = signals[pair];
