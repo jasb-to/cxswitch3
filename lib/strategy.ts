@@ -1,7 +1,9 @@
-// lib/strategy.ts — v30.12.1 "Sync market snapshot with trendline invalidation"
+// lib/strategy.ts — v30.13 "Pivot recency filter + distance invalidation"
 // ============================================================
-// Fixed: getMarketSnapshot now applies the same TL_MAX_DIST check as getContext,
-// so the dashboard shows "no trendline" instead of stale +97% values
+// Changes:
+// 1. v30.12: Distance-based trendline invalidation (TL_MAX_DIST = 5%)
+// 2. v30.13: Pivot recency filter — only use pivots from last 60 candles (~10 days)
+//    Prevents ancient pivots from polluting trendline after regime changes
 
 import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -51,7 +53,8 @@ const ADX_EXHAUSTION = 45;
 const STOCH_EXTREME_LONG = 85;
 const STOCH_EXTREME_SHORT = 15;
 const CORRECT_SIDE_BUFFER = 0.015;
-const TL_MAX_DIST = 0.05; // 5% — invalidate trendline if price broke too far
+const TL_MAX_DIST = 0.05; // 5%
+const MAX_PIVOT_AGE_CANDLES = 60; // ~10 days of 4H data
 
 // --- STATE ---
 interface TrendlineState {
@@ -221,7 +224,7 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// --- SWING DETECTION (used for targets and trendline construction) ---
+// --- SWING DETECTION ---
 function findSwingHighs(candles: Candle[]): { index: number; price: number; timestamp: number }[] {
   const highs: { index: number; price: number; timestamp: number }[] = [];
   for (let i = 3; i < candles.length - 3; i++) {
@@ -244,7 +247,7 @@ function findSwingLows(candles: Candle[]): { index: number; price: number; times
   return lows;
 }
 
-// v30.11: Enforce structural consistency — each pivot must follow the trend direction
+// v30.11: Enforce structural consistency
 function enforceTrendStructure(
   pivots: { index: number; price: number; timestamp: number }[],
   direction: "LONG" | "SHORT"
@@ -253,57 +256,73 @@ function enforceTrendStructure(
   const clean = [pivots[0]];
   for (let i = 1; i < pivots.length; i++) {
     const prev = clean[clean.length - 1];
-    // SHORT: each high must be <= prior high + 2% (allows small wicks, rejects higher highs)
-    // LONG: each low must be >= prior low - 2% (allows small wicks, rejects lower lows)
     const valid = direction === "SHORT"
       ? pivots[i].price <= prev.price * 1.02
       : pivots[i].price >= prev.price * 0.98;
-
     if (valid) clean.push(pivots[i]);
   }
   return clean.slice(-5);
 }
 
-// --- TRENDLINE: Directional + structural consistency + log-price regression ---
+// --- TRENDLINE: Directional + structural + recency + log-price regression ---
 function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT", debug: string[]): { price: number; r2: number; age: number } | null {
   const len = candles.length;
   if (len < 20) return null;
-  // v30.11: Directional pivot selection — SHORT uses highs, LONG uses lows
+  
   const rawPivots = direction === "SHORT" ? findSwingHighs(candles) : findSwingLows(candles);
   if (rawPivots.length < 3) return null;
-  // v30.11: Enforce structural consistency (lower highs / higher lows)
+  
   const structuredPivots = enforceTrendStructure(rawPivots, direction);
   if (structuredPivots.length < 3) return null;
-  const recentPivots = structuredPivots.slice(-5);
+  
+  // v30.13: Filter to recent pivots only — prevents ancient regime pivots from polluting trendline
+  const currentIndex = candles.length - 1;
+  const recentPivots = structuredPivots.filter(p => currentIndex - p.index <= MAX_PIVOT_AGE_CANDLES).slice(-5);
+  if (recentPivots.length < 3) {
+    debug.push(`Insufficient recent pivots (${recentPivots.length} < 3, max age ${MAX_PIVOT_AGE_CANDLES})`);
+    return null;
+  }
+  
   const now = candles[candles.length - 1].timestamp;
   const existing = trendlineStore.get(pair);
   let usePivots = recentPivots;
+  
   if (existing && existing.direction === direction && (now - existing.lastUpdated) < TL_MAX_AGE_MS) {
-    const allPivots = [...existing.pivots, ...recentPivots];
-    const seen = new Set<number>();
-    usePivots = allPivots.filter(p => {
-      if (seen.has(p.index)) return false;
-      seen.add(p.index);
-      return true;
-    }).sort((a, b) => a.index - b.index);
+    // v30.13: Only merge stored pivots that are also recent
+    const freshStored = existing.pivots.filter(p => currentIndex - p.index <= MAX_PIVOT_AGE_CANDLES);
+    if (freshStored.length > 0) {
+      const allPivots = [...freshStored, ...recentPivots];
+      const seen = new Set<number>();
+      usePivots = enforceTrendStructure(
+        allPivots.filter(p => {
+          if (seen.has(p.index)) return false;
+          seen.add(p.index);
+          return true;
+        }).sort((a, b) => a.index - b.index),
+        direction
+      ).slice(-5);
+    }
   }
-  // Re-apply structure filter after merge (older pivots may break new structure)
-  usePivots = enforceTrendStructure(usePivots, direction);
+  
   if (usePivots.length < 3) return null;
+  
   debug.push(`Pivots: ${usePivots.map(p => `${p.index}: ${p.price.toFixed(1)}`).join(",")}`);
-  // Log-price regression for scale-independent crypto trendlines
+  
   const points = usePivots.map((p, idx) => ({ x: idx, y: Math.log(p.price) }));
   const regression = linearRegression(points);
   if (!regression) return null;
+  
   debug.push(`R2 raw=${regression.rawR2.toFixed(4)} clamped=${regression.r2.toFixed(4)} slope=${regression.slope.toFixed(6)} pivots=${points.length}`);
+  
   trendlineStore.set(pair, {
     pivots: usePivots,
     lastUpdated: now,
     direction,
   });
-  const currentIndex = usePivots.length - 1;
+  
+  const regressionIndex = usePivots.length - 1;
   return {
-    price: Math.exp(regression.slope * currentIndex + regression.intercept),
+    price: Math.exp(regression.slope * regressionIndex + regression.intercept),
     r2: Math.round(regression.r2 * 100) / 100,
     age: 0,
   };
@@ -325,7 +344,7 @@ function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; str
   return { direction, strength };
 }
 
-// --- 4H TREND (confidence only) ---
+// --- 4H TREND ---
 function trend4H(candles4h: Candle[]): { direction: "LONG" | "SHORT" | null } {
   const len = candles4h.length;
   if (len < 25) return { direction: null };
@@ -335,7 +354,7 @@ function trend4H(candles4h: Candle[]): { direction: "LONG" | "SHORT" | null } {
   return { direction: ema8[ema8.length - 1] > ema21[ema21.length - 1] ? "LONG" : "SHORT" };
 }
 
-// --- PIVOT TARGETS (Single MIN_RR threshold) ---
+// --- PIVOT TARGETS ---
 function getPivotTarget(
   candles4h: Candle[],
   direction: "LONG" | "SHORT",
@@ -469,7 +488,7 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
   const dist = (price - trendline.price) / trendline.price;
   debug.push(`TL: ${trendline.price.toFixed(1)} | R² ${trendline.r2} | Price: ${price.toFixed(1)} | Dist: ${(dist >= 0 ? "+" : "")}${(dist * 100).toFixed(2)}%`);
   
-  // v30.12: Distance-based trendline invalidation
+  // v30.12: Distance-based invalidation
   if (t1d.direction === "SHORT" && dist > TL_MAX_DIST) {
     debug.push(`Trendline too far below price (${(dist * 100).toFixed(2)}% > ${(TL_MAX_DIST * 100).toFixed(0)}%), likely broken structure`);
     trendlineStore.delete(pair);
@@ -499,7 +518,7 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
   };
 }
 
-// --- SETUP FINDER (ATR-scaled nearTrendline) ---
+// --- SETUP FINDER ---
 interface Setup {
   type: "ACCUMULATE" | "BREAKOUT";
   scale: "ENTRY_1" | "ADD";
@@ -548,7 +567,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v30.12 ---
+// --- MAIN SIGNAL ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -605,7 +624,7 @@ export function generateSignal(
   return { signal: result.signal, market: result.market, debug };
 }
 
-// Build trade (Bounded stops + spread confidence)
+// Build trade
 function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candle[]): { signal: Signal; market: any } | null {
   const { pair, price, now, t1d, t4h, trendline, indicators } = ctx;
   const tlPrice = trendline.price;
@@ -618,7 +637,6 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
 
   if (setup.type === "ACCUMULATE") {
     entry = price;
-    // Bounded stops: trendline invalidation with ATR cap
     sl = t1d.direction === "LONG"
       ? Math.max(entry - atrVal * 1.2, tlPrice * 0.992)
       : Math.min(entry + atrVal * 1.2, tlPrice * 1.008);
@@ -655,7 +673,6 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
   if (rr < MIN_RR) return null;
 
-  // Spread confidence: 50 base, +10 per quality factor
   let confidence = 50;
   if (rr > 2.0) confidence += 10;
   const stochTurning = t1d.direction === "LONG"
@@ -714,7 +731,6 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
   const stochRsi4h = stochRsi(candles4h.map(c => c.close));
   const price = candles4h[candles4h.length - 1].close;
   
-  // v30.12.1: Apply same distance-based invalidation to keep UI in sync with signal logic
   let tlPrice = 0;
   let dist = 1;
   if (t1d.direction) {
@@ -745,7 +761,7 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
   };
 }
 
-// --- VALIDITY (Extended TTL) ---
+// --- VALIDITY ---
 export interface ValidityCheck {
   valid: boolean;
   reason: string;
