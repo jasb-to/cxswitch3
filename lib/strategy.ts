@@ -1,10 +1,21 @@
-// lib/strategy.ts — v31.6 "Unified Structure Detection"
+// lib/strategy.ts — v31.0 "Simplified: Trend → Location → Trigger"
 // ============================================================
-// 1D and 4H both use same higherLow/lowerHigh + confirmation logic
-// 4H is more sensitive (fewer bars, tighter thresholds)
-// Trendline: timestamp-based 2-point extrapolation from swing points
-
-import { getTrendlineState, setTrendlineState } from "@/lib/state";
+// CHANGES FROM v30.3:
+// 1. TREND: Single source of truth — 1D EMA 8/21 only
+//    - Removed 4H direction filtering
+//    - Removed HH/HL swing structure logic
+//    - Removed trendline direction state (trendline is location-only)
+// 2. TRENDLINE: Pure location tool, never decides direction
+//    - Removed persisted trendline direction state
+//    - Lowered R² filter: 0.65 → 0.30 (only reject extremely poor fits)
+//    - ±1.5% accumulation zone, ±2% retest zone
+// 3. ENTRIES simplified:
+//    - ACCUMULATE: near TL + stoch turning (K>D LONG / K<D SHORT)
+//    - BREAKOUT: retest + confirming candle + ADX>20
+//    - Removed "correct side" hard gate (trend already decides direction)
+//    - Removed stoch extreme standalone trigger
+// 4. STATE: KV persistence removed for trendlines, kept for signals only
+// 5. Philosophy: Trend decides direction. Trendline decides location. Stoch decides timing.
 
 export interface Candle {
   timestamp: number;
@@ -46,37 +57,36 @@ export const CURRENT_SIGNAL_VERSION = 31;
 
 // --- CONFIG ---
 const MIN_RR = 1.5;
+const MIN_R2 = 0.30;           // v31: only reject extremely poor fits
 const TL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const ACCUM_ZONE = 0.015;      // ±1.5% of trendline
+const RETEST_ZONE = 0.02;      // ±2% of trendline
 
-// --- STATE ---
-interface TrendlineState {
-  pivots: { index: number; price: number; timestamp: number }[];
-  lastUpdated: number;
-  direction: "LONG" | "SHORT";
-}
-
-const trendlineStore: Map<string, TrendlineState> = new Map();
-
-export async function loadTrendlinesFromKV(): Promise<void> {
-  const state = await getTrendlineState();
-  trendlineStore.clear();
-  for (const [pair, data] of Object.entries(state)) {
-    trendlineStore.set(pair, data as TrendlineState);
-  }
-}
-
-export async function saveTrendlinesToKV(): Promise<void> {
-  const state: Record<string, any> = {};
-  for (const [pair, data] of trendlineStore.entries()) {
-    state[pair] = data;
-  }
-  await setTrendlineState(state);
-}
+// --- STATE: Removed. Trendlines are computed fresh each run. ---
+// No persisted trendline state. No KV load/save for trendlines.
 
 // --- MATH UTILS ---
 function avg(arr: number[]): number {
   if (!arr.length) return 0;
   return arr.reduce((a, b) => a + b, 0) / arr.length;
+}
+
+function linearRegression(points: { x: number; y: number }[]): { slope: number; intercept: number; r2: number } | null {
+  const n = points.length;
+  if (n < 2) return null;
+  const sumX = points.reduce((s, p) => s + p.x, 0);
+  const sumY = points.reduce((s, p) => s + p.y, 0);
+  const sumXY = points.reduce((s, p) => s + p.x * p.y, 0);
+  const sumX2 = points.reduce((s, p) => s + p.x * p.x, 0);
+  const denom = n * sumX2 - sumX * sumX;
+  if (Math.abs(denom) < 1e-9) return null;
+  const slope = (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
+  const yMean = sumY / n;
+  const ssTotal = points.reduce((s, p) => s + Math.pow(p.y - yMean, 2), 0);
+  const ssResidual = points.reduce((s, p) => s + Math.pow(p.y - (slope * p.x + intercept), 2), 0);
+  const r2 = ssTotal === 0 ? 0 : 1 - (ssResidual / ssTotal);
+  return { slope, intercept, r2 };
 }
 
 // --- INDICATORS ---
@@ -116,9 +126,9 @@ function rsiSeries(closes: number[], period: number = 14): number[] {
   return series;
 }
 
-function stochRsi(closes: number[], rsiPeriod: number = 14, stochPeriod: number = 14, kSmooth: number = 3, dSmooth: number = 3): { k: number; d: number; prevK: number; prevD: number } {
+function stochRsi(closes: number[], rsiPeriod: number = 14, stochPeriod: number = 14, kSmooth: number = 3, dSmooth: number = 3): { k: number; d: number } {
   const rsiValues = rsiSeries(closes, rsiPeriod);
-  if (rsiValues.length < stochPeriod + kSmooth - 1 + dSmooth) return { k: 50, d: 50, prevK: 50, prevD: 50 };
+  if (rsiValues.length < stochPeriod + kSmooth - 1) return { k: 50, d: 50 };
   const rawK: number[] = [];
   for (let i = stochPeriod - 1; i < rsiValues.length; i++) {
     const window = rsiValues.slice(i - stochPeriod + 1, i + 1);
@@ -129,14 +139,8 @@ function stochRsi(closes: number[], rsiPeriod: number = 14, stochPeriod: number 
   for (let i = kSmooth - 1; i < rawK.length; i++) {
     kValues.push(avg(rawK.slice(i - kSmooth + 1, i + 1)));
   }
-  if (kValues.length < dSmooth + 1) return { k: 50, d: 50, prevK: 50, prevD: 50 };
-  const prevD = avg(kValues.slice(-(dSmooth + 1), -1));
-  return { 
-    k: Math.round(kValues[kValues.length - 1] * 10) / 10, 
-    d: Math.round(avg(kValues.slice(-dSmooth)) * 10) / 10,
-    prevK: Math.round(kValues[kValues.length - 2] * 10) / 10,
-    prevD: Math.round(prevD * 10) / 10,
-  };
+  if (kValues.length < dSmooth) return { k: 50, d: 50 };
+  return { k: Math.round(kValues[kValues.length - 1] * 10) / 10, d: Math.round(avg(kValues.slice(-dSmooth)) * 10) / 10 };
 }
 
 function wilderSmooth(values: number[], period: number): number[] {
@@ -161,12 +165,11 @@ function adx(candles: Candle[], period: number = 14): number {
   const minusDISmooth = wilderSmooth(minusDMs, period);
   const dxValues: number[] = [];
   for (let i = 0; i < atrSmooth.length; i++) {
-    if (atrSmooth[i] <= 0) continue;
     const pDI = (plusDISmooth[i] / atrSmooth[i]) * 100;
     const mDI = (minusDISmooth[i] / atrSmooth[i]) * 100;
     dxValues.push((pDI + mDI === 0) ? 0 : (Math.abs(pDI - mDI) / (pDI + mDI)) * 100);
   }
-  return dxValues.length === 0 ? 0 : Math.round(wilderSmooth(dxValues, period).slice(-1)[0] * 10) / 10;
+  return Math.round(wilderSmooth(dxValues, period).slice(-1)[0] * 10) / 10;
 }
 
 function ema(closes: number[], period: number): number[] {
@@ -191,9 +194,9 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
   const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
   const groups: Map<string, Candle[]> = new Map();
   for (const c of sorted) {
-    const dayKey = Math.floor(c.timestamp / 86400000).toString();
-    if (!groups.has(dayKey)) groups.set(dayKey, []);
-    groups.get(dayKey)!.push(c);
+    const key = `${new Date(c.timestamp).getUTCFullYear()}-${new Date(c.timestamp).getUTCMonth()}-${new Date(c.timestamp).getUTCDate()}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(c);
   }
   const daily: Candle[] = [];
   for (const [, bars] of groups) {
@@ -203,225 +206,95 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// --- SWING DETECTION ---
-function findSwingLows(candles: Candle[]): { price: number; index: number; timestamp: number }[] {
-  const lows: { price: number; index: number; timestamp: number }[] = [];
-  for (let i = 2; i < candles.length - 2; i++) {
+// --- PIVOTS: Used for trendline regression and targets ---
+function findPivots(candles: Candle[], direction: "LONG" | "SHORT"): { index: number; price: number; timestamp: number }[] {
+  const pivots: { index: number; price: number; timestamp: number }[] = [];
+  for (let i = 3; i < candles.length - 3; i++) {
     const c = candles[i];
-    if (c.low < candles[i-1].low && c.low < candles[i-2].low && c.low < candles[i+1].low && c.low < candles[i+2].low) {
-      lows.push({ price: c.low, index: i, timestamp: c.timestamp });
-    }
+    const isSwingLow = c.low < candles[i-1].low && c.low < candles[i-2].low && c.low < candles[i+1].low && c.low < candles[i+2].low;
+    const isSwingHigh = c.high > candles[i-1].high && c.high > candles[i-2].high && c.high > candles[i+1].high && c.high > candles[i+2].high;
+    if (direction === "LONG" && isSwingLow) pivots.push({ index: i, price: c.low, timestamp: c.timestamp });
+    if (direction === "SHORT" && isSwingHigh) pivots.push({ index: i, price: c.high, timestamp: c.timestamp });
   }
-  return lows;
+  return pivots;
 }
 
-function findSwingHighs(candles: Candle[]): { price: number; index: number; timestamp: number }[] {
-  const highs: { price: number; index: number; timestamp: number }[] = [];
-  for (let i = 2; i < candles.length - 2; i++) {
+function findSwingHighs(candles: Candle[]): { price: number; index: number }[] {
+  const highs: { price: number; index: number }[] = [];
+  for (let i = 3; i < candles.length - 3; i++) {
     const c = candles[i];
     if (c.high > candles[i-1].high && c.high > candles[i-2].high && c.high > candles[i+1].high && c.high > candles[i+2].high) {
-      highs.push({ price: c.high, index: i, timestamp: c.timestamp });
+      highs.push({ price: c.high, index: i });
     }
   }
   return highs;
 }
 
-// --- UNIFIED TREND DETECTION ---
-// Uses actual swing highs/lows for HH/HL and LH/LL structure
-interface TrendConfig {
-  lookback: number;
-  hlBars: number;
-  confirmBars: number;
-  confirmThreshold: number;
+function findSwingLows(candles: Candle[]): { price: number; index: number }[] {
+  const lows: { price: number; index: number }[] = [];
+  for (let i = 3; i < candles.length - 3; i++) {
+    const c = candles[i];
+    if (c.low < candles[i-1].low && c.low < candles[i-2].low && c.low < candles[i+1].low && c.low < candles[i+2].low) {
+      lows.push({ price: c.low, index: i });
+    }
+  }
+  return lows;
 }
 
-const TREND_CONFIG_1D: TrendConfig = {
-  lookback: 7,
-  hlBars: 2,
-  confirmBars: 5,
-  confirmThreshold: 3,
-};
-
-const TREND_CONFIG_4H: TrendConfig = {
-  lookback: 10,
-  hlBars: 3,
-  confirmBars: 5,
-  confirmThreshold: 3,
-};
-
-function detectTrend(candles: Candle[], config: TrendConfig): { direction: "LONG" | "SHORT" | null; strength: string } {
-  const len = candles.length;
-  if (len < config.lookback + 5) return { direction: null, strength: "WEAK" };
-
-  const closes = candles.map(c => c.close);
-  const ema8Arr = ema(closes, 8);
-  const ema21Arr = ema(closes, 21);
-  const ema8Now = ema8Arr[ema8Arr.length - 1];
-  const ema21Now = ema21Arr[ema21Arr.length - 1];
-  const ema8Prev3 = ema8Arr[ema8Arr.length - 4];
-  const ema21Prev3 = ema21Arr[ema21Arr.length - 4];
-
-  const emaCrossLong = ema8Now > ema21Now;
-  const emaCrossShort = ema8Now < ema21Now;
-
-  const emaCurlLong = ema8Now > ema8Prev3 && (ema21Now - ema8Now) < (ema21Prev3 - ema8Prev3);
-  const emaCurlShort = ema8Now < ema8Prev3 && (ema8Now - ema21Now) < (ema8Prev3 - ema21Prev3);
-
-  // Use actual swing points for HH/HL and LH/LL detection
-  const swingLows = findSwingLows(candles);
-  const swingHighs = findSwingHighs(candles);
-
-  const recentSwingLows = swingLows.slice(-config.lookback);
-  const recentSwingHighs = swingHighs.slice(-config.lookback);
-
-  // Higher Lows: last 2 swing lows are ascending (lowered from 3)
-  let higherLows = false;
-  if (recentSwingLows.length >= 2) {
-    higherLows = recentSwingLows[recentSwingLows.length - 1].price > recentSwingLows[recentSwingLows.length - 2].price;
-  }
-
-  // Lower Highs: last 2 swing highs are descending (lowered from 3)
-  let lowerHighs = false;
-  if (recentSwingHighs.length >= 2) {
-    lowerHighs = recentSwingHighs[recentSwingHighs.length - 1].price < recentSwingHighs[recentSwingHighs.length - 2].price;
-  }
-
-  // Higher Highs: last swing high > previous swing high
-  let higherHighs = false;
-  if (recentSwingHighs.length >= 2) {
-    higherHighs = recentSwingHighs[recentSwingHighs.length - 1].price > recentSwingHighs[recentSwingHighs.length - 2].price;
-  }
-
-  // Lower Lows: last swing low < previous swing low
-  let lowerLows = false;
-  if (recentSwingLows.length >= 2) {
-    lowerLows = recentSwingLows[recentSwingLows.length - 1].price < recentSwingLows[recentSwingLows.length - 2].price;
-  }
-
-  // Price action confirmation — ratio-based to avoid off-by-one
-  const recentCloses = closes.slice(-config.confirmBars);
-  const higherCount = recentCloses.filter((c, i, arr) => i > 0 && c > arr[i-1]).length;
-  const lowerCount = recentCloses.filter((c, i, arr) => i > 0 && c < arr[i-1]).length;
-  const totalComparisons = recentCloses.length - 1;
-  const higherCloses = totalComparisons > 0 && (higherCount / totalComparisons) >= (config.confirmThreshold / (config.confirmBars - 1));
-  const lowerCloses = totalComparisons > 0 && (lowerCount / totalComparisons) >= (config.confirmThreshold / (config.confirmBars - 1));
-
-  // Breakout checks — exclude current candle from lookback
-  const lookbackBars = candles.slice(-(config.lookback + 1), -1);
-  const periodHigh = Math.max(...lookbackBars.map(c => c.high));
-  const periodLow = Math.min(...lookbackBars.map(c => c.low));
-  const brokeHigh = candles[candles.length - 1].high > periodHigh;
-  const brokeLow = candles[candles.length - 1].low < periodLow;
-
-  const longConfirmations = [brokeHigh, higherCloses, emaCurlLong, higherHighs].filter(Boolean).length;
-  const shortConfirmations = [brokeLow, lowerCloses, emaCurlShort, lowerHighs].filter(Boolean).length;
-
-  // LONG: Higher Lows structure + confirmations
-  if (higherLows) {
-    if (emaCrossLong && longConfirmations >= 2) return { direction: "LONG", strength: "STRONG" };
-    if (emaCrossLong || longConfirmations >= 1) return { direction: "LONG", strength: "MEDIUM" };
-    return { direction: "LONG", strength: "WEAK" };
-  }
-
-  // SHORT: Lower Highs structure + confirmations
-  if (lowerHighs) {
-    if (emaCrossShort && shortConfirmations >= 2) return { direction: "SHORT", strength: "STRONG" };
-    if (emaCrossShort || shortConfirmations >= 1) return { direction: "SHORT", strength: "MEDIUM" };
-    return { direction: "SHORT", strength: "WEAK" };
-  }
-
-  // No clear structure — check for breakout momentum
-  if (brokeHigh && emaCrossLong && higherCloses) return { direction: "LONG", strength: "WEAK" };
-  if (brokeLow && emaCrossShort && lowerCloses) return { direction: "SHORT", strength: "WEAK" };
-
-  return { direction: null, strength: "NONE" };
-}
-
-function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string } {
-  return detectTrend(candles1d, TREND_CONFIG_1D);
-}
-
-function trend4H(candles4h: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string } {
-  return detectTrend(candles4h, TREND_CONFIG_4H);
-}
-
-// --- TRENDLINE: Timestamp-based 2-point extrapolation with pivot validation ---
-function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number; age: number } | null {
+// --- TRENDLINE: Stateless regression, direction-agnostic ---
+// v31: Trendline is location-only. We compute TWO trendlines (LONG pivots and SHORT pivots)
+// and pick the one with better R². The trendline NEVER decides direction — EMA does.
+function getTrendline(pair: string, candles: Candle[]): { price: number; r2: number; type: "support" | "resistance" } | null {
   const len = candles.length;
   if (len < 20) return null;
 
-  const swings = direction === "LONG" ? findSwingLows(candles) : findSwingHighs(candles);
-  if (swings.length < 2) return null;
+  // Compute both support (swing lows) and resistance (swing highs) trendlines
+  const longPivots = findPivots(candles, "LONG");
+  const shortPivots = findPivots(candles, "SHORT");
 
-  const recentSwings = swings.slice(-3);
-  const now = candles[candles.length - 1].timestamp;
+  let bestLine: { price: number; r2: number; type: "support" | "resistance" } | null = null;
 
-  const existing = trendlineStore.get(pair);
-  let useSwings = recentSwings;
+  if (longPivots.length >= 3) {
+    const recentPivots = longPivots.slice(-5);
+    const points = recentPivots.map(p => ({ x: p.index, y: p.price }));
+    const regression = linearRegression(points);
+    if (regression) {
+      const currentIndex = len - 1;
+      bestLine = {
+        price: regression.slope * currentIndex + regression.intercept,
+        r2: Math.round(regression.r2 * 100) / 100,
+        type: "support",
+      };
+    }
+  }
 
-  if (existing && existing.direction === direction && (now - existing.lastUpdated) < TL_MAX_AGE_MS) {
-    // Validate existing trendline against ALL recent pivots, not just latest
-    const s1 = existing.pivots[existing.pivots.length - 2];
-    const s2 = existing.pivots[existing.pivots.length - 1];
-    if (s1 && s2 && s2.timestamp !== s1.timestamp) {
-      const slope = (s2.price - s1.price) / (s2.timestamp - s1.timestamp);
-      const intercept = s2.price - slope * s2.timestamp;
-
-      const validPivots = recentSwings.filter(p => {
-        const expectedPrice = slope * p.timestamp + intercept;
-        return Math.abs(p.price - expectedPrice) / p.price < 0.02;
-      });
-
-      // Require newest pivot to validate — prevents ghost trendlines after regime change
-      const newestValid = validPivots.some(p => p.timestamp === recentSwings[recentSwings.length - 1]?.timestamp);
-      if (!newestValid) return null;
-
-      // Only keep existing if at least 3 pivots validate it
-      if (validPivots.length >= 3 || (existing.pivots.length >= 3 && validPivots.length >= 2)) {
-        const all = [...existing.pivots.map(p => ({ price: p.price, index: p.index, timestamp: p.timestamp })), ...recentSwings];
-        const seen = new Set<number>();
-        useSwings = all.filter(s => {
-          if (seen.has(s.timestamp)) return false;
-          seen.add(s.timestamp);
-          return true;
-        }).slice(-3);
+  if (shortPivots.length >= 3) {
+    const recentPivots = shortPivots.slice(-5);
+    const points = recentPivots.map(p => ({ x: p.index, y: p.price }));
+    const regression = linearRegression(points);
+    if (regression) {
+      const currentIndex = len - 1;
+      const price = regression.slope * currentIndex + regression.intercept;
+      const r2 = Math.round(regression.r2 * 100) / 100;
+      if (!bestLine || r2 > bestLine.r2) {
+        bestLine = { price, r2, type: "resistance" };
       }
     }
   }
 
-  if (useSwings.length < 2) return null;
-  const s1 = useSwings[useSwings.length - 2];
-  const s2 = useSwings[useSwings.length - 1];
+  return bestLine;
+}
 
-  // Guard: prevent division by zero
-  if (s2.timestamp === s1.timestamp) return null;
-
-  const slope = (s2.price - s1.price) / (s2.timestamp - s1.timestamp);
-  const extrapolatedPrice = s2.price + slope * (now - s2.timestamp);
-
-  const recentClose = candles[len - 1].close;
-  const dist = Math.abs(extrapolatedPrice - recentClose) / recentClose;
-  if (dist > 0.15) return null;
-
-  let r2 = 1;
-  if (useSwings.length >= 3) {
-    const s0 = useSwings[useSwings.length - 3];
-    const expectedS0 = s2.price + slope * (s0.timestamp - s2.timestamp);
-    const error = Math.abs(s0.price - expectedS0) / s0.price;
-    r2 = Math.max(0, 1 - error * 10);
-  }
-
-  trendlineStore.set(pair, {
-    pivots: useSwings.map(s => ({ index: s.index, price: s.price, timestamp: s.timestamp })),
-    lastUpdated: now,
-    direction,
-  });
-
-  return {
-    price: Math.round(extrapolatedPrice * 100) / 100,
-    r2: Math.round(r2 * 100) / 100,
-    age: 0,
-  };
+// --- 1D TREND: Single source of truth ---
+// v31: EMA 8/21 crossover ONLY. No HH/HL. No swing structure.
+function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null } {
+  const len = candles1d.length;
+  if (len < 25) return { direction: null };
+  const closes = candles1d.map(c => c.close);
+  const ema8 = ema(closes, 8);
+  const ema21 = ema(closes, 21);
+  const direction = ema8[ema8.length - 1] > ema21[ema21.length - 1] ? "LONG" : "SHORT";
+  return { direction };
 }
 
 // --- PIVOT TARGETS ---
@@ -447,7 +320,9 @@ function getPivotTarget(
       const rr = (highestHigh - entry) / (entry - sl);
       if (rr >= minRR * 0.75) return { target: highestHigh, source: "extended_pivot_high" };
     }
-    return null;
+    const atrTarget = entry + atrVal * 2;
+    const atrRR = (atrTarget - entry) / (entry - sl);
+    if (atrRR >= minRR) return { target: atrTarget, source: "atr_x2" };
   } else {
     const validLows = swingLows.filter(l => l.price < entry).sort((a, b) => b.price - a.price);
     for (const low of validLows) {
@@ -459,14 +334,17 @@ function getPivotTarget(
       const rr = (entry - lowestLow) / (sl - entry);
       if (rr >= minRR * 0.75) return { target: lowestLow, source: "extended_pivot_low" };
     }
-    return null;
+    const atrTarget = entry - atrVal * 2;
+    const atrRR = (entry - atrTarget) / (sl - entry);
+    if (atrRR >= minRR) return { target: atrTarget, source: "atr_x2" };
   }
+  return null;
 }
 
 // --- INDICATOR BUNDLE ---
 interface Indicators {
   rsi: number;
-  stoch: { k: number; d: number; prevK: number; prevD: number };
+  stoch: { k: number; d: number };
   adx: number;
   ema8: number;
   ema21: number;
@@ -492,9 +370,8 @@ interface MarketContext {
   pair: string;
   price: number;
   now: number;
-  t1d: { direction: "LONG" | "SHORT" | null; strength: string };
-  t4h: { direction: "LONG" | "SHORT" | null; strength: string };
-  trendline: { price: number; r2: number } | null;
+  trend: { direction: "LONG" | "SHORT" | null };
+  trendline: { price: number; r2: number; type: "support" | "resistance" } | null;
   indicators: Indicators;
   last: Candle;
   prev: Candle;
@@ -516,16 +393,15 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
     return { ctx: null, debug };
   }
 
-  const t1d = trend1D(candles1d);
-  const t4h = trend4H(candles4h);
-  debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength} | 4H: ${t4h.direction || "NONE"} ${t4h.strength}`);
+  const trend = trend1D(candles1d);
+  debug.push(`1D EMA: ${trend.direction || "NONE"}`);
 
-  if (!t1d.direction) {
-    debug.push("1D trend unclear (no structure)");
+  if (!trend.direction) {
+    debug.push("1D trend unclear");
     return { ctx: null, debug };
   }
 
-  const trendline = getTrendline(pair, candles4h, t1d.direction);
+  const trendline = getTrendline(pair, candles4h);
   if (!trendline) {
     debug.push("No trendline");
     return { ctx: null, debug };
@@ -533,18 +409,17 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
 
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
   const dist = (price - trendline.price) / trendline.price;
-  debug.push(`TL: ${trendline.price.toFixed(1)} | R² ${trendline.r2} | Price: ${price.toFixed(1)} | Dist to TL: ${(dist >= 0 ? "+" : "")}${(dist * 100).toFixed(2)}%`);
+  debug.push(`TL: ${trendline.price.toFixed(1)} | R² ${trendline.r2} | Type: ${trendline.type} | Price: ${price.toFixed(1)} | Dist: ${(dist >= 0 ? "+" : "")}${(dist * 100).toFixed(2)}%`);
 
   const indicators = buildIndicators(candles4h);
-  debug.push(`StochRSI: K ${indicators.stoch.k} | D ${indicators.stoch.d}`);
+  debug.push(`StochRSI: K ${indicators.stoch.k} | D ${indicators.stoch.d} | ADX ${indicators.adx}`);
 
   return {
     ctx: {
       pair,
       price,
       now: candles4h[candles4h.length - 1].timestamp,
-      t1d,
-      t4h,
+      trend,
       trendline,
       indicators,
       last: candles4h[candles4h.length - 1],
@@ -555,6 +430,7 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
 }
 
 // --- SETUP FINDER ---
+// v31: Simplified. Trend decides direction. Trendline decides location. Stoch decides timing.
 interface Setup {
   type: "ACCUMULATE" | "BREAKOUT";
   scale: "ENTRY_1" | "ADD";
@@ -562,67 +438,38 @@ interface Setup {
 }
 
 function findSetup(ctx: MarketContext): Setup | null {
-  const { price, t1d, t4h, trendline, indicators, last, prev } = ctx;
+  const { price, trend, trendline, indicators, last, prev } = ctx;
   const tlPrice = trendline.price;
   const dist = (price - tlPrice) / tlPrice;
 
-  // Require 1D and 4H alignment — allow 4H NONE for accumulation phases
-  const aligned = !t4h.direction || t1d.direction === t4h.direction;
-  if (!aligned) return null;
+  const inAccumZone = Math.abs(dist) <= ACCUM_ZONE;     // ±1.5%
+  const inRetestZone = Math.abs(dist) <= RETEST_ZONE;   // ±2%
+  const beyondAccum = Math.abs(dist) > ACCUM_ZONE;      // outside 1.5%
 
-  // Directional trendline distance check
-  const nearTrendline = t1d.direction === "LONG"
-    ? dist > -0.012 && dist < 0.003   // LONG: near or slightly below support
-    : dist < 0.012 && dist > -0.003;  // SHORT: near or slightly above resistance
+  // Stoch turning: momentum alignment with trend
+  const stochTurning = trend.direction === "LONG"
+    ? indicators.stoch.k > indicators.stoch.d   // K crossing above D = up momentum
+    : indicators.stoch.k < indicators.stoch.d;   // K crossing below D = down momentum
 
-  // ENTRY_1: extreme OR turning with confirmed crossover direction
-  const stochExtreme = t1d.direction === "LONG"
-    ? indicators.stoch.k < 20
-    : indicators.stoch.k > 80;
-
-  // Require actual crossover: prevK <= prevD && currK > currD for LONG, opposite for SHORT
-  const stochTurning = t1d.direction === "LONG"
-    ? indicators.stoch.prevK <= indicators.stoch.prevD && indicators.stoch.k > indicators.stoch.d
-    : indicators.stoch.prevK >= indicators.stoch.prevD && indicators.stoch.k < indicators.stoch.d;
-
-  const accumulateReady = nearTrendline && (stochExtreme || stochTurning);
-
-  if (accumulateReady) {
-    return { type: "ACCUMULATE", scale: "ENTRY_1", reason: stochExtreme ? "TL+stoch_extreme" : "TL+stoch_turn" };
-  }
-
-  // ADD: retest zone
-  const inRetestZone = t1d.direction === "LONG"
-    ? price > tlPrice * 1.005 && price < tlPrice * 1.02 && dist > 0
-    : price < tlPrice * 0.995 && price > tlPrice * 0.98 && dist < 0;
-
-  const confirming = t1d.direction === "LONG"
+  // Confirming candle: price action in trend direction
+  const confirming = trend.direction === "LONG"
     ? last.close > last.open && last.close > prev.close
     : last.close < last.open && last.close < prev.close;
 
-  const emaAligned = t1d.direction === "LONG"
-    ? price > indicators.ema8 && price > indicators.ema21
-    : price < indicators.ema8 && price < indicators.ema21;
-
-  if (inRetestZone && confirming && emaAligned && indicators.adx > 20) {
-    return { type: "BREAKOUT", scale: "ADD", reason: "Retest+ADX" };
+  // ACCUMULATE: near trendline + stoch turning
+  if (inAccumZone && stochTurning) {
+    return { type: "ACCUMULATE", scale: "ENTRY_1", reason: "TL_accum+stoch_turn" };
   }
 
-  // ADD: trend continuation
-  const inBreakoutZone = t1d.direction === "LONG"
-    ? dist > 0.02 && dist < 0.20
-    : dist < -0.02 && dist > -0.20;
-
-  const trendStrongEnough = t1d.strength === "MEDIUM" || t1d.strength === "STRONG";
-
-  if (inBreakoutZone && trendStrongEnough && emaAligned && indicators.adx > 25) {
-    return { type: "BREAKOUT", scale: "ADD", reason: "Trend_continuation" };
+  // BREAKOUT: retest (just outside accum zone, within retest zone) + confirming + ADX>20
+  if (beyondAccum && inRetestZone && confirming && indicators.adx > 20) {
+    return { type: "BREAKOUT", scale: "ADD", reason: "TL_retest+confirm+ADX" };
   }
 
   return null;
 }
 
-// --- MAIN SIGNAL v31.6 ---
+// --- MAIN SIGNAL v31.0 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -631,45 +478,36 @@ export function generateSignal(
   const { ctx, debug } = getContext(pair, candles4h, currentPrice);
   if (!ctx) return { debug };
 
+  if (ctx.trendline.r2 < MIN_R2) {
+    debug.push(`Rejected: R² ${ctx.trendline.r2} < ${MIN_R2} (extremely poor fit)`);
+    return { debug };
+  }
+
   const setup = findSetup(ctx);
   if (!setup) {
     const dist = (ctx.price - ctx.trendline.price) / ctx.trendline.price;
-    const aligned = !ctx.t4h.direction || ctx.t1d.direction === ctx.t4h.direction;
-    const nearTrendline = ctx.t1d.direction === "LONG"
-      ? dist > -0.012 && dist < 0.003
-      : dist < 0.012 && dist > -0.003;
-    const stochTurning = ctx.t1d.direction === "LONG"
-      ? ctx.indicators.stoch.prevK <= ctx.indicators.stoch.prevD && ctx.indicators.stoch.k > ctx.indicators.stoch.d
-      : ctx.indicators.stoch.prevK >= ctx.indicators.stoch.prevD && ctx.indicators.stoch.k < ctx.indicators.stoch.d;
-    const stochExtreme = ctx.t1d.direction === "LONG"
-      ? ctx.indicators.stoch.k < 20
-      : ctx.indicators.stoch.k > 80;
-    const inBreakout = ctx.t1d.direction === "LONG"
-      ? dist > 0.02 && dist < 0.20
-      : dist < -0.02 && dist > -0.20;
+    const inAccum = Math.abs(dist) <= ACCUM_ZONE;
+    const inRetest = Math.abs(dist) <= RETEST_ZONE && Math.abs(dist) > ACCUM_ZONE;
+    const stochTurning = ctx.trend.direction === "LONG"
+      ? ctx.indicators.stoch.k > ctx.indicators.stoch.d
+      : ctx.indicators.stoch.k < ctx.indicators.stoch.d;
 
     const stateParts: string[] = [];
-    if (!aligned) stateParts.push("1D/4H MISALIGNED");
-    else if (nearTrendline) stateParts.push("near TL");
-    else if ((ctx.t1d.direction === "LONG" && ctx.price > ctx.trendline.price * 1.005 && ctx.price < ctx.trendline.price * 1.02) ||
-             (ctx.t1d.direction === "SHORT" && ctx.price < ctx.trendline.price * 0.995 && ctx.price > ctx.trendline.price * 0.98)) {
-      stateParts.push("retest zone");
-    } else if (inBreakout) {
-      stateParts.push("breakout zone");
-    } else {
-      stateParts.push("far from TL");
-    }
+    if (inAccum) stateParts.push("accum zone");
+    else if (inRetest) stateParts.push("retest zone");
+    else stateParts.push("far from TL");
     stateParts.push(`Stoch K${ctx.indicators.stoch.k} D${ctx.indicators.stoch.d}`);
+    stateParts.push(`ADX ${ctx.indicators.adx}`);
     stateParts.push("No signal");
 
-    debug.push(`Rejected: ALIGNED=${aligned} | TL=${!nearTrendline} | EXTREME=${!stochExtreme} | TURN=${!stochTurning} | BREAKOUT=${!inBreakout} | RR=unchecked`);
+    debug.push(`Rejected: ACCUM=${!inAccum} | TURN=${!stochTurning} | RETEST=${!inRetest} | ADX=${ctx.indicators.adx <= 20} | RR=unchecked | R2=passed`);
     debug.push(`State: ${stateParts.join(" | ")}`);
     return { debug };
   }
 
   const result = buildTradeWithPivots(ctx, setup, candles4h);
   if (!result) {
-    debug.push(`Rejected: ALIGNED=passed | TL=passed | STOCH=passed | RR=failed`);
+    debug.push(`Rejected: TL=passed | STOCH=passed | RR=failed | R2=passed`);
     debug.push("R:R too low");
     return { debug };
   }
@@ -681,7 +519,7 @@ export function generateSignal(
 
 // Build trade with full candle access for pivot targets
 function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candle[]): { signal: Signal; market: any } | null {
-  const { pair, price, now, t1d, trendline, indicators } = ctx;
+  const { pair, price, now, trend, trendline, indicators } = ctx;
   const tlPrice = trendline.price;
   const atrVal = indicators.atr;
 
@@ -694,51 +532,51 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
 
   if (setup.type === "ACCUMULATE") {
     entry = price;
+    // ATR × 1.5 stop, using farther of swing or buffer
     const stopBuffer = atrVal * 1.5;
-    // FIXED: Use Math.min for LONG (wider of the two), Math.max for SHORT
-    sl = t1d.direction === "LONG"
+    sl = trend.direction === "LONG"
       ? Math.min(swingLow, entry - stopBuffer)
       : Math.max(swingHigh, entry + stopBuffer);
 
-    const pivotTarget = getPivotTarget(candles4h, t1d.direction!, entry, sl, atrVal);
-    if (!pivotTarget) return null;
-    tp = pivotTarget.target;
-    targetSource = pivotTarget.source;
+    const pivotTarget = getPivotTarget(candles4h, trend.direction!, entry, sl, atrVal);
+    if (pivotTarget) {
+      tp = pivotTarget.target;
+      targetSource = pivotTarget.source;
+    } else {
+      tp = trend.direction === "LONG" ? entry + atrVal * 2 : entry - atrVal * 2;
+      targetSource = "atr_x2";
+    }
   } else {
     entry = price;
-    if (setup.reason === "Trend_continuation") {
-      sl = t1d.direction === "LONG"
-        ? Math.max(tlPrice, indicators.ema21)
-        : Math.min(tlPrice, indicators.ema21);
+    sl = trend.direction === "LONG"
+      ? Math.max(tlPrice * 0.995, entry - atrVal * 1.5)
+      : Math.min(tlPrice * 1.005, entry + atrVal * 1.5);
+
+    const pivotTarget = getPivotTarget(candles4h, trend.direction!, entry, sl, atrVal);
+    if (pivotTarget) {
+      tp = pivotTarget.target;
+      targetSource = pivotTarget.source;
     } else {
-      sl = t1d.direction === "LONG"
-        ? Math.max(tlPrice * 0.995, entry - atrVal * 1.5)
-        : Math.min(tlPrice * 1.005, entry + atrVal * 1.5);
+      const minTarget = trend.direction === "LONG"
+        ? entry + (entry - sl) * MIN_RR
+        : entry - (sl - entry) * MIN_RR;
+      tp = trend.direction === "LONG"
+        ? Math.max(swingHigh, minTarget)
+        : Math.min(swingLow, minTarget);
+      targetSource = "swing_or_minRR";
     }
-
-    // Guard: stop cannot be above entry for LONG, below entry for SHORT
-    if (t1d.direction === "LONG" && sl >= entry) return null;
-    if (t1d.direction === "SHORT" && sl <= entry) return null;
-
-    const pivotTarget = getPivotTarget(candles4h, t1d.direction!, entry, sl, atrVal);
-    if (!pivotTarget) return null;
-    tp = pivotTarget.target;
-    targetSource = pivotTarget.source;
   }
 
-  const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
+  const rr = trend.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
   if (rr < MIN_RR) return null;
 
-  const confidence = setup.type === "ACCUMULATE"
-    ? (t1d.strength === "STRONG" ? 75 : t1d.strength === "MEDIUM" ? 65 : 60)
-    : 85;
-
+  const confidence = setup.type === "ACCUMULATE" ? 65 : 85;
   const expectedMove = Math.abs(tp - entry) / entry * 100;
 
   const signal: Signal = {
     id: `${pair}_${now}`,
     pair,
-    direction: t1d.direction!,
+    direction: trend.direction!,
     type: setup.type,
     scale: setup.scale,
     entry: Math.round(entry * 100) / 100,
@@ -751,7 +589,7 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
     stochK: indicators.stoch.k,
     stochD: indicators.stoch.d,
     expectedMove: Math.round(expectedMove * 10) / 10,
-    reason: `${t1d.direction} ${setup.type} ${setup.scale} | 1D ${t1d.strength} | 4H ${ctx.t4h.strength} | Stoch K${indicators.stoch.k} D${indicators.stoch.d} | ${setup.reason} | TP:${targetSource} | RR ${rr.toFixed(2)}`,
+    reason: `${trend.direction} ${setup.type} ${setup.scale} | 1D EMA | Stoch K${indicators.stoch.k} D${indicators.stoch.d} | ${setup.reason} | TP:${targetSource} | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
   };
@@ -760,8 +598,7 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: now,
-    trend1d: `${t1d.direction} ${t1d.strength}`,
-    trend4h: `${ctx.t4h.direction} ${ctx.t4h.strength}`,
+    trend: trend.direction,
     adx: signal.adx,
     rsi: signal.rsi,
     stochK: signal.stochK,
@@ -776,24 +613,19 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
 }
 
 // --- MARKET SNAPSHOT ---
-// Returns safe defaults when no trendline exists — never returns null for distToTrendline
 export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
   const candles1d = aggregateTo1D(candles4h);
-  const t1d = trend1D(candles1d);
-  const t4h = trend4H(candles4h);
+  const trend = trend1D(candles1d);
   const stochRsi4h = stochRsi(candles4h.map(c => c.close));
   const price = candles4h[candles4h.length - 1].close;
-  const trendline = t1d.direction ? getTrendline(pair, candles4h, t1d.direction) : null;
+  const trendline = getTrendline(pair, candles4h);
   const tlPrice = trendline ? trendline.price : 0;
-  // Safe default: 0 when no trendline, actual distance when trendline exists
-  const dist = trendline ? (price - tlPrice) / tlPrice : 0;
-  const now = candles4h[candles4h.length - 1].timestamp;
+  const dist = trendline ? (price - tlPrice) / tlPrice : 1;
   return {
     pair,
     price: Math.round(price * 100) / 100,
-    timestamp: now,
-    trend: t1d.direction ? `${t1d.direction} ${t1d.strength}` : "NONE",
-    trend4h: t4h.direction ? `${t4h.direction} ${t4h.strength}` : "NONE",
+    timestamp: Date.now(),
+    trend: trend.direction || "NONE",
     adx: Math.round(adx(candles4h) * 10) / 10,
     rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
     stochK: stochRsi4h.k,
@@ -815,6 +647,7 @@ export interface ValidityCheck {
 export function isSignalStillValid(signal: Signal, currentPrice: number, now: number = Date.now()): ValidityCheck {
   const ageMs = now - signal.timestamp;
   const maxAge = signal.type === "ACCUMULATE" ? 24 * 60 * 60 * 1000 : 4 * 60 * 60 * 1000;
+  if (ageMs > maxAge) return { valid: false, reason: "expired_ttl", exited: true };
 
   const entryBuffer = signal.type === "ACCUMULATE" ? 1.02 : 1.005;
   if (signal.direction === "LONG" && currentPrice > signal.entry * entryBuffer) return { valid: false, reason: "missed_entry", exited: true };
@@ -825,8 +658,6 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
 
   if (signal.direction === "LONG" && currentPrice >= signal.target) return { valid: false, reason: "tp_hit", exited: true };
   if (signal.direction === "SHORT" && currentPrice <= signal.target) return { valid: false, reason: "tp_hit", exited: true };
-
-  if (ageMs > maxAge) return { valid: false, reason: "expired_ttl", exited: true };
 
   return { valid: true, reason: "active", exited: false };
 }
@@ -839,8 +670,8 @@ export interface HoldResult {
 
 export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, now?: number): HoldResult {
   const candles1d = aggregateTo1D(candles4h);
-  const t1d = trend1D(candles1d);
-  const trendReversed = (signal.direction === "LONG" && t1d.direction === "SHORT") || (signal.direction === "SHORT" && t1d.direction === "LONG");
+  const trend = trend1D(candles1d);
+  const trendReversed = (signal.direction === "LONG" && trend.direction === "SHORT") || (signal.direction === "SHORT" && trend.direction === "LONG");
   if (trendReversed) {
     const inProfit = signal.direction === "LONG" ? currentPrice > signal.entry : currentPrice < signal.entry;
     if (!inProfit) return { shouldHold: false, reason: "trend_reversed_unprofitable" };
@@ -876,6 +707,8 @@ export function filterExpiredSignals(
 export type TradeStatus = "ACTIVE" | "TP_HIT" | "SL_HIT" | "EXPIRED";
 
 export function checkTradeStatus(signal: Signal, currentPrice: number, now: number = Date.now()): TradeStatus {
+  const validity = isSignalStillValid(signal, currentPrice, now);
+  if (!validity.valid && validity.reason === "expired_ttl") return "EXPIRED";
   if (signal.direction === "LONG") {
     if (currentPrice >= signal.target) return "TP_HIT";
     if (currentPrice <= signal.stop) return "SL_HIT";
@@ -883,12 +716,10 @@ export function checkTradeStatus(signal: Signal, currentPrice: number, now: numb
     if (currentPrice <= signal.target) return "TP_HIT";
     if (currentPrice >= signal.stop) return "SL_HIT";
   }
-  const validity = isSignalStillValid(signal, currentPrice, now);
-  if (!validity.valid && validity.reason === "expired_ttl") return "EXPIRED";
   return "ACTIVE";
 }
 
-// --- MINIMAL COMPAT ---
+// --- MINIMAL COMPAT (unchanged interfaces) ---
 export async function generateSignalCompat(
   pair: string,
   candles1h: Candle[],
