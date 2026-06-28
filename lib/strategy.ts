@@ -1,4 +1,4 @@
-// lib/strategy.ts — v31.4 "Unified Structure Detection"
+// lib/strategy.ts — v31.5 "Unified Structure Detection"
 // ============================================================
 // 1D and 4H both use same higherLow/lowerHigh + confirmation logic
 // 4H is more sensitive (fewer bars, tighter thresholds)
@@ -274,18 +274,16 @@ function detectTrend(candles: Candle[], config: TrendConfig): { direction: "LONG
   const recentSwingLows = swingLows.slice(-config.lookback);
   const recentSwingHighs = swingHighs.slice(-config.lookback);
 
-  // Higher Lows: last N swing lows are ascending
+  // Higher Lows: last 2 swing lows are ascending (lowered from 3)
   let higherLows = false;
-  if (recentSwingLows.length >= 3) {
-    higherLows = recentSwingLows[recentSwingLows.length - 1].price > recentSwingLows[recentSwingLows.length - 2].price &&
-                 recentSwingLows[recentSwingLows.length - 2].price > recentSwingLows[recentSwingLows.length - 3].price;
+  if (recentSwingLows.length >= 2) {
+    higherLows = recentSwingLows[recentSwingLows.length - 1].price > recentSwingLows[recentSwingLows.length - 2].price;
   }
 
-  // Lower Highs: last N swing highs are descending
+  // Lower Highs: last 2 swing highs are descending (lowered from 3)
   let lowerHighs = false;
-  if (recentSwingHighs.length >= 3) {
-    lowerHighs = recentSwingHighs[recentSwingHighs.length - 1].price < recentSwingHighs[recentSwingHighs.length - 2].price &&
-                 recentSwingHighs[recentSwingHighs.length - 2].price < recentSwingHighs[recentSwingHighs.length - 3].price;
+  if (recentSwingHighs.length >= 2) {
+    lowerHighs = recentSwingHighs[recentSwingHighs.length - 1].price < recentSwingHighs[recentSwingHighs.length - 2].price;
   }
 
   // Higher Highs: last swing high > previous swing high
@@ -624,7 +622,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v31.4 ---
+// --- MAIN SIGNAL v31.5 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
