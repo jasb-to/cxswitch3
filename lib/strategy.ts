@@ -1,12 +1,9 @@
-// lib/strategy.ts — v30.8 "Stable Rebuild"
+// lib/strategy.ts — v30.9 "Confidence Spread + Pivot Debug"
 // ============================================================
-// 6 fixes from v30.7 review:
-// 1. Trendline regression uses sequential index, not persisted index (fixes drift)
-// 2. nearTrendline uses ATR-scaled threshold instead of fixed %
-// 3. Stop logic bounded with max() to prevent RR inversion
-// 4. Single MIN_RR threshold everywhere, no 0.75x fallback
-// 5. 4H confidence requires ADX>20, not just EMA crossover
-// 6. TTL extended: ACCUMULATE 36h, BREAKOUT 8h
+// 2 changes from v30.8:
+// 1. Confidence spread: 50 base, +10 per quality factor (RR, stoch, 4H, ADX, R²)
+//    Range: 50–100 instead of 60–80
+// 2. Pivot debug instrumentation to catch R²=0 regression collapse
 
 import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -257,8 +254,8 @@ function findSwingLows(candles: Candle[]): { price: number; index: number }[] {
   return lows;
 }
 
-// --- TRENDLINE: Sequential index regression (Fix #1) ---
-function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number; age: number } | null {
+// --- TRENDLINE: Sequential index regression + pivot debug ---
+function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT", debug: string[]): { price: number; r2: number; age: number } | null {
   const len = candles.length;
   if (len < 20) return null;
   
@@ -281,7 +278,10 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     }).slice(-5);
   }
   
-  // v30.8 Fix #1: Use sequential index, not persisted index
+  // v30.9: Pivot debug instrumentation
+  debug.push(`Pivots: ${usePivots.map(p => `${p.index}:${p.price.toFixed(1)}`).join(",")}`);
+  
+  // Sequential index regression (Fix #1 from v30.8)
   const points = usePivots.map((p, idx) => ({ x: idx, y: p.price }));
   const regression = linearRegression(points);
   if (!regression) return null;
@@ -326,7 +326,7 @@ function trend4H(candles4h: Candle[]): { direction: "LONG" | "SHORT" | null } {
   return { direction: ema8[ema8.length - 1] > ema21[ema21.length - 1] ? "LONG" : "SHORT" };
 }
 
-// --- PIVOT TARGETS (Fix #4: Single MIN_RR threshold) ---
+// --- PIVOT TARGETS (Single MIN_RR threshold) ---
 function getPivotTarget(
   candles4h: Candle[],
   direction: "LONG" | "SHORT",
@@ -461,7 +461,7 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
     return { ctx: null, debug };
   }
   
-  const trendline = getTrendline(pair, candles4h, t1d.direction);
+  const trendline = getTrendline(pair, candles4h, t1d.direction, debug);
   if (!trendline) {
     debug.push("No trendline");
     return { ctx: null, debug };
@@ -490,14 +490,13 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
   };
 }
 
-// --- SETUP FINDER (Fix #2: ATR-scaled nearTrendline) ---
+// --- SETUP FINDER (ATR-scaled nearTrendline) ---
 function findSetup(ctx: MarketContext): Setup | null {
   const { price, t1d, trendline, indicators, last, prev } = ctx;
   const tlPrice = trendline.price;
   const dist = (price - tlPrice) / tlPrice;
   const atrVal = indicators.atr;
   
-  // v30.8 Fix #2: ATR-scaled threshold instead of fixed %
   const nearTrendline = Math.abs(price - tlPrice) < atrVal * 0.8;
   
   const stochTurning = t1d.direction === "LONG" 
@@ -544,7 +543,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v30.8 ---
+// --- MAIN SIGNAL v30.9 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -607,7 +606,7 @@ export function generateSignal(
   return { signal: result.signal, market: result.market, debug };
 }
 
-// Build trade (Fix #3: Bounded stops)
+// Build trade (Bounded stops + spread confidence)
 function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candle[]): { signal: Signal; market: any } | null {
   const { pair, price, now, t1d, t4h, trendline, indicators } = ctx;
   const tlPrice = trendline.price;
@@ -622,7 +621,7 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   
   if (setup.type === "ACCUMULATE") {
     entry = price;
-    // v30.8 Fix #3: Bounded stops — trendline invalidation with ATR cap
+    // Bounded stops: trendline invalidation with ATR cap
     sl = t1d.direction === "LONG" 
       ? Math.max(entry - atrVal * 1.2, tlPrice * 0.992)
       : Math.min(entry + atrVal * 1.2, tlPrice * 1.008);
@@ -659,14 +658,16 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
   if (rr < MIN_RR) return null;
   
-  // v30.8 Fix #5: 4H confidence requires ADX>20, not just EMA crossover
-  let confidence = 60;
+  // v30.9: Spread confidence — 50 base, +10 per quality factor
+  let confidence = 50;
+  if (rr > 2.0) confidence += 10;
   const stochTurning = t1d.direction === "LONG" 
     ? indicators.stoch.k > indicators.stoch.d
     : indicators.stoch.k < indicators.stoch.d;
   if (stochTurning) confidence += 10;
   if (t4h.direction === t1d.direction && indicators.adx > 20) confidence += 10;
-  if (setup.reason === "TL+stoch_extreme") confidence += 5;
+  if (indicators.adx > 30) confidence += 10;
+  if (trendline.r2 > 0.70) confidence += 10;
   
   const expectedMove = Math.abs(tp - entry) / entry * 100;
   
@@ -715,7 +716,7 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
   const t1d = trend1D(candles1d);
   const stochRsi4h = stochRsi(candles4h.map(c => c.close));
   const price = candles4h[candles4h.length - 1].close;
-  const trendline = t1d.direction ? getTrendline(pair, candles4h, t1d.direction) : null;
+  const trendline = t1d.direction ? getTrendline(pair, candles4h, t1d.direction, []) : null;
   const tlPrice = trendline ? trendline.price : 0;
   const dist = trendline ? (price - tlPrice) / tlPrice : 1;
   return {
@@ -734,7 +735,7 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
   };
 }
 
-// --- VALIDITY (Fix #6: Extended TTL) ---
+// --- VALIDITY (Extended TTL) ---
 export interface ValidityCheck {
   valid: boolean;
   reason: string;
@@ -743,7 +744,6 @@ export interface ValidityCheck {
 
 export function isSignalStillValid(signal: Signal, currentPrice: number, now: number = Date.now()): ValidityCheck {
   const ageMs = now - signal.timestamp;
-  // v30.8 Fix #6: Extended TTL for crypto retests
   const maxAge = signal.type === "ACCUMULATE" ? 36 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000;
   if (ageMs > maxAge) return { valid: false, reason: "expired_ttl", exited: true };
   
