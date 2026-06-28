@@ -1,4 +1,4 @@
-// lib/strategy.ts — v31.5 "Unified Structure Detection"
+// lib/strategy.ts — v31.6 "Unified Structure Detection"
 // ============================================================
 // 1D and 4H both use same higherLow/lowerHigh + confirmation logic
 // 4H is more sensitive (fewer bars, tighter thresholds)
@@ -622,7 +622,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v31.5 ---
+// --- MAIN SIGNAL v31.6 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -776,6 +776,7 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
 }
 
 // --- MARKET SNAPSHOT ---
+// Returns safe defaults when no trendline exists — never returns null for distToTrendline
 export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
   const candles1d = aggregateTo1D(candles4h);
   const t1d = trend1D(candles1d);
@@ -784,7 +785,8 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
   const price = candles4h[candles4h.length - 1].close;
   const trendline = t1d.direction ? getTrendline(pair, candles4h, t1d.direction) : null;
   const tlPrice = trendline ? trendline.price : 0;
-  const dist = trendline ? (price - tlPrice) / tlPrice : null;
+  // Safe default: 0 when no trendline, actual distance when trendline exists
+  const dist = trendline ? (price - tlPrice) / tlPrice : 0;
   const now = candles4h[candles4h.length - 1].timestamp;
   return {
     pair,
@@ -797,7 +799,7 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
     stochK: stochRsi4h.k,
     stochD: stochRsi4h.d,
     trendlinePrice: Math.round(tlPrice * 100) / 100,
-    distToTrendline: dist !== null ? Math.round(dist * 10000) / 100 : null,
+    distToTrendline: Math.round(dist * 10000) / 100,
     ema8: Math.round(ema(candles4h.map(c => c.close), 8).slice(-1)[0] * 100) / 100,
     ema21: Math.round(ema(candles4h.map(c => c.close), 21).slice(-1)[0] * 100) / 100,
   };
