@@ -1,7 +1,7 @@
-// lib/strategy.ts — v30.12 "Distance-based trendline invalidation"
+// lib/strategy.ts — v30.12.1 "Sync market snapshot with trendline invalidation"
 // ============================================================
-// Added: maxDist check in getContext to invalidate stale trendlines
-// when price has broken too far from the projected trendline structure
+// Fixed: getMarketSnapshot now applies the same TL_MAX_DIST check as getContext,
+// so the dashboard shows "no trendline" instead of stale +97% values
 
 import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -713,9 +713,22 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
   const t1d = trend1D(candles1d);
   const stochRsi4h = stochRsi(candles4h.map(c => c.close));
   const price = candles4h[candles4h.length - 1].close;
-  const trendline = t1d.direction ? getTrendline(pair, candles4h, t1d.direction, []) : null;
-  const tlPrice = trendline ? trendline.price : 0;
-  const dist = trendline ? (price - tlPrice) / tlPrice : 1;
+  
+  // v30.12.1: Apply same distance-based invalidation to keep UI in sync with signal logic
+  let tlPrice = 0;
+  let dist = 1;
+  if (t1d.direction) {
+    const tl = getTrendline(pair, candles4h, t1d.direction, []);
+    if (tl) {
+      const d = (price - tl.price) / tl.price;
+      const valid = t1d.direction === "SHORT" ? d <= TL_MAX_DIST : d >= -TL_MAX_DIST;
+      if (valid) {
+        tlPrice = tl.price;
+        dist = d;
+      }
+    }
+  }
+  
   return {
     pair,
     price: Math.round(price * 100) / 100,
