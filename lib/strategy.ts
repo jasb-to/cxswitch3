@@ -1,10 +1,10 @@
-// lib/strategy.ts — v30.5 "ADX + Stoch Dual Exhaustion Guard"
+// lib/strategy.ts — v30.6 "Restore Signal Generation"
 // ============================================================
-// CHANGES FROM v30.4:
-// 1. Added stoch extreme + turning against guard
-//    Blocks entries when stoch >85 (LONG) or <15 (SHORT) AND K turning against trend
-// 2. Dual exhaustion: ADX > 45 OR stoch extreme+turning = no entry
-// 3. Everything else identical to v30.3/v30.4
+// CHANGES FROM v30.5:
+// 1. Widened nearTrendline from 1.2% to 2.5% for crypto volatility
+// 2. Widened correctSide buffer from 0.5% to 1.5%
+// 3. Fixed debug output to show actual boolean values (not inverted)
+// 4. Everything else identical to v30.5
 
 import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -53,6 +53,8 @@ const TL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const ADX_EXHAUSTION = 45;      // v30.4: Block entries when ADX > 45
 const STOCH_EXTREME_LONG = 85;  // v30.5: Stoch overbought threshold for LONG
 const STOCH_EXTREME_SHORT = 15; // v30.5: Stoch oversold threshold for SHORT
+const NEAR_TL_THRESHOLD = 0.025; // v30.6: Widened from 0.012 for crypto volatility
+const CORRECT_SIDE_BUFFER = 0.015; // v30.6: Widened from 0.005
 
 // --- STATE: Only raw pivots persisted, never computed values ---
 interface TrendlineState {
@@ -487,7 +489,8 @@ function findSetup(ctx: MarketContext): Setup | null {
   const tlPrice = trendline.price;
   const dist = (price - tlPrice) / tlPrice;
   
-  const nearTrendline = Math.abs(dist) < 0.012;
+  // v30.6: Widened from 0.012 to 0.025 for crypto volatility
+  const nearTrendline = Math.abs(dist) < NEAR_TL_THRESHOLD;
   
   // v30.3: Stoch turning is the primary early entry signal
   const stochTurning = t1d.direction === "LONG" 
@@ -500,14 +503,14 @@ function findSetup(ctx: MarketContext): Setup | null {
     ? indicators.stoch.k < 20 
     : indicators.stoch.k > 80;
   
-  // v30.3: Must be on correct side of trendline
+  // v30.6: Widened correctSide buffer from 0.5% to 1.5%
   const correctSide = t1d.direction === "LONG" 
-    ? price <= tlPrice * 1.005   // At or slightly below TL for LONG
-    : price >= tlPrice * 0.995;  // At or slightly above TL for SHORT
+    ? price <= tlPrice * (1 + CORRECT_SIDE_BUFFER)   // At or slightly below TL for LONG
+    : price >= tlPrice * (1 - CORRECT_SIDE_BUFFER);  // At or slightly above TL for SHORT
   
   const inRetestZone = t1d.direction === "LONG"
-    ? price > tlPrice * 1.005 && price < tlPrice * 1.02 && dist > 0
-    : price < tlPrice * 0.995 && price > tlPrice * 0.98 && dist < 0;
+    ? price > tlPrice * (1 + CORRECT_SIDE_BUFFER) && price < tlPrice * 1.02 && dist > 0
+    : price < tlPrice * (1 - CORRECT_SIDE_BUFFER) && price > tlPrice * 0.98 && dist < 0;
   
   const confirming = t1d.direction === "LONG" 
     ? last.close > last.open && last.close > prev.close 
@@ -534,7 +537,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v30.5 ---
+// --- MAIN SIGNAL v30.6 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -559,10 +562,10 @@ export function generateSignal(
   const setup = findSetup(ctx);
   if (!setup) {
     const dist = (ctx.price - ctx.trendline.price) / ctx.trendline.price;
-    const nearTrendline = Math.abs(dist) < 0.012;
+    const nearTrendline = Math.abs(dist) < NEAR_TL_THRESHOLD;
     const correctSide = ctx.t1d.direction === "LONG" 
-      ? ctx.price <= ctx.trendline.price * 1.005
-      : ctx.price >= ctx.trendline.price * 0.995;
+      ? ctx.price <= ctx.trendline.price * (1 + CORRECT_SIDE_BUFFER)
+      : ctx.price >= ctx.trendline.price * (1 - CORRECT_SIDE_BUFFER);
     const stochTurning = ctx.t1d.direction === "LONG" 
       ? ctx.indicators.stoch.k > ctx.indicators.stoch.d
       : ctx.indicators.stoch.k < ctx.indicators.stoch.d;
@@ -571,9 +574,9 @@ export function generateSignal(
       : ctx.indicators.stoch.k > 80;
     
     const stateParts: string[] = [];
-    if (Math.abs(dist) < 0.012) stateParts.push("near TL");
-    else if ((ctx.t1d.direction === "LONG" && ctx.price > ctx.trendline.price * 1.005 && ctx.price < ctx.trendline.price * 1.02) ||
-             (ctx.t1d.direction === "SHORT" && ctx.price < ctx.trendline.price * 0.995 && ctx.price > ctx.trendline.price * 0.98)) {
+    if (Math.abs(dist) < NEAR_TL_THRESHOLD) stateParts.push("near TL");
+    else if ((ctx.t1d.direction === "LONG" && ctx.price > ctx.trendline.price * (1 + CORRECT_SIDE_BUFFER) && ctx.price < ctx.trendline.price * 1.02) ||
+             (ctx.t1d.direction === "SHORT" && ctx.price < ctx.trendline.price * (1 - CORRECT_SIDE_BUFFER) && ctx.price > ctx.trendline.price * 0.98)) {
       stateParts.push("retest zone");
     } else {
       stateParts.push("far from TL");
@@ -581,7 +584,8 @@ export function generateSignal(
     stateParts.push(`Stoch K${ctx.indicators.stoch.k} D${ctx.indicators.stoch.d}`);
     stateParts.push("No signal");
     
-    debug.push(`Rejected: TL=${!nearTrendline} | SIDE=${!correctSide} | TURN=${!stochTurning} | EXTREME=${!stochExtreme} | RR=unchecked | R2=passed`);
+    // v30.6: Fixed debug to show actual values instead of inverted
+    debug.push(`Check: nearTL=${nearTrendline} | correctSide=${correctSide} | stochTurning=${stochTurning} | stochExtreme=${stochExtreme} | RR=unchecked | R2=passed`);
     debug.push(`State: ${stateParts.join(" | ")}`);
     return { debug };
   }
