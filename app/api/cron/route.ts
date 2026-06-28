@@ -1,9 +1,9 @@
-// app/api/cron/route.ts — v30.2 "Diagnostic Logging"
+// app/api/cron/route.ts — v31.0 "Simplified: No Trendline State"
 // ============================================================
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot, loadTrendlinesFromKV, saveTrendlinesToKV } from "@/lib/strategy";
+import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot } from "@/lib/strategy";
 import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory, setCronLogs, getCronLogs } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
@@ -55,11 +55,7 @@ export async function GET(request: Request) {
   await setLastCronRun(runStart);
   log(`[CRON] lastRun set, force=${forceRun}`);
 
-  // Load persisted state (serverless-safe)
-  log("[CRON] Loading trendlines from KV...");
-  await loadTrendlinesFromKV();
-  log("[CRON] Trendlines loaded");
-
+  // v31: No trendline state to load — trendlines computed fresh per run
   let activeTrades = await getActiveTrades();
   log(`[STATE] Active trades: ${Object.keys(activeTrades).join(", ") || "none"}`);
 
@@ -198,9 +194,7 @@ export async function GET(request: Request) {
     if (idx >= 0) merged[idx] = s; else merged.push(s);
   }
 
-  log("[CRON] Saving trendlines to KV...");
-  await saveTrendlinesToKV();
-
+  // v31: No trendline state to save
   log("[CRON] Persisting state...");
   await Promise.all([setSignals(merged), setMarketData(marketDataList), setActiveTrades(activeTrades)]);
 
