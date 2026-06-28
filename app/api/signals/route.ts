@@ -1,4 +1,4 @@
-// app/api/signals/route.ts — v30.1 "Clean Slate UI"
+// app/api/signals/route.ts — v31.0 "Clean Slate UI"
 // ============================================================
 
 import { NextResponse } from "next/server";
