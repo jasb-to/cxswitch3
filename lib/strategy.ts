@@ -1,6 +1,7 @@
-// lib/strategy.ts — v30.11.1 "Fix template literal"
+// lib/strategy.ts — v30.12 "Distance-based trendline invalidation"
 // ============================================================
-// Only change: fixed corrupted template literal in aggregateTo1D
+// Added: maxDist check in getContext to invalidate stale trendlines
+// when price has broken too far from the projected trendline structure
 
 import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -50,6 +51,7 @@ const ADX_EXHAUSTION = 45;
 const STOCH_EXTREME_LONG = 85;
 const STOCH_EXTREME_SHORT = 15;
 const CORRECT_SIDE_BUFFER = 0.015;
+const TL_MAX_DIST = 0.05; // 5% — invalidate trendline if price broke too far
 
 // --- STATE ---
 interface TrendlineState {
@@ -466,6 +468,19 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
   const dist = (price - trendline.price) / trendline.price;
   debug.push(`TL: ${trendline.price.toFixed(1)} | R² ${trendline.r2} | Price: ${price.toFixed(1)} | Dist: ${(dist >= 0 ? "+" : "")}${(dist * 100).toFixed(2)}%`);
+  
+  // v30.12: Distance-based trendline invalidation
+  if (t1d.direction === "SHORT" && dist > TL_MAX_DIST) {
+    debug.push(`Trendline too far below price (${(dist * 100).toFixed(2)}% > ${(TL_MAX_DIST * 100).toFixed(0)}%), likely broken structure`);
+    trendlineStore.delete(pair);
+    return { ctx: null, debug };
+  }
+  if (t1d.direction === "LONG" && dist < -TL_MAX_DIST) {
+    debug.push(`Trendline too far above price (${(dist * 100).toFixed(2)}% < -${(TL_MAX_DIST * 100).toFixed(0)}%), likely broken structure`);
+    trendlineStore.delete(pair);
+    return { ctx: null, debug };
+  }
+  
   const indicators = buildIndicators(candles4h);
   debug.push(`StochRSI: K ${indicators.stoch.k} | D ${indicators.stoch.d} | ADX ${indicators.adx}`);
   return {
@@ -533,7 +548,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v30.11 ---
+// --- MAIN SIGNAL v30.12 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
