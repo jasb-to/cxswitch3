@@ -1,10 +1,12 @@
-// lib/strategy.ts — v30.6 "Restore Signal Generation"
+// lib/strategy.ts — v30.7 "Minimal Rebuild"
 // ============================================================
-// CHANGES FROM v30.5:
-// 1. Widened nearTrendline from 1.2% to 2.5% for crypto volatility
-// 2. Widened correctSide buffer from 0.5% to 1.5%
-// 3. Fixed debug output to show actual boolean values (not inverted)
-// 4. Everything else identical to v30.5
+// Stripped back to v30 core + 4 surgical fixes:
+// 1. 4H alignment removed as hard gate → confidence boost only
+// 2. stochTurning removed as hard gate → confidence boost only
+// 3. ACCUMULATE stops tightened to trendline invalidation + ATR
+// 4. MIN_R2 lowered to 0.45 for crypto
+// 5. nearTrendline widened to 2.5% for crypto volatility
+// 6. correctSide widened to 1.5%
 
 import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -48,15 +50,15 @@ export const CURRENT_SIGNAL_VERSION = 30;
 
 // --- CONFIG ---
 const MIN_RR = 1.5;
-const MIN_R2 = 0.65;
+const MIN_R2 = 0.45;            // v30.7: Lowered from 0.65 for crypto
 const TL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-const ADX_EXHAUSTION = 45;      // v30.4: Block entries when ADX > 45
-const STOCH_EXTREME_LONG = 85;  // v30.5: Stoch overbought threshold for LONG
-const STOCH_EXTREME_SHORT = 15; // v30.5: Stoch oversold threshold for SHORT
-const NEAR_TL_THRESHOLD = 0.025; // v30.6: Widened from 0.012 for crypto volatility
-const CORRECT_SIDE_BUFFER = 0.015; // v30.6: Widened from 0.005
+const ADX_EXHAUSTION = 45;
+const STOCH_EXTREME_LONG = 85;
+const STOCH_EXTREME_SHORT = 15;
+const NEAR_TL_THRESHOLD = 0.025;   // v30.7: 2.5% for crypto
+const CORRECT_SIDE_BUFFER = 0.015; // v30.7: 1.5%
 
-// --- STATE: Only raw pivots persisted, never computed values ---
+// --- STATE ---
 interface TrendlineState {
   pivots: { index: number; price: number; timestamp: number }[];
   lastUpdated: number;
@@ -256,7 +258,7 @@ function findSwingLows(candles: Candle[]): { price: number; index: number }[] {
   return lows;
 }
 
-// --- TRENDLINE: Stateless regression from stored pivots ---
+// --- TRENDLINE ---
 function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number; age: number } | null {
   const len = candles.length;
   if (len < 20) return null;
@@ -312,6 +314,16 @@ function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; str
   const ll = lows[lows.length - 1] < Math.min(...lows.slice(0, -1));
   const strength = (direction === "LONG" && hh) || (direction === "SHORT" && ll) ? "STRONG" : "MEDIUM";
   return { direction, strength };
+}
+
+// --- 4H TREND (confidence only, not a gate) ---
+function trend4H(candles4h: Candle[]): { direction: "LONG" | "SHORT" | null } {
+  const len = candles4h.length;
+  if (len < 25) return { direction: null };
+  const closes = candles4h.map(c => c.close);
+  const ema8 = ema(closes, 8);
+  const ema21 = ema(closes, 21);
+  return { direction: ema8[ema8.length - 1] > ema21[ema21.length - 1] ? "LONG" : "SHORT" };
 }
 
 // --- PIVOT TARGETS ---
@@ -382,26 +394,24 @@ function buildIndicators(candles4h: Candle[]): Indicators {
   };
 }
 
-// --- EXHAUSTION CHECK: v30.5 Dual Guard ---
+// --- EXHAUSTION CHECK ---
 interface ExhaustionResult {
   exhausted: boolean;
   reason: string;
 }
 
 function checkExhaustion(direction: "LONG" | "SHORT", indicators: Indicators): ExhaustionResult {
-  // Guard 1: ADX > 45 (trend peaking)
   if (indicators.adx > ADX_EXHAUSTION) {
     return { exhausted: true, reason: `ADX_${indicators.adx}` };
   }
 
-  // Guard 2: Stoch extreme AND turning against trend
   const stochExtreme = direction === "LONG"
-    ? indicators.stoch.k > STOCH_EXTREME_LONG   // > 85, overbought
-    : indicators.stoch.k < STOCH_EXTREME_SHORT; // < 15, oversold
+    ? indicators.stoch.k > STOCH_EXTREME_LONG
+    : indicators.stoch.k < STOCH_EXTREME_SHORT;
 
   const stochTurningAgainst = direction === "LONG"
-    ? indicators.stoch.k < indicators.stoch.d   // K crossing below D in uptrend
-    : indicators.stoch.k > indicators.stoch.d;  // K crossing above D in downtrend
+    ? indicators.stoch.k < indicators.stoch.d
+    : indicators.stoch.k > indicators.stoch.d;
 
   if (stochExtreme && stochTurningAgainst) {
     return {
@@ -419,6 +429,7 @@ interface MarketContext {
   price: number;
   now: number;
   t1d: { direction: "LONG" | "SHORT" | null; strength: string };
+  t4h: { direction: "LONG" | "SHORT" | null };
   trendline: { price: number; r2: number } | null;
   indicators: Indicators;
   last: Candle;
@@ -442,7 +453,8 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
   }
   
   const t1d = trend1D(candles1d);
-  debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength}`);
+  const t4h = trend4H(candles4h);
+  debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength} | 4H: ${t4h.direction || "NONE"}`);
   
   if (!t1d.direction) {
     debug.push("1D trend unclear");
@@ -457,7 +469,7 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
   
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
   const dist = (price - trendline.price) / trendline.price;
-  debug.push(`TL: ${trendline.price.toFixed(1)} | R² ${trendline.r2} | Price: ${price.toFixed(1)} | Dist to TL: ${(dist >= 0 ? "+" : "")}${(dist * 100).toFixed(2)}%`);
+  debug.push(`TL: ${trendline.price.toFixed(1)} | R² ${trendline.r2} | Price: ${price.toFixed(1)} | Dist: ${(dist >= 0 ? "+" : "")}${(dist * 100).toFixed(2)}%`);
   
   const indicators = buildIndicators(candles4h);
   debug.push(`StochRSI: K ${indicators.stoch.k} | D ${indicators.stoch.d} | ADX ${indicators.adx}`);
@@ -468,6 +480,7 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
       price,
       now: candles4h[candles4h.length - 1].timestamp,
       t1d,
+      t4h,
       trendline,
       indicators,
       last: candles4h[candles4h.length - 1],
@@ -489,24 +502,20 @@ function findSetup(ctx: MarketContext): Setup | null {
   const tlPrice = trendline.price;
   const dist = (price - tlPrice) / tlPrice;
   
-  // v30.6: Widened from 0.012 to 0.025 for crypto volatility
   const nearTrendline = Math.abs(dist) < NEAR_TL_THRESHOLD;
   
-  // v30.3: Stoch turning is the primary early entry signal
   const stochTurning = t1d.direction === "LONG" 
-    ? indicators.stoch.k > indicators.stoch.d   // K crossing above D = momentum up
-    : indicators.stoch.k < indicators.stoch.d;   // K crossing below D = momentum down
+    ? indicators.stoch.k > indicators.stoch.d
+    : indicators.stoch.k < indicators.stoch.d;
   
-  // v30.3: Extreme stoch only valid if price is exactly at trendline (±0.3%)
   const atTrendlineExact = Math.abs(dist) < 0.003;
   const stochExtreme = t1d.direction === "LONG" 
     ? indicators.stoch.k < 20 
     : indicators.stoch.k > 80;
   
-  // v30.6: Widened correctSide buffer from 0.5% to 1.5%
   const correctSide = t1d.direction === "LONG" 
-    ? price <= tlPrice * (1 + CORRECT_SIDE_BUFFER)   // At or slightly below TL for LONG
-    : price >= tlPrice * (1 - CORRECT_SIDE_BUFFER);  // At or slightly above TL for SHORT
+    ? price <= tlPrice * (1 + CORRECT_SIDE_BUFFER)
+    : price >= tlPrice * (1 - CORRECT_SIDE_BUFFER);
   
   const inRetestZone = t1d.direction === "LONG"
     ? price > tlPrice * (1 + CORRECT_SIDE_BUFFER) && price < tlPrice * 1.02 && dist > 0
@@ -520,10 +529,14 @@ function findSetup(ctx: MarketContext): Setup | null {
     ? price > indicators.ema8 && price > indicators.ema21
     : price < indicators.ema8 && price < indicators.ema21;
   
-  // v30.3: ACCUMULATE requires turning stoch + correct side + near TL
-  // OR extreme stoch + exactly at trendline
-  if (nearTrendline && correctSide && stochTurning) {
-    return { type: "ACCUMULATE", scale: "ENTRY_1", reason: "TL+stoch_turn" };
+  // v30.7: ACCUMULATE requires proximity + correct side only
+  // stochTurning is a confidence boost, not a gate
+  if (nearTrendline && correctSide) {
+    return { 
+      type: "ACCUMULATE", 
+      scale: "ENTRY_1", 
+      reason: stochTurning ? "TL+stoch_turn" : "TL+proximity" 
+    };
   }
   
   if (atTrendlineExact && stochExtreme) {
@@ -537,7 +550,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v30.6 ---
+// --- MAIN SIGNAL v30.7 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -546,7 +559,6 @@ export function generateSignal(
   const { ctx, debug } = getContext(pair, candles4h, currentPrice);
   if (!ctx) return { debug };
   
-  // v30.5: Dual exhaustion guard — ADX > 45 OR stoch extreme + turning against
   const exhaustion = checkExhaustion(ctx.t1d.direction!, ctx.indicators);
   debug.push(`Exhaustion: ${exhaustion.exhausted ? "YES" : "NO"} (${exhaustion.reason})`);
   if (exhaustion.exhausted) {
@@ -584,7 +596,6 @@ export function generateSignal(
     stateParts.push(`Stoch K${ctx.indicators.stoch.k} D${ctx.indicators.stoch.d}`);
     stateParts.push("No signal");
     
-    // v30.6: Fixed debug to show actual values instead of inverted
     debug.push(`Check: nearTL=${nearTrendline} | correctSide=${correctSide} | stochTurning=${stochTurning} | stochExtreme=${stochExtreme} | RR=unchecked | R2=passed`);
     debug.push(`State: ${stateParts.join(" | ")}`);
     return { debug };
@@ -604,7 +615,7 @@ export function generateSignal(
 
 // Build trade with full candle access for pivot targets
 function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candle[]): { signal: Signal; market: any } | null {
-  const { pair, price, now, t1d, trendline, indicators } = ctx;
+  const { pair, price, now, t1d, t4h, trendline, indicators } = ctx;
   const tlPrice = trendline.price;
   const atrVal = indicators.atr;
   
@@ -617,11 +628,10 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   
   if (setup.type === "ACCUMULATE") {
     entry = price;
-    // v30.3: Wider stops — use farther of swing or ATR × 1.5
-    const stopBuffer = atrVal * 1.5;
+    // v30.7: Tighter stops — trendline invalidation + ATR, not swing-based
     sl = t1d.direction === "LONG" 
-      ? Math.min(swingLow, entry - stopBuffer)   // Farther stop for LONG
-      : Math.max(swingHigh, entry + stopBuffer); // Farther stop for SHORT
+      ? Math.min(entry - atrVal, tlPrice * 0.99)
+      : Math.max(entry + atrVal, tlPrice * 1.01);
     
     const pivotTarget = getPivotTarget(candles4h, t1d.direction!, entry, sl, atrVal);
     if (pivotTarget) {
@@ -655,10 +665,14 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
   if (rr < MIN_RR) return null;
   
-  // v30.3: Minimum 60 confidence for all signals
-  const confidence = setup.type === "ACCUMULATE" 
-    ? (setup.reason === "TL+stoch_turn" ? 65 : 60)  // Turning gets 65, extreme gets 60
-    : 85;
+  // v30.7: Confidence = base 60 + stochTurning(10) + 4H alignment(10)
+  let confidence = 60;
+  const stochTurning = t1d.direction === "LONG" 
+    ? indicators.stoch.k > indicators.stoch.d
+    : indicators.stoch.k < indicators.stoch.d;
+  if (stochTurning) confidence += 10;
+  if (t4h.direction === t1d.direction) confidence += 10;
+  if (setup.reason === "TL+stoch_extreme") confidence += 5;
   
   const expectedMove = Math.abs(tp - entry) / entry * 100;
   
@@ -678,7 +692,7 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
     stochK: indicators.stoch.k,
     stochD: indicators.stoch.d,
     expectedMove: Math.round(expectedMove * 10) / 10,
-    reason: `${t1d.direction} ${setup.type} ${setup.scale} | 1D ${t1d.strength} | Stoch K${indicators.stoch.k} D${indicators.stoch.d} | ${setup.reason} | TP:${targetSource} | RR ${rr.toFixed(2)}`,
+    reason: `${t1d.direction} ${setup.type} ${setup.scale} | 1D ${t1d.strength} | 4H ${t4h.direction || "NONE"} | Stoch K${indicators.stoch.k} D${indicators.stoch.d} | ${setup.reason} | TP:${targetSource} | RR ${rr.toFixed(2)} | Conf ${confidence}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
   };
@@ -808,7 +822,7 @@ export function checkTradeStatus(signal: Signal, currentPrice: number, now: numb
   return "ACTIVE";
 }
 
-// --- MINIMAL COMPAT (only what's actually imported) ---
+// --- MINIMAL COMPAT ---
 export async function generateSignalCompat(
   pair: string,
   candles1h: Candle[],
