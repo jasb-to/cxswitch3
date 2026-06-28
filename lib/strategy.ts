@@ -1,12 +1,11 @@
-// lib/strategy.ts — v31.1b "Simplified + Exhaustion Guard + UI Fix"
+// lib/strategy.ts — v31.2 "Simplified + Exhaustion Guard + Pullback Exception"
 // ============================================================
-// CHANGES FROM v31.0:
-// 1. Added trend exhaustion detection to prevent entries at trend ends
-// 2. Four checks: EMA spread, price vs EMA8, ADX extreme, stoch extreme
-// 3. Exhaustion blocks ALL new entries (accumulate + breakout)
-// 4. Existing positions still managed by shouldHold (trend reversal exit)
-// 5. UI FIX: trend string includes strength ("LONG MEDIUM") for dashboard compatibility
-// 6. DEBUG FIX: clearer rejection labels (accum=true/false instead of ACCUM=true)
+// CHANGES FROM v31.1b:
+// 1. Added pullback exception to exhaustion check
+//    - If price has moved 1+ ATR against the trend direction,
+//      exhaustion is lifted and entries are allowed
+//    - This catches mean-reversion pullbacks to EMA8 within stretched trends
+// 2. Philosophy: Don't chase stretched trends, but DO enter on pullbacks
 
 export interface Candle {
   timestamp: number;
@@ -280,7 +279,7 @@ function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null } {
   return { direction };
 }
 
-// --- TREND EXHAUSTION: v31.1 Prevent entries at trend ends ---
+// --- TREND EXHAUSTION: v31.2 Prevent entries at trend ends + pullback exception ---
 interface ExhaustionCheck {
   exhausted: boolean;
   reason: string;
@@ -303,6 +302,16 @@ function checkTrendExhaustion(
   const ema8 = ema8Arr[ema8Arr.length - 1];
   const ema21 = ema21Arr[ema21Arr.length - 1];
   const emaSpread = Math.abs(ema8 - ema21) / ema21;
+
+  // v31.2: Pullback exception — if price has moved 1+ ATR against trend,
+  // exhaustion is lifted. This catches mean-reversion entries.
+  const pullbackAgainstTrend = direction === "LONG"
+    ? currentPrice < ema8 - atr1d   // Dropped 1 ATR below EMA8 in uptrend
+    : currentPrice > ema8 + atr1d;  // Rallied 1 ATR above EMA8 in downtrend
+
+  if (pullbackAgainstTrend) {
+    return { exhausted: false, reason: "pullback_against_trend" };
+  }
 
   // 1. EMA divergence > 3%
   if (emaSpread > 0.03) {
@@ -438,7 +447,7 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
 
   const indicators = buildIndicators(candles4h);
 
-  // v31.1: Exhaustion check BEFORE location/trigger
+  // v31.2: Exhaustion check with pullback exception
   const exhaustion = checkTrendExhaustion(candles1d, trend.direction, indicators);
   debug.push(`Exhaustion: ${exhaustion.exhausted ? "YES" : "NO"} (${exhaustion.reason})`);
   if (exhaustion.exhausted) {
@@ -508,7 +517,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v31.1b ---
+// --- MAIN SIGNAL v31.2 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -539,7 +548,6 @@ export function generateSignal(
     stateParts.push(`ADX ${ctx.indicators.adx}`);
     stateParts.push("No signal");
 
-    // v31.1b: Clearer debug labels
     debug.push(`Rejected: accum=${inAccum} | turn=${stochTurning} | retest=${inRetest} | ADX_ok=${ctx.indicators.adx > 20} | RR=unchecked | R2=passed`);
     debug.push(`State: ${stateParts.join(" | ")}`);
     return { debug };
@@ -633,7 +641,7 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
     version: CURRENT_SIGNAL_VERSION,
   };
 
-  // v31.1b: UI-compatible trend string with strength
+  // v31.2: UI-compatible trend string with strength
   const ema8Arr = ema(candles4h.map(c => c.close), 8);
   const ema21Arr = ema(candles4h.map(c => c.close), 21);
   const ema8 = ema8Arr[ema8Arr.length - 1];
@@ -676,7 +684,7 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
     exhaustion = checkTrendExhaustion(candles1d, trend.direction, indicators);
   }
 
-  // v31.1b: UI-compatible trend string with strength
+  // v31.2: UI-compatible trend string with strength
   const ema8Arr = ema(candles1d.map(c => c.close), 8);
   const ema21Arr = ema(candles1d.map(c => c.close), 21);
   const ema8 = ema8Arr[ema8Arr.length - 1];
