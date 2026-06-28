@@ -1,10 +1,12 @@
-// lib/strategy.ts — v31.1 "Simplified + Exhaustion Guard"
+// lib/strategy.ts — v31.1b "Simplified + Exhaustion Guard + UI Fix"
 // ============================================================
 // CHANGES FROM v31.0:
 // 1. Added trend exhaustion detection to prevent entries at trend ends
 // 2. Four checks: EMA spread, price vs EMA8, ADX extreme, stoch extreme
 // 3. Exhaustion blocks ALL new entries (accumulate + breakout)
 // 4. Existing positions still managed by shouldHold (trend reversal exit)
+// 5. UI FIX: trend string includes strength ("LONG MEDIUM") for dashboard compatibility
+// 6. DEBUG FIX: clearer rejection labels (accum=true/false instead of ACCUM=true)
 
 export interface Candle {
   timestamp: number;
@@ -506,7 +508,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v31.1 ---
+// --- MAIN SIGNAL v31.1b ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -530,14 +532,15 @@ export function generateSignal(
       : ctx.indicators.stoch.k < ctx.indicators.stoch.d;
 
     const stateParts: string[] = [];
-    if (inAccum) stateParts.push("accum zone");
-    else if (inRetest) stateParts.push("retest zone");
+    if (inAccum) stateParts.push("in accum zone");
+    else if (inRetest) stateParts.push("in retest zone");
     else stateParts.push("far from TL");
     stateParts.push(`Stoch K${ctx.indicators.stoch.k} D${ctx.indicators.stoch.d}`);
     stateParts.push(`ADX ${ctx.indicators.adx}`);
     stateParts.push("No signal");
 
-    debug.push(`Rejected: ACCUM=${!inAccum} | TURN=${!stochTurning} | RETEST=${!inRetest} | ADX=${ctx.indicators.adx <= 20} | RR=unchecked | R2=passed`);
+    // v31.1b: Clearer debug labels
+    debug.push(`Rejected: accum=${inAccum} | turn=${stochTurning} | retest=${inRetest} | ADX_ok=${ctx.indicators.adx > 20} | RR=unchecked | R2=passed`);
     debug.push(`State: ${stateParts.join(" | ")}`);
     return { debug };
   }
@@ -630,11 +633,19 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
     version: CURRENT_SIGNAL_VERSION,
   };
 
+  // v31.1b: UI-compatible trend string with strength
+  const ema8Arr = ema(candles4h.map(c => c.close), 8);
+  const ema21Arr = ema(candles4h.map(c => c.close), 21);
+  const ema8 = ema8Arr[ema8Arr.length - 1];
+  const ema21 = ema21Arr[ema21Arr.length - 1];
+  const spread = Math.abs(ema8 - ema21) / ema21;
+  const strength = spread > 0.02 ? "STRONG" : "MEDIUM";
+
   const market = {
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: now,
-    trend: trend.direction,
+    trend: trend.direction ? `${trend.direction} ${strength}` : "NONE",
     exhaustion: ctx.exhaustion.exhausted ? ctx.exhaustion.reason : "healthy",
     adx: signal.adx,
     rsi: signal.rsi,
@@ -665,11 +676,19 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
     exhaustion = checkTrendExhaustion(candles1d, trend.direction, indicators);
   }
 
+  // v31.1b: UI-compatible trend string with strength
+  const ema8Arr = ema(candles1d.map(c => c.close), 8);
+  const ema21Arr = ema(candles1d.map(c => c.close), 21);
+  const ema8 = ema8Arr[ema8Arr.length - 1];
+  const ema21 = ema21Arr[ema21Arr.length - 1];
+  const spread = Math.abs(ema8 - ema21) / ema21;
+  const strength = spread > 0.02 ? "STRONG" : "MEDIUM";
+
   return {
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
-    trend: trend.direction || "NONE",
+    trend: trend.direction ? `${trend.direction} ${strength}` : "NONE",
     exhaustion: exhaustion.exhausted ? exhaustion.reason : "healthy",
     adx: Math.round(adx(candles4h) * 10) / 10,
     rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
