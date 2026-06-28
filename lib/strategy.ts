@@ -1,8 +1,10 @@
-// lib/strategy.ts — v30.4 "ADX Exhaustion Guard"
+// lib/strategy.ts — v30.5 "ADX + Stoch Dual Exhaustion Guard"
 // ============================================================
-// CHANGES FROM v30.3:
-// 1. Added ADX > 45 exhaustion check — blocks entries when trend is peaking
-// 2. Everything else identical to v30.3
+// CHANGES FROM v30.4:
+// 1. Added stoch extreme + turning against guard
+//    Blocks entries when stoch >85 (LONG) or <15 (SHORT) AND K turning against trend
+// 2. Dual exhaustion: ADX > 45 OR stoch extreme+turning = no entry
+// 3. Everything else identical to v30.3/v30.4
 
 import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -48,7 +50,9 @@ export const CURRENT_SIGNAL_VERSION = 30;
 const MIN_RR = 1.5;
 const MIN_R2 = 0.65;
 const TL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-const ADX_EXHAUSTION = 45;  // v30.4: Block entries when ADX > 45
+const ADX_EXHAUSTION = 45;      // v30.4: Block entries when ADX > 45
+const STOCH_EXTREME_LONG = 85;  // v30.5: Stoch overbought threshold for LONG
+const STOCH_EXTREME_SHORT = 15; // v30.5: Stoch oversold threshold for SHORT
 
 // --- STATE: Only raw pivots persisted, never computed values ---
 interface TrendlineState {
@@ -376,6 +380,37 @@ function buildIndicators(candles4h: Candle[]): Indicators {
   };
 }
 
+// --- EXHAUSTION CHECK: v30.5 Dual Guard ---
+interface ExhaustionResult {
+  exhausted: boolean;
+  reason: string;
+}
+
+function checkExhaustion(direction: "LONG" | "SHORT", indicators: Indicators): ExhaustionResult {
+  // Guard 1: ADX > 45 (trend peaking)
+  if (indicators.adx > ADX_EXHAUSTION) {
+    return { exhausted: true, reason: `ADX_${indicators.adx}` };
+  }
+
+  // Guard 2: Stoch extreme AND turning against trend
+  const stochExtreme = direction === "LONG"
+    ? indicators.stoch.k > STOCH_EXTREME_LONG   // > 85, overbought
+    : indicators.stoch.k < STOCH_EXTREME_SHORT; // < 15, oversold
+
+  const stochTurningAgainst = direction === "LONG"
+    ? indicators.stoch.k < indicators.stoch.d   // K crossing below D in uptrend
+    : indicators.stoch.k > indicators.stoch.d;  // K crossing above D in downtrend
+
+  if (stochExtreme && stochTurningAgainst) {
+    return {
+      exhausted: true,
+      reason: `stoch_extreme_${direction === "LONG" ? "overbought" : "oversold"}_${indicators.stoch.k}_turning`
+    };
+  }
+
+  return { exhausted: false, reason: "healthy" };
+}
+
 // --- CONTEXT ---
 interface MarketContext {
   pair: string;
@@ -499,7 +534,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v30.4 ---
+// --- MAIN SIGNAL v30.5 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -508,9 +543,11 @@ export function generateSignal(
   const { ctx, debug } = getContext(pair, candles4h, currentPrice);
   if (!ctx) return { debug };
   
-  // v30.4: ADX exhaustion guard — block entries when trend is peaking
-  if (ctx.indicators.adx > ADX_EXHAUSTION) {
-    debug.push(`Rejected: ADX ${ctx.indicators.adx} > ${ADX_EXHAUSTION} (trend exhausted)`);
+  // v30.5: Dual exhaustion guard — ADX > 45 OR stoch extreme + turning against
+  const exhaustion = checkExhaustion(ctx.t1d.direction!, ctx.indicators);
+  debug.push(`Exhaustion: ${exhaustion.exhausted ? "YES" : "NO"} (${exhaustion.reason})`);
+  if (exhaustion.exhausted) {
+    debug.push(`Rejected: exhaustion — ${exhaustion.reason}`);
     return { debug };
   }
   
