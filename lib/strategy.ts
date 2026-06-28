@@ -1,9 +1,10 @@
-// lib/strategy.ts — v30.9 "Confidence Spread + Pivot Debug"
+// lib/strategy.ts — v30.10 "Regression Fix + Log Price + Version Unify"
 // ============================================================
-// 2 changes from v30.8:
-// 1. Confidence spread: 50 base, +10 per quality factor (RR, stoch, 4H, ADX, R²)
-//    Range: 50–100 instead of 60–80
-// 2. Pivot debug instrumentation to catch R²=0 regression collapse
+// 4 fixes from v30.9 review:
+// 1. R² clamped to [0,1] — negative values no longer collapse to 0
+// 2. Log-price regression for scale-independent crypto trendlines
+// 3. CURRENT_SIGNAL_VERSION unified to 30 (was split with runtime expecting 28)
+// 4. Raw R² debug instrumentation
 
 import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -85,7 +86,8 @@ function avg(arr: number[]): number {
   return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
-function linearRegression(points: { x: number; y: number }[]): { slope: number; intercept: number; r2: number } | null {
+// v30.10: Log-price regression with clamped R²
+function linearRegression(points: { x: number; y: number }[]): { slope: number; intercept: number; r2: number; rawR2: number } | null {
   const n = points.length;
   if (n < 2) return null;
   const sumX = points.reduce((s, p) => s + p.x, 0);
@@ -99,8 +101,11 @@ function linearRegression(points: { x: number; y: number }[]): { slope: number; 
   const yMean = sumY / n;
   const ssTotal = points.reduce((s, p) => s + Math.pow(p.y - yMean, 2), 0);
   const ssResidual = points.reduce((s, p) => s + Math.pow(p.y - (slope * p.x + intercept), 2), 0);
-  const r2 = ssTotal === 0 ? 0 : 1 - (ssResidual / ssTotal);
-  return { slope, intercept, r2 };
+  
+  const rawR2 = ssTotal === 0 ? 0 : 1 - (ssResidual / ssTotal);
+  const r2 = Math.max(0, Math.min(1, rawR2));
+  
+  return { slope, intercept, r2, rawR2 };
 }
 
 // --- INDICATORS ---
@@ -254,7 +259,7 @@ function findSwingLows(candles: Candle[]): { price: number; index: number }[] {
   return lows;
 }
 
-// --- TRENDLINE: Sequential index regression + pivot debug ---
+// --- TRENDLINE: Log-price regression + clamped R² + pivot debug ---
 function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT", debug: string[]): { price: number; r2: number; age: number } | null {
   const len = candles.length;
   if (len < 20) return null;
@@ -278,13 +283,15 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     }).slice(-5);
   }
   
-  // v30.9: Pivot debug instrumentation
   debug.push(`Pivots: ${usePivots.map(p => `${p.index}:${p.price.toFixed(1)}`).join(",")}`);
   
-  // Sequential index regression (Fix #1 from v30.8)
-  const points = usePivots.map((p, idx) => ({ x: idx, y: p.price }));
+  // v30.10: Log-price regression for scale-independent crypto trendlines
+  const points = usePivots.map((p, idx) => ({ x: idx, y: Math.log(p.price) }));
   const regression = linearRegression(points);
   if (!regression) return null;
+  
+  // v30.10: Raw R² debug to diagnose regression quality
+  debug.push(`R2 raw=${regression.rawR2.toFixed(4)} clamped=${regression.r2.toFixed(4)} slope=${regression.slope.toFixed(6)} pivots=${points.length}`);
   
   trendlineStore.set(pair, {
     pivots: usePivots,
@@ -293,8 +300,9 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   });
   
   const currentIndex = usePivots.length - 1;
+  // v30.10: Exponentiate back to price space
   return {
-    price: regression.slope * currentIndex + regression.intercept,
+    price: Math.exp(regression.slope * currentIndex + regression.intercept),
     r2: Math.round(regression.r2 * 100) / 100,
     age: 0,
   };
@@ -543,7 +551,7 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v30.9 ---
+// --- MAIN SIGNAL v30.10 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -658,7 +666,7 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
   if (rr < MIN_RR) return null;
   
-  // v30.9: Spread confidence — 50 base, +10 per quality factor
+  // Spread confidence: 50 base, +10 per quality factor
   let confidence = 50;
   if (rr > 2.0) confidence += 10;
   const stochTurning = t1d.direction === "LONG" 
