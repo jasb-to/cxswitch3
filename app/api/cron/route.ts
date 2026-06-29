@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v31.1 "v28.1 strategy compat + UI alerts"
+// app/api/cron/route.ts — v31.2 "10-min cron + v28.1 strategy compat + UI alerts"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -20,7 +20,7 @@ import {
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
-const MIN_CRON_INTERVAL_MS = 14 * 60 * 1000;
+const MIN_CRON_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes
 
 function roundPrice(n: number): number {
   if (n >= 10000) return Math.round(n);
@@ -141,14 +141,21 @@ export async function GET(request: Request) {
       const existingIdx = validSignals.findIndex((s) => s.pair === pair);
       const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
 
-      // FIX: Pass all 5 required arguments to generateSignal (v28.1 signature)
+      // v28.1: Pass all 5 required arguments to generateSignal
       const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
 
+      // Build market snapshot with closes for client-side real-time StochRSI
       let market = result.market;
-      if (!market) market = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
-      if (market) marketDataList.push(market);
+      if (!market) {
+        market = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+      }
+      if (market) {
+        // Add last 50 closes for client-side real-time calc
+        market.closes4h = candles4h.slice(-50).map((c) => c.close);
+        marketDataList.push(market);
+      }
 
-      // NEW: Persist UI alerts from strategy
+      // Persist UI alerts from strategy
       if (result.uiAlert) {
         log(
           `[UI_ALERT] ${pair} — ${result.uiAlert.type} K=${result.uiAlert.stochK} D=${result.uiAlert.stochD}`
@@ -157,6 +164,7 @@ export async function GET(request: Request) {
         alerts.push({ pair, status: "ui_alert", type: result.uiAlert.type });
       }
 
+      // Handle existing signal validity and hold checks
       if (existingForPair) {
         log(`[PAIR] ${pair} — has existing signal ${existingForPair.id}`);
         const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
@@ -181,6 +189,7 @@ export async function GET(request: Request) {
         }
       }
 
+      // No new signal generated
       if (!result.signal) {
         log(`[PAIR] ${pair} — NO SIGNAL (${result.debug?.join(" | ")})`);
         alerts.push({ pair, status: "no_signal", debug: result.debug?.join(" | ") });
@@ -193,6 +202,7 @@ export async function GET(request: Request) {
       );
       newSignals.push(signal);
 
+      // Send Telegram alert
       try {
         await sendAlert({
           symbol: signal.pair,
