@@ -1,9 +1,14 @@
-// lib/strategy.ts — v31.2 "Adaptive swing window + wider compression zone"
+// lib/strategy.ts — v31 "Exit Engine + Adaptive Pivots + Profit Protection"
 // ============================================================
-// Fixes:
-// 1. COMPRESSION dist threshold: 0.025 → 0.04 (4%)
-// 2. Adaptive swing window: ±5 primary, ±3 fallback for low-volatility structure
-// 3. Fallback pivot detection when ±5 finds insufficient pivots
+// Changes:
+// 1. Softened exhaustion: ADX>50 + stoch turning, or stoch extreme (K>90/<10) + turning
+// 2. Exit engine with evaluateExit(): WATCH/EXIT/FORCE_EXIT, profit locking, never widen stops
+// 3. UI exit state: tradeHealth + exitReason in market snapshot
+// 4. Removed pivot recency filter — TL_MAX_DIST is sole staleness control
+// 5. Adaptive pivots: ±5 high/low → ±3 high/low → ±3 close → no trendline
+// 6. MIN_STOP_PCT = 0.025 leverage safety
+// 7. Profit protection: exit if retraces from >2R to <1R
+// 8. Rich debug: entry state, exit state, profit lock, stoch state, trendline state
 
 import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -47,19 +52,17 @@ export const CURRENT_SIGNAL_VERSION = 31;
 
 // --- CONFIG ---
 const MIN_RR = 1.5;
+const MIN_R2 = 0.45;
 const TL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-const ADX_EXHAUSTION = 45;
-const STOCH_EXTREME_LONG = 85;
-const STOCH_EXTREME_SHORT = 15;
+const ADX_EXHAUSTION = 50;
+const STOCH_EXTREME_LONG = 90;
+const STOCH_EXTREME_SHORT = 10;
 const CORRECT_SIDE_BUFFER = 0.015;
 const TL_MAX_DIST = 0.05; // 5%
-const MAX_PIVOT_AGE_CANDLES = 120; // ~20 days of 4H data
-const SWING_WINDOW = 5; // ±5 candles primary
-const SWING_WINDOW_FALLBACK = 3; // ±3 fallback
-
-// Regime-specific R² thresholds
-const MIN_R2_TREND = 0.55;
-const MIN_R2_COMPRESSION = 0.20;
+const SWING_WINDOW = 5;
+const SWING_WINDOW_FALLBACK = 3;
+const MIN_PIVOT_SPACING = 6;
+const MIN_STOP_PCT = 0.025;
 
 // --- STATE ---
 interface TrendlineState {
@@ -229,44 +232,70 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// --- SWING DETECTION v31.2: Adaptive window with fallback ---
-function findPivots(
-  candles: Candle[],
-  direction: "LONG" | "SHORT",
-  window: number = SWING_WINDOW
-): { index: number; price: number; timestamp: number }[] {
+// --- SWING DETECTION v31: Adaptive with fallback ---
+function findPivotsHL(candles: Candle[], direction: "LONG" | "SHORT", window: number): { index: number; price: number; timestamp: number }[] {
   const out: { index: number; price: number; timestamp: number }[] = [];
   for (let i = window; i < candles.length - window; i++) {
     const c = candles[i];
     const value = direction === "SHORT" ? c.high : c.low;
-    const w = candles.slice(i - window, i + window + 1).map(x =>
-      direction === "SHORT" ? x.high : x.low
-    );
-    const extreme = direction === "SHORT"
-      ? value === Math.max(...w)
-      : value === Math.min(...w);
-    if (extreme) {
-      out.push({ index: i, price: value, timestamp: c.timestamp });
-    }
+    const w = candles.slice(i - window, i + window + 1).map(x => direction === "SHORT" ? x.high : x.low);
+    const extreme = direction === "SHORT" ? value === Math.max(...w) : value === Math.min(...w);
+    if (extreme) out.push({ index: i, price: value, timestamp: c.timestamp });
   }
   return out;
 }
 
-// v31.2: Try primary window, fallback to smaller window if insufficient
-function findPivotsWithFallback(
-  candles: Candle[],
-  direction: "LONG" | "SHORT",
-  debug: string[]
-): { index: number; price: number; timestamp: number }[] {
-  const primary = findPivots(candles, direction, SWING_WINDOW);
-  if (primary.length >= 3) {
-    debug.push(`Pivots ±${SWING_WINDOW}: ${primary.length}`);
-    return primary;
+function findPivotsClose(candles: Candle[], direction: "LONG" | "SHORT", window: number): { index: number; price: number; timestamp: number }[] {
+  const out: { index: number; price: number; timestamp: number }[] = [];
+  for (let i = window; i < candles.length - window; i++) {
+    const c = candles[i];
+    const value = c.close;
+    const w = candles.slice(i - window, i + window + 1).map(x => x.close);
+    const extreme = direction === "SHORT" ? value === Math.max(...w) : value === Math.min(...w);
+    if (extreme) out.push({ index: i, price: value, timestamp: c.timestamp });
   }
-  debug.push(`±${SWING_WINDOW} pivots: ${primary.length} < 3, trying ±${SWING_WINDOW_FALLBACK}`);
-  const fallback = findPivots(candles, direction, SWING_WINDOW_FALLBACK);
-  debug.push(`±${SWING_WINDOW_FALLBACK} pivots: ${fallback.length}`);
-  return fallback;
+  return out;
+}
+
+function applyPivotSpacing(pivots: { index: number; price: number; timestamp: number }[]): { index: number; price: number; timestamp: number }[] {
+  if (pivots.length < 2) return pivots;
+  const spaced = [pivots[0]];
+  for (let i = 1; i < pivots.length; i++) {
+    if (pivots[i].index - spaced[spaced.length - 1].index >= MIN_PIVOT_SPACING) {
+      spaced.push(pivots[i]);
+    }
+  }
+  return spaced;
+}
+
+function findPivotsWithFallback(candles: Candle[], direction: "LONG" | "SHORT", debug: string[]): { pivots: { index: number; price: number; timestamp: number }[]; source: string } {
+  // 1. High/low ±5
+  let raw = findPivotsHL(candles, direction, SWING_WINDOW);
+  raw = applyPivotSpacing(raw);
+  if (raw.length >= 3) {
+    debug.push(`Pivots HL±${SWING_WINDOW}: ${raw.length}`);
+    return { pivots: raw, source: `HL±${SWING_WINDOW}` };
+  }
+  debug.push(`HL±${SWING_WINDOW}: ${raw.length} < 3`);
+
+  // 2. High/low ±3
+  raw = findPivotsHL(candles, direction, SWING_WINDOW_FALLBACK);
+  raw = applyPivotSpacing(raw);
+  if (raw.length >= 3) {
+    debug.push(`Pivots HL±${SWING_WINDOW_FALLBACK}: ${raw.length}`);
+    return { pivots: raw, source: `HL±${SWING_WINDOW_FALLBACK}` };
+  }
+  debug.push(`HL±${SWING_WINDOW_FALLBACK}: ${raw.length} < 3`);
+
+  // 3. Close ±3
+  raw = findPivotsClose(candles, direction, SWING_WINDOW_FALLBACK);
+  raw = applyPivotSpacing(raw);
+  debug.push(`Pivots Close±${SWING_WINDOW_FALLBACK}: ${raw.length}`);
+  if (raw.length >= 3) {
+    return { pivots: raw, source: `Close±${SWING_WINDOW_FALLBACK}` };
+  }
+
+  return { pivots: [], source: "none" };
 }
 
 // v31: Enforce structural consistency
@@ -286,81 +315,66 @@ function enforceTrendStructure(
   return clean.slice(-5);
 }
 
-// --- REGIME CLASSIFICATION v31 ---
-function classifyRegime(r2: number, adxVal: number, atrPct: number): "TREND" | "COMPRESSION" | "RANGE" {
-  if (r2 > MIN_R2_TREND && adxVal > 22) return "TREND";
-  if (r2 > MIN_R2_COMPRESSION && adxVal < 22) return "COMPRESSION";
-  return "RANGE";
-}
-
-// --- TRENDLINE v31.2: Adaptive pivots, 120-candle recency ---
-function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT", debug: string[]): { price: number; r2: number; age: number; pivotAge: number } | null {
+// --- TRENDLINE v31: No recency filter, TL_MAX_DIST only ---
+function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT", debug: string[]): { price: number; r2: number; age: number; pivotSource: string } | null {
   const len = candles.length;
   if (len < 20) return null;
-  
-  const rawPivots = findPivotsWithFallback(candles, direction, debug);
+
+  const { pivots: rawPivots, source: pivotSource } = findPivotsWithFallback(candles, direction, debug);
   if (rawPivots.length < 3) {
     debug.push(`Raw pivots: ${rawPivots.length} < 3`);
     return null;
   }
-  
+
   const structuredPivots = enforceTrendStructure(rawPivots, direction);
   if (structuredPivots.length < 3) {
     debug.push(`Structured pivots: ${structuredPivots.length} < 3`);
     return null;
   }
-  
-  const currentIndex = candles.length - 1;
-  const recentPivots = structuredPivots.filter(p => currentIndex - p.index <= MAX_PIVOT_AGE_CANDLES).slice(-5);
-  if (recentPivots.length < 3) {
-    debug.push(`Recent pivots: ${recentPivots.length} < 3 (max age ${MAX_PIVOT_AGE_CANDLES})`);
-    return null;
-  }
-  
-  const pivotAge = currentIndex - recentPivots[recentPivots.length - 1].index;
-  
+
+  const usePivots = structuredPivots.slice(-5);
   const now = candles[candles.length - 1].timestamp;
   const existing = trendlineStore.get(pair);
-  let usePivots = recentPivots;
-  
+
+  let finalPivots = usePivots;
   if (existing && existing.direction === direction && (now - existing.lastUpdated) < TL_MAX_AGE_MS) {
-    const freshStored = existing.pivots.filter(p => currentIndex - p.index <= MAX_PIVOT_AGE_CANDLES);
-    if (freshStored.length > 0) {
-      const allPivots = [...freshStored, ...recentPivots];
-      const seen = new Set<number>();
-      usePivots = enforceTrendStructure(
-        allPivots.filter(p => {
-          if (seen.has(p.index)) return false;
-          seen.add(p.index);
-          return true;
-        }).sort((a, b) => a.index - b.index),
-        direction
-      ).slice(-5);
-    }
+    const allPivots = [...existing.pivots, ...usePivots];
+    const seen = new Set<number>();
+    finalPivots = enforceTrendStructure(
+      allPivots.filter(p => {
+        if (seen.has(p.index)) return false;
+        seen.add(p.index);
+        return true;
+      }).sort((a, b) => a.index - b.index),
+      direction
+    ).slice(-5);
   }
-  
-  if (usePivots.length < 3) return null;
-  
-  debug.push(`Pivots: ${usePivots.map(p => `${p.index}: ${p.price.toFixed(1)}`).join(",")}`);
-  
-  const points = usePivots.map((p, idx) => ({ x: idx, y: Math.log(p.price) }));
+
+  if (finalPivots.length < 3) return null;
+
+  debug.push(`Pivots: ${finalPivots.map(p => `${p.index}: ${p.price.toFixed(1)}`).join(",")} [${pivotSource}]`);
+
+  const points = finalPivots.map((p, idx) => ({ x: idx, y: Math.log(p.price) }));
   const regression = linearRegression(points);
   if (!regression) return null;
-  
-  debug.push(`R2 raw=${regression.rawR2.toFixed(4)} clamped=${regression.r2.toFixed(4)} slope=${regression.slope.toFixed(6)} pivots=${points.length} age=${pivotAge}`);
-  
+
+  debug.push(`R2 raw=${regression.rawR2.toFixed(4)} clamped=${regression.r2.toFixed(4)} slope=${regression.slope.toFixed(6)} pivots=${points.length} source=${pivotSource}`);
+
   trendlineStore.set(pair, {
-    pivots: usePivots,
+    pivots: finalPivots,
     lastUpdated: now,
     direction,
   });
-  
-  const regressionIndex = usePivots.length - 1;
+
+  const regressionIndex = finalPivots.length - 1;
+  const lastPivot = finalPivots[finalPivots.length - 1];
+  const age = len - 1 - lastPivot.index;
+
   return {
     price: Math.exp(regression.slope * regressionIndex + regression.intercept),
     r2: Math.round(regression.r2 * 100) / 100,
-    age: pivotAge,
-    pivotAge,
+    age,
+    pivotSource,
   };
 }
 
@@ -399,8 +413,8 @@ function getPivotTarget(
   atrVal: number,
   minRR: number = MIN_RR
 ): { target: number; source: string } | null {
-  const swingHighs = findPivots(candles4h, "SHORT", SWING_WINDOW_FALLBACK);
-  const swingLows = findPivots(candles4h, "LONG", SWING_WINDOW_FALLBACK);
+  const swingHighs = findPivotsHL(candles4h, "SHORT", SWING_WINDOW_FALLBACK);
+  const swingLows = findPivotsHL(candles4h, "LONG", SWING_WINDOW_FALLBACK);
   if (direction === "LONG") {
     const validHighs = swingHighs.filter(h => h.price > entry).sort((a, b) => a.price - b.price);
     for (const high of validHighs) {
@@ -457,29 +471,149 @@ function buildIndicators(candles4h: Candle[]): Indicators {
   };
 }
 
-// --- EXHAUSTION CHECK ---
+// --- EXHAUSTION v31: Softened ---
 interface ExhaustionResult {
-  exhausted: boolean;
+  level: "NONE" | "WARNING" | "ACTIVE";
   reason: string;
 }
 
 function checkExhaustion(direction: "LONG" | "SHORT", indicators: Indicators): ExhaustionResult {
-  if (indicators.adx > ADX_EXHAUSTION) {
-    return { exhausted: true, reason: `ADX_${indicators.adx}` };
-  }
-  const stochExtreme = direction === "LONG"
-    ? indicators.stoch.k > STOCH_EXTREME_LONG
-    : indicators.stoch.k < STOCH_EXTREME_SHORT;
+  // ADX exhaustion: only if ADX > 50 AND stoch turning against
   const stochTurningAgainst = direction === "LONG"
     ? indicators.stoch.k < indicators.stoch.d
     : indicators.stoch.k > indicators.stoch.d;
+
+  if (indicators.adx > ADX_EXHAUSTION && stochTurningAgainst) {
+    return { level: "ACTIVE", reason: `ADX_${indicators.adx}_stoch_turning` };
+  }
+  if (indicators.adx > ADX_EXHAUSTION) {
+    return { level: "WARNING", reason: `ADX_${indicators.adx}` };
+  }
+
+  // Stochastic exhaustion: extreme + turning
+  const stochExtreme = direction === "LONG"
+    ? indicators.stoch.k > STOCH_EXTREME_LONG
+    : indicators.stoch.k < STOCH_EXTREME_SHORT;
+
   if (stochExtreme && stochTurningAgainst) {
     return {
-      exhausted: true,
+      level: "ACTIVE",
       reason: `stoch_extreme_${direction === "LONG" ? "overbought" : "oversold"}_${indicators.stoch.k}_turning`
     };
   }
-  return { exhausted: false, reason: "healthy" };
+  if (stochExtreme) {
+    return { level: "WARNING", reason: `stoch_extreme_${indicators.stoch.k}` };
+  }
+
+  return { level: "NONE", reason: "healthy" };
+}
+
+// --- EXIT ENGINE v31 ---
+export interface ExitEvaluation {
+  shouldExit: boolean;
+  reason: string;
+  urgency: "WATCH" | "EXIT" | "FORCE_EXIT";
+  newStop?: number;
+  tradeHealth: "STRONG" | "WEAKENING" | "EXIT_RECOMMENDED" | "FORCE_EXIT";
+}
+
+function stochRsiFromCloses(closes: number[]): { k: number; d: number } {
+  return stochRsi(closes);
+}
+
+export function evaluateExit(
+  signal: Signal,
+  candles1h: Candle[],
+  candles4h: Candle[],
+  currentPrice: number
+): ExitEvaluation {
+  const direction = signal.direction;
+  const entry = signal.entry;
+  const initialSl = signal.stop;
+  const risk = direction === "LONG" ? entry - initialSl : initialSl - entry;
+  const profit = direction === "LONG" ? currentPrice - entry : entry - currentPrice;
+  const profitRR = risk > 0 ? profit / risk : 0;
+
+  // Build 1H stoch
+  const closes1h = candles1h.map(c => c.close);
+  const stoch1h = stochRsiFromCloses(closes1h);
+  const adx4h = adx(candles4h);
+
+  // Default
+  let shouldExit = false;
+  let reason = "";
+  let urgency: "WATCH" | "EXIT" | "FORCE_EXIT" = "WATCH";
+  let newStop: number | undefined = undefined;
+  let tradeHealth: ExitEvaluation["tradeHealth"] = "STRONG";
+
+  // Profit locking — never widen stops
+  if (profitRR > 1.5) {
+    const lockLevel = entry + (direction === "LONG" ? risk * 0.5 : -risk * 0.5);
+    const currentStop = direction === "LONG" ? Math.max(initialSl, lockLevel) : Math.min(initialSl, lockLevel);
+    if (direction === "LONG" && currentStop > initialSl) newStop = currentStop;
+    if (direction === "SHORT" && currentStop < initialSl) newStop = currentStop;
+  } else if (profitRR > 1.0) {
+    const breakeven = entry + (direction === "LONG" ? 0 : 0);
+    const currentStop = direction === "LONG" ? Math.max(initialSl, entry) : Math.min(initialSl, entry);
+    if (direction === "LONG" && currentStop > initialSl) newStop = currentStop;
+    if (direction === "SHORT" && currentStop < initialSl) newStop = currentStop;
+  }
+
+  // Stoch state
+  const stochAligned = direction === "LONG"
+    ? stoch1h.k > stoch1h.d
+    : stoch1h.k < stoch1h.d;
+  const stochCrossing = direction === "LONG"
+    ? stoch1h.k < stoch1h.d
+    : stoch1h.k > stoch1h.d;
+  const stochExtremeZone = direction === "LONG" ? stoch1h.k > 60 : stoch1h.k < 40;
+
+  if (stochAligned) tradeHealth = "STRONG";
+  else if (!stochCrossing) tradeHealth = "WEAKENING";
+
+  // Rule C: Exit on stoch cross in extreme zone
+  const crossExit = direction === "LONG"
+    ? stoch1h.k < stoch1h.d && stoch1h.k > 60
+    : stoch1h.k > stoch1h.d && stoch1h.k < 40;
+
+  if (crossExit) {
+    shouldExit = true;
+    reason = `stoch_cross_${direction === "LONG" ? "below" : "above"}_D_${stoch1h.k.toFixed(1)}`;
+    urgency = "EXIT";
+    tradeHealth = "EXIT_RECOMMENDED";
+  }
+
+  // Rule D: Force exit — stoch extreme + ADX falling + profitable
+  const adxFalling = candles4h.length > 28;
+  let forceExit = false;
+  if (adxFalling) {
+    const adxPrev = adx(candles4h.slice(0, -1));
+    forceExit = adx4h < adxPrev && profit > 0 && stochExtremeZone;
+  }
+
+  if (forceExit) {
+    shouldExit = true;
+    reason = `force_exit_stoch${stoch1h.k.toFixed(0)}_adx_falling`;
+    urgency = "FORCE_EXIT";
+    tradeHealth = "FORCE_EXIT";
+  }
+
+  // Profit protection: retraced from >2R to <1R
+  const peakProfitRR = (signal as any).peakProfitRR ?? profitRR;
+  if (peakProfitRR > 2.0 && profitRR < 1.0) {
+    shouldExit = true;
+    reason = "profit_protection";
+    urgency = "FORCE_EXIT";
+    tradeHealth = "FORCE_EXIT";
+  }
+
+  return {
+    shouldExit,
+    reason,
+    urgency,
+    newStop,
+    tradeHealth,
+  };
 }
 
 // --- CONTEXT ---
@@ -489,11 +623,10 @@ interface MarketContext {
   now: number;
   t1d: { direction: "LONG" | "SHORT" | null; strength: string };
   t4h: { direction: "LONG" | "SHORT" | null };
-  trendline: { price: number; r2: number; age: number } | null;
+  trendline: { price: number; r2: number; age: number; pivotSource: string } | null;
   indicators: Indicators;
   last: Candle;
   prev: Candle;
-  regime: "TREND" | "COMPRESSION" | "RANGE";
 }
 
 function getContext(pair: string, candles4h: Candle[], currentPrice?: number): { ctx: MarketContext | null; debug: string[] } {
@@ -523,9 +656,9 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
   }
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
   const dist = (price - trendline.price) / trendline.price;
-  debug.push(`TL: ${trendline.price.toFixed(1)} | R² ${trendline.r2} | Price: ${price.toFixed(1)} | Dist: ${(dist >= 0 ? "+" : "")}${(dist * 100).toFixed(2)}%`);
-  
-  // Distance-based invalidation
+  debug.push(`TL: ${trendline.price.toFixed(1)} | R² ${trendline.r2} | Price: ${price.toFixed(1)} | Dist: ${(dist >= 0 ? "+" : "")}${(dist * 100).toFixed(2)}% | Age: ${trendline.age} | Source: ${trendline.pivotSource}`);
+
+  // Distance-based invalidation (sole staleness control)
   if (t1d.direction === "SHORT" && dist > TL_MAX_DIST) {
     debug.push(`Trendline too far below price (${(dist * 100).toFixed(2)}% > ${(TL_MAX_DIST * 100).toFixed(0)}%), likely broken structure`);
     trendlineStore.delete(pair);
@@ -536,12 +669,9 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
     trendlineStore.delete(pair);
     return { ctx: null, debug };
   }
-  
+
   const indicators = buildIndicators(candles4h);
-  const atrPct = indicators.atr / price;
-  const regime = classifyRegime(trendline.r2, indicators.adx, atrPct);
-  debug.push(`Regime: ${regime} | StochRSI: K ${indicators.stoch.k} | D ${indicators.stoch.d} | ADX ${indicators.adx}`);
-  
+  debug.push(`StochRSI: K ${indicators.stoch.k} | D ${indicators.stoch.d} | ADX ${indicators.adx}`);
   return {
     ctx: {
       pair,
@@ -553,13 +683,12 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
       indicators,
       last: candles4h[candles4h.length - 1],
       prev: candles4h[candles4h.length - 2],
-      regime,
     },
     debug,
   };
 }
 
-// --- SETUP FINDER v31.2: Wider compression zone ---
+// --- SETUP FINDER ---
 interface Setup {
   type: "ACCUMULATE" | "BREAKOUT";
   scale: "ENTRY_1" | "ADD";
@@ -567,41 +696,44 @@ interface Setup {
 }
 
 function findSetup(ctx: MarketContext): Setup | null {
-  const { price, t1d, trendline, indicators, regime } = ctx;
-  const dist = Math.abs(price - trendline.price) / trendline.price;
-  
-  // TREND: tight retest to trendline
-  if (regime === "TREND" && dist < 0.015) {
+  const { price, t1d, trendline, indicators, last, prev } = ctx;
+  const tlPrice = trendline.price;
+  const dist = (price - tlPrice) / tlPrice;
+  const atrVal = indicators.atr;
+  const nearTrendline = Math.abs(price - tlPrice) < atrVal * 0.8;
+  const stochTurning = t1d.direction === "LONG"
+    ? indicators.stoch.k > indicators.stoch.d
+    : indicators.stoch.k < indicators.stoch.d;
+  const atTrendlineExact = Math.abs(dist) < 0.003;
+  const stochExtreme = t1d.direction === "LONG"
+    ? indicators.stoch.k < 20
+    : indicators.stoch.k > 80;
+  const correctSide = t1d.direction === "LONG"
+    ? price <= tlPrice * (1 + CORRECT_SIDE_BUFFER)
+    : price >= tlPrice * (1 - CORRECT_SIDE_BUFFER);
+  const inRetestZone = t1d.direction === "LONG"
+    ? price > tlPrice * (1 + CORRECT_SIDE_BUFFER) && price < tlPrice * 1.02 && dist > 0
+    : price < tlPrice * (1 - CORRECT_SIDE_BUFFER) && price > tlPrice * 0.98 && dist < 0;
+  const confirming = t1d.direction === "LONG"
+    ? last.close > last.open && last.close > prev.close
+    : last.close < last.open && last.close < prev.close;
+  const emaAligned = t1d.direction === "LONG"
+    ? price > indicators.ema8 && price > indicators.ema21
+    : price < indicators.ema8 && price < indicators.ema21;
+
+  if (nearTrendline && correctSide) {
     return {
       type: "ACCUMULATE",
       scale: "ENTRY_1",
-      reason: "trend_retest"
+      reason: stochTurning ? "TL+stoch_turn" : "TL+proximity"
     };
   }
-  
-  // COMPRESSION: wider zone (v31.2: 0.025 → 0.04)
-  if (regime === "COMPRESSION" && dist < 0.04) {
-    return {
-      type: "ACCUMULATE",
-      scale: "ENTRY_1",
-      reason: "compression"
-    };
+  if (atTrendlineExact && stochExtreme) {
+    return { type: "ACCUMULATE", scale: "ENTRY_1", reason: "TL+stoch_extreme" };
   }
-  
-  // Breakout: ADX confirming, price on correct side
-  if (indicators.adx > 18) {
-    const onCorrectSide = t1d.direction === "LONG"
-      ? price > trendline.price
-      : price < trendline.price;
-    if (onCorrectSide) {
-      return {
-        type: "BREAKOUT",
-        scale: "ADD",
-        reason: "release"
-      };
-    }
+  if (inRetestZone && confirming && emaAligned && indicators.adx > 20) {
+    return { type: "BREAKOUT", scale: "ADD", reason: "Retest+ADX" };
   }
-  
   return null;
 }
 
@@ -613,58 +745,89 @@ export function generateSignal(
 ): SignalResult {
   const { ctx, debug } = getContext(pair, candles4h, currentPrice);
   if (!ctx) return { debug };
-  
+
   const exhaustion = checkExhaustion(ctx.t1d.direction!, ctx.indicators);
-  debug.push(`Exhaustion: ${exhaustion.exhausted ? "YES" : "NO"} (${exhaustion.reason})`);
-  if (exhaustion.exhausted) {
+  debug.push(`Exhaustion: ${exhaustion.level} (${exhaustion.reason})`);
+  if (exhaustion.level === "ACTIVE") {
     debug.push(`Rejected: exhaustion — ${exhaustion.reason}`);
     return { debug };
   }
-  
-  // Adaptive R² gate per regime
-  const minR2 = ctx.regime === "TREND" ? MIN_R2_TREND : ctx.regime === "COMPRESSION" ? MIN_R2_COMPRESSION : 0.45;
-  if (ctx.trendline.r2 < minR2) {
-    debug.push(`Rejected: R² ${ctx.trendline.r2} < ${minR2} (${ctx.regime})`);
+
+  if (ctx.trendline.r2 < MIN_R2) {
+    debug.push(`Rejected: R² ${ctx.trendline.r2} < ${MIN_R2} (weak trendline)`);
     return { debug };
   }
-  
+
   const setup = findSetup(ctx);
   if (!setup) {
-    debug.push(`Check: regime=${ctx.regime} | dist=${((ctx.price - ctx.trendline.price) / ctx.trendline.price * 100).toFixed(2)}% | ADX=${ctx.indicators.adx} | No signal`);
+    const dist = (ctx.price - ctx.trendline.price) / ctx.trendline.price;
+    const nearTrendline = Math.abs(ctx.price - ctx.trendline.price) < ctx.indicators.atr * 0.8;
+    const correctSide = ctx.t1d.direction === "LONG"
+      ? ctx.price <= ctx.trendline.price * (1 + CORRECT_SIDE_BUFFER)
+      : ctx.price >= ctx.trendline.price * (1 - CORRECT_SIDE_BUFFER);
+    const stochTurning = ctx.t1d.direction === "LONG"
+      ? ctx.indicators.stoch.k > ctx.indicators.stoch.d
+      : ctx.indicators.stoch.k < ctx.indicators.stoch.d;
+    const stochExtreme = ctx.t1d.direction === "LONG"
+      ? ctx.indicators.stoch.k < 20
+      : ctx.indicators.stoch.k > 80;
+
+    const stateParts: string[] = [];
+    if (Math.abs(ctx.price - ctx.trendline.price) < ctx.indicators.atr * 0.8) stateParts.push("near TL");
+    else if ((ctx.t1d.direction === "LONG" && ctx.price > ctx.trendline.price * (1 + CORRECT_SIDE_BUFFER) && ctx.price < ctx.trendline.price * 1.02) ||
+             (ctx.t1d.direction === "SHORT" && ctx.price < ctx.trendline.price * (1 - CORRECT_SIDE_BUFFER) && ctx.price > ctx.trendline.price * 0.98)) {
+      stateParts.push("retest zone");
+    } else {
+      stateParts.push("far from TL");
+    }
+    stateParts.push(`Stoch K${ctx.indicators.stoch.k} D${ctx.indicators.stoch.d}`);
+    stateParts.push("No signal");
+
+    debug.push(`EntryState: nearTL=${nearTrendline} | correctSide=${correctSide} | stochTurning=${stochTurning} | stochExtreme=${stochExtreme} | RR=unchecked | R2=passed`);
+    debug.push(`State: ${stateParts.join(" | ")}`);
     return { debug };
   }
-  
+
   const result = buildTradeWithPivots(ctx, setup, candles4h);
   if (!result) {
-    debug.push(`Rejected: setup found | RR failed`);
+    debug.push(`Rejected: TL=passed | SIDE=passed | STOCH=passed | RR=failed | R2=passed`);
+    debug.push("R:R too low");
     return { debug };
   }
   debug.push(`SIGNAL: ${result.signal.type} ${result.signal.scale} ${result.signal.direction} ${result.signal.entry} | TP ${result.signal.target} | SL ${result.signal.stop} | RR ${result.signal.rr}`);
   return { signal: result.signal, market: result.market, debug };
 }
 
-// Build trade v31: Structure-based stops
+// Build trade v31: Structure stops + leverage safety
 function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candle[]): { signal: Signal; market: any } | null {
   const { pair, price, now, t1d, t4h, trendline, indicators } = ctx;
   const tlPrice = trendline.price;
   const atrVal = indicators.atr;
-  
-  // Structure-based stops using recent pivots
-  const swingLows = findPivots(candles4h, "LONG", SWING_WINDOW_FALLBACK);
-  const swingHighs = findPivots(candles4h, "SHORT", SWING_WINDOW_FALLBACK);
-  const recentLows = swingLows.filter(p => p.index > candles4h.length - 30).map(p => p.price);
-  const recentHighs = swingHighs.filter(p => p.index > candles4h.length - 30).map(p => p.price);
-  const swingLow = recentLows.length > 0 ? Math.min(...recentLows) : Math.min(...candles4h.slice(-20).map(c => c.low));
-  const swingHigh = recentHighs.length > 0 ? Math.max(...recentHighs) : Math.max(...candles4h.slice(-20).map(c => c.high));
-  
+  const swingLows = candles4h.map(c => c.low).slice(-20);
+  const swingHighs = candles4h.map(c => c.high).slice(-20);
+  const swingLow = Math.min(...swingLows);
+  const swingHigh = Math.max(...swingHighs);
   let entry: number, sl: number, tp: number, targetSource: string;
 
   if (setup.type === "ACCUMULATE") {
     entry = price;
-    // Structure stop = swing ± 0.5 ATR
+    // Widest valid stop: structure-based with MIN_STOP_PCT floor
+    const atrStop = t1d.direction === "LONG"
+      ? entry - atrVal * 1.2
+      : entry + atrVal * 1.2;
+    const structStop = t1d.direction === "LONG"
+      ? Math.max(atrStop, swingLow - atrVal * 0.5)
+      : Math.min(atrStop, swingHigh + atrVal * 0.5);
+    const minStop = t1d.direction === "LONG"
+      ? entry * (1 - MIN_STOP_PCT)
+      : entry * (1 + MIN_STOP_PCT);
     sl = t1d.direction === "LONG"
-      ? Math.min(swingLow - atrVal * 0.5, tlPrice * 0.99)
-      : Math.max(swingHigh + atrVal * 0.5, tlPrice * 1.01);
+      ? Math.min(structStop, minStop)
+      : Math.max(structStop, minStop);
+    // Ensure stop doesn't go beyond trendline invalidation
+    sl = t1d.direction === "LONG"
+      ? Math.max(sl, tlPrice * 0.992)
+      : Math.min(sl, tlPrice * 1.008);
 
     const pivotTarget = getPivotTarget(candles4h, t1d.direction!, entry, sl, atrVal);
     if (pivotTarget) {
@@ -676,9 +839,21 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
     }
   } else {
     entry = price;
+    const atrStop = t1d.direction === "LONG"
+      ? entry - atrVal * 1.5
+      : entry + atrVal * 1.5;
+    const structStop = t1d.direction === "LONG"
+      ? Math.max(atrStop, swingLow - atrVal * 0.5)
+      : Math.min(atrStop, swingHigh + atrVal * 0.5);
+    const minStop = t1d.direction === "LONG"
+      ? entry * (1 - MIN_STOP_PCT)
+      : entry * (1 + MIN_STOP_PCT);
     sl = t1d.direction === "LONG"
-      ? Math.max(tlPrice * 0.995, swingLow - atrVal * 0.5)
-      : Math.min(tlPrice * 1.005, swingHigh + atrVal * 0.5);
+      ? Math.min(structStop, minStop)
+      : Math.max(structStop, minStop);
+    sl = t1d.direction === "LONG"
+      ? Math.max(sl, tlPrice * 0.995)
+      : Math.min(sl, tlPrice * 1.005);
 
     const pivotTarget = getPivotTarget(candles4h, t1d.direction!, entry, sl, atrVal);
     if (pivotTarget) {
@@ -688,8 +863,8 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
       const minTarget = t1d.direction === "LONG"
         ? entry + (entry - sl) * MIN_RR
         : entry - (sl - entry) * MIN_RR;
-      tp = t1d.direction === "LONG" 
-        ? Math.max(swingHigh, minTarget) 
+      tp = t1d.direction === "LONG"
+        ? Math.max(swingHigh, minTarget)
         : Math.min(swingLow, minTarget);
       targetSource = "swing_or_minRR";
     }
@@ -698,7 +873,14 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
   if (rr < MIN_RR) return null;
 
-  // Confidence with age decay
+  // Leverage safety: ensure stop distance >= MIN_STOP_PCT
+  const stopPct = Math.abs(entry - sl) / entry;
+  if (stopPct < MIN_STOP_PCT) {
+    sl = t1d.direction === "LONG" ? entry * (1 - MIN_STOP_PCT) : entry * (1 + MIN_STOP_PCT);
+    const newRR = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
+    if (newRR < MIN_RR) return null;
+  }
+
   let confidence = 50;
   if (rr > 2.0) confidence += 10;
   const stochTurning = t1d.direction === "LONG"
@@ -708,7 +890,6 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   if (t4h.direction === t1d.direction && indicators.adx > 20) confidence += 10;
   if (indicators.adx > 30) confidence += 10;
   if (trendline.r2 > 0.70) confidence += 10;
-  if (trendline.age > 80) confidence -= 10;
 
   const expectedMove = Math.abs(tp - entry) / entry * 100;
 
@@ -721,14 +902,14 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
     entry: Math.round(entry * 100) / 100,
     stop: Math.round(sl * 100) / 100,
     target: Math.round(tp * 100) / 100,
-    confidence: Math.max(0, confidence),
+    confidence,
     rr: Math.round(rr * 100) / 100,
     adx: Math.round(indicators.adx * 10) / 10,
     rsi: Math.round(indicators.rsi * 10) / 10,
     stochK: indicators.stoch.k,
     stochD: indicators.stoch.d,
     expectedMove: Math.round(expectedMove * 10) / 10,
-    reason: `${t1d.direction} ${setup.type} ${setup.scale} | 1D ${t1d.strength} | 4H ${t4h.direction || "NONE"} | Regime:${ctx.regime} | Stoch K${indicators.stoch.k} D${indicators.stoch.d} | ${setup.reason} | TP:${targetSource} | RR ${rr.toFixed(2)} | Conf ${confidence}`,
+    reason: `${t1d.direction} ${setup.type} ${setup.scale} | 1D ${t1d.strength} | 4H ${t4h.direction || "NONE"} | Stoch K${indicators.stoch.k} D${indicators.stoch.d} | ${setup.reason} | TP:${targetSource} | RR ${rr.toFixed(2)} | Conf ${confidence}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
   };
@@ -746,37 +927,33 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
     distToTrendline: Math.round(((price - tlPrice) / tlPrice) * 10000) / 100,
     ema8: Math.round(indicators.ema8 * 100) / 100,
     ema21: Math.round(indicators.ema21 * 100) / 100,
-    regime: ctx.regime,
   };
 
   return { signal, market };
 }
 
-// --- MARKET SNAPSHOT ---
-export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
+// --- MARKET SNAPSHOT v31: UI exit state ---
+export function getMarketSnapshot(pair: string, candles4h: Candle[], signal?: Signal, candles1h?: Candle[]): any {
   const candles1d = aggregateTo1D(candles4h);
   const t1d = trend1D(candles1d);
   const stochRsi4h = stochRsi(candles4h.map(c => c.close));
   const price = candles4h[candles4h.length - 1].close;
-  
-  let tlPrice = 0;
-  let dist = 1;
-  let regime: "TREND" | "COMPRESSION" | "RANGE" | "NONE" = "NONE";
-  
-  if (t1d.direction) {
-    const tl = getTrendline(pair, candles4h, t1d.direction, []);
-    if (tl) {
-      const d = (price - tl.price) / tl.price;
-      const valid = t1d.direction === "SHORT" ? d <= TL_MAX_DIST : d >= -TL_MAX_DIST;
-      if (valid) {
-        tlPrice = tl.price;
-        dist = d;
-        const atrPct = atr(candles4h) / price;
-        regime = classifyRegime(tl.r2, adx(candles4h), atrPct);
-      }
-    }
+  const trendline = t1d.direction ? getTrendline(pair, candles4h, t1d.direction, []) : null;
+  const tlPrice = trendline ? trendline.price : 0;
+  const dist = trendline ? (price - tlPrice) / tlPrice : 1;
+
+  // Exit state
+  let tradeHealth: "STRONG" | "WEAKENING" | "EXIT_RECOMMENDED" | "FORCE_EXIT" | "NONE" = "NONE";
+  let exitReason = "";
+  let exitUrgency: "WATCH" | "EXIT" | "FORCE_EXIT" | "NONE" = "NONE";
+
+  if (signal && candles1h && candles1h.length > 0) {
+    const exitEval = evaluateExit(signal, candles1h, candles4h, price);
+    tradeHealth = exitEval.tradeHealth;
+    exitReason = exitEval.reason;
+    exitUrgency = exitEval.urgency;
   }
-  
+
   return {
     pair,
     price: Math.round(price * 100) / 100,
@@ -790,7 +967,9 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[]): any {
     distToTrendline: Math.round(dist * 10000) / 100,
     ema8: Math.round(ema(candles4h.map(c => c.close), 8).slice(-1)[0] * 100) / 100,
     ema21: Math.round(ema(candles4h.map(c => c.close), 21).slice(-1)[0] * 100) / 100,
-    regime,
+    tradeHealth,
+    exitReason,
+    exitUrgency,
   };
 }
 
@@ -815,7 +994,7 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
   return { valid: true, reason: "active", exited: false };
 }
 
-// --- shouldHold ---
+// --- shouldHold v31: Delegate to exit engine ---
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
@@ -829,14 +1008,11 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
     const inProfit = signal.direction === "LONG" ? currentPrice > signal.entry : currentPrice < signal.entry;
     if (!inProfit) return { shouldHold: false, reason: "trend_reversed_unprofitable" };
   }
-  const stoch = stochRsi(candles4h.map(c => c.close));
-  const stochExtremeOpposite = signal.direction === "LONG" ? stoch.k > 80 : stoch.k < 20;
-  if (stochExtremeOpposite) return { shouldHold: false, reason: "stoch_extreme_opposite_exit" };
   const validity = isSignalStillValid(signal, currentPrice, now);
   return { shouldHold: validity.valid, reason: validity.reason };
 }
 
-// --- filterExpiredSignals v31: Run BEFORE merge ---
+// --- filterExpiredSignals ---
 export function filterExpiredSignals(
   signals: Signal[],
   currentPrices: Record<string, number>,
@@ -892,5 +1068,15 @@ export function shouldHoldCompat(
   candles1h: Candle[],
   currentPrice: number
 ): HoldResult {
+  // v31: Use exit engine if 1H candles available
+  if (candles1h && candles1h.length > 0) {
+    const exitEval = evaluateExit(signal, candles1h, candles4h, currentPrice);
+    if (exitEval.shouldExit) {
+      return { shouldHold: false, reason: exitEval.reason };
+    }
+    if (exitEval.newStop !== undefined && exitEval.newStop !== signal.stop) {
+      // Signal that stop should be updated — caller handles
+    }
+  }
   return shouldHold(signal, candles4h, currentPrice);
 }
