@@ -1,9 +1,10 @@
-// lib/strategy.ts — v28.1 "Trendline Break: StochRSI Timing + Position Build"
+// lib/strategy.ts — v28.2 "Trendline Break: StochRSI Timing + Position Build"
 // ============================================================
-// Architecture: stateful trendline, hysteresis bands, TV-exact StochRSI
-// EXIT: Stoch extreme opposite (matches chart)
-// ALERTS: ENTRY_1 and ADD only (ENTRY_2 is internal, no alert)
-// NEW: Exhaustion Block + UI Crossover Alerts (v28.1)
+// CHANGELOG v28.2:
+// - Strengthened exhaustion_block: Stoch pinned (>95/<5) blocks ALL entries
+// - Stoch flat extreme (>90/<10) + extended price blocks entries
+// - ADX threshold lowered to 28 for exhaustion detection
+// - Late-cycle ADD protection: Stoch >90 for LONG, <10 for SHORT
 
 export interface Candle {
   timestamp: number;
@@ -39,10 +40,9 @@ export interface SignalResult {
   signal?: Signal;
   market?: any;
   debug: string[];
-  uiAlert?: UIAlert; // NEW: non-breaking UI alert field
+  uiAlert?: UIAlert;
 }
 
-// NEW: UI Alert interface (purely informational)
 export interface UIAlert {
   type: "SHORT_ALERT_OVERSOLD_CROSS" | "LONG_ALERT_OVERBOUGHT_CROSS";
   message: string;
@@ -78,7 +78,6 @@ function rsi(closes: number[], period: number = 14): number {
   let gains = 0;
   let losses = 0;
   
-  // First average using simple mean
   for (let i = 1; i <= period; i++) {
     const change = closes[closes.length - period - 1 + i] - closes[closes.length - period - 2 + i];
     if (change > 0) gains += change;
@@ -88,7 +87,6 @@ function rsi(closes: number[], period: number = 14): number {
   let avgGain = gains / period;
   let avgLoss = losses / period;
   
-  // Wilder's smoothing for remaining data
   for (let i = period + 1; i < closes.length; i++) {
     const change = closes[i] - closes[i - 1];
     const gain = change > 0 ? change : 0;
@@ -101,7 +99,7 @@ function rsi(closes: number[], period: number = 14): number {
   return 100 - (100 / (1 + avgGain / avgLoss));
 }
 
-// --- RSI SERIES (precomputed, non-overlapping) ---
+// --- RSI SERIES ---
 function rsiSeries(closes: number[], period: number = 14): number[] {
   const series: number[] = [];
   for (let i = period; i < closes.length; i++) {
@@ -151,7 +149,7 @@ function wilderSmooth(values: number[], period: number): number[] {
   return result;
 }
 
-// --- ADX (Wilder-smoothed, proper) ---
+// --- ADX ---
 function adx(candles: Candle[], period: number = 14): number {
   if (candles.length < period + 1) return 0;
   
@@ -242,7 +240,6 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   const recentPivots = pivots.slice(-5);
   const now = candles[candles.length - 1].timestamp;
   
-  // Clean stale store entries
   for (const [key, state] of trendlineStore.entries()) {
     if (now - state.lastUpdated > TRENDLINE_MAX_AGE * 2) {
       trendlineStore.delete(key);
@@ -259,7 +256,6 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     if (deviation < 0.02) {
       const currentIndex = len - 1;
       const price = existing.slope * currentIndex + existing.intercept;
-      // Calculate actual R² instead of hardcoding
       const yMean = recentPivots.reduce((s, p) => s + p.price, 0) / recentPivots.length;
       const ssTotal = recentPivots.reduce((s, p) => s + Math.pow(p.price - yMean, 2), 0);
       const ssResidual = recentPivots.reduce((s, p) => s + Math.pow(p.price - (existing.slope * p.index + existing.intercept), 2), 0);
@@ -346,11 +342,10 @@ interface HysteresisState {
 }
 
 const hysteresisStore: Map<string, HysteresisState> = new Map();
-const HYSTERESIS_BAND = 0.005; // 0.5%
-const HYSTERESIS_MAX_AGE = 48 * 60 * 60 * 1000; // 48h cleanup
+const HYSTERESIS_BAND = 0.005;
+const HYSTERESIS_MAX_AGE = 48 * 60 * 60 * 1000;
 
 function getHysteresis(pair: string, now: number): HysteresisState {
-  // Clean stale entries
   for (const [key, state] of hysteresisStore.entries()) {
     if (now > state.lockUntil + HYSTERESIS_MAX_AGE) {
       hysteresisStore.delete(key);
@@ -372,7 +367,7 @@ function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price:
   });
 }
 
-// NEW: EXHAUSTION BLOCK
+// --- EXHAUSTION BLOCK (v28.2 — strengthened) ---
 interface ExhaustionCheck {
   blocked: boolean;
   reason: string;
@@ -384,24 +379,55 @@ function checkExhaustion(
   dist: number,
   direction: "LONG" | "SHORT"
 ): ExhaustionCheck {
-  const stochExtendedFlat = direction === "LONG"
-    ? stoch.k > 80 && stoch.d > 80   // Overbought in uptrend = exhaustion
-    : stoch.k < 20 && stoch.d < 20;  // Oversold in downtrend = exhaustion
-  
-  const adxHigh = adxVal > 32; // Tightened from 30-35 range to 32
-  const priceExtended = Math.abs(dist) > 0.025; // 2.5% from trendline
-  
-  if (adxHigh && stochExtendedFlat && priceExtended) {
+  // CRITICAL: Stoch pinned at absolute extreme — blocks ALL entries regardless of other conditions
+  const stochPinned = stoch.k >= 99 || stoch.k <= 1;
+  if (stochPinned) {
     return {
       blocked: true,
-      reason: `exhaustion_block: ADX ${adxVal.toFixed(1)} > 32, Stoch K${stoch.k}/D${stoch.d} extreme flat, price ${(dist * 100).toFixed(2)}% from TL`
+      reason: `exhaustion_block: Stoch pinned at ${stoch.k} — absolute momentum exhaustion, no entries`
     };
   }
+
+  // Stoch very extended (>95/<5) + any distance from TL — late cycle protection
+  const stochVeryExtended = direction === "LONG" ? stoch.k > 95 : stoch.k < 5;
+  if (stochVeryExtended && Math.abs(dist) > 0.01) {
+    return {
+      blocked: true,
+      reason: `exhaustion_block: Stoch ${stoch.k} extreme + price ${(dist * 100).toFixed(2)}% from TL — late cycle, avoid`
+    };
+  }
+
+  // Stoch extended flat (>90/<10) + extended price — momentum stall
+  const stochExtendedFlat = direction === "LONG"
+    ? stoch.k > 90 && stoch.d > 90
+    : stoch.k < 10 && stoch.d < 10;
   
+  const priceExtended = Math.abs(dist) > 0.02;
+  
+  if (stochExtendedFlat && priceExtended) {
+    return {
+      blocked: true,
+      reason: `exhaustion_block: Stoch K${stoch.k}/D${stoch.d} flat extreme, price ${(dist * 100).toFixed(2)}% from TL`
+    };
+  }
+
+  // Original: High ADX + flat extreme + extended
+  const adxHigh = adxVal > 28;
+  const stochFlatExtreme = direction === "LONG"
+    ? stoch.k > 80 && stoch.d > 80
+    : stoch.k < 20 && stoch.d < 20;
+  
+  if (adxHigh && stochFlatExtreme && Math.abs(dist) > 0.025) {
+    return {
+      blocked: true,
+      reason: `exhaustion_block: ADX ${adxVal.toFixed(1)} > 28, Stoch K${stoch.k}/D${stoch.d} extreme flat, price ${(dist * 100).toFixed(2)}% from TL`
+    };
+  }
+
   return { blocked: false, reason: "" };
 }
 
-// NEW: UI CROSSOVER ALERT DETECTION
+// --- UI CROSSOVER ALERT DETECTION ---
 function detectUICrossoverAlert(
   pair: string,
   stoch: { k: number; d: number },
@@ -410,8 +436,6 @@ function detectUICrossoverAlert(
 ): UIAlert | undefined {
   if (!prevStoch || !direction) return undefined;
   
-  // A) SHORT ALERT: K crosses ABOVE D in OVERSOLD (K < 20)
-  // Early reversal warning / potential bounce
   if (prevStoch.k <= prevStoch.d && stoch.k > stoch.d && stoch.k < 20) {
     return {
       type: "SHORT_ALERT_OVERSOLD_CROSS",
@@ -422,8 +446,6 @@ function detectUICrossoverAlert(
     };
   }
   
-  // B) LONG ALERT: K crosses BELOW D in OVERBOUGHT (K > 80)
-  // Momentum exhaustion / potential pullback
   if (prevStoch.k >= prevStoch.d && stoch.k < stoch.d && stoch.k > 80) {
     return {
       type: "LONG_ALERT_OVERBOUGHT_CROSS",
@@ -437,7 +459,6 @@ function detectUICrossoverAlert(
   return undefined;
 }
 
-// Store previous StochRSI for crossover detection
 const prevStochStore: Map<string, { k: number; d: number; timestamp: number }> = new Map();
 
 // --- MAIN SIGNAL ---
@@ -487,17 +508,15 @@ export function generateSignal(
   const stoch = stochRsi(candles4h.map(c => c.close));
   debug.push(`StochRSI: K ${stoch.k} | D ${stoch.d}`);
   
-  // NEW: UI Crossover Alert detection (before any blocking logic)
+  // UI Crossover Alert (before any blocking logic)
+  const now = Date.now();
   const prevStoch = prevStochStore.get(pair);
   const uiAlert = detectUICrossoverAlert(pair, stoch, prevStoch || null, t1d.direction);
   if (uiAlert) {
     debug.push(`UI_ALERT: ${uiAlert.type} | K${uiAlert.stochK} D${uiAlert.stochD}`);
   }
-  // Update stored StochRSI
-  prevStochStore.set(pair, { ...stoch, timestamp: Date.now() });
+  prevStochStore.set(pair, { ...stoch, timestamp: now });
   
-  // Clean old prevStoch entries
-  const now = Date.now();
   for (const [key, state] of prevStochStore.entries()) {
     if (now - state.timestamp > 24 * 60 * 60 * 1000) {
       prevStochStore.delete(key);
@@ -511,7 +530,6 @@ export function generateSignal(
   const ema8_4h = ema(closes4h, 8);
   const ema21_4h = ema(closes4h, 21);
   
-  // Tightened near-trendline threshold: 0.8% (was 1.2%)
   const nearTrendline = Math.abs(dist) < 0.008;
   const stochExtreme = t1d.direction === "LONG" ? stoch.k < 20 : stoch.k > 80;
   const stochTurning = t1d.direction === "LONG" ? stoch.k > stoch.d : stoch.k < stoch.d;
@@ -529,31 +547,26 @@ export function generateSignal(
   const adxVal = adx(candles4h);
   const adxStrong = adxVal > 20;
   
-  // NEW: Exhaustion Block check
+  // NEW: Exhaustion Block check (v28.2 — before signal determination)
   const exhaustion = checkExhaustion(adxVal, stoch, dist, t1d.direction);
   if (exhaustion.blocked) {
     debug.push(exhaustion.reason);
-    // Still return UI alert if present, but no signal
     return { debug, uiAlert };
   }
   
-  // Determine raw signal type
   let rawType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
   
-  // ENTRY_1: Near trendline + Stoch extreme + volume confirmation (NEW: added volUp requirement)
   if (nearTrendline && stochExtreme && volUp) {
     rawType = "ENTRY_1";
   } else if (nearTrendline && stochTurning && !stochExtreme) {
     rawType = "ENTRY_2";
   } else if (beyondTrendline && confirming && emaAligned) {
-    // ADD: Require 2-of-3 confirmation factors (was 1-of-3)
     const confirmCount = (volUp ? 1 : 0) + (stochMomentum ? 1 : 0) + (adxStrong ? 1 : 0);
     if (confirmCount >= 2) {
       rawType = "ADD";
     }
   }
   
-  // Apply hysteresis
   const hyst = getHysteresis(pair, now);
   
   let finalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
@@ -571,7 +584,6 @@ export function generateSignal(
     finalType = rawType;
   }
   
-  // Price hysteresis
   if (hyst.lastSignalType && finalType === hyst.lastSignalType) {
     const priceMove = Math.abs(price - hyst.lastSignalPrice) / hyst.lastSignalPrice;
     if (priceMove < HYSTERESIS_BAND) {
@@ -591,12 +603,10 @@ export function generateSignal(
     return { debug, uiAlert };
   }
   
-  // Set hysteresis for new signal
   if (finalType !== hyst.lastSignalType) {
     setHysteresis(pair, finalType, price, now);
   }
   
-  // Levels
   const atrVal = atr(candles4h, 14);
   const swingLows = candles4h.map(c => c.low).slice(-20);
   const swingHighs = candles4h.map(c => c.high).slice(-20);
@@ -680,6 +690,7 @@ export function generateSignal(
     distToTrendline: Math.round(dist * 10000) / 100,
     ema8: Math.round(ema8_4h[ema8_4h.length - 1] * 100) / 100,
     ema21: Math.round(ema21_4h[ema21_4h.length - 1] * 100) / 100,
+    closes4h: candles4h.slice(-50).map(c => c.close),
   };
   
   debug.push(`SIGNAL: ${type} ${finalType} ${signal.direction} ${signal.entry} | TP ${signal.target} | SL ${signal.stop} | RR ${signal.rr}`);
@@ -714,6 +725,7 @@ export function getMarketSnapshot(
     stochD: stochRsi4h.d,
     trendlinePrice: Math.round(tlPrice * 100) / 100,
     distToTrendline: Math.round(Math.abs(dist) * 10000) / 100,
+    closes4h: candles4h.slice(-50).map(c => c.close),
   };
 }
 
@@ -759,7 +771,6 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
 }
 
 // --- shouldHold ---
-// FIX #1: Exit on Stoch extreme opposite (matches chart)
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
@@ -780,13 +791,12 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
     }
   }
   
-  // FIX #1: Exit when Stoch hits extreme opposite (chart behavior)
   const closes4h = candles4h.map(c => c.close);
   const stoch = stochRsi(closes4h);
   
   const stochExtremeOpposite = signal.direction === "LONG" 
-    ? stoch.k < 20   // was long, now oversold = exit
-    : stoch.k > 80;  // was short, now overbought = exit
+    ? stoch.k < 20
+    : stoch.k > 80;
   
   if (stochExtremeOpposite) {
     return { shouldHold: false, reason: "stoch_extreme_opposite_exit" };
@@ -841,7 +851,7 @@ export function checkTradeStatus(signal: Signal, currentPrice: number, now: numb
 }
 
 // ============================================================
-// v28 COMPATIBILITY LAYER (DO NOT REMOVE)
+// v28 COMPATIBILITY LAYER
 // ============================================================
 
 export async function getMonitorState(pair: string): Promise<any | undefined> {
@@ -860,8 +870,6 @@ export function setRedisClient(_: any): void {
   return;
 }
 
-// FIX #2: Only alert on ENTRY_1 and ADD. ENTRY_2 is internal (no alert).
-// v28.1: UI alerts are now passed through uiAlert field, not signal suppression
 export async function generateSignalCompat(
   pair: string,
   candles1h: Candle[],
@@ -872,9 +880,8 @@ export async function generateSignalCompat(
 ): Promise<SignalResult> {
   const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
   
-  // Suppress ENTRY_2 alerts — return signal without alerting
   if (result.signal?.scale === "ENTRY_2") {
-    return { ...result, signal: undefined }; // No alert, but market data and UI alerts still returned
+    return { ...result, signal: undefined };
   }
   
   return result;
