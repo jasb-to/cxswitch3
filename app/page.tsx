@@ -35,7 +35,6 @@ interface MarketData {
   distToTrendline?: number | null;
   ema8?: number;
   ema21?: number;
-  // NEW: historical closes for client-side StochRSI calc
   closes4h?: number[];
 }
 
@@ -48,7 +47,6 @@ interface UIAlertData {
   pair: string;
 }
 
-// NEW: Real-time client-side alert
 interface RealtimeAlert {
   pair: string;
   type: "STOCH_CROSS_EXIT_LONG" | "STOCH_CROSS_EXIT_SHORT" | "STOCH_EXTREME";
@@ -67,12 +65,11 @@ const KRAKEN_PAIRS: Record<string, string> = {
   HYPE: "HYPEUSD",
 };
 
-// ─── StochRSI Calculator (client-side, lightweight) ───────────────────────
+// ─── StochRSI Calculator (client-side) ────────────────────────────────────
 
 function calcStochRSI(closes: number[]): { k: number; d: number } {
   if (closes.length < 30) return { k: 50, d: 50 };
 
-  // RSI
   const rsiPeriod = 14;
   const rsiValues: number[] = [];
   for (let i = rsiPeriod; i < closes.length; i++) {
@@ -88,7 +85,6 @@ function calcStochRSI(closes: number[]): { k: number; d: number } {
     rsiValues.push(avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss)));
   }
 
-  // Stoch of RSI
   const stochPeriod = 14;
   const kSmooth = 3;
   const dSmooth = 3;
@@ -214,22 +210,23 @@ async function fetchKrakenPrice(pair: string): Promise<number | null> {
   }
 }
 
-// ─── NEW: Real-time Alert Banner ──────────────────────────────────────────
+// ─── Real-time Alert Banner ───────────────────────────────────────────────
 
 function RealtimeAlertBanner({ alert, onDismiss }: { alert: RealtimeAlert; onDismiss: () => void }) {
   const isExitLong = alert.type === "STOCH_CROSS_EXIT_LONG";
   const isExitShort = alert.type === "STOCH_CROSS_EXIT_SHORT";
+  const isExtreme = alert.type === "STOCH_EXTREME";
   const color = isExitLong
     ? "border-rose-500 bg-rose-950/40 animate-pulse"
     : isExitShort
     ? "border-emerald-500 bg-emerald-950/40 animate-pulse"
-    : "border-yellow-500 bg-yellow-950/40";
+    : "border-orange-500 bg-orange-950/40 animate-pulse";
   const icon = isExitLong ? "🔴" : isExitShort ? "🟢" : "⚠️";
   const title = isExitLong
     ? "EXIT LONG — Stoch Cross Detected"
     : isExitShort
     ? "EXIT SHORT — Stoch Cross Detected"
-    : "Stoch Extreme";
+    : "STOCH EXTREME — Imminent Reversal";
 
   return (
     <div className={`rounded-xl border-2 ${color} p-4 mb-4 relative`}>
@@ -269,7 +266,16 @@ function MarketStateSummary({ market, signal }: { market: MarketData | undefined
   let readinessColor = "text-slate-500";
   let readinessBg = "bg-slate-800/50";
 
-  if (signal) {
+  // DANGER: Stoch pinned at extreme (highest priority)
+  if (stochK >= 99 || stochK <= 1) {
+    readiness = "🔥 STOCH PINNED — imminent reversal likely";
+    readinessColor = "text-red-500";
+    readinessBg = "bg-red-950/40 border-red-500/40";
+  } else if (stochK > 95 || stochK < 5) {
+    readiness = "⚠️ Stoch extreme — exhaustion zone, avoid entries";
+    readinessColor = "text-orange-400";
+    readinessBg = "bg-orange-950/20 border-orange-500/20";
+  } else if (signal) {
     readiness = `${signal.direction} ${signal.type} ${signal.scale || ""} IN PLAY`;
     readinessColor = signal.direction === "LONG" ? "text-emerald-400" : "text-rose-400";
     readinessBg = signal.direction === "LONG" ? "bg-emerald-950/30 border-emerald-500/30" : "bg-rose-950/30 border-rose-500/30";
@@ -354,12 +360,24 @@ function MarketStateSummary({ market, signal }: { market: MarketData | undefined
   );
 }
 
-// ─── Signal Reason Summary ──────────────────────────────────────────────
+// ─── Signal Reason Summary ────────────────────────────────────────────────
 
 function SignalReasonSummary({ signal }: { signal: Signal }) {
+  const stochK = signal.stochK ?? 50;
+  const isDangerous = stochK >= 99 || stochK <= 1;
+  const isWarning = stochK > 95 || stochK < 5;
+
   return (
-    <div className="rounded-xl border border-slate-700/50 bg-slate-800/30 p-3">
-      <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Signal Reason</p>
+    <div className={`rounded-xl border p-3 ${
+      isDangerous ? "border-red-500/50 bg-red-950/20" :
+      isWarning ? "border-orange-500/50 bg-orange-950/20" :
+      "border-slate-700/50 bg-slate-800/30"
+    }`}>
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-xs text-slate-500 uppercase tracking-wider">Signal Reason</p>
+        {isDangerous && <span className="text-xs font-bold text-red-500 animate-pulse">🔥 LATE CYCLE</span>}
+        {isWarning && !isDangerous && <span className="text-xs font-bold text-orange-400">⚠️ EXHAUSTION</span>}
+      </div>
       <p className="text-sm text-slate-300 font-medium leading-relaxed">
         {signal.reason || "No reason provided"}
       </p>
@@ -373,7 +391,7 @@ function SignalReasonSummary({ signal }: { signal: Signal }) {
   );
 }
 
-// ─── UI Alert Banner (from cron) ────────────────────────────────────────
+// ─── UI Alert Banner (from cron) ─────────────────────────────────────────
 
 function UIAlertBanner({ alert }: { alert: UIAlertData }) {
   const isShortAlert = alert.type === "SHORT_ALERT_OVERSOLD_CROSS";
@@ -401,7 +419,7 @@ function UIAlertBanner({ alert }: { alert: UIAlertData }) {
   );
 }
 
-// ─── Signal Card ─────────────────────────────────────────────────────────
+// ─── Signal Card ──────────────────────────────────────────────────────────
 
 function SignalCard({
   signal,
@@ -547,7 +565,7 @@ function SignalCard({
   );
 }
 
-// ─── Waiting Card ───────────────────────────────────────────────────────
+// ─── Waiting Card ─────────────────────────────────────────────────────────
 
 function WaitingCard({
   pair,
@@ -625,7 +643,7 @@ function WaitingCard({
   );
 }
 
-// ─── Main Dashboard ─────────────────────────────────────────────────────
+// ─── Main Dashboard ───────────────────────────────────────────────────────
 
 export default function Dashboard() {
   const [signals, setSignals] = useState<Record<string, Signal | null>>({});
@@ -637,10 +655,9 @@ export default function Dashboard() {
   const [fetchCount, setFetchCount] = useState(0);
   const [lastFetch, setLastFetch] = useState<number>(0);
 
-  // Track previous Stoch values for crossover detection
   const prevStochRef = useRef<Record<string, { k: number; d: number }>>({});
 
-  // NEW: Real-time StochRSI monitoring
+  // Real-time StochRSI monitoring
   const checkRealtimeCrossovers = useCallback(() => {
     const newAlerts: RealtimeAlert[] = [];
     const now = Date.now();
@@ -712,7 +729,6 @@ export default function Dashboard() {
     }
   }, [marketData, signals]);
 
-  // Run real-time check every 10 seconds
   useEffect(() => {
     const interval = setInterval(checkRealtimeCrossovers, 10000);
     return () => clearInterval(interval);
@@ -800,7 +816,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* REAL-TIME ALERTS — Pulsing, dismissible */}
+      {/* REAL-TIME ALERTS */}
       {realtimeAlerts.length > 0 && (
         <div className="space-y-2">
           {realtimeAlerts.map((alert, i) => (
