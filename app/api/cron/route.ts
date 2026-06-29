@@ -1,10 +1,22 @@
-// app/api/cron/route.ts — v31.0 "Simplified: No Trendline State"
+// app/api/cron/route.ts — v31.1 "v28.1 strategy compat + UI alerts"
 // ============================================================
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
 import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot } from "@/lib/strategy";
-import { setSignals, setMarketData, getSignals, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory, setCronLogs, getCronLogs } from "@/lib/state";
+import {
+  setSignals,
+  setMarketData,
+  getSignals,
+  getActiveTrades,
+  setActiveTrades,
+  getLastCronRun,
+  setLastCronRun,
+  addSignalToHistory,
+  setCronLogs,
+  getCronLogs,
+  addUIAlert,
+} from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
@@ -24,7 +36,7 @@ export async function GET(request: Request) {
   const runStart = Date.now();
   const runId = `${runStart}-${Math.random().toString(36).slice(2, 8)}`;
   const logs: string[] = [];
-  
+
   const log = (msg: string) => {
     const line = `[${new Date().toISOString()}] ${msg}`;
     logs.push(line);
@@ -39,7 +51,10 @@ export async function GET(request: Request) {
   const authHeader = request.headers.get("authorization");
   const forceRun = url.searchParams.get("force") === "true";
 
-  const isAuthorized = querySecret === process.env.CRON_SECRET || authHeader === `Bearer ${process.env.CRON_SECRET}`;
+  const isAuthorized =
+    querySecret === process.env.CRON_SECRET ||
+    authHeader === `Bearer ${process.env.CRON_SECRET}`;
+
   if (!isAuthorized) {
     log("[CRON] Unauthorized");
     await persistLog(runId, logs, "unauthorized");
@@ -47,7 +62,7 @@ export async function GET(request: Request) {
   }
 
   const lastRun = await getLastCronRun();
-  if (!forceRun && (runStart - lastRun) < MIN_CRON_INTERVAL_MS) {
+  if (!forceRun && runStart - lastRun < MIN_CRON_INTERVAL_MS) {
     log(`[CRON] Rate limited, lastRun=${lastRun}, diff=${runStart - lastRun}ms`);
     await persistLog(runId, logs, "rate_limited");
     return NextResponse.json({ success: true, skipped: true, reason: "rate_limited" });
@@ -55,7 +70,6 @@ export async function GET(request: Request) {
   await setLastCronRun(runStart);
   log(`[CRON] lastRun set, force=${forceRun}`);
 
-  // v31: No trendline state to load — trendlines computed fresh per run
   let activeTrades = await getActiveTrades();
   log(`[STATE] Active trades: ${Object.keys(activeTrades).join(", ") || "none"}`);
 
@@ -78,12 +92,20 @@ export async function GET(request: Request) {
   }
 
   log(`[CRON] Filtering ${existingSignals.length} existing signals...`);
-  const { active: validSignals, exited: preExited } = filterExpiredSignals(existingSignals, currentPrices, runStart);
+  const { active: validSignals, exited: preExited } = filterExpiredSignals(
+    existingSignals,
+    currentPrices,
+    runStart
+  );
   log(`[STATE] Valid: ${validSignals.length}, Expired: ${preExited.length}`);
 
   for (const { signal, reason } of preExited) {
     log(`[EXIT] ${signal.pair} — ${reason}`);
-    await addSignalToHistory(signal, reason as any, currentPrices[signal.pair] || signal.entry);
+    await addSignalToHistory(
+      signal,
+      reason as any,
+      currentPrices[signal.pair] || signal.entry
+    );
     if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
   }
 
@@ -98,19 +120,42 @@ export async function GET(request: Request) {
       const [candles1h, candles4h, candles15m] = await Promise.all([
         getCandles(pair as any, 60),
         getCandles(pair as any, 240),
-        getCandles(pair as any, 15)
+        getCandles(pair as any, 15),
       ]);
-      log(`[FETCH] ${pair} — received: 1H=${candles1h?.length}, 4H=${candles4h?.length}, 15M=${candles15m?.length}`);
+      log(
+        `[FETCH] ${pair} — received: 1H=${candles1h?.length}, 4H=${candles4h?.length}, 15M=${candles15m?.length}`
+      );
 
       if (!candles1h || !candles4h || !candles15m || candles4h.length < 30) {
         log(`[PAIR] ${pair} — SKIP: insufficient candles`);
-        alerts.push({ pair, status: "skip", reason: "insufficient_candles", counts: { h1: candles1h?.length, h4: candles4h?.length, m15: candles15m?.length } });
+        alerts.push({
+          pair,
+          status: "skip",
+          reason: "insufficient_candles",
+          counts: { h1: candles1h?.length, h4: candles4h?.length, m15: candles15m?.length },
+        });
         continue;
       }
 
       const currentPrice = candles4h[candles4h.length - 1].close;
-      const existingIdx = validSignals.findIndex(s => s.pair === pair);
+      const existingIdx = validSignals.findIndex((s) => s.pair === pair);
       const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
+
+      // FIX: Pass all 5 required arguments to generateSignal (v28.1 signature)
+      const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
+
+      let market = result.market;
+      if (!market) market = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+      if (market) marketDataList.push(market);
+
+      // NEW: Persist UI alerts from strategy
+      if (result.uiAlert) {
+        log(
+          `[UI_ALERT] ${pair} — ${result.uiAlert.type} K=${result.uiAlert.stochK} D=${result.uiAlert.stochD}`
+        );
+        await addUIAlert({ ...result.uiAlert, pair });
+        alerts.push({ pair, status: "ui_alert", type: result.uiAlert.type });
+      }
 
       if (existingForPair) {
         log(`[PAIR] ${pair} — has existing signal ${existingForPair.id}`);
@@ -131,20 +176,10 @@ export async function GET(request: Request) {
             alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
           } else {
             log(`[PAIR] ${pair} — Still valid, skipping generation`);
-            const result = generateSignal(pair, candles4h, currentPrice);
-            let market = result.market;
-            if (!market) market = getMarketSnapshot(pair, candles4h);
-            if (market) marketDataList.push(market);
             continue;
           }
         }
       }
-
-      log(`[PAIR] ${pair} — generating signal...`);
-      const result = generateSignal(pair, candles4h, currentPrice);
-      let market = result.market;
-      if (!market) market = getMarketSnapshot(pair, candles4h);
-      if (market) marketDataList.push(market);
 
       if (!result.signal) {
         log(`[PAIR] ${pair} — NO SIGNAL (${result.debug?.join(" | ")})`);
@@ -153,7 +188,9 @@ export async function GET(request: Request) {
       }
 
       const signal = result.signal;
-      log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} ${signal.scale || ""} entry=${signal.entry} TP=${signal.target} SL=${signal.stop} RR=${signal.rr}`);
+      log(
+        `[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} ${signal.scale || ""} entry=${signal.entry} TP=${signal.target} SL=${signal.stop} RR=${signal.rr}`
+      );
       newSignals.push(signal);
 
       try {
@@ -175,7 +212,15 @@ export async function GET(request: Request) {
           updatedAt: new Date(signal.timestamp).toISOString(),
         });
         log(`[ALERT] ${pair} — SENT`);
-        activeTrades[pair] = { direction: signal.direction, timestamp: Date.now(), entry: signal.entry, stop: signal.stop, target: signal.target, id: signal.id, scale: signal.scale };
+        activeTrades[pair] = {
+          direction: signal.direction,
+          timestamp: Date.now(),
+          entry: signal.entry,
+          stop: signal.stop,
+          target: signal.target,
+          id: signal.id,
+          scale: signal.scale,
+        };
         alerts.push({ pair, status: "sent" });
       } catch (err: any) {
         log(`[ALERT] ${pair} — FAILED: ${err.message}`);
@@ -191,22 +236,34 @@ export async function GET(request: Request) {
   const merged = [...validSignals];
   for (const s of newSignals) {
     const idx = merged.findIndex((x: any) => x.pair === s.pair);
-    if (idx >= 0) merged[idx] = s; else merged.push(s);
+    if (idx >= 0) merged[idx] = s;
+    else merged.push(s);
   }
 
-  // v31: No trendline state to save
   log("[CRON] Persisting state...");
-  await Promise.all([setSignals(merged), setMarketData(marketDataList), setActiveTrades(activeTrades)]);
+  await Promise.all([
+    setSignals(merged),
+    setMarketData(marketDataList),
+    setActiveTrades(activeTrades),
+  ]);
 
-  log(`[CRON] Done. signals=${merged.length}, marketData=${marketDataList.length}, exited=${preExited.length}`);
+  log(
+    `[CRON] Done. signals=${merged.length}, marketData=${marketDataList.length}, exited=${preExited.length}`
+  );
   log("========================================");
 
-  const response = { success: true, signals: merged.length, marketData: marketDataList.length, exited: preExited.length, alerts, runId };
+  const response = {
+    success: true,
+    signals: merged.length,
+    marketData: marketDataList.length,
+    exited: preExited.length,
+    alerts,
+    runId,
+  };
   await persistLog(runId, logs, "complete", response);
   return NextResponse.json(response);
 }
 
-// Persist full log to KV for diagnostic visibility
 async function persistLog(runId: string, logs: string[], status: string, response?: any) {
   try {
     const existing = await getCronLogs();
