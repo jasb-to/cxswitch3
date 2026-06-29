@@ -110,6 +110,68 @@ function calcStochRSI(closes: number[]): { k: number; d: number } {
   return { k: Math.round(currentK * 10) / 10, d: Math.round(currentD * 10) / 10 };
 }
 
+// ─── Readiness Score Calculator ──────────────────────────────────────────
+
+function calcReadinessScore(market: MarketData | undefined, signal: Signal | null): { score: number; label: string; color: string; bg: string } {
+  if (!market) return { score: 0, label: "No data", color: "text-slate-500", bg: "bg-slate-800" };
+
+  // If active signal, show signal confidence instead
+  if (signal) {
+    return {
+      score: signal.confidence,
+      label: `${signal.direction} ${signal.type} ${signal.scale || ""} IN PLAY`,
+      color: signal.direction === "LONG" ? "text-emerald-400" : "text-rose-400",
+      bg: signal.direction === "LONG" ? "bg-emerald-500" : "bg-rose-500",
+    };
+  }
+
+  const dist = Math.abs(market.distToTrendline ?? 999);
+  const stochK = market.stochK;
+  const stochD = market.stochD;
+  const adx = market.adx;
+  const trend1d = market.trend || "";
+
+  let score = 0;
+
+  // Distance to trendline (closer = higher score)
+  if (dist < 0.8) score += 40;
+  else if (dist < 1.5) score += 30;
+  else if (dist < 2.5) score += 20;
+  else if (dist < 4) score += 10;
+
+  // Stoch position (near extremes = higher score)
+  const stochExtreme = Math.min(Math.abs(stochK - 20), Math.abs(stochK - 80));
+  if (stochExtreme < 5) score += 30;
+  else if (stochExtreme < 15) score += 20;
+  else if (stochExtreme < 25) score += 10;
+
+  // Stoch cross alignment (K approaching D at extreme = bonus)
+  const crossSpread = Math.abs(stochK - stochD);
+  if (crossSpread < 5 && (stochK < 25 || stochK > 75)) score += 10;
+
+  // ADX strength
+  if (adx > 25) score += 15;
+  else if (adx > 20) score += 10;
+  else if (adx > 15) score += 5;
+
+  // Trend alignment (1D trend clear)
+  if (trend1d.includes("STRONG")) score += 5;
+
+  // Penalties
+  if (stochK >= 99 || stochK <= 1) score = Math.min(score, 15); // Pinned = very low
+  else if (stochK > 95 || stochK < 5) score = Math.min(score, 25); // Extreme = low
+  else if (dist > 5) score = Math.min(score, 10); // Too far from TL
+
+  score = Math.min(100, Math.max(0, score));
+
+  // Label and colors based on score
+  if (score >= 81) return { score, label: "Signal imminent — finger on trigger", color: "text-emerald-400", bg: "bg-emerald-500" };
+  if (score >= 61) return { score, label: "Setup forming — ready to act", color: "text-emerald-300", bg: "bg-emerald-400" };
+  if (score >= 41) return { score, label: "Near setup — prepare", color: "text-yellow-400", bg: "bg-yellow-500" };
+  if (score >= 21) return { score, label: "Building — watch", color: "text-orange-400", bg: "bg-orange-500" };
+  return { score, label: "No setup", color: "text-slate-500", bg: "bg-slate-600" };
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 function money(n?: number): string {
@@ -261,53 +323,53 @@ function MarketStateSummary({ market, signal }: { market: MarketData | undefined
   const stochK = market.stochK;
   const stochD = market.stochD;
   const dist = market.distToTrendline;
+  const readiness = calcReadinessScore(market, signal);
 
-  let readiness = "Scanning...";
-  let readinessColor = "text-slate-500";
-  let readinessBg = "bg-slate-800/50";
+  let stateText = "Scanning...";
+  let stateColor = "text-slate-500";
+  let stateBg = "bg-slate-800/50";
 
-  // DANGER: Stoch pinned at extreme (highest priority)
   if (stochK >= 99 || stochK <= 1) {
-    readiness = "🔥 STOCH PINNED — imminent reversal likely";
-    readinessColor = "text-red-500";
-    readinessBg = "bg-red-950/40 border-red-500/40";
+    stateText = "🔥 STOCH PINNED — imminent reversal likely";
+    stateColor = "text-red-500";
+    stateBg = "bg-red-950/40 border-red-500/40";
   } else if (stochK > 95 || stochK < 5) {
-    readiness = "⚠️ Stoch extreme — exhaustion zone, avoid entries";
-    readinessColor = "text-orange-400";
-    readinessBg = "bg-orange-950/20 border-orange-500/20";
+    stateText = "⚠️ Stoch extreme — exhaustion zone, avoid entries";
+    stateColor = "text-orange-400";
+    stateBg = "bg-orange-950/20 border-orange-500/20";
   } else if (signal) {
-    readiness = `${signal.direction} ${signal.type} ${signal.scale || ""} IN PLAY`;
-    readinessColor = signal.direction === "LONG" ? "text-emerald-400" : "text-rose-400";
-    readinessBg = signal.direction === "LONG" ? "bg-emerald-950/30 border-emerald-500/30" : "bg-rose-950/30 border-rose-500/30";
+    stateText = `${signal.direction} ${signal.type} ${signal.scale || ""} IN PLAY`;
+    stateColor = signal.direction === "LONG" ? "text-emerald-400" : "text-rose-400";
+    stateBg = signal.direction === "LONG" ? "bg-emerald-950/30 border-emerald-500/30" : "bg-rose-950/30 border-rose-500/30";
   } else if (typeof dist === "number") {
     const nearTL = Math.abs(dist) < 1.2;
     const extremeOversold = stochK < 20 && stochD < 20;
     const extremeOverbought = stochK > 80 && stochD > 80;
 
     if (nearTL && extremeOversold) {
-      readiness = "LONG accumulation zone — near trendline + oversold";
-      readinessColor = "text-emerald-400";
-      readinessBg = "bg-emerald-950/20 border-emerald-500/20";
+      stateText = "LONG accumulation zone — near trendline + oversold";
+      stateColor = "text-emerald-400";
+      stateBg = "bg-emerald-950/20 border-emerald-500/20";
     } else if (nearTL && extremeOverbought) {
-      readiness = "SHORT accumulation zone — near trendline + overbought";
-      readinessColor = "text-rose-400";
-      readinessBg = "bg-rose-950/20 border-rose-500/20";
+      stateText = "SHORT accumulation zone — near trendline + overbought";
+      stateColor = "text-rose-400";
+      stateBg = "bg-rose-950/20 border-rose-500/20";
     } else if (nearTL) {
-      readiness = "Near trendline — waiting for Stoch extreme";
-      readinessColor = "text-yellow-400";
-      readinessBg = "bg-yellow-950/20 border-yellow-500/20";
+      stateText = "Near trendline — waiting for Stoch extreme";
+      stateColor = "text-yellow-400";
+      stateBg = "bg-yellow-950/20 border-yellow-500/20";
     } else if (Math.abs(dist) > 3 && adx > 32) {
-      readiness = "Extended move — exhaustion risk, avoid new entries";
-      readinessColor = "text-orange-400";
-      readinessBg = "bg-orange-950/20 border-orange-500/20";
+      stateText = "Extended move — exhaustion risk, avoid new entries";
+      stateColor = "text-orange-400";
+      stateBg = "bg-orange-950/20 border-orange-500/20";
     } else if (stochK > 80 || stochK < 20) {
-      readiness = `Stoch extreme (${stochK.toFixed(1)}) — watch for reversal`;
-      readinessColor = "text-purple-400";
-      readinessBg = "bg-purple-950/20 border-purple-500/20";
+      stateText = `Stoch extreme (${stochK.toFixed(1)}) — watch for reversal`;
+      stateColor = "text-purple-400";
+      stateBg = "bg-purple-950/20 border-purple-500/20";
     } else {
-      readiness = "No setup — price away from trendline";
-      readinessColor = "text-slate-500";
-      readinessBg = "bg-slate-800/50";
+      stateText = "No setup — price away from trendline";
+      stateColor = "text-slate-500";
+      stateBg = "bg-slate-800/50";
     }
   }
 
@@ -317,13 +379,32 @@ function MarketStateSummary({ market, signal }: { market: MarketData | undefined
   const stochColor = stochK < 20 ? "text-emerald-400" : stochK > 80 ? "text-rose-400" : "text-slate-500";
 
   return (
-    <div className={`rounded-xl border p-4 space-y-3 ${readinessBg}`}>
+    <div className={`rounded-xl border p-4 space-y-3 ${stateBg}`}>
+      {/* State banner */}
       <div className="flex items-center gap-2">
-        <span className={`text-xs font-bold uppercase tracking-wider ${readinessColor}`}>
-          {readiness}
+        <span className={`text-xs font-bold uppercase tracking-wider ${stateColor}`}>
+          {stateText}
         </span>
       </div>
 
+      {/* NEW: Readiness Score */}
+      {!signal && (
+        <div>
+          <div className="flex justify-between items-center mb-1">
+            <span className="text-xs text-slate-500 uppercase tracking-wider">Readiness Score</span>
+            <span className={`text-sm font-bold ${readiness.color}`}>{readiness.score}/100</span>
+          </div>
+          <div className="h-2.5 bg-slate-800 rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-700 ${readiness.bg}`}
+              style={{ width: `${readiness.score}%` }}
+            />
+          </div>
+          <p className={`text-xs mt-1 ${readiness.color}`}>{readiness.label}</p>
+        </div>
+      )}
+
+      {/* Metrics row */}
       <div className="grid grid-cols-3 gap-3 text-sm">
         <div className="text-center">
           <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">ADX</p>
@@ -629,16 +710,6 @@ function WaitingCard({
           </p>
         </div>
       </div>
-
-      <div>
-        <div className="flex justify-between items-center mb-2">
-          <span className="text-xs text-slate-500 uppercase tracking-wider">Readiness</span>
-          <span className="text-sm font-bold text-slate-500">Waiting...</span>
-        </div>
-        <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
-          <div className="h-full w-0 bg-slate-600 rounded-full" />
-        </div>
-      </div>
     </div>
   );
 }
@@ -674,7 +745,6 @@ export default function Dashboard() {
       const prev = prevStochRef.current[pair];
 
       if (prev) {
-        // LONG trade: alert when K crosses below D (momentum exhaustion)
         if (signal.direction === "LONG" && prev.k >= prev.d && stoch.k < stoch.d && stoch.k > 60) {
           newAlerts.push({
             pair,
@@ -686,7 +756,6 @@ export default function Dashboard() {
           });
         }
 
-        // SHORT trade: alert when K crosses above D (momentum exhaustion)
         if (signal.direction === "SHORT" && prev.k <= prev.d && stoch.k > stoch.d && stoch.k < 40) {
           newAlerts.push({
             pair,
@@ -698,7 +767,6 @@ export default function Dashboard() {
           });
         }
 
-        // Extreme alert: Stoch hits opposite extreme (auto-exit territory)
         if (signal.direction === "LONG" && stoch.k < 20) {
           newAlerts.push({
             pair,
