@@ -1,15 +1,11 @@
-// lib/strategy.ts — v31.3 "Exit Engine + Adaptive Pivots + Profit Protection"
+// lib/strategy-v32.ts — "Dual Strategy: BREAKOUT for HYPE/SOL, TRENDLINE for BTC/ETH"
 // ============================================================
-// Changes from v30:
-// 1. Softened exhaustion: ADX>50 + stoch turning, or stoch extreme (>90/<10) + turning
-// 2. Exit engine: evaluateExit() with WATCH/EXIT/FORCE_EXIT, profit locking, never widen stops
-// 3. UI exit state: tradeHealth + exitReason in market snapshot
-// 4. Removed pivot recency filter — TL_MAX_DIST is sole staleness control
-// 5. Adaptive pivots: ±5 HL → ±3 HL → ±3 close → no trendline
-// 6. MIN_STOP_PCT = 0.025 leverage safety
-// 7. Profit protection: exit if retraces from >2R to <1R
-// 8. Exit on stoch cross only when trade ≥ +0.75R in profit
-// 9. Rich debug: entry state, exit state, profit lock, stoch state, trendline state
+// Major changes from v31:
+// 1. BREAKOUT strategy for HYPE/SOL: EMA alignment, Stoch momentum, ADX confirmation, pivot targets
+// 2. TRENDLINE strategy (legacy) for BTC/ETH: maintains all v31 behavior
+// 3. No trendline distance checks (TL_MAX_DIST) for HYPE/SOL
+// 4. Different entry logic for breakout: above/below EMA + structure, not near-trendline
+// 5. Maintains all connections to external APIs, UI, and state management
 
 import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -49,7 +45,7 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 31;
+export const CURRENT_SIGNAL_VERSION = 32;
 
 // --- CONFIG ---
 const MIN_RR = 1.5;
@@ -59,12 +55,29 @@ const ADX_EXHAUSTION = 50;
 const STOCH_EXTREME_LONG = 90;
 const STOCH_EXTREME_SHORT = 10;
 const CORRECT_SIDE_BUFFER = 0.015;
-const TL_MAX_DIST = 0.05; // 5%
+const TL_MAX_DIST = 0.05; // 5% (only for BTC/ETH)
 const SWING_WINDOW = 5;
 const SWING_WINDOW_FALLBACK = 3;
 const MIN_PIVOT_SPACING = 6;
 const MIN_STOP_PCT = 0.025;
 const EXIT_PROFIT_THRESHOLD_R = 0.75;
+
+// BREAKOUT config (HYPE/SOL)
+const BREAKOUT_ADX_MIN = 20;
+const BREAKOUT_STOCH_MIN = 30;
+const BREAKOUT_EMA_BUFFER = 0.005; // 0.5% above/below EMA for entry
+
+// --- ASSET CLASSIFICATION ---
+const TRENDLINE_PAIRS = new Set(["BTCUSDT", "ETHUSDT"]);
+const BREAKOUT_PAIRS = new Set(["HYPEITUSDT", "SOLUSDT"]);
+
+function isBreakoutAsset(pair: string): boolean {
+  return BREAKOUT_PAIRS.has(pair);
+}
+
+function isTrendlineAsset(pair: string): boolean {
+  return TRENDLINE_PAIRS.has(pair);
+}
 
 // --- STATE ---
 interface TrendlineState {
@@ -234,7 +247,7 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// --- SWING DETECTION v31: Adaptive with fallback ---
+// --- SWING DETECTION ---
 function findPivotsHL(candles: Candle[], direction: "LONG" | "SHORT", window: number): { index: number; price: number; timestamp: number }[] {
   const out: { index: number; price: number; timestamp: number }[] = [];
   for (let i = window; i < candles.length - window; i++) {
@@ -271,7 +284,6 @@ function applyPivotSpacing(pivots: { index: number; price: number; timestamp: nu
 }
 
 function findPivotsWithFallback(candles: Candle[], direction: "LONG" | "SHORT", debug: string[]): { pivots: { index: number; price: number; timestamp: number }[]; source: string } {
-  // 1. High/low ±5
   let raw = findPivotsHL(candles, direction, SWING_WINDOW);
   raw = applyPivotSpacing(raw);
   if (raw.length >= 3) {
@@ -280,7 +292,6 @@ function findPivotsWithFallback(candles: Candle[], direction: "LONG" | "SHORT", 
   }
   debug.push(`HL±${SWING_WINDOW}: ${raw.length} < 3`);
 
-  // 2. High/low ±3
   raw = findPivotsHL(candles, direction, SWING_WINDOW_FALLBACK);
   raw = applyPivotSpacing(raw);
   if (raw.length >= 3) {
@@ -289,7 +300,6 @@ function findPivotsWithFallback(candles: Candle[], direction: "LONG" | "SHORT", 
   }
   debug.push(`HL±${SWING_WINDOW_FALLBACK}: ${raw.length} < 3`);
 
-  // 3. Close ±3
   raw = findPivotsClose(candles, direction, SWING_WINDOW_FALLBACK);
   raw = applyPivotSpacing(raw);
   debug.push(`Pivots Close±${SWING_WINDOW_FALLBACK}: ${raw.length}`);
@@ -300,7 +310,6 @@ function findPivotsWithFallback(candles: Candle[], direction: "LONG" | "SHORT", 
   return { pivots: [], source: "none" };
 }
 
-// v31: Enforce structural consistency
 function enforceTrendStructure(
   pivots: { index: number; price: number; timestamp: number }[],
   direction: "LONG" | "SHORT"
@@ -317,7 +326,7 @@ function enforceTrendStructure(
   return clean.slice(-5);
 }
 
-// --- TRENDLINE v31: No recency filter, TL_MAX_DIST only ---
+// --- TRENDLINE (for BTC/ETH only) ---
 function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT", debug: string[]): { price: number; r2: number; age: number; pivotSource: string } | null {
   const len = candles.length;
   if (len < 20) return null;
@@ -473,7 +482,7 @@ function buildIndicators(candles4h: Candle[]): Indicators {
   };
 }
 
-// --- EXHAUSTION v31: Softened ---
+// --- EXHAUSTION v31 ---
 interface ExhaustionResult {
   level: "NONE" | "WARNING" | "ACTIVE";
   reason: string;
@@ -484,7 +493,6 @@ function checkExhaustion(direction: "LONG" | "SHORT", indicators: Indicators): E
     ? indicators.stoch.k < indicators.stoch.d
     : indicators.stoch.k > indicators.stoch.d;
 
-  // ADX exhaustion: only if ADX > 50 AND stoch turning against
   if (indicators.adx > ADX_EXHAUSTION && stochTurningAgainst) {
     return { level: "ACTIVE", reason: `ADX_${indicators.adx}_stoch_turning` };
   }
@@ -492,7 +500,6 @@ function checkExhaustion(direction: "LONG" | "SHORT", indicators: Indicators): E
     return { level: "WARNING", reason: `ADX_${indicators.adx}` };
   }
 
-  // Stochastic exhaustion: extreme (>90/<10) + turning
   const stochExtreme = direction === "LONG"
     ? indicators.stoch.k > STOCH_EXTREME_LONG
     : indicators.stoch.k < STOCH_EXTREME_SHORT;
@@ -536,12 +543,10 @@ export function evaluateExit(
   const profitRR = risk > 0 ? profit / risk : 0;
   const peakRR = peakProfitRR ?? profitRR;
 
-  // Build 1H stoch
   const closes1h = candles1h.map(c => c.close);
   const stoch1h = stochRsi(closes1h);
   const adx4h = adx(candles4h);
 
-  // Default
   let shouldExit = false;
   let reason = "";
   let urgency: "WATCH" | "EXIT" | "FORCE_EXIT" = "WATCH";
@@ -562,18 +567,13 @@ export function evaluateExit(
     }
   }
 
-  // Stoch state
   const stochAligned = direction === "LONG"
     ? stoch1h.k > stoch1h.d
     : stoch1h.k < stoch1h.d;
-  const stochCrossing = direction === "LONG"
-    ? stoch1h.k < stoch1h.d
-    : stoch1h.k > stoch1h.d;
 
   if (stochAligned) tradeHealth = "STRONG";
-  else if (!stochCrossing) tradeHealth = "WEAKENING";
+  else tradeHealth = "WEAKENING";
 
-  // Rule C: Exit on stoch cross ONLY when trade ≥ +0.75R in profit
   const crossExit = direction === "LONG"
     ? stoch1h.k < stoch1h.d && stoch1h.k > 60
     : stoch1h.k > stoch1h.d && stoch1h.k < 40;
@@ -585,7 +585,6 @@ export function evaluateExit(
     tradeHealth = "EXIT_RECOMMENDED";
   }
 
-  // Rule D: Force exit — stoch extreme + ADX falling + profitable
   const adxFalling = candles4h.length > 28;
   let forceExit = false;
   if (adxFalling) {
@@ -601,7 +600,6 @@ export function evaluateExit(
     tradeHealth = "FORCE_EXIT";
   }
 
-  // Profit protection: retraced from >2R to <1R
   if (peakRR > 2.0 && profitRR < 1.0) {
     shouldExit = true;
     reason = "profit_protection";
@@ -649,20 +647,45 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
   const t1d = trend1D(candles1d);
   const t4h = trend4H(candles4h);
   debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength} | 4H: ${t4h.direction || "NONE"}`);
+  
+  // For BREAKOUT assets, skip trendline requirement
+  if (isBreakoutAsset(pair)) {
+    const price = currentPrice ?? candles4h[candles4h.length - 1].close;
+    const indicators = buildIndicators(candles4h);
+    debug.push(`[BREAKOUT MODE] StochRSI: K ${indicators.stoch.k} | D ${indicators.stoch.d} | ADX ${indicators.adx}`);
+    return {
+      ctx: {
+        pair,
+        price,
+        now: candles4h[candles4h.length - 1].timestamp,
+        t1d,
+        t4h,
+        trendline: null,
+        indicators,
+        last: candles4h[candles4h.length - 1],
+        prev: candles4h[candles4h.length - 2],
+      },
+      debug,
+    };
+  }
+
+  // For TRENDLINE assets, require valid trendline
   if (!t1d.direction) {
     debug.push("1D trend unclear");
     return { ctx: null, debug };
   }
+  
   const trendline = getTrendline(pair, candles4h, t1d.direction, debug);
   if (!trendline) {
     debug.push("No trendline");
     return { ctx: null, debug };
   }
+  
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
   const dist = (price - trendline.price) / trendline.price;
   debug.push(`TL: ${trendline.price.toFixed(1)} | R² ${trendline.r2} | Price: ${price.toFixed(1)} | Dist: ${(dist >= 0 ? "+" : "")}${(dist * 100).toFixed(2)}% | Age: ${trendline.age} | Source: ${trendline.pivotSource}`);
 
-  // Distance-based invalidation (sole staleness control)
+  // Distance-based invalidation (only for trendline assets)
   if (t1d.direction === "SHORT" && dist > TL_MAX_DIST) {
     debug.push(`Trendline too far below price (${(dist * 100).toFixed(2)}% > ${(TL_MAX_DIST * 100).toFixed(0)}%), likely broken structure`);
     trendlineStore.delete(pair);
@@ -692,7 +715,7 @@ function getContext(pair: string, candles4h: Candle[], currentPrice?: number): {
   };
 }
 
-// --- SETUP FINDER ---
+// --- SETUP FINDER (TRENDLINE) ---
 interface Setup {
   type: "ACCUMULATE" | "BREAKOUT";
   scale: "ENTRY_1" | "ADD";
@@ -701,6 +724,10 @@ interface Setup {
 
 function findSetup(ctx: MarketContext): Setup | null {
   const { price, t1d, trendline, indicators, last, prev } = ctx;
+  
+  // If no trendline (BREAKOUT asset), skip setup
+  if (!trendline) return null;
+  
   const tlPrice = trendline.price;
   const dist = (price - tlPrice) / tlPrice;
   const atrVal = indicators.atr;
@@ -741,7 +768,51 @@ function findSetup(ctx: MarketContext): Setup | null {
   return null;
 }
 
-// --- MAIN SIGNAL v31 ---
+// --- BREAKOUT SETUP (for HYPE/SOL) ---
+function findBreakoutSetup(ctx: MarketContext): Setup | null {
+  const { price, t1d, indicators, last, prev } = ctx;
+
+  if (!t1d.direction) return null;
+
+  // EMA alignment: price must be above/below BOTH EMAs
+  const emaAligned = t1d.direction === "LONG"
+    ? price > indicators.ema8 && price > indicators.ema21
+    : price < indicators.ema8 && price < indicators.ema21;
+
+  if (!emaAligned) return null;
+
+  // Stoch momentum: must show alignment with direction
+  const stochAligned = t1d.direction === "LONG"
+    ? indicators.stoch.k > indicators.stoch.d
+    : indicators.stoch.k < indicators.stoch.d;
+
+  if (!stochAligned) return null;
+
+  // ADX confirmation: must be > BREAKOUT_ADX_MIN
+  if (indicators.adx < BREAKOUT_ADX_MIN) return null;
+
+  // Stoch level check: should be in valid range (not too extreme too late)
+  const stochValid = t1d.direction === "LONG"
+    ? indicators.stoch.k >= BREAKOUT_STOCH_MIN && indicators.stoch.k <= 85
+    : indicators.stoch.k <= (100 - BREAKOUT_STOCH_MIN) && indicators.stoch.k >= 15;
+
+  if (!stochValid) return null;
+
+  // Structure check: recent close confirming direction
+  const confirming = t1d.direction === "LONG"
+    ? last.close > last.open
+    : last.close < last.open;
+
+  if (!confirming) return null;
+
+  return {
+    type: "BREAKOUT",
+    scale: "ENTRY_1",
+    reason: "breakout_ema_stoch_adx"
+  };
+}
+
+// --- MAIN SIGNAL v32 ---
 export function generateSignal(
   pair: string,
   candles4h: Candle[],
@@ -750,62 +821,198 @@ export function generateSignal(
   const { ctx, debug } = getContext(pair, candles4h, currentPrice);
   if (!ctx) return { debug };
 
-  const exhaustion = checkExhaustion(ctx.t1d.direction!, ctx.indicators);
-  debug.push(`Exhaustion: ${exhaustion.level} (${exhaustion.reason})`);
-  if (exhaustion.level === "ACTIVE") {
-    debug.push(`Rejected: exhaustion — ${exhaustion.reason}`);
-    return { debug };
-  }
+  // Route to appropriate strategy
+  const isBreakout = isBreakoutAsset(pair);
 
-  if (ctx.trendline.r2 < MIN_R2) {
-    debug.push(`Rejected: R² ${ctx.trendline.r2} < ${MIN_R2} (weak trendline)`);
-    return { debug };
-  }
-
-  const setup = findSetup(ctx);
-  if (!setup) {
-    const dist = (ctx.price - ctx.trendline.price) / ctx.trendline.price;
-    const nearTrendline = Math.abs(ctx.price - ctx.trendline.price) < ctx.indicators.atr * 0.8;
-    const correctSide = ctx.t1d.direction === "LONG"
-      ? ctx.price <= ctx.trendline.price * (1 + CORRECT_SIDE_BUFFER)
-      : ctx.price >= ctx.trendline.price * (1 - CORRECT_SIDE_BUFFER);
-    const stochTurning = ctx.t1d.direction === "LONG"
-      ? ctx.indicators.stoch.k > ctx.indicators.stoch.d
-      : ctx.indicators.stoch.k < ctx.indicators.stoch.d;
-    const stochExtreme = ctx.t1d.direction === "LONG"
-      ? ctx.indicators.stoch.k < 20
-      : ctx.indicators.stoch.k > 80;
-
-    const stateParts: string[] = [];
-    if (Math.abs(ctx.price - ctx.trendline.price) < ctx.indicators.atr * 0.8) stateParts.push("near TL");
-    else if ((ctx.t1d.direction === "LONG" && ctx.price > ctx.trendline.price * (1 + CORRECT_SIDE_BUFFER) && ctx.price < ctx.trendline.price * 1.02) ||
-             (ctx.t1d.direction === "SHORT" && ctx.price < ctx.trendline.price * (1 - CORRECT_SIDE_BUFFER) && ctx.price > ctx.trendline.price * 0.98)) {
-      stateParts.push("retest zone");
-    } else {
-      stateParts.push("far from TL");
+  if (isBreakout) {
+    // BREAKOUT strategy for HYPE/SOL
+    const exhaustion = checkExhaustion(ctx.t1d.direction!, ctx.indicators);
+    debug.push(`Exhaustion: ${exhaustion.level} (${exhaustion.reason})`);
+    if (exhaustion.level === "ACTIVE") {
+      debug.push(`Rejected: exhaustion — ${exhaustion.reason}`);
+      return { debug };
     }
-    stateParts.push(`Stoch K${ctx.indicators.stoch.k} D${ctx.indicators.stoch.d}`);
-    stateParts.push("No signal");
 
-    debug.push(`EntryState: nearTL=${nearTrendline} | correctSide=${correctSide} | stochTurning=${stochTurning} | stochExtreme=${stochExtreme} | RR=unchecked | R2=passed`);
-    debug.push(`State: ${stateParts.join(" | ")}`);
-    return { debug };
-  }
+    const setup = findBreakoutSetup(ctx);
+    if (!setup) {
+      const emaAligned = ctx.t1d.direction === "LONG"
+        ? ctx.price > ctx.indicators.ema8 && ctx.price > ctx.indicators.ema21
+        : ctx.price < ctx.indicators.ema8 && ctx.price < ctx.indicators.ema21;
+      const stochAligned = ctx.t1d.direction === "LONG"
+        ? ctx.indicators.stoch.k > ctx.indicators.stoch.d
+        : ctx.indicators.stoch.k < ctx.indicators.stoch.d;
 
-  const result = buildTradeWithPivots(ctx, setup, candles4h);
-  if (!result) {
-    debug.push(`Rejected: TL=passed | SIDE=passed | STOCH=passed | RR=failed | R2=passed`);
-    debug.push("R:R too low");
-    return { debug };
+      debug.push(`[BREAKOUT] EMA=${emaAligned} | Stoch=${stochAligned} | ADX=${ctx.indicators.adx.toFixed(1)} (need ${BREAKOUT_ADX_MIN}) | K=${ctx.indicators.stoch.k} | No signal`);
+      return { debug };
+    }
+
+    const result = buildBreakoutTrade(ctx, setup, candles4h);
+    if (!result) {
+      debug.push(`Rejected: RR too low for breakout entry`);
+      return { debug };
+    }
+    debug.push(`SIGNAL: ${result.signal.type} ${result.signal.scale} ${result.signal.direction} ${result.signal.entry} | TP ${result.signal.target} | SL ${result.signal.stop} | RR ${result.signal.rr}`);
+    return { signal: result.signal, market: result.market, debug };
+  } else {
+    // TRENDLINE strategy for BTC/ETH
+    const exhaustion = checkExhaustion(ctx.t1d.direction!, ctx.indicators);
+    debug.push(`Exhaustion: ${exhaustion.level} (${exhaustion.reason})`);
+    if (exhaustion.level === "ACTIVE") {
+      debug.push(`Rejected: exhaustion — ${exhaustion.reason}`);
+      return { debug };
+    }
+
+    if (!ctx.trendline) {
+      debug.push(`Rejected: no trendline (BTC/ETH require trendline)`);
+      return { debug };
+    }
+
+    if (ctx.trendline.r2 < MIN_R2) {
+      debug.push(`Rejected: R² ${ctx.trendline.r2} < ${MIN_R2} (weak trendline)`);
+      return { debug };
+    }
+
+    const setup = findSetup(ctx);
+    if (!setup) {
+      const dist = (ctx.price - ctx.trendline.price) / ctx.trendline.price;
+      const nearTrendline = Math.abs(ctx.price - ctx.trendline.price) < ctx.indicators.atr * 0.8;
+      const correctSide = ctx.t1d.direction === "LONG"
+        ? ctx.price <= ctx.trendline.price * (1 + CORRECT_SIDE_BUFFER)
+        : ctx.price >= ctx.trendline.price * (1 - CORRECT_SIDE_BUFFER);
+      const stochTurning = ctx.t1d.direction === "LONG"
+        ? ctx.indicators.stoch.k > ctx.indicators.stoch.d
+        : ctx.indicators.stoch.k < ctx.indicators.stoch.d;
+      const stochExtreme = ctx.t1d.direction === "LONG"
+        ? ctx.indicators.stoch.k < 20
+        : ctx.indicators.stoch.k > 80;
+
+      const stateParts: string[] = [];
+      if (Math.abs(ctx.price - ctx.trendline.price) < ctx.indicators.atr * 0.8) stateParts.push("near TL");
+      else if ((ctx.t1d.direction === "LONG" && ctx.price > ctx.trendline.price * (1 + CORRECT_SIDE_BUFFER) && ctx.price < ctx.trendline.price * 1.02) ||
+               (ctx.t1d.direction === "SHORT" && ctx.price < ctx.trendline.price * (1 - CORRECT_SIDE_BUFFER) && ctx.price > ctx.trendline.price * 0.98)) {
+        stateParts.push("retest zone");
+      } else {
+        stateParts.push("far from TL");
+      }
+      stateParts.push(`Stoch K${ctx.indicators.stoch.k} D${ctx.indicators.stoch.d}`);
+      stateParts.push("No signal");
+
+      debug.push(`EntryState: nearTL=${nearTrendline} | correctSide=${correctSide} | stochTurning=${stochTurning} | stochExtreme=${stochExtreme} | RR=unchecked | R2=passed`);
+      debug.push(`State: ${stateParts.join(" | ")}`);
+      return { debug };
+    }
+
+    const result = buildTradeWithPivots(ctx, setup, candles4h);
+    if (!result) {
+      debug.push(`Rejected: TL=passed | SIDE=passed | STOCH=passed | RR=failed | R2=passed`);
+      debug.push("R:R too low");
+      return { debug };
+    }
+    debug.push(`SIGNAL: ${result.signal.type} ${result.signal.scale} ${result.signal.direction} ${result.signal.entry} | TP ${result.signal.target} | SL ${result.signal.stop} | RR ${result.signal.rr}`);
+    return { signal: result.signal, market: result.market, debug };
   }
-  debug.push(`SIGNAL: ${result.signal.type} ${result.signal.scale} ${result.signal.direction} ${result.signal.entry} | TP ${result.signal.target} | SL ${result.signal.stop} | RR ${result.signal.rr}`);
-  return { signal: result.signal, market: result.market, debug };
 }
 
-// Build trade v31: Structure stops + leverage safety
+// Build BREAKOUT trade (HYPE/SOL)
+function buildBreakoutTrade(ctx: MarketContext, setup: Setup, candles4h: Candle[]): { signal: Signal; market: any } | null {
+  const { pair, price, now, t1d, t4h, indicators } = ctx;
+  const atrVal = indicators.atr;
+  const swingLows = candles4h.map(c => c.low).slice(-20);
+  const swingHighs = candles4h.map(c => c.high).slice(-20);
+  const swingLow = Math.min(...swingLows);
+  const swingHigh = Math.max(...swingHighs);
+
+  // Entry at current price
+  const entry = price;
+
+  // Stop: wider for breakout, based on recent structure
+  const atrStop = t1d.direction === "LONG"
+    ? entry - atrVal * 1.5
+    : entry + atrVal * 1.5;
+  
+  const structStop = t1d.direction === "LONG"
+    ? Math.max(atrStop, swingLow - atrVal * 0.5)
+    : Math.min(atrStop, swingHigh + atrVal * 0.5);
+  
+  const minStop = t1d.direction === "LONG"
+    ? entry * (1 - MIN_STOP_PCT)
+    : entry * (1 + MIN_STOP_PCT);
+  
+  let sl = t1d.direction === "LONG"
+    ? Math.min(structStop, minStop)
+    : Math.max(structStop, minStop);
+
+  // Target: pivot-based or ATR-based
+  const pivotTarget = getPivotTarget(candles4h, t1d.direction!, entry, sl, atrVal);
+  let tp: number, targetSource: string;
+  
+  if (pivotTarget) {
+    tp = pivotTarget.target;
+    targetSource = pivotTarget.source;
+  } else {
+    tp = t1d.direction === "LONG" ? entry + atrVal * 2.5 : entry - atrVal * 2.5;
+    targetSource = "atr_x2.5";
+  }
+
+  const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
+  if (rr < MIN_RR) return null;
+
+  // Leverage safety
+  const stopPct = Math.abs(entry - sl) / entry;
+  if (stopPct < MIN_STOP_PCT) {
+    sl = t1d.direction === "LONG" ? entry * (1 - MIN_STOP_PCT) : entry * (1 + MIN_STOP_PCT);
+    const newRR = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
+    if (newRR < MIN_RR) return null;
+  }
+
+  let confidence = 60;
+  if (rr > 2.0) confidence += 15;
+  if (indicators.adx > 30) confidence += 15;
+  if (t4h.direction === t1d.direction) confidence += 10;
+
+  const expectedMove = Math.abs(tp - entry) / entry * 100;
+
+  const signal: Signal = {
+    id: `${pair}_${now}`,
+    pair,
+    direction: t1d.direction!,
+    type: setup.type,
+    scale: setup.scale,
+    entry: Math.round(entry * 100) / 100,
+    stop: Math.round(sl * 100) / 100,
+    target: Math.round(tp * 100) / 100,
+    confidence,
+    rr: Math.round(rr * 100) / 100,
+    adx: Math.round(indicators.adx * 10) / 10,
+    rsi: Math.round(indicators.rsi * 10) / 10,
+    stochK: indicators.stoch.k,
+    stochD: indicators.stoch.d,
+    expectedMove: Math.round(expectedMove * 10) / 10,
+    reason: `${t1d.direction} ${setup.type} ${setup.scale} | 1D ${t1d.strength} | 4H ${t4h.direction || "NONE"} | Stoch K${indicators.stoch.k} D${indicators.stoch.d} | ADX ${indicators.adx.toFixed(1)} | ${setup.reason} | TP:${targetSource} | RR ${rr.toFixed(2)} | Conf ${confidence}`,
+    timestamp: now,
+    version: CURRENT_SIGNAL_VERSION,
+  };
+
+  const market = {
+    pair,
+    price: Math.round(price * 100) / 100,
+    timestamp: now,
+    trend: `${t1d.direction} ${t1d.strength}`,
+    adx: signal.adx,
+    rsi: signal.rsi,
+    stochK: signal.stochK,
+    stochD: signal.stochD,
+    ema8: Math.round(indicators.ema8 * 100) / 100,
+    ema21: Math.round(indicators.ema21 * 100) / 100,
+  };
+
+  return { signal, market };
+}
+
+// Build TRENDLINE trade (BTC/ETH) - v31 logic
 function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candle[]): { signal: Signal; market: any } | null {
   const { pair, price, now, t1d, t4h, trendline, indicators } = ctx;
-  const tlPrice = trendline.price;
+  const tlPrice = trendline!.price;
   const atrVal = indicators.atr;
   const swingLows = candles4h.map(c => c.low).slice(-20);
   const swingHighs = candles4h.map(c => c.high).slice(-20);
@@ -815,7 +1022,6 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
 
   if (setup.type === "ACCUMULATE") {
     entry = price;
-    // Widest valid stop: structure-based with MIN_STOP_PCT floor
     const atrStop = t1d.direction === "LONG"
       ? entry - atrVal * 1.2
       : entry + atrVal * 1.2;
@@ -828,7 +1034,6 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
     sl = t1d.direction === "LONG"
       ? Math.min(structStop, minStop)
       : Math.max(structStop, minStop);
-    // Ensure stop doesn't go beyond trendline invalidation
     sl = t1d.direction === "LONG"
       ? Math.max(sl, tlPrice * 0.992)
       : Math.min(sl, tlPrice * 1.008);
@@ -877,7 +1082,6 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
   if (rr < MIN_RR) return null;
 
-  // Leverage safety: ensure stop distance >= MIN_STOP_PCT
   const stopPct = Math.abs(entry - sl) / entry;
   if (stopPct < MIN_STOP_PCT) {
     sl = t1d.direction === "LONG" ? entry * (1 - MIN_STOP_PCT) : entry * (1 + MIN_STOP_PCT);
@@ -893,7 +1097,7 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   if (stochTurning) confidence += 10;
   if (t4h.direction === t1d.direction && indicators.adx > 20) confidence += 10;
   if (indicators.adx > 30) confidence += 10;
-  if (trendline.r2 > 0.70) confidence += 10;
+  if (trendline!.r2 > 0.70) confidence += 10;
 
   const expectedMove = Math.abs(tp - entry) / entry * 100;
 
@@ -936,17 +1140,22 @@ function buildTradeWithPivots(ctx: MarketContext, setup: Setup, candles4h: Candl
   return { signal, market };
 }
 
-// --- MARKET SNAPSHOT v31: UI exit state ---
+// --- MARKET SNAPSHOT v32 ---
 export function getMarketSnapshot(pair: string, candles4h: Candle[], signal?: Signal, candles1h?: Candle[]): any {
   const candles1d = aggregateTo1D(candles4h);
   const t1d = trend1D(candles1d);
   const stochRsi4h = stochRsi(candles4h.map(c => c.close));
   const price = candles4h[candles4h.length - 1].close;
-  const trendline = t1d.direction ? getTrendline(pair, candles4h, t1d.direction, []) : null;
-  const tlPrice = trendline ? trendline.price : 0;
-  const dist = trendline ? (price - tlPrice) / tlPrice : 1;
+  
+  // Only compute trendline for trendline assets
+  let trendline: { price: number; r2: number; age: number; pivotSource: string } | null = null;
+  if (isTrendlineAsset(pair) && t1d.direction) {
+    trendline = getTrendline(pair, candles4h, t1d.direction, []);
+  }
 
-  // Exit state
+  const tlPrice = trendline ? trendline.price : 0;
+  const dist = trendline ? (price - tlPrice) / tlPrice : 0;
+
   let tradeHealth: "STRONG" | "WEAKENING" | "EXIT_RECOMMENDED" | "FORCE_EXIT" | "NONE" = "NONE";
   let exitReason = "";
   let exitUrgency: "WATCH" | "EXIT" | "FORCE_EXIT" | "NONE" = "NONE";
@@ -971,8 +1180,8 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[], signal?: Si
     rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
     stochK: stochRsi4h.k,
     stochD: stochRsi4h.d,
-    trendlinePrice: Math.round(tlPrice * 100) / 100,
-    distToTrendline: Math.round(dist * 10000) / 100,
+    trendlinePrice: trendline ? Math.round(tlPrice * 100) / 100 : null,
+    distToTrendline: trendline ? Math.round(dist * 10000) / 100 : null,
     ema8: Math.round(ema(candles4h.map(c => c.close), 8).slice(-1)[0] * 100) / 100,
     ema21: Math.round(ema(candles4h.map(c => c.close), 21).slice(-1)[0] * 100) / 100,
     tradeHealth,
@@ -1004,7 +1213,7 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
   return { valid: true, reason: "active", exited: false };
 }
 
-// --- shouldHold v31: Delegate to exit engine ---
+// --- shouldHold v32 ---
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
@@ -1056,7 +1265,7 @@ export function checkTradeStatus(signal: Signal, currentPrice: number, now: numb
   return "ACTIVE";
 }
 
-// --- MINIMAL COMPAT ---
+// --- COMPAT FUNCTIONS ---
 export async function generateSignalCompat(
   pair: string,
   candles1h: Candle[],
@@ -1078,14 +1287,10 @@ export function shouldHoldCompat(
   candles1h: Candle[],
   currentPrice: number
 ): HoldResult {
-  // v31: Use exit engine if 1H candles available
   if (candles1h && candles1h.length > 0) {
     const exitEval = evaluateExit(signal, candles1h, candles4h, currentPrice);
     if (exitEval.shouldExit) {
       return { shouldHold: false, reason: exitEval.reason };
-    }
-    if (exitEval.newStop !== undefined && exitEval.newStop !== signal.stop) {
-      // Signal that stop should be updated — caller handles
     }
   }
   return shouldHold(signal, candles4h, currentPrice);
