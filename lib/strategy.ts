@@ -1,14 +1,15 @@
-// lib/strategy.ts — v31 "Exit Engine + Adaptive Pivots + Profit Protection"
+// lib/strategy.ts — v31.3 "Exit Engine + Adaptive Pivots + Profit Protection"
 // ============================================================
-// Changes:
-// 1. Softened exhaustion: ADX>50 + stoch turning, or stoch extreme (K>90/<10) + turning
-// 2. Exit engine with evaluateExit(): WATCH/EXIT/FORCE_EXIT, profit locking, never widen stops
+// Changes from v30:
+// 1. Softened exhaustion: ADX>50 + stoch turning, or stoch extreme (>90/<10) + turning
+// 2. Exit engine: evaluateExit() with WATCH/EXIT/FORCE_EXIT, profit locking, never widen stops
 // 3. UI exit state: tradeHealth + exitReason in market snapshot
 // 4. Removed pivot recency filter — TL_MAX_DIST is sole staleness control
-// 5. Adaptive pivots: ±5 high/low → ±3 high/low → ±3 close → no trendline
+// 5. Adaptive pivots: ±5 HL → ±3 HL → ±3 close → no trendline
 // 6. MIN_STOP_PCT = 0.025 leverage safety
 // 7. Profit protection: exit if retraces from >2R to <1R
-// 8. Rich debug: entry state, exit state, profit lock, stoch state, trendline state
+// 8. Exit on stoch cross only when trade ≥ +0.75R in profit
+// 9. Rich debug: entry state, exit state, profit lock, stoch state, trendline state
 
 import { getTrendlineState, setTrendlineState } from "@/lib/state";
 
@@ -63,6 +64,7 @@ const SWING_WINDOW = 5;
 const SWING_WINDOW_FALLBACK = 3;
 const MIN_PIVOT_SPACING = 6;
 const MIN_STOP_PCT = 0.025;
+const EXIT_PROFIT_THRESHOLD_R = 0.75;
 
 // --- STATE ---
 interface TrendlineState {
@@ -478,11 +480,11 @@ interface ExhaustionResult {
 }
 
 function checkExhaustion(direction: "LONG" | "SHORT", indicators: Indicators): ExhaustionResult {
-  // ADX exhaustion: only if ADX > 50 AND stoch turning against
   const stochTurningAgainst = direction === "LONG"
     ? indicators.stoch.k < indicators.stoch.d
     : indicators.stoch.k > indicators.stoch.d;
 
+  // ADX exhaustion: only if ADX > 50 AND stoch turning against
   if (indicators.adx > ADX_EXHAUSTION && stochTurningAgainst) {
     return { level: "ACTIVE", reason: `ADX_${indicators.adx}_stoch_turning` };
   }
@@ -490,7 +492,7 @@ function checkExhaustion(direction: "LONG" | "SHORT", indicators: Indicators): E
     return { level: "WARNING", reason: `ADX_${indicators.adx}` };
   }
 
-  // Stochastic exhaustion: extreme + turning
+  // Stochastic exhaustion: extreme (>90/<10) + turning
   const stochExtreme = direction === "LONG"
     ? indicators.stoch.k > STOCH_EXTREME_LONG
     : indicators.stoch.k < STOCH_EXTREME_SHORT;
@@ -515,17 +517,16 @@ export interface ExitEvaluation {
   urgency: "WATCH" | "EXIT" | "FORCE_EXIT";
   newStop?: number;
   tradeHealth: "STRONG" | "WEAKENING" | "EXIT_RECOMMENDED" | "FORCE_EXIT";
-}
-
-function stochRsiFromCloses(closes: number[]): { k: number; d: number } {
-  return stochRsi(closes);
+  profitRR: number;
+  peakProfitRR: number;
 }
 
 export function evaluateExit(
   signal: Signal,
   candles1h: Candle[],
   candles4h: Candle[],
-  currentPrice: number
+  currentPrice: number,
+  peakProfitRR?: number
 ): ExitEvaluation {
   const direction = signal.direction;
   const entry = signal.entry;
@@ -533,10 +534,11 @@ export function evaluateExit(
   const risk = direction === "LONG" ? entry - initialSl : initialSl - entry;
   const profit = direction === "LONG" ? currentPrice - entry : entry - currentPrice;
   const profitRR = risk > 0 ? profit / risk : 0;
+  const peakRR = peakProfitRR ?? profitRR;
 
   // Build 1H stoch
   const closes1h = candles1h.map(c => c.close);
-  const stoch1h = stochRsiFromCloses(closes1h);
+  const stoch1h = stochRsi(closes1h);
   const adx4h = adx(candles4h);
 
   // Default
@@ -549,14 +551,15 @@ export function evaluateExit(
   // Profit locking — never widen stops
   if (profitRR > 1.5) {
     const lockLevel = entry + (direction === "LONG" ? risk * 0.5 : -risk * 0.5);
-    const currentStop = direction === "LONG" ? Math.max(initialSl, lockLevel) : Math.min(initialSl, lockLevel);
-    if (direction === "LONG" && currentStop > initialSl) newStop = currentStop;
-    if (direction === "SHORT" && currentStop < initialSl) newStop = currentStop;
+    const proposedStop = direction === "LONG" ? Math.max(initialSl, lockLevel) : Math.min(initialSl, lockLevel);
+    if ((direction === "LONG" && proposedStop > initialSl) || (direction === "SHORT" && proposedStop < initialSl)) {
+      newStop = proposedStop;
+    }
   } else if (profitRR > 1.0) {
-    const breakeven = entry + (direction === "LONG" ? 0 : 0);
-    const currentStop = direction === "LONG" ? Math.max(initialSl, entry) : Math.min(initialSl, entry);
-    if (direction === "LONG" && currentStop > initialSl) newStop = currentStop;
-    if (direction === "SHORT" && currentStop < initialSl) newStop = currentStop;
+    const proposedStop = direction === "LONG" ? Math.max(initialSl, entry) : Math.min(initialSl, entry);
+    if ((direction === "LONG" && proposedStop > initialSl) || (direction === "SHORT" && proposedStop < initialSl)) {
+      newStop = proposedStop;
+    }
   }
 
   // Stoch state
@@ -566,19 +569,18 @@ export function evaluateExit(
   const stochCrossing = direction === "LONG"
     ? stoch1h.k < stoch1h.d
     : stoch1h.k > stoch1h.d;
-  const stochExtremeZone = direction === "LONG" ? stoch1h.k > 60 : stoch1h.k < 40;
 
   if (stochAligned) tradeHealth = "STRONG";
   else if (!stochCrossing) tradeHealth = "WEAKENING";
 
-  // Rule C: Exit on stoch cross in extreme zone
+  // Rule C: Exit on stoch cross ONLY when trade ≥ +0.75R in profit
   const crossExit = direction === "LONG"
     ? stoch1h.k < stoch1h.d && stoch1h.k > 60
     : stoch1h.k > stoch1h.d && stoch1h.k < 40;
 
-  if (crossExit) {
+  if (crossExit && profitRR >= EXIT_PROFIT_THRESHOLD_R) {
     shouldExit = true;
-    reason = `stoch_cross_${direction === "LONG" ? "below" : "above"}_D_${stoch1h.k.toFixed(1)}`;
+    reason = `stoch_cross_${direction === "LONG" ? "below" : "above"}_D_${stoch1h.k.toFixed(1)}_profit${profitRR.toFixed(2)}R`;
     urgency = "EXIT";
     tradeHealth = "EXIT_RECOMMENDED";
   }
@@ -588,6 +590,7 @@ export function evaluateExit(
   let forceExit = false;
   if (adxFalling) {
     const adxPrev = adx(candles4h.slice(0, -1));
+    const stochExtremeZone = direction === "LONG" ? stoch1h.k < 40 : stoch1h.k > 60;
     forceExit = adx4h < adxPrev && profit > 0 && stochExtremeZone;
   }
 
@@ -599,8 +602,7 @@ export function evaluateExit(
   }
 
   // Profit protection: retraced from >2R to <1R
-  const peakProfitRR = (signal as any).peakProfitRR ?? profitRR;
-  if (peakProfitRR > 2.0 && profitRR < 1.0) {
+  if (peakRR > 2.0 && profitRR < 1.0) {
     shouldExit = true;
     reason = "profit_protection";
     urgency = "FORCE_EXIT";
@@ -613,6 +615,8 @@ export function evaluateExit(
     urgency,
     newStop,
     tradeHealth,
+    profitRR,
+    peakProfitRR: Math.max(peakRR, profitRR),
   };
 }
 
@@ -946,12 +950,16 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[], signal?: Si
   let tradeHealth: "STRONG" | "WEAKENING" | "EXIT_RECOMMENDED" | "FORCE_EXIT" | "NONE" = "NONE";
   let exitReason = "";
   let exitUrgency: "WATCH" | "EXIT" | "FORCE_EXIT" | "NONE" = "NONE";
+  let profitRR = 0;
+  let peakProfitRR = 0;
 
   if (signal && candles1h && candles1h.length > 0) {
     const exitEval = evaluateExit(signal, candles1h, candles4h, price);
     tradeHealth = exitEval.tradeHealth;
     exitReason = exitEval.reason;
     exitUrgency = exitEval.urgency;
+    profitRR = exitEval.profitRR;
+    peakProfitRR = exitEval.peakProfitRR;
   }
 
   return {
@@ -970,6 +978,8 @@ export function getMarketSnapshot(pair: string, candles4h: Candle[], signal?: Si
     tradeHealth,
     exitReason,
     exitUrgency,
+    profitRR: Math.round(profitRR * 100) / 100,
+    peakProfitRR: Math.round(peakProfitRR * 100) / 100,
   };
 }
 
