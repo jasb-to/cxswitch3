@@ -313,6 +313,50 @@ function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; str
   return { direction, strength };
 }
 
+// --- TREND BREAK OVERRIDE (v28.3 — for HYPE and SOL only) ---
+function trendBreakOverride(
+  pair: string,
+  candles1d: Candle[],
+  baseDirection: "LONG" | "SHORT"
+): "LONG" | "SHORT" | null {
+  // Only apply to tokens with recent breakdown risk
+  if (pair !== "HYPE" && pair !== "SOL") return baseDirection;
+
+  const len = candles1d.length;
+  if (len < 10) return baseDirection;
+
+  const closes = candles1d.map(c => c.close);
+  const ema8 = ema(closes, 8);
+  const ema21 = ema(closes, 21);
+
+  const last1 = candles1d[len - 1];
+  const last2 = candles1d[len - 2];
+  const ema8_1 = ema8[ema8.length - 1];
+  const ema21_1 = ema21[ema21.length - 1];
+  const ema8_2 = ema8[ema8.length - 2];
+  const ema21_2 = ema21[ema21.length - 2];
+
+  // LONG override to SHORT: price below both EMAs for 2 consecutive candles
+  if (baseDirection === "LONG") {
+    const belowBoth1 = last1.close < ema8_1 && last1.close < ema21_1;
+    const belowBoth2 = last2.close < ema8_2 && last2.close < ema21_2;
+    if (belowBoth1 && belowBoth2) {
+      return "SHORT";
+    }
+  }
+
+  // SHORT override to LONG: price above both EMAs for 2 consecutive candles
+  if (baseDirection === "SHORT") {
+    const aboveBoth1 = last1.close > ema8_1 && last1.close > ema21_1;
+    const aboveBoth2 = last2.close > ema8_2 && last2.close > ema21_2;
+    if (aboveBoth1 && aboveBoth2) {
+      return "LONG";
+    }
+  }
+
+  return baseDirection;
+}
+
 function ema(closes: number[], period: number): number[] {
   const k = 2 / (period + 1);
   const ema: number[] = [closes[0]];
@@ -486,6 +530,12 @@ export function generateSignal(
   }
   
   const t1d = trend1D(candles1d);
+// v28.3: Trend break override for HYPE/SOL
+  const t1dDirection = trendBreakOverride(pair, candles1d, t1d.direction);
+  if (t1dDirection !== t1d.direction) {
+    debug.push(`1D_OVERRIDDEN: ${t1d.direction} -> ${t1dDirection} (price below/above both EMAs for 2 candles)`);
+    t1d.direction = t1dDirection;
+  }
   debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength}`);
   
   if (!t1d.direction) {
