@@ -1,13 +1,11 @@
-// lib/strategy.ts — v31 "Diagnostic Logging + resolveTrend1D wrapper + Bug Fixes"
+// lib/strategy.ts — v28 "Clean: version freeze + incomplete-day fix"
 // ============================================================
-// CHANGELOG v31:
-// - FIX: shouldHold() now accepts 'pair' parameter (was causing ReferenceError)
-// - ADD: resolveTrend1D() wrapper — single source of truth for 1D trend + override
-// - ADD: Diagnostic logging in trendBreakOverride (closes, ema8, ema21, conditions)
-// - ADD: Incomplete day logging in aggregateTo1D
-// - ADD: Override-fired logging visible in debug output
-// - FIX: getMarketSnapshot signature made compatible with signals/route.ts fallback
-// - Version sync: all files now v31
+// CHANGELOG:
+// - Version frozen to 28 (profitable baseline)
+// - aggregateTo1D: drops incomplete last day (<6 bars)
+// - Diagnostic logging removed (confirmed working)
+// - resolveTrend1D wrapper kept for single source of truth
+// - shouldHold pair param fix kept
 
 export interface Candle {
   timestamp: number;
@@ -54,7 +52,7 @@ export interface UIAlert {
   timestamp: number;
 }
 
-export const CURRENT_SIGNAL_VERSION = 31;
+export const CURRENT_SIGNAL_VERSION = 28;
 const MIN_RR = 1.5;
 
 // --- STATEFUL TRENDLINE STORE ---
@@ -77,19 +75,19 @@ function avg(arr: number[]): number {
 // --- RSI (TradingView exact — Wilder smoothing) ---
 function rsi(closes: number[], period: number = 14): number {
   if (closes.length < period + 1) return 50;
-  
+
   let gains = 0;
   let losses = 0;
-  
+
   for (let i = 1; i <= period; i++) {
     const change = closes[closes.length - period - 1 + i] - closes[closes.length - period - 2 + i];
     if (change > 0) gains += change;
     else losses += Math.abs(change);
   }
-  
+
   let avgGain = gains / period;
   let avgLoss = losses / period;
-  
+
   for (let i = period + 1; i < closes.length; i++) {
     const change = closes[i] - closes[i - 1];
     const gain = change > 0 ? change : 0;
@@ -97,7 +95,7 @@ function rsi(closes: number[], period: number = 14): number {
     avgGain = (avgGain * (period - 1) + gain) / period;
     avgLoss = (avgLoss * (period - 1) + loss) / period;
   }
-  
+
   if (avgLoss === 0) return 100;
   return 100 - (100 / (1 + avgGain / avgLoss));
 }
@@ -115,9 +113,9 @@ function rsiSeries(closes: number[], period: number = 14): number[] {
 // --- STOCHRSI (TradingView exact) ---
 function stochRsi(closes: number[], rsiPeriod: number = 14, stochPeriod: number = 14, kSmooth: number = 3, dSmooth: number = 3): { k: number; d: number } {
   const rsiValues = rsiSeries(closes, rsiPeriod);
-  
+
   if (rsiValues.length < stochPeriod + kSmooth - 1) return { k: 50, d: 50 };
-  
+
   const rawK: number[] = [];
   for (let i = stochPeriod - 1; i < rsiValues.length; i++) {
     const window = rsiValues.slice(i - stochPeriod + 1, i + 1);
@@ -129,17 +127,17 @@ function stochRsi(closes: number[], rsiPeriod: number = 14, stochPeriod: number 
       rawK.push(((rsiValues[i] - lowest) / (highest - lowest)) * 100);
     }
   }
-  
+
   const kValues: number[] = [];
   for (let i = kSmooth - 1; i < rawK.length; i++) {
     kValues.push(avg(rawK.slice(i - kSmooth + 1, i + 1)));
   }
-  
+
   if (kValues.length < dSmooth) return { k: 50, d: 50 };
-  
+
   const currentK = kValues[kValues.length - 1];
   const currentD = avg(kValues.slice(-dSmooth));
-  
+
   return { k: Math.round(currentK * 10) / 10, d: Math.round(currentD * 10) / 10 };
 }
 
@@ -155,11 +153,11 @@ function wilderSmooth(values: number[], period: number): number[] {
 // --- ADX ---
 function adx(candles: Candle[], period: number = 14): number {
   if (candles.length < period + 1) return 0;
-  
+
   const trs: number[] = [];
   const plusDMs: number[] = [];
   const minusDMs: number[] = [];
-  
+
   for (let i = 1; i < candles.length; i++) {
     const c = candles[i];
     const p = candles[i - 1];
@@ -167,11 +165,11 @@ function adx(candles: Candle[], period: number = 14): number {
     plusDMs.push(c.high - p.high > p.low - c.low ? Math.max(c.high - p.high, 0) : 0);
     minusDMs.push(p.low - c.low > c.high - p.high ? Math.max(p.low - c.low, 0) : 0);
   }
-  
+
   const atrSmooth = wilderSmooth(trs, period);
   const plusDISmooth = wilderSmooth(plusDMs, period);
   const minusDISmooth = wilderSmooth(minusDMs, period);
-  
+
   const dxValues: number[] = [];
   for (let i = 0; i < atrSmooth.length; i++) {
     const pDI = (plusDISmooth[i] / atrSmooth[i]) * 100;
@@ -179,32 +177,35 @@ function adx(candles: Candle[], period: number = 14): number {
     const dx = (pDI + mDI === 0) ? 0 : (Math.abs(pDI - mDI) / (pDI + mDI)) * 100;
     dxValues.push(dx);
   }
-  
+
   const adxSmooth = wilderSmooth(dxValues, period);
   return Math.round(adxSmooth[adxSmooth.length - 1] * 10) / 10;
 }
 
 // --- AGGREGATE 4H TO 1D ---
-function aggregateTo1D(candles4h: Candle[], pair?: string): Candle[] {
+// Drops the last day if incomplete (<6 bars) to prevent stale EMA distortion
+function aggregateTo1D(candles4h: Candle[]): Candle[] {
   const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
   const groups: Map<string, Candle[]> = new Map();
-  
+
   for (const c of sorted) {
     const date = new Date(c.timestamp);
     const key = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(c);
   }
-  
+
+  const entries = Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   const daily: Candle[] = [];
-  for (const [dateKey, bars] of groups) {
+
+  for (let i = 0; i < entries.length; i++) {
+    const [dateKey, bars] = entries[i];
     if (bars.length === 0) continue;
-    
-    // v31: Log incomplete days for diagnostic
-    if (bars.length < 6 && pair) {
-      console.log(`[1D_AGGREGATE] INCOMPLETE day=${dateKey} bars=${bars.length} pair=${pair} lastClose=${bars[bars.length-1].close.toFixed(2)}`);
-    }
-    
+
+    // Skip incomplete last day (<6 bars = not a full 24h of 4H candles)
+    const isLastDay = i === entries.length - 1;
+    if (isLastDay && bars.length < 6) continue;
+
     daily.push({
       timestamp: bars[0].timestamp,
       open: bars[0].open,
@@ -214,19 +215,19 @@ function aggregateTo1D(candles4h: Candle[], pair?: string): Candle[] {
       volume: bars.reduce((sum, b) => sum + b.volume, 0),
     });
   }
-  
+
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
 // --- FIND PIVOTS ---
 function findPivots(candles: Candle[], direction: "LONG" | "SHORT"): { index: number; price: number; timestamp: number }[] {
   const pivots: { index: number; price: number; timestamp: number }[] = [];
-  
+
   for (let i = 3; i < candles.length - 3; i++) {
     const c = candles[i];
     const isSwingLow = c.low < candles[i-1].low && c.low < candles[i-2].low && c.low < candles[i+1].low && c.low < candles[i+2].low;
     const isSwingHigh = c.high > candles[i-1].high && c.high > candles[i-2].high && c.high > candles[i+1].high && c.high > candles[i+2].high;
-    
+
     if (direction === "LONG" && isSwingLow) {
       pivots.push({ index: i, price: c.low, timestamp: c.timestamp });
     }
@@ -234,7 +235,7 @@ function findPivots(candles: Candle[], direction: "LONG" | "SHORT"): { index: nu
       pivots.push({ index: i, price: c.high, timestamp: c.timestamp });
     }
   }
-  
+
   return pivots;
 }
 
@@ -242,26 +243,26 @@ function findPivots(candles: Candle[], direction: "LONG" | "SHORT"): { index: nu
 function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number; age: number } | null {
   const len = candles.length;
   if (len < 20) return null;
-  
+
   const pivots = findPivots(candles, direction);
   if (pivots.length < 3) return null;
-  
+
   const recentPivots = pivots.slice(-5);
   const now = candles[candles.length - 1].timestamp;
-  
+
   for (const [key, state] of trendlineStore.entries()) {
     if (now - state.lastUpdated > TRENDLINE_MAX_AGE * 2) {
       trendlineStore.delete(key);
     }
   }
-  
+
   const existing = trendlineStore.get(pair);
-  
+
   if (existing && existing.direction === direction && (now - existing.lastUpdated) < TRENDLINE_MAX_AGE) {
     const lastPivot = recentPivots[recentPivots.length - 1];
     const projectedPrice = existing.slope * lastPivot.index + existing.intercept;
     const deviation = Math.abs(lastPivot.price - projectedPrice) / projectedPrice;
-    
+
     if (deviation < 0.02) {
       const currentIndex = len - 1;
       const price = existing.slope * currentIndex + existing.intercept;
@@ -272,21 +273,21 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
       return { price, r2: Math.round(actualR2 * 100) / 100, age: now - existing.lastUpdated };
     }
   }
-  
+
   const n = recentPivots.length;
   const sumX = recentPivots.reduce((s, p) => s + p.index, 0);
   const sumY = recentPivots.reduce((s, p) => s + p.price, 0);
   const sumXY = recentPivots.reduce((s, p) => s + p.index * p.price, 0);
   const sumX2 = recentPivots.reduce((s, p) => s + p.index * p.index, 0);
-  
+
   const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
   const intercept = (sumY - slope * sumX) / n;
-  
+
   const yMean = sumY / n;
   const ssTotal = recentPivots.reduce((s, p) => s + Math.pow(p.price - yMean, 2), 0);
   const ssResidual = recentPivots.reduce((s, p) => s + Math.pow(p.price - (slope * p.index + intercept), 2), 0);
   const r2 = ssTotal === 0 ? 0 : 1 - (ssResidual / ssTotal);
-  
+
   trendlineStore.set(pair, {
     slope,
     intercept,
@@ -294,10 +295,10 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     lastUpdated: now,
     direction,
   });
-  
+
   const currentIndex = len - 1;
   const price = slope * currentIndex + intercept;
-  
+
   return { price, r2: Math.round(r2 * 100) / 100, age: 0 };
 }
 
@@ -305,24 +306,24 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
 function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string } {
   const len = candles1d.length;
   if (len < 25) return { direction: null, strength: "WEAK" };
-  
+
   const closes = candles1d.map(c => c.close);
   const ema8 = ema(closes, 8);
   const ema21 = ema(closes, 21);
-  
+
   const direction = ema8[ema8.length - 1] > ema21[ema21.length - 1] ? "LONG" : "SHORT";
-  
+
   const highs = candles1d.slice(-20).map(c => c.high);
   const lows = candles1d.slice(-20).map(c => c.low);
   const hh = highs[highs.length - 1] > Math.max(...highs.slice(0, -1));
   const ll = lows[lows.length - 1] < Math.min(...lows.slice(0, -1));
-  
+
   const strength = (direction === "LONG" && hh) || (direction === "SHORT" && ll) ? "STRONG" : "MEDIUM";
-  
+
   return { direction, strength };
 }
 
-// --- TREND BREAK OVERRIDE (v31 — diagnostic logging) ---
+// --- TREND BREAK OVERRIDE ---
 function trendBreakOverride(
   pair: string,
   candles1d: Candle[],
@@ -342,29 +343,12 @@ function trendBreakOverride(
   const ema8_2 = ema8[ema8.length - 2];
   const ema21_2 = ema21[ema21.length - 2];
 
-  // v31: Diagnostic logging — always print override check state
-  const debugParts: string[] = [
-    `[OVERRIDE_CHECK] pair=${pair} base=${baseDirection}`,
-    `last3=[${candles1d.slice(-3).map(c => c.close.toFixed(2)).join(',')}]`,
-    `ema8=[${ema8_2.toFixed(2)},${ema8_1.toFixed(2)}]`,
-    `ema21=[${ema21_2.toFixed(2)},${ema21_1.toFixed(2)}]`,
-  ];
-
   if (baseDirection === "LONG") {
     const belowEMA21_1 = last1.close < ema21_1;
     const belowEMA21_2 = last2.close < ema21_2;
     const belowEMA8_1 = last1.close < ema8_1;
     const belowEMA8_2 = last2.close < ema8_2;
-    
-    debugParts.push(
-      `l1<ema21=${belowEMA21_1}(${last1.close.toFixed(2)}<${ema21_1.toFixed(2)})`,
-      `l2<ema21=${belowEMA21_2}(${last2.close.toFixed(2)}<${ema21_2.toFixed(2)})`,
-      `l1<ema8=${belowEMA8_1} l2<ema8=${belowEMA8_2}`
-    );
-    
     if (belowEMA21_1 && belowEMA21_2 && (belowEMA8_1 || belowEMA8_2)) {
-      debugParts.push(`OVERRIDE_FIRED: LONG->SHORT`);
-      console.log(debugParts.join(" | "));
       return "SHORT";
     }
   }
@@ -374,27 +358,15 @@ function trendBreakOverride(
     const aboveEMA21_2 = last2.close > ema21_2;
     const aboveEMA8_1 = last1.close > ema8_1;
     const aboveEMA8_2 = last2.close > ema8_2;
-    
-    debugParts.push(
-      `l1>ema21=${aboveEMA21_1}(${last1.close.toFixed(2)}>${ema21_1.toFixed(2)})`,
-      `l2>ema21=${aboveEMA21_2}(${last2.close.toFixed(2)}>${ema21_2.toFixed(2)})`,
-      `l1>ema8=${aboveEMA8_1} l2>ema8=${aboveEMA8_2}`
-    );
-    
     if (aboveEMA21_1 && aboveEMA21_2 && (aboveEMA8_1 || aboveEMA8_2)) {
-      debugParts.push(`OVERRIDE_FIRED: SHORT->LONG`);
-      console.log(debugParts.join(" | "));
       return "LONG";
     }
   }
 
-  debugParts.push(`OVERRIDE_NOOP`);
-  console.log(debugParts.join(" | "));
   return baseDirection;
 }
 
-// --- RESOLVE 1D TREND (v31 — single source of truth) ---
-// Wraps trend1D + override. Use this everywhere instead of calling trend1D directly.
+// --- RESOLVE 1D TREND (single source of truth) ---
 export function resolveTrend1D(
   pair: string,
   candles1d: Candle[],
@@ -453,7 +425,7 @@ function getHysteresis(pair: string, now: number): HysteresisState {
       hysteresisStore.delete(key);
     }
   }
-  
+
   const state = hysteresisStore.get(pair);
   if (!state) return { lastSignalType: null, lastSignalPrice: 0, lockUntil: 0 };
   if (now > state.lockUntil) return { lastSignalType: null, lastSignalPrice: 0, lockUntil: 0 };
@@ -469,7 +441,7 @@ function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price:
   });
 }
 
-// --- EXHAUSTION BLOCK (v28.2 — strengthened) ---
+// --- EXHAUSTION BLOCK ---
 interface ExhaustionCheck {
   blocked: boolean;
   reason: string;
@@ -481,7 +453,6 @@ function checkExhaustion(
   dist: number,
   direction: "LONG" | "SHORT"
 ): ExhaustionCheck {
-  // CRITICAL: Stoch pinned at absolute extreme — blocks ALL entries regardless of other conditions
   const stochPinned = stoch.k >= 99 || stoch.k <= 1;
   if (stochPinned) {
     return {
@@ -490,7 +461,6 @@ function checkExhaustion(
     };
   }
 
-  // Stoch very extended (>95/<5) + any distance from TL — late cycle protection
   const stochVeryExtended = direction === "LONG" ? stoch.k > 95 : stoch.k < 5;
   if (stochVeryExtended && Math.abs(dist) > 0.01) {
     return {
@@ -499,13 +469,12 @@ function checkExhaustion(
     };
   }
 
-  // Stoch extended flat (>90/<10) + extended price — momentum stall
   const stochExtendedFlat = direction === "LONG"
     ? stoch.k > 90 && stoch.d > 90
     : stoch.k < 10 && stoch.d < 10;
-  
+
   const priceExtended = Math.abs(dist) > 0.02;
-  
+
   if (stochExtendedFlat && priceExtended) {
     return {
       blocked: true,
@@ -513,12 +482,11 @@ function checkExhaustion(
     };
   }
 
-  // Original: High ADX + flat extreme + extended
   const adxHigh = adxVal > 28;
   const stochFlatExtreme = direction === "LONG"
     ? stoch.k > 80 && stoch.d > 80
     : stoch.k < 20 && stoch.d < 20;
-  
+
   if (adxHigh && stochFlatExtreme && Math.abs(dist) > 0.025) {
     return {
       blocked: true,
@@ -537,7 +505,7 @@ function detectUICrossoverAlert(
   direction: "LONG" | "SHORT" | null
 ): UIAlert | undefined {
   if (!prevStoch || !direction) return undefined;
-  
+
   if (prevStoch.k <= prevStoch.d && stoch.k > stoch.d && stoch.k < 20) {
     return {
       type: "SHORT_ALERT_OVERSOLD_CROSS",
@@ -547,7 +515,7 @@ function detectUICrossoverAlert(
       timestamp: Date.now(),
     };
   }
-  
+
   if (prevStoch.k >= prevStoch.d && stoch.k < stoch.d && stoch.k > 80) {
     return {
       type: "LONG_ALERT_OVERBOUGHT_CROSS",
@@ -557,7 +525,7 @@ function detectUICrossoverAlert(
       timestamp: Date.now(),
     };
   }
-  
+
   return undefined;
 }
 
@@ -572,48 +540,45 @@ export function generateSignal(
   currentPrice?: number
 ): SignalResult {
   const debug: string[] = [];
-  
+
   for (let i = 1; i < candles4h.length; i++) {
     if (candles4h[i].timestamp < candles4h[i-1].timestamp) {
       debug.push("Candles not sorted");
       return { debug };
     }
   }
-  
-  // v31: Pass pair to aggregateTo1D for diagnostic logging
-  const candles1d = aggregateTo1D(candles4h, pair);
-  
+
+  const candles1d = aggregateTo1D(candles4h);
+
   if (candles1d.length < 25 || candles4h.length < 30) {
     debug.push(`Insufficient candle data: 1D=${candles1d.length} 4H=${candles4h.length}`);
     return { debug };
   }
-  
-  // v31: Use resolveTrend1D (wrapper with override + logging)
+
   const t1d = resolveTrend1D(pair, candles1d, debug);
 
   debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength}`);
-  
+
   if (!t1d.direction) {
     debug.push("1D trend unclear");
     return { debug };
   }
-  
+
   const trendline = getTrendline(pair, candles4h, t1d.direction);
   if (!trendline) {
     debug.push("No trendline");
     return { debug };
   }
-  
+
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
   const tlPrice = trendline.price;
   const dist = (price - tlPrice) / tlPrice;
-  
+
   debug.push(`TL: ${tlPrice.toFixed(1)} | R² ${trendline.r2} | Price: ${price.toFixed(1)} | Dist: ${(dist * 100).toFixed(2)}%`);
-  
+
   const stoch = stochRsi(candles4h.map(c => c.close));
   debug.push(`StochRSI: K ${stoch.k} | D ${stoch.d}`);
-  
-  // UI Crossover Alert (before any blocking logic)
+
   const now = Date.now();
   const prevStoch = prevStochStore.get(pair);
   const uiAlert = detectUICrossoverAlert(pair, stoch, prevStoch || null, t1d.direction);
@@ -621,24 +586,24 @@ export function generateSignal(
     debug.push(`UI_ALERT: ${uiAlert.type} | K${uiAlert.stochK} D${uiAlert.stochD}`);
   }
   prevStochStore.set(pair, { ...stoch, timestamp: now });
-  
+
   for (const [key, state] of prevStochStore.entries()) {
     if (now - state.timestamp > 24 * 60 * 60 * 1000) {
       prevStochStore.delete(key);
     }
   }
-  
+
   const last = candles4h[candles4h.length - 1];
   const prev = candles4h[candles4h.length - 2];
-  
+
   const closes4h = candles4h.map(c => c.close);
   const ema8_4h = ema(closes4h, 8);
   const ema21_4h = ema(closes4h, 21);
-  
+
   const nearTrendline = Math.abs(dist) < 0.008;
   const stochExtreme = t1d.direction === "LONG" ? stoch.k < 20 : stoch.k > 80;
   const stochTurning = t1d.direction === "LONG" ? stoch.k > stoch.d : stoch.k < stoch.d;
-  
+
   const beyondTrendline = t1d.direction === "LONG" ? price > tlPrice * 1.008 : price < tlPrice * 0.992;
   const confirming = t1d.direction === "LONG" 
     ? last.close > last.open && last.close > prev.close 
@@ -648,19 +613,18 @@ export function generateSignal(
     ? price > ema8_4h[ema8_4h.length - 1] && price > ema21_4h[ema21_4h.length - 1]
     : price < ema8_4h[ema8_4h.length - 1] && price < ema21_4h[ema21_4h.length - 1];
   const stochMomentum = t1d.direction === "LONG" ? stoch.k > stoch.d : stoch.k < stoch.d;
-  
+
   const adxVal = adx(candles4h);
   const adxStrong = adxVal > 20;
-  
-  // Exhaustion Block check (before signal determination)
+
   const exhaustion = checkExhaustion(adxVal, stoch, dist, t1d.direction);
   if (exhaustion.blocked) {
     debug.push(exhaustion.reason);
     return { debug, uiAlert };
   }
-  
+
   let rawType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
-  
+
   if (nearTrendline && stochExtreme && volUp) {
     rawType = "ENTRY_1";
   } else if (nearTrendline && stochTurning && !stochExtreme) {
@@ -671,11 +635,11 @@ export function generateSignal(
       rawType = "ADD";
     }
   }
-  
+
   const hyst = getHysteresis(pair, now);
-  
+
   let finalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
-  
+
   if (hyst.lastSignalType === "ADD") {
     finalType = "ADD";
   } else if (hyst.lastSignalType === "ENTRY_2") {
@@ -688,7 +652,7 @@ export function generateSignal(
   } else {
     finalType = rawType;
   }
-  
+
   if (hyst.lastSignalType && finalType === hyst.lastSignalType) {
     const priceMove = Math.abs(price - hyst.lastSignalPrice) / hyst.lastSignalPrice;
     if (priceMove < HYSTERESIS_BAND) {
@@ -696,7 +660,7 @@ export function generateSignal(
       return { debug, uiAlert };
     }
   }
-  
+
   if (!finalType) {
     const stateParts: string[] = [];
     if (nearTrendline) stateParts.push("near TL");
@@ -707,24 +671,24 @@ export function generateSignal(
     debug.push(`State: ${stateParts.join(" | ")}`);
     return { debug, uiAlert };
   }
-  
+
   if (finalType !== hyst.lastSignalType) {
     setHysteresis(pair, finalType, price, now);
   }
-  
+
   const atrVal = atr(candles4h, 14);
   const swingLows = candles4h.map(c => c.low).slice(-20);
   const swingHighs = candles4h.map(c => c.high).slice(-20);
   const swingLow = Math.min(...swingLows);
   const swingHigh = Math.max(...swingHighs);
-  
+
   let entry: number;
   let sl: number;
   let tp: number;
   let type: "ACCUMULATE" | "BREAKOUT";
   let confidence: number;
   let expectedMove: number;
-  
+
   if (finalType === "ENTRY_1" || finalType === "ENTRY_2") {
     type = "ACCUMULATE";
     entry = price;
@@ -740,27 +704,27 @@ export function generateSignal(
     sl = t1d.direction === "LONG" 
       ? Math.min(tlPrice * 0.995, entry - atrVal * 1.5) 
       : Math.max(tlPrice * 1.005, entry + atrVal * 1.5);
-    
+
     const minTarget = t1d.direction === "LONG"
       ? entry + (entry - sl) * MIN_RR
       : entry - (sl - entry) * MIN_RR;
-    
+
     tp = t1d.direction === "LONG" 
       ? Math.max(swingHigh, minTarget) 
       : Math.min(swingLow, minTarget);
-    
+
     confidence = 85;
     expectedMove = Math.abs(tp - entry) / entry * 100;
   }
-  
+
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
   if (rr < MIN_RR) {
     debug.push(`R:R ${rr.toFixed(2)} < ${MIN_RR}`);
     return { debug, uiAlert };
   }
-  
+
   const rsi4h = rsi(candles4h.map(c => c.close));
-  
+
   const signal: Signal = {
     id: `${pair}_${Date.now()}`,
     pair,
@@ -781,7 +745,7 @@ export function generateSignal(
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
   };
-  
+
   const market = {
     pair,
     price: Math.round(price * 100) / 100,
@@ -797,29 +761,25 @@ export function generateSignal(
     ema21: Math.round(ema21_4h[ema21_4h.length - 1] * 100) / 100,
     closes4h: candles4h.slice(-50).map(c => c.close),
   };
-  
+
   debug.push(`SIGNAL: ${type} ${finalType} ${signal.direction} ${signal.entry} | TP ${signal.target} | SL ${signal.stop} | RR ${signal.rr}`);
-  
+
   return { signal, market, debug, uiAlert };
 }
 
 // --- MARKET SNAPSHOT ---
-// v31: Made candles1h and candles15m optional for signals/route.ts fallback compatibility
 export function getMarketSnapshot(
   pair: string,
   candles1h?: Candle[],
   candles4h: Candle[],
   candles15m?: Candle[]
 ): any {
-  // v31: Pass pair to aggregateTo1D for diagnostic logging
-  const candles1d = aggregateTo1D(candles4h, pair);
-  
-  // v31: Use resolveTrend1D everywhere
+  const candles1d = aggregateTo1D(candles4h);
   const t1d = resolveTrend1D(pair, candles1d);
-  
+
   const stochRsi4h = stochRsi(candles4h.map(c => c.close));
   const price = candles4h[candles4h.length - 1].close;
-  
+
   const trendline = t1d.direction ? getTrendline(pair, candles4h, t1d.direction) : null;
   const tlPrice = trendline ? trendline.price : 0;
   const dist = trendline ? (price - tlPrice) / tlPrice : 1;
@@ -854,13 +814,13 @@ export interface ValidityCheck {
 
 export function isSignalStillValid(signal: Signal, currentPrice: number, now: number = Date.now()): ValidityCheck {
   const ageMs = now - signal.timestamp;
-  
+
   const maxAge = signal.type === "ACCUMULATE" ? 24 * 60 * 60 * 1000 : 4 * 60 * 60 * 1000;
-  
+
   if (ageMs > maxAge) {
     return { valid: false, reason: "expired_ttl", exited: true };
   }
-  
+
   const entryBuffer = signal.type === "ACCUMULATE" ? 1.02 : 1.005;
   if (signal.direction === "LONG" && currentPrice > signal.entry * entryBuffer) {
     return { valid: false, reason: "missed_entry", exited: true };
@@ -868,26 +828,25 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
   if (signal.direction === "SHORT" && currentPrice < signal.entry * (2 - entryBuffer)) {
     return { valid: false, reason: "missed_entry", exited: true };
   }
-  
+
   if (signal.direction === "LONG" && currentPrice <= signal.stop) {
     return { valid: false, reason: "sl_hit", exited: true };
   }
   if (signal.direction === "SHORT" && currentPrice >= signal.stop) {
     return { valid: false, reason: "sl_hit", exited: true };
   }
-  
+
   if (signal.direction === "LONG" && currentPrice >= signal.target) {
     return { valid: false, reason: "tp_hit", exited: true };
   }
   if (signal.direction === "SHORT" && currentPrice <= signal.target) {
     return { valid: false, reason: "tp_hit", exited: true };
   }
-  
+
   return { valid: true, reason: "active", exited: false };
 }
 
 // --- shouldHold ---
-// v31 FIX: Added 'pair' parameter (was causing ReferenceError)
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
@@ -900,15 +859,12 @@ export function shouldHold(
   currentPrice: number,
   now?: number
 ): HoldResult {
-  // v31: Pass pair to aggregateTo1D for diagnostic logging
-  const candles1d = aggregateTo1D(candles4h, pair);
-  
-  // v31: Use resolveTrend1D
+  const candles1d = aggregateTo1D(candles4h);
   const t1d = resolveTrend1D(pair, candles1d);
-  
+
   const trendReversed = (signal.direction === "LONG" && t1d.direction === "SHORT") ||
                         (signal.direction === "SHORT" && t1d.direction === "LONG");
-  
+
   if (trendReversed) {
     const inProfit = signal.direction === "LONG" 
       ? currentPrice > signal.entry 
@@ -917,18 +873,18 @@ export function shouldHold(
       return { shouldHold: false, reason: "trend_reversed_unprofitable" };
     }
   }
-  
+
   const closes4h = candles4h.map(c => c.close);
   const stoch = stochRsi(closes4h);
-  
+
   const stochExtremeOpposite = signal.direction === "LONG" 
     ? stoch.k < 20
     : stoch.k > 80;
-  
+
   if (stochExtremeOpposite) {
     return { shouldHold: false, reason: "stoch_extreme_opposite_exit" };
   }
-  
+
   const validity = isSignalStillValid(signal, currentPrice, now);
   return { shouldHold: validity.valid, reason: validity.reason };
 }
@@ -941,7 +897,7 @@ export function filterExpiredSignals(
 ): { active: Signal[]; exited: { signal: Signal; reason: string }[] } {
   const active: Signal[] = [];
   const exited: { signal: Signal; reason: string }[] = [];
-  
+
   for (const signal of signals) {
     const price = currentPrices[signal.pair];
     if (price === undefined) {
@@ -952,7 +908,7 @@ export function filterExpiredSignals(
     if (check.valid) active.push(signal);
     else exited.push({ signal, reason: check.reason });
   }
-  
+
   return { active, exited };
 }
 
@@ -961,11 +917,11 @@ export type TradeStatus = "ACTIVE" | "TP_HIT" | "SL_HIT" | "EXPIRED";
 
 export function checkTradeStatus(signal: Signal, currentPrice: number, now: number = Date.now()): TradeStatus {
   const validity = isSignalStillValid(signal, currentPrice, now);
-  
+
   if (!validity.valid && validity.reason === "expired_ttl") {
     return "EXPIRED";
   }
-  
+
   if (signal.direction === "LONG") {
     if (currentPrice >= signal.target) return "TP_HIT";
     if (currentPrice <= signal.stop) return "SL_HIT";
@@ -973,7 +929,7 @@ export function checkTradeStatus(signal: Signal, currentPrice: number, now: numb
     if (currentPrice <= signal.target) return "TP_HIT";
     if (currentPrice >= signal.stop) return "SL_HIT";
   }
-  
+
   return "ACTIVE";
 }
 
@@ -1006,11 +962,11 @@ export async function generateSignalCompat(
   currentPrice?: number
 ): Promise<SignalResult> {
   const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
-  
+
   if (result.signal?.scale === "ENTRY_2") {
     return { ...result, signal: undefined };
   }
-  
+
   return result;
 }
 
@@ -1018,7 +974,6 @@ export function isSignalStillValidBool(signal: Signal, currentPrice: number): bo
   return isSignalStillValid(signal, currentPrice).valid;
 }
 
-// v31 FIX: shouldHoldCompat now passes pair through
 export function shouldHoldCompat(
   pair: string,
   signal: Signal,
