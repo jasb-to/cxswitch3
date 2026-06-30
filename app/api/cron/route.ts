@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v31.2 "10-min cron + v28.2 strategy compat + UI alerts"
+// app/api/cron/route.ts — v31 "Diagnostic logging + resolveTrend1D + bug fixes"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -44,7 +44,7 @@ export async function GET(request: Request) {
   };
 
   log("========================================");
-  log(`[CRON] Started runId=${runId}`);
+  log(`[CRON] Started runId=${runId} v31`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -145,6 +145,7 @@ export async function GET(request: Request) {
 
       let market = result.market;
       if (!market) {
+        // v31: getMarketSnapshot signature updated — pass all args
         market = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
       }
       if (market) {
@@ -170,7 +171,8 @@ export async function GET(request: Request) {
           validSignals.splice(existingIdx, 1);
           alerts.push({ pair, status: "expired", reason: validity.reason });
         } else {
-          const holdResult = shouldHold(existingForPair, candles4h, currentPrice, runStart);
+          // v31 FIX: shouldHold now requires 'pair' as first argument
+          const holdResult = shouldHold(pair, existingForPair, candles4h, currentPrice, runStart);
           if (!holdResult.shouldHold) {
             log(`[PAIR] ${pair} — HOLD EXIT: ${holdResult.reason}`);
             await addSignalToHistory(existingForPair, "hold_exit", currentPrice);
