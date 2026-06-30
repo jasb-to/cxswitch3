@@ -1,6 +1,6 @@
-// lib/strategy.ts — v28.2 "Trendline Break: StochRSI Timing + Position Build"
+// lib/strategy.ts — v29 "Trendline Break: StochRSI Timing + Position Build + Trend Override"
 // ============================================================
-// CHANGELOG v28.2:
+// CHANGELOG v29:
 // - Strengthened exhaustion_block: Stoch pinned (>95/<5) blocks ALL entries
 // - Stoch flat extreme (>90/<10) + extended price blocks entries
 // - ADX threshold lowered to 28 for exhaustion detection
@@ -51,7 +51,7 @@ export interface UIAlert {
   timestamp: number;
 }
 
-export const CURRENT_SIGNAL_VERSION = 28;
+export const CURRENT_SIGNAL_VERSION = 29;
 const MIN_RR = 1.5;
 
 // --- STATEFUL TRENDLINE STORE ---
@@ -314,14 +314,12 @@ function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; str
 }
 
 // --- TREND BREAK OVERRIDE (v28.3 — for HYPE and SOL only) ---
+// --- TREND BREAK OVERRIDE (v29 — applies to ALL tokens) ---
 function trendBreakOverride(
   pair: string,
   candles1d: Candle[],
   baseDirection: "LONG" | "SHORT"
-): "LONG" | "SHORT" | null {
-  // Only apply to tokens with recent breakdown risk
-  if (pair !== "HYPE" && pair !== "SOL") return baseDirection;
-
+): "LONG" | "SHORT" {
   const len = candles1d.length;
   if (len < 10) return baseDirection;
 
@@ -336,25 +334,39 @@ function trendBreakOverride(
   const ema8_2 = ema8[ema8.length - 2];
   const ema21_2 = ema21[ema21.length - 2];
 
-  // LONG override to SHORT: price below both EMAs for 2 consecutive candles
+  // LONG override to SHORT: price below EMA21 for 2 consecutive candles
+  // (EMA21 is the primary trend judge — if price is below it, trend is broken)
   if (baseDirection === "LONG") {
-    const belowBoth1 = last1.close < ema8_1 && last1.close < ema21_1;
-    const belowBoth2 = last2.close < ema8_2 && last2.close < ema21_2;
-    if (belowBoth1 && belowBoth2) {
+    const belowEMA21_1 = last1.close < ema21_1;
+    const belowEMA21_2 = last2.close < ema21_2;
+    const belowEMA8_1 = last1.close < ema8_1;
+    const belowEMA8_2 = last2.close < ema8_2;
+    // Require below EMA21 for both, and below EMA8 for at least one
+    if (belowEMA21_1 && belowEMA21_2 && (belowEMA8_1 || belowEMA8_2)) {
       return "SHORT";
     }
   }
 
-  // SHORT override to LONG: price above both EMAs for 2 consecutive candles
+  // SHORT override to LONG: price above EMA21 for 2 consecutive candles
   if (baseDirection === "SHORT") {
-    const aboveBoth1 = last1.close > ema8_1 && last1.close > ema21_1;
-    const aboveBoth2 = last2.close > ema8_2 && last2.close > ema21_2;
-    if (aboveBoth1 && aboveBoth2) {
+    const aboveEMA21_1 = last1.close > ema21_1;
+    const aboveEMA21_2 = last2.close > ema21_2;
+    const aboveEMA8_1 = last1.close > ema8_1;
+    const aboveEMA8_2 = last2.close > ema8_2;
+    if (aboveEMA21_1 && aboveEMA21_2 && (aboveEMA8_1 || aboveEMA8_2)) {
       return "LONG";
     }
   }
 
   return baseDirection;
+}
+
+// --- WRAPPED 1D TREND (applies override everywhere) ---
+function trend1DWithOverride(pair: string, candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string } {
+  const base = trend1D(candles1d);
+  if (!base.direction) return base;
+  const overridden = trendBreakOverride(pair, candles1d, base.direction);
+  return { direction: overridden, strength: base.strength };
 }
 
 function ema(closes: number[], period: number): number[] {
@@ -529,13 +541,8 @@ export function generateSignal(
     return { debug };
   }
   
-  const t1d = trend1D(candles1d);
-// v28.3: Trend break override for HYPE/SOL
-  const t1dDirection = trendBreakOverride(pair, candles1d, t1d.direction);
-  if (t1dDirection !== t1d.direction) {
-    debug.push(`1D_OVERRIDDEN: ${t1d.direction} -> ${t1dDirection} (price below/above both EMAs for 2 candles)`);
-    t1d.direction = t1dDirection;
-  }
+  const t1d = trend1DWithOverride(pair, candles1d);
+
   debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength}`);
   
   if (!t1d.direction) {
@@ -756,7 +763,7 @@ export function getMarketSnapshot(
   candles15m: Candle[]
 ): any {
   const candles1d = aggregateTo1D(candles4h);
-  const t1d = trend1D(candles1d);
+  const t1d = trend1DWithOverride(pair, candles1d);
   const stochRsi4h = stochRsi(candles4h.map(c => c.close));
   const price = candles4h[candles4h.length - 1].close;
   
@@ -828,7 +835,7 @@ export interface HoldResult {
 
 export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, now?: number): HoldResult {
   const candles1d = aggregateTo1D(candles4h);
-  const t1d = trend1D(candles1d);
+  const t1d = trend1DWithOverride(pair, candles1d);
   const trendReversed = (signal.direction === "LONG" && t1d.direction === "SHORT") ||
                         (signal.direction === "SHORT" && t1d.direction === "LONG");
   
