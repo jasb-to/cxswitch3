@@ -1,10 +1,13 @@
-// lib/strategy.ts — v29 "Trendline Break: StochRSI Timing + Position Build + Trend Override"
+// lib/strategy.ts — v31 "Diagnostic Logging + resolveTrend1D wrapper + Bug Fixes"
 // ============================================================
-// CHANGELOG v29:
-// - Strengthened exhaustion_block: Stoch pinned (>95/<5) blocks ALL entries
-// - Stoch flat extreme (>90/<10) + extended price blocks entries
-// - ADX threshold lowered to 28 for exhaustion detection
-// - Late-cycle ADD protection: Stoch >90 for LONG, <10 for SHORT
+// CHANGELOG v31:
+// - FIX: shouldHold() now accepts 'pair' parameter (was causing ReferenceError)
+// - ADD: resolveTrend1D() wrapper — single source of truth for 1D trend + override
+// - ADD: Diagnostic logging in trendBreakOverride (closes, ema8, ema21, conditions)
+// - ADD: Incomplete day logging in aggregateTo1D
+// - ADD: Override-fired logging visible in debug output
+// - FIX: getMarketSnapshot signature made compatible with signals/route.ts fallback
+// - Version sync: all files now v31
 
 export interface Candle {
   timestamp: number;
@@ -51,7 +54,7 @@ export interface UIAlert {
   timestamp: number;
 }
 
-export const CURRENT_SIGNAL_VERSION = 29;
+export const CURRENT_SIGNAL_VERSION = 31;
 const MIN_RR = 1.5;
 
 // --- STATEFUL TRENDLINE STORE ---
@@ -182,7 +185,7 @@ function adx(candles: Candle[], period: number = 14): number {
 }
 
 // --- AGGREGATE 4H TO 1D ---
-function aggregateTo1D(candles4h: Candle[]): Candle[] {
+function aggregateTo1D(candles4h: Candle[], pair?: string): Candle[] {
   const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
   const groups: Map<string, Candle[]> = new Map();
   
@@ -194,8 +197,14 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
   }
   
   const daily: Candle[] = [];
-  for (const [, bars] of groups) {
+  for (const [dateKey, bars] of groups) {
     if (bars.length === 0) continue;
+    
+    // v31: Log incomplete days for diagnostic
+    if (bars.length < 6 && pair) {
+      console.log(`[1D_AGGREGATE] INCOMPLETE day=${dateKey} bars=${bars.length} pair=${pair} lastClose=${bars[bars.length-1].close.toFixed(2)}`);
+    }
+    
     daily.push({
       timestamp: bars[0].timestamp,
       open: bars[0].open,
@@ -292,7 +301,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   return { price, r2: Math.round(r2 * 100) / 100, age: 0 };
 }
 
-// --- 1D TREND ---
+// --- 1D TREND (pure classifier — EMA8 vs EMA21 crossover) ---
 function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string } {
   const len = candles1d.length;
   if (len < 25) return { direction: null, strength: "WEAK" };
@@ -313,8 +322,7 @@ function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; str
   return { direction, strength };
 }
 
-// --- TREND BREAK OVERRIDE (v28.3 — for HYPE and SOL only) ---
-// --- TREND BREAK OVERRIDE (v29 — applies to ALL tokens) ---
+// --- TREND BREAK OVERRIDE (v31 — diagnostic logging) ---
 function trendBreakOverride(
   pair: string,
   candles1d: Candle[],
@@ -334,39 +342,77 @@ function trendBreakOverride(
   const ema8_2 = ema8[ema8.length - 2];
   const ema21_2 = ema21[ema21.length - 2];
 
-  // LONG override to SHORT: price below EMA21 for 2 consecutive candles
-  // (EMA21 is the primary trend judge — if price is below it, trend is broken)
+  // v31: Diagnostic logging — always print override check state
+  const debugParts: string[] = [
+    `[OVERRIDE_CHECK] pair=${pair} base=${baseDirection}`,
+    `last3=[${candles1d.slice(-3).map(c => c.close.toFixed(2)).join(',')}]`,
+    `ema8=[${ema8_2.toFixed(2)},${ema8_1.toFixed(2)}]`,
+    `ema21=[${ema21_2.toFixed(2)},${ema21_1.toFixed(2)}]`,
+  ];
+
   if (baseDirection === "LONG") {
     const belowEMA21_1 = last1.close < ema21_1;
     const belowEMA21_2 = last2.close < ema21_2;
     const belowEMA8_1 = last1.close < ema8_1;
     const belowEMA8_2 = last2.close < ema8_2;
-    // Require below EMA21 for both, and below EMA8 for at least one
+    
+    debugParts.push(
+      `l1<ema21=${belowEMA21_1}(${last1.close.toFixed(2)}<${ema21_1.toFixed(2)})`,
+      `l2<ema21=${belowEMA21_2}(${last2.close.toFixed(2)}<${ema21_2.toFixed(2)})`,
+      `l1<ema8=${belowEMA8_1} l2<ema8=${belowEMA8_2}`
+    );
+    
     if (belowEMA21_1 && belowEMA21_2 && (belowEMA8_1 || belowEMA8_2)) {
+      debugParts.push(`OVERRIDE_FIRED: LONG->SHORT`);
+      console.log(debugParts.join(" | "));
       return "SHORT";
     }
   }
 
-  // SHORT override to LONG: price above EMA21 for 2 consecutive candles
   if (baseDirection === "SHORT") {
     const aboveEMA21_1 = last1.close > ema21_1;
     const aboveEMA21_2 = last2.close > ema21_2;
     const aboveEMA8_1 = last1.close > ema8_1;
     const aboveEMA8_2 = last2.close > ema8_2;
+    
+    debugParts.push(
+      `l1>ema21=${aboveEMA21_1}(${last1.close.toFixed(2)}>${ema21_1.toFixed(2)})`,
+      `l2>ema21=${aboveEMA21_2}(${last2.close.toFixed(2)}>${ema21_2.toFixed(2)})`,
+      `l1>ema8=${aboveEMA8_1} l2>ema8=${aboveEMA8_2}`
+    );
+    
     if (aboveEMA21_1 && aboveEMA21_2 && (aboveEMA8_1 || aboveEMA8_2)) {
+      debugParts.push(`OVERRIDE_FIRED: SHORT->LONG`);
+      console.log(debugParts.join(" | "));
       return "LONG";
     }
   }
 
+  debugParts.push(`OVERRIDE_NOOP`);
+  console.log(debugParts.join(" | "));
   return baseDirection;
 }
 
-// --- WRAPPED 1D TREND (applies override everywhere) ---
-function trend1DWithOverride(pair: string, candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string } {
+// --- RESOLVE 1D TREND (v31 — single source of truth) ---
+// Wraps trend1D + override. Use this everywhere instead of calling trend1D directly.
+export function resolveTrend1D(
+  pair: string,
+  candles1d: Candle[],
+  debug?: string[]
+): { direction: "LONG" | "SHORT" | null; strength: string } {
   const base = trend1D(candles1d);
   if (!base.direction) return base;
-  const overridden = trendBreakOverride(pair, candles1d, base.direction);
-  return { direction: overridden, strength: base.strength };
+
+  const adjusted = trendBreakOverride(pair, candles1d, base.direction);
+
+  if (adjusted !== base.direction && debug) {
+    debug.push(`1D_OVERRIDE ${base.direction}->${adjusted}`);
+  }
+
+  return {
+    ...base,
+    direction: adjusted,
+  };
 }
 
 function ema(closes: number[], period: number): number[] {
@@ -534,14 +580,16 @@ export function generateSignal(
     }
   }
   
-  const candles1d = aggregateTo1D(candles4h);
+  // v31: Pass pair to aggregateTo1D for diagnostic logging
+  const candles1d = aggregateTo1D(candles4h, pair);
   
   if (candles1d.length < 25 || candles4h.length < 30) {
-    debug.push("Insufficient candle data");
+    debug.push(`Insufficient candle data: 1D=${candles1d.length} 4H=${candles4h.length}`);
     return { debug };
   }
   
-  const t1d = trend1DWithOverride(pair, candles1d);
+  // v31: Use resolveTrend1D (wrapper with override + logging)
+  const t1d = resolveTrend1D(pair, candles1d, debug);
 
   debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength}`);
   
@@ -604,7 +652,7 @@ export function generateSignal(
   const adxVal = adx(candles4h);
   const adxStrong = adxVal > 20;
   
-  // NEW: Exhaustion Block check (v28.2 — before signal determination)
+  // Exhaustion Block check (before signal determination)
   const exhaustion = checkExhaustion(adxVal, stoch, dist, t1d.direction);
   if (exhaustion.blocked) {
     debug.push(exhaustion.reason);
@@ -756,20 +804,29 @@ export function generateSignal(
 }
 
 // --- MARKET SNAPSHOT ---
+// v31: Made candles1h and candles15m optional for signals/route.ts fallback compatibility
 export function getMarketSnapshot(
   pair: string,
-  candles1h: Candle[],
+  candles1h?: Candle[],
   candles4h: Candle[],
-  candles15m: Candle[]
+  candles15m?: Candle[]
 ): any {
-  const candles1d = aggregateTo1D(candles4h);
-  const t1d = trend1DWithOverride(pair, candles1d);
+  // v31: Pass pair to aggregateTo1D for diagnostic logging
+  const candles1d = aggregateTo1D(candles4h, pair);
+  
+  // v31: Use resolveTrend1D everywhere
+  const t1d = resolveTrend1D(pair, candles1d);
+  
   const stochRsi4h = stochRsi(candles4h.map(c => c.close));
   const price = candles4h[candles4h.length - 1].close;
   
   const trendline = t1d.direction ? getTrendline(pair, candles4h, t1d.direction) : null;
   const tlPrice = trendline ? trendline.price : 0;
   const dist = trendline ? (price - tlPrice) / tlPrice : 1;
+
+  const closes4h = candles4h.map(c => c.close);
+  const ema8_4h = ema(closes4h, 8);
+  const ema21_4h = ema(closes4h, 21);
 
   return {
     pair,
@@ -782,6 +839,8 @@ export function getMarketSnapshot(
     stochD: stochRsi4h.d,
     trendlinePrice: Math.round(tlPrice * 100) / 100,
     distToTrendline: Math.round(Math.abs(dist) * 10000) / 100,
+    ema8: Math.round(ema8_4h[ema8_4h.length - 1] * 100) / 100,
+    ema21: Math.round(ema21_4h[ema21_4h.length - 1] * 100) / 100,
     closes4h: candles4h.slice(-50).map(c => c.close),
   };
 }
@@ -828,14 +887,25 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
 }
 
 // --- shouldHold ---
+// v31 FIX: Added 'pair' parameter (was causing ReferenceError)
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
 }
 
-export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, now?: number): HoldResult {
-  const candles1d = aggregateTo1D(candles4h);
-  const t1d = trend1DWithOverride(pair, candles1d);
+export function shouldHold(
+  pair: string,
+  signal: Signal,
+  candles4h: Candle[],
+  currentPrice: number,
+  now?: number
+): HoldResult {
+  // v31: Pass pair to aggregateTo1D for diagnostic logging
+  const candles1d = aggregateTo1D(candles4h, pair);
+  
+  // v31: Use resolveTrend1D
+  const t1d = resolveTrend1D(pair, candles1d);
+  
   const trendReversed = (signal.direction === "LONG" && t1d.direction === "SHORT") ||
                         (signal.direction === "SHORT" && t1d.direction === "LONG");
   
@@ -908,7 +978,7 @@ export function checkTradeStatus(signal: Signal, currentPrice: number, now: numb
 }
 
 // ============================================================
-// v28 COMPATIBILITY LAYER
+// COMPATIBILITY EXPORTS
 // ============================================================
 
 export async function getMonitorState(pair: string): Promise<any | undefined> {
@@ -948,11 +1018,13 @@ export function isSignalStillValidBool(signal: Signal, currentPrice: number): bo
   return isSignalStillValid(signal, currentPrice).valid;
 }
 
+// v31 FIX: shouldHoldCompat now passes pair through
 export function shouldHoldCompat(
+  pair: string,
   signal: Signal,
   candles4h: Candle[],
   candles1h: Candle[],
   currentPrice: number
 ): HoldResult {
-  return shouldHold(signal, candles4h, currentPrice);
+  return shouldHold(pair, signal, candles4h, currentPrice);
 }
