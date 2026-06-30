@@ -1,4 +1,4 @@
-// app/api/signals/route.ts — v31.0 "Clean Slate UI"
+// app/api/signals/route.ts — v31 "Fixed getMarketSnapshot arity + shouldHold pair param"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -26,7 +26,8 @@ export async function GET() {
       try {
         const candles4h = await getCandles(pair, 240);
         if (candles4h?.length) {
-          const snapshot = getMarketSnapshot(pair, candles4h);
+          // v31 FIX: getMarketSnapshot now accepts optional 1h/15m + requires pair as first arg
+          const snapshot = getMarketSnapshot(pair, undefined, candles4h, undefined);
           freshMarket.push(snapshot);
           currentPrices[pair] = snapshot.price;
         }
@@ -47,7 +48,7 @@ export async function GET() {
 
   const enriched = await Promise.all(validSignals.map(async (s: any) => {
     const ageMin = (Date.now() - s.timestamp) / (1000 * 60);
-    
+
     let status = "ACTIVE";
     const price = currentPrices[s.pair];
     if (price) {
@@ -64,7 +65,8 @@ export async function GET() {
     try {
       const candles4h = await getCandles(s.pair, 240);
       const p = currentPrices[s.pair] || s.entry;
-      if (candles4h?.length > 30) holdAdvice = shouldHold(s, candles4h, p);
+      // v31 FIX: shouldHold now requires 'pair' as first argument
+      if (candles4h?.length > 30) holdAdvice = shouldHold(s.pair, s, candles4h, p);
     } catch (e) {}
 
     return {
@@ -88,6 +90,6 @@ export async function GET() {
   response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   response.headers.set("Pragma", "no-cache");
   response.headers.set("Expires", "0");
-  
+
   return response;
 }
