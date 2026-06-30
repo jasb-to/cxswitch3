@@ -1,4 +1,4 @@
-// lib/state.ts — v29 "FIXED: version sync v29 + Signal interface match"
+// lib/state.ts — v31 "Version sync + Signal interface match"
 // ============================================================
 
 import { Redis } from "@upstash/redis";
@@ -22,9 +22,7 @@ const SIGNAL_HISTORY_TTL = 48 * 60 * 60;
 const UI_ALERTS_TTL = 24 * 60 * 60;
 
 // CRITICAL: Must match lib/strategy.ts CURRENT_SIGNAL_VERSION
-export const CURRENT_SIGNAL_VERSION = 29;
-
-
+export const CURRENT_SIGNAL_VERSION = 31;
 
 export interface Signal {
   id: string;
