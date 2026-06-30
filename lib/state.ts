@@ -1,4 +1,4 @@
-// lib/state.ts — v23.3 "FIXED: version sync v28 + UI alerts KV"
+// lib/state.ts — v29 "FIXED: version sync v29 + Signal interface match"
 // ============================================================
 
 import { Redis } from "@upstash/redis";
@@ -22,19 +22,20 @@ const SIGNAL_HISTORY_TTL = 48 * 60 * 60;
 const UI_ALERTS_TTL = 24 * 60 * 60;
 
 // CRITICAL: Must match lib/strategy.ts CURRENT_SIGNAL_VERSION
-export const CURRENT_SIGNAL_VERSION = 28;
+export const CURRENT_SIGNAL_VERSION = 29;
 
-export type SignalType = "EARLY" | "BREAKOUT" | "PULLBACK" | "CONTINUATION" | "REVERSAL";
+
 
 export interface Signal {
   id: string;
   pair: string;
   direction: "LONG" | "SHORT";
-  type: SignalType;
-  confidence: number;
+  type: "ACCUMULATE" | "BREAKOUT" | "EXIT";
+  scale: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
   entry: number;
   stop: number;
   target: number;
+  confidence: number;
   rr: number;
   timestamp: number;
   adx: number;
@@ -44,7 +45,6 @@ export interface Signal {
   expectedMove: number;
   reason: string;
   version: number;
-  scale?: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
 }
 
 export interface SignalHistory {
@@ -80,10 +80,9 @@ function safeParseObject(data: unknown): Record<string, any> {
 }
 
 function getSignalMaxAgeHours(signal: any): number {
-  if (signal.type === "EARLY") return 1;
+  if (signal.type === "ACCUMULATE") return 24;
   if (signal.type === "BREAKOUT") return 6;
-  if (signal.type === "PULLBACK") return 4;
-  if (signal.type === "REVERSAL") return 4;
+  if (signal.type === "EXIT") return 4;
   return 6;
 }
 
