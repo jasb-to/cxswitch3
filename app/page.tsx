@@ -49,11 +49,16 @@ interface UIAlertData {
 
 interface RealtimeAlert {
   pair: string;
-  type: "STOCH_CROSS_EXIT_LONG" | "STOCH_CROSS_EXIT_SHORT" | "STOCH_EXTREME";
+  type: "STOCH_CROSS_EXIT_LONG" | "STOCH_CROSS_EXIT_SHORT" | "STOCH_EXTREME_EXIT" | "STOCH_EXTREME_BLOCK";
   message: string;
   stochK: number;
   stochD: number;
   timestamp: number;
+  // NEW: position info for exit alerts
+  entry?: number;
+  currentPrice?: number;
+  pnl?: number;
+  direction?: "LONG" | "SHORT";
 }
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"];
@@ -273,39 +278,65 @@ async function fetchKrakenPrice(pair: string): Promise<number | null> {
 }
 
 // ─── Real-time Alert Banner ───────────────────────────────────────────────
+// FIXED: Direct, urgent, red for exits, clear command language
 
 function RealtimeAlertBanner({ alert, onDismiss }: { alert: RealtimeAlert; onDismiss: () => void }) {
-  const isExitLong = alert.type === "STOCH_CROSS_EXIT_LONG";
-  const isExitShort = alert.type === "STOCH_CROSS_EXIT_SHORT";
-  const isExtreme = alert.type === "STOCH_EXTREME";
-  const color = isExitLong
-    ? "border-rose-500 bg-rose-950/40 animate-pulse"
-    : isExitShort
-    ? "border-emerald-500 bg-emerald-950/40 animate-pulse"
-    : "border-orange-500 bg-orange-950/40 animate-pulse";
-  const icon = isExitLong ? "🔴" : isExitShort ? "🟢" : "⚠️";
-  const title = isExitLong
-    ? "EXIT LONG — Stoch Cross Detected"
-    : isExitShort
-    ? "EXIT SHORT — Stoch Cross Detected"
-    : "STOCH EXTREME — Imminent Reversal";
+  // Determine alert type and styling
+  const isExit = alert.type === "STOCH_CROSS_EXIT_LONG" || alert.type === "STOCH_CROSS_EXIT_SHORT" || alert.type === "STOCH_EXTREME_EXIT";
+  const isBlock = alert.type === "STOCH_EXTREME_BLOCK";
+
+  // Color scheme: RED for exits, orange for blocks
+  const colorClass = isExit
+    ? "border-red-600 bg-red-950/60"
+    : isBlock
+    ? "border-orange-500 bg-orange-950/40"
+    : "border-slate-600 bg-slate-900/60";
+
+  // Title: Direct command, not passive observation
+  const getTitle = () => {
+    if (alert.type === "STOCH_CROSS_EXIT_LONG") return `CLOSE YOUR ${alert.pair} LONG NOW`;
+    if (alert.type === "STOCH_CROSS_EXIT_SHORT") return `CLOSE YOUR ${alert.pair} SHORT NOW`;
+    if (alert.type === "STOCH_EXTREME_EXIT") return `EXIT ${alert.pair} ${alert.direction} — STOCH EXHAUSTED`;
+    if (alert.type === "STOCH_EXTREME_BLOCK") return `BLOCKED: ${alert.pair} ${alert.direction} — STOCH EXTREME`;
+    return `${alert.pair} ALERT`;
+  };
+
+  // Message: Clear reason + consequence
+  const getMessage = () => {
+    if (alert.type === "STOCH_EXTREME_EXIT") {
+      const pnlStr = alert.pnl !== undefined ? ` | PnL: ${alert.pnl >= 0 ? '+' : ''}${alert.pnl.toFixed(2)}%` : '';
+      return `Stoch pinned at ${alert.stochK.toFixed(1)} — momentum is dead. Close manually or system forces exit next check.${pnlStr}`;
+    }
+    if (alert.type === "STOCH_CROSS_EXIT_LONG") {
+      return `K crossed below D at ${alert.stochK.toFixed(1)} — momentum flipping. Take profit or close now.`;
+    }
+    if (alert.type === "STOCH_CROSS_EXIT_SHORT") {
+      return `K crossed above D at ${alert.stochK.toFixed(1)} — momentum flipping. Take profit or close now.`;
+    }
+    if (alert.type === "STOCH_EXTREME_BLOCK") {
+      return `Stoch at ${alert.stochK.toFixed(1)} — signal blocked. No entry at extreme exhaustion.`;
+    }
+    return alert.message;
+  };
 
   return (
-    <div className={`rounded-xl border-2 ${color} p-4 mb-4 relative`}>
+    <div className={`rounded-xl border-2 ${colorClass} p-4 mb-4 relative animate-pulse`}>
       <button
         onClick={onDismiss}
-        className="absolute top-2 right-2 text-slate-400 hover:text-white text-xs"
+        className="absolute top-2 right-2 text-white/60 hover:text-white text-sm font-bold"
       >
         ✕
       </button>
-      <div className="flex items-center gap-3">
-        <span className="text-2xl">{icon}</span>
-        <div className="flex-1">
-          <p className="text-sm font-bold text-white uppercase tracking-wider">
-            {alert.pair} — {title}
+      <div className="flex items-start gap-3">
+        <span className="text-2xl mt-0.5">{isExit ? "🔴" : isBlock ? "⛔" : "⚠️"}</span>
+        <div className="flex-1 min-w-0">
+          <p className="text-base font-black text-white uppercase tracking-wide leading-tight">
+            {getTitle()}
           </p>
-          <p className="text-xs text-slate-300 mt-1">{alert.message}</p>
-          <p className="text-xs text-slate-500 mt-1">
+          <p className="text-sm text-white/90 mt-1.5 leading-relaxed">
+            {getMessage()}
+          </p>
+          <p className="text-xs text-white/50 mt-2 font-mono">
             Stoch K={alert.stochK.toFixed(1)} D={alert.stochD.toFixed(1)} • {timeAgo(alert.timestamp)} ago
           </p>
         </div>
@@ -330,11 +361,11 @@ function MarketStateSummary({ market, signal }: { market: MarketData | undefined
   let stateBg = "bg-slate-800/50";
 
   if (stochK >= 99 || stochK <= 1) {
-    stateText = "🔥 STOCH PINNED — imminent reversal likely";
+    stateText = "🔥 STOCH PINNED — EXIT NOW IF IN POSITION";
     stateColor = "text-red-500";
     stateBg = "bg-red-950/40 border-red-500/40";
   } else if (stochK > 95 || stochK < 5) {
-    stateText = "⚠️ Stoch extreme — exhaustion zone, avoid entries";
+    stateText = "⚠️ Stoch extreme — exhaustion zone, NO new entries";
     stateColor = "text-orange-400";
     stateBg = "bg-orange-950/20 border-orange-500/20";
   } else if (signal) {
@@ -456,8 +487,8 @@ function SignalReasonSummary({ signal }: { signal: Signal }) {
     }`}>
       <div className="flex items-center justify-between mb-1">
         <p className="text-xs text-slate-500 uppercase tracking-wider">Signal Reason</p>
-        {isDangerous && <span className="text-xs font-bold text-red-500 animate-pulse">🔥 LATE CYCLE</span>}
-        {isWarning && !isDangerous && <span className="text-xs font-bold text-orange-400">⚠️ EXHAUSTION</span>}
+        {isDangerous && <span className="text-xs font-bold text-red-500 animate-pulse">🔥 LATE CYCLE — EXIT NOW</span>}
+        {isWarning && !isDangerous && <span className="text-xs font-bold text-orange-400">⚠️ EXHAUSTION RISK</span>}
       </div>
       <p className="text-sm text-slate-300 font-medium leading-relaxed">
         {signal.reason || "No reason provided"}
@@ -728,7 +759,7 @@ export default function Dashboard() {
 
   const prevStochRef = useRef<Record<string, { k: number; d: number }>>({});
 
-  // Real-time StochRSI monitoring
+  // Real-time StochRSI monitoring — FIXED: Direct exit commands, no passive language
   const checkRealtimeCrossovers = useCallback(() => {
     const newAlerts: RealtimeAlert[] = [];
     const now = Date.now();
@@ -743,48 +774,72 @@ export default function Dashboard() {
 
       const stoch = calcStochRSI(closes);
       const prev = prevStochRef.current[pair];
+      const currentPrice = livePrices[pair] ?? market.price ?? 0;
 
       if (prev) {
+        // EXIT LONG: K crosses below D while above 60
         if (signal.direction === "LONG" && prev.k >= prev.d && stoch.k < stoch.d && stoch.k > 60) {
+          const pnl = ((currentPrice - signal.entry) / signal.entry) * 100;
           newAlerts.push({
             pair,
             type: "STOCH_CROSS_EXIT_LONG",
-            message: `K crossed below D at ${stoch.k.toFixed(1)} — consider taking profit or tightening stop`,
+            message: `K crossed below D at ${stoch.k.toFixed(1)} — momentum flipping. Close your LONG now.`,
             stochK: stoch.k,
             stochD: stoch.d,
             timestamp: now,
+            entry: signal.entry,
+            currentPrice,
+            pnl,
+            direction: "LONG",
           });
         }
 
+        // EXIT SHORT: K crosses above D while below 40
         if (signal.direction === "SHORT" && prev.k <= prev.d && stoch.k > stoch.d && stoch.k < 40) {
+          const pnl = ((signal.entry - currentPrice) / signal.entry) * 100;
           newAlerts.push({
             pair,
             type: "STOCH_CROSS_EXIT_SHORT",
-            message: `K crossed above D at ${stoch.k.toFixed(1)} — consider taking profit or tightening stop`,
+            message: `K crossed above D at ${stoch.k.toFixed(1)} — momentum flipping. Close your SHORT now.`,
             stochK: stoch.k,
             stochD: stoch.d,
             timestamp: now,
+            entry: signal.entry,
+            currentPrice,
+            pnl,
+            direction: "SHORT",
           });
         }
 
-        if (signal.direction === "LONG" && stoch.k < 20) {
+        // EXTREME EXHAUSTION: Stoch pinned — FORCE EXIT alert
+        if (signal.direction === "LONG" && stoch.k < 10) {
+          const pnl = ((currentPrice - signal.entry) / signal.entry) * 100;
           newAlerts.push({
             pair,
-            type: "STOCH_EXTREME",
-            message: `Stoch deeply oversold (${stoch.k.toFixed(1)}) — system will auto-exit on next cron`,
+            type: "STOCH_EXTREME_EXIT",
+            message: `Stoch pinned at ${stoch.k.toFixed(1)} — momentum is dead. CLOSE YOUR LONG NOW or system forces exit next check.`,
             stochK: stoch.k,
             stochD: stoch.d,
             timestamp: now,
+            entry: signal.entry,
+            currentPrice,
+            pnl,
+            direction: "LONG",
           });
         }
-        if (signal.direction === "SHORT" && stoch.k > 80) {
+        if (signal.direction === "SHORT" && stoch.k > 90) {
+          const pnl = ((signal.entry - currentPrice) / signal.entry) * 100;
           newAlerts.push({
             pair,
-            type: "STOCH_EXTREME",
-            message: `Stoch deeply overbought (${stoch.k.toFixed(1)}) — system will auto-exit on next cron`,
+            type: "STOCH_EXTREME_EXIT",
+            message: `Stoch pinned at ${stoch.k.toFixed(1)} — momentum is dead. CLOSE YOUR SHORT NOW or system forces exit next check.`,
             stochK: stoch.k,
             stochD: stoch.d,
             timestamp: now,
+            entry: signal.entry,
+            currentPrice,
+            pnl,
+            direction: "SHORT",
           });
         }
       }
@@ -795,7 +850,7 @@ export default function Dashboard() {
     if (newAlerts.length > 0) {
       setRealtimeAlerts((prev) => [...newAlerts, ...prev].slice(0, 20));
     }
-  }, [marketData, signals]);
+  }, [marketData, signals, livePrices]);
 
   useEffect(() => {
     const interval = setInterval(checkRealtimeCrossovers, 10000);
@@ -884,11 +939,11 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* REAL-TIME ALERTS */}
+      {/* REAL-TIME ALERTS — FIXED: Direct exit commands */}
       {realtimeAlerts.length > 0 && (
         <div className="space-y-2">
           {realtimeAlerts.map((alert, i) => (
-            <RealtimeAlertBanner key={`rt-${alert.pair}-${alert.timestamp}`} alert={alert} onDismiss={() => dismissAlert(i)} />
+            <RealtimeAlertBanner key={`rt-${alert.pair}-${alert.timestamp}-${i}`} alert={alert} onDismiss={() => dismissAlert(i)} />
           ))}
         </div>
       )}
