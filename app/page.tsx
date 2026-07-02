@@ -54,7 +54,6 @@ interface RealtimeAlert {
   stochK: number;
   stochD: number;
   timestamp: number;
-  // NEW: position info for exit alerts
   entry?: number;
   currentPrice?: number;
   pnl?: number;
@@ -284,14 +283,14 @@ function RealtimeAlertBanner({ alert, onDismiss }: { alert: RealtimeAlert; onDis
   // Determine alert type and styling
   const isExit = alert.type === "STOCH_CROSS_EXIT_LONG" || alert.type === "STOCH_CROSS_EXIT_SHORT" || alert.type === "STOCH_EXTREME_EXIT";
   const isBlock = alert.type === "STOCH_EXTREME_BLOCK";
-
+  
   // Color scheme: RED for exits, orange for blocks
   const colorClass = isExit
     ? "border-red-600 bg-red-950/60"
     : isBlock
     ? "border-orange-500 bg-orange-950/40"
     : "border-slate-600 bg-slate-900/60";
-
+  
   // Title: Direct command, not passive observation
   const getTitle = () => {
     if (alert.type === "STOCH_CROSS_EXIT_LONG") return `CLOSE YOUR ${alert.pair} LONG NOW`;
@@ -300,7 +299,7 @@ function RealtimeAlertBanner({ alert, onDismiss }: { alert: RealtimeAlert; onDis
     if (alert.type === "STOCH_EXTREME_BLOCK") return `BLOCKED: ${alert.pair} ${alert.direction} — STOCH EXTREME`;
     return `${alert.pair} ALERT`;
   };
-
+  
   // Message: Clear reason + consequence
   const getMessage = () => {
     if (alert.type === "STOCH_EXTREME_EXIT") {
@@ -758,8 +757,10 @@ export default function Dashboard() {
   const [lastFetch, setLastFetch] = useState<number>(0);
 
   const prevStochRef = useRef<Record<string, { k: number; d: number }>>({});
+  // NEW: Track which alerts we've already fired to prevent duplicates
+  const firedAlertsRef = useRef<Set<string>>(new Set());
 
-  // Real-time StochRSI monitoring — FIXED: Direct exit commands, no passive language
+  // Real-time StochRSI monitoring — FIXED: Dedup + direct exit commands
   const checkRealtimeCrossovers = useCallback(() => {
     const newAlerts: RealtimeAlert[] = [];
     const now = Date.now();
@@ -780,67 +781,88 @@ export default function Dashboard() {
         // EXIT LONG: K crosses below D while above 60
         if (signal.direction === "LONG" && prev.k >= prev.d && stoch.k < stoch.d && stoch.k > 60) {
           const pnl = ((currentPrice - signal.entry) / signal.entry) * 100;
-          newAlerts.push({
-            pair,
-            type: "STOCH_CROSS_EXIT_LONG",
-            message: `K crossed below D at ${stoch.k.toFixed(1)} — momentum flipping. Close your LONG now.`,
-            stochK: stoch.k,
-            stochD: stoch.d,
-            timestamp: now,
-            entry: signal.entry,
-            currentPrice,
-            pnl,
-            direction: "LONG",
-          });
+          const alertKey = `${pair}-CROSS_EXIT_LONG-${Math.floor(stoch.k)}`;
+          
+          // NEW: Skip if we already fired this alert
+          if (!firedAlertsRef.current.has(alertKey)) {
+            firedAlertsRef.current.add(alertKey);
+            newAlerts.push({
+              pair,
+              type: "STOCH_CROSS_EXIT_LONG",
+              message: `K crossed below D at ${stoch.k.toFixed(1)} — momentum flipping. Close your LONG now.`,
+              stochK: stoch.k,
+              stochD: stoch.d,
+              timestamp: now,
+              entry: signal.entry,
+              currentPrice,
+              pnl,
+              direction: "LONG",
+            });
+          }
         }
 
         // EXIT SHORT: K crosses above D while below 40
         if (signal.direction === "SHORT" && prev.k <= prev.d && stoch.k > stoch.d && stoch.k < 40) {
           const pnl = ((signal.entry - currentPrice) / signal.entry) * 100;
-          newAlerts.push({
-            pair,
-            type: "STOCH_CROSS_EXIT_SHORT",
-            message: `K crossed above D at ${stoch.k.toFixed(1)} — momentum flipping. Close your SHORT now.`,
-            stochK: stoch.k,
-            stochD: stoch.d,
-            timestamp: now,
-            entry: signal.entry,
-            currentPrice,
-            pnl,
-            direction: "SHORT",
-          });
+          const alertKey = `${pair}-CROSS_EXIT_SHORT-${Math.floor(stoch.k)}`;
+          
+          if (!firedAlertsRef.current.has(alertKey)) {
+            firedAlertsRef.current.add(alertKey);
+            newAlerts.push({
+              pair,
+              type: "STOCH_CROSS_EXIT_SHORT",
+              message: `K crossed above D at ${stoch.k.toFixed(1)} — momentum flipping. Close your SHORT now.`,
+              stochK: stoch.k,
+              stochD: stoch.d,
+              timestamp: now,
+              entry: signal.entry,
+              currentPrice,
+              pnl,
+              direction: "SHORT",
+            });
+          }
         }
 
         // EXTREME EXHAUSTION: Stoch pinned — FORCE EXIT alert
         if (signal.direction === "LONG" && stoch.k < 10) {
           const pnl = ((currentPrice - signal.entry) / signal.entry) * 100;
-          newAlerts.push({
-            pair,
-            type: "STOCH_EXTREME_EXIT",
-            message: `Stoch pinned at ${stoch.k.toFixed(1)} — momentum is dead. CLOSE YOUR LONG NOW or system forces exit next check.`,
-            stochK: stoch.k,
-            stochD: stoch.d,
-            timestamp: now,
-            entry: signal.entry,
-            currentPrice,
-            pnl,
-            direction: "LONG",
-          });
+          const alertKey = `${pair}-EXTREME_EXIT-LONG-${Math.floor(stoch.k)}`;
+          
+          if (!firedAlertsRef.current.has(alertKey)) {
+            firedAlertsRef.current.add(alertKey);
+            newAlerts.push({
+              pair,
+              type: "STOCH_EXTREME_EXIT",
+              message: `Stoch pinned at ${stoch.k.toFixed(1)} — momentum is dead. CLOSE YOUR LONG NOW or system forces exit next check.`,
+              stochK: stoch.k,
+              stochD: stoch.d,
+              timestamp: now,
+              entry: signal.entry,
+              currentPrice,
+              pnl,
+              direction: "LONG",
+            });
+          }
         }
         if (signal.direction === "SHORT" && stoch.k > 90) {
           const pnl = ((signal.entry - currentPrice) / signal.entry) * 100;
-          newAlerts.push({
-            pair,
-            type: "STOCH_EXTREME_EXIT",
-            message: `Stoch pinned at ${stoch.k.toFixed(1)} — momentum is dead. CLOSE YOUR SHORT NOW or system forces exit next check.`,
-            stochK: stoch.k,
-            stochD: stoch.d,
-            timestamp: now,
-            entry: signal.entry,
-            currentPrice,
-            pnl,
-            direction: "SHORT",
-          });
+          const alertKey = `${pair}-EXTREME_EXIT-SHORT-${Math.floor(stoch.k)}`;
+          
+          if (!firedAlertsRef.current.has(alertKey)) {
+            firedAlertsRef.current.add(alertKey);
+            newAlerts.push({
+              pair,
+              type: "STOCH_EXTREME_EXIT",
+              message: `Stoch pinned at ${stoch.k.toFixed(1)} — momentum is dead. CLOSE YOUR SHORT NOW or system forces exit next check.`,
+              stochK: stoch.k,
+              stochD: stoch.d,
+              timestamp: now,
+              entry: signal.entry,
+              currentPrice,
+              pnl,
+              direction: "SHORT",
+            });
+          }
         }
       }
 
@@ -856,6 +878,21 @@ export default function Dashboard() {
     const interval = setInterval(checkRealtimeCrossovers, 10000);
     return () => clearInterval(interval);
   }, [checkRealtimeCrossovers]);
+
+  // NEW: Clear fired alerts when signal changes or is dismissed
+  useEffect(() => {
+    // When signals change (e.g., signal removed after exit), clear fired alerts for that pair
+    for (const pair of PAIRS) {
+      if (!signals[pair]) {
+        // Clear all fired alerts for this pair
+        for (const key of firedAlertsRef.current) {
+          if (key.startsWith(`${pair}-`)) {
+            firedAlertsRef.current.delete(key);
+          }
+        }
+      }
+    }
+  }, [signals]);
 
   // Data fetching
   useEffect(() => {
@@ -939,11 +976,11 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* REAL-TIME ALERTS — FIXED: Direct exit commands */}
+      {/* REAL-TIME ALERTS — FIXED: Direct exit commands + dedup */}
       {realtimeAlerts.length > 0 && (
         <div className="space-y-2">
           {realtimeAlerts.map((alert, i) => (
-            <RealtimeAlertBanner key={`rt-${alert.pair}-${alert.timestamp}-${i}`} alert={alert} onDismiss={() => dismissAlert(i)} />
+            <RealtimeAlertBanner key={`rt-${alert.pair}-${alert.type}-${alert.timestamp}`} alert={alert} onDismiss={() => dismissAlert(i)} />
           ))}
         </div>
       )}
