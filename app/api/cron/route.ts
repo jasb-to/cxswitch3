@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v28 "Clean: version freeze + incomplete-day fix"
+// app/api/cron/route.ts — v28 "Clean: version freeze + direct-exit-messaging fix"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -172,11 +172,12 @@ export async function GET(request: Request) {
         } else {
           const holdResult = shouldHold(pair, existingForPair, candles4h, currentPrice, runStart);
           if (!holdResult.shouldHold) {
-            log(`[PAIR] ${pair} — HOLD EXIT: ${holdResult.reason}`);
-            await addSignalToHistory(existingForPair, "hold_exit", currentPrice);
+            // FIXED: Direct exit language, no more "HOLD EXIT"
+            log(`[PAIR] ${pair} — FORCED EXIT: ${holdResult.reason}`);
+            await addSignalToHistory(existingForPair, "forced_exit", currentPrice);
             if (activeTrades[pair]) delete activeTrades[pair];
             validSignals.splice(existingIdx, 1);
-            alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
+            alerts.push({ pair, status: "forced_exit", reason: holdResult.reason });
           } else {
             log(`[PAIR] ${pair} — Still valid, skipping generation`);
             continue;
