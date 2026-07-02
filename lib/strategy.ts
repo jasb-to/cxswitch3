@@ -1,4 +1,4 @@
-// lib/strategy.ts — v28.1 "Clean: removed override, incomplete-day fix only"
+// lib/strategy.ts — v28.2 "Clean: direct-exit-messaging fix"
 // ============================================================
 
 export interface Candle {
@@ -177,7 +177,6 @@ function adx(candles: Candle[], period: number = 14): number {
 }
 
 // --- AGGREGATE 4H TO 1D ---
-// Drops the last day if incomplete (<6 bars) to prevent stale EMA distortion
 function aggregateTo1D(candles4h: Candle[]): Candle[] {
   const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
   const groups: Map<string, Candle[]> = new Map();
@@ -196,7 +195,6 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
     const [dateKey, bars] = entries[i];
     if (bars.length === 0) continue;
     
-    // Skip incomplete last day (<6 bars = not a full 24h of 4H candles)
     const isLastDay = i === entries.length - 1;
     if (isLastDay && bars.length < 6) continue;
     
@@ -371,7 +369,7 @@ function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price:
   });
 }
 
-// --- EXHAUSTION BLOCK ---
+// --- EXHAUSTION BLOCK — FIXED: Direct language ---
 interface ExhaustionCheck {
   blocked: boolean;
   reason: string;
@@ -387,7 +385,7 @@ function checkExhaustion(
   if (stochPinned) {
     return {
       blocked: true,
-      reason: `exhaustion_block: Stoch pinned at ${stoch.k} — absolute momentum exhaustion, no entries`
+      reason: `exhaustion_block: Stoch pinned at ${stoch.k} — absolute momentum exhaustion, NO entries`
     };
   }
 
@@ -395,7 +393,7 @@ function checkExhaustion(
   if (stochVeryExtended && Math.abs(dist) > 0.01) {
     return {
       blocked: true,
-      reason: `exhaustion_block: Stoch ${stoch.k} extreme + price ${(dist * 100).toFixed(2)}% from TL — late cycle, avoid`
+      reason: `exhaustion_block: Stoch ${stoch.k} extreme + price ${(dist * 100).toFixed(2)}% from TL — late cycle, AVOID`
     };
   }
 
@@ -408,7 +406,7 @@ function checkExhaustion(
   if (stochExtendedFlat && priceExtended) {
     return {
       blocked: true,
-      reason: `exhaustion_block: Stoch K${stoch.k}/D${stoch.d} flat extreme, price ${(dist * 100).toFixed(2)}% from TL`
+      reason: `exhaustion_block: Stoch K${stoch.k}/D${stoch.d} flat extreme, price ${(dist * 100).toFixed(2)}% from TL — DO NOT ENTER`
     };
   }
 
@@ -420,7 +418,7 @@ function checkExhaustion(
   if (adxHigh && stochFlatExtreme && Math.abs(dist) > 0.025) {
     return {
       blocked: true,
-      reason: `exhaustion_block: ADX ${adxVal.toFixed(1)} > 28, Stoch K${stoch.k}/D${stoch.d} extreme flat, price ${(dist * 100).toFixed(2)}% from TL`
+      reason: `exhaustion_block: ADX ${adxVal.toFixed(1)} > 28, Stoch K${stoch.k}/D${stoch.d} extreme flat, price ${(dist * 100).toFixed(2)}% from TL — BLOCKED`
     };
   }
 
@@ -700,9 +698,9 @@ export function generateSignal(
 // --- MARKET SNAPSHOT ---
 export function getMarketSnapshot(
   pair: string,
-  candles1h?: Candle[],
+  candles1h: Candle[] | undefined,
   candles4h: Candle[],
-  candles15m?: Candle[]
+  candles15m: Candle[] | undefined
 ): any {
   const candles1d = aggregateTo1D(candles4h);
   const t1d = trend1D(candles1d);
@@ -776,7 +774,7 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
   return { valid: true, reason: "active", exited: false };
 }
 
-// --- shouldHold ---
+// --- shouldHold — FIXED: Direct exit language ---
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
@@ -807,12 +805,16 @@ export function shouldHold(
   const closes4h = candles4h.map(c => c.close);
   const stoch = stochRsi(closes4h);
   
+  // FIXED: Direct language — "EXIT" not "opposite_exit"
   const stochExtremeOpposite = signal.direction === "LONG" 
     ? stoch.k < 20
     : stoch.k > 80;
   
   if (stochExtremeOpposite) {
-    return { shouldHold: false, reason: "stoch_extreme_opposite_exit" };
+    return { 
+      shouldHold: false, 
+      reason: `stoch_extreme_exit — Stoch ${stoch.k} exhausted against ${signal.direction} position. CLOSE NOW.` 
+    };
   }
   
   const validity = isSignalStillValid(signal, currentPrice, now);
