@@ -346,18 +346,22 @@ function MarketStateSummary({ market, signal }: { market: MarketData | undefined
   let stateColor = "text-slate-500";
   let stateBg = "bg-slate-800/50";
 
-  if (stochK >= 99 || stochK <= 1) {
-    stateText = "🔥 STOCH PINNED — EXIT NOW IF IN POSITION";
-    stateColor = "text-red-500";
-    stateBg = "bg-red-950/40 border-red-500/40";
-  } else if (stochK > 95 || stochK < 5) {
-    stateText = "⚠️ Stoch extreme — exhaustion zone, NO new entries";
-    stateColor = "text-orange-400";
-    stateBg = "bg-orange-950/20 border-orange-500/20";
-  } else if (signal) {
-    stateText = `${signal.direction} ${signal.type} ${signal.scale || ""} IN PLAY`;
-    stateColor = signal.direction === "LONG" ? "text-emerald-400" : "text-rose-400";
-    stateBg = signal.direction === "LONG" ? "bg-emerald-950/30 border-emerald-500/30" : "bg-rose-950/30 border-rose-500/30";
+  // FIXED: Only show pinned/extreme warnings when signal is ACTIVE
+  // When no signal, show readiness-based or distance-based state
+  if (signal) {
+    if (stochK >= 99 || stochK <= 1) {
+      stateText = "🔥 STOCH PINNED — EXIT NOW IF IN POSITION";
+      stateColor = "text-red-500";
+      stateBg = "bg-red-950/40 border-red-500/40";
+    } else if (stochK > 95 || stochK < 5) {
+      stateText = "⚠️ Stoch extreme — exhaustion zone, NO new entries";
+      stateColor = "text-orange-400";
+      stateBg = "bg-orange-950/20 border-orange-500/20";
+    } else {
+      stateText = `${signal.direction} ${signal.type} ${signal.scale || ""} IN PLAY`;
+      stateColor = signal.direction === "LONG" ? "text-emerald-400" : "text-rose-400";
+      stateBg = signal.direction === "LONG" ? "bg-emerald-950/30 border-emerald-500/30" : "bg-rose-950/30 border-rose-500/30";
+    }
   } else if (typeof dist === "number") {
     const nearTL = Math.abs(dist) < 1.2;
     const extremeOversold = stochK < 20 && stochD < 20;
@@ -741,10 +745,9 @@ export default function Dashboard() {
   const [lastFetch, setLastFetch] = useState<number>(0);
 
   const prevStochRef = useRef<Record<string, { k: number; d: number }>>({});
-  // FIXED: Coarser dedup keys — one per pair+direction+alertType, not per stoch floor
   const firedAlertsRef = useRef<Set<string>>(new Set());
 
-  // FIXED: Real-time StochRSI monitoring — coarser dedup + auto-cleanup + UI dedup
+  // Real-time StochRSI monitoring — coarser dedup + auto-cleanup + UI dedup
   const checkRealtimeCrossovers = useCallback(() => {
     const newAlerts: RealtimeAlert[] = [];
     const now = Date.now();
@@ -765,10 +768,8 @@ export default function Dashboard() {
         // EXIT LONG: K crosses below D while above 60
         if (signal.direction === "LONG" && prev.k >= prev.d && stoch.k < stoch.d && stoch.k > 60) {
           const pnl = ((currentPrice - signal.entry) / signal.entry) * 100;
-          // FIXED: Coarser key — pair + type + direction only, NOT stoch floor
           const alertKey = `${pair}-CROSS_EXIT_LONG-${signal.direction}`;
           
-          // FIXED: Skip if already fired OR if cron already pushed equivalent UI alert
           const cronHasIt = uiAlerts.some(a => 
             a.pair === pair && a.type === "LONG_ALERT_OVERBOUGHT_CROSS"
           );
@@ -870,17 +871,14 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [checkRealtimeCrossovers]);
 
-  // FIXED: Auto-cleanup — remove realtime alerts when signal exits, direction flips, or stoch normalizes
+  // Auto-cleanup — remove realtime alerts when signal exits, direction flips, or stoch normalizes
   useEffect(() => {
     setRealtimeAlerts(prev => {
       const filtered = prev.filter(alert => {
         const signal = signals[alert.pair];
-        // Signal gone = dismiss alert
         if (!signal) return false;
-        // Direction flipped = dismiss alert
         if (signal.direction !== alert.direction) return false;
         
-        // For extreme exit: dismiss if stoch normalized out of danger zone
         if (alert.type === "STOCH_EXTREME_EXIT") {
           const market = marketData[alert.pair];
           if (market) {
@@ -893,14 +891,13 @@ export default function Dashboard() {
           }
         }
         
-        // For cross exits: dismiss if cross reversed
         if (alert.type === "STOCH_CROSS_EXIT_LONG") {
           const market = marketData[alert.pair];
           if (market) {
             const closes = market.closes4h;
             if (closes && closes.length >= 30) {
               const stoch = calcStochRSI(closes);
-              if (stoch.k > stoch.d) return false; // Cross reversed back
+              if (stoch.k > stoch.d) return false;
             }
           }
         }
@@ -910,7 +907,7 @@ export default function Dashboard() {
             const closes = market.closes4h;
             if (closes && closes.length >= 30) {
               const stoch = calcStochRSI(closes);
-              if (stoch.k < stoch.d) return false; // Cross reversed back
+              if (stoch.k < stoch.d) return false;
             }
           }
         }
@@ -921,7 +918,7 @@ export default function Dashboard() {
     });
   }, [signals, marketData]);
 
-  // FIXED: Clear fired alerts when signal is removed (so re-entry can re-trigger)
+  // Clear fired alerts when signal is removed (so re-entry can re-trigger)
   useEffect(() => {
     for (const pair of PAIRS) {
       if (!signals[pair]) {
@@ -993,11 +990,10 @@ export default function Dashboard() {
     return () => clearInterval(i);
   }, []);
 
-  // FIXED: Dismiss removes from display AND from fired ref so it can re-fire later
+  // Dismiss removes from display AND from fired ref so it can re-fire later
   const dismissAlert = (index: number) => {
     const alert = realtimeAlerts[index];
     if (alert) {
-      // Remove from fired ref so same condition can re-trigger later (e.g., re-entry after exit)
       const key = `${alert.pair}-${alert.type}-${alert.direction}`;
       firedAlertsRef.current.delete(key);
     }
