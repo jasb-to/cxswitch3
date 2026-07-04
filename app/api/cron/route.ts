@@ -1,9 +1,9 @@
-// app/api/cron/route.ts — v29.1 "State Machine: Clean exits + explainable signals"
+// app/api/cron/route.ts — v29.2 "State Machine + Redis Persistence"
 // ============================================================
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot, resetState } from "@/lib/strategy";
+import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot } from "@/lib/strategy";
 import {
   setSignals,
   setMarketData,
@@ -15,7 +15,6 @@ import {
   addSignalToHistory,
   setCronLogs,
   getCronLogs,
-  addUIAlert,
 } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
@@ -44,7 +43,7 @@ export async function GET(request: Request) {
   };
 
   log("========================================");
-  log(`[CRON] Started runId=${runId} v29.1`);
+  log(`[CRON] Started runId=${runId} v29.2`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -141,27 +140,20 @@ export async function GET(request: Request) {
       const existingIdx = validSignals.findIndex((s) => s.pair === pair);
       const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
 
-      const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
+      // v29.2: generateSignal is now async (Redis-backed state)
+      const result = await generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
 
       let market = result.market;
       if (!market) {
-        market = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+        market = await getMarketSnapshot(pair, candles1h, candles4h, candles15m);
       }
       if (market) {
         market.closes4h = candles4h.slice(-50).map((c) => c.close);
         marketDataList.push(market);
       }
 
-      if (result.uiAlert) {
-        log(
-          `[UI_ALERT] ${pair} — ${result.uiAlert.type} K=${result.uiAlert.stochK} D=${result.uiAlert.stochD}`
-        );
-        await addUIAlert({ ...result.uiAlert, pair });
-        alerts.push({ pair, status: "ui_alert", type: result.uiAlert.type });
-      }
-
       if (existingForPair) {
-        log(`[PAIR] ${pair} — has existing signal ${existingForPair.id} stage=${existingForPair.stage}`);
+        log(`[PAIR] ${pair} — has existing signal ${existingForPair.id}`);
         const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
         if (!validity.valid) {
           log(`[PAIR] ${pair} — INVALID: ${validity.reason}`);
@@ -173,7 +165,7 @@ export async function GET(request: Request) {
           const holdResult = shouldHold(pair, existingForPair, candles4h, currentPrice);
           if (!holdResult.shouldHold) {
             log(`[PAIR] ${pair} — FORCED EXIT: ${holdResult.reason}`);
-            await addSignalToHistory(existingForPair, "trail_stop", currentPrice);
+            await addSignalToHistory(existingForPair, "forced_exit", currentPrice);
             if (activeTrades[pair]) delete activeTrades[pair];
             validSignals.splice(existingIdx, 1);
             alerts.push({ pair, status: "forced_exit", reason: holdResult.reason });
@@ -185,14 +177,14 @@ export async function GET(request: Request) {
       }
 
       if (!result.signal) {
-        log(`[PAIR] ${pair} — NO SIGNAL stage=${result.stage} (${result.debug?.join(" | ")})`);
-        alerts.push({ pair, status: "no_signal", stage: result.stage, debug: result.debug?.join(" | ") });
+        log(`[PAIR] ${pair} — NO SIGNAL (${result.debug?.join(" | ")})`);
+        alerts.push({ pair, status: "no_signal", debug: result.debug?.join(" | ") });
         continue;
       }
 
       const signal = result.signal;
       log(
-        `[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.stage} entry=${signal.entry} TP=${signal.target} SL=${signal.stop} RR=${signal.rr}`
+        `[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.stage} entry=${signal.entry} TP=${signal.target} SL=${signal.stop} trail=${signal.trail} RR=${signal.rr}`
       );
       newSignals.push(signal);
 
@@ -206,8 +198,7 @@ export async function GET(request: Request) {
           stopLoss: roundPrice(signal.stop),
           takeProfit: roundPrice(signal.target),
           rr: signal.rr,
-          adx: signal.adx,
-          explanation: signal.explanation,
+          reason: signal.explanation,
           updatedAt: new Date(signal.timestamp).toISOString(),
         });
         log(`[ALERT] ${pair} — SENT`);
