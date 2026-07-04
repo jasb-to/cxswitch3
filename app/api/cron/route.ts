@@ -1,9 +1,9 @@
-// app/api/cron/route.ts — v28 "Clean: version freeze + direct-exit-messaging fix"
+// app/api/cron/route.ts — v29.1 "State Machine: Clean exits + explainable signals"
 // ============================================================
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot } from "@/lib/strategy";
+import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot, resetState } from "@/lib/strategy";
 import {
   setSignals,
   setMarketData,
@@ -44,7 +44,7 @@ export async function GET(request: Request) {
   };
 
   log("========================================");
-  log(`[CRON] Started runId=${runId} v28`);
+  log(`[CRON] Started runId=${runId} v29.1`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -161,7 +161,7 @@ export async function GET(request: Request) {
       }
 
       if (existingForPair) {
-        log(`[PAIR] ${pair} — has existing signal ${existingForPair.id}`);
+        log(`[PAIR] ${pair} — has existing signal ${existingForPair.id} stage=${existingForPair.stage}`);
         const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
         if (!validity.valid) {
           log(`[PAIR] ${pair} — INVALID: ${validity.reason}`);
@@ -170,11 +170,10 @@ export async function GET(request: Request) {
           validSignals.splice(existingIdx, 1);
           alerts.push({ pair, status: "expired", reason: validity.reason });
         } else {
-          const holdResult = shouldHold(pair, existingForPair, candles4h, currentPrice, runStart);
+          const holdResult = shouldHold(pair, existingForPair, candles4h, currentPrice);
           if (!holdResult.shouldHold) {
-            // FIXED: Direct exit language, no more "HOLD EXIT"
             log(`[PAIR] ${pair} — FORCED EXIT: ${holdResult.reason}`);
-            await addSignalToHistory(existingForPair, "forced_exit", currentPrice);
+            await addSignalToHistory(existingForPair, "trail_stop", currentPrice);
             if (activeTrades[pair]) delete activeTrades[pair];
             validSignals.splice(existingIdx, 1);
             alerts.push({ pair, status: "forced_exit", reason: holdResult.reason });
@@ -186,33 +185,29 @@ export async function GET(request: Request) {
       }
 
       if (!result.signal) {
-        log(`[PAIR] ${pair} — NO SIGNAL (${result.debug?.join(" | ")})`);
-        alerts.push({ pair, status: "no_signal", debug: result.debug?.join(" | ") });
+        log(`[PAIR] ${pair} — NO SIGNAL stage=${result.stage} (${result.debug?.join(" | ")})`);
+        alerts.push({ pair, status: "no_signal", stage: result.stage, debug: result.debug?.join(" | ") });
         continue;
       }
 
       const signal = result.signal;
       log(
-        `[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} ${signal.scale || ""} entry=${signal.entry} TP=${signal.target} SL=${signal.stop} RR=${signal.rr}`
+        `[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.stage} entry=${signal.entry} TP=${signal.target} SL=${signal.stop} RR=${signal.rr}`
       );
       newSignals.push(signal);
 
       try {
         await sendAlert({
           symbol: signal.pair,
-          state: `${signal.type} ${signal.scale || ""}`,
+          state: signal.stage,
           price: roundPrice(signal.entry),
           bias: signal.direction,
           confidence: signal.confidence,
           stopLoss: roundPrice(signal.stop),
           takeProfit: roundPrice(signal.target),
           rr: signal.rr,
-          expectedMove: signal.expectedMove,
           adx: signal.adx,
-          rsi: signal.rsi,
-          stochK: signal.stochK,
-          stochD: signal.stochD,
-          reason: signal.reason,
+          explanation: signal.explanation,
           updatedAt: new Date(signal.timestamp).toISOString(),
         });
         log(`[ALERT] ${pair} — SENT`);
@@ -222,8 +217,9 @@ export async function GET(request: Request) {
           entry: signal.entry,
           stop: signal.stop,
           target: signal.target,
+          trail: signal.trail,
           id: signal.id,
-          scale: signal.scale,
+          stage: signal.stage,
         };
         alerts.push({ pair, status: "sent" });
       } catch (err: any) {
