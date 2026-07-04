@@ -1,4 +1,4 @@
-// lib/strategy.ts — v28.2 "Clean: direct-exit-messaging fix"
+// lib/strategy.ts — v28.3 "ADD distance cap + stoch health check"
 // ============================================================
 
 export interface Candle {
@@ -369,7 +369,7 @@ function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price:
   });
 }
 
-// --- EXHAUSTION BLOCK — FIXED: Direct language ---
+// --- EXHAUSTION BLOCK ---
 interface ExhaustionCheck {
   blocked: boolean;
   reason: string;
@@ -559,8 +559,23 @@ export function generateSignal(
     rawType = "ENTRY_2";
   } else if (beyondTrendline && confirming && emaAligned) {
     const confirmCount = (volUp ? 1 : 0) + (stochMomentum ? 1 : 0) + (adxStrong ? 1 : 0);
-    if (confirmCount >= 2) {
+    // FIXED: ADD distance cap — max 3% beyond trendline, plus stoch health check
+    const maxAddDistance = 0.03;
+    const stochHealthy = t1d.direction === "LONG" 
+      ? stoch.k < 80  // Not overbought for LONG ADD
+      : stoch.k > 20; // Not oversold for SHORT ADD
+    const stochMomentumAligned = t1d.direction === "LONG"
+      ? stoch.k > stoch.d  // Rising momentum for LONG
+      : stoch.k < stoch.d; // Falling momentum for SHORT
+    
+    if (confirmCount >= 2 && Math.abs(dist) < maxAddDistance && stochHealthy && stochMomentumAligned) {
       rawType = "ADD";
+    } else if (confirmCount >= 2 && Math.abs(dist) >= maxAddDistance) {
+      debug.push(`ADD blocked: price ${(dist * 100).toFixed(2)}% beyond TL exceeds max ${(maxAddDistance * 100).toFixed(1)}% cap`);
+    } else if (confirmCount >= 2 && !stochHealthy) {
+      debug.push(`ADD blocked: stoch ${stoch.k} unhealthy for ${t1d.direction} direction`);
+    } else if (confirmCount >= 2 && !stochMomentumAligned) {
+      debug.push(`ADD blocked: stoch momentum misaligned K${stoch.k} vs D${stoch.d} for ${t1d.direction}`);
     }
   }
   
@@ -774,7 +789,7 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
   return { valid: true, reason: "active", exited: false };
 }
 
-// --- shouldHold — FIXED: Direct exit language ---
+// --- shouldHold ---
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
@@ -805,7 +820,6 @@ export function shouldHold(
   const closes4h = candles4h.map(c => c.close);
   const stoch = stochRsi(closes4h);
   
-  // FIXED: Direct language — "EXIT" not "opposite_exit"
   const stochExtremeOpposite = signal.direction === "LONG" 
     ? stoch.k < 20
     : stoch.k > 80;
