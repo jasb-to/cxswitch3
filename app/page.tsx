@@ -177,7 +177,7 @@ async function fetchKrakenPrice(pair: string): Promise<number | null> {
       `https://api.kraken.com/0/public/Ticker?pair=${KRAKEN_PAIRS[pair]}`,
       { cache: "no-store" }
     );
-n    const data = await res.json();
+    const data = await res.json();
     if (data.error?.length) return null;
     const ticker = data.result[Object.keys(data.result)[0]];
     return parseFloat(ticker.c[0]);
@@ -259,7 +259,6 @@ function TrendDisplay({ market }: { market: MarketData | undefined }) {
   }
   const trend4h = trend4hDir ? `${trend4hDir} ${trend4hStrength}` : "MIXED";
 
-  // FIX: 1D trend comes from htfBias, never "NONE"
   const trend1d = market.htfBias === "BULLISH" ? "LONG" : market.htfBias === "BEARISH" ? "SHORT" : "MIXED";
 
   return (
@@ -293,9 +292,6 @@ function ZoneDetails({ market }: { market: MarketData | undefined }) {
   if (!market?.zoneQuality) return null;
 
   const q = market.zoneQuality;
-  const zoneHeight = market.zoneTop !== null && market.zoneBottom !== null
-    ? market.zoneTop - market.zoneBottom
-    : 0;
 
   return (
     <div className="bg-slate-800/40 rounded-lg p-3 space-y-2">
@@ -329,7 +325,7 @@ function ZoneDetails({ market }: { market: MarketData | undefined }) {
           <p className="font-mono font-bold text-slate-300">{q.breakAttempts}</p>
         </div>
       </div>
-      {zoneHeight > 0 && (
+      {market.zoneTop !== null && market.zoneBottom !== null && (
         <div className="flex items-center justify-between text-[11px]">
           <span className="text-slate-500">Zone Range</span>
           <span className="font-mono text-blue-400">
@@ -431,7 +427,6 @@ function SignalCard({
 
   return (
     <div className="rounded-2xl border border-slate-700/50 bg-slate-900/60 p-5 space-y-4 backdrop-blur-sm">
-      {/* Header */}
       <div className="flex justify-between items-start">
         <div>
           <h2 className="text-2xl font-bold text-white tracking-tight">{signal.pair}</h2>
@@ -443,19 +438,11 @@ function SignalCard({
         </div>
       </div>
 
-      {/* Progress Banner */}
       <ProgressBanner market={market} />
-
-      {/* Indicators */}
       <IndicatorGrid market={market} />
-
-      {/* Trends */}
       <TrendDisplay market={market} />
-
-      {/* Zone Details */}
       <ZoneDetails market={market} />
 
-      {/* Confidence */}
       <div>
         <div className="flex justify-between items-center mb-1.5">
           <span className="text-xs text-slate-500 uppercase tracking-wider">Confidence</span>
@@ -472,7 +459,6 @@ function SignalCard({
         </div>
       </div>
 
-      {/* Trade Setup */}
       <div className="bg-slate-800/40 rounded-lg p-3 space-y-2">
         <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Trade Setup</p>
         <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
@@ -513,13 +499,11 @@ function SignalCard({
         </div>
       </div>
 
-      {/* Explanation */}
       <div className="bg-slate-800/40 rounded-lg p-3">
         <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">Explanation</p>
         <p className="text-xs text-slate-300 leading-relaxed">{signal.explanation}</p>
       </div>
 
-      {/* PnL / Status */}
       {meta.status === "ACTIVE" && (
         <div className={`text-2xl font-mono font-bold ${meta.pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
           {meta.pnl >= 0 ? "+" : ""}{meta.pnl.toFixed(2)}%
@@ -540,7 +524,6 @@ function SignalCard({
         </div>
       )}
 
-      {/* Footer */}
       <div className="flex gap-2 text-[10px]">
         <span className="px-2 py-1 rounded bg-slate-800 text-slate-400">TTL {meta.ttlRemaining}</span>
         <span className="px-2 py-1 rounded bg-slate-800 text-slate-400">{timeAgo(signal.timestamp)} old</span>
@@ -565,7 +548,6 @@ function WaitingCard({
 
   return (
     <div className="rounded-2xl border border-slate-700/50 bg-slate-900/40 p-5 space-y-4 backdrop-blur-sm">
-      {/* Header */}
       <div className="flex justify-between items-start">
         <div>
           <h2 className="text-2xl font-bold text-slate-300 tracking-tight">{pair}</h2>
@@ -574,19 +556,11 @@ function WaitingCard({
         <PhaseBadge phase={market?.phase || "NONE"} />
       </div>
 
-      {/* Progress Banner */}
       <ProgressBanner market={market} />
-
-      {/* Indicators */}
       <IndicatorGrid market={market} />
-
-      {/* Trends */}
       <TrendDisplay market={market} />
-
-      {/* Zone Details */}
       <ZoneDetails market={market} />
 
-      {/* Phase-specific info */}
       {market?.phase === "ACCUMULATION" && market.zoneTop !== null && market.zoneBottom !== null && (
         <div className="bg-blue-950/20 border border-blue-500/20 rounded-lg p-3">
           <div className="flex items-center justify-between mb-1">
