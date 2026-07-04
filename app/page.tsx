@@ -2,62 +2,51 @@
 
 import { useEffect, useState, useRef, useCallback } from "react";
 
+// ─── Types (v29.1) ──────────────────────────────────────────────────────
+
 interface Signal {
+  id: string;
   pair: string;
   direction: "LONG" | "SHORT";
-  type: "ACCUMULATE" | "BREAKOUT" | "EXIT";
-  scale: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
-  confidence: number;
+  stage: "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED";
   entry: number;
   stop: number;
   target: number;
+  trail: number;
+  confidence: number;
   rr: number;
+  adx: number;
+  zoneTop: number;
+  zoneBottom: number;
+  explanation: string;
   timestamp: number;
-  expectedMove: number;
-  reason?: string;
-  version?: number;
-  adx?: number;
-  rsi?: number;
-  stochK?: number;
-  stochD?: number;
+  version: number;
+}
+
+interface Zone {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+  active: boolean;
+  volumeClimax: number;
+  type: "ACCUMULATION" | "DISTRIBUTION";
 }
 
 interface MarketData {
   pair: string;
   price: number;
+  timestamp: number;
+  phase: "NONE" | "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED" | "EXPANSION" | "EXHAUSTION";
   trend: string;
   adx: number;
   rsi: number;
   stochK: number;
   stochD: number;
-  timestamp: number;
-  trendlinePrice?: number;
-  distToTrendline?: number | null;
-  ema8?: number;
-  ema21?: number;
+  zoneTop: number | null;
+  zoneBottom: number | null;
+  zoneScore: number;
   closes4h?: number[];
-}
-
-interface UIAlertData {
-  type: "SHORT_ALERT_OVERSOLD_CROSS" | "LONG_ALERT_OVERBOUGHT_CROSS";
-  message: string;
-  stochK: number;
-  stochD: number;
-  timestamp: number;
-  pair: string;
-}
-
-interface RealtimeAlert {
-  pair: string;
-  type: "STOCH_CROSS_EXIT_LONG" | "STOCH_CROSS_EXIT_SHORT" | "STOCH_EXTREME_EXIT" | "STOCH_EXTREME_BLOCK";
-  message: string;
-  stochK: number;
-  stochD: number;
-  timestamp: number;
-  entry?: number;
-  currentPrice?: number;
-  pnl?: number;
-  direction?: "LONG" | "SHORT";
 }
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"];
@@ -69,106 +58,7 @@ const KRAKEN_PAIRS: Record<string, string> = {
   HYPE: "HYPEUSD",
 };
 
-// ─── StochRSI Calculator (client-side) ────────────────────────────────────
-
-function calcStochRSI(closes: number[]): { k: number; d: number } {
-  if (closes.length < 30) return { k: 50, d: 50 };
-
-  const rsiPeriod = 14;
-  const rsiValues: number[] = [];
-  for (let i = rsiPeriod; i < closes.length; i++) {
-    const window = closes.slice(i - rsiPeriod + 1, i + 1);
-    let gains = 0, losses = 0;
-    for (let j = 1; j < window.length; j++) {
-      const change = window[j] - window[j - 1];
-      if (change > 0) gains += change;
-      else losses += Math.abs(change);
-    }
-    const avgGain = gains / rsiPeriod;
-    const avgLoss = losses / rsiPeriod;
-    rsiValues.push(avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss)));
-  }
-
-  const stochPeriod = 14;
-  const kSmooth = 3;
-  const dSmooth = 3;
-  const rawK: number[] = [];
-
-  for (let i = stochPeriod - 1; i < rsiValues.length; i++) {
-    const window = rsiValues.slice(i - stochPeriod + 1, i + 1);
-    const lowest = Math.min(...window);
-    const highest = Math.max(...window);
-    rawK.push(highest === lowest ? 50 : ((rsiValues[i] - lowest) / (highest - lowest)) * 100);
-  }
-
-  const kValues: number[] = [];
-  for (let i = kSmooth - 1; i < rawK.length; i++) {
-    kValues.push(rawK.slice(i - kSmooth + 1, i + 1).reduce((a, b) => a + b, 0) / kSmooth);
-  }
-
-  if (kValues.length < dSmooth) return { k: 50, d: 50 };
-
-  const currentK = kValues[kValues.length - 1];
-  const currentD = kValues.slice(-dSmooth).reduce((a, b) => a + b, 0) / dSmooth;
-
-  return { k: Math.round(currentK * 10) / 10, d: Math.round(currentD * 10) / 10 };
-}
-
-// ─── Readiness Score Calculator ──────────────────────────────────────────
-
-function calcReadinessScore(market: MarketData | undefined, signal: Signal | null): { score: number; label: string; color: string; bg: string } {
-  if (!market) return { score: 0, label: "No data", color: "text-slate-500", bg: "bg-slate-800" };
-
-  if (signal) {
-    return {
-      score: signal.confidence,
-      label: `${signal.direction} ${signal.type} ${signal.scale || ""} IN PLAY`,
-      color: signal.direction === "LONG" ? "text-emerald-400" : "text-rose-400",
-      bg: signal.direction === "LONG" ? "bg-emerald-500" : "bg-rose-500",
-    };
-  }
-
-  const dist = Math.abs(market.distToTrendline ?? 999);
-  const stochK = market.stochK;
-  const stochD = market.stochD;
-  const adx = market.adx;
-  const trend1d = market.trend || "";
-
-  let score = 0;
-
-  if (dist < 0.8) score += 40;
-  else if (dist < 1.5) score += 30;
-  else if (dist < 2.5) score += 20;
-  else if (dist < 4) score += 10;
-
-  const stochExtreme = Math.min(Math.abs(stochK - 20), Math.abs(stochK - 80));
-  if (stochExtreme < 5) score += 30;
-  else if (stochExtreme < 15) score += 20;
-  else if (stochExtreme < 25) score += 10;
-
-  const crossSpread = Math.abs(stochK - stochD);
-  if (crossSpread < 5 && (stochK < 25 || stochK > 75)) score += 10;
-
-  if (adx > 25) score += 15;
-  else if (adx > 20) score += 10;
-  else if (adx > 15) score += 5;
-
-  if (trend1d.includes("STRONG")) score += 5;
-
-  if (stochK >= 99 || stochK <= 1) score = Math.min(score, 15);
-  else if (stochK > 95 || stochK < 5) score = Math.min(score, 25);
-  else if (dist > 5) score = Math.min(score, 10);
-
-  score = Math.min(100, Math.max(0, score));
-
-  if (score >= 81) return { score, label: "Signal imminent — finger on trigger", color: "text-emerald-400", bg: "bg-emerald-500" };
-  if (score >= 61) return { score, label: "Setup forming — ready to act", color: "text-emerald-300", bg: "bg-emerald-400" };
-  if (score >= 41) return { score, label: "Near setup — prepare", color: "text-yellow-400", bg: "bg-yellow-500" };
-  if (score >= 21) return { score, label: "Building — watch", color: "text-orange-400", bg: "bg-orange-500" };
-  return { score, label: "No setup", color: "text-slate-500", bg: "bg-slate-600" };
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────
+// ─── Helpers ────────────────────────────────────────────────────────────
 
 function money(n?: number): string {
   if (typeof n !== "number" || !isFinite(n)) return "—";
@@ -190,7 +80,7 @@ function timeAgo(ts: number): string {
 
 function getSignalStatus(signal: Signal, currentPrice: number) {
   const ageMinutes = Math.floor((Date.now() - signal.timestamp) / 60000);
-  const maxAge = signal.type === "ACCUMULATE" ? 24 * 60 : 4 * 60;
+  const maxAge = 24 * 60; // 24h for expansion entries
 
   if (signal.direction === "LONG") {
     if (currentPrice >= signal.target) return { status: "TP_HIT" as const, pnl: 0, ageMinutes, ttlRemaining: "0m" };
@@ -202,14 +92,6 @@ function getSignalStatus(signal: Signal, currentPrice: number) {
 
   if (ageMinutes > maxAge) return { status: "EXPIRED" as const, pnl: 0, ageMinutes, ttlRemaining: "0m" };
 
-  const buffer = signal.type === "ACCUMULATE" ? 0.02 : 0.005;
-  if (signal.direction === "LONG" && currentPrice > signal.entry * (1 + buffer)) {
-    return { status: "MISSED" as const, pnl: 0, ageMinutes, ttlRemaining: `${Math.max(0, maxAge - ageMinutes)}m` };
-  }
-  if (signal.direction === "SHORT" && currentPrice < signal.entry * (1 - buffer)) {
-    return { status: "MISSED" as const, pnl: 0, ageMinutes, ttlRemaining: `${Math.max(0, maxAge - ageMinutes)}m` };
-  }
-
   const pnl = signal.direction === "LONG"
     ? ((currentPrice - signal.entry) / signal.entry) * 100
     : ((signal.entry - currentPrice) / signal.entry) * 100;
@@ -217,40 +99,28 @@ function getSignalStatus(signal: Signal, currentPrice: number) {
   return { status: "ACTIVE" as const, pnl, ageMinutes, ttlRemaining: `${Math.max(0, maxAge - ageMinutes)}m` };
 }
 
-function parseTrend(trend?: string) {
-  if (!trend) return { full: "—" };
-  const parts = trend.split(" ");
-  if (parts.length >= 2) {
-    return { direction: parts[0], strength: parts[1], full: trend };
-  }
-  return { full: trend };
-}
-
-function StatusBadge({ status, direction }: { status: string; direction: "LONG" | "SHORT" }) {
+function StatusBadge({ status, direction }: { status: string; direction?: "LONG" | "SHORT" }) {
   const configs: Record<string, { bg: string; text: string; label: string }> = {
     ACTIVE_LONG: { bg: "bg-emerald-500", text: "text-white", label: "ACTIVE" },
     ACTIVE_SHORT: { bg: "bg-rose-500", text: "text-white", label: "ACTIVE" },
     TP_HIT: { bg: "bg-purple-500", text: "text-white", label: "TP HIT" },
     SL_HIT: { bg: "bg-red-600", text: "text-white", label: "SL HIT" },
     EXPIRED: { bg: "bg-slate-600", text: "text-white", label: "EXPIRED" },
-    MISSED: { bg: "bg-yellow-600", text: "text-white", label: "MISSED" },
-    WAITING: { bg: "bg-slate-700", text: "text-slate-300", label: "BUILDING" },
+    WATCHING: { bg: "bg-yellow-600", text: "text-white", label: "WATCHING" },
+    ACCUMULATION: { bg: "bg-blue-600", text: "text-white", label: "ACCUMULATING" },
+    READY: { bg: "bg-cyan-600", text: "text-white", label: "READY" },
+    CONFIRMED: { bg: "bg-emerald-600", text: "text-white", label: "CONFIRMED" },
+    NONE: { bg: "bg-slate-700", text: "text-slate-300", label: "SCANNING" },
   };
 
   const key = status === "ACTIVE" ? `ACTIVE_${direction}` : status;
-  const config = configs[key] || configs.WAITING;
+  const config = configs[key] || configs.NONE;
 
   return (
     <span className={`px-4 py-1.5 rounded-lg text-sm font-bold ${config.bg} ${config.text}`}>
       {config.label}
     </span>
   );
-}
-
-function formatDist(dist: number | null | undefined): string {
-  if (dist === null || dist === undefined) return "—";
-  const sign = dist > 0 ? "+" : "";
-  return `${sign}${dist.toFixed(2)}%`;
 }
 
 async function fetchKrakenPrice(pair: string): Promise<number | null> {
@@ -268,166 +138,137 @@ async function fetchKrakenPrice(pair: string): Promise<number | null> {
   }
 }
 
-// ─── Real-time Alert Banner ───────────────────────────────────────────────
+// ─── Phase Color Helper ─────────────────────────────────────────────────
 
-function RealtimeAlertBanner({ alert, onDismiss }: { alert: RealtimeAlert; onDismiss: () => void }) {
-  const isExit = alert.type === "STOCH_CROSS_EXIT_LONG" || alert.type === "STOCH_CROSS_EXIT_SHORT" || alert.type === "STOCH_EXTREME_EXIT";
-  const isBlock = alert.type === "STOCH_EXTREME_BLOCK";
-  
-  const colorClass = isExit
-    ? "border-red-600 bg-red-950/60"
-    : isBlock
-    ? "border-orange-500 bg-orange-950/40"
-    : "border-slate-600 bg-slate-900/60";
-  
-  const getTitle = () => {
-    if (alert.type === "STOCH_CROSS_EXIT_LONG") return `CLOSE YOUR ${alert.pair} LONG NOW`;
-    if (alert.type === "STOCH_CROSS_EXIT_SHORT") return `CLOSE YOUR ${alert.pair} SHORT NOW`;
-    if (alert.type === "STOCH_EXTREME_EXIT") return `EXIT ${alert.pair} ${alert.direction} — STOCH EXHAUSTED`;
-    if (alert.type === "STOCH_EXTREME_BLOCK") return `BLOCKED: ${alert.pair} ${alert.direction} — STOCH EXTREME`;
-    return `${alert.pair} ALERT`;
-  };
-  
-  const getMessage = () => {
-    if (alert.type === "STOCH_EXTREME_EXIT") {
-      const pnlStr = alert.pnl !== undefined ? ` | PnL: ${alert.pnl >= 0 ? '+' : ''}${alert.pnl.toFixed(2)}%` : '';
-      return `Stoch pinned at ${alert.stochK.toFixed(1)} — momentum is dead. Close manually or system forces exit next check.${pnlStr}`;
-    }
-    if (alert.type === "STOCH_CROSS_EXIT_LONG") {
-      return `K crossed below D at ${alert.stochK.toFixed(1)} — momentum flipping. Take profit or close now.`;
-    }
-    if (alert.type === "STOCH_CROSS_EXIT_SHORT") {
-      return `K crossed above D at ${alert.stochK.toFixed(1)} — momentum flipping. Take profit or close now.`;
-    }
-    if (alert.type === "STOCH_EXTREME_BLOCK") {
-      return `Stoch at ${alert.stochK.toFixed(1)} — signal blocked. No entry at extreme exhaustion.`;
-    }
-    return alert.message;
-  };
+function phaseColor(phase: string): { text: string; bg: string; border: string; label: string } {
+  switch (phase) {
+    case "IMPULSE":
+      return { text: "text-orange-400", bg: "bg-orange-950/30", border: "border-orange-500/30", label: "🔥 IMPULSE" };
+    case "ACCUMULATION":
+      return { text: "text-blue-400", bg: "bg-blue-950/30", border: "border-blue-500/30", label: "📦 ACCUMULATION" };
+    case "READY":
+      return { text: "text-cyan-400", bg: "bg-cyan-950/30", border: "border-cyan-500/30", label: "⚡ READY" };
+    case "CONFIRMED":
+      return { text: "text-emerald-400", bg: "bg-emerald-950/30", border: "border-emerald-500/30", label: "✅ CONFIRMED" };
+    case "EXPANSION":
+      return { text: "text-purple-400", bg: "bg-purple-950/30", border: "border-purple-500/30", label: "🚀 EXPANSION" };
+    case "EXHAUSTION":
+      return { text: "text-red-400", bg: "bg-red-950/30", border: "border-red-500/30", label: "😮‍💨 EXHAUSTION" };
+    default:
+      return { text: "text-slate-500", bg: "bg-slate-800/50", border: "border-slate-600/30", label: "SCANNING" };
+  }
+}
+
+// ─── Zone Mini-Chart ──────────────────────────────────────────────────────
+
+function ZoneMiniChart({ market, signal }: { market: MarketData | undefined; signal: Signal | null }) {
+  if (!market?.closes4h || market.closes4h.length < 10) return null;
+
+  const closes = market.closes4h.slice(-30);
+  const min = Math.min(...closes);
+  const max = Math.max(...closes);
+  const range = max - min || 1;
+  const width = 200;
+  const height = 60;
+  const padding = 4;
+
+  const points = closes.map((c, i) => {
+    const x = padding + (i / (closes.length - 1)) * (width - padding * 2);
+    const y = height - padding - ((c - min) / range) * (height - padding * 2);
+    return `${x},${y}`;
+  }).join(" ");
+
+  const zoneTopY = market.zoneTop ? height - padding - ((market.zoneTop - min) / range) * (height - padding * 2) : null;
+  const zoneBottomY = market.zoneBottom ? height - padding - ((market.zoneBottom - min) / range) * (height - padding * 2) : null;
+  const entryY = signal ? height - padding - ((signal.entry - min) / range) * (height - padding * 2) : null;
+  const stopY = signal ? height - padding - ((signal.stop - min) / range) * (height - padding * 2) : null;
+  const targetY = signal ? height - padding - ((signal.target - min) / range) * (height - padding * 2) : null;
+  const trailY = signal ? height - padding - ((signal.trail - min) / range) * (height - padding * 2) : null;
 
   return (
-    <div className={`rounded-xl border-2 ${colorClass} p-4 mb-4 relative animate-pulse`}>
-      <button
-        onClick={onDismiss}
-        className="absolute top-2 right-2 text-white/60 hover:text-white text-sm font-bold"
-      >
-        ✕
-      </button>
-      <div className="flex items-start gap-3">
-        <span className="text-2xl mt-0.5">{isExit ? "🔴" : isBlock ? "⛔" : "⚠️"}</span>
-        <div className="flex-1 min-w-0">
-          <p className="text-base font-black text-white uppercase tracking-wide leading-tight">
-            {getTitle()}
-          </p>
-          <p className="text-sm text-white/90 mt-1.5 leading-relaxed">
-            {getMessage()}
-          </p>
-          <p className="text-xs text-white/50 mt-2 font-mono">
-            Stoch K={alert.stochK.toFixed(1)} D={alert.stochD.toFixed(1)} • {timeAgo(alert.timestamp)} ago
-          </p>
-        </div>
-      </div>
-    </div>
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-16 mt-3">
+      {/* Zone rectangle */}
+      {zoneTopY !== null && zoneBottomY !== null && (
+        <rect
+          x={padding}
+          y={Math.min(zoneTopY, zoneBottomY)}
+          width={width - padding * 2}
+          height={Math.abs(zoneBottomY - zoneTopY)}
+          fill="rgba(59, 130, 246, 0.15)"
+          stroke="rgba(59, 130, 246, 0.4)"
+          strokeWidth="1"
+          strokeDasharray="4 2"
+        />
+      )}
+      {/* Price line */}
+      <polyline
+        fill="none"
+        stroke={signal?.direction === "SHORT" ? "#f43f5e" : "#10b981"}
+        strokeWidth="1.5"
+        points={points}
+      />
+      {/* Entry dot */}
+      {entryY !== null && (
+        <circle cx={width - padding} cy={entryY} r="3" fill="#fbbf24" />
+      )}
+      {/* Stop line */}
+      {stopY !== null && (
+        <line x1={padding} y1={stopY} x2={width - padding} y2={stopY} stroke="#f43f5e" strokeWidth="1" strokeDasharray="3 2" opacity="0.7" />
+      )}
+      {/* Target line */}
+      {targetY !== null && (
+        <line x1={padding} y1={targetY} x2={width - padding} y2={targetY} stroke="#10b981" strokeWidth="1" strokeDasharray="3 2" opacity="0.7" />
+      )}
+      {/* Trail line */}
+      {trailY !== null && (
+        <line x1={padding} y1={trailY} x2={width - padding} y2={trailY} stroke="#a78bfa" strokeWidth="1.5" strokeDasharray="5 3" />
+      )}
+    </svg>
   );
 }
 
-// ─── Market State Summary ─────────────────────────────────────────────────
+// ─── Market State Summary (v29.1) ───────────────────────────────────────
 
 function MarketStateSummary({ market, signal }: { market: MarketData | undefined; signal: Signal | null }) {
   if (!market) return null;
 
-  const adx = market.adx;
+  const phase = phaseColor(market.phase);
   const stochK = market.stochK;
   const stochD = market.stochD;
-  const dist = market.distToTrendline;
-  const readiness = calcReadinessScore(market, signal);
+  const adx = market.adx;
 
-  let stateText = "Scanning...";
-  let stateColor = "text-slate-500";
-  let stateBg = "bg-slate-800/50";
-
-  // FIXED: Only show pinned/extreme warnings when signal is ACTIVE
-  // When no signal, show readiness-based or distance-based state
-  if (signal) {
-    if (stochK >= 99 || stochK <= 1) {
-      stateText = "🔥 STOCH PINNED — EXIT NOW IF IN POSITION";
-      stateColor = "text-red-500";
-      stateBg = "bg-red-950/40 border-red-500/40";
-    } else if (stochK > 95 || stochK < 5) {
-      stateText = "⚠️ Stoch extreme — exhaustion zone, NO new entries";
-      stateColor = "text-orange-400";
-      stateBg = "bg-orange-950/20 border-orange-500/20";
-    } else {
-      stateText = `${signal.direction} ${signal.type} ${signal.scale || ""} IN PLAY`;
-      stateColor = signal.direction === "LONG" ? "text-emerald-400" : "text-rose-400";
-      stateBg = signal.direction === "LONG" ? "bg-emerald-950/30 border-emerald-500/30" : "bg-rose-950/30 border-rose-500/30";
-    }
-  } else if (typeof dist === "number") {
-    const nearTL = Math.abs(dist) < 1.2;
-    const extremeOversold = stochK < 20 && stochD < 20;
-    const extremeOverbought = stochK > 80 && stochD > 80;
-
-    if (nearTL && extremeOversold) {
-      stateText = "LONG accumulation zone — near trendline + oversold";
-      stateColor = "text-emerald-400";
-      stateBg = "bg-emerald-950/20 border-emerald-500/20";
-    } else if (nearTL && extremeOverbought) {
-      stateText = "SHORT accumulation zone — near trendline + overbought";
-      stateColor = "text-rose-400";
-      stateBg = "bg-rose-950/20 border-rose-500/20";
-    } else if (nearTL) {
-      stateText = "Near trendline — waiting for Stoch extreme";
-      stateColor = "text-yellow-400";
-      stateBg = "bg-yellow-950/20 border-yellow-500/20";
-    } else if (Math.abs(dist) > 3 && adx > 32) {
-      stateText = "Extended move — exhaustion risk, avoid new entries";
-      stateColor = "text-orange-400";
-      stateBg = "bg-orange-950/20 border-orange-500/20";
-    } else if (stochK > 80 || stochK < 20) {
-      stateText = `Stoch extreme (${stochK.toFixed(1)}) — watch for reversal`;
-      stateColor = "text-purple-400";
-      stateBg = "bg-purple-950/20 border-purple-500/20";
-    } else {
-      stateText = "No setup — price away from trendline";
-      stateColor = "text-slate-500";
-      stateBg = "bg-slate-800/50";
-    }
-  }
-
-  const adxStrength = adx > 25 ? "STRONG" : adx > 20 ? "BUILDING" : "WEAK";
-  const adxColor = adx > 25 ? "text-emerald-400" : adx > 20 ? "text-yellow-400" : "text-slate-500";
   const stochState = stochK < 20 ? "OVERSOLD" : stochK > 80 ? "OVERBOUGHT" : "NEUTRAL";
   const stochColor = stochK < 20 ? "text-emerald-400" : stochK > 80 ? "text-rose-400" : "text-slate-500";
 
   return (
-    <div className={`rounded-xl border p-4 space-y-3 ${stateBg}`}>
-      <div className="flex items-center gap-2">
-        <span className={`text-xs font-bold uppercase tracking-wider ${stateColor}`}>
-          {stateText}
+    <div className={`rounded-xl border p-4 space-y-3 ${phase.bg} ${phase.border}`}>
+      <div className="flex items-center justify-between">
+        <span className={`text-xs font-bold uppercase tracking-wider ${phase.text}`}>
+          {phase.label}
         </span>
+        {signal && (
+          <span className={`text-xs font-mono ${signal.direction === "LONG" ? "text-emerald-400" : "text-rose-400"}`}>
+            {signal.direction} {signal.stage}
+          </span>
+        )}
       </div>
 
-      {!signal && (
-        <div>
-          <div className="flex justify-between items-center mb-1">
-            <span className="text-xs text-slate-500 uppercase tracking-wider">Readiness Score</span>
-            <span className={`text-sm font-bold ${readiness.color}`}>{readiness.score}/100</span>
-          </div>
-          <div className="h-2.5 bg-slate-800 rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-700 ${readiness.bg}`}
-              style={{ width: `${readiness.score}%` }}
-            />
-          </div>
-          <p className={`text-xs mt-1 ${readiness.color}`}>{readiness.label}</p>
+      {/* Zone info */}
+      {market.zoneTop !== null && market.zoneBottom !== null && (
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-slate-500">Zone</span>
+          <span className="font-mono text-blue-400">
+            {money(market.zoneBottom)} — {money(market.zoneTop)}
+            {market.zoneScore > 0 && <span className="text-slate-500 ml-1">({market.zoneScore})</span>}
+          </span>
         </div>
       )}
 
       <div className="grid grid-cols-3 gap-3 text-sm">
         <div className="text-center">
           <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">ADX</p>
-          <p className={`font-mono font-bold ${adxColor}`}>
-            {adx.toFixed(1)} <span className="text-xs font-normal text-slate-600">{adxStrength}</span>
+          <p className={`font-mono font-bold ${adx > 25 ? "text-emerald-400" : adx > 20 ? "text-yellow-400" : "text-slate-500"}`}>
+            {adx.toFixed(1)}
           </p>
         </div>
         <div className="text-center">
@@ -447,78 +288,39 @@ function MarketStateSummary({ market, signal }: { market: MarketData | undefined
         </span>
       </div>
 
-      {typeof dist === "number" && (
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-slate-500">Trendline Distance</span>
-          <span className={`font-mono ${Math.abs(dist) < 1.2 ? "text-emerald-400" : Math.abs(dist) < 3 ? "text-yellow-400" : "text-slate-500"}`}>
-            {formatDist(dist)}
-          </span>
-        </div>
-      )}
+      <ZoneMiniChart market={market} signal={signal} />
     </div>
   );
 }
 
-// ─── Signal Reason Summary ────────────────────────────────────────────────
+// ─── Signal Explanation ───────────────────────────────────────────────────
 
-function SignalReasonSummary({ signal }: { signal: Signal }) {
-  const stochK = signal.stochK ?? 50;
-  const isDangerous = stochK >= 99 || stochK <= 1;
-  const isWarning = stochK > 95 || stochK < 5;
-
+function SignalExplanation({ signal }: { signal: Signal }) {
   return (
-    <div className={`rounded-xl border p-3 ${
-      isDangerous ? "border-red-500/50 bg-red-950/20" :
-      isWarning ? "border-orange-500/50 bg-orange-950/20" :
-      "border-slate-700/50 bg-slate-800/30"
-    }`}>
+    <div className="rounded-xl border border-slate-700/50 bg-slate-800/30 p-3">
       <div className="flex items-center justify-between mb-1">
-        <p className="text-xs text-slate-500 uppercase tracking-wider">Signal Reason</p>
-        {isDangerous && <span className="text-xs font-bold text-red-500 animate-pulse">🔥 LATE CYCLE — EXIT NOW</span>}
-        {isWarning && !isDangerous && <span className="text-xs font-bold text-orange-400">⚠️ EXHAUSTION RISK</span>}
+        <p className="text-xs text-slate-500 uppercase tracking-wider">Explanation</p>
+        <span className={`text-xs font-bold px-2 py-0.5 rounded ${
+          signal.confidence >= 70 ? "bg-emerald-500/20 text-emerald-400" :
+          signal.confidence >= 50 ? "bg-yellow-500/20 text-yellow-400" :
+          "bg-rose-500/20 text-rose-400"
+        }`}>
+          {signal.confidence}% confidence
+        </span>
       </div>
       <p className="text-sm text-slate-300 font-medium leading-relaxed">
-        {signal.reason || "No reason provided"}
+        {signal.explanation || "No explanation provided"}
       </p>
       <div className="flex gap-3 mt-2 text-xs text-slate-500">
         <span>ADX: {signal.adx?.toFixed(1) ?? "—"}</span>
-        <span>RSI: {signal.rsi?.toFixed(1) ?? "—"}</span>
-        <span>Stoch K: {signal.stochK?.toFixed(1) ?? "—"}</span>
-        <span>Stoch D: {signal.stochD?.toFixed(1) ?? "—"}</span>
+        <span>R:R: {signal.rr?.toFixed(2) ?? "—"}</span>
+        <span>Zone: {money(signal.zoneBottom)} — {money(signal.zoneTop)}</span>
       </div>
     </div>
   );
 }
 
-// ─── UI Alert Banner (from cron) ─────────────────────────────────────────
-
-function UIAlertBanner({ alert }: { alert: UIAlertData }) {
-  const isShortAlert = alert.type === "SHORT_ALERT_OVERSOLD_CROSS";
-  const color = isShortAlert
-    ? "border-emerald-500/50 bg-emerald-950/20"
-    : "border-rose-500/50 bg-rose-950/20";
-  const icon = isShortAlert ? "↗️" : "↘️";
-  const title = isShortAlert ? "Potential Bounce" : "Potential Pullback";
-
-  return (
-    <div className={`rounded-xl border ${color} p-4 mb-4`}>
-      <div className="flex items-center gap-3">
-        <span className="text-xl">{icon}</span>
-        <div className="flex-1">
-          <p className="text-sm font-semibold text-white">
-            {alert.pair} — {title}
-          </p>
-          <p className="text-xs text-slate-400 mt-1">{alert.message}</p>
-          <p className="text-xs text-slate-500 mt-1">
-            Stoch K={alert.stochK.toFixed(1)} D={alert.stochD.toFixed(1)} • {timeAgo(alert.timestamp)} ago
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Signal Card ──────────────────────────────────────────────────────────
+// ─── Signal Card ────────────────────────────────────────────────────────
 
 function SignalCard({
   signal,
@@ -531,32 +333,11 @@ function SignalCard({
 }) {
   const currentPrice = livePrice ?? market?.price ?? 0;
   const meta = getSignalStatus(signal, currentPrice);
-  const trend1d = parseTrend(market?.trend);
-
-  const ema8 = market?.ema8;
-  const ema21 = market?.ema21;
-  const price = market?.price ?? currentPrice;
-  let trend4hDir: string | null = null;
-  let trend4hStrength = "WEAK";
-
-  if (ema8 !== undefined && ema21 !== undefined) {
-    trend4hDir =
-      price > ema8 && price > ema21
-        ? "LONG"
-        : price < ema8 && price < ema21
-        ? "SHORT"
-        : null;
-    const spread = Math.abs(ema8 - ema21) / ema21;
-    trend4hStrength = spread > 0.02 ? "STRONG" : spread > 0.01 ? "MEDIUM" : "WEAK";
-  }
-  const trend4h = trend4hDir ? `${trend4hDir} (${trend4hStrength})` : "MIXED";
 
   const confColor =
-    signal.confidence >= 70
-      ? "text-emerald-400"
-      : signal.confidence >= 50
-      ? "text-yellow-400"
-      : "text-rose-400";
+    signal.confidence >= 70 ? "text-emerald-400" :
+    signal.confidence >= 50 ? "text-yellow-400" :
+    "text-rose-400";
 
   return (
     <div className="rounded-2xl border border-slate-700/50 bg-slate-900/60 p-6 space-y-5 backdrop-blur-sm">
@@ -569,28 +350,7 @@ function SignalCard({
       </div>
 
       <MarketStateSummary market={market} signal={signal} />
-      <SignalReasonSummary signal={signal} />
-
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">4H Trend</p>
-          <p className={`text-sm font-semibold ${
-            trend4h.includes("SHORT") ? "text-rose-400" : 
-            trend4h.includes("LONG") ? "text-emerald-400" : "text-yellow-400"
-          }`}>
-            {trend4h}
-          </p>
-        </div>
-        <div>
-          <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">1D Trend</p>
-          <p className={`text-sm font-semibold ${
-            trend1d.direction === "SHORT" ? "text-rose-400" : 
-            trend1d.direction === "LONG" ? "text-emerald-400" : "text-slate-400"
-          }`}>
-            {trend1d.direction || "—"} <span className="text-slate-500 font-normal">({trend1d.strength || "—"})</span>
-          </p>
-        </div>
-      </div>
+      <SignalExplanation signal={signal} />
 
       <div>
         <div className="flex justify-between items-center mb-2">
@@ -598,9 +358,9 @@ function SignalCard({
           <span className={`text-sm font-bold ${confColor}`}>{signal.confidence}%</span>
         </div>
         <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
-          <div 
+          <div
             className={`h-full rounded-full transition-all duration-500 ${
-              signal.confidence >= 70 ? "bg-emerald-500" : 
+              signal.confidence >= 70 ? "bg-emerald-500" :
               signal.confidence >= 50 ? "bg-yellow-500" : "bg-rose-500"
             }`}
             style={{ width: `${signal.confidence}%` }}
@@ -630,6 +390,10 @@ function SignalCard({
             <span className="font-mono text-emerald-400 font-semibold">{money(signal.target)}</span>
           </div>
           <div className="flex justify-between">
+            <span className="text-slate-400 text-sm">Trail</span>
+            <span className="font-mono text-purple-400 font-semibold">{money(signal.trail)}</span>
+          </div>
+          <div className="flex justify-between">
             <span className="text-slate-400 text-sm">R:R</span>
             <span className="font-mono text-yellow-400 font-bold">{signal.rr.toFixed(2)}</span>
           </div>
@@ -652,13 +416,14 @@ function SignalCard({
           {meta.status === "TP_HIT" ? "🎯 TARGET HIT" :
            meta.status === "SL_HIT" ? "🛑 STOP HIT" :
            meta.status === "EXPIRED" ? "⏰ EXPIRED" :
-           "⚠️ MISSED ENTRY"}
+           "⚠️ UNKNOWN"}
         </div>
       )}
 
       <div className="flex gap-3 text-xs">
         <span className="px-2 py-1 rounded bg-slate-800 text-slate-400">TTL {meta.ttlRemaining}</span>
         <span className="px-2 py-1 rounded bg-slate-800 text-slate-400">{timeAgo(signal.timestamp)} old</span>
+        <span className="px-2 py-1 rounded bg-slate-800 text-slate-400">v{signal.version}</span>
       </div>
     </div>
   );
@@ -676,25 +441,6 @@ function WaitingCard({
   livePrice: number | undefined;
 }) {
   const currentPrice = livePrice ?? market?.price ?? 0;
-  const trend1d = parseTrend(market?.trend);
-
-  const ema8 = market?.ema8;
-  const ema21 = market?.ema21;
-  const price = market?.price ?? currentPrice;
-  let trend4hDir: string | null = null;
-  let trend4hStrength = "WEAK";
-
-  if (ema8 !== undefined && ema21 !== undefined) {
-    trend4hDir =
-      price > ema8 && price > ema21
-        ? "LONG"
-        : price < ema8 && price < ema21
-        ? "SHORT"
-        : null;
-    const spread = Math.abs(ema8 - ema21) / ema21;
-    trend4hStrength = spread > 0.02 ? "STRONG" : spread > 0.01 ? "MEDIUM" : "WEAK";
-  }
-  const trend4h = trend4hDir ? `${trend4hDir} (${trend4hStrength})` : "MIXED";
 
   return (
     <div className="rounded-2xl border border-slate-700/50 bg-slate-900/40 p-6 space-y-5 backdrop-blur-sm">
@@ -703,31 +449,40 @@ function WaitingCard({
           <h2 className="text-2xl font-bold text-slate-300 tracking-tight">{pair}</h2>
           <p className="text-slate-500 text-sm mt-1">Price: {money(currentPrice)}</p>
         </div>
-        <StatusBadge status="WAITING" direction="LONG" />
+        <StatusBadge status={market?.phase || "NONE"} />
       </div>
 
       <MarketStateSummary market={market} signal={null} />
 
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">4H Trend</p>
-          <p className={`text-sm font-semibold ${
-            trend4h.includes("SHORT") ? "text-rose-400/60" : 
-            trend4h.includes("LONG") ? "text-emerald-400/60" : "text-yellow-400/60"
-          }`}>
-            {trend4h}
+      {market?.phase === "ACCUMULATION" && market.zoneTop !== null && market.zoneBottom !== null && (
+        <div className="rounded-lg bg-blue-950/20 border border-blue-500/20 p-3">
+          <p className="text-xs text-blue-400 font-semibold uppercase tracking-wider mb-1">Accumulation Zone</p>
+          <p className="text-sm text-slate-300">
+            Range: {money(market.zoneBottom)} — {money(market.zoneTop)}
+          </p>
+          <p className="text-xs text-slate-500 mt-1">
+            Waiting for breakout with momentum confirmation...
           </p>
         </div>
-        <div>
-          <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">1D Trend</p>
-          <p className={`text-sm font-semibold ${
-            trend1d.direction === "SHORT" ? "text-rose-400/60" : 
-            trend1d.direction === "LONG" ? "text-emerald-400/60" : "text-slate-500"
-          }`}>
-            {trend1d.direction || "—"} <span className="text-slate-600 font-normal">({trend1d.strength || "—"})</span>
+      )}
+
+      {market?.phase === "READY" && (
+        <div className="rounded-lg bg-cyan-950/20 border border-cyan-500/20 p-3 animate-pulse">
+          <p className="text-xs text-cyan-400 font-semibold uppercase tracking-wider mb-1">⚡ Ready for Breakout</p>
+          <p className="text-xs text-slate-400">
+            Stoch crossed with momentum. One breakout candle away from entry.
           </p>
         </div>
-      </div>
+      )}
+
+      {market?.phase === "WATCHING" && (
+        <div className="rounded-lg bg-yellow-950/20 border border-yellow-500/20 p-3">
+          <p className="text-xs text-yellow-400 font-semibold uppercase tracking-wider mb-1">👀 Watching</p>
+          <p className="text-xs text-slate-400">
+            Volume climax detected. Waiting for range compression to confirm accumulation.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -738,198 +493,9 @@ export default function Dashboard() {
   const [signals, setSignals] = useState<Record<string, Signal | null>>({});
   const [marketData, setMarketData] = useState<Record<string, MarketData>>({});
   const [livePrices, setLivePrices] = useState<Record<string, number>>({});
-  const [uiAlerts, setUIAlerts] = useState<UIAlertData[]>([]);
-  const [realtimeAlerts, setRealtimeAlerts] = useState<RealtimeAlert[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchCount, setFetchCount] = useState(0);
   const [lastFetch, setLastFetch] = useState<number>(0);
-
-  const prevStochRef = useRef<Record<string, { k: number; d: number }>>({});
-  const firedAlertsRef = useRef<Set<string>>(new Set());
-
-  // Real-time StochRSI monitoring — coarser dedup + auto-cleanup + UI dedup
-  const checkRealtimeCrossovers = useCallback(() => {
-    const newAlerts: RealtimeAlert[] = [];
-    const now = Date.now();
-
-    for (const pair of PAIRS) {
-      const market = marketData[pair];
-      const signal = signals[pair];
-      if (!market || !signal) continue;
-
-      const closes = market.closes4h;
-      if (!closes || closes.length < 30) continue;
-
-      const stoch = calcStochRSI(closes);
-      const prev = prevStochRef.current[pair];
-      const currentPrice = livePrices[pair] ?? market.price ?? 0;
-
-      if (prev) {
-        // EXIT LONG: K crosses below D while above 60
-        if (signal.direction === "LONG" && prev.k >= prev.d && stoch.k < stoch.d && stoch.k > 60) {
-          const pnl = ((currentPrice - signal.entry) / signal.entry) * 100;
-          const alertKey = `${pair}-CROSS_EXIT_LONG-${signal.direction}`;
-          
-          const cronHasIt = uiAlerts.some(a => 
-            a.pair === pair && a.type === "LONG_ALERT_OVERBOUGHT_CROSS"
-          );
-          if (!firedAlertsRef.current.has(alertKey) && !cronHasIt) {
-            firedAlertsRef.current.add(alertKey);
-            newAlerts.push({
-              pair,
-              type: "STOCH_CROSS_EXIT_LONG",
-              message: `K crossed below D at ${stoch.k.toFixed(1)} — momentum flipping. Close your LONG now.`,
-              stochK: stoch.k,
-              stochD: stoch.d,
-              timestamp: now,
-              entry: signal.entry,
-              currentPrice,
-              pnl,
-              direction: "LONG",
-            });
-          }
-        }
-
-        // EXIT SHORT: K crosses above D while below 40
-        if (signal.direction === "SHORT" && prev.k <= prev.d && stoch.k > stoch.d && stoch.k < 40) {
-          const pnl = ((signal.entry - currentPrice) / signal.entry) * 100;
-          const alertKey = `${pair}-CROSS_EXIT_SHORT-${signal.direction}`;
-          
-          const cronHasIt = uiAlerts.some(a => 
-            a.pair === pair && a.type === "SHORT_ALERT_OVERSOLD_CROSS"
-          );
-          if (!firedAlertsRef.current.has(alertKey) && !cronHasIt) {
-            firedAlertsRef.current.add(alertKey);
-            newAlerts.push({
-              pair,
-              type: "STOCH_CROSS_EXIT_SHORT",
-              message: `K crossed above D at ${stoch.k.toFixed(1)} — momentum flipping. Close your SHORT now.`,
-              stochK: stoch.k,
-              stochD: stoch.d,
-              timestamp: now,
-              entry: signal.entry,
-              currentPrice,
-              pnl,
-              direction: "SHORT",
-            });
-          }
-        }
-
-        // EXTREME EXHAUSTION: Stoch pinned — FORCE EXIT alert
-        if (signal.direction === "LONG" && stoch.k < 10) {
-          const pnl = ((currentPrice - signal.entry) / signal.entry) * 100;
-          const alertKey = `${pair}-EXTREME_EXIT-${signal.direction}`;
-          
-          if (!firedAlertsRef.current.has(alertKey)) {
-            firedAlertsRef.current.add(alertKey);
-            newAlerts.push({
-              pair,
-              type: "STOCH_EXTREME_EXIT",
-              message: `Stoch pinned at ${stoch.k.toFixed(1)} — momentum is dead. CLOSE YOUR LONG NOW or system forces exit next check.`,
-              stochK: stoch.k,
-              stochD: stoch.d,
-              timestamp: now,
-              entry: signal.entry,
-              currentPrice,
-              pnl,
-              direction: "LONG",
-            });
-          }
-        }
-        if (signal.direction === "SHORT" && stoch.k > 90) {
-          const pnl = ((signal.entry - currentPrice) / signal.entry) * 100;
-          const alertKey = `${pair}-EXTREME_EXIT-${signal.direction}`;
-          
-          if (!firedAlertsRef.current.has(alertKey)) {
-            firedAlertsRef.current.add(alertKey);
-            newAlerts.push({
-              pair,
-              type: "STOCH_EXTREME_EXIT",
-              message: `Stoch pinned at ${stoch.k.toFixed(1)} — momentum is dead. CLOSE YOUR SHORT NOW or system forces exit next check.`,
-              stochK: stoch.k,
-              stochD: stoch.d,
-              timestamp: now,
-              entry: signal.entry,
-              currentPrice,
-              pnl,
-              direction: "SHORT",
-            });
-          }
-        }
-      }
-
-      prevStochRef.current[pair] = { k: stoch.k, d: stoch.d };
-    }
-
-    if (newAlerts.length > 0) {
-      setRealtimeAlerts((prev) => [...newAlerts, ...prev].slice(0, 20));
-    }
-  }, [marketData, signals, livePrices, uiAlerts]);
-
-  useEffect(() => {
-    const interval = setInterval(checkRealtimeCrossovers, 10000);
-    return () => clearInterval(interval);
-  }, [checkRealtimeCrossovers]);
-
-  // Auto-cleanup — remove realtime alerts when signal exits, direction flips, or stoch normalizes
-  useEffect(() => {
-    setRealtimeAlerts(prev => {
-      const filtered = prev.filter(alert => {
-        const signal = signals[alert.pair];
-        if (!signal) return false;
-        if (signal.direction !== alert.direction) return false;
-        
-        if (alert.type === "STOCH_EXTREME_EXIT") {
-          const market = marketData[alert.pair];
-          if (market) {
-            const closes = market.closes4h;
-            if (closes && closes.length >= 30) {
-              const stoch = calcStochRSI(closes);
-              if (alert.direction === "SHORT" && stoch.k < 85) return false;
-              if (alert.direction === "LONG" && stoch.k > 15) return false;
-            }
-          }
-        }
-        
-        if (alert.type === "STOCH_CROSS_EXIT_LONG") {
-          const market = marketData[alert.pair];
-          if (market) {
-            const closes = market.closes4h;
-            if (closes && closes.length >= 30) {
-              const stoch = calcStochRSI(closes);
-              if (stoch.k > stoch.d) return false;
-            }
-          }
-        }
-        if (alert.type === "STOCH_CROSS_EXIT_SHORT") {
-          const market = marketData[alert.pair];
-          if (market) {
-            const closes = market.closes4h;
-            if (closes && closes.length >= 30) {
-              const stoch = calcStochRSI(closes);
-              if (stoch.k < stoch.d) return false;
-            }
-          }
-        }
-        
-        return true;
-      });
-      return filtered;
-    });
-  }, [signals, marketData]);
-
-  // Clear fired alerts when signal is removed (so re-entry can re-trigger)
-  useEffect(() => {
-    for (const pair of PAIRS) {
-      if (!signals[pair]) {
-        for (const key of Array.from(firedAlertsRef.current)) {
-          if (key.startsWith(`${pair}-`)) {
-            firedAlertsRef.current.delete(key);
-          }
-        }
-      }
-    }
-  }, [signals]);
 
   // Data fetching
   useEffect(() => {
@@ -937,14 +503,6 @@ export default function Dashboard() {
       try {
         const res = await fetch("/api/signals", { cache: "no-store" });
         const data = await res.json();
-
-        let alertData: { alerts?: UIAlertData[] } = { alerts: [] };
-        try {
-          const alertRes = await fetch("/api/alerts", { cache: "no-store" });
-          alertData = await alertRes.json();
-        } catch {
-          // Alerts endpoint optional
-        }
 
         const sigMap: Record<string, Signal | null> = {};
         const mktMap: Record<string, MarketData> = {};
@@ -959,7 +517,6 @@ export default function Dashboard() {
 
         setSignals(sigMap);
         setMarketData(mktMap);
-        setUIAlerts(alertData.alerts || []);
         setFetchCount((c) => c + 1);
         setLastFetch(Date.now());
       } catch (e) {
@@ -990,20 +547,10 @@ export default function Dashboard() {
     return () => clearInterval(i);
   }, []);
 
-  // Dismiss removes from display AND from fired ref so it can re-fire later
-  const dismissAlert = (index: number) => {
-    const alert = realtimeAlerts[index];
-    if (alert) {
-      const key = `${alert.pair}-${alert.type}-${alert.direction}`;
-      firedAlertsRef.current.delete(key);
-    }
-    setRealtimeAlerts((prev) => prev.filter((_, i) => i !== index));
-  };
-
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center">
-        <div className="text-lg">Loading CX Switch v28...</div>
+        <div className="text-lg">Loading CX Switch v29...</div>
       </div>
     );
   }
@@ -1012,30 +559,15 @@ export default function Dashboard() {
     <div className="min-h-screen bg-slate-950 p-6 space-y-8">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold text-white tracking-tight">CX Switch v28</h1>
+          <h1 className="text-3xl font-bold text-white tracking-tight">CX Switch v29</h1>
           <p className="text-slate-500 text-sm mt-1">
+            Phase-Based Accumulation → Expansion
+          </p>
+          <p className="text-slate-600 text-xs">
             Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
           </p>
         </div>
       </div>
-
-      {/* REAL-TIME ALERTS — deduped + auto-cleaned */}
-      {realtimeAlerts.length > 0 && (
-        <div className="space-y-2">
-          {realtimeAlerts.map((alert, i) => (
-            <RealtimeAlertBanner key={`rt-${alert.pair}-${alert.type}-${alert.timestamp}`} alert={alert} onDismiss={() => dismissAlert(i)} />
-          ))}
-        </div>
-      )}
-
-      {/* Cron-based UI alerts */}
-      {uiAlerts.length > 0 && (
-        <div className="space-y-2">
-          {uiAlerts.map((alert, i) => (
-            <UIAlertBanner key={`ui-${alert.pair}-${alert.type}-${i}`} alert={alert} />
-          ))}
-        </div>
-      )}
 
       <div className="grid md:grid-cols-2 gap-6">
         {PAIRS.map((pair) => {
