@@ -1,4 +1,4 @@
-// lib/strategy.ts — v28.3 "ADD distance cap + stoch health check"
+// lib/strategy.ts — v28.4 "Trend conflict soft penalty + ADD distance cap"
 // ============================================================
 
 export interface Candle {
@@ -48,6 +48,7 @@ export interface UIAlert {
 
 export const CURRENT_SIGNAL_VERSION = 28;
 const MIN_RR = 1.5;
+const MIN_RR_TREND_CONFLICT = 2.0;
 
 // --- STATEFUL TRENDLINE STORE ---
 interface TrendlineState {
@@ -315,6 +316,14 @@ function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; str
   return { direction, strength };
 }
 
+// --- 4H TREND DIRECTION ---
+function trend4H(candles4h: Candle[]): "LONG" | "SHORT" {
+  const closes = candles4h.map(c => c.close);
+  const ema8 = ema(closes, 8);
+  const ema21 = ema(closes, 21);
+  return ema8[ema8.length - 1] > ema21[ema21.length - 1] ? "LONG" : "SHORT";
+}
+
 function ema(closes: number[], period: number): number[] {
   const k = 2 / (period + 1);
   const ema: number[] = [closes[0]];
@@ -484,8 +493,10 @@ export function generateSignal(
   }
   
   const t1d = trend1D(candles1d);
+  const t4h = trend4H(candles4h);
+  const trendConflict = t1d.direction !== t4h;
 
-  debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength}`);
+  debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength} | 4H: ${t4h}${trendConflict ? " ⚠️ CONFLICT" : ""}`);
   
   if (!t1d.direction) {
     debug.push("1D trend unclear");
@@ -544,6 +555,8 @@ export function generateSignal(
   
   const adxVal = adx(candles4h);
   const adxStrong = adxVal > 20;
+  // Stricter ADX requirement when trends conflict
+  const adxStrongConflict = adxVal > 25;
   
   const exhaustion = checkExhaustion(adxVal, stoch, dist, t1d.direction);
   if (exhaustion.blocked) {
@@ -559,14 +572,13 @@ export function generateSignal(
     rawType = "ENTRY_2";
   } else if (beyondTrendline && confirming && emaAligned) {
     const confirmCount = (volUp ? 1 : 0) + (stochMomentum ? 1 : 0) + (adxStrong ? 1 : 0);
-    // FIXED: ADD distance cap — max 3% beyond trendline, plus stoch health check
     const maxAddDistance = 0.03;
     const stochHealthy = t1d.direction === "LONG" 
-      ? stoch.k < 80  // Not overbought for LONG ADD
-      : stoch.k > 20; // Not oversold for SHORT ADD
+      ? stoch.k < 80
+      : stoch.k > 20;
     const stochMomentumAligned = t1d.direction === "LONG"
-      ? stoch.k > stoch.d  // Rising momentum for LONG
-      : stoch.k < stoch.d; // Falling momentum for SHORT
+      ? stoch.k > stoch.d
+      : stoch.k < stoch.d;
     
     if (confirmCount >= 2 && Math.abs(dist) < maxAddDistance && stochHealthy && stochMomentumAligned) {
       rawType = "ADD";
@@ -615,6 +627,25 @@ export function generateSignal(
     return { debug, uiAlert };
   }
   
+  // SOFT PENALTY: When 1D and 4H trends conflict, apply stricter filters
+  if (trendConflict) {
+    // Require stoch to be turning in the 1D direction, not just extreme
+    const stochTurningWithTrend = t1d.direction === "LONG" 
+      ? stoch.k > stoch.d && stoch.k < 50  // Rising from below 50
+      : stoch.k < stoch.d && stoch.k > 50; // Falling from above 50
+    
+    if (!stochTurningWithTrend && finalType !== "ADD") {
+      debug.push(`Trend conflict: 1D=${t1d.direction} vs 4H=${t4h}, stoch not turning with 1D — NO SIGNAL`);
+      return { debug, uiAlert };
+    }
+    
+    // For ADD entries in conflict, require stronger ADX
+    if (finalType === "ADD" && !adxStrongConflict) {
+      debug.push(`Trend conflict ADD blocked: ADX ${adxVal.toFixed(1)} < 25 required for conflict trades`);
+      return { debug, uiAlert };
+    }
+  }
+  
   if (finalType !== hyst.lastSignalType) {
     setHysteresis(pair, finalType, price, now);
   }
@@ -660,9 +691,17 @@ export function generateSignal(
     expectedMove = Math.abs(tp - entry) / entry * 100;
   }
   
+  // SOFT PENALTY: Cap confidence and raise min RR when trends conflict
+  let effectiveMinRR = MIN_RR;
+  if (trendConflict) {
+    confidence = Math.min(confidence, 40);
+    effectiveMinRR = MIN_RR_TREND_CONFLICT;
+    debug.push(`Trend conflict penalty: confidence capped at ${confidence}%, min RR raised to ${effectiveMinRR}`);
+  }
+  
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
-  if (rr < MIN_RR) {
-    debug.push(`R:R ${rr.toFixed(2)} < ${MIN_RR}`);
+  if (rr < effectiveMinRR) {
+    debug.push(`R:R ${rr.toFixed(2)} < ${effectiveMinRR}${trendConflict ? " (conflict adjusted)" : ""}`);
     return { debug, uiAlert };
   }
   
@@ -684,7 +723,7 @@ export function generateSignal(
     stochK: stoch.k,
     stochD: stoch.d,
     expectedMove: Math.round(expectedMove * 10) / 10,
-    reason: `${t1d.direction} ${type} ${finalType} | 1D ${t1d.strength} | Stoch K${stoch.k} D${stoch.d} | ${finalType === "ADD" ? "Break+EMA" + (volUp ? "+Vol" : "") + (stochMomentum ? "+Stoch" : "") + (adxStrong ? "+ADX" : "") : "TL approach"} | RR ${rr.toFixed(2)}`,
+    reason: `${t1d.direction} ${type} ${finalType} | 1D ${t1d.strength}${trendConflict ? "/4H_" + t4h : ""} | Stoch K${stoch.k} D${stoch.d} | ${finalType === "ADD" ? "Break+EMA" + (volUp ? "+Vol" : "") + (stochMomentum ? "+Stoch" : "") + (adxStrong ? "+ADX" : "") : "TL approach"} | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
   };
@@ -705,7 +744,7 @@ export function generateSignal(
     closes4h: candles4h.slice(-50).map(c => c.close),
   };
   
-  debug.push(`SIGNAL: ${type} ${finalType} ${signal.direction} ${signal.entry} | TP ${signal.target} | SL ${signal.stop} | RR ${signal.rr}`);
+  debug.push(`SIGNAL: ${type} ${finalType} ${signal.direction} ${signal.entry} | TP ${signal.target} | SL ${signal.stop} | RR ${signal.rr} | Conf ${confidence}%`);
   
   return { signal, market, debug, uiAlert };
 }
