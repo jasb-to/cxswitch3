@@ -1,4 +1,4 @@
-// lib/strategy.ts — v28.4 "Trend conflict soft penalty + ADD distance cap"
+// lib/strategy.ts — v28.5 "HARD BLOCK: 1D/4H trend alignment required"
 // ============================================================
 
 export interface Candle {
@@ -48,7 +48,6 @@ export interface UIAlert {
 
 export const CURRENT_SIGNAL_VERSION = 28;
 const MIN_RR = 1.5;
-const MIN_RR_TREND_CONFLICT = 2.0;
 
 // --- STATEFUL TRENDLINE STORE ---
 interface TrendlineState {
@@ -503,6 +502,13 @@ export function generateSignal(
     return { debug };
   }
   
+  // HARD BLOCK: 1D and 4H trends must align for new entries
+  // This prevents SHORT entries when 4H is pumping LONG, and vice versa
+  if (trendConflict) {
+    debug.push(`HARD BLOCK: 1D=${t1d.direction} vs 4H=${t4h} — trends must align for new entries`);
+    return { debug, uiAlert };
+  }
+  
   const trendline = getTrendline(pair, candles4h, t1d.direction);
   if (!trendline) {
     debug.push("No trendline");
@@ -555,8 +561,6 @@ export function generateSignal(
   
   const adxVal = adx(candles4h);
   const adxStrong = adxVal > 20;
-  // Stricter ADX requirement when trends conflict
-  const adxStrongConflict = adxVal > 25;
   
   const exhaustion = checkExhaustion(adxVal, stoch, dist, t1d.direction);
   if (exhaustion.blocked) {
@@ -627,25 +631,6 @@ export function generateSignal(
     return { debug, uiAlert };
   }
   
-  // SOFT PENALTY: When 1D and 4H trends conflict, apply stricter filters
-  if (trendConflict) {
-    // Require stoch to be turning in the 1D direction, not just extreme
-    const stochTurningWithTrend = t1d.direction === "LONG" 
-      ? stoch.k > stoch.d && stoch.k < 50  // Rising from below 50
-      : stoch.k < stoch.d && stoch.k > 50; // Falling from above 50
-    
-    if (!stochTurningWithTrend && finalType !== "ADD") {
-      debug.push(`Trend conflict: 1D=${t1d.direction} vs 4H=${t4h}, stoch not turning with 1D — NO SIGNAL`);
-      return { debug, uiAlert };
-    }
-    
-    // For ADD entries in conflict, require stronger ADX
-    if (finalType === "ADD" && !adxStrongConflict) {
-      debug.push(`Trend conflict ADD blocked: ADX ${adxVal.toFixed(1)} < 25 required for conflict trades`);
-      return { debug, uiAlert };
-    }
-  }
-  
   if (finalType !== hyst.lastSignalType) {
     setHysteresis(pair, finalType, price, now);
   }
@@ -691,17 +676,9 @@ export function generateSignal(
     expectedMove = Math.abs(tp - entry) / entry * 100;
   }
   
-  // SOFT PENALTY: Cap confidence and raise min RR when trends conflict
-  let effectiveMinRR = MIN_RR;
-  if (trendConflict) {
-    confidence = Math.min(confidence, 40);
-    effectiveMinRR = MIN_RR_TREND_CONFLICT;
-    debug.push(`Trend conflict penalty: confidence capped at ${confidence}%, min RR raised to ${effectiveMinRR}`);
-  }
-  
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
-  if (rr < effectiveMinRR) {
-    debug.push(`R:R ${rr.toFixed(2)} < ${effectiveMinRR}${trendConflict ? " (conflict adjusted)" : ""}`);
+  if (rr < MIN_RR) {
+    debug.push(`R:R ${rr.toFixed(2)} < ${MIN_RR}`);
     return { debug, uiAlert };
   }
   
@@ -723,7 +700,7 @@ export function generateSignal(
     stochK: stoch.k,
     stochD: stoch.d,
     expectedMove: Math.round(expectedMove * 10) / 10,
-    reason: `${t1d.direction} ${type} ${finalType} | 1D ${t1d.strength}${trendConflict ? "/4H_" + t4h : ""} | Stoch K${stoch.k} D${stoch.d} | ${finalType === "ADD" ? "Break+EMA" + (volUp ? "+Vol" : "") + (stochMomentum ? "+Stoch" : "") + (adxStrong ? "+ADX" : "") : "TL approach"} | RR ${rr.toFixed(2)}`,
+    reason: `${t1d.direction} ${type} ${finalType} | 1D ${t1d.strength} | Stoch K${stoch.k} D${stoch.d} | ${finalType === "ADD" ? "Break+EMA" + (volUp ? "+Vol" : "") + (stochMomentum ? "+Stoch" : "") + (adxStrong ? "+ADX" : "") : "TL approach"} | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
   };
@@ -744,7 +721,7 @@ export function generateSignal(
     closes4h: candles4h.slice(-50).map(c => c.close),
   };
   
-  debug.push(`SIGNAL: ${type} ${finalType} ${signal.direction} ${signal.entry} | TP ${signal.target} | SL ${signal.stop} | RR ${signal.rr} | Conf ${confidence}%`);
+  debug.push(`SIGNAL: ${type} ${finalType} ${signal.direction} ${signal.entry} | TP ${signal.target} | SL ${signal.stop} | RR ${signal.rr}`);
   
   return { signal, market, debug, uiAlert };
 }
