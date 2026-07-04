@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState } from "react";
 
-// ─── Types (v29.1) ──────────────────────────────────────────────────────
+// ─── Types (v29.2) ──────────────────────────────────────────────────────
 
 interface Signal {
   id: string;
@@ -33,12 +33,23 @@ interface Zone {
   type: "ACCUMULATION" | "DISTRIBUTION";
 }
 
+interface ZoneQuality {
+  age: number;
+  widthATR: number;
+  compression: number;
+  volumeDecay: number;
+  touches: number;
+  breakAttempts: number;
+  label: "EXCELLENT" | "GOOD" | "AVERAGE" | "WEAK";
+}
+
 interface MarketData {
   pair: string;
   price: number;
   timestamp: number;
   phase: "NONE" | "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED" | "EXPANSION" | "EXHAUSTION";
   trend: string;
+  htfBias?: "BULLISH" | "BEARISH" | "NEUTRAL";
   adx: number;
   rsi: number;
   stochK: number;
@@ -46,6 +57,7 @@ interface MarketData {
   zoneTop: number | null;
   zoneBottom: number | null;
   zoneScore: number;
+  zoneQuality?: ZoneQuality;
   closes4h?: number[];
 }
 
@@ -78,9 +90,18 @@ function timeAgo(ts: number): string {
   return `${Math.floor(hrs / 24)}d`;
 }
 
+function calcEMA(values: number[], period: number): number[] {
+  const k = 2 / (period + 1);
+  const result: number[] = [values[0]];
+  for (let i = 1; i < values.length; i++) {
+    result.push(values[i] * k + result[i - 1] * (1 - k));
+  }
+  return result;
+}
+
 function getSignalStatus(signal: Signal, currentPrice: number) {
   const ageMinutes = Math.floor((Date.now() - signal.timestamp) / 60000);
-  const maxAge = 24 * 60; // 24h for expansion entries
+  const maxAge = 24 * 60;
 
   if (signal.direction === "LONG") {
     if (currentPrice >= signal.target) return { status: "TP_HIT" as const, pnl: 0, ageMinutes, ttlRemaining: "0m" };
@@ -159,7 +180,7 @@ function phaseColor(phase: string): { text: string; bg: string; border: string; 
   }
 }
 
-// ─── Zone Mini-Chart ──────────────────────────────────────────────────────
+// ─── Zone Mini-Chart ──────────────────────────────────────────────────
 
 function ZoneMiniChart({ market, signal }: { market: MarketData | undefined; signal: Signal | null }) {
   if (!market?.closes4h || market.closes4h.length < 10) return null;
@@ -187,7 +208,6 @@ function ZoneMiniChart({ market, signal }: { market: MarketData | undefined; sig
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-16 mt-3">
-      {/* Zone rectangle */}
       {zoneTopY !== null && zoneBottomY !== null && (
         <rect
           x={padding}
@@ -200,34 +220,88 @@ function ZoneMiniChart({ market, signal }: { market: MarketData | undefined; sig
           strokeDasharray="4 2"
         />
       )}
-      {/* Price line */}
       <polyline
         fill="none"
         stroke={signal?.direction === "SHORT" ? "#f43f5e" : "#10b981"}
         strokeWidth="1.5"
         points={points}
       />
-      {/* Entry dot */}
-      {entryY !== null && (
-        <circle cx={width - padding} cy={entryY} r="3" fill="#fbbf24" />
-      )}
-      {/* Stop line */}
-      {stopY !== null && (
-        <line x1={padding} y1={stopY} x2={width - padding} y2={stopY} stroke="#f43f5e" strokeWidth="1" strokeDasharray="3 2" opacity="0.7" />
-      )}
-      {/* Target line */}
-      {targetY !== null && (
-        <line x1={padding} y1={targetY} x2={width - padding} y2={targetY} stroke="#10b981" strokeWidth="1" strokeDasharray="3 2" opacity="0.7" />
-      )}
-      {/* Trail line */}
-      {trailY !== null && (
-        <line x1={padding} y1={trailY} x2={width - padding} y2={trailY} stroke="#a78bfa" strokeWidth="1.5" strokeDasharray="5 3" />
-      )}
+      {entryY !== null && <circle cx={width - padding} cy={entryY} r="3" fill="#fbbf24" />}
+      {stopY !== null && <line x1={padding} y1={stopY} x2={width - padding} y2={stopY} stroke="#f43f5e" strokeWidth="1" strokeDasharray="3 2" opacity="0.7" />}
+      {targetY !== null && <line x1={padding} y1={targetY} x2={width - padding} y2={targetY} stroke="#10b981" strokeWidth="1" strokeDasharray="3 2" opacity="0.7" />}
+      {trailY !== null && <line x1={padding} y1={trailY} x2={width - padding} y2={trailY} stroke="#a78bfa" strokeWidth="1.5" strokeDasharray="5 3" />}
     </svg>
   );
 }
 
-// ─── Market State Summary (v29.1) ───────────────────────────────────────
+// ─── Trend Display (4H + 1D) ──────────────────────────────────────────
+
+function TrendDisplay({ market }: { market: MarketData | undefined }) {
+  if (!market?.closes4h || market.closes4h.length < 30) {
+    return (
+      <div className="grid grid-cols-2 gap-4 border-t border-slate-700/50 pt-4">
+        <div>
+          <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">4H Trend</p>
+          <p className="text-sm text-slate-600">—</p>
+        </div>
+        <div>
+          <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">1D Trend</p>
+          <p className="text-sm text-slate-600">—</p>
+        </div>
+      </div>
+    );
+  }
+
+  const closes = market.closes4h;
+  const ema8 = calcEMA(closes, 8);
+  const ema21 = calcEMA(closes, 21);
+  const price = closes[closes.length - 1];
+
+  const ema8Last = ema8[ema8.length - 1];
+  const ema21Last = ema21[ema21.length - 1];
+  let trend4hDir: string | null = null;
+  let trend4hStrength = "WEAK";
+  if (ema8Last !== undefined && ema21Last !== undefined) {
+    trend4hDir = price > ema8Last && price > ema21Last ? "LONG" : price < ema8Last && price < ema21Last ? "SHORT" : null;
+    const spread = Math.abs(ema8Last - ema21Last) / ema21Last;
+    trend4hStrength = spread > 0.02 ? "STRONG" : spread > 0.01 ? "MEDIUM" : "WEAK";
+  }
+  const trend4h = trend4hDir ? `${trend4hDir} (${trend4hStrength})` : "MIXED";
+
+  const trend1d = market.trend || "—";
+  const trend1dDir = trend1d.split(" ")[0];
+
+  return (
+    <div className="grid grid-cols-2 gap-4 border-t border-slate-700/50 pt-4">
+      <div>
+        <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">4H Trend</p>
+        <p className={`text-sm font-semibold ${
+          trend4h.includes("SHORT") ? "text-rose-400" :
+          trend4h.includes("LONG") ? "text-emerald-400" : "text-yellow-400"
+        }`}>
+          {trend4h}
+        </p>
+        <p className="text-xs text-slate-600 font-mono mt-0.5">
+          EMA8: {ema8Last?.toFixed(1) ?? "—"} | EMA21: {ema21Last?.toFixed(1) ?? "—"}
+        </p>
+      </div>
+      <div>
+        <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">1D Trend</p>
+        <p className={`text-sm font-semibold ${
+          trend1dDir === "SHORT" ? "text-rose-400" :
+          trend1dDir === "LONG" ? "text-emerald-400" : "text-slate-400"
+        }`}>
+          {trend1d}
+        </p>
+        <p className="text-xs text-slate-600 font-mono mt-0.5">
+          HTF Bias: {market.htfBias || "—"}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Market State Summary ───────────────────────────────────────────────
 
 function MarketStateSummary({ market, signal }: { market: MarketData | undefined; signal: Signal | null }) {
   if (!market) return null;
@@ -253,13 +327,25 @@ function MarketStateSummary({ market, signal }: { market: MarketData | undefined
         )}
       </div>
 
-      {/* Zone info */}
       {market.zoneTop !== null && market.zoneBottom !== null && (
         <div className="flex items-center justify-between text-xs">
           <span className="text-slate-500">Zone</span>
           <span className="font-mono text-blue-400">
             {money(market.zoneBottom)} — {money(market.zoneTop)}
             {market.zoneScore > 0 && <span className="text-slate-500 ml-1">({market.zoneScore})</span>}
+          </span>
+        </div>
+      )}
+
+      {market.zoneQuality && (
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-slate-500">Zone Quality</span>
+          <span className={`font-mono font-bold ${
+            market.zoneQuality.label === "EXCELLENT" ? "text-emerald-400" :
+            market.zoneQuality.label === "GOOD" ? "text-cyan-400" :
+            market.zoneQuality.label === "AVERAGE" ? "text-yellow-400" : "text-rose-400"
+          }`}>
+            {market.zoneQuality.label}
           </span>
         </div>
       )}
@@ -293,7 +379,7 @@ function MarketStateSummary({ market, signal }: { market: MarketData | undefined
   );
 }
 
-// ─── Signal Explanation ───────────────────────────────────────────────────
+// ─── Signal Explanation ─────────────────────────────────────────────────
 
 function SignalExplanation({ signal }: { signal: Signal }) {
   return (
@@ -351,6 +437,7 @@ function SignalCard({
 
       <MarketStateSummary market={market} signal={signal} />
       <SignalExplanation signal={signal} />
+      <TrendDisplay market={market} />
 
       <div>
         <div className="flex justify-between items-center mb-2">
@@ -429,7 +516,7 @@ function SignalCard({
   );
 }
 
-// ─── Waiting Card ─────────────────────────────────────────────────────────
+// ─── Waiting Card ───────────────────────────────────────────────────────
 
 function WaitingCard({
   pair,
@@ -453,6 +540,7 @@ function WaitingCard({
       </div>
 
       <MarketStateSummary market={market} signal={null} />
+      <TrendDisplay market={market} />
 
       {market?.phase === "ACCUMULATION" && market.zoneTop !== null && market.zoneBottom !== null && (
         <div className="rounded-lg bg-blue-950/20 border border-blue-500/20 p-3">
@@ -460,6 +548,17 @@ function WaitingCard({
           <p className="text-sm text-slate-300">
             Range: {money(market.zoneBottom)} — {money(market.zoneTop)}
           </p>
+          {market.zoneQuality && (
+            <p className="text-xs text-slate-500 mt-1">
+              Quality: <span className={
+                market.zoneQuality.label === "EXCELLENT" ? "text-emerald-400" :
+                market.zoneQuality.label === "GOOD" ? "text-cyan-400" :
+                market.zoneQuality.label === "AVERAGE" ? "text-yellow-400" : "text-rose-400"
+              }>{market.zoneQuality.label}</span>
+              {' '}• Age: {market.zoneQuality.age} candles
+              {' '}• Compression: {market.zoneQuality.compression}%
+            </p>
+          )}
           <p className="text-xs text-slate-500 mt-1">
             Waiting for breakout with momentum confirmation...
           </p>
@@ -470,7 +569,7 @@ function WaitingCard({
         <div className="rounded-lg bg-cyan-950/20 border border-cyan-500/20 p-3 animate-pulse">
           <p className="text-xs text-cyan-400 font-semibold uppercase tracking-wider mb-1">⚡ Ready for Breakout</p>
           <p className="text-xs text-slate-400">
-            Stoch crossed with momentum. One breakout candle away from entry.
+            Zone matured. One breakout candle away from entry.
           </p>
         </div>
       )}
@@ -487,7 +586,7 @@ function WaitingCard({
   );
 }
 
-// ─── Main Dashboard ───────────────────────────────────────────────────────
+// ─── Main Dashboard ─────────────────────────────────────────────────────
 
 export default function Dashboard() {
   const [signals, setSignals] = useState<Record<string, Signal | null>>({});
@@ -497,7 +596,6 @@ export default function Dashboard() {
   const [fetchCount, setFetchCount] = useState(0);
   const [lastFetch, setLastFetch] = useState<number>(0);
 
-  // Data fetching
   useEffect(() => {
     async function load() {
       try {
@@ -530,7 +628,6 @@ export default function Dashboard() {
     return () => clearInterval(i);
   }, []);
 
-  // Live prices
   useEffect(() => {
     async function loadPrices() {
       const liveMap: Record<string, number> = {};
