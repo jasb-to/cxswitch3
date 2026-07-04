@@ -1,4 +1,4 @@
-// app/api/signals/route.ts — v28 "Clean: version freeze"
+// app/api/signals/route.ts — v29.2 "Async state + new signal shape"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -26,7 +26,7 @@ export async function GET() {
       try {
         const candles4h = await getCandles(pair, 240);
         if (candles4h?.length) {
-          const snapshot = getMarketSnapshot(pair, undefined, candles4h, undefined);
+          const snapshot = await getMarketSnapshot(pair, undefined, candles4h, undefined);
           freshMarket.push(snapshot);
           currentPrices[pair] = snapshot.price;
         }
