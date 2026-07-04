@@ -23,16 +23,6 @@ interface Signal {
   version: number;
 }
 
-interface Zone {
-  top: number;
-  bottom: number;
-  left: number;
-  right: number;
-  active: boolean;
-  volumeClimax: number;
-  type: "ACCUMULATION" | "DISTRIBUTION";
-}
-
 interface ZoneQuality {
   age: number;
   widthATR: number;
@@ -122,8 +112,8 @@ function getSignalStatus(signal: Signal, currentPrice: number) {
 
 function StatusBadge({ status, direction }: { status: string; direction?: "LONG" | "SHORT" }) {
   const configs: Record<string, { bg: string; text: string; label: string }> = {
-    ACTIVE_LONG: { bg: "bg-emerald-500", text: "text-white", label: "ACTIVE" },
-    ACTIVE_SHORT: { bg: "bg-rose-500", text: "text-white", label: "ACTIVE" },
+    ACTIVE_LONG: { bg: "bg-emerald-500", text: "text-white", label: "ACTIVE LONG" },
+    ACTIVE_SHORT: { bg: "bg-rose-500", text: "text-white", label: "ACTIVE SHORT" },
     TP_HIT: { bg: "bg-purple-500", text: "text-white", label: "TP HIT" },
     SL_HIT: { bg: "bg-red-600", text: "text-white", label: "SL HIT" },
     EXPIRED: { bg: "bg-slate-600", text: "text-white", label: "EXPIRED" },
@@ -138,8 +128,45 @@ function StatusBadge({ status, direction }: { status: string; direction?: "LONG"
   const config = configs[key] || configs.NONE;
 
   return (
-    <span className={`px-4 py-1.5 rounded-lg text-sm font-bold ${config.bg} ${config.text}`}>
+    <span className={`px-3 py-1.5 rounded-lg text-sm font-bold ${config.bg} ${config.text}`}>
       {config.label}
+    </span>
+  );
+}
+
+function PhaseBadge({ phase }: { phase: string }) {
+  const configs: Record<string, { bg: string; text: string; icon: string }> = {
+    IMPULSE: { bg: "bg-orange-950/50 border-orange-500/40", text: "text-orange-400", icon: "🔥" },
+    ACCUMULATION: { bg: "bg-blue-950/50 border-blue-500/40", text: "text-blue-400", icon: "📦" },
+    READY: { bg: "bg-cyan-950/50 border-cyan-500/40", text: "text-cyan-400", icon: "⚡" },
+    CONFIRMED: { bg: "bg-emerald-950/50 border-emerald-500/40", text: "text-emerald-400", icon: "✅" },
+    EXPANSION: { bg: "bg-purple-950/50 border-purple-500/40", text: "text-purple-400", icon: "🚀" },
+    EXHAUSTION: { bg: "bg-red-950/50 border-red-500/40", text: "text-red-400", icon: "😮‍💨" },
+    WATCHING: { bg: "bg-yellow-950/50 border-yellow-500/40", text: "text-yellow-400", icon: "👀" },
+    NONE: { bg: "bg-slate-800/50 border-slate-600/30", text: "text-slate-500", icon: "◌" },
+  };
+
+  const config = configs[phase] || configs.NONE;
+
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold border ${config.bg} ${config.text}`}>
+      <span>{config.icon}</span>
+      {phase}
+    </span>
+  );
+}
+
+function QualityBadge({ quality }: { quality?: ZoneQuality }) {
+  if (!quality) return null;
+  const colors: Record<string, string> = {
+    EXCELLENT: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
+    GOOD: "bg-cyan-500/20 text-cyan-400 border-cyan-500/30",
+    AVERAGE: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
+    WEAK: "bg-rose-500/20 text-rose-400 border-rose-500/30",
+  };
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold border ${colors[quality.label]}`}>
+      {quality.label}
     </span>
   );
 }
@@ -159,94 +186,19 @@ async function fetchKrakenPrice(pair: string): Promise<number | null> {
   }
 }
 
-// ─── Phase Color Helper ─────────────────────────────────────────────────
-
-function phaseColor(phase: string): { text: string; bg: string; border: string; label: string } {
-  switch (phase) {
-    case "IMPULSE":
-      return { text: "text-orange-400", bg: "bg-orange-950/30", border: "border-orange-500/30", label: "🔥 IMPULSE" };
-    case "ACCUMULATION":
-      return { text: "text-blue-400", bg: "bg-blue-950/30", border: "border-blue-500/30", label: "📦 ACCUMULATION" };
-    case "READY":
-      return { text: "text-cyan-400", bg: "bg-cyan-950/30", border: "border-cyan-500/30", label: "⚡ READY" };
-    case "CONFIRMED":
-      return { text: "text-emerald-400", bg: "bg-emerald-950/30", border: "border-emerald-500/30", label: "✅ CONFIRMED" };
-    case "EXPANSION":
-      return { text: "text-purple-400", bg: "bg-purple-950/30", border: "border-purple-500/30", label: "🚀 EXPANSION" };
-    case "EXHAUSTION":
-      return { text: "text-red-400", bg: "bg-red-950/30", border: "border-red-500/30", label: "😮‍💨 EXHAUSTION" };
-    default:
-      return { text: "text-slate-500", bg: "bg-slate-800/50", border: "border-slate-600/30", label: "SCANNING" };
-  }
-}
-
-// ─── Zone Mini-Chart ──────────────────────────────────────────────────
-
-function ZoneMiniChart({ market, signal }: { market: MarketData | undefined; signal: Signal | null }) {
-  if (!market?.closes4h || market.closes4h.length < 10) return null;
-
-  const closes = market.closes4h.slice(-30);
-  const min = Math.min(...closes);
-  const max = Math.max(...closes);
-  const range = max - min || 1;
-  const width = 200;
-  const height = 60;
-  const padding = 4;
-
-  const points = closes.map((c, i) => {
-    const x = padding + (i / (closes.length - 1)) * (width - padding * 2);
-    const y = height - padding - ((c - min) / range) * (height - padding * 2);
-    return `${x},${y}`;
-  }).join(" ");
-
-  const zoneTopY = market.zoneTop ? height - padding - ((market.zoneTop - min) / range) * (height - padding * 2) : null;
-  const zoneBottomY = market.zoneBottom ? height - padding - ((market.zoneBottom - min) / range) * (height - padding * 2) : null;
-  const entryY = signal ? height - padding - ((signal.entry - min) / range) * (height - padding * 2) : null;
-  const stopY = signal ? height - padding - ((signal.stop - min) / range) * (height - padding * 2) : null;
-  const targetY = signal ? height - padding - ((signal.target - min) / range) * (height - padding * 2) : null;
-  const trailY = signal ? height - padding - ((signal.trail - min) / range) * (height - padding * 2) : null;
-
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-16 mt-3">
-      {zoneTopY !== null && zoneBottomY !== null && (
-        <rect
-          x={padding}
-          y={Math.min(zoneTopY, zoneBottomY)}
-          width={width - padding * 2}
-          height={Math.abs(zoneBottomY - zoneTopY)}
-          fill="rgba(59, 130, 246, 0.15)"
-          stroke="rgba(59, 130, 246, 0.4)"
-          strokeWidth="1"
-          strokeDasharray="4 2"
-        />
-      )}
-      <polyline
-        fill="none"
-        stroke={signal?.direction === "SHORT" ? "#f43f5e" : "#10b981"}
-        strokeWidth="1.5"
-        points={points}
-      />
-      {entryY !== null && <circle cx={width - padding} cy={entryY} r="3" fill="#fbbf24" />}
-      {stopY !== null && <line x1={padding} y1={stopY} x2={width - padding} y2={stopY} stroke="#f43f5e" strokeWidth="1" strokeDasharray="3 2" opacity="0.7" />}
-      {targetY !== null && <line x1={padding} y1={targetY} x2={width - padding} y2={targetY} stroke="#10b981" strokeWidth="1" strokeDasharray="3 2" opacity="0.7" />}
-      {trailY !== null && <line x1={padding} y1={trailY} x2={width - padding} y2={trailY} stroke="#a78bfa" strokeWidth="1.5" strokeDasharray="5 3" />}
-    </svg>
-  );
-}
-
 // ─── Trend Display (4H + 1D) ──────────────────────────────────────────
 
 function TrendDisplay({ market }: { market: MarketData | undefined }) {
   if (!market?.closes4h || market.closes4h.length < 30) {
     return (
-      <div className="grid grid-cols-2 gap-4 border-t border-slate-700/50 pt-4">
-        <div>
-          <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">4H Trend</p>
-          <p className="text-sm text-slate-600">—</p>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-slate-800/40 rounded-lg p-2.5">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">4H Trend</p>
+          <p className="text-sm text-slate-600 font-semibold">—</p>
         </div>
-        <div>
-          <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">1D Trend</p>
-          <p className="text-sm text-slate-600">—</p>
+        <div className="bg-slate-800/40 rounded-lg p-2.5">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">1D Trend</p>
+          <p className="text-sm text-slate-600 font-semibold">—</p>
         </div>
       </div>
     );
@@ -266,142 +218,199 @@ function TrendDisplay({ market }: { market: MarketData | undefined }) {
     const spread = Math.abs(ema8Last - ema21Last) / ema21Last;
     trend4hStrength = spread > 0.02 ? "STRONG" : spread > 0.01 ? "MEDIUM" : "WEAK";
   }
-  const trend4h = trend4hDir ? `${trend4hDir} (${trend4hStrength})` : "MIXED";
+  const trend4h = trend4hDir ? `${trend4hDir} ${trend4hStrength}` : "MIXED";
 
   const trend1d = market.trend || "—";
   const trend1dDir = trend1d.split(" ")[0];
 
   return (
-    <div className="grid grid-cols-2 gap-4 border-t border-slate-700/50 pt-4">
-      <div>
-        <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">4H Trend</p>
-        <p className={`text-sm font-semibold ${
+    <div className="grid grid-cols-2 gap-3">
+      <div className="bg-slate-800/40 rounded-lg p-2.5">
+        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">4H Trend</p>
+        <p className={`text-sm font-bold ${
           trend4h.includes("SHORT") ? "text-rose-400" :
           trend4h.includes("LONG") ? "text-emerald-400" : "text-yellow-400"
         }`}>
           {trend4h}
         </p>
-        <p className="text-xs text-slate-600 font-mono mt-0.5">
-          EMA8: {ema8Last?.toFixed(1) ?? "—"} | EMA21: {ema21Last?.toFixed(1) ?? "—"}
+        <p className="text-[10px] text-slate-600 font-mono mt-0.5">
+          EMA8 {ema8Last?.toFixed(0)} | EMA21 {ema21Last?.toFixed(0)}
         </p>
       </div>
-      <div>
-        <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">1D Trend</p>
-        <p className={`text-sm font-semibold ${
+      <div className="bg-slate-800/40 rounded-lg p-2.5">
+        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">1D Trend</p>
+        <p className={`text-sm font-bold ${
           trend1dDir === "SHORT" ? "text-rose-400" :
           trend1dDir === "LONG" ? "text-emerald-400" : "text-slate-400"
         }`}>
           {trend1d}
         </p>
-        <p className="text-xs text-slate-600 font-mono mt-0.5">
-          HTF Bias: {market.htfBias || "—"}
+        <p className="text-[10px] text-slate-600 font-mono mt-0.5">
+          HTF: {market.htfBias || "—"}
         </p>
       </div>
     </div>
   );
 }
 
-// ─── Market State Summary ───────────────────────────────────────────────
+// ─── Zone Details Panel ─────────────────────────────────────────────────
 
-function MarketStateSummary({ market, signal }: { market: MarketData | undefined; signal: Signal | null }) {
-  if (!market) return null;
+function ZoneDetails({ market }: { market: MarketData | undefined }) {
+  if (!market?.zoneQuality) return null;
 
-  const phase = phaseColor(market.phase);
-  const stochK = market.stochK;
-  const stochD = market.stochD;
-  const adx = market.adx;
-
-  const stochState = stochK < 20 ? "OVERSOLD" : stochK > 80 ? "OVERBOUGHT" : "NEUTRAL";
-  const stochColor = stochK < 20 ? "text-emerald-400" : stochK > 80 ? "text-rose-400" : "text-slate-500";
+  const q = market.zoneQuality;
+  const zoneHeight = market.zoneTop !== null && market.zoneBottom !== null
+    ? market.zoneTop - market.zoneBottom
+    : 0;
 
   return (
-    <div className={`rounded-xl border p-4 space-y-3 ${phase.bg} ${phase.border}`}>
+    <div className="bg-slate-800/40 rounded-lg p-3 space-y-2">
       <div className="flex items-center justify-between">
-        <span className={`text-xs font-bold uppercase tracking-wider ${phase.text}`}>
-          {phase.label}
-        </span>
-        {signal && (
-          <span className={`text-xs font-mono ${signal.direction === "LONG" ? "text-emerald-400" : "text-rose-400"}`}>
-            {signal.direction} {signal.stage}
-          </span>
-        )}
+        <span className="text-[10px] text-slate-500 uppercase tracking-wider">Zone Quality</span>
+        <QualityBadge quality={q} />
       </div>
-
-      {market.zoneTop !== null && market.zoneBottom !== null && (
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-slate-500">Zone</span>
+      <div className="grid grid-cols-3 gap-2 text-[11px]">
+        <div className="text-center bg-slate-900/50 rounded p-1.5">
+          <p className="text-slate-500 mb-0.5">Age</p>
+          <p className="font-mono font-bold text-slate-300">{q.age}c</p>
+        </div>
+        <div className="text-center bg-slate-900/50 rounded p-1.5">
+          <p className="text-slate-500 mb-0.5">Width</p>
+          <p className="font-mono font-bold text-slate-300">{q.widthATR.toFixed(1)}x ATR</p>
+        </div>
+        <div className="text-center bg-slate-900/50 rounded p-1.5">
+          <p className="text-slate-500 mb-0.5">Compress</p>
+          <p className="font-mono font-bold text-slate-300">{q.compression}%</p>
+        </div>
+        <div className="text-center bg-slate-900/50 rounded p-1.5">
+          <p className="text-slate-500 mb-0.5">Vol Decay</p>
+          <p className="font-mono font-bold text-slate-300">{q.volumeDecay}%</p>
+        </div>
+        <div className="text-center bg-slate-900/50 rounded p-1.5">
+          <p className="text-slate-500 mb-0.5">Touches</p>
+          <p className="font-mono font-bold text-slate-300">{q.touches}</p>
+        </div>
+        <div className="text-center bg-slate-900/50 rounded p-1.5">
+          <p className="text-slate-500 mb-0.5">Breaks</p>
+          <p className="font-mono font-bold text-slate-300">{q.breakAttempts}</p>
+        </div>
+      </div>
+      {zoneHeight > 0 && (
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="text-slate-500">Zone Range</span>
           <span className="font-mono text-blue-400">
-            {money(market.zoneBottom)} — {money(market.zoneTop)}
-            {market.zoneScore > 0 && <span className="text-slate-500 ml-1">({market.zoneScore})</span>}
+            {money(market.zoneBottom)} — {money(market.zoneTop)} ({money(zoneHeight)} height)
           </span>
         </div>
       )}
-
-      {market.zoneQuality && (
-        <div className="flex items-center justify-between text-xs">
-          <span className="text-slate-500">Zone Quality</span>
-          <span className={`font-mono font-bold ${
-            market.zoneQuality.label === "EXCELLENT" ? "text-emerald-400" :
-            market.zoneQuality.label === "GOOD" ? "text-cyan-400" :
-            market.zoneQuality.label === "AVERAGE" ? "text-yellow-400" : "text-rose-400"
-          }`}>
-            {market.zoneQuality.label}
-          </span>
-        </div>
-      )}
-
-      <div className="grid grid-cols-3 gap-3 text-sm">
-        <div className="text-center">
-          <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">ADX</p>
-          <p className={`font-mono font-bold ${adx > 25 ? "text-emerald-400" : adx > 20 ? "text-yellow-400" : "text-slate-500"}`}>
-            {adx.toFixed(1)}
-          </p>
-        </div>
-        <div className="text-center">
-          <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Stoch K</p>
-          <p className={`font-mono font-bold ${stochColor}`}>{stochK.toFixed(1)}</p>
-        </div>
-        <div className="text-center">
-          <p className="text-xs text-slate-500 uppercase tracking-wider mb-1">Stoch D</p>
-          <p className={`font-mono font-bold ${stochColor}`}>{stochD.toFixed(1)}</p>
-        </div>
-      </div>
-
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-slate-500">Stoch Cross</span>
-        <span className={`font-mono ${stochK > stochD ? "text-emerald-400" : "text-rose-400"}`}>
-          {stochK > stochD ? "K ↑ D" : "K ↓ D"} ({Math.abs(stochK - stochD).toFixed(1)} spread)
-        </span>
-      </div>
-
-      <ZoneMiniChart market={market} signal={signal} />
     </div>
   );
 }
 
-// ─── Signal Explanation ─────────────────────────────────────────────────
+// ─── Indicator Grid ─────────────────────────────────────────────────────
 
-function SignalExplanation({ signal }: { signal: Signal }) {
+function IndicatorGrid({ market }: { market: MarketData | undefined }) {
+  if (!market) return null;
+
+  const adx = market.adx;
+  const stochK = market.stochK;
+  const stochD = market.stochD;
+
+  const adxColor = adx > 25 ? "text-emerald-400" : adx > 20 ? "text-yellow-400" : "text-slate-500";
+  const stochColor = stochK < 20 ? "text-emerald-400" : stochK > 80 ? "text-rose-400" : "text-slate-500";
+  const crossDir = stochK > stochD ? "↑" : "↓";
+  const crossColor = stochK > stochD ? "text-emerald-400" : "text-rose-400";
+
   return (
-    <div className="rounded-xl border border-slate-700/50 bg-slate-800/30 p-3">
-      <div className="flex items-center justify-between mb-1">
-        <p className="text-xs text-slate-500 uppercase tracking-wider">Explanation</p>
-        <span className={`text-xs font-bold px-2 py-0.5 rounded ${
-          signal.confidence >= 70 ? "bg-emerald-500/20 text-emerald-400" :
-          signal.confidence >= 50 ? "bg-yellow-500/20 text-yellow-400" :
-          "bg-rose-500/20 text-rose-400"
-        }`}>
-          {signal.confidence}% confidence
-        </span>
+    <div className="grid grid-cols-4 gap-2">
+      <div className="bg-slate-800/40 rounded-lg p-2 text-center">
+        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">ADX</p>
+        <p className={`font-mono font-bold text-sm ${adxColor}`}>{adx.toFixed(1)}</p>
+        <p className="text-[10px] text-slate-600">{adx > 25 ? "STRONG" : adx > 20 ? "BUILDING" : "WEAK"}</p>
       </div>
-      <p className="text-sm text-slate-300 font-medium leading-relaxed">
-        {signal.explanation || "No explanation provided"}
-      </p>
-      <div className="flex gap-3 mt-2 text-xs text-slate-500">
-        <span>ADX: {signal.adx?.toFixed(1) ?? "—"}</span>
-        <span>R:R: {signal.rr?.toFixed(2) ?? "—"}</span>
-        <span>Zone: {money(signal.zoneBottom)} — {money(signal.zoneTop)}</span>
+      <div className="bg-slate-800/40 rounded-lg p-2 text-center">
+        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Stoch K</p>
+        <p className={`font-mono font-bold text-sm ${stochColor}`}>{stochK.toFixed(1)}</p>
+        <p className="text-[10px] text-slate-600">{stochK < 20 ? "OVERSOLD" : stochK > 80 ? "OVERBOUGHT" : "NEUTRAL"}</p>
       </div>
+      <div className="bg-slate-800/40 rounded-lg p-2 text-center">
+        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Stoch D</p>
+        <p className={`font-mono font-bold text-sm ${stochColor}`}>{stochD.toFixed(1)}</p>
+      </div>
+      <div className="bg-slate-800/40 rounded-lg p-2 text-center">
+        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Cross</p>
+        <p className={`font-mono font-bold text-sm ${crossColor}`}>K {crossDir} D</p>
+        <p className="text-[10px] text-slate-600">{Math.abs(stochK - stochD).toFixed(1)} spread</p>
+      </div>
+    </div>
+  );
+}
+
+// ─── Progress Banner ──────────────────────────────────────────────────────
+
+function ProgressBanner({ market }: { market: MarketData | undefined }) {
+  if (!market) return null;
+
+  const phase = market.phase;
+
+  const banners: Record<string, { bg: string; border: string; text: string; title: string; desc: string }> = {
+    WATCHING: {
+      bg: "bg-yellow-950/30",
+      border: "border-yellow-500/30",
+      text: "text-yellow-400",
+      title: "👀 Watching for Accumulation",
+      desc: "Volume climax detected. Waiting for price to compress into a range.",
+    },
+    ACCUMULATION: {
+      bg: "bg-blue-950/30",
+      border: "border-blue-500/30",
+      text: "text-blue-400",
+      title: "📦 Accumulation in Progress",
+      desc: "Price is compressing. Zone is growing. Monitoring for breakout readiness.",
+    },
+    READY: {
+      bg: "bg-cyan-950/30",
+      border: "border-cyan-500/30",
+      text: "text-cyan-400",
+      title: "⚡ Ready for Breakout",
+      desc: "Zone matured. Momentum aligned. One breakout candle away from entry signal.",
+    },
+    CONFIRMED: {
+      bg: "bg-emerald-950/30",
+      border: "border-emerald-500/30",
+      text: "text-emerald-400",
+      title: "✅ Signal Confirmed",
+      desc: "Breakout detected. Trade is active with trail stop in play.",
+    },
+    EXPANSION: {
+      bg: "bg-purple-950/30",
+      border: "border-purple-500/30",
+      text: "text-purple-400",
+      title: "🚀 Expansion Phase",
+      desc: "Price is expanding from zone. Trail stop managing the position.",
+    },
+    EXHAUSTION: {
+      bg: "bg-red-950/30",
+      border: "border-red-500/30",
+      text: "text-red-400",
+      title: "😮‍💨 Exhaustion",
+      desc: "Extended move showing signs of fatigue. No new entries.",
+    },
+    NONE: {
+      bg: "bg-slate-800/30",
+      border: "border-slate-600/20",
+      text: "text-slate-500",
+      title: "◌ Scanning Market",
+      desc: "No impulse or accumulation detected. Monitoring for setups.",
+    },
+  };
+
+  const b = banners[phase] || banners.NONE;
+
+  return (
+    <div className={`rounded-lg border ${b.bg} ${b.border} p-3`}>
+      <p className={`text-xs font-bold uppercase tracking-wider ${b.text} mb-1`}>{b.title}</p>
+      <p className="text-xs text-slate-400 leading-relaxed">{b.desc}</p>
     </div>
   );
 }
@@ -426,21 +435,34 @@ function SignalCard({
     "text-rose-400";
 
   return (
-    <div className="rounded-2xl border border-slate-700/50 bg-slate-900/60 p-6 space-y-5 backdrop-blur-sm">
+    <div className="rounded-2xl border border-slate-700/50 bg-slate-900/60 p-5 space-y-4 backdrop-blur-sm">
+      {/* Header */}
       <div className="flex justify-between items-start">
         <div>
           <h2 className="text-2xl font-bold text-white tracking-tight">{signal.pair}</h2>
-          <p className="text-slate-400 text-sm mt-1">Price: {money(currentPrice)}</p>
+          <p className="text-slate-400 text-sm mt-0.5">Price: {money(currentPrice)}</p>
         </div>
-        <StatusBadge status={meta.status} direction={signal.direction} />
+        <div className="flex flex-col items-end gap-2">
+          <StatusBadge status={meta.status} direction={signal.direction} />
+          <PhaseBadge phase={market?.phase || "NONE"} />
+        </div>
       </div>
 
-      <MarketStateSummary market={market} signal={signal} />
-      <SignalExplanation signal={signal} />
+      {/* Progress Banner */}
+      <ProgressBanner market={market} />
+
+      {/* Indicators */}
+      <IndicatorGrid market={market} />
+
+      {/* Trends */}
       <TrendDisplay market={market} />
 
+      {/* Zone Details */}
+      <ZoneDetails market={market} />
+
+      {/* Confidence */}
       <div>
-        <div className="flex justify-between items-center mb-2">
+        <div className="flex justify-between items-center mb-1.5">
           <span className="text-xs text-slate-500 uppercase tracking-wider">Confidence</span>
           <span className={`text-sm font-bold ${confColor}`}>{signal.confidence}%</span>
         </div>
@@ -455,46 +477,62 @@ function SignalCard({
         </div>
       </div>
 
-      <div className="border-t border-slate-700/50 pt-4">
-        <p className="text-xs text-slate-500 uppercase tracking-wider mb-3">Trade Setup</p>
-        <div className="space-y-3">
+      {/* Trade Setup */}
+      <div className="bg-slate-800/40 rounded-lg p-3 space-y-2">
+        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Trade Setup</p>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
           <div className="flex justify-between">
-            <span className="text-slate-400 text-sm">Direction</span>
+            <span className="text-slate-400">Direction</span>
             <span className={`font-bold ${signal.direction === "LONG" ? "text-emerald-400" : "text-rose-400"}`}>
               {signal.direction}
             </span>
           </div>
           <div className="flex justify-between">
-            <span className="text-slate-400 text-sm">Entry</span>
+            <span className="text-slate-400">Stage</span>
+            <span className="font-mono text-slate-300">{signal.stage}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400">Entry</span>
             <span className="font-mono text-white font-semibold">{money(signal.entry)}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-slate-400 text-sm">Stop</span>
+            <span className="text-slate-400">Stop</span>
             <span className="font-mono text-rose-400 font-semibold">{money(signal.stop)}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-slate-400 text-sm">Target</span>
+            <span className="text-slate-400">Target</span>
             <span className="font-mono text-emerald-400 font-semibold">{money(signal.target)}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-slate-400 text-sm">Trail</span>
+            <span className="text-slate-400">Trail</span>
             <span className="font-mono text-purple-400 font-semibold">{money(signal.trail)}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-slate-400 text-sm">R:R</span>
+            <span className="text-slate-400">R:R</span>
             <span className="font-mono text-yellow-400 font-bold">{signal.rr.toFixed(2)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400">Zone</span>
+            <span className="font-mono text-blue-400">{money(signal.zoneBottom)} — {money(signal.zoneTop)}</span>
           </div>
         </div>
       </div>
 
+      {/* Explanation */}
+      <div className="bg-slate-800/40 rounded-lg p-3">
+        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">Explanation</p>
+        <p className="text-xs text-slate-300 leading-relaxed">{signal.explanation}</p>
+      </div>
+
+      {/* PnL / Status */}
       {meta.status === "ACTIVE" && (
-        <div className={`text-3xl font-mono font-bold ${meta.pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+        <div className={`text-2xl font-mono font-bold ${meta.pnl >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
           {meta.pnl >= 0 ? "+" : ""}{meta.pnl.toFixed(2)}%
         </div>
       )}
 
       {meta.status !== "ACTIVE" && (
-        <div className={`text-lg font-bold ${
+        <div className={`text-base font-bold ${
           meta.status === "TP_HIT" ? "text-purple-400" :
           meta.status === "SL_HIT" ? "text-rose-400" :
           meta.status === "EXPIRED" ? "text-slate-400" :
@@ -507,7 +545,8 @@ function SignalCard({
         </div>
       )}
 
-      <div className="flex gap-3 text-xs">
+      {/* Footer */}
+      <div className="flex gap-2 text-[10px]">
         <span className="px-2 py-1 rounded bg-slate-800 text-slate-400">TTL {meta.ttlRemaining}</span>
         <span className="px-2 py-1 rounded bg-slate-800 text-slate-400">{timeAgo(signal.timestamp)} old</span>
         <span className="px-2 py-1 rounded bg-slate-800 text-slate-400">v{signal.version}</span>
@@ -530,55 +569,74 @@ function WaitingCard({
   const currentPrice = livePrice ?? market?.price ?? 0;
 
   return (
-    <div className="rounded-2xl border border-slate-700/50 bg-slate-900/40 p-6 space-y-5 backdrop-blur-sm">
+    <div className="rounded-2xl border border-slate-700/50 bg-slate-900/40 p-5 space-y-4 backdrop-blur-sm">
+      {/* Header */}
       <div className="flex justify-between items-start">
         <div>
           <h2 className="text-2xl font-bold text-slate-300 tracking-tight">{pair}</h2>
-          <p className="text-slate-500 text-sm mt-1">Price: {money(currentPrice)}</p>
+          <p className="text-slate-500 text-sm mt-0.5">Price: {money(currentPrice)}</p>
         </div>
-        <StatusBadge status={market?.phase || "NONE"} />
+        <PhaseBadge phase={market?.phase || "NONE"} />
       </div>
 
-      <MarketStateSummary market={market} signal={null} />
+      {/* Progress Banner */}
+      <ProgressBanner market={market} />
+
+      {/* Indicators */}
+      <IndicatorGrid market={market} />
+
+      {/* Trends */}
       <TrendDisplay market={market} />
 
+      {/* Zone Details */}
+      <ZoneDetails market={market} />
+
+      {/* Phase-specific info */}
       {market?.phase === "ACCUMULATION" && market.zoneTop !== null && market.zoneBottom !== null && (
-        <div className="rounded-lg bg-blue-950/20 border border-blue-500/20 p-3">
-          <p className="text-xs text-blue-400 font-semibold uppercase tracking-wider mb-1">Accumulation Zone</p>
-          <p className="text-sm text-slate-300">
-            Range: {money(market.zoneBottom)} — {money(market.zoneTop)}
+        <div className="bg-blue-950/20 border border-blue-500/20 rounded-lg p-3">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] text-blue-400 font-bold uppercase tracking-wider">Accumulation Zone</span>
+            {market.zoneQuality && <QualityBadge quality={market.zoneQuality} />}
+          </div>
+          <p className="text-sm text-slate-300 font-mono">
+            {money(market.zoneBottom)} — {money(market.zoneTop)}
           </p>
-          {market.zoneQuality && (
-            <p className="text-xs text-slate-500 mt-1">
-              Quality: <span className={
-                market.zoneQuality.label === "EXCELLENT" ? "text-emerald-400" :
-                market.zoneQuality.label === "GOOD" ? "text-cyan-400" :
-                market.zoneQuality.label === "AVERAGE" ? "text-yellow-400" : "text-rose-400"
-              }>{market.zoneQuality.label}</span>
-              {' '}• Age: {market.zoneQuality.age} candles
-              {' '}• Compression: {market.zoneQuality.compression}%
-            </p>
-          )}
           <p className="text-xs text-slate-500 mt-1">
-            Waiting for breakout with momentum confirmation...
+            {market.zoneQuality
+              ? `${market.zoneQuality.age} candles old • ${market.zoneQuality.compression}% compressed • ${market.zoneQuality.touches} touches`
+              : "Zone forming..."}
           </p>
         </div>
       )}
 
       {market?.phase === "READY" && (
-        <div className="rounded-lg bg-cyan-950/20 border border-cyan-500/20 p-3 animate-pulse">
-          <p className="text-xs text-cyan-400 font-semibold uppercase tracking-wider mb-1">⚡ Ready for Breakout</p>
+        <div className="bg-cyan-950/20 border border-cyan-500/20 rounded-lg p-3 animate-pulse">
+          <p className="text-[10px] text-cyan-400 font-bold uppercase tracking-wider mb-1">⚡ Breakout Imminent</p>
           <p className="text-xs text-slate-400">
-            Zone matured. One breakout candle away from entry.
+            Zone matured. Waiting for breakout candle with volume confirmation.
           </p>
+          {market.zoneTop !== null && market.zoneBottom !== null && (
+            <p className="text-xs text-slate-500 font-mono mt-1">
+              Zone: {money(market.zoneBottom)} — {money(market.zoneTop)}
+            </p>
+          )}
         </div>
       )}
 
       {market?.phase === "WATCHING" && (
-        <div className="rounded-lg bg-yellow-950/20 border border-yellow-500/20 p-3">
-          <p className="text-xs text-yellow-400 font-semibold uppercase tracking-wider mb-1">👀 Watching</p>
+        <div className="bg-yellow-950/20 border border-yellow-500/20 rounded-lg p-3">
+          <p className="text-[10px] text-yellow-400 font-bold uppercase tracking-wider mb-1">👀 Volume Climax Detected</p>
           <p className="text-xs text-slate-400">
-            Volume climax detected. Waiting for range compression to confirm accumulation.
+            Abnormal volume + range expansion spotted. Monitoring for accumulation pattern.
+          </p>
+        </div>
+      )}
+
+      {market?.phase === "NONE" && (
+        <div className="bg-slate-800/30 border border-slate-600/20 rounded-lg p-3">
+          <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mb-1">◌ No Setup</p>
+          <p className="text-xs text-slate-500">
+            No impulse or accumulation detected. Market is either trending or ranging without clear structure.
           </p>
         </div>
       )}
@@ -586,7 +644,7 @@ function WaitingCard({
   );
 }
 
-// ─── Main Dashboard ─────────────────────────────────────────────────────
+// ─── Main Dashboard ───────────────────────────────────────────────────────
 
 export default function Dashboard() {
   const [signals, setSignals] = useState<Record<string, Signal | null>>({});
