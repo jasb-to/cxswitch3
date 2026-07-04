@@ -1,17 +1,16 @@
-// lib/state.ts — v29.1 "State Machine sync"
+// lib/state.ts — v29.2 "Version sync + zone quality support"
 // ============================================================
 
 import { Redis } from "@upstash/redis";
 
 export const redis = Redis.fromEnv();
 
-const SIGNALS_KEY = "cx_signals_v29";
-const MARKET_KEY = "cx_market_v29";
-const ACTIVE_TRADES_KEY = "cx_active_trades_v29";
-const LAST_CRON_RUN_KEY = "cx_last_cron_run_v29";
-const SIGNAL_HISTORY_KEY = "cx_signal_history_v29";
-const UI_ALERTS_KEY = "cx_ui_alerts_v29";
-const CRON_LOGS_KEY = "cx_cron_logs_v29";
+const SIGNALS_KEY = "cx_signals_v15";
+const MARKET_KEY = "cx_market_v15";
+const ACTIVE_TRADES_KEY = "cx_active_trades_v15";
+const LAST_CRON_RUN_KEY = "cx_last_cron_run_v15";
+const SIGNAL_HISTORY_KEY = "cx_signal_history_v15";
+const UI_ALERTS_KEY = "cx_ui_alerts_v15";
 
 const SIGNALS_TTL = 6 * 60 * 60;
 const MARKET_TTL = 4 * 60 * 60;
@@ -19,7 +18,6 @@ const ACTIVE_TRADES_TTL = 24 * 60 * 60;
 const LAST_CRON_RUN_TTL = 24 * 60 * 60;
 const SIGNAL_HISTORY_TTL = 48 * 60 * 60;
 const UI_ALERTS_TTL = 24 * 60 * 60;
-const CRON_LOGS_TTL = 24 * 60 * 60;
 
 // CRITICAL: Must match lib/strategy.ts CURRENT_SIGNAL_VERSION
 export const CURRENT_SIGNAL_VERSION = 29;
@@ -46,7 +44,7 @@ export interface Signal {
 export interface SignalHistory {
   pair: string;
   direction: "LONG" | "SHORT";
-  stage: string;
+  type: string;
   entry: number;
   stop: number;
   target: number;
@@ -56,10 +54,8 @@ export interface SignalHistory {
 }
 
 export interface UIAlert {
-  type: "SHORT_ALERT_OVERSOLD_CROSS" | "LONG_ALERT_OVERBOUGHT_CROSS";
+  type: string;
   message: string;
-  stochK: number;
-  stochD: number;
   timestamp: number;
   pair: string;
 }
@@ -76,9 +72,8 @@ function safeParseObject(data: unknown): Record<string, any> {
 }
 
 function getSignalMaxAgeHours(signal: any): number {
-  // CONFIRMED signals = 24h, everything else is transient
-  if (signal.stage === "CONFIRMED") return 24;
-  return 6;
+  // v29: all signals are expansion entries, 24h TTL
+  return 24;
 }
 
 function isSignalExpired(signal: any): boolean {
@@ -126,9 +121,9 @@ export async function addSignalToHistory(signal: any, exitReason: "stop_hit" | "
   try {
     const history = await getSignalHistory();
     const entry = { ...signal, exitedAt: Date.now(), exitReason, exitPrice: exitPrice || null };
-    const filtered = history.filter((h: any) => h.id !== signal.id);
+    const filtered = history.filter((h: any) => h.pair !== signal.pair);
     filtered.push(entry);
-    await redis.set(SIGNAL_HISTORY_KEY, filtered.slice(-50), { ex: SIGNAL_HISTORY_TTL });
+    await redis.set(SIGNAL_HISTORY_KEY, filtered.slice(-30), { ex: SIGNAL_HISTORY_TTL });
     console.log(`[STATE] Added ${signal.pair} to history: ${exitReason}`);
   } catch (err) {
     console.error("[STATE] History write failed:", err);
@@ -230,7 +225,7 @@ export async function addUIAlert(alert: UIAlert): Promise<void> {
   try {
     const existing = await getUIAlerts();
     const oneHourAgo = Date.now() - 60 * 60 * 1000;
-    const filtered = existing.filter((a: UIAlert) => 
+    const filtered = existing.filter((a: UIAlert) =>
       !(a.pair === alert.pair && a.type === alert.type && a.timestamp > oneHourAgo)
     );
     filtered.push(alert);
@@ -239,6 +234,23 @@ export async function addUIAlert(alert: UIAlert): Promise<void> {
     console.error("[STATE] UI alert add failed:", err);
   }
 }
+
+export async function resetAll() {
+  try {
+    await redis.del(SIGNALS_KEY);
+    await redis.del(MARKET_KEY);
+    await redis.del(ACTIVE_TRADES_KEY);
+    await redis.del(LAST_CRON_RUN_KEY);
+    await redis.del(SIGNAL_HISTORY_KEY);
+    await redis.del(UI_ALERTS_KEY);
+    console.log("[STATE] All KV data reset");
+  } catch (err) {
+    console.error("[STATE] Reset failed:", err);
+  }
+}
+
+const CRON_LOGS_KEY = "cx_cron_logs_v15";
+const CRON_LOGS_TTL = 24 * 60 * 60;
 
 export async function getCronLogs(): Promise<any[]> {
   try {
@@ -255,20 +267,5 @@ export async function setCronLogs(logs: any[]): Promise<void> {
     await redis.set(CRON_LOGS_KEY, logs, { ex: CRON_LOGS_TTL });
   } catch (err) {
     console.error("[STATE] Cron logs KV write failed:", err);
-  }
-}
-
-export async function resetAll() {
-  try {
-    await redis.del(SIGNALS_KEY);
-    await redis.del(MARKET_KEY);
-    await redis.del(ACTIVE_TRADES_KEY);
-    await redis.del(LAST_CRON_RUN_KEY);
-    await redis.del(SIGNAL_HISTORY_KEY);
-    await redis.del(UI_ALERTS_KEY);
-    await redis.del(CRON_LOGS_KEY);
-    console.log("[STATE] All KV data reset");
-  } catch (err) {
-    console.error("[STATE] Reset failed:", err);
   }
 }
