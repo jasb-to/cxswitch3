@@ -695,8 +695,13 @@ export async function getMarketSnapshot(
   const closes = candles4h.map(c => c.close);
   const stoch = stochRsi(closes);
   const htBias = higherTimeframeBias(candles4h);
+  
+  // FIX: Actually compute ADX instead of returning 0
+  const adxValue = adx(candles4h);
+  
+  // FIX: Set meaningful 1D trend based on HTF bias, not "NONE"
+  const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
 
-  // If we have an active zone, calculate quality
   let zoneQuality: ZoneQuality | null = null;
   if (state.zone && state.zoneStartIndex > 0) {
     zoneQuality = calcZoneQuality(state.zone, candles4h, state.zoneStartIndex, state.impulseRange, state.impulseCandle?.volume || 0);
@@ -707,10 +712,10 @@ export async function getMarketSnapshot(
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
     phase: state.stage === "NONE" ? "NONE" : state.stage,
-    trend: state.impulseDirection ? `${state.impulseDirection} ${state.stage}` : "NONE",
+    trend: trend1d,  // FIX: "LONG", "SHORT", or "MIXED" — never "NONE"
     htfBias: htBias,
-    adx: 0,
-    rsi: 0,
+    adx: adxValue,   // FIX: Real computed ADX value
+    rsi: 0,          // Can add RSI calc here if needed
     stochK: stoch.k,
     stochD: stoch.d,
     zoneTop: state.zone ? Math.round(state.zone.top * 100) / 100 : null,
