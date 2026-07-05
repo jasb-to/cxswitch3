@@ -1,8 +1,8 @@
-// lib/telegram.ts — v16.3 "v28.1 compat: scale-aware confidence floors"
+// lib/telegram.ts — v16.4 "v28.1 compat: scale-aware confidence floors"
 // ============================================================
 // CHANGELOG:
-// v16.3 — Scale-aware confidence floors. ENTRY_1 = 50, ENTRY_2/ADD = 60.
-//         UI alerts bypass confidence check (they are not trading signals).
+// v16.4 — Lowered default floor from 60 to 50 to match v29 breakout signals
+//         ENTRY_1 = 50, ENTRY_2/ADD = 55
 
 export async function sendAlert(signal: any) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -13,10 +13,10 @@ export async function sendAlert(signal: any) {
     return;
   }
 
-  // v16.3: Scale-aware confidence floors
-  // ENTRY_1 (accumulation) can be 50, ENTRY_2/ADD must be 60+
+  // v16.4: Scale-aware confidence floors
+  // ENTRY_1 = 50, ENTRY_2/ADD = 55 (lowered from 60)
   const scale = signal.scale || signal.state?.split(" ")[1] || null;
-  const minConfidence = scale === "ENTRY_1" ? 50 : 60;
+  const minConfidence = scale === "ENTRY_1" ? 50 : 55;
 
   if (signal.confidence < minConfidence) {
     console.log(`[TELEGRAM SKIP: LOW CONFIDENCE] ${signal.symbol || signal.pair} ${signal.confidence} (need ${minConfidence} for ${scale || "default"})`);
@@ -31,18 +31,28 @@ export async function sendAlert(signal: any) {
 Entry: ${signal.price || signal.entry} | Stop: ${signal.stopLoss || signal.stop} | Target: ${signal.takeProfit || signal.target}
 RR ${signal.rr} | ${signal.reason}`;
 
-  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: "HTML",
-    }),
-  });
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: "HTML",
+      }),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      console.error("[TELEGRAM ERROR]", data);
+    } else {
+      console.log(`[TELEGRAM SENT] ${signal.symbol || signal.pair} ${signal.confidence}%`);
+    }
+  } catch (err) {
+    console.error("[TELEGRAM SEND FAILED]", err);
+  }
 }
 
-// NEW: UI alert sender (no confidence check, different formatting)
+// UI alert sender (no confidence check)
 export async function sendUIAlert(alert: {
   pair: string;
   type: "SHORT_ALERT_OVERSOLD_CROSS" | "LONG_ALERT_OVERBOUGHT_CROSS";
@@ -67,13 +77,17 @@ ${alert.message}
 Stoch K=${alert.stochK.toFixed(1)} D=${alert.stochD.toFixed(1)}
 <i>UI warning only — not a trading signal</i>`;
 
-  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      parse_mode: "HTML",
-    }),
-  });
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        parse_mode: "HTML",
+      }),
+    });
+  } catch (err) {
+    console.error("[TELEGRAM UI SEND FAILED]", err);
+  }
 }
