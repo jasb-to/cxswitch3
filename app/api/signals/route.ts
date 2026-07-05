@@ -1,4 +1,4 @@
-// app/api/signals/route.ts — v29.4 "Fresh indicators every request"
+// app/api/signals/route.ts — v29.5 "Fix phase display + trend warnings"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -33,7 +33,6 @@ async function getCandles(pair: string, interval: number): Promise<Candle[]> {
   }));
 }
 
-// Inline indicator calc for UI (same logic as strategy.ts)
 function avg(arr: number[]): number {
   if (!arr.length) return 0;
   return arr.reduce((a, b) => a + b, 0) / arr.length;
@@ -63,10 +62,6 @@ function trueRange(c: Candle, p: Candle): number {
 
 function calculateIndicators(candles4h: Candle[]) {
   const closes = candles4h.map(c => c.close);
-  const highs = candles4h.map(c => c.high);
-  const lows = candles4h.map(c => c.low);
-
-  // StochRSI
   let stochK = 50, stochD = 50;
   try {
     const rsiValues: number[] = [];
@@ -78,8 +73,7 @@ function calculateIndicators(candles4h: Candle[]) {
         if (change > 0) gains += change;
         else losses += Math.abs(change);
       }
-      const avgGain = gains / 14;
-      const avgLoss = losses / 14;
+      const avgGain = gains / 14, avgLoss = losses / 14;
       rsiValues.push(avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss)));
     }
     if (rsiValues.length >= 14) {
@@ -90,9 +84,7 @@ function calculateIndicators(candles4h: Candle[]) {
         rawK.push(hi === lo ? 50 : ((rsiValues[i] - lo) / (hi - lo)) * 100);
       }
       const kValues: number[] = [];
-      for (let i = 2; i < rawK.length; i++) {
-        kValues.push(avg(rawK.slice(i - 2, i + 1)));
-      }
+      for (let i = 2; i < rawK.length; i++) kValues.push(avg(rawK.slice(i - 2, i + 1)));
       if (kValues.length >= 3) {
         stochK = Math.round(kValues[kValues.length - 1] * 10) / 10;
         stochD = Math.round(avg(kValues.slice(-3)) * 10) / 10;
@@ -100,18 +92,14 @@ function calculateIndicators(candles4h: Candle[]) {
     }
   } catch (e) {}
 
-  // ADX
   let adxValue = 0;
   try {
     if (candles4h.length >= 43) {
-      const trs: number[] = [];
-      const plusDMs: number[] = [];
-      const minusDMs: number[] = [];
+      const trs: number[] = [], plusDMs: number[] = [], minusDMs: number[] = [];
       for (let i = 1; i < candles4h.length; i++) {
         const c = candles4h[i], p = candles4h[i - 1];
         trs.push(trueRange(c, p));
-        const upMove = c.high - p.high;
-        const downMove = p.low - c.low;
+        const upMove = c.high - p.high, downMove = p.low - c.low;
         plusDMs.push(upMove > downMove && upMove > 0 ? upMove : 0);
         minusDMs.push(downMove > upMove && downMove > 0 ? downMove : 0);
       }
@@ -121,8 +109,7 @@ function calculateIndicators(candles4h: Candle[]) {
       const dxValues: number[] = [];
       for (let i = 0; i < atrSmooth.length; i++) {
         const atr = atrSmooth[i] || 0.0001;
-        const pDI = (plusDISmooth[i] / atr) * 100;
-        const mDI = (minusDISmooth[i] / atr) * 100;
+        const pDI = (plusDISmooth[i] / atr) * 100, mDI = (minusDISmooth[i] / atr) * 100;
         dxValues.push(pDI + mDI > 0 ? (Math.abs(pDI - mDI) / (pDI + mDI)) * 100 : 0);
       }
       if (dxValues.length >= 14) {
@@ -132,7 +119,6 @@ function calculateIndicators(candles4h: Candle[]) {
     }
   } catch (e) {}
 
-  // HTF Bias
   let htBias: "BULLISH" | "BEARISH" | "NEUTRAL" = "NEUTRAL";
   try {
     const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
@@ -155,19 +141,14 @@ function calculateIndicators(candles4h: Candle[]) {
     daily.sort((a, b) => a.timestamp - b.timestamp);
     if (daily.length >= 30) {
       const dcloses = daily.map(c => c.close);
-      const ema8 = ema(dcloses, 8);
-      const ema21 = ema(dcloses, 21);
-      const ema50 = ema(dcloses, 50);
-      const last8 = ema8[ema8.length - 1];
-      const last21 = ema21[ema21.length - 1];
-      const last50 = ema50[ema50.length - 1];
+      const ema8 = ema(dcloses, 8), ema21 = ema(dcloses, 21), ema50 = ema(dcloses, 50);
+      const last8 = ema8[ema8.length - 1], last21 = ema21[ema21.length - 1], last50 = ema50[ema50.length - 1];
       if (last8 > last21 && last21 > last50) htBias = "BULLISH";
       else if (last8 < last21 && last21 < last50) htBias = "BEARISH";
     }
   } catch (e) {}
 
   const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
-
   return { adx: adxValue, stochK, stochD, htBias, trend1d };
 }
 
@@ -234,6 +215,40 @@ export async function GET() {
       holdAdvice,
     };
   }));
+
+  // ── FIX: Override phase for active signals + add trend warnings ──
+  for (const m of freshMarket) {
+    const signal = enriched.find((s: any) => s.pair === m.pair);
+    if (signal) {
+      m.phase = "EXPANSION";
+      // Trend warning: signal direction vs HTF bias mismatch
+      if (signal.direction === "LONG" && m.htfBias === "BEARISH") {
+        m.trendWarning = {
+          severity: "HIGH",
+          message: "LONG signal but HTF is BEARISH — consider early exit",
+          type: "DIRECTION_MISMATCH",
+        };
+      } else if (signal.direction === "SHORT" && m.htfBias === "BULLISH") {
+        m.trendWarning = {
+          severity: "HIGH",
+          message: "SHORT signal but HTF is BULLISH — consider early exit",
+          type: "DIRECTION_MISMATCH",
+        };
+      } else if (signal.direction === "LONG" && m.htfBias === "NEUTRAL") {
+        m.trendWarning = {
+          severity: "MEDIUM",
+          message: "LONG signal in NEUTRAL HTF — monitor closely",
+          type: "WEAK_ALIGNMENT",
+        };
+      } else if (signal.direction === "SHORT" && m.htfBias === "NEUTRAL") {
+        m.trendWarning = {
+          severity: "MEDIUM",
+          message: "SHORT signal in NEUTRAL HTF — monitor closely",
+          type: "WEAK_ALIGNMENT",
+        };
+      }
+    }
+  }
 
   const response = NextResponse.json({
     signals: enriched,
