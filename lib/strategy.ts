@@ -1,9 +1,8 @@
-// lib/strategy.ts — v29.4 "Phase-Based Detection: Fixed Impulse Scanning"
+// lib/strategy.ts — v29.5 "Breakout Detection: Direct Signal Generation"
 // ============================================================
-// Fixes: detectImpulse now scans last 10 candles (not just last 1)
-//        Added detailed debug logging throughout
-//        Fixed trend1d undefined reference
-//        Lowered thresholds to match actual market conditions
+// MAJOR CHANGE: Removed accumulation phase requirement
+// Now detects breakout impulses directly: vol + range + direction = signal
+// This matches current market conditions where volume drives expansion immediately
 
 export interface Candle {
   timestamp: number;
@@ -67,10 +66,15 @@ export const CURRENT_SIGNAL_VERSION = 29;
 
 // ─── Config (TUNABLE) ────────────────────────────────────────────────────
 
-const IMPULSE_VOLUME_MULT = 1.3;        // 1.3x avg volume
-const IMPULSE_BODY_MULT = 1.4;          // 1.4x avg body
-const IMPULSE_TR_MULT = 1.2;            // 1.2x avg true range
-const IMPULSE_SCAN_DEPTH = 10;          // Scan last N candles
+// Breakout detection: vol + range + momentum = signal
+const BREAKOUT_VOLUME_MULT = 1.5;       // 1.5x avg volume
+const BREAKOUT_RANGE_MULT = 0.9;        // 0.9x ATR (lowered from 1.2)
+const BREAKOUT_BODY_MULT = 0.8;         // 0.8x avg body
+const BREAKOUT_SCAN_DEPTH = 10;         // Scan last N candles
+const BREAKOUT_MIN_SCORE = 2;           // Need 2 of 3 conditions
+
+// Timeframe alignment
+const REQUIRE_HTF_ALIGNMENT = true;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -284,23 +288,31 @@ async function persistState(pair: string, state: any): Promise<void> {
   }
 }
 
-// ─── IMPULSE DETECTION (v29.4 FIX) ───────────────────────────────────
-// Scans last N candles for the BEST impulse candidate, not just the last one
+// ─── BREAKOUT DETECTION (v29.5 — THE FIX) ──────────────────────────────
+// Detects breakout impulses directly without requiring accumulation phase
+// High volume + range expansion + directional momentum = immediate signal
 
-function detectImpulse(
+function detectBreakout(
   candles: Candle[],
   debug: string[]
-): { candle: Candle; direction: "LONG" | "SHORT"; range: number; index: number } | null {
-  if (candles.length < IMPULSE_SCAN_DEPTH + 5) {
-    debug.push(`IMPULSE: insufficient candles (${candles.length})`);
+): {
+  candle: Candle;
+  direction: "LONG" | "SHORT";
+  range: number;
+  index: number;
+  zone: { top: number; bottom: number };
+  quality: ZoneQuality;
+} | null {
+  if (candles.length < BREAKOUT_SCAN_DEPTH + 15) {
+    debug.push(`BREAKOUT: insufficient candles (${candles.length})`);
     return null;
   }
 
   const last = candles.length - 1;
-  const scanStart = Math.max(1, last - IMPULSE_SCAN_DEPTH + 1);
+  const scanStart = Math.max(1, last - BREAKOUT_SCAN_DEPTH + 1);
 
-  // Pre-calculate averages from the full lookback window
-  const lookbackStart = Math.max(0, last - IMPULSE_SCAN_DEPTH - 10);
+  // Pre-calculate averages from lookback window
+  const lookbackStart = Math.max(0, last - BREAKOUT_SCAN_DEPTH - 15);
   const lookbackCandles = candles.slice(lookbackStart, scanStart);
 
   const prevBodies = lookbackCandles.map(c => Math.abs(c.close - c.open));
@@ -312,7 +324,7 @@ function detectImpulse(
   const prevVolumes = lookbackCandles.map(c => c.volume);
   const avgVol = avg(prevVolumes);
 
-  debug.push(`IMPULSE_AVG body=${avgBody.toFixed(2)} tr=${avgTR.toFixed(2)} vol=${avgVol.toFixed(2)}`);
+  debug.push(`BREAKOUT_AVG body=${avgBody.toFixed(2)} tr=${avgTR.toFixed(2)} vol=${avgVol.toFixed(2)}`);
 
   let bestCandidate: {
     candle: Candle;
@@ -320,154 +332,108 @@ function detectImpulse(
     range: number;
     index: number;
     score: number;
+    zone: { top: number; bottom: number };
   } | null = null;
 
-  // Scan last N candles for the best impulse
+  // Scan last N candles for breakout
   for (let i = scanStart; i <= last; i++) {
     const c = candles[i];
     const p = candles[i - 1];
 
     const body = Math.abs(c.close - c.open);
     const tr = trueRange(c, p);
+    const candleRange = c.high - c.low;
 
     const volRatio = avgVol > 0 ? c.volume / avgVol : 0;
     const bodyRatio = avgBody > 0 ? body / avgBody : 0;
     const trRatio = avgTR > 0 ? tr / avgTR : 0;
 
-    const volClimax = volRatio >= IMPULSE_VOLUME_MULT;
-    const strongBody = bodyRatio >= IMPULSE_BODY_MULT;
-    const expandingTR = trRatio >= IMPULSE_TR_MULT;
+    // Direction: momentum-based (not reversal)
+    const direction = c.close > c.open ? "LONG" : "SHORT";
+    const momentum = Math.abs(c.close - c.open) / c.open;
 
-    // Direction: reversal logic — big RED candle suggests LONG reversal setup
-    const direction = c.close < c.open ? "LONG" : "SHORT";
-
-    // Composite score (0-3)
-    const score = (volClimax ? 1 : 0) + (strongBody ? 1 : 0) + (expandingTR ? 1 : 0);
+    // Score: vol + range + momentum
+    const volScore = volRatio >= BREAKOUT_VOLUME_MULT ? 1 : 0;
+    const rangeScore = trRatio >= BREAKOUT_RANGE_MULT ? 1 : 0;
+    const momentumScore = bodyRatio >= BREAKOUT_BODY_MULT && momentum > 0.001 ? 1 : 0;
+    const score = volScore + rangeScore + momentumScore;
 
     debug.push(
-      `IMPULSE[${i}] vol=${volRatio.toFixed(2)}x body=${bodyRatio.toFixed(2)}x tr=${trRatio.toFixed(2)}x ` +
-      `score=${score}/3 dir=${direction} close=${c.close.toFixed(2)} open=${c.open.toFixed(2)}`
+      `BREAKOUT[${i}] vol=${volRatio.toFixed(2)}x(${volScore}) tr=${trRatio.toFixed(2)}x(${rangeScore}) ` +
+      `body=${bodyRatio.toFixed(2)}x(${momentumScore}) score=${score}/3 dir=${direction} close=${c.close.toFixed(2)}`
     );
 
-    // Need at least 2 of 3 conditions
-    if (score >= 2) {
-      const impulseHigh = Math.max(...candles.slice(Math.max(0, i - 2), i + 1).map(c => c.high));
-      const impulseLow = Math.min(...candles.slice(Math.max(0, i - 2), i + 1).map(c => c.low));
+    if (score >= BREAKOUT_MIN_SCORE) {
+      // Build zone from recent consolidation before this candle
+      const zoneStart = Math.max(0, i - 8);
+      const zoneCandles = candles.slice(zoneStart, i);
+      const top = Math.max(...zoneCandles.map(c => c.high), c.high);
+      const bottom = Math.min(...zoneCandles.map(c => c.low), c.low);
 
       if (!bestCandidate || score > bestCandidate.score) {
         bestCandidate = {
           candle: c,
           direction,
-          range: impulseHigh - impulseLow,
+          range: candleRange,
           index: i,
           score,
+          zone: { top, bottom },
         };
       }
     }
   }
 
-  if (bestCandidate) {
-    debug.push(
-      `IMPULSE_SELECTED[${bestCandidate.index}] score=${bestCandidate.score}/3 ` +
-      `dir=${bestCandidate.direction} range=${bestCandidate.range.toFixed(2)}`
-    );
-    return {
-      candle: bestCandidate.candle,
-      direction: bestCandidate.direction,
-      range: bestCandidate.range,
-      index: bestCandidate.index,
-    };
+  if (!bestCandidate) {
+    debug.push(`BREAKOUT: no candidate met score>=${BREAKOUT_MIN_SCORE} (vol>=${BREAKOUT_VOLUME_MULT}x tr>=${BREAKOUT_RANGE_MULT}x body>=${BREAKOUT_BODY_MULT}x)`);
+    return null;
   }
 
-  debug.push(`IMPULSE: no candidate met score>=2 (vol>=${IMPULSE_VOLUME_MULT}x body>=${IMPULSE_BODY_MULT}x tr>=${IMPULSE_TR_MULT}x)`);
-  return null;
-}
-
-// ─── ACCUMULATION DETECTION (adaptive duration) ───────────────────────────
-
-function isAccumulating(
-  candles: Candle[],
-  impulseDir: "LONG" | "SHORT",
-  zoneStartIndex: number
-): { accumulating: boolean; reason?: string } {
-  const zoneAge = candles.length - zoneStartIndex;
-
-  if (zoneAge < 4) return { accumulating: false, reason: `too_fresh_${zoneAge}` };
-  if (zoneAge > 20) return { accumulating: false, reason: "max_age_exceeded" };
-
-  const recent = candles.slice(zoneStartIndex);
-  const highs = recent.map(c => c.high);
-  const lows = recent.map(c => c.low);
-  const range = Math.max(...highs) - Math.min(...lows);
-
+  // Calculate zone quality
+  const z = bestCandidate.zone;
+  const zoneHeight = z.top - z.bottom;
   const atrSeries = atr(candles, 14);
-  const currentATR = atrSeries[atrSeries.length - 1];
-  const impulseATR = atrSeries[Math.max(0, atrSeries.length - zoneAge - 1)] || currentATR;
+  const currentATR = atrSeries[atrSeries.length - 1] || zoneHeight;
+  const widthATR = currentATR > 0 ? zoneHeight / currentATR : 0;
 
-  const compressed = range < impulseATR * 3;
-  const atrContracted = currentATR < impulseATR * 0.8;
-
-  if (!compressed) return { accumulating: false, reason: "not_compressed" };
-  if (!atrContracted) return { accumulating: false, reason: "atr_not_contracted" };
-
-  return { accumulating: true };
-}
-
-// ─── ZONE QUALITY METRIC ─────────────────────────────────────────────────
-
-function calcZoneQuality(
-  zone: Zone,
-  candles: Candle[],
-  zoneStartIndex: number,
-  impulseRange: number,
-  impulseVolume: number
-): ZoneQuality {
-  const zoneAge = candles.length - zoneStartIndex;
-  const atrSeries = atr(candles, 14);
-  const currentATR = atrSeries[atrSeries.length - 1] || 1;
-  const widthATR = (zone.top - zone.bottom) / currentATR;
-
-  const compression = impulseRange > 0
-    ? Math.max(0, (1 - (zone.top - zone.bottom) / impulseRange) * 100)
-    : 0;
-
-  const recentVolumes = candles.slice(-Math.min(zoneAge, 10)).map(c => c.volume);
+  const recentVolumes = candles.slice(-5).map(c => c.volume);
   const currentAvgVol = avg(recentVolumes);
-  const volumeDecay = impulseVolume > 0
-    ? Math.max(0, (1 - currentAvgVol / impulseVolume) * 100)
+  const volumeDecay = bestCandidate.candle.volume > 0
+    ? Math.max(0, (1 - currentAvgVol / bestCandidate.candle.volume) * 100)
     : 0;
 
   let touches = 0;
-  const recent = candles.slice(zoneStartIndex);
-  for (const c of recent) {
-    const nearTop = Math.abs(c.high - zone.top) < currentATR * 0.3;
-    const nearBottom = Math.abs(c.low - zone.bottom) < currentATR * 0.3;
-    if (nearTop || nearBottom) touches++;
+  const zoneCandles = candles.slice(Math.max(0, bestCandidate.index - 8), bestCandidate.index);
+  for (const c of zoneCandles) {
+    if (Math.abs(c.high - z.top) < currentATR * 0.3 || Math.abs(c.low - z.bottom) < currentATR * 0.3) touches++;
   }
 
-  let score = 0;
-  if (zoneAge >= 6) score += 15;
-  if (zoneAge >= 10) score += 10;
-  if (widthATR < 2) score += 20;
-  if (widthATR < 1.5) score += 10;
-  if (compression > 60) score += 15;
-  if (volumeDecay > 40) score += 15;
-  if (touches >= 3) score += 10;
-  if (zone.breakAttempts >= 1) score += 5;
-
   let label: ZoneQuality["label"] = "WEAK";
-  if (score >= 75) label = "EXCELLENT";
-  else if (score >= 55) label = "GOOD";
-  else if (score >= 35) label = "AVERAGE";
+  if (widthATR < 1.5 && touches >= 2) label = "EXCELLENT";
+  else if (widthATR < 2 && touches >= 1) label = "GOOD";
+  else if (widthATR < 3) label = "AVERAGE";
+
+  const quality: ZoneQuality = {
+    age: zoneCandles.length,
+    widthATR,
+    compression: Math.max(0, 100 - widthATR * 30),
+    volumeDecay,
+    touches,
+    breakAttempts: 0,
+    label,
+  };
+
+  debug.push(
+    `BREAKOUT_SELECTED[${bestCandidate.index}] score=${bestCandidate.score}/3 ` +
+    `dir=${bestCandidate.direction} zone=${z.bottom.toFixed(2)}-${z.top.toFixed(2)} quality=${label}`
+  );
 
   return {
-    age: zoneAge,
-    widthATR,
-    compression: Math.round(compression),
-    volumeDecay: Math.round(volumeDecay),
-    touches,
-    breakAttempts: zone.breakAttempts,
-    label,
+    candle: bestCandidate.candle,
+    direction: bestCandidate.direction,
+    range: bestCandidate.range,
+    index: bestCandidate.index,
+    zone: z,
+    quality,
   };
 }
 
@@ -494,223 +460,210 @@ export async function generateSignal(
 
   debug.push(`HTF Bias: ${htBias} | Stage: ${state.stage}`);
 
-  // ── STAGE: NONE → WATCHING ──────────────────────────────────────
+  // ── STAGE: NONE → Detect Breakout Directly ──────────────────────
 
   if (state.stage === "NONE") {
-    const impulse = detectImpulse(candles4h, debug);
-    if (impulse) {
+    const breakout = detectBreakout(candles4h, debug);
+
+    if (!breakout) {
+      debug.push("No breakout detected — scanning");
+      return {
+        signal: null,
+        market: {
+          pair, price, timestamp: Date.now(),
+          phase: "NONE", trend: trend1d,
+          htfBias: htBias, adx: adx(candles4h), rsi: 0,
+          stochK: stoch.k, stochD: stoch.d,
+          zoneTop: null, zoneBottom: null, zoneScore: 0,
+        },
+        debug,
+        stage: "NONE",
+      };
+    }
+
+    // Timeframe alignment check
+    if (REQUIRE_HTF_ALIGNMENT) {
       const aligned =
-        (htBias === "BULLISH" && impulse.direction === "LONG") ||
-        (htBias === "BEARISH" && impulse.direction === "SHORT") ||
-        htBias === "NEUTRAL";
+        (breakout.direction === "LONG" && (htBias === "BULLISH" || htBias === "NEUTRAL")) ||
+        (breakout.direction === "SHORT" && (htBias === "BEARISH" || htBias === "NEUTRAL"));
 
       if (!aligned) {
-        debug.push(`WATCHING BLOCKED: ${impulse.direction} impulse but HTF is ${htBias}`);
-        return { debug, stage: "NONE" };
+        debug.push(`BREAKOUT BLOCKED: ${breakout.direction} breakout but HTF is ${htBias}`);
+        return {
+          signal: null,
+          market: {
+            pair, price, timestamp: Date.now(),
+            phase: "NONE", trend: trend1d,
+            htfBias: htBias, adx: adx(candles4h), rsi: 0,
+            stochK: stoch.k, stochD: stoch.d,
+            zoneTop: null, zoneBottom: null, zoneScore: 0,
+          },
+          debug,
+          stage: "NONE",
+        };
       }
-
-      state = {
-        ...state,
-        stage: "WATCHING",
-        impulseCandle: impulse.candle,
-        impulseDirection: impulse.direction,
-        impulseRange: impulse.range,
-        zoneStartIndex: len,
-      };
-      await persistState(pair, state);
-      debug.push(`WATCHING: ${impulse.direction} impulse (reversal setup) at ${impulse.candle.close.toFixed(1)} | HTF: ${htBias}`);
-      return { debug, stage: "WATCHING" };
-    }
-    debug.push("No impulse — scanning");
-    return { debug, stage: "NONE" };
-  }
-
-  // ── STAGE: WATCHING → ACCUMULATION ──────────────────────────────
-
-  if (state.stage === "WATCHING" && state.impulseDirection) {
-    const accumulation = isAccumulating(candles4h, state.impulseDirection, state.zoneStartIndex);
-
-    if (accumulation.accumulating) {
-      const recent = candles4h.slice(state.zoneStartIndex);
-      const top = Math.max(...recent.map(c => c.high));
-      const bottom = Math.min(...recent.map(c => c.low));
-
-      const zone: Zone = {
-        top,
-        bottom,
-        left: recent[0].timestamp,
-        right: recent[recent.length - 1].timestamp,
-        active: true,
-        volumeClimax: state.impulseCandle?.volume || 0,
-        type: state.impulseDirection === "LONG" ? "ACCUMULATION" : "DISTRIBUTION",
-        touches: 0,
-        breakAttempts: 0,
-      };
-
-      state = { ...state, stage: "ACCUMULATION", zone };
-      await persistState(pair, state);
-      debug.push(`ACCUMULATION: Zone ${bottom.toFixed(1)}-${top.toFixed(1)} forming after ${state.impulseDirection} impulse | Age: ${len - state.zoneStartIndex}`);
-      return { debug, stage: "ACCUMULATION", zone };
     }
 
-    const last = candles4h[candles4h.length - 1];
-    const impulseClose = state.impulseCandle?.close || 0;
-    const continued = state.impulseDirection === "LONG"
-      ? last.close < impulseClose * 0.97
-      : last.close > impulseClose * 1.03;
+    // Build signal directly from breakout
+    const direction = breakout.direction;
+    const entry = breakout.candle.close;
+    const zone = breakout.zone;
+    const zoneHeight = zone.top - zone.bottom;
 
-    if (continued) {
-      debug.push("Impulse continued without accumulation — resetting");
-      await persistState(pair, { stage: "NONE", zone: null, impulseCandle: null, impulseDirection: null, impulseRange: 0, prevStoch: null, zoneStartIndex: 0 });
-      return { debug, stage: "NONE" };
-    }
-
-    debug.push("WATCHING: waiting for accumulation pattern");
-    return { debug, stage: "WATCHING" };
-  }
-
-  // ── STAGE: ACCUMULATION (grow zone) ─────────────────────────────
-
-  if (state.stage === "ACCUMULATION" && state.zone) {
-    const last = candles4h[candles4h.length - 1];
     const atrSeries = atr(candles4h, 14);
-    const currentATR = atrSeries[atrSeries.length - 1];
+    const currentATR = atrSeries[atrSeries.length - 1] || zoneHeight * 0.5;
 
-    state.zone.top = Math.max(state.zone.top, last.high);
-    state.zone.bottom = Math.min(state.zone.bottom, last.low);
-    state.zone.right = last.timestamp;
+    const swingStop = direction === "LONG" ? zone.bottom : zone.top;
+    const atrStop = direction === "LONG" ? entry - currentATR * 1.5 : entry + currentATR * 1.5;
+    const stop = direction === "LONG" ? Math.max(swingStop, atrStop) : Math.min(swingStop, atrStop);
 
-    const nearTop = Math.abs(last.high - state.zone.top) < currentATR * 0.3;
-    const nearBottom = Math.abs(last.low - state.zone.bottom) < currentATR * 0.3;
-    if (nearTop || nearBottom) state.zone.touches++;
+    const atrTarget = direction === "LONG" ? entry + currentATR * 3 : entry - currentATR * 3;
+    const zoneTarget = direction === "LONG" ? entry + zoneHeight * 1.5 : entry - zoneHeight * 1.5;
+    const target = direction === "LONG" ? Math.max(atrTarget, zoneTarget) : Math.min(atrTarget, zoneTarget);
 
-    const brieflyAbove = last.high > state.zone.top && last.close <= state.zone.top;
-    const brieflyBelow = last.low < state.zone.bottom && last.close >= state.zone.bottom;
-    if (brieflyAbove || brieflyBelow) state.zone.breakAttempts++;
+    const ema21 = ema(closes, 21);
+    const trail = direction === "LONG"
+      ? ema21[ema21.length - 1] - currentATR * 0.5
+      : ema21[ema21.length - 1] + currentATR * 0.5;
 
-    const zoneAge = len - state.zoneStartIndex;
-    const insideZone = last.close >= state.zone.bottom && last.close <= state.zone.top;
-    const ready = zoneAge >= 5 && insideZone;
+    const rr = Math.abs(target - entry) / Math.abs(entry - stop);
 
-    if (ready) {
-      state = { ...state, stage: "READY" };
-      await persistState(pair, state);
-      debug.push(`READY: Zone matured after ${zoneAge} candles`);
-      return { debug, stage: "READY", zone: state.zone };
-    }
+    // Confidence based on zone quality
+    let confidence = 50;
+    if (breakout.quality.label === "EXCELLENT") confidence = 85;
+    else if (breakout.quality.label === "GOOD") confidence = 72;
+    else if (breakout.quality.label === "AVERAGE") confidence = 60;
+    else confidence = 45;
 
-    const brokeWrongWay = state.impulseDirection === "LONG"
-      ? last.close < state.zone.bottom - currentATR * 0.5
-      : last.close > state.zone.top + currentATR * 0.5;
+    if (htBias === "NEUTRAL") confidence -= 5;
 
-    if (brokeWrongWay) {
-      debug.push("Broke zone wrong way — resetting");
-      await persistState(pair, { stage: "NONE", zone: null, impulseCandle: null, impulseDirection: null, impulseRange: 0, prevStoch: null, zoneStartIndex: 0 });
-      return { debug, stage: "NONE" };
-    }
+    const adxValue = adx(candles4h);
+    if (adxValue > 25) confidence += 5;
+    if (adxValue > 35) confidence += 5;
 
-    await persistState(pair, state);
-    debug.push(`ACCUMULATION: Zone growing ${state.zone.bottom.toFixed(1)}-${state.zone.top.toFixed(1)} | Age: ${zoneAge} | Touches: ${state.zone.touches}`);
-    return { debug, stage: "ACCUMULATION", zone: state.zone };
+    confidence = Math.min(95, Math.max(30, confidence));
+
+    const explanation = `${direction} BREAKOUT: ${breakout.quality.label} quality zone (${zone.bottom.toFixed(0)}-${zone.top.toFixed(0)}) broken with ${breakout.candle.volume.toFixed(0)} volume, ATR=${currentATR.toFixed(1)}, HTF=${htBias}, ADX=${adxValue.toFixed(1)}`;
+
+    const signal: Signal = {
+      id: `${pair}_${Date.now()}`,
+      pair,
+      direction,
+      stage: "CONFIRMED",
+      entry: Math.round(entry * 100) / 100,
+      stop: Math.round(stop * 100) / 100,
+      target: Math.round(target * 100) / 100,
+      trail: Math.round(trail * 100) / 100,
+      confidence,
+      rr: Math.round(rr * 100) / 100,
+      adx: adxValue,
+      zoneTop: Math.round(zone.top * 100) / 100,
+      zoneBottom: Math.round(zone.bottom * 100) / 100,
+      explanation,
+      timestamp: Date.now(),
+      version: CURRENT_SIGNAL_VERSION,
+    };
+
+    // Reset state after signal
+    await persistState(pair, { stage: "NONE", zone: null, impulseCandle: null, impulseDirection: null, impulseRange: 0, prevStoch: null, zoneStartIndex: 0 });
+
+    const market = {
+      pair,
+      price: Math.round(price * 100) / 100,
+      timestamp: Date.now(),
+      phase: "EXPANSION",
+      trend: trend1d,
+      htfBias: htBias,
+      adx: adxValue,
+      rsi: 0,
+      stochK: stoch.k,
+      stochD: stoch.d,
+      zoneTop: signal.zoneTop,
+      zoneBottom: signal.zoneBottom,
+      zoneScore: breakout.quality.label === "EXCELLENT" ? 90 : breakout.quality.label === "GOOD" ? 70 : breakout.quality.label === "AVERAGE" ? 50 : 30,
+      zoneQuality: breakout.quality,
+      closes4h: candles4h.slice(-50).map(c => c.close),
+    };
+
+    debug.push(`SIGNAL: ${direction} CONFIRMED entry=${signal.entry} stop=${signal.stop} target=${signal.target} trail=${signal.trail} RR=${signal.rr} Quality=${breakout.quality.label}`);
+
+    return { signal, market, debug, stage: "EXPANSION", zone: undefined };
   }
 
-  // ── STAGE: READY → CONFIRMED (breakout) ─────────────────────────
+  // ── Handle existing states (WATCHING, ACCUMULATION, READY) ──────
+  // These are legacy states — reset and re-detect
 
-  if (state.stage === "READY" && state.zone) {
-    const last = candles4h[candles4h.length - 1];
-    const atrSeries = atr(candles4h, 14);
-    const currentATR = atrSeries[atrSeries.length - 1];
+  if (state.stage !== "NONE") {
+    debug.push(`Legacy state ${state.stage} detected — resetting to NONE for breakout detection`);
+    await persistState(pair, { stage: "NONE", zone: null, impulseCandle: null, impulseDirection: null, impulseRange: 0, prevStoch: null, zoneStartIndex: 0 });
 
-    const breakoutUp = last.close > state.zone.top + currentATR * 0.2;
-    const breakoutDown = last.close < state.zone.bottom - currentATR * 0.2;
-
-    const correctBreakout = state.impulseDirection === "LONG" ? breakoutUp : breakoutDown;
-
-    if (correctBreakout) {
-      state.zone.active = false;
-      state.zone.right = last.timestamp;
-
-      const direction = state.impulseDirection;
-      const entry = last.close;
-      const zoneHeight = state.zone.top - state.zone.bottom;
-
-      const swingStop = direction === "LONG" ? state.zone.bottom : state.zone.top;
-      const atrStop = direction === "LONG" ? entry - currentATR * 2 : entry + currentATR * 2;
+    // Re-run detection
+    const breakout = detectBreakout(candles4h, debug);
+    if (breakout) {
+      // ... same signal generation as above ...
+      // (duplicated for simplicity — in production, extract to helper)
+      const direction = breakout.direction;
+      const entry = breakout.candle.close;
+      const zone = breakout.zone;
+      const zoneHeight = zone.top - zone.bottom;
+      const atrSeries = atr(candles4h, 14);
+      const currentATR = atrSeries[atrSeries.length - 1] || zoneHeight * 0.5;
+      const swingStop = direction === "LONG" ? zone.bottom : zone.top;
+      const atrStop = direction === "LONG" ? entry - currentATR * 1.5 : entry + currentATR * 1.5;
       const stop = direction === "LONG" ? Math.max(swingStop, atrStop) : Math.min(swingStop, atrStop);
-
-      const atrTarget = direction === "LONG" ? entry + currentATR * 4 : entry - currentATR * 4;
-      const zoneTarget = direction === "LONG" ? entry + zoneHeight * 2 : entry - zoneHeight * 2;
+      const atrTarget = direction === "LONG" ? entry + currentATR * 3 : entry - currentATR * 3;
+      const zoneTarget = direction === "LONG" ? entry + zoneHeight * 1.5 : entry - zoneHeight * 1.5;
       const target = direction === "LONG" ? Math.max(atrTarget, zoneTarget) : Math.min(atrTarget, zoneTarget);
-
       const ema21 = ema(closes, 21);
-      const trail = direction === "LONG"
-        ? ema21[ema21.length - 1] - currentATR * 0.3
-        : ema21[ema21.length - 1] + currentATR * 0.3;
-
+      const trail = direction === "LONG" ? ema21[ema21.length - 1] - currentATR * 0.5 : ema21[ema21.length - 1] + currentATR * 0.5;
       const rr = Math.abs(target - entry) / Math.abs(entry - stop);
-
-      const quality = calcZoneQuality(state.zone, candles4h, state.zoneStartIndex, state.impulseRange, state.impulseCandle?.volume || 0);
       let confidence = 50;
-      if (quality.label === "EXCELLENT") confidence = 85;
-      else if (quality.label === "GOOD") confidence = 72;
-      else if (quality.label === "AVERAGE") confidence = 60;
+      if (breakout.quality.label === "EXCELLENT") confidence = 85;
+      else if (breakout.quality.label === "GOOD") confidence = 72;
+      else if (breakout.quality.label === "AVERAGE") confidence = 60;
       else confidence = 45;
-
       if (htBias === "NEUTRAL") confidence -= 5;
-
-      const explanation = `BUY because: A ${state.impulseDirection === "LONG" ? "high-volume selloff" : "high-volume buying climax"} was followed by ${quality.age} candles of range compression, ATR contracted, price formed a ${quality.label.toLowerCase()} ${state.zone.type.toLowerCase()} zone (${state.zone.bottom.toFixed(0)}-${state.zone.top.toFixed(0)}), and price broke out with momentum. Zone quality: ${quality.label} | Compression: ${quality.compression}% | Volume decay: ${quality.volumeDecay}% | Touches: ${quality.touches}.`;
-
+      const adxValue = adx(candles4h);
+      if (adxValue > 25) confidence += 5;
+      if (adxValue > 35) confidence += 5;
+      confidence = Math.min(95, Math.max(30, confidence));
+      const explanation = `${direction} BREAKOUT: ${breakout.quality.label} quality zone (${zone.bottom.toFixed(0)}-${zone.top.toFixed(0)}) broken with ${breakout.candle.volume.toFixed(0)} volume, ATR=${currentATR.toFixed(1)}, HTF=${htBias}, ADX=${adxValue.toFixed(1)}`;
       const signal: Signal = {
-        id: `${pair}_${Date.now()}`,
-        pair,
-        direction,
-        stage: "CONFIRMED",
-        entry: Math.round(entry * 100) / 100,
-        stop: Math.round(stop * 100) / 100,
-        target: Math.round(target * 100) / 100,
-        trail: Math.round(trail * 100) / 100,
-        confidence: Math.min(95, Math.max(30, confidence)),
-        rr: Math.round(rr * 100) / 100,
-        adx: adx(candles4h),
-        zoneTop: Math.round(state.zone.top * 100) / 100,
-        zoneBottom: Math.round(state.zone.bottom * 100) / 100,
-        explanation,
-        timestamp: Date.now(),
-        version: CURRENT_SIGNAL_VERSION,
+        id: `${pair}_${Date.now()}`, pair, direction, stage: "CONFIRMED",
+        entry: Math.round(entry * 100) / 100, stop: Math.round(stop * 100) / 100,
+        target: Math.round(target * 100) / 100, trail: Math.round(trail * 100) / 100,
+        confidence, rr: Math.round(rr * 100) / 100, adx: adxValue,
+        zoneTop: Math.round(zone.top * 100) / 100, zoneBottom: Math.round(zone.bottom * 100) / 100,
+        explanation, timestamp: Date.now(), version: CURRENT_SIGNAL_VERSION,
       };
-
       await persistState(pair, { stage: "NONE", zone: null, impulseCandle: null, impulseDirection: null, impulseRange: 0, prevStoch: null, zoneStartIndex: 0 });
-
       const market = {
-        pair,
-        price: Math.round(price * 100) / 100,
-        timestamp: Date.now(),
-        phase: "EXPANSION",
-        trend: trend1d,
-        htfBias: htBias,
-        adx: signal.adx,
-        rsi: 0,
-        stochK: stoch.k,
-        stochD: stoch.d,
-        zoneTop: signal.zoneTop,
-        zoneBottom: signal.zoneBottom,
-        zoneScore: quality.label === "EXCELLENT" ? 90 : quality.label === "GOOD" ? 70 : quality.label === "AVERAGE" ? 50 : 30,
-        zoneQuality: quality,
+        pair, price: Math.round(price * 100) / 100, timestamp: Date.now(),
+        phase: "EXPANSION", trend: trend1d, htfBias: htBias, adx: adxValue,
+        rsi: 0, stochK: stoch.k, stochD: stoch.d,
+        zoneTop: signal.zoneTop, zoneBottom: signal.zoneBottom,
+        zoneScore: breakout.quality.label === "EXCELLENT" ? 90 : breakout.quality.label === "GOOD" ? 70 : breakout.quality.label === "AVERAGE" ? 50 : 30,
+        zoneQuality: breakout.quality,
         closes4h: candles4h.slice(-50).map(c => c.close),
       };
-
-      debug.push(`SIGNAL: ${direction} CONFIRMED entry=${signal.entry} stop=${signal.stop} target=${signal.target} trail=${signal.trail} RR=${signal.rr} Quality=${quality.label}`);
-
-      return { signal, market, debug, phase: "EXPANSION", zone: state.zone };
+      debug.push(`SIGNAL: ${direction} CONFIRMED entry=${signal.entry} stop=${signal.stop} target=${signal.target} trail=${signal.trail} RR=${signal.rr} Quality=${breakout.quality.label}`);
+      return { signal, market, debug, stage: "EXPANSION", zone: undefined };
     }
-
-    debug.push(`READY: Waiting for breakout | Zone ${state.zone.bottom.toFixed(1)}-${state.zone.top.toFixed(1)}`);
-    return { debug, stage: "READY", zone: state.zone };
   }
 
-  debug.push(`Unknown stage: ${state.stage} — resetting`);
-  await persistState(pair, { stage: "NONE", zone: null, impulseCandle: null, impulseDirection: null, impulseRange: 0, prevStoch: null, zoneStartIndex: 0 });
-  return { debug, stage: "NONE" };
+  debug.push("No breakout detected — scanning");
+  return {
+    signal: null,
+    market: {
+      pair, price, timestamp: Date.now(),
+      phase: "NONE", trend: trend1d,
+      htfBias: htBias, adx: adx(candles4h), rsi: 0,
+      stochK: stoch.k, stochD: stoch.d,
+      zoneTop: null, zoneBottom: null, zoneScore: 0,
+    },
+    debug,
+    stage: "NONE",
+  };
 }
 
 // ─── Trail Stop Update ─────────────────────────────────────────────────
@@ -757,7 +710,10 @@ export async function getMarketSnapshot(
 
   let zoneQuality: ZoneQuality | null = null;
   if (state.zone && state.zoneStartIndex > 0) {
-    zoneQuality = calcZoneQuality(state.zone, candles4h, state.zoneStartIndex, state.impulseRange, state.impulseCandle?.volume || 0);
+    zoneQuality = {
+      age: candles4h.length - state.zoneStartIndex,
+      widthATR: 0, compression: 0, volumeDecay: 0, touches: 0, breakAttempts: 0, label: "WEAK",
+    };
   }
 
   return {
