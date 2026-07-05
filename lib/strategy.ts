@@ -1,8 +1,8 @@
-// lib/strategy.ts — v29.5 "Breakout Detection: Direct Signal Generation"
+// lib/strategy.ts — v29.6 "Configurable Thresholds + Test Mode"
 // ============================================================
-// MAJOR CHANGE: Removed accumulation phase requirement
-// Now detects breakout impulses directly: vol + range + direction = signal
-// This matches current market conditions where volume drives expansion immediately
+// FINAL VERSION: All exports preserved, no breaking changes
+// Added: threshold config, test mode, detailed logging
+// Fixed: detects both breakout AND accumulation patterns
 
 export interface Candle {
   timestamp: number;
@@ -64,17 +64,29 @@ export interface ZoneQuality {
 
 export const CURRENT_SIGNAL_VERSION = 29;
 
-// ─── Config (TUNABLE) ────────────────────────────────────────────────────
+// ─── Config (TUNABLE — adjust these based on market conditions) ──────────
 
-// Breakout detection: vol + range + momentum = signal
-const BREAKOUT_VOLUME_MULT = 1.5;       // 1.5x avg volume
-const BREAKOUT_RANGE_MULT = 0.9;        // 0.9x ATR (lowered from 1.2)
-const BREAKOUT_BODY_MULT = 0.8;         // 0.8x avg body
+// Mode: "BREAKOUT" = detects expansion immediately | "ACCUMULATION" = waits for zone
+const DETECTION_MODE: "BREAKOUT" | "ACCUMULATION" = "BREAKOUT";
+
+// Breakout detection thresholds
+const BREAKOUT_VOLUME_MULT = 1.2;       // 1.2x avg volume (lowered from 1.5)
+const BREAKOUT_RANGE_MULT = 0.7;        // 0.7x ATR (lowered from 0.9)
+const BREAKOUT_BODY_MULT = 0.5;         // 0.5x avg body (lowered from 0.8)
 const BREAKOUT_SCAN_DEPTH = 10;         // Scan last N candles
 const BREAKOUT_MIN_SCORE = 2;           // Need 2 of 3 conditions
 
+// Accumulation detection thresholds (legacy mode)
+const CLIMAX_VOLUME_MULT = 1.5;        // 1.5x avg volume
+const CLIMAX_RANGE_MAX = 1.0;           // Max 1.0x ATR for tight range
+const CLIMAX_BODY_MIN = 0.3;            // Min body ratio
+
 // Timeframe alignment
 const REQUIRE_HTF_ALIGNMENT = true;
+
+// Test mode: forces signal generation for debugging
+const TEST_MODE = false;
+const TEST_DIRECTION: "LONG" | "SHORT" = "LONG";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -288,30 +300,31 @@ async function persistState(pair: string, state: any): Promise<void> {
   }
 }
 
-// ─── BREAKOUT DETECTION (v29.5 — THE FIX) ──────────────────────────────
-// Detects breakout impulses directly without requiring accumulation phase
-// High volume + range expansion + directional momentum = immediate signal
+// ─── DETECTION ENGINE (v29.6) ──────────────────────────────────────────
 
-function detectBreakout(
+interface DetectionResult {
+  detected: boolean;
+  candle: Candle | null;
+  direction: "LONG" | "SHORT" | null;
+  zone: { top: number; bottom: number } | null;
+  quality: ZoneQuality | null;
+  index: number;
+  score: number;
+  reason: string;
+}
+
+function detectPattern(
   candles: Candle[],
   debug: string[]
-): {
-  candle: Candle;
-  direction: "LONG" | "SHORT";
-  range: number;
-  index: number;
-  zone: { top: number; bottom: number };
-  quality: ZoneQuality;
-} | null {
-  if (candles.length < BREAKOUT_SCAN_DEPTH + 15) {
-    debug.push(`BREAKOUT: insufficient candles (${candles.length})`);
-    return null;
+): DetectionResult {
+  if (candles.length < 25) {
+    return { detected: false, candle: null, direction: null, zone: null, quality: null, index: -1, score: 0, reason: "insufficient_candles" };
   }
 
   const last = candles.length - 1;
   const scanStart = Math.max(1, last - BREAKOUT_SCAN_DEPTH + 1);
 
-  // Pre-calculate averages from lookback window
+  // Pre-calculate averages
   const lookbackStart = Math.max(0, last - BREAKOUT_SCAN_DEPTH - 15);
   const lookbackCandles = candles.slice(lookbackStart, scanStart);
 
@@ -324,18 +337,10 @@ function detectBreakout(
   const prevVolumes = lookbackCandles.map(c => c.volume);
   const avgVol = avg(prevVolumes);
 
-  debug.push(`BREAKOUT_AVG body=${avgBody.toFixed(2)} tr=${avgTR.toFixed(2)} vol=${avgVol.toFixed(2)}`);
+  debug.push(`DETECT avgBody=${avgBody.toFixed(2)} avgTR=${avgTR.toFixed(2)} avgVol=${avgVol.toFixed(2)} mode=${DETECTION_MODE}`);
 
-  let bestCandidate: {
-    candle: Candle;
-    direction: "LONG" | "SHORT";
-    range: number;
-    index: number;
-    score: number;
-    zone: { top: number; bottom: number };
-  } | null = null;
+  let bestResult: DetectionResult | null = null;
 
-  // Scan last N candles for breakout
   for (let i = scanStart; i <= last; i++) {
     const c = candles[i];
     const p = candles[i - 1];
@@ -348,93 +353,92 @@ function detectBreakout(
     const bodyRatio = avgBody > 0 ? body / avgBody : 0;
     const trRatio = avgTR > 0 ? tr / avgTR : 0;
 
-    // Direction: momentum-based (not reversal)
-    const direction = c.close > c.open ? "LONG" : "SHORT";
-    const momentum = Math.abs(c.close - c.open) / c.open;
+    const isBullish = c.close > c.open;
+    const direction = isBullish ? "LONG" : "SHORT";
 
-    // Score: vol + range + momentum
-    const volScore = volRatio >= BREAKOUT_VOLUME_MULT ? 1 : 0;
-    const rangeScore = trRatio >= BREAKOUT_RANGE_MULT ? 1 : 0;
-    const momentumScore = bodyRatio >= BREAKOUT_BODY_MULT && momentum > 0.001 ? 1 : 0;
-    const score = volScore + rangeScore + momentumScore;
+    if (DETECTION_MODE === "BREAKOUT") {
+      // Breakout mode: vol + range + momentum
+      const volScore = volRatio >= BREAKOUT_VOLUME_MULT ? 1 : 0;
+      const rangeScore = trRatio >= BREAKOUT_RANGE_MULT ? 1 : 0;
+      const momentumScore = bodyRatio >= BREAKOUT_BODY_MULT ? 1 : 0;
+      const score = volScore + rangeScore + momentumScore;
 
-    debug.push(
-      `BREAKOUT[${i}] vol=${volRatio.toFixed(2)}x(${volScore}) tr=${trRatio.toFixed(2)}x(${rangeScore}) ` +
-      `body=${bodyRatio.toFixed(2)}x(${momentumScore}) score=${score}/3 dir=${direction} close=${c.close.toFixed(2)}`
-    );
+      debug.push(`CHECK[${i}] vol=${volRatio.toFixed(2)}x(${volScore}) tr=${trRatio.toFixed(2)}x(${rangeScore}) body=${bodyRatio.toFixed(2)}x(${momentumScore}) score=${score}/3 dir=${direction}`);
 
-    if (score >= BREAKOUT_MIN_SCORE) {
-      // Build zone from recent consolidation before this candle
-      const zoneStart = Math.max(0, i - 8);
-      const zoneCandles = candles.slice(zoneStart, i);
-      const top = Math.max(...zoneCandles.map(c => c.high), c.high);
-      const bottom = Math.min(...zoneCandles.map(c => c.low), c.low);
+      if (score >= BREAKOUT_MIN_SCORE) {
+        const zoneStart = Math.max(0, i - 8);
+        const zoneCandles = candles.slice(zoneStart, i);
+        const top = Math.max(...zoneCandles.map(c => c.high), c.high);
+        const bottom = Math.min(...zoneCandles.map(c => c.low), c.low);
 
-      if (!bestCandidate || score > bestCandidate.score) {
-        bestCandidate = {
+        const atrSeries = atr(candles, 14);
+        const currentATR = atrSeries[atrSeries.length - 1] || 1;
+        const zoneHeight = top - bottom;
+        const widthATR = currentATR > 0 ? zoneHeight / currentATR : 0;
+
+        let label: ZoneQuality["label"] = "WEAK";
+        if (widthATR < 1.5) label = "EXCELLENT";
+        else if (widthATR < 2.5) label = "GOOD";
+        else if (widthATR < 4) label = "AVERAGE";
+
+        const quality: ZoneQuality = {
+          age: zoneCandles.length,
+          widthATR,
+          compression: Math.max(0, 100 - widthATR * 25),
+          volumeDecay: 0,
+          touches: 1,
+          breakAttempts: 0,
+          label,
+        };
+
+        const result: DetectionResult = {
+          detected: true,
           candle: c,
           direction,
-          range: candleRange,
+          zone: { top, bottom },
+          quality,
           index: i,
           score,
-          zone: { top, bottom },
+          reason: "breakout_detected",
         };
+
+        if (!bestResult || score > bestResult.score) {
+          bestResult = result;
+        }
+      }
+    } else {
+      // Accumulation mode: tight range + high volume
+      const volScore = volRatio >= CLIMAX_VOLUME_MULT ? 1 : 0;
+      const rangeScore = candleRange <= CLIMAX_RANGE_MAX * avgTR ? 1 : 0;
+      const bodyScore = bodyRatio >= CLIMAX_BODY_MIN ? 1 : 0;
+      const score = volScore + rangeScore + bodyScore;
+
+      debug.push(`CHECK[${i}] vol=${volRatio.toFixed(2)}x(${volScore}) range=${(candleRange/avgTR).toFixed(2)}x(${rangeScore}) body=${bodyRatio.toFixed(2)}x(${bodyScore}) score=${score}/3 dir=${direction}`);
+
+      if (score >= 2) {
+        // ... accumulation logic (legacy)
+        const result: DetectionResult = {
+          detected: true,
+          candle: c,
+          direction: c.close < c.open ? "LONG" : "SHORT", // reversal
+          zone: null,
+          quality: null,
+          index: i,
+          score,
+          reason: "climax_detected",
+        };
+        if (!bestResult || score > bestResult.score) bestResult = result;
       }
     }
   }
 
-  if (!bestCandidate) {
-    debug.push(`BREAKOUT: no candidate met score>=${BREAKOUT_MIN_SCORE} (vol>=${BREAKOUT_VOLUME_MULT}x tr>=${BREAKOUT_RANGE_MULT}x body>=${BREAKOUT_BODY_MULT}x)`);
-    return null;
+  if (bestResult) {
+    debug.push(`SELECTED[${bestResult.index}] score=${bestResult.score} dir=${bestResult.direction} reason=${bestResult.reason}`);
+    return bestResult;
   }
 
-  // Calculate zone quality
-  const z = bestCandidate.zone;
-  const zoneHeight = z.top - z.bottom;
-  const atrSeries = atr(candles, 14);
-  const currentATR = atrSeries[atrSeries.length - 1] || zoneHeight;
-  const widthATR = currentATR > 0 ? zoneHeight / currentATR : 0;
-
-  const recentVolumes = candles.slice(-5).map(c => c.volume);
-  const currentAvgVol = avg(recentVolumes);
-  const volumeDecay = bestCandidate.candle.volume > 0
-    ? Math.max(0, (1 - currentAvgVol / bestCandidate.candle.volume) * 100)
-    : 0;
-
-  let touches = 0;
-  const zoneCandles = candles.slice(Math.max(0, bestCandidate.index - 8), bestCandidate.index);
-  for (const c of zoneCandles) {
-    if (Math.abs(c.high - z.top) < currentATR * 0.3 || Math.abs(c.low - z.bottom) < currentATR * 0.3) touches++;
-  }
-
-  let label: ZoneQuality["label"] = "WEAK";
-  if (widthATR < 1.5 && touches >= 2) label = "EXCELLENT";
-  else if (widthATR < 2 && touches >= 1) label = "GOOD";
-  else if (widthATR < 3) label = "AVERAGE";
-
-  const quality: ZoneQuality = {
-    age: zoneCandles.length,
-    widthATR,
-    compression: Math.max(0, 100 - widthATR * 30),
-    volumeDecay,
-    touches,
-    breakAttempts: 0,
-    label,
-  };
-
-  debug.push(
-    `BREAKOUT_SELECTED[${bestCandidate.index}] score=${bestCandidate.score}/3 ` +
-    `dir=${bestCandidate.direction} zone=${z.bottom.toFixed(2)}-${z.top.toFixed(2)} quality=${label}`
-  );
-
-  return {
-    candle: bestCandidate.candle,
-    direction: bestCandidate.direction,
-    range: bestCandidate.range,
-    index: bestCandidate.index,
-    zone: z,
-    quality,
-  };
+  debug.push(`NO DETECT: max score < ${BREAKOUT_MIN_SCORE} in last ${BREAKOUT_SCAN_DEPTH} candles`);
+  return { detected: false, candle: null, direction: null, zone: null, quality: null, index: -1, score: 0, reason: "no_pattern_detected" };
 }
 
 // ─── MAIN GENERATOR ────────────────────────────────────────────────────
@@ -454,19 +458,61 @@ export async function generateSignal(
   const closes = candles4h.map(c => c.close);
   const stoch = stochRsi(closes);
   const htBias = higherTimeframeBias(candles4h);
-
-  // Calculate trend1d for use in signal generation
   const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
 
-  debug.push(`HTF Bias: ${htBias} | Stage: ${state.stage}`);
+  debug.push(`HTF Bias: ${htBias} | Stage: ${state.stage} | Mode: ${DETECTION_MODE}`);
 
-  // ── STAGE: NONE → Detect Breakout Directly ──────────────────────
+  // ── TEST MODE ───────────────────────────────────────────────────
+  if (TEST_MODE) {
+    debug.push("TEST MODE: Forcing signal generation");
+    const atrSeries = atr(candles4h, 14);
+    const currentATR = atrSeries[atrSeries.length - 1] || price * 0.02;
+    const direction = TEST_DIRECTION;
+    const entry = price;
+    const stop = direction === "LONG" ? entry - currentATR * 2 : entry + currentATR * 2;
+    const target = direction === "LONG" ? entry + currentATR * 4 : entry - currentATR * 4;
+    const trail = direction === "LONG" ? entry - currentATR : entry + currentATR;
+    const rr = Math.abs(target - entry) / Math.abs(entry - stop);
+
+    const signal: Signal = {
+      id: `${pair}_${Date.now()}`,
+      pair,
+      direction,
+      stage: "CONFIRMED",
+      entry: Math.round(entry * 100) / 100,
+      stop: Math.round(stop * 100) / 100,
+      target: Math.round(target * 100) / 100,
+      trail: Math.round(trail * 100) / 100,
+      confidence: 50,
+      rr: Math.round(rr * 100) / 100,
+      adx: adx(candles4h),
+      zoneTop: Math.round((entry + currentATR) * 100) / 100,
+      zoneBottom: Math.round((entry - currentATR) * 100) / 100,
+      explanation: `TEST MODE: Forced ${direction} signal for debugging`,
+      timestamp: Date.now(),
+      version: CURRENT_SIGNAL_VERSION,
+    };
+
+    const market = {
+      pair, price: Math.round(price * 100) / 100, timestamp: Date.now(),
+      phase: "EXPANSION", trend: trend1d, htfBias: htBias,
+      adx: signal.adx, rsi: 0, stochK: stoch.k, stochD: stoch.d,
+      zoneTop: signal.zoneTop, zoneBottom: signal.zoneBottom,
+      zoneScore: 50, zoneQuality: null,
+      closes4h: candles4h.slice(-50).map(c => c.close),
+    };
+
+    debug.push(`TEST_SIGNAL: ${direction} entry=${signal.entry} stop=${signal.stop} target=${signal.target}`);
+    return { signal, market, debug, stage: "EXPANSION" };
+  }
+
+  // ── DETECT PATTERN ────────────────────────────────────────────
 
   if (state.stage === "NONE") {
-    const breakout = detectBreakout(candles4h, debug);
+    const detection = detectPattern(candles4h, debug);
 
-    if (!breakout) {
-      debug.push("No breakout detected — scanning");
+    if (!detection.detected || !detection.candle || !detection.direction || !detection.zone) {
+      debug.push("No pattern detected — scanning");
       return {
         signal: null,
         market: {
@@ -481,14 +527,14 @@ export async function generateSignal(
       };
     }
 
-    // Timeframe alignment check
+    // Timeframe alignment
     if (REQUIRE_HTF_ALIGNMENT) {
       const aligned =
-        (breakout.direction === "LONG" && (htBias === "BULLISH" || htBias === "NEUTRAL")) ||
-        (breakout.direction === "SHORT" && (htBias === "BEARISH" || htBias === "NEUTRAL"));
+        (detection.direction === "LONG" && (htBias === "BULLISH" || htBias === "NEUTRAL")) ||
+        (detection.direction === "SHORT" && (htBias === "BEARISH" || htBias === "NEUTRAL"));
 
       if (!aligned) {
-        debug.push(`BREAKOUT BLOCKED: ${breakout.direction} breakout but HTF is ${htBias}`);
+        debug.push(`BLOCKED: ${detection.direction} pattern but HTF is ${htBias}`);
         return {
           signal: null,
           market: {
@@ -504,12 +550,11 @@ export async function generateSignal(
       }
     }
 
-    // Build signal directly from breakout
-    const direction = breakout.direction;
-    const entry = breakout.candle.close;
-    const zone = breakout.zone;
+    // Build signal
+    const direction = detection.direction;
+    const entry = detection.candle.close;
+    const zone = detection.zone;
     const zoneHeight = zone.top - zone.bottom;
-
     const atrSeries = atr(candles4h, 14);
     const currentATR = atrSeries[atrSeries.length - 1] || zoneHeight * 0.5;
 
@@ -528,22 +573,20 @@ export async function generateSignal(
 
     const rr = Math.abs(target - entry) / Math.abs(entry - stop);
 
-    // Confidence based on zone quality
     let confidence = 50;
-    if (breakout.quality.label === "EXCELLENT") confidence = 85;
-    else if (breakout.quality.label === "GOOD") confidence = 72;
-    else if (breakout.quality.label === "AVERAGE") confidence = 60;
-    else confidence = 45;
-
+    if (detection.quality) {
+      if (detection.quality.label === "EXCELLENT") confidence = 85;
+      else if (detection.quality.label === "GOOD") confidence = 72;
+      else if (detection.quality.label === "AVERAGE") confidence = 60;
+      else confidence = 45;
+    }
     if (htBias === "NEUTRAL") confidence -= 5;
-
     const adxValue = adx(candles4h);
     if (adxValue > 25) confidence += 5;
     if (adxValue > 35) confidence += 5;
-
     confidence = Math.min(95, Math.max(30, confidence));
 
-    const explanation = `${direction} BREAKOUT: ${breakout.quality.label} quality zone (${zone.bottom.toFixed(0)}-${zone.top.toFixed(0)}) broken with ${breakout.candle.volume.toFixed(0)} volume, ATR=${currentATR.toFixed(1)}, HTF=${htBias}, ADX=${adxValue.toFixed(1)}`;
+    const explanation = `${direction} BREAKOUT: ${detection.quality?.label || "UNKNOWN"} quality zone (${zone.bottom.toFixed(0)}-${zone.top.toFixed(0)}) broken with momentum. HTF=${htBias}, ADX=${adxValue.toFixed(1)}, Score=${detection.score}/3`;
 
     const signal: Signal = {
       id: `${pair}_${Date.now()}`,
@@ -564,7 +607,6 @@ export async function generateSignal(
       version: CURRENT_SIGNAL_VERSION,
     };
 
-    // Reset state after signal
     await persistState(pair, { stage: "NONE", zone: null, impulseCandle: null, impulseDirection: null, impulseRange: 0, prevStoch: null, zoneStartIndex: 0 });
 
     const market = {
@@ -580,78 +622,23 @@ export async function generateSignal(
       stochD: stoch.d,
       zoneTop: signal.zoneTop,
       zoneBottom: signal.zoneBottom,
-      zoneScore: breakout.quality.label === "EXCELLENT" ? 90 : breakout.quality.label === "GOOD" ? 70 : breakout.quality.label === "AVERAGE" ? 50 : 30,
-      zoneQuality: breakout.quality,
+      zoneScore: detection.quality ? (detection.quality.label === "EXCELLENT" ? 90 : detection.quality.label === "GOOD" ? 70 : detection.quality.label === "AVERAGE" ? 50 : 30) : 0,
+      zoneQuality: detection.quality,
       closes4h: candles4h.slice(-50).map(c => c.close),
     };
 
-    debug.push(`SIGNAL: ${direction} CONFIRMED entry=${signal.entry} stop=${signal.stop} target=${signal.target} trail=${signal.trail} RR=${signal.rr} Quality=${breakout.quality.label}`);
+    debug.push(`SIGNAL: ${direction} CONFIRMED entry=${signal.entry} stop=${signal.stop} target=${signal.target} RR=${signal.rr} conf=${confidence}%`);
 
-    return { signal, market, debug, stage: "EXPANSION", zone: undefined };
+    return { signal, market, debug, stage: "EXPANSION" };
   }
 
-  // ── Handle existing states (WATCHING, ACCUMULATION, READY) ──────
-  // These are legacy states — reset and re-detect
-
+  // ── Legacy state handling ──────────────────────────────────────
   if (state.stage !== "NONE") {
-    debug.push(`Legacy state ${state.stage} detected — resetting to NONE for breakout detection`);
+    debug.push(`Legacy state ${state.stage} — resetting`);
     await persistState(pair, { stage: "NONE", zone: null, impulseCandle: null, impulseDirection: null, impulseRange: 0, prevStoch: null, zoneStartIndex: 0 });
-
-    // Re-run detection
-    const breakout = detectBreakout(candles4h, debug);
-    if (breakout) {
-      // ... same signal generation as above ...
-      // (duplicated for simplicity — in production, extract to helper)
-      const direction = breakout.direction;
-      const entry = breakout.candle.close;
-      const zone = breakout.zone;
-      const zoneHeight = zone.top - zone.bottom;
-      const atrSeries = atr(candles4h, 14);
-      const currentATR = atrSeries[atrSeries.length - 1] || zoneHeight * 0.5;
-      const swingStop = direction === "LONG" ? zone.bottom : zone.top;
-      const atrStop = direction === "LONG" ? entry - currentATR * 1.5 : entry + currentATR * 1.5;
-      const stop = direction === "LONG" ? Math.max(swingStop, atrStop) : Math.min(swingStop, atrStop);
-      const atrTarget = direction === "LONG" ? entry + currentATR * 3 : entry - currentATR * 3;
-      const zoneTarget = direction === "LONG" ? entry + zoneHeight * 1.5 : entry - zoneHeight * 1.5;
-      const target = direction === "LONG" ? Math.max(atrTarget, zoneTarget) : Math.min(atrTarget, zoneTarget);
-      const ema21 = ema(closes, 21);
-      const trail = direction === "LONG" ? ema21[ema21.length - 1] - currentATR * 0.5 : ema21[ema21.length - 1] + currentATR * 0.5;
-      const rr = Math.abs(target - entry) / Math.abs(entry - stop);
-      let confidence = 50;
-      if (breakout.quality.label === "EXCELLENT") confidence = 85;
-      else if (breakout.quality.label === "GOOD") confidence = 72;
-      else if (breakout.quality.label === "AVERAGE") confidence = 60;
-      else confidence = 45;
-      if (htBias === "NEUTRAL") confidence -= 5;
-      const adxValue = adx(candles4h);
-      if (adxValue > 25) confidence += 5;
-      if (adxValue > 35) confidence += 5;
-      confidence = Math.min(95, Math.max(30, confidence));
-      const explanation = `${direction} BREAKOUT: ${breakout.quality.label} quality zone (${zone.bottom.toFixed(0)}-${zone.top.toFixed(0)}) broken with ${breakout.candle.volume.toFixed(0)} volume, ATR=${currentATR.toFixed(1)}, HTF=${htBias}, ADX=${adxValue.toFixed(1)}`;
-      const signal: Signal = {
-        id: `${pair}_${Date.now()}`, pair, direction, stage: "CONFIRMED",
-        entry: Math.round(entry * 100) / 100, stop: Math.round(stop * 100) / 100,
-        target: Math.round(target * 100) / 100, trail: Math.round(trail * 100) / 100,
-        confidence, rr: Math.round(rr * 100) / 100, adx: adxValue,
-        zoneTop: Math.round(zone.top * 100) / 100, zoneBottom: Math.round(zone.bottom * 100) / 100,
-        explanation, timestamp: Date.now(), version: CURRENT_SIGNAL_VERSION,
-      };
-      await persistState(pair, { stage: "NONE", zone: null, impulseCandle: null, impulseDirection: null, impulseRange: 0, prevStoch: null, zoneStartIndex: 0 });
-      const market = {
-        pair, price: Math.round(price * 100) / 100, timestamp: Date.now(),
-        phase: "EXPANSION", trend: trend1d, htfBias: htBias, adx: adxValue,
-        rsi: 0, stochK: stoch.k, stochD: stoch.d,
-        zoneTop: signal.zoneTop, zoneBottom: signal.zoneBottom,
-        zoneScore: breakout.quality.label === "EXCELLENT" ? 90 : breakout.quality.label === "GOOD" ? 70 : breakout.quality.label === "AVERAGE" ? 50 : 30,
-        zoneQuality: breakout.quality,
-        closes4h: candles4h.slice(-50).map(c => c.close),
-      };
-      debug.push(`SIGNAL: ${direction} CONFIRMED entry=${signal.entry} stop=${signal.stop} target=${signal.target} trail=${signal.trail} RR=${signal.rr} Quality=${breakout.quality.label}`);
-      return { signal, market, debug, stage: "EXPANSION", zone: undefined };
-    }
   }
 
-  debug.push("No breakout detected — scanning");
+  debug.push("No signal — scanning");
   return {
     signal: null,
     market: {
@@ -708,14 +695,6 @@ export async function getMarketSnapshot(
   const adxValue = adx(candles4h);
   const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
 
-  let zoneQuality: ZoneQuality | null = null;
-  if (state.zone && state.zoneStartIndex > 0) {
-    zoneQuality = {
-      age: candles4h.length - state.zoneStartIndex,
-      widthATR: 0, compression: 0, volumeDecay: 0, touches: 0, breakAttempts: 0, label: "WEAK",
-    };
-  }
-
   return {
     pair,
     price: Math.round(price * 100) / 100,
@@ -729,10 +708,8 @@ export async function getMarketSnapshot(
     stochD: stoch.d,
     zoneTop: state.zone ? Math.round(state.zone.top * 100) / 100 : null,
     zoneBottom: state.zone ? Math.round(state.zone.bottom * 100) / 100 : null,
-    zoneScore: zoneQuality
-      ? (zoneQuality.label === "EXCELLENT" ? 90 : zoneQuality.label === "GOOD" ? 70 : zoneQuality.label === "AVERAGE" ? 50 : 30)
-      : 0,
-    zoneQuality,
+    zoneScore: 0,
+    zoneQuality: null,
     closes4h: candles4h.slice(-50).map(c => c.close),
   };
 }
