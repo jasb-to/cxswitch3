@@ -1,6 +1,9 @@
-// lib/strategy.ts — v29.2 "State Machine: Accumulation → Expansion"
+// lib/strategy.ts — v29.4 "Phase-Based Detection: Fixed Impulse Scanning"
 // ============================================================
-// Fixes: reversed impulse logic, Redis state persistence, adaptive accumulation
+// Fixes: detectImpulse now scans last 10 candles (not just last 1)
+//        Added detailed debug logging throughout
+//        Fixed trend1d undefined reference
+//        Lowered thresholds to match actual market conditions
 
 export interface Candle {
   timestamp: number;
@@ -61,6 +64,13 @@ export interface ZoneQuality {
 }
 
 export const CURRENT_SIGNAL_VERSION = 29;
+
+// ─── Config (TUNABLE) ────────────────────────────────────────────────────
+
+const IMPULSE_VOLUME_MULT = 1.3;        // 1.3x avg volume
+const IMPULSE_BODY_MULT = 1.4;          // 1.4x avg body
+const IMPULSE_TR_MULT = 1.2;            // 1.2x avg true range
+const IMPULSE_SCAN_DEPTH = 10;          // Scan last N candles
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -274,38 +284,103 @@ async function persistState(pair: string, state: any): Promise<void> {
   }
 }
 
-// ─── IMPULSE DETECTION ─────────────────────────────────────────────────
+// ─── IMPULSE DETECTION (v29.4 FIX) ───────────────────────────────────
+// Scans last N candles for the BEST impulse candidate, not just the last one
 
-function detectImpulse(candles: Candle[]): { candle: Candle; direction: "LONG" | "SHORT"; range: number } | null {
-  if (candles.length < 10) return null;
+function detectImpulse(
+  candles: Candle[],
+  debug: string[]
+): { candle: Candle; direction: "LONG" | "SHORT"; range: number; index: number } | null {
+  if (candles.length < IMPULSE_SCAN_DEPTH + 5) {
+    debug.push(`IMPULSE: insufficient candles (${candles.length})`);
+    return null;
+  }
 
-  const last = candles[candles.length - 1];
-  const prev = candles[candles.length - 2];
+  const last = candles.length - 1;
+  const scanStart = Math.max(1, last - IMPULSE_SCAN_DEPTH + 1);
 
-  const body = Math.abs(last.close - last.open);
-  const prevBodies = candles.slice(-10, -1).map(c => Math.abs(c.close - c.open));
+  // Pre-calculate averages from the full lookback window
+  const lookbackStart = Math.max(0, last - IMPULSE_SCAN_DEPTH - 10);
+  const lookbackCandles = candles.slice(lookbackStart, scanStart);
+
+  const prevBodies = lookbackCandles.map(c => Math.abs(c.close - c.open));
   const avgBody = avg(prevBodies);
 
-  const tr = trueRange(last, prev);
-  const prevTRs = candles.slice(-10, -1).map((c, i) => trueRange(c, candles[candles.length - 10 + i - 1]));
+  const prevTRs = lookbackCandles.slice(1).map((c, i) => trueRange(c, lookbackCandles[i]));
   const avgTR = avg(prevTRs);
 
-  const prevVolumes = candles.slice(-10, -1).map(c => c.volume);
+  const prevVolumes = lookbackCandles.map(c => c.volume);
   const avgVol = avg(prevVolumes);
-  const volClimax = last.volume > avgVol * 1.3;
 
-  const strongBody = body > avgBody * 1.4;
-  const expandingTR = tr > avgTR * 1.2;
+  debug.push(`IMPULSE_AVG body=${avgBody.toFixed(2)} tr=${avgTR.toFixed(2)} vol=${avgVol.toFixed(2)}`);
 
-  if (!strongBody || !expandingTR || !volClimax) return null;
+  let bestCandidate: {
+    candle: Candle;
+    direction: "LONG" | "SHORT";
+    range: number;
+    index: number;
+    score: number;
+  } | null = null;
 
-  // FIXED: Reverse direction. Big RED candle → look for LONG reversal.
-  const direction = last.close < last.open ? "LONG" : "SHORT";
+  // Scan last N candles for the best impulse
+  for (let i = scanStart; i <= last; i++) {
+    const c = candles[i];
+    const p = candles[i - 1];
 
-  const impulseHigh = Math.max(...candles.slice(-3).map(c => c.high));
-  const impulseLow = Math.min(...candles.slice(-3).map(c => c.low));
+    const body = Math.abs(c.close - c.open);
+    const tr = trueRange(c, p);
 
-  return { candle: last, direction, range: impulseHigh - impulseLow };
+    const volRatio = avgVol > 0 ? c.volume / avgVol : 0;
+    const bodyRatio = avgBody > 0 ? body / avgBody : 0;
+    const trRatio = avgTR > 0 ? tr / avgTR : 0;
+
+    const volClimax = volRatio >= IMPULSE_VOLUME_MULT;
+    const strongBody = bodyRatio >= IMPULSE_BODY_MULT;
+    const expandingTR = trRatio >= IMPULSE_TR_MULT;
+
+    // Direction: reversal logic — big RED candle suggests LONG reversal setup
+    const direction = c.close < c.open ? "LONG" : "SHORT";
+
+    // Composite score (0-3)
+    const score = (volClimax ? 1 : 0) + (strongBody ? 1 : 0) + (expandingTR ? 1 : 0);
+
+    debug.push(
+      `IMPULSE[${i}] vol=${volRatio.toFixed(2)}x body=${bodyRatio.toFixed(2)}x tr=${trRatio.toFixed(2)}x ` +
+      `score=${score}/3 dir=${direction} close=${c.close.toFixed(2)} open=${c.open.toFixed(2)}`
+    );
+
+    // Need at least 2 of 3 conditions
+    if (score >= 2) {
+      const impulseHigh = Math.max(...candles.slice(Math.max(0, i - 2), i + 1).map(c => c.high));
+      const impulseLow = Math.min(...candles.slice(Math.max(0, i - 2), i + 1).map(c => c.low));
+
+      if (!bestCandidate || score > bestCandidate.score) {
+        bestCandidate = {
+          candle: c,
+          direction,
+          range: impulseHigh - impulseLow,
+          index: i,
+          score,
+        };
+      }
+    }
+  }
+
+  if (bestCandidate) {
+    debug.push(
+      `IMPULSE_SELECTED[${bestCandidate.index}] score=${bestCandidate.score}/3 ` +
+      `dir=${bestCandidate.direction} range=${bestCandidate.range.toFixed(2)}`
+    );
+    return {
+      candle: bestCandidate.candle,
+      direction: bestCandidate.direction,
+      range: bestCandidate.range,
+      index: bestCandidate.index,
+    };
+  }
+
+  debug.push(`IMPULSE: no candidate met score>=2 (vol>=${IMPULSE_VOLUME_MULT}x body>=${IMPULSE_BODY_MULT}x tr>=${IMPULSE_TR_MULT}x)`);
+  return null;
 }
 
 // ─── ACCUMULATION DETECTION (adaptive duration) ───────────────────────────
@@ -414,12 +489,15 @@ export async function generateSignal(
   const stoch = stochRsi(closes);
   const htBias = higherTimeframeBias(candles4h);
 
+  // Calculate trend1d for use in signal generation
+  const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
+
   debug.push(`HTF Bias: ${htBias} | Stage: ${state.stage}`);
 
   // ── STAGE: NONE → WATCHING ──────────────────────────────────────
 
   if (state.stage === "NONE") {
-    const impulse = detectImpulse(candles4h);
+    const impulse = detectImpulse(candles4h, debug);
     if (impulse) {
       const aligned =
         (htBias === "BULLISH" && impulse.direction === "LONG") ||
@@ -797,7 +875,7 @@ export function checkTradeStatus(signal: Signal, currentPrice: number, now: numb
 }
 
 // ============================================================
-// COMPATIBILITY EXPORTS
+// COMPATIBILITY EXPORTS (unchanged)
 // ============================================================
 
 export async function getMonitorState(pair: string): Promise<any | undefined> {
