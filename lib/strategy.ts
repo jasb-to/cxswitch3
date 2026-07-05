@@ -1,5 +1,7 @@
-// lib/strategy.ts — v30.1 "Fix body check order + market data confidence"
+// lib/strategy.ts — v30.2 "1H Accumulation + 4H HTF Alignment"
 // ============================================================
+// PHILOSOPHY: Find tight accumulation on 1H, confirm direction on 4H
+// Enter earlier, build position before breakout, ride the full wave
 
 import { getPairState, setPairState } from "./state";
 
@@ -42,15 +44,18 @@ export const CURRENT_SIGNAL_VERSION = 30;
 
 // ─── Config ──────────────────────────────────────────────────────────────
 
-const ACCUM_MIN_CANDLES = 6;
-const ACCUM_MAX_CANDLES = 20;
-const ACCUM_MAX_WIDTH_ATR = 2.0;    // Tightened from 2.5
-const ACCUM_MIN_TOUCHES = 2;
-const ACCUM_VOLUME_DECLINE = 0.7;
+// 1H Accumulation detection
+const ACCUM_MIN_CANDLES = 8;        // 8 candles = 8 hours minimum
+const ACCUM_MAX_CANDLES = 30;       // 30 candles = 30 hours max
+const ACCUM_MAX_WIDTH_ATR = 2.0;    // tight zone
+const ACCUM_MIN_TOUCHES = 3;        // 3+ touches for quality
+const ACCUM_VOLUME_DECLINE = 0.7;   // declining volume
 
-const BREAKOUT_MIN_BODY_ATR = 0.3;  // Lowered from 0.4 for early wave capture
+// Breakout requirements
+const BREAKOUT_MIN_BODY_ATR = 0.3;
 const BREAKOUT_CONFIRM_CLOSE = true;
 
+// Confidence
 const STOCH_EXTREME_LOW = 15;
 const STOCH_EXTREME_HIGH = 85;
 const STOCH_CONFIDENCE_PENALTY = 15;
@@ -155,7 +160,7 @@ function adx(candles: Candle[]): number {
   return Math.round(adxSmooth[adxSmooth.length - 1] * 10) / 10;
 }
 
-// ─── Higher Timeframe Bias ───────────────────────────────────────────────
+// ─── Higher Timeframe Bias (4H) ────────────────────────────────────────
 
 function higherTimeframeBias(candles4h: Candle[]): "BULLISH" | "BEARISH" | "NEUTRAL" {
   const daily = aggregateTo1D(candles4h);
@@ -233,7 +238,7 @@ async function persistState(pair: string, state: Partial<PairState>): Promise<vo
   await setPairState(pair, { ...existing, ...state });
 }
 
-// ─── ACCUMULATION DETECTION ──────────────────────────────────────────────
+// ─── ACCUMULATION DETECTION (1H candles) ────────────────────────────────
 
 interface AccumulationZone {
   top: number;
@@ -245,19 +250,19 @@ interface AccumulationZone {
   widthATR: number;
 }
 
-function detectAccumulation(candles: Candle[], debug: string[]): AccumulationZone | null {
-  if (candles.length < ACCUM_MIN_CANDLES + 14) {
-    debug.push(`ACCUM: insufficient candles (${candles.length})`);
+function detectAccumulation(candles1h: Candle[], debug: string[]): AccumulationZone | null {
+  if (candles1h.length < ACCUM_MIN_CANDLES + 14) {
+    debug.push(`ACCUM: insufficient 1H candles (${candles1h.length})`);
     return null;
   }
 
-  const atrSeries = atr(candles, 14);
+  const atrSeries = atr(candles1h, 14);
   const currentATR = atrSeries[atrSeries.length - 1] || 1;
-  const last = candles.length - 1;
+  const last = candles1h.length - 1;
 
   for (let windowSize = ACCUM_MIN_CANDLES; windowSize <= Math.min(ACCUM_MAX_CANDLES, last); windowSize++) {
     const start = last - windowSize;
-    const zoneCandles = candles.slice(start, last);
+    const zoneCandles = candles1h.slice(start, last);
 
     const highs = zoneCandles.map(c => c.high);
     const lows = zoneCandles.map(c => c.low);
@@ -287,7 +292,7 @@ function detectAccumulation(candles: Candle[], debug: string[]): AccumulationZon
       continue;
     }
 
-    debug.push(`ACCUM FOUND: [${start}-${last - 1}] top=${top.toFixed(2)} bottom=${bottom.toFixed(2)} width=${width.toFixed(2)} (${widthATR.toFixed(2)}x ATR) touches=${touches} volRatio=${volRatio.toFixed(2)}`);
+    debug.push(`ACCUM FOUND (1H): [${start}-${last - 1}] top=${top.toFixed(2)} bottom=${bottom.toFixed(2)} width=${width.toFixed(2)} (${widthATR.toFixed(2)}x ATR) touches=${touches} volRatio=${volRatio.toFixed(2)}`);
 
     return {
       top,
@@ -300,11 +305,11 @@ function detectAccumulation(candles: Candle[], debug: string[]): AccumulationZon
     };
   }
 
-  debug.push("ACCUM: no tight accumulation zone found");
+  debug.push("ACCUM: no tight accumulation zone found on 1H");
   return null;
 }
 
-// ─── BREAKOUT DETECTION (FIXED: check boundary first, then body) ─────────
+// ─── BREAKOUT DETECTION (1H current candle) ──────────────────────────────
 
 interface BreakoutResult {
   detected: boolean;
@@ -314,18 +319,16 @@ interface BreakoutResult {
 }
 
 function checkBreakout(
-  candles: Candle[],
+  candles1h: Candle[],
   zone: AccumulationZone,
   debug: string[]
 ): BreakoutResult {
-  const last = candles.length - 1;
-  const c = candles[last];
+  const last = candles1h.length - 1;
+  const c = candles1h[last];
 
   debug.push(`BREAKOUT CHECK: close=${c.close.toFixed(2)} open=${c.open.toFixed(2)} zone=${zone.bottom.toFixed(2)}-${zone.top.toFixed(2)}`);
 
   const isBullish = c.close > c.open;
-
-  // FIRST: Check if candle is beyond zone boundary
   let beyondZone = false;
   let direction: "LONG" | "SHORT" | null = null;
 
@@ -352,8 +355,7 @@ function checkBreakout(
     return { detected: false, direction: null, candle: null, reason: "no_breakout" };
   }
 
-  // SECOND: Check body size (only for confirmed breakouts)
-  const atrSeries = atr(candles, 14);
+  const atrSeries = atr(candles1h, 14);
   const currentATR = atrSeries[atrSeries.length - 1] || 1;
   const body = Math.abs(c.close - c.open);
   const bodyATR = currentATR > 0 ? body / currentATR : 0;
@@ -375,18 +377,20 @@ function buildSignal(
   pair: string,
   direction: "LONG" | "SHORT",
   zone: AccumulationZone,
+  candles1h: Candle[],
   candles4h: Candle[],
   htBias: "BULLISH" | "BEARISH" | "NEUTRAL",
   stochK: number,
   debug: string[]
 ): { signal: Signal; market: any } | null {
-  const entry = candles4h[candles4h.length - 1].close;
+  const entry = candles1h[candles1h.length - 1].close;
   const zoneHeight = zone.top - zone.bottom;
 
-  const closes = candles4h.map(c => c.close);
-  const atrSeries = atr(candles4h, 14);
-  const currentATR = atrSeries[atrSeries.length - 1] || zoneHeight * 0.5;
+  const closes1h = candles1h.map(c => c.close);
+  const atr1h = atr(candles1h, 14);
+  const currentATR = atr1h[atr1h.length - 1] || zoneHeight * 0.5;
 
+  // Stop: outside zone + 1H ATR buffer
   const swingStop = direction === "LONG" ? zone.bottom : zone.top;
   const atrStop = direction === "LONG"
     ? entry - currentATR * 1.5
@@ -399,25 +403,29 @@ function buildSignal(
   const risk = Math.abs(entry - stop);
   const target = direction === "LONG" ? entry + risk * 2.5 : entry - risk * 2.5;
 
-  const ema21 = ema(closes, 21);
+  // Trail: EMA21(1H) ± ATR
+  const ema21 = ema(closes1h, 21);
   const trail = direction === "LONG"
     ? ema21[ema21.length - 1] - currentATR * 0.5
     : ema21[ema21.length - 1] + currentATR * 0.5;
 
   const rr = risk > 0 ? Math.abs(target - entry) / risk : 0;
 
+  // Confidence
   let confidence = 50;
 
   if (zone.widthATR < 1.5) confidence += 20;
   else if (zone.widthATR < 2.0) confidence += 10;
 
-  if (zone.touches >= 4) confidence += 10;
+  if (zone.touches >= 5) confidence += 10;
   else if (zone.touches >= 3) confidence += 5;
 
-  const adxValue = adx(candles4h);
-  if (adxValue > 30) confidence += 10;
-  else if (adxValue > 20) confidence += 5;
+  // 4H ADX for trend strength
+  const adx4h = adx(candles4h);
+  if (adx4h > 30) confidence += 10;
+  else if (adx4h > 20) confidence += 5;
 
+  // Stoch adjustment (confidence, not veto)
   if (direction === "SHORT" && stochK < STOCH_EXTREME_LOW) {
     confidence -= STOCH_CONFIDENCE_PENALTY;
     debug.push(`CONFIDENCE: Stoch K=${stochK} oversold, -${STOCH_CONFIDENCE_PENALTY}% for SHORT`);
@@ -429,7 +437,7 @@ function buildSignal(
 
   confidence = Math.min(95, Math.max(25, confidence));
 
-  const explanation = `${direction} BREAKOUT: Accumulation zone ${zone.bottom.toFixed(0)}-${zone.top.toFixed(0)} (${zone.widthATR.toFixed(1)}x ATR, ${zone.touches} touches) broken. HTF=${htBias}, ADX=${adxValue.toFixed(1)}, StochK=${stochK}`;
+  const explanation = `${direction} BREAKOUT (1H): Accumulation zone ${zone.bottom.toFixed(0)}-${zone.top.toFixed(0)} (${zone.widthATR.toFixed(1)}x ATR, ${zone.touches} touches) broken. HTF=${htBias}, ADX(4H)=${adx4h.toFixed(1)}, StochK=${stochK}`;
 
   const signal: Signal = {
     id: `${pair}_${Date.now()}`,
@@ -442,7 +450,7 @@ function buildSignal(
     trail: Math.round(trail * 100) / 100,
     confidence,
     rr: Math.round(rr * 100) / 100,
-    adx: adxValue,
+    adx: adx4h,
     zoneTop: Math.round(zone.top * 100) / 100,
     zoneBottom: Math.round(zone.bottom * 100) / 100,
     explanation,
@@ -451,7 +459,7 @@ function buildSignal(
   };
 
   const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
-  const stoch = stochRsi(closes);
+  const stoch = stochRsi(closes1h);
 
   const market = {
     pair,
@@ -460,7 +468,7 @@ function buildSignal(
     phase: "EXPANSION",
     trend: trend1d,
     htfBias: htBias,
-    adx: adxValue,
+    adx: adx4h,
     rsi: 0,
     stochK: stoch.k,
     stochD: stoch.d,
@@ -494,15 +502,15 @@ export async function generateSignal(
   currentPrice?: number
 ): Promise<SignalResult> {
   const debug: string[] = [];
-  const price = currentPrice ?? candles4h[candles4h.length - 1].close;
+  const price = currentPrice ?? candles1h[candles1h.length - 1].close;
 
   const state = await getPersistedState(pair);
-  const closes = candles4h.map(c => c.close);
-  const stoch = stochRsi(closes);
+  const closes1h = candles1h.map(c => c.close);
+  const stoch = stochRsi(closes1h);
   const htBias = higherTimeframeBias(candles4h);
   const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
 
-  debug.push(`HTF Bias: ${htBias} | Stage: ${state.stage} | StochK=${stoch.k} | ADX=${adx(candles4h)}`);
+  debug.push(`HTF(4H): ${htBias} | Stage: ${state.stage} | StochK(1H)=${stoch.k} | ADX(4H)=${adx(candles4h)}`);
 
   // ── COOLDOWN CHECK ──────────────────────────────────────────
   if (state.lastExitAt > 0) {
@@ -524,8 +532,8 @@ export async function generateSignal(
     }
   }
 
-  // ── STEP 1: DETECT ACCUMULATION ───────────────────────────
-  const zone = detectAccumulation(candles4h, debug);
+  // ── STEP 1: DETECT ACCUMULATION ON 1H ──────────────────────
+  const zone = detectAccumulation(candles1h, debug);
 
   if (!zone) {
     return {
@@ -560,11 +568,11 @@ export async function generateSignal(
     };
   }
 
-  // ── STEP 3: CHECK FOR BREAKOUT ON CURRENT CANDLE ──────────
-  const breakout = checkBreakout(candles4h, zone, debug);
+  // ── STEP 3: CHECK FOR BREAKOUT ON CURRENT 1H CANDLE ───────
+  const breakout = checkBreakout(candles1h, zone, debug);
 
   if (!breakout.detected || !breakout.direction) {
-    debug.push(`WATCHING: accumulation detected, waiting for breakout`);
+    debug.push(`WATCHING: 1H accumulation detected, waiting for breakout`);
 
     await persistState(pair, {
       stage: "WATCHING",
@@ -596,14 +604,14 @@ export async function generateSignal(
     };
   }
 
-  // ── STEP 4: HTF ALIGNMENT ───────────────────────────────────
+  // ── STEP 4: HTF ALIGNMENT (4H) ─────────────────────────────
   if (REQUIRE_HTF_ALIGNMENT) {
     const aligned =
       (breakout.direction === "LONG" && (htBias === "BULLISH" || htBias === "NEUTRAL")) ||
       (breakout.direction === "SHORT" && (htBias === "BEARISH" || htBias === "NEUTRAL"));
 
     if (!aligned) {
-      debug.push(`BLOCKED: ${breakout.direction} breakout but HTF is ${htBias}`);
+      debug.push(`BLOCKED: ${breakout.direction} breakout but HTF(4H) is ${htBias}`);
       return {
         signal: null,
         market: {
@@ -620,7 +628,7 @@ export async function generateSignal(
   }
 
   // ── STEP 5: BUILD SIGNAL ──────────────────────────────────
-  const built = buildSignal(pair, breakout.direction, zone, candles4h, htBias, stoch.k, debug);
+  const built = buildSignal(pair, breakout.direction, zone, candles1h, candles4h, htBias, stoch.k, debug);
 
   if (!built) {
     debug.push("Signal build failed");
@@ -655,12 +663,12 @@ export async function generateSignal(
 
 export function updateTrail(
   signal: Signal,
-  candles4h: Candle[],
+  candles1h: Candle[],
   currentPrice: number
 ): { trail: number; shouldExit: boolean; reason: string } {
-  const closes = candles4h.map(c => c.close);
+  const closes = candles1h.map(c => c.close);
   const ema21 = ema(closes, 21);
-  const atrSeries = atr(candles4h, 14);
+  const atrSeries = atr(candles1h, 14);
   const currentATR = atrSeries[atrSeries.length - 1];
 
   const newTrail = signal.direction === "LONG"
@@ -755,10 +763,10 @@ export interface HoldResult {
 export async function shouldHold(
   pair: string,
   signal: Signal,
-  candles4h: Candle[],
+  candles1h: Candle[],
   currentPrice: number
 ): Promise<HoldResult> {
-  const trailUpdate = updateTrail(signal, candles4h, currentPrice);
+  const trailUpdate = updateTrail(signal, candles1h, currentPrice);
 
   if (trailUpdate.shouldExit) {
     await persistState(pair, { lastExitAt: Date.now() });
@@ -844,5 +852,5 @@ export async function shouldHoldCompat(
   candles1h: Candle[],
   currentPrice: number
 ): Promise<HoldResult> {
-  return shouldHold(pair, signal, candles4h, currentPrice);
+  return shouldHold(pair, signal, candles1h, currentPrice);
 }
