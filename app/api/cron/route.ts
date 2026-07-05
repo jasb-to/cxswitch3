@@ -1,10 +1,11 @@
-// app/api/cron/route.ts — v29.7 "Use lib/strategy.ts + lib/state.ts"
+// app/api/cron/route.ts — v29.7 "Unified: strategy.ts + state.ts + telegram.ts"
 // ============================================================
 // DELETED: All inline detection logic (PHASE1, CLIMAX, detectPhase, etc.)
-// DELETED: All inline indicator functions (calcATR, calcEMA, calcRSI, etc.)
+// DELETED: All inline indicator functions
 // DELETED: Stub KV functions
-// IMPORTS: generateSignal, filterExpiredSignals, shouldHold from @/lib/strategy
+// IMPORTS: generateSignal, filterExpiredSignals, shouldHold, isSignalStillValid from @/lib/strategy
 // IMPORTS: All state functions from @/lib/state
+// IMPORTS: sendAlert from @/lib/telegram
 
 import { NextResponse } from "next/server";
 import {
@@ -24,12 +25,12 @@ import {
   generateSignal,
   filterExpiredSignals,
   shouldHold,
-  checkTradeStatus,
   isSignalStillValid,
   Candle,
 } from "@/lib/strategy";
+import { sendAlert } from "@/lib/telegram";
 
-// ─── Types (minimal, for cron-specific structures) ──────────────────────
+// ─── Types ────────────────────────────────────────────────────────────
 
 interface MarketData {
   pair: string;
@@ -90,12 +91,6 @@ function roundPrice(n: number): number {
   if (n >= 1000) return Math.round(n * 10) / 10;
   if (n >= 100) return Math.round(n * 100) / 100;
   return Math.round(n * 1000) / 1000;
-}
-
-// ─── Telegram Alert (REPLACE with your @/lib/telegram) ──────────────────
-
-async function sendAlert(data: any): Promise<void> {
-  console.log(`[TELEGRAM] Alert: ${JSON.stringify(data)}`);
 }
 
 // ─── Main Handler ───────────────────────────────────────────────────────
@@ -258,10 +253,12 @@ export async function GET(request: Request) {
       );
       newSignals.push(signal);
 
+      // ── SEND TELEGRAM ALERT ─────────────────────────────────
       try {
         await sendAlert({
           symbol: signal.pair,
           state: signal.stage,
+          scale: "ENTRY_1",
           price: roundPrice(signal.entry),
           bias: signal.direction,
           confidence: signal.confidence,
