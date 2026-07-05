@@ -1,5 +1,7 @@
-// lib/state.ts — v29.3 "Fixed: @upstash/redis + v29 keys"
+// lib/state.ts — v29.8 "Redis State Management"
 // ============================================================
+// Uses @upstash/redis with Redis.fromEnv()
+// All v29 keys, all exports preserved
 
 import { Redis } from "@upstash/redis";
 
@@ -77,6 +79,11 @@ function safeParseObject(data: unknown): Record<string, any> {
 
 function getSignalMaxAgeHours(signal: any): number {
   return 24;
+}
+
+function isSignalExpired(signal: any): boolean {
+  const ageHours = (Date.now() - signal.timestamp) / (1000 * 60 * 60);
+  return ageHours >= getSignalMaxAgeHours(signal);
 }
 
 export async function setSignals(signals: any[]) {
@@ -251,6 +258,8 @@ export async function setCronLogs(logs: any[]): Promise<void> {
   }
 }
 
+// ─── Per-Pair State (for strategy persistence) ───────────────────────────
+
 export async function getPairState(pair: string): Promise<any> {
   try {
     const data = await redis.get(`cx_state_${pair}_${KEY_VERSION}`);
@@ -268,6 +277,8 @@ export async function setPairState(pair: string, state: any): Promise<void> {
     console.error(`[STATE] setPairState(${pair}) error:`, err);
   }
 }
+
+// ─── Legacy Compatibility ─────────────────────────────────────────────────
 
 export async function resetAll() {
   try {
