@@ -1,15 +1,5 @@
-// lib/strategy.ts — v30 "Accumulation First, Breakout Second"
+// lib/strategy.ts — v30.1 "Fix body check order + market data confidence"
 // ============================================================
-// PHILOSOPHY: Detect accumulation zones, wait for FIRST breakout, ride early wave
-// NOT: Scan backwards for any breakout in last 10 candles (chasing)
-//
-// CHANGES FROM v29:
-// 1. detectAccumulation() finds tight zones with declining volume
-// 2. waitForBreakout() checks ONLY the most recent candle against the zone
-// 3. No backward scanning — no chasing completed moves
-// 4. Stoch used for confidence adjustment (not hard block)
-// 5. Consumed breakout tracking preserved
-// 6. Cooldown after exit preserved
 
 import { getPairState, setPairState } from "./state";
 
@@ -52,21 +42,18 @@ export const CURRENT_SIGNAL_VERSION = 30;
 
 // ─── Config ──────────────────────────────────────────────────────────────
 
-// Accumulation detection
-const ACCUM_MIN_CANDLES = 6;        // minimum candles in zone
-const ACCUM_MAX_CANDLES = 20;       // maximum lookback for zone
-const ACCUM_MAX_WIDTH_ATR = 2.5;    // zone must be tight (within 2.5x ATR)
-const ACCUM_MIN_TOUCHES = 2;        // at least 2 touches of zone boundary
-const ACCUM_VOLUME_DECLINE = 0.7;   // recent volume < 70% of earlier volume
+const ACCUM_MIN_CANDLES = 6;
+const ACCUM_MAX_CANDLES = 20;
+const ACCUM_MAX_WIDTH_ATR = 2.0;    // Tightened from 2.5
+const ACCUM_MIN_TOUCHES = 2;
+const ACCUM_VOLUME_DECLINE = 0.7;
 
-// Breakout requirements
-const BREAKOUT_MIN_BODY_ATR = 0.4;  // breakout candle body must be meaningful
-const BREAKOUT_CONFIRM_CLOSE = true; // close must be beyond zone (not just wick)
+const BREAKOUT_MIN_BODY_ATR = 0.3;  // Lowered from 0.4 for early wave capture
+const BREAKOUT_CONFIRM_CLOSE = true;
 
-// Confidence adjustments
-const STOCH_EXTREME_LOW = 15;       // K < 15: reduce confidence
-const STOCH_EXTREME_HIGH = 85;      // K > 85: reduce confidence
-const STOCH_CONFIDENCE_PENALTY = 15; // subtract this from confidence at extremes
+const STOCH_EXTREME_LOW = 15;
+const STOCH_EXTREME_HIGH = 85;
+const STOCH_CONFIDENCE_PENALTY = 15;
 
 const REQUIRE_HTF_ALIGNMENT = true;
 const EXIT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -219,7 +206,7 @@ interface PairState {
   zoneStartIndex: number;
   zoneEndIndex: number;
   lastExitAt: number;
-  consumedZones: string[];  // hash of zone bounds to prevent re-trade
+  consumedZones: string[];
   lastBreakoutTs: number;
 }
 
@@ -268,11 +255,9 @@ function detectAccumulation(candles: Candle[], debug: string[]): AccumulationZon
   const currentATR = atrSeries[atrSeries.length - 1] || 1;
   const last = candles.length - 1;
 
-  // Scan backwards from current candle to find tight ranges
-  // We want the MOST RECENT accumulation (closest to now)
   for (let windowSize = ACCUM_MIN_CANDLES; windowSize <= Math.min(ACCUM_MAX_CANDLES, last); windowSize++) {
     const start = last - windowSize;
-    const zoneCandles = candles.slice(start, last); // EXCLUDE the current (last) candle
+    const zoneCandles = candles.slice(start, last);
 
     const highs = zoneCandles.map(c => c.high);
     const lows = zoneCandles.map(c => c.low);
@@ -281,10 +266,8 @@ function detectAccumulation(candles: Candle[], debug: string[]): AccumulationZon
     const width = top - bottom;
     const widthATR = currentATR > 0 ? width / currentATR : 999;
 
-    // Check tightness
     if (widthATR > ACCUM_MAX_WIDTH_ATR) continue;
 
-    // Count touches of boundaries
     let touches = 0;
     for (const c of zoneCandles) {
       const touchTop = Math.abs(c.high - top) / width < 0.15;
@@ -293,7 +276,6 @@ function detectAccumulation(candles: Candle[], debug: string[]): AccumulationZon
     }
     if (touches < ACCUM_MIN_TOUCHES) continue;
 
-    // Check volume decline (later candles should have lower volume)
     const firstHalf = zoneCandles.slice(0, Math.floor(zoneCandles.length / 2));
     const secondHalf = zoneCandles.slice(Math.floor(zoneCandles.length / 2));
     const volFirst = avg(firstHalf.map(c => c.volume));
@@ -305,7 +287,7 @@ function detectAccumulation(candles: Candle[], debug: string[]): AccumulationZon
       continue;
     }
 
-    debug.push(`ACCUM FOUND: candles[${start}-${last - 1}] top=${top.toFixed(2)} bottom=${bottom.toFixed(2)} width=${width.toFixed(2)} (${widthATR.toFixed(2)}x ATR) touches=${touches} volRatio=${volRatio.toFixed(2)}`);
+    debug.push(`ACCUM FOUND: [${start}-${last - 1}] top=${top.toFixed(2)} bottom=${bottom.toFixed(2)} width=${width.toFixed(2)} (${widthATR.toFixed(2)}x ATR) touches=${touches} volRatio=${volRatio.toFixed(2)}`);
 
     return {
       top,
@@ -322,7 +304,7 @@ function detectAccumulation(candles: Candle[], debug: string[]): AccumulationZon
   return null;
 }
 
-// ─── BREAKOUT DETECTION (only checks CURRENT candle) ────────────────────
+// ─── BREAKOUT DETECTION (FIXED: check boundary first, then body) ─────────
 
 interface BreakoutResult {
   detected: boolean;
@@ -338,50 +320,53 @@ function checkBreakout(
 ): BreakoutResult {
   const last = candles.length - 1;
   const c = candles[last];
-  const p = candles[last - 1];
 
+  debug.push(`BREAKOUT CHECK: close=${c.close.toFixed(2)} open=${c.open.toFixed(2)} zone=${zone.bottom.toFixed(2)}-${zone.top.toFixed(2)}`);
+
+  const isBullish = c.close > c.open;
+
+  // FIRST: Check if candle is beyond zone boundary
+  let beyondZone = false;
+  let direction: "LONG" | "SHORT" | null = null;
+
+  if (BREAKOUT_CONFIRM_CLOSE) {
+    if (c.close > zone.top) {
+      beyondZone = true;
+      direction = "LONG";
+    } else if (c.close < zone.bottom) {
+      beyondZone = true;
+      direction = "SHORT";
+    }
+  } else {
+    if (c.high > zone.top) {
+      beyondZone = true;
+      direction = "LONG";
+    } else if (c.low < zone.bottom) {
+      beyondZone = true;
+      direction = "SHORT";
+    }
+  }
+
+  if (!beyondZone) {
+    debug.push(`BREAKOUT: no breakout — close=${c.close.toFixed(2)} inside zone`);
+    return { detected: false, direction: null, candle: null, reason: "no_breakout" };
+  }
+
+  // SECOND: Check body size (only for confirmed breakouts)
   const atrSeries = atr(candles, 14);
   const currentATR = atrSeries[atrSeries.length - 1] || 1;
-
   const body = Math.abs(c.close - c.open);
   const bodyATR = currentATR > 0 ? body / currentATR : 0;
 
-  debug.push(`BREAKOUT CHECK: last candle close=${c.close.toFixed(2)} open=${c.open.toFixed(2)} body=${body.toFixed(2)} (${bodyATR.toFixed(2)}x ATR) zone=${zone.bottom.toFixed(2)}-${zone.top.toFixed(2)}`);
+  debug.push(`BREAKOUT: beyond zone dir=${direction} body=${body.toFixed(2)} (${bodyATR.toFixed(2)}x ATR)`);
 
-  // Body must be meaningful
   if (bodyATR < BREAKOUT_MIN_BODY_ATR) {
     debug.push(`BREAKOUT: body too small (${bodyATR.toFixed(2)} < ${BREAKOUT_MIN_BODY_ATR})`);
     return { detected: false, direction: null, candle: null, reason: "body_too_small" };
   }
 
-  const isBullish = c.close > c.open;
-
-  // LONG breakout: close above zone top
-  if (isBullish) {
-    if (BREAKOUT_CONFIRM_CLOSE && c.close > zone.top) {
-      debug.push(`BREAKOUT: LONG confirmed close=${c.close.toFixed(2)} > zoneTop=${zone.top.toFixed(2)}`);
-      return { detected: true, direction: "LONG", candle: c, reason: "breakout_long" };
-    }
-    if (!BREAKOUT_CONFIRM_CLOSE && c.high > zone.top) {
-      debug.push(`BREAKOUT: LONG wick break high=${c.high.toFixed(2)} > zoneTop=${zone.top.toFixed(2)}`);
-      return { detected: true, direction: "LONG", candle: c, reason: "wick_break_long" };
-    }
-  }
-
-  // SHORT breakout: close below zone bottom
-  if (!isBullish) {
-    if (BREAKOUT_CONFIRM_CLOSE && c.close < zone.bottom) {
-      debug.push(`BREAKOUT: SHORT confirmed close=${c.close.toFixed(2)} < zoneBottom=${zone.bottom.toFixed(2)}`);
-      return { detected: true, direction: "SHORT", candle: c, reason: "breakout_short" };
-    }
-    if (!BREAKOUT_CONFIRM_CLOSE && c.low < zone.bottom) {
-      debug.push(`BREAKOUT: SHORT wick break low=${c.low.toFixed(2)} < zoneBottom=${zone.bottom.toFixed(2)}`);
-      return { detected: true, direction: "SHORT", candle: c, reason: "wick_break_short" };
-    }
-  }
-
-  debug.push(`BREAKOUT: no breakout — close=${c.close.toFixed(2)} inside zone ${zone.bottom.toFixed(2)}-${zone.top.toFixed(2)}`);
-  return { detected: false, direction: null, candle: null, reason: "no_breakout" };
+  debug.push(`BREAKOUT: ${direction} confirmed close=${c.close.toFixed(2)} beyond zone`);
+  return { detected: true, direction, candle: c, reason: `breakout_${direction?.toLowerCase()}` };
 }
 
 // ─── Signal Builder ─────────────────────────────────────────────────────
@@ -402,7 +387,6 @@ function buildSignal(
   const atrSeries = atr(candles4h, 14);
   const currentATR = atrSeries[atrSeries.length - 1] || zoneHeight * 0.5;
 
-  // Stop: outside zone + ATR buffer
   const swingStop = direction === "LONG" ? zone.bottom : zone.top;
   const atrStop = direction === "LONG"
     ? entry - currentATR * 1.5
@@ -412,11 +396,9 @@ function buildSignal(
     ? Math.min(swingStop, atrStop)
     : Math.max(swingStop, atrStop);
 
-  // Target: 2-3x risk
   const risk = Math.abs(entry - stop);
   const target = direction === "LONG" ? entry + risk * 2.5 : entry - risk * 2.5;
 
-  // Trail: EMA21 ± ATR
   const ema21 = ema(closes, 21);
   const trail = direction === "LONG"
     ? ema21[ema21.length - 1] - currentATR * 0.5
@@ -424,23 +406,18 @@ function buildSignal(
 
   const rr = risk > 0 ? Math.abs(target - entry) / risk : 0;
 
-  // Confidence base
   let confidence = 50;
 
-  // Zone quality
   if (zone.widthATR < 1.5) confidence += 20;
   else if (zone.widthATR < 2.0) confidence += 10;
 
-  // Touches
   if (zone.touches >= 4) confidence += 10;
   else if (zone.touches >= 3) confidence += 5;
 
-  // ADX
   const adxValue = adx(candles4h);
   if (adxValue > 30) confidence += 10;
   else if (adxValue > 20) confidence += 5;
 
-  // Stoch adjustment (NOT hard block)
   if (direction === "SHORT" && stochK < STOCH_EXTREME_LOW) {
     confidence -= STOCH_CONFIDENCE_PENALTY;
     debug.push(`CONFIDENCE: Stoch K=${stochK} oversold, -${STOCH_CONFIDENCE_PENALTY}% for SHORT`);
@@ -551,7 +528,6 @@ export async function generateSignal(
   const zone = detectAccumulation(candles4h, debug);
 
   if (!zone) {
-    // No accumulation zone — just market data
     return {
       signal: null,
       market: {
@@ -588,10 +564,8 @@ export async function generateSignal(
   const breakout = checkBreakout(candles4h, zone, debug);
 
   if (!breakout.detected || !breakout.direction) {
-    // Accumulation detected, waiting for breakout
     debug.push(`WATCHING: accumulation detected, waiting for breakout`);
 
-    // Persist zone so we don't keep redetecting
     await persistState(pair, {
       stage: "WATCHING",
       zoneTop: zone.top,
@@ -664,7 +638,6 @@ export async function generateSignal(
     };
   }
 
-  // Mark zone as consumed
   await persistState(pair, {
     stage: "NONE",
     zoneTop: null,
