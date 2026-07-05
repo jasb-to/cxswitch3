@@ -1,11 +1,5 @@
-// app/api/cron/route.ts — v29.7 "Unified: strategy.ts + state.ts + telegram.ts"
+// app/api/cron/route.ts — v29.8 "Always generate market data + fix ADX in UI"
 // ============================================================
-// DELETED: All inline detection logic (PHASE1, CLIMAX, detectPhase, etc.)
-// DELETED: All inline indicator functions
-// DELETED: Stub KV functions
-// IMPORTS: generateSignal, filterExpiredSignals, shouldHold, isSignalStillValid from @/lib/strategy
-// IMPORTS: All state functions from @/lib/state
-// IMPORTS: sendAlert from @/lib/telegram
 
 import { NextResponse } from "next/server";
 import {
@@ -26,6 +20,7 @@ import {
   filterExpiredSignals,
   shouldHold,
   isSignalStillValid,
+  getMarketSnapshot,
   Candle,
 } from "@/lib/strategy";
 import { sendAlert } from "@/lib/telegram";
@@ -110,7 +105,7 @@ export async function GET(request: Request) {
   };
 
   log("========================================");
-  log(`[CRON] Started runId=${runId} v29.7`);
+  log(`[CRON] Started runId=${runId} v29.8`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -203,20 +198,12 @@ export async function GET(request: Request) {
       const existingIdx = validSignals.findIndex((s: any) => s.pair === pair);
       const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
 
-      // ── CALL lib/strategy.ts ─────────────────────────────────
-      const result = await generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
+      // ── ALWAYS generate market data for UI ──────────────────────
+      const marketSnapshot = await getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+      marketDataList.push(marketSnapshot as MarketData);
+      log(`[MARKET] ${pair} ADX=${marketSnapshot.adx} HTF=${marketSnapshot.htfBias}`);
 
-      // Log strategy debug output
-      for (const line of result.debug) {
-        log(`[STRAT] ${pair} ${line}`);
-      }
-
-      let market = result.market;
-      if (market) {
-        market.closes4h = candles4h.slice(-50).map((c) => c.close);
-        marketDataList.push(market as MarketData);
-      }
-
+      // ── Check existing signal first ─────────────────────────────
       if (existingForPair) {
         log(`[PAIR] ${pair} — has existing signal ${existingForPair.id}`);
         const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
@@ -241,6 +228,14 @@ export async function GET(request: Request) {
         }
       }
 
+      // ── CALL lib/strategy.ts for NEW signal ─────────────────────
+      const result = await generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
+
+      // Log strategy debug output
+      for (const line of result.debug) {
+        log(`[STRAT] ${pair} ${line}`);
+      }
+
       if (!result.signal) {
         log(`[PAIR] ${pair} — NO SIGNAL (${result.debug[result.debug.length - 1] || "no breakout"})`);
         alerts.push({ pair, status: "no_signal", debug: result.debug.join(" | ") });
@@ -253,7 +248,7 @@ export async function GET(request: Request) {
       );
       newSignals.push(signal);
 
-      // ── SEND TELEGRAM ALERT ─────────────────────────────────
+      // ── SEND TELEGRAM ALERT ─────────────────────────────────────
       try {
         await sendAlert({
           symbol: signal.pair,
