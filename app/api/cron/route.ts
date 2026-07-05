@@ -1,10 +1,6 @@
-// app/api/cron/route.ts — v29.8 "Cooldown + No Re-alerts + Reordered Flow"
+// app/api/cron/route.ts — v30 "Accumulation First Flow"
 // ============================================================
-// FIXES APPLIED:
-// 1. Check existing signals FIRST, skip generateSignal() if valid
-// 2. Mark exits with cooldown, record lastExitAt
-// 3. Don't send Telegram alerts for already-active trades
-// 4. Reordered: isSignalStillValid → shouldHold → generateSignal (only if no valid trade)
+// Uses lib/strategy.ts v30 — accumulation detection, then breakout on current candle
 
 import { NextResponse } from "next/server";
 import {
@@ -114,7 +110,7 @@ export async function GET(request: Request) {
   };
 
   log("========================================");
-  log(`[CRON] Started runId=${runId} v29.8`);
+  log(`[CRON] Started runId=${runId} v30`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -206,7 +202,7 @@ export async function GET(request: Request) {
       const currentPrice = candles4h[candles4h.length - 1].close;
 
       // ═══════════════════════════════════════════════════════════════
-      // FIX #1: Check existing signal FIRST before generating new one
+      // CHECK EXISTING SIGNAL FIRST
       // ═══════════════════════════════════════════════════════════════
       const existingIdx = validSignals.findIndex((s: any) => s.pair === pair);
       const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
@@ -214,7 +210,6 @@ export async function GET(request: Request) {
       if (existingForPair) {
         log(`[PAIR] ${pair} — has existing signal ${existingForPair.id}`);
 
-        // Check if still valid
         const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
         if (!validity.valid) {
           log(`[PAIR] ${pair} — INVALID: ${validity.reason}`);
@@ -222,9 +217,8 @@ export async function GET(request: Request) {
           if (activeTrades[pair]) delete activeTrades[pair];
           validSignals.splice(existingIdx, 1);
           alerts.push({ pair, status: "expired", reason: validity.reason });
-          // FALL THROUGH to generateSignal() below
+          // FALL THROUGH to generateSignal
         } else {
-          // Check trail stop
           const holdResult = await shouldHold(pair, existingForPair, candles4h, currentPrice);
           if (!holdResult.shouldHold) {
             log(`[PAIR] ${pair} — FORCED EXIT: ${holdResult.reason}`);
@@ -232,26 +226,25 @@ export async function GET(request: Request) {
             if (activeTrades[pair]) delete activeTrades[pair];
             validSignals.splice(existingIdx, 1);
             alerts.push({ pair, status: "forced_exit", reason: holdResult.reason });
-            // FALL THROUGH to generateSignal() below
+            // FALL THROUGH to generateSignal
           } else {
             log(`[PAIR] ${pair} — Still valid, skipping generation`);
-            // Build market data for dashboard even when holding
+            // Build market data for dashboard
             const marketResult = await generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
             if (marketResult.market) {
               marketResult.market.closes4h = candles4h.slice(-50).map((c: any) => c.close);
               marketDataList.push(marketResult.market as MarketData);
             }
-            continue; // SKIP generateSignal — save CPU
+            continue;
           }
         }
       }
 
       // ═══════════════════════════════════════════════════════════════
-      // Only reach here if: no existing signal, OR existing was exited
+      // GENERATE NEW SIGNAL (only if no valid existing trade)
       // ═══════════════════════════════════════════════════════════════
       const result = await generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
 
-      // Log strategy debug output
       for (const line of result.debug) {
         log(`[STRAT] ${pair} ${line}`);
       }
@@ -274,10 +267,7 @@ export async function GET(request: Request) {
       );
       newSignals.push(signal);
 
-      // ═══════════════════════════════════════════════════════════════
-      // FIX #2: Don't send Telegram alert if we already have this pair active
-      // (shouldn't happen due to check above, but guard anyway)
-      // ═══════════════════════════════════════════════════════════════
+      // Skip alert if already active
       if (activeTrades[pair]) {
         log(`[ALERT] ${pair} — already active, skipping alert`);
         alerts.push({ pair, status: "already_active", signalId: signal.id });
