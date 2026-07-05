@@ -1,13 +1,14 @@
-// lib/strategy.ts — v29.6 "Production Breakout Engine"
+// lib/strategy.ts — v29.8 "Production Breakout Engine"
 // ============================================================
-// ALL FIXES APPLIED:
+// FIXES:
+// - Uses getPairState/setPairState from @/lib/state (no duplicate Redis)
 // - No legacy strings (PHASE1, CLIMAX, etc.)
-// - Redis keys migrated to v29
 // - Breakout confirmation: close beyond consolidation
 // - Safer stop placement (outside zone + ATR)
 // - Prefer newest breakout on tie
 // - Extracted buildBreakoutSignal() helper
-// - All 23 exports preserved 
+
+import { getPairState, setPairState } from "@/lib/state";
 
 export interface Candle {
   timestamp: number;
@@ -82,25 +83,6 @@ const BREAKOUT_MIN_SCORE = 2;
 const REQUIRE_HTF_ALIGNMENT = true;
 const TEST_MODE = false;
 const TEST_DIRECTION: "LONG" | "SHORT" = "LONG";
-
-// ─── Redis Keys (MIGRATED to v29) ────────────────────────────────────────
-
-const REDIS_KEY_PREFIX = "cx";
-const REDIS_KEY_VERSION = "v29";
-
-function redisKey(base: string): string {
-  return `${REDIS_KEY_PREFIX}_${base}_${REDIS_KEY_VERSION}`;
-}
-
-// Keys:
-// cx_signals_v29
-// cx_market_v29
-// cx_active_trades_v29
-// cx_last_cron_run_v29
-// cx_signal_history_v29
-// cx_ui_alerts_v29
-// cx_cron_logs_v29
-// cx_state_{pair}_v29
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -183,8 +165,8 @@ function adx(candles: Candle[]): number {
   const minusDISmooth = [avg(minusDMs.slice(0, 14))];
   for (let i = 14; i < trs.length; i++) {
     atrSmooth.push((atrSmooth[atrSmooth.length - 1] * 13 + trs[i]) / 14);
-    plusDISmooth.push((plusDISmooth[plusDISmooth.length - 1] * 13 + plusDMs[i]) / 14);
-    minusDISmooth.push((minusDISmooth[minusDISmooth.length - 1] * 13 + minusDMs[i]) / 14);
+    plusDISmooth.push((plusDISmooth[plusDISmooth.length - 1] * plusDMs[i]) / 14);
+    minusDISmooth.push((minusDISmooth[minusDISmooth.length - 1] * minusDMs[i]) / 14);
   }
   const dxValues: number[] = [];
   for (let i = 0; i < atrSmooth.length; i++) {
@@ -241,13 +223,7 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// ─── STATE PERSISTENCE (Redis-backed, v29 keys) ────────────────────────
-
-let redisClient: any = null;
-
-export function setRedisClient(client: any): void {
-  redisClient = client;
-}
+// ─── STATE PERSISTENCE (uses @/lib/state getPairState/setPairState) ─────
 
 async function getPersistedState(pair: string): Promise<{
   stage: "NONE" | "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED";
@@ -258,39 +234,23 @@ async function getPersistedState(pair: string): Promise<{
   prevStoch: { k: number; d: number } | null;
   zoneStartIndex: number;
 }> {
-  if (!redisClient) {
-    return { stage: "NONE", zone: null, impulseCandle: null, impulseDirection: null, impulseRange: 0, prevStoch: null, zoneStartIndex: 0 };
-  }
-  try {
-    const raw = await redisClient.get(redisKey(`state_${pair}`));
-    if (!raw) {
-      return { stage: "NONE", zone: null, impulseCandle: null, impulseDirection: null, impulseRange: 0, prevStoch: null, zoneStartIndex: 0 };
-    }
-    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-    return {
-      stage: parsed.stage || "NONE",
-      zone: parsed.zone || null,
-      impulseCandle: parsed.impulseCandle || null,
-      impulseDirection: parsed.impulseDirection || null,
-      impulseRange: parsed.impulseRange || 0,
-      prevStoch: parsed.prevStoch || null,
-      zoneStartIndex: parsed.zoneStartIndex || 0,
-    };
-  } catch {
-    return { stage: "NONE", zone: null, impulseCandle: null, impulseDirection: null, impulseRange: 0, prevStoch: null, zoneStartIndex: 0 };
-  }
+  const raw = await getPairState(pair);
+  return {
+    stage: raw.stage || "NONE",
+    zone: raw.zone || null,
+    impulseCandle: raw.impulseCandle || null,
+    impulseDirection: raw.impulseDirection || null,
+    impulseRange: raw.impulseRange || 0,
+    prevStoch: raw.prevStoch || null,
+    zoneStartIndex: raw.zoneStartIndex || 0,
+  };
 }
 
 async function persistState(pair: string, state: any): Promise<void> {
-  if (!redisClient) return;
-  try {
-    await redisClient.set(redisKey(`state_${pair}`), JSON.stringify(state), { ex: 7 * 24 * 60 * 60 });
-  } catch (e) {
-    console.error(`[STRATEGY] Failed to persist state for ${pair}:`, e);
-  }
+  await setPairState(pair, state);
 }
 
-// ─── DETECTION ENGINE (v29.6) ──────────────────────────────────────────
+// ─── DETECTION ENGINE (v29.8) ──────────────────────────────────────────
 
 interface DetectionResult {
   detected: boolean;
@@ -352,13 +312,11 @@ function detectPattern(candles: Candle[], debug: string[]): DetectionResult {
     );
 
     if (score >= BREAKOUT_MIN_SCORE) {
-      // Build consolidation zone BEFORE this candle
       const zoneStart = Math.max(0, i - 8);
       const zoneCandles = candles.slice(zoneStart, i);
       const prevHigh = Math.max(...zoneCandles.map(c => c.high));
       const prevLow = Math.min(...zoneCandles.map(c => c.low));
 
-      // BREAKOUT CONFIRMATION: close must be beyond consolidation
       const confirmed = direction === "LONG" ? c.close > prevHigh : c.close < prevLow;
 
       debug.push(`CHECK[${i}] zone=${prevLow.toFixed(2)}-${prevHigh.toFixed(2)} confirmed=${confirmed}`);
@@ -399,7 +357,6 @@ function detectPattern(candles: Candle[], debug: string[]): DetectionResult {
         reason: "breakout_confirmed",
       };
 
-      // Prefer: higher score, then newer candle
       if (
         !bestResult ||
         score > bestResult.score ||
@@ -419,7 +376,7 @@ function detectPattern(candles: Candle[], debug: string[]): DetectionResult {
   return { detected: false, candle: null, direction: null, zone: null, quality: null, index: -1, score: 0, reason: "no_breakout_detected" };
 }
 
-// ─── Signal Builder (extracted helper) ─────────────────────────────────
+// ─── Signal Builder ─────────────────────────────────────────────────────
 
 function buildBreakoutSignal(
   pair: string,
@@ -439,13 +396,11 @@ function buildBreakoutSignal(
   const atrSeries = atr(candles4h, 14);
   const currentATR = atrSeries[atrSeries.length - 1] || zoneHeight * 0.5;
 
-  // SAFER STOP PLACEMENT
   const swingStop = direction === "LONG" ? zone.bottom : zone.top;
   const atrStop = direction === "LONG"
     ? entry - currentATR * 1.5
     : entry + currentATR * 1.5;
 
-  // Stop is OUTSIDE both zone and normal volatility
   const stop = direction === "LONG"
     ? Math.min(swingStop, atrStop)
     : Math.max(swingStop, atrStop);
@@ -541,7 +496,6 @@ export async function generateSignal(
 
   debug.push(`HTF Bias: ${htBias} | Stage: ${state.stage} | Mode: ${DETECTION_MODE}`);
 
-  // ── TEST MODE ───────────────────────────────────────────────────
   if (TEST_MODE) {
     debug.push("TEST MODE: Forcing signal generation");
     const atrSeries = atr(candles4h, 14);
@@ -585,8 +539,6 @@ export async function generateSignal(
     return { signal, market, debug, stage: "EXPANSION" };
   }
 
-  // ── DETECT PATTERN ────────────────────────────────────────────
-
   if (state.stage === "NONE") {
     const detection = detectPattern(candles4h, debug);
 
@@ -606,7 +558,6 @@ export async function generateSignal(
       };
     }
 
-    // Timeframe alignment
     if (REQUIRE_HTF_ALIGNMENT) {
       const aligned =
         (detection.direction === "LONG" && (htBias === "BULLISH" || htBias === "NEUTRAL")) ||
@@ -629,7 +580,6 @@ export async function generateSignal(
       }
     }
 
-    // Build signal using extracted helper
     const built = buildBreakoutSignal(pair, detection, candles4h, htBias, debug);
     if (!built) {
       debug.push("Signal build failed");
@@ -652,12 +602,10 @@ export async function generateSignal(
     return { signal: built.signal, market: built.market, debug, stage: "EXPANSION" };
   }
 
-  // ── Legacy state handling ──────────────────────────────────────
   if (state.stage !== "NONE") {
     debug.push(`Legacy state ${state.stage} — resetting`);
     await persistState(pair, { stage: "NONE", zone: null, impulseCandle: null, impulseDirection: null, impulseRange: 0, prevStoch: null, zoneStartIndex: 0 });
 
-    // Re-run detection
     const detection = detectPattern(candles4h, debug);
     if (detection.detected && detection.candle && detection.direction && detection.zone) {
       const aligned =
@@ -844,7 +792,7 @@ export function checkTradeStatus(signal: Signal, currentPrice: number, now: numb
 }
 
 // ============================================================
-// COMPATIBILITY EXPORTS (unchanged)
+// COMPATIBILITY EXPORTS
 // ============================================================
 
 export async function getMonitorState(pair: string): Promise<any | undefined> {
