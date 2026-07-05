@@ -7,7 +7,7 @@
 // - Safer stop placement (outside zone + ATR)
 // - Prefer newest breakout on tie
 // - Extracted buildBreakoutSignal() helper
-// - All 23 exports preserved
+// - All 23 exports preserved 
 
 export interface Candle {
   timestamp: number;
