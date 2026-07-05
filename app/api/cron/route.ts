@@ -1,6 +1,5 @@
-// app/api/cron/route.ts — v30 "Accumulation First Flow"
+// app/api/cron/route.ts — v30.2 "1H Accumulation + 4H HTF"
 // ============================================================
-// Uses lib/strategy.ts v30 — accumulation detection, then breakout on current candle
 
 import { NextResponse } from "next/server";
 import {
@@ -110,7 +109,7 @@ export async function GET(request: Request) {
   };
 
   log("========================================");
-  log(`[CRON] Started runId=${runId} v30`);
+  log(`[CRON] Started runId=${runId} v30.2`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -199,7 +198,7 @@ export async function GET(request: Request) {
         continue;
       }
 
-      const currentPrice = candles4h[candles4h.length - 1].close;
+      const currentPrice = candles1h[candles1h.length - 1].close;
 
       // ═══════════════════════════════════════════════════════════════
       // CHECK EXISTING SIGNAL FIRST
@@ -217,16 +216,15 @@ export async function GET(request: Request) {
           if (activeTrades[pair]) delete activeTrades[pair];
           validSignals.splice(existingIdx, 1);
           alerts.push({ pair, status: "expired", reason: validity.reason });
-          // FALL THROUGH to generateSignal
         } else {
-          const holdResult = await shouldHold(pair, existingForPair, candles4h, currentPrice);
+          // FIX: Pass 1H candles for trail update (strategy now uses 1H)
+          const holdResult = await shouldHold(pair, existingForPair, candles1h, currentPrice);
           if (!holdResult.shouldHold) {
             log(`[PAIR] ${pair} — FORCED EXIT: ${holdResult.reason}`);
             await addSignalToHistory(existingForPair, "forced_exit" as any, currentPrice);
             if (activeTrades[pair]) delete activeTrades[pair];
             validSignals.splice(existingIdx, 1);
             alerts.push({ pair, status: "forced_exit", reason: holdResult.reason });
-            // FALL THROUGH to generateSignal
           } else {
             log(`[PAIR] ${pair} — Still valid, skipping generation`);
             // Build market data for dashboard
