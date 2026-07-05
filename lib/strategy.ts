@@ -1,12 +1,13 @@
-// lib/strategy.ts — v29.9 "Fixed ADX calculation + unified indicators"
+// lib/strategy.ts — v29.8 "Cooldown + Exhaustion + Consumed Breakouts"
 // ============================================================
-// FIXES:
-// - Rewrote adx() with correct Wilder's smoothing (needs 43+ candles, not 27)
-// - getMarketSnapshot now uses same indicator path as generateSignal
-// - Uses getPairState/setPairState from @/lib/state
-// - All indicators computed via calculateIndicators() helper
+// FIXES APPLIED:
+// 1. Cooldown: 30min after exit before re-entry
+// 2. Stoch exhaustion: don't short when K<15, don't long when K>85
+// 3. Consumed breakout tracking: mark breakouts as traded
+// 4. Skip generateSignal() if existing trade valid (cron handles this)
+// 5. All 23 exports preserved
 
-import { getPairState, setPairState } from "@/lib/state";
+import { getPairState, setPairState } from "./state";
 
 export interface Candle {
   timestamp: number;
@@ -82,6 +83,13 @@ const REQUIRE_HTF_ALIGNMENT = true;
 const TEST_MODE = false;
 const TEST_DIRECTION: "LONG" | "SHORT" = "LONG";
 
+// NEW: Cooldown after exit (ms)
+const EXIT_COOLDOWN_MS = 30 * 60 * 1000;
+
+// NEW: Stoch exhaustion thresholds
+const STOCH_OVERSOLD = 15;
+const STOCH_OVERBOUGHT = 85;
+
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 function avg(arr: number[]): number {
@@ -98,11 +106,15 @@ function ema(values: number[], period: number): number[] {
   return result;
 }
 
-function wilderSmooth(values: number[], period: number): number[] {
-  if (values.length < period) return [];
-  const result: number[] = [avg(values.slice(0, period))];
-  for (let i = period; i < values.length; i++) {
-    result.push((result[result.length - 1] * (period - 1) + values[i]) / period);
+function atr(candles: Candle[], period: number = 14): number[] {
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i], p = candles[i - 1];
+    trs.push(Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close)));
+  }
+  const result: number[] = [];
+  for (let i = period - 1; i < trs.length; i++) {
+    result.push(avg(trs.slice(i - period + 1, i + 1)));
   }
   return result;
 }
@@ -111,114 +123,68 @@ function trueRange(c: Candle, p: Candle): number {
   return Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
 }
 
-// ─── Unified Indicator Calculator ────────────────────────────────────────
+function stochRsi(closes: number[]): { k: number; d: number } {
+  const rsiValues: number[] = [];
+  for (let i = 14; i < closes.length; i++) {
+    const window = closes.slice(0, i + 1);
+    let gains = 0, losses = 0;
+    for (let j = 1; j <= 14; j++) {
+      const change = window[window.length - 1 - j] - window[window.length - 2 - j];
+      if (change > 0) gains += change;
+      else losses += Math.abs(change);
+    }
+    const avgGain = gains / 14;
+    const avgLoss = losses / 14;
+    rsiValues.push(avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss)));
+  }
+  if (rsiValues.length < 14) return { k: 50, d: 50 };
 
-interface Indicators {
-  adx: number;
-  stochK: number;
-  stochD: number;
-  htBias: "BULLISH" | "BEARISH" | "NEUTRAL";
-  trend1d: "LONG" | "SHORT" | "MIXED";
-  closes: number[];
+  const rawK: number[] = [];
+  for (let i = 13; i < rsiValues.length; i++) {
+    const w = rsiValues.slice(i - 13, i + 1);
+    const lo = Math.min(...w), hi = Math.max(...w);
+    rawK.push(hi === lo ? 50 : ((rsiValues[i] - lo) / (hi - lo)) * 100);
+  }
+
+  const kValues: number[] = [];
+  for (let i = 2; i < rawK.length; i++) {
+    kValues.push(avg(rawK.slice(i - 2, i + 1)));
+  }
+
+  if (kValues.length < 3) return { k: 50, d: 50 };
+  return { k: Math.round(kValues[kValues.length - 1] * 10) / 10, d: Math.round(avg(kValues.slice(-3)) * 10) / 10 };
 }
 
-function calculateIndicators(candles4h: Candle[]): Indicators {
-  const closes = candles4h.map(c => c.close);
-  const highs = candles4h.map(c => c.high);
-  const lows = candles4h.map(c => c.low);
-
-  // Stochastic RSI
-  let stochK = 50, stochD = 50;
-  try {
-    const rsiValues: number[] = [];
-    for (let i = 14; i < closes.length; i++) {
-      const window = closes.slice(i - 13, i + 1);
-      let gains = 0, losses = 0;
-      for (let j = 1; j < window.length; j++) {
-        const change = window[j] - window[j - 1];
-        if (change > 0) gains += change;
-        else losses += Math.abs(change);
-      }
-      const avgGain = gains / 14;
-      const avgLoss = losses / 14;
-      rsiValues.push(avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss)));
-    }
-
-    if (rsiValues.length >= 14) {
-      const rawK: number[] = [];
-      for (let i = 13; i < rsiValues.length; i++) {
-        const w = rsiValues.slice(i - 13, i + 1);
-        const lo = Math.min(...w), hi = Math.max(...w);
-        rawK.push(hi === lo ? 50 : ((rsiValues[i] - lo) / (hi - lo)) * 100);
-      }
-
-      const kValues: number[] = [];
-      for (let i = 2; i < rawK.length; i++) {
-        kValues.push(avg(rawK.slice(i - 2, i + 1)));
-      }
-
-      if (kValues.length >= 3) {
-        stochK = Math.round(kValues[kValues.length - 1] * 10) / 10;
-        stochD = Math.round(avg(kValues.slice(-3)) * 10) / 10;
-      }
-    }
-  } catch (e) {
-    console.error("[INDICATORS] StochRSI failed:", e);
+function adx(candles: Candle[]): number {
+  if (candles.length < 27) return 0;
+  const trs: number[] = [];
+  const plusDMs: number[] = [];
+  const minusDMs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i], p = candles[i - 1];
+    trs.push(Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close)));
+    plusDMs.push(c.high - p.high > p.low - c.low ? Math.max(c.high - p.high, 0) : 0);
+    minusDMs.push(p.low - c.low > c.high - p.high ? Math.max(p.low - c.low, 0) : 0);
   }
-
-  // ADX — proper Wilder's smoothing
-  let adxValue = 0;
-  try {
-    if (candles4h.length >= 43) { // 14 TR + 14 DX + 14 ADX smooth + 1
-      const trs: number[] = [];
-      const plusDMs: number[] = [];
-      const minusDMs: number[] = [];
-
-      for (let i = 1; i < candles4h.length; i++) {
-        const c = candles4h[i], p = candles4h[i - 1];
-        trs.push(trueRange(c, p));
-        const upMove = c.high - p.high;
-        const downMove = p.low - c.low;
-        plusDMs.push(upMove > downMove && upMove > 0 ? upMove : 0);
-        minusDMs.push(downMove > upMove && downMove > 0 ? downMove : 0);
-      }
-
-      const atrSmooth = wilderSmooth(trs, 14);
-      const plusDISmooth = wilderSmooth(plusDMs, 14);
-      const minusDISmooth = wilderSmooth(minusDMs, 14);
-
-      const dxValues: number[] = [];
-      for (let i = 0; i < atrSmooth.length; i++) {
-        const atr = atrSmooth[i] || 0.0001;
-        const pDI = (plusDISmooth[i] / atr) * 100;
-        const mDI = (minusDISmooth[i] / atr) * 100;
-        if (pDI + mDI > 0) {
-          dxValues.push((Math.abs(pDI - mDI) / (pDI + mDI)) * 100);
-        } else {
-          dxValues.push(0);
-        }
-      }
-
-      if (dxValues.length >= 14) {
-        const adxSmooth = wilderSmooth(dxValues, 14);
-        adxValue = Math.round(adxSmooth[adxSmooth.length - 1] * 10) / 10;
-      }
-    }
-  } catch (e) {
-    console.error("[INDICATORS] ADX failed:", e);
+  const atrSmooth = [avg(trs.slice(0, 14))];
+  const plusDISmooth = [avg(plusDMs.slice(0, 14))];
+  const minusDISmooth = [avg(minusDMs.slice(0, 14))];
+  for (let i = 14; i < trs.length; i++) {
+    atrSmooth.push((atrSmooth[atrSmooth.length - 1] * 13 + trs[i]) / 14);
+    plusDISmooth.push((plusDISmooth[plusDISmooth.length - 1] * plusDMs[i]) / 14);
+    minusDISmooth.push((minusDISmooth[minusDISmooth.length - 1] * minusDMs[i]) / 14);
   }
-
-  // HTF Bias
-  let htBias: "BULLISH" | "BEARISH" | "NEUTRAL" = "NEUTRAL";
-  try {
-    htBias = higherTimeframeBias(candles4h);
-  } catch (e) {
-    console.error("[INDICATORS] HTF Bias failed:", e);
+  const dxValues: number[] = [];
+  for (let i = 0; i < atrSmooth.length; i++) {
+    const pDI = (plusDISmooth[i] / atrSmooth[i]) * 100;
+    const mDI = (minusDISmooth[i] / atrSmooth[i]) * 100;
+    dxValues.push((pDI + mDI === 0) ? 0 : (Math.abs(pDI - mDI) / (pDI + mDI)) * 100);
   }
-
-  const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
-
-  return { adx: adxValue, stochK, stochD, htBias, trend1d, closes };
+  const adxSmooth = [avg(dxValues.slice(0, 14))];
+  for (let i = 14; i < dxValues.length; i++) {
+    adxSmooth.push((adxSmooth[adxSmooth.length - 1] * 13 + dxValues[i]) / 14);
+  }
+  return Math.round(adxSmooth[adxSmooth.length - 1] * 10) / 10;
 }
 
 // ─── Higher Timeframe Bias ───────────────────────────────────────────────
@@ -263,9 +229,9 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// ─── STATE PERSISTENCE ─────────────────────────────────────────────────
+// ─── STATE PERSISTENCE (via lib/state.ts getPairState/setPairState) ─────
 
-async function getPersistedState(pair: string): Promise<{
+interface PairState {
   stage: "NONE" | "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED";
   zone: Zone | null;
   impulseCandle: Candle | null;
@@ -273,7 +239,12 @@ async function getPersistedState(pair: string): Promise<{
   impulseRange: number;
   prevStoch: { k: number; d: number } | null;
   zoneStartIndex: number;
-}> {
+  lastExitAt: number;           // NEW: timestamp of last exit
+  lastBreakoutCandleTs: number; // NEW: timestamp of last consumed breakout
+  consumedBreakouts: number[];  // NEW: array of consumed candle timestamps
+}
+
+async function getPersistedState(pair: string): Promise<PairState> {
   const raw = await getPairState(pair);
   return {
     stage: raw.stage || "NONE",
@@ -283,28 +254,18 @@ async function getPersistedState(pair: string): Promise<{
     impulseRange: raw.impulseRange || 0,
     prevStoch: raw.prevStoch || null,
     zoneStartIndex: raw.zoneStartIndex || 0,
+    lastExitAt: raw.lastExitAt || 0,
+    lastBreakoutCandleTs: raw.lastBreakoutCandleTs || 0,
+    consumedBreakouts: raw.consumedBreakouts || [],
   };
 }
 
-async function persistState(pair: string, state: any): Promise<void> {
-  await setPairState(pair, state);
+async function persistState(pair: string, state: Partial<PairState>): Promise<void> {
+  const existing = await getPersistedState(pair);
+  await setPairState(pair, { ...existing, ...state });
 }
 
-// ─── ATR Helper ────────────────────────────────────────────────────────
-
-function calcATR(candles: Candle[], period: number = 14): number[] {
-  const trs: number[] = [];
-  for (let i = 1; i < candles.length; i++) {
-    trs.push(trueRange(candles[i], candles[i - 1]));
-  }
-  const result: number[] = [];
-  for (let i = period - 1; i < trs.length; i++) {
-    result.push(avg(trs.slice(i - period + 1, i + 1)));
-  }
-  return result;
-}
-
-// ─── DETECTION ENGINE ─────────────────────────────────────────────────
+// ─── DETECTION ENGINE (v29.8) ────────────────────────────────────────────
 
 interface DetectionResult {
   detected: boolean;
@@ -317,20 +278,27 @@ interface DetectionResult {
   reason: string;
 }
 
-function detectPattern(candles: Candle[], debug: string[]): DetectionResult {
+function detectPattern(
+  candles: Candle[],
+  debug: string[],
+  consumedBreakouts: number[]
+): DetectionResult {
   if (candles.length < 25) {
     return { detected: false, candle: null, direction: null, zone: null, quality: null, index: -1, score: 0, reason: "insufficient_candles" };
   }
 
   const last = candles.length - 1;
   const scanStart = Math.max(1, last - BREAKOUT_SCAN_DEPTH + 1);
+
   const lookbackStart = Math.max(0, last - BREAKOUT_SCAN_DEPTH - 15);
   const lookbackCandles = candles.slice(lookbackStart, scanStart);
 
   const prevBodies = lookbackCandles.map(c => Math.abs(c.close - c.open));
   const avgBody = avg(prevBodies);
+
   const prevTRs = lookbackCandles.slice(1).map((c, i) => trueRange(c, lookbackCandles[i]));
   const avgTR = avg(prevTRs);
+
   const prevVolumes = lookbackCandles.map(c => c.volume);
   const avgVol = avg(prevVolumes);
 
@@ -341,11 +309,20 @@ function detectPattern(candles: Candle[], debug: string[]): DetectionResult {
   for (let i = scanStart; i <= last; i++) {
     const c = candles[i];
     const p = candles[i - 1];
+
+    // NEW: Skip if this breakout candle was already consumed
+    if (consumedBreakouts.includes(c.timestamp)) {
+      debug.push(`SKIP[${i}] candle ts=${c.timestamp} already consumed`);
+      continue;
+    }
+
     const body = Math.abs(c.close - c.open);
     const tr = trueRange(c, p);
+
     const volRatio = avgVol > 0 ? c.volume / avgVol : 0;
     const bodyRatio = avgBody > 0 ? body / avgBody : 0;
     const trRatio = avgTR > 0 ? tr / avgTR : 0;
+
     const isBullish = c.close > c.open;
     const direction = isBullish ? "LONG" : "SHORT";
 
@@ -354,21 +331,29 @@ function detectPattern(candles: Candle[], debug: string[]): DetectionResult {
     const momentumScore = bodyRatio >= BREAKOUT_BODY_MULT ? 1 : 0;
     const score = volScore + rangeScore + momentumScore;
 
-    debug.push(`CHECK[${i}] vol=${volRatio.toFixed(2)}x(${volScore}) tr=${trRatio.toFixed(2)}x(${rangeScore}) body=${bodyRatio.toFixed(2)}x(${momentumScore}) score=${score}/3 dir=${direction} close=${c.close.toFixed(2)}`);
+    debug.push(
+      `CHECK[${i}] vol=${volRatio.toFixed(2)}x(${volScore}) tr=${trRatio.toFixed(2)}x(${rangeScore}) ` +
+      `body=${bodyRatio.toFixed(2)}x(${momentumScore}) score=${score}/3 dir=${direction} close=${c.close.toFixed(2)} ts=${c.timestamp}`
+    );
 
     if (score >= BREAKOUT_MIN_SCORE) {
+      // Build consolidation zone BEFORE this candle
       const zoneStart = Math.max(0, i - 8);
       const zoneCandles = candles.slice(zoneStart, i);
       const prevHigh = Math.max(...zoneCandles.map(c => c.high));
       const prevLow = Math.min(...zoneCandles.map(c => c.low));
+
+      // BREAKOUT CONFIRMATION: close must be beyond consolidation
       const confirmed = direction === "LONG" ? c.close > prevHigh : c.close < prevLow;
 
       debug.push(`CHECK[${i}] zone=${prevLow.toFixed(2)}-${prevHigh.toFixed(2)} confirmed=${confirmed}`);
+
       if (!confirmed) continue;
 
       const top = Math.max(prevHigh, c.high);
       const bottom = Math.min(prevLow, c.low);
-      const atrSeries = calcATR(candles, 14);
+
+      const atrSeries = atr(candles, 14);
       const currentATR = atrSeries[atrSeries.length - 1] || 1;
       const zoneHeight = top - bottom;
       const widthATR = currentATR > 0 ? zoneHeight / currentATR : 0;
@@ -389,19 +374,29 @@ function detectPattern(candles: Candle[], debug: string[]): DetectionResult {
       };
 
       const result: DetectionResult = {
-        detected: true, candle: c, direction,
-        zone: { top, bottom }, quality,
-        index: i, score, reason: "breakout_confirmed",
+        detected: true,
+        candle: c,
+        direction,
+        zone: { top, bottom },
+        quality,
+        index: i,
+        score,
+        reason: "breakout_confirmed",
       };
 
-      if (!bestResult || score > bestResult.score || (score === bestResult.score && i > bestResult.index)) {
+      // Prefer: higher score, then newer candle
+      if (
+        !bestResult ||
+        score > bestResult.score ||
+        (score === bestResult.score && i > bestResult.index)
+      ) {
         bestResult = result;
       }
     }
   }
 
   if (bestResult) {
-    debug.push(`SELECTED[${bestResult.index}] score=${bestResult.score} dir=${bestResult.direction} zone=${bestResult.zone?.bottom.toFixed(2)}-${bestResult.zone?.top.toFixed(2)}`);
+    debug.push(`SELECTED[${bestResult.index}] score=${bestResult.score} dir=${bestResult.direction} zone=${bestResult.zone?.bottom.toFixed(2)}-${bestResult.zone?.top.toFixed(2)} ts=${bestResult.candle?.timestamp}`);
     return bestResult;
   }
 
@@ -415,7 +410,7 @@ function buildBreakoutSignal(
   pair: string,
   detection: DetectionResult,
   candles4h: Candle[],
-  indicators: Indicators,
+  htBias: "BULLISH" | "BEARISH" | "NEUTRAL",
   debug: string[]
 ): { signal: Signal; market: any } | null {
   if (!detection.candle || !detection.direction || !detection.zone) return null;
@@ -425,18 +420,25 @@ function buildBreakoutSignal(
   const zone = detection.zone;
   const zoneHeight = zone.top - zone.bottom;
 
-  const atrSeries = calcATR(candles4h, 14);
+  const closes = candles4h.map(c => c.close);
+  const atrSeries = atr(candles4h, 14);
   const currentATR = atrSeries[atrSeries.length - 1] || zoneHeight * 0.5;
 
+  // SAFER STOP PLACEMENT
   const swingStop = direction === "LONG" ? zone.bottom : zone.top;
-  const atrStop = direction === "LONG" ? entry - currentATR * 1.5 : entry + currentATR * 1.5;
-  const stop = direction === "LONG" ? Math.min(swingStop, atrStop) : Math.max(swingStop, atrStop);
+  const atrStop = direction === "LONG"
+    ? entry - currentATR * 1.5
+    : entry + currentATR * 1.5;
+
+  const stop = direction === "LONG"
+    ? Math.min(swingStop, atrStop)
+    : Math.max(swingStop, atrStop);
 
   const atrTarget = direction === "LONG" ? entry + currentATR * 3 : entry - currentATR * 3;
   const zoneTarget = direction === "LONG" ? entry + zoneHeight * 1.5 : entry - zoneHeight * 1.5;
   const target = direction === "LONG" ? Math.max(atrTarget, zoneTarget) : Math.min(atrTarget, zoneTarget);
 
-  const ema21 = ema(indicators.closes, 21);
+  const ema21 = ema(closes, 21);
   const trail = direction === "LONG"
     ? ema21[ema21.length - 1] - currentATR * 0.5
     : ema21[ema21.length - 1] + currentATR * 0.5;
@@ -450,16 +452,18 @@ function buildBreakoutSignal(
     else if (detection.quality.label === "AVERAGE") confidence = 60;
     else confidence = 45;
   }
-  if (indicators.htBias === "NEUTRAL") confidence -= 5;
-  if (indicators.adx > 25) confidence += 5;
-  if (indicators.adx > 35) confidence += 5;
+  if (htBias === "NEUTRAL") confidence -= 5;
+  const adxValue = adx(candles4h);
+  if (adxValue > 25) confidence += 5;
+  if (adxValue > 35) confidence += 5;
   confidence = Math.min(95, Math.max(30, confidence));
 
-  const explanation = `${direction} BREAKOUT: ${detection.quality?.label || "UNKNOWN"} quality zone (${zone.bottom.toFixed(0)}-${zone.top.toFixed(0)}) broken with momentum. HTF=${indicators.htBias}, ADX=${indicators.adx.toFixed(1)}, Score=${detection.score}/3`;
+  const explanation = `${direction} BREAKOUT: ${detection.quality?.label || "UNKNOWN"} quality zone (${zone.bottom.toFixed(0)}-${zone.top.toFixed(0)}) broken with momentum. HTF=${htBias}, ADX=${adxValue.toFixed(1)}, Score=${detection.score}/3`;
 
   const signal: Signal = {
     id: `${pair}_${Date.now()}`,
-    pair, direction,
+    pair,
+    direction,
     stage: "CONFIRMED",
     entry: Math.round(entry * 100) / 100,
     stop: Math.round(stop * 100) / 100,
@@ -467,7 +471,7 @@ function buildBreakoutSignal(
     trail: Math.round(trail * 100) / 100,
     confidence,
     rr: Math.round(rr * 100) / 100,
-    adx: indicators.adx,
+    adx: adxValue,
     zoneTop: Math.round(zone.top * 100) / 100,
     zoneBottom: Math.round(zone.bottom * 100) / 100,
     explanation,
@@ -475,17 +479,20 @@ function buildBreakoutSignal(
     version: CURRENT_SIGNAL_VERSION,
   };
 
+  const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
+  const stoch = stochRsi(closes);
+
   const market = {
     pair,
     price: Math.round(entry * 100) / 100,
     timestamp: Date.now(),
     phase: "EXPANSION",
-    trend: indicators.trend1d,
-    htfBias: indicators.htBias,
-    adx: indicators.adx,
+    trend: trend1d,
+    htfBias: htBias,
+    adx: adxValue,
     rsi: 0,
-    stochK: indicators.stochK,
-    stochD: indicators.stochD,
+    stochK: stoch.k,
+    stochD: stoch.d,
     zoneTop: signal.zoneTop,
     zoneBottom: signal.zoneBottom,
     zoneScore: detection.quality ? (detection.quality.label === "EXCELLENT" ? 90 : detection.quality.label === "GOOD" ? 70 : detection.quality.label === "AVERAGE" ? 50 : 30) : 0,
@@ -510,12 +517,48 @@ export async function generateSignal(
   const debug: string[] = [];
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
 
-  const indicators = calculateIndicators(candles4h);
-  debug.push(`HTF Bias: ${indicators.htBias} | Stage: NONE | Mode: ${DETECTION_MODE} | ADX=${indicators.adx}`);
+  const state = await getPersistedState(pair);
+  const closes = candles4h.map(c => c.close);
+  const stoch = stochRsi(closes);
+  const htBias = higherTimeframeBias(candles4h);
+  const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
 
+  debug.push(`HTF Bias: ${htBias} | Stage: ${state.stage} | Mode: ${DETECTION_MODE} | ADX=${adx(candles4h)}`);
+
+  // ── COOLDOWN CHECK ──────────────────────────────────────────
+  // NEW: If we exited recently, require cooldown + fresh breakout
+  if (state.lastExitAt > 0) {
+    const timeSinceExit = Date.now() - state.lastExitAt;
+    if (timeSinceExit < EXIT_COOLDOWN_MS) {
+      debug.push(`COOLDOWN: ${Math.round(timeSinceExit / 1000)}s since exit, need ${Math.round(EXIT_COOLDOWN_MS / 1000)}s`);
+      return {
+        signal: null,
+        market: {
+          pair, price, timestamp: Date.now(),
+          phase: "NONE", trend: trend1d,
+          htfBias: htBias, adx: adx(candles4h), rsi: 0,
+          stochK: stoch.k, stochD: stoch.d,
+          zoneTop: null, zoneBottom: null, zoneScore: 0,
+        },
+        debug,
+        stage: "NONE",
+      };
+    }
+  }
+
+  // ── STOCH EXHAUSTION CHECK ─────────────────────────────────
+  // NEW: Don't fight extreme momentum
+  if (stoch.k < STOCH_OVERSOLD) {
+    debug.push(`EXHAUSTION: Stoch K=${stoch.k} oversold, SHORT signals blocked`);
+  }
+  if (stoch.k > STOCH_OVERBOUGHT) {
+    debug.push(`EXHAUSTION: Stoch K=${stoch.k} overbought, LONG signals blocked`);
+  }
+
+  // ── TEST MODE ───────────────────────────────────────────────
   if (TEST_MODE) {
     debug.push("TEST MODE: Forcing signal generation");
-    const atrSeries = calcATR(candles4h, 14);
+    const atrSeries = atr(candles4h, 14);
     const currentATR = atrSeries[atrSeries.length - 1] || price * 0.02;
     const direction = TEST_DIRECTION;
     const entry = price;
@@ -525,7 +568,9 @@ export async function generateSignal(
     const rr = Math.abs(target - entry) / Math.abs(entry - stop);
 
     const signal: Signal = {
-      id: `${pair}_${Date.now()}`, pair, direction,
+      id: `${pair}_${Date.now()}`,
+      pair,
+      direction,
       stage: "CONFIRMED",
       entry: Math.round(entry * 100) / 100,
       stop: Math.round(stop * 100) / 100,
@@ -533,7 +578,7 @@ export async function generateSignal(
       trail: Math.round(trail * 100) / 100,
       confidence: 50,
       rr: Math.round(rr * 100) / 100,
-      adx: indicators.adx,
+      adx: adx(candles4h),
       zoneTop: Math.round((entry + currentATR) * 100) / 100,
       zoneBottom: Math.round((entry - currentATR) * 100) / 100,
       explanation: `TEST MODE: Forced ${direction} signal for debugging`,
@@ -543,8 +588,8 @@ export async function generateSignal(
 
     const market = {
       pair, price: Math.round(price * 100) / 100, timestamp: Date.now(),
-      phase: "EXPANSION", trend: indicators.trend1d, htfBias: indicators.htBias,
-      adx: indicators.adx, rsi: 0, stochK: indicators.stochK, stochD: indicators.stochD,
+      phase: "EXPANSION", trend: trend1d, htfBias: htBias,
+      adx: signal.adx, rsi: 0, stochK: stoch.k, stochD: stoch.d,
       zoneTop: signal.zoneTop, zoneBottom: signal.zoneBottom,
       zoneScore: 50, zoneQuality: null,
       closes4h: candles4h.slice(-50).map(c => c.close),
@@ -554,52 +599,207 @@ export async function generateSignal(
     return { signal, market, debug, stage: "EXPANSION" };
   }
 
-  // Build market data even if no signal
-  const baseMarket = {
-    pair,
-    price: Math.round(price * 100) / 100,
-    timestamp: Date.now(),
-    phase: "NONE" as string,
-    trend: indicators.trend1d,
-    htfBias: indicators.htBias,
-    adx: indicators.adx,
-    rsi: 0,
-    stochK: indicators.stochK,
-    stochD: indicators.stochD,
-    zoneTop: null as number | null,
-    zoneBottom: null as number | null,
-    zoneScore: 0,
-    zoneQuality: null,
-    closes4h: candles4h.slice(-50).map(c => c.close),
-  };
+  // ── DETECT PATTERN ──────────────────────────────────────────
 
-  const detection = detectPattern(candles4h, debug);
+  if (state.stage === "NONE") {
+    const detection = detectPattern(candles4h, debug, state.consumedBreakouts);
 
-  if (!detection.detected || !detection.candle || !detection.direction || !detection.zone) {
-    debug.push("No breakout detected — scanning");
-    return { signal: null, market: baseMarket, debug, stage: "NONE" };
+    if (!detection.detected || !detection.candle || !detection.direction || !detection.zone) {
+      debug.push("No breakout detected — scanning");
+      return {
+        signal: null,
+        market: {
+          pair, price, timestamp: Date.now(),
+          phase: "NONE", trend: trend1d,
+          htfBias: htBias, adx: adx(candles4h), rsi: 0,
+          stochK: stoch.k, stochD: stoch.d,
+          zoneTop: null, zoneBottom: null, zoneScore: 0,
+        },
+        debug,
+        stage: "NONE",
+      };
+    }
+
+    // NEW: Stoch exhaustion block
+    if (detection.direction === "SHORT" && stoch.k < STOCH_OVERSOLD) {
+      debug.push(`BLOCKED: SHORT breakout but Stoch K=${stoch.k} oversold (exhausted)`);
+      // Mark as consumed so we don't keep trying
+      await persistState(pair, {
+        consumedBreakouts: [...state.consumedBreakouts, detection.candle.timestamp],
+      });
+      return {
+        signal: null,
+        market: {
+          pair, price, timestamp: Date.now(),
+          phase: "EXHAUSTION", trend: trend1d,
+          htfBias: htBias, adx: adx(candles4h), rsi: 0,
+          stochK: stoch.k, stochD: stoch.d,
+          zoneTop: null, zoneBottom: null, zoneScore: 0,
+        },
+        debug,
+        stage: "EXHAUSTION",
+      };
+    }
+    if (detection.direction === "LONG" && stoch.k > STOCH_OVERBOUGHT) {
+      debug.push(`BLOCKED: LONG breakout but Stoch K=${stoch.k} overbought (exhausted)`);
+      await persistState(pair, {
+        consumedBreakouts: [...state.consumedBreakouts, detection.candle.timestamp],
+      });
+      return {
+        signal: null,
+        market: {
+          pair, price, timestamp: Date.now(),
+          phase: "EXHAUSTION", trend: trend1d,
+          htfBias: htBias, adx: adx(candles4h), rsi: 0,
+          stochK: stoch.k, stochD: stoch.d,
+          zoneTop: null, zoneBottom: null, zoneScore: 0,
+        },
+        debug,
+        stage: "EXHAUSTION",
+      };
+    }
+
+    // Timeframe alignment
+    if (REQUIRE_HTF_ALIGNMENT) {
+      const aligned =
+        (detection.direction === "LONG" && (htBias === "BULLISH" || htBias === "NEUTRAL")) ||
+        (detection.direction === "SHORT" && (htBias === "BEARISH" || htBias === "NEUTRAL"));
+
+      if (!aligned) {
+        debug.push(`BLOCKED: ${detection.direction} breakout but HTF is ${htBias}`);
+        return {
+          signal: null,
+          market: {
+            pair, price, timestamp: Date.now(),
+            phase: "NONE", trend: trend1d,
+            htfBias: htBias, adx: adx(candles4h), rsi: 0,
+            stochK: stoch.k, stochD: stoch.d,
+            zoneTop: null, zoneBottom: null, zoneScore: 0,
+          },
+          debug,
+          stage: "NONE",
+        };
+      }
+    }
+
+    // Build signal
+    const built = buildBreakoutSignal(pair, detection, candles4h, htBias, debug);
+    if (!built) {
+      debug.push("Signal build failed");
+      return {
+        signal: null,
+        market: {
+          pair, price, timestamp: Date.now(),
+          phase: "NONE", trend: trend1d,
+          htfBias: htBias, adx: adx(candles4h), rsi: 0,
+          stochK: stoch.k, stochD: stoch.d,
+          zoneTop: null, zoneBottom: null, zoneScore: 0,
+        },
+        debug,
+        stage: "NONE",
+      };
+    }
+
+    // NEW: Mark breakout as consumed
+    await persistState(pair, {
+      stage: "NONE",
+      zone: null,
+      impulseCandle: null,
+      impulseDirection: null,
+      impulseRange: 0,
+      prevStoch: null,
+      zoneStartIndex: 0,
+      lastBreakoutCandleTs: detection.candle.timestamp,
+      consumedBreakouts: [...state.consumedBreakouts, detection.candle.timestamp],
+    });
+
+    return { signal: built.signal, market: built.market, debug, stage: "EXPANSION" };
   }
 
-  if (REQUIRE_HTF_ALIGNMENT) {
-    const aligned =
-      (detection.direction === "LONG" && (indicators.htBias === "BULLISH" || indicators.htBias === "NEUTRAL")) ||
-      (detection.direction === "SHORT" && (indicators.htBias === "BEARISH" || indicators.htBias === "NEUTRAL"));
+  // ── Legacy state handling ──────────────────────────────────
+  if (state.stage !== "NONE") {
+    debug.push(`Legacy state ${state.stage} — resetting`);
+    await persistState(pair, {
+      stage: "NONE",
+      zone: null,
+      impulseCandle: null,
+      impulseDirection: null,
+      impulseRange: 0,
+      prevStoch: null,
+      zoneStartIndex: 0,
+    });
 
-    if (!aligned) {
-      debug.push(`BLOCKED: ${detection.direction} breakout but HTF is ${indicators.htBias}`);
-      return { signal: null, market: baseMarket, debug, stage: "NONE" };
+    const detection = detectPattern(candles4h, debug, state.consumedBreakouts);
+    if (detection.detected && detection.candle && detection.direction && detection.zone) {
+      // Check exhaustion
+      if (detection.direction === "SHORT" && stoch.k < STOCH_OVERSOLD) {
+        debug.push(`BLOCKED: SHORT breakout but Stoch K=${stoch.k} oversold`);
+        return {
+          signal: null,
+          market: {
+            pair, price, timestamp: Date.now(),
+            phase: "EXHAUSTION", trend: trend1d,
+            htfBias: htBias, adx: adx(candles4h), rsi: 0,
+            stochK: stoch.k, stochD: stoch.d,
+            zoneTop: null, zoneBottom: null, zoneScore: 0,
+          },
+          debug,
+          stage: "EXHAUSTION",
+        };
+      }
+      if (detection.direction === "LONG" && stoch.k > STOCH_OVERBOUGHT) {
+        debug.push(`BLOCKED: LONG breakout but Stoch K=${stoch.k} overbought`);
+        return {
+          signal: null,
+          market: {
+            pair, price, timestamp: Date.now(),
+            phase: "EXHAUSTION", trend: trend1d,
+            htfBias: htBias, adx: adx(candles4h), rsi: 0,
+            stochK: stoch.k, stochD: stoch.d,
+            zoneTop: null, zoneBottom: null, zoneScore: 0,
+          },
+          debug,
+          stage: "EXHAUSTION",
+        };
+      }
+
+      const aligned =
+        (detection.direction === "LONG" && (htBias === "BULLISH" || htBias === "NEUTRAL")) ||
+        (detection.direction === "SHORT" && (htBias === "BEARISH" || htBias === "NEUTRAL"));
+
+      if (aligned) {
+        const built = buildBreakoutSignal(pair, detection, candles4h, htBias, debug);
+        if (built) {
+          await persistState(pair, {
+            stage: "NONE",
+            zone: null,
+            impulseCandle: null,
+            impulseDirection: null,
+            impulseRange: 0,
+            prevStoch: null,
+            zoneStartIndex: 0,
+            lastBreakoutCandleTs: detection.candle.timestamp,
+            consumedBreakouts: [...state.consumedBreakouts, detection.candle.timestamp],
+          });
+          return { signal: built.signal, market: built.market, debug, stage: "EXPANSION" };
+        }
+      }
     }
   }
 
-  const built = buildBreakoutSignal(pair, detection, candles4h, indicators, debug);
-  if (!built) {
-    debug.push("Signal build failed");
-    return { signal: null, market: baseMarket, debug, stage: "NONE" };
-  }
-
-  await persistState(pair, { stage: "NONE", zone: null, impulseCandle: null, impulseDirection: null, impulseRange: 0, prevStoch: null, zoneStartIndex: 0 });
-
-  return { signal: built.signal, market: built.market, debug, stage: "EXPANSION" };
+  debug.push("No signal — scanning");
+  return {
+    signal: null,
+    market: {
+      pair, price, timestamp: Date.now(),
+      phase: "NONE", trend: trend1d,
+      htfBias: htBias, adx: adx(candles4h), rsi: 0,
+      stochK: stoch.k, stochD: stoch.d,
+      zoneTop: null, zoneBottom: null, zoneScore: 0,
+    },
+    debug,
+    stage: "NONE",
+  };
 }
 
 // ─── Trail Stop Update ─────────────────────────────────────────────────
@@ -611,7 +811,7 @@ export function updateTrail(
 ): { trail: number; shouldExit: boolean; reason: string } {
   const closes = candles4h.map(c => c.close);
   const ema21 = ema(closes, 21);
-  const atrSeries = calcATR(candles4h, 14);
+  const atrSeries = atr(candles4h, 14);
   const currentATR = atrSeries[atrSeries.length - 1];
 
   const newTrail = signal.direction === "LONG"
@@ -636,19 +836,25 @@ export async function getMarketSnapshot(
   candles15m: Candle[] | undefined
 ): Promise<any> {
   const state = await getPersistedState(pair);
-  const indicators = calculateIndicators(candles4h);
+  const price = candles4h[candles4h.length - 1].close;
+  const closes = candles4h.map(c => c.close);
+  const stoch = stochRsi(closes);
+  const htBias = higherTimeframeBias(candles4h);
+
+  const adxValue = adx(candles4h);
+  const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
 
   return {
     pair,
-    price: Math.round(candles4h[candles4h.length - 1].close * 100) / 100,
+    price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
     phase: state.stage === "NONE" ? "NONE" : state.stage,
-    trend: indicators.trend1d,
-    htfBias: indicators.htBias,
-    adx: indicators.adx,
+    trend: trend1d,
+    htfBias: htBias,
+    adx: adxValue,
     rsi: 0,
-    stochK: indicators.stochK,
-    stochD: indicators.stochD,
+    stochK: stoch.k,
+    stochD: stoch.d,
     zoneTop: state.zone ? Math.round(state.zone.top * 100) / 100 : null,
     zoneBottom: state.zone ? Math.round(state.zone.bottom * 100) / 100 : null,
     zoneScore: 0,
@@ -669,11 +875,23 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
   const ageMs = now - signal.timestamp;
   const maxAge = 24 * 60 * 60 * 1000;
 
-  if (ageMs > maxAge) return { valid: false, reason: "expired_ttl", exited: true };
-  if (signal.direction === "LONG" && currentPrice <= signal.stop) return { valid: false, reason: "sl_hit", exited: true };
-  if (signal.direction === "SHORT" && currentPrice >= signal.stop) return { valid: false, reason: "sl_hit", exited: true };
-  if (signal.direction === "LONG" && currentPrice >= signal.target) return { valid: false, reason: "tp_hit", exited: true };
-  if (signal.direction === "SHORT" && currentPrice <= signal.target) return { valid: false, reason: "tp_hit", exited: true };
+  if (ageMs > maxAge) {
+    return { valid: false, reason: "expired_ttl", exited: true };
+  }
+
+  if (signal.direction === "LONG" && currentPrice <= signal.stop) {
+    return { valid: false, reason: "sl_hit", exited: true };
+  }
+  if (signal.direction === "SHORT" && currentPrice >= signal.stop) {
+    return { valid: false, reason: "sl_hit", exited: true };
+  }
+
+  if (signal.direction === "LONG" && currentPrice >= signal.target) {
+    return { valid: false, reason: "tp_hit", exited: true };
+  }
+  if (signal.direction === "SHORT" && currentPrice <= signal.target) {
+    return { valid: false, reason: "tp_hit", exited: true };
+  }
 
   return { valid: true, reason: "active", exited: false };
 }
@@ -685,16 +903,20 @@ export interface HoldResult {
   reason: string;
 }
 
-export function shouldHold(
+export async function shouldHold(
   pair: string,
   signal: Signal,
   candles4h: Candle[],
   currentPrice: number
-): HoldResult {
+): Promise<HoldResult> {
   const trailUpdate = updateTrail(signal, candles4h, currentPrice);
+
   if (trailUpdate.shouldExit) {
+    // NEW: Record exit timestamp for cooldown
+    await persistState(pair, { lastExitAt: Date.now() });
     return { shouldHold: false, reason: `trail_stop — Price ${currentPrice.toFixed(1)} hit trail at ${trailUpdate.trail}` };
   }
+
   return { shouldHold: true, reason: `trailing at ${trailUpdate.trail}` };
 }
 
@@ -710,7 +932,10 @@ export function filterExpiredSignals(
 
   for (const signal of signals) {
     const price = currentPrices[signal.pair];
-    if (price === undefined) { active.push(signal); continue; }
+    if (price === undefined) {
+      active.push(signal);
+      continue;
+    }
     const check = isSignalStillValid(signal, price, now);
     if (check.valid) active.push(signal);
     else exited.push({ signal, reason: check.reason });
@@ -725,23 +950,37 @@ export type TradeStatus = "ACTIVE" | "TP_HIT" | "SL_HIT" | "EXHAUSTION" | "EXPIR
 
 export function checkTradeStatus(signal: Signal, currentPrice: number, now: number = Date.now()): TradeStatus {
   const validity = isSignalStillValid(signal, currentPrice, now);
+
   if (!validity.valid && validity.reason === "expired_ttl") return "EXPIRED";
   if (!validity.valid && validity.reason === "sl_hit") return "SL_HIT";
   if (!validity.valid && validity.reason === "tp_hit") return "TP_HIT";
+
   return "ACTIVE";
 }
 
 // ============================================================
-// COMPATIBILITY EXPORTS
+// COMPATIBILITY EXPORTS (unchanged)
 // ============================================================
 
-export async function getMonitorState(pair: string): Promise<any | undefined> { return undefined; }
-export async function clearMonitorState(pair: string): Promise<void> { return; }
-export async function setMonitorState(pair: string, state: any): Promise<void> { return; }
+export async function getMonitorState(pair: string): Promise<any | undefined> {
+  return undefined;
+}
+
+export async function clearMonitorState(pair: string): Promise<void> {
+  return;
+}
+
+export async function setMonitorState(pair: string, state: any): Promise<void> {
+  return;
+}
 
 export async function generateSignalCompat(
-  pair: string, candles1h: Candle[], candles4h: Candle[], candles15m: Candle[],
-  activeTrades?: Record<string, any>, currentPrice?: number
+  pair: string,
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candles15m: Candle[],
+  activeTrades?: Record<string, any>,
+  currentPrice?: number
 ): Promise<SignalResult> {
   return generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
 }
@@ -750,8 +989,12 @@ export function isSignalStillValidBool(signal: Signal, currentPrice: number): bo
   return isSignalStillValid(signal, currentPrice).valid;
 }
 
-export function shouldHoldCompat(
-  pair: string, signal: Signal, candles4h: Candle[], candles1h: Candle[], currentPrice: number
-): HoldResult {
+export async function shouldHoldCompat(
+  pair: string,
+  signal: Signal,
+  candles4h: Candle[],
+  candles1h: Candle[],
+  currentPrice: number
+): Promise<HoldResult> {
   return shouldHold(pair, signal, candles4h, currentPrice);
 }
