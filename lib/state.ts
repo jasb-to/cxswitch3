@@ -24,7 +24,6 @@ const UI_ALERTS_TTL = 24 * 60 * 60;
 const CRON_LOGS_TTL = 24 * 60 * 60;
 const PAIR_STATE_TTL = 7 * 24 * 60 * 60;
 
-// CRITICAL: Must match lib/strategy.ts CURRENT_SIGNAL_VERSION
 export const CURRENT_SIGNAL_VERSION = 29;
 
 export interface Signal {
@@ -78,11 +77,6 @@ function safeParseObject(data: unknown): Record<string, any> {
 
 function getSignalMaxAgeHours(signal: any): number {
   return 24;
-}
-
-function isSignalExpired(signal: any): boolean {
-  const ageHours = (Date.now() - signal.timestamp) / (1000 * 60 * 60);
-  return ageHours >= getSignalMaxAgeHours(signal);
 }
 
 export async function setSignals(signals: any[]) {
@@ -257,8 +251,6 @@ export async function setCronLogs(logs: any[]): Promise<void> {
   }
 }
 
-// ─── Per-Pair State (for strategy persistence) ───────────────────────────
-
 export async function getPairState(pair: string): Promise<any> {
   try {
     const data = await redis.get(`cx_state_${pair}_${KEY_VERSION}`);
@@ -276,8 +268,6 @@ export async function setPairState(pair: string, state: any): Promise<void> {
     console.error(`[STATE] setPairState(${pair}) error:`, err);
   }
 }
-
-// ─── Legacy Compatibility ─────────────────────────────────────────────────
 
 export async function resetAll() {
   try {
