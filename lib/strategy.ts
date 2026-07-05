@@ -1,11 +1,15 @@
-// lib/strategy.ts — v29.8 "Cooldown + Exhaustion + Consumed Breakouts"
+// lib/strategy.ts — v30 "Accumulation First, Breakout Second"
 // ============================================================
-// FIXES APPLIED:
-// 1. Cooldown: 30min after exit before re-entry
-// 2. Stoch exhaustion: don't short when K<15, don't long when K>85
-// 3. Consumed breakout tracking: mark breakouts as traded
-// 4. Skip generateSignal() if existing trade valid (cron handles this)
-// 5. All 23 exports preserved
+// PHILOSOPHY: Detect accumulation zones, wait for FIRST breakout, ride early wave
+// NOT: Scan backwards for any breakout in last 10 candles (chasing)
+//
+// CHANGES FROM v29:
+// 1. detectAccumulation() finds tight zones with declining volume
+// 2. waitForBreakout() checks ONLY the most recent candle against the zone
+// 3. No backward scanning — no chasing completed moves
+// 4. Stoch used for confidence adjustment (not hard block)
+// 5. Consumed breakout tracking preserved
+// 6. Cooldown after exit preserved
 
 import { getPairState, setPairState } from "./state";
 
@@ -16,18 +20,6 @@ export interface Candle {
   low: number;
   close: number;
   volume: number;
-}
-
-export interface Zone {
-  top: number;
-  bottom: number;
-  left: number;
-  right: number;
-  active: boolean;
-  volumeClimax: number;
-  type: "ACCUMULATION" | "DISTRIBUTION";
-  touches: number;
-  breakAttempts: number;
 }
 
 export interface Signal {
@@ -53,42 +45,31 @@ export interface SignalResult {
   signal?: Signal;
   market?: any;
   debug: string[];
-  zone?: Zone;
   stage: "NONE" | "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED" | "EXPANSION" | "EXHAUSTION";
 }
 
-export interface ZoneQuality {
-  age: number;
-  widthATR: number;
-  compression: number;
-  volumeDecay: number;
-  touches: number;
-  breakAttempts: number;
-  label: "EXCELLENT" | "GOOD" | "AVERAGE" | "WEAK";
-}
-
-export const CURRENT_SIGNAL_VERSION = 29;
+export const CURRENT_SIGNAL_VERSION = 30;
 
 // ─── Config ──────────────────────────────────────────────────────────────
 
-const DETECTION_MODE: "BREAKOUT" | "ACCUMULATION" = "BREAKOUT";
+// Accumulation detection
+const ACCUM_MIN_CANDLES = 6;        // minimum candles in zone
+const ACCUM_MAX_CANDLES = 20;       // maximum lookback for zone
+const ACCUM_MAX_WIDTH_ATR = 2.5;    // zone must be tight (within 2.5x ATR)
+const ACCUM_MIN_TOUCHES = 2;        // at least 2 touches of zone boundary
+const ACCUM_VOLUME_DECLINE = 0.7;   // recent volume < 70% of earlier volume
 
-const BREAKOUT_VOLUME_MULT = 1.2;
-const BREAKOUT_RANGE_MULT = 0.7;
-const BREAKOUT_BODY_MULT = 0.5;
-const BREAKOUT_SCAN_DEPTH = 10;
-const BREAKOUT_MIN_SCORE = 2;
+// Breakout requirements
+const BREAKOUT_MIN_BODY_ATR = 0.4;  // breakout candle body must be meaningful
+const BREAKOUT_CONFIRM_CLOSE = true; // close must be beyond zone (not just wick)
+
+// Confidence adjustments
+const STOCH_EXTREME_LOW = 15;       // K < 15: reduce confidence
+const STOCH_EXTREME_HIGH = 85;      // K > 85: reduce confidence
+const STOCH_CONFIDENCE_PENALTY = 15; // subtract this from confidence at extremes
 
 const REQUIRE_HTF_ALIGNMENT = true;
-const TEST_MODE = false;
-const TEST_DIRECTION: "LONG" | "SHORT" = "LONG";
-
-// NEW: Cooldown after exit (ms)
 const EXIT_COOLDOWN_MS = 30 * 60 * 1000;
-
-// NEW: Stoch exhaustion thresholds
-const STOCH_OVERSOLD = 15;
-const STOCH_OVERBOUGHT = 85;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -171,8 +152,8 @@ function adx(candles: Candle[]): number {
   const minusDISmooth = [avg(minusDMs.slice(0, 14))];
   for (let i = 14; i < trs.length; i++) {
     atrSmooth.push((atrSmooth[atrSmooth.length - 1] * 13 + trs[i]) / 14);
-    plusDISmooth.push((plusDISmooth[plusDISmooth.length - 1] * plusDMs[i]) / 14);
-    minusDISmooth.push((minusDISmooth[minusDISmooth.length - 1] * minusDMs[i]) / 14);
+    plusDISmooth.push((plusDISmooth[plusDISmooth.length - 1] * 13 + plusDMs[i]) / 14);
+    minusDISmooth.push((minusDISmooth[minusDISmooth.length - 1] * 13 + minusDMs[i]) / 14);
   }
   const dxValues: number[] = [];
   for (let i = 0; i < atrSmooth.length; i++) {
@@ -229,34 +210,34 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// ─── STATE PERSISTENCE (via lib/state.ts getPairState/setPairState) ─────
+// ─── STATE PERSISTENCE ───────────────────────────────────────────────────
 
 interface PairState {
   stage: "NONE" | "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED";
-  zone: Zone | null;
-  impulseCandle: Candle | null;
-  impulseDirection: "LONG" | "SHORT" | null;
-  impulseRange: number;
-  prevStoch: { k: number; d: number } | null;
+  zoneTop: number | null;
+  zoneBottom: number | null;
   zoneStartIndex: number;
-  lastExitAt: number;           // NEW: timestamp of last exit
-  lastBreakoutCandleTs: number; // NEW: timestamp of last consumed breakout
-  consumedBreakouts: number[];  // NEW: array of consumed candle timestamps
+  zoneEndIndex: number;
+  lastExitAt: number;
+  consumedZones: string[];  // hash of zone bounds to prevent re-trade
+  lastBreakoutTs: number;
+}
+
+function hashZone(top: number, bottom: number): string {
+  return `${Math.round(top)}_${Math.round(bottom)}`;
 }
 
 async function getPersistedState(pair: string): Promise<PairState> {
   const raw = await getPairState(pair);
   return {
     stage: raw.stage || "NONE",
-    zone: raw.zone || null,
-    impulseCandle: raw.impulseCandle || null,
-    impulseDirection: raw.impulseDirection || null,
-    impulseRange: raw.impulseRange || 0,
-    prevStoch: raw.prevStoch || null,
+    zoneTop: raw.zoneTop || null,
+    zoneBottom: raw.zoneBottom || null,
     zoneStartIndex: raw.zoneStartIndex || 0,
+    zoneEndIndex: raw.zoneEndIndex || 0,
     lastExitAt: raw.lastExitAt || 0,
-    lastBreakoutCandleTs: raw.lastBreakoutCandleTs || 0,
-    consumedBreakouts: raw.consumedBreakouts || [],
+    consumedZones: raw.consumedZones || [],
+    lastBreakoutTs: raw.lastBreakoutTs || 0,
   };
 }
 
@@ -265,166 +246,163 @@ async function persistState(pair: string, state: Partial<PairState>): Promise<vo
   await setPairState(pair, { ...existing, ...state });
 }
 
-// ─── DETECTION ENGINE (v29.8) ────────────────────────────────────────────
+// ─── ACCUMULATION DETECTION ──────────────────────────────────────────────
 
-interface DetectionResult {
-  detected: boolean;
-  candle: Candle | null;
-  direction: "LONG" | "SHORT" | null;
-  zone: { top: number; bottom: number } | null;
-  quality: ZoneQuality | null;
-  index: number;
-  score: number;
-  reason: string;
+interface AccumulationZone {
+  top: number;
+  bottom: number;
+  startIndex: number;
+  endIndex: number;
+  touches: number;
+  avgVolume: number;
+  widthATR: number;
 }
 
-function detectPattern(
-  candles: Candle[],
-  debug: string[],
-  consumedBreakouts: number[]
-): DetectionResult {
-  if (candles.length < 25) {
-    return { detected: false, candle: null, direction: null, zone: null, quality: null, index: -1, score: 0, reason: "insufficient_candles" };
+function detectAccumulation(candles: Candle[], debug: string[]): AccumulationZone | null {
+  if (candles.length < ACCUM_MIN_CANDLES + 14) {
+    debug.push(`ACCUM: insufficient candles (${candles.length})`);
+    return null;
   }
 
+  const atrSeries = atr(candles, 14);
+  const currentATR = atrSeries[atrSeries.length - 1] || 1;
   const last = candles.length - 1;
-  const scanStart = Math.max(1, last - BREAKOUT_SCAN_DEPTH + 1);
 
-  const lookbackStart = Math.max(0, last - BREAKOUT_SCAN_DEPTH - 15);
-  const lookbackCandles = candles.slice(lookbackStart, scanStart);
+  // Scan backwards from current candle to find tight ranges
+  // We want the MOST RECENT accumulation (closest to now)
+  for (let windowSize = ACCUM_MIN_CANDLES; windowSize <= Math.min(ACCUM_MAX_CANDLES, last); windowSize++) {
+    const start = last - windowSize;
+    const zoneCandles = candles.slice(start, last); // EXCLUDE the current (last) candle
 
-  const prevBodies = lookbackCandles.map(c => Math.abs(c.close - c.open));
-  const avgBody = avg(prevBodies);
+    const highs = zoneCandles.map(c => c.high);
+    const lows = zoneCandles.map(c => c.low);
+    const top = Math.max(...highs);
+    const bottom = Math.min(...lows);
+    const width = top - bottom;
+    const widthATR = currentATR > 0 ? width / currentATR : 999;
 
-  const prevTRs = lookbackCandles.slice(1).map((c, i) => trueRange(c, lookbackCandles[i]));
-  const avgTR = avg(prevTRs);
+    // Check tightness
+    if (widthATR > ACCUM_MAX_WIDTH_ATR) continue;
 
-  const prevVolumes = lookbackCandles.map(c => c.volume);
-  const avgVol = avg(prevVolumes);
+    // Count touches of boundaries
+    let touches = 0;
+    for (const c of zoneCandles) {
+      const touchTop = Math.abs(c.high - top) / width < 0.15;
+      const touchBottom = Math.abs(c.low - bottom) / width < 0.15;
+      if (touchTop || touchBottom) touches++;
+    }
+    if (touches < ACCUM_MIN_TOUCHES) continue;
 
-  debug.push(`DETECT mode=${DETECTION_MODE} avgBody=${avgBody.toFixed(2)} avgTR=${avgTR.toFixed(2)} avgVol=${avgVol.toFixed(2)}`);
+    // Check volume decline (later candles should have lower volume)
+    const firstHalf = zoneCandles.slice(0, Math.floor(zoneCandles.length / 2));
+    const secondHalf = zoneCandles.slice(Math.floor(zoneCandles.length / 2));
+    const volFirst = avg(firstHalf.map(c => c.volume));
+    const volSecond = avg(secondHalf.map(c => c.volume));
+    const volRatio = volFirst > 0 ? volSecond / volFirst : 1;
 
-  let bestResult: DetectionResult | null = null;
-
-  for (let i = scanStart; i <= last; i++) {
-    const c = candles[i];
-    const p = candles[i - 1];
-
-    // NEW: Skip if this breakout candle was already consumed
-    if (consumedBreakouts.includes(c.timestamp)) {
-      debug.push(`SKIP[${i}] candle ts=${c.timestamp} already consumed`);
+    if (volRatio > ACCUM_VOLUME_DECLINE) {
+      debug.push(`ACCUM: volume not declining (${volRatio.toFixed(2)} > ${ACCUM_VOLUME_DECLINE})`);
       continue;
     }
 
-    const body = Math.abs(c.close - c.open);
-    const tr = trueRange(c, p);
+    debug.push(`ACCUM FOUND: candles[${start}-${last - 1}] top=${top.toFixed(2)} bottom=${bottom.toFixed(2)} width=${width.toFixed(2)} (${widthATR.toFixed(2)}x ATR) touches=${touches} volRatio=${volRatio.toFixed(2)}`);
 
-    const volRatio = avgVol > 0 ? c.volume / avgVol : 0;
-    const bodyRatio = avgBody > 0 ? body / avgBody : 0;
-    const trRatio = avgTR > 0 ? tr / avgTR : 0;
+    return {
+      top,
+      bottom,
+      startIndex: start,
+      endIndex: last - 1,
+      touches,
+      avgVolume: avg(zoneCandles.map(c => c.volume)),
+      widthATR,
+    };
+  }
 
-    const isBullish = c.close > c.open;
-    const direction = isBullish ? "LONG" : "SHORT";
+  debug.push("ACCUM: no tight accumulation zone found");
+  return null;
+}
 
-    const volScore = volRatio >= BREAKOUT_VOLUME_MULT ? 1 : 0;
-    const rangeScore = trRatio >= BREAKOUT_RANGE_MULT ? 1 : 0;
-    const momentumScore = bodyRatio >= BREAKOUT_BODY_MULT ? 1 : 0;
-    const score = volScore + rangeScore + momentumScore;
+// ─── BREAKOUT DETECTION (only checks CURRENT candle) ────────────────────
 
-    debug.push(
-      `CHECK[${i}] vol=${volRatio.toFixed(2)}x(${volScore}) tr=${trRatio.toFixed(2)}x(${rangeScore}) ` +
-      `body=${bodyRatio.toFixed(2)}x(${momentumScore}) score=${score}/3 dir=${direction} close=${c.close.toFixed(2)} ts=${c.timestamp}`
-    );
+interface BreakoutResult {
+  detected: boolean;
+  direction: "LONG" | "SHORT" | null;
+  candle: Candle | null;
+  reason: string;
+}
 
-    if (score >= BREAKOUT_MIN_SCORE) {
-      // Build consolidation zone BEFORE this candle
-      const zoneStart = Math.max(0, i - 8);
-      const zoneCandles = candles.slice(zoneStart, i);
-      const prevHigh = Math.max(...zoneCandles.map(c => c.high));
-      const prevLow = Math.min(...zoneCandles.map(c => c.low));
+function checkBreakout(
+  candles: Candle[],
+  zone: AccumulationZone,
+  debug: string[]
+): BreakoutResult {
+  const last = candles.length - 1;
+  const c = candles[last];
+  const p = candles[last - 1];
 
-      // BREAKOUT CONFIRMATION: close must be beyond consolidation
-      const confirmed = direction === "LONG" ? c.close > prevHigh : c.close < prevLow;
+  const atrSeries = atr(candles, 14);
+  const currentATR = atrSeries[atrSeries.length - 1] || 1;
 
-      debug.push(`CHECK[${i}] zone=${prevLow.toFixed(2)}-${prevHigh.toFixed(2)} confirmed=${confirmed}`);
+  const body = Math.abs(c.close - c.open);
+  const bodyATR = currentATR > 0 ? body / currentATR : 0;
 
-      if (!confirmed) continue;
+  debug.push(`BREAKOUT CHECK: last candle close=${c.close.toFixed(2)} open=${c.open.toFixed(2)} body=${body.toFixed(2)} (${bodyATR.toFixed(2)}x ATR) zone=${zone.bottom.toFixed(2)}-${zone.top.toFixed(2)}`);
 
-      const top = Math.max(prevHigh, c.high);
-      const bottom = Math.min(prevLow, c.low);
+  // Body must be meaningful
+  if (bodyATR < BREAKOUT_MIN_BODY_ATR) {
+    debug.push(`BREAKOUT: body too small (${bodyATR.toFixed(2)} < ${BREAKOUT_MIN_BODY_ATR})`);
+    return { detected: false, direction: null, candle: null, reason: "body_too_small" };
+  }
 
-      const atrSeries = atr(candles, 14);
-      const currentATR = atrSeries[atrSeries.length - 1] || 1;
-      const zoneHeight = top - bottom;
-      const widthATR = currentATR > 0 ? zoneHeight / currentATR : 0;
+  const isBullish = c.close > c.open;
 
-      let label: ZoneQuality["label"] = "WEAK";
-      if (widthATR < 1.5) label = "EXCELLENT";
-      else if (widthATR < 2.5) label = "GOOD";
-      else if (widthATR < 4) label = "AVERAGE";
-
-      const quality: ZoneQuality = {
-        age: zoneCandles.length,
-        widthATR,
-        compression: Math.max(0, 100 - widthATR * 25),
-        volumeDecay: 0,
-        touches: 1,
-        breakAttempts: 0,
-        label,
-      };
-
-      const result: DetectionResult = {
-        detected: true,
-        candle: c,
-        direction,
-        zone: { top, bottom },
-        quality,
-        index: i,
-        score,
-        reason: "breakout_confirmed",
-      };
-
-      // Prefer: higher score, then newer candle
-      if (
-        !bestResult ||
-        score > bestResult.score ||
-        (score === bestResult.score && i > bestResult.index)
-      ) {
-        bestResult = result;
-      }
+  // LONG breakout: close above zone top
+  if (isBullish) {
+    if (BREAKOUT_CONFIRM_CLOSE && c.close > zone.top) {
+      debug.push(`BREAKOUT: LONG confirmed close=${c.close.toFixed(2)} > zoneTop=${zone.top.toFixed(2)}`);
+      return { detected: true, direction: "LONG", candle: c, reason: "breakout_long" };
+    }
+    if (!BREAKOUT_CONFIRM_CLOSE && c.high > zone.top) {
+      debug.push(`BREAKOUT: LONG wick break high=${c.high.toFixed(2)} > zoneTop=${zone.top.toFixed(2)}`);
+      return { detected: true, direction: "LONG", candle: c, reason: "wick_break_long" };
     }
   }
 
-  if (bestResult) {
-    debug.push(`SELECTED[${bestResult.index}] score=${bestResult.score} dir=${bestResult.direction} zone=${bestResult.zone?.bottom.toFixed(2)}-${bestResult.zone?.top.toFixed(2)} ts=${bestResult.candle?.timestamp}`);
-    return bestResult;
+  // SHORT breakout: close below zone bottom
+  if (!isBullish) {
+    if (BREAKOUT_CONFIRM_CLOSE && c.close < zone.bottom) {
+      debug.push(`BREAKOUT: SHORT confirmed close=${c.close.toFixed(2)} < zoneBottom=${zone.bottom.toFixed(2)}`);
+      return { detected: true, direction: "SHORT", candle: c, reason: "breakout_short" };
+    }
+    if (!BREAKOUT_CONFIRM_CLOSE && c.low < zone.bottom) {
+      debug.push(`BREAKOUT: SHORT wick break low=${c.low.toFixed(2)} < zoneBottom=${zone.bottom.toFixed(2)}`);
+      return { detected: true, direction: "SHORT", candle: c, reason: "wick_break_short" };
+    }
   }
 
-  debug.push(`NO_DETECT: max score < ${BREAKOUT_MIN_SCORE} in last ${BREAKOUT_SCAN_DEPTH} candles`);
-  return { detected: false, candle: null, direction: null, zone: null, quality: null, index: -1, score: 0, reason: "no_breakout_detected" };
+  debug.push(`BREAKOUT: no breakout — close=${c.close.toFixed(2)} inside zone ${zone.bottom.toFixed(2)}-${zone.top.toFixed(2)}`);
+  return { detected: false, direction: null, candle: null, reason: "no_breakout" };
 }
 
 // ─── Signal Builder ─────────────────────────────────────────────────────
 
-function buildBreakoutSignal(
+function buildSignal(
   pair: string,
-  detection: DetectionResult,
+  direction: "LONG" | "SHORT",
+  zone: AccumulationZone,
   candles4h: Candle[],
   htBias: "BULLISH" | "BEARISH" | "NEUTRAL",
+  stochK: number,
   debug: string[]
 ): { signal: Signal; market: any } | null {
-  if (!detection.candle || !detection.direction || !detection.zone) return null;
-
-  const direction = detection.direction;
-  const entry = detection.candle.close;
-  const zone = detection.zone;
+  const entry = candles4h[candles4h.length - 1].close;
   const zoneHeight = zone.top - zone.bottom;
 
   const closes = candles4h.map(c => c.close);
   const atrSeries = atr(candles4h, 14);
   const currentATR = atrSeries[atrSeries.length - 1] || zoneHeight * 0.5;
 
-  // SAFER STOP PLACEMENT
+  // Stop: outside zone + ATR buffer
   const swingStop = direction === "LONG" ? zone.bottom : zone.top;
   const atrStop = direction === "LONG"
     ? entry - currentATR * 1.5
@@ -434,31 +412,47 @@ function buildBreakoutSignal(
     ? Math.min(swingStop, atrStop)
     : Math.max(swingStop, atrStop);
 
-  const atrTarget = direction === "LONG" ? entry + currentATR * 3 : entry - currentATR * 3;
-  const zoneTarget = direction === "LONG" ? entry + zoneHeight * 1.5 : entry - zoneHeight * 1.5;
-  const target = direction === "LONG" ? Math.max(atrTarget, zoneTarget) : Math.min(atrTarget, zoneTarget);
+  // Target: 2-3x risk
+  const risk = Math.abs(entry - stop);
+  const target = direction === "LONG" ? entry + risk * 2.5 : entry - risk * 2.5;
 
+  // Trail: EMA21 ± ATR
   const ema21 = ema(closes, 21);
   const trail = direction === "LONG"
     ? ema21[ema21.length - 1] - currentATR * 0.5
     : ema21[ema21.length - 1] + currentATR * 0.5;
 
-  const rr = Math.abs(target - entry) / Math.abs(entry - stop);
+  const rr = risk > 0 ? Math.abs(target - entry) / risk : 0;
 
+  // Confidence base
   let confidence = 50;
-  if (detection.quality) {
-    if (detection.quality.label === "EXCELLENT") confidence = 85;
-    else if (detection.quality.label === "GOOD") confidence = 72;
-    else if (detection.quality.label === "AVERAGE") confidence = 60;
-    else confidence = 45;
-  }
-  if (htBias === "NEUTRAL") confidence -= 5;
-  const adxValue = adx(candles4h);
-  if (adxValue > 25) confidence += 5;
-  if (adxValue > 35) confidence += 5;
-  confidence = Math.min(95, Math.max(30, confidence));
 
-  const explanation = `${direction} BREAKOUT: ${detection.quality?.label || "UNKNOWN"} quality zone (${zone.bottom.toFixed(0)}-${zone.top.toFixed(0)}) broken with momentum. HTF=${htBias}, ADX=${adxValue.toFixed(1)}, Score=${detection.score}/3`;
+  // Zone quality
+  if (zone.widthATR < 1.5) confidence += 20;
+  else if (zone.widthATR < 2.0) confidence += 10;
+
+  // Touches
+  if (zone.touches >= 4) confidence += 10;
+  else if (zone.touches >= 3) confidence += 5;
+
+  // ADX
+  const adxValue = adx(candles4h);
+  if (adxValue > 30) confidence += 10;
+  else if (adxValue > 20) confidence += 5;
+
+  // Stoch adjustment (NOT hard block)
+  if (direction === "SHORT" && stochK < STOCH_EXTREME_LOW) {
+    confidence -= STOCH_CONFIDENCE_PENALTY;
+    debug.push(`CONFIDENCE: Stoch K=${stochK} oversold, -${STOCH_CONFIDENCE_PENALTY}% for SHORT`);
+  }
+  if (direction === "LONG" && stochK > STOCH_EXTREME_HIGH) {
+    confidence -= STOCH_CONFIDENCE_PENALTY;
+    debug.push(`CONFIDENCE: Stoch K=${stochK} overbought, -${STOCH_CONFIDENCE_PENALTY}% for LONG`);
+  }
+
+  confidence = Math.min(95, Math.max(25, confidence));
+
+  const explanation = `${direction} BREAKOUT: Accumulation zone ${zone.bottom.toFixed(0)}-${zone.top.toFixed(0)} (${zone.widthATR.toFixed(1)}x ATR, ${zone.touches} touches) broken. HTF=${htBias}, ADX=${adxValue.toFixed(1)}, StochK=${stochK}`;
 
   const signal: Signal = {
     id: `${pair}_${Date.now()}`,
@@ -495,8 +489,16 @@ function buildBreakoutSignal(
     stochD: stoch.d,
     zoneTop: signal.zoneTop,
     zoneBottom: signal.zoneBottom,
-    zoneScore: detection.quality ? (detection.quality.label === "EXCELLENT" ? 90 : detection.quality.label === "GOOD" ? 70 : detection.quality.label === "AVERAGE" ? 50 : 30) : 0,
-    zoneQuality: detection.quality,
+    zoneScore: confidence,
+    zoneQuality: {
+      age: zone.endIndex - zone.startIndex,
+      widthATR: zone.widthATR,
+      compression: Math.max(0, 100 - zone.widthATR * 30),
+      volumeDecay: 0,
+      touches: zone.touches,
+      breakAttempts: 0,
+      label: zone.widthATR < 1.5 ? "EXCELLENT" : zone.widthATR < 2.0 ? "GOOD" : "AVERAGE",
+    },
     closes4h: candles4h.slice(-50).map(c => c.close),
   };
 
@@ -523,10 +525,9 @@ export async function generateSignal(
   const htBias = higherTimeframeBias(candles4h);
   const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
 
-  debug.push(`HTF Bias: ${htBias} | Stage: ${state.stage} | Mode: ${DETECTION_MODE} | ADX=${adx(candles4h)}`);
+  debug.push(`HTF Bias: ${htBias} | Stage: ${state.stage} | StochK=${stoch.k} | ADX=${adx(candles4h)}`);
 
   // ── COOLDOWN CHECK ──────────────────────────────────────────
-  // NEW: If we exited recently, require cooldown + fresh breakout
   if (state.lastExitAt > 0) {
     const timeSinceExit = Date.now() - state.lastExitAt;
     if (timeSinceExit < EXIT_COOLDOWN_MS) {
@@ -546,66 +547,89 @@ export async function generateSignal(
     }
   }
 
-  // ── STOCH EXHAUSTION CHECK ─────────────────────────────────
-  // NEW: Don't fight extreme momentum
-  if (stoch.k < STOCH_OVERSOLD) {
-    debug.push(`EXHAUSTION: Stoch K=${stoch.k} oversold, SHORT signals blocked`);
-  }
-  if (stoch.k > STOCH_OVERBOUGHT) {
-    debug.push(`EXHAUSTION: Stoch K=${stoch.k} overbought, LONG signals blocked`);
-  }
+  // ── STEP 1: DETECT ACCUMULATION ───────────────────────────
+  const zone = detectAccumulation(candles4h, debug);
 
-  // ── TEST MODE ───────────────────────────────────────────────
-  if (TEST_MODE) {
-    debug.push("TEST MODE: Forcing signal generation");
-    const atrSeries = atr(candles4h, 14);
-    const currentATR = atrSeries[atrSeries.length - 1] || price * 0.02;
-    const direction = TEST_DIRECTION;
-    const entry = price;
-    const stop = direction === "LONG" ? entry - currentATR * 2 : entry + currentATR * 2;
-    const target = direction === "LONG" ? entry + currentATR * 4 : entry - currentATR * 4;
-    const trail = direction === "LONG" ? entry - currentATR : entry + currentATR;
-    const rr = Math.abs(target - entry) / Math.abs(entry - stop);
-
-    const signal: Signal = {
-      id: `${pair}_${Date.now()}`,
-      pair,
-      direction,
-      stage: "CONFIRMED",
-      entry: Math.round(entry * 100) / 100,
-      stop: Math.round(stop * 100) / 100,
-      target: Math.round(target * 100) / 100,
-      trail: Math.round(trail * 100) / 100,
-      confidence: 50,
-      rr: Math.round(rr * 100) / 100,
-      adx: adx(candles4h),
-      zoneTop: Math.round((entry + currentATR) * 100) / 100,
-      zoneBottom: Math.round((entry - currentATR) * 100) / 100,
-      explanation: `TEST MODE: Forced ${direction} signal for debugging`,
-      timestamp: Date.now(),
-      version: CURRENT_SIGNAL_VERSION,
+  if (!zone) {
+    // No accumulation zone — just market data
+    return {
+      signal: null,
+      market: {
+        pair, price, timestamp: Date.now(),
+        phase: "NONE", trend: trend1d,
+        htfBias: htBias, adx: adx(candles4h), rsi: 0,
+        stochK: stoch.k, stochD: stoch.d,
+        zoneTop: null, zoneBottom: null, zoneScore: 0,
+      },
+      debug,
+      stage: "NONE",
     };
-
-    const market = {
-      pair, price: Math.round(price * 100) / 100, timestamp: Date.now(),
-      phase: "EXPANSION", trend: trend1d, htfBias: htBias,
-      adx: signal.adx, rsi: 0, stochK: stoch.k, stochD: stoch.d,
-      zoneTop: signal.zoneTop, zoneBottom: signal.zoneBottom,
-      zoneScore: 50, zoneQuality: null,
-      closes4h: candles4h.slice(-50).map(c => c.close),
-    };
-
-    debug.push(`TEST_SIGNAL: ${direction} entry=${signal.entry} stop=${signal.stop} target=${signal.target}`);
-    return { signal, market, debug, stage: "EXPANSION" };
   }
 
-  // ── DETECT PATTERN ──────────────────────────────────────────
+  // ── STEP 2: CHECK IF ZONE ALREADY CONSUMED ──────────────────
+  const zoneHash = hashZone(zone.top, zone.bottom);
+  if (state.consumedZones.includes(zoneHash)) {
+    debug.push(`ZONE CONSUMED: ${zoneHash} already traded`);
+    return {
+      signal: null,
+      market: {
+        pair, price, timestamp: Date.now(),
+        phase: "NONE", trend: trend1d,
+        htfBias: htBias, adx: adx(candles4h), rsi: 0,
+        stochK: stoch.k, stochD: stoch.d,
+        zoneTop: zone.top, zoneBottom: zone.bottom, zoneScore: 0,
+      },
+      debug,
+      stage: "NONE",
+    };
+  }
 
-  if (state.stage === "NONE") {
-    const detection = detectPattern(candles4h, debug, state.consumedBreakouts);
+  // ── STEP 3: CHECK FOR BREAKOUT ON CURRENT CANDLE ──────────
+  const breakout = checkBreakout(candles4h, zone, debug);
 
-    if (!detection.detected || !detection.candle || !detection.direction || !detection.zone) {
-      debug.push("No breakout detected — scanning");
+  if (!breakout.detected || !breakout.direction) {
+    // Accumulation detected, waiting for breakout
+    debug.push(`WATCHING: accumulation detected, waiting for breakout`);
+
+    // Persist zone so we don't keep redetecting
+    await persistState(pair, {
+      stage: "WATCHING",
+      zoneTop: zone.top,
+      zoneBottom: zone.bottom,
+      zoneStartIndex: zone.startIndex,
+      zoneEndIndex: zone.endIndex,
+    });
+
+    return {
+      signal: null,
+      market: {
+        pair, price, timestamp: Date.now(),
+        phase: "WATCHING", trend: trend1d,
+        htfBias: htBias, adx: adx(candles4h), rsi: 0,
+        stochK: stoch.k, stochD: stoch.d,
+        zoneTop: zone.top, zoneBottom: zone.bottom,
+        zoneScore: 40,
+        zoneQuality: {
+          age: zone.endIndex - zone.startIndex,
+          widthATR: zone.widthATR,
+          compression: Math.max(0, 100 - zone.widthATR * 30),
+          touches: zone.touches,
+          label: zone.widthATR < 1.5 ? "EXCELLENT" : zone.widthATR < 2.0 ? "GOOD" : "AVERAGE",
+        },
+      },
+      debug,
+      stage: "WATCHING",
+    };
+  }
+
+  // ── STEP 4: HTF ALIGNMENT ───────────────────────────────────
+  if (REQUIRE_HTF_ALIGNMENT) {
+    const aligned =
+      (breakout.direction === "LONG" && (htBias === "BULLISH" || htBias === "NEUTRAL")) ||
+      (breakout.direction === "SHORT" && (htBias === "BEARISH" || htBias === "NEUTRAL"));
+
+    if (!aligned) {
+      debug.push(`BLOCKED: ${breakout.direction} breakout but HTF is ${htBias}`);
       return {
         signal: null,
         market: {
@@ -613,193 +637,45 @@ export async function generateSignal(
           phase: "NONE", trend: trend1d,
           htfBias: htBias, adx: adx(candles4h), rsi: 0,
           stochK: stoch.k, stochD: stoch.d,
-          zoneTop: null, zoneBottom: null, zoneScore: 0,
+          zoneTop: zone.top, zoneBottom: zone.bottom, zoneScore: 0,
         },
         debug,
         stage: "NONE",
       };
     }
-
-    // NEW: Stoch exhaustion block
-    if (detection.direction === "SHORT" && stoch.k < STOCH_OVERSOLD) {
-      debug.push(`BLOCKED: SHORT breakout but Stoch K=${stoch.k} oversold (exhausted)`);
-      // Mark as consumed so we don't keep trying
-      await persistState(pair, {
-        consumedBreakouts: [...state.consumedBreakouts, detection.candle.timestamp],
-      });
-      return {
-        signal: null,
-        market: {
-          pair, price, timestamp: Date.now(),
-          phase: "EXHAUSTION", trend: trend1d,
-          htfBias: htBias, adx: adx(candles4h), rsi: 0,
-          stochK: stoch.k, stochD: stoch.d,
-          zoneTop: null, zoneBottom: null, zoneScore: 0,
-        },
-        debug,
-        stage: "EXHAUSTION",
-      };
-    }
-    if (detection.direction === "LONG" && stoch.k > STOCH_OVERBOUGHT) {
-      debug.push(`BLOCKED: LONG breakout but Stoch K=${stoch.k} overbought (exhausted)`);
-      await persistState(pair, {
-        consumedBreakouts: [...state.consumedBreakouts, detection.candle.timestamp],
-      });
-      return {
-        signal: null,
-        market: {
-          pair, price, timestamp: Date.now(),
-          phase: "EXHAUSTION", trend: trend1d,
-          htfBias: htBias, adx: adx(candles4h), rsi: 0,
-          stochK: stoch.k, stochD: stoch.d,
-          zoneTop: null, zoneBottom: null, zoneScore: 0,
-        },
-        debug,
-        stage: "EXHAUSTION",
-      };
-    }
-
-    // Timeframe alignment
-    if (REQUIRE_HTF_ALIGNMENT) {
-      const aligned =
-        (detection.direction === "LONG" && (htBias === "BULLISH" || htBias === "NEUTRAL")) ||
-        (detection.direction === "SHORT" && (htBias === "BEARISH" || htBias === "NEUTRAL"));
-
-      if (!aligned) {
-        debug.push(`BLOCKED: ${detection.direction} breakout but HTF is ${htBias}`);
-        return {
-          signal: null,
-          market: {
-            pair, price, timestamp: Date.now(),
-            phase: "NONE", trend: trend1d,
-            htfBias: htBias, adx: adx(candles4h), rsi: 0,
-            stochK: stoch.k, stochD: stoch.d,
-            zoneTop: null, zoneBottom: null, zoneScore: 0,
-          },
-          debug,
-          stage: "NONE",
-        };
-      }
-    }
-
-    // Build signal
-    const built = buildBreakoutSignal(pair, detection, candles4h, htBias, debug);
-    if (!built) {
-      debug.push("Signal build failed");
-      return {
-        signal: null,
-        market: {
-          pair, price, timestamp: Date.now(),
-          phase: "NONE", trend: trend1d,
-          htfBias: htBias, adx: adx(candles4h), rsi: 0,
-          stochK: stoch.k, stochD: stoch.d,
-          zoneTop: null, zoneBottom: null, zoneScore: 0,
-        },
-        debug,
-        stage: "NONE",
-      };
-    }
-
-    // NEW: Mark breakout as consumed
-    await persistState(pair, {
-      stage: "NONE",
-      zone: null,
-      impulseCandle: null,
-      impulseDirection: null,
-      impulseRange: 0,
-      prevStoch: null,
-      zoneStartIndex: 0,
-      lastBreakoutCandleTs: detection.candle.timestamp,
-      consumedBreakouts: [...state.consumedBreakouts, detection.candle.timestamp],
-    });
-
-    return { signal: built.signal, market: built.market, debug, stage: "EXPANSION" };
   }
 
-  // ── Legacy state handling ──────────────────────────────────
-  if (state.stage !== "NONE") {
-    debug.push(`Legacy state ${state.stage} — resetting`);
-    await persistState(pair, {
+  // ── STEP 5: BUILD SIGNAL ──────────────────────────────────
+  const built = buildSignal(pair, breakout.direction, zone, candles4h, htBias, stoch.k, debug);
+
+  if (!built) {
+    debug.push("Signal build failed");
+    return {
+      signal: null,
+      market: {
+        pair, price, timestamp: Date.now(),
+        phase: "NONE", trend: trend1d,
+        htfBias: htBias, adx: adx(candles4h), rsi: 0,
+        stochK: stoch.k, stochD: stoch.d,
+        zoneTop: null, zoneBottom: null, zoneScore: 0,
+      },
+      debug,
       stage: "NONE",
-      zone: null,
-      impulseCandle: null,
-      impulseDirection: null,
-      impulseRange: 0,
-      prevStoch: null,
-      zoneStartIndex: 0,
-    });
-
-    const detection = detectPattern(candles4h, debug, state.consumedBreakouts);
-    if (detection.detected && detection.candle && detection.direction && detection.zone) {
-      // Check exhaustion
-      if (detection.direction === "SHORT" && stoch.k < STOCH_OVERSOLD) {
-        debug.push(`BLOCKED: SHORT breakout but Stoch K=${stoch.k} oversold`);
-        return {
-          signal: null,
-          market: {
-            pair, price, timestamp: Date.now(),
-            phase: "EXHAUSTION", trend: trend1d,
-            htfBias: htBias, adx: adx(candles4h), rsi: 0,
-            stochK: stoch.k, stochD: stoch.d,
-            zoneTop: null, zoneBottom: null, zoneScore: 0,
-          },
-          debug,
-          stage: "EXHAUSTION",
-        };
-      }
-      if (detection.direction === "LONG" && stoch.k > STOCH_OVERBOUGHT) {
-        debug.push(`BLOCKED: LONG breakout but Stoch K=${stoch.k} overbought`);
-        return {
-          signal: null,
-          market: {
-            pair, price, timestamp: Date.now(),
-            phase: "EXHAUSTION", trend: trend1d,
-            htfBias: htBias, adx: adx(candles4h), rsi: 0,
-            stochK: stoch.k, stochD: stoch.d,
-            zoneTop: null, zoneBottom: null, zoneScore: 0,
-          },
-          debug,
-          stage: "EXHAUSTION",
-        };
-      }
-
-      const aligned =
-        (detection.direction === "LONG" && (htBias === "BULLISH" || htBias === "NEUTRAL")) ||
-        (detection.direction === "SHORT" && (htBias === "BEARISH" || htBias === "NEUTRAL"));
-
-      if (aligned) {
-        const built = buildBreakoutSignal(pair, detection, candles4h, htBias, debug);
-        if (built) {
-          await persistState(pair, {
-            stage: "NONE",
-            zone: null,
-            impulseCandle: null,
-            impulseDirection: null,
-            impulseRange: 0,
-            prevStoch: null,
-            zoneStartIndex: 0,
-            lastBreakoutCandleTs: detection.candle.timestamp,
-            consumedBreakouts: [...state.consumedBreakouts, detection.candle.timestamp],
-          });
-          return { signal: built.signal, market: built.market, debug, stage: "EXPANSION" };
-        }
-      }
-    }
+    };
   }
 
-  debug.push("No signal — scanning");
-  return {
-    signal: null,
-    market: {
-      pair, price, timestamp: Date.now(),
-      phase: "NONE", trend: trend1d,
-      htfBias: htBias, adx: adx(candles4h), rsi: 0,
-      stochK: stoch.k, stochD: stoch.d,
-      zoneTop: null, zoneBottom: null, zoneScore: 0,
-    },
-    debug,
+  // Mark zone as consumed
+  await persistState(pair, {
     stage: "NONE",
-  };
+    zoneTop: null,
+    zoneBottom: null,
+    zoneStartIndex: 0,
+    zoneEndIndex: 0,
+    consumedZones: [...state.consumedZones, zoneHash],
+    lastBreakoutTs: breakout.candle!.timestamp,
+  });
+
+  return { signal: built.signal, market: built.market, debug, stage: "EXPANSION" };
 }
 
 // ─── Trail Stop Update ─────────────────────────────────────────────────
@@ -855,8 +731,8 @@ export async function getMarketSnapshot(
     rsi: 0,
     stochK: stoch.k,
     stochD: stoch.d,
-    zoneTop: state.zone ? Math.round(state.zone.top * 100) / 100 : null,
-    zoneBottom: state.zone ? Math.round(state.zone.bottom * 100) / 100 : null,
+    zoneTop: state.zoneTop ? Math.round(state.zoneTop * 100) / 100 : null,
+    zoneBottom: state.zoneBottom ? Math.round(state.zoneBottom * 100) / 100 : null,
     zoneScore: 0,
     zoneQuality: null,
     closes4h: candles4h.slice(-50).map(c => c.close),
@@ -912,7 +788,6 @@ export async function shouldHold(
   const trailUpdate = updateTrail(signal, candles4h, currentPrice);
 
   if (trailUpdate.shouldExit) {
-    // NEW: Record exit timestamp for cooldown
     await persistState(pair, { lastExitAt: Date.now() });
     return { shouldHold: false, reason: `trail_stop — Price ${currentPrice.toFixed(1)} hit trail at ${trailUpdate.trail}` };
   }
@@ -959,7 +834,7 @@ export function checkTradeStatus(signal: Signal, currentPrice: number, now: numb
 }
 
 // ============================================================
-// COMPATIBILITY EXPORTS (unchanged)
+// COMPATIBILITY EXPORTS
 // ============================================================
 
 export async function getMonitorState(pair: string): Promise<any | undefined> {
