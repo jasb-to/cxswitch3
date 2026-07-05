@@ -1,5 +1,8 @@
-// app/api/cron/route.ts — v29.3 "Full Debug + Timeframe Alignment"
+// app/api/cron/route.ts — v29.4 "Phase-Based Impulse Detection"
 // ============================================================
+// KEY FIX: Volume climax and range expansion are SEPARATE events
+// Volume climax = WATCHING phase (tight range + high volume)
+// Range expansion = ACCUMULATION/READY phase (breakout from zone)
 
 import { NextResponse } from "next/server";
 
@@ -67,8 +70,9 @@ interface ImpulseResult {
   strength: number;
   volumeRatio: number;
   rangeATR: number;
-  prevRangeATR: number;
+  bodyRatio: number;
   candleIndex: number;
+  type: "CLIMAX" | "BREAKOUT" | "NONE";
   reason: string;
 }
 
@@ -78,19 +82,20 @@ const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
 const MIN_CRON_INTERVAL_MS = 10 * 60 * 1000;
 const SIGNAL_TTL_MS = 24 * 60 * 60 * 1000;
 
-// Impulse detection thresholds (TUNABLE)
-const IMPULSE_VOLUME_THRESHOLD = 1.5;      // 1.5x avg volume
-const IMPULSE_RANGE_THRESHOLD = 1.2;       // 1.2x ATR
-const IMPULSE_STRENGTH_MIN = 0.3;          // composite strength
+// Phase 1: Volume Climax Detection (WATCHING)
+const CLIMAX_VOLUME_THRESHOLD = 1.8;       // 1.8x avg volume
+const CLIMAX_RANGE_MAX = 0.8;              // TIGHT range (not expanded)
+const CLIMAX_BODY_MIN = 0.3;             // Body must be >30% of range (directional)
 
-// Timeframe alignment (NEW v29.3)
-const REQUIRE_HTF_ALIGNMENT = true;          // 4H trend must agree with 1D bias
-const HTF_ALIGNMENT_TOLERANCE = 0.02;      // 2% tolerance for "close enough"
+// Phase 2: Breakout Detection (ACCUMULATION → READY)
+const BREAKOUT_RANGE_THRESHOLD = 0.9;    // 0.9x ATR (lowered from 1.2)
+const BREAKOUT_VOLUME_THRESHOLD = 1.2;   // 1.2x avg volume
+const BREAKOUT_STRENGTH_MIN = 0.25;      // composite strength
 
-// ─── Redis / KV State (placeholder — replace with your actual impl) ─────
+// Timeframe alignment
+const REQUIRE_HTF_ALIGNMENT = true;
 
-// NOTE: Replace these with your actual @/lib/state imports
-// For this standalone version, we use in-memory fallbacks
+// ─── Redis / KV State (REPLACE with your @/lib/state imports) ─────────
 
 let _signals: Signal[] = [];
 let _marketData: Record<string, MarketData> = {};
@@ -194,7 +199,6 @@ function calcRSI(closes: number[], period = 14): number[] {
       rsi.push(100 - 100 / (1 + gain / loss));
     }
   }
-  // Pad with first value
   while (rsi.length < closes.length) rsi.unshift(rsi[0] || 50);
   return rsi;
 }
@@ -239,7 +243,6 @@ function calcADX(candles: Candle[], period = 14): number[] {
     plusDM.push(upMove > downMove && upMove > 0 ? upMove : 0);
     minusDM.push(downMove > upMove && downMove > 0 ? downMove : 0);
   }
-  // Pad
   const atr = calcATR(candles, period);
   const adx: number[] = [0];
   let smoothedPlus = 0, smoothedMinus = 0;
@@ -262,7 +265,7 @@ function calcADX(candles: Candle[], period = 14): number[] {
   return adx;
 }
 
-// ─── HTF Bias Detection ─────────────────────────────────────────────────
+// ─── HTF Analysis ────────────────────────────────────────────────────────
 
 function detectHTFBias(candles4h: Candle[]): "BULLISH" | "BEARISH" | "NEUTRAL" {
   const closes = candles4h.map((c) => c.close);
@@ -293,145 +296,150 @@ function detect4HTrend(candles4h: Candle[]): { direction: string | null; strengt
   return { direction: dir, strength };
 }
 
-// ─── Impulse Detection (v29.3 — FULLY LOGGED) ───────────────────────────
+// ─── Phase Detection (v29.4 — THE FIX) ─────────────────────────────────
 
-function detectImpulse(
+function detectPhase(
   candles: Candle[],
   pair: string,
   log: (msg: string) => void
-): ImpulseResult {
+): { phase: MarketData["phase"]; impulse: ImpulseResult; zone: { top: number; bottom: number } | null } {
   const lookback = 20;
-  const minCandles = lookback + 5;
+  const minCandles = lookback + 10;
 
   if (candles.length < minCandles) {
     return {
-      detected: false, direction: null, strength: 0,
-      volumeRatio: 0, rangeATR: 0, prevRangeATR: 0,
-      candleIndex: -1, reason: `insufficient candles (${candles.length} < ${minCandles})`
+      phase: "NONE",
+      impulse: {
+        detected: false, direction: null, strength: 0,
+        volumeRatio: 0, rangeATR: 0, bodyRatio: 0,
+        candleIndex: -1, type: "NONE",
+        reason: `insufficient candles (${candles.length} < ${minCandles})`
+      },
+      zone: null
     };
   }
 
-  const closes = candles.map((c) => c.close);
-  const highs = candles.map((c) => c.high);
-  const lows = candles.map((c) => c.low);
   const volumes = candles.map((c) => c.volume);
   const atr = calcATR(candles, 14);
-
   const last = candles.length - 1;
 
-  // Check last N candles for impulse
-  for (let i = last; i > last - 5 && i >= lookback; i--) {
-    const candle = candles[i];
-    const prevCandle = candles[i - 1];
+  // ── PHASE 1: Look for Volume Climax (last 10 candles) ──
+  let climaxIndex = -1;
+  let climaxData: any = null;
 
-    // Volume analysis
+  for (let i = last; i > last - 10 && i >= lookback; i--) {
+    const c = candles[i];
     const recentVolumes = volumes.slice(i - lookback, i);
     const avgVolume = recentVolumes.reduce((a, b) => a + b, 0) / recentVolumes.length;
-    const volumeRatio = avgVolume > 0 ? candle.volume / avgVolume : 0;
-
-    // Range analysis
-    const candleRange = candle.high - candle.low;
+    const volumeRatio = avgVolume > 0 ? c.volume / avgVolume : 0;
+    const candleRange = c.high - c.low;
     const atrVal = atr[i] || candleRange;
     const rangeATR = atrVal > 0 ? candleRange / atrVal : 0;
-    const prevRange = prevCandle.high - prevCandle.low;
-    const prevATR = atr[i - 1] || prevRange;
-    const prevRangeATR = prevATR > 0 ? prevRange / prevATR : 0;
+    const bodySize = Math.abs(c.close - c.open);
+    const bodyRatio = candleRange > 0 ? bodySize / candleRange : 0;
+    const isBullish = c.close > c.open;
 
-    // Direction
-    const isBullish = candle.close > candle.open;
-    const isBearish = candle.close < candle.open;
-    const bodySize = Math.abs(candle.close - candle.open);
-    const wickRatio = bodySize > 0 ? candleRange / bodySize : 999;
+    log(`[PHASE1] ${pair}[${i}] vol=${volumeRatio.toFixed(2)}x range=${rangeATR.toFixed(2)}x body=${bodyRatio.toFixed(2)} bullish=${isBullish}`);
 
-    // Composite strength (0-1)
-    const volScore = Math.min(volumeRatio / 3, 1);  // 3x vol = max score
-    const rangeScore = Math.min(rangeATR / 2, 1);   // 2x ATR = max score
-    const momentumScore = isBullish
-      ? Math.max(0, (candle.close - prevCandle.close) / prevCandle.close * 50)
-      : Math.max(0, (prevCandle.close - candle.close) / prevCandle.close * 50);
-    const strength = (volScore * 0.4 + rangeScore * 0.4 + Math.min(momentumScore, 1) * 0.2);
-
-    log(`[IMPULSE] ${pair} candle[${i}] vol=${volumeRatio.toFixed(2)}x range=${rangeATR.toFixed(2)}x prevRange=${prevRangeATR.toFixed(2)}x body=${bodySize.toFixed(2)} wickRatio=${wickRatio.toFixed(2)} strength=${strength.toFixed(3)} bullish=${isBullish} bearish=${isBearish}`);
-
-    // Threshold check
-    if (volumeRatio >= IMPULSE_VOLUME_THRESHOLD && rangeATR >= IMPULSE_RANGE_THRESHOLD && strength >= IMPULSE_STRENGTH_MIN) {
-      const direction: "LONG" | "SHORT" = isBullish ? "LONG" : "SHORT";
-      log(`[IMPULSE] ${pair} DETECTED: ${direction} at candle[${i}] strength=${strength.toFixed(3)}`);
-      return {
-        detected: true, direction, strength,
-        volumeRatio, rangeATR, prevRangeATR,
-        candleIndex: i, reason: "impulse_threshold_met"
-      };
+    // Volume climax = high volume + tight range + directional body
+    if (volumeRatio >= CLIMAX_VOLUME_THRESHOLD && rangeATR <= CLIMAX_RANGE_MAX && bodyRatio >= CLIMAX_BODY_MIN) {
+      climaxIndex = i;
+      climaxData = { volumeRatio, rangeATR, bodyRatio, isBullish, candle: c };
+      log(`[PHASE1] ${pair} CLIMAX at [${i}] vol=${volumeRatio.toFixed(2)}x range=${rangeATR.toFixed(2)}x body=${bodyRatio.toFixed(2)}`);
+      break;
     }
   }
 
-  log(`[IMPULSE] ${pair} NO IMPULSE: max checked=${Math.min(5, last - lookback + 1)} candles, thresholds: vol>=${IMPULSE_VOLUME_THRESHOLD}, range>=${IMPULSE_RANGE_THRESHOLD}, strength>=${IMPULSE_STRENGTH_MIN}`);
-  return {
-    detected: false, direction: null, strength: 0,
-    volumeRatio: 0, rangeATR: 0, prevRangeATR: 0,
-    candleIndex: -1, reason: "no_candle_met_thresholds"
-  };
-}
-
-// ─── Zone Detection ───────────────────────────────────────────────────────
-
-function detectZone(
-  candles: Candle[],
-  impulseIndex: number,
-  pair: string,
-  log: (msg: string) => void
-): { top: number; bottom: number; quality: ZoneQuality } | null {
-  if (impulseIndex < 5 || impulseIndex >= candles.length) return null;
-
-  // Look at candles AFTER impulse for consolidation
-  const postImpulse = candles.slice(impulseIndex + 1, impulseIndex + 21);
-  if (postImpulse.length < 5) return null;
-
-  const highs = postImpulse.map((c) => c.high);
-  const lows = postImpulse.map((c) => c.low);
-  const top = Math.max(...highs);
-  const bottom = Math.min(...lows);
-  const width = top - bottom;
-
-  const closes = candles.map((c) => c.close);
-  const atr = calcATR(candles, 14);
-  const atrVal = atr[atr.length - 1] || width;
-  const widthATR = atrVal > 0 ? width / atrVal : 0;
-
-  // Count touches
-  let touches = 0;
-  for (const c of postImpulse) {
-    if (Math.abs(c.high - top) < width * 0.1 || Math.abs(c.low - bottom) < width * 0.1) touches++;
+  if (climaxIndex < 0) {
+    log(`[PHASE1] ${pair} NO CLIMAX in last 10 candles`);
+    return {
+      phase: "NONE",
+      impulse: {
+        detected: false, direction: null, strength: 0,
+        volumeRatio: 0, rangeATR: 0, bodyRatio: 0,
+        candleIndex: -1, type: "NONE",
+        reason: "no_volume_climax"
+      },
+      zone: null
+    };
   }
 
-  // Volume decay
-  const preVol = candles.slice(impulseIndex - 5, impulseIndex).reduce((a, c) => a + c.volume, 0) / 5;
-  const postVol = postImpulse.reduce((a, c) => a + c.volume, 0) / postImpulse.length;
-  const volumeDecay = preVol > 0 ? ((preVol - postVol) / preVol) * 100 : 0;
+  // ── PHASE 2: Look for Breakout AFTER climax ──
+  // Check candles AFTER the climax for range expansion
+  const direction: "LONG" | "SHORT" = climaxData.isBullish ? "LONG" : "SHORT";
+  const postClimax = candles.slice(climaxIndex + 1, Math.min(climaxIndex + 8, candles.length));
 
-  // Compression (lower = tighter)
-  const compression = Math.max(0, 100 - widthATR * 50);
+  log(`[PHASE2] ${pair} checking ${postClimax.length} candles after climax[${climaxIndex}]`);
 
-  // Quality score
-  let label: ZoneQuality["label"] = "WEAK";
-  const score = (touches * 10) + compression + volumeDecay;
-  if (score >= 120 && widthATR < 1.5) label = "EXCELLENT";
-  else if (score >= 80 && widthATR < 2.0) label = "GOOD";
-  else if (score >= 50) label = "AVERAGE";
+  for (let j = 0; j < postClimax.length; j++) {
+    const i = climaxIndex + 1 + j;
+    const c = postClimax[j];
+    const recentVolumes = volumes.slice(i - lookback, i);
+    const avgVolume = recentVolumes.reduce((a, b) => a + b, 0) / recentVolumes.length;
+    const volumeRatio = avgVolume > 0 ? c.volume / avgVolume : 0;
+    const candleRange = c.high - c.low;
+    const atrVal = atr[i] || candleRange;
+    const rangeATR = atrVal > 0 ? candleRange / atrVal : 0;
+    const bodySize = Math.abs(c.close - c.open);
+    const bodyRatio = candleRange > 0 ? bodySize / candleRange : 0;
+    const isBullish = c.close > c.open;
 
-  log(`[ZONE] ${pair} top=${top.toFixed(2)} bottom=${bottom.toFixed(2)} width=${widthATR.toFixed(2)}xATR touches=${touches} compression=${compression.toFixed(1)}% decay=${volumeDecay.toFixed(1)}% quality=${label}`);
+    // Momentum in impulse direction
+    const momentum = direction === "LONG"
+      ? (c.close - c.open) / c.open
+      : (c.open - c.close) / c.open;
+
+    const strength = (Math.min(volumeRatio / 3, 1) * 0.3) +
+                     (Math.min(rangeATR / 2, 1) * 0.4) +
+                     (Math.max(Math.min(momentum * 100, 1), 0) * 0.3);
+
+    log(`[PHASE2] ${pair}[${i}] vol=${volumeRatio.toFixed(2)}x range=${rangeATR.toFixed(2)}x body=${bodyRatio.toFixed(2)} mom=${momentum.toFixed(4)} strength=${strength.toFixed(3)}`);
+
+    // Breakout detected
+    if (rangeATR >= BREAKOUT_RANGE_THRESHOLD && volumeRatio >= BREAKOUT_VOLUME_THRESHOLD && strength >= BREAKOUT_STRENGTH_MIN) {
+      // Confirm direction matches
+      if ((direction === "LONG" && isBullish) || (direction === "SHORT" && !isBullish)) {
+        // Build zone from climax + post-climax range
+        const zoneCandles = candles.slice(climaxIndex, i + 1);
+        const highs = zoneCandles.map((c) => c.high);
+        const lows = zoneCandles.map((c) => c.low);
+        const top = Math.max(...highs);
+        const bottom = Math.min(...lows);
+
+        log(`[PHASE2] ${pair} BREAKOUT at [${i}] dir=${direction} zone=${bottom.toFixed(2)}-${top.toFixed(2)} strength=${strength.toFixed(3)}`);
+
+        return {
+          phase: "READY",
+          impulse: {
+            detected: true, direction, strength,
+            volumeRatio, rangeATR, bodyRatio,
+            candleIndex: i, type: "BREAKOUT",
+            reason: "breakout_after_climax"
+          },
+          zone: { top, bottom }
+        };
+      }
+    }
+  }
+
+  // No breakout yet — we're in ACCUMULATION
+  const zoneCandles = candles.slice(climaxIndex, Math.min(climaxIndex + 8, candles.length));
+  const highs = zoneCandles.map((c) => c.high);
+  const lows = zoneCandles.map((c) => c.low);
+  const top = Math.max(...highs);
+  const bottom = Math.min(...lows);
+
+  log(`[PHASE2] ${pair} ACCUMULATION zone=${bottom.toFixed(2)}-${top.toFixed(2)} no breakout yet`);
 
   return {
-    top, bottom,
-    quality: {
-      age: postImpulse.length,
-      widthATR,
-      compression,
-      volumeDecay,
-      touches,
-      breakAttempts: 0,
-      label,
+    phase: "ACCUMULATION",
+    impulse: {
+      detected: true, direction, strength: climaxData.bodyRatio,
+      volumeRatio: climaxData.volumeRatio, rangeATR: climaxData.rangeATR, bodyRatio: climaxData.bodyRatio,
+      candleIndex: climaxIndex, type: "CLIMAX",
+      reason: "climax_no_breakout_yet"
     },
+    zone: { top, bottom }
   };
 }
 
@@ -477,13 +485,13 @@ async function generateSignal(
 
   log(`[HTF] ${pair} bias=${htfBias} 4H=${trend4h.direction || "MIXED"} strength=${trend4h.strength}`);
 
-  // 3. Detect impulse
-  const impulse = detectImpulse(candles1h, pair, log);
+  // 3. Detect phase (volume climax + breakout)
+  const phaseResult = detectPhase(candles1h, pair, log);
 
-  if (!impulse.detected || !impulse.direction) {
+  if (phaseResult.phase === "NONE") {
     debug.push(`HTF Bias: ${htfBias}`);
     debug.push(`Stage: NONE`);
-    debug.push(`No impulse -- ${impulse.reason}`);
+    debug.push(`No impulse -- ${phaseResult.impulse.reason}`);
     return {
       signal: null,
       market: {
@@ -496,17 +504,18 @@ async function generateSignal(
     };
   }
 
-  // 4. Timeframe alignment check (NEW v29.3)
-  if (REQUIRE_HTF_ALIGNMENT) {
+  // 4. Timeframe alignment check
+  const impulseDir = phaseResult.impulse.direction;
+  if (REQUIRE_HTF_ALIGNMENT && impulseDir) {
     const aligned =
-      (impulse.direction === "LONG" && (htfBias === "BULLISH" || htfBias === "NEUTRAL")) ||
-      (impulse.direction === "SHORT" && (htfBias === "BEARISH" || htfBias === "NEUTRAL"));
+      (impulseDir === "LONG" && (htfBias === "BULLISH" || htfBias === "NEUTRAL")) ||
+      (impulseDir === "SHORT" && (htfBias === "BEARISH" || htfBias === "NEUTRAL"));
 
     if (!aligned) {
-      log(`[ALIGN] ${pair} REJECTED: impulse=${impulse.direction} vs HTF=${htfBias}`);
+      log(`[ALIGN] ${pair} REJECTED: impulse=${impulseDir} vs HTF=${htfBias}`);
       debug.push(`HTF Bias: ${htfBias}`);
       debug.push(`Stage: NONE`);
-      debug.push(`Misaligned -- impulse=${impulse.direction} HTF=${htfBias}`);
+      debug.push(`Misaligned -- impulse=${impulseDir} HTF=${htfBias}`);
       return {
         signal: null,
         market: {
@@ -518,51 +527,61 @@ async function generateSignal(
         debug,
       };
     }
-    log(`[ALIGN] ${pair} PASSED: impulse=${impulse.direction} aligns with HTF=${htfBias}`);
+    log(`[ALIGN] ${pair} PASSED: impulse=${impulseDir} aligns with HTF=${htfBias}`);
   }
 
-  // 5. Detect zone
-  const zone = detectZone(candles1h, impulse.candleIndex, pair, log);
-
-  if (!zone) {
+  // 5. If only accumulation (no breakout), no signal yet
+  if (phaseResult.phase === "ACCUMULATION") {
     debug.push(`HTF Bias: ${htfBias}`);
-    debug.push(`Stage: WATCHING`);
-    debug.push(`Impulse detected but no zone formed yet`);
+    debug.push(`Stage: ACCUMULATION`);
+    debug.push(`Climax detected, waiting for breakout`);
+
+    const zone = phaseResult.zone!;
+    const width = zone.top - zone.bottom;
+    const atr = calcATR(candles1h, 14);
+    const atrVal = atr[atr.length - 1] || width;
+    const widthATR = atrVal > 0 ? width / atrVal : 0;
+
     return {
       signal: null,
       market: {
         pair, price: currentPrice, timestamp: Date.now(),
-        phase: "WATCHING", trend: `${trend4h.direction || "MIXED"} ${trend4h.strength}`,
+        phase: "ACCUMULATION", trend: `${trend4h.direction || "MIXED"} ${trend4h.strength}`,
         htfBias, adx, rsi, stochK, stochD,
-        zoneTop: null, zoneBottom: null, zoneScore: 0,
+        zoneTop: zone.top, zoneBottom: zone.bottom,
+        zoneScore: 50,
+        zoneQuality: {
+          age: 5,
+          widthATR,
+          compression: Math.max(0, 100 - widthATR * 50),
+          volumeDecay: 0,
+          touches: 2,
+          breakAttempts: 0,
+          label: "AVERAGE",
+        },
       },
       debug,
     };
   }
 
-  // 6. Determine stage
-  let stage: Signal["stage"] = "ACCUMULATION";
-  if (zone.quality.label === "EXCELLENT" || zone.quality.label === "GOOD") {
-    stage = "READY";
-  }
+  // 6. READY or CONFIRMED — build signal
+  const direction = phaseResult.impulse.direction!;
+  const zone = phaseResult.zone!;
+  const stage: Signal["stage"] = phaseResult.phase === "READY" ? "READY" : "CONFIRMED";
 
-  // 7. Build signal
-  const direction = impulse.direction;
   const entry = direction === "LONG" ? zone.top : zone.bottom;
   const stop = direction === "LONG"
-    ? zone.bottom - (zone.top - zone.bottom) * 0.5
-    : zone.top + (zone.top - zone.bottom) * 0.5;
+    ? zone.bottom - (zone.top - zone.bottom) * 0.3
+    : zone.top + (zone.top - zone.bottom) * 0.3;
   const risk = Math.abs(entry - stop);
   const target = direction === "LONG" ? entry + risk * 2 : entry - risk * 2;
-  const trail = direction === "LONG"
-    ? zone.bottom
-    : zone.top;
+  const trail = direction === "LONG" ? zone.bottom : zone.top;
 
   const rr = risk > 0 ? Math.abs(target - entry) / risk : 0;
 
-  // Confidence calculation
+  // Confidence
   let confidence = 50;
-  confidence += zone.quality.label === "EXCELLENT" ? 20 : zone.quality.label === "GOOD" ? 15 : zone.quality.label === "AVERAGE" ? 5 : 0;
+  confidence += phaseResult.phase === "READY" ? 15 : 0;
   confidence += adx > 25 ? 10 : 0;
   confidence += Math.abs(stochK - stochD) > 5 ? 5 : 0;
   confidence = Math.min(95, Math.max(30, confidence));
@@ -581,21 +600,34 @@ async function generateSignal(
     adx: Math.round(adx * 10) / 10,
     zoneTop: roundPrice(zone.top),
     zoneBottom: roundPrice(zone.bottom),
-    explanation: `${direction} ${stage}: ${impulse.direction} impulse detected at ${impulse.volumeRatio.toFixed(1)}x volume, ${zone.quality.label} zone (${zone.quality.widthATR.toFixed(1)}x ATR), HTF=${htfBias}, ADX=${adx.toFixed(1)}`,
+    explanation: `${direction} ${stage}: ${phaseResult.impulse.type} detected, zone ${zone.bottom.toFixed(2)}-${zone.top.toFixed(2)}, HTF=${htfBias}, ADX=${adx.toFixed(1)}`,
     timestamp: Date.now(),
     version: 29,
   };
 
   log(`[SIGNAL] ${pair} ${direction} ${stage} entry=${signal.entry} SL=${signal.stop} TP=${signal.target} RR=${signal.rr} conf=${confidence}%`);
 
+  const width = zone.top - zone.bottom;
+  const atrArr = calcATR(candles1h, 14);
+  const atrVal = atrArr[atrArr.length - 1] || width;
+  const widthATR = atrVal > 0 ? width / atrVal : 0;
+
   const market: MarketData = {
     pair, price: currentPrice, timestamp: Date.now(),
-    phase: stage === "READY" ? "READY" : "ACCUMULATION",
+    phase: stage === "READY" ? "READY" : "CONFIRMED",
     trend: `${trend4h.direction || "MIXED"} ${trend4h.strength}`,
     htfBias, adx, rsi, stochK, stochD,
     zoneTop: zone.top, zoneBottom: zone.bottom,
-    zoneScore: zone.quality.label === "EXCELLENT" ? 90 : zone.quality.label === "GOOD" ? 70 : zone.quality.label === "AVERAGE" ? 50 : 30,
-    zoneQuality: zone.quality,
+    zoneScore: confidence,
+    zoneQuality: {
+      age: 5,
+      widthATR,
+      compression: Math.max(0, 100 - widthATR * 50),
+      volumeDecay: 30,
+      touches: 3,
+      breakAttempts: 1,
+      label: widthATR < 1.5 ? "GOOD" : "AVERAGE",
+    },
     closes4h: candles4h.slice(-50).map((c) => c.close),
   };
 
@@ -624,7 +656,6 @@ function isSignalStillValid(signal: Signal, currentPrice: number, now: number): 
 }
 
 function shouldHold(pair: string, signal: Signal, candles4h: Candle[], currentPrice: number): { shouldHold: boolean; reason: string } {
-  // Simple trail stop check
   if (signal.direction === "LONG" && currentPrice < signal.trail) {
     return { shouldHold: false, reason: "trail_stop_breached" };
   }
@@ -655,10 +686,9 @@ function roundPrice(n: number): number {
   return Math.round(n * 1000) / 1000;
 }
 
-// ─── Telegram Alert (placeholder) ─────────────────────────────────────────
+// ─── Telegram Alert (REPLACE with your @/lib/telegram) ──────────────────
 
 async function sendAlert(data: any): Promise<void> {
-  // Replace with your actual @/lib/telegram implementation
   console.log(`[TELEGRAM] Alert: ${JSON.stringify(data)}`);
 }
 
@@ -679,7 +709,7 @@ export async function GET(request: Request) {
   };
 
   log("========================================");
-  log(`[CRON] Started runId=${runId} v29.3`);
+  log(`[CRON] Started runId=${runId} v29.4`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -772,7 +802,6 @@ export async function GET(request: Request) {
       const existingIdx = validSignals.findIndex((s) => s.pair === pair);
       const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
 
-      // v29.3: generateSignal now takes log function for detailed output
       const result = await generateSignal(pair, candles1h, candles4h, candles15m, currentPrice, log);
 
       let market = result.market;
