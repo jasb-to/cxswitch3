@@ -1,12 +1,5 @@
 // lib/telegram.ts — v28 "Clean alert dispatch for v28 strategy"
 // ============================================================
-// CHANGES:
-//   - Accepts both raw Signal objects and mapped alert objects
-//   - Maps v28 Signal.type to stage for actionable check
-//   - Maps v28 Signal.reason to explanation
-//   - Guards against non-actionable types
-//   - Adds signal.id to all logs for traceability
-//   - Adds one retry on Telegram API failure
 
 interface AlertPayload {
   symbol?: string;
@@ -32,20 +25,16 @@ interface AlertPayload {
 function resolveAlert(payload: AlertPayload) {
   const pair = payload.symbol || payload.pair || "UNKNOWN";
   const direction = payload.bias || payload.direction || "SHORT";
-  // v28: type is "ACCUMULATE" | "BREAKOUT" | "EXIT"
-  // Map to stage for actionable check
   const stage = payload.state || payload.stage || payload.type || "UNKNOWN";
   const price = payload.price ?? payload.entry ?? 0;
   const stop = payload.stopLoss ?? payload.stop ?? 0;
   const target = payload.takeProfit ?? payload.target ?? 0;
-  // v28: reason, v30.5: explanation
   const reason = payload.reason || payload.explanation || "";
   const id = payload.id || "no-id";
   return { pair, direction, stage, price, stop, target, reason, id, confidence: payload.confidence, rr: payload.rr };
 }
 
 function isActionableStage(stage: string): boolean {
-  // v28 actionable types: ACCUMULATE, BREAKOUT
   const actionable = ["ACCUMULATE", "BREAKOUT", "CONFIRMED", "EXPANSION", "READY"];
   return actionable.includes(stage.toUpperCase());
 }
