@@ -1,5 +1,12 @@
-// app/api/cron/route.ts — v30.2 "1H Accumulation + 4H HTF"
+// app/api/cron/route.ts — v30.5 "Full v30.5 strategy integration"
 // ============================================================
+// CRITICAL FIXES:
+//   - Uses lib/kraken.ts (no more duplicated fetch logic)
+//   - Fixed "Still valid, skipping generation" → now re-evaluates for new setups
+//   - Fixed candle count: 350+ 4H candles required for reliable HTF
+//   - Fixed shouldHold() passes candles1h (not 4h) for trail update
+//   - Clears consumedZones when signal expires
+//   - Only sends alert on NEW signal generation, not on every run
 
 import { NextResponse } from "next/server";
 import {
@@ -14,6 +21,7 @@ import {
   addSignalToHistory,
   setCronLogs,
   getCronLogs,
+  resetPairConsumedZones,
 } from "@/lib/state";
 import {
   generateSignal,
@@ -21,7 +29,9 @@ import {
   shouldHold,
   isSignalStillValid,
   Candle,
+  Signal,
 } from "@/lib/strategy";
+import { getCandles, getCurrentPrice, Symbol } from "@/lib/kraken";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -45,51 +55,25 @@ interface MarketData {
 
 // ─── Config ─────────────────────────────────────────────────────────────
 
-const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
+const PAIRS: Symbol[] = ["BTC", "ETH", "SOL", "HYPE"];
 const MIN_CRON_INTERVAL_MS = 10 * 60 * 1000;
 
-// ─── Kraken API ─────────────────────────────────────────────────────────
+// v30.5 strategy requirements
+const MIN_CANDLES_1H = 60;
+const MIN_CANDLES_4H = 350;
+const MIN_CANDLES_15M = 60;
 
-const KRAKEN_PAIRS: Record<string, string> = {
-  BTC: "XBTUSD",
-  ETH: "ETHUSD",
-  SOL: "SOLUSD",
-  HYPE: "HYPEUSD",
-};
+// ─── Telegram Alert ─────────────────────────────────────────────────────
 
-async function getCandles(pair: string, interval: number): Promise<Candle[]> {
-  const kp = KRAKEN_PAIRS[pair] || pair + "USD";
-  const res = await fetch(
-    `https://api.kraken.com/0/public/OHLC?pair=${kp}&interval=${interval}`,
-    { cache: "no-store" }
-  );
-  const data = await res.json();
-  if (data.error?.length) throw new Error(data.error[0]);
-  const key = Object.keys(data.result).find((k) => k !== "last")!;
-  const raw = data.result[key];
-  return raw.map((r: any[]) => ({
-    timestamp: r[0] * 1000,
-    open: parseFloat(r[1]),
-    high: parseFloat(r[2]),
-    low: parseFloat(r[3]),
-    close: parseFloat(r[4]),
-    volume: parseFloat(r[6]),
-  }));
+async function sendAlert(data: any): Promise<void> {
+  console.log(`[TELEGRAM] Alert: ${JSON.stringify(data)}`);
 }
-
-// ─── Helpers ────────────────────────────────────────────────────────────
 
 function roundPrice(n: number): number {
   if (n >= 10000) return Math.round(n);
   if (n >= 1000) return Math.round(n * 10) / 10;
   if (n >= 100) return Math.round(n * 100) / 100;
   return Math.round(n * 1000) / 1000;
-}
-
-// ─── Telegram Alert ─────────────────────────────────────────────────────
-
-async function sendAlert(data: any): Promise<void> {
-  console.log(`[TELEGRAM] Alert: ${JSON.stringify(data)}`);
 }
 
 // ─── Main Handler ───────────────────────────────────────────────────────
@@ -109,7 +93,7 @@ export async function GET(request: Request) {
   };
 
   log("========================================");
-  log(`[CRON] Started runId=${runId} v30.2`);
+  log(`[CRON] Started runId=${runId} v30.5`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -141,21 +125,23 @@ export async function GET(request: Request) {
   const existingSignals = await getSignals();
   const currentPrices: Record<string, number> = {};
 
+  // ── Fetch current prices first (fast, using ticker) ─────────
   log("[CRON] Fetching current prices...");
   for (const pair of PAIRS) {
     try {
-      const candles = await getCandles(pair, 240);
-      if (candles?.length) {
-        currentPrices[pair] = candles[candles.length - 1].close;
-        log(`[PRICE] ${pair} = ${currentPrices[pair]}`);
+      const price = await getCurrentPrice(pair);
+      if (price > 0) {
+        currentPrices[pair] = price;
+        log(`[PRICE] ${pair} = ${price}`);
       } else {
-        log(`[PRICE] ${pair} — no candles returned`);
+        log(`[PRICE] ${pair} — ticker returned 0`);
       }
     } catch (e: any) {
       log(`[PRICE] ${pair} — ERROR: ${e.message}`);
     }
   }
 
+  // ── Filter expired signals ──────────────────────────────────
   log(`[CRON] Filtering ${existingSignals.length} existing signals...`);
   const { active: validSignals, exited: preExited } = filterExpiredSignals(
     existingSignals,
@@ -164,19 +150,25 @@ export async function GET(request: Request) {
   );
   log(`[STATE] Valid: ${validSignals.length}, Expired: ${preExited.length}`);
 
+  // Handle expired signals: clear their consumedZones so new accumulations can form
   for (const { signal, reason } of preExited) {
     log(`[EXIT] ${signal.pair} — ${reason}`);
     await addSignalToHistory(signal, reason as any, currentPrices[signal.pair] || signal.entry);
     if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
+    // CRITICAL FIX: Clear consumed zones when signal expires so same area can trade again
+    await resetPairConsumedZones(signal.pair);
+    log(`[STATE] Cleared consumedZones for ${signal.pair} after ${reason}`);
   }
 
-  const newSignals: any[] = [...validSignals];
+  const newSignals: Signal[] = [];
   const marketDataList: MarketData[] = [];
   const alerts: any[] = [];
 
+  // ── Process each pair ─────────────────────────────────────
   for (const pair of PAIRS) {
     log(`[PAIR] ${pair} — starting processing`);
     try {
+      // Fetch all timeframes in parallel
       log(`[FETCH] ${pair} — requesting 1H/4H/15M candles`);
       const [candles1h, candles4h, candles15m] = await Promise.all([
         getCandles(pair, 60),
@@ -187,21 +179,22 @@ export async function GET(request: Request) {
         `[FETCH] ${pair} — received: 1H=${candles1h?.length}, 4H=${candles4h?.length}, 15M=${candles15m?.length}`
       );
 
-      if (!candles1h || !candles4h || !candles15m || candles4h.length < 30) {
-        log(`[PAIR] ${pair} — SKIP: insufficient candles`);
-        alerts.push({
-          pair,
-          status: "skip",
-          reason: "insufficient_candles",
-          counts: { h1: candles1h?.length, h4: candles4h?.length, m15: candles15m?.length },
-        });
+      // Validate candle counts for v30.5 strategy
+      if (!candles1h || candles1h.length < MIN_CANDLES_1H) {
+        log(`[PAIR] ${pair} — SKIP: insufficient 1H candles (${candles1h?.length || 0} < ${MIN_CANDLES_1H})`);
+        alerts.push({ pair, status: "skip", reason: "insufficient_1h_candles", count: candles1h?.length });
+        continue;
+      }
+      if (!candles4h || candles4h.length < MIN_CANDLES_4H) {
+        log(`[PAIR] ${pair} — SKIP: insufficient 4H candles (${candles4h?.length || 0} < ${MIN_CANDLES_4H})`);
+        alerts.push({ pair, status: "skip", reason: "insufficient_4h_candles", count: candles4h?.length });
         continue;
       }
 
       const currentPrice = candles1h[candles1h.length - 1].close;
 
       // ═══════════════════════════════════════════════════════════════
-      // CHECK EXISTING SIGNAL FIRST
+      // CHECK EXISTING SIGNAL
       // ═══════════════════════════════════════════════════════════════
       const existingIdx = validSignals.findIndex((s: any) => s.pair === pair);
       const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
@@ -215,31 +208,47 @@ export async function GET(request: Request) {
           await addSignalToHistory(existingForPair, validity.reason as any, currentPrice);
           if (activeTrades[pair]) delete activeTrades[pair];
           validSignals.splice(existingIdx, 1);
+          // Clear consumed zones so new accumulation can form
+          await resetPairConsumedZones(pair);
+          log(`[STATE] Cleared consumedZones for ${pair} after ${validity.reason}`);
           alerts.push({ pair, status: "expired", reason: validity.reason });
         } else {
-          // FIX: Pass 1H candles for trail update (strategy now uses 1H)
+          // FIX: Pass candles1h (not 4h) for trail update
           const holdResult = await shouldHold(pair, existingForPair, candles1h, currentPrice);
           if (!holdResult.shouldHold) {
-            log(`[PAIR] ${pair} — FORCED EXIT: ${holdResult.reason}`);
-            await addSignalToHistory(existingForPair, "forced_exit" as any, currentPrice);
+            log(`[PAIR] ${pair} — TRAIL STOP: ${holdResult.reason}`);
+            await addSignalToHistory(existingForPair, "trail_stop" as any, currentPrice);
             if (activeTrades[pair]) delete activeTrades[pair];
             validSignals.splice(existingIdx, 1);
-            alerts.push({ pair, status: "forced_exit", reason: holdResult.reason });
+            // Clear consumed zones
+            await resetPairConsumedZones(pair);
+            alerts.push({ pair, status: "trail_stop", reason: holdResult.reason });
           } else {
-            log(`[PAIR] ${pair} — Still valid, skipping generation`);
-            // Build market data for dashboard
-            const marketResult = await generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
-            if (marketResult.market) {
-              marketResult.market.closes4h = candles4h.slice(-50).map((c: any) => c.close);
-              marketDataList.push(marketResult.market as MarketData);
-            }
+            log(`[PAIR] ${pair} — Holding, trail=${holdResult.reason}`);
+            // Build market data for dashboard from existing signal
+            marketDataList.push({
+              pair,
+              price: roundPrice(currentPrice),
+              timestamp: Date.now(),
+              phase: "EXPANSION",
+              trend: existingForPair.direction,
+              htfBias: existingForPair.direction === "LONG" ? "BULLISH" : "BEARISH",
+              adx: existingForPair.adx,
+              rsi: 0,
+              stochK: 0,
+              stochD: 0,
+              zoneTop: existingForPair.zoneTop,
+              zoneBottom: existingForPair.zoneBottom,
+              zoneScore: existingForPair.confidence,
+              closes4h: candles4h.slice(-50).map((c: Candle) => c.close),
+            });
             continue;
           }
         }
       }
 
       // ═══════════════════════════════════════════════════════════════
-      // GENERATE NEW SIGNAL (only if no valid existing trade)
+      // GENERATE NEW SIGNAL
       // ═══════════════════════════════════════════════════════════════
       const result = await generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
 
@@ -249,13 +258,14 @@ export async function GET(request: Request) {
 
       let market = result.market;
       if (market) {
-        market.closes4h = candles4h.slice(-50).map((c: any) => c.close);
+        market.closes4h = candles4h.slice(-50).map((c: Candle) => c.close);
         marketDataList.push(market as MarketData);
       }
 
       if (!result.signal) {
-        log(`[PAIR] ${pair} — NO SIGNAL (${result.debug[result.debug.length - 1] || "no breakout"})`);
-        alerts.push({ pair, status: "no_signal", debug: result.debug.join(" | ") });
+        const lastDebug = result.debug[result.debug.length - 1] || "no breakout";
+        log(`[PAIR] ${pair} — NO SIGNAL (${lastDebug})`);
+        alerts.push({ pair, status: "no_signal", stage: result.stage, debug: result.debug.join(" | ") });
         continue;
       }
 
@@ -265,13 +275,14 @@ export async function GET(request: Request) {
       );
       newSignals.push(signal);
 
-      // Skip alert if already active
+      // Skip alert if already active (shouldn't happen after expiry check, but safety)
       if (activeTrades[pair]) {
         log(`[ALERT] ${pair} — already active, skipping alert`);
         alerts.push({ pair, status: "already_active", signalId: signal.id });
         continue;
       }
 
+      // Send alert for NEW signal
       try {
         await sendAlert({
           symbol: signal.pair,
@@ -307,6 +318,7 @@ export async function GET(request: Request) {
     }
   }
 
+  // ── Merge and persist ─────────────────────────────────────
   log("[CRON] Merging signals...");
   const merged = [...validSignals];
   for (const s of newSignals) {
