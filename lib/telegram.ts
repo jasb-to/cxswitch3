@@ -1,12 +1,12 @@
-// lib/telegram.ts — v30.5 "Clean alert dispatch for v30.5 strategy"
+// lib/telegram.ts — v28 "Clean alert dispatch for v28 strategy"
 // ============================================================
 // CHANGES:
 //   - Accepts both raw Signal objects and mapped alert objects
-//   - Guards against non-actionable stages (WATCHING, EXHAUSTION, NONE)
-//   - Removes dead scale/ENTRY_1 logic
+//   - Maps v28 Signal.type to stage for actionable check
+//   - Maps v28 Signal.reason to explanation
+//   - Guards against non-actionable types
 //   - Adds signal.id to all logs for traceability
 //   - Adds one retry on Telegram API failure
-//   - Cleans up sendUIAlert for v30.5 alert format
 
 interface AlertPayload {
   symbol?: string;
@@ -32,17 +32,21 @@ interface AlertPayload {
 function resolveAlert(payload: AlertPayload) {
   const pair = payload.symbol || payload.pair || "UNKNOWN";
   const direction = payload.bias || payload.direction || "SHORT";
+  // v28: type is "ACCUMULATE" | "BREAKOUT" | "EXIT"
+  // Map to stage for actionable check
   const stage = payload.state || payload.stage || payload.type || "UNKNOWN";
   const price = payload.price ?? payload.entry ?? 0;
   const stop = payload.stopLoss ?? payload.stop ?? 0;
   const target = payload.takeProfit ?? payload.target ?? 0;
+  // v28: reason, v30.5: explanation
   const reason = payload.reason || payload.explanation || "";
   const id = payload.id || "no-id";
   return { pair, direction, stage, price, stop, target, reason, id, confidence: payload.confidence, rr: payload.rr };
 }
 
 function isActionableStage(stage: string): boolean {
-  const actionable = ["CONFIRMED", "EXPANSION", "READY"];
+  // v28 actionable types: ACCUMULATE, BREAKOUT
+  const actionable = ["ACCUMULATE", "BREAKOUT", "CONFIRMED", "EXPANSION", "READY"];
   return actionable.includes(stage.toUpperCase());
 }
 
@@ -57,7 +61,6 @@ async function sendTelegramMessage(text: string): Promise<boolean> {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
   const body = JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" });
 
-  // Try once, retry once on failure
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const res = await fetch(url, {
@@ -80,13 +83,11 @@ async function sendTelegramMessage(text: string): Promise<boolean> {
 export async function sendAlert(payload: AlertPayload) {
   const alert = resolveAlert(payload);
 
-  // Guard: only alert on actionable stages
   if (!isActionableStage(alert.stage)) {
     console.log(`[TELEGRAM SKIP: NON-ACTIONABLE] ${alert.pair} stage=${alert.stage} id=${alert.id}`);
     return;
   }
 
-  // Guard: minimum confidence
   const minConfidence = 55;
   if (alert.confidence < minConfidence) {
     console.log(`[TELEGRAM SKIP: LOW CONFIDENCE] ${alert.pair} ${alert.confidence}% (need ${minConfidence}%) id=${alert.id}`);
