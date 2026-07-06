@@ -57,14 +57,19 @@ const KRAKEN_PAIRS: Record<string, string> = {
   BTC: "XBTUSD", ETH: "ETHUSD", SOL: "SOLUSD", HYPE: "HYPEUSD",
 };
 
-// --- Helpers ---
+// --- Helpers (DEFENSIVE: handles null/undefined/NaN) ---
 
-function money(n?: number): string {
-  if (typeof n !== "number" || !isFinite(n)) return "-";
+function money(n?: number | null): string {
+  if (n === null || n === undefined || typeof n !== "number" || !isFinite(n)) return "—";
   return new Intl.NumberFormat("en-US", {
     style: "currency", currency: "USD",
     maximumFractionDigits: n >= 1000 ? 0 : 2,
   }).format(n);
+}
+
+function pct(n?: number | null): string {
+  if (n === null || n === undefined || typeof n !== "number" || !isFinite(n)) return "—";
+  return (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
 }
 
 function timeAgo(ts: number): string {
@@ -171,21 +176,20 @@ async function fetchKrakenPrice(pair: string): Promise<number | null> {
   } catch { return null; }
 }
 
-// --- REAL Progress Banner (no fake "Volume Climax") ---
+// --- Progress Banner ---
 
 function ProgressBanner({ market }: { market: MarketData | undefined }) {
   if (!market) return null;
 
   const phase = market.phase;
 
-  // REAL descriptions based on actual strategy state
   const banners: Record<string, { bg: string; border: string; text: string; title: string; desc: string }> = {
     WATCHING: {
       bg: "bg-yellow-950/30",
       border: "border-yellow-500/30",
       text: "text-yellow-400",
       title: "Accumulation Detected",
-      desc: market.zoneTop !== null && market.zoneBottom !== null
+      desc: market.zoneTop != null && market.zoneBottom != null
         ? `Zone: ${money(market.zoneBottom)} - ${money(market.zoneTop)}. Waiting for breakout. Price must break below ${money(market.zoneBottom)} for SHORT or above ${money(market.zoneTop)} for LONG.`
         : "Price compression detected. Monitoring for tight accumulation range.",
     },
@@ -286,56 +290,55 @@ function IndicatorGrid({ market }: { market: MarketData | undefined }) {
   );
 }
 
-// --- Trend Display ---
+// --- Trend Display (DEFENSIVE) ---
 
 function TrendDisplay({ market }: { market: MarketData | undefined }) {
-  if (!market?.closes4h || market.closes4h.length < 30) {
-    return (
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-slate-800/40 rounded-lg p-3">
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">4H Trend</p>
-          <p className="text-sm text-slate-600 font-semibold">-</p>
-        </div>
-        <div className="bg-slate-800/40 rounded-lg p-3">
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">1D Trend</p>
-          <p className="text-sm text-slate-600 font-semibold">-</p>
-        </div>
-      </div>
-    );
+  // Always show something, never blank "-"
+  const hasCloses = market?.closes4h && market.closes4h.length >= 30;
+
+  let trend4h = "—";
+  let trend4hClass = "text-sm font-bold text-slate-600";
+  let trend1d = "—";
+  let trend1dClass = "text-sm font-bold text-slate-600";
+  let htfLabel = market?.htfBias || "unknown";
+
+  if (hasCloses) {
+    const closes = market.closes4h!;
+    const ema8 = calcEMA(closes, 8);
+    const ema21 = calcEMA(closes, 21);
+    const price = closes[closes.length - 1];
+    const ema8Last = ema8[ema8.length - 1];
+    const ema21Last = ema21[ema21.length - 1];
+
+    let trend4hDir: string | null = null;
+    let trend4hStrength = "WEAK";
+    if (ema8Last !== undefined && ema21Last !== undefined) {
+      trend4hDir = price > ema8Last && price > ema21Last ? "LONG" : price < ema8Last && price < ema21Last ? "SHORT" : null;
+      const spread = Math.abs(ema8Last - ema21Last) / ema21Last;
+      trend4hStrength = spread > 0.02 ? "STRONG" : spread > 0.01 ? "MEDIUM" : "WEAK";
+    }
+    trend4h = trend4hDir ? trend4hDir + " " + trend4hStrength : "MIXED";
+    trend4hClass = trend4h.includes("SHORT") ? "text-sm font-bold text-rose-400" :
+      trend4h.includes("LONG") ? "text-sm font-bold text-emerald-400" : "text-sm font-bold text-yellow-400";
   }
 
-  const closes = market.closes4h;
-  const ema8 = calcEMA(closes, 8);
-  const ema21 = calcEMA(closes, 21);
-  const price = closes[closes.length - 1];
-
-  const ema8Last = ema8[ema8.length - 1];
-  const ema21Last = ema21[ema21.length - 1];
-  let trend4hDir: string | null = null;
-  let trend4hStrength = "WEAK";
-  if (ema8Last !== undefined && ema21Last !== undefined) {
-    trend4hDir = price > ema8Last && price > ema21Last ? "LONG" : price < ema8Last && price < ema21Last ? "SHORT" : null;
-    const spread = Math.abs(ema8Last - ema21Last) / ema21Last;
-    trend4hStrength = spread > 0.02 ? "STRONG" : spread > 0.01 ? "MEDIUM" : "WEAK";
+  if (market?.htfBias) {
+    trend1d = market.htfBias === "BULLISH" ? "LONG" : market.htfBias === "BEARISH" ? "SHORT" : "NEUTRAL";
+    trend1dClass = trend1d === "SHORT" ? "text-sm font-bold text-rose-400" :
+      trend1d === "LONG" ? "text-sm font-bold text-emerald-400" : "text-sm font-bold text-yellow-400";
   }
-  const trend4h = trend4hDir ? trend4hDir + " " + trend4hStrength : "MIXED";
-  const trend1d = market.htfBias === "BULLISH" ? "LONG" : market.htfBias === "BEARISH" ? "SHORT" : "MIXED";
-
-  const trend4hClass = trend4h.includes("SHORT") ? "text-sm font-bold text-rose-400" :
-    trend4h.includes("LONG") ? "text-sm font-bold text-emerald-400" : "text-sm font-bold text-yellow-400";
-  const trend1dClass = trend1d === "SHORT" ? "text-sm font-bold text-rose-400" :
-    trend1d === "LONG" ? "text-sm font-bold text-emerald-400" : "text-sm font-bold text-yellow-400";
 
   return (
     <div className="grid grid-cols-2 gap-3">
       <div className="bg-slate-800/40 rounded-lg p-3">
         <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">4H Trend</p>
         <p className={trend4hClass}>{trend4h}</p>
+        {!hasCloses && <p className="text-[10px] text-slate-600 mt-0.5">No 4H data from API</p>}
       </div>
       <div className="bg-slate-800/40 rounded-lg p-3">
         <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">1D Trend</p>
         <p className={trend1dClass}>{trend1d}</p>
-        <p className="text-[10px] text-slate-600 mt-0.5">HTF: {market.htfBias}</p>
+        <p className="text-[10px] text-slate-600 mt-0.5">HTF: {htfLabel}</p>
       </div>
     </div>
   );
@@ -379,7 +382,7 @@ function ZoneDetails({ market }: { market: MarketData | undefined }) {
           <p className="font-mono font-bold text-slate-300">{q.breakAttempts}</p>
         </div>
       </div>
-      {market.zoneTop !== null && market.zoneBottom !== null && (
+      {market.zoneTop != null && market.zoneBottom != null && (
         <div className="flex items-center justify-between text-[11px]">
           <span className="text-slate-500">Zone Range</span>
           <span className="font-mono text-blue-400">{money(market.zoneBottom)} - {money(market.zoneTop)}</span>
@@ -389,7 +392,7 @@ function ZoneDetails({ market }: { market: MarketData | undefined }) {
   );
 }
 
-// --- Signal Card ---
+// --- Signal Card (DEFENSIVE) ---
 
 function SignalCard({ signal, market, livePrice }: { signal: Signal; market: MarketData | undefined; livePrice: number | undefined }) {
   const currentPrice = livePrice ?? market?.price ?? 0;
@@ -432,19 +435,19 @@ function SignalCard({ signal, market, livePrice }: { signal: Signal; market: Mar
         <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Trade Setup</p>
         <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
           <div className="flex justify-between"><span className="text-slate-400">Direction</span><span className={"font-bold " + dirColor}>{signal.direction}</span></div>
-          <div className="flex justify-between"><span className="text-slate-400">Stage</span><span className="font-mono text-slate-300">{signal.stage}</span></div>
+          <div className="flex justify-between"><span className="text-slate-400">Stage</span><span className="font-mono text-slate-300">{signal.stage || "—"}</span></div>
           <div className="flex justify-between"><span className="text-slate-400">Entry</span><span className="font-mono text-white font-semibold">{money(signal.entry)}</span></div>
           <div className="flex justify-between"><span className="text-slate-400">Stop</span><span className="font-mono text-rose-400 font-semibold">{money(signal.stop)}</span></div>
           <div className="flex justify-between"><span className="text-slate-400">Target</span><span className="font-mono text-emerald-400 font-semibold">{money(signal.target)}</span></div>
           <div className="flex justify-between"><span className="text-slate-400">Trail</span><span className="font-mono text-purple-400 font-semibold">{money(signal.trail)}</span></div>
-          <div className="flex justify-between"><span className="text-slate-400">R:R</span><span className="font-mono text-yellow-400 font-bold">{signal.rr.toFixed(2)}</span></div>
+          <div className="flex justify-between"><span className="text-slate-400">R:R</span><span className="font-mono text-yellow-400 font-bold">{signal.rr?.toFixed(2) || "—"}</span></div>
           <div className="flex justify-between"><span className="text-slate-400">Zone</span><span className="font-mono text-blue-400">{money(signal.zoneBottom)} - {money(signal.zoneTop)}</span></div>
         </div>
       </div>
 
       <div className="bg-slate-800/40 rounded-lg p-3">
         <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">Explanation</p>
-        <p className="text-xs text-slate-300 leading-relaxed">{signal.explanation}</p>
+        <p className="text-xs text-slate-300 leading-relaxed">{signal.explanation?.trim() || "No explanation provided by strategy."}</p>
       </div>
 
       {meta.status === "ACTIVE" && <div className={pnlClass}>{meta.pnl >= 0 ? "+" : ""}{meta.pnl.toFixed(2)}%</div>}
@@ -458,17 +461,17 @@ function SignalCard({ signal, market, livePrice }: { signal: Signal; market: Mar
   );
 }
 
-// --- REAL Waiting Card (no fake Volume Climax) ---
+// --- Waiting Card (DEFENSIVE) ---
 
 function WaitingCard({ pair, market, livePrice }: { pair: string; market: MarketData | undefined; livePrice: number | undefined }) {
   const currentPrice = livePrice ?? market?.price ?? 0;
   const phase = market?.phase || "NONE";
 
-  // Calculate what price needs to break for signal
-  let breakoutInfo = "";
-  if (market?.zoneTop !== null && market?.zoneBottom !== null) {
-    const distToTop = ((market.zoneTop - currentPrice) / currentPrice * 100);
-    const distToBottom = ((currentPrice - market.zoneBottom) / currentPrice * 100);
+  // DEFENSIVE: only show breakout info if we have real zone data and a valid price
+  let breakoutInfo: string | null = null;
+  if (market?.zoneTop != null && market?.zoneBottom != null && currentPrice > 0) {
+    const distToTop = ((market.zoneTop - currentPrice) / currentPrice) * 100;
+    const distToBottom = ((currentPrice - market.zoneBottom) / currentPrice) * 100;
     breakoutInfo = `Break below ${money(market.zoneBottom)} (${distToBottom.toFixed(2)}%) for SHORT · Break above ${money(market.zoneTop)} (${distToTop.toFixed(2)}%) for LONG`;
   }
 
@@ -487,10 +490,15 @@ function WaitingCard({ pair, market, livePrice }: { pair: string; market: Market
       <TrendDisplay market={market} />
       <ZoneDetails market={market} />
 
-      {breakoutInfo && (
+      {breakoutInfo ? (
         <div className="bg-slate-800/60 border border-slate-600/30 rounded-lg p-3">
           <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Breakout Levels</p>
           <p className="text-xs text-slate-300 font-mono leading-relaxed">{breakoutInfo}</p>
+        </div>
+      ) : (
+        <div className="bg-slate-800/60 border border-slate-600/30 rounded-lg p-3">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Breakout Levels</p>
+          <p className="text-xs text-slate-500 font-mono leading-relaxed">No accumulation zone detected. Price may be trending or ranging too wide for a setup.</p>
         </div>
       )}
 
@@ -503,7 +511,7 @@ function WaitingCard({ pair, market, livePrice }: { pair: string; market: Market
           <p className="text-xs text-slate-400">
             {market.zoneQuality.touches} touches · {market.zoneQuality.widthATR.toFixed(1)}x ATR width · {market.zoneQuality.compression}% compressed
           </p>
-          {market.zoneTop !== null && market.zoneBottom !== null && (
+          {market.zoneTop != null && market.zoneBottom != null && (
             <p className="text-xs text-slate-500 font-mono mt-1">
               Zone: {money(market.zoneBottom)} - {money(market.zoneTop)}
             </p>
@@ -515,7 +523,7 @@ function WaitingCard({ pair, market, livePrice }: { pair: string; market: Market
         <div className="bg-slate-800/40 rounded-lg p-3">
           <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">No Setup</p>
           <p className="text-xs text-slate-400">
-            Price is either trending strongly or ranging too wide for accumulation. 
+            Price is either trending strongly or ranging too wide for accumulation.
             HTF bias: {market?.htfBias || "unknown"}.
           </p>
         </div>
@@ -525,7 +533,7 @@ function WaitingCard({ pair, market, livePrice }: { pair: string; market: Market
         <div className="bg-red-950/20 border border-red-500/20 rounded-lg p-3">
           <p className="text-[10px] text-red-400 font-bold uppercase tracking-wider mb-1">Entry Blocked</p>
           <p className="text-xs text-slate-400">
-            Stochastic at extreme ({market?.stochK?.toFixed(1)}). New signals paused until pullback resets momentum.
+            Stochastic at extreme ({market?.stochK?.toFixed(1) || "—"}). New signals paused until pullback resets momentum.
           </p>
         </div>
       )}
@@ -605,7 +613,7 @@ export default function Dashboard() {
         <div>
           <h1 className="text-3xl font-bold text-white tracking-tight">CX Switch v30.5</h1>
           <p className="text-slate-500 text-sm mt-1">Phase-Based Accumulation to Expansion</p>
-          <p className="text-slate-600 text-xs">Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "-"}</p>
+          <p className="text-slate-600 text-xs">Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}</p>
         </div>
       </div>
 
