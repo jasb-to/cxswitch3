@@ -1,50 +1,159 @@
-// lib/telegram.ts — v16.4
-export async function sendAlert(signal: any) {
+// lib/telegram.ts — v30.5 "Clean alert dispatch for v30.5 strategy"
+// ============================================================
+// CHANGES:
+//   - Accepts both raw Signal objects and mapped alert objects
+//   - Guards against non-actionable stages (WATCHING, EXHAUSTION, NONE)
+//   - Removes dead scale/ENTRY_1 logic
+//   - Adds signal.id to all logs for traceability
+//   - Adds one retry on Telegram API failure
+//   - Cleans up sendUIAlert for v30.5 alert format
+
+interface AlertPayload {
+  symbol?: string;
+  pair?: string;
+  direction?: "LONG" | "SHORT";
+  bias?: "LONG" | "SHORT";
+  stage?: string;
+  state?: string;
+  type?: string;
+  confidence: number;
+  entry?: number;
+  price?: number;
+  stop?: number;
+  stopLoss?: number;
+  target?: number;
+  takeProfit?: number;
+  rr?: number;
+  reason?: string;
+  explanation?: string;
+  id?: string;
+}
+
+function resolveAlert(payload: AlertPayload) {
+  const pair = payload.symbol || payload.pair || "UNKNOWN";
+  const direction = payload.bias || payload.direction || "SHORT";
+  const stage = payload.state || payload.stage || payload.type || "UNKNOWN";
+  const price = payload.price ?? payload.entry ?? 0;
+  const stop = payload.stopLoss ?? payload.stop ?? 0;
+  const target = payload.takeProfit ?? payload.target ?? 0;
+  const reason = payload.reason || payload.explanation || "";
+  const id = payload.id || "no-id";
+  return { pair, direction, stage, price, stop, target, reason, id, confidence: payload.confidence, rr: payload.rr };
+}
+
+function isActionableStage(stage: string): boolean {
+  const actionable = ["CONFIRMED", "EXPANSION", "READY"];
+  return actionable.includes(stage.toUpperCase());
+}
+
+async function sendTelegramMessage(text: string): Promise<boolean> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
   if (!token || !chatId) {
-    console.log("[TELEGRAM DISABLED]", signal);
+    console.log("[TELEGRAM DISABLED]", text.slice(0, 100));
+    return false;
+  }
+
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  const body = JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" });
+
+  // Try once, retry once on failure
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      const data = await res.json();
+      if (data.ok) return true;
+      console.error(`[TELEGRAM ERROR] attempt ${attempt}:`, data);
+      if (attempt === 1) await new Promise(r => setTimeout(r, 1000));
+    } catch (err) {
+      console.error(`[TELEGRAM SEND FAILED] attempt ${attempt}:`, err);
+      if (attempt === 1) await new Promise(r => setTimeout(r, 1000));
+    }
+  }
+  return false;
+}
+
+export async function sendAlert(payload: AlertPayload) {
+  const alert = resolveAlert(payload);
+
+  // Guard: only alert on actionable stages
+  if (!isActionableStage(alert.stage)) {
+    console.log(`[TELEGRAM SKIP: NON-ACTIONABLE] ${alert.pair} stage=${alert.stage} id=${alert.id}`);
     return;
   }
-  const scale = signal.scale || signal.state?.split(" ")[1] || null;
-  const minConfidence = scale === "ENTRY_1" ? 50 : 55;
-  if (signal.confidence < minConfidence) {
-    console.log(`[TELEGRAM SKIP: LOW CONFIDENCE] ${signal.symbol || signal.pair} ${signal.confidence} (need ${minConfidence})`);
+
+  // Guard: minimum confidence
+  const minConfidence = 55;
+  if (alert.confidence < minConfidence) {
+    console.log(`[TELEGRAM SKIP: LOW CONFIDENCE] ${alert.pair} ${alert.confidence}% (need ${minConfidence}%) id=${alert.id}`);
     return;
   }
-  const dirEmoji = signal.bias === "LONG" ? "🟢" : "🔴";
-  const confColor = signal.confidence >= 85 ? "🟢" : signal.confidence >= 70 ? "🟡" : "🟠";
-  const text = `${dirEmoji} ${signal.symbol || signal.pair} ${signal.bias || signal.direction} ${signal.state || signal.type} — ${confColor} ${signal.confidence}%
-Entry: ${signal.price || signal.entry} | Stop: ${signal.stopLoss || signal.stop} | Target: ${signal.takeProfit || signal.target}
-RR ${signal.rr} | ${signal.reason}`;
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
-    });
-    const data = await res.json();
-    if (!data.ok) console.error("[TELEGRAM ERROR]", data);
-    else console.log(`[TELEGRAM SENT] ${signal.symbol || signal.pair} ${signal.confidence}%`);
-  } catch (err) {
-    console.error("[TELEGRAM SEND FAILED]", err);
+
+  const dirEmoji = alert.direction === "LONG" ? "🟢" : "🔴";
+  const confColor = alert.confidence >= 85 ? "🟢" : alert.confidence >= 70 ? "🟡" : "🟠";
+
+  const text = `${dirEmoji} <b>${alert.pair}</b> ${alert.direction} ${alert.stage} — ${confColor} ${alert.confidence}%
+Entry: ${alert.price} | Stop: ${alert.stop} | Target: ${alert.target}
+RR ${alert.rr ?? "N/A"} | ${alert.reason}
+<code>id=${alert.id}</code>`;
+
+  const sent = await sendTelegramMessage(text);
+  if (sent) {
+    console.log(`[TELEGRAM SENT] ${alert.pair} ${alert.direction} ${alert.confidence}% id=${alert.id}`);
+  } else {
+    console.error(`[TELEGRAM FAILED] ${alert.pair} id=${alert.id}`);
   }
 }
 
-export async function sendUIAlert(alert: any) {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) { console.log("[TELEGRAM UI DISABLED]", alert); return; }
-  const isShort = alert.type === "SHORT_ALERT_OVERSOLD_CROSS";
-  const text = `${isShort ? "↗️" : "↘️"} ${alert.pair} — ${isShort ? "Potential Bounce" : "Potential Pullback"}
-${alert.message}
-Stoch K=${alert.stochK.toFixed(1)} D=${alert.stochD.toFixed(1)}
+export async function sendExitAlert(payload: {
+  pair: string;
+  direction: "LONG" | "SHORT";
+  exitPrice: number;
+  reason: string;
+  pnl?: number;
+  id?: string;
+}) {
+  const { pair, direction, exitPrice, reason, pnl, id = "no-id" } = payload;
+  const dirEmoji = direction === "LONG" ? "🟢" : "🔴";
+  const pnlEmoji = pnl && pnl > 0 ? "✅" : pnl && pnl < 0 ? "❌" : "⚪";
+  const pnlText = pnl !== undefined ? ` | PnL: ${pnlEmoji} ${pnl.toFixed(2)}%` : "";
+
+  const text = `${dirEmoji} <b>${pair}</b> ${direction} EXIT — ${reason}${pnlText}
+Exit Price: ${exitPrice}
+<code>id=${id}</code>`;
+
+  const sent = await sendTelegramMessage(text);
+  if (sent) {
+    console.log(`[TELEGRAM EXIT] ${pair} ${direction} ${reason} id=${id}`);
+  }
+}
+
+export async function sendUIAlert(alert: {
+  pair: string;
+  type: string;
+  message: string;
+  stochK?: number;
+  stochD?: number;
+}) {
+  const { pair, type, message, stochK, stochD } = alert;
+  const isWarning = type.includes("OVERSOLD") || type.includes("OVERBOUGHT");
+  const emoji = isWarning ? "⚠️" : "ℹ️";
+
+  let text = `${emoji} <b>${pair}</b> — ${type}
+${message}`;
+  if (stochK !== undefined && stochD !== undefined) {
+    text += `
+Stoch K=${stochK.toFixed(1)} D=${stochD.toFixed(1)}`;
+  }
+  text += `
 <i>UI warning only — not a trading signal</i>`;
-  try {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: "HTML" }),
-    });
-  } catch (err) {
-    console.error("[TELEGRAM UI SEND FAILED]", err);
+
+  const sent = await sendTelegramMessage(text);
+  if (sent) {
+    console.log(`[TELEGRAM UI] ${pair} ${type}`);
   }
 }
