@@ -1,15 +1,15 @@
-// lib/state.ts — v30.5 "Redis State Management"
+// lib/state.ts — v28 "Redis State Management"
 // ============================================================
-// Updated for v30.5 strategy compatibility
-//   - CURRENT_SIGNAL_VERSION bumped to 30
-//   - Added resetPairConsumedZones() for v30.5 migration
-//   - getSignalMaxAgeHours aligned with strategy (24h)
+// Updated for v28 strategy compatibility
+//   - CURRENT_SIGNAL_VERSION bumped to 28
+//   - Signal interface expanded to include v28 fields
+//   - Maintains backward compatibility with v30.5 fields in existing data
 
 import { Redis } from "@upstash/redis";
 
 export const redis = Redis.fromEnv();
 
-const KEY_VERSION = "v30";
+const KEY_VERSION = "v28";
 
 const SIGNALS_KEY = `cx_signals_${KEY_VERSION}`;
 const MARKET_KEY = `cx_market_${KEY_VERSION}`;
@@ -28,26 +28,47 @@ const UI_ALERTS_TTL = 24 * 60 * 60;
 const CRON_LOGS_TTL = 24 * 60 * 60;
 const PAIR_STATE_TTL = 7 * 24 * 60 * 60;
 
-// FIX: Bumped to 30 to match strategy.ts
-export const CURRENT_SIGNAL_VERSION = 30;
+export const CURRENT_SIGNAL_VERSION = 28;
 
+// Unified Signal interface — superset of v28 and v30.5 fields
+// v28 fields: type, scale, rsi, stochK, stochD, expectedMove, reason
+// v30.5 fields: stage, zoneTop, zoneBottom, trail, explanation
 export interface Signal {
   id: string;
   pair: string;
   direction: "LONG" | "SHORT";
-  stage: "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED";
+  // v28 fields
+  type?: "ACCUMULATE" | "BREAKOUT" | "EXIT";
+  scale?: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
+  rsi?: number;
+  stochK?: number;
+  stochD?: number;
+  expectedMove?: number;
+  reason?: string;
+  // v30.5 fields (for backward compat)
+  stage?: "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED";
+  zoneTop?: number;
+  zoneBottom?: number;
+  trail?: number;
+  explanation?: string;
+  // Common fields
   entry: number;
   stop: number;
   target: number;
-  trail: number;
   confidence: number;
   rr: number;
   adx: number;
-  zoneTop: number;
-  zoneBottom: number;
-  explanation: string;
   timestamp: number;
   version: number;
+  // Trade manager state
+  tradeState?: string;
+  highestPrice?: number;
+  lowestPrice?: number;
+  lockedStop?: number;
+  exited?: boolean;
+  exitReason?: string;
+  exitPrice?: number;
+  exitTimestamp?: number;
 }
 
 export interface SignalHistory {
@@ -281,7 +302,7 @@ export async function setPairState(pair: string, state: any): Promise<void> {
   }
 }
 
-// NEW: Reset consumed zones for a pair (run once after v30.5 deploy)
+// NEW: Reset consumed zones for a pair
 export async function resetPairConsumedZones(pair: string): Promise<void> {
   try {
     const existing = await getPairState(pair);
@@ -297,7 +318,7 @@ export async function resetPairConsumedZones(pair: string): Promise<void> {
   }
 }
 
-// NEW: Reset all pairs (run once after v30.5 deploy)
+// NEW: Reset all pairs
 export async function resetAllConsumedZones(pairs: string[]): Promise<void> {
   for (const pair of pairs) {
     await resetPairConsumedZones(pair);
@@ -335,7 +356,7 @@ export async function migrateFromV15(): Promise<void> {
     try {
       const data = await redis.get(oldKey);
       if (data) {
-        const newKey = oldKey.replace("_v15", "_v29");
+        const newKey = oldKey.replace("_v15", "_v28");
         await redis.set(newKey, data);
         console.log(`[MIGRATE] ${oldKey} → ${newKey}`);
       }
