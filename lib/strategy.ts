@@ -1,20 +1,20 @@
 // lib/strategy.ts — v28 "Trendline Break: StochRSI Timing + Trade Manager"
 // ============================================================
 // Architecture: stateful trendline, hysteresis bands, TV-exact StochRSI
-// EXIT: Stoch extreme opposite (matches chart)
-// ALERTS: ENTRY only (no ADD, no ENTRY_2)
-// TRADE MANAGER: Isolated profit-locking engine
+// EXIT: Trade Manager only (single authority)
+// ALERTS: ENTRY only (no ADD, no ENTRY_2, no pyramiding)
+// TRADE MANAGER: Isolated profit-locking engine, sole exit authority for open trades
 //
-// CHANGELOG v28-PROD:
-// - Removed all ADD/ENTRY_2/ENTRY_1 progression logic
-// - Single entry per position, no pyramiding
-// - Exhaustion filter (2+ conditions required to reject)
-// - Dedicated trade manager with state machine
-// - Staged profit locking: +3% BE, +5% → +2%, +8% → +4%, +12% trail, +20% ATR trail
-// - Trailing only after break-even
-// - Duplicate exit prevention via EXITED state
+// CHANGELOG v28-PROD-FINAL:
+// - Single entry per position, no pyramiding, no progression
+// - Exhaustion filter: 2+ conditions required to reject
+// - nearTrendline: distance < 0.5 ATR (adaptive, not fixed 1.2%)
+// - Stop: max(recent swing, 2 ATR, 3%) — adapts to volatility
+// - Trade Manager: sole exit authority for open trades
+// - isSignalStillValid: ONLY TTL + missed entry (no SL/TP for active trades)
+// - Profit lock: +3% BE → +6% +3% → +10% ATR trail → EXIT
+// - Duplicate exit prevention: signal.exited + tradeState=EXITED persisted immediately
 // - Stop never moves backwards
-//
 // ============================================================
 
 export interface Candle {
@@ -78,15 +78,13 @@ export const FEATURES = {
 };
 
 // ============================================================
-// TRADE MANAGER — ISOLATED STATE MACHINE
+// TRADE MANAGER — ISOLATED STATE MACHINE (SOLE EXIT AUTHORITY)
 // ============================================================
 
 export type TradeState =
   | "OPEN"
-  | "UNDERWATER"
   | "BREAK_EVEN"
-  | "LOCKED_2"
-  | "LOCKED_4"
+  | "LOCKED"
   | "RUNNER"
   | "EXITED";
 
@@ -130,7 +128,7 @@ export function clearAllTradeManagerState(): void {
 }
 
 /**
- * Core trade manager update.
+ * Core trade manager update. SOLE exit authority for open trades.
  * Returns: updated state, shouldExit flag, exitReason.
  * Stop NEVER moves backwards.
  * Duplicate exits prevented by EXITED state short-circuit.
@@ -168,18 +166,10 @@ export function updateTradeManagerState(
 
   // --- STATE TRANSITIONS ---
 
-  if (state.tradeState === "OPEN" && pnlPct < 0) {
-    state.tradeState = "UNDERWATER";
-  }
-
-  if (state.tradeState === "UNDERWATER" && pnlPct >= 0) {
-    state.tradeState = "OPEN";
-  }
-
   // +3% → Break Even
   if (
     FEATURES.BREAK_EVEN_ENABLED &&
-    (state.tradeState === "OPEN" || state.tradeState === "UNDERWATER") &&
+    state.tradeState === "OPEN" &&
     pnlPct >= 3
   ) {
     state.tradeState = "BREAK_EVEN";
@@ -192,15 +182,15 @@ export function updateTradeManagerState(
     }
   }
 
-  // +5% → Lock at +2%
+  // +6% → Lock at +3%
   if (
     FEATURES.PROFIT_LOCK_ENABLED &&
-    (state.tradeState === "BREAK_EVEN" || state.tradeState === "OPEN") &&
-    pnlPct >= 5
+    (state.tradeState === "OPEN" || state.tradeState === "BREAK_EVEN") &&
+    pnlPct >= 6
   ) {
-    state.tradeState = "LOCKED_2";
+    state.tradeState = "LOCKED";
     const newStop =
-      signal.direction === "LONG" ? entry * 1.02 : entry * 0.98;
+      signal.direction === "LONG" ? entry * 1.03 : entry * 0.97;
     if (
       (signal.direction === "LONG" && newStop > state.lockedStop) ||
       (signal.direction === "SHORT" && newStop < state.lockedStop)
@@ -209,76 +199,38 @@ export function updateTradeManagerState(
     }
   }
 
-  // +8% → Lock at +4%
-  if (
-    FEATURES.PROFIT_LOCK_ENABLED &&
-    state.tradeState === "LOCKED_2" &&
-    pnlPct >= 8
-  ) {
-    state.tradeState = "LOCKED_4";
-    const newStop =
-      signal.direction === "LONG" ? entry * 1.04 : entry * 0.96;
-    if (
-      (signal.direction === "LONG" && newStop > state.lockedStop) ||
-      (signal.direction === "SHORT" && newStop < state.lockedStop)
-    ) {
-      state.lockedStop = newStop;
-    }
-  }
-
-  // +12% → RUNNER (trail using ATR or EMA20)
+  // +10% → RUNNER (ATR trailing stop)
   if (
     FEATURES.TRAIL_STOP_ENABLED &&
-    (state.tradeState === "LOCKED_4" || state.tradeState === "LOCKED_2") &&
-    pnlPct >= 12
+    (state.tradeState === "BREAK_EVEN" || state.tradeState === "LOCKED") &&
+    pnlPct >= 10
   ) {
     state.tradeState = "RUNNER";
   }
 
-  // --- TRAILING STOP (only after break-even) ---
+  // --- TRAILING STOP (only in RUNNER state) ---
   if (
     FEATURES.TRAIL_STOP_ENABLED &&
-    (state.tradeState === "BREAK_EVEN" ||
-      state.tradeState === "LOCKED_2" ||
-      state.tradeState === "LOCKED_4" ||
-      state.tradeState === "RUNNER")
+    state.tradeState === "RUNNER" &&
+    candles4h.length > 0
   ) {
     const atrVal = atr(candles4h, 14);
-    const closes4h = candles4h.map((c) => c.close);
-    const ema20Arr = ema(closes4h, 20);
-    const ema20Price = ema20Arr[ema20Arr.length - 1];
 
-    let trailPrice: number | null = null;
+    // Pure ATR trailing stop from current price
+    const trailPrice =
+      signal.direction === "LONG"
+        ? currentPrice - atrVal * 2
+        : currentPrice + atrVal * 2;
 
-    if (state.tradeState === "RUNNER") {
-      if (pnlPct < 20) {
-        // +12% to +20%: Trail using EMA20 ± 1.5 ATR, never below lockedStop
-        const atrTrail =
-          signal.direction === "LONG"
-            ? Math.max(ema20Price - atrVal * 1.5, state.lockedStop)
-            : Math.min(ema20Price + atrVal * 1.5, state.lockedStop);
-        trailPrice = atrTrail;
-      } else {
-        // +20%+: Pure ATR trailing stop from current price
-        const atrTrail =
-          signal.direction === "LONG"
-            ? currentPrice - atrVal * 2
-            : currentPrice + atrVal * 2;
-        trailPrice = atrTrail;
-      }
-    }
-
-    if (trailPrice !== null) {
-      if (
-        (signal.direction === "LONG" && trailPrice > state.lockedStop) ||
-        (signal.direction === "SHORT" && trailPrice < state.lockedStop)
-      ) {
-        state.lockedStop = trailPrice;
-      }
+    if (
+      (signal.direction === "LONG" && trailPrice > state.lockedStop) ||
+      (signal.direction === "SHORT" && trailPrice < state.lockedStop)
+    ) {
+      state.lockedStop = trailPrice;
     }
   }
 
-  // --- EXIT CHECKS ---
+  // --- EXIT CHECKS (sole authority) ---
   // 1. Locked stop hit (profit lock or trailing stop)
   if (
     (signal.direction === "LONG" && currentPrice <= state.lockedStop) ||
@@ -297,22 +249,14 @@ export function updateTradeManagerState(
     };
   }
 
-  // 2. Initial hard stop hit
+  // 2. Initial hard stop hit (only if manager hasn't moved stop yet)
   if (
-    (signal.direction === "LONG" && currentPrice <= signal.stop) ||
-    (signal.direction === "SHORT" && currentPrice >= signal.stop)
+    state.tradeState === "OPEN" &&
+    ((signal.direction === "LONG" && currentPrice <= signal.stop) ||
+      (signal.direction === "SHORT" && currentPrice >= signal.stop))
   ) {
     state.tradeState = "EXITED";
     return { state, shouldExit: true, exitReason: "initial_stop" };
-  }
-
-  // 3. Target hit (legacy, kept for compatibility)
-  if (
-    (signal.direction === "LONG" && currentPrice >= signal.target) ||
-    (signal.direction === "SHORT" && currentPrice <= signal.target)
-  ) {
-    state.tradeState = "EXITED";
-    return { state, shouldExit: true, exitReason: "target_hit" };
   }
 
   return { state, shouldExit: false };
@@ -749,9 +693,10 @@ export function generateSignal(
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
   const tlPrice = trendline.price;
   const dist = (price - tlPrice) / tlPrice;
+  const atrVal = atr(candles4h, 14);
 
   debug.push(
-    `TL: ${tlPrice.toFixed(1)} | R2 ${trendline.r2} | Price: ${price.toFixed(1)} | Dist: ${(dist * 100).toFixed(2)}%`
+    `TL: ${tlPrice.toFixed(1)} | R2 ${trendline.r2} | Price: ${price.toFixed(1)} | Dist: ${(dist * 100).toFixed(2)}% | ATR: ${atrVal.toFixed(1)}`
   );
 
   const stoch = stochRsi(candles4h.map((c) => c.close));
@@ -765,7 +710,8 @@ export function generateSignal(
   const ema21_4h = ema(closes4h, 21);
 
   // --- ENTRY CONDITIONS (early, trendline-touch) ---
-  const nearTrendline = Math.abs(dist) < 0.012;
+  // Adaptive: near trendline = within 0.5 ATR (not fixed 1.2%)
+  const nearTrendline = Math.abs(dist * tlPrice) < atrVal * 0.5;
   const stochExtreme =
     t1d.direction === "LONG" ? stoch.k < 20 : stoch.k > 80;
   const stochTurning =
@@ -804,7 +750,7 @@ export function generateSignal(
   if (!finalType) {
     const stateParts: string[] = [];
     if (nearTrendline) stateParts.push("near TL");
-    else if (Math.abs(dist) < 0.03) stateParts.push("approaching TL");
+    else if (Math.abs(dist * tlPrice) < atrVal) stateParts.push("approaching TL");
     else stateParts.push("far from TL");
     stateParts.push(`Stoch K${stoch.k} D${stoch.d}`);
     stateParts.push("No signal");
@@ -835,7 +781,6 @@ export function generateSignal(
   }
 
   // --- LEVELS ---
-  const atrVal = atr(candles4h, 14);
   const swingLows = candles4h.map((c) => c.low).slice(-20);
   const swingHighs = candles4h.map((c) => c.high).slice(-20);
   const swingLow = Math.min(...swingLows);
@@ -850,30 +795,26 @@ export function generateSignal(
 
   type = "ACCUMULATE";
   entry = price;
+
+  // Stop: max(recent swing, 2 ATR, 3%) — adapts to volatility
+  const twoAtrStop =
+    t1d.direction === "LONG"
+      ? entry - atrVal * 2
+      : entry + atrVal * 2;
+  const pctStop =
+    t1d.direction === "LONG" ? entry * 0.97 : entry * 1.03;
+
   sl =
     t1d.direction === "LONG"
-      ? Math.min(swingLow, entry - atrVal * 2)
-      : Math.max(swingHigh, entry + atrVal * 2);
+      ? Math.min(swingLow, twoAtrStop, pctStop)
+      : Math.max(swingHigh, twoAtrStop, pctStop);
+
   tp =
     t1d.direction === "LONG"
       ? entry + atrVal * 5
       : entry - atrVal * 5;
   confidence = 50;
   expectedMove = (Math.abs(tp - entry) / entry) * 100;
-
-  // Ensure initial stop is approximately 3% (allow room to breathe)
-  const stopPct = Math.abs(entry - sl) / entry;
-  if (stopPct < 0.025) {
-    sl =
-      t1d.direction === "LONG"
-        ? entry * 0.97
-        : entry * 1.03;
-  } else if (stopPct > 0.04) {
-    sl =
-      t1d.direction === "LONG"
-        ? entry * 0.97
-        : entry * 1.03;
-  }
 
   const rr =
     t1d.direction === "LONG"
@@ -965,7 +906,7 @@ export function getMarketSnapshot(
 }
 
 // ============================================================
-// VALIDITY CHECK
+// VALIDITY CHECK — TTL + MISSED ENTRY ONLY (no SL/TP for active trades)
 // ============================================================
 
 export interface ValidityCheck {
@@ -974,6 +915,14 @@ export interface ValidityCheck {
   exited: boolean;
 }
 
+/**
+ * isSignalStillValid checks ONLY:
+ * 1. TTL expiry (signal too old)
+ * 2. Missed entry (price moved too far from entry)
+ *
+ * It does NOT check stop-loss or take-profit.
+ * Those are the sole responsibility of the Trade Manager.
+ */
 export function isSignalStillValid(
   signal: Signal,
   currentPrice: number,
@@ -981,16 +930,14 @@ export function isSignalStillValid(
 ): ValidityCheck {
   const ageMs = now - signal.timestamp;
 
-  const maxAge =
-    signal.type === "ACCUMULATE"
-      ? 24 * 60 * 60 * 1000
-      : 4 * 60 * 60 * 1000;
+  const maxAge = 24 * 60 * 60 * 1000; // 24h for all signals
 
   if (ageMs > maxAge) {
     return { valid: false, reason: "expired_ttl", exited: true };
   }
 
-  const entryBuffer = signal.type === "ACCUMULATE" ? 1.02 : 1.005;
+  // Missed entry: price moved >2% away from entry without triggering
+  const entryBuffer = 1.02;
   if (signal.direction === "LONG" && currentPrice > signal.entry * entryBuffer) {
     return { valid: false, reason: "missed_entry", exited: true };
   }
@@ -1001,25 +948,12 @@ export function isSignalStillValid(
     return { valid: false, reason: "missed_entry", exited: true };
   }
 
-  if (signal.direction === "LONG" && currentPrice <= signal.stop) {
-    return { valid: false, reason: "sl_hit", exited: true };
-  }
-  if (signal.direction === "SHORT" && currentPrice >= signal.stop) {
-    return { valid: false, reason: "sl_hit", exited: true };
-  }
-
-  if (signal.direction === "LONG" && currentPrice >= signal.target) {
-    return { valid: false, reason: "tp_hit", exited: true };
-  }
-  if (signal.direction === "SHORT" && currentPrice <= signal.target) {
-    return { valid: false, reason: "tp_hit", exited: true };
-  }
-
   return { valid: true, reason: "active", exited: false };
 }
 
 // ============================================================
 // shouldHold — delegates to trade manager when enabled
+// Trade Manager is SOLE exit authority for open trades.
 // ============================================================
 
 export interface HoldResult {
@@ -1081,50 +1015,27 @@ export function shouldHold(
   }
 
   // Fallback legacy behavior (when trade manager disabled)
-  const candles1d = aggregateTo1D(candles4h);
-  const t1d = trend1D(candles1d);
-  const trendReversed =
-    (signal.direction === "LONG" && t1d.direction === "SHORT") ||
-    (signal.direction === "SHORT" && t1d.direction === "LONG");
-
-  if (trendReversed) {
-    const inProfit =
-      signal.direction === "LONG"
-        ? currentPrice > signal.entry
-        : currentPrice < signal.entry;
-    if (!inProfit) {
-      return { shouldHold: false, reason: "trend_reversed_unprofitable" };
-    }
-  }
-
-  const closes4h = candles4h.map((c) => c.close);
-  const stoch = stochRsi(closes4h);
-
-  const stochExtremeOpposite =
-    signal.direction === "LONG" ? stoch.k < 20 : stoch.k > 80;
-
-  if (stochExtremeOpposite) {
-    return { shouldHold: false, reason: "stoch_extreme_opposite_exit" };
-  }
-
   const validity = isSignalStillValid(signal, currentPrice, now);
   return { shouldHold: validity.valid, reason: validity.reason };
 }
 
 // ============================================================
 // filterExpiredSignals
+// Uses Trade Manager as sole exit authority.
+// Does NOT pass empty candles4h to updateTradeManagerState.
 // ============================================================
 
 export function filterExpiredSignals(
   signals: Signal[],
   currentPrices: Record<string, number>,
+  candles4hMap?: Record<string, Candle[]>,
   now?: number
 ): { active: Signal[]; exited: { signal: Signal; reason: string }[] } {
   const active: Signal[] = [];
   const exited: { signal: Signal; reason: string }[] = [];
 
   for (const signal of signals) {
-    // DUPLICATE EXIT BUG FIX: Skip already-exited signals
+    // Skip already-exited signals (duplicate exit prevention)
     if (signal.exited || signal.tradeState === "EXITED") {
       continue;
     }
@@ -1135,8 +1046,10 @@ export function filterExpiredSignals(
       continue;
     }
 
+    // Trade Manager is sole exit authority — pass real candles, never empty array
     if (FEATURES.TRADE_MANAGER_ENABLED) {
-      const managerResult = updateTradeManagerState(signal, price, []);
+      const candles4h = candles4hMap?.[signal.pair] || [];
+      const managerResult = updateTradeManagerState(signal, price, candles4h);
       if (managerResult.shouldExit) {
         exited.push({
           signal,
@@ -1146,6 +1059,7 @@ export function filterExpiredSignals(
       }
     }
 
+    // TTL + missed entry check only
     const check = isSignalStillValid(signal, price, now);
     if (check.valid) active.push(signal);
     else exited.push({ signal, reason: check.reason });
@@ -1175,12 +1089,15 @@ export function checkTradeStatus(
     return "EXPIRED";
   }
 
-  if (signal.direction === "LONG") {
-    if (currentPrice >= signal.target) return "TP_HIT";
-    if (currentPrice <= signal.stop) return "SL_HIT";
-  } else {
-    if (currentPrice <= signal.target) return "TP_HIT";
-    if (currentPrice >= signal.stop) return "SL_HIT";
+  // Legacy: hard SL/TP only for signals NOT managed by trade manager
+  if (!FEATURES.TRADE_MANAGER_ENABLED) {
+    if (signal.direction === "LONG") {
+      if (currentPrice >= signal.target) return "TP_HIT";
+      if (currentPrice <= signal.stop) return "SL_HIT";
+    } else {
+      if (currentPrice <= signal.target) return "TP_HIT";
+      if (currentPrice >= signal.stop) return "SL_HIT";
+    }
   }
 
   return "ACTIVE";
