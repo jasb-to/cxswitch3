@@ -1,7 +1,5 @@
-// lib/strategy.ts — v30.2 "1H Accumulation + 4H HTF Alignment"
+// lib/strategy.ts — v30.3 "Enhanced debug logging for accumulation detection"
 // ============================================================
-// PHILOSOPHY: Find tight accumulation on 1H, confirm direction on 4H
-// Enter earlier, build position before breakout, ride the full wave
 
 import { getPairState, setPairState } from "./state";
 
@@ -44,18 +42,15 @@ export const CURRENT_SIGNAL_VERSION = 30;
 
 // ─── Config ──────────────────────────────────────────────────────────────
 
-// 1H Accumulation detection
-const ACCUM_MIN_CANDLES = 8;        // 8 candles = 8 hours minimum
-const ACCUM_MAX_CANDLES = 30;       // 30 candles = 30 hours max
-const ACCUM_MAX_WIDTH_ATR = 2.0;    // tight zone
-const ACCUM_MIN_TOUCHES = 3;        // 3+ touches for quality
-const ACCUM_VOLUME_DECLINE = 0.7;   // declining volume
+const ACCUM_MIN_CANDLES = 6;        // Relaxed from 8
+const ACCUM_MAX_CANDLES = 40;       // Increased from 30
+const ACCUM_MAX_WIDTH_ATR = 2.5;    // Relaxed from 2.0
+const ACCUM_MIN_TOUCHES = 2;        // Relaxed from 3
+const ACCUM_VOLUME_DECLINE = 0.85;  // Relaxed from 0.7
 
-// Breakout requirements
-const BREAKOUT_MIN_BODY_ATR = 0.3;
+const BREAKOUT_MIN_BODY_ATR = 0.25; // Lowered from 0.3
 const BREAKOUT_CONFIRM_CLOSE = true;
 
-// Confidence
 const STOCH_EXTREME_LOW = 15;
 const STOCH_EXTREME_HIGH = 85;
 const STOCH_CONFIDENCE_PENALTY = 15;
@@ -238,7 +233,7 @@ async function persistState(pair: string, state: Partial<PairState>): Promise<vo
   await setPairState(pair, { ...existing, ...state });
 }
 
-// ─── ACCUMULATION DETECTION (1H candles) ────────────────────────────────
+// ─── ACCUMULATION DETECTION (1H) with detailed debug ────────────────────
 
 interface AccumulationZone {
   top: number;
@@ -252,13 +247,18 @@ interface AccumulationZone {
 
 function detectAccumulation(candles1h: Candle[], debug: string[]): AccumulationZone | null {
   if (candles1h.length < ACCUM_MIN_CANDLES + 14) {
-    debug.push(`ACCUM: insufficient 1H candles (${candles1h.length})`);
+    debug.push(`ACCUM: insufficient 1H candles (${candles1h.length} < ${ACCUM_MIN_CANDLES + 14})`);
     return null;
   }
 
   const atrSeries = atr(candles1h, 14);
   const currentATR = atrSeries[atrSeries.length - 1] || 1;
   const last = candles1h.length - 1;
+
+  debug.push(`ACCUM SCAN: last=${last} ATR=${currentATR.toFixed(4)} minCandles=${ACCUM_MIN_CANDLES} maxCandles=${ACCUM_MAX_CANDLES} maxWidthATR=${ACCUM_MAX_WIDTH_ATR}`);
+
+  let bestZone: AccumulationZone | null = null;
+  let bestScore = -1;
 
   for (let windowSize = ACCUM_MIN_CANDLES; windowSize <= Math.min(ACCUM_MAX_CANDLES, last); windowSize++) {
     const start = last - windowSize;
@@ -271,15 +271,27 @@ function detectAccumulation(candles1h: Candle[], debug: string[]): AccumulationZ
     const width = top - bottom;
     const widthATR = currentATR > 0 ? width / currentATR : 999;
 
-    if (widthATR > ACCUM_MAX_WIDTH_ATR) continue;
+    // Log every 5th window for visibility
+    if (windowSize <= 12 || windowSize % 5 === 0) {
+      debug.push(`ACCUM[${windowSize}]: top=${top.toFixed(2)} bottom=${bottom.toFixed(2)} width=${width.toFixed(4)} widthATR=${widthATR.toFixed(2)}`);
+    }
+
+    if (widthATR > ACCUM_MAX_WIDTH_ATR) {
+      if (windowSize <= 10) debug.push(`ACCUM[${windowSize}]: REJECTED widthATR=${widthATR.toFixed(2)} > ${ACCUM_MAX_WIDTH_ATR}`);
+      continue;
+    }
 
     let touches = 0;
     for (const c of zoneCandles) {
-      const touchTop = Math.abs(c.high - top) / width < 0.15;
-      const touchBottom = Math.abs(c.low - bottom) / width < 0.15;
+      const touchTop = width > 0 && Math.abs(c.high - top) / width < 0.20;  // 20% tolerance
+      const touchBottom = width > 0 && Math.abs(c.low - bottom) / width < 0.20;
       if (touchTop || touchBottom) touches++;
     }
-    if (touches < ACCUM_MIN_TOUCHES) continue;
+
+    if (touches < ACCUM_MIN_TOUCHES) {
+      debug.push(`ACCUM[${windowSize}]: REJECTED touches=${touches} < ${ACCUM_MIN_TOUCHES}`);
+      continue;
+    }
 
     const firstHalf = zoneCandles.slice(0, Math.floor(zoneCandles.length / 2));
     const secondHalf = zoneCandles.slice(Math.floor(zoneCandles.length / 2));
@@ -288,21 +300,31 @@ function detectAccumulation(candles1h: Candle[], debug: string[]): AccumulationZ
     const volRatio = volFirst > 0 ? volSecond / volFirst : 1;
 
     if (volRatio > ACCUM_VOLUME_DECLINE) {
-      debug.push(`ACCUM: volume not declining (${volRatio.toFixed(2)} > ${ACCUM_VOLUME_DECLINE})`);
+      debug.push(`ACCUM[${windowSize}]: REJECTED volRatio=${volRatio.toFixed(2)} > ${ACCUM_VOLUME_DECLINE}`);
       continue;
     }
 
-    debug.push(`ACCUM FOUND (1H): [${start}-${last - 1}] top=${top.toFixed(2)} bottom=${bottom.toFixed(2)} width=${width.toFixed(2)} (${widthATR.toFixed(2)}x ATR) touches=${touches} volRatio=${volRatio.toFixed(2)}`);
+    // Score: tighter = better, more touches = better
+    const score = (100 - widthATR * 20) + touches * 5;
+    debug.push(`ACCUM[${windowSize}]: CANDIDATE top=${top.toFixed(2)} bottom=${bottom.toFixed(2)} width=${width.toFixed(4)} (${widthATR.toFixed(2)}x ATR) touches=${touches} volRatio=${volRatio.toFixed(2)} score=${score.toFixed(1)}`);
 
-    return {
-      top,
-      bottom,
-      startIndex: start,
-      endIndex: last - 1,
-      touches,
-      avgVolume: avg(zoneCandles.map(c => c.volume)),
-      widthATR,
-    };
+    if (score > bestScore) {
+      bestScore = score;
+      bestZone = {
+        top,
+        bottom,
+        startIndex: start,
+        endIndex: last - 1,
+        touches,
+        avgVolume: avg(zoneCandles.map(c => c.volume)),
+        widthATR,
+      };
+    }
+  }
+
+  if (bestZone) {
+    debug.push(`ACCUM SELECTED: [${bestZone.startIndex}-${bestZone.endIndex}] top=${bestZone.top.toFixed(2)} bottom=${bestZone.bottom.toFixed(2)} width=${(bestZone.top - bestZone.bottom).toFixed(4)} (${bestZone.widthATR.toFixed(2)}x ATR) touches=${bestZone.touches}`);
+    return bestZone;
   }
 
   debug.push("ACCUM: no tight accumulation zone found on 1H");
@@ -351,7 +373,7 @@ function checkBreakout(
   }
 
   if (!beyondZone) {
-    debug.push(`BREAKOUT: no breakout — close=${c.close.toFixed(2)} inside zone`);
+    debug.push(`BREAKOUT: no breakout — close=${c.close.toFixed(2)} inside zone ${zone.bottom.toFixed(2)}-${zone.top.toFixed(2)}`);
     return { detected: false, direction: null, candle: null, reason: "no_breakout" };
   }
 
@@ -390,7 +412,6 @@ function buildSignal(
   const atr1h = atr(candles1h, 14);
   const currentATR = atr1h[atr1h.length - 1] || zoneHeight * 0.5;
 
-  // Stop: outside zone + 1H ATR buffer
   const swingStop = direction === "LONG" ? zone.bottom : zone.top;
   const atrStop = direction === "LONG"
     ? entry - currentATR * 1.5
@@ -403,7 +424,6 @@ function buildSignal(
   const risk = Math.abs(entry - stop);
   const target = direction === "LONG" ? entry + risk * 2.5 : entry - risk * 2.5;
 
-  // Trail: EMA21(1H) ± ATR
   const ema21 = ema(closes1h, 21);
   const trail = direction === "LONG"
     ? ema21[ema21.length - 1] - currentATR * 0.5
@@ -411,7 +431,6 @@ function buildSignal(
 
   const rr = risk > 0 ? Math.abs(target - entry) / risk : 0;
 
-  // Confidence
   let confidence = 50;
 
   if (zone.widthATR < 1.5) confidence += 20;
@@ -420,12 +439,10 @@ function buildSignal(
   if (zone.touches >= 5) confidence += 10;
   else if (zone.touches >= 3) confidence += 5;
 
-  // 4H ADX for trend strength
   const adx4h = adx(candles4h);
   if (adx4h > 30) confidence += 10;
   else if (adx4h > 20) confidence += 5;
 
-  // Stoch adjustment (confidence, not veto)
   if (direction === "SHORT" && stochK < STOCH_EXTREME_LOW) {
     confidence -= STOCH_CONFIDENCE_PENALTY;
     debug.push(`CONFIDENCE: Stoch K=${stochK} oversold, -${STOCH_CONFIDENCE_PENALTY}% for SHORT`);
