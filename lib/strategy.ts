@@ -58,16 +58,16 @@ export const CURRENT_SIGNAL_VERSION = 30;
 
 // ─── Config ──────────────────────────────────────────────────────────────
 
-const ACCUM_MIN_CANDLES = 6;
+const ACCUM_MIN_CANDLES = 5;  // Faster detection
 const ACCUM_MAX_CANDLES = 40;
 const ACCUM_MAX_WIDTH_ATR = 2.5;
 const ACCUM_MIN_TOUCHES = 2;
 const ACCUM_VOLUME_DECLINE = 0.92;  // Relaxed from 0.85 → 0.90 → 0.92
 
-const BREAKOUT_MIN_BODY_ATR = 0.25;
+const BREAKOUT_MIN_BODY_ATR = 0.15;  // More aggressive: smaller candles accepted
 const BREAKOUT_CONFIRM_CLOSE = true;
 
-const STOCH_EXTREME_LOW = 15;
+const STOCH_EXTREME_LOW = 10;  // More aggressive SHORTs in oversold
 const STOCH_EXTREME_HIGH = 85;
 const STOCH_CONFIDENCE_PENALTY = 15;
 
@@ -408,6 +408,7 @@ interface BreakoutResult {
 function checkBreakout(
   candles1h: Candle[],
   zone: AccumulationZone,
+  htBias: "BULLISH" | "BEARISH" | "NEUTRAL",
   debug: string[]
 ): BreakoutResult {
   const current = candles1h[candles1h.length - 1];
@@ -447,8 +448,12 @@ function checkBreakout(
 
   debug.push(`BREAKOUT: beyond zone dir=${direction} body=${body.toFixed(2)} (${bodyATR.toFixed(2)}x ATR)`);
 
-  if (bodyATR < BREAKOUT_MIN_BODY_ATR) {
-    debug.push(`BREAKOUT: body too small (${bodyATR.toFixed(2)} < ${BREAKOUT_MIN_BODY_ATR})`);
+  // RETEST MODE: if HTF strongly aligned, accept smaller bodies
+  const isStrongHTF = htBias === "BEARISH" || htBias === "BULLISH";
+  const minBody = isStrongHTF ? BREAKOUT_MIN_BODY_ATR * 0.6 : BREAKOUT_MIN_BODY_ATR;
+
+  if (bodyATR < minBody) {
+    debug.push(`BREAKOUT: body too small (${bodyATR.toFixed(2)} < ${minBody.toFixed(2)}, HTF=${htBias})`);
     return { detected: false, direction: null, candle: null, reason: "body_too_small" };
   }
 
@@ -703,7 +708,7 @@ export async function generateSignal(
   }
 
   // ── STEP 3: CHECK FOR BREAKOUT ON CURRENT 1H CANDLE ───────
-  const breakout = checkBreakout(candles1h, zone, debug);
+  const breakout = checkBreakout(candles1h, zone, htBias, debug);
 
   if (!breakout.detected || !breakout.direction) {
     debug.push(`WATCHING: 1H accumulation detected, waiting for breakout`);
