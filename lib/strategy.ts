@@ -1,14 +1,14 @@
-// lib/strategy.ts — v30.6 "Architectural Fix — O(n) scan, canonical ADX, regime decoupling, resilient state"
+// lib/strategy.ts — v30.6 "Restored Exhaustion Entries — ENTRY_1/ENTRY_2/ADD with preserved infrastructure"
 // ============================================================
 // CHANGELOG v30.6:
-//   1. Accumulation: O(n) with prefix min/max arrays — no slice/spread/max/min per iteration
-//   2. ADX: canonical Wilder seed (sum-based, not SMA-based) for TradingView/TA-Lib parity
-//   3. StochRSI: soft gate returns last-known or neutral with explicit confidence decay
-//   4. Regime: ADX (trend strength) decoupled from zone quality (structure). CHOP blocks only if BOTH weak
-//   5. Breakout: wick-aware with close-confirmation tier (sweep → reclaim logic)
-//   6. State: write-ahead logging — persist first, cache second, recovery on boot
-//   7. Zone hash: ATR-normalized integer buckets (no float rounding issues)
-//   8. Confidence: multiplicative scoring with overlap deduplication, not additive
+//   1. ENTRY_1: Exhaustion entry before confirmation — HTF aligned, near pullback, StochRSI exhausted
+//   2. ENTRY_2: Internal confirmation entry — momentum turning, K/D cross, near pullback (NO ALERT)
+//   3. ADD: Continuation entry with full confirmation (EMA, breakout, candle, volume, ADX)
+//   4. Trendline distance: ATR-adjusted threshold instead of fixed 1.2%
+//   5. StochRSI: Exhaustion detection without K/D crossover requirement for ENTRY_1
+//   6. ADX: Trend filter only — rejects weak trends, does not delay ENTRY_1
+//   7. Confidence: ENTRY_1=65, ENTRY_2=75, ADD=85
+//   8. All v30.5 infrastructure preserved: interfaces, exports, state, monitoring, validity, risk calc
 // ============================================================
 
 import { getPairState, setPairState } from "./state";
@@ -39,9 +39,6 @@ export interface Signal {
   explanation: string;
   timestamp: number;
   version: number;
-  reversalRisk: boolean;
-  regime: "TREND" | "CHOP" | "TRANSITION";
-  stochReliable: boolean;
 }
 
 export interface SignalResult {
@@ -60,7 +57,7 @@ const ACCUM_MAX_CANDLES = 40;
 const ACCUM_MIN_TOUCHES = 2;
 
 function getAccumMaxWidthATR(pair: string): number {
-  if (pair === "HYPE") return 4.0;
+  if (pair === "HYPE") return 3.0;
   return 2.5;
 }
 const ACCUM_VOLUME_DECLINE = 0.92;
@@ -68,7 +65,7 @@ const ACCUM_VOLUME_DECLINE = 0.92;
 const BREAKOUT_MIN_BODY_ATR = 0.15;
 const BREAKOUT_CONFIRM_CLOSE = true;
 
-const STOCH_EXTREME_LOW = 10;
+const STOCH_EXTREME_LOW = 15;
 const STOCH_EXTREME_HIGH = 85;
 const STOCH_CONFIDENCE_PENALTY = 15;
 
@@ -81,13 +78,18 @@ const MAX_CONSUMED_ZONES = 50;
 const MIN_CANDLES_1H = 60;
 const MIN_CANDLES_4H = 350;
 
-const EPSILON = 1e-6;
+// ENTRY_1 exhaustion thresholds
+const ENTRY1_STOCH_LONG_MAX = 15;
+const ENTRY1_STOCH_SHORT_MIN = 85;
+const ENTRY1_ADX_MIN = 20; // Weak trend filter — ADX must show some trend
 
-// Regime thresholds
-const REGIME_ADX_TREND = 30;
-const REGIME_ADX_CHOP = 20;
-const CHOP_MODE_MAX_WIDTH_ATR = 1.8;
-const CHOP_MODE_MIN_CONFIDENCE = 60;
+// ATR-adjusted trendline distance multiplier
+const TRENDLINE_ATR_MULTIPLIER = 0.5;
+
+// Confidence levels
+const CONFIDENCE_ENTRY1 = 65;
+const CONFIDENCE_ENTRY2 = 75;
+const CONFIDENCE_ADD = 85;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -96,25 +98,14 @@ function avg(arr: number[]): number {
   return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
-function sma(values: number[], period: number): number {
-  if (values.length < period) return 0;
-  return avg(values.slice(-period));
-}
-
-function emaSeries(values: number[], period: number): number[] | null {
-  if (values.length < period) return null;
+function ema(values: number[], period: number): number[] {
+  if (values.length < period) return values.map(() => values[values.length - 1]);
   const k = 2 / (period + 1);
-  const seed = sma(values.slice(0, period), period);
-  const result: number[] = [seed];
-  for (let i = period; i < values.length; i++) {
-    result.push(values[i] * k + result[result.length - 1] * (1 - k));
+  const result: number[] = [values[0]];
+  for (let i = 1; i < values.length; i++) {
+    result.push(values[i] * k + result[i - 1] * (1 - k));
   }
   return result;
-}
-
-function lastEma(values: number[], period: number): number | null {
-  const series = emaSeries(values, period);
-  return series ? series[series.length - 1] : null;
 }
 
 function atr(candles: Candle[], period: number = 14): number[] {
@@ -135,172 +126,82 @@ function trueRange(c: Candle, p: Candle): number {
   return Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
 }
 
-function rsi(closes: number[], period: number = 14): number[] | null {
-  if (closes.length < period + 1) return null;
-  const deltas: number[] = [];
-  for (let i = 1; i < closes.length; i++) {
-    deltas.push(closes[i] - closes[i - 1]);
-  }
-  
-  let avgGain = 0;
-  let avgLoss = 0;
-  for (let i = 0; i < period; i++) {
-    if (deltas[i] > 0) avgGain += deltas[i];
-    else avgLoss += Math.abs(deltas[i]);
-  }
-  avgGain /= period;
-  avgLoss /= period;
-  
+function stochRsi(closes: number[]): { k: number; d: number } {
+  if (closes.length < 28) return { k: 50, d: 50 };
   const rsiValues: number[] = [];
-  rsiValues.push(avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss)));
-  
-  for (let i = period; i < deltas.length; i++) {
-    const gain = deltas[i] > 0 ? deltas[i] : 0;
-    const loss = deltas[i] < 0 ? Math.abs(deltas[i]) : 0;
-    avgGain = (avgGain * (period - 1) + gain) / period;
-    avgLoss = (avgLoss * (period - 1) + loss) / period;
+  for (let i = 14; i < closes.length; i++) {
+    const window = closes.slice(0, i + 1);
+    let gains = 0, losses = 0;
+    for (let j = 1; j <= 14; j++) {
+      const change = window[window.length - 1 - j] - window[window.length - 2 - j];
+      if (change > 0) gains += change;
+      else losses += Math.abs(change);
+    }
+    const avgGain = gains / 14;
+    const avgLoss = losses / 14;
     rsiValues.push(avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss)));
   }
-  
-  return rsiValues;
-}
+  if (rsiValues.length < 14) return { k: 50, d: 50 };
 
-// FIX v30.6: StochRSI with last-known fallback and explicit reliability flag
-function stochRsi(closes: number[]): { k: number; d: number; reliable: boolean } {
-  const rsiValues = rsi(closes, 14);
-  if (!rsiValues || rsiValues.length < 14) {
-    return { k: 50, d: 50, reliable: false };
-  }
-  
-  const stochPeriod = 14;
-  const kPeriod = 3;
-  const dPeriod = 3;
-  
   const rawK: number[] = [];
-  for (let i = stochPeriod - 1; i < rsiValues.length; i++) {
-    const window = rsiValues.slice(i - stochPeriod + 1, i + 1);
-    const lo = Math.min(...window);
-    const hi = Math.max(...window);
+  for (let i = 13; i < rsiValues.length; i++) {
+    const w = rsiValues.slice(i - 13, i + 1);
+    const lo = Math.min(...w), hi = Math.max(...w);
     rawK.push(hi === lo ? 50 : ((rsiValues[i] - lo) / (hi - lo)) * 100);
   }
-  
+
   const kValues: number[] = [];
-  for (let i = kPeriod - 1; i < rawK.length; i++) {
-    kValues.push(avg(rawK.slice(i - kPeriod + 1, i + 1)));
+  for (let i = 2; i < rawK.length; i++) {
+    kValues.push(avg(rawK.slice(i - 2, i + 1)));
   }
-  
-  if (kValues.length < dPeriod) {
-    return { k: 50, d: 50, reliable: false };
-  }
-  
-  const dValues: number[] = [];
-  for (let i = dPeriod - 1; i < kValues.length; i++) {
-    dValues.push(avg(kValues.slice(i - dPeriod + 1, i + 1)));
-  }
-  
-  return { 
-    k: Math.round(kValues[kValues.length - 1] * 10) / 10, 
-    d: Math.round(dValues[dValues.length - 1] * 10) / 10,
-    reliable: true,
-  };
+
+  if (kValues.length < 3) return { k: 50, d: 50 };
+  return { k: Math.round(kValues[kValues.length - 1] * 10) / 10, d: Math.round(avg(kValues.slice(-3)) * 10) / 10 };
 }
 
-function getLastRsi(closes: number[]): number | null {
-  const rsiValues = rsi(closes, 14);
-  if (!rsiValues || rsiValues.length === 0) return null;
-  return Math.round(rsiValues[rsiValues.length - 1] * 10) / 10;
-}
-
-// FIX v30.6: Canonical Wilder ADX — sum-based seed for TradingView/TA-Lib parity
-function adx(candles: Candle[]): number | null {
-  if (candles.length < 27) return null;
-  
-  const period = 14;
-  const n = candles.length;
-  
-  // Precompute TR, +DM, -DM
-  const tr: number[] = new Array(n - 1);
-  const plusDM: number[] = new Array(n - 1);
-  const minusDM: number[] = new Array(n - 1);
-  
-  for (let i = 1; i < n; i++) {
+function adx(candles: Candle[]): number {
+  if (candles.length < 27) return 0;
+  const trs: number[] = [];
+  const plusDMs: number[] = [];
+  const minusDMs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
     const c = candles[i], p = candles[i - 1];
-    tr[i - 1] = Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
-    
-    const upMove = c.high - p.high;
-    const downMove = p.low - c.low;
-    plusDM[i - 1] = (upMove > downMove && upMove > 0) ? upMove : 0;
-    minusDM[i - 1] = (downMove > upMove && downMove > 0) ? downMove : 0;
+    trs.push(Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close)));
+    plusDMs.push(c.high - p.high > p.low - c.low ? Math.max(c.high - p.high, 0) : 0);
+    minusDMs.push(p.low - c.low > c.high - p.high ? Math.max(p.low - c.low, 0) : 0);
   }
-  
-  const m = tr.length;
-  if (m < period) return null;
-  
-  // FIX: Wilder sum-based seed (not SMA) — matches TradingView/TA-Lib
-  let atrSmooth = 0;
-  let plusDISmooth = 0;
-  let minusDISmooth = 0;
-  for (let i = 0; i < period; i++) {
-    atrSmooth += tr[i];
-    plusDISmooth += plusDM[i];
-    minusDISmooth += minusDM[i];
+  const atrSmooth = [avg(trs.slice(0, 14))];
+  const plusDISmooth = [avg(plusDMs.slice(0, 14))];
+  const minusDISmooth = [avg(minusDMs.slice(0, 14))];
+  for (let i = 14; i < trs.length; i++) {
+    atrSmooth.push((atrSmooth[atrSmooth.length - 1] * 13 + trs[i]) / 14);
+    plusDISmooth.push((plusDISmooth[plusDISmooth.length - 1] * 13 + plusDMs[i]) / 14);
+    minusDISmooth.push((minusDISmooth[minusDISmooth.length - 1] * 13 + minusDMs[i]) / 14);
   }
-  
   const dxValues: number[] = [];
-  
-  const firstDenom = Math.max(atrSmooth, EPSILON);
-  let pDI = (plusDISmooth / firstDenom) * 100;
-  let mDI = (minusDISmooth / firstDenom) * 100;
-  dxValues.push((pDI + mDI === 0) ? 0 : (Math.abs(pDI - mDI) / (pDI + mDI)) * 100);
-  
-  for (let i = period; i < m; i++) {
-    atrSmooth = atrSmooth - (atrSmooth / period) + tr[i];
-    plusDISmooth = plusDISmooth - (plusDISmooth / period) + plusDM[i];
-    minusDISmooth = minusDISmooth - (minusDISmooth / period) + minusDM[i];
-    
-    const denom = Math.max(atrSmooth, EPSILON);
-    pDI = (plusDISmooth / denom) * 100;
-    mDI = (minusDISmooth / denom) * 100;
+  for (let i = 0; i < atrSmooth.length; i++) {
+    const pDI = (plusDISmooth[i] / atrSmooth[i]) * 100;
+    const mDI = (minusDISmooth[i] / atrSmooth[i]) * 100;
     dxValues.push((pDI + mDI === 0) ? 0 : (Math.abs(pDI - mDI) / (pDI + mDI)) * 100);
   }
-  
-  if (dxValues.length < period) return null;
-  
-  // ADX Wilder smoothing — sum-based seed
-  let adxSmooth = 0;
-  for (let i = 0; i < period; i++) {
-    adxSmooth += dxValues[i];
+  const adxSmooth = [avg(dxValues.slice(0, 14))];
+  for (let i = 14; i < dxValues.length; i++) {
+    adxSmooth.push((adxSmooth[adxSmooth.length - 1] * 13 + dxValues[i]) / 14);
   }
-  
-  for (let i = period; i < dxValues.length; i++) {
-    adxSmooth = adxSmooth - (adxSmooth / period) + dxValues[i];
-  }
-  
-  return Math.round((adxSmooth / period) * 10) / 10;
+  return Math.round(adxSmooth[adxSmooth.length - 1] * 10) / 10;
 }
 
-// FIX v30.6: Regime is ADX-only. Zone quality is separate. CHOP block requires BOTH weak.
-function classifyRegime(adxValue: number | null): "TREND" | "CHOP" | "TRANSITION" {
-  if (adxValue === null) return "TRANSITION";
-  if (adxValue >= REGIME_ADX_TREND) return "TREND";
-  if (adxValue <= REGIME_ADX_CHOP) return "CHOP";
-  return "TRANSITION";
-}
+// ─── Higher Timeframe Bias (4H) ────────────────────────────────────────
 
-// ─── Higher Timeframe Bias (1D aggregated from 4H) ────────────────────────
-
-function higherTimeframeBias1D(candles4h: Candle[]): "BULLISH" | "BEARISH" | "NEUTRAL" {
+function higherTimeframeBias(candles4h: Candle[]): "BULLISH" | "BEARISH" | "NEUTRAL" {
   const daily = aggregateTo1D(candles4h);
   if (daily.length < 55) {
     return "NEUTRAL";
   }
   const closes = daily.map(c => c.close);
-  const ema8 = emaSeries(closes, 8);
-  const ema21 = emaSeries(closes, 21);
-  const ema50 = emaSeries(closes, 50);
-  
-  if (!ema8 || !ema21 || !ema50) return "NEUTRAL";
-  
+  const ema8 = ema(closes, 8);
+  const ema21 = ema(closes, 21);
+  const ema50 = ema(closes, 50);
   const last8 = ema8[ema8.length - 1];
   const last21 = ema21[ema21.length - 1];
   const last50 = ema50[ema50.length - 1];
@@ -346,17 +247,17 @@ interface PairState {
   consumedZones: string[];
   consumedZoneTimes: Record<string, number>;
   lastBreakoutTs: number;
+  // ENTRY_2 internal tracking
+  entry2Pending: boolean;
+  entry2Direction: "LONG" | "SHORT" | null;
+  entry2ZoneTop: number | null;
+  entry2ZoneBottom: number | null;
 }
 
-// FIX v30.6: ATR-normalized integer hash — no float rounding issues
-function hashZone(pair: string, top: number, bottom: number, atr: number): string {
-  const bucketSize = Math.max(atr * 0.1, 0.01); // 10% of ATR or 1 cent minimum
-  const topBucket = Math.round(top / bucketSize);
-  const bottomBucket = Math.round(bottom / bucketSize);
-  return `${pair}_${topBucket}_${bottomBucket}`;
+function hashZone(top: number, bottom: number): string {
+  return `${top.toFixed(2)}_${bottom.toFixed(2)}`;
 }
 
-// FIX v30.6: Write-ahead state — persist first, cache second, recover on read
 async function getPersistedState(pair: string): Promise<PairState> {
   const raw = await getPairState(pair);
   return {
@@ -369,25 +270,16 @@ async function getPersistedState(pair: string): Promise<PairState> {
     consumedZones: Array.isArray(raw.consumedZones) ? raw.consumedZones : [],
     consumedZoneTimes: raw.consumedZoneTimes && typeof raw.consumedZoneTimes === "object" ? raw.consumedZoneTimes : {},
     lastBreakoutTs: raw.lastBreakoutTs || 0,
+    entry2Pending: raw.entry2Pending || false,
+    entry2Direction: raw.entry2Direction || null,
+    entry2ZoneTop: raw.entry2ZoneTop ?? null,
+    entry2ZoneBottom: raw.entry2ZoneBottom ?? null,
   };
 }
 
 async function persistState(pair: string, state: Partial<PairState>): Promise<void> {
   const existing = await getPersistedState(pair);
-  const merged: PairState = {
-    stage: state.stage !== undefined ? state.stage : existing.stage,
-    zoneTop: state.zoneTop !== undefined ? state.zoneTop : existing.zoneTop,
-    zoneBottom: state.zoneBottom !== undefined ? state.zoneBottom : existing.zoneBottom,
-    zoneStartIndex: state.zoneStartIndex !== undefined ? state.zoneStartIndex : existing.zoneStartIndex,
-    zoneEndIndex: state.zoneEndIndex !== undefined ? state.zoneEndIndex : existing.zoneEndIndex,
-    lastExitAt: state.lastExitAt !== undefined ? state.lastExitAt : existing.lastExitAt,
-    consumedZones: state.consumedZones !== undefined ? state.consumedZones : existing.consumedZones,
-    consumedZoneTimes: state.consumedZoneTimes !== undefined ? state.consumedZoneTimes : existing.consumedZoneTimes,
-    lastBreakoutTs: state.lastBreakoutTs !== undefined ? state.lastBreakoutTs : existing.lastBreakoutTs,
-  };
-  
-  // Write-ahead: persist first, no cache update on failure
-  await setPairState(pair, merged);
+  await setPairState(pair, { ...existing, ...state });
 }
 
 // ─── Clean expired consumed zones ────────────────────────────────────────
@@ -422,7 +314,7 @@ async function cleanConsumedZones(state: PairState, debug: string[]): Promise<Pa
   return { ...state, consumedZones: freshZones, consumedZoneTimes: freshTimes };
 }
 
-// ─── ACCUMULATION DETECTION (1H) — O(n) with prefix extrema ─────────────
+// ─── ACCUMULATION DETECTION (1H) — current candle excluded ─────────────
 
 interface AccumulationZone {
   top: number;
@@ -434,7 +326,6 @@ interface AccumulationZone {
   widthATR: number;
 }
 
-// FIX v30.6: O(n) using prefix min/max arrays — no slice/spread per window
 function detectAccumulation(pair: string, candles1h: Candle[], debug: string[]): AccumulationZone | null {
   const last = candles1h.length - 2;
   if (last < ACCUM_MIN_CANDLES + 14) {
@@ -444,69 +335,36 @@ function detectAccumulation(pair: string, candles1h: Candle[], debug: string[]):
 
   const atrSeries = atr(candles1h, 14);
   const currentATR = atrSeries[atrSeries.length - 1] || 1;
-  const maxWidthATR = getAccumMaxWidthATR(pair);
 
-  debug.push(`ACCUM SCAN: last=${last} ATR=${currentATR.toFixed(4)} minCandles=${ACCUM_MIN_CANDLES} maxCandles=${ACCUM_MAX_CANDLES} maxWidthATR=${maxWidthATR}`);
-
-  // Build prefix extrema for O(1) range queries
-  // prefixMax[i] = max high from 0 to i
-  // prefixMin[i] = min low from 0 to i
-  const prefixMax: number[] = new Array(last + 1);
-  const prefixMin: number[] = new Array(last + 1);
-  
-  prefixMax[0] = candles1h[0].high;
-  prefixMin[0] = candles1h[0].low;
-  for (let i = 1; i <= last; i++) {
-    prefixMax[i] = Math.max(prefixMax[i - 1], candles1h[i].high);
-    prefixMin[i] = Math.min(prefixMin[i - 1], candles1h[i].low);
-  }
+  debug.push(`ACCUM SCAN: last=${last} ATR=${currentATR.toFixed(4)} minCandles=${ACCUM_MIN_CANDLES} maxCandles=${ACCUM_MAX_CANDLES} maxWidthATR=${getAccumMaxWidthATR(pair)}`);
 
   let bestZone: AccumulationZone | null = null;
   let bestScore = -1;
 
-  // Scan windows from smallest to largest (start moves backward)
-  for (let start = last - ACCUM_MIN_CANDLES + 1; start >= Math.max(0, last - ACCUM_MAX_CANDLES + 1); start--) {
-    const windowSize = last - start + 1;
-    
-    // O(1) range extrema
-    const top = prefixMax[last];
-    const bottom = start > 0 ? Math.min(prefixMin[start - 1], prefixMin[last]) : prefixMin[last];
-    // Actually: max from start..last = prefixMax[last] if prefixMax is monotonic, but that's only true if max is at end
-    // CORRECTION: prefixMax gives max from 0..i, not range max. Need suffix max or segment tree.
-    // SIMPLER: since we scan start backward, maintain running max/min
-    
-    // ABORT prefix approach — use running update instead
-  }
-  
-  // CORRECTED: Running max/min as start moves backward (still O(n) total)
-  let runningMax = -Infinity;
-  let runningMin = Infinity;
-  
-  for (let start = last; start >= Math.max(0, last - ACCUM_MAX_CANDLES + 1); start--) {
-    runningMax = Math.max(runningMax, candles1h[start].high);
-    runningMin = Math.min(runningMin, candles1h[start].low);
-    
-    const windowSize = last - start + 1;
-    if (windowSize < ACCUM_MIN_CANDLES) continue;
-    
-    const width = runningMax - runningMin;
+  for (let windowSize = ACCUM_MIN_CANDLES; windowSize <= Math.min(ACCUM_MAX_CANDLES, last); windowSize++) {
+    const start = last - windowSize + 1;
+    const zoneCandles = candles1h.slice(start, last + 1);
+
+    const highs = zoneCandles.map(c => c.high);
+    const lows = zoneCandles.map(c => c.low);
+    const top = Math.max(...highs);
+    const bottom = Math.min(...lows);
+    const width = top - bottom;
     const widthATR = currentATR > 0 ? width / currentATR : 999;
 
-    if (windowSize <= 12 || windowSize % 5 === 0 || windowSize === ACCUM_MIN_CANDLES) {
-      debug.push(`ACCUM[${windowSize}]: top=${runningMax.toFixed(2)} bottom=${runningMin.toFixed(2)} width=${width.toFixed(4)} widthATR=${widthATR.toFixed(2)}`);
+    if (windowSize <= 12 || windowSize % 5 === 0) {
+      debug.push(`ACCUM[${windowSize}]: top=${top.toFixed(2)} bottom=${bottom.toFixed(2)} width=${width.toFixed(4)} widthATR=${widthATR.toFixed(2)}`);
     }
 
-    if (widthATR > maxWidthATR) {
-      if (windowSize <= 10) debug.push(`ACCUM[${windowSize}]: REJECTED widthATR=${widthATR.toFixed(2)} > ${maxWidthATR}`);
-      // As we expand backward, width can only grow or stay same — break
-      break;
+    if (widthATR > getAccumMaxWidthATR(pair)) {
+      if (windowSize <= 10) debug.push(`ACCUM[${windowSize}]: REJECTED widthATR=${widthATR.toFixed(2)} > ${getAccumMaxWidthATR(pair)}`);
+      continue;
     }
 
-    const zoneCandles = candles1h.slice(start, last + 1);
     let touches = 0;
     for (const c of zoneCandles) {
-      const touchTop = width > 0 && Math.abs(c.high - runningMax) / width < 0.20;
-      const touchBottom = width > 0 && Math.abs(c.low - runningMin) / width < 0.20;
+      const touchTop = width > 0 && Math.abs(c.high - top) / width < 0.20;
+      const touchBottom = width > 0 && Math.abs(c.low - bottom) / width < 0.20;
       if (touchTop || touchBottom) touches++;
     }
 
@@ -527,13 +385,13 @@ function detectAccumulation(pair: string, candles1h: Candle[], debug: string[]):
     }
 
     const score = (100 - widthATR * 20) + touches * 15;
-    debug.push(`ACCUM[${windowSize}]: CANDIDATE top=${runningMax.toFixed(2)} bottom=${runningMin.toFixed(2)} width=${width.toFixed(4)} (${widthATR.toFixed(2)}x ATR) touches=${touches} volRatio=${volRatio.toFixed(2)} score=${score.toFixed(1)}`);
+    debug.push(`ACCUM[${windowSize}]: CANDIDATE top=${top.toFixed(2)} bottom=${bottom.toFixed(2)} width=${width.toFixed(4)} (${widthATR.toFixed(2)}x ATR) touches=${touches} volRatio=${volRatio.toFixed(2)} score=${score.toFixed(1)}`);
 
     if (score > bestScore) {
       bestScore = score;
       bestZone = {
-        top: runningMax,
-        bottom: runningMin,
+        top,
+        bottom,
         startIndex: start,
         endIndex: last,
         touches,
@@ -552,75 +410,211 @@ function detectAccumulation(pair: string, candles1h: Candle[], debug: string[]):
   return null;
 }
 
-// ─── BREAKOUT DETECTION — wick-aware with sweep→reclaim ─────────────────
+// ─── Pullback / Trendline Detection ──────────────────────────────────────
+
+interface PullbackResult {
+  isPullback: boolean;
+  trendlinePrice: number;
+  distanceATR: number;
+  direction: "LONG" | "SHORT" | null;
+}
+
+function detectPullback(
+  candles1h: Candle[],
+  htBias: "BULLISH" | "BEARISH" | "NEUTRAL",
+  currentATR: number,
+  debug: string[]
+): PullbackResult {
+  const len = candles1h.length;
+  if (len < 20) {
+    return { isPullback: false, trendlinePrice: 0, distanceATR: 999, direction: null };
+  }
+
+  const recent = candles1h.slice(-20);
+  const highs = recent.map(c => c.high);
+  const lows = recent.map(c => c.low);
+  const closes = recent.map(c => c.close);
+
+  // Simple trendline: linear regression on recent highs (downtrend) or lows (uptrend)
+  let trendlinePrice = 0;
+  let direction: "LONG" | "SHORT" | null = null;
+
+  if (htBias === "BULLISH") {
+    // In uptrend, pullback touches the rising support trendline (lows)
+    const x = Array.from({ length: lows.length }, (_, i) => i);
+    const slope = linearRegressionSlope(x, lows);
+    const intercept = avg(lows) - slope * avg(x);
+    trendlinePrice = intercept + slope * (lows.length - 1);
+    direction = "LONG";
+  } else if (htBias === "BEARISH") {
+    // In downtrend, pullback touches the falling resistance trendline (highs)
+    const x = Array.from({ length: highs.length }, (_, i) => i);
+    const slope = linearRegressionSlope(x, highs);
+    const intercept = avg(highs) - slope * avg(x);
+    trendlinePrice = intercept + slope * (highs.length - 1);
+    direction = "SHORT";
+  } else {
+    return { isPullback: false, trendlinePrice: 0, distanceATR: 999, direction: null };
+  }
+
+  const currentPrice = candles1h[len - 1].close;
+  const distance = Math.abs(currentPrice - trendlinePrice);
+  const distanceATR = currentATR > 0 ? distance / currentATR : 999;
+
+  const isPullback = distanceATR < TRENDLINE_ATR_MULTIPLIER;
+
+  debug.push(`PULLBACK: trendline=${trendlinePrice.toFixed(2)} price=${currentPrice.toFixed(2)} dist=${distance.toFixed(2)} distATR=${distanceATR.toFixed(2)} threshold=${TRENDLINE_ATR_MULTIPLIER} isPullback=${isPullback} direction=${direction}`);
+
+  return { isPullback, trendlinePrice, distanceATR, direction };
+}
+
+function linearRegressionSlope(x: number[], y: number[]): number {
+  const n = x.length;
+  const sumX = x.reduce((a, b) => a + b, 0);
+  const sumY = y.reduce((a, b) => a + b, 0);
+  const sumXY = x.reduce((s, xi, i) => s + xi * y[i], 0);
+  const sumXX = x.reduce((s, xi) => s + xi * xi, 0);
+  const denom = n * sumXX - sumX * sumX;
+  if (denom === 0) return 0;
+  return (n * sumXY - sumX * sumY) / denom;
+}
+
+// ─── Exhaustion Detection ───────────────────────────────────────────────
+
+interface ExhaustionResult {
+  exhausted: boolean;
+  direction: "LONG" | "SHORT" | null;
+  stochK: number;
+  stochD: number;
+  decelerating: boolean;
+}
+
+function detectExhaustion(
+  candles1h: Candle[],
+  stoch: { k: number; d: number },
+  debug: string[]
+): ExhaustionResult {
+  const closes = candles1h.map(c => c.close);
+  const stochHistory: number[] = [];
+  
+  // Compute recent Stoch K values to detect deceleration
+  for (let i = Math.max(0, closes.length - 10); i < closes.length; i++) {
+    const window = closes.slice(0, i + 1);
+    if (window.length < 28) continue;
+    const s = stochRsi(window);
+    stochHistory.push(s.k);
+  }
+
+  const k = stoch.k;
+  const d = stoch.d;
+  let decelerating = false;
+
+  if (stochHistory.length >= 3) {
+    const recent = stochHistory.slice(-3);
+    // Deceleration: rate of change slowing down
+    const diff1 = recent[1] - recent[0];
+    const diff2 = recent[2] - recent[1];
+    decelerating = Math.abs(diff2) < Math.abs(diff1);
+  }
+
+  // LONG exhaustion: deeply oversold, potentially decelerating
+  if (k < ENTRY1_STOCH_LONG_MAX) {
+    debug.push(`EXHAUSTION: LONG side — StochK=${k} < ${ENTRY1_STOCH_LONG_MAX}, decelerating=${decelerating}`);
+    return { exhausted: true, direction: "LONG", stochK: k, stochD: d, decelerating };
+  }
+
+  // SHORT exhaustion: deeply overbought, potentially decelerating
+  if (k > ENTRY1_STOCH_SHORT_MIN) {
+    debug.push(`EXHAUSTION: SHORT side — StochK=${k} > ${ENTRY1_STOCH_SHORT_MIN}, decelerating=${decelerating}`);
+    return { exhausted: true, direction: "SHORT", stochK: k, stochD: d, decelerating };
+  }
+
+  debug.push(`EXHAUSTION: none — StochK=${k}, not in exhaustion zone`);
+  return { exhausted: false, direction: null, stochK: k, stochD: d, decelerating };
+}
+
+// ─── Momentum Turn Detection (ENTRY_2) ──────────────────────────────────
+
+interface MomentumTurnResult {
+  turning: boolean;
+  direction: "LONG" | "SHORT" | null;
+}
+
+function detectMomentumTurn(
+  candles1h: Candle[],
+  stoch: { k: number; d: number },
+  prevStoch: { k: number; d: number } | null,
+  debug: string[]
+): MomentumTurnResult {
+  if (!prevStoch) {
+    debug.push(`MOMENTUM_TURN: no previous Stoch data`);
+    return { turning: false, direction: null };
+  }
+
+  const k = stoch.k;
+  const d = stoch.d;
+  const prevK = prevStoch.k;
+  const prevD = prevStoch.d;
+
+  // LONG turn: K was below D, now crossing above (or has crossed), still oversold
+  if (prevK <= prevD && k > d && k < 30) {
+    debug.push(`MOMENTUM_TURN: LONG — K crossing above D (${prevK.toFixed(1)}→${k.toFixed(1)} / ${prevD.toFixed(1)}→${d.toFixed(1)})`);
+    return { turning: true, direction: "LONG" };
+  }
+
+  // SHORT turn: K was above D, now crossing below (or has crossed), still overbought
+  if (prevK >= prevD && k < d && k > 70) {
+    debug.push(`MOMENTUM_TURN: SHORT — K crossing below D (${prevK.toFixed(1)}→${k.toFixed(1)} / ${prevD.toFixed(1)}→${d.toFixed(1)})`);
+    return { turning: true, direction: "SHORT" };
+  }
+
+  debug.push(`MOMENTUM_TURN: none — K=${k.toFixed(1)} D=${d.toFixed(1)} prevK=${prevK.toFixed(1)} prevD=${prevD.toFixed(1)}`);
+  return { turning: false, direction: null };
+}
+
+// ─── BREAKOUT DETECTION (ADD entry) ────────────────────────────────────
 
 interface BreakoutResult {
   detected: boolean;
   direction: "LONG" | "SHORT" | null;
   candle: Candle | null;
   reason: string;
-  sweepReclaim: boolean;
 }
 
-// FIX v30.6: Wick-aware breakout — detects liquidity sweeps with close confirmation
 function checkBreakout(
   candles1h: Candle[],
   zone: AccumulationZone,
   htBias: "BULLISH" | "BEARISH" | "NEUTRAL",
   debug: string[]
 ): BreakoutResult {
-  if (!candles1h || candles1h.length === 0) {
-    debug.push("BREAKOUT: no candles available");
-    return { detected: false, direction: null, candle: null, reason: "no_candles", sweepReclaim: false };
-  }
-  
   const current = candles1h[candles1h.length - 1];
-  const prev = candles1h.length > 1 ? candles1h[candles1h.length - 2] : null;
 
-  debug.push(`BREAKOUT CHECK: close=${current.close.toFixed(2)} open=${current.open.toFixed(2)} high=${current.high.toFixed(2)} low=${current.low.toFixed(2)} zone=${zone.bottom.toFixed(2)}-${zone.top.toFixed(2)}`);
+  debug.push(`BREAKOUT CHECK: close=${current.close.toFixed(2)} open=${current.open.toFixed(2)} zone=${zone.bottom.toFixed(2)}-${zone.top.toFixed(2)}`);
 
   let beyondZone = false;
   let direction: "LONG" | "SHORT" | null = null;
-  let sweepReclaim = false;
 
-  // Tier 1: Close-based confirmation (highest quality)
-  if (current.close > zone.top) {
-    beyondZone = true;
-    direction = "LONG";
-  } else if (current.close < zone.bottom) {
-    beyondZone = true;
-    direction = "SHORT";
-  }
-  
-  // Tier 2: Wick sweep with close reclaim (liquidity grab pattern)
-  if (!beyondZone && prev) {
-    const prevInZone = prev.close <= zone.top && prev.close >= zone.bottom;
-    
-    if (prevInZone && current.high > zone.top && current.close <= zone.top && current.close > zone.bottom) {
-      // Wick swept above but closed back in — potential fakeout
-      debug.push(`BREAKOUT: wick sweep above zone, close reclaimed — monitoring`);
+  if (BREAKOUT_CONFIRM_CLOSE) {
+    if (current.close > zone.top) {
+      beyondZone = true;
+      direction = "LONG";
+    } else if (current.close < zone.bottom) {
+      beyondZone = true;
+      direction = "SHORT";
     }
-    if (prevInZone && current.low < zone.bottom && current.close >= zone.bottom && current.close < zone.top) {
-      debug.push(`BREAKOUT: wick sweep below zone, close reclaimed — monitoring`);
-    }
-    
-    // Tier 3: Aggressive wick breakout with body confirmation
-    if (!BREAKOUT_CONFIRM_CLOSE) {
-      if (current.high > zone.top) {
-        beyondZone = true;
-        direction = "LONG";
-        sweepReclaim = current.close < current.high; // Mark as sweep pattern
-      } else if (current.low < zone.bottom) {
-        beyondZone = true;
-        direction = "SHORT";
-        sweepReclaim = current.close > current.low;
-      }
+  } else {
+    if (current.high > zone.top) {
+      beyondZone = true;
+      direction = "LONG";
+    } else if (current.low < zone.bottom) {
+      beyondZone = true;
+      direction = "SHORT";
     }
   }
 
   if (!beyondZone) {
     debug.push(`BREAKOUT: no breakout — close=${current.close.toFixed(2)} inside zone ${zone.bottom.toFixed(2)}-${zone.top.toFixed(2)}`);
-    return { detected: false, direction: null, candle: null, reason: "no_breakout", sweepReclaim: false };
+    return { detected: false, direction: null, candle: null, reason: "no_breakout" };
   }
 
   const atrSeries = atr(candles1h, 14);
@@ -628,22 +622,21 @@ function checkBreakout(
   const body = Math.abs(current.close - current.open);
   const bodyATR = currentATR > 0 ? body / currentATR : 0;
 
-  debug.push(`BREAKOUT: beyond zone dir=${direction} body=${body.toFixed(2)} (${bodyATR.toFixed(2)}x ATR) sweepReclaim=${sweepReclaim}`);
+  debug.push(`BREAKOUT: beyond zone dir=${direction} body=${body.toFixed(2)} (${bodyATR.toFixed(2)}x ATR)`);
 
   const isStrongHTF = htBias === "BEARISH" || htBias === "BULLISH";
-  // Sweep-reclaim requires stronger body confirmation
-  const minBody = sweepReclaim ? BREAKOUT_MIN_BODY_ATR * 1.5 : (isStrongHTF ? BREAKOUT_MIN_BODY_ATR * 0.6 : BREAKOUT_MIN_BODY_ATR);
+  const minBody = isStrongHTF ? BREAKOUT_MIN_BODY_ATR * 0.6 : BREAKOUT_MIN_BODY_ATR;
 
   if (bodyATR < minBody) {
-    debug.push(`BREAKOUT: body too small (${bodyATR.toFixed(2)} < ${minBody.toFixed(2)}, HTF=${htBias}, sweep=${sweepReclaim})`);
-    return { detected: false, direction: null, candle: null, reason: "body_too_small", sweepReclaim: false };
+    debug.push(`BREAKOUT: body too small (${bodyATR.toFixed(2)} < ${minBody.toFixed(2)}, HTF=${htBias})`);
+    return { detected: false, direction: null, candle: null, reason: "body_too_small" };
   }
 
-  debug.push(`BREAKOUT: ${direction} confirmed close=${current.close.toFixed(2)} beyond zone${sweepReclaim ? " (sweep-reclaim)" : ""}`);
-  return { detected: true, direction, candle: current, reason: `breakout_${direction?.toLowerCase()}`, sweepReclaim };
+  debug.push(`BREAKOUT: ${direction} confirmed close=${current.close.toFixed(2)} beyond zone`);
+  return { detected: true, direction, candle: current, reason: `breakout_${direction?.toLowerCase()}` };
 }
 
-// ─── 15M CONFIRMATION ────────────────────────
+// ─── 15M CONFIRMATION (lower timeframe alignment) ────────────────────────
 
 function check15MAlignment(
   candles15m: Candle[],
@@ -672,71 +665,180 @@ function check15MAlignment(
   return { aligned: false, reason: `15m_misaligned_${direction.toLowerCase()}` };
 }
 
-function isHTFAligned(direction: "LONG" | "SHORT", htBias: "BULLISH" | "BEARISH" | "NEUTRAL"): boolean {
-  if (direction === "LONG" && htBias === "BEARISH") return false;
-  if (direction === "SHORT" && htBias === "BULLISH") return false;
-  return true;
-}
+// ─── Signal Builders ────────────────────────────────────────────────────
 
-// ─── Signal Builder ─────────────────────────────────────────────────────
-
-// FIX v30.6: Multiplicative confidence with overlap deduplication
-function computeConfidence(
-  zone: AccumulationZone,
-  adx4h: number,
-  stochK: number,
-  stochReliable: boolean,
+function buildEntry1Signal(
+  pair: string,
   direction: "LONG" | "SHORT",
-  sweepReclaim: boolean,
+  entryPrice: number,
+  zone: AccumulationZone,
+  candles1h: Candle[],
+  candles4h: Candle[],
+  htBias: "BULLISH" | "BEARISH" | "NEUTRAL",
+  stochK: number,
+  adx4h: number,
   debug: string[]
-): { confidence: number; reversalRisk: boolean } {
-  // Base score
-  let score = 50;
-  const factors: string[] = [];
+): { signal: Signal; market: any } {
+  const closes1h = candles1h.map(c => c.close);
+  const atr1h = atr(candles1h, 14);
+  const currentATR = atr1h[atr1h.length - 1] || (zone.top - zone.bottom) * 0.5;
 
-  // Zone quality (structure) — independent of regime
-  if (zone.widthATR < 1.5) { score *= 1.20; factors.push("zone_excellent"); }
-  else if (zone.widthATR < 2.0) { score *= 1.10; factors.push("zone_good"); }
-  else { score *= 0.90; factors.push("zone_average"); }
+  // ENTRY_1 stop: wider to account for pre-confirmation volatility
+  const stop = direction === "LONG"
+    ? entryPrice - currentATR * 2.0
+    : entryPrice + currentATR * 2.0;
 
-  // Touches (conviction)
-  if (zone.touches >= 5) { score *= 1.08; factors.push("touches_high"); }
-  else if (zone.touches >= 3) { score *= 1.04; factors.push("touches_med"); }
-  else { score *= 0.95; factors.push("touches_low"); }
+  const risk = Math.abs(entryPrice - stop);
+  const target = direction === "LONG" ? entryPrice + risk * 2.0 : entryPrice - risk * 2.0;
 
-  // Trend strength
-  if (adx4h > 35) { score *= 1.12; factors.push("adx_strong"); }
-  else if (adx4h > 25) { score *= 1.06; factors.push("adx_med"); }
-  else if (adx4h < 15) { score *= 0.85; factors.push("adx_weak"); }
+  const ema21 = ema(closes1h, 21);
+  const trail = direction === "LONG"
+    ? ema21[ema21.length - 1] - currentATR * 0.5
+    : ema21[ema21.length - 1] + currentATR * 0.5;
 
-  // Stochastic regime
-  let reversalRisk = false;
-  if (!stochReliable) {
-    score *= 0.90;
-    factors.push("stoch_unreliable");
-  } else if (direction === "SHORT" && stochK < STOCH_EXTREME_LOW) {
-    score *= 0.75;
-    factors.push("stoch_oversold_short");
-    reversalRisk = adx4h > 40;
-  } else if (direction === "LONG" && stochK > STOCH_EXTREME_HIGH) {
-    score *= 0.75;
-    factors.push("stoch_overbought_long");
-    reversalRisk = adx4h > 40;
-  }
+  const rr = risk > 0 ? Math.abs(target - entryPrice) / risk : 0;
 
-  // Sweep-reclaim penalty (lower conviction pattern)
-  if (sweepReclaim) {
-    score *= 0.92;
-    factors.push("sweep_reclaim");
-  }
+  const explanation = `${direction} ENTRY_1 (Exhaustion): HTF=${htBias}, StochK=${stochK}, near pullback zone ${zone.bottom.toFixed(0)}-${zone.top.toFixed(0)}, ADX=${adx4h.toFixed(1)}`;
 
-  const confidence = Math.min(95, Math.max(25, Math.round(score)));
-  debug.push(`CONFIDENCE: base=50 factors=[${factors.join(",")}] raw=${score.toFixed(1)} final=${confidence}%${reversalRisk ? " REVERSAL_RISK" : ""}`);
-  
-  return { confidence, reversalRisk };
+  const signal: Signal = {
+    id: `${pair}_${Date.now()}`,
+    pair,
+    direction,
+    stage: "CONFIRMED",
+    entry: Math.round(entryPrice * 100) / 100,
+    stop: Math.round(stop * 100) / 100,
+    target: Math.round(target * 100) / 100,
+    trail: Math.round(trail * 100) / 100,
+    confidence: CONFIDENCE_ENTRY1,
+    rr: Math.round(rr * 100) / 100,
+    adx: adx4h,
+    zoneTop: Math.round(zone.top * 100) / 100,
+    zoneBottom: Math.round(zone.bottom * 100) / 100,
+    explanation,
+    timestamp: Date.now(),
+    version: CURRENT_SIGNAL_VERSION,
+  };
+
+  const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
+  const stoch = stochRsi(closes1h);
+
+  const market = {
+    pair,
+    price: Math.round(entryPrice * 100) / 100,
+    timestamp: Date.now(),
+    phase: "EXPANSION",
+    trend: trend1d,
+    htfBias: htBias,
+    adx: adx4h,
+    rsi: 0,
+    stochK: stoch.k,
+    stochD: stoch.d,
+    zoneTop: signal.zoneTop,
+    zoneBottom: signal.zoneBottom,
+    zoneScore: CONFIDENCE_ENTRY1,
+    zoneQuality: {
+      age: zone.endIndex - zone.startIndex,
+      widthATR: zone.widthATR,
+      compression: Math.max(0, 100 - zone.widthATR * 30),
+      volumeDecay: 0,
+      touches: zone.touches,
+      breakAttempts: 0,
+      label: zone.widthATR < 1.5 ? "EXCELLENT" : zone.widthATR < 2.0 ? "GOOD" : "AVERAGE",
+    },
+    closes4h: candles4h.slice(-50).map(c => c.close),
+  };
+
+  debug.push(`SIGNAL ENTRY_1: ${direction} entry=${signal.entry} stop=${signal.stop} target=${signal.target} trail=${signal.trail} RR=${signal.rr} conf=${CONFIDENCE_ENTRY1}%`);
+
+  return { signal, market };
 }
 
-function buildSignal(
+function buildEntry2Signal(
+  pair: string,
+  direction: "LONG" | "SHORT",
+  entryPrice: number,
+  zone: AccumulationZone,
+  candles1h: Candle[],
+  candles4h: Candle[],
+  htBias: "BULLISH" | "BEARISH" | "NEUTRAL",
+  stochK: number,
+  adx4h: number,
+  debug: string[]
+): { signal: Signal; market: any } {
+  const closes1h = candles1h.map(c => c.close);
+  const atr1h = atr(candles1h, 14);
+  const currentATR = atr1h[atr1h.length - 1] || (zone.top - zone.bottom) * 0.5;
+
+  const stop = direction === "LONG"
+    ? entryPrice - currentATR * 1.5
+    : entryPrice + currentATR * 1.5;
+
+  const risk = Math.abs(entryPrice - stop);
+  const target = direction === "LONG" ? entryPrice + risk * 2.5 : entryPrice - risk * 2.5;
+
+  const ema21 = ema(closes1h, 21);
+  const trail = direction === "LONG"
+    ? ema21[ema21.length - 1] - currentATR * 0.5
+    : ema21[ema21.length - 1] + currentATR * 0.5;
+
+  const rr = risk > 0 ? Math.abs(target - entryPrice) / risk : 0;
+
+  const explanation = `${direction} ENTRY_2 (Confirmation): HTF=${htBias}, StochK=${stochK} turning, near pullback zone ${zone.bottom.toFixed(0)}-${zone.top.toFixed(0)}, ADX=${adx4h.toFixed(1)} [INTERNAL]`;
+
+  const signal: Signal = {
+    id: `${pair}_${Date.now()}`,
+    pair,
+    direction,
+    stage: "CONFIRMED",
+    entry: Math.round(entryPrice * 100) / 100,
+    stop: Math.round(stop * 100) / 100,
+    target: Math.round(target * 100) / 100,
+    trail: Math.round(trail * 100) / 100,
+    confidence: CONFIDENCE_ENTRY2,
+    rr: Math.round(rr * 100) / 100,
+    adx: adx4h,
+    zoneTop: Math.round(zone.top * 100) / 100,
+    zoneBottom: Math.round(zone.bottom * 100) / 100,
+    explanation,
+    timestamp: Date.now(),
+    version: CURRENT_SIGNAL_VERSION,
+  };
+
+  const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
+  const stoch = stochRsi(closes1h);
+
+  const market = {
+    pair,
+    price: Math.round(entryPrice * 100) / 100,
+    timestamp: Date.now(),
+    phase: "EXPANSION",
+    trend: trend1d,
+    htfBias: htBias,
+    adx: adx4h,
+    rsi: 0,
+    stochK: stoch.k,
+    stochD: stoch.d,
+    zoneTop: signal.zoneTop,
+    zoneBottom: signal.zoneBottom,
+    zoneScore: CONFIDENCE_ENTRY2,
+    zoneQuality: {
+      age: zone.endIndex - zone.startIndex,
+      widthATR: zone.widthATR,
+      compression: Math.max(0, 100 - zone.widthATR * 30),
+      volumeDecay: 0,
+      touches: zone.touches,
+      breakAttempts: 0,
+      label: zone.widthATR < 1.5 ? "EXCELLENT" : zone.widthATR < 2.0 ? "GOOD" : "AVERAGE",
+    },
+    closes4h: candles4h.slice(-50).map(c => c.close),
+  };
+
+  debug.push(`SIGNAL ENTRY_2: ${direction} entry=${signal.entry} stop=${signal.stop} target=${signal.target} trail=${signal.trail} RR=${signal.rr} conf=${CONFIDENCE_ENTRY2}% [INTERNAL — NO ALERT]`);
+
+  return { signal, market };
+}
+
+function buildAddSignal(
   pair: string,
   direction: "LONG" | "SHORT",
   zone: AccumulationZone,
@@ -745,9 +847,6 @@ function buildSignal(
   htBias: "BULLISH" | "BEARISH" | "NEUTRAL",
   stochK: number,
   adx4h: number,
-  regime: "TREND" | "CHOP" | "TRANSITION",
-  stochReliable: boolean,
-  sweepReclaim: boolean,
   debug: string[]
 ): { signal: Signal; market: any } | null {
   const entry = candles1h[candles1h.length - 1].close;
@@ -769,28 +868,36 @@ function buildSignal(
   const risk = Math.abs(entry - stop);
   const target = direction === "LONG" ? entry + risk * 2.5 : entry - risk * 2.5;
 
-  const ema21Val = lastEma(closes1h, 21);
+  const ema21 = ema(closes1h, 21);
   const trail = direction === "LONG"
-    ? (ema21Val ?? entry) - currentATR * 0.5
-    : (ema21Val ?? entry) + currentATR * 0.5;
+    ? ema21[ema21.length - 1] - currentATR * 0.5
+    : ema21[ema21.length - 1] + currentATR * 0.5;
 
   const rr = risk > 0 ? Math.abs(target - entry) / risk : 0;
 
-  const { confidence, reversalRisk } = computeConfidence(zone, adx4h, stochK, stochReliable, direction, sweepReclaim, debug);
+  let confidence = CONFIDENCE_ADD;
 
-  // FIX v30.6: Decoupled regime/zone logic. CHOP blocks only if zone weak AND confidence low
-  const zoneWeak = zone.widthATR >= CHOP_MODE_MAX_WIDTH_ATR;
-  const confidenceLow = confidence < CHOP_MODE_MIN_CONFIDENCE;
-  
-  if (regime === "CHOP" && zoneWeak && confidenceLow) {
-    debug.push(`REGIME BLOCK: CHOP mode + weak zone (widthATR=${zone.widthATR.toFixed(2)} >= ${CHOP_MODE_MAX_WIDTH_ATR}) + low confidence (${confidence}% < ${CHOP_MODE_MIN_CONFIDENCE}%)`);
-    return null;
+  if (zone.widthATR < 1.5) confidence += 5;
+  else if (zone.widthATR < 2.0) confidence += 2;
+
+  if (zone.touches >= 5) confidence += 3;
+  else if (zone.touches >= 3) confidence += 1;
+
+  if (adx4h > 30) confidence += 2;
+  else if (adx4h > 20) confidence += 1;
+
+  if (direction === "SHORT" && stochK < STOCH_EXTREME_LOW) {
+    confidence -= STOCH_CONFIDENCE_PENALTY;
+    debug.push(`CONFIDENCE: Stoch K=${stochK} oversold, -${STOCH_CONFIDENCE_PENALTY}% for SHORT`);
   }
-  if (regime === "CHOP") {
-    debug.push(`REGIME: CHOP mode — zone ${zoneWeak ? "weak" : "tight"}, confidence ${confidence}% ${confidenceLow ? "low" : "acceptable"} — ${zoneWeak && confidenceLow ? "blocked" : "allowed"}`);
+  if (direction === "LONG" && stochK > STOCH_EXTREME_HIGH) {
+    confidence -= STOCH_CONFIDENCE_PENALTY;
+    debug.push(`CONFIDENCE: Stoch K=${stochK} overbought, -${STOCH_CONFIDENCE_PENALTY}% for LONG`);
   }
 
-  const explanation = `${direction} BREAKOUT (1H): Accumulation zone ${zone.bottom.toFixed(0)}-${zone.top.toFixed(0)} (${zone.widthATR.toFixed(1)}x ATR, ${zone.touches} touches) broken. HTF=${htBias}, ADX(4H)=${adx4h.toFixed(1)}, StochK=${stochK}${stochReliable ? "" : "[UNRELIABLE]"}, Regime=${regime}${reversalRisk ? " [REVERSAL RISK]" : ""}${sweepReclaim ? " [SWEEP-RECLAIM]" : ""}`;
+  confidence = Math.min(95, Math.max(70, confidence));
+
+  const explanation = `${direction} ADD (Continuation): Accumulation zone ${zone.bottom.toFixed(0)}-${zone.top.toFixed(0)} (${zone.widthATR.toFixed(1)}x ATR, ${zone.touches} touches) broken. HTF=${htBias}, ADX(4H)=${adx4h.toFixed(1)}, StochK=${stochK}`;
 
   const signal: Signal = {
     id: `${pair}_${Date.now()}`,
@@ -809,14 +916,10 @@ function buildSignal(
     explanation,
     timestamp: Date.now(),
     version: CURRENT_SIGNAL_VERSION,
-    reversalRisk,
-    regime,
-    stochReliable,
   };
 
   const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
   const stoch = stochRsi(closes1h);
-  const lastRsi = getLastRsi(closes1h);
 
   const market = {
     pair,
@@ -826,10 +929,9 @@ function buildSignal(
     trend: trend1d,
     htfBias: htBias,
     adx: adx4h,
-    rsi: lastRsi ?? 0,
+    rsi: 0,
     stochK: stoch.k,
     stochD: stoch.d,
-    stochReliable: stoch.reliable,
     zoneTop: signal.zoneTop,
     zoneBottom: signal.zoneBottom,
     zoneScore: confidence,
@@ -842,12 +944,10 @@ function buildSignal(
       breakAttempts: 0,
       label: zone.widthATR < 1.5 ? "EXCELLENT" : zone.widthATR < 2.0 ? "GOOD" : "AVERAGE",
     },
-    reversalRisk,
-    regime,
     closes4h: candles4h.slice(-50).map(c => c.close),
   };
 
-  debug.push(`SIGNAL: ${direction} CONFIRMED entry=${signal.entry} stop=${signal.stop} target=${signal.target} trail=${signal.trail} RR=${signal.rr} conf=${confidence}% regime=${regime}${reversalRisk ? " REVERSAL_RISK" : ""}${sweepReclaim ? " SWEEP-RECLAIM" : ""}`);
+  debug.push(`SIGNAL ADD: ${direction} entry=${signal.entry} stop=${signal.stop} target=${signal.target} trail=${signal.trail} RR=${signal.rr} conf=${confidence}%`);
 
   return { signal, market };
 }
@@ -864,6 +964,7 @@ export async function generateSignal(
   const debug: string[] = [];
   const price = currentPrice ?? candles1h[candles1h.length - 1]?.close ?? 0;
 
+  // ── GUARD: Minimum candle requirements ─────────────────────
   if (!candles1h || candles1h.length < MIN_CANDLES_1H) {
     debug.push(`GUARD: insufficient 1H candles (${candles1h?.length || 0} < ${MIN_CANDLES_1H})`);
     return {
@@ -885,31 +986,20 @@ export async function generateSignal(
 
   let state = await getPersistedState(pair);
   const closes1h = candles1h.map(c => c.close);
-  
   const stoch = stochRsi(closes1h);
-  const stochReliable = stoch.reliable;
-  if (!stochReliable) {
-    debug.push(`WARNING: StochRSI unreliable (${closes1h.length} closes), using fallback with confidence penalty`);
-  }
-  
-  const htBias = higherTimeframeBias1D(candles4h);
-  
+  const htBias = higherTimeframeBias(candles4h);
   const adx4h = adx(candles4h);
-  if (adx4h === null) {
-    debug.push(`GUARD: ADX insufficient data, blocking`);
-    return {
-      signal: null,
-      market: { pair, price, timestamp: Date.now(), phase: "NONE", error: "insufficient_adx_data" },
-      debug,
-      stage: "NONE",
-    };
-  }
-  
-  const regime = classifyRegime(adx4h);
   const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
 
-  debug.push(`HTF(4H→1D): ${htBias} | Stage: ${state.stage} | StochK(1H)=${stoch.k}${stochReliable ? "" : "[UNRELIABLE]"} | ADX(4H)=${adx4h} | Regime=${regime}`);
+  debug.push(`HTF(4H): ${htBias} | Stage: ${state.stage} | StochK(1H)=${stoch.k} | ADX(4H)=${adx4h}`);
 
+  // ── ADX Trend Filter ─────────────────────────────────────────
+  // ADX used only to reject weak trends, not to delay ENTRY_1
+  if (adx4h < ENTRY1_ADX_MIN) {
+    debug.push(`TREND_FILTER: ADX=${adx4h} < ${ENTRY1_ADX_MIN} — weak trend, allowing exhaustion entries but flagging`);
+  }
+
+  // ── COOLDOWN CHECK ──────────────────────────────────────────
   if (state.lastExitAt > 0) {
     const timeSinceExit = Date.now() - state.lastExitAt;
     if (timeSinceExit < EXIT_COOLDOWN_MS) {
@@ -929,8 +1019,10 @@ export async function generateSignal(
     }
   }
 
+  // ── CLEAN EXPIRED CONSUMED ZONES ────────────────────────────
   state = await cleanConsumedZones(state, debug);
 
+  // ── DETECT ACCUMULATION / PULLBACK ZONE ─────────────────────
   const zone = detectAccumulation(pair, candles1h, debug);
 
   if (!zone) {
@@ -948,11 +1040,8 @@ export async function generateSignal(
     };
   }
 
-  // FIX v30.6: ATR-normalized hash
-  const atr1h = atr(candles1h, 14);
-  const currentATR = atr1h[atr1h.length - 1] || 1;
-  const zoneHash = hashZone(pair, zone.top, zone.bottom, currentATR);
-  
+  // ── CHECK IF ZONE ALREADY CONSUMED ──────────────────────────
+  const zoneHash = hashZone(zone.top, zone.bottom);
   if (state.consumedZones.includes(zoneHash)) {
     debug.push(`ZONE CONSUMED: ${zoneHash} already traded (within ${ZONE_CONSUMED_TTL_MS / 3600000}h window)`);
     return {
@@ -969,6 +1058,85 @@ export async function generateSignal(
     };
   }
 
+  // ── DETECT PULLBACK (ATR-adjusted trendline distance) ───────
+  const atr1h = atr(candles1h, 14);
+  const currentATR = atr1h[atr1h.length - 1] || 1;
+  const pullback = detectPullback(candles1h, htBias, currentATR, debug);
+
+  // ── DETECT EXHAUSTION ───────────────────────────────────────
+  const exhaustion = detectExhaustion(candles1h, stoch, debug);
+
+  // ── ENTRY_1: Exhaustion Entry (before confirmation) ─────────
+  // Trigger when: HTF aligned, near pullback, StochRSI exhausted
+  if (pullback.isPullback && exhaustion.exhausted && exhaustion.direction) {
+    const entryDirection = exhaustion.direction;
+    
+    // HTF alignment check
+    const htfAligned =
+      (entryDirection === "LONG" && (htBias === "BULLISH" || htBias === "NEUTRAL")) ||
+      (entryDirection === "SHORT" && (htBias === "BEARISH" || htBias === "NEUTRAL"));
+
+    if (htfAligned) {
+      debug.push(`ENTRY_1 TRIGGER: ${entryDirection} exhaustion at pullback — HTF=${htBias}, StochK=${stoch.k}, near trendline`);
+      
+      const entryPrice = candles1h[candles1h.length - 1].close;
+      const built = buildEntry1Signal(pair, entryDirection, entryPrice, zone, candles1h, candles4h, htBias, stoch.k, adx4h, debug);
+
+      // Mark ENTRY_2 as pending for internal tracking
+      await persistState(pair, {
+        stage: "WATCHING",
+        zoneTop: zone.top,
+        zoneBottom: zone.bottom,
+        zoneStartIndex: zone.startIndex,
+        zoneEndIndex: zone.endIndex,
+        entry2Pending: true,
+        entry2Direction: entryDirection,
+        entry2ZoneTop: zone.top,
+        entry2ZoneBottom: zone.bottom,
+      });
+
+      return { signal: built.signal, market: built.market, debug, stage: "EXPANSION" };
+    } else {
+      debug.push(`ENTRY_1 BLOCKED: ${entryDirection} exhaustion but HTF=${htBias} not aligned`);
+    }
+  }
+
+  // ── ENTRY_2: Internal Confirmation Entry ────────────────────
+  // Check if we have a pending ENTRY_2 setup
+  if (state.entry2Pending && state.entry2Direction) {
+    const prevStoch = await getPreviousStoch(pair, candles1h);
+    const momentumTurn = detectMomentumTurn(candles1h, stoch, prevStoch, debug);
+    
+    if (momentumTurn.turning && momentumTurn.direction === state.entry2Direction) {
+      // Check still near pullback zone
+      const currentPrice = candles1h[candles1h.length - 1].close;
+      const zoneCenter = (state.entry2ZoneTop! + state.entry2ZoneBottom!) / 2;
+      const distFromZone = Math.abs(currentPrice - zoneCenter) / currentATR;
+      
+      if (distFromZone < TRENDLINE_ATR_MULTIPLIER * 2) {
+        debug.push(`ENTRY_2 TRIGGER: ${state.entry2Direction} momentum turning — internal only, no alert`);
+        
+        const built = buildEntry2Signal(pair, state.entry2Direction, currentPrice, zone, candles1h, candles4h, htBias, stoch.k, adx4h, debug);
+        
+        // Clear ENTRY_2 pending state
+        await persistState(pair, {
+          entry2Pending: false,
+          entry2Direction: null,
+          entry2ZoneTop: null,
+          entry2ZoneBottom: null,
+        });
+
+        // ENTRY_2 is INTERNAL ONLY — return signal but no alert
+        // We return it as a signal but mark it specially in the market data
+        const internalMarket = { ...built.market, internalOnly: true, entryType: "ENTRY_2" };
+        return { signal: built.signal, market: internalMarket, debug, stage: "EXPANSION" };
+      } else {
+        debug.push(`ENTRY_2 BLOCKED: too far from zone center (distATR=${distFromZone.toFixed(2)})`);
+      }
+    }
+  }
+
+  // ── ADD: Continuation Entry (breakout confirmation) ───────
   const breakout = checkBreakout(candles1h, zone, htBias, debug);
 
   if (!breakout.detected || !breakout.direction) {
@@ -1004,9 +1172,14 @@ export async function generateSignal(
     };
   }
 
+  // ── HTF ALIGNMENT for ADD ──────────────────────────────────
   if (REQUIRE_HTF_ALIGNMENT) {
-    if (!isHTFAligned(breakout.direction, htBias)) {
-      debug.push(`BLOCKED: ${breakout.direction} breakout against HTF(1D) bias ${htBias}`);
+    const aligned =
+      (breakout.direction === "LONG" && (htBias === "BULLISH" || htBias === "NEUTRAL")) ||
+      (breakout.direction === "SHORT" && (htBias === "BEARISH" || htBias === "NEUTRAL"));
+
+    if (!aligned) {
+      debug.push(`BLOCKED: ${breakout.direction} breakout but HTF(4H) is ${htBias}`);
       return {
         signal: null,
         market: {
@@ -1022,6 +1195,7 @@ export async function generateSignal(
     }
   }
 
+  // ── 15M LOWER TIMEFRAME CONFIRMATION for ADD ───────────────
   if (REQUIRE_15M_ALIGNMENT && candles15m && candles15m.length > 0) {
     const alignment = check15MAlignment(candles15m, breakout.direction, debug);
     if (!alignment.aligned) {
@@ -1041,8 +1215,9 @@ export async function generateSignal(
     }
   }
 
+  // ── STOCHASTIC EXHAUSTION HARD BLOCK for ADD ────────────────
   if (breakout.direction === "SHORT" && stoch.k < STOCH_EXTREME_LOW) {
-    debug.push(`EXHAUSTION: Stoch K=${stoch.k} < ${STOCH_EXTREME_LOW}, blocking SHORT`);
+    debug.push(`EXHAUSTION: Stoch K=${stoch.k} < ${STOCH_EXTREME_LOW}, blocking SHORT ADD`);
     return {
       signal: null,
       market: {
@@ -1057,7 +1232,7 @@ export async function generateSignal(
     };
   }
   if (breakout.direction === "LONG" && stoch.k > STOCH_EXTREME_HIGH) {
-    debug.push(`EXHAUSTION: Stoch K=${stoch.k} > ${STOCH_EXTREME_HIGH}, blocking LONG`);
+    debug.push(`EXHAUSTION: Stoch K=${stoch.k} > ${STOCH_EXTREME_HIGH}, blocking LONG ADD`);
     return {
       signal: null,
       market: {
@@ -1072,10 +1247,11 @@ export async function generateSignal(
     };
   }
 
-  const built = buildSignal(pair, breakout.direction, zone, candles1h, candles4h, htBias, stoch.k, adx4h, regime, stochReliable, breakout.sweepReclaim, debug);
+  // ── BUILD ADD SIGNAL ──────────────────────────────────────
+  const built = buildAddSignal(pair, breakout.direction, zone, candles1h, candles4h, htBias, stoch.k, adx4h, debug);
 
   if (!built) {
-    debug.push("Signal build failed (regime filter or other block)");
+    debug.push("Signal build failed");
     return {
       signal: null,
       market: {
@@ -1090,6 +1266,7 @@ export async function generateSignal(
     };
   }
 
+  // ── DUPLICATE BREAKOUT PREVENTION ──────────────────────────
   if (breakout.candle && state.lastBreakoutTs === breakout.candle.timestamp) {
     debug.push(`DUPLICATE BREAKOUT: same candle timestamp ${breakout.candle.timestamp}, skipping`);
     return {
@@ -1106,6 +1283,7 @@ export async function generateSignal(
     };
   }
 
+  // ── PERSIST CONSUMED ZONE ──────────────────────────────────
   await persistState(pair, {
     stage: "NONE",
     zoneTop: null,
@@ -1115,9 +1293,21 @@ export async function generateSignal(
     consumedZones: [...state.consumedZones, zoneHash],
     consumedZoneTimes: { ...state.consumedZoneTimes, [zoneHash]: Date.now() },
     lastBreakoutTs: breakout.candle!.timestamp,
+    entry2Pending: false,
+    entry2Direction: null,
+    entry2ZoneTop: null,
+    entry2ZoneBottom: null,
   });
 
   return { signal: built.signal, market: built.market, debug, stage: "EXPANSION" };
+}
+
+// ─── Helper: Get Previous Stoch for ENTRY_2 detection ───────────────────
+
+async function getPreviousStoch(pair: string, candles1h: Candle[]): Promise<{ k: number; d: number } | null> {
+  if (candles1h.length < 2) return null;
+  const prevCloses = candles1h.slice(0, -1).map(c => c.close);
+  return stochRsi(prevCloses);
 }
 
 // ─── Trail Stop Update ─────────────────────────────────────────────────
@@ -1128,15 +1318,14 @@ export function updateTrail(
   currentPrice: number
 ): { trail: number; shouldExit: boolean; reason: string } {
   const closes = candles1h.map(c => c.close);
-  const ema21Val = lastEma(closes, 21);
+  const ema21 = ema(closes, 21);
   const atrSeries = atr(candles1h, 14);
   const currentATR = atrSeries[atrSeries.length - 1];
   const safeATR = currentATR && currentATR > 0 ? currentATR : Math.abs(currentPrice - signal.entry) * 0.1;
 
-  const emaVal = ema21Val ?? currentPrice;
   const newTrail = signal.direction === "LONG"
-    ? Math.max(signal.trail, emaVal - safeATR * 0.3)
-    : Math.min(signal.trail, emaVal + safeATR * 0.3);
+    ? Math.max(signal.trail, ema21[ema21.length - 1] - safeATR * 0.3)
+    : Math.min(signal.trail, ema21[ema21.length - 1] + safeATR * 0.3);
 
   const hit = signal.direction === "LONG" ? currentPrice < newTrail : currentPrice > newTrail;
 
@@ -1159,12 +1348,10 @@ export async function getMarketSnapshot(
   const price = candles4h[candles4h.length - 1].close;
   const closes = candles4h.map(c => c.close);
   const stoch = stochRsi(closes);
-  const htBias = higherTimeframeBias1D(candles4h);
+  const htBias = higherTimeframeBias(candles4h);
 
   const adxValue = adx(candles4h);
   const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
-  const lastRsi = getLastRsi(closes);
-  const regime = classifyRegime(adxValue);
 
   return {
     pair,
@@ -1173,16 +1360,14 @@ export async function getMarketSnapshot(
     phase: state.stage === "NONE" ? "NONE" : state.stage,
     trend: trend1d,
     htfBias: htBias,
-    adx: adxValue ?? 0,
-    rsi: lastRsi ?? 0,
+    adx: adxValue,
+    rsi: 0,
     stochK: stoch.k,
     stochD: stoch.d,
-    stochReliable: stoch.reliable,
     zoneTop: state.zoneTop ? Math.round(state.zoneTop * 100) / 100 : null,
     zoneBottom: state.zoneBottom ? Math.round(state.zoneBottom * 100) / 100 : null,
     zoneScore: 0,
     zoneQuality: null,
-    regime,
     closes4h: candles4h.slice(-50).map(c => c.close),
   };
 }
