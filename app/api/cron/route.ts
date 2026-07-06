@@ -1,5 +1,14 @@
 // app/api/cron/route.ts — v28 "Full v28 strategy integration with Trade Manager"
 // ============================================================
+// Backend cron (10 min): calculates highest/lowest price, locked profit,
+// current stop, trade state. UI only displays these values.
+//
+// CHANGELOG v28-PROD:
+// - Uses only v28 exports from @/lib/strategy (no v30.5 imports)
+// - Trade manager state computed here, persisted on signals
+// - Duplicate exit prevention via signal.exited + signal.tradeState
+// - One exit alert per trade ID only
+// ============================================================
 
 import { NextResponse } from "next/server";
 import {
@@ -21,6 +30,8 @@ import {
   filterExpiredSignals,
   shouldHold,
   isSignalStillValid,
+  updateTradeManagerState,
+  removeTradeManagerState,
   Candle,
   Signal,
   FEATURES,
@@ -131,21 +142,41 @@ export async function GET(request: Request) {
   );
   log(`[STATE] Valid: ${validSignals.length}, Expired: ${preExited.length}`);
 
+  // --- Process pre-exited signals (from filterExpiredSignals) ---
+  // DUPLICATE EXIT BUG FIX: Mark exited, send one alert, clean up
   for (const { signal, reason } of preExited) {
+    // Skip if already processed in a prior run
+    if (signal.exited || signal.tradeState === "EXITED") {
+      log(`[EXIT] ${signal.pair} — already marked exited, skipping duplicate alert`);
+      if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
+      continue;
+    }
+
     log(`[EXIT] ${signal.pair} — ${reason}`);
-    await addSignalToHistory(signal, reason as any, currentPrices[signal.pair] || signal.entry);
+
+    // Mark signal as exited to prevent duplicate alerts
+    signal.exited = true;
+    signal.exitReason = reason;
+    signal.exitPrice = currentPrices[signal.pair] || signal.entry;
+    signal.exitTimestamp = runStart;
+    signal.tradeState = "EXITED";
+
+    await addSignalToHistory(signal, reason as any, signal.exitPrice);
     if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
     await resetPairConsumedZones(signal.pair);
     log(`[STATE] Cleared consumedZones for ${signal.pair} after ${reason}`);
 
-    const exitPrice = currentPrices[signal.pair] || signal.entry;
-    const pnl = signal.direction === "LONG"
-      ? ((exitPrice - signal.entry) / signal.entry) * 100
-      : ((signal.entry - exitPrice) / signal.entry) * 100;
+    // Clean up trade manager memory
+    removeTradeManagerState(signal.id);
+
+    const pnl =
+      signal.direction === "LONG"
+        ? ((signal.exitPrice - signal.entry) / signal.entry) * 100
+        : ((signal.entry - signal.exitPrice) / signal.entry) * 100;
     await sendExitAlert({
       pair: signal.pair,
       direction: signal.direction,
-      exitPrice,
+      exitPrice: signal.exitPrice,
       reason,
       pnl,
       id: signal.id,
@@ -188,18 +219,80 @@ export async function GET(request: Request) {
       if (existingForPair) {
         log(`[PAIR] ${pair} — has existing signal ${existingForPair.id}`);
 
+        // DUPLICATE EXIT BUG FIX: Skip already-exited signals
+        if (existingForPair.exited || existingForPair.tradeState === "EXITED") {
+          log(`[PAIR] ${pair} — signal already EXITED, removing from active`);
+          validSignals.splice(existingIdx, 1);
+          if (activeTrades[pair]) delete activeTrades[pair];
+          removeTradeManagerState(existingForPair.id);
+          continue;
+        }
+
+        // --- Update trade manager state on existing signal ---
+        // Backend responsibility: calculate highest/lowest/locked/stop/state
+        if (FEATURES.TRADE_MANAGER_ENABLED) {
+          const mgrResult = updateTradeManagerState(existingForPair, currentPrice, candles4h);
+
+          // Persist manager state back onto signal object for UI display
+          existingForPair.tradeState = mgrResult.state.tradeState;
+          existingForPair.highestPrice = mgrResult.state.highestPrice;
+          existingForPair.lowestPrice = mgrResult.state.lowestPrice;
+          existingForPair.lockedStop = mgrResult.state.lockedStop;
+
+          if (mgrResult.shouldExit) {
+            log(`[PAIR] ${pair} — MANAGER EXIT: ${mgrResult.exitReason}`);
+
+            existingForPair.exited = true;
+            existingForPair.exitReason = mgrResult.exitReason;
+            existingForPair.exitPrice = currentPrice;
+            existingForPair.exitTimestamp = runStart;
+            existingForPair.tradeState = "EXITED";
+
+            await addSignalToHistory(existingForPair, mgrResult.exitReason as any, currentPrice);
+            validSignals.splice(existingIdx, 1);
+            if (activeTrades[pair]) delete activeTrades[pair];
+            await resetPairConsumedZones(pair);
+            removeTradeManagerState(existingForPair.id);
+
+            const pnl =
+              existingForPair.direction === "LONG"
+                ? ((currentPrice - existingForPair.entry) / existingForPair.entry) * 100
+                : ((existingForPair.entry - currentPrice) / existingForPair.entry) * 100;
+            await sendExitAlert({
+              pair,
+              direction: existingForPair.direction,
+              exitPrice: currentPrice,
+              reason: mgrResult.exitReason || "manager_exit",
+              pnl,
+              id: existingForPair.id,
+            });
+            alerts.push({ pair, status: "manager_exit", reason: mgrResult.exitReason });
+            continue;
+          }
+        }
+
+        // Legacy validity check (catches TTL, missed entry, hard SL/TP)
         const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
         if (!validity.valid) {
           log(`[PAIR] ${pair} — INVALID: ${validity.reason}`);
+
+          existingForPair.exited = true;
+          existingForPair.exitReason = validity.reason;
+          existingForPair.exitPrice = currentPrice;
+          existingForPair.exitTimestamp = runStart;
+          existingForPair.tradeState = "EXITED";
+
           await addSignalToHistory(existingForPair, validity.reason as any, currentPrice);
           if (activeTrades[pair]) delete activeTrades[pair];
           validSignals.splice(existingIdx, 1);
           await resetPairConsumedZones(pair);
+          removeTradeManagerState(existingForPair.id);
           log(`[STATE] Cleared consumedZones for ${pair} after ${validity.reason}`);
 
-          const pnl = existingForPair.direction === "LONG"
-            ? ((currentPrice - existingForPair.entry) / existingForPair.entry) * 100
-            : ((existingForPair.entry - currentPrice) / existingForPair.entry) * 100;
+          const pnl =
+            existingForPair.direction === "LONG"
+              ? ((currentPrice - existingForPair.entry) / existingForPair.entry) * 100
+              : ((existingForPair.entry - currentPrice) / existingForPair.entry) * 100;
           await sendExitAlert({
             pair,
             direction: existingForPair.direction,
@@ -210,50 +303,37 @@ export async function GET(request: Request) {
           });
           alerts.push({ pair, status: "expired", reason: validity.reason });
         } else {
+          // Still holding — log state and push market data
           const holdResult = shouldHold(existingForPair, candles4h, currentPrice);
-          if (!holdResult.shouldHold) {
-            log(`[PAIR] ${pair} — TRAIL STOP: ${holdResult.reason}`);
-            await addSignalToHistory(existingForPair, "trail_stop" as any, currentPrice);
-            if (activeTrades[pair]) delete activeTrades[pair];
-            validSignals.splice(existingIdx, 1);
-            await resetPairConsumedZones(pair);
-            log(`[STATE] Cleared consumedZones for ${pair} after trail_stop`);
+          log(`[PAIR] ${pair} — Holding, ${holdResult.reason}`);
 
-            const pnl = existingForPair.direction === "LONG"
-              ? ((currentPrice - existingForPair.entry) / existingForPair.entry) * 100
-              : ((existingForPair.entry - currentPrice) / existingForPair.entry) * 100;
-            await sendExitAlert({
-              pair,
-              direction: existingForPair.direction,
-              exitPrice: currentPrice,
-              reason: "trail_stop",
-              pnl,
-              id: existingForPair.id,
-            });
-            alerts.push({ pair, status: "trail_stop", reason: holdResult.reason });
-          } else {
-            log(`[PAIR] ${pair} — Holding, ${holdResult.reason}`);
-            marketDataList.push({
-              pair,
-              price: roundPrice(currentPrice),
-              timestamp: Date.now(),
-              phase: "EXPANSION",
-              trend: existingForPair.direction,
-              htfBias: existingForPair.direction === "LONG" ? "BULLISH" : "BEARISH",
-              adx: existingForPair.adx,
-              rsi: 0,
-              stochK: 0,
-              stochD: 0,
-              zoneTop: null,
-              zoneBottom: null,
-              zoneScore: existingForPair.confidence,
-              closes4h: candles4h.slice(-50).map((c: Candle) => c.close),
-            });
-            continue;
-          }
+          // Ensure manager state is synced to signal for UI
+          if (holdResult.tradeState) existingForPair.tradeState = holdResult.tradeState;
+          if (holdResult.lockedStop !== undefined) existingForPair.lockedStop = holdResult.lockedStop;
+          if (holdResult.highestPrice !== undefined) existingForPair.highestPrice = holdResult.highestPrice;
+          if (holdResult.lowestPrice !== undefined) existingForPair.lowestPrice = holdResult.lowestPrice;
+
+          marketDataList.push({
+            pair,
+            price: roundPrice(currentPrice),
+            timestamp: Date.now(),
+            phase: "EXPANSION",
+            trend: existingForPair.direction,
+            htfBias: existingForPair.direction === "LONG" ? "BULLISH" : "BEARISH",
+            adx: existingForPair.adx,
+            rsi: 0,
+            stochK: 0,
+            stochD: 0,
+            zoneTop: null,
+            zoneBottom: null,
+            zoneScore: existingForPair.confidence,
+            closes4h: candles4h.slice(-50).map((c: Candle) => c.close),
+          });
+          continue;
         }
       }
 
+      // --- Generate new signal ---
       const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
 
       for (const line of result.debug) {
@@ -279,8 +359,10 @@ export async function GET(request: Request) {
       );
       newSignals.push(signal);
 
+      // --- Alert logic ---
+      // Do NOT alert if this pair already has an active trade
       if (activeTrades[pair]) {
-        log(`[ALERT] ${pair} — already active, skipping alert`);
+        log(`[ALERT] ${pair} — already active trade, skipping alert`);
         alerts.push({ pair, status: "already_active", signalId: signal.id });
         continue;
       }
