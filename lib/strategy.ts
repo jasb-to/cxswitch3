@@ -1,4 +1,20 @@
-// lib/strategy.ts — v30.3 "Enhanced debug logging for accumulation detection"
+// lib/strategy.ts — v30.5 "Production complete: all 14 review issues resolved"
+// ============================================================
+// CHANGELOG v30.5:
+//   1. Accumulation window excludes current candle (breakout candle isolated)
+//   2. HTF bias requires 55+ daily candles for reliable EMA50
+//   3. Stochastic exhaustion is a HARD BLOCK (EXHAUSTION stage)
+//   4. Zone hash uses 2-decimal precision + 4h TTL + 50-entry cap
+//   5. lastBreakoutTs prevents duplicate signals from same candle
+//   6. ADX calculated once and reused
+//   7. updateTrail has NaN protection with safe fallback
+//   8. Touch scoring weight increased (touches * 15)
+//   9. Volume decline relaxed to 0.92
+//   10. SignalResult type cleaned (signal: Signal | null, market: any)
+//   11. candles15m used for lower-timeframe breakout confirmation
+//   12. Added minimum candle validation guards
+//   13. Added 15M alignment check for breakout confirmation
+//   14. Consumed zone cleanup runs before every signal generation
 // ============================================================
 
 import { getPairState, setPairState } from "./state";
@@ -32,8 +48,8 @@ export interface Signal {
 }
 
 export interface SignalResult {
-  signal?: Signal;
-  market?: any;
+  signal: Signal | null;
+  market: any;
   debug: string[];
   stage: "NONE" | "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED" | "EXPANSION" | "EXHAUSTION";
 }
@@ -42,13 +58,13 @@ export const CURRENT_SIGNAL_VERSION = 30;
 
 // ─── Config ──────────────────────────────────────────────────────────────
 
-const ACCUM_MIN_CANDLES = 6;        // Relaxed from 8
-const ACCUM_MAX_CANDLES = 40;       // Increased from 30
-const ACCUM_MAX_WIDTH_ATR = 2.5;    // Relaxed from 2.0
-const ACCUM_MIN_TOUCHES = 2;        // Relaxed from 3
-const ACCUM_VOLUME_DECLINE = 0.85;  // Relaxed from 0.7
+const ACCUM_MIN_CANDLES = 6;
+const ACCUM_MAX_CANDLES = 40;
+const ACCUM_MAX_WIDTH_ATR = 2.5;
+const ACCUM_MIN_TOUCHES = 2;
+const ACCUM_VOLUME_DECLINE = 0.92;  // Relaxed from 0.85 → 0.90 → 0.92
 
-const BREAKOUT_MIN_BODY_ATR = 0.25; // Lowered from 0.3
+const BREAKOUT_MIN_BODY_ATR = 0.25;
 const BREAKOUT_CONFIRM_CLOSE = true;
 
 const STOCH_EXTREME_LOW = 15;
@@ -56,7 +72,13 @@ const STOCH_EXTREME_HIGH = 85;
 const STOCH_CONFIDENCE_PENALTY = 15;
 
 const REQUIRE_HTF_ALIGNMENT = true;
+const REQUIRE_15M_ALIGNMENT = true;  // NEW: 15M confirmation for breakouts
 const EXIT_COOLDOWN_MS = 30 * 60 * 1000;
+const ZONE_CONSUMED_TTL_MS = 4 * 60 * 60 * 1000;
+const MAX_CONSUMED_ZONES = 50;
+
+const MIN_CANDLES_1H = 60;   // Minimum for reliable ATR + StochRSI + EMA21
+const MIN_CANDLES_4H = 350;  // Minimum for 55+ daily candles + ADX + EMAs
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -66,6 +88,7 @@ function avg(arr: number[]): number {
 }
 
 function ema(values: number[], period: number): number[] {
+  if (values.length < period) return values.map(() => values[values.length - 1]);
   const k = 2 / (period + 1);
   const result: number[] = [values[0]];
   for (let i = 1; i < values.length; i++) {
@@ -75,6 +98,7 @@ function ema(values: number[], period: number): number[] {
 }
 
 function atr(candles: Candle[], period: number = 14): number[] {
+  if (candles.length < period + 1) return [];
   const trs: number[] = [];
   for (let i = 1; i < candles.length; i++) {
     const c = candles[i], p = candles[i - 1];
@@ -92,6 +116,7 @@ function trueRange(c: Candle, p: Candle): number {
 }
 
 function stochRsi(closes: number[]): { k: number; d: number } {
+  if (closes.length < 28) return { k: 50, d: 50 };
   const rsiValues: number[] = [];
   for (let i = 14; i < closes.length; i++) {
     const window = closes.slice(0, i + 1);
@@ -159,7 +184,10 @@ function adx(candles: Candle[]): number {
 
 function higherTimeframeBias(candles4h: Candle[]): "BULLISH" | "BEARISH" | "NEUTRAL" {
   const daily = aggregateTo1D(candles4h);
-  if (daily.length < 30) return "NEUTRAL";
+  // FIX #2: Require 55+ daily candles for reliable EMA50
+  if (daily.length < 55) {
+    return "NEUTRAL";
+  }
   const closes = daily.map(c => c.close);
   const ema8 = ema(closes, 8);
   const ema21 = ema(closes, 21);
@@ -207,23 +235,26 @@ interface PairState {
   zoneEndIndex: number;
   lastExitAt: number;
   consumedZones: string[];
+  consumedZoneTimes: Record<string, number>;
   lastBreakoutTs: number;
 }
 
 function hashZone(top: number, bottom: number): string {
-  return `${Math.round(top)}_${Math.round(bottom)}`;
+  // FIX #4: 2-decimal precision prevents collision of nearby zones
+  return `${top.toFixed(2)}_${bottom.toFixed(2)}`;
 }
 
 async function getPersistedState(pair: string): Promise<PairState> {
   const raw = await getPairState(pair);
   return {
     stage: raw.stage || "NONE",
-    zoneTop: raw.zoneTop || null,
-    zoneBottom: raw.zoneBottom || null,
+    zoneTop: raw.zoneTop ?? null,
+    zoneBottom: raw.zoneBottom ?? null,
     zoneStartIndex: raw.zoneStartIndex || 0,
     zoneEndIndex: raw.zoneEndIndex || 0,
     lastExitAt: raw.lastExitAt || 0,
-    consumedZones: raw.consumedZones || [],
+    consumedZones: Array.isArray(raw.consumedZones) ? raw.consumedZones : [],
+    consumedZoneTimes: raw.consumedZoneTimes && typeof raw.consumedZoneTimes === "object" ? raw.consumedZoneTimes : {},
     lastBreakoutTs: raw.lastBreakoutTs || 0,
   };
 }
@@ -233,7 +264,40 @@ async function persistState(pair: string, state: Partial<PairState>): Promise<vo
   await setPairState(pair, { ...existing, ...state });
 }
 
-// ─── ACCUMULATION DETECTION (1H) with detailed debug ────────────────────
+// ─── Clean expired consumed zones ────────────────────────────────────────
+
+async function cleanConsumedZones(state: PairState, debug: string[]): Promise<PairState> {
+  const now = Date.now();
+  const freshZones: string[] = [];
+  const freshTimes: Record<string, number> = {};
+
+  for (const zh of state.consumedZones) {
+    const consumedAt = state.consumedZoneTimes[zh] || 0;
+    if (now - consumedAt < ZONE_CONSUMED_TTL_MS) {
+      freshZones.push(zh);
+      freshTimes[zh] = consumedAt;
+    } else {
+      debug.push(`ZONE EXPIRED: ${zh} consumed ${Math.round((now - consumedAt) / 60000)}m ago, clearing`);
+    }
+  }
+
+  // FIX #5: Hard cap at MAX_CONSUMED_ZONES most recent
+  if (freshZones.length > MAX_CONSUMED_ZONES) {
+    const sorted = freshZones
+      .map(z => ({ zone: z, time: freshTimes[z] || 0 }))
+      .sort((a, b) => b.time - a.time)
+      .slice(0, MAX_CONSUMED_ZONES);
+    const trimmedZones = sorted.map(s => s.zone);
+    const trimmedTimes: Record<string, number> = {};
+    for (const s of sorted) trimmedTimes[s.zone] = s.time;
+    debug.push(`TRIMMED consumedZones from ${freshZones.length} to ${MAX_CONSUMED_ZONES}`);
+    return { ...state, consumedZones: trimmedZones, consumedZoneTimes: trimmedTimes };
+  }
+
+  return { ...state, consumedZones: freshZones, consumedZoneTimes: freshTimes };
+}
+
+// ─── ACCUMULATION DETECTION (1H) — current candle excluded ─────────────
 
 interface AccumulationZone {
   top: number;
@@ -246,14 +310,15 @@ interface AccumulationZone {
 }
 
 function detectAccumulation(candles1h: Candle[], debug: string[]): AccumulationZone | null {
-  if (candles1h.length < ACCUM_MIN_CANDLES + 14) {
-    debug.push(`ACCUM: insufficient 1H candles (${candles1h.length} < ${ACCUM_MIN_CANDLES + 14})`);
+  // FIX #1/#2/#3: Accumulation ends at previous candle; current candle is for breakout only
+  const last = candles1h.length - 2;
+  if (last < ACCUM_MIN_CANDLES + 14) {
+    debug.push(`ACCUM: insufficient 1H candles (${candles1h.length} need >= ${ACCUM_MIN_CANDLES + 14 + 1})`);
     return null;
   }
 
   const atrSeries = atr(candles1h, 14);
   const currentATR = atrSeries[atrSeries.length - 1] || 1;
-  const last = candles1h.length - 1;
 
   debug.push(`ACCUM SCAN: last=${last} ATR=${currentATR.toFixed(4)} minCandles=${ACCUM_MIN_CANDLES} maxCandles=${ACCUM_MAX_CANDLES} maxWidthATR=${ACCUM_MAX_WIDTH_ATR}`);
 
@@ -261,8 +326,8 @@ function detectAccumulation(candles1h: Candle[], debug: string[]): AccumulationZ
   let bestScore = -1;
 
   for (let windowSize = ACCUM_MIN_CANDLES; windowSize <= Math.min(ACCUM_MAX_CANDLES, last); windowSize++) {
-    const start = last - windowSize;
-    const zoneCandles = candles1h.slice(start, last);
+    const start = last - windowSize + 1;
+    const zoneCandles = candles1h.slice(start, last + 1);
 
     const highs = zoneCandles.map(c => c.high);
     const lows = zoneCandles.map(c => c.low);
@@ -271,7 +336,6 @@ function detectAccumulation(candles1h: Candle[], debug: string[]): AccumulationZ
     const width = top - bottom;
     const widthATR = currentATR > 0 ? width / currentATR : 999;
 
-    // Log every 5th window for visibility
     if (windowSize <= 12 || windowSize % 5 === 0) {
       debug.push(`ACCUM[${windowSize}]: top=${top.toFixed(2)} bottom=${bottom.toFixed(2)} width=${width.toFixed(4)} widthATR=${widthATR.toFixed(2)}`);
     }
@@ -283,7 +347,7 @@ function detectAccumulation(candles1h: Candle[], debug: string[]): AccumulationZ
 
     let touches = 0;
     for (const c of zoneCandles) {
-      const touchTop = width > 0 && Math.abs(c.high - top) / width < 0.20;  // 20% tolerance
+      const touchTop = width > 0 && Math.abs(c.high - top) / width < 0.20;
       const touchBottom = width > 0 && Math.abs(c.low - bottom) / width < 0.20;
       if (touchTop || touchBottom) touches++;
     }
@@ -299,13 +363,14 @@ function detectAccumulation(candles1h: Candle[], debug: string[]): AccumulationZ
     const volSecond = avg(secondHalf.map(c => c.volume));
     const volRatio = volFirst > 0 ? volSecond / volFirst : 1;
 
+    // FIX #12: Relaxed volume decline (0.92)
     if (volRatio > ACCUM_VOLUME_DECLINE) {
       debug.push(`ACCUM[${windowSize}]: REJECTED volRatio=${volRatio.toFixed(2)} > ${ACCUM_VOLUME_DECLINE}`);
       continue;
     }
 
-    // Score: tighter = better, more touches = better
-    const score = (100 - widthATR * 20) + touches * 5;
+    // FIX #11: Stronger touch weighting (touches * 15 instead of * 5)
+    const score = (100 - widthATR * 20) + touches * 15;
     debug.push(`ACCUM[${windowSize}]: CANDIDATE top=${top.toFixed(2)} bottom=${bottom.toFixed(2)} width=${width.toFixed(4)} (${widthATR.toFixed(2)}x ATR) touches=${touches} volRatio=${volRatio.toFixed(2)} score=${score.toFixed(1)}`);
 
     if (score > bestScore) {
@@ -314,7 +379,7 @@ function detectAccumulation(candles1h: Candle[], debug: string[]): AccumulationZ
         top,
         bottom,
         startIndex: start,
-        endIndex: last - 1,
+        endIndex: last,
         touches,
         avgVolume: avg(zoneCandles.map(c => c.volume)),
         widthATR,
@@ -331,7 +396,7 @@ function detectAccumulation(candles1h: Candle[], debug: string[]): AccumulationZ
   return null;
 }
 
-// ─── BREAKOUT DETECTION (1H current candle) ──────────────────────────────
+// ─── BREAKOUT DETECTION (current candle only) ────────────────────────────
 
 interface BreakoutResult {
   detected: boolean;
@@ -345,41 +410,39 @@ function checkBreakout(
   zone: AccumulationZone,
   debug: string[]
 ): BreakoutResult {
-  const last = candles1h.length - 1;
-  const c = candles1h[last];
+  const current = candles1h[candles1h.length - 1];
 
-  debug.push(`BREAKOUT CHECK: close=${c.close.toFixed(2)} open=${c.open.toFixed(2)} zone=${zone.bottom.toFixed(2)}-${zone.top.toFixed(2)}`);
+  debug.push(`BREAKOUT CHECK: close=${current.close.toFixed(2)} open=${current.open.toFixed(2)} zone=${zone.bottom.toFixed(2)}-${zone.top.toFixed(2)}`);
 
-  const isBullish = c.close > c.open;
   let beyondZone = false;
   let direction: "LONG" | "SHORT" | null = null;
 
   if (BREAKOUT_CONFIRM_CLOSE) {
-    if (c.close > zone.top) {
+    if (current.close > zone.top) {
       beyondZone = true;
       direction = "LONG";
-    } else if (c.close < zone.bottom) {
+    } else if (current.close < zone.bottom) {
       beyondZone = true;
       direction = "SHORT";
     }
   } else {
-    if (c.high > zone.top) {
+    if (current.high > zone.top) {
       beyondZone = true;
       direction = "LONG";
-    } else if (c.low < zone.bottom) {
+    } else if (current.low < zone.bottom) {
       beyondZone = true;
       direction = "SHORT";
     }
   }
 
   if (!beyondZone) {
-    debug.push(`BREAKOUT: no breakout — close=${c.close.toFixed(2)} inside zone ${zone.bottom.toFixed(2)}-${zone.top.toFixed(2)}`);
+    debug.push(`BREAKOUT: no breakout — close=${current.close.toFixed(2)} inside zone ${zone.bottom.toFixed(2)}-${zone.top.toFixed(2)}`);
     return { detected: false, direction: null, candle: null, reason: "no_breakout" };
   }
 
   const atrSeries = atr(candles1h, 14);
   const currentATR = atrSeries[atrSeries.length - 1] || 1;
-  const body = Math.abs(c.close - c.open);
+  const body = Math.abs(current.close - current.open);
   const bodyATR = currentATR > 0 ? body / currentATR : 0;
 
   debug.push(`BREAKOUT: beyond zone dir=${direction} body=${body.toFixed(2)} (${bodyATR.toFixed(2)}x ATR)`);
@@ -389,8 +452,37 @@ function checkBreakout(
     return { detected: false, direction: null, candle: null, reason: "body_too_small" };
   }
 
-  debug.push(`BREAKOUT: ${direction} confirmed close=${c.close.toFixed(2)} beyond zone`);
-  return { detected: true, direction, candle: c, reason: `breakout_${direction?.toLowerCase()}` };
+  debug.push(`BREAKOUT: ${direction} confirmed close=${current.close.toFixed(2)} beyond zone`);
+  return { detected: true, direction, candle: current, reason: `breakout_${direction?.toLowerCase()}` };
+}
+
+// ─── 15M CONFIRMATION (lower timeframe alignment) ────────────────────────
+
+function check15MAlignment(
+  candles15m: Candle[],
+  direction: "LONG" | "SHORT",
+  debug: string[]
+): { aligned: boolean; reason: string } {
+  if (!candles15m || candles15m.length < 1) {
+    debug.push("15M: no data available, skipping confirmation");
+    return { aligned: true, reason: "no_15m_data" };
+  }
+
+  const last15m = candles15m[candles15m.length - 1];
+  const isBullish = last15m.close > last15m.open;
+  const isBearish = last15m.close < last15m.open;
+
+  if (direction === "LONG" && isBullish) {
+    debug.push(`15M: aligned bullish (close=${last15m.close.toFixed(2)} > open=${last15m.open.toFixed(2)})`);
+    return { aligned: true, reason: "15m_aligned" };
+  }
+  if (direction === "SHORT" && isBearish) {
+    debug.push(`15M: aligned bearish (close=${last15m.close.toFixed(2)} < open=${last15m.open.toFixed(2)})`);
+    return { aligned: true, reason: "15m_aligned" };
+  }
+
+  debug.push(`15M: MISALIGNED — direction=${direction} but 15M candle is ${isBullish ? "bullish" : isBearish ? "bearish" : "neutral"}`);
+  return { aligned: false, reason: `15m_misaligned_${direction.toLowerCase()}` };
 }
 
 // ─── Signal Builder ─────────────────────────────────────────────────────
@@ -403,6 +495,7 @@ function buildSignal(
   candles4h: Candle[],
   htBias: "BULLISH" | "BEARISH" | "NEUTRAL",
   stochK: number,
+  adx4h: number,
   debug: string[]
 ): { signal: Signal; market: any } | null {
   const entry = candles1h[candles1h.length - 1].close;
@@ -439,7 +532,6 @@ function buildSignal(
   if (zone.touches >= 5) confidence += 10;
   else if (zone.touches >= 3) confidence += 5;
 
-  const adx4h = adx(candles4h);
   if (adx4h > 30) confidence += 10;
   else if (adx4h > 20) confidence += 5;
 
@@ -519,15 +611,37 @@ export async function generateSignal(
   currentPrice?: number
 ): Promise<SignalResult> {
   const debug: string[] = [];
-  const price = currentPrice ?? candles1h[candles1h.length - 1].close;
+  const price = currentPrice ?? candles1h[candles1h.length - 1]?.close ?? 0;
 
-  const state = await getPersistedState(pair);
+  // ── GUARD: Minimum candle requirements ─────────────────────
+  if (!candles1h || candles1h.length < MIN_CANDLES_1H) {
+    debug.push(`GUARD: insufficient 1H candles (${candles1h?.length || 0} < ${MIN_CANDLES_1H})`);
+    return {
+      signal: null,
+      market: { pair, price, timestamp: Date.now(), phase: "NONE", error: "insufficient_1h_data" },
+      debug,
+      stage: "NONE",
+    };
+  }
+  if (!candles4h || candles4h.length < MIN_CANDLES_4H) {
+    debug.push(`GUARD: insufficient 4H candles (${candles4h?.length || 0} < ${MIN_CANDLES_4H})`);
+    return {
+      signal: null,
+      market: { pair, price, timestamp: Date.now(), phase: "NONE", error: "insufficient_4h_data" },
+      debug,
+      stage: "NONE",
+    };
+  }
+
+  let state = await getPersistedState(pair);
   const closes1h = candles1h.map(c => c.close);
   const stoch = stochRsi(closes1h);
   const htBias = higherTimeframeBias(candles4h);
+  // FIX #9: ADX calculated once and reused
+  const adx4h = adx(candles4h);
   const trend1d = htBias === "BULLISH" ? "LONG" : htBias === "BEARISH" ? "SHORT" : "MIXED";
 
-  debug.push(`HTF(4H): ${htBias} | Stage: ${state.stage} | StochK(1H)=${stoch.k} | ADX(4H)=${adx(candles4h)}`);
+  debug.push(`HTF(4H): ${htBias} | Stage: ${state.stage} | StochK(1H)=${stoch.k} | ADX(4H)=${adx4h}`);
 
   // ── COOLDOWN CHECK ──────────────────────────────────────────
   if (state.lastExitAt > 0) {
@@ -539,7 +653,7 @@ export async function generateSignal(
         market: {
           pair, price, timestamp: Date.now(),
           phase: "NONE", trend: trend1d,
-          htfBias: htBias, adx: adx(candles4h), rsi: 0,
+          htfBias: htBias, adx: adx4h, rsi: 0,
           stochK: stoch.k, stochD: stoch.d,
           zoneTop: null, zoneBottom: null, zoneScore: 0,
         },
@@ -549,7 +663,10 @@ export async function generateSignal(
     }
   }
 
-  // ── STEP 1: DETECT ACCUMULATION ON 1H ──────────────────────
+  // ── CLEAN EXPIRED CONSUMED ZONES ────────────────────────────
+  state = await cleanConsumedZones(state, debug);
+
+  // ── STEP 1: DETECT ACCUMULATION ON 1H (excludes current candle) ──
   const zone = detectAccumulation(candles1h, debug);
 
   if (!zone) {
@@ -558,7 +675,7 @@ export async function generateSignal(
       market: {
         pair, price, timestamp: Date.now(),
         phase: "NONE", trend: trend1d,
-        htfBias: htBias, adx: adx(candles4h), rsi: 0,
+        htfBias: htBias, adx: adx4h, rsi: 0,
         stochK: stoch.k, stochD: stoch.d,
         zoneTop: null, zoneBottom: null, zoneScore: 0,
       },
@@ -570,13 +687,13 @@ export async function generateSignal(
   // ── STEP 2: CHECK IF ZONE ALREADY CONSUMED ──────────────────
   const zoneHash = hashZone(zone.top, zone.bottom);
   if (state.consumedZones.includes(zoneHash)) {
-    debug.push(`ZONE CONSUMED: ${zoneHash} already traded`);
+    debug.push(`ZONE CONSUMED: ${zoneHash} already traded (within ${ZONE_CONSUMED_TTL_MS / 3600000}h window)`);
     return {
       signal: null,
       market: {
         pair, price, timestamp: Date.now(),
         phase: "NONE", trend: trend1d,
-        htfBias: htBias, adx: adx(candles4h), rsi: 0,
+        htfBias: htBias, adx: adx4h, rsi: 0,
         stochK: stoch.k, stochD: stoch.d,
         zoneTop: zone.top, zoneBottom: zone.bottom, zoneScore: 0,
       },
@@ -604,7 +721,7 @@ export async function generateSignal(
       market: {
         pair, price, timestamp: Date.now(),
         phase: "WATCHING", trend: trend1d,
-        htfBias: htBias, adx: adx(candles4h), rsi: 0,
+        htfBias: htBias, adx: adx4h, rsi: 0,
         stochK: stoch.k, stochD: stoch.d,
         zoneTop: zone.top, zoneBottom: zone.bottom,
         zoneScore: 40,
@@ -634,7 +751,7 @@ export async function generateSignal(
         market: {
           pair, price, timestamp: Date.now(),
           phase: "NONE", trend: trend1d,
-          htfBias: htBias, adx: adx(candles4h), rsi: 0,
+          htfBias: htBias, adx: adx4h, rsi: 0,
           stochK: stoch.k, stochD: stoch.d,
           zoneTop: zone.top, zoneBottom: zone.bottom, zoneScore: 0,
         },
@@ -644,8 +761,62 @@ export async function generateSignal(
     }
   }
 
-  // ── STEP 5: BUILD SIGNAL ──────────────────────────────────
-  const built = buildSignal(pair, breakout.direction, zone, candles1h, candles4h, htBias, stoch.k, debug);
+  // ── STEP 5: 15M LOWER TIMEFRAME CONFIRMATION ───────────────
+  // FIX #14: candles15m now used for breakout confirmation
+  if (REQUIRE_15M_ALIGNMENT && candles15m && candles15m.length > 0) {
+    const alignment = check15MAlignment(candles15m, breakout.direction, debug);
+    if (!alignment.aligned) {
+      debug.push(`BLOCKED: ${breakout.direction} breakout rejected by 15M misalignment`);
+      return {
+        signal: null,
+        market: {
+          pair, price, timestamp: Date.now(),
+          phase: "NONE", trend: trend1d,
+          htfBias: htBias, adx: adx4h, rsi: 0,
+          stochK: stoch.k, stochD: stoch.d,
+          zoneTop: zone.top, zoneBottom: zone.bottom, zoneScore: 0,
+        },
+        debug,
+        stage: "NONE",
+      };
+    }
+  }
+
+  // ── STEP 6: STOCHASTIC EXHAUSTION HARD BLOCK ────────────────
+  // FIX #7: Exhaustion now returns EXHAUSTION stage, no signal generated
+  if (breakout.direction === "SHORT" && stoch.k < STOCH_EXTREME_LOW) {
+    debug.push(`EXHAUSTION: Stoch K=${stoch.k} < ${STOCH_EXTREME_LOW}, blocking SHORT`);
+    return {
+      signal: null,
+      market: {
+        pair, price, timestamp: Date.now(),
+        phase: "EXHAUSTION", trend: trend1d,
+        htfBias: htBias, adx: adx4h, rsi: 0,
+        stochK: stoch.k, stochD: stoch.d,
+        zoneTop: zone.top, zoneBottom: zone.bottom, zoneScore: 0,
+      },
+      debug,
+      stage: "EXHAUSTION",
+    };
+  }
+  if (breakout.direction === "LONG" && stoch.k > STOCH_EXTREME_HIGH) {
+    debug.push(`EXHAUSTION: Stoch K=${stoch.k} > ${STOCH_EXTREME_HIGH}, blocking LONG`);
+    return {
+      signal: null,
+      market: {
+        pair, price, timestamp: Date.now(),
+        phase: "EXHAUSTION", trend: trend1d,
+        htfBias: htBias, adx: adx4h, rsi: 0,
+        stochK: stoch.k, stochD: stoch.d,
+        zoneTop: zone.top, zoneBottom: zone.bottom, zoneScore: 0,
+      },
+      debug,
+      stage: "EXHAUSTION",
+    };
+  }
+
+  // ── STEP 7: BUILD SIGNAL ──────────────────────────────────
+  const built = buildSignal(pair, breakout.direction, zone, candles1h, candles4h, htBias, stoch.k, adx4h, debug);
 
   if (!built) {
     debug.push("Signal build failed");
@@ -654,7 +825,7 @@ export async function generateSignal(
       market: {
         pair, price, timestamp: Date.now(),
         phase: "NONE", trend: trend1d,
-        htfBias: htBias, adx: adx(candles4h), rsi: 0,
+        htfBias: htBias, adx: adx4h, rsi: 0,
         stochK: stoch.k, stochD: stoch.d,
         zoneTop: null, zoneBottom: null, zoneScore: 0,
       },
@@ -663,6 +834,25 @@ export async function generateSignal(
     };
   }
 
+  // ── STEP 8: DUPLICATE BREAKOUT PREVENTION ──────────────────
+  // FIX #6: lastBreakoutTs now prevents duplicate signals from same candle
+  if (breakout.candle && state.lastBreakoutTs === breakout.candle.timestamp) {
+    debug.push(`DUPLICATE BREAKOUT: same candle timestamp ${breakout.candle.timestamp}, skipping`);
+    return {
+      signal: null,
+      market: {
+        pair, price, timestamp: Date.now(),
+        phase: "NONE", trend: trend1d,
+        htfBias: htBias, adx: adx4h, rsi: 0,
+        stochK: stoch.k, stochD: stoch.d,
+        zoneTop: zone.top, zoneBottom: zone.bottom, zoneScore: 0,
+      },
+      debug,
+      stage: "NONE",
+    };
+  }
+
+  // ── STEP 9: PERSIST CONSUMED ZONE ──────────────────────────
   await persistState(pair, {
     stage: "NONE",
     zoneTop: null,
@@ -670,6 +860,7 @@ export async function generateSignal(
     zoneStartIndex: 0,
     zoneEndIndex: 0,
     consumedZones: [...state.consumedZones, zoneHash],
+    consumedZoneTimes: { ...state.consumedZoneTimes, [zoneHash]: Date.now() },
     lastBreakoutTs: breakout.candle!.timestamp,
   });
 
@@ -686,11 +877,13 @@ export function updateTrail(
   const closes = candles1h.map(c => c.close);
   const ema21 = ema(closes, 21);
   const atrSeries = atr(candles1h, 14);
+  // FIX #8: Safe fallback for undefined ATR
   const currentATR = atrSeries[atrSeries.length - 1];
+  const safeATR = currentATR && currentATR > 0 ? currentATR : Math.abs(currentPrice - signal.entry) * 0.1;
 
   const newTrail = signal.direction === "LONG"
-    ? Math.max(signal.trail, ema21[ema21.length - 1] - currentATR * 0.3)
-    : Math.min(signal.trail, ema21[ema21.length - 1] + currentATR * 0.3);
+    ? Math.max(signal.trail, ema21[ema21.length - 1] - safeATR * 0.3)
+    : Math.min(signal.trail, ema21[ema21.length - 1] + safeATR * 0.3);
 
   const hit = signal.direction === "LONG" ? currentPrice < newTrail : currentPrice > newTrail;
 
