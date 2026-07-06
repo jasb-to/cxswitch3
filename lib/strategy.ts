@@ -60,8 +60,12 @@ export const CURRENT_SIGNAL_VERSION = 30;
 
 const ACCUM_MIN_CANDLES = 5;  // Faster detection
 const ACCUM_MAX_CANDLES = 40;
-const ACCUM_MAX_WIDTH_ATR = 2.5;
 const ACCUM_MIN_TOUCHES = 2;
+
+function getAccumMaxWidthATR(pair: string): number {
+  if (pair === "HYPE") return 3.0;
+  return 2.5;
+}
 const ACCUM_VOLUME_DECLINE = 0.92;  // Relaxed from 0.85 → 0.90 → 0.92
 
 const BREAKOUT_MIN_BODY_ATR = 0.15;  // More aggressive: smaller candles accepted
