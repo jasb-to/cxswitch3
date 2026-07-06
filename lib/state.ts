@@ -1,9 +1,5 @@
 // lib/state.ts — v28 "Redis State Management"
 // ============================================================
-// Updated for v28 strategy compatibility
-//   - CURRENT_SIGNAL_VERSION bumped to 28
-//   - Signal interface expanded to include v28 fields
-//   - Maintains backward compatibility with v30.5 fields in existing data
 
 import { Redis } from "@upstash/redis";
 
@@ -30,28 +26,22 @@ const PAIR_STATE_TTL = 7 * 24 * 60 * 60;
 
 export const CURRENT_SIGNAL_VERSION = 28;
 
-// Unified Signal interface — superset of v28 and v30.5 fields
-// v28 fields: type, scale, rsi, stochK, stochD, expectedMove, reason
-// v30.5 fields: stage, zoneTop, zoneBottom, trail, explanation
 export interface Signal {
   id: string;
   pair: string;
   direction: "LONG" | "SHORT";
-  // v28 fields
   type?: "ACCUMULATE" | "BREAKOUT" | "EXIT";
   scale?: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
+  stage?: "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED";
   rsi?: number;
   stochK?: number;
   stochD?: number;
   expectedMove?: number;
   reason?: string;
-  // v30.5 fields (for backward compat)
-  stage?: "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED";
+  explanation?: string;
   zoneTop?: number;
   zoneBottom?: number;
   trail?: number;
-  explanation?: string;
-  // Common fields
   entry: number;
   stop: number;
   target: number;
@@ -60,7 +50,6 @@ export interface Signal {
   adx: number;
   timestamp: number;
   version: number;
-  // Trade manager state
   tradeState?: string;
   highestPrice?: number;
   lowestPrice?: number;
@@ -282,8 +271,6 @@ export async function setCronLogs(logs: any[]): Promise<void> {
   }
 }
 
-// ─── Per-Pair State (for strategy persistence) ───────────────────────────
-
 export async function getPairState(pair: string): Promise<any> {
   try {
     const data = await redis.get(`cx_state_${pair}_${KEY_VERSION}`);
@@ -302,7 +289,6 @@ export async function setPairState(pair: string, state: any): Promise<void> {
   }
 }
 
-// NEW: Reset consumed zones for a pair
 export async function resetPairConsumedZones(pair: string): Promise<void> {
   try {
     const existing = await getPairState(pair);
@@ -318,14 +304,11 @@ export async function resetPairConsumedZones(pair: string): Promise<void> {
   }
 }
 
-// NEW: Reset all pairs
 export async function resetAllConsumedZones(pairs: string[]): Promise<void> {
   for (const pair of pairs) {
     await resetPairConsumedZones(pair);
   }
 }
-
-// ─── Legacy Compatibility ─────────────────────────────────────────────────
 
 export async function resetAll() {
   try {
