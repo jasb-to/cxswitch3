@@ -3,11 +3,12 @@
 // Backend cron (10 min): calculates highest/lowest price, locked profit,
 // current stop, trade state. UI only displays these values.
 //
-// CHANGELOG v28-PROD:
-// - Uses only v28 exports from @/lib/strategy (no v30.5 imports)
-// - Trade manager state computed here, persisted on signals
-// - Duplicate exit prevention via signal.exited + signal.tradeState
-// - One exit alert per trade ID only
+// CHANGELOG v28-PROD-FINAL:
+// - Trade Manager is SOLE exit authority for open trades
+// - filterExpiredSignals receives real candles4h (never empty array)
+// - Exited state persisted BEFORE Telegram alert (duplicate exit fix)
+// - isSignalStillValid only checks TTL + missed entry (no SL/TP)
+// - Manager state synced to signal object for UI display
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -134,16 +135,40 @@ export async function GET(request: Request) {
     }
   }
 
+  // --- Fetch candles for ALL pairs first so filterExpiredSignals gets real data ---
+  const candles4hMap: Record<string, Candle[]> = {};
+  const candles1hMap: Record<string, Candle[]> = {};
+  const candles15mMap: Record<string, Candle[]> = {};
+
+  for (const pair of PAIRS) {
+    try {
+      const [c1h, c4h, c15m] = await Promise.all([
+        getCandles(pair, 60),
+        getCandles(pair, 240),
+        getCandles(pair, 15),
+      ]);
+      candles1hMap[pair] = c1h || [];
+      candles4hMap[pair] = c4h || [];
+      candles15mMap[pair] = c15m || [];
+    } catch (e: any) {
+      log(`[FETCH] ${pair} — ERROR: ${e.message}`);
+      candles1hMap[pair] = [];
+      candles4hMap[pair] = [];
+      candles15mMap[pair] = [];
+    }
+  }
+
   log(`[CRON] Filtering ${existingSignals.length} existing signals...`);
   const { active: validSignals, exited: preExited } = filterExpiredSignals(
     existingSignals,
     currentPrices,
+    candles4hMap,
     runStart
   );
   log(`[STATE] Valid: ${validSignals.length}, Expired: ${preExited.length}`);
 
-  // --- Process pre-exited signals (from filterExpiredSignals) ---
-  // DUPLICATE EXIT BUG FIX: Mark exited, send one alert, clean up
+  // --- Process pre-exited signals ---
+  // DUPLICATE EXIT BUG FIX: Mark exited, persist BEFORE alert, clean up
   for (const { signal, reason } of preExited) {
     // Skip if already processed in a prior run
     if (signal.exited || signal.tradeState === "EXITED") {
@@ -154,13 +179,14 @@ export async function GET(request: Request) {
 
     log(`[EXIT] ${signal.pair} — ${reason}`);
 
-    // Mark signal as exited to prevent duplicate alerts
+    // Mark signal as exited IMMEDIATELY (before any async operations)
     signal.exited = true;
     signal.exitReason = reason;
     signal.exitPrice = currentPrices[signal.pair] || signal.entry;
     signal.exitTimestamp = runStart;
     signal.tradeState = "EXITED";
 
+    // Persist to history BEFORE sending alert
     await addSignalToHistory(signal, reason as any, signal.exitPrice);
     if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
     await resetPairConsumedZones(signal.pair);
@@ -173,6 +199,8 @@ export async function GET(request: Request) {
       signal.direction === "LONG"
         ? ((signal.exitPrice - signal.entry) / signal.entry) * 100
         : ((signal.entry - signal.exitPrice) / signal.entry) * 100;
+
+    // Send alert AFTER state is persisted
     await sendExitAlert({
       pair: signal.pair,
       direction: signal.direction,
@@ -190,14 +218,12 @@ export async function GET(request: Request) {
   for (const pair of PAIRS) {
     log(`[PAIR] ${pair} — starting processing`);
     try {
-      log(`[FETCH] ${pair} — requesting 1H/4H/15M candles`);
-      const [candles1h, candles4h, candles15m] = await Promise.all([
-        getCandles(pair, 60),
-        getCandles(pair, 240),
-        getCandles(pair, 15),
-      ]);
+      const candles1h = candles1hMap[pair];
+      const candles4h = candles4hMap[pair];
+      const candles15m = candles15mMap[pair];
+
       log(
-        `[FETCH] ${pair} — received: 1H=${candles1h?.length}, 4H=${candles4h?.length}, 15M=${candles15m?.length}`
+        `[FETCH] ${pair} — using: 1H=${candles1h?.length}, 4H=${candles4h?.length}, 15M=${candles15m?.length}`
       );
 
       if (!candles1h || candles1h.length < MIN_CANDLES_1H) {
@@ -242,12 +268,14 @@ export async function GET(request: Request) {
           if (mgrResult.shouldExit) {
             log(`[PAIR] ${pair} — MANAGER EXIT: ${mgrResult.exitReason}`);
 
+            // Mark as exited IMMEDIATELY (before any async)
             existingForPair.exited = true;
             existingForPair.exitReason = mgrResult.exitReason;
             existingForPair.exitPrice = currentPrice;
             existingForPair.exitTimestamp = runStart;
             existingForPair.tradeState = "EXITED";
 
+            // Persist to history BEFORE alert
             await addSignalToHistory(existingForPair, mgrResult.exitReason as any, currentPrice);
             validSignals.splice(existingIdx, 1);
             if (activeTrades[pair]) delete activeTrades[pair];
@@ -258,6 +286,8 @@ export async function GET(request: Request) {
               existingForPair.direction === "LONG"
                 ? ((currentPrice - existingForPair.entry) / existingForPair.entry) * 100
                 : ((existingForPair.entry - currentPrice) / existingForPair.entry) * 100;
+
+            // Send alert AFTER state persisted
             await sendExitAlert({
               pair,
               direction: existingForPair.direction,
@@ -271,7 +301,7 @@ export async function GET(request: Request) {
           }
         }
 
-        // Legacy validity check (catches TTL, missed entry, hard SL/TP)
+        // Legacy TTL + missed entry check (Trade Manager doesn't handle these)
         const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
         if (!validity.valid) {
           log(`[PAIR] ${pair} — INVALID: ${validity.reason}`);
@@ -293,6 +323,7 @@ export async function GET(request: Request) {
             existingForPair.direction === "LONG"
               ? ((currentPrice - existingForPair.entry) / existingForPair.entry) * 100
               : ((existingForPair.entry - currentPrice) / existingForPair.entry) * 100;
+
           await sendExitAlert({
             pair,
             direction: existingForPair.direction,
@@ -304,14 +335,7 @@ export async function GET(request: Request) {
           alerts.push({ pair, status: "expired", reason: validity.reason });
         } else {
           // Still holding — log state and push market data
-          const holdResult = shouldHold(existingForPair, candles4h, currentPrice);
-          log(`[PAIR] ${pair} — Holding, ${holdResult.reason}`);
-
-          // Ensure manager state is synced to signal for UI
-          if (holdResult.tradeState) existingForPair.tradeState = holdResult.tradeState;
-          if (holdResult.lockedStop !== undefined) existingForPair.lockedStop = holdResult.lockedStop;
-          if (holdResult.highestPrice !== undefined) existingForPair.highestPrice = holdResult.highestPrice;
-          if (holdResult.lowestPrice !== undefined) existingForPair.lowestPrice = holdResult.lowestPrice;
+          log(`[PAIR] ${pair} — Holding, state=${existingForPair.tradeState || "OPEN"}`);
 
           marketDataList.push({
             pair,
