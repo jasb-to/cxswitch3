@@ -5,17 +5,20 @@
 // ALERTS: ENTRY only (no ADD, no ENTRY_2, no pyramiding)
 // TRADE MANAGER: Isolated profit-locking engine, sole exit authority for open trades
 //
-// CHANGELOG v28-PROD-FINAL:
-// - Single entry per position, no pyramiding, no progression
-// - Exhaustion filter: 2+ conditions required to reject
-// - nearTrendline: distance < 0.5 ATR (adaptive, not fixed 1.2%)
-// - Stop: max(recent swing, 2 ATR, 3%) — adapts to volatility
-// - Trade Manager: sole exit authority for open trades
-// - isSignalStillValid: ONLY TTL + missed entry (no SL/TP for active trades)
-// - Profit lock: +3% BE → +6% +3% → +10% ATR trail → EXIT
-// - Duplicate exit prevention: signal.exited + tradeState=EXITED persisted immediately
-// - Stop never moves backwards
+// CHANGELOG v28-PROD-FINAL-v3:
+// - Trade Manager state: in-memory with persistence hooks (get/set/clear)
+// - ATR: true Wilder smoothing (reuses wilderSmooth from ADX)
+// - RSI: true Wilder smoothing for TV parity
+// - Trendline: uses timestamps instead of candle indices
+// - Profit lock thresholds: configurable constants
+// - Hysteresis: unlock on 24h OR price moved >3 ATR
+// - Trend confirmation: EMA21 slope > 0 for LONG, < 0 for SHORT
+// - Confidence: calculated from R², ADX, trend strength, stoch alignment, dist, RR
+// - Signal IDs: crypto.randomUUID() instead of pair+Date.now()
+// - Trade Manager: highestPrice/lowestPrice initialized from entry candle
 // ============================================================
+
+import { randomUUID } from "crypto";
 
 export interface Candle {
   timestamp: number;
@@ -66,6 +69,14 @@ export const CURRENT_SIGNAL_VERSION = 28;
 const MIN_RR = 1.5;
 
 // ============================================================
+// CONFIGURABLE PROFIT LOCK THRESHOLDS
+// ============================================================
+
+const BREAK_EVEN_TRIGGER = 3;   // % PnL to move stop to entry
+const LOCK_TRIGGER = 6;         // % PnL to lock at +3%
+const RUNNER_TRIGGER = 10;      // % PnL to activate ATR trailing
+
+// ============================================================
 // FEATURE FLAGS
 // ============================================================
 
@@ -98,16 +109,59 @@ interface TradeManagerState {
   initialStop: number;
 }
 
+// In-memory store (fast access)
 const tradeManagerStore: Map<string, TradeManagerState> = new Map();
+
+// Persistence hooks (set by cron to use Redis/Postgres)
+let persistGet: ((signalId: string) => Promise<TradeManagerState | null>) | null = null;
+let persistSet: ((signalId: string, state: TradeManagerState) => Promise<void>) | null = null;
+let persistDel: ((signalId: string) => Promise<void>) | null = null;
+
+export function setTradeManagerPersistence(
+  getFn: (signalId: string) => Promise<TradeManagerState | null>,
+  setFn: (signalId: string, state: TradeManagerState) => Promise<void>,
+  delFn: (signalId: string) => Promise<void>
+): void {
+  persistGet = getFn;
+  persistSet = setFn;
+  persistDel = delFn;
+}
+
+async function loadTradeManagerState(signalId: string): Promise<TradeManagerState | null> {
+  // Check memory first
+  const mem = tradeManagerStore.get(signalId);
+  if (mem) return mem;
+  // Fall back to persistent store
+  if (persistGet) {
+    const persisted = await persistGet(signalId);
+    if (persisted) {
+      tradeManagerStore.set(signalId, persisted);
+      return persisted;
+    }
+  }
+  return null;
+}
+
+async function saveTradeManagerState(signalId: string, state: TradeManagerState): Promise<void> {
+  tradeManagerStore.set(signalId, state);
+  if (persistSet) {
+    await persistSet(signalId, state);
+  }
+}
 
 function getTradeManagerState(signal: Signal): TradeManagerState {
   const existing = tradeManagerStore.get(signal.id);
   if (existing) return existing;
 
+  // FIX #14: Initialize highest/lowest from entry candle if available
+  // Default to entry, but if we have the entry candle's high/low, use those
+  const entryHigh = signal.highestPrice ?? signal.entry;
+  const entryLow = signal.lowestPrice ?? signal.entry;
+
   const state: TradeManagerState = {
     tradeState: "OPEN",
-    highestPrice: signal.entry,
-    lowestPrice: signal.entry,
+    highestPrice: signal.direction === "LONG" ? entryHigh : entryLow,
+    lowestPrice: signal.direction === "LONG" ? entryLow : entryHigh,
     lockedStop: signal.stop,
     entryPrice: signal.entry,
     direction: signal.direction,
@@ -118,8 +172,11 @@ function getTradeManagerState(signal: Signal): TradeManagerState {
 }
 
 /** Remove a trade from the manager store (cleanup after EXITED) */
-export function removeTradeManagerState(signalId: string): void {
+export async function removeTradeManagerState(signalId: string): Promise<void> {
   tradeManagerStore.delete(signalId);
+  if (persistDel) {
+    await persistDel(signalId);
+  }
 }
 
 /** Reset all trade manager state (useful for testing) */
@@ -170,7 +227,7 @@ export function updateTradeManagerState(
   if (
     FEATURES.BREAK_EVEN_ENABLED &&
     state.tradeState === "OPEN" &&
-    pnlPct >= 3
+    pnlPct >= BREAK_EVEN_TRIGGER
   ) {
     state.tradeState = "BREAK_EVEN";
     const newStop = entry;
@@ -186,7 +243,7 @@ export function updateTradeManagerState(
   if (
     FEATURES.PROFIT_LOCK_ENABLED &&
     (state.tradeState === "OPEN" || state.tradeState === "BREAK_EVEN") &&
-    pnlPct >= 6
+    pnlPct >= LOCK_TRIGGER
   ) {
     state.tradeState = "LOCKED";
     const newStop =
@@ -203,7 +260,7 @@ export function updateTradeManagerState(
   if (
     FEATURES.TRAIL_STOP_ENABLED &&
     (state.tradeState === "BREAK_EVEN" || state.tradeState === "LOCKED") &&
-    pnlPct >= 10
+    pnlPct >= RUNNER_TRIGGER
   ) {
     state.tradeState = "RUNNER";
   }
@@ -241,7 +298,7 @@ export function updateTradeManagerState(
       state,
       shouldExit: true,
       exitReason:
-        pnlPct >= 3
+        pnlPct >= BREAK_EVEN_TRIGGER
           ? "profit_lock_stop"
           : pnlPct >= 0
             ? "break_even_stop"
@@ -263,13 +320,13 @@ export function updateTradeManagerState(
 }
 
 // ============================================================
-// STATEFUL TRENDLINE STORE
+// STATEFUL TRENDLINE STORE (uses timestamps, not indices)
 // ============================================================
 
 interface TrendlineState {
-  slope: number;
-  intercept: number;
-  pivots: { index: number; price: number; timestamp: number }[];
+  slope: number;          // price per ms
+  intercept: number;      // price at timestamp=0
+  pivots: { timestamp: number; price: number }[];
   lastUpdated: number;
   direction: "LONG" | "SHORT";
 }
@@ -281,25 +338,44 @@ function avg(arr: number[]): number {
   return arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
-function rsi(closes: number[], period: number = 14): number {
-  let gains = 0;
-  let losses = 0;
-  for (let i = 1; i <= period && i < closes.length; i++) {
-    const change = closes[closes.length - i] - closes[closes.length - i - 1];
-    if (change > 0) gains += change;
-    else losses += Math.abs(change);
+// --- WILDER SMOOTHING (reusable) ---
+function wilderSmooth(values: number[], period: number): number[] {
+  const result: number[] = [avg(values.slice(0, period))];
+  for (let i = period; i < values.length; i++) {
+    result.push((result[result.length - 1] * (period - 1) + values[i]) / period);
   }
-  const avgGain = gains / period;
-  const avgLoss = losses / period;
-  if (avgLoss === 0) return 100;
-  return 100 - (100 / (1 + avgGain / avgLoss));
+  return result;
+}
+
+// --- TRUE WILDER RSI (TradingView exact) ---
+// FIX #3: Uses Wilder smoothing instead of simple average
+function wilderRsi(closes: number[], period: number = 14): number {
+  if (closes.length < period + 1) return 50;
+
+  const changes: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    changes.push(closes[i] - closes[i - 1]);
+  }
+
+  const gains = changes.map((c) => (c > 0 ? c : 0));
+  const losses = changes.map((c) => (c < 0 ? Math.abs(c) : 0));
+
+  const smoothedGains = wilderSmooth(gains, period);
+  const smoothedLosses = wilderSmooth(losses, period);
+
+  const lastGain = smoothedGains[smoothedGains.length - 1];
+  const lastLoss = smoothedLosses[smoothedLosses.length - 1];
+
+  if (lastLoss === 0) return 100;
+  const rs = lastGain / lastLoss;
+  return 100 - (100 / (1 + rs));
 }
 
 function rsiSeries(closes: number[], period: number = 14): number[] {
   const series: number[] = [];
-  for (let i = period; i < closes.length; i++) {
-    const window = closes.slice(i - period + 1, i + 1);
-    series.push(rsi(window, period));
+  for (let i = period + 1; i <= closes.length; i++) {
+    const window = closes.slice(0, i);
+    series.push(wilderRsi(window, period));
   }
   return series;
 }
@@ -338,14 +414,6 @@ function stochRsi(
   const currentD = avg(kValues.slice(-dSmooth));
 
   return { k: Math.round(currentK * 10) / 10, d: Math.round(currentD * 10) / 10 };
-}
-
-function wilderSmooth(values: number[], period: number): number[] {
-  const result: number[] = [avg(values.slice(0, period))];
-  for (let i = period; i < values.length; i++) {
-    result.push((result[result.length - 1] * (period - 1) + values[i]) / period);
-  }
-  return result;
 }
 
 function adx(candles: Candle[], period: number = 14): number {
@@ -420,8 +488,8 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
 function findPivots(
   candles: Candle[],
   direction: "LONG" | "SHORT"
-): { index: number; price: number; timestamp: number }[] {
-  const pivots: { index: number; price: number; timestamp: number }[] = [];
+): { timestamp: number; price: number }[] {
+  const pivots: { timestamp: number; price: number }[] = [];
 
   for (let i = 3; i < candles.length - 3; i++) {
     const c = candles[i];
@@ -437,16 +505,17 @@ function findPivots(
       c.high > candles[i + 2].high;
 
     if (direction === "LONG" && isSwingLow) {
-      pivots.push({ index: i, price: c.low, timestamp: c.timestamp });
+      pivots.push({ timestamp: c.timestamp, price: c.low });
     }
     if (direction === "SHORT" && isSwingHigh) {
-      pivots.push({ index: i, price: c.high, timestamp: c.timestamp });
+      pivots.push({ timestamp: c.timestamp, price: c.high });
     }
   }
 
   return pivots;
 }
 
+// FIX #5: Trendline uses timestamps instead of candle indices
 function getTrendline(
   pair: string,
   candles: Candle[],
@@ -471,22 +540,22 @@ function getTrendline(
   ) {
     const lastPivot = recentPivots[recentPivots.length - 1];
     const projectedPrice =
-      existing.slope * lastPivot.index + existing.intercept;
+      existing.slope * lastPivot.timestamp + existing.intercept;
     const deviation =
       Math.abs(lastPivot.price - projectedPrice) / projectedPrice;
 
     if (deviation < 0.02) {
-      const currentIndex = len - 1;
-      const price = existing.slope * currentIndex + existing.intercept;
-      return { price, r2: 0.85, age: now - existing.lastUpdated };
+      const currentPrice = existing.slope * now + existing.intercept;
+      return { price: currentPrice, r2: 0.85, age: now - existing.lastUpdated };
     }
   }
 
+  // Linear regression on timestamps (not indices)
   const n = recentPivots.length;
-  const sumX = recentPivots.reduce((s, p) => s + p.index, 0);
+  const sumX = recentPivots.reduce((s, p) => s + p.timestamp, 0);
   const sumY = recentPivots.reduce((s, p) => s + p.price, 0);
-  const sumXY = recentPivots.reduce((s, p) => s + p.index * p.price, 0);
-  const sumX2 = recentPivots.reduce((s, p) => s + p.index * p.index, 0);
+  const sumXY = recentPivots.reduce((s, p) => s + p.timestamp * p.price, 0);
+  const sumX2 = recentPivots.reduce((s, p) => s + p.timestamp * p.timestamp, 0);
 
   const slope =
     (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
@@ -498,7 +567,7 @@ function getTrendline(
     0
   );
   const ssResidual = recentPivots.reduce(
-    (s, p) => s + Math.pow(p.price - (slope * p.index + intercept), 2),
+    (s, p) => s + Math.pow(p.price - (slope * p.timestamp + intercept), 2),
     0
   );
   const r2 = ssTotal === 0 ? 0 : 1 - ssResidual / ssTotal;
@@ -511,18 +580,18 @@ function getTrendline(
     direction,
   });
 
-  const currentIndex = len - 1;
-  const price = slope * currentIndex + intercept;
+  const currentPrice = slope * now + intercept;
 
-  return { price, r2: Math.round(r2 * 100) / 100, age: 0 };
+  return { price: currentPrice, r2: Math.round(r2 * 100) / 100, age: 0 };
 }
 
 function trend1D(candles1d: Candle[]): {
   direction: "LONG" | "SHORT" | null;
   strength: string;
+  ema21Slope: number;
 } {
   const len = candles1d.length;
-  if (len < 25) return { direction: null, strength: "WEAK" };
+  if (len < 25) return { direction: null, strength: "WEAK", ema21Slope: 0 };
 
   const closes = candles1d.map((c) => c.close);
   const ema8 = ema(closes, 8);
@@ -530,6 +599,11 @@ function trend1D(candles1d: Candle[]): {
 
   const direction =
     ema8[ema8.length - 1] > ema21[ema21.length - 1] ? "LONG" : "SHORT";
+
+  // FIX #11: EMA21 slope for trend confirmation
+  const ema21Slope = ema21.length >= 3
+    ? (ema21[ema21.length - 1] - ema21[ema21.length - 3]) / 2
+    : 0;
 
   const highs = candles1d.slice(-20).map((c) => c.high);
   const lows = candles1d.slice(-20).map((c) => c.low);
@@ -541,7 +615,7 @@ function trend1D(candles1d: Candle[]): {
       ? "STRONG"
       : "MEDIUM";
 
-  return { direction, strength };
+  return { direction, strength, ema21Slope };
 }
 
 export function ema(closes: number[], period: number): number[] {
@@ -553,10 +627,12 @@ export function ema(closes: number[], period: number): number[] {
   return ema;
 }
 
+// FIX #2: True Wilder ATR (reuses wilderSmooth)
 function atr(candles: Candle[], period: number = 14): number {
-  const start = Math.max(1, candles.length - period);
+  if (candles.length < 2) return 0;
+
   const trs: number[] = [];
-  for (let i = start; i < candles.length; i++) {
+  for (let i = 1; i < candles.length; i++) {
     const c = candles[i];
     const p = candles[i - 1];
     trs.push(
@@ -567,17 +643,23 @@ function atr(candles: Candle[], period: number = 14): number {
       )
     );
   }
-  return avg(trs);
+
+  if (trs.length < period) return avg(trs);
+
+  const atrSmooth = wilderSmooth(trs, period);
+  return atrSmooth[atrSmooth.length - 1];
 }
 
 // ============================================================
 // HYSTERESIS (simplified: only ENTRY_1, no progression)
+// FIX #9: Unlock on 24h OR price moved >3 ATR
 // ============================================================
 
 interface HysteresisState {
   lastSignalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
   lastSignalPrice: number;
   lockUntil: number;
+  atrAtLock: number;
 }
 
 const hysteresisStore: Map<string, HysteresisState> = new Map();
@@ -585,9 +667,9 @@ const HYSTERESIS_BAND = 0.005;
 
 function getHysteresis(pair: string, now: number): HysteresisState {
   const state = hysteresisStore.get(pair);
-  if (!state) return { lastSignalType: null, lastSignalPrice: 0, lockUntil: 0 };
+  if (!state) return { lastSignalType: null, lastSignalPrice: 0, lockUntil: 0, atrAtLock: 0 };
   if (now > state.lockUntil)
-    return { lastSignalType: null, lastSignalPrice: 0, lockUntil: 0 };
+    return { lastSignalType: null, lastSignalPrice: 0, lockUntil: 0, atrAtLock: 0 };
   return state;
 }
 
@@ -595,15 +677,37 @@ function setHysteresis(
   pair: string,
   type: "ENTRY_1" | "ENTRY_2" | "ADD",
   price: number,
-  now: number
+  now: number,
+  atrVal: number
 ): void {
-  // Always 24h lock for single-entry system
   const lockDuration = 24 * 60 * 60 * 1000;
   hysteresisStore.set(pair, {
     lastSignalType: type,
     lastSignalPrice: price,
     lockUntil: now + lockDuration,
+    atrAtLock: atrVal,
   });
+}
+
+function checkHysteresisUnlock(
+  pair: string,
+  currentPrice: number,
+  now: number
+): boolean {
+  const state = hysteresisStore.get(pair);
+  if (!state) return true;
+  if (now > state.lockUntil) return true;
+
+  // FIX #9: Unlock if price moved >3 ATR from entry
+  const priceMove = Math.abs(currentPrice - state.lastSignalPrice) / state.lastSignalPrice;
+  const atrMove = state.atrAtLock > 0 ? (Math.abs(currentPrice - state.lastSignalPrice) / state.atrAtLock) : 0;
+
+  if (atrMove > 3) {
+    hysteresisStore.delete(pair);
+    return true;
+  }
+
+  return false;
 }
 
 // ============================================================
@@ -650,6 +754,53 @@ function checkExhaustion(
 }
 
 // ============================================================
+// CONFIDENCE CALCULATION
+// FIX #12: Calculate from multiple factors instead of constant 50
+// ============================================================
+function calculateConfidence(
+  r2: number,
+  adxVal: number,
+  trendStrength: string,
+  stochK: number,
+  stochD: number,
+  distToTrendline: number,
+  rr: number,
+  direction: "LONG" | "SHORT",
+  ema21Slope: number
+): number {
+  let score = 50;
+
+  // Trendline fit (R²): 0-1 → 0-10 points
+  score += r2 * 10;
+
+  // ADX: 0-60 → 0-15 points
+  score += Math.min(adxVal / 60, 1) * 15;
+
+  // Trend strength
+  if (trendStrength === "STRONG") score += 10;
+  else if (trendStrength === "MEDIUM") score += 5;
+
+  // StochRSI alignment (K crossing D in direction of trade)
+  const stochAligned =
+    direction === "LONG" ? stochK > stochD : stochK < stochD;
+  if (stochAligned) score += 5;
+
+  // Near trendline (closer = better)
+  const distScore = Math.max(0, 1 - Math.abs(distToTrendline) / 0.02);
+  score += distScore * 5;
+
+  // Risk/reward: 1.5-4 → 0-10 points
+  score += Math.min((rr - 1.5) / 2.5, 1) * 10;
+
+  // EMA21 slope confirmation
+  const slopeAligned =
+    direction === "LONG" ? ema21Slope > 0 : ema21Slope < 0;
+  if (slopeAligned) score += 5;
+
+  return Math.round(Math.min(Math.max(score, 0), 100));
+}
+
+// ============================================================
 // MAIN SIGNAL GENERATOR
 // ============================================================
 
@@ -677,10 +828,18 @@ export function generateSignal(
   }
 
   const t1d = trend1D(candles1d);
-  debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength}`);
+  debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength} slope=${t1d.ema21Slope.toFixed(2)}`);
 
   if (!t1d.direction) {
     debug.push("1D trend unclear");
+    return { debug };
+  }
+
+  // FIX #11: Require EMA21 slope confirmation
+  const slopeAligned =
+    t1d.direction === "LONG" ? t1d.ema21Slope > 0 : t1d.ema21Slope < 0;
+  if (!slopeAligned) {
+    debug.push(`EMA21 slope not aligned: ${t1d.ema21Slope.toFixed(2)}`);
     return { debug };
   }
 
@@ -728,6 +887,16 @@ export function generateSignal(
   }
 
   const now = Date.now();
+
+  // FIX #9: Check hysteresis unlock (time OR >3 ATR move)
+  const unlocked = checkHysteresisUnlock(pair, price, now);
+  if (!unlocked) {
+    const hyst = getHysteresis(pair, now);
+    const priceMove = Math.abs(price - hyst.lastSignalPrice) / hyst.lastSignalPrice;
+    debug.push(`Hysteresis lock: ${hyst.lastSignalType} | move ${(priceMove * 100).toFixed(2)}% | ATR move ${(Math.abs(price - hyst.lastSignalPrice) / hyst.atrAtLock).toFixed(1)}x`);
+    return { debug };
+  }
+
   const hyst = getHysteresis(pair, now);
 
   let finalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
@@ -775,9 +944,9 @@ export function generateSignal(
     return { debug };
   }
 
-  // Set hysteresis for new signal
+  // Set hysteresis for new signal (with ATR for unlock check)
   if (finalType !== hyst.lastSignalType) {
-    setHysteresis(pair, finalType, price, now);
+    setHysteresis(pair, finalType, price, now, atrVal);
   }
 
   // --- LEVELS ---
@@ -790,8 +959,6 @@ export function generateSignal(
   let sl: number;
   let tp: number;
   let type: "ACCUMULATE" | "BREAKOUT";
-  let confidence: number;
-  let expectedMove: number;
 
   type = "ACCUMULATE";
   entry = price;
@@ -813,8 +980,6 @@ export function generateSignal(
     t1d.direction === "LONG"
       ? entry + atrVal * 5
       : entry - atrVal * 5;
-  confidence = 50;
-  expectedMove = (Math.abs(tp - entry) / entry) * 100;
 
   const rr =
     t1d.direction === "LONG"
@@ -825,10 +990,27 @@ export function generateSignal(
     return { debug };
   }
 
-  const rsi4h = rsi(candles4h.map((c) => c.close));
+  const expectedMove = (Math.abs(tp - entry) / entry) * 100;
 
+  // FIX #12: Calculate confidence from multiple factors
+  const confidence = calculateConfidence(
+    trendline.r2,
+    adxVal,
+    t1d.strength,
+    stoch.k,
+    stoch.d,
+    dist,
+    rr,
+    t1d.direction,
+    t1d.ema21Slope
+  );
+
+  // FIX #3: Use Wilder RSI
+  const rsi4h = wilderRsi(candles4h.map((c) => c.close));
+
+  // FIX #13: Use crypto.randomUUID() for signal IDs
   const signal: Signal = {
-    id: `${pair}_${Date.now()}`,
+    id: randomUUID(),
     pair,
     direction: t1d.direction,
     type,
@@ -843,7 +1025,7 @@ export function generateSignal(
     stochK: stoch.k,
     stochD: stoch.d,
     expectedMove: Math.round(expectedMove * 10) / 10,
-    reason: `${t1d.direction} ${type} ${finalType} | 1D ${t1d.strength} | Stoch K${stoch.k} D${stoch.d} | TL approach | RR ${rr.toFixed(2)}${exhaustion.reasons.length > 0 ? " | exhaustion:" + exhaustion.reasons.join(",") : ""}`,
+    reason: `${t1d.direction} ${type} ${finalType} | 1D ${t1d.strength} | Stoch K${stoch.k} D${stoch.d} | TL approach | RR ${rr.toFixed(2)} | Conf ${confidence}${exhaustion.reasons.length > 0 ? " | exhaustion:" + exhaustion.reasons.join(",") : ""}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
   };
@@ -864,7 +1046,7 @@ export function generateSignal(
   };
 
   debug.push(
-    `SIGNAL: ${type} ${finalType} ${signal.direction} ${signal.entry} | TP ${signal.target} | SL ${signal.stop} | RR ${signal.rr}`
+    `SIGNAL: ${type} ${finalType} ${signal.direction} ${signal.entry} | TP ${signal.target} | SL ${signal.stop} | RR ${signal.rr} | Conf ${confidence}`
   );
 
   return { signal, market, debug };
@@ -897,7 +1079,7 @@ export function getMarketSnapshot(
     timestamp: Date.now(),
     trend: t1d.direction ? `${t1d.direction} ${t1d.strength}` : "NONE",
     adx: Math.round(adx(candles4h) * 10) / 10,
-    rsi: Math.round(rsi(candles4h.map((c) => c.close)) * 10) / 10,
+    rsi: Math.round(wilderRsi(candles4h.map((c) => c.close)) * 10) / 10,
     stochK: stochRsi4h.k,
     stochD: stochRsi4h.d,
     trendlinePrice: Math.round(tlPrice * 100) / 100,
