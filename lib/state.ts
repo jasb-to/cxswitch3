@@ -1,13 +1,15 @@
-// lib/state.ts — v29.8 "Redis State Management"
+// lib/state.ts — v30.5 "Redis State Management"
 // ============================================================
-// Uses @upstash/redis with Redis.fromEnv()
-// All v29 keys, all exports preserved
+// Updated for v30.5 strategy compatibility
+//   - CURRENT_SIGNAL_VERSION bumped to 30
+//   - Added resetPairConsumedZones() for v30.5 migration
+//   - getSignalMaxAgeHours aligned with strategy (24h)
 
 import { Redis } from "@upstash/redis";
 
 export const redis = Redis.fromEnv();
 
-const KEY_VERSION = "v29";
+const KEY_VERSION = "v30";
 
 const SIGNALS_KEY = `cx_signals_${KEY_VERSION}`;
 const MARKET_KEY = `cx_market_${KEY_VERSION}`;
@@ -26,7 +28,8 @@ const UI_ALERTS_TTL = 24 * 60 * 60;
 const CRON_LOGS_TTL = 24 * 60 * 60;
 const PAIR_STATE_TTL = 7 * 24 * 60 * 60;
 
-export const CURRENT_SIGNAL_VERSION = 29;
+// FIX: Bumped to 30 to match strategy.ts
+export const CURRENT_SIGNAL_VERSION = 30;
 
 export interface Signal {
   id: string;
@@ -275,6 +278,29 @@ export async function setPairState(pair: string, state: any): Promise<void> {
     await redis.set(`cx_state_${pair}_${KEY_VERSION}`, state, { ex: PAIR_STATE_TTL });
   } catch (err) {
     console.error(`[STATE] setPairState(${pair}) error:`, err);
+  }
+}
+
+// NEW: Reset consumed zones for a pair (run once after v30.5 deploy)
+export async function resetPairConsumedZones(pair: string): Promise<void> {
+  try {
+    const existing = await getPairState(pair);
+    await setPairState(pair, {
+      ...existing,
+      consumedZones: [],
+      consumedZoneTimes: {},
+      lastBreakoutTs: 0,
+    });
+    console.log(`[STATE] Reset consumed zones for ${pair}`);
+  } catch (err) {
+    console.error(`[STATE] resetPairConsumedZones(${pair}) failed:`, err);
+  }
+}
+
+// NEW: Reset all pairs (run once after v30.5 deploy)
+export async function resetAllConsumedZones(pairs: string[]): Promise<void> {
+  for (const pair of pairs) {
+    await resetPairConsumedZones(pair);
   }
 }
 
