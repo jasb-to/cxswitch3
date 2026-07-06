@@ -309,7 +309,7 @@ interface AccumulationZone {
   widthATR: number;
 }
 
-function detectAccumulation(candles1h: Candle[], debug: string[]): AccumulationZone | null {
+function detectAccumulation(pair: string, candles1h: Candle[], debug: string[]): AccumulationZone | null {
   // FIX #1/#2/#3: Accumulation ends at previous candle; current candle is for breakout only
   const last = candles1h.length - 2;
   if (last < ACCUM_MIN_CANDLES + 14) {
@@ -320,7 +320,7 @@ function detectAccumulation(candles1h: Candle[], debug: string[]): AccumulationZ
   const atrSeries = atr(candles1h, 14);
   const currentATR = atrSeries[atrSeries.length - 1] || 1;
 
-  debug.push(`ACCUM SCAN: last=${last} ATR=${currentATR.toFixed(4)} minCandles=${ACCUM_MIN_CANDLES} maxCandles=${ACCUM_MAX_CANDLES} maxWidthATR=${ACCUM_MAX_WIDTH_ATR}`);
+  debug.push(`ACCUM SCAN: last=${last} ATR=${currentATR.toFixed(4)} minCandles=${ACCUM_MIN_CANDLES} maxCandles=${ACCUM_MAX_CANDLES} maxWidthATR=${getAccumMaxWidthATR(pair)}`);
 
   let bestZone: AccumulationZone | null = null;
   let bestScore = -1;
@@ -340,8 +340,8 @@ function detectAccumulation(candles1h: Candle[], debug: string[]): AccumulationZ
       debug.push(`ACCUM[${windowSize}]: top=${top.toFixed(2)} bottom=${bottom.toFixed(2)} width=${width.toFixed(4)} widthATR=${widthATR.toFixed(2)}`);
     }
 
-    if (widthATR > ACCUM_MAX_WIDTH_ATR) {
-      if (windowSize <= 10) debug.push(`ACCUM[${windowSize}]: REJECTED widthATR=${widthATR.toFixed(2)} > ${ACCUM_MAX_WIDTH_ATR}`);
+    if (widthATR > getAccumMaxWidthATR(pair)) {
+      if (windowSize <= 10) debug.push(`ACCUM[${windowSize}]: REJECTED widthATR=${widthATR.toFixed(2)} > ${getAccumMaxWidthATR(pair)}`);
       continue;
     }
 
@@ -667,7 +667,7 @@ export async function generateSignal(
   state = await cleanConsumedZones(state, debug);
 
   // ── STEP 1: DETECT ACCUMULATION ON 1H (excludes current candle) ──
-  const zone = detectAccumulation(candles1h, debug);
+  const zone = detectAccumulation(pair, candles1h, debug);
 
   if (!zone) {
     return {
