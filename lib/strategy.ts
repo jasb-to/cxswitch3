@@ -4,7 +4,7 @@
 // EXIT: Stoch extreme opposite (matches chart)
 // ALERTS: ENTRY_1 and ADD only (ENTRY_2 is internal, no alert)
 //
-// v28-UI-FIX:
+// v28-UI-FIX + MOMENTUM:
 // - getMarketSnapshot returns full UI-compatible market data for ALL pairs
 // - Phase detection for UI (NONE/WATCHING/ACCUMULATION/READY/CONFIRMED/EXHAUSTION)
 // - Zone calculation (top/bottom/quality/score) for ALL pairs
@@ -12,6 +12,7 @@
 // - htfBias included for UI 1D trend display
 // - Signal enriched with UI fields (stage, zoneTop, zoneBottom, trail, explanation)
 // - HYPE-specific parameters (wider bands, larger targets)
+// - MOMENTUM ENTRY MODE: early trend change detection via EMA cross + volume
 // ============================================================
 
 export interface Candle {
@@ -42,12 +43,17 @@ export interface Signal {
   reason: string;
   timestamp: number;
   version: number;
-  // UI-enriched fields (added by enrichSignalForUI)
+  // UI-enriched fields
   stage?: "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED";
   zoneTop?: number;
   zoneBottom?: number;
   trail?: number;
   explanation?: string;
+  // v28 exit tracking
+  exited?: boolean;
+  exitReason?: string;
+  exitPrice?: number;
+  exitTimestamp?: number;
 }
 
 export interface ZoneQuality {
@@ -88,24 +94,33 @@ export const CURRENT_SIGNAL_VERSION = 28;
 const MIN_RR = 1.5;
 
 // ============================================================
+// MOMENTUM MODE FLAG
+// Set to true to enable early momentum entry (EMA cross + volume)
+// Set to false for original v28 pullback behavior
+// ============================================================
+export const MOMENTUM_MODE = true;
+
+// ============================================================
 // PAIR-SPECIFIC PARAMETERS
 // ============================================================
 
 interface PairConfig {
-  nearTrendlineATR: number;      // ATR multiplier for "near trendline"
-  targetATR: number;             // ATR multiplier for target
-  stopATR: number;                 // ATR multiplier for stop
-  hysteresisBand: number;          // Price move % to unlock
-  hysteresisLockHours: number;   // Hours for hysteresis lock
-  minADX: number;                // Minimum ADX for signal
+  nearTrendlineATR: number;
+  targetATR: number;
+  stopATR: number;
+  hysteresisBand: number;
+  hysteresisLockHours: number;
+  minADX: number;
+  momentumBandATR: number;    // ATR multiplier for momentum entry band
+  momentumTargetATR: number;  // Target multiplier for momentum mode
 }
 
 const PAIR_CONFIGS: Record<string, PairConfig> = {
-  default: { nearTrendlineATR: 0.5, targetATR: 5, stopATR: 2, hysteresisBand: 0.005, hysteresisLockHours: 24, minADX: 20 },
-  BTC:     { nearTrendlineATR: 0.5, targetATR: 5, stopATR: 2, hysteresisBand: 0.005, hysteresisLockHours: 24, minADX: 20 },
-  ETH:     { nearTrendlineATR: 0.5, targetATR: 5, stopATR: 2, hysteresisBand: 0.005, hysteresisLockHours: 24, minADX: 20 },
-  SOL:     { nearTrendlineATR: 0.7, targetATR: 6, stopATR: 1.8, hysteresisBand: 0.008, hysteresisLockHours: 18, minADX: 18 },
-  HYPE:    { nearTrendlineATR: 1.2, targetATR: 8, stopATR: 1.5, hysteresisBand: 0.012, hysteresisLockHours: 12, minADX: 15 },
+  default: { nearTrendlineATR: 0.5, targetATR: 5, stopATR: 2, hysteresisBand: 0.005, hysteresisLockHours: 24, minADX: 20, momentumBandATR: 1.5, momentumTargetATR: 6 },
+  BTC:     { nearTrendlineATR: 0.5, targetATR: 5, stopATR: 2, hysteresisBand: 0.005, hysteresisLockHours: 24, minADX: 20, momentumBandATR: 1.0, momentumTargetATR: 5 },
+  ETH:     { nearTrendlineATR: 0.5, targetATR: 5, stopATR: 2, hysteresisBand: 0.005, hysteresisLockHours: 24, minADX: 20, momentumBandATR: 1.0, momentumTargetATR: 5 },
+  SOL:     { nearTrendlineATR: 0.7, targetATR: 6, stopATR: 1.8, hysteresisBand: 0.008, hysteresisLockHours: 18, minADX: 18, momentumBandATR: 1.5, momentumTargetATR: 7 },
+  HYPE:    { nearTrendlineATR: 1.2, targetATR: 8, stopATR: 1.5, hysteresisBand: 0.012, hysteresisLockHours: 12, minADX: 15, momentumBandATR: 2.0, momentumTargetATR: 10 },
 };
 
 function getPairConfig(pair: string): PairConfig {
@@ -146,7 +161,7 @@ function rsi(closes: number[], period: number = 14): number {
   return 100 - (100 / (1 + avgGain / avgLoss));
 }
 
-// --- RSI SERIES (precomputed, non-overlapping) ---
+// --- RSI SERIES ---
 function rsiSeries(closes: number[], period: number = 14): number[] {
   const series: number[] = [];
   for (let i = period; i < closes.length; i++) {
@@ -202,7 +217,7 @@ function wilderSmooth(values: number[], period: number): number[] {
   return result;
 }
 
-// --- ADX (Wilder-smoothed, proper) ---
+// --- ADX (Wilder-smoothed) ---
 function adx(candles: Candle[], period: number = 14): number {
   if (candles.length < period + 1) return 0;
 
@@ -390,7 +405,6 @@ function trend1D(candles1d: Candle[]): {
   const direction =
     ema8[ema8.length - 1] > ema21[ema21.length - 1] ? "LONG" : "SHORT";
 
-  // EMA21 slope for trend confirmation
   const ema21Slope =
     ema21.length >= 3
       ? (ema21[ema21.length - 1] - ema21[ema21.length - 3]) / 2
@@ -472,7 +486,118 @@ function setHysteresis(
 }
 
 // ============================================================
-// ZONE CALCULATION (for UI)
+// MOMENTUM DETECTION
+// ============================================================
+
+interface MomentumResult {
+  hasMomentum: boolean;
+  direction: "LONG" | "SHORT" | null;
+  strength: number; // 0-100
+  reasons: string[];
+}
+
+function detectMomentum(
+  candles4h: Candle[],
+  candles1d: Candle[],
+  currentPrice: number,
+  config: PairConfig
+): MomentumResult {
+  const reasons: string[] = [];
+  const closes4h = candles4h.map((c) => c.close);
+  const volumes4h = candles4h.map((c) => c.volume);
+
+  // 4H EMA cross detection
+  const ema8_4h = ema(closes4h, 8);
+  const ema21_4h = ema(closes4h, 21);
+  const ema8Prev = ema8_4h[ema8_4h.length - 2];
+  const ema21Prev = ema21_4h[ema21_4h.length - 2];
+  const ema8Now = ema8_4h[ema8_4h.length - 1];
+  const ema21Now = ema21_4h[ema21_4h.length - 1];
+
+  const wasBearish = ema8Prev <= ema21Prev;
+  const isBullish = ema8Now > ema21Now;
+  const wasBullish = ema8Prev >= ema21Prev;
+  const isBearish = ema8Now < ema21Now;
+
+  const emaCrossUp = wasBearish && isBullish;
+  const emaCrossDown = wasBullish && isBearish;
+
+  // Volume surge
+  const avgVol = avg(volumes4h.slice(-10));
+  const lastVol = volumes4h[volumes4h.length - 1];
+  const volSurge = lastVol > avgVol * 1.5;
+
+  // StochRSI alignment
+  const stoch = stochRsi(closes4h);
+  const stochAlignedLong = stoch.k > stoch.d && stoch.k < 70; // crossing up, not yet overbought
+  const stochAlignedShort = stoch.k < stoch.d && stoch.k > 30; // crossing down, not yet oversold
+
+  // ADX confirmation
+  const adxVal = adx(candles4h);
+  const adxBuilding = adxVal > config.minADX;
+
+  // Price velocity (ROC)
+  const roc = ((closes4h[closes4h.length - 1] - closes4h[closes4h.length - 4]) / closes4h[closes4h.length - 4]) * 100;
+  const strongVelocity = Math.abs(roc) > 2;
+
+  let direction: "LONG" | "SHORT" | null = null;
+  let strength = 0;
+
+  if (emaCrossUp) {
+    direction = "LONG";
+    reasons.push("ema8_cross_above_21");
+    strength += 30;
+  } else if (emaCrossDown) {
+    direction = "SHORT";
+    reasons.push("ema8_cross_below_21");
+    strength += 30;
+  }
+
+  // Also detect momentum WITHOUT cross (price accelerating away from EMAs)
+  if (!direction) {
+    const priceAboveBoth = currentPrice > ema8Now && currentPrice > ema21Now;
+    const priceBelowBoth = currentPrice < ema8Now && currentPrice < ema21Now;
+    const emaSpread = Math.abs(ema8Now - ema21Now) / ema21Now;
+    const emaSpreadWide = emaSpread > 0.005; // 0.5% spread
+
+    if (priceAboveBoth && emaSpreadWide && stochAlignedLong) {
+      direction = "LONG";
+      reasons.push("price_above_emas");
+      strength += 20;
+    } else if (priceBelowBoth && emaSpreadWide && stochAlignedShort) {
+      direction = "SHORT";
+      reasons.push("price_below_emas");
+      strength += 20;
+    }
+  }
+
+  if (volSurge) {
+    reasons.push("volume_surge");
+    strength += 20;
+  }
+  if (adxBuilding) {
+    reasons.push("adx_building");
+    strength += 15;
+  }
+  if (strongVelocity) {
+    reasons.push("strong_velocity");
+    strength += 15;
+  }
+  if (direction === "LONG" && stochAlignedLong) {
+    reasons.push("stoch_aligned");
+    strength += 10;
+  } else if (direction === "SHORT" && stochAlignedShort) {
+    reasons.push("stoch_aligned");
+    strength += 10;
+  }
+
+  strength = Math.min(100, strength);
+
+  return { hasMomentum: strength >= 50 && direction !== null, direction, strength, reasons };
+}
+
+// ============================================================
+// ZONE CALCULATION
 // ============================================================
 
 function calculateZone(
@@ -499,18 +624,16 @@ function calculateZone(
   const rangeLow = Math.min(...lows);
   const rangeWidth = rangeHigh - rangeLow;
 
-  // Zone is centered on trendline, bounded by recent range
   const zoneTop = Math.min(trendlinePrice + atrVal * 1.5, rangeHigh);
   const zoneBottom = Math.max(trendlinePrice - atrVal * 1.5, rangeLow);
 
-  // Zone quality metrics
   const widthATR = rangeWidth / atrVal;
   const compression = Math.max(0, Math.min(100, (1 - widthATR / 4) * 100));
   const avgVol = avg(volumes);
   const recentVol = avg(volumes.slice(-5));
-  const volumeDecay = avgVol > 0 ? Math.max(0, (1 - recentVol / avgVol) * 100) : 0;
+  const volumeDecay =
+    avgVol > 0 ? Math.max(0, (1 - recentVol / avgVol) * 100) : 0;
 
-  // Count touches of zone boundaries
   let touches = 0;
   let breakAttempts = 0;
   for (const c of recent) {
@@ -520,12 +643,11 @@ function calculateZone(
     if (c.high > zoneTop || c.low < zoneBottom) breakAttempts++;
   }
 
-  // Score: 0-100
   let score = 50;
-  score += Math.min(compression, 30); // compression bonus
-  score += Math.min(touches * 3, 15); // touches bonus
-  score -= breakAttempts * 2; // break penalty
-  score += volumeDecay * 0.2; // declining volume bonus
+  score += Math.min(compression, 30);
+  score += Math.min(touches * 3, 15);
+  score -= breakAttempts * 2;
+  score += volumeDecay * 0.2;
   score = Math.round(Math.min(100, Math.max(0, score)));
 
   let label: ZoneQuality["label"] = "AVERAGE";
@@ -552,7 +674,7 @@ function calculateZone(
 }
 
 // ============================================================
-// PHASE DETECTION (for UI)
+// PHASE DETECTION
 // ============================================================
 
 function detectPhase(
@@ -565,17 +687,23 @@ function detectPhase(
   stochExtreme: boolean,
   stochTurning: boolean,
   config: PairConfig,
-  hasSignal: boolean
+  hasSignal: boolean,
+  momentumResult?: MomentumResult
 ): MarketData["phase"] {
   if (!direction || adxVal < 15) return "NONE";
 
-  // Exhaustion: stoch extreme in opposite direction of trend
-  const stochExhausted =
-    direction === "LONG" ? stochK > 85 : stochK < 15;
+  // Exhaustion
+  const stochExhausted = direction === "LONG" ? stochK > 85 : stochK < 15;
   if (stochExhausted && adxVal > 30) return "EXHAUSTION";
 
   if (hasSignal) return "CONFIRMED";
 
+  // Momentum phase
+  if (MOMENTUM_MODE && momentumResult?.hasMomentum) {
+    return momentumResult.strength >= 70 ? "READY" : "ACCUMULATION";
+  }
+
+  // Pullback phase
   if (nearTrendline) {
     if (stochExtreme) return "READY";
     if (stochTurning) return "ACCUMULATION";
@@ -599,7 +727,6 @@ function enrichSignalForUI(
 ): Signal {
   const enriched = { ...signal };
 
-  // Map scale to stage
   if (signal.scale === "ENTRY_1" || signal.scale === "ENTRY_2") {
     enriched.stage = "CONFIRMED";
   } else if (signal.scale === "ADD") {
@@ -608,18 +735,15 @@ function enrichSignalForUI(
     enriched.stage = "WATCHING";
   }
 
-  // Calculate zone for signal
   const zone = calculateZone(candles4h, trendlinePrice, atrVal, signal.direction);
   enriched.zoneTop = zone.zoneTop ?? undefined;
   enriched.zoneBottom = zone.zoneBottom ?? undefined;
 
-  // Trail stop: initial = entry - 1 ATR (LONG) or entry + 1 ATR (SHORT)
   enriched.trail =
     signal.direction === "LONG"
       ? Math.round((signal.entry - atrVal) * 100) / 100
       : Math.round((signal.entry + atrVal) * 100) / 100;
 
-  // Explanation from reason
   enriched.explanation = signal.reason;
 
   return enriched;
@@ -658,83 +782,113 @@ export function generateSignal(
     `1D: ${t1d.direction || "NONE"} ${t1d.strength} slope=${t1d.ema21Slope.toFixed(2)}`
   );
 
-  if (!t1d.direction) {
-    debug.push("1D trend unclear");
-    return { debug };
-  }
-
-  const trendline = getTrendline(pair, candles4h, t1d.direction);
-  if (!trendline) {
-    debug.push("No trendline");
-    return { debug };
-  }
-
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
-  const tlPrice = trendline.price;
-  const dist = (price - tlPrice) / tlPrice;
   const atrVal = atr(candles4h, 14);
-
-  debug.push(
-    `TL: ${tlPrice.toFixed(1)} | R² ${trendline.r2} | Price: ${price.toFixed(1)} | Dist: ${(dist * 100).toFixed(2)}% | ATR: ${atrVal.toFixed(1)}`
-  );
-
   const stoch = stochRsi(candles4h.map((c) => c.close));
-  debug.push(`StochRSI: K ${stoch.k} | D ${stoch.d}`);
-
-  const last = candles4h[candles4h.length - 1];
-  const prev = candles4h[candles4h.length - 2];
-
+  const adxVal = adx(candles4h);
   const closes4h = candles4h.map((c) => c.close);
   const ema8_4h = ema(closes4h, 8);
   const ema21_4h = ema(closes4h, 21);
 
-  const adxVal = adx(candles4h);
-  debug.push(`ADX: ${adxVal.toFixed(1)}`);
-
-  // Entry conditions with pair-specific thresholds
-  const nearTrendline = Math.abs(dist * tlPrice) < atrVal * config.nearTrendlineATR;
-  const stochExtreme =
-    t1d.direction === "LONG" ? stoch.k < 20 : stoch.k > 80;
-  const stochTurning =
-    t1d.direction === "LONG" ? stoch.k > stoch.d : stoch.k < stoch.d;
-
-  const beyondTrendline =
-    t1d.direction === "LONG"
-      ? price > tlPrice * 1.008
-      : price < tlPrice * 0.992;
-  const confirming =
-    t1d.direction === "LONG"
-      ? last.close > last.open && last.close > prev.close
-      : last.close < last.open && last.close < prev.close;
-  const volUp =
-    last.volume > avg(candles4h.slice(-10).map((c) => c.volume)) * 1.3;
-  const emaAligned =
-    t1d.direction === "LONG"
-      ? price > ema8_4h[ema8_4h.length - 1] &&
-        price > ema21_4h[ema21_4h.length - 1]
-      : price < ema8_4h[ema8_4h.length - 1] &&
-        price < ema21_4h[ema21_4h.length - 1];
-  const stochMomentum =
-    t1d.direction === "LONG" ? stoch.k > stoch.d : stoch.k < stoch.d;
-
-  const adxStrong = adxVal > config.minADX;
-
-  // Determine raw signal type
-  let rawType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
-
-  if (nearTrendline && stochExtreme) {
-    rawType = "ENTRY_1";
-  } else if (nearTrendline && stochTurning && !stochExtreme) {
-    rawType = "ENTRY_2";
-  } else if (beyondTrendline && confirming && emaAligned) {
-    if (volUp || stochMomentum || adxStrong) {
-      rawType = "ADD";
+  // --- MOMENTUM MODE: Early trend change detection ---
+  let momentumResult: MomentumResult | undefined;
+  if (MOMENTUM_MODE) {
+    momentumResult = detectMomentum(candles4h, candles1d, price, config);
+    if (momentumResult.hasMomentum) {
+      debug.push(
+        `MOMENTUM: ${momentumResult.direction} strength=${momentumResult.strength} | ${momentumResult.reasons.join(", ")}`
+      );
     }
   }
+
+  // Determine trend direction: use 1D trend OR momentum direction
+  let trendDirection: "LONG" | "SHORT" | null = t1d.direction;
+
+  // If momentum disagrees with 1D trend, follow momentum for early entry
+  if (MOMENTUM_MODE && momentumResult?.hasMomentum && momentumResult.direction !== t1d.direction) {
+    debug.push(`Momentum disagrees with 1D trend (${t1d.direction} vs ${momentumResult.direction}), following momentum`);
+    trendDirection = momentumResult.direction;
+  }
+
+  if (!trendDirection) {
+    debug.push("1D trend unclear");
+    return { debug };
+  }
+
+  const trendline = getTrendline(pair, candles4h, trendDirection);
+  const tlPrice = trendline ? trendline.price : price;
+  const dist = trendline ? (price - tlPrice) / tlPrice : 0;
+
+  if (trendline) {
+    debug.push(
+      `TL: ${tlPrice.toFixed(1)} | R² ${trendline.r2} | Price: ${price.toFixed(1)} | Dist: ${(dist * 100).toFixed(2)}% | ATR: ${atrVal.toFixed(1)}`
+    );
+  }
+
+  debug.push(`StochRSI: K ${stoch.k} | D ${stoch.d}`);
+  debug.push(`ADX: ${adxVal.toFixed(1)}`);
+
+  const last = candles4h[candles4h.length - 1];
+  const prev = candles4h[candles4h.length - 2];
 
   const now = Date.now();
   const hyst = getHysteresis(pair, now);
 
+  // --- ENTRY CONDITIONS ---
+  let rawType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
+
+  // MOMENTUM ENTRY: EMA cross + volume + stoch alignment
+  if (MOMENTUM_MODE && momentumResult?.hasMomentum && momentumResult.direction === trendDirection) {
+    const volUp = last.volume > avg(candles4h.slice(-10).map((c) => c.volume)) * 1.3;
+    const confirming =
+      trendDirection === "LONG"
+        ? last.close > last.open && last.close > prev.close
+        : last.close < last.open && last.close < prev.close;
+
+    if (confirming || volUp || momentumResult.strength >= 70) {
+      rawType = "ENTRY_1";
+      debug.push(`MOMENTUM ENTRY triggered: strength=${momentumResult.strength}`);
+    }
+  }
+
+  // PULLBACK ENTRY: Original v28 logic (only if no momentum entry)
+  if (!rawType) {
+    const nearTrendline = trendline && Math.abs(dist * tlPrice) < atrVal * config.nearTrendlineATR;
+    const stochExtreme = trendDirection === "LONG" ? stoch.k < 20 : stoch.k > 80;
+    const stochTurning = trendDirection === "LONG" ? stoch.k > stoch.d : stoch.k < stoch.d;
+
+    const beyondTrendline =
+      trendDirection === "LONG"
+        ? price > tlPrice * 1.008
+        : price < tlPrice * 0.992;
+    const confirming =
+      trendDirection === "LONG"
+        ? last.close > last.open && last.close > prev.close
+        : last.close < last.open && last.close < prev.close;
+    const volUp =
+      last.volume > avg(candles4h.slice(-10).map((c) => c.volume)) * 1.3;
+    const emaAligned =
+      trendDirection === "LONG"
+        ? price > ema8_4h[ema8_4h.length - 1] &&
+          price > ema21_4h[ema21_4h.length - 1]
+        : price < ema8_4h[ema8_4h.length - 1] &&
+          price < ema21_4h[ema21_4h.length - 1];
+    const stochMomentum =
+      trendDirection === "LONG" ? stoch.k > stoch.d : stoch.k < stoch.d;
+    const adxStrong = adxVal > config.minADX;
+
+    if (nearTrendline && stochExtreme) {
+      rawType = "ENTRY_1";
+    } else if (nearTrendline && stochTurning && !stochExtreme) {
+      rawType = "ENTRY_2";
+    } else if (beyondTrendline && confirming && emaAligned) {
+      if (volUp || stochMomentum || adxStrong) {
+        rawType = "ADD";
+      }
+    }
+  }
+
+  // Hysteresis
   let finalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
 
   if (hyst.lastSignalType === "ADD") {
@@ -750,7 +904,7 @@ export function generateSignal(
     finalType = rawType;
   }
 
-  // Price hysteresis with pair-specific band
+  // Price hysteresis
   if (hyst.lastSignalType && finalType === hyst.lastSignalType) {
     const priceMove = Math.abs(price - hyst.lastSignalPrice) / hyst.lastSignalPrice;
     if (priceMove < config.hysteresisBand) {
@@ -758,30 +912,30 @@ export function generateSignal(
         `Hysteresis lock: ${finalType} | move ${(priceMove * 100).toFixed(2)}% < ${(config.hysteresisBand * 100).toFixed(2)}%`
       );
 
-      // Still return market data even when locked
       const phase = detectPhase(
-        t1d.direction,
+        trendDirection,
         adxVal,
         stoch.k,
         stoch.d,
         dist,
-        nearTrendline,
-        stochExtreme,
-        stochTurning,
+        false,
+        false,
+        false,
         config,
-        false
+        false,
+        momentumResult
       );
-      const zone = calculateZone(candles4h, tlPrice, atrVal, t1d.direction);
+      const zone = calculateZone(candles4h, tlPrice, atrVal, trendDirection);
       const market: MarketData = {
         pair,
         price: Math.round(price * 100) / 100,
         timestamp: now,
         phase,
-        trend: `${t1d.direction} ${t1d.strength}`,
+        trend: `${trendDirection} ${t1d.strength}`,
         htfBias:
-          t1d.direction === "LONG"
+          trendDirection === "LONG"
             ? "BULLISH"
-            : t1d.direction === "SHORT"
+            : trendDirection === "SHORT"
               ? "BEARISH"
               : "NEUTRAL",
         adx: Math.round(adxVal * 10) / 10,
@@ -800,37 +954,37 @@ export function generateSignal(
 
   if (!finalType) {
     const stateParts: string[] = [];
-    if (nearTrendline) stateParts.push("near TL");
-    else if (beyondTrendline) stateParts.push("beyond TL");
-    else stateParts.push("far from TL");
+    if (MOMENTUM_MODE && momentumResult?.hasMomentum) {
+      stateParts.push(`momentum ${momentumResult.direction} strength=${momentumResult.strength}`);
+    }
     stateParts.push(`Stoch K${stoch.k} D${stoch.d}`);
     stateParts.push("No signal");
     debug.push(`State: ${stateParts.join(" | ")}`);
 
-    // Return market data even when no signal
     const phase = detectPhase(
-      t1d.direction,
+      trendDirection,
       adxVal,
       stoch.k,
       stoch.d,
       dist,
-      nearTrendline,
-      stochExtreme,
-      stochTurning,
+      false,
+      false,
+      false,
       config,
-      false
+      false,
+      momentumResult
     );
-    const zone = calculateZone(candles4h, tlPrice, atrVal, t1d.direction);
+    const zone = calculateZone(candles4h, tlPrice, atrVal, trendDirection);
     const market: MarketData = {
       pair,
       price: Math.round(price * 100) / 100,
       timestamp: now,
       phase,
-      trend: `${t1d.direction} ${t1d.strength}`,
+      trend: `${trendDirection} ${t1d.strength}`,
       htfBias:
-        t1d.direction === "LONG"
+        trendDirection === "LONG"
           ? "BULLISH"
-          : t1d.direction === "SHORT"
+          : trendDirection === "SHORT"
             ? "BEARISH"
             : "NEUTRAL",
       adx: Math.round(adxVal * 10) / 10,
@@ -846,12 +1000,11 @@ export function generateSignal(
     return { market, debug };
   }
 
-  // Set hysteresis for new signal
   if (finalType !== hyst.lastSignalType) {
     setHysteresis(pair, finalType, price, now, config);
   }
 
-  // Levels with pair-specific multipliers
+  // --- LEVELS ---
   const swingLows = candles4h.map((c) => c.low).slice(-20);
   const swingHighs = candles4h.map((c) => c.high).slice(-20);
   const swingLow = Math.min(...swingLows);
@@ -864,34 +1017,38 @@ export function generateSignal(
   let confidence: number;
   let expectedMove: number;
 
+  // Momentum mode uses wider bands and bigger targets
+  const isMomentumEntry = MOMENTUM_MODE && momentumResult?.hasMomentum && finalType === "ENTRY_1";
+  const targetMult = isMomentumEntry ? config.momentumTargetATR : config.targetATR;
+
   if (finalType === "ENTRY_1" || finalType === "ENTRY_2") {
     type = "ACCUMULATE";
     entry = price;
     sl =
-      t1d.direction === "LONG"
+      trendDirection === "LONG"
         ? Math.min(swingLow, entry - atrVal * config.stopATR)
         : Math.max(swingHigh, entry + atrVal * config.stopATR);
     tp =
-      t1d.direction === "LONG"
-        ? entry + atrVal * config.targetATR
-        : entry - atrVal * config.targetATR;
-    confidence = finalType === "ENTRY_1" ? 50 : 60;
+      trendDirection === "LONG"
+        ? entry + atrVal * targetMult
+        : entry - atrVal * targetMult;
+    confidence = finalType === "ENTRY_1" ? (isMomentumEntry ? 65 : 50) : 60;
     expectedMove = (Math.abs(tp - entry) / entry) * 100;
   } else {
     type = "BREAKOUT";
     entry = price;
     sl =
-      t1d.direction === "LONG"
+      trendDirection === "LONG"
         ? Math.min(tlPrice * 0.995, entry - atrVal * config.stopATR)
         : Math.max(tlPrice * 1.005, entry + atrVal * config.stopATR);
 
     const minTarget =
-      t1d.direction === "LONG"
+      trendDirection === "LONG"
         ? entry + (entry - sl) * MIN_RR
         : entry - (sl - entry) * MIN_RR;
 
     tp =
-      t1d.direction === "LONG"
+      trendDirection === "LONG"
         ? Math.max(swingHigh, minTarget)
         : Math.min(swingLow, minTarget);
 
@@ -900,36 +1057,36 @@ export function generateSignal(
   }
 
   const rr =
-    t1d.direction === "LONG"
+    trendDirection === "LONG"
       ? (tp - entry) / (entry - sl)
       : (entry - tp) / (sl - entry);
   if (rr < MIN_RR) {
     debug.push(`R:R ${rr.toFixed(2)} < ${MIN_RR}`);
 
-    // Return market data even when RR too low
     const phase = detectPhase(
-      t1d.direction,
+      trendDirection,
       adxVal,
       stoch.k,
       stoch.d,
       dist,
-      nearTrendline,
-      stochExtreme,
-      stochTurning,
+      false,
+      false,
+      false,
       config,
-      false
+      false,
+      momentumResult
     );
-    const zone = calculateZone(candles4h, tlPrice, atrVal, t1d.direction);
+    const zone = calculateZone(candles4h, tlPrice, atrVal, trendDirection);
     const market: MarketData = {
       pair,
       price: Math.round(price * 100) / 100,
       timestamp: now,
       phase,
-      trend: `${t1d.direction} ${t1d.strength}`,
+      trend: `${trendDirection} ${t1d.strength}`,
       htfBias:
-        t1d.direction === "LONG"
+        trendDirection === "LONG"
           ? "BULLISH"
-          : t1d.direction === "SHORT"
+          : trendDirection === "SHORT"
             ? "BEARISH"
             : "NEUTRAL",
       adx: Math.round(adxVal * 10) / 10,
@@ -947,10 +1104,14 @@ export function generateSignal(
 
   const rsi4h = rsi(candles4h.map((c) => c.close));
 
+  const entryReason = isMomentumEntry
+    ? `${trendDirection} MOMENTUM ${finalType} | 1D ${t1d.strength} | Stoch K${stoch.k} D${stoch.d} | ${momentumResult!.reasons.join(", ")} | RR ${rr.toFixed(2)}`
+    : `${trendDirection} ${type} ${finalType} | 1D ${t1d.strength} | Stoch K${stoch.k} D${stoch.d} | TL approach | RR ${rr.toFixed(2)}`;
+
   let signal: Signal = {
     id: `${pair}_${Date.now()}`,
     pair,
-    direction: t1d.direction,
+    direction: trendDirection,
     type,
     scale: finalType,
     entry: Math.round(entry * 100) / 100,
@@ -963,38 +1124,38 @@ export function generateSignal(
     stochK: stoch.k,
     stochD: stoch.d,
     expectedMove: Math.round(expectedMove * 10) / 10,
-    reason: `${t1d.direction} ${type} ${finalType} | 1D ${t1d.strength} | Stoch K${stoch.k} D${stoch.d} | ${finalType === "ADD" ? "Break+EMA" + (volUp ? "+Vol" : "") + (stochMomentum ? "+Stoch" : "") + (adxStrong ? "+ADX" : "") : "TL approach"} | RR ${rr.toFixed(2)}`,
+    reason: entryReason,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
   };
 
-  // Enrich with UI fields
   signal = enrichSignalForUI(signal, candles4h, tlPrice, atrVal);
 
   const phase = detectPhase(
-    t1d.direction,
+    trendDirection,
     adxVal,
     stoch.k,
     stoch.d,
     dist,
-    nearTrendline,
-    stochExtreme,
-    stochTurning,
+    false,
+    false,
+    false,
     config,
-    true
+    true,
+    momentumResult
   );
-  const zone = calculateZone(candles4h, tlPrice, atrVal, t1d.direction);
+  const zone = calculateZone(candles4h, tlPrice, atrVal, trendDirection);
 
   const market: MarketData = {
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: now,
     phase,
-    trend: `${t1d.direction} ${t1d.strength}`,
+    trend: `${trendDirection} ${t1d.strength}`,
     htfBias:
-      t1d.direction === "LONG"
+      trendDirection === "LONG"
         ? "BULLISH"
-        : t1d.direction === "SHORT"
+        : trendDirection === "SHORT"
           ? "BEARISH"
           : "NEUTRAL",
     adx: signal.adx,
@@ -1034,8 +1195,8 @@ export function getMarketSnapshot(
   const trendline = t1d.direction
     ? getTrendline(pair, candles4h, t1d.direction)
     : null;
-  const tlPrice = trendline ? trendline.price : 0;
-  const dist = trendline ? (price - tlPrice) / tlPrice : 1;
+  const tlPrice = trendline ? trendline.price : price;
+  const dist = trendline ? (price - tlPrice) / tlPrice : 0;
   const atrVal = atr(candles4h, 14);
   const adxVal = adx(candles4h);
 
@@ -1058,6 +1219,12 @@ export function getMarketSnapshot(
         ? stochRsi4h.k < stochRsi4h.d
         : false;
 
+  // Check momentum for phase
+  let momentumResult: MomentumResult | undefined;
+  if (MOMENTUM_MODE) {
+    momentumResult = detectMomentum(candles4h, candles1d, price, config);
+  }
+
   const phase = detectPhase(
     t1d.direction,
     adxVal,
@@ -1068,7 +1235,8 @@ export function getMarketSnapshot(
     stochExtreme,
     stochTurning,
     config,
-    false
+    false,
+    momentumResult
   );
 
   const zone = calculateZone(candles4h, tlPrice, atrVal, t1d.direction);
@@ -1189,8 +1357,8 @@ export function shouldHold(
 
   const stochExtremeOpposite =
     signal.direction === "LONG"
-      ? stoch.k < 20 // was long, now oversold = exit
-      : stoch.k > 80; // was short, now overbought = exit
+      ? stoch.k < 20
+      : stoch.k > 80;
 
   if (stochExtremeOpposite) {
     return { shouldHold: false, reason: "stoch_extreme_opposite_exit" };
@@ -1249,7 +1417,7 @@ export function checkTradeStatus(
 }
 
 // ============================================================
-// v28 COMPATIBILITY LAYER (DO NOT REMOVE)
+// v28 COMPATIBILITY LAYER
 // ============================================================
 
 export async function getMonitorState(pair: string): Promise<any | undefined> {
@@ -1285,7 +1453,6 @@ export async function generateSignalCompat(
     currentPrice
   );
 
-  // Suppress ENTRY_2 alerts — return signal without alerting
   if (result.signal?.scale === "ENTRY_2") {
     return { ...result, signal: undefined };
   }
@@ -1307,4 +1474,64 @@ export function shouldHoldCompat(
   currentPrice: number
 ): HoldResult {
   return shouldHold(signal, candles4h, currentPrice);
+}
+
+// ============================================================
+// STUB EXPORTS for any code that imports Trade Manager stuff
+// These are no-ops to prevent build errors
+// ============================================================
+
+export const FEATURES = {
+  TRADE_MANAGER_ENABLED: false,
+  PROFIT_LOCK_ENABLED: false,
+  TRAIL_STOP_ENABLED: false,
+  BREAK_EVEN_ENABLED: false,
+  EXHAUSTION_FILTER_ENABLED: true,
+};
+
+export type TradeState = "OPEN" | "BREAK_EVEN" | "LOCKED" | "RUNNER" | "EXITED";
+
+export interface TradeManagerState {
+  tradeState: TradeState;
+  highestPrice: number;
+  lowestPrice: number;
+  lockedStop: number;
+  entryPrice: number;
+  direction: "LONG" | "SHORT";
+  initialStop: number;
+}
+
+export function updateTradeManagerState(
+  _signal: Signal,
+  _currentPrice: number,
+  _candles4h: Candle[]
+): { state: TradeManagerState; shouldExit: boolean; exitReason?: string } {
+  return {
+    state: {
+      tradeState: "OPEN",
+      highestPrice: 0,
+      lowestPrice: 0,
+      lockedStop: 0,
+      entryPrice: 0,
+      direction: "LONG",
+      initialStop: 0,
+    },
+    shouldExit: false,
+  };
+}
+
+export function removeTradeManagerState(_signalId: string): void {
+  return;
+}
+
+export function setTradeManagerPersistence(
+  _getFn: (signalId: string) => Promise<TradeManagerState | null>,
+  _setFn: (signalId: string, state: TradeManagerState) => Promise<void>,
+  _delFn: (signalId: string) => Promise<void>
+): void {
+  return;
+}
+
+export function clearAllTradeManagerState(): void {
+  return;
 }
