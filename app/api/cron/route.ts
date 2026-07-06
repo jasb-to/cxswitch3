@@ -1,12 +1,5 @@
 // app/api/cron/route.ts — v30.5 "Full v30.5 strategy integration"
 // ============================================================
-// CRITICAL FIXES:
-//   - Uses lib/kraken.ts (no more duplicated fetch logic)
-//   - Fixed "Still valid, skipping generation" → now re-evaluates for new setups
-//   - Fixed candle count: 350+ 4H candles required for reliable HTF
-//   - Fixed shouldHold() passes candles1h (not 4h) for trail update
-//   - Clears consumedZones when signal expires
-//   - Only sends alert on NEW signal generation, not on every run
 
 import { NextResponse } from "next/server";
 import {
@@ -32,6 +25,7 @@ import {
   Signal,
 } from "@/lib/strategy";
 import { getCandles, getCurrentPrice, Symbol } from "@/lib/kraken";
+import { sendAlert, sendExitAlert } from "@/lib/telegram";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -62,12 +56,6 @@ const MIN_CRON_INTERVAL_MS = 10 * 60 * 1000;
 const MIN_CANDLES_1H = 60;
 const MIN_CANDLES_4H = 350;
 const MIN_CANDLES_15M = 60;
-
-// ─── Telegram Alert ─────────────────────────────────────────────────────
-
-async function sendAlert(data: any): Promise<void> {
-  console.log(`[TELEGRAM] Alert: ${JSON.stringify(data)}`);
-}
 
 function roundPrice(n: number): number {
   if (n >= 10000) return Math.round(n);
@@ -155,9 +143,22 @@ export async function GET(request: Request) {
     log(`[EXIT] ${signal.pair} — ${reason}`);
     await addSignalToHistory(signal, reason as any, currentPrices[signal.pair] || signal.entry);
     if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
-    // CRITICAL FIX: Clear consumed zones when signal expires so same area can trade again
     await resetPairConsumedZones(signal.pair);
     log(`[STATE] Cleared consumedZones for ${signal.pair} after ${reason}`);
+
+    // Send exit alert
+    const exitPrice = currentPrices[signal.pair] || signal.entry;
+    const pnl = signal.direction === "LONG"
+      ? ((exitPrice - signal.entry) / signal.entry) * 100
+      : ((signal.entry - exitPrice) / signal.entry) * 100;
+    await sendExitAlert({
+      pair: signal.pair,
+      direction: signal.direction,
+      exitPrice,
+      reason,
+      pnl,
+      id: signal.id,
+    });
   }
 
   const newSignals: Signal[] = [];
@@ -208,24 +209,45 @@ export async function GET(request: Request) {
           await addSignalToHistory(existingForPair, validity.reason as any, currentPrice);
           if (activeTrades[pair]) delete activeTrades[pair];
           validSignals.splice(existingIdx, 1);
-          // Clear consumed zones so new accumulation can form
           await resetPairConsumedZones(pair);
           log(`[STATE] Cleared consumedZones for ${pair} after ${validity.reason}`);
+
+          const pnl = existingForPair.direction === "LONG"
+            ? ((currentPrice - existingForPair.entry) / existingForPair.entry) * 100
+            : ((existingForPair.entry - currentPrice) / existingForPair.entry) * 100;
+          await sendExitAlert({
+            pair,
+            direction: existingForPair.direction,
+            exitPrice: currentPrice,
+            reason: validity.reason,
+            pnl,
+            id: existingForPair.id,
+          });
           alerts.push({ pair, status: "expired", reason: validity.reason });
         } else {
-          // FIX: Pass candles1h (not 4h) for trail update
           const holdResult = await shouldHold(pair, existingForPair, candles1h, currentPrice);
           if (!holdResult.shouldHold) {
             log(`[PAIR] ${pair} — TRAIL STOP: ${holdResult.reason}`);
             await addSignalToHistory(existingForPair, "trail_stop" as any, currentPrice);
             if (activeTrades[pair]) delete activeTrades[pair];
             validSignals.splice(existingIdx, 1);
-            // Clear consumed zones
             await resetPairConsumedZones(pair);
+            log(`[STATE] Cleared consumedZones for ${pair} after trail_stop`);
+
+            const pnl = existingForPair.direction === "LONG"
+              ? ((currentPrice - existingForPair.entry) / existingForPair.entry) * 100
+              : ((existingForPair.entry - currentPrice) / existingForPair.entry) * 100;
+            await sendExitAlert({
+              pair,
+              direction: existingForPair.direction,
+              exitPrice: currentPrice,
+              reason: "trail_stop",
+              pnl,
+              id: existingForPair.id,
+            });
             alerts.push({ pair, status: "trail_stop", reason: holdResult.reason });
           } else {
-            log(`[PAIR] ${pair} — Holding, trail=${holdResult.reason}`);
-            // Build market data for dashboard from existing signal
+            log(`[PAIR] ${pair} — Holding, ${holdResult.reason}`);
             marketDataList.push({
               pair,
               price: roundPrice(currentPrice),
@@ -286,15 +308,15 @@ export async function GET(request: Request) {
       try {
         await sendAlert({
           symbol: signal.pair,
-          state: signal.stage,
-          price: roundPrice(signal.entry),
-          bias: signal.direction,
+          direction: signal.direction,
+          stage: signal.stage,
           confidence: signal.confidence,
-          stopLoss: roundPrice(signal.stop),
-          takeProfit: roundPrice(signal.target),
+          entry: signal.entry,
+          stop: signal.stop,
+          target: signal.target,
           rr: signal.rr,
           reason: signal.explanation,
-          updatedAt: new Date(signal.timestamp).toISOString(),
+          id: signal.id,
         });
         log(`[ALERT] ${pair} — SENT`);
         activeTrades[pair] = {
