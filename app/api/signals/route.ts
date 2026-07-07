@@ -1,14 +1,12 @@
 // app/api/signals/route.ts — v28 "Dashboard API with strategy sync"
 // ============================================================
-// Uses v28 strategy.ts
 
 import { NextResponse } from "next/server";
-import { getSignals, getSignalHistory, getPairState } from "@/lib/state";
+import { getSignals, getSignalHistory } from "@/lib/state";
 import {
   isSignalStillValid,
   shouldHold,
   getMarketSnapshot,
-  Candle,
 } from "@/lib/strategy";
 import { getCandles, Symbol } from "@/lib/kraken";
 
@@ -40,7 +38,9 @@ export async function GET() {
       const price = candles4h[candles4h.length - 1].close;
       currentPrices[pair] = price;
 
-      const marketSnapshot = getMarketSnapshot(pair, candles1h, candles4h, undefined);
+      // FIX: correct argument order — candles15m is 3rd, candles4h is 4th
+      // We don't fetch 15m here, so pass empty array
+      const marketSnapshot = getMarketSnapshot(pair, candles1h || [], candles4h, []);
       freshMarket.push(marketSnapshot);
     } catch (e) {
       console.error(`[SIGNALS ROUTE] ${pair} failed:`, e);
@@ -97,44 +97,8 @@ export async function GET() {
 
     if (signal) {
       m.phase = "EXPANSION";
-
-      if (signal.direction === "LONG" && m.htfBias === "BEARISH") {
-        m.trendWarning = {
-          severity: "HIGH",
-          message: "LONG signal but HTF is BEARISH — consider early exit",
-          type: "DIRECTION_MISMATCH",
-        };
-      } else if (signal.direction === "SHORT" && m.htfBias === "BULLISH") {
-        m.trendWarning = {
-          severity: "HIGH",
-          message: "SHORT signal but HTF is BULLISH — consider early exit",
-          type: "DIRECTION_MISMATCH",
-        };
-      } else if (signal.direction === "LONG" && m.htfBias === "NEUTRAL") {
-        m.trendWarning = {
-          severity: "MEDIUM",
-          message: "LONG signal in NEUTRAL HTF — monitor closely",
-          type: "WEAK_ALIGNMENT",
-        };
-      } else if (signal.direction === "SHORT" && m.htfBias === "NEUTRAL") {
-        m.trendWarning = {
-          severity: "MEDIUM",
-          message: "SHORT signal in NEUTRAL HTF — monitor closely",
-          type: "WEAK_ALIGNMENT",
-        };
-      }
-    } else {
-      try {
-        const state = await getPairState(m.pair);
-        if (state.stage && state.stage !== "NONE") {
-          m.phase = state.stage;
-          m.zoneTop = state.zoneTop;
-          m.zoneBottom = state.zoneBottom;
-        }
-      } catch (e) {
-        // ignore
-      }
     }
+    // REMOVED: getPairState zone code — v28 has no zones
   }
 
   const response = NextResponse.json({
