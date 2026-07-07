@@ -150,9 +150,77 @@ async function fetchKrakenPrice(pair: string): Promise<number | null> {
   } catch { return null; }
 }
 
+// --- Warning Banner ---
+
+function WarningBanner({ market, signal }: { market: MarketData | undefined; signal?: Signal }) {
+  if (!market) return null;
+  const warnings: { type: "danger" | "warning" | "info"; text: string }[] = [];
+
+  // 1. 1D/4H mismatch (no entries allowed)
+  const hasCloses = market.closes4h && market.closes4h.length >= 30;
+  let trend4hDir: string | null = null;
+  if (hasCloses) {
+    const closes = market.closes4h!;
+    const ema8 = calcEMA(closes, 8);
+    const ema21 = calcEMA(closes, 21);
+    const price = closes[closes.length - 1];
+    const ema8Last = ema8[ema8.length - 1];
+    const ema21Last = ema21[ema21.length - 1];
+    if (ema8Last !== undefined && ema21Last !== undefined) {
+      trend4hDir = price > ema8Last && price > ema21Last ? "LONG" : price < ema8Last && price < ema21Last ? "SHORT" : null;
+    }
+  }
+  const trend1d = market.htfBias === "BULLISH" ? "LONG" : market.htfBias === "BEARISH" ? "SHORT" : null;
+  if (trend4hDir && trend1d && trend4hDir !== trend1d) {
+    warnings.push({ type: "warning", text: `1D ${trend1d} vs 4H ${trend4hDir} — entries blocked until alignment` });
+  }
+
+  // 2. Active signal aging into exhaustion
+  if (signal && signal.direction === "LONG" && market.stochK > 90) {
+    warnings.push({ type: "danger", text: `4H Stoch K=${market.stochK.toFixed(1)} OVERBOUGHT — consider tightening SL or partial exit` });
+  }
+  if (signal && signal.direction === "SHORT" && market.stochK < 10) {
+    warnings.push({ type: "danger", text: `4H Stoch K=${market.stochK.toFixed(1)} OVERSOLD — consider tightening SL or partial exit` });
+  }
+
+  // 3. ADX dropping (momentum fading)
+  if (signal && market.adx < 20) {
+    warnings.push({ type: "warning", text: `ADX ${market.adx.toFixed(1)} < 20 — trend weakening, monitor closely` });
+  }
+
+  // 4. TTL running low
+  if (signal) {
+    const ageMin = Math.floor((Date.now() - signal.timestamp) / 60000);
+    const ttlLeft = 12 * 60 - ageMin;
+    if (ttlLeft < 120) {
+      warnings.push({ type: "info", text: `TTL ${Math.floor(ttlLeft / 60)}h ${ttlLeft % 60}m remaining — signal expiring soon` });
+    }
+  }
+
+  if (warnings.length === 0) return null;
+
+  return (
+    <div className="space-y-1.5">
+      {warnings.map((w, i) => {
+        const styles = {
+          danger: "bg-rose-950/40 border-rose-500/40 text-rose-300",
+          warning: "bg-yellow-950/40 border-yellow-500/40 text-yellow-300",
+          info: "bg-blue-950/40 border-blue-500/40 text-blue-300",
+        };
+        const emoji = { danger: "🔴", warning: "🟡", info: "🔵" };
+        return (
+          <div key={i} className={"rounded-lg border px-3 py-2 text-xs font-medium " + styles[w.type]}>
+            {emoji[w.type]} {w.text}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // --- Progress Banner ---
 
-function ProgressBanner({ market }: { market: MarketData | undefined }) {
+function ProgressBanner({ market, signal }: { market: MarketData | undefined; signal?: Signal }) {
   if (!market) return null;
 
   const phase = market.phase;
@@ -184,7 +252,7 @@ function ProgressBanner({ market }: { market: MarketData | undefined }) {
       border: "border-purple-500/30",
       text: "text-purple-400",
       title: "Expansion",
-      desc: "Signal active. Price moving toward target. Monitoring for SL/TP hit or trend reversal.",
+      desc: "Signal active. Price moving toward target. Monitor Stoch extremes and ADX for exit timing.",
     },
     EXHAUSTION: {
       bg: "bg-red-950/30",
@@ -212,9 +280,9 @@ function ProgressBanner({ market }: { market: MarketData | undefined }) {
   );
 }
 
-// --- Indicator Grid ---
+// --- Indicator Grid (with Entry Stoch vs Current) ---
 
-function IndicatorGrid({ market }: { market: MarketData | undefined }) {
+function IndicatorGrid({ market, signal }: { market: MarketData | undefined; signal?: Signal }) {
   if (!market) return null;
 
   const adxColor = market.adx > 25 ? "text-emerald-400" : market.adx > 20 ? "text-yellow-400" : "text-slate-500";
@@ -222,27 +290,51 @@ function IndicatorGrid({ market }: { market: MarketData | undefined }) {
   const crossDir = market.stochK > market.stochD ? "up" : "down";
   const crossColor = market.stochK > market.stochD ? "text-emerald-400" : "text-rose-400";
 
+  // Entry stoch from signal reason string (extracted)
+  let entryStochK: number | null = null;
+  let entryStochD: number | null = null;
+  if (signal?.reason) {
+    const matchK = signal.reason.match(/K(\d+\.?\d*)/);
+    const matchD = signal.reason.match(/D(\d+\.?\d*)/);
+    if (matchK) entryStochK = parseFloat(matchK[1]);
+    if (matchD) entryStochD = parseFloat(matchD[1]);
+  }
+
   return (
-    <div className="grid grid-cols-4 gap-2">
-      <div className="bg-slate-800/40 rounded-lg p-2 text-center">
-        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">ADX</p>
-        <p className={"font-mono font-bold text-sm " + adxColor}>{market.adx.toFixed(1)}</p>
-        <p className="text-[10px] text-slate-600">{market.adx > 25 ? "STRONG" : market.adx > 20 ? "BUILDING" : "WEAK"}</p>
+    <div className="space-y-2">
+      <div className="grid grid-cols-4 gap-2">
+        <div className="bg-slate-800/40 rounded-lg p-2 text-center">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">ADX</p>
+          <p className={"font-mono font-bold text-sm " + adxColor}>{market.adx.toFixed(1)}</p>
+          <p className="text-[10px] text-slate-600">{market.adx > 25 ? "STRONG" : market.adx > 20 ? "BUILDING" : "WEAK"}</p>
+        </div>
+        <div className="bg-slate-800/40 rounded-lg p-2 text-center">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Stoch K</p>
+          <p className={"font-mono font-bold text-sm " + stochColor}>{market.stochK.toFixed(1)}</p>
+          <p className="text-[10px] text-slate-600">{market.stochK < 20 ? "OVERSOLD" : market.stochK > 80 ? "OVERBOUGHT" : "NEUTRAL"}</p>
+        </div>
+        <div className="bg-slate-800/40 rounded-lg p-2 text-center">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Stoch D</p>
+          <p className={"font-mono font-bold text-sm " + stochColor}>{market.stochD.toFixed(1)}</p>
+        </div>
+        <div className="bg-slate-800/40 rounded-lg p-2 text-center">
+          <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Cross</p>
+          <p className={"font-mono font-bold text-sm " + crossColor}>K {crossDir} D</p>
+          <p className="text-[10px] text-slate-600">{Math.abs(market.stochK - market.stochD).toFixed(1)} spread</p>
+        </div>
       </div>
-      <div className="bg-slate-800/40 rounded-lg p-2 text-center">
-        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Stoch K</p>
-        <p className={"font-mono font-bold text-sm " + stochColor}>{market.stochK.toFixed(1)}</p>
-        <p className="text-[10px] text-slate-600">{market.stochK < 20 ? "OVERSOLD" : market.stochK > 80 ? "OVERBOUGHT" : "NEUTRAL"}</p>
-      </div>
-      <div className="bg-slate-800/40 rounded-lg p-2 text-center">
-        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Stoch D</p>
-        <p className={"font-mono font-bold text-sm " + stochColor}>{market.stochD.toFixed(1)}</p>
-      </div>
-      <div className="bg-slate-800/40 rounded-lg p-2 text-center">
-        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Cross</p>
-        <p className={"font-mono font-bold text-sm " + crossColor}>K {crossDir} D</p>
-        <p className="text-[10px] text-slate-600">{Math.abs(market.stochK - market.stochD).toFixed(1)} spread</p>
-      </div>
+      {entryStochK !== null && (
+        <div className="bg-slate-800/30 rounded-lg p-2 flex justify-between items-center text-xs">
+          <span className="text-slate-500">Entry Stoch:</span>
+          <span className="font-mono text-slate-300">
+            K{entryStochK.toFixed(1)} D{entryStochD?.toFixed(1) || "—"} 
+            <span className="text-slate-600 ml-2">→ now K{market.stochK.toFixed(1)}</span>
+            <span className={market.stochK > entryStochK + 40 ? "text-rose-400 ml-1" : market.stochK > entryStochK + 20 ? "text-yellow-400 ml-1" : "text-emerald-400 ml-1"}>
+              ({market.stochK > entryStochK ? "+" : ""}{(market.stochK - (entryStochK || 0)).toFixed(1)})
+            </span>
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -324,8 +416,9 @@ function SignalCard({ signal, market, livePrice }: { signal: Signal; market: Mar
         </div>
       </div>
 
-      <ProgressBanner market={market} />
-      <IndicatorGrid market={market} />
+      <WarningBanner market={market} signal={signal} />
+      <ProgressBanner market={market} signal={signal} />
+      <IndicatorGrid market={market} signal={signal} />
       <TrendDisplay market={market} />
 
       <div>
@@ -383,6 +476,7 @@ function WaitingCard({ pair, market, livePrice }: { pair: string; market: Market
         <PhaseBadge phase={phase} />
       </div>
 
+      <WarningBanner market={market} />
       <ProgressBanner market={market} />
       <IndicatorGrid market={market} />
       <TrendDisplay market={market} />
