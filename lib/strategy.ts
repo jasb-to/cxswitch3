@@ -1,8 +1,6 @@
 // lib/strategy.ts — v28 "1H Entry + HTF Direction"
 // ============================================================
-// 2026-07-07: Stripped all zone logic, MACD, trendlines, hysteresis, EMA entry gate
-// 1D = direction, 4H = confirmation, 1H = entry trigger only
-// Entry on 1H StochRSI cross + volume, no EMA lag
+// 2026-07-07: 1H Stoch cross entry, HTF direction filter, no zones, no EMA gate
 // ============================================================
 
 export interface Candle {
@@ -50,6 +48,7 @@ export interface MarketData {
   rsi: number;
   stochK: number;
   stochD: number;
+  closes4h?: number[];
 }
 
 export interface SignalResult {
@@ -221,7 +220,7 @@ function isInCooldown(pair: string, now: number, direction?: "LONG" | "SHORT"): 
   return elapsed < EXIT_COOLDOWN_MS ? { inCooldown: true, remainingMs: EXIT_COOLDOWN_MS - elapsed, lastExit } : { inCooldown: false, remainingMs: 0, lastExit };
 }
 
-// --- 1H ENTRY DETECTION (NO EMA GATE) ---
+// --- 1H ENTRY DETECTION ---
 interface EntryResult {
   hasEntry: boolean;
   direction: "LONG" | "SHORT" | null;
@@ -238,22 +237,18 @@ function detect1HEntry(candles1h: Candle[], config: PairConfig): EntryResult {
 
   if (closes.length < 50) return { hasEntry: false, direction: null, strength: 0, reasons: ["insufficient_1h"], stochK: 50, stochD: 50 };
 
-  // Current + previous Stoch
   const stoch = stochRsi(closes);
   const stochPrev = stochRsi(closes.slice(0, -1));
 
-  // Volume
   const avgVol = avg(volumes.slice(-10)), lastVol = volumes[volumes.length - 1];
   const volSurge = lastVol > avgVol * config.volumeMultiplier;
 
-  // Cross detection
   const crossUp = stochPrev.k <= stochPrev.d && stoch.k > stoch.d;
   const crossDown = stochPrev.k >= stochPrev.d && stoch.k < stoch.d;
 
   let direction: "LONG" | "SHORT" | null = null;
   let strength = 0;
 
-  // === ENTRY: Stoch cross ===
   if (crossUp) {
     direction = "LONG";
     reasons.push("stoch_cross_up");
@@ -264,18 +259,14 @@ function detect1HEntry(candles1h: Candle[], config: PairConfig): EntryResult {
     strength += 60;
   }
 
-  // Boosters
   if (volSurge) { strength += 20; reasons.push("volume_surge"); }
 
-  // 1H ADX
   const adx1h = adx(candles1h);
   if (adx1h > config.minADX) { strength += 10; reasons.push("adx_ok"); }
 
-  // Velocity (3-candle ROC)
   const roc = ((closes[closes.length - 1] - closes[closes.length - 4]) / closes[closes.length - 4]) * 100;
   if (Math.abs(roc) > 1.0) { strength += 10; reasons.push("velocity"); }
 
-  // BLOCK: Only if already extreme (not crossing through)
   const wasBelow70 = stochPrev.k < 70;
   const wasAbove30 = stochPrev.k > 30;
 
@@ -296,7 +287,6 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   const config = getPairConfig(pair);
   const now = Date.now();
 
-  // Validate
   for (let i = 1; i < candles4h.length; i++) {
     if (candles4h[i].timestamp < candles4h[i - 1].timestamp) { debug.push("Candles not sorted"); return { debug }; }
   }
@@ -307,7 +297,6 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
     return { debug };
   }
 
-  // HTF Trends
   const t1d = trendDirection(candles1d);
   const t4h = trendDirection(candles4h);
   debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength}`);
@@ -317,7 +306,6 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   const stoch4h = stochRsi(candles4h.map(c => c.close));
   const adx4h = adx(candles4h);
 
-  // DIRECTION: 1D + 4H must agree
   let tradeDirection: "LONG" | "SHORT" | null = t1d.direction;
 
   if (t4h.direction !== t1d.direction) {
@@ -337,11 +325,11 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
       htfBias: t1d.direction === "LONG" ? "BULLISH" : t1d.direction === "SHORT" ? "BEARISH" : "NEUTRAL",
       adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
       stochK: stoch4h.k, stochD: stoch4h.d,
+      closes4h: candles4h.map(c => c.close).slice(-50),
     };
     return { market, debug };
   }
 
-  // COOLDOWN
   const cooldown = isInCooldown(pair, now, tradeDirection);
   if (cooldown.inCooldown) {
     debug.push(`EXIT COOLDOWN: ${(cooldown.remainingMs / 3600000).toFixed(1)}h remaining`);
@@ -351,11 +339,11 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
       htfBias: tradeDirection === "LONG" ? "BULLISH" : "BEARISH",
       adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
       stochK: stoch4h.k, stochD: stoch4h.d,
+      closes4h: candles4h.map(c => c.close).slice(-50),
     };
     return { market, debug };
   }
 
-  // 1H ENTRY DETECTION
   const entry1h = detect1HEntry(candles1h, config);
   debug.push(`1H Stoch: K${entry1h.stochK} D${entry1h.stochD}`);
 
@@ -373,11 +361,11 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
       htfBias: tradeDirection === "LONG" ? "BULLISH" : "BEARISH",
       adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
       stochK: stoch4h.k, stochD: stoch4h.d,
+      closes4h: candles4h.map(c => c.close).slice(-50),
     };
     return { market, debug };
   }
 
-  // BUILD SIGNAL
   const entry = price;
   let sl: number, tp: number;
   if (entry1h.direction === "LONG") {
@@ -395,6 +383,7 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
       htfBias: tradeDirection === "LONG" ? "BULLISH" : "BEARISH",
       adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
       stochK: stoch4h.k, stochD: stoch4h.d,
+      closes4h: candles4h.map(c => c.close).slice(-50),
     };
     return { market, debug };
   }
@@ -415,6 +404,7 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
     phase: "EARLY_ENTRY", trend: `${tradeDirection} ${t1d.strength}`,
     htfBias: entry1h.direction === "LONG" ? "BULLISH" : "BEARISH",
     adx: signal.adx, rsi: signal.rsi, stochK: stoch4h.k, stochD: stoch4h.d,
+    closes4h: candles4h.map(c => c.close).slice(-50),
   };
 
   debug.push(`SIGNAL: ${signal.direction} entry=${signal.entry} TP=${signal.target} SL=${signal.stop} RR=${signal.rr}`);
@@ -436,6 +426,7 @@ export function getMarketSnapshot(pair: string, candles1h: Candle[], candles4h: 
     htfBias: t1d.direction === "LONG" ? "BULLISH" : t1d.direction === "SHORT" ? "BEARISH" : "NEUTRAL",
     adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
     stochK: stoch4h.k, stochD: stoch4h.d,
+    closes4h: candles4h.map(c => c.close).slice(-50),
   };
 }
 
