@@ -10,6 +10,7 @@
 //   7. Signal stores 1H StochRSI
 //   8. Trade Manager state fields added
 //   9. UI alignment: 1H labeled as entry TF, 4H as context
+//   10. aggregateTo1D() fixed for robust daily grouping
 // ============================================================
 
 export interface Candle {
@@ -166,18 +167,26 @@ function adx(candles: Candle[], period: number = 14): number {
 }
 
 function aggregateTo1D(candles4h: Candle[]): Candle[] {
+  if (!candles4h || candles4h.length < 6) return [];
   const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
   const groups: Map<string, Candle[]> = new Map();
   for (const c of sorted) {
     const d = new Date(c.timestamp);
-    const key = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+    const key = d.toISOString().split("T")[0];
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(c);
   }
   const daily: Candle[] = [];
   for (const [, bars] of groups) {
     if (!bars.length) continue;
-    daily.push({ timestamp: bars[0].timestamp, open: bars[0].open, high: Math.max(...bars.map(b => b.high)), low: Math.min(...bars.map(b => b.low)), close: bars[bars.length - 1].close, volume: bars.reduce((s, b) => s + b.volume, 0) });
+    daily.push({
+      timestamp: bars[0].timestamp,
+      open: bars[0].open,
+      high: Math.max(...bars.map(b => b.high)),
+      low: Math.min(...bars.map(b => b.low)),
+      close: bars[bars.length - 1].close,
+      volume: bars.reduce((s, b) => s + b.volume, 0)
+    });
   }
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
@@ -189,19 +198,16 @@ function ema(closes: number[], period: number): number[] {
   return ema;
 }
 
-// RELAXED priceStructure: compares first half vs second half instead of requiring precise swing points
-function priceStructure(candles: Candle[], direction: "LONG" | "SHORT", lookback: number = 12): { valid: boolean; reason: string } {
+function priceStructure(candles: Candle[], direction: "LONG" | "SHORT", lookback: number = 30): { valid: boolean; reason: string } {
   if (candles.length < lookback + 3) return { valid: false, reason: "insufficient_data" };
   const recent = candles.slice(-lookback);
   const highs = recent.map(c => c.high);
   const lows = recent.map(c => c.low);
-
   const mid = Math.floor(recent.length / 2);
   const firstHalfHigh = Math.max(...highs.slice(0, mid));
   const firstHalfLow = Math.min(...lows.slice(0, mid));
   const secondHalfHigh = Math.max(...highs.slice(mid));
   const secondHalfLow = Math.min(...lows.slice(mid));
-
   if (direction === "LONG") {
     const higherHigh = secondHalfHigh > firstHalfHigh;
     const higherLow = secondHalfLow > firstHalfLow;
@@ -314,7 +320,11 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
     if (candles4h[i].timestamp < candles4h[i - 1].timestamp) { debug.push("Candles not sorted"); return { debug }; }
   }
   const candles1d = aggregateTo1D(candles4h);
-  if (candles1d.length < 25 || candles4h.length < 30 || candles1h.length < 50) { debug.push("Insufficient candle data"); return { debug }; }
+  debug.push(`1D candles: ${candles1d.length} days from ${candles4h.length} 4H bars`);
+  if (candles1d.length < 25 || candles4h.length < 30 || candles1h.length < 50) {
+    debug.push(`Insufficient candle data: 1D=${candles1d.length}, 4H=${candles4h.length}, 1H=${candles1h.length}`);
+    return { debug };
+  }
   const t1d = trendDirection(candles1d);
   const t4h = trendDirection(candles4h);
   debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength} structure=${t1d.structureValid}`);
