@@ -109,7 +109,6 @@ export async function GET(request: Request) {
   await setLastCronRun(runStart);
   log(`[CRON] lastRun set, force=${forceRun}`);
 
-  // NEW: Wire up exit persistence so cooldowns survive deployments
   setExitPersistence(persistExit, loadExits);
   await loadExitsStrategy();
   log("[CRON] Loaded exit history from KV");
@@ -157,7 +156,6 @@ export async function GET(request: Request) {
     }
   }
 
-  // NEW: Update Trade Manager for all active signals before checking exits
   log(`[CRON] Updating Trade Manager for ${existingSignals.length} signals...`);
   for (const signal of existingSignals) {
     if (signal.exited || hasExited(signal.id)) continue;
