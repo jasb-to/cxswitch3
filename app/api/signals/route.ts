@@ -45,6 +45,7 @@ export async function GET() {
       else pnl = ((s.entry - price) / s.entry) * 100;
     }
 
+    // TTL only applies to pre-entry signals, not active trades
     const isPreEntry = !s.tradeState || s.tradeState === "OPEN";
     if (isPreEntry && ageMin > 12 * 60) status = "EXPIRED";
 
@@ -54,15 +55,41 @@ export async function GET() {
     };
   });
 
+  // FIX: marketSnapshots is an ARRAY from getMarketData(). Use .find(), not bracket notation.
   const freshMarket = TRACKED_PAIRS.map((pair) => {
-    const snapshot = marketSnapshots?.[pair];
+    const snapshot = Array.isArray(marketSnapshots) 
+      ? marketSnapshots.find((m: any) => m.pair === pair)
+      : undefined;
+    
     if (!snapshot) {
-      return { pair, price: currentPrices[pair] ?? 0, timestamp: Date.now(), phase: "NONE", trend: "UNKNOWN", htfBias: "NEUTRAL", adx: 0, rsi: 0, stochK: 0, stochD: 0 };
+      return { 
+        pair, 
+        price: currentPrices[pair] ?? 0, 
+        timestamp: Date.now(), 
+        phase: "NONE", 
+        trend: "UNKNOWN", 
+        htfBias: "NEUTRAL", 
+        adx: 0, 
+        rsi: 0, 
+        stochK: 0, 
+        stochD: 0 
+      };
     }
-    return snapshot;
+    
+    // Merge current live price with snapshot data
+    return {
+      ...snapshot,
+      price: currentPrices[pair] ?? snapshot.price ?? 0,
+    };
   });
 
-  const response = NextResponse.json({ signals: enriched, marketData: freshMarket, history: Array.isArray(history) ? history : [], updatedAt: new Date().toISOString() });
+  const response = NextResponse.json({ 
+    signals: enriched, 
+    marketData: freshMarket, 
+    history: Array.isArray(history) ? history : [], 
+    updatedAt: new Date().toISOString() 
+  });
+  
   response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   response.headers.set("Pragma", "no-cache");
   response.headers.set("Expires", "0");
