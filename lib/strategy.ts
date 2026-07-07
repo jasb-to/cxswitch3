@@ -1,14 +1,15 @@
-// lib/strategy.ts — v28.1 "1H Entry + HTF Direction + Per-Asset Stops"
+// lib/strategy.ts — v28.1 "1H Entry + HTF Direction + Per-Asset Stops + Trade Manager"
 // ============================================================
-// 2026-07-07: Fixed per your audit:
+// 2026-07-07: Fixed per audit:
 //   1. Removed 4H exhaustion warning logic
 //   2. Removed redundant MIN_RR check
-//   3. TTL removed for active positions
+//   3. TTL removed for active positions (only pre-entry)
 //   4. Exit tracking persisted via KV hooks
 //   5. Trend detection requires HH/HL or LH/LL structure
 //   6. Per-asset stopLossPct / takeProfitPct
 //   7. Signal stores 1H StochRSI
 //   8. Trade Manager state fields added
+//   9. UI alignment: 1H labeled as entry TF, 4H as context
 // ============================================================
 
 export interface Candle {
@@ -56,7 +57,7 @@ export interface MarketData {
   pair: string;
   price: number;
   timestamp: number;
-  phase: "NONE" | "WATCHING" | "READY" | "EARLY_ENTRY" | "EXHAUSTION" | "EXPANSION";
+  phase: "NONE" | "WATCHING" | "READY" | "EARLY_ENTRY" | "EXPANSION";
   trend: string;
   htfBias?: "BULLISH" | "BEARISH" | "NEUTRAL";
   adx: number;
@@ -188,32 +189,31 @@ function ema(closes: number[], period: number): number[] {
   return ema;
 }
 
+// RELAXED priceStructure: compares first half vs second half instead of requiring precise swing points
 function priceStructure(candles: Candle[], direction: "LONG" | "SHORT", lookback: number = 12): { valid: boolean; reason: string } {
-  if (candles.length < lookback + 5) return { valid: false, reason: "insufficient_data" };
+  if (candles.length < lookback + 3) return { valid: false, reason: "insufficient_data" };
   const recent = candles.slice(-lookback);
   const highs = recent.map(c => c.high);
   const lows = recent.map(c => c.low);
-  const swingHighs: number[] = [];
-  const swingLows: number[] = [];
-  for (let i = 2; i < highs.length - 2; i++) {
-    if (highs[i] > highs[i-1] && highs[i] > highs[i-2] && highs[i] > highs[i+1] && highs[i] > highs[i+2]) swingHighs.push(highs[i]);
-    if (lows[i] < lows[i-1] && lows[i] < lows[i-2] && lows[i] < lows[i+1] && lows[i] < lows[i+2]) swingLows.push(lows[i]);
-  }
-  if (swingHighs.length < 2 || swingLows.length < 2) return { valid: false, reason: "no_clear_swings" };
-  const lastTwoHighs = swingHighs.slice(-2);
-  const lastTwoLows = swingLows.slice(-2);
+
+  const mid = Math.floor(recent.length / 2);
+  const firstHalfHigh = Math.max(...highs.slice(0, mid));
+  const firstHalfLow = Math.min(...lows.slice(0, mid));
+  const secondHalfHigh = Math.max(...highs.slice(mid));
+  const secondHalfLow = Math.min(...lows.slice(mid));
+
   if (direction === "LONG") {
-    const higherHigh = lastTwoHighs[1] > lastTwoHighs[0];
-    const higherLow = lastTwoLows[1] > lastTwoLows[0];
+    const higherHigh = secondHalfHigh > firstHalfHigh;
+    const higherLow = secondHalfLow > firstHalfLow;
     if (higherHigh && higherLow) return { valid: true, reason: "hh_hl_structure" };
-    if (!higherHigh && !higherLow) return { valid: false, reason: "lower_highs_lows" };
-    return { valid: true, reason: "mixed_but_trending" };
+    if (higherHigh || higherLow) return { valid: true, reason: "mixed_but_trending" };
+    return { valid: false, reason: "no_bullish_structure" };
   } else {
-    const lowerHigh = lastTwoHighs[1] < lastTwoHighs[0];
-    const lowerLow = lastTwoLows[1] < lastTwoLows[0];
+    const lowerHigh = secondHalfHigh < firstHalfHigh;
+    const lowerLow = secondHalfLow < firstHalfLow;
     if (lowerHigh && lowerLow) return { valid: true, reason: "lh_ll_structure" };
-    if (!lowerHigh && !lowerLow) return { valid: false, reason: "higher_highs_lows" };
-    return { valid: true, reason: "mixed_but_trending" };
+    if (lowerHigh || lowerLow) return { valid: true, reason: "mixed_but_trending" };
+    return { valid: false, reason: "no_bearish_structure" };
   }
 }
 
@@ -356,10 +356,9 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   if (entry1h.hasEntry && entry1h.direction === tradeDirection) debug.push(`1H ENTRY: ${entry1h.direction} strength=${entry1h.strength} | ${entry1h.reasons.join(", ")}`);
   else debug.push(`1H: ${entry1h.hasEntry ? "wrong direction" : "no cross"} | ${entry1h.reasons.join(", ") || "waiting"}`);
   if (!entry1h.hasEntry || entry1h.direction !== tradeDirection) {
-    const phase = entry1h.stochK > 80 || entry1h.stochK < 20 ? "EXHAUSTION" : "WATCHING";
     const market: MarketData = {
       pair, price: Math.round(price * 100) / 100, timestamp: now,
-      phase, trend: `${tradeDirection} ${t1d.strength}`,
+      phase: "WATCHING", trend: `${tradeDirection} ${t1d.strength}`,
       htfBias: tradeDirection === "LONG" ? "BULLISH" : "BEARISH",
       adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
       stochK: stoch4h.k, stochD: stoch4h.d, stoch1hK: stoch1h.k, stoch1hD: stoch1h.d,
