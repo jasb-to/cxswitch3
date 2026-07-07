@@ -45,7 +45,6 @@ export async function GET() {
       else pnl = ((s.entry - price) / s.entry) * 100;
     }
 
-    // TTL only applies to pre-entry signals, not active trades
     const isPreEntry = !s.tradeState || s.tradeState === "OPEN";
     if (isPreEntry && ageMin > 12 * 60) status = "EXPIRED";
 
@@ -55,7 +54,6 @@ export async function GET() {
     };
   });
 
-  // FIX: marketSnapshots is an ARRAY from getMarketData(). Use .find(), not bracket notation.
   const freshMarket = TRACKED_PAIRS.map((pair) => {
     const snapshot = Array.isArray(marketSnapshots) 
       ? marketSnapshots.find((m: any) => m.pair === pair)
@@ -76,7 +74,6 @@ export async function GET() {
       };
     }
 
-    // Merge current live price with snapshot data
     return {
       ...snapshot,
       price: currentPrices[pair] ?? snapshot.price ?? 0,
