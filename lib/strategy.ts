@@ -1,4 +1,4 @@
-// lib/strategy.ts — v28.2 "1H Entry + HTF Direction + HTF Exhaustion Filter + Per-Asset Stops"
+// lib/strategy.ts — v28.3 "1H Entry + HTF Direction + HTF Exhaustion Filter + Per-Asset Stops + Lagging EMA Fix"
 // ============================================================
 // 2026-07-07: Changes:
 //   - "NONE" trend label changed to "MIXED" (more accurate for EMA cross without structure)
@@ -6,7 +6,10 @@
 //     * If 4H StochRSI > 80 and K < D (rolling over) → LONG entries blocked
 //     * If 4H StochRSI < 20 and K > D (bouncing) → SHORT entries blocked
 //     * Prevents buying into HTF exhaustion / selling into HTF capitulation
-//   - All previous v28.1 fixes retained
+//   - v28.3 FIX: Recent momentum override for lagging EMAs
+//     * If last 6 candles show clear reversal against EMA direction → return MIXED WEAK
+//     * Prevents "LONG MEDIUM" when price just broke down from a double-top
+//   - All previous v28.1/v28.2 fixes retained
 // ============================================================
 
 export interface Candle {
@@ -219,19 +222,57 @@ function priceStructure(candles: Candle[], direction: "LONG" | "SHORT", lookback
   }
 }
 
-// FIXED: "NONE" -> "MIXED" when EMAs cross but structure isn't confirmed
+// v28.3 FIX: Recent momentum override for lagging EMAs
+// If last 6 candles show clear reversal against EMA direction, return MIXED WEAK
 function trendDirection(candles: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string; structureValid: boolean; emaDirection: "LONG" | "SHORT" } {
   const len = candles.length;
   if (len < 25) return { direction: null, strength: "WEAK", structureValid: false, emaDirection: "LONG" };
+
   const closes = candles.map(c => c.close);
   const ema8 = ema(closes, 8), ema21 = ema(closes, 21);
   const emaDir = ema8[ema8.length - 1] > ema21[ema21.length - 1] ? "LONG" : "SHORT";
+
+  // === v28.3: Recent momentum check (last 6 candles = 1.5 days on 4H) ===
+  const recent = candles.slice(-6);
+  const recentHighs = recent.map(c => c.high);
+  const recentLows = recent.map(c => c.low);
+  const firstClose = recent[0].close;
+  const lastClose = recent[recent.length - 1].close;
+  const recentChange = ((lastClose - firstClose) / firstClose) * 100;
+
+  let lowerHighs = 0, lowerLows = 0, higherHighs = 0, higherLows = 0;
+  for (let i = 1; i < recent.length; i++) {
+    if (recentHighs[i] < recentHighs[i-1]) lowerHighs++;
+    if (recentLows[i] < recentLows[i-1]) lowerLows++;
+    if (recentHighs[i] > recentHighs[i-1]) higherHighs++;
+    if (recentLows[i] > recentLows[i-1]) higherLows++;
+  }
+
+  // EMA says LONG but recent price is breaking down hard
+  if (emaDir === "LONG") {
+    const breakingDown = recentChange < -2.5 && lowerHighs >= 4 && lowerLows >= 3;
+    if (breakingDown) {
+      return { direction: null, strength: "WEAK", structureValid: false, emaDirection: "LONG" };
+    }
+  }
+  // EMA says SHORT but recent price is pumping hard
+  if (emaDir === "SHORT") {
+    const breakingUp = recentChange > 2.5 && higherHighs >= 4 && higherLows >= 3;
+    if (breakingUp) {
+      return { direction: null, strength: "WEAK", structureValid: false, emaDirection: "SHORT" };
+    }
+  }
+  // === END v28.3 ===
+
   const structure = priceStructure(candles, emaDir as "LONG" | "SHORT");
+
   if (!structure.valid) return { direction: null, strength: "WEAK", structureValid: false, emaDirection: emaDir as "LONG" | "SHORT" };
+
   const highs = candles.slice(-20).map(c => c.high), lows = candles.slice(-20).map(c => c.low);
   const hh = highs[highs.length - 1] > Math.max(...highs.slice(0, -1));
   const ll = lows[lows.length - 1] < Math.min(...lows.slice(0, -1));
   const strength = (emaDir === "LONG" && hh) || (emaDir === "SHORT" && ll) ? "STRONG" : "MEDIUM";
+
   return { direction: emaDir as "LONG" | "SHORT", strength, structureValid: true, emaDirection: emaDir as "LONG" | "SHORT" };
 }
 
@@ -309,19 +350,16 @@ function detect1HEntry(candles1h: Candle[], config: PairConfig): EntryResult {
   return { hasEntry: strength >= config.momentumThreshold && direction !== null, direction, strength, reasons, stochK: stoch.k, stochD: stoch.d };
 }
 
-// NEW: HTF momentum exhaustion check
+// HTF momentum exhaustion check
 function isHTFExhausted(stoch4h: { k: number; d: number }, tradeDirection: "LONG" | "SHORT"): { exhausted: boolean; reason: string } {
   if (tradeDirection === "LONG") {
-    // 4H StochRSI > 80 and K crossing below D = overbought exhaustion
     if (stoch4h.k > 80 && stoch4h.k < stoch4h.d) {
       return { exhausted: true, reason: `4H StochRSI overbought exhaustion: K${stoch4h.k} < D${stoch4h.d}` };
     }
-    // Also flag extreme overbought even if not yet crossing
     if (stoch4h.k > 90) {
       return { exhausted: true, reason: `4H StochRSI extreme overbought: K${stoch4h.k}` };
     }
   } else {
-    // 4H StochRSI < 20 and K crossing above D = oversold exhaustion (for SHORTs, this means bounce)
     if (stoch4h.k < 20 && stoch4h.k > stoch4h.d) {
       return { exhausted: true, reason: `4H StochRSI oversold bounce risk: K${stoch4h.k} > D${stoch4h.d}` };
     }
@@ -348,7 +386,6 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   const t1d = trendDirection(candles1d);
   const t4h = trendDirection(candles4h);
 
-  // FIXED: "NONE" -> "MIXED" for display
   const t1dDisplay = t1d.direction ? `${t1d.direction} ${t1d.strength}` : `MIXED ${t1d.strength}`;
   const t4hDisplay = t4h.direction ? `${t4h.direction} ${t4h.strength}` : `MIXED ${t4h.strength}`;
 
@@ -387,7 +424,6 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
     return { market, debug };
   }
 
-  // NEW: Check HTF momentum exhaustion
   const htfCheck = isHTFExhausted(stoch4h, tradeDirection);
   if (htfCheck.exhausted) {
     debug.push(`HTF EXHAUSTION: ${htfCheck.reason}`);
