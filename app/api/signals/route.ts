@@ -60,7 +60,7 @@ export async function GET() {
     const snapshot = Array.isArray(marketSnapshots) 
       ? marketSnapshots.find((m: any) => m.pair === pair)
       : undefined;
-    
+
     if (!snapshot) {
       return { 
         pair, 
@@ -75,7 +75,7 @@ export async function GET() {
         stochD: 0 
       };
     }
-    
+
     // Merge current live price with snapshot data
     return {
       ...snapshot,
@@ -89,7 +89,7 @@ export async function GET() {
     history: Array.isArray(history) ? history : [], 
     updatedAt: new Date().toISOString() 
   });
-  
+
   response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   response.headers.set("Pragma", "no-cache");
   response.headers.set("Expires", "0");
