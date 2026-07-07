@@ -1,4 +1,4 @@
-// lib/state.ts — v28 "Redis State Management"
+// lib/state.ts — v28.1 "Redis State Management + Exit Persistence"
 // ============================================================
 
 import { Redis } from "@upstash/redis";
@@ -14,6 +14,7 @@ const LAST_CRON_RUN_KEY = `cx_last_cron_run_${KEY_VERSION}`;
 const SIGNAL_HISTORY_KEY = `cx_signal_history_${KEY_VERSION}`;
 const UI_ALERTS_KEY = `cx_ui_alerts_${KEY_VERSION}`;
 const CRON_LOGS_KEY = `cx_cron_logs_${KEY_VERSION}`;
+const EXITS_KEY = `cx_exits_${KEY_VERSION}`;
 
 const SIGNALS_TTL = 6 * 60 * 60;
 const MARKET_TTL = 4 * 60 * 60;
@@ -22,9 +23,19 @@ const LAST_CRON_RUN_TTL = 24 * 60 * 60;
 const SIGNAL_HISTORY_TTL = 48 * 60 * 60;
 const UI_ALERTS_TTL = 24 * 60 * 60;
 const CRON_LOGS_TTL = 24 * 60 * 60;
+const EXITS_TTL = 30 * 24 * 60 * 60;
 const PAIR_STATE_TTL = 7 * 24 * 60 * 60;
 
 export const CURRENT_SIGNAL_VERSION = 28;
+
+export interface ExitRecord {
+  signalId: string;
+  pair: string;
+  direction: "LONG" | "SHORT";
+  exitTimestamp: number;
+  exitReason: string;
+  exitPrice: number;
+}
 
 export interface Signal {
   id: string;
@@ -36,6 +47,8 @@ export interface Signal {
   rsi?: number;
   stochK?: number;
   stochD?: number;
+  stoch1hK?: number;
+  stoch1hD?: number;
   expectedMove?: number;
   reason?: string;
   explanation?: string;
@@ -54,6 +67,7 @@ export interface Signal {
   highestPrice?: number;
   lowestPrice?: number;
   lockedStop?: number;
+  profitLockActive?: boolean;
   exited?: boolean;
   exitReason?: string;
   exitPrice?: number;
@@ -271,6 +285,33 @@ export async function setCronLogs(logs: any[]): Promise<void> {
   }
 }
 
+// NEW: Exit persistence for cooldown survival across deployments
+export async function persistExit(record: ExitRecord): Promise<void> {
+  try {
+    await redis.set(`exit:${record.signalId}`, JSON.stringify(record), { ex: EXITS_TTL });
+    await redis.set(`exit_pair:${record.pair}`, JSON.stringify(record), { ex: EXITS_TTL });
+    console.log(`[STATE] Persisted exit for ${record.pair}: ${record.exitReason}`);
+  } catch (err) {
+    console.error("[STATE] Exit persist failed:", err);
+  }
+}
+
+export async function loadExits(): Promise<ExitRecord[]> {
+  try {
+    const keys = await redis.keys("exit:*");
+    const exits: ExitRecord[] = [];
+    for (const key of keys) {
+      const data = await redis.get(key);
+      if (data) exits.push(typeof data === "string" ? JSON.parse(data) : data);
+    }
+    console.log(`[STATE] Loaded ${exits.length} exits from KV`);
+    return exits;
+  } catch (err) {
+    console.error("[STATE] Exit load failed:", err);
+    return [];
+  }
+}
+
 export async function getPairState(pair: string): Promise<any> {
   try {
     const data = await redis.get(`cx_state_${pair}_${KEY_VERSION}`);
@@ -319,6 +360,7 @@ export async function resetAll() {
     await redis.del(SIGNAL_HISTORY_KEY);
     await redis.del(UI_ALERTS_KEY);
     await redis.del(CRON_LOGS_KEY);
+    await redis.del(EXITS_KEY);
     console.log("[STATE] All KV data reset");
   } catch (err) {
     console.error("[STATE] Reset failed:", err);
