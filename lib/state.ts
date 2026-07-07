@@ -5,7 +5,7 @@ import { Redis } from "@upstash/redis";
 
 export const redis = Redis.fromEnv();
 
-const KEY_VERSION = "v28";
+const KEY_VERSION = "v29";
 
 const SIGNALS_KEY = `cx_signals_${KEY_VERSION}`;
 const MARKET_KEY = `cx_market_${KEY_VERSION}`;
