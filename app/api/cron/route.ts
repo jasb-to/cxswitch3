@@ -1,11 +1,5 @@
 // app/api/cron/route.ts — v28 "Full v28 strategy integration"
 // ============================================================
-// PATCHED 2026-07-07:
-// - Exit alerts deduplicated by signal ID (uses hasExited from strategy)
-// - Signals with exited=true are filtered before check
-// - Only ONE exit alert per signal ID ever
-// - Cleaned up market data for exited pairs
-// ============================================================
 
 import { NextResponse } from "next/server";
 import {
@@ -128,7 +122,6 @@ export async function GET(request: Request) {
     }
   }
 
-  // --- Fetch candles for ALL pairs ---
   const candles4hMap: Record<string, Candle[]> = {};
   const candles1hMap: Record<string, Candle[]> = {};
   const candles15mMap: Record<string, Candle[]> = {};
@@ -151,10 +144,8 @@ export async function GET(request: Request) {
     }
   }
 
-  // --- v28 exit check ---
   log(`[CRON] Checking ${existingSignals.length} existing signals...`);
 
-  // PATCH: Filter out already-exited signals BEFORE checking
   const signalsToCheck = existingSignals.filter((s: any) => !s.exited && !hasExited(s.id));
   const alreadyExitedSignals = existingSignals.filter((s: any) => s.exited || hasExited(s.id));
 
@@ -174,7 +165,6 @@ export async function GET(request: Request) {
       continue;
     }
 
-    // v28 exit: Stoch extreme opposite (primary) + SL/TP/TTL (secondary)
     const holdResult = shouldHold(signal, candles4h, price, runStart);
     const validity = isSignalStillValid(signal, price, runStart);
 
@@ -191,11 +181,9 @@ export async function GET(request: Request) {
 
   log(`[STATE] Valid: ${validSignals.length}, Exited: ${preExited.length}`);
 
-  // --- Process exited signals ---
   const exitAlertsToSend: { signal: Signal; reason: string; exitPrice: number; pnl: number }[] = [];
 
   for (const { signal, reason } of preExited) {
-    // PATCH: Double-check not already exited
     if (signal.exited || hasExited(signal.id)) {
       log(`[EXIT] ${signal.pair} — already marked exited, skipping alert`);
       if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
@@ -304,15 +292,14 @@ export async function GET(request: Request) {
           rsi: existingForPair.rsi,
           stochK: existingForPair.stochK,
           stochD: existingForPair.stochD,
-          zoneTop: existingForPair.zoneTop ?? null,
-          zoneBottom: existingForPair.zoneBottom ?? null,
+          zoneTop: null,
+          zoneBottom: null,
           zoneScore: existingForPair.confidence,
           closes4h: candles4h.slice(-50).map((c: Candle) => c.close),
         });
         continue;
       }
 
-      // --- Generate new signal ---
       const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
 
       for (const line of result.debug) {
@@ -336,7 +323,6 @@ export async function GET(request: Request) {
       );
       newSignals.push(signal);
 
-      // --- Alert logic ---
       if (activeTrades[pair]) {
         log(`[ALERT] ${pair} — already active trade, skipping alert`);
         alerts.push({ pair, status: "already_active", signalId: signal.id });
@@ -379,18 +365,13 @@ export async function GET(request: Request) {
   }
 
   log("[CRON] Merging signals...");
-  // PATCH: Merge valid + new, exclude already exited
   const merged = [...validSignals, ...newSignals].filter((s: any) => !s.exited && !hasExited(s.id));
   
-  // Keep one signal per pair (latest)
   const deduped: Signal[] = [];
   for (const s of merged) {
     const idx = deduped.findIndex((x: any) => x.pair === s.pair);
     if (idx >= 0) {
-      // Keep the newer one
-      if (s.timestamp > deduped[idx].timestamp) {
-        deduped[idx] = s;
-      }
+      if (s.timestamp > deduped[idx].timestamp) deduped[idx] = s;
     } else {
       deduped.push(s);
     }
@@ -408,32 +389,4 @@ export async function GET(request: Request) {
   );
   log("========================================");
 
-  const response = {
-    success: true,
-    signals: deduped.length,
-    marketData: marketDataList.length,
-    exited: preExited.length,
-    alerts,
-    runId,
-  };
-  await persistLog(runId, logs, "complete", response);
-  return NextResponse.json(response);
-}
-
-async function persistLog(runId: string, logs: string[], status: string, response?: any) {
-  try {
-    const existing = await getCronLogs();
-    const entry = {
-      runId,
-      time: new Date().toISOString(),
-      status,
-      logCount: logs.length,
-      logs: logs.slice(-50),
-      response: response ? JSON.stringify(response) : undefined,
-    };
-    const updated = [entry, ...(existing || [])].slice(0, 20);
-    await setCronLogs(updated);
-  } catch (e) {
-    console.error("[CRON] Failed to persist log:", e);
-  }
-}
+  const response
