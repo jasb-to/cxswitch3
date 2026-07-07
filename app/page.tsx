@@ -46,7 +46,7 @@ interface MarketData {
   pair: string;
   price: number;
   timestamp: number;
-  phase: "NONE" | "WATCHING" | "READY" | "EARLY_ENTRY" | "EXHAUSTION" | "EXPANSION";
+  phase: "NONE" | "WATCHING" | "READY" | "EARLY_ENTRY" | "EXPANSION";
   trend: string;
   htfBias?: "BULLISH" | "BEARISH" | "NEUTRAL";
   adx: number;
@@ -102,7 +102,6 @@ function PhaseBadge({ phase }: { phase: string }) {
     WATCHING: { bg: "bg-yellow-950/50", border: "border-yellow-500/40", text: "text-yellow-400" },
     READY: { bg: "bg-cyan-950/50", border: "border-cyan-500/40", text: "text-cyan-400" },
     EARLY_ENTRY: { bg: "bg-emerald-950/50", border: "border-emerald-500/40", text: "text-emerald-400" },
-    EXHAUSTION: { bg: "bg-red-950/50", border: "border-red-500/40", text: "text-red-400" },
     EXPANSION: { bg: "bg-purple-950/50", border: "border-purple-500/40", text: "text-purple-400" },
   };
   const cfg = configs[phase] || configs.NONE;
@@ -141,6 +140,7 @@ function IndicatorGrid({ market, signal }: { market: MarketData | undefined; sig
         <div className="bg-slate-800/40 rounded-lg p-2 text-center"><p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Stoch D</p><p className={`font-mono font-bold text-sm ${stochColor}`}>{market.stochD.toFixed(1)}</p></div>
         <div className="bg-slate-800/40 rounded-lg p-2 text-center"><p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Cross</p><p className={`font-mono font-bold text-sm ${crossColor}`}>K {crossDir} D</p><p className="text-[10px] text-slate-600">{Math.abs(market.stochK - market.stochD).toFixed(1)} spread</p></div>
       </div>
+      {/* 1H StochRSI — clearly labeled as ENTRY timeframe */}
       {market.stoch1hK !== undefined && (
         <div className="bg-blue-950/20 rounded-lg p-2 flex justify-between items-center text-xs border border-blue-500/20">
           <span className="text-blue-400 font-semibold">1H StochRSI (Entry TF):</span>
@@ -163,8 +163,8 @@ function TrendDisplay({ market }: { market: MarketData | undefined }) {
   const trend1dClass = trend1d === "SHORT" ? "text-rose-400" : trend1d === "LONG" ? "text-emerald-400" : "text-yellow-400";
   return (
     <div className="grid grid-cols-2 gap-3">
-      <div className="bg-slate-800/40 rounded-lg p-3"><p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">4H Trend</p><p className="text-sm font-bold text-slate-300">{market.trend || "—"}</p></div>
-      <div className="bg-slate-800/40 rounded-lg p-3"><p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">1D Trend</p><p className={`text-sm font-bold ${trend1dClass}`}>{trend1d}</p><p className="text-[10px] text-slate-600 mt-0.5">HTF: {market.htfBias || "unknown"}</p></div>
+      <div className="bg-slate-800/40 rounded-lg p-3"><p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">4H Trend (Context)</p><p className="text-sm font-bold text-slate-300">{market.trend || "—"}</p></div>
+      <div className="bg-slate-800/40 rounded-lg p-3"><p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">1D Trend (HTF Filter)</p><p className={`text-sm font-bold ${trend1dClass}`}>{trend1d}</p><p className="text-[10px] text-slate-600 mt-0.5">HTF: {market.htfBias || "unknown"}</p></div>
     </div>
   );
 }
