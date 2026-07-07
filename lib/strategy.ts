@@ -1,6 +1,7 @@
 // lib/strategy.ts — v28 "1H Entry + HTF Direction"
 // ============================================================
 // 2026-07-07: 1H Stoch cross entry, HTF direction filter, no zones, no EMA gate
+// BOTH: StochRSI (entry logic) + Regular Stochastic (UI/chart alignment)
 // ============================================================
 
 export interface Candle {
@@ -27,6 +28,8 @@ export interface Signal {
   rsi: number;
   stochK: number;
   stochD: number;
+  stochRsiK: number;
+  stochRsiD: number;
   expectedMove: number;
   reason: string;
   timestamp: number;
@@ -48,6 +51,8 @@ export interface MarketData {
   rsi: number;
   stochK: number;
   stochD: number;
+  stochRsiK: number;
+  stochRsiD: number;
   closes4h?: number[];
 }
 
@@ -109,7 +114,7 @@ function rsiSeries(closes: number[], period: number = 14): number[] {
   return series;
 }
 
-// --- STOCHRSI ---
+// --- STOCHRSI (for 1H entry detection) ---
 function stochRsi(closes: number[], rsiPeriod: number = 14, stochPeriod: number = 14, kSmooth: number = 3, dSmooth: number = 3): { k: number; d: number } {
   const rsiValues = rsiSeries(closes, rsiPeriod);
   if (rsiValues.length < stochPeriod + kSmooth - 1) return { k: 50, d: 50 };
@@ -128,6 +133,31 @@ function stochRsi(closes: number[], rsiPeriod: number = 14, stochPeriod: number 
 
   if (kValues.length < dSmooth) return { k: 50, d: 50 };
   return { k: Math.round(kValues[kValues.length - 1] * 10) / 10, d: Math.round(avg(kValues.slice(-dSmooth)) * 10) / 10 };
+}
+
+// --- REGULAR STOCHASTIC (for UI/chart alignment — uses high/low/close) ---
+function stochastic(candles: Candle[], period: number = 14, kSmooth: number = 3, dSmooth: number = 3): { k: number; d: number } {
+  if (candles.length < period) return { k: 50, d: 50 };
+
+  const rawK: number[] = [];
+  for (let i = period - 1; i < candles.length; i++) {
+    const window = candles.slice(i - period + 1, i + 1);
+    const lowest = Math.min(...window.map(c => c.low));
+    const highest = Math.max(...window.map(c => c.high));
+    const close = candles[i].close;
+    rawK.push(highest === lowest ? 50 : ((close - lowest) / (highest - lowest)) * 100);
+  }
+
+  const kValues: number[] = [];
+  for (let i = kSmooth - 1; i < rawK.length; i++) {
+    kValues.push(avg(rawK.slice(i - kSmooth + 1, i + 1)));
+  }
+
+  if (kValues.length < dSmooth) return { k: 50, d: 50 };
+  return {
+    k: Math.round(kValues[kValues.length - 1] * 10) / 10,
+    d: Math.round(avg(kValues.slice(-dSmooth)) * 10) / 10,
+  };
 }
 
 // --- WILDER SMOOTHING ---
@@ -220,7 +250,7 @@ function isInCooldown(pair: string, now: number, direction?: "LONG" | "SHORT"): 
   return elapsed < EXIT_COOLDOWN_MS ? { inCooldown: true, remainingMs: EXIT_COOLDOWN_MS - elapsed, lastExit } : { inCooldown: false, remainingMs: 0, lastExit };
 }
 
-// --- 1H ENTRY DETECTION ---
+// --- 1H ENTRY DETECTION (uses StochRSI on closes — kept as-is for entry logic) ---
 interface EntryResult {
   hasEntry: boolean;
   direction: "LONG" | "SHORT" | null;
@@ -303,7 +333,10 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   debug.push(`4H: ${t4h.direction || "NONE"} ${t4h.strength}`);
 
   const price = currentPrice ?? candles1h[candles1h.length - 1].close;
-  const stoch4h = stochRsi(candles4h.map(c => c.close));
+
+  // BOTH: Regular Stochastic for UI, StochRSI for entry logic
+  const stoch4hRegular = stochastic(candles4h);
+  const stoch4hRsi = stochRsi(candles4h.map(c => c.close));
   const adx4h = adx(candles4h);
 
   let tradeDirection: "LONG" | "SHORT" | null = t1d.direction;
@@ -324,7 +357,8 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
       phase: "WATCHING", trend: `${t1d.direction || "NONE"} ${t1d.strength}`,
       htfBias: t1d.direction === "LONG" ? "BULLISH" : t1d.direction === "SHORT" ? "BEARISH" : "NEUTRAL",
       adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
-      stochK: stoch4h.k, stochD: stoch4h.d,
+      stochK: stoch4hRegular.k, stochD: stoch4hRegular.d,
+      stochRsiK: stoch4hRsi.k, stochRsiD: stoch4hRsi.d,
       closes4h: candles4h.map(c => c.close).slice(-50),
     };
     return { market, debug };
@@ -338,14 +372,15 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
       phase: "WATCHING", trend: `${tradeDirection} ${t1d.strength}`,
       htfBias: tradeDirection === "LONG" ? "BULLISH" : "BEARISH",
       adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
-      stochK: stoch4h.k, stochD: stoch4h.d,
+      stochK: stoch4hRegular.k, stochD: stoch4hRegular.d,
+      stochRsiK: stoch4hRsi.k, stochRsiD: stoch4hRsi.d,
       closes4h: candles4h.map(c => c.close).slice(-50),
     };
     return { market, debug };
   }
 
   const entry1h = detect1HEntry(candles1h, config);
-  debug.push(`1H Stoch: K${entry1h.stochK} D${entry1h.stochD}`);
+  debug.push(`1H StochRSI: K${entry1h.stochK} D${entry1h.stochD}`);
 
   if (entry1h.hasEntry && entry1h.direction === tradeDirection) {
     debug.push(`1H ENTRY: ${entry1h.direction} strength=${entry1h.strength} | ${entry1h.reasons.join(", ")}`);
@@ -360,7 +395,8 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
       phase, trend: `${tradeDirection} ${t1d.strength}`,
       htfBias: tradeDirection === "LONG" ? "BULLISH" : "BEARISH",
       adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
-      stochK: stoch4h.k, stochD: stoch4h.d,
+      stochK: stoch4hRegular.k, stochD: stoch4hRegular.d,
+      stochRsiK: stoch4hRsi.k, stochRsiD: stoch4hRsi.d,
       closes4h: candles4h.map(c => c.close).slice(-50),
     };
     return { market, debug };
@@ -382,7 +418,8 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
       phase: "WATCHING", trend: `${tradeDirection} ${t1d.strength}`,
       htfBias: tradeDirection === "LONG" ? "BULLISH" : "BEARISH",
       adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
-      stochK: stoch4h.k, stochD: stoch4h.d,
+      stochK: stoch4hRegular.k, stochD: stoch4hRegular.d,
+      stochRsiK: stoch4hRsi.k, stochRsiD: stoch4hRsi.d,
       closes4h: candles4h.map(c => c.close).slice(-50),
     };
     return { market, debug };
@@ -393,9 +430,10 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
     entry: Math.round(entry * 100) / 100, stop: Math.round(sl * 100) / 100, target: Math.round(tp * 100) / 100,
     confidence: entry1h.strength, rr: Math.round(rr * 100) / 100,
     adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
-    stochK: entry1h.stochK, stochD: entry1h.stochD,
+    stochK: stoch4hRegular.k, stochD: stoch4hRegular.d,
+    stochRsiK: entry1h.stochK, stochRsiD: entry1h.stochD,
     expectedMove: Math.round((Math.abs(tp - entry) / entry) * 100 * 10) / 10,
-    reason: `${entry1h.direction} 1H ENTRY | 1D ${t1d.strength} | 4H ${t4h.strength} | 1H Stoch K${entry1h.stochK} D${entry1h.stochD} cross | ${entry1h.reasons.join(", ")} | RR ${rr.toFixed(2)}`,
+    reason: `${entry1h.direction} 1H ENTRY | 1D ${t1d.strength} | 4H ${t4h.strength} | 1H StochRSI K${entry1h.stochK} D${entry1h.stochD} cross | ${entry1h.reasons.join(", ")} | RR ${rr.toFixed(2)}`,
     timestamp: now, version: CURRENT_SIGNAL_VERSION,
   };
 
@@ -403,7 +441,9 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
     pair, price: Math.round(price * 100) / 100, timestamp: now,
     phase: "EARLY_ENTRY", trend: `${tradeDirection} ${t1d.strength}`,
     htfBias: entry1h.direction === "LONG" ? "BULLISH" : "BEARISH",
-    adx: signal.adx, rsi: signal.rsi, stochK: stoch4h.k, stochD: stoch4h.d,
+    adx: signal.adx, rsi: signal.rsi,
+    stochK: stoch4hRegular.k, stochD: stoch4hRegular.d,
+    stochRsiK: stoch4hRsi.k, stochRsiD: stoch4hRsi.d,
     closes4h: candles4h.map(c => c.close).slice(-50),
   };
 
@@ -416,7 +456,8 @@ export function getMarketSnapshot(pair: string, candles1h: Candle[], candles4h: 
   const candles1d = aggregateTo1D(candles4h);
   const t1d = trendDirection(candles1d);
   const t4h = trendDirection(candles4h);
-  const stoch4h = stochRsi(candles4h.map(c => c.close));
+  const stoch4hRegular = stochastic(candles4h);
+  const stoch4hRsi = stochRsi(candles4h.map(c => c.close));
   const price = candles4h[candles4h.length - 1].close;
   const adx4h = adx(candles4h);
 
@@ -425,7 +466,8 @@ export function getMarketSnapshot(pair: string, candles1h: Candle[], candles4h: 
     phase: "WATCHING", trend: t1d.direction ? `${t1d.direction} ${t1d.strength}` : "NONE",
     htfBias: t1d.direction === "LONG" ? "BULLISH" : t1d.direction === "SHORT" ? "BEARISH" : "NEUTRAL",
     adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
-    stochK: stoch4h.k, stochD: stoch4h.d,
+    stochK: stoch4hRegular.k, stochD: stoch4hRegular.d,
+    stochRsiK: stoch4hRsi.k, stochRsiD: stoch4hRsi.d,
     closes4h: candles4h.map(c => c.close).slice(-50),
   };
 }
