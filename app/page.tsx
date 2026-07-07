@@ -48,7 +48,7 @@ interface MarketData {
   timestamp: number;
   phase: "NONE" | "WATCHING" | "READY" | "EARLY_ENTRY" | "EXPANSION";
   trend: string;
-  htfBias?: "BULLISH" | "BEARISH" | "NEUTRAL";
+  htfBias?: "BULLISH" | "BEARISH" | "MIXED";
   adx: number;
   rsi: number;
   stochK: number;
@@ -161,7 +161,8 @@ function TrendDisplay({ market }: { market: MarketData | undefined }) {
   const trendParts = (market.trend || "").split(" ");
   const direction = trendParts[0];
   const trendClass = direction === "SHORT" ? "text-rose-400" : direction === "LONG" ? "text-emerald-400" : "text-yellow-400";
-  const trend1d = market.htfBias === "BULLISH" ? "LONG" : market.htfBias === "BEARISH" ? "SHORT" : "NEUTRAL";
+  // v28.3 FIX: "NEUTRAL" -> "MIXED" for null htfBias
+  const trend1d = market.htfBias === "BULLISH" ? "LONG" : market.htfBias === "BEARISH" ? "SHORT" : "MIXED";
   const trend1dClass = trend1d === "SHORT" ? "text-rose-400" : trend1d === "LONG" ? "text-emerald-400" : "text-yellow-400";
   return (
     <div className="grid grid-cols-2 gap-3">
