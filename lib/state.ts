@@ -285,7 +285,6 @@ export async function setCronLogs(logs: any[]): Promise<void> {
   }
 }
 
-// NEW: Exit persistence for cooldown survival across deployments
 export async function persistExit(record: ExitRecord): Promise<void> {
   try {
     await redis.set(`exit:${record.signalId}`, JSON.stringify(record), { ex: EXITS_TTL });
