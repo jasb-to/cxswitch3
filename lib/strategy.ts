@@ -103,45 +103,53 @@ function getSignalStatus(signal: Signal, currentPrice: number) {
   return { status: "ACTIVE" as const, pnl, ageMinutes, ttlRemaining: String(Math.max(0, maxAge - ageMinutes)) + "m" };
 }
 
-// --- Badges ---
+// --- Badges (FIXED: no Record indexing, bulletproof for TS strict mode) ---
 
-// FIXED: Explicit direction check to avoid TS strict-mode concatenation error
 function StatusBadge({ status, direction }: { status: string; direction?: "LONG" | "SHORT" }) {
-  const configs: Record<string, { bg: string; text: string; label: string }> = {
-    ACTIVE_LONG: { bg: "bg-emerald-500", text: "text-white", label: "ACTIVE LONG" },
-    ACTIVE_SHORT: { bg: "bg-rose-500", text: "text-white", label: "ACTIVE SHORT" },
-    TP_HIT: { bg: "bg-purple-500", text: "text-white", label: "TP HIT" },
-    SL_HIT: { bg: "bg-red-600", text: "text-white", label: "SL HIT" },
-    EXPIRED: { bg: "bg-slate-600", text: "text-white", label: "EXPIRED" },
-    WATCHING: { bg: "bg-yellow-600", text: "text-white", label: "WATCHING" },
-    READY: { bg: "bg-cyan-600", text: "text-white", label: "READY" },
-    EARLY_ENTRY: { bg: "bg-emerald-600", text: "text-white", label: "ENTRY" },
-    NONE: { bg: "bg-slate-700", text: "text-slate-300", label: "SCANNING" },
-  };
+  let bg = "bg-slate-700";
+  let text = "text-slate-300";
+  let label = "SCANNING";
 
-  let key: string;
-  if (status === "ACTIVE" && direction) {
-    key = "ACTIVE_" + direction;
-  } else {
-    key = status;
+  if (status === "ACTIVE" && direction === "LONG") {
+    bg = "bg-emerald-500"; text = "text-white"; label = "ACTIVE LONG";
+  } else if (status === "ACTIVE" && direction === "SHORT") {
+    bg = "bg-rose-500"; text = "text-white"; label = "ACTIVE SHORT";
+  } else if (status === "TP_HIT") {
+    bg = "bg-purple-500"; text = "text-white"; label = "TP HIT";
+  } else if (status === "SL_HIT") {
+    bg = "bg-red-600"; text = "text-white"; label = "SL HIT";
+  } else if (status === "EXPIRED") {
+    bg = "bg-slate-600"; text = "text-white"; label = "EXPIRED";
+  } else if (status === "WATCHING") {
+    bg = "bg-yellow-600"; text = "text-white"; label = "WATCHING";
+  } else if (status === "READY") {
+    bg = "bg-cyan-600"; text = "text-white"; label = "READY";
+  } else if (status === "EARLY_ENTRY") {
+    bg = "bg-emerald-600"; text = "text-white"; label = "ENTRY";
   }
 
-  const c = configs[key] || configs.NONE;
-  return <span className={"px-3 py-1.5 rounded-lg text-sm font-bold " + c.bg + " " + c.text}>{c.label}</span>;
+  return <span className={"px-3 py-1.5 rounded-lg text-sm font-bold " + bg + " " + text}>{label}</span>;
 }
 
 function PhaseBadge({ phase }: { phase: string }) {
-  const configs: Record<string, { bg: string; border: string; text: string }> = {
-    READY: { bg: "bg-cyan-950/50", border: "border-cyan-500/40", text: "text-cyan-400" },
-    EARLY_ENTRY: { bg: "bg-emerald-950/50", border: "border-emerald-500/40", text: "text-emerald-400" },
-    EXPANSION: { bg: "bg-purple-950/50", border: "border-purple-500/40", text: "text-purple-400" },
-    EXHAUSTION: { bg: "bg-red-950/50", border: "border-red-500/40", text: "text-red-400" },
-    WATCHING: { bg: "bg-yellow-950/50", border: "border-yellow-500/40", text: "text-yellow-400" },
-    NONE: { bg: "bg-slate-800/50", border: "border-slate-600/30", text: "text-slate-500" },
-  };
-  const c = configs[phase] || configs.NONE;
+  let bg = "bg-slate-800/50";
+  let border = "border-slate-600/30";
+  let text = "text-slate-500";
+
+  if (phase === "READY") {
+    bg = "bg-cyan-950/50"; border = "border-cyan-500/40"; text = "text-cyan-400";
+  } else if (phase === "EARLY_ENTRY") {
+    bg = "bg-emerald-950/50"; border = "border-emerald-500/40"; text = "text-emerald-400";
+  } else if (phase === "EXPANSION") {
+    bg = "bg-purple-950/50"; border = "border-purple-500/40"; text = "text-purple-400";
+  } else if (phase === "EXHAUSTION") {
+    bg = "bg-red-950/50"; border = "border-red-500/40"; text = "text-red-400";
+  } else if (phase === "WATCHING") {
+    bg = "bg-yellow-950/50"; border = "border-yellow-500/40"; text = "text-yellow-400";
+  }
+
   return (
-    <span className={"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold border " + c.bg + " " + c.border + " " + c.text}>
+    <span className={"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold border " + bg + " " + border + " " + text}>
       <span>*</span>{phase}
     </span>
   );
