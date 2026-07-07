@@ -1,9 +1,10 @@
 // app/api/cron/route.ts — v28 "Full v28 strategy integration"
 // ============================================================
-// Backend cron (10 min): v28 exits (Stoch extreme opposite, SL/TP, TTL)
-// No Trade Manager — pure v28 behavior
-// MarketData calculated with real values for ALL pairs
-// Telegram alerts batched (Promise.all)
+// PATCHED 2026-07-07:
+// - Exit alerts deduplicated by signal ID (uses hasExited from strategy)
+// - Signals with exited=true are filtered before check
+// - Only ONE exit alert per signal ID ever
+// - Cleaned up market data for exited pairs
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -26,6 +27,7 @@ import {
   filterExpiredSignals,
   isSignalStillValid,
   shouldHold,
+  hasExited,
   Candle,
   Signal,
 } from "@/lib/strategy";
@@ -149,9 +151,17 @@ export async function GET(request: Request) {
     }
   }
 
-  // --- v28 exit check: shouldHold (Stoch extreme opposite) + isSignalStillValid (SL/TP/TTL) ---
+  // --- v28 exit check ---
   log(`[CRON] Checking ${existingSignals.length} existing signals...`);
-  const signalsToCheck = [...existingSignals];
+
+  // PATCH: Filter out already-exited signals BEFORE checking
+  const signalsToCheck = existingSignals.filter((s: any) => !s.exited && !hasExited(s.id));
+  const alreadyExitedSignals = existingSignals.filter((s: any) => s.exited || hasExited(s.id));
+
+  if (alreadyExitedSignals.length > 0) {
+    log(`[STATE] Skipping ${alreadyExitedSignals.length} already-exited signals`);
+  }
+
   const validSignals: Signal[] = [];
   const preExited: { signal: Signal; reason: string }[] = [];
 
@@ -185,8 +195,9 @@ export async function GET(request: Request) {
   const exitAlertsToSend: { signal: Signal; reason: string; exitPrice: number; pnl: number }[] = [];
 
   for (const { signal, reason } of preExited) {
-    if (signal.exited) {
-      log(`[EXIT] ${signal.pair} — already marked exited, skipping`);
+    // PATCH: Double-check not already exited
+    if (signal.exited || hasExited(signal.id)) {
+      log(`[EXIT] ${signal.pair} — already marked exited, skipping alert`);
       if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
       continue;
     }
@@ -251,7 +262,6 @@ export async function GET(request: Request) {
       if (!candles1h || candles1h.length < MIN_CANDLES_1H) {
         log(`[PAIR] ${pair} — SKIP: insufficient 1H candles (${candles1h?.length || 0} < ${MIN_CANDLES_1H})`);
         alerts.push({ pair, status: "skip", reason: "insufficient_1h_candles", count: candles1h?.length });
-        // Still push marketData with what we have
         if (candles4h && candles4h.length >= 30) {
           const currentPrice = currentPrices[pair] ?? candles1h?.[candles1h.length - 1]?.close ?? 0;
           const result = generateSignal(pair, candles1h || [], candles4h, candles15m || [], currentPrice);
@@ -275,14 +285,13 @@ export async function GET(request: Request) {
       if (existingForPair) {
         log(`[PAIR] ${pair} — has existing signal ${existingForPair.id}`);
 
-        if (existingForPair.exited) {
+        if (existingForPair.exited || hasExited(existingForPair.id)) {
           log(`[PAIR] ${pair} — signal already EXITED, removing from active`);
           validSignals.splice(existingIdx, 1);
           if (activeTrades[pair]) delete activeTrades[pair];
           continue;
         }
 
-        // Still holding — push market data with EXPANSION phase
         log(`[PAIR] ${pair} — Holding`);
         marketDataList.push({
           pair,
@@ -310,7 +319,6 @@ export async function GET(request: Request) {
         log(`[STRAT] ${pair} ${line}`);
       }
 
-      // ALWAYS push market data (even when no signal)
       if (result.market) {
         marketDataList.push(result.market as MarketData);
       }
@@ -371,32 +379,38 @@ export async function GET(request: Request) {
   }
 
   log("[CRON] Merging signals...");
-  const merged = [...validSignals];
-  for (const s of newSignals) {
-    const idx = merged.findIndex((x: any) => x.pair === s.pair);
+  // PATCH: Merge valid + new, exclude already exited
+  const merged = [...validSignals, ...newSignals].filter((s: any) => !s.exited && !hasExited(s.id));
+  
+  // Keep one signal per pair (latest)
+  const deduped: Signal[] = [];
+  for (const s of merged) {
+    const idx = deduped.findIndex((x: any) => x.pair === s.pair);
     if (idx >= 0) {
-      merged[idx] = s;
-      log(`[MERGE] ${s.pair} — replaced existing`);
+      // Keep the newer one
+      if (s.timestamp > deduped[idx].timestamp) {
+        deduped[idx] = s;
+      }
     } else {
-      merged.push(s);
+      deduped.push(s);
     }
   }
 
   log("[CRON] Persisting final state...");
   await Promise.all([
-    setSignals(merged),
+    setSignals(deduped),
     setMarketData(marketDataList),
     setActiveTrades(activeTrades),
   ]);
 
   log(
-    `[CRON] Done. signals=${merged.length}, marketData=${marketDataList.length}, exited=${preExited.length}`
+    `[CRON] Done. signals=${deduped.length}, marketData=${marketDataList.length}, exited=${preExited.length}`
   );
   log("========================================");
 
   const response = {
     success: true,
-    signals: merged.length,
+    signals: deduped.length,
     marketData: marketDataList.length,
     exited: preExited.length,
     alerts,
