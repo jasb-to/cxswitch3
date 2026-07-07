@@ -1,16 +1,12 @@
-// lib/strategy.ts — v28.1 "1H Entry + HTF Direction + Per-Asset Stops + Trade Manager"
+// lib/strategy.ts — v28.2 "1H Entry + HTF Direction + HTF Exhaustion Filter + Per-Asset Stops"
 // ============================================================
-// 2026-07-07: Fixed per audit:
-//   1. Removed 4H exhaustion warning logic
-//   2. Removed redundant MIN_RR check
-//   3. TTL removed for active positions (only pre-entry)
-//   4. Exit tracking persisted via KV hooks
-//   5. Trend detection requires HH/HL or LH/LL structure
-//   6. Per-asset stopLossPct / takeProfitPct
-//   7. Signal stores 1H StochRSI
-//   8. Trade Manager state fields added
-//   9. UI alignment: 1H labeled as entry TF, 4H as context
-//   10. aggregateTo1D() fixed for robust daily grouping
+// 2026-07-07: Changes:
+//   - "NONE" trend label changed to "MIXED" (more accurate for EMA cross without structure)
+//   - HTF momentum exhaustion filter added:
+//     * If 4H StochRSI > 80 and K < D (rolling over) → LONG entries blocked
+//     * If 4H StochRSI < 20 and K > D (bouncing) → SHORT entries blocked
+//     * Prevents buying into HTF exhaustion / selling into HTF capitulation
+//   - All previous v28.1 fixes retained
 // ============================================================
 
 export interface Candle {
@@ -223,19 +219,20 @@ function priceStructure(candles: Candle[], direction: "LONG" | "SHORT", lookback
   }
 }
 
-function trendDirection(candles: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string; structureValid: boolean } {
+// FIXED: "NONE" -> "MIXED" when EMAs cross but structure isn't confirmed
+function trendDirection(candles: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string; structureValid: boolean; emaDirection: "LONG" | "SHORT" } {
   const len = candles.length;
-  if (len < 25) return { direction: null, strength: "WEAK", structureValid: false };
+  if (len < 25) return { direction: null, strength: "WEAK", structureValid: false, emaDirection: "LONG" };
   const closes = candles.map(c => c.close);
   const ema8 = ema(closes, 8), ema21 = ema(closes, 21);
   const emaDir = ema8[ema8.length - 1] > ema21[ema21.length - 1] ? "LONG" : "SHORT";
   const structure = priceStructure(candles, emaDir as "LONG" | "SHORT");
-  if (!structure.valid) return { direction: null, strength: "WEAK", structureValid: false };
+  if (!structure.valid) return { direction: null, strength: "WEAK", structureValid: false, emaDirection: emaDir as "LONG" | "SHORT" };
   const highs = candles.slice(-20).map(c => c.high), lows = candles.slice(-20).map(c => c.low);
   const hh = highs[highs.length - 1] > Math.max(...highs.slice(0, -1));
   const ll = lows[lows.length - 1] < Math.min(...lows.slice(0, -1));
   const strength = (emaDir === "LONG" && hh) || (emaDir === "SHORT" && ll) ? "STRONG" : "MEDIUM";
-  return { direction: emaDir as "LONG" | "SHORT", strength, structureValid: true };
+  return { direction: emaDir as "LONG" | "SHORT", strength, structureValid: true, emaDirection: emaDir as "LONG" | "SHORT" };
 }
 
 interface ExitRecord { signalId: string; pair: string; direction: "LONG" | "SHORT"; exitTimestamp: number; exitReason: string; exitPrice: number; }
@@ -312,6 +309,29 @@ function detect1HEntry(candles1h: Candle[], config: PairConfig): EntryResult {
   return { hasEntry: strength >= config.momentumThreshold && direction !== null, direction, strength, reasons, stochK: stoch.k, stochD: stoch.d };
 }
 
+// NEW: HTF momentum exhaustion check
+function isHTFExhausted(stoch4h: { k: number; d: number }, tradeDirection: "LONG" | "SHORT"): { exhausted: boolean; reason: string } {
+  if (tradeDirection === "LONG") {
+    // 4H StochRSI > 80 and K crossing below D = overbought exhaustion
+    if (stoch4h.k > 80 && stoch4h.k < stoch4h.d) {
+      return { exhausted: true, reason: `4H StochRSI overbought exhaustion: K${stoch4h.k} < D${stoch4h.d}` };
+    }
+    // Also flag extreme overbought even if not yet crossing
+    if (stoch4h.k > 90) {
+      return { exhausted: true, reason: `4H StochRSI extreme overbought: K${stoch4h.k}` };
+    }
+  } else {
+    // 4H StochRSI < 20 and K crossing above D = oversold exhaustion (for SHORTs, this means bounce)
+    if (stoch4h.k < 20 && stoch4h.k > stoch4h.d) {
+      return { exhausted: true, reason: `4H StochRSI oversold bounce risk: K${stoch4h.k} > D${stoch4h.d}` };
+    }
+    if (stoch4h.k < 10) {
+      return { exhausted: true, reason: `4H StochRSI extreme oversold: K${stoch4h.k}` };
+    }
+  }
+  return { exhausted: false, reason: "" };
+}
+
 export function generateSignal(pair: string, candles1h: Candle[], candles4h: Candle[], candles15m: Candle[], currentPrice?: number): SignalResult {
   const debug: string[] = [];
   const config = getPairConfig(pair);
@@ -327,59 +347,95 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   }
   const t1d = trendDirection(candles1d);
   const t4h = trendDirection(candles4h);
-  debug.push(`1D: ${t1d.direction || "NONE"} ${t1d.strength} structure=${t1d.structureValid}`);
-  debug.push(`4H: ${t4h.direction || "NONE"} ${t4h.strength} structure=${t4h.structureValid}`);
+
+  // FIXED: "NONE" -> "MIXED" for display
+  const t1dDisplay = t1d.direction ? `${t1d.direction} ${t1d.strength}` : `MIXED ${t1d.strength}`;
+  const t4hDisplay = t4h.direction ? `${t4h.direction} ${t4h.strength}` : `MIXED ${t4h.strength}`;
+
+  debug.push(`1D: ${t1dDisplay} structure=${t1d.structureValid}`);
+  debug.push(`4H: ${t4hDisplay} structure=${t4h.structureValid}`);
+
   const price = currentPrice ?? candles1h[candles1h.length - 1].close;
   const stoch4h = stochRsi(candles4h.map(c => c.close));
   const stoch1h = stochRsi(candles1h.map(c => c.close));
   const adx4h = adx(candles4h);
+
   let tradeDirection: "LONG" | "SHORT" | null = t1d.direction;
   if (t4h.direction !== t1d.direction) {
-    if (t4h.strength === "STRONG" && t1d.strength !== "STRONG") { debug.push(`4H override: 4H=${t4h.direction} STRONG vs 1D=${t1d.direction} ${t1d.strength}`); tradeDirection = t4h.direction; }
-    else { debug.push(`4H/1D mismatch blocked: 4H=${t4h.direction} vs 1D=${t1d.direction}`); tradeDirection = null; }
+    if (t4h.strength === "STRONG" && t1d.strength !== "STRONG") { 
+      debug.push(`4H override: 4H=${t4h.direction || "MIXED"} STRONG vs 1D=${t1d.direction || "MIXED"} ${t1d.strength}`); 
+      tradeDirection = t4h.direction; 
+    }
+    else { 
+      debug.push(`4H/1D mismatch blocked: 4H=${t4h.direction || "MIXED"} vs 1D=${t1d.direction || "MIXED"}`); 
+      tradeDirection = null; 
+    }
   }
-  if (tradeDirection && !t1d.structureValid) { debug.push(`1D structure invalid: ${t1d.direction} without HH/HL or LH/LL`); tradeDirection = null; }
+  if (tradeDirection && !t1d.structureValid) { 
+    debug.push(`1D structure invalid: ${tradeDirection} without HH/HL or LH/LL`); 
+    tradeDirection = null; 
+  }
+
   if (!tradeDirection) {
     const market: MarketData = {
       pair, price: Math.round(price * 100) / 100, timestamp: now,
-      phase: "WATCHING", trend: `${t1d.direction || "NONE"} ${t1d.strength}`,
+      phase: "WATCHING", trend: t4hDisplay,
       htfBias: t1d.direction === "LONG" ? "BULLISH" : t1d.direction === "SHORT" ? "BEARISH" : "NEUTRAL",
       adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
       stochK: stoch4h.k, stochD: stoch4h.d, stoch1hK: stoch1h.k, stoch1hD: stoch1h.d,
     };
     return { market, debug };
   }
+
+  // NEW: Check HTF momentum exhaustion
+  const htfCheck = isHTFExhausted(stoch4h, tradeDirection);
+  if (htfCheck.exhausted) {
+    debug.push(`HTF EXHAUSTION: ${htfCheck.reason}`);
+    const market: MarketData = {
+      pair, price: Math.round(price * 100) / 100, timestamp: now,
+      phase: "WATCHING", trend: t4hDisplay,
+      htfBias: tradeDirection === "LONG" ? "BULLISH" : "BEARISH",
+      adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
+      stochK: stoch4h.k, stochD: stoch4h.d, stoch1hK: stoch1h.k, stoch1hD: stoch1h.d,
+    };
+    return { market, debug };
+  }
+
   const cooldown = isInCooldown(pair, now, tradeDirection);
   if (cooldown.inCooldown) {
     debug.push(`EXIT COOLDOWN: ${(cooldown.remainingMs / 3600000).toFixed(1)}h remaining`);
     const market: MarketData = {
       pair, price: Math.round(price * 100) / 100, timestamp: now,
-      phase: "WATCHING", trend: `${tradeDirection} ${t1d.strength}`,
+      phase: "WATCHING", trend: t4hDisplay,
       htfBias: tradeDirection === "LONG" ? "BULLISH" : "BEARISH",
       adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
       stochK: stoch4h.k, stochD: stoch4h.d, stoch1hK: stoch1h.k, stoch1hD: stoch1h.d,
     };
     return { market, debug };
   }
+
   const entry1h = detect1HEntry(candles1h, config);
   debug.push(`1H StochRSI: K${entry1h.stochK} D${entry1h.stochD}`);
   if (entry1h.hasEntry && entry1h.direction === tradeDirection) debug.push(`1H ENTRY: ${entry1h.direction} strength=${entry1h.strength} | ${entry1h.reasons.join(", ")}`);
   else debug.push(`1H: ${entry1h.hasEntry ? "wrong direction" : "no cross"} | ${entry1h.reasons.join(", ") || "waiting"}`);
+
   if (!entry1h.hasEntry || entry1h.direction !== tradeDirection) {
     const market: MarketData = {
       pair, price: Math.round(price * 100) / 100, timestamp: now,
-      phase: "WATCHING", trend: `${tradeDirection} ${t1d.strength}`,
+      phase: "WATCHING", trend: t4hDisplay,
       htfBias: tradeDirection === "LONG" ? "BULLISH" : "BEARISH",
       adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
       stochK: stoch4h.k, stochD: stoch4h.d, stoch1hK: stoch1h.k, stoch1hD: stoch1h.d,
     };
     return { market, debug };
   }
+
   const entry = price;
   const sl = entry1h.direction === "LONG" ? entry * (1 - config.stopLossPct) : entry * (1 + config.stopLossPct);
   const tp = entry1h.direction === "LONG" ? entry * (1 + config.takeProfitPct) : entry * (1 - config.takeProfitPct);
   const rr = Math.abs(tp - entry) / Math.abs(entry - sl);
   debug.push(`R:R ${rr.toFixed(2)} (informational, no gate)`);
+
   const signal: Signal = {
     id: `${pair}_${now}`, pair, direction: entry1h.direction, type: "ENTRY", scale: "ENTRY_1",
     entry: Math.round(entry * 100) / 100, stop: Math.round(sl * 100) / 100, target: Math.round(tp * 100) / 100,
@@ -387,16 +443,18 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
     adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
     stochK: stoch4h.k, stochD: stoch4h.d, stoch1hK: entry1h.stochK, stoch1hD: entry1h.stochD,
     expectedMove: Math.round((Math.abs(tp - entry) / entry) * 100 * 10) / 10,
-    reason: `${entry1h.direction} 1H ENTRY | 1D ${t1d.strength} | 4H ${t4h.strength} | 1H StochRSI K${entry1h.stochK} D${entry1h.stochD} cross | ${entry1h.reasons.join(", ")} | RR ${rr.toFixed(2)} | SL ${(config.stopLossPct * 100).toFixed(1)}% TP ${(config.takeProfitPct * 100).toFixed(1)}%`,
+    reason: `${entry1h.direction} 1H ENTRY | 1D ${t1dDisplay} | 4H ${t4hDisplay} | 1H StochRSI K${entry1h.stochK} D${entry1h.stochD} cross | ${entry1h.reasons.join(", ")} | RR ${rr.toFixed(2)} | SL ${(config.stopLossPct * 100).toFixed(1)}% TP ${(config.takeProfitPct * 100).toFixed(1)}%`,
     timestamp: now, version: CURRENT_SIGNAL_VERSION,
     tradeState: "OPEN", lockedStop: null, highestPrice: entry, lowestPrice: entry, profitLockActive: false,
   };
+
   const market: MarketData = {
     pair, price: Math.round(price * 100) / 100, timestamp: now,
-    phase: "EARLY_ENTRY", trend: `${tradeDirection} ${t1d.strength}`,
+    phase: "EARLY_ENTRY", trend: t4hDisplay,
     htfBias: entry1h.direction === "LONG" ? "BULLISH" : "BEARISH",
     adx: signal.adx, rsi: signal.rsi, stochK: stoch4h.k, stochD: stoch4h.d, stoch1hK: stoch1h.k, stoch1hD: stoch1h.d,
   };
+
   debug.push(`SIGNAL: ${signal.direction} entry=${signal.entry} TP=${signal.target} SL=${signal.stop} RR=${signal.rr}`);
   return { signal, market, debug };
 }
@@ -409,9 +467,12 @@ export function getMarketSnapshot(pair: string, candles1h: Candle[], candles4h: 
   const stoch1h = stochRsi(candles1h.map(c => c.close));
   const price = candles4h[candles4h.length - 1].close;
   const adx4h = adx(candles4h);
+
+  const t1dDisplay = t1d.direction ? `${t1d.direction} ${t1d.strength}` : `MIXED ${t1d.strength}`;
+
   return {
     pair, price: Math.round(price * 100) / 100, timestamp: Date.now(),
-    phase: "WATCHING", trend: t1d.direction ? `${t1d.direction} ${t1d.strength}` : "NONE",
+    phase: "WATCHING", trend: t4h.direction ? `${t4h.direction} ${t4h.strength}` : `MIXED ${t4h.strength}`,
     htfBias: t1d.direction === "LONG" ? "BULLISH" : t1d.direction === "SHORT" ? "BEARISH" : "NEUTRAL",
     adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
     stochK: stoch4h.k, stochD: stoch4h.d, stoch1hK: stoch1h.k, stoch1hD: stoch1h.d,
