@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v28 "Full v28 strategy integration"
+// app/api/cron/route.ts — v28.1 "Full v28 strategy integration + Trade Manager"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -14,6 +14,8 @@ import {
   addSignalToHistory,
   setCronLogs,
   getCronLogs,
+  persistExit,
+  loadExits,
 } from "@/lib/state";
 import {
   generateSignal,
@@ -21,6 +23,9 @@ import {
   isSignalStillValid,
   shouldHold,
   hasExited,
+  updateTradeManager,
+  setExitPersistence,
+  loadExits as loadExitsStrategy,
   Candle,
   Signal,
 } from "@/lib/strategy";
@@ -38,6 +43,8 @@ interface MarketData {
   rsi: number;
   stochK: number;
   stochD: number;
+  stoch1hK?: number;
+  stoch1hD?: number;
   closes4h?: number[];
 }
 
@@ -76,7 +83,7 @@ export async function GET(request: Request) {
   };
 
   log("========================================");
-  log(`[CRON] Started runId=${runId} v28`);
+  log(`[CRON] Started runId=${runId} v28.1`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -101,6 +108,11 @@ export async function GET(request: Request) {
   }
   await setLastCronRun(runStart);
   log(`[CRON] lastRun set, force=${forceRun}`);
+
+  // NEW: Wire up exit persistence so cooldowns survive deployments
+  setExitPersistence(persistExit, loadExits);
+  await loadExitsStrategy();
+  log("[CRON] Loaded exit history from KV");
 
   let activeTrades = await getActiveTrades();
   log(`[STATE] Active trades: ${Object.keys(activeTrades).join(", ") || "none"}`);
@@ -145,6 +157,31 @@ export async function GET(request: Request) {
     }
   }
 
+  // NEW: Update Trade Manager for all active signals before checking exits
+  log(`[CRON] Updating Trade Manager for ${existingSignals.length} signals...`);
+  for (const signal of existingSignals) {
+    if (signal.exited || hasExited(signal.id)) continue;
+    const price = currentPrices[signal.pair];
+    if (!price) continue;
+
+    const tm = updateTradeManager(signal, price);
+    signal.tradeState = tm.newState;
+    signal.lockedStop = tm.lockedStop;
+    signal.highestPrice = tm.highestPrice;
+    signal.lowestPrice = tm.lowestPrice;
+    signal.profitLockActive = tm.profitLockActive;
+
+    if (tm.exitTriggered) {
+      log(`[TRADE MGR] ${signal.pair} — ${tm.exitReason} at ${price}`);
+      signal.exited = true;
+      signal.exitReason = tm.exitReason;
+      signal.exitPrice = price;
+      signal.exitTimestamp = runStart;
+      await addSignalToHistory(signal, tm.exitReason as any, price);
+      if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
+    }
+  }
+
   log(`[CRON] Checking ${existingSignals.length} existing signals...`);
 
   const signalsToCheck = existingSignals.filter((s: any) => !s.exited && !hasExited(s.id));
@@ -166,7 +203,7 @@ export async function GET(request: Request) {
       continue;
     }
 
-    const holdResult = shouldHold(signal, candles4h, price, runStart);
+    const holdResult = await shouldHold(signal, candles4h, price, runStart);
     const validity = isSignalStillValid(signal, price, runStart);
 
     if (!holdResult.shouldHold) {
@@ -290,6 +327,8 @@ export async function GET(request: Request) {
           rsi: existingForPair.rsi,
           stochK: existingForPair.stochK,
           stochD: existingForPair.stochD,
+          stoch1hK: existingForPair.stoch1hK,
+          stoch1hD: existingForPair.stoch1hD,
           closes4h: candles4h.slice(-50).map((c: Candle) => c.close),
         });
         continue;
@@ -361,7 +400,7 @@ export async function GET(request: Request) {
 
   log("[CRON] Merging signals...");
   const merged = [...validSignals, ...newSignals].filter((s: any) => !s.exited && !hasExited(s.id));
-  
+
   const deduped: Signal[] = [];
   for (const s of merged) {
     const idx = deduped.findIndex((x: any) => x.pair === s.pair);
