@@ -105,6 +105,7 @@ function getSignalStatus(signal: Signal, currentPrice: number) {
 
 // --- Badges ---
 
+// FIXED: Explicit direction check to avoid TS strict-mode concatenation error
 function StatusBadge({ status, direction }: { status: string; direction?: "LONG" | "SHORT" }) {
   const configs: Record<string, { bg: string; text: string; label: string }> = {
     ACTIVE_LONG: { bg: "bg-emerald-500", text: "text-white", label: "ACTIVE LONG" },
@@ -117,7 +118,14 @@ function StatusBadge({ status, direction }: { status: string; direction?: "LONG"
     EARLY_ENTRY: { bg: "bg-emerald-600", text: "text-white", label: "ENTRY" },
     NONE: { bg: "bg-slate-700", text: "text-slate-300", label: "SCANNING" },
   };
-  const key = status === "ACTIVE" ? "ACTIVE_" + direction : status;
+
+  let key: string;
+  if (status === "ACTIVE" && direction) {
+    key = "ACTIVE_" + direction;
+  } else {
+    key = status;
+  }
+
   const c = configs[key] || configs.NONE;
   return <span className={"px-3 py-1.5 rounded-lg text-sm font-bold " + c.bg + " " + c.text}>{c.label}</span>;
 }
@@ -175,7 +183,7 @@ function WarningBanner({ market, signal }: { market: MarketData | undefined; sig
     warnings.push({ type: "warning", text: `1D ${trend1d} vs 4H ${trend4hDir} — entries blocked until alignment` });
   }
 
-  // 2. StochRSI exhaustion (StochRSI uses 0-100 on RSI, so thresholds are same)
+  // 2. StochRSI exhaustion
   if (signal && signal.direction === "LONG" && market.stochK > 90) {
     warnings.push({ type: "danger", text: `StochRSI K=${market.stochK.toFixed(1)} extreme — consider tightening SL or partial exit` });
   }
