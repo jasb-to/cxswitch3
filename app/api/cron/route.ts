@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v28.1 "Full v28 strategy integration + Trade Manager"
+// app/api/cron/route.ts — v28.3 "Full v28 strategy integration + Trade Manager + Entry Quality"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -38,7 +38,7 @@ interface MarketData {
   timestamp: number;
   phase: string;
   trend: string;
-  htfBias?: "BULLISH" | "BEARISH" | "NEUTRAL";
+  htfBias?: "BULLISH" | "BEARISH" | "MIXED";
   adx: number;
   rsi: number;
   stochK: number;
@@ -83,7 +83,7 @@ export async function GET(request: Request) {
   };
 
   log("========================================");
-  log(`[CRON] Started runId=${runId} v28.1`);
+  log(`[CRON] Started runId=${runId} v28.3`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -285,7 +285,7 @@ export async function GET(request: Request) {
         alerts.push({ pair, status: "skip", reason: "insufficient_1h_candles", count: candles1h?.length });
         if (candles4h && candles4h.length >= 30) {
           const currentPrice = currentPrices[pair] ?? candles1h?.[candles1h.length - 1]?.close ?? 0;
-          const result = generateSignal(pair, candles1h || [], candles4h, candles15m || [], currentPrice);
+          const result = generateSignal(pair, candles1h || [], candles4h, candles15m || [], activeTrades, currentPrice);
           if (result.market) {
             marketDataList.push(result.market as MarketData);
           }
@@ -332,7 +332,8 @@ export async function GET(request: Request) {
         continue;
       }
 
-      const result = generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
+      // v28.3: Pass activeTrades to generateSignal for duplicate entry block
+      const result = generateSignal(pair, candles1h, candles4h, candles15m, activeTrades, currentPrice);
 
       for (const line of result.debug) {
         log(`[STRAT] ${pair} ${line}`);
