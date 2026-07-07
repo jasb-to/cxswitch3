@@ -6,9 +6,11 @@
 //     * If 4H StochRSI > 80 and K < D (rolling over) → LONG entries blocked
 //     * If 4H StochRSI < 20 and K > D (bouncing) → SHORT entries blocked
 //     * Prevents buying into HTF exhaustion / selling into HTF capitulation
-//   - v28.3 FIX: Recent momentum override for lagging EMAs
+//   - v28.3 FIX #1: Recent momentum override for lagging EMAs
 //     * If last 6 candles show clear reversal against EMA direction → return MIXED WEAK
 //     * Prevents "LONG MEDIUM" when price just broke down from a double-top
+//   - v28.3 FIX #2: htfBias "NEUTRAL" → "MIXED" for null directions
+//     * UI was showing "NEUTRAL" when logs said "MIXED WEAK"
 //   - All previous v28.1/v28.2 fixes retained
 // ============================================================
 
@@ -59,7 +61,7 @@ export interface MarketData {
   timestamp: number;
   phase: "NONE" | "WATCHING" | "READY" | "EARLY_ENTRY" | "EXPANSION";
   trend: string;
-  htfBias?: "BULLISH" | "BEARISH" | "NEUTRAL";
+  htfBias?: "BULLISH" | "BEARISH" | "MIXED";
   adx: number;
   rsi: number;
   stochK: number;
@@ -222,7 +224,7 @@ function priceStructure(candles: Candle[], direction: "LONG" | "SHORT", lookback
   }
 }
 
-// v28.3 FIX: Recent momentum override for lagging EMAs
+// v28.3 FIX #1: Recent momentum override for lagging EMAs
 // If last 6 candles show clear reversal against EMA direction, return MIXED WEAK
 function trendDirection(candles: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string; structureValid: boolean; emaDirection: "LONG" | "SHORT" } {
   const len = candles.length;
@@ -262,7 +264,7 @@ function trendDirection(candles: Candle[]): { direction: "LONG" | "SHORT" | null
       return { direction: null, strength: "WEAK", structureValid: false, emaDirection: "SHORT" };
     }
   }
-  // === END v28.3 ===
+  // === END v28.3 FIX #1 ===
 
   const structure = priceStructure(candles, emaDir as "LONG" | "SHORT");
 
@@ -413,11 +415,14 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
     tradeDirection = null; 
   }
 
+  // v28.3 FIX #2: htfBias "NEUTRAL" -> "MIXED" for null directions
+  const htfBias = t1d.direction === "LONG" ? "BULLISH" : t1d.direction === "SHORT" ? "BEARISH" : "MIXED";
+
   if (!tradeDirection) {
     const market: MarketData = {
       pair, price: Math.round(price * 100) / 100, timestamp: now,
       phase: "WATCHING", trend: t4hDisplay,
-      htfBias: t1d.direction === "LONG" ? "BULLISH" : t1d.direction === "SHORT" ? "BEARISH" : "NEUTRAL",
+      htfBias,
       adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
       stochK: stoch4h.k, stochD: stoch4h.d, stoch1hK: stoch1h.k, stoch1hD: stoch1h.d,
     };
@@ -506,10 +511,13 @@ export function getMarketSnapshot(pair: string, candles1h: Candle[], candles4h: 
 
   const t1dDisplay = t1d.direction ? `${t1d.direction} ${t1d.strength}` : `MIXED ${t1d.strength}`;
 
+  // v28.3 FIX #2: htfBias "NEUTRAL" -> "MIXED" for null directions
+  const htfBias = t1d.direction === "LONG" ? "BULLISH" : t1d.direction === "SHORT" ? "BEARISH" : "MIXED";
+
   return {
     pair, price: Math.round(price * 100) / 100, timestamp: Date.now(),
     phase: "WATCHING", trend: t4h.direction ? `${t4h.direction} ${t4h.strength}` : `MIXED ${t4h.strength}`,
-    htfBias: t1d.direction === "LONG" ? "BULLISH" : t1d.direction === "SHORT" ? "BEARISH" : "NEUTRAL",
+    htfBias,
     adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
     stochK: stoch4h.k, stochD: stoch4h.d, stoch1hK: stoch1h.k, stoch1hD: stoch1h.d,
   };
