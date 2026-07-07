@@ -1166,6 +1166,9 @@ export function setRedisClient(_: any): void {
   return;
 }
 
+// PATCH: Export hasExited for cron deduplication
+export { hasExited };
+
 export async function generateSignalCompat(
   pair: string,
   candles1h: Candle[],
