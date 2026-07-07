@@ -425,6 +425,7 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
 export function getMarketSnapshot(pair: string, candles1h: Candle[], candles4h: Candle[], candles15m: Candle[]): MarketData {
   const candles1d = aggregateTo1D(candles4h);
   const t1d = trendDirection(candles1d);
+  const t4h = trendDirection(candles4h);
   const stoch4h = stochRsi(candles4h.map(c => c.close));
   const price = candles4h[candles4h.length - 1].close;
   const adx4h = adx(candles4h);
