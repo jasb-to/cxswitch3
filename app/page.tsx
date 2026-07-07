@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-// --- Types (v28 StochRSI-only) ---
+// ==================== TYPES ====================
 
 interface Signal {
   id: string;
@@ -43,34 +43,39 @@ interface MarketData {
   closes4h?: number[];
 }
 
+// ==================== CONFIG ====================
+
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"];
 
 const KRAKEN_PAIRS: Record<string, string> = {
-  BTC: "XBTUSD", ETH: "ETHUSD", SOL: "SOLUSD", HYPE: "HYPEUSD",
+  BTC: "XBTUSD",
+  ETH: "ETHUSD",
+  SOL: "SOLUSD",
+  HYPE: "HYPEUSD",
 };
 
-// --- Helpers ---
+// StochRSI exhaustion warning thresholds (warning only, no auto-exit)
+const WARN_LONG = 80;
+const WARN_SHORT = 20;
+
+// ==================== HELPERS ====================
 
 function money(n?: number | null): string {
   if (n === null || n === undefined || typeof n !== "number" || !isFinite(n)) return "—";
   return new Intl.NumberFormat("en-US", {
-    style: "currency", currency: "USD",
+    style: "currency",
+    currency: "USD",
     maximumFractionDigits: n >= 1000 ? 0 : 2,
   }).format(n);
-}
-
-function pct(n?: number | null): string {
-  if (n === null || n === undefined || typeof n !== "number" || !isFinite(n)) return "—";
-  return (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
 }
 
 function timeAgo(ts: number): string {
   const mins = Math.floor((Date.now() - ts) / 60000);
   if (mins < 1) return "now";
-  if (mins < 60) return String(mins) + "m";
+  if (mins < 60) return `${mins}m`;
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return String(hrs) + "h " + String(mins % 60) + "m";
-  return String(Math.floor(hrs / 24)) + "d";
+  if (hrs < 24) return `${hrs}h ${mins % 60}m`;
+  return `${Math.floor(hrs / 24)}d`;
 }
 
 function calcEMA(values: number[], period: number): number[] {
@@ -100,57 +105,77 @@ function getSignalStatus(signal: Signal, currentPrice: number) {
     ? ((currentPrice - signal.entry) / signal.entry) * 100
     : ((signal.entry - currentPrice) / signal.entry) * 100;
 
-  return { status: "ACTIVE" as const, pnl, ageMinutes, ttlRemaining: String(Math.max(0, maxAge - ageMinutes)) + "m" };
+  return { status: "ACTIVE" as const, pnl, ageMinutes, ttlRemaining: `${Math.max(0, maxAge - ageMinutes)}m` };
 }
 
-// --- Badges ---
+// ==================== BADGES (NO STRING CONCAT IN JSX) ====================
 
 function StatusBadge({ status, direction }: { status: string; direction?: "LONG" | "SHORT" }) {
-  const configs: Record<string, { bg: string; text: string; label: string }> = {
-    ACTIVE_LONG: { bg: "bg-emerald-500", text: "text-white", label: "ACTIVE LONG" },
-    ACTIVE_SHORT: { bg: "bg-rose-500", text: "text-white", label: "ACTIVE SHORT" },
-    TP_HIT: { bg: "bg-purple-500", text: "text-white", label: "TP HIT" },
-    SL_HIT: { bg: "bg-red-600", text: "text-white", label: "SL HIT" },
-    EXPIRED: { bg: "bg-slate-600", text: "text-white", label: "EXPIRED" },
-    WATCHING: { bg: "bg-yellow-600", text: "text-white", label: "WATCHING" },
-    READY: { bg: "bg-cyan-600", text: "text-white", label: "READY" },
-    EARLY_ENTRY: { bg: "bg-emerald-600", text: "text-white", label: "ENTRY" },
-    NONE: { bg: "bg-slate-700", text: "text-slate-300", label: "SCANNING" },
-  };
-  const key = status === "ACTIVE" ? "ACTIVE_" + direction : status;
-  const c = configs[key] || configs.NONE;
-  return <span className={"px-3 py-1.5 rounded-lg text-sm font-bold " + c.bg + " " + c.text}>{c.label}</span>;
+  let bg = "bg-slate-700";
+  let text = "text-slate-300";
+  let label = "SCANNING";
+
+  if (status === "ACTIVE" && direction === "LONG") {
+    bg = "bg-emerald-500"; text = "text-white"; label = "ACTIVE LONG";
+  } else if (status === "ACTIVE" && direction === "SHORT") {
+    bg = "bg-rose-500"; text = "text-white"; label = "ACTIVE SHORT";
+  } else if (status === "TP_HIT") {
+    bg = "bg-purple-500"; text = "text-white"; label = "TP HIT";
+  } else if (status === "SL_HIT") {
+    bg = "bg-red-600"; text = "text-white"; label = "SL HIT";
+  } else if (status === "EXPIRED") {
+    bg = "bg-slate-600"; text = "text-white"; label = "EXPIRED";
+  } else if (status === "WATCHING") {
+    bg = "bg-yellow-600"; text = "text-white"; label = "WATCHING";
+  } else if (status === "READY") {
+    bg = "bg-cyan-600"; text = "text-white"; label = "READY";
+  } else if (status === "EARLY_ENTRY") {
+    bg = "bg-emerald-600"; text = "text-white"; label = "ENTRY";
+  }
+
+  const className = `px-3 py-1.5 rounded-lg text-sm font-bold ${bg} ${text}`;
+  return <span className={className}>{label}</span>;
 }
 
 function PhaseBadge({ phase }: { phase: string }) {
-  const configs: Record<string, { bg: string; border: string; text: string }> = {
-    READY: { bg: "bg-cyan-950/50", border: "border-cyan-500/40", text: "text-cyan-400" },
-    EARLY_ENTRY: { bg: "bg-emerald-950/50", border: "border-emerald-500/40", text: "text-emerald-400" },
-    EXPANSION: { bg: "bg-purple-950/50", border: "border-purple-500/40", text: "text-purple-400" },
-    EXHAUSTION: { bg: "bg-red-950/50", border: "border-red-500/40", text: "text-red-400" },
-    WATCHING: { bg: "bg-yellow-950/50", border: "border-yellow-500/40", text: "text-yellow-400" },
-    NONE: { bg: "bg-slate-800/50", border: "border-slate-600/30", text: "text-slate-500" },
-  };
-  const c = configs[phase] || configs.NONE;
+  let bg = "bg-slate-800/50";
+  let border = "border-slate-600/30";
+  let text = "text-slate-500";
+
+  if (phase === "READY") {
+    bg = "bg-cyan-950/50"; border = "border-cyan-500/40"; text = "text-cyan-400";
+  } else if (phase === "EARLY_ENTRY") {
+    bg = "bg-emerald-950/50"; border = "border-emerald-500/40"; text = "text-emerald-400";
+  } else if (phase === "EXHAUSTION") {
+    bg = "bg-red-950/50"; border = "border-red-500/40"; text = "text-red-400";
+  } else if (phase === "WATCHING") {
+    bg = "bg-yellow-950/50"; border = "border-yellow-500/40"; text = "text-yellow-400";
+  }
+
+  const className = `inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold border ${bg} ${border} ${text}`;
   return (
-    <span className={"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold border " + c.bg + " " + c.border + " " + c.text}>
+    <span className={className}>
       <span>*</span>{phase}
     </span>
   );
 }
 
+// ==================== DATA FETCHING ====================
+
 async function fetchKrakenPrice(pair: string): Promise<number | null> {
   try {
-    const url = "https://api.kraken.com/0/public/Ticker?pair=" + KRAKEN_PAIRS[pair];
+    const url = `https://api.kraken.com/0/public/Ticker?pair=${KRAKEN_PAIRS[pair]}`;
     const res = await fetch(url, { cache: "no-store" });
     const data = await res.json();
     if (data.error?.length) return null;
     const ticker = data.result[Object.keys(data.result)[0]];
     return parseFloat(ticker.c[0]);
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
-// --- Warning Banner (uses StochRSI thresholds) ---
+// ==================== WARNING BANNER (WARNING ONLY, NO AUTO-EXIT) ====================
 
 function WarningBanner({ market, signal }: { market: MarketData | undefined; signal?: Signal }) {
   if (!market) return null;
@@ -175,12 +200,18 @@ function WarningBanner({ market, signal }: { market: MarketData | undefined; sig
     warnings.push({ type: "warning", text: `1D ${trend1d} vs 4H ${trend4hDir} — entries blocked until alignment` });
   }
 
-  // 2. StochRSI exhaustion (StochRSI uses 0-100 on RSI, so thresholds are same)
-  if (signal && signal.direction === "LONG" && market.stochK > 90) {
-    warnings.push({ type: "danger", text: `StochRSI K=${market.stochK.toFixed(1)} extreme — consider tightening SL or partial exit` });
+  // 2. EXHAUSTION WARNING (NOT EXIT) — big red banner when StochRSI hits extremes
+  if (signal && signal.direction === "LONG" && market.stochK >= WARN_LONG) {
+    warnings.push({
+      type: "danger",
+      text: `⚠️ EXHAUSTION WARNING: StochRSI K=${market.stochK.toFixed(1)} ≥ ${WARN_LONG} — Consider closing LONG to lock gains before pullback!`
+    });
   }
-  if (signal && signal.direction === "SHORT" && market.stochK < 10) {
-    warnings.push({ type: "danger", text: `StochRSI K=${market.stochK.toFixed(1)} extreme — consider tightening SL or partial exit` });
+  if (signal && signal.direction === "SHORT" && market.stochK <= WARN_SHORT) {
+    warnings.push({
+      type: "danger",
+      text: `⚠️ EXHAUSTION WARNING: StochRSI K=${market.stochK.toFixed(1)} ≤ ${WARN_SHORT} — Consider closing SHORT to lock gains before bounce!`
+    });
   }
 
   // 3. ADX dropping
@@ -202,15 +233,22 @@ function WarningBanner({ market, signal }: { market: MarketData | undefined; sig
   return (
     <div className="space-y-1.5">
       {warnings.map((w, i) => {
-        const styles = {
-          danger: "bg-rose-950/40 border-rose-500/40 text-rose-300",
-          warning: "bg-yellow-950/40 border-yellow-500/40 text-yellow-300",
-          info: "bg-blue-950/40 border-blue-500/40 text-blue-300",
-        };
-        const emoji = { danger: "🔴", warning: "🟡", info: "🔵" };
+        let styleClass = "";
+        let emoji = "";
+        if (w.type === "danger") {
+          styleClass = "bg-rose-950/60 border-rose-500/50 text-rose-200";
+          emoji = "🚨";
+        } else if (w.type === "warning") {
+          styleClass = "bg-yellow-950/40 border-yellow-500/40 text-yellow-300";
+          emoji = "🟡";
+        } else {
+          styleClass = "bg-blue-950/40 border-blue-500/40 text-blue-300";
+          emoji = "🔵";
+        }
+        const className = `rounded-lg border px-3 py-2.5 text-xs font-semibold ${styleClass}`;
         return (
-          <div key={i} className={"rounded-lg border px-3 py-2 text-xs font-medium " + styles[w.type]}>
-            {emoji[w.type]} {w.text}
+          <div key={i} className={className}>
+            {emoji} {w.text}
           </div>
         );
       })}
@@ -218,47 +256,52 @@ function WarningBanner({ market, signal }: { market: MarketData | undefined; sig
   );
 }
 
-// --- Progress Banner ---
+// ==================== PROGRESS BANNER ====================
 
-function ProgressBanner({ market }: { market: MarketData | undefined }) {
+function ProgressBanner({ market, exhausted }: { market: MarketData | undefined; exhausted?: boolean }) {
   if (!market) return null;
   const phase = market.phase;
-  const banners: Record<string, { bg: string; border: string; text: string; title: string; desc: string }> = {
-    WATCHING: {
-      bg: "bg-yellow-950/30", border: "border-yellow-500/30", text: "text-yellow-400",
-      title: "Watching", desc: "1D trend aligned. Waiting for 1H StochRSI cross entry. Monitoring K/D for momentum shift.",
-    },
-    READY: {
-      bg: "bg-cyan-950/30", border: "border-cyan-500/30", text: "text-cyan-400",
-      title: "Ready", desc: "HTF trend confirmed. StochRSI approaching crossover zone. One 1H candle away from potential entry.",
-    },
-    EARLY_ENTRY: {
-      bg: "bg-emerald-950/30", border: "border-emerald-500/30", text: "text-emerald-400",
-      title: "Entry Triggered", desc: "1H StochRSI cross confirmed with HTF alignment. Signal active. SL and TP set.",
-    },
-    EXPANSION: {
-      bg: "bg-purple-950/30", border: "border-purple-500/30", text: "text-purple-400",
-      title: "Expansion", desc: "Signal active. Price moving toward target. Monitor StochRSI extremes for exit timing.",
-    },
-    EXHAUSTION: {
-      bg: "bg-red-950/30", border: "border-red-500/30", text: "text-red-400",
-      title: "StochRSI Exhaustion", desc: "StochRSI extreme reached. New entries blocked. Waiting for pullback/reset.",
-    },
-    NONE: {
-      bg: "bg-slate-800/30", border: "border-slate-600/20", text: "text-slate-500",
-      title: "Scanning Market", desc: "No clear HTF trend alignment. Price may be ranging or indecisive.",
-    },
-  };
-  const b = banners[phase] || banners.NONE;
+
+  let bg = "bg-slate-800/30";
+  let border = "border-slate-600/20";
+  let text = "text-slate-500";
+  let title = "Scanning Market";
+  let desc = "No clear HTF trend alignment. Price may be ranging or indecisive.";
+
+  if (exhausted) {
+    bg = "bg-red-950/30"; border = "border-red-500/30"; text = "text-red-400";
+    title = "EXHAUSTION WARNING";
+    desc = "StochRSI at extreme. Signal still active — YOU decide when to close. Consider taking profits.";
+  } else if (phase === "WATCHING") {
+    bg = "bg-yellow-950/30"; border = "border-yellow-500/30"; text = "text-yellow-400";
+    title = "Watching";
+    desc = "1D trend aligned. Waiting for 1H StochRSI cross entry. Monitoring K/D for momentum shift.";
+  } else if (phase === "READY") {
+    bg = "bg-cyan-950/30"; border = "border-cyan-500/30"; text = "text-cyan-400";
+    title = "Ready";
+    desc = "HTF trend confirmed. StochRSI approaching crossover zone. One 1H candle away from potential entry.";
+  } else if (phase === "EARLY_ENTRY") {
+    bg = "bg-emerald-950/30"; border = "border-emerald-500/30"; text = "text-emerald-400";
+    title = "Entry Triggered";
+    desc = "1H StochRSI cross confirmed with HTF alignment. Signal active. SL and TP set.";
+  } else if (phase === "EXHAUSTION") {
+    bg = "bg-red-950/30"; border = "border-red-500/30"; text = "text-red-400";
+    title = "StochRSI Exhaustion";
+    desc = "StochRSI extreme reached. New entries blocked. Waiting for pullback/reset.";
+  }
+
+  const className = `rounded-lg border ${bg} ${border} p-3`;
+  const titleClass = `text-xs font-bold uppercase tracking-wider ${text} mb-1`;
+
   return (
-    <div className={"rounded-lg border " + b.bg + " " + b.border + " p-3"}>
-      <p className={"text-xs font-bold uppercase tracking-wider " + b.text + " mb-1"}>{b.title}</p>
-      <p className="text-xs text-slate-400 leading-relaxed">{b.desc}</p>
+    <div className={className}>
+      <p className={titleClass}>{title}</p>
+      <p className="text-xs text-slate-400 leading-relaxed">{desc}</p>
     </div>
   );
 }
 
-// --- Indicator Grid (StochRSI clearly labeled) ---
+// ==================== INDICATOR GRID ====================
 
 function IndicatorGrid({ market, signal }: { market: MarketData | undefined; signal?: Signal }) {
   if (!market) return null;
@@ -268,7 +311,6 @@ function IndicatorGrid({ market, signal }: { market: MarketData | undefined; sig
   const crossDir = market.stochK > market.stochD ? "up" : "down";
   const crossColor = market.stochK > market.stochD ? "text-emerald-400" : "text-rose-400";
 
-  // Entry StochRSI from signal reason
   let entryStochK: number | null = null;
   let entryStochD: number | null = null;
   if (signal?.reason) {
@@ -278,26 +320,31 @@ function IndicatorGrid({ market, signal }: { market: MarketData | undefined; sig
     if (matchD) entryStochD = parseFloat(matchD[1]);
   }
 
+  const adxClass = `font-mono font-bold text-sm ${adxColor}`;
+  const stochKClass = `font-mono font-bold text-sm ${stochColor}`;
+  const stochDClass = `font-mono font-bold text-sm ${stochColor}`;
+  const crossClass = `font-mono font-bold text-sm ${crossColor}`;
+
   return (
     <div className="space-y-2">
       <div className="grid grid-cols-4 gap-2">
         <div className="bg-slate-800/40 rounded-lg p-2 text-center">
           <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">ADX</p>
-          <p className={"font-mono font-bold text-sm " + adxColor}>{market.adx.toFixed(1)}</p>
+          <p className={adxClass}>{market.adx.toFixed(1)}</p>
           <p className="text-[10px] text-slate-600">{market.adx > 25 ? "STRONG" : market.adx > 20 ? "BUILDING" : "WEAK"}</p>
         </div>
         <div className="bg-slate-800/40 rounded-lg p-2 text-center">
           <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">StochRSI K</p>
-          <p className={"font-mono font-bold text-sm " + stochColor}>{market.stochK.toFixed(1)}</p>
+          <p className={stochKClass}>{market.stochK.toFixed(1)}</p>
           <p className="text-[10px] text-slate-600">{market.stochK < 20 ? "OVERSOLD" : market.stochK > 80 ? "OVERBOUGHT" : "NEUTRAL"}</p>
         </div>
         <div className="bg-slate-800/40 rounded-lg p-2 text-center">
           <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">StochRSI D</p>
-          <p className={"font-mono font-bold text-sm " + stochColor}>{market.stochD.toFixed(1)}</p>
+          <p className={stochDClass}>{market.stochD.toFixed(1)}</p>
         </div>
         <div className="bg-slate-800/40 rounded-lg p-2 text-center">
           <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Cross</p>
-          <p className={"font-mono font-bold text-sm " + crossColor}>K {crossDir} D</p>
+          <p className={crossClass}>K {crossDir} D</p>
           <p className="text-[10px] text-slate-600">{Math.abs(market.stochK - market.stochD).toFixed(1)} spread</p>
         </div>
       </div>
@@ -317,12 +364,14 @@ function IndicatorGrid({ market, signal }: { market: MarketData | undefined; sig
   );
 }
 
-// --- Trend Display ---
+// ==================== TREND DISPLAY ====================
 
 function TrendDisplay({ market }: { market: MarketData | undefined }) {
   const hasCloses = market?.closes4h && market.closes4h.length >= 30;
-  let trend4h = "—", trend4hClass = "text-sm font-bold text-slate-600";
-  let trend1d = "—", trend1dClass = "text-sm font-bold text-slate-600";
+  let trend4h = "—";
+  let trend4hClass = "text-sm font-bold text-slate-600";
+  let trend1d = "—";
+  let trend1dClass = "text-sm font-bold text-slate-600";
   let htfLabel = market?.htfBias || "unknown";
 
   if (hasCloses) {
@@ -339,7 +388,7 @@ function TrendDisplay({ market }: { market: MarketData | undefined }) {
       const spread = Math.abs(ema8Last - ema21Last) / ema21Last;
       trend4hStrength = spread > 0.02 ? "STRONG" : spread > 0.01 ? "MEDIUM" : "WEAK";
     }
-    trend4h = trend4hDir ? trend4hDir + " " + trend4hStrength : "MIXED";
+    trend4h = trend4hDir ? `${trend4hDir} ${trend4hStrength}` : "MIXED";
     trend4hClass = trend4h.includes("SHORT") ? "text-sm font-bold text-rose-400" :
       trend4h.includes("LONG") ? "text-sm font-bold text-emerald-400" : "text-sm font-bold text-yellow-400";
   }
@@ -366,18 +415,31 @@ function TrendDisplay({ market }: { market: MarketData | undefined }) {
   );
 }
 
-// --- Signal Card ---
+// ==================== SIGNAL CARD (WARNING ONLY, NO AUTO-EXIT) ====================
 
 function SignalCard({ signal, market, livePrice }: { signal: Signal; market: MarketData | undefined; livePrice: number | undefined }) {
   const currentPrice = livePrice ?? market?.price ?? 0;
   const meta = getSignalStatus(signal, currentPrice);
+
+  // Check if we should show exhaustion warning (but NOT exit)
+  const isExhausted = signal.direction === "LONG" && (market?.stochK ?? 0) >= WARN_LONG
+    || signal.direction === "SHORT" && (market?.stochK ?? 0) <= WARN_SHORT;
+
   const confColor = signal.confidence >= 70 ? "text-emerald-400" : signal.confidence >= 50 ? "text-yellow-400" : "text-rose-400";
   const confBarColor = signal.confidence >= 70 ? "bg-emerald-500" : signal.confidence >= 50 ? "bg-yellow-500" : "bg-rose-500";
   const dirColor = signal.direction === "LONG" ? "text-emerald-400" : "text-rose-400";
   const pnlClass = meta.pnl >= 0 ? "text-2xl font-mono font-bold text-emerald-400" : "text-2xl font-mono font-bold text-rose-400";
 
+  const confClass = `text-sm font-bold ${confColor}`;
+  const barClass = `h-full rounded-full transition-all duration-500 ${confBarColor}`;
+  const dirClass = `font-bold ${dirColor}`;
+
+  // Card border changes to red when exhausted (visual cue only)
+  const cardBorder = isExhausted ? "border-red-500/50" : "border-slate-700/50";
+  const cardBg = isExhausted ? "bg-red-950/10" : "bg-slate-900/60";
+
   return (
-    <div className="rounded-2xl border border-slate-700/50 bg-slate-900/60 p-5 space-y-4 backdrop-blur-sm">
+    <div className={`rounded-2xl border ${cardBorder} ${cardBg} p-5 space-y-4 backdrop-blur-sm`}>
       <div className="flex justify-between items-start">
         <div>
           <h2 className="text-2xl font-bold text-white tracking-tight">{signal.pair}</h2>
@@ -385,35 +447,66 @@ function SignalCard({ signal, market, livePrice }: { signal: Signal; market: Mar
         </div>
         <div className="flex flex-col items-end gap-2">
           <StatusBadge status={meta.status} direction={signal.direction} />
-          <PhaseBadge phase={market?.phase || "NONE"} />
+          <PhaseBadge phase={isExhausted ? "EXHAUSTION" : (market?.phase || "NONE")} />
         </div>
       </div>
 
       <WarningBanner market={market} signal={signal} />
-      <ProgressBanner market={market} />
+      <ProgressBanner market={market} exhausted={isExhausted} />
       <IndicatorGrid market={market} signal={signal} />
       <TrendDisplay market={market} />
+
+      {isExhausted && (
+        <div className="bg-red-950/30 border border-red-500/30 rounded-lg p-3">
+          <p className="text-[10px] text-red-400 font-bold uppercase tracking-wider mb-1">🚨 EXHAUSTION ZONE — MANUAL CLOSE RECOMMENDED</p>
+          <p className="text-xs text-slate-300">
+            StochRSI K is at extreme ({market?.stochK?.toFixed(1)}). Signal is still ACTIVE.
+            Consider closing to lock gains. You decide.
+          </p>
+        </div>
+      )}
 
       <div>
         <div className="flex justify-between items-center mb-1.5">
           <span className="text-xs text-slate-500 uppercase tracking-wider">Confidence</span>
-          <span className={"text-sm font-bold " + confColor}>{signal.confidence}%</span>
+          <span className={confClass}>{signal.confidence}%</span>
         </div>
         <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
-          <div className={"h-full rounded-full transition-all duration-500 " + confBarColor} style={{ width: String(signal.confidence) + "%" }} />
+          <div className={barClass} style={{ width: `${signal.confidence}%` }} />
         </div>
       </div>
 
       <div className="bg-slate-800/40 rounded-lg p-3 space-y-2">
         <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Trade Setup</p>
         <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
-          <div className="flex justify-between"><span className="text-slate-400">Direction</span><span className={"font-bold " + dirColor}>{signal.direction}</span></div>
-          <div className="flex justify-between"><span className="text-slate-400">Type</span><span className="font-mono text-slate-300">{signal.type}</span></div>
-          <div className="flex justify-between"><span className="text-slate-400">Entry</span><span className="font-mono text-white font-semibold">{money(signal.entry)}</span></div>
-          <div className="flex justify-between"><span className="text-slate-400">Stop</span><span className="font-mono text-rose-400 font-semibold">{money(signal.stop)}</span></div>
-          <div className="flex justify-between"><span className="text-slate-400">Target</span><span className="font-mono text-emerald-400 font-semibold">{money(signal.target)}</span></div>
-          <div className="flex justify-between"><span className="text-slate-400">R:R</span><span className="font-mono text-yellow-400 font-bold">{signal.rr?.toFixed(2) || "—"}</span></div>
-          <div className="flex justify-between"><span className="text-slate-400">Expected</span><span className="font-mono text-cyan-400 font-bold">{signal.expectedMove?.toFixed(1) || "—"}%</span></div>
+          <div className="flex justify-between">
+            <span className="text-slate-400">Direction</span>
+            <span className={dirClass}>{signal.direction}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400">Type</span>
+            <span className="font-mono text-slate-300">{signal.type}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400">Entry</span>
+            <span className="font-mono text-white font-semibold">{money(signal.entry)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400">Stop</span>
+            <span className="font-mono text-rose-400 font-semibold">{money(signal.stop)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400">Target</span>
+            <span className="font-mono text-emerald-400 font-semibold">{money(signal.target)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400">R:R</span>
+            <span className="font-mono text-yellow-400 font-bold">{signal.rr?.toFixed(2) || "—"}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-slate-400">Expected</span>
+            <span className="font-mono text-cyan-400 font-bold">{signal.expectedMove?.toFixed(1) || "—"}%</span>
+          </div>
         </div>
       </div>
 
@@ -433,7 +526,7 @@ function SignalCard({ signal, market, livePrice }: { signal: Signal; market: Mar
   );
 }
 
-// --- Waiting Card ---
+// ==================== WAITING CARD ====================
 
 function WaitingCard({ pair, market, livePrice }: { pair: string; market: MarketData | undefined; livePrice: number | undefined }) {
   const currentPrice = livePrice ?? market?.price ?? 0;
@@ -485,7 +578,7 @@ function WaitingCard({ pair, market, livePrice }: { pair: string; market: Market
   );
 }
 
-// --- Main Dashboard ---
+// ==================== MAIN DASHBOARD ====================
 
 export default function Dashboard() {
   const [signals, setSignals] = useState<Record<string, Signal | null>>({});
@@ -553,7 +646,7 @@ export default function Dashboard() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold text-white tracking-tight">CX Switch v28</h1>
-          <p className="text-slate-500 text-sm mt-1">1H StochRSI Entry + HTF Direction Filter</p>
+          <p className="text-slate-500 text-sm mt-1">1H StochRSI Entry + HTF Direction Filter + Exhaustion Warning</p>
           <p className="text-slate-600 text-xs">Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}</p>
         </div>
       </div>
@@ -563,6 +656,7 @@ export default function Dashboard() {
           const signal = signals[pair];
           const mkt = marketData[pair];
           const livePrice = livePrices[pair];
+
           return signal ? (
             <SignalCard key={pair} signal={signal} market={mkt} livePrice={livePrice} />
           ) : (
