@@ -1,7 +1,8 @@
 // lib/strategy.ts — v28 "1H Entry + HTF Direction"
 // ============================================================
-// 2026-07-07: Stripped all zone logic, MACD, trendlines, hysteresis
+// 2026-07-07: Stripped all zone logic, MACD, trendlines, hysteresis, EMA entry gate
 // 1D = direction, 4H = confirmation, 1H = entry trigger only
+// Entry on 1H StochRSI cross + volume, no EMA lag
 // ============================================================
 
 export interface Candle {
@@ -220,7 +221,7 @@ function isInCooldown(pair: string, now: number, direction?: "LONG" | "SHORT"): 
   return elapsed < EXIT_COOLDOWN_MS ? { inCooldown: true, remainingMs: EXIT_COOLDOWN_MS - elapsed, lastExit } : { inCooldown: false, remainingMs: 0, lastExit };
 }
 
-// --- 1H ENTRY DETECTION (THE ONLY THING THAT FIRES) ---
+// --- 1H ENTRY DETECTION (NO EMA GATE) ---
 interface EntryResult {
   hasEntry: boolean;
   direction: "LONG" | "SHORT" | null;
@@ -237,15 +238,9 @@ function detect1HEntry(candles1h: Candle[], config: PairConfig): EntryResult {
 
   if (closes.length < 50) return { hasEntry: false, direction: null, strength: 0, reasons: ["insufficient_1h"], stochK: 50, stochD: 50 };
 
-  // Current Stoch
+  // Current + previous Stoch
   const stoch = stochRsi(closes);
-  // Previous candle Stoch (for cross detection)
   const stochPrev = stochRsi(closes.slice(0, -1));
-
-  // EMAs
-  const ema8 = ema(closes, 8), ema21 = ema(closes, 21);
-  const price = closes[closes.length - 1];
-  const ema8Now = ema8[ema8.length - 1], ema21Now = ema21[ema21.length - 1];
 
   // Volume
   const avgVol = avg(volumes.slice(-10)), lastVol = volumes[volumes.length - 1];
@@ -255,39 +250,32 @@ function detect1HEntry(candles1h: Candle[], config: PairConfig): EntryResult {
   const crossUp = stochPrev.k <= stochPrev.d && stoch.k > stoch.d;
   const crossDown = stochPrev.k >= stochPrev.d && stoch.k < stoch.d;
 
-  // Price vs EMAs
-  const aboveEMAs = price > ema8Now && price > ema21Now && ema8Now > ema21Now;
-  const belowEMAs = price < ema8Now && price < ema21Now && ema8Now < ema21Now;
-
   let direction: "LONG" | "SHORT" | null = null;
   let strength = 0;
 
-  // === ENTRY: Stoch cross + EMA alignment ===
-  if (crossUp && aboveEMAs) {
+  // === ENTRY: Stoch cross ===
+  if (crossUp) {
     direction = "LONG";
     reasons.push("stoch_cross_up");
-    reasons.push("price_above_emas");
     strength += 60;
-  } else if (crossDown && belowEMAs) {
+  } else if (crossDown) {
     direction = "SHORT";
     reasons.push("stoch_cross_down");
-    reasons.push("price_below_emas");
     strength += 60;
   }
 
   // Boosters
-  if (volSurge) { strength += 15; reasons.push("volume_surge"); }
+  if (volSurge) { strength += 20; reasons.push("volume_surge"); }
 
   // 1H ADX
   const adx1h = adx(candles1h);
   if (adx1h > config.minADX) { strength += 10; reasons.push("adx_ok"); }
 
-  // Velocity
+  // Velocity (3-candle ROC)
   const roc = ((closes[closes.length - 1] - closes[closes.length - 4]) / closes[closes.length - 4]) * 100;
-  if (Math.abs(roc) > 1.5) { strength += 10; reasons.push("velocity"); }
+  if (Math.abs(roc) > 1.0) { strength += 10; reasons.push("velocity"); }
 
-  // BLOCK: Don't enter if Stoch already extreme (chasing)
-  // BUT: Allow if this is the cross candle coming from the other side
+  // BLOCK: Only if already extreme (not crossing through)
   const wasBelow70 = stochPrev.k < 70;
   const wasAbove30 = stochPrev.k > 30;
 
@@ -333,7 +321,6 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   let tradeDirection: "LONG" | "SHORT" | null = t1d.direction;
 
   if (t4h.direction !== t1d.direction) {
-    // 4H override only if STRONG and 1D is weak
     if (t4h.strength === "STRONG" && t1d.strength !== "STRONG") {
       debug.push(`4H override: 4H=${t4h.direction} STRONG vs 1D=${t1d.direction} ${t1d.strength}`);
       tradeDirection = t4h.direction;
