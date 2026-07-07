@@ -1,4 +1,4 @@
-// lib/telegram.ts — v28 "Clean alert dispatch for v28 strategy"
+// lib/telegram.ts — v28 "Clean alert dispatch"
 // ============================================================
 
 interface AlertPayload {
@@ -35,7 +35,8 @@ function resolveAlert(payload: AlertPayload) {
 }
 
 function isActionableStage(stage: string): boolean {
-  const actionable = ["ACCUMULATE", "BREAKOUT", "CONFIRMED", "EXPANSION", "READY"];
+  // PATCH: Added "ENTRY" for v28 strategy
+  const actionable = ["ACCUMULATE", "BREAKOUT", "CONFIRMED", "EXPANSION", "READY", "ENTRY"];
   return actionable.includes(stage.toUpperCase());
 }
 
