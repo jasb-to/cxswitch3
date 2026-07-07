@@ -2,52 +2,44 @@
 
 import { useEffect, useState } from "react";
 
-// --- Types (v30.5) ---
+// --- Types (v28) ---
 
 interface Signal {
   id: string;
   pair: string;
   direction: "LONG" | "SHORT";
-  stage: "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED";
+  type: "ENTRY";
+  scale: "ENTRY_1" | null;
   entry: number;
   stop: number;
   target: number;
-  trail: number;
   confidence: number;
   rr: number;
   adx: number;
-  zoneTop: number;
-  zoneBottom: number;
-  explanation: string;
+  rsi: number;
+  stochK: number;
+  stochD: number;
+  expectedMove: number;
+  reason: string;
   timestamp: number;
   version: number;
-}
-
-interface ZoneQuality {
-  age: number;
-  widthATR: number;
-  compression: number;
-  volumeDecay: number;
-  touches: number;
-  breakAttempts: number;
-  label: "EXCELLENT" | "GOOD" | "AVERAGE" | "WEAK";
+  exited?: boolean;
+  exitReason?: string;
+  exitPrice?: number;
+  exitTimestamp?: number;
 }
 
 interface MarketData {
   pair: string;
   price: number;
   timestamp: number;
-  phase: "NONE" | "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED" | "EXPANSION" | "EXHAUSTION";
+  phase: "NONE" | "WATCHING" | "READY" | "EARLY_ENTRY" | "EXHAUSTION";
   trend: string;
   htfBias?: "BULLISH" | "BEARISH" | "NEUTRAL";
   adx: number;
   rsi: number;
   stochK: number;
   stochD: number;
-  zoneTop: number | null;
-  zoneBottom: number | null;
-  zoneScore: number;
-  zoneQuality?: ZoneQuality;
   closes4h?: number[];
 }
 
@@ -57,7 +49,7 @@ const KRAKEN_PAIRS: Record<string, string> = {
   BTC: "XBTUSD", ETH: "ETHUSD", SOL: "SOLUSD", HYPE: "HYPEUSD",
 };
 
-// --- Helpers (DEFENSIVE: handles null/undefined/NaN) ---
+// --- Helpers ---
 
 function money(n?: number | null): string {
   if (n === null || n === undefined || typeof n !== "number" || !isFinite(n)) return "—";
@@ -92,7 +84,7 @@ function calcEMA(values: number[], period: number): number[] {
 
 function getSignalStatus(signal: Signal, currentPrice: number) {
   const ageMinutes = Math.floor((Date.now() - signal.timestamp) / 60000);
-  const maxAge = 24 * 60;
+  const maxAge = 12 * 60;
 
   if (signal.direction === "LONG") {
     if (currentPrice >= signal.target) return { status: "TP_HIT" as const, pnl: 0, ageMinutes, ttlRemaining: "0m" };
@@ -121,9 +113,8 @@ function StatusBadge({ status, direction }: { status: string; direction?: "LONG"
     SL_HIT: { bg: "bg-red-600", text: "text-white", label: "SL HIT" },
     EXPIRED: { bg: "bg-slate-600", text: "text-white", label: "EXPIRED" },
     WATCHING: { bg: "bg-yellow-600", text: "text-white", label: "WATCHING" },
-    ACCUMULATION: { bg: "bg-blue-600", text: "text-white", label: "ACCUMULATING" },
     READY: { bg: "bg-cyan-600", text: "text-white", label: "READY" },
-    CONFIRMED: { bg: "bg-emerald-600", text: "text-white", label: "CONFIRMED" },
+    EARLY_ENTRY: { bg: "bg-emerald-600", text: "text-white", label: "ENTRY" },
     NONE: { bg: "bg-slate-700", text: "text-slate-300", label: "SCANNING" },
   };
   const key = status === "ACTIVE" ? "ACTIVE_" + direction : status;
@@ -133,10 +124,8 @@ function StatusBadge({ status, direction }: { status: string; direction?: "LONG"
 
 function PhaseBadge({ phase }: { phase: string }) {
   const configs: Record<string, { bg: string; border: string; text: string }> = {
-    IMPULSE: { bg: "bg-orange-950/50", border: "border-orange-500/40", text: "text-orange-400" },
-    ACCUMULATION: { bg: "bg-blue-950/50", border: "border-blue-500/40", text: "text-blue-400" },
     READY: { bg: "bg-cyan-950/50", border: "border-cyan-500/40", text: "text-cyan-400" },
-    CONFIRMED: { bg: "bg-emerald-950/50", border: "border-emerald-500/40", text: "text-emerald-400" },
+    EARLY_ENTRY: { bg: "bg-emerald-950/50", border: "border-emerald-500/40", text: "text-emerald-400" },
     EXPANSION: { bg: "bg-purple-950/50", border: "border-purple-500/40", text: "text-purple-400" },
     EXHAUSTION: { bg: "bg-red-950/50", border: "border-red-500/40", text: "text-red-400" },
     WATCHING: { bg: "bg-yellow-950/50", border: "border-yellow-500/40", text: "text-yellow-400" },
@@ -146,21 +135,6 @@ function PhaseBadge({ phase }: { phase: string }) {
   return (
     <span className={"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold border " + c.bg + " " + c.border + " " + c.text}>
       <span>*</span>{phase}
-    </span>
-  );
-}
-
-function QualityBadge({ quality }: { quality?: ZoneQuality }) {
-  if (!quality) return null;
-  const colors: Record<string, string> = {
-    EXCELLENT: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
-    GOOD: "bg-cyan-500/20 text-cyan-400 border-cyan-500/30",
-    AVERAGE: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
-    WEAK: "bg-rose-500/20 text-rose-400 border-rose-500/30",
-  };
-  return (
-    <span className={"inline-flex items-center px-2 py-0.5 rounded text-xs font-bold border " + colors[quality.label]}>
-      {quality.label}
     </span>
   );
 }
@@ -188,38 +162,29 @@ function ProgressBanner({ market }: { market: MarketData | undefined }) {
       bg: "bg-yellow-950/30",
       border: "border-yellow-500/30",
       text: "text-yellow-400",
-      title: "Accumulation Detected",
-      desc: market.zoneTop != null && market.zoneBottom != null
-        ? `Zone: ${money(market.zoneBottom)} - ${money(market.zoneTop)}. Waiting for breakout. Price must break below ${money(market.zoneBottom)} for SHORT or above ${money(market.zoneTop)} for LONG.`
-        : "Price compression detected. Monitoring for tight accumulation range.",
-    },
-    ACCUMULATION: {
-      bg: "bg-blue-950/30",
-      border: "border-blue-500/30",
-      text: "text-blue-400",
-      title: "Accumulation in Progress",
-      desc: "Price is compressing into a range. Volume declining. Monitoring for breakout readiness.",
+      title: "Watching",
+      desc: "1D trend aligned. Waiting for 1H Stoch cross entry signal. Monitoring Stoch K/D for momentum shift.",
     },
     READY: {
       bg: "bg-cyan-950/30",
       border: "border-cyan-500/30",
       text: "text-cyan-400",
-      title: "Ready for Breakout",
-      desc: "Zone matured with sufficient touches. One directional breakout candle away from signal.",
+      title: "Ready",
+      desc: "HTF trend confirmed. Stoch approaching crossover zone. One 1H candle away from potential entry.",
     },
-    CONFIRMED: {
+    EARLY_ENTRY: {
       bg: "bg-emerald-950/30",
       border: "border-emerald-500/30",
       text: "text-emerald-400",
-      title: "Signal Confirmed",
-      desc: "Breakout detected. Entry triggered. Trail stop is now active.",
+      title: "Entry Triggered",
+      desc: "1H Stoch cross confirmed with HTF alignment. Signal active. SL and TP set.",
     },
     EXPANSION: {
       bg: "bg-purple-950/30",
       border: "border-purple-500/30",
       text: "text-purple-400",
-      title: "Expansion Phase",
-      desc: "Price expanding from zone. Trail stop managing position. Monitoring for exhaustion.",
+      title: "Expansion",
+      desc: "Signal active. Price moving toward target. Monitoring for SL/TP hit or trend reversal.",
     },
     EXHAUSTION: {
       bg: "bg-red-950/30",
@@ -233,7 +198,7 @@ function ProgressBanner({ market }: { market: MarketData | undefined }) {
       border: "border-slate-600/20",
       text: "text-slate-500",
       title: "Scanning Market",
-      desc: "No tight accumulation pattern detected. Price may be trending or ranging too wide.",
+      desc: "No clear HTF trend alignment. Price may be ranging or indecisive.",
     },
   };
 
@@ -243,14 +208,6 @@ function ProgressBanner({ market }: { market: MarketData | undefined }) {
     <div className={"rounded-lg border " + b.bg + " " + b.border + " p-3"}>
       <p className={"text-xs font-bold uppercase tracking-wider " + b.text + " mb-1"}>{b.title}</p>
       <p className="text-xs text-slate-400 leading-relaxed">{b.desc}</p>
-      {market.zoneQuality && (
-        <div className="mt-2 flex items-center gap-2">
-          <QualityBadge quality={market.zoneQuality} />
-          <span className="text-[10px] text-slate-500">
-            {market.zoneQuality.touches} touches · {market.zoneQuality.widthATR.toFixed(1)}x ATR · {market.zoneQuality.compression}% compressed
-          </span>
-        </div>
-      )}
     </div>
   );
 }
@@ -290,10 +247,9 @@ function IndicatorGrid({ market }: { market: MarketData | undefined }) {
   );
 }
 
-// --- Trend Display (DEFENSIVE) ---
+// --- Trend Display ---
 
 function TrendDisplay({ market }: { market: MarketData | undefined }) {
-  // Always show something, never blank "-"
   const hasCloses = market?.closes4h && market.closes4h.length >= 30;
 
   let trend4h = "—";
@@ -344,55 +300,7 @@ function TrendDisplay({ market }: { market: MarketData | undefined }) {
   );
 }
 
-// --- Zone Details ---
-
-function ZoneDetails({ market }: { market: MarketData | undefined }) {
-  if (!market?.zoneQuality) return null;
-  const q = market.zoneQuality;
-
-  return (
-    <div className="bg-slate-800/40 rounded-lg p-3 space-y-2">
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] text-slate-500 uppercase tracking-wider">Zone Quality</span>
-        <QualityBadge quality={q} />
-      </div>
-      <div className="grid grid-cols-3 gap-2 text-[11px]">
-        <div className="text-center bg-slate-900/50 rounded p-1.5">
-          <p className="text-slate-500 mb-0.5">Age</p>
-          <p className="font-mono font-bold text-slate-300">{q.age}c</p>
-        </div>
-        <div className="text-center bg-slate-900/50 rounded p-1.5">
-          <p className="text-slate-500 mb-0.5">Width</p>
-          <p className="font-mono font-bold text-slate-300">{q.widthATR.toFixed(1)}x ATR</p>
-        </div>
-        <div className="text-center bg-slate-900/50 rounded p-1.5">
-          <p className="text-slate-500 mb-0.5">Compress</p>
-          <p className="font-mono font-bold text-slate-300">{q.compression}%</p>
-        </div>
-        <div className="text-center bg-slate-900/50 rounded p-1.5">
-          <p className="text-slate-500 mb-0.5">Vol Decay</p>
-          <p className="font-mono font-bold text-slate-300">{q.volumeDecay}%</p>
-        </div>
-        <div className="text-center bg-slate-900/50 rounded p-1.5">
-          <p className="text-slate-500 mb-0.5">Touches</p>
-          <p className="font-mono font-bold text-slate-300">{q.touches}</p>
-        </div>
-        <div className="text-center bg-slate-900/50 rounded p-1.5">
-          <p className="text-slate-500 mb-0.5">Breaks</p>
-          <p className="font-mono font-bold text-slate-300">{q.breakAttempts}</p>
-        </div>
-      </div>
-      {market.zoneTop != null && market.zoneBottom != null && (
-        <div className="flex items-center justify-between text-[11px]">
-          <span className="text-slate-500">Zone Range</span>
-          <span className="font-mono text-blue-400">{money(market.zoneBottom)} - {money(market.zoneTop)}</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// --- Signal Card (DEFENSIVE) ---
+// --- Signal Card ---
 
 function SignalCard({ signal, market, livePrice }: { signal: Signal; market: MarketData | undefined; livePrice: number | undefined }) {
   const currentPrice = livePrice ?? market?.price ?? 0;
@@ -419,7 +327,6 @@ function SignalCard({ signal, market, livePrice }: { signal: Signal; market: Mar
       <ProgressBanner market={market} />
       <IndicatorGrid market={market} />
       <TrendDisplay market={market} />
-      <ZoneDetails market={market} />
 
       <div>
         <div className="flex justify-between items-center mb-1.5">
@@ -435,19 +342,18 @@ function SignalCard({ signal, market, livePrice }: { signal: Signal; market: Mar
         <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Trade Setup</p>
         <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
           <div className="flex justify-between"><span className="text-slate-400">Direction</span><span className={"font-bold " + dirColor}>{signal.direction}</span></div>
-          <div className="flex justify-between"><span className="text-slate-400">Stage</span><span className="font-mono text-slate-300">{signal.stage || "—"}</span></div>
+          <div className="flex justify-between"><span className="text-slate-400">Type</span><span className="font-mono text-slate-300">{signal.type}</span></div>
           <div className="flex justify-between"><span className="text-slate-400">Entry</span><span className="font-mono text-white font-semibold">{money(signal.entry)}</span></div>
           <div className="flex justify-between"><span className="text-slate-400">Stop</span><span className="font-mono text-rose-400 font-semibold">{money(signal.stop)}</span></div>
           <div className="flex justify-between"><span className="text-slate-400">Target</span><span className="font-mono text-emerald-400 font-semibold">{money(signal.target)}</span></div>
-          <div className="flex justify-between"><span className="text-slate-400">Trail</span><span className="font-mono text-purple-400 font-semibold">{money(signal.trail)}</span></div>
           <div className="flex justify-between"><span className="text-slate-400">R:R</span><span className="font-mono text-yellow-400 font-bold">{signal.rr?.toFixed(2) || "—"}</span></div>
-          <div className="flex justify-between"><span className="text-slate-400">Zone</span><span className="font-mono text-blue-400">{money(signal.zoneBottom)} - {money(signal.zoneTop)}</span></div>
+          <div className="flex justify-between"><span className="text-slate-400">Expected</span><span className="font-mono text-cyan-400 font-bold">{signal.expectedMove?.toFixed(1) || "—"}%</span></div>
         </div>
       </div>
 
       <div className="bg-slate-800/40 rounded-lg p-3">
-        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">Explanation</p>
-        <p className="text-xs text-slate-300 leading-relaxed">{signal.explanation?.trim() || "No explanation provided by strategy."}</p>
+        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1.5">Reason</p>
+        <p className="text-xs text-slate-300 leading-relaxed font-mono">{signal.reason || "No reason provided."}</p>
       </div>
 
       {meta.status === "ACTIVE" && <div className={pnlClass}>{meta.pnl >= 0 ? "+" : ""}{meta.pnl.toFixed(2)}%</div>}
@@ -461,19 +367,11 @@ function SignalCard({ signal, market, livePrice }: { signal: Signal; market: Mar
   );
 }
 
-// --- Waiting Card (DEFENSIVE) ---
+// --- Waiting Card ---
 
 function WaitingCard({ pair, market, livePrice }: { pair: string; market: MarketData | undefined; livePrice: number | undefined }) {
   const currentPrice = livePrice ?? market?.price ?? 0;
   const phase = market?.phase || "NONE";
-
-  // DEFENSIVE: only show breakout info if we have real zone data and a valid price
-  let breakoutInfo: string | null = null;
-  if (market?.zoneTop != null && market?.zoneBottom != null && currentPrice > 0) {
-    const distToTop = ((market.zoneTop - currentPrice) / currentPrice) * 100;
-    const distToBottom = ((currentPrice - market.zoneBottom) / currentPrice) * 100;
-    breakoutInfo = `Break below ${money(market.zoneBottom)} (${distToBottom.toFixed(2)}%) for SHORT · Break above ${money(market.zoneTop)} (${distToTop.toFixed(2)}%) for LONG`;
-  }
 
   return (
     <div className="rounded-2xl border border-slate-700/50 bg-slate-900/40 p-5 space-y-4 backdrop-blur-sm">
@@ -488,34 +386,13 @@ function WaitingCard({ pair, market, livePrice }: { pair: string; market: Market
       <ProgressBanner market={market} />
       <IndicatorGrid market={market} />
       <TrendDisplay market={market} />
-      <ZoneDetails market={market} />
 
-      {breakoutInfo ? (
-        <div className="bg-slate-800/60 border border-slate-600/30 rounded-lg p-3">
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Breakout Levels</p>
-          <p className="text-xs text-slate-300 font-mono leading-relaxed">{breakoutInfo}</p>
-        </div>
-      ) : (
-        <div className="bg-slate-800/60 border border-slate-600/30 rounded-lg p-3">
-          <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Breakout Levels</p>
-          <p className="text-xs text-slate-500 font-mono leading-relaxed">No accumulation zone detected. Price may be trending or ranging too wide for a setup.</p>
-        </div>
-      )}
-
-      {phase === "WATCHING" && market?.zoneQuality && (
-        <div className="bg-yellow-950/20 border border-yellow-500/20 rounded-lg p-3">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-[10px] text-yellow-400 font-bold uppercase tracking-wider">Accumulation Active</span>
-            <QualityBadge quality={market.zoneQuality} />
-          </div>
+      {phase === "EXHAUSTION" && (
+        <div className="bg-red-950/20 border border-red-500/20 rounded-lg p-3">
+          <p className="text-[10px] text-red-400 font-bold uppercase tracking-wider mb-1">Entry Blocked</p>
           <p className="text-xs text-slate-400">
-            {market.zoneQuality.touches} touches · {market.zoneQuality.widthATR.toFixed(1)}x ATR width · {market.zoneQuality.compression}% compressed
+            Stochastic at extreme ({market?.stochK?.toFixed(1) || "—"}). New signals paused until pullback resets momentum.
           </p>
-          {market.zoneTop != null && market.zoneBottom != null && (
-            <p className="text-xs text-slate-500 font-mono mt-1">
-              Zone: {money(market.zoneBottom)} - {money(market.zoneTop)}
-            </p>
-          )}
         </div>
       )}
 
@@ -523,17 +400,17 @@ function WaitingCard({ pair, market, livePrice }: { pair: string; market: Market
         <div className="bg-slate-800/40 rounded-lg p-3">
           <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">No Setup</p>
           <p className="text-xs text-slate-400">
-            Price is either trending strongly or ranging too wide for accumulation.
+            No clear HTF trend alignment. Price may be ranging or indecisive.
             HTF bias: {market?.htfBias || "unknown"}.
           </p>
         </div>
       )}
 
-      {phase === "EXHAUSTION" && (
-        <div className="bg-red-950/20 border border-red-500/20 rounded-lg p-3">
-          <p className="text-[10px] text-red-400 font-bold uppercase tracking-wider mb-1">Entry Blocked</p>
+      {phase === "WATCHING" && (
+        <div className="bg-yellow-950/20 border border-yellow-500/20 rounded-lg p-3">
+          <p className="text-[10px] text-yellow-400 font-bold uppercase tracking-wider mb-1">Watching</p>
           <p className="text-xs text-slate-400">
-            Stochastic at extreme ({market?.stochK?.toFixed(1) || "—"}). New signals paused until pullback resets momentum.
+            1D trend aligned. Waiting for 1H Stoch cross entry. ADX: {market?.adx?.toFixed(1) || "—"}.
           </p>
         </div>
       )}
@@ -602,7 +479,7 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center">
-        <div className="text-lg">Loading CX Switch v30.5...</div>
+        <div className="text-lg">Loading CX Switch v28...</div>
       </div>
     );
   }
@@ -611,8 +488,8 @@ export default function Dashboard() {
     <div className="min-h-screen bg-slate-950 p-6 space-y-8">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold text-white tracking-tight">CX Switch v30.5</h1>
-          <p className="text-slate-500 text-sm mt-1">Phase-Based Accumulation to Expansion</p>
+          <h1 className="text-3xl font-bold text-white tracking-tight">CX Switch v28</h1>
+          <p className="text-slate-500 text-sm mt-1">1H Entry + HTF Direction Filter</p>
           <p className="text-slate-600 text-xs">Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}</p>
         </div>
       </div>
