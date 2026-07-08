@@ -1,4 +1,4 @@
-// lib/state.ts — v28.1 "Redis State Management + Exit Persistence"
+// lib/state.ts — v29.1 "Redis State Management + Exit Persistence"
 // ============================================================
 
 import { Redis } from "@upstash/redis";
@@ -26,7 +26,7 @@ const CRON_LOGS_TTL = 24 * 60 * 60;
 const EXITS_TTL = 30 * 24 * 60 * 60;
 const PAIR_STATE_TTL = 7 * 24 * 60 * 60;
 
-export const CURRENT_SIGNAL_VERSION = 28;
+export const CURRENT_SIGNAL_VERSION = 29;
 
 export interface ExitRecord {
   signalId: string;
@@ -35,6 +35,16 @@ export interface ExitRecord {
   exitTimestamp: number;
   exitReason: string;
   exitPrice: number;
+}
+
+export interface ConfidenceComponents {
+  regimeAlignment: number;
+  setupQuality: number;
+  momentum: number;
+  structure: number;
+  volume: number;
+  riskPenalty: number;
+  total: number;
 }
 
 export interface Signal {
@@ -72,6 +82,12 @@ export interface Signal {
   exitReason?: string;
   exitPrice?: number;
   exitTimestamp?: number;
+  // v29.1 additions
+  entryMode?: "PULLBACK" | "REJECTION" | "BREAKOUT";
+  confidenceComponents?: ConfidenceComponents;
+  exhaustionWarning?: string;
+  regimeDirection?: "LONG" | "SHORT";
+  regimeSince?: number;
 }
 
 export interface SignalHistory {
@@ -380,7 +396,7 @@ export async function migrateFromV15(): Promise<void> {
     try {
       const data = await redis.get(oldKey);
       if (data) {
-        const newKey = oldKey.replace("_v15", "_v28");
+        const newKey = oldKey.replace("_v15", "_v29");
         await redis.set(newKey, data);
         console.log(`[MIGRATE] ${oldKey} → ${newKey}`);
       }
