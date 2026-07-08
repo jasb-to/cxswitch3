@@ -9,6 +9,16 @@ interface SignalMeta {
   actionable: boolean;
 }
 
+interface ConfidenceComponents {
+  regimeAlignment: number;
+  setupQuality: number;
+  momentum: number;
+  structure: number;
+  volume: number;
+  riskPenalty: number;
+  total: number;
+}
+
 interface Signal {
   id: string;
   pair: string;
@@ -40,6 +50,12 @@ interface Signal {
   lowestPrice?: number;
   profitLockActive?: boolean;
   meta: SignalMeta;
+  // v29.1 additions
+  entryMode?: "PULLBACK" | "REJECTION" | "BREAKOUT";
+  confidenceComponents?: ConfidenceComponents;
+  exhaustionWarning?: string;
+  regimeDirection?: "LONG" | "SHORT";
+  regimeSince?: number;
 }
 
 interface MarketData {
@@ -108,6 +124,54 @@ function PhaseBadge({ phase }: { phase: string }) {
   return <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold border ${cfg.bg} ${cfg.border} ${cfg.text}`}><span className="w-1.5 h-1.5 rounded-full bg-current" />{phase}</span>;
 }
 
+function EntryModeBadge({ mode }: { mode?: string }) {
+  if (!mode) return null;
+  const configs: Record<string, { bg: string; text: string }> = {
+    PULLBACK: { bg: "bg-blue-950/50", text: "text-blue-400" },
+    REJECTION: { bg: "bg-orange-950/50", text: "text-orange-400" },
+    BREAKOUT: { bg: "bg-purple-950/50", text: "text-purple-400" },
+  };
+  const cfg = configs[mode] || { bg: "bg-slate-800", text: "text-slate-400" };
+  return <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${cfg.bg} ${cfg.text}`}>{mode}</span>;
+}
+
+function ConfidenceBreakdown({ components }: { components?: ConfidenceComponents }) {
+  if (!components) return null;
+  const items = [
+    { label: "Regime", value: components.regimeAlignment, color: "bg-emerald-500" },
+    { label: "Setup", value: components.setupQuality, color: "bg-blue-500" },
+    { label: "Momentum", value: components.momentum, color: "bg-cyan-500" },
+    { label: "Structure", value: components.structure, color: "bg-amber-500" },
+    { label: "Volume", value: components.volume, color: "bg-violet-500" },
+    { label: "Risk", value: components.riskPenalty, color: components.riskPenalty < 0 ? "bg-rose-500" : "bg-slate-500" },
+  ];
+  return (
+    <div className="bg-slate-800/40 rounded-lg p-3 space-y-2 border border-slate-700/30">
+      <p className="text-[10px] text-slate-500 uppercase tracking-wider">Confidence Breakdown</p>
+      <div className="space-y-1.5">
+        {items.map((item) => (
+          <div key={item.label} className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-400 w-16">{item.label}</span>
+            <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+              <div
+                className={`h-full rounded-full ${item.color}`}
+                style={{ width: `${Math.min(100, Math.max(0, Math.abs(item.value) * 2))}%`, opacity: Math.abs(item.value) > 0 ? 1 : 0.3 }}
+              />
+            </div>
+            <span className={`text-[10px] font-mono w-8 text-right ${item.value < 0 ? "text-rose-400" : "text-slate-300"}`}>
+              {item.value > 0 ? "+" : ""}{item.value}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="flex justify-between items-center pt-1 border-t border-slate-700/30">
+        <span className="text-[10px] text-slate-500">TOTAL</span>
+        <span className="text-xs font-bold font-mono text-white">{components.total}</span>
+      </div>
+    </div>
+  );
+}
+
 function TradeManagerPanel({ signal }: { signal: Signal }) {
   if (!signal.tradeState) return null;
   const stateColors: Record<string, string> = { OPEN: "text-blue-400", BREAK_EVEN: "text-cyan-400", LOCKED: "text-amber-400", RUNNER: "text-emerald-400", EXITED: "text-slate-400" };
@@ -161,7 +225,6 @@ function TrendDisplay({ market }: { market: MarketData | undefined }) {
   const trendParts = (market.trend || "").split(" ");
   const direction = trendParts[0];
   const trendClass = direction === "SHORT" ? "text-rose-400" : direction === "LONG" ? "text-emerald-400" : "text-yellow-400";
-  // v28.3 FIX: "NEUTRAL" -> "MIXED" for null htfBias
   const trend1d = market.htfBias === "BULLISH" ? "LONG" : market.htfBias === "BEARISH" ? "SHORT" : "MIXED";
   const trend1dClass = trend1d === "SHORT" ? "text-rose-400" : trend1d === "LONG" ? "text-emerald-400" : "text-yellow-400";
   return (
@@ -189,7 +252,10 @@ function SignalCard({ signal, market }: { signal: Signal; market: MarketData | u
     <div className="rounded-2xl border border-slate-700/50 bg-slate-900/60 p-5 space-y-4 backdrop-blur-sm">
       <div className="flex justify-between items-start">
         <div>
-          <h2 className="text-2xl font-bold text-white tracking-tight">{signal.pair}</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-2xl font-bold text-white tracking-tight">{signal.pair}</h2>
+            <EntryModeBadge mode={signal.entryMode} />
+          </div>
           <p className="text-slate-400 text-sm mt-0.5">Price: {money(market?.price)}</p>
         </div>
         <div className="flex flex-col items-end gap-2">
@@ -201,6 +267,13 @@ function SignalCard({ signal, market }: { signal: Signal; market: MarketData | u
       <IndicatorGrid market={market} signal={signal} />
       <TrendDisplay market={market} />
       <TradeManagerPanel signal={signal} />
+      {signal.exhaustionWarning && (
+        <div className="bg-amber-950/20 border border-amber-500/20 rounded-lg p-3">
+          <p className="text-[10px] text-amber-400 font-bold uppercase tracking-wider mb-1">⚠️ Exhaustion Warning</p>
+          <p className="text-xs text-amber-300/80">{signal.exhaustionWarning}</p>
+        </div>
+      )}
+      <ConfidenceBreakdown components={signal.confidenceComponents} />
       <div>
         <div className="flex justify-between items-center mb-1.5">
           <span className="text-xs text-slate-500 uppercase tracking-wider">Confidence</span>
@@ -231,6 +304,11 @@ function SignalCard({ signal, market }: { signal: Signal; market: MarketData | u
       <div className="flex gap-2 text-[10px]">
         <span className="px-2 py-1 rounded bg-slate-800 text-slate-400">{timeAgo(signal.timestamp)} old</span>
         <span className="px-2 py-1 rounded bg-slate-800 text-slate-400">v{signal.version}</span>
+        {signal.regimeDirection && (
+          <span className={`px-2 py-1 rounded ${signal.regimeDirection === "LONG" ? "bg-emerald-950/50 text-emerald-400" : "bg-rose-950/50 text-rose-400"}`}>
+            Regime: {signal.regimeDirection}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -314,7 +392,7 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center">
-        <div className="text-lg">Loading CX Switch v28...</div>
+        <div className="text-lg">Loading CX Switch v29.1...</div>
       </div>
     );
   }
@@ -323,8 +401,8 @@ export default function Dashboard() {
     <div className="min-h-screen bg-slate-950 p-6 space-y-8">
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold text-white tracking-tight">CX Switch v28</h1>
-          <p className="text-slate-500 text-sm mt-1">1H Entry + HTF Filter + Per-Asset Stops + Trade Manager</p>
+          <h1 className="text-3xl font-bold text-white tracking-tight">CX Switch v29.1</h1>
+          <p className="text-slate-500 text-sm mt-1">3-Mode Entry + HTF Filter + Per-Asset Stops + Trade Manager</p>
           <p className="text-slate-600 text-xs">Fetches: {fetchCount} | Last: {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}{error && <span className="text-red-400 ml-2">Error: {error}</span>}</p>
         </div>
       </div>
