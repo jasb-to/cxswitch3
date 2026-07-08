@@ -1,15 +1,19 @@
-// lib/strategy.ts — v28.3 "1H Entry + HTF Direction + HTF Exhaustion Filter + Per-Asset Stops + Lagging EMA Fix + Entry Quality"
+// lib/strategy.ts — v28.4 "1H Entry + HTF Direction + HTF Exhaustion Filter + Per-Asset Stops + HYPE Hybrid"
 // ============================================================
 // 2026-07-07: Changes:
 //   - v28.3 FIX #1: Recent momentum override for lagging EMAs
-//     * If last 6 candles show clear reversal against EMA direction → return MIXED WEAK
-//   - v28.3 FIX #2: htfBias "NEUTRAL" → "MIXED" for null directions
-//   - v28.3 FIX #3: Entry quality scoring (replaces binary pass/fail)
-//     * Cross depth bonus/penalty (cross below 40 = +15, above 70 = -20)
-//     * Entry freshness gate (skip if price moved >1% from cross candle close)
-//     * Volume direction check (only count volume that aligns with entry direction)
-//   - v28.3 FIX #4: 5-tier trend classification (LONG STRONG, LONG, NEUTRAL, SHORT, SHORT STRONG)
-//     * Replaces binary LONG/SHORT/MIXED with smoother transitions
+//   - v28.3 FIX #2: htfBias "NEUTRAL" -> "MIXED" for null directions
+//   - v28.3 FIX #3: Entry quality scoring (cross depth, freshness, volume direction)
+//   - v28.3 FIX #4: Entry freshness gate (skip if price moved >1% from cross candle)
+//   - v28.3 FIX #5: Volume direction check
+//   - v28.3 FIX #6: 5-tier trend classification
+//   - v28.4: HYPE embedded hybrid module
+//     * 6% stop (survives wicks)
+//     * 5% target (captures early move)
+//     * Faster profit lock: 2% BE -> 2.5% lock -> 4% runner
+//     * Deep cross filter: K < 25 for LONG, K > 75 for SHORT
+//     * Volatility gate: skip if last 6 candles range > 8%
+//     * ADX min: 20 (not 15)
 // ============================================================
 
 export interface Candle {
@@ -83,6 +87,14 @@ interface PairConfig {
   stopLossPct: number;
   takeProfitPct: number;
   maxEntryDriftPct: number;
+  // v28.4 HYPE-specific
+  isHYPE?: boolean;
+  deepCrossThresholdLong?: number;
+  deepCrossThresholdShort?: number;
+  maxRecentVolatility?: number;
+  bePct?: number;
+  lockPct?: number;
+  runnerPct?: number;
 }
 
 const PAIR_CONFIGS: Record<string, PairConfig> = {
@@ -90,7 +102,22 @@ const PAIR_CONFIGS: Record<string, PairConfig> = {
   BTC: { minADX: 20, momentumThreshold: 55, volumeMultiplier: 1.3, stopLossPct: 0.02, takeProfitPct: 0.03, maxEntryDriftPct: 0.01 },
   ETH: { minADX: 20, momentumThreshold: 55, volumeMultiplier: 1.3, stopLossPct: 0.025, takeProfitPct: 0.035, maxEntryDriftPct: 0.01 },
   SOL: { minADX: 18, momentumThreshold: 50, volumeMultiplier: 1.4, stopLossPct: 0.03, takeProfitPct: 0.04, maxEntryDriftPct: 0.012 },
-  HYPE: { minADX: 15, momentumThreshold: 50, volumeMultiplier: 1.5, stopLossPct: 0.04, takeProfitPct: 0.05, maxEntryDriftPct: 0.015 },
+  // v28.4: HYPE hybrid config
+  HYPE: { 
+    minADX: 20, 
+    momentumThreshold: 60, 
+    volumeMultiplier: 1.5, 
+    stopLossPct: 0.06, 
+    takeProfitPct: 0.05, 
+    maxEntryDriftPct: 0.02,
+    isHYPE: true,
+    deepCrossThresholdLong: 25,
+    deepCrossThresholdShort: 75,
+    maxRecentVolatility: 0.08,
+    bePct: 0.02,
+    lockPct: 0.025,
+    runnerPct: 0.04,
+  },
 };
 
 function getPairConfig(pair: string): PairConfig {
@@ -223,7 +250,6 @@ function priceStructure(candles: Candle[], direction: "LONG" | "SHORT", lookback
   }
 }
 
-// v28.3 FIX #1: Recent momentum override for lagging EMAs
 function trendDirection(candles: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string; structureValid: boolean; emaDirection: "LONG" | "SHORT" } {
   const len = candles.length;
   if (len < 25) return { direction: null, strength: "WEAK", structureValid: false, emaDirection: "LONG" };
@@ -272,7 +298,6 @@ function trendDirection(candles: Candle[]): { direction: "LONG" | "SHORT" | null
   return { direction: emaDir as "LONG" | "SHORT", strength, structureValid: true, emaDirection: emaDir as "LONG" | "SHORT" };
 }
 
-// v28.3 FIX #4: 5-tier trend classification
 function classifyTrend(trend: { direction: "LONG" | "SHORT" | null; strength: string; structureValid: boolean }): string {
   if (!trend.direction) return "NEUTRAL";
   return `${trend.direction} ${trend.strength}`;
@@ -325,12 +350,24 @@ interface EntryResult {
   crossCandleClose?: number;
 }
 
-// v28.3 FIX #3: Entry quality scoring
-function detect1HEntry(candles1h: Candle[], config: PairConfig): EntryResult {
+// v28.4: Unified entry detection with HYPE special case
+function detect1HEntry(candles1h: Candle[], config: PairConfig, pair: string): EntryResult {
   const reasons: string[] = [];
   const closes = candles1h.map(c => c.close);
   const volumes = candles1h.map(c => c.volume);
+
   if (closes.length < 50) return { hasEntry: false, direction: null, strength: 0, reasons: ["insufficient_1h"], stochK: 50, stochD: 50 };
+
+  // === v28.4 HYPE VOLATILITY GATE ===
+  if (config.isHYPE) {
+    const recent = candles1h.slice(-6);
+    const recentHighs = recent.map(c => c.high);
+    const recentLows = recent.map(c => c.low);
+    const recentRange = (Math.max(...recentHighs) - Math.min(...recentLows)) / Math.min(...recentLows);
+    if (recentRange > (config.maxRecentVolatility || 0.08)) {
+      return { hasEntry: false, direction: null, strength: 0, reasons: [`hype_too_volatile_${(recentRange * 100).toFixed(1)}%`], stochK: 50, stochD: 50 };
+    }
+  }
 
   const stoch = stochRsi(closes);
   const stochPrev = stochRsi(closes.slice(0, -1));
@@ -360,7 +397,38 @@ function detect1HEntry(candles1h: Candle[], config: PairConfig): EntryResult {
     return { hasEntry: false, direction: null, strength: 0, reasons: ["no_cross"], stochK: stoch.k, stochD: stoch.d };
   }
 
-  // Volume direction check: only count if volume aligns with entry direction
+  // === v28.4 HYPE DEEP CROSS FILTER ===
+  if (config.isHYPE) {
+    if (direction === "LONG") {
+      if (stoch.k < (config.deepCrossThresholdLong || 25)) {
+        strength += 20;
+        reasons.push("deep_cross");
+      } else {
+        strength -= 30;
+        reasons.push("shallow_cross_rejected");
+      }
+    }
+    if (direction === "SHORT") {
+      if (stoch.k > (config.deepCrossThresholdShort || 75)) {
+        strength += 20;
+        reasons.push("deep_cross");
+      } else {
+        strength -= 30;
+        reasons.push("shallow_cross_rejected");
+      }
+    }
+  } else {
+    // Standard cross depth scoring for non-HYPE
+    if (direction === "LONG") {
+      if (stoch.k < 40) { strength += 15; reasons.push("deep_cross"); }
+      else if (stoch.k > 70) { strength -= 20; reasons.push("extended_cross"); }
+    } else {
+      if (stoch.k > 60) { strength += 15; reasons.push("deep_cross"); }
+      else if (stoch.k < 30) { strength -= 20; reasons.push("extended_cross"); }
+    }
+  }
+
+  // Volume direction check
   const lastCandle = candles1h[candles1h.length - 1];
   const volDirection = lastCandle.close > lastCandle.open ? "LONG" : "SHORT";
   if (volSurge && volDirection === direction) { 
@@ -371,29 +439,24 @@ function detect1HEntry(candles1h: Candle[], config: PairConfig): EntryResult {
     reasons.push("volume_opposes");
   }
 
+  // ADX check
   const adx1h = adx(candles1h);
   if (adx1h > config.minADX) { strength += 10; reasons.push("adx_ok"); }
+  else { strength -= 10; reasons.push("adx_weak"); }
 
+  // Velocity
   const roc = ((closes[closes.length - 1] - closes[closes.length - 4]) / closes[closes.length - 4]) * 100;
   if (Math.abs(roc) > 1.0) { strength += 5; reasons.push("velocity"); }
 
-  // Cross depth scoring
-  if (direction === "LONG") {
-    if (stoch.k < 40) { strength += 15; reasons.push("deep_cross"); }
-    else if (stoch.k > 70) { strength -= 20; reasons.push("extended_cross"); }
-  } else {
-    if (stoch.k > 60) { strength += 15; reasons.push("deep_cross"); }
-    else if (stoch.k < 30) { strength -= 20; reasons.push("extended_cross"); }
-  }
-
-  // Strong rejection wick check
+  // Rejection wick check
   const body = Math.abs(lastCandle.close - lastCandle.open);
   const upperWick = lastCandle.high - Math.max(lastCandle.open, lastCandle.close);
   const lowerWick = Math.min(lastCandle.open, lastCandle.close) - lastCandle.low;
   const totalRange = lastCandle.high - lastCandle.low;
   if (totalRange > 0) {
-    if (direction === "LONG" && upperWick / totalRange > 0.6) { strength -= 15; reasons.push("upper_rejection"); }
-    if (direction === "SHORT" && lowerWick / totalRange > 0.6) { strength -= 15; reasons.push("lower_rejection"); }
+    const wickThreshold = config.isHYPE ? 0.5 : 0.6;
+    if (direction === "LONG" && upperWick / totalRange > wickThreshold) { strength -= 15; reasons.push("upper_rejection"); }
+    if (direction === "SHORT" && lowerWick / totalRange > wickThreshold) { strength -= 15; reasons.push("lower_rejection"); }
   }
 
   strength = Math.min(100, Math.max(0, strength));
@@ -425,11 +488,9 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   const config = getPairConfig(pair);
   const now = Date.now();
 
-  // Check for existing active trade in same direction
-  const activeKey = `${pair}_${activeTrades?.direction}`;
-  if (activeTrades && activeTrades.pair === pair) {
+  // Check for existing active trade
+  if (activeTrades && activeTrades[pair]) {
     debug.push("Active trade exists, skipping duplicate entry");
-    // Still return market data for UI
     const t1dQuick = trendDirection(aggregateTo1D(candles4h));
     const t4hQuick = trendDirection(candles4h);
     const stoch4hQuick = stochRsi(candles4h.map(c => c.close));
@@ -523,7 +584,7 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
     return { market, debug };
   }
 
-  const entry1h = detect1HEntry(candles1h, config);
+  const entry1h = detect1HEntry(candles1h, config, pair);
   debug.push(`1H StochRSI: K${entry1h.stochK} D${entry1h.stochD}`);
   if (entry1h.hasEntry && entry1h.direction === tradeDirection) {
     debug.push(`1H ENTRY: ${entry1h.direction} strength=${entry1h.strength} | ${entry1h.reasons.join(", ")}`);
@@ -542,7 +603,7 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
     return { market, debug };
   }
 
-  // v28.3 FIX #3: Entry freshness gate
+  // Entry freshness gate
   if (entry1h.crossCandleClose) {
     const drift = Math.abs(price - entry1h.crossCandleClose) / entry1h.crossCandleClose;
     if (drift > config.maxEntryDriftPct) {
@@ -562,7 +623,7 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   const sl = entry1h.direction === "LONG" ? entry * (1 - config.stopLossPct) : entry * (1 + config.stopLossPct);
   const tp = entry1h.direction === "LONG" ? entry * (1 + config.takeProfitPct) : entry * (1 - config.takeProfitPct);
   const rr = Math.abs(tp - entry) / Math.abs(entry - sl);
-  debug.push(`R:R ${rr.toFixed(2)} (informational, no gate)`);
+  debug.push(`R:R ${rr.toFixed(2)} (${(config.stopLossPct * 100).toFixed(0)}% SL / ${(config.takeProfitPct * 100).toFixed(0)}% TP)`);
 
   const signal: Signal = {
     id: `${pair}_${now}`, pair, direction: entry1h.direction, type: "ENTRY", scale: "ENTRY_1",
@@ -620,6 +681,7 @@ export interface TradeManagerUpdate {
   exitReason?: string;
 }
 
+// v28.4: Unified trade manager with HYPE special case
 export function updateTradeManager(signal: Signal, currentPrice: number): TradeManagerUpdate {
   const highest = Math.max(signal.highestPrice || signal.entry, currentPrice);
   const lowest = Math.min(signal.lowestPrice || signal.entry, currentPrice);
@@ -628,18 +690,33 @@ export function updateTradeManager(signal: Signal, currentPrice: number): TradeM
   let profitLock = signal.profitLockActive || false;
   let exit = false;
   let exitReason = "";
+
   const pnlPct = signal.direction === "LONG" ? (currentPrice - signal.entry) / signal.entry : (signal.entry - currentPrice) / signal.entry;
-  if (pnlPct >= 0.015 && state === "OPEN") { state = "BREAK_EVEN"; locked = signal.entry; }
-  if (pnlPct >= 0.03 && state === "BREAK_EVEN") { state = "LOCKED"; profitLock = true; locked = signal.direction === "LONG" ? signal.entry * 1.015 : signal.entry * 0.985; }
-  if (pnlPct >= 0.05 && state === "LOCKED") {
+
+  // v28.4 HYPE: Faster profit lock
+  const config = getPairConfig(signal.pair);
+  const bePct = config.bePct || 0.015;
+  const lockPct = config.lockPct || 0.03;
+  const runnerPct = config.runnerPct || 0.05;
+  const trailRatio = config.isHYPE ? 0.4 : 0.5;
+
+  if (pnlPct >= bePct && state === "OPEN") { state = "BREAK_EVEN"; locked = signal.entry; }
+  if (pnlPct >= lockPct && state === "BREAK_EVEN") { 
+    state = "LOCKED"; 
+    profitLock = true; 
+    locked = signal.direction === "LONG" ? signal.entry * (1 + bePct * 0.5) : signal.entry * (1 - bePct * 0.5); 
+  }
+  if (pnlPct >= runnerPct && state === "LOCKED") {
     state = "RUNNER";
-    const trailDistance = signal.direction === "LONG" ? (highest - signal.entry) * 0.5 : (signal.entry - lowest) * 0.5;
+    const trailDistance = signal.direction === "LONG" ? (highest - signal.entry) * trailRatio : (signal.entry - lowest) * trailRatio;
     locked = signal.direction === "LONG" ? Math.max(locked, highest - trailDistance) : Math.min(locked, lowest + trailDistance);
   }
+
   if (signal.direction === "LONG" && currentPrice <= locked) { exit = true; exitReason = state === "RUNNER" ? "trailing_stop" : "stop_hit"; }
   else if (signal.direction === "SHORT" && currentPrice >= locked) { exit = true; exitReason = state === "RUNNER" ? "trailing_stop" : "stop_hit"; }
   if (signal.direction === "LONG" && currentPrice >= signal.target) { exit = true; exitReason = "tp_hit"; }
   else if (signal.direction === "SHORT" && currentPrice <= signal.target) { exit = true; exitReason = "tp_hit"; }
+
   return { signalId: signal.id, newState: exit ? "EXITED" : state, lockedStop: locked, profitLockActive: profitLock, highestPrice: highest, lowestPrice: lowest, exitTriggered: exit, exitReason: exitReason || undefined };
 }
 
