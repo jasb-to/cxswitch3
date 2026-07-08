@@ -1,55 +1,70 @@
-// lib/kraken.ts
+// lib/kraken.ts — Kraken Exchange API Client
 // ============================================================
 
 export type Symbol = "BTC" | "ETH" | "SOL" | "HYPE";
 
-const PAIRS: Record<Symbol, string> = {
+const SYMBOL_MAP: Record<string, string> = {
   BTC: "XXBTZUSD",
   ETH: "XETHZUSD",
   SOL: "SOLUSD",
   HYPE: "HYPEUSD",
 };
 
-const BASE = "https://api.kraken.com/0/public";
-
-async function fetchKraken(url: string) {
-  const res = await fetch(url, { cache: "no-store" });
-  const data = await res.json();
-
-  if (!data || data.error?.length) return null;
-  return data.result;
+export interface Candle {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
 }
 
-function parseCandles(raw: any) {
-  if (!raw) return [];
-  
-  const keys = Object.keys(raw).filter(k => k !== "last");
-  if (keys.length === 0) return [];
-  const key = keys[0];
+export async function getCurrentPrice(pair: Symbol): Promise<number> {
+  const symbol = SYMBOL_MAP[pair];
+  if (!symbol) throw new Error(`Unknown pair: ${pair}`);
 
-  return (raw[key] || []).map((c: any) => ({
-    timestamp: Number(c[0]) * 1000,
-    open: Number(c[1]),
-    high: Number(c[2]),
-    low: Number(c[3]),
-    close: Number(c[4]),
-    volume: Number(c[6]),
-  }));
+  try {
+    const res = await fetch(`https://api.kraken.com/0/public/Ticker?pair=${symbol}`);
+    const data = await res.json();
+    if (data.error && data.error.length) throw new Error(data.error[0]);
+    const result = data.result;
+    const key = Object.keys(result)[0];
+    const price = parseFloat(result[key].c[0]);
+    return price;
+  } catch (e) {
+    console.error(`[KRAKEN] Price fetch failed for ${pair}:`, e);
+    throw e;
+  }
 }
 
-export async function getCandles(symbol: Symbol, interval: number) {
-  const url = `${BASE}/OHLC?pair=${PAIRS[symbol]}&interval=${interval}`;
-  const res = await fetchKraken(url);
-  const candles = parseCandles(res);
-  return candles.sort((a, b) => a.timestamp - b.timestamp);
-}
+export async function getCandles(pair: Symbol, intervalMinutes: number): Promise<Candle[]> {
+  const symbol = SYMBOL_MAP[pair];
+  if (!symbol) throw new Error(`Unknown pair: ${pair}`);
 
-export async function getCurrentPrice(symbol: Symbol) {
-  const url = `${BASE}/Ticker?pair=${PAIRS[symbol]}`;
-  const res = await fetchKraken(url);
+  // Kraken intervals: 1, 5, 15, 30, 60, 240, 1440, 10080, 21600
+  const krakenInterval = intervalMinutes;
+  const since = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000); // 30 days back
 
-  if (!res) return 0;
+  try {
+    const res = await fetch(
+      `https://api.kraken.com/0/public/OHLC?pair=${symbol}&interval=${krakenInterval}&since=${since}`
+    );
+    const data = await res.json();
+    if (data.error && data.error.length) throw new Error(data.error[0]);
+    const result = data.result;
+    const key = Object.keys(result)[0];
+    const raw = result[key];
 
-  const key = Object.keys(res)[0];
-  return Number(res[key]?.c?.[0] ?? 0);
+    return raw.map((c: any[]) => ({
+      timestamp: c[0] * 1000,
+      open: parseFloat(c[1]),
+      high: parseFloat(c[2]),
+      low: parseFloat(c[3]),
+      close: parseFloat(c[4]),
+      volume: parseFloat(c[6]),
+    }));
+  } catch (e) {
+    console.error(`[KRAKEN] Candles fetch failed for ${pair} ${intervalMinutes}m:`, e);
+    throw e;
+  }
 }
