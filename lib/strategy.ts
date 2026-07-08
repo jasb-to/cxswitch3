@@ -365,6 +365,27 @@ function avg(arr: number[]): number {
   return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
 }
 
+// Trendline helper: returns { slope, intercept, support/resistance at current price }
+function linearRegression(closes: number[], lookback: number = 50): { slope: number; intercept: number; supportLevel: number; resistanceLevel: number } {
+  if (closes.length < lookback) return { slope: 0, intercept: 0, supportLevel: 0, resistanceLevel: 0 };
+  
+  const data = closes.slice(-lookback);
+  const n = data.length;
+  const sumX = (n * (n - 1)) / 2;
+  const sumY = data.reduce((a, b) => a + b, 0);
+  const sumXY = data.reduce((sum, y, i) => sum + i * y, 0);
+  const sumX2 = (n * (n - 1) * (2 * n - 1)) / 6;
+  
+  const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+  const intercept = (sumY - slope * sumX) / n;
+  
+  const currentLevel = intercept + slope * (n - 1);
+  const supportLevel = currentLevel - Math.abs(slope * 5);
+  const resistanceLevel = currentLevel + Math.abs(slope * 5);
+  
+  return { slope, intercept, supportLevel, resistanceLevel };
+}
+
 function rsi(values: number[], period: number = 14): number {
   if (values.length < period + 1) return 50;
   const diffs: number[] = [];
@@ -406,12 +427,14 @@ function stochRsi(values: number[], period: number = 14, k: number = 3, d: numbe
 }
 
 function adx(candles: Candle[], period: number = 14): number {
-  if (candles.length < period + 1) return 0;
+  // Canonical Wilder's ADX (TradingView parity)
+  if (candles.length < period * 2) return 0;
 
   const highs = candles.map(c => c.high);
   const lows = candles.map(c => c.low);
   const closes = candles.map(c => c.close);
 
+  // Step 1: Calculate True Range
   const trueRanges: number[] = [];
   for (let i = 1; i < candles.length; i++) {
     const tr = Math.max(
@@ -422,14 +445,14 @@ function adx(candles: Candle[], period: number = 14): number {
     trueRanges.push(tr);
   }
 
+  // Step 2: Calculate Directional Movements
   const plusDMs: number[] = [];
   const minusDMs: number[] = [];
   for (let i = 1; i < candles.length; i++) {
     const upMove = highs[i] - highs[i - 1];
     const downMove = lows[i - 1] - lows[i];
 
-    let plusDM = 0,
-      minusDM = 0;
+    let plusDM = 0, minusDM = 0;
     if (upMove > downMove && upMove > 0) plusDM = upMove;
     if (downMove > upMove && downMove > 0) minusDM = downMove;
 
@@ -437,23 +460,48 @@ function adx(candles: Candle[], period: number = 14): number {
     minusDMs.push(minusDM);
   }
 
-  let atr = avg(trueRanges.slice(0, period));
-  let plusDI = (avg(plusDMs.slice(0, period)) / atr) * 100;
-  let minusDI = (avg(minusDMs.slice(0, period)) / atr) * 100;
+  // Step 3: Wilder's RMA (smoothing) for TR, +DM, -DM
+  const wildersRma = (values: number[], lookback: number): number[] => {
+    if (values.length < lookback) return [];
+    const result: number[] = [];
+    let sum = values.slice(0, lookback).reduce((a, b) => a + b, 0);
+    result.push(sum / lookback);
 
-  const adxValues: number[] = [];
-  let adxValue = Math.abs(plusDI - minusDI) / (plusDI + minusDI + 0.001) * 100;
-  adxValues.push(adxValue);
+    for (let i = lookback; i < values.length; i++) {
+      sum = result[result.length - 1] * lookback - result[result.length - 1] + values[i];
+      result.push(sum / lookback);
+    }
+    return result;
+  };
 
-  for (let i = period; i < trueRanges.length; i++) {
-    atr = (atr * period + trueRanges[i]) / (period + 1);
-    plusDI = (avg(plusDMs.slice(Math.max(0, i - period + 1), i + 1)) / atr) * 100;
-    minusDI = (avg(minusDMs.slice(Math.max(0, i - period + 1), i + 1)) / atr) * 100;
-    adxValue = (adxValue * period + (Math.abs(plusDI - minusDI) / (plusDI + minusDI + 0.001) * 100)) / (period + 1);
-    adxValues.push(adxValue);
+  const atrRma = wildersRma(trueRanges, period);
+  const plusDmRma = wildersRma(plusDMs, period);
+  const minusDmRma = wildersRma(minusDMs, period);
+
+  if (atrRma.length < 1) return 0;
+
+  // Step 4: Calculate DI+ and DI-
+  const diPlusArray: number[] = [];
+  const diMinusArray: number[] = [];
+  for (let i = 0; i < atrRma.length; i++) {
+    const atr = atrRma[i];
+    diPlusArray.push((plusDmRma[i] / atr) * 100);
+    diMinusArray.push((minusDmRma[i] / atr) * 100);
   }
 
-  return adxValues[adxValues.length - 1] || 0;
+  // Step 5: Calculate DX and smooth with Wilder's RMA
+  const dxArray: number[] = [];
+  for (let i = 0; i < diPlusArray.length; i++) {
+    const diPlus = diPlusArray[i];
+    const diMinus = diMinusArray[i];
+    const di = diPlus + diMinus;
+    const dx = di === 0 ? 0 : (Math.abs(diPlus - diMinus) / di) * 100;
+    dxArray.push(dx);
+  }
+
+  // Step 6: ADX is Wilder's RMA of DX
+  const adxRma = wildersRma(dxArray, period);
+  return adxRma[adxRma.length - 1] || 0;
 }
 
 // ─── CANDLE AGGREGATION ───
@@ -485,6 +533,9 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
 
 // ─── PAIR CONFIG ───
 
+// Minimum Risk:Reward ratio — reject all trades that don't meet this
+const MIN_RR = 1.5;
+
 const PAIR_CONFIGS: Record<string, PairConfig> = {
   default: { minADX: 20, momentumThreshold: 55, volumeMultiplier: 1.3, stopLossPct: 0.025, takeProfitPct: 0.035, maxEntryDriftPct: 0.01 },
   BTC: { minADX: 20, momentumThreshold: 55, volumeMultiplier: 1.3, stopLossPct: 0.02, takeProfitPct: 0.03, maxEntryDriftPct: 0.01 },
@@ -507,12 +558,25 @@ function checkExhaustion(
   stoch4h: { k: number; d: number },
   tradeDirection: "LONG" | "SHORT"
 ): { isExhausted: boolean; reason: string; confidencePenalty: number } {
+  // Hard blocker for dangerous reversals (not just penalty)
   if (tradeDirection === "LONG") {
-    if (stoch4h.k > 90) return { isExhausted: true, reason: `4H extreme overbought K${stoch4h.k}`, confidencePenalty: -20 };
-    if (stoch4h.k > 80 && stoch4h.k < stoch4h.d) return { isExhausted: true, reason: `4H overbought exhaustion K${stoch4h.k} < D${stoch4h.d}`, confidencePenalty: -15 };
+    // Extreme overbought — no reversal needed
+    if (stoch4h.k > 90) {
+      return { isExhausted: true, reason: `BLOCK: 4H extreme overbought K${stoch4h.k} — buyers exhausted`, confidencePenalty: -50 };
+    }
+    // Reversal risk: overbought AND K crosses below D = buyers losing control
+    if (stoch4h.k > 80 && stoch4h.k < stoch4h.d) {
+      return { isExhausted: true, reason: `BLOCK: 4H overbought reversal K${stoch4h.k}<D${stoch4h.d} — momentum rolling over`, confidencePenalty: -40 };
+    }
   } else {
-    if (stoch4h.k < 10) return { isExhausted: true, reason: `4H extreme oversold K${stoch4h.k}`, confidencePenalty: -20 };
-    if (stoch4h.k < 20 && stoch4h.k > stoch4h.d) return { isExhausted: true, reason: `4H oversold exhaustion K${stoch4h.k} > D${stoch4h.d}`, confidencePenalty: -15 };
+    // Extreme oversold — no reversal needed
+    if (stoch4h.k < 10) {
+      return { isExhausted: true, reason: `BLOCK: 4H extreme oversold K${stoch4h.k} — sellers exhausted`, confidencePenalty: -50 };
+    }
+    // Reversal risk: oversold AND K crosses above D = sellers losing control
+    if (stoch4h.k < 20 && stoch4h.k > stoch4h.d) {
+      return { isExhausted: true, reason: `BLOCK: 4H oversold reversal K${stoch4h.k}>D${stoch4h.d} — momentum rolling over`, confidencePenalty: -40 };
+    }
   }
   return { isExhausted: false, reason: "", confidencePenalty: 0 };
 }
@@ -525,11 +589,13 @@ function getExhaustionWarning(
   const crossUp = stochPrev1h.k <= stochPrev1h.d && stoch1h.k > stoch1h.d;
   const crossDown = stochPrev1h.k >= stochPrev1h.d && stoch1h.k < stoch1h.d;
 
-  if (direction === "SHORT" && crossDown && stoch1h.k < 20) {
-    return "SHORT momentum exhaustion risk — StochRSI recovering from oversold";
+  // LONG exhaustion: K crosses BELOW D while still overbought = buyers losing control
+  if (direction === "LONG" && crossDown && stoch1h.k > 80) {
+    return "⚠️ LONG exhaustion risk — StochRSI rolling over from overbought";
   }
-  if (direction === "LONG" && crossUp && stoch1h.k > 80) {
-    return "LONG momentum exhaustion risk — StochRSI rolling from overbought";
+  // SHORT exhaustion: K crosses ABOVE D while still oversold = sellers losing control
+  if (direction === "SHORT" && crossUp && stoch1h.k < 20) {
+    return "⚠️ SHORT exhaustion risk — StochRSI rolling over from oversold";
   }
   return "";
 }
@@ -623,8 +689,8 @@ function scorePullbackEntry(
   if (!direction) return null;
   if (direction !== regimeDirection) return null;
 
-  let regimeAlignment = 30;
-  reasons.push("regime_alignment:+30");
+  let regimeAlignment = 25;
+  reasons.push("regime_alignment:+25");
   let setupQuality = 0, momentum = 0, structure = 0, volumeScore = 0;
 
   if (config.isHYPE) {
@@ -672,6 +738,18 @@ function scorePullbackEntry(
   else if (adx1h > config.minADX) { structure += 10; reasons.push(`adx_ok_${adx1h.toFixed(1)}:+10`); }
   else if (adx1h > 10) { structure += 5; reasons.push(`adx_weak_${adx1h.toFixed(1)}:+5`); }
   else { structure -= 10; reasons.push(`adx_too_weak_${adx1h.toFixed(1)}:-10`); }
+
+  // Trendline structure: entries near support/resistance get bonus
+  const trendline = linearRegression(closes, 50);
+  const currentPrice = closes[closes.length - 1];
+  const distToSupport = Math.abs(currentPrice - trendline.supportLevel) / currentPrice;
+  const distToResistance = Math.abs(currentPrice - trendline.resistanceLevel) / currentPrice;
+  
+  if (direction === "LONG" && distToSupport < 0.01) { 
+    structure += 10; reasons.push("trendline_support_bounce:+10"); 
+  } else if (direction === "SHORT" && distToResistance < 0.01) { 
+    structure += 10; reasons.push("trendline_resistance_bounce:+10"); 
+  }
 
   const avgVol = avg(volumes.slice(-10));
   const lastVol = volumes[volumes.length - 1];
@@ -755,8 +833,8 @@ function scoreRejectionEntry(
   if (direction === "LONG" && !cross15mUp) return null;
   if (direction === "SHORT" && !cross15mDown) return null;
 
-  let regimeAlignment = 30;
-  reasons.push("regime_alignment:+30");
+  let regimeAlignment = 25;
+  reasons.push("regime_alignment:+25");
   let setupQuality = 0, momentum = 0, structure = 0, volumeScore = 0;
 
   if (direction === "LONG") {
@@ -900,8 +978,8 @@ function scoreBreakoutEntry(
   if (direction === "LONG" && stoch15m.k < 30) return null;
   if (direction === "SHORT" && stoch15m.k > 70) return null;
 
-  let regimeAlignment = 30;
-  reasons.push("regime_alignment:+30");
+  let regimeAlignment = 25;
+  reasons.push("regime_alignment:+25");
   let setupQuality = 0, momentum = 0, structure = 0, volumeScore = 0;
 
   const lookback = 12;
@@ -910,21 +988,34 @@ function scoreBreakoutEntry(
   const currentPrice = closes1h[closes1h.length - 1];
   const prevPrice = closes1h[closes1h.length - 2];
 
+  // Candle body quality check: close must be within top 40% of range to eliminate wick fakes
   if (direction === "LONG") {
-    if (currentPrice > recentHigh && prevPrice <= recentHigh) {
-      setupQuality += 20; reasons.push("high_breakout:+20");
+    const candleRange = candles1h[candles1h.length - 1].high - candles1h[candles1h.length - 1].low;
+    const closeToHighDistance = candles1h[candles1h.length - 1].high - currentPrice;
+    const closeQuality = candleRange > 0 ? 1 - (closeToHighDistance / candleRange) : 0;
+
+    if (currentPrice > recentHigh && prevPrice <= recentHigh && closeQuality > 0.4) {
+      setupQuality += 25; reasons.push("quality_high_breakout:+25");
+    } else if (currentPrice > recentHigh && closeQuality > 0.4) {
+      setupQuality += 15; reasons.push("quality_breakout:+15");
     } else if (currentPrice > recentHigh * 0.995) {
-      setupQuality += 10; reasons.push("near_high_breakout:+10");
+      setupQuality += 8; reasons.push("near_high:+8");
     } else {
-      setupQuality -= 10; reasons.push("no_breakout:-10");
+      setupQuality -= 15; reasons.push("low_quality_breakout:-15");
     }
   } else {
-    if (currentPrice < recentLow && prevPrice >= recentLow) {
-      setupQuality += 20; reasons.push("low_breakout:+20");
+    const candleRange = candles1h[candles1h.length - 1].high - candles1h[candles1h.length - 1].low;
+    const closeLowDistance = currentPrice - candles1h[candles1h.length - 1].low;
+    const closeQuality = candleRange > 0 ? 1 - (closeLowDistance / candleRange) : 0;
+
+    if (currentPrice < recentLow && prevPrice >= recentLow && closeQuality > 0.4) {
+      setupQuality += 25; reasons.push("quality_low_breakout:+25");
+    } else if (currentPrice < recentLow && closeQuality > 0.4) {
+      setupQuality += 15; reasons.push("quality_breakout:+15");
     } else if (currentPrice < recentLow * 1.005) {
-      setupQuality += 10; reasons.push("near_low_breakout:+10");
+      setupQuality += 8; reasons.push("near_low:+8");
     } else {
-      setupQuality -= 10; reasons.push("no_breakout:-10");
+      setupQuality -= 15; reasons.push("low_quality_breakout:-15");
     }
   }
 
@@ -1242,6 +1333,19 @@ export async function generateSignal(
   const tp = candidate.direction === "LONG" ? entry * (1 + config.takeProfitPct) : entry * (1 - config.takeProfitPct);
   const rr = Math.abs(tp - entry) / Math.abs(entry - sl);
   debug.push(`R:R ${rr.toFixed(2)} (${(config.stopLossPct * 100).toFixed(0)}% SL / ${(config.takeProfitPct * 100).toFixed(0)}% TP)`);
+
+  // REJECTION: R:R discipline — reject trades that violate minimum risk:reward
+  if (rr < MIN_RR) {
+    debug.push(`REJECTED: R:R ${rr.toFixed(2)} < MIN_RR ${MIN_RR} — insufficient reward vs risk`);
+    const market: MarketData = {
+      pair, price: Math.round(price * 100) / 100, timestamp: now,
+      phase: "WATCHING", trend: `${regime.direction} ${regime.strength}`,
+      htfBias: regime.direction === "LONG" ? "BULLISH" : "BEARISH", regime,
+      adx: Math.round(adx4h * 10) / 10, rsi: Math.round(rsi(candles4h.map(c => c.close)) * 10) / 10,
+      stochK: stoch4h.k, stochD: stoch4h.d, stoch1hK: stoch1h.k, stoch1hD: stoch1h.d,
+    };
+    return { market, debug };
+  }
 
   const exhaustionNote = candidate.exhaustionWarning ? ` | WARNING: ${candidate.exhaustionWarning}` : "";
 
