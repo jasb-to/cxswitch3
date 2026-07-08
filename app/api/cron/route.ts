@@ -434,3 +434,4 @@ export async function GET(request: Request) {
 
   await persistLog(runId, logs, "success");
   return NextResponse.json(response);
+}
