@@ -1,41 +1,141 @@
-// lib/strategy.ts — v29.1 "Trendline Break: StochRSI Timing + Position Build"
+// lib/strategy-consolidated.ts — v29.1 FULL SELF-CONTAINED
 // ============================================================
-// CORE PHILOSOPHY:
-// Higher timeframe regime controls direction.
-// Entries only happen with regime alignment.
-// No repainting. No future candle leakage.
-// Stateful logic remains stateful.
-//
-// TIMEFRAMES:
-// - 1D = macro regime
-// - 4H = confirmation + exhaustion filter
-// - 1H = entries
-// - 15m = timing confirmation
-//
-// ENTRY MODES:
-// MODE A — PULLBACK: StochRSI cross timing, regime alignment, deep entries
-// MODE B — REJECTION: Pullback level + S/R reaction + wick rejection + 15m confirm
-// MODE C — BREAKOUT: ADX > 25 + recent high/low breakout + volume expansion + 15m momentum
-//
-// Every rejected signal is logged with full breakdown.
+// This file contains ALL strategy logic, indicators, types, and regime management
+// in a single consolidated file. Copy this entire file to replace your lib/strategy.ts
 // ============================================================
 
-import { Candle, Signal, MarketData, SignalResult, PairConfig, TradeManagerUpdate, ValidityCheck, HoldResult, ExitRecord, RejectionLog } from "@/lib/types";
-import { getRegime, setRegimePersistence, persistRegime, getRegimeSync } from "@/lib/regime/persistence";
-import { evaluateRegime, shouldInvalidateRegime } from "@/lib/regime/engine";
-import { stochRsi } from "@/lib/indicators/stochrsi";
-import { adx } from "@/lib/indicators/adx";
-import { rsi } from "@/lib/indicators/rsi";
+// ─── ALL TYPES (from @/lib/types) ───
 
-export * from "@/lib/types";
-export { setRegimePersistence, evaluateRegime, shouldInvalidateRegime } from "@/lib/regime/engine";
-export { setRegimePersistence as setRegimePersistenceHook, getRegimeSync } from "@/lib/regime/persistence";
+export interface Candle {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
 
-export const CURRENT_SIGNAL_VERSION = 29;
+export interface Signal {
+  id: string;
+  pair: string;
+  direction: "LONG" | "SHORT";
+  type: "ENTRY" | "EXIT" | "SCALE_IN" | "SCALE_OUT";
+  scale?: string;
+  entry: number;
+  stop: number;
+  target: number;
+  confidence: number;
+  rr: number;
+  adx?: number;
+  rsi?: number;
+  stochK?: number;
+  stochD?: number;
+  stoch1hK?: number;
+  stoch1hD?: number;
+  expectedMove?: number;
+  reason?: string;
+  timestamp: number;
+  version: number;
+  tradeState?: "OPEN" | "BREAK_EVEN" | "LOCKED" | "RUNNER" | "EXITED";
+  exited?: boolean;
+  lockedStop?: number | null;
+  highestPrice?: number;
+  lowestPrice?: number;
+  profitLockActive?: boolean;
+  regimeDirection?: "LONG" | "SHORT" | "NEUTRAL" | null;
+  regimeSince?: number;
+  entryMode?: "PULLBACK" | "REJECTION" | "BREAKOUT";
+  confidenceComponents?: ConfidenceComponents;
+  exhaustionWarning?: string;
+}
 
-// ─── Types needed locally ───
+export interface MarketData {
+  pair: string;
+  price: number;
+  timestamp: number;
+  phase?: string;
+  trend?: string;
+  htfBias?: "BULLISH" | "BEARISH" | "MIXED";
+  regime?: MarketRegime;
+  adx?: number;
+  rsi?: number;
+  stochK?: number;
+  stochD?: number;
+  stoch1hK?: number;
+  stoch1hD?: number;
+}
 
-interface MarketRegime {
+export interface SignalResult {
+  signal?: Signal;
+  market?: MarketData;
+  debug?: string[];
+}
+
+export interface PairConfig {
+  minADX: number;
+  momentumThreshold: number;
+  volumeMultiplier: number;
+  stopLossPct: number;
+  takeProfitPct: number;
+  maxEntryDriftPct: number;
+  isHYPE?: boolean;
+  deepCrossThresholdLong?: number;
+  deepCrossThresholdShort?: number;
+  maxRecentVolatility?: number;
+  bePct?: number;
+  lockPct?: number;
+  runnerPct?: number;
+}
+
+export interface TradeManagerUpdate {
+  signalId: string;
+  newState: "OPEN" | "BREAK_EVEN" | "LOCKED" | "RUNNER" | "EXITED";
+  lockedStop: number;
+  profitLockActive: boolean;
+  highestPrice: number;
+  lowestPrice: number;
+  exitTriggered: boolean;
+  exitReason?: string;
+}
+
+export interface ValidityCheck {
+  valid: boolean;
+  reason: string;
+  exited: boolean;
+}
+
+export interface HoldResult {
+  shouldHold: boolean;
+  reason: string;
+  managedStop?: number;
+}
+
+export interface ExitRecord {
+  signalId: string;
+  pair: string;
+  direction: "LONG" | "SHORT";
+  exitTimestamp: number;
+  exitReason: string;
+  exitPrice: number;
+}
+
+export interface RejectionLog {
+  pair: string;
+  timestamp: number;
+  crossDetected: boolean;
+  crossDirection: "LONG" | "SHORT" | null;
+  regimeDirection: "LONG" | "SHORT" | "NEUTRAL" | null;
+  regimeStrength: string;
+  confidenceScore: number;
+  confidenceBreakdown: Record<string, number>;
+  rejectionReason: string;
+  stochK: number;
+  stochD: number;
+  stochPrevK: number;
+  stochPrevD: number;
+}
+
+export interface MarketRegime {
   direction: "LONG" | "SHORT" | "NEUTRAL" | null;
   strength: string;
   confidence: number;
@@ -43,23 +143,7 @@ interface MarketRegime {
   detectedAt: number;
 }
 
-interface EntryCandidate {
-  direction: "LONG" | "SHORT";
-  strength: number;
-  finalConfidence: number;
-  reasons: string[];
-  confidenceComponents: ConfidenceComponents;
-  stochK: number;
-  stochD: number;
-  stochPrevK: number;
-  stochPrevD: number;
-  entryPrice: number;
-  confidencePenalty: number;
-  exhaustionWarning: string;
-  entryMode: "PULLBACK" | "REJECTION" | "BREAKOUT";
-}
-
-interface ConfidenceComponents {
+export interface ConfidenceComponents {
   regimeAlignment: number;
   setupQuality: number;
   momentum: number;
@@ -69,54 +153,180 @@ interface ConfidenceComponents {
   total: number;
 }
 
-// ─── Pair Config (unchanged from v28) ───
+// ─── REGIME PERSISTENCE & CACHE ───
 
-const PAIR_CONFIGS: Record<string, PairConfig> = {
-  default: { minADX: 20, momentumThreshold: 55, volumeMultiplier: 1.3, stopLossPct: 0.025, takeProfitPct: 0.035, maxEntryDriftPct: 0.01 },
-  BTC: { minADX: 20, momentumThreshold: 55, volumeMultiplier: 1.3, stopLossPct: 0.02, takeProfitPct: 0.03, maxEntryDriftPct: 0.01 },
-  ETH: { minADX: 20, momentumThreshold: 55, volumeMultiplier: 1.3, stopLossPct: 0.025, takeProfitPct: 0.035, maxEntryDriftPct: 0.01 },
-  SOL: { minADX: 18, momentumThreshold: 50, volumeMultiplier: 1.4, stopLossPct: 0.03, takeProfitPct: 0.04, maxEntryDriftPct: 0.012 },
-  HYPE: {
-    minADX: 20, momentumThreshold: 60, volumeMultiplier: 1.5, stopLossPct: 0.06, takeProfitPct: 0.05, maxEntryDriftPct: 0.02,
-    isHYPE: true, deepCrossThresholdLong: 25, deepCrossThresholdShort: 75, maxRecentVolatility: 0.08,
-    bePct: 0.02, lockPct: 0.025, runnerPct: 0.04,
-  },
-};
-
-export function getPairConfig(pair: string): PairConfig {
-  return PAIR_CONFIGS[pair] || PAIR_CONFIGS.default;
+interface RegimeCache {
+  regime: MarketRegime;
+  timestamp: number;
+  pairKey: string;
 }
 
-// ─── Candle Aggregation ───
+const regimeCache = new Map<string, RegimeCache>();
+const REGIME_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
-function aggregateTo1D(candles4h: Candle[]): Candle[] {
-  if (!candles4h || candles4h.length < 6) return [];
-  const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
-  const groups: Map<string, Candle[]> = new Map();
-  for (const c of sorted) {
-    const d = new Date(c.timestamp);
-    const key = d.toISOString().split("T")[0];
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(c);
+let persistRegimeFn: ((pair: string, regime: MarketRegime) => Promise<void>) | null = null;
+let loadRegimeFn: ((pair: string) => Promise<MarketRegime | null>) | null = null;
+
+export function setRegimePersistence(
+  persist: (pair: string, regime: MarketRegime) => Promise<void>,
+  load: (pair: string) => Promise<MarketRegime | null>
+): void {
+  persistRegimeFn = persist;
+  loadRegimeFn = load;
+}
+
+async function getRegime(pair: string, candles1d: Candle[], candles4h: Candle[]): Promise<MarketRegime> {
+  const cacheKey = pair;
+  const cached = regimeCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < REGIME_CACHE_TTL_MS) {
+    return cached.regime;
   }
-  const daily: Candle[] = [];
-  for (const [, bars] of groups) {
-    if (!bars.length) continue;
-    daily.push({
-      timestamp: bars[0].timestamp,
-      open: bars[0].open,
-      high: Math.max(...bars.map(b => b.high)),
-      low: Math.min(...bars.map(b => b.low)),
-      close: bars[bars.length - 1].close,
-      volume: bars.reduce((s, b) => s + b.volume, 0)
-    });
+
+  let regime = await evaluateRegime(pair, candles1d, candles4h);
+
+  if (persistRegimeFn) {
+    try {
+      await persistRegimeFn(pair, regime);
+    } catch (e) {
+      console.error("[REGIME PERSIST] Failed:", e);
+    }
   }
-  return daily.sort((a, b) => a.timestamp - b.timestamp);
+
+  regimeCache.set(cacheKey, { regime, timestamp: Date.now(), pairKey: pair });
+  return regime;
 }
 
-function avg(arr: number[]): number {
-  return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+export function getRegimeSync(pair: string): MarketRegime | null {
+  const cached = regimeCache.get(pair);
+  return cached ? cached.regime : null;
 }
+
+export async function persistRegime(pair: string, regime: MarketRegime): Promise<void> {
+  if (persistRegimeFn) {
+    try {
+      await persistRegimeFn(pair, regime);
+    } catch (e) {
+      console.error("[REGIME PERSIST DIRECT] Failed:", e);
+    }
+  }
+}
+
+// ─── REGIME EVALUATION ENGINE ───
+
+async function evaluateRegime(pair: string, candles1d: Candle[], candles4h: Candle[]): Promise<MarketRegime> {
+  const reasons: string[] = [];
+  const detectedAt = Date.now();
+
+  if (candles1d.length < 25 || candles4h.length < 30) {
+    return { direction: null, strength: "INSUFFICIENT_DATA", confidence: 0, reason: ["not_enough_candles"], detectedAt };
+  }
+
+  const closes1d = candles1d.map(c => c.close);
+  const closes4h = candles4h.map(c => c.close);
+
+  // EMA structure
+  const ema21_1d = ema(closes1d, 21);
+  const ema50_1d = ema(closes1d, 50);
+  const ema200_1d = ema(closes1d, 200);
+  const ema21_4h = ema(closes4h, 21);
+  const ema50_4h = ema(closes4h, 50);
+
+  let regimeScore = 0;
+  let direction: "LONG" | "SHORT" | "NEUTRAL" | null = null;
+
+  // 1D structure alignment
+  if (ema21_1d.length > 0 && ema50_1d.length > 0 && ema200_1d.length > 0) {
+    const e21 = ema21_1d[ema21_1d.length - 1];
+    const e50 = ema50_1d[ema50_1d.length - 1];
+    const e200 = ema200_1d[ema200_1d.length - 1];
+
+    if (e21 > e50 && e50 > e200) {
+      regimeScore += 40;
+      direction = "LONG";
+      reasons.push("1D_bullish_stack");
+    } else if (e21 < e50 && e50 < e200) {
+      regimeScore -= 40;
+      direction = "SHORT";
+      reasons.push("1D_bearish_stack");
+    } else if (e21 > e50) {
+      regimeScore += 15;
+      reasons.push("1D_bullish_lean");
+    } else if (e21 < e50) {
+      regimeScore -= 15;
+      reasons.push("1D_bearish_lean");
+    }
+  }
+
+  // 4H confirmation
+  if (ema21_4h.length > 0 && ema50_4h.length > 0) {
+    const e21 = ema21_4h[ema21_4h.length - 1];
+    const e50 = ema50_4h[ema50_4h.length - 1];
+
+    if (direction === "LONG" && e21 > e50) {
+      regimeScore += 20;
+      reasons.push("4H_confirms_bull");
+    } else if (direction === "SHORT" && e21 < e50) {
+      regimeScore += 20;
+      reasons.push("4H_confirms_bear");
+    } else if (e21 > e50) {
+      regimeScore += 10;
+      reasons.push("4H_bullish");
+    } else if (e21 < e50) {
+      regimeScore -= 10;
+      reasons.push("4H_bearish");
+    }
+  }
+
+  // RSI structure
+  const rsi1d = rsi(closes1d);
+  const rsi4h = rsi(closes4h);
+  if (rsi1d > 60) {
+    regimeScore += 10;
+    reasons.push(`1D_rsi_strong_${rsi1d.toFixed(0)}`);
+  } else if (rsi1d < 40) {
+    regimeScore -= 10;
+    reasons.push(`1D_rsi_weak_${rsi1d.toFixed(0)}`);
+  }
+
+  // ADX confirmation
+  const adx1d = adx(candles1d);
+  const adx4h = adx(candles4h);
+  if (adx1d > 25) {
+    regimeScore += 15;
+    reasons.push(`1D_adx_strong_${adx1d.toFixed(1)}`);
+  } else if (adx1d < 20) {
+    regimeScore -= 10;
+    reasons.push(`1D_adx_weak_${adx1d.toFixed(1)}`);
+  }
+
+  if (adx4h > 30) {
+    regimeScore += 10;
+    reasons.push(`4H_adx_trending_${adx4h.toFixed(1)}`);
+  }
+
+  let strength = "NEUTRAL";
+  if (Math.abs(regimeScore) > 50) strength = "STRONG";
+  else if (Math.abs(regimeScore) > 30) strength = "MODERATE";
+  else if (Math.abs(regimeScore) > 10) strength = "WEAK";
+
+  if (Math.abs(regimeScore) < 10) {
+    direction = "NEUTRAL";
+    strength = "NEUTRAL";
+    reasons.push("score_neutral");
+  }
+
+  const confidence = Math.min(100, Math.max(0, Math.abs(regimeScore)));
+
+  return { direction, strength, confidence, reason: reasons, detectedAt };
+}
+
+export function shouldInvalidateRegime(regime: MarketRegime): boolean {
+  if (!regime) return false;
+  const age = Date.now() - regime.detectedAt;
+  return age > REGIME_CACHE_TTL_MS;
+}
+
+// ─── INDICATOR FUNCTIONS (all indicators self-contained) ───
 
 function sma(values: number[], period: number): number[] {
   if (values.length < period) return [];
@@ -151,7 +361,147 @@ function lowest(values: number[], period: number): number {
   return Math.min(...values.slice(-period));
 }
 
-// ─── Exhaustion Check (soft modifier, not a gate) ───
+function avg(arr: number[]): number {
+  return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+}
+
+function rsi(values: number[], period: number = 14): number {
+  if (values.length < period + 1) return 50;
+  const diffs: number[] = [];
+  for (let i = 1; i < values.length; i++) {
+    diffs.push(values[i] - values[i - 1]);
+  }
+  const gains = diffs.filter(d => d > 0);
+  const losses = diffs.filter(d => d < 0).map(d => Math.abs(d));
+  const avgGain = avg(gains.slice(-period));
+  const avgLoss = avg(losses.slice(-period));
+  if (avgLoss === 0) return avgGain > 0 ? 100 : 50;
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
+}
+
+function stochRsi(values: number[], period: number = 14, k: number = 3, d: number = 3): { k: number; d: number } {
+  const rsiValues: number[] = [];
+  for (let i = period; i < values.length; i++) {
+    rsiValues.push(rsi(values.slice(0, i + 1), period));
+  }
+  if (rsiValues.length < k) return { k: 50, d: 50 };
+
+  const stochKValues: number[] = [];
+  for (let i = k - 1; i < rsiValues.length; i++) {
+    const slice = rsiValues.slice(i - k + 1, i + 1);
+    const highest = Math.max(...slice);
+    const lowest = Math.min(...slice);
+    const stochK = lowest === highest ? 50 : ((rsiValues[i] - lowest) / (highest - lowest)) * 100;
+    stochKValues.push(stochK);
+  }
+
+  if (stochKValues.length < d) return { k: stochKValues[stochKValues.length - 1] || 50, d: 50 };
+
+  const dValues = stochKValues.slice(-d);
+  const stochD = avg(dValues);
+  const stochK = stochKValues[stochKValues.length - 1];
+
+  return { k: stochK, d: stochD };
+}
+
+function adx(candles: Candle[], period: number = 14): number {
+  if (candles.length < period + 1) return 0;
+
+  const highs = candles.map(c => c.high);
+  const lows = candles.map(c => c.low);
+  const closes = candles.map(c => c.close);
+
+  const trueRanges: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const tr = Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i - 1]),
+      Math.abs(lows[i] - closes[i - 1])
+    );
+    trueRanges.push(tr);
+  }
+
+  const plusDMs: number[] = [];
+  const minusDMs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const upMove = highs[i] - highs[i - 1];
+    const downMove = lows[i - 1] - lows[i];
+
+    let plusDM = 0,
+      minusDM = 0;
+    if (upMove > downMove && upMove > 0) plusDM = upMove;
+    if (downMove > upMove && downMove > 0) minusDM = downMove;
+
+    plusDMs.push(plusDM);
+    minusDMs.push(minusDM);
+  }
+
+  let atr = avg(trueRanges.slice(0, period));
+  let plusDI = (avg(plusDMs.slice(0, period)) / atr) * 100;
+  let minusDI = (avg(minusDMs.slice(0, period)) / atr) * 100;
+
+  const adxValues: number[] = [];
+  let adxValue = Math.abs(plusDI - minusDI) / (plusDI + minusDI + 0.001) * 100;
+  adxValues.push(adxValue);
+
+  for (let i = period; i < trueRanges.length; i++) {
+    atr = (atr * period + trueRanges[i]) / (period + 1);
+    plusDI = (avg(plusDMs.slice(Math.max(0, i - period + 1), i + 1)) / atr) * 100;
+    minusDI = (avg(minusDMs.slice(Math.max(0, i - period + 1), i + 1)) / atr) * 100;
+    adxValue = (adxValue * period + (Math.abs(plusDI - minusDI) / (plusDI + minusDI + 0.001) * 100)) / (period + 1);
+    adxValues.push(adxValue);
+  }
+
+  return adxValues[adxValues.length - 1] || 0;
+}
+
+// ─── CANDLE AGGREGATION ───
+
+function aggregateTo1D(candles4h: Candle[]): Candle[] {
+  if (!candles4h || candles4h.length < 6) return [];
+  const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
+  const groups: Map<string, Candle[]> = new Map();
+  for (const c of sorted) {
+    const d = new Date(c.timestamp);
+    const key = d.toISOString().split("T")[0];
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(c);
+  }
+  const daily: Candle[] = [];
+  for (const [, bars] of groups) {
+    if (!bars.length) continue;
+    daily.push({
+      timestamp: bars[0].timestamp,
+      open: bars[0].open,
+      high: Math.max(...bars.map(b => b.high)),
+      low: Math.min(...bars.map(b => b.low)),
+      close: bars[bars.length - 1].close,
+      volume: bars.reduce((s, b) => s + b.volume, 0)
+    });
+  }
+  return daily.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+// ─── PAIR CONFIG ───
+
+const PAIR_CONFIGS: Record<string, PairConfig> = {
+  default: { minADX: 20, momentumThreshold: 55, volumeMultiplier: 1.3, stopLossPct: 0.025, takeProfitPct: 0.035, maxEntryDriftPct: 0.01 },
+  BTC: { minADX: 20, momentumThreshold: 55, volumeMultiplier: 1.3, stopLossPct: 0.02, takeProfitPct: 0.03, maxEntryDriftPct: 0.01 },
+  ETH: { minADX: 20, momentumThreshold: 55, volumeMultiplier: 1.3, stopLossPct: 0.025, takeProfitPct: 0.035, maxEntryDriftPct: 0.01 },
+  SOL: { minADX: 18, momentumThreshold: 50, volumeMultiplier: 1.4, stopLossPct: 0.03, takeProfitPct: 0.04, maxEntryDriftPct: 0.012 },
+  HYPE: {
+    minADX: 20, momentumThreshold: 60, volumeMultiplier: 1.5, stopLossPct: 0.06, takeProfitPct: 0.05, maxEntryDriftPct: 0.02,
+    isHYPE: true, deepCrossThresholdLong: 25, deepCrossThresholdShort: 75, maxRecentVolatility: 0.08,
+    bePct: 0.02, lockPct: 0.025, runnerPct: 0.04,
+  },
+};
+
+export function getPairConfig(pair: string): PairConfig {
+  return PAIR_CONFIGS[pair] || PAIR_CONFIGS.default;
+}
+
+// ─── EXHAUSTION CHECK ───
 
 function checkExhaustion(
   stoch4h: { k: number; d: number },
@@ -166,8 +516,6 @@ function checkExhaustion(
   }
   return { isExhausted: false, reason: "", confidencePenalty: 0 };
 }
-
-// ─── UI Exhaustion Warnings (direction-preserving, non-blocking) ───
 
 function getExhaustionWarning(
   stoch1h: { k: number; d: number },
@@ -210,7 +558,23 @@ export function clearRejectionLogs(): void {
   rejectionLogs.length = 0;
 }
 
-// ─── Confidence Engine ───
+// ─── CONFIDENCE ENGINE ───
+
+interface EntryCandidate {
+  direction: "LONG" | "SHORT";
+  strength: number;
+  finalConfidence: number;
+  reasons: string[];
+  confidenceComponents: ConfidenceComponents;
+  stochK: number;
+  stochD: number;
+  stochPrevK: number;
+  stochPrevD: number;
+  entryPrice: number;
+  confidencePenalty: number;
+  exhaustionWarning: string;
+  entryMode: "PULLBACK" | "REJECTION" | "BREAKOUT";
+}
 
 function buildEntryComponents(
   regimeAlignment: number,
@@ -233,9 +597,6 @@ function buildEntryComponents(
 }
 
 // ─── MODE A: PULLBACK ENTRY ───
-// 1H StochRSI K/D crossover on CURRENT confirmed candle = THE trigger.
-// Previous candle: K <= D (LONG) or K >= D (SHORT)
-// Current candle: K > D (LONG) or K < D (SHORT)
 
 function scorePullbackEntry(
   candles1h: Candle[],
@@ -249,7 +610,6 @@ function scorePullbackEntry(
   const volumes = candles1h.map(c => c.volume);
   if (closes.length < 50) return null;
 
-  // CORE TRIGGER: CONFIRMED 1H StochRSI K/D crossover
   const stoch = stochRsi(closes);
   const stochPrev = stochRsi(closes.slice(0, -1));
 
@@ -263,10 +623,10 @@ function scorePullbackEntry(
   if (!direction) return null;
   if (direction !== regimeDirection) return null;
 
-  let regimeAlignment = 30; reasons.push("regime_alignment:+30");
+  let regimeAlignment = 30;
+  reasons.push("regime_alignment:+30");
   let setupQuality = 0, momentum = 0, structure = 0, volumeScore = 0;
 
-  // Setup quality: how deep is the cross?
   if (config.isHYPE) {
     if (direction === "LONG") {
       if (stoch.k < (config.deepCrossThresholdLong || 25)) { setupQuality += 20; reasons.push("deep_cross:+20"); }
@@ -289,13 +649,11 @@ function scorePullbackEntry(
     }
   }
 
-  // Momentum: velocity of the move
   const roc = ((closes[closes.length - 1] - closes[closes.length - 4]) / closes[closes.length - 4]) * 100;
   if (Math.abs(roc) > 2.0) { momentum += 10; reasons.push("strong_velocity:+10"); }
   else if (Math.abs(roc) > 1.0) { momentum += 5; reasons.push("velocity:+5"); }
   else if (Math.abs(roc) < 0.3) { momentum -= 5; reasons.push("low_velocity:-5"); }
 
-  // 4H context = CONFIDENCE factor, NOT a gate
   const closes4h = candles4h.map(c => c.close);
   const stoch4h = stochRsi(closes4h);
   if (direction === "LONG" && stoch4h.k < 50) {
@@ -309,14 +667,12 @@ function scorePullbackEntry(
     reasons.push("4h_context_mixed:0");
   }
 
-  // Structure: ADX confirms trend strength
   const adx1h = adx(candles1h);
   if (adx1h > config.minADX + 5) { structure += 15; reasons.push(`adx_strong_${adx1h.toFixed(1)}:+15`); }
   else if (adx1h > config.minADX) { structure += 10; reasons.push(`adx_ok_${adx1h.toFixed(1)}:+10`); }
   else if (adx1h > 10) { structure += 5; reasons.push(`adx_weak_${adx1h.toFixed(1)}:+5`); }
   else { structure -= 10; reasons.push(`adx_too_weak_${adx1h.toFixed(1)}:-10`); }
 
-  // Volume: confirms or denies
   const avgVol = avg(volumes.slice(-10));
   const lastVol = volumes[volumes.length - 1];
   const lastCandle = candles1h[candles1h.length - 1];
@@ -335,7 +691,6 @@ function scorePullbackEntry(
     volumeScore -= 10; reasons.push("volume_opposes_direction:-10");
   }
 
-  // Rejection wick penalty (pullback mode)
   const body = Math.abs(lastCandle.close - lastCandle.open);
   const upperWick = lastCandle.high - Math.max(lastCandle.open, lastCandle.close);
   const lowerWick = Math.min(lastCandle.open, lastCandle.close) - lastCandle.low;
@@ -366,7 +721,6 @@ function scorePullbackEntry(
 }
 
 // ─── MODE B: REJECTION ENTRY ───
-// Pullback level detection + S/R reaction + wick rejection + 15m StochRSI + EMA structure
 
 function scoreRejectionEntry(
   candles1h: Candle[],
@@ -381,7 +735,6 @@ function scoreRejectionEntry(
   const volumes1h = candles1h.map(c => c.volume);
   if (closes1h.length < 50 || candles15m.length < 20) return null;
 
-  // 1H StochRSI cross as base trigger (same as pullback)
   const stoch1h = stochRsi(closes1h);
   const stochPrev1h = stochRsi(closes1h.slice(0, -1));
   const crossUp = stochPrev1h.k <= stochPrev1h.d && stoch1h.k > stoch1h.d;
@@ -393,7 +746,6 @@ function scoreRejectionEntry(
 
   if (!direction || direction !== regimeDirection) return null;
 
-  // 15m StochRSI confirmation
   const closes15m = candles15m.map(c => c.close);
   const stoch15m = stochRsi(closes15m);
   const stochPrev15m = stochRsi(closes15m.slice(0, -1));
@@ -403,10 +755,10 @@ function scoreRejectionEntry(
   if (direction === "LONG" && !cross15mUp) return null;
   if (direction === "SHORT" && !cross15mDown) return null;
 
-  let regimeAlignment = 30; reasons.push("regime_alignment:+30");
+  let regimeAlignment = 30;
+  reasons.push("regime_alignment:+30");
   let setupQuality = 0, momentum = 0, structure = 0, volumeScore = 0;
 
-  // Setup quality: deep cross + 15m alignment
   if (direction === "LONG") {
     if (stoch1h.k < 35) { setupQuality += 15; reasons.push("deep_cross_1h:+15"); }
     else if (stoch1h.k < 50) { setupQuality += 5; reasons.push("moderate_cross_1h:+5"); }
@@ -419,7 +771,6 @@ function scoreRejectionEntry(
     if (stoch15m.k > 70) { setupQuality += 10; reasons.push("deep_cross_15m:+10"); }
   }
 
-  // Pullback level detection: price near recent swing
   const recentLows = candles1h.slice(-20).map(c => c.low);
   const recentHighs = candles1h.slice(-20).map(c => c.high);
   const swingLow = Math.min(...recentLows);
@@ -436,7 +787,6 @@ function scoreRejectionEntry(
     else if (distFromHigh < 0.03) { setupQuality += 5; reasons.push("pullback_zone:+5"); }
   }
 
-  // Wick rejection confirmation
   const last1h = candles1h[candles1h.length - 1];
   const body1h = Math.abs(last1h.close - last1h.open);
   const upperWick1h = last1h.high - Math.max(last1h.open, last1h.close);
@@ -453,7 +803,6 @@ function scoreRejectionEntry(
     setupQuality -= 15; reasons.push("lower_rejection_penalty:-15");
   }
 
-  // EMA21 / EMA50 structure
   const ema21 = ema(closes1h, 21);
   const ema50 = ema(closes1h, 50);
   if (ema21.length >= 2 && ema50.length >= 2) {
@@ -476,7 +825,6 @@ function scoreRejectionEntry(
     }
   }
 
-  // Momentum: 4H context
   const closes4h = candles4h.map(c => c.close);
   const stoch4h = stochRsi(closes4h);
   if (direction === "LONG" && stoch4h.k < 50) {
@@ -485,7 +833,6 @@ function scoreRejectionEntry(
     momentum += 10; reasons.push("4h_context_bearish:+10");
   }
 
-  // Volume
   const avgVol = avg(volumes1h.slice(-10));
   const lastVol = volumes1h[volumes1h.length - 1];
   if (lastVol > avgVol * config.volumeMultiplier * 1.5) {
@@ -518,7 +865,6 @@ function scoreRejectionEntry(
 }
 
 // ─── MODE C: BREAKOUT ENTRY ───
-// ADX > 25 + recent high/low breakout + volume expansion + 15m momentum + avoid exhausted
 
 function scoreBreakoutEntry(
   candles1h: Candle[],
@@ -535,11 +881,9 @@ function scoreBreakoutEntry(
   const lows1h = candles1h.map(c => c.low);
   if (closes1h.length < 50 || candles15m.length < 20 || candles4h.length < 30) return null;
 
-  // ADX > 25 gate for breakout mode
   const adx4h = adx(candles4h);
   if (adx4h <= 25) return null;
 
-  // 1H StochRSI cross
   const stoch1h = stochRsi(closes1h);
   const stochPrev1h = stochRsi(closes1h.slice(0, -1));
   const crossUp = stochPrev1h.k <= stochPrev1h.d && stoch1h.k > stoch1h.d;
@@ -551,17 +895,16 @@ function scoreBreakoutEntry(
 
   if (!direction || direction !== regimeDirection) return null;
 
-  // 15m momentum confirmation
   const closes15m = candles15m.map(c => c.close);
   const stoch15m = stochRsi(closes15m);
-  if (direction === "LONG" && stoch15m.k < 30) return null; // too weak 15m
-  if (direction === "SHORT" && stoch15m.k > 70) return null; // too weak 15m
+  if (direction === "LONG" && stoch15m.k < 30) return null;
+  if (direction === "SHORT" && stoch15m.k > 70) return null;
 
-  let regimeAlignment = 30; reasons.push("regime_alignment:+30");
+  let regimeAlignment = 30;
+  reasons.push("regime_alignment:+30");
   let setupQuality = 0, momentum = 0, structure = 0, volumeScore = 0;
 
-  // Recent high/low breakout detection
-  const lookback = 12; // 12 hours
+  const lookback = 12;
   const recentHigh = highest(highs1h, lookback);
   const recentLow = lowest(lows1h, lookback);
   const currentPrice = closes1h[closes1h.length - 1];
@@ -585,7 +928,6 @@ function scoreBreakoutEntry(
     }
   }
 
-  // Avoid exhausted breakouts
   const closes4h = candles4h.map(c => c.close);
   const stoch4h = stochRsi(closes4h);
   if (direction === "LONG" && stoch4h.k > 85) {
@@ -595,7 +937,6 @@ function scoreBreakoutEntry(
     setupQuality -= 15; reasons.push("exhausted_breakout_short:-15");
   }
 
-  // Volume expansion
   const avgVol = avg(volumes1h.slice(-10));
   const lastVol = volumes1h[volumes1h.length - 1];
   if (lastVol > avgVol * config.volumeMultiplier * 2.0) {
@@ -608,19 +949,16 @@ function scoreBreakoutEntry(
     volumeScore -= 10; reasons.push("weak_breakout_volume:-10");
   }
 
-  // ADX strength bonus
   if (adx4h > 35) { structure += 15; reasons.push(`adx_extreme_${adx4h.toFixed(1)}:+15`); }
   else if (adx4h > 30) { structure += 10; reasons.push(`adx_strong_${adx4h.toFixed(1)}:+10`); }
   else { structure += 5; reasons.push(`adx_breakout_${adx4h.toFixed(1)}:+5`); }
 
-  // Momentum: 4H aligned
   if (direction === "LONG" && stoch4h.k < 60) {
     momentum += 10; reasons.push("4h_momentum_room:+10");
   } else if (direction === "SHORT" && stoch4h.k > 40) {
     momentum += 10; reasons.push("4h_momentum_room:+10");
   }
 
-  // 15m momentum
   if (direction === "LONG" && stoch15m.k > 50) {
     momentum += 5; reasons.push("15m_momentum_bullish:+5");
   } else if (direction === "SHORT" && stoch15m.k < 50) {
@@ -647,7 +985,6 @@ function scoreBreakoutEntry(
 }
 
 // ─── Entry Orchestrator ───
-// Tries all 3 modes, picks the highest-confidence valid candidate
 
 function scoreBestEntry(
   candles1h: Candle[],
@@ -687,7 +1024,7 @@ function scoreBestEntry(
   return { candidate: best, mode: bestName, debugLines };
 }
 
-// ─── Exit Store (unchanged from v28) ───
+// ─── Exit Store ───
 
 const exitStoreById: Map<string, ExitRecord> = new Map();
 const exitStoreByPair: Map<string, ExitRecord> = new Map();
@@ -725,8 +1062,9 @@ function isInCooldown(pair: string, now: number, direction?: "LONG" | "SHORT"): 
   return elapsed < EXIT_COOLDOWN_MS ? { inCooldown: true, remainingMs: EXIT_COOLDOWN_MS - elapsed, lastExit } : { inCooldown: false, remainingMs: 0, lastExit };
 }
 
-// ─── MAIN SIGNAL GENERATION (v29.1) ───
-// ⚠️ THIS IS NOW ASYNC — ALL CALLERS MUST AWAIT
+// ─── MAIN SIGNAL GENERATION ───
+
+export const CURRENT_SIGNAL_VERSION = 29;
 
 export async function generateSignal(
   pair: string,
@@ -767,7 +1105,6 @@ export async function generateSignal(
     return { debug };
   }
 
-  // Load or evaluate regime (async — from KV cache)
   const regime = await getRegime(pair, candles1d, candles4h);
   debug.push(`REGIME: ${regime.direction || "NEUTRAL"} ${regime.strength} conf=${regime.confidence}`);
   debug.push(`Regime reasons: ${regime.reason.join(", ")}`);
@@ -805,12 +1142,10 @@ export async function generateSignal(
     return { market, debug };
   }
 
-  // ─── ENTRY ORCHESTRATOR: try all 3 modes ───
   const { candidate, mode, debugLines } = scoreBestEntry(candles1h, candles4h, candles15m, config, pair, regime.direction);
   for (const line of debugLines) debug.push(line);
 
   if (!candidate) {
-    // Log why we rejected
     const stochCurrent = stochRsi(candles1h.map(c => c.close));
     const stochPrevious = stochRsi(candles1h.slice(0, -1).map(c => c.close));
     const crossUp = stochPrevious.k <= stochPrevious.d && stochCurrent.k > stochCurrent.d;
@@ -854,7 +1189,6 @@ export async function generateSignal(
   debug.push(`CROSSOVER CONFIRMED: ${candidate.direction} ${mode} prevK${candidate.stochPrevK}<=prevD${candidate.stochPrevD} → K${candidate.stochK}>D${candidate.stochD} raw=${candidate.strength}`);
   debug.push(`Components: ${JSON.stringify(candidate.confidenceComponents)}`);
 
-  // Apply exhaustion modifier (soft, not a gate)
   const exhaustion = checkExhaustion(stoch4h, candidate.direction);
   if (exhaustion.isExhausted) {
     candidate.confidencePenalty = exhaustion.confidencePenalty;
@@ -865,7 +1199,6 @@ export async function generateSignal(
     debug.push(`EXHAUSTION: ${exhaustion.reason} → ${candidate.strength} → ${candidate.finalConfidence}`);
   }
 
-  // UI exhaustion warning (direction-preserving)
   const uiWarning = getExhaustionWarning(stoch1h, { k: candidate.stochPrevK, d: candidate.stochPrevD }, candidate.direction);
   if (uiWarning && !candidate.exhaustionWarning) {
     candidate.exhaustionWarning = uiWarning;
@@ -873,7 +1206,6 @@ export async function generateSignal(
     candidate.exhaustionWarning += ` | ${uiWarning}`;
   }
 
-  // Final confidence check
   if (candidate.finalConfidence < config.momentumThreshold) {
     debug.push(`FINAL CONFIDENCE ${candidate.finalConfidence} below threshold ${config.momentumThreshold} — blocked`);
 
@@ -984,7 +1316,7 @@ export async function getMarketSnapshot(pair: string, candles1h: Candle[], candl
   };
 }
 
-// ─── Trade Manager (UNCHANGED from v28) ───
+// ─── Trade Manager ───
 
 export function updateTradeManager(signal: Signal, currentPrice: number): TradeManagerUpdate {
   const highest = Math.max(signal.highestPrice || signal.entry, currentPrice);
@@ -1077,7 +1409,7 @@ export async function filterExpiredSignals(signals: Signal[], currentPrices: Rec
   return { active, exited };
 }
 
-// ─── UI Helpers: get regime without async (reads from cache) ───
+// ─── UI Helpers ───
 
 export function getCurrentRegime(pair: string): MarketRegime | null {
   return getRegimeSync(pair);
