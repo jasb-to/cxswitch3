@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v28.3 "Full v28 strategy integration + Trade Manager + Entry Quality"
+// app/api/cron/route.ts — v29.1 "Full v29.1 strategy integration + Trade Manager + Entry Quality"
 // ============================================================
 
 import { NextResponse } from "next/server";
@@ -83,7 +83,7 @@ export async function GET(request: Request) {
   };
 
   log("========================================");
-  log(`[CRON] Started runId=${runId} v28.3`);
+  log(`[CRON] Started runId=${runId} v29.1`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -285,7 +285,7 @@ export async function GET(request: Request) {
         alerts.push({ pair, status: "skip", reason: "insufficient_1h_candles", count: candles1h?.length });
         if (candles4h && candles4h.length >= 30) {
           const currentPrice = currentPrices[pair] ?? candles1h?.[candles1h.length - 1]?.close ?? 0;
-          const result = generateSignal(pair, candles1h || [], candles4h, candles15m || [], activeTrades, currentPrice);
+          const result = await generateSignal(pair, candles1h || [], candles4h, candles15m || [], activeTrades, currentPrice);
           if (result.market) {
             marketDataList.push(result.market as MarketData);
           }
@@ -332,8 +332,8 @@ export async function GET(request: Request) {
         continue;
       }
 
-      // v28.3: Pass activeTrades to generateSignal for duplicate entry block
-      const result = generateSignal(pair, candles1h, candles4h, candles15m, activeTrades, currentPrice);
+      // v29.1: Await generateSignal (now async)
+      const result = await generateSignal(pair, candles1h, candles4h, candles15m, activeTrades, currentPrice);
 
       for (const line of result.debug) {
         log(`[STRAT] ${pair} ${line}`);
@@ -352,7 +352,7 @@ export async function GET(request: Request) {
 
       const signal = result.signal;
       log(
-        `[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} entry=${signal.entry} TP=${signal.target} SL=${signal.stop} RR=${signal.rr}`
+        `[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.type} mode=${signal.entryMode} entry=${signal.entry} TP=${signal.target} SL=${signal.stop} RR=${signal.rr}`
       );
       newSignals.push(signal);
 
