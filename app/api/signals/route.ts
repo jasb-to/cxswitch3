@@ -1,4 +1,4 @@
-// app/api/signals/route.ts — v28.1 "Pure Reader API"
+// app/api/signals/route.ts — v29.1 "Pure Reader API"
 // ============================================================
 // PRINCIPLE: This route ONLY reads from KV. It NEVER recalculates.
 // The cron job is the single source of truth.
