@@ -1,14 +1,23 @@
-// lib/strategy.ts — v29.3 "Early Entry Orchestrator"
+// lib/strategy.ts — v29.1 "Trendline Break: StochRSI Timing + Position Build"
 // ============================================================
-// CORE PRINCIPLES:
-// 1. 1H StochRSI K/D crossover on CURRENT confirmed candle = THE trigger
-// 2. Regime (1D EMA) filters direction. 4H modulates confidence, NEVER blocks.
-// 3. Everything else (ADX, volume, structure, exhaustion) modulates CONFIDENCE.
-// 4. UI and cron use SAME persisted regime from KV. No brain split.
-// 5. Every rejected signal is logged with full breakdown.
+// CORE PHILOSOPHY:
+// Higher timeframe regime controls direction.
+// Entries only happen with regime alignment.
+// No repainting. No future candle leakage.
+// Stateful logic remains stateful.
 //
-// The question: "Is this the beginning of a move?"
-// NOT: "Has the move already proven itself?"
+// TIMEFRAMES:
+// - 1D = macro regime
+// - 4H = confirmation + exhaustion filter
+// - 1H = entries
+// - 15m = timing confirmation
+//
+// ENTRY MODES:
+// MODE A — PULLBACK: StochRSI cross timing, regime alignment, deep entries
+// MODE B — REJECTION: Pullback level + S/R reaction + wick rejection + 15m confirm
+// MODE C — BREAKOUT: ADX > 25 + recent high/low breakout + volume expansion + 15m momentum
+//
+// Every rejected signal is logged with full breakdown.
 // ============================================================
 
 import { Candle, Signal, MarketData, SignalResult, PairConfig, TradeManagerUpdate, ValidityCheck, HoldResult, ExitRecord, RejectionLog } from "@/lib/types";
@@ -16,13 +25,49 @@ import { getRegime, setRegimePersistence, persistRegime, getRegimeSync } from "@
 import { evaluateRegime, shouldInvalidateRegime } from "@/lib/regime/engine";
 import { stochRsi } from "@/lib/indicators/stochrsi";
 import { adx } from "@/lib/indicators/adx";
-import { buildConfidence, meetsThreshold } from "@/lib/scoring/confidence";
+import { rsi } from "@/lib/indicators/rsi";
 
 export * from "@/lib/types";
 export { setRegimePersistence, evaluateRegime, shouldInvalidateRegime } from "@/lib/regime/engine";
 export { setRegimePersistence as setRegimePersistenceHook, getRegimeSync } from "@/lib/regime/persistence";
 
 export const CURRENT_SIGNAL_VERSION = 29;
+
+// ─── Types needed locally ───
+
+interface MarketRegime {
+  direction: "LONG" | "SHORT" | "NEUTRAL" | null;
+  strength: string;
+  confidence: number;
+  reason: string[];
+  detectedAt: number;
+}
+
+interface EntryCandidate {
+  direction: "LONG" | "SHORT";
+  strength: number;
+  finalConfidence: number;
+  reasons: string[];
+  confidenceComponents: ConfidenceComponents;
+  stochK: number;
+  stochD: number;
+  stochPrevK: number;
+  stochPrevD: number;
+  entryPrice: number;
+  confidencePenalty: number;
+  exhaustionWarning: string;
+  entryMode: "PULLBACK" | "REJECTION" | "BREAKOUT";
+}
+
+interface ConfidenceComponents {
+  regimeAlignment: number;
+  setupQuality: number;
+  momentum: number;
+  structure: number;
+  volume: number;
+  riskPenalty: number;
+  total: number;
+}
 
 // ─── Pair Config (unchanged from v28) ───
 
@@ -73,9 +118,45 @@ function avg(arr: number[]): number {
   return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
 }
 
+function sma(values: number[], period: number): number[] {
+  if (values.length < period) return [];
+  const out: number[] = [];
+  for (let i = period - 1; i < values.length; i++) {
+    const slice = values.slice(i - period + 1, i + 1);
+    out.push(slice.reduce((a, b) => a + b, 0) / period);
+  }
+  return out;
+}
+
+function ema(values: number[], period: number): number[] {
+  if (values.length < period) return [];
+  const k = 2 / (period + 1);
+  const out: number[] = [];
+  let prev = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  out.push(prev);
+  for (let i = period; i < values.length; i++) {
+    prev = values[i] * k + prev * (1 - k);
+    out.push(prev);
+  }
+  return out;
+}
+
+function highest(values: number[], period: number): number {
+  if (values.length < period) return values[values.length - 1] ?? 0;
+  return Math.max(...values.slice(-period));
+}
+
+function lowest(values: number[], period: number): number {
+  if (values.length < period) return values[values.length - 1] ?? 0;
+  return Math.min(...values.slice(-period));
+}
+
 // ─── Exhaustion Check (soft modifier, not a gate) ───
 
-function checkExhaustion(stoch4h: { k: number; d: number }, tradeDirection: "LONG" | "SHORT"): { isExhausted: boolean; reason: string; confidencePenalty: number } {
+function checkExhaustion(
+  stoch4h: { k: number; d: number },
+  tradeDirection: "LONG" | "SHORT"
+): { isExhausted: boolean; reason: string; confidencePenalty: number } {
   if (tradeDirection === "LONG") {
     if (stoch4h.k > 90) return { isExhausted: true, reason: `4H extreme overbought K${stoch4h.k}`, confidencePenalty: -20 };
     if (stoch4h.k > 80 && stoch4h.k < stoch4h.d) return { isExhausted: true, reason: `4H overbought exhaustion K${stoch4h.k} < D${stoch4h.d}`, confidencePenalty: -15 };
@@ -84,6 +165,25 @@ function checkExhaustion(stoch4h: { k: number; d: number }, tradeDirection: "LON
     if (stoch4h.k < 20 && stoch4h.k > stoch4h.d) return { isExhausted: true, reason: `4H oversold exhaustion K${stoch4h.k} > D${stoch4h.d}`, confidencePenalty: -15 };
   }
   return { isExhausted: false, reason: "", confidencePenalty: 0 };
+}
+
+// ─── UI Exhaustion Warnings (direction-preserving, non-blocking) ───
+
+function getExhaustionWarning(
+  stoch1h: { k: number; d: number },
+  stochPrev1h: { k: number; d: number },
+  direction: "LONG" | "SHORT"
+): string {
+  const crossUp = stochPrev1h.k <= stochPrev1h.d && stoch1h.k > stoch1h.d;
+  const crossDown = stochPrev1h.k >= stochPrev1h.d && stoch1h.k < stoch1h.d;
+
+  if (direction === "SHORT" && crossDown && stoch1h.k < 20) {
+    return "SHORT momentum exhaustion risk — StochRSI recovering from oversold";
+  }
+  if (direction === "LONG" && crossUp && stoch1h.k > 80) {
+    return "LONG momentum exhaustion risk — StochRSI rolling from overbought";
+  }
+  return "";
 }
 
 // ─── REJECTION LOGGING ───
@@ -96,7 +196,6 @@ function logRejection(log: RejectionLog): void {
   if (rejectionLogs.length > MAX_REJECTION_LOGS) {
     rejectionLogs.shift();
   }
-  // Also console for immediate visibility
   console.log(`[REJECTED] ${log.pair} | cross=${log.crossDetected ? log.crossDirection : "none"} | regime=${log.regimeDirection} | conf=${log.confidenceScore} | reason=${log.rejectionReason}`);
 }
 
@@ -111,82 +210,82 @@ export function clearRejectionLogs(): void {
   rejectionLogs.length = 0;
 }
 
-// ─── EARLY ENTRY SCORING ───
-// 1H StochRSI K/D crossover on CONFIRMED candle = THE trigger.
+// ─── Confidence Engine ───
+
+function buildEntryComponents(
+  regimeAlignment: number,
+  setupQuality: number,
+  momentum: number,
+  structure: number,
+  volume: number,
+  riskPenalty: number
+): ConfidenceComponents {
+  const total = Math.min(100, Math.max(0, regimeAlignment + setupQuality + momentum + structure + volume + riskPenalty));
+  return {
+    regimeAlignment,
+    setupQuality,
+    momentum,
+    structure,
+    volume,
+    riskPenalty,
+    total,
+  };
+}
+
+// ─── MODE A: PULLBACK ENTRY ───
+// 1H StochRSI K/D crossover on CURRENT confirmed candle = THE trigger.
 // Previous candle: K <= D (LONG) or K >= D (SHORT)
 // Current candle: K > D (LONG) or K < D (SHORT)
 
-interface EarlyEntryCandidate {
-  direction: "LONG" | "SHORT";
-  strength: number;
-  finalConfidence: number;
-  reasons: string[];
-  confidenceComponents: Record<string, number>;
-  stochK: number;
-  stochD: number;
-  stochPrevK: number;
-  stochPrevD: number;
-  entryPrice: number;
-  confidencePenalty: number;
-  exhaustionWarning: string;
-}
-
-function scoreEarlyEntry(
+function scorePullbackEntry(
   candles1h: Candle[],
   candles4h: Candle[],
   config: PairConfig,
   pair: string,
   regimeDirection: "LONG" | "SHORT"
-): EarlyEntryCandidate | null {
+): EntryCandidate | null {
   const reasons: string[] = [];
   const closes = candles1h.map(c => c.close);
   const volumes = candles1h.map(c => c.volume);
   if (closes.length < 50) return null;
 
-  // ─── CORE TRIGGER: CONFIRMED 1H StochRSI K/D crossover ───
-  // We need EXACTLY the current candle's cross, not "sometime in last 5"
+  // CORE TRIGGER: CONFIRMED 1H StochRSI K/D crossover
   const stoch = stochRsi(closes);
   const stochPrev = stochRsi(closes.slice(0, -1));
 
-  // LONG: previous K <= D, current K > D
   const crossUp = stochPrev.k <= stochPrev.d && stoch.k > stoch.d;
-  // SHORT: previous K >= D, current K < D
   const crossDown = stochPrev.k >= stochPrev.d && stoch.k < stoch.d;
 
   let direction: "LONG" | "SHORT" | null = null;
   if (crossUp) direction = "LONG";
   else if (crossDown) direction = "SHORT";
 
-  // No confirmed crossover = no entry. Period.
   if (!direction) return null;
-
-  // Regime mismatch = no entry. Period.
   if (direction !== regimeDirection) return null;
 
-  // ─── CONFIDENCE SCORING ───
-  let base = 30; reasons.push("regime_alignment:+30");
-  let setup = 0, momentum = 0, structure = 0, volume = 0;
+  let regimeAlignment = 30; reasons.push("regime_alignment:+30");
+  let setupQuality = 0, momentum = 0, structure = 0, volumeScore = 0;
 
-  // Setup quality: how deep is the cross? (earlier = better)
+  // Setup quality: how deep is the cross?
   if (config.isHYPE) {
     if (direction === "LONG") {
-      if (stoch.k < (config.deepCrossThresholdLong || 25)) { setup += 20; reasons.push("deep_cross:+20"); }
-      else if (stoch.k < 40) { setup += 10; reasons.push("moderate_cross:+10"); }
-      else { setup -= 20; reasons.push("shallow_cross:-20"); }
+      if (stoch.k < (config.deepCrossThresholdLong || 25)) { setupQuality += 20; reasons.push("deep_cross:+20"); }
+      else if (stoch.k < 40) { setupQuality += 10; reasons.push("moderate_cross:+10"); }
+      else { setupQuality -= 20; reasons.push("shallow_cross:-20"); }
     } else {
-      if (stoch.k > (config.deepCrossThresholdShort || 75)) { setup += 20; reasons.push("deep_cross:+20"); }
-      else if (stoch.k > 60) { setup += 10; reasons.push("moderate_cross:+10"); }
-      else { setup -= 20; reasons.push("shallow_cross:-20"); }
+      if (stoch.k > (config.deepCrossThresholdShort || 75)) { setupQuality += 20; reasons.push("deep_cross:+20"); }
+      else if (stoch.k > 60) { setupQuality += 10; reasons.push("moderate_cross:+10"); }
+      else { setupQuality -= 20; reasons.push("shallow_cross:-20"); }
     }
   } else {
     if (direction === "LONG") {
-      if (stoch.k < 35) { setup += 15; reasons.push("deep_cross:+15"); }
-      else if (stoch.k < 50) { setup += 5; reasons.push("moderate_cross:+5"); }
-      else if (stoch.k > 70) { setup -= 15; reasons.push("extended_cross:-15"); }
+      if (stoch.k < 35) { setupQuality += 15; reasons.push("deep_cross:+15"); }
+      else if (stoch.k < 50) { setupQuality += 5; reasons.push("moderate_cross:+5"); }
+      else if (stoch.k > 70) { setupQuality -= 15; reasons.push("extended_cross:-15"); }
     } else {
-      if (stoch.k > 65) { setup += 15; reasons.push("deep_cross:+15"); }
-      else if (stoch.k > 50) { setup += 5; reasons.push("moderate_cross:+5"); }
-      else if (stoch.k < 30) { setup -= 15; reasons.push("extended_cross:-15"); }
+      if (stoch.k > 65) { setupQuality += 15; reasons.push("deep_cross:+15"); }
+      else if (stoch.k > 50) { setupQuality += 5; reasons.push("moderate_cross:+5"); }
+      else if (stoch.k < 30) { setupQuality -= 15; reasons.push("extended_cross:-15"); }
     }
   }
 
@@ -197,15 +296,15 @@ function scoreEarlyEntry(
   else if (Math.abs(roc) < 0.3) { momentum -= 5; reasons.push("low_velocity:-5"); }
 
   // 4H context = CONFIDENCE factor, NOT a gate
-  // 4H aligned with regime direction = bonus, opposing = no penalty
-  const stoch4h = stochRsi(candles4h.map(c => c.close));
-  if (direction === "LONG" && stoch4h.k < 50) { 
-    momentum += 10; reasons.push("4h_context_bullish:+10"); 
+  const closes4h = candles4h.map(c => c.close);
+  const stoch4h = stochRsi(closes4h);
+  if (direction === "LONG" && stoch4h.k < 50) {
+    momentum += 10; reasons.push("4h_context_bullish:+10");
   } else if (direction === "LONG") {
     reasons.push("4h_context_mixed:0");
   }
-  if (direction === "SHORT" && stoch4h.k > 50) { 
-    momentum += 10; reasons.push("4h_context_bearish:+10"); 
+  if (direction === "SHORT" && stoch4h.k > 50) {
+    momentum += 10; reasons.push("4h_context_bearish:+10");
   } else if (direction === "SHORT") {
     reasons.push("4h_context_mixed:0");
   }
@@ -222,30 +321,370 @@ function scoreEarlyEntry(
   const lastVol = volumes[volumes.length - 1];
   const lastCandle = candles1h[candles1h.length - 1];
   const volDirection = lastCandle.close > lastCandle.open ? "LONG" : "SHORT";
-  if (lastVol > avgVol * config.volumeMultiplier * 1.5) { 
-    volume += 15; reasons.push("strong_volume:+15"); 
-  } else if (lastVol > avgVol * config.volumeMultiplier) { 
-    volume += 10; reasons.push("volume_confirms:+10"); 
-  } else if (lastVol > avgVol) { 
-    volume += 5; reasons.push("volume_above_avg:+5"); 
-  } else { 
-    volume -= 5; reasons.push("volume_weak:-5"); 
+  if (lastVol > avgVol * config.volumeMultiplier * 1.5) {
+    volumeScore += 15; reasons.push("strong_volume:+15");
+  } else if (lastVol > avgVol * config.volumeMultiplier) {
+    volumeScore += 10; reasons.push("volume_confirms:+10");
+  } else if (lastVol > avgVol) {
+    volumeScore += 5; reasons.push("volume_above_avg:+5");
+  } else {
+    volumeScore -= 5; reasons.push("volume_weak:-5");
   }
 
   if (volDirection !== direction && lastVol > avgVol) {
-    volume -= 10; reasons.push("volume_opposes_direction:-10");
+    volumeScore -= 10; reasons.push("volume_opposes_direction:-10");
   }
 
-  const components = buildConfidence(base, setup, momentum, structure, volume, 0);
+  // Rejection wick penalty (pullback mode)
+  const body = Math.abs(lastCandle.close - lastCandle.open);
+  const upperWick = lastCandle.high - Math.max(lastCandle.open, lastCandle.close);
+  const lowerWick = Math.min(lastCandle.open, lastCandle.close) - lastCandle.low;
+  if (direction === "LONG" && upperWick > body * 2 && upperWick > lowerWick * 2) {
+    setupQuality -= 10; reasons.push("upper_rejection_wick:-10");
+  }
+  if (direction === "SHORT" && lowerWick > body * 2 && lowerWick > upperWick * 2) {
+    setupQuality -= 10; reasons.push("lower_rejection_wick:-10");
+  }
+
+  const components = buildEntryComponents(regimeAlignment, setupQuality, momentum, structure, volumeScore, 0);
 
   return {
-    direction, strength: components.total, finalConfidence: components.total,
-    reasons, confidenceComponents: components as any, 
-    stochK: stoch.k, stochD: stoch.d,
-    stochPrevK: stochPrev.k, stochPrevD: stochPrev.d,
-    entryPrice: candles1h[candles1h.length - 1].close, 
-    confidencePenalty: 0, exhaustionWarning: "",
+    direction,
+    strength: components.total,
+    finalConfidence: components.total,
+    reasons,
+    confidenceComponents: components,
+    stochK: stoch.k,
+    stochD: stoch.d,
+    stochPrevK: stochPrev.k,
+    stochPrevD: stochPrev.d,
+    entryPrice: candles1h[candles1h.length - 1].close,
+    confidencePenalty: 0,
+    exhaustionWarning: "",
+    entryMode: "PULLBACK",
   };
+}
+
+// ─── MODE B: REJECTION ENTRY ───
+// Pullback level detection + S/R reaction + wick rejection + 15m StochRSI + EMA structure
+
+function scoreRejectionEntry(
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candles15m: Candle[],
+  config: PairConfig,
+  pair: string,
+  regimeDirection: "LONG" | "SHORT"
+): EntryCandidate | null {
+  const reasons: string[] = [];
+  const closes1h = candles1h.map(c => c.close);
+  const volumes1h = candles1h.map(c => c.volume);
+  if (closes1h.length < 50 || candles15m.length < 20) return null;
+
+  // 1H StochRSI cross as base trigger (same as pullback)
+  const stoch1h = stochRsi(closes1h);
+  const stochPrev1h = stochRsi(closes1h.slice(0, -1));
+  const crossUp = stochPrev1h.k <= stochPrev1h.d && stoch1h.k > stoch1h.d;
+  const crossDown = stochPrev1h.k >= stochPrev1h.d && stoch1h.k < stoch1h.d;
+
+  let direction: "LONG" | "SHORT" | null = null;
+  if (crossUp) direction = "LONG";
+  else if (crossDown) direction = "SHORT";
+
+  if (!direction || direction !== regimeDirection) return null;
+
+  // 15m StochRSI confirmation
+  const closes15m = candles15m.map(c => c.close);
+  const stoch15m = stochRsi(closes15m);
+  const stochPrev15m = stochRsi(closes15m.slice(0, -1));
+  const cross15mUp = stochPrev15m.k <= stochPrev15m.d && stoch15m.k > stoch15m.d;
+  const cross15mDown = stochPrev15m.k >= stochPrev15m.d && stoch15m.k < stoch15m.d;
+
+  if (direction === "LONG" && !cross15mUp) return null;
+  if (direction === "SHORT" && !cross15mDown) return null;
+
+  let regimeAlignment = 30; reasons.push("regime_alignment:+30");
+  let setupQuality = 0, momentum = 0, structure = 0, volumeScore = 0;
+
+  // Setup quality: deep cross + 15m alignment
+  if (direction === "LONG") {
+    if (stoch1h.k < 35) { setupQuality += 15; reasons.push("deep_cross_1h:+15"); }
+    else if (stoch1h.k < 50) { setupQuality += 5; reasons.push("moderate_cross_1h:+5"); }
+    else { setupQuality -= 15; reasons.push("extended_cross_1h:-15"); }
+    if (stoch15m.k < 30) { setupQuality += 10; reasons.push("deep_cross_15m:+10"); }
+  } else {
+    if (stoch1h.k > 65) { setupQuality += 15; reasons.push("deep_cross_1h:+15"); }
+    else if (stoch1h.k > 50) { setupQuality += 5; reasons.push("moderate_cross_1h:+5"); }
+    else { setupQuality -= 15; reasons.push("extended_cross_1h:-15"); }
+    if (stoch15m.k > 70) { setupQuality += 10; reasons.push("deep_cross_15m:+10"); }
+  }
+
+  // Pullback level detection: price near recent swing
+  const recentLows = candles1h.slice(-20).map(c => c.low);
+  const recentHighs = candles1h.slice(-20).map(c => c.high);
+  const swingLow = Math.min(...recentLows);
+  const swingHigh = Math.max(...recentHighs);
+  const currentPrice = candles1h[candles1h.length - 1].close;
+
+  if (direction === "LONG") {
+    const distFromLow = (currentPrice - swingLow) / swingLow;
+    if (distFromLow < 0.015) { setupQuality += 10; reasons.push("near_swing_low:+10"); }
+    else if (distFromLow < 0.03) { setupQuality += 5; reasons.push("pullback_zone:+5"); }
+  } else {
+    const distFromHigh = (swingHigh - currentPrice) / swingHigh;
+    if (distFromHigh < 0.015) { setupQuality += 10; reasons.push("near_swing_high:+10"); }
+    else if (distFromHigh < 0.03) { setupQuality += 5; reasons.push("pullback_zone:+5"); }
+  }
+
+  // Wick rejection confirmation
+  const last1h = candles1h[candles1h.length - 1];
+  const body1h = Math.abs(last1h.close - last1h.open);
+  const upperWick1h = last1h.high - Math.max(last1h.open, last1h.close);
+  const lowerWick1h = Math.min(last1h.open, last1h.close) - last1h.low;
+
+  if (direction === "LONG" && lowerWick1h > body1h * 1.5) {
+    setupQuality += 10; reasons.push("lower_wick_rejection:+10");
+  } else if (direction === "LONG" && upperWick1h > body1h * 2) {
+    setupQuality -= 15; reasons.push("upper_rejection_penalty:-15");
+  }
+  if (direction === "SHORT" && upperWick1h > body1h * 1.5) {
+    setupQuality += 10; reasons.push("upper_wick_rejection:+10");
+  } else if (direction === "SHORT" && lowerWick1h > body1h * 2) {
+    setupQuality -= 15; reasons.push("lower_rejection_penalty:-15");
+  }
+
+  // EMA21 / EMA50 structure
+  const ema21 = ema(closes1h, 21);
+  const ema50 = ema(closes1h, 50);
+  if (ema21.length >= 2 && ema50.length >= 2) {
+    const e21Now = ema21[ema21.length - 1];
+    const e21Prev = ema21[ema21.length - 2];
+    const e50Now = ema50[ema50.length - 1];
+    if (direction === "LONG" && e21Now > e50Now && e21Prev <= e50Now) {
+      structure += 15; reasons.push("ema21_cross_above_50:+15");
+    } else if (direction === "LONG" && e21Now > e50Now) {
+      structure += 5; reasons.push("above_ema21_50:+5");
+    } else if (direction === "LONG") {
+      structure -= 10; reasons.push("below_ema_structure:-10");
+    }
+    if (direction === "SHORT" && e21Now < e50Now && e21Prev >= e50Now) {
+      structure += 15; reasons.push("ema21_cross_below_50:+15");
+    } else if (direction === "SHORT" && e21Now < e50Now) {
+      structure += 5; reasons.push("below_ema21_50:+5");
+    } else if (direction === "SHORT") {
+      structure -= 10; reasons.push("above_ema_structure:-10");
+    }
+  }
+
+  // Momentum: 4H context
+  const closes4h = candles4h.map(c => c.close);
+  const stoch4h = stochRsi(closes4h);
+  if (direction === "LONG" && stoch4h.k < 50) {
+    momentum += 10; reasons.push("4h_context_bullish:+10");
+  } else if (direction === "SHORT" && stoch4h.k > 50) {
+    momentum += 10; reasons.push("4h_context_bearish:+10");
+  }
+
+  // Volume
+  const avgVol = avg(volumes1h.slice(-10));
+  const lastVol = volumes1h[volumes1h.length - 1];
+  if (lastVol > avgVol * config.volumeMultiplier * 1.5) {
+    volumeScore += 15; reasons.push("strong_volume:+15");
+  } else if (lastVol > avgVol * config.volumeMultiplier) {
+    volumeScore += 10; reasons.push("volume_confirms:+10");
+  } else if (lastVol > avgVol) {
+    volumeScore += 5; reasons.push("volume_above_avg:+5");
+  } else {
+    volumeScore -= 5; reasons.push("volume_weak:-5");
+  }
+
+  const components = buildEntryComponents(regimeAlignment, setupQuality, momentum, structure, volumeScore, 0);
+
+  return {
+    direction,
+    strength: components.total,
+    finalConfidence: components.total,
+    reasons,
+    confidenceComponents: components,
+    stochK: stoch1h.k,
+    stochD: stoch1h.d,
+    stochPrevK: stochPrev1h.k,
+    stochPrevD: stochPrev1h.d,
+    entryPrice: currentPrice,
+    confidencePenalty: 0,
+    exhaustionWarning: "",
+    entryMode: "REJECTION",
+  };
+}
+
+// ─── MODE C: BREAKOUT ENTRY ───
+// ADX > 25 + recent high/low breakout + volume expansion + 15m momentum + avoid exhausted
+
+function scoreBreakoutEntry(
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candles15m: Candle[],
+  config: PairConfig,
+  pair: string,
+  regimeDirection: "LONG" | "SHORT"
+): EntryCandidate | null {
+  const reasons: string[] = [];
+  const closes1h = candles1h.map(c => c.close);
+  const volumes1h = candles1h.map(c => c.volume);
+  const highs1h = candles1h.map(c => c.high);
+  const lows1h = candles1h.map(c => c.low);
+  if (closes1h.length < 50 || candles15m.length < 20 || candles4h.length < 30) return null;
+
+  // ADX > 25 gate for breakout mode
+  const adx4h = adx(candles4h);
+  if (adx4h <= 25) return null;
+
+  // 1H StochRSI cross
+  const stoch1h = stochRsi(closes1h);
+  const stochPrev1h = stochRsi(closes1h.slice(0, -1));
+  const crossUp = stochPrev1h.k <= stochPrev1h.d && stoch1h.k > stoch1h.d;
+  const crossDown = stochPrev1h.k >= stochPrev1h.d && stoch1h.k < stoch1h.d;
+
+  let direction: "LONG" | "SHORT" | null = null;
+  if (crossUp) direction = "LONG";
+  else if (crossDown) direction = "SHORT";
+
+  if (!direction || direction !== regimeDirection) return null;
+
+  // 15m momentum confirmation
+  const closes15m = candles15m.map(c => c.close);
+  const stoch15m = stochRsi(closes15m);
+  if (direction === "LONG" && stoch15m.k < 30) return null; // too weak 15m
+  if (direction === "SHORT" && stoch15m.k > 70) return null; // too weak 15m
+
+  let regimeAlignment = 30; reasons.push("regime_alignment:+30");
+  let setupQuality = 0, momentum = 0, structure = 0, volumeScore = 0;
+
+  // Recent high/low breakout detection
+  const lookback = 12; // 12 hours
+  const recentHigh = highest(highs1h, lookback);
+  const recentLow = lowest(lows1h, lookback);
+  const currentPrice = closes1h[closes1h.length - 1];
+  const prevPrice = closes1h[closes1h.length - 2];
+
+  if (direction === "LONG") {
+    if (currentPrice > recentHigh && prevPrice <= recentHigh) {
+      setupQuality += 20; reasons.push("high_breakout:+20");
+    } else if (currentPrice > recentHigh * 0.995) {
+      setupQuality += 10; reasons.push("near_high_breakout:+10");
+    } else {
+      setupQuality -= 10; reasons.push("no_breakout:-10");
+    }
+  } else {
+    if (currentPrice < recentLow && prevPrice >= recentLow) {
+      setupQuality += 20; reasons.push("low_breakout:+20");
+    } else if (currentPrice < recentLow * 1.005) {
+      setupQuality += 10; reasons.push("near_low_breakout:+10");
+    } else {
+      setupQuality -= 10; reasons.push("no_breakout:-10");
+    }
+  }
+
+  // Avoid exhausted breakouts
+  const closes4h = candles4h.map(c => c.close);
+  const stoch4h = stochRsi(closes4h);
+  if (direction === "LONG" && stoch4h.k > 85) {
+    setupQuality -= 15; reasons.push("exhausted_breakout_long:-15");
+  }
+  if (direction === "SHORT" && stoch4h.k < 15) {
+    setupQuality -= 15; reasons.push("exhausted_breakout_short:-15");
+  }
+
+  // Volume expansion
+  const avgVol = avg(volumes1h.slice(-10));
+  const lastVol = volumes1h[volumes1h.length - 1];
+  if (lastVol > avgVol * config.volumeMultiplier * 2.0) {
+    volumeScore += 20; reasons.push("breakout_volume_surge:+20");
+  } else if (lastVol > avgVol * config.volumeMultiplier * 1.5) {
+    volumeScore += 15; reasons.push("strong_breakout_volume:+15");
+  } else if (lastVol > avgVol * config.volumeMultiplier) {
+    volumeScore += 10; reasons.push("breakout_volume:+10");
+  } else {
+    volumeScore -= 10; reasons.push("weak_breakout_volume:-10");
+  }
+
+  // ADX strength bonus
+  if (adx4h > 35) { structure += 15; reasons.push(`adx_extreme_${adx4h.toFixed(1)}:+15`); }
+  else if (adx4h > 30) { structure += 10; reasons.push(`adx_strong_${adx4h.toFixed(1)}:+10`); }
+  else { structure += 5; reasons.push(`adx_breakout_${adx4h.toFixed(1)}:+5`); }
+
+  // Momentum: 4H aligned
+  if (direction === "LONG" && stoch4h.k < 60) {
+    momentum += 10; reasons.push("4h_momentum_room:+10");
+  } else if (direction === "SHORT" && stoch4h.k > 40) {
+    momentum += 10; reasons.push("4h_momentum_room:+10");
+  }
+
+  // 15m momentum
+  if (direction === "LONG" && stoch15m.k > 50) {
+    momentum += 5; reasons.push("15m_momentum_bullish:+5");
+  } else if (direction === "SHORT" && stoch15m.k < 50) {
+    momentum += 5; reasons.push("15m_momentum_bearish:+5");
+  }
+
+  const components = buildEntryComponents(regimeAlignment, setupQuality, momentum, structure, volumeScore, 0);
+
+  return {
+    direction,
+    strength: components.total,
+    finalConfidence: components.total,
+    reasons,
+    confidenceComponents: components,
+    stochK: stoch1h.k,
+    stochD: stoch1h.d,
+    stochPrevK: stochPrev1h.k,
+    stochPrevD: stochPrev1h.d,
+    entryPrice: currentPrice,
+    confidencePenalty: 0,
+    exhaustionWarning: "",
+    entryMode: "BREAKOUT",
+  };
+}
+
+// ─── Entry Orchestrator ───
+// Tries all 3 modes, picks the highest-confidence valid candidate
+
+function scoreBestEntry(
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candles15m: Candle[],
+  config: PairConfig,
+  pair: string,
+  regimeDirection: "LONG" | "SHORT"
+): { candidate: EntryCandidate | null; mode: string; debugLines: string[] } {
+  const debugLines: string[] = [];
+
+  const pullback = scorePullbackEntry(candles1h, candles4h, config, pair, regimeDirection);
+  const rejection = scoreRejectionEntry(candles1h, candles4h, candles15m, config, pair, regimeDirection);
+  const breakout = scoreBreakoutEntry(candles1h, candles4h, candles15m, config, pair, regimeDirection);
+
+  const candidates: { c: EntryCandidate | null; name: string }[] = [
+    { c: pullback, name: "PULLBACK" },
+    { c: rejection, name: "REJECTION" },
+    { c: breakout, name: "BREAKOUT" },
+  ];
+
+  let best: EntryCandidate | null = null;
+  let bestName = "NONE";
+
+  for (const { c, name } of candidates) {
+    if (c) {
+      debugLines.push(`${name} candidate: conf=${c.finalConfidence} raw=${c.strength}`);
+      if (!best || c.finalConfidence > best.finalConfidence) {
+        best = c;
+        bestName = name;
+      }
+    } else {
+      debugLines.push(`${name}: no candidate`);
+    }
+  }
+
+  return { candidate: best, mode: bestName, debugLines };
 }
 
 // ─── Exit Store (unchanged from v28) ───
@@ -286,8 +725,8 @@ function isInCooldown(pair: string, now: number, direction?: "LONG" | "SHORT"): 
   return elapsed < EXIT_COOLDOWN_MS ? { inCooldown: true, remainingMs: EXIT_COOLDOWN_MS - elapsed, lastExit } : { inCooldown: false, remainingMs: 0, lastExit };
 }
 
-// ─── MAIN SIGNAL GENERATION (v29.3) ───
-// ⚠️  THIS IS NOW ASYNC — ALL CALLERS MUST AWAIT
+// ─── MAIN SIGNAL GENERATION (v29.1) ───
+// ⚠️ THIS IS NOW ASYNC — ALL CALLERS MUST AWAIT
 
 export async function generateSignal(
   pair: string,
@@ -366,8 +805,9 @@ export async function generateSignal(
     return { market, debug };
   }
 
-  // ─── EARLY ENTRY: Confirmed 1H StochRSI K/D crossover is the trigger ───
-  const candidate = scoreEarlyEntry(candles1h, candles4h, config, pair, regime.direction);
+  // ─── ENTRY ORCHESTRATOR: try all 3 modes ───
+  const { candidate, mode, debugLines } = scoreBestEntry(candles1h, candles4h, candles15m, config, pair, regime.direction);
+  for (const line of debugLines) debug.push(line);
 
   if (!candidate) {
     // Log why we rejected
@@ -411,7 +851,7 @@ export async function generateSignal(
     return { market, debug };
   }
 
-  debug.push(`CROSSOVER CONFIRMED: ${candidate.direction} prevK${candidate.stochPrevK}<=prevD${candidate.stochPrevD} → K${candidate.stochK}>D${candidate.stochD} raw=${candidate.strength}`);
+  debug.push(`CROSSOVER CONFIRMED: ${candidate.direction} ${mode} prevK${candidate.stochPrevK}<=prevD${candidate.stochPrevD} → K${candidate.stochK}>D${candidate.stochD} raw=${candidate.strength}`);
   debug.push(`Components: ${JSON.stringify(candidate.confidenceComponents)}`);
 
   // Apply exhaustion modifier (soft, not a gate)
@@ -423,6 +863,14 @@ export async function generateSignal(
     candidate.confidenceComponents.riskPenalty = exhaustion.confidencePenalty;
     candidate.confidenceComponents.total = candidate.finalConfidence;
     debug.push(`EXHAUSTION: ${exhaustion.reason} → ${candidate.strength} → ${candidate.finalConfidence}`);
+  }
+
+  // UI exhaustion warning (direction-preserving)
+  const uiWarning = getExhaustionWarning(stoch1h, { k: candidate.stochPrevK, d: candidate.stochPrevD }, candidate.direction);
+  if (uiWarning && !candidate.exhaustionWarning) {
+    candidate.exhaustionWarning = uiWarning;
+  } else if (uiWarning) {
+    candidate.exhaustionWarning += ` | ${uiWarning}`;
   }
 
   // Final confidence check
@@ -455,7 +903,7 @@ export async function generateSignal(
     return { market, debug };
   }
 
-  debug.push(`SELECTED: ${candidate.direction} EARLY_ENTRY conf=${candidate.finalConfidence} (raw=${candidate.strength} penalty=${candidate.confidencePenalty})`);
+  debug.push(`SELECTED: ${candidate.direction} ${mode} conf=${candidate.finalConfidence} (raw=${candidate.strength} penalty=${candidate.confidencePenalty})`);
 
   const entry = price;
   const sl = candidate.direction === "LONG" ? entry * (1 - config.stopLossPct) : entry * (1 + config.stopLossPct);
@@ -483,7 +931,7 @@ export async function generateSignal(
     stoch1hK: candidate.stochK,
     stoch1hD: candidate.stochD,
     expectedMove: Math.round((Math.abs(tp - entry) / entry) * 100 * 10) / 10,
-    reason: `${candidate.direction} EARLY ENTRY | Regime ${regime.direction} ${regime.strength} (since ${new Date(regime.detectedAt).toISOString().split('T')[0]}) | 1H StochRSI K${candidate.stochK}→D${candidate.stochD} cross (prev K${candidate.stochPrevK}/D${candidate.stochPrevD}) | ${candidate.reasons.join(", ")} | RR ${rr.toFixed(2)} | SL ${(config.stopLossPct * 100).toFixed(1)}% TP ${(config.takeProfitPct * 100).toFixed(1)}%${exhaustionNote}`,
+    reason: `${candidate.direction} ${mode} ENTRY | Regime ${regime.direction} ${regime.strength} (since ${new Date(regime.detectedAt).toISOString().split('T')[0]}) | 1H StochRSI K${candidate.stochK}→D${candidate.stochD} cross (prev K${candidate.stochPrevK}/D${candidate.stochPrevD}) | ${candidate.reasons.join(", ")} | RR ${rr.toFixed(2)} | SL ${(config.stopLossPct * 100).toFixed(1)}% TP ${(config.takeProfitPct * 100).toFixed(1)}%${exhaustionNote}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
     tradeState: "OPEN",
@@ -493,14 +941,14 @@ export async function generateSignal(
     profitLockActive: false,
     regimeDirection: regime.direction,
     regimeSince: regime.detectedAt,
-    entryMode: "PULLBACK",
+    entryMode: candidate.entryMode,
     confidenceComponents: candidate.confidenceComponents,
     exhaustionWarning: candidate.exhaustionWarning || undefined,
   };
 
   const market: MarketData = {
     pair, price: Math.round(price * 100) / 100, timestamp: now,
-    phase: "EARLY_ENTRY",
+    phase: mode === "BREAKOUT" ? "EXPANSION" : "EARLY_ENTRY",
     trend: `${regime.direction} ${regime.strength}`,
     htfBias: candidate.direction === "LONG" ? "BULLISH" : "BEARISH",
     regime,
@@ -509,7 +957,7 @@ export async function generateSignal(
     stoch1hK: stoch1h.k, stoch1hD: stoch1h.d,
   };
 
-  debug.push(`SIGNAL: ${signal.direction} ${signal.type} entry=${signal.entry} TP=${signal.target} SL=${signal.stop} RR=${signal.rr} conf=${signal.confidence}`);
+  debug.push(`SIGNAL: ${signal.direction} ${signal.type} mode=${signal.entryMode} entry=${signal.entry} TP=${signal.target} SL=${signal.stop} RR=${signal.rr} conf=${signal.confidence}`);
   return { signal, market, debug };
 }
 
