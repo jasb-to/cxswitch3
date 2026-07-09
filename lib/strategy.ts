@@ -283,7 +283,7 @@ async function evaluateRegime(pair: string, candles1d: Candle[], candles4h: Cand
   const reasons: string[] = [];
   const detectedAt = Date.now();
 
-  if (candles1d.length < 25 || candles4h.length < 30) {
+  if (candles1d.length < 20 || candles4h.length < 30) {
     return { direction: "NEUTRAL", strength: "INSUFFICIENT_DATA", confidence: 0, score: 0, reason: ["not_enough_candles"], detectedAt };
   }
 
@@ -296,15 +296,12 @@ async function evaluateRegime(pair: string, candles1d: Candle[], candles4h: Cand
   const ema21_4h = ema(closes4h, 21);
   const ema50_4h = ema(closes4h, 50);
 
-  // Debug 1D EMA status
-  if (ema21_1d.length === 0) reasons.push(`1D_ema21_empty_closes_${closes1d.length}`);
-  if (ema50_1d.length === 0) reasons.push(`1D_ema50_empty_closes_${closes1d.length}`);
-  if (ema200_1d.length === 0) reasons.push(`1D_ema200_empty_closes_${closes1d.length}`);
-
   let regimeScore = 0;
-  let direction: "LONG" | "SHORT" | "NEUTRAL" | null = null;
+  let direction: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
+  let tf1d: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
+  let tf4h: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
 
-  // 1D EMA analysis - use available EMAs, don't require all three
+  // ─── 1D TIMEFRAME ───
   if (ema21_1d.length > 0 && ema50_1d.length > 0) {
     const e21 = ema21_1d[ema21_1d.length - 1];
     const e50 = ema50_1d[ema50_1d.length - 1];
@@ -312,130 +309,83 @@ async function evaluateRegime(pair: string, candles1d: Candle[], candles4h: Cand
 
     if (ema200_1d.length > 0) {
       const e200 = ema200_1d[ema200_1d.length - 1];
-      if (e21 > e50 && e50 > e200) {
-        regimeScore += 40;
-        direction = "LONG";
-        reasons.push("1D_bullish_stack");
-      } else if (e21 < e50 && e50 < e200) {
-        regimeScore -= 40;
-        direction = "SHORT";
-        reasons.push("1D_bearish_stack");
+      if (e21 > e50 && e50 > e200 && lastClose > e200) {
+        regimeScore += 40; tf1d = "LONG"; reasons.push("1D_bullish_stack");
+      } else if (e21 < e50 && e50 < e200 && lastClose < e200) {
+        regimeScore -= 40; tf1d = "SHORT"; reasons.push("1D_bearish_stack");
+      } else if (e21 > e50 && lastClose > e21) {
+        regimeScore += 25; tf1d = "LONG"; reasons.push("1D_bullish_lean");
+      } else if (e21 < e50 && lastClose < e21) {
+        regimeScore -= 25; tf1d = "SHORT"; reasons.push("1D_bearish_lean");
       } else if (e21 > e50) {
-        regimeScore += 20;
-        direction = "LONG";
-        reasons.push("1D_bullish_lean");
+        regimeScore += 15; tf1d = "LONG"; reasons.push("1D_bullish_weak");
       } else if (e21 < e50) {
-        regimeScore -= 20;
-        direction = "SHORT";
-        reasons.push("1D_bearish_lean");
-      }
-      // Price vs 200EMA confirmation
-      if (lastClose > e200 && direction === "LONG") {
-        regimeScore += 10;
-        reasons.push("price_above_200ema");
-      } else if (lastClose < e200 && direction === "SHORT") {
-        regimeScore += 10;
-        reasons.push("price_below_200ema");
+        regimeScore -= 15; tf1d = "SHORT"; reasons.push("1D_bearish_weak");
       }
     } else {
-      // No EMA200 available - use 21/50 only with reduced confidence
       if (e21 > e50 && lastClose > e21) {
-        regimeScore += 25;
-        direction = "LONG";
-        reasons.push("1D_bullish_21_50");
+        regimeScore += 25; tf1d = "LONG"; reasons.push("1D_bullish_21_50");
       } else if (e21 < e50 && lastClose < e21) {
-        regimeScore -= 25;
-        direction = "SHORT";
-        reasons.push("1D_bearish_21_50");
+        regimeScore -= 25; tf1d = "SHORT"; reasons.push("1D_bearish_21_50");
       } else if (e21 > e50) {
-        regimeScore += 15;
-        direction = "LONG";
-        reasons.push("1D_bullish_weak");
+        regimeScore += 10; tf1d = "LONG"; reasons.push("1D_bullish_weak");
       } else if (e21 < e50) {
-        regimeScore -= 15;
-        direction = "SHORT";
-        reasons.push("1D_bearish_weak");
+        regimeScore -= 10; tf1d = "SHORT"; reasons.push("1D_bearish_weak");
       }
     }
   } else if (ema21_1d.length > 0) {
-    // Only EMA21 available - minimal trend indication
     const e21 = ema21_1d[ema21_1d.length - 1];
     const lastClose = closes1d[closes1d.length - 1];
-    if (lastClose > e21) {
-      regimeScore += 10;
-      direction = "LONG";
-      reasons.push("1D_price_above_21ema");
-    } else {
-      regimeScore -= 10;
-      direction = "SHORT";
-      reasons.push("1D_price_below_21ema");
-    }
+    if (lastClose > e21) { regimeScore += 10; tf1d = "LONG"; reasons.push("1D_price_above_21ema"); }
+    else { regimeScore -= 10; tf1d = "SHORT"; reasons.push("1D_price_below_21ema"); }
   }
 
+  // ─── 4H TIMEFRAME ───
   if (ema21_4h.length > 0 && ema50_4h.length > 0) {
     const e21 = ema21_4h[ema21_4h.length - 1];
     const e50 = ema50_4h[ema50_4h.length - 1];
-
-    if (direction === "LONG" && e21 > e50) {
-      regimeScore += 20;
-      reasons.push("4H_confirms_bull");
-    } else if (direction === "SHORT" && e21 < e50) {
-      regimeScore += 20;
-      reasons.push("4H_confirms_bear");
-    } else if (e21 > e50) {
-      regimeScore += 10;
-      reasons.push("4H_bullish");
+    if (e21 > e50) {
+      tf4h = "LONG";
+      if (tf1d === "LONG") { regimeScore += 20; reasons.push("4H_confirms_bull"); }
+      else { regimeScore += 10; reasons.push("4H_bullish"); }
     } else if (e21 < e50) {
-      regimeScore -= 10;
-      reasons.push("4H_bearish");
+      tf4h = "SHORT";
+      if (tf1d === "SHORT") { regimeScore += 20; reasons.push("4H_confirms_bear"); }
+      else { regimeScore -= 10; reasons.push("4H_bearish"); }
     }
   }
 
-  const rsi1d = rsi(closes1d);
-  const rsi4h = rsi(closes4h);
-  if (rsi1d > 60) {
-    regimeScore += 10;
-    reasons.push(`1D_rsi_strong_${f0(rsi1d)}`);
-  } else if (rsi1d < 40) {
-    regimeScore -= 10;
-    reasons.push(`1D_rsi_weak_${f0(rsi1d)}`);
+  // ─── TIMEFRAME CONFLICT PENALTY ───
+  if (tf1d !== "NEUTRAL" && tf4h !== "NEUTRAL" && tf1d !== tf4h) {
+    regimeScore = Math.round(regimeScore * 0.5);
+    reasons.push(`conflict_${tf1d}_1D_vs_${tf4h}_4H`);
   }
+
+  // ─── MOMENTUM ───
+  const rsi1d = rsi(closes1d);
+  if (rsi1d > 60) { regimeScore += (tf1d === "LONG" ? 10 : 5); reasons.push(`rsi_${f0(rsi1d)}`); }
+  else if (rsi1d < 40) { regimeScore -= (tf1d === "SHORT" ? 10 : 5); reasons.push(`rsi_${f0(rsi1d)}`); }
 
   const adx1d = adx(candles1d);
   const adx4h = adx(candles4h);
-  if (adx1d > 25) {
-    regimeScore += 15;
-    reasons.push(`1D_adx_strong_${f1(adx1d)}`);
-  } else if (adx1d < 20) {
-    regimeScore -= 10;
-    reasons.push(`1D_adx_weak_${f1(adx1d)}`);
-  }
+  if (adx1d > 25) { regimeScore += (tf1d !== "NEUTRAL" ? 15 : 5); reasons.push(`adx_${f1(adx1d)}`); }
+  if (adx4h > 25) { regimeScore += 10; reasons.push(`4H_adx_${f1(adx4h)}`); }
 
-  if (adx4h > 30) {
-    regimeScore += 10;
-    reasons.push(`4H_adx_trending_${f1(adx4h)}`);
-  }
+  // ─── DIRECTION RESOLUTION ───
+  if (tf1d !== "NEUTRAL") direction = tf1d;
+  else if (tf4h !== "NEUTRAL") { direction = tf4h; regimeScore += 5; reasons.push("fallback_4H"); }
 
+  // ─── STRENGTH ───
+  const absScore = Math.abs(regimeScore);
   let strength = "NEUTRAL";
-  if (Math.abs(regimeScore) > 45) strength = "STRONG";
-  else if (Math.abs(regimeScore) > 25) strength = "MODERATE";
-  else if (Math.abs(regimeScore) > 10) strength = "WEAK";
+  if (absScore > 45) strength = "STRONG";
+  else if (absScore > 25) strength = "MODERATE";
+  else if (absScore > 10) strength = "WEAK";
 
-  if (Math.abs(regimeScore) < 10) {
-    direction = "NEUTRAL";
-    strength = "NEUTRAL";
-    reasons.push("score_neutral");
-  }
+  if (absScore < 10) { direction = "NEUTRAL"; strength = "NEUTRAL"; reasons.push("score_neutral"); }
 
-  const confidence = Math.min(100, Math.max(0, Math.abs(regimeScore)));
-
-  // Ensure direction is never null
-  const safeDirection = direction || "NEUTRAL";
-
-  return { direction: safeDirection, strength, confidence, score: regimeScore, reason: reasons, detectedAt };
-}
-
-export function shouldInvalidateRegime(regime: MarketRegime): boolean {
+  return { direction, strength, confidence: Math.min(100, absScore), score: regimeScore, reason: reasons, detectedAt };
+}export function shouldInvalidateRegime(regime: MarketRegime): boolean {
   if (!regime) return false;
   const age = Date.now() - regime.detectedAt;
   return age > REGIME_CACHE_TTL_MS;
@@ -1197,12 +1147,9 @@ function scoreBestEntry(
     },
   };
 
-  debug.push(`PULLBACK: eligible=${candidates.pullback.eligible} conf=${f1(candidates.pullback.confidence)}`);
-  if (pullback) debug.push(`  reasons: ${pullback.reasons.join(", ")}`);
-  debug.push(`REJECTION: eligible=${candidates.rejection.eligible} conf=${f1(candidates.rejection.confidence)}`);
-  if (rejection) debug.push(`  reasons: ${rejection.reasons.join(", ")}`);
-  debug.push(`BREAKOUT: eligible=${candidates.breakout.eligible} conf=${f1(candidates.breakout.confidence)}`);
-  if (breakout) debug.push(`  reasons: ${breakout.reasons.join(", ")}`);
+  debug.push(`PULLBACK: ${candidates.pullback.eligible ? "PASS" : "FAIL"} conf=${f0(candidates.pullback.confidence)}${candidates.pullback.rejectionReason ? " " + candidates.pullback.rejectionReason : ""}`);
+  debug.push(`REJECTION: ${candidates.rejection.eligible ? "PASS" : "FAIL"} conf=${f0(candidates.rejection.confidence)}${candidates.rejection.rejectionReason ? " " + candidates.rejection.rejectionReason : ""}`);
+  debug.push(`BREAKOUT: ${candidates.breakout.eligible ? "PASS" : "FAIL"} conf=${f0(candidates.breakout.confidence)}${candidates.breakout.rejectionReason ? " " + candidates.breakout.rejectionReason : ""}`);
 
   let best: EntryCandidateInternal | null = null;
   if (pullback && (!best || pullback.finalConfidence > best.finalConfidence)) best = pullback;
@@ -1620,9 +1567,7 @@ export async function generateSignal(
     exhaustionWarning: candidate.exhaustionWarning || undefined,
   };
 
-  debug.push(`SIGNAL GENERATED: ${candidate.direction} ${pair} @ ${f2(candidate.entryPrice)} tier=${entryTier} conf=${f1(candidate.finalConfidence)} size=${f0(positionSizePct * 100)}% rr=${f2(rr)} mode=${candidate.entryMode}`);
-  debug.push(`  stop=${f2(stop)} target=${f2(target)}`);
-  debug.push(`  components: regime=${candidate.confidenceComponents.regimeAlignment} setup=${candidate.confidenceComponents.setupQuality} momentum=${candidate.confidenceComponents.momentum} structure=${candidate.confidenceComponents.structure} volume=${candidate.confidenceComponents.volume} risk=${candidate.confidenceComponents.riskPenalty}`);
+  debug.push(`SIGNAL: ${candidate.direction} ${pair} @ ${f2(candidate.entryPrice)} tier=${entryTier} conf=${f1(candidate.finalConfidence)} size=${f0(positionSizePct * 100)}% rr=${f2(rr)} mode=${candidate.entryMode}`);
 
   return {
     signal,
