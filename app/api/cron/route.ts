@@ -104,9 +104,10 @@ export async function GET(req: NextRequest) {
             signal.lockedStop = tm.lockedStop;
             signal.profitLockActive = tm.profitLockActive;
 
-            const pnl = signal.direction === "LONG"
-              ? ((price - signal.entry) / signal.entry * 100).toFixed(2) + "%"
-              : ((signal.entry - price) / signal.entry * 100).toFixed(2) + "%";
+            const rawPnl = signal.direction === "LONG"
+              ? ((price - signal.entry) / signal.entry * 100)
+              : ((signal.entry - price) / signal.entry * 100);
+            const pnl = (isFinite(rawPnl) ? rawPnl.toFixed(2) : "0.00") + "%";
 
             results[pair] = { status: "HOLDING", state: tm.newState, lockedStop: tm.lockedStop, pnl, signalId: signal.id };
           }
