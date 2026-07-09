@@ -41,9 +41,25 @@ export async function GET(req: NextRequest) {
   const secret = req.nextUrl.searchParams.get("secret");
   const token = authHeader?.replace("Bearer ", "") || secret;
 
-  if (CRON_SECRET && token !== CRON_SECRET) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  // Verify CRON_SECRET is configured
+  if (!CRON_SECRET) {
+    console.error("[CRON] CRON_SECRET environment variable is not set");
+    return NextResponse.json({ error: "Server misconfiguration: CRON_SECRET not set" }, { status: 500 });
   }
+
+  // Verify token was provided
+  if (!token) {
+    console.warn("[CRON] Rejected — no secret provided (query param or Authorization header missing)");
+    return NextResponse.json({ error: "Authentication required. Provide ?secret= or Authorization: Bearer header" }, { status: 401 });
+  }
+
+  // Verify token matches
+  if (token !== CRON_SECRET) {
+    console.warn("[CRON] Rejected — invalid secret provided");
+    return NextResponse.json({ error: "Invalid secret" }, { status: 401 });
+  }
+
+  console.log("[CRON] Authenticated successfully");
 
   const now = Date.now();
   const results: Record<string, any> = {};
@@ -139,20 +155,7 @@ export async function GET(req: NextRequest) {
         } else {
           results[pair] = { status: "NO_SIGNAL", trend: result.market?.trend, debug: result.debug };
 
-          // Only alert no-signal if regime is strong/moderate AND we had a candidate close to threshold
-          const regime = result.market?.regime;
-          const bestConf = Math.max(
-            result.entryCandidates?.pullback?.confidence || 0,
-            result.entryCandidates?.rejection?.confidence || 0,
-            result.entryCandidates?.breakout?.confidence || 0
-          );
-          if (regime && (regime.strength === "STRONG" || regime.strength === "MODERATE") && bestConf >= 55) {
-            try {
-              await alertNoSignal(pair, result.market, result.debug || []);
-            } catch (alertErr) {
-              console.error("[CRON] alertNoSignal failed for", pair, ":", alertErr);
-            }
-          }
+          // No NO_SIGNAL alerts — only actionable signals are sent to Telegram
         }
       }
     } catch (err) {
@@ -204,13 +207,14 @@ export async function GET(req: NextRequest) {
     console.error("[CRON] save state failed:", e);
   }
 
+  // Status reports only if DAILY_STATUS_REPORT env var is set, once per day at 00:00 UTC
   const hour = new Date(now).getUTCHours();
-  if (hour % 6 === 0) {
+  const sendDailyStatus = process.env.DAILY_STATUS_REPORT === "true";
+  if (sendDailyStatus && hour === 0) {
     try {
       await alertStatus(activeSignals, currentPrices);
     } catch (alertErr) {
       console.error("[CRON] alertStatus failed:", alertErr);
-      errors.push("alertStatus: " + alertErr);
     }
   }
 
