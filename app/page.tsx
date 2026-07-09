@@ -1,4 +1,4 @@
-// app/page.tsx — v29.1 CXSwitch Dashboard (FIXED TYPES)
+// app/page.tsx — v29.1 CXSwitch Dashboard (FIXED)
 // ============================================================
 
 "use client";
@@ -20,7 +20,6 @@ interface Signal {
   entryMode?: string;
   exhaustionWarning?: string;
   timestamp: number;
-  // Aligned with strategy.ts Signal type
   exited?: boolean;
   highestPrice?: number;
   lowestPrice?: number;
@@ -237,7 +236,7 @@ export default function Dashboard() {
                   <div className="h-8 bg-gray-800 rounded w-32"></div>
                 </div>
               );
-n              const regimeDir = snap.regime?.direction;
+              const regimeDir = snap.regime?.direction;
               const regimeColor = regimeDir === "LONG" ? "text-green-400" : regimeDir === "SHORT" ? "text-red-400" : "text-gray-400";
               return (
                 <div key={pair} className="p-4 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-700 transition">
