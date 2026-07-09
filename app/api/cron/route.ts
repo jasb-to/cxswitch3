@@ -139,8 +139,14 @@ export async function GET(req: NextRequest) {
         } else {
           results[pair] = { status: "NO_SIGNAL", trend: result.market?.trend, debug: result.debug };
 
+          // Only alert no-signal if regime is strong/moderate AND we had a candidate close to threshold
           const regime = result.market?.regime;
-          if (regime && (regime.strength === "STRONG" || regime.strength === "MODERATE")) {
+          const bestConf = Math.max(
+            result.entryCandidates?.pullback?.confidence || 0,
+            result.entryCandidates?.rejection?.confidence || 0,
+            result.entryCandidates?.breakout?.confidence || 0
+          );
+          if (regime && (regime.strength === "STRONG" || regime.strength === "MODERATE") && bestConf >= 55) {
             try {
               await alertNoSignal(pair, result.market, result.debug || []);
             } catch (alertErr) {
