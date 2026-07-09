@@ -37,7 +37,7 @@ function safeFixed(v: any, digits: number): string {
 
 export async function sendAlert(signal: any): Promise<boolean> {
   const dirEmoji = signal.direction === "LONG" ? "🟢" : "🔴";
-  const confEmoji = signal.confidence >= 70 ? "🟢" : signal.confidence >= 50 ? "🟡" : "🔴";
+  const tierEmoji = signal.entryTier === "CONFIRMED_ENTRY" ? "✅" : signal.entryTier === "EARLY_ENTRY" ? "⚡" : "🔴";
   const mode = signal.entryMode || "ENTRY";
   const conf = signal.confidence || 0;
   const rr = signal.rr || 0;
@@ -46,6 +46,7 @@ export async function sendAlert(signal: any): Promise<boolean> {
   const target = safeFixed(signal.target, 2);
   const slPct = safeFixed(Math.abs((signal.stop - signal.entry) / signal.entry) * 100, 1);
   const tpPct = safeFixed(Math.abs((signal.target - signal.entry) / signal.entry) * 100, 1);
+  const sizePct = safeFixed((signal.positionSizePct || 0) * 100, 0);
 
   // Build regime context line
   const regimeParts: string[] = [];
@@ -57,11 +58,11 @@ export async function sendAlert(signal: any): Promise<boolean> {
   const tagLine = reasonTags.slice(0, 6).join(", ");
 
   const text = 
-    `${dirEmoji} ${signal.pair} ${signal.direction} ${mode} — ${confEmoji} ${safeFixed(conf, 0)}%
+    `${dirEmoji} ${signal.pair} ${signal.direction} ${mode} — ${tierEmoji} ${signal.entryTier || "UNKNOWN"} (${safeFixed(conf, 0)}%)
 ` +
-    `Entry: ${entry} | Stop: ${stop} | Target: ${target}
+    `Entry: ${entry} | Stop: ${stop} | Target: ${target} | Size: ${sizePct}%
 ` +
-    `RR ${safeFixed(rr, 2)} | ${regimeParts.join(" ")} | ${tagLine} | RR ${safeFixed(rr, 2)} | SL ${slPct}% TP ${tpPct}%
+    `RR ${safeFixed(rr, 2)} | ${regimeParts.join(" ")} | ${tagLine} | SL ${slPct}% TP ${tpPct}%
 ` +
     `id=${signal.id}`;
 
