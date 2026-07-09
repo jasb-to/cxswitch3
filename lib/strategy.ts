@@ -257,21 +257,11 @@ function classifyEntryTier(confidence: number): EntryTier {
   return "NO_TRADE";
 }
 
-function getPositionSizePct(tier: EntryTier, regimeStrength: string): number {
+// [v29.1] FIXED: simplified position sizing — 33% for EARLY, 100% for CONFIRMED
+function getPositionSizePct(tier: EntryTier, _regimeStrength: string): number {
   if (tier === "NO_TRADE") return 0;
-  const s = (regimeStrength || "").toUpperCase();
-  if (tier === "CONFIRMED_ENTRY") {
-    if (s === "STRONG") return 1.0;
-    if (s === "MODERATE") return 0.75;
-    if (s === "WEAK") return 0.50;
-    return 0;
-  }
-  if (tier === "EARLY_ENTRY") {
-    if (s === "STRONG") return 0.40;
-    if (s === "MODERATE") return 0.30;
-    if (s === "WEAK") return 0.20;
-    return 0;
-  }
+  if (tier === "EARLY_ENTRY") return 0.33;
+  if (tier === "CONFIRMED_ENTRY") return 1.0;
   return 0;
 }
 
