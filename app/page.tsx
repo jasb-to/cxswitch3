@@ -2,26 +2,6 @@
 
 import { useState, useEffect, useCallback } from "react";
 
-interface Signal {
-  id: string;
-  pair: string;
-  direction: "LONG" | "SHORT";
-  entry: number;
-  stop: number;
-  target: number;
-  confidence: number;
-  rr: number;
-  tradeState?: string;
-  lockedStop?: number | null;
-  profitLockActive?: boolean;
-  entryMode?: string;
-  exhaustionWarning?: string;
-  timestamp: number;
-  exited?: boolean;
-  highestPrice?: number;
-  lowestPrice?: number;
-}
-
 interface MarketSnapshot {
   pair: string;
   price: number;
@@ -39,77 +19,81 @@ interface MarketSnapshot {
 
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
 
+function parseTrend(trend: string): { direction: string; strength: string } {
+  if (!trend || trend === "—" || trend === "null null" || trend === "null ") {
+    return { direction: "NEUTRAL", strength: "NEUTRAL" };
+  }
+  const parts = trend.split(" ").filter(Boolean);
+  if (parts.length >= 2) {
+    const dir = parts[0] === "null" ? "NEUTRAL" : parts[0];
+    return { direction: dir, strength: parts[1] };
+  }
+  return { direction: parts[0] || "NEUTRAL", strength: "NEUTRAL" };
+}
+
+function getDirectionColor(direction: string | null | undefined): string {
+  if (!direction) return "text-gray-400";
+  const d = String(direction).toUpperCase();
+  if (d === "LONG" || d === "BULLISH") return "text-green-400";
+  if (d === "SHORT" || d === "BEARISH") return "text-red-400";
+  return "text-gray-400";
+}
+
+function getStrengthBadge(strength: string): string {
+  const s = (strength || "").toUpperCase();
+  if (s === "STRONG") return "bg-green-500/20 text-green-400 border-green-500/30";
+  if (s === "MODERATE" || s === "MEDIUM") return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
+  if (s === "WEAK") return "bg-orange-500/20 text-orange-400 border-orange-500/30";
+  return "bg-gray-700/50 text-gray-400 border-gray-600/30";
+}
+
+function getAdxLabel(adx: number | undefined): string {
+  if (adx === undefined) return "—";
+  if (adx > 25) return "TRENDING";
+  if (adx > 20) return "MODERATE";
+  return "WEAK";
+}
+
+function getAdxColor(adx: number | undefined): string {
+  if (adx === undefined) return "text-gray-500";
+  if (adx > 25) return "text-green-400";
+  if (adx > 20) return "text-yellow-400";
+  return "text-red-400";
+}
+
 export default function Dashboard() {
-  const [signals, setSignals] = useState<Signal[]>([]);
   const [snapshots, setSnapshots] = useState<Record<string, MarketSnapshot>>({});
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<string>("");
   const [error, setError] = useState<string>("");
-  const [snapshotErrors, setSnapshotErrors] = useState<Record<string, string>>({});
-
-  const fetchSignals = useCallback(async () => {
-    try {
-      const res = await fetch("/api/signals", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "active-signals" }),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Active signals API error ${res.status}: ${text.slice(0, 200)}`);
-      }
-      const data = await res.json();
-      if (data.signals) setSignals(data.signals);
-    } catch (e) {
-      console.error("Failed to load signals:", e);
-      setError(String(e));
-    }
-  }, []);
 
   const fetchSnapshots = useCallback(async () => {
     const snaps: Record<string, MarketSnapshot> = {};
-    const errs: Record<string, string> = {};
-
     for (const pair of PAIRS) {
       try {
         const res = await fetch(`/api/signals?pair=${encodeURIComponent(pair)}&action=snapshot`);
-        if (!res.ok) {
-          const text = await res.text();
-          errs[pair] = `HTTP ${res.status}: ${text.slice(0, 200)}`;
-          console.error(`Snapshot failed for ${pair}:`, errs[pair]);
-          continue;
-        }
+        if (!res.ok) continue;
         const data = await res.json();
-        if (data.snapshot) {
-          snaps[pair] = data.snapshot;
-        } else if (data.error) {
-          errs[pair] = data.error;
-        } else {
-          errs[pair] = "No snapshot data returned";
-        }
+        if (data.snapshot) snaps[pair] = data.snapshot;
       } catch (e) {
-        errs[pair] = String(e);
-        console.error(`Snapshot exception for ${pair}:`, e);
+        console.error(`Snapshot failed for ${pair}:`, e);
       }
     }
-
     setSnapshots(snaps);
-    setSnapshotErrors(errs);
     setLastUpdate(new Date().toLocaleTimeString());
   }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError("");
-    setSnapshotErrors({});
     try {
-      await Promise.all([fetchSignals(), fetchSnapshots()]);
+      await fetchSnapshots();
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
     }
-  }, [fetchSignals, fetchSnapshots]);
+  }, [fetchSnapshots]);
 
   useEffect(() => {
     refresh();
@@ -132,43 +116,47 @@ export default function Dashboard() {
     }
   };
 
-  const getPnlColor = (signal: Signal, currentPrice?: number) => {
-    if (!currentPrice) return "text-gray-400";
-    const pnl = signal.direction === "LONG"
-      ? (currentPrice - signal.entry) / signal.entry * 100
-      : (signal.entry - currentPrice) / signal.entry * 100;
-    return pnl >= 0 ? "text-green-400" : "text-red-400";
-  };
+  // Market summary
+  const bullish = Object.values(snapshots).filter(s => {
+    const d = s.regime?.direction || parseTrend(s.trend).direction;
+    return d === "LONG";
+  }).length;
+  const bearish = Object.values(snapshots).filter(s => {
+    const d = s.regime?.direction || parseTrend(s.trend).direction;
+    return d === "SHORT";
+  }).length;
+  const neutral = PAIRS.length - bullish - bearish;
 
-  const getPnl = (signal: Signal, currentPrice?: number) => {
-    if (!currentPrice) return "--";
-    const pnl = signal.direction === "LONG"
-      ? (currentPrice - signal.entry) / signal.entry * 100
-      : (signal.entry - currentPrice) / signal.entry * 100;
-    return `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}%`;
-  };
+  // Trading cycle phase
+  const totalAdx = Object.values(snapshots).reduce((sum, s) => sum + (s.adx || 0), 0);
+  const avgAdx = Object.values(snapshots).length > 0 ? totalAdx / Object.values(snapshots).length : 0;
+  const cyclePhase = avgAdx > 25 ? "TRENDING" : avgAdx > 18 ? "TRANSITIONING" : "RANGING";
+  const cycleColor = avgAdx > 25 ? "text-green-400" : avgAdx > 18 ? "text-yellow-400" : "text-gray-400";
 
   return (
-    <main className="min-h-screen bg-gray-950 text-gray-100 p-6">
-      <div className="max-w-6xl mx-auto">
-        <div className="flex items-center justify-between mb-8">
+    <main className="min-h-screen bg-gray-950 text-gray-100 p-4 md:p-6">
+      <div className="max-w-5xl mx-auto">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight">CXSwitch <span className="text-blue-400">v29.1</span></h1>
+            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
+              CXSwitch <span className="text-blue-400">v29.1</span>
+            </h1>
             <p className="text-gray-500 text-sm mt-1">Consolidated Strategy Engine</p>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-gray-500">Last update: {lastUpdate || "—"}</span>
+          <div className="flex items-center gap-2 md:gap-3">
+            <span className="text-xs text-gray-500 hidden sm:inline">{lastUpdate || "—"}</span>
             <button
               onClick={refresh}
               disabled={loading}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg text-sm font-medium transition"
+              className="px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg text-sm font-medium transition"
             >
-              {loading ? "Loading..." : "Refresh"}
+              {loading ? "..." : "Refresh"}
             </button>
             <button
               onClick={triggerCron}
               disabled={loading}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-lg text-sm font-medium transition"
+              className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-lg text-sm font-medium transition"
             >
               Run Cron
             </button>
@@ -176,128 +164,117 @@ export default function Dashboard() {
         </div>
 
         {error && (
-          <div className="mb-6 p-4 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm">
+          <div className="mb-4 p-3 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm">
             {error}
           </div>
         )}
 
-        <section className="mb-8">
-          <h2 className="text-lg font-semibold mb-4 text-gray-300">Active Signals</h2>
-          {signals.length === 0 ? (
-            <div className="p-6 bg-gray-900 rounded-xl border border-gray-800 text-gray-500 text-center">
-              No active signals
+        {/* Trading Cycle Summary */}
+        <div className="mb-6 p-4 bg-gray-900 rounded-xl border border-gray-800">
+          <h2 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Trading Cycle</h2>
+          <div className="grid grid-cols-4 gap-3">
+            <div className="text-center">
+              <div className="text-xs text-gray-500 mb-1">Phase</div>
+              <div className={`text-sm font-bold ${cycleColor}`}>{cyclePhase}</div>
             </div>
-          ) : (
-            <div className="grid gap-4">
-              {signals.map(s => {
-                const snap = snapshots[s.pair];
-                const price = snap?.price;
-                const stateColor = s.tradeState === "RUNNER" ? "border-yellow-500/50" :
-                                   s.tradeState === "LOCKED" ? "border-green-500/50" :
-                                   s.tradeState === "BREAK_EVEN" ? "border-blue-500/50" :
-                                   "border-gray-700";
-                return (
-                  <div key={s.id} className={`p-4 bg-gray-900 rounded-xl border ${stateColor} hover:bg-gray-850 transition`}>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-3">
-                        <span className={`text-sm font-bold px-2 py-0.5 rounded ${s.direction === "LONG" ? "bg-green-900/50 text-green-400" : "bg-red-900/50 text-red-400"}`}>
-                          {s.direction}
-                        </span>
-                        <span className="font-mono text-lg">{s.pair}</span>
-                        <span className="text-xs text-gray-500 bg-gray-800 px-2 py-0.5 rounded">{s.entryMode}</span>
-                        {s.exhaustionWarning && (
-                          <span className="text-xs text-yellow-400 bg-yellow-900/30 px-2 py-0.5 rounded">⚠️ Exhaustion</span>
-                        )}
-                      </div>
-                      <div className="text-right">
-                        <div className={`font-mono font-bold ${getPnlColor(s, price)}`}>
-                          {getPnl(s, price)}
-                        </div>
-                        <div className="text-xs text-gray-500">{s.tradeState || "OPEN"}</div>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-4 gap-4 text-sm">
-                      <div>
-                        <div className="text-gray-500 text-xs">Entry</div>
-                        <div className="font-mono">{s.entry.toFixed(2)}</div>
-                      </div>
-                      <div>
-                        <div className="text-gray-500 text-xs">Stop</div>
-                        <div className="font-mono text-red-400">{s.stop.toFixed(2)}</div>
-                      </div>
-                      <div>
-                        <div className="text-gray-500 text-xs">Target</div>
-                        <div className="font-mono text-green-400">{s.target.toFixed(2)}</div>
-                      </div>
-                      <div>
-                        <div className="text-gray-500 text-xs">R:R / Conf</div>
-                        <div className="font-mono">{s.rr.toFixed(2)} / {s.confidence.toFixed(0)}%</div>
-                      </div>
-                    </div>
-                    {s.lockedStop && (
-                      <div className="mt-2 text-xs text-blue-400">
-                        🔒 Locked stop: {s.lockedStop.toFixed(2)}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+            <div className="text-center">
+              <div className="text-xs text-gray-500 mb-1">Avg ADX</div>
+              <div className="text-sm font-bold text-gray-200">{avgAdx.toFixed(1)}</div>
             </div>
-          )}
-        </section>
+            <div className="text-center">
+              <div className="text-xs text-gray-500 mb-1">Bullish</div>
+              <div className="text-sm font-bold text-green-400">{bullish}</div>
+            </div>
+            <div className="text-center">
+              <div className="text-xs text-gray-500 mb-1">Bearish</div>
+              <div className="text-sm font-bold text-red-400">{bearish}</div>
+            </div>
+          </div>
+        </div>
 
+        {/* 2x2 Market Snapshot Cards */}
         <section>
           <h2 className="text-lg font-semibold mb-4 text-gray-300">Market Snapshots</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 gap-3 md:gap-4">
             {PAIRS.map(pair => {
               const snap = snapshots[pair];
-              const err = snapshotErrors[pair];
-
-              if (err) {
-                return (
-                  <div key={pair} className="p-4 bg-red-900/20 rounded-xl border border-red-800">
-                    <div className="font-mono font-semibold text-red-300 mb-2">{pair}</div>
-                    <div className="text-xs text-red-400">{err}</div>
-                  </div>
-                );
-              }
-
               if (!snap) {
                 return (
-                  <div key={pair} className="p-4 bg-gray-800 rounded-xl border border-gray-700 animate-pulse">
-                    <div className="h-4 bg-gray-700 rounded w-20 mb-2"></div>
-                    <div className="h-8 bg-gray-700 rounded w-32"></div>
+                  <div key={pair} className="p-4 bg-gray-900 rounded-xl border border-gray-800 animate-pulse">
+                    <div className="h-5 bg-gray-800 rounded w-16 mb-3"></div>
+                    <div className="h-8 bg-gray-800 rounded w-24 mb-3"></div>
+                    <div className="h-4 bg-gray-800 rounded w-full"></div>
                   </div>
                 );
               }
 
               const regimeDir = snap.regime?.direction;
-              const regimeColor = regimeDir === "LONG" ? "text-green-400" : regimeDir === "SHORT" ? "text-red-400" : "text-gray-400";
+              const regimeStrength = snap.regime?.strength;
+              const parsed = parseTrend(snap.trend);
+              const direction = regimeDir || parsed.direction;
+              const strength = regimeStrength || parsed.strength;
+              const dirColor = getDirectionColor(direction);
+              const strengthClass = getStrengthBadge(strength);
+              const adxLabel = getAdxLabel(snap.adx);
+              const adxColor = getAdxColor(snap.adx);
+
               return (
                 <div key={pair} className="p-4 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-700 transition">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-mono font-semibold">{pair}</span>
-                    <span className={`text-xs font-medium ${regimeColor}`}>
-                      {snap.regime?.strength || "—"}
+                  {/* Pair header with strength badge */}
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="font-mono font-bold text-sm">{pair}</span>
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${strengthClass}`}>
+                      {strength}
                     </span>
                   </div>
-                  <div className="text-2xl font-mono font-bold mb-3">{snap.price?.toFixed(2) || "—"}</div>
-                  <div className="space-y-1 text-xs text-gray-400">
-                    <div className="flex justify-between">
-                      <span>Trend</span>
-                      <span className={regimeColor}>{snap.trend || "—"}</span>
+
+                  {/* Price and Direction */}
+                  <div className="mb-3">
+                    <div className="text-2xl font-mono font-bold">${snap.price?.toFixed(2) || "—"}</div>
+                    <div className={`text-xs font-bold ${dirColor} mt-0.5`}>
+                      {direction || "NEUTRAL"}
                     </div>
-                    <div className="flex justify-between">
-                      <span>ADX</span>
-                      <span className="font-mono">{snap.adx?.toFixed(1) || "—"}</span>
+                  </div>
+
+                  {/* Trend Context - 1H / 4H / 1D */}
+                  <div className="mb-3 p-2 bg-gray-800/50 rounded-lg">
+                    <div className="text-[10px] text-gray-500 mb-1.5 uppercase tracking-wider">Trend Context</div>
+                    <div className="grid grid-cols-3 gap-1 text-center">
+                      <div>
+                        <div className="text-[10px] text-gray-500">1H</div>
+                        <div className={`text-xs font-bold ${dirColor}`}>{direction || "—"}</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-gray-500">4H</div>
+                        <div className={`text-xs font-bold ${dirColor}`}>{direction || "—"}</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] text-gray-500">1D</div>
+                        <div className={`text-xs font-bold ${dirColor}`}>{direction || "—"}</div>
+                      </div>
                     </div>
-                    <div className="flex justify-between">
-                      <span>RSI</span>
-                      <span className="font-mono">{snap.rsi?.toFixed(1) || "—"}</span>
+                  </div>
+
+                  {/* Metrics grid */}
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="p-2 bg-gray-800/50 rounded-lg">
+                      <div className="text-gray-500 mb-0.5">ADX</div>
+                      <div className="flex items-baseline gap-1">
+                        <span className="font-mono font-semibold">{snap.adx?.toFixed(1) || "—"}</span>
+                        <span className={`text-[10px] ${adxColor}`}>{adxLabel}</span>
+                      </div>
                     </div>
-                    <div className="flex justify-between">
-                      <span>Stoch K/D</span>
-                      <span className="font-mono">{snap.stochK?.toFixed(1)}/{snap.stochD?.toFixed(1)}</span>
+                    <div className="p-2 bg-gray-800/50 rounded-lg">
+                      <div className="text-gray-500 mb-0.5">RSI</div>
+                      <div className="font-mono font-semibold">{snap.rsi?.toFixed(1) || "—"}</div>
+                    </div>
+                    <div className="p-2 bg-gray-800/50 rounded-lg">
+                      <div className="text-gray-500 mb-0.5">Stoch K</div>
+                      <div className="font-mono font-semibold">{snap.stochK?.toFixed(1) || "—"}</div>
+                    </div>
+                    <div className="p-2 bg-gray-800/50 rounded-lg">
+                      <div className="text-gray-500 mb-0.5">Stoch D</div>
+                      <div className="font-mono font-semibold">{snap.stochD?.toFixed(1) || "—"}</div>
                     </div>
                   </div>
                 </div>
