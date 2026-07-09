@@ -139,3 +139,29 @@ export async function setCronLogs(logs: any[]): Promise<void> {
 export async function getCronLogs(): Promise<any[]> {
   return loadJson(join(DATA_DIR, "cron-logs.json"), []);
 }
+
+// ─── DASHBOARD SNAPSHOT PERSISTENCE ───
+// Saved by /api/cron, read by /api/signals.
+// This is the bridge between the writer (cron) and readers (dashboard).
+
+const SNAPSHOT_KEY = "dashboard_snapshot";
+const SNAPSHOT_TTL_MS = 20 * 60 * 1000; // 20 minutes (cron runs every 10)
+
+export async function saveDashboardSnapshot(snapshot: any): Promise<void> {
+  await kv.set(SNAPSHOT_KEY, JSON.stringify(snapshot));
+}
+
+export async function loadDashboardSnapshot(): Promise<any | null> {
+  const data = await kv.get(SNAPSHOT_KEY);
+  if (!data) return null;
+  
+  const snapshot = typeof data === "string" ? JSON.parse(data) : data;
+  
+  // Warn if stale but still return it — client can show a warning
+  const age = Date.now() - (snapshot?.timestamp || 0);
+  if (age > SNAPSHOT_TTL_MS) {
+    console.warn(`[SNAPSHOT] Stale — ${Math.round(age / 60000)}min old`);
+  }
+  
+  return snapshot;
+}
