@@ -140,10 +140,13 @@ export async function GET(req: NextRequest) {
         if (result.signal) {
           const signal = result.signal;
           activeSignals.push(signal);
-          try {
-            await sendAlert(signal);
-          } catch (alertErr) {
-            console.error("[CRON] sendAlert failed for", signal.id, ":", alertErr);
+          // [v29.1] Only send Telegram for actionable signals (EARLY / CONFIRMED)
+          if (signal.entryTier !== "NO_TRADE") {
+            try {
+              await sendAlert(signal);
+            } catch (alertErr) {
+              console.error("[CRON] sendAlert failed for", signal.id, ":", alertErr);
+            }
           }
           results[pair] = {
             status: "SIGNAL",
@@ -154,6 +157,8 @@ export async function GET(req: NextRequest) {
             target: signal.target,
             rr: signal.rr,
             mode: signal.entryMode,
+            entryTier: signal.entryTier,
+            positionSizePct: signal.positionSizePct,
           };
         } else {
           results[pair] = { status: "NO_SIGNAL", trend: result.market?.trend };
