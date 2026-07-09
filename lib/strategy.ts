@@ -177,6 +177,17 @@ export interface TrendContext {
   strength: string;
 }
 
+// ─── SAFE NUMBER FORMATTING ───
+
+function safeNum(v: any): number {
+  const n = Number(v);
+  return isFinite(n) ? n : 0;
+}
+
+function f0(v: any): string { return safeNum(v).toFixed(0); }
+function f1(v: any): string { return safeNum(v).toFixed(1); }
+function f2(v: any): string { return safeNum(v).toFixed(2); }
+
 // ─── REGIME PERSISTENCE & CACHE ───
 
 interface RegimeCache {
@@ -242,7 +253,7 @@ async function evaluateRegime(pair: string, candles1d: Candle[], candles4h: Cand
   const detectedAt = Date.now();
 
   if (candles1d.length < 25 || candles4h.length < 30) {
-    return { direction: null, strength: "INSUFFICIENT_DATA", confidence: 0, score: 0, reason: ["not_enough_candles"], detectedAt };
+    return { direction: "NEUTRAL", strength: "INSUFFICIENT_DATA", confidence: 0, score: 0, reason: ["not_enough_candles"], detectedAt };
   }
 
   const closes1d = candles1d.map(c => c.close);
@@ -304,25 +315,25 @@ async function evaluateRegime(pair: string, candles1d: Candle[], candles4h: Cand
   const rsi4h = rsi(closes4h);
   if (rsi1d > 60) {
     regimeScore += 10;
-    reasons.push(`1D_rsi_strong_${rsi1d.toFixed(0)}`);
+    reasons.push(`1D_rsi_strong_${f0(rsi1d)}`);
   } else if (rsi1d < 40) {
     regimeScore -= 10;
-    reasons.push(`1D_rsi_weak_${rsi1d.toFixed(0)}`);
+    reasons.push(`1D_rsi_weak_${f0(rsi1d)}`);
   }
 
   const adx1d = adx(candles1d);
   const adx4h = adx(candles4h);
   if (adx1d > 25) {
     regimeScore += 15;
-    reasons.push(`1D_adx_strong_${adx1d.toFixed(1)}`);
+    reasons.push(`1D_adx_strong_${f1(adx1d)}`);
   } else if (adx1d < 20) {
     regimeScore -= 10;
-    reasons.push(`1D_adx_weak_${adx1d.toFixed(1)}`);
+    reasons.push(`1D_adx_weak_${f1(adx1d)}`);
   }
 
   if (adx4h > 30) {
     regimeScore += 10;
-    reasons.push(`4H_adx_trending_${adx4h.toFixed(1)}`);
+    reasons.push(`4H_adx_trending_${f1(adx4h)}`);
   }
 
   let strength = "NEUTRAL";
@@ -338,7 +349,10 @@ async function evaluateRegime(pair: string, candles1d: Candle[], candles4h: Cand
 
   const confidence = Math.min(100, Math.max(0, Math.abs(regimeScore)));
 
-  return { direction, strength, confidence, score: regimeScore, reason: reasons, detectedAt };
+  // Ensure direction is never null
+  const safeDirection = direction || "NEUTRAL";
+
+  return { direction: safeDirection, strength, confidence, score: regimeScore, reason: reasons, detectedAt };
 }
 
 export function shouldInvalidateRegime(regime: MarketRegime): boolean {
@@ -353,8 +367,8 @@ function sma(values: number[], period: number): number[] {
   if (values.length < period) return [];
   const out: number[] = [];
   for (let i = period - 1; i < values.length; i++) {
-    const slice = values.slice(i - period + 1, i + 1);
-    out.push(slice.reduce((a, b) => a + b, 0) / period);
+    const slice = values.slice(i - period + 1, i + 1).filter(isFinite);
+    if (slice.length) out.push(slice.reduce((a, b) => a + b, 0) / slice.length);
   }
   return out;
 }
@@ -363,10 +377,12 @@ function ema(values: number[], period: number): number[] {
   if (values.length < period) return [];
   const k = 2 / (period + 1);
   const out: number[] = [];
-  let prev = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  const seed = values.slice(0, period).reduce((a, b) => a + (isFinite(b) ? b : 0), 0) / period;
+  let prev = isFinite(seed) ? seed : values[0] || 0;
   out.push(prev);
   for (let i = period; i < values.length; i++) {
-    prev = values[i] * k + prev * (1 - k);
+    const v = isFinite(values[i]) ? values[i] : prev;
+    prev = v * k + prev * (1 - k);
     out.push(prev);
   }
   return out;
@@ -383,7 +399,10 @@ function lowest(values: number[], period: number): number {
 }
 
 function avg(arr: number[]): number {
-  return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+  if (!arr.length) return 0;
+  const sum = arr.reduce((a, b) => a + (isFinite(b) ? b : 0), 0);
+  const result = sum / arr.length;
+  return isFinite(result) ? result : 0;
 }
 
 function linearRegression(closes: number[], lookback: number = 50): { slope: number; intercept: number; supportLevel: number; resistanceLevel: number } {
@@ -412,15 +431,18 @@ function rsi(values: number[], period: number = 14): number {
   const losses = diffs.filter(d => d < 0).map(d => Math.abs(d));
   const avgGain = avg(gains.slice(-period));
   const avgLoss = avg(losses.slice(-period));
+  if (!isFinite(avgGain) || !isFinite(avgLoss)) return 50;
   if (avgLoss === 0) return avgGain > 0 ? 100 : 50;
   const rs = avgGain / avgLoss;
+  if (!isFinite(rs)) return 50;
   return 100 - 100 / (1 + rs);
 }
 
 function stochRsi(values: number[], period: number = 14, k: number = 3, d: number = 3): { k: number; d: number } {
   const rsiValues: number[] = [];
   for (let i = period; i < values.length; i++) {
-    rsiValues.push(rsi(values.slice(0, i + 1), period));
+    const r = rsi(values.slice(0, i + 1), period);
+    if (isFinite(r)) rsiValues.push(r);
   }
   if (rsiValues.length < k) return { k: 50, d: 50 };
 
@@ -430,7 +452,7 @@ function stochRsi(values: number[], period: number = 14, k: number = 3, d: numbe
     const highest = Math.max(...slice);
     const lowest = Math.min(...slice);
     const stochK = lowest === highest ? 50 : ((rsiValues[i] - lowest) / (highest - lowest)) * 100;
-    stochKValues.push(stochK);
+    stochKValues.push(isFinite(stochK) ? stochK : 50);
   }
 
   if (stochKValues.length < d) return { k: stochKValues[stochKValues.length - 1] || 50, d: 50 };
@@ -439,7 +461,7 @@ function stochRsi(values: number[], period: number = 14, k: number = 3, d: numbe
   const stochD = avg(dValues);
   const stochK = stochKValues[stochKValues.length - 1];
 
-  return { k: stochK, d: stochD };
+  return { k: isFinite(stochK) ? stochK : 50, d: isFinite(stochD) ? stochD : 50 };
 }
 
 function adx(candles: Candle[], period: number = 14): number {
@@ -476,8 +498,10 @@ function adx(candles: Candle[], period: number = 14): number {
     let sum = values.slice(0, lookback).reduce((a, b) => a + b, 0);
     result.push(sum / lookback);
     for (let i = lookback; i < values.length; i++) {
-      sum = result[result.length - 1] * lookback - result[result.length - 1] + values[i];
-      result.push(sum / lookback);
+      const prev = result[result.length - 1];
+      sum = prev * lookback - prev + values[i];
+      const val = sum / lookback;
+      result.push(isFinite(val) ? val : prev);
     }
     return result;
   };
@@ -506,7 +530,8 @@ function adx(candles: Candle[], period: number = 14): number {
   }
 
   const adxRma = wildersRma(dxArray, period);
-  return adxRma[adxRma.length - 1] || 0;
+  const finalAdx = adxRma[adxRma.length - 1];
+  return isFinite(finalAdx) ? finalAdx : 0;
 }
 
 // ─── CANDLE AGGREGATION ───
@@ -717,7 +742,7 @@ function scorePullbackEntry(
   // Momentum score
   if (Math.abs(roc) > 2) {
     momentum += Math.min(15, Math.abs(roc) * 3);
-    reasons.push(`momentum_roc:${roc.toFixed(1)}:+${Math.min(15, Math.abs(roc) * 3).toFixed(0)}`);
+    reasons.push(`momentum_roc:${f1(roc)}:+${f0(Math.min(15, Math.abs(roc) * 3))}`);
   }
 
   // Structure: price vs EMAs
@@ -866,7 +891,7 @@ function scoreRejectionEntry(
   const roc15m = ((closes15m[closes15m.length - 1] - closes15m[closes15m.length - 4]) / closes15m[closes15m.length - 4]) * 100;
   if (Math.abs(roc15m) > 1.5) {
     momentum += Math.min(15, Math.abs(roc15m) * 3);
-    reasons.push(`momentum_15m:${roc15m.toFixed(1)}:+${Math.min(15, Math.abs(roc15m) * 3).toFixed(0)}`);
+    reasons.push(`momentum_15m:${f1(roc15m)}:+${f0(Math.min(15, Math.abs(roc15m) * 3))}`);
   }
 
   // Volume confirmation on rejection candle
@@ -990,17 +1015,17 @@ function scoreBreakoutEntry(
   const roc = ((closes[closes.length - 1] - closes[closes.length - 4]) / closes[closes.length - 4]) * 100;
   if (Math.abs(roc) > 2) {
     momentum += Math.min(15, Math.abs(roc) * 3);
-    reasons.push(`momentum_roc:${roc.toFixed(1)}:+${Math.min(15, Math.abs(roc) * 3).toFixed(0)}`);
+    reasons.push(`momentum_roc:${f1(roc)}:+${f0(Math.min(15, Math.abs(roc) * 3))}`);
   }
 
   // ADX check for breakout quality
   const adx1h = adx(candles1h);
   if (adx1h > config.minADX) {
     structure += 15;
-    reasons.push(`adx_confirms:${adx1h.toFixed(1)}:+15`);
+    reasons.push(`adx_confirms:${f1(adx1h)}:+15`);
   } else {
     structure -= 10;
-    reasons.push(`adx_weak:${adx1h.toFixed(1)}:-10`);
+    reasons.push(`adx_weak:${f1(adx1h)}:-10`);
   }
 
   // Risk
@@ -1066,30 +1091,30 @@ function scoreBestEntry(
       eligible: !!pullback && (pullback.finalConfidence >= 50),
       confidence: pullback?.finalConfidence || 0,
       rejectionReason: pullback
-        ? (pullback.finalConfidence < 50 ? `confidence_too_low:${pullback.finalConfidence.toFixed(0)}` : null)
+        ? (pullback.finalConfidence < 50 ? `confidence_too_low:${f0(pullback.finalConfidence)}` : null)
         : "no_cross_or_regime_mismatch",
     },
     rejection: {
       eligible: !!rejection && (rejection.finalConfidence >= 50),
       confidence: rejection?.finalConfidence || 0,
       rejectionReason: rejection
-        ? (rejection.finalConfidence < 50 ? `confidence_too_low:${rejection.finalConfidence.toFixed(0)}` : null)
+        ? (rejection.finalConfidence < 50 ? `confidence_too_low:${f0(rejection.finalConfidence)}` : null)
         : "no_rejection_pattern_or_regime_mismatch",
     },
     breakout: {
       eligible: !!breakout && (breakout.finalConfidence >= 50),
       confidence: breakout?.finalConfidence || 0,
       rejectionReason: breakout
-        ? (breakout.finalConfidence < 50 ? `confidence_too_low:${breakout.finalConfidence.toFixed(0)}` : null)
+        ? (breakout.finalConfidence < 50 ? `confidence_too_low:${f0(breakout.finalConfidence)}` : null)
         : "no_breakout_or_regime_mismatch",
     },
   };
 
-  debug.push(`PULLBACK: eligible=${candidates.pullback.eligible} conf=${candidates.pullback.confidence.toFixed(1)}`);
+  debug.push(`PULLBACK: eligible=${candidates.pullback.eligible} conf=${f1(candidates.pullback.confidence)}`);
   if (pullback) debug.push(`  reasons: ${pullback.reasons.join(", ")}`);
-  debug.push(`REJECTION: eligible=${candidates.rejection.eligible} conf=${candidates.rejection.confidence.toFixed(1)}`);
+  debug.push(`REJECTION: eligible=${candidates.rejection.eligible} conf=${f1(candidates.rejection.confidence)}`);
   if (rejection) debug.push(`  reasons: ${rejection.reasons.join(", ")}`);
-  debug.push(`BREAKOUT: eligible=${candidates.breakout.eligible} conf=${candidates.breakout.confidence.toFixed(1)}`);
+  debug.push(`BREAKOUT: eligible=${candidates.breakout.eligible} conf=${f1(candidates.breakout.confidence)}`);
   if (breakout) debug.push(`  reasons: ${breakout.reasons.join(", ")}`);
 
   let best: EntryCandidateInternal | null = null;
@@ -1098,7 +1123,7 @@ function scoreBestEntry(
   if (breakout && (!best || breakout.finalConfidence > best.finalConfidence)) best = breakout;
 
   if (best && best.finalConfidence < 50) {
-    debug.push(`Best candidate confidence ${best.finalConfidence.toFixed(1)} below threshold 50`);
+    debug.push(`Best candidate confidence ${f1(best.finalConfidence)} below threshold 50`);
     best = null;
   }
 
@@ -1109,7 +1134,7 @@ function scoreBestEntry(
 
 function getTrendContext(candles: Candle[]): TrendContext {
   if (candles.length < 50) return { direction: "NEUTRAL", strength: "INSUFFICIENT_DATA" };
-  const closes = candles.map(c => c.close);
+  const closes = candles.map(c => c.close).filter(isFinite);
   const ema21v = ema(closes, 21);
   const ema50v = ema(closes, 50);
   if (ema21v.length < 2 || ema50v.length < 2) return { direction: "NEUTRAL", strength: "INSUFFICIENT_DATA" };
@@ -1120,6 +1145,8 @@ function getTrendContext(candles: Candle[]): TrendContext {
 
   let direction = "NEUTRAL";
   let strength = "NEUTRAL";
+
+  if (!isFinite(e21) || !isFinite(e50)) return { direction: "NEUTRAL", strength: "INSUFFICIENT_DATA" };
 
   if (e21 > e50 && slope21 > 0) {
     direction = "BULLISH";
@@ -1152,7 +1179,7 @@ export async function generateSignal(
   const debug: string[] = [];
   debug.push(`=== generateSignal ${pair} ===`);
   debug.push(`candles: 1h=${candles1h.length} 4h=${candles4h.length} 15m=${candles15m.length}`);
-  debug.push(`price=${currentPrice.toFixed(2)}`);
+  debug.push(`price=${f2(currentPrice)}`);
 
   const config = getPairConfig(pair);
   const candles1d = aggregateTo1D(candles4h);
@@ -1215,7 +1242,7 @@ export async function generateSignal(
   const now = Date.now();
   const cooldown = isInCooldown(pair, now, regime.direction);
   if (cooldown.inCooldown) {
-    debug.push(`REJECTED: cooldown active, remaining ${(cooldown.remainingMs / 60000).toFixed(0)}min`);
+    debug.push(`REJECTED: cooldown active, remaining ${(f1(cooldown.remainingMs / 60000)}min`);
     return {
       market: {
         pair,
@@ -1235,7 +1262,7 @@ export async function generateSignal(
         rejection: { eligible: false, confidence: 0, rejectionReason: "cooldown_active" },
         breakout: { eligible: false, confidence: 0, rejectionReason: "cooldown_active" },
       },
-      rejectionStage: `Cooldown active (${(cooldown.remainingMs / 60000).toFixed(0)}min)`,
+      rejectionStage: `Cooldown active (${(f1(cooldown.remainingMs / 60000)}min)`,
     };
   }
 
@@ -1254,7 +1281,7 @@ export async function generateSignal(
       regimeStrength: regime.strength,
       confidenceScore: 0,
       confidenceBreakdown: {},
-      rejectionReason: `No entry candidate met threshold. Best: pullback=${candidates.pullback.confidence.toFixed(0)} rejection=${candidates.rejection.confidence.toFixed(0)} breakout=${candidates.breakout.confidence.toFixed(0)}`,
+      rejectionReason: `No entry candidate met threshold. Best: pullback=${f0(candidates.pullback.confidence)} rejection=${f0(candidates.rejection.confidence)} breakout=${f0(candidates.breakout.confidence)}`,
       stochK: stoch4h.k,
       stochD: stoch4h.d,
       stochPrevK: 0,
@@ -1267,7 +1294,7 @@ export async function generateSignal(
     let rejectionStage = "No entry candidate";
     if (!candidates.pullback.eligible && !candidates.rejection.eligible && !candidates.breakout.eligible) {
       if (candidates.pullback.rejectionReason?.includes("no_cross")) rejectionStage = "StochRSI no cross";
-      else if (candidates.pullback.confidence > 0) rejectionStage = `Confidence too low (best: ${Math.max(candidates.pullback.confidence, candidates.rejection.confidence, candidates.breakout.confidence).toFixed(0)})`;
+      else if (candidates.pullback.confidence > 0) rejectionStage = `Confidence too low (best: ${f0(Math.max(candidates.pullback.confidence, candidates.rejection.confidence, candidates.breakout.confidence))})`;
     }
 
     return {
@@ -1364,14 +1391,14 @@ export async function generateSignal(
         volume: candidate.confidenceComponents.volume,
         riskPenalty: candidate.confidenceComponents.riskPenalty,
       },
-      rejectionReason: `RR ${rr.toFixed(2)} below minimum ${MIN_RR}`,
+      rejectionReason: `RR ${f2(rr)} below minimum ${MIN_RR}`,
       stochK: stoch4h.k,
       stochD: stoch4h.d,
       stochPrevK: candidate.stochPrevK,
       stochPrevD: candidate.stochPrevD,
     };
     logRejection(rejectionLog);
-    debug.push(`REJECTED: RR ${rr.toFixed(2)} < ${MIN_RR}`);
+    debug.push(`REJECTED: RR ${f2(rr)} < ${MIN_RR}`);
 
     return {
       market: {
@@ -1388,7 +1415,7 @@ export async function generateSignal(
       },
       debug,
       entryCandidates: candidates,
-      rejectionStage: `RR failure (${rr.toFixed(2)} < ${MIN_RR})`,
+      rejectionStage: `RR failure (${f2(rr)} < ${MIN_RR})`,
     };
   }
 
@@ -1412,14 +1439,14 @@ export async function generateSignal(
         volume: candidate.confidenceComponents.volume,
         riskPenalty: candidate.confidenceComponents.riskPenalty,
       },
-      rejectionReason: `ADX ${adx4h.toFixed(1)} below threshold ${config.minADX}`,
+      rejectionReason: `ADX ${f1(adx4h)} below threshold ${config.minADX}`,
       stochK: stoch4h.k,
       stochD: stoch4h.d,
       stochPrevK: candidate.stochPrevK,
       stochPrevD: candidate.stochPrevD,
     };
     logRejection(rejectionLog);
-    debug.push(`REJECTED: ADX ${adx4h.toFixed(1)} < ${config.minADX}`);
+    debug.push(`REJECTED: ADX ${f1(adx4h)} < ${config.minADX}`);
 
     return {
       market: {
@@ -1436,7 +1463,7 @@ export async function generateSignal(
       },
       debug,
       entryCandidates: candidates,
-      rejectionStage: `ADX too low (${adx4h.toFixed(1)} < ${config.minADX})`,
+      rejectionStage: `ADX too low (${f1(adx4h)} < ${config.minADX})`,
     };
   }
 
@@ -1470,8 +1497,8 @@ export async function generateSignal(
     exhaustionWarning: candidate.exhaustionWarning || undefined,
   };
 
-  debug.push(`SIGNAL GENERATED: ${candidate.direction} ${pair} @ ${candidate.entryPrice.toFixed(2)} conf=${candidate.finalConfidence.toFixed(1)} rr=${rr.toFixed(2)} mode=${candidate.entryMode}`);
-  debug.push(`  stop=${stop.toFixed(2)} target=${target.toFixed(2)}`);
+  debug.push(`SIGNAL GENERATED: ${candidate.direction} ${pair} @ ${f2(candidate.entryPrice)} conf=${f1(candidate.finalConfidence)} rr=${f2(rr)} mode=${candidate.entryMode}`);
+  debug.push(`  stop=${f2(stop)} target=${f2(target)}`);
   debug.push(`  components: regime=${candidate.confidenceComponents.regimeAlignment} setup=${candidate.confidenceComponents.setupQuality} momentum=${candidate.confidenceComponents.momentum} structure=${candidate.confidenceComponents.structure} volume=${candidate.confidenceComponents.volume} risk=${candidate.confidenceComponents.riskPenalty}`);
 
   return {
@@ -1637,7 +1664,7 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
   // Entry drift check
   const drift = Math.abs(currentPrice - signal.entry) / signal.entry;
   if (drift > (getPairConfig(signal.pair).maxEntryDriftPct || 0.01)) {
-    return { valid: false, reason: `entry_drift_${(drift * 100).toFixed(1)}%`, exited: false };
+    return { valid: false, reason: `entry_drift_${f1(drift * 100)}%`, exited: false };
   }
   // Time decay: invalidate if not filled within 4 hours
   if (now - signal.timestamp > 4 * 60 * 60 * 1000) {
@@ -1715,10 +1742,10 @@ export async function getMarketSnapshot(pair: string, candles1h: Candle[], candl
     price: currentPrice,
     trend: regime.direction || "NEUTRAL",
     regime: {
-      direction: regime.direction,
+      direction: regime.direction || "NEUTRAL",
       strength: regime.strength,
-      confidence: regime.confidence,
-      score: regime.score,
+      confidence: safeNum(regime.confidence),
+      score: safeNum(regime.score),
       reason: regime.reason,
     },
     adx: adx(candles4h),
