@@ -49,7 +49,7 @@ export default function Dashboard() {
 
   const fetchSignals = useCallback(async () => {
     try {
-      const res = await fetch("/api/signal", {
+      const res = await fetch("/api/signals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "active-signals" }),
@@ -72,7 +72,7 @@ export default function Dashboard() {
 
     for (const pair of PAIRS) {
       try {
-        const res = await fetch(`/api/signal?pair=${encodeURIComponent(pair)}&action=snapshot`);
+        const res = await fetch(`/api/signals?pair=${encodeURIComponent(pair)}&action=snapshot`);
         if (!res.ok) {
           const text = await res.text();
           errs[pair] = `HTTP ${res.status}: ${text.slice(0, 200)}`;
