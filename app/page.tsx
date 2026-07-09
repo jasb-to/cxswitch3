@@ -237,6 +237,8 @@ function RejectionBanner({ stage }: { stage?: string | null }) {
 
 export default function Dashboard() {
   const [snapshots, setSnapshots] = useState<Record<string, MarketSnapshot>>({});
+  const [cronResults, setCronResults] = useState<Record<string, any>>({});
+  const [cronErrors, setCronErrors] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<string>("");
   const [error, setError] = useState<string>("");
@@ -257,17 +259,30 @@ export default function Dashboard() {
     setLastUpdate(new Date().toLocaleTimeString());
   }, []);
 
+  const fetchCronStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/cron?secret=${process.env.NEXT_PUBLIC_CRON_SECRET || ""}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.results) setCronResults(data.results);
+      if (data.errors) setCronErrors(data.errors);
+    } catch (e) {
+      console.error("Cron status fetch failed:", e);
+    }
+  }, []);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
       await fetchSnapshots();
+      await fetchCronStatus();
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
     }
-  }, [fetchSnapshots]);
+  }, [fetchSnapshots, fetchCronStatus]);
 
   useEffect(() => {
     refresh();
@@ -325,6 +340,72 @@ export default function Dashboard() {
             {error}
           </div>
         )}
+
+        {/* Strategy Engine Diagnostics */}
+        <section className="mb-8">
+          <h2 className="text-lg font-semibold mb-4 text-gray-300">Strategy Engine Diagnostics</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
+            {PAIRS.map(pair => {
+              const cron = cronResults[pair];
+              const snap = snapshots[pair];
+              if (!cron && !snap) return null;
+
+              const status = cron?.status || "UNKNOWN";
+              const statusColor = status === "SIGNAL" ? "text-green-400" :
+                                 status === "HOLDING" ? "text-blue-400" :
+                                 status === "NO_SIGNAL" ? "text-yellow-400" :
+                                 status === "ERROR" ? "text-red-400" : "text-gray-400";
+              const statusBg = status === "SIGNAL" ? "bg-green-500/10 border-green-500/20" :
+                              status === "HOLDING" ? "bg-blue-500/10 border-blue-500/20" :
+                              status === "NO_SIGNAL" ? "bg-yellow-500/10 border-yellow-500/20" :
+                              status === "ERROR" ? "bg-red-500/10 border-red-500/20" : "bg-gray-800/50 border-gray-700/50";
+
+              return (
+                <div key={`diag-${pair}`} className={`p-4 rounded-xl border ${statusBg}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-mono font-bold text-sm">{pair}</span>
+                    <span className={`text-xs font-bold px-2 py-0.5 rounded ${statusColor} bg-gray-900/50`}>
+                      {status}
+                    </span>
+                  </div>
+                  {cron?.error && (
+                    <div className="text-xs text-red-400 mb-2 font-mono">{cron.error}</div>
+                  )}
+                  {cron?.direction && (
+                    <div className="text-xs text-gray-400">Direction: <span className={getDirectionColor(cron.direction)}>{cron.direction}</span></div>
+                  )}
+                  {cron?.confidence !== undefined && (
+                    <div className="text-xs text-gray-400">Confidence: <span className={getConfidenceColor(cron.confidence)}>{cron.confidence}</span></div>
+                  )}
+                  {cron?.mode && (
+                    <div className="text-xs text-gray-400">Mode: {cron.mode}</div>
+                  )}
+                  {cron?.debug && cron.debug.length > 0 && (
+                    <div className="mt-2">
+                      <div className="text-[10px] text-gray-500 mb-1">Debug</div>
+                      <div className="max-h-24 overflow-y-auto">
+                        {cron.debug.slice(-5).map((d: string, i: number) => (
+                          <div key={i} className="text-[10px] font-mono text-gray-500">{d}</div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {snap?.rejectionStage && (
+                    <div className="mt-2 text-[10px] text-orange-400 font-mono">Rejected: {snap.rejectionStage}</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {cronErrors.length > 0 && (
+            <div className="mt-4 p-3 bg-red-900/20 border border-red-700/30 rounded-lg">
+              <div className="text-xs font-semibold text-red-300 mb-1">Cron Errors</div>
+              {cronErrors.map((err, i) => (
+                <div key={i} className="text-[10px] text-red-400 font-mono">{err}</div>
+              ))}
+            </div>
+          )}
+        </section>
 
         {/* Market Snapshot Cards */}
         <section>
