@@ -1,16 +1,19 @@
 // lib/state.ts — v29.1 State Persistence (UPSTASH REDIS)
 // ============================================================
-// Uses Upstash Redis (REST API) for persistence.
-// Credentials are read from environment variables automatically.
+// Uses @upstash/redis (HTTP/REST client) for persistence.
+// Works on Vercel, local dev, and any Node.js environment.
 //
-// Required env vars (already set in your Vercel project):
+// Install: npm install @upstash/redis
+//          or: pnpm add @upstash/redis
+//
+// Your env vars (already set):
 //   KV_REST_API_URL=https://amused-shepherd-136664.upstash.io
 //   KV_REST_API_TOKEN=gQAAAAAAAhXYAAIgcDI1YzhhM2FhNmY0ZjA0NDRlOWE2ZGEwY2U2MDkwYTc4MA
 
-import { createClient } from "@vercel/kv";
+import { Redis } from "@upstash/redis";
 import { MarketRegime, ExitRecord, Signal } from "./strategy";
 
-const kv = createClient({
+const redis = new Redis({
   url: process.env.KV_REST_API_URL!,
   token: process.env.KV_REST_API_TOKEN!,
 });
@@ -20,11 +23,11 @@ const kv = createClient({
 const ACTIVE_SIGNALS_KEY = "cxswitch:active_signals";
 
 export async function saveActiveSignals(signals: Signal[]): Promise<void> {
-  await kv.set(ACTIVE_SIGNALS_KEY, signals);
+  await redis.set(ACTIVE_SIGNALS_KEY, signals);
 }
 
 export async function loadActiveSignals(): Promise<Signal[]> {
-  const data = await kv.get<Signal[]>(ACTIVE_SIGNALS_KEY);
+  const data = await redis.get<Signal[]>(ACTIVE_SIGNALS_KEY);
   return data || [];
 }
 
@@ -33,13 +36,13 @@ export async function loadActiveSignals(): Promise<Signal[]> {
 const REGIME_KEY = "cxswitch:regimes";
 
 export async function persistRegime(pair: string, regime: MarketRegime): Promise<void> {
-  const all = (await kv.get<Record<string, MarketRegime>>(REGIME_KEY)) || {};
+  const all = (await redis.get<Record<string, MarketRegime>>(REGIME_KEY)) || {};
   all[pair] = regime;
-  await kv.set(REGIME_KEY, all);
+  await redis.set(REGIME_KEY, all);
 }
 
 export async function loadRegime(pair: string): Promise<MarketRegime | null> {
-  const all = await kv.get<Record<string, MarketRegime>>(REGIME_KEY);
+  const all = await redis.get<Record<string, MarketRegime>>(REGIME_KEY);
   return all?.[pair] || null;
 }
 
@@ -48,13 +51,13 @@ export async function loadRegime(pair: string): Promise<MarketRegime | null> {
 const EXITS_KEY = "cxswitch:exits";
 
 export async function persistExit(record: ExitRecord): Promise<void> {
-  const all = (await kv.get<ExitRecord[]>(EXITS_KEY)) || [];
+  const all = (await redis.get<ExitRecord[]>(EXITS_KEY)) || [];
   all.push(record);
-  await kv.set(EXITS_KEY, all);
+  await redis.set(EXITS_KEY, all);
 }
 
 export async function loadExits(): Promise<ExitRecord[]> {
-  return (await kv.get<ExitRecord[]>(EXITS_KEY)) || [];
+  return (await redis.get<ExitRecord[]>(EXITS_KEY)) || [];
 }
 
 // ─── CRON TRACKING ───
@@ -62,11 +65,11 @@ export async function loadExits(): Promise<ExitRecord[]> {
 const CRON_KEY = "cxswitch:last_cron";
 
 export async function setLastCronRun(timestamp: number): Promise<void> {
-  await kv.set(CRON_KEY, { timestamp });
+  await redis.set(CRON_KEY, { timestamp });
 }
 
 export async function getLastCronRun(): Promise<number | null> {
-  const data = await kv.get<{ timestamp: number }>(CRON_KEY);
+  const data = await redis.get<{ timestamp: number }>(CRON_KEY);
   return data?.timestamp || null;
 }
 
@@ -77,11 +80,11 @@ const SNAPSHOT_KEY = "cxswitch:dashboard_snapshot";
 const SNAPSHOT_TTL_MS = 20 * 60 * 1000; // 20 minutes
 
 export async function saveDashboardSnapshot(snapshot: any): Promise<void> {
-  await kv.set(SNAPSHOT_KEY, snapshot);
+  await redis.set(SNAPSHOT_KEY, snapshot);
 }
 
 export async function loadDashboardSnapshot(): Promise<any | null> {
-  const snapshot = await kv.get<any>(SNAPSHOT_KEY);
+  const snapshot = await redis.get<any>(SNAPSHOT_KEY);
   if (!snapshot) return null;
 
   const age = Date.now() - (snapshot?.timestamp || 0);
