@@ -1,391 +1,177 @@
-// lib/state.ts — v28.1 "Redis State Management + Exit Persistence"
+// lib/state.ts — v29.1 State persistence for CXSwitch
 // ============================================================
+// Handles: active signals, regime cache, exit records, cron state
+// Falls back to in-memory if no KV/DB configured.
 
-import { Redis } from "@upstash/redis";
+import { Signal, MarketRegime, ExitRecord } from "@/lib/strategy-consolidated";
 
-export const redis = Redis.fromEnv();
+// ─── Storage backend selection ───
 
-const KEY_VERSION = "v29";
+const USE_REDIS = !!process.env.KV_URL || !!process.env.REDIS_URL;
+const USE_SQLITE = !!process.env.DATABASE_URL;
 
-const SIGNALS_KEY = `cx_signals_${KEY_VERSION}`;
-const MARKET_KEY = `cx_market_${KEY_VERSION}`;
-const ACTIVE_TRADES_KEY = `cx_active_trades_${KEY_VERSION}`;
-const LAST_CRON_RUN_KEY = `cx_last_cron_run_${KEY_VERSION}`;
-const SIGNAL_HISTORY_KEY = `cx_signal_history_${KEY_VERSION}`;
-const UI_ALERTS_KEY = `cx_ui_alerts_${KEY_VERSION}`;
-const CRON_LOGS_KEY = `cx_cron_logs_${KEY_VERSION}`;
-const EXITS_KEY = `cx_exits_${KEY_VERSION}`;
+// In-memory fallback
+const memoryState: {
+  signals: Signal[];
+  regimes: Record<string, MarketRegime>;
+  exits: ExitRecord[];
+  lastCronRun: number;
+} = {
+  signals: [],
+  regimes: {},
+  exits: [],
+  lastCronRun: 0,
+};
 
-const SIGNALS_TTL = 6 * 60 * 60;
-const MARKET_TTL = 4 * 60 * 60;
-const ACTIVE_TRADES_TTL = 24 * 60 * 60;
-const LAST_CRON_RUN_TTL = 24 * 60 * 60;
-const SIGNAL_HISTORY_TTL = 48 * 60 * 60;
-const UI_ALERTS_TTL = 24 * 60 * 60;
-const CRON_LOGS_TTL = 24 * 60 * 60;
-const EXITS_TTL = 30 * 24 * 60 * 60;
-const PAIR_STATE_TTL = 7 * 24 * 60 * 60;
+// ─── Redis helpers (Vercel KV or Upstash) ───
 
-export const CURRENT_SIGNAL_VERSION = 28;
-
-export interface ExitRecord {
-  signalId: string;
-  pair: string;
-  direction: "LONG" | "SHORT";
-  exitTimestamp: number;
-  exitReason: string;
-  exitPrice: number;
-}
-
-export interface Signal {
-  id: string;
-  pair: string;
-  direction: "LONG" | "SHORT";
-  type?: "ACCUMULATE" | "BREAKOUT" | "EXIT";
-  scale?: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
-  stage?: "WATCHING" | "ACCUMULATION" | "READY" | "CONFIRMED";
-  rsi?: number;
-  stochK?: number;
-  stochD?: number;
-  stoch1hK?: number;
-  stoch1hD?: number;
-  expectedMove?: number;
-  reason?: string;
-  explanation?: string;
-  zoneTop?: number;
-  zoneBottom?: number;
-  trail?: number;
-  entry: number;
-  stop: number;
-  target: number;
-  confidence: number;
-  rr: number;
-  adx: number;
-  timestamp: number;
-  version: number;
-  tradeState?: string;
-  highestPrice?: number;
-  lowestPrice?: number;
-  lockedStop?: number;
-  profitLockActive?: boolean;
-  exited?: boolean;
-  exitReason?: string;
-  exitPrice?: number;
-  exitTimestamp?: number;
-}
-
-export interface SignalHistory {
-  pair: string;
-  direction: "LONG" | "SHORT";
-  type: string;
-  entry: number;
-  stop: number;
-  target: number;
-  exitedAt: number;
-  exitReason: "stop_hit" | "target_hit" | "expired" | "forced_exit" | "trail_stop";
-  exitPrice: number | null;
-}
-
-export interface UIAlert {
-  type: string;
-  message: string;
-  timestamp: number;
-  pair: string;
-}
-
-function safeParseArray(data: unknown): any[] {
-  if (!data) return [];
-  const parsed = typeof data === "string" ? JSON.parse(data) : data;
-  return Array.isArray(parsed) ? parsed : [];
-}
-
-function safeParseObject(data: unknown): Record<string, any> {
-  if (!data) return {};
-  return typeof data === "string" ? JSON.parse(data) : (data || {});
-}
-
-function getSignalMaxAgeHours(signal: any): number {
-  return 24;
-}
-
-function isSignalExpired(signal: any): boolean {
-  const ageHours = (Date.now() - signal.timestamp) / (1000 * 60 * 60);
-  return ageHours >= getSignalMaxAgeHours(signal);
-}
-
-export async function setSignals(signals: any[]) {
-  const incoming = Array.isArray(signals) ? signals : [];
+async function getRedisClient() {
+  if (!USE_REDIS) return null;
   try {
-    const existing = await getSignals();
-    const now = Date.now();
-    const freshExisting = existing.filter((s: any) => {
-      if (!s.id || s.version !== CURRENT_SIGNAL_VERSION) {
-        console.log(`[STATE] Purging old-format signal for ${s.pair || "unknown"} (id=${s.id}, version=${s.version}, need=${CURRENT_SIGNAL_VERSION})`);
-        return false;
-      }
-      const ageHours = (now - s.timestamp) / (1000 * 60 * 60);
-      return ageHours < getSignalMaxAgeHours(s);
-    });
-    const merged: any[] = [...freshExisting];
-    for (const s of incoming) {
-      const idx = merged.findIndex((x: any) => x.pair === s.pair);
-      if (idx >= 0) merged[idx] = s;
-      else merged.push(s);
-    }
-    await redis.set(SIGNALS_KEY, merged, { ex: SIGNALS_TTL });
-    console.log("[STATE] Saved", merged.length, "signals to KV (merged)");
-  } catch (err) {
-    console.error("[STATE] Signals KV write failed:", err);
-  }
-}
-
-export async function getSignals(): Promise<any[]> {
-  try {
-    const data = await redis.get(SIGNALS_KEY);
-    return safeParseArray(data);
-  } catch (err) {
-    console.error("[STATE] Signals KV read failed:", err);
-    return [];
-  }
-}
-
-export async function addSignalToHistory(signal: any, exitReason: "stop_hit" | "target_hit" | "expired" | "forced_exit" | "trail_stop", exitPrice?: number) {
-  try {
-    const history = await getSignalHistory();
-    const entry = { ...signal, exitedAt: Date.now(), exitReason, exitPrice: exitPrice || null };
-    const filtered = history.filter((h: any) => h.pair !== signal.pair);
-    filtered.push(entry);
-    await redis.set(SIGNAL_HISTORY_KEY, filtered.slice(-30), { ex: SIGNAL_HISTORY_TTL });
-    console.log(`[STATE] Added ${signal.pair} to history: ${exitReason}`);
-  } catch (err) {
-    console.error("[STATE] History write failed:", err);
-  }
-}
-
-export async function getSignalHistory(): Promise<any[]> {
-  try {
-    const data = await redis.get(SIGNAL_HISTORY_KEY);
-    return safeParseArray(data);
-  } catch (err) {
-    console.error("[STATE] History read failed:", err);
-    return [];
-  }
-}
-
-export async function clearSignalHistory(): Promise<void> {
-  try {
-    await redis.del(SIGNAL_HISTORY_KEY);
-  } catch (err) {
-    console.error("[STATE] History clear failed:", err);
-  }
-}
-
-export async function setMarketData(data: any[]) {
-  const marketData = Array.isArray(data) ? data : [];
-  try {
-    await redis.set(MARKET_KEY, marketData, { ex: MARKET_TTL });
-    console.log("[STATE] Saved", marketData.length, "market entries to KV");
-  } catch (err) {
-    console.error("[STATE] Market KV write failed:", err);
-  }
-}
-
-export async function getMarketData(): Promise<any[]> {
-  try {
-    const data = await redis.get(MARKET_KEY);
-    return safeParseArray(data);
-  } catch (err) {
-    console.error("[STATE] Market KV read failed:", err);
-    return [];
-  }
-}
-
-export async function getActiveTrades(): Promise<Record<string, any>> {
-  try {
-    const data = await redis.get(ACTIVE_TRADES_KEY);
-    return safeParseObject(data);
-  } catch (err) {
-    console.error("[STATE] Active trades KV read failed:", err);
-    return {};
-  }
-}
-
-export async function setActiveTrades(trades: Record<string, any>) {
-  try {
-    await redis.set(ACTIVE_TRADES_KEY, trades, { ex: ACTIVE_TRADES_TTL });
-  } catch (err) {
-    console.error("[STATE] Active trades KV write failed:", err);
-  }
-}
-
-export async function getLastCronRun(): Promise<number> {
-  try {
-    const data = await redis.get(LAST_CRON_RUN_KEY);
-    return data ? Number(data) : 0;
+    const { createClient } = await import("redis");
+    const client = createClient({ url: process.env.KV_URL || process.env.REDIS_URL });
+    await client.connect();
+    return client;
   } catch {
-    return 0;
+    return null;
   }
 }
 
-export async function setLastCronRun(timestamp: number): Promise<void> {
-  try {
-    await redis.set(LAST_CRON_RUN_KEY, timestamp, { ex: LAST_CRON_RUN_TTL });
-  } catch (err) {
-    console.error("[STATE] Last cron run KV write failed:", err);
+// ─── Signal persistence ───
+
+export async function saveActiveSignals(signals: Signal[]): Promise<void> {
+  const client = await getRedisClient();
+  if (client) {
+    await client.set("cxswitch:active_signals", JSON.stringify(signals));
+    await client.disconnect();
+    return;
   }
+  memoryState.signals = signals;
 }
 
-export async function getUIAlerts(): Promise<UIAlert[]> {
-  try {
-    const data = await redis.get(UI_ALERTS_KEY);
-    return safeParseArray(data);
-  } catch (err) {
-    console.error("[STATE] UI alerts KV read failed:", err);
-    return [];
+export async function loadActiveSignals(): Promise<Signal[]> {
+  const client = await getRedisClient();
+  if (client) {
+    const data = await client.get("cxswitch:active_signals");
+    await client.disconnect();
+    return data ? JSON.parse(data) : [];
   }
+  return memoryState.signals;
 }
 
-export async function setUIAlerts(alerts: UIAlert[]): Promise<void> {
-  try {
-    await redis.set(UI_ALERTS_KEY, alerts, { ex: UI_ALERTS_TTL });
-  } catch (err) {
-    console.error("[STATE] UI alerts KV write failed:", err);
+// ─── Regime persistence ───
+
+export async function persistRegime(pair: string, regime: MarketRegime): Promise<void> {
+  const client = await getRedisClient();
+  if (client) {
+    await client.hSet("cxswitch:regimes", pair, JSON.stringify(regime));
+    await client.disconnect();
+    return;
   }
+  memoryState.regimes[pair] = regime;
 }
 
-export async function addUIAlert(alert: UIAlert): Promise<void> {
-  try {
-    const existing = await getUIAlerts();
-    const oneHourAgo = Date.now() - 60 * 60 * 1000;
-    const filtered = existing.filter((a: UIAlert) =>
-      !(a.pair === alert.pair && a.type === alert.type && a.timestamp > oneHourAgo)
-    );
-    filtered.push(alert);
-    await redis.set(UI_ALERTS_KEY, filtered.slice(-20), { ex: UI_ALERTS_TTL });
-  } catch (err) {
-    console.error("[STATE] UI alert add failed:", err);
+export async function loadRegime(pair: string): Promise<MarketRegime | null> {
+  const client = await getRedisClient();
+  if (client) {
+    const data = await client.hGet("cxswitch:regimes", pair);
+    await client.disconnect();
+    return data ? JSON.parse(data) : null;
   }
+  return memoryState.regimes[pair] || null;
 }
 
-export async function getCronLogs(): Promise<any[]> {
-  try {
-    const data = await redis.get(CRON_LOGS_KEY);
-    return safeParseArray(data);
-  } catch (err) {
-    console.error("[STATE] Cron logs KV read failed:", err);
-    return [];
-  }
-}
-
-export async function setCronLogs(logs: any[]): Promise<void> {
-  try {
-    await redis.set(CRON_LOGS_KEY, logs, { ex: CRON_LOGS_TTL });
-  } catch (err) {
-    console.error("[STATE] Cron logs KV write failed:", err);
-  }
-}
+// ─── Exit record persistence ───
 
 export async function persistExit(record: ExitRecord): Promise<void> {
-  try {
-    await redis.set(`exit:${record.signalId}`, JSON.stringify(record), { ex: EXITS_TTL });
-    await redis.set(`exit_pair:${record.pair}`, JSON.stringify(record), { ex: EXITS_TTL });
-    console.log(`[STATE] Persisted exit for ${record.pair}: ${record.exitReason}`);
-  } catch (err) {
-    console.error("[STATE] Exit persist failed:", err);
+  const client = await getRedisClient();
+  if (client) {
+    const existing = await client.lRange("cxswitch:exits", 0, 999);
+    const exits: ExitRecord[] = existing.map(e => JSON.parse(e));
+    exits.push(record);
+    // Keep last 500
+    const trimmed = exits.slice(-500);
+    await client.del("cxswitch:exits");
+    for (const r of trimmed) {
+      await client.rPush("cxswitch:exits", JSON.stringify(r));
+    }
+    await client.disconnect();
+    return;
   }
+  memoryState.exits.push(record);
+  if (memoryState.exits.length > 500) memoryState.exits.shift();
 }
 
 export async function loadExits(): Promise<ExitRecord[]> {
+  const client = await getRedisClient();
+  if (client) {
+    const data = await client.lRange("cxswitch:exits", 0, -1);
+    await client.disconnect();
+    return data.map(d => JSON.parse(d));
+  }
+  return memoryState.exits;
+}
+
+// ─── Cron state ───
+
+export async function setLastCronRun(timestamp: number): Promise<void> {
+  const client = await getRedisClient();
+  if (client) {
+    await client.set("cxswitch:last_cron", String(timestamp));
+    await client.disconnect();
+    return;
+  }
+  memoryState.lastCronRun = timestamp;
+}
+
+export async function getLastCronRun(): Promise<number> {
+  const client = await getRedisClient();
+  if (client) {
+    const data = await client.get("cxswitch:last_cron");
+    await client.disconnect();
+    return data ? parseInt(data, 10) : 0;
+  }
+  return memoryState.lastCronRun;
+}
+
+// ─── SQLite helpers (if DATABASE_URL is set) ───
+
+export async function initSQLite(): Promise<void> {
+  if (!USE_SQLITE) return;
   try {
-    const keys = await redis.keys("exit:*");
-    const exits: ExitRecord[] = [];
-    for (const key of keys) {
-      const data = await redis.get(key);
-      if (data) exits.push(typeof data === "string" ? JSON.parse(data) : data);
-    }
-    console.log(`[STATE] Loaded ${exits.length} exits from KV`);
-    return exits;
+    const { default: Database } = await import("better-sqlite3");
+    const db = new Database(process.env.DATABASE_URL!.replace("file:", ""));
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS signals (
+        id TEXT PRIMARY KEY,
+        pair TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        entry REAL NOT NULL,
+        stop REAL NOT NULL,
+        target REAL NOT NULL,
+        confidence REAL NOT NULL,
+        timestamp INTEGER NOT NULL,
+        data TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS exits (
+        signal_id TEXT PRIMARY KEY,
+        pair TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        exit_timestamp INTEGER NOT NULL,
+        exit_reason TEXT NOT NULL,
+        exit_price REAL NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS regimes (
+        pair TEXT PRIMARY KEY,
+        direction TEXT,
+        strength TEXT,
+        confidence REAL,
+        reason TEXT,
+        detected_at INTEGER NOT NULL
+      );
+    `);
+    db.close();
   } catch (err) {
-    console.error("[STATE] Exit load failed:", err);
-    return [];
-  }
-}
-
-export async function getPairState(pair: string): Promise<any> {
-  try {
-    const data = await redis.get(`cx_state_${pair}_${KEY_VERSION}`);
-    return data ? safeParseObject(data) : { stage: "NONE" };
-  } catch (err) {
-    console.error(`[STATE] getPairState(${pair}) error:`, err);
-    return { stage: "NONE" };
-  }
-}
-
-export async function setPairState(pair: string, state: any): Promise<void> {
-  try {
-    await redis.set(`cx_state_${pair}_${KEY_VERSION}`, state, { ex: PAIR_STATE_TTL });
-  } catch (err) {
-    console.error(`[STATE] setPairState(${pair}) error:`, err);
-  }
-}
-
-export async function resetPairConsumedZones(pair: string): Promise<void> {
-  try {
-    const existing = await getPairState(pair);
-    await setPairState(pair, {
-      ...existing,
-      consumedZones: [],
-      consumedZoneTimes: {},
-      lastBreakoutTs: 0,
-    });
-    console.log(`[STATE] Reset consumed zones for ${pair}`);
-  } catch (err) {
-    console.error(`[STATE] resetPairConsumedZones(${pair}) failed:`, err);
-  }
-}
-
-export async function resetAllConsumedZones(pairs: string[]): Promise<void> {
-  for (const pair of pairs) {
-    await resetPairConsumedZones(pair);
-  }
-}
-
-export async function resetAll() {
-  try {
-    await redis.del(SIGNALS_KEY);
-    await redis.del(MARKET_KEY);
-    await redis.del(ACTIVE_TRADES_KEY);
-    await redis.del(LAST_CRON_RUN_KEY);
-    await redis.del(SIGNAL_HISTORY_KEY);
-    await redis.del(UI_ALERTS_KEY);
-    await redis.del(CRON_LOGS_KEY);
-    await redis.del(EXITS_KEY);
-    console.log("[STATE] All KV data reset");
-  } catch (err) {
-    console.error("[STATE] Reset failed:", err);
-  }
-}
-
-export async function migrateFromV15(): Promise<void> {
-  const oldKeys = [
-    "cx_signals_v15",
-    "cx_market_v15",
-    "cx_active_trades_v15",
-    "cx_last_cron_run_v15",
-    "cx_signal_history_v15",
-    "cx_ui_alerts_v15",
-    "cx_cron_logs_v15",
-  ];
-  for (const oldKey of oldKeys) {
-    try {
-      const data = await redis.get(oldKey);
-      if (data) {
-        const newKey = oldKey.replace("_v15", "_v28");
-        await redis.set(newKey, data);
-        console.log(`[MIGRATE] ${oldKey} → ${newKey}`);
-      }
-    } catch (e) {
-      console.error(`[MIGRATE] Failed ${oldKey}:`, e);
-    }
+    console.warn("[STATE] SQLite init failed:", err);
   }
 }
