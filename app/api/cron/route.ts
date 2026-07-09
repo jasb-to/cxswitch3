@@ -1,7 +1,5 @@
 // app/api/cron/route.ts — v29.1 CXSwitch cron job
 // ============================================================
-// Triggers: Vercel cron (vercel.json) or external scheduler (e.g. cron-job.org)
-// Scans all pairs, generates signals, manages exits, sends Telegram alerts.
 
 import { NextRequest, NextResponse } from "next/server";
 import {
@@ -11,20 +9,11 @@ import {
   loadExits,
   setRegimePersistence,
   setExitPersistence,
-  getCurrentRegime,
-  getPairConfig,
+  updateTradeManager,
   Signal,
-  MarketData,
-} from "@/lib/strategy-consolidated";
-import { getOHLC, getTicker, krakenPairFormat } from "@/lib/kraken";
-import {
-  alertSignal,
-  alertExit,
-  alertStatus,
-  alertNoSignal,
-  alertError,
-  alertWarning,
-} from "@/lib/telegram";
+} from "@/lib/strategy";
+import { getCandles, getCurrentPrice, krakenPairFormat } from "@/lib/kraken";
+import { sendAlert, sendExitAlert, alertStatus, alertNoSignal, alertError } from "@/lib/telegram";
 import {
   saveActiveSignals,
   loadActiveSignals,
@@ -35,6 +24,9 @@ import {
   setLastCronRun,
 } from "@/lib/state";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 // ─── Config ───
 
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
@@ -44,23 +36,10 @@ const CRON_SECRET = process.env.CRON_SECRET;
 setRegimePersistence(persistRegime, loadRegime);
 setExitPersistence(persistExit, loadExitsState);
 
-// ─── Candle helpers ───
-
-function krakenCandlesToStrategy(candles: any[]): any[] {
-  return candles.map(c => ({
-    timestamp: c.time * 1000,
-    open: parseFloat(c.open),
-    high: parseFloat(c.high),
-    low: parseFloat(c.low),
-    close: parseFloat(c.close),
-    volume: parseFloat(c.volume),
-  }));
-}
-
 // ─── Main handler ───
 
 export async function GET(req: NextRequest) {
-  // Auth check for external cron triggers
+  // Auth check
   const authHeader = req.headers.get("authorization");
   const secret = req.nextUrl.searchParams.get("secret");
   const token = authHeader?.replace("Bearer ", "") || secret;
@@ -73,82 +52,62 @@ export async function GET(req: NextRequest) {
   const results: Record<string, any> = {};
   const errors: string[] = [];
 
-  try {
-    await loadExits();
-  } catch (e) {
-    errors.push(`loadExits failed: ${e}`);
-  }
+  try { await loadExits(); } catch (e) { errors.push(`loadExits: ${e}`); }
 
-  // Load active trades
   let activeSignals: Signal[] = [];
-  try {
-    activeSignals = await loadActiveSignals();
-  } catch (e) {
-    errors.push(`loadActiveSignals failed: ${e}`);
-  }
+  try { activeSignals = await loadActiveSignals(); } catch (e) { errors.push(`loadActiveSignals: ${e}`); }
 
   const currentPrices: Record<string, number> = {};
 
   for (const pair of PAIRS) {
     const krakenPair = krakenPairFormat(pair);
-    results[pair] = { status: "pending", debug: [] as string[] };
+    results[pair] = { status: "pending" };
 
     try {
-      // Fetch candles
-      const [candles1hRaw, candles4hRaw, candles15mRaw, ticker] = await Promise.all([
-        getOHLC(krakenPair, 60),
-        getOHLC(krakenPair, 240),
-        getOHLC(krakenPair, 15),
-        getTicker(krakenPair),
+      const [candles1h, candles4h, candles15m, price] = await Promise.all([
+        getCandles(krakenPair, 60),
+        getCandles(krakenPair, 240),
+        getCandles(krakenPair, 15),
+        getCurrentPrice(krakenPair),
       ]);
 
-      currentPrices[pair] = ticker.price;
+      currentPrices[pair] = price;
 
-      const candles1h = krakenCandlesToStrategy(candles1hRaw);
-      const candles4h = krakenCandlesToStrategy(candles4hRaw);
-      const candles15m = krakenCandlesToStrategy(candles15mRaw);
-
-      // Check if we have an active trade for this pair
       const activeForPair = activeSignals.find(s => s.pair === pair && !s.exited);
 
       if (activeForPair) {
         // ─── MANAGE EXISTING TRADE ───
-        const holdResult = await shouldHold(activeForPair, candles4h, ticker.price, now);
+        const holdResult = await shouldHold(activeForPair, candles4h, price, now);
 
         if (!holdResult.shouldHold) {
-          // EXIT triggered
-          await alertExit(activeForPair, ticker.price, holdResult.reason);
+          await sendExitAlert(activeForPair, price, holdResult.reason);
           activeForPair.exited = true;
-          results[pair] = { status: "EXITED", reason: holdResult.reason, price: ticker.price };
+          results[pair] = { status: "EXITED", reason: holdResult.reason, price };
         } else {
-          // Update trade manager state
-          const { updateTradeManager } = await import("@/lib/strategy-consolidated");
-          const tm = updateTradeManager(activeForPair, ticker.price);
-
-          // Update highest/lowest tracking
+          const tm = updateTradeManager(activeForPair, price);
           activeForPair.highestPrice = tm.highestPrice;
           activeForPair.lowestPrice = tm.lowestPrice;
           activeForPair.tradeState = tm.newState;
           activeForPair.lockedStop = tm.lockedStop;
           activeForPair.profitLockActive = tm.profitLockActive;
 
-          results[pair] = {
-            status: "HOLDING",
-            state: tm.newState,
-            lockedStop: tm.lockedStop,
-            pnl: activeForPair.direction === "LONG"
-              ? ((ticker.price - activeForPair.entry) / activeForPair.entry * 100).toFixed(2) + "%"
-              : ((activeForPair.entry - ticker.price) / activeForPair.entry * 100).toFixed(2) + "%",
-          };
+          const pnl = activeForPair.direction === "LONG"
+            ? ((price - activeForPair.entry) / activeForPair.entry * 100).toFixed(2) + "%"
+            : ((activeForPair.entry - price) / activeForPair.entry * 100).toFixed(2) + "%";
+
+          results[pair] = { status: "HOLDING", state: tm.newState, lockedStop: tm.lockedStop, pnl };
         }
       } else {
         // ─── GENERATE NEW SIGNAL ───
-        const result = await generateSignal(pair, candles1h, candles4h, candles15m, {}, ticker.price);
+        const activeTrades: Record<string, any> = {};
+        for (const s of activeSignals) { if (!s.exited) activeTrades[s.pair] = s; }
+
+        const result = await generateSignal(pair, candles1h, candles4h, candles15m, activeTrades, price);
 
         if (result.signal) {
           const signal = result.signal;
           activeSignals.push(signal);
-          await alertSignal(signal);
+          await sendAlert(signal);
           results[pair] = {
             status: "SIGNAL",
             direction: signal.direction,
@@ -160,13 +119,8 @@ export async function GET(req: NextRequest) {
             mode: signal.entryMode,
           };
         } else {
-          results[pair] = {
-            status: "NO_SIGNAL",
-            trend: result.market?.trend,
-            debug: result.debug,
-          };
+          results[pair] = { status: "NO_SIGNAL", trend: result.market?.trend, debug: result.debug };
 
-          // Only send "no signal" alert if regime is strong (reduce noise)
           const regime = result.market?.regime;
           if (regime && (regime.strength === "STRONG" || regime.strength === "MODERATE")) {
             await alertNoSignal(pair, result.market, result.debug || []);
@@ -181,21 +135,19 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // ─── Filter expired / exited signals ───
+  // ─── Filter expired ───
   try {
     const { active, exited } = await filterExpiredSignals(activeSignals, currentPrices, now);
-
     for (const { signal, reason } of exited) {
       if (!signal.exited) {
         const price = currentPrices[signal.pair] || signal.entry;
-        await alertExit(signal, price, reason);
+        await sendExitAlert(signal, price, reason);
         signal.exited = true;
       }
     }
-
     activeSignals = active;
   } catch (e) {
-    errors.push(`filterExpiredSignals failed: ${e}`);
+    errors.push(`filterExpiredSignals: ${e}`);
   }
 
   // ─── Save state ───
@@ -203,10 +155,10 @@ export async function GET(req: NextRequest) {
     await saveActiveSignals(activeSignals);
     await setLastCronRun(now);
   } catch (e) {
-    errors.push(`save state failed: ${e}`);
+    errors.push(`save state: ${e}`);
   }
 
-  // ─── Send daily status (every 6th run ≈ every 6 hours if hourly) ───
+  // Status every 6 hours
   const hour = new Date(now).getUTCHours();
   if (hour % 6 === 0) {
     await alertStatus(activeSignals, currentPrices);
@@ -217,12 +169,11 @@ export async function GET(req: NextRequest) {
     timestamp: now,
     iso: new Date(now).toISOString(),
     results,
-    activeTrades: activeSignals.length,
+    activeTrades: activeSignals.filter(s => !s.exited).length,
     errors: errors.length > 0 ? errors : undefined,
   });
 }
 
-// POST handler for webhook-style cron triggers (e.g. cron-job.org)
 export async function POST(req: NextRequest) {
   return GET(req);
 }
