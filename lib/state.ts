@@ -1,7 +1,5 @@
 // lib/state.ts — v29.1 State persistence (zero external deps)
 // ============================================================
-// Pure in-memory state with optional JSON file persistence via fs.
-// No redis, no sqlite, no external packages required.
 
 import { Signal, MarketRegime, ExitRecord } from "@/lib/strategy";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
@@ -18,9 +16,7 @@ function ensureDir() {
 }
 
 function loadJson<T>(path: string, fallback: T): T {
-  try {
-    if (existsSync(path)) return JSON.parse(readFileSync(path, "utf-8"));
-  } catch {}
+  try { if (existsSync(path)) return JSON.parse(readFileSync(path, "utf-8")); } catch {}
   return fallback;
 }
 
@@ -28,13 +24,10 @@ function saveJson(path: string, data: any) {
   try { ensureDir(); writeFileSync(path, JSON.stringify(data, null, 2)); } catch {}
 }
 
-// ─── In-memory cache ───
 let memSignals: Signal[] = [];
 let memRegimes: Record<string, MarketRegime> = {};
 let memExits: ExitRecord[] = [];
 let memCron: { lastRun: number } = { lastRun: 0 };
-
-// ─── Signal persistence ───
 
 export async function saveActiveSignals(signals: Signal[]): Promise<void> {
   memSignals = signals;
@@ -46,7 +39,6 @@ export async function loadActiveSignals(): Promise<Signal[]> {
   return memSignals;
 }
 
-// Backward compat aliases used by old routes
 export async function getSignals(): Promise<Signal[]> {
   return loadActiveSignals();
 }
@@ -61,13 +53,10 @@ export async function getActiveTrades(): Promise<Signal[]> {
 }
 
 export async function setActiveTrades(signals: Signal[]): Promise<void> {
-  // Merge with full signal list
   const all = await loadActiveSignals();
   const nonActive = all.filter(s => !signals.find(ns => ns.id === s.id));
   await saveActiveSignals([...nonActive, ...signals]);
 }
-
-// ─── Regime persistence ───
 
 export async function persistRegime(pair: string, regime: MarketRegime): Promise<void> {
   memRegimes[pair] = regime;
@@ -81,7 +70,6 @@ export async function loadRegime(pair: string): Promise<MarketRegime | null> {
   return memRegimes[pair] || null;
 }
 
-// Backward compat
 export async function getMarketData(pair: string): Promise<any> {
   const regime = await loadRegime(pair);
   return { pair, regime, timestamp: Date.now() };
@@ -90,8 +78,6 @@ export async function getMarketData(pair: string): Promise<any> {
 export async function setMarketData(pair: string, data: any): Promise<void> {
   // No-op for backward compat
 }
-
-// ─── Exit record persistence ───
 
 export async function persistExit(record: ExitRecord): Promise<void> {
   memExits.push(record);
@@ -104,8 +90,6 @@ export async function loadExits(): Promise<ExitRecord[]> {
   return memExits;
 }
 
-// ─── Cron state ───
-
 export async function setLastCronRun(timestamp: number): Promise<void> {
   memCron.lastRun = timestamp;
   saveJson(CRON_FILE, memCron);
@@ -116,8 +100,6 @@ export async function getLastCronRun(): Promise<number> {
   return memCron.lastRun;
 }
 
-// ─── Signal history (backward compat) ───
-
 export async function addSignalToHistory(signal: Signal): Promise<void> {
   // Signals are already saved via saveActiveSignals
 }
@@ -125,8 +107,6 @@ export async function addSignalToHistory(signal: Signal): Promise<void> {
 export async function getSignalHistory(): Promise<Signal[]> {
   return loadActiveSignals();
 }
-
-// ─── Cron logs (backward compat) ───
 
 export async function setCronLogs(logs: any[]): Promise<void> {
   saveJson(join(DATA_DIR, "cron-logs.json"), logs);
