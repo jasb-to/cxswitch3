@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v29.1 CXSwitch cron job
+// app/api/cron/route.ts — v29.1 CXSwitch cron job (FIXED)
 // ============================================================
 
 import { NextRequest, NextResponse } from "next/server";
@@ -30,6 +30,9 @@ export const dynamic = "force-dynamic";
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
 const CRON_SECRET = process.env.CRON_SECRET;
 
+// Max age of exited signals to keep in state (7 days)
+const EXITED_SIGNAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 setRegimePersistence(persistRegime, loadRegime);
 setExitPersistence(persistExit, loadExitsState);
 
@@ -46,10 +49,20 @@ export async function GET(req: NextRequest) {
   const results: Record<string, any> = {};
   const errors: string[] = [];
 
-  try { await loadExits(); } catch (e) { errors.push("loadExits: " + e); }
+  try {
+    await loadExits();
+  } catch (e) {
+    errors.push("loadExits: " + e);
+    console.warn("[CRON] loadExits failed (non-fatal):", e);
+  }
 
   let activeSignals: Signal[] = [];
-  try { activeSignals = await loadActiveSignals(); } catch (e) { errors.push("loadActiveSignals: " + e); }
+  try {
+    activeSignals = await loadActiveSignals();
+  } catch (e) {
+    errors.push("loadActiveSignals: " + e);
+    console.error("[CRON] loadActiveSignals failed:", e);
+  }
 
   const currentPrices: Record<string, number> = {};
 
@@ -67,28 +80,36 @@ export async function GET(req: NextRequest) {
 
       currentPrices[pair] = price;
 
-      const activeForPair = activeSignals.find(s => s.pair === pair && !s.exited);
+      // FIX: Process ALL active signals for this pair, not just the first one
+      const activeForPair = activeSignals.filter(s => s.pair === pair && !s.exited);
 
-      if (activeForPair) {
-        const holdResult = await shouldHold(activeForPair, candles4h, price, now);
+      if (activeForPair.length > 0) {
+        for (const signal of activeForPair) {
+          const holdResult = await shouldHold(signal, candles4h, price, now);
 
-        if (!holdResult.shouldHold) {
-          await sendExitAlert(activeForPair, price, holdResult.reason);
-          activeForPair.exited = true;
-          results[pair] = { status: "EXITED", reason: holdResult.reason, price };
-        } else {
-          const tm = updateTradeManager(activeForPair, price);
-          activeForPair.highestPrice = tm.highestPrice;
-          activeForPair.lowestPrice = tm.lowestPrice;
-          activeForPair.tradeState = tm.newState;
-          activeForPair.lockedStop = tm.lockedStop;
-          activeForPair.profitLockActive = tm.profitLockActive;
+          if (!holdResult.shouldHold) {
+            // FIX: Wrap sendExitAlert in try/catch — mark exited even if Telegram fails
+            try {
+              await sendExitAlert(signal, price, holdResult.reason);
+            } catch (alertErr) {
+              console.error("[CRON] sendExitAlert failed for", signal.id, ":", alertErr);
+            }
+            signal.exited = true;
+            results[pair] = { status: "EXITED", reason: holdResult.reason, price, signalId: signal.id };
+          } else {
+            const tm = updateTradeManager(signal, price);
+            signal.highestPrice = tm.highestPrice;
+            signal.lowestPrice = tm.lowestPrice;
+            signal.tradeState = tm.newState;
+            signal.lockedStop = tm.lockedStop;
+            signal.profitLockActive = tm.profitLockActive;
 
-          const pnl = activeForPair.direction === "LONG"
-            ? ((price - activeForPair.entry) / activeForPair.entry * 100).toFixed(2) + "%"
-            : ((activeForPair.entry - price) / activeForPair.entry * 100).toFixed(2) + "%";
+            const pnl = signal.direction === "LONG"
+              ? ((price - signal.entry) / signal.entry * 100).toFixed(2) + "%"
+              : ((signal.entry - price) / signal.entry * 100).toFixed(2) + "%";
 
-          results[pair] = { status: "HOLDING", state: tm.newState, lockedStop: tm.lockedStop, pnl };
+            results[pair] = { status: "HOLDING", state: tm.newState, lockedStop: tm.lockedStop, pnl, signalId: signal.id };
+          }
         }
       } else {
         const activeTrades: Record<string, any> = {};
@@ -99,7 +120,11 @@ export async function GET(req: NextRequest) {
         if (result.signal) {
           const signal = result.signal;
           activeSignals.push(signal);
-          await sendAlert(signal);
+          try {
+            await sendAlert(signal);
+          } catch (alertErr) {
+            console.error("[CRON] sendAlert failed for", signal.id, ":", alertErr);
+          }
           results[pair] = {
             status: "SIGNAL",
             direction: signal.direction,
@@ -115,7 +140,11 @@ export async function GET(req: NextRequest) {
 
           const regime = result.market?.regime;
           if (regime && (regime.strength === "STRONG" || regime.strength === "MODERATE")) {
-            await alertNoSignal(pair, result.market, result.debug || []);
+            try {
+              await alertNoSignal(pair, result.market, result.debug || []);
+            } catch (alertErr) {
+              console.error("[CRON] alertNoSignal failed for", pair, ":", alertErr);
+            }
           }
         }
       }
@@ -123,7 +152,11 @@ export async function GET(req: NextRequest) {
       const msg = String(err);
       errors.push(pair + ": " + msg);
       results[pair] = { status: "ERROR", error: msg };
-      await alertError("cron/" + pair, err);
+      try {
+        await alertError("cron/" + pair, err);
+      } catch (alertErr) {
+        console.error("[CRON] alertError failed:", alertErr);
+      }
     }
   }
 
@@ -132,7 +165,11 @@ export async function GET(req: NextRequest) {
     for (const { signal, reason } of exited) {
       if (!signal.exited) {
         const price = currentPrices[signal.pair] || signal.entry;
-        await sendExitAlert(signal, price, reason);
+        try {
+          await sendExitAlert(signal, price, reason);
+        } catch (alertErr) {
+          console.error("[CRON] sendExitAlert (filterExpired) failed for", signal.id, ":", alertErr);
+        }
         signal.exited = true;
       }
     }
@@ -141,16 +178,33 @@ export async function GET(req: NextRequest) {
     errors.push("filterExpiredSignals: " + e);
   }
 
+  // FIX: Clean up old exited signals before saving to prevent unbounded growth
+  const cleanedSignals = activeSignals.filter(s => {
+    if (!s.exited) return true;
+    const age = now - s.timestamp;
+    return age < EXITED_SIGNAL_TTL_MS;
+  });
+  const prunedCount = activeSignals.length - cleanedSignals.length;
+  if (prunedCount > 0) {
+    console.log("[CRON] Pruned", prunedCount, "old exited signals");
+  }
+
   try {
-    await saveActiveSignals(activeSignals);
+    await saveActiveSignals(cleanedSignals);
     await setLastCronRun(now);
   } catch (e) {
     errors.push("save state: " + e);
+    console.error("[CRON] save state failed:", e);
   }
 
   const hour = new Date(now).getUTCHours();
   if (hour % 6 === 0) {
-    await alertStatus(activeSignals, currentPrices);
+    try {
+      await alertStatus(activeSignals, currentPrices);
+    } catch (alertErr) {
+      console.error("[CRON] alertStatus failed:", alertErr);
+      errors.push("alertStatus: " + alertErr);
+    }
   }
 
   return NextResponse.json({
@@ -159,6 +213,7 @@ export async function GET(req: NextRequest) {
     iso: new Date(now).toISOString(),
     results,
     activeTrades: activeSignals.filter(s => !s.exited).length,
+    prunedExited: prunedCount || undefined,
     errors: errors.length > 0 ? errors : undefined,
   });
 }
