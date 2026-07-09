@@ -191,6 +191,62 @@ function f1(v: any): string { return safeNum(v).toFixed(1); }
 function f2(v: any): string { return safeNum(v).toFixed(2); }
 
 
+// ─── TRADER-FRIENDLY MESSAGES ───
+
+function getTraderReason(internalReason: string | null): string {
+  if (!internalReason) return "Analyzing market conditions...";
+  const map: Record<string, string> = {
+    "regime_neutral": "No directional bias",
+    "regime_neutral": "Market lacks clear direction",
+    "cooldown_active": "Position cooldown active",
+    "confidence_too_low": "Setup developing",
+    "no_cross_or_regime_mismatch": "Momentum confirmation pending",
+    "no_rejection_pattern_or_regime_mismatch": "No rejection pattern yet",
+    "no_breakout_or_regime_mismatch": "Breakout not confirmed",
+    "shallow_cross": "Waiting for deeper pullback",
+    "extended_cross": "Waiting for pullback",
+    "no_stoch_cross": "Waiting for StochRSI confirmation",
+    "low_breakout_volume": "Waiting for volume confirmation",
+    "adx_weak": "Market lacks strength",
+    "high_volatility": "Volatility too high — risk control",
+    "time_decay": "Signal expired",
+    "entry_drift": "Entry price moved away",
+    "already_exited": "Position already closed",
+    "stop_hit": "Stop loss triggered",
+    "target_hit": "Target reached",
+    "trailing_stop": "Trailing stop triggered",
+    "regime_reversal": "Trend reversed — exiting",
+  };
+  for (const [key, value] of Object.entries(map)) {
+    if (internalReason.includes(key)) return value;
+  }
+  return "Analyzing market conditions...";
+}
+
+function getRecommendedAction(regime: MarketRegime, bestConfidence: number): { action: string; detail: string } {
+  if (!regime.direction || regime.direction === "NEUTRAL") {
+    return { action: "WAIT", detail: "No directional bias" };
+  }
+  if (regime.strength === "NEUTRAL") {
+    return { action: "WAIT", detail: "Market lacks strength" };
+  }
+  if (bestConfidence >= 85) {
+    const size = regime.strength === "STRONG" ? "Full Position" : regime.strength === "MODERATE" ? "75% Position" : "50% Position";
+    return { action: "CONFIRMED ENTRY", detail: size };
+  }
+  if (bestConfidence >= 70) {
+    const size = regime.strength === "STRONG" ? "40% Position" : regime.strength === "MODERATE" ? "30% Position" : "20% Position";
+    return { action: "EARLY ENTRY", detail: size };
+  }
+  if (bestConfidence >= 50) {
+    return { action: "WATCH", detail: "Setup developing" };
+  }
+  if (regime.strength === "STRONG" || regime.strength === "MODERATE") {
+    return { action: "WAIT", detail: "Waiting for setup confirmation" };
+  }
+  return { action: "WAIT", detail: "Market conditions not favorable" };
+}
+
 // ─── ENTRY TIER & POSITION SIZING ───
 
 type EntryTier = "NO_TRADE" | "EARLY_ENTRY" | "CONFIRMED_ENTRY";
@@ -1269,7 +1325,7 @@ export async function generateSignal(
         rejection: { eligible: false, confidence: 0, rejectionReason: "regime_neutral" },
         breakout: { eligible: false, confidence: 0, rejectionReason: "regime_neutral" },
       },
-      rejectionStage: "Regime NEUTRAL",
+      rejectionStage: "No directional bias",
     };
   }
 
@@ -1297,7 +1353,7 @@ export async function generateSignal(
         rejection: { eligible: false, confidence: 0, rejectionReason: "cooldown_active" },
         breakout: { eligible: false, confidence: 0, rejectionReason: "cooldown_active" },
       },
-      rejectionStage: `Cooldown active (${f1(cooldown.remainingMs / 60000)}min)`,
+      rejectionStage: `Position cooldown (${f0(cooldown.remainingMs / 60000)}min remaining)`,
     };
   }
 
@@ -1326,10 +1382,11 @@ export async function generateSignal(
     debug.push("REJECTED: no entry candidate met threshold");
 
     // Determine rejection stage
-    let rejectionStage = "No entry candidate";
+    let rejectionStage = "Waiting for setup confirmation";
     if (!candidates.pullback.eligible && !candidates.rejection.eligible && !candidates.breakout.eligible) {
-      if (candidates.pullback.rejectionReason?.includes("no_cross")) rejectionStage = "StochRSI no cross";
-      else if (candidates.pullback.confidence > 0) rejectionStage = `Confidence too low (best: ${f0(Math.max(candidates.pullback.confidence, candidates.rejection.confidence, candidates.breakout.confidence))})`;
+      const bestConf = Math.max(candidates.pullback.confidence, candidates.rejection.confidence, candidates.breakout.confidence);
+      if (bestConf >= 50) rejectionStage = `Setup developing (${f0(bestConf)}%)`;
+      else rejectionStage = "Waiting for momentum confirmation";
     }
 
     return {
@@ -1394,7 +1451,7 @@ export async function generateSignal(
       },
       debug,
       entryCandidates: candidates,
-      rejectionStage: `Exhaustion block — ${candidate.exhaustionWarning}`,
+      rejectionStage: `Market exhausted — ${candidate.exhaustionWarning?.replace("BLOCK: ", "") || "cooling off"}`,
     };
   }
 
@@ -1450,7 +1507,7 @@ export async function generateSignal(
       },
       debug,
       entryCandidates: candidates,
-      rejectionStage: `RR failure (${f2(rr)} < ${MIN_RR})`,
+      rejectionStage: `Risk:Reward too low (${f2(rr)} < ${MIN_RR})`,
     };
   }
 
@@ -1531,7 +1588,7 @@ export async function generateSignal(
       },
       debug,
       entryCandidates: candidates,
-      rejectionStage: `Confidence ${f1(candidate.finalConfidence)} — NO_TRADE tier`,
+      rejectionStage: `Setup developing (${f0(candidate.finalConfidence)}%) — below entry threshold`,
     };
   }
 
@@ -1802,8 +1859,42 @@ export async function getMarketSnapshot(pair: string, candles1h: Candle[], candl
   const trend4h = getTrendContext(candles4h);
   const trend1d = getTrendContext(candles1d);
 
-  // Run signal generation for diagnostics (but don't return the signal directly)
+  // Run signal generation for diagnostics
   const signalResult = await generateSignal(pair, candles1h, candles4h, candles15m, currentPrice);
+
+  // Build trader-friendly "Why no trade?" checklist
+  const whyNoTrade: string[] = [];
+  const bestConf = Math.max(
+    signalResult.entryCandidates?.pullback?.confidence || 0,
+    signalResult.entryCandidates?.rejection?.confidence || 0,
+    signalResult.entryCandidates?.breakout?.confidence || 0
+  );
+  const rec = getRecommendedAction(regime, bestConf);
+
+  // Build checklist
+  const checklist: string[] = [];
+  if (regime.direction && regime.direction !== "NEUTRAL") {
+    checklist.push(`✓ ${regime.direction} bias on higher timeframe`);
+  }
+  if ((regime.adx || adx(candles4h)) > 20) {
+    checklist.push("✓ Market showing strength");
+  }
+  if (signalResult.entryCandidates?.pullback?.confidence || 0 > 30) {
+    checklist.push("✓ Pullback forming");
+  }
+  if (signalResult.entryCandidates?.rejection?.confidence || 0 > 30) {
+    checklist.push("✓ Rejection pattern developing");
+  }
+  if (safeNum(rsi(candles4h.map(c => c.close))) > 30 && safeNum(rsi(candles4h.map(c => c.close))) < 70) {
+    checklist.push("✓ RSI in healthy range");
+  }
+
+  // Waiting for items
+  if (signalResult.rejectionStage) {
+    whyNoTrade.push(`• ${signalResult.rejectionStage}`);
+  } else if (bestConf < 70) {
+    whyNoTrade.push(`• Setup developing (${f0(bestConf)}%)`);
+  }
 
   return {
     pair,
@@ -1826,8 +1917,10 @@ export async function getMarketSnapshot(pair: string, candles1h: Candle[], candl
     trend4h,
     trend1d,
     entryCandidates: signalResult.entryCandidates,
-    debug: signalResult.debug,
     rejectionStage: signalResult.rejectionStage || null,
+    recommendedAction: rec.action,
+    positionSize: rec.detail,
+    whyNoTrade: whyNoTrade.length > 0 ? whyNoTrade : ["• Waiting for market setup"],
   };
 }
 
