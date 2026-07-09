@@ -3,7 +3,7 @@
 // This is the ONLY place that evaluates markets, generates signals,
 // manages exits, and computes dashboard snapshots.
 //
-// /api/signals is READ-ONLY. It never calls strategy functions.
+// /api/signals is READ-ONLY. It never calls strategy Functions.
 
 import { NextRequest, NextResponse } from "next/server";
 import {
