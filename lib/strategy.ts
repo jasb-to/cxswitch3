@@ -265,6 +265,11 @@ async function evaluateRegime(pair: string, candles1d: Candle[], candles4h: Cand
   const ema21_4h = ema(closes4h, 21);
   const ema50_4h = ema(closes4h, 50);
 
+  // Debug 1D EMA status
+  if (ema21_1d.length === 0) reasons.push(`1D_ema21_empty_closes_${closes1d.length}`);
+  if (ema50_1d.length === 0) reasons.push(`1D_ema50_empty_closes_${closes1d.length}`);
+  if (ema200_1d.length === 0) reasons.push(`1D_ema200_empty_closes_${closes1d.length}`);
+
   let regimeScore = 0;
   let direction: "LONG" | "SHORT" | "NEUTRAL" | null = null;
 
@@ -539,9 +544,16 @@ function adx(candles: Candle[], period: number = 14): number {
 function aggregateTo1D(candles4h: Candle[]): Candle[] {
   if (!candles4h || candles4h.length < 6) return [];
   const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
+
+  // Detect if timestamps are in seconds (Kraken API returns seconds)
+  const sampleTs = sorted[0].timestamp;
+  const isSeconds = sampleTs < 1e10; // Milliseconds would be > 1e10 (year ~2286)
+  const tsMultiplier = isSeconds ? 1000 : 1;
+
   const groups: Map<string, Candle[]> = new Map();
   for (const c of sorted) {
-    const d = new Date(c.timestamp);
+    const ts = c.timestamp * tsMultiplier;
+    const d = new Date(ts);
     const key = d.toISOString().split("T")[0];
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(c);
@@ -550,7 +562,7 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
   for (const [, bars] of groups) {
     if (!bars.length) continue;
     daily.push({
-      timestamp: bars[0].timestamp,
+      timestamp: bars[0].timestamp * tsMultiplier,
       open: bars[0].open,
       high: Math.max(...bars.map(b => b.high)),
       low: Math.min(...bars.map(b => b.low)),
