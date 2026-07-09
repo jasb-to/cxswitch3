@@ -64,11 +64,11 @@ export default function Dashboard() {
     const snaps: Record<string, MarketSnapshot> = {};
     for (const pair of PAIRS) {
       try {
-        const res = await fetch(`/api/signal?pair=${encodeURIComponent(pair)}&action=snapshot`);
+        const res = await fetch("/api/signal?pair=" + encodeURIComponent(pair) + "&action=snapshot");
         const data = await res.json();
         if (data.snapshot) snaps[pair] = data.snapshot;
       } catch (e) {
-        console.error(`Snapshot failed for ${pair}:`, e);
+        console.error("Snapshot failed for " + pair + ":", e);
       }
     }
     setSnapshots(snaps);
@@ -97,12 +97,12 @@ export default function Dashboard() {
     setLoading(true);
     try {
       const secret = process.env.NEXT_PUBLIC_CRON_SECRET || "";
-      const res = await fetch(`/api/cron?secret=${encodeURIComponent(secret)}`);
+      const res = await fetch("/api/cron?secret=" + encodeURIComponent(secret));
       const data = await res.json();
       console.log("Cron result:", data);
       await refresh();
     } catch (e) {
-      setError(`Cron trigger failed: ${e}`);
+      setError("Cron trigger failed: " + e);
     } finally {
       setLoading(false);
     }
@@ -121,7 +121,7 @@ export default function Dashboard() {
     const pnl = signal.direction === "LONG"
       ? (currentPrice - signal.entry) / signal.entry * 100
       : (signal.entry - currentPrice) / signal.entry * 100;
-    return `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}%`;
+    return (pnl >= 0 ? "+" : "") + pnl.toFixed(2) + "%";
   };
 
   return (
