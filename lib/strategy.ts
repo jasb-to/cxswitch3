@@ -725,7 +725,10 @@ function logRejection(log: RejectionLog): void {
   if (rejectionLogs.length > MAX_REJECTION_LOGS) {
     rejectionLogs.shift();
   }
-  console.log(`[REJECTED] ${log.pair} | cross=${log.crossDetected ? log.crossDirection : "none"} | regime=${log.regimeDirection} | conf=${log.confidenceScore} | reason=${log.rejectionReason}`);
+  // ONLY log in debug mode — normal market conditions are NOT events
+  if (process.env.DEBUG_STRATEGY === "true") {
+    console.log(`[REJECTED] ${log.pair} | cross=${log.crossDetected ? log.crossDirection : "none"} | regime=${log.regimeDirection} | conf=${log.confidenceScore} | reason=${log.rejectionReason}`);
+  }
 }
 
 export function getRejectionLogs(pair?: string, since?: number): RejectionLog[] {
