@@ -36,35 +36,60 @@ function safeFixed(v: any, digits: number): string {
 }
 
 export async function sendAlert(signal: any): Promise<boolean> {
-  const dirEmoji = signal.direction === "LONG" ? "🟢" : "🔴";
-  const tierEmoji = signal.entryTier === "CONFIRMED_ENTRY" ? "✅" : signal.entryTier === "EARLY_ENTRY" ? "⚡" : "🔴";
-  const mode = signal.entryMode || "ENTRY";
+  // [v29.1] Suppress NO_TRADE alerts — only actionable signals go to Telegram
+  if (signal.entryTier === "NO_TRADE") {
+    console.log(`[TELEGRAM SKIP] ${signal.pair} — NO_TRADE, no alert`);
+    return false;
+  }
+
   const conf = signal.confidence || 0;
-  const rr = signal.rr || 0;
   const entry = safeFixed(signal.entry, 2);
   const stop = safeFixed(signal.stop, 2);
   const target = safeFixed(signal.target, 2);
   const slPct = safeFixed(Math.abs((signal.stop - signal.entry) / signal.entry) * 100, 1);
   const tpPct = safeFixed(Math.abs((signal.target - signal.entry) / signal.entry) * 100, 1);
-  const sizePct = safeFixed((signal.positionSizePct || 0) * 100, 0);
 
-  // Build regime context line
-  const regimeParts: string[] = [];
-  if (signal.regimeDirection) regimeParts.push(`${signal.regimeDirection}`);
-  if (signal.entryMode) regimeParts.push(`${signal.entryMode}`);
+  let text: string;
 
-  // Build reason tags
-  const reasonTags = (signal.reason || "").split(" | ").filter((r: string) => r.length > 0);
-  const tagLine = reasonTags.slice(0, 6).join(", ");
+  if (signal.entryTier === "EARLY_ENTRY") {
+    // [v29.1] EARLY ENTRY format
+    text =
+      `🟡 EARLY ENTRY — ${signal.pair}\n\n` +
+      `Direction: ${signal.direction}\n` +
+      `Confidence: ${safeFixed(conf, 0)}%\n\n` +
+      `Position:\n` +
+      `33% starter size\n\n` +
+      `Entry: ${entry} | Stop: ${stop} | Target: ${target}\n` +
+      `RR ${safeFixed(signal.rr || 0, 2)} | SL ${slPct}% | TP ${tpPct}%\n` +
+      `id=${signal.id}`;
+  } else if (signal.entryTier === "CONFIRMED_ENTRY") {
+    // [v29.1] CONFIRMED ENTRY format
+    text =
+      `🟢 CONFIRMED ENTRY — ${signal.pair}\n\n` +
+      `Direction: ${signal.direction}\n` +
+      `Confidence: ${safeFixed(conf, 0)}%\n\n` +
+      `Position:\n` +
+      `FULL SIZE\n\n` +
+      `Entry: ${entry} | Stop: ${stop} | Target: ${target}\n` +
+      `RR ${safeFixed(signal.rr || 0, 2)} | SL ${slPct}% | TP ${tpPct}%\n` +
+      `id=${signal.id}`;
+  } else {
+    // Fallback for any other tier (should not reach here)
+    const dirEmoji = signal.direction === "LONG" ? "🟢" : "🔴";
+    const mode = signal.entryMode || "ENTRY";
+    const sizePct = safeFixed((signal.positionSizePct || 0) * 100, 0);
+    const regimeParts: string[] = [];
+    if (signal.regimeDirection) regimeParts.push(`${signal.regimeDirection}`);
+    if (signal.entryMode) regimeParts.push(`${signal.entryMode}`);
+    const reasonTags = (signal.reason || "").split(" | ").filter((r: string) => r.length > 0);
+    const tagLine = reasonTags.slice(0, 6).join(", ");
 
-  const text = 
-    `${dirEmoji} ${signal.pair} ${signal.direction} ${mode} — ${tierEmoji} ${signal.entryTier || "UNKNOWN"} (${safeFixed(conf, 0)}%)
-` +
-    `Entry: ${entry} | Stop: ${stop} | Target: ${target} | Size: ${sizePct}%
-` +
-    `RR ${safeFixed(rr, 2)} | ${regimeParts.join(" ")} | ${tagLine} | SL ${slPct}% TP ${tpPct}%
-` +
-    `id=${signal.id}`;
+    text =
+      `${dirEmoji} ${signal.pair} ${signal.direction} ${mode} — ${signal.entryTier || "UNKNOWN"} (${safeFixed(conf, 0)}%)\n` +
+      `Entry: ${entry} | Stop: ${stop} | Target: ${target} | Size: ${sizePct}%\n` +
+      `RR ${safeFixed(signal.rr || 0, 2)} | ${regimeParts.join(" ")} | ${tagLine} | SL ${slPct}% TP ${tpPct}%\n` +
+      `id=${signal.id}`;
+  }
 
   return sendMessage(text);
 }
@@ -79,12 +104,9 @@ export async function sendExitAlert(signal: any, exitPrice: number, reason: stri
   const pnlSign = pnl >= 0 ? "+" : "";
 
   const text = 
-    `${pnlEmoji} ${signal.pair} ${signal.direction} EXIT — ${pnlSign}${safeFixed(pnl, 2)}%
-` +
-    `Entry: ${safeFixed(signal.entry, 2)} | Exit: ${safeFixed(exitPrice, 2)}
-` +
-    `Reason: ${reason}
-` +
+    `${pnlEmoji} ${signal.pair} ${signal.direction} EXIT — ${pnlSign}${safeFixed(pnl, 2)}%\n` +
+    `Entry: ${safeFixed(signal.entry, 2)} | Exit: ${safeFixed(exitPrice, 2)}\n` +
+    `Reason: ${reason}\n` +
     `id=${signal.id}`;
 
   return sendMessage(text);
@@ -126,10 +148,8 @@ export async function alertNoSignal(pair: string, market: any, debugLines: strin
   const stochLine = stochK !== null && stochD !== null ? `Stoch ${stochK}/${stochD}` : "";
 
   const text = 
-    `⏸️ NO SIGNAL — ${pair}
-` +
-    `Trend: ${trend} | ADX: ${adx} | RSI: ${rsi}
-` +
+    `⏸️ NO SIGNAL — ${pair}\n` +
+    `Trend: ${trend} | ADX: ${adx} | RSI: ${rsi}\n` +
     (stochLine ? `${stochLine}\n` : "") +
     (debugLines || []).slice(-3).join("\n");
 
