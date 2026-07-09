@@ -45,6 +45,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const [snapshotErrors, setSnapshotErrors] = useState<Record<string, string>>({});
 
   const fetchSignals = useCallback(async () => {
     try {
@@ -53,31 +54,54 @@ export default function Dashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "active-signals" }),
       });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Active signals API error ${res.status}: ${text.slice(0, 200)}`);
+      }
       const data = await res.json();
       if (data.signals) setSignals(data.signals);
     } catch (e) {
       console.error("Failed to load signals:", e);
+      setError(String(e));
     }
   }, []);
 
   const fetchSnapshots = useCallback(async () => {
     const snaps: Record<string, MarketSnapshot> = {};
+    const errs: Record<string, string> = {};
+
     for (const pair of PAIRS) {
       try {
         const res = await fetch(`/api/signal?pair=${encodeURIComponent(pair)}&action=snapshot`);
+        if (!res.ok) {
+          const text = await res.text();
+          errs[pair] = `HTTP ${res.status}: ${text.slice(0, 200)}`;
+          console.error(`Snapshot failed for ${pair}:`, errs[pair]);
+          continue;
+        }
         const data = await res.json();
-        if (data.snapshot) snaps[pair] = data.snapshot;
+        if (data.snapshot) {
+          snaps[pair] = data.snapshot;
+        } else if (data.error) {
+          errs[pair] = data.error;
+        } else {
+          errs[pair] = "No snapshot data returned";
+        }
       } catch (e) {
-        console.error(`Snapshot failed for ${pair}:`, e);
+        errs[pair] = String(e);
+        console.error(`Snapshot exception for ${pair}:`, e);
       }
     }
+
     setSnapshots(snaps);
+    setSnapshotErrors(errs);
     setLastUpdate(new Date().toLocaleTimeString());
   }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError("");
+    setSnapshotErrors({});
     try {
       await Promise.all([fetchSignals(), fetchSnapshots()]);
     } catch (e) {
@@ -227,12 +251,26 @@ export default function Dashboard() {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             {PAIRS.map(pair => {
               const snap = snapshots[pair];
-              if (!snap) return (
-                <div key={pair} className="p-4 bg-gray-800 rounded-xl border border-gray-700 animate-pulse">
-                  <div className="h-4 bg-gray-700 rounded w-20 mb-2"></div>
-                  <div className="h-8 bg-gray-700 rounded w-32"></div>
-                </div>
-              );
+              const err = snapshotErrors[pair];
+
+              if (err) {
+                return (
+                  <div key={pair} className="p-4 bg-red-900/20 rounded-xl border border-red-800">
+                    <div className="font-mono font-semibold text-red-300 mb-2">{pair}</div>
+                    <div className="text-xs text-red-400">{err}</div>
+                  </div>
+                );
+              }
+
+              if (!snap) {
+                return (
+                  <div key={pair} className="p-4 bg-gray-800 rounded-xl border border-gray-700 animate-pulse">
+                    <div className="h-4 bg-gray-700 rounded w-20 mb-2"></div>
+                    <div className="h-8 bg-gray-700 rounded w-32"></div>
+                  </div>
+                );
+              }
+
               const regimeDir = snap.regime?.direction;
               const regimeColor = regimeDir === "LONG" ? "text-green-400" : regimeDir === "SHORT" ? "text-red-400" : "text-gray-400";
               return (
