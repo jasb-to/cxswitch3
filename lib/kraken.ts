@@ -1,9 +1,7 @@
-// lib/kraken.ts — v29.1 Kraken API wrapper (backward compatible)
+// lib/kraken.ts — v29.1 Kraken API wrapper
 // ============================================================
 
 const KRAKEN_API_URL = "https://api.kraken.com";
-
-// ─── Types ───
 
 export type Symbol = string;
 
@@ -25,8 +23,6 @@ export interface KrakenTicker {
   volume24h: number;
 }
 
-// ─── Rate limiting ───
-
 let lastRequestTime = 0;
 const MIN_INTERVAL_MS = 600;
 
@@ -39,8 +35,6 @@ async function rateLimitedFetch(url: string, options?: RequestInit): Promise<Res
   lastRequestTime = Date.now();
   return fetch(url, options);
 }
-
-// ─── Public API ───
 
 export async function getCandles(pair: Symbol, interval: number = 60, since?: number): Promise<any[]> {
   const url = new URL(`${KRAKEN_API_URL}/0/public/OHLC`);
@@ -57,7 +51,6 @@ export async function getCandles(pair: Symbol, interval: number = 60, since?: nu
   const key = Object.keys(data.result).find(k => k !== "last");
   if (!key) throw new Error("No OHLC data returned");
 
-  // Return in strategy-compatible format
   return data.result[key].map((c: any) => ({
     timestamp: c[0] * 1000,
     open: parseFloat(c[1]),
@@ -91,8 +84,6 @@ export async function getTicker(pair: Symbol): Promise<KrakenTicker> {
     volume24h: parseFloat(tick.v[1]),
   };
 }
-
-// ─── Private API ───
 
 function getKrakenSignature(path: string, nonce: string, body: string, secret: string): string {
   const crypto = require("crypto");
@@ -154,8 +145,6 @@ export async function placeMarketOrder(pair: string, direction: "buy" | "sell", 
 
   return data.result.txid?.[0] || "";
 }
-
-// ─── Helpers ───
 
 export function krakenPairFormat(pair: string): string {
   const map: Record<string, string> = {
