@@ -114,4 +114,4 @@ export async function alertError(context: string, error: any): Promise<boolean> 
     "Context: <code>" + context + "</code>\n" +
     "Error: <pre>" + String(error).slice(0, 400) + "</pre>";
   return sendMessage(text);
-}
+} 
