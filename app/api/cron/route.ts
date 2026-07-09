@@ -116,7 +116,7 @@ export async function GET(req: NextRequest) {
         const activeTrades: Record<string, any> = {};
         for (const s of activeSignals) { if (!s.exited) activeTrades[s.pair] = s; }
 
-        const result = await generateSignal(pair, candles1h, candles4h, candles15m, activeTrades, price);
+        const result = await generateSignal(pair, candles1h, candles4h, candles15m, price);
 
         if (result.signal) {
           const signal = result.signal;
