@@ -1,14 +1,7 @@
 // lib/state.ts — v29.1 State Persistence (UPSTASH REDIS)
 // ============================================================
 // Uses @upstash/redis (HTTP/REST client) for persistence.
-// Works on Vercel, local dev, and any Node.js environment.
-//
-// Install: npm install @upstash/redis
-//          or: pnpm add @upstash/redis
-//
-// Your env vars (already set):
-//   KV_REST_API_URL=https://amused-shepherd-136664.upstash.io
-//   KV_REST_API_TOKEN=gQAAAAAAAhXYAAIgcDI1YzhhM2FhNmY0ZjA0NDRlOWE2ZGEwY2U2MDkwYTc4MA
+// Install: npm install @upstash/redis  or  pnpm add @upstash/redis
 
 import { Redis } from "@upstash/redis";
 import { MarketRegime, ExitRecord, Signal } from "./strategy";
