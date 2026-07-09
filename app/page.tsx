@@ -1,6 +1,3 @@
-// app/page.tsx — v29.1 CXSwitch Dashboard (FIXED)
-// ============================================================
-
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
@@ -231,9 +228,9 @@ export default function Dashboard() {
             {PAIRS.map(pair => {
               const snap = snapshots[pair];
               if (!snap) return (
-                <div key={pair} className="p-4 bg-gray-900 rounded-xl border border-gray-800 animate-pulse">
-                  <div className="h-4 bg-gray-800 rounded w-20 mb-2"></div>
-                  <div className="h-8 bg-gray-800 rounded w-32"></div>
+                <div key={pair} className="p-4 bg-gray-800 rounded-xl border border-gray-700 animate-pulse">
+                  <div className="h-4 bg-gray-700 rounded w-20 mb-2"></div>
+                  <div className="h-8 bg-gray-700 rounded w-32"></div>
                 </div>
               );
               const regimeDir = snap.regime?.direction;
