@@ -2,7 +2,7 @@
 // ============================================================
 // This endpoint NEVER evaluates strategy. It only reads the pre-computed
 // dashboard snapshot that /api/cron saves every 10 minutes.
-// 
+//
 // NO Kraken calls. NO indicator calculations. NO strategy. NO logging.
 // Response time target: 5–20ms.
 
