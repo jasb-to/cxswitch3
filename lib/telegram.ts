@@ -30,40 +30,61 @@ async function sendMessage(text: string, parseMode: "HTML" | "Markdown" = "HTML"
   }
 }
 
+function safeFixed(v: any, digits: number): string {
+  const n = Number(v);
+  return isFinite(n) ? n.toFixed(digits) : "0";
+}
+
 export async function sendAlert(signal: any): Promise<boolean> {
-  const dir = signal.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
+  const dirEmoji = signal.direction === "LONG" ? "🟢" : "🔴";
+  const confEmoji = signal.confidence >= 70 ? "🟢" : signal.confidence >= 50 ? "🟡" : "🔴";
   const mode = signal.entryMode || "ENTRY";
   const conf = signal.confidence || 0;
   const rr = signal.rr || 0;
-  const emo = signal.exhaustionWarning ? "⚠️ " : "";
-  const warn = signal.exhaustionWarning ? "⚠️ <i>" + signal.exhaustionWarning + "</i>\n" : "";
-  const reason = (signal.reason || "").split(" | ")[0];
+  const entry = safeFixed(signal.entry, 2);
+  const stop = safeFixed(signal.stop, 2);
+  const target = safeFixed(signal.target, 2);
+  const slPct = safeFixed(Math.abs((signal.stop - signal.entry) / signal.entry) * 100, 1);
+  const tpPct = safeFixed(Math.abs((signal.target - signal.entry) / signal.entry) * 100, 1);
 
-  const text = emo + "<b>" + dir + " " + signal.pair + "</b> (" + mode + ")\n" +
-    "━━━━━━━━━━━━━━\n" +
-    "📍 Entry: <code>" + signal.entry + "</code>\n" +
-    "🛑 Stop:  <code>" + signal.stop + "</code>\n" +
-    "🎯 Target: <code>" + signal.target + "</code>\n" +
-    "📊 R:R: <code>" + rr.toFixed(2) + "</code> | Conf: <code>" + conf.toFixed(0) + "%</code>\n" +
-    warn +
-    "<i>" + reason + "</i>";
+  // Build regime context line
+  const regimeParts: string[] = [];
+  if (signal.regimeDirection) regimeParts.push(`${signal.regimeDirection}`);
+  if (signal.entryMode) regimeParts.push(`${signal.entryMode}`);
+
+  // Build reason tags
+  const reasonTags = (signal.reason || "").split(" | ").filter((r: string) => r.length > 0);
+  const tagLine = reasonTags.slice(0, 6).join(", ");
+
+  const text = 
+    `${dirEmoji} ${signal.pair} ${signal.direction} ${mode} — ${confEmoji} ${safeFixed(conf, 0)}%
+` +
+    `Entry: ${entry} | Stop: ${stop} | Target: ${target}
+` +
+    `RR ${safeFixed(rr, 2)} | ${regimeParts.join(" ")} | ${tagLine} | RR ${safeFixed(rr, 2)} | SL ${slPct}% TP ${tpPct}%
+` +
+    `id=${signal.id}`;
 
   return sendMessage(text);
 }
 
 export async function sendExitAlert(signal: any, exitPrice: number, reason: string): Promise<boolean> {
-  const dir = signal.direction === "LONG" ? "🟢 LONG" : "🔴 SHORT";
-  const pnl = signal.direction === "LONG"
+  const dirEmoji = signal.direction === "LONG" ? "🟢" : "🔴";
+  const rawPnl = signal.direction === "LONG"
     ? ((exitPrice - signal.entry) / signal.entry) * 100
     : ((signal.entry - exitPrice) / signal.entry) * 100;
+  const pnl = isFinite(rawPnl) ? rawPnl : 0;
   const pnlEmoji = pnl >= 0 ? "✅" : "❌";
+  const pnlSign = pnl >= 0 ? "+" : "";
 
-  const text = "<b>" + pnlEmoji + " EXIT " + signal.pair + "</b> " + dir + "\n" +
-    "━━━━━━━━━━━━━━\n" +
-    "📍 Entry: <code>" + signal.entry + "</code>\n" +
-    "💰 Exit:  <code>" + exitPrice.toFixed(2) + "</code>\n" +
-    "📈 PnL:  <code>" + (pnl >= 0 ? "+" : "") + pnl.toFixed(2) + "%</code>\n" +
-    "📝 Reason: <i>" + reason + "</i>";
+  const text = 
+    `${pnlEmoji} ${signal.pair} ${signal.direction} EXIT — ${pnlSign}${safeFixed(pnl, 2)}%
+` +
+    `Entry: ${safeFixed(signal.entry, 2)} | Exit: ${safeFixed(exitPrice, 2)}
+` +
+    `Reason: ${reason}
+` +
+    `id=${signal.id}`;
 
   return sendMessage(text);
 }
@@ -78,40 +99,46 @@ export async function alertExit(signal: any, exitPrice: number, reason: string):
 
 export async function alertStatus(signals: any[], prices: Record<string, number>): Promise<boolean> {
   if (signals.length === 0) {
-    return sendMessage("📊 <b>CXSwitch v29.1</b>\nNo active signals.");
+    return sendMessage("📊 CXSwitch v29.1\nNo active signals.");
   }
 
   const lines = signals.map(s => {
     const price = prices[s.pair] || s.entry;
-    const pnl = s.direction === "LONG"
+    const rawPnl = s.direction === "LONG"
       ? ((price - s.entry) / s.entry) * 100
       : ((s.entry - price) / s.entry) * 100;
+    const pnl = isFinite(rawPnl) ? rawPnl : 0;
     const state = s.tradeState || "OPEN";
-    return "• " + s.pair + " " + s.direction + " | " + state + " | " + (pnl >= 0 ? "+" : "") + pnl.toFixed(2) + "%";
+    const pnlSign = pnl >= 0 ? "+" : "";
+    return `• ${s.pair} ${s.direction} | ${state} | ${pnlSign}${safeFixed(pnl, 2)}%`;
   });
 
-  return sendMessage("📊 <b>CXSwitch v29.1 Active Signals</b>\n━━━━━━━━━━━━━━\n" + lines.join("\n"));
+  return sendMessage("📊 CXSwitch v29.1 Active Signals\n" + lines.join("\n"));
 }
 
 export async function alertNoSignal(pair: string, market: any, debugLines: string[]): Promise<boolean> {
   const trend = market?.trend || "UNKNOWN";
-  const stoch = market?.stochK !== undefined ? "Stoch " + market.stochK.toFixed(1) + "/" + market.stochD?.toFixed(1) : "";
-  const stochLine = stoch ? "📉 " + stoch + "\n" : "";
+  const adx = market?.adx !== undefined ? safeFixed(market.adx, 1) : "N/A";
+  const rsi = market?.rsi !== undefined ? safeFixed(market.rsi, 1) : "N/A";
+  const stochK = market?.stochK !== undefined ? safeFixed(market.stochK, 1) : null;
+  const stochD = market?.stochD !== undefined ? safeFixed(market.stochD, 1) : null;
+  const stochLine = stochK !== null && stochD !== null ? `Stoch ${stochK}/${stochD}` : "";
 
-  const text = "⏸️ <b>NO SIGNAL — " + pair + "</b>\n" +
-    "━━━━━━━━━━━━━━\n" +
-    "📈 Trend: <i>" + trend + "</i>\n" +
-    "📊 ADX: <code>" + (market?.adx || "N/A") + "</code> | RSI: <code>" + (market?.rsi || "N/A") + "</code>\n" +
-    stochLine +
-    "<i>" + (debugLines || []).slice(-3).join("\n") + "</i>";
+  const text = 
+    `⏸️ NO SIGNAL — ${pair}
+` +
+    `Trend: ${trend} | ADX: ${adx} | RSI: ${rsi}
+` +
+    (stochLine ? `${stochLine}\n` : "") +
+    (debugLines || []).slice(-3).join("\n");
 
   return sendMessage(text);
 }
 
 export async function alertError(context: string, error: any): Promise<boolean> {
-  const text = "🚨 <b>CXSwitch ERROR</b>\n" +
-    "━━━━━━━━━━━━━━\n" +
-    "Context: <code>" + context + "</code>\n" +
-    "Error: <pre>" + String(error).slice(0, 400) + "</pre>";
+  const text = 
+    `🚨 CXSwitch ERROR\n` +
+    `Context: ${context}\n` +
+    `${String(error).slice(0, 400)}`;
   return sendMessage(text);
 }
