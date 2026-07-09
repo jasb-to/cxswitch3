@@ -1,4 +1,4 @@
-// app/api/signal/route.ts — v29.1 Signal REST API
+// app/api/signal/route.ts — v29.1 Signal REST API (FIXED)
 // ============================================================
 
 import { NextRequest, NextResponse } from "next/server";
@@ -41,13 +41,20 @@ export async function GET(req: NextRequest) {
     }
 
     if (action === "snapshot") {
-      const [candles1h, candles4h, candles15m] = await Promise.all([
+      // FIX: Fetch current price alongside candles for live price in UI
+      const [candles1h, candles4h, candles15m, price] = await Promise.all([
         getCandles(krakenPair, 60),
         getCandles(krakenPair, 240),
         getCandles(krakenPair, 15),
+        getCurrentPrice(krakenPair),
       ]);
 
       const snapshot = await getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+      // Override with live price if available
+      if (price && snapshot) {
+        snapshot.price = Math.round(price * 100) / 100;
+      }
+
       return NextResponse.json({ pair, snapshot });
     }
 
@@ -58,7 +65,14 @@ export async function GET(req: NextRequest) {
       getCurrentPrice(krakenPair),
     ]);
 
-    const result = await generateSignal(pair, candles1h, candles4h, candles15m, {}, price);
+    // FIX: Load active signals to pass to generateSignal so it respects existing trades
+    const activeSignals = await loadActiveSignals();
+    const activeTrades: Record<string, any> = {};
+    for (const s of activeSignals) {
+      if (!s.exited) activeTrades[s.pair] = s;
+    }
+
+    const result = await generateSignal(pair, candles1h, candles4h, candles15m, activeTrades, price);
 
     return NextResponse.json({
       pair,
