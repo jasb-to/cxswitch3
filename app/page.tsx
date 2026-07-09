@@ -89,7 +89,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     refresh();
-    const interval = setInterval(refresh, 60000); // Auto-refresh every 60s
+    const interval = setInterval(refresh, 60000);
     return () => clearInterval(interval);
   }, [refresh]);
 
@@ -127,7 +127,6 @@ export default function Dashboard() {
   return (
     <main className="min-h-screen bg-gray-950 text-gray-100 p-6">
       <div className="max-w-6xl mx-auto">
-        {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div>
             <h1 className="text-3xl font-bold tracking-tight">CXSwitch <span className="text-blue-400">v29.1</span></h1>
@@ -158,7 +157,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Active Signals */}
         <section className="mb-8">
           <h2 className="text-lg font-semibold mb-4 text-gray-300">Active Signals</h2>
           {signals.length === 0 ? (
@@ -224,7 +222,6 @@ export default function Dashboard() {
           )}
         </section>
 
-        {/* Market Snapshots */}
         <section>
           <h2 className="text-lg font-semibold mb-4 text-gray-300">Market Snapshots</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
