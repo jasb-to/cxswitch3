@@ -1,167 +1,93 @@
-// lib/state.ts — v29.1 State persistence (FIXED)
+// lib/state.ts — v29.1 State Persistence (UPSTASH REDIS)
 // ============================================================
+// Uses Upstash Redis (REST API) for persistence.
+// Credentials are read from environment variables automatically.
+//
+// Required env vars (already set in your Vercel project):
+//   KV_REST_API_URL=https://amused-shepherd-136664.upstash.io
+//   KV_REST_API_TOKEN=gQAAAAAAAhXYAAIgcDI1YzhhM2FhNmY0ZjA0NDRlOWE2ZGEwY2U2MDkwYTc4MA
 
-import { Signal, MarketRegime, ExitRecord } from "@/lib/strategy";
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { join } from "path";
+import { createClient } from "@vercel/kv";
+import { MarketRegime, ExitRecord, Signal } from "./strategy";
 
-// FIX: Always use /tmp in serverless environments. process.cwd() is read-only on Vercel/Railway.
-// You can override with env var if needed.
-const DATA_DIR = process.env.CXSWITCH_DATA_DIR || "/tmp/cxswitch-data";
-const SIGNALS_FILE = join(DATA_DIR, "signals.json");
-const REGIMES_FILE = join(DATA_DIR, "regimes.json");
-const EXITS_FILE = join(DATA_DIR, "exits.json");
-const CRON_FILE = join(DATA_DIR, "cron.json");
+const kv = createClient({
+  url: process.env.KV_REST_API_URL!,
+  token: process.env.KV_REST_API_TOKEN!,
+});
 
-function ensureDir(): boolean {
-  try {
-    if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-    return true;
-  } catch (err) {
-    console.error("[STATE] Failed to create data dir:", err);
-    return false;
-  }
-}
+// ─── ACTIVE SIGNALS ───
 
-function loadJson<T>(path: string, fallback: T): T {
-  try {
-    if (existsSync(path)) {
-      const raw = readFileSync(path, "utf-8");
-      if (!raw.trim()) return fallback;
-      return JSON.parse(raw);
-    }
-  } catch (err) {
-    console.error("[STATE] Failed to load JSON from", path, ":", err);
-  }
-  return fallback;
-}
-
-function saveJson(path: string, data: any): boolean {
-  try {
-    if (!ensureDir()) return false;
-    writeFileSync(path, JSON.stringify(data, null, 2));
-    return true;
-  } catch (err) {
-    console.error("[STATE] Failed to save JSON to", path, ":", err);
-    return false;
-  }
-}
-
-let memSignals: Signal[] = [];
-let memRegimes: Record<string, MarketRegime> = {};
-let memExits: ExitRecord[] = [];
-let memCron: { lastRun: number } = { lastRun: 0 };
+const ACTIVE_SIGNALS_KEY = "cxswitch:active_signals";
 
 export async function saveActiveSignals(signals: Signal[]): Promise<void> {
-  memSignals = signals;
-  const ok = saveJson(SIGNALS_FILE, signals);
-  if (!ok) console.error("[STATE] saveActiveSignals failed — signals not persisted!");
+  await kv.set(ACTIVE_SIGNALS_KEY, signals);
 }
 
 export async function loadActiveSignals(): Promise<Signal[]> {
-  memSignals = loadJson(SIGNALS_FILE, []);
-  return memSignals;
+  const data = await kv.get<Signal[]>(ACTIVE_SIGNALS_KEY);
+  return data || [];
 }
 
-export async function getSignals(): Promise<Signal[]> {
-  return loadActiveSignals();
-}
+// ─── REGIME PERSISTENCE ───
 
-export async function setSignals(signals: Signal[]): Promise<void> {
-  return saveActiveSignals(signals);
-}
-
-export async function getActiveTrades(): Promise<Signal[]> {
-  const all = await loadActiveSignals();
-  return all.filter(s => !s.exited);
-}
-
-export async function setActiveTrades(signals: Signal[]): Promise<void> {
-  const all = await loadActiveSignals();
-  const nonActive = all.filter(s => !signals.find(ns => ns.id === s.id));
-  await saveActiveSignals([...nonActive, ...signals]);
-}
+const REGIME_KEY = "cxswitch:regimes";
 
 export async function persistRegime(pair: string, regime: MarketRegime): Promise<void> {
-  memRegimes[pair] = regime;
-  saveJson(REGIMES_FILE, memRegimes);
+  const all = (await kv.get<Record<string, MarketRegime>>(REGIME_KEY)) || {};
+  all[pair] = regime;
+  await kv.set(REGIME_KEY, all);
 }
 
 export async function loadRegime(pair: string): Promise<MarketRegime | null> {
-  if (!Object.keys(memRegimes).length) {
-    memRegimes = loadJson(REGIMES_FILE, {});
-  }
-  return memRegimes[pair] || null;
+  const all = await kv.get<Record<string, MarketRegime>>(REGIME_KEY);
+  return all?.[pair] || null;
 }
 
-export async function getMarketData(pair: string): Promise<any> {
-  const regime = await loadRegime(pair);
-  return { pair, regime, timestamp: Date.now() };
-}
+// ─── EXIT PERSISTENCE ───
 
-export async function setMarketData(pair: string, data: any): Promise<void> {
-  // No-op for backward compat
-}
+const EXITS_KEY = "cxswitch:exits";
 
 export async function persistExit(record: ExitRecord): Promise<void> {
-  memExits.push(record);
-  if (memExits.length > 500) memExits = memExits.slice(-500);
-  saveJson(EXITS_FILE, memExits);
+  const all = (await kv.get<ExitRecord[]>(EXITS_KEY)) || [];
+  all.push(record);
+  await kv.set(EXITS_KEY, all);
 }
 
 export async function loadExits(): Promise<ExitRecord[]> {
-  memExits = loadJson(EXITS_FILE, []);
-  return memExits;
+  return (await kv.get<ExitRecord[]>(EXITS_KEY)) || [];
 }
+
+// ─── CRON TRACKING ───
+
+const CRON_KEY = "cxswitch:last_cron";
 
 export async function setLastCronRun(timestamp: number): Promise<void> {
-  memCron.lastRun = timestamp;
-  saveJson(CRON_FILE, memCron);
+  await kv.set(CRON_KEY, { timestamp });
 }
 
-export async function getLastCronRun(): Promise<number> {
-  memCron = loadJson(CRON_FILE, { lastRun: 0 });
-  return memCron.lastRun;
+export async function getLastCronRun(): Promise<number | null> {
+  const data = await kv.get<{ timestamp: number }>(CRON_KEY);
+  return data?.timestamp || null;
 }
 
-export async function addSignalToHistory(signal: Signal): Promise<void> {
-  // Signals are already saved via saveActiveSignals
-}
-
-export async function getSignalHistory(): Promise<Signal[]> {
-  return loadActiveSignals();
-}
-
-export async function setCronLogs(logs: any[]): Promise<void> {
-  saveJson(join(DATA_DIR, "cron-logs.json"), logs);
-}
-
-export async function getCronLogs(): Promise<any[]> {
-  return loadJson(join(DATA_DIR, "cron-logs.json"), []);
-}
-
-// ─── DASHBOARD SNAPSHOT PERSISTENCE ───
+// ─── DASHBOARD SNAPSHOT ───
 // Saved by /api/cron, read by /api/signals.
-// This is the bridge between the writer (cron) and readers (dashboard).
 
-const SNAPSHOT_KEY = "dashboard_snapshot";
-const SNAPSHOT_TTL_MS = 20 * 60 * 1000; // 20 minutes (cron runs every 10)
+const SNAPSHOT_KEY = "cxswitch:dashboard_snapshot";
+const SNAPSHOT_TTL_MS = 20 * 60 * 1000; // 20 minutes
 
 export async function saveDashboardSnapshot(snapshot: any): Promise<void> {
-  await kv.set(SNAPSHOT_KEY, JSON.stringify(snapshot));
+  await kv.set(SNAPSHOT_KEY, snapshot);
 }
 
 export async function loadDashboardSnapshot(): Promise<any | null> {
-  const data = await kv.get(SNAPSHOT_KEY);
-  if (!data) return null;
-  
-  const snapshot = typeof data === "string" ? JSON.parse(data) : data;
-  
-  // Warn if stale but still return it — client can show a warning
+  const snapshot = await kv.get<any>(SNAPSHOT_KEY);
+  if (!snapshot) return null;
+
   const age = Date.now() - (snapshot?.timestamp || 0);
   if (age > SNAPSHOT_TTL_MS) {
     console.warn(`[SNAPSHOT] Stale — ${Math.round(age / 60000)}min old`);
   }
-  
+
   return snapshot;
 }
