@@ -1,5 +1,9 @@
 // app/api/cron/route.ts — v29.1 CXSwitch cron job (FIXED)
 // ============================================================
+// This is the ONLY place that evaluates markets, generates signals,
+// manages exits, and computes dashboard snapshots.
+//
+// /api/signals is READ-ONLY. It never calls strategy functions.
 
 import { NextRequest, NextResponse } from "next/server";
 import {
@@ -10,10 +14,11 @@ import {
   setRegimePersistence,
   setExitPersistence,
   updateTradeManager,
+  getMarketSnapshot,
   Signal,
 } from "@/lib/strategy";
 import { getCandles, getCurrentPrice, krakenPairFormat } from "@/lib/kraken";
-import { sendAlert, sendExitAlert, alertStatus, alertNoSignal, alertError } from "@/lib/telegram";
+import { sendAlert, sendExitAlert, alertStatus, alertError } from "@/lib/telegram";
 import {
   saveActiveSignals,
   loadActiveSignals,
@@ -22,6 +27,7 @@ import {
   persistExit,
   loadExits as loadExitsState,
   setLastCronRun,
+  saveDashboardSnapshot,
 } from "@/lib/state";
 
 export const runtime = "nodejs";
@@ -96,7 +102,7 @@ export async function GET(req: NextRequest) {
 
       currentPrices[pair] = price;
 
-      // FIX: Process ALL active signals for this pair, not just the first one
+      // Process ALL active signals for this pair, not just the first one
       const activeForPair = activeSignals.filter(s => s.pair === pair && !s.exited);
 
       if (activeForPair.length > 0) {
@@ -104,7 +110,7 @@ export async function GET(req: NextRequest) {
           const holdResult = await shouldHold(signal, candles4h, price, now);
 
           if (!holdResult.shouldHold) {
-            // FIX: Wrap sendExitAlert in try/catch — mark exited even if Telegram fails
+            // Wrap sendExitAlert in try/catch — mark exited even if Telegram fails
             try {
               await sendExitAlert(signal, price, holdResult.reason);
             } catch (alertErr) {
@@ -129,9 +135,6 @@ export async function GET(req: NextRequest) {
           }
         }
       } else {
-        const activeTrades: Record<string, any> = {};
-        for (const s of activeSignals) { if (!s.exited) activeTrades[s.pair] = s; }
-
         const result = await generateSignal(pair, candles1h, candles4h, candles15m, price);
 
         if (result.signal) {
@@ -153,8 +156,7 @@ export async function GET(req: NextRequest) {
             mode: signal.entryMode,
           };
         } else {
-          results[pair] = { status: "NO_SIGNAL", trend: result.market?.trend, debug: result.debug };
-
+          results[pair] = { status: "NO_SIGNAL", trend: result.market?.trend };
           // No NO_SIGNAL alerts — only actionable signals are sent to Telegram
         }
       }
@@ -188,7 +190,7 @@ export async function GET(req: NextRequest) {
     errors.push("filterExpiredSignals: " + e);
   }
 
-  // FIX: Clean up old exited signals before saving to prevent unbounded growth
+  // Clean up old exited signals before saving to prevent unbounded growth
   const cleanedSignals = activeSignals.filter(s => {
     if (!s.exited) return true;
     const age = now - s.timestamp;
@@ -207,6 +209,46 @@ export async function GET(req: NextRequest) {
     console.error("[CRON] save state failed:", e);
   }
 
+  // ─── BUILD DASHBOARD SNAPSHOT ───
+  // This is the ONLY place that computes market snapshots.
+  // /api/signals will read this pre-computed data.
+
+  const marketSnapshots = [];
+  for (const pair of PAIRS) {
+    try {
+      const krakenPair = krakenPairFormat(pair);
+      const [candles1h, candles4h, candles15m, price] = await Promise.all([
+        getCandles(krakenPair, 60),
+        getCandles(krakenPair, 240),
+        getCandles(krakenPair, 15),
+        getCurrentPrice(krakenPair),
+      ]);
+
+      const snapshot = await getMarketSnapshot(pair, candles1h, candles4h, candles15m, price);
+      marketSnapshots.push(snapshot);
+    } catch (e) {
+      console.error(`[CRON] Snapshot failed for ${pair}:`, e);
+      // Don't fail the whole cron if one pair's snapshot fails
+    }
+  }
+
+  const dashboardSnapshot = {
+    timestamp: now,
+    iso: new Date(now).toISOString(),
+    markets: marketSnapshots,
+    activeSignals: cleanedSignals.filter(s => !s.exited),
+    diagnostics: results,
+    errors: errors.length > 0 ? errors : undefined,
+  };
+
+  try {
+    await saveDashboardSnapshot(dashboardSnapshot);
+    console.log("[CRON] Dashboard snapshot saved");
+  } catch (e) {
+    console.error("[CRON] saveDashboardSnapshot failed:", e);
+    errors.push("saveDashboardSnapshot: " + e);
+  }
+
   // Status reports only if DAILY_STATUS_REPORT env var is set, once per day at 00:00 UTC
   const hour = new Date(now).getUTCHours();
   const sendDailyStatus = process.env.DAILY_STATUS_REPORT === "true";
@@ -223,7 +265,7 @@ export async function GET(req: NextRequest) {
     timestamp: now,
     iso: new Date(now).toISOString(),
     results,
-    activeTrades: activeSignals.filter(s => !s.exited).length,
+    activeTrades: cleanedSignals.filter(s => !s.exited).length,
     prunedExited: prunedCount || undefined,
     errors: errors.length > 0 ? errors : undefined,
   });
