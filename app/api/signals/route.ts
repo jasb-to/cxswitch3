@@ -1,4 +1,4 @@
-// app/api/signal/route.ts — v29.1 Signal REST API (FIXED)
+// app/api/signal/route.ts — v29.1 Signal REST API (DIAGNOSTIC)
 // ============================================================
 
 import { NextRequest, NextResponse } from "next/server";
@@ -18,18 +18,27 @@ import { persistRegime, loadRegime, persistExit, loadExits as loadExitsState, lo
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+console.log("[SIGNAL API] Module loading...");
+
 setRegimePersistence(persistRegime, loadRegime);
 setExitPersistence(persistExit, loadExitsState);
 
+console.log("[SIGNAL API] Persistence set up complete");
+
 export async function GET(req: NextRequest) {
+  const start = Date.now();
   const { searchParams } = new URL(req.url);
   const pair = searchParams.get("pair") || "BTC/USD";
   const action = searchParams.get("action");
 
+  console.log(`[SIGNAL API] GET ${pair} action=${action}`);
+
   const krakenPair = krakenPairFormat(pair);
+  console.log(`[SIGNAL API] Kraken pair format: ${krakenPair}`);
 
   try {
     if (action === "regime") {
+      console.log(`[SIGNAL API] Returning regime for ${pair}`);
       const regime = getCurrentRegime(pair);
       return NextResponse.json({ pair, regime });
     }
@@ -41,23 +50,48 @@ export async function GET(req: NextRequest) {
     }
 
     if (action === "snapshot") {
-      // FIX: Fetch current price alongside candles for live price in UI
-      const [candles1h, candles4h, candles15m, price] = await Promise.all([
-        getCandles(krakenPair, 60),
-        getCandles(krakenPair, 240),
-        getCandles(krakenPair, 15),
-        getCurrentPrice(krakenPair),
-      ]);
+      console.log(`[SIGNAL API] Fetching snapshot for ${pair}`);
+      let candles1h, candles4h, candles15m, price;
 
-      const snapshot = await getMarketSnapshot(pair, candles1h, candles4h, candles15m);
-      // Override with live price if available
-      if (price && snapshot) {
-        snapshot.price = Math.round(price * 100) / 100;
+      try {
+        [candles1h, candles4h, candles15m, price] = await Promise.all([
+          getCandles(krakenPair, 60),
+          getCandles(krakenPair, 240),
+          getCandles(krakenPair, 15),
+          getCurrentPrice(krakenPair),
+        ]);
+        console.log(`[SIGNAL API] Data fetched: 1h=${candles1h?.length}, 4h=${candles4h?.length}, 15m=${candles15m?.length}, price=${price}`);
+      } catch (fetchErr) {
+        console.error(`[SIGNAL API] Kraken fetch failed for ${pair}:`, fetchErr);
+        return NextResponse.json({
+          pair,
+          error: `Kraken API error: ${String(fetchErr)}`,
+          snapshot: null,
+        }, { status: 500 });
       }
 
+      let snapshot;
+      try {
+        snapshot = await getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+        if (price && snapshot) {
+          snapshot.price = Math.round(price * 100) / 100;
+        }
+        console.log(`[SIGNAL API] Snapshot built for ${pair}:`, JSON.stringify(snapshot));
+      } catch (snapErr) {
+        console.error(`[SIGNAL API] getMarketSnapshot failed for ${pair}:`, snapErr);
+        return NextResponse.json({
+          pair,
+          error: `Snapshot build error: ${String(snapErr)}`,
+          snapshot: null,
+        }, { status: 500 });
+      }
+
+      console.log(`[SIGNAL API] Snapshot success for ${pair} in ${Date.now() - start}ms`);
       return NextResponse.json({ pair, snapshot });
     }
 
+    // Default: generate signal
+    console.log(`[SIGNAL API] Generating signal for ${pair}`);
     const [candles1h, candles4h, candles15m, price] = await Promise.all([
       getCandles(krakenPair, 60),
       getCandles(krakenPair, 240),
@@ -65,7 +99,6 @@ export async function GET(req: NextRequest) {
       getCurrentPrice(krakenPair),
     ]);
 
-    // FIX: Load active signals to pass to generateSignal so it respects existing trades
     const activeSignals = await loadActiveSignals();
     const activeTrades: Record<string, any> = {};
     for (const s of activeSignals) {
@@ -81,12 +114,17 @@ export async function GET(req: NextRequest) {
       debug: result.debug,
     });
   } catch (err) {
-    console.error("[SIGNAL API] " + pair + " error:", err);
-    return NextResponse.json({ error: String(err), pair }, { status: 500 });
+    console.error(`[SIGNAL API] UNHANDLED ERROR for ${pair}:`, err);
+    return NextResponse.json({
+      error: String(err),
+      pair,
+      stack: err instanceof Error ? err.stack : undefined,
+    }, { status: 500 });
   }
 }
 
 export async function POST(req: NextRequest) {
+  console.log("[SIGNAL API] POST received");
   const body = await req.json().catch(() => ({}));
   const { action } = body;
 
