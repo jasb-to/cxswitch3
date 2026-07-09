@@ -15,18 +15,6 @@ interface TrendContext {
   strength: string;
 }
 
-interface EntryCandidate {
-  eligible: boolean;
-  confidence: number;
-  rejectionReason: string | null;
-}
-
-interface EntryCandidates {
-  pullback: EntryCandidate;
-  rejection: EntryCandidate;
-  breakout: EntryCandidate;
-}
-
 interface MarketSnapshot {
   pair: string;
   price: number;
@@ -41,7 +29,6 @@ interface MarketSnapshot {
   trend1h?: TrendContext;
   trend4h?: TrendContext;
   trend1d?: TrendContext;
-  entryCandidates?: EntryCandidates;
   rejectionStage?: string | null;
   recommendedAction?: string;
   positionSize?: string;
@@ -111,12 +98,17 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </div>
       </div>
 
-      {/* Recommended Action */}
+      {/* Recommended Action Tier */}
       {snap.recommendedAction && (
         <div className={`mb-3 p-3 rounded-lg border ${actionBg}`}>
-          <div className={`text-sm font-bold ${actionColor}`}>{snap.recommendedAction}</div>
+          <div className={`text-sm font-bold ${actionColor}`}>
+            {snap.recommendedAction}
+          </div>
           {snap.positionSize && (
             <div className="text-xs text-gray-400 mt-0.5">{snap.positionSize}</div>
+          )}
+          {snap.rejectionStage && snap.recommendedAction === "WAIT" && (
+            <div className="text-xs text-gray-500 mt-1">{snap.rejectionStage}</div>
           )}
         </div>
       )}
@@ -130,27 +122,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
               <div key={i} className="text-xs text-gray-400">{item}</div>
             ))}
           </div>
-        </div>
-      )}
-
-      {/* Entry Candidates */}
-      {snap.entryCandidates && (
-        <div className="mb-3 grid grid-cols-3 gap-2 text-center">
-          {[
-            { key: "pullback", label: "Pullback" },
-            { key: "rejection", label: "Rejection" },
-            { key: "breakout", label: "Breakout" },
-          ].map(({ key, label }) => {
-            const c = snap.entryCandidates![key as keyof EntryCandidates];
-            return (
-              <div key={key} className={`p-2 rounded-lg ${c.eligible ? "bg-green-500/10" : "bg-gray-800/30"}`}>
-                <div className="text-[10px] text-gray-500">{label}</div>
-                <div className={`text-xs font-bold ${c.eligible ? "text-green-400" : "text-gray-500"}`}>
-                  {c.eligible ? "READY" : `${Math.round(c.confidence)}%`}
-                </div>
-              </div>
-            );
-          })}
         </div>
       )}
 
@@ -206,24 +177,30 @@ export default function Dashboard() {
   const [error, setError] = useState<string>("");
 
   const fetchSnapshots = useCallback(async () => {
-    const snaps: Record<string, MarketSnapshot> = {};
-    for (const pair of PAIRS) {
-      try {
-        const res = await fetch(`/api/signals?pair=${encodeURIComponent(pair)}&action=snapshot`);
-        if (!res.ok) continue;
-        const data = await res.json();
-        if (data.snapshot) snaps[pair] = data.snapshot;
-      } catch (e) {
-        console.error(`Snapshot failed for ${pair}:`, e);
+    try {
+      const res = await fetch("/api/signals");
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setError(err.error || `HTTP ${res.status}`);
+        return;
       }
+      const data = await res.json();
+      const marketMap: Record<string, MarketSnapshot> = {};
+      if (data.markets) {
+        for (const m of data.markets) {
+          if (m.pair) marketMap[m.pair] = m;
+        }
+      }
+      setSnapshots(marketMap);
+      setLastUpdate(new Date(data.lastCronRun || Date.now()).toLocaleTimeString());
+      setError("");
+    } catch (e) {
+      setError(String(e));
     }
-    setSnapshots(snaps);
-    setLastUpdate(new Date().toLocaleTimeString());
   }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    setError("");
     try {
       await fetchSnapshots();
     } catch (e) {
