@@ -27,19 +27,13 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// ─── Config ───
-
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
 const CRON_SECRET = process.env.CRON_SECRET;
 
-// Initialize persistence hooks
 setRegimePersistence(persistRegime, loadRegime);
 setExitPersistence(persistExit, loadExitsState);
 
-// ─── Main handler ───
-
 export async function GET(req: NextRequest) {
-  // Auth check
   const authHeader = req.headers.get("authorization");
   const secret = req.nextUrl.searchParams.get("secret");
   const token = authHeader?.replace("Bearer ", "") || secret;
@@ -52,10 +46,10 @@ export async function GET(req: NextRequest) {
   const results: Record<string, any> = {};
   const errors: string[] = [];
 
-  try { await loadExits(); } catch (e) { errors.push(`loadExits: ${e}`); }
+  try { await loadExits(); } catch (e) { errors.push("loadExits: " + e); }
 
   let activeSignals: Signal[] = [];
-  try { activeSignals = await loadActiveSignals(); } catch (e) { errors.push(`loadActiveSignals: ${e}`); }
+  try { activeSignals = await loadActiveSignals(); } catch (e) { errors.push("loadActiveSignals: " + e); }
 
   const currentPrices: Record<string, number> = {};
 
@@ -76,7 +70,6 @@ export async function GET(req: NextRequest) {
       const activeForPair = activeSignals.find(s => s.pair === pair && !s.exited);
 
       if (activeForPair) {
-        // ─── MANAGE EXISTING TRADE ───
         const holdResult = await shouldHold(activeForPair, candles4h, price, now);
 
         if (!holdResult.shouldHold) {
@@ -98,7 +91,6 @@ export async function GET(req: NextRequest) {
           results[pair] = { status: "HOLDING", state: tm.newState, lockedStop: tm.lockedStop, pnl };
         }
       } else {
-        // ─── GENERATE NEW SIGNAL ───
         const activeTrades: Record<string, any> = {};
         for (const s of activeSignals) { if (!s.exited) activeTrades[s.pair] = s; }
 
@@ -129,13 +121,12 @@ export async function GET(req: NextRequest) {
       }
     } catch (err) {
       const msg = String(err);
-      errors.push(`${pair}: ${msg}`);
+      errors.push(pair + ": " + msg);
       results[pair] = { status: "ERROR", error: msg };
-      await alertError(`cron/${pair}`, err);
+      await alertError("cron/" + pair, err);
     }
   }
 
-  // ─── Filter expired ───
   try {
     const { active, exited } = await filterExpiredSignals(activeSignals, currentPrices, now);
     for (const { signal, reason } of exited) {
@@ -147,18 +138,16 @@ export async function GET(req: NextRequest) {
     }
     activeSignals = active;
   } catch (e) {
-    errors.push(`filterExpiredSignals: ${e}`);
+    errors.push("filterExpiredSignals: " + e);
   }
 
-  // ─── Save state ───
   try {
     await saveActiveSignals(activeSignals);
     await setLastCronRun(now);
   } catch (e) {
-    errors.push(`save state: ${e}`);
+    errors.push("save state: " + e);
   }
 
-  // Status every 6 hours
   const hour = new Date(now).getUTCHours();
   if (hour % 6 === 0) {
     await alertStatus(activeSignals, currentPrices);
