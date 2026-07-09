@@ -2,34 +2,53 @@
 
 import { useState, useEffect, useCallback } from "react";
 
+interface RegimeData {
+  direction: string | null;
+  strength: string;
+  confidence: number;
+  score: number;
+  reason: string[];
+}
+
+interface TrendContext {
+  direction: string;
+  strength: string;
+}
+
+interface EntryCandidate {
+  eligible: boolean;
+  confidence: number;
+  rejectionReason: string | null;
+}
+
+interface EntryCandidates {
+  pullback: EntryCandidate;
+  rejection: EntryCandidate;
+  breakout: EntryCandidate;
+}
+
 interface MarketSnapshot {
   pair: string;
   price: number;
   trend: string;
+  regime: RegimeData;
   adx?: number;
   rsi?: number;
   stochK?: number;
   stochD?: number;
-  regime?: {
-    direction: string | null;
-    strength: string;
-    confidence: number;
-  };
+  stoch1hK?: number;
+  stoch1hD?: number;
+  trend1h?: TrendContext;
+  trend4h?: TrendContext;
+  trend1d?: TrendContext;
+  entryCandidates?: EntryCandidates;
+  debug?: string[];
+  rejectionStage?: string | null;
 }
 
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
 
-function parseTrend(trend: string): { direction: string; strength: string } {
-  if (!trend || trend === "—" || trend === "null null" || trend === "null ") {
-    return { direction: "NEUTRAL", strength: "NEUTRAL" };
-  }
-  const parts = trend.split(" ").filter(Boolean);
-  if (parts.length >= 2) {
-    const dir = parts[0] === "null" ? "NEUTRAL" : parts[0];
-    return { direction: dir, strength: parts[1] };
-  }
-  return { direction: parts[0] || "NEUTRAL", strength: "NEUTRAL" };
-}
+// ─── Helpers ───
 
 function getDirectionColor(direction: string | null | undefined): string {
   if (!direction) return "text-gray-400";
@@ -60,6 +79,161 @@ function getAdxColor(adx: number | undefined): string {
   if (adx > 20) return "text-yellow-400";
   return "text-red-400";
 }
+
+function getConfidenceColor(conf: number): string {
+  if (conf >= 70) return "text-green-400";
+  if (conf >= 50) return "text-yellow-400";
+  if (conf >= 30) return "text-orange-400";
+  return "text-red-400";
+}
+
+function getRejectionStageColor(stage: string | null): string {
+  if (!stage) return "text-gray-400";
+  if (stage.includes("Regime")) return "text-purple-400";
+  if (stage.includes("Exhaustion")) return "text-red-400";
+  if (stage.includes("Confidence")) return "text-orange-400";
+  if (stage.includes("RR")) return "text-yellow-400";
+  return "text-gray-400";
+}
+
+// ─── Sub-components ───
+
+function RegimePanel({ regime }: { regime: RegimeData }) {
+  return (
+    <div className="mb-3 p-2.5 bg-gray-800/60 rounded-lg border border-gray-700/50">
+      <div className="text-[10px] text-gray-500 mb-2 uppercase tracking-wider font-semibold">Regime Diagnostics</div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+        <div className="flex justify-between">
+          <span className="text-gray-500">Direction</span>
+          <span className={`font-bold ${getDirectionColor(regime.direction)}`}>{regime.direction || "NEUTRAL"}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-gray-500">Strength</span>
+          <span className={`font-bold ${regime.strength === "STRONG" ? "text-green-400" : regime.strength === "MODERATE" ? "text-yellow-400" : regime.strength === "WEAK" ? "text-orange-400" : "text-gray-400"}`}>{regime.strength}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-gray-500">Confidence</span>
+          <span className="font-mono font-semibold text-gray-200">{regime.confidence}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-gray-500">Score</span>
+          <span className="font-mono font-semibold text-gray-200">{regime.score}</span>
+        </div>
+      </div>
+      {regime.reason.length > 0 && (
+        <div className="mt-2">
+          <div className="text-[10px] text-gray-500 mb-1">Reasons</div>
+          <div className="flex flex-wrap gap-1">
+            {regime.reason.map((r, i) => (
+              <span key={i} className="text-[10px] px-1.5 py-0.5 bg-gray-700/50 rounded text-gray-400 font-mono">{r}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EntryCandidatesPanel({ candidates }: { candidates?: EntryCandidates }) {
+  if (!candidates) return null;
+
+  const modes: Array<{ key: keyof EntryCandidates; label: string }> = [
+    { key: "pullback", label: "PULLBACK" },
+    { key: "rejection", label: "REJECTION" },
+    { key: "breakout", label: "BREAKOUT" },
+  ];
+
+  return (
+    <div className="mb-3 p-2.5 bg-gray-800/60 rounded-lg border border-gray-700/50">
+      <div className="text-[10px] text-gray-500 mb-2 uppercase tracking-wider font-semibold">Entry Candidates</div>
+      <div className="space-y-2">
+        {modes.map(({ key, label }) => {
+          const c = candidates[key];
+          return (
+            <div key={key} className="flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${c.eligible ? "bg-green-500" : "bg-red-500"}`}></span>
+                <span className="font-mono text-gray-300 w-20">{label}</span>
+                <span className={`text-[10px] px-1.5 py-0.5 rounded ${c.eligible ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+                  {c.eligible ? "ELIGIBLE" : "REJECTED"}
+                </span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-gray-500">conf: <span className={`font-mono font-semibold ${getConfidenceColor(c.confidence)}`}>{c.confidence}</span></span>
+                {c.rejectionReason && (
+                  <span className="text-[10px] text-red-400 max-w-[180px] truncate" title={c.rejectionReason}>{c.rejectionReason}</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DebugPanel({ debug, pair }: { debug?: string[]; pair: string }) {
+  const [open, setOpen] = useState(false);
+  if (!debug || debug.length === 0) return null;
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1.5 text-[10px] text-gray-500 hover:text-gray-300 transition w-full"
+      >
+        <span className={`transition-transform ${open ? "rotate-90" : ""}`}>▶</span>
+        <span className="font-mono">Strategy Debug ({debug.length} lines)</span>
+      </button>
+      {open && (
+        <div className="mt-1.5 p-2 bg-gray-950 rounded border border-gray-800 max-h-48 overflow-y-auto">
+          {debug.map((line, i) => (
+            <div key={i} className="text-[10px] font-mono text-gray-500 leading-relaxed">
+              <span className="text-gray-700 mr-1.5">{String(i + 1).padStart(2, "0")}</span>
+              {line}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NoSignalBanner({ regime, rejectionStage }: { regime: RegimeData; rejectionStage?: string | null }) {
+  if (regime.direction && regime.direction !== "NEUTRAL") return null;
+
+  return (
+    <div className="mb-3 p-3 bg-purple-900/20 border border-purple-700/30 rounded-lg">
+      <div className="flex items-center gap-2">
+        <span className="text-purple-400 text-lg">⊘</span>
+        <div>
+          <div className="text-xs font-semibold text-purple-300">No signal because higher-timeframe regime is neutral.</div>
+          {rejectionStage && (
+            <div className="text-[10px] text-purple-400/70 mt-0.5 font-mono">Stage: {rejectionStage}</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RejectionBanner({ stage }: { stage?: string | null }) {
+  if (!stage) return null;
+  if (stage.includes("Regime")) return null;
+
+  return (
+    <div className="mb-3 p-3 bg-orange-900/20 border border-orange-700/30 rounded-lg">
+      <div className="flex items-center gap-2">
+        <span className="text-orange-400 text-lg">⚠</span>
+        <div>
+          <div className={`text-xs font-semibold ${getRejectionStageColor(stage)}`}>Trade rejected: {stage}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Dashboard ───
 
 export default function Dashboard() {
   const [snapshots, setSnapshots] = useState<Record<string, MarketSnapshot>>({});
@@ -116,23 +290,6 @@ export default function Dashboard() {
     }
   };
 
-  // Market summary
-  const bullish = Object.values(snapshots).filter(s => {
-    const d = s.regime?.direction || parseTrend(s.trend).direction;
-    return d === "LONG";
-  }).length;
-  const bearish = Object.values(snapshots).filter(s => {
-    const d = s.regime?.direction || parseTrend(s.trend).direction;
-    return d === "SHORT";
-  }).length;
-  const neutral = PAIRS.length - bullish - bearish;
-
-  // Trading cycle phase
-  const totalAdx = Object.values(snapshots).reduce((sum, s) => sum + (s.adx || 0), 0);
-  const avgAdx = Object.values(snapshots).length > 0 ? totalAdx / Object.values(snapshots).length : 0;
-  const cyclePhase = avgAdx > 25 ? "TRENDING" : avgAdx > 18 ? "TRANSITIONING" : "RANGING";
-  const cycleColor = avgAdx > 25 ? "text-green-400" : avgAdx > 18 ? "text-yellow-400" : "text-gray-400";
-
   return (
     <main className="min-h-screen bg-gray-950 text-gray-100 p-4 md:p-6">
       <div className="max-w-5xl mx-auto">
@@ -142,7 +299,7 @@ export default function Dashboard() {
             <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
               CXSwitch <span className="text-blue-400">v29.1</span>
             </h1>
-            <p className="text-gray-500 text-sm mt-1">Consolidated Strategy Engine</p>
+            <p className="text-gray-500 text-sm mt-1">Diagnostic Dashboard — Full Strategy Visibility</p>
           </div>
           <div className="flex items-center gap-2 md:gap-3">
             <span className="text-xs text-gray-500 hidden sm:inline">{lastUpdate || "—"}</span>
@@ -169,33 +326,10 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Trading Cycle Summary */}
-        <div className="mb-6 p-4 bg-gray-900 rounded-xl border border-gray-800">
-          <h2 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Trading Cycle</h2>
-          <div className="grid grid-cols-4 gap-3">
-            <div className="text-center">
-              <div className="text-xs text-gray-500 mb-1">Phase</div>
-              <div className={`text-sm font-bold ${cycleColor}`}>{cyclePhase}</div>
-            </div>
-            <div className="text-center">
-              <div className="text-xs text-gray-500 mb-1">Avg ADX</div>
-              <div className="text-sm font-bold text-gray-200">{avgAdx.toFixed(1)}</div>
-            </div>
-            <div className="text-center">
-              <div className="text-xs text-gray-500 mb-1">Bullish</div>
-              <div className="text-sm font-bold text-green-400">{bullish}</div>
-            </div>
-            <div className="text-center">
-              <div className="text-xs text-gray-500 mb-1">Bearish</div>
-              <div className="text-sm font-bold text-red-400">{bearish}</div>
-            </div>
-          </div>
-        </div>
-
-        {/* 2x2 Market Snapshot Cards */}
+        {/* Market Snapshot Cards */}
         <section>
           <h2 className="text-lg font-semibold mb-4 text-gray-300">Market Snapshots</h2>
-          <div className="grid grid-cols-2 gap-3 md:gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
             {PAIRS.map(pair => {
               const snap = snapshots[pair];
               if (!snap) {
@@ -208,13 +342,9 @@ export default function Dashboard() {
                 );
               }
 
-              const regimeDir = snap.regime?.direction;
-              const regimeStrength = snap.regime?.strength;
-              const parsed = parseTrend(snap.trend);
-              const direction = regimeDir || parsed.direction;
-              const strength = regimeStrength || parsed.strength;
-              const dirColor = getDirectionColor(direction);
-              const strengthClass = getStrengthBadge(strength);
+              const regime = snap.regime;
+              const dirColor = getDirectionColor(regime?.direction);
+              const strengthClass = getStrengthBadge(regime?.strength || "NEUTRAL");
               const adxLabel = getAdxLabel(snap.adx);
               const adxColor = getAdxColor(snap.adx);
 
@@ -224,7 +354,7 @@ export default function Dashboard() {
                   <div className="flex items-center justify-between mb-3">
                     <span className="font-mono font-bold text-sm">{pair}</span>
                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${strengthClass}`}>
-                      {strength}
+                      {regime?.strength || "NEUTRAL"}
                     </span>
                   </div>
 
@@ -232,25 +362,40 @@ export default function Dashboard() {
                   <div className="mb-3">
                     <div className="text-2xl font-mono font-bold">${snap.price?.toFixed(2) || "—"}</div>
                     <div className={`text-xs font-bold ${dirColor} mt-0.5`}>
-                      {direction || "NEUTRAL"}
+                      {regime?.direction || "NEUTRAL"}
                     </div>
                   </div>
 
-                  {/* Trend Context - 1H / 4H / 1D */}
+                  {/* No Signal Banner */}
+                  <NoSignalBanner regime={regime} rejectionStage={snap.rejectionStage} />
+
+                  {/* Rejection Banner (non-regime) */}
+                  <RejectionBanner stage={snap.rejectionStage} />
+
+                  {/* Regime Diagnostics */}
+                  <RegimePanel regime={regime} />
+
+                  {/* Entry Candidates */}
+                  <EntryCandidatesPanel candidates={snap.entryCandidates} />
+
+                  {/* Trend Context — 1H / 4H / 1D (actual values, not copied) */}
                   <div className="mb-3 p-2 bg-gray-800/50 rounded-lg">
                     <div className="text-[10px] text-gray-500 mb-1.5 uppercase tracking-wider">Trend Context</div>
                     <div className="grid grid-cols-3 gap-1 text-center">
                       <div>
                         <div className="text-[10px] text-gray-500">1H</div>
-                        <div className={`text-xs font-bold ${dirColor}`}>{direction || "—"}</div>
+                        <div className={`text-xs font-bold ${getDirectionColor(snap.trend1h?.direction)}`}>{snap.trend1h?.direction || "—"}</div>
+                        <div className="text-[10px] text-gray-600">{snap.trend1h?.strength || ""}</div>
                       </div>
                       <div>
                         <div className="text-[10px] text-gray-500">4H</div>
-                        <div className={`text-xs font-bold ${dirColor}`}>{direction || "—"}</div>
+                        <div className={`text-xs font-bold ${getDirectionColor(snap.trend4h?.direction)}`}>{snap.trend4h?.direction || "—"}</div>
+                        <div className="text-[10px] text-gray-600">{snap.trend4h?.strength || ""}</div>
                       </div>
                       <div>
                         <div className="text-[10px] text-gray-500">1D</div>
-                        <div className={`text-xs font-bold ${dirColor}`}>{direction || "—"}</div>
+                        <div className={`text-xs font-bold ${getDirectionColor(snap.trend1d?.direction)}`}>{snap.trend1d?.direction || "—"}</div>
+                        <div className="text-[10px] text-gray-600">{snap.trend1d?.strength || ""}</div>
                       </div>
                     </div>
                   </div>
@@ -276,7 +421,18 @@ export default function Dashboard() {
                       <div className="text-gray-500 mb-0.5">Stoch D</div>
                       <div className="font-mono font-semibold">{snap.stochD?.toFixed(1) || "—"}</div>
                     </div>
+                    <div className="p-2 bg-gray-800/50 rounded-lg">
+                      <div className="text-gray-500 mb-0.5">Stoch 1H K</div>
+                      <div className="font-mono font-semibold">{snap.stoch1hK?.toFixed(1) || "—"}</div>
+                    </div>
+                    <div className="p-2 bg-gray-800/50 rounded-lg">
+                      <div className="text-gray-500 mb-0.5">Stoch 1H D</div>
+                      <div className="font-mono font-semibold">{snap.stoch1hD?.toFixed(1) || "—"}</div>
+                    </div>
                   </div>
+
+                  {/* Strategy Debug Panel */}
+                  <DebugPanel debug={snap.debug} pair={pair} />
                 </div>
               );
             })}
