@@ -21,8 +21,6 @@ export const dynamic = "force-dynamic";
 setRegimePersistence(persistRegime, loadRegime);
 setExitPersistence(persistExit, loadExitsState);
 
-// ─── GET /api/signal?pair=BTC/USD ───
-
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const pair = searchParams.get("pair") || "BTC/USD";
@@ -53,7 +51,6 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ pair, snapshot });
     }
 
-    // Default: generate signal
     const [candles1h, candles4h, candles15m, price] = await Promise.all([
       getCandles(krakenPair, 60),
       getCandles(krakenPair, 240),
@@ -70,12 +67,10 @@ export async function GET(req: NextRequest) {
       debug: result.debug,
     });
   } catch (err) {
-    console.error(`[SIGNAL API] ${pair} error:`, err);
+    console.error("[SIGNAL API] " + pair + " error:", err);
     return NextResponse.json({ error: String(err), pair }, { status: 500 });
   }
 }
-
-// ─── POST /api/signal ───
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
