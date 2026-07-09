@@ -42,8 +42,10 @@ interface MarketSnapshot {
   trend4h?: TrendContext;
   trend1d?: TrendContext;
   entryCandidates?: EntryCandidates;
-  debug?: string[];
   rejectionStage?: string | null;
+  recommendedAction?: string;
+  positionSize?: string;
+  whyNoTrade?: string[];
 }
 
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
@@ -66,167 +68,129 @@ function getStrengthBadge(strength: string): string {
   return "bg-gray-700/50 text-gray-400 border-gray-600/30";
 }
 
-function getAdxLabel(adx: number | undefined): string {
-  if (adx === undefined) return "—";
-  if (adx > 25) return "TRENDING";
-  if (adx > 20) return "MODERATE";
-  return "WEAK";
-}
-
-function getAdxColor(adx: number | undefined): string {
-  if (adx === undefined) return "text-gray-500";
-  if (adx > 25) return "text-green-400";
-  if (adx > 20) return "text-yellow-400";
-  return "text-red-400";
-}
-
-function getConfidenceColor(conf: number): string {
-  if (conf >= 70) return "text-green-400";
-  if (conf >= 50) return "text-yellow-400";
-  if (conf >= 30) return "text-orange-400";
-  return "text-red-400";
-}
-
-function getRejectionStageColor(stage: string | null): string {
-  if (!stage) return "text-gray-400";
-  if (stage.includes("Regime")) return "text-purple-400";
-  if (stage.includes("Exhaustion")) return "text-red-400";
-  if (stage.includes("Confidence")) return "text-orange-400";
-  if (stage.includes("RR")) return "text-yellow-400";
+function getActionColor(action: string | undefined): string {
+  if (!action) return "text-gray-400";
+  if (action.includes("CONFIRMED")) return "text-green-400";
+  if (action.includes("EARLY")) return "text-yellow-400";
+  if (action.includes("WATCH")) return "text-blue-400";
   return "text-gray-400";
 }
 
-// ─── Sub-components ───
+function getActionBg(action: string | undefined): string {
+  if (!action) return "bg-gray-800/50";
+  if (action.includes("CONFIRMED")) return "bg-green-500/10 border-green-500/20";
+  if (action.includes("EARLY")) return "bg-yellow-500/10 border-yellow-500/20";
+  if (action.includes("WATCH")) return "bg-blue-500/10 border-blue-500/20";
+  return "bg-gray-800/50 border-gray-700/30";
+}
 
-function RegimePanel({ regime }: { regime: RegimeData }) {
+// ─── Card Component ───
+
+function MarketCard({ snap }: { snap: MarketSnapshot }) {
+  const regime = snap.regime;
+  const dirColor = getDirectionColor(regime?.direction);
+  const strengthClass = getStrengthBadge(regime?.strength || "NEUTRAL");
+  const actionColor = getActionColor(snap.recommendedAction);
+  const actionBg = getActionBg(snap.recommendedAction);
+
   return (
-    <div className="mb-3 p-2.5 bg-gray-800/60 rounded-lg border border-gray-700/50">
-      <div className="text-[10px] text-gray-500 mb-2 uppercase tracking-wider font-semibold">Regime Diagnostics</div>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
-        <div className="flex justify-between">
-          <span className="text-gray-500">Direction</span>
-          <span className={`font-bold ${getDirectionColor(regime.direction)}`}>{regime.direction || "NEUTRAL"}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-500">Strength</span>
-          <span className={`font-bold ${regime.strength === "STRONG" ? "text-green-400" : regime.strength === "MODERATE" ? "text-yellow-400" : regime.strength === "WEAK" ? "text-orange-400" : "text-gray-400"}`}>{regime.strength}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-500">Confidence</span>
-          <span className="font-mono font-semibold text-gray-200">{regime.confidence}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-gray-500">Score</span>
-          <span className="font-mono font-semibold text-gray-200">{regime.score}</span>
+    <div className="p-4 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-700 transition">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-3">
+        <span className="font-mono font-bold text-sm">{snap.pair}</span>
+        <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${strengthClass}`}>
+          {regime?.strength || "NEUTRAL"}
+        </span>
+      </div>
+
+      {/* Price & Direction */}
+      <div className="mb-3">
+        <div className="text-2xl font-mono font-bold">${snap.price?.toFixed(2) || "—"}</div>
+        <div className={`text-xs font-bold ${dirColor} mt-0.5`}>
+          {regime?.direction || "NEUTRAL"} · Confidence {regime?.confidence || 0}%
         </div>
       </div>
-      {regime.reason.length > 0 && (
-        <div className="mt-2">
-          <div className="text-[10px] text-gray-500 mb-1">Reasons</div>
-          <div className="flex flex-wrap gap-1">
-            {regime.reason.map((r, i) => (
-              <span key={i} className="text-[10px] px-1.5 py-0.5 bg-gray-700/50 rounded text-gray-400 font-mono">{r}</span>
+
+      {/* Recommended Action */}
+      {snap.recommendedAction && (
+        <div className={`mb-3 p-3 rounded-lg border ${actionBg}`}>
+          <div className={`text-sm font-bold ${actionColor}`}>{snap.recommendedAction}</div>
+          {snap.positionSize && (
+            <div className="text-xs text-gray-400 mt-0.5">{snap.positionSize}</div>
+          )}
+        </div>
+      )}
+
+      {/* Why No Trade */}
+      {snap.whyNoTrade && snap.whyNoTrade.length > 0 && (
+        <div className="mb-3 p-2.5 bg-gray-800/40 rounded-lg">
+          <div className="text-[10px] text-gray-500 mb-1.5 uppercase tracking-wider font-semibold">Why No Trade?</div>
+          <div className="space-y-1">
+            {snap.whyNoTrade.map((item, i) => (
+              <div key={i} className="text-xs text-gray-400">{item}</div>
             ))}
           </div>
         </div>
       )}
-    </div>
-  );
-}
 
-function EntryCandidatesPanel({ candidates }: { candidates?: EntryCandidates }) {
-  if (!candidates) return null;
-
-  const modes: Array<{ key: keyof EntryCandidates; label: string }> = [
-    { key: "pullback", label: "PULLBACK" },
-    { key: "rejection", label: "REJECTION" },
-    { key: "breakout", label: "BREAKOUT" },
-  ];
-
-  return (
-    <div className="mb-3 p-2.5 bg-gray-800/60 rounded-lg border border-gray-700/50">
-      <div className="text-[10px] text-gray-500 mb-2 uppercase tracking-wider font-semibold">Entry Candidates</div>
-      <div className="space-y-2">
-        {modes.map(({ key, label }) => {
-          const c = candidates[key];
-          return (
-            <div key={key} className="flex items-center justify-between text-xs">
-              <div className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${c.eligible ? "bg-green-500" : "bg-red-500"}`}></span>
-                <span className="font-mono text-gray-300 w-20">{label}</span>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded ${c.eligible ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
-                  {c.eligible ? "ELIGIBLE" : "REJECTED"}
-                </span>
+      {/* Entry Candidates */}
+      {snap.entryCandidates && (
+        <div className="mb-3 grid grid-cols-3 gap-2 text-center">
+          {[
+            { key: "pullback", label: "Pullback" },
+            { key: "rejection", label: "Rejection" },
+            { key: "breakout", label: "Breakout" },
+          ].map(({ key, label }) => {
+            const c = snap.entryCandidates![key as keyof EntryCandidates];
+            return (
+              <div key={key} className={`p-2 rounded-lg ${c.eligible ? "bg-green-500/10" : "bg-gray-800/30"}`}>
+                <div className="text-[10px] text-gray-500">{label}</div>
+                <div className={`text-xs font-bold ${c.eligible ? "text-green-400" : "text-gray-500"}`}>
+                  {c.eligible ? "READY" : `${Math.round(c.confidence)}%`}
+                </div>
               </div>
-              <div className="flex items-center gap-3">
-                <span className="text-gray-500">conf: <span className={`font-mono font-semibold ${getConfidenceColor(c.confidence)}`}>{c.confidence}</span></span>
-                {c.rejectionReason && (
-                  <span className="text-[10px] text-red-400 max-w-[180px] truncate" title={c.rejectionReason}>{c.rejectionReason}</span>
-                )}
+            );
+          })}
+        </div>
+      )}
+
+      {/* Trend Context */}
+      <div className="mb-3 p-2 bg-gray-800/30 rounded-lg">
+        <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Trend Context</div>
+        <div className="grid grid-cols-3 gap-1 text-center">
+          {[
+            { label: "1H", trend: snap.trend1h },
+            { label: "4H", trend: snap.trend4h },
+            { label: "1D", trend: snap.trend1d },
+          ].map(({ label, trend }) => (
+            <div key={label}>
+              <div className="text-[10px] text-gray-600">{label}</div>
+              <div className={`text-xs font-bold ${getDirectionColor(trend?.direction)}`}>
+                {trend?.direction || "—"}
               </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function DebugPanel({ debug, pair }: { debug?: string[]; pair: string }) {
-  const [open, setOpen] = useState(false);
-  if (!debug || debug.length === 0) return null;
-
-  return (
-    <div className="mt-2">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 text-[10px] text-gray-500 hover:text-gray-300 transition w-full"
-      >
-        <span className={`transition-transform ${open ? "rotate-90" : ""}`}>▶</span>
-        <span className="font-mono">Strategy Debug ({debug.length} lines)</span>
-      </button>
-      {open && (
-        <div className="mt-1.5 p-2 bg-gray-950 rounded border border-gray-800 max-h-48 overflow-y-auto">
-          {debug.map((line, i) => (
-            <div key={i} className="text-[10px] font-mono text-gray-500 leading-relaxed">
-              <span className="text-gray-700 mr-1.5">{String(i + 1).padStart(2, "0")}</span>
-              {line}
+              <div className="text-[10px] text-gray-600">{trend?.strength || ""}</div>
             </div>
           ))}
         </div>
-      )}
-    </div>
-  );
-}
-
-function NoSignalBanner({ regime, rejectionStage }: { regime: RegimeData; rejectionStage?: string | null }) {
-  if (regime.direction && regime.direction !== "NEUTRAL") return null;
-
-  return (
-    <div className="mb-3 p-3 bg-purple-900/20 border border-purple-700/30 rounded-lg">
-      <div className="flex items-center gap-2">
-        <span className="text-purple-400 text-lg">⊘</span>
-        <div>
-          <div className="text-xs font-semibold text-purple-300">No signal because higher-timeframe regime is neutral.</div>
-          {rejectionStage && (
-            <div className="text-[10px] text-purple-400/70 mt-0.5 font-mono">Stage: {rejectionStage}</div>
-          )}
-        </div>
       </div>
-    </div>
-  );
-}
 
-function RejectionBanner({ stage }: { stage?: string | null }) {
-  if (!stage) return null;
-  if (stage.includes("Regime")) return null;
-
-  return (
-    <div className="mb-3 p-3 bg-orange-900/20 border border-orange-700/30 rounded-lg">
-      <div className="flex items-center gap-2">
-        <span className="text-orange-400 text-lg">⚠</span>
-        <div>
-          <div className={`text-xs font-semibold ${getRejectionStageColor(stage)}`}>Trade rejected: {stage}</div>
+      {/* Metrics */}
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div className="p-2 bg-gray-800/30 rounded-lg">
+          <div className="text-gray-600">ADX</div>
+          <div className="font-mono font-semibold">{snap.adx?.toFixed(1) || "—"}</div>
+        </div>
+        <div className="p-2 bg-gray-800/30 rounded-lg">
+          <div className="text-gray-600">RSI</div>
+          <div className="font-mono font-semibold">{snap.rsi?.toFixed(1) || "—"}</div>
+        </div>
+        <div className="p-2 bg-gray-800/30 rounded-lg">
+          <div className="text-gray-600">Stoch 4H</div>
+          <div className="font-mono font-semibold">{snap.stochK?.toFixed(1) || "—"} / {snap.stochD?.toFixed(1) || "—"}</div>
+        </div>
+        <div className="p-2 bg-gray-800/30 rounded-lg">
+          <div className="text-gray-600">Stoch 1H</div>
+          <div className="font-mono font-semibold">{snap.stoch1hK?.toFixed(1) || "—"} / {snap.stoch1hD?.toFixed(1) || "—"}</div>
         </div>
       </div>
     </div>
@@ -237,7 +201,6 @@ function RejectionBanner({ stage }: { stage?: string | null }) {
 
 export default function Dashboard() {
   const [snapshots, setSnapshots] = useState<Record<string, MarketSnapshot>>({});
-
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<string>("");
   const [error, setError] = useState<string>("");
@@ -257,8 +220,6 @@ export default function Dashboard() {
     setSnapshots(snaps);
     setLastUpdate(new Date().toLocaleTimeString());
   }, []);
-
-
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -302,7 +263,7 @@ export default function Dashboard() {
             <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
               CXSwitch <span className="text-blue-400">v29.1</span>
             </h1>
-            <p className="text-gray-500 text-sm mt-1">Diagnostic Dashboard — Full Strategy Visibility</p>
+            <p className="text-gray-500 text-sm mt-1">Trading Dashboard</p>
           </div>
           <div className="flex items-center gap-2 md:gap-3">
             <span className="text-xs text-gray-500 hidden sm:inline">{lastUpdate || "—"}</span>
@@ -329,9 +290,9 @@ export default function Dashboard() {
           </div>
         )}
 
-                {/* Market Snapshot Cards */}
+        {/* Market Cards */}
         <section>
-          <h2 className="text-lg font-semibold mb-4 text-gray-300">Market Snapshots</h2>
+          <h2 className="text-lg font-semibold mb-4 text-gray-300">Markets</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
             {PAIRS.map(pair => {
               const snap = snapshots[pair];
@@ -344,100 +305,7 @@ export default function Dashboard() {
                   </div>
                 );
               }
-
-              const regime = snap.regime;
-              const dirColor = getDirectionColor(regime?.direction);
-              const strengthClass = getStrengthBadge(regime?.strength || "NEUTRAL");
-              const adxLabel = getAdxLabel(snap.adx);
-              const adxColor = getAdxColor(snap.adx);
-
-              return (
-                <div key={pair} className="p-4 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-700 transition">
-                  {/* Pair header with strength badge */}
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="font-mono font-bold text-sm">{pair}</span>
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${strengthClass}`}>
-                      {regime?.strength || "NEUTRAL"}
-                    </span>
-                  </div>
-
-                  {/* Price and Direction */}
-                  <div className="mb-3">
-                    <div className="text-2xl font-mono font-bold">${snap.price?.toFixed(2) || "—"}</div>
-                    <div className={`text-xs font-bold ${dirColor} mt-0.5`}>
-                      {regime?.direction || "NEUTRAL"}
-                    </div>
-                  </div>
-
-                  {/* No Signal Banner */}
-                  <NoSignalBanner regime={regime} rejectionStage={snap.rejectionStage} />
-
-                  {/* Rejection Banner (non-regime) */}
-                  <RejectionBanner stage={snap.rejectionStage} />
-
-                  {/* Regime Diagnostics */}
-                  <RegimePanel regime={regime} />
-
-                  {/* Entry Candidates */}
-                  <EntryCandidatesPanel candidates={snap.entryCandidates} />
-
-                  {/* Trend Context — 1H / 4H / 1D (actual values, not copied) */}
-                  <div className="mb-3 p-2 bg-gray-800/50 rounded-lg">
-                    <div className="text-[10px] text-gray-500 mb-1.5 uppercase tracking-wider">Trend Context</div>
-                    <div className="grid grid-cols-3 gap-1 text-center">
-                      <div>
-                        <div className="text-[10px] text-gray-500">1H</div>
-                        <div className={`text-xs font-bold ${getDirectionColor(snap.trend1h?.direction)}`}>{snap.trend1h?.direction || "—"}</div>
-                        <div className="text-[10px] text-gray-600">{snap.trend1h?.strength || ""}</div>
-                      </div>
-                      <div>
-                        <div className="text-[10px] text-gray-500">4H</div>
-                        <div className={`text-xs font-bold ${getDirectionColor(snap.trend4h?.direction)}`}>{snap.trend4h?.direction || "—"}</div>
-                        <div className="text-[10px] text-gray-600">{snap.trend4h?.strength || ""}</div>
-                      </div>
-                      <div>
-                        <div className="text-[10px] text-gray-500">1D</div>
-                        <div className={`text-xs font-bold ${getDirectionColor(snap.trend1d?.direction)}`}>{snap.trend1d?.direction || "—"}</div>
-                        <div className="text-[10px] text-gray-600">{snap.trend1d?.strength || ""}</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Metrics grid */}
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div className="p-2 bg-gray-800/50 rounded-lg">
-                      <div className="text-gray-500 mb-0.5">ADX</div>
-                      <div className="flex items-baseline gap-1">
-                        <span className="font-mono font-semibold">{snap.adx?.toFixed(1) || "—"}</span>
-                        <span className={`text-[10px] ${adxColor}`}>{adxLabel}</span>
-                      </div>
-                    </div>
-                    <div className="p-2 bg-gray-800/50 rounded-lg">
-                      <div className="text-gray-500 mb-0.5">RSI</div>
-                      <div className="font-mono font-semibold">{snap.rsi?.toFixed(1) || "—"}</div>
-                    </div>
-                    <div className="p-2 bg-gray-800/50 rounded-lg">
-                      <div className="text-gray-500 mb-0.5">Stoch K</div>
-                      <div className="font-mono font-semibold">{snap.stochK?.toFixed(1) || "—"}</div>
-                    </div>
-                    <div className="p-2 bg-gray-800/50 rounded-lg">
-                      <div className="text-gray-500 mb-0.5">Stoch D</div>
-                      <div className="font-mono font-semibold">{snap.stochD?.toFixed(1) || "—"}</div>
-                    </div>
-                    <div className="p-2 bg-gray-800/50 rounded-lg">
-                      <div className="text-gray-500 mb-0.5">Stoch 1H K</div>
-                      <div className="font-mono font-semibold">{snap.stoch1hK?.toFixed(1) || "—"}</div>
-                    </div>
-                    <div className="p-2 bg-gray-800/50 rounded-lg">
-                      <div className="text-gray-500 mb-0.5">Stoch 1H D</div>
-                      <div className="font-mono font-semibold">{snap.stoch1hD?.toFixed(1) || "—"}</div>
-                    </div>
-                  </div>
-
-                  {/* Strategy Debug Panel */}
-                  <DebugPanel debug={snap.debug} pair={pair} />
-                </div>
-              );
+              return <MarketCard key={pair} snap={snap} />;
             })}
           </div>
         </section>
