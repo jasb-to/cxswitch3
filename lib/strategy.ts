@@ -1242,7 +1242,7 @@ export async function generateSignal(
   const now = Date.now();
   const cooldown = isInCooldown(pair, now, regime.direction);
   if (cooldown.inCooldown) {
-    debug.push(`REJECTED: cooldown active, remaining ${(f1(cooldown.remainingMs / 60000)}min`);
+    debug.push(`REJECTED: cooldown active, remaining ${f1(cooldown.remainingMs / 60000)}min`);
     return {
       market: {
         pair,
@@ -1262,7 +1262,7 @@ export async function generateSignal(
         rejection: { eligible: false, confidence: 0, rejectionReason: "cooldown_active" },
         breakout: { eligible: false, confidence: 0, rejectionReason: "cooldown_active" },
       },
-      rejectionStage: `Cooldown active (${(f1(cooldown.remainingMs / 60000)}min)`,
+      rejectionStage: `Cooldown active (${f1(cooldown.remainingMs / 60000)}min)`,
     };
   }
 
