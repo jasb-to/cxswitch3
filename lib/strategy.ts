@@ -232,7 +232,9 @@ async function evaluateRegime(pair: string, candles1d: Candle[], candles4h: Cand
   const ema50_4h = ema(closes4h, 50);
 
   let regimeScore = 0;
-  let direction: "LONG" | "SHORT" | "NEUTRAL" | null =   // 1D structure alignment
+  let direction: "LONG" | "SHORT" | "NEUTRAL" | null = null;
+
+  // 1D structure alignment
   if (ema21_1d.length > 0 && ema50_1d.length > 0 && ema200_1d.length > 0) {
     const e21 = ema21_1d[ema21_1d.length - 1];
     const e50 = ema50_1d[ema50_1d.length - 1];
@@ -248,15 +250,14 @@ async function evaluateRegime(pair: string, candles1d: Candle[], candles4h: Cand
       reasons.push("1D_bearish_stack");
     } else if (e21 > e50) {
       regimeScore += 15;
-      direction = "LONG";        // ← FIX: was missing
+      direction = "LONG";
       reasons.push("1D_bullish_lean");
     } else if (e21 < e50) {
       regimeScore -= 15;
-      direction = "SHORT";       // ← FIX: was missing
+      direction = "SHORT";
       reasons.push("1D_bearish_lean");
     }
   }
-
 
   // 4H confirmation
   if (ema21_4h.length > 0 && ema50_4h.length > 0) {
