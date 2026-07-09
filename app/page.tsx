@@ -1,7 +1,7 @@
-"use client";
-
-// app/page.tsx — v29.1 CXSwitch Dashboard
+// app/page.tsx — v29.1 CXSwitch Dashboard (FIXED TYPES)
 // ============================================================
+
+"use client";
 
 import { useState, useEffect, useCallback } from "react";
 
@@ -20,6 +20,10 @@ interface Signal {
   entryMode?: string;
   exhaustionWarning?: string;
   timestamp: number;
+  // Aligned with strategy.ts Signal type
+  exited?: boolean;
+  highestPrice?: number;
+  lowestPrice?: number;
 }
 
 interface MarketSnapshot {
@@ -64,11 +68,11 @@ export default function Dashboard() {
     const snaps: Record<string, MarketSnapshot> = {};
     for (const pair of PAIRS) {
       try {
-        const res = await fetch("/api/signal?pair=" + encodeURIComponent(pair) + "&action=snapshot");
+        const res = await fetch(`/api/signal?pair=${encodeURIComponent(pair)}&action=snapshot`);
         const data = await res.json();
         if (data.snapshot) snaps[pair] = data.snapshot;
       } catch (e) {
-        console.error("Snapshot failed for " + pair + ":", e);
+        console.error(`Snapshot failed for ${pair}:`, e);
       }
     }
     setSnapshots(snaps);
@@ -97,12 +101,12 @@ export default function Dashboard() {
     setLoading(true);
     try {
       const secret = process.env.NEXT_PUBLIC_CRON_SECRET || "";
-      const res = await fetch("/api/cron?secret=" + encodeURIComponent(secret));
+      const res = await fetch(`/api/cron?secret=${encodeURIComponent(secret)}`);
       const data = await res.json();
       console.log("Cron result:", data);
       await refresh();
     } catch (e) {
-      setError("Cron trigger failed: " + e);
+      setError(`Cron trigger failed: ${e}`);
     } finally {
       setLoading(false);
     }
@@ -121,7 +125,7 @@ export default function Dashboard() {
     const pnl = signal.direction === "LONG"
       ? (currentPrice - signal.entry) / signal.entry * 100
       : (signal.entry - currentPrice) / signal.entry * 100;
-    return (pnl >= 0 ? "+" : "") + pnl.toFixed(2) + "%";
+    return `${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}%`;
   };
 
   return (
@@ -233,7 +237,7 @@ export default function Dashboard() {
                   <div className="h-8 bg-gray-800 rounded w-32"></div>
                 </div>
               );
-              const regimeDir = snap.regime?.direction;
+n              const regimeDir = snap.regime?.direction;
               const regimeColor = regimeDir === "LONG" ? "text-green-400" : regimeDir === "SHORT" ? "text-red-400" : "text-gray-400";
               return (
                 <div key={pair} className="p-4 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-700 transition">
