@@ -1,27 +1,50 @@
-// lib/state.ts — v29.1 State persistence (zero external deps)
+// lib/state.ts — v29.1 State persistence (FIXED)
 // ============================================================
 
 import { Signal, MarketRegime, ExitRecord } from "@/lib/strategy";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 
-const DATA_DIR = process.cwd().includes("/tmp") ? "/tmp/cxswitch-data" : join(process.cwd(), ".cxswitch-data");
+// FIX: Always use /tmp in serverless environments. process.cwd() is read-only on Vercel/Railway.
+// You can override with env var if needed.
+const DATA_DIR = process.env.CXSWITCH_DATA_DIR || "/tmp/cxswitch-data";
 const SIGNALS_FILE = join(DATA_DIR, "signals.json");
 const REGIMES_FILE = join(DATA_DIR, "regimes.json");
 const EXITS_FILE = join(DATA_DIR, "exits.json");
 const CRON_FILE = join(DATA_DIR, "cron.json");
 
-function ensureDir() {
-  try { if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+function ensureDir(): boolean {
+  try {
+    if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+    return true;
+  } catch (err) {
+    console.error("[STATE] Failed to create data dir:", err);
+    return false;
+  }
 }
 
 function loadJson<T>(path: string, fallback: T): T {
-  try { if (existsSync(path)) return JSON.parse(readFileSync(path, "utf-8")); } catch {}
+  try {
+    if (existsSync(path)) {
+      const raw = readFileSync(path, "utf-8");
+      if (!raw.trim()) return fallback;
+      return JSON.parse(raw);
+    }
+  } catch (err) {
+    console.error("[STATE] Failed to load JSON from", path, ":", err);
+  }
   return fallback;
 }
 
-function saveJson(path: string, data: any) {
-  try { ensureDir(); writeFileSync(path, JSON.stringify(data, null, 2)); } catch {}
+function saveJson(path: string, data: any): boolean {
+  try {
+    if (!ensureDir()) return false;
+    writeFileSync(path, JSON.stringify(data, null, 2));
+    return true;
+  } catch (err) {
+    console.error("[STATE] Failed to save JSON to", path, ":", err);
+    return false;
+  }
 }
 
 let memSignals: Signal[] = [];
@@ -31,7 +54,8 @@ let memCron: { lastRun: number } = { lastRun: 0 };
 
 export async function saveActiveSignals(signals: Signal[]): Promise<void> {
   memSignals = signals;
-  saveJson(SIGNALS_FILE, signals);
+  const ok = saveJson(SIGNALS_FILE, signals);
+  if (!ok) console.error("[STATE] saveActiveSignals failed — signals not persisted!");
 }
 
 export async function loadActiveSignals(): Promise<Signal[]> {
