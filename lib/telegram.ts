@@ -1,4 +1,4 @@
-// lib/telegram.ts — v29.1 Telegram alerts
+// lib/telegram.ts — v29.1 Telegram alerts (FIXED)
 // ============================================================
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
