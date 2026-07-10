@@ -1,4 +1,4 @@
-// lib/strategy.ts — v31.1 "Trendline Pullback + StochRSI Timing"
+// lib/strategy.ts — v31.2 "Trendline Pullback + StochRSI Timing"
 // ============================================================
 // Architecture: v28 trendline engine + Wilder RSI + API compatibility
 // Philosophy: Early trend continuation entries. Missed entry > false positive.
@@ -470,24 +470,83 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
 }
 
 // ------------------------------------------------------------------
-// 1D TREND — Direction only, no hard gate
+// TREND DETECTION (multi-timeframe)
 // ------------------------------------------------------------------
 
-function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string } {
-  const len = candles1d.length;
+/** Detect trend from any candle set using EMA8/21 */
+function detectTrend(candles: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string } {
+  const len = candles.length;
   if (len < 25) return { direction: null, strength: "WEAK" };
-  const closes = candles1d.map(c => c.close);
+  const closes = candles.map(c => c.close);
   const ema8 = ema(closes, 8);
   const ema21 = ema(closes, 21);
   if (!ema8.length || !ema21.length) return { direction: null, strength: "WEAK" };
 
   const direction = ema8[ema8.length - 1] > ema21[ema21.length - 1] ? "LONG" : "SHORT";
-  const highs = candles1d.slice(-20).map(c => c.high);
-  const lows = candles1d.slice(-20).map(c => c.low);
+  const highs = candles.slice(-20).map(c => c.high);
+  const lows = candles.slice(-20).map(c => c.low);
   const hh = highs[highs.length - 1] > Math.max(...highs.slice(0, -1));
   const ll = lows[lows.length - 1] < Math.min(...lows.slice(0, -1));
   const strength = (direction === "LONG" && hh) || (direction === "SHORT" && ll) ? "STRONG" : "MEDIUM";
   return { direction, strength };
+}
+
+// ------------------------------------------------------------------
+// 1D TREND — Direction only, no hard gate
+// ------------------------------------------------------------------
+
+function trend1D(candles1d: Candle[]): { direction: "LONG" | "SHORT" | null; strength: string } {
+  return detectTrend(candles1d);
+}
+
+// ------------------------------------------------------------------
+// PHASE DETECTION (expansion / exhaustion)
+// ------------------------------------------------------------------
+
+interface PhaseInfo {
+  phase: "EXPANSION" | "EXHAUSTION" | "NEUTRAL";
+  warning: string | null;
+  stochK: number;
+  stochD: number;
+}
+
+/** Detect momentum phase from StochRSI for exit decisions */
+function detectPhase(
+  stoch: { k: number; d: number },
+  direction: "LONG" | "SHORT" | null
+): PhaseInfo {
+  if (!direction) return { phase: "NEUTRAL", warning: null, stochK: stoch.k, stochD: stoch.d };
+
+  const k = stoch.k;
+  const d = stoch.d;
+
+  // LONG direction
+  if (direction === "LONG") {
+    if (k > 80 && k > d) {
+      return { phase: "EXPANSION", warning: "⚠️ Stoch overbought >80 — consider tightening stop", stochK: k, stochD: d };
+    }
+    if (k > 80 && k < d) {
+      return { phase: "EXHAUSTION", warning: "🔴 Stoch crossing down from overbought — EXIT SIGNAL", stochK: k, stochD: d };
+    }
+    if (k < 20 && k < d) {
+      return { phase: "EXPANSION", warning: "⚠️ Stoch oversold <20 — deep pullback, watch stop", stochK: k, stochD: d };
+    }
+  }
+
+  // SHORT direction
+  if (direction === "SHORT") {
+    if (k < 20 && k < d) {
+      return { phase: "EXPANSION", warning: "⚠️ Stoch oversold <20 — consider tightening stop", stochK: k, stochD: d };
+    }
+    if (k < 20 && k > d) {
+      return { phase: "EXHAUSTION", warning: "🔴 Stoch crossing up from oversold — EXIT SIGNAL", stochK: k, stochD: d };
+    }
+    if (k > 80 && k > d) {
+      return { phase: "EXPANSION", warning: "⚠️ Stoch overbought >80 — deep pullback, watch stop", stochK: k, stochD: d };
+    }
+  }
+
+  return { phase: "NEUTRAL", warning: null, stochK: k, stochD: d };
 }
 
 // ------------------------------------------------------------------
@@ -848,7 +907,7 @@ export function filterExpiredSignals(
 }
 
 // ------------------------------------------------------------------
-// MARKET SNAPSHOT
+// MARKET SNAPSHOT — v31.2 (multi-timeframe + phase detection)
 // ------------------------------------------------------------------
 
 export function getMarketSnapshot(
@@ -859,15 +918,26 @@ export function getMarketSnapshot(
   currentPrice?: number,
   signalResult?: SignalResult
 ): any {
-  const stochRsi4h = stochRsi(candles4h.map(c => c.close));
-  const price = candles4h[candles4h.length - 1].close;
+  // Compute all timeframe trends independently
+  const t1h = detectTrend(candles1h);
+  const t4h = detectTrend(candles4h);
   const t1d = trend1D(candles1d);
+
+  // StochRSI on all timeframes
+  const stochRsi4h = stochRsi(candles4h.map(c => c.close));
+  const stochRsi1h = candles1h.length >= 30 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50 };
+
+  const price = currentPrice ?? candles4h[candles4h.length - 1].close;
   const trendline = t1d.direction ? getTrendline(pair, candles4h, t1d.direction) : null;
   const tlPrice = trendline ? trendline.price : 0;
   const dist = trendline ? (price - tlPrice) / tlPrice : 1;
 
   const signal = signalResult?.signal || null;
   const market = signalResult?.market || {};
+
+  // Phase detection for active trades
+  const phase1h = detectPhase(stochRsi1h, t1h.direction);
+  const phase4h = detectPhase(stochRsi4h, t4h.direction);
 
   return {
     pair,
@@ -886,13 +956,18 @@ export function getMarketSnapshot(
     rsi: Math.round((wilderRsi(candles4h.map(c => c.close)) ?? 50) * 10) / 10,
     stochK: stochRsi4h.k,
     stochD: stochRsi4h.d,
-    stoch1hK: null,
-    stoch1hD: null,
+    stoch1hK: stochRsi1h.k,
+    stoch1hD: stochRsi1h.d,
     trendlinePrice: Math.round(tlPrice * 100) / 100,
     distToTrendline: Math.round(Math.abs(dist) * 10000) / 100,
-    trend1h: null,
-    trend4h: t1d.direction ? { direction: t1d.direction, strength: t1d.strength } : null,
+    trend1h: t1h.direction ? { direction: t1h.direction, strength: t1h.strength } : null,
+    trend4h: t4h.direction ? { direction: t4h.direction, strength: t4h.strength } : null,
     trend1d: t1d.direction ? { direction: t1d.direction, strength: t1d.strength } : null,
+    // v31.2: Phase detection for exit decisions
+    phase1h: phase1h.phase,
+    phaseWarning1h: phase1h.warning,
+    phase4h: phase4h.phase,
+    phaseWarning4h: phase4h.warning,
     entryCandidates: {
       pullback: { eligible: signal?.scale === "ENTRY_1", confidence: signal?.scale === "ENTRY_1" ? 65 : 0, rejectionReason: null },
       rejection: { eligible: signal?.scale === "ENTRY_2", confidence: signal?.scale === "ENTRY_2" ? 75 : 0, rejectionReason: null },
