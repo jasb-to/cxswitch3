@@ -22,7 +22,7 @@ interface EntryCandidates {
   breakout: { eligible: boolean; confidence: number; rejectionReason: string | null };
 }
 
-// v29.2 — active trade info surfaced from cron snapshot
+// v31.2 — active trade info + phase detection
 interface ActiveTradeInfo {
   signalId: string;
   direction: "LONG" | "SHORT";
@@ -59,6 +59,11 @@ interface MarketSnapshot {
   trendConflict?: boolean;
   // v29.2
   activeTrade?: ActiveTradeInfo;
+  // v31.2 — phase detection
+  phase1h?: "EXPANSION" | "EXHAUSTION" | "NEUTRAL";
+  phaseWarning1h?: string | null;
+  phase4h?: "EXPANSION" | "EXHAUSTION" | "NEUTRAL";
+  phaseWarning4h?: string | null;
 }
 
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
@@ -107,6 +112,18 @@ function getTierEmoji(tier: EntryTier | null | undefined): string {
   return "⚪";
 }
 
+function getPhaseColor(phase: string | undefined): string {
+  if (phase === "EXHAUSTION") return "text-red-400";
+  if (phase === "EXPANSION") return "text-yellow-400";
+  return "text-gray-400";
+}
+
+function getPhaseBg(phase: string | undefined): string {
+  if (phase === "EXHAUSTION") return "bg-red-500/10 border-red-500/20";
+  if (phase === "EXPANSION") return "bg-yellow-500/10 border-yellow-500/20";
+  return "bg-gray-800/50";
+}
+
 // ─── Card Component ───
 
 function MarketCard({ snap }: { snap: MarketSnapshot }) {
@@ -121,6 +138,11 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
     snap.entryCandidates?.breakout?.confidence || 0
   );
 
+  // v31.2: Determine most urgent phase warning
+  const hasExhaustion = snap.phase1h === "EXHAUSTION" || snap.phase4h === "EXHAUSTION";
+  const hasExpansion = snap.phase1h === "EXPANSION" || snap.phase4h === "EXPANSION";
+  const priorityWarning = snap.phaseWarning1h || snap.phaseWarning4h;
+
   return (
     <div className="p-4 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-700 transition">
       {/* Header */}
@@ -130,6 +152,21 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
           {regime?.strength || "NEUTRAL"}
         </span>
       </div>
+
+      {/* v31.2 — Phase Warning Banner (always shown if active) */}
+      {priorityWarning && (
+        <div className={`mb-3 p-2.5 rounded-lg border ${getPhaseBg(hasExhaustion ? "EXHAUSTION" : hasExpansion ? "EXPANSION" : "NEUTRAL")}`}>
+          <div className={`text-xs font-bold ${getPhaseColor(hasExhaustion ? "EXHAUSTION" : hasExpansion ? "EXPANSION" : "NEUTRAL")}`}>
+            {priorityWarning}
+          </div>
+          <div className="text-[10px] text-gray-500 mt-0.5">
+            1H: {snap.phase1h || "NEUTRAL"} | 4H: {snap.phase4h || "NEUTRAL"}
+            {snap.stoch1hK !== undefined && (
+              <span> | Stoch 1H: {snap.stoch1hK.toFixed(1)} / {snap.stoch1hD?.toFixed(1)}</span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* v29.2 — Active Trade Banner */}
       {snap.activeTrade && (
@@ -210,8 +247,8 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </div>
       )}
 
-      {/* Why No Trade */}
-      {snap.whyNoTrade && snap.whyNoTrade.length > 0 && (
+      {/* Why No Trade — HIDE when active trade exists */}
+      {snap.whyNoTrade && snap.whyNoTrade.length > 0 && !snap.activeTrade && (
         <div className="mb-3 p-2.5 bg-gray-800/40 rounded-lg">
           <div className="text-[10px] text-gray-500 mb-1.5 uppercase tracking-wider font-semibold">Why No Trade?</div>
           <div className="space-y-1">
@@ -334,7 +371,7 @@ export default function Dashboard() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
-              CXSwitch <span className="text-blue-400">v29.2</span>
+              CXSwitch <span className="text-blue-400">v31.2</span>
             </h1>
             <p className="text-gray-500 text-sm mt-1">Trading Dashboard</p>
           </div>
