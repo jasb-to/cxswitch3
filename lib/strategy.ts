@@ -1,4 +1,4 @@
-// lib/strategy.ts — v31 "Trendline Pullback + StochRSI Timing"
+// lib/strategy.ts — v31.1 "Trendline Pullback + StochRSI Timing"
 // ============================================================
 // Architecture: v28 trendline engine + Wilder RSI + API compatibility
 // Philosophy: Early trend continuation entries. Missed entry > false positive.
@@ -9,7 +9,6 @@
 // TYPES
 // ------------------------------------------------------------------
 
-
 export interface ExitRecord {
   pair: string;
   direction: "LONG" | "SHORT";
@@ -18,6 +17,7 @@ export interface ExitRecord {
   reason: string;
   timestamp: number;
 }
+
 export interface Candle {
   timestamp: number;
   open: number;
