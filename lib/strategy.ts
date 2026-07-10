@@ -549,7 +549,7 @@ export function generateSignal(
 
   // Entry conditions
   const nearTrendline = Math.abs(dist) < 0.012;
-  const stochExtreme = t1d.direction === "LONG" ? stoch.k < 20 : stoch.k > 80;
+  const stochExtreme = t1d.direction === "LONG" ? stoch.k < 35 : stoch.k > 65;
   const stochTurning = t1d.direction === "LONG" ? stoch.k > stoch.d : stoch.k < stoch.d;
 
   const beyondTrendline = t1d.direction === "LONG" ? price > tlPrice * 1.008 : price < tlPrice * 0.992;
@@ -573,8 +573,8 @@ export function generateSignal(
     rawType = "ENTRY_1";
   } else if (nearTrendline && stochTurning && !stochExtreme) {
     rawType = "ENTRY_2";
-  } else if (beyondTrendline && confirming && emaAligned) {
-    if (volUp || stochMomentum || adxStrong) {
+  } else if (beyondTrendline && confirming) {
+    if (volUp || stochMomentum) {
       rawType = "ADD";
     }
   }
@@ -649,8 +649,9 @@ export function generateSignal(
     sl = t1d.direction === "LONG"
       ? Math.min(swingLow, entry - atrVal * 2)
       : Math.max(swingHigh, entry + atrVal * 2);
-    tp = t1d.direction === "LONG" ? entry + atrVal * 5 : entry - atrVal * 5;
-    confidence = finalType === "ENTRY_1" ? 50 : 60;
+    tp = t1d.direction === "LONG" ? Math.max(entry + atrVal * 5, entry * 1.05) : Math.min(entry - atrVal * 5, entry * 0.95);
+    confidence = finalType === "ENTRY_1" ? 65 : 75;
+    if (emaAligned) confidence += 10;
     expectedMove = Math.abs(tp - entry) / entry * 100;
   } else {
     type = "BREAKOUT";
@@ -663,9 +664,10 @@ export function generateSignal(
       ? entry + (entry - sl) * MIN_RR
       : entry - (sl - entry) * MIN_RR;
 
+    const minMove = t1d.direction === "LONG" ? entry * 1.05 : entry * 0.95;
     tp = t1d.direction === "LONG"
-      ? Math.max(swingHigh, minTarget)
-      : Math.min(swingLow, minTarget);
+      ? Math.max(swingHigh, minTarget, minMove)
+      : Math.min(swingLow, minTarget, minMove);
 
     confidence = 85;
     expectedMove = Math.abs(tp - entry) / entry * 100;
