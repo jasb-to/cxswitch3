@@ -22,6 +22,20 @@ interface EntryCandidates {
   breakout: { eligible: boolean; confidence: number; rejectionReason: string | null };
 }
 
+// v29.2 — active trade info surfaced from cron snapshot
+interface ActiveTradeInfo {
+  signalId: string;
+  direction: "LONG" | "SHORT";
+  state: string;
+  pnl: string;
+  lockedStop?: number;
+  entry: number;
+  stop: number;
+  target: number;
+  entryTier?: EntryTier;
+  positionSizePct?: number;
+}
+
 interface MarketSnapshot {
   pair: string;
   price: number;
@@ -43,6 +57,8 @@ interface MarketSnapshot {
   whyNoTrade?: string[];
   entryTier?: EntryTier | null;
   trendConflict?: boolean;
+  // v29.2
+  activeTrade?: ActiveTradeInfo;
 }
 
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
@@ -63,6 +79,7 @@ function getStrengthBadge(strength: string): string {
   if (s === "STRONG") return "bg-green-500/20 text-green-400 border-green-500/30";
   if (s === "MODERATE" || s === "MEDIUM") return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
   if (s === "WEAK") return "bg-orange-500/20 text-orange-400 border-orange-500/30";
+  if (s === "ACTIVE") return "bg-blue-500/20 text-blue-400 border-blue-500/30";
   return "bg-gray-700/50 text-gray-400 border-gray-600/30";
 }
 
@@ -71,6 +88,7 @@ function getActionColor(action: string | undefined): string {
   if (action.includes("CONFIRMED")) return "text-green-400";
   if (action.includes("EARLY")) return "text-yellow-400";
   if (action.includes("WATCH")) return "text-blue-400";
+  if (action.includes("HOLDING")) return "text-blue-400";
   return "text-gray-400";
 }
 
@@ -79,6 +97,7 @@ function getActionBg(action: string | undefined): string {
   if (action.includes("CONFIRMED")) return "bg-green-500/10 border-green-500/20";
   if (action.includes("EARLY")) return "bg-yellow-500/10 border-yellow-500/20";
   if (action.includes("WATCH")) return "bg-blue-500/10 border-blue-500/20";
+  if (action.includes("HOLDING")) return "bg-blue-500/10 border-blue-500/20";
   return "bg-gray-800/50 border-gray-700/30";
 }
 
@@ -112,11 +131,39 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </span>
       </div>
 
+      {/* v29.2 — Active Trade Banner */}
+      {snap.activeTrade && (
+        <div className="mb-3 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-blue-400 uppercase tracking-wider">
+              🔄 ACTIVE TRADE
+            </span>
+            <span className={`text-xs font-mono font-bold ${
+              snap.activeTrade.pnl.startsWith("-") ? "text-red-400" : "text-green-400"
+            }`}>
+              {snap.activeTrade.pnl}
+            </span>
+          </div>
+          <div className="text-xs text-gray-400 mt-1">
+            {snap.activeTrade.direction} | State: {snap.activeTrade.state}
+            {snap.activeTrade.lockedStop !== undefined && (
+              <span> | Locked Stop: ${snap.activeTrade.lockedStop.toFixed(2)}</span>
+            )}
+          </div>
+          <div className="text-xs text-gray-500 mt-0.5">
+            Entry: ${snap.activeTrade.entry.toFixed(2)} | Stop: ${snap.activeTrade.stop.toFixed(2)} | Target: ${snap.activeTrade.target.toFixed(2)}
+          </div>
+        </div>
+      )}
+
       {/* Price & Regime Direction */}
       <div className="mb-3">
         <div className="text-2xl font-mono font-bold">${snap.price?.toFixed(2) || "—"}</div>
         <div className={`text-xs font-bold ${dirColor} mt-0.5`}>
-          {regime?.direction === "TREND_CONFLICT" ? "⚠ TREND CONFLICT" : (regime?.direction || "NEUTRAL")}
+          {snap.activeTrade
+            ? `${snap.regime?.direction} — TRADE ACTIVE`
+            : (snap.regime?.direction === "TREND_CONFLICT" ? "⚠ TREND CONFLICT" : (snap.regime?.direction || "NEUTRAL"))
+          }
         </div>
       </div>
 
@@ -126,28 +173,30 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         <div className="text-lg font-mono font-bold text-gray-200">{regime?.confidence || 0}</div>
       </div>
 
-      {/* Entry Score */}
-      <div className="mb-3 p-2 bg-gray-800/40 rounded-lg">
-        <div className="text-[10px] text-gray-500 mb-1.5 uppercase tracking-wider font-semibold">Entry Score</div>
-        <div className="grid grid-cols-3 gap-2 text-center mb-2">
-          <div>
-            <div className="text-[10px] text-gray-600">Pullback</div>
-            <div className="text-xs font-mono font-semibold">{snap.entryCandidates?.pullback?.confidence?.toFixed(0) || "0"}</div>
+      {/* Entry Score — hide when active trade is running */}
+      {!snap.activeTrade && (
+        <div className="mb-3 p-2 bg-gray-800/40 rounded-lg">
+          <div className="text-[10px] text-gray-500 mb-1.5 uppercase tracking-wider font-semibold">Entry Score</div>
+          <div className="grid grid-cols-3 gap-2 text-center mb-2">
+            <div>
+              <div className="text-[10px] text-gray-600">Pullback</div>
+              <div className="text-xs font-mono font-semibold">{snap.entryCandidates?.pullback?.confidence?.toFixed(0) || "0"}</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-gray-600">Rejection</div>
+              <div className="text-xs font-mono font-semibold">{snap.entryCandidates?.rejection?.confidence?.toFixed(0) || "0"}</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-gray-600">Breakout</div>
+              <div className="text-xs font-mono font-semibold">{snap.entryCandidates?.breakout?.confidence?.toFixed(0) || "0"}</div>
+            </div>
           </div>
-          <div>
-            <div className="text-[10px] text-gray-600">Rejection</div>
-            <div className="text-xs font-mono font-semibold">{snap.entryCandidates?.rejection?.confidence?.toFixed(0) || "0"}</div>
-          </div>
-          <div>
-            <div className="text-[10px] text-gray-600">Breakout</div>
-            <div className="text-xs font-mono font-semibold">{snap.entryCandidates?.breakout?.confidence?.toFixed(0) || "0"}</div>
+          <div className="flex items-center justify-between pt-1.5 border-t border-gray-700/50">
+            <span className="text-[10px] text-gray-500">Best Candidate</span>
+            <span className="text-xs font-mono font-bold text-gray-300">{bestConf.toFixed(0)} / 100</span>
           </div>
         </div>
-        <div className="flex items-center justify-between pt-1.5 border-t border-gray-700/50">
-          <span className="text-[10px] text-gray-500">Best Candidate</span>
-          <span className="text-xs font-mono font-bold text-gray-300">{bestConf.toFixed(0)} / 100</span>
-        </div>
-      </div>
+      )}
 
       {/* Recommended Action Tier */}
       {snap.recommendedAction && (
@@ -285,7 +334,7 @@ export default function Dashboard() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
-              CXSwitch <span className="text-blue-400">v29.1</span>
+              CXSwitch <span className="text-blue-400">v29.2</span>
             </h1>
             <p className="text-gray-500 text-sm mt-1">Trading Dashboard</p>
           </div>
