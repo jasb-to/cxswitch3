@@ -13,7 +13,7 @@ import {
   loadExits,
   setRegimePersistence,
   setExitPersistence,
-  updateTradeManager,
+  updateTradeManagerCompat,
   getMarketSnapshot,
   Signal,
   SignalResult,
@@ -120,7 +120,7 @@ export async function GET(req: NextRequest) {
             results[pair] = { status: "EXITED", reason: holdResult.reason, price, signalId: signal.id };
             console.log("[EXIT] " + pair + " | " + signal.direction + " | " + holdResult.reason + " | $" + price.toFixed(2));
           } else {
-            const tm = updateTradeManager(signal, price);
+            const tm = updateTradeManagerCompat(signal, price);
             signal.highestPrice = tm.highestPrice;
             signal.lowestPrice = tm.lowestPrice;
             signal.tradeState = tm.newState;
