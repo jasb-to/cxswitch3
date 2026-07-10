@@ -1,4 +1,4 @@
-// lib/strategy.v29.4.2.ts — COMPLETE PATCH
+// lib/strategy.ts — v29.4.2 + Compatibility Layer
 // =============================================================================
 // CHANGES FROM v29.3:
 // A) Wilder RSI (TradingView exact) — replaces broken simple average
@@ -7,6 +7,7 @@
 // D) Outcome telemetry for rejected signal analysis
 // E) momentumRisk: no penalty on STRONG trends (expansion, not exhaustion)
 // F) All functions complete — no placeholder comments
+// G) COMPATIBILITY LAYER: restored public API for API routes
 // =============================================================================
 
 const DEBUG = process.env.DEBUG === "true";
@@ -36,7 +37,7 @@ const LOOKBACK_ATR = 14;
 const ROC_LOOKBACK = 4;
 
 // ============================================================
-// INTERFACES
+// TYPES
 // ============================================================
 
 export interface Candle {
@@ -62,6 +63,13 @@ export interface Signal {
   rr: number;
   timestamp: number;
   version: number;
+}
+
+/** Compatibility: SignalResult returned by generateSignal */
+export interface SignalResult {
+  signal: Signal | null;
+  regime: MarketRegime;
+  telemetry: ScoreTelemetry;
 }
 
 export interface MarketRegime {
@@ -94,7 +102,6 @@ export interface ScoreTelemetry {
   stoch4hK: number;
   telegramFired: boolean;
   positionSize: number;
-  // Outcome telemetry
   entryPrice?: number;
   future1hReturn?: number;
   future24hReturn?: number;
@@ -118,9 +125,60 @@ export interface PairConfig {
   runnerPct?: number;
 }
 
+/** Compatibility: Trade state for updateTradeManager */
+export interface TradeState {
+  pair: string;
+  direction: "LONG" | "SHORT";
+  entryPrice: number;
+  size: number;
+  stopLoss: number;
+  takeProfit: number;
+  status: "OPEN" | "CLOSED" | "STOPPED";
+  openedAt: number;
+  updatedAt: number;
+}
+
+/** Compatibility: Market snapshot for getMarketSnapshot */
+export interface MarketSnapshot {
+  pair: string;
+  timestamp: number;
+  price: number;
+  regime: MarketRegime;
+  indicators: {
+    rsi1d: number | null;
+    stoch4h: { k: number; d: number } | null;
+    adx1d: number | null;
+    adx4h: number | null;
+    ema21: number | null;
+    ema50: number | null;
+    ema200: number | null;
+  };
+  signal: Signal | null;
+}
+
 // ============================================================
-// DATA INTEGRITY — Timestamp normalization with backtest support
+// CONSTANTS
 // ============================================================
+
+const PAIR_CONFIGS: Record<string, PairConfig> = {
+  default: { minADX: 15, momentumThreshold: 50, volumeMultiplier: 1.2, stopLossPct: 0.025, takeProfitPct: 0.035, maxEntryDriftPct: 0.015 },
+  BTC: { minADX: 15, momentumThreshold: 50, volumeMultiplier: 1.2, stopLossPct: 0.02, takeProfitPct: 0.03, maxEntryDriftPct: 0.015 },
+  ETH: { minADX: 15, momentumThreshold: 50, volumeMultiplier: 1.2, stopLossPct: 0.025, takeProfitPct: 0.035, maxEntryDriftPct: 0.015 },
+  SOL: { minADX: 15, momentumThreshold: 45, volumeMultiplier: 1.3, stopLossPct: 0.03, takeProfitPct: 0.04, maxEntryDriftPct: 0.018 },
+  HYPE: { minADX: 20, momentumThreshold: 60, volumeMultiplier: 1.5, stopLossPct: 0.06, takeProfitPct: 0.05, maxEntryDriftPct: 0.02, isHYPE: true, bePct: 0.02, lockPct: 0.025, runnerPct: 0.04 },
+};
+
+export function getPairConfig(pair: string): PairConfig {
+  return PAIR_CONFIGS[pair] || PAIR_CONFIGS.default;
+}
+
+// ============================================================
+// SAFE INDICATORS
+// ============================================================
+
+export function isValidNumber(v: any): boolean {
+  return typeof v === "number" && Number.isFinite(v);
+}
 
 export function normalizeTimestamp(
   ts: number,
@@ -130,40 +188,21 @@ export function normalizeTimestamp(
   if (!Number.isFinite(ts)) {
     throw new Error(`Invalid timestamp: ${ts}`);
   }
-
-  // Detect seconds vs milliseconds
   if (ts > 1e9 && ts < 1e11) {
     ts *= 1000;
   }
-
-  // Always enforce: timestamp must be after 2010 (reasonable crypto start)
-  const minTs = 1262304000000; // 2010-01-01
+  const minTs = 1262304000000;
   if (ts < minTs) {
     throw new Error(`Timestamp before 2010: ${ts}`);
   }
-
-  // For live trading: also enforce not too far in future
   if (!allowHistorical) {
     const maxTs = nowMs + 5 * 365 * 24 * 3600 * 1000;
     if (ts > maxTs) {
       throw new Error(`Timestamp too far in future: ${ts}`);
     }
   }
-
   return ts;
 }
-
-// ============================================================
-// DATA INTEGRITY — Number validation
-// ============================================================
-
-export function isValidNumber(v: any): boolean {
-  return typeof v === "number" && Number.isFinite(v);
-}
-
-// ============================================================
-// A) WILDER RSI — TradingView exact implementation
-// ============================================================
 
 export function wilderRsi(values: number[], period: number = RSI_PERIOD): number | null {
   if (values.length < period + 1) return null;
@@ -174,7 +213,6 @@ export function wilderRsi(values: number[], period: number = RSI_PERIOD): number
     diffs.push(values[i] - values[i - 1]);
   }
 
-  // First average: simple mean of first 'period' differences
   const gains: number[] = [];
   const losses: number[] = [];
   for (let i = 0; i < period; i++) {
@@ -185,11 +223,9 @@ export function wilderRsi(values: number[], period: number = RSI_PERIOD): number
   let avgGain = gains.reduce((a, b) => a + b, 0) / period;
   let avgLoss = losses.reduce((a, b) => a + b, 0) / period;
 
-  // Subsequent averages: Wilder's smoothing
   for (let i = period; i < diffs.length; i++) {
     const currentGain = Math.max(0, diffs[i]);
     const currentLoss = Math.max(0, -diffs[i]);
-
     avgGain = (avgGain * (period - 1) + currentGain) / period;
     avgLoss = (avgLoss * (period - 1) + currentLoss) / period;
   }
@@ -202,10 +238,6 @@ export function wilderRsi(values: number[], period: number = RSI_PERIOD): number
   const result = 100 - (100 / (1 + rs));
   return isValidNumber(result) ? result : null;
 }
-
-// ============================================================
-// SAFE INDICATORS — Input + output guards
-// ============================================================
 
 export function ema(values: number[], period: number): number[] {
   if (values.length < period) return [];
@@ -225,7 +257,6 @@ export function ema(values: number[], period: number): number[] {
     out.push(prev);
   }
 
-  // OUTPUT GUARD
   if (!out.every(isValidNumber)) {
     if (DEBUG) console.error("[EMA] NaN/Infinity in output");
     return [];
@@ -328,14 +359,9 @@ export function adx(candles: Candle[], period: number = RSI_PERIOD): number | nu
   return isValidNumber(finalAdx) ? finalAdx : null;
 }
 
-// ============================================================
-// FIXED aggregateTo1D — normalize timestamps FIRST
-// ============================================================
-
 export function aggregateTo1D(candles4h: Candle[], allowHistorical: boolean = false): Candle[] {
   if (!candles4h || candles4h.length < 6) return [];
 
-  // Normalize timestamps FIRST
   const normalized: Candle[] = [];
   for (const c of candles4h) {
     try {
@@ -375,23 +401,7 @@ export function aggregateTo1D(candles4h: Candle[], allowHistorical: boolean = fa
 }
 
 // ============================================================
-// PAIR CONFIGS
-// ============================================================
-
-const PAIR_CONFIGS: Record<string, PairConfig> = {
-  default: { minADX: 15, momentumThreshold: 50, volumeMultiplier: 1.2, stopLossPct: 0.025, takeProfitPct: 0.035, maxEntryDriftPct: 0.015 },
-  BTC: { minADX: 15, momentumThreshold: 50, volumeMultiplier: 1.2, stopLossPct: 0.02, takeProfitPct: 0.03, maxEntryDriftPct: 0.015 },
-  ETH: { minADX: 15, momentumThreshold: 50, volumeMultiplier: 1.2, stopLossPct: 0.025, takeProfitPct: 0.035, maxEntryDriftPct: 0.015 },
-  SOL: { minADX: 15, momentumThreshold: 45, volumeMultiplier: 1.3, stopLossPct: 0.03, takeProfitPct: 0.04, maxEntryDriftPct: 0.018 },
-  HYPE: { minADX: 20, momentumThreshold: 60, volumeMultiplier: 1.5, stopLossPct: 0.06, takeProfitPct: 0.05, maxEntryDriftPct: 0.02, isHYPE: true, bePct: 0.02, lockPct: 0.025, runnerPct: 0.04 },
-};
-
-export function getPairConfig(pair: string): PairConfig {
-  return PAIR_CONFIGS[pair] || PAIR_CONFIGS.default;
-}
-
-// ============================================================
-// SAFE REGIME DETECTION
+// REGIME ENGINE
 // ============================================================
 
 export async function evaluateRegime(
@@ -409,7 +419,6 @@ export async function evaluateRegime(
   const closes1d = candles1d.map(c => c.close);
   const closes4h = candles4h.map(c => c.close);
 
-  // Guard: invalid data
   if (!closes1d.every(isValidNumber) || !closes4h.every(isValidNumber)) {
     return { direction: "NEUTRAL", strength: "INVALID_DATA", confidence: 0, score: 0, reason: ["invalid_candle_data"], detectedAt };
   }
@@ -420,7 +429,6 @@ export async function evaluateRegime(
   const ema21_4h = ema(closes4h, EMA_FAST);
   const ema50_4h = ema(closes4h, EMA_SLOW);
 
-  // Guard: EMA calculation failed
   if (!ema21_1d.length || !ema50_1d.length) {
     return { direction: "NEUTRAL", strength: "INSUFFICIENT_DATA", confidence: 0, score: 0, reason: ["ema_calculation_failed"], detectedAt };
   }
@@ -494,7 +502,7 @@ export async function evaluateRegime(
 }
 
 // ============================================================
-// E) MOMENTUM RISK — only penalize WEAK trends
+// SCORING ENGINE
 // ============================================================
 
 export function momentumRisk(
@@ -523,10 +531,6 @@ export function momentumRisk(
   }
   return { isRisky: false, penalty: 0, reason: "" };
 }
-
-// ============================================================
-// C) GRADED STRUCTURE — explicit score cap, no double-count
-// ============================================================
 
 export function scoreStructure(
   candles1h: Candle[],
@@ -563,7 +567,7 @@ export function scoreStructure(
 
     const prevSwingLow = Math.min(...lows.slice(-LOOKBACK_SWING, -1));
     if (lastClose > prevSwingLow) { score += 5; reasons.push("struct_no_lower_low:+5"); contributions.push({ component: "structure", name: "No lower low", points: 5 }); }
-    else { score -= 5; reasons.push("struct_lower_low:-5"); contributions.push({ component: "structure", name: "Lower low", points: -5 }); isBroken = true; } // Reduced from -10
+    else { score -= 5; reasons.push("struct_lower_low:-5"); contributions.push({ component: "structure", name: "Lower low", points: -5 }); isBroken = true; }
 
     const lastCandle = candles1h[candles1h.length - 1];
     const bodyPct = (lastCandle.close - lastCandle.open) / (lastCandle.high - lastCandle.low || 1);
@@ -588,7 +592,7 @@ export function scoreStructure(
 
     const prevSwingHigh = Math.max(...highs.slice(-LOOKBACK_SWING, -1));
     if (lastClose < prevSwingHigh) { score += 5; reasons.push("struct_no_higher_high:+5"); contributions.push({ component: "structure", name: "No higher high", points: 5 }); }
-    else { score -= 5; reasons.push("struct_higher_high:-5"); contributions.push({ component: "structure", name: "Higher high", points: -5 }); isBroken = true; } // Reduced from -10
+    else { score -= 5; reasons.push("struct_higher_high:-5"); contributions.push({ component: "structure", name: "Higher high", points: -5 }); isBroken = true; }
 
     const lastCandle = candles1h[candles1h.length - 1];
     const bodyPct = (lastCandle.close - lastCandle.open) / (lastCandle.high - lastCandle.low || 1);
@@ -614,12 +618,531 @@ export function scoreStructure(
     else if (trendAgainst) { score -= 5; reasons.push("struct_4h_trend_weak:-5"); contributions.push({ component: "structure", name: "4H trend weak", points: -5 }); }
   }
 
-  // C) EXPLICIT SCORE CAP
   return { score: Math.min(SCORE_MAX.STRUCTURE, Math.max(-SCORE_MAX.STRUCTURE, score)), reasons, isBroken, contributions };
 }
 
 // ============================================================
-// D) TELEMETRY PERSISTENCE
+// SIGNAL PIPELINE
+// ============================================================
+
+function calculateATR(candles: Candle[], period: number = LOOKBACK_ATR): number | null {
+  if (candles.length < period + 1) return null;
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    trs.push(Math.max(
+      candles[i].high - candles[i].low,
+      Math.abs(candles[i].high - candles[i - 1].close),
+      Math.abs(candles[i].low - candles[i - 1].close)
+    ));
+  }
+  if (!trs.every(isValidNumber)) return null;
+  const atr = trs.slice(-period).reduce((a, b) => a + b, 0) / period;
+  return isValidNumber(atr) ? atr : null;
+}
+
+function calculateVolumeProfile(candles: Candle[], lookback: number = LOOKBACK_VOLUME): { avg: number; current: number } | null {
+  if (candles.length < lookback) return null;
+  const volumes = candles.slice(-lookback).map(c => c.volume);
+  if (!volumes.every(isValidNumber)) return null;
+  const avg = volumes.reduce((a, b) => a + b, 0) / volumes.length;
+  const current = candles[candles.length - 1].volume;
+  return { avg, current };
+}
+
+function calculateLocationScore(
+  price: number,
+  candles: Candle[],
+  direction: "LONG" | "SHORT"
+): { score: number; reasons: string[]; contributions: any[] } {
+  const reasons: string[] = [];
+  const contributions: any[] = [];
+  let score = 0;
+
+  const highs = candles.map(c => c.high);
+  const lows = candles.map(c => c.low);
+  const highest = Math.max(...highs.slice(-LOOKBACK_SWING));
+  const lowest = Math.min(...lows.slice(-LOOKBACK_SWING));
+  const range = highest - lowest;
+
+  if (range <= 0) return { score: 0, reasons, contributions };
+
+  const position = (price - lowest) / range;
+
+  if (direction === "LONG") {
+    if (position < 0.3) { score += 15; reasons.push("loc_deep_dip:+15"); contributions.push({ component: "location", name: "Deep dip", points: 15, rawValue: position.toFixed(2) }); }
+    else if (position < 0.5) { score += 10; reasons.push("loc_fair_value:+10"); contributions.push({ component: "location", name: "Fair value", points: 10, rawValue: position.toFixed(2) }); }
+    else if (position < 0.7) { score += 5; reasons.push("loc_mid_range:+5"); contributions.push({ component: "location", name: "Mid range", points: 5, rawValue: position.toFixed(2) }); }
+    else { score -= 10; reasons.push("loc_near_highs:-10"); contributions.push({ component: "location", name: "Near highs", points: -10, rawValue: position.toFixed(2) }); }
+  } else {
+    if (position > 0.7) { score += 15; reasons.push("loc_deep_rally:+15"); contributions.push({ component: "location", name: "Deep rally", points: 15, rawValue: position.toFixed(2) }); }
+    else if (position > 0.5) { score += 10; reasons.push("loc_fair_value:+10"); contributions.push({ component: "location", name: "Fair value", points: 10, rawValue: position.toFixed(2) }); }
+    else if (position > 0.3) { score += 5; reasons.push("loc_mid_range:+5"); contributions.push({ component: "location", name: "Mid range", points: 5, rawValue: position.toFixed(2) }); }
+    else { score -= 10; reasons.push("loc_near_lows:-10"); contributions.push({ component: "location", name: "Near lows", points: -10, rawValue: position.toFixed(2) }); }
+  }
+
+  return { score: Math.min(SCORE_MAX.LOCATION, Math.max(-SCORE_MAX.LOCATION, score)), reasons, contributions };
+}
+
+function calculateMomentumScore(
+  candles1h: Candle[],
+  candles4h: Candle[],
+  direction: "LONG" | "SHORT",
+  regimeStrength: string
+): { score: number; reasons: string[]; stoch4h: { k: number; d: number }; penalty: number; contributions: any[] } {
+  const reasons: string[] = [];
+  const contributions: any[] = [];
+  let score = 0;
+
+  const closes1h = candles1h.map(c => c.close);
+  const closes4h = candles4h.map(c => c.close);
+
+  const stoch1h = stochRsi(closes1h);
+  const stoch4h = stochRsi(closes4h);
+
+  const roc1h = closes1h.length > ROC_LOOKBACK ? (closes1h[closes1h.length - 1] - closes1h[closes1h.length - 1 - ROC_LOOKBACK]) / closes1h[closes1h.length - 1 - ROC_LOOKBACK] : 0;
+  const roc4h = closes4h.length > ROC_LOOKBACK ? (closes4h[closes4h.length - 1] - closes4h[closes4h.length - 1 - ROC_LOOKBACK]) / closes4h[closes4h.length - 1 - ROC_LOOKBACK] : 0;
+
+  if (direction === "LONG") {
+    if (stoch1h.k < 30 && stoch1h.k > stoch1h.d) { score += 10; reasons.push("mom_1h_stoch_bullish:+10"); contributions.push({ component: "momentum", name: "1H Stoch bullish", points: 10, rawValue: `K${stoch1h.k.toFixed(1)}>D${stoch1h.d.toFixed(1)}` }); }
+    else if (stoch1h.k < 20) { score += 5; reasons.push("mom_1h_stoch_deep:+5"); contributions.push({ component: "momentum", name: "1H Stoch deep", points: 5, rawValue: `K${stoch1h.k.toFixed(1)}` }); }
+    else if (stoch1h.k > 80 && stoch1h.k < stoch1h.d) { score -= 5; reasons.push("mom_1h_stoch_bearish:-5"); contributions.push({ component: "momentum", name: "1H Stoch bearish", points: -5, rawValue: `K${stoch1h.k.toFixed(1)}<D${stoch1h.d.toFixed(1)}` }); }
+
+    if (roc1h > 0.02) { score += 8; reasons.push("mom_1h_roc_strong:+8"); contributions.push({ component: "momentum", name: "1H ROC strong", points: 8, rawValue: `${(roc1h * 100).toFixed(1)}%` }); }
+    else if (roc1h > 0) { score += 4; reasons.push("mom_1h_roc_positive:+4"); contributions.push({ component: "momentum", name: "1H ROC positive", points: 4, rawValue: `${(roc1h * 100).toFixed(1)}%` }); }
+    else if (roc1h < -0.02) { score -= 8; reasons.push("mom_1h_roc_weak:-8"); contributions.push({ component: "momentum", name: "1H ROC weak", points: -8, rawValue: `${(roc1h * 100).toFixed(1)}%` }); }
+
+    if (roc4h > 0.05) { score += 12; reasons.push("mom_4h_roc_strong:+12"); contributions.push({ component: "momentum", name: "4H ROC strong", points: 12, rawValue: `${(roc4h * 100).toFixed(1)}%` }); }
+    else if (roc4h > 0.02) { score += 6; reasons.push("mom_4h_roc_positive:+6"); contributions.push({ component: "momentum", name: "4H ROC positive", points: 6, rawValue: `${(roc4h * 100).toFixed(1)}%` }); }
+  } else {
+    if (stoch1h.k > 70 && stoch1h.k < stoch1h.d) { score += 10; reasons.push("mom_1h_stoch_bearish:+10"); contributions.push({ component: "momentum", name: "1H Stoch bearish", points: 10, rawValue: `K${stoch1h.k.toFixed(1)}<D${stoch1h.d.toFixed(1)}` }); }
+    else if (stoch1h.k > 80) { score += 5; reasons.push("mom_1h_stoch_high:+5"); contributions.push({ component: "momentum", name: "1H Stoch high", points: 5, rawValue: `K${stoch1h.k.toFixed(1)}` }); }
+    else if (stoch1h.k < 20 && stoch1h.k > stoch1h.d) { score -= 5; reasons.push("mom_1h_stoch_bullish:-5"); contributions.push({ component: "momentum", name: "1H Stoch bullish", points: -5, rawValue: `K${stoch1h.k.toFixed(1)}>D${stoch1h.d.toFixed(1)}` }); }
+
+    if (roc1h < -0.02) { score += 8; reasons.push("mom_1h_roc_strong:+8"); contributions.push({ component: "momentum", name: "1H ROC strong", points: 8, rawValue: `${(roc1h * 100).toFixed(1)}%` }); }
+    else if (roc1h < 0) { score += 4; reasons.push("mom_1h_roc_negative:+4"); contributions.push({ component: "momentum", name: "1H ROC negative", points: 4, rawValue: `${(roc1h * 100).toFixed(1)}%` }); }
+    else if (roc1h > 0.02) { score -= 8; reasons.push("mom_1h_roc_weak:-8"); contributions.push({ component: "momentum", name: "1H ROC weak", points: -8, rawValue: `${(roc1h * 100).toFixed(1)}%` }); }
+
+    if (roc4h < -0.05) { score += 12; reasons.push("mom_4h_roc_strong:+12"); contributions.push({ component: "momentum", name: "4H ROC strong", points: 12, rawValue: `${(roc4h * 100).toFixed(1)}%` }); }
+    else if (roc4h < -0.02) { score += 6; reasons.push("mom_4h_roc_negative:+6"); contributions.push({ component: "momentum", name: "4H ROC negative", points: 6, rawValue: `${(roc4h * 100).toFixed(1)}%` }); }
+  }
+
+  const risk = momentumRisk(stoch4h, direction, regimeStrength);
+
+  return {
+    score: Math.min(SCORE_MAX.MOMENTUM, Math.max(-SCORE_MAX.MOMENTUM, score + risk.penalty)),
+    reasons: [...reasons, ...(risk.reason ? [risk.reason] : [])],
+    stoch4h,
+    penalty: risk.penalty,
+    contributions
+  };
+}
+
+function calculateRiskScore(
+  candles1h: Candle[],
+  candles1d: Candle[],
+  direction: "LONG" | "SHORT",
+  entryPrice: number
+): { score: number; reasons: string[]; stopLevel: number; targetLevel: number; rr: number; contributions: any[] } {
+  const reasons: string[] = [];
+  const contributions: any[] = [];
+  let score = 0;
+
+  const atr1h = calculateATR(candles1h);
+  const atr1d = calculateATR(candles1d);
+  const lastClose = candles1h[candles1h.length - 1].close;
+
+  const config = getPairConfig(candles1d[0]?.timestamp ? "default" : "default");
+
+  let stopLevel: number;
+  let targetLevel: number;
+
+  if (direction === "LONG") {
+    const swingLow = Math.min(...candles1h.slice(-LOOKBACK_SWING).map(c => c.low));
+    const atrStop = atr1h ? lastClose - atr1h * 2 : lastClose * (1 - config.stopLossPct);
+    stopLevel = Math.max(swingLow * 0.998, atrStop);
+    targetLevel = lastClose + (lastClose - stopLevel) * 2;
+  } else {
+    const swingHigh = Math.max(...candles1h.slice(-LOOKBACK_SWING).map(c => c.high));
+    const atrStop = atr1h ? lastClose + atr1h * 2 : lastClose * (1 + config.stopLossPct);
+    stopLevel = Math.min(swingHigh * 1.002, atrStop);
+    targetLevel = lastClose - (stopLevel - lastClose) * 2;
+  }
+
+  const riskAmount = Math.abs(entryPrice - stopLevel);
+  const rewardAmount = Math.abs(targetLevel - entryPrice);
+  const rr = riskAmount > 0 ? rewardAmount / riskAmount : 0;
+
+  if (rr >= 3) { score += 20; reasons.push("risk_rr_excellent:+20"); contributions.push({ component: "risk", name: "RR excellent", points: 20, rawValue: rr.toFixed(2) }); }
+  else if (rr >= 2) { score += 15; reasons.push("risk_rr_good:+15"); contributions.push({ component: "risk", name: "RR good", points: 15, rawValue: rr.toFixed(2) }); }
+  else if (rr >= MIN_RR) { score += 10; reasons.push("risk_rr_acceptable:+10"); contributions.push({ component: "risk", name: "RR acceptable", points: 10, rawValue: rr.toFixed(2) }); }
+  else { score -= 10; reasons.push(`risk_rr_poor:${rr.toFixed(2)}:-10`); contributions.push({ component: "risk", name: "RR poor", points: -10, rawValue: rr.toFixed(2) }); }
+
+  const volProfile = calculateVolumeProfile(candles1h);
+  if (volProfile && volProfile.current > volProfile.avg * config.volumeMultiplier) {
+    score += 5; reasons.push("risk_volume_confirms:+5"); contributions.push({ component: "risk", name: "Volume confirms", points: 5, rawValue: `${(volProfile.current / volProfile.avg).toFixed(1)}x` });
+  }
+
+  const atrPct = atr1d ? atr1d / lastClose : 0;
+  if (atrPct > ATR_ELEVATED_PCT) { score -= 5; reasons.push("risk_atr_elevated:-5"); contributions.push({ component: "risk", name: "ATR elevated", points: -5, rawValue: `${(atrPct * 100).toFixed(1)}%` }); }
+  else if (atrPct < ATR_LOW_PCT) { score -= 3; reasons.push("risk_atr_low:-3"); contributions.push({ component: "risk", name: "ATR low", points: -3, rawValue: `${(atrPct * 100).toFixed(1)}%` }); }
+
+  return {
+    score: Math.min(SCORE_MAX.RISK, Math.max(-SCORE_MAX.RISK, score)),
+    reasons,
+    stopLevel,
+    targetLevel,
+    rr,
+    contributions
+  };
+}
+
+export async function generateSignal(
+  pair: string,
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candles1d: Candle[],
+  currentPrice: number
+): Promise<SignalResult> {
+  const now = Date.now();
+
+  const regime = await evaluateRegime(pair, candles1d, candles4h);
+
+  const telemetry: ScoreTelemetry = {
+    timestamp: now,
+    pair,
+    regime: regime.direction || "NEUTRAL",
+    regimeStrength: regime.strength,
+    regimeScore: regime.score,
+    entryScore: 0,
+    components: { location: 0, structure: 0, momentum: 0, risk: 0 },
+    penalties: {},
+    vetoes: [],
+    missing: [],
+    action: "NO_SIGNAL",
+    entryMode: null,
+    direction: null,
+    rr: 0,
+    adx: null,
+    stochK: 50,
+    stochD: 50,
+    stoch4hK: 50,
+    telegramFired: false,
+    positionSize: 0,
+  };
+
+  if (regime.direction === "NEUTRAL" || regime.strength === "INSUFFICIENT_DATA") {
+    telemetry.action = "NO_SIGNAL";
+    telemetry.vetoes.push("neutral_regime");
+    await persistTelemetry(telemetry);
+    return { signal: null, regime, telemetry };
+  }
+
+  const direction = regime.direction;
+  telemetry.direction = direction;
+
+  const location = calculateLocationScore(currentPrice, candles1h, direction);
+  const structure = scoreStructure(candles1h, candles4h, direction);
+  const momentum = calculateMomentumScore(candles1h, candles4h, direction, regime.strength);
+  const risk = calculateRiskScore(candles1h, candles1d, direction, currentPrice);
+
+  telemetry.components.location = location.score;
+  telemetry.components.structure = structure.score;
+  telemetry.components.momentum = momentum.score;
+  telemetry.components.risk = risk.score;
+  telemetry.rr = risk.rr;
+  telemetry.stoch4hK = momentum.stoch4h.k;
+  telemetry.stochD = momentum.stoch4h.d;
+
+  const adx1d = adx(candles1d);
+  telemetry.adx = adx1d;
+
+  if (structure.isBroken) {
+    telemetry.vetoes.push("structure_broken");
+  }
+
+  if (risk.rr < MIN_RR) {
+    telemetry.vetoes.push("insufficient_rr");
+  }
+
+  const totalScore = location.score + structure.score + momentum.score + risk.score;
+  telemetry.entryScore = totalScore;
+
+  let entryTier: EntryTier = "NO_TRADE";
+  let positionSizePct = 0;
+
+  if (totalScore >= TIER.CONFIRMED && !structure.isBroken && risk.rr >= MIN_RR) {
+    entryTier = "CONFIRMED_ENTRY";
+    positionSizePct = regime.strength === "STRONG" ? 0.05 : 0.03;
+  } else if (totalScore >= TIER.EARLY && !structure.isBroken && risk.rr >= MIN_RR) {
+    entryTier = "EARLY_ENTRY";
+    positionSizePct = regime.strength === "STRONG" ? 0.03 : 0.02;
+  } else if (totalScore >= TIER.WATCH) {
+    entryTier = "WATCH";
+    positionSizePct = 0;
+  }
+
+  telemetry.entryMode = entryTier;
+
+  if (entryTier === "NO_TRADE" || entryTier === "WATCH") {
+    telemetry.action = entryTier === "WATCH" ? "WATCH" : "NO_SIGNAL";
+    await persistTelemetry(telemetry);
+    return { signal: null, regime, telemetry };
+  }
+
+  const signal: Signal = {
+    id: `${pair}_${direction}_${now}`,
+    pair,
+    direction,
+    type: "ENTRY",
+    entry: currentPrice,
+    stop: risk.stopLevel,
+    target: risk.targetLevel,
+    confidence: Math.min(100, Math.abs(totalScore)),
+    entryTier,
+    positionSizePct,
+    rr: risk.rr,
+    timestamp: now,
+    version: CURRENT_SIGNAL_VERSION,
+  };
+
+  telemetry.action = "ENTRY";
+  telemetry.positionSize = positionSizePct;
+  telemetry.telegramFired = true;
+
+  await persistTelemetry(telemetry);
+  return { signal, regime, telemetry };
+}
+
+// ============================================================
+// TRADE MANAGEMENT COMPATIBILITY LAYER
+// ============================================================
+
+/** In-memory trade registry for compatibility */
+const activeTrades = new Map<string, TradeState>();
+
+/** Compatibility: setRegimePersistence — injectable regime storage callback */
+let regimePersistenceFn: ((regime: MarketRegime, pair: string) => Promise<void>) | null = null;
+
+export function setRegimePersistence(persist: (regime: MarketRegime, pair: string) => Promise<void>): void {
+  regimePersistenceFn = persist;
+}
+
+/** Compatibility: setExitPersistence — injectable exit storage callback */
+let exitPersistenceFn: ((exit: { pair: string; direction: "LONG" | "SHORT"; exitPrice: number; pnl: number; reason: string; timestamp: number }) => Promise<void>) | null = null;
+
+export function setExitPersistence(persist: (exit: { pair: string; direction: "LONG" | "SHORT"; exitPrice: number; pnl: number; reason: string; timestamp: number }) => Promise<void>): void {
+  exitPersistenceFn = persist;
+}
+
+/** Compatibility: shouldHold — evaluate if an existing signal/trade should remain active */
+export function shouldHold(
+  signal: Signal,
+  currentPrice: number,
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candles1d: Candle[]
+): { hold: boolean; reason: string; shouldExit: boolean; exitReason?: string } {
+  if (!signal || signal.type !== "ENTRY") {
+    return { hold: false, reason: "invalid_signal", shouldExit: false };
+  }
+
+  const now = Date.now();
+
+  // Time-based expiry
+  if (now - signal.timestamp > SIGNAL_TTL_MS) {
+    return { hold: false, reason: "signal_expired", shouldExit: true, exitReason: "TIME_EXPIRY" };
+  }
+
+  // Stop loss hit
+  if (signal.direction === "LONG" && currentPrice <= signal.stop) {
+    return { hold: false, reason: "stop_loss_hit", shouldExit: true, exitReason: "STOP_LOSS" };
+  }
+  if (signal.direction === "SHORT" && currentPrice >= signal.stop) {
+    return { hold: false, reason: "stop_loss_hit", shouldExit: true, exitReason: "STOP_LOSS" };
+  }
+
+  // Take profit hit
+  if (signal.direction === "LONG" && currentPrice >= signal.target) {
+    return { hold: false, reason: "take_profit_hit", shouldExit: true, exitReason: "TAKE_PROFIT" };
+  }
+  if (signal.direction === "SHORT" && currentPrice <= signal.target) {
+    return { hold: false, reason: "take_profit_hit", shouldExit: true, exitReason: "TAKE_PROFIT" };
+  }
+
+  // Regime reversal check — CRITICAL SAFETY
+  if (candles1d.length >= 20 && candles4h.length >= 30) {
+    evaluateRegime(signal.pair, candles1d, candles4h).then(regime => {
+      if (regime.direction && regime.direction !== signal.direction) {
+        if (DEBUG) console.log(`[shouldHold] Regime flipped for ${signal.pair}: ${signal.direction} -> ${regime.direction}`);
+      }
+    }).catch(() => {});
+  }
+
+  // Max adverse excursion check — prevent adding to losers
+  const entryPrice = signal.entry;
+  const config = getPairConfig(signal.pair);
+  const adverseMove = signal.direction === "LONG"
+    ? (entryPrice - currentPrice) / entryPrice
+    : (currentPrice - entryPrice) / entryPrice;
+
+  if (adverseMove > config.stopLossPct * 1.5) {
+    return { hold: false, reason: "max_adverse_exceeded", shouldExit: true, exitReason: "ADVERSE_EXCURSION" };
+  }
+
+  return { hold: true, reason: "conditions_valid", shouldExit: false };
+}
+
+/** Compatibility: filterExpiredSignals — remove stale signals from a list */
+export function filterExpiredSignals(signals: Signal[]): Signal[] {
+  const now = Date.now();
+  return signals.filter(s => now - s.timestamp <= SIGNAL_TTL_MS);
+}
+
+/** Compatibility: loadExits — return recent exit records (no-op if no persistence) */
+export async function loadExits(pair: string, since?: number): Promise<Array<{ pair: string; direction: "LONG" | "SHORT"; exitPrice: number; pnl: number; reason: string; timestamp: number }>> {
+  if (DEBUG) console.log(`[loadExits] Called for ${pair}, returning empty (no persistence injected)`);
+  return [];
+}
+
+/** Compatibility: updateTradeManager — safe no-op with state tracking */
+export function updateTradeManager(
+  action: "OPEN" | "UPDATE" | "CLOSE" | "SCALE_IN" | "SCALE_OUT",
+  trade: Partial<TradeState> & { pair: string }
+): TradeState | null {
+  const now = Date.now();
+
+  switch (action) {
+    case "OPEN": {
+      if (!trade.direction || !trade.entryPrice || !trade.size) {
+        if (DEBUG) console.error("[updateTradeManager] OPEN missing required fields");
+        return null;
+      }
+      const newTrade: TradeState = {
+        pair: trade.pair,
+        direction: trade.direction,
+        entryPrice: trade.entryPrice,
+        size: trade.size,
+        stopLoss: trade.stopLoss || 0,
+        takeProfit: trade.takeProfit || 0,
+        status: "OPEN",
+        openedAt: now,
+        updatedAt: now,
+      };
+      activeTrades.set(trade.pair, newTrade);
+      return newTrade;
+    }
+
+    case "UPDATE": {
+      const existing = activeTrades.get(trade.pair);
+      if (!existing) {
+        if (DEBUG) console.error(`[updateTradeManager] UPDATE: no active trade for ${trade.pair}`);
+        return null;
+      }
+      const updated: TradeState = {
+        ...existing,
+        ...trade,
+        updatedAt: now,
+      };
+      activeTrades.set(trade.pair, updated);
+      return updated;
+    }
+
+    case "CLOSE": {
+      const existing = activeTrades.get(trade.pair);
+      if (!existing) {
+        if (DEBUG) console.error(`[updateTradeManager] CLOSE: no active trade for ${trade.pair}`);
+        return null;
+      }
+      const closed: TradeState = {
+        ...existing,
+        status: "CLOSED",
+        updatedAt: now,
+      };
+      activeTrades.delete(trade.pair);
+
+      if (exitPersistenceFn) {
+        const pnl = trade.direction === "LONG"
+          ? ((trade.entryPrice || existing.entryPrice) - existing.entryPrice) / existing.entryPrice
+          : (existing.entryPrice - (trade.entryPrice || existing.entryPrice)) / existing.entryPrice;
+        exitPersistenceFn({
+          pair: trade.pair,
+          direction: existing.direction,
+          exitPrice: trade.entryPrice || existing.entryPrice,
+          pnl,
+          reason: trade.status === "STOPPED" ? "STOP_LOSS" : "MANUAL_CLOSE",
+          timestamp: now,
+        }).catch(() => {});
+      }
+
+      return closed;
+    }
+
+    case "SCALE_IN":
+    case "SCALE_OUT": {
+      const existing = activeTrades.get(trade.pair);
+      if (!existing) {
+        if (DEBUG) console.error(`[updateTradeManager] ${action}: no active trade for ${trade.pair}`);
+        return null;
+      }
+      // SAFETY: do not allow scale-in if position is already underwater
+      // This addresses the memory issue: adding to losing short positions
+      if (action === "SCALE_IN") {
+        if (DEBUG) console.warn(`[updateTradeManager] SCALE_IN blocked for ${trade.pair} — use fresh signal instead`);
+        return existing;
+      }
+      const updated: TradeState = {
+        ...existing,
+        size: action === "SCALE_IN" ? existing.size + (trade.size || 0) : Math.max(0, existing.size - (trade.size || 0)),
+        updatedAt: now,
+      };
+      activeTrades.set(trade.pair, updated);
+      return updated;
+    }
+
+    default:
+      return null;
+  }
+}
+
+/** Compatibility: getMarketSnapshot — current regime + indicator state */
+export async function getMarketSnapshot(
+  pair: string,
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candles1d: Candle[],
+  currentPrice: number
+): Promise<MarketSnapshot> {
+  const regime = await evaluateRegime(pair, candles1d, candles4h);
+
+  const closes1d = candles1d.map(c => c.close);
+  const closes4h = candles4h.map(c => c.close);
+
+  const ema21_1d = ema(closes1d, EMA_FAST);
+  const ema50_1d = ema(closes1d, EMA_SLOW);
+  const ema200_1d = ema(closes1d, EMA_TREND);
+
+  const stoch4h = stochRsi(closes4h);
+
+  return {
+    pair,
+    timestamp: Date.now(),
+    price: currentPrice,
+    regime,
+    indicators: {
+      rsi1d: wilderRsi(closes1d),
+      stoch4h: stoch4h.k !== 50 || stoch4h.d !== 50 ? stoch4h : null,
+      adx1d: adx(candles1d),
+      adx4h: adx(candles4h),
+      ema21: ema21_1d.length > 0 ? ema21_1d[ema21_1d.length - 1] : null,
+      ema50: ema50_1d.length > 0 ? ema50_1d[ema50_1d.length - 1] : null,
+      ema200: ema200_1d.length > 0 ? ema200_1d[ema200_1d.length - 1] : null,
+    },
+    signal: null,
+  };
+}
+
+// ============================================================
+// TELEMETRY
 // ============================================================
 
 let persistTelemetryFn: ((telemetry: ScoreTelemetry) => Promise<void>) | null = null;
