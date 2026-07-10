@@ -15,7 +15,6 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const pair = searchParams.get("pair");
-  const action = searchParams.get("action");
 
   try {
     const snapshot = await loadDashboardSnapshot();
@@ -27,7 +26,6 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Filter by pair if requested
     if (pair && snapshot.markets) {
       const market = snapshot.markets.find((m: any) => m.pair === pair);
       return NextResponse.json({
@@ -38,7 +36,6 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // Return full snapshot
     return NextResponse.json({
       snapshot,
       activeSignals: snapshot.activeSignals || [],
@@ -47,7 +44,7 @@ export async function GET(req: NextRequest) {
     });
   } catch (e) {
     return NextResponse.json(
-      { error: String(e), stack: e instanceof Error ? e.stack : undefined },
+      { error: String(e) },
       { status: 500 }
     );
   }
