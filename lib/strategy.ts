@@ -1,9 +1,12 @@
-// lib/strategy.ts — v29.2 ARCHITECTURAL REFACTOR
+// lib/strategy.ts — v29.2 CONSISTENCY REFACTOR
 // ============================================================
 // Entry engine redesigned: Location → Structure → Momentum → Risk
 // StochRSI confirms setup, does not create or veto it.
-// All regime, exit, risk management, hysteresis, lock, Telegram, 
+// All regime, exit, risk management, hysteresis, lock, Telegram,
 // dashboard, cron and persistence logic UNCHANGED.
+//
+// NEW: Single Source of Truth — EntryEvaluation object consumed by
+//      dashboard, cron, Telegram, logs, and API. No duplicate calculations.
 //
 // NEW SCORING HIERARCHY (100-point scale):
 //   Location Score  : 0-30  (proximity to EMAs, trendlines, swing levels)
@@ -11,8 +14,11 @@
 //   Momentum Score  : 0-30  (StochRSI turn, MACD, ROC, ADX, volume)
 //   Risk Score      : 0-20  (ATR quality, stop distance, RR, volatility)
 //
-// EARLY ENTRY: 70-84 (33% position)
-// CONFIRMED ENTRY: 85+ (100% position)
+// ENTRY TIERS:
+//   WAIT            : 0-49   (no setup)
+//   WATCH           : 50-69  (setup developing — shows what's missing)
+//   EARLY ENTRY     : 70-84  (33% position)
+//   CONFIRMED ENTRY : 85+    (100% position)
 // ============================================================
 
 const DEBUG = process.env.DEBUG === "true";
@@ -86,6 +92,8 @@ export interface SignalResult {
   debug?: string[];
   entryCandidates?: EntryCandidates;
   rejectionStage?: string | null;
+  /** NEW: Full evaluation object for all consumers */
+  evaluation?: EntryEvaluation;
 }
 
 export interface PairConfig {
@@ -150,6 +158,8 @@ export interface RejectionLog {
   stochD: number;
   stochPrevK: number;
   stochPrevD: number;
+  /** NEW: Full diagnostic data */
+  evaluation?: EntryEvaluation;
 }
 
 export interface MarketRegime {
@@ -207,6 +217,8 @@ export interface MarketSnapshot {
   whyNoTrade?: string[];
   entryTier?: EntryTier | null;
   trendConflict?: boolean;
+  /** NEW: Full evaluation for dashboard */
+  evaluation?: EntryEvaluation;
 }
 
 export interface RegimeDisplay {
@@ -216,6 +228,76 @@ export interface RegimeDisplay {
   score: number;
   reason: string[];
 }
+
+// ═══════════════════════════════════════════════════════════
+// ═══ NEW v29.2 SINGLE SOURCE OF TRUTH ═══
+// ═══════════════════════════════════════════════════════════
+
+/** Single evaluation object consumed by ALL surfaces */
+export interface EntryEvaluation {
+  pair: string;
+  direction: "LONG" | "SHORT" | null;
+  entryMode: "PULLBACK" | "REJECTION" | "BREAKOUT" | null;
+  tier: EntryTier;
+  confidence: number;
+  thresholds: {
+    wait: number;
+    watch: number;
+    early: number;
+    confirmed: number;
+  };
+  gapToNextTier: number;
+  nextTier: EntryTier | null;
+  breakdown: ScoreBreakdown;
+  missing: MissingComponent[];
+  likelyTriggers: string[];
+  reasons: string[];
+  stochK: number;
+  stochD: number;
+  stochPrevK: number;
+  stochPrevD: number;
+  crossDetected: boolean;
+  exhaustionWarning: string;
+  exhaustionBlocked: boolean;
+  entryPrice: number;
+  stopDistance: number;
+  targetDistance: number;
+  rr: number;
+  atrPct: number;
+  adx4h: number;
+  regimeDirection: "LONG" | "SHORT" | "NEUTRAL" | null;
+  regimeStrength: string;
+}
+
+export interface ScoreBreakdown {
+  location: number;
+  locationMax: number;
+  structure: number;
+  structureMax: number;
+  momentum: number;
+  momentumMax: number;
+  risk: number;
+  riskMax: number;
+  total: number;
+  maxTotal: number;
+  /** Individual score contributions for debug */
+  contributions: ScoreContribution[];
+}
+
+export interface ScoreContribution {
+  component: "location" | "structure" | "momentum" | "risk";
+  name: string;
+  points: number;
+  rawValue?: string;
+}
+
+export interface MissingComponent {
+  component: string;
+  pointsNeeded: number;
+  description: string;
+}
+
+export type EntryTier = "NO_TRADE" | "WATCH" | "EARLY_ENTRY" | "CONFIRMED_ENTRY";
 
 // ─── SAFE NUMBER FORMATTING ───
 
@@ -229,75 +311,130 @@ function f1(v: any): string { return safeNum(v).toFixed(1); }
 function f2(v: any): string { return safeNum(v).toFixed(2); }
 function f3(v: any): string { return safeNum(v).toFixed(3); }
 
-// ─── TRADER-FRIENDLY MESSAGES ───
+// ─── TRADER-FRIENDLY MESSAGES (REFACTORED) ───
+
+/** Maps internal reason keys to human-readable explanations */
+const REASON_MAP: Record<string, string> = {
+  "regime_neutral": "No directional bias — regime is neutral",
+  "cooldown_active": "Position cooldown active",
+  "confidence_too_low": "Setup developing — score below entry threshold",
+  "location_weak": "Price not at optimal location (far from EMAs/swing levels)",
+  "structure_broken": "Market structure compromised (lower low / higher high)",
+  "momentum_missing": "Momentum confirmation pending — StochRSI not aligned",
+  "risk_too_high": "Risk parameters unfavorable (ATR spike, poor RR)",
+  "adx_weak": "Market lacks strength — ADX below minimum",
+  "high_volatility": "Volatility too high — risk control active",
+  "time_decay": "Signal expired — entry window closed",
+  "entry_drift": "Entry price moved away from signal",
+  "already_exited": "Position already closed",
+  "stop_hit": "Stop loss triggered",
+  "target_hit": "Target reached",
+  "trailing_stop": "Trailing stop triggered",
+  "regime_reversal": "Trend reversed — exiting position",
+  "exhaustion_block": "Market exhausted — cooling off",
+  "rr_too_low": "Risk:Reward too low",
+  "tier_locked": "Entry tier alert already sent — waiting for next cycle",
+  "exhaustion_4h_overbought": "4H extreme overbought — buyers exhausted",
+  "exhaustion_4h_oversold": "4H extreme oversold — sellers exhausted",
+};
 
 function getTraderReason(internalReason: string | null): string {
   if (!internalReason) return "Analyzing market conditions...";
-  const map: Record<string, string> = {
-    "regime_neutral": "No directional bias",
-    "cooldown_active": "Position cooldown active",
-    "confidence_too_low": "Setup developing",
-    "location_weak": "Price not at optimal location",
-    "structure_broken": "Market structure compromised",
-    "momentum_missing": "Momentum confirmation pending",
-    "risk_too_high": "Risk parameters unfavorable",
-    "adx_weak": "Market lacks strength",
-    "high_volatility": "Volatility too high — risk control",
-    "time_decay": "Signal expired",
-    "entry_drift": "Entry price moved away",
-    "already_exited": "Position already closed",
-    "stop_hit": "Stop loss triggered",
-    "target_hit": "Target reached",
-    "trailing_stop": "Trailing stop triggered",
-    "regime_reversal": "Trend reversed — exiting",
-    "exhaustion_block": "Market exhausted — cooling off",
-    "rr_too_low": "Risk:Reward too low",
-  };
-  for (const [key, value] of Object.entries(map)) {
+  for (const [key, value] of Object.entries(REASON_MAP)) {
     if (internalReason.includes(key)) return value;
   }
-  return "Analyzing market conditions...";
-}
-
-function getRecommendedAction(regime: MarketRegime, bestConfidence: number): { action: string; detail: string } {
-  if (!regime.direction || regime.direction === "NEUTRAL") {
-    return { action: "WAIT", detail: "No directional bias" };
-  }
-  if (regime.strength === "NEUTRAL") {
-    return { action: "WAIT", detail: "Market lacks strength" };
-  }
-  if (bestConfidence >= 85) {
-    const size = regime.strength === "STRONG" ? "Full Position" : regime.strength === "MODERATE" ? "75% Position" : "50% Position";
-    return { action: "CONFIRMED ENTRY", detail: size };
-  }
-  if (bestConfidence >= 70) {
-    const size = regime.strength === "STRONG" ? "33% Position" : regime.strength === "MODERATE" ? "25% Position" : "20% Position";
-    return { action: "EARLY ENTRY", detail: size };
-  }
-  if (bestConfidence >= 50) {
-    return { action: "WATCH", detail: "Setup developing" };
-  }
-  if (regime.strength === "STRONG" || regime.strength === "MODERATE") {
-    return { action: "WAIT", detail: "Waiting for setup confirmation" };
-  }
-  return { action: "WAIT", detail: "Market conditions not favorable" };
+  return internalReason;
 }
 
 // ─── ENTRY TIER & POSITION SIZING ───
 
-export type EntryTier = "NO_TRADE" | "EARLY_ENTRY" | "CONFIRMED_ENTRY";
+const TIER_THRESHOLDS = {
+  WAIT: 0,
+  WATCH: 50,
+  EARLY: 70,
+  CONFIRMED: 85,
+};
 
 function classifyEntryTier(confidence: number): EntryTier {
-  if (confidence >= 85) return "CONFIRMED_ENTRY";
-  if (confidence >= 70) return "EARLY_ENTRY";
+  if (confidence >= TIER_THRESHOLDS.CONFIRMED) return "CONFIRMED_ENTRY";
+  if (confidence >= TIER_THRESHOLDS.EARLY) return "EARLY_ENTRY";
+  if (confidence >= TIER_THRESHOLDS.WATCH) return "WATCH";
   return "NO_TRADE";
 }
 
+function getTierGap(currentTier: EntryTier, confidence: number): { gap: number; nextTier: EntryTier | null } {
+  switch (currentTier) {
+    case "NO_TRADE": return { gap: TIER_THRESHOLDS.WATCH - confidence, nextTier: "WATCH" };
+    case "WATCH": return { gap: TIER_THRESHOLDS.EARLY - confidence, nextTier: "EARLY_ENTRY" };
+    case "EARLY_ENTRY": return { gap: TIER_THRESHOLDS.CONFIRMED - confidence, nextTier: "CONFIRMED_ENTRY" };
+    case "CONFIRMED_ENTRY": return { gap: 0, nextTier: null };
+  }
+}
+
 function getPositionSizePct(tier: EntryTier, _regimeStrength: string): number {
-  if (tier === "NO_TRADE") return 0;
+  if (tier === "NO_TRADE" || tier === "WATCH") return 0;
   if (tier === "EARLY_ENTRY") return 0.33;
   if (tier === "CONFIRMED_ENTRY") return 1.0;
   return 0;
+}
+
+// ─── RECOMMENDED ACTION (REFACTORED — consumes EntryEvaluation) ───
+
+interface RecommendedAction {
+  action: string;
+  detail: string;
+  missing: string[];
+  progressPct: number;
+}
+
+function getRecommendedActionFromEvaluation(evaluation: EntryEvaluation): RecommendedAction {
+  const { tier, confidence, gapToNextTier, nextTier, missing } = evaluation;
+
+  const progressPct = Math.min(100, Math.round((confidence / TIER_THRESHOLDS.CONFIRMED) * 100));
+
+  if (!evaluation.direction || evaluation.regimeDirection === "NEUTRAL") {
+    return { action: "WAIT", detail: "No directional bias", missing: [], progressPct: 0 };
+  }
+
+  if (tier === "NO_TRADE") {
+    return {
+      action: "WAIT",
+      detail: `Score ${f0(confidence)}/100 — need +${f0(gapToNextTier)} for ${nextTier?.replace("_", " ") || "entry"}`,
+      missing: missing.map(m => `${m.component}: need +${m.pointsNeeded} (${m.description})`),
+      progressPct,
+    };
+  }
+
+  if (tier === "WATCH") {
+    return {
+      action: "WATCH",
+      detail: `Setup developing at ${f0(confidence)}/100 — need +${f0(gapToNextTier)} for ${nextTier?.replace("_", " ") || "entry"}`,
+      missing: missing.map(m => `${m.component}: need +${m.pointsNeeded} (${m.description})`),
+      progressPct,
+    };
+  }
+
+  if (tier === "EARLY_ENTRY") {
+    const size = evaluation.regimeStrength === "STRONG" ? "33% Position" : evaluation.regimeStrength === "MODERATE" ? "25% Position" : "20% Position";
+    return {
+      action: "EARLY ENTRY",
+      detail: size,
+      missing: missing.map(m => `${m.component}: need +${m.pointsNeeded} for CONFIRMED`),
+      progressPct,
+    };
+  }
+
+  if (tier === "CONFIRMED_ENTRY") {
+    const size = evaluation.regimeStrength === "STRONG" ? "Full Position" : evaluation.regimeStrength === "MODERATE" ? "75% Position" : "50% Position";
+    return {
+      action: "CONFIRMED ENTRY",
+      detail: size,
+      missing: [],
+      progressPct: 100,
+    };
+  }
+
+  return { action: "WAIT", detail: "Market conditions not favorable", missing: [], progressPct: 0 };
 }
 
 // ─── TIER LOCK SYSTEM ───
@@ -335,7 +472,6 @@ export function clearTierLocksForPair(pair: string): void {
     }
   }
 }
-
 
 // ─── REGIME PERSISTENCE & CACHE ───
 
@@ -747,28 +883,6 @@ export function getPairConfig(pair: string): PairConfig {
 //
 // ═══════════════════════════════════════════════════════════
 
-interface ScoreBreakdown {
-  location: number;
-  structure: number;
-  momentum: number;
-  risk: number;
-  total: number;
-  reasons: string[];
-}
-
-interface EntryScoreResult {
-  direction: "LONG" | "SHORT" | null;
-  confidence: number;
-  breakdown: ScoreBreakdown;
-  entryPrice: number;
-  entryMode: "PULLBACK" | "REJECTION" | "BREAKOUT";
-  stochK: number;
-  stochD: number;
-  stochPrevK: number;
-  stochPrevD: number;
-  exhaustionWarning: string;
-}
-
 // ─── 1. LOCATION SCORE (0-30) ───
 // Price proximity to key levels: EMAs, trendlines, swing levels
 
@@ -777,8 +891,9 @@ function scoreLocation(
   candles4h: Candle[],
   direction: "LONG" | "SHORT",
   _config: PairConfig
-): { score: number; reasons: string[] } {
+): { score: number; reasons: string[]; contributions: ScoreContribution[] } {
   const reasons: string[] = [];
+  const contributions: ScoreContribution[] = [];
   let score = 0;
 
   const closes = candles1h.map(c => c.close);
@@ -797,33 +912,77 @@ function scoreLocation(
     // Rising EMA21 (trendline proxy) — LONG
     if (direction === "LONG" && slope21 > 0) {
       const distFromE21 = Math.abs(lastClose - e21) / e21;
-      if (distFromE21 < 0.01) { score += 10; reasons.push("loc_ema21_touch:+10 (" + f2(distFromE21 * 100) + "% away)"); }
-      else if (distFromE21 < 0.02) { score += 7; reasons.push("loc_ema21_near:+7 (" + f2(distFromE21 * 100) + "% away)"); }
-      else if (distFromE21 < 0.035) { score += 4; reasons.push("loc_ema21_close:+4 (" + f2(distFromE21 * 100) + "% away)"); }
+      if (distFromE21 < 0.01) {
+        score += 10;
+        reasons.push("loc_ema21_touch:+10 (" + f2(distFromE21 * 100) + "% away)");
+        contributions.push({ component: "location", name: "EMA21 touch", points: 10, rawValue: f2(distFromE21 * 100) + "%" });
+      }
+      else if (distFromE21 < 0.02) {
+        score += 7;
+        reasons.push("loc_ema21_near:+7 (" + f2(distFromE21 * 100) + "% away)");
+        contributions.push({ component: "location", name: "EMA21 near", points: 7, rawValue: f2(distFromE21 * 100) + "%" });
+      }
+      else if (distFromE21 < 0.035) {
+        score += 4;
+        reasons.push("loc_ema21_close:+4 (" + f2(distFromE21 * 100) + "% away)");
+        contributions.push({ component: "location", name: "EMA21 close", points: 4, rawValue: f2(distFromE21 * 100) + "%" });
+      }
 
       const distFromE50 = Math.abs(lastClose - e50) / e50;
-      if (distFromE50 < 0.015) { score += 5; reasons.push("loc_ema50_near:+5"); }
-      else if (distFromE50 < 0.03) { score += 3; reasons.push("loc_ema50_close:+3"); }
+      if (distFromE50 < 0.015) {
+        score += 5;
+        reasons.push("loc_ema50_near:+5");
+        contributions.push({ component: "location", name: "EMA50 near", points: 5, rawValue: f2(distFromE50 * 100) + "%" });
+      }
+      else if (distFromE50 < 0.03) {
+        score += 3;
+        reasons.push("loc_ema50_close:+3");
+        contributions.push({ component: "location", name: "EMA50 close", points: 3, rawValue: f2(distFromE50 * 100) + "%" });
+      }
 
       // Price between EMA21 and EMA50 (value area)
       if (lastClose < e21 && lastClose > e50 && e21 > e50) {
-        score += 5; reasons.push("loc_value_area:+5 (between EMA21/EMA50)");
+        score += 5;
+        reasons.push("loc_value_area:+5 (between EMA21/EMA50)");
+        contributions.push({ component: "location", name: "Value area", points: 5 });
       }
     }
 
     // Falling EMA21 — SHORT
     if (direction === "SHORT" && slope21 < 0) {
       const distFromE21 = Math.abs(lastClose - e21) / e21;
-      if (distFromE21 < 0.01) { score += 10; reasons.push("loc_ema21_touch:+10"); }
-      else if (distFromE21 < 0.02) { score += 7; reasons.push("loc_ema21_near:+7"); }
-      else if (distFromE21 < 0.035) { score += 4; reasons.push("loc_ema21_close:+4"); }
+      if (distFromE21 < 0.01) {
+        score += 10;
+        reasons.push("loc_ema21_touch:+10");
+        contributions.push({ component: "location", name: "EMA21 touch", points: 10, rawValue: f2(distFromE21 * 100) + "%" });
+      }
+      else if (distFromE21 < 0.02) {
+        score += 7;
+        reasons.push("loc_ema21_near:+7");
+        contributions.push({ component: "location", name: "EMA21 near", points: 7, rawValue: f2(distFromE21 * 100) + "%" });
+      }
+      else if (distFromE21 < 0.035) {
+        score += 4;
+        reasons.push("loc_ema21_close:+4");
+        contributions.push({ component: "location", name: "EMA21 close", points: 4, rawValue: f2(distFromE21 * 100) + "%" });
+      }
 
       const distFromE50 = Math.abs(lastClose - e50) / e50;
-      if (distFromE50 < 0.015) { score += 5; reasons.push("loc_ema50_near:+5"); }
-      else if (distFromE50 < 0.03) { score += 3; reasons.push("loc_ema50_close:+3"); }
+      if (distFromE50 < 0.015) {
+        score += 5;
+        reasons.push("loc_ema50_near:+5");
+        contributions.push({ component: "location", name: "EMA50 near", points: 5, rawValue: f2(distFromE50 * 100) + "%" });
+      }
+      else if (distFromE50 < 0.03) {
+        score += 3;
+        reasons.push("loc_ema50_close:+3");
+        contributions.push({ component: "location", name: "EMA50 close", points: 3, rawValue: f2(distFromE50 * 100) + "%" });
+      }
 
       if (lastClose > e21 && lastClose < e50 && e21 < e50) {
-        score += 5; reasons.push("loc_value_area:+5 (between EMA21/EMA50)");
+        score += 5;
+        reasons.push("loc_value_area:+5 (between EMA21/EMA50)");
+        contributions.push({ component: "location", name: "Value area", points: 5 });
       }
     }
   }
@@ -835,7 +994,11 @@ function scoreLocation(
   if (ema21_4h.length > 0) {
     const e21_4h = ema21_4h[ema21_4h.length - 1];
     const dist4h = Math.abs(lastClose - e21_4h) / e21_4h;
-    if (dist4h < 0.02) { score += 5; reasons.push("loc_4h_ema21_near:+5"); }
+    if (dist4h < 0.02) {
+      score += 5;
+      reasons.push("loc_4h_ema21_near:+5");
+      contributions.push({ component: "location", name: "4H EMA21 near", points: 5, rawValue: f2(dist4h * 100) + "%" });
+    }
   }
 
   // Swing level proximity
@@ -844,15 +1007,31 @@ function scoreLocation(
 
   if (direction === "LONG") {
     const distFromSwingLow = (lastClose - swingLow) / swingLow;
-    if (distFromSwingLow < 0.015) { score += 5; reasons.push("loc_swing_low:+5 (" + f2(distFromSwingLow * 100) + "% above)"); }
-    else if (distFromSwingLow < 0.03) { score += 3; reasons.push("loc_swing_low_near:+3"); }
+    if (distFromSwingLow < 0.015) {
+      score += 5;
+      reasons.push("loc_swing_low:+5 (" + f2(distFromSwingLow * 100) + "% above)");
+      contributions.push({ component: "location", name: "Swing low proximity", points: 5, rawValue: f2(distFromSwingLow * 100) + "%" });
+    }
+    else if (distFromSwingLow < 0.03) {
+      score += 3;
+      reasons.push("loc_swing_low_near:+3");
+      contributions.push({ component: "location", name: "Swing low near", points: 3, rawValue: f2(distFromSwingLow * 100) + "%" });
+    }
   } else {
     const distFromSwingHigh = (swingHigh - lastClose) / swingHigh;
-    if (distFromSwingHigh < 0.015) { score += 5; reasons.push("loc_swing_high:+5 (" + f2(distFromSwingHigh * 100) + "% below)"); }
-    else if (distFromSwingHigh < 0.03) { score += 3; reasons.push("loc_swing_high_near:+3"); }
+    if (distFromSwingHigh < 0.015) {
+      score += 5;
+      reasons.push("loc_swing_high:+5 (" + f2(distFromSwingHigh * 100) + "% below)");
+      contributions.push({ component: "location", name: "Swing high proximity", points: 5, rawValue: f2(distFromSwingHigh * 100) + "%" });
+    }
+    else if (distFromSwingHigh < 0.03) {
+      score += 3;
+      reasons.push("loc_swing_high_near:+3");
+      contributions.push({ component: "location", name: "Swing high near", points: 3, rawValue: f2(distFromSwingHigh * 100) + "%" });
+    }
   }
 
-  return { score: Math.min(30, score), reasons };
+  return { score: Math.min(30, score), reasons, contributions };
 }
 
 // ─── 2. STRUCTURE SCORE (0-20) ───
@@ -862,8 +1041,9 @@ function scoreStructure(
   candles1h: Candle[],
   candles4h: Candle[],
   direction: "LONG" | "SHORT"
-): { score: number; reasons: string[]; isBroken: boolean } {
+): { score: number; reasons: string[]; isBroken: boolean; contributions: ScoreContribution[] } {
   const reasons: string[] = [];
+  const contributions: ScoreContribution[] = [];
   let score = 0;
   let isBroken = false;
 
@@ -882,37 +1062,67 @@ function scoreStructure(
     for (let i = 1; i < recentLows.length; i++) {
       if (recentLows[i] > recentLows[i - 1]) higherLowsCount++;
     }
-    if (higherLowsCount >= 4) { score += 5; reasons.push("struct_higher_lows:+5 (" + higherLowsCount + "/9)"); }
-    else if (higherLowsCount >= 2) { score += 3; reasons.push("struct_higher_lows_weak:+3 (" + higherLowsCount + "/9)"); }
+    if (higherLowsCount >= 4) {
+      score += 5;
+      reasons.push("struct_higher_lows:+5 (" + higherLowsCount + "/9)");
+      contributions.push({ component: "structure", name: "Higher lows", points: 5, rawValue: higherLowsCount + "/9" });
+    }
+    else if (higherLowsCount >= 2) {
+      score += 3;
+      reasons.push("struct_higher_lows_weak:+3 (" + higherLowsCount + "/9)");
+      contributions.push({ component: "structure", name: "Higher lows (weak)", points: 3, rawValue: higherLowsCount + "/9" });
+    }
 
     // Check for higher highs
     let higherHighsCount = 0;
     for (let i = 1; i < recentHighs.length; i++) {
       if (recentHighs[i] > recentHighs[i - 1]) higherHighsCount++;
     }
-    if (higherHighsCount >= 4) { score += 5; reasons.push("struct_higher_highs:+5 (" + higherHighsCount + "/9)"); }
-    else if (higherHighsCount >= 2) { score += 3; reasons.push("struct_higher_highs_weak:+3 (" + higherHighsCount + "/9)"); }
+    if (higherHighsCount >= 4) {
+      score += 5;
+      reasons.push("struct_higher_highs:+5 (" + higherHighsCount + "/9)");
+      contributions.push({ component: "structure", name: "Higher highs", points: 5, rawValue: higherHighsCount + "/9" });
+    }
+    else if (higherHighsCount >= 2) {
+      score += 3;
+      reasons.push("struct_higher_highs_weak:+3 (" + higherHighsCount + "/9)");
+      contributions.push({ component: "structure", name: "Higher highs (weak)", points: 3, rawValue: higherHighsCount + "/9" });
+    }
 
     // No lower low (structure intact)
     const prevSwingLow = lowest(lows.slice(-20, -1), 10);
     if (lastClose > prevSwingLow) {
-      score += 5; reasons.push("struct_no_lower_low:+5");
+      score += 5;
+      reasons.push("struct_no_lower_low:+5");
+      contributions.push({ component: "structure", name: "No lower low", points: 5 });
     } else {
-      score -= 10; reasons.push("struct_lower_low:-10 (BROKEN)");
+      score -= 10;
+      reasons.push("struct_lower_low:-10 (BROKEN)");
+      contributions.push({ component: "structure", name: "Lower low (broken)", points: -10 });
       isBroken = true;
     }
 
     // Bullish close (close near high of candle)
     const lastCandle = candles1h[candles1h.length - 1];
     const bodyPct = (lastCandle.close - lastCandle.open) / (lastCandle.high - lastCandle.low || 1);
-    if (bodyPct > 0.6) { score += 3; reasons.push("struct_bullish_body:+3"); }
-    else if (bodyPct < -0.3) { score -= 5; reasons.push("struct_bearish_body:-5"); }
+    if (bodyPct > 0.6) {
+      score += 3;
+      reasons.push("struct_bullish_body:+3");
+      contributions.push({ component: "structure", name: "Bullish body", points: 3, rawValue: f2(bodyPct) });
+    }
+    else if (bodyPct < -0.3) {
+      score -= 5;
+      reasons.push("struct_bearish_body:-5");
+      contributions.push({ component: "structure", name: "Bearish body", points: -5, rawValue: f2(bodyPct) });
+    }
 
     // Rejection wick at support
     const lowerWick = Math.min(lastCandle.close, lastCandle.open) - lastCandle.low;
     const candleRange = lastCandle.high - lastCandle.low;
     if (candleRange > 0 && lowerWick / candleRange > 0.4) {
-      score += 2; reasons.push("struct_rejection_wick:+2");
+      score += 2;
+      reasons.push("struct_rejection_wick:+2");
+      contributions.push({ component: "structure", name: "Rejection wick", points: 2, rawValue: f2(lowerWick / candleRange) });
     }
 
   } else {
@@ -921,33 +1131,63 @@ function scoreStructure(
     for (let i = 1; i < recentHighs.length; i++) {
       if (recentHighs[i] < recentHighs[i - 1]) lowerHighsCount++;
     }
-    if (lowerHighsCount >= 4) { score += 5; reasons.push("struct_lower_highs:+5"); }
-    else if (lowerHighsCount >= 2) { score += 3; reasons.push("struct_lower_highs_weak:+3"); }
+    if (lowerHighsCount >= 4) {
+      score += 5;
+      reasons.push("struct_lower_highs:+5");
+      contributions.push({ component: "structure", name: "Lower highs", points: 5, rawValue: lowerHighsCount + "/9" });
+    }
+    else if (lowerHighsCount >= 2) {
+      score += 3;
+      reasons.push("struct_lower_highs_weak:+3");
+      contributions.push({ component: "structure", name: "Lower highs (weak)", points: 3, rawValue: lowerHighsCount + "/9" });
+    }
 
     let lowerLowsCount = 0;
     for (let i = 1; i < recentLows.length; i++) {
       if (recentLows[i] < recentLows[i - 1]) lowerLowsCount++;
     }
-    if (lowerLowsCount >= 4) { score += 5; reasons.push("struct_lower_lows:+5"); }
-    else if (lowerLowsCount >= 2) { score += 3; reasons.push("struct_lower_lows_weak:+3"); }
+    if (lowerLowsCount >= 4) {
+      score += 5;
+      reasons.push("struct_lower_lows:+5");
+      contributions.push({ component: "structure", name: "Lower lows", points: 5, rawValue: lowerLowsCount + "/9" });
+    }
+    else if (lowerLowsCount >= 2) {
+      score += 3;
+      reasons.push("struct_lower_lows_weak:+3");
+      contributions.push({ component: "structure", name: "Lower lows (weak)", points: 3, rawValue: lowerLowsCount + "/9" });
+    }
 
     const prevSwingHigh = highest(highs.slice(-20, -1), 10);
     if (lastClose < prevSwingHigh) {
-      score += 5; reasons.push("struct_no_higher_high:+5");
+      score += 5;
+      reasons.push("struct_no_higher_high:+5");
+      contributions.push({ component: "structure", name: "No higher high", points: 5 });
     } else {
-      score -= 10; reasons.push("struct_higher_high:-10 (BROKEN)");
+      score -= 10;
+      reasons.push("struct_higher_high:-10 (BROKEN)");
+      contributions.push({ component: "structure", name: "Higher high (broken)", points: -10 });
       isBroken = true;
     }
 
     const lastCandle = candles1h[candles1h.length - 1];
     const bodyPct = (lastCandle.close - lastCandle.open) / (lastCandle.high - lastCandle.low || 1);
-    if (bodyPct < -0.6) { score += 3; reasons.push("struct_bearish_body:+3"); }
-    else if (bodyPct > 0.3) { score -= 5; reasons.push("struct_bullish_body:-5"); }
+    if (bodyPct < -0.6) {
+      score += 3;
+      reasons.push("struct_bearish_body:+3");
+      contributions.push({ component: "structure", name: "Bearish body", points: 3, rawValue: f2(bodyPct) });
+    }
+    else if (bodyPct > 0.3) {
+      score -= 5;
+      reasons.push("struct_bullish_body:-5");
+      contributions.push({ component: "structure", name: "Bullish body", points: -5, rawValue: f2(bodyPct) });
+    }
 
     const upperWick = lastCandle.high - Math.max(lastCandle.close, lastCandle.open);
     const candleRange = lastCandle.high - lastCandle.low;
     if (candleRange > 0 && upperWick / candleRange > 0.4) {
-      score += 2; reasons.push("struct_rejection_wick:+2");
+      score += 2;
+      reasons.push("struct_rejection_wick:+2");
+      contributions.push({ component: "structure", name: "Rejection wick", points: 2, rawValue: f2(upperWick / candleRange) });
     }
   }
 
@@ -962,17 +1202,25 @@ function scoreStructure(
     const slope4h = e21_4h - prevE21_4h;
 
     if (direction === "LONG" && e21_4h > e50_4h && slope4h > 0) {
-      score += 5; reasons.push("struct_4h_trend_intact:+5");
+      score += 5;
+      reasons.push("struct_4h_trend_intact:+5");
+      contributions.push({ component: "structure", name: "4H trend intact", points: 5 });
     } else if (direction === "SHORT" && e21_4h < e50_4h && slope4h < 0) {
-      score += 5; reasons.push("struct_4h_trend_intact:+5");
+      score += 5;
+      reasons.push("struct_4h_trend_intact:+5");
+      contributions.push({ component: "structure", name: "4H trend intact", points: 5 });
     } else if (direction === "LONG" && e21_4h < e50_4h) {
-      score -= 5; reasons.push("struct_4h_trend_weak:-5");
+      score -= 5;
+      reasons.push("struct_4h_trend_weak:-5");
+      contributions.push({ component: "structure", name: "4H trend weak", points: -5 });
     } else if (direction === "SHORT" && e21_4h > e50_4h) {
-      score -= 5; reasons.push("struct_4h_trend_weak:-5");
+      score -= 5;
+      reasons.push("struct_4h_trend_weak:-5");
+      contributions.push({ component: "structure", name: "4H trend weak", points: -5 });
     }
   }
 
-  return { score: Math.min(20, Math.max(-20, score)), reasons, isBroken };
+  return { score: Math.min(20, Math.max(-20, score)), reasons, isBroken, contributions };
 }
 
 // ─── 3. MOMENTUM SCORE (0-30) ───
@@ -983,8 +1231,9 @@ function scoreMomentum(
   candles4h: Candle[],
   direction: "LONG" | "SHORT",
   config: PairConfig
-): { score: number; reasons: string[]; stochK: number; stochD: number; stochPrevK: number; stochPrevD: number; crossDetected: boolean } {
+): { score: number; reasons: string[]; stochK: number; stochD: number; stochPrevK: number; stochPrevD: number; crossDetected: boolean; contributions: ScoreContribution[] } {
   const reasons: string[] = [];
+  const contributions: ScoreContribution[] = [];
   let score = 0;
 
   const closes = candles1h.map(c => c.close);
@@ -1000,60 +1249,96 @@ function scoreMomentum(
   // StochRSI — CONFIRMS, does not veto
   if (direction === "LONG") {
     if (crossUp) {
-      score += 10; reasons.push("mom_stoch_cross_up:+10 (K=" + f1(stoch.k) + ", D=" + f1(stoch.d) + ")");
+      score += 10;
+      reasons.push("mom_stoch_cross_up:+10 (K=" + f1(stoch.k) + ", D=" + f1(stoch.d) + ")");
+      contributions.push({ component: "momentum", name: "StochRSI cross up", points: 10, rawValue: "K=" + f1(stoch.k) + " D=" + f1(stoch.d) });
     } else if (stoch.k > stoch.d && stoch.k < 80) {
-      score += 5; reasons.push("mom_stoch_bullish:+5 (K>D, not overbought)");
+      score += 5;
+      reasons.push("mom_stoch_bullish:+5 (K>D, not overbought)");
+      contributions.push({ component: "momentum", name: "StochRSI bullish", points: 5, rawValue: "K=" + f1(stoch.k) + " D=" + f1(stoch.d) });
     } else if (stoch.k > 80) {
-      score += 2; reasons.push("mom_stoch_extended:+2 (overbought but trending)");
+      score += 2;
+      reasons.push("mom_stoch_extended:+2 (overbought but trending)");
+      contributions.push({ component: "momentum", name: "StochRSI extended", points: 2, rawValue: "K=" + f1(stoch.k) });
     } else {
-      score += 1; reasons.push("mom_stoch_neutral:+1 (waiting for turn)");
+      score += 1;
+      reasons.push("mom_stoch_neutral:+1 (waiting for turn)");
+      contributions.push({ component: "momentum", name: "StochRSI neutral", points: 1, rawValue: "K=" + f1(stoch.k) + " D=" + f1(stoch.d) });
     }
   } else {
     if (crossDown) {
-      score += 10; reasons.push("mom_stoch_cross_down:+10");
+      score += 10;
+      reasons.push("mom_stoch_cross_down:+10");
+      contributions.push({ component: "momentum", name: "StochRSI cross down", points: 10, rawValue: "K=" + f1(stoch.k) + " D=" + f1(stoch.d) });
     } else if (stoch.k < stoch.d && stoch.k > 20) {
-      score += 5; reasons.push("mom_stoch_bearish:+5 (K<D, not oversold)");
+      score += 5;
+      reasons.push("mom_stoch_bearish:+5 (K<D, not oversold)");
+      contributions.push({ component: "momentum", name: "StochRSI bearish", points: 5, rawValue: "K=" + f1(stoch.k) + " D=" + f1(stoch.d) });
     } else if (stoch.k < 20) {
-      score += 2; reasons.push("mom_stoch_extended:+2 (oversold but trending)");
+      score += 2;
+      reasons.push("mom_stoch_extended:+2 (oversold but trending)");
+      contributions.push({ component: "momentum", name: "StochRSI extended", points: 2, rawValue: "K=" + f1(stoch.k) });
     } else {
-      score += 1; reasons.push("mom_stoch_neutral:+1");
+      score += 1;
+      reasons.push("mom_stoch_neutral:+1");
+      contributions.push({ component: "momentum", name: "StochRSI neutral", points: 1, rawValue: "K=" + f1(stoch.k) + " D=" + f1(stoch.d) });
     }
   }
 
   // ROC (rate of change)
   const roc = ((closes[closes.length - 1] - closes[closes.length - 4]) / closes[closes.length - 4]) * 100;
   if (direction === "LONG" && roc > 0) {
-    score += Math.min(8, roc * 2); reasons.push("mom_roc:+" + f0(Math.min(8, roc * 2)) + " (" + f1(roc) + "%)");
+    const rocPoints = Math.min(8, roc * 2);
+    score += rocPoints;
+    reasons.push("mom_roc:+" + f0(rocPoints) + " (" + f1(roc) + "%)");
+    contributions.push({ component: "momentum", name: "ROC positive", points: rocPoints, rawValue: f1(roc) + "%" });
   } else if (direction === "SHORT" && roc < 0) {
-    score += Math.min(8, Math.abs(roc) * 2); reasons.push("mom_roc:+" + f0(Math.min(8, Math.abs(roc) * 2)) + " (" + f1(roc) + "%)");
+    const rocPoints = Math.min(8, Math.abs(roc) * 2);
+    score += rocPoints;
+    reasons.push("mom_roc:+" + f0(rocPoints) + " (" + f1(roc) + "%)");
+    contributions.push({ component: "momentum", name: "ROC negative", points: rocPoints, rawValue: f1(roc) + "%" });
   } else if (Math.abs(roc) > 3) {
-    score -= 3; reasons.push("mom_roc_against:-3 (" + f1(roc) + "%)");
+    score -= 3;
+    reasons.push("mom_roc_against:-3 (" + f1(roc) + "%)");
+    contributions.push({ component: "momentum", name: "ROC against", points: -3, rawValue: f1(roc) + "%" });
   }
 
   // Volume confirmation
   const recentVol = avg(volumes.slice(-3));
   const avgVol = avg(volumes.slice(-20));
   if (recentVol > avgVol * config.volumeMultiplier) {
-    score += 5; reasons.push("mom_volume_spike:+5 (" + f1(recentVol / avgVol) + "x avg)");
+    score += 5;
+    reasons.push("mom_volume_spike:+5 (" + f1(recentVol / avgVol) + "x avg)");
+    contributions.push({ component: "momentum", name: "Volume spike", points: 5, rawValue: f1(recentVol / avgVol) + "x" });
   } else if (recentVol > avgVol * 1.1) {
-    score += 2; reasons.push("mom_volume_above:+2 (" + f1(recentVol / avgVol) + "x avg)");
+    score += 2;
+    reasons.push("mom_volume_above:+2 (" + f1(recentVol / avgVol) + "x avg)");
+    contributions.push({ component: "momentum", name: "Volume above avg", points: 2, rawValue: f1(recentVol / avgVol) + "x" });
   }
 
   // ADX improving
   const adx1h = adx(candles1h);
   if (adx1h > config.minADX) {
-    score += 5; reasons.push("mom_adx_strong:+5 (" + f1(adx1h) + ")");
+    score += 5;
+    reasons.push("mom_adx_strong:+5 (" + f1(adx1h) + ")");
+    contributions.push({ component: "momentum", name: "ADX strong", points: 5, rawValue: f1(adx1h) });
   } else if (adx1h > config.minADX * 0.7) {
-    score += 2; reasons.push("mom_adx_moderate:+2 (" + f1(adx1h) + ")");
+    score += 2;
+    reasons.push("mom_adx_moderate:+2 (" + f1(adx1h) + ")");
+    contributions.push({ component: "momentum", name: "ADX moderate", points: 2, rawValue: f1(adx1h) });
   }
 
   // 4H momentum alignment
   const closes4h = candles4h.map(c => c.close);
   const stoch4h = stochRsi(closes4h);
   if (direction === "LONG" && stoch4h.k > stoch4h.d) {
-    score += 3; reasons.push("mom_4h_stoch_aligned:+3");
+    score += 3;
+    reasons.push("mom_4h_stoch_aligned:+3");
+    contributions.push({ component: "momentum", name: "4H Stoch aligned", points: 3, rawValue: "K=" + f1(stoch4h.k) + " D=" + f1(stoch4h.d) });
   } else if (direction === "SHORT" && stoch4h.k < stoch4h.d) {
-    score += 3; reasons.push("mom_4h_stoch_aligned:+3");
+    score += 3;
+    reasons.push("mom_4h_stoch_aligned:+3");
+    contributions.push({ component: "momentum", name: "4H Stoch aligned", points: 3, rawValue: "K=" + f1(stoch4h.k) + " D=" + f1(stoch4h.d) });
   }
 
   return {
@@ -1064,6 +1349,7 @@ function scoreMomentum(
     stochPrevK: stochPrev.k,
     stochPrevD: stochPrev.d,
     crossDetected,
+    contributions,
   };
 }
 
@@ -1076,8 +1362,9 @@ function scoreRisk(
   direction: "LONG" | "SHORT",
   config: PairConfig,
   entryPrice: number
-): { score: number; reasons: string[]; stopDistance: number; targetDistance: number; rr: number; atrPct: number } {
+): { score: number; reasons: string[]; stopDistance: number; targetDistance: number; rr: number; atrPct: number; contributions: ScoreContribution[] } {
   const reasons: string[] = [];
+  const contributions: ScoreContribution[] = [];
   let score = 0;
 
   const closes = candles1h.map(c => c.close);
@@ -1088,13 +1375,21 @@ function scoreRisk(
 
   // ATR quality
   if (atrPct < 0.015) {
-    score += 8; reasons.push("risk_atr_low:+8 (" + f2(atrPct * 100) + "%)");
+    score += 8;
+    reasons.push("risk_atr_low:+8 (" + f2(atrPct * 100) + "%)");
+    contributions.push({ component: "risk", name: "ATR low", points: 8, rawValue: f2(atrPct * 100) + "%" });
   } else if (atrPct < 0.025) {
-    score += 5; reasons.push("risk_atr_normal:+5 (" + f2(atrPct * 100) + "%)");
+    score += 5;
+    reasons.push("risk_atr_normal:+5 (" + f2(atrPct * 100) + "%)");
+    contributions.push({ component: "risk", name: "ATR normal", points: 5, rawValue: f2(atrPct * 100) + "%" });
   } else if (atrPct < 0.04) {
-    score += 2; reasons.push("risk_atr_elevated:+2 (" + f2(atrPct * 100) + "%)");
+    score += 2;
+    reasons.push("risk_atr_elevated:+2 (" + f2(atrPct * 100) + "%)");
+    contributions.push({ component: "risk", name: "ATR elevated", points: 2, rawValue: f2(atrPct * 100) + "%" });
   } else {
-    score -= 5; reasons.push("risk_atr_high:-5 (" + f2(atrPct * 100) + "%)");
+    score -= 5;
+    reasons.push("risk_atr_high:-5 (" + f2(atrPct * 100) + "%)");
+    contributions.push({ component: "risk", name: "ATR high", points: -5, rawValue: f2(atrPct * 100) + "%" });
   }
 
   // Stop distance quality
@@ -1103,22 +1398,34 @@ function scoreRisk(
   const rr = targetDistance / stopDistance;
 
   if (rr >= 3.0) {
-    score += 7; reasons.push("risk_rr_excellent:+7 (" + f2(rr) + ")");
+    score += 7;
+    reasons.push("risk_rr_excellent:+7 (" + f2(rr) + ")");
+    contributions.push({ component: "risk", name: "RR excellent", points: 7, rawValue: f2(rr) });
   } else if (rr >= 2.0) {
-    score += 5; reasons.push("risk_rr_good:+5 (" + f2(rr) + ")");
+    score += 5;
+    reasons.push("risk_rr_good:+5 (" + f2(rr) + ")");
+    contributions.push({ component: "risk", name: "RR good", points: 5, rawValue: f2(rr) });
   } else if (rr >= MIN_RR) {
-    score += 3; reasons.push("risk_rr_acceptable:+3 (" + f2(rr) + ")");
+    score += 3;
+    reasons.push("risk_rr_acceptable:+3 (" + f2(rr) + ")");
+    contributions.push({ component: "risk", name: "RR acceptable", points: 3, rawValue: f2(rr) });
   } else {
-    score -= 10; reasons.push("risk_rr_poor:-10 (" + f2(rr) + " < " + MIN_RR + ")");
+    score -= 10;
+    reasons.push("risk_rr_poor:-10 (" + f2(rr) + " < " + MIN_RR + ")");
+    contributions.push({ component: "risk", name: "RR poor", points: -10, rawValue: f2(rr) });
   }
 
   // Volatility check (recent vs historical)
   const recentRange = avg(candles1h.slice(-3).map(c => (c.high - c.low) / c.close));
   const historicalRange = avg(candles1h.slice(-20, -3).map(c => (c.high - c.low) / c.close));
   if (recentRange < historicalRange * 1.5) {
-    score += 3; reasons.push("risk_vol_stable:+3");
+    score += 3;
+    reasons.push("risk_vol_stable:+3");
+    contributions.push({ component: "risk", name: "Volatility stable", points: 3 });
   } else if (recentRange > historicalRange * 2.5) {
-    score -= 5; reasons.push("risk_vol_spike:-5");
+    score -= 5;
+    reasons.push("risk_vol_spike:-5");
+    contributions.push({ component: "risk", name: "Volatility spike", points: -5, rawValue: f2(recentRange / historicalRange) + "x" });
   }
 
   // Position near logical stop level
@@ -1126,13 +1433,17 @@ function scoreRisk(
     const recentLow = lowest(candles1h.map(c => c.low), 10);
     const stopAboveLow = (entryPrice - stopDistance) > recentLow * 0.995;
     if (stopAboveLow) {
-      score += 2; reasons.push("risk_stop_logical:+2 (above recent low)");
+      score += 2;
+      reasons.push("risk_stop_logical:+2 (above recent low)");
+      contributions.push({ component: "risk", name: "Stop logical", points: 2 });
     }
   } else {
     const recentHigh = highest(candles1h.map(c => c.high), 10);
     const stopBelowHigh = (entryPrice + stopDistance) < recentHigh * 1.005;
     if (stopBelowHigh) {
-      score += 2; reasons.push("risk_stop_logical:+2 (below recent high)");
+      score += 2;
+      reasons.push("risk_stop_logical:+2 (below recent high)");
+      contributions.push({ component: "risk", name: "Stop logical", points: 2 });
     }
   }
 
@@ -1143,6 +1454,7 @@ function scoreRisk(
     targetDistance,
     rr,
     atrPct,
+    contributions,
   };
 }
 
@@ -1188,6 +1500,105 @@ function getExhaustionWarning(
   return "";
 }
 
+// ─── MISSING COMPONENTS ANALYZER ───
+
+function analyzeMissingComponents(
+  location: { score: number; contributions: ScoreContribution[] },
+  structure: { score: number; contributions: ScoreContribution[] },
+  momentum: { score: number; contributions: ScoreContribution[] },
+  risk: { score: number; contributions: ScoreContribution[] },
+  direction: "LONG" | "SHORT",
+  crossDetected: boolean
+): { missing: MissingComponent[]; likelyTriggers: string[] } {
+  const missing: MissingComponent[] = [];
+  const likelyTriggers: string[] = [];
+
+  // Location gaps
+  const locationGap = 30 - location.score;
+  if (locationGap > 5) {
+    missing.push({
+      component: "Location",
+      pointsNeeded: locationGap,
+      description: "Price not near optimal entry zone (EMAs/swing levels)"
+    });
+  }
+
+  // Structure gaps
+  const structureGap = 20 - structure.score;
+  if (structureGap > 3) {
+    const hasBroken = structure.contributions.some(c => c.name.includes("broken"));
+    if (hasBroken) {
+      missing.push({
+        component: "Structure",
+        pointsNeeded: structureGap,
+        description: "Market structure broken — need higher lows/highs to form"
+      });
+    } else {
+      missing.push({
+        component: "Structure",
+        pointsNeeded: structureGap,
+        description: "Structure developing — waiting for confirmation"
+      });
+    }
+  }
+
+  // Momentum gaps
+  const momentumGap = 30 - momentum.score;
+  if (momentumGap > 5) {
+    if (!crossDetected) {
+      missing.push({
+        component: "Momentum",
+        pointsNeeded: momentumGap,
+        description: "StochRSI cross pending — waiting for momentum turn"
+      });
+      likelyTriggers.push(direction === "LONG" ? "Bullish StochRSI cross" : "Bearish StochRSI cross");
+    } else {
+      const hasVolume = momentum.contributions.some(c => c.name.includes("Volume"));
+      if (!hasVolume) {
+        missing.push({
+          component: "Momentum",
+          pointsNeeded: momentumGap,
+          description: "Volume confirmation missing"
+        });
+        likelyTriggers.push("Volume expansion");
+      }
+      const hasAdx = momentum.contributions.some(c => c.name.includes("ADX"));
+      if (!hasAdx) {
+        missing.push({
+          component: "Momentum",
+          pointsNeeded: Math.min(momentumGap, 5),
+          description: "ADX below threshold — trend strength weak"
+        });
+        likelyTriggers.push("ADX strengthening above " + f0(15));
+      }
+    }
+  }
+
+  // Risk gaps
+  const riskGap = 20 - risk.score;
+  if (riskGap > 3) {
+    const atrHigh = risk.contributions.some(c => c.name === "ATR high");
+    if (atrHigh) {
+      missing.push({
+        component: "Risk",
+        pointsNeeded: riskGap,
+        description: "ATR too high — volatility unfavorable"
+      });
+      likelyTriggers.push("Volatility contraction");
+    }
+    const rrPoor = risk.contributions.some(c => c.name === "RR poor");
+    if (rrPoor) {
+      missing.push({
+        component: "Risk",
+        pointsNeeded: riskGap,
+        description: "Risk:Reward below minimum " + MIN_RR
+      });
+    }
+  }
+
+  return { missing, likelyTriggers };
+}
+
 // ─── REJECTION LOGGING (DEBUG ONLY) ───
 
 const rejectionLogs: RejectionLog[] = [];
@@ -1200,6 +1611,16 @@ function logRejection(log: RejectionLog): void {
   }
   if (DEBUG) {
     console.log("[REJECTED] " + log.pair + " | cross=" + (log.crossDetected ? log.crossDirection : "none") + " | regime=" + log.regimeDirection + " | conf=" + log.confidenceScore + " | reason=" + log.rejectionReason);
+    if (log.evaluation) {
+      console.log("  Location: " + f0(log.evaluation.breakdown.location) + "/30");
+      console.log("  Structure: " + f0(log.evaluation.breakdown.structure) + "/20");
+      console.log("  Momentum: " + f0(log.evaluation.breakdown.momentum) + "/30");
+      console.log("  Risk: " + f0(log.evaluation.breakdown.risk) + "/20");
+      console.log("  Total: " + f0(log.evaluation.confidence) + "/100");
+      if (log.evaluation.missing.length > 0) {
+        console.log("  Missing: " + log.evaluation.missing.map(m => m.component + " (+" + m.pointsNeeded + ")").join(", "));
+      }
+    }
   }
 }
 
@@ -1214,8 +1635,9 @@ export function clearRejectionLogs(): void {
   rejectionLogs.length = 0;
 }
 
-// ─── NEW ENTRY ORCHESTRATOR ───
+// ─── NEW ENTRY ORCHESTRATOR — SINGLE SOURCE OF TRUTH ───
 // Replaces scoreBestEntry, scorePullbackEntry, scoreRejectionEntry, scoreBreakoutEntry
+// Returns ONE EntryEvaluation object consumed by ALL surfaces
 
 function evaluateEntry(
   candles1h: Candle[],
@@ -1224,7 +1646,7 @@ function evaluateEntry(
   config: PairConfig,
   pair: string,
   regimeDirection: "LONG" | "SHORT"
-): { result: EntryScoreResult | null; candidates: EntryCandidates; debug: string[] } {
+): { evaluation: EntryEvaluation | null; candidates: EntryCandidates; debug: string[] } {
   const debug: string[] = [];
 
   // Determine entry mode and direction from price action
@@ -1280,7 +1702,7 @@ function evaluateEntry(
       breakout: { eligible: false, confidence: 0, rejectionReason: "no_breakout_or_regime_mismatch" },
     };
     if (DEBUG) debug.push("No direction detected or regime mismatch");
-    return { result: null, candidates, debug };
+    return { evaluation: null, candidates, debug };
   }
 
   // Compute the four scores
@@ -1312,37 +1734,82 @@ function evaluateEntry(
     ...risk.reasons,
   ];
 
+  const allContributions = [
+    ...location.contributions,
+    ...structure.contributions,
+    ...momentum.contributions,
+    ...risk.contributions,
+  ];
+
+  let exhaustionBlocked = false;
   if (exhaustion.isExhausted) {
     total += exhaustion.confidencePenalty;
     reasons.push(exhaustion.reason);
+    exhaustionBlocked = true;
   }
 
   total = Math.min(100, Math.max(0, total));
 
-  const breakdown: ScoreBreakdown = {
-    location: location.score,
-    structure: structure.score,
-    momentum: momentum.score,
-    risk: risk.score,
-    total,
-    reasons,
-  };
+  const tier = classifyEntryTier(total);
+  const { gap, nextTier } = getTierGap(tier, total);
+
+  const { missing, likelyTriggers } = analyzeMissingComponents(
+    location, structure, momentum, risk, direction, momentum.crossDetected
+  );
 
   const stoch1h = stochRsi(closes);
   const stochPrev1h = stochRsi(closes.slice(0, -1));
   const exhaustionWarning = getExhaustionWarning(stoch1h, stochPrev1h, direction);
 
-  const result: EntryScoreResult = {
+  const adx4h = adx(candles4h);
+
+  const breakdown: ScoreBreakdown = {
+    location: location.score,
+    locationMax: 30,
+    structure: structure.score,
+    structureMax: 20,
+    momentum: momentum.score,
+    momentumMax: 30,
+    risk: risk.score,
+    riskMax: 20,
+    total,
+    maxTotal: 100,
+    contributions: allContributions,
+  };
+
+  const evaluation: EntryEvaluation = {
+    pair,
     direction,
-    confidence: total,
-    breakdown,
-    entryPrice,
     entryMode,
+    tier,
+    confidence: total,
+    thresholds: {
+      wait: TIER_THRESHOLDS.WAIT,
+      watch: TIER_THRESHOLDS.WATCH,
+      early: TIER_THRESHOLDS.EARLY,
+      confirmed: TIER_THRESHOLDS.CONFIRMED,
+    },
+    gapToNextTier: gap,
+    nextTier,
+    breakdown,
+    missing,
+    likelyTriggers,
+    reasons,
     stochK: momentum.stochK,
     stochD: momentum.stochD,
     stochPrevK: momentum.stochPrevK,
     stochPrevD: momentum.stochPrevD,
+    crossDetected: momentum.crossDetected,
     exhaustionWarning,
+    exhaustionBlocked,
+    entryPrice,
+    stopDistance: risk.stopDistance,
+    targetDistance: risk.targetDistance,
+    rr: risk.rr,
+    atrPct: risk.atrPct,
+    adx4h,
+    regimeDirection,
+    regimeStrength: "", // filled by caller
   };
 
   // Build candidate scores for each mode
@@ -1352,19 +1819,19 @@ function evaluateEntry(
 
   const candidates: EntryCandidates = {
     pullback: {
-      eligible: entryMode === "PULLBACK" && total >= 70,
+      eligible: entryMode === "PULLBACK" && total >= TIER_THRESHOLDS.EARLY,
       confidence: pullbackScore,
-      rejectionReason: entryMode === "PULLBACK" && total < 70 ? "confidence_too_low:" + f0(total) : null,
+      rejectionReason: entryMode === "PULLBACK" && total < TIER_THRESHOLDS.EARLY ? "confidence_too_low:" + f0(total) : null,
     },
     rejection: {
-      eligible: entryMode === "REJECTION" && total >= 70,
+      eligible: entryMode === "REJECTION" && total >= TIER_THRESHOLDS.EARLY,
       confidence: rejectionScore,
-      rejectionReason: entryMode === "REJECTION" && total < 70 ? "confidence_too_low:" + f0(total) : null,
+      rejectionReason: entryMode === "REJECTION" && total < TIER_THRESHOLDS.EARLY ? "confidence_too_low:" + f0(total) : null,
     },
     breakout: {
-      eligible: entryMode === "BREAKOUT" && total >= 70,
+      eligible: entryMode === "BREAKOUT" && total >= TIER_THRESHOLDS.EARLY,
       confidence: breakoutScore,
-      rejectionReason: entryMode === "BREAKOUT" && total < 70 ? "confidence_too_low:" + f0(total) : null,
+      rejectionReason: entryMode === "BREAKOUT" && total < TIER_THRESHOLDS.EARLY ? "confidence_too_low:" + f0(total) : null,
     },
   };
 
@@ -1372,17 +1839,70 @@ function evaluateEntry(
     debug.push("=== v29.2 ENTRY EVALUATION ===");
     debug.push("Direction: " + direction + " | Mode: " + entryMode);
     debug.push("Location: " + f0(location.score) + "/30");
+    for (const c of location.contributions) {
+      debug.push("  " + c.name + ": " + (c.points >= 0 ? "+" : "") + c.points + (c.rawValue ? " (" + c.rawValue + ")" : ""));
+    }
     debug.push("Structure: " + f0(structure.score) + "/20");
+    for (const c of structure.contributions) {
+      debug.push("  " + c.name + ": " + (c.points >= 0 ? "+" : "") + c.points + (c.rawValue ? " (" + c.rawValue + ")" : ""));
+    }
     debug.push("Momentum: " + f0(momentum.score) + "/30");
+    for (const c of momentum.contributions) {
+      debug.push("  " + c.name + ": " + (c.points >= 0 ? "+" : "") + c.points + (c.rawValue ? " (" + c.rawValue + ")" : ""));
+    }
     debug.push("Risk: " + f0(risk.score) + "/20");
-    debug.push("Total: " + f0(total) + "/100");
+    for (const c of risk.contributions) {
+      debug.push("  " + c.name + ": " + (c.points >= 0 ? "+" : "") + c.points + (c.rawValue ? " (" + c.rawValue + ")" : ""));
+    }
+    debug.push("Total: " + f0(total) + "/100 | Tier: " + tier);
     if (exhaustion.isExhausted) debug.push("EXHAUSTION PENALTY: " + f0(exhaustion.confidencePenalty));
     debug.push("Stoch K=" + f1(momentum.stochK) + " D=" + f1(momentum.stochD) + " cross=" + (momentum.crossDetected ? "YES" : "NO"));
     debug.push("RR=" + f2(risk.rr) + " ATR%=" + f2(risk.atrPct * 100) + "%");
-    for (const r of reasons) debug.push("  " + r);
+    if (missing.length > 0) {
+      debug.push("Missing:");
+      for (const m of missing) {
+        debug.push("  " + m.component + ": need +" + m.pointsNeeded + " — " + m.description);
+      }
+    }
+    if (likelyTriggers.length > 0) {
+      debug.push("Likely triggers: " + likelyTriggers.join(", "));
+    }
   }
 
-  return { result, candidates, debug };
+  return { evaluation, candidates, debug };
+}
+
+// ─── FORMAT EVALUATION FOR OUTPUT (used by all surfaces) ───
+
+export function formatEvaluation(evaluation: EntryEvaluation): string {
+  const lines: string[] = [];
+  lines.push(evaluation.pair + "  —  " + (evaluation.direction || "NEUTRAL") + "  —  " + evaluation.tier.replace("_", " "));
+  lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  lines.push("Location  ..... " + f0(evaluation.breakdown.location) + " / " + evaluation.breakdown.locationMax);
+  lines.push("Structure .... " + f0(evaluation.breakdown.structure) + " / " + evaluation.breakdown.structureMax);
+  lines.push("Momentum ..... " + f0(evaluation.breakdown.momentum) + " / " + evaluation.breakdown.momentumMax);
+  lines.push("Risk ......... " + f0(evaluation.breakdown.risk) + " / " + evaluation.breakdown.riskMax);
+  lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  lines.push("TOTAL: " + f0(evaluation.confidence) + " / 100");
+
+  if (evaluation.tier !== "CONFIRMED_ENTRY") {
+    lines.push("Need +" + f0(evaluation.gapToNextTier) + " for " + (evaluation.nextTier?.replace("_", " ") || "entry"));
+  }
+
+  if (evaluation.missing.length > 0) {
+    lines.push("");
+    lines.push("Missing:");
+    for (const m of evaluation.missing) {
+      lines.push("  " + m.component + " (+" + m.pointsNeeded + "): " + m.description);
+    }
+  }
+
+  if (evaluation.likelyTriggers.length > 0) {
+    lines.push("");
+    lines.push("Likely trigger: " + evaluation.likelyTriggers.join(", "));
+  }
+
+  return lines.join("\n");
 }
 
 // ─── DEPRECATED: Old scoring functions removed ───
@@ -1426,17 +1946,26 @@ function getTrendContext(candles: Candle[]): TrendContext {
 
 // ─── TREND CONFLICT DETECTION ───
 
-function detectTrendConflict(trend1h: TrendContext, trend4h: TrendContext, trend1d: TrendContext): boolean {
+function detectTrendConflict(trend1h: TrendContext, trend4h: TrendContext, trend1d: TrendContext): { isConflict: boolean; details: string[] } {
   const htf1 = trend1h.direction.toUpperCase();
   const htf2 = trend4h.direction.toUpperCase();
   const ltf = trend1d.direction.toUpperCase();
 
-  if (htf1 === "NEUTRAL" || htf2 === "NEUTRAL" || htf1 === "INSUFFICIENT_DATA" || htf2 === "INSUFFICIENT_DATA") return false;
-  if (htf1 !== htf2) return false;
-  if (ltf === "NEUTRAL" || ltf === "INSUFFICIENT_DATA") return false;
-  if (ltf === htf1) return false;
+  const details: string[] = [];
 
-  return true;
+  if (htf1 === "NEUTRAL" || htf2 === "NEUTRAL" || htf1 === "INSUFFICIENT_DATA" || htf2 === "INSUFFICIENT_DATA") {
+    return { isConflict: false, details };
+  }
+  if (htf1 !== htf2) return { isConflict: false, details };
+  if (ltf === "NEUTRAL" || ltf === "INSUFFICIENT_DATA") return { isConflict: false, details };
+  if (ltf === htf1) return { isConflict: false, details };
+
+  details.push("1H " + trend1h.direction + " (" + trend1h.strength + ")");
+  details.push("4H " + trend4h.direction + " (" + trend4h.strength + ")");
+  details.push("1D " + trend1d.direction + " (" + trend1d.strength + ")");
+  details.push("Higher timeframe disagreement — no trades until resolved.");
+
+  return { isConflict: true, details };
 }
 
 
@@ -1472,6 +2001,37 @@ export async function generateSignal(
   const trend1d = getTrendContext(candles1d);
   if (DEBUG) {
     debug.push("trend context: 1h=" + trend1h.direction + "/" + trend1h.strength + " 4h=" + trend4h.direction + "/" + trend4h.strength + " 1d=" + trend1d.direction + "/" + trend1d.strength);
+  }
+
+  // Trend conflict check
+  const trendConflict = detectTrendConflict(trend1h, trend4h, trend1d);
+  if (trendConflict.isConflict) {
+    const stoch4h = stochRsi(candles4h.map(c => c.close));
+    if (DEBUG) {
+      debug.push("TREND CONFLICT DETECTED:");
+      for (const d of trendConflict.details) debug.push("  " + d);
+    }
+    return {
+      market: {
+        pair,
+        price: currentPrice,
+        timestamp: Date.now(),
+        regime,
+        adx: adx(candles4h),
+        rsi: rsi(candles4h.map(c => c.close)),
+        stochK: stoch4h.k,
+        stochD: stoch4h.d,
+        stoch1hK: stochRsi(candles1h.map(c => c.close)).k,
+        stoch1hD: stochRsi(candles1h.map(c => c.close)).d,
+      },
+      debug,
+      entryCandidates: {
+        pullback: { eligible: false, confidence: 0, rejectionReason: "trend_conflict" },
+        rejection: { eligible: false, confidence: 0, rejectionReason: "trend_conflict" },
+        breakout: { eligible: false, confidence: 0, rejectionReason: "trend_conflict" },
+      },
+      rejectionStage: "Trend Conflict\n" + trendConflict.details.join("\n"),
+    };
   }
 
   if (!regime.direction || regime.direction === "NEUTRAL" || regime.strength === "NEUTRAL") {
@@ -1544,11 +2104,11 @@ export async function generateSignal(
     };
   }
 
-  // Use new v29.2 entry engine
-  const { result, candidates, debug: entryDebug } = evaluateEntry(candles1h, candles4h, candles15m, config, pair, regime.direction);
+  // Use new v29.2 entry engine — SINGLE SOURCE OF TRUTH
+  const { evaluation, candidates, debug: entryDebug } = evaluateEntry(candles1h, candles4h, candles15m, config, pair, regime.direction);
   if (DEBUG) debug.push(...entryDebug);
 
-  if (!result) {
+  if (!evaluation) {
     const stoch4h = stochRsi(candles4h.map(c => c.close));
     const rejectionLog: RejectionLog = {
       pair,
@@ -1594,31 +2154,35 @@ export async function generateSignal(
     };
   }
 
+  // Fill regime strength into evaluation
+  evaluation.regimeStrength = regime.strength;
+
   // Check exhaustion block
-  if (result.breakdown.total < 70 && result.exhaustionWarning) {
+  if (evaluation.exhaustionBlocked && evaluation.confidence < TIER_THRESHOLDS.EARLY) {
     const stoch4h = stochRsi(candles4h.map(c => c.close));
     const rejectionLog: RejectionLog = {
       pair,
       timestamp: now,
-      crossDetected: result.breakdown.momentum > 0,
-      crossDirection: result.direction,
+      crossDetected: evaluation.crossDetected,
+      crossDirection: evaluation.direction,
       regimeDirection: regime.direction,
       regimeStrength: regime.strength,
-      confidenceScore: result.confidence,
+      confidenceScore: evaluation.confidence,
       confidenceBreakdown: {
-        location: result.breakdown.location,
-        structure: result.breakdown.structure,
-        momentum: result.breakdown.momentum,
-        risk: result.breakdown.risk,
+        location: evaluation.breakdown.location,
+        structure: evaluation.breakdown.structure,
+        momentum: evaluation.breakdown.momentum,
+        risk: evaluation.breakdown.risk,
       },
-      rejectionReason: result.exhaustionWarning || "Exhaustion block",
+      rejectionReason: evaluation.exhaustionWarning || "Exhaustion block",
       stochK: stoch4h.k,
       stochD: stoch4h.d,
-      stochPrevK: result.stochPrevK,
-      stochPrevD: result.stochPrevD,
+      stochPrevK: evaluation.stochPrevK,
+      stochPrevD: evaluation.stochPrevD,
+      evaluation,
     };
     logRejection(rejectionLog);
-    if (DEBUG) debug.push("REJECTED: exhaustion block — " + result.exhaustionWarning);
+    if (DEBUG) debug.push("REJECTED: exhaustion block — " + evaluation.exhaustionWarning);
 
     return {
       market: {
@@ -1630,45 +2194,46 @@ export async function generateSignal(
         rsi: rsi(candles4h.map(c => c.close)),
         stochK: stoch4h.k,
         stochD: stoch4h.d,
-        stoch1hK: result.stochK,
-        stoch1hD: result.stochD,
+        stoch1hK: evaluation.stochK,
+        stoch1hD: evaluation.stochD,
       },
       debug,
       entryCandidates: candidates,
-      rejectionStage: "Market exhausted — " + (result.exhaustionWarning?.replace("⚠️ ", "").replace("⚠ ", "") || "cooling off"),
+      rejectionStage: "Market exhausted — " + (evaluation.exhaustionWarning?.replace("⚠️ ", "").replace("⚠ ", "") || "cooling off"),
+      evaluation,
     };
   }
 
   // Calculate stops and targets
-  const risk = scoreRisk(candles1h, candles4h, result.direction!, config, result.entryPrice);
-  const stop = result.direction === "LONG" ? result.entryPrice - risk.stopDistance : result.entryPrice + risk.stopDistance;
-  const target = result.direction === "LONG" ? result.entryPrice + risk.targetDistance : result.entryPrice - risk.targetDistance;
+  const stop = evaluation.direction === "LONG" ? evaluation.entryPrice - evaluation.stopDistance : evaluation.entryPrice + evaluation.stopDistance;
+  const target = evaluation.direction === "LONG" ? evaluation.entryPrice + evaluation.targetDistance : evaluation.entryPrice - evaluation.targetDistance;
 
   // RR check
-  if (risk.rr < MIN_RR) {
+  if (evaluation.rr < MIN_RR) {
     const stoch4h = stochRsi(candles4h.map(c => c.close));
     const rejectionLog: RejectionLog = {
       pair,
       timestamp: now,
-      crossDetected: result.breakdown.momentum > 0,
-      crossDirection: result.direction,
+      crossDetected: evaluation.crossDetected,
+      crossDirection: evaluation.direction,
       regimeDirection: regime.direction,
       regimeStrength: regime.strength,
-      confidenceScore: result.confidence,
+      confidenceScore: evaluation.confidence,
       confidenceBreakdown: {
-        location: result.breakdown.location,
-        structure: result.breakdown.structure,
-        momentum: result.breakdown.momentum,
-        risk: result.breakdown.risk,
+        location: evaluation.breakdown.location,
+        structure: evaluation.breakdown.structure,
+        momentum: evaluation.breakdown.momentum,
+        risk: evaluation.breakdown.risk,
       },
-      rejectionReason: "RR " + f2(risk.rr) + " below minimum " + MIN_RR,
+      rejectionReason: "RR " + f2(evaluation.rr) + " below minimum " + MIN_RR,
       stochK: stoch4h.k,
       stochD: stoch4h.d,
-      stochPrevK: result.stochPrevK,
-      stochPrevD: result.stochPrevD,
+      stochPrevK: evaluation.stochPrevK,
+      stochPrevD: evaluation.stochPrevD,
+      evaluation,
     };
     logRejection(rejectionLog);
-    if (DEBUG) debug.push("REJECTED: RR " + f2(risk.rr) + " < " + MIN_RR);
+    if (DEBUG) debug.push("REJECTED: RR " + f2(evaluation.rr) + " < " + MIN_RR);
 
     return {
       market: {
@@ -1680,47 +2245,49 @@ export async function generateSignal(
         rsi: rsi(candles4h.map(c => c.close)),
         stochK: stoch4h.k,
         stochD: stoch4h.d,
-        stoch1hK: result.stochK,
-        stoch1hD: result.stochD,
+        stoch1hK: evaluation.stochK,
+        stoch1hD: evaluation.stochD,
       },
       debug,
       entryCandidates: candidates,
-      rejectionStage: "Risk:Reward too low (" + f2(risk.rr) + " < " + MIN_RR + ")",
+      rejectionStage: "Risk:Reward too low (" + f2(evaluation.rr) + " < " + MIN_RR + ")",
+      evaluation,
     };
   }
 
   // ADX check - soft penalty instead of hard block for early entries
   const adx4h = adx(candles4h);
-  let finalConfidence = result.confidence;
+  let finalConfidence = evaluation.confidence;
   if (adx4h < config.minADX) {
     const adxPenalty = Math.round((config.minADX - adx4h) * 2);
     finalConfidence -= adxPenalty;
     if (DEBUG) debug.push("ADX " + f1(adx4h) + " below threshold " + config.minADX + ", penalty -" + adxPenalty);
 
-    if (finalConfidence < 70) {
+    if (finalConfidence < TIER_THRESHOLDS.EARLY) {
       const stoch4h = stochRsi(candles4h.map(c => c.close));
       const rejectionLog: RejectionLog = {
         pair,
         timestamp: now,
-        crossDetected: result.breakdown.momentum > 0,
-        crossDirection: result.direction,
+        crossDetected: evaluation.crossDetected,
+        crossDirection: evaluation.direction,
         regimeDirection: regime.direction,
         regimeStrength: regime.strength,
         confidenceScore: finalConfidence,
         confidenceBreakdown: {
-          location: result.breakdown.location,
-          structure: result.breakdown.structure,
-          momentum: result.breakdown.momentum,
-          risk: result.breakdown.risk,
+          location: evaluation.breakdown.location,
+          structure: evaluation.breakdown.structure,
+          momentum: evaluation.breakdown.momentum,
+          risk: evaluation.breakdown.risk,
         },
         rejectionReason: "ADX " + f1(adx4h) + " too low, confidence dropped to " + f0(finalConfidence) + " after penalty",
         stochK: stoch4h.k,
         stochD: stoch4h.d,
-        stochPrevK: result.stochPrevK,
-        stochPrevD: result.stochPrevD,
+        stochPrevK: evaluation.stochPrevK,
+        stochPrevD: evaluation.stochPrevD,
+        evaluation,
       };
       logRejection(rejectionLog);
-      if (DEBUG) debug.push("REJECTED: ADX penalty dropped confidence below EARLY_ENTRY (70)");
+      if (DEBUG) debug.push("REJECTED: ADX penalty dropped confidence below EARLY_ENTRY (" + TIER_THRESHOLDS.EARLY + ")");
 
       return {
         market: {
@@ -1732,12 +2299,13 @@ export async function generateSignal(
           rsi: rsi(candles4h.map(c => c.close)),
           stochK: stoch4h.k,
           stochD: stoch4h.d,
-          stoch1hK: result.stochK,
-          stoch1hD: result.stochD,
+          stoch1hK: evaluation.stochK,
+          stoch1hD: evaluation.stochD,
         },
         debug,
         entryCandidates: candidates,
-        rejectionStage: "ADX penalty — confidence " + f0(finalConfidence) + " below EARLY_ENTRY (70)",
+        rejectionStage: "ADX penalty — confidence " + f0(finalConfidence) + " below EARLY_ENTRY (" + TIER_THRESHOLDS.EARLY + ")",
+        evaluation,
       };
     }
   }
@@ -1746,8 +2314,12 @@ export async function generateSignal(
   const entryTier = classifyEntryTier(finalConfidence);
   const positionSizePct = getPositionSizePct(entryTier, regime.strength);
 
-  if (entryTier === "NO_TRADE") {
-    if (DEBUG) debug.push("REJECTED: confidence " + f1(finalConfidence) + " below EARLY_ENTRY threshold (70)");
+  if (entryTier === "NO_TRADE" || entryTier === "WATCH") {
+    if (DEBUG) debug.push("REJECTED: confidence " + f1(finalConfidence) + " below EARLY_ENTRY threshold (" + TIER_THRESHOLDS.EARLY + ")");
+
+    // Build detailed rejection stage with evaluation data
+    const rec = getRecommendedActionFromEvaluation({ ...evaluation, confidence: finalConfidence, tier: entryTier });
+
     return {
       market: {
         pair,
@@ -1758,12 +2330,13 @@ export async function generateSignal(
         rsi: rsi(candles4h.map(c => c.close)),
         stochK: stochRsi(candles4h.map(c => c.close)).k,
         stochD: stochRsi(candles4h.map(c => c.close)).d,
-        stoch1hK: result.stochK,
-        stoch1hD: result.stochD,
+        stoch1hK: evaluation.stochK,
+        stoch1hD: evaluation.stochD,
       },
       debug,
       entryCandidates: candidates,
-      rejectionStage: "Setup developing (" + f0(finalConfidence) + "%) — below entry threshold",
+      rejectionStage: rec.detail,
+      evaluation: { ...evaluation, confidence: finalConfidence, tier: entryTier },
     };
   }
 
@@ -1780,12 +2353,13 @@ export async function generateSignal(
         rsi: rsi(candles4h.map(c => c.close)),
         stochK: stochRsi(candles4h.map(c => c.close)).k,
         stochD: stochRsi(candles4h.map(c => c.close)).d,
-        stoch1hK: result.stochK,
-        stoch1hD: result.stochD,
+        stoch1hK: evaluation.stochK,
+        stoch1hD: evaluation.stochD,
       },
       debug,
       entryCandidates: candidates,
       rejectionStage: entryTier + " alert already sent — waiting for next cycle",
+      evaluation,
     };
   }
 
@@ -1793,44 +2367,44 @@ export async function generateSignal(
   setTierLock(pair, entryTier, now);
 
   // Generate signal with tier and sizing
-  const signalId = pair + "-" + result.direction + "-" + now;
+  const signalId = pair + "-" + evaluation.direction + "-" + now;
   const signal: Signal = {
     id: signalId,
     pair,
-    direction: result.direction!,
+    direction: evaluation.direction!,
     type: "ENTRY",
-    entry: result.entryPrice,
+    entry: evaluation.entryPrice,
     stop,
     target,
     confidence: finalConfidence,
     entryTier,
     positionSizePct,
-    rr: risk.rr,
+    rr: evaluation.rr,
     adx: adx4h,
     rsi: rsi(candles4h.map(c => c.close)),
     stochK: stochRsi(candles4h.map(c => c.close)).k,
     stochD: stochRsi(candles4h.map(c => c.close)).d,
-    stoch1hK: result.stochK,
-    stoch1hD: result.stochD,
-    expectedMove: risk.targetDistance,
-    reason: result.breakdown.reasons.join(" | "),
+    stoch1hK: evaluation.stochK,
+    stoch1hD: evaluation.stochD,
+    expectedMove: evaluation.targetDistance,
+    reason: evaluation.reasons.join(" | "),
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
     tradeState: "OPEN",
     regimeDirection: regime.direction,
     regimeSince: regime.detectedAt,
-    entryMode: result.entryMode,
+    entryMode: evaluation.entryMode!,
     confidenceComponents: {
-      location: result.breakdown.location,
-      structure: result.breakdown.structure,
-      momentum: result.breakdown.momentum,
-      risk: result.breakdown.risk,
+      location: evaluation.breakdown.location,
+      structure: evaluation.breakdown.structure,
+      momentum: evaluation.breakdown.momentum,
+      risk: evaluation.breakdown.risk,
       total: finalConfidence,
     },
-    exhaustionWarning: result.exhaustionWarning || undefined,
+    exhaustionWarning: evaluation.exhaustionWarning || undefined,
   };
 
-  if (DEBUG) debug.push("SIGNAL: " + result.direction + " " + pair + " @ " + f2(result.entryPrice) + " tier=" + entryTier + " conf=" + f1(finalConfidence) + " size=" + f0(positionSizePct * 100) + "% rr=" + f2(risk.rr) + " mode=" + result.entryMode);
+  if (DEBUG) debug.push("SIGNAL: " + evaluation.direction + " " + pair + " @ " + f2(evaluation.entryPrice) + " tier=" + entryTier + " conf=" + f1(finalConfidence) + " size=" + f0(positionSizePct * 100) + "% rr=" + f2(evaluation.rr) + " mode=" + evaluation.entryMode);
 
   return {
     signal,
@@ -1843,11 +2417,12 @@ export async function generateSignal(
       rsi: rsi(candles4h.map(c => c.close)),
       stochK: stochRsi(candles4h.map(c => c.close)).k,
       stochD: stochRsi(candles4h.map(c => c.close)).d,
-      stoch1hK: result.stochK,
-      stoch1hD: result.stochD,
+      stoch1hK: evaluation.stochK,
+      stoch1hD: evaluation.stochD,
     },
     debug,
     entryCandidates: candidates,
+    evaluation,
   };
 }
 
@@ -2054,7 +2629,7 @@ export async function filterExpiredSignals(signals: Signal[], currentPrices: Rec
 }
 
 
-// ─── Market Snapshot ───
+// ─── Market Snapshot (REFACTORED — uses EntryEvaluation) ───
 
 export async function getMarketSnapshot(
   pair: string,
@@ -2079,8 +2654,8 @@ export async function getMarketSnapshot(
     rejectionStage: null,
   });
 
-  // Detect trend conflict
-  const trendConflict = detectTrendConflict(trend1h, trend4h, trend1d);
+  // Detect trend conflict with details
+  const conflictResult = detectTrendConflict(trend1h, trend4h, trend1d);
 
   // Build regime display with trend conflict override
   let regimeDisplay: RegimeDisplay = {
@@ -2092,31 +2667,62 @@ export async function getMarketSnapshot(
   };
 
   // Override direction for display when trend conflict detected
-  if (trendConflict) {
+  if (conflictResult.isConflict) {
     regimeDisplay.direction = "TREND_CONFLICT";
   }
 
-  const bestConf = Math.max(
-    signalResult.entryCandidates?.pullback?.confidence || 0,
-    signalResult.entryCandidates?.rejection?.confidence || 0,
-    signalResult.entryCandidates?.breakout?.confidence || 0
-  );
-  const rec = getRecommendedAction(regime, bestConf);
+  // Build recommendation from evaluation if available
+  let rec: RecommendedAction;
+  if (signalResult.evaluation) {
+    rec = getRecommendedActionFromEvaluation(signalResult.evaluation);
+  } else {
+    const bestConf = Math.max(
+      signalResult.entryCandidates?.pullback?.confidence || 0,
+      signalResult.entryCandidates?.rejection?.confidence || 0,
+      signalResult.entryCandidates?.breakout?.confidence || 0
+    );
+    rec = { action: bestConf >= 70 ? "EARLY ENTRY" : "WAIT", detail: "Score " + f0(bestConf) + "/100", missing: [], progressPct: Math.round((bestConf / 85) * 100) };
+  }
 
-  // Build "Why no trade?" messages
+  // Build "Why no trade?" messages using evaluation if available
   const whyNoTrade: string[] = [];
-  if (trendConflict) {
-    whyNoTrade.push("⚠ Trend Conflict — Waiting for higher timeframe confirmation");
+  if (conflictResult.isConflict) {
+    whyNoTrade.push("⚠ Trend Conflict");
+    for (const detail of conflictResult.details) {
+      whyNoTrade.push("  " + detail);
+    }
+  } else if (signalResult.evaluation) {
+    const eval_ = signalResult.evaluation;
+    whyNoTrade.push("• " + rec.action + " — " + rec.detail);
+    if (eval_.missing.length > 0) {
+      for (const m of eval_.missing) {
+        whyNoTrade.push("  Missing: " + m.component + " (+" + m.pointsNeeded + ") — " + m.description);
+      }
+    }
+    if (eval_.likelyTriggers.length > 0) {
+      whyNoTrade.push("  Likely trigger: " + eval_.likelyTriggers.join(", "));
+    }
   } else if (signalResult.rejectionStage) {
     whyNoTrade.push("• " + signalResult.rejectionStage);
-  } else if (bestConf < 70) {
-    whyNoTrade.push("• Setup developing (" + f0(bestConf) + "%)");
+  } else {
+    const bestConf = Math.max(
+      signalResult.entryCandidates?.pullback?.confidence || 0,
+      signalResult.entryCandidates?.rejection?.confidence || 0,
+      signalResult.entryCandidates?.breakout?.confidence || 0
+    );
+    if (bestConf < TIER_THRESHOLDS.WATCH) {
+      whyNoTrade.push("• Waiting for market setup (" + f0(bestConf) + "%)");
+    } else {
+      whyNoTrade.push("• Setup developing (" + f0(bestConf) + "%)");
+    }
   }
 
   // Determine entry tier from precomputed result
   let entryTier: EntryTier | null = null;
   if (signalResult.signal) {
     entryTier = signalResult.signal.entryTier;
+  } else if (signalResult.evaluation) {
+    entryTier = signalResult.evaluation.tier;
   }
 
   return {
@@ -2135,11 +2741,12 @@ export async function getMarketSnapshot(
     trend1d,
     entryCandidates: signalResult.entryCandidates,
     rejectionStage: signalResult.rejectionStage || null,
-    recommendedAction: trendConflict ? "WAIT" : rec.action,
-    positionSize: trendConflict ? "Waiting for confirmation" : rec.detail,
+    recommendedAction: conflictResult.isConflict ? "WAIT" : rec.action,
+    positionSize: conflictResult.isConflict ? "Waiting for confirmation" : rec.detail,
     whyNoTrade: whyNoTrade.length > 0 ? whyNoTrade : ["• Waiting for market setup"],
     entryTier,
-    trendConflict,
+    trendConflict: conflictResult.isConflict,
+    evaluation: signalResult.evaluation,
   };
 }
 
