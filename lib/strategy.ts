@@ -9,6 +9,15 @@
 // TYPES
 // ------------------------------------------------------------------
 
+
+export interface ExitRecord {
+  pair: string;
+  direction: "LONG" | "SHORT";
+  exitPrice: number;
+  pnl: number;
+  reason: string;
+  timestamp: number;
+}
 export interface Candle {
   timestamp: number;
   open: number;
@@ -37,6 +46,17 @@ export interface Signal {
   reason: string;
   timestamp: number;
   version: number;
+  // v31 compat fields for cron/state management
+  exited?: boolean;
+  highestPrice?: number;
+  lowestPrice?: number;
+  tradeState?: string;
+  lockedStop?: number;
+  profitLockActive?: boolean;
+  entryTier?: EntryTier;
+  entryMode?: string;
+  positionSizePct?: number;
+  regimeDirection?: string;
 }
 
 export interface SignalResult {
@@ -700,6 +720,14 @@ export function generateSignal(
     reason: `${t1d.direction} ${type} ${finalType} | 1D ${t1d.strength} | Stoch K${stoch.k} D${stoch.d} | ${finalType === "ADD" ? "Break+EMA" + (volUp ? "+Vol" : "") + (stochMomentum ? "+Stoch" : "") + (adxStrong ? "+ADX" : "") : "TL approach"} | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
+    entryTier: finalType === "ENTRY_1" ? "EARLY_ENTRY" : finalType === "ENTRY_2" ? "EARLY_ENTRY" : "CONFIRMED_ENTRY",
+    entryMode: finalType === "ADD" ? "BREAKOUT" : "PULLBACK",
+    positionSizePct: finalType === "ADD" ? 0.05 : 0.03,
+    regimeDirection: t1d.direction,
+    exited: false,
+    highestPrice: entry,
+    lowestPrice: entry,
+    tradeState: "OPEN",
   };
 
   // Record cooldown
@@ -723,6 +751,18 @@ export function generateSignal(
   debug.push(`SIGNAL: ${type} ${finalType} ${signal.direction} ${signal.entry} | TP ${signal.target} | SL ${signal.stop} | RR ${signal.rr}`);
 
   return { signal, market, debug };
+}
+
+/** Async wrapper for cron compatibility */
+export async function generateSignalAsync(
+  pair: string,
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candles15m: Candle[],
+  currentPrice?: number
+): Promise<SignalResult> {
+  const candles1d = aggregateTo1D(candles4h);
+  return generateSignal(pair, candles1h, candles4h, candles1d, currentPrice);
 }
 
 // ------------------------------------------------------------------
@@ -752,7 +792,7 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
   return { valid: true, reason: "active", exited: false };
 }
 
-export function shouldHold(signal: Signal, currentPrice: number, now?: number): HoldResult {
+export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, now?: number): HoldResult {
   // FIX: Exit when Stoch hits extreme opposite (chart behavior)
   // This is the v28 regime flip proxy — when Stoch goes extreme opposite,
   // the momentum has reversed. No async needed.
@@ -782,15 +822,22 @@ export function checkTradeStatus(signal: Signal, currentPrice: number, now: numb
 
 export function filterExpiredSignals(
   signals: Signal[],
-  currentPrices: Record<string, number>,
+  currentPrices?: Record<string, number>,
   now?: number
 ): { active: Signal[]; exited: { signal: Signal; reason: string }[] } {
   const active: Signal[] = [];
   const exited: { signal: Signal; reason: string }[] = [];
   for (const signal of signals) {
-    const price = currentPrices[signal.pair];
+    const price = currentPrices?.[signal.pair];
     if (price === undefined) {
-      active.push(signal);
+      // Fallback: check without current price (time-based expiry only)
+      const ageMs = (now || Date.now()) - signal.timestamp;
+      const maxAge = signal.type === "ACCUMULATE" ? 24 * 60 * 60 * 1000 : 4 * 60 * 60 * 1000;
+      if (ageMs > maxAge) {
+        exited.push({ signal, reason: "expired_ttl" });
+      } else {
+        active.push(signal);
+      }
       continue;
     }
     const check = isSignalStillValid(signal, price, now);
@@ -808,7 +855,9 @@ export function getMarketSnapshot(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
-  candles1d: Candle[]
+  candles1d: Candle[],
+  currentPrice?: number,
+  signalResult?: SignalResult
 ): any {
   const stochRsi4h = stochRsi(candles4h.map(c => c.close));
   const price = candles4h[candles4h.length - 1].close;
@@ -817,17 +866,44 @@ export function getMarketSnapshot(
   const tlPrice = trendline ? trendline.price : 0;
   const dist = trendline ? (price - tlPrice) / tlPrice : 1;
 
+  const signal = signalResult?.signal || null;
+  const market = signalResult?.market || {};
+
   return {
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
     trend: t1d.direction ? `${t1d.direction} ${t1d.strength}` : "NONE",
+    regime: {
+      direction: t1d.direction,
+      strength: t1d.strength,
+      confidence: t1d.direction ? (t1d.strength === "STRONG" ? 75 : 50) : 0,
+      score: t1d.direction ? (t1d.strength === "STRONG" ? 40 : 25) : 0,
+      reason: t1d.direction ? ["ema8_21_alignment"] : ["no_trend"],
+      detectedAt: Date.now(),
+    },
     adx: Math.round((adx(candles4h) ?? 0) * 10) / 10,
     rsi: Math.round((wilderRsi(candles4h.map(c => c.close)) ?? 50) * 10) / 10,
     stochK: stochRsi4h.k,
     stochD: stochRsi4h.d,
+    stoch1hK: null,
+    stoch1hD: null,
     trendlinePrice: Math.round(tlPrice * 100) / 100,
     distToTrendline: Math.round(Math.abs(dist) * 10000) / 100,
+    trend1h: null,
+    trend4h: t1d.direction ? { direction: t1d.direction, strength: t1d.strength } : null,
+    trend1d: t1d.direction ? { direction: t1d.direction, strength: t1d.strength } : null,
+    entryCandidates: {
+      pullback: { eligible: signal?.scale === "ENTRY_1", confidence: signal?.scale === "ENTRY_1" ? 65 : 0, rejectionReason: null },
+      rejection: { eligible: signal?.scale === "ENTRY_2", confidence: signal?.scale === "ENTRY_2" ? 75 : 0, rejectionReason: null },
+      breakout: { eligible: signal?.scale === "ADD", confidence: signal?.scale === "ADD" ? 85 : 0, rejectionReason: null },
+    },
+    recommendedAction: signal ? `${signal.direction} ${signal.type} ${signal.scale}` : null,
+    entryTier: signal ? (signal.scale === "ENTRY_1" ? "EARLY_ENTRY" : signal.scale === "ENTRY_2" ? "EARLY_ENTRY" : "CONFIRMED_ENTRY") : null,
+    positionSize: signal ? (signal.scale === "ADD" ? "FULL" : "STARTER") : null,
+    whyNoTrade: signal ? [] : ["No active signal"],
+    signal,
+    ...market,
   };
 }
 
@@ -837,13 +913,19 @@ export function getMarketSnapshot(
 
 /** Compatibility: injectable regime persistence */
 let regimePersistenceFn: ((regime: MarketRegime, pair: string) => Promise<void>) | null = null;
-export function setRegimePersistence(persist: (regime: MarketRegime, pair: string) => Promise<void>): void {
+export function setRegimePersistence(
+  persist: (pair: string, regime: MarketRegime) => Promise<void>,
+  load?: (pair: string) => Promise<MarketRegime | null>
+): void {
   regimePersistenceFn = persist;
 }
 
 /** Compatibility: injectable exit persistence */
 let exitPersistenceFn: ((exit: { pair: string; direction: "LONG" | "SHORT"; exitPrice: number; pnl: number; reason: string; timestamp: number }) => Promise<void>) | null = null;
-export function setExitPersistence(persist: (exit: { pair: string; direction: "LONG" | "SHORT"; exitPrice: number; pnl: number; reason: string; timestamp: number }) => Promise<void>): void {
+export function setExitPersistence(
+  persist: (record: any) => Promise<void>,
+  load?: () => Promise<any[]>
+): void {
   exitPersistenceFn = persist;
 }
 
@@ -947,6 +1029,32 @@ export function updateTradeManager(
     default:
       return null;
   }
+}
+
+/** v29 compat: updateTradeManager(signal, price) -> tracks highest/lowest prices */
+export function updateTradeManagerCompat(signal: Signal, currentPrice: number): { highestPrice: number; lowestPrice: number; newState: string; lockedStop: number | undefined; profitLockActive: boolean } {
+  const highest = Math.max(signal.highestPrice || signal.entry, currentPrice);
+  const lowest = Math.min(signal.lowestPrice || signal.entry, currentPrice);
+
+  // Simple profit lock: if > 2% profit, lock 50% of gains as stop
+  const pnl = signal.direction === "LONG" 
+    ? (currentPrice - signal.entry) / signal.entry
+    : (signal.entry - currentPrice) / signal.entry;
+
+  const profitLockActive = pnl > 0.02;
+  const lockedStop = profitLockActive 
+    ? (signal.direction === "LONG" 
+        ? Math.max(signal.stop, signal.entry + (currentPrice - signal.entry) * 0.5)
+        : Math.min(signal.stop, signal.entry - (signal.entry - currentPrice) * 0.5))
+    : undefined;
+
+  return {
+    highestPrice: highest,
+    lowestPrice: lowest,
+    newState: "HOLDING",
+    lockedStop,
+    profitLockActive,
+  };
 }
 
 // ------------------------------------------------------------------
