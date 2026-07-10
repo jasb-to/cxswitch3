@@ -36,9 +36,10 @@ function safeFixed(v: any, digits: number): string {
 }
 
 export async function sendAlert(signal: any): Promise<boolean> {
-  // [v29.1] Suppress NO_TRADE alerts — only actionable signals go to Telegram
-  if (signal.entryTier === "NO_TRADE") {
-    console.log(`[TELEGRAM SKIP] ${signal.pair} — NO_TRADE, no alert`);
+  // Suppress non-actionable signals
+  const isNoTrade = signal.entryTier === "NO_TRADE" || signal.scale === null;
+  if (isNoTrade) {
+    console.log(`[TELEGRAM SKIP] ${signal.pair} — no actionable signal`);
     return false;
   }
 
