@@ -1,17 +1,18 @@
-// lib/strategy.ts — v29.1 POLISHED PRODUCTION
+// lib/strategy.ts — v29.2 ARCHITECTURAL REFACTOR
 // ============================================================
-// Strategy logic, regime engine, exit logic, hysteresis, state persistence.
-// NO debug logging in production. NO rejection spam.
-// All diagnostics gated behind DEBUG mode.
+// Entry engine redesigned: Location → Structure → Momentum → Risk
+// StochRSI confirms setup, does not create or veto it.
+// All regime, exit, risk management, hysteresis, lock, Telegram, 
+// dashboard, cron and persistence logic UNCHANGED.
 //
-// Changes from diagnostic edition:
-//   - logRejection() only logs when DEBUG=true
-//   - getMarketSnapshot() accepts pre-computed signalResult (no duplicate generateSignal)
-//   - Tier locks: pair+tier based (EARLY vs CONFIRMED separate)
-//   - Trend Conflict detection in snapshot
-//   - Regime Score / Entry Score separation
-//   - Two-tier entry routing: EARLY (70-84) / CONFIRMED (85+)
-//   - Clean trader-facing messages only
+// NEW SCORING HIERARCHY (100-point scale):
+//   Location Score  : 0-30  (proximity to EMAs, trendlines, swing levels)
+//   Structure Score : 0-20  (higher highs/lows, trend integrity, rejection)
+//   Momentum Score  : 0-30  (StochRSI turn, MACD, ROC, ADX, volume)
+//   Risk Score      : 0-20  (ATR quality, stop distance, RR, volatility)
+//
+// EARLY ENTRY: 70-84 (33% position)
+// CONFIRMED ENTRY: 85+ (100% position)
 // ============================================================
 
 const DEBUG = process.env.DEBUG === "true";
@@ -161,12 +162,10 @@ export interface MarketRegime {
 }
 
 export interface ConfidenceComponents {
-  regimeAlignment: number;
-  setupQuality: number;
-  momentum: number;
+  location: number;
   structure: number;
-  volume: number;
-  riskPenalty: number;
+  momentum: number;
+  risk: number;
   total: number;
 }
 
@@ -228,6 +227,7 @@ function safeNum(v: any): number {
 function f0(v: any): string { return safeNum(v).toFixed(0); }
 function f1(v: any): string { return safeNum(v).toFixed(1); }
 function f2(v: any): string { return safeNum(v).toFixed(2); }
+function f3(v: any): string { return safeNum(v).toFixed(3); }
 
 // ─── TRADER-FRIENDLY MESSAGES ───
 
@@ -237,13 +237,10 @@ function getTraderReason(internalReason: string | null): string {
     "regime_neutral": "No directional bias",
     "cooldown_active": "Position cooldown active",
     "confidence_too_low": "Setup developing",
-    "no_cross_or_regime_mismatch": "Momentum confirmation pending",
-    "no_rejection_pattern_or_regime_mismatch": "No rejection pattern yet",
-    "no_breakout_or_regime_mismatch": "Breakout not confirmed",
-    "shallow_cross": "Waiting for deeper pullback",
-    "extended_cross": "Waiting for pullback",
-    "no_stoch_cross": "Waiting for StochRSI confirmation",
-    "low_breakout_volume": "Waiting for volume confirmation",
+    "location_weak": "Price not at optimal location",
+    "structure_broken": "Market structure compromised",
+    "momentum_missing": "Momentum confirmation pending",
+    "risk_too_high": "Risk parameters unfavorable",
     "adx_weak": "Market lacks strength",
     "high_volatility": "Volatility too high — risk control",
     "time_decay": "Signal expired",
@@ -253,6 +250,8 @@ function getTraderReason(internalReason: string | null): string {
     "target_hit": "Target reached",
     "trailing_stop": "Trailing stop triggered",
     "regime_reversal": "Trend reversed — exiting",
+    "exhaustion_block": "Market exhausted — cooling off",
+    "rr_too_low": "Risk:Reward too low",
   };
   for (const [key, value] of Object.entries(map)) {
     if (internalReason.includes(key)) return value;
@@ -302,7 +301,6 @@ function getPositionSizePct(tier: EntryTier, _regimeStrength: string): number {
 }
 
 // ─── TIER LOCK SYSTEM ───
-// Locks are pair + tier based: BTC/USD:EARLY and BTC/USD:CONFIRMED are independent
 
 const tierLockStore = new Map<string, number>();
 const TIER_LOCK_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours
@@ -740,7 +738,416 @@ export function getPairConfig(pair: string): PairConfig {
 }
 
 
-// ─── EXHAUSTION CHECK ───
+// ═══════════════════════════════════════════════════════════
+// ═══ NEW v29.2 ENTRY SCORING ENGINE ═══
+// ═══════════════════════════════════════════════════════════
+//
+// Architecture: Location → Structure → Momentum → Risk
+// StochRSI confirms, does not create or veto.
+//
+// ═══════════════════════════════════════════════════════════
+
+interface ScoreBreakdown {
+  location: number;
+  structure: number;
+  momentum: number;
+  risk: number;
+  total: number;
+  reasons: string[];
+}
+
+interface EntryScoreResult {
+  direction: "LONG" | "SHORT" | null;
+  confidence: number;
+  breakdown: ScoreBreakdown;
+  entryPrice: number;
+  entryMode: "PULLBACK" | "REJECTION" | "BREAKOUT";
+  stochK: number;
+  stochD: number;
+  stochPrevK: number;
+  stochPrevD: number;
+  exhaustionWarning: string;
+}
+
+// ─── 1. LOCATION SCORE (0-30) ───
+// Price proximity to key levels: EMAs, trendlines, swing levels
+
+function scoreLocation(
+  candles1h: Candle[],
+  candles4h: Candle[],
+  direction: "LONG" | "SHORT",
+  _config: PairConfig
+): { score: number; reasons: string[] } {
+  const reasons: string[] = [];
+  let score = 0;
+
+  const closes = candles1h.map(c => c.close);
+  const lastClose = closes[closes.length - 1];
+
+  // EMA proximity on 1H
+  const ema21_1h = ema(closes, 21);
+  const ema50_1h = ema(closes, 50);
+
+  if (ema21_1h.length > 0 && ema50_1h.length > 0) {
+    const e21 = ema21_1h[ema21_1h.length - 1];
+    const e50 = ema50_1h[ema50_1h.length - 1];
+    const prevE21 = ema21_1h.length > 1 ? ema21_1h[ema21_1h.length - 2] : e21;
+    const slope21 = e21 - prevE21;
+
+    // Rising EMA21 (trendline proxy) — LONG
+    if (direction === "LONG" && slope21 > 0) {
+      const distFromE21 = Math.abs(lastClose - e21) / e21;
+      if (distFromE21 < 0.01) { score += 10; reasons.push("loc_ema21_touch:+10 (" + f2(distFromE21 * 100) + "% away)"); }
+      else if (distFromE21 < 0.02) { score += 7; reasons.push("loc_ema21_near:+7 (" + f2(distFromE21 * 100) + "% away)"); }
+      else if (distFromE21 < 0.035) { score += 4; reasons.push("loc_ema21_close:+4 (" + f2(distFromE21 * 100) + "% away)"); }
+
+      const distFromE50 = Math.abs(lastClose - e50) / e50;
+      if (distFromE50 < 0.015) { score += 5; reasons.push("loc_ema50_near:+5"); }
+      else if (distFromE50 < 0.03) { score += 3; reasons.push("loc_ema50_close:+3"); }
+
+      // Price between EMA21 and EMA50 (value area)
+      if (lastClose < e21 && lastClose > e50 && e21 > e50) {
+        score += 5; reasons.push("loc_value_area:+5 (between EMA21/EMA50)");
+      }
+    }
+
+    // Falling EMA21 — SHORT
+    if (direction === "SHORT" && slope21 < 0) {
+      const distFromE21 = Math.abs(lastClose - e21) / e21;
+      if (distFromE21 < 0.01) { score += 10; reasons.push("loc_ema21_touch:+10"); }
+      else if (distFromE21 < 0.02) { score += 7; reasons.push("loc_ema21_near:+7"); }
+      else if (distFromE21 < 0.035) { score += 4; reasons.push("loc_ema21_close:+4"); }
+
+      const distFromE50 = Math.abs(lastClose - e50) / e50;
+      if (distFromE50 < 0.015) { score += 5; reasons.push("loc_ema50_near:+5"); }
+      else if (distFromE50 < 0.03) { score += 3; reasons.push("loc_ema50_close:+3"); }
+
+      if (lastClose > e21 && lastClose < e50 && e21 < e50) {
+        score += 5; reasons.push("loc_value_area:+5 (between EMA21/EMA50)");
+      }
+    }
+  }
+
+  // 4H EMA proximity (higher timeframe anchor)
+  const closes4h = candles4h.map(c => c.close);
+  const ema21_4h = ema(closes4h, 21);
+  const ema50_4h = ema(closes4h, 50);
+  if (ema21_4h.length > 0) {
+    const e21_4h = ema21_4h[ema21_4h.length - 1];
+    const dist4h = Math.abs(lastClose - e21_4h) / e21_4h;
+    if (dist4h < 0.02) { score += 5; reasons.push("loc_4h_ema21_near:+5"); }
+  }
+
+  // Swing level proximity
+  const swingLow = lowest(candles1h.map(c => c.low), 20);
+  const swingHigh = highest(candles1h.map(c => c.high), 20);
+
+  if (direction === "LONG") {
+    const distFromSwingLow = (lastClose - swingLow) / swingLow;
+    if (distFromSwingLow < 0.015) { score += 5; reasons.push("loc_swing_low:+5 (" + f2(distFromSwingLow * 100) + "% above)"); }
+    else if (distFromSwingLow < 0.03) { score += 3; reasons.push("loc_swing_low_near:+3"); }
+  } else {
+    const distFromSwingHigh = (swingHigh - lastClose) / swingHigh;
+    if (distFromSwingHigh < 0.015) { score += 5; reasons.push("loc_swing_high:+5 (" + f2(distFromSwingHigh * 100) + "% below)"); }
+    else if (distFromSwingHigh < 0.03) { score += 3; reasons.push("loc_swing_high_near:+3"); }
+  }
+
+  return { score: Math.min(30, score), reasons };
+}
+
+// ─── 2. STRUCTURE SCORE (0-20) ───
+// Market structure: higher highs/lows, trend integrity, rejection patterns
+
+function scoreStructure(
+  candles1h: Candle[],
+  candles4h: Candle[],
+  direction: "LONG" | "SHORT"
+): { score: number; reasons: string[]; isBroken: boolean } {
+  const reasons: string[] = [];
+  let score = 0;
+  let isBroken = false;
+
+  const closes = candles1h.map(c => c.close);
+  const highs = candles1h.map(c => c.high);
+  const lows = candles1h.map(c => c.low);
+  const lastClose = closes[closes.length - 1];
+
+  // Higher lows / lower highs check (last 10 candles)
+  const recentLows = lows.slice(-10);
+  const recentHighs = highs.slice(-10);
+
+  if (direction === "LONG") {
+    // Check for higher lows
+    let higherLowsCount = 0;
+    for (let i = 1; i < recentLows.length; i++) {
+      if (recentLows[i] > recentLows[i - 1]) higherLowsCount++;
+    }
+    if (higherLowsCount >= 4) { score += 5; reasons.push("struct_higher_lows:+5 (" + higherLowsCount + "/9)"); }
+    else if (higherLowsCount >= 2) { score += 3; reasons.push("struct_higher_lows_weak:+3 (" + higherLowsCount + "/9)"); }
+
+    // Check for higher highs
+    let higherHighsCount = 0;
+    for (let i = 1; i < recentHighs.length; i++) {
+      if (recentHighs[i] > recentHighs[i - 1]) higherHighsCount++;
+    }
+    if (higherHighsCount >= 4) { score += 5; reasons.push("struct_higher_highs:+5 (" + higherHighsCount + "/9)"); }
+    else if (higherHighsCount >= 2) { score += 3; reasons.push("struct_higher_highs_weak:+3 (" + higherHighsCount + "/9)"); }
+
+    // No lower low (structure intact)
+    const prevSwingLow = lowest(lows.slice(-20, -1), 10);
+    if (lastClose > prevSwingLow) {
+      score += 5; reasons.push("struct_no_lower_low:+5");
+    } else {
+      score -= 10; reasons.push("struct_lower_low:-10 (BROKEN)");
+      isBroken = true;
+    }
+
+    // Bullish close (close near high of candle)
+    const lastCandle = candles1h[candles1h.length - 1];
+    const bodyPct = (lastCandle.close - lastCandle.open) / (lastCandle.high - lastCandle.low || 1);
+    if (bodyPct > 0.6) { score += 3; reasons.push("struct_bullish_body:+3"); }
+    else if (bodyPct < -0.3) { score -= 5; reasons.push("struct_bearish_body:-5"); }
+
+    // Rejection wick at support
+    const lowerWick = Math.min(lastCandle.close, lastCandle.open) - lastCandle.low;
+    const candleRange = lastCandle.high - lastCandle.low;
+    if (candleRange > 0 && lowerWick / candleRange > 0.4) {
+      score += 2; reasons.push("struct_rejection_wick:+2");
+    }
+
+  } else {
+    // SHORT direction
+    let lowerHighsCount = 0;
+    for (let i = 1; i < recentHighs.length; i++) {
+      if (recentHighs[i] < recentHighs[i - 1]) lowerHighsCount++;
+    }
+    if (lowerHighsCount >= 4) { score += 5; reasons.push("struct_lower_highs:+5"); }
+    else if (lowerHighsCount >= 2) { score += 3; reasons.push("struct_lower_highs_weak:+3"); }
+
+    let lowerLowsCount = 0;
+    for (let i = 1; i < recentLows.length; i++) {
+      if (recentLows[i] < recentLows[i - 1]) lowerLowsCount++;
+    }
+    if (lowerLowsCount >= 4) { score += 5; reasons.push("struct_lower_lows:+5"); }
+    else if (lowerLowsCount >= 2) { score += 3; reasons.push("struct_lower_lows_weak:+3"); }
+
+    const prevSwingHigh = highest(highs.slice(-20, -1), 10);
+    if (lastClose < prevSwingHigh) {
+      score += 5; reasons.push("struct_no_higher_high:+5");
+    } else {
+      score -= 10; reasons.push("struct_higher_high:-10 (BROKEN)");
+      isBroken = true;
+    }
+
+    const lastCandle = candles1h[candles1h.length - 1];
+    const bodyPct = (lastCandle.close - lastCandle.open) / (lastCandle.high - lastCandle.low || 1);
+    if (bodyPct < -0.6) { score += 3; reasons.push("struct_bearish_body:+3"); }
+    else if (bodyPct > 0.3) { score -= 5; reasons.push("struct_bullish_body:-5"); }
+
+    const upperWick = lastCandle.high - Math.max(lastCandle.close, lastCandle.open);
+    const candleRange = lastCandle.high - lastCandle.low;
+    if (candleRange > 0 && upperWick / candleRange > 0.4) {
+      score += 2; reasons.push("struct_rejection_wick:+2");
+    }
+  }
+
+  // 4H trend integrity
+  const closes4h = candles4h.map(c => c.close);
+  const ema21_4h = ema(closes4h, 21);
+  const ema50_4h = ema(closes4h, 50);
+  if (ema21_4h.length > 1 && ema50_4h.length > 0) {
+    const e21_4h = ema21_4h[ema21_4h.length - 1];
+    const e50_4h = ema50_4h[ema50_4h.length - 1];
+    const prevE21_4h = ema21_4h[ema21_4h.length - 2];
+    const slope4h = e21_4h - prevE21_4h;
+
+    if (direction === "LONG" && e21_4h > e50_4h && slope4h > 0) {
+      score += 5; reasons.push("struct_4h_trend_intact:+5");
+    } else if (direction === "SHORT" && e21_4h < e50_4h && slope4h < 0) {
+      score += 5; reasons.push("struct_4h_trend_intact:+5");
+    } else if (direction === "LONG" && e21_4h < e50_4h) {
+      score -= 5; reasons.push("struct_4h_trend_weak:-5");
+    } else if (direction === "SHORT" && e21_4h > e50_4h) {
+      score -= 5; reasons.push("struct_4h_trend_weak:-5");
+    }
+  }
+
+  return { score: Math.min(20, Math.max(-20, score)), reasons, isBroken };
+}
+
+// ─── 3. MOMENTUM SCORE (0-30) ───
+// StochRSI turn, MACD, ROC, ADX, volume — confirms existing setup
+
+function scoreMomentum(
+  candles1h: Candle[],
+  candles4h: Candle[],
+  direction: "LONG" | "SHORT",
+  config: PairConfig
+): { score: number; reasons: string[]; stochK: number; stochD: number; stochPrevK: number; stochPrevD: number; crossDetected: boolean } {
+  const reasons: string[] = [];
+  let score = 0;
+
+  const closes = candles1h.map(c => c.close);
+  const volumes = candles1h.map(c => c.volume);
+
+  const stoch = stochRsi(closes);
+  const stochPrev = stochRsi(closes.slice(0, -1));
+
+  const crossUp = stochPrev.k <= stochPrev.d && stoch.k > stoch.d;
+  const crossDown = stochPrev.k >= stochPrev.d && stoch.k < stoch.d;
+  const crossDetected = direction === "LONG" ? crossUp : crossDown;
+
+  // StochRSI — CONFIRMS, does not veto
+  if (direction === "LONG") {
+    if (crossUp) {
+      score += 10; reasons.push("mom_stoch_cross_up:+10 (K=" + f1(stoch.k) + ", D=" + f1(stoch.d) + ")");
+    } else if (stoch.k > stoch.d && stoch.k < 80) {
+      score += 5; reasons.push("mom_stoch_bullish:+5 (K>D, not overbought)");
+    } else if (stoch.k > 80) {
+      score += 2; reasons.push("mom_stoch_extended:+2 (overbought but trending)");
+    } else {
+      score += 1; reasons.push("mom_stoch_neutral:+1 (waiting for turn)");
+    }
+  } else {
+    if (crossDown) {
+      score += 10; reasons.push("mom_stoch_cross_down:+10");
+    } else if (stoch.k < stoch.d && stoch.k > 20) {
+      score += 5; reasons.push("mom_stoch_bearish:+5 (K<D, not oversold)");
+    } else if (stoch.k < 20) {
+      score += 2; reasons.push("mom_stoch_extended:+2 (oversold but trending)");
+    } else {
+      score += 1; reasons.push("mom_stoch_neutral:+1");
+    }
+  }
+
+  // ROC (rate of change)
+  const roc = ((closes[closes.length - 1] - closes[closes.length - 4]) / closes[closes.length - 4]) * 100;
+  if (direction === "LONG" && roc > 0) {
+    score += Math.min(8, roc * 2); reasons.push("mom_roc:+" + f0(Math.min(8, roc * 2)) + " (" + f1(roc) + "%)");
+  } else if (direction === "SHORT" && roc < 0) {
+    score += Math.min(8, Math.abs(roc) * 2); reasons.push("mom_roc:+" + f0(Math.min(8, Math.abs(roc) * 2)) + " (" + f1(roc) + "%)");
+  } else if (Math.abs(roc) > 3) {
+    score -= 3; reasons.push("mom_roc_against:-3 (" + f1(roc) + "%)");
+  }
+
+  // Volume confirmation
+  const recentVol = avg(volumes.slice(-3));
+  const avgVol = avg(volumes.slice(-20));
+  if (recentVol > avgVol * config.volumeMultiplier) {
+    score += 5; reasons.push("mom_volume_spike:+5 (" + f1(recentVol / avgVol) + "x avg)");
+  } else if (recentVol > avgVol * 1.1) {
+    score += 2; reasons.push("mom_volume_above:+2 (" + f1(recentVol / avgVol) + "x avg)");
+  }
+
+  // ADX improving
+  const adx1h = adx(candles1h);
+  if (adx1h > config.minADX) {
+    score += 5; reasons.push("mom_adx_strong:+5 (" + f1(adx1h) + ")");
+  } else if (adx1h > config.minADX * 0.7) {
+    score += 2; reasons.push("mom_adx_moderate:+2 (" + f1(adx1h) + ")");
+  }
+
+  // 4H momentum alignment
+  const closes4h = candles4h.map(c => c.close);
+  const stoch4h = stochRsi(closes4h);
+  if (direction === "LONG" && stoch4h.k > stoch4h.d) {
+    score += 3; reasons.push("mom_4h_stoch_aligned:+3");
+  } else if (direction === "SHORT" && stoch4h.k < stoch4h.d) {
+    score += 3; reasons.push("mom_4h_stoch_aligned:+3");
+  }
+
+  return {
+    score: Math.min(30, score),
+    reasons,
+    stochK: stoch.k,
+    stochD: stoch.d,
+    stochPrevK: stochPrev.k,
+    stochPrevD: stochPrev.d,
+    crossDetected,
+  };
+}
+
+// ─── 4. RISK SCORE (0-20) ───
+// ATR quality, stop distance, RR, volatility
+
+function scoreRisk(
+  candles1h: Candle[],
+  candles4h: Candle[],
+  direction: "LONG" | "SHORT",
+  config: PairConfig,
+  entryPrice: number
+): { score: number; reasons: string[]; stopDistance: number; targetDistance: number; rr: number; atrPct: number } {
+  const reasons: string[] = [];
+  let score = 0;
+
+  const closes = candles1h.map(c => c.close);
+  const lastClose = closes[closes.length - 1];
+
+  const atr = avg(candles1h.slice(-14).map(c => c.high - c.low));
+  const atrPct = atr / lastClose;
+
+  // ATR quality
+  if (atrPct < 0.015) {
+    score += 8; reasons.push("risk_atr_low:+8 (" + f2(atrPct * 100) + "%)");
+  } else if (atrPct < 0.025) {
+    score += 5; reasons.push("risk_atr_normal:+5 (" + f2(atrPct * 100) + "%)");
+  } else if (atrPct < 0.04) {
+    score += 2; reasons.push("risk_atr_elevated:+2 (" + f2(atrPct * 100) + "%)");
+  } else {
+    score -= 5; reasons.push("risk_atr_high:-5 (" + f2(atrPct * 100) + "%)");
+  }
+
+  // Stop distance quality
+  const stopDistance = Math.max(atr * 2, entryPrice * config.stopLossPct);
+  const targetDistance = stopDistance * MIN_RR;
+  const rr = targetDistance / stopDistance;
+
+  if (rr >= 3.0) {
+    score += 7; reasons.push("risk_rr_excellent:+7 (" + f2(rr) + ")");
+  } else if (rr >= 2.0) {
+    score += 5; reasons.push("risk_rr_good:+5 (" + f2(rr) + ")");
+  } else if (rr >= MIN_RR) {
+    score += 3; reasons.push("risk_rr_acceptable:+3 (" + f2(rr) + ")");
+  } else {
+    score -= 10; reasons.push("risk_rr_poor:-10 (" + f2(rr) + " < " + MIN_RR + ")");
+  }
+
+  // Volatility check (recent vs historical)
+  const recentRange = avg(candles1h.slice(-3).map(c => (c.high - c.low) / c.close));
+  const historicalRange = avg(candles1h.slice(-20, -3).map(c => (c.high - c.low) / c.close));
+  if (recentRange < historicalRange * 1.5) {
+    score += 3; reasons.push("risk_vol_stable:+3");
+  } else if (recentRange > historicalRange * 2.5) {
+    score -= 5; reasons.push("risk_vol_spike:-5");
+  }
+
+  // Position near logical stop level
+  if (direction === "LONG") {
+    const recentLow = lowest(candles1h.map(c => c.low), 10);
+    const stopAboveLow = (entryPrice - stopDistance) > recentLow * 0.995;
+    if (stopAboveLow) {
+      score += 2; reasons.push("risk_stop_logical:+2 (above recent low)");
+    }
+  } else {
+    const recentHigh = highest(candles1h.map(c => c.high), 10);
+    const stopBelowHigh = (entryPrice + stopDistance) < recentHigh * 1.005;
+    if (stopBelowHigh) {
+      score += 2; reasons.push("risk_stop_logical:+2 (below recent high)");
+    }
+  }
+
+  return {
+    score: Math.min(20, Math.max(-20, score)),
+    reasons,
+    stopDistance,
+    targetDistance,
+    rr,
+    atrPct,
+  };
+}
+
+
+// ─── EXHAUSTION CHECK (UNCHANGED) ───
 
 function checkExhaustion(
   stoch4h: { k: number; d: number },
@@ -791,7 +1198,6 @@ function logRejection(log: RejectionLog): void {
   if (rejectionLogs.length > MAX_REJECTION_LOGS) {
     rejectionLogs.shift();
   }
-  // Only log to console in DEBUG mode
   if (DEBUG) {
     console.log("[REJECTED] " + log.pair + " | cross=" + (log.crossDetected ? log.crossDirection : "none") + " | regime=" + log.regimeDirection + " | conf=" + log.confidenceScore + " | reason=" + log.rejectionReason);
   }
@@ -808,153 +1214,80 @@ export function clearRejectionLogs(): void {
   rejectionLogs.length = 0;
 }
 
-// ─── CONFIDENCE ENGINE ───
+// ─── NEW ENTRY ORCHESTRATOR ───
+// Replaces scoreBestEntry, scorePullbackEntry, scoreRejectionEntry, scoreBreakoutEntry
 
-interface EntryCandidateInternal {
-  direction: "LONG" | "SHORT";
-  strength: number;
-  finalConfidence: number;
-  reasons: string[];
-  confidenceComponents: ConfidenceComponents;
-  stochK: number;
-  stochD: number;
-  stochPrevK: number;
-  stochPrevD: number;
-  entryPrice: number;
-  confidencePenalty: number;
-  exhaustionWarning: string;
-  entryMode: "PULLBACK" | "REJECTION" | "BREAKOUT";
-}
-
-function buildEntryComponents(
-  regimeAlignment: number,
-  setupQuality: number,
-  momentum: number,
-  structure: number,
-  volume: number,
-  riskPenalty: number
-): ConfidenceComponents {
-  const total = Math.min(100, Math.max(0, regimeAlignment + setupQuality + momentum + structure + volume + riskPenalty));
-  return {
-    regimeAlignment,
-    setupQuality,
-    momentum,
-    structure,
-    volume,
-    riskPenalty,
-    total,
-  };
-}
-
-// ─── MODE A: PULLBACK ENTRY ───
-
-function scorePullbackEntry(
+function evaluateEntry(
   candles1h: Candle[],
   candles4h: Candle[],
+  candles15m: Candle[],
   config: PairConfig,
   pair: string,
   regimeDirection: "LONG" | "SHORT"
-): EntryCandidateInternal | null {
-  const reasons: string[] = [];
+): { result: EntryScoreResult | null; candidates: EntryCandidates; debug: string[] } {
+  const debug: string[] = [];
+
+  // Determine entry mode and direction from price action
   const closes = candles1h.map(c => c.close);
-  const volumes = candles1h.map(c => c.volume);
-  if (closes.length < 50) return null;
-
-  const stoch = stochRsi(closes);
-  const stochPrev = stochRsi(closes.slice(0, -1));
-
-  const crossUp = stochPrev.k <= stochPrev.d && stoch.k > stoch.d;
-  const crossDown = stochPrev.k >= stochPrev.d && stoch.k < stoch.d;
-
-  let direction: "LONG" | "SHORT" | null = null;
-  if (crossUp) direction = "LONG";
-  else if (crossDown) direction = "SHORT";
-
-  if (!direction) return null;
-  if (direction !== regimeDirection) return null;
-
-  let regimeAlignment = 25;
-  reasons.push("regime_alignment:+25");
-  let setupQuality = 0, momentum = 0, structure = 0, volumeScore = 0;
-
-  if (config.isHYPE) {
-    if (direction === "LONG") {
-      if (stoch.k < (config.deepCrossThresholdLong || 25)) { setupQuality += 20; reasons.push("deep_cross:+20"); }
-      else if (stoch.k < 40) { setupQuality += 10; reasons.push("moderate_cross:+10"); }
-      else { setupQuality -= 20; reasons.push("shallow_cross:-20"); }
-    } else {
-      if (stoch.k > (config.deepCrossThresholdShort || 75)) { setupQuality += 20; reasons.push("deep_cross:+20"); }
-      else if (stoch.k > 60) { setupQuality += 10; reasons.push("moderate_cross:+10"); }
-      else { setupQuality -= 20; reasons.push("shallow_cross:-20"); }
-    }
-  } else {
-    if (direction === "LONG") {
-      if (stoch.k < 35) { setupQuality += 15; reasons.push("deep_cross:+15"); }
-      else if (stoch.k < 50) { setupQuality += 5; reasons.push("moderate_cross:+5"); }
-      else if (stoch.k > 70) { setupQuality -= 15; reasons.push("extended_cross:-15"); }
-    } else {
-      if (stoch.k > 65) { setupQuality += 15; reasons.push("deep_cross:+15"); }
-      else if (stoch.k > 50) { setupQuality += 5; reasons.push("moderate_cross:+5"); }
-      else if (stoch.k < 30) { setupQuality -= 15; reasons.push("extended_cross:-15"); }
-    }
-  }
-
-  const roc = ((closes[closes.length - 1] - closes[closes.length - 4]) / closes[closes.length - 4]) * 100;
-
-  if (Math.abs(roc) > 2) {
-    momentum += Math.min(15, Math.abs(roc) * 3);
-    reasons.push("momentum_roc:" + f1(roc) + ":+" + f0(Math.min(15, Math.abs(roc) * 3)));
-  }
-
-  const ema21 = ema(closes, 21);
-  const ema50 = ema(closes, 50);
+  const highs = candles1h.map(c => c.high);
+  const lows = candles1h.map(c => c.low);
   const lastClose = closes[closes.length - 1];
-  if (ema21.length > 0 && ema50.length > 0) {
-    const e21 = ema21[ema21.length - 1];
-    const e50 = ema50[ema50.length - 1];
-    if (direction === "LONG" && lastClose > e21) {
-      structure += 10;
-      reasons.push("price_above_21ema:+10");
-    } else if (direction === "SHORT" && lastClose < e21) {
-      structure += 10;
-      reasons.push("price_below_21ema:+10");
+  const prevClose = closes[closes.length - 2];
+
+  const recentHigh = highest(highs, 20);
+  const recentLow = lowest(lows, 20);
+
+  // Detect entry mode
+  let entryMode: "PULLBACK" | "REJECTION" | "BREAKOUT" = "PULLBACK";
+  let direction: "LONG" | "SHORT" | null = null;
+
+  // Breakout detection
+  if (lastClose > recentHigh && prevClose <= recentHigh) {
+    direction = "LONG";
+    entryMode = "BREAKOUT";
+  } else if (lastClose < recentLow && prevClose >= recentLow) {
+    direction = "SHORT";
+    entryMode = "BREAKOUT";
+  }
+
+  // Rejection detection (if not breakout)
+  if (!direction) {
+    if (lastClose > recentLow * 1.005 && lows[lows.length - 2] <= recentLow * 1.002) {
+      direction = "LONG";
+      entryMode = "REJECTION";
+    } else if (lastClose < recentHigh * 0.995 && highs[highs.length - 2] >= recentHigh * 0.998) {
+      direction = "SHORT";
+      entryMode = "REJECTION";
     }
-    if (direction === "LONG" && e21 > e50) {
-      structure += 10;
-      reasons.push("21ema_above_50ema:+10");
-    } else if (direction === "SHORT" && e21 < e50) {
-      structure += 10;
-      reasons.push("21ema_below_50ema:+10");
-    }
   }
 
-  const recentVol = avg(volumes.slice(-5));
-  const avgVol = avg(volumes.slice(-20));
-  if (recentVol > avgVol * config.volumeMultiplier) {
-    volumeScore += 10;
-    reasons.push("volume_spike:+10");
+  // Default to pullback if no clear pattern
+  if (!direction) {
+    const stoch = stochRsi(closes);
+    const stochPrev = stochRsi(closes.slice(0, -1));
+    const crossUp = stochPrev.k <= stochPrev.d && stoch.k > stoch.d;
+    const crossDown = stochPrev.k >= stochPrev.d && stoch.k < stoch.d;
+
+    if (crossUp) direction = "LONG";
+    else if (crossDown) direction = "SHORT";
   }
 
-  const atr = avg(candles1h.slice(-14).map(c => c.high - c.low));
-  const atrPct = atr / lastClose;
-  let riskPenalty = 0;
-  if (atrPct > 0.03) {
-    riskPenalty -= 15;
-    reasons.push("high_volatility:-15");
+  // Must align with regime
+  if (!direction || direction !== regimeDirection) {
+    const candidates: EntryCandidates = {
+      pullback: { eligible: false, confidence: 0, rejectionReason: "no_cross_or_regime_mismatch" },
+      rejection: { eligible: false, confidence: 0, rejectionReason: "no_rejection_pattern_or_regime_mismatch" },
+      breakout: { eligible: false, confidence: 0, rejectionReason: "no_breakout_or_regime_mismatch" },
+    };
+    if (DEBUG) debug.push("No direction detected or regime mismatch");
+    return { result: null, candidates, debug };
   }
 
-  const closes4h = candles4h.map(c => c.close);
-  const stoch4h = stochRsi(closes4h);
-  const exhaustion = checkExhaustion(stoch4h, direction);
-  let confidencePenalty = exhaustion.confidencePenalty;
-  if (exhaustion.isExhausted) {
-    reasons.push(exhaustion.reason);
-  }
+  // Compute the four scores
+  const location = scoreLocation(candles1h, candles4h, direction, config);
+  const structure = scoreStructure(candles1h, candles4h, direction);
 
-  const stoch1h = stochRsi(closes);
-  const stochPrev1h = stochRsi(closes.slice(0, -1));
-  const exhaustionWarning = getExhaustionWarning(stoch1h, stochPrev1h, direction);
-
+  // Entry price
   let entryPrice = lastClose;
   if (direction === "LONG") {
     entryPrice = Math.min(lastClose, candles1h[candles1h.length - 1].low * 1.002);
@@ -962,312 +1295,99 @@ function scorePullbackEntry(
     entryPrice = Math.max(lastClose, candles1h[candles1h.length - 1].high * 0.998);
   }
 
-  const confidenceComponents = buildEntryComponents(regimeAlignment, setupQuality, momentum, structure, volumeScore, riskPenalty);
-  const finalConfidence = confidenceComponents.total + confidencePenalty;
+  const risk = scoreRisk(candles1h, candles4h, direction, config, entryPrice);
+  const momentum = scoreMomentum(candles1h, candles4h, direction, config);
 
-  return {
-    direction,
-    strength: finalConfidence,
-    finalConfidence,
+  // Exhaustion check on 4H
+  const closes4h = candles4h.map(c => c.close);
+  const stoch4h = stochRsi(closes4h);
+  const exhaustion = checkExhaustion(stoch4h, direction);
+
+  // Build total
+  let total = location.score + structure.score + momentum.score + risk.score;
+  let reasons = [
+    ...location.reasons,
+    ...structure.reasons,
+    ...momentum.reasons,
+    ...risk.reasons,
+  ];
+
+  if (exhaustion.isExhausted) {
+    total += exhaustion.confidencePenalty;
+    reasons.push(exhaustion.reason);
+  }
+
+  total = Math.min(100, Math.max(0, total));
+
+  const breakdown: ScoreBreakdown = {
+    location: location.score,
+    structure: structure.score,
+    momentum: momentum.score,
+    risk: risk.score,
+    total,
     reasons,
-    confidenceComponents,
-    stochK: stoch.k,
-    stochD: stoch.d,
-    stochPrevK: stochPrev.k,
-    stochPrevD: stochPrev.d,
+  };
+
+  const stoch1h = stochRsi(closes);
+  const stochPrev1h = stochRsi(closes.slice(0, -1));
+  const exhaustionWarning = getExhaustionWarning(stoch1h, stochPrev1h, direction);
+
+  const result: EntryScoreResult = {
+    direction,
+    confidence: total,
+    breakdown,
     entryPrice,
-    confidencePenalty,
+    entryMode,
+    stochK: momentum.stochK,
+    stochD: momentum.stochD,
+    stochPrevK: momentum.stochPrevK,
+    stochPrevD: momentum.stochPrevD,
     exhaustionWarning,
-    entryMode: "PULLBACK",
   };
-}
 
-// ─── MODE B: REJECTION ENTRY ───
-
-function scoreRejectionEntry(
-  candles1h: Candle[],
-  candles4h: Candle[],
-  candles15m: Candle[],
-  config: PairConfig,
-  pair: string,
-  regimeDirection: "LONG" | "SHORT"
-): EntryCandidateInternal | null {
-  const reasons: string[] = [];
-  const closes = candles1h.map(c => c.close);
-  const highs = candles1h.map(c => c.high);
-  const lows = candles1h.map(c => c.low);
-  const volumes = candles1h.map(c => c.volume);
-  if (closes.length < 50 || candles15m.length < 20) return null;
-
-  const stoch = stochRsi(closes);
-  const stochPrev = stochRsi(closes.slice(0, -1));
-
-  const recentHigh = highest(highs, 10);
-  const recentLow = lowest(lows, 10);
-  const lastClose = closes[closes.length - 1];
-
-  let direction: "LONG" | "SHORT" | null = null;
-  let setupQuality = 0;
-
-  if (lastClose > recentLow * 1.005 && lows[lows.length - 2] <= recentLow * 1.002) {
-    direction = "LONG";
-    setupQuality += 20;
-    reasons.push("support_rejection:+20");
-  }
-  else if (lastClose < recentHigh * 0.995 && highs[highs.length - 2] >= recentHigh * 0.998) {
-    direction = "SHORT";
-    setupQuality += 20;
-    reasons.push("resistance_rejection:+20");
-  }
-
-  if (!direction || direction !== regimeDirection) return null;
-
-  const crossUp = stochPrev.k <= stochPrev.d && stoch.k > stoch.d;
-  const crossDown = stochPrev.k >= stochPrev.d && stoch.k < stoch.d;
-
-  if (direction === "LONG" && !crossUp) {
-    setupQuality -= 10;
-    reasons.push("no_stoch_cross:-10");
-  } else if (direction === "SHORT" && !crossDown) {
-    setupQuality -= 10;
-    reasons.push("no_stoch_cross:-10");
-  }
-
-  let regimeAlignment = 25;
-  reasons.push("regime_alignment:+25");
-  let momentum = 0, structure = 0, volumeScore = 0;
-
-  const closes15m = candles15m.map(c => c.close);
-  const roc15m = ((closes15m[closes15m.length - 1] - closes15m[closes15m.length - 4]) / closes15m[closes15m.length - 4]) * 100;
-  if (Math.abs(roc15m) > 1.5) {
-    momentum += Math.min(15, Math.abs(roc15m) * 3);
-    reasons.push("momentum_15m:" + f1(roc15m) + ":+" + f0(Math.min(15, Math.abs(roc15m) * 3)));
-  }
-
-  const recentVol = volumes[volumes.length - 1];
-  const avgVol = avg(volumes.slice(-10));
-  if (recentVol > avgVol * 1.5) {
-    volumeScore += 15;
-    reasons.push("rejection_volume:+15");
-  }
-
-  const atr = avg(candles1h.slice(-14).map(c => c.high - c.low));
-  const atrPct = atr / lastClose;
-  let riskPenalty = 0;
-  if (atrPct > 0.03) {
-    riskPenalty -= 15;
-    reasons.push("high_volatility:-15");
-  }
-
-  const closes4h = candles4h.map(c => c.close);
-  const stoch4h = stochRsi(closes4h);
-  const exhaustion = checkExhaustion(stoch4h, direction);
-  let confidencePenalty = exhaustion.confidencePenalty;
-  if (exhaustion.isExhausted) {
-    reasons.push(exhaustion.reason);
-  }
-
-  const stoch1h = stochRsi(closes);
-  const stochPrev1h = stochRsi(closes.slice(0, -1));
-  const exhaustionWarning = getExhaustionWarning(stoch1h, stochPrev1h, direction);
-
-  const confidenceComponents = buildEntryComponents(regimeAlignment, setupQuality, momentum, structure, volumeScore, riskPenalty);
-  const finalConfidence = confidenceComponents.total + confidencePenalty;
-
-  return {
-    direction,
-    strength: finalConfidence,
-    finalConfidence,
-    reasons,
-    confidenceComponents,
-    stochK: stoch.k,
-    stochD: stoch.d,
-    stochPrevK: stochPrev.k,
-    stochPrevD: stochPrev.d,
-    entryPrice: lastClose,
-    confidencePenalty,
-    exhaustionWarning,
-    entryMode: "REJECTION",
-  };
-}
-
-// ─── MODE C: BREAKOUT ENTRY ───
-
-function scoreBreakoutEntry(
-  candles1h: Candle[],
-  candles4h: Candle[],
-  candles15m: Candle[],
-  config: PairConfig,
-  pair: string,
-  regimeDirection: "LONG" | "SHORT"
-): EntryCandidateInternal | null {
-  const reasons: string[] = [];
-  const closes = candles1h.map(c => c.close);
-  const highs = candles1h.map(c => c.high);
-  const lows = candles1h.map(c => c.low);
-  const volumes = candles1h.map(c => c.volume);
-  if (closes.length < 50) return null;
-
-  const stoch = stochRsi(closes);
-  const stochPrev = stochRsi(closes.slice(0, -1));
-
-  const recentHigh = highest(highs, 20);
-  const recentLow = lowest(lows, 20);
-  const lastClose = closes[closes.length - 1];
-  const prevClose = closes[closes.length - 2];
-
-  let direction: "LONG" | "SHORT" | null = null;
-  let setupQuality = 0;
-
-  if (lastClose > recentHigh && prevClose <= recentHigh) {
-    direction = "LONG";
-    setupQuality += 25;
-    reasons.push("resistance_breakout:+25");
-  }
-  else if (lastClose < recentLow && prevClose >= recentLow) {
-    direction = "SHORT";
-    setupQuality += 25;
-    reasons.push("support_breakdown:+25");
-  }
-
-  if (!direction || direction !== regimeDirection) return null;
-
-  const recentVol = volumes[volumes.length - 1];
-  const avgVol = avg(volumes.slice(-10));
-  if (recentVol > avgVol * config.volumeMultiplier) {
-    setupQuality += 15;
-    reasons.push("breakout_volume:+15");
-  } else {
-    setupQuality -= 10;
-    reasons.push("low_breakout_volume:-10");
-  }
-
-  if (direction === "LONG" && stoch.k > 85) {
-    setupQuality -= 15;
-    reasons.push("stoch_overbought:-15");
-  } else if (direction === "SHORT" && stoch.k < 15) {
-    setupQuality -= 15;
-    reasons.push("stoch_oversold:-15");
-  }
-
-  let regimeAlignment = 25;
-  reasons.push("regime_alignment:+25");
-  let momentum = 0, structure = 0, volumeScore = 0;
-
-  const roc = ((closes[closes.length - 1] - closes[closes.length - 4]) / closes[closes.length - 4]) * 100;
-  if (Math.abs(roc) > 2) {
-    momentum += Math.min(15, Math.abs(roc) * 3);
-    reasons.push("momentum_roc:" + f1(roc) + ":+" + f0(Math.min(15, Math.abs(roc) * 3)));
-  }
-
-  const adx1h = adx(candles1h);
-  if (adx1h > config.minADX) {
-    structure += 15;
-    reasons.push("adx_confirms:" + f1(adx1h) + ":+15");
-  } else {
-    structure -= 10;
-    reasons.push("adx_weak:" + f1(adx1h) + ":-10");
-  }
-
-  const atr = avg(candles1h.slice(-14).map(c => c.high - c.low));
-  const atrPct = atr / lastClose;
-  let riskPenalty = 0;
-  if (atrPct > 0.03) {
-    riskPenalty -= 15;
-    reasons.push("high_volatility:-15");
-  }
-
-  const closes4h = candles4h.map(c => c.close);
-  const stoch4h = stochRsi(closes4h);
-  const exhaustion = checkExhaustion(stoch4h, direction);
-  let confidencePenalty = exhaustion.confidencePenalty;
-  if (exhaustion.isExhausted) {
-    reasons.push(exhaustion.reason);
-  }
-
-  const stoch1h = stochRsi(closes);
-  const stochPrev1h = stochRsi(closes.slice(0, -1));
-  const exhaustionWarning = getExhaustionWarning(stoch1h, stochPrev1h, direction);
-
-  const confidenceComponents = buildEntryComponents(regimeAlignment, setupQuality, momentum, structure, volumeScore, riskPenalty);
-  const finalConfidence = confidenceComponents.total + confidencePenalty;
-
-  return {
-    direction,
-    strength: finalConfidence,
-    finalConfidence,
-    reasons,
-    confidenceComponents,
-    stochK: stoch.k,
-    stochD: stoch.d,
-    stochPrevK: stochPrev.k,
-    stochPrevD: stochPrev.d,
-    entryPrice: lastClose,
-    confidencePenalty,
-    exhaustionWarning,
-    entryMode: "BREAKOUT",
-  };
-}
-
-
-// ─── Entry Orchestrator ───
-
-function scoreBestEntry(
-  candles1h: Candle[],
-  candles4h: Candle[],
-  candles15m: Candle[],
-  config: PairConfig,
-  pair: string,
-  regimeDirection: "LONG" | "SHORT"
-): { candidate: EntryCandidateInternal | null; candidates: EntryCandidates; debug: string[] } {
-  const debug: string[] = [];
-
-  const pullback = scorePullbackEntry(candles1h, candles4h, config, pair, regimeDirection);
-  const rejection = scoreRejectionEntry(candles1h, candles4h, candles15m, config, pair, regimeDirection);
-  const breakout = scoreBreakoutEntry(candles1h, candles4h, candles15m, config, pair, regimeDirection);
+  // Build candidate scores for each mode
+  const pullbackScore = entryMode === "PULLBACK" ? total : 0;
+  const rejectionScore = entryMode === "REJECTION" ? total : 0;
+  const breakoutScore = entryMode === "BREAKOUT" ? total : 0;
 
   const candidates: EntryCandidates = {
     pullback: {
-      eligible: !!pullback && (pullback.finalConfidence >= 70),
-      confidence: pullback?.finalConfidence || 0,
-      rejectionReason: pullback
-        ? (pullback.finalConfidence < 70 ? "confidence_too_low:" + f0(pullback.finalConfidence) : null)
-        : "no_cross_or_regime_mismatch",
+      eligible: entryMode === "PULLBACK" && total >= 70,
+      confidence: pullbackScore,
+      rejectionReason: entryMode === "PULLBACK" && total < 70 ? "confidence_too_low:" + f0(total) : null,
     },
     rejection: {
-      eligible: !!rejection && (rejection.finalConfidence >= 70),
-      confidence: rejection?.finalConfidence || 0,
-      rejectionReason: rejection
-        ? (rejection.finalConfidence < 70 ? "confidence_too_low:" + f0(rejection.finalConfidence) : null)
-        : "no_rejection_pattern_or_regime_mismatch",
+      eligible: entryMode === "REJECTION" && total >= 70,
+      confidence: rejectionScore,
+      rejectionReason: entryMode === "REJECTION" && total < 70 ? "confidence_too_low:" + f0(total) : null,
     },
     breakout: {
-      eligible: !!breakout && (breakout.finalConfidence >= 70),
-      confidence: breakout?.finalConfidence || 0,
-      rejectionReason: breakout
-        ? (breakout.finalConfidence < 70 ? "confidence_too_low:" + f0(breakout.finalConfidence) : null)
-        : "no_breakout_or_regime_mismatch",
+      eligible: entryMode === "BREAKOUT" && total >= 70,
+      confidence: breakoutScore,
+      rejectionReason: entryMode === "BREAKOUT" && total < 70 ? "confidence_too_low:" + f0(total) : null,
     },
   };
 
   if (DEBUG) {
-    debug.push("PULLBACK: " + (candidates.pullback.eligible ? "PASS" : "FAIL") + " conf=" + f0(candidates.pullback.confidence) + (candidates.pullback.rejectionReason ? " " + candidates.pullback.rejectionReason : ""));
-    debug.push("REJECTION: " + (candidates.rejection.eligible ? "PASS" : "FAIL") + " conf=" + f0(candidates.rejection.confidence) + (candidates.rejection.rejectionReason ? " " + candidates.rejection.rejectionReason : ""));
-    debug.push("BREAKOUT: " + (candidates.breakout.eligible ? "PASS" : "FAIL") + " conf=" + f0(candidates.breakout.confidence) + (candidates.breakout.rejectionReason ? " " + candidates.breakout.rejectionReason : ""));
+    debug.push("=== v29.2 ENTRY EVALUATION ===");
+    debug.push("Direction: " + direction + " | Mode: " + entryMode);
+    debug.push("Location: " + f0(location.score) + "/30");
+    debug.push("Structure: " + f0(structure.score) + "/20");
+    debug.push("Momentum: " + f0(momentum.score) + "/30");
+    debug.push("Risk: " + f0(risk.score) + "/20");
+    debug.push("Total: " + f0(total) + "/100");
+    if (exhaustion.isExhausted) debug.push("EXHAUSTION PENALTY: " + f0(exhaustion.confidencePenalty));
+    debug.push("Stoch K=" + f1(momentum.stochK) + " D=" + f1(momentum.stochD) + " cross=" + (momentum.crossDetected ? "YES" : "NO"));
+    debug.push("RR=" + f2(risk.rr) + " ATR%=" + f2(risk.atrPct * 100) + "%");
+    for (const r of reasons) debug.push("  " + r);
   }
 
-  let best: EntryCandidateInternal | null = null;
-  if (pullback && (!best || pullback.finalConfidence > best.finalConfidence)) best = pullback;
-  if (rejection && (!best || rejection.finalConfidence > best.finalConfidence)) best = rejection;
-  if (breakout && (!best || breakout.finalConfidence > best.finalConfidence)) best = breakout;
-
-  if (best && best.finalConfidence < 70) {
-    if (DEBUG) debug.push("Best candidate confidence " + f1(best.finalConfidence) + " below minimum 70 (NO_TRADE)");
-    best = null;
-  }
-
-  return { candidate: best, candidates, debug };
+  return { result, candidates, debug };
 }
+
+// ─── DEPRECATED: Old scoring functions removed ───
+// scorePullbackEntry, scoreRejectionEntry, scoreBreakoutEntry, scoreBestEntry
+// have been replaced by evaluateEntry() with Location → Structure → Momentum → Risk architecture.
 
 // ─── Trend Context Helper ───
 
@@ -1319,9 +1439,10 @@ function detectTrendConflict(trend1h: TrendContext, trend4h: TrendContext, trend
   return true;
 }
 
+
 // ─── MAIN SIGNAL GENERATION ───
 
-export const CURRENT_SIGNAL_VERSION = 29;
+export const CURRENT_SIGNAL_VERSION = 30;
 
 export async function generateSignal(
   pair: string,
@@ -1332,7 +1453,7 @@ export async function generateSignal(
 ): Promise<SignalResult> {
   const debug: string[] = [];
   if (DEBUG) {
-    debug.push("=== generateSignal " + pair + " ===");
+    debug.push("=== generateSignal v29.2 " + pair + " ===");
     debug.push("candles: 1h=" + candles1h.length + " 4h=" + candles4h.length + " 15m=" + candles15m.length);
     debug.push("price=" + f2(currentPrice));
   }
@@ -1423,10 +1544,11 @@ export async function generateSignal(
     };
   }
 
-  const { candidate, candidates, debug: entryDebug } = scoreBestEntry(candles1h, candles4h, candles15m, config, pair, regime.direction);
+  // Use new v29.2 entry engine
+  const { result, candidates, debug: entryDebug } = evaluateEntry(candles1h, candles4h, candles15m, config, pair, regime.direction);
   if (DEBUG) debug.push(...entryDebug);
 
-  if (!candidate) {
+  if (!result) {
     const stoch4h = stochRsi(candles4h.map(c => c.close));
     const rejectionLog: RejectionLog = {
       pair,
@@ -1473,32 +1595,30 @@ export async function generateSignal(
   }
 
   // Check exhaustion block
-  if (candidate.confidencePenalty <= -40) {
+  if (result.breakdown.total < 70 && result.exhaustionWarning) {
     const stoch4h = stochRsi(candles4h.map(c => c.close));
     const rejectionLog: RejectionLog = {
       pair,
       timestamp: now,
-      crossDetected: true,
-      crossDirection: candidate.direction,
+      crossDetected: result.breakdown.momentum > 0,
+      crossDirection: result.direction,
       regimeDirection: regime.direction,
       regimeStrength: regime.strength,
-      confidenceScore: candidate.finalConfidence,
+      confidenceScore: result.confidence,
       confidenceBreakdown: {
-        regimeAlignment: candidate.confidenceComponents.regimeAlignment,
-        setupQuality: candidate.confidenceComponents.setupQuality,
-        momentum: candidate.confidenceComponents.momentum,
-        structure: candidate.confidenceComponents.structure,
-        volume: candidate.confidenceComponents.volume,
-        riskPenalty: candidate.confidenceComponents.riskPenalty,
+        location: result.breakdown.location,
+        structure: result.breakdown.structure,
+        momentum: result.breakdown.momentum,
+        risk: result.breakdown.risk,
       },
-      rejectionReason: candidate.exhaustionWarning || "Exhaustion block",
+      rejectionReason: result.exhaustionWarning || "Exhaustion block",
       stochK: stoch4h.k,
       stochD: stoch4h.d,
-      stochPrevK: candidate.stochPrevK,
-      stochPrevD: candidate.stochPrevD,
+      stochPrevK: result.stochPrevK,
+      stochPrevD: result.stochPrevD,
     };
     logRejection(rejectionLog);
-    if (DEBUG) debug.push("REJECTED: exhaustion block — " + candidate.exhaustionWarning);
+    if (DEBUG) debug.push("REJECTED: exhaustion block — " + result.exhaustionWarning);
 
     return {
       market: {
@@ -1510,51 +1630,45 @@ export async function generateSignal(
         rsi: rsi(candles4h.map(c => c.close)),
         stochK: stoch4h.k,
         stochD: stoch4h.d,
-        stoch1hK: candidate.stochK,
-        stoch1hD: candidate.stochD,
+        stoch1hK: result.stochK,
+        stoch1hD: result.stochD,
       },
       debug,
       entryCandidates: candidates,
-      rejectionStage: "Market exhausted — " + (candidate.exhaustionWarning?.replace("BLOCK: ", "") || "cooling off"),
+      rejectionStage: "Market exhausted — " + (result.exhaustionWarning?.replace("⚠️ ", "").replace("⚠ ", "") || "cooling off"),
     };
   }
 
   // Calculate stops and targets
-  const atr = avg(candles1h.slice(-14).map(c => c.high - c.low));
-  const stopDistance = Math.max(atr * 2, currentPrice * config.stopLossPct);
-  const targetDistance = stopDistance * MIN_RR;
-
-  let stop = candidate.direction === "LONG" ? candidate.entryPrice - stopDistance : candidate.entryPrice + stopDistance;
-  let target = candidate.direction === "LONG" ? candidate.entryPrice + targetDistance : candidate.entryPrice - targetDistance;
+  const risk = scoreRisk(candles1h, candles4h, result.direction!, config, result.entryPrice);
+  const stop = result.direction === "LONG" ? result.entryPrice - risk.stopDistance : result.entryPrice + risk.stopDistance;
+  const target = result.direction === "LONG" ? result.entryPrice + risk.targetDistance : result.entryPrice - risk.targetDistance;
 
   // RR check
-  const rr = targetDistance / stopDistance;
-  if (rr < MIN_RR) {
+  if (risk.rr < MIN_RR) {
     const stoch4h = stochRsi(candles4h.map(c => c.close));
     const rejectionLog: RejectionLog = {
       pair,
       timestamp: now,
-      crossDetected: true,
-      crossDirection: candidate.direction,
+      crossDetected: result.breakdown.momentum > 0,
+      crossDirection: result.direction,
       regimeDirection: regime.direction,
       regimeStrength: regime.strength,
-      confidenceScore: candidate.finalConfidence,
+      confidenceScore: result.confidence,
       confidenceBreakdown: {
-        regimeAlignment: candidate.confidenceComponents.regimeAlignment,
-        setupQuality: candidate.confidenceComponents.setupQuality,
-        momentum: candidate.confidenceComponents.momentum,
-        structure: candidate.confidenceComponents.structure,
-        volume: candidate.confidenceComponents.volume,
-        riskPenalty: candidate.confidenceComponents.riskPenalty,
+        location: result.breakdown.location,
+        structure: result.breakdown.structure,
+        momentum: result.breakdown.momentum,
+        risk: result.breakdown.risk,
       },
-      rejectionReason: "RR " + f2(rr) + " below minimum " + MIN_RR,
+      rejectionReason: "RR " + f2(risk.rr) + " below minimum " + MIN_RR,
       stochK: stoch4h.k,
       stochD: stoch4h.d,
-      stochPrevK: candidate.stochPrevK,
-      stochPrevD: candidate.stochPrevD,
+      stochPrevK: result.stochPrevK,
+      stochPrevD: result.stochPrevD,
     };
     logRejection(rejectionLog);
-    if (DEBUG) debug.push("REJECTED: RR " + f2(rr) + " < " + MIN_RR);
+    if (DEBUG) debug.push("REJECTED: RR " + f2(risk.rr) + " < " + MIN_RR);
 
     return {
       market: {
@@ -1566,45 +1680,44 @@ export async function generateSignal(
         rsi: rsi(candles4h.map(c => c.close)),
         stochK: stoch4h.k,
         stochD: stoch4h.d,
-        stoch1hK: candidate.stochK,
-        stoch1hD: candidate.stochD,
+        stoch1hK: result.stochK,
+        stoch1hD: result.stochD,
       },
       debug,
       entryCandidates: candidates,
-      rejectionStage: "Risk:Reward too low (" + f2(rr) + " < " + MIN_RR + ")",
+      rejectionStage: "Risk:Reward too low (" + f2(risk.rr) + " < " + MIN_RR + ")",
     };
   }
 
   // ADX check - soft penalty instead of hard block for early entries
   const adx4h = adx(candles4h);
+  let finalConfidence = result.confidence;
   if (adx4h < config.minADX) {
     const adxPenalty = Math.round((config.minADX - adx4h) * 2);
-    candidate.finalConfidence -= adxPenalty;
+    finalConfidence -= adxPenalty;
     if (DEBUG) debug.push("ADX " + f1(adx4h) + " below threshold " + config.minADX + ", penalty -" + adxPenalty);
 
-    if (candidate.finalConfidence < 70) {
+    if (finalConfidence < 70) {
       const stoch4h = stochRsi(candles4h.map(c => c.close));
       const rejectionLog: RejectionLog = {
         pair,
         timestamp: now,
-        crossDetected: true,
-        crossDirection: candidate.direction,
+        crossDetected: result.breakdown.momentum > 0,
+        crossDirection: result.direction,
         regimeDirection: regime.direction,
         regimeStrength: regime.strength,
-        confidenceScore: candidate.finalConfidence,
+        confidenceScore: finalConfidence,
         confidenceBreakdown: {
-          regimeAlignment: candidate.confidenceComponents.regimeAlignment,
-          setupQuality: candidate.confidenceComponents.setupQuality,
-          momentum: candidate.confidenceComponents.momentum,
-          structure: candidate.confidenceComponents.structure,
-          volume: candidate.confidenceComponents.volume,
-          riskPenalty: candidate.confidenceComponents.riskPenalty,
+          location: result.breakdown.location,
+          structure: result.breakdown.structure,
+          momentum: result.breakdown.momentum,
+          risk: result.breakdown.risk,
         },
-        rejectionReason: "ADX " + f1(adx4h) + " too low, confidence dropped to " + f0(candidate.finalConfidence) + " after penalty",
+        rejectionReason: "ADX " + f1(adx4h) + " too low, confidence dropped to " + f0(finalConfidence) + " after penalty",
         stochK: stoch4h.k,
         stochD: stoch4h.d,
-        stochPrevK: candidate.stochPrevK,
-        stochPrevD: candidate.stochPrevD,
+        stochPrevK: result.stochPrevK,
+        stochPrevD: result.stochPrevD,
       };
       logRejection(rejectionLog);
       if (DEBUG) debug.push("REJECTED: ADX penalty dropped confidence below EARLY_ENTRY (70)");
@@ -1619,22 +1732,22 @@ export async function generateSignal(
           rsi: rsi(candles4h.map(c => c.close)),
           stochK: stoch4h.k,
           stochD: stoch4h.d,
-          stoch1hK: candidate.stochK,
-          stoch1hD: candidate.stochD,
+          stoch1hK: result.stochK,
+          stoch1hD: result.stochD,
         },
         debug,
         entryCandidates: candidates,
-        rejectionStage: "ADX penalty — confidence " + f0(candidate.finalConfidence) + " below EARLY_ENTRY (70)",
+        rejectionStage: "ADX penalty — confidence " + f0(finalConfidence) + " below EARLY_ENTRY (70)",
       };
     }
   }
 
   // Classify entry tier and position size
-  const entryTier = classifyEntryTier(candidate.finalConfidence);
+  const entryTier = classifyEntryTier(finalConfidence);
   const positionSizePct = getPositionSizePct(entryTier, regime.strength);
 
   if (entryTier === "NO_TRADE") {
-    if (DEBUG) debug.push("REJECTED: confidence " + f1(candidate.finalConfidence) + " below EARLY_ENTRY threshold (70)");
+    if (DEBUG) debug.push("REJECTED: confidence " + f1(finalConfidence) + " below EARLY_ENTRY threshold (70)");
     return {
       market: {
         pair,
@@ -1645,12 +1758,12 @@ export async function generateSignal(
         rsi: rsi(candles4h.map(c => c.close)),
         stochK: stochRsi(candles4h.map(c => c.close)).k,
         stochD: stochRsi(candles4h.map(c => c.close)).d,
-        stoch1hK: candidate.stochK,
-        stoch1hD: candidate.stochD,
+        stoch1hK: result.stochK,
+        stoch1hD: result.stochD,
       },
       debug,
       entryCandidates: candidates,
-      rejectionStage: "Setup developing (" + f0(candidate.finalConfidence) + "%) — below entry threshold",
+      rejectionStage: "Setup developing (" + f0(finalConfidence) + "%) — below entry threshold",
     };
   }
 
@@ -1667,8 +1780,8 @@ export async function generateSignal(
         rsi: rsi(candles4h.map(c => c.close)),
         stochK: stochRsi(candles4h.map(c => c.close)).k,
         stochD: stochRsi(candles4h.map(c => c.close)).d,
-        stoch1hK: candidate.stochK,
-        stoch1hD: candidate.stochD,
+        stoch1hK: result.stochK,
+        stoch1hD: result.stochD,
       },
       debug,
       entryCandidates: candidates,
@@ -1680,38 +1793,44 @@ export async function generateSignal(
   setTierLock(pair, entryTier, now);
 
   // Generate signal with tier and sizing
-  const signalId = pair + "-" + candidate.direction + "-" + now;
+  const signalId = pair + "-" + result.direction + "-" + now;
   const signal: Signal = {
     id: signalId,
     pair,
-    direction: candidate.direction,
+    direction: result.direction!,
     type: "ENTRY",
-    entry: candidate.entryPrice,
+    entry: result.entryPrice,
     stop,
     target,
-    confidence: candidate.finalConfidence,
+    confidence: finalConfidence,
     entryTier,
     positionSizePct,
-    rr,
+    rr: risk.rr,
     adx: adx4h,
     rsi: rsi(candles4h.map(c => c.close)),
     stochK: stochRsi(candles4h.map(c => c.close)).k,
     stochD: stochRsi(candles4h.map(c => c.close)).d,
-    stoch1hK: candidate.stochK,
-    stoch1hD: candidate.stochD,
-    expectedMove: targetDistance,
-    reason: candidate.reasons.join(" | "),
+    stoch1hK: result.stochK,
+    stoch1hD: result.stochD,
+    expectedMove: risk.targetDistance,
+    reason: result.breakdown.reasons.join(" | "),
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
     tradeState: "OPEN",
     regimeDirection: regime.direction,
     regimeSince: regime.detectedAt,
-    entryMode: candidate.entryMode,
-    confidenceComponents: candidate.confidenceComponents,
-    exhaustionWarning: candidate.exhaustionWarning || undefined,
+    entryMode: result.entryMode,
+    confidenceComponents: {
+      location: result.breakdown.location,
+      structure: result.breakdown.structure,
+      momentum: result.breakdown.momentum,
+      risk: result.breakdown.risk,
+      total: finalConfidence,
+    },
+    exhaustionWarning: result.exhaustionWarning || undefined,
   };
 
-  if (DEBUG) debug.push("SIGNAL: " + candidate.direction + " " + pair + " @ " + f2(candidate.entryPrice) + " tier=" + entryTier + " conf=" + f1(candidate.finalConfidence) + " size=" + f0(positionSizePct * 100) + "% rr=" + f2(rr) + " mode=" + candidate.entryMode);
+  if (DEBUG) debug.push("SIGNAL: " + result.direction + " " + pair + " @ " + f2(result.entryPrice) + " tier=" + entryTier + " conf=" + f1(finalConfidence) + " size=" + f0(positionSizePct * 100) + "% rr=" + f2(risk.rr) + " mode=" + result.entryMode);
 
   return {
     signal,
@@ -1724,8 +1843,8 @@ export async function generateSignal(
       rsi: rsi(candles4h.map(c => c.close)),
       stochK: stochRsi(candles4h.map(c => c.close)).k,
       stochD: stochRsi(candles4h.map(c => c.close)).d,
-      stoch1hK: candidate.stochK,
-      stoch1hD: candidate.stochD,
+      stoch1hK: result.stochK,
+      stoch1hD: result.stochD,
     },
     debug,
     entryCandidates: candidates,
@@ -1936,9 +2055,6 @@ export async function filterExpiredSignals(signals: Signal[], currentPrices: Rec
 
 
 // ─── Market Snapshot ───
-// CRITICAL: This function does NOT call generateSignal().
-// The cron passes the pre-computed SignalResult from its earlier generateSignal() call.
-// This prevents duplicate calculation and duplicate logs.
 
 export async function getMarketSnapshot(
   pair: string,
