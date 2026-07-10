@@ -1,19 +1,15 @@
-// app/api/cron/route.ts — v29.1 CXSwitch cron job (POLISHED)
+// app/api/cron/route.ts — v32 CXSwitch cron job
 // ============================================================
-// This is the ONLY place that evaluates markets, generates signals,
-// manages exits, and computes dashboard snapshots.
-//
-// /api/signals is READ-ONLY. It never calls strategy functions.
 
 import { NextRequest, NextResponse } from "next/server";
 import {
-  generateSignal,
+  generateSignalAsync,
   shouldHold,
   filterExpiredSignals,
   loadExits,
   setRegimePersistence,
   setExitPersistence,
-  updateTradeManager,
+  updateTradeManagerCompat,
   getMarketSnapshot,
   Signal,
   SignalResult,
@@ -38,11 +34,26 @@ const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
 const CRON_SECRET = process.env.CRON_SECRET;
 const DEBUG = process.env.DEBUG === "true";
 
-// Max age of exited signals to keep in state (7 days)
-const EXITED_SIGNAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
 setRegimePersistence(persistRegime, loadRegime);
 setExitPersistence(persistExit, loadExitsState);
+
+/** Migrate old signal format to v32 */
+function migrateSignal(signal: any): Signal {
+  if (!signal) return signal;
+  return {
+    ...signal,
+    exited: signal.exited ?? false,
+    highestPrice: signal.highestPrice ?? signal.entry,
+    lowestPrice: signal.lowestPrice ?? signal.entry,
+    tradeState: signal.tradeState ?? "OPEN",
+    lockedStop: signal.lockedStop ?? undefined,
+    profitLockActive: signal.profitLockActive ?? false,
+    entryTier: signal.entryTier ?? (signal.scale === "ADD" ? "CONFIRMED_ENTRY" : signal.scale ? "EARLY_ENTRY" : null),
+    entryMode: signal.entryMode ?? (signal.scale === "ADD" ? "BREAKOUT" : "PULLBACK"),
+    positionSizePct: signal.positionSizePct ?? (signal.scale === "ADD" ? 0.05 : 0.03),
+    regimeDirection: signal.regimeDirection ?? signal.direction,
+  };
+}
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -50,50 +61,39 @@ export async function GET(req: NextRequest) {
   const token = authHeader?.replace("Bearer ", "") || secret;
 
   if (!CRON_SECRET) {
-    console.error("[CRON] CRON_SECRET environment variable is not set");
-    return NextResponse.json({ error: "Server misconfiguration: CRON_SECRET not set" }, { status: 500 });
+    console.error("[CRON] CRON_SECRET not set");
+    return NextResponse.json({ error: "CRON_SECRET not set" }, { status: 500 });
   }
-
-  if (!token) {
-    console.warn("[CRON] Rejected — no secret provided");
-    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
-  }
-
-  if (token !== CRON_SECRET) {
-    console.warn("[CRON] Rejected — invalid secret provided");
+  if (!token || token !== CRON_SECRET) {
     return NextResponse.json({ error: "Invalid secret" }, { status: 401 });
   }
 
   console.log("[CRON] Started");
-
   const now = Date.now();
   const results: Record<string, any> = {};
   const errors: string[] = [];
 
-  try {
-    await loadExits();
-  } catch (e) {
-    errors.push("loadExits: " + e);
-    if (DEBUG) console.warn("[CRON] loadExits failed (non-fatal):", e);
-  }
-
   let activeSignals: Signal[] = [];
   try {
-    activeSignals = await loadActiveSignals();
+    const loaded = await loadActiveSignals();
+    activeSignals = loaded.map(migrateSignal);
   } catch (e) {
     errors.push("loadActiveSignals: " + e);
-    console.error("[CRON] loadActiveSignals failed:", e);
   }
 
   const currentPrices: Record<string, number> = {};
   const signalResults: Record<string, SignalResult> = {};
-  const marketSnapshots = [];
+  const marketSnapshots: any[] = [];
 
   for (const pair of PAIRS) {
-    const krakenPair = krakenPairFormat(pair);
     results[pair] = { status: "pending" };
 
     try {
+      const krakenPair = krakenPairFormat(pair);
+      if (!krakenPair) {
+        throw new Error(`krakenPairFormat returned empty for ${pair}`);
+      }
+
       const [candles1h, candles4h, candles15m, price] = await Promise.all([
         getCandles(krakenPair, 60),
         getCandles(krakenPair, 240),
@@ -108,19 +108,19 @@ export async function GET(req: NextRequest) {
 
       if (activeForPair.length > 0) {
         for (const signal of activeForPair) {
-          const holdResult = await shouldHold(signal, candles4h, price);
+          const holdResult = shouldHold(signal, candles4h, price, now);
 
           if (!holdResult.shouldHold) {
             try {
               await sendExitAlert(signal, price, holdResult.reason);
             } catch (alertErr) {
-              console.error("[CRON] sendExitAlert failed for", signal.id, ":", alertErr);
+              console.error("[CRON] sendExitAlert failed:", alertErr);
             }
             signal.exited = true;
             results[pair] = { status: "EXITED", reason: holdResult.reason, price, signalId: signal.id };
             console.log("[EXIT] " + pair + " | " + signal.direction + " | " + holdResult.reason + " | $" + price.toFixed(2));
           } else {
-            const tm = updateTradeManager(signal, price);
+            const tm = updateTradeManagerCompat(signal, price);
             signal.highestPrice = tm.highestPrice;
             signal.lowestPrice = tm.lowestPrice;
             signal.tradeState = tm.newState;
@@ -136,23 +136,23 @@ export async function GET(req: NextRequest) {
           }
         }
       } else {
-        // ─── STEP 2: Generate new signal (ONCE) ───
-        const result = await generateSignal(pair, candles1h, candles4h, candles15m, price);
+        // ─── STEP 2: Generate new signal ───
+        const result = await generateSignalAsync(pair, candles1h, candles4h, candles15m, price);
         signalResults[pair] = result;
 
         if (result.signal) {
-          const signal = result.signal;
+          const signal = migrateSignal(result.signal);
           activeSignals.push(signal);
 
-          // Only send Telegram for actionable tiers
-          if (signal.entryTier !== "NO_TRADE") {
+          // Only send Telegram for ENTRY_1 and ADD (not ENTRY_2)
+          if (signal.scale !== "ENTRY_2") {
             try {
               await sendAlert(signal);
             } catch (alertErr) {
-              console.error("[CRON] sendAlert failed for", signal.id, ":", alertErr);
+              console.error("[CRON] sendAlert failed:", alertErr);
             }
-            console.log("[" + signal.entryTier.replace("_", " ") + "] " + pair + " | " + signal.direction + " | conf=" + signal.confidence.toFixed(1) + "% | entry=" + signal.entry.toFixed(2) + " | size=" + (signal.positionSizePct * 100).toFixed(0) + "%");
           }
+          console.log("[" + (signal.scale || "SIGNAL") + "] " + pair + " | " + signal.direction + " | conf=" + signal.confidence + "% | entry=" + signal.entry.toFixed(2));
 
           results[pair] = {
             status: "SIGNAL",
@@ -162,25 +162,15 @@ export async function GET(req: NextRequest) {
             stop: signal.stop,
             target: signal.target,
             rr: signal.rr,
-            mode: signal.entryMode,
-            entryTier: signal.entryTier,
-            positionSizePct: signal.positionSizePct,
+            scale: signal.scale,
           };
         } else {
-          results[pair] = { status: "NO_SIGNAL" };
+          results[pair] = { status: "NO_SIGNAL", debug: result.debug };
         }
       }
 
-      // ─── STEP 3: Build snapshot using PRE-COMPUTED signal result ───
-      // This is the fix for duplicate execution — we pass the already-computed result
-      const snapshot = await getMarketSnapshot(
-        pair,
-        candles1h,
-        candles4h,
-        candles15m,
-        price,
-        signalResults[pair] // ← Pre-computed, no second generateSignal() call
-      );
+      // ─── STEP 3: Build snapshot ───
+      const snapshot = getMarketSnapshot(pair, candles1h, candles4h, [], price, signalResults[pair]);
       marketSnapshots.push(snapshot);
 
     } catch (err) {
@@ -189,23 +179,19 @@ export async function GET(req: NextRequest) {
       results[pair] = { status: "ERROR", error: msg };
       try {
         await alertError("cron/" + pair, err);
-      } catch (alertErr) {
-        console.error("[CRON] alertError failed:", alertErr);
-      }
+      } catch {}
     }
   }
 
-  // Filter expired signals
+  // ─── STEP 4: Filter expired ───
   try {
-    const { active, exited } = await filterExpiredSignals(activeSignals, currentPrices, now);
+    const { active, exited } = filterExpiredSignals(activeSignals, currentPrices, now);
     for (const { signal, reason } of exited) {
       if (!signal.exited) {
         const price = currentPrices[signal.pair] || signal.entry;
         try {
           await sendExitAlert(signal, price, reason);
-        } catch (alertErr) {
-          console.error("[CRON] sendExitAlert (filterExpired) failed for", signal.id, ":", alertErr);
-        }
+        } catch {}
         signal.exited = true;
       }
     }
@@ -214,48 +200,28 @@ export async function GET(req: NextRequest) {
     errors.push("filterExpiredSignals: " + e);
   }
 
-  // Clean up old exited signals
-  const cleanedSignals = activeSignals.filter(s => {
-    if (!s.exited) return true;
-    const age = now - s.timestamp;
-    return age < EXITED_SIGNAL_TTL_MS;
-  });
-  const prunedCount = activeSignals.length - cleanedSignals.length;
-
+  // ─── STEP 5: Save state ───
   try {
-    await saveActiveSignals(cleanedSignals);
+    await saveActiveSignals(activeSignals);
     await setLastCronRun(now);
   } catch (e) {
     errors.push("save state: " + e);
-    console.error("[CRON] save state failed:", e);
   }
 
-  // Build and save dashboard snapshot
+  // ─── STEP 6: Dashboard snapshot ───
   const dashboardSnapshot = {
     timestamp: now,
     iso: new Date(now).toISOString(),
     markets: marketSnapshots,
-    activeSignals: cleanedSignals.filter(s => !s.exited),
+    activeSignals: activeSignals.filter(s => !s.exited),
     errors: errors.length > 0 ? errors : undefined,
   };
 
   try {
     await saveDashboardSnapshot(dashboardSnapshot);
-    console.log("[CRON] Finished | Markets: " + PAIRS.length + " | Active trades: " + cleanedSignals.filter(s => !s.exited).length);
+    console.log("[CRON] Finished | Active trades: " + activeSignals.filter(s => !s.exited).length);
   } catch (e) {
-    console.error("[CRON] saveDashboardSnapshot failed:", e);
     errors.push("saveDashboardSnapshot: " + e);
-  }
-
-  // Daily report only if enabled
-  const hour = new Date(now).getUTCHours();
-  const sendDailyStatus = process.env.DAILY_STATUS_REPORT === "true";
-  if (sendDailyStatus && hour === 0) {
-    try {
-      await alertStatus(activeSignals, currentPrices);
-    } catch (alertErr) {
-      console.error("[CRON] alertStatus failed:", alertErr);
-    }
   }
 
   return NextResponse.json({
@@ -263,8 +229,7 @@ export async function GET(req: NextRequest) {
     timestamp: now,
     iso: new Date(now).toISOString(),
     results,
-    activeTrades: cleanedSignals.filter(s => !s.exited).length,
-    prunedExited: prunedCount || undefined,
+    activeTrades: activeSignals.filter(s => !s.exited).length,
     errors: errors.length > 0 ? errors : undefined,
   });
 }
