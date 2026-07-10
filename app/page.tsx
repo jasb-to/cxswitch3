@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { EntryTier } from "@/lib/strategy";
 
 interface RegimeData {
   direction: string | null;
@@ -13,6 +14,12 @@ interface RegimeData {
 interface TrendContext {
   direction: string;
   strength: string;
+}
+
+interface EntryCandidates {
+  pullback: { eligible: boolean; confidence: number; rejectionReason: string | null };
+  rejection: { eligible: boolean; confidence: number; rejectionReason: string | null };
+  breakout: { eligible: boolean; confidence: number; rejectionReason: string | null };
 }
 
 interface MarketSnapshot {
@@ -29,10 +36,13 @@ interface MarketSnapshot {
   trend1h?: TrendContext;
   trend4h?: TrendContext;
   trend1d?: TrendContext;
+  entryCandidates?: EntryCandidates;
   rejectionStage?: string | null;
   recommendedAction?: string;
   positionSize?: string;
   whyNoTrade?: string[];
+  entryTier?: EntryTier | null;
+  trendConflict?: boolean;
 }
 
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
@@ -44,6 +54,7 @@ function getDirectionColor(direction: string | null | undefined): string {
   const d = String(direction).toUpperCase();
   if (d === "LONG" || d === "BULLISH") return "text-green-400";
   if (d === "SHORT" || d === "BEARISH") return "text-red-400";
+  if (d === "TREND_CONFLICT") return "text-yellow-400";
   return "text-gray-400";
 }
 
@@ -71,6 +82,12 @@ function getActionBg(action: string | undefined): string {
   return "bg-gray-800/50 border-gray-700/30";
 }
 
+function getTierEmoji(tier: EntryTier | null | undefined): string {
+  if (tier === "CONFIRMED_ENTRY") return "🟢";
+  if (tier === "EARLY_ENTRY") return "🟡";
+  return "⚪";
+}
+
 // ─── Card Component ───
 
 function MarketCard({ snap }: { snap: MarketSnapshot }) {
@@ -79,6 +96,11 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
   const strengthClass = getStrengthBadge(regime?.strength || "NEUTRAL");
   const actionColor = getActionColor(snap.recommendedAction);
   const actionBg = getActionBg(snap.recommendedAction);
+  const bestConf = Math.max(
+    snap.entryCandidates?.pullback?.confidence || 0,
+    snap.entryCandidates?.rejection?.confidence || 0,
+    snap.entryCandidates?.breakout?.confidence || 0
+  );
 
   return (
     <div className="p-4 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-700 transition">
@@ -90,11 +112,40 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </span>
       </div>
 
-      {/* Price & Direction */}
+      {/* Price & Regime Direction */}
       <div className="mb-3">
         <div className="text-2xl font-mono font-bold">${snap.price?.toFixed(2) || "—"}</div>
         <div className={`text-xs font-bold ${dirColor} mt-0.5`}>
-          {regime?.direction || "NEUTRAL"} · Confidence {regime?.confidence || 0}%
+          {regime?.direction === "TREND_CONFLICT" ? "⚠ TREND CONFLICT" : (regime?.direction || "NEUTRAL")}
+        </div>
+      </div>
+
+      {/* Regime Score */}
+      <div className="mb-3 p-2 bg-gray-800/40 rounded-lg">
+        <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider font-semibold">Regime Score</div>
+        <div className="text-lg font-mono font-bold text-gray-200">{regime?.confidence || 0}</div>
+      </div>
+
+      {/* Entry Score */}
+      <div className="mb-3 p-2 bg-gray-800/40 rounded-lg">
+        <div className="text-[10px] text-gray-500 mb-1.5 uppercase tracking-wider font-semibold">Entry Score</div>
+        <div className="grid grid-cols-3 gap-2 text-center mb-2">
+          <div>
+            <div className="text-[10px] text-gray-600">Pullback</div>
+            <div className="text-xs font-mono font-semibold">{snap.entryCandidates?.pullback?.confidence?.toFixed(0) || "0"}</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-gray-600">Rejection</div>
+            <div className="text-xs font-mono font-semibold">{snap.entryCandidates?.rejection?.confidence?.toFixed(0) || "0"}</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-gray-600">Breakout</div>
+            <div className="text-xs font-mono font-semibold">{snap.entryCandidates?.breakout?.confidence?.toFixed(0) || "0"}</div>
+          </div>
+        </div>
+        <div className="flex items-center justify-between pt-1.5 border-t border-gray-700/50">
+          <span className="text-[10px] text-gray-500">Best Candidate</span>
+          <span className="text-xs font-mono font-bold text-gray-300">{bestConf.toFixed(0)} / 100</span>
         </div>
       </div>
 
@@ -102,13 +153,10 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
       {snap.recommendedAction && (
         <div className={`mb-3 p-3 rounded-lg border ${actionBg}`}>
           <div className={`text-sm font-bold ${actionColor}`}>
-            {snap.recommendedAction}
+            {getTierEmoji(snap.entryTier)} {snap.recommendedAction}
           </div>
           {snap.positionSize && (
             <div className="text-xs text-gray-400 mt-0.5">{snap.positionSize}</div>
-          )}
-          {snap.rejectionStage && snap.recommendedAction === "WAIT" && (
-            <div className="text-xs text-gray-500 mt-1">{snap.rejectionStage}</div>
           )}
         </div>
       )}
@@ -186,10 +234,9 @@ export default function Dashboard() {
       }
       const data = await res.json();
       const marketMap: Record<string, MarketSnapshot> = {};
-      if (data.markets) {
-        for (const m of data.markets) {
-          if (m.pair) marketMap[m.pair] = m;
-        }
+      const markets = data.markets || data.snapshot?.markets || [];
+      for (const m of markets) {
+        if (m.pair) marketMap[m.pair] = m;
       }
       setSnapshots(marketMap);
       setLastUpdate(new Date(data.lastCronRun || Date.now()).toLocaleTimeString());
