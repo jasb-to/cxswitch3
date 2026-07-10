@@ -1,9 +1,9 @@
-// app/api/cron/route.ts — v29.1 CXSwitch cron job (FIXED)
+// app/api/cron/route.ts — v29.1 CXSwitch cron job (POLISHED)
 // ============================================================
 // This is the ONLY place that evaluates markets, generates signals,
 // manages exits, and computes dashboard snapshots.
 //
-// /api/signals is READ-ONLY. It never calls strategy Functions.
+// /api/signals is READ-ONLY. It never calls strategy functions.
 
 import { NextRequest, NextResponse } from "next/server";
 import {
@@ -16,6 +16,7 @@ import {
   updateTradeManager,
   getMarketSnapshot,
   Signal,
+  SignalResult,
 } from "@/lib/strategy";
 import { getCandles, getCurrentPrice, krakenPairFormat } from "@/lib/kraken";
 import { sendAlert, sendExitAlert, alertStatus, alertError } from "@/lib/telegram";
@@ -35,6 +36,7 @@ export const dynamic = "force-dynamic";
 
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
 const CRON_SECRET = process.env.CRON_SECRET;
+const DEBUG = process.env.DEBUG === "true";
 
 // Max age of exited signals to keep in state (7 days)
 const EXITED_SIGNAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -47,25 +49,22 @@ export async function GET(req: NextRequest) {
   const secret = req.nextUrl.searchParams.get("secret");
   const token = authHeader?.replace("Bearer ", "") || secret;
 
-  // Verify CRON_SECRET is configured
   if (!CRON_SECRET) {
     console.error("[CRON] CRON_SECRET environment variable is not set");
     return NextResponse.json({ error: "Server misconfiguration: CRON_SECRET not set" }, { status: 500 });
   }
 
-  // Verify token was provided
   if (!token) {
-    console.warn("[CRON] Rejected — no secret provided (query param or Authorization header missing)");
-    return NextResponse.json({ error: "Authentication required. Provide ?secret= or Authorization: Bearer header" }, { status: 401 });
+    console.warn("[CRON] Rejected — no secret provided");
+    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
   }
 
-  // Verify token matches
   if (token !== CRON_SECRET) {
     console.warn("[CRON] Rejected — invalid secret provided");
     return NextResponse.json({ error: "Invalid secret" }, { status: 401 });
   }
 
-  console.log("[CRON] Authenticated successfully");
+  console.log("[CRON] Started");
 
   const now = Date.now();
   const results: Record<string, any> = {};
@@ -75,7 +74,7 @@ export async function GET(req: NextRequest) {
     await loadExits();
   } catch (e) {
     errors.push("loadExits: " + e);
-    console.warn("[CRON] loadExits failed (non-fatal):", e);
+    if (DEBUG) console.warn("[CRON] loadExits failed (non-fatal):", e);
   }
 
   let activeSignals: Signal[] = [];
@@ -87,6 +86,8 @@ export async function GET(req: NextRequest) {
   }
 
   const currentPrices: Record<string, number> = {};
+  const signalResults: Record<string, SignalResult> = {};
+  const marketSnapshots = [];
 
   for (const pair of PAIRS) {
     const krakenPair = krakenPairFormat(pair);
@@ -102,15 +103,14 @@ export async function GET(req: NextRequest) {
 
       currentPrices[pair] = price;
 
-      // Process ALL active signals for this pair, not just the first one
+      // ─── STEP 1: Manage existing positions ───
       const activeForPair = activeSignals.filter(s => s.pair === pair && !s.exited);
 
       if (activeForPair.length > 0) {
         for (const signal of activeForPair) {
-          const holdResult = await shouldHold(signal, candles4h, price, now);
+          const holdResult = await shouldHold(signal, candles4h, price);
 
           if (!holdResult.shouldHold) {
-            // Wrap sendExitAlert in try/catch — mark exited even if Telegram fails
             try {
               await sendExitAlert(signal, price, holdResult.reason);
             } catch (alertErr) {
@@ -118,6 +118,7 @@ export async function GET(req: NextRequest) {
             }
             signal.exited = true;
             results[pair] = { status: "EXITED", reason: holdResult.reason, price, signalId: signal.id };
+            console.log("[EXIT] " + pair + " | " + signal.direction + " | " + holdResult.reason + " | $" + price.toFixed(2));
           } else {
             const tm = updateTradeManager(signal, price);
             signal.highestPrice = tm.highestPrice;
@@ -135,19 +136,24 @@ export async function GET(req: NextRequest) {
           }
         }
       } else {
+        // ─── STEP 2: Generate new signal (ONCE) ───
         const result = await generateSignal(pair, candles1h, candles4h, candles15m, price);
+        signalResults[pair] = result;
 
         if (result.signal) {
           const signal = result.signal;
           activeSignals.push(signal);
-          // [v29.1] Only send Telegram for actionable signals (EARLY / CONFIRMED)
+
+          // Only send Telegram for actionable tiers
           if (signal.entryTier !== "NO_TRADE") {
             try {
               await sendAlert(signal);
             } catch (alertErr) {
               console.error("[CRON] sendAlert failed for", signal.id, ":", alertErr);
             }
+            console.log("[" + signal.entryTier.replace("_", " ") + "] " + pair + " | " + signal.direction + " | conf=" + signal.confidence.toFixed(1) + "% | entry=" + signal.entry.toFixed(2) + " | size=" + (signal.positionSizePct * 100).toFixed(0) + "%");
           }
+
           results[pair] = {
             status: "SIGNAL",
             direction: signal.direction,
@@ -161,10 +167,22 @@ export async function GET(req: NextRequest) {
             positionSizePct: signal.positionSizePct,
           };
         } else {
-          results[pair] = { status: "NO_SIGNAL", trend: result.market?.trend };
-          // No NO_SIGNAL alerts — only actionable signals are sent to Telegram
+          results[pair] = { status: "NO_SIGNAL" };
         }
       }
+
+      // ─── STEP 3: Build snapshot using PRE-COMPUTED signal result ───
+      // This is the fix for duplicate execution — we pass the already-computed result
+      const snapshot = await getMarketSnapshot(
+        pair,
+        candles1h,
+        candles4h,
+        candles15m,
+        price,
+        signalResults[pair] // ← Pre-computed, no second generateSignal() call
+      );
+      marketSnapshots.push(snapshot);
+
     } catch (err) {
       const msg = String(err);
       errors.push(pair + ": " + msg);
@@ -177,6 +195,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // Filter expired signals
   try {
     const { active, exited } = await filterExpiredSignals(activeSignals, currentPrices, now);
     for (const { signal, reason } of exited) {
@@ -195,16 +214,13 @@ export async function GET(req: NextRequest) {
     errors.push("filterExpiredSignals: " + e);
   }
 
-  // Clean up old exited signals before saving to prevent unbounded growth
+  // Clean up old exited signals
   const cleanedSignals = activeSignals.filter(s => {
     if (!s.exited) return true;
     const age = now - s.timestamp;
     return age < EXITED_SIGNAL_TTL_MS;
   });
   const prunedCount = activeSignals.length - cleanedSignals.length;
-  if (prunedCount > 0) {
-    console.log("[CRON] Pruned", prunedCount, "old exited signals");
-  }
 
   try {
     await saveActiveSignals(cleanedSignals);
@@ -214,47 +230,24 @@ export async function GET(req: NextRequest) {
     console.error("[CRON] save state failed:", e);
   }
 
-  // ─── BUILD DASHBOARD SNAPSHOT ───
-  // This is the ONLY place that computes market snapshots.
-  // /api/signals will read this pre-computed data.
-
-  const marketSnapshots = [];
-  for (const pair of PAIRS) {
-    try {
-      const krakenPair = krakenPairFormat(pair);
-      const [candles1h, candles4h, candles15m, price] = await Promise.all([
-        getCandles(krakenPair, 60),
-        getCandles(krakenPair, 240),
-        getCandles(krakenPair, 15),
-        getCurrentPrice(krakenPair),
-      ]);
-
-      const snapshot = await getMarketSnapshot(pair, candles1h, candles4h, candles15m, price);
-      marketSnapshots.push(snapshot);
-    } catch (e) {
-      console.error(`[CRON] Snapshot failed for ${pair}:`, e);
-      // Don't fail the whole cron if one pair's snapshot fails
-    }
-  }
-
+  // Build and save dashboard snapshot
   const dashboardSnapshot = {
     timestamp: now,
     iso: new Date(now).toISOString(),
     markets: marketSnapshots,
     activeSignals: cleanedSignals.filter(s => !s.exited),
-    diagnostics: results,
     errors: errors.length > 0 ? errors : undefined,
   };
 
   try {
     await saveDashboardSnapshot(dashboardSnapshot);
-    console.log("[CRON] Dashboard snapshot saved");
+    console.log("[CRON] Finished | Markets: " + PAIRS.length + " | Active trades: " + cleanedSignals.filter(s => !s.exited).length);
   } catch (e) {
     console.error("[CRON] saveDashboardSnapshot failed:", e);
     errors.push("saveDashboardSnapshot: " + e);
   }
 
-  // Status reports only if DAILY_STATUS_REPORT env var is set, once per day at 00:00 UTC
+  // Daily report only if enabled
   const hour = new Date(now).getUTCHours();
   const sendDailyStatus = process.env.DAILY_STATUS_REPORT === "true";
   if (sendDailyStatus && hour === 0) {
