@@ -394,27 +394,42 @@ export function generateSignal(
 
   // ─── DECISION TREE ───
   // Priority: ENTRY_1 > ENTRY_2 > ADD
+  // v33.1: Allow entries even when 4H trend conflicts with 1D,
+  // as long as price is near EMA21 (pullback entry, not reversal)
+
+  const isPullback = nearEMA21 || nearEMA8;
+  const trendConflict = t4h.direction && t4h.direction !== t1d.direction;
 
   if (nearEMA21 && stochExtreme && emaAligned) {
     // Deep pullback to EMA21 with extreme stoch — prime entry
     entryType = "ENTRY_1";
     confidence = 75;
     if (trend4hAligned) confidence += 10;
+    else if (trendConflict) confidence -= 10; // penalty but still valid
     if (adx4h >= config.adxThreshold) confidence += 5;
-    debug.push(`ENTRY_1: EMA21 pullback, stoch ${stoch4h.k}/${stoch4h.d}`);
+    debug.push(`ENTRY_1: EMA21 pullback, stoch ${stoch4h.k}/${stoch4h.d}` + (trendConflict ? " (4H conflict)" : ""));
   } else if (nearEMA8 && stochTurning && emaAligned) {
     // Shallow pullback to EMA8, stoch turning up
     entryType = "ENTRY_2";
     confidence = 60;
     if (trend4hAligned) confidence += 10;
-    debug.push(`ENTRY_2: EMA8 pullback, stoch turning ${stoch4h.k}/${stoch4h.d}`);
-  } else if (beyondEMA8 && confirmingCandle && trend4hAligned) {
-    // Momentum continuation
+    else if (trendConflict) confidence -= 10;
+    debug.push(`ENTRY_2: EMA8 pullback, stoch turning ${stoch4h.k}/${stoch4h.d}` + (trendConflict ? " (4H conflict)" : ""));
+  } else if (beyondEMA8 && confirmingCandle && (trend4hAligned || !t4h.direction)) {
+    // Momentum continuation — require 4H alignment for ADDs
     entryType = "ADD";
     confidence = 50;
     if (volUp) confidence += 5;
     if (adx4h >= config.adxThreshold) confidence += 5;
     debug.push(`ADD: momentum, beyond EMA8`);
+  }
+
+  // v33.1: If 4H conflicts but we're at a deep pullback, still allow entry
+  // This catches the "chop before the pop" you want
+  if (!entryType && trendConflict && isPullback && stochExtreme) {
+    entryType = "ENTRY_1";
+    confidence = 55; // lower confidence due to conflict
+    debug.push(`ENTRY_1: conflict pullback, stoch extreme ${stoch4h.k}/${stoch4h.d}`);
   }
 
   // ─── 1H TIMING FILTER ───
