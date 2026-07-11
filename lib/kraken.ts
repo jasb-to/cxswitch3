@@ -1,9 +1,19 @@
-// lib/kraken.ts — v29.1 Kraken API wrapper
+// lib/kraken.ts — v32.3 Kraken API wrapper
 // ============================================================
+// Added: getCandles now supports interval=1440 (1D) for real daily candles
 
 const KRAKEN_API_URL = "https://api.kraken.com";
 
 export type Symbol = string;
+
+export interface Candle {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
 
 export interface KrakenCandle {
   time: number;
@@ -36,7 +46,9 @@ async function rateLimitedFetch(url: string, options?: RequestInit): Promise<Res
   return fetch(url, options);
 }
 
-export async function getCandles(pair: Symbol, interval: number = 60, since?: number): Promise<any[]> {
+// v32.3: Kraken supports intervals: 1, 5, 15, 30, 60, 240, 1440, 10080, 21600 (minutes)
+// 1440 = 1 day, 10080 = 1 week, 21600 = 15 days
+export async function getCandles(pair: Symbol, interval: number = 60, since?: number): Promise<Candle[]> {
   const url = new URL(`${KRAKEN_API_URL}/0/public/OHLC`);
   url.searchParams.set("pair", pair);
   url.searchParams.set("interval", String(interval));
@@ -51,7 +63,12 @@ export async function getCandles(pair: Symbol, interval: number = 60, since?: nu
   const key = Object.keys(data.result).find(k => k !== "last");
   if (!key) throw new Error("No OHLC data returned");
 
-  return data.result[key].map((c: any) => ({
+  const raw = data.result[key];
+  if (!Array.isArray(raw)) {
+    throw new Error(`Kraken OHLC data is not an array: ${typeof raw}`);
+  }
+
+  return raw.map((c: any) => ({
     timestamp: c[0] * 1000,
     open: parseFloat(c[1]),
     high: parseFloat(c[2]),
