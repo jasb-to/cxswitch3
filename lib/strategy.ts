@@ -367,17 +367,23 @@ export function generateSignal(
   let entryType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
   let confidence = 0;
 
-  // Check for deep pullback (ENTRY_1)
-  const nearEMA21 = Math.abs(distFromEMA21) < 0.015; // within 1.5% of EMA21
-  const stochExtremeLong = stoch4h.k < 30 && stoch4h.d < 35;
-  const stochExtremeShort = stoch4h.k > 70 && stoch4h.d > 65;
+  // v33.2: Relaxed stoch thresholds for early entries
+  // ENTRY_1: Deep pullback - price near EMA21, stoch oversold (was <30, now <45)
+  const nearEMA21 = Math.abs(distFromEMA21) < 0.02; // within 2% of EMA21 (was 1.5%)
+  const stochExtremeLong = stoch4h.k < 45 && stoch4h.d < 50;
+  const stochExtremeShort = stoch4h.k > 55 && stoch4h.d > 50;
   const stochExtreme = t1d.direction === "LONG" ? stochExtremeLong : stochExtremeShort;
 
-  // Check for shallow pullback (ENTRY_2)
-  const nearEMA8 = Math.abs((price - ema8Price) / ema8Price) < 0.008;
-  const stochTurningLong = stoch4h.k > stoch4h.d && stoch4h.k < 50;
-  const stochTurningShort = stoch4h.k < stoch4h.d && stoch4h.k > 50;
+  // ENTRY_2: Shallow pullback - price near EMA8, stoch turning (was <50, now <60)
+  const nearEMA8 = Math.abs((price - ema8Price) / ema8Price) < 0.012; // was 0.8%
+  const stochTurningLong = stoch4h.k > stoch4h.d && stoch4h.k < 60;
+  const stochTurningShort = stoch4h.k < stoch4h.d && stoch4h.k > 40;
   const stochTurning = t1d.direction === "LONG" ? stochTurningLong : stochTurningShort;
+
+  // v33.2: NEW - EMA21 touch entry with ANY stoch below 60 (for LONG)
+  // This catches entries where stoch hasn't reached extreme yet but price is at support
+  const ema21Touch = Math.abs(distFromEMA21) < 0.01; // within 1%
+  const stochBelowMid = t1d.direction === "LONG" ? stoch4h.k < 60 : stoch4h.k > 40;
 
   // Check for momentum (ADD)
   const beyondEMA8 = t1d.direction === "LONG" ? price > ema8Price * 1.005 : price < ema8Price * 0.995;
@@ -394,29 +400,31 @@ export function generateSignal(
 
   // ─── DECISION TREE ───
   // Priority: ENTRY_1 > ENTRY_2 > ADD
-  // v33.1: Allow entries even when 4H trend conflicts with 1D,
-  // as long as price is near EMA21 (pullback entry, not reversal)
+  // v33.2: Relaxed for early entries - get in before the pop
 
   const isPullback = nearEMA21 || nearEMA8;
   const trendConflict = t4h.direction && t4h.direction !== t1d.direction;
 
   if (nearEMA21 && stochExtreme && emaAligned) {
-    // Deep pullback to EMA21 with extreme stoch — prime entry
     entryType = "ENTRY_1";
     confidence = 75;
     if (trend4hAligned) confidence += 10;
-    else if (trendConflict) confidence -= 10; // penalty but still valid
+    else if (trendConflict) confidence -= 10;
     if (adx4h >= config.adxThreshold) confidence += 5;
     debug.push(`ENTRY_1: EMA21 pullback, stoch ${stoch4h.k}/${stoch4h.d}` + (trendConflict ? " (4H conflict)" : ""));
   } else if (nearEMA8 && stochTurning && emaAligned) {
-    // Shallow pullback to EMA8, stoch turning up
     entryType = "ENTRY_2";
     confidence = 60;
     if (trend4hAligned) confidence += 10;
     else if (trendConflict) confidence -= 10;
     debug.push(`ENTRY_2: EMA8 pullback, stoch turning ${stoch4h.k}/${stoch4h.d}` + (trendConflict ? " (4H conflict)" : ""));
+  } else if (ema21Touch && stochBelowMid && emaAligned) {
+    // v33.2: EMA21 touch with stoch below mid - early entry before extreme
+    entryType = "ENTRY_1";
+    confidence = 55;
+    if (trend4hAligned) confidence += 10;
+    debug.push(`ENTRY_1: EMA21 touch, stoch ${stoch4h.k}/${stoch4h.d} below mid`);
   } else if (beyondEMA8 && confirmingCandle && (trend4hAligned || !t4h.direction)) {
-    // Momentum continuation — require 4H alignment for ADDs
     entryType = "ADD";
     confidence = 50;
     if (volUp) confidence += 5;
@@ -424,12 +432,11 @@ export function generateSignal(
     debug.push(`ADD: momentum, beyond EMA8`);
   }
 
-  // v33.1: If 4H conflicts but we're at a deep pullback, still allow entry
-  // This catches the "chop before the pop" you want
-  if (!entryType && trendConflict && isPullback && stochExtreme) {
+  // v33.2: Conflict pullback entry - wider stoch range
+  if (!entryType && trendConflict && isPullback && stochBelowMid) {
     entryType = "ENTRY_1";
-    confidence = 55; // lower confidence due to conflict
-    debug.push(`ENTRY_1: conflict pullback, stoch extreme ${stoch4h.k}/${stoch4h.d}`);
+    confidence = 50;
+    debug.push(`ENTRY_1: conflict pullback, stoch ${stoch4h.k}/${stoch4h.d}`);
   }
 
   // ─── 1H TIMING FILTER ───
