@@ -107,7 +107,7 @@ const PAIR_CONFIG: Record<string, PairConfig> = {
   "HYPE/USD": { atrMultiplier: 3.5, adxThreshold: 18, signalCooldownMs: 2 * 60 * 60 * 1000, hysteresisBand: 0.010, useTrendline: false, minRegimeStrength: "MEDIUM" },
 };
 
-function getPairConfig(pair: string): PairConfig {
+export function getPairConfig(pair: string): PairConfig {
   return PAIR_CONFIG[pair] || PAIR_CONFIG["BTC/USD"];
 }
 
@@ -892,6 +892,3 @@ export function setRegimePersistence(): void {}
 export function setExitPersistence(): void {}
 export function setTelemetryPersistence(): void {}
 export async function persistTelemetry(): Promise<void> {}
-export function getPairConfig(pair: string) {
-  return PAIR_CONFIG[pair] || PAIR_CONFIG["BTC/USD"];
-}
