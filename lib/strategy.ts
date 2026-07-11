@@ -55,6 +55,19 @@ export interface Signal {
   regimeDirection?: string;
 }
 
+export interface MarketRegime {
+  direction: "LONG" | "SHORT" | null;
+  strength: string;
+  lockedUntil: number;
+  lastCandleTimestamp: number;
+}
+
+export interface ExitRecord {
+  pair: string;
+  timestamp: number;
+  reason: string;
+}
+
 export interface SignalResult {
   signal?: Signal;
   market?: any;
@@ -638,6 +651,47 @@ export function getMarketSnapshot(
   const stoch4h = stochRsi(candles4h.map(c => c.close));
   const stoch1h = candles1h.length >= 30 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50 };
   const regimePersist = regimeStore.get(pair);
+  const adxVal = adx(candles4h) ?? 0;
+
+  // v32.3 FIX #1: Trend strength indicator
+  const closes4h = candles4h.map(c => c.close);
+  const e8_4h = ema(closes4h, 8);
+  const e21_4h = ema(closes4h, 21);
+  const emaAligned = e8_4h.length > 0 && e21_4h.length > 0 && (
+    (t1d.direction === "LONG" && e8_4h[e8_4h.length - 1] > e21_4h[e21_4h.length - 1]) ||
+    (t1d.direction === "SHORT" && e8_4h[e8_4h.length - 1] < e21_4h[e21_4h.length - 1])
+  );
+  const trendStrength = {
+    adx: adxVal,
+    isStrong: adxVal >= 25 && emaAligned,
+    emaAligned,
+  };
+
+  // v32.3 FIX #2: Phase warnings for both EXPANSION and EXHAUSTION
+  let phaseWarning1h: string | null = null;
+  let phaseWarning4h: string | null = null;
+
+  if (stoch1h.k > 80) {
+    phaseWarning1h = "Stochastic overbought — momentum may be peaking";
+  } else if (stoch1h.k < 20) {
+    phaseWarning1h = "Stochastic oversold — potential exhaustion bounce";
+  }
+
+  if (stoch4h.k > 80) {
+    phaseWarning4h = "4H Stochastic overbought — watch for reversal";
+  } else if (stoch4h.k < 20) {
+    phaseWarning4h = "4H Stochastic oversold — accumulation zone";
+  }
+
+  // v32.3 FIX #3: Better "Why No Trade?" using debug info from signal generation
+  const whyNoTrade: string[] = [];
+  if (!signalResult?.signal) {
+    if (signalResult?.debug && signalResult.debug.length > 0) {
+      whyNoTrade.push(...signalResult.debug);
+    } else {
+      whyNoTrade.push("No active signal");
+    }
+  }
 
   return {
     pair,
@@ -653,7 +707,7 @@ export function getMarketSnapshot(
       detectedAt: Date.now(),
       lockedUntil: regimePersist?.lockedUntil || null,
     },
-    adx: Math.round((adx(candles4h) ?? 0) * 10) / 10,
+    adx: Math.round(adxVal * 10) / 10,
     rsi: Math.round((wilderRsi(candles4h.map(c => c.close)) ?? 50) * 10) / 10,
     stochK: stoch4h.k,
     stochD: stoch4h.d,
@@ -664,10 +718,11 @@ export function getMarketSnapshot(
     trend1h: t1h.direction ? { direction: t1h.direction, strength: t1h.strength } : null,
     trend4h: t4h.direction ? { direction: t4h.direction, strength: t4h.strength } : null,
     trend1d: t1d.direction ? { direction: t1d.direction, strength: t1d.strength } : null,
-    phase1h: "NEUTRAL",
-    phaseWarning1h: null,
+    trendStrength,
+    phase1h: stoch1h.k > 80 ? "EXPANSION" : stoch1h.k < 20 ? "EXHAUSTION" : "NEUTRAL",
+    phaseWarning1h,
     phase4h: stoch4h.k > 80 ? "EXPANSION" : stoch4h.k < 20 ? "EXHAUSTION" : "NEUTRAL",
-    phaseWarning4h: null,
+    phaseWarning4h,
     entryCandidates: {
       pullback: { eligible: signalResult?.signal?.scale === "ENTRY_1", confidence: signalResult?.signal?.scale === "ENTRY_1" ? 65 : 0, rejectionReason: null },
       rejection: { eligible: signalResult?.signal?.scale === "ENTRY_2", confidence: signalResult?.signal?.scale === "ENTRY_2" ? 75 : 0, rejectionReason: null },
@@ -676,7 +731,7 @@ export function getMarketSnapshot(
     recommendedAction: signalResult?.signal ? `${signalResult.signal.direction} ${signalResult.signal.type}` : null,
     entryTier: signalResult?.signal ? (signalResult.signal.scale === "ADD" ? "CONFIRMED_ENTRY" : "EARLY_ENTRY") : null,
     positionSize: signalResult?.signal ? (signalResult.signal.scale === "ADD" ? "FULL" : "STARTER") : null,
-    whyNoTrade: signalResult?.signal ? [] : ["No active signal"],
+    whyNoTrade,
     signal: signalResult?.signal || null,
     ...signalResult?.market,
   };
