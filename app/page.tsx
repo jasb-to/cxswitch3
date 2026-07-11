@@ -9,6 +9,7 @@ interface RegimeData {
   confidence: number;
   score: number;
   reason: string[];
+  lockedUntil?: number | null;
 }
 
 interface TrendContext {
@@ -68,6 +69,8 @@ interface MarketSnapshot {
   phaseWarning1h?: string | null;
   phase4h?: "EXPANSION" | "EXHAUSTION" | "NEUTRAL";
   phaseWarning4h?: string | null;
+  trendlinePrice?: number;
+  distToTrendline?: number;
 }
 
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
@@ -184,6 +187,19 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
           }
         </div>
       </div>
+
+      {/* ─── TRENDLINE ─── */}
+      {snap.trendlinePrice && snap.trendlinePrice > 0 && (
+        <div className="mb-4 p-3 bg-gray-800/50 rounded-lg border border-gray-700/50">
+          <div className="flex items-center justify-between">
+            <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Trendline</span>
+            <span className="text-xs font-mono text-gray-400">${snap.trendlinePrice.toFixed(2)}</span>
+          </div>
+          <div className="text-xs text-gray-500 mt-1">
+            Distance: {snap.distToTrendline?.toFixed(2)}%
+          </div>
+        </div>
+      )}
 
       {/* ─── TREND STRENGTH INDICATOR ─── */}
       {snap.trendStrength && (
@@ -311,6 +327,11 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
       <div className="mb-4 p-3 bg-gray-800/50 rounded-lg">
         <div className="text-xs text-gray-500 mb-1 uppercase tracking-wider font-semibold">Regime Score</div>
         <div className="text-xl font-mono font-bold text-gray-200">{regime?.confidence || 0}</div>
+        {regime?.lockedUntil && (
+          <div className="text-xs text-gray-500 mt-1">
+            Locked until: {new Date(regime.lockedUntil).toLocaleTimeString()}
+          </div>
+        )}
       </div>
 
       {/* ─── ENTRY SCORE (no active trade only) ─── */}
@@ -464,10 +485,10 @@ export default function Dashboard() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
-              CXSwitch <span className="text-blue-400">v31.3</span>
+              CXSwitch <span className="text-blue-400">v32.3</span>
             </h1>
             <p className="text-gray-500 text-sm mt-1">
-              Trading Dashboard — {activeTrades} active / {totalPairs} markets
+              Swing Architecture — {activeTrades} active / {totalPairs} markets
             </p>
           </div>
           <div className="flex items-center gap-2 md:gap-3">
@@ -599,7 +620,7 @@ export default function Dashboard() {
         {/* Footer */}
         <div className="mt-8 pt-4 border-t border-gray-800 text-center">
           <p className="text-xs text-gray-600">
-            CXSwitch v31.3 — Trend-aware exits | Min hold: 30min | Stoch exits gated by ADX
+            CXSwitch v32.3 — Five Exits Only: SL · TP · 4H Structure Break · Trendline Breach (1.5x ATR) · 1D Regime Flip (STRONG)
           </p>
         </div>
       </div>
