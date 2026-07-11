@@ -692,9 +692,15 @@ export function generateSignal(
   }
 
   // Signal cooldown — prevent duplicate signals
+  // v32: Increased to 2 hours after exit to prevent whipsaw re-entry
   const lastSignalTime = signalCooldowns.get(pair);
-  if (lastSignalTime && now - lastSignalTime < SIGNAL_COOLDOWN_MS) {
-    debug.push(`Cooldown active: ${((now - lastSignalTime) / 1000 / 60).toFixed(1)}min < ${SIGNAL_COOLDOWN_MS / 1000 / 60}min`);
+  const cooldownMs = signalCooldowns.get(pair + "_exit") 
+    ? 2 * 60 * 60 * 1000  // 2 hours after exit
+    : SIGNAL_COOLDOWN_MS; // 30 min normally
+  if (lastSignalTime && now - lastSignalTime < cooldownMs) {
+    const mins = ((now - lastSignalTime) / 1000 / 60).toFixed(1);
+    const required = cooldownMs / 1000 / 60;
+    debug.push(`Cooldown active: ${mins}min < ${required}min`);
     return { debug };
   }
 
@@ -840,13 +846,20 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
 
   if (ageMs > maxAge) return { valid: false, reason: "expired_ttl", exited: true };
 
-  const entryBuffer = signal.type === "ACCUMULATE" ? 1.02 : 1.005;
-  if (signal.direction === "LONG" && currentPrice > signal.entry * entryBuffer) {
-    return { valid: false, reason: "missed_entry", exited: true };
+  // v32 FIX: Removed missed_entry check for 4H BREAKOUT signals.
+  // The 0.5% buffer was causing constant whipsaw. For 4H plays, let SL/TP
+  // handle exits. Only check missed_entry for ACCUMULATE (pullback) entries
+  // where price moving far away means the setup is invalidated.
+  if (signal.type === "ACCUMULATE") {
+    const entryBuffer = 1.03; // 3% drift allowed for pullback entries
+    if (signal.direction === "LONG" && currentPrice > signal.entry * entryBuffer) {
+      return { valid: false, reason: "missed_entry", exited: true };
+    }
+    if (signal.direction === "SHORT" && currentPrice < signal.entry * (2 - entryBuffer)) {
+      return { valid: false, reason: "missed_entry", exited: true };
+    }
   }
-  if (signal.direction === "SHORT" && currentPrice < signal.entry * (2 - entryBuffer)) {
-    return { valid: false, reason: "missed_entry", exited: true };
-  }
+  // BREAKOUT signals: no missed_entry check. Price can drift, we hold until SL/TP/1H exit.
 
   if (signal.direction === "LONG" && currentPrice <= signal.stop) return { valid: false, reason: "sl_hit", exited: true };
   if (signal.direction === "SHORT" && currentPrice >= signal.stop) return { valid: false, reason: "sl_hit", exited: true };
@@ -861,38 +874,57 @@ export function shouldHold(
   signal: Signal,
   candles4h: Candle[],
   currentPrice: number,
+  candles1h?: Candle[],
   now?: number
 ): HoldResult {
   // Build 1D candles from 4H for regime flip detection
   const candles1d = aggregateTo1D(candles4h);
+
   // 1. Check price-based validity (SL, TP, expiry)
   const validity = isSignalStillValid(signal, currentPrice, now);
   if (!validity.valid) return { shouldHold: false, reason: validity.reason };
 
   // 2. REGIME FLIP DETECTION: Exit if 1D trend reverses against position
-  // This prevents holding SHORT into a strong uptrend or LONG into a strong downtrend
   if (candles1d && candles1d.length >= 25) {
     const currentTrend = trend1D(candles1d);
     if (currentTrend.direction && currentTrend.direction !== signal.direction) {
-      // Trend has flipped against our position
-      // Only exit if the new trend is STRONG — avoid whipsaws on weak flips
       if (currentTrend.strength === "STRONG") {
         return { shouldHold: false, reason: "regime_flip" };
       }
-      // If medium strength, at least warn by not returning yet — let price stops handle it
     }
   }
 
-  // 3. StochRSI extreme opposite check (momentum exhaustion)
-  // For LONG: if Stoch K > 80 and crossing down, momentum is fading
-  // For SHORT: if Stoch K < 20 and crossing up, momentum is fading
-  if (candles4h.length >= 30) {
-    const stoch = stochRsi(candles4h.map(c => c.close));
-    if (signal.direction === "LONG" && stoch.k > 80 && stoch.k < stoch.d) {
-      return { shouldHold: false, reason: "stoch_exhaustion_long" };
+  // 3. 1H STOCHRSI EXIT (user request: "use 1hr to exit")
+  // For 4H trades, we hold through 4H noise but exit when 1H stoch shows exhaustion.
+  if (candles1h && candles1h.length >= 30) {
+    const stoch1h = stochRsi(candles1h.map(c => c.close));
+
+    // LONG exit: 1H Stoch K > 75 and crossing down
+    if (signal.direction === "LONG" && stoch1h.k > 75 && stoch1h.k < stoch1h.d) {
+      return { shouldHold: false, reason: "1h_stoch_exhaustion" };
     }
-    if (signal.direction === "SHORT" && stoch.k < 20 && stoch.k > stoch.d) {
-      return { shouldHold: false, reason: "stoch_exhaustion_short" };
+    // SHORT exit: 1H Stoch K < 25 and crossing up
+    if (signal.direction === "SHORT" && stoch1h.k < 25 && stoch1h.k > stoch1h.d) {
+      return { shouldHold: false, reason: "1h_stoch_exhaustion" };
+    }
+
+    // Also exit if 1H stoch goes extreme against position
+    if (signal.direction === "LONG" && stoch1h.k < 15) {
+      return { shouldHold: false, reason: "1h_stoch_extreme" };
+    }
+    if (signal.direction === "SHORT" && stoch1h.k > 85) {
+      return { shouldHold: false, reason: "1h_stoch_extreme" };
+    }
+  }
+
+  // 4. 4H StochRSI exhaustion (secondary)
+  if (candles4h.length >= 30) {
+    const stoch4h = stochRsi(candles4h.map(c => c.close));
+    if (signal.direction === "LONG" && stoch4h.k > 85 && stoch4h.k < stoch4h.d) {
+      return { shouldHold: false, reason: "4h_stoch_exhaustion" };
+    }
+    if (signal.direction === "SHORT" && stoch4h.k < 15 && stoch4h.k > stoch4h.d) {
+      return { shouldHold: false, reason: "4h_stoch_exhaustion" };
     }
   }
 
@@ -1227,6 +1259,12 @@ export function shouldHoldCompat(
   return shouldHold(signal, currentPrice);
 }
 
+
+/** Record an exit to enforce post-exit cooldown (prevents whipsaw re-entry) */
+export function recordExitCooldown(pair: string, now: number = Date.now()): void {
+  signalCooldowns.set(pair + "_exit", now);
+  console.log(`[COOLDOWN] ${pair} exit recorded. Next signal allowed after ${new Date(now + 2 * 60 * 60 * 1000).toISOString()}`);
+}
 // ------------------------------------------------------------------
 // PAIR CONFIG
 // ------------------------------------------------------------------
