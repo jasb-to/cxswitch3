@@ -34,6 +34,7 @@ export interface Signal {
   entryMode?: string;
   positionSizePct?: number;
   regimeDirection?: string;
+  conflictEntry?: boolean; // v33.7: true if 4H opposed 1D at entry
 }
 
 export interface SignalResult {
@@ -403,10 +404,13 @@ export function generateSignal(
 
   // ─── DECISION TREE ───
   // Priority: ENTRY_1 > ENTRY_2 > ADD
-  // v33.2: Relaxed for early entries - get in before the pop
+  // v33.6: Aggressive alt entries - stoch cross + EMA proximity
 
   const isPullback = nearEMA21 || nearEMA8;
   const trendConflict = t4h.direction && t4h.direction !== t1d.direction;
+  const stochCrossBullish = stoch4h.k > stoch4h.d && stoch4h.k > 35;
+  const stochCrossBearish = stoch4h.k < stoch4h.d && stoch4h.k < 65;
+  const stochCross = t1d.direction === "LONG" ? stochCrossBullish : stochCrossBearish;
 
   if (nearEMA21 && stochExtreme && emaAligned) {
     entryType = "ENTRY_1";
@@ -422,11 +426,18 @@ export function generateSignal(
     else if (trendConflict) confidence -= 10;
     debug.push(`ENTRY_2: EMA8 pullback, stoch turning ${stoch4h.k}/${stoch4h.d}` + (trendConflict ? " (4H conflict)" : ""));
   } else if (ema21Touch && stochBelowMid && emaAligned) {
-    // v33.2: EMA21 touch with stoch below mid - early entry before extreme
     entryType = "ENTRY_1";
     confidence = 55;
     if (trend4hAligned) confidence += 10;
     debug.push(`ENTRY_1: EMA21 touch, stoch ${stoch4h.k}/${stoch4h.d} below mid`);
+  } else if (nearEMA21 && stochCross && emaAligned && agg > 1.1) {
+    // v33.6: NEW - For aggressive alts (agg > 1.1), stoch cross + EMA21 proximity is enough
+    // This catches HYPE at stoch 56/42 when price is at EMA21
+    entryType = "ENTRY_1";
+    confidence = 45;
+    if (trend4hAligned) confidence += 10;
+    else if (trendConflict) confidence -= 5;
+    debug.push(`ENTRY_1: stoch cross ${stoch4h.k}/${stoch4h.d} at EMA21, agg=${agg}`);
   } else if (beyondEMA8 && confirmingCandle && (trend4hAligned || !t4h.direction)) {
     entryType = "ADD";
     confidence = 50;
@@ -435,11 +446,11 @@ export function generateSignal(
     debug.push(`ADD: momentum, beyond EMA8`);
   }
 
-  // v33.2: Conflict pullback entry - wider stoch range
-  if (!entryType && trendConflict && isPullback && stochBelowMid) {
+  // v33.6: Conflict pullback entry - stoch cross OR below mid
+  if (!entryType && trendConflict && isPullback && (stochBelowMid || (stochCross && agg > 1.1))) {
     entryType = "ENTRY_1";
-    confidence = 50;
-    debug.push(`ENTRY_1: conflict pullback, stoch ${stoch4h.k}/${stoch4h.d}`);
+    confidence = 40 + Math.floor(agg * 5); // 47 for HYPE, 47 for SOL
+    debug.push(`ENTRY_1: conflict pullback, stoch ${stoch4h.k}/${stoch4h.d}, agg=${agg}`);
   }
 
   // ─── 1H TIMING FILTER ───
@@ -544,6 +555,7 @@ export function generateSignal(
     entryMode: entryType === "ADD" ? "BREAKOUT" : "PULLBACK",
     positionSizePct: entryType === "ADD" ? 0.05 : entryType === "ENTRY_1" ? 0.04 : 0.03,
     regimeDirection: t1d.direction,
+    conflictEntry: trendConflict, // v33.7: flag conflict entries
     exited: false,
     highestPrice: entry,
     lowestPrice: entry,
