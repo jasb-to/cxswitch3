@@ -14,6 +14,7 @@ import {
   setRegimePersistence,
   setExitPersistence,
   updateTradeManagerCompat,
+  recordExitCooldown,
   getMarketSnapshot,
   Signal,
   SignalResult,
@@ -118,7 +119,7 @@ export async function GET(req: NextRequest) {
         for (const signal of activeForPair) {
           console.log(`[CRON] ${pair} | Trade ID: ${signal.id} | Dir: ${signal.direction} | Entry: $${signal.entry.toFixed(2)} | Stop: $${signal.stop.toFixed(2)} | Target: $${signal.target.toFixed(2)}`);
 
-          const holdResult = await shouldHold(signal, candles4h, price);
+          const holdResult = await shouldHold(signal, candles4h, price, candles1h);
           console.log(`[CRON] ${pair} | shouldHold: ${holdResult.shouldHold} | reason: ${holdResult.reason}`);
 
           if (!holdResult.shouldHold) {
@@ -136,6 +137,7 @@ export async function GET(req: NextRequest) {
               console.error("[CRON] sendExitAlert failed for", signal.id, ":", alertErr);
             }
             signal.exited = true;
+            recordExitCooldown(pair, now);
             results[pair] = { status: "EXITED", reason: holdResult.reason, price, signalId: signal.id, pnl: pnlStr };
           } else {
             // ─── HOLDING ───
@@ -269,6 +271,7 @@ export async function GET(req: NextRequest) {
             console.error("[CRON] sendExitAlert (filterExpired) failed for", signal.id, ":", alertErr);
           }
           signal.exited = true;
+        recordExitCooldown(signal.pair, now);
         }
       }
     }
@@ -367,4 +370,3 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   return GET(req);
 }
- 
