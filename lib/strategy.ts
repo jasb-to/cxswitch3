@@ -1,4 +1,4 @@
-// lib/strategy.ts — v32.4 "Altcoin Fix"
+// lib/strategy.ts — v32.5 "ADD Fix"
 // ============================================================
 // Timeframe contract:
 //   1D = bias only. Real 1D candles. Only closed candles flip regime.
@@ -12,11 +12,13 @@
 //   4. 4H close beyond trendline by 1.5x ATR
 //   5. 1D regime flips STRONG against position (closed candle only)
 //
-// v32.4 CHANGES:
+// v32.5 CHANGES:
+//   - ADD entries require 4H trend alignment with 1D
+//   - ADD entries require EMA alignment
+//   - Structure break exit requires candles to have actually progressed
 //   - Pair-specific config for altcoins (wider stops, lower ADX threshold)
 //   - Trendline optional: falls back to EMA21 if no trendline
 //   - Reduced cooldowns for volatile pairs
-//   - Keep five exits intact (discipline prevents blow-ups)
 // ============================================================
 
 export interface Candle {
@@ -90,7 +92,7 @@ const MIN_RR = 1.5;
 const EXITED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEBUG = process.env.DEBUG === "true";
 
-// v32.4: Pair-specific configuration
+// v32.5: Pair-specific configuration
 interface PairConfig {
   atrMultiplier: number;      // Stop distance multiplier
   adxThreshold: number;       // "Strong" trend threshold
@@ -308,7 +310,7 @@ function getPersistentRegime(pair: string, candles1d: Candle[], now: number) {
     return current;
   }
 
-  // v32.4: Only update regime when we have a NEW closed daily candle
+  // v32.5: Only update regime when we have a NEW closed daily candle
   const lastCandle = candles1d[candles1d.length - 1];
   if (!lastCandle || lastCandle.timestamp <= stored.lastCandleTimestamp) {
     return { direction: stored.direction, strength: stored.strength };
@@ -325,7 +327,7 @@ function getPersistentRegime(pair: string, candles1d: Candle[], now: number) {
     return { direction: stored.direction, strength: stored.strength };
   }
 
-  // v32.4: Use pair-specific ADX threshold for "STRONG"
+  // v32.5: Use pair-specific ADX threshold for "STRONG"
   const config = getPairConfig(pair);
   const adxVal = adx(candles1d) ?? 0;
   const isStrong = current.strength === "STRONG" || adxVal >= config.adxThreshold;
@@ -360,7 +362,7 @@ function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price:
   hysteresisStore.set(pair, { lastSignalType: type, lastSignalPrice: price, lockUntil: now + (type === "ADD" ? config.signalCooldownMs : 24 * 60 * 60 * 1000) });
 }
 
-// ─── SIGNAL GENERATION — v32.4: Pair-specific, trendline optional ───
+// ─── SIGNAL GENERATION — v32.5: ADD requires 4H alignment ───
 
 export function generateSignal(
   pair: string,
@@ -374,7 +376,7 @@ export function generateSignal(
   const now = Date.now();
   const config = getPairConfig(pair);
 
-  // v32.4: Check if we already have an active trade on this pair
+  // v32.5: Check if we already have an active trade on this pair
   const activeForPair = activeSignals.filter(s => s.pair === pair && !s.exited);
   if (activeForPair.length > 0) {
     debug.push(`Active trade exists — no new signals`);
@@ -394,7 +396,7 @@ export function generateSignal(
     return { debug };
   }
 
-  // v32.4: Use pair-specific minimum regime strength
+  // v32.5: Use pair-specific minimum regime strength
   if (t1d.strength === "WEAK" && config.minRegimeStrength !== "WEAK") {
     debug.push("1D too weak for this pair");
     return { debug };
@@ -406,7 +408,7 @@ export function generateSignal(
     return { debug };
   }
 
-  // v32.4: Trendline is optional for altcoins
+  // v32.5: Trendline is optional for altcoins
   let trendline = getTrendline(pair, candles4h, t1d.direction);
   let referencePrice: number;
   let usingTrendline = false;
@@ -456,18 +458,32 @@ export function generateSignal(
 
   const adxVal = adx(candles4h) ?? 0;
 
+  // v32.5: Detect 4H trend for ADD validation
+  const t4h = detectTrend(candles4h);
+
   let rawType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
   if (nearTL && stochExtreme) rawType = "ENTRY_1";
   else if (nearTL && stochTurning && !stochExtreme) rawType = "ENTRY_2";
   else if (beyondTL && confirming && (volUp || stochTurning)) rawType = "ADD";
 
-  // v32.4: For altcoins without trendline, relax entry criteria
+  // v32.5: For altcoins without trendline, relax entry criteria
   if (!usingTrendline && !rawType && config.useTrendline === false) {
     // EMA21 pullback entry for altcoins
     const nearEMA = Math.abs(dist) < 0.015; // 1.5% from EMA21
     if (nearEMA && stochExtreme) rawType = "ENTRY_1";
     else if (nearEMA && stochTurning) rawType = "ENTRY_2";
     else if (beyondTL && confirming) rawType = "ADD";
+  }
+
+  // v32.5: ADD entries must align with 4H trend AND EMA
+  if (rawType === "ADD") {
+    if (t4h.direction !== t1d.direction) {
+      debug.push(`ADD blocked: 4H ${t4h.direction || "NONE"} vs 1D ${t1d.direction}`);
+      rawType = null;
+    } else if (!emaAligned) {
+      debug.push(`ADD blocked: EMA not aligned`);
+      rawType = null;
+    }
   }
 
   if ((rawType === "ENTRY_1" || rawType === "ENTRY_2") && candles1h.length >= 30) {
@@ -487,7 +503,7 @@ export function generateSignal(
   else if (hyst.lastSignalType === "ENTRY_1" && rawType === "ENTRY_2") finalType = "ENTRY_2";
   else if (hyst.lastSignalType === "ENTRY_1") finalType = "ENTRY_1";
 
-  // v32.4: Use pair-specific hysteresis band
+  // v32.5: Use pair-specific hysteresis band
   if (hyst.lastSignalType && finalType === hyst.lastSignalType) {
     if (Math.abs(price - hyst.lastSignalPrice) / hyst.lastSignalPrice < config.hysteresisBand) {
       debug.push("Hysteresis lock");
@@ -495,7 +511,7 @@ export function generateSignal(
     }
   }
 
-  // v32.4: Use pair-specific cooldown
+  // v32.5: Use pair-specific cooldown
   const lastSignal = signalCooldowns.get(pair);
   if (lastSignal && now - lastSignal < config.signalCooldownMs) {
     debug.push(`Cooldown ${((now - lastSignal) / 60000).toFixed(0)}min < ${(config.signalCooldownMs / 60000).toFixed(0)}min`);
@@ -509,7 +525,7 @@ export function generateSignal(
 
   setHysteresis(pair, finalType, price, now);
 
-  // v32.4: Use pair-specific ATR multiplier for stops
+  // v32.5: Use pair-specific ATR multiplier for stops
   const atrVal = atr(candles4h, 14);
   const swingLow = Math.min(...candles4h.slice(-20).map(c => c.low));
   const swingHigh = Math.max(...candles4h.slice(-20).map(c => c.high));
@@ -556,7 +572,7 @@ export function generateSignal(
     stochK: stoch4h.k,
     stochD: stoch4h.d,
     expectedMove: Math.round(Math.abs(tp - entry) / entry * 1000) / 10,
-    reason: `${t1d.direction} ${type} ${finalType} | 1D ${t1d.strength} | 4H K${stoch4h.k} D${stoch4h.d} | 1H K${stoch1h.k} D${stoch1h.d} | RR ${rr.toFixed(2)} | ${usingTrendline ? "TL" : "EMA21"}`,
+    reason: `${t1d.direction} ${type} ${finalType} | 1D ${t1d.strength} | 4H ${t4h.direction || "NONE"} ${t4h.strength} | 4H K${stoch4h.k} D${stoch4h.d} | 1H K${stoch1h.k} D${stoch1h.d} | RR ${rr.toFixed(2)} | ${usingTrendline ? "TL" : "EMA21"}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
     entryTier: finalType === "ADD" ? "CONFIRMED_ENTRY" : "EARLY_ENTRY",
@@ -611,6 +627,11 @@ export function shouldHold(
   const v = isSignalStillValid(signal, currentPrice);
   if (!v.valid) return { shouldHold: false, reason: v.reason };
 
+  // v32.5: Require minimum candle count for structure analysis
+  if (candles4h.length < 50) {
+    return { shouldHold: true, reason: "structure_intact_insufficient_data" };
+  }
+
   // 2. 4H STRUCTURE BREAK — TWO consecutive closes beyond EMA21 + EMA21 slope negative
   const closes = candles4h.map(c => c.close);
   const e21 = ema(closes, 21);
@@ -619,10 +640,8 @@ export function shouldHold(
   if (e21.length >= 3 && e50.length >= 3) {
     const c0 = candles4h[candles4h.length - 1].close; // last
     const c1 = candles4h[candles4h.length - 2].close; // prev
-    const c2 = candles4h[candles4h.length - 3].close; // before prev
     const e21_0 = e21[e21.length - 1];
     const e21_1 = e21[e21.length - 2];
-    const e21_2 = e21[e21.length - 3];
     const e50_0 = e50[e50.length - 1];
 
     // EMA21 slope negative: current < previous
@@ -662,7 +681,7 @@ export function shouldHold(
   }
 
   // 4. 1D REGIME FLIP — STRONG only, CLOSED candle only
-  // v32.4: Use pair-specific ADX threshold for "strong" flip
+  // v32.5: Use pair-specific ADX threshold for "strong" flip
   if (candles1d.length >= 25) {
     const regime = getPersistentRegime(signal.pair, candles1d, Date.now());
     const config = getPairConfig(signal.pair);
@@ -702,7 +721,7 @@ export function filterExpiredSignals(signals: Signal[], currentPrices?: Record<s
   return { active, exited };
 }
 
-// ─── SNAPSHOT — v32.4: accepts candles1d directly, pair-specific trend strength ───
+// ─── SNAPSHOT — v32.5: accepts candles1d directly, pair-specific trend strength ───
 
 export function getMarketSnapshot(
   pair: string,
@@ -724,7 +743,7 @@ export function getMarketSnapshot(
   const adxVal = adx(candles4h) ?? 0;
   const config = getPairConfig(pair);
 
-  // v32.4: Pair-specific trend strength
+  // v32.5: Pair-specific trend strength
   const closes4h = candles4h.map(c => c.close);
   const e8_4h = ema(closes4h, 8);
   const e21_4h = ema(closes4h, 21);
@@ -738,7 +757,7 @@ export function getMarketSnapshot(
     emaAligned,
   };
 
-  // v32.4: Phase warnings
+  // v32.5: Phase warnings
   let phaseWarning1h: string | null = null;
   let phaseWarning4h: string | null = null;
 
@@ -754,7 +773,7 @@ export function getMarketSnapshot(
     phaseWarning4h = "4H Stochastic oversold — accumulation zone";
   }
 
-  // v32.4: Better "Why No Trade?" using debug info
+  // v32.5: Better "Why No Trade?" using debug info
   const whyNoTrade: string[] = [];
   if (!signalResult?.signal) {
     if (signalResult?.debug && signalResult.debug.length > 0) {
@@ -808,7 +827,7 @@ export function getMarketSnapshot(
   };
 }
 
-// ─── TRADE MANAGER — v32.4: profit lock starts at 5% ───
+// ─── TRADE MANAGER — v32.5: profit lock starts at 5% ───
 
 export function updateTradeManagerCompat(signal: Signal, currentPrice: number) {
   const highest = Math.max(signal.highestPrice || signal.entry, currentPrice);
@@ -818,7 +837,7 @@ export function updateTradeManagerCompat(signal: Signal, currentPrice: number) {
   let profitLockActive = false;
   let lockedStop: number | undefined;
 
-  // v32.4: Swing-appropriate profit locking
+  // v32.5: Swing-appropriate profit locking
   // +5% = move to breakeven + small buffer
   // +8% = lock 50% of gains
   // +12% = lock 75% of gains (trailing)
@@ -881,7 +900,7 @@ export function shouldHoldCompat(
   candles1h: Candle[],
   currentPrice: number
 ): HoldResult {
-  // v32.4: shouldHold now requires candles1d. For compat, aggregate from 4H.
+  // v32.5: shouldHold now requires candles1d. For compat, aggregate from 4H.
   // NOTE: Real callers should pass actual 1D candles.
   const candles1d = aggregateTo1D(candles4h);
   return shouldHold(signal, candles4h, candles1d, currentPrice);
