@@ -85,9 +85,9 @@ function phaseBg(phase: string | undefined): string {
 }
 
 function phaseLabel(phase: string | undefined, dir: string | null): string {
-  if (!phase || !dir) return "Neutral";
-  if (phase === "EXPANSION") return dir === "LONG" ? "Expanding" : "Expanding";
-  if (phase === "EXHAUSTION") return dir === "LONG" ? "Exhaustion" : "Exhaustion";
+  if (!phase || !dir) return "Building";
+  if (phase === "EXPANSION") return "Expanding";
+  if (phase === "EXHAUSTION") return "Exhaustion";
   return "Building";
 }
 
@@ -171,7 +171,7 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </div>
         <div className="text-xs text-gray-500 mt-1">
           4H Stoch: {snap.stochK?.toFixed(1)} / {snap.stochD?.toFixed(1)}
-          {snap.phase4h === "EXPANSION" ? " — momentum running" : snap.phase4h === "EXHAUSTION" ? " — watch for reversal" : " — waiting for setup"}
+          {snap.phase4h === "EXPANSION" ? " — momentum running, dont chase" : snap.phase4h === "EXHAUSTION" ? " — reversal zone, watch for entry" : " — waiting for setup"}
         </div>
       </div>
 
