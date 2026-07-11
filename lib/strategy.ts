@@ -72,13 +72,14 @@ interface PairConfig {
   signalCooldownMs: number;
   hysteresisBand: number;
   minRegimeStrength: string;
+  aggression: number; // 1.0 = normal, 1.5 = aggressive (alts), 0.8 = conservative (BTC)
 }
 
 const PAIR_CONFIG: Record<string, PairConfig> = {
-  "BTC/USD": { atrMultiplier: 2.0, adxThreshold: 22, signalCooldownMs: 4 * 60 * 60 * 1000, hysteresisBand: 0.005, minRegimeStrength: "MEDIUM" },
-  "ETH/USD": { atrMultiplier: 2.0, adxThreshold: 22, signalCooldownMs: 4 * 60 * 60 * 1000, hysteresisBand: 0.005, minRegimeStrength: "MEDIUM" },
-  "SOL/USD": { atrMultiplier: 3.0, adxThreshold: 16, signalCooldownMs: 2 * 60 * 60 * 1000, hysteresisBand: 0.010, minRegimeStrength: "MEDIUM" },
-  "HYPE/USD": { atrMultiplier: 3.0, adxThreshold: 16, signalCooldownMs: 2 * 60 * 60 * 1000, hysteresisBand: 0.010, minRegimeStrength: "MEDIUM" },
+  "BTC/USD": { atrMultiplier: 2.0, adxThreshold: 22, signalCooldownMs: 4 * 60 * 60 * 1000, hysteresisBand: 0.005, minRegimeStrength: "MEDIUM", aggression: 0.9 },
+  "ETH/USD": { atrMultiplier: 2.0, adxThreshold: 22, signalCooldownMs: 4 * 60 * 60 * 1000, hysteresisBand: 0.005, minRegimeStrength: "MEDIUM", aggression: 1.0 },
+  "SOL/USD": { atrMultiplier: 3.0, adxThreshold: 14, signalCooldownMs: 2 * 60 * 60 * 1000, hysteresisBand: 0.015, minRegimeStrength: "MEDIUM", aggression: 1.4 },
+  "HYPE/USD": { atrMultiplier: 3.0, adxThreshold: 14, signalCooldownMs: 2 * 60 * 60 * 1000, hysteresisBand: 0.015, minRegimeStrength: "MEDIUM", aggression: 1.5 },
 };
 
 export function getPairConfig(pair: string): PairConfig {
@@ -367,23 +368,25 @@ export function generateSignal(
   let entryType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
   let confidence = 0;
 
-  // v33.2: Relaxed stoch thresholds for early entries
-  // ENTRY_1: Deep pullback - price near EMA21, stoch oversold (was <30, now <45)
-  const nearEMA21 = Math.abs(distFromEMA21) < 0.02; // within 2% of EMA21 (was 1.5%)
-  const stochExtremeLong = stoch4h.k < 45 && stoch4h.d < 50;
-  const stochExtremeShort = stoch4h.k > 55 && stoch4h.d > 50;
+  // v33.3: Aggression-adjusted thresholds for alts
+  const agg = config.aggression;
+
+  // ENTRY_1: Deep pullback - price near EMA21, stoch oversold
+  // Aggression multiplies the distance threshold and lowers stoch threshold
+  const nearEMA21 = Math.abs(distFromEMA21) < (0.025 * agg); // 2.5% base * aggression
+  const stochExtremeLong = stoch4h.k < (50 / agg) && stoch4h.d < (55 / agg); // 50/55 base / aggression
+  const stochExtremeShort = stoch4h.k > (50 / agg) && stoch4h.d > (45 / agg);
   const stochExtreme = t1d.direction === "LONG" ? stochExtremeLong : stochExtremeShort;
 
-  // ENTRY_2: Shallow pullback - price near EMA8, stoch turning (was <50, now <60)
-  const nearEMA8 = Math.abs((price - ema8Price) / ema8Price) < 0.012; // was 0.8%
-  const stochTurningLong = stoch4h.k > stoch4h.d && stoch4h.k < 60;
-  const stochTurningShort = stoch4h.k < stoch4h.d && stoch4h.k > 40;
+  // ENTRY_2: Shallow pullback - price near EMA8, stoch turning
+  const nearEMA8 = Math.abs((price - ema8Price) / ema8Price) < (0.015 * agg);
+  const stochTurningLong = stoch4h.k > stoch4h.d && stoch4h.k < (65 / agg);
+  const stochTurningShort = stoch4h.k < stoch4h.d && stoch4h.k > (35 / agg);
   const stochTurning = t1d.direction === "LONG" ? stochTurningLong : stochTurningShort;
 
-  // v33.2: NEW - EMA21 touch entry with ANY stoch below 60 (for LONG)
-  // This catches entries where stoch hasn't reached extreme yet but price is at support
-  const ema21Touch = Math.abs(distFromEMA21) < 0.01; // within 1%
-  const stochBelowMid = t1d.direction === "LONG" ? stoch4h.k < 60 : stoch4h.k > 40;
+  // v33.3: EMA21 touch entry - wider for aggressive pairs
+  const ema21Touch = Math.abs(distFromEMA21) < (0.012 * agg);
+  const stochBelowMid = t1d.direction === "LONG" ? stoch4h.k < (70 / agg) : stoch4h.k > (30 / agg);
 
   // Check for momentum (ADD)
   const beyondEMA8 = t1d.direction === "LONG" ? price > ema8Price * 1.005 : price < ema8Price * 0.995;
@@ -441,14 +444,15 @@ export function generateSignal(
 
   // ─── 1H TIMING FILTER ───
   // For ENTRY_1 and ENTRY_2, check 1H stoch for better timing
+  // v33.4: Soft penalty for aggressive pairs, hard penalty for conservative
   if ((entryType === "ENTRY_1" || entryType === "ENTRY_2") && candles1h.length >= 30) {
     const timingOk = t1d.direction === "LONG"
-      ? stoch1h.k > stoch1h.d || stoch1h.k < 30
-      : stoch1h.k < stoch1h.d || stoch1h.k > 70;
+      ? stoch1h.k > stoch1h.d || stoch1h.k < 35
+      : stoch1h.k < stoch1h.d || stoch1h.k > 65;
     if (!timingOk) {
-      debug.push("1H timing opposed — waiting");
-      // Don't kill the signal, just reduce confidence
-      confidence -= 15;
+      const timingPenalty = Math.floor(20 / agg); // 20 for BTC, 13 for HYPE
+      confidence -= timingPenalty;
+      debug.push("1H timing opposed (-" + timingPenalty + " conf)");
     }
   }
 
@@ -467,8 +471,9 @@ export function generateSignal(
     return { debug };
   }
 
-  if (!entryType || confidence < 45) {
-    debug.push(`No setup (conf=${confidence})`);
+  const minConfidence = Math.floor(40 / agg); // 40 base / aggression = 28 for HYPE, 44 for BTC
+  if (!entryType || confidence < minConfidence) {
+    debug.push(`No setup (conf=${confidence}, need ${minConfidence})`);
     return { debug };
   }
 
@@ -477,22 +482,26 @@ export function generateSignal(
   // ─── CALCULATE LEVELS ───
   let entry: number, sl: number, tp: number, type: "ACCUMULATE" | "BREAKOUT";
 
+  // v33.4: Aggression-adjusted stops and targets
+  const stopMultiplier = config.atrMultiplier * (1 + (agg - 1) * 0.5);
+  const swingLow = Math.min(...candles4h.slice(-30).map(c => c.low));
+  const swingHigh = Math.max(...candles4h.slice(-30).map(c => c.high));
+
   if (entryType === "ENTRY_1" || entryType === "ENTRY_2") {
     type = "ACCUMULATE";
     entry = price;
-    // Stop below swing low (LONG) or above swing high (SHORT)
-    const atrStop = atrVal * config.atrMultiplier;
+    // Wider stops for aggressive pairs
+    const atrStop = atrVal * stopMultiplier;
     sl = t1d.direction === "LONG"
-      ? Math.min(swingLow20, entry - atrStop)
-      : Math.max(swingHigh20, entry + atrStop);
-    // Target: 3x ATR or 5% move, whichever is larger
+      ? Math.min(swingLow, entry - atrStop)
+      : Math.max(swingHigh, entry + atrStop);
+    // Target: 4x ATR or 5% move, whichever is larger
     const minTarget = t1d.direction === "LONG"
       ? Math.max(entry + atrVal * 4, entry * 1.05)
       : Math.min(entry - atrVal * 4, entry * 0.95);
-    // Use swing high/low as target if better
     tp = t1d.direction === "LONG"
-      ? Math.max(swingHigh20, minTarget)
-      : Math.min(swingLow20, minTarget);
+      ? Math.max(swingHigh, minTarget)
+      : Math.min(swingLow, minTarget);
   } else {
     type = "BREAKOUT";
     entry = price;
@@ -500,16 +509,17 @@ export function generateSignal(
       ? Math.min(ema21Price * 0.995, entry - atrVal * 1.5)
       : Math.max(ema21Price * 1.005, entry + atrVal * 1.5);
     const minTarget = t1d.direction === "LONG"
-      ? entry + (entry - sl) * MIN_RR
-      : entry - (sl - entry) * MIN_RR;
+      ? entry + (entry - sl) * minRR
+      : entry - (sl - entry) * minRR;
     tp = t1d.direction === "LONG"
-      ? Math.max(swingHigh20, minTarget)
-      : Math.min(swingLow20, minTarget);
+      ? Math.max(swingHigh, minTarget)
+      : Math.min(swingLow, minTarget);
   }
 
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
-  if (rr < MIN_RR) {
-    debug.push(`R:R ${rr.toFixed(2)} < ${MIN_RR}`);
+  const minRR = Math.max(1.2, MIN_RR / agg); // 1.5 for BTC, 1.0 for HYPE
+  if (rr < minRR) {
+    debug.push(`R:R ${rr.toFixed(2)} < ${minRR.toFixed(2)}`);
     return { debug };
   }
 
