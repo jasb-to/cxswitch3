@@ -1,9 +1,17 @@
-// app/api/cron/route.ts — v29.3 CXSwitch cron job (VERBOSE LOGGING)
+// app/api/cron/route.ts — v32.3 CXSwitch cron job (FIVE EXITS, FIXED)
 // ============================================================
 // This is the ONLY place that evaluates markets, generates signals,
 // manages exits, and computes dashboard snapshots.
 //
 // /api/signals is READ-ONLY. It never calls strategy functions.
+//
+// v32.3 FIXES:
+// - generateSignal signature: (pair, candles1h, candles4h, candles1d, activeSignals, price)
+// - shouldHold signature: (signal, candles4h, candles1d, price)
+// - getMarketSnapshot signature: (pair, candles1h, candles4h, candles15m, candles1d, price, signalResult)
+// - Array.isArray() validation on all candle data
+// - Fallback to aggregateTo1D() if getCandles(1440) fails
+// ============================================================
 
 import { NextRequest, NextResponse } from "next/server";
 import {
@@ -16,6 +24,7 @@ import {
   updateTradeManagerCompat,
   recordExitCooldown,
   getMarketSnapshot,
+  aggregateTo1D,
   Signal,
   SignalResult,
 } from "@/lib/strategy";
@@ -89,6 +98,12 @@ export async function GET(req: NextRequest) {
     console.error("[CRON] loadActiveSignals failed:", e);
   }
 
+  // v32.3 FIX: Ensure activeSignals is always an array
+  if (!Array.isArray(activeSignals)) {
+    console.warn("[CRON] loadActiveSignals returned non-array, resetting to []");
+    activeSignals = [];
+  }
+
   const currentPrices: Record<string, number> = {};
   const signalResults: Record<string, SignalResult> = {};
   const marketSnapshots = [];
@@ -100,15 +115,56 @@ export async function GET(req: NextRequest) {
     console.log(`[CRON] ─── ${pair} ───`);
 
     try {
-      const [candles1h, candles4h, candles15m, price] = await Promise.all([
-        getCandles(krakenPair, 60),
-        getCandles(krakenPair, 240),
-        getCandles(krakenPair, 15),
-        getCurrentPrice(krakenPair),
-      ]);
+      // v32.3 FIX: Fetch REAL 1D candles (1440 min = 1 day)
+      // Kraken supports: 1, 5, 15, 30, 60, 240, 1440, 10080, 21600
+      let candles1h: any[] = [];
+      let candles4h: any[] = [];
+      let candles15m: any[] = [];
+      let candles1d: any[] = [];
+      let price = 0;
+
+      try {
+        [candles1h, candles4h, candles15m, candles1d, price] = await Promise.all([
+          getCandles(krakenPair, 60),
+          getCandles(krakenPair, 240),
+          getCandles(krakenPair, 15),
+          getCandles(krakenPair, 1440), // ← REAL 1D candles
+          getCurrentPrice(krakenPair),
+        ]);
+      } catch (fetchErr) {
+        // If 1440 fails, try without it and aggregate from 4H
+        console.warn(`[CRON] ${pair} | getCandles(1440) failed, falling back to aggregation:`, String(fetchErr));
+        [candles1h, candles4h, candles15m, price] = await Promise.all([
+          getCandles(krakenPair, 60),
+          getCandles(krakenPair, 240),
+          getCandles(krakenPair, 15),
+          getCurrentPrice(krakenPair),
+        ]);
+      }
 
       currentPrices[pair] = price;
-      console.log(`[CRON] ${pair} | Price: $${price.toFixed(2)} | 1H: ${candles1h.length} | 4H: ${candles4h.length} | 15m: ${candles15m.length}`);
+
+      // v32.3 FIX: Validate candle data is arrays before using .map() or .filter()
+      if (!Array.isArray(candles1h)) {
+        console.error(`[CRON] ${pair} | candles1h is not array:`, typeof candles1h);
+        throw new Error(`Invalid candle data for 1H: ${typeof candles1h}`);
+      }
+      if (!Array.isArray(candles4h)) {
+        console.error(`[CRON] ${pair} | candles4h is not array:`, typeof candles4h);
+        throw new Error(`Invalid candle data for 4H: ${typeof candles4h}`);
+      }
+      if (!Array.isArray(candles15m)) {
+        console.error(`[CRON] ${pair} | candles15m is not array:`, typeof candles15m);
+        throw new Error(`Invalid candle data for 15m: ${typeof candles15m}`);
+      }
+
+      // v32.3 FIX: If 1D candles failed, aggregate from 4H
+      if (!Array.isArray(candles1d) || candles1d.length === 0) {
+        console.log(`[CRON] ${pair} | Aggregating 1D from 4H candles (${candles4h.length} bars)`);
+        candles1d = aggregateTo1D(candles4h);
+      }
+
+      console.log(`[CRON] ${pair} | Price: $${price.toFixed(2)} | 1H: ${candles1h.length} | 4H: ${candles4h.length} | 15m: ${candles15m.length} | 1D: ${candles1d.length}`);
 
       // ─── STEP 1: Manage existing positions ───
       const activeForPair = activeSignals.filter(s => s.pair === pair && !s.exited);
@@ -119,7 +175,8 @@ export async function GET(req: NextRequest) {
         for (const signal of activeForPair) {
           console.log(`[CRON] ${pair} | Trade ID: ${signal.id} | Dir: ${signal.direction} | Entry: $${signal.entry.toFixed(2)} | Stop: $${signal.stop.toFixed(2)} | Target: $${signal.target.toFixed(2)}`);
 
-          const holdResult = await shouldHold(signal, candles4h, price, candles1h);
+          // v32.3 FIX: shouldHold now takes candles1d (real 1D), not candles1h
+          const holdResult = shouldHold(signal, candles4h, candles1d, price);
           console.log(`[CRON] ${pair} | shouldHold: ${holdResult.shouldHold} | reason: ${holdResult.reason}`);
 
           if (!holdResult.shouldHold) {
@@ -162,7 +219,9 @@ export async function GET(req: NextRequest) {
         // ─── STEP 2: Generate new signal (ONCE) ───
         console.log(`[CRON] ${pair} | No active trades — evaluating for new signal`);
 
-        const result = await generateSignal(pair, candles1h, candles4h, candles15m, price);
+        // v32.3 FIX: Pass activeSignals to prevent duplicate entries
+        // Signature: generateSignal(pair, candles1h, candles4h, candles1d, activeSignals, price)
+        const result = generateSignal(pair, candles1h, candles4h, candles1d, activeSignals, price);
         signalResults[pair] = result;
 
         if (result.debug && result.debug.length > 0) {
@@ -203,16 +262,18 @@ export async function GET(req: NextRequest) {
       }
 
       // ─── STEP 3: Build snapshot ───
-      const snapshot = await getMarketSnapshot(
+      // v32.3 FIX: getMarketSnapshot now takes candles1d as 5th param
+      const snapshot = getMarketSnapshot(
         pair,
         candles1h,
         candles4h,
         candles15m,
+        candles1d,
         price,
         signalResults[pair]
       );
 
-      // FIX v29.2: Overlay active-trade state onto the snapshot
+      // FIX v32.3: Overlay active-trade state onto the snapshot
       if (results[pair]?.status === "HOLDING" && activeForPair.length > 0) {
         const activeSignal = activeForPair[0];
         snapshot.activeTrade = {
@@ -239,7 +300,7 @@ export async function GET(req: NextRequest) {
 
       // Log snapshot summary for this pair
       const snap = snapshot;
-      console.log(`[CRON] ${pair} | Snapshot → Trend: ${snap.trend} | ADX: ${snap.adx} | RSI: ${snap.rsi} | Stoch4H: ${snap.stochK}/${snap.stochD} | Stoch1H: ${snap.stoch1hK}/${snap.stoch1hD} | Phase1H: ${snap.phase1h} | Phase4H: ${snap.phase4h}`);
+      console.log(`[CRON] ${pair} | Snapshot → Trend: ${snap.trend} | ADX: ${snap.adx} | RSI: ${snap.rsi} | Stoch4H: ${snap.stochK}/${snap.stochD} | Stoch1H: ${snap.stoch1hK}/${snap.stoch1hD} | Phase1H: ${snap.phase1h} | Phase4H: ${snap.phase4h} | Trendline: ${snap.trendlinePrice || "none"}`);
 
       marketSnapshots.push(snapshot);
 
@@ -258,7 +319,7 @@ export async function GET(req: NextRequest) {
 
   // Filter expired signals
   try {
-    const { active, exited } = await filterExpiredSignals(activeSignals, currentPrices, now);
+    const { active, exited } = filterExpiredSignals(activeSignals, currentPrices);
     if (exited.length > 0) {
       console.log(`[CRON] Filtered ${exited.length} expired signal(s)`);
       for (const { signal, reason } of exited) {
@@ -271,7 +332,7 @@ export async function GET(req: NextRequest) {
             console.error("[CRON] sendExitAlert (filterExpired) failed for", signal.id, ":", alertErr);
           }
           signal.exited = true;
-        recordExitCooldown(signal.pair, now);
+          recordExitCooldown(signal.pair, now);
         }
       }
     }
