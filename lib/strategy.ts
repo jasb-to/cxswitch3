@@ -601,6 +601,12 @@ export function generateSignal(
     return { debug };
   }
 
+  // SAFETY: Do not generate signals if 1D trend is WEAK — wait for clarity
+  if (t1d.strength === "WEAK") {
+    debug.push("1D trend too weak — waiting for clarity");
+    return { debug };
+  }
+
   // Trendline
   const trendline = getTrendline(pair, candles4h, t1d.direction);
   if (!trendline) {
@@ -851,13 +857,44 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
   return { valid: true, reason: "active", exited: false };
 }
 
-export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, now?: number): HoldResult {
-  // FIX: Exit when Stoch hits extreme opposite (chart behavior)
-  // This is the v28 regime flip proxy — when Stoch goes extreme opposite,
-  // the momentum has reversed. No async needed.
-
+export function shouldHold(
+  signal: Signal,
+  candles4h: Candle[],
+  currentPrice: number,
+  now?: number
+): HoldResult {
+  // Build 1D candles from 4H for regime flip detection
+  const candles1d = aggregateTo1D(candles4h);
+  // 1. Check price-based validity (SL, TP, expiry)
   const validity = isSignalStillValid(signal, currentPrice, now);
   if (!validity.valid) return { shouldHold: false, reason: validity.reason };
+
+  // 2. REGIME FLIP DETECTION: Exit if 1D trend reverses against position
+  // This prevents holding SHORT into a strong uptrend or LONG into a strong downtrend
+  if (candles1d && candles1d.length >= 25) {
+    const currentTrend = trend1D(candles1d);
+    if (currentTrend.direction && currentTrend.direction !== signal.direction) {
+      // Trend has flipped against our position
+      // Only exit if the new trend is STRONG — avoid whipsaws on weak flips
+      if (currentTrend.strength === "STRONG") {
+        return { shouldHold: false, reason: "regime_flip" };
+      }
+      // If medium strength, at least warn by not returning yet — let price stops handle it
+    }
+  }
+
+  // 3. StochRSI extreme opposite check (momentum exhaustion)
+  // For LONG: if Stoch K > 80 and crossing down, momentum is fading
+  // For SHORT: if Stoch K < 20 and crossing up, momentum is fading
+  if (candles4h.length >= 30) {
+    const stoch = stochRsi(candles4h.map(c => c.close));
+    if (signal.direction === "LONG" && stoch.k > 80 && stoch.k < stoch.d) {
+      return { shouldHold: false, reason: "stoch_exhaustion_long" };
+    }
+    if (signal.direction === "SHORT" && stoch.k < 20 && stoch.k > stoch.d) {
+      return { shouldHold: false, reason: "stoch_exhaustion_short" };
+    }
+  }
 
   return { shouldHold: true, reason: "active" };
 }
@@ -914,10 +951,13 @@ export function getMarketSnapshot(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
-  candles1d: Candle[],
+  candles15m: Candle[],
   currentPrice?: number,
   signalResult?: SignalResult
 ): any {
+  // v32 FIX: Aggregate 4H to 1D internally. The 4th param was incorrectly
+  // receiving 15m candles from callers. Now we ignore it and build 1D from 4H.
+  const candles1d = aggregateTo1D(candles4h);
   // Compute all timeframe trends independently
   const t1h = detectTrend(candles1h);
   const t4h = detectTrend(candles4h);
