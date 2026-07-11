@@ -1,11 +1,3 @@
-// app/api/signals/route.ts — v29.1 READ-ONLY SIGNALS ENDPOINT
-// ============================================================
-// This endpoint NEVER evaluates strategy. It only reads the pre-computed
-// dashboard snapshot that /api/cron saves every 10 minutes.
-//
-// NO Kraken calls. NO indicator calculations. NO strategy. NO logging.
-// Response time target: 5–20ms.
-
 import { NextRequest, NextResponse } from "next/server";
 import { loadDashboardSnapshot } from "@/lib/state";
 
@@ -18,12 +10,8 @@ export async function GET(req: NextRequest) {
 
   try {
     const snapshot = await loadDashboardSnapshot();
-
     if (!snapshot) {
-      return NextResponse.json(
-        { error: "No snapshot available. Cron may not have run yet." },
-        { status: 503 }
-      );
+      return NextResponse.json({ error: "No snapshot available. Cron may not have run yet." }, { status: 503 });
     }
 
     if (pair && snapshot.markets) {
@@ -43,9 +31,6 @@ export async function GET(req: NextRequest) {
       lastCronRun: snapshot.timestamp,
     });
   } catch (e) {
-    return NextResponse.json(
-      { error: String(e) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }
