@@ -673,14 +673,17 @@ export function generateSignal(
     confidence = 0;
   }
 
+  // ═══════════════════════════════════════════════════════════
+  // FIX: Reduced 1H timing penalty so good setups aren't killed
+  // ═══════════════════════════════════════════════════════════
   if ((entryType === "ENTRY_1" || entryType === "ENTRY_2") && candles1h.length >= 30) {
     const timingOk = t1d.direction === "LONG"
       ? stoch1h.k > stoch1h.d || stoch1h.k < 35
       : stoch1h.k < stoch1h.d || stoch1h.k > 65;
     if (!timingOk) {
-      const timingPenalty = Math.floor(15 / agg);
+      const timingPenalty = Math.floor(6 / agg); // Was 15. BTC: 6, ETH: 6, SOL/HYPE: 4
       confidence -= timingPenalty;
-      debug.push("1H timing opposed (-" + timingPenalty + " conf)");
+      debug.push("1H timing check (-" + timingPenalty + " conf)");
     }
   }
 
@@ -1139,9 +1142,6 @@ export function getMarketSnapshot(
   if (signalResult?.signal) readiness += 25;
   else if (Math.abs(distToEMA21) < 0.01) readiness += 15;
 
-  // ═══════════════════════════════════════════════════════════
-  // FIX: Build summary with correct blocker priority
-  // ═══════════════════════════════════════════════════════════
   const summary: {
     status: string;
     debug?: string[];
@@ -1156,7 +1156,6 @@ export function getMarketSnapshot(
     const blocks: string[] = [];
     const debugLines: string[] = [];
 
-    // Parse debug lines to find the PRIMARY blocker
     let rrBlocker: string | null = null;
     let confBlocker: string | null = null;
     let hysteresisBlocker = false;
@@ -1182,7 +1181,6 @@ export function getMarketSnapshot(
       }
     }
 
-    // PRIORITY ORDER: RR > Confidence > Hysteresis > Cooldown > Churn > Other
     if (rrBlocker) {
       const rrMatch = rrBlocker.match(/R:R\s+([\d.]+)\s*<\s*([\d.]+)/);
       if (rrMatch) {
@@ -1206,7 +1204,6 @@ export function getMarketSnapshot(
     } else if (blockedEarly) {
       blocks.push("Early entry blocked in EXPANSION phase");
     } else {
-      // Fallback: show any BLOCKED or No setup line
       const fallback = signalResult.debug.find(d => d.includes("BLOCKED") || d.includes("No setup") || d.includes("Insufficient"));
       blocks.push(fallback || "No valid setup");
     }
