@@ -3,22 +3,17 @@ import {
   generateSignal,
   shouldHold,
   filterExpiredSignals,
-  updateTradeManagerCompat,
-  recordExitCooldown,
+  calculateTradeState,
   getMarketSnapshot,
   aggregateTo1D,
   Signal,
   SignalResult,
 } from "@/lib/strategy";
 import { getCandles, getCurrentPrice, krakenPairFormat } from "@/lib/kraken";
-import { sendAlert, sendExitAlert, alertStatus, alertError } from "@/lib/telegram";
+import { sendAlert, sendExitAlert, alertError } from "@/lib/telegram";
 import {
   saveActiveSignals,
   loadActiveSignals,
-  persistRegime,
-  loadRegime,
-  persistExit,
-  loadExits,
   setLastCronRun,
   saveDashboardSnapshot,
 } from "@/lib/state";
@@ -28,7 +23,6 @@ export const dynamic = "force-dynamic";
 
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
 const CRON_SECRET = process.env.CRON_SECRET;
-const DEBUG = process.env.DEBUG === "true";
 const EXITED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export async function GET(req: NextRequest) {
@@ -95,35 +89,55 @@ export async function GET(req: NextRequest) {
 
       console.log(`[CRON] ${pair} | $${price.toFixed(2)} | 1H:${candles1h.length} 4H:${candles4h.length} 15m:${candles15m.length} 1D:${candles1d.length}`);
 
-      // ─── MANAGE EXISTING ───
+      // ─── MANAGE EXISTING TRADES ───
       const activeForPair = activeSignals.filter(s => s.pair === pair && !s.exited);
 
       if (activeForPair.length > 0) {
         for (const signal of activeForPair) {
+          // v34: shouldHold now returns updatedSignal for state sync
           const holdResult = shouldHold(signal, candles4h, candles1d, price);
           console.log(`[CRON] ${pair} | shouldHold: ${holdResult.shouldHold} | ${holdResult.reason}`);
 
+          // v34: CRITICAL — persist updated signal state BEFORE deciding exit
+          if (holdResult.updatedSignal) {
+            Object.assign(signal, holdResult.updatedSignal);
+          }
+
           if (!holdResult.shouldHold) {
-            const rawPnl = signal.direction === "LONG" ? ((price - signal.entry) / signal.entry * 100) : ((signal.entry - price) / signal.entry * 100);
+            const rawPnl = signal.direction === "LONG"
+              ? ((price - signal.entry) / signal.entry * 100)
+              : ((signal.entry - price) / signal.entry * 100);
             const pnlStr = (isFinite(rawPnl) ? rawPnl.toFixed(2) : "0.00") + "%";
             console.log(`[CRON] ${pair} | EXITING | ${holdResult.reason} | ${pnlStr}`);
 
             try { await sendExitAlert(signal, price, holdResult.reason); } catch (e) {}
             signal.exited = true;
-            recordExitCooldown(pair, now);
+            // v34: recordExit is now called inside shouldHold(), but we keep this for safety
             results[pair] = { status: "EXITED", reason: holdResult.reason, price, signalId: signal.id, pnl: pnlStr };
           } else {
-            const tm = updateTradeManagerCompat(signal, price);
-            signal.highestPrice = tm.highestPrice;
-            signal.lowestPrice = tm.lowestPrice;
-            signal.tradeState = tm.newState;
-            signal.lockedStop = tm.lockedStop;
-            signal.profitLockActive = tm.profitLockActive;
+            // v34: Use calculateTradeState directly (updateTradeManagerCompat is deprecated)
+            const tradeState = calculateTradeState(signal, price);
 
-            const rawPnl = signal.direction === "LONG" ? ((price - signal.entry) / signal.entry * 100) : ((signal.entry - price) / signal.entry * 100);
+            // v34: Merge trade state into signal (shouldHold already did this via updatedSignal,
+            // but we recalculate here for the log and to ensure consistency)
+            signal.highestPrice = tradeState.highestPrice;
+            signal.lowestPrice = tradeState.lowestPrice;
+            signal.tradeState = tradeState.newState;
+            signal.lockedStop = tradeState.lockedStop;
+            signal.profitLockActive = tradeState.profitLockActive;
+
+            const rawPnl = signal.direction === "LONG"
+              ? ((price - signal.entry) / signal.entry * 100)
+              : ((signal.entry - price) / signal.entry * 100);
             const pnl = (isFinite(rawPnl) ? rawPnl.toFixed(2) : "0.00") + "%";
-            console.log(`[CRON] ${pair} | HOLDING | ${tm.newState} | ${pnl}`);
-            results[pair] = { status: "HOLDING", state: tm.newState, lockedStop: tm.lockedStop, pnl, signalId: signal.id };
+            console.log(`[CRON] ${pair} | HOLDING | ${tradeState.newState} | ${pnl}`);
+            results[pair] = {
+              status: "HOLDING",
+              state: tradeState.newState,
+              lockedStop: tradeState.lockedStop,
+              pnl,
+              signalId: signal.id,
+            };
           }
         }
       } else {
@@ -195,7 +209,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Filter expired
+  // ─── FILTER EXPIRED (SL/TP HITS) ───
   try {
     const { active, exited } = filterExpiredSignals(activeSignals, currentPrices);
     if (exited.length > 0) {
@@ -204,14 +218,13 @@ export async function GET(req: NextRequest) {
           const price = currentPrices[signal.pair] || signal.entry;
           try { await sendExitAlert(signal, price, reason); } catch (e) {}
           signal.exited = true;
-          recordExitCooldown(signal.pair, now);
         }
       }
     }
     activeSignals = active;
   } catch (e) { errors.push("filterExpired: " + e); }
 
-  // Clean old exited
+  // ─── CLEAN OLD EXITED ───
   const cleaned = activeSignals.filter(s => !s.exited || (now - s.timestamp) < EXITED_TTL_MS);
   const pruned = activeSignals.length - cleaned.length;
 
@@ -220,6 +233,7 @@ export async function GET(req: NextRequest) {
     await setLastCronRun(now);
   } catch (e) { errors.push("save state: " + e); }
 
+  // ─── DASHBOARD SNAPSHOT ───
   const dashboardSnapshot = {
     timestamp: now,
     iso: new Date(now).toISOString(),
@@ -230,7 +244,7 @@ export async function GET(req: NextRequest) {
 
   try { await saveDashboardSnapshot(dashboardSnapshot); } catch (e) { errors.push("save snapshot: " + e); }
 
-  // Summary
+  // ─── SUMMARY ───
   const activeTrades = cleaned.filter(s => !s.exited);
   console.log("[CRON] FINISHED | Active trades: " + activeTrades.length);
   for (const pair of PAIRS) {
