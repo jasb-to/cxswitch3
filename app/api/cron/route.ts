@@ -1,4 +1,3 @@
-
 import { NextRequest, NextResponse } from "next/server";
 import {
   generateSignal,
@@ -55,7 +54,7 @@ export async function GET(req: NextRequest) {
       pairCounts.set(s.pair, (pairCounts.get(s.pair) || 0) + 1);
     }
   }
-  for (const [pair, count] of of pairCounts) {
+  for (const [pair, count] of pairCounts) {
     if (count > 1) {
       console.error(`[CRON] STATE CORRUPTION: ${pair} has ${count} active signals. Keeping most recent.`);
       const pairSignals = activeSignals.filter(s => s.pair === pair && !s.exited);
