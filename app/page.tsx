@@ -1,77 +1,3 @@
-"use client";
-
-import { useState, useEffect, useCallback } from "react";
-
-interface TrendContext {
-  direction: string;
-  strength: string;
-}
-
-interface ActiveTradeInfo {
-  signalId: string;
-  direction: "LONG" | "SHORT";
-  phase: string;
-  pnl: string;
-  lockedStop?: number | null;
-  entry: number;
-  stop: number;
-  target: number;
-  entryTier?: string;
-  entryMode?: string;
-  positionSizePct?: number;
-  maxProfit?: string;
-  maxDrawdown?: string;
-  profitLockLevel?: number;
-  currentR?: string;
-}
-
-interface SummaryInfo {
-  status: string;
-  debug?: string[];
-  distanceToEntry?: number | null;
-  nextTrigger?: string | null;
-  blocks?: string[];
-}
-
-interface MarketSnapshot {
-  pair: string;
-  price: number;
-  trend: string;
-  regime: {
-    direction: string | null;
-    strength: string;
-    confidence: number;
-    lockedUntil?: number | null;
-  };
-  adx?: number;
-  rsi?: number;
-  stochK?: number;
-  stochD?: number;
-  stoch1hK?: number;
-  stoch1hD?: number;
-  trend1h?: TrendContext;
-  trend4h?: TrendContext;
-  trend1d?: TrendContext;
-  trendStrength?: { adx: number; isStrong: boolean };
-  phase1h?: "EXPANSION" | "EXHAUSTION" | "BUILDING" | "NEUTRAL";
-  phase4h?: "EXPANSION" | "EXHAUSTION" | "BUILDING" | "NEUTRAL";
-  structure15m?: string;
-  readiness?: number;
-  recommendedAction?: string;
-  entryTier?: string | null;
-  entryMode?: string | null;
-  positionSize?: string | null;
-  summary?: SummaryInfo;
-  activeTrade?: ActiveTradeInfo;
-  ema21?: number;
-  distToEMA21?: number;
-  signal?: any;
-  distanceToEntry?: number | null;
-  nextTrigger?: string | null;
-}
-
-const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
-
 function dirColor(dir: string | null | undefined): string {
   if (!dir) return "text-gray-400";
   const d = String(dir).toUpperCase();
@@ -161,6 +87,27 @@ function statusBadge(snap: MarketSnapshot): { label: string; className: string }
     return { label: "BUILDING", className: "bg-amber-500/20 text-amber-400 border-amber-500/30" };
   }
   return { label: "WATCH", className: "bg-gray-700/50 text-gray-400 border-gray-600/30" };
+}
+
+// ═══════════════════════════════════════════════════════════
+// FIX: Helper to determine blocker color based on type
+// ═══════════════════════════════════════════════════════════
+function blockerColor(block: string): string {
+  if (block.includes("R:R")) return "text-amber-300";
+  if (block.includes("conf=") || block.includes("confidence")) return "text-yellow-300";
+  if (block.includes("Hysteresis")) return "text-orange-300";
+  if (block.includes("Cooldown")) return "text-blue-300";
+  if (block.includes("Churn")) return "text-purple-300";
+  return "text-red-300";
+}
+
+function blockerDotColor(block: string): string {
+  if (block.includes("R:R")) return "text-amber-500";
+  if (block.includes("conf=") || block.includes("confidence")) return "text-yellow-500";
+  if (block.includes("Hysteresis")) return "text-orange-500";
+  if (block.includes("Cooldown")) return "text-blue-500";
+  if (block.includes("Churn")) return "text-purple-500";
+  return "text-red-500";
 }
 
 function MarketCard({ snap }: { snap: MarketSnapshot }) {
@@ -320,14 +267,16 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </div>
       )}
 
-      {/* Summary (replaces Why No Trade) */}
+      {/* ═══════════════════════════════════════════════════════════
+          FIX: Summary with correct blocker priority + color coding
+          ═══════════════════════════════════════════════════════════ */}
       {!snap.signal && !snap.activeTrade && summary && (
         <div className="mb-4">
           {/* Status */}
-          <div className={`mb-2 p-3 rounded-lg border ${summary.status === "READY" ? "bg-green-500/10 border-green-500/30" : "bg-gray-800/50 border-gray-700/30"}`}>
+          <div className={`mb-2 p-3 rounded-lg border ${summary.status === "READY" ? "bg-green-500/10 border-green-500/30" : summary.status === "BUILDING" ? "bg-amber-500/10 border-amber-500/30" : "bg-gray-800/50 border-gray-700/30"}`}>
             <div className="flex items-center justify-between">
               <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Status</span>
-              <span className={`text-sm font-bold ${summary.status === "READY" ? "text-green-400" : "text-gray-400"}`}>
+              <span className={`text-sm font-bold ${summary.status === "READY" ? "text-green-400" : summary.status === "BUILDING" ? "text-amber-400" : "text-gray-400"}`}>
                 {summary.status}
               </span>
             </div>
@@ -335,25 +284,25 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
 
           {/* Next Trigger / Distance */}
           {summary.nextTrigger && (
-            <div className="mb-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
-              <div className="text-xs uppercase text-amber-500 font-semibold tracking-wider mb-1">Next Trigger</div>
-              <div className="text-sm text-amber-300">{summary.nextTrigger}</div>
+            <div className="mb-2 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+              <div className="text-xs uppercase text-blue-500 font-semibold tracking-wider mb-1">Next Trigger</div>
+              <div className="text-sm text-blue-300">{summary.nextTrigger}</div>
               {summary.distanceToEntry !== undefined && summary.distanceToEntry !== null && (
-                <div className="text-xs text-amber-500/70 mt-1">
+                <div className="text-xs text-blue-500/70 mt-1">
                   Distance: {typeof summary.distanceToEntry === "number" ? summary.distanceToEntry.toFixed(2) : summary.distanceToEntry}%
                 </div>
               )}
             </div>
           )}
 
-          {/* Blockers */}
+          {/* Blockers — color-coded by type */}
           {summary.blocks && summary.blocks.length > 0 && (
             <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
               <div className="text-xs uppercase text-red-400 font-semibold tracking-wider mb-2">Blockers</div>
               <div className="space-y-1">
                 {summary.blocks.map((block, i) => (
-                  <div key={i} className="text-xs text-red-300 flex items-start gap-2">
-                    <span className="text-red-500 mt-0.5">●</span>
+                  <div key={i} className={`text-xs flex items-start gap-2 ${blockerColor(block)}`}>
+                    <span className={`mt-0.5 ${blockerDotColor(block)}`}>●</span>
                     {block}
                   </div>
                 ))}
