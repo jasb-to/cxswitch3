@@ -1,3 +1,77 @@
+"use client";
+
+import React, { useState, useEffect, useCallback } from "react";
+
+interface TrendContext {
+  direction: string;
+  strength: string;
+}
+
+interface ActiveTradeInfo {
+  signalId: string;
+  direction: "LONG" | "SHORT";
+  phase: string;
+  pnl: string;
+  lockedStop?: number | null;
+  entry: number;
+  stop: number;
+  target: number;
+  entryTier?: string;
+  entryMode?: string;
+  positionSizePct?: number;
+  maxProfit?: string;
+  maxDrawdown?: string;
+  profitLockLevel?: number;
+  currentR?: string;
+}
+
+interface SummaryInfo {
+  status: string;
+  debug?: string[];
+  distanceToEntry?: number | null;
+  nextTrigger?: string | null;
+  blocks?: string[];
+}
+
+interface MarketSnapshot {
+  pair: string;
+  price: number;
+  trend: string;
+  regime: {
+    direction: string | null;
+    strength: string;
+    confidence: number;
+    lockedUntil?: number | null;
+  };
+  adx?: number;
+  rsi?: number;
+  stochK?: number;
+  stochD?: number;
+  stoch1hK?: number;
+  stoch1hD?: number;
+  trend1h?: TrendContext;
+  trend4h?: TrendContext;
+  trend1d?: TrendContext;
+  trendStrength?: { adx: number; isStrong: boolean };
+  phase1h?: "EXPANSION" | "EXHAUSTION" | "BUILDING" | "NEUTRAL";
+  phase4h?: "EXPANSION" | "EXHAUSTION" | "BUILDING" | "NEUTRAL";
+  structure15m?: string;
+  readiness?: number;
+  recommendedAction?: string;
+  entryTier?: string | null;
+  entryMode?: string | null;
+  positionSize?: string | null;
+  summary?: SummaryInfo;
+  activeTrade?: ActiveTradeInfo;
+  ema21?: number;
+  distToEMA21?: number;
+  signal?: any;
+  distanceToEntry?: number | null;
+  nextTrigger?: string | null;
+}
+
+const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
+
 function dirColor(dir: string | null | undefined): string {
   if (!dir) return "text-gray-400";
   const d = String(dir).toUpperCase();
@@ -89,9 +163,6 @@ function statusBadge(snap: MarketSnapshot): { label: string; className: string }
   return { label: "WATCH", className: "bg-gray-700/50 text-gray-400 border-gray-600/30" };
 }
 
-// ═══════════════════════════════════════════════════════════
-// FIX: Helper to determine blocker color based on type
-// ═══════════════════════════════════════════════════════════
 function blockerColor(block: string): string {
   if (block.includes("R:R")) return "text-amber-300";
   if (block.includes("conf=") || block.includes("confidence")) return "text-yellow-300";
@@ -117,7 +188,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
 
   return (
     <div className="p-5 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-600 transition shadow-lg">
-      {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <span className="font-mono font-bold text-xl tracking-tight">{snap.pair.replace("/USD", "")}</span>
         <span className={`text-xs font-bold px-3 py-1 rounded-lg border ${badge.className} uppercase tracking-wider`}>
@@ -125,12 +195,10 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </span>
       </div>
 
-      {/* Price */}
       <div className="mb-4">
         <div className="text-sm text-gray-500">Price: <span className="text-gray-200 font-mono">${snap.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span></div>
       </div>
 
-      {/* 4H Trend + 15M Structure */}
       <div className="grid grid-cols-2 gap-4 mb-4">
         <div>
           <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-1">4H Trend</div>
@@ -144,7 +212,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </div>
       </div>
 
-      {/* Macro Bias */}
       <div className="mb-4">
         <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-1">Macro Bias</div>
         <div className={`text-sm font-bold ${dirColor(snap.trend1d?.direction)}`}>
@@ -153,7 +220,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </div>
       </div>
 
-      {/* Phase Banner */}
       <div className={`mb-4 p-3 rounded-lg border ${phaseBg(snap.phase4h)}`}>
         <div className="flex items-center justify-between">
           <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Phase</span>
@@ -167,7 +233,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </div>
       </div>
 
-      {/* Readiness Bar */}
       <div className="mb-4">
         <div className="flex items-center justify-between mb-1">
           <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Readiness</span>
@@ -181,7 +246,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </div>
       </div>
 
-      {/* Trade Setup (when signal exists) */}
       {snap.signal && (
         <div className="mb-4 p-4 bg-gray-800/50 rounded-lg border border-gray-700/50">
           <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-3">Trade Setup</div>
@@ -214,7 +278,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </div>
       )}
 
-      {/* Active Trade */}
       {snap.activeTrade && (
         <div className="mb-4 p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
           <div className="flex items-center justify-between mb-3">
@@ -224,7 +287,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
             </span>
           </div>
 
-          {/* Phase + R Badge */}
           <div className="flex items-center gap-2 mb-3">
             <div className={`px-2 py-1 rounded border ${tradePhaseBg(snap.activeTrade.phase)}`}>
               <span className={`text-xs font-bold uppercase tracking-wider ${tradePhaseColor(snap.activeTrade.phase)}`}>
@@ -267,12 +329,8 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </div>
       )}
 
-      {/* ═══════════════════════════════════════════════════════════
-          FIX: Summary with correct blocker priority + color coding
-          ═══════════════════════════════════════════════════════════ */}
       {!snap.signal && !snap.activeTrade && summary && (
         <div className="mb-4">
-          {/* Status */}
           <div className={`mb-2 p-3 rounded-lg border ${summary.status === "READY" ? "bg-green-500/10 border-green-500/30" : summary.status === "BUILDING" ? "bg-amber-500/10 border-amber-500/30" : "bg-gray-800/50 border-gray-700/30"}`}>
             <div className="flex items-center justify-between">
               <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Status</span>
@@ -282,7 +340,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
             </div>
           </div>
 
-          {/* Next Trigger / Distance */}
           {summary.nextTrigger && (
             <div className="mb-2 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
               <div className="text-xs uppercase text-blue-500 font-semibold tracking-wider mb-1">Next Trigger</div>
@@ -295,7 +352,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
             </div>
           )}
 
-          {/* Blockers — color-coded by type */}
           {summary.blocks && summary.blocks.length > 0 && (
             <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
               <div className="text-xs uppercase text-red-400 font-semibold tracking-wider mb-2">Blockers</div>
@@ -310,7 +366,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
             </div>
           )}
 
-          {/* Full Debug */}
           {summary.debug && summary.debug.length > 0 && (
             <details className="mt-2">
               <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-400">Show full debug</summary>
@@ -324,7 +379,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </div>
       )}
 
-      {/* Footer */}
       <div className="text-xs text-gray-600 text-right">
         Updated: {new Date(snap.timestamp).toLocaleString()}
       </div>
@@ -387,7 +441,6 @@ export default function Dashboard() {
 
   const activeTrades = Object.values(snapshots).filter(s => s.activeTrade).length;
 
-  // v35.2: Count trades by phase for funnel visibility
   const phaseCounts = Object.values(snapshots).reduce((acc, s) => {
     if (s.activeTrade?.phase) {
       acc[s.activeTrade.phase] = (acc[s.activeTrade.phase] || 0) + 1;
@@ -398,7 +451,6 @@ export default function Dashboard() {
   return (
     <main className="min-h-screen bg-black text-gray-100 p-4 md:p-6">
       <div className="max-w-6xl mx-auto">
-        {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div>
             <h1 className="text-2xl md:text-3xl font-bold tracking-tight">CXSwitch v35.2</h1>
@@ -435,7 +487,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* 2x2 Grid */}
         <section>
           <h2 className="text-lg font-semibold mb-4 text-gray-300">Market Overview</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -456,7 +507,6 @@ export default function Dashboard() {
           </div>
         </section>
 
-        {/* Footer */}
         <div className="mt-8 pt-4 border-t border-gray-800 text-center">
           <p className="text-xs text-gray-600">
             CXSwitch v35.2 — R-Based Lifecycle | ENTRY → BUILDING (1R) → TREND (2R) → PROFIT_PROTECTION
