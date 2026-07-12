@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
@@ -10,14 +11,27 @@ interface TrendContext {
 interface ActiveTradeInfo {
   signalId: string;
   direction: "LONG" | "SHORT";
-  state: string;
+  phase: string;
   pnl: string;
-  lockedStop?: number;
+  lockedStop?: number | null;
   entry: number;
   stop: number;
   target: number;
   entryTier?: string;
+  entryMode?: string;
   positionSizePct?: number;
+  maxProfit?: string;
+  maxDrawdown?: string;
+  profitLockLevel?: number;
+  currentR?: string;
+}
+
+interface SummaryInfo {
+  status: string;
+  debug?: string[];
+  distanceToEntry?: number | null;
+  nextTrigger?: string | null;
+  blocks?: string[];
 }
 
 interface MarketSnapshot {
@@ -40,18 +54,21 @@ interface MarketSnapshot {
   trend4h?: TrendContext;
   trend1d?: TrendContext;
   trendStrength?: { adx: number; isStrong: boolean };
-  phase1h?: "EXPANSION" | "EXHAUSTION" | "NEUTRAL";
-  phase4h?: "EXPANSION" | "EXHAUSTION" | "NEUTRAL";
+  phase1h?: "EXPANSION" | "EXHAUSTION" | "BUILDING" | "NEUTRAL";
+  phase4h?: "EXPANSION" | "EXHAUSTION" | "BUILDING" | "NEUTRAL";
   structure15m?: string;
   readiness?: number;
   recommendedAction?: string;
   entryTier?: string | null;
+  entryMode?: string | null;
   positionSize?: string | null;
-  whyNoTrade?: string[];
+  summary?: SummaryInfo;
   activeTrade?: ActiveTradeInfo;
   ema21?: number;
   distToEMA21?: number;
   signal?: any;
+  distanceToEntry?: number | null;
+  nextTrigger?: string | null;
 }
 
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
@@ -75,12 +92,14 @@ function strengthBadge(strength: string): string {
 function phaseColor(phase: string | undefined): string {
   if (phase === "EXHAUSTION") return "text-red-400";
   if (phase === "EXPANSION") return "text-amber-400";
+  if (phase === "BUILDING") return "text-blue-400";
   return "text-gray-400";
 }
 
 function phaseBg(phase: string | undefined): string {
   if (phase === "EXHAUSTION") return "bg-red-500/15 border-red-500/30";
   if (phase === "EXPANSION") return "bg-amber-500/15 border-amber-500/30";
+  if (phase === "BUILDING") return "bg-blue-500/15 border-blue-500/30";
   return "bg-gray-800/50";
 }
 
@@ -89,6 +108,33 @@ function phaseLabel(phase: string | undefined, dir: string | null): string {
   if (phase === "EXPANSION") return "Expanding";
   if (phase === "EXHAUSTION") return "Exhaustion";
   return "Building";
+}
+
+function tradePhaseColor(phase: string | undefined): string {
+  if (phase === "ENTRY") return "text-yellow-400";
+  if (phase === "BUILDING") return "text-blue-400";
+  if (phase === "TREND") return "text-green-400";
+  if (phase === "PROFIT_PROTECTION") return "text-emerald-400";
+  if (phase === "EXIT") return "text-red-400";
+  return "text-gray-400";
+}
+
+function tradePhaseBg(phase: string | undefined): string {
+  if (phase === "ENTRY") return "bg-yellow-500/15 border-yellow-500/30";
+  if (phase === "BUILDING") return "bg-blue-500/15 border-blue-500/30";
+  if (phase === "TREND") return "bg-green-500/15 border-green-500/30";
+  if (phase === "PROFIT_PROTECTION") return "bg-emerald-500/15 border-emerald-500/30";
+  if (phase === "EXIT") return "bg-red-500/15 border-red-500/30";
+  return "bg-gray-800/50";
+}
+
+function rColor(r: string | undefined): string {
+  if (!r) return "text-gray-400";
+  const val = parseFloat(r);
+  if (val >= 2) return "text-emerald-400";
+  if (val >= 1) return "text-green-400";
+  if (val >= 0) return "text-blue-400";
+  return "text-red-400";
 }
 
 function readinessColor(pct: number): string {
@@ -121,7 +167,7 @@ function statusBadge(snap: MarketSnapshot): { label: string; className: string }
 function MarketCard({ snap }: { snap: MarketSnapshot }) {
   const badge = statusBadge(snap);
   const regimeDir = snap.regime?.direction;
-  const regimeStr = snap.regime?.strength || "NEUTRAL";
+  const summary = snap.summary;
 
   return (
     <div className="p-5 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-600 transition shadow-lg">
@@ -218,11 +264,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
               <span className="text-sm text-gray-400">Confidence:</span>
               <span className={`text-sm font-bold ${snap.signal.confidence >= 70 ? "text-green-400" : "text-amber-400"}`}>{snap.signal.confidence}%</span>
             </div>
-            {snap.signal.reason && (
-              <div className="text-xs text-gray-500 mt-2 pt-2 border-t border-gray-700/50">
-                Reason: {snap.signal.reason.split(" | ").slice(0, 3).join(" | ")}
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -236,25 +277,102 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
               {snap.activeTrade.pnl}
             </span>
           </div>
+
+          {/* Phase + R Badge */}
+          <div className="flex items-center gap-2 mb-3">
+            <div className={`px-2 py-1 rounded border ${tradePhaseBg(snap.activeTrade.phase)}`}>
+              <span className={`text-xs font-bold uppercase tracking-wider ${tradePhaseColor(snap.activeTrade.phase)}`}>
+                {snap.activeTrade.phase || "UNKNOWN"}
+              </span>
+            </div>
+            {snap.activeTrade.currentR && (
+              <div className="px-2 py-1 rounded bg-gray-800 border border-gray-700">
+                <span className={`text-xs font-mono font-bold ${rColor(snap.activeTrade.currentR)}`}>
+                  R: {snap.activeTrade.currentR}
+                </span>
+              </div>
+            )}
+            {snap.activeTrade.entryMode && (
+              <div className="px-2 py-1 rounded bg-gray-800 border border-gray-700">
+                <span className="text-xs text-gray-400">{snap.activeTrade.entryMode}</span>
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 gap-2 text-sm">
             <div><span className="text-gray-500">Entry:</span> <span className="font-mono text-gray-200">${snap.activeTrade.entry.toFixed(2)}</span></div>
             <div><span className="text-gray-500">Stop:</span> <span className="font-mono text-red-400">${snap.activeTrade.stop.toFixed(2)}</span></div>
             <div><span className="text-gray-500">Target:</span> <span className="font-mono text-green-400">${snap.activeTrade.target.toFixed(2)}</span></div>
-            <div><span className="text-gray-500">State:</span> <span className="font-bold text-blue-400">{snap.activeTrade.state}</span></div>
+            <div><span className="text-gray-500">Size:</span> <span className="font-bold text-blue-400">{snap.activeTrade.positionSizePct ? (snap.activeTrade.positionSizePct * 100).toFixed(0) + "%" : "—"}</span></div>
           </div>
+
           {snap.activeTrade.lockedStop !== undefined && snap.activeTrade.lockedStop !== null && (
             <div className="mt-2 p-2 bg-emerald-500/10 border border-emerald-500/20 rounded text-xs">
-              <span className="text-emerald-400">Profit Lock:</span> <span className="font-mono text-emerald-300">${snap.activeTrade.lockedStop.toFixed(2)}</span>
+              <span className="text-emerald-400">Profit Lock L{snap.activeTrade.profitLockLevel || 1}:</span> <span className="font-mono text-emerald-300">${snap.activeTrade.lockedStop.toFixed(2)}</span>
+            </div>
+          )}
+
+          {(snap.activeTrade.maxProfit || snap.activeTrade.maxDrawdown) && (
+            <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+              <div><span className="text-gray-500">Max Profit:</span> <span className="text-green-400">{snap.activeTrade.maxProfit}</span></div>
+              <div><span className="text-gray-500">Max DD:</span> <span className="text-red-400">{snap.activeTrade.maxDrawdown}</span></div>
             </div>
           )}
         </div>
       )}
 
-      {/* Why No Trade */}
-      {!snap.signal && !snap.activeTrade && snap.whyNoTrade && snap.whyNoTrade.length > 0 && (
-        <div className="mb-4 p-3 bg-gray-800/30 rounded-lg">
-          <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-1">Why No Trade?</div>
-          <div className="text-xs text-gray-400">{snap.whyNoTrade[0]}</div>
+      {/* Summary (replaces Why No Trade) */}
+      {!snap.signal && !snap.activeTrade && summary && (
+        <div className="mb-4">
+          {/* Status */}
+          <div className={`mb-2 p-3 rounded-lg border ${summary.status === "READY" ? "bg-green-500/10 border-green-500/30" : "bg-gray-800/50 border-gray-700/30"}`}>
+            <div className="flex items-center justify-between">
+              <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Status</span>
+              <span className={`text-sm font-bold ${summary.status === "READY" ? "text-green-400" : "text-gray-400"}`}>
+                {summary.status}
+              </span>
+            </div>
+          </div>
+
+          {/* Next Trigger / Distance */}
+          {summary.nextTrigger && (
+            <div className="mb-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+              <div className="text-xs uppercase text-amber-500 font-semibold tracking-wider mb-1">Next Trigger</div>
+              <div className="text-sm text-amber-300">{summary.nextTrigger}</div>
+              {summary.distanceToEntry !== undefined && summary.distanceToEntry !== null && (
+                <div className="text-xs text-amber-500/70 mt-1">
+                  Distance: {typeof summary.distanceToEntry === "number" ? summary.distanceToEntry.toFixed(2) : summary.distanceToEntry}%
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Blockers */}
+          {summary.blocks && summary.blocks.length > 0 && (
+            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+              <div className="text-xs uppercase text-red-400 font-semibold tracking-wider mb-2">Blockers</div>
+              <div className="space-y-1">
+                {summary.blocks.map((block, i) => (
+                  <div key={i} className="text-xs text-red-300 flex items-start gap-2">
+                    <span className="text-red-500 mt-0.5">●</span>
+                    {block}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Full Debug */}
+          {summary.debug && summary.debug.length > 0 && (
+            <details className="mt-2">
+              <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-400">Show full debug</summary>
+              <div className="mt-2 p-2 bg-gray-800/30 rounded text-xs text-gray-500 space-y-1">
+                {summary.debug.map((d, i) => (
+                  <div key={i}>{d}</div>
+                ))}
+              </div>
+            </details>
+          )}
         </div>
       )}
 
@@ -321,15 +439,28 @@ export default function Dashboard() {
 
   const activeTrades = Object.values(snapshots).filter(s => s.activeTrade).length;
 
+  // v35.2: Count trades by phase for funnel visibility
+  const phaseCounts = Object.values(snapshots).reduce((acc, s) => {
+    if (s.activeTrade?.phase) {
+      acc[s.activeTrade.phase] = (acc[s.activeTrade.phase] || 0) + 1;
+    }
+    return acc;
+  }, {} as Record<string, number>);
+
   return (
     <main className="min-h-screen bg-black text-gray-100 p-4 md:p-6">
       <div className="max-w-6xl mx-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">CXSwitch v33</h1>
+            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">CXSwitch v35.2</h1>
             <p className="text-gray-500 text-sm mt-1">
-              Last updated: {lastUpdate || "—"}
+              Last updated: {lastUpdate || "—"} | Active: {activeTrades}
+              {Object.entries(phaseCounts).map(([phase, count]) => (
+                <span key={phase} className="ml-2 text-xs text-gray-600">
+                  {phase}: {count}
+                </span>
+              ))}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -380,7 +511,7 @@ export default function Dashboard() {
         {/* Footer */}
         <div className="mt-8 pt-4 border-t border-gray-800 text-center">
           <p className="text-xs text-gray-600">
-            CXSwitch v33 — Early Entry System | Five Exits: SL · TP · 4H Structure · EMA21 Breach · 1D Regime Flip
+            CXSwitch v35.2 — R-Based Lifecycle | ENTRY → BUILDING (1R) → TREND (2R) → PROFIT_PROTECTION
           </p>
         </div>
       </div>
