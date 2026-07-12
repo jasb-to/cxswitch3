@@ -823,7 +823,9 @@ export function updateTradeManagerCompat(signal: Signal, currentPrice: number) {
 // ─── COOLDOWNS ───
 
 export function recordExitCooldown(pair: string, now: number = Date.now()) {
+  // v33.8: 2-hour cooldown after any exit to prevent whipsaw re-entries
   signalCooldowns.set(pair + "_exit", now);
+  signalCooldowns.set(pair, now + 2 * 60 * 60 * 1000); // 2h re-entry block
 }
 
 // ─── COMPAT ───
