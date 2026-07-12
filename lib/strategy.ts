@@ -34,7 +34,8 @@ export interface Signal {
   entryMode?: string;
   positionSizePct?: number;
   regimeDirection?: string;
-  conflictEntry?: boolean; // v33.7: true if 4H opposed 1D at entry
+  conflictEntry?: boolean;
+  entryTimeframe?: string;
 }
 
 export interface SignalResult {
@@ -63,9 +64,17 @@ export interface ExitRecord {
   reason: string;
 }
 
-export const CURRENT_SIGNAL_VERSION = 33;
+export const CURRENT_SIGNAL_VERSION = 34;
 const MIN_RR = 1.5;
 const EXITED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+// v34: Minimum hold times by entry type (in ms)
+const MIN_HOLD_TIMES: Record<string, number> = {
+  "15m": 30 * 60 * 1000,      // 30 min for 15m entries
+  "1H": 2 * 60 * 60 * 1000,   // 2 hours for 1H entries
+  "4H": 4 * 60 * 60 * 1000,   // 4 hours for 4H entries
+  "1D": 24 * 60 * 60 * 1000,  // 1 day for 1D entries
+};
 
 interface PairConfig {
   atrMultiplier: number;
@@ -73,7 +82,7 @@ interface PairConfig {
   signalCooldownMs: number;
   hysteresisBand: number;
   minRegimeStrength: string;
-  aggression: number; // 1.0 = normal, 1.5 = aggressive (alts), 0.8 = conservative (BTC)
+  aggression: number;
 }
 
 const PAIR_CONFIG: Record<string, PairConfig> = {
@@ -285,7 +294,7 @@ function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price:
   hysteresisStore.set(pair, { lastSignalType: type, lastSignalPrice: price, lockUntil: now + (type === "ADD" ? config.signalCooldownMs : 24 * 60 * 60 * 1000) });
 }
 
-// ─── SIGNAL GENERATION — v33: EARLY ENTRIES ───
+// ─── SIGNAL GENERATION — v34: FIXED EARLY ENTRIES ───
 
 export function generateSignal(
   pair: string,
@@ -299,7 +308,6 @@ export function generateSignal(
   const now = Date.now();
   const config = getPairConfig(pair);
 
-  // No new signals if active trade exists
   const activeForPair = activeSignals.filter(s => s.pair === pair && !s.exited);
   if (activeForPair.length > 0) {
     debug.push("Active trade exists");
@@ -322,14 +330,6 @@ export function generateSignal(
   const t4h = detectTrend(candles4h);
   debug.push(`4H: ${t4h.direction || "NONE"} ${t4h.strength}`);
 
-  // ─── EARLY ENTRY LOGIC ───
-  // We want to get in EARLY — before the big move.
-  // Signal when:
-  // 1. 1D regime is established (LONG or SHORT)
-  // 2. 4H is aligned with 1D OR pulling back to EMA21 within the trend
-  // 3. Stochastic is in extreme zone (oversold for LONG, overbought for SHORT)
-  // 4. Price is near key support/resistance (EMA21 or swing)
-
   const closes4h = candles4h.map(c => c.close);
   const e8_4h = ema(closes4h, 8);
   const e21_4h = ema(closes4h, 21);
@@ -351,60 +351,45 @@ export function generateSignal(
   const adx4h = adx(candles4h) ?? 0;
   const atrVal = atr(candles4h, 14);
 
-  // Key levels
   const ema21Price = e21_4h[e21_4h.length - 1];
   const ema8Price = e8_4h[e8_4h.length - 1];
   const swingLow20 = Math.min(...candles4h.slice(-20).map(c => c.low));
   const swingHigh20 = Math.max(...candles4h.slice(-20).map(c => c.high));
 
-  // Distance from EMA21
   const distFromEMA21 = (price - ema21Price) / ema21Price;
-
-  // ─── ENTRY CONDITIONS ───
-  // We classify entries as:
-  // ENTRY_1 = deep pullback to EMA21, stoch extreme — BEST R:R, highest confidence
-  // ENTRY_2 = shallow pullback, stoch turning — good R:R, medium confidence
-  // ADD = momentum continuation, price beyond EMA8 — chase, lower confidence
 
   let entryType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
   let confidence = 0;
 
-  // v33.3: Aggression-adjusted thresholds for alts
   const agg = config.aggression;
 
-  // ENTRY_1: Deep pullback - price near EMA21, stoch oversold
-  // Aggression multiplies the distance threshold and lowers stoch threshold
-  const nearEMA21 = Math.abs(distFromEMA21) < (0.025 * agg); // 2.5% base * aggression
-  const stochExtremeLong = stoch4h.k < (50 / agg) && stoch4h.d < (55 / agg); // 50/55 base / aggression
+  // ENTRY_1: Deep pullback
+  const nearEMA21 = Math.abs(distFromEMA21) < (0.025 * agg);
+  const stochExtremeLong = stoch4h.k < (50 / agg) && stoch4h.d < (55 / agg);
   const stochExtremeShort = stoch4h.k > (50 / agg) && stoch4h.d > (45 / agg);
   const stochExtreme = t1d.direction === "LONG" ? stochExtremeLong : stochExtremeShort;
 
-  // ENTRY_2: Shallow pullback - price near EMA8, stoch turning
+  // ENTRY_2: Shallow pullback
   const nearEMA8 = Math.abs((price - ema8Price) / ema8Price) < (0.015 * agg);
   const stochTurningLong = stoch4h.k > stoch4h.d && stoch4h.k < (65 / agg);
   const stochTurningShort = stoch4h.k < stoch4h.d && stoch4h.k > (35 / agg);
   const stochTurning = t1d.direction === "LONG" ? stochTurningLong : stochTurningShort;
 
-  // v33.3: EMA21 touch entry - wider for aggressive pairs
+  // EMA21 touch entry
   const ema21Touch = Math.abs(distFromEMA21) < (0.012 * agg);
   const stochBelowMid = t1d.direction === "LONG" ? stoch4h.k < (70 / agg) : stoch4h.k > (30 / agg);
 
-  // Check for momentum (ADD)
+  // ADD momentum
   const beyondEMA8 = t1d.direction === "LONG" ? price > ema8Price * 1.005 : price < ema8Price * 0.995;
   const confirmingCandle = t1d.direction === "LONG"
     ? last4h.close > last4h.open && last4h.close > prev4h.close
     : last4h.close < last4h.open && last4h.close < prev4h.close;
   const volUp = last4h.volume > avg(candles4h.slice(-10).map(c => c.volume)) * 1.2;
 
-  // 4H trend alignment check
   const trend4hAligned = t4h.direction === t1d.direction;
   const emaAligned = t1d.direction === "LONG"
     ? ema8Price > ema21Price
     : ema8Price < ema21Price;
-
-  // ─── DECISION TREE ───
-  // Priority: ENTRY_1 > ENTRY_2 > ADD
-  // v33.6: Aggressive alt entries - stoch cross + EMA proximity
 
   const isPullback = nearEMA21 || nearEMA8;
   const trendConflict = t4h.direction && t4h.direction !== t1d.direction;
@@ -431,8 +416,6 @@ export function generateSignal(
     if (trend4hAligned) confidence += 10;
     debug.push(`ENTRY_1: EMA21 touch, stoch ${stoch4h.k}/${stoch4h.d} below mid`);
   } else if (nearEMA21 && stochCross && emaAligned && agg > 1.1) {
-    // v33.6: NEW - For aggressive alts (agg > 1.1), stoch cross + EMA21 proximity is enough
-    // This catches HYPE at stoch 56/42 when price is at EMA21
     entryType = "ENTRY_1";
     confidence = 45;
     if (trend4hAligned) confidence += 10;
@@ -446,28 +429,26 @@ export function generateSignal(
     debug.push(`ADD: momentum, beyond EMA8`);
   }
 
-  // v33.6: Conflict pullback entry - stoch cross OR below mid
+  // Conflict pullback entry
   if (!entryType && trendConflict && isPullback && (stochBelowMid || (stochCross && agg > 1.1))) {
     entryType = "ENTRY_1";
-    confidence = 40 + Math.floor(agg * 5); // 47 for HYPE, 47 for SOL
+    confidence = 40 + Math.floor(agg * 5);
     debug.push(`ENTRY_1: conflict pullback, stoch ${stoch4h.k}/${stoch4h.d}, agg=${agg}`);
   }
 
-  // ─── 1H TIMING FILTER ───
-  // For ENTRY_1 and ENTRY_2, check 1H stoch for better timing
-  // v33.4: Soft penalty for aggressive pairs, hard penalty for conservative
+  // 1H timing filter
   if ((entryType === "ENTRY_1" || entryType === "ENTRY_2") && candles1h.length >= 30) {
     const timingOk = t1d.direction === "LONG"
       ? stoch1h.k > stoch1h.d || stoch1h.k < 35
       : stoch1h.k < stoch1h.d || stoch1h.k > 65;
     if (!timingOk) {
-      const timingPenalty = Math.floor(20 / agg); // 20 for BTC, 13 for HYPE
+      const timingPenalty = Math.floor(20 / agg);
       confidence -= timingPenalty;
       debug.push("1H timing opposed (-" + timingPenalty + " conf)");
     }
   }
 
-  // ─── HYSTERESIS & COOLDOWN ───
+  // Hysteresis & cooldown
   const hyst = getHysteresis(pair, now);
   if (hyst.lastSignalType && entryType === hyst.lastSignalType) {
     if (Math.abs(price - hyst.lastSignalPrice) / hyst.lastSignalPrice < config.hysteresisBand) {
@@ -482,7 +463,7 @@ export function generateSignal(
     return { debug };
   }
 
-  const minConfidence = Math.floor(40 / agg); // 40 base / aggression = 28 for HYPE, 44 for BTC
+  const minConfidence = Math.floor(40 / agg);
   if (!entryType || confidence < minConfidence) {
     debug.push(`No setup (conf=${confidence}, need ${minConfidence})`);
     return { debug };
@@ -493,7 +474,8 @@ export function generateSignal(
   // ─── CALCULATE LEVELS ───
   let entry: number, sl: number, tp: number, type: "ACCUMULATE" | "BREAKOUT";
 
-  // v33.4: Aggression-adjusted stops and targets
+  // v34: Fix minRR declaration order
+  const minRR = Math.max(1.2, MIN_RR / agg);
   const stopMultiplier = config.atrMultiplier * (1 + (agg - 1) * 0.5);
   const swingLow = Math.min(...candles4h.slice(-30).map(c => c.low));
   const swingHigh = Math.max(...candles4h.slice(-30).map(c => c.high));
@@ -501,12 +483,10 @@ export function generateSignal(
   if (entryType === "ENTRY_1" || entryType === "ENTRY_2") {
     type = "ACCUMULATE";
     entry = price;
-    // Wider stops for aggressive pairs
     const atrStop = atrVal * stopMultiplier;
     sl = t1d.direction === "LONG"
       ? Math.min(swingLow, entry - atrStop)
       : Math.max(swingHigh, entry + atrStop);
-    // Target: 4x ATR or 5% move, whichever is larger
     const minTarget = t1d.direction === "LONG"
       ? Math.max(entry + atrVal * 4, entry * 1.05)
       : Math.min(entry - atrVal * 4, entry * 0.95);
@@ -528,7 +508,6 @@ export function generateSignal(
   }
 
   const rr = t1d.direction === "LONG" ? (tp - entry) / (entry - sl) : (entry - tp) / (sl - entry);
-  const minRR = Math.max(1.2, MIN_RR / agg); // 1.5 for BTC, 1.0 for HYPE
   if (rr < minRR) {
     debug.push(`R:R ${rr.toFixed(2)} < ${minRR.toFixed(2)}`);
     return { debug };
@@ -555,7 +534,8 @@ export function generateSignal(
     entryMode: entryType === "ADD" ? "BREAKOUT" : "PULLBACK",
     positionSizePct: entryType === "ADD" ? 0.05 : entryType === "ENTRY_1" ? 0.04 : 0.03,
     regimeDirection: t1d.direction,
-    conflictEntry: trendConflict, // v33.7: flag conflict entries
+    conflictEntry: trendConflict,
+    entryTimeframe: "4H",
     exited: false,
     highestPrice: entry,
     lowestPrice: entry,
@@ -587,7 +567,7 @@ export function isSignalStillValid(signal: Signal, currentPrice: number): { vali
   return { valid: true, reason: "active", exited: false };
 }
 
-// ─── shouldHold — FIVE EXITS ───
+// ─── shouldHold — v34: FIXED EXITS ───
 
 export function shouldHold(
   signal: Signal,
@@ -601,7 +581,25 @@ export function shouldHold(
 
   if (candles4h.length < 50) return { shouldHold: true, reason: "structure_intact" };
 
-  // 2. 4H STRUCTURE BREAK — two consecutive closes beyond EMA21 + slope against
+  const now = Date.now();
+  const timeInTrade = now - signal.timestamp;
+  const config = getPairConfig(signal.pair);
+
+  // v34: Minimum hold time guard — block ALL discretionary exits until minimum hold expires
+  const entryTf = signal.entryTimeframe || "4H";
+  const minHold = MIN_HOLD_TIMES[entryTf] || MIN_HOLD_TIMES["4H"];
+  if (timeInTrade < minHold) {
+    return { shouldHold: true, reason: `min_hold_${Math.floor(timeInTrade / 60000)}min` };
+  }
+
+  // v34: Conflict entries get extra breathing room (1.5x min hold)
+  if (signal.conflictEntry) {
+    const conflictMinHold = minHold * 1.5;
+    if (timeInTrade < conflictMinHold) {
+      return { shouldHold: true, reason: `conflict_hold_${Math.floor(timeInTrade / 60000)}min` };
+    }
+  }
+
   const closes = candles4h.map(c => c.close);
   const e21 = ema(closes, 21);
   const e50 = ema(closes, 50);
@@ -613,19 +611,36 @@ export function shouldHold(
     const e21_1 = e21[e21.length - 2];
     const e50_0 = e50[e50.length - 1];
 
+    // v34: Structure break requires 3 consecutive closes (not 2) for conflict entries
+    const c2 = candles4h.length >= 3 ? candles4h[candles4h.length - 3].close : c1;
+    const e21_2 = e21.length >= 3 ? e21[e21.length - 3] : e21_1;
+
     if (signal.direction === "LONG") {
-      if (c0 < e21_0 && c1 < e21_1 && e21_0 < e21_1 && c0 < e50_0) {
-        return { shouldHold: false, reason: "4h_structure_break" };
+      if (signal.conflictEntry) {
+        // Conflict LONG: need 3 closes below EMA21 + EMA21 sloping down + below EMA50
+        if (c0 < e21_0 && c1 < e21_1 && c2 < e21_2 && e21_0 < e21_1 && c0 < e50_0) {
+          return { shouldHold: false, reason: "4h_structure_break" };
+        }
+      } else {
+        // Normal LONG: 2 closes below EMA21 + EMA21 sloping down + below EMA50
+        if (c0 < e21_0 && c1 < e21_1 && e21_0 < e21_1 && c0 < e50_0) {
+          return { shouldHold: false, reason: "4h_structure_break" };
+        }
       }
     } else {
-      if (c0 > e21_0 && c1 > e21_1 && e21_0 > e21_1 && c0 > e50_0) {
-        return { shouldHold: false, reason: "4h_structure_break" };
+      if (signal.conflictEntry) {
+        if (c0 > e21_0 && c1 > e21_1 && c2 > e21_2 && e21_0 > e21_1 && c0 > e50_0) {
+          return { shouldHold: false, reason: "4h_structure_break" };
+        }
+      } else {
+        if (c0 > e21_0 && c1 > e21_1 && e21_0 > e21_1 && c0 > e50_0) {
+          return { shouldHold: false, reason: "4h_structure_break" };
+        }
       }
     }
   }
-  // v33.9: If we reach here on a conflict entry, structure break was skipped
 
-  // 3. EMA21 BREACH by 1.5x ATR (trendline proxy)
+  // 3. EMA21 BREACH by 1.5x ATR
   const atr4h = atr(candles4h, 14);
   if (e21.length > 0) {
     const ema21Price = e21[e21.length - 1];
@@ -640,8 +655,7 @@ export function shouldHold(
 
   // 4. 1D REGIME FLIP — STRONG only
   if (candles1d.length >= 25) {
-    const regime = getPersistentRegime(signal.pair, candles1d, Date.now());
-    const config = getPairConfig(signal.pair);
+    const regime = getPersistentRegime(signal.pair, candles1d, now);
     const adx1d = adx(candles1d) ?? 0;
     const isStrongFlip = regime.strength === "STRONG" || adx1d >= config.adxThreshold;
     if (regime.direction && regime.direction !== signal.direction && isStrongFlip) {
@@ -704,8 +718,6 @@ export function getMarketSnapshot(
     isStrong: adxVal >= config.adxThreshold,
   };
 
-  // Phase: EXPANSION = stoch extreme in trend direction (overbought LONG, oversold SHORT)
-  // EXHAUSTION = stoch extreme against trend direction
   let phase4h: "EXPANSION" | "EXHAUSTION" | "NEUTRAL" = "NEUTRAL";
   if (t1d.direction === "LONG") {
     if (stoch4h.k > 75) phase4h = "EXPANSION";
@@ -724,7 +736,6 @@ export function getMarketSnapshot(
     else if (stoch1h.k > 75) phase1h = "EXHAUSTION";
   }
 
-  // 15M structure label
   let structure15m = "Neutral";
   if (candles15m.length >= 20) {
     const t15m = detectTrend(candles15m);
@@ -735,7 +746,6 @@ export function getMarketSnapshot(
     }
   }
 
-  // Readiness score: 0-100
   let readiness = 0;
   if (t1d.direction) readiness += 30;
   if (t4h.direction === t1d.direction) readiness += 25;
@@ -824,9 +834,8 @@ export function updateTradeManagerCompat(signal: Signal, currentPrice: number) {
 // ─── COOLDOWNS ───
 
 export function recordExitCooldown(pair: string, now: number = Date.now()) {
-  // v33.8: 2-hour cooldown after any exit to prevent whipsaw re-entries
   signalCooldowns.set(pair + "_exit", now);
-  signalCooldowns.set(pair, now + 2 * 60 * 60 * 1000); // 2h re-entry block
+  signalCooldowns.set(pair, now + 2 * 60 * 60 * 1000);
 }
 
 // ─── COMPAT ───
