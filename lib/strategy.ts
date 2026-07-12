@@ -1,4 +1,3 @@
-
 // ============================================================
 // CXSwitch v35.2 — R-Based Lifecycle + Relaxed Stale Exit + ADD Funnel
 // ============================================================
@@ -1140,6 +1139,9 @@ export function getMarketSnapshot(
   if (signalResult?.signal) readiness += 25;
   else if (Math.abs(distToEMA21) < 0.01) readiness += 15;
 
+  // ═══════════════════════════════════════════════════════════
+  // FIX: Build summary with correct blocker priority
+  // ═══════════════════════════════════════════════════════════
   const summary: {
     status: string;
     debug?: string[];
@@ -1151,11 +1153,66 @@ export function getMarketSnapshot(
   };
 
   if (!signalResult?.signal && signalResult?.debug?.length) {
-    summary.debug = signalResult.debug;
-    summary.blocks = signalResult.debug.filter(d => 
-      d.includes("BLOCKED") || d.includes("No setup") || d.includes("Cooldown") || 
-      d.includes("Hysteresis") || d.includes("Churn")
-    );
+    const blocks: string[] = [];
+    const debugLines: string[] = [];
+
+    // Parse debug lines to find the PRIMARY blocker
+    let rrBlocker: string | null = null;
+    let confBlocker: string | null = null;
+    let hysteresisBlocker = false;
+    let cooldownBlocker = false;
+    let churnBlocker = false;
+    let blockedEarly = false;
+
+    for (const line of signalResult.debug) {
+      debugLines.push(line);
+
+      if (line.includes("R:R") && line.includes("<")) {
+        rrBlocker = line;
+      } else if (line.includes("conf=") && line.includes("need")) {
+        confBlocker = line;
+      } else if (line.includes("Hysteresis lock")) {
+        hysteresisBlocker = true;
+      } else if (line.includes("Cooldown active")) {
+        cooldownBlocker = true;
+      } else if (line.includes("Churn pattern")) {
+        churnBlocker = true;
+      } else if (line.includes("BLOCKED: Early entry in EXPANSION")) {
+        blockedEarly = true;
+      }
+    }
+
+    // PRIORITY ORDER: RR > Confidence > Hysteresis > Cooldown > Churn > Other
+    if (rrBlocker) {
+      const rrMatch = rrBlocker.match(/R:R\s+([\d.]+)\s*<\s*([\d.]+)/);
+      if (rrMatch) {
+        blocks.push(`R:R ${rrMatch[1]} < ${rrMatch[2]} (need ${rrMatch[2]}+)`);
+      } else {
+        blocks.push("Insufficient risk:reward");
+      }
+    } else if (confBlocker) {
+      const confMatch = confBlocker.match(/conf=(\d+),\s*need\s*(\d+)/);
+      if (confMatch) {
+        blocks.push(`No setup (conf=${confMatch[1]}, need ${confMatch[2]})`);
+      } else {
+        blocks.push("Insufficient confidence");
+      }
+    } else if (hysteresisBlocker) {
+      blocks.push("Hysteresis lock");
+    } else if (cooldownBlocker) {
+      blocks.push("Cooldown active");
+    } else if (churnBlocker) {
+      blocks.push("Churn pattern — avoid re-entry");
+    } else if (blockedEarly) {
+      blocks.push("Early entry blocked in EXPANSION phase");
+    } else {
+      // Fallback: show any BLOCKED or No setup line
+      const fallback = signalResult.debug.find(d => d.includes("BLOCKED") || d.includes("No setup") || d.includes("Insufficient"));
+      blocks.push(fallback || "No valid setup");
+    }
+
+    summary.debug = debugLines;
+    summary.blocks = blocks;
   }
 
   if (signalResult?.market?.nextTrigger) {
