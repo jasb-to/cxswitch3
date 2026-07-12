@@ -1,3 +1,22 @@
+
+// ============================================================
+// CXSwitch v35 — Trade Lifecycle Architecture
+// ============================================================
+// Core philosophy: Once a trade is open, every decision is driven by
+// trade state, not by re-evaluating the market from scratch.
+//
+// Lifecycle: WATCH → ENTRY → BUILDING → TREND → PROFIT_PROTECTION → EXIT → COOLDOWN → WATCH
+//
+// Changes from v34:
+// 1. Unified TradeState drives ALL decisions (no more scattered fields)
+// 2. Softened phase check: Building OR Exhaustion, provided trendline respected
+// 3. Confidence gating: Absolute minimum 55% (not scaled by aggression)
+// 4. Persistent exits: 3-4 closes + EMA slope + structure confirmation
+// 5. Re-entry bug fixed: ALL exit paths record cooldowns
+// 6. Entry-specific management: Pullback vs Breakout vs Counter-trend
+// 7. Stale-trade exit: 8h + <0.3% move (tighter than v34's 12h/0.5%)
+// 8. TREND phase: Noise-ignoring mode — exits require STRONGER evidence
+
 export interface Candle {
   timestamp: number;
   open: number;
@@ -5,6 +24,50 @@ export interface Candle {
   low: number;
   close: number;
   volume: number;
+}
+
+// ============================================================
+// TRADE LIFECYCLE STATE MACHINE
+// ============================================================
+export type TradeLifecyclePhase =
+  | "WATCH"
+  | "ENTRY"
+  | "BUILDING"
+  | "TREND"
+  | "PROFIT_PROTECTION"
+  | "EXIT"
+  | "COOLDOWN";
+
+export interface TradeState {
+  // Lifecycle
+  phase: TradeLifecyclePhase;
+  phaseEnteredAt: number;
+
+  // Price tracking
+  highestPrice: number;
+  lowestPrice: number;
+  entryPrice: number;
+
+  // Profit protection
+  lockedStop: number | null;
+  profitLockLevel: number; // 0 = none, 1 = breakeven, 2 = 50% trail, 3 = 75% trail
+
+  // Exit persistence (the "memory" of weakening structure)
+  exitPersistence: {
+    consecutiveClosesBeyondEMA21: number;
+    lastCloseBeyondEMA21: number;
+    ema21SlopeHistory: number[];
+    warningCount: number;
+  };
+
+  // Timing
+  entryTimestamp: number;
+  lastDecisionTimestamp: number;
+
+  // PnL
+  realizedPnl: number;
+  maxDrawdown: number;
+  maxProfit: number;
 }
 
 export interface Signal {
@@ -25,22 +88,17 @@ export interface Signal {
   timestamp: number;
   version: number;
   exited?: boolean;
-  highestPrice?: number;
-  lowestPrice?: number;
-  tradeState?: string;
-  lockedStop?: number;
-  profitLockActive?: boolean;
-  entryTier?: EntryTier;
-  entryMode?: string;
-  positionSizePct?: number;
-  regimeDirection?: string;
-  conflictEntry?: boolean;
-  entryTimeframe?: string;
-  exitPersistence?: {
-    consecutiveClosesBeyondEMA21: number;
-    lastCloseBeyondEMA21: number;
-    ema21Slope: number[];
-  };
+
+  // v35: Unified trade state (replaces scattered fields)
+  tradeState: TradeState;
+
+  // Entry metadata
+  entryTier: EntryTier;
+  entryMode: "PULLBACK" | "BREAKOUT" | "COUNTER_TREND";
+  positionSizePct: number;
+  regimeDirection: string;
+  conflictEntry: boolean;
+  entryTimeframe: string;
 }
 
 export interface SignalResult {
@@ -54,7 +112,7 @@ export type EntryTier = "NO_TRADE" | "WATCH" | "EARLY_ENTRY" | "CONFIRMED_ENTRY"
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
-  updatedSignal?: Partial<Signal>;
+  updatedTradeState?: TradeState;
 }
 
 export interface MarketRegime {
@@ -70,9 +128,31 @@ export interface ExitRecord {
   reason: string;
 }
 
-export const CURRENT_SIGNAL_VERSION = 34;
+export const CURRENT_SIGNAL_VERSION = 35;
 const MIN_RR = 1.5;
 const EXITED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+// ============================================================
+// LIFECYCLE CONFIGURATION
+// ============================================================
+const LIFECYCLE_CONFIG = {
+  // Phase transitions
+  entryPhaseDurationMs: 4 * 60 * 60 * 1000,      // 4h: no structural exits
+  buildingPhaseDurationMs: 8 * 60 * 60 * 1000,     // 8h: can add, wider stops
+  trendPhaseProfitThreshold: 0.03,                  // 3% profit to enter TREND
+  profitLockThreshold: 0.05,                        // 5% profit to enter PROFIT_PROTECTION
+
+  // Exit thresholds by phase
+  trendExitRequiredCloses: 4,                       // TREND needs 4 closes (vs 3 normal)
+  trendExitNeedsEMA50Breach: true,                  // TREND also needs EMA50 breach
+
+  // Stale trade
+  staleTradeHours: 8,
+  staleTradePnlThreshold: 0.003,                    // 0.3% (tighter than v34's 0.5%)
+
+  // Confidence
+  minConfidence: 55,                                // ABSOLUTE minimum, not scaled
+};
 
 const MIN_HOLD_TIMES: Record<string, number> = {
   "15m": 30 * 60 * 1000,
@@ -85,6 +165,7 @@ const EXIT_PERSISTENCE = {
   normalConsecutiveCloses: 3,
   addConsecutiveCloses: 2,
   conflictConsecutiveCloses: 4,
+  trendConsecutiveCloses: 4,
   maxTrackedCloses: 6,
 };
 
@@ -244,6 +325,9 @@ function detectTrend(candles: Candle[]) {
   return { direction, strength };
 }
 
+// ============================================================
+// REGIME PERSISTENCE (unchanged from v34)
+// ============================================================
 const regimeStore = new Map<string, { direction: "LONG" | "SHORT"; strength: string; lockedUntil: number; lastCandleTimestamp: number }>();
 const DIRECTION_LOCK_MS = 8 * 60 * 60 * 1000;
 
@@ -286,6 +370,9 @@ function getPersistentRegime(pair: string, candles1d: Candle[], now: number) {
   return { direction: stored.direction, strength: stored.strength };
 }
 
+// ============================================================
+// COOLDOWN & HYSTERESIS MANAGEMENT
+// ============================================================
 const hysteresisStore = new Map<string, { lastSignalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null; lastSignalPrice: number; lockUntil: number }>();
 const signalCooldowns = new Map<string, number>();
 const exitCooldowns = new Map<string, number>();
@@ -302,6 +389,16 @@ function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price:
   hysteresisStore.set(pair, { lastSignalType: type, lastSignalPrice: price, lockUntil: now + (type === "ADD" ? config.signalCooldownMs : 24 * 60 * 60 * 1000) });
 }
 
+// v35 CRITICAL FIX: Centralized cooldown recording — ALL exits go through here
+function recordExit(pair: string, reason: string, price: number, now: number) {
+  exitCooldowns.set(pair, now + POST_EXIT_COOLDOWN_MS);
+  signalCooldowns.set(pair, now + 2 * 60 * 60 * 1000);
+  const history = exitHistory.get(pair) || [];
+  history.push({ timestamp: now, reason, price });
+  if (history.length > 20) history.shift();
+  exitHistory.set(pair, history);
+}
+
 function canReenter(pair: string, now: number, debug: string[]): boolean {
   const cooldown = exitCooldowns.get(pair);
   if (cooldown && now < cooldown) {
@@ -310,15 +407,6 @@ function canReenter(pair: string, now: number, debug: string[]): boolean {
     return false;
   }
   return true;
-}
-
-function recordExit(pair: string, reason: string, price: number, now: number) {
-  exitCooldowns.set(pair, now + POST_EXIT_COOLDOWN_MS);
-  signalCooldowns.set(pair, now + 2 * 60 * 60 * 1000);
-  const history = exitHistory.get(pair) || [];
-  history.push({ timestamp: now, reason, price });
-  if (history.length > 20) history.shift();
-  exitHistory.set(pair, history);
 }
 
 function isChurnPattern(pair: string, currentPrice: number, now: number): boolean {
@@ -332,6 +420,113 @@ function isChurnPattern(pair: string, currentPrice: number, now: number): boolea
   return maxDeviation < 0.02;
 }
 
+// ============================================================
+// TRADE STATE INITIALIZATION & MANAGEMENT
+// ============================================================
+function createInitialTradeState(entryPrice: number, timestamp: number): TradeState {
+  return {
+    phase: "ENTRY",
+    phaseEnteredAt: timestamp,
+    highestPrice: entryPrice,
+    lowestPrice: entryPrice,
+    entryPrice,
+    lockedStop: null,
+    profitLockLevel: 0,
+    exitPersistence: {
+      consecutiveClosesBeyondEMA21: 0,
+      lastCloseBeyondEMA21: 0,
+      ema21SlopeHistory: [],
+      warningCount: 0,
+    },
+    entryTimestamp: timestamp,
+    lastDecisionTimestamp: timestamp,
+    realizedPnl: 0,
+    maxDrawdown: 0,
+    maxProfit: 0,
+  };
+}
+
+// v35: Central state update — ALL price updates flow through here
+function updateTradeState(state: TradeState, signal: Signal, currentPrice: number, now: number): TradeState {
+  const highest = Math.max(state.highestPrice, currentPrice);
+  const lowest = Math.min(state.lowestPrice, currentPrice);
+
+  const pnl = signal.direction === "LONG"
+    ? (currentPrice - state.entryPrice) / state.entryPrice
+    : (state.entryPrice - currentPrice) / state.entryPrice;
+
+  const maxProfit = Math.max(state.maxProfit, pnl);
+  const maxDrawdown = Math.min(state.maxDrawdown, pnl);
+
+  // Phase transitions
+  let newPhase = state.phase;
+  let newPhaseEnteredAt = state.phaseEnteredAt;
+
+  const timeInPhase = now - state.phaseEnteredAt;
+
+  // ENTRY → BUILDING: After entry duration OR if we see a pullback opportunity
+  if (state.phase === "ENTRY" && timeInPhase > LIFECYCLE_CONFIG.entryPhaseDurationMs) {
+    newPhase = "BUILDING";
+    newPhaseEnteredAt = now;
+  }
+
+  // BUILDING → TREND: Once we hit profit threshold
+  if (state.phase === "BUILDING" && pnl > LIFECYCLE_CONFIG.trendPhaseProfitThreshold) {
+    newPhase = "TREND";
+    newPhaseEnteredAt = now;
+  }
+
+  // TREND → PROFIT_PROTECTION: Hit profit lock threshold
+  if (state.phase === "TREND" && pnl > LIFECYCLE_CONFIG.profitLockThreshold) {
+    newPhase = "PROFIT_PROTECTION";
+    newPhaseEnteredAt = now;
+  }
+
+  // PROFIT_PROTECTION stays until exit
+
+  // Profit lock levels
+  let profitLockLevel = state.profitLockLevel;
+  let lockedStop = state.lockedStop;
+
+  const lockThreshold = signal.scale === "ADD" ? 0.04 : 0.05;
+  const lockAggressive = signal.scale === "ADD" ? 0.06 : 0.08;
+  const lockFull = signal.scale === "ADD" ? 0.10 : 0.12;
+
+  if (pnl > lockFull && profitLockLevel < 3) {
+    profitLockLevel = 3;
+    lockedStop = signal.direction === "LONG"
+      ? Math.max(signal.stop, state.entryPrice + (currentPrice - state.entryPrice) * 0.75)
+      : Math.min(signal.stop, state.entryPrice - (state.entryPrice - currentPrice) * 0.75);
+  } else if (pnl > lockAggressive && profitLockLevel < 2) {
+    profitLockLevel = 2;
+    lockedStop = signal.direction === "LONG"
+      ? Math.max(signal.stop, state.entryPrice + (currentPrice - state.entryPrice) * 0.5)
+      : Math.min(signal.stop, state.entryPrice - (state.entryPrice - currentPrice) * 0.5);
+  } else if (pnl > lockThreshold && profitLockLevel < 1) {
+    profitLockLevel = 1;
+    const buffer = state.entryPrice * 0.005;
+    lockedStop = signal.direction === "LONG"
+      ? Math.max(signal.stop, state.entryPrice + buffer)
+      : Math.min(signal.stop, state.entryPrice - buffer);
+  }
+
+  return {
+    ...state,
+    phase: newPhase,
+    phaseEnteredAt: newPhaseEnteredAt,
+    highestPrice: highest,
+    lowestPrice: lowest,
+    lockedStop,
+    profitLockLevel,
+    lastDecisionTimestamp: now,
+    maxProfit,
+    maxDrawdown,
+  };
+}
+
+// ============================================================
+// SIGNAL GENERATION
+// ============================================================
 export function generateSignal(
   pair: string,
   candles1h: Candle[],
@@ -344,10 +539,10 @@ export function generateSignal(
   const now = Date.now();
   const config = getPairConfig(pair);
 
-  // v34 DEFENSIVE: Check for ANY active trade for this pair across entire array
+  // v35 DEFENSIVE: Check for ANY active trade for this pair
   const anyActiveForPair = activeSignals.filter(s => s.pair === pair && !s.exited);
   if (anyActiveForPair.length > 0) {
-    debug.push(`BLOCKED: Active trade exists (id=${anyActiveForPair[0].id}, entry=$${anyActiveForPair[0].entry})`);
+    debug.push(`BLOCKED: Active trade exists (id=${anyActiveForPair[0].id}, phase=${anyActiveForPair[0].tradeState?.phase || "unknown"})`);
     return { debug };
   }
 
@@ -397,17 +592,26 @@ export function generateSignal(
 
   let entryType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
   let confidence = 0;
+  let entryMode: "PULLBACK" | "BREAKOUT" | "COUNTER_TREND" = "PULLBACK";
 
   const agg = config.aggression;
 
-  let phase4h: "EXPANSION" | "EXHAUSTION" | "NEUTRAL" = "NEUTRAL";
+  // v35: Softer phase detection — we care about structure, not just exhaustion
+  let phase4h: "EXPANSION" | "EXHAUSTION" | "BUILDING" | "NEUTRAL" = "NEUTRAL";
   if (t1d.direction === "LONG") {
     if (stoch4h.k > 75) phase4h = "EXPANSION";
     else if (stoch4h.k < 25) phase4h = "EXHAUSTION";
+    else phase4h = "BUILDING";
   } else if (t1d.direction === "SHORT") {
     if (stoch4h.k < 25) phase4h = "EXPANSION";
     else if (stoch4h.k > 75) phase4h = "EXHAUSTION";
+    else phase4h = "BUILDING";
   }
+
+  // v35: Structure check — is price still respecting the trend?
+  const structureRespected = t1d.direction === "LONG"
+    ? price > ema21Price && ema8Price > ema21Price
+    : price < ema21Price && ema8Price < ema21Price;
 
   const nearEMA21 = Math.abs(distFromEMA21) < (0.025 * agg);
   const stochExtremeLong = stoch4h.k < (50 / agg) && stoch4h.d < (55 / agg);
@@ -439,6 +643,7 @@ export function generateSignal(
   const stochCrossBearish = stoch4h.k < stoch4h.d && stoch4h.k < 65;
   const stochCross = t1d.direction === "LONG" ? stochCrossBullish : stochCrossBearish;
 
+  // Entry logic (same as v34 but with better confidence)
   if (nearEMA21 && stochExtreme && emaAligned) {
     entryType = "ENTRY_1";
     confidence = 75;
@@ -459,12 +664,13 @@ export function generateSignal(
     debug.push(`ENTRY_1: EMA21 touch, stoch ${stoch4h.k}/${stoch4h.d} below mid`);
   } else if (nearEMA21 && stochCross && emaAligned && agg > 1.1) {
     entryType = "ENTRY_1";
-    confidence = 45;
+    confidence = 50;
     if (trend4hAligned) confidence += 10;
     else if (trendConflict) confidence -= 5;
     debug.push(`ENTRY_1: stoch cross ${stoch4h.k}/${stoch4h.d} at EMA21, agg=${agg}`);
   } else if (beyondEMA8 && confirmingCandle && (trend4hAligned || !t4h.direction)) {
     entryType = "ADD";
+    entryMode = "BREAKOUT";
     confidence = 50;
     if (volUp) confidence += 5;
     if (adx4h >= config.adxThreshold) confidence += 5;
@@ -473,29 +679,31 @@ export function generateSignal(
 
   if (!entryType && trendConflict && isPullback && (stochBelowMid || (stochCross && agg > 1.1))) {
     entryType = "ENTRY_1";
-    confidence = 40 + Math.floor(agg * 5);
+    entryMode = "COUNTER_TREND";
+    confidence = 45;
     debug.push(`ENTRY_1: conflict pullback, stoch ${stoch4h.k}/${stoch4h.d}, agg=${agg}`);
   }
 
-  if (entryType && entryType !== "ADD" && phase4h !== "EXHAUSTION") {
-    debug.push(`BLOCKED: Early entry in ${phase4h} phase (need EXHAUSTION)`);
-    if (entryType !== "ADD") {
-      entryType = null;
-      confidence = 0;
-    }
+  // v35: Softer phase check — allow BUILDING and EXHAUSTION, block only EXPANSION without structure
+  if (entryType && entryType !== "ADD" && phase4h === "EXPANSION" && !structureRespected) {
+    debug.push(`BLOCKED: Early entry in EXPANSION phase without structure respect`);
+    entryType = null;
+    confidence = 0;
   }
 
+  // 1H timing check
   if ((entryType === "ENTRY_1" || entryType === "ENTRY_2") && candles1h.length >= 30) {
     const timingOk = t1d.direction === "LONG"
       ? stoch1h.k > stoch1h.d || stoch1h.k < 35
       : stoch1h.k < stoch1h.d || stoch1h.k > 65;
     if (!timingOk) {
-      const timingPenalty = Math.floor(20 / agg);
+      const timingPenalty = Math.floor(15 / agg);
       confidence -= timingPenalty;
       debug.push("1H timing opposed (-" + timingPenalty + " conf)");
     }
   }
 
+  // Hysteresis
   const hyst = getHysteresis(pair, now);
   if (hyst.lastSignalType && entryType === hyst.lastSignalType) {
     if (Math.abs(price - hyst.lastSignalPrice) / hyst.lastSignalPrice < config.hysteresisBand) {
@@ -504,29 +712,33 @@ export function generateSignal(
     }
   }
 
+  // Signal cooldown
   const lastSignal = signalCooldowns.get(pair);
   if (lastSignal && now - lastSignal < config.signalCooldownMs) {
     debug.push(`Cooldown active`);
     return { debug };
   }
 
+  // Exit cooldown (re-entry bug fix)
   if (!canReenter(pair, now, debug)) {
     return { debug };
   }
 
+  // Churn pattern
   if (isChurnPattern(pair, price, now)) {
     debug.push("Churn pattern detected: blocking re-entry in same price zone");
     return { debug };
   }
 
-  const minConfidence = Math.floor(40 / agg);
-  if (!entryType || confidence < minConfidence) {
-    debug.push(`No setup (conf=${confidence}, need ${minConfidence})`);
+  // v35: ABSOLUTE confidence minimum — not scaled by aggression
+  if (!entryType || confidence < LIFECYCLE_CONFIG.minConfidence) {
+    debug.push(`No setup (conf=${confidence}, need ${LIFECYCLE_CONFIG.minConfidence})`);
     return { debug };
   }
 
   setHysteresis(pair, entryType, price, now);
 
+  // Calculate levels
   let entry: number, sl: number, tp: number, type: "ACCUMULATE" | "BREAKOUT";
 
   const minRR = Math.max(1.3, MIN_RR / agg);
@@ -567,6 +779,9 @@ export function generateSignal(
     return { debug };
   }
 
+  // v35: Create unified trade state
+  const tradeState = createInitialTradeState(entry, now);
+
   const signal: Signal = {
     id: `${pair}_${now}`,
     pair,
@@ -584,21 +799,14 @@ export function generateSignal(
     stochD: stoch4h.d,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
+    tradeState,
     entryTier: entryType === "ADD" ? "CONFIRMED_ENTRY" : "EARLY_ENTRY",
-    entryMode: entryType === "ADD" ? "BREAKOUT" : "PULLBACK",
+    entryMode,
     positionSizePct: entryType === "ADD" ? 0.05 : entryType === "ENTRY_1" ? 0.04 : 0.03,
     regimeDirection: t1d.direction,
     conflictEntry: trendConflict,
     entryTimeframe: "4H",
     exited: false,
-    highestPrice: entry,
-    lowestPrice: entry,
-    tradeState: "OPEN",
-    exitPersistence: {
-      consecutiveClosesBeyondEMA21: 0,
-      lastCloseBeyondEMA21: 0,
-      ema21Slope: [],
-    },
   };
 
   signalCooldowns.set(pair, now);
@@ -616,6 +824,9 @@ export function generateSignal(
   };
 }
 
+// ============================================================
+// EXIT VALIDATION (SL/TP hits)
+// ============================================================
 export function isSignalStillValid(signal: Signal, currentPrice: number): { valid: boolean; reason: string; exited: boolean } {
   if (signal.direction === "LONG" && currentPrice <= signal.stop) return { valid: false, reason: "sl_hit", exited: true };
   if (signal.direction === "SHORT" && currentPrice >= signal.stop) return { valid: false, reason: "sl_hit", exited: true };
@@ -624,55 +835,9 @@ export function isSignalStillValid(signal: Signal, currentPrice: number): { vali
   return { valid: true, reason: "active", exited: false };
 }
 
-export interface TradeState {
-  highestPrice: number;
-  lowestPrice: number;
-  pnl: number;
-  newState: string;
-  lockedStop?: number;
-  profitLockActive: boolean;
-}
-
-export function calculateTradeState(signal: Signal, currentPrice: number): TradeState {
-  const highest = Math.max(signal.highestPrice || signal.entry, currentPrice);
-  const lowest = Math.min(signal.lowestPrice || signal.entry, currentPrice);
-  const pnl = signal.direction === "LONG"
-    ? (currentPrice - signal.entry) / signal.entry
-    : (signal.entry - currentPrice) / signal.entry;
-
-  let profitLockActive = false;
-  let lockedStop: number | undefined;
-
-  const lockThreshold = signal.scale === "ADD" ? 0.04 : 0.05;
-  const lockAggressive = signal.scale === "ADD" ? 0.06 : 0.08;
-  const lockFull = signal.scale === "ADD" ? 0.10 : 0.12;
-
-  if (pnl > lockFull) {
-    profitLockActive = true;
-    lockedStop = signal.direction === "LONG"
-      ? Math.max(signal.stop, signal.entry + (currentPrice - signal.entry) * 0.75)
-      : Math.min(signal.stop, signal.entry - (signal.entry - currentPrice) * 0.75);
-  } else if (pnl > lockAggressive) {
-    profitLockActive = true;
-    lockedStop = signal.direction === "LONG"
-      ? Math.max(signal.stop, signal.entry + (currentPrice - signal.entry) * 0.5)
-      : Math.min(signal.stop, signal.entry - (signal.entry - currentPrice) * 0.5);
-  } else if (pnl > lockThreshold) {
-    profitLockActive = true;
-    const buffer = signal.entry * 0.005;
-    lockedStop = signal.direction === "LONG"
-      ? Math.max(signal.stop, signal.entry + buffer)
-      : Math.min(signal.stop, signal.entry - buffer);
-  }
-
-  let newState = "ENTRY";
-  if (pnl > lockThreshold) newState = "PROFIT_ZONE";
-  if (profitLockActive) newState = "LOCKED";
-  if (pnl < -0.005) newState = "DRAWDOWN";
-
-  return { highestPrice: highest, lowestPrice: lowest, pnl, newState, lockedStop, profitLockActive };
-}
-
+// ============================================================
+// SHOULD HOLD — THE CORE EXIT LOGIC
+// ============================================================
 export function shouldHold(
   signal: Signal,
   candles4h: Candle[],
@@ -683,45 +848,71 @@ export function shouldHold(
   const timeInTrade = now - signal.timestamp;
   const config = getPairConfig(signal.pair);
 
+  // v35: Update trade state FIRST — all decisions use this
+  const updatedState = updateTradeState(signal.tradeState, signal, currentPrice, now);
+
   const entryTf = signal.entryTimeframe || "4H";
   const minHold = MIN_HOLD_TIMES[entryTf] || MIN_HOLD_TIMES["4H"];
   const conflictMinHold = signal.conflictEntry ? minHold * 1.5 : minHold;
 
+  // Minimum hold time (except SL/TP)
+  const sltpCheck = isSignalStillValid(signal, currentPrice);
+  if (!sltpCheck.valid) {
+    // v35 CRITICAL: ALL exits record cooldown
+    recordExit(signal.pair, sltpCheck.reason, currentPrice, now);
+    return { 
+      shouldHold: false, 
+      reason: sltpCheck.reason,
+      updatedTradeState: { ...updatedState, phase: "EXIT", phaseEnteredAt: now }
+    };
+  }
+
   if (timeInTrade < conflictMinHold) {
-    return { shouldHold: true, reason: `min_hold_${Math.floor(timeInTrade / 60000)}min` };
+    return { 
+      shouldHold: true, 
+      reason: `min_hold_${Math.floor(timeInTrade / 60000)}min`,
+      updatedTradeState: updatedState
+    };
   }
 
-  const tradeState = calculateTradeState(signal, currentPrice);
-
-  const v = isSignalStillValid(signal, currentPrice);
-  if (!v.valid) {
-    recordExit(signal.pair, v.reason, currentPrice, now);
-    return { shouldHold: false, reason: v.reason };
-  }
-
-  if (tradeState.profitLockActive && tradeState.lockedStop) {
-    const effectiveSL = tradeState.lockedStop;
+  // Profit lock stop
+  if (updatedState.profitLockLevel > 0 && updatedState.lockedStop) {
+    const effectiveSL = updatedState.lockedStop;
     if (signal.direction === "LONG" && currentPrice <= effectiveSL) {
       recordExit(signal.pair, "profit_lock_stop", currentPrice, now);
-      return { shouldHold: false, reason: "profit_lock_stop" };
+      return { 
+        shouldHold: false, 
+        reason: "profit_lock_stop",
+        updatedTradeState: { ...updatedState, phase: "EXIT", phaseEnteredAt: now }
+      };
     }
     if (signal.direction === "SHORT" && currentPrice >= effectiveSL) {
       recordExit(signal.pair, "profit_lock_stop", currentPrice, now);
-      return { shouldHold: false, reason: "profit_lock_stop" };
+      return { 
+        shouldHold: false, 
+        reason: "profit_lock_stop",
+        updatedTradeState: { ...updatedState, phase: "EXIT", phaseEnteredAt: now }
+      };
     }
   }
 
+  // v35: Stale trade exit (tighter than v34)
+  const hoursInTrade = timeInTrade / (60 * 60 * 1000);
+  if (hoursInTrade > LIFECYCLE_CONFIG.staleTradeHours && Math.abs(updatedState.maxProfit) < LIFECYCLE_CONFIG.staleTradePnlThreshold) {
+    recordExit(signal.pair, "time_decay", currentPrice, now);
+    return { 
+      shouldHold: false, 
+      reason: "time_decay",
+      updatedTradeState: { ...updatedState, phase: "EXIT", phaseEnteredAt: now }
+    };
+  }
+
+  // Not enough data for structural analysis
   if (candles4h.length < 50) {
     return {
       shouldHold: true,
       reason: "structure_intact",
-      updatedSignal: {
-        highestPrice: tradeState.highestPrice,
-        lowestPrice: tradeState.lowestPrice,
-        tradeState: tradeState.newState,
-        lockedStop: tradeState.lockedStop,
-        profitLockActive: tradeState.profitLockActive,
-      }
+      updatedTradeState: updatedState,
     };
   }
 
@@ -738,8 +929,11 @@ export function shouldHold(
     const e21_2 = e21[e21.length - 3];
     const e50_0 = e50[e50.length - 1];
 
+    // v35: Phase-aware required closes
     let requiredCloses: number;
-    if (signal.conflictEntry) {
+    if (updatedState.phase === "TREND" || updatedState.phase === "PROFIT_PROTECTION") {
+      requiredCloses = EXIT_PERSISTENCE.trendConsecutiveCloses;
+    } else if (signal.conflictEntry) {
       requiredCloses = EXIT_PERSISTENCE.conflictConsecutiveCloses;
     } else if (signal.scale === "ADD") {
       requiredCloses = EXIT_PERSISTENCE.addConsecutiveCloses;
@@ -764,7 +958,13 @@ export function shouldHold(
     const emaSlopeConfirming = signal.direction === "LONG" ? ema21SlopingDown : ema21SlopingUp;
     const beyondEMA50 = signal.direction === "LONG" ? c0 < e50_0 : c0 > e50_0;
 
-    if (consecutiveBeyond >= requiredCloses && emaSlopeConfirming && beyondEMA50) {
+    // v35: TREND phase requires EMA50 breach too
+    const structureConfirmed = updatedState.phase === "TREND" || updatedState.phase === "PROFIT_PROTECTION"
+      ? beyondEMA50
+      : true;
+
+    if (consecutiveBeyond >= requiredCloses && emaSlopeConfirming && structureConfirmed) {
+      // Conflict entries need stoch confirmation
       if (signal.conflictEntry) {
         const stoch4h = stochRsi(closes);
         const stochConfirming = signal.direction === "LONG"
@@ -775,16 +975,14 @@ export function shouldHold(
           return {
             shouldHold: true,
             reason: `structure_weakening_${consecutiveBeyond}/${requiredCloses}`,
-            updatedSignal: {
-              highestPrice: tradeState.highestPrice,
-              lowestPrice: tradeState.lowestPrice,
-              tradeState: tradeState.newState,
-              lockedStop: tradeState.lockedStop,
-              profitLockActive: tradeState.profitLockActive,
+            updatedTradeState: {
+              ...updatedState,
               exitPersistence: {
+                ...updatedState.exitPersistence,
                 consecutiveClosesBeyondEMA21: consecutiveBeyond,
                 lastCloseBeyondEMA21: now,
-                ema21Slope: [e21_0, e21_1, e21_2],
+                ema21SlopeHistory: [e21_0, e21_1, e21_2],
+                warningCount: updatedState.exitPersistence.warningCount + 1,
               }
             }
           };
@@ -792,85 +990,103 @@ export function shouldHold(
       }
 
       recordExit(signal.pair, "4h_structure_break", currentPrice, now);
-      return { shouldHold: false, reason: "4h_structure_break" };
+      return { 
+        shouldHold: false, 
+        reason: "4h_structure_break",
+        updatedTradeState: { ...updatedState, phase: "EXIT", phaseEnteredAt: now }
+      };
     }
 
+    // Warning state
     if (consecutiveBeyond >= 2 && consecutiveBeyond < requiredCloses) {
       return {
         shouldHold: true,
         reason: `structure_warning_${consecutiveBeyond}/${requiredCloses}`,
-        updatedSignal: {
-          highestPrice: tradeState.highestPrice,
-          lowestPrice: tradeState.lowestPrice,
-          tradeState: tradeState.newState,
-          lockedStop: tradeState.lockedStop,
-          profitLockActive: tradeState.profitLockActive,
+        updatedTradeState: {
+          ...updatedState,
           exitPersistence: {
+            ...updatedState.exitPersistence,
             consecutiveClosesBeyondEMA21: consecutiveBeyond,
             lastCloseBeyondEMA21: now,
-            ema21Slope: [e21_0, e21_1, e21_2],
+            ema21SlopeHistory: [e21_0, e21_1, e21_2],
+            warningCount: updatedState.exitPersistence.warningCount + 1,
           }
         }
       };
     }
   }
 
+  // EMA21 breach (accelerated exit)
   const atr4h = atr(candles4h, 14);
   if (e21.length > 0) {
     const ema21Price = e21[e21.length - 1];
     const breach = atr4h * 1.5;
-    const effectiveBreach = (tradeState.newState === "PROFIT_ZONE" || tradeState.newState === "LOCKED")
-      ? breach * 1.5
+
+    // v35: TREND phase needs larger breach
+    const effectiveBreach = (updatedState.phase === "TREND" || updatedState.phase === "PROFIT_PROTECTION")
+      ? breach * 2.0  // Double the breach requirement in TREND
       : breach;
 
     if (signal.direction === "LONG" && currentPrice < ema21Price - effectiveBreach) {
       recordExit(signal.pair, "ema21_breach", currentPrice, now);
-      return { shouldHold: false, reason: "ema21_breach" };
+      return { 
+        shouldHold: false, 
+        reason: "ema21_breach",
+        updatedTradeState: { ...updatedState, phase: "EXIT", phaseEnteredAt: now }
+      };
     }
     if (signal.direction === "SHORT" && currentPrice > ema21Price + effectiveBreach) {
       recordExit(signal.pair, "ema21_breach", currentPrice, now);
-      return { shouldHold: false, reason: "ema21_breach" };
+      return { 
+        shouldHold: false, 
+        reason: "ema21_breach",
+        updatedTradeState: { ...updatedState, phase: "EXIT", phaseEnteredAt: now }
+      };
     }
   }
 
+  // Regime flip
   if (candles1d.length >= 25) {
     const regime = getPersistentRegime(signal.pair, candles1d, now);
     const adx1d = adx(candles1d) ?? 0;
     const isStrongFlip = regime.strength === "STRONG" || adx1d >= config.adxThreshold;
     if (regime.direction && regime.direction !== signal.direction && isStrongFlip) {
       recordExit(signal.pair, "regime_flip", currentPrice, now);
-      return { shouldHold: false, reason: "regime_flip" };
+      return { 
+        shouldHold: false, 
+        reason: "regime_flip",
+        updatedTradeState: { ...updatedState, phase: "EXIT", phaseEnteredAt: now }
+      };
     }
   }
 
-  const hoursInTrade = timeInTrade / (60 * 60 * 1000);
-  if (hoursInTrade > 12 && Math.abs(tradeState.pnl) < 0.005) {
-    recordExit(signal.pair, "time_decay", currentPrice, now);
-    return { shouldHold: false, reason: "time_decay" };
-  }
-
+  // Hold — structure intact
   return {
     shouldHold: true,
     reason: "structure_intact",
-    updatedSignal: {
-      highestPrice: tradeState.highestPrice,
-      lowestPrice: tradeState.lowestPrice,
-      tradeState: tradeState.newState,
-      lockedStop: tradeState.lockedStop,
-      profitLockActive: tradeState.profitLockActive,
-    }
+    updatedTradeState: updatedState,
   };
 }
 
+// ============================================================
+// FILTER EXPIRED SIGNALS (v35: ALL exits record cooldown)
+// ============================================================
 export function filterExpiredSignals(signals: Signal[], currentPrices?: Record<string, number>) {
   const active: Signal[] = [];
   const exited: { signal: Signal; reason: string }[] = [];
+  const now = Date.now();
+
   for (const signal of signals) {
     if (!signal.exited) {
       const price = currentPrices?.[signal.pair];
       if (price !== undefined) {
         const check = isSignalStillValid(signal, price);
-        if (!check.valid) { exited.push({ signal, reason: check.reason }); continue; }
+        if (!check.valid) {
+          // v35 CRITICAL: Record cooldown on SL/TP hits too
+          recordExit(signal.pair, check.reason, price, now);
+          exited.push({ signal, reason: check.reason });
+          continue;
+        }
       }
       active.push(signal);
       continue;
@@ -880,6 +1096,9 @@ export function filterExpiredSignals(signals: Signal[], currentPrices?: Record<s
   return { active, exited };
 }
 
+// ============================================================
+// MARKET SNAPSHOT
+// ============================================================
 export function getMarketSnapshot(
   pair: string,
   candles1h: Candle[],
@@ -910,22 +1129,26 @@ export function getMarketSnapshot(
     isStrong: adxVal >= config.adxThreshold,
   };
 
-  let phase4h: "EXPANSION" | "EXHAUSTION" | "NEUTRAL" = "NEUTRAL";
+  let phase4h: "EXPANSION" | "EXHAUSTION" | "BUILDING" | "NEUTRAL" = "NEUTRAL";
   if (t1d.direction === "LONG") {
     if (stoch4h.k > 75) phase4h = "EXPANSION";
     else if (stoch4h.k < 25) phase4h = "EXHAUSTION";
+    else phase4h = "BUILDING";
   } else if (t1d.direction === "SHORT") {
     if (stoch4h.k < 25) phase4h = "EXPANSION";
     else if (stoch4h.k > 75) phase4h = "EXHAUSTION";
+    else phase4h = "BUILDING";
   }
 
-  let phase1h: "EXPANSION" | "EXHAUSTION" | "NEUTRAL" = "NEUTRAL";
+  let phase1h: "EXPANSION" | "EXHAUSTION" | "BUILDING" | "NEUTRAL" = "NEUTRAL";
   if (t1d.direction === "LONG") {
     if (stoch1h.k > 75) phase1h = "EXPANSION";
     else if (stoch1h.k < 25) phase1h = "EXHAUSTION";
+    else phase1h = "BUILDING";
   } else if (t1d.direction === "SHORT") {
     if (stoch1h.k < 25) phase1h = "EXPANSION";
     else if (stoch1h.k > 75) phase1h = "EXHAUSTION";
+    else phase1h = "BUILDING";
   }
 
   let structure15m = "Neutral";
@@ -987,13 +1210,19 @@ export function getMarketSnapshot(
   };
 }
 
+// ============================================================
+// BACKWARD COMPATIBILITY EXPORTS
+// ============================================================
 export function updateTradeManagerCompat(signal: Signal, currentPrice: number) {
-  return calculateTradeState(signal, currentPrice);
+  // v35: Returns the updated trade state for external consumers
+  const now = Date.now();
+  return updateTradeState(signal.tradeState, signal, currentPrice, now);
 }
 
 export function recordExitCooldown(pair: string, now: number = Date.now()) {
-  signalCooldowns.set(pair + "_exit", now);
-  signalCooldowns.set(pair, now + 2 * 60 * 60 * 1000);
+  // v35: This is now handled automatically by recordExit() on all exits
+  // Kept for backward compatibility with external callers
+  recordExit(pair, "manual_cooldown", 0, now);
 }
 
 export function getExitHistory(pair: string): { timestamp: number; reason: string; price: number }[] {
