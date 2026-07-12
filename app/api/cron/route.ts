@@ -48,6 +48,25 @@ export async function GET(req: NextRequest) {
   try { activeSignals = await loadActiveSignals(); } catch (e) { errors.push("loadActiveSignals: " + e); }
   if (!Array.isArray(activeSignals)) activeSignals = [];
 
+  // v34 DEFENSIVE: Check for duplicate active signals per pair
+  const pairCounts = new Map<string, number>();
+  for (const s of activeSignals) {
+    if (!s.exited) {
+      pairCounts.set(s.pair, (pairCounts.get(s.pair) || 0) + 1);
+    }
+  }
+  for (const [pair, count] of pairCounts) {
+    if (count > 1) {
+      console.error(`[CRON] STATE CORRUPTION: ${pair} has ${count} active signals. Keeping most recent.`);
+      const pairSignals = activeSignals.filter(s => s.pair === pair && !s.exited);
+      pairSignals.sort((a, b) => b.timestamp - a.timestamp);
+      for (let i = 1; i < pairSignals.length; i++) {
+        pairSignals[i].exited = true;
+        pairSignals[i].tradeState = "DUPLICATE_CLEANUP";
+      }
+    }
+  }
+
   const currentPrices: Record<string, number> = {};
   const signalResults: Record<string, SignalResult> = {};
   const marketSnapshots = [];
@@ -94,7 +113,6 @@ export async function GET(req: NextRequest) {
 
       if (activeForPair.length > 0) {
         for (const signal of activeForPair) {
-          // v34: shouldHold now returns updatedSignal for state sync
           const holdResult = shouldHold(signal, candles4h, candles1d, price);
           console.log(`[CRON] ${pair} | shouldHold: ${holdResult.shouldHold} | ${holdResult.reason}`);
 
@@ -112,14 +130,11 @@ export async function GET(req: NextRequest) {
 
             try { await sendExitAlert(signal, price, holdResult.reason); } catch (e) {}
             signal.exited = true;
-            // v34: recordExit is now called inside shouldHold(), but we keep this for safety
             results[pair] = { status: "EXITED", reason: holdResult.reason, price, signalId: signal.id, pnl: pnlStr };
           } else {
-            // v34: Use calculateTradeState directly (updateTradeManagerCompat is deprecated)
+            // v34: Use calculateTradeState directly
             const tradeState = calculateTradeState(signal, price);
 
-            // v34: Merge trade state into signal (shouldHold already did this via updatedSignal,
-            // but we recalculate here for the log and to ensure consistency)
             signal.highestPrice = tradeState.highestPrice;
             signal.lowestPrice = tradeState.lowestPrice;
             signal.tradeState = tradeState.newState;
@@ -141,35 +156,42 @@ export async function GET(req: NextRequest) {
           }
         }
       } else {
-        // ─── NEW SIGNAL ───
-        console.log(`[CRON] ${pair} | No active trades — evaluating`);
-        const result = generateSignal(pair, candles1h, candles4h, candles1d, activeSignals, price);
-        signalResults[pair] = result;
-
-        if (result.debug?.length) console.log(`[CRON] ${pair} | Debug: ${result.debug.join(" | ")}`);
-
-        if (result.signal) {
-          const signal = result.signal;
-          activeSignals.push(signal);
-          console.log(`[CRON] ${pair} | SIGNAL | ${signal.direction} ${signal.type} ${signal.scale} | Entry:$${signal.entry.toFixed(2)} | RR:${signal.rr.toFixed(2)} | Conf:${signal.confidence}%`);
-
-          if (signal.entryTier !== "NO_TRADE") {
-            try { await sendAlert(signal); } catch (e) {}
-          }
-
-          results[pair] = {
-            status: "SIGNAL",
-            direction: signal.direction,
-            confidence: signal.confidence,
-            entry: signal.entry,
-            stop: signal.stop,
-            target: signal.target,
-            rr: signal.rr,
-            entryTier: signal.entryTier,
-          };
+        // v34 DEFENSIVE: Before generating new signal, verify no active trades exist
+        const allForPair = activeSignals.filter(s => s.pair === pair && !s.exited);
+        if (allForPair.length > 0) {
+          console.warn(`[CRON] ${pair} | SIGNAL BLOCKED: ${allForPair.length} active trade(s) already exist`);
+          results[pair] = { status: "BLOCKED", reason: "active_trade_exists", signalId: allForPair[0].id };
         } else {
-          console.log(`[CRON] ${pair} | NO SIGNAL`);
-          results[pair] = { status: "NO_SIGNAL" };
+          // ─── NEW SIGNAL ───
+          console.log(`[CRON] ${pair} | No active trades — evaluating`);
+          const result = generateSignal(pair, candles1h, candles4h, candles1d, activeSignals, price);
+          signalResults[pair] = result;
+
+          if (result.debug?.length) console.log(`[CRON] ${pair} | Debug: ${result.debug.join(" | ")}`);
+
+          if (result.signal) {
+            const signal = result.signal;
+            activeSignals.push(signal);
+            console.log(`[CRON] ${pair} | SIGNAL | ${signal.direction} ${signal.type} ${signal.scale} | Entry:$${signal.entry.toFixed(2)} | RR:${signal.rr.toFixed(2)} | Conf:${signal.confidence}%`);
+
+            if (signal.entryTier !== "NO_TRADE") {
+              try { await sendAlert(signal); } catch (e) {}
+            }
+
+            results[pair] = {
+              status: "SIGNAL",
+              direction: signal.direction,
+              confidence: signal.confidence,
+              entry: signal.entry,
+              stop: signal.stop,
+              target: signal.target,
+              rr: signal.rr,
+              entryTier: signal.entryTier,
+            };
+          } else {
+            console.log(`[CRON] ${pair} | NO SIGNAL`);
+            results[pair] = { status: "NO_SIGNAL" };
+          }
         }
       }
 
@@ -252,6 +274,7 @@ export async function GET(req: NextRequest) {
     if (r?.status === "HOLDING") console.log(`[CRON]   📊 ${pair} | HOLDING | ${r.pnl}`);
     else if (r?.status === "SIGNAL") console.log(`[CRON]   🔔 ${pair} | SIGNAL | ${r.direction} | Entry:$${r.entry.toFixed(2)}`);
     else if (r?.status === "EXITED") console.log(`[CRON]   🚪 ${pair} | EXITED | ${r.reason} | ${r.pnl}`);
+    else if (r?.status === "BLOCKED") console.log(`[CRON]   🛡️ ${pair} | BLOCKED | ${r.reason}`);
     else if (r?.status === "NO_SIGNAL") console.log(`[CRON]   ⏸️ ${pair} | NO SIGNAL`);
     else if (r?.status === "ERROR") console.log(`[CRON]   ❌ ${pair} | ERROR: ${r.error}`);
   }
