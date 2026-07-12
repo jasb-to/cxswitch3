@@ -623,6 +623,7 @@ export function shouldHold(
       }
     }
   }
+  // v33.9: If we reach here on a conflict entry, structure break was skipped
 
   // 3. EMA21 BREACH by 1.5x ATR (trendline proxy)
   const atr4h = atr(candles4h, 14);
