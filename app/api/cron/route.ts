@@ -1,13 +1,14 @@
+
 import { NextRequest, NextResponse } from "next/server";
 import {
   generateSignal,
   shouldHold,
   filterExpiredSignals,
-  calculateTradeState,
   getMarketSnapshot,
   aggregateTo1D,
   Signal,
   SignalResult,
+  TradeState,
 } from "@/lib/strategy";
 import { getCandles, getCurrentPrice, krakenPairFormat } from "@/lib/kraken";
 import { sendAlert, sendExitAlert, alertError } from "@/lib/telegram";
@@ -48,7 +49,7 @@ export async function GET(req: NextRequest) {
   try { activeSignals = await loadActiveSignals(); } catch (e) { errors.push("loadActiveSignals: " + e); }
   if (!Array.isArray(activeSignals)) activeSignals = [];
 
-  // v34 DEFENSIVE: Check for duplicate active signals per pair
+  // v35: Check for duplicate active signals per pair
   const pairCounts = new Map<string, number>();
   for (const s of activeSignals) {
     if (!s.exited) {
@@ -62,7 +63,11 @@ export async function GET(req: NextRequest) {
       pairSignals.sort((a, b) => b.timestamp - a.timestamp);
       for (let i = 1; i < pairSignals.length; i++) {
         pairSignals[i].exited = true;
-        pairSignals[i].tradeState = "DUPLICATE_CLEANUP";
+        // v35: Set exit phase in trade state
+        if (pairSignals[i].tradeState) {
+          pairSignals[i].tradeState.phase = "EXIT";
+          pairSignals[i].tradeState.phaseEnteredAt = now;
+        }
       }
     }
   }
@@ -113,12 +118,37 @@ export async function GET(req: NextRequest) {
 
       if (activeForPair.length > 0) {
         for (const signal of activeForPair) {
-          const holdResult = shouldHold(signal, candles4h, candles1d, price);
-          console.log(`[CRON] ${pair} | shouldHold: ${holdResult.shouldHold} | ${holdResult.reason}`);
+          // v35: Ensure tradeState exists (migration from v34)
+          if (!signal.tradeState) {
+            console.warn(`[CRON] ${pair} | Migrating v34 signal to v35 trade state`);
+            signal.tradeState = {
+              phase: "ENTRY",
+              phaseEnteredAt: signal.timestamp,
+              highestPrice: signal.highestPrice || signal.entry,
+              lowestPrice: signal.lowestPrice || signal.entry,
+              entryPrice: signal.entry,
+              lockedStop: signal.lockedStop || null,
+              profitLockLevel: signal.profitLockActive ? 1 : 0,
+              exitPersistence: {
+                consecutiveClosesBeyondEMA21: 0,
+                lastCloseBeyondEMA21: 0,
+                ema21SlopeHistory: [],
+                warningCount: 0,
+              },
+              entryTimestamp: signal.timestamp,
+              lastDecisionTimestamp: now,
+              realizedPnl: 0,
+              maxDrawdown: 0,
+              maxProfit: 0,
+            };
+          }
 
-          // v34: CRITICAL — persist updated signal state BEFORE deciding exit
-          if (holdResult.updatedSignal) {
-            Object.assign(signal, holdResult.updatedSignal);
+          const holdResult = shouldHold(signal, candles4h, candles1d, price);
+          console.log(`[CRON] ${pair} | shouldHold: ${holdResult.shouldHold} | ${holdResult.reason} | phase: ${signal.tradeState.phase}`);
+
+          // v35: CRITICAL — persist updated trade state BEFORE any other logic
+          if (holdResult.updatedTradeState) {
+            signal.tradeState = holdResult.updatedTradeState;
           }
 
           if (!holdResult.shouldHold) {
@@ -126,37 +156,46 @@ export async function GET(req: NextRequest) {
               ? ((price - signal.entry) / signal.entry * 100)
               : ((signal.entry - price) / signal.entry * 100);
             const pnlStr = (isFinite(rawPnl) ? rawPnl.toFixed(2) : "0.00") + "%";
-            console.log(`[CRON] ${pair} | EXITING | ${holdResult.reason} | ${pnlStr}`);
+            console.log(`[CRON] ${pair} | EXITING | ${holdResult.reason} | ${pnlStr} | phase: ${signal.tradeState.phase}`);
 
             try { await sendExitAlert(signal, price, holdResult.reason); } catch (e) {}
             signal.exited = true;
-            results[pair] = { status: "EXITED", reason: holdResult.reason, price, signalId: signal.id, pnl: pnlStr };
+            // v35: Ensure EXIT phase is set
+            signal.tradeState.phase = "EXIT";
+            signal.tradeState.phaseEnteredAt = now;
+
+            results[pair] = { 
+              status: "EXITED", 
+              reason: holdResult.reason, 
+              price, 
+              signalId: signal.id, 
+              pnl: pnlStr,
+              phase: signal.tradeState.phase,
+            };
           } else {
-            // v34: Use calculateTradeState directly
-            const tradeState = calculateTradeState(signal, price);
-
-            signal.highestPrice = tradeState.highestPrice;
-            signal.lowestPrice = tradeState.lowestPrice;
-            signal.tradeState = tradeState.newState;
-            signal.lockedStop = tradeState.lockedStop;
-            signal.profitLockActive = tradeState.profitLockActive;
-
+            // v35: Use unified trade state directly
+            const ts = signal.tradeState;
             const rawPnl = signal.direction === "LONG"
               ? ((price - signal.entry) / signal.entry * 100)
               : ((signal.entry - price) / signal.entry * 100);
             const pnl = (isFinite(rawPnl) ? rawPnl.toFixed(2) : "0.00") + "%";
-            console.log(`[CRON] ${pair} | HOLDING | ${tradeState.newState} | ${pnl}`);
+
+            console.log(`[CRON] ${pair} | HOLDING | ${ts.phase} | ${pnl} | profitLock: ${ts.profitLockLevel}`);
+
             results[pair] = {
               status: "HOLDING",
-              state: tradeState.newState,
-              lockedStop: tradeState.lockedStop,
+              phase: ts.phase,
+              profitLockLevel: ts.profitLockLevel,
+              lockedStop: ts.lockedStop,
               pnl,
               signalId: signal.id,
+              maxProfit: (ts.maxProfit * 100).toFixed(2) + "%",
+              maxDrawdown: (ts.maxDrawdown * 100).toFixed(2) + "%",
             };
           }
         }
       } else {
-        // v34 DEFENSIVE: Before generating new signal, verify no active trades exist
+        // v35 DEFENSIVE: Before generating new signal, verify no active trades exist
         const allForPair = activeSignals.filter(s => s.pair === pair && !s.exited);
         if (allForPair.length > 0) {
           console.warn(`[CRON] ${pair} | SIGNAL BLOCKED: ${allForPair.length} active trade(s) already exist`);
@@ -172,7 +211,7 @@ export async function GET(req: NextRequest) {
           if (result.signal) {
             const signal = result.signal;
             activeSignals.push(signal);
-            console.log(`[CRON] ${pair} | SIGNAL | ${signal.direction} ${signal.type} ${signal.scale} | Entry:$${signal.entry.toFixed(2)} | RR:${signal.rr.toFixed(2)} | Conf:${signal.confidence}%`);
+            console.log(`[CRON] ${pair} | SIGNAL | ${signal.direction} ${signal.type} ${signal.scale} | Entry:$${signal.entry.toFixed(2)} | RR:${signal.rr.toFixed(2)} | Conf:${signal.confidence}% | Phase: ${signal.tradeState.phase}`);
 
             if (signal.entryTier !== "NO_TRADE") {
               try { await sendAlert(signal); } catch (e) {}
@@ -187,6 +226,8 @@ export async function GET(req: NextRequest) {
               target: signal.target,
               rr: signal.rr,
               entryTier: signal.entryTier,
+              entryMode: signal.entryMode,
+              phase: signal.tradeState.phase,
             };
           } else {
             console.log(`[CRON] ${pair} | NO SIGNAL`);
@@ -200,23 +241,29 @@ export async function GET(req: NextRequest) {
 
       if (results[pair]?.status === "HOLDING" && activeForPair.length > 0) {
         const activeSignal = activeForPair[0];
+        const ts = activeSignal.tradeState;
         snapshot.activeTrade = {
           signalId: results[pair].signalId,
           direction: activeSignal.direction,
-          state: results[pair].state,
+          phase: ts.phase,
           pnl: results[pair].pnl,
-          lockedStop: results[pair].lockedStop,
+          lockedStop: ts.lockedStop,
+          profitLockLevel: ts.profitLockLevel,
           entry: activeSignal.entry,
           stop: activeSignal.stop,
           target: activeSignal.target,
           entryTier: activeSignal.entryTier,
+          entryMode: activeSignal.entryMode,
           positionSizePct: activeSignal.positionSizePct,
+          maxProfit: results[pair].maxProfit,
+          maxDrawdown: results[pair].maxDrawdown,
         };
         snapshot.regime.direction = activeSignal.direction;
         snapshot.regime.strength = "ACTIVE";
         snapshot.regime.confidence = activeSignal.confidence;
-        snapshot.recommendedAction = activeSignal.direction + " HOLDING";
+        snapshot.recommendedAction = activeSignal.direction + " " + ts.phase;
         snapshot.entryTier = activeSignal.entryTier;
+        snapshot.entryMode = activeSignal.entryMode;
         snapshot.positionSize = activeSignal.positionSizePct ? (activeSignal.positionSizePct * 100).toFixed(0) + "%" : null;
       }
 
@@ -231,7 +278,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // ─── FILTER EXPIRED (SL/TP HITS) ───
+  // ─── FILTER EXPIRED (SL/TP HITS) — v35: ALL exits record cooldowns ───
   try {
     const { active, exited } = filterExpiredSignals(activeSignals, currentPrices);
     if (exited.length > 0) {
@@ -240,6 +287,11 @@ export async function GET(req: NextRequest) {
           const price = currentPrices[signal.pair] || signal.entry;
           try { await sendExitAlert(signal, price, reason); } catch (e) {}
           signal.exited = true;
+          // v35: Set exit phase
+          if (signal.tradeState) {
+            signal.tradeState.phase = "EXIT";
+            signal.tradeState.phaseEnteredAt = now;
+          }
         }
       }
     }
@@ -271,9 +323,9 @@ export async function GET(req: NextRequest) {
   console.log("[CRON] FINISHED | Active trades: " + activeTrades.length);
   for (const pair of PAIRS) {
     const r = results[pair];
-    if (r?.status === "HOLDING") console.log(`[CRON]   📊 ${pair} | HOLDING | ${r.pnl}`);
-    else if (r?.status === "SIGNAL") console.log(`[CRON]   🔔 ${pair} | SIGNAL | ${r.direction} | Entry:$${r.entry.toFixed(2)}`);
-    else if (r?.status === "EXITED") console.log(`[CRON]   🚪 ${pair} | EXITED | ${r.reason} | ${r.pnl}`);
+    if (r?.status === "HOLDING") console.log(`[CRON]   📊 ${pair} | HOLDING | ${r.phase} | ${r.pnl}`);
+    else if (r?.status === "SIGNAL") console.log(`[CRON]   🔔 ${pair} | SIGNAL | ${r.direction} | Entry:$${r.entry.toFixed(2)} | ${r.entryMode}`);
+    else if (r?.status === "EXITED") console.log(`[CRON]   🚪 ${pair} | EXITED | ${r.reason} | ${r.pnl} | ${r.phase}`);
     else if (r?.status === "BLOCKED") console.log(`[CRON]   🛡️ ${pair} | BLOCKED | ${r.reason}`);
     else if (r?.status === "NO_SIGNAL") console.log(`[CRON]   ⏸️ ${pair} | NO SIGNAL`);
     else if (r?.status === "ERROR") console.log(`[CRON]   ❌ ${pair} | ERROR: ${r.error}`);
