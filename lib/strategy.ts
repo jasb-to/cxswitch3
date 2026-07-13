@@ -644,12 +644,30 @@ export function generateSignal(
 
   if (biasDirection === "LONG") {
     stop = Math.min(swingLow * 0.998, entry - atr4h * atrMultiplier);
-    const breakToEntry = entry - trendlinePrice;
-    target = Math.max(entry + breakToEntry * 2, entry + atr4h * 3, swingHigh);
+    // Cap target at 3x ATR for strong trends (trendline can give ridiculous targets)
+    const atrTarget = entry + atr4h * 3;
+    const swingTarget = swingHigh;
+    if (isStrongTrend) {
+      target = Math.min(atrTarget, swingTarget);
+    } else {
+      const breakToEntry = Math.max(0, entry - trendlinePrice);
+      const tlTarget = entry + breakToEntry * 2;
+      target = Math.max(Math.min(tlTarget, atrTarget * 1.5), atrTarget);
+      target = Math.min(target, swingTarget);
+    }
   } else {
     stop = Math.max(swingHigh * 1.002, entry + atr4h * atrMultiplier);
-    const breakToEntry = trendlinePrice - entry;
-    target = Math.min(entry - breakToEntry * 2, entry - atr4h * 3, swingLow);
+    // Cap target at 3x ATR for strong trends
+    const atrTarget = entry - atr4h * 3;
+    const swingTarget = swingLow;
+    if (isStrongTrend) {
+      target = Math.max(atrTarget, swingTarget);
+    } else {
+      const breakToEntry = Math.max(0, trendlinePrice - entry);
+      const tlTarget = entry - breakToEntry * 2;
+      target = Math.min(Math.max(tlTarget, atrTarget * 1.5), atrTarget);
+      target = Math.max(target, swingTarget);
+    }
   }
 
   const risk = Math.abs(entry - stop);
