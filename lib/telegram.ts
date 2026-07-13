@@ -36,8 +36,34 @@ function sf(v: any, d: number): string {
 }
 
 // ============================================================
-// UNIVERSAL ALERTS — Handles both v35 and v36 signal shapes
+// v37 TELEGRAM ALERTS — Trend-Following Format
 // ============================================================
+
+function getDirectionEmoji(direction: string): string {
+  return direction?.toUpperCase() === "LONG" ? "🟢" : "🔴";
+}
+
+function getEntryLabel(entryType: string, entryTier: string): string {
+  const type = entryType?.toUpperCase() || "";
+  const tier = entryTier?.toUpperCase() || "";
+
+  if (type === "RETEST" || tier === "RETEST_ENTRY") return "RETEST ENTRY";
+  if (type === "BREAKOUT" || tier === "CONFIRMED_ENTRY") return "CONFIRMED ENTRY";
+  if (type === "EARLY" || tier === "EARLY_ENTRY") return "EARLY ENTRY";
+  return "ENTRY";
+}
+
+function getPositionSize(entryType: string, entryTier: string, scale: string): string {
+  const type = entryType?.toUpperCase() || "";
+  const tier = entryTier?.toUpperCase() || "";
+  const sc = scale?.toUpperCase() || "";
+
+  if (type === "RETEST" || sc === "ENTRY_1") return "FULL SIZE";
+  if (type === "BREAKOUT" || sc === "ENTRY_2") return "FULL SIZE";
+  if (type === "EARLY") return "50% STARTER";
+  if (sc === "ADD") return "ADD POSITION";
+  return "FULL SIZE";
+}
 
 export async function sendAlert(signal: any): Promise<boolean> {
   if (!signal || !signal.pair) {
@@ -45,12 +71,9 @@ export async function sendAlert(signal: any): Promise<boolean> {
     return false;
   }
 
-  // v36 uses entryType, v35 uses entryTier/scale
-  const entryType = signal.entryType || "ENTRY";
+  // Skip non-actionable signals
   const entryTier = signal.entryTier || "";
   const scale = signal.scale || "";
-
-  // Skip non-actionable signals (v35 compat)
   if (entryTier === "NO_TRADE" || scale === null) {
     console.log("[TELEGRAM SKIP] " + signal.pair + " - no actionable signal");
     return false;
@@ -65,31 +88,28 @@ export async function sendAlert(signal: any): Promise<boolean> {
   const rr = sf(signal.rr || 0, 2);
   const slPct = sf(Math.abs((signal.stop - signal.entry) / signal.entry) * 100, 1);
   const tpPct = sf(Math.abs((signal.target - signal.entry) / signal.entry) * 100, 1);
-  const volBadge = signal.volumeConfirmed ? " | VOL+" : "";
 
-  // Determine label and size based on signal shape
-  let label: string;
-  let size: string;
+  const emoji = getDirectionEmoji(direction);
+  const label = getEntryLabel(signal.entryType, signal.entryTier);
+  const size = getPositionSize(signal.entryType, signal.entryTier, signal.scale);
 
-  if (entryType === "EARLY" || entryTier === "EARLY_ENTRY") {
-    label = "EARLY ENTRY";
-    size = "33% starter";
-  } else if (entryType === "RETEST" || scale === "ADD") {
-    label = entryType === "RETEST" ? "RETEST ENTRY" : "ADD POSITION";
-    size = "50% add";
-  } else if (entryType === "BREAKOUT" || entryTier === "CONFIRMED_ENTRY") {
-    label = "BREAKOUT ENTRY";
-    size = "FULL SIZE";
-  } else {
-    label = "ENTRY";
-    size = "33% starter";
-  }
+  const text = emoji + " " + label + " — " + pair + "
 
-  const text = label + " - " + pair + " | Direction: " + direction +
-    " | Confidence: " + sf(confidence, 0) + "% | Position: " + size +
-    " | Entry: " + entry + " | Stop: " + stop + " | Target: " + target +
-    " | RR " + rr + " | SL " + slPct + "% | TP " + tpPct + "%" + volBadge +
-    " | id=" + signal.id;
+" +
+    "Direction: " + direction + "
+" +
+    "Confidence: " + sf(confidence, 0) + "%
+
+" +
+    "Position:
+" + size + "
+
+" +
+    "Entry: " + entry + " | Stop: " + stop + " | Target: " + target + "
+" +
+    "RR " + rr + " | SL " + slPct + "% | TP " + tpPct + "%
+" +
+    "id=" + signal.id;
 
   return sendMessage(text);
 }
@@ -105,19 +125,28 @@ export async function sendExitAlert(signal: any, exitPrice: number, reason: stri
     : ((signal.entry - exitPrice) / signal.entry) * 100;
   const pnl = isFinite(rawPnl) ? rawPnl : 0;
   const sign = pnl >= 0 ? "+" : "";
+  const emoji = pnl >= 0 ? "🟢" : "🔴";
   const entryType = signal.entryType || signal.entryMode || "ENTRY";
 
-  const text = "EXIT " + signal.pair + " " + signal.direction +
-    " - " + sign + sf(pnl, 2) + "% | Entry: " + sf(signal.entry, 2) +
-    " | Exit: " + sf(exitPrice, 2) + " | Reason: " + reason +
-    " | Type: " + entryType + " | id=" + signal.id;
+  const text = emoji + " EXIT — " + signal.pair + " " + signal.direction + "
+
+" +
+    "P&L: " + sign + sf(pnl, 2) + "%
+" +
+    "Entry: " + sf(signal.entry, 2) + " | Exit: " + sf(exitPrice, 2) + "
+" +
+    "Reason: " + reason + "
+" +
+    "Type: " + entryType + "
+" +
+    "id=" + signal.id;
 
   return sendMessage(text);
 }
 
 export async function alertStatus(signals: any[], prices: Record<string, number>): Promise<boolean> {
   if (!Array.isArray(signals) || signals.length === 0) {
-    return sendMessage("CXSwitch v36.1 - No active signals.");
+    return sendMessage("CXSwitch v37 — No active signals.");
   }
 
   const lines = signals.map(s => {
@@ -128,14 +157,15 @@ export async function alertStatus(signals: any[], prices: Record<string, number>
       : ((s.entry - price) / s.entry) * 100;
     const pnl = isFinite(rawPnl) ? rawPnl : 0;
     const sign = pnl >= 0 ? "+" : "";
+    const emoji = pnl >= 0 ? "🟢" : "🔴";
     const entryType = s.entryType || s.entryMode || "OPEN";
-    return s.pair + " " + s.direction + " | " + entryType + " | " + sign + sf(pnl, 2) + "%";
+    return emoji + " " + s.pair + " " + s.direction + " | " + entryType + " | " + sign + sf(pnl, 2) + "%";
   });
 
-  return sendMessage("CXSwitch v36.1 Active Signals | " + lines.join(" | "));
+  return sendMessage("CXSwitch v37 Active Signals | " + lines.join(" | "));
 }
 
 export async function alertError(context: string, error: any): Promise<boolean> {
   const errStr = String(error).slice(0, 400);
-  return sendMessage("CXSwitch ERROR | Context: " + context + " | " + errStr);
+  return sendMessage("CXSwitch v37 ERROR | Context: " + context + " | " + errStr);
 }
