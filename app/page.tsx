@@ -276,11 +276,75 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
               {snap.activeTrade!.pnl}
             </span>
           </div>
-          <div className="grid grid-cols-2 gap-2 text-sm">
+          <div className="grid grid-cols-2 gap-2 text-sm mb-4">
             <div><span className="text-gray-500">Entry:</span> <span className="font-mono text-gray-200">${snap.activeTrade!.entry.toFixed(2)}</span></div>
             <div><span className="text-gray-500">Stop:</span> <span className="font-mono text-red-400">${snap.activeTrade!.stop.toFixed(2)}</span></div>
             <div><span className="text-gray-500">Target:</span> <span className="font-mono text-green-400">${snap.activeTrade!.target.toFixed(2)}</span></div>
             <div><span className="text-gray-500">TL:</span> <span className="font-mono text-amber-400">${snap.activeTrade!.trendlinePrice?.toFixed(2) || "—"}</span></div>
+          </div>
+
+          {/* R-LEVEL TRACKER */}
+          <div className="border-t border-gray-700/50 pt-3">
+            <div className="text-[10px] uppercase text-gray-500 font-semibold tracking-wider mb-2">Stop Trail</div>
+            <div className="space-y-1.5">
+              {(() => {
+                const entry = snap.activeTrade!.entry;
+                const stop = snap.activeTrade!.stop;
+                const currentPrice = snap.price;
+                const risk = Math.abs(entry - stop);
+                const currentR = risk > 0 ? (snap.activeTrade!.direction === "LONG" ? (currentPrice - entry) / risk : (entry - currentPrice) / risk) : 0;
+                const isBreakeven = currentR >= 1;
+                const is50Lock = currentR >= 2;
+                const is70Lock = currentR >= 3;
+                const nextR = Math.ceil(currentR + 0.01);
+                const nextPrice = entry + (risk * nextR) * (snap.activeTrade!.direction === "LONG" ? 1 : -1);
+
+                return (
+                  <>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-gray-400">Current</span>
+                      <span className={`font-mono font-bold ${currentR >= 1 ? "text-green-400" : currentR >= 0 ? "text-amber-400" : "text-red-400"}`}>
+                        {currentR.toFixed(2)}R
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs opacity-60">
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-1.5 h-1.5 rounded-full bg-red-500"></div>
+                        <span className="text-gray-400">Hard Stop</span>
+                      </div>
+                      <span className="font-mono text-red-400">${stop.toFixed(2)}</span>
+                    </div>
+                    <div className={`flex items-center justify-between text-xs ${isBreakeven ? "opacity-60" : ""}`}>
+                      <div className="flex items-center gap-1.5">
+                        <div className={`w-1.5 h-1.5 rounded-full ${isBreakeven ? "bg-green-500" : "bg-amber-500 animate-pulse"}`}></div>
+                        <span className="text-gray-400">Breakeven</span>
+                        {!isBreakeven && <span className="text-[9px] text-amber-400">← NEXT</span>}
+                      </div>
+                      <span className={`font-mono ${isBreakeven ? "text-green-400" : "text-amber-400"}`}>${entry.toFixed(2)}</span>
+                    </div>
+                    <div className={`flex items-center justify-between text-xs ${is50Lock ? "" : "opacity-40"}`}>
+                      <div className="flex items-center gap-1.5">
+                        <div className={`w-1.5 h-1.5 rounded-full ${is50Lock ? "bg-green-500" : "bg-gray-600"}`}></div>
+                        <span className="text-gray-400">50% Lock</span>
+                      </div>
+                      <span className={`font-mono ${is50Lock ? "text-green-400" : "text-gray-500"}`}>${(entry + risk * 0.5 * (snap.activeTrade!.direction === "LONG" ? 1 : -1)).toFixed(2)}</span>
+                    </div>
+                    <div className={`flex items-center justify-between text-xs ${is70Lock ? "" : "opacity-40"}`}>
+                      <div className="flex items-center gap-1.5">
+                        <div className={`w-1.5 h-1.5 rounded-full ${is70Lock ? "bg-green-500" : "bg-gray-600"}`}></div>
+                        <span className="text-gray-400">70% Lock</span>
+                      </div>
+                      <span className={`font-mono ${is70Lock ? "text-green-400" : "text-gray-500"}`}>${(entry + risk * 0.7 * (snap.activeTrade!.direction === "LONG" ? 1 : -1)).toFixed(2)}</span>
+                    </div>
+                    {!isBreakeven && (
+                      <div className="mt-2 text-[10px] text-amber-400 text-center">
+                        ${Math.abs(nextPrice - currentPrice).toFixed(2)} to +{nextR}R
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
           </div>
         </div>
       ) : hasSignal ? (
