@@ -414,12 +414,10 @@ function checkPullbackAdaptive(
   if (isStrongTrend) {
     if (biasDirection === "LONG") {
       if (stoch4h.k < 20) {
-        if (crossUp) return { pullbackActive: true, tier: "DEEP", reason: `STRONG TREND DEEP: 4H Stoch cross up from extreme oversold (${stoch4h.k})`, stochZone: "EXTREME" };
-        return { pullbackActive: false, tier: null, reason: `STRONG LONG: 4H Stoch extreme oversold (${stoch4h.k}), waiting for cross up`, stochZone: "EXTREME" };
+        return { pullbackActive: true, tier: "DEEP", reason: `STRONG TREND DEEP: 4H Stoch extreme oversold (${stoch4h.k}) — trend stretched, 15m cross triggers`, stochZone: "EXTREME" };
       }
       if (stoch4h.k < 35) {
-        if (crossUp) return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch cross up from oversold (${stoch4h.k})`, stochZone: "ZONE" };
-        return { pullbackActive: false, tier: null, reason: `STRONG LONG: 4H Stoch oversold (${stoch4h.k}), waiting for cross up`, stochZone: "ZONE" };
+        return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch oversold (${stoch4h.k}) — 15m cross triggers`, stochZone: "ZONE" };
       }
       if (stoch4h.k < 50) {
         return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k} (not overbought), 15m cross can trigger`, stochZone: "NEUTRAL" };
@@ -430,12 +428,10 @@ function checkPullbackAdaptive(
     if (biasDirection === "SHORT") {
       // THE FIX: In strong SHORT trend, deeply oversold (< 20) = DEEP zone
       if (stoch4h.k < 20) {
-        if (crossDown) return { pullbackActive: true, tier: "DEEP", reason: `STRONG TREND DEEP: 4H Stoch cross down from extreme oversold (${stoch4h.k}) — trend stretched`, stochZone: "EXTREME" };
-        return { pullbackActive: false, tier: null, reason: `STRONG SHORT: 4H Stoch extreme oversold (${stoch4h.k}), waiting for cross down`, stochZone: "EXTREME" };
+        return { pullbackActive: true, tier: "DEEP", reason: `STRONG TREND DEEP: 4H Stoch extreme oversold (${stoch4h.k}) — trend stretched, 15m cross triggers`, stochZone: "EXTREME" };
       }
       if (stoch4h.k < 35) {
-        if (crossDown) return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch cross down from oversold (${stoch4h.k})`, stochZone: "ZONE" };
-        return { pullbackActive: false, tier: null, reason: `STRONG SHORT: 4H Stoch oversold (${stoch4h.k}), waiting for cross down`, stochZone: "ZONE" };
+        return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch oversold (${stoch4h.k}) — 15m cross triggers`, stochZone: "ZONE" };
       }
       if (stoch4h.k < 50) {
         return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k} (not overbought), 15m cross can trigger`, stochZone: "NEUTRAL" };
