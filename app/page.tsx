@@ -44,6 +44,9 @@ interface MarketSnapshot {
   } | null;
   activeTrade?: ActiveTradeInfo;
   debug: string[];
+  summary?: {
+    debug: string[];
+  };
 }
 
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
@@ -74,6 +77,12 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
   const bias = snap.bias;
   const hasSignal = !!snap.signal;
   const hasTrade = !!snap.activeTrade;
+
+  // FIX: Get debug from top-level or nested summary.debug
+  const debugLines: string[] = snap.debug || snap.summary?.debug || [];
+
+  // FIX: Ensure trendlines is always an array
+  const trendlines: TrendlineInfo[] = snap.trendlines || [];
 
   const statusBadge = hasTrade
     ? { label: "ACTIVE", className: "bg-blue-500/20 text-blue-400 border-blue-500/30" }
@@ -110,30 +119,30 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
       <div className="grid grid-cols-3 gap-2 mb-4">
         <div className="p-2 bg-gray-800/30 rounded-lg text-center">
           <div className="text-xs text-gray-500 mb-1">4H Stoch</div>
-          <div className={`text-sm font-mono font-bold ${stochColor(snap.stoch4h.k, snap.stoch4h.d)}`}>
-            {snap.stoch4h.k.toFixed(1)} / {snap.stoch4h.d.toFixed(1)}
+          <div className={`text-sm font-mono font-bold ${stochColor(snap.stoch4h?.k ?? 50, snap.stoch4h?.d ?? 50)}`}>
+            {(snap.stoch4h?.k ?? 0).toFixed(1)} / {(snap.stoch4h?.d ?? 0).toFixed(1)}
           </div>
         </div>
         <div className="p-2 bg-gray-800/30 rounded-lg text-center">
           <div className="text-xs text-gray-500 mb-1">1H Stoch</div>
-          <div className={`text-sm font-mono font-bold ${stochColor(snap.stoch1h.k, snap.stoch1h.d)}`}>
-            {snap.stoch1h.k.toFixed(1)} / {snap.stoch1h.d.toFixed(1)}
+          <div className={`text-sm font-mono font-bold ${stochColor(snap.stoch1h?.k ?? 50, snap.stoch1h?.d ?? 50)}`}>
+            {(snap.stoch1h?.k ?? 0).toFixed(1)} / {(snap.stoch1h?.d ?? 0).toFixed(1)}
           </div>
         </div>
         <div className="p-2 bg-gray-800/30 rounded-lg text-center">
           <div className="text-xs text-gray-500 mb-1">15M Stoch</div>
-          <div className={`text-sm font-mono font-bold ${stochColor(snap.stoch15m.k, snap.stoch15m.d)}`}>
-            {snap.stoch15m.k.toFixed(1)} / {snap.stoch15m.d.toFixed(1)}
+          <div className={`text-sm font-mono font-bold ${stochColor(snap.stoch15m?.k ?? 50, snap.stoch15m?.d ?? 50)}`}>
+            {(snap.stoch15m?.k ?? 0).toFixed(1)} / {(snap.stoch15m?.d ?? 0).toFixed(1)}
           </div>
         </div>
       </div>
 
       {/* TRENDLINES */}
-      {snap.trendlines.length > 0 && (
+      {trendlines.length > 0 && (
         <div className="mb-4">
           <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-2">Active Trendlines</div>
           <div className="space-y-1">
-            {snap.trendlines.map((tl, i) => (
+            {trendlines.map((tl, i) => (
               <div key={i} className="flex justify-between text-xs">
                 <span className={tl.type === "RESISTANCE" ? "text-red-400" : "text-green-400"}>
                   {tl.type} ({tl.touches} touches)
@@ -206,11 +215,11 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
       )}
 
       {/* DEBUG */}
-      {snap.debug.length > 0 && (
+      {debugLines.length > 0 && (
         <details className="mt-2">
           <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-400">Show debug</summary>
           <div className="mt-2 p-2 bg-gray-800/30 rounded text-xs text-gray-500 space-y-1">
-            {snap.debug.map((d, i) => (
+            {debugLines.map((d, i) => (
               <div key={i}>{d}</div>
             ))}
           </div>
@@ -284,7 +293,7 @@ export default function Dashboard() {
       <div className="max-w-6xl mx-auto">
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">CXSwitch v36.0</h1>
+            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">CXSwitch v36.1</h1>
             <p className="text-gray-500 text-sm mt-1">
               Trendline Break + Stoch Momentum | Active: {activeTrades}
             </p>
@@ -338,7 +347,7 @@ export default function Dashboard() {
 
         <div className="mt-8 pt-4 border-t border-gray-800 text-center">
           <p className="text-xs text-gray-600">
-            CXSwitch v36.0 — 1D/4H Bias → Trendline Break → 15M Entry → 1H Stoch Exit
+            CXSwitch v36.1 — 1D/4H Bias → Trendline Break → 15M Entry → 1H Stoch Exit
           </p>
         </div>
       </div>
