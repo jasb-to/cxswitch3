@@ -1,8 +1,8 @@
 // ============================================================
-// CXSwitch v37 — Trend-Following Trendline Break
+// CXSwitch v37.1 — Adaptive Pullback Trend-Following
 //
 // Philosophy: 1D sets the bias. 4H provides the setup. 15m executes.
-// Trade WITH the 1D trend. Use 4H pullbacks and trendline breaks for entry.
+// Trade WITH the 1D trend. Use adaptive pullback tiers for entry.
 // Favour participation over perfection. Build positions in valid trends.
 // ============================================================
 
@@ -93,6 +93,7 @@ export interface TradeState {
 
 export type EntryTier = "NO_TRADE" | "WATCH" | "EARLY_ENTRY" | "CONFIRMED_ENTRY";
 export type TradeLifecyclePhase = "WATCH" | "ENTRY" | "BUILDING" | "TREND" | "PROFIT_PROTECTION" | "EXIT" | "COOLDOWN";
+export type PullbackTier = "DEEP" | "SHALLOW" | "MOMENTUM" | null;
 
 export const CURRENT_SIGNAL_VERSION = 37;
 
@@ -402,11 +403,7 @@ function analyzeStructure(candles: Candle[]): {
 }
 
 // ============================================================
-// TREND DETECTION (v37 Option B: 1D = Master Bias, 4H = Execution)
-// ============================================================
-// 1D sets the directional bias.
-// 4H provides the setup (pullback + trendline break).
-// 15m provides execution timing.
+// TREND DETECTION (v37.1: 1D = Master Bias, 4H = Execution)
 // ============================================================
 
 function detectTrend(
@@ -443,17 +440,14 @@ function detectTrend(
   const adxVal = adx(candles4h);
   debug.push(`4H ADX: ${adxVal !== null ? adxVal.toFixed(1) : "N/A"}`);
 
-  // 1D is the MASTER bias. If 1D is unclear, we can't trade.
   if (!structure1d.direction) {
     debug.push(`BIAS: UNCLEAR — 1D structure missing`);
     return { direction: null, strength: 0, adx: adxVal, debug };
   }
 
-  // 1D sets the direction. 4H can be in pullback (disagreeing) — that's the setup.
   const biasDirection = structure1d.direction;
   const biasStrength = structure1d.strength;
 
-  // 4H alignment is a bonus, not required
   const fourHAligned = structure4h.direction === biasDirection;
   const fourHInPullback = structure4h.direction && structure4h.direction !== biasDirection;
   const fourHNeutral = !structure4h.direction;
@@ -470,51 +464,147 @@ function detectTrend(
 }
 
 // ============================================================
-// PULLBACK DETECTION (v37: 4H pullback within 1D trend)
+// ADAPTIVE PULLBACK DETECTION (v37.1)
 // ============================================================
-// LONG 1D bias: 4H Stoch oversold (<35) + K crosses above D = pullback complete
-// SHORT 1D bias: 4H Stoch overbought (>65) + K crosses below D = pullback complete
-// Stoch is timing only — does NOT create signal by itself
+// Tier 1 — Deep Pullback: Stoch at extreme + cross (best R:R)
+// Tier 2 — Shallow Pullback: Stoch in zone + cross (good R:R)
+// Tier 3 — Momentum: Stoch neutral + 15m cross (chase, tight stop)
 // ============================================================
 
-function checkPullback(
+export interface PullbackResult {
+  pullbackActive: boolean;
+  tier: PullbackTier;
+  reason: string;
+  stochZone: "EXTREME" | "ZONE" | "NEUTRAL" | "EXTENDED";
+}
+
+function checkPullbackAdaptive(
   biasDirection: "LONG" | "SHORT" | null,
   stoch4h: { k: number; d: number },
-  prevStoch4h: { k: number; d: number }
-): { pullbackActive: boolean; reason: string } {
+  prevStoch4h: { k: number; d: number },
+  adx: number | null,
+  isStrongTrend: boolean
+): PullbackResult {
   if (!biasDirection) {
-    return { pullbackActive: false, reason: "No bias — no pullback check" };
+    return { pullbackActive: false, tier: null, reason: "No bias — no pullback check", stochZone: "NEUTRAL" };
   }
 
-  if (biasDirection === "LONG") {
-    // LONG 1D bias: pullback on 4H = oversold bounce (K crosses above D from below)
-    const wasOversold = prevStoch4h.k < 35;
-    const crossUp = prevStoch4h.k <= prevStoch4h.d && stoch4h.k > stoch4h.d;
+  const crossUp = prevStoch4h.k <= prevStoch4h.d && stoch4h.k > stoch4h.d;
+  const crossDown = prevStoch4h.k >= prevStoch4h.d && stoch4h.k < stoch4h.d;
 
-    if (wasOversold && crossUp) {
-      return { pullbackActive: true, reason: `LONG pullback: 4H Stoch cross up from oversold (${stoch4h.k})` };
+  if (biasDirection === "LONG") {
+    // --- DEEP PULLBACK: Stoch < 20 + cross up ---
+    if (stoch4h.k < 20) {
+      if (crossUp) {
+        return {
+          pullbackActive: true,
+          tier: "DEEP",
+          reason: `DEEP pullback: 4H Stoch cross up from extreme oversold (${stoch4h.k})`,
+          stochZone: "EXTREME"
+        };
+      }
+      return {
+        pullbackActive: false,
+        tier: null,
+        reason: `LONG deep pullback forming: 4H Stoch extreme oversold (${stoch4h.k}), waiting for cross up`,
+        stochZone: "EXTREME"
+      };
     }
+
+    // --- SHALLOW PULLBACK: Stoch < 35 + cross up ---
     if (stoch4h.k < 35) {
-      return { pullbackActive: false, reason: `LONG pullback forming: 4H Stoch oversold (${stoch4h.k}), waiting for cross` };
+      if (crossUp) {
+        return {
+          pullbackActive: true,
+          tier: "SHALLOW",
+          reason: `SHALLOW pullback: 4H Stoch cross up from oversold (${stoch4h.k})`,
+          stochZone: "ZONE"
+        };
+      }
+      return {
+        pullbackActive: false,
+        tier: null,
+        reason: `LONG shallow pullback forming: 4H Stoch oversold (${stoch4h.k}), waiting for cross up`,
+        stochZone: "ZONE"
+      };
     }
-    return { pullbackActive: false, reason: `LONG: no pullback — 4H Stoch ${stoch4h.k} (need <35 + cross up)` };
+
+    // --- MOMENTUM ENTRY: Stoch < 50 (not overbought) ---
+    if (stoch4h.k < 50) {
+      return {
+        pullbackActive: true,
+        tier: "MOMENTUM",
+        reason: `MOMENTUM zone: 4H Stoch ${stoch4h.k} (not overbought), 15m cross can trigger entry`,
+        stochZone: "NEUTRAL"
+      };
+    }
+
+    // --- EXTENDED: Stoch > 50, chasing ---
+    return {
+      pullbackActive: false,
+      tier: null,
+      reason: `LONG: extended — 4H Stoch ${stoch4h.k} (need <50 for any entry)`,
+      stochZone: "EXTENDED"
+    };
   }
 
   if (biasDirection === "SHORT") {
-    // SHORT 1D bias: pullback on 4H = overbought rejection (K crosses below D from above)
-    const wasOverbought = prevStoch4h.k > 65;
-    const crossDown = prevStoch4h.k >= prevStoch4h.d && stoch4h.k < stoch4h.d;
+    // --- DEEP PULLBACK: Stoch > 80 + cross down ---
+    if (stoch4h.k > 80) {
+      if (crossDown) {
+        return {
+          pullbackActive: true,
+          tier: "DEEP",
+          reason: `DEEP pullback: 4H Stoch cross down from extreme overbought (${stoch4h.k})`,
+          stochZone: "EXTREME"
+        };
+      }
+      return {
+        pullbackActive: false,
+        tier: null,
+        reason: `SHORT deep pullback forming: 4H Stoch extreme overbought (${stoch4h.k}), waiting for cross down`,
+        stochZone: "EXTREME"
+      };
+    }
 
-    if (wasOverbought && crossDown) {
-      return { pullbackActive: true, reason: `SHORT pullback: 4H Stoch cross down from overbought (${stoch4h.k})` };
-    }
+    // --- SHALLOW PULLBACK: Stoch > 65 + cross down ---
     if (stoch4h.k > 65) {
-      return { pullbackActive: false, reason: `SHORT pullback forming: 4H Stoch overbought (${stoch4h.k}), waiting for cross` };
+      if (crossDown) {
+        return {
+          pullbackActive: true,
+          tier: "SHALLOW",
+          reason: `SHALLOW pullback: 4H Stoch cross down from overbought (${stoch4h.k})`,
+          stochZone: "ZONE"
+        };
+      }
+      return {
+        pullbackActive: false,
+        tier: null,
+        reason: `SHORT shallow pullback forming: 4H Stoch overbought (${stoch4h.k}), waiting for cross down`,
+        stochZone: "ZONE"
+      };
     }
-    return { pullbackActive: false, reason: `SHORT: no pullback — 4H Stoch ${stoch4h.k} (need >65 + cross down)` };
+
+    // --- MOMENTUM ENTRY: Stoch > 50 (not oversold) ---
+    if (stoch4h.k > 50) {
+      return {
+        pullbackActive: true,
+        tier: "MOMENTUM",
+        reason: `MOMENTUM zone: 4H Stoch ${stoch4h.k} (not oversold), 15m cross can trigger entry`,
+        stochZone: "NEUTRAL"
+      };
+    }
+
+    // --- EXTENDED: Stoch < 50, chasing ---
+    return {
+      pullbackActive: false,
+      tier: null,
+      reason: `SHORT: extended — 4H Stoch ${stoch4h.k} (need >50 for any entry)`,
+      stochZone: "EXTENDED"
+    };
   }
 
-  return { pullbackActive: false, reason: "Unknown bias direction" };
+  return { pullbackActive: false, tier: null, reason: "Unknown bias direction", stochZone: "NEUTRAL" };
 }
 
 // ============================================================
@@ -530,13 +620,7 @@ function isVolumeConfirmed(candles: Candle[], lookback = 10): boolean {
 }
 
 // ============================================================
-// ENTRY LOGIC — Trend-Following Trendline Break (Option B)
-// ============================================================
-// 1D bias sets direction.
-// 4H provides pullback + trendline setup.
-// 15m provides execution timing.
-// Priority: Retest > Breakout > Early Entry
-// Favour participation — allow multiple entries.
+// ENTRY LOGIC — Adaptive Pullback Tiers (v37.1)
 // ============================================================
 
 export function generateSignal(
@@ -556,7 +640,6 @@ export function generateSignal(
     activeSignals = [];
   }
 
-  // Check for active trade on this pair
   const active = activeSignals.find((s: any) => s && s.pair === pair && s.exited === false);
   if (active) {
     debug.push(`Already active: ${active.id}`);
@@ -570,7 +653,7 @@ export function generateSignal(
 
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
 
-  // ─── STEP 1: 1D BIAS (master direction) ───
+  // ─── STEP 1: 1D BIAS ───
   const trend = detectTrend(candles1d, candles4h);
   debug.push(...trend.debug);
 
@@ -580,32 +663,25 @@ export function generateSignal(
   }
 
   const biasDirection = trend.direction;
+  const isStrongTrend = (trend.adx !== null && trend.adx >= 25) && trend.strength >= 80;
 
-  // ─── STEP 2: 4H PULLBACK (Stoch timing) ───
+  // ─── STEP 2: 4H PULLBACK (Adaptive) ───
   const closes4h = candles4h.map(c => c.close);
   const stoch4h = stochRsi(closes4h);
   const prevStoch4h = stochRsi(closes4h.slice(0, -1));
 
   debug.push(`4H Stoch: ${stoch4h.k}/${stoch4h.d}`);
 
-  const pullback = checkPullback(biasDirection, stoch4h, prevStoch4h);
+  const pullback = checkPullbackAdaptive(biasDirection, stoch4h, prevStoch4h, trend.adx, isStrongTrend);
   debug.push(pullback.reason);
 
-  // We don't require pullback to be "active" right now — we just need to be
-  // in a reasonable zone (not chasing). For LONG bias, Stoch < 50 means we're
-  // not overbought. For SHORT bias, Stoch > 50 means we're not oversold.
-  const inPullbackZone = biasDirection === "LONG" ? stoch4h.k < 50 : stoch4h.k > 50;
-
-  if (!inPullbackZone) {
-    debug.push(`Not in pullback zone — ${biasDirection} bias, 4H Stoch ${stoch4h.k} (need ${biasDirection === "LONG" ? "<50" : ">50"})`);
+  if (pullback.stochZone === "EXTENDED" && !isStrongTrend) {
+    debug.push(`Entry blocked — Stoch extended (${stoch4h.k}), not in pullback zone`);
     return { debug };
   }
 
   // ─── STEP 3: 4H TRENDLINE SETUP ───
-  // LONG bias: look for descending resistance to break (pullback within uptrend)
-  // SHORT bias: look for ascending support to break (pullback within downtrend)
   const pivots4h = findPivots(candles4h, 3, 2);
-
   let relevantLines: Trendline[] = [];
   let breakType: "RESISTANCE" | "SUPPORT";
 
@@ -626,10 +702,7 @@ export function generateSignal(
 
   debug.push(`15M Stoch: ${stoch15m.k}/${stoch15m.d}`);
 
-  // Check 4H trendline break
   const breakEvent = checkTrendlineBreak(candles4h, relevantLines, breakType);
-
-  // Volume check
   const volConfirmed = isVolumeConfirmed(candles4h);
   debug.push(`Volume: ${volConfirmed ? "CONFIRMED (+20%)" : "weak"}`);
 
@@ -637,67 +710,86 @@ export function generateSignal(
   let confidence = 50;
   let trendlinePrice = 0;
 
-  // ─── EARLY ENTRY (15m Stoch cross in trend direction, BEFORE 4H break) ───
-  // This is the aggressive entry — catches the first wave of the move.
-  // 15m Stoch cross in bias direction while 4H is in pullback zone.
+  const stoch15mCrossUp = prevStoch15m.k <= prevStoch15m.d && stoch15m.k > stoch15m.d;
+  const stoch15mCrossDown = prevStoch15m.k >= prevStoch15m.d && stoch15m.k < stoch15m.d;
+  const stoch15mAlignsLong = stoch15m.k > stoch15m.d && stoch15m.k < 80;
+  const stoch15mAlignsShort = stoch15m.k < stoch15m.d && stoch15m.k > 20;
+
   if (biasDirection === "LONG") {
-    const stoch15mCrossUp = prevStoch15m.k <= prevStoch15m.d && stoch15m.k > stoch15m.d;
-    const stoch15mNotOverbought = stoch15m.k < 70;
-    const stoch15mAligns = stoch15m.k > stoch15m.d;
-
-    // Early entry: 15m cross up while 4H is still in pullback (not broken yet)
-    if ((stoch15mCrossUp || stoch15mAligns) && stoch15mNotOverbought && !breakEvent.broken) {
-      entryType = "EARLY";
-      confidence = 65;
-      if (volConfirmed) confidence += 5;
-      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
-      debug.push(`EARLY LONG: 15m Stoch cross up (${stoch15m.k}), 4H in pullback zone, awaiting 4H break`);
+    // === TIER 1: DEEP PULLBACK ===
+    if (pullback.tier === "DEEP") {
+      if (stoch15mAlignsLong || stoch15mCrossUp) {
+        entryType = "RETEST";
+        confidence = 85;
+        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
+        debug.push(`DEEP PULLBACK LONG: 4H Stoch ${stoch4h.k} extreme oversold + 15m aligns`);
+      }
     }
-  } else {
-    const stoch15mCrossDown = prevStoch15m.k >= prevStoch15m.d && stoch15m.k < stoch15m.d;
-    const stoch15mNotOversold = stoch15m.k > 30;
-    const stoch15mAligns = stoch15m.k < stoch15m.d;
 
-    if ((stoch15mCrossDown || stoch15mAligns) && stoch15mNotOversold && !breakEvent.broken) {
-      entryType = "EARLY";
-      confidence = 65;
-      if (volConfirmed) confidence += 5;
-      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
-      debug.push(`EARLY SHORT: 15m Stoch cross down (${stoch15m.k}), 4H in pullback zone, awaiting 4H break`);
+    // === TIER 2: SHALLOW PULLBACK ===
+    else if (pullback.tier === "SHALLOW") {
+      if (stoch15mCrossUp || stoch15mAlignsLong) {
+        entryType = "BREAKOUT";
+        confidence = 75;
+        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
+        debug.push(`SHALLOW PULLBACK LONG: 4H Stoch ${stoch4h.k} oversold + 15m confirms`);
+      }
+    }
+
+    // === TIER 3: MOMENTUM ===
+    else if (pullback.tier === "MOMENTUM") {
+      if (stoch15mCrossUp) {
+        entryType = "EARLY";
+        confidence = 60;
+        if (isStrongTrend) confidence += 10;
+        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
+        debug.push(`MOMENTUM LONG: 4H Stoch ${stoch4h.k} neutral + 15m cross up${isStrongTrend ? " (strong trend boost)" : ""}`);
+      }
     }
   }
 
-  // ─── BREAKOUT ENTRY (4H trendline break + 15m confirms) ───
-  if (!entryType && breakEvent.broken && breakEvent.line) {
-    const stoch15mAligns = biasDirection === "LONG"
-      ? stoch15m.k > stoch15m.d && stoch15m.k < 80
-      : stoch15m.k < stoch15m.d && stoch15m.k > 20;
+  else if (biasDirection === "SHORT") {
+    // === TIER 1: DEEP PULLBACK ===
+    if (pullback.tier === "DEEP") {
+      if (stoch15mAlignsShort || stoch15mCrossDown) {
+        entryType = "RETEST";
+        confidence = 85;
+        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
+        debug.push(`DEEP PULLBACK SHORT: 4H Stoch ${stoch4h.k} extreme overbought + 15m aligns`);
+      }
+    }
 
+    // === TIER 2: SHALLOW PULLBACK ===
+    else if (pullback.tier === "SHALLOW") {
+      if (stoch15mCrossDown || stoch15mAlignsShort) {
+        entryType = "BREAKOUT";
+        confidence = 75;
+        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
+        debug.push(`SHALLOW PULLBACK SHORT: 4H Stoch ${stoch4h.k} overbought + 15m confirms`);
+      }
+    }
+
+    // === TIER 3: MOMENTUM ===
+    else if (pullback.tier === "MOMENTUM") {
+      if (stoch15mCrossDown) {
+        entryType = "EARLY";
+        confidence = 60;
+        if (isStrongTrend) confidence += 10;
+        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
+        debug.push(`MOMENTUM SHORT: 4H Stoch ${stoch4h.k} neutral + 15m cross down${isStrongTrend ? " (strong trend boost)" : ""}`);
+      }
+    }
+  }
+
+  // ─── TRENDLINE BREAK BONUS ───
+  if (!entryType && breakEvent.broken && breakEvent.line) {
+    const stoch15mAligns = biasDirection === "LONG" ? stoch15mAlignsLong : stoch15mAlignsShort;
     if (stoch15mAligns) {
       entryType = "BREAKOUT";
       confidence = 80;
       if (volConfirmed) confidence += 5;
       trendlinePrice = getTrendlinePrice(breakEvent.line, candles4h.length - 1);
       debug.push(`BREAKOUT ${biasDirection}: 4H ${breakEvent.line.type} broken, 15m confirms`);
-    } else {
-      debug.push(`4H break detected but 15m not aligned — waiting`);
-    }
-  }
-
-  // ─── RETEST ENTRY (best entry — price back at broken trendline + 15m confirms) ───
-  if (!entryType && breakEvent.broken && breakEvent.line) {
-    const linePrice = getTrendlinePrice(breakEvent.line, candles4h.length - 1);
-    const distToLine = Math.abs(price - linePrice) / linePrice;
-    const stoch15mAligns = biasDirection === "LONG"
-      ? stoch15m.k > stoch15m.d && stoch15m.k < 70
-      : stoch15m.k < stoch15m.d && stoch15m.k > 30;
-
-    if (distToLine < 0.008 && stoch15mAligns) {
-      entryType = "RETEST";
-      confidence = 85;
-      if (volConfirmed) confidence += 5;
-      trendlinePrice = linePrice;
-      debug.push(`RETEST ${biasDirection}: Price at broken trendline, 15m confirms`);
     }
   }
 
@@ -706,7 +798,7 @@ export function generateSignal(
     return { debug };
   }
 
-  // ─── CALCULATE STOP AND TARGET ───
+  // ─── CALCULATE STOP AND TARGET (Tier-Adjusted) ───
   const swingLow = Math.min(...candles4h.slice(-20).map(c => c.low));
   const swingHigh = Math.max(...candles4h.slice(-20).map(c => c.high));
   const atr4h = atr(candles4h, 14);
@@ -715,14 +807,14 @@ export function generateSignal(
   let stop: number;
   let target: number;
 
+  const atrMultiplier = pullback.tier === "DEEP" ? 2.0 : pullback.tier === "SHALLOW" ? 1.5 : 1.0;
+
   if (biasDirection === "LONG") {
-    // Stop below recent swing low or ATR-based
-    stop = Math.min(swingLow * 0.998, entry - atr4h * 1.5);
-    // Target: measured move or ATR-based expansion
+    stop = Math.min(swingLow * 0.998, entry - atr4h * atrMultiplier);
     const breakToEntry = entry - trendlinePrice;
     target = Math.max(entry + breakToEntry * 2, entry + atr4h * 3, swingHigh);
   } else {
-    stop = Math.max(swingHigh * 1.002, entry + atr4h * 1.5);
+    stop = Math.max(swingHigh * 1.002, entry + atr4h * atrMultiplier);
     const breakToEntry = trendlinePrice - entry;
     target = Math.min(entry - breakToEntry * 2, entry - atr4h * 3, swingLow);
   }
@@ -731,23 +823,23 @@ export function generateSignal(
   const reward = Math.abs(target - entry);
   const rr = risk > 0 ? reward / risk : 0;
 
-  if (rr < 1.0) {
-    debug.push(`R:R ${rr.toFixed(2)} < 1.0 — skip`);
+  const minRR = pullback.tier === "DEEP" ? 1.0 : pullback.tier === "SHALLOW" ? 1.5 : 2.0;
+  if (rr < minRR) {
+    debug.push(`R:R ${rr.toFixed(2)} < ${minRR} (min for ${pullback.tier} tier) — skip`);
     return { debug };
   }
 
-  // Confidence boosters
+  // ─── CONFIDENCE & POSITION SIZING ───
   confidence += Math.min(10, trend.strength / 10);
   if (breakEvent.broken) confidence += 5;
   if (trend.adx !== null && trend.adx >= 25) confidence += 5;
   if (trend.adx !== null && trend.adx >= 30) confidence += 5;
   confidence = Math.min(95, Math.round(confidence));
 
-  // Position sizing
-  let positionSizePct = 0.04; // 4% default
-  if (entryType === "RETEST") positionSizePct = 0.06; // 6% on best entry
-  else if (entryType === "BREAKOUT") positionSizePct = 0.05; // 5% on confirmation
-  else if (entryType === "EARLY") positionSizePct = 0.03; // 3% on early
+  let positionSizePct = 0.03;
+  if (pullback.tier === "DEEP") positionSizePct = 0.06;
+  else if (pullback.tier === "SHALLOW") positionSizePct = 0.05;
+  else if (pullback.tier === "MOMENTUM") positionSizePct = 0.03;
 
   const signal: Signal = {
     id: `${pair}_${now}`,
@@ -764,7 +856,7 @@ export function generateSignal(
     volumeConfirmed: volConfirmed,
     type: "ACCUMULATE",
     scale: entryType === "RETEST" ? "ENTRY_1" : entryType === "BREAKOUT" ? "ENTRY_2" : "ENTRY_1",
-    entryTier: entryType === "EARLY" ? "EARLY_ENTRY" : "CONFIRMED_ENTRY",
+    entryTier: pullback.tier === "DEEP" ? "CONFIRMED_ENTRY" : pullback.tier === "SHALLOW" ? "CONFIRMED_ENTRY" : "EARLY_ENTRY",
     entryMode: entryType === "EARLY" ? "PULLBACK" : entryType === "RETEST" ? "RETEST" : "BREAKOUT",
     positionSizePct,
     regimeDirection: biasDirection,
@@ -789,7 +881,7 @@ export function generateSignal(
 
   setHysteresis(pair, entry, now);
 
-  debug.push(`SIGNAL: ${entryType} ${biasDirection} ${pair} @ ${entry.toFixed(2)}, SL ${stop.toFixed(2)}, TP ${target.toFixed(2)}, RR ${rr.toFixed(2)}, Conf ${confidence}%, ADX ${trend.adx?.toFixed(1) || "N/A"}${volConfirmed ? ", VOL+" : ""}`);
+  debug.push(`SIGNAL: ${pullback.tier} ${entryType} ${biasDirection} ${pair} @ ${entry.toFixed(2)}, SL ${stop.toFixed(2)}, TP ${target.toFixed(2)}, RR ${rr.toFixed(2)}, Conf ${confidence}%, Size ${(positionSizePct*100).toFixed(0)}%, ADX ${trend.adx?.toFixed(1) || "N/A"}${volConfirmed ? ", VOL+" : ""}`);
 
   return { signal, debug };
 }
@@ -834,16 +926,6 @@ function isInExhaustionZone(
 // ============================================================
 // EXIT LOGIC — Trend-Following with Profit Protection
 // ============================================================
-// Primary exits:
-// 1. Stop Loss
-// 2. Target Hit
-// 3. Persistent 4H structure failure (against 1D bias)
-// 4. 1D regime flip (master bias changes)
-// 5. Profit protection trailing stop
-//
-// A trade should survive normal pullbacks.
-// Goal: capturing trend expansion, not scalping.
-// ============================================================
 
 export function shouldHold(
   signal: Signal,
@@ -866,7 +948,6 @@ export function shouldHold(
     lastDecisionTimestamp: signal.timestamp,
   };
 
-  // Update highest/lowest tracking
   const newHighest = Math.max(ts.highestPrice, currentPrice);
   const newLowest = Math.min(ts.lowestPrice, currentPrice);
   const currentR = signal.direction === "LONG"
@@ -897,36 +978,28 @@ export function shouldHold(
     return { shouldHold: false, reason: "target_hit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
   }
 
-  // 3. 1D Regime Flip — master bias changes against our position
-  // This is the MOST IMPORTANT exit. If 1D flips, the trend is over.
+  // 3. 1D Regime Flip
   if (candles1d && candles1d.length >= 25) {
     const structure1d = analyzeStructure(candles1d);
     if (structure1d.direction && structure1d.direction !== signal.direction) {
-      // 1D has flipped against our trade. Exit immediately.
       const hoursInTrade = (now - signal.timestamp) / (60 * 60 * 1000);
-      // If we're deep in profit, give it more room (could be a deep pullback)
       if (currentR < 2 || hoursInTrade < 24) {
         return { shouldHold: false, reason: "1d_regime_flip", updatedTradeState: { ...updatedState, phase: "EXIT" } };
       }
-      // If we're up 2R+ and 1D flips, maybe take profit but don't panic
-      // Actually no — if 1D flipped, the trend is over. Exit.
       return { shouldHold: false, reason: "1d_regime_flip_profit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
     }
   }
 
-  // 4. Persistent 4H structure failure (against 1D bias)
-  // 4H structure failing against our 1D bias = the pullback became a reversal
+  // 4. Persistent 4H structure failure
   if (candles4h && candles4h.length >= 50) {
     const structure4h = analyzeStructure(candles4h);
     const closes4h = candles4h.map(c => c.close);
     const e21 = ema(closes4h, 21);
 
     if (structure4h.direction && structure4h.direction !== signal.direction) {
-      // 4H has flipped against our 1D bias. This is a warning.
       const hoursInTrade = (now - signal.timestamp) / (60 * 60 * 1000);
 
       if (hoursInTrade > 4) {
-        // Check if price is beyond key EMA (against our direction)
         if (e21.length > 0) {
           const ema21Price = e21[e21.length - 1];
           if (signal.direction === "LONG" && currentPrice < ema21Price * 0.99) {
@@ -941,9 +1014,6 @@ export function shouldHold(
   }
 
   // 5. Profit Protection Trailing Stop
-  // Move stop to breakeven at +1R
-  // Trail at 50% of gains after +2R
-  // Trail at 70% of gains after +3R
   let newLockedStop = ts.lockedStop;
   let newProfitLockLevel = ts.profitLockLevel;
   let newPhase: TradeLifecyclePhase = ts.phase;
@@ -970,7 +1040,6 @@ export function shouldHold(
     newPhase = "BUILDING";
   }
 
-  // Check if profit protection stop hit
   if (newLockedStop) {
     if (signal.direction === "LONG" && currentPrice <= newLockedStop) {
       return { shouldHold: false, reason: `profit_protection_${newProfitLockLevel}R`, updatedTradeState: { ...updatedState, phase: "EXIT", lockedStop: newLockedStop, profitLockLevel: newProfitLockLevel } };
@@ -980,7 +1049,6 @@ export function shouldHold(
     }
   }
 
-  // Update phase based on R multiple
   if (currentR >= 2 && newPhase === "BUILDING") newPhase = "TREND";
   if (currentR >= 1 && newPhase === "ENTRY") newPhase = "BUILDING";
 
@@ -1045,7 +1113,6 @@ export function getMarketSnapshot(
 ) {
   const price = currentPrice ?? candles4h[candles4h.length - 1]?.close ?? 0;
 
-  // v37 Option B: 1D = master bias, 4H = execution
   const trend = detectTrend(candles1d, candles4h);
 
   const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50 };
@@ -1068,7 +1135,6 @@ export function getMarketSnapshot(
       currentPrice: getTrendlinePrice(l, candles4h.length - 1),
     }));
 
-  // Check breaks for readiness
   const biasDirection = trend.direction;
   const longBreak = biasDirection === "LONG"
     ? checkTrendlineBreak(candles4h, resistanceLines, "RESISTANCE")
@@ -1077,12 +1143,10 @@ export function getMarketSnapshot(
     ? checkTrendlineBreak(candles4h, supportLines, "SUPPORT")
     : { broken: false };
 
-  // Pullback status
   const closes4h = candles4h.map(c => c.close);
   const prevStoch4h = stochRsi(closes4h.slice(0, -1));
-  const pullback = biasDirection ? checkPullback(biasDirection, stoch4h, prevStoch4h) : { pullbackActive: false, reason: "No bias" };
+  const pullback = biasDirection ? checkPullbackAdaptive(biasDirection, stoch4h, prevStoch4h, trend.adx, (trend.adx !== null && trend.adx >= 25) && trend.strength >= 80) : { pullbackActive: false, reason: "No bias", tier: null, stochZone: "NEUTRAL" };
 
-  // v37 backward compat fields
   const t1h = detectTrendCompat(candles1h);
   const t4h = detectTrendCompat(candles4h);
   const t1d = detectTrendCompat(candles1d);
@@ -1120,14 +1184,16 @@ export function getMarketSnapshot(
     }
   }
 
-  // Readiness calculation (v37 Option B)
+  // v37.1 readiness: include pullback tier
   let readiness = 0;
-  if (biasDirection) readiness += 25; // Valid 1D bias
+  if (biasDirection) readiness += 25;
   if (trend.strength >= 50) readiness += 15;
-  if (pullback.pullbackActive) readiness += 25; // Pullback timing
-  else if (stoch4h.k < 50 && biasDirection === "LONG") readiness += 10; // In pullback zone
-  else if (stoch4h.k > 50 && biasDirection === "SHORT") readiness += 10;
-  if (longBreak.broken || shortBreak.broken) readiness += 20; // Trendline break
+  if (pullback.pullbackActive) {
+    if (pullback.tier === "DEEP") readiness += 30;
+    else if (pullback.tier === "SHALLOW") readiness += 20;
+    else if (pullback.tier === "MOMENTUM") readiness += 10;
+  }
+  if (longBreak.broken || shortBreak.broken) readiness += 20;
   if (adxVal >= 25) readiness += 10;
   if (volConfirmed) readiness += 5;
   if (signalResult?.signal) readiness += 15;
@@ -1143,24 +1209,23 @@ export function getMarketSnapshot(
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
-    // v37 fields
     bias: trend.direction ? { direction: trend.direction, strength: trend.strength } : null,
     stoch4h,
     stoch1h,
     stoch15m,
     volumeConfirmed: volConfirmed,
     trendlines: activeTrendlines,
-    // Trend-following info
     trendDirection: trend.direction,
     trendStrength: trend.strength,
     isPullback: pullback.pullbackActive,
+    pullbackTier: pullback.tier,
     pullbackReason: pullback.reason,
+    stochZone: pullback.stochZone,
     readiness,
     readinessLabel,
     readinessColor,
     adx: Math.round(adxVal * 10) / 10,
     trendStrengthLabel,
-    // Backward compat
     trend: trend.direction ? `${trend.direction} ${trend.strength > 50 ? "STRONG" : "MEDIUM"}` : "NONE",
     regime: {
       direction: trend.direction,
@@ -1184,7 +1249,7 @@ export function getMarketSnapshot(
     recommendedAction: signalResult?.signal ? `${signalResult.signal.direction} ${signalResult.signal.entryType}` : null,
     entryTier: signalResult?.signal ? (signalResult.signal.entryType === "RETEST" ? "CONFIRMED_ENTRY" : "EARLY_ENTRY") : null,
     entryMode: signalResult?.signal ? (signalResult.signal.entryType === "EARLY" ? "PULLBACK" : "BREAKOUT") : null,
-    positionSize: signalResult?.signal ? (signalResult.signal.entryType === "RETEST" ? "FULL" : "STARTER") : null,
+    positionSize: signalResult?.signal ? (signalResult.signal.positionSizePct ? (signalResult.signal.positionSizePct * 100).toFixed(0) + "%" : null) : null,
     signal: signalResult?.signal || null,
     summary: {
       status: signalResult?.signal ? "READY" : "WATCH",
@@ -1200,17 +1265,11 @@ export function getMarketSnapshot(
 // TREND DETECTION COMPAT (helper for snapshot)
 // ============================================================
 
-// ============================================================
-// TREND DETECTION COMPAT (helper for snapshot)
-// Uses analyzeStructure for consistency with signal generation logic
-// ============================================================
-
 function detectTrendCompat(candles: Candle[]) {
   if (candles.length < 25) return { direction: null as "LONG" | "SHORT" | null, strength: "WEAK" };
 
   const structure = analyzeStructure(candles);
   if (!structure.direction) {
-    // Fallback to EMA if structure is unclear
     const closes = candles.map(c => c.close);
     const e8 = ema(closes, 8), e21 = ema(closes, 21);
     if (!e8.length || !e21.length) return { direction: null as "LONG" | "SHORT" | null, strength: "WEAK" };
@@ -1221,6 +1280,7 @@ function detectTrendCompat(candles: Candle[]) {
   const strength = structure.strength >= 60 ? "STRONG" : structure.strength >= 30 ? "MEDIUM" : "WEAK";
   return { direction: structure.direction, strength };
 }
+
 // ============================================================
 // COMPAT / LEGACY
 // ============================================================
