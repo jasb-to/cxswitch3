@@ -6,7 +6,8 @@ import {
   getMarketSnapshot,
   aggregateTo1D,
   Signal,
-} from "@/lib/strategy_v36";
+  SignalResult,
+} from "@/lib/strategy";
 import { getCandles, getCurrentPrice, krakenPairFormat } from "@/lib/kraken";
 import { sendAlert, sendExitAlert, alertError } from "@/lib/telegram";
 import {
@@ -70,7 +71,7 @@ export async function GET(req: NextRequest) {
   }
 
   const currentPrices: Record<string, number> = {};
-  const signalResults: Record<string, { signal?: Signal; debug: string[] }> = {};
+  const signalResults: Record<string, SignalResult> = {};
   const marketSnapshots = [];
 
   for (const pair of PAIRS) {
@@ -115,9 +116,11 @@ export async function GET(req: NextRequest) {
 
       if (activeForPair.length > 0) {
         for (const signal of activeForPair) {
-          const holdResult = shouldHold(signal, candles1h, candles4h, price);
+          // v36 signature: shouldHold(signal, candles4h, candles1d, candles1h, price)
+          const holdResult = shouldHold(signal, candles4h, candles1d, candles1h, price);
+          const ts = holdResult.updatedTradeState || { phase: "TREND" };
 
-          console.log(`[CRON] ${pair} | shouldHold: ${holdResult.shouldHold} | ${holdResult.reason}`);
+          console.log(`[CRON] ${pair} | shouldHold: ${holdResult.shouldHold} | ${holdResult.reason} | phase: ${ts.phase}`);
 
           if (!holdResult.shouldHold) {
             const rawPnl = signal.direction === "LONG"
@@ -128,9 +131,10 @@ export async function GET(req: NextRequest) {
 
             try { await sendExitAlert(signal, price, holdResult.reason); } catch (e) {}
             signal.exited = true;
-            signal.exitReason = holdResult.reason;
-            signal.exitPrice = price;
-            signal.exitTimestamp = now;
+            if (signal.tradeState) {
+              signal.tradeState.phase = "EXIT";
+              signal.tradeState.phaseEnteredAt = now;
+            }
 
             results[pair] = {
               status: "EXITED",
@@ -138,7 +142,8 @@ export async function GET(req: NextRequest) {
               price,
               signalId: signal.id,
               pnl: pnlStr,
-              entryType: signal.entryType,
+              phase: ts.phase,
+              entryType: signal.entryType || signal.entryMode || "ENTRY",
             };
           } else {
             const rawPnl = signal.direction === "LONG"
@@ -146,13 +151,14 @@ export async function GET(req: NextRequest) {
               : ((signal.entry - price) / signal.entry * 100);
             const pnl = (isFinite(rawPnl) ? rawPnl.toFixed(2) : "0.00") + "%";
 
-            console.log(`[CRON] ${pair} | HOLDING | ${pnl} | ${signal.entryType}`);
+            console.log(`[CRON] ${pair} | HOLDING | ${ts.phase} | ${pnl}`);
 
             results[pair] = {
               status: "HOLDING",
+              phase: ts.phase,
               pnl,
               signalId: signal.id,
-              entryType: signal.entryType,
+              entryType: signal.entryType || signal.entryMode || "ENTRY",
               entry: signal.entry,
               stop: signal.stop,
               target: signal.target,
@@ -161,12 +167,13 @@ export async function GET(req: NextRequest) {
         }
       } else {
         console.log(`[CRON] ${pair} | No active trades — evaluating`);
-        const result = generateSignal(pair, candles15m, candles1h, candles4h, candles1d, activeSignals, price);
+        const result = generateSignal(pair, candles1h, candles4h, candles1d, activeSignals, price);
 
-        // Ensure result is valid
-        const safeResult: { signal?: Signal; debug: string[] } = {
+        // NULL-SAFE: Ensure result is valid before storing
+        const safeResult: SignalResult = {
           signal: result?.signal,
           debug: Array.isArray(result?.debug) ? result.debug : [],
+          market: result?.market,
         };
         signalResults[pair] = safeResult;
 
@@ -177,7 +184,9 @@ export async function GET(req: NextRequest) {
         if (safeResult.signal) {
           const signal = safeResult.signal;
           activeSignals.push(signal);
-          console.log(`[CRON] ${pair} | SIGNAL | ${signal.direction} ${signal.entryType} | Entry:$${signal.entry.toFixed(2)} | RR:${((signal.target - signal.entry) / (signal.entry - signal.stop)).toFixed(2)} | Conf:${signal.confidence}%`);
+
+          const rr = signal.rr || ((signal.target - signal.entry) / (signal.entry - signal.stop));
+          console.log(`[CRON] ${pair} | SIGNAL | ${signal.direction} ${signal.entryType || signal.entryMode} | Entry:$${signal.entry.toFixed(2)} | RR:${sf(rr, 2)} | Conf:${signal.confidence}%`);
 
           try { await sendAlert(signal); } catch (e) {}
 
@@ -188,8 +197,8 @@ export async function GET(req: NextRequest) {
             entry: signal.entry,
             stop: signal.stop,
             target: signal.target,
-            rr: (signal.target - signal.entry) / (signal.entry - signal.stop),
-            entryType: signal.entryType,
+            rr: sf(rr, 2),
+            entryType: signal.entryType || signal.entryMode || "ENTRY",
             volumeConfirmed: signal.volumeConfirmed,
           };
         } else {
@@ -199,22 +208,38 @@ export async function GET(req: NextRequest) {
       }
 
       // ─── SNAPSHOT ───
-      // FIX: Ensure signalResults[pair] exists before passing
-      const snapshotInput = signalResults[pair] || { signal: undefined, debug: [] };
-      const snapshot = getMarketSnapshot(pair, candles15m, candles1h, candles4h, candles1d, price, snapshotInput);
+      // NULL-SAFE: Ensure signalResults[pair] exists
+      const snapshotInput = signalResults[pair] || { debug: [] };
+      const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m, candles1d, price, snapshotInput);
 
       if (results[pair]?.status === "HOLDING" && activeForPair.length > 0) {
         const activeSignal = activeForPair[0];
+        const ts = activeSignal.tradeState || { phase: "TREND", profitLockLevel: 0, lockedStop: null, currentR: 0 };
         snapshot.activeTrade = {
           signalId: results[pair].signalId,
           direction: activeSignal.direction,
+          phase: ts.phase,
           pnl: results[pair].pnl,
+          lockedStop: ts.lockedStop,
+          profitLockLevel: ts.profitLockLevel,
           entry: activeSignal.entry,
           stop: activeSignal.stop,
           target: activeSignal.target,
-          entryType: activeSignal.entryType,
+          entryTier: activeSignal.entryTier,
+          entryMode: activeSignal.entryMode || activeSignal.entryType,
+          positionSizePct: activeSignal.positionSizePct,
+          maxProfit: "0%",
+          maxDrawdown: "0%",
+          currentR: ts.currentR?.toFixed(2) || "0.00",
           trendlinePrice: activeSignal.trendlinePrice,
         };
+        snapshot.regime.direction = activeSignal.direction;
+        snapshot.regime.strength = "ACTIVE";
+        snapshot.regime.confidence = activeSignal.confidence;
+        snapshot.recommendedAction = activeSignal.direction + " " + (ts.phase || "TREND");
+        snapshot.entryTier = activeSignal.entryTier;
+        snapshot.entryMode = activeSignal.entryMode || activeSignal.entryType;
+        snapshot.positionSize = activeSignal.positionSizePct ? (activeSignal.positionSizePct * 100).toFixed(0) + "%" : null;
       }
 
       marketSnapshots.push(snapshot);
@@ -237,9 +262,10 @@ export async function GET(req: NextRequest) {
           const price = currentPrices[signal.pair] || signal.entry;
           try { await sendExitAlert(signal, price, reason); } catch (e) {}
           signal.exited = true;
-          signal.exitReason = reason;
-          signal.exitPrice = price;
-          signal.exitTimestamp = now;
+          if (signal.tradeState) {
+            signal.tradeState.phase = "EXIT";
+            signal.tradeState.phaseEnteredAt = now;
+          }
         }
       }
     }
@@ -271,9 +297,9 @@ export async function GET(req: NextRequest) {
   console.log("[CRON] FINISHED | Active trades: " + activeTrades.length);
   for (const pair of PAIRS) {
     const r = results[pair];
-    if (r?.status === "HOLDING") console.log(`[CRON]   📊 ${pair} | HOLDING | ${r.pnl} | ${r.entryType}`);
+    if (r?.status === "HOLDING") console.log(`[CRON]   📊 ${pair} | HOLDING | ${r.phase} | ${r.pnl} | ${r.entryType}`);
     else if (r?.status === "SIGNAL") console.log(`[CRON]   🔔 ${pair} | SIGNAL | ${r.direction} ${r.entryType} | Entry:$${r.entry.toFixed(2)}`);
-    else if (r?.status === "EXITED") console.log(`[CRON]   🚪 ${pair} | EXITED | ${r.reason} | ${r.pnl} | ${r.entryType}`);
+    else if (r?.status === "EXITED") console.log(`[CRON]   🚪 ${pair} | EXITED | ${r.reason} | ${r.pnl} | ${r.entryType} | ${r.phase}`);
     else if (r?.status === "NO_SIGNAL") console.log(`[CRON]   ⏸️ ${pair} | NO SIGNAL`);
     else if (r?.status === "ERROR") console.log(`[CRON]   ❌ ${pair} | ERROR: ${r.error}`);
   }
@@ -291,4 +317,9 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   return GET(req);
+}
+
+function sf(v: any, d: number): string {
+  const n = Number(v);
+  return isFinite(n) ? n.toFixed(d) : "0";
 }
