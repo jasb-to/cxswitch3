@@ -23,6 +23,7 @@ export const dynamic = "force-dynamic";
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
 const CRON_SECRET = process.env.CRON_SECRET;
 const EXITED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const PENDING_EXIT_TIMEOUT_MS = 30 * 60 * 1000; // 30 min auto-exit if no response
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -47,23 +48,24 @@ export async function GET(req: NextRequest) {
   try { activeSignals = await loadActiveSignals(); } catch (e) { errors.push("loadActiveSignals: " + e); }
   if (!Array.isArray(activeSignals)) activeSignals = [];
 
-  // v37: Check for duplicate active signals per pair
+  // v37.2: Check for duplicate active signals per pair
   const pairCounts = new Map<string, number>();
   for (const s of activeSignals) {
-    if (!s.exited) {
+    if (!s.exited && s.status !== "PENDING_EXIT") {
       pairCounts.set(s.pair, (pairCounts.get(s.pair) || 0) + 1);
     }
   }
   for (const [pair, count] of pairCounts) {
     if (count > 1) {
       console.error(`[CRON] STATE CORRUPTION: ${pair} has ${count} active signals. Keeping most recent.`);
-      const pairSignals = activeSignals.filter(s => s.pair === pair && !s.exited);
+      const pairSignals = activeSignals.filter(s => s.pair === pair && !s.exited && s.status !== "PENDING_EXIT");
       pairSignals.sort((a, b) => b.timestamp - a.timestamp);
       for (let i = 1; i < pairSignals.length; i++) {
         pairSignals[i].exited = true;
+        pairSignals[i].status = "EXITED";
         if (pairSignals[i].tradeState) {
-          pairSignals[i].tradeState.phase = "EXIT";
-          pairSignals[i].tradeState.phaseEnteredAt = now;
+          pairSignals[i].tradeState!.phase = "EXIT";
+          pairSignals[i].tradeState!.phaseEnteredAt = now;
         }
       }
     }
@@ -111,11 +113,51 @@ export async function GET(req: NextRequest) {
       console.log(`[CRON] ${pair} | $${price.toFixed(2)} | 1H:${candles1h.length} 4H:${candles4h.length} 15m:${candles15m.length} 1D:${candles1d.length}`);
 
       // ─── MANAGE EXISTING TRADES ───
-      const activeForPair = activeSignals.filter(s => s.pair === pair && !s.exited);
+      const activeForPair = activeSignals.filter(s => s.pair === pair && !s.exited && s.status !== "PENDING_EXIT");
+      const pendingForPair = activeSignals.filter(s => s.pair === pair && s.status === "PENDING_EXIT");
+
+      // Handle pending exits (auto-exit after timeout)
+      for (const signal of pendingForPair) {
+        if (signal.exitRecommendedAt && (now - signal.exitRecommendedAt) > PENDING_EXIT_TIMEOUT_MS) {
+          console.log(`[CRON] ${pair} | AUTO-EXIT | Pending exit timed out (${Math.round((now - signal.exitRecommendedAt!) / 60000)}min)`);
+          signal.exited = true;
+          signal.status = "EXITED";
+          if (signal.tradeState) {
+            signal.tradeState.phase = "EXIT";
+            signal.tradeState.phaseEnteredAt = now;
+          }
+          const rawPnl = signal.direction === "LONG"
+            ? ((price - signal.entry) / signal.entry * 100)
+            : ((signal.entry - price) / signal.entry * 100);
+          const pnlStr = (isFinite(rawPnl) ? rawPnl.toFixed(2) : "0.00") + "%";
+          try { await sendExitAlert(signal, price, "auto_exit_timeout"); } catch (e) {}
+          results[pair] = {
+            status: "EXITED",
+            reason: "auto_exit_timeout",
+            price,
+            signalId: signal.id,
+            pnl: pnlStr,
+            phase: "EXIT",
+          };
+        } else {
+          // Still pending — skip evaluation for this pair
+          console.log(`[CRON] ${pair} | PENDING_EXIT | waiting for user confirmation (${Math.round((PENDING_EXIT_TIMEOUT_MS - (now - signal.exitRecommendedAt!)) / 60000)}min left)`);
+          results[pair] = {
+            status: "PENDING_EXIT",
+            reason: signal.exitReason,
+            price,
+            signalId: signal.id,
+          };
+          continue;
+        }
+      }
 
       if (activeForPair.length > 0) {
         for (const signal of activeForPair) {
-          // v37: Pass all timeframes for trend-following exits
+          // v37.2 debug: trace hoursInTrade for 4h_structure_failure
+          const hoursInTrade = (now - signal.timestamp) / (60 * 60 * 1000);
+          console.log(`[CRON] ${pair} | hoursInTrade: ${hoursInTrade.toFixed(2)} | timestamp: ${signal.timestamp} | now: ${now}`);
+
           const holdResult = shouldHold(signal, candles4h, candles1d, candles1h, price);
           const ts = holdResult.updatedTradeState || signal.tradeState;
 
@@ -130,17 +172,18 @@ export async function GET(req: NextRequest) {
               ? ((price - signal.entry) / signal.entry * 100)
               : ((signal.entry - price) / signal.entry * 100);
             const pnlStr = (isFinite(rawPnl) ? rawPnl.toFixed(2) : "0.00") + "%";
-            console.log(`[CRON] ${pair} | EXITING | ${holdResult.reason} | ${pnlStr}`);
+            console.log(`[CRON] ${pair} | EXIT RECOMMENDED | ${holdResult.reason} | ${pnlStr}`);
+
+            // v37.2: Set to PENDING_EXIT instead of exiting immediately
+            signal.status = "PENDING_EXIT";
+            signal.exitReason = holdResult.reason;
+            signal.exitRecommendedAt = now;
+            signal.exitRecommendedPrice = price;
 
             try { await sendExitAlert(signal, price, holdResult.reason); } catch (e) {}
-            signal.exited = true;
-            if (signal.tradeState) {
-              signal.tradeState.phase = "EXIT";
-              signal.tradeState.phaseEnteredAt = now;
-            }
 
             results[pair] = {
-              status: "EXITED",
+              status: "PENDING_EXIT",
               reason: holdResult.reason,
               price,
               signalId: signal.id,
@@ -164,44 +207,38 @@ export async function GET(req: NextRequest) {
             };
           }
         }
-      } else {
-        const allForPair = activeSignals.filter(s => s.pair === pair && !s.exited);
-        if (allForPair.length > 0) {
-          console.warn(`[CRON] ${pair} | SIGNAL BLOCKED: ${allForPair.length} active trade(s) already exist`);
-          results[pair] = { status: "BLOCKED", reason: "active_trade_exists", signalId: allForPair[0].id };
-        } else {
-          console.log(`[CRON] ${pair} | No active trades — evaluating`);
-          // v37: Pass candles15m for 15m execution timing
-          const result = generateSignal(pair, candles1h, candles4h, candles1d, candles15m, activeSignals, price);
-          signalResults[pair] = result || { debug: [] };
+      } else if (pendingForPair.length === 0) {
+        // Only evaluate new signals if no pending exit
+        console.log(`[CRON] ${pair} | No active trades — evaluating`);
+        const result = generateSignal(pair, candles1h, candles4h, candles1d, candles15m, activeSignals, price);
+        signalResults[pair] = result || { debug: [] };
 
-          if (result?.debug?.length) console.log(`[CRON] ${pair} | Debug: ${result.debug.join(" | ")}`);
+        if (result?.debug?.length) console.log(`[CRON] ${pair} | Debug: ${result.debug.join(" | ")}`);
 
-          if (result?.signal) {
-            const signal = result.signal;
-            activeSignals.push(signal);
-            const rr = signal.rr || ((signal.target - signal.entry) / (signal.entry - signal.stop));
-            console.log(`[CRON] ${pair} | SIGNAL | ${signal.direction} ${signal.entryType || signal.entryMode} | Entry:$${signal.entry.toFixed(2)} | RR:${rr.toFixed(2)} | Conf:${signal.confidence}%`);
+        if (result?.signal) {
+          const signal = result.signal;
+          activeSignals.push(signal);
+          const rr = signal.rr || ((signal.target - signal.entry) / (signal.entry - signal.stop));
+          console.log(`[CRON] ${pair} | SIGNAL | ${signal.direction} ${signal.entryType || signal.entryMode} | Entry:$${signal.entry.toFixed(2)} | RR:${rr.toFixed(2)} | Conf:${signal.confidence}%`);
 
-            if (signal.entryTier !== "NO_TRADE") {
-              try { await sendAlert(signal); } catch (e) {}
-            }
-
-            results[pair] = {
-              status: "SIGNAL",
-              direction: signal.direction,
-              confidence: signal.confidence,
-              entry: signal.entry,
-              stop: signal.stop,
-              target: signal.target,
-              rr: rr.toFixed(2),
-              entryType: signal.entryType || signal.entryMode,
-              volumeConfirmed: signal.volumeConfirmed,
-            };
-          } else {
-            console.log(`[CRON] ${pair} | NO SIGNAL`);
-            results[pair] = { status: "NO_SIGNAL" };
+          if (signal.entryTier !== "NO_TRADE") {
+            try { await sendAlert(signal); } catch (e) {}
           }
+
+          results[pair] = {
+            status: "SIGNAL",
+            direction: signal.direction,
+            confidence: signal.confidence,
+            entry: signal.entry,
+            stop: signal.stop,
+            target: signal.target,
+            rr: rr.toFixed(2),
+            entryType: signal.entryType || signal.entryMode,
+            volumeConfirmed: signal.volumeConfirmed,
+          };
+        } else {
+          console.log(`[CRON] ${pair} | NO SIGNAL`);
+          results[pair] = { status: "NO_SIGNAL" };
         }
       }
 
@@ -239,6 +276,10 @@ export async function GET(req: NextRequest) {
           maxDrawdown: "0%",
           currentR: ts.currentR?.toFixed(2) || "0.00",
           trendlinePrice: activeSignal.trendlinePrice,
+          // v37.2: Add exit recommendation info
+          exitRecommended: false,
+          exitReason: null,
+          exitRecommendedAt: null,
         };
         snapshot.regime.direction = activeSignal.direction;
         snapshot.regime.strength = "ACTIVE";
@@ -247,6 +288,51 @@ export async function GET(req: NextRequest) {
         snapshot.entryTier = activeSignal.entryTier;
         snapshot.entryMode = activeSignal.entryMode || activeSignal.entryType;
         snapshot.positionSize = activeSignal.positionSizePct ? (activeSignal.positionSizePct * 100).toFixed(0) + "%" : null;
+      }
+
+      if (results[pair]?.status === "PENDING_EXIT" && pendingForPair.length > 0) {
+        const pendingSignal = pendingForPair[0];
+        const ts = pendingSignal.tradeState || {
+          phase: "EXIT",
+          profitLockLevel: 0,
+          lockedStop: null,
+          currentR: 0,
+          highestPrice: pendingSignal.entry,
+          lowestPrice: pendingSignal.entry,
+          entryPrice: pendingSignal.entry,
+          entryTimestamp: pendingSignal.timestamp,
+          lastDecisionTimestamp: Date.now(),
+          phaseEnteredAt: pendingSignal.timestamp,
+        };
+        snapshot.activeTrade = {
+          signalId: results[pair].signalId,
+          direction: pendingSignal.direction,
+          phase: "EXIT_RECOMMENDED",
+          pnl: results[pair].pnl,
+          lockedStop: ts.lockedStop,
+          profitLockLevel: ts.profitLockLevel,
+          entry: pendingSignal.entry,
+          stop: pendingSignal.stop,
+          target: pendingSignal.target,
+          entryTier: pendingSignal.entryTier,
+          entryMode: pendingSignal.entryMode || pendingSignal.entryType,
+          positionSizePct: pendingSignal.positionSizePct,
+          maxProfit: "0%",
+          maxDrawdown: "0%",
+          currentR: ts.currentR?.toFixed(2) || "0.00",
+          trendlinePrice: pendingSignal.trendlinePrice,
+          // v37.2: Exit recommendation info
+          exitRecommended: true,
+          exitReason: pendingSignal.exitReason,
+          exitRecommendedAt: pendingSignal.exitRecommendedAt,
+        };
+        snapshot.regime.direction = pendingSignal.direction;
+        snapshot.regime.strength = "PENDING_EXIT";
+        snapshot.regime.confidence = pendingSignal.confidence;
+        snapshot.recommendedAction = "EXIT RECOMMENDED — Confirm or Override";
+        snapshot.entryTier = pendingSignal.entryTier;
+        snapshot.entryMode = pendingSignal.entryMode || pendingSignal.entryType;
+        snapshot.positionSize = pendingSignal.positionSizePct ? (pendingSignal.positionSizePct * 100).toFixed(0) + "%" : null;
       }
 
       marketSnapshots.push(snapshot);
@@ -269,6 +355,7 @@ export async function GET(req: NextRequest) {
           const price = currentPrices[signal.pair] || signal.entry;
           try { await sendExitAlert(signal, price, reason); } catch (e) {}
           signal.exited = true;
+          signal.status = "EXITED";
           if (signal.tradeState) {
             signal.tradeState.phase = "EXIT";
             signal.tradeState.phaseEnteredAt = now;
@@ -293,18 +380,21 @@ export async function GET(req: NextRequest) {
     timestamp: now,
     iso: new Date(now).toISOString(),
     markets: marketSnapshots,
-    activeSignals: cleaned.filter(s => !s.exited),
+    activeSignals: cleaned.filter(s => !s.exited && s.status !== "PENDING_EXIT"),
+    pendingExits: cleaned.filter(s => s.status === "PENDING_EXIT"),
     errors: errors.length > 0 ? errors : undefined,
   };
 
   try { await saveDashboardSnapshot(dashboardSnapshot); } catch (e) { errors.push("save snapshot: " + e); }
 
   // ─── SUMMARY ───
-  const activeTrades = cleaned.filter(s => !s.exited);
-  console.log("[CRON] FINISHED | Active trades: " + activeTrades.length);
+  const activeTrades = cleaned.filter(s => !s.exited && s.status !== "PENDING_EXIT");
+  const pendingExits = cleaned.filter(s => s.status === "PENDING_EXIT");
+  console.log("[CRON] FINISHED | Active trades: " + activeTrades.length + " | Pending exits: " + pendingExits.length);
   for (const pair of PAIRS) {
     const r = results[pair];
     if (r?.status === "HOLDING") console.log(`[CRON]   📊 ${pair} | HOLDING | ${r.phase} | ${r.pnl}`);
+    else if (r?.status === "PENDING_EXIT") console.log(`[CRON]   ⏳ ${pair} | PENDING EXIT | ${r.reason} | ${r.pnl}`);
     else if (r?.status === "SIGNAL") console.log(`[CRON]   🔔 ${pair} | SIGNAL | ${r.direction} | Entry:$${r.entry.toFixed(2)} | ${r.entryType}`);
     else if (r?.status === "EXITED") console.log(`[CRON]   🚪 ${pair} | EXITED | ${r.reason} | ${r.pnl} | ${r.phase}`);
     else if (r?.status === "BLOCKED") console.log(`[CRON]   🛡️ ${pair} | BLOCKED | ${r.reason}`);
@@ -318,6 +408,7 @@ export async function GET(req: NextRequest) {
     iso: new Date(now).toISOString(),
     results,
     activeTrades: activeTrades.length,
+    pendingExits: pendingExits.length,
     prunedExited: pruned || undefined,
     errors: errors.length > 0 ? errors : undefined,
   });
