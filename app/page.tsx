@@ -2,14 +2,6 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 
-interface TrendlineInfo {
-  type: "SUPPORT" | "RESISTANCE";
-  startPrice: number;
-  endPrice: number;
-  touches: number;
-  currentPrice: number;
-}
-
 interface ActiveTradeInfo {
   signalId: string;
   direction: "LONG" | "SHORT";
@@ -30,7 +22,6 @@ interface MarketSnapshot {
   stoch4h: { k: number; d: number };
   stoch1h: { k: number; d: number };
   stoch15m: { k: number; d: number };
-  trendlines: TrendlineInfo[];
   signal?: {
     direction: string;
     entryType: string;
@@ -41,14 +32,15 @@ interface MarketSnapshot {
     rr: number;
   } | null;
   activeTrade?: ActiveTradeInfo;
-  // v36.3 new fields
+  // v36.3 fields
   trendDirection: string | null;
-  counterDirection: string | null;
+  trendStrengthLabel: string;
+  trend1d: { direction: string | null; strength: string } | null;
+  trend4h: { direction: string | null; strength: string } | null;
   isExhausted: boolean;
   exhaustionReason: string;
   readiness: number;
   readinessLabel: string;
-  readinessColor: string;
   adx: number | null;
   // Debug / Structure
   debug: string[];
@@ -67,6 +59,14 @@ function dirColor(dir: string | null | undefined): string {
   return "text-gray-400";
 }
 
+function dirBg(dir: string | null | undefined): string {
+  if (!dir) return "bg-gray-800/30";
+  const d = String(dir).toUpperCase();
+  if (d === "LONG") return "bg-green-500/10 border-green-500/20";
+  if (d === "SHORT") return "bg-red-500/10 border-red-500/20";
+  return "bg-gray-800/30";
+}
+
 function stochColor(k: number, d: number): string {
   if (k > 80 && d > 70) return "text-red-400 font-bold";
   if (k < 20 && d < 30) return "text-green-400 font-bold";
@@ -80,7 +80,8 @@ function stochBg(k: number): string {
   return "bg-gray-800/30 border-gray-700/20";
 }
 
-function readinessBarColors(score: number): { bg: string; text: string; bar: string } {
+function readinessBarColors(score: number, hasTrade: boolean): { bg: string; text: string; bar: string } {
+  if (hasTrade) return { bg: "bg-blue-500/10", text: "text-blue-400", bar: "bg-blue-500" };
   if (score >= 80) return { bg: "bg-green-500/10", text: "text-green-400", bar: "bg-green-500" };
   if (score >= 60) return { bg: "bg-amber-500/10", text: "text-amber-400", bar: "bg-amber-500" };
   if (score >= 40) return { bg: "bg-blue-500/10", text: "text-blue-400", bar: "bg-blue-500" };
@@ -94,17 +95,43 @@ function entryTypeBadge(type: string): { label: string; className: string } {
   return { label: "ENTRY", className: "bg-gray-700/50 text-gray-400 border-gray-600/30" };
 }
 
-function ReadinessBar({ score, label }: { score: number; label: string }) {
-  const colors = readinessBarColors(score);
+function TrendBadge({ direction, strength, label }: { direction: string | null; strength: string; label: string }) {
+  if (!direction) {
+    return (
+      <div className="p-2.5 bg-gray-800/30 rounded-lg text-center border border-gray-700/20">
+        <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">{label}</div>
+        <div className="text-sm font-bold text-gray-500">NONE</div>
+      </div>
+    );
+  }
+  const isLong = direction.toUpperCase() === "LONG";
   return (
-    <div className={`p-3 rounded-lg border ${colors.bg} ${label === "READY" ? "border-green-500/30" : "border-gray-700/30"}`}>
+    <div className={`p-2.5 rounded-lg text-center border ${isLong ? "bg-green-500/5 border-green-500/15" : "bg-red-500/5 border-red-500/15"}`}>
+      <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">{label}</div>
+      <div className={`text-sm font-bold ${dirColor(direction)}`}>
+        {direction}
+      </div>
+      <div className={`text-[10px] mt-0.5 ${strength === "STRONG" ? "text-green-400 font-semibold" : strength === "MEDIUM" ? "text-amber-400" : "text-gray-500"}`}>
+        {strength}
+      </div>
+    </div>
+  );
+}
+
+function ReadinessBar({ score, label, hasTrade, tradeDirection }: { score: number; label: string; hasTrade: boolean; tradeDirection?: string }) {
+  const colors = readinessBarColors(score, hasTrade);
+  const displayLabel = hasTrade ? (tradeDirection || "ACTIVE") : label;
+  return (
+    <div className={`p-3 rounded-lg border ${colors.bg} ${hasTrade ? "border-blue-500/30" : "border-gray-700/30"}`}>
       <div className="flex items-center justify-between mb-2">
-        <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Readiness</span>
-        <span className={`text-sm font-bold ${colors.text}`}>{label} ({score})</span>
+        <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">{hasTrade ? "Trade Status" : "Readiness"}</span>
+        <span className={`text-sm font-bold ${colors.text}`}>{displayLabel} {hasTrade ? "" : `(${score})`}</span>
       </div>
-      <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden">
-        <div className={`h-full ${colors.bar} rounded-full transition-all duration-500`} style={{ width: `${score}%` }} />
-      </div>
+      {!hasTrade && (
+        <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden">
+          <div className={`h-full ${colors.bar} rounded-full transition-all duration-500`} style={{ width: `${score}%` }} />
+        </div>
+      )}
     </div>
   );
 }
@@ -123,12 +150,15 @@ function StructurePanel({ debug }: { debug: string[] }) {
     d.includes("Volume:") ||
     d.includes("Readiness:") ||
     d.includes("exhaustion") ||
-    d.includes("blocked")
+    d.includes("blocked") ||
+    d.includes("SIGNAL:")
   );
+
+  if (structureLines.length === 0) return null;
 
   return (
     <div className="mb-4 p-3 bg-gray-800/40 rounded-lg border border-gray-700/30">
-      <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-2">Market Structure</div>
+      <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-2">Structure</div>
       <div className="space-y-1">
         {structureLines.map((line, i) => {
           let color = "text-gray-400";
@@ -138,6 +168,7 @@ function StructurePanel({ debug }: { debug: string[] }) {
           if (line.includes("Readiness:")) color = "text-blue-400";
           if (line.includes("exhaustion") || line.includes("blocked")) color = "text-orange-400";
           if (line.includes("CONFIRMED")) color = "text-green-400";
+          if (line.includes("SIGNAL:")) color = "text-green-400 font-bold";
           return (
             <div key={i} className={`text-xs ${color}`}>{line}</div>
           );
@@ -148,16 +179,25 @@ function StructurePanel({ debug }: { debug: string[] }) {
 }
 
 function MarketCard({ snap }: { snap: MarketSnapshot }) {
-  const bias = snap.bias;
   const hasSignal = !!snap.signal;
   const hasTrade = !!snap.activeTrade;
-  const colors = readinessBarColors(snap.readiness ?? 0);
+  const colors = readinessBarColors(snap.readiness ?? 0, hasTrade);
 
-  const statusBadge = hasTrade
-    ? { label: "ACTIVE", className: "bg-blue-500/20 text-blue-400 border-blue-500/30" }
-    : hasSignal
-    ? entryTypeBadge(snap.signal!.entryType)
-    : { label: snap.readinessLabel || "WATCH", className: `${colors.bg} ${colors.text} border-gray-600/30` };
+  // Status badge
+  let statusBadge;
+  if (hasTrade) {
+    const dir = snap.activeTrade!.direction;
+    statusBadge = {
+      label: dir,
+      className: dir === "LONG" 
+        ? "bg-green-500/20 text-green-400 border-green-500/30" 
+        : "bg-red-500/20 text-red-400 border-red-500/30"
+    };
+  } else if (hasSignal) {
+    statusBadge = entryTypeBadge(snap.signal!.entryType);
+  } else {
+    statusBadge = { label: snap.readinessLabel || "WATCH", className: `${colors.bg} ${colors.text} border-gray-600/30` };
+  }
 
   // Get debug lines safely
   const debugLines: string[] = snap.debug || snap.summary?.debug || [];
@@ -177,23 +217,26 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </span>
       </div>
 
-      {/* READINESS BAR */}
-      <ReadinessBar score={snap.readiness ?? 0} label={snap.readinessLabel ?? "NO TRADE"} />
+      {/* READINESS / TRADE STATUS BAR */}
+      <ReadinessBar 
+        score={snap.readiness ?? 0} 
+        label={snap.readinessLabel ?? "NO TRADE"} 
+        hasTrade={hasTrade}
+        tradeDirection={snap.activeTrade?.direction}
+      />
 
-      {/* TREND / FADE TO */}
+      {/* TREND GRID: 1D and 4H */}
       <div className="mt-4 grid grid-cols-2 gap-2">
-        <div className="p-2.5 bg-gray-800/30 rounded-lg text-center border border-gray-700/20">
-          <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">Trend</div>
-          <div className={`text-sm font-bold ${dirColor(snap.trendDirection)}`}>
-            {snap.trendDirection || "NONE"}
-          </div>
-        </div>
-        <div className="p-2.5 bg-gray-800/30 rounded-lg text-center border border-gray-700/20">
-          <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">Fade To</div>
-          <div className={`text-sm font-bold ${dirColor(snap.counterDirection)}`}>
-            {snap.counterDirection || "NONE"}
-          </div>
-        </div>
+        <TrendBadge 
+          direction={snap.trend1d?.direction || null} 
+          strength={snap.trend1d?.strength || "WEAK"} 
+          label="1D Trend" 
+        />
+        <TrendBadge 
+          direction={snap.trend4h?.direction || null} 
+          strength={snap.trend4h?.strength || "WEAK"} 
+          label="4H Trend" 
+        />
       </div>
 
       {/* ADX */}
@@ -244,25 +287,8 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
       {/* STRUCTURE PANEL — Visible by default */}
       <StructurePanel debug={debugLines} />
 
-      {/* TRENDLINES (compact) */}
-      {snap.trendlines && snap.trendlines.length > 0 && (
-        <div className="mb-4">
-          <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-2">Active Trendlines</div>
-          <div className="space-y-1">
-            {snap.trendlines.map((tl, i) => (
-              <div key={i} className="flex justify-between text-xs">
-                <span className={tl.type === "RESISTANCE" ? "text-red-400" : "text-green-400"}>
-                  {tl.type} ({tl.touches}t)
-                </span>
-                <span className="font-mono text-gray-400">${tl.currentPrice.toFixed(2)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* SIGNAL SETUP */}
-      {snap.signal && (
+      {snap.signal && !hasTrade && (
         <div className="mb-4 p-4 bg-gray-800/50 rounded-lg border border-gray-700/50">
           <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-3">Trade Setup</div>
           <div className="space-y-2">
@@ -298,13 +324,18 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </div>
       )}
 
-      {/* ACTIVE TRADE */}
+      {/* ACTIVE TRADE — Prominent direction display */}
       {snap.activeTrade && (
-        <div className="mb-4 p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+        <div className={`mb-4 p-4 rounded-lg border ${snap.activeTrade.direction === "LONG" ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"}`}>
           <div className="flex items-center justify-between mb-3">
-            <span className="text-xs uppercase text-blue-400 font-bold tracking-wider">
-              Active Trade — {snap.activeTrade.entryType}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className={`text-xs uppercase font-bold tracking-wider px-2 py-1 rounded ${snap.activeTrade.direction === "LONG" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+                {snap.activeTrade.direction}
+              </span>
+              <span className="text-xs text-gray-500">
+                {snap.activeTrade.entryType}
+              </span>
+            </div>
             <span className={`text-lg font-mono font-bold ${snap.activeTrade.pnl.startsWith("-") ? "text-red-400" : "text-green-400"}`}>
               {snap.activeTrade.pnl}
             </span>
@@ -313,7 +344,7 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
             <div><span className="text-gray-500">Entry:</span> <span className="font-mono text-gray-200">${snap.activeTrade.entry.toFixed(2)}</span></div>
             <div><span className="text-gray-500">Stop:</span> <span className="font-mono text-red-400">${snap.activeTrade.stop.toFixed(2)}</span></div>
             <div><span className="text-gray-500">Target:</span> <span className="font-mono text-green-400">${snap.activeTrade.target.toFixed(2)}</span></div>
-            <div><span className="text-gray-500">Trendline:</span> <span className="font-mono text-amber-400">${snap.activeTrade.trendlinePrice?.toFixed(2) || "—"}</span></div>
+            <div><span className="text-gray-500">TL:</span> <span className="font-mono text-amber-400">${snap.activeTrade.trendlinePrice?.toFixed(2) || "—"}</span></div>
           </div>
         </div>
       )}
