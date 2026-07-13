@@ -93,23 +93,17 @@ export async function sendAlert(signal: any): Promise<boolean> {
   const label = getEntryLabel(signal.entryType, signal.entryTier);
   const size = getPositionSize(signal.entryType, signal.entryTier, signal.scale);
 
-  const text = emoji + " " + label + " — " + pair + "
+  const text = `${emoji} ${label} — ${pair}
 
-" +
-    "Direction: " + direction + "
-" +
-    "Confidence: " + sf(confidence, 0) + "%
+Direction: ${direction}
+Confidence: ${sf(confidence, 0)}%
 
-" +
-    "Position:
-" + size + "
+Position:
+${size}
 
-" +
-    "Entry: " + entry + " | Stop: " + stop + " | Target: " + target + "
-" +
-    "RR " + rr + " | SL " + slPct + "% | TP " + tpPct + "%
-" +
-    "id=" + signal.id;
+Entry: ${entry} | Stop: ${stop} | Target: ${target}
+RR ${rr} | SL ${slPct}% | TP ${tpPct}%
+id=${signal.id}`;
 
   return sendMessage(text);
 }
@@ -128,18 +122,13 @@ export async function sendExitAlert(signal: any, exitPrice: number, reason: stri
   const emoji = pnl >= 0 ? "🟢" : "🔴";
   const entryType = signal.entryType || signal.entryMode || "ENTRY";
 
-  const text = emoji + " EXIT — " + signal.pair + " " + signal.direction + "
+  const text = `${emoji} EXIT — ${signal.pair} ${signal.direction}
 
-" +
-    "P&L: " + sign + sf(pnl, 2) + "%
-" +
-    "Entry: " + sf(signal.entry, 2) + " | Exit: " + sf(exitPrice, 2) + "
-" +
-    "Reason: " + reason + "
-" +
-    "Type: " + entryType + "
-" +
-    "id=" + signal.id;
+P&L: ${sign}${sf(pnl, 2)}%
+Entry: ${sf(signal.entry, 2)} | Exit: ${sf(exitPrice, 2)}
+Reason: ${reason}
+Type: ${entryType}
+id=${signal.id}`;
 
   return sendMessage(text);
 }
@@ -159,7 +148,7 @@ export async function alertStatus(signals: any[], prices: Record<string, number>
     const sign = pnl >= 0 ? "+" : "";
     const emoji = pnl >= 0 ? "🟢" : "🔴";
     const entryType = s.entryType || s.entryMode || "OPEN";
-    return emoji + " " + s.pair + " " + s.direction + " | " + entryType + " | " + sign + sf(pnl, 2) + "%";
+    return `${emoji} ${s.pair} ${s.direction} | ${entryType} | ${sign}${sf(pnl, 2)}%`;
   });
 
   return sendMessage("CXSwitch v37 Active Signals | " + lines.join(" | "));
