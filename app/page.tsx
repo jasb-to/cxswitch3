@@ -122,24 +122,26 @@ function ReadinessBar({ score, label, hasTrade }: { score: number; label: string
 function StructurePanel({ debug, hasSignal, hasTrade }: { debug: string[]; hasSignal: boolean; hasTrade: boolean }) {
   if (!debug || debug.length === 0) return null;
 
-  // Filter out lines that duplicate trade info or are too verbose
+  // v37: Filter for trend-following debug lines
   const structureLines = debug.filter(d => {
     // Skip SIGNAL lines (duplicates trade setup)
     if (d.includes("SIGNAL:")) return false;
-    // Skip volume/vol+ lines (shown elsewhere)
+    // Skip volume lines (shown elsewhere)
     if (d === "Volume: CONFIRMED (+20%)" || d === "Volume: weak") return false;
-    // Keep structure, trend, bias, ADX, stoch, exhaustion info
-    return d.includes("Structure:") || 
-           d.includes("EMA") || 
-           d.includes("BIAS:") || 
+    // Keep trend, pullback, structure, ADX, stoch info
+    return d.includes("Structure:") ||
+           d.includes("EMA") ||
            d.includes("TREND:") ||
-           d.includes("COUNTER BIAS:") ||
+           d.includes("PULLBACK:") ||
+           d.includes("pullback") ||
            d.includes("ADX:") ||
            d.includes("Stoch:") ||
            d.includes("Readiness:") ||
-           d.includes("exhaustion") ||
+           d.includes("trendline") ||
            d.includes("blocked") ||
-           d.includes("waiting");
+           d.includes("waiting") ||
+           d.includes("aligned") ||
+           d.includes("cross");
   });
 
   if (structureLines.length === 0) return null;
@@ -152,10 +154,11 @@ function StructurePanel({ debug, hasSignal, hasTrade }: { debug: string[]; hasSi
           let color = "text-gray-400";
           if (line.includes("LONG")) color = "text-green-400";
           if (line.includes("SHORT")) color = "text-red-400";
-          if (line.includes("COUNTER BIAS:")) color = "text-amber-400 font-semibold";
+          if (line.includes("PULLBACK:")) color = "text-amber-400 font-semibold";
           if (line.includes("Readiness:")) color = "text-blue-400";
-          if (line.includes("exhaustion") || line.includes("blocked")) color = "text-orange-400";
+          if (line.includes("blocked")) color = "text-orange-400";
           if (line.includes("CONFIRMED")) color = "text-green-400";
+          if (line.includes("aligned")) color = "text-green-400";
           return <div key={i} className={`text-xs ${color}`}>{line}</div>;
         })}
       </div>
@@ -174,8 +177,8 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
     const dir = snap.activeTrade!.direction;
     statusBadge = {
       label: dir,
-      className: dir === "LONG" 
-        ? "bg-green-500/20 text-green-400 border-green-500/30" 
+      className: dir === "LONG"
+        ? "bg-green-500/20 text-green-400 border-green-500/30"
         : "bg-red-500/20 text-red-400 border-red-500/30"
     };
   } else if (hasSignal) {
@@ -384,9 +387,9 @@ export default function Dashboard() {
       <div className="max-w-6xl mx-auto">
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">CXSwitch v36.3</h1>
+            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">CXSwitch v37</h1>
             <p className="text-gray-500 text-sm mt-1">
-              Trendline Break + Exhaustion Filter | Active: {activeTrades}
+              Trend-Following | Trendline Break + Pullback Entry | Active: {activeTrades}
             </p>
             <p className="text-gray-600 text-xs">
               Last updated: {lastUpdate || "—"}
@@ -438,7 +441,7 @@ export default function Dashboard() {
 
         <div className="mt-8 pt-4 border-t border-gray-800 text-center">
           <p className="text-xs text-gray-600">
-            CXSwitch v36.3 — Trendline Break + Counter-Trend Exhaustion Filter | 4H Break → 15M Entry
+            CXSwitch v37 — Trend-Following | 1D/4H Bias → 4H Pullback → 15M Entry → Trendline Break
           </p>
         </div>
       </div>
