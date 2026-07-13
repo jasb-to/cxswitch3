@@ -987,6 +987,7 @@ export function getMarketSnapshot(
     readinessLabel,
     readinessColor,
     adx: Math.round(adxVal * 10) / 10,
+    trendStrengthLabel,
     // v35 backward compat
     trend: bias.direction ? `${bias.direction} ${bias.strength > 50 ? "STRONG" : "MEDIUM"}` : "NONE",
     regime: {
