@@ -1,15 +1,11 @@
 // ============================================================
-// CXSwitch v36.1 — Complete Drop-In Replacement for strategy.ts
+// CXSwitch v36.3 — Trendline Break + Counter-Trend Exhaustion Filter
 // 
-// REPLACES your existing @/lib/strategy file. All imports stay the same.
-// 
-// What's new:
-// 1. True trendline break detection (pivot-based, ATR-tolerant)
-// 2. Volume confirmation on entries (+20% above average)
-// 3. 1H StochRSI exits (no more 4H structure break churn)
-// 4. Three entry types: EARLY, BREAKOUT, RETEST
-// 5. Hysteresis exhaustion protection
-// 6. Null-safe everywhere (fixes p.find errors)
+// Core: Trendline breaks on 4H (resistance/support)
+// Filter: Only take breaks when market is at Stoch extremes
+//   - LONG trend + overbought → look for SHORT on resistance break
+//   - SHORT trend + oversold → look for LONG on support break
+//   - 15M entry timing
 // ============================================================
 
 export interface Candle {
@@ -21,7 +17,6 @@ export interface Candle {
   volume: number;
 }
 
-// v36 Signal shape — backward compatible with v35 fields
 export interface Signal {
   id: string;
   pair: string;
@@ -35,11 +30,9 @@ export interface Signal {
   exitReason?: string;
   exitPrice?: number;
   exitTimestamp?: number;
-  // v36 fields
   entryType?: "EARLY" | "BREAKOUT" | "RETEST";
   trendlinePrice?: number;
   volumeConfirmed?: boolean;
-  // v35 backward compat fields (kept for existing state data)
   type?: "ACCUMULATE" | "BREAKOUT";
   scale?: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
   entryTier?: string;
@@ -398,13 +391,16 @@ function analyzeStructure(candles: Candle[]): {
 }
 
 // ============================================================
-// BIAS DETECTION
+// COUNTER-TREND BIAS DETECTION
+// ============================================================
+// Detects the TREND, returns the OPPOSITE direction
+// We want to fade the trend at extremes
 // ============================================================
 
 function detectBias(
   candles1d: Candle[],
   candles4h: Candle[]
-): { direction: "LONG" | "SHORT" | null; strength: number; debug: string[] } {
+): { direction: "LONG" | "SHORT" | null; strength: number; adx: number | null; debug: string[] } {
   const debug: string[] = [];
 
   const structure1d = analyzeStructure(candles1d);
@@ -418,37 +414,84 @@ function detectBias(
   const e21 = ema(closes4h, 21);
   const e50 = ema(closes4h, 50);
 
-  let emaBias: "LONG" | "SHORT" | null = null;
+  let emaTrend: "LONG" | "SHORT" | null = null;
   if (e8.length && e21.length && e50.length) {
     const c0 = closes4h[closes4h.length - 1];
     const e8_0 = e8[e8.length - 1];
     const e21_0 = e21[e21.length - 1];
     const e50_0 = e50[e50.length - 1];
 
-    if (c0 > e8_0 && e8_0 > e21_0 && e21_0 > e50_0) emaBias = "LONG";
-    else if (c0 < e8_0 && e8_0 < e21_0 && e21_0 < e50_0) emaBias = "SHORT";
-    else if (e8_0 > e21_0) emaBias = "LONG";
-    else if (e8_0 < e21_0) emaBias = "SHORT";
+    if (c0 > e8_0 && e8_0 > e21_0 && e21_0 > e50_0) emaTrend = "LONG";
+    else if (c0 < e8_0 && e8_0 < e21_0 && e21_0 < e50_0) emaTrend = "SHORT";
+    else if (e8_0 > e21_0) emaTrend = "LONG";
+    else if (e8_0 < e21_0) emaTrend = "SHORT";
   }
-  debug.push(`4H EMA Bias: ${emaBias || "NONE"}`);
+  debug.push(`4H EMA Trend: ${emaTrend || "NONE"}`);
 
-  const votes = [structure1d.direction, structure4h.direction, emaBias].filter(Boolean);
+  const adxVal = adx(candles4h);
+  debug.push(`4H ADX: ${adxVal !== null ? adxVal.toFixed(1) : "N/A"}`);
+
+  const votes = [structure1d.direction, structure4h.direction, emaTrend].filter(Boolean);
   const longVotes = votes.filter(v => v === "LONG").length;
   const shortVotes = votes.filter(v => v === "SHORT").length;
 
+  // Determine trend direction
+  let trendDirection: "LONG" | "SHORT" | null = null;
+  let trendStrength = 0;
+
   if (longVotes >= 2) {
-    const strength = Math.round((structure1d.strength + structure4h.strength) / 2);
-    debug.push(`BIAS: LONG (${longVotes}/3 votes)`);
-    return { direction: "LONG", strength, debug };
-  }
-  if (shortVotes >= 2) {
-    const strength = Math.round((structure1d.strength + structure4h.strength) / 2);
-    debug.push(`BIAS: SHORT (${shortVotes}/3 votes)`);
-    return { direction: "SHORT", strength, debug };
+    trendDirection = "LONG";
+    trendStrength = Math.round((structure1d.strength + structure4h.strength) / 2);
+    debug.push(`TREND: LONG (${longVotes}/3 votes) | ADX: ${adxVal?.toFixed(1) || "N/A"}`);
+  } else if (shortVotes >= 2) {
+    trendDirection = "SHORT";
+    trendStrength = Math.round((structure1d.strength + structure4h.strength) / 2);
+    debug.push(`TREND: SHORT (${shortVotes}/3 votes) | ADX: ${adxVal?.toFixed(1) || "N/A"}`);
+  } else {
+    debug.push(`TREND: UNCLEAR (L:${longVotes}, S:${shortVotes}) | ADX: ${adxVal?.toFixed(1) || "N/A"}`);
+    return { direction: null, strength: 0, adx: adxVal, debug };
   }
 
-  debug.push(`BIAS: UNCLEAR (L:${longVotes}, S:${shortVotes})`);
-  return { direction: null, strength: 0, debug };
+  // COUNTER-TREND: return OPPOSITE direction
+  const counterDirection = trendDirection === "LONG" ? "SHORT" : "LONG";
+  debug.push(`COUNTER BIAS: ${counterDirection} (fading ${trendDirection} trend)`);
+
+  return { direction: counterDirection, strength: trendStrength, adx: adxVal, debug };
+}
+
+// ============================================================
+// EXHAUSTION FILTER
+// ============================================================
+// Only allow entries when Stoch is at extremes
+// LONG entry allowed when: 4H Stoch < 35 (oversold after SHORT trend)
+// SHORT entry allowed when: 4H Stoch > 65 (overbought after LONG trend)
+// ============================================================
+
+function checkExhaustion(
+  biasDirection: "LONG" | "SHORT" | null,
+  stoch4h: { k: number; d: number }
+): { allowed: boolean; reason: string } {
+  if (!biasDirection) {
+    return { allowed: false, reason: "No bias — no exhaustion check" };
+  }
+
+  if (biasDirection === "LONG") {
+    // We want LONG entry — need oversold (market dumped)
+    if (stoch4h.k < 35) {
+      return { allowed: true, reason: `LONG exhaustion confirmed (4H Stoch ${stoch4h.k})` };
+    }
+    return { allowed: false, reason: `LONG blocked — not oversold (4H Stoch ${stoch4h.k})` };
+  }
+
+  if (biasDirection === "SHORT") {
+    // We want SHORT entry — need overbought (market pumped)
+    if (stoch4h.k > 65) {
+      return { allowed: true, reason: `SHORT exhaustion confirmed (4H Stoch ${stoch4h.k})` };
+    }
+    return { allowed: false, reason: `SHORT blocked — not overbought (4H Stoch ${stoch4h.k})` };
+  }
+
+  return { allowed: false, reason: "Unknown bias" };
 }
 
 // ============================================================
@@ -501,7 +544,7 @@ function isInExhaustionZone(
 }
 
 // ============================================================
-// ENTRY LOGIC
+// ENTRY LOGIC — Trendline Break + Exhaustion Filter
 // ============================================================
 
 export function generateSignal(
@@ -515,7 +558,6 @@ export function generateSignal(
   const debug: string[] = [];
   const now = Date.now();
 
-  // NULL-SAFE: Ensure activeSignals is an array
   if (!Array.isArray(activeSignals)) {
     console.warn(`[generateSignal] activeSignals is not an array for ${pair}, defaulting to empty`);
     activeSignals = [];
@@ -534,29 +576,47 @@ export function generateSignal(
 
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
 
-  // 1. BIAS
+  // 1. BIAS (counter-trend)
   const bias = detectBias(candles1d, candles4h);
   debug.push(...bias.debug);
 
   if (!bias.direction) {
-    debug.push("No clear bias — waiting");
+    debug.push("No clear trend to fade — waiting");
     return { debug };
   }
 
-  // 2. Check exhaustion zone
+  // 2. STOCH READINGS
+  const closes1h = candles1h.map(c => c.close);
+  const stoch1h = stochRsi(closes1h);
+  debug.push(`1H Stoch: ${stoch1h.k}/${stoch1h.d}`);
+
+  const closes4h = candles4h.map(c => c.close);
+  const stoch4h = stochRsi(closes4h);
+  debug.push(`4H Stoch: ${stoch4h.k}/${stoch4h.d}`);
+
+  // 3. EXHAUSTION FILTER
+  const exhaustion = checkExhaustion(bias.direction, stoch4h);
+  debug.push(exhaustion.reason);
+
+  if (!exhaustion.allowed) {
+    debug.push("Exhaustion filter blocked — waiting for Stoch extreme");
+    return { debug };
+  }
+
+  // 4. Check exhaustion zone (hysteresis)
   if (isInExhaustionZone(pair, price, candles4h, bias.direction)) {
     debug.push("In exhaustion zone — hysteresis lock active");
     return { debug };
   }
 
-  // 3. Build trendlines
+  // 5. Build trendlines
   const pivots4h = findPivots(candles4h, 3, 2);
   const resistanceLines = buildTrendlines(candles4h, pivots4h.highs, "RESISTANCE", 2, 0.3);
   const supportLines = buildTrendlines(candles4h, pivots4h.lows, "SUPPORT", 2, 0.3);
 
   debug.push(`Trendlines: ${resistanceLines.length} resistance, ${supportLines.length} support`);
 
-  // 4. Check for trendline breaks
+  // 6. Check for trendline breaks
   const longBreak = bias.direction === "LONG" 
     ? checkTrendlineBreak(candles4h, resistanceLines, "RESISTANCE")
     : { broken: false };
@@ -566,16 +626,7 @@ export function generateSignal(
 
   const breakEvent = bias.direction === "LONG" ? longBreak : shortBreak;
 
-  // 5. Stoch readings
-  const closes1h = candles1h.map(c => c.close);
-  const stoch1h = stochRsi(closes1h);
-  debug.push(`1H Stoch: ${stoch1h.k}/${stoch1h.d}`);
-
-  const closes4h = candles4h.map(c => c.close);
-  const stoch4h = stochRsi(closes4h);
-  debug.push(`4H Stoch: ${stoch4h.k}/${stoch4h.d}`);
-
-  // 6. Volume check
+  // 7. Volume check
   const volConfirmed = isVolumeConfirmed(candles4h);
   debug.push(`Volume: ${volConfirmed ? "CONFIRMED (+20%)" : "weak"}`);
 
@@ -583,7 +634,7 @@ export function generateSignal(
   let confidence = 50;
   let trendlinePrice = 0;
 
-  // EARLY ENTRY
+  // EARLY ENTRY (deep Stoch extreme without break yet)
   if (bias.direction === "LONG") {
     const is4hOversold = stoch4h.k < 25 && stoch4h.d < 30;
     const is1hTurning = stoch1h.k > stoch1h.d || stoch1h.k < 20;
@@ -593,7 +644,7 @@ export function generateSignal(
       confidence = 70;
       if (volConfirmed) confidence += 10;
       trendlinePrice = resistanceLines[0] ? getTrendlinePrice(resistanceLines[0], candles4h.length - 1) : price * 1.02;
-      debug.push(`EARLY ENTRY: 4H oversold(${stoch4h.k}), 1H turning${volConfirmed ? ", volume confirmed" : ""}`);
+      debug.push(`EARLY LONG: 4H oversold(${stoch4h.k}), 1H turning${volConfirmed ? ", volume confirmed" : ""}`);
     }
   } else {
     const is4hOverbought = stoch4h.k > 75 && stoch4h.d > 70;
@@ -604,17 +655,17 @@ export function generateSignal(
       confidence = 70;
       if (volConfirmed) confidence += 10;
       trendlinePrice = supportLines[0] ? getTrendlinePrice(supportLines[0], candles4h.length - 1) : price * 0.98;
-      debug.push(`EARLY ENTRY: 4H overbought(${stoch4h.k}), 1H turning${volConfirmed ? ", volume confirmed" : ""}`);
+      debug.push(`EARLY SHORT: 4H overbought(${stoch4h.k}), 1H turning${volConfirmed ? ", volume confirmed" : ""}`);
     }
   }
 
-  // BREAKOUT ENTRY
+  // BREAKOUT ENTRY (trendline break + exhaustion confirmed)
   if (!entryType && breakEvent.broken && breakEvent.line) {
     entryType = "BREAKOUT";
     confidence = 80;
     if (volConfirmed) confidence += 5;
     trendlinePrice = getTrendlinePrice(breakEvent.line, candles4h.length - 1);
-    debug.push(`BREAKOUT ENTRY: Trendline ${breakEvent.line.type} broken${volConfirmed ? ", volume confirmed" : ""}`);
+    debug.push(`BREAKOUT ${bias.direction}: Trendline ${breakEvent.line.type} broken${volConfirmed ? ", volume confirmed" : ""}`);
   }
 
   // RETEST ENTRY
@@ -627,7 +678,7 @@ export function generateSignal(
       confidence = 75;
       if (volConfirmed) confidence += 5;
       trendlinePrice = linePrice;
-      debug.push(`RETEST ENTRY: Price at broken trendline${volConfirmed ? ", volume confirmed" : ""}`);
+      debug.push(`RETEST ${bias.direction}: Price at broken trendline${volConfirmed ? ", volume confirmed" : ""}`);
     }
   }
 
@@ -664,6 +715,7 @@ export function generateSignal(
 
   confidence += Math.min(15, bias.strength / 7);
   if (breakEvent.broken) confidence += 10;
+  if (bias.adx !== null && bias.adx >= 25) confidence += 5;
   confidence = Math.min(95, confidence);
 
   const signal: Signal = {
@@ -679,7 +731,6 @@ export function generateSignal(
     entryType,
     trendlinePrice: Math.round(trendlinePrice * 100) / 100,
     volumeConfirmed: volConfirmed,
-    // v35 backward compat
     type: "ACCUMULATE",
     scale: entryType === "RETEST" ? "ADD" : "ENTRY_1",
     entryTier: entryType === "EARLY" ? "EARLY_ENTRY" : "CONFIRMED_ENTRY",
@@ -689,12 +740,13 @@ export function generateSignal(
     conflictEntry: false,
     entryTimeframe: "4H",
     rr: Math.round(rr * 100) / 100,
+    adx: bias.adx !== null ? Math.round(bias.adx * 10) / 10 : undefined,
     version: CURRENT_SIGNAL_VERSION,
   };
 
   setHysteresis(pair, entry, now);
 
-  debug.push(`SIGNAL: ${entryType} ${bias.direction} ${pair} @ ${entry.toFixed(2)}, SL ${stop.toFixed(2)}, TP ${target.toFixed(2)}, RR ${rr.toFixed(2)}, Conf ${confidence}%${volConfirmed ? ", VOL+" : ""}`);
+  debug.push(`SIGNAL: ${entryType} ${bias.direction} ${pair} @ ${entry.toFixed(2)}, SL ${stop.toFixed(2)}, TP ${target.toFixed(2)}, RR ${rr.toFixed(2)}, Conf ${confidence}%, ADX ${bias.adx?.toFixed(1) || "N/A"}${volConfirmed ? ", VOL+" : ""}`);
 
   return { signal, debug };
 }
@@ -849,7 +901,17 @@ export function getMarketSnapshot(
       currentPrice: getTrendlinePrice(l, candles4h.length - 1),
     }));
 
-  // v35 backward compat fields for existing dashboard
+  // Check breaks for readiness
+  const longBreak = bias.direction === "LONG" 
+    ? checkTrendlineBreak(candles4h, resistanceLines, "RESISTANCE")
+    : { broken: false };
+  const shortBreak = bias.direction === "SHORT"
+    ? checkTrendlineBreak(candles4h, supportLines, "SUPPORT")
+    : { broken: false };
+
+  const exhaustion = checkExhaustion(bias.direction, stoch4h);
+
+  // v35 backward compat fields
   const t1h = detectTrend(candles1h);
   const t4h = detectTrend(candles4h);
   const t1d = detectTrend(candles1d);
@@ -860,6 +922,11 @@ export function getMarketSnapshot(
   const distToEMA21 = ema21Price > 0 ? (price - ema21Price) / ema21Price : 0;
 
   const adxVal = adx(candles4h) ?? 0;
+  const rsiVal = wilderRsi(closes4h);
+
+  let trendStrengthLabel = "WEAK";
+  if (adxVal >= 30) trendStrengthLabel = "STRONG";
+  else if (adxVal >= 20) trendStrengthLabel = "MEDIUM";
 
   let phase4h: "EXPANSION" | "EXHAUSTION" | "BUILDING" | "NEUTRAL" = "NEUTRAL";
   if (bias.direction === "LONG") {
@@ -882,11 +949,23 @@ export function getMarketSnapshot(
     }
   }
 
+  // Readiness calculation
   let readiness = 0;
-  if (bias.direction) readiness += 30;
-  if (t4h.direction === bias.direction) readiness += 25;
-  if (adxVal >= 22) readiness += 20;
-  if (signalResult?.signal) readiness += 25;
+  if (bias.direction) readiness += 20;
+  if (exhaustion.allowed) readiness += 30;
+  if (adxVal >= 25) readiness += 20;
+  else if (adxVal >= 20) readiness += 15;
+  else if (adxVal >= 15) readiness += 10;
+  if (longBreak.broken || shortBreak.broken) readiness += 20;
+  if (volConfirmed) readiness += 10;
+  if (signalResult?.signal) readiness += 15;
+  readiness = Math.min(100, readiness);
+
+  let readinessLabel = "NO TRADE";
+  let readinessColor = "text-gray-400";
+  if (readiness >= 80) { readinessLabel = "READY"; readinessColor = "text-green-400"; }
+  else if (readiness >= 60) { readinessLabel = "WARM"; readinessColor = "text-amber-400"; }
+  else if (readiness >= 40) { readinessLabel = "WATCH"; readinessColor = "text-blue-400"; }
 
   return {
     pair,
@@ -899,6 +978,15 @@ export function getMarketSnapshot(
     stoch15m,
     volumeConfirmed: volConfirmed,
     trendlines: activeTrendlines,
+    // Counter-trend info
+    trendDirection: bias.direction ? (bias.direction === "LONG" ? "SHORT" : "LONG") : null,
+    counterDirection: bias.direction,
+    isExhausted: exhaustion.allowed,
+    exhaustionReason: exhaustion.reason,
+    readiness,
+    readinessLabel,
+    readinessColor,
+    adx: Math.round(adxVal * 10) / 10,
     // v35 backward compat
     trend: bias.direction ? `${bias.direction} ${bias.strength > 50 ? "STRONG" : "MEDIUM"}` : "NONE",
     regime: {
@@ -906,8 +994,7 @@ export function getMarketSnapshot(
       strength: bias.strength > 50 ? "STRONG" : "MEDIUM",
       confidence: bias.direction ? (bias.strength > 50 ? 75 : 50) : 0,
     },
-    adx: Math.round(adxVal * 10) / 10,
-    rsi: Math.round((wilderRsi(closes4h) ?? 50) * 10) / 10,
+    rsi: Math.round((rsiVal ?? 50) * 10) / 10,
     stochK: stoch4h.k,
     stochD: stoch4h.d,
     stoch1hK: stoch1h.k,
@@ -917,11 +1004,10 @@ export function getMarketSnapshot(
     trend1h: t1h.direction ? { direction: t1h.direction, strength: t1h.strength } : null,
     trend4h: t4h.direction ? { direction: t4h.direction, strength: t4h.strength } : null,
     trend1d: t1d.direction ? { direction: t1d.direction, strength: t1d.strength } : null,
-    trendStrength: { adx: adxVal, isStrong: adxVal >= 22 },
+    trendStrength: { adx: adxVal, isStrong: adxVal >= 25 },
     phase4h,
     phase1h: phase4h,
     structure15m,
-    readiness,
     recommendedAction: signalResult?.signal ? `${signalResult.signal.direction} ${signalResult.signal.entryType}` : null,
     entryTier: signalResult?.signal ? (signalResult.signal.entryType === "RETEST" ? "CONFIRMED_ENTRY" : "EARLY_ENTRY") : null,
     entryMode: signalResult?.signal ? (signalResult.signal.entryType === "EARLY" ? "PULLBACK" : "BREAKOUT") : null,
@@ -929,9 +1015,10 @@ export function getMarketSnapshot(
     signal: signalResult?.signal || null,
     summary: {
       status: signalResult?.signal ? "READY" : "WATCH",
-      debug: signalResult?.debug || [],
+      debug: signalResult?.debug || bias.debug || [],
     },
     activeTrade: null,
+    debug: signalResult?.debug || bias.debug || [],
     ...signalResult?.market,
   };
 }
