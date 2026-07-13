@@ -43,20 +43,25 @@ export async function GET(req: NextRequest) {
   const errors: string[] = [];
 
   let activeSignals: Signal[] = [];
-  try { activeSignals = await loadActiveSignals(); } catch (e) { errors.push("loadActiveSignals: " + e); }
-  if (!Array.isArray(activeSignals)) activeSignals = [];
+  try {
+    const loaded = await loadActiveSignals();
+    activeSignals = Array.isArray(loaded) ? loaded : [];
+  } catch (e) {
+    errors.push("loadActiveSignals: " + e);
+    activeSignals = [];
+  }
 
   // Check for duplicate active signals per pair
   const pairCounts = new Map<string, number>();
   for (const s of activeSignals) {
-    if (!s.exited) {
+    if (s && !s.exited) {
       pairCounts.set(s.pair, (pairCounts.get(s.pair) || 0) + 1);
     }
   }
   for (const [pair, count] of pairCounts) {
     if (count > 1) {
       console.error(`[CRON] STATE CORRUPTION: ${pair} has ${count} active signals. Keeping most recent.`);
-      const pairSignals = activeSignals.filter(s => s.pair === pair && !s.exited);
+      const pairSignals = activeSignals.filter(s => s && s.pair === pair && !s.exited);
       pairSignals.sort((a, b) => b.timestamp - a.timestamp);
       for (let i = 1; i < pairSignals.length; i++) {
         pairSignals[i].exited = true;
@@ -106,11 +111,10 @@ export async function GET(req: NextRequest) {
       console.log(`[CRON] ${pair} | $${price.toFixed(2)} | 1H:${candles1h.length} 4H:${candles4h.length} 15m:${candles15m.length} 1D:${candles1d.length}`);
 
       // ─── MANAGE EXISTING TRADES ───
-      const activeForPair = activeSignals.filter(s => s.pair === pair && !s.exited);
+      const activeForPair = activeSignals.filter(s => s && s.pair === pair && s.exited === false);
 
       if (activeForPair.length > 0) {
         for (const signal of activeForPair) {
-          // v36: Pass candles1h and candles4h to shouldHold
           const holdResult = shouldHold(signal, candles1h, candles4h, price);
 
           console.log(`[CRON] ${pair} | shouldHold: ${holdResult.shouldHold} | ${holdResult.reason}`);
@@ -158,14 +162,22 @@ export async function GET(req: NextRequest) {
       } else {
         console.log(`[CRON] ${pair} | No active trades — evaluating`);
         const result = generateSignal(pair, candles15m, candles1h, candles4h, candles1d, activeSignals, price);
-        signalResults[pair] = result;
 
-        if (result.debug?.length) console.log(`[CRON] ${pair} | Debug: ${result.debug.join(" | ")}`);
+        // Ensure result is valid
+        const safeResult: { signal?: Signal; debug: string[] } = {
+          signal: result?.signal,
+          debug: Array.isArray(result?.debug) ? result.debug : [],
+        };
+        signalResults[pair] = safeResult;
 
-        if (result.signal) {
-          const signal = result.signal;
+        if (safeResult.debug.length) {
+          console.log(`[CRON] ${pair} | Debug: ${safeResult.debug.join(" | ")}`);
+        }
+
+        if (safeResult.signal) {
+          const signal = safeResult.signal;
           activeSignals.push(signal);
-          console.log(`[CRON] ${pair} | SIGNAL | ${signal.direction} ${signal.entryType} | Entry:$${signal.entry.toFixed(2)} | RR:${signal.rr.toFixed(2)} | Conf:${signal.confidence}%`);
+          console.log(`[CRON] ${pair} | SIGNAL | ${signal.direction} ${signal.entryType} | Entry:$${signal.entry.toFixed(2)} | RR:${((signal.target - signal.entry) / (signal.entry - signal.stop)).toFixed(2)} | Conf:${signal.confidence}%`);
 
           try { await sendAlert(signal); } catch (e) {}
 
@@ -176,8 +188,9 @@ export async function GET(req: NextRequest) {
             entry: signal.entry,
             stop: signal.stop,
             target: signal.target,
-            rr: signal.rr,
+            rr: (signal.target - signal.entry) / (signal.entry - signal.stop),
             entryType: signal.entryType,
+            volumeConfirmed: signal.volumeConfirmed,
           };
         } else {
           console.log(`[CRON] ${pair} | NO SIGNAL`);
@@ -186,7 +199,9 @@ export async function GET(req: NextRequest) {
       }
 
       // ─── SNAPSHOT ───
-      const snapshot = getMarketSnapshot(pair, candles15m, candles1h, candles4h, candles1d, price, signalResults[pair]);
+      // FIX: Ensure signalResults[pair] exists before passing
+      const snapshotInput = signalResults[pair] || { signal: undefined, debug: [] };
+      const snapshot = getMarketSnapshot(pair, candles15m, candles1h, candles4h, candles1d, price, snapshotInput);
 
       if (results[pair]?.status === "HOLDING" && activeForPair.length > 0) {
         const activeSignal = activeForPair[0];
