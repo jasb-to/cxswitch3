@@ -25,7 +25,10 @@ export interface Signal {
   confidence: number;
   timestamp: number;
   exited: boolean;
+  status?: "ACTIVE" | "PENDING_EXIT" | "EXITED";
   exitReason?: string;
+  exitRecommendedAt?: number;
+  exitRecommendedPrice?: number;
   exitPrice?: number;
   exitTimestamp?: number;
   entryType?: "EARLY" | "BREAKOUT" | "RETEST";
