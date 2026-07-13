@@ -1200,19 +1200,27 @@ export function getMarketSnapshot(
 // TREND DETECTION COMPAT (helper for snapshot)
 // ============================================================
 
+// ============================================================
+// TREND DETECTION COMPAT (helper for snapshot)
+// Uses analyzeStructure for consistency with signal generation logic
+// ============================================================
+
 function detectTrendCompat(candles: Candle[]) {
   if (candles.length < 25) return { direction: null as "LONG" | "SHORT" | null, strength: "WEAK" };
-  const closes = candles.map(c => c.close);
-  const e8 = ema(closes, 8), e21 = ema(closes, 21);
-  if (!e8.length || !e21.length) return { direction: null as "LONG" | "SHORT" | null, strength: "WEAK" };
-  const direction = e8[e8.length - 1] > e21[e21.length - 1] ? "LONG" : "SHORT";
-  const highs = candles.slice(-20).map(c => c.high), lows = candles.slice(-20).map(c => c.low);
-  const hh = highs[highs.length - 1] > Math.max(...highs.slice(0, -1));
-  const ll = lows[lows.length - 1] < Math.min(...lows.slice(0, -1));
-  const strength = (direction === "LONG" && hh) || (direction === "SHORT" && ll) ? "STRONG" : "MEDIUM";
-  return { direction, strength };
-}
 
+  const structure = analyzeStructure(candles);
+  if (!structure.direction) {
+    // Fallback to EMA if structure is unclear
+    const closes = candles.map(c => c.close);
+    const e8 = ema(closes, 8), e21 = ema(closes, 21);
+    if (!e8.length || !e21.length) return { direction: null as "LONG" | "SHORT" | null, strength: "WEAK" };
+    const direction = e8[e8.length - 1] > e21[e21.length - 1] ? "LONG" : "SHORT";
+    return { direction, strength: "MEDIUM" as "STRONG" | "MEDIUM" | "WEAK" };
+  }
+
+  const strength = structure.strength >= 60 ? "STRONG" : structure.strength >= 30 ? "MEDIUM" : "WEAK";
+  return { direction: structure.direction, strength };
+}
 // ============================================================
 // COMPAT / LEGACY
 // ============================================================
