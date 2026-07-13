@@ -1,13 +1,13 @@
 // ============================================================
-// CXSwitch v36.0 — Trendline Break + Stoch Momentum System
+// CXSwitch v36.1 — Trendline Break + Stoch Momentum + Volume
 // 
 // RULES:
 // 1. 1D + 4H bias: EMA alignment + HH/HL (LONG) or LL/LH (SHORT)
 // 2. Trendline break: Price closes through validated diagonal S/R
-// 3. 15M entry: Stoch cross + momentum BEFORE break (early) or AFTER (confirmed)
+// 3. 15M entry: Stoch cross + momentum + VOLUME confirmation
 // 4. Add on retest of broken trendline
 // 5. Exit: 1H StochRSI tops/bottoms out
-// 6. Hysteresis: Prevents re-entry in exhaustion zone
+// 6. Hysteresis: Prevents re-entry in exhaustion
 // ============================================================
 
 export interface Candle {
@@ -33,7 +33,8 @@ export interface Signal {
   exitPrice?: number;
   exitTimestamp?: number;
   entryType: "EARLY" | "BREAKOUT" | "RETEST";
-  trendlinePrice: number;  // Price of the broken trendline at entry
+  trendlinePrice: number;
+  volumeConfirmed: boolean;
 }
 
 export interface HoldResult {
@@ -147,7 +148,7 @@ function atr(candles: Candle[], period = 14): number {
 }
 
 // ============================================================
-// PIVOT DETECTION (for trendline construction)
+// PIVOT DETECTION
 // ============================================================
 
 function findPivots(candles: Candle[], leftBars = 3, rightBars = 2): {
@@ -158,12 +159,10 @@ function findPivots(candles: Candle[], leftBars = 3, rightBars = 2): {
   const lows: { index: number; price: number }[] = [];
 
   for (let i = leftBars; i < candles.length - rightBars; i++) {
-    // Pivot High
     const isHigh = candles.slice(i - leftBars, i).every(c => c.high <= candles[i].high) &&
                    candles.slice(i + 1, i + 1 + rightBars).every(c => c.high <= candles[i].high);
     if (isHigh) highs.push({ index: i, price: candles[i].high });
 
-    // Pivot Low
     const isLow = candles.slice(i - leftBars, i).every(c => c.low >= candles[i].low) &&
                   candles.slice(i + 1, i + 1 + rightBars).every(c => c.low >= candles[i].low);
     if (isLow) lows.push({ index: i, price: candles[i].low });
@@ -173,7 +172,7 @@ function findPivots(candles: Candle[], leftBars = 3, rightBars = 2): {
 }
 
 // ============================================================
-// TRENDLINE CONSTRUCTION (from confirmed pivots)
+// TRENDLINE CONSTRUCTION
 // ============================================================
 
 function buildTrendlines(
@@ -187,20 +186,15 @@ function buildTrendlines(
   const tolerance = atrVal * atrTolerance;
   const lines: Trendline[] = [];
 
-  // Try all pivot pairs
   for (let i = 0; i < pivots.length - 1; i++) {
     for (let j = i + 1; j < pivots.length; j++) {
       const p1 = pivots[i];
       const p2 = pivots[j];
-
-      // Slope
       const slope = (p2.price - p1.price) / (p2.index - p1.index);
 
-      // Classic direction check
-      if (type === "RESISTANCE" && slope > 0.001) continue;  // Resistance should slope down or flat
-      if (type === "SUPPORT" && slope < -0.001) continue;    // Support should slope up or flat
+      if (type === "RESISTANCE" && slope > 0.001) continue;
+      if (type === "SUPPORT" && slope < -0.001) continue;
 
-      // Validate: check all candles between pivots
       let touches = 0;
       let valid = true;
 
@@ -209,19 +203,11 @@ function buildTrendlines(
         const actualPrice = type === "RESISTANCE" ? candles[k].high : candles[k].low;
         const closePrice = candles[k].close;
 
-        // For resistance: highs should stay below line + tolerance
-        // For support: lows should stay above line - tolerance
         if (type === "RESISTANCE") {
-          if (closePrice > expectedPrice + tolerance * 2) {
-            valid = false;
-            break;
-          }
+          if (closePrice > expectedPrice + tolerance * 2) { valid = false; break; }
           if (Math.abs(actualPrice - expectedPrice) < tolerance) touches++;
         } else {
-          if (closePrice < expectedPrice - tolerance * 2) {
-            valid = false;
-            break;
-          }
+          if (closePrice < expectedPrice - tolerance * 2) { valid = false; break; }
           if (Math.abs(actualPrice - expectedPrice) < tolerance) touches++;
         }
       }
@@ -242,13 +228,12 @@ function buildTrendlines(
     }
   }
 
-  // Sort by recency and touches, keep best
   lines.sort((a, b) => {
     if (b.touches !== a.touches) return b.touches - a.touches;
     return b.endIndex - a.endIndex;
   });
 
-  return lines.slice(0, 3);  // Keep top 3
+  return lines.slice(0, 3);
 }
 
 // ============================================================
@@ -278,7 +263,6 @@ function checkTrendlineBreak(
     const linePrev = getTrendlinePrice(line, prevIndex);
 
     if (type === "RESISTANCE") {
-      // Break: prev close <= line, current close > line
       if (prev.close <= linePrev && current.close > lineCurrent) {
         line.isBroken = true;
         line.brokenAt = current.timestamp;
@@ -286,7 +270,6 @@ function checkTrendlineBreak(
         return { broken: true, line, breakIndex: currentIndex, breakPrice: current.close };
       }
     } else {
-      // Break: prev close >= line, current close < line
       if (prev.close >= linePrev && current.close < lineCurrent) {
         line.isBroken = true;
         line.brokenAt = current.timestamp;
@@ -318,7 +301,6 @@ function analyzeStructure(candles: Candle[]): {
     return { direction: null, strength: 0, lastHH: null, lastHL: null, lastLH: null, lastLL: null };
   }
 
-  // Count HH/HL vs LL/LH
   let hhCount = 0, hlCount = 0, llCount = 0, lhCount = 0;
 
   for (let i = 1; i < Math.min(highs.length, 5); i++) {
@@ -368,15 +350,12 @@ function detectBias(
 ): { direction: "LONG" | "SHORT" | null; strength: number; debug: string[] } {
   const debug: string[] = [];
 
-  // 1D bias
   const structure1d = analyzeStructure(candles1d);
   debug.push(`1D Structure: ${structure1d.direction || "NONE"} (strength: ${structure1d.strength})`);
 
-  // 4H bias
   const structure4h = analyzeStructure(candles4h);
   debug.push(`4H Structure: ${structure4h.direction || "NONE"} (strength: ${structure4h.strength})`);
 
-  // EMA alignment on 4H
   const closes4h = candles4h.map(c => c.close);
   const e8 = ema(closes4h, 8);
   const e21 = ema(closes4h, 21);
@@ -396,7 +375,6 @@ function detectBias(
   }
   debug.push(`4H EMA Bias: ${emaBias || "NONE"}`);
 
-  // Combine: need 2 of 3 agreeing
   const votes = [structure1d.direction, structure4h.direction, emaBias].filter(Boolean);
   const longVotes = votes.filter(v => v === "LONG").length;
   const shortVotes = votes.filter(v => v === "SHORT").length;
@@ -417,11 +395,23 @@ function detectBias(
 }
 
 // ============================================================
-// HYSTERESIS (prevents exhaustion re-entry)
+// VOLUME CONFIRMATION
+// ============================================================
+
+function isVolumeConfirmed(candles: Candle[], lookback = 10): boolean {
+  if (candles.length < lookback + 2) return false;
+  const volumes = candles.map(c => c.volume);
+  const avgVol = avg(volumes.slice(-lookback - 1, -1));
+  const currentVol = volumes[volumes.length - 1];
+  return currentVol > avgVol * 1.2;  // 20% above average
+}
+
+// ============================================================
+// HYSTERESIS
 // ============================================================
 
 const hysteresisStore = new Map<string, { lastEntryPrice: number; lockUntil: number }>();
-const POST_EXIT_COOLDOWN_MS = 30 * 60 * 1000;  // 30 min
+const POST_EXIT_COOLDOWN_MS = 30 * 60 * 1000;
 
 function getHysteresis(pair: string, now: number) {
   const s = hysteresisStore.get(pair);
@@ -439,17 +429,15 @@ function isInExhaustionZone(
   candles4h: Candle[],
   direction: "LONG" | "SHORT"
 ): boolean {
-  // Check if 4H stoch is in exhaustion zone
   const stoch4h = stochRsi(candles4h.map(c => c.close));
 
   if (direction === "LONG" && stoch4h.k > 75) return true;
   if (direction === "SHORT" && stoch4h.k < 25) return true;
 
-  // Check hysteresis
   const hyst = getHysteresis(pair, Date.now());
   if (hyst) {
     const dist = Math.abs(price - hyst.lastEntryPrice) / hyst.lastEntryPrice;
-    if (dist < 0.01) return true;  // Within 1% of last exit
+    if (dist < 0.01) return true;
   }
 
   return false;
@@ -471,8 +459,13 @@ export function generateSignal(
   const debug: string[] = [];
   const now = Date.now();
 
-  // Already active?
-  const active = activeSignals.find(s => s.pair === pair && !s.exited);
+  // Ensure activeSignals is an array
+  if (!Array.isArray(activeSignals)) {
+    console.warn(`[generateSignal] activeSignals is not an array for ${pair}, defaulting to empty`);
+    activeSignals = [];
+  }
+
+  const active = activeSignals.find((s: any) => s && s.pair === pair && s.exited === false);
   if (active) {
     debug.push(`Already active: ${active.id}`);
     return { debug };
@@ -494,13 +487,13 @@ export function generateSignal(
     return { debug };
   }
 
-  // 2. Check exhaustion zone (hysteresis)
+  // 2. Check exhaustion zone
   if (isInExhaustionZone(pair, price, candles4h, bias.direction)) {
     debug.push("In exhaustion zone — hysteresis lock active");
     return { debug };
   }
 
-  // 3. Build trendlines on 4H
+  // 3. Build trendlines
   const pivots4h = findPivots(candles4h, 3, 2);
   const resistanceLines = buildTrendlines(candles4h, pivots4h.highs, "RESISTANCE", 2, 0.3);
   const supportLines = buildTrendlines(candles4h, pivots4h.lows, "SUPPORT", 2, 0.3);
@@ -517,7 +510,7 @@ export function generateSignal(
 
   const breakEvent = bias.direction === "LONG" ? longBreak : shortBreak;
 
-  // 5. Check 15M stoch for entry timing
+  // 5. Stoch readings
   const closes15m = candles15m.map(c => c.close);
   const stoch15m = stochRsi(closes15m);
   debug.push(`15M Stoch: ${stoch15m.k}/${stoch15m.d}`);
@@ -530,12 +523,15 @@ export function generateSignal(
   const stoch4h = stochRsi(closes4h);
   debug.push(`4H Stoch: ${stoch4h.k}/${stoch4h.d}`);
 
+  // 6. Volume check
+  const volConfirmed = isVolumeConfirmed(candles4h);
+  debug.push(`Volume: ${volConfirmed ? "CONFIRMED (+20%)" : "weak"}`);
+
   let entryType: "EARLY" | "BREAKOUT" | "RETEST" | null = null;
   let confidence = 50;
   let trendlinePrice = 0;
 
-  // EARLY ENTRY: Before the break
-  // 4H stoch oversold + 1H turning up + 15M cross up
+  // EARLY ENTRY
   if (bias.direction === "LONG") {
     const is4hOversold = stoch4h.k < 25 && stoch4h.d < 30;
     const is1hTurning = stoch1h.k > stoch1h.d || stoch1h.k < 20;
@@ -544,8 +540,9 @@ export function generateSignal(
     if (is4hOversold && is1hTurning && is15mCrossing) {
       entryType = "EARLY";
       confidence = 70;
+      if (volConfirmed) confidence += 10;
       trendlinePrice = resistanceLines[0] ? getTrendlinePrice(resistanceLines[0], candles4h.length - 1) : price * 1.02;
-      debug.push(`EARLY ENTRY: 4H oversold(${stoch4h.k}), 1H turning, 15M cross`);
+      debug.push(`EARLY ENTRY: 4H oversold(${stoch4h.k}), 1H turning, 15M cross${volConfirmed ? ", volume confirmed" : ""}`);
     }
   } else {
     const is4hOverbought = stoch4h.k > 75 && stoch4h.d > 70;
@@ -555,12 +552,13 @@ export function generateSignal(
     if (is4hOverbought && is1hTurning && is15mCrossing) {
       entryType = "EARLY";
       confidence = 70;
+      if (volConfirmed) confidence += 10;
       trendlinePrice = supportLines[0] ? getTrendlinePrice(supportLines[0], candles4h.length - 1) : price * 0.98;
-      debug.push(`EARLY ENTRY: 4H overbought(${stoch4h.k}), 1H turning, 15M cross`);
+      debug.push(`EARLY ENTRY: 4H overbought(${stoch4h.k}), 1H turning, 15M cross${volConfirmed ? ", volume confirmed" : ""}`);
     }
   }
 
-  // BREAKOUT ENTRY: After the break
+  // BREAKOUT ENTRY
   if (!entryType && breakEvent.broken && breakEvent.line) {
     const is15mConfirming = bias.direction === "LONG"
       ? stoch15m.k > stoch15m.d
@@ -569,17 +567,18 @@ export function generateSignal(
     if (is15mConfirming) {
       entryType = "BREAKOUT";
       confidence = 80;
+      if (volConfirmed) confidence += 5;
       trendlinePrice = getTrendlinePrice(breakEvent.line, candles4h.length - 1);
-      debug.push(`BREAKOUT ENTRY: Trendline ${breakEvent.line.type} broken, 15M confirming`);
+      debug.push(`BREAKOUT ENTRY: Trendline ${breakEvent.line.type} broken, 15M confirming${volConfirmed ? ", volume confirmed" : ""}`);
     }
   }
 
-  // RETEST ENTRY: Price comes back to broken trendline
+  // RETEST ENTRY
   if (!entryType && breakEvent.broken && breakEvent.line) {
     const linePrice = getTrendlinePrice(breakEvent.line, candles4h.length - 1);
     const distToLine = Math.abs(price - linePrice) / linePrice;
 
-    if (distToLine < 0.005) {  // Within 0.5% of broken trendline
+    if (distToLine < 0.005) {
       const is15mBouncing = bias.direction === "LONG"
         ? stoch15m.k > stoch15m.d && stoch15m.k < 40
         : stoch15m.k < stoch15m.d && stoch15m.k > 60;
@@ -587,8 +586,9 @@ export function generateSignal(
       if (is15mBouncing) {
         entryType = "RETEST";
         confidence = 75;
+        if (volConfirmed) confidence += 5;
         trendlinePrice = linePrice;
-        debug.push(`RETEST ENTRY: Price at broken trendline, 15M bouncing`);
+        debug.push(`RETEST ENTRY: Price at broken trendline, 15M bouncing${volConfirmed ? ", volume confirmed" : ""}`);
       }
     }
   }
@@ -609,10 +609,10 @@ export function generateSignal(
 
   if (bias.direction === "LONG") {
     stop = Math.min(swingLow, entry - atr4h * 1.5, trendlinePrice * 0.99);
-    target = Math.max(swingHigh * 1.02, entry + atr4h * 4, trendlinePrice * 1.03);
+    target = Math.max(swingHigh, entry + atr4h * 4, trendlinePrice * 1.03);
   } else {
     stop = Math.max(swingHigh, entry + atr4h * 1.5, trendlinePrice * 1.01);
-    target = Math.min(swingLow * 0.98, entry - atr4h * 4, trendlinePrice * 0.97);
+    target = Math.min(swingLow, entry - atr4h * 4, trendlinePrice * 0.97);
   }
 
   const risk = Math.abs(entry - stop);
@@ -624,7 +624,6 @@ export function generateSignal(
     return { debug };
   }
 
-  // Adjust confidence
   confidence += Math.min(15, bias.strength / 7);
   if (breakEvent.broken) confidence += 10;
   confidence = Math.min(95, confidence);
@@ -641,17 +640,18 @@ export function generateSignal(
     exited: false,
     entryType,
     trendlinePrice: Math.round(trendlinePrice * 100) / 100,
+    volumeConfirmed: volConfirmed,
   };
 
   setHysteresis(pair, entry, now);
 
-  debug.push(`SIGNAL: ${entryType} ${bias.direction} ${pair} @ ${entry.toFixed(2)}, SL ${stop.toFixed(2)}, TP ${target.toFixed(2)}, RR ${rr.toFixed(2)}, Conf ${confidence}%`);
+  debug.push(`SIGNAL: ${entryType} ${bias.direction} ${pair} @ ${entry.toFixed(2)}, SL ${stop.toFixed(2)}, TP ${target.toFixed(2)}, RR ${rr.toFixed(2)}, Conf ${confidence}%${volConfirmed ? ", VOL+" : ""}`);
 
   return { signal, debug };
 }
 
 // ============================================================
-// EXIT LOGIC — Stoch-Driven
+// EXIT LOGIC
 // ============================================================
 
 export function shouldHold(
@@ -662,7 +662,6 @@ export function shouldHold(
 ): HoldResult {
   const now = Date.now();
 
-  // 1. Hard stop
   if (signal.direction === "LONG" && currentPrice <= signal.stop) {
     return { shouldHold: false, reason: "stop_loss" };
   }
@@ -670,7 +669,6 @@ export function shouldHold(
     return { shouldHold: false, reason: "stop_loss" };
   }
 
-  // 2. Hard target
   if (signal.direction === "LONG" && currentPrice >= signal.target) {
     return { shouldHold: false, reason: "target_hit" };
   }
@@ -678,33 +676,27 @@ export function shouldHold(
     return { shouldHold: false, reason: "target_hit" };
   }
 
-  // 3. 1H Stoch exit — PRIMARY
   if (candles1h.length >= 30) {
     const closes1h = candles1h.map(c => c.close);
     const stoch1h = stochRsi(closes1h);
 
     if (signal.direction === "LONG") {
-      // K crosses below D from above 65 — momentum reversal
       if (stoch1h.k < stoch1h.d && stoch1h.d > 65) {
         return { shouldHold: false, reason: "1h_stoch_cross_overbought" };
       }
-      // K was high, now falling below 70 — topped out
       if (stoch1h.k < 70 && stoch1h.k < stoch1h.d) {
         return { shouldHold: false, reason: "1h_stoch_top" };
       }
     } else {
-      // SHORT: K crosses above D from below 35
       if (stoch1h.k > stoch1h.d && stoch1h.d < 35) {
         return { shouldHold: false, reason: "1h_stoch_cross_oversold" };
       }
-      // K was low, now rising above 30 — bottomed out
       if (stoch1h.k > 30 && stoch1h.k > stoch1h.d) {
         return { shouldHold: false, reason: "1h_stoch_bottom" };
       }
     }
   }
 
-  // 4. 4H Stoch exit — BACKUP (if 1H misses it)
   if (candles4h.length >= 50) {
     const closes4h = candles4h.map(c => c.close);
     const stoch4h = stochRsi(closes4h);
@@ -717,7 +709,6 @@ export function shouldHold(
     }
   }
 
-  // 5. Time stop — going nowhere
   const hoursInTrade = (now - signal.timestamp) / (60 * 60 * 1000);
   if (hoursInTrade > 8) {
     const pnl = signal.direction === "LONG"
@@ -787,7 +778,8 @@ export function getMarketSnapshot(
   const stoch1h = candles1h.length >= 30 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50 };
   const stoch15m = candles15m.length >= 20 ? stochRsi(candles15m.map(c => c.close)) : { k: 50, d: 50 };
 
-  // Build trendlines for display
+  const volConfirmed = isVolumeConfirmed(candles4h);
+
   const pivots4h = findPivots(candles4h, 3, 2);
   const resistanceLines = buildTrendlines(candles4h, pivots4h.highs, "RESISTANCE", 2, 0.3);
   const supportLines = buildTrendlines(candles4h, pivots4h.lows, "SUPPORT", 2, 0.3);
@@ -810,6 +802,7 @@ export function getMarketSnapshot(
     stoch4h,
     stoch1h,
     stoch15m,
+    volumeConfirmed: volConfirmed,
     trendlines: activeTrendlines,
     signal: signalResult?.signal || null,
     debug: signalResult?.debug || [],
