@@ -25,10 +25,8 @@ interface MarketSnapshot {
   pair: string;
   price: number;
   timestamp: number;
-  bias: {
-    direction: string;
-    strength: number;
-  } | null;
+  // Core
+  bias: { direction: string; strength: number } | null;
   stoch4h: { k: number; d: number };
   stoch1h: { k: number; d: number };
   stoch15m: { k: number; d: number };
@@ -43,10 +41,20 @@ interface MarketSnapshot {
     rr: number;
   } | null;
   activeTrade?: ActiveTradeInfo;
+  // v36.3 new fields
+  trendDirection: string | null;
+  counterDirection: string | null;
+  isExhausted: boolean;
+  exhaustionReason: string;
+  readiness: number;
+  readinessLabel: string;
+  readinessColor: string;
+  adx: number | null;
+  // Debug / Structure
   debug: string[];
-  summary?: {
-    debug: string[];
-  };
+  summary?: { debug: string[] };
+  // Legacy
+  rsi?: number;
 }
 
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
@@ -59,11 +67,24 @@ function dirColor(dir: string | null | undefined): string {
   return "text-gray-400";
 }
 
-function stochColor(k: number, d: number, direction?: string): string {
-  if (k > 80 && d > 70) return "text-red-400";  // Overbought
-  if (k < 20 && d < 30) return "text-green-400"; // Oversold
-  if (k > d) return "text-green-400";            // Bullish momentum
-  return "text-red-400";                          // Bearish momentum
+function stochColor(k: number, d: number): string {
+  if (k > 80 && d > 70) return "text-red-400 font-bold";
+  if (k < 20 && d < 30) return "text-green-400 font-bold";
+  if (k > d) return "text-green-400";
+  return "text-red-400";
+}
+
+function stochBg(k: number): string {
+  if (k > 80) return "bg-red-500/10 border-red-500/20";
+  if (k < 20) return "bg-green-500/10 border-green-500/20";
+  return "bg-gray-800/30 border-gray-700/20";
+}
+
+function readinessBarColors(score: number): { bg: string; text: string; bar: string } {
+  if (score >= 80) return { bg: "bg-green-500/10", text: "text-green-400", bar: "bg-green-500" };
+  if (score >= 60) return { bg: "bg-amber-500/10", text: "text-amber-400", bar: "bg-amber-500" };
+  if (score >= 40) return { bg: "bg-blue-500/10", text: "text-blue-400", bar: "bg-blue-500" };
+  return { bg: "bg-gray-700/30", text: "text-gray-400", bar: "bg-gray-500" };
 }
 
 function entryTypeBadge(type: string): { label: string; className: string } {
@@ -73,83 +94,167 @@ function entryTypeBadge(type: string): { label: string; className: string } {
   return { label: "ENTRY", className: "bg-gray-700/50 text-gray-400 border-gray-600/30" };
 }
 
+function ReadinessBar({ score, label }: { score: number; label: string }) {
+  const colors = readinessBarColors(score);
+  return (
+    <div className={`p-3 rounded-lg border ${colors.bg} ${label === "READY" ? "border-green-500/30" : "border-gray-700/30"}`}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Readiness</span>
+        <span className={`text-sm font-bold ${colors.text}`}>{label} ({score})</span>
+      </div>
+      <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden">
+        <div className={`h-full ${colors.bar} rounded-full transition-all duration-500`} style={{ width: `${score}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function StructurePanel({ debug }: { debug: string[] }) {
+  if (!debug || debug.length === 0) return null;
+
+  const structureLines = debug.filter(d => 
+    d.includes("Structure:") || 
+    d.includes("EMA") || 
+    d.includes("BIAS:") || 
+    d.includes("TREND:") ||
+    d.includes("COUNTER BIAS:") ||
+    d.includes("ADX:") ||
+    d.includes("Stoch:") ||
+    d.includes("Volume:") ||
+    d.includes("Readiness:") ||
+    d.includes("exhaustion") ||
+    d.includes("blocked")
+  );
+
+  return (
+    <div className="mb-4 p-3 bg-gray-800/40 rounded-lg border border-gray-700/30">
+      <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-2">Market Structure</div>
+      <div className="space-y-1">
+        {structureLines.map((line, i) => {
+          let color = "text-gray-400";
+          if (line.includes("LONG")) color = "text-green-400";
+          if (line.includes("SHORT")) color = "text-red-400";
+          if (line.includes("COUNTER BIAS:")) color = "text-amber-400 font-semibold";
+          if (line.includes("Readiness:")) color = "text-blue-400";
+          if (line.includes("exhaustion") || line.includes("blocked")) color = "text-orange-400";
+          if (line.includes("CONFIRMED")) color = "text-green-400";
+          return (
+            <div key={i} className={`text-xs ${color}`}>{line}</div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function MarketCard({ snap }: { snap: MarketSnapshot }) {
   const bias = snap.bias;
   const hasSignal = !!snap.signal;
   const hasTrade = !!snap.activeTrade;
-
-  // FIX: Get debug from top-level or nested summary.debug
-  const debugLines: string[] = snap.debug || snap.summary?.debug || [];
-
-  // FIX: Ensure trendlines is always an array
-  const trendlines: TrendlineInfo[] = snap.trendlines || [];
+  const colors = readinessBarColors(snap.readiness ?? 0);
 
   const statusBadge = hasTrade
     ? { label: "ACTIVE", className: "bg-blue-500/20 text-blue-400 border-blue-500/30" }
     : hasSignal
     ? entryTypeBadge(snap.signal!.entryType)
-    : { label: "WATCH", className: "bg-gray-700/50 text-gray-400 border-gray-600/30" };
+    : { label: snap.readinessLabel || "WATCH", className: `${colors.bg} ${colors.text} border-gray-600/30` };
+
+  // Get debug lines safely
+  const debugLines: string[] = snap.debug || snap.summary?.debug || [];
 
   return (
     <div className="p-5 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-600 transition shadow-lg">
+      {/* HEADER */}
       <div className="flex items-center justify-between mb-4">
-        <span className="font-mono font-bold text-xl tracking-tight">{snap.pair.replace("/USD", "")}</span>
-        <span className={`text-xs font-bold px-3 py-1 rounded-lg border ${statusBadge.className} uppercase tracking-wider`}>
+        <div>
+          <span className="font-mono font-bold text-xl tracking-tight">{snap.pair.replace("/USD", "")}</span>
+          <div className="text-sm text-gray-500 mt-0.5">
+            ${snap.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+        </div>
+        <span className={`text-xs font-bold px-3 py-1.5 rounded-lg border ${statusBadge.className} uppercase tracking-wider`}>
           {statusBadge.label}
         </span>
       </div>
 
-      <div className="mb-4">
-        <div className="text-sm text-gray-500">
-          Price: <span className="text-gray-200 font-mono">${snap.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+      {/* READINESS BAR */}
+      <ReadinessBar score={snap.readiness ?? 0} label={snap.readinessLabel ?? "NO TRADE"} />
+
+      {/* TREND / FADE TO */}
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <div className="p-2.5 bg-gray-800/30 rounded-lg text-center border border-gray-700/20">
+          <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">Trend</div>
+          <div className={`text-sm font-bold ${dirColor(snap.trendDirection)}`}>
+            {snap.trendDirection || "NONE"}
+          </div>
+        </div>
+        <div className="p-2.5 bg-gray-800/30 rounded-lg text-center border border-gray-700/20">
+          <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">Fade To</div>
+          <div className={`text-sm font-bold ${dirColor(snap.counterDirection)}`}>
+            {snap.counterDirection || "NONE"}
+          </div>
         </div>
       </div>
 
-      {/* BIAS */}
-      <div className="mb-4 p-3 bg-gray-800/50 rounded-lg border border-gray-700/30">
-        <div className="flex items-center justify-between">
-          <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Bias (1D + 4H)</span>
-          <span className={`text-sm font-bold ${dirColor(bias?.direction)}`}>
-            {bias ? `${bias.direction} (${bias.strength}%)` : "UNCLEAR"}
+      {/* ADX */}
+      {snap.adx !== null && (
+        <div className="mt-2 p-2 bg-gray-800/20 rounded-lg text-center">
+          <span className="text-xs text-gray-500">ADX: </span>
+          <span className={`text-sm font-mono font-bold ${snap.adx >= 25 ? "text-green-400" : snap.adx >= 20 ? "text-amber-400" : "text-gray-400"}`}>
+            {snap.adx.toFixed(1)}
+          </span>
+          <span className="text-xs text-gray-600 ml-1">
+            {snap.adx >= 30 ? "Strong" : snap.adx >= 25 ? "Good" : snap.adx >= 20 ? "Moderate" : "Weak"}
           </span>
         </div>
-      </div>
+      )}
 
       {/* STOCH GRID */}
-      <div className="grid grid-cols-3 gap-2 mb-4">
-        <div className="p-2 bg-gray-800/30 rounded-lg text-center">
-          <div className="text-xs text-gray-500 mb-1">4H Stoch</div>
+      <div className="grid grid-cols-3 gap-2 mt-4">
+        <div className={`p-2 rounded-lg text-center border ${stochBg(snap.stoch4h?.k ?? 50)}`}>
+          <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider">4H Stoch</div>
           <div className={`text-sm font-mono font-bold ${stochColor(snap.stoch4h?.k ?? 50, snap.stoch4h?.d ?? 50)}`}>
             {(snap.stoch4h?.k ?? 0).toFixed(1)} / {(snap.stoch4h?.d ?? 0).toFixed(1)}
           </div>
         </div>
-        <div className="p-2 bg-gray-800/30 rounded-lg text-center">
-          <div className="text-xs text-gray-500 mb-1">1H Stoch</div>
+        <div className={`p-2 rounded-lg text-center border ${stochBg(snap.stoch1h?.k ?? 50)}`}>
+          <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider">1H Stoch</div>
           <div className={`text-sm font-mono font-bold ${stochColor(snap.stoch1h?.k ?? 50, snap.stoch1h?.d ?? 50)}`}>
             {(snap.stoch1h?.k ?? 0).toFixed(1)} / {(snap.stoch1h?.d ?? 0).toFixed(1)}
           </div>
         </div>
-        <div className="p-2 bg-gray-800/30 rounded-lg text-center">
-          <div className="text-xs text-gray-500 mb-1">15M Stoch</div>
+        <div className={`p-2 rounded-lg text-center border ${stochBg(snap.stoch15m?.k ?? 50)}`}>
+          <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider">15M Stoch</div>
           <div className={`text-sm font-mono font-bold ${stochColor(snap.stoch15m?.k ?? 50, snap.stoch15m?.d ?? 50)}`}>
             {(snap.stoch15m?.k ?? 0).toFixed(1)} / {(snap.stoch15m?.d ?? 0).toFixed(1)}
           </div>
         </div>
       </div>
 
-      {/* TRENDLINES */}
-      {trendlines.length > 0 && (
+      {/* RSI */}
+      {snap.rsi !== undefined && (
+        <div className="mt-2 flex items-center justify-between px-2">
+          <span className="text-xs text-gray-500">RSI</span>
+          <span className={`text-xs font-mono font-bold ${snap.rsi > 70 ? "text-red-400" : snap.rsi < 30 ? "text-green-400" : "text-gray-400"}`}>
+            {snap.rsi.toFixed(1)}
+          </span>
+        </div>
+      )}
+
+      {/* STRUCTURE PANEL — Visible by default */}
+      <StructurePanel debug={debugLines} />
+
+      {/* TRENDLINES (compact) */}
+      {snap.trendlines && snap.trendlines.length > 0 && (
         <div className="mb-4">
           <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-2">Active Trendlines</div>
           <div className="space-y-1">
-            {trendlines.map((tl, i) => (
+            {snap.trendlines.map((tl, i) => (
               <div key={i} className="flex justify-between text-xs">
                 <span className={tl.type === "RESISTANCE" ? "text-red-400" : "text-green-400"}>
-                  {tl.type} ({tl.touches} touches)
+                  {tl.type} ({tl.touches}t)
                 </span>
-                <span className="font-mono text-gray-400">
-                  ${tl.currentPrice.toFixed(2)}
-                </span>
+                <span className="font-mono text-gray-400">${tl.currentPrice.toFixed(2)}</span>
               </div>
             ))}
           </div>
@@ -204,7 +309,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
               {snap.activeTrade.pnl}
             </span>
           </div>
-
           <div className="grid grid-cols-2 gap-2 text-sm">
             <div><span className="text-gray-500">Entry:</span> <span className="font-mono text-gray-200">${snap.activeTrade.entry.toFixed(2)}</span></div>
             <div><span className="text-gray-500">Stop:</span> <span className="font-mono text-red-400">${snap.activeTrade.stop.toFixed(2)}</span></div>
@@ -212,18 +316,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
             <div><span className="text-gray-500">Trendline:</span> <span className="font-mono text-amber-400">${snap.activeTrade.trendlinePrice?.toFixed(2) || "—"}</span></div>
           </div>
         </div>
-      )}
-
-      {/* DEBUG */}
-      {debugLines.length > 0 && (
-        <details className="mt-2">
-          <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-400">Show debug</summary>
-          <div className="mt-2 p-2 bg-gray-800/30 rounded text-xs text-gray-500 space-y-1">
-            {debugLines.map((d, i) => (
-              <div key={i}>{d}</div>
-            ))}
-          </div>
-        </details>
       )}
 
       <div className="text-xs text-gray-600 text-right mt-2">
@@ -293,9 +385,9 @@ export default function Dashboard() {
       <div className="max-w-6xl mx-auto">
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">CXSwitch v36.1</h1>
+            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">CXSwitch v36.3</h1>
             <p className="text-gray-500 text-sm mt-1">
-              Trendline Break + Stoch Momentum | Active: {activeTrades}
+              Trendline Break + Exhaustion Filter | Active: {activeTrades}
             </p>
             <p className="text-gray-600 text-xs">
               Last updated: {lastUpdate || "—"}
@@ -347,7 +439,7 @@ export default function Dashboard() {
 
         <div className="mt-8 pt-4 border-t border-gray-800 text-center">
           <p className="text-xs text-gray-600">
-            CXSwitch v36.1 — 1D/4H Bias → Trendline Break → 15M Entry → 1H Stoch Exit
+            CXSwitch v36.3 — Trendline Break + Counter-Trend Exhaustion Filter | 4H Break → 15M Entry
           </p>
         </div>
       </div>
