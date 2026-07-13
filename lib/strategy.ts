@@ -1,5 +1,8 @@
 // ============================================================
-// CXSwitch v35.2 — R-Based Lifecycle + Relaxed Stale Exit + ADD Funnel
+// CXSwitch v35.3 — Patched for High-Conviction 10-20x Trading
+// Changes: Lower R:R, fix conflict entries, remove 1H penalty,
+//          shorter cooldowns, wider hysteresis, faster profit locks,
+//          time stop, no conflict min-hold penalty
 // ============================================================
 
 export interface Candle {
@@ -39,7 +42,7 @@ export interface TradeState {
   realizedPnl: number;
   maxDrawdown: number;
   maxProfit: number;
-  // v35.2: Track R-multiple for lifecycle transitions
+  // v35.3: Track R-multiple for lifecycle transitions
   currentR: number;
 }
 
@@ -90,7 +93,8 @@ export interface HoldResult {
 }
 
 export const CURRENT_SIGNAL_VERSION = 35;
-const MIN_RR = 1.5;
+// v35.3: Lowered R:R floor for 10-20x leverage
+const MIN_RR = 1.0;
 const EXITED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 // ============================================================
@@ -100,22 +104,24 @@ const LIFECYCLE_CONFIG = {
   entryPhaseDurationMs: 4 * 60 * 60 * 1000,      // 4h: no structural exits
   buildingPhaseDurationMs: 8 * 60 * 60 * 1000,     // 8h: can add, wider stops
 
-  // v35.2: R-based thresholds (your fix)
-  trendPhaseThresholdR: 1.0,                       // Enter TREND at 1R profit
-  profitLockThresholdR: 2.0,                       // Enter PROFIT_PROTECTION at 2R
+  // v35.3: Faster profit locks for high leverage
+  trendPhaseThresholdR: 0.5,                       // Enter TREND at 0.5R (was 1.0)
+  profitLockThresholdR: 1.0,                       // Enter PROFIT_PROTECTION at 1.0R (was 2.0)
 
-  // v35.2: Relaxed stale trade (your fix)
-  staleTradeHours: 24,                             // 24h (was 8h)
-  staleTradeThresholdR: 0.5,                       // <0.5R (was 0.3%)
+  // v35.3: Relaxed stale trade
+  staleTradeHours: 24,                             // 24h
+  staleTradeThresholdR: 0.5,                       // <0.5R
 
+  // v35.3: Keep confidence floor at 55 (quality control preserved)
   minConfidence: 55,
 };
 
+// v35.3: Reduced min hold times for faster exits at high leverage
 const MIN_HOLD_TIMES: Record<string, number> = {
-  "15m": 30 * 60 * 1000,
-  "1H": 2 * 60 * 60 * 1000,
-  "4H": 4 * 60 * 60 * 1000,
-  "1D": 24 * 60 * 60 * 1000,
+  "15m": 5 * 60 * 1000,      // 5 min (was 30)
+  "1H": 15 * 60 * 1000,      // 15 min (was 2h)
+  "4H": 30 * 60 * 1000,      // 30 min (was 4h)
+  "1D": 2 * 60 * 60 * 1000,  // 2 hours (was 24h)
 };
 
 const EXIT_PERSISTENCE = {
@@ -126,7 +132,8 @@ const EXIT_PERSISTENCE = {
   maxTrackedCloses: 6,
 };
 
-const POST_EXIT_COOLDOWN_MS = 4 * 60 * 60 * 1000;
+// v35.3: Shorter post-exit cooldown for faster re-entry
+const POST_EXIT_COOLDOWN_MS = 30 * 60 * 1000;  // 30 min (was 4h)
 
 interface PairConfig {
   atrMultiplier: number;
@@ -137,11 +144,12 @@ interface PairConfig {
   aggression: number;
 }
 
+// v35.3: Wider hysteresis bands for high-leverage re-entries
 const PAIR_CONFIG: Record<string, PairConfig> = {
-  "BTC/USD": { atrMultiplier: 2.0, adxThreshold: 22, signalCooldownMs: 4 * 60 * 60 * 1000, hysteresisBand: 0.005, minRegimeStrength: "MEDIUM", aggression: 0.9 },
-  "ETH/USD": { atrMultiplier: 2.0, adxThreshold: 22, signalCooldownMs: 4 * 60 * 60 * 1000, hysteresisBand: 0.005, minRegimeStrength: "MEDIUM", aggression: 1.0 },
-  "SOL/USD": { atrMultiplier: 3.0, adxThreshold: 14, signalCooldownMs: 2 * 60 * 60 * 1000, hysteresisBand: 0.015, minRegimeStrength: "MEDIUM", aggression: 1.4 },
-  "HYPE/USD": { atrMultiplier: 3.0, adxThreshold: 14, signalCooldownMs: 2 * 60 * 60 * 1000, hysteresisBand: 0.015, minRegimeStrength: "MEDIUM", aggression: 1.5 },
+  "BTC/USD": { atrMultiplier: 2.0, adxThreshold: 22, signalCooldownMs: 4 * 60 * 60 * 1000, hysteresisBand: 0.03, minRegimeStrength: "MEDIUM", aggression: 0.9 },
+  "ETH/USD": { atrMultiplier: 2.0, adxThreshold: 22, signalCooldownMs: 4 * 60 * 60 * 1000, hysteresisBand: 0.03, minRegimeStrength: "MEDIUM", aggression: 1.0 },
+  "SOL/USD": { atrMultiplier: 3.0, adxThreshold: 14, signalCooldownMs: 2 * 60 * 60 * 1000, hysteresisBand: 0.05, minRegimeStrength: "MEDIUM", aggression: 1.4 },
+  "HYPE/USD": { atrMultiplier: 3.0, adxThreshold: 14, signalCooldownMs: 2 * 60 * 60 * 1000, hysteresisBand: 0.05, minRegimeStrength: "MEDIUM", aggression: 1.5 },
 };
 
 export function getPairConfig(pair: string): PairConfig {
@@ -434,7 +442,7 @@ export function migrateV34ToV35(signal: Signal): TradeState {
   };
 }
 
-// v35.2: R-based state updates
+// v35.3: R-based state updates with faster locks
 function updateTradeState(state: TradeState, signal: Signal, currentPrice: number, now: number): TradeState {
   const highest = Math.max(state.highestPrice, currentPrice);
   const lowest = Math.min(state.lowestPrice, currentPrice);
@@ -462,23 +470,23 @@ function updateTradeState(state: TradeState, signal: Signal, currentPrice: numbe
     newPhaseEnteredAt = now;
   }
 
-  // BUILDING → TREND: At 1R profit (your fix)
+  // BUILDING → TREND: At 0.5R profit (v35.3: faster)
   if (state.phase === "BUILDING" && currentR >= LIFECYCLE_CONFIG.trendPhaseThresholdR) {
     newPhase = "TREND";
     newPhaseEnteredAt = now;
   }
 
-  // TREND → PROFIT_PROTECTION: At 2R profit (your fix)
+  // TREND → PROFIT_PROTECTION: At 1.0R profit (v35.3: faster)
   if ((state.phase === "TREND" || state.phase === "BUILDING") && currentR >= LIFECYCLE_CONFIG.profitLockThresholdR) {
     newPhase = "PROFIT_PROTECTION";
     newPhaseEnteredAt = now;
   }
 
-  // Profit lock levels (also R-based now)
+  // Profit lock levels (v35.3: faster triggers)
   let profitLockLevel = state.profitLockLevel;
   let lockedStop = state.lockedStop;
 
-  // v35.2: R-based profit locks
+  // v35.3: R-based profit locks at lower thresholds
   if (currentR >= 3.0 && profitLockLevel < 3) {
     profitLockLevel = 3;
     lockedStop = signal.direction === "LONG"
@@ -495,6 +503,13 @@ function updateTradeState(state: TradeState, signal: Signal, currentPrice: numbe
     lockedStop = signal.direction === "LONG"
       ? Math.max(signal.stop, state.entryPrice + buffer)
       : Math.min(signal.stop, state.entryPrice - buffer);
+  }
+  // v35.3: Early partial lock at 0.5R
+  else if (currentR >= 0.5 && profitLockLevel < 1) {
+    profitLockLevel = 1;
+    lockedStop = signal.direction === "LONG"
+      ? Math.max(signal.stop, state.entryPrice + (currentPrice - state.entryPrice) * 0.25)
+      : Math.min(signal.stop, state.entryPrice - (state.entryPrice - currentPrice) * 0.25);
   }
 
   return {
@@ -660,10 +675,14 @@ export function generateSignal(
     debug.push(`ADD: momentum, beyond EMA8`);
   }
 
+  // v35.3: FIXED — Conflict entries treated as pullback opportunity, not danger
   if (!entryType && trendConflict && isPullback && (stochBelowMid || (stochCross && agg > 1.1))) {
     entryType = "ENTRY_1";
-    entryMode = "COUNTER_TREND";
-    confidence = 45;
+    entryMode = "PULLBACK";  // v35.3: Was "COUNTER_TREND", now "PULLBACK"
+    confidence = 65;         // v35.3: Was 45, now 65 (passes 55 floor)
+    // v35.3: Deep stoch extreme = extra conviction
+    if (t1d.direction === "LONG" && stoch4h.k < 20) confidence += 10;
+    if (t1d.direction === "SHORT" && stoch4h.k > 80) confidence += 10;
     debug.push(`ENTRY_1: conflict pullback, stoch ${stoch4h.k}/${stoch4h.d}, agg=${agg}`);
   }
 
@@ -673,19 +692,8 @@ export function generateSignal(
     confidence = 0;
   }
 
-  // ═══════════════════════════════════════════════════════════
-  // FIX: Reduced 1H timing penalty so good setups aren't killed
-  // ═══════════════════════════════════════════════════════════
-  if ((entryType === "ENTRY_1" || entryType === "ENTRY_2") && candles1h.length >= 30) {
-    const timingOk = t1d.direction === "LONG"
-      ? stoch1h.k > stoch1h.d || stoch1h.k < 35
-      : stoch1h.k < stoch1h.d || stoch1h.k > 65;
-    if (!timingOk) {
-      const timingPenalty = Math.floor(6 / agg); // Was 15. BTC: 6, ETH: 6, SOL/HYPE: 4
-      confidence -= timingPenalty;
-      debug.push("1H timing check (-" + timingPenalty + " conf)");
-    }
-  }
+  // v35.3: REMOVED — 1H timing penalty was blocking valid setups
+  // (The entire 1H timing check block has been deleted)
 
   if (!entryType) {
     const distToEMA21Pct = Math.abs(distFromEMA21) * 100;
@@ -737,7 +745,8 @@ export function generateSignal(
 
   let entry: number, sl: number, tp: number, type: "ACCUMULATE" | "BREAKOUT";
 
-  const minRR = Math.max(1.3, MIN_RR / agg);
+  // v35.3: Lower minRR for 10-20x leverage
+  const minRR = Math.max(1.0, MIN_RR / agg);  // Was Math.max(1.3, MIN_RR / agg)
   const stopMultiplier = config.atrMultiplier * (1 + (agg - 1) * 0.5);
   const swingLow = Math.min(...candles4h.slice(-30).map(c => c.low));
   const swingHigh = Math.max(...candles4h.slice(-30).map(c => c.high));
@@ -847,7 +856,8 @@ export function shouldHold(
 
   const entryTf = signal.entryTimeframe || "4H";
   const minHold = MIN_HOLD_TIMES[entryTf] || MIN_HOLD_TIMES["4H"];
-  const conflictMinHold = signal.conflictEntry ? minHold * 1.5 : minHold;
+  // v35.3: REMOVED conflict min-hold penalty — same hold time for all entries
+  const conflictMinHold = minHold;  // Was: signal.conflictEntry ? minHold * 1.5 : minHold
 
   const sltpCheck = isSignalStillValid(signal, currentPrice);
   if (!sltpCheck.valid) {
@@ -887,8 +897,18 @@ export function shouldHold(
     }
   }
 
-  // v35.2: Relaxed stale trade — 24h + <0.5R (your fix)
+  // v35.3: NEW — Hard time stop for non-performing trades
   const hoursInTrade = timeInTrade / (60 * 60 * 1000);
+  if (hoursInTrade > 4 && updatedState.currentR < 0.3) {
+    recordExit(signal.pair, "time_stop_weak", currentPrice, now);
+    return { 
+      shouldHold: false, 
+      reason: "time_stop_weak",
+      updatedTradeState: { ...updatedState, phase: "EXIT", phaseEnteredAt: now }
+    };
+  }
+
+  // v35.3: Relaxed stale trade — 24h + <0.5R
   if (hoursInTrade > LIFECYCLE_CONFIG.staleTradeHours && updatedState.currentR < LIFECYCLE_CONFIG.staleTradeThresholdR) {
     recordExit(signal.pair, "time_decay", currentPrice, now);
     return { 
