@@ -716,7 +716,7 @@ export function generateSignal(
   confidence += Math.min(15, bias.strength / 7);
   if (breakEvent.broken) confidence += 10;
   if (bias.adx !== null && bias.adx >= 25) confidence += 5;
-  confidence = Math.min(95, confidence);
+  confidence = Math.min(95, Math.round(confidence));
 
   const signal: Signal = {
     id: `${pair}_${now}`,
@@ -725,7 +725,7 @@ export function generateSignal(
     entry: Math.round(entry * 100) / 100,
     stop: Math.round(stop * 100) / 100,
     target: Math.round(target * 100) / 100,
-    confidence,
+    confidence: Math.round(confidence),
     timestamp: now,
     exited: false,
     entryType,
