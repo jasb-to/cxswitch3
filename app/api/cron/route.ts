@@ -47,7 +47,7 @@ export async function GET(req: NextRequest) {
   try { activeSignals = await loadActiveSignals(); } catch (e) { errors.push("loadActiveSignals: " + e); }
   if (!Array.isArray(activeSignals)) activeSignals = [];
 
-  // v35.2: Check for duplicate active signals per pair
+  // v37: Check for duplicate active signals per pair
   const pairCounts = new Map<string, number>();
   for (const s of activeSignals) {
     if (!s.exited) {
@@ -115,7 +115,7 @@ export async function GET(req: NextRequest) {
 
       if (activeForPair.length > 0) {
         for (const signal of activeForPair) {
-          // v36: Pass candles1h as 4th argument for stoch-based exits
+          // v37: Pass all timeframes for trend-following exits
           const holdResult = shouldHold(signal, candles4h, candles1d, candles1h, price);
           const ts = holdResult.updatedTradeState || signal.tradeState;
 
@@ -148,7 +148,6 @@ export async function GET(req: NextRequest) {
               phase: ts?.phase || "EXIT",
             };
           } else {
-            const ts = signal.tradeState;
             const rawPnl = signal.direction === "LONG"
               ? ((price - signal.entry) / signal.entry * 100)
               : ((signal.entry - price) / signal.entry * 100);
@@ -172,7 +171,8 @@ export async function GET(req: NextRequest) {
           results[pair] = { status: "BLOCKED", reason: "active_trade_exists", signalId: allForPair[0].id };
         } else {
           console.log(`[CRON] ${pair} | No active trades — evaluating`);
-          const result = generateSignal(pair, candles1h, candles4h, candles1d, activeSignals, price);
+          // v37: Pass candles15m for 15m execution timing
+          const result = generateSignal(pair, candles1h, candles4h, candles1d, candles15m, activeSignals, price);
           signalResults[pair] = result || { debug: [] };
 
           if (result?.debug?.length) console.log(`[CRON] ${pair} | Debug: ${result.debug.join(" | ")}`);
@@ -210,7 +210,18 @@ export async function GET(req: NextRequest) {
 
       if (results[pair]?.status === "HOLDING" && activeForPair.length > 0) {
         const activeSignal = activeForPair[0];
-        const ts = activeSignal.tradeState || { phase: "TREND", profitLockLevel: 0, lockedStop: null, currentR: 0 };
+        const ts = activeSignal.tradeState || {
+          phase: "TREND",
+          profitLockLevel: 0,
+          lockedStop: null,
+          currentR: 0,
+          highestPrice: activeSignal.entry,
+          lowestPrice: activeSignal.entry,
+          entryPrice: activeSignal.entry,
+          entryTimestamp: activeSignal.timestamp,
+          lastDecisionTimestamp: Date.now(),
+          phaseEnteredAt: activeSignal.timestamp,
+        };
         snapshot.activeTrade = {
           signalId: results[pair].signalId,
           direction: activeSignal.direction,
