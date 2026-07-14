@@ -426,18 +426,16 @@ function checkPullbackAdaptive(
     }
 
     if (biasDirection === "SHORT") {
-      // THE FIX: In strong SHORT trend, deeply oversold (< 20) = DEEP zone
-      if (stoch4h.k < 20) {
-        return { pullbackActive: true, tier: "DEEP", reason: `STRONG TREND DEEP: 4H Stoch extreme oversold (${stoch4h.k}) — trend stretched, 15m cross triggers`, stochZone: "EXTREME" };
+      if (stoch4h.k > 80) {
+        return { pullbackActive: true, tier: "DEEP", reason: `STRONG TREND DEEP: 4H Stoch extreme overbought (${stoch4h.k}) — pullback up complete, 15m cross triggers`, stochZone: "EXTREME" };
       }
-      if (stoch4h.k < 35) {
-        return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch oversold (${stoch4h.k}) — 15m cross triggers`, stochZone: "ZONE" };
+      if (stoch4h.k > 65) {
+        return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch overbought (${stoch4h.k}) — pullback up, 15m cross triggers`, stochZone: "ZONE" };
       }
-      if (stoch4h.k < 50) {
-        return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k} (not overbought), 15m cross can trigger`, stochZone: "NEUTRAL" };
+      if (stoch4h.k > 50) {
+        return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k} (not oversold), 15m cross can trigger`, stochZone: "NEUTRAL" };
       }
-      // Stoch > 50 in strong SHORT trend = counter-trend bounce, might be exhaustion
-      return { pullbackActive: false, tier: null, reason: `STRONG SHORT: counter-trend bounce — 4H Stoch ${stoch4h.k} (need <50 for entry)`, stochZone: "EXTENDED" };
+      return { pullbackActive: false, tier: null, reason: `STRONG SHORT: extended — 4H Stoch ${stoch4h.k} (need >50 for entry)`, stochZone: "EXTENDED" };
     }
   }
 
@@ -571,7 +569,7 @@ export function generateSignal(
   const stoch15mCrossUp = prevStoch15m.k <= prevStoch15m.d && stoch15m.k > stoch15m.d;
   const stoch15mCrossDown = prevStoch15m.k >= prevStoch15m.d && stoch15m.k < stoch15m.d;
   const stoch15mAlignsLong = stoch15m.k > stoch15m.d && stoch15m.k < 80;
-  const stoch15mAlignsShort = stoch15m.k < stoch15m.d && stoch15m.k > 20;
+  const stoch15mAlignsShort = stoch15m.k < stoch15m.d && stoch15m.k > 65;
 
   if (biasDirection === "LONG") {
     if (pullback.tier === "DEEP") {
@@ -661,7 +659,7 @@ export function generateSignal(
     const atrTarget = entry - atr4h * 3;
     const swingTarget = swingLow;
     if (isStrongTrend) {
-      target = Math.max(atrTarget, swingTarget);
+      target = Math.min(atrTarget, swingTarget);
     } else {
       const breakToEntry = Math.max(0, trendlinePrice - entry);
       const tlTarget = entry - breakToEntry * 2;
