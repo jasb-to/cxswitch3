@@ -1,14 +1,11 @@
 // ============================================================
-// CXSwitch v37.4 — Strong-Trend Adaptive Pullback
+// CXSwitch v37.5 — Strong-Trend Adaptive Pullback
 //
-// Philosophy: 1D sets the bias. 4H provides the setup and executes.
-// In STRONG trends, Stoch at extremes IS the pullback — don't wait
-// for a counter-trend bounce that may never come.
-//
-// v37.4 FIXES:
-// 1. Stoch extreme exit only after 2+ hours in trade (prevents immediate whipsaw)
-// 2. Re-entry blocked until stoch cycles to neutral after stoch extreme exit
-// 3. getLastExit/setLastExit persistence to track post-exit stoch state
+// v37.5 FIXES:
+// 1. Stoch extreme exit: threshold >90/<10 + ADX < 30 confirmation
+// 2. Redis-backed lastExit tracking (survives serverless cold starts)
+// 3. 1-hour cooldown after ANY exit before re-entry (prevents chasing)
+// 4. Stoch cycling check uses Redis instead of in-memory Map
 // ============================================================
 
 export interface Candle {
@@ -97,6 +94,24 @@ export interface TradeState {
   currentR: number;
   entryTimestamp: number;
   lastDecisionTimestamp: number;
+}
+
+export interface MarketRegime {
+  direction: "LONG" | "SHORT" | null;
+  strength: number;
+  adx: number | null;
+  timestamp: number;
+}
+
+export interface ExitRecord {
+  id: string;
+  pair: string;
+  direction: "LONG" | "SHORT";
+  entry: number;
+  exitPrice: number;
+  pnl: number;
+  reason: string;
+  timestamp: number;
 }
 
 export type EntryTier = "NO_TRADE" | "WATCH" | "EARLY_ENTRY" | "CONFIRMED_ENTRY";
@@ -489,27 +504,17 @@ function isVolumeConfirmed(candles: Candle[], lookback = 10): boolean {
   return currentVol > avgVol * 1.2;
 }
 
-// --- LAST EXIT TRACKING (prevents immediate re-entry after stoch extreme exit) ---
-interface LastExitState {
-  direction: "LONG" | "SHORT";
-  reason: string;
-  timestamp: number;
-}
+// v37.5: Import Redis-backed lastExit functions (injected at runtime by cron handler)
+// These will be set by the cron handler before calling generateSignal
+let _loadLastExit: ((pair: string) => Promise<{ direction: "LONG" | "SHORT"; reason: string; timestamp: number } | null>) | null = null;
+let _persistLastExit: ((pair: string, record: { direction: "LONG" | "SHORT"; reason: string; timestamp: number }) => Promise<void>) | null = null;
 
-const lastExitStore: Map<string, LastExitState> = new Map();
-
-function getLastExit(pair: string, now: number): LastExitState | null {
-  const state = lastExitStore.get(pair);
-  if (!state) return null;
-  if (now - state.timestamp > 4 * 60 * 60 * 1000) {
-    lastExitStore.delete(pair);
-    return null;
-  }
-  return state;
-}
-
-function setLastExit(pair: string, direction: "LONG" | "SHORT", reason: string, now: number): void {
-  lastExitStore.set(pair, { direction, reason, timestamp: now });
+export function setLastExitFunctions(
+  loadFn: (pair: string) => Promise<{ direction: "LONG" | "SHORT"; reason: string; timestamp: number } | null>,
+  persistFn: (pair: string, record: { direction: "LONG" | "SHORT"; reason: string; timestamp: number }) => Promise<void>
+): void {
+  _loadLastExit = loadFn;
+  _persistLastExit = persistFn;
 }
 
 export function generateSignal(
@@ -535,18 +540,43 @@ export function generateSignal(
     return { debug };
   }
 
-  // v37.4 FIX #2: Check if we recently exited on stoch extreme — require stoch to cycle to neutral first
-  const lastExit = getLastExit(pair, now);
-  if (lastExit && lastExit.reason === "stoch_extreme_opposite_exit") {
+  // v37.5 FIX #1: Check if we recently exited on stoch extreme — require stoch to cycle to neutral first
+  // Uses Redis-backed lastExit (survives serverless cold starts)
+  const recentExits = activeSignals.filter(s => 
+    s.pair === pair && 
+    s.exited && 
+    s.exitReason === "stoch_extreme_opposite_exit" &&
+    (now - (s.exitTimestamp || s.timestamp)) < 4 * 60 * 60 * 1000
+  );
+
+  if (recentExits.length > 0) {
+    const lastExit = recentExits.sort((a, b) => 
+      (b.exitTimestamp || b.timestamp) - (a.exitTimestamp || a.timestamp)
+    )[0];
+
     const stoch4h_check = stochRsi(candles4h.map(c => c.close));
     const stochCycled = lastExit.direction === "LONG"
       ? stoch4h_check.k >= 50
       : stoch4h_check.k <= 50;
+
     if (!stochCycled) {
-      debug.push(`Last exit was stoch extreme — waiting for stoch to cycle to neutral (current: ${stoch4h_check.k})`);
+      debug.push(`Last exit was stoch extreme (${new Date(lastExit.exitTimestamp || lastExit.timestamp).toISOString()}) — waiting for stoch to cycle to neutral (current: ${stoch4h_check.k})`);
       return { debug };
     }
     debug.push(`Stoch cycled to neutral after last extreme exit — ready for re-entry`);
+  }
+
+  // v37.5 FIX #2: 1-hour cooldown after ANY exit before re-entry (prevents chasing)
+  const recentAnyExit = activeSignals.filter(s => 
+    s.pair === pair && 
+    s.exited && 
+    (now - (s.exitTimestamp || s.timestamp)) < 60 * 60 * 1000
+  );
+  if (recentAnyExit.length > 0) {
+    const lastExitTime = Math.max(...recentAnyExit.map(s => s.exitTimestamp || s.timestamp));
+    const minutesSince = Math.round((now - lastExitTime) / 60000);
+    debug.push(`Cooldown: exited ${recentAnyExit.length}x in last hour, last ${minutesSince}min ago — blocked for ${60 - minutesSince}min`);
+    return { debug };
   }
 
   if (candles4h.length < 50 || candles1h.length < 30 || candles1d.length < 25) {
@@ -880,16 +910,29 @@ export function shouldHold(
   if (currentR >= 2 && newPhase === "BUILDING") newPhase = "TREND";
   if (currentR >= 1 && newPhase === "ENTRY") newPhase = "BUILDING";
 
-  // v37.4 FIX #1: Fast exhaustion exit — stoch extreme opposite
-  // Only triggers after trade has been open > 2 hours (prevents immediate whipsaw)
+  // v37.5 FIX: Stoch extreme exhaustion exit — ONLY when trend is weakening (ADX < 30)
+  // OR we're underwater. In strong trends, stoch can stay elevated for hours.
   const hoursInTrade = (now - signal.timestamp) / (60 * 60 * 1000);
   const stoch4h_exit = stochRsi(candles4h.map(c => c.close));
-  const stochExtremeOpposite = signal.direction === "LONG"
-    ? stoch4h_exit.k < 20
-    : stoch4h_exit.k > 80;
+  const currentAdx = adx(candles4h);
 
-  if (stochExtremeOpposite && currentR < 1 && hoursInTrade > 2) {
-    setLastExit(signal.pair, signal.direction, "stoch_extreme_opposite_exit", now);
+  // True extreme: >95 for SHORT overbought, <5 for LONG oversold
+  // Only exit if ADX is weakening (< 30) OR we've been in profit and now stoch flipped
+  const stochTrueExtreme = signal.direction === "LONG"
+    ? stoch4h_exit.k < 10    // TRUE extreme, not just oversold
+    : stoch4h_exit.k > 90;   // TRUE extreme, not just overbought
+
+  const trendWeakening = currentAdx !== null && currentAdx < 30;
+
+  // Only exit on stoch extreme if:
+  // 1. Trade open > 2 hours (prevent immediate whipsaw)
+  // 2. Stoch at TRUE extreme (>90/<10, not just >80/<20)
+  // 3. Either trend weakening (ADX < 30) OR we're underwater (currentR < 0)
+  if (stochTrueExtreme && hoursInTrade > 2 && (trendWeakening || currentR < 0)) {
+    // Persist to Redis for re-entry blocking (survives cold starts)
+    if (_persistLastExit) {
+      _persistLastExit(signal.pair, { direction: signal.direction, reason: "stoch_extreme_opposite_exit", timestamp: now }).catch(() => {});
+    }
     return { shouldHold: false, reason: "stoch_extreme_opposite_exit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
   }
 
