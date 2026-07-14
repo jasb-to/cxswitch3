@@ -11,6 +11,7 @@ const REGIME_KEY = "cxswitch:regimes";
 const EXIT_KEY = "cxswitch:exits";
 const CRON_KEY = "cxswitch:last_cron";
 const SNAPSHOT_KEY = "cxswitch:dashboard_snapshot";
+const LAST_EXIT_KEY = "cxswitch:last_exits"; // v37.5: Redis-backed last exit tracking
 
 export async function saveActiveSignals(signals: Signal[]): Promise<void> {
   await redis.set(ACTIVE_KEY, signals);
@@ -40,6 +41,26 @@ export async function persistExit(record: ExitRecord): Promise<void> {
 
 export async function loadExits(): Promise<ExitRecord[]> {
   return (await redis.get<ExitRecord[]>(EXIT_KEY)) || [];
+}
+
+// v37.5: Redis-backed last exit tracking (survives serverless cold starts)
+export async function persistLastExit(pair: string, record: { direction: "LONG" | "SHORT"; reason: string; timestamp: number }): Promise<void> {
+  const all = (await redis.get<Record<string, { direction: "LONG" | "SHORT"; reason: string; timestamp: number }>>(LAST_EXIT_KEY)) || {};
+  all[pair] = record;
+  await redis.set(LAST_EXIT_KEY, all);
+}
+
+export async function loadLastExit(pair: string): Promise<{ direction: "LONG" | "SHORT"; reason: string; timestamp: number } | null> {
+  const all = await redis.get<Record<string, { direction: "LONG" | "SHORT"; reason: string; timestamp: number }>>(LAST_EXIT_KEY);
+  if (!all || !all[pair]) return null;
+  const record = all[pair];
+  // Only valid for 4 hours
+  if (Date.now() - record.timestamp > 4 * 60 * 60 * 1000) {
+    delete all[pair];
+    await redis.set(LAST_EXIT_KEY, all);
+    return null;
+  }
+  return record;
 }
 
 export async function setLastCronRun(ts: number): Promise<void> {
