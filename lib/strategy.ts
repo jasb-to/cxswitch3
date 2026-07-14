@@ -1,7 +1,7 @@
 // ============================================================
 // CXSwitch v37.2 — Strong-Trend Adaptive Pullback
 //
-// Philosophy: 1D sets the bias. 4H provides the setup. 15m executes.
+// Philosophy: 1D sets the bias. 4H provides the setup and executes.
 // In STRONG trends, Stoch at extremes IS the pullback — don't wait
 // for a counter-trend bounce that may never come.
 // ============================================================
@@ -424,26 +424,26 @@ function checkPullbackAdaptive(
   if (isStrongTrend) {
     if (biasDirection === "LONG") {
       if (stoch4h.k < 20) {
-        return { pullbackActive: true, tier: "DEEP", reason: `STRONG TREND DEEP: 4H Stoch extreme oversold (${stoch4h.k}) — trend stretched, 15m cross triggers`, stochZone: "EXTREME" };
+        return { pullbackActive: true, tier: "DEEP", reason: `STRONG TREND DEEP: 4H Stoch extreme oversold (${stoch4h.k}) — trend stretched, entry triggers`, stochZone: "EXTREME" };
       }
       if (stoch4h.k < 35) {
-        return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch oversold (${stoch4h.k}) — 15m cross triggers`, stochZone: "ZONE" };
+        return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch oversold (${stoch4h.k}) — entry triggers`, stochZone: "ZONE" };
       }
       if (stoch4h.k < 50) {
-        return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k} (not overbought), 15m cross can trigger`, stochZone: "NEUTRAL" };
+        return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k} (not overbought), entry can trigger`, stochZone: "NEUTRAL" };
       }
       return { pullbackActive: false, tier: null, reason: `STRONG LONG: extended — 4H Stoch ${stoch4h.k} (need <50)`, stochZone: "EXTENDED" };
     }
 
     if (biasDirection === "SHORT") {
       if (stoch4h.k > 80) {
-        return { pullbackActive: true, tier: "DEEP", reason: `STRONG TREND DEEP: 4H Stoch extreme overbought (${stoch4h.k}) — pullback up complete, 15m cross triggers`, stochZone: "EXTREME" };
+        return { pullbackActive: true, tier: "DEEP", reason: `STRONG TREND DEEP: 4H Stoch extreme overbought (${stoch4h.k}) — pullback up complete`, stochZone: "EXTREME" };
       }
       if (stoch4h.k > 65) {
-        return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch overbought (${stoch4h.k}) — pullback up, 15m cross triggers`, stochZone: "ZONE" };
+        return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch overbought (${stoch4h.k}) — pullback up`, stochZone: "ZONE" };
       }
       if (stoch4h.k > 50) {
-        return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k} (not oversold), 15m cross can trigger`, stochZone: "NEUTRAL" };
+        return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k} (not oversold), entry can trigger`, stochZone: "NEUTRAL" };
       }
       return { pullbackActive: false, tier: null, reason: `STRONG SHORT: extended — 4H Stoch ${stoch4h.k} (need >50 for entry)`, stochZone: "EXTENDED" };
     }
@@ -462,7 +462,7 @@ function checkPullbackAdaptive(
       return { pullbackActive: false, tier: null, reason: `LONG shallow pullback forming: 4H Stoch oversold (${stoch4h.k}), waiting for cross up`, stochZone: "ZONE" };
     }
     if (stoch4h.k < 50) {
-      return { pullbackActive: true, tier: "MOMENTUM", reason: `MOMENTUM zone: 4H Stoch ${stoch4h.k} (not overbought), 15m cross can trigger entry`, stochZone: "NEUTRAL" };
+      return { pullbackActive: true, tier: "MOMENTUM", reason: `MOMENTUM zone: 4H Stoch ${stoch4h.k} (not overbought), entry can trigger entry`, stochZone: "NEUTRAL" };
     }
     return { pullbackActive: false, tier: null, reason: `LONG: extended — 4H Stoch ${stoch4h.k} (need <50 for any entry)`, stochZone: "EXTENDED" };
   }
@@ -477,7 +477,7 @@ function checkPullbackAdaptive(
       return { pullbackActive: false, tier: null, reason: `SHORT shallow pullback forming: 4H Stoch overbought (${stoch4h.k}), waiting for cross down`, stochZone: "ZONE" };
     }
     if (stoch4h.k > 50) {
-      return { pullbackActive: true, tier: "MOMENTUM", reason: `MOMENTUM zone: 4H Stoch ${stoch4h.k} (not oversold), 15m cross can trigger entry`, stochZone: "NEUTRAL" };
+      return { pullbackActive: true, tier: "MOMENTUM", reason: `MOMENTUM zone: 4H Stoch ${stoch4h.k} (not oversold), entry can trigger entry`, stochZone: "NEUTRAL" };
     }
     return { pullbackActive: false, tier: null, reason: `SHORT: extended — 4H Stoch ${stoch4h.k} (need >50 for any entry)`, stochZone: "EXTENDED" };
   }
@@ -516,7 +516,21 @@ export function generateSignal(
     return { debug };
   }
 
-  if (candles4h.length < 50 || candles1h.length < 30 || candles1d.length < 25 || candles15m.length < 20) {
+  // Check if we recently exited on stoch extreme — require stoch to cycle to neutral first
+  const lastExit = getLastExit(pair, now);
+  if (lastExit && lastExit.reason === "stoch_extreme_opposite_exit") {
+    const stoch4h_check = stochRsi(candles4h.map(c => c.close));
+    const stochCycled = lastExit.direction === "LONG"
+      ? stoch4h_check.k >= 50   // Was long exit (stoch < 20), need stoch >= 50
+      : stoch4h_check.k <= 50;  // Was short exit (stoch > 80), need stoch <= 50
+    if (!stochCycled) {
+      debug.push(`Last exit was stoch extreme — waiting for stoch to cycle to neutral (current: ${stoch4h_check.k})`);
+      return { debug };
+    }
+    debug.push(`Stoch cycled to neutral after last extreme exit — ready for re-entry`);
+  }
+
+  if (candles4h.length < 50 || candles1h.length < 30 || candles1d.length < 25) {
     debug.push("Insufficient data");
     return { debug };
   }
@@ -699,7 +713,7 @@ export function generateSignal(
     positionSizePct,
     regimeDirection: biasDirection,
     conflictEntry: false,
-    entryTimeframe: "15M",
+    entryTimeframe: "4H",
     rr: Math.round(rr * 100) / 100,
     adx: trend.adx !== null ? Math.round(trend.adx * 10) / 10 : undefined,
     version: CURRENT_SIGNAL_VERSION,
@@ -735,6 +749,30 @@ function getHysteresis(pair: string, now: number) {
 
 function setHysteresis(pair: string, price: number, now: number) {
   hysteresisStore.set(pair, { lastEntryPrice: price, lockUntil: now + POST_EXIT_COOLDOWN_MS });
+}
+
+// --- LAST EXIT TRACKING (prevents immediate re-entry after stoch extreme exit) ---
+interface LastExitState {
+  direction: "LONG" | "SHORT";
+  reason: string;
+  timestamp: number;
+}
+
+const lastExitStore: Map<string, LastExitState> = new Map();
+
+function getLastExit(pair: string, now: number): LastExitState | null {
+  const state = lastExitStore.get(pair);
+  if (!state) return null;
+  // Only valid for 4 hours after exit
+  if (now - state.timestamp > 4 * 60 * 60 * 1000) {
+    lastExitStore.delete(pair);
+    return null;
+  }
+  return state;
+}
+
+function setLastExit(pair: string, direction: "LONG" | "SHORT", reason: string, now: number): void {
+  lastExitStore.set(pair, { direction, reason, timestamp: now });
 }
 
 function isInExhaustionZone(
@@ -854,12 +892,15 @@ export function shouldHold(
   if (currentR >= 1 && newPhase === "ENTRY") newPhase = "BUILDING";
 
   // PORTED FROM V28: Fast exhaustion exit — stoch extreme opposite
+  // Only triggers after trade has been open > 2 hours (prevents immediate whipsaw)
+  const hoursInTrade = (now - signal.timestamp) / (60 * 60 * 1000);
   const stoch4h_exit = stochRsi(candles4h.map(c => c.close));
   const stochExtremeOpposite = signal.direction === "LONG"
     ? stoch4h_exit.k < 20   // was long, now oversold = trend exhausted
     : stoch4h_exit.k > 80;  // was short, now overbought = trend exhausted
 
-  if (stochExtremeOpposite && currentR < 1) {
+  if (stochExtremeOpposite && currentR < 1 && hoursInTrade > 2) {
+    setLastExit(signal.pair, signal.direction, "stoch_extreme_opposite_exit", now);
     return { shouldHold: false, reason: "stoch_extreme_opposite_exit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
   }
 
