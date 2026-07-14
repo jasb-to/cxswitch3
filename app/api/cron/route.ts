@@ -48,6 +48,15 @@ export async function GET(req: NextRequest) {
   try { activeSignals = await loadActiveSignals(); } catch (e) { errors.push("loadActiveSignals: " + e); }
   if (!Array.isArray(activeSignals)) activeSignals = [];
 
+  // v37.4 FIX: Skip already-exited signals before any processing
+  // This prevents duplicate exit alerts from filterExpiredSignals
+  const preCleanSignals = activeSignals.filter(s => !s.exited || (now - s.timestamp) < EXITED_TTL_MS);
+  const prePruned = activeSignals.length - preCleanSignals.length;
+  if (prePruned > 0) {
+    console.log(`[CRON] Pre-cleaned ${prePruned} old exited signals`);
+  }
+  activeSignals = preCleanSignals;
+
   // v37.2: Check for duplicate active signals per pair
   const pairCounts = new Map<string, number>();
   for (const s of activeSignals) {
@@ -118,10 +127,17 @@ export async function GET(req: NextRequest) {
 
       // Handle pending exits (auto-exit after timeout)
       for (const signal of pendingForPair) {
+        // v37.4 FIX: Skip if already exited (defensive)
+        if (signal.exited) continue;
+
         if (signal.exitRecommendedAt && (now - signal.exitRecommendedAt) > PENDING_EXIT_TIMEOUT_MS) {
           console.log(`[CRON] ${pair} | AUTO-EXIT | Pending exit timed out (${Math.round((now - signal.exitRecommendedAt!) / 60000)}min)`);
+          // v37.4 FIX: Mark as exited FIRST, then send alert
           signal.exited = true;
           signal.status = "EXITED";
+          signal.exitReason = "auto_exit_timeout";
+          signal.exitTimestamp = now;
+          signal.exitPrice = price;
           if (signal.tradeState) {
             signal.tradeState.phase = "EXIT";
             signal.tradeState.phaseEnteredAt = now;
@@ -154,6 +170,9 @@ export async function GET(req: NextRequest) {
 
       if (activeForPair.length > 0) {
         for (const signal of activeForPair) {
+          // v37.4 FIX: Defensive skip if already exited
+          if (signal.exited) continue;
+
           // v37.2 debug: trace hoursInTrade for 4h_structure_failure
           const hoursInTrade = (now - signal.timestamp) / (60 * 60 * 1000);
           console.log(`[CRON] ${pair} | hoursInTrade: ${hoursInTrade.toFixed(2)} | timestamp: ${signal.timestamp} | now: ${now}`);
@@ -174,16 +193,18 @@ export async function GET(req: NextRequest) {
             const pnlStr = (isFinite(rawPnl) ? rawPnl.toFixed(2) : "0.00") + "%";
             console.log(`[CRON] ${pair} | EXIT RECOMMENDED | ${holdResult.reason} | ${pnlStr}`);
 
-            // v37.2: Set to PENDING_EXIT instead of exiting immediately
-            signal.status = "PENDING_EXIT";
+            // v37.4 FIX: Mark signal as exited IMMEDIATELY before sending alert
+            // This prevents duplicate exits from filterExpiredSignals
+            signal.exited = true;
+            signal.status = "EXITED";
             signal.exitReason = holdResult.reason;
-            signal.exitRecommendedAt = now;
-            signal.exitRecommendedPrice = price;
+            signal.exitTimestamp = now;
+            signal.exitPrice = price;
 
             try { await sendExitAlert(signal, price, holdResult.reason); } catch (e) {}
 
             results[pair] = {
-              status: "PENDING_EXIT",
+              status: "EXITED",
               reason: holdResult.reason,
               price,
               signalId: signal.id,
@@ -276,7 +297,6 @@ export async function GET(req: NextRequest) {
           maxDrawdown: "0%",
           currentR: ts.currentR?.toFixed(2) || "0.00",
           trendlinePrice: activeSignal.trendlinePrice,
-          // v37.2: Add exit recommendation info
           exitRecommended: false,
           exitReason: null,
           exitRecommendedAt: null,
@@ -321,7 +341,6 @@ export async function GET(req: NextRequest) {
           maxDrawdown: "0%",
           currentR: ts.currentR?.toFixed(2) || "0.00",
           trendlinePrice: pendingSignal.trendlinePrice,
-          // v37.2: Exit recommendation info
           exitRecommended: true,
           exitReason: pendingSignal.exitReason,
           exitRecommendedAt: pendingSignal.exitRecommendedAt,
@@ -347,19 +366,26 @@ export async function GET(req: NextRequest) {
   }
 
   // ─── FILTER EXPIRED (SL/TP HITS) ───
+  // v37.4 FIX: filterExpiredSignals now only processes signals NOT already marked exited
+  // The pre-clean at the top of the loop already removed old exited signals
   try {
     const { active, exited } = filterExpiredSignals(activeSignals, currentPrices);
     if (exited.length > 0) {
       for (const { signal, reason } of exited) {
+        // v37.4 FIX: Double-check not already exited (belt and suspenders)
         if (!signal.exited) {
           const price = currentPrices[signal.pair] || signal.entry;
-          try { await sendExitAlert(signal, price, reason); } catch (e) {}
+          // Mark exited BEFORE sending alert
           signal.exited = true;
           signal.status = "EXITED";
+          signal.exitReason = reason;
+          signal.exitTimestamp = now;
+          signal.exitPrice = price;
           if (signal.tradeState) {
             signal.tradeState.phase = "EXIT";
             signal.tradeState.phaseEnteredAt = now;
           }
+          try { await sendExitAlert(signal, price, reason); } catch (e) {}
         }
       }
     }
