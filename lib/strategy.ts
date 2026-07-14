@@ -1,9 +1,14 @@
 // ============================================================
-// CXSwitch v37.2 — Strong-Trend Adaptive Pullback
+// CXSwitch v37.4 — Strong-Trend Adaptive Pullback
 //
 // Philosophy: 1D sets the bias. 4H provides the setup and executes.
 // In STRONG trends, Stoch at extremes IS the pullback — don't wait
 // for a counter-trend bounce that may never come.
+//
+// v37.4 FIXES:
+// 1. Stoch extreme exit only after 2+ hours in trade (prevents immediate whipsaw)
+// 2. Re-entry blocked until stoch cycles to neutral after stoch extreme exit
+// 3. getLastExit/setLastExit persistence to track post-exit stoch state
 // ============================================================
 
 export interface Candle {
@@ -372,7 +377,6 @@ function detectTrend(candles1d: Candle[], candles4h: Candle[]): {
   const adxVal = adx(candles4h);
   debug.push(`4H ADX: ${adxVal !== null ? adxVal.toFixed(1) : "N/A"}`);
   if (!structure1d.direction) {
-    // FALLBACK: V28-style EMA cross when structure is unclear (e.g. new coins like HYPE)
     const closes1d = candles1d.map(c => c.close);
     const e8_1d = ema(closes1d, 8);
     const e21_1d = ema(closes1d, 21);
@@ -416,11 +420,6 @@ function checkPullbackAdaptive(
   const crossUp = prevStoch4h.k <= prevStoch4h.d && stoch4h.k > stoch4h.d;
   const crossDown = prevStoch4h.k >= prevStoch4h.d && stoch4h.k < stoch4h.d;
 
-  // ============================================================
-  // STRONG TREND LOGIC (ADX >= 25, 1D+4H aligned)
-  // In strong trends, deeply oversold Stoch = trend is STRETCHED.
-  // The "pullback" is the brief pause, not a counter-trend bounce.
-  // ============================================================
   if (isStrongTrend) {
     if (biasDirection === "LONG") {
       if (stoch4h.k < 20) {
@@ -449,9 +448,6 @@ function checkPullbackAdaptive(
     }
   }
 
-  // ============================================================
-  // NORMAL (WEAK) TREND LOGIC — Counter-trend bounce required
-  // ============================================================
   if (biasDirection === "LONG") {
     if (stoch4h.k < 20) {
       if (crossUp) return { pullbackActive: true, tier: "DEEP", reason: `DEEP pullback: 4H Stoch cross up from extreme oversold (${stoch4h.k})`, stochZone: "EXTREME" };
@@ -493,6 +489,29 @@ function isVolumeConfirmed(candles: Candle[], lookback = 10): boolean {
   return currentVol > avgVol * 1.2;
 }
 
+// --- LAST EXIT TRACKING (prevents immediate re-entry after stoch extreme exit) ---
+interface LastExitState {
+  direction: "LONG" | "SHORT";
+  reason: string;
+  timestamp: number;
+}
+
+const lastExitStore: Map<string, LastExitState> = new Map();
+
+function getLastExit(pair: string, now: number): LastExitState | null {
+  const state = lastExitStore.get(pair);
+  if (!state) return null;
+  if (now - state.timestamp > 4 * 60 * 60 * 1000) {
+    lastExitStore.delete(pair);
+    return null;
+  }
+  return state;
+}
+
+function setLastExit(pair: string, direction: "LONG" | "SHORT", reason: string, now: number): void {
+  lastExitStore.set(pair, { direction, reason, timestamp: now });
+}
+
 export function generateSignal(
   pair: string,
   candles1h: Candle[],
@@ -516,13 +535,13 @@ export function generateSignal(
     return { debug };
   }
 
-  // Check if we recently exited on stoch extreme — require stoch to cycle to neutral first
+  // v37.4 FIX #2: Check if we recently exited on stoch extreme — require stoch to cycle to neutral first
   const lastExit = getLastExit(pair, now);
   if (lastExit && lastExit.reason === "stoch_extreme_opposite_exit") {
     const stoch4h_check = stochRsi(candles4h.map(c => c.close));
     const stochCycled = lastExit.direction === "LONG"
-      ? stoch4h_check.k >= 50   // Was long exit (stoch < 20), need stoch >= 50
-      : stoch4h_check.k <= 50;  // Was short exit (stoch > 80), need stoch <= 50
+      ? stoch4h_check.k >= 50
+      : stoch4h_check.k <= 50;
     if (!stochCycled) {
       debug.push(`Last exit was stoch extreme — waiting for stoch to cycle to neutral (current: ${stoch4h_check.k})`);
       return { debug };
@@ -576,7 +595,6 @@ export function generateSignal(
     debug.push(`Trendlines: ${relevantLines.length} ascending support (SHORT setup)`);
   }
 
-
   debug.push(`Entry mode: 4H-only (15M gate removed)`);
 
   const breakEvent = checkTrendlineBreak(candles4h, relevantLines, breakType);
@@ -587,8 +605,6 @@ export function generateSignal(
   let confidence = 50;
   let trendlinePrice = 0;
 
-
-  // SIMPLIFIED: 4H-only entry, no 15M gate (ported from V28 philosophy)
   if (biasDirection === "LONG") {
     if (pullback.tier === "DEEP") {
       entryType = "RETEST"; confidence = 85;
@@ -628,7 +644,6 @@ export function generateSignal(
     debug.push(`BREAKOUT ${biasDirection}: 4H ${breakEvent.line.type} broken`);
   }
 
-
   if (!entryType) {
     debug.push("No entry setup — waiting for 15m signal or 4H trendline break");
     return { debug };
@@ -646,7 +661,6 @@ export function generateSignal(
 
   if (biasDirection === "LONG") {
     stop = Math.min(swingLow * 0.998, entry - atr4h * atrMultiplier);
-    // Cap target at 3x ATR for strong trends (trendline can give ridiculous targets)
     const atrTarget = entry + atr4h * 3;
     const swingTarget = swingHigh;
     if (isStrongTrend) {
@@ -659,7 +673,6 @@ export function generateSignal(
     }
   } else {
     stop = Math.max(swingHigh * 1.002, entry + atr4h * atrMultiplier);
-    // Cap target at 3x ATR for strong trends
     const atrTarget = entry - atr4h * 3;
     const swingTarget = swingLow;
     if (isStrongTrend) {
@@ -749,30 +762,6 @@ function getHysteresis(pair: string, now: number) {
 
 function setHysteresis(pair: string, price: number, now: number) {
   hysteresisStore.set(pair, { lastEntryPrice: price, lockUntil: now + POST_EXIT_COOLDOWN_MS });
-}
-
-// --- LAST EXIT TRACKING (prevents immediate re-entry after stoch extreme exit) ---
-interface LastExitState {
-  direction: "LONG" | "SHORT";
-  reason: string;
-  timestamp: number;
-}
-
-const lastExitStore: Map<string, LastExitState> = new Map();
-
-function getLastExit(pair: string, now: number): LastExitState | null {
-  const state = lastExitStore.get(pair);
-  if (!state) return null;
-  // Only valid for 4 hours after exit
-  if (now - state.timestamp > 4 * 60 * 60 * 1000) {
-    lastExitStore.delete(pair);
-    return null;
-  }
-  return state;
-}
-
-function setLastExit(pair: string, direction: "LONG" | "SHORT", reason: string, now: number): void {
-  lastExitStore.set(pair, { direction, reason, timestamp: now });
 }
 
 function isInExhaustionZone(
@@ -891,13 +880,13 @@ export function shouldHold(
   if (currentR >= 2 && newPhase === "BUILDING") newPhase = "TREND";
   if (currentR >= 1 && newPhase === "ENTRY") newPhase = "BUILDING";
 
-  // PORTED FROM V28: Fast exhaustion exit — stoch extreme opposite
+  // v37.4 FIX #1: Fast exhaustion exit — stoch extreme opposite
   // Only triggers after trade has been open > 2 hours (prevents immediate whipsaw)
   const hoursInTrade = (now - signal.timestamp) / (60 * 60 * 1000);
   const stoch4h_exit = stochRsi(candles4h.map(c => c.close));
   const stochExtremeOpposite = signal.direction === "LONG"
-    ? stoch4h_exit.k < 20   // was long, now oversold = trend exhausted
-    : stoch4h_exit.k > 80;  // was short, now overbought = trend exhausted
+    ? stoch4h_exit.k < 20
+    : stoch4h_exit.k > 80;
 
   if (stochExtremeOpposite && currentR < 1 && hoursInTrade > 2) {
     setLastExit(signal.pair, signal.direction, "stoch_extreme_opposite_exit", now);
