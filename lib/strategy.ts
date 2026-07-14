@@ -563,7 +563,7 @@ export function generateSignal(
   }
 
 
-  debug.push(`15M Stoch: ${stoch15m?.k ?? "N/A"}/${stoch15m?.d ?? "N/A"} | 4H-only entry mode`);
+  debug.push(`Entry mode: 4H-only (15M gate removed)`);
 
   const breakEvent = checkTrendlineBreak(candles4h, relevantLines, breakType);
   const volConfirmed = isVolumeConfirmed(candles4h);
