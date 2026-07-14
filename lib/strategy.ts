@@ -372,7 +372,17 @@ function detectTrend(candles1d: Candle[], candles4h: Candle[]): {
   const adxVal = adx(candles4h);
   debug.push(`4H ADX: ${adxVal !== null ? adxVal.toFixed(1) : "N/A"}`);
   if (!structure1d.direction) {
-    debug.push(`BIAS: UNCLEAR — 1D structure missing`);
+    // FALLBACK: V28-style EMA cross when structure is unclear (e.g. new coins like HYPE)
+    const closes1d = candles1d.map(c => c.close);
+    const e8_1d = ema(closes1d, 8);
+    const e21_1d = ema(closes1d, 21);
+    if (e8_1d.length && e21_1d.length) {
+      const fallbackDir = e8_1d[e8_1d.length - 1] > e21_1d[e21_1d.length - 1] ? "LONG" : "SHORT";
+      const fallbackStrength = 50;
+      debug.push(`BIAS: ${fallbackDir} | 1D structure unclear — using EMA fallback | Strength: ${fallbackStrength} | ADX: ${adxVal?.toFixed(1) || "N/A"}`);
+      return { direction: fallbackDir, strength: fallbackStrength, adx: adxVal, debug };
+    }
+    debug.push(`BIAS: UNCLEAR — 1D structure missing and EMA fallback failed`);
     return { direction: null, strength: 0, adx: adxVal, debug };
   }
   const biasDirection = structure1d.direction;
@@ -552,11 +562,8 @@ export function generateSignal(
     debug.push(`Trendlines: ${relevantLines.length} ascending support (SHORT setup)`);
   }
 
-  const closes15m = candles15m.map(c => c.close);
-  const stoch15m = stochRsi(closes15m);
-  const prevStoch15m = stochRsi(closes15m.slice(0, -1));
 
-  debug.push(`15M Stoch: ${stoch15m.k}/${stoch15m.d}`);
+  debug.push(`15M Stoch: ${stoch15m?.k ?? "N/A"}/${stoch15m?.d ?? "N/A"} | 4H-only entry mode`);
 
   const breakEvent = checkTrendlineBreak(candles4h, relevantLines, breakType);
   const volConfirmed = isVolumeConfirmed(candles4h);
@@ -566,64 +573,47 @@ export function generateSignal(
   let confidence = 50;
   let trendlinePrice = 0;
 
-  const stoch15mCrossUp = prevStoch15m.k <= prevStoch15m.d && stoch15m.k > stoch15m.d;
-  const stoch15mCrossDown = prevStoch15m.k >= prevStoch15m.d && stoch15m.k < stoch15m.d;
-  const stoch15mAlignsLong = stoch15m.k > stoch15m.d && stoch15m.k < 80;
-  const stoch15mAlignsShort = stoch15m.k < stoch15m.d && stoch15m.k > 65;
 
+  // SIMPLIFIED: 4H-only entry, no 15M gate (ported from V28 philosophy)
   if (biasDirection === "LONG") {
     if (pullback.tier === "DEEP") {
-      if (stoch15mAlignsLong || stoch15mCrossUp) {
-        entryType = "RETEST"; confidence = 85;
-        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
-        debug.push(`DEEP PULLBACK LONG: 4H Stoch ${stoch4h.k} extreme oversold + 15m aligns`);
-      }
+      entryType = "RETEST"; confidence = 85;
+      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
+      debug.push(`DEEP PULLBACK LONG: 4H Stoch ${stoch4h.k} extreme oversold`);
     } else if (pullback.tier === "SHALLOW") {
-      if (stoch15mCrossUp || stoch15mAlignsLong) {
-        entryType = "BREAKOUT"; confidence = 75;
-        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
-        debug.push(`SHALLOW PULLBACK LONG: 4H Stoch ${stoch4h.k} oversold + 15m confirms`);
-      }
+      entryType = "BREAKOUT"; confidence = 75;
+      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
+      debug.push(`SHALLOW PULLBACK LONG: 4H Stoch ${stoch4h.k} oversold`);
     } else if (pullback.tier === "MOMENTUM") {
-      if (stoch15mCrossUp) {
-        entryType = "EARLY"; confidence = 60;
-        if (isStrongTrend) confidence += 10;
-        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
-        debug.push(`MOMENTUM LONG: 4H Stoch ${stoch4h.k} neutral + 15m cross up${isStrongTrend ? " (strong trend boost)" : ""}`);
-      }
+      entryType = "EARLY"; confidence = 60;
+      if (isStrongTrend) confidence += 10;
+      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
+      debug.push(`MOMENTUM LONG: 4H Stoch ${stoch4h.k} neutral${isStrongTrend ? " (strong trend boost)" : ""}`);
     }
   } else if (biasDirection === "SHORT") {
     if (pullback.tier === "DEEP") {
-      if (stoch15mAlignsShort || stoch15mCrossDown) {
-        entryType = "RETEST"; confidence = 85;
-        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
-        debug.push(`DEEP PULLBACK SHORT: 4H Stoch ${stoch4h.k} extreme oversold + 15m aligns — trend stretched`);
-      }
+      entryType = "RETEST"; confidence = 85;
+      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
+      debug.push(`DEEP PULLBACK SHORT: 4H Stoch ${stoch4h.k} extreme overbought`);
     } else if (pullback.tier === "SHALLOW") {
-      if (stoch15mCrossDown || stoch15mAlignsShort) {
-        entryType = "BREAKOUT"; confidence = 75;
-        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
-        debug.push(`SHALLOW PULLBACK SHORT: 4H Stoch ${stoch4h.k} oversold + 15m confirms`);
-      }
+      entryType = "BREAKOUT"; confidence = 75;
+      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
+      debug.push(`SHALLOW PULLBACK SHORT: 4H Stoch ${stoch4h.k} overbought`);
     } else if (pullback.tier === "MOMENTUM") {
-      if (stoch15mCrossDown) {
-        entryType = "EARLY"; confidence = 60;
-        if (isStrongTrend) confidence += 10;
-        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
-        debug.push(`MOMENTUM SHORT: 4H Stoch ${stoch4h.k} neutral + 15m cross down${isStrongTrend ? " (strong trend boost)" : ""}`);
-      }
+      entryType = "EARLY"; confidence = 60;
+      if (isStrongTrend) confidence += 10;
+      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
+      debug.push(`MOMENTUM SHORT: 4H Stoch ${stoch4h.k} neutral${isStrongTrend ? " (strong trend boost)" : ""}`);
     }
   }
 
   if (!entryType && breakEvent.broken && breakEvent.line) {
-    const stoch15mAligns = biasDirection === "LONG" ? stoch15mAlignsLong : stoch15mAlignsShort;
-    if (stoch15mAligns) {
-      entryType = "BREAKOUT"; confidence = 80;
-      if (volConfirmed) confidence += 5;
-      trendlinePrice = getTrendlinePrice(breakEvent.line, candles4h.length - 1);
-      debug.push(`BREAKOUT ${biasDirection}: 4H ${breakEvent.line.type} broken, 15m confirms`);
-    }
+    entryType = "BREAKOUT"; confidence = 80;
+    if (volConfirmed) confidence += 5;
+    trendlinePrice = getTrendlinePrice(breakEvent.line, candles4h.length - 1);
+    debug.push(`BREAKOUT ${biasDirection}: 4H ${breakEvent.line.type} broken`);
   }
+
 
   if (!entryType) {
     debug.push("No entry setup — waiting for 15m signal or 4H trendline break");
@@ -862,6 +852,16 @@ export function shouldHold(
 
   if (currentR >= 2 && newPhase === "BUILDING") newPhase = "TREND";
   if (currentR >= 1 && newPhase === "ENTRY") newPhase = "BUILDING";
+
+  // PORTED FROM V28: Fast exhaustion exit — stoch extreme opposite
+  const stoch4h_exit = stochRsi(candles4h.map(c => c.close));
+  const stochExtremeOpposite = signal.direction === "LONG"
+    ? stoch4h_exit.k < 20   // was long, now oversold = trend exhausted
+    : stoch4h_exit.k > 80;  // was short, now overbought = trend exhausted
+
+  if (stochExtremeOpposite && currentR < 1) {
+    return { shouldHold: false, reason: "stoch_extreme_opposite_exit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
+  }
 
   const finalState: TradeState = {
     ...updatedState, phase: newPhase,
