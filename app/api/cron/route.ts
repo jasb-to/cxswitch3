@@ -7,6 +7,7 @@ import {
   aggregateTo1D,
   Signal,
   SignalResult,
+  setLastExitFunctions,
 } from "@/lib/strategy";
 import { getCandles, getCurrentPrice, krakenPairFormat } from "@/lib/kraken";
 import { sendAlert, sendExitAlert, alertError } from "@/lib/telegram";
@@ -15,6 +16,9 @@ import {
   loadActiveSignals,
   setLastCronRun,
   saveDashboardSnapshot,
+  persistExit,
+  loadLastExit,
+  persistLastExit,
 } from "@/lib/state";
 
 export const runtime = "nodejs";
@@ -48,8 +52,10 @@ export async function GET(req: NextRequest) {
   try { activeSignals = await loadActiveSignals(); } catch (e) { errors.push("loadActiveSignals: " + e); }
   if (!Array.isArray(activeSignals)) activeSignals = [];
 
-  // v37.4 FIX: Skip already-exited signals before any processing
-  // This prevents duplicate exit alerts from filterExpiredSignals
+  // v37.5: Wire Redis-backed lastExit functions into strategy module
+  setLastExitFunctions(loadLastExit, persistLastExit);
+
+  // v37.5 FIX: Pre-clean old exited signals to prevent duplicate processing
   const preCleanSignals = activeSignals.filter(s => !s.exited || (now - s.timestamp) < EXITED_TTL_MS);
   const prePruned = activeSignals.length - preCleanSignals.length;
   if (prePruned > 0) {
@@ -127,12 +133,11 @@ export async function GET(req: NextRequest) {
 
       // Handle pending exits (auto-exit after timeout)
       for (const signal of pendingForPair) {
-        // v37.4 FIX: Skip if already exited (defensive)
         if (signal.exited) continue;
 
         if (signal.exitRecommendedAt && (now - signal.exitRecommendedAt) > PENDING_EXIT_TIMEOUT_MS) {
           console.log(`[CRON] ${pair} | AUTO-EXIT | Pending exit timed out (${Math.round((now - signal.exitRecommendedAt!) / 60000)}min)`);
-          // v37.4 FIX: Mark as exited FIRST, then send alert
+          // Mark as exited FIRST, then send alert
           signal.exited = true;
           signal.status = "EXITED";
           signal.exitReason = "auto_exit_timeout";
@@ -146,6 +151,21 @@ export async function GET(req: NextRequest) {
             ? ((price - signal.entry) / signal.entry * 100)
             : ((signal.entry - price) / signal.entry * 100);
           const pnlStr = (isFinite(rawPnl) ? rawPnl.toFixed(2) : "0.00") + "%";
+
+          // v37.5: Persist exit record to Redis
+          try {
+            await persistExit({
+              id: signal.id,
+              pair: signal.pair,
+              direction: signal.direction,
+              entry: signal.entry,
+              exitPrice: price,
+              pnl: parseFloat(pnlStr),
+              reason: "auto_exit_timeout",
+              timestamp: now,
+            });
+          } catch (e) {}
+
           try { await sendExitAlert(signal, price, "auto_exit_timeout"); } catch (e) {}
           results[pair] = {
             status: "EXITED",
@@ -156,7 +176,6 @@ export async function GET(req: NextRequest) {
             phase: "EXIT",
           };
         } else {
-          // Still pending — skip evaluation for this pair
           console.log(`[CRON] ${pair} | PENDING_EXIT | waiting for user confirmation (${Math.round((PENDING_EXIT_TIMEOUT_MS - (now - signal.exitRecommendedAt!)) / 60000)}min left)`);
           results[pair] = {
             status: "PENDING_EXIT",
@@ -170,10 +189,8 @@ export async function GET(req: NextRequest) {
 
       if (activeForPair.length > 0) {
         for (const signal of activeForPair) {
-          // v37.4 FIX: Defensive skip if already exited
           if (signal.exited) continue;
 
-          // v37.2 debug: trace hoursInTrade for 4h_structure_failure
           const hoursInTrade = (now - signal.timestamp) / (60 * 60 * 1000);
           console.log(`[CRON] ${pair} | hoursInTrade: ${hoursInTrade.toFixed(2)} | timestamp: ${signal.timestamp} | now: ${now}`);
 
@@ -193,13 +210,26 @@ export async function GET(req: NextRequest) {
             const pnlStr = (isFinite(rawPnl) ? rawPnl.toFixed(2) : "0.00") + "%";
             console.log(`[CRON] ${pair} | EXIT RECOMMENDED | ${holdResult.reason} | ${pnlStr}`);
 
-            // v37.4 FIX: Mark signal as exited IMMEDIATELY before sending alert
-            // This prevents duplicate exits from filterExpiredSignals
+            // v37.5 FIX: Mark signal as exited IMMEDIATELY before sending alert
             signal.exited = true;
             signal.status = "EXITED";
             signal.exitReason = holdResult.reason;
             signal.exitTimestamp = now;
             signal.exitPrice = price;
+
+            // v37.5: Persist exit record to Redis
+            try {
+              await persistExit({
+                id: signal.id,
+                pair: signal.pair,
+                direction: signal.direction,
+                entry: signal.entry,
+                exitPrice: price,
+                pnl: parseFloat(pnlStr),
+                reason: holdResult.reason,
+                timestamp: now,
+              });
+            } catch (e) {}
 
             try { await sendExitAlert(signal, price, holdResult.reason); } catch (e) {}
 
@@ -229,7 +259,6 @@ export async function GET(req: NextRequest) {
           }
         }
       } else if (pendingForPair.length === 0) {
-        // Only evaluate new signals if no pending exit
         console.log(`[CRON] ${pair} | No active trades — evaluating`);
         const result = generateSignal(pair, candles1h, candles4h, candles1d, candles15m, activeSignals, price);
         signalResults[pair] = result || { debug: [] };
@@ -366,16 +395,12 @@ export async function GET(req: NextRequest) {
   }
 
   // ─── FILTER EXPIRED (SL/TP HITS) ───
-  // v37.4 FIX: filterExpiredSignals now only processes signals NOT already marked exited
-  // The pre-clean at the top of the loop already removed old exited signals
   try {
     const { active, exited } = filterExpiredSignals(activeSignals, currentPrices);
     if (exited.length > 0) {
       for (const { signal, reason } of exited) {
-        // v37.4 FIX: Double-check not already exited (belt and suspenders)
         if (!signal.exited) {
           const price = currentPrices[signal.pair] || signal.entry;
-          // Mark exited BEFORE sending alert
           signal.exited = true;
           signal.status = "EXITED";
           signal.exitReason = reason;
@@ -385,6 +410,25 @@ export async function GET(req: NextRequest) {
             signal.tradeState.phase = "EXIT";
             signal.tradeState.phaseEnteredAt = now;
           }
+
+          const rawPnl = signal.direction === "LONG"
+            ? ((price - signal.entry) / signal.entry * 100)
+            : ((signal.entry - price) / signal.entry * 100);
+          const pnlStr = (isFinite(rawPnl) ? rawPnl.toFixed(2) : "0.00") + "%";
+
+          try {
+            await persistExit({
+              id: signal.id,
+              pair: signal.pair,
+              direction: signal.direction,
+              entry: signal.entry,
+              exitPrice: price,
+              pnl: parseFloat(pnlStr),
+              reason,
+              timestamp: now,
+            });
+          } catch (e) {}
+
           try { await sendExitAlert(signal, price, reason); } catch (e) {}
         }
       }
