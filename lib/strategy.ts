@@ -426,8 +426,8 @@ function detectTrend(candles1d: Candle[]): {
   if (adxVal !== null) {
     debug.push(`1D ADX: ${adxVal.toFixed(1)}`);
     if (adxVal < 20) {
-      debug.push(`ADX < 20 — NO TRADE ZONE`);
-      direction = null; strength = 0;
+      debug.push(`ADX < 20 — weak trend confidence reduced`);
+      strength = Math.max(10, strength - 30);
     } else if (adxVal >= 25) {
       strength = Math.min(100, strength + 10);
       debug.push(`ADX >= 25 — strong trend`);
