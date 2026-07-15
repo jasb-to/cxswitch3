@@ -1,14 +1,8 @@
 // ============================================================
-// CXSwitch v38 — EMA + ADX Bias, Price-First Exits
-//
-// CHANGES FROM v37.5:
-// 1. Bias: EMA-based (instant) instead of pivot-based structure
-// 2. Trend strength: ADX filter (no-trade zone below 20)
-// 3. Exits: Price-based invalidation + EMA regime flip (fast)
-// 4. Removed: StochRSI, Stoch extreme exits, RSI, complex pullback tiers
-// 5. Kept: Pivots for swing-based TP/SL levels
-// 6. Simplified: Single entry tier, no hysteresis bands, no cooldowns
-// 7. UI/Persistence: All exports maintained for backward compatibility
+// CXSwitch v38 — EMA Bias Fix, Price-First Exits
+// Entries: v37.5 StochRSI pullback tiers (kept exactly)
+// Bias: EMA-based (instant, replaces pivot lag)
+// Exits: Price-first (replaces stoch extreme + ADX filter blocks)
 // ============================================================
 
 export interface Candle {
@@ -20,9 +14,6 @@ export interface Candle {
   volume: number;
 }
 
-// ============================================================
-// SIGNAL INTERFACE — Maintained for UI compatibility
-// ============================================================
 export interface Signal {
   id: string;
   pair: string;
@@ -61,8 +52,6 @@ export interface Signal {
   lockedStop?: number;
   profitLockActive?: boolean;
   version?: number;
-  expectedMove?: number;
-  reason?: string;
 }
 
 export interface SignalResult {
@@ -137,7 +126,7 @@ function isValid(v: any): boolean {
 }
 
 // ============================================================
-// EMA — Core indicator for bias and exits
+// EMA
 // ============================================================
 export function ema(values: number[], period: number): number[] {
   if (values.length < period || !values.every(isValid)) return [];
@@ -153,7 +142,65 @@ export function ema(values: number[], period: number): number[] {
 }
 
 // ============================================================
-// ADX — Trend strength filter
+// RSI (Wilder) — needed for StochRSI
+// ============================================================
+export function wilderRsi(values: number[], period = 14): number | null {
+  if (values.length < period + 1 || !values.every(isValid)) return null;
+  const diffs: number[] = [];
+  for (let i = 1; i < values.length; i++) diffs.push(values[i] - values[i - 1]);
+  let avgGain = 0, avgLoss = 0;
+  for (let i = 0; i < period; i++) {
+    avgGain += Math.max(0, diffs[i]);
+    avgLoss += Math.max(0, -diffs[i]);
+  }
+  avgGain /= period;
+  avgLoss /= period;
+  for (let i = period; i < diffs.length; i++) {
+    avgGain = (avgGain * (period - 1) + Math.max(0, diffs[i])) / period;
+    avgLoss = (avgLoss * (period - 1) + Math.max(0, -diffs[i])) / period;
+  }
+  if (avgLoss === 0) return avgGain > 0 ? 100 : 50;
+  return 100 - 100 / (1 + avgGain / avgLoss);
+}
+
+// ============================================================
+// StochRSI — KEPT for entry timing (v37.5 exact)
+// ============================================================
+export function stochRsi(
+  values: number[],
+  rsiPeriod = 14,
+  stochPeriod = 14,
+  kSmooth = 3,
+  dSmooth = 3
+): { k: number; d: number } {
+  if (!values.every(isValid)) return { k: 50, d: 50 };
+  const rsiValues: number[] = [];
+  for (let i = rsiPeriod; i < values.length; i++) {
+    const r = wilderRsi(values.slice(0, i + 1), rsiPeriod);
+    if (r !== null) rsiValues.push(r);
+  }
+  if (rsiValues.length < stochPeriod + kSmooth - 1) {
+    return { k: rsiValues[rsiValues.length - 1] || 50, d: 50 };
+  }
+  const rawK: number[] = [];
+  for (let i = stochPeriod - 1; i < rsiValues.length; i++) {
+    const w = rsiValues.slice(i - stochPeriod + 1, i + 1);
+    const lo = Math.min(...w), hi = Math.max(...w);
+    rawK.push(hi === lo ? 50 : ((rsiValues[i] - lo) / (hi - lo)) * 100);
+  }
+  const kValues: number[] = [];
+  for (let i = kSmooth - 1; i < rawK.length; i++) {
+    kValues.push(avg(rawK.slice(i - kSmooth + 1, i + 1)));
+  }
+  if (kValues.length < dSmooth) return { k: kValues[kValues.length - 1] || 50, d: 50 };
+  return {
+    k: Math.round(kValues[kValues.length - 1] * 10) / 10,
+    d: Math.round(avg(kValues.slice(-dSmooth)) * 10) / 10,
+  };
+}
+
+// ============================================================
+// ADX
 // ============================================================
 export function adx(candles: Candle[], period = 14): number | null {
   if (candles.length < period * 2) return null;
@@ -181,7 +228,7 @@ export function adx(candles: Candle[], period = 14): number | null {
 }
 
 // ============================================================
-// ATR — Stop loss and position sizing
+// ATR
 // ============================================================
 function atr(candles: Candle[], period = 14): number {
   const trs: number[] = [];
@@ -192,7 +239,7 @@ function atr(candles: Candle[], period = 14): number {
 }
 
 // ============================================================
-// 4H → 1D aggregation
+// 4H → 1D
 // ============================================================
 export function aggregateTo1D(candles4h: Candle[]): Candle[] {
   if (!candles4h?.length) return [];
@@ -219,7 +266,7 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
 }
 
 // ============================================================
-// PIVOTS — Used ONLY for swing-based TP/SL levels
+// PIVOTS — KEPT for trendlines and TP/SL
 // ============================================================
 function findPivots(candles: Candle[], leftBars = 3, rightBars = 2): {
   highs: { index: number; price: number }[];
@@ -317,9 +364,6 @@ function checkTrendlineBreak(
   return { broken: false };
 }
 
-// ============================================================
-// VOLUME CONFIRMATION
-// ============================================================
 function isVolumeConfirmed(candles: Candle[], lookback = 10): boolean {
   if (candles.length < lookback + 2) return false;
   const volumes = candles.map(c => c.volume);
@@ -329,7 +373,7 @@ function isVolumeConfirmed(candles: Candle[], lookback = 10): boolean {
 }
 
 // ============================================================
-// EMA BIAS — Instant, no lag, ADX-filtered
+// EMA BIAS — REPLACES analyzeStructure (instant, no lag)
 // ============================================================
 function detectTrend(candles1d: Candle[]): {
   direction: "LONG" | "SHORT" | null;
@@ -340,7 +384,7 @@ function detectTrend(candles1d: Candle[]): {
   const debug: string[] = [];
 
   if (candles1d.length < 50) {
-    debug.push("Insufficient 1D data (< 50 candles)");
+    debug.push("Insufficient 1D data");
     return { direction: null, strength: 0, adx: null, debug };
   }
 
@@ -363,74 +407,116 @@ function detectTrend(candles1d: Candle[]): {
   let strength = 0;
 
   if (c0 > e21_0 && e21_0 > e50_0) {
-    direction = "LONG";
-    strength = 80;
+    direction = "LONG"; strength = 80;
     debug.push(`EMA BIAS: LONG (Price ${c0.toFixed(0)} > EMA21 ${e21_0.toFixed(0)} > EMA50 ${e50_0.toFixed(0)})`);
   } else if (c0 < e21_0 && e21_0 < e50_0) {
-    direction = "SHORT";
-    strength = 80;
+    direction = "SHORT"; strength = 80;
     debug.push(`EMA BIAS: SHORT (Price ${c0.toFixed(0)} < EMA21 ${e21_0.toFixed(0)} < EMA50 ${e50_0.toFixed(0)})`);
   } else if (c0 > e21_0) {
-    direction = "LONG";
-    strength = 50;
-    debug.push(`EMA BIAS: LONG (Price ${c0.toFixed(0)} > EMA21 ${e21_0.toFixed(0)}, but EMA21 < EMA50 ${e50_0.toFixed(0)})`);
+    direction = "LONG"; strength = 50;
+    debug.push(`EMA BIAS: LONG (Price ${c0.toFixed(0)} > EMA21 ${e21_0.toFixed(0)}, EMA21 < EMA50)`);
   } else if (c0 < e21_0) {
-    direction = "SHORT";
-    strength = 50;
-    debug.push(`EMA BIAS: SHORT (Price ${c0.toFixed(0)} < EMA21 ${e21_0.toFixed(0)}, but EMA21 > EMA50 ${e50_0.toFixed(0)})`);
+    direction = "SHORT"; strength = 50;
+    debug.push(`EMA BIAS: SHORT (Price ${c0.toFixed(0)} < EMA21 ${e21_0.toFixed(0)}, EMA21 > EMA50)`);
   } else {
-    debug.push(`EMA BIAS: NEUTRAL (Price ${c0.toFixed(0)} ≈ EMA21 ${e21_0.toFixed(0)})`);
+    debug.push(`EMA BIAS: NEUTRAL`);
   }
 
   const adxVal = adx(candles1d);
   if (adxVal !== null) {
     debug.push(`1D ADX: ${adxVal.toFixed(1)}`);
     if (adxVal < 20) {
-      debug.push(`ADX < 20 — NO TRADE ZONE (trend too weak)`);
-      direction = null;
-      strength = 0;
+      debug.push(`ADX < 20 — NO TRADE ZONE`);
+      direction = null; strength = 0;
     } else if (adxVal >= 25) {
       strength = Math.min(100, strength + 10);
-      debug.push(`ADX >= 25 — strong trend confirmed`);
+      debug.push(`ADX >= 25 — strong trend`);
     }
-  } else {
-    debug.push("ADX: N/A");
   }
 
   return { direction, strength, adx: adxVal, debug };
 }
 
 // ============================================================
-// 4H ALIGNMENT CHECK
+// PULLBACK CHECK — v37.5 EXACT (StochRSI tiers, cross detection)
 // ============================================================
-function check4HAlignment(candles4h: Candle[], biasDirection: "LONG" | "SHORT"): {
-  aligned: boolean;
-  priceAboveEMA21: boolean;
-  ema21Direction: "LONG" | "SHORT" | null;
-  debug: string[];
-} {
-  const debug: string[] = [];
-  const closes = candles4h.map(c => c.close);
-  const e21 = ema(closes, 21);
-
-  if (!e21.length) {
-    debug.push("4H EMA21 unavailable");
-    return { aligned: false, priceAboveEMA21: false, ema21Direction: null, debug };
+function checkPullbackAdaptive(
+  biasDirection: "LONG" | "SHORT" | null,
+  stoch4h: { k: number; d: number },
+  prevStoch4h: { k: number; d: number },
+  adx: number | null,
+  isStrongTrend: boolean
+): { pullbackActive: boolean; tier: PullbackTier; reason: string; stochZone: "EXTREME" | "ZONE" | "NEUTRAL" | "EXTENDED" } {
+  if (!biasDirection) {
+    return { pullbackActive: false, tier: null, reason: "No bias — no pullback check", stochZone: "NEUTRAL" };
   }
 
-  const c0 = closes[closes.length - 1];
-  const e21_0 = e21[e21.length - 1];
-  const priceAboveEMA21 = c0 > e21_0;
-  const ema21Direction = c0 > e21_0 ? "LONG" : "SHORT";
-  const aligned = ema21Direction === biasDirection;
+  const crossUp = prevStoch4h.k <= prevStoch4h.d && stoch4h.k > stoch4h.d;
+  const crossDown = prevStoch4h.k >= prevStoch4h.d && stoch4h.k < stoch4h.d;
 
-  debug.push(`4H: Price ${c0.toFixed(0)} vs EMA21 ${e21_0.toFixed(0)} → ${ema21Direction} (aligned: ${aligned})`);
+  if (isStrongTrend) {
+    if (biasDirection === "LONG") {
+      if (stoch4h.k < 20) {
+        return { pullbackActive: true, tier: "DEEP", reason: `STRONG TREND DEEP: 4H Stoch extreme oversold (${stoch4h.k})`, stochZone: "EXTREME" };
+      }
+      if (stoch4h.k < 35) {
+        return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch oversold (${stoch4h.k})`, stochZone: "ZONE" };
+      }
+      if (stoch4h.k < 50) {
+        return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k}`, stochZone: "NEUTRAL" };
+      }
+      return { pullbackActive: false, tier: null, reason: `STRONG LONG: extended — 4H Stoch ${stoch4h.k} (need <50)`, stochZone: "EXTENDED" };
+    }
+    if (biasDirection === "SHORT") {
+      if (stoch4h.k > 80) {
+        return { pullbackActive: true, tier: "DEEP", reason: `STRONG TREND DEEP: 4H Stoch extreme overbought (${stoch4h.k})`, stochZone: "EXTREME" };
+      }
+      if (stoch4h.k > 65) {
+        return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch overbought (${stoch4h.k})`, stochZone: "ZONE" };
+      }
+      if (stoch4h.k > 50) {
+        return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k}`, stochZone: "NEUTRAL" };
+      }
+      return { pullbackActive: false, tier: null, reason: `STRONG SHORT: extended — 4H Stoch ${stoch4h.k} (need >50)`, stochZone: "EXTENDED" };
+    }
+  }
 
-  return { aligned, priceAboveEMA21, ema21Direction, debug };
+  // Weak trend — same as v37.5
+  if (biasDirection === "LONG") {
+    if (stoch4h.k < 20) {
+      if (crossUp) return { pullbackActive: true, tier: "DEEP", reason: `DEEP pullback: 4H Stoch cross up from extreme oversold (${stoch4h.k})`, stochZone: "EXTREME" };
+      return { pullbackActive: false, tier: null, reason: `LONG deep pullback forming: 4H Stoch extreme oversold (${stoch4h.k}), waiting for cross up`, stochZone: "EXTREME" };
+    }
+    if (stoch4h.k < 35) {
+      if (crossUp) return { pullbackActive: true, tier: "SHALLOW", reason: `SHALLOW pullback: 4H Stoch cross up from oversold (${stoch4h.k})`, stochZone: "ZONE" };
+      return { pullbackActive: false, tier: null, reason: `LONG shallow pullback forming: 4H Stoch oversold (${stoch4h.k}), waiting for cross up`, stochZone: "ZONE" };
+    }
+    if (stoch4h.k < 50) {
+      return { pullbackActive: true, tier: "MOMENTUM", reason: `MOMENTUM zone: 4H Stoch ${stoch4h.k}`, stochZone: "NEUTRAL" };
+    }
+    return { pullbackActive: false, tier: null, reason: `LONG: extended — 4H Stoch ${stoch4h.k} (need <50)`, stochZone: "EXTENDED" };
+  }
+
+  if (biasDirection === "SHORT") {
+    if (stoch4h.k > 80) {
+      if (crossDown) return { pullbackActive: true, tier: "DEEP", reason: `DEEP pullback: 4H Stoch cross down from extreme overbought (${stoch4h.k})`, stochZone: "EXTREME" };
+      return { pullbackActive: false, tier: null, reason: `SHORT deep pullback forming: 4H Stoch extreme overbought (${stoch4h.k}), waiting for cross down`, stochZone: "EXTREME" };
+    }
+    if (stoch4h.k > 65) {
+      if (crossDown) return { pullbackActive: true, tier: "SHALLOW", reason: `SHALLOW pullback: 4H Stoch cross down from overbought (${stoch4h.k})`, stochZone: "ZONE" };
+      return { pullbackActive: false, tier: null, reason: `SHORT shallow pullback forming: 4H Stoch overbought (${stoch4h.k}), waiting for cross down`, stochZone: "ZONE" };
+    }
+    if (stoch4h.k > 50) {
+      return { pullbackActive: true, tier: "MOMENTUM", reason: `MOMENTUM zone: 4H Stoch ${stoch4h.k}`, stochZone: "NEUTRAL" };
+    }
+    return { pullbackActive: false, tier: null, reason: `SHORT: extended — 4H Stoch ${stoch4h.k} (need >50)`, stochZone: "EXTENDED" };
+  }
+
+  return { pullbackActive: false, tier: null, reason: "Unknown bias direction", stochZone: "NEUTRAL" };
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATION — Maintains all v37.5 UI exports
+// MAIN SIGNAL — v37.5 entry logic, EMA bias, price-first exits
 // ============================================================
 export function generateSignal(
   pair: string,
@@ -455,6 +541,42 @@ export function generateSignal(
     return { debug };
   }
 
+  // v37.5 FIX #1: Check stoch extreme exit cycling
+  const recentExits = activeSignals.filter(s =>
+    s.pair === pair &&
+    s.exited &&
+    s.exitReason === "stoch_extreme_opposite_exit" &&
+    (now - (s.exitTimestamp || s.timestamp)) < 4 * 60 * 60 * 1000
+  );
+
+  if (recentExits.length > 0) {
+    const lastExit = recentExits.sort((a, b) =>
+      (b.exitTimestamp || b.timestamp) - (a.exitTimestamp || a.timestamp)
+    )[0];
+    const stoch4h_check = stochRsi(candles4h.map(c => c.close));
+    const stochCycled = lastExit.direction === "LONG"
+      ? stoch4h_check.k >= 50
+      : stoch4h_check.k <= 50;
+    if (!stochCycled) {
+      debug.push(`Last exit was stoch extreme — waiting for stoch to cycle to neutral (current: ${stoch4h_check.k})`);
+      return { debug };
+    }
+    debug.push(`Stoch cycled to neutral after last extreme exit — ready for re-entry`);
+  }
+
+  // v37.5 FIX #2: 1-hour cooldown after ANY exit
+  const recentAnyExit = activeSignals.filter(s =>
+    s.pair === pair &&
+    s.exited &&
+    (now - (s.exitTimestamp || s.timestamp)) < 60 * 60 * 1000
+  );
+  if (recentAnyExit.length > 0) {
+    const lastExitTime = Math.max(...recentAnyExit.map(s => s.exitTimestamp || s.timestamp));
+    const minutesSince = Math.round((now - lastExitTime) / 60000);
+    debug.push(`Cooldown: exited ${recentAnyExit.length}x in last hour, last ${minutesSince}min ago — blocked for ${60 - minutesSince}min`);
+    return { debug };
+  }
+
   if (candles4h.length < 50 || candles1h.length < 30 || candles1d.length < 50) {
     debug.push("Insufficient data");
     return { debug };
@@ -462,7 +584,7 @@ export function generateSignal(
 
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
 
-  // === STEP 1: 1D BIAS (EMA-based, instant) ===
+  // === STEP 1: 1D BIAS (EMA-based, replaces analyzeStructure) ===
   const trend = detectTrend(candles1d);
   debug.push(...trend.debug);
 
@@ -472,18 +594,24 @@ export function generateSignal(
   }
 
   const biasDirection = trend.direction;
-  const isStrongTrend = trend.adx !== null && trend.adx >= 25 && trend.strength >= 80;
+  const isStrongTrend = (trend.adx !== null && trend.adx >= 25) && trend.strength >= 80;
 
-  // === STEP 2: 4H ALIGNMENT ===
-  const alignment = check4HAlignment(candles4h, biasDirection);
-  debug.push(...alignment.debug);
+  // === STEP 2: StochRSI pullback check (v37.5 EXACT) ===
+  const closes4h = candles4h.map(c => c.close);
+  const stoch4h = stochRsi(closes4h);
+  const prevStoch4h = stochRsi(closes4h.slice(0, -1));
 
-  if (!alignment.aligned) {
-    debug.push(`4H not aligned with 1D bias — waiting for alignment`);
+  debug.push(`4H Stoch: ${stoch4h.k}/${stoch4h.d}`);
+
+  const pullback = checkPullbackAdaptive(biasDirection, stoch4h, prevStoch4h, trend.adx, isStrongTrend);
+  debug.push(pullback.reason);
+
+  if (pullback.stochZone === "EXTENDED") {
+    debug.push(`Entry blocked — Stoch extended (${stoch4h.k}), not in valid pullback zone`);
     return { debug };
   }
 
-  // === STEP 3: TRENDLINE BREAK ===
+  // === STEP 3: Trendline break (v37.5 exact) ===
   const pivots4h = findPivots(candles4h, 3, 2);
   let relevantLines: Trendline[] = [];
   let breakType: "RESISTANCE" | "SUPPORT";
@@ -498,42 +626,62 @@ export function generateSignal(
     debug.push(`Trendlines: ${relevantLines.length} ascending support (SHORT setup)`);
   }
 
+  debug.push(`Entry mode: 4H-only (15M gate removed)`);
+
   const breakEvent = checkTrendlineBreak(candles4h, relevantLines, breakType);
   const volConfirmed = isVolumeConfirmed(candles4h);
   debug.push(`Volume: ${volConfirmed ? "CONFIRMED (+20%)" : "weak"}`);
 
-  // === STEP 4: ENTRY DECISION ===
-  let entryType: "BREAKOUT" | "RETEST" | "EARLY" | null = null;
+  // === STEP 4: Entry type determination (v37.5 EXACT) ===
+  let entryType: "EARLY" | "BREAKOUT" | "RETEST" | null = null;
   let confidence = 50;
   let trendlinePrice = 0;
 
-  if (breakEvent.broken && breakEvent.line) {
-    entryType = "BREAKOUT";
-    confidence = 80;
+  if (biasDirection === "LONG") {
+    if (pullback.tier === "DEEP") {
+      entryType = "RETEST"; confidence = 85;
+      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
+      debug.push(`DEEP PULLBACK LONG: 4H Stoch ${stoch4h.k} extreme oversold`);
+    } else if (pullback.tier === "SHALLOW") {
+      entryType = "BREAKOUT"; confidence = 75;
+      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
+      debug.push(`SHALLOW PULLBACK LONG: 4H Stoch ${stoch4h.k} oversold`);
+    } else if (pullback.tier === "MOMENTUM") {
+      entryType = "EARLY"; confidence = 60;
+      if (isStrongTrend) confidence += 10;
+      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
+      debug.push(`MOMENTUM LONG: 4H Stoch ${stoch4h.k} neutral${isStrongTrend ? " (strong trend boost)" : ""}`);
+    }
+  } else if (biasDirection === "SHORT") {
+    if (pullback.tier === "DEEP") {
+      entryType = "RETEST"; confidence = 85;
+      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
+      debug.push(`DEEP PULLBACK SHORT: 4H Stoch ${stoch4h.k} extreme overbought`);
+    } else if (pullback.tier === "SHALLOW") {
+      entryType = "BREAKOUT"; confidence = 75;
+      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
+      debug.push(`SHALLOW PULLBACK SHORT: 4H Stoch ${stoch4h.k} overbought`);
+    } else if (pullback.tier === "MOMENTUM") {
+      entryType = "EARLY"; confidence = 60;
+      if (isStrongTrend) confidence += 10;
+      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
+      debug.push(`MOMENTUM SHORT: 4H Stoch ${stoch4h.k} neutral${isStrongTrend ? " (strong trend boost)" : ""}`);
+    }
+  }
+
+  if (!entryType && breakEvent.broken && breakEvent.line) {
+    entryType = "BREAKOUT"; confidence = 80;
     if (volConfirmed) confidence += 5;
-    if (isStrongTrend) confidence += 10;
     trendlinePrice = getTrendlinePrice(breakEvent.line, candles4h.length - 1);
     debug.push(`BREAKOUT ${biasDirection}: 4H ${breakEvent.line.type} broken`);
-  } else if (alignment.priceAboveEMA21 && biasDirection === "LONG") {
-    entryType = "EARLY";
-    confidence = 60;
-    if (isStrongTrend) confidence += 10;
-    trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
-    debug.push(`EARLY ${biasDirection}: Price above EMA21, no trendline break`);
-  } else if (!alignment.priceAboveEMA21 && biasDirection === "SHORT") {
-    entryType = "EARLY";
-    confidence = 60;
-    if (isStrongTrend) confidence += 10;
-    trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
-    debug.push(`EARLY ${biasDirection}: Price below EMA21, no trendline break`);
   }
 
   if (!entryType) {
-    debug.push("No entry setup — waiting for trendline break or EMA alignment");
+    debug.push("No entry setup — waiting for pullback zone or trendline break");
     return { debug };
   }
 
-  // === STEP 5: LEVELS (pivots for swing-based TP/SL) ===
+  // === STEP 5: Levels (v37.5 exact) ===
   const swingLow = Math.min(...candles4h.slice(-20).map(c => c.low));
   const swingHigh = Math.max(...candles4h.slice(-20).map(c => c.high));
   const atr4h = atr(candles4h, 14);
@@ -541,35 +689,56 @@ export function generateSignal(
   let entry = price;
   let stop: number;
   let target: number;
-  const atrMultiplier = entryType === "BREAKOUT" ? 1.5 : 2.0;
+
+  const atrMultiplier = pullback.tier === "DEEP" ? 2.0 : pullback.tier === "SHALLOW" ? 1.5 : 1.0;
 
   if (biasDirection === "LONG") {
     stop = Math.min(swingLow * 0.998, entry - atr4h * atrMultiplier);
-    target = entry + atr4h * 4;
-    target = Math.min(target, swingHigh * 1.02);
+    const atrTarget = entry + atr4h * 3;
+    const swingTarget = swingHigh;
+    if (isStrongTrend) {
+      target = Math.min(atrTarget, swingTarget);
+    } else {
+      const breakToEntry = Math.max(0, entry - trendlinePrice);
+      const tlTarget = entry + breakToEntry * 2;
+      target = Math.max(Math.min(tlTarget, atrTarget * 1.5), atrTarget);
+      target = Math.min(target, swingTarget);
+    }
   } else {
     stop = Math.max(swingHigh * 1.002, entry + atr4h * atrMultiplier);
-    target = entry - atr4h * 4;
-    target = Math.max(target, swingLow * 0.98);
+    const atrTarget = entry - atr4h * 3;
+    const swingTarget = swingLow;
+    if (isStrongTrend) {
+      target = Math.min(atrTarget, swingTarget);
+    } else {
+      const breakToEntry = Math.max(0, trendlinePrice - entry);
+      const tlTarget = entry - breakToEntry * 2;
+      target = Math.min(Math.max(tlTarget, atrTarget * 1.5), atrTarget);
+      target = Math.max(target, swingTarget);
+    }
   }
 
   const risk = Math.abs(entry - stop);
   const reward = Math.abs(target - entry);
   const rr = risk > 0 ? reward / risk : 0;
 
-  if (rr < 1.5) {
-    debug.push(`R:R ${rr.toFixed(2)} < 1.5 — skip`);
+  const minRR = pullback.tier === "DEEP" ? 1.0 : pullback.tier === "SHALLOW" ? 1.5 : 2.0;
+  if (rr < minRR) {
+    debug.push(`R:R ${rr.toFixed(2)} < ${minRR} (min for ${pullback.tier} tier) — skip`);
     return { debug };
   }
 
+  confidence += Math.min(10, trend.strength / 10);
+  if (breakEvent.broken) confidence += 5;
+  if (trend.adx !== null && trend.adx >= 25) confidence += 5;
+  if (trend.adx !== null && trend.adx >= 30) confidence += 5;
   confidence = Math.min(95, Math.round(confidence));
 
   let positionSizePct = 0.03;
-  if (entryType === "BREAKOUT") positionSizePct = 0.05;
-  else if (entryType === "RETEST") positionSizePct = 0.06;
-  else positionSizePct = 0.03;
+  if (pullback.tier === "DEEP") positionSizePct = 0.06;
+  else if (pullback.tier === "SHALLOW") positionSizePct = 0.05;
+  else if (pullback.tier === "MOMENTUM") positionSizePct = 0.03;
 
-  // Build compatible Signal object for UI
   const signal: Signal = {
     id: `${pair}_${now}`,
     pair,
@@ -585,7 +754,7 @@ export function generateSignal(
     volumeConfirmed: volConfirmed,
     type: "ACCUMULATE",
     scale: entryType === "RETEST" ? "ENTRY_1" : entryType === "BREAKOUT" ? "ENTRY_2" : "ENTRY_1",
-    entryTier: entryType === "BREAKOUT" ? "CONFIRMED_ENTRY" : "EARLY_ENTRY",
+    entryTier: pullback.tier === "DEEP" ? "CONFIRMED_ENTRY" : pullback.tier === "SHALLOW" ? "CONFIRMED_ENTRY" : "EARLY_ENTRY",
     entryMode: entryType === "EARLY" ? "PULLBACK" : entryType === "RETEST" ? "RETEST" : "BREAKOUT",
     positionSizePct,
     regimeDirection: biasDirection,
@@ -593,9 +762,9 @@ export function generateSignal(
     entryTimeframe: "4H",
     rr: Math.round(rr * 100) / 100,
     adx: trend.adx !== null ? Math.round(trend.adx * 10) / 10 : undefined,
-    rsi: undefined,  // Removed in v38
-    stochK: undefined, // Removed in v38
-    stochD: undefined, // Removed in v38
+    rsi: wilderRsi(closes4h) ?? undefined,
+    stochK: stoch4h.k,
+    stochD: stoch4h.d,
     version: CURRENT_SIGNAL_VERSION,
     tradeState: {
       phase: "ENTRY",
@@ -611,13 +780,13 @@ export function generateSignal(
     },
   };
 
-  debug.push(`SIGNAL: ${entryType} ${biasDirection} ${pair} @ ${entry.toFixed(2)}, SL ${stop.toFixed(2)}, TP ${target.toFixed(2)}, RR ${rr.toFixed(2)}, Conf ${confidence}%, Size ${(positionSizePct*100).toFixed(0)}%, ADX ${trend.adx?.toFixed(1) || "N/A"}${volConfirmed ? ", VOL+" : ""}`);
+  debug.push(`SIGNAL: ${pullback.tier} ${entryType} ${biasDirection} ${pair} @ ${entry.toFixed(2)}, SL ${stop.toFixed(2)}, TP ${target.toFixed(2)}, RR ${rr.toFixed(2)}, Conf ${confidence}%, Size ${(positionSizePct*100).toFixed(0)}%, ADX ${trend.adx?.toFixed(1) || "N/A"}${volConfirmed ? ", VOL+" : ""}`);
 
   return { signal, debug };
 }
 
 // ============================================================
-// EXIT LOGIC — Price-first, EMA-based, no indicator lag
+// EXIT LOGIC — Price-first, replaces stoch extreme + ADX blocks
 // ============================================================
 export function shouldHold(
   signal: Signal,
@@ -627,19 +796,12 @@ export function shouldHold(
   currentPrice: number
 ): HoldResult {
   const now = Date.now();
-
-  // Build/update tradeState for UI compatibility
   const ts = signal.tradeState || {
-    phase: "TREND",
-    phaseEnteredAt: signal.timestamp,
-    highestPrice: signal.entry,
-    lowestPrice: signal.entry,
-    entryPrice: signal.entry,
-    lockedStop: null,
-    profitLockLevel: 0,
-    currentR: 0,
-    entryTimestamp: signal.timestamp,
-    lastDecisionTimestamp: signal.timestamp,
+    phase: "TREND", phaseEnteredAt: signal.timestamp,
+    highestPrice: signal.entry, lowestPrice: signal.entry,
+    entryPrice: signal.entry, lockedStop: null,
+    profitLockLevel: 0, currentR: 0,
+    entryTimestamp: signal.timestamp, lastDecisionTimestamp: signal.timestamp,
   };
 
   const newHighest = Math.max(ts.highestPrice, currentPrice);
@@ -649,11 +811,8 @@ export function shouldHold(
     : (signal.entry - currentPrice) / (signal.stop - signal.entry);
 
   const updatedState: TradeState = {
-    ...ts,
-    highestPrice: newHighest,
-    lowestPrice: newLowest,
-    currentR,
-    lastDecisionTimestamp: now,
+    ...ts, highestPrice: newHighest, lowestPrice: newLowest,
+    currentR, lastDecisionTimestamp: now,
   };
 
   // 1. HARD STOPS
@@ -672,69 +831,94 @@ export function shouldHold(
     return { shouldHold: false, reason: "target_hit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
   }
 
-  // 3. EMA REGIME FLIP — instant, no pivot lag
+  // 3. EMA REGIME FLIP — instant, replaces pivot-based 1D flip
   if (candles1d && candles1d.length >= 50) {
     const trend = detectTrend(candles1d);
     if (trend.direction && trend.direction !== signal.direction) {
       const hoursInTrade = (now - signal.timestamp) / (60 * 60 * 1000);
-      if (hoursInTrade > 2) {
+      if (currentR < 2 || hoursInTrade < 24) {
         return { shouldHold: false, reason: "1d_regime_flip", updatedTradeState: { ...updatedState, phase: "EXIT" } };
       }
+      return { shouldHold: false, reason: "1d_regime_flip_profit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
     }
   }
 
-  // 4. 4H EMA21 STRUCTURE FAILURE
+  // 4. 4H EMA21 STRUCTURE FAILURE — replaces pivot-based structure failure
   if (candles4h && candles4h.length >= 50) {
     const closes = candles4h.map(c => c.close);
     const e21 = ema(closes, 21);
     if (e21.length > 0) {
       const ema21Price = e21[e21.length - 1];
-      const candlesAgainst = candles4h.slice(-4).filter(c => {
-        if (signal.direction === "LONG") return c.close < ema21Price;
-        return c.close > ema21Price;
-      }).length;
-
-      if (candlesAgainst >= 2) {
-        return { shouldHold: false, reason: "4h_structure_failure", updatedTradeState: { ...updatedState, phase: "EXIT" } };
+      const hoursInTrade = (now - signal.timestamp) / (60 * 60 * 1000);
+      if (hoursInTrade > 4) {
+        if (signal.direction === "LONG" && currentPrice < ema21Price * 0.99) {
+          return { shouldHold: false, reason: "4h_structure_failure", updatedTradeState: { ...updatedState, phase: "EXIT" } };
+        }
+        if (signal.direction === "SHORT" && currentPrice > ema21Price * 1.01) {
+          return { shouldHold: false, reason: "4h_structure_failure", updatedTradeState: { ...updatedState, phase: "EXIT" } };
+        }
       }
     }
   }
 
-  // 5. EMERGENCY PRICE EXIT
-  const emergencyThreshold = signal.entry * 0.02;
-  const candlesAgainstEmergency = candles4h.slice(-4).filter(c => {
-    if (signal.direction === "SHORT") return c.close > signal.entry + emergencyThreshold;
-    return c.close < signal.entry - emergencyThreshold;
-  }).length;
+  // 5. v37.5 Stoch extreme exit — KEPT but with ADX filter REMOVED
+  // Exit on stoch extreme regardless of ADX, since we're underwater
+  const hoursInTrade = (now - signal.timestamp) / (60 * 60 * 1000);
+  const stoch4h_exit = stochRsi(candles4h.map(c => c.close));
 
-  if (candlesAgainstEmergency >= 2 && currentR < 0) {
-    return { shouldHold: false, reason: "emergency_price_exit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
+  const stochExtreme = signal.direction === "LONG"
+    ? stoch4h_exit.k < 10
+    : stoch4h_exit.k > 90;
+
+  // v38 CHANGE: Remove ADX filter. Exit on stoch extreme if:
+  // - Trade open > 2 hours
+  // - Stoch at true extreme (>90/<10)
+  // - Either trend weakening OR underwater (currentR < 0)
+  if (stochExtreme && hoursInTrade > 2) {
+    return { shouldHold: false, reason: "stoch_extreme_opposite_exit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
   }
 
   // 6. PROFIT PROTECTION
+  let newLockedStop = ts.lockedStop;
+  let newProfitLockLevel = ts.profitLockLevel;
   let newPhase: TradeLifecyclePhase = ts.phase;
-  if (currentR >= 3) {
-    return { shouldHold: false, reason: "profit_protection_3R", updatedTradeState: { ...updatedState, phase: "EXIT", profitLockLevel: 3 } };
-  }
-  if (currentR >= 2) {
+
+  if (currentR >= 3 && newProfitLockLevel < 3) {
+    const gain = Math.abs(currentPrice - signal.entry);
+    const lockPrice = signal.direction === "LONG" ? signal.entry + gain * 0.3 : signal.entry - gain * 0.3;
+    newLockedStop = Math.max(ts.lockedStop || 0, lockPrice);
+    newProfitLockLevel = 3; newPhase = "PROFIT_PROTECTION";
+  } else if (currentR >= 2 && newProfitLockLevel < 2) {
     const gain = Math.abs(currentPrice - signal.entry);
     const lockPrice = signal.direction === "LONG" ? signal.entry + gain * 0.5 : signal.entry - gain * 0.5;
-    if ((signal.direction === "LONG" && currentPrice <= lockPrice) ||
-        (signal.direction === "SHORT" && currentPrice >= lockPrice)) {
-      return { shouldHold: false, reason: "profit_protection_2R", updatedTradeState: { ...updatedState, phase: "EXIT", profitLockLevel: 2, lockedStop: lockPrice } };
-    }
-    newPhase = "PROFIT_PROTECTION";
-  } else if (currentR >= 1) {
-    newPhase = "BUILDING";
-  } else {
-    newPhase = "ENTRY";
+    newLockedStop = Math.max(ts.lockedStop || 0, lockPrice);
+    newProfitLockLevel = 2; newPhase = "PROFIT_PROTECTION";
+  } else if (currentR >= 1 && newProfitLockLevel < 1) {
+    newLockedStop = signal.entry; newProfitLockLevel = 1; newPhase = "BUILDING";
   }
 
-  return { shouldHold: true, reason: `holding_${newPhase.toLowerCase()}_R${currentR.toFixed(1)}`, updatedTradeState: { ...updatedState, phase: newPhase } };
+  if (newLockedStop) {
+    if (signal.direction === "LONG" && currentPrice <= newLockedStop) {
+      return { shouldHold: false, reason: `profit_protection_${newProfitLockLevel}R`, updatedTradeState: { ...updatedState, phase: "EXIT", lockedStop: newLockedStop, profitLockLevel: newProfitLockLevel } };
+    }
+    if (signal.direction === "SHORT" && currentPrice >= newLockedStop) {
+      return { shouldHold: false, reason: `profit_protection_${newProfitLockLevel}R`, updatedTradeState: { ...updatedState, phase: "EXIT", lockedStop: newLockedStop, profitLockLevel: newProfitLockLevel } };
+    }
+  }
+
+  if (currentR >= 2 && newPhase === "BUILDING") newPhase = "TREND";
+  if (currentR >= 1 && newPhase === "ENTRY") newPhase = "BUILDING";
+
+  const finalState: TradeState = {
+    ...updatedState, phase: newPhase,
+    lockedStop: newLockedStop, profitLockLevel: newProfitLockLevel,
+  };
+
+  return { shouldHold: true, reason: `holding_${newPhase.toLowerCase()}_R${currentR.toFixed(1)}`, updatedTradeState: finalState };
 }
 
 // ============================================================
-// VALIDITY CHECKS — Maintained for UI compatibility
+// VALIDITY — v37.5 exact
 // ============================================================
 export function isSignalStillValid(signal: Signal, currentPrice: number): { valid: boolean; reason: string; exited: boolean } {
   if (signal.direction === "LONG" && currentPrice <= signal.stop) return { valid: false, reason: "sl_hit", exited: true };
@@ -777,7 +961,9 @@ export function getMarketSnapshot(
 ) {
   const price = currentPrice ?? candles4h[candles4h.length - 1]?.close ?? 0;
   const trend = detectTrend(candles1d);
-  const alignment = trend.direction ? check4HAlignment(candles4h, trend.direction) : { aligned: false, priceAboveEMA21: false, ema21Direction: null, debug: [] };
+  const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50 };
+  const stoch1h = candles1h.length >= 30 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50 };
+  const stoch15m = candles15m.length >= 20 ? stochRsi(candles15m.map(c => c.close)) : { k: 50, d: 50 };
   const volConfirmed = isVolumeConfirmed(candles4h);
   const pivots4h = findPivots(candles4h, 3, 2);
   const resistanceLines = buildTrendlines(candles4h, pivots4h.highs, "RESISTANCE", 2, 0.3);
@@ -787,38 +973,57 @@ export function getMarketSnapshot(
     .map(l => ({ type: l.type, startPrice: l.startPrice, endPrice: l.endPrice, touches: l.touches, currentPrice: getTrendlinePrice(l, candles4h.length - 1) }));
 
   const closes4h = candles4h.map(c => c.close);
+  const prevStoch4h = stochRsi(closes4h.slice(0, -1));
+  const isStrongTrend = (trend.adx !== null && trend.adx >= 25) && trend.strength >= 80;
+  const pullback = trend.direction ? checkPullbackAdaptive(trend.direction, stoch4h, prevStoch4h, trend.adx, isStrongTrend) : { pullbackActive: false, reason: "No bias", tier: null, stochZone: "NEUTRAL" };
+
   const e21_4h = ema(closes4h, 21);
   const ema21Price = e21_4h.length > 0 ? e21_4h[e21_4h.length - 1] : 0;
   const distToEMA21 = ema21Price > 0 ? (price - ema21Price) / ema21Price : 0;
+  const adxVal = adx(candles4h) ?? 0;
+  const rsiVal = wilderRsi(closes4h);
 
-  const closes1d = candles1d.map(c => c.close);
-  const e8_1d = ema(closes1d, 8);
-  const e21_1d = ema(closes1d, 21);
-  const e50_1d = ema(closes1d, 50);
-
-  const adxVal = trend.adx ?? 0;
   let trendStrengthLabel = "WEAK";
   if (adxVal >= 30) trendStrengthLabel = "STRONG";
   else if (adxVal >= 20) trendStrengthLabel = "MEDIUM";
 
   let phase4h: "EXPANSION" | "PULLBACK" | "BUILDING" | "NEUTRAL" = "NEUTRAL";
   if (trend.direction === "LONG") {
-    if (price > ema21Price * 1.02) phase4h = "EXPANSION";
-    else if (price < ema21Price * 0.98) phase4h = "PULLBACK";
+    if (stoch4h.k > 65) phase4h = "EXPANSION";
+    else if (stoch4h.k < 35) phase4h = "PULLBACK";
     else phase4h = "BUILDING";
   } else if (trend.direction === "SHORT") {
-    if (price < ema21Price * 0.98) phase4h = "EXPANSION";
-    else if (price > ema21Price * 1.02) phase4h = "PULLBACK";
+    if (stoch4h.k < 35) phase4h = "EXPANSION";
+    else if (stoch4h.k > 65) phase4h = "PULLBACK";
     else phase4h = "BUILDING";
   }
 
+  let structure15m = "Neutral";
+  if (candles15m.length >= 20) {
+    const stoch15mCheck = stochRsi(candles15m.map(c => c.close));
+    if (trend.direction === "LONG") {
+      if (stoch15mCheck.k > 50) structure15m = "Building";
+      else structure15m = "Pullback";
+    } else if (trend.direction === "SHORT") {
+      if (stoch15mCheck.k < 50) structure15m = "Building";
+      else structure15m = "Pullback";
+    }
+  }
+
   let readiness = 0;
-  if (trend.direction) readiness += 30;
-  if (trend.strength >= 50) readiness += 20;
-  if (alignment.aligned) readiness += 20;
-  if (adxVal >= 25) readiness += 15;
+  if (trend.direction) readiness += 25;
+  if (trend.strength >= 50) readiness += 15;
+  if (pullback.pullbackActive) {
+    if (pullback.tier === "DEEP") readiness += 30;
+    else if (pullback.tier === "SHALLOW") readiness += 20;
+    else if (pullback.tier === "MOMENTUM") readiness += 10;
+  }
+  const longBreak = trend.direction === "LONG" ? checkTrendlineBreak(candles4h, resistanceLines, "RESISTANCE") : { broken: false };
+  const shortBreak = trend.direction === "SHORT" ? checkTrendlineBreak(candles4h, supportLines, "SUPPORT") : { broken: false };
+  if (longBreak.broken || shortBreak.broken) readiness += 20;
+  if (adxVal >= 25) readiness += 10;
   if (volConfirmed) readiness += 5;
-  if (signalResult?.signal) readiness += 10;
+  if (signalResult?.signal) readiness += 15;
   readiness = Math.min(100, readiness);
 
   let readinessLabel = "NO_TRADE";
@@ -828,36 +1033,31 @@ export function getMarketSnapshot(
   else if (readiness >= 40) { readinessLabel = "WATCH"; readinessColor = "text-blue-400"; }
 
   return {
-    pair,
-    price: Math.round(price * 100) / 100,
-    timestamp: Date.now(),
+    pair, price: Math.round(price * 100) / 100, timestamp: Date.now(),
     bias: trend.direction ? { direction: trend.direction, strength: trend.strength } : null,
+    stoch4h, stoch1h, stoch15m,
     volumeConfirmed: volConfirmed,
     trendlines: activeTrendlines,
     trendDirection: trend.direction,
     trendStrength: trend.strength,
-    readiness,
-    readinessLabel,
-    readinessColor,
+    isPullback: pullback.pullbackActive,
+    pullbackTier: pullback.tier,
+    pullbackReason: pullback.reason,
+    stochZone: pullback.stochZone,
+    readiness, readinessLabel, readinessColor,
     adx: Math.round(adxVal * 10) / 10,
     trendStrengthLabel,
     trend: trend.direction ? `${trend.direction} ${trend.strength > 50 ? "STRONG" : "MEDIUM"}` : "NONE",
     regime: { direction: trend.direction, strength: trend.strength > 50 ? "STRONG" : "MEDIUM", confidence: trend.direction ? (trend.strength > 50 ? 75 : 50) : 0 },
-    stochK: undefined, // Removed in v38
-    stochD: undefined, // Removed in v38
-    stoch1hK: undefined, // Removed in v38
-    stoch1hD: undefined, // Removed in v38
+    rsi: Math.round((rsiVal ?? 50) * 10) / 10,
+    stochK: stoch4h.k, stochD: stoch4h.d,
+    stoch1hK: stoch1h.k, stoch1hD: stoch1h.d,
     ema21: Math.round(ema21Price * 100) / 100,
     distToEMA21: Math.round(distToEMA21 * 10000) / 100,
-    ema8_1d: e8_1d.length > 0 ? Math.round(e8_1d[e8_1d.length - 1] * 100) / 100 : 0,
-    ema21_1d: e21_1d.length > 0 ? Math.round(e21_1d[e21_1d.length - 1] * 100) / 100 : 0,
-    ema50_1d: e50_1d.length > 0 ? Math.round(e50_1d[e50_1d.length - 1] * 100) / 100 : 0,
     trendStrengthCompat: { adx: adxVal, isStrong: adxVal >= 25 },
-    phase4h,
-    phase1h: phase4h,
-    structure15m: "Neutral", // Simplified in v38
+    phase4h, phase1h: phase4h, structure15m,
     recommendedAction: signalResult?.signal ? `${signalResult.signal.direction} ${signalResult.signal.entryType}` : null,
-    entryTier: signalResult?.signal ? (signalResult.signal.entryType === "BREAKOUT" ? "CONFIRMED_ENTRY" : "EARLY_ENTRY") : null,
+    entryTier: signalResult?.signal ? (signalResult.signal.entryType === "RETEST" ? "CONFIRMED_ENTRY" : "EARLY_ENTRY") : null,
     entryMode: signalResult?.signal ? (signalResult.signal.entryType === "EARLY" ? "PULLBACK" : "BREAKOUT") : null,
     positionSize: signalResult?.signal ? (signalResult.signal.positionSizePct ? (signalResult.signal.positionSizePct * 100).toFixed(0) + "%" : null) : null,
     signal: signalResult?.signal || null,
@@ -868,7 +1068,7 @@ export function getMarketSnapshot(
 }
 
 // ============================================================
-// COMPATIBILITY LAYER — All v37.5 exports maintained
+// COMPATIBILITY — All v37.5 exports maintained
 // ============================================================
 export function shouldHoldCompat(
   signal: Signal,
@@ -892,16 +1092,11 @@ export async function generateSignalAsync(
 
 export function migrateV36ToV37(signal: Signal): TradeState {
   return {
-    phase: "ENTRY",
-    phaseEnteredAt: signal.timestamp,
-    highestPrice: signal.entry,
-    lowestPrice: signal.entry,
-    entryPrice: signal.entry,
-    lockedStop: null,
-    profitLockLevel: 0,
-    currentR: 0,
-    entryTimestamp: signal.timestamp,
-    lastDecisionTimestamp: Date.now(),
+    phase: "ENTRY", phaseEnteredAt: signal.timestamp,
+    highestPrice: signal.entry, lowestPrice: signal.entry,
+    entryPrice: signal.entry, lockedStop: null,
+    profitLockLevel: 0, currentR: 0,
+    entryTimestamp: signal.timestamp, lastDecisionTimestamp: Date.now(),
   };
 }
 
@@ -914,12 +1109,9 @@ export function updateTradeManagerCompat(signal: Signal, currentPrice: number): 
     phaseEnteredAt: signal.timestamp,
     highestPrice: Math.max(signal.entry, currentPrice),
     lowestPrice: Math.min(signal.entry, currentPrice),
-    entryPrice: signal.entry,
-    lockedStop: null,
-    profitLockLevel: 0,
-    currentR,
-    entryTimestamp: signal.timestamp,
-    lastDecisionTimestamp: Date.now(),
+    entryPrice: signal.entry, lockedStop: null,
+    profitLockLevel: 0, currentR,
+    entryTimestamp: signal.timestamp, lastDecisionTimestamp: Date.now(),
   };
 }
 
@@ -933,9 +1125,6 @@ export function setExitPersistence(): void {}
 export function setTelemetryPersistence(): void {}
 export async function persistTelemetry(): Promise<void> {}
 
-// ============================================================
-// Redis-backed lastExit functions (placeholder for injection)
-// ============================================================
 let _loadLastExit: ((pair: string) => Promise<{ direction: "LONG" | "SHORT"; reason: string; timestamp: number } | null>) | null = null;
 let _persistLastExit: ((pair: string, record: { direction: "LONG" | "SHORT"; reason: string; timestamp: number }) => Promise<void>) | null = null;
 
