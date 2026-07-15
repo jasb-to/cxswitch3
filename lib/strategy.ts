@@ -948,6 +948,33 @@ export function filterExpiredSignals(signals: Signal[], currentPrices?: Record<s
 }
 
 // ============================================================
+// 4H ALIGNMENT CHECK — used by getMarketSnapshot
+// ============================================================
+function check4HAlignment(
+  candles4h: Candle[],
+  biasDirection: "LONG" | "SHORT"
+): { aligned: boolean; priceAboveEMA21: boolean; ema21Direction: string | null; debug: string[] } {
+  const debug: string[] = [];
+  if (candles4h.length < 50) {
+    debug.push("Insufficient 4H data for alignment check");
+    return { aligned: false, priceAboveEMA21: false, ema21Direction: null, debug };
+  }
+  const closes = candles4h.map(c => c.close);
+  const e21 = ema(closes, 21);
+  if (!e21.length) {
+    debug.push("EMA21 calculation failed on 4H");
+    return { aligned: false, priceAboveEMA21: false, ema21Direction: null, debug };
+  }
+  const price = closes[closes.length - 1];
+  const ema21Price = e21[e21.length - 1];
+  const priceAboveEMA21 = price > ema21Price;
+  const ema21Direction = priceAboveEMA21 ? "LONG" : "SHORT";
+  const aligned = ema21Direction === biasDirection;
+  debug.push(`4H alignment: price ${price.toFixed(2)} ${priceAboveEMA21 ? ">" : "<"} EMA21 ${ema21Price.toFixed(2)} — ${aligned ? "ALIGNED" : "MISALIGNED"}`);
+  return { aligned, priceAboveEMA21, ema21Direction, debug };
+}
+
+// ============================================================
 // MARKET SNAPSHOT — Full UI compatibility
 // ============================================================
 export function getMarketSnapshot(
