@@ -961,6 +961,7 @@ export function getMarketSnapshot(
 ) {
   const price = currentPrice ?? candles4h[candles4h.length - 1]?.close ?? 0;
   const trend = detectTrend(candles1d);
+  const alignment = trend.direction ? check4HAlignment(candles4h, trend.direction) : { aligned: false, priceAboveEMA21: false, ema21Direction: null, debug: [] };
   const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50 };
   const stoch1h = candles1h.length >= 30 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50 };
   const stoch15m = candles15m.length >= 20 ? stochRsi(candles15m.map(c => c.close)) : { k: 50, d: 50 };
@@ -1032,9 +1033,17 @@ export function getMarketSnapshot(
   else if (readiness >= 60) { readinessLabel = "WARM"; readinessColor = "text-amber-400"; }
   else if (readiness >= 40) { readinessLabel = "WATCH"; readinessColor = "text-blue-400"; }
 
+  // Build timeframe-specific trend objects for UI compatibility
+  const trend1dObj = trend.direction ? { direction: trend.direction, strength: trend.strength > 50 ? "STRONG" : "MEDIUM" } : null;
+  const trend4hObj = alignment.aligned ? { direction: trend.direction, strength: trend.strength > 50 ? "STRONG" : "MEDIUM" } : null;
+  const trend1hObj = trend.direction ? { direction: trend.direction, strength: trend.strength > 50 ? "STRONG" : "MEDIUM" } : null;
+
   return {
     pair, price: Math.round(price * 100) / 100, timestamp: Date.now(),
     bias: trend.direction ? { direction: trend.direction, strength: trend.strength } : null,
+    trend1d: trend1dObj,
+    trend4h: trend4hObj,
+    trend1h: trend1hObj,
     stoch4h, stoch1h, stoch15m,
     volumeConfirmed: volConfirmed,
     trendlines: activeTrendlines,
