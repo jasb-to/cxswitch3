@@ -58,9 +58,9 @@ function getPositionSize(entryType: string, entryTier: string, scale: string): s
   const tier = entryTier?.toUpperCase() || "";
   const sc = scale?.toUpperCase() || "";
 
+  if (type === "EARLY") return "50% STARTER";
   if (type === "RETEST" || sc === "ENTRY_1") return "FULL SIZE";
   if (type === "BREAKOUT" || sc === "ENTRY_2") return "FULL SIZE";
-  if (type === "EARLY") return "50% STARTER";
   if (sc === "ADD") return "ADD POSITION";
   return "FULL SIZE";
 }
