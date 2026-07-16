@@ -606,12 +606,7 @@ export function generateSignal(
   const pullback = checkPullbackAdaptive(biasDirection, stoch4h, prevStoch4h, trend.adx, isStrongTrend);
   debug.push(pullback.reason);
 
-  if (pullback.stochZone === "EXTENDED") {
-    debug.push(`Entry blocked — Stoch extended (${stoch4h.k}), not in valid pullback zone`);
-    return { debug };
-  }
-
-  // === STEP 3: Trendline break (v37.5 exact) ===
+  // === STEP 3: Trendline break (CHECK FIRST — overrides pullback tier) ===
   const pivots4h = findPivots(candles4h, 3, 2);
   let relevantLines: Trendline[] = [];
   let breakType: "RESISTANCE" | "SUPPORT";
@@ -632,48 +627,58 @@ export function generateSignal(
   const volConfirmed = isVolumeConfirmed(candles4h);
   debug.push(`Volume: ${volConfirmed ? "CONFIRMED (+20%)" : "weak"}`);
 
-  // === STEP 4: Entry type determination (v37.5 EXACT) ===
+  // === STEP 4: Entry type determination ===
   let entryType: "EARLY" | "BREAKOUT" | "RETEST" | null = null;
   let confidence = 50;
   let trendlinePrice = 0;
+  let isBreakout = false;
 
-  if (biasDirection === "LONG") {
-    if (pullback.tier === "DEEP") {
-      entryType = "RETEST"; confidence = 85;
-      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
-      debug.push(`DEEP PULLBACK LONG: 4H Stoch ${stoch4h.k} extreme oversold`);
-    } else if (pullback.tier === "SHALLOW") {
-      entryType = "BREAKOUT"; confidence = 75;
-      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
-      debug.push(`SHALLOW PULLBACK LONG: 4H Stoch ${stoch4h.k} oversold`);
-    } else if (pullback.tier === "MOMENTUM") {
-      entryType = "EARLY"; confidence = 60;
-      if (isStrongTrend) confidence += 10;
-      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
-      debug.push(`MOMENTUM LONG: 4H Stoch ${stoch4h.k} neutral${isStrongTrend ? " (strong trend boost)" : ""}`);
-    }
-  } else if (biasDirection === "SHORT") {
-    if (pullback.tier === "DEEP") {
-      entryType = "RETEST"; confidence = 85;
-      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
-      debug.push(`DEEP PULLBACK SHORT: 4H Stoch ${stoch4h.k} extreme overbought`);
-    } else if (pullback.tier === "SHALLOW") {
-      entryType = "BREAKOUT"; confidence = 75;
-      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
-      debug.push(`SHALLOW PULLBACK SHORT: 4H Stoch ${stoch4h.k} overbought`);
-    } else if (pullback.tier === "MOMENTUM") {
-      entryType = "EARLY"; confidence = 60;
-      if (isStrongTrend) confidence += 10;
-      trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
-      debug.push(`MOMENTUM SHORT: 4H Stoch ${stoch4h.k} neutral${isStrongTrend ? " (strong trend boost)" : ""}`);
-    }
-  }
-
-  if (!entryType && breakEvent.broken && breakEvent.line) {
-    entryType = "BREAKOUT"; confidence = 80;
+  // Trendline break takes precedence — never blocked by stoch zone
+  if (breakEvent.broken && breakEvent.line) {
+    entryType = "BREAKOUT";
+    confidence = 80;
     if (volConfirmed) confidence += 5;
     trendlinePrice = getTrendlinePrice(breakEvent.line, candles4h.length - 1);
+    isBreakout = true;
     debug.push(`BREAKOUT ${biasDirection}: 4H ${breakEvent.line.type} broken`);
+  } else {
+    // No break — require valid pullback zone
+    if (pullback.stochZone === "EXTENDED") {
+      debug.push(`Entry blocked — Stoch extended (${stoch4h.k}), not in valid pullback zone`);
+      return { debug };
+    }
+
+    if (biasDirection === "LONG") {
+      if (pullback.tier === "DEEP") {
+        entryType = "RETEST"; confidence = 85;
+        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
+        debug.push(`DEEP PULLBACK LONG: 4H Stoch ${stoch4h.k} extreme oversold`);
+      } else if (pullback.tier === "SHALLOW") {
+        entryType = "BREAKOUT"; confidence = 75;
+        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
+        debug.push(`SHALLOW PULLBACK LONG: 4H Stoch ${stoch4h.k} oversold`);
+      } else if (pullback.tier === "MOMENTUM") {
+        entryType = "EARLY"; confidence = 60;
+        if (isStrongTrend) confidence += 10;
+        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
+        debug.push(`MOMENTUM LONG: 4H Stoch ${stoch4h.k} neutral${isStrongTrend ? " (strong trend boost)" : ""}`);
+      }
+    } else if (biasDirection === "SHORT") {
+      if (pullback.tier === "DEEP") {
+        entryType = "RETEST"; confidence = 85;
+        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
+        debug.push(`DEEP PULLBACK SHORT: 4H Stoch ${stoch4h.k} extreme overbought`);
+      } else if (pullback.tier === "SHALLOW") {
+        entryType = "BREAKOUT"; confidence = 75;
+        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
+        debug.push(`SHALLOW PULLBACK SHORT: 4H Stoch ${stoch4h.k} overbought`);
+      } else if (pullback.tier === "MOMENTUM") {
+        entryType = "EARLY"; confidence = 60;
+        if (isStrongTrend) confidence += 10;
+        trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
+        debug.push(`MOMENTUM SHORT: 4H Stoch ${stoch4h.k} neutral${isStrongTrend ? " (strong trend boost)" : ""}`);
+      }
+    }
   }
 
   if (!entryType) {
@@ -681,7 +686,7 @@ export function generateSignal(
     return { debug };
   }
 
-  // === STEP 5: Levels (v37.5 exact) ===
+  // === STEP 5: Levels ===
   const swingLow = Math.min(...candles4h.slice(-20).map(c => c.low));
   const swingHigh = Math.max(...candles4h.slice(-20).map(c => c.high));
   const atr4h = atr(candles4h, 14);
@@ -690,10 +695,15 @@ export function generateSignal(
   let stop: number;
   let target: number;
 
-  const atrMultiplier = pullback.tier === "DEEP" ? 2.0 : pullback.tier === "SHALLOW" ? 1.5 : 1.0;
+  // Breakout entries use trendline-based stop for tighter R:R
+  const atrMultiplier = isBreakout ? 1.0 : pullback.tier === "DEEP" ? 2.0 : pullback.tier === "SHALLOW" ? 1.5 : 1.0;
 
   if (biasDirection === "LONG") {
-    stop = Math.min(swingLow * 0.998, entry - atr4h * atrMultiplier);
+    if (isBreakout) {
+      stop = Math.max(trendlinePrice * 0.99, entry - atr4h * 1.0);
+    } else {
+      stop = Math.min(swingLow * 0.998, entry - atr4h * atrMultiplier);
+    }
     const atrTarget = entry + atr4h * 3;
     const swingTarget = swingHigh;
     if (isStrongTrend) {
@@ -705,7 +715,11 @@ export function generateSignal(
       target = Math.min(target, swingTarget);
     }
   } else {
-    stop = Math.max(swingHigh * 1.002, entry + atr4h * atrMultiplier);
+    if (isBreakout) {
+      stop = Math.min(trendlinePrice * 1.01, entry + atr4h * 1.0);
+    } else {
+      stop = Math.max(swingHigh * 1.002, entry + atr4h * atrMultiplier);
+    }
     const atrTarget = entry - atr4h * 3;
     const swingTarget = swingLow;
     if (isStrongTrend) {
@@ -714,7 +728,7 @@ export function generateSignal(
       const breakToEntry = Math.max(0, trendlinePrice - entry);
       const tlTarget = entry - breakToEntry * 2;
       target = Math.min(Math.max(tlTarget, atrTarget * 1.5), atrTarget);
-      target = Math.max(target, swingTarget);
+      target = Math.min(target, swingTarget);  // FIX: was Math.max — cap target below swingLow for SHORT
     }
   }
 
@@ -722,9 +736,10 @@ export function generateSignal(
   const reward = Math.abs(target - entry);
   const rr = risk > 0 ? reward / risk : 0;
 
-  const minRR = pullback.tier === "DEEP" ? 1.0 : pullback.tier === "SHALLOW" ? 1.5 : 2.0;
+  // Breakout entries: minRR 1.5 | Pullback: DEEP=1.0, SHALLOW=1.5, MOMENTUM=1.5
+  const minRR = isBreakout ? 1.5 : pullback.tier === "DEEP" ? 1.0 : 1.5;
   if (rr < minRR) {
-    debug.push(`R:R ${rr.toFixed(2)} < ${minRR} (min for ${pullback.tier} tier) — skip`);
+    debug.push(`R:R ${rr.toFixed(2)} < ${minRR} (min for ${isBreakout ? "BREAKOUT" : pullback.tier} tier) — skip`);
     return { debug };
   }
 
@@ -735,7 +750,8 @@ export function generateSignal(
   confidence = Math.min(95, Math.round(confidence));
 
   let positionSizePct = 0.03;
-  if (pullback.tier === "DEEP") positionSizePct = 0.06;
+  if (isBreakout) positionSizePct = 0.05;
+  else if (pullback.tier === "DEEP") positionSizePct = 0.06;
   else if (pullback.tier === "SHALLOW") positionSizePct = 0.05;
   else if (pullback.tier === "MOMENTUM") positionSizePct = 0.03;
 
@@ -754,7 +770,7 @@ export function generateSignal(
     volumeConfirmed: volConfirmed,
     type: "ACCUMULATE",
     scale: entryType === "RETEST" ? "ENTRY_1" : entryType === "BREAKOUT" ? "ENTRY_2" : "ENTRY_1",
-    entryTier: pullback.tier === "DEEP" ? "CONFIRMED_ENTRY" : pullback.tier === "SHALLOW" ? "CONFIRMED_ENTRY" : "EARLY_ENTRY",
+    entryTier: isBreakout ? "CONFIRMED_ENTRY" : pullback.tier === "DEEP" ? "CONFIRMED_ENTRY" : pullback.tier === "SHALLOW" ? "CONFIRMED_ENTRY" : "EARLY_ENTRY",
     entryMode: entryType === "EARLY" ? "PULLBACK" : entryType === "RETEST" ? "RETEST" : "BREAKOUT",
     positionSizePct,
     regimeDirection: biasDirection,
