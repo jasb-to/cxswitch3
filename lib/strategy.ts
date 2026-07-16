@@ -1,8 +1,8 @@
 // ============================================================
-// CXSwitch v38 — EMA Bias Fix, Price-First Exits
+// CXSwitch v38.1 — Structure-Based Targets (HH/HL/LH/LL + Pivot Extension)
 // Entries: v37.5 StochRSI pullback tiers (kept exactly)
 // Bias: EMA-based (instant, replaces pivot lag)
-// Exits: Price-first (replaces stoch extreme + ADX filter blocks)
+// Exits: Price-first with structure-based targets + existing profit lock trail
 // ============================================================
 
 export interface Candle {
@@ -52,6 +52,13 @@ export interface Signal {
   lockedStop?: number;
   profitLockActive?: boolean;
   version?: number;
+  // v38.1: Structure-based target metadata
+  structureTarget?: {
+    type: "HH_EXTENSION" | "LL_EXTENSION" | "PIVOT_EXTENSION" | "SWING_TARGET";
+    basePrice: number;
+    extension: number;
+    description: string;
+  };
 }
 
 export interface SignalResult {
@@ -266,7 +273,7 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
 }
 
 // ============================================================
-// PIVOTS — KEPT for trendlines and TP/SL
+// PIVOTS — KEPT for trendlines and structure-based targets
 // ============================================================
 function findPivots(candles: Candle[], leftBars = 3, rightBars = 2): {
   highs: { index: number; price: number }[];
@@ -283,6 +290,119 @@ function findPivots(candles: Candle[], leftBars = 3, rightBars = 2): {
     if (isLow) lows.push({ index: i, price: candles[i].low });
   }
   return { highs, lows };
+}
+
+// ============================================================
+// v38.1: STRUCTURE-BASED TARGET CALCULATION
+// ============================================================
+
+/**
+ * Find the most recent HH/LL and project the next one using swing extension
+ */
+function calculateStructureTarget(
+  candles4h: Candle[],
+  direction: "LONG" | "SHORT",
+  entry: number,
+  stop: number
+): { target: number; structureInfo: Signal["structureTarget"] } {
+  const pivots = findPivots(candles4h, 3, 2);
+  
+  if (direction === "LONG") {
+    // Find recent swing structure: last significant low and high
+    const recentLows = pivots.lows.slice(-5);
+    const recentHighs = pivots.highs.slice(-5);
+    
+    if (recentLows.length >= 2 && recentHighs.length >= 1) {
+      // HH/HL structure detected
+      const lastHL = recentLows[recentLows.length - 1].price;
+      const prevHL = recentLows[recentLows.length - 2].price;
+      const lastHH = recentHighs[recentHighs.length - 1].price;
+      
+      // Check if we have HL structure (higher low)
+      const isHL = lastHL > prevHL;
+      
+      if (isHL) {
+        // Project next HH: last HH + (last HH - last HL) * 0.618 (conservative) or 1.0 (aggressive)
+        const swingSize = lastHH - lastHL;
+        const extension = swingSize * 0.618; // Conservative Fib extension
+        const target = lastHH + extension;
+        
+        return {
+          target: Math.round(target * 100) / 100,
+          structureInfo: {
+            type: "HH_EXTENSION",
+            basePrice: lastHH,
+            extension,
+            description: `HL structure: HH ${lastHH.toFixed(2)} + ${(extension).toFixed(2)} extension from swing ${swingSize.toFixed(2)}`
+          }
+        };
+      }
+    }
+    
+    // Fallback: Use pivot high + ATR extension
+    const atr4h = atr(candles4h, 14);
+    const lastPivotHigh = pivots.highs.length > 0 ? pivots.highs[pivots.highs.length - 1].price : entry;
+    const extension = atr4h * 2;
+    const target = lastPivotHigh + extension;
+    
+    return {
+      target: Math.round(target * 100) / 100,
+      structureInfo: {
+        type: "PIVOT_EXTENSION",
+        basePrice: lastPivotHigh,
+        extension,
+        description: `Pivot high ${lastPivotHigh.toFixed(2)} + ATR×2 extension ${extension.toFixed(2)}`
+      }
+    };
+    
+  } else {
+    // SHORT direction
+    const recentHighs = pivots.highs.slice(-5);
+    const recentLows = pivots.lows.slice(-5);
+    
+    if (recentHighs.length >= 2 && recentLows.length >= 1) {
+      // LH/LL structure detected
+      const lastLH = recentHighs[recentHighs.length - 1].price;
+      const prevLH = recentHighs[recentHighs.length - 2].price;
+      const lastLL = recentLows[recentLows.length - 1].price;
+      
+      // Check if we have LH structure (lower high)
+      const isLH = lastLH < prevLH;
+      
+      if (isLH) {
+        // Project next LL: last LL - (last LH - last LL) * 0.618
+        const swingSize = lastLH - lastLL;
+        const extension = swingSize * 0.618;
+        const target = lastLL - extension;
+        
+        return {
+          target: Math.round(target * 100) / 100,
+          structureInfo: {
+            type: "LL_EXTENSION",
+            basePrice: lastLL,
+            extension,
+            description: `LH structure: LL ${lastLL.toFixed(2)} - ${extension.toFixed(2)} extension from swing ${swingSize.toFixed(2)}`
+          }
+        };
+      }
+    }
+    
+    // Fallback: Use pivot low - ATR extension
+    const atr4h = atr(candles4h, 14);
+    const lastPivotLow = pivots.lows.length > 0 ? pivots.lows[pivots.lows.length - 1].price : entry;
+    const extension = atr4h * 2;
+    const target = lastPivotLow - extension;
+    
+    return {
+      target: Math.round(target * 100) / 100,
+      structureInfo: {
+        type: "PIVOT_EXTENSION",
+        basePrice: lastPivotLow,
+        extension,
+        description: `Pivot low ${lastPivotLow.toFixed(2)} - ATR×2 extension ${extension.toFixed(2)}`
+      }
+    };
+  }
 }
 
 function buildTrendlines(
@@ -516,7 +636,7 @@ function checkPullbackAdaptive(
 }
 
 // ============================================================
-// MAIN SIGNAL — v37.5 entry logic, EMA bias, price-first exits
+// MAIN SIGNAL — v37.5 entry logic, EMA bias, structure-based targets
 // ============================================================
 export function generateSignal(
   pair: string,
@@ -702,12 +822,11 @@ export function generateSignal(
 
   let entry = price;
   let stop: number;
-  let target: number;
 
   const isMomentum = !isBreakout && entryType === "EARLY";
 
   // Breakout entries use trendline-based stop for tighter R:R
-  // MOMENTUM entries use ATR-only stop/target (no swing floor/ceiling) for better R:R
+  // MOMENTUM entries use ATR-only stop (no swing floor/ceiling) for better R:R
   const atrMultiplier = isBreakout ? 1.0 : pullback.tier === "DEEP" ? 2.0 : pullback.tier === "SHALLOW" ? 1.5 : 1.0;
 
   if (biasDirection === "LONG") {
@@ -718,18 +837,6 @@ export function generateSignal(
     } else {
       stop = Math.min(swingLow * 0.998, entry - atr4h * atrMultiplier);
     }
-    const atrTarget = entry + atr4h * 3;
-    const swingTarget = swingHigh;
-    if (isStrongTrend) {
-      target = Math.min(atrTarget, swingTarget);
-    } else if (isMomentum) {
-      target = entry + atr4h * 2.5;
-    } else {
-      const breakToEntry = Math.max(0, entry - trendlinePrice);
-      const tlTarget = entry + breakToEntry * 2;
-      target = Math.max(Math.min(tlTarget, atrTarget * 1.5), atrTarget);
-      target = Math.min(target, swingTarget);
-    }
   } else {
     if (isBreakout) {
       stop = Math.min(trendlinePrice * 1.01, entry + atr4h * 1.0);
@@ -738,20 +845,11 @@ export function generateSignal(
     } else {
       stop = Math.max(swingHigh * 1.002, entry + atr4h * atrMultiplier);
     }
-    const atrTarget = entry - atr4h * 3;
-    const swingTarget = swingLow;
-    if (isStrongTrend) {
-      target = Math.min(atrTarget, swingTarget);
-    } else if (isMomentum) {
-      target = entry - atr4h * 2.5;
-    } else {
-      const breakToEntry = Math.max(0, trendlinePrice - entry);
-      const tlTarget = entry - breakToEntry * 2;
-      target = Math.min(Math.max(tlTarget, atrTarget * 1.5), atrTarget);
-      target = Math.min(target, swingTarget);
-    }
   }
 
+  // === v38.1: STRUCTURE-BASED TARGET (replaces fixed 2.5R) ===
+  const { target, structureInfo } = calculateStructureTarget(candles4h, biasDirection, entry, stop);
+  
   const risk = Math.abs(entry - stop);
   const reward = Math.abs(target - entry);
   const rr = risk > 0 ? reward / risk : 0;
@@ -759,11 +857,13 @@ export function generateSignal(
   // === R:R INSTRUMENTATION ===
   debug.push(`ENTRY: ${entry.toFixed(2)} | STOP: ${stop.toFixed(2)} | TARGET: ${target.toFixed(2)}`);
   debug.push(`RISK: ${risk.toFixed(2)} | REWARD: ${reward.toFixed(2)} | R:R ${rr.toFixed(2)}`);
+  debug.push(`STRUCTURE: ${structureInfo?.description || "N/A"}`);
   debug.push(`swingLow=${swingLow.toFixed(2)} swingHigh=${swingHigh.toFixed(2)} atr4h=${atr4h.toFixed(2)} trendlinePrice=${trendlinePrice.toFixed(2)}`);
   debug.push(`isBreakout=${isBreakout} isMomentum=${isMomentum} isStrongTrend=${isStrongTrend} tier=${pullback.tier || "N/A"}`);
 
-  // Breakout entries: minRR 1.5 | Pullback: DEEP=1.0, SHALLOW=1.5, MOMENTUM=1.0
-  const minRR = isBreakout ? 1.5 : pullback.tier === "DEEP" ? 1.0 : 1.5;
+  // v38.1: Relaxed R:R minimum — structure targets can be larger but we still need reasonable R:R
+  // Breakout entries: minRR 1.0 | Pullback: DEEP=0.8, SHALLOW=1.0, MOMENTUM=0.8
+  const minRR = isBreakout ? 1.0 : pullback.tier === "DEEP" ? 0.8 : 1.0;
   if (rr < minRR) {
     debug.push(`R:R ${rr.toFixed(2)} < ${minRR} (min for ${isBreakout ? "BREAKOUT" : isMomentum ? "MOMENTUM" : pullback.tier} tier) — skip`);
     return { debug };
@@ -808,6 +908,7 @@ export function generateSignal(
     stochK: stoch4h.k,
     stochD: stoch4h.d,
     version: CURRENT_SIGNAL_VERSION,
+    structureTarget: structureInfo,
     tradeState: {
       phase: "ENTRY",
       phaseEnteredAt: now,
@@ -822,13 +923,13 @@ export function generateSignal(
     },
   };
 
-  debug.push(`SIGNAL: ${pullback.tier} ${entryType} ${biasDirection} ${pair} @ ${entry.toFixed(2)}, SL ${stop.toFixed(2)}, TP ${target.toFixed(2)}, RR ${rr.toFixed(2)}, Conf ${confidence}%, Size ${(positionSizePct*100).toFixed(0)}%, ADX ${trend.adx?.toFixed(1) || "N/A"}${volConfirmed ? ", VOL+" : ""}`);
+  debug.push(`SIGNAL: ${pullback.tier} ${entryType} ${biasDirection} ${pair} @ ${entry.toFixed(2)}, SL ${stop.toFixed(2)}, TP ${target.toFixed(2)} (${structureInfo?.type || "N/A"}), RR ${rr.toFixed(2)}, Conf ${confidence}%, Size ${(positionSizePct*100).toFixed(0)}%, ADX ${trend.adx?.toFixed(1) || "N/A"}${volConfirmed ? ", VOL+" : ""}`);
 
   return { signal, debug };
 }
 
 // ============================================================
-// EXIT LOGIC — Price-first, replaces stoch extreme + ADX blocks
+// EXIT LOGIC — Price-first with structure targets, profit lock trail KEPT EXACTLY
 // ============================================================
 export function shouldHold(
   signal: Signal,
@@ -865,7 +966,8 @@ export function shouldHold(
     return { shouldHold: false, reason: "stop_loss", updatedTradeState: { ...updatedState, phase: "EXIT" } };
   }
 
-  // 2. TARGET HIT
+  // 2. TARGET HIT — v38.1: Structure-based target (HH/LL extension or pivot extension)
+  // This is now a "soft target" — the trail may have already locked profit beyond this
   if (signal.direction === "LONG" && currentPrice >= signal.target) {
     return { shouldHold: false, reason: "target_hit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
   }
@@ -904,7 +1006,6 @@ export function shouldHold(
   }
 
   // 5. v37.5 Stoch extreme exit — KEPT but with ADX filter REMOVED
-  // Exit on stoch extreme regardless of ADX, since we're underwater
   const hoursInTrade = (now - signal.timestamp) / (60 * 60 * 1000);
   const stoch4h_exit = stochRsi(candles4h.map(c => c.close));
 
@@ -912,15 +1013,11 @@ export function shouldHold(
     ? stoch4h_exit.k < 10
     : stoch4h_exit.k > 90;
 
-  // v38 CHANGE: Remove ADX filter. Exit on stoch extreme if:
-  // - Trade open > 2 hours
-  // - Stoch at true extreme (>90/<10)
-  // - Either trend weakening OR underwater (currentR < 0)
   if (stochExtreme && hoursInTrade > 2) {
     return { shouldHold: false, reason: "stoch_extreme_opposite_exit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
   }
 
-  // 6. PROFIT PROTECTION
+  // 6. PROFIT PROTECTION — KEPT EXACTLY AS-IS (v37.5 trail architecture)
   let newLockedStop = ts.lockedStop;
   let newProfitLockLevel = ts.profitLockLevel;
   let newPhase: TradeLifecyclePhase = ts.phase;
