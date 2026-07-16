@@ -625,7 +625,16 @@ export function generateSignal(
 
   const breakEvent = checkTrendlineBreak(candles4h, relevantLines, breakType);
   const volConfirmed = isVolumeConfirmed(candles4h);
-  debug.push(`Volume: ${volConfirmed ? "CONFIRMED (+20%)" : "weak"}`);
+  // === VOLUME INSTRUMENTATION ===
+  if (candles4h.length >= 12) {
+    const vols = candles4h.map(c => c.volume);
+    const avgVol = vols.slice(-11, -1).reduce((a, b) => a + b, 0) / 10;
+    const curVol = vols[vols.length - 1];
+    const ratio = avgVol > 0 ? curVol / avgVol : 0;
+    debug.push(`VOLUME: current=${curVol.toFixed(0)} avg10=${avgVol.toFixed(0)} ratio=${ratio.toFixed(2)} threshold=1.20 ${volConfirmed ? "CONFIRMED" : "WEAK"}`);
+  } else {
+    debug.push(`VOLUME: insufficient data (${candles4h.length} candles)`);
+  }
 
   // === STEP 4: Entry type determination ===
   let entryType: "EARLY" | "BREAKOUT" | "RETEST" | null = null;
@@ -695,12 +704,17 @@ export function generateSignal(
   let stop: number;
   let target: number;
 
+  const isMomentum = !isBreakout && entryType === "EARLY";
+
   // Breakout entries use trendline-based stop for tighter R:R
+  // MOMENTUM entries use ATR-only stop/target (no swing floor/ceiling) for better R:R
   const atrMultiplier = isBreakout ? 1.0 : pullback.tier === "DEEP" ? 2.0 : pullback.tier === "SHALLOW" ? 1.5 : 1.0;
 
   if (biasDirection === "LONG") {
     if (isBreakout) {
       stop = Math.max(trendlinePrice * 0.99, entry - atr4h * 1.0);
+    } else if (isMomentum) {
+      stop = entry - atr4h * 1.0;
     } else {
       stop = Math.min(swingLow * 0.998, entry - atr4h * atrMultiplier);
     }
@@ -708,6 +722,8 @@ export function generateSignal(
     const swingTarget = swingHigh;
     if (isStrongTrend) {
       target = Math.min(atrTarget, swingTarget);
+    } else if (isMomentum) {
+      target = entry + atr4h * 2.5;
     } else {
       const breakToEntry = Math.max(0, entry - trendlinePrice);
       const tlTarget = entry + breakToEntry * 2;
@@ -717,6 +733,8 @@ export function generateSignal(
   } else {
     if (isBreakout) {
       stop = Math.min(trendlinePrice * 1.01, entry + atr4h * 1.0);
+    } else if (isMomentum) {
+      stop = entry + atr4h * 1.0;
     } else {
       stop = Math.max(swingHigh * 1.002, entry + atr4h * atrMultiplier);
     }
@@ -724,11 +742,13 @@ export function generateSignal(
     const swingTarget = swingLow;
     if (isStrongTrend) {
       target = Math.min(atrTarget, swingTarget);
+    } else if (isMomentum) {
+      target = entry - atr4h * 2.5;
     } else {
       const breakToEntry = Math.max(0, trendlinePrice - entry);
       const tlTarget = entry - breakToEntry * 2;
       target = Math.min(Math.max(tlTarget, atrTarget * 1.5), atrTarget);
-      target = Math.min(target, swingTarget);  // FIX: was Math.max — cap target below swingLow for SHORT
+      target = Math.min(target, swingTarget);
     }
   }
 
@@ -736,10 +756,16 @@ export function generateSignal(
   const reward = Math.abs(target - entry);
   const rr = risk > 0 ? reward / risk : 0;
 
-  // Breakout entries: minRR 1.5 | Pullback: DEEP=1.0, SHALLOW=1.5, MOMENTUM=1.5
+  // === R:R INSTRUMENTATION ===
+  debug.push(`ENTRY: ${entry.toFixed(2)} | STOP: ${stop.toFixed(2)} | TARGET: ${target.toFixed(2)}`);
+  debug.push(`RISK: ${risk.toFixed(2)} | REWARD: ${reward.toFixed(2)} | R:R ${rr.toFixed(2)}`);
+  debug.push(`swingLow=${swingLow.toFixed(2)} swingHigh=${swingHigh.toFixed(2)} atr4h=${atr4h.toFixed(2)} trendlinePrice=${trendlinePrice.toFixed(2)}`);
+  debug.push(`isBreakout=${isBreakout} isMomentum=${isMomentum} isStrongTrend=${isStrongTrend} tier=${pullback.tier || "N/A"}`);
+
+  // Breakout entries: minRR 1.5 | Pullback: DEEP=1.0, SHALLOW=1.5, MOMENTUM=1.0
   const minRR = isBreakout ? 1.5 : pullback.tier === "DEEP" ? 1.0 : 1.5;
   if (rr < minRR) {
-    debug.push(`R:R ${rr.toFixed(2)} < ${minRR} (min for ${isBreakout ? "BREAKOUT" : pullback.tier} tier) — skip`);
+    debug.push(`R:R ${rr.toFixed(2)} < ${minRR} (min for ${isBreakout ? "BREAKOUT" : isMomentum ? "MOMENTUM" : pullback.tier} tier) — skip`);
     return { debug };
   }
 
