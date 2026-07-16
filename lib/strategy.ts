@@ -5,7 +5,7 @@
 // Exits: Price-first with structure-based targets + existing profit lock trail
 // 4H Trend: Now shows independently of 1D alignment
 // ============================================================
- 
+
 export interface Candle {
   timestamp: number;
   open: number;
