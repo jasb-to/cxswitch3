@@ -122,13 +122,9 @@ function ReadinessBar({ score, label, hasTrade }: { score: number; label: string
 function StructurePanel({ debug, hasSignal, hasTrade }: { debug: string[]; hasSignal: boolean; hasTrade: boolean }) {
   if (!debug || debug.length === 0) return null;
 
-  // v37: Filter for trend-following debug lines
   const structureLines = debug.filter(d => {
-    // Skip SIGNAL lines (duplicates trade setup)
     if (d.includes("SIGNAL:")) return false;
-    // Skip volume lines (shown elsewhere)
     if (d === "Volume: CONFIRMED (+20%)" || d === "Volume: weak") return false;
-    // Keep trend, pullback, structure, ADX, stoch info
     return d.includes("Structure:") ||
            d.includes("EMA") ||
            d.includes("TREND:") ||
@@ -171,7 +167,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
   const hasTrade = !!snap.activeTrade;
   const colors = readinessBarColors(snap.readiness ?? 0, hasTrade);
 
-  // Status badge
   let statusBadge;
   if (hasTrade) {
     const dir = snap.activeTrade!.direction;
@@ -261,9 +256,8 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
       {/* STRUCTURE PANEL */}
       <StructurePanel debug={debugLines} hasSignal={hasSignal} hasTrade={hasTrade} />
 
-      {/* TRADE DETAILS — Only ONE panel shown */}
+      {/* TRADE DETAILS */}
       {hasTrade ? (
-        /* ACTIVE TRADE */
         <div className={`mb-4 p-4 rounded-lg border ${snap.activeTrade!.direction === "LONG" ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"}`}>
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
@@ -348,7 +342,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
           </div>
         </div>
       ) : hasSignal ? (
-        /* SIGNAL SETUP (only when no active trade) */
         <div className="mb-4 p-4 bg-gray-800/50 rounded-lg border border-gray-700/50">
           <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-3">Trade Setup</div>
           <div className="space-y-2">
@@ -505,7 +498,7 @@ export default function Dashboard() {
 
         <div className="mt-8 pt-4 border-t border-gray-800 text-center">
           <p className="text-xs text-gray-600">
-            CXSwitch v37 — Trend-Following | 1D/4H Bias → 4H Pullback → 15M Entry → Trendline Break
+            CXSwitch v37 — Trend-Following | 1D/4H Bias &rarr; 4H Pullback &rarr; Trendline Entry &rarr; Profit Lock
           </p>
         </div>
       </div>
