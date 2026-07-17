@@ -1,9 +1,6 @@
 // ============================================================
-// CXSwitch v38.1 — Structure-Based Targets + 4H Trend Fix
-// Entries: v37.5 StochRSI pullback tiers (kept exactly)
-// Bias: EMA-based (instant, replaces pivot lag)
-// Exits: Price-first with structure-based targets + existing profit lock trail
-// 4H Trend: Now shows independently of 1D alignment
+// CXSwitch v38.2 — Flat 3% Targets, Stoch Extreme Exit Removed,
+// MOMENTUM Rising/Falling Filter, Bias Fix (EMA21<EMA50 = trend direction)
 // ============================================================
 
 export interface Candle {
@@ -53,12 +50,6 @@ export interface Signal {
   lockedStop?: number;
   profitLockActive?: boolean;
   version?: number;
-  structureTarget?: {
-    type: "HH_EXTENSION" | "LL_EXTENSION" | "PIVOT_EXTENSION" | "SWING_TARGET";
-    basePrice: number;
-    extension: number;
-    description: string;
-  };
 }
 
 export interface SignalResult {
@@ -149,7 +140,7 @@ export function ema(values: number[], period: number): number[] {
 }
 
 // ============================================================
-// RSI (Wilder) — needed for StochRSI
+// RSI (Wilder)
 // ============================================================
 export function wilderRsi(values: number[], period = 14): number | null {
   if (values.length < period + 1 || !values.every(isValid)) return null;
@@ -171,7 +162,7 @@ export function wilderRsi(values: number[], period = 14): number | null {
 }
 
 // ============================================================
-// StochRSI — KEPT for entry timing (v37.5 exact)
+// StochRSI
 // ============================================================
 export function stochRsi(
   values: number[],
@@ -273,7 +264,7 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
 }
 
 // ============================================================
-// PIVOTS — KEPT for trendlines and structure-based targets
+// PIVOTS
 // ============================================================
 function findPivots(candles: Candle[], leftBars = 3, rightBars = 2): {
   highs: { index: number; price: number }[];
@@ -290,104 +281,6 @@ function findPivots(candles: Candle[], leftBars = 3, rightBars = 2): {
     if (isLow) lows.push({ index: i, price: candles[i].low });
   }
   return { highs, lows };
-}
-
-// ============================================================
-// v38.1: STRUCTURE-BASED TARGET CALCULATION
-// ============================================================
-
-function calculateStructureTarget(
-  candles4h: Candle[],
-  direction: "LONG" | "SHORT",
-  entry: number,
-  stop: number
-): { target: number; structureInfo: Signal["structureTarget"] } {
-  const pivots = findPivots(candles4h, 3, 2);
-  
-  if (direction === "LONG") {
-    const recentLows = pivots.lows.slice(-5);
-    const recentHighs = pivots.highs.slice(-5);
-    
-    if (recentLows.length >= 2 && recentHighs.length >= 1) {
-      const lastHL = recentLows[recentLows.length - 1].price;
-      const prevHL = recentLows[recentLows.length - 2].price;
-      const lastHH = recentHighs[recentHighs.length - 1].price;
-      const isHL = lastHL > prevHL;
-      
-      if (isHL) {
-        const swingSize = lastHH - lastHL;
-        const extension = swingSize * 0.618;
-        const target = lastHH + extension;
-        
-        return {
-          target: Math.round(target * 100) / 100,
-          structureInfo: {
-            type: "HH_EXTENSION",
-            basePrice: lastHH,
-            extension,
-            description: `HL structure: HH ${lastHH.toFixed(2)} + ${extension.toFixed(2)} extension from swing ${swingSize.toFixed(2)}`
-          }
-        };
-      }
-    }
-    
-    const atr4h = atr(candles4h, 14);
-    const lastPivotHigh = pivots.highs.length > 0 ? pivots.highs[pivots.highs.length - 1].price : entry;
-    const extension = atr4h * 2;
-    const target = lastPivotHigh + extension;
-    
-    return {
-      target: Math.round(target * 100) / 100,
-      structureInfo: {
-        type: "PIVOT_EXTENSION",
-        basePrice: lastPivotHigh,
-        extension,
-        description: `Pivot high ${lastPivotHigh.toFixed(2)} + ATR×2 extension ${extension.toFixed(2)}`
-      }
-    };
-    
-  } else {
-    const recentHighs = pivots.highs.slice(-5);
-    const recentLows = pivots.lows.slice(-5);
-    
-    if (recentHighs.length >= 2 && recentLows.length >= 1) {
-      const lastLH = recentHighs[recentHighs.length - 1].price;
-      const prevLH = recentHighs[recentHighs.length - 2].price;
-      const lastLL = recentLows[recentLows.length - 1].price;
-      const isLH = lastLH < prevLH;
-      
-      if (isLH) {
-        const swingSize = lastLH - lastLL;
-        const extension = swingSize * 0.618;
-        const target = lastLL - extension;
-        
-        return {
-          target: Math.round(target * 100) / 100,
-          structureInfo: {
-            type: "LL_EXTENSION",
-            basePrice: lastLL,
-            extension,
-            description: `LH structure: LL ${lastLL.toFixed(2)} - ${extension.toFixed(2)} extension from swing ${swingSize.toFixed(2)}`
-          }
-        };
-      }
-    }
-    
-    const atr4h = atr(candles4h, 14);
-    const lastPivotLow = pivots.lows.length > 0 ? pivots.lows[pivots.lows.length - 1].price : entry;
-    const extension = atr4h * 2;
-    const target = lastPivotLow - extension;
-    
-    return {
-      target: Math.round(target * 100) / 100,
-      structureInfo: {
-        type: "PIVOT_EXTENSION",
-        basePrice: lastPivotLow,
-        extension,
-        description: `Pivot low ${lastPivotLow.toFixed(2)} - ATR×2 extension ${extension.toFixed(2)}`
-      }
-    };
-  }
 }
 
 function buildTrendlines(
@@ -478,7 +371,7 @@ function isVolumeConfirmed(candles: Candle[], lookback = 10): boolean {
 }
 
 // ============================================================
-// EMA BIAS — REPLACES analyzeStructure (instant, no lag)
+// EMA BIAS — v38.2 FIX: EMA21 < EMA50 defines trend direction
 // ============================================================
 function detectTrend(candles1d: Candle[]): {
   direction: "LONG" | "SHORT" | null;
@@ -511,20 +404,29 @@ function detectTrend(candles1d: Candle[]): {
   let direction: "LONG" | "SHORT" | null = null;
   let strength = 0;
 
-  if (c0 > e21_0 && e21_0 > e50_0) {
-    direction = "LONG"; strength = 80;
-    debug.push(`EMA BIAS: LONG (Price ${c0.toFixed(0)} > EMA21 ${e21_0.toFixed(0)} > EMA50 ${e50_0.toFixed(0)})`);
-  } else if (c0 < e21_0 && e21_0 < e50_0) {
-    direction = "SHORT"; strength = 80;
-    debug.push(`EMA BIAS: SHORT (Price ${c0.toFixed(0)} < EMA21 ${e21_0.toFixed(0)} < EMA50 ${e50_0.toFixed(0)})`);
-  } else if (c0 > e21_0) {
-    direction = "LONG"; strength = 50;
-    debug.push(`EMA BIAS: LONG (Price ${c0.toFixed(0)} > EMA21 ${e21_0.toFixed(0)}, EMA21 < EMA50)`);
-  } else if (c0 < e21_0) {
-    direction = "SHORT"; strength = 50;
-    debug.push(`EMA BIAS: SHORT (Price ${c0.toFixed(0)} < EMA21 ${e21_0.toFixed(0)}, EMA21 > EMA50)`);
+  // v38.2: EMA21 vs EMA50 defines trend, price vs EMA21 defines pullback/confirmation
+  if (e21_0 > e50_0) {
+    // Uptrend — EMA21 above EMA50
+    if (c0 > e21_0) {
+      direction = "LONG"; strength = 80;
+      debug.push(`EMA BIAS: LONG (Price ${c0.toFixed(0)} > EMA21 ${e21_0.toFixed(0)} > EMA50 ${e50_0.toFixed(0)})`);
+    } else {
+      // Pullback in uptrend — still LONG bias but weaker
+      direction = "LONG"; strength = 40;
+      debug.push(`EMA BIAS: LONG PULLBACK (Price ${c0.toFixed(0)} < EMA21 ${e21_0.toFixed(0)} > EMA50 ${e50_0.toFixed(0)})`);
+    }
+  } else if (e21_0 < e50_0) {
+    // Downtrend — EMA21 below EMA50
+    if (c0 < e21_0) {
+      direction = "SHORT"; strength = 80;
+      debug.push(`EMA BIAS: SHORT (Price ${c0.toFixed(0)} < EMA21 ${e21_0.toFixed(0)} < EMA50 ${e50_0.toFixed(0)})`);
+    } else {
+      // Pullback in downtrend — still SHORT bias but weaker
+      direction = "SHORT"; strength = 40;
+      debug.push(`EMA BIAS: SHORT PULLBACK (Price ${c0.toFixed(0)} > EMA21 ${e21_0.toFixed(0)} < EMA50 ${e50_0.toFixed(0)})`);
+    }
   } else {
-    debug.push(`EMA BIAS: NEUTRAL`);
+    debug.push(`EMA BIAS: NEUTRAL (EMA21 ${e21_0.toFixed(0)} ≈ EMA50 ${e50_0.toFixed(0)})`);
   }
 
   const adxVal = adx(candles1d);
@@ -543,7 +445,7 @@ function detectTrend(candles1d: Candle[]): {
 }
 
 // ============================================================
-// PULLBACK CHECK — v37.5 EXACT (StochRSI tiers, cross detection)
+// PULLBACK CHECK — v38.2: MOMENTUM requires rising/falling stoch
 // ============================================================
 function checkPullbackAdaptive(
   biasDirection: "LONG" | "SHORT" | null,
@@ -558,6 +460,8 @@ function checkPullbackAdaptive(
 
   const crossUp = prevStoch4h.k <= prevStoch4h.d && stoch4h.k > stoch4h.d;
   const crossDown = prevStoch4h.k >= prevStoch4h.d && stoch4h.k < stoch4h.d;
+  const rising = stoch4h.k > prevStoch4h.k;
+  const falling = stoch4h.k < prevStoch4h.k;
 
   if (isStrongTrend) {
     if (biasDirection === "LONG") {
@@ -567,8 +471,12 @@ function checkPullbackAdaptive(
       if (stoch4h.k < 35) {
         return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch oversold (${stoch4h.k})`, stochZone: "ZONE" };
       }
-      if (stoch4h.k < 50) {
-        return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k}`, stochZone: "NEUTRAL" };
+      // v38.2: MOMENTUM requires rising stoch
+      if (stoch4h.k < 50 && rising) {
+        return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k} rising`, stochZone: "NEUTRAL" };
+      }
+      if (stoch4h.k < 50 && !rising) {
+        return { pullbackActive: false, tier: null, reason: `STRONG LONG: stoch falling (${stoch4h.k}→${prevStoch4h.k}) — waiting for turn`, stochZone: "EXTENDED" };
       }
       return { pullbackActive: false, tier: null, reason: `STRONG LONG: extended — 4H Stoch ${stoch4h.k} (need <50)`, stochZone: "EXTENDED" };
     }
@@ -579,13 +487,18 @@ function checkPullbackAdaptive(
       if (stoch4h.k > 65) {
         return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch overbought (${stoch4h.k})`, stochZone: "ZONE" };
       }
-      if (stoch4h.k > 50) {
-        return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k}`, stochZone: "NEUTRAL" };
+      // v38.2: MOMENTUM requires falling stoch
+      if (stoch4h.k > 50 && falling) {
+        return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k} falling`, stochZone: "NEUTRAL" };
+      }
+      if (stoch4h.k > 50 && !falling) {
+        return { pullbackActive: false, tier: null, reason: `STRONG SHORT: stoch rising (${stoch4h.k}→${prevStoch4h.k}) — waiting for turn`, stochZone: "EXTENDED" };
       }
       return { pullbackActive: false, tier: null, reason: `STRONG SHORT: extended — 4H Stoch ${stoch4h.k} (need >50)`, stochZone: "EXTENDED" };
     }
   }
 
+  // Weak trend
   if (biasDirection === "LONG") {
     if (stoch4h.k < 20) {
       if (crossUp) return { pullbackActive: true, tier: "DEEP", reason: `DEEP pullback: 4H Stoch cross up from extreme oversold (${stoch4h.k})`, stochZone: "EXTREME" };
@@ -595,8 +508,12 @@ function checkPullbackAdaptive(
       if (crossUp) return { pullbackActive: true, tier: "SHALLOW", reason: `SHALLOW pullback: 4H Stoch cross up from oversold (${stoch4h.k})`, stochZone: "ZONE" };
       return { pullbackActive: false, tier: null, reason: `LONG shallow pullback forming: 4H Stoch oversold (${stoch4h.k}), waiting for cross up`, stochZone: "ZONE" };
     }
-    if (stoch4h.k < 50) {
-      return { pullbackActive: true, tier: "MOMENTUM", reason: `MOMENTUM zone: 4H Stoch ${stoch4h.k}`, stochZone: "NEUTRAL" };
+    // v38.2: MOMENTUM requires rising stoch
+    if (stoch4h.k < 50 && rising) {
+      return { pullbackActive: true, tier: "MOMENTUM", reason: `MOMENTUM zone: 4H Stoch ${stoch4h.k} rising`, stochZone: "NEUTRAL" };
+    }
+    if (stoch4h.k < 50 && !rising) {
+      return { pullbackActive: false, tier: null, reason: `LONG: stoch falling (${stoch4h.k}→${prevStoch4h.k}) — waiting for turn`, stochZone: "EXTENDED" };
     }
     return { pullbackActive: false, tier: null, reason: `LONG: extended — 4H Stoch ${stoch4h.k} (need <50)`, stochZone: "EXTENDED" };
   }
@@ -610,8 +527,12 @@ function checkPullbackAdaptive(
       if (crossDown) return { pullbackActive: true, tier: "SHALLOW", reason: `SHALLOW pullback: 4H Stoch cross down from overbought (${stoch4h.k})`, stochZone: "ZONE" };
       return { pullbackActive: false, tier: null, reason: `SHORT shallow pullback forming: 4H Stoch overbought (${stoch4h.k}), waiting for cross down`, stochZone: "ZONE" };
     }
-    if (stoch4h.k > 50) {
-      return { pullbackActive: true, tier: "MOMENTUM", reason: `MOMENTUM zone: 4H Stoch ${stoch4h.k}`, stochZone: "NEUTRAL" };
+    // v38.2: MOMENTUM requires falling stoch
+    if (stoch4h.k > 50 && falling) {
+      return { pullbackActive: true, tier: "MOMENTUM", reason: `MOMENTUM zone: 4H Stoch ${stoch4h.k} falling`, stochZone: "NEUTRAL" };
+    }
+    if (stoch4h.k > 50 && !falling) {
+      return { pullbackActive: false, tier: null, reason: `SHORT: stoch rising (${stoch4h.k}→${prevStoch4h.k}) — waiting for turn`, stochZone: "EXTENDED" };
     }
     return { pullbackActive: false, tier: null, reason: `SHORT: extended — 4H Stoch ${stoch4h.k} (need >50)`, stochZone: "EXTENDED" };
   }
@@ -620,7 +541,7 @@ function checkPullbackAdaptive(
 }
 
 // ============================================================
-// MAIN SIGNAL — v37.5 entry logic, EMA bias, structure-based targets
+// MAIN SIGNAL — v38.2: Flat 3% targets, fixed bias, momentum filter
 // ============================================================
 export function generateSignal(
   pair: string,
@@ -694,6 +615,7 @@ export function generateSignal(
     return { debug };
   }
 
+  // v38.2: Block weak pullback entries (strength < 50) unless trendline break
   const biasDirection = trend.direction;
   const isStrongTrend = (trend.adx !== null && trend.adx >= 25) && trend.strength >= 80;
 
@@ -701,7 +623,7 @@ export function generateSignal(
   const stoch4h = stochRsi(closes4h);
   const prevStoch4h = stochRsi(closes4h.slice(0, -1));
 
-  debug.push(`4H Stoch: ${stoch4h.k}/${stoch4h.d}`);
+  debug.push(`4H Stoch: ${stoch4h.k}/${stoch4h.d} (prev: ${prevStoch4h.k}/${prevStoch4h.d})`);
 
   const pullback = checkPullbackAdaptive(biasDirection, stoch4h, prevStoch4h, trend.adx, isStrongTrend);
   debug.push(pullback.reason);
@@ -740,6 +662,7 @@ export function generateSignal(
   let trendlinePrice = 0;
   let isBreakout = false;
 
+  // Trendline break takes precedence — never blocked by stoch zone
   if (breakEvent.broken && breakEvent.line) {
     entryType = "BREAKOUT";
     confidence = 80;
@@ -748,6 +671,13 @@ export function generateSignal(
     isBreakout = true;
     debug.push(`BREAKOUT ${biasDirection}: 4H ${breakEvent.line.type} broken`);
   } else {
+    // v38.2: Block entries if trend strength < 50 and no breakout
+    if (trend.strength < 50 && !isStrongTrend) {
+      debug.push(`Entry blocked — trend strength ${trend.strength} < 50, waiting for EMA alignment or breakout`);
+      return { debug };
+    }
+
+    // No break — require valid pullback zone
     if (pullback.stochZone === "EXTENDED") {
       debug.push(`Entry blocked — Stoch extended (${stoch4h.k}), not in valid pullback zone`);
       return { debug };
@@ -766,7 +696,7 @@ export function generateSignal(
         entryType = "EARLY"; confidence = 60;
         if (isStrongTrend) confidence += 10;
         trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 1.02;
-        debug.push(`MOMENTUM LONG: 4H Stoch ${stoch4h.k} neutral${isStrongTrend ? " (strong trend boost)" : ""}`);
+        debug.push(`MOMENTUM LONG: 4H Stoch ${stoch4h.k} rising${isStrongTrend ? " (strong trend boost)" : ""}`);
       }
     } else if (biasDirection === "SHORT") {
       if (pullback.tier === "DEEP") {
@@ -781,7 +711,7 @@ export function generateSignal(
         entryType = "EARLY"; confidence = 60;
         if (isStrongTrend) confidence += 10;
         trendlinePrice = relevantLines[0] ? getTrendlinePrice(relevantLines[0], candles4h.length - 1) : price * 0.98;
-        debug.push(`MOMENTUM SHORT: 4H Stoch ${stoch4h.k} neutral${isStrongTrend ? " (strong trend boost)" : ""}`);
+        debug.push(`MOMENTUM SHORT: 4H Stoch ${stoch4h.k} falling${isStrongTrend ? " (strong trend boost)" : ""}`);
       }
     }
   }
@@ -819,15 +749,22 @@ export function generateSignal(
     }
   }
 
-  const { target, structureInfo } = calculateStructureTarget(candles4h, biasDirection, entry, stop);
+  // v38.2: FLAT 3% TARGET
+  const targetPct = 0.03;
+  let target: number;
+  if (biasDirection === "LONG") {
+    target = entry * (1 + targetPct);
+  } else {
+    target = entry * (1 - targetPct);
+  }
+  target = Math.round(target * 100) / 100;
   
   const risk = Math.abs(entry - stop);
   const reward = Math.abs(target - entry);
   const rr = risk > 0 ? reward / risk : 0;
 
-  debug.push(`ENTRY: ${entry.toFixed(2)} | STOP: ${stop.toFixed(2)} | TARGET: ${target.toFixed(2)}`);
+  debug.push(`ENTRY: ${entry.toFixed(2)} | STOP: ${stop.toFixed(2)} | TARGET: ${target.toFixed(2)} (flat 3%)`);
   debug.push(`RISK: ${risk.toFixed(2)} | REWARD: ${reward.toFixed(2)} | R:R ${rr.toFixed(2)}`);
-  debug.push(`STRUCTURE: ${structureInfo?.description || "N/A"}`);
   debug.push(`swingLow=${swingLow.toFixed(2)} swingHigh=${swingHigh.toFixed(2)} atr4h=${atr4h.toFixed(2)} trendlinePrice=${trendlinePrice.toFixed(2)}`);
   debug.push(`isBreakout=${isBreakout} isMomentum=${isMomentum} isStrongTrend=${isStrongTrend} tier=${pullback.tier || "N/A"}`);
 
@@ -876,7 +813,6 @@ export function generateSignal(
     stochK: stoch4h.k,
     stochD: stoch4h.d,
     version: CURRENT_SIGNAL_VERSION,
-    structureTarget: structureInfo,
     tradeState: {
       phase: "ENTRY",
       phaseEnteredAt: now,
@@ -891,13 +827,13 @@ export function generateSignal(
     },
   };
 
-  debug.push(`SIGNAL: ${pullback.tier} ${entryType} ${biasDirection} ${pair} @ ${entry.toFixed(2)}, SL ${stop.toFixed(2)}, TP ${target.toFixed(2)} (${structureInfo?.type || "N/A"}), RR ${rr.toFixed(2)}, Conf ${confidence}%, Size ${(positionSizePct*100).toFixed(0)}%, ADX ${trend.adx?.toFixed(1) || "N/A"}${volConfirmed ? ", VOL+" : ""}`);
+  debug.push(`SIGNAL: ${pullback.tier} ${entryType} ${biasDirection} ${pair} @ ${entry.toFixed(2)}, SL ${stop.toFixed(2)}, TP ${target.toFixed(2)} (flat 3%), RR ${rr.toFixed(2)}, Conf ${confidence}%, Size ${(positionSizePct*100).toFixed(0)}%, ADX ${trend.adx?.toFixed(1) || "N/A"}${volConfirmed ? ", VOL+" : ""}`);
 
   return { signal, debug };
 }
 
 // ============================================================
-// EXIT LOGIC — Price-first with structure targets, profit lock trail KEPT EXACTLY
+// EXIT LOGIC — v38.2: Stoch extreme exit REMOVED, profit lock trail KEPT
 // ============================================================
 export function shouldHold(
   signal: Signal,
@@ -926,6 +862,7 @@ export function shouldHold(
     currentR, lastDecisionTimestamp: now,
   };
 
+  // 1. HARD STOPS
   if (signal.direction === "LONG" && currentPrice <= signal.stop) {
     return { shouldHold: false, reason: "stop_loss", updatedTradeState: { ...updatedState, phase: "EXIT" } };
   }
@@ -933,6 +870,7 @@ export function shouldHold(
     return { shouldHold: false, reason: "stop_loss", updatedTradeState: { ...updatedState, phase: "EXIT" } };
   }
 
+  // 2. TARGET HIT — flat 3%
   if (signal.direction === "LONG" && currentPrice >= signal.target) {
     return { shouldHold: false, reason: "target_hit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
   }
@@ -940,6 +878,7 @@ export function shouldHold(
     return { shouldHold: false, reason: "target_hit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
   }
 
+  // 3. EMA REGIME FLIP
   if (candles1d && candles1d.length >= 50) {
     const trend = detectTrend(candles1d);
     if (trend.direction && trend.direction !== signal.direction) {
@@ -951,6 +890,7 @@ export function shouldHold(
     }
   }
 
+  // 4. 4H EMA21 STRUCTURE FAILURE
   if (candles4h && candles4h.length >= 50) {
     const closes = candles4h.map(c => c.close);
     const e21 = ema(closes, 21);
@@ -968,17 +908,11 @@ export function shouldHold(
     }
   }
 
-  const hoursInTrade = (now - signal.timestamp) / (60 * 60 * 1000);
-  const stoch4h_exit = stochRsi(candles4h.map(c => c.close));
+  // v38.2: STOCH EXTREME EXIT REMOVED
+  // Previously exited at stoch < 10 (LONG) or > 90 (SHORT) after 2 hours
+  // This caused premature exits on valid pullbacks
 
-  const stochExtreme = signal.direction === "LONG"
-    ? stoch4h_exit.k < 10
-    : stoch4h_exit.k > 90;
-
-  if (stochExtreme && hoursInTrade > 2) {
-    return { shouldHold: false, reason: "stoch_extreme_opposite_exit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
-  }
-
+  // 5. PROFIT PROTECTION — KEPT EXACTLY
   let newLockedStop = ts.lockedStop;
   let newProfitLockLevel = ts.profitLockLevel;
   let newPhase: TradeLifecyclePhase = ts.phase;
@@ -1018,7 +952,7 @@ export function shouldHold(
 }
 
 // ============================================================
-// VALIDITY — v37.5 exact
+// VALIDITY
 // ============================================================
 export function isSignalStillValid(signal: Signal, currentPrice: number): { valid: boolean; reason: string; exited: boolean } {
   if (signal.direction === "LONG" && currentPrice <= signal.stop) return { valid: false, reason: "sl_hit", exited: true };
@@ -1075,7 +1009,7 @@ function check4HAlignment(
 }
 
 // ============================================================
-// MARKET SNAPSHOT — Full UI compatibility with 4H trend fix
+// MARKET SNAPSHOT
 // ============================================================
 export function getMarketSnapshot(
   pair: string,
@@ -1138,7 +1072,7 @@ export function getMarketSnapshot(
     }
   }
 
-  // v38.1 FIX: 4H trend shows independently with its own EMA21 + ADX
+  // v38.2: 4H trend independent calculation
   let trend4hObj: { direction: "LONG" | "SHORT"; strength: "STRONG" | "MEDIUM" | "WEAK" } | null = null;
   if (candles4h.length >= 50) {
     const closes4h_trend = candles4h.map(c => c.close);
@@ -1228,7 +1162,7 @@ export function getMarketSnapshot(
 }
 
 // ============================================================
-// COMPATIBILITY — All v37.5 exports maintained
+// COMPATIBILITY
 // ============================================================
 export function shouldHoldCompat(
   signal: Signal,
