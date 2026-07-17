@@ -11,7 +11,10 @@ export async function GET(req: NextRequest) {
   try {
     const snapshot = await loadDashboardSnapshot();
     if (!snapshot) {
-      return NextResponse.json({ error: "No snapshot available. Cron may not have run yet." }, { status: 503 });
+      return NextResponse.json(
+        { error: "No snapshot available. Cron may not have run yet." },
+        { status: 503 }
+      );
     }
 
     if (pair && snapshot.markets) {
