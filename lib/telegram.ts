@@ -1,3 +1,7 @@
+// ============================================================
+// CXSwitch v37 Telegram Alerts
+// ============================================================
+
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
