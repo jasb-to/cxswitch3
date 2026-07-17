@@ -141,6 +141,7 @@ export interface TrendlineEvaluation {
   trendline: Trendline | null;
   isValid: boolean;
   reason: string;
+  quality: "NOISE" | "WEAK" | "GOOD" | "EXCELLENT";
   debug: string[];
 }
 
@@ -713,7 +714,7 @@ export function evaluateTrendline(
 
   if (len < 20) {
     debug.push("[TL] Insufficient candles (< 20)");
-    return { trendline: null, isValid: false, reason: "Insufficient data", debug };
+    return { trendline: null, isValid: false, reason: "Insufficient data", quality: "NOISE", debug };
   }
 
   const pivots = findPivotsV28(candles, direction);
@@ -721,7 +722,7 @@ export function evaluateTrendline(
 
   if (pivots.length < 3) {
     debug.push("[TL] Need >= 3 pivots");
-    return { trendline: null, isValid: false, reason: "Need >= 3 pivots", debug };
+    return { trendline: null, isValid: false, reason: "Need >= 3 pivots", quality: "NOISE", debug };
   }
 
   const recentPivots = pivots.slice(-5);
@@ -758,7 +759,7 @@ export function evaluateTrendline(
 
   if (!fit) {
     debug.push("[TL] Trendline fit failed");
-    return { trendline: null, isValid: false, reason: "Fit failed", debug };
+    return { trendline: null, isValid: false, reason: "Fit failed", quality: "NOISE", debug };
   }
 
   if (isRecalculated) {
@@ -795,17 +796,25 @@ export function evaluateTrendline(
 
   debug.push(`[TL] Trendline | Price=${sf(projectedPrice,2)} | R²=${sf(trendline.r2,2)} | Touches=${trendline.touches} | Age=${Math.round(ageMs/3600000)}h | DistFromPrice=${sf(distanceFromPrice*100,2)}%`);
 
-  // Validate: extremely poor trendline
-  if (trendline.r2 < 0.5) {
-    debug.push(`[TL] REJECTED: R² ${sf(trendline.r2,2)} < 0.50 — trendline is noise`);
-    return { trendline, isValid: false, reason: `R² ${sf(trendline.r2,2)} too low (< 0.50)`, debug };
+  // Three-band quality assessment
+  let quality: "NOISE" | "WEAK" | "GOOD" | "EXCELLENT";
+
+  if (trendline.r2 < 0.30) {
+    quality = "NOISE";
+    debug.push(`[TL] REJECTED: R² ${sf(trendline.r2,2)} < 0.30 — trendline is noise`);
+    return { trendline, isValid: false, reason: `R² ${sf(trendline.r2,2)} too low (< 0.30)`, quality, debug };
+  } else if (trendline.r2 < 0.50) {
+    quality = "WEAK";
+    debug.push(`[TL] WEAK TRENDLINE: R² ${sf(trendline.r2,2)} (0.30–0.50) — acceptable for high-beta coins`);
+  } else if (trendline.r2 < 0.70) {
+    quality = "GOOD";
+    debug.push(`[TL] GOOD TRENDLINE: R² ${sf(trendline.r2,2)} (0.50–0.70)`);
+  } else {
+    quality = "EXCELLENT";
+    debug.push(`[TL] EXCELLENT TRENDLINE: R² ${sf(trendline.r2,2)} ≥ 0.70 — strong structure`);
   }
 
-  if (trendline.r2 < 0.7) {
-    debug.push(`[TL] WARNING: R² ${sf(trendline.r2,2)} < 0.70 — moderate fit`);
-  }
-
-  return { trendline, isValid: true, reason: `Valid | R²=${sf(trendline.r2,2)} | Touches=${trendline.touches}`, debug };
+  return { trendline, isValid: true, reason: `Valid | R²=${sf(trendline.r2,2)} | Touches=${trendline.touches} | Quality=${quality}`, quality, debug };
 }
 
 // ============================================================
@@ -1139,6 +1148,16 @@ export function generateSignal(
     return { debug };
   }
 
+  // Trendline quality confidence adjustment
+  const tlQuality = trendlineEval.quality;
+  if (tlQuality === "WEAK") {
+    confidence -= 10;
+    debug.push(`[SIGNAL] Confidence reduced by 10 for WEAK trendline (R²=${trendlineEval.trendline?.r2})`);
+  } else if (tlQuality === "EXCELLENT") {
+    confidence += 5;
+    debug.push(`[SIGNAL] Confidence boosted by 5 for EXCELLENT trendline (R²=${trendlineEval.trendline?.r2})`);
+  }
+
   // Confidence boosters
   confidence += Math.min(10, trend.strength / 10);
   if (trend.adx !== null && trend.adx >= 25) confidence += 5;
@@ -1193,7 +1212,7 @@ export function generateSignal(
   debug.push(`[SIGNAL] Entry=$${sf(entry,2)} | Stop=$${sf(stop,2)} | Target=$${sf(target,2)}`);
   debug.push(`[SIGNAL] Risk=$${sf(riskDiag.risk,2)} | Reward=$${sf(riskDiag.reward,2)} | RR=${sf(riskDiag.rr,2)}`);
   debug.push(`[SIGNAL] Conf=${confidence}% | Size=${(positionSizePct*100).toFixed(0)}% | ADX=${trend.adx?.toFixed(1) || "N/A"}`);
-  debug.push(`[SIGNAL] Trendline: R²=${trendlineEval.trendline?.r2} | Touches=${trendlineEval.trendline?.touches} | Dist=${trendlineEval.trendline?.distanceFromPrice}%`);
+  debug.push(`[SIGNAL] Trendline: R²=${trendlineEval.trendline?.r2} | Quality=${trendlineEval.quality} | Touches=${trendlineEval.trendline?.touches} | Dist=${trendlineEval.trendline?.distanceFromPrice}%`);
   debug.push(`[SIGNAL] ═══════════════════════════════════════`);
 
   return { signal, debug };
