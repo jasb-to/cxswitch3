@@ -796,13 +796,13 @@ export function evaluateTrendline(
   debug.push(`[TL] Trendline | Price=${sf(projectedPrice,2)} | R²=${sf(trendline.r2,2)} | Touches=${trendline.touches} | Age=${Math.round(ageMs/3600000)}h | DistFromPrice=${sf(distanceFromPrice*100,2)}%`);
 
   // Validate: extremely poor trendline
-  if (trendline.r2 < 0.3) {
-    debug.push(`[TL] REJECTED: R² ${sf(trendline.r2,2)} < 0.30 — trendline is noise`);
-    return { trendline, isValid: false, reason: `R² ${sf(trendline.r2,2)} too low (< 0.30)`, debug };
+  if (trendline.r2 < 0.5) {
+    debug.push(`[TL] REJECTED: R² ${sf(trendline.r2,2)} < 0.50 — trendline is noise`);
+    return { trendline, isValid: false, reason: `R² ${sf(trendline.r2,2)} too low (< 0.50)`, debug };
   }
 
-  if (trendline.r2 < 0.5) {
-    debug.push(`[TL] WARNING: R² ${sf(trendline.r2,2)} < 0.50 — weak fit`);
+  if (trendline.r2 < 0.7) {
+    debug.push(`[TL] WARNING: R² ${sf(trendline.r2,2)} < 0.70 — moderate fit`);
   }
 
   return { trendline, isValid: true, reason: `Valid | R²=${sf(trendline.r2,2)} | Touches=${trendline.touches}`, debug };
