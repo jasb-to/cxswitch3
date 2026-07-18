@@ -793,8 +793,18 @@ export function evaluateTrendline(
     debug.push(`[TL] EXCELLENT TRENDLINE: R² ${sf(trendline.r2,2)} ≥ 0.70 — strong structure`);
   }
 
-  // v28: ALWAYS valid if 3+ pivots. R² never blocks.
-  return { trendline, isValid: true, reason: `Valid | R²=${sf(trendline.r2,2)} | Touches=${trendline.touches} | Quality=${quality}`, quality, debug };
+  // v38.6: Invalidate trendline if too far from price (>5%)
+  const maxDist = 0.05; // 5% max distance
+  if (Math.abs(distanceFromPrice) > maxDist) {
+    debug.push(`[TL] REJECTED: Distance ${sf(Math.abs(distanceFromPrice)*100,2)}% > ${sf(maxDist*100,0)}% — trendline is stale`);
+    debug.push(`[TL] Will recalculate fresh trendline on next cycle`);
+    // Clear the stale trendline so next cycle rebuilds
+    trendlineStore.delete(pair);
+    return { trendline, isValid: false, reason: `Stale: ${sf(Math.abs(distanceFromPrice)*100,2)}% from price (max ${sf(maxDist*100,0)}%)`, quality: "NOISE", debug };
+  }
+
+  // v28: ALWAYS valid if 3+ pivots and within distance. R² never blocks.
+  return { trendline, isValid: true, reason: `Valid | R²=${sf(trendline.r2,2)} | Touches=${trendline.touches} | Quality=${quality} | Dist=${sf(Math.abs(distanceFromPrice)*100,2)}%`, quality, debug };
 }
 
 // ============================================================
@@ -1119,17 +1129,27 @@ export function generateSignal(
       target = entry - atr4h * 5;
     }
   } else {
-    // ADD (v28)
+    // ADD — v38.6: use TL buffer only if trendline is valid and reasonably close
     confidence = 85;
     positionSizePct = 0.03;
+    const tlValid = trendlineEval.isValid && trendlineEval.trendline !== null;
+    const distPct = tlValid ? Math.abs((entry - tlPrice) / tlPrice) : 1;
+    const useTL = tlValid && distPct < 0.03; // only use TL if within 3%
+
     if (trend.direction === "LONG") {
-      stop = Math.min(tlPrice * 0.995, entry - atr4h * 1.5);
+      const atrStop = entry - atr4h * 1.5;
+      const tlStop = useTL ? tlPrice * 0.995 : 0;
+      stop = tlStop > 0 && tlStop > atrStop ? Math.max(tlStop, atrStop) : atrStop;
       const minTarget = entry + (entry - stop) * 1.5;
       target = Math.max(swingHigh, minTarget);
+      if (!useTL) debug.push(`[RISK] ADD: TL too far (${sf(distPct*100,2)}%), using ATR stop=${sf(atrStop,2)}`);
     } else {
-      stop = Math.max(tlPrice * 1.005, entry + atr4h * 1.5);
+      const atrStop = entry + atr4h * 1.5;
+      const tlStop = useTL ? tlPrice * 1.005 : 999999;
+      stop = useTL && tlStop < atrStop ? Math.min(tlStop, atrStop) : atrStop;
       const minTarget = entry - (stop - entry) * 1.5;
       target = Math.min(swingLow, minTarget);
+      if (!useTL) debug.push(`[RISK] ADD: TL too far (${sf(distPct*100,2)}%), using ATR stop=${sf(atrStop,2)}`);
     }
     if (entryDiag.volUp) confidence += 5;
     if (entryDiag.stochMomentum) confidence += 5;
