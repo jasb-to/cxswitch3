@@ -939,17 +939,18 @@ function diagnoseEntry(
     entryType = "BREAKOUT";
     debug.push("[ENTRY] RAW ENTRY_2: near TL + stoch turning (no volume/ADX/EMA required)");
   } else if (beyondTrendline && confirming && alignment.aligned) {
-    // ADD: needs at least one momentum indicator
-    if (volUp || stochMomentum || adxStrong) {
+    // ADD: needs 2 of 3 momentum indicators
+    const momentumCount = (volUp ? 1 : 0) + (stochMomentum ? 1 : 0) + (adxStrong ? 1 : 0);
+    if (momentumCount >= 2) {
       rawType = "ADD";
       entryType = "EARLY";
       const momentumParts: string[] = [];
       if (volUp) momentumParts.push("vol");
       if (stochMomentum) momentumParts.push("stoch");
       if (adxStrong) momentumParts.push("adx");
-      debug.push(`[ENTRY] RAW ADD: beyond TL + confirming + EMA aligned + momentum(${momentumParts.join("+")})`);
+      debug.push(`[ENTRY] RAW ADD: beyond TL + confirming + EMA aligned + momentum(${momentumParts.join("+")}) [${momentumCount}/3]`);
     } else {
-      debug.push("[ENTRY] Beyond TL + confirming + aligned, but no momentum (vol/stoch/adx)");
+      debug.push(`[ENTRY] Beyond TL + confirming + aligned, but only ${momentumCount}/3 momentum (need 2+: vol/stoch/adx)`);
     }
   } else {
     const reasons: string[] = [];
@@ -1317,7 +1318,7 @@ export function shouldHold(
   // 4. 4H EMA STRUCTURE FAILURE
   if (candles4h && candles4h.length >= 50) {
     const alignment = calculateEMAAlignment(candles4h, signal.direction);
-    if (hoursInTrade > 4) {
+    if (hoursInTrade > 6) {
       if (!alignment.aligned) {
         debug.push(`[HOLD] EXIT: 4H EMA structure failure | Aligned=false | Price=${sf(alignment.price,2)} EMA8=${sf(alignment.ema8,2)} EMA21=${sf(alignment.ema21,2)}`);
         return { shouldHold: false, reason: "4h_structure_failure", updatedTradeState: { ...updatedState, phase: "EXIT" } };
