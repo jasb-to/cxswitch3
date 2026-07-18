@@ -142,11 +142,19 @@ function StructurePanel({ debug, hasSignal, hasTrade }: { debug: string[]; hasSi
 
   if (structureLines.length === 0) return null;
 
+  // DEDUPLICATE: keep only first occurrence of each line
+  const seen = new Set<string>();
+  const uniqueLines = structureLines.filter(line => {
+    if (seen.has(line)) return false;
+    seen.add(line);
+    return true;
+  });
+
   return (
     <div className="mb-4 p-3 bg-gray-800/40 rounded-lg border border-gray-700/30">
       <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-2">Structure</div>
       <div className="space-y-1">
-        {structureLines.map((line, i) => {
+        {uniqueLines.map((line, i) => {
           let color = "text-gray-400";
           if (line.includes("LONG")) color = "text-green-400";
           if (line.includes("SHORT")) color = "text-red-400";
