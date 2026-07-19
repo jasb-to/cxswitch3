@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  generateSignalAsync,  // v38.7: async with Redis hysteresis
+  generateSignalAsync,
   shouldHold,
   filterExpiredSignals,
   getMarketSnapshot,
@@ -8,7 +8,7 @@ import {
   Signal,
   SignalResult,
   setLastExitFunctions,
-  setRedisHelpers,      // v38.7: Redis hysteresis hook
+  setRedisHelpers,
 } from "@/lib/strategy";
 import { getCandles, getCurrentPrice, krakenPairFormat } from "@/lib/kraken";
 import { sendAlert, sendExitAlert, alertError } from "@/lib/telegram";
@@ -21,7 +21,6 @@ import {
   loadLastExit,
   persistLastExit,
 } from "@/lib/state";
-import { redis } from "@/lib/redis";  // v38.7: your Redis client
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -46,22 +45,25 @@ export async function GET(req: NextRequest) {
 
   console.log("[CRON] STARTED | " + new Date().toISOString());
 
-  // v38.7: Wire Redis helpers for cross-instance hysteresis persistence
+  // v38.7: Wire Redis helpers for cross-instance hysteresis persistence.
+  // Uses your existing state module's Redis — no separate @/lib/redis needed.
   setRedisHelpers(
     async <T>(key: string) => {
       try {
-        const val = await redis.get(key);
-        return val as T | null;
-      } catch (e) {
-        console.warn("[CRON] Redis get failed:", e);
+        // Use your existing state module's Redis or Upstash binding
+        const { redis } = await import("@/lib/state");
+        const val = await (redis as any).get(key);
+        return val ? (JSON.parse(val) as T) : null;
+      } catch {
         return null;
       }
     },
     async (key: string, value: any) => {
       try {
-        await redis.set(key, JSON.stringify(value), { ex: 24 * 60 * 60 }); // 24h TTL
-      } catch (e) {
-        console.warn("[CRON] Redis set failed:", e);
+        const { redis } = await import("@/lib/state");
+        await (redis as any).set(key, JSON.stringify(value), { ex: 24 * 60 * 60 });
+      } catch {
+        // Redis unavailable — hysteresis falls back to activeSignals
       }
     }
   );
@@ -118,7 +120,7 @@ export async function GET(req: NextRequest) {
 
   const currentPrices: Record<string, number> = {};
   const signalResults: Record<string, SignalResult> = {};
-  const marketSnapshots = [];
+  const marketSnapshots: any[] = [];
 
   // ─── Process Each Pair ────────────────────────────────────
 
@@ -325,7 +327,6 @@ export async function GET(req: NextRequest) {
         }
       } else if (pendingForPair.length === 0) {
         // ─── Evaluate New Signals ─────────────────────────────
-        // v38.7: Use async generateSignal with Redis-backed hysteresis
         console.log(`[CRON] ${pair} | No active trades — evaluating`);
         const result = await generateSignalAsync(
           pair,
