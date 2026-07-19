@@ -1,5 +1,5 @@
 // ============================================================
-// CXSwitch v38.6 — "Setup Detector" (v28 entry logic + v38.5 risk mgmt)
+// CXSwitch v38.7 — "Setup Detector" (v28 entry logic + v38.5 risk mgmt)
 // Entry: v28 logic — near TL + stoch for ENTRY_1/2, momentum for ADD
 // Exit: v38.5 full lifecycle (stop trail, profit locks, phases)
 // Trendline: 3+ pivots, any R² (logged, not gated)
@@ -376,10 +376,8 @@ export function calculateTrend1D(candles1d: Candle[]): TrendResult {
   const ema21 = e21[e21.length - 1];
   const ema50 = e50[e50.length - 1];
 
-  // v28: Direction from EMA8 vs EMA21 only
   const direction: "LONG" | "SHORT" | null = ema8 > ema21 ? "LONG" : "SHORT";
 
-  // v28: Strength from HH/LL check
   let strength = 50;
   let strengthLabel: "STRONG" | "MEDIUM" | "WEAK" = "MEDIUM";
 
@@ -396,7 +394,6 @@ export function calculateTrend1D(candles1d: Candle[]): TrendResult {
 
   debug.push(`[TREND] 1D ${direction} ${strengthLabel} | Price=${sf(price,2)} EMA8=${sf(ema8,2)} EMA21=${sf(ema21,2)} EMA50=${sf(ema50,2)}`);
 
-  // 1D ADX logged for info only, never gates
   const adxVal = adx(candles1d);
   if (adxVal !== null) {
     debug.push(`[TREND] 1D ADX=${sf(adxVal,1)} (informational)`);
@@ -573,7 +570,6 @@ function checkPullbackAdaptive(
     }
   }
 
-  // Normal trend (not strong)
   if (biasDirection === "LONG") {
     if (stoch4h.k < 20) {
       if (crossUp) {
@@ -709,7 +705,6 @@ export function evaluateTrendline(
   const currentPrice = candles[len - 1].close;
   const currentIndex = len - 1;
 
-  // Check existing trendline
   const existing = trendlineStore.get(pair);
   const maxAge = 7 * 24 * 60 * 60 * 1000;
 
@@ -776,7 +771,6 @@ export function evaluateTrendline(
 
   debug.push(`[TL] Trendline | Price=${sf(projectedPrice,2)} | R²=${sf(trendline.r2,2)} | Touches=${trendline.touches} | Age=${Math.round(ageMs/3600000)}h | DistFromPrice=${sf(distanceFromPrice*100,2)}%`);
 
-  // v28: Three-band quality assessment — INFORMATIONAL ONLY, never gates
   let quality: "NOISE" | "WEAK" | "GOOD" | "EXCELLENT";
 
   if (trendline.r2 < 0.30) {
@@ -793,17 +787,14 @@ export function evaluateTrendline(
     debug.push(`[TL] EXCELLENT TRENDLINE: R² ${sf(trendline.r2,2)} ≥ 0.70 — strong structure`);
   }
 
-  // v38.6: Invalidate trendline if too far from price (>5%)
-  const maxDist = 0.05; // 5% max distance
+  const maxDist = 0.05;
   if (Math.abs(distanceFromPrice) > maxDist) {
     debug.push(`[TL] REJECTED: Distance ${sf(Math.abs(distanceFromPrice)*100,2)}% > ${sf(maxDist*100,0)}% — trendline is stale`);
     debug.push(`[TL] Will recalculate fresh trendline on next cycle`);
-    // Clear the stale trendline so next cycle rebuilds
     trendlineStore.delete(pair);
     return { trendline, isValid: false, reason: `Stale: ${sf(Math.abs(distanceFromPrice)*100,2)}% from price (max ${sf(maxDist*100,0)}%)`, quality: "NOISE", debug };
   }
 
-  // v28: ALWAYS valid if 3+ pivots and within distance. R² never blocks.
   return { trendline, isValid: true, reason: `Valid | R²=${sf(trendline.r2,2)} | Touches=${trendline.touches} | Quality=${quality} | Dist=${sf(Math.abs(distanceFromPrice)*100,2)}%`, quality, debug };
 }
 
@@ -819,7 +810,6 @@ function calculateRisk(
   const risk = Math.abs(entry - stop);
   const reward = Math.abs(target - entry);
   const rr = risk > 0 ? reward / risk : 0;
-  // v28: ENTRY_1/2 have no minRR — they use ATR-based SL/TP
   const minRR = rawType === "ADD" ? 1.5 : 0;
   const passes = rawType === "ADD" ? rr >= minRR : true;
 
@@ -843,13 +833,13 @@ function checkVolume(candles: Candle[], lookback = 10): { confirmed: boolean; ra
   const avgVol = avg(volumes.slice(-lookback - 1, -1));
   const currentVol = volumes[volumes.length - 1];
   const ratio = avgVol > 0 ? currentVol / avgVol : 0;
-  const confirmed = currentVol > avgVol * 1.3; // v28: 1.3x threshold
+  const confirmed = currentVol > avgVol * 1.3;
   debug.push(`[VOL] Current=${Math.round(currentVol)} | Avg${lookback}=${Math.round(avgVol)} | Ratio=${sf(ratio,2)} | Threshold=1.30 | Confirmed=${confirmed}`);
   return { confirmed, ratio, debug };
 }
 
 // ============================================================
-// HYSTERESIS (v28 feature — preserved)
+// HYSTERESIS (v28 feature — v38.7: Redis-backed with cold-start fallback)
 // ============================================================
 
 interface HysteresisState {
@@ -860,20 +850,116 @@ interface HysteresisState {
 
 const hysteresisStore: Map<string, HysteresisState> = new Map();
 
-function getHysteresis(pair: string, now: number): HysteresisState {
+// v38.7: Redis helpers for cross-instance hysteresis persistence
+let _redisGet: (<T>(key: string) => Promise<T | null>) | null = null;
+let _redisSet: ((key: string, value: any) => Promise<void>) | null = null;
+
+/**
+ * Set Redis helpers for cross-instance hysteresis persistence.
+ * Call this once in your cron handler before processing pairs.
+ * If you don't have Redis, the activeSignals fallback still prevents double entries.
+ */
+export function setRedisHelpers(
+  getFn: <T>(key: string) => Promise<T | null>,
+  setFn: (key: string, value: any) => Promise<void>
+): void {
+  _redisGet = getFn;
+  _redisSet = setFn;
+}
+
+const HYSTERESIS_REDIS_PREFIX = "hysteresis:";
+
+async function getHysteresisFromRedis(pair: string, now: number): Promise<HysteresisState | null> {
+  if (!_redisGet) return null;
+  try {
+    const key = `${HYSTERESIS_REDIS_PREFIX}${pair}`;
+    const data = await _redisGet<string>(key);
+    if (!data) return null;
+    const parsed = JSON.parse(data) as HysteresisState;
+    if (parsed.lockUntil > now) {
+      hysteresisStore.set(pair, parsed);
+      return parsed;
+    }
+    return null;
+  } catch (e) {
+    console.warn(`[HYSTERESIS] Redis read failed for ${pair}:`, e);
+    return null;
+  }
+}
+
+async function setHysteresisToRedis(pair: string, state: HysteresisState): Promise<void> {
+  if (!_redisSet) return;
+  try {
+    const key = `${HYSTERESIS_REDIS_PREFIX}${pair}`;
+    await _redisSet(key, JSON.stringify(state));
+  } catch (e) {
+    console.warn(`[HYSTERESIS] Redis write failed for ${pair}:`, e);
+  }
+}
+
+/**
+ * v38.7: Check hysteresis with cold-start fallback.
+ * 
+ * In serverless environments (Vercel), the in-memory hysteresisStore
+ * is lost on cold starts. We fall back to:
+ * 1. Redis (if configured via setRedisHelpers)
+ * 2. Active signals array (always available)
+ */
+function getHysteresisSync(
+  pair: string,
+  now: number,
+  activeSignals: Signal[] = []
+): HysteresisState {
+  // 1. Check in-memory store first (fast path)
   const state = hysteresisStore.get(pair);
-  if (!state) return { lastSignalType: null, lastSignalPrice: 0, lockUntil: 0 };
-  if (now > state.lockUntil) return { lastSignalType: null, lastSignalPrice: 0, lockUntil: 0 };
-  return state;
+  if (state && now <= state.lockUntil) {
+    return state;
+  }
+
+  // 2. Cold-start fallback: check active signals for recent ENTRY_1/2
+  const recentEntry = activeSignals.find(s =>
+    s.pair === pair &&
+    !s.exited &&
+    (s.scale === "ENTRY_1" || s.scale === "ENTRY_2") &&
+    (now - s.timestamp) < 24 * 60 * 60 * 1000
+  );
+  if (recentEntry) {
+    const lockUntil = recentEntry.timestamp + 24 * 60 * 60 * 1000;
+    const rehydrated: HysteresisState = {
+      lastSignalType: recentEntry.scale as "ENTRY_1" | "ENTRY_2",
+      lastSignalPrice: recentEntry.entry,
+      lockUntil,
+    };
+    hysteresisStore.set(pair, rehydrated);
+    return rehydrated;
+  }
+
+  return { lastSignalType: null, lastSignalPrice: 0, lockUntil: 0 };
+}
+
+async function getHysteresisAsync(
+  pair: string,
+  now: number,
+  activeSignals: Signal[] = []
+): Promise<HysteresisState> {
+  const mem = hysteresisStore.get(pair);
+  if (mem && now <= mem.lockUntil) return mem;
+
+  const fromRedis = await getHysteresisFromRedis(pair, now);
+  if (fromRedis) return fromRedis;
+
+  return getHysteresisSync(pair, now, activeSignals);
 }
 
 function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price: number, now: number): void {
   const lockDuration = type === "ADD" ? 4 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
-  hysteresisStore.set(pair, {
+  const state: HysteresisState = {
     lastSignalType: type,
     lastSignalPrice: price,
     lockUntil: now + lockDuration,
-  });
+  };
+  hysteresisStore.set(pair, state);
+  setHysteresisToRedis(pair, state);
 }
 
 // ============================================================
@@ -897,36 +983,30 @@ function diagnoseEntry(
   const tlPrice = trendlineEval.trendline?.projectedPrice ?? price;
   const dist = (price - tlPrice) / tlPrice;
 
-  // EMA alignment — calculated for logging, only used for ADD
   const alignment = calculateEMAAlignment(candles4h, trend.direction || "LONG");
   debug.push(...alignment.debug);
 
-  // v28: Stoch conditions for ENTRY_1/2
   const nearTrendline = Math.abs(dist) < 0.012;
   const stochExtreme = trend.direction === "LONG" ? stoch4h.k < 20 : stoch4h.k > 80;
   const stochTurning = trend.direction === "LONG" ? stoch4h.k > stoch4h.d : stoch4h.k < stoch4h.d;
 
-  // v28: ADD conditions (momentum filters)
   const beyondTrendline = trend.direction === "LONG" ? price > tlPrice * 1.008 : price < tlPrice * 0.992;
   const confirming = trend.direction === "LONG"
     ? last.close > last.open && last.close > prev.close
     : last.close < last.open && last.close < prev.close;
 
-  // Volume — v28: only for ADD
   const volCheck = checkVolume(candles4h);
   const volUp = volCheck.confirmed && volCheck.ratio > 1.3;
   debug.push(...volCheck.debug);
 
   const stochMomentum = trend.direction === "LONG" ? stoch4h.k > stoch4h.d : stoch4h.k < stoch4h.d;
 
-  // v28: 4H ADX > 20 for ADD momentum (not 1D ADX)
   const adx4h = adx(candles4h) ?? 0;
   const adxStrong = adx4h > 20;
   debug.push(`[ADX] 4H ADX=${sf(adx4h,1)} (threshold=20 for ADD momentum)`);
 
   debug.push(`[ENTRY] Conditions: nearTL=${nearTrendline} beyondTL=${beyondTrendline} stochExtreme=${stochExtreme} stochTurning=${stochTurning} confirming=${confirming} emaAligned=${alignment.aligned} volUp=${volUp} stochMomentum=${stochMomentum} adxStrong=${adxStrong}`);
 
-  // v28: Determine raw type — ENTRY_1/2 need ONLY near TL + stoch
   let rawType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
   let entryType: "EARLY" | "BREAKOUT" | "RETEST" | null = null;
 
@@ -939,7 +1019,6 @@ function diagnoseEntry(
     entryType = "BREAKOUT";
     debug.push("[ENTRY] RAW ENTRY_2: near TL + stoch turning (no volume/ADX/EMA required)");
   } else if (beyondTrendline && confirming && alignment.aligned) {
-    // ADD: needs 2 of 3 momentum indicators
     const momentumCount = (volUp ? 1 : 0) + (stochMomentum ? 1 : 0) + (adxStrong ? 1 : 0);
     if (momentumCount >= 2) {
       rawType = "ADD";
@@ -982,6 +1061,7 @@ function diagnoseEntry(
 
 // ============================================================
 // CANONICAL SIGNAL GENERATION (v28 entry + v38.5 risk mgmt)
+// v38.7: Hysteresis checks activeSignals for cold-start safety
 // ============================================================
 export function generateSignal(
   pair: string,
@@ -1000,22 +1080,20 @@ export function generateSignal(
     activeSignals = [];
   }
 
-  // Check existing active signal
   const active = activeSignals.find((s: any) => s && s.pair === pair && s.exited === false);
   if (active) {
     debug.push(`[SIGNAL] Already active: ${active.id}`);
     return { debug };
   }
 
-  // Hysteresis check
-  const hyst = getHysteresis(pair, now);
+  // v38.7: Hysteresis with cold-start fallback via activeSignals
+  const hyst = getHysteresisSync(pair, now, activeSignals);
   if (hyst.lastSignalType) {
     const minutesLeft = Math.round((hyst.lockUntil - now) / 60000);
     debug.push(`[SIGNAL] Hysteresis lock: ${hyst.lastSignalType} | ${minutesLeft}min remaining`);
     return { debug };
   }
 
-  // Stoch extreme exit cooldown
   const recentExits = activeSignals.filter(s =>
     s.pair === pair && s.exited && s.exitReason === "stoch_extreme_opposite_exit" &&
     (now - (s.exitTimestamp || s.timestamp)) < 4 * 60 * 60 * 1000
@@ -1030,7 +1108,6 @@ export function generateSignal(
     }
   }
 
-  // General exit cooldown
   const recentAnyExit = activeSignals.filter(s =>
     s.pair === pair && s.exited && (now - (s.exitTimestamp || s.timestamp)) < 60 * 60 * 1000
   );
@@ -1041,7 +1118,6 @@ export function generateSignal(
     return { debug };
   }
 
-  // Data sufficiency
   if (candles4h.length < 50 || candles1h.length < 30 || candles1d.length < 50) {
     debug.push(`[SIGNAL] Insufficient data: 4H=${candles4h.length} 1H=${candles1h.length} 1D=${candles1d.length}`);
     return { debug };
@@ -1049,7 +1125,6 @@ export function generateSignal(
 
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
 
-  // === STEP 1: CANONICAL 1D TREND (v28: direction only) ===
   const trend = calculateTrend1D(candles1d);
   debug.push(...trend.debug);
 
@@ -1058,31 +1133,25 @@ export function generateSignal(
     return { debug };
   }
 
-  // v28: isStrongTrend logged for info, never gates entry
   const isStrongTrend = (trend.adx !== null && trend.adx >= 25) && trend.strength >= 80;
   debug.push(`[SIGNAL] StrongTrend=${isStrongTrend} (informational)`);
 
-  // === STEP 2: CANONICAL TRENDLINE (v28: 3+ pivots, any R²) ===
   const trendlineEval = evaluateTrendline(pair, candles4h, trend.direction, now);
   debug.push(...trendlineEval.debug);
 
-  // v28: Trendline always valid if 3+ pivots (R² never blocks)
   if (!trendlineEval.trendline) {
     debug.push("[SIGNAL] No trendline — need 3+ pivots");
     return { debug };
   }
 
-  // === STEP 3: CANONICAL STOCH ===
   const closes4h = candles4h.map(c => c.close);
   const stoch4h = stochRsi(closes4h);
   const prevStoch4h = stochRsi(closes4h.slice(0, -1));
   debug.push(`[SIGNAL] 4H Stoch K=${stoch4h.k} D=${stoch4h.d}`);
 
-  // === STEP 4: CANONICAL PULLBACK (for UI readiness) ===
   const pullback = checkPullbackAdaptive(trend.direction, stoch4h, prevStoch4h, trend.adx, isStrongTrend);
   debug.push(...pullback.debug);
 
-  // === STEP 5: CANONICAL ENTRY DIAGNOSTICS (v28 logic) ===
   const entryDiag = diagnoseEntry(pair, candles4h, trend, trendlineEval, stoch4h, now);
   debug.push(...entryDiag.debug);
 
@@ -1091,10 +1160,8 @@ export function generateSignal(
     return { debug };
   }
 
-  // Apply hysteresis
   setHysteresis(pair, entryDiag.rawType, price, now);
 
-  // === STEP 6: CANONICAL LEVELS (v28 ATR-based) ===
   const atr4h = atr(candles4h, 14);
   const swingLows = candles4h.map(c => c.low).slice(-20);
   const swingHighs = candles4h.map(c => c.high).slice(-20);
@@ -1108,7 +1175,6 @@ export function generateSignal(
   let confidence = 50;
   let positionSizePct: number;
 
-  // v28: ENTRY_1/2 use ATR-based SL/TP. ADD uses trendline buffer.
   if (entryDiag.rawType === "ENTRY_1") {
     confidence = 50;
     positionSizePct = 0.06;
@@ -1130,12 +1196,11 @@ export function generateSignal(
       target = entry - atr4h * 5;
     }
   } else {
-    // ADD — v38.6: use TL buffer only if trendline is valid and reasonably close
     confidence = 85;
     positionSizePct = 0.03;
     const tlValid = trendlineEval.isValid && trendlineEval.trendline !== null;
     const distPct = tlValid ? Math.abs((entry - tlPrice) / tlPrice) : 1;
-    const useTL = tlValid && distPct < 0.03; // only use TL if within 3%
+    const useTL = tlValid && distPct < 0.03;
 
     if (trend.direction === "LONG") {
       const atrStop = entry - atr4h * 1.5;
@@ -1157,7 +1222,6 @@ export function generateSignal(
     if (entryDiag.adxStrong) confidence += 5;
   }
 
-  // === STEP 7: CANONICAL RISK (v28: no RR gate for ENTRY_1/2) ===
   const riskDiag = calculateRisk(entry, stop, target, entryDiag.rawType);
   debug.push(...riskDiag.debug);
 
@@ -1166,26 +1230,23 @@ export function generateSignal(
     return { debug };
   }
 
-  // Trendline quality confidence adjustment
   const tlQuality = trendlineEval.quality;
   if (tlQuality === "NOISE") {
     confidence -= 5;
     debug.push(`[SIGNAL] Confidence reduced by 5 for NOISE trendline (R²=${trendlineEval.trendline?.r2})`);
   } else if (tlQuality === "WEAK") {
-    confidence -= 0; // v28: weak is acceptable
+    confidence -= 0;
     debug.push(`[SIGNAL] Weak trendline accepted (R²=${trendlineEval.trendline?.r2})`);
   } else if (tlQuality === "EXCELLENT") {
     confidence += 5;
     debug.push(`[SIGNAL] Confidence boosted by 5 for EXCELLENT trendline (R²=${trendlineEval.trendline?.r2})`);
   }
 
-  // Confidence boosters
   confidence += Math.min(10, trend.strength / 10);
   if (trend.adx !== null && trend.adx >= 25) confidence += 5;
   if (trend.adx !== null && trend.adx >= 30) confidence += 5;
   confidence = Math.min(95, Math.round(confidence));
 
-  // === STEP 8: BUILD SIGNAL WITH FULL DIAGNOSTICS ===
   const signal: Signal = {
     id: `${pair}_${now}`,
     pair,
@@ -1227,7 +1288,6 @@ export function generateSignal(
     },
   };
 
-  // Canonical entry log
   debug.push(`[SIGNAL] ═══════════════════════════════════════`);
   debug.push(`[SIGNAL] ENTRY ACCEPTED: ${entryDiag.rawType} ${entryDiag.entryType} ${trend.direction} ${pair}`);
   debug.push(`[SIGNAL] Entry=$${sf(entry,2)} | Stop=$${sf(stop,2)} | Target=$${sf(target,2)}`);
@@ -1240,7 +1300,8 @@ export function generateSignal(
 }
 
 // ============================================================
-// CANONICAL EXIT LOGIC — shouldHold (v38.5 preserved exactly)
+// CANONICAL EXIT LOGIC — shouldHold (v38.7)
+// FIX: Stoch extreme opposite now correctly checks for OPPOSITE extreme
 // ============================================================
 export function shouldHold(
   signal: Signal,
@@ -1326,14 +1387,21 @@ export function shouldHold(
     }
   }
 
-  // 5. STOCH EXTREME OPPOSITE (v28 exit)
+  // 5. STOCH EXTREME OPPOSITE (v38.7 FIX)
+  // OLD BUG: For LONG, checked K<20 (same as entry). For SHORT, checked K>80 (same as entry).
+  // FIXED: Exit when stoch reaches the OPPOSITE extreme from entry.
+  //   LONG entry at oversold (K<20) → exit when overbought (K>80)
+  //   SHORT entry at overbought (K>80) → exit when oversold (K<20)
   const closes4h = candles4h.map(c => c.close);
   const stoch = stochRsi(closes4h);
+  
+  // v38.7: Opposite extreme check — was checking SAME extreme as entry (bug)
   const stochExtremeOpposite = signal.direction === "LONG"
-    ? stoch.k < 20
-    : stoch.k > 80;
+    ? stoch.k > 80   // LONG: exit when overbought (opposite of oversold entry)
+    : stoch.k < 20;  // SHORT: exit when oversold (opposite of overbought entry)
+    
   if (stochExtremeOpposite) {
-    debug.push(`[HOLD] EXIT: Stoch extreme opposite | K=${stoch.k}`);
+    debug.push(`[HOLD] EXIT: Stoch extreme opposite | K=${stoch.k} | Direction=${signal.direction} → exit at ${signal.direction === "LONG" ? "K>80" : "K<20"}`);
     return { shouldHold: false, reason: "stoch_extreme_opposite_exit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
   }
 
@@ -1449,7 +1517,6 @@ export function getMarketSnapshot(
   const adxVal = adx(candles4h) ?? 0;
   const rsiVal = wilderRsi(closes4h);
 
-  // Readiness calculation (for UI only, never gates entry)
   let readiness = 0;
   if (trend.direction) readiness += 25;
   if (trend.strength >= 50) readiness += 15;
@@ -1469,7 +1536,6 @@ export function getMarketSnapshot(
   else if (readiness >= 60) readinessLabel = "WARM";
   else if (readiness >= 40) readinessLabel = "WATCH";
 
-  // Build unified debug from canonical sources
   const allDebug: string[] = [
     ...trend.debug,
     ...trend4h.debug,
