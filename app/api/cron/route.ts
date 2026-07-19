@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  generateSignalAsync,
+  generateSignal,
   shouldHold,
   filterExpiredSignals,
   getMarketSnapshot,
@@ -8,7 +8,6 @@ import {
   Signal,
   SignalResult,
   setLastExitFunctions,
-  setRedisHelpers,
 } from "@/lib/strategy";
 import { getCandles, getCurrentPrice, krakenPairFormat } from "@/lib/kraken";
 import { sendAlert, sendExitAlert, alertError } from "@/lib/telegram";
@@ -44,29 +43,6 @@ export async function GET(req: NextRequest) {
   }
 
   console.log("[CRON] STARTED | " + new Date().toISOString());
-
-  // v38.7: Wire Redis helpers for cross-instance hysteresis persistence.
-  // Uses your existing state module's Redis — no separate @/lib/redis needed.
-  setRedisHelpers(
-    async <T>(key: string) => {
-      try {
-        // Use your existing state module's Redis or Upstash binding
-        const { redis } = await import("@/lib/state");
-        const val = await (redis as any).get(key);
-        return val ? (JSON.parse(val) as T) : null;
-      } catch {
-        return null;
-      }
-    },
-    async (key: string, value: any) => {
-      try {
-        const { redis } = await import("@/lib/state");
-        await (redis as any).set(key, JSON.stringify(value), { ex: 24 * 60 * 60 });
-      } catch {
-        // Redis unavailable — hysteresis falls back to activeSignals
-      }
-    }
-  );
 
   const now = Date.now();
   const results: Record<string, any> = {};
@@ -120,7 +96,7 @@ export async function GET(req: NextRequest) {
 
   const currentPrices: Record<string, number> = {};
   const signalResults: Record<string, SignalResult> = {};
-  const marketSnapshots: any[] = [];
+  const marketSnapshots = [];
 
   // ─── Process Each Pair ────────────────────────────────────
 
@@ -328,7 +304,7 @@ export async function GET(req: NextRequest) {
       } else if (pendingForPair.length === 0) {
         // ─── Evaluate New Signals ─────────────────────────────
         console.log(`[CRON] ${pair} | No active trades — evaluating`);
-        const result = await generateSignalAsync(
+        const result = generateSignal(
           pair,
           candles1h,
           candles4h,
