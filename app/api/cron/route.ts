@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Redis } from "@upstash/redis";
 import {
   generateSignal,
   shouldHold,
@@ -10,9 +11,6 @@ import {
   setLastExitFunctions,
   setRedisHelpers,
 } from "@/lib/strategy";
-import { redis } from "@/lib/state";
-import { getCandles, getCurrentPrice, krakenPairFormat } from "@/lib/kraken";
-import { sendAlert, sendExitAlert, alertError } from "@/lib/telegram";
 import {
   saveActiveSignals,
   loadActiveSignals,
@@ -22,7 +20,13 @@ import {
   loadLastExit,
   persistLastExit,
 } from "@/lib/state";
+import { getCandles, getCurrentPrice, krakenPairFormat } from "@/lib/kraken";
+import { sendAlert, sendExitAlert, alertError } from "@/lib/telegram";
 
+const redis = new Redis({
+  url: process.env.KV_REST_API_URL!,
+  token: process.env.KV_REST_API_TOKEN!,
+});
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
