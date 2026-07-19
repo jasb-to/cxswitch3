@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  generateSignal,
+  generateSignalAsync,  // v38.7: async with Redis hysteresis
   shouldHold,
   filterExpiredSignals,
   getMarketSnapshot,
@@ -8,6 +8,7 @@ import {
   Signal,
   SignalResult,
   setLastExitFunctions,
+  setRedisHelpers,      // v38.7: Redis hysteresis hook
 } from "@/lib/strategy";
 import { getCandles, getCurrentPrice, krakenPairFormat } from "@/lib/kraken";
 import { sendAlert, sendExitAlert, alertError } from "@/lib/telegram";
@@ -20,6 +21,7 @@ import {
   loadLastExit,
   persistLastExit,
 } from "@/lib/state";
+import { redis } from "@/lib/redis";  // v38.7: your Redis client
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -43,6 +45,26 @@ export async function GET(req: NextRequest) {
   }
 
   console.log("[CRON] STARTED | " + new Date().toISOString());
+
+  // v38.7: Wire Redis helpers for cross-instance hysteresis persistence
+  setRedisHelpers(
+    async <T>(key: string) => {
+      try {
+        const val = await redis.get(key);
+        return val as T | null;
+      } catch (e) {
+        console.warn("[CRON] Redis get failed:", e);
+        return null;
+      }
+    },
+    async (key: string, value: any) => {
+      try {
+        await redis.set(key, JSON.stringify(value), { ex: 24 * 60 * 60 }); // 24h TTL
+      } catch (e) {
+        console.warn("[CRON] Redis set failed:", e);
+      }
+    }
+  );
 
   const now = Date.now();
   const results: Record<string, any> = {};
@@ -303,8 +325,9 @@ export async function GET(req: NextRequest) {
         }
       } else if (pendingForPair.length === 0) {
         // ─── Evaluate New Signals ─────────────────────────────
+        // v38.7: Use async generateSignal with Redis-backed hysteresis
         console.log(`[CRON] ${pair} | No active trades — evaluating`);
-        const result = generateSignal(
+        const result = await generateSignalAsync(
           pair,
           candles1h,
           candles4h,
