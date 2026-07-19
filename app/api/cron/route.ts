@@ -8,7 +8,9 @@ import {
   Signal,
   SignalResult,
   setLastExitFunctions,
+  setRedisHelpers,
 } from "@/lib/strategy";
+import { redis } from "@/lib/state";
 import { getCandles, getCurrentPrice, krakenPairFormat } from "@/lib/kraken";
 import { sendAlert, sendExitAlert, alertError } from "@/lib/telegram";
 import {
@@ -59,6 +61,17 @@ export async function GET(req: NextRequest) {
   if (!Array.isArray(activeSignals)) activeSignals = [];
 
   setLastExitFunctions(loadLastExit, persistLastExit);
+
+  // Wire Redis for cross-instance hysteresis persistence (v38.7)
+  setRedisHelpers(
+    async (key) => {
+      const val = await redis.get(key);
+      return val ? JSON.parse(val as string) : null;
+    },
+    async (key, value) => {
+      await redis.set(key, JSON.stringify(value), { ex: 86400 });
+    }
+  );
 
   const preCleanSignals = activeSignals.filter(
     (s) => !s.exited || now - s.timestamp < EXITED_TTL_MS
