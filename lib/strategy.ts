@@ -302,6 +302,48 @@ export function adx(candles: Candle[], period = 14): number | null {
 }
 
 // ============================================================
+// ADX WITH +DI / -DI — v39 direction engine
+// ============================================================
+export function adxWithDI(candles: Candle[], period = 14): {
+  adx: number | null;
+  plusDI: number | null;
+  minusDI: number | null;
+} {
+  if (candles.length < period * 2) return { adx: null, plusDI: null, minusDI: null };
+  const h = candles.map(c => c.high), l = candles.map(c => c.low), c = candles.map(c => c.close);
+  const trs: number[] = [], pDM: number[] = [], mDM: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    trs.push(Math.max(h[i] - l[i], Math.abs(h[i] - c[i - 1]), Math.abs(l[i] - c[i - 1])));
+    pDM.push(h[i] - h[i - 1] > l[i - 1] - l[i] ? Math.max(h[i] - h[i - 1], 0) : 0);
+    mDM.push(l[i - 1] - l[i] > h[i] - h[i - 1] ? Math.max(l[i - 1] - l[i], 0) : 0);
+  }
+  const wilderSmooth = (vals: number[], lookback: number) => {
+    const r = [avg(vals.slice(0, lookback))];
+    for (let i = lookback; i < vals.length; i++) {
+      r.push((r[r.length - 1] * (lookback - 1) + vals[i]) / lookback);
+    }
+    return r;
+  };
+  const atrS = wilderSmooth(trs, period);
+  const pDIS = wilderSmooth(pDM, period);
+  const mDIS = wilderSmooth(mDM, period);
+  if (!atrS.length) return { adx: null, plusDI: null, minusDI: null };
+  const pDI = atrS.map((_, i) => (pDIS[i] / atrS[i]) * 100);
+  const mDI = atrS.map((_, i) => (mDIS[i] / atrS[i]) * 100);
+  const dx = atrS.map((_, i) => {
+    const sum = pDI[i] + mDI[i];
+    return sum === 0 ? 0 : (Math.abs(pDI[i] - mDI[i]) / sum) * 100;
+  });
+  const adxS = wilderSmooth(dx, period);
+  const v = adxS[adxS.length - 1];
+  return {
+    adx: isValid(v) ? Math.round(v * 10) / 10 : null,
+    plusDI: isValid(pDI[pDI.length - 1]) ? Math.round(pDI[pDI.length - 1] * 10) / 10 : null,
+    minusDI: isValid(mDI[mDI.length - 1]) ? Math.round(mDI[mDI.length - 1] * 10) / 10 : null,
+  };
+}
+
+// ============================================================
 // CANONICAL ATR
 // ============================================================
 function atr(candles: Candle[], period = 14): number {
@@ -345,7 +387,10 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
 }
 
 // ============================================================
-// CANONICAL 1D TREND — EMA8 vs EMA21 (v28: direction only, no ADX gating)
+// CANONICAL 1D TREND — ADX +DI/-DI for direction (v39)
+// Direction from +DI vs -DI (actual buying/selling pressure)
+// Strength from ADX + DI spread (trend conviction)
+// No gating — informational only, system keeps flowing
 // ============================================================
 export function calculateTrend1D(candles1d: Candle[]): TrendResult {
   const debug: string[] = [];
@@ -376,28 +421,40 @@ export function calculateTrend1D(candles1d: Candle[]): TrendResult {
   const ema21 = e21[e21.length - 1];
   const ema50 = e50[e50.length - 1];
 
-  const direction: "LONG" | "SHORT" | null = ema8 > ema21 ? "LONG" : "SHORT";
+  // v39: Direction from +DI vs -DI, NOT from EMA cross
+  const { adx: adxVal, plusDI, minusDI } = adxWithDI(candles1d);
 
-  let strength = 50;
-  let strengthLabel: "STRONG" | "MEDIUM" | "WEAK" = "MEDIUM";
+  let direction: "LONG" | "SHORT" | null = null;
+  let strength = 0;
+  let strengthLabel: "STRONG" | "MEDIUM" | "WEAK" = "WEAK";
 
-  const highs = candles1d.slice(-20).map(c => c.high);
-  const lows = candles1d.slice(-20).map(c => c.low);
-  const hh = highs[highs.length - 1] > Math.max(...highs.slice(0, -1));
-  const ll = lows[lows.length - 1] < Math.min(...lows.slice(0, -1));
+  if (adxVal !== null && plusDI !== null && minusDI !== null) {
+    // Directional pressure: which side is stronger?
+    direction = plusDI > minusDI ? "LONG" : "SHORT";
+    const diSpread = Math.abs(plusDI - minusDI);
 
-  if (direction === "LONG" && hh) {
-    strength = 80; strengthLabel = "STRONG";
-  } else if (direction === "SHORT" && ll) {
-    strength = 80; strengthLabel = "STRONG";
+    if (adxVal >= 25 && diSpread >= 10) {
+      strength = 85;
+      strengthLabel = "STRONG";
+    } else if (adxVal >= 20 && diSpread >= 5) {
+      strength = 60;
+      strengthLabel = "MEDIUM";
+    } else {
+      strength = 30;
+      strengthLabel = "WEAK";
+    }
+
+    debug.push(`[TREND] 1D ${direction} ${strengthLabel} | ADX=${sf(adxVal,1)} +DI=${sf(plusDI,1)} -DI=${sf(minusDI,1)} spread=${sf(diSpread,1)} | Price=${sf(price,2)}`);
+  } else {
+    // Fallback to EMA if ADX/DI calc fails
+    direction = ema8 > ema21 ? "LONG" : "SHORT";
+    strength = 40;
+    strengthLabel = "WEAK";
+    debug.push(`[TREND] 1D ${direction} ${strengthLabel} (fallback EMA) | Price=${sf(price,2)} EMA8=${sf(ema8,2)} EMA21=${sf(ema21,2)}`);
   }
 
-  debug.push(`[TREND] 1D ${direction} ${strengthLabel} | Price=${sf(price,2)} EMA8=${sf(ema8,2)} EMA21=${sf(ema21,2)} EMA50=${sf(ema50,2)}`);
-
-  const adxVal = adx(candles1d);
-  if (adxVal !== null) {
-    debug.push(`[TREND] 1D ADX=${sf(adxVal,1)} (informational)`);
-  }
+  // Keep EMAs for reference / alignment checks elsewhere
+  debug.push(`[TREND] EMA ref: EMA8=${sf(ema8,2)} EMA21=${sf(ema21,2)} EMA50=${sf(ema50,2)}`);
 
   return { direction, strength, strengthLabel, adx: adxVal, ema8, ema21, ema50, price, debug };
 }
@@ -448,7 +505,8 @@ export function calculateEMAAlignment(
 }
 
 // ============================================================
-// CANONICAL 4H TREND (dashboard display only)
+// CANONICAL 4H TREND — ADX +DI/-DI for direction (v39)
+// Dashboard + entry confirmation. No gating.
 // ============================================================
 export function calculateTrend4H(candles4h: Candle[]): {
   direction: "LONG" | "SHORT" | null;
@@ -478,30 +536,41 @@ export function calculateTrend4H(candles4h: Candle[]): {
   const ema21 = e21[e21.length - 1];
   const ema50 = e50[e50.length - 1];
 
+  // v39: Direction from +DI vs -DI
+  const { adx: adxVal, plusDI, minusDI } = adxWithDI(candles4h);
+
   let direction: "LONG" | "SHORT" | null = null;
   let strengthLabel: "STRONG" | "MEDIUM" | "WEAK" = "WEAK";
 
-  if (price > ema8 && ema8 > ema21 && ema21 > ema50) {
-    direction = "LONG"; strengthLabel = "STRONG";
-  } else if (price < ema8 && ema8 < ema21 && ema21 < ema50) {
-    direction = "SHORT"; strengthLabel = "STRONG";
-  } else if (price > ema8 && ema8 > ema21) {
-    direction = "LONG"; strengthLabel = "MEDIUM";
-  } else if (price < ema8 && ema8 < ema21) {
-    direction = "SHORT"; strengthLabel = "MEDIUM";
-  } else if (price > ema21) {
-    direction = "LONG"; strengthLabel = "WEAK";
-  } else if (price < ema21) {
-    direction = "SHORT"; strengthLabel = "WEAK";
-  }
+  if (adxVal !== null && plusDI !== null && minusDI !== null) {
+    direction = plusDI > minusDI ? "LONG" : "SHORT";
+    const diSpread = Math.abs(plusDI - minusDI);
 
-  const adxVal = adx(candles4h);
-  if (adxVal !== null) {
-    if (adxVal >= 30 && strengthLabel !== "WEAK") strengthLabel = "STRONG";
-    else if (adxVal >= 20 && strengthLabel === "WEAK") strengthLabel = "MEDIUM";
-    debug.push(`[TREND4H] ${direction} ${strengthLabel} | ADX=${sf(adxVal,1)} | Price=${sf(price,2)} EMA8=${sf(ema8,2)} EMA21=${sf(ema21,2)}`);
+    if (adxVal >= 25 && diSpread >= 10) {
+      strengthLabel = "STRONG";
+    } else if (adxVal >= 20 && diSpread >= 5) {
+      strengthLabel = "MEDIUM";
+    } else {
+      strengthLabel = "WEAK";
+    }
+
+    debug.push(`[TREND4H] ${direction} ${strengthLabel} | ADX=${sf(adxVal,1)} +DI=${sf(plusDI,1)} -DI=${sf(minusDI,1)} spread=${sf(diSpread,1)} | Price=${sf(price,2)}`);
   } else {
-    debug.push(`[TREND4H] ${direction} ${strengthLabel} | Price=${sf(price,2)} EMA8=${sf(ema8,2)} EMA21=${sf(ema21,2)}`);
+    // Fallback to EMA stack
+    if (price > ema8 && ema8 > ema21 && ema21 > ema50) {
+      direction = "LONG"; strengthLabel = "STRONG";
+    } else if (price < ema8 && ema8 < ema21 && ema21 < ema50) {
+      direction = "SHORT"; strengthLabel = "STRONG";
+    } else if (price > ema8 && ema8 > ema21) {
+      direction = "LONG"; strengthLabel = "MEDIUM";
+    } else if (price < ema8 && ema8 < ema21) {
+      direction = "SHORT"; strengthLabel = "MEDIUM";
+    } else if (price > ema21) {
+      direction = "LONG"; strengthLabel = "WEAK";
+    } else if (price < ema21) {
+      direction = "SHORT"; strengthLabel = "WEAK";
+    }
+    debug.push(`[TREND4H] ${direction} ${strengthLabel} (fallback EMA) | Price=${sf(price,2)} EMA8=${sf(ema8,2)} EMA21=${sf(ema21,2)}`);
   }
 
   return { direction, strengthLabel, adx: adxVal, debug };
