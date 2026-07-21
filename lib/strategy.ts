@@ -1,9 +1,36 @@
 // ============================================================
-// CXSwitch v38.7 — "Setup Detector" (v28 entry logic + v38.5 risk mgmt)
-// Entry: v28 logic — near TL + stoch for ENTRY_1/2, momentum for ADD
-// Exit: v38.5 full lifecycle (stop trail, profit locks, phases)
-// Trendline: 3+ pivots, any R² (logged, not gated)
-// ADX: 4H only >20 for ADD momentum. 1D ADX for strength label only.
+// CXSwitch "Trend Rider v2" — Simple, Profitable, No Churn
+// ============================================================
+// Philosophy: Trade WITH the 1D trend, enter on 4H pullback, 
+// ride until 1D trend flips or stop hits. No scalping.
+//
+// Bias:     1D EMA8 vs EMA21 (direction + strength)
+// Entry:     4H StochRSI < 30 (LONG) or > 70 (SHORT) 
+// Stop:      ATR(14) × 2, capped at 5% max
+// Exit:      1D trend flip, stop hit, or trailing stop in profit
+// Position:  Fixed 2% risk per trade
+//
+// What was removed from v38:
+// - Profit locks (1R/2R/3R) — they chop winners
+// - Stoch extreme opposite exit — exits too early
+// - 4H EMA structure failure — exits on normal noise
+// - 1D regime flip with profit distinction — overcomplicated
+// - ENTRY_1/ENTRY_2/ADD scaling — one entry, one size
+// - Hysteresis with Redis — in-memory only, simpler
+// - Trendline R² gating — any 3+ pivots works
+// - Cooldowns, phases, trade states — unnecessary complexity
+//
+// What was kept from v28:
+// - Trendline for entry timing (price near TL = better entry)
+// - StochRSI for pullback detection
+// - ATR-based stops
+// - Simple signal structure
+//
+// What was added:
+// - 1D/4H/15m alignment check (higher confidence when aligned)
+// - Trailing stop once in 2R profit
+// - ADX filter (skip when 1D ADX < 20, market is ranging)
+// - Counter-trend fade detection (optional, for experienced users)
 // ============================================================
 
 export interface Candle {
@@ -31,15 +58,14 @@ export interface Signal {
   exitRecommendedPrice?: number;
   exitPrice?: number;
   exitTimestamp?: number;
-  entryType?: "EARLY" | "BREAKOUT" | "RETEST";
+  entryType?: "PULLBACK" | "BREAKOUT" | "FADE";
   trendlinePrice?: number;
   volumeConfirmed?: boolean;
   type?: "ACCUMULATE" | "BREAKOUT";
-  scale?: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
+  scale?: "ENTRY" | "ADD" | null;
   entryTier?: string;
   entryMode?: string;
   positionSizePct?: number;
-  tradeState?: TradeState;
   regimeDirection?: string;
   conflictEntry?: boolean;
   entryTimeframe?: string;
@@ -53,6 +79,7 @@ export interface Signal {
   lockedStop?: number;
   profitLockActive?: boolean;
   version?: number;
+  tradeState?: TradeState;
 }
 
 export interface SignalResult {
@@ -149,8 +176,8 @@ export interface TrendlineEvaluation {
 }
 
 export interface EntryDiagnostics {
-  rawType: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
-  entryType: "EARLY" | "BREAKOUT" | "RETEST" | null;
+  rawType: "ENTRY" | "ADD" | "FADE" | null;
+  entryType: "PULLBACK" | "BREAKOUT" | "FADE" | null;
   nearTrendline: boolean;
   beyondTrendline: boolean;
   stochExtreme: boolean;
@@ -177,11 +204,11 @@ export interface RiskDiagnostics {
   debug: string[];
 }
 
-export type EntryTier = "NO_TRADE" | "WATCH" | "EARLY_ENTRY" | "CONFIRMED_ENTRY";
+export type EntryTier = "NO_TRADE" | "WATCH" | "PULLBACK_ENTRY" | "BREAKOUT_ENTRY" | "FADE_ENTRY";
 export type TradeLifecyclePhase = "WATCH" | "ENTRY" | "BUILDING" | "TREND" | "PROFIT_PROTECTION" | "EXIT" | "COOLDOWN";
 export type PullbackTier = "DEEP" | "SHALLOW" | "MOMENTUM" | null;
 
-export const CURRENT_SIGNAL_VERSION = 38;
+export const CURRENT_SIGNAL_VERSION = 40;
 
 function avg(arr: number[]): number {
   return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
@@ -196,7 +223,7 @@ function sf(v: number, d: number): string {
 }
 
 // ============================================================
-// CANONICAL EMA CALCULATION
+// CANONICAL EMA
 // ============================================================
 export function ema(values: number[], period: number): number[] {
   if (values.length < period || !values.every(isValid)) return [];
@@ -302,7 +329,7 @@ export function adx(candles: Candle[], period = 14): number | null {
 }
 
 // ============================================================
-// ADX WITH +DI / -DI — v39 direction engine
+// ADX WITH +DI / -DI
 // ============================================================
 export function adxWithDI(candles: Candle[], period = 14): {
   adx: number | null;
@@ -387,16 +414,15 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
 }
 
 // ============================================================
-// CANONICAL 1D TREND — ADX +DI/-DI for direction (v39)
-// Direction from +DI vs -DI (actual buying/selling pressure)
-// Strength from ADX + DI spread (trend conviction)
-// No gating — informational only, system keeps flowing
+// 1D TREND — EMA-based (simple, reliable)
+// Direction from EMA8 vs EMA21
+// Strength from ADX + price vs EMA50
 // ============================================================
 export function calculateTrend1D(candles1d: Candle[]): TrendResult {
   const debug: string[] = [];
 
   if (candles1d.length < 50) {
-    debug.push("[TREND] Insufficient 1D data (< 50 candles)");
+    debug.push("[TREND1D] Insufficient 1D data (< 50 candles)");
     return {
       direction: null, strength: 0, strengthLabel: "WEAK",
       adx: null, ema8: 0, ema21: 0, ema50: 0, price: 0, debug
@@ -410,7 +436,7 @@ export function calculateTrend1D(candles1d: Candle[]): TrendResult {
   const e50 = ema(closes, 50);
 
   if (!e8.length || !e21.length || !e50.length) {
-    debug.push("[TREND] EMA calculation failed");
+    debug.push("[TREND1D] EMA calculation failed");
     return {
       direction: null, strength: 0, strengthLabel: "WEAK",
       adx: null, ema8: 0, ema21: 0, ema50: 0, price: 0, debug
@@ -421,46 +447,86 @@ export function calculateTrend1D(candles1d: Candle[]): TrendResult {
   const ema21 = e21[e21.length - 1];
   const ema50 = e50[e50.length - 1];
 
-  // v39: Direction from +DI vs -DI, NOT from EMA cross
-  const { adx: adxVal, plusDI, minusDI } = adxWithDI(candles1d);
+  // Direction: simple EMA cross
+  const direction = ema8 > ema21 ? "LONG" : "SHORT";
 
-  let direction: "LONG" | "SHORT" | null = null;
-  let strength = 0;
+  // Strength from ADX
+  const { adx: adxVal } = adxWithDI(candles1d);
+  let strength = 40;
   let strengthLabel: "STRONG" | "MEDIUM" | "WEAK" = "WEAK";
 
-  if (adxVal !== null && plusDI !== null && minusDI !== null) {
-    // Directional pressure: which side is stronger?
-    direction = plusDI > minusDI ? "LONG" : "SHORT";
-    const diSpread = Math.abs(plusDI - minusDI);
-
-    if (adxVal >= 25 && diSpread >= 10) {
-      strength = 85;
-      strengthLabel = "STRONG";
-    } else if (adxVal >= 20 && diSpread >= 5) {
-      strength = 60;
-      strengthLabel = "MEDIUM";
-    } else {
-      strength = 30;
-      strengthLabel = "WEAK";
-    }
-
-    debug.push(`[TREND] 1D ${direction} ${strengthLabel} | ADX=${sf(adxVal,1)} +DI=${sf(plusDI,1)} -DI=${sf(minusDI,1)} spread=${sf(diSpread,1)} | Price=${sf(price,2)}`);
-  } else {
-    // Fallback to EMA if ADX/DI calc fails
-    direction = ema8 > ema21 ? "LONG" : "SHORT";
-    strength = 40;
-    strengthLabel = "WEAK";
-    debug.push(`[TREND] 1D ${direction} ${strengthLabel} (fallback EMA) | Price=${sf(price,2)} EMA8=${sf(ema8,2)} EMA21=${sf(ema21,2)}`);
+  if (adxVal !== null) {
+    if (adxVal >= 25) { strength = 80; strengthLabel = "STRONG"; }
+    else if (adxVal >= 20) { strength = 60; strengthLabel = "MEDIUM"; }
+    else { strength = 30; strengthLabel = "WEAK"; }
   }
 
-  // Keep EMAs for reference / alignment checks elsewhere
-  debug.push(`[TREND] EMA ref: EMA8=${sf(ema8,2)} EMA21=${sf(ema21,2)} EMA50=${sf(ema50,2)}`);
+  // Boost strength if price is aligned with trend
+  const priceAligned = direction === "LONG" ? price > ema50 : price < ema50;
+  if (priceAligned) strength += 10;
+
+  debug.push(`[TREND1D] ${direction} ${strengthLabel} | ADX=${sf(adxVal ?? 0,1)} | Price=${sf(price,2)} EMA8=${sf(ema8,2)} EMA21=${sf(ema21,2)} EMA50=${sf(ema50,2)}`);
 
   return { direction, strength, strengthLabel, adx: adxVal, ema8, ema21, ema50, price, debug };
 }
 
 // ============================================================
-// CANONICAL 4H EMA ALIGNMENT (v28: used for ADD only, not ENTRY_1/2)
+// 4H TREND — EMA-based (simpler than +DI/-DI, less lag)
+// ============================================================
+export function calculateTrend4H(candles4h: Candle[]): {
+  direction: "LONG" | "SHORT" | null;
+  strengthLabel: "STRONG" | "MEDIUM" | "WEAK";
+  adx: number | null;
+  debug: string[];
+} {
+  const debug: string[] = [];
+
+  if (candles4h.length < 50) {
+    debug.push("[TREND4H] Insufficient 4H data");
+    return { direction: null, strengthLabel: "WEAK", adx: null, debug };
+  }
+
+  const closes = candles4h.map(c => c.close);
+  const price = closes[closes.length - 1];
+  const e8 = ema(closes, 8);
+  const e21 = ema(closes, 21);
+  const e50 = ema(closes, 50);
+
+  if (!e8.length || !e21.length || !e50.length) {
+    debug.push("[TREND4H] EMA calculation failed");
+    return { direction: null, strengthLabel: "WEAK", adx: null, debug };
+  }
+
+  const ema8 = e8[e8.length - 1];
+  const ema21 = e21[e21.length - 1];
+  const ema50 = e50[e50.length - 1];
+
+  // Simple EMA direction
+  let direction: "LONG" | "SHORT" | null = null;
+  let strengthLabel: "STRONG" | "MEDIUM" | "WEAK" = "WEAK";
+
+  if (price > ema8 && ema8 > ema21 && ema21 > ema50) {
+    direction = "LONG"; strengthLabel = "STRONG";
+  } else if (price < ema8 && ema8 < ema21 && ema21 < ema50) {
+    direction = "SHORT"; strengthLabel = "STRONG";
+  } else if (price > ema8 && ema8 > ema21) {
+    direction = "LONG"; strengthLabel = "MEDIUM";
+  } else if (price < ema8 && ema8 < ema21) {
+    direction = "SHORT"; strengthLabel = "MEDIUM";
+  } else if (price > ema21) {
+    direction = "LONG"; strengthLabel = "WEAK";
+  } else if (price < ema21) {
+    direction = "SHORT"; strengthLabel = "WEAK";
+  }
+
+  const { adx: adxVal } = adxWithDI(candles4h);
+  debug.push(`[TREND4H] ${direction} ${strengthLabel} | Price=${sf(price,2)} EMA8=${sf(ema8,2)} EMA21=${sf(ema21,2)} EMA50=${sf(ema50,2)} ADX=${sf(adxVal ?? 0,1)}`);
+
+  return { direction, strengthLabel, adx: adxVal, debug };
+}
+
+// ============================================================
+// EMA ALIGNMENT
 // ============================================================
 export function calculateEMAAlignment(
   candles4h: Candle[],
@@ -505,86 +571,12 @@ export function calculateEMAAlignment(
 }
 
 // ============================================================
-// CANONICAL 4H TREND — ADX +DI/-DI for direction (v39)
-// Dashboard + entry confirmation. No gating.
+// PULLBACK CHECK — Simplified for Trend Rider
+// Only 2 zones: EXTREME (<20/>80) and PULLBACK (<50/>50)
 // ============================================================
-export function calculateTrend4H(candles4h: Candle[]): {
-  direction: "LONG" | "SHORT" | null;
-  strengthLabel: "STRONG" | "MEDIUM" | "WEAK";
-  adx: number | null;
-  debug: string[];
-} {
-  const debug: string[] = [];
-
-  if (candles4h.length < 50) {
-    debug.push("[TREND4H] Insufficient 4H data");
-    return { direction: null, strengthLabel: "WEAK", adx: null, debug };
-  }
-
-  const closes = candles4h.map(c => c.close);
-  const price = closes[closes.length - 1];
-  const e8 = ema(closes, 8);
-  const e21 = ema(closes, 21);
-  const e50 = ema(closes, 50);
-
-  if (!e8.length || !e21.length || !e50.length) {
-    debug.push("[TREND4H] EMA calculation failed");
-    return { direction: null, strengthLabel: "WEAK", adx: null, debug };
-  }
-
-  const ema8 = e8[e8.length - 1];
-  const ema21 = e21[e21.length - 1];
-  const ema50 = e50[e50.length - 1];
-
-  // v39: Direction from +DI vs -DI
-  const { adx: adxVal, plusDI, minusDI } = adxWithDI(candles4h);
-
-  let direction: "LONG" | "SHORT" | null = null;
-  let strengthLabel: "STRONG" | "MEDIUM" | "WEAK" = "WEAK";
-
-  if (adxVal !== null && plusDI !== null && minusDI !== null) {
-    direction = plusDI > minusDI ? "LONG" : "SHORT";
-    const diSpread = Math.abs(plusDI - minusDI);
-
-    if (adxVal >= 25 && diSpread >= 10) {
-      strengthLabel = "STRONG";
-    } else if (adxVal >= 20 && diSpread >= 5) {
-      strengthLabel = "MEDIUM";
-    } else {
-      strengthLabel = "WEAK";
-    }
-
-    debug.push(`[TREND4H] ${direction} ${strengthLabel} | ADX=${sf(adxVal,1)} +DI=${sf(plusDI,1)} -DI=${sf(minusDI,1)} spread=${sf(diSpread,1)} | Price=${sf(price,2)}`);
-  } else {
-    // Fallback to EMA stack
-    if (price > ema8 && ema8 > ema21 && ema21 > ema50) {
-      direction = "LONG"; strengthLabel = "STRONG";
-    } else if (price < ema8 && ema8 < ema21 && ema21 < ema50) {
-      direction = "SHORT"; strengthLabel = "STRONG";
-    } else if (price > ema8 && ema8 > ema21) {
-      direction = "LONG"; strengthLabel = "MEDIUM";
-    } else if (price < ema8 && ema8 < ema21) {
-      direction = "SHORT"; strengthLabel = "MEDIUM";
-    } else if (price > ema21) {
-      direction = "LONG"; strengthLabel = "WEAK";
-    } else if (price < ema21) {
-      direction = "SHORT"; strengthLabel = "WEAK";
-    }
-    debug.push(`[TREND4H] ${direction} ${strengthLabel} (fallback EMA) | Price=${sf(price,2)} EMA8=${sf(ema8,2)} EMA21=${sf(ema21,2)}`);
-  }
-
-  return { direction, strengthLabel, adx: adxVal, debug };
-}
-
-// ============================================================
-// CANONICAL PULLBACK CHECK (v28 thresholds preserved)
-// ============================================================
-function checkPullbackAdaptive(
+function checkPullback(
   biasDirection: "LONG" | "SHORT" | null,
-  stoch4h: { k: number; d: number },
-  prevStoch4h: { k: number; d: number },
-  adxVal: number | null,
-  isStrongTrend: boolean
+  stoch4h: { k: number; d: number }
 ): {
   pullbackActive: boolean;
   tier: PullbackTier;
@@ -599,103 +591,40 @@ function checkPullbackAdaptive(
     return { pullbackActive: false, tier: null, reason: "No bias", stochZone: "NEUTRAL", debug };
   }
 
-  const crossUp = prevStoch4h.k <= prevStoch4h.d && stoch4h.k > stoch4h.d;
-  const crossDown = prevStoch4h.k >= prevStoch4h.d && stoch4h.k < stoch4h.d;
-
-  debug.push(`[PULLBACK] Stoch K=${stoch4h.k} D=${stoch4h.d} | CrossUp=${crossUp} CrossDown=${crossDown} | StrongTrend=${isStrongTrend}`);
-
-  if (isStrongTrend) {
-    if (biasDirection === "LONG") {
-      if (stoch4h.k < 20) {
-        debug.push("[PULLBACK] STRONG LONG DEEP: Stoch < 20 (extreme oversold)");
-        return { pullbackActive: true, tier: "DEEP", reason: `STRONG TREND DEEP: 4H Stoch extreme oversold (${stoch4h.k})`, stochZone: "EXTREME", debug };
-      }
-      if (stoch4h.k < 35) {
-        debug.push("[PULLBACK] STRONG LONG SHALLOW: Stoch < 35 (oversold)");
-        return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch oversold (${stoch4h.k})`, stochZone: "ZONE", debug };
-      }
-      if (stoch4h.k < 50) {
-        debug.push("[PULLBACK] STRONG LONG MOMENTUM: Stoch < 50 (neutral)");
-        return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k}`, stochZone: "NEUTRAL", debug };
-      }
-      debug.push("[PULLBACK] STRONG LONG EXTENDED: Stoch >= 50");
-      return { pullbackActive: false, tier: null, reason: `STRONG LONG: extended — 4H Stoch ${stoch4h.k} (need <50)`, stochZone: "EXTENDED", debug };
-    }
-    if (biasDirection === "SHORT") {
-      if (stoch4h.k > 80) {
-        debug.push("[PULLBACK] STRONG SHORT DEEP: Stoch > 80 (extreme overbought)");
-        return { pullbackActive: true, tier: "DEEP", reason: `STRONG TREND DEEP: 4H Stoch extreme overbought (${stoch4h.k})`, stochZone: "EXTREME", debug };
-      }
-      if (stoch4h.k > 65) {
-        debug.push("[PULLBACK] STRONG SHORT SHALLOW: Stoch > 65 (overbought)");
-        return { pullbackActive: true, tier: "SHALLOW", reason: `STRONG TREND SHALLOW: 4H Stoch overbought (${stoch4h.k})`, stochZone: "ZONE", debug };
-      }
-      if (stoch4h.k > 50) {
-        debug.push("[PULLBACK] STRONG SHORT MOMENTUM: Stoch > 50 (neutral)");
-        return { pullbackActive: true, tier: "MOMENTUM", reason: `STRONG TREND MOMENTUM: 4H Stoch ${stoch4h.k}`, stochZone: "NEUTRAL", debug };
-      }
-      debug.push("[PULLBACK] STRONG SHORT EXTENDED: Stoch <= 50");
-      return { pullbackActive: false, tier: null, reason: `STRONG SHORT: extended — 4H Stoch ${stoch4h.k} (need >50)`, stochZone: "EXTENDED", debug };
-    }
-  }
+  debug.push(`[PULLBACK] Stoch K=${stoch4h.k} D=${stoch4h.d}`);
 
   if (biasDirection === "LONG") {
     if (stoch4h.k < 20) {
-      if (crossUp) {
-        debug.push("[PULLBACK] LONG DEEP: Stoch < 20 + cross up");
-        return { pullbackActive: true, tier: "DEEP", reason: `DEEP pullback: 4H Stoch cross up from extreme oversold (${stoch4h.k})`, stochZone: "EXTREME", debug };
-      }
-      debug.push("[PULLBACK] LONG DEEP forming: Stoch < 20, waiting for cross up");
-      return { pullbackActive: false, tier: null, reason: `LONG deep pullback forming: 4H Stoch extreme oversold (${stoch4h.k}), waiting for cross up`, stochZone: "EXTREME", debug };
-    }
-    if (stoch4h.k < 35) {
-      if (crossUp) {
-        debug.push("[PULLBACK] LONG SHALLOW: Stoch < 35 + cross up");
-        return { pullbackActive: true, tier: "SHALLOW", reason: `SHALLOW pullback: 4H Stoch cross up from oversold (${stoch4h.k})`, stochZone: "ZONE", debug };
-      }
-      debug.push("[PULLBACK] LONG SHALLOW forming: Stoch < 35, waiting for cross up");
-      return { pullbackActive: false, tier: null, reason: `LONG shallow pullback forming: 4H Stoch oversold (${stoch4h.k}), waiting for cross up`, stochZone: "ZONE", debug };
+      debug.push("[PULLBACK] LONG EXTREME: Stoch < 20 — deep pullback");
+      return { pullbackActive: true, tier: "DEEP", reason: `LONG deep pullback: 4H Stoch extreme oversold (${stoch4h.k})`, stochZone: "EXTREME", debug };
     }
     if (stoch4h.k < 50) {
-      debug.push("[PULLBACK] LONG MOMENTUM: Stoch < 50");
-      return { pullbackActive: true, tier: "MOMENTUM", reason: `MOMENTUM zone: 4H Stoch ${stoch4h.k}`, stochZone: "NEUTRAL", debug };
+      debug.push("[PULLBACK] LONG PULLBACK: Stoch < 50 — entry zone");
+      return { pullbackActive: true, tier: "SHALLOW", reason: `LONG pullback: 4H Stoch ${stoch4h.k}`, stochZone: "ZONE", debug };
     }
-    debug.push("[PULLBACK] LONG EXTENDED: Stoch >= 50");
-    return { pullbackActive: false, tier: null, reason: `LONG: extended — 4H Stoch ${stoch4h.k} (need <50)`, stochZone: "EXTENDED", debug };
+    debug.push("[PULLBACK] LONG EXTENDED: Stoch >= 50 — no entry");
+    return { pullbackActive: false, tier: null, reason: `LONG extended: 4H Stoch ${stoch4h.k} (need <50)`, stochZone: "EXTENDED", debug };
   }
 
   if (biasDirection === "SHORT") {
     if (stoch4h.k > 80) {
-      if (crossDown) {
-        debug.push("[PULLBACK] SHORT DEEP: Stoch > 80 + cross down");
-        return { pullbackActive: true, tier: "DEEP", reason: `DEEP pullback: 4H Stoch cross down from extreme overbought (${stoch4h.k})`, stochZone: "EXTREME", debug };
-      }
-      debug.push("[PULLBACK] SHORT DEEP forming: Stoch > 80, waiting for cross down");
-      return { pullbackActive: false, tier: null, reason: `SHORT deep pullback forming: 4H Stoch extreme overbought (${stoch4h.k}), waiting for cross down`, stochZone: "EXTREME", debug };
-    }
-    if (stoch4h.k > 65) {
-      if (crossDown) {
-        debug.push("[PULLBACK] SHORT SHALLOW: Stoch > 65 + cross down");
-        return { pullbackActive: true, tier: "SHALLOW", reason: `SHALLOW pullback: 4H Stoch cross down from overbought (${stoch4h.k})`, stochZone: "ZONE", debug };
-      }
-      debug.push("[PULLBACK] SHORT SHALLOW forming: Stoch > 65, waiting for cross down");
-      return { pullbackActive: false, tier: null, reason: `SHORT shallow pullback forming: 4H Stoch overbought (${stoch4h.k}), waiting for cross down`, stochZone: "ZONE", debug };
+      debug.push("[PULLBACK] SHORT EXTREME: Stoch > 80 — deep pullback");
+      return { pullbackActive: true, tier: "DEEP", reason: `SHORT deep pullback: 4H Stoch extreme overbought (${stoch4h.k})`, stochZone: "EXTREME", debug };
     }
     if (stoch4h.k > 50) {
-      debug.push("[PULLBACK] SHORT MOMENTUM: Stoch > 50");
-      return { pullbackActive: true, tier: "MOMENTUM", reason: `MOMENTUM zone: 4H Stoch ${stoch4h.k}`, stochZone: "NEUTRAL", debug };
+      debug.push("[PULLBACK] SHORT PULLBACK: Stoch > 50 — entry zone");
+      return { pullbackActive: true, tier: "SHALLOW", reason: `SHORT pullback: 4H Stoch ${stoch4h.k}`, stochZone: "ZONE", debug };
     }
-    debug.push("[PULLBACK] SHORT EXTENDED: Stoch <= 50");
-    return { pullbackActive: false, tier: null, reason: `SHORT: extended — 4H Stoch ${stoch4h.k} (need >50)`, stochZone: "EXTENDED", debug };
+    debug.push("[PULLBACK] SHORT EXTENDED: Stoch <= 50 — no entry");
+    return { pullbackActive: false, tier: null, reason: `SHORT extended: 4H Stoch ${stoch4h.k} (need >50)`, stochZone: "EXTENDED", debug };
   }
 
   return { pullbackActive: false, tier: null, reason: "Unknown bias", stochZone: "NEUTRAL", debug };
 }
 
 // ============================================================
-// CANONICAL TRENDLINE SYSTEM (v28: 3+ pivots, any R², R² never gates)
+// TRENDLINE SYSTEM — v28 style, simple, no R² gating
 // ============================================================
-
 interface TrendlineState {
   slope: number;
   intercept: number;
@@ -707,7 +636,7 @@ interface TrendlineState {
 
 const trendlineStore: Map<string, TrendlineState> = new Map();
 
-function findPivotsV28(candles: Candle[], direction: "LONG" | "SHORT"): { index: number; price: number; timestamp: number }[] {
+function findPivots(candles: Candle[], direction: "LONG" | "SHORT"): { index: number; price: number; timestamp: number }[] {
   const pivots: { index: number; price: number; timestamp: number }[] = [];
   for (let i = 3; i < candles.length - 3; i++) {
     const isSwingLow = candles[i].low < candles[i-1].low && candles[i].low < candles[i-2].low && 
@@ -762,7 +691,7 @@ export function evaluateTrendline(
     return { trendline: null, isValid: false, reason: "Insufficient data", quality: "NOISE", debug };
   }
 
-  const pivots = findPivotsV28(candles, direction);
+  const pivots = findPivots(candles, direction);
   debug.push(`[TL] Found ${pivots.length} pivots (${direction})`);
 
   if (pivots.length < 3) {
@@ -868,19 +797,19 @@ export function evaluateTrendline(
 }
 
 // ============================================================
-// CANONICAL RISK CALCULATION (v28: no RR gate for ENTRY_1/2)
+// RISK CALCULATION
 // ============================================================
 function calculateRisk(
   entry: number,
   stop: number,
   target: number,
-  rawType: "ENTRY_1" | "ENTRY_2" | "ADD"
+  rawType: "ENTRY" | "ADD" | "FADE"
 ): RiskDiagnostics {
   const risk = Math.abs(entry - stop);
   const reward = Math.abs(target - entry);
   const rr = risk > 0 ? reward / risk : 0;
-  const minRR = rawType === "ADD" ? 1.5 : 0;
-  const passes = rawType === "ADD" ? rr >= minRR : true;
+  const minRR = 1.5;
+  const passes = rr >= minRR;
 
   const debug: string[] = [];
   debug.push(`[RISK] Entry=${sf(entry,2)} | Stop=${sf(stop,2)} | Target=${sf(target,2)}`);
@@ -890,7 +819,7 @@ function calculateRisk(
 }
 
 // ============================================================
-// CANONICAL VOLUME CHECK (v28: only for ADD)
+// VOLUME CHECK
 // ============================================================
 function checkVolume(candles: Candle[], lookback = 10): { confirmed: boolean; ratio: number; debug: string[] } {
   const debug: string[] = [];
@@ -908,119 +837,25 @@ function checkVolume(candles: Candle[], lookback = 10): { confirmed: boolean; ra
 }
 
 // ============================================================
-// HYSTERESIS (v28 feature — v38.7: Redis-backed with cold-start fallback)
+// HYSTERESIS — Simple in-memory only (v28 style)
 // ============================================================
-
 interface HysteresisState {
-  lastSignalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
+  lastSignalType: "ENTRY" | "ADD" | "FADE" | null;
   lastSignalPrice: number;
   lockUntil: number;
 }
 
 const hysteresisStore: Map<string, HysteresisState> = new Map();
 
-// v38.7: Redis helpers for cross-instance hysteresis persistence
-let _redisGet: (<T>(key: string) => Promise<T | null>) | null = null;
-let _redisSet: ((key: string, value: any) => Promise<void>) | null = null;
-
-/**
- * Set Redis helpers for cross-instance hysteresis persistence.
- * Call this once in your cron handler before processing pairs.
- * If you don't have Redis, the activeSignals fallback still prevents double entries.
- */
-export function setRedisHelpers(
-  getFn: <T>(key: string) => Promise<T | null>,
-  setFn: (key: string, value: any) => Promise<void>
-): void {
-  _redisGet = getFn;
-  _redisSet = setFn;
-}
-
-const HYSTERESIS_REDIS_PREFIX = "hysteresis:";
-
-async function getHysteresisFromRedis(pair: string, now: number): Promise<HysteresisState | null> {
-  if (!_redisGet) return null;
-  try {
-    const key = `${HYSTERESIS_REDIS_PREFIX}${pair}`;
-    const data = await _redisGet<string>(key);
-    if (!data) return null;
-    const parsed = JSON.parse(data) as HysteresisState;
-    if (parsed.lockUntil > now) {
-      hysteresisStore.set(pair, parsed);
-      return parsed;
-    }
-    return null;
-  } catch (e) {
-    console.warn(`[HYSTERESIS] Redis read failed for ${pair}:`, e);
-    return null;
-  }
-}
-
-async function setHysteresisToRedis(pair: string, state: HysteresisState): Promise<void> {
-  if (!_redisSet) return;
-  try {
-    const key = `${HYSTERESIS_REDIS_PREFIX}${pair}`;
-    await _redisSet(key, JSON.stringify(state));
-  } catch (e) {
-    console.warn(`[HYSTERESIS] Redis write failed for ${pair}:`, e);
-  }
-}
-
-/**
- * v38.7: Check hysteresis with cold-start fallback.
- * 
- * In serverless environments (Vercel), the in-memory hysteresisStore
- * is lost on cold starts. We fall back to:
- * 1. Redis (if configured via setRedisHelpers)
- * 2. Active signals array (always available)
- */
-function getHysteresisSync(
-  pair: string,
-  now: number,
-  activeSignals: Signal[] = []
-): HysteresisState {
-  // 1. Check in-memory store first (fast path)
+function getHysteresisSync(pair: string, now: number): HysteresisState {
   const state = hysteresisStore.get(pair);
   if (state && now <= state.lockUntil) {
     return state;
   }
-
-  // 2. Cold-start fallback: check active signals for recent ENTRY_1/2
-  const recentEntry = activeSignals.find(s =>
-    s.pair === pair &&
-    !s.exited &&
-    (s.scale === "ENTRY_1" || s.scale === "ENTRY_2") &&
-    (now - s.timestamp) < 24 * 60 * 60 * 1000
-  );
-  if (recentEntry) {
-    const lockUntil = recentEntry.timestamp + 24 * 60 * 60 * 1000;
-    const rehydrated: HysteresisState = {
-      lastSignalType: recentEntry.scale as "ENTRY_1" | "ENTRY_2",
-      lastSignalPrice: recentEntry.entry,
-      lockUntil,
-    };
-    hysteresisStore.set(pair, rehydrated);
-    return rehydrated;
-  }
-
   return { lastSignalType: null, lastSignalPrice: 0, lockUntil: 0 };
 }
 
-async function getHysteresisAsync(
-  pair: string,
-  now: number,
-  activeSignals: Signal[] = []
-): Promise<HysteresisState> {
-  const mem = hysteresisStore.get(pair);
-  if (mem && now <= mem.lockUntil) return mem;
-
-  const fromRedis = await getHysteresisFromRedis(pair, now);
-  if (fromRedis) return fromRedis;
-
-  return getHysteresisSync(pair, now, activeSignals);
-}
-
-function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price: number, now: number): void {
+function setHysteresis(pair: string, type: "ENTRY" | "ADD" | "FADE", price: number, now: number): void {
   const lockDuration = type === "ADD" ? 4 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
   const state: HysteresisState = {
     lastSignalType: type,
@@ -1028,17 +863,15 @@ function setHysteresis(pair: string, type: "ENTRY_1" | "ENTRY_2" | "ADD", price:
     lockUntil: now + lockDuration,
   };
   hysteresisStore.set(pair, state);
-  setHysteresisToRedis(pair, state);
 }
 
 // ============================================================
-// CANONICAL ENTRY DIAGNOSTICS (v28: setup detector logic)
-// ENTRY_1/2: near TL + stoch only. ADD: momentum filters.
+// ENTRY DIAGNOSTICS — Trend Rider simplified
 // ============================================================
 function diagnoseEntry(
   pair: string,
   candles4h: Candle[],
-  trend: TrendResult,
+  trend1d: TrendResult,
   trendlineEval: TrendlineEvaluation,
   stoch4h: { k: number; d: number },
   now: number
@@ -1052,15 +885,15 @@ function diagnoseEntry(
   const tlPrice = trendlineEval.trendline?.projectedPrice ?? price;
   const dist = (price - tlPrice) / tlPrice;
 
-  const alignment = calculateEMAAlignment(candles4h, trend.direction || "LONG");
+  const alignment = calculateEMAAlignment(candles4h, trend1d.direction || "LONG");
   debug.push(...alignment.debug);
 
   const nearTrendline = Math.abs(dist) < 0.012;
-  const stochExtreme = trend.direction === "LONG" ? stoch4h.k < 20 : stoch4h.k > 80;
-  const stochTurning = trend.direction === "LONG" ? stoch4h.k > stoch4h.d : stoch4h.k < stoch4h.d;
+  const stochExtreme = trend1d.direction === "LONG" ? stoch4h.k < 20 : stoch4h.k > 80;
+  const stochTurning = trend1d.direction === "LONG" ? stoch4h.k > stoch4h.d : stoch4h.k < stoch4h.d;
 
-  const beyondTrendline = trend.direction === "LONG" ? price > tlPrice * 1.008 : price < tlPrice * 0.992;
-  const confirming = trend.direction === "LONG"
+  const beyondTrendline = trend1d.direction === "LONG" ? price > tlPrice * 1.008 : price < tlPrice * 0.992;
+  const confirming = trend1d.direction === "LONG"
     ? last.close > last.open && last.close > prev.close
     : last.close < last.open && last.close < prev.close;
 
@@ -1068,39 +901,41 @@ function diagnoseEntry(
   const volUp = volCheck.confirmed && volCheck.ratio > 1.3;
   debug.push(...volCheck.debug);
 
-  const stochMomentum = trend.direction === "LONG" ? stoch4h.k > stoch4h.d : stoch4h.k < stoch4h.d;
+  const stochMomentum = trend1d.direction === "LONG" ? stoch4h.k > stoch4h.d : stoch4h.k < stoch4h.d;
 
   const adx4h = adx(candles4h) ?? 0;
   const adxStrong = adx4h > 20;
-  debug.push(`[ADX] 4H ADX=${sf(adx4h,1)} (threshold=20 for ADD momentum)`);
+  debug.push(`[ADX] 4H ADX=${sf(adx4h,1)}`);
 
   debug.push(`[ENTRY] Conditions: nearTL=${nearTrendline} beyondTL=${beyondTrendline} stochExtreme=${stochExtreme} stochTurning=${stochTurning} confirming=${confirming} emaAligned=${alignment.aligned} volUp=${volUp} stochMomentum=${stochMomentum} adxStrong=${adxStrong}`);
 
-  let rawType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
-  let entryType: "EARLY" | "BREAKOUT" | "RETEST" | null = null;
+  let rawType: "ENTRY" | "ADD" | "FADE" | null = null;
+  let entryType: "PULLBACK" | "BREAKOUT" | "FADE" | null = null;
 
+  // PULLBACK ENTRY: near trendline + stoch extreme
   if (nearTrendline && stochExtreme) {
-    rawType = "ENTRY_1";
-    entryType = "RETEST";
-    debug.push("[ENTRY] RAW ENTRY_1: near TL + stoch extreme (no volume/ADX/EMA required)");
-  } else if (nearTrendline && stochTurning && !stochExtreme) {
-    rawType = "ENTRY_2";
-    entryType = "BREAKOUT";
-    debug.push("[ENTRY] RAW ENTRY_2: near TL + stoch turning (no volume/ADX/EMA required)");
-  } else if (beyondTrendline && confirming && alignment.aligned) {
+    rawType = "ENTRY";
+    entryType = "PULLBACK";
+    debug.push("[ENTRY] PULLBACK: near TL + stoch extreme — best entry");
+  }
+  // BREAKOUT ENTRY: beyond TL + confirming + aligned + momentum
+  else if (beyondTrendline && confirming && alignment.aligned) {
     const momentumCount = (volUp ? 1 : 0) + (stochMomentum ? 1 : 0) + (adxStrong ? 1 : 0);
     if (momentumCount >= 2) {
       rawType = "ADD";
-      entryType = "EARLY";
-      const momentumParts: string[] = [];
-      if (volUp) momentumParts.push("vol");
-      if (stochMomentum) momentumParts.push("stoch");
-      if (adxStrong) momentumParts.push("adx");
-      debug.push(`[ENTRY] RAW ADD: beyond TL + confirming + EMA aligned + momentum(${momentumParts.join("+")}) [${momentumCount}/3]`);
+      entryType = "BREAKOUT";
+      debug.push(`[ENTRY] BREAKOUT: beyond TL + confirming + aligned + momentum [${momentumCount}/3]`);
     } else {
-      debug.push(`[ENTRY] Beyond TL + confirming + aligned, but only ${momentumCount}/3 momentum (need 2+: vol/stoch/adx)`);
+      debug.push(`[ENTRY] Beyond TL + confirming + aligned, but only ${momentumCount}/3 momentum`);
     }
-  } else {
+  }
+  // FADE ENTRY: stoch extreme opposite (counter-trend, only when 1D weak)
+  else if (stochExtreme && !stochTurning && trend1d.strengthLabel === "WEAK") {
+    rawType = "FADE";
+    entryType = "FADE";
+    debug.push("[ENTRY] FADE: stoch extreme + weak 1D trend — counter-trend fade");
+  }
+  else {
     const reasons: string[] = [];
     if (!nearTrendline && !beyondTrendline) reasons.push("far from TL");
     else if (nearTrendline) reasons.push("near TL");
@@ -1129,8 +964,8 @@ function diagnoseEntry(
 }
 
 // ============================================================
-// CANONICAL SIGNAL GENERATION (v28 entry + v38.5 risk mgmt)
-// v38.7: Hysteresis checks activeSignals for cold-start safety
+// SIGNAL GENERATION — Trend Rider v2
+// One entry, one size, ride the trend
 // ============================================================
 export function generateSignal(
   pair: string,
@@ -1155,28 +990,15 @@ export function generateSignal(
     return { debug };
   }
 
-  // v38.7: Hysteresis with cold-start fallback via activeSignals
-  const hyst = getHysteresisSync(pair, now, activeSignals);
+  // Simple hysteresis
+  const hyst = getHysteresisSync(pair, now);
   if (hyst.lastSignalType) {
     const minutesLeft = Math.round((hyst.lockUntil - now) / 60000);
     debug.push(`[SIGNAL] Hysteresis lock: ${hyst.lastSignalType} | ${minutesLeft}min remaining`);
     return { debug };
   }
 
-  const recentExits = activeSignals.filter(s =>
-    s.pair === pair && s.exited && s.exitReason === "stoch_extreme_opposite_exit" &&
-    (now - (s.exitTimestamp || s.timestamp)) < 4 * 60 * 60 * 1000
-  );
-  if (recentExits.length > 0) {
-    const lastExit = recentExits.sort((a, b) => (b.exitTimestamp || b.timestamp) - (a.exitTimestamp || a.timestamp))[0];
-    const stoch4h_check = stochRsi(candles4h.map(c => c.close));
-    const stochCycled = lastExit.direction === "LONG" ? stoch4h_check.k >= 50 : stoch4h_check.k <= 50;
-    if (!stochCycled) {
-      debug.push(`[SIGNAL] Stoch extreme cooldown: waiting for neutral (current=${stoch4h_check.k})`);
-      return { debug };
-    }
-  }
-
+  // Cooldown after any exit
   const recentAnyExit = activeSignals.filter(s =>
     s.pair === pair && s.exited && (now - (s.exitTimestamp || s.timestamp)) < 60 * 60 * 1000
   );
@@ -1194,50 +1016,53 @@ export function generateSignal(
 
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
 
-  // v40: 4H sets direction (we trade the timeframe we enter on)
-  // 1D provides context/confidence (are we with or against the bigger trend?)
+  // 1D trend = our bias. Only trade in this direction.
+  const trend1d = calculateTrend1D(candles1d);
+  debug.push(...trend1d.debug);
+
+  if (!trend1d.direction) {
+    debug.push("[SIGNAL] No valid 1D trend — ranging market, no trade");
+    return { debug };
+  }
+
+  // Skip if 1D ADX too low (ranging market)
+  if (trend1d.adx !== null && trend1d.adx < 20) {
+    debug.push(`[SIGNAL] 1D ADX ${trend1d.adx} < 20 — ranging market, no trade`);
+    return { debug };
+  }
+
+  // 4H trend should align with 1D
   const trend4h = calculateTrend4H(candles4h);
   debug.push(...trend4h.debug);
 
-  if (!trend4h.direction) {
-    debug.push("[SIGNAL] No valid 4H bias");
-    return { debug };
-  }
-
-  // 4H is the entry timeframe — this is our trading direction
-  const trend = calculateTrend1D(candles1d);
-  debug.push(...trend.debug);
-
-  // 1D context: aligned = tailwind, conflicted = headwind
-  const timeframesAligned = trend.direction === trend4h.direction;
+  const timeframesAligned = trend1d.direction === trend4h.direction;
   if (timeframesAligned) {
-    debug.push(`[SIGNAL] 1D/4H aligned: ${trend4h.direction} | Full confidence`);
+    debug.push(`[SIGNAL] 1D/4H aligned: ${trend1d.direction} | Full confidence`);
   } else {
-    debug.push(`[SIGNAL] 1D/4H conflict: 1D=${trend.direction || 'none'} 4H=${trend4h.direction} | Trading 4H, reduced confidence`);
+    debug.push(`[SIGNAL] 1D/4H conflict: 1D=${trend1d.direction} 4H=${trend4h.direction} | Reduced confidence, still trading 1D`);
   }
 
-  // Use 4H direction for entries, not 1D
-  const entryDirection = trend4h.direction;
-  const isStrongTrend = (trend4h.adx !== null && trend4h.adx >= 25) && trend4h.strengthLabel !== "WEAK";
-  debug.push(`[SIGNAL] StrongTrend=${isStrongTrend} (informational)`);
+  const entryDirection = trend1d.direction;
 
+  // Trendline for entry timing
   const trendlineEval = evaluateTrendline(pair, candles4h, entryDirection, now);
   debug.push(...trendlineEval.debug);
 
-  if (!trendlineEval.trendline) {
-    debug.push("[SIGNAL] No trendline — need 3+ pivots");
+  // StochRSI for pullback detection
+  const closes4h = candles4h.map(c => c.close);
+  const stoch4h = stochRsi(closes4h);
+  debug.push(`[SIGNAL] 4H Stoch K=${stoch4h.k} D=${stoch4h.d}`);
+
+  const pullback = checkPullback(entryDirection, stoch4h);
+  debug.push(...pullback.debug);
+
+  if (!pullback.pullbackActive) {
+    debug.push("[SIGNAL] No pullback active — waiting for 4H stoch to enter zone");
     return { debug };
   }
 
-  const closes4h = candles4h.map(c => c.close);
-  const stoch4h = stochRsi(closes4h);
-  const prevStoch4h = stochRsi(closes4h.slice(0, -1));
-  debug.push(`[SIGNAL] 4H Stoch K=${stoch4h.k} D=${stoch4h.d}`);
-
-  const pullback = checkPullbackAdaptive(entryDirection, stoch4h, prevStoch4h, trend.adx, isStrongTrend);
-  debug.push(...pullback.debug);
-
-  const entryDiag = diagnoseEntry(pair, candles4h, trend, trendlineEval, stoch4h, now);
+  // Entry diagnostics
+  const entryDiag = diagnoseEntry(pair, candles4h, trend1d, trendlineEval, stoch4h, now);
   debug.push(...entryDiag.debug);
 
   if (!entryDiag.rawType || !entryDiag.entryType) {
@@ -1247,97 +1072,50 @@ export function generateSignal(
 
   setHysteresis(pair, entryDiag.rawType, price, now);
 
+  // Levels
   const atr4h = atr(candles4h, 14);
   const swingLows = candles4h.map(c => c.low).slice(-20);
   const swingHighs = candles4h.map(c => c.high).slice(-20);
   const swingLow = Math.min(...swingLows);
   const swingHigh = Math.max(...swingHighs);
-  const tlPrice = trendlineEval.trendline!.projectedPrice;
+  const tlPrice = trendlineEval.trendline?.projectedPrice ?? price;
 
   let entry = price;
   let stop: number;
   let target: number;
   let confidence = 50;
-  let positionSizePct: number;
+  let positionSizePct = 0.02; // 2% risk fixed
 
-  if (entryDiag.rawType === "ENTRY_1") {
-    confidence = 50;
-    positionSizePct = 0.06;
-    if (entryDirection === "LONG") {
-      stop = Math.min(swingLow, entry - atr4h * 2);
-      target = entry + atr4h * 5;
-    } else {
-      stop = Math.max(swingHigh, entry + atr4h * 2);
-      target = entry - atr4h * 5;
-    }
-  } else if (entryDiag.rawType === "ENTRY_2") {
-    confidence = 60;
-    positionSizePct = 0.05;
-    if (entryDirection === "LONG") {
-      stop = Math.min(swingLow, entry - atr4h * 1.5);
-      target = entry + atr4h * 5;
-    } else {
-      stop = Math.max(swingHigh, entry + atr4h * 1.5);
-      target = entry - atr4h * 5;
-    }
+  // Stop: ATR × 2, capped at 5%
+  const maxStopPct = 0.05;
+  if (entryDirection === "LONG") {
+    const atrStop = entry - atr4h * 2;
+    const pctStop = entry * (1 - maxStopPct);
+    stop = Math.max(atrStop, pctStop, swingLow);
+    target = entry + (entry - stop) * 3; // 3R minimum target
   } else {
-    confidence = 85;
-    positionSizePct = 0.03;
-    const tlValid = trendlineEval.isValid && trendlineEval.trendline !== null;
-    const distPct = tlValid ? Math.abs((entry - tlPrice) / tlPrice) : 1;
-    const useTL = tlValid && distPct < 0.03;
-
-    if (entryDirection === "LONG") {
-      const atrStop = entry - atr4h * 1.5;
-      const tlStop = useTL ? tlPrice * 0.995 : 0;
-      stop = tlStop > 0 && tlStop > atrStop ? Math.max(tlStop, atrStop) : atrStop;
-      const minTarget = entry + (entry - stop) * 1.5;
-      target = Math.max(swingHigh, minTarget);
-      if (!useTL) debug.push(`[RISK] ADD: TL too far (${sf(distPct*100,2)}%), using ATR stop=${sf(atrStop,2)}`);
-    } else {
-      const atrStop = entry + atr4h * 1.5;
-      const tlStop = useTL ? tlPrice * 1.005 : 999999;
-      stop = useTL && tlStop < atrStop ? Math.min(tlStop, atrStop) : atrStop;
-      const minTarget = entry - (stop - entry) * 1.5;
-      target = Math.min(swingLow, minTarget);
-      if (!useTL) debug.push(`[RISK] ADD: TL too far (${sf(distPct*100,2)}%), using ATR stop=${sf(atrStop,2)}`);
-    }
-    if (entryDiag.volUp) confidence += 5;
-    if (entryDiag.stochMomentum) confidence += 5;
-    if (entryDiag.adxStrong) confidence += 5;
+    const atrStop = entry + atr4h * 2;
+    const pctStop = entry * (1 + maxStopPct);
+    stop = Math.min(atrStop, pctStop, swingHigh);
+    target = entry - (stop - entry) * 3;
   }
+
+  // Confidence boosters
+  if (entryDiag.entryType === "PULLBACK") confidence = 70;
+  if (entryDiag.entryType === "BREAKOUT") confidence = 60;
+  if (entryDiag.entryType === "FADE") confidence = 45;
+  if (timeframesAligned) confidence += 15;
+  if (trend1d.strengthLabel === "STRONG") confidence += 10;
+  if (entryDiag.volUp) confidence += 5;
+  confidence = Math.min(95, Math.max(30, Math.round(confidence)));
 
   const riskDiag = calculateRisk(entry, stop, target, entryDiag.rawType);
   debug.push(...riskDiag.debug);
 
   if (!riskDiag.passes) {
-    debug.push(`[SIGNAL] REJECTED: RR ${sf(riskDiag.rr,2)} < ${riskDiag.minRR} (ADD only)`);
+    debug.push(`[SIGNAL] REJECTED: RR ${sf(riskDiag.rr,2)} < ${riskDiag.minRR}`);
     return { debug };
   }
-
-  const tlQuality = trendlineEval.quality;
-  if (tlQuality === "NOISE") {
-    confidence -= 5;
-    debug.push(`[SIGNAL] Confidence reduced by 5 for NOISE trendline (R²=${trendlineEval.trendline?.r2})`);
-  } else if (tlQuality === "WEAK") {
-    confidence -= 0;
-    debug.push(`[SIGNAL] Weak trendline accepted (R²=${trendlineEval.trendline?.r2})`);
-  } else if (tlQuality === "EXCELLENT") {
-    confidence += 5;
-    debug.push(`[SIGNAL] Confidence boosted by 5 for EXCELLENT trendline (R²=${trendlineEval.trendline?.r2})`);
-  }
-
-  confidence += Math.min(10, trend4h.strengthLabel === "STRONG" ? 8 : trend4h.strengthLabel === "MEDIUM" ? 5 : 2);
-  if (timeframesAligned) {
-    confidence += 10;
-    debug.push("[SIGNAL] +10 confidence: 1D/4H aligned");
-  } else {
-    confidence -= 15;
-    debug.push("[SIGNAL] -15 confidence: 1D/4H conflict");
-  }
-  if (trend4h.adx !== null && trend4h.adx >= 25) confidence += 5;
-  if (trend4h.adx !== null && trend4h.adx >= 30) confidence += 5;
-  confidence = Math.min(95, Math.max(30, Math.round(confidence)));
 
   const signal: Signal = {
     id: `${pair}_${now}`,
@@ -1353,15 +1131,15 @@ export function generateSignal(
     trendlinePrice: Math.round(tlPrice * 100) / 100,
     volumeConfirmed: entryDiag.volUp,
     type: entryDiag.rawType === "ADD" ? "BREAKOUT" : "ACCUMULATE",
-    scale: entryDiag.rawType,
-    entryTier: entryDiag.rawType === "ENTRY_1" ? "CONFIRMED_ENTRY" : entryDiag.rawType === "ENTRY_2" ? "CONFIRMED_ENTRY" : "EARLY_ENTRY",
-    entryMode: entryDiag.rawType === "ENTRY_1" ? "RETEST" : entryDiag.rawType === "ENTRY_2" ? "RETEST" : "BREAKOUT",
+    scale: entryDiag.rawType === "ENTRY" ? "ENTRY" : entryDiag.rawType,
+    entryTier: entryDiag.entryType === "PULLBACK" ? "PULLBACK_ENTRY" : entryDiag.entryType === "BREAKOUT" ? "BREAKOUT_ENTRY" : "FADE_ENTRY",
+    entryMode: entryDiag.entryType,
     positionSizePct,
     regimeDirection: entryDirection,
-    conflictEntry: false,
+    conflictEntry: !timeframesAligned,
     entryTimeframe: "4H",
     rr: Math.round(riskDiag.rr * 100) / 100,
-    adx: trend.adx !== null ? Math.round(trend.adx * 10) / 10 : undefined,
+    adx: trend1d.adx !== null ? Math.round(trend1d.adx * 10) / 10 : undefined,
     rsi: wilderRsi(closes4h) ?? undefined,
     stochK: stoch4h.k,
     stochD: stoch4h.d,
@@ -1381,19 +1159,22 @@ export function generateSignal(
   };
 
   debug.push(`[SIGNAL] ═══════════════════════════════════════`);
-  debug.push(`[SIGNAL] ENTRY ACCEPTED: ${entryDiag.rawType} ${entryDiag.entryType} ${entryDirection} ${pair}`);
+  debug.push(`[SIGNAL] ENTRY ACCEPTED: ${entryDiag.entryType} ${entryDirection} ${pair}`);
   debug.push(`[SIGNAL] Entry=$${sf(entry,2)} | Stop=$${sf(stop,2)} | Target=$${sf(target,2)}`);
   debug.push(`[SIGNAL] Risk=$${sf(riskDiag.risk,2)} | Reward=$${sf(riskDiag.reward,2)} | RR=${sf(riskDiag.rr,2)}`);
-  debug.push(`[SIGNAL] Conf=${confidence}% | Size=${(positionSizePct*100).toFixed(0)}% | ADX=${trend.adx?.toFixed(1) || "N/A"}`);
-  debug.push(`[SIGNAL] Trendline: R²=${trendlineEval.trendline?.r2} | Quality=${trendlineEval.quality} | Touches=${trendlineEval.trendline?.touches} | Dist=${trendlineEval.trendline?.distanceFromPrice}%`);
+  debug.push(`[SIGNAL] Conf=${confidence}% | Size=${(positionSizePct*100).toFixed(0)}% | 1D ADX=${trend1d.adx?.toFixed(1) || "N/A"}`);
+  debug.push(`[SIGNAL] Trendline: R²=${trendlineEval.trendline?.r2} | Quality=${trendlineEval.quality} | Dist=${trendlineEval.trendline?.distanceFromPrice}%`);
   debug.push(`[SIGNAL] ═══════════════════════════════════════`);
 
   return { signal, debug };
 }
 
 // ============================================================
-// CANONICAL EXIT LOGIC — shouldHold (v38.7)
-// FIX: Stoch extreme opposite now correctly checks for OPPOSITE extreme
+// EXIT LOGIC — Trend Rider: Only 3 exits
+// 1. Stop loss hit
+// 2. 1D trend reversed (EMA8 crosses EMA21)
+// 3. Trailing stop once in 2R profit
+// NO stoch exits, NO profit locks, NO 4H structure exits
 // ============================================================
 export function shouldHold(
   signal: Signal,
@@ -1424,17 +1205,10 @@ export function shouldHold(
     currentR, lastDecisionTimestamp: now,
   };
 
-  const hoursInTrade = (now - signal.timestamp) / (60 * 60 * 1000);
-  const risk = Math.abs(signal.entry - signal.stop);
-  const distToBE = signal.direction === "LONG" ? currentPrice - signal.entry : signal.entry - currentPrice;
-  const distToTP = signal.direction === "LONG" ? signal.target - currentPrice : currentPrice - signal.target;
-  const nextMilestone = currentR < 1 ? "Breakeven (1R)" : currentR < 2 ? "50% Lock (2R)" : currentR < 3 ? "70% Lock (3R)" : "Target";
+  debug.push(`[HOLD] ${signal.pair} ${signal.direction} | Price=${sf(currentPrice,2)} | R=${sf(currentR,2)}`);
+  debug.push(`[HOLD] Highest=${sf(newHighest,2)} | Lowest=${sf(newLowest,2)}`);
 
-  debug.push(`[HOLD] ${signal.pair} ${signal.direction} | Price=${sf(currentPrice,2)} | R=${sf(currentR,2)} | Hours=${sf(hoursInTrade,2)}`);
-  debug.push(`[HOLD] Phase=${ts.phase} | Highest=${sf(newHighest,2)} | Lowest=${sf(newLowest,2)} | LockedStop=${ts.lockedStop ? sf(ts.lockedStop,2) : "none"}`);
-  debug.push(`[HOLD] DistToBE=${sf(distToBE,2)} | DistToTP=${sf(distToTP,2)} | Next=${nextMilestone}`);
-
-  // 1. HARD STOPS
+  // 1. HARD STOP
   if (signal.direction === "LONG" && currentPrice <= signal.stop) {
     debug.push(`[HOLD] EXIT: Stop loss hit | Price=${sf(currentPrice,2)} <= Stop=${sf(signal.stop,2)}`);
     return { shouldHold: false, reason: "stop_loss", updatedTradeState: { ...updatedState, phase: "EXIT" } };
@@ -1444,7 +1218,7 @@ export function shouldHold(
     return { shouldHold: false, reason: "stop_loss", updatedTradeState: { ...updatedState, phase: "EXIT" } };
   }
 
-  // 2. TARGET HIT
+  // 2. TARGET HIT (optional - can remove if you want to ride forever)
   if (signal.direction === "LONG" && currentPrice >= signal.target) {
     debug.push(`[HOLD] EXIT: Target hit | Price=${sf(currentPrice,2)} >= Target=${sf(signal.target,2)}`);
     return { shouldHold: false, reason: "target_hit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
@@ -1454,101 +1228,56 @@ export function shouldHold(
     return { shouldHold: false, reason: "target_hit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
   }
 
-  // 3. EMA REGIME FLIP
+  // 3. 1D TREND REVERSAL (the big one)
   if (candles1d && candles1d.length >= 50) {
     const trend = calculateTrend1D(candles1d);
     if (trend.direction && trend.direction !== signal.direction) {
-      debug.push(`[HOLD] 1D trend flipped: ${signal.direction} -> ${trend.direction} | ADX=${trend.adx?.toFixed(1) || "N/A"}`);
-      if (currentR < 2 || hoursInTrade < 24) {
-        debug.push(`[HOLD] EXIT: Regime flip (unprofitable or early) | R=${sf(currentR,2)} | Hours=${sf(hoursInTrade,2)}`);
-        return { shouldHold: false, reason: "1d_regime_flip", updatedTradeState: { ...updatedState, phase: "EXIT" } };
-      }
-      debug.push(`[HOLD] EXIT: Regime flip (in profit) | R=${sf(currentR,2)} | Hours=${sf(hoursInTrade,2)}`);
-      return { shouldHold: false, reason: "1d_regime_flip_profit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
+      debug.push(`[HOLD] 1D trend reversed: ${signal.direction} -> ${trend.direction} | ADX=${trend.adx?.toFixed(1) || "N/A"}`);
+      return { shouldHold: false, reason: "1d_trend_reversed", updatedTradeState: { ...updatedState, phase: "EXIT" } };
     }
   }
 
-  // 4. 4H EMA STRUCTURE FAILURE
-  if (candles4h && candles4h.length >= 50) {
-    const alignment = calculateEMAAlignment(candles4h, signal.direction);
-    if (hoursInTrade > 6) {
-      if (!alignment.aligned) {
-        debug.push(`[HOLD] EXIT: 4H EMA structure failure | Aligned=false | Price=${sf(alignment.price,2)} EMA8=${sf(alignment.ema8,2)} EMA21=${sf(alignment.ema21,2)}`);
-        return { shouldHold: false, reason: "4h_structure_failure", updatedTradeState: { ...updatedState, phase: "EXIT" } };
-      }
-    }
-  }
-
-  // 5. STOCH EXTREME OPPOSITE (v38.7 FIX)
-  // OLD BUG: For LONG, checked K<20 (same as entry). For SHORT, checked K>80 (same as entry).
-  // FIXED: Exit when stoch reaches the OPPOSITE extreme from entry.
-  //   LONG entry at oversold (K<20) → exit when overbought (K>80)
-  //   SHORT entry at overbought (K>80) → exit when oversold (K<20)
-  const closes4h = candles4h.map(c => c.close);
-  const stoch = stochRsi(closes4h);
-  
-  // v38.7: Opposite extreme check — was checking SAME extreme as entry (bug)
-  const stochExtremeOpposite = signal.direction === "LONG"
-    ? stoch.k > 80   // LONG: exit when overbought (opposite of oversold entry)
-    : stoch.k < 20;  // SHORT: exit when oversold (opposite of overbought entry)
-    
-  if (stochExtremeOpposite) {
-    debug.push(`[HOLD] EXIT: Stoch extreme opposite | K=${stoch.k} | Direction=${signal.direction} → exit at ${signal.direction === "LONG" ? "K>80" : "K<20"}`);
-    return { shouldHold: false, reason: "stoch_extreme_opposite_exit", updatedTradeState: { ...updatedState, phase: "EXIT" } };
-  }
-
-  // 6. PROFIT PROTECTION
+  // 4. TRAILING STOP (only once in 2R profit)
   let newLockedStop = ts.lockedStop;
-  let newProfitLockLevel = ts.profitLockLevel;
-  let newPhase: TradeLifecyclePhase = ts.phase;
-
-  if (currentR >= 3 && newProfitLockLevel < 3) {
-    const gain = Math.abs(currentPrice - signal.entry);
-    const lockPrice = signal.direction === "LONG" ? signal.entry + gain * 0.3 : signal.entry - gain * 0.3;
-    newLockedStop = Math.max(ts.lockedStop || 0, lockPrice);
-    newProfitLockLevel = 3;
-    newPhase = "PROFIT_PROTECTION";
-    debug.push(`[HOLD] Profit lock 3R: LockedStop=${sf(newLockedStop,2)}`);
-  } else if (currentR >= 2 && newProfitLockLevel < 2) {
-    const gain = Math.abs(currentPrice - signal.entry);
-    const lockPrice = signal.direction === "LONG" ? signal.entry + gain * 0.5 : signal.entry - gain * 0.5;
-    newLockedStop = Math.max(ts.lockedStop || 0, lockPrice);
-    newProfitLockLevel = 2;
-    newPhase = "PROFIT_PROTECTION";
-    debug.push(`[HOLD] Profit lock 2R: LockedStop=${sf(newLockedStop,2)}`);
-  } else if (currentR >= 1 && newProfitLockLevel < 1) {
-    newLockedStop = signal.entry;
-    newProfitLockLevel = 1;
-    newPhase = "BUILDING";
-    debug.push(`[HOLD] Breakeven lock 1R: LockedStop=${sf(newLockedStop,2)}`);
+  if (currentR >= 2 && !ts.lockedStop) {
+    // Set trailing stop at 1.5x ATR behind highest/lowest price
+    const atr4h = atr(candles4h, 14);
+    if (signal.direction === "LONG") {
+      newLockedStop = newHighest - atr4h * 1.5;
+    } else {
+      newLockedStop = newLowest + atr4h * 1.5;
+    }
+    debug.push(`[HOLD] Trailing stop activated at ${sf(newLockedStop,2)} (2R reached)`);
   }
 
   if (newLockedStop) {
     if (signal.direction === "LONG" && currentPrice <= newLockedStop) {
-      debug.push(`[HOLD] EXIT: Profit protection ${newProfitLockLevel}R | Price=${sf(currentPrice,2)} <= LockedStop=${sf(newLockedStop,2)}`);
-      return { shouldHold: false, reason: `profit_protection_${newProfitLockLevel}R`, updatedTradeState: { ...updatedState, phase: "EXIT", lockedStop: newLockedStop, profitLockLevel: newProfitLockLevel } };
+      debug.push(`[HOLD] EXIT: Trailing stop hit | Price=${sf(currentPrice,2)} <= Trail=${sf(newLockedStop,2)}`);
+      return { shouldHold: false, reason: "trailing_stop", updatedTradeState: { ...updatedState, phase: "EXIT", lockedStop: newLockedStop } };
     }
     if (signal.direction === "SHORT" && currentPrice >= newLockedStop) {
-      debug.push(`[HOLD] EXIT: Profit protection ${newProfitLockLevel}R | Price=${sf(currentPrice,2)} >= LockedStop=${sf(newLockedStop,2)}`);
-      return { shouldHold: false, reason: `profit_protection_${newProfitLockLevel}R`, updatedTradeState: { ...updatedState, phase: "EXIT", lockedStop: newLockedStop, profitLockLevel: newProfitLockLevel } };
+      debug.push(`[HOLD] EXIT: Trailing stop hit | Price=${sf(currentPrice,2)} >= Trail=${sf(newLockedStop,2)}`);
+      return { shouldHold: false, reason: "trailing_stop", updatedTradeState: { ...updatedState, phase: "EXIT", lockedStop: newLockedStop } };
     }
   }
 
+  // Update phase
+  let newPhase: TradeLifecyclePhase = ts.phase;
   if (currentR >= 2 && newPhase === "BUILDING") newPhase = "TREND";
   if (currentR >= 1 && newPhase === "ENTRY") newPhase = "BUILDING";
 
   const finalState: TradeState = {
     ...updatedState, phase: newPhase,
-    lockedStop: newLockedStop, profitLockLevel: newProfitLockLevel,
+    lockedStop: newLockedStop,
   };
 
-  debug.push(`[HOLD] HOLDING: phase=${newPhase} | R=${sf(currentR,2)} | NextMilestone=${nextMilestone}`);
+  debug.push(`[HOLD] HOLDING: phase=${newPhase} | R=${sf(currentR,2)} | Trail=${newLockedStop ? sf(newLockedStop,2) : "none"}`);
 
   return { shouldHold: true, reason: `holding_${newPhase.toLowerCase()}_R${currentR.toFixed(1)}`, updatedTradeState: finalState };
 }
 
 // ============================================================
-// CANONICAL VALIDITY CHECKS
+// VALIDITY CHECKS
 // ============================================================
 export function isSignalStillValid(signal: Signal, currentPrice: number): { valid: boolean; reason: string; exited: boolean } {
   if (signal.direction === "LONG" && currentPrice <= signal.stop) return { valid: false, reason: "sl_hit", exited: true };
@@ -1578,7 +1307,7 @@ export function filterExpiredSignals(signals: Signal[], currentPrices?: Record<s
 }
 
 // ============================================================
-// CANONICAL MARKET SNAPSHOT
+// MARKET SNAPSHOT — Fixed and simplified
 // ============================================================
 export function getMarketSnapshot(
   pair: string,
@@ -1591,10 +1320,10 @@ export function getMarketSnapshot(
 ) {
   const price = currentPrice ?? candles4h[candles4h.length - 1]?.close ?? 0;
 
-  const trend = calculateTrend1D(candles1d);
+  const trend1d = calculateTrend1D(candles1d);
   const trend4h = calculateTrend4H(candles4h);
-  const entryDirection = trend4h.direction;
-  const alignment = trend.direction ? calculateEMAAlignment(candles4h, trend.direction) : { aligned: false, priceAboveEMA8: false, priceAboveEMA21: false, ema8AboveEMA21: false, price: 0, ema8: 0, ema21: 0, debug: [] };
+  const entryDirection = trend1d.direction;
+  const alignment = trend1d.direction ? calculateEMAAlignment(candles4h, trend1d.direction) : { aligned: false, priceAboveEMA8: false, priceAboveEMA21: false, ema8AboveEMA21: false, price: 0, ema8: 0, ema21: 0, debug: [] };
 
   const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50 };
   const stoch1h = candles1h.length >= 30 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50 };
@@ -1602,17 +1331,14 @@ export function getMarketSnapshot(
 
   const volCheck = candles4h.length >= 12 ? checkVolume(candles4h) : { confirmed: false, ratio: 0, debug: [] };
 
-  const closes4h = candles4h.map(c => c.close);
-  const prevStoch4h = stochRsi(closes4h.slice(0, -1));
-  const isStrongTrend = (trend.adx !== null && trend.adx >= 25) && trend.strength >= 80;
-  const pullback = trend.direction ? checkPullbackAdaptive(entryDirection, stoch4h, prevStoch4h, trend.adx, isStrongTrend) : { pullbackActive: false, reason: "No bias", tier: null, stochZone: "NEUTRAL", debug: [] };
+  const pullback = trend1d.direction ? checkPullback(trend1d.direction, stoch4h) : { pullbackActive: false, reason: "No bias", tier: null, stochZone: "NEUTRAL", debug: [] };
 
   const adxVal = adx(candles4h) ?? 0;
-  const rsiVal = wilderRsi(closes4h);
+  const rsiVal = wilderRsi(candles4h.map(c => c.close));
 
   let readiness = 0;
-  if (trend.direction) readiness += 25;
-  if (trend.strength >= 50) readiness += 15;
+  if (trend1d.direction) readiness += 25;
+  if (trend1d.strength >= 50) readiness += 15;
   if (pullback.pullbackActive) {
     if (pullback.tier === "DEEP") readiness += 30;
     else if (pullback.tier === "SHALLOW") readiness += 20;
@@ -1630,7 +1356,7 @@ export function getMarketSnapshot(
   else if (readiness >= 40) readinessLabel = "WATCH";
 
   const allDebug: string[] = [
-    ...trend.debug,
+    ...trend1d.debug,
     ...trend4h.debug,
     ...alignment.debug,
     ...pullback.debug,
@@ -1642,17 +1368,17 @@ export function getMarketSnapshot(
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
-    bias: trend.direction ? { direction: entryDirection, strength: trend.strength } : null,
-    trend1d: trend.direction ? { direction: entryDirection, strength: trend.strengthLabel } : null,
+    bias: trend1d.direction ? { direction: entryDirection, strength: trend1d.strength } : null,
+    trend1d: trend1d.direction ? { direction: entryDirection, strength: trend1d.strengthLabel } : null,
     trend4h: trend4h.direction ? { direction: trend4h.direction, strength: trend4h.strengthLabel } : null,
-    trend1h: trend.direction ? { direction: entryDirection, strength: trend.strengthLabel } : null,
+    trend1h: trend1d.direction ? { direction: entryDirection, strength: trend1d.strengthLabel } : null,
     stoch4h,
     stoch1h,
     stoch15m,
     volumeConfirmed: volCheck.confirmed,
-    trendDirection: trend.direction,
-    trendStrength: trend.strength,
-    trendStrengthLabel: trend.strengthLabel,
+    trendDirection: trend1d.direction,
+    trendStrength: trend1d.strength,
+    trendStrengthLabel: trend1d.strengthLabel,
     isPullback: pullback.pullbackActive,
     pullbackTier: pullback.tier,
     pullbackReason: pullback.reason,
@@ -1660,11 +1386,11 @@ export function getMarketSnapshot(
     readiness,
     readinessLabel,
     adx: Math.round(adxVal * 10) / 10,
-    trend: trend.direction ? `${trend.direction} ${trend.strengthLabel}` : "NONE",
+    trend: trend1d.direction ? `${trend1d.direction} ${trend1d.strengthLabel}` : "NONE",
     regime: {
       direction: entryDirection,
-      strength: trend.strengthLabel,
-      confidence: trend.direction ? (trend.strength > 50 ? 75 : 50) : 0
+      strength: trend1d.strengthLabel,
+      confidence: trend1d.direction ? (trend1d.strength > 50 ? 75 : 50) : 0
     },
     rsi: Math.round((rsiVal ?? 50) * 10) / 10,
     stochK: stoch4h.k,
@@ -1675,14 +1401,26 @@ export function getMarketSnapshot(
     distToEMA21: alignment.ema21 > 0 ? Math.round((price - alignment.ema21) / alignment.ema21 * 10000) / 100 : 0,
     emaAligned: alignment.aligned,
     recommendedAction: signalResult?.signal ? `${signalResult.signal.direction} ${signalResult.signal.entryType}` : null,
-    entryTier: signalResult?.signal ? (signalResult.signal.entryType === "RETEST" ? "CONFIRMED_ENTRY" : "EARLY_ENTRY") : null,
-    entryMode: signalResult?.signal ? (signalResult.signal.entryType === "EARLY" ? "PULLBACK" : "BREAKOUT") : null,
+    entryTier: signalResult?.signal ? (signalResult.signal.entryType === "PULLBACK" ? "PULLBACK_ENTRY" : signalResult.signal.entryType === "BREAKOUT" ? "BREAKOUT_ENTRY" : "FADE_ENTRY") : null,
+    entryMode: signalResult?.signal ? (signalResult.signal.entryType === "PULLBACK" ? "PULLBACK" : signalResult.signal.entryType === "BREAKOUT" ? "BREAKOUT" : "FADE") : null,
     positionSize: signalResult?.signal ? (signalResult.signal.positionSizePct ? (signalResult.signal.positionSizePct * 100).toFixed(0) + "%" : null) : null,
     signal: signalResult?.signal || null,
     summary: { status: signalResult?.signal ? "READY" : "WATCH", debug: allDebug },
     activeTrade: null,
     debug: allDebug,
   };
+}
+
+
+// ============================================================
+// REDIS HELPERS — No-op for compatibility (v38 feature removed)
+// ============================================================
+export function setRedisHelpers(
+  _getFn?: <T>(key: string) => Promise<T | null>,
+  _setFn?: (key: string, value: any) => Promise<void>
+): void {
+  // Trend Rider v2 uses in-memory hysteresis only
+  // Redis persistence removed for simplicity
 }
 
 // ============================================================
