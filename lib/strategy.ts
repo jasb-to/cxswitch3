@@ -1056,7 +1056,7 @@ export function generateSignal(
     debug.push(`[SIGNAL] 1D/4H conflict: 1D=${trend1d.direction} 4H=${trend4h.direction} | Reduced confidence, still trading 1D`);
   }
 
-  const entryDirection = trend1d.direction;
+  let entryDirection = trend1d.direction;
 
   // Trendline for entry timing
   const trendlineEval = evaluateTrendline(pair, candles4h, entryDirection, now);
@@ -1118,7 +1118,7 @@ export function generateSignal(
   }
 
   // For FADE entries, direction is OPPOSITE to 1D trend
-  const entryDirection = entryDiag.entryType === "FADE" 
+  entryDirection = entryDiag.entryType === "FADE" 
     ? (trend1d.direction === "LONG" ? "SHORT" : "LONG")
     : trend1d.direction;
 
@@ -1344,7 +1344,7 @@ export function getMarketSnapshot(
 
   const trend1d = calculateTrend1D(candles1d);
   const trend4h = calculateTrend4H(candles4h);
-  const entryDirection = trend1d.direction;
+  let entryDirection = trend1d.direction;
   const alignment = trend1d.direction ? calculateEMAAlignment(candles4h, trend1d.direction) : { aligned: false, priceAboveEMA8: false, priceAboveEMA21: false, ema8AboveEMA21: false, price: 0, ema8: 0, ema21: 0, debug: [] };
 
   const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50 };
