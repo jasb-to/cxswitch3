@@ -1593,6 +1593,7 @@ export function getMarketSnapshot(
 
   const trend = calculateTrend1D(candles1d);
   const trend4h = calculateTrend4H(candles4h);
+  const entryDirection = trend4h.direction;
   const alignment = trend.direction ? calculateEMAAlignment(candles4h, trend.direction) : { aligned: false, priceAboveEMA8: false, priceAboveEMA21: false, ema8AboveEMA21: false, price: 0, ema8: 0, ema21: 0, debug: [] };
 
   const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50 };
