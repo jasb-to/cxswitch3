@@ -1194,18 +1194,34 @@ export function generateSignal(
 
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
 
-  const trend = calculateTrend1D(candles1d);
-  debug.push(...trend.debug);
+  // v40: 4H sets direction (we trade the timeframe we enter on)
+  // 1D provides context/confidence (are we with or against the bigger trend?)
+  const trend4h = calculateTrend4H(candles4h);
+  debug.push(...trend4h.debug);
 
-  if (!trend.direction) {
-    debug.push("[SIGNAL] No valid 1D bias");
+  if (!trend4h.direction) {
+    debug.push("[SIGNAL] No valid 4H bias");
     return { debug };
   }
 
-  const isStrongTrend = (trend.adx !== null && trend.adx >= 25) && trend.strength >= 80;
+  // 4H is the entry timeframe — this is our trading direction
+  const trend = calculateTrend1D(candles1d);
+  debug.push(...trend.debug);
+
+  // 1D context: aligned = tailwind, conflicted = headwind
+  const timeframesAligned = trend.direction === trend4h.direction;
+  if (timeframesAligned) {
+    debug.push(`[SIGNAL] 1D/4H aligned: ${trend4h.direction} | Full confidence`);
+  } else {
+    debug.push(`[SIGNAL] 1D/4H conflict: 1D=${trend.direction || 'none'} 4H=${trend4h.direction} | Trading 4H, reduced confidence`);
+  }
+
+  // Use 4H direction for entries, not 1D
+  const entryDirection = trend4h.direction;
+  const isStrongTrend = (trend4h.adx !== null && trend4h.adx >= 25) && trend4h.strengthLabel !== "WEAK";
   debug.push(`[SIGNAL] StrongTrend=${isStrongTrend} (informational)`);
 
-  const trendlineEval = evaluateTrendline(pair, candles4h, trend.direction, now);
+  const trendlineEval = evaluateTrendline(pair, candles4h, entryDirection, now);
   debug.push(...trendlineEval.debug);
 
   if (!trendlineEval.trendline) {
@@ -1218,7 +1234,7 @@ export function generateSignal(
   const prevStoch4h = stochRsi(closes4h.slice(0, -1));
   debug.push(`[SIGNAL] 4H Stoch K=${stoch4h.k} D=${stoch4h.d}`);
 
-  const pullback = checkPullbackAdaptive(trend.direction, stoch4h, prevStoch4h, trend.adx, isStrongTrend);
+  const pullback = checkPullbackAdaptive(entryDirection, stoch4h, prevStoch4h, trend.adx, isStrongTrend);
   debug.push(...pullback.debug);
 
   const entryDiag = diagnoseEntry(pair, candles4h, trend, trendlineEval, stoch4h, now);
@@ -1247,7 +1263,7 @@ export function generateSignal(
   if (entryDiag.rawType === "ENTRY_1") {
     confidence = 50;
     positionSizePct = 0.06;
-    if (trend.direction === "LONG") {
+    if (entryDirection === "LONG") {
       stop = Math.min(swingLow, entry - atr4h * 2);
       target = entry + atr4h * 5;
     } else {
@@ -1257,7 +1273,7 @@ export function generateSignal(
   } else if (entryDiag.rawType === "ENTRY_2") {
     confidence = 60;
     positionSizePct = 0.05;
-    if (trend.direction === "LONG") {
+    if (entryDirection === "LONG") {
       stop = Math.min(swingLow, entry - atr4h * 1.5);
       target = entry + atr4h * 5;
     } else {
@@ -1271,7 +1287,7 @@ export function generateSignal(
     const distPct = tlValid ? Math.abs((entry - tlPrice) / tlPrice) : 1;
     const useTL = tlValid && distPct < 0.03;
 
-    if (trend.direction === "LONG") {
+    if (entryDirection === "LONG") {
       const atrStop = entry - atr4h * 1.5;
       const tlStop = useTL ? tlPrice * 0.995 : 0;
       stop = tlStop > 0 && tlStop > atrStop ? Math.max(tlStop, atrStop) : atrStop;
@@ -1311,15 +1327,22 @@ export function generateSignal(
     debug.push(`[SIGNAL] Confidence boosted by 5 for EXCELLENT trendline (R²=${trendlineEval.trendline?.r2})`);
   }
 
-  confidence += Math.min(10, trend.strength / 10);
-  if (trend.adx !== null && trend.adx >= 25) confidence += 5;
-  if (trend.adx !== null && trend.adx >= 30) confidence += 5;
-  confidence = Math.min(95, Math.round(confidence));
+  confidence += Math.min(10, trend4h.strengthLabel === "STRONG" ? 8 : trend4h.strengthLabel === "MEDIUM" ? 5 : 2);
+  if (timeframesAligned) {
+    confidence += 10;
+    debug.push("[SIGNAL] +10 confidence: 1D/4H aligned");
+  } else {
+    confidence -= 15;
+    debug.push("[SIGNAL] -15 confidence: 1D/4H conflict");
+  }
+  if (trend4h.adx !== null && trend4h.adx >= 25) confidence += 5;
+  if (trend4h.adx !== null && trend4h.adx >= 30) confidence += 5;
+  confidence = Math.min(95, Math.max(30, Math.round(confidence)));
 
   const signal: Signal = {
     id: `${pair}_${now}`,
     pair,
-    direction: trend.direction,
+    direction: entryDirection,
     entry: Math.round(entry * 100) / 100,
     stop: Math.round(stop * 100) / 100,
     target: Math.round(target * 100) / 100,
@@ -1334,7 +1357,7 @@ export function generateSignal(
     entryTier: entryDiag.rawType === "ENTRY_1" ? "CONFIRMED_ENTRY" : entryDiag.rawType === "ENTRY_2" ? "CONFIRMED_ENTRY" : "EARLY_ENTRY",
     entryMode: entryDiag.rawType === "ENTRY_1" ? "RETEST" : entryDiag.rawType === "ENTRY_2" ? "RETEST" : "BREAKOUT",
     positionSizePct,
-    regimeDirection: trend.direction,
+    regimeDirection: entryDirection,
     conflictEntry: false,
     entryTimeframe: "4H",
     rr: Math.round(riskDiag.rr * 100) / 100,
@@ -1358,7 +1381,7 @@ export function generateSignal(
   };
 
   debug.push(`[SIGNAL] ═══════════════════════════════════════`);
-  debug.push(`[SIGNAL] ENTRY ACCEPTED: ${entryDiag.rawType} ${entryDiag.entryType} ${trend.direction} ${pair}`);
+  debug.push(`[SIGNAL] ENTRY ACCEPTED: ${entryDiag.rawType} ${entryDiag.entryType} ${entryDirection} ${pair}`);
   debug.push(`[SIGNAL] Entry=$${sf(entry,2)} | Stop=$${sf(stop,2)} | Target=$${sf(target,2)}`);
   debug.push(`[SIGNAL] Risk=$${sf(riskDiag.risk,2)} | Reward=$${sf(riskDiag.reward,2)} | RR=${sf(riskDiag.rr,2)}`);
   debug.push(`[SIGNAL] Conf=${confidence}% | Size=${(positionSizePct*100).toFixed(0)}% | ADX=${trend.adx?.toFixed(1) || "N/A"}`);
@@ -1581,7 +1604,7 @@ export function getMarketSnapshot(
   const closes4h = candles4h.map(c => c.close);
   const prevStoch4h = stochRsi(closes4h.slice(0, -1));
   const isStrongTrend = (trend.adx !== null && trend.adx >= 25) && trend.strength >= 80;
-  const pullback = trend.direction ? checkPullbackAdaptive(trend.direction, stoch4h, prevStoch4h, trend.adx, isStrongTrend) : { pullbackActive: false, reason: "No bias", tier: null, stochZone: "NEUTRAL", debug: [] };
+  const pullback = trend.direction ? checkPullbackAdaptive(entryDirection, stoch4h, prevStoch4h, trend.adx, isStrongTrend) : { pullbackActive: false, reason: "No bias", tier: null, stochZone: "NEUTRAL", debug: [] };
 
   const adxVal = adx(candles4h) ?? 0;
   const rsiVal = wilderRsi(closes4h);
@@ -1618,10 +1641,10 @@ export function getMarketSnapshot(
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
-    bias: trend.direction ? { direction: trend.direction, strength: trend.strength } : null,
-    trend1d: trend.direction ? { direction: trend.direction, strength: trend.strengthLabel } : null,
+    bias: trend.direction ? { direction: entryDirection, strength: trend.strength } : null,
+    trend1d: trend.direction ? { direction: entryDirection, strength: trend.strengthLabel } : null,
     trend4h: trend4h.direction ? { direction: trend4h.direction, strength: trend4h.strengthLabel } : null,
-    trend1h: trend.direction ? { direction: trend.direction, strength: trend.strengthLabel } : null,
+    trend1h: trend.direction ? { direction: entryDirection, strength: trend.strengthLabel } : null,
     stoch4h,
     stoch1h,
     stoch15m,
@@ -1638,7 +1661,7 @@ export function getMarketSnapshot(
     adx: Math.round(adxVal * 10) / 10,
     trend: trend.direction ? `${trend.direction} ${trend.strengthLabel}` : "NONE",
     regime: {
-      direction: trend.direction,
+      direction: entryDirection,
       strength: trend.strengthLabel,
       confidence: trend.direction ? (trend.strength > 50 ? 75 : 50) : 0
     },
