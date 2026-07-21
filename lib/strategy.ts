@@ -571,8 +571,10 @@ export function calculateEMAAlignment(
 }
 
 // ============================================================
-// PULLBACK CHECK — Simplified for Trend Rider
-// Only 2 zones: EXTREME (<20/>80) and PULLBACK (<50/>50)
+// PULLBACK CHECK — Trend Rider with early entry (25/75 zones)
+// LONG entry when K < 75 (was < 50) — gets in earlier
+// SHORT entry when K > 25 (was > 50) — gets in earlier
+// Still avoids true extremes (<20/>80) for best entries
 // ============================================================
 function checkPullback(
   biasDirection: "LONG" | "SHORT" | null,
@@ -595,28 +597,28 @@ function checkPullback(
 
   if (biasDirection === "LONG") {
     if (stoch4h.k < 20) {
-      debug.push("[PULLBACK] LONG EXTREME: Stoch < 20 — deep pullback");
+      debug.push("[PULLBACK] LONG EXTREME: Stoch < 20 — deep pullback, best entry");
       return { pullbackActive: true, tier: "DEEP", reason: `LONG deep pullback: 4H Stoch extreme oversold (${stoch4h.k})`, stochZone: "EXTREME", debug };
     }
-    if (stoch4h.k < 50) {
-      debug.push("[PULLBACK] LONG PULLBACK: Stoch < 50 — entry zone");
-      return { pullbackActive: true, tier: "SHALLOW", reason: `LONG pullback: 4H Stoch ${stoch4h.k}`, stochZone: "ZONE", debug };
+    if (stoch4h.k < 75) {
+      debug.push("[PULLBACK] LONG PULLBACK: Stoch < 75 — early entry zone");
+      return { pullbackActive: true, tier: "SHALLOW", reason: `LONG pullback: 4H Stoch ${stoch4h.k} (< 75)`, stochZone: "ZONE", debug };
     }
-    debug.push("[PULLBACK] LONG EXTENDED: Stoch >= 50 — no entry");
-    return { pullbackActive: false, tier: null, reason: `LONG extended: 4H Stoch ${stoch4h.k} (need <50)`, stochZone: "EXTENDED", debug };
+    debug.push("[PULLBACK] LONG EXTENDED: Stoch >= 75 — no entry, wait for pullback");
+    return { pullbackActive: false, tier: null, reason: `LONG extended: 4H Stoch ${stoch4h.k} (need < 75)`, stochZone: "EXTENDED", debug };
   }
 
   if (biasDirection === "SHORT") {
     if (stoch4h.k > 80) {
-      debug.push("[PULLBACK] SHORT EXTREME: Stoch > 80 — deep pullback");
+      debug.push("[PULLBACK] SHORT EXTREME: Stoch > 80 — deep pullback, best entry");
       return { pullbackActive: true, tier: "DEEP", reason: `SHORT deep pullback: 4H Stoch extreme overbought (${stoch4h.k})`, stochZone: "EXTREME", debug };
     }
-    if (stoch4h.k > 50) {
-      debug.push("[PULLBACK] SHORT PULLBACK: Stoch > 50 — entry zone");
-      return { pullbackActive: true, tier: "SHALLOW", reason: `SHORT pullback: 4H Stoch ${stoch4h.k}`, stochZone: "ZONE", debug };
+    if (stoch4h.k > 25) {
+      debug.push("[PULLBACK] SHORT PULLBACK: Stoch > 25 — early entry zone");
+      return { pullbackActive: true, tier: "SHALLOW", reason: `SHORT pullback: 4H Stoch ${stoch4h.k} (> 25)`, stochZone: "ZONE", debug };
     }
-    debug.push("[PULLBACK] SHORT EXTENDED: Stoch <= 50 — no entry");
-    return { pullbackActive: false, tier: null, reason: `SHORT extended: 4H Stoch ${stoch4h.k} (need >50)`, stochZone: "EXTENDED", debug };
+    debug.push("[PULLBACK] SHORT EXTENDED: Stoch <= 25 — no entry, wait for pullback");
+    return { pullbackActive: false, tier: null, reason: `SHORT extended: 4H Stoch ${stoch4h.k} (need > 25)`, stochZone: "EXTENDED", debug };
   }
 
   return { pullbackActive: false, tier: null, reason: "Unknown bias", stochZone: "NEUTRAL", debug };
