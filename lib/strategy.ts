@@ -931,6 +931,18 @@ function diagnoseEntry(
       debug.push(`[ENTRY] Beyond TL + confirming + aligned, but only ${momentumCount}/3 momentum`);
     }
   }
+  // TREND EXHAUSTION FADE: 1D trend strong but 4H stoch at extreme opposite
+  // This catches reversals when a trend is overextended
+  else if (trend1d.direction === "LONG" && stoch4h.k > 90) {
+    rawType = "FADE";
+    entryType = "FADE";
+    debug.push("[ENTRY] TREND EXHAUSTION: 1D LONG but 4H Stoch > 90 — overbought fade SHORT");
+  }
+  else if (trend1d.direction === "SHORT" && stoch4h.k < 10) {
+    rawType = "FADE";
+    entryType = "FADE";
+    debug.push("[ENTRY] TREND EXHAUSTION: 1D SHORT but 4H Stoch < 10 — oversold fade LONG");
+  }
   // FADE ENTRY: stoch extreme opposite (counter-trend, only when 1D weak)
   else if (stochExtreme && !stochTurning && trend1d.strengthLabel === "WEAK") {
     rawType = "FADE";
@@ -1058,17 +1070,16 @@ export function generateSignal(
   const pullback = checkPullback(entryDirection, stoch4h);
   debug.push(...pullback.debug);
 
-  if (!pullback.pullbackActive) {
-    debug.push("[SIGNAL] No pullback active — waiting for 4H stoch to enter zone");
-    return { debug };
-  }
-
-  // Entry diagnostics
+  // Entry diagnostics — handles both trend entries AND fade entries
   const entryDiag = diagnoseEntry(pair, candles4h, trend1d, trendlineEval, stoch4h, now);
   debug.push(...entryDiag.debug);
 
   if (!entryDiag.rawType || !entryDiag.entryType) {
-    debug.push("[SIGNAL] No entry type determined");
+    if (!pullback.pullbackActive) {
+      debug.push("[SIGNAL] No pullback active — waiting for 4H stoch to enter zone");
+    } else {
+      debug.push("[SIGNAL] No entry type determined");
+    }
     return { debug };
   }
 
@@ -1086,30 +1097,39 @@ export function generateSignal(
   let stop: number;
   let target: number;
   let confidence = 50;
-  let positionSizePct = 0.02; // 2% risk fixed
+  let positionSizePct = entryDiag.entryType === "FADE" ? 0.01 : 0.02; // 1% for fade, 2% for trend
 
-  // Stop: ATR × 2, capped at 5%
-  const maxStopPct = 0.05;
+  // Stop: ATR × 2 for trend entries, ATR × 1.5 for fade entries
+  // Capped at 5% for trend, 3% for fade
+  const isFade = entryDiag.entryType === "FADE";
+  const atrMultiplier = isFade ? 1.5 : 2;
+  const maxStopPct = isFade ? 0.03 : 0.05;
+
   if (entryDirection === "LONG") {
-    const atrStop = entry - atr4h * 2;
+    const atrStop = entry - atr4h * atrMultiplier;
     const pctStop = entry * (1 - maxStopPct);
     stop = Math.max(atrStop, pctStop, swingLow);
     target = entry + (entry - stop) * 3; // 3R minimum target
   } else {
-    const atrStop = entry + atr4h * 2;
+    const atrStop = entry + atr4h * atrMultiplier;
     const pctStop = entry * (1 + maxStopPct);
     stop = Math.min(atrStop, pctStop, swingHigh);
     target = entry - (stop - entry) * 3;
   }
 
+  // For FADE entries, direction is OPPOSITE to 1D trend
+  const entryDirection = entryDiag.entryType === "FADE" 
+    ? (trend1d.direction === "LONG" ? "SHORT" : "LONG")
+    : trend1d.direction;
+
   // Confidence boosters
   if (entryDiag.entryType === "PULLBACK") confidence = 70;
   if (entryDiag.entryType === "BREAKOUT") confidence = 60;
-  if (entryDiag.entryType === "FADE") confidence = 45;
-  if (timeframesAligned) confidence += 15;
-  if (trend1d.strengthLabel === "STRONG") confidence += 10;
+  if (entryDiag.entryType === "FADE") confidence = 40; // Lower confidence for counter-trend
+  if (timeframesAligned && entryDiag.entryType !== "FADE") confidence += 15;
+  if (trend1d.strengthLabel === "STRONG" && entryDiag.entryType !== "FADE") confidence += 10;
   if (entryDiag.volUp) confidence += 5;
-  confidence = Math.min(95, Math.max(30, Math.round(confidence)));
+  confidence = Math.min(95, Math.max(25, Math.round(confidence)));
 
   const riskDiag = calculateRisk(entry, stop, target, entryDiag.rawType);
   debug.push(...riskDiag.debug);
