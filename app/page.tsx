@@ -1,515 +1,542 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
+import { Signal, MarketSnapshot, ExitRecord } from "@/lib/strategy";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  ArrowUpRight,
+  ArrowDownRight,
+  TrendingUp,
+  TrendingDown,
+  Target,
+  Shield,
+  Activity,
+  Clock,
+  Zap,
+  BarChart3,
+  AlertTriangle,
+  CheckCircle2,
+  XCircle,
+  RefreshCw,
+  Settings,
+  Eye,
+  Flame,
+  Crosshair,
+  Rocket,
+  Gauge,
+} from "lucide-react";
 
-interface ActiveTradeInfo {
-  signalId: string;
-  direction: "LONG" | "SHORT";
-  pnl: string;
-  entry: number;
-  stop: number;
-  target: number;
-  entryType?: string;
-  trendlinePrice?: number;
+// ─── Types ───
+interface DashboardData {
+  signals: Signal[];
+  snapshots: Record<string, MarketSnapshot>;
+  exits: ExitRecord[];
+  lastUpdated: number;
+  systemStatus: "online" | "degraded" | "offline";
+  version: string;
 }
 
-interface MarketSnapshot {
-  pair: string;
-  price: number;
-  timestamp: number;
-  bias: { direction: string; strength: number } | null;
-  stoch4h: { k: number; d: number };
-  stoch1h: { k: number; d: number };
-  stoch15m: { k: number; d: number };
-  signal?: {
-    direction: string;
-    entryType: string;
-    entry: number;
-    stop: number;
-    target: number;
-    confidence: number;
-    rr: number;
-  } | null;
-  activeTrade?: ActiveTradeInfo;
-  trendDirection: string | null;
-  trendStrengthLabel: string;
-  trend1d: { direction: string | null; strength: string } | null;
-  trend4h: { direction: string | null; strength: string } | null;
-  isExhausted: boolean;
-  exhaustionReason: string;
-  readiness: number;
-  readinessLabel: string;
-  adx: number | null;
-  debug: string[];
-  summary?: { debug: string[] };
-  rsi?: number;
+// ─── Helpers ───
+function formatPrice(price: number): string {
+  return price >= 1000
+    ? `$${price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : `$${price.toFixed(4)}`;
 }
 
-const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
-
-function dirColor(dir: string | null | undefined): string {
-  if (!dir) return "text-gray-400";
-  const d = String(dir).toUpperCase();
-  if (d === "LONG" || d === "BULLISH") return "text-green-400";
-  if (d === "SHORT" || d === "BEARISH") return "text-red-400";
-  return "text-gray-400";
+function formatTimeAgo(ts: number): string {
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
-function stochColor(k: number, d: number): string {
-  if (k > 80 && d > 70) return "text-red-400 font-bold";
-  if (k < 20 && d < 30) return "text-green-400 font-bold";
-  if (k > d) return "text-green-400";
-  return "text-red-400";
+function formatR(r: number): string {
+  return r >= 0 ? `+${r.toFixed(2)}R` : `${r.toFixed(2)}R`;
 }
 
-function stochBg(k: number): string {
-  if (k > 80) return "bg-red-500/10 border-red-500/20";
-  if (k < 20) return "bg-green-500/10 border-green-500/20";
-  return "bg-gray-800/30 border-gray-700/20";
-}
+// ─── Entry Type Badge (v41 update) ───
+function entryTypeBadge(entryType: string | undefined): React.ReactNode {
+  if (!entryType) return <Badge variant="outline">Unknown</Badge>;
 
-function readinessBarColors(score: number, hasTrade: boolean): { bg: string; text: string; bar: string } {
-  if (hasTrade) return { bg: "bg-blue-500/10", text: "text-blue-400", bar: "bg-blue-500" };
-  if (score >= 80) return { bg: "bg-green-500/10", text: "text-green-400", bar: "bg-green-500" };
-  if (score >= 60) return { bg: "bg-amber-500/10", text: "text-amber-400", bar: "bg-amber-500" };
-  if (score >= 40) return { bg: "bg-blue-500/10", text: "text-blue-400", bar: "bg-blue-500" };
-  return { bg: "bg-gray-700/30", text: "text-gray-400", bar: "bg-gray-500" };
-}
-
-function entryTypeBadge(type: string): { label: string; className: string } {
-  if (type === "EARLY") return { label: "EARLY", className: "bg-amber-500/20 text-amber-400 border-amber-500/30" };
-  if (type === "BREAKOUT") return { label: "BREAKOUT", className: "bg-green-500/20 text-green-400 border-green-500/30" };
-  if (type === "RETEST") return { label: "RETEST", className: "bg-blue-500/20 text-blue-400 border-blue-500/30" };
-  return { label: "ENTRY", className: "bg-gray-700/50 text-gray-400 border-gray-600/30" };
-}
-
-function TrendBadge({ direction, strength, label }: { direction: string | null; strength: string; label: string }) {
-  if (!direction) {
-    return (
-      <div className="p-2.5 bg-gray-800/30 rounded-lg text-center border border-gray-700/20">
-        <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">{label}</div>
-        <div className="text-sm font-bold text-gray-500">NONE</div>
-      </div>
-    );
-  }
-  const isLong = direction.toUpperCase() === "LONG";
-  return (
-    <div className={`p-2.5 rounded-lg text-center border ${isLong ? "bg-green-500/5 border-green-500/15" : "bg-red-500/5 border-red-500/15"}`}>
-      <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">{label}</div>
-      <div className={`text-sm font-bold ${dirColor(direction)}`}>{direction}</div>
-      <div className={`text-[10px] mt-0.5 ${strength === "STRONG" ? "text-green-400 font-semibold" : strength === "MEDIUM" ? "text-amber-400" : "text-gray-500"}`}>{strength}</div>
-    </div>
-  );
-}
-
-function ReadinessBar({ score, label, hasTrade }: { score: number; label: string; hasTrade: boolean }) {
-  const colors = readinessBarColors(score, hasTrade);
-  return (
-    <div className={`p-3 rounded-lg border ${colors.bg} ${hasTrade ? "border-blue-500/30" : "border-gray-700/30"}`}>
-      <div className="flex items-center justify-between">
-        <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">{hasTrade ? "In Trade" : "Readiness"}</span>
-        <span className={`text-sm font-bold ${colors.text}`}>{hasTrade ? "ACTIVE" : `${label} (${score})`}</span>
-      </div>
-      {!hasTrade && (
-        <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden mt-2">
-          <div className={`h-full ${colors.bar} rounded-full transition-all duration-500`} style={{ width: `${score}%` }} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function StructurePanel({ debug, hasSignal, hasTrade }: { debug: string[]; hasSignal: boolean; hasTrade: boolean }) {
-  if (!debug || debug.length === 0) return null;
-
-  const structureLines = debug.filter(d => {
-    if (d.includes("SIGNAL:")) return false;
-    if (d === "Volume: CONFIRMED (+20%)" || d === "Volume: weak") return false;
-    return d.includes("Structure:") ||
-           d.includes("EMA") ||
-           d.includes("TREND:") ||
-           d.includes("PULLBACK:") ||
-           d.includes("pullback") ||
-           d.includes("ADX:") ||
-           d.includes("Stoch:") ||
-           d.includes("Readiness:") ||
-           d.includes("trendline") ||
-           d.includes("blocked") ||
-           d.includes("waiting") ||
-           d.includes("aligned") ||
-           d.includes("cross");
-  });
-
-  if (structureLines.length === 0) return null;
-
-  // DEDUPLICATE: keep only first occurrence of each line
-  const seen = new Set<string>();
-  const uniqueLines = structureLines.filter(line => {
-    if (seen.has(line)) return false;
-    seen.add(line);
-    return true;
-  });
-
-  return (
-    <div className="mb-4 p-3 bg-gray-800/40 rounded-lg border border-gray-700/30">
-      <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-2">Structure</div>
-      <div className="space-y-1">
-        {uniqueLines.map((line, i) => {
-          let color = "text-gray-400";
-          if (line.includes("LONG")) color = "text-green-400";
-          if (line.includes("SHORT")) color = "text-red-400";
-          if (line.includes("PULLBACK:")) color = "text-amber-400 font-semibold";
-          if (line.includes("Readiness:")) color = "text-blue-400";
-          if (line.includes("blocked")) color = "text-orange-400";
-          if (line.includes("CONFIRMED")) color = "text-green-400";
-          if (line.includes("aligned")) color = "text-green-400";
-          return <div key={i} className={`text-xs ${color}`}>{line}</div>;
-        })}
-      </div>
-    </div>
-  );
-}
-
-function MarketCard({ snap }: { snap: MarketSnapshot }) {
-  const hasSignal = !!snap.signal;
-  const hasTrade = !!snap.activeTrade;
-  const colors = readinessBarColors(snap.readiness ?? 0, hasTrade);
-
-  let statusBadge;
-  if (hasTrade) {
-    const dir = snap.activeTrade!.direction;
-    statusBadge = {
-      label: dir,
-      className: dir === "LONG"
-        ? "bg-green-500/20 text-green-400 border-green-500/30"
-        : "bg-red-500/20 text-red-400 border-red-500/30"
-    };
-  } else if (hasSignal) {
-    statusBadge = entryTypeBadge(snap.signal!.entryType);
-  } else {
-    statusBadge = { label: snap.readinessLabel || "WATCH", className: `${colors.bg} ${colors.text} border-gray-600/30` };
-  }
-
-  const debugLines: string[] = snap.debug || snap.summary?.debug || [];
-
-  return (
-    <div className="p-5 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-600 transition shadow-lg">
-      {/* HEADER */}
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <span className="font-mono font-bold text-xl tracking-tight">{snap.pair.replace("/USD", "")}</span>
-          <div className="text-sm text-gray-500 mt-0.5">
-            ${snap.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </div>
-        </div>
-        <span className={`text-xs font-bold px-3 py-1.5 rounded-lg border ${statusBadge.className} uppercase tracking-wider`}>
-          {statusBadge.label}
-        </span>
-      </div>
-
-      {/* READINESS BAR */}
-      <ReadinessBar score={snap.readiness ?? 0} label={snap.readinessLabel ?? "NO TRADE"} hasTrade={hasTrade} />
-
-      {/* TREND GRID: 1D and 4H */}
-      <div className="mt-4 grid grid-cols-2 gap-2">
-        <TrendBadge direction={snap.trend1d?.direction || null} strength={snap.trend1d?.strength || "WEAK"} label="1D Trend" />
-        <TrendBadge direction={snap.trend4h?.direction || null} strength={snap.trend4h?.strength || "WEAK"} label="4H Trend" />
-      </div>
-
-      {/* ADX */}
-      {snap.adx !== null && (
-        <div className="mt-2 p-2 bg-gray-800/20 rounded-lg text-center">
-          <span className="text-xs text-gray-500">ADX: </span>
-          <span className={`text-sm font-mono font-bold ${snap.adx >= 25 ? "text-green-400" : snap.adx >= 20 ? "text-amber-400" : "text-gray-400"}`}>
-            {snap.adx.toFixed(1)}
-          </span>
-          <span className="text-xs text-gray-600 ml-1">
-            {snap.adx >= 30 ? "Strong" : snap.adx >= 25 ? "Good" : snap.adx >= 20 ? "Moderate" : "Weak"}
-          </span>
-        </div>
-      )}
-
-      {/* STOCH GRID */}
-      <div className="grid grid-cols-3 gap-2 mt-4">
-        <div className={`p-2 rounded-lg text-center border ${stochBg(snap.stoch4h?.k ?? 50)}`}>
-          <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider">4H Stoch</div>
-          <div className={`text-sm font-mono font-bold ${stochColor(snap.stoch4h?.k ?? 50, snap.stoch4h?.d ?? 50)}`}>
-            {(snap.stoch4h?.k ?? 0).toFixed(1)} / {(snap.stoch4h?.d ?? 0).toFixed(1)}
-          </div>
-        </div>
-        <div className={`p-2 rounded-lg text-center border ${stochBg(snap.stoch1h?.k ?? 50)}`}>
-          <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider">1H Stoch</div>
-          <div className={`text-sm font-mono font-bold ${stochColor(snap.stoch1h?.k ?? 50, snap.stoch1h?.d ?? 50)}`}>
-            {(snap.stoch1h?.k ?? 0).toFixed(1)} / {(snap.stoch1h?.d ?? 0).toFixed(1)}
-          </div>
-        </div>
-        <div className={`p-2 rounded-lg text-center border ${stochBg(snap.stoch15m?.k ?? 50)}`}>
-          <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider">15M Stoch</div>
-          <div className={`text-sm font-mono font-bold ${stochColor(snap.stoch15m?.k ?? 50, snap.stoch15m?.d ?? 50)}`}>
-            {(snap.stoch15m?.k ?? 0).toFixed(1)} / {(snap.stoch15m?.d ?? 0).toFixed(1)}
-          </div>
-        </div>
-      </div>
-
-      {/* RSI */}
-      {snap.rsi !== undefined && (
-        <div className="mt-2 flex items-center justify-between px-2">
-          <span className="text-xs text-gray-500">RSI</span>
-          <span className={`text-xs font-mono font-bold ${snap.rsi > 70 ? "text-red-400" : snap.rsi < 30 ? "text-green-400" : "text-gray-400"}`}>
-            {snap.rsi.toFixed(1)}
-          </span>
-        </div>
-      )}
-
-      {/* STRUCTURE PANEL */}
-      <StructurePanel debug={debugLines} hasSignal={hasSignal} hasTrade={hasTrade} />
-
-      {/* TRADE DETAILS */}
-      {hasTrade ? (
-        <div className={`mb-4 p-4 rounded-lg border ${snap.activeTrade!.direction === "LONG" ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"}`}>
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <span className={`text-xs uppercase font-bold tracking-wider px-2 py-1 rounded ${snap.activeTrade!.direction === "LONG" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
-                {snap.activeTrade!.direction}
-              </span>
-              <span className="text-xs text-gray-500">{snap.activeTrade!.entryType}</span>
-            </div>
-            <span className={`text-lg font-mono font-bold ${snap.activeTrade!.pnl.startsWith("-") ? "text-red-400" : "text-green-400"}`}>
-              {snap.activeTrade!.pnl}
-            </span>
-          </div>
-          <div className="grid grid-cols-2 gap-2 text-sm mb-4">
-            <div><span className="text-gray-500">Entry:</span> <span className="font-mono text-gray-200">${snap.activeTrade!.entry.toFixed(2)}</span></div>
-            <div><span className="text-gray-500">Stop:</span> <span className="font-mono text-red-400">${snap.activeTrade!.stop.toFixed(2)}</span></div>
-            <div><span className="text-gray-500">Target:</span> <span className="font-mono text-green-400">${snap.activeTrade!.target.toFixed(2)}</span></div>
-            <div><span className="text-gray-500">TL:</span> <span className="font-mono text-amber-400">${snap.activeTrade!.trendlinePrice?.toFixed(2) || "—"}</span></div>
-          </div>
-
-          {/* R-LEVEL TRACKER */}
-          <div className="border-t border-gray-700/50 pt-3">
-            <div className="text-[10px] uppercase text-gray-500 font-semibold tracking-wider mb-2">Stop Trail</div>
-            <div className="space-y-1.5">
-              {(() => {
-                const entry = snap.activeTrade!.entry;
-                const stop = snap.activeTrade!.stop;
-                const currentPrice = snap.price;
-                const risk = Math.abs(entry - stop);
-                const currentR = risk > 0 ? (snap.activeTrade!.direction === "LONG" ? (currentPrice - entry) / risk : (entry - currentPrice) / risk) : 0;
-                const isBreakeven = currentR >= 1;
-                const is50Lock = currentR >= 2;
-                const is70Lock = currentR >= 3;
-                const nextR = Math.ceil(currentR + 0.01);
-                const nextPrice = entry + (risk * nextR) * (snap.activeTrade!.direction === "LONG" ? 1 : -1);
-
-                return (
-                  <>
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-gray-400">Current</span>
-                      <span className={`font-mono font-bold ${currentR >= 1 ? "text-green-400" : currentR >= 0 ? "text-amber-400" : "text-red-400"}`}>
-                        {currentR.toFixed(2)}R
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-xs opacity-60">
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-1.5 h-1.5 rounded-full bg-red-500"></div>
-                        <span className="text-gray-400">Hard Stop</span>
-                      </div>
-                      <span className="font-mono text-red-400">${stop.toFixed(2)}</span>
-                    </div>
-                    <div className={`flex items-center justify-between text-xs ${isBreakeven ? "opacity-60" : ""}`}>
-                      <div className="flex items-center gap-1.5">
-                        <div className={`w-1.5 h-1.5 rounded-full ${isBreakeven ? "bg-green-500" : "bg-amber-500 animate-pulse"}`}></div>
-                        <span className="text-gray-400">Breakeven</span>
-                        {!isBreakeven && <span className="text-[9px] text-amber-400">← NEXT</span>}
-                      </div>
-                      <span className={`font-mono ${isBreakeven ? "text-green-400" : "text-amber-400"}`}>${entry.toFixed(2)}</span>
-                    </div>
-                    <div className={`flex items-center justify-between text-xs ${is50Lock ? "" : "opacity-40"}`}>
-                      <div className="flex items-center gap-1.5">
-                        <div className={`w-1.5 h-1.5 rounded-full ${is50Lock ? "bg-green-500" : "bg-gray-600"}`}></div>
-                        <span className="text-gray-400">50% Lock</span>
-                      </div>
-                      <span className={`font-mono ${is50Lock ? "text-green-400" : "text-gray-500"}`}>${(entry + risk * 0.5 * (snap.activeTrade!.direction === "LONG" ? 1 : -1)).toFixed(2)}</span>
-                    </div>
-                    <div className={`flex items-center justify-between text-xs ${is70Lock ? "" : "opacity-40"}`}>
-                      <div className="flex items-center gap-1.5">
-                        <div className={`w-1.5 h-1.5 rounded-full ${is70Lock ? "bg-green-500" : "bg-gray-600"}`}></div>
-                        <span className="text-gray-400">70% Lock</span>
-                      </div>
-                      <span className={`font-mono ${is70Lock ? "text-green-400" : "text-gray-500"}`}>${(entry + risk * 0.7 * (snap.activeTrade!.direction === "LONG" ? 1 : -1)).toFixed(2)}</span>
-                    </div>
-                    {!isBreakeven && (
-                      <div className="mt-2 text-[10px] text-amber-400 text-center">
-                        ${Math.abs(nextPrice - currentPrice).toFixed(2)} to +{nextR}R
-                      </div>
-                    )}
-                  </>
-                );
-              })()}
-            </div>
-          </div>
-        </div>
-      ) : hasSignal ? (
-        <div className="mb-4 p-4 bg-gray-800/50 rounded-lg border border-gray-700/50">
-          <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-3">Trade Setup</div>
-          <div className="space-y-2">
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">Direction:</span>
-              <span className={`text-sm font-bold ${dirColor(snap.signal!.direction)}`}>{snap.signal!.direction}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">Type:</span>
-              <span className="text-sm font-bold text-amber-400">{snap.signal!.entryType}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">Entry:</span>
-              <span className="text-sm font-mono font-bold text-gray-200">${snap.signal!.entry.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">SL:</span>
-              <span className="text-sm font-mono font-bold text-red-400">${snap.signal!.stop.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">TP:</span>
-              <span className="text-sm font-mono font-bold text-green-400">${snap.signal!.target.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">RR:</span>
-              <span className="text-sm font-mono font-bold text-gray-200">{snap.signal!.rr.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">Confidence:</span>
-              <span className={`text-sm font-bold ${snap.signal!.confidence >= 70 ? "text-green-400" : "text-amber-400"}`}>{snap.signal!.confidence}%</span>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      <div className="text-xs text-gray-600 text-right mt-2">
-        Updated: {new Date(snap.timestamp).toLocaleString()}
-      </div>
-    </div>
-  );
-}
-
-export default function Dashboard() {
-  const [snapshots, setSnapshots] = useState<Record<string, MarketSnapshot>>({});
-  const [loading, setLoading] = useState(false);
-  const [lastUpdate, setLastUpdate] = useState<string>("");
-  const [error, setError] = useState<string>("");
-
-  const fetchSnapshots = useCallback(async () => {
-    try {
-      const res = await fetch("/api/signals");
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        setError(err.error || `HTTP ${res.status}`);
-        return;
-      }
-      const data = await res.json();
-      const marketMap: Record<string, MarketSnapshot> = {};
-      const markets = data.markets || data.snapshot?.markets || [];
-      for (const m of markets) {
-        if (m.pair) marketMap[m.pair] = m;
-      }
-      setSnapshots(marketMap);
-      setLastUpdate(new Date(data.lastCronRun || Date.now()).toLocaleString());
-      setError("");
-    } catch (e) {
-      setError(String(e));
-    }
-  }, []);
-
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try { await fetchSnapshots(); } catch (e) { setError(String(e)); }
-    finally { setLoading(false); }
-  }, [fetchSnapshots]);
-
-  useEffect(() => {
-    refresh();
-    const interval = setInterval(refresh, 60000);
-    return () => clearInterval(interval);
-  }, [refresh]);
-
-  const triggerCron = async () => {
-    setLoading(true);
-    try {
-      const secret = process.env.NEXT_PUBLIC_CRON_SECRET || "";
-      await fetch(`/api/cron?secret=${encodeURIComponent(secret)}`);
-      await refresh();
-    } catch (e) {
-      setError(`Cron failed: ${e}`);
-    } finally {
-      setLoading(false);
-    }
+  const config: Record<string, { label: string; icon: React.ReactNode; variant: "default" | "secondary" | "destructive" | "outline" }> = {
+    PULLBACK: { label: "Pullback", icon: <Crosshair className="w-3 h-3 mr-1" />, variant: "default" },
+    BREAKOUT: { label: "Breakout", icon: <Rocket className="w-3 h-3 mr-1" />, variant: "secondary" },
+    FADE: { label: "Fade", icon: <Zap className="w-3 h-3 mr-1" />, variant: "destructive" },
   };
 
-  const activeTrades = Object.values(snapshots).filter(s => s.activeTrade).length;
+  const cfg = config[entryType] || { label: entryType, icon: null, variant: "outline" as const };
 
   return (
-    <main className="min-h-screen bg-black text-gray-100 p-4 md:p-6">
-      <div className="max-w-6xl mx-auto">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">CXSwitch v37</h1>
-            <p className="text-gray-500 text-sm mt-1">
-              Trend-Following | Trendline Break + Pullback Entry | Active: {activeTrades}
-            </p>
-            <p className="text-gray-600 text-xs">
-              Last updated: {lastUpdate || "—"}
-            </p>
+    <Badge variant={cfg.variant} className="flex items-center gap-0.5">
+      {cfg.icon}
+      {cfg.label}
+    </Badge>
+  );
+}
+
+// ─── Direction Badge ───
+function directionBadge(direction: string): React.ReactNode {
+  return direction === "LONG" ? (
+    <Badge className="bg-emerald-500 hover:bg-emerald-600 text-white flex items-center gap-1">
+      <ArrowUpRight className="w-3 h-3" /> LONG
+    </Badge>
+  ) : (
+    <Badge className="bg-rose-500 hover:bg-rose-600 text-white flex items-center gap-1">
+      <ArrowDownRight className="w-3 h-3" /> SHORT
+    </Badge>
+  );
+}
+
+// ─── Confidence Badge ───
+function confidenceBadge(confidence: number): React.ReactNode {
+  if (confidence >= 80) return <Badge className="bg-emerald-500 text-white">{confidence}%</Badge>;
+  if (confidence >= 60) return <Badge className="bg-amber-500 text-white">{confidence}%</Badge>;
+  if (confidence >= 40) return <Badge variant="outline">{confidence}%</Badge>;
+  return <Badge variant="secondary">{confidence}%</Badge>;
+}
+
+// ─── Phase Badge ───
+function phaseBadge(phase: string): React.ReactNode {
+  const colors: Record<string, string> = {
+    ENTRY: "bg-blue-500",
+    BUILDING: "bg-amber-500",
+    TREND: "bg-emerald-500",
+    PROFIT_PROTECTION: "bg-purple-500",
+    EXIT: "bg-rose-500",
+    COOLDOWN: "bg-slate-500",
+    WATCH: "bg-slate-400",
+  };
+  return <Badge className={`${colors[phase] || "bg-slate-500"} text-white`}>{phase}</Badge>;
+}
+
+// ─── Signal Card ───
+function SignalCard({ signal }: { signal: Signal }) {
+  const currentR = signal.tradeState?.currentR || 0;
+  const isProfitable = currentR > 0;
+  const pnlColor = isProfitable ? "text-emerald-500" : currentR < 0 ? "text-rose-500" : "text-slate-500";
+
+  return (
+    <Card className="hover:shadow-md transition-shadow">
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {directionBadge(signal.direction)}
+            {entryTypeBadge(signal.entryType)}
+            <span className="font-bold text-lg">{signal.pair}</span>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={refresh}
-              disabled={loading}
-              className="px-4 py-2 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 rounded-lg text-sm font-medium transition border border-gray-700"
-            >
-              {loading ? "..." : "Refresh"}
-            </button>
-            <button
-              onClick={triggerCron}
-              disabled={loading}
-              className="px-4 py-2 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 rounded-lg text-sm font-medium transition border border-gray-700"
-            >
-              {loading ? "Running..." : "Run Cron"}
-            </button>
+            {confidenceBadge(signal.confidence)}
+            <span className="text-xs text-muted-foreground">{formatTimeAgo(signal.timestamp)}</span>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-3 gap-4">
+          <div>
+            <p className="text-xs text-muted-foreground">Entry</p>
+            <p className="font-mono font-semibold">{formatPrice(signal.entry)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Stop</p>
+            <p className="font-mono font-semibold text-rose-500">{formatPrice(signal.stop)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-muted-foreground">Target</p>
+            <p className="font-mono font-semibold text-emerald-500">{formatPrice(signal.target)}</p>
           </div>
         </div>
 
-        {error && (
-          <div className="mb-4 p-3 bg-red-900/30 border border-red-700 rounded-lg text-red-300 text-sm">
-            {error}
+        <Separator />
+
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Gauge className="w-4 h-4 text-muted-foreground" />
+            <span className={`font-mono font-bold ${pnlColor}`}>{formatR(currentR)}</span>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            {signal.rr && (
+              <span>RR {signal.rr.toFixed(2)}</span>
+            )}
+            {signal.positionSizePct && (
+              <span>Size {(signal.positionSizePct * 100).toFixed(0)}%</span>
+            )}
+            <span className="text-xs bg-slate-100 px-1.5 py-0.5 rounded">v{signal.version || 41}</span>
+          </div>
+        </div>
+
+        {signal.tradeState && (
+          <div className="flex items-center gap-2">
+            {phaseBadge(signal.tradeState.phase)}
+            {signal.tradeState.lockedStop && (
+              <Badge variant="outline" className="text-amber-600 border-amber-300">
+                <Shield className="w-3 h-3 mr-1" /> Trail: {formatPrice(signal.tradeState.lockedStop)}
+              </Badge>
+            )}
           </div>
         )}
 
-        <section>
-          <h2 className="text-lg font-semibold mb-4 text-gray-300">Market Overview</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {PAIRS.map(pair => {
-              const snap = snapshots[pair];
-              if (!snap) {
-                return (
-                  <div key={pair} className="p-5 bg-gray-900 rounded-xl border border-gray-800 animate-pulse">
-                    <div className="h-6 bg-gray-800 rounded w-16 mb-4"></div>
-                    <div className="h-4 bg-gray-800 rounded w-32 mb-4"></div>
-                    <div className="h-20 bg-gray-800 rounded w-full mb-4"></div>
-                    <div className="h-2 bg-gray-800 rounded w-full"></div>
-                  </div>
-                );
-              }
-              return <MarketCard key={pair} snap={snap} />;
-            })}
-          </div>
-        </section>
+        {signal.trendlinePrice && (
+          <p className="text-xs text-muted-foreground">
+            Trendline: {formatPrice(signal.trendlinePrice)}
+          </p>
+        )}
 
-        <div className="mt-8 pt-4 border-t border-gray-800 text-center">
-          <p className="text-xs text-gray-600">
-            CXSwitch v37 — Trend-Following | 1D/4H Bias &rarr; 4H Pullback &rarr; Trendline Entry &rarr; Profit Lock
+        {signal.debug && signal.debug.length > 0 && (
+          <details className="text-xs">
+            <summary className="cursor-pointer text-muted-foreground hover:text-foreground">Debug ({signal.debug.length} lines)</summary>
+            <ScrollArea className="h-32 mt-2 bg-slate-50 rounded p-2">
+              <pre className="text-[10px] leading-tight">{signal.debug.slice(0, 20).join("\n")}</pre>
+            </ScrollArea>
+          </details>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Snapshot Card ───
+function SnapshotCard({ snapshot }: { snapshot: MarketSnapshot }) {
+  const dirColor = snapshot.bias?.direction === "LONG" ? "text-emerald-500" : snapshot.bias?.direction === "SHORT" ? "text-rose-500" : "text-slate-500";
+  const dirIcon = snapshot.bias?.direction === "LONG" ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {dirIcon}
+            <span className="font-bold">{snapshot.pair}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {snapshot.readiness >= 80 ? (
+              <Flame className="w-4 h-4 text-orange-500" />
+            ) : snapshot.readiness >= 60 ? (
+              <Eye className="w-4 h-4 text-amber-500" />
+            ) : (
+              <Clock className="w-4 h-4 text-slate-400" />
+            )}
+            <span className="text-sm font-mono">{snapshot.readiness}%</span>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-2xl font-bold font-mono">{formatPrice(snapshot.price)}</span>
+          <span className={`text-sm font-semibold ${dirColor}`}>
+            {snapshot.bias?.direction || "—"} {snapshot.bias?.strength || ""}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="bg-slate-50 rounded p-2">
+            <p className="text-muted-foreground">1D Trend</p>
+            <p className="font-semibold">{snapshot.trend1d?.direction || "—"} {snapshot.trend1d?.strength || ""}</p>
+          </div>
+          <div className="bg-slate-50 rounded p-2">
+            <p className="text-muted-foreground">4H Trend</p>
+            <p className="font-semibold">{snapshot.trend4h?.direction || "—"} {snapshot.trend4h?.strength || ""}</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-1 text-xs text-center">
+          <div className="bg-slate-50 rounded p-1">
+            <p className="text-muted-foreground">4H Stoch</p>
+            <p className="font-mono">K:{snapshot.stoch4h.k.toFixed(1)}</p>
+          </div>
+          <div className="bg-slate-50 rounded p-1">
+            <p className="text-muted-foreground">1H Stoch</p>
+            <p className="font-mono">K:{snapshot.stoch1h.k.toFixed(1)}</p>
+          </div>
+          <div className="bg-slate-50 rounded p-1">
+            <p className="text-muted-foreground">15M Stoch</p>
+            <p className="font-mono">K:{snapshot.stoch15m.k.toFixed(1)}</p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 text-xs">
+          <Badge variant={snapshot.emaAligned ? "default" : "outline"} className={snapshot.emaAligned ? "bg-emerald-500" : ""}>
+            {snapshot.emaAligned ? "Aligned" : "Misaligned"}
+          </Badge>
+          {snapshot.isPullback && (
+            <Badge variant="secondary">
+              <Crosshair className="w-3 h-3 mr-1" /> Pullback
+            </Badge>
+          )}
+          {snapshot.volumeConfirmed && (
+            <Badge variant="outline" className="text-blue-600">
+              <Activity className="w-3 h-3 mr-1" /> Vol
+            </Badge>
+          )}
+        </div>
+
+        {snapshot.recommendedAction && (
+          <div className="bg-amber-50 border border-amber-200 rounded p-2 text-xs">
+            <p className="font-semibold text-amber-700 flex items-center gap-1">
+              <Zap className="w-3 h-3" /> {snapshot.recommendedAction}
+            </p>
+            {snapshot.entryTier && (
+              <p className="text-muted-foreground mt-1">{snapshot.entryTier}</p>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Exit Card ───
+function ExitCard({ exit }: { exit: ExitRecord }) {
+  const isWin = exit.pnl > 0;
+  return (
+    <Card className={isWin ? "border-emerald-200" : "border-rose-200"}>
+      <CardContent className="p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {exit.direction === "LONG" ? (
+              <ArrowUpRight className={`w-4 h-4 ${isWin ? "text-emerald-500" : "text-rose-500"}`} />
+            ) : (
+              <ArrowDownRight className={`w-4 h-4 ${isWin ? "text-emerald-500" : "text-rose-500"}`} />
+            )}
+            <span className="font-semibold">{exit.pair}</span>
+            <Badge variant="outline" className="text-xs">{exit.reason.replace(/_/g, " ")}</Badge>
+          </div>
+          <span className={`font-mono font-bold ${isWin ? "text-emerald-500" : "text-rose-500"}`}>
+            {isWin ? "+" : ""}{exit.pnl.toFixed(2)}%
+          </span>
+        </div>
+        <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
+          <span>Entry: {formatPrice(exit.entry)}</span>
+          <span>Exit: {formatPrice(exit.exitPrice)}</span>
+          <span>{formatTimeAgo(exit.timestamp)}</span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Stats Card ───
+function StatsCard({ title, value, icon, color }: { title: string; value: string; icon: React.ReactNode; color: string }) {
+  return (
+    <Card>
+      <CardContent className="p-4 flex items-center gap-4">
+        <div className={`p-2 rounded-lg ${color}`}>
+          {icon}
+        </div>
+        <div>
+          <p className="text-sm text-muted-foreground">{title}</p>
+          <p className="text-2xl font-bold">{value}</p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ─── Main Dashboard ───
+export default function DashboardPage() {
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState("signals");
+
+  const fetchData = useCallback(async () => {
+    try {
+      const res = await fetch("/api/dashboard");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      setData(json);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to fetch");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 30000); // 30s refresh
+    return () => clearInterval(interval);
+  }, [fetchData]);
+
+  if (loading) {
+    return (
+      <div className="p-6 space-y-4">
+        <Skeleton className="h-8 w-64" />
+        <div className="grid grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map(i => <Skeleton key={i} className="h-24" />)}
+        </div>
+        <Skeleton className="h-96" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="p-6">
+        <Card className="border-rose-200">
+          <CardContent className="p-6 flex items-center gap-4">
+            <AlertTriangle className="w-8 h-8 text-rose-500" />
+            <div>
+              <p className="font-semibold text-rose-600">Connection Error</p>
+              <p className="text-sm text-muted-foreground">{error}</p>
+              <Button variant="outline" size="sm" className="mt-2" onClick={fetchData}>
+                <RefreshCw className="w-4 h-4 mr-2" /> Retry
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  const activeSignals = data.signals.filter(s => !s.exited);
+  const exitedSignals = data.signals.filter(s => s.exited);
+  const winCount = data.exits.filter(e => e.pnl > 0).length;
+  const lossCount = data.exits.filter(e => e.pnl < 0).length;
+  const totalPnL = data.exits.reduce((sum, e) => sum + e.pnl, 0);
+  const winRate = data.exits.length > 0 ? (winCount / data.exits.length * 100).toFixed(1) : "0";
+
+  return (
+    <div className="p-6 space-y-6 max-w-7xl mx-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <BarChart3 className="w-6 h-6" />
+            CXSwitch Dashboard
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            v41 "Trendline Break" — Method 1 (Pressure Cooker) Early Entry
           </p>
         </div>
+        <div className="flex items-center gap-2">
+          <Badge
+            variant={data.systemStatus === "online" ? "default" : data.systemStatus === "degraded" ? "secondary" : "destructive"}
+            className={data.systemStatus === "online" ? "bg-emerald-500" : ""}
+          >
+            {data.systemStatus === "online" ? <CheckCircle2 className="w-3 h-3 mr-1" /> : <XCircle className="w-3 h-3 mr-1" />}
+            {data.systemStatus}
+          </Badge>
+          <span className="text-xs text-muted-foreground">Updated {formatTimeAgo(data.lastUpdated)}</span>
+          <Button variant="outline" size="sm" onClick={fetchData}>
+            <RefreshCw className="w-4 h-4" />
+          </Button>
+        </div>
       </div>
-    </main>
+
+      {/* Stats */}
+      <div className="grid grid-cols-4 gap-4">
+        <StatsCard
+          title="Active Signals"
+          value={activeSignals.length.toString()}
+          icon={<Target className="w-5 h-5 text-white" />}
+          color="bg-blue-500"
+        />
+        <StatsCard
+          title="Win Rate"
+          value={`${winRate}%`}
+          icon={<CheckCircle2 className="w-5 h-5 text-white" />}
+          color="bg-emerald-500"
+        />
+        <StatsCard
+          title="Net PnL"
+          value={`${totalPnL >= 0 ? "+" : ""}${totalPnL.toFixed(2)}%`}
+          icon={<Activity className="w-5 h-5 text-white" />}
+          color={totalPnL >= 0 ? "bg-emerald-500" : "bg-rose-500"}
+        />
+        <StatsCard
+          title="Total Exits"
+          value={data.exits.length.toString()}
+          icon={<Shield className="w-5 h-5 text-white" />}
+          color="bg-slate-500"
+        />
+      </div>
+
+      {/* Tabs */}
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList>
+          <TabsTrigger value="signals">
+            <Target className="w-4 h-4 mr-2" /> Signals ({activeSignals.length})
+          </TabsTrigger>
+          <TabsTrigger value="snapshots">
+            <Eye className="w-4 h-4 mr-2" /> Market ({Object.keys(data.snapshots).length})
+          </TabsTrigger>
+          <TabsTrigger value="exits">
+            <Shield className="w-4 h-4 mr-2" /> Exits ({data.exits.length})
+          </TabsTrigger>
+          <TabsTrigger value="history">
+            <Clock className="w-4 h-4 mr-2" /> History ({exitedSignals.length})
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="signals" className="space-y-4 mt-4">
+          {activeSignals.length === 0 ? (
+            <Card>
+              <CardContent className="p-8 text-center text-muted-foreground">
+                <Clock className="w-8 h-8 mx-auto mb-2" />
+                <p>No active signals. Waiting for setup...</p>
+              </CardContent>
+            </Card>
+          ) : (
+            activeSignals.map(signal => <SignalCard key={signal.id} signal={signal} />)
+          )}
+        </TabsContent>
+
+        <TabsContent value="snapshots" className="space-y-4 mt-4">
+          {Object.keys(data.snapshots).length === 0 ? (
+            <Card>
+              <CardContent className="p-8 text-center text-muted-foreground">
+                <Eye className="w-8 h-8 mx-auto mb-2" />
+                <p>No market data available.</p>
+              </CardContent>
+            </Card>
+          ) : (
+            Object.values(data.snapshots).map(snapshot => <SnapshotCard key={snapshot.pair} snapshot={snapshot} />)
+          )}
+        </TabsContent>
+
+        <TabsContent value="exits" className="space-y-4 mt-4">
+          {data.exits.length === 0 ? (
+            <Card>
+              <CardContent className="p-8 text-center text-muted-foreground">
+                <Shield className="w-8 h-8 mx-auto mb-2" />
+                <p>No exits yet.</p>
+              </CardContent>
+            </Card>
+          ) : (
+            data.exits.map(exit => <ExitCard key={exit.id} exit={exit} />)
+          )}
+        </TabsContent>
+
+        <TabsContent value="history" className="space-y-4 mt-4">
+          {exitedSignals.length === 0 ? (
+            <Card>
+              <CardContent className="p-8 text-center text-muted-foreground">
+                <Clock className="w-8 h-8 mx-auto mb-2" />
+                <p>No historical signals.</p>
+              </CardContent>
+            </Card>
+          ) : (
+            exitedSignals.map(signal => <SignalCard key={signal.id} signal={signal} />)
+          )}
+        </TabsContent>
+      </Tabs>
+
+      {/* Footer */}
+      <div className="text-center text-xs text-muted-foreground pt-4">
+        CXSwitch v41 "Trendline Break" — Method 1 (Pressure Cooker) Early Entry | Built for account building with tighter stops
+      </div>
+    </div>
   );
 }
