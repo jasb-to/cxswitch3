@@ -189,8 +189,8 @@ export interface TrendlineEvaluation {
 }
 
 export interface EntryDiagnostics {
-  rawType: "ENTRY" | "ADD" | "FADE" | null;
-  entryType: "PULLBACK" | "BREAKOUT" | "FADE" | null;
+  rawType: "ENTRY" | "ENTRY_2" | "ADD" | "FADE" | null;
+  entryType: "PULLBACK" | "PULLBACK_2" | "BREAKOUT" | "FADE" | null;
   nearTrendline: boolean;
   beyondTrendline: boolean;
   stochExtreme: boolean;
@@ -463,22 +463,33 @@ export function calculateTrend1D(candles1d: Candle[]): TrendResult {
   // Direction: simple EMA cross
   const direction = ema8 > ema21 ? "LONG" : "SHORT";
 
-  // Strength from ADX
+  // FIX v41.3: Restore v28 HH/LL structure check — don't call trend STRONG if making lower highs
+  const highs = candles1d.slice(-20).map(c => c.high);
+  const lows = candles1d.slice(-20).map(c => c.low);
+  const hh = highs[highs.length - 1] > Math.max(...highs.slice(0, -1));
+  const ll = lows[lows.length - 1] < Math.min(...lows.slice(0, -1));
+  const structureValid = (direction === "LONG" && hh) || (direction === "SHORT" && ll);
+
+  // Strength from ADX + structure
   const { adx: adxVal } = adxWithDI(candles1d);
   let strength = 40;
   let strengthLabel: "STRONG" | "MEDIUM" | "WEAK" = "WEAK";
 
   if (adxVal !== null) {
-    if (adxVal >= 25) { strength = 80; strengthLabel = "STRONG"; }
+    if (adxVal >= 25 && structureValid) { strength = 80; strengthLabel = "STRONG"; }
+    else if (adxVal >= 25 && !structureValid) { strength = 65; strengthLabel = "MEDIUM"; }
     else if (adxVal >= 20) { strength = 60; strengthLabel = "MEDIUM"; }
     else { strength = 30; strengthLabel = "WEAK"; }
+  } else {
+    // No ADX available — use structure only
+    if (structureValid) { strength = 55; strengthLabel = "MEDIUM"; }
   }
 
   // Boost strength if price is aligned with trend
   const priceAligned = direction === "LONG" ? price > ema50 : price < ema50;
   if (priceAligned) strength += 10;
 
-  debug.push(`[TREND1D] ${direction} ${strengthLabel} | ADX=${sf(adxVal ?? 0,1)} | Price=${sf(price,2)} EMA8=${sf(ema8,2)} EMA21=${sf(ema21,2)} EMA50=${sf(ema50,2)}`);
+  debug.push(`[TREND1D] ${direction} ${strengthLabel} | ADX=${sf(adxVal ?? 0,1)} | Structure=${structureValid ? (direction === "LONG" ? "HH" : "LL") : (direction === "LONG" ? "LH" : "HL")} | Price=${sf(price,2)} EMA8=${sf(ema8,2)} EMA21=${sf(ema21,2)} EMA50=${sf(ema50,2)}`);
 
   return { direction, strength, strengthLabel, adx: adxVal, ema8, ema21, ema50, price, debug };
 }
@@ -608,17 +619,19 @@ function checkPullback(
 
   debug.push(`[PULLBACK] Stoch K=${stoch4h.k} D=${stoch4h.d}`);
 
+  // FIX v41.1: Tightened back to v28 levels — < 50 / > 50 instead of < 75 / > 25
+  // This prevents entering too early in shallow pullbacks that often reverse
   if (biasDirection === "LONG") {
     if (stoch4h.k < 20) {
       debug.push("[PULLBACK] LONG EXTREME: Stoch < 20 — deep pullback, best entry");
       return { pullbackActive: true, tier: "DEEP", reason: `LONG deep pullback: 4H Stoch extreme oversold (${stoch4h.k})`, stochZone: "EXTREME", debug };
     }
-    if (stoch4h.k < 75) {
-      debug.push("[PULLBACK] LONG PULLBACK: Stoch < 75 — early entry zone");
-      return { pullbackActive: true, tier: "SHALLOW", reason: `LONG pullback: 4H Stoch ${stoch4h.k} (< 75)`, stochZone: "ZONE", debug };
+    if (stoch4h.k < 50) {
+      debug.push("[PULLBACK] LONG PULLBACK: Stoch < 50 — pullback zone (v28 tightened)");
+      return { pullbackActive: true, tier: "SHALLOW", reason: `LONG pullback: 4H Stoch ${stoch4h.k} (< 50)`, stochZone: "ZONE", debug };
     }
-    debug.push("[PULLBACK] LONG EXTENDED: Stoch >= 75 — no entry, wait for pullback");
-    return { pullbackActive: false, tier: null, reason: `LONG extended: 4H Stoch ${stoch4h.k} (need < 75)`, stochZone: "EXTENDED", debug };
+    debug.push("[PULLBACK] LONG EXTENDED: Stoch >= 50 — no entry, wait for deeper pullback");
+    return { pullbackActive: false, tier: null, reason: `LONG extended: 4H Stoch ${stoch4h.k} (need < 50)`, stochZone: "EXTENDED", debug };
   }
 
   if (biasDirection === "SHORT") {
@@ -626,12 +639,12 @@ function checkPullback(
       debug.push("[PULLBACK] SHORT EXTREME: Stoch > 80 — deep pullback, best entry");
       return { pullbackActive: true, tier: "DEEP", reason: `SHORT deep pullback: 4H Stoch extreme overbought (${stoch4h.k})`, stochZone: "EXTREME", debug };
     }
-    if (stoch4h.k > 25) {
-      debug.push("[PULLBACK] SHORT PULLBACK: Stoch > 25 — early entry zone");
-      return { pullbackActive: true, tier: "SHALLOW", reason: `SHORT pullback: 4H Stoch ${stoch4h.k} (> 25)`, stochZone: "ZONE", debug };
+    if (stoch4h.k > 50) {
+      debug.push("[PULLBACK] SHORT PULLBACK: Stoch > 50 — pullback zone (v28 tightened)");
+      return { pullbackActive: true, tier: "SHALLOW", reason: `SHORT pullback: 4H Stoch ${stoch4h.k} (> 50)`, stochZone: "ZONE", debug };
     }
-    debug.push("[PULLBACK] SHORT EXTENDED: Stoch <= 25 — no entry, wait for pullback");
-    return { pullbackActive: false, tier: null, reason: `SHORT extended: 4H Stoch ${stoch4h.k} (need > 25)`, stochZone: "EXTENDED", debug };
+    debug.push("[PULLBACK] SHORT EXTENDED: Stoch <= 50 — no entry, wait for deeper pullback");
+    return { pullbackActive: false, tier: null, reason: `SHORT extended: 4H Stoch ${stoch4h.k} (need > 50)`, stochZone: "EXTENDED", debug };
   }
 
   return { pullbackActive: false, tier: null, reason: "Unknown bias", stochZone: "NEUTRAL", debug };
@@ -927,11 +940,18 @@ function diagnoseEntry(
   let rawType: "ENTRY" | "ADD" | "FADE" | null = null;
   let entryType: "PULLBACK" | "BREAKOUT" | "FADE" | null = null;
 
-  // PULLBACK ENTRY: near trendline + stoch extreme
+  // PULLBACK ENTRY (ENTRY_1): near trendline + stoch extreme — best entry
   if (nearTrendline && stochExtreme) {
     rawType = "ENTRY";
     entryType = "PULLBACK";
     debug.push("[ENTRY] PULLBACK: near TL + stoch extreme — best entry");
+  }
+  // FIX v41.2: Restore ENTRY_2 — near trendline + stoch turning (not extreme) — internal DCA build
+  // v28 used this for position building without alert. Lower confidence, no notification.
+  else if (nearTrendline && stochTurning && !stochExtreme) {
+    rawType = "ENTRY_2";
+    entryType = "PULLBACK_2";
+    debug.push("[ENTRY] PULLBACK_2: near TL + stoch turning (not extreme) — internal DCA build");
   }
   // BREAKOUT ENTRY: beyond TL + confirming + aligned + momentum
   else if (beyondTrendline && confirming && alignment.aligned) {
@@ -1099,7 +1119,9 @@ export function generateSignal(
     return { debug };
   }
 
-  setHysteresis(pair, entryDiag.rawType, price, now);
+  // FIX v41.2: ENTRY_2 uses same hysteresis as ENTRY (24h lock)
+  const hystType = entryDiag.rawType === "ENTRY_2" ? "ENTRY" : entryDiag.rawType;
+  setHysteresis(pair, hystType as "ENTRY" | "ADD" | "FADE", price, now);
 
   // FIX v41: For FADE entries, direction is OPPOSITE to 1D trend
   // Do this BEFORE building the signal so signal.direction is correct
@@ -1142,6 +1164,7 @@ export function generateSignal(
 
   // Confidence boosters
   if (entryDiag.entryType === "PULLBACK") confidence = 70;
+  if (entryDiag.entryType === "PULLBACK_2") confidence = 55; // ENTRY_2: lower confidence, internal DCA build
   if (entryDiag.entryType === "BREAKOUT") confidence = 60;
   if (entryDiag.entryType === "FADE") confidence = 40; // Lower confidence for counter-trend
   if (timeframesAligned && entryDiag.entryType !== "FADE") confidence += 15;
@@ -1171,9 +1194,9 @@ export function generateSignal(
     trendlinePrice: Math.round(tlPrice * 100) / 100,
     volumeConfirmed: entryDiag.volUp,
     type: entryDiag.rawType === "ADD" ? "BREAKOUT" : "ACCUMULATE",
-    scale: entryDiag.rawType === "ENTRY" ? "ENTRY" : entryDiag.rawType,
-    entryTier: entryDiag.entryType === "PULLBACK" ? "PULLBACK_ENTRY" : entryDiag.entryType === "BREAKOUT" ? "BREAKOUT_ENTRY" : "FADE_ENTRY",
-    entryMode: entryDiag.entryType,
+    scale: entryDiag.rawType === "ENTRY" ? "ENTRY" : entryDiag.rawType === "ENTRY_2" ? "ENTRY" : entryDiag.rawType,
+    entryTier: entryDiag.entryType === "PULLBACK" ? "PULLBACK_ENTRY" : entryDiag.entryType === "PULLBACK_2" ? "PULLBACK_2_ENTRY" : entryDiag.entryType === "BREAKOUT" ? "BREAKOUT_ENTRY" : "FADE_ENTRY",
+    entryMode: entryDiag.entryType === "PULLBACK_2" ? "PULLBACK" : entryDiag.entryType,
     positionSizePct,
     regimeDirection: regimeDirection, // FIX v41: Always store original 1D trend, not flipped entry direction
     conflictEntry: !timeframesAligned,
