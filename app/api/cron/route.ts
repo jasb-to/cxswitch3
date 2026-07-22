@@ -257,6 +257,7 @@ export async function GET(req: NextRequest) {
             `[CRON] ${pair} | shouldHold: ${holdResult.shouldHold} | ${holdResult.reason} | phase: ${ts?.phase || "TREND"}`
           );
 
+          // FIX v41: Persist updated tradeState back to signal
           if (holdResult.updatedTradeState) {
             signal.tradeState = holdResult.updatedTradeState;
           }
@@ -415,8 +416,11 @@ export async function GET(req: NextRequest) {
           exitReason: null,
           exitRecommendedAt: null,
         };
-        snapshot.regime.direction = activeSignal.direction;
-        snapshot.regime.strength = "ACTIVE";
+        // FIX v41: Use regimeDirection (original 1D trend) for regime, not activeSignal.direction
+        // This prevents UI duplication where trade direction = regime direction
+        const regimeDir = activeSignal.regimeDirection || activeSignal.direction;
+        snapshot.regime.direction = regimeDir;
+        snapshot.regime.strength = ts.phase === "TREND" ? "STRONG" : ts.phase === "BUILDING" ? "MEDIUM" : "WEAK";
         snapshot.regime.confidence = activeSignal.confidence;
         snapshot.recommendedAction = activeSignal.direction + " " + (ts.phase || "TREND");
         snapshot.entryTier = activeSignal.entryTier;
@@ -461,7 +465,9 @@ export async function GET(req: NextRequest) {
           exitReason: pendingSignal.exitReason,
           exitRecommendedAt: pendingSignal.exitRecommendedAt,
         };
-        snapshot.regime.direction = pendingSignal.direction;
+        // FIX v41: Use regimeDirection for regime, not pendingSignal.direction
+        const regimeDir = pendingSignal.regimeDirection || pendingSignal.direction;
+        snapshot.regime.direction = regimeDir;
         snapshot.regime.strength = "PENDING_EXIT";
         snapshot.regime.confidence = pendingSignal.confidence;
         snapshot.recommendedAction = "EXIT RECOMMENDED — Confirm or Override";
