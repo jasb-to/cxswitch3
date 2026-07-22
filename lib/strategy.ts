@@ -1,5 +1,6 @@
 // ============================================================
-// CXSwitch "Trend Rider v2" — Simple, Profitable, No Churn
+// CXSwitch "Trend Rider v2" — Simple, Profitable, No Churn  
+// VERSION 41 — FIXED
 // ============================================================
 // Philosophy: Trade WITH the 1D trend, enter on 4H pullback, 
 // ride until 1D trend flips or stop hits. No scalping.
@@ -9,6 +10,18 @@
 // Stop:      ATR(14) × 2, capped at 5% max
 // Exit:      1D trend flip, stop hit, or trailing stop in profit
 // Position:  Fixed 2% risk per trade
+//
+// FIXES IN v41:
+// 1. regimeDirection now always stores original 1D trend (not flipped FADE direction)
+//    — fixes UI duplication where bias/trend1d/trend1h all showed entry direction
+// 2. FADE direction flip moved BEFORE signal construction
+//    — ensures signal.direction is correct without corrupting regime tracking
+// 3. getMarketSnapshot uses trend1d.direction for trend fields, not entryDirection
+//    — separates regime state from entry state in UI
+// 4. Phase transitions in shouldHold are now properly returned
+//    — caller MUST assign: signal.tradeState = holdResult.updatedTradeState
+// 5. Trail display: lockedStop now renders actual value when active, "—" when inactive
+//    — 2R row shows correctly based on phase, not just lockedStop presence
 //
 // What was removed from v38:
 // - Profit locks (1R/2R/3R) — they chop winners
@@ -208,7 +221,7 @@ export type EntryTier = "NO_TRADE" | "WATCH" | "PULLBACK_ENTRY" | "BREAKOUT_ENTR
 export type TradeLifecyclePhase = "WATCH" | "ENTRY" | "BUILDING" | "TREND" | "PROFIT_PROTECTION" | "EXIT" | "COOLDOWN";
 export type PullbackTier = "DEEP" | "SHALLOW" | "MOMENTUM" | null;
 
-export const CURRENT_SIGNAL_VERSION = 40;
+export const CURRENT_SIGNAL_VERSION = 41;
 
 function avg(arr: number[]): number {
   return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
@@ -1056,6 +1069,9 @@ export function generateSignal(
     debug.push(`[SIGNAL] 1D/4H conflict: 1D=${trend1d.direction} 4H=${trend4h.direction} | Reduced confidence, still trading 1D`);
   }
 
+  // FIX v41: Store original 1D trend direction for regime tracking
+  // Prevents UI duplication where bias/trend1d/trend1h all showed entry direction
+  const regimeDirection = trend1d.direction;
   let entryDirection = trend1d.direction;
 
   // Trendline for entry timing
@@ -1084,6 +1100,13 @@ export function generateSignal(
   }
 
   setHysteresis(pair, entryDiag.rawType, price, now);
+
+  // FIX v41: For FADE entries, direction is OPPOSITE to 1D trend
+  // Do this BEFORE building the signal so signal.direction is correct
+  if (entryDiag.entryType === "FADE") {
+    entryDirection = trend1d.direction === "LONG" ? "SHORT" : "LONG";
+    debug.push(`[SIGNAL] FADE entry: flipping direction ${regimeDirection} -> ${entryDirection}`);
+  }
 
   // Levels
   const atr4h = atr(candles4h, 14);
@@ -1116,11 +1139,6 @@ export function generateSignal(
     stop = Math.min(atrStop, pctStop, swingHigh);
     target = entry - (stop - entry) * 3;
   }
-
-  // For FADE entries, direction is OPPOSITE to 1D trend
-  entryDirection = entryDiag.entryType === "FADE" 
-    ? (trend1d.direction === "LONG" ? "SHORT" : "LONG")
-    : trend1d.direction;
 
   // Confidence boosters
   if (entryDiag.entryType === "PULLBACK") confidence = 70;
@@ -1157,7 +1175,7 @@ export function generateSignal(
     entryTier: entryDiag.entryType === "PULLBACK" ? "PULLBACK_ENTRY" : entryDiag.entryType === "BREAKOUT" ? "BREAKOUT_ENTRY" : "FADE_ENTRY",
     entryMode: entryDiag.entryType,
     positionSizePct,
-    regimeDirection: entryDirection,
+    regimeDirection: regimeDirection, // FIX v41: Always store original 1D trend, not flipped entry direction
     conflictEntry: !timeframesAligned,
     entryTimeframe: "4H",
     rr: Math.round(riskDiag.rr * 100) / 100,
@@ -1209,7 +1227,7 @@ export function shouldHold(
   const debug: string[] = [];
 
   const ts = signal.tradeState || {
-    phase: "TREND", phaseEnteredAt: signal.timestamp,
+    phase: "ENTRY", phaseEnteredAt: signal.timestamp,
     highestPrice: signal.entry, lowestPrice: signal.entry,
     entryPrice: signal.entry, lockedStop: null,
     profitLockLevel: 0, currentR: 0,
@@ -1330,6 +1348,8 @@ export function filterExpiredSignals(signals: Signal[], currentPrices?: Record<s
 
 // ============================================================
 // MARKET SNAPSHOT — Fixed and simplified
+// FIX v41: Uses trend1d.direction for trend fields (not entryDirection)
+// This separates regime state from entry state, preventing UI duplication
 // ============================================================
 export function getMarketSnapshot(
   pair: string,
@@ -1344,7 +1364,12 @@ export function getMarketSnapshot(
 
   const trend1d = calculateTrend1D(candles1d);
   const trend4h = calculateTrend4H(candles4h);
-  let entryDirection = trend1d.direction;
+
+  // FIX v41: Use actual 1D trend direction for regime/bias fields, not entry direction
+  // This prevents the UI from showing duplicated LONG/LONG when trade direction = trend direction
+  const regimeDir = trend1d.direction;
+  const entryDir = signalResult?.signal?.direction ?? regimeDir;
+
   const alignment = trend1d.direction ? calculateEMAAlignment(candles4h, trend1d.direction) : { aligned: false, priceAboveEMA8: false, priceAboveEMA21: false, ema8AboveEMA21: false, price: 0, ema8: 0, ema21: 0, debug: [] };
 
   const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50 };
@@ -1390,10 +1415,11 @@ export function getMarketSnapshot(
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
-    bias: trend1d.direction ? { direction: entryDirection, strength: trend1d.strength } : null,
-    trend1d: trend1d.direction ? { direction: entryDirection, strength: trend1d.strengthLabel } : null,
+    // FIX v41: bias uses regimeDir (original 1D trend), entryDir is separate
+    bias: trend1d.direction ? { direction: regimeDir, strength: trend1d.strength } : null,
+    trend1d: trend1d.direction ? { direction: regimeDir, strength: trend1d.strengthLabel } : null,
     trend4h: trend4h.direction ? { direction: trend4h.direction, strength: trend4h.strengthLabel } : null,
-    trend1h: trend1d.direction ? { direction: entryDirection, strength: trend1d.strengthLabel } : null,
+    trend1h: trend1d.direction ? { direction: regimeDir, strength: trend1d.strengthLabel } : null,
     stoch4h,
     stoch1h,
     stoch15m,
@@ -1408,9 +1434,9 @@ export function getMarketSnapshot(
     readiness,
     readinessLabel,
     adx: Math.round(adxVal * 10) / 10,
-    trend: trend1d.direction ? `${trend1d.direction} ${trend1d.strengthLabel}` : "NONE",
+    trend: trend1d.direction ? `${regimeDir} ${trend1d.strengthLabel}` : "NONE",
     regime: {
-      direction: entryDirection,
+      direction: regimeDir,
       strength: trend1d.strengthLabel,
       confidence: trend1d.direction ? (trend1d.strength > 50 ? 75 : 50) : 0
     },
@@ -1422,7 +1448,7 @@ export function getMarketSnapshot(
     ema21: Math.round(alignment.ema21 * 100) / 100,
     distToEMA21: alignment.ema21 > 0 ? Math.round((price - alignment.ema21) / alignment.ema21 * 10000) / 100 : 0,
     emaAligned: alignment.aligned,
-    recommendedAction: signalResult?.signal ? `${signalResult.signal.direction} ${signalResult.signal.entryType}` : null,
+    recommendedAction: signalResult?.signal ? `${entryDir} ${signalResult.signal.entryType}` : null,
     entryTier: signalResult?.signal ? (signalResult.signal.entryType === "PULLBACK" ? "PULLBACK_ENTRY" : signalResult.signal.entryType === "BREAKOUT" ? "BREAKOUT_ENTRY" : "FADE_ENTRY") : null,
     entryMode: signalResult?.signal ? (signalResult.signal.entryType === "PULLBACK" ? "PULLBACK" : signalResult.signal.entryType === "BREAKOUT" ? "BREAKOUT" : "FADE") : null,
     positionSize: signalResult?.signal ? (signalResult.signal.positionSizePct ? (signalResult.signal.positionSizePct * 100).toFixed(0) + "%" : null) : null,
@@ -1432,7 +1458,6 @@ export function getMarketSnapshot(
     debug: allDebug,
   };
 }
-
 
 // ============================================================
 // REDIS HELPERS — No-op for compatibility (v38 feature removed)
