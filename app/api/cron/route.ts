@@ -148,17 +148,31 @@ export async function GET(req: NextRequest) {
       // ─── Snapshot ─────────────────────────────────────────
       const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m, candles1d, price, signalResults[pair]);
 
+      // Enrich activeTrade for UI compatibility
       if (results[pair]?.status === "HOLDING" && activeForPair.length > 0) {
         const s = activeForPair[0];
         const rawPnl = s.direction === "LONG"
           ? ((price - s.entry) / s.entry) * 100
           : ((s.entry - price) / s.entry) * 100;
+        const pnl = isFinite(rawPnl) ? rawPnl : 0;
+        const risk = Math.abs(s.entry - s.stop);
+        const currentR = risk > 0 ? (s.direction === "LONG" ? (price - s.entry) / risk : (s.entry - price) / risk) : 0;
+
         snapshot.activeTrade = {
-          signalId: s.id, direction: s.direction,
-          entry: s.entry, stop: s.stop, target: s.target,
-          pnl: (isFinite(rawPnl) ? rawPnl.toFixed(2) : "0.00") + "%",
+          signalId: s.id,
+          direction: s.direction,
+          pnl: (pnl >= 0 ? "+" : "") + pnl.toFixed(2) + "%",
+          entry: s.entry,
+          stop: s.stop,
+          target: s.target,
+          entryType: s.entryType || "PULLBACK",
+          trendlinePrice: s.entry, // v42.1 doesn't track this separately, use entry as fallback
+          lockedStop: null, // v42.1 has no trailing stop
+          currentR: currentR,
+          phase: currentR >= 2 ? "TREND" : currentR >= 1 ? "BUILDING" : "ENTRY",
         };
       }
+
       marketSnapshots.push(snapshot);
 
     } catch (err) {
@@ -230,4 +244,3 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   return GET(req);
 }
- 
