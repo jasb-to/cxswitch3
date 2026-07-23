@@ -17,30 +17,28 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Normalize markets — v42.1 uses simpler fields, enrich for UI compatibility
+    // Normalize markets — v42.1 returns real data for all timeframes
     const markets = (snapshot.markets || []).map((m: any) => {
-      // v42.1 fields: pair, price, timestamp, trend, trendDirection, trendStrength,
-      //               stoch15m, adx, ema8, ema21, signal, debug
+      const direction = m.trendDirection;
+      const strength = m.trendStrength || "WEAK";
+      const stoch15m = m.stoch15m || { k: 50, d: 50 };
+      const stoch1h = m.stoch1h || { k: 50, d: 50 };
+      const stoch4h = m.stoch4h || { k: 50, d: 50 };
 
-      // Derive v41-style fields from v42.1 data for backward UI compatibility
-      const trendParts = (m.trend || "NONE").split(" ");
-      const direction = trendParts[0]; // LONG or SHORT
-      const strength = trendParts[1] || "WEAK"; // STRONG, MEDIUM, WEAK
+      const emaAligned = m.ema8 && m.ema21 ? (direction === "LONG" ? m.ema8 > m.ema21 : m.ema8 < m.ema21) : false;
 
-      const stoch = m.stoch15m || { k: 50, d: 50 };
-
-      // Compute readiness (v41 metric) from available data
+      // Compute readiness
       let readiness = 0;
-      if (m.trendDirection) readiness += 25;
-      if (m.trendStrength === "STRONG") readiness += 20;
-      else if (m.trendStrength === "MEDIUM") readiness += 10;
-      if (stoch.k < 20 || stoch.k > 80) readiness += 25;
-      else if (stoch.k < 50 || stoch.k > 50) readiness += 10;
+      if (direction) readiness += 25;
+      if (strength === "STRONG") readiness += 20;
+      else if (strength === "MEDIUM") readiness += 10;
+      if (stoch15m.k < 20 || stoch15m.k > 80) readiness += 25;
+      else if (stoch15m.k < 50 || stoch15m.k > 50) readiness += 10;
       if (m.adx >= 25) readiness += 10;
       if (m.signal) readiness += 10;
       readiness = Math.min(100, readiness);
 
-      const isPullback = stoch.k < 50 && direction === "LONG" || stoch.k > 50 && direction === "SHORT";
+      const isPullback = (direction === "LONG" && stoch15m.k < 50) || (direction === "SHORT" && stoch15m.k > 50);
 
       return {
         // v42.1 native fields
@@ -50,43 +48,50 @@ export async function GET(req: NextRequest) {
         trend: m.trend,
         trendDirection: m.trendDirection,
         trendStrength: m.trendStrength,
-        stoch15m: m.stoch15m,
+        stoch15m,
+        stoch1h,
+        stoch4h,
         adx: m.adx,
+        adx1d: m.adx1d,
         ema8: m.ema8,
         ema21: m.ema21,
         signal: m.signal,
         debug: m.debug,
 
-        // v41-compatible derived fields (for UI that expects them)
-        bias: m.trendDirection ? { direction: m.trendDirection, strength: m.trendStrength === "STRONG" ? 80 : m.trendStrength === "MEDIUM" ? 60 : 30 } : null,
-        trend1d: m.trendDirection ? { direction: m.trendDirection, strength: m.trendStrength } : null,
-        trend1h: m.trendDirection ? { direction: m.trendDirection, strength: m.trendStrength } : null,
-        stoch4h: m.stoch15m, // alias — UI might reference stoch4h
-        stoch1h: m.stoch15m, // alias
-        stochK: stoch.k,
-        stochD: stoch.d,
-        rsi: stoch.k, // approximate — StochRSI K is close to RSI in extreme zones
-        volumeConfirmed: false, // v42.1 doesn't track this in snapshot, UI can ignore
-        trendStrengthLabel: m.trendStrength,
+        // v41-compatible derived fields
+        bias: direction ? { direction, strength: strength === "STRONG" ? 80 : strength === "MEDIUM" ? 60 : 30 } : null,
+        trend1d: m.trend1d || (direction ? { direction, strength } : null),
+        trend4h: m.trend4h || (direction ? { direction, strength } : null),
+        stochK: stoch15m.k,
+        stochD: stoch15m.d,
+        rsi: stoch15m.k,
+        volumeConfirmed: false,
+        trendStrengthLabel: strength,
         isPullback,
-        pullbackTier: isPullback ? (stoch.k < 20 || stoch.k > 80 ? "DEEP" : "SHALLOW") : null,
-        stochZone: stoch.k < 20 ? "EXTREME" : stoch.k < 50 ? "ZONE" : stoch.k > 80 ? "EXTREME" : stoch.k > 50 ? "ZONE" : "NEUTRAL",
+        pullbackTier: isPullback ? (stoch15m.k < 20 || stoch15m.k > 80 ? "DEEP" : "SHALLOW") : null,
+        stochZone: stoch15m.k < 20 ? "EXTREME" : stoch15m.k < 50 ? "ZONE" : stoch15m.k > 80 ? "EXTREME" : stoch15m.k > 50 ? "ZONE" : "NEUTRAL",
         readiness,
         readinessLabel: readiness >= 80 ? "READY" : readiness >= 60 ? "WARM" : readiness >= 40 ? "WATCH" : "NO_TRADE",
-        regime: m.trendDirection ? { direction: m.trendDirection, strength: m.trendStrength, confidence: m.trendStrength === "STRONG" ? 75 : 50 } : null,
-        emaAligned: m.ema8 && m.ema21 ? (direction === "LONG" ? m.ema8 > m.ema21 : m.ema8 < m.ema21) : false,
+        regime: direction ? { direction, strength, confidence: strength === "STRONG" ? 75 : 50 } : null,
+        emaAligned,
         recommendedAction: m.signal ? `${m.signal.direction} ${m.signal.entryType || "PULLBACK"}` : null,
         entryTier: m.signal ? "PULLBACK_ENTRY" : null,
         entryMode: m.signal ? "PULLBACK" : null,
         positionSize: m.signal ? "2%" : null,
-        summary: { status: m.signal ? "READY" : "WATCH", debug: m.debug || [] },
+        summary: { debug: m.debug || [] },
+
+        // activeTrade from cron
+        activeTrade: m.activeTrade || null,
+
+        // v41 fields UI references
+        isExhausted: false,
+        exhaustionReason: "",
       };
     });
 
     // Normalize active signals
     const activeSignals = (snapshot.activeSignals || []).map((s: any) => ({
       ...s,
-      // Ensure v42.1 signals have fields UI might expect
       entryType: s.entryType || "PULLBACK",
       entryMode: s.entryType || "PULLBACK",
       entryTier: "PULLBACK_ENTRY",
@@ -116,4 +121,3 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }
- 
