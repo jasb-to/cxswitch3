@@ -1,15 +1,16 @@
-// lib/strategy.ts — v42.1 "Trend Rider" — 1H Trendline + 15m Entry
+// lib/strategy.ts — v42.2 "Trend Rider" — Canonical Rewrite
 // ============================================================
 // Timeframe architecture:
-//   1D  →  Bias direction (EMA8/21), trend reversal exit, ADX filter
-//   1H  →  Trendline pivots, ATR for stops, StochRSI for UI
-//   4H  →  StochRSI for UI, 1D aggregation source
-//   15m →  StochRSI for entry trigger and exit detection
+//   4H  →  Market Bias (LONG / SHORT / NEUTRAL)
+//   1H  →  Market Structure (trendline, ATR, swing levels, volume)
+//   15m →  Entry Trigger (StochRSI cross from extreme)
 //
-// Entry:  1D trend LONG + 1H near trendline + 15m Stoch extreme
-// Stop:   ATR(14) on 1H × 1.5, hard cap 4%
-// Exit:   1D trend flip OR 15m Stoch opposite extreme OR stop
+// Entry:  4H bias aligns + 1H near trendline + 15m StochRSI cross
+// Stop:   ATR(14) on 1H × 1.5, hard cap 4%, swing floor/ceiling
+// Exit:   4H bias flip OR 15m Stoch opposite extreme OR stop/target
 // ============================================================
+
+// ─── Types ─────────────────────────────────────────────────
 
 export interface Candle {
   timestamp: number;
@@ -40,6 +41,8 @@ export interface Signal {
   stochK?: number;
   stochD?: number;
   version?: number;
+  setupGrade?: "A" | "B";
+  positionSizePct?: number;
 }
 
 export interface SignalResult {
@@ -52,15 +55,59 @@ export interface HoldResult {
   reason: string;
 }
 
-export const CURRENT_SIGNAL_VERSION = 42.1;
+export interface BiasResult {
+  direction: "LONG" | "SHORT" | "NEUTRAL";
+  strength: "STRONG" | "MEDIUM" | "WEAK";
+  adx: number | null;
+  ema8: number | null;
+  ema21: number | null;
+  debug: string[];
+}
+
+export interface StructureResult {
+  atr: number;
+  swingLow: number;
+  swingHigh: number;
+  trendlinePrice: number | null;
+  trendlineR2: number | null;
+  trendlineAgeMs: number;
+  volumeOk: boolean;
+  volumeRatio: number;
+  nearTrendline: boolean;
+  distToTrendline: number;
+  debug: string[];
+}
+
+export interface TriggerResult {
+  fired: boolean;
+  reason: string;
+  stochK: number;
+  stochD: number;
+  prevK: number | null;
+  prevD: number | null;
+  debug: string[];
+}
+
+// ─── Constants ─────────────────────────────────────────────
+
+export const CURRENT_SIGNAL_VERSION = 42.2;
 const MIN_RR = 1.5;
 const MAX_STOP_PCT = 0.04;
 const ATR_MULT = 1.5;
-const STOCH_ENTRY_LONG = 20;
-const STOCH_ENTRY_SHORT = 80;
-const STOCH_EXIT_LONG = 80;
-const STOCH_EXIT_SHORT = 20;
+const STOCH_OVERSOLD = 20;
+const STOCH_OVERBOUGHT = 80;
 const MIN_ADX = 20;
+const MIN_TRENDLINE_R2 = 0.50;
+const TRENDLINE_PROXIMITY_PCT = 0.012;
+const VOL_THRESHOLD = 1.2;
+const HYSTERESIS_ENTRY_MS = 4 * 60 * 60 * 1000;      // 4h after entry
+const COOLDOWN_STOP_MS = 2 * 60 * 60 * 1000;         // 2h after stop loss
+const COOLDOWN_TP_MS = 1 * 60 * 60 * 1000;           // 1h after target hit
+const SIGNAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;       // 7 days
+const A_SETUP_CONFIDENCE = 80;
+const B_SETUP_CONFIDENCE = 60;
+const A_SETUP_SIZE_PCT = 1.0;
+const B_SETUP_SIZE_PCT = 0.5;
 
 // ─── Helpers ───────────────────────────────────────────────
 
@@ -120,15 +167,16 @@ export function stochRsi(
   stochPeriod = 14,
   kSmooth = 3,
   dSmooth = 3
-): { k: number; d: number } {
-  if (!values.every(isValid)) return { k: 50, d: 50 };
+): { k: number; d: number; prevK: number | null; prevD: number | null } {
+  if (!values.every(isValid)) return { k: 50, d: 50, prevK: null, prevD: null };
   const rsiValues: number[] = [];
   for (let i = rsiPeriod; i < values.length; i++) {
     const r = wilderRsi(values.slice(0, i + 1), rsiPeriod);
     if (r !== null) rsiValues.push(r);
   }
-  if (rsiValues.length < stochPeriod + kSmooth - 1) {
-    return { k: rsiValues[rsiValues.length - 1] || 50, d: 50 };
+  if (rsiValues.length < stochPeriod + kSmooth) {
+    const last = rsiValues[rsiValues.length - 1] ?? 50;
+    return { k: last, d: 50, prevK: null, prevD: null };
   }
   const rawK: number[] = [];
   for (let i = stochPeriod - 1; i < rsiValues.length; i++) {
@@ -140,10 +188,23 @@ export function stochRsi(
   for (let i = kSmooth - 1; i < rawK.length; i++) {
     kValues.push(avg(rawK.slice(i - kSmooth + 1, i + 1)));
   }
-  if (kValues.length < dSmooth) return { k: kValues[kValues.length - 1] || 50, d: 50 };
+  if (kValues.length < dSmooth + 1) {
+    const k = kValues[kValues.length - 1] ?? 50;
+    return { k: Math.round(k * 10) / 10, d: Math.round(k * 10) / 10, prevK: null, prevD: null };
+  }
+  const dValues: number[] = [];
+  for (let i = dSmooth - 1; i < kValues.length; i++) {
+    dValues.push(avg(kValues.slice(i - dSmooth + 1, i + 1)));
+  }
+  const currentK = kValues[kValues.length - 1];
+  const currentD = dValues[dValues.length - 1];
+  const prevK = kValues.length >= 2 ? kValues[kValues.length - 2] : null;
+  const prevD = dValues.length >= 2 ? dValues[dValues.length - 2] : null;
   return {
-    k: Math.round(kValues[kValues.length - 1] * 10) / 10,
-    d: Math.round(avg(kValues.slice(-dSmooth)) * 10) / 10,
+    k: Math.round(currentK * 10) / 10,
+    d: Math.round(currentD * 10) / 10,
+    prevK: prevK !== null ? Math.round(prevK * 10) / 10 : null,
+    prevD: prevD !== null ? Math.round(prevD * 10) / 10 : null,
   };
 }
 
@@ -194,7 +255,7 @@ function atr(candles: Candle[], period = 14): number {
   return avg(trs);
 }
 
-// ─── 4H → 1D ───────────────────────────────────────────────
+// ─── 4H → 1D (compatibility only, not used for bias) ───────
 
 export function aggregateTo1D(candles4h: Candle[]): Candle[] {
   if (!candles4h?.length) return [];
@@ -221,60 +282,55 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// ─── 1D Trend ──────────────────────────────────────────────
+// ─── 4H BIAS ───────────────────────────────────────────────
 
-export function calculateTrend1D(candles1d: Candle[]): {
-  direction: "LONG" | "SHORT" | null;
-  strength: "STRONG" | "MEDIUM" | "WEAK";
-  adx: number | null;
-  debug: string[];
-} {
+export function calculateBias4H(candles4h: Candle[]): BiasResult {
   const debug: string[] = [];
-  if (candles1d.length < 50) {
-    debug.push("[TREND1D] Insufficient data");
-    return { direction: null, strength: "WEAK", adx: null, debug };
+  if (candles4h.length < 50) {
+    debug.push("[BIAS-4H] Insufficient data (<50 bars)");
+    return { direction: "NEUTRAL", strength: "WEAK", adx: null, ema8: null, ema21: null, debug };
   }
-  const closes = candles1d.map(c => c.close);
+  const closes = candles4h.map(c => c.close);
   const e8 = ema(closes, 8);
   const e21 = ema(closes, 21);
   if (!e8.length || !e21.length) {
-    debug.push("[TREND1D] EMA calc failed");
-    return { direction: null, strength: "WEAK", adx: null, debug };
+    debug.push("[BIAS-4H] EMA calc failed");
+    return { direction: "NEUTRAL", strength: "WEAK", adx: null, ema8: null, ema21: null, debug };
   }
-  const direction = e8[e8.length - 1] > e21[e21.length - 1] ? "LONG" : "SHORT";
+  const lastE8 = e8[e8.length - 1];
+  const lastE21 = e21[e21.length - 1];
+  const direction = lastE8 > lastE21 ? "LONG" : "SHORT";
 
-  const highs = candles1d.slice(-20).map(c => c.high);
-  const lows = candles1d.slice(-20).map(c => c.low);
-  const hh = highs[highs.length - 1] > Math.max(...highs.slice(0, -1));
-  const ll = lows[lows.length - 1] < Math.min(...lows.slice(0, -1));
-  const structureValid = (direction === "LONG" && hh) || (direction === "SHORT" && ll);
-
-  const adxVal = adx(candles1d);
+  const adxVal = adx(candles4h);
   let strength: "STRONG" | "MEDIUM" | "WEAK" = "WEAK";
   if (adxVal !== null) {
-    if (adxVal >= 25 && structureValid) strength = "STRONG";
-    else if (adxVal >= 20) strength = "MEDIUM";
-  } else if (structureValid) {
-    strength = "MEDIUM";
+    if (adxVal >= 25) strength = "STRONG";
+    else if (adxVal >= MIN_ADX) strength = "MEDIUM";
   }
 
-  debug.push(`[TREND1D] ${direction} ${strength} | ADX=${sf(adxVal ?? 0,1)}`);
-  return { direction, strength, adx: adxVal, debug };
+  // Optional: price on correct side of EMA21
+  const lastClose = closes[closes.length - 1];
+  const priceOnSide = direction === "LONG" ? lastClose >= lastE21 : lastClose <= lastE21;
+  if (!priceOnSide) {
+    debug.push(`[BIAS-4H] Price ${sf(lastClose,2)} on wrong side of EMA21 ${sf(lastE21,2)} — NEUTRAL`);
+    return { direction: "NEUTRAL", strength, adx: adxVal, ema8: lastE8, ema21: lastE21, debug };
+  }
+
+  if (adxVal !== null && adxVal < MIN_ADX) {
+    debug.push(`[BIAS-4H] ADX ${adxVal} < ${MIN_ADX} — NEUTRAL`);
+    return { direction: "NEUTRAL", strength, adx: adxVal, ema8: lastE8, ema21: lastE21, debug };
+  }
+
+  debug.push(`[BIAS-4H] ${direction} ${strength} | ADX=${sf(adxVal ?? 0,1)} | EMA8=${sf(lastE8,2)} EMA21=${sf(lastE21,2)}`);
+  return { direction, strength, adx: adxVal, ema8: lastE8, ema21: lastE21, debug };
 }
 
-// ─── Trendline (on 1H candles) ───────────────────────────
+// ─── 1H STRUCTURE ──────────────────────────────────────────
 
-interface TrendlineState {
-  slope: number;
-  intercept: number;
-  lastUpdated: number;
-  direction: "LONG" | "SHORT";
-}
+interface Pivot { index: number; price: number; }
 
-const trendlineStore: Map<string, TrendlineState> = new Map();
-
-function findPivots(candles: Candle[], direction: "LONG" | "SHORT") {
-  const pivots: { index: number; price: number }[] = [];
+function findPivots(candles: Candle[], direction: "LONG" | "SHORT"): Pivot[] {
+  const pivots: Pivot[] = [];
   for (let i = 3; i < candles.length - 3; i++) {
     const isSwingLow = candles[i].low < candles[i-1].low && candles[i].low < candles[i-2].low &&
                        candles[i].low < candles[i+1].low && candles[i].low < candles[i+2].low;
@@ -286,172 +342,341 @@ function findPivots(candles: Candle[], direction: "LONG" | "SHORT") {
   return pivots;
 }
 
-function fitTrendline(pivots: { index: number; price: number }[]) {
+function fitTrendline(pivots: Pivot[]): { slope: number; intercept: number; r2: number } | null {
   const n = pivots.length;
   if (n < 3) return null;
   const sumX = pivots.reduce((s, p) => s + p.index, 0);
   const sumY = pivots.reduce((s, p) => s + p.price, 0);
   const sumXY = pivots.reduce((s, p) => s + p.index * p.price, 0);
   const sumX2 = pivots.reduce((s, p) => s + p.index * p.index, 0);
+  const sumY2 = pivots.reduce((s, p) => s + p.price * p.price, 0);
   const denom = n * sumX2 - sumX * sumX;
   if (denom === 0) return null;
   const slope = (n * sumXY - sumX * sumY) / denom;
   const intercept = (sumY - slope * sumX) / n;
-  return { slope, intercept };
+  const ssTot = sumY2 - (sumY * sumY) / n;
+  let ssRes = 0;
+  for (const p of pivots) {
+    const predicted = slope * p.index + intercept;
+    ssRes += (p.price - predicted) ** 2;
+  }
+  const r2 = ssTot === 0 ? 1 : 1 - ssRes / ssTot;
+  return { slope, intercept, r2 };
 }
 
-function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): {
-  price: number; age: number;
-} | null {
-  if (candles.length < 20) return null;
-  const pivots = findPivots(candles, direction);
-  if (pivots.length < 3) return null;
+export interface TrendlineState {
+  slope: number;
+  intercept: number;
+  lastUpdated: number;
+  direction: "LONG" | "SHORT";
+  r2: number;
+}
 
+// Redis-backed trendline store — caller provides get/set
+export interface TrendlineStore {
+  get(pair: string, direction: "LONG" | "SHORT"): Promise<TrendlineState | null>;
+  set(pair: string, state: TrendlineState): Promise<void>;
+}
+
+// In-memory fallback (for tests / single-process)
+class InMemoryTrendlineStore implements TrendlineStore {
+  private map = new Map<string, TrendlineState>();
+  private key(pair: string, direction: string) { return `${pair}:${direction}`; }
+  async get(pair: string, direction: "LONG" | "SHORT"): Promise<TrendlineState | null> {
+    return this.map.get(this.key(pair, direction)) ?? null;
+  }
+  async set(pair: string, state: TrendlineState): Promise<void> {
+    this.map.set(this.key(pair, state.direction), state);
+  }
+}
+
+export const defaultTrendlineStore = new InMemoryTrendlineStore();
+
+export async function calculateStructure1H(
+  pair: string,
+  candles1h: Candle[],
+  direction: "LONG" | "SHORT",
+  store: TrendlineStore = defaultTrendlineStore
+): Promise<StructureResult> {
+  const debug: string[] = [];
+  const result: StructureResult = {
+    atr: 0, swingLow: 0, swingHigh: 0,
+    trendlinePrice: null, trendlineR2: null, trendlineAgeMs: 0,
+    volumeOk: false, volumeRatio: 0,
+    nearTrendline: false, distToTrendline: 0,
+    debug,
+  };
+
+  if (candles1h.length < 50) {
+    debug.push("[STRUCTURE-1H] Insufficient data (<50 bars)");
+    return result;
+  }
+
+  // ATR
+  result.atr = atr(candles1h, 14);
+  debug.push(`[STRUCTURE-1H] ATR=${sf(result.atr,4)}`);
+
+  // Swing levels (last 20 bars)
+  const recent = candles1h.slice(-20);
+  result.swingLow = Math.min(...recent.map(c => c.low));
+  result.swingHigh = Math.max(...recent.map(c => c.high));
+  debug.push(`[STRUCTURE-1H] SwingLow=${sf(result.swingLow,2)} SwingHigh=${sf(result.swingHigh,2)}`);
+
+  // Volume
+  const vols = candles1h.slice(-10).map(c => c.volume);
+  const avgVol = avg(vols.slice(0, -1));
+  const currentVol = candles1h[candles1h.length - 1].volume;
+  result.volumeRatio = avgVol > 0 ? currentVol / avgVol : 0;
+  result.volumeOk = result.volumeRatio > VOL_THRESHOLD;
+  debug.push(`[STRUCTURE-1H] VolRatio=${sf(result.volumeRatio,2)} OK=${result.volumeOk}`);
+
+  // Trendline
+  const pivots = findPivots(candles1h, direction);
+  if (pivots.length < 3) {
+    debug.push(`[STRUCTURE-1H] Only ${pivots.length} pivots, need >=3`);
+    return result;
+  }
   const recentPivots = pivots.slice(-5);
-  const now = candles[candles.length - 1].timestamp;
-  const existing = trendlineStore.get(pair);
-  const maxAge = 7 * 24 * 60 * 60 * 1000;
+  const fit = fitTrendline(recentPivots);
+  if (!fit) {
+    debug.push("[STRUCTURE-1H] Trendline fit failed");
+    return result;
+  }
+  if (fit.r2 < MIN_TRENDLINE_R2) {
+    debug.push(`[STRUCTURE-1H] R² ${sf(fit.r2,3)} < ${MIN_TRENDLINE_R2} — rejected`);
+    return result;
+  }
 
-  let fit = null;
-  if (existing && existing.direction === direction && (now - existing.lastUpdated) < maxAge) {
-    const lastPivot = recentPivots[recentPivots.length - 1];
-    const projected = existing.slope * lastPivot.index + existing.intercept;
-    const deviation = Math.abs(lastPivot.price - projected) / projected;
-    if (deviation < 0.02) {
-      fit = existing;
+  const now = candles1h[candles1h.length - 1].timestamp;
+  const currentIndex = candles1h.length - 1;
+  const trendlinePrice = fit.slope * currentIndex + fit.intercept;
+
+  // Store
+  await store.set(pair, {
+    slope: fit.slope,
+    intercept: fit.intercept,
+    lastUpdated: now,
+    direction,
+    r2: fit.r2,
+  });
+
+  const lastPrice = candles1h[candles1h.length - 1].close;
+  result.trendlinePrice = trendlinePrice;
+  result.trendlineR2 = fit.r2;
+  result.trendlineAgeMs = 0; // just rebuilt
+  result.distToTrendline = (lastPrice - trendlinePrice) / trendlinePrice;
+  result.nearTrendline = Math.abs(result.distToTrendline) < TRENDLINE_PROXIMITY_PCT;
+
+  debug.push(`[STRUCTURE-1H] TL=${sf(trendlinePrice,2)} R²=${sf(fit.r2,3)} Dist=${sf(result.distToTrendline*100,2)}% Near=${result.nearTrendline}`);
+  return result;
+}
+
+// ─── 15m TRIGGER ───────────────────────────────────────────
+
+export function calculateTrigger15m(
+  candles15m: Candle[],
+  direction: "LONG" | "SHORT"
+): TriggerResult {
+  const debug: string[] = [];
+  const closes = candles15m.map(c => c.close);
+  const stoch = stochRsi(closes);
+
+  debug.push(`[TRIGGER-15m] K=${stoch.k} D=${stoch.d} prevK=${stoch.prevK} prevD=${stoch.prevD}`);
+
+  let fired = false;
+  let reason = "";
+
+  if (direction === "LONG") {
+    // K crosses above D from oversold
+    if (stoch.prevK !== null && stoch.prevD !== null) {
+      if (stoch.prevK < stoch.prevD && stoch.k >= stoch.d && stoch.k < STOCH_OVERSOLD) {
+        fired = true;
+        reason = `K crossed above D from oversold (K=${stoch.k}, D=${stoch.d})`;
+      }
+    }
+    // Fallback: K is in oversold zone (for when we don't have enough history for cross)
+    if (!fired && stoch.k < STOCH_OVERSOLD) {
+      fired = true;
+      reason = `K in oversold zone (K=${stoch.k})`;
+    }
+  } else {
+    // K crosses below D from overbought
+    if (stoch.prevK !== null && stoch.prevD !== null) {
+      if (stoch.prevK > stoch.prevD && stoch.k <= stoch.d && stoch.k > STOCH_OVERBOUGHT) {
+        fired = true;
+        reason = `K crossed below D from overbought (K=${stoch.k}, D=${stoch.d})`;
+      }
+    }
+    // Fallback
+    if (!fired && stoch.k > STOCH_OVERBOUGHT) {
+      fired = true;
+      reason = `K in overbought zone (K=${stoch.k})`;
     }
   }
-  if (!fit) {
-    fit = fitTrendline(recentPivots);
-    if (!fit) return null;
-    trendlineStore.set(pair, { ...fit, lastUpdated: now, direction });
+
+  if (!fired) {
+    reason = direction === "LONG"
+      ? `No LONG trigger: K=${stoch.k} not < ${STOCH_OVERSOLD}`
+      : `No SHORT trigger: K=${stoch.k} not > ${STOCH_OVERBOUGHT}`;
   }
 
-  const currentIndex = candles.length - 1;
-  return {
-    price: fit.slope * currentIndex + fit.intercept,
-    age: now - (trendlineStore.get(pair)?.lastUpdated ?? now),
-  };
+  debug.push(`[TRIGGER-15m] Fired=${fired} | ${reason}`);
+  return { fired, reason, stochK: stoch.k, stochD: stoch.d, prevK: stoch.prevK, prevD: stoch.prevD, debug };
 }
 
-// ─── Hysteresis (simple, in-memory) ────────────────────────
+// ─── Hysteresis / Cooldown ─────────────────────────────────
 
-interface HystState {
+export interface CooldownState {
   lockUntil: number;
-}
-const hystStore: Map<string, HystState> = new Map();
-
-function getHyst(pair: string, now: number): boolean {
-  const s = hystStore.get(pair);
-  return !!(s && now <= s.lockUntil);
+  reason: "entry" | "stop" | "target";
 }
 
-function setHyst(pair: string, now: number): void {
-  hystStore.set(pair, { lockUntil: now + 24 * 60 * 60 * 1000 });
+export interface CooldownStore {
+  get(pair: string): Promise<CooldownState | null>;
+  set(pair: string, state: CooldownState): Promise<void>;
+}
+
+class InMemoryCooldownStore implements CooldownStore {
+  private map = new Map<string, CooldownState>();
+  async get(pair: string): Promise<CooldownState | null> {
+    return this.map.get(pair) ?? null;
+  }
+  async set(pair: string, state: CooldownState): Promise<void> {
+    this.map.set(pair, state);
+  }
+}
+
+export const defaultCooldownStore = new InMemoryCooldownStore();
+
+async function isLocked(
+  pair: string,
+  now: number,
+  activeSignals: Signal[],
+  store: CooldownStore = defaultCooldownStore
+): Promise<{ locked: boolean; reason: string }> {
+  // Check active signal (entry hysteresis)
+  const active = activeSignals.find(s => s.pair === pair && !s.exited);
+  if (active) {
+    const elapsed = now - active.timestamp;
+    if (elapsed < HYSTERESIS_ENTRY_MS) {
+      return { locked: true, reason: `Active signal (${Math.round(elapsed/60000)}min old)` };
+    }
+  }
+
+  // Check cooldown store
+  const cd = await store.get(pair);
+  if (cd && now < cd.lockUntil) {
+    const mins = Math.round((cd.lockUntil - now) / 60000);
+    return { locked: true, reason: `Cooldown: ${cd.reason} (${mins}min remaining)` };
+  }
+
+  return { locked: false, reason: "" };
+}
+
+async function setCooldown(
+  pair: string,
+  reason: "entry" | "stop" | "target",
+  now: number,
+  store: CooldownStore = defaultCooldownStore
+): Promise<void> {
+  let duration = HYSTERESIS_ENTRY_MS;
+  if (reason === "stop") duration = COOLDOWN_STOP_MS;
+  if (reason === "target") duration = COOLDOWN_TP_MS;
+  await store.set(pair, { lockUntil: now + duration, reason });
 }
 
 // ─── SIGNAL GENERATION ─────────────────────────────────────
 
-export function generateSignal(
+export async function generateSignal(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
   candles1d: Candle[],
   candles15m: Candle[],
   activeSignals: Signal[],
-  currentPrice?: number
-): SignalResult {
+  currentPrice?: number,
+  options?: {
+    trendlineStore?: TrendlineStore;
+    cooldownStore?: CooldownStore;
+  }
+): Promise<SignalResult> {
   const debug: string[] = [];
   const now = Date.now();
+  const price = currentPrice ?? candles15m[candles15m.length - 1]?.close ?? 0;
 
   if (!Array.isArray(activeSignals)) activeSignals = [];
 
-  const active = activeSignals.find(s => s && s.pair === pair && s.exited === false);
-  if (active) {
-    debug.push(`[SIGNAL] Already active: ${active.id}`);
+  // ── Cooldown check ──
+  const lock = await isLocked(pair, now, activeSignals, options?.cooldownStore);
+  if (lock.locked) {
+    debug.push(`[SIGNAL] REJECTED — ${lock.reason}`);
     return { debug };
   }
 
-  if (getHyst(pair, now)) {
-    debug.push(`[SIGNAL] Hysteresis lock active`);
+  // ── Data sufficiency ──
+  if (candles4h.length < 50) {
+    debug.push(`[SIGNAL] REJECTED — 4H insufficient data (${candles4h.length} < 50)`);
+    return { debug };
+  }
+  if (candles1h.length < 100) {
+    debug.push(`[SIGNAL] REJECTED — 1H insufficient data (${candles1h.length} < 100)`);
+    return { debug };
+  }
+  if (candles15m.length < 100) {
+    debug.push(`[SIGNAL] REJECTED — 15m insufficient data (${candles15m.length} < 100)`);
     return { debug };
   }
 
-  const recentExit = activeSignals
-    .filter(s => s.pair === pair && s.exited === true && s.exitTimestamp)
-    .sort((a, b) => (b.exitTimestamp || 0) - (a.exitTimestamp || 0))[0];
-  if (recentExit && recentExit.exitTimestamp && now - recentExit.exitTimestamp < 2 * 60 * 60 * 1000) {
-    debug.push(`[SIGNAL] Cooldown: ${Math.round((now - recentExit.exitTimestamp) / 60000)}min since exit`);
+  // ── 4H Bias ──
+  const bias = calculateBias4H(candles4h);
+  debug.push(...bias.debug);
+  if (bias.direction === "NEUTRAL") {
+    if (bias.adx !== null && bias.adx < MIN_ADX) {
+      debug.push("[SIGNAL] REJECTED — 4H ADX too low");
+    } else {
+      debug.push("[SIGNAL] REJECTED — 4H bias NEUTRAL");
+    }
+    return { debug };
+  }
+  const direction = bias.direction;
+
+  // ── 1H Structure ──
+  const structure = await calculateStructure1H(pair, candles1h, direction, options?.trendlineStore);
+  debug.push(...structure.debug);
+  if (!structure.nearTrendline) {
+    debug.push(`[SIGNAL] REJECTED — Not near trendline (dist=${sf(structure.distToTrendline*100,2)}%)`);
     return { debug };
   }
 
-  if (candles4h.length < 50 || candles1d.length < 50 || candles1h.length < 100 || candles15m.length < 100) {
-    debug.push(`[SIGNAL] Insufficient data`);
+  // ── 15m Trigger ──
+  const trigger = calculateTrigger15m(candles15m, direction);
+  debug.push(...trigger.debug);
+  if (!trigger.fired) {
+    debug.push("[SIGNAL] REJECTED — No 15m trigger");
     return { debug };
   }
 
-  const price = currentPrice ?? candles15m[candles15m.length - 1].close;
-
-  const trend1d = calculateTrend1D(candles1d);
-  debug.push(...trend1d.debug);
-
-  if (!trend1d.direction) {
-    debug.push("[SIGNAL] No 1D trend");
-    return { debug };
-  }
-
-  if (trend1d.adx !== null && trend1d.adx < MIN_ADX) {
-    debug.push(`[SIGNAL] 1D ADX ${trend1d.adx} < ${MIN_ADX} — ranging, no trade`);
-    return { debug };
-  }
-
-  const direction = trend1d.direction;
-
-  const tl = getTrendline(pair, candles1h, direction);
-  const tlPrice = tl?.price ?? price;
-  const dist = (price - tlPrice) / tlPrice;
-  debug.push(`[TL-1H] Price=${sf(price,2)} TL=${sf(tlPrice,2)} Dist=${sf(dist*100,2)}%`);
-
-  const nearTrendline = Math.abs(dist) < 0.012;
-  if (!nearTrendline) {
-    debug.push(`[SIGNAL] No signal: far from TL (${sf(Math.abs(dist)*100,2)}% > 1.2%)`);
-    return { debug };
-  }
-
-  const closes15m = candles15m.map(c => c.close);
-  const stoch = stochRsi(closes15m);
-  debug.push(`[STOCH-15m] K=${stoch.k} D=${stoch.d}`);
-
-  const stochExtreme = direction === "LONG" ? stoch.k < STOCH_ENTRY_LONG : stoch.k > STOCH_ENTRY_SHORT;
-  if (!stochExtreme) {
-    debug.push(`[SIGNAL] No signal: Stoch not extreme (K=${stoch.k}, need ${direction === "LONG" ? "<" + STOCH_ENTRY_LONG : ">" + STOCH_ENTRY_SHORT})`);
-    return { debug };
-  }
-
-  const vols = candles1h.slice(-10).map(c => c.volume);
-  const avgVol = avg(vols.slice(0, -1));
-  const volOk = candles1h[candles1h.length - 1].volume > avgVol * 1.2;
-  debug.push(`[VOL-1H] Ratio=${sf(vols[vols.length-1]/avgVol,2)} | OK=${volOk}`);
-
-  const atr1h = atr(candles1h, 14);
-  const swingLows = candles1h.map(c => c.low).slice(-20);
-  const swingHighs = candles1h.map(c => c.high).slice(-20);
-  const swingLow = Math.min(...swingLows);
-  const swingHigh = Math.max(...swingHighs);
-
-  let entry = price;
+  // ── Risk Management ──
+  const entry = price;
   let stop: number;
   let target: number;
 
   if (direction === "LONG") {
-    const atrStop = entry - atr1h * ATR_MULT;
+    const atrStop = entry - structure.atr * ATR_MULT;
     const pctStop = entry * (1 - MAX_STOP_PCT);
-    stop = Math.max(atrStop, pctStop, swingLow * 0.998);
+    const swingStop = structure.swingLow * 0.998;
+    stop = Math.max(atrStop, pctStop, swingStop);
+    // Cap: never let trendline push stop unreasonably wide
+    const maxStop = entry * (1 - MAX_STOP_PCT);
+    if (stop < maxStop) stop = maxStop;
     target = entry + (entry - stop) * 3;
   } else {
-    const atrStop = entry + atr1h * ATR_MULT;
+    const atrStop = entry + structure.atr * ATR_MULT;
     const pctStop = entry * (1 + MAX_STOP_PCT);
-    stop = Math.min(atrStop, pctStop, swingHigh * 1.002);
+    const swingStop = structure.swingHigh * 1.002;
+    stop = Math.min(atrStop, pctStop, swingStop);
+    const maxStop = entry * (1 + MAX_STOP_PCT);
+    if (stop > maxStop) stop = maxStop;
     target = entry - (stop - entry) * 3;
   }
 
@@ -460,21 +685,21 @@ export function generateSignal(
   const rr = risk > 0 ? reward / risk : 0;
 
   if (rr < MIN_RR) {
-    debug.push(`[SIGNAL] RR ${sf(rr,2)} < ${MIN_RR}`);
+    debug.push(`[SIGNAL] REJECTED — RR ${sf(rr,2)} < ${MIN_RR} (risk=$${sf(risk,2)}, reward=$${sf(reward,2)})`);
     return { debug };
   }
 
-  let confidence = 60;
-  if (trend1d.strength === "STRONG") confidence += 15;
-  else if (trend1d.strength === "MEDIUM") confidence += 5;
-  if (volOk) confidence += 5;
-  if (Math.abs(dist) < 0.006) confidence += 10;
-  confidence = Math.min(90, Math.max(40, confidence));
+  // ── Setup Grade ──
+  let setupGrade: "A" | "B" = "B";
+  let confidence = B_SETUP_CONFIDENCE;
+  let positionSizePct = B_SETUP_SIZE_PCT;
+  if (bias.strength === "STRONG" && structure.volumeOk && structure.trendlineR2 && structure.trendlineR2 > 0.70) {
+    setupGrade = "A";
+    confidence = A_SETUP_CONFIDENCE;
+    positionSizePct = A_SETUP_SIZE_PCT;
+  }
 
-  setHyst(pair, now);
-
-  const adx1h = adx(candles1h);
-
+  // ── Build Signal ──
   const signal: Signal = {
     id: `${pair}_${now}`,
     pair,
@@ -487,13 +712,20 @@ export function generateSignal(
     exited: false,
     entryType: "PULLBACK",
     rr: Math.round(rr * 100) / 100,
-    adx: adx1h !== null ? Math.round(adx1h * 10) / 10 : undefined,
-    stochK: stoch.k,
-    stochD: stoch.d,
+    adx: bias.adx ?? undefined,
+    stochK: trigger.stochK,
+    stochD: trigger.stochD,
     version: CURRENT_SIGNAL_VERSION,
+    setupGrade,
+    positionSizePct,
   };
 
-  debug.push(`[SIGNAL] ✅ ENTRY ${direction} | Entry=$${sf(entry,2)} Stop=$${sf(stop,2)} Target=$${sf(target,2)} RR=${sf(rr,2)} Conf=${confidence}%`);
+  await setCooldown(pair, "entry", now, options?.cooldownStore);
+
+  debug.push(`[SIGNAL] ✅ ACCEPTED ${direction} ${setupGrade} | Entry=$${sf(entry,2)} Stop=$${sf(stop,2)} Target=$${sf(target,2)} RR=${sf(rr,2)} Conf=${confidence}% Size=${sf(positionSizePct*100,0)}%`);
+  debug.push(`[SIGNAL] 4H: ${bias.direction} ${bias.strength} ADX=${sf(bias.adx ?? 0,1)}`);
+  debug.push(`[SIGNAL] 1H: ATR=${sf(structure.atr,4)} TL=${sf(structure.trendlinePrice ?? 0,2)} R²=${sf(structure.trendlineR2 ?? 0,3)} Vol=${structure.volumeOk}`);
+  debug.push(`[SIGNAL] 15m: K=${trigger.stochK} D=${trigger.stochD} ${trigger.reason}`);
 
   return { signal, debug };
 }
@@ -503,42 +735,40 @@ export function generateSignal(
 export function shouldHold(
   signal: Signal,
   candles1h: Candle[],
-  candles1d: Candle[],
+  candles4h: Candle[],
   candles15m: Candle[],
   currentPrice: number
 ): HoldResult {
+  // Hard stops
   if (signal.direction === "LONG" && currentPrice <= signal.stop) {
     return { shouldHold: false, reason: "stop_loss" };
   }
   if (signal.direction === "SHORT" && currentPrice >= signal.stop) {
     return { shouldHold: false, reason: "stop_loss" };
   }
-
+  // Targets
   if (signal.direction === "LONG" && currentPrice >= signal.target) {
     return { shouldHold: false, reason: "target_hit" };
   }
   if (signal.direction === "SHORT" && currentPrice <= signal.target) {
     return { shouldHold: false, reason: "target_hit" };
   }
-
-  if (candles1d.length >= 50) {
-    const trend = calculateTrend1D(candles1d);
-    if (trend.direction && trend.direction !== signal.direction) {
-      return { shouldHold: false, reason: "1d_trend_reversed" };
+  // 4H bias reversal
+  if (candles4h.length >= 50) {
+    const bias = calculateBias4H(candles4h);
+    if (bias.direction && bias.direction !== signal.direction) {
+      return { shouldHold: false, reason: "4h_bias_reversed" };
     }
   }
-
+  // 15m Stoch opposite extreme
   const closes15m = candles15m.map(c => c.close);
   const stoch = stochRsi(closes15m);
-
   const stochOpposite = signal.direction === "LONG"
-    ? stoch.k > STOCH_EXIT_LONG
-    : stoch.k < STOCH_EXIT_SHORT;
-
+    ? stoch.k > STOCH_OVERBOUGHT
+    : stoch.k < STOCH_OVERSOLD;
   if (stochOpposite) {
     return { shouldHold: false, reason: "stoch_extreme_opposite" };
   }
-
   return { shouldHold: true, reason: "active" };
 }
 
@@ -561,7 +791,6 @@ export function filterExpiredSignals(
   const active: Signal[] = [];
   const exited: { signal: Signal; reason: string }[] = [];
   const now = Date.now();
-  const TTL = 7 * 24 * 60 * 60 * 1000;
 
   for (const signal of signals) {
     if (!signal.exited) {
@@ -572,68 +801,63 @@ export function filterExpiredSignals(
       }
       active.push(signal); continue;
     }
-    if (now - signal.timestamp < TTL) active.push(signal);
+    if (now - signal.timestamp < SIGNAL_TTL_MS) active.push(signal);
   }
   return { active, exited };
 }
 
 // ─── Market Snapshot ───────────────────────────────────────
-// Computes StochRSI on ALL timeframes for UI display
 
-export function getMarketSnapshot(
+export async function getMarketSnapshot(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
   candles15m: Candle[],
   candles1d: Candle[],
   currentPrice?: number,
-  signalResult?: SignalResult
+  signalResult?: SignalResult,
+  options?: {
+    trendlineStore?: TrendlineStore;
+  }
 ) {
   const price = currentPrice ?? candles15m[candles15m.length - 1]?.close ?? 0;
-  const trend1d = calculateTrend1D(candles1d);
+  const bias = calculateBias4H(candles4h);
+  const structure = await calculateStructure1H(pair, candles1h, bias.direction || "LONG", options?.trendlineStore);
 
-  // Compute StochRSI on all timeframes for UI
-  const stoch15m = candles15m.length >= 100 ? stochRsi(candles15m.map(c => c.close)) : { k: 50, d: 50 };
-  const stoch1h = candles1h.length >= 100 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50 };
-  const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50 };
-
-  const adxVal = adx(candles1h) ?? 0;
-  const adx1d = adx(candles1d);
+  const stoch15m = candles15m.length >= 100 ? stochRsi(candles15m.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
+  const stoch1h = candles1h.length >= 100 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
+  const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
 
   const closes1h = candles1h.map(c => c.close);
-  const e8 = ema(closes1h, 8);
-  const e21 = ema(closes1h, 21);
-
-  // Compute 4H EMA for trend4h display
-  const closes4h = candles4h.map(c => c.close);
-  const e8_4h = ema(closes4h, 8);
-  const e21_4h = ema(closes4h, 21);
-  const trend4hDir = e8_4h.length && e21_4h.length
-    ? (e8_4h[e8_4h.length - 1] > e21_4h[e21_4h.length - 1] ? "LONG" : "SHORT")
-    : null;
-  const trend4hStrength = trend4hDir
-    ? (adx(candles4h) ?? 0) >= 25 ? "STRONG" : (adx(candles4h) ?? 0) >= 20 ? "MEDIUM" : "WEAK"
-    : "WEAK";
+  const e8_1h = ema(closes1h, 8);
+  const e21_1h = ema(closes1h, 21);
 
   return {
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
-    trend: trend1d.direction ? `${trend1d.direction} ${trend1d.strength}` : "NONE",
-    trendDirection: trend1d.direction,
-    trendStrength: trend1d.strength,
+    bias: bias.direction ? `${bias.direction} ${bias.strength}` : "NEUTRAL",
+    biasDirection: bias.direction,
+    biasStrength: bias.strength,
     stoch15m,
     stoch1h,
     stoch4h,
-    adx: Math.round(adxVal * 10) / 10,
-    adx1d: adx1d !== null ? Math.round(adx1d * 10) / 10 : null,
-    ema8: e8.length ? Math.round(e8[e8.length - 1] * 100) / 100 : 0,
-    ema21: e21.length ? Math.round(e21[e21.length - 1] * 100) / 100 : 0,
+    adx: bias.adx,
+    ema8_1h: e8_1h.length ? Math.round(e8_1h[e8_1h.length - 1] * 100) / 100 : 0,
+    ema21_1h: e21_1h.length ? Math.round(e21_1h[e21_1h.length - 1] * 100) / 100 : 0,
+    structure: {
+      atr: structure.atr,
+      swingLow: structure.swingLow,
+      swingHigh: structure.swingHigh,
+      trendlinePrice: structure.trendlinePrice,
+      trendlineR2: structure.trendlineR2,
+      nearTrendline: structure.nearTrendline,
+      volumeOk: structure.volumeOk,
+    },
     signal: signalResult?.signal || null,
     debug: signalResult?.debug || [],
-    // v41-compatible fields for UI
-    trend1d: trend1d.direction ? { direction: trend1d.direction, strength: trend1d.strength } : null,
-    trend4h: trend4hDir ? { direction: trend4hDir, strength: trend4hStrength } : null,
+    trend1d: null, // deprecated, kept for compatibility
+    trend4h: bias.direction ? { direction: bias.direction, strength: bias.strength } : null,
     stochK: stoch15m.k,
     stochD: stoch15m.d,
     rsi: stoch15m.k,
@@ -646,9 +870,10 @@ export function shouldHoldCompat(
   signal: Signal,
   candles4h: Candle[],
   candles1h: Candle[],
+  candles15m: Candle[],
   currentPrice: number
 ): HoldResult {
-  return shouldHold(signal, candles1h, aggregateTo1D(candles4h), candles1h, currentPrice);
+  return shouldHold(signal, candles1h, candles4h, candles15m, currentPrice);
 }
 
 export async function generateSignalAsync(
@@ -657,7 +882,20 @@ export async function generateSignalAsync(
   candles4h: Candle[],
   candles15m: Candle[],
   activeSignals?: Signal[],
-  currentPrice?: number
+  currentPrice?: number,
+  options?: {
+    trendlineStore?: TrendlineStore;
+    cooldownStore?: CooldownStore;
+  }
 ): Promise<SignalResult> {
-  return generateSignal(pair, candles1h, candles4h, aggregateTo1D(candles4h), candles15m, activeSignals || [], currentPrice);
+  return generateSignal(
+    pair,
+    candles1h,
+    candles4h,
+    aggregateTo1D(candles4h), // 1D aggregated from 4H for compatibility
+    candles15m,
+    activeSignals || [],
+    currentPrice,
+    options
+  );
 }
