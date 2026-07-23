@@ -2,9 +2,9 @@
 // ============================================================
 // Timeframe architecture:
 //   1D  →  Bias direction (EMA8/21), trend reversal exit, ADX filter
-//   1H  →  Trendline pivots (more points, fresher), ATR for stops
+//   1H  →  Trendline pivots, ATR for stops, StochRSI for UI
+//   4H  →  StochRSI for UI, 1D aggregation source
 //   15m →  StochRSI for entry trigger and exit detection
-//   4H  →  1D aggregation source only
 //
 // Entry:  1D trend LONG + 1H near trendline + 15m Stoch extreme
 // Stop:   ATR(14) on 1H × 1.5, hard cap 4%
@@ -295,7 +295,6 @@ function fitTrendline(pivots: { index: number; price: number }[]) {
   const sumX2 = pivots.reduce((s, p) => s + p.index * p.index, 0);
   const denom = n * sumX2 - sumX * sumX;
   if (denom === 0) return null;
-  // FIX: calculate slope and intercept as separate variables FIRST
   const slope = (n * sumXY - sumX * sumY) / denom;
   const intercept = (sumY - slope * sumX) / n;
   return { slope, intercept };
@@ -579,6 +578,7 @@ export function filterExpiredSignals(
 }
 
 // ─── Market Snapshot ───────────────────────────────────────
+// Computes StochRSI on ALL timeframes for UI display
 
 export function getMarketSnapshot(
   pair: string,
@@ -591,12 +591,29 @@ export function getMarketSnapshot(
 ) {
   const price = currentPrice ?? candles15m[candles15m.length - 1]?.close ?? 0;
   const trend1d = calculateTrend1D(candles1d);
+
+  // Compute StochRSI on all timeframes for UI
   const stoch15m = candles15m.length >= 100 ? stochRsi(candles15m.map(c => c.close)) : { k: 50, d: 50 };
+  const stoch1h = candles1h.length >= 100 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50 };
+  const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50 };
+
   const adxVal = adx(candles1h) ?? 0;
+  const adx1d = adx(candles1d);
 
   const closes1h = candles1h.map(c => c.close);
   const e8 = ema(closes1h, 8);
   const e21 = ema(closes1h, 21);
+
+  // Compute 4H EMA for trend4h display
+  const closes4h = candles4h.map(c => c.close);
+  const e8_4h = ema(closes4h, 8);
+  const e21_4h = ema(closes4h, 21);
+  const trend4hDir = e8_4h.length && e21_4h.length
+    ? (e8_4h[e8_4h.length - 1] > e21_4h[e21_4h.length - 1] ? "LONG" : "SHORT")
+    : null;
+  const trend4hStrength = trend4hDir
+    ? (adx(candles4h) ?? 0) >= 25 ? "STRONG" : (adx(candles4h) ?? 0) >= 20 ? "MEDIUM" : "WEAK"
+    : "WEAK";
 
   return {
     pair,
@@ -606,11 +623,20 @@ export function getMarketSnapshot(
     trendDirection: trend1d.direction,
     trendStrength: trend1d.strength,
     stoch15m,
+    stoch1h,
+    stoch4h,
     adx: Math.round(adxVal * 10) / 10,
+    adx1d: adx1d !== null ? Math.round(adx1d * 10) / 10 : null,
     ema8: e8.length ? Math.round(e8[e8.length - 1] * 100) / 100 : 0,
     ema21: e21.length ? Math.round(e21[e21.length - 1] * 100) / 100 : 0,
     signal: signalResult?.signal || null,
     debug: signalResult?.debug || [],
+    // v41-compatible fields for UI
+    trend1d: trend1d.direction ? { direction: trend1d.direction, strength: trend1d.strength } : null,
+    trend4h: trend4hDir ? { direction: trend4hDir, strength: trend4hStrength } : null,
+    stochK: stoch15m.k,
+    stochD: stoch15m.d,
+    rsi: stoch15m.k,
   };
 }
 
