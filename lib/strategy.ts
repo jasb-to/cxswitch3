@@ -1,10 +1,10 @@
 // lib/strategy.ts — v42.1 "Trend Rider" — 1H Trendline + 15m Entry
 // ============================================================
-// Timeframe architecture (what v28 was SUPPOSED to do):
+// Timeframe architecture:
 //   1D  →  Bias direction (EMA8/21), trend reversal exit, ADX filter
-//   1H  →  Trendline pivots (more points, fresher)
-//   15m →  Entry timing (StochRSI for precise pullback detection)
-//   4H  →  1D aggregation source, broader context
+//   1H  →  Trendline pivots (more points, fresher), ATR for stops
+//   15m →  StochRSI for entry trigger and exit detection
+//   4H  →  1D aggregation source only
 //
 // Entry:  1D trend LONG + 1H near trendline + 15m Stoch extreme
 // Stop:   ATR(14) on 1H × 1.5, hard cap 4%
@@ -262,7 +262,7 @@ export function calculateTrend1D(candles1d: Candle[]): {
   return { direction, strength, adx: adxVal, debug };
 }
 
-// ─── Trendline (on 1H candles) ─────────────────────────────
+// ─── Trendline (on 1H candles) ───────────────────────────
 
 interface TrendlineState {
   slope: number;
@@ -295,10 +295,10 @@ function fitTrendline(pivots: { index: number; price: number }[]) {
   const sumX2 = pivots.reduce((s, p) => s + p.index * p.index, 0);
   const denom = n * sumX2 - sumX * sumX;
   if (denom === 0) return null;
-  return {
-    slope: (n * sumXY - sumX * sumY) / denom,
-    intercept: (sumY - slope * sumX) / n,
-  };
+  // FIX: calculate slope and intercept as separate variables FIRST
+  const slope = (n * sumXY - sumX * sumY) / denom;
+  const intercept = (sumY - slope * sumX) / n;
+  return { slope, intercept };
 }
 
 function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): {
@@ -335,7 +335,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   };
 }
 
-// ─── Hysteresis (simple, in-memory) ──────────────────────────
+// ─── Hysteresis (simple, in-memory) ────────────────────────
 
 interface HystState {
   lockUntil: number;
@@ -352,7 +352,6 @@ function setHyst(pair: string, now: number): void {
 }
 
 // ─── SIGNAL GENERATION ─────────────────────────────────────
-// 1D bias → 1H trendline → 15m Stoch entry
 
 export function generateSignal(
   pair: string,
@@ -368,20 +367,17 @@ export function generateSignal(
 
   if (!Array.isArray(activeSignals)) activeSignals = [];
 
-  // One active trade per pair
   const active = activeSignals.find(s => s && s.pair === pair && s.exited === false);
   if (active) {
     debug.push(`[SIGNAL] Already active: ${active.id}`);
     return { debug };
   }
 
-  // Hysteresis
   if (getHyst(pair, now)) {
     debug.push(`[SIGNAL] Hysteresis lock active`);
     return { debug };
   }
 
-  // Cooldown: 2h after exit
   const recentExit = activeSignals
     .filter(s => s.pair === pair && s.exited === true && s.exitTimestamp)
     .sort((a, b) => (b.exitTimestamp || 0) - (a.exitTimestamp || 0))[0];
@@ -390,15 +386,13 @@ export function generateSignal(
     return { debug };
   }
 
-  // Need: 1D for bias, 1H for trendline, 15m for entry
-  if (candles1d.length < 50 || candles1h.length < 100 || candles15m.length < 100) {
-    debug.push(`[SIGNAL] Insufficient data: 1D=${candles1d.length} 1H=${candles1h.length} 15m=${candles15m.length}`);
+  if (candles4h.length < 50 || candles1d.length < 50 || candles1h.length < 100 || candles15m.length < 100) {
+    debug.push(`[SIGNAL] Insufficient data`);
     return { debug };
   }
 
   const price = currentPrice ?? candles15m[candles15m.length - 1].close;
 
-  // ─── 1D BIAS ─────────────────────────────────────────────
   const trend1d = calculateTrend1D(candles1d);
   debug.push(...trend1d.debug);
 
@@ -414,7 +408,6 @@ export function generateSignal(
 
   const direction = trend1d.direction;
 
-  // ─── 1H TRENDLINE ────────────────────────────────────────
   const tl = getTrendline(pair, candles1h, direction);
   const tlPrice = tl?.price ?? price;
   const dist = (price - tlPrice) / tlPrice;
@@ -426,7 +419,6 @@ export function generateSignal(
     return { debug };
   }
 
-  // ─── 15m STOCHRSI ────────────────────────────────────────
   const closes15m = candles15m.map(c => c.close);
   const stoch = stochRsi(closes15m);
   debug.push(`[STOCH-15m] K=${stoch.k} D=${stoch.d}`);
@@ -437,13 +429,11 @@ export function generateSignal(
     return { debug };
   }
 
-  // ─── 1H VOLUME ────────────────────────────────────────────
   const vols = candles1h.slice(-10).map(c => c.volume);
   const avgVol = avg(vols.slice(0, -1));
   const volOk = candles1h[candles1h.length - 1].volume > avgVol * 1.2;
   debug.push(`[VOL-1H] Ratio=${sf(vols[vols.length-1]/avgVol,2)} | OK=${volOk}`);
 
-  // ─── LEVELS (ATR on 1H for tighter stop) ──────────────────
   const atr1h = atr(candles1h, 14);
   const swingLows = candles1h.map(c => c.low).slice(-20);
   const swingHighs = candles1h.map(c => c.high).slice(-20);
@@ -475,7 +465,6 @@ export function generateSignal(
     return { debug };
   }
 
-  // Confidence
   let confidence = 60;
   if (trend1d.strength === "STRONG") confidence += 15;
   else if (trend1d.strength === "MEDIUM") confidence += 5;
@@ -483,7 +472,6 @@ export function generateSignal(
   if (Math.abs(dist) < 0.006) confidence += 10;
   confidence = Math.min(90, Math.max(40, confidence));
 
-  // Set hysteresis
   setHyst(pair, now);
 
   const adx1h = adx(candles1h);
@@ -512,7 +500,6 @@ export function generateSignal(
 }
 
 // ─── EXIT LOGIC ────────────────────────────────────────────
-// 1D trend flip OR 15m Stoch opposite extreme OR stop
 
 export function shouldHold(
   signal: Signal,
@@ -521,7 +508,6 @@ export function shouldHold(
   candles15m: Candle[],
   currentPrice: number
 ): HoldResult {
-  // 1. Hard stop
   if (signal.direction === "LONG" && currentPrice <= signal.stop) {
     return { shouldHold: false, reason: "stop_loss" };
   }
@@ -529,7 +515,6 @@ export function shouldHold(
     return { shouldHold: false, reason: "stop_loss" };
   }
 
-  // 2. Target hit
   if (signal.direction === "LONG" && currentPrice >= signal.target) {
     return { shouldHold: false, reason: "target_hit" };
   }
@@ -537,7 +522,6 @@ export function shouldHold(
     return { shouldHold: false, reason: "target_hit" };
   }
 
-  // 3. 1D trend reversal
   if (candles1d.length >= 50) {
     const trend = calculateTrend1D(candles1d);
     if (trend.direction && trend.direction !== signal.direction) {
@@ -545,7 +529,6 @@ export function shouldHold(
     }
   }
 
-  // 4. ⭐ 15m Stoch extreme opposite (v28 style, restored)
   const closes15m = candles15m.map(c => c.close);
   const stoch = stochRsi(closes15m);
 
@@ -652,4 +635,3 @@ export async function generateSignalAsync(
 ): Promise<SignalResult> {
   return generateSignal(pair, candles1h, candles4h, aggregateTo1D(candles4h), candles15m, activeSignals || [], currentPrice);
 }
- 
