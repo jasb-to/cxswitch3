@@ -652,3 +652,4 @@ export async function generateSignalAsync(
 ): Promise<SignalResult> {
   return generateSignal(pair, candles1h, candles4h, aggregateTo1D(candles4h), candles15m, activeSignals || [], currentPrice);
 }
+ 
