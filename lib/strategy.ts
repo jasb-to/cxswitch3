@@ -39,7 +39,7 @@ export interface Signal {
   stochK?: number;
   stochD?: number;
   version?: number;
-  setupGrade?: "A+" | "A" | "B" | "B-";
+  setupGrade?: "A+" | "A" | "B";
   positionSizePct?: number;
   earlyTrend?: boolean;     // true if entered on early trend detection
   triggerCandle?: {         // the confirming candle that fired the trigger
@@ -113,7 +113,7 @@ const SIGNAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const SCORE_A_PLUS = 90;
 const SCORE_A = 80;
 const SCORE_B = 70;
-const MIN_SCORE = 55;
+const MIN_SCORE = 70;
 
 // Position sizing by grade
 const SIZE_A_PLUS = 1.0;
@@ -121,8 +121,9 @@ const SIZE_A = 0.85;
 const SIZE_B = 0.65;
 
 // ─── Score Weights ─────────────────────────────────────────
+// Configurable — pass overrides via options.scoreWeights
 
-const SCORE_WEIGHTS = {
+const DEFAULT_SCORE_WEIGHTS = {
   // 4H Trend
   trendStrong: 25,
   trendMedium: 15,
@@ -139,11 +140,14 @@ const SCORE_WEIGHTS = {
   volumeGood: 10,          // > 1.2x avg
   volumeVeryHigh: 20,      // > 2.0x avg
   atrContraction: 15,      // ATR < 80% of 20-bar avg
+  structure: 10,           // higher low / lower high
 
   // 15m Trigger
   stochCross: 10,
   confirmingCandle: 10,    // one candle confirmation
 } as const;
+
+export type ScoreWeights = typeof DEFAULT_SCORE_WEIGHTS;
 
 // ─── Helpers ───────────────────────────────────────────────
 
@@ -494,8 +498,10 @@ export async function calculateSetupScore(
   candles1h: Candle[],
   direction: "LONG" | "SHORT",
   trend: TrendResult,
-  store: TrendlineStore = defaultTrendlineStore
+  store: TrendlineStore = defaultTrendlineStore,
+  weightOverrides?: Partial<ScoreWeights>
 ): Promise<SetupScore> {
+  const W = { ...DEFAULT_SCORE_WEIGHTS, ...weightOverrides };
   const debug: string[] = [];
   const breakdown: Record<string, number> = {};
   let total = 0;
@@ -515,23 +521,23 @@ export async function calculateSetupScore(
   // EMA Pullback score
   if (direction === "LONG") {
     if (lastPrice <= lastE21_1h * 1.005) {
-      total += SCORE_WEIGHTS.ema21Pullback;
-      breakdown["ema21Pullback"] = SCORE_WEIGHTS.ema21Pullback;
-      debug.push(`[SETUP-1H] EMA21 pullback +${SCORE_WEIGHTS.ema21Pullback}`);
+      total += W.ema21Pullback;
+      breakdown["ema21Pullback"] = W.ema21Pullback;
+      debug.push(`[SETUP-1H] EMA21 pullback +${W.ema21Pullback}`);
     } else if (lastPrice <= lastE50_1h * 1.005) {
-      total += SCORE_WEIGHTS.ema50Pullback;
-      breakdown["ema50Pullback"] = SCORE_WEIGHTS.ema50Pullback;
-      debug.push(`[SETUP-1H] EMA50 pullback +${SCORE_WEIGHTS.ema50Pullback}`);
+      total += W.ema50Pullback;
+      breakdown["ema50Pullback"] = W.ema50Pullback;
+      debug.push(`[SETUP-1H] EMA50 pullback +${W.ema50Pullback}`);
     }
   } else {
     if (lastPrice >= lastE21_1h * 0.995) {
-      total += SCORE_WEIGHTS.ema21Pullback;
-      breakdown["ema21Pullback"] = SCORE_WEIGHTS.ema21Pullback;
-      debug.push(`[SETUP-1H] EMA21 pullback +${SCORE_WEIGHTS.ema21Pullback}`);
+      total += W.ema21Pullback;
+      breakdown["ema21Pullback"] = W.ema21Pullback;
+      debug.push(`[SETUP-1H] EMA21 pullback +${W.ema21Pullback}`);
     } else if (lastPrice >= lastE50_1h * 0.995) {
-      total += SCORE_WEIGHTS.ema50Pullback;
-      breakdown["ema50Pullback"] = SCORE_WEIGHTS.ema50Pullback;
-      debug.push(`[SETUP-1H] EMA50 pullback +${SCORE_WEIGHTS.ema50Pullback}`);
+      total += W.ema50Pullback;
+      breakdown["ema50Pullback"] = W.ema50Pullback;
+      debug.push(`[SETUP-1H] EMA50 pullback +${W.ema50Pullback}`);
     }
   }
 
@@ -545,9 +551,9 @@ export async function calculateSetupScore(
       const tlPrice = fit.slope * currentIndex + fit.intercept;
       const dist = Math.abs(lastPrice - tlPrice) / tlPrice;
       if (dist < TRENDLINE_PROXIMITY_PCT) {
-        total += SCORE_WEIGHTS.nearTrendline;
-        breakdown["nearTrendline"] = SCORE_WEIGHTS.nearTrendline;
-        debug.push(`[SETUP-1H] Near trendline +${SCORE_WEIGHTS.nearTrendline} (R²=${sf(fit.r2,3)})`);
+        total += W.nearTrendline;
+        breakdown["nearTrendline"] = W.nearTrendline;
+        debug.push(`[SETUP-1H] Near trendline +${W.nearTrendline} (R²=${sf(fit.r2,3)})`);
       }
       await store.set(pair, {
         slope: fit.slope,
@@ -564,17 +570,17 @@ export async function calculateSetupScore(
     const prevLow = Math.min(...candles1h.slice(-10, -5).map(c => c.low));
     const recentLow = Math.min(...candles1h.slice(-5).map(c => c.low));
     if (recentLow > prevLow) {
-      total += 15;
-      breakdown["higherLow"] = 15;
-      debug.push(`[SETUP-1H] Higher low +15 (${sf(recentLow,2)} > ${sf(prevLow,2)})`);
+      total += 10;
+      breakdown["higherLow"] = 10;
+      debug.push(`[SETUP-1H] Higher low +10 (${sf(recentLow,2)} > ${sf(prevLow,2)})`);
     }
   } else {
     const prevHigh = Math.max(...candles1h.slice(-10, -5).map(c => c.high));
     const recentHigh = Math.max(...candles1h.slice(-5).map(c => c.high));
     if (recentHigh < prevHigh) {
-      total += 15;
-      breakdown["lowerHigh"] = 15;
-      debug.push(`[SETUP-1H] Lower high +15 (${sf(recentHigh,2)} < ${sf(prevHigh,2)})`);
+      total += 10;
+      breakdown["lowerHigh"] = 10;
+      debug.push(`[SETUP-1H] Lower high +10 (${sf(recentHigh,2)} < ${sf(prevHigh,2)})`);
     }
   }
 
@@ -585,13 +591,13 @@ export async function calculateSetupScore(
   const currentVol = candles1h[candles1h.length - 2].volume; // most recent complete candle
   const volRatio = avgVol > 0 ? currentVol / avgVol : 0;
   if (volRatio > 2.0) {
-    total += SCORE_WEIGHTS.volumeVeryHigh;
-    breakdown["volumeVeryHigh"] = SCORE_WEIGHTS.volumeVeryHigh;
-    debug.push(`[SETUP-1H] Very high volume +${SCORE_WEIGHTS.volumeVeryHigh} (${sf(volRatio,1)}x)`);
+    total += W.volumeVeryHigh;
+    breakdown["volumeVeryHigh"] = W.volumeVeryHigh;
+    debug.push(`[SETUP-1H] Very high volume +${W.volumeVeryHigh} (${sf(volRatio,1)}x)`);
   } else if (volRatio > VOL_THRESHOLD) {
-    total += SCORE_WEIGHTS.volumeGood;
-    breakdown["volumeGood"] = SCORE_WEIGHTS.volumeGood;
-    debug.push(`[SETUP-1H] Good volume +${SCORE_WEIGHTS.volumeGood} (${sf(volRatio,1)}x)`);
+    total += W.volumeGood;
+    breakdown["volumeGood"] = W.volumeGood;
+    debug.push(`[SETUP-1H] Good volume +${W.volumeGood} (${sf(volRatio,1)}x)`);
   } else {
     breakdown["volumeNormal"] = 0;
     debug.push(`[SETUP-1H] Normal volume +0 (${sf(volRatio,1)}x)`);
@@ -603,39 +609,39 @@ export async function calculateSetupScore(
     const currentATR = atrs[atrs.length - 1];
     const avgATR = avg(atrs.slice(-20));
     if (avgATR > 0 && currentATR < avgATR * 0.80) {
-      total += SCORE_WEIGHTS.atrContraction;
-      breakdown["atrContraction"] = SCORE_WEIGHTS.atrContraction;
-      debug.push(`[SETUP-1H] ATR contraction +${SCORE_WEIGHTS.atrContraction} (${sf(currentATR/avgATR*100,0)}% of avg)`);
+      total += W.atrContraction;
+      breakdown["atrContraction"] = W.atrContraction;
+      debug.push(`[SETUP-1H] ATR contraction +${W.atrContraction} (${sf(currentATR/avgATR*100,0)}% of avg)`);
     }
   }
 
   // 4H trend score contribution
   if (trend.direction === "EARLY_LONG" || trend.direction === "EARLY_SHORT") {
-    total += SCORE_WEIGHTS.earlyTrend;
-    breakdown["earlyTrend"] = SCORE_WEIGHTS.earlyTrend;
-    debug.push(`[SETUP-1H] Early trend +${SCORE_WEIGHTS.earlyTrend}`);
+    total += W.earlyTrend;
+    breakdown["earlyTrend"] = W.earlyTrend;
+    debug.push(`[SETUP-1H] Early trend +${W.earlyTrend}`);
   } else if (trend.strength === "STRONG") {
-    total += SCORE_WEIGHTS.trendStrong;
-    breakdown["trendStrong"] = SCORE_WEIGHTS.trendStrong;
-    debug.push(`[SETUP-1H] Strong trend +${SCORE_WEIGHTS.trendStrong}`);
+    total += W.trendStrong;
+    breakdown["trendStrong"] = W.trendStrong;
+    debug.push(`[SETUP-1H] Strong trend +${W.trendStrong}`);
   } else if (trend.strength === "MEDIUM") {
-    total += SCORE_WEIGHTS.trendMedium;
-    breakdown["trendMedium"] = SCORE_WEIGHTS.trendMedium;
-    debug.push(`[SETUP-1H] Medium trend +${SCORE_WEIGHTS.trendMedium}`);
+    total += W.trendMedium;
+    breakdown["trendMedium"] = W.trendMedium;
+    debug.push(`[SETUP-1H] Medium trend +${W.trendMedium}`);
   } else {
-    total += SCORE_WEIGHTS.trendWeak;
-    breakdown["trendWeak"] = SCORE_WEIGHTS.trendWeak;
-    debug.push(`[SETUP-1H] Weak trend +${SCORE_WEIGHTS.trendWeak}`);
+    total += W.trendWeak;
+    breakdown["trendWeak"] = W.trendWeak;
+    debug.push(`[SETUP-1H] Weak trend +${W.trendWeak}`);
   }
 
   if (trend.adx !== null && trend.adx >= 25) {
-    total += SCORE_WEIGHTS.adxAbove25;
-    breakdown["adxAbove25"] = SCORE_WEIGHTS.adxAbove25;
-    debug.push(`[SETUP-1H] ADX >25 +${SCORE_WEIGHTS.adxAbove25}`);
+    total += W.adxAbove25;
+    breakdown["adxAbove25"] = W.adxAbove25;
+    debug.push(`[SETUP-1H] ADX >25 +${W.adxAbove25}`);
   } else if (trend.adx !== null && trend.adx >= 20) {
-    total += SCORE_WEIGHTS.adxAbove20;
-    breakdown["adxAbove20"] = SCORE_WEIGHTS.adxAbove20;
-    debug.push(`[SETUP-1H] ADX >20 +${SCORE_WEIGHTS.adxAbove20}`);
+    total += W.adxAbove20;
+    breakdown["adxAbove20"] = W.adxAbove20;
+    debug.push(`[SETUP-1H] ADX >20 +${W.adxAbove20}`);
   }
 
   debug.push(`[SETUP-1H] Total score: ${total}`);
@@ -804,6 +810,7 @@ export async function generateSignal(
   options?: {
     trendlineStore?: TrendlineStore;
     cooldownStore?: CooldownStore;
+    scoreWeights?: Partial<ScoreWeights>;
   }
 ): Promise<SignalResult> {
   const debug: string[] = [];
@@ -844,7 +851,7 @@ export async function generateSignal(
   const isEarly = trend.direction === "EARLY_LONG" || trend.direction === "EARLY_SHORT";
 
   // ── 1H Setup Score ──
-  const setup = await calculateSetupScore(pair, candles1h, direction, trend, options?.trendlineStore);
+  const setup = await calculateSetupScore(pair, candles1h, direction, trend, options?.trendlineStore, options?.scoreWeights);
   debug.push(...setup.debug);
 
   // ── 15m Trigger ──
@@ -865,21 +872,19 @@ export async function generateSignal(
   }
   debug.push(`[SIGNAL] Score after trigger: ${totalScore}`);
 
-  // Grade
-  let grade: "A+" | "A" | "B" | "B-" | null = null;
+  // Grade — only A+/A/B exist. Below B = no trade.
+  let grade: "A+" | "A" | "B" | null = null;
   let positionSizePct = 0;
   if (totalScore >= SCORE_A_PLUS) {
     grade = "A+"; positionSizePct = SIZE_A_PLUS;
   } else if (totalScore >= SCORE_A) {
     grade = "A"; positionSizePct = SIZE_A;
-  } else if (totalScore >= SCORE_B) {
-    grade = "B"; positionSizePct = SIZE_B;
   } else if (totalScore >= MIN_SCORE) {
-    grade = "B-"; positionSizePct = 0.50;
+    grade = "B"; positionSizePct = SIZE_B;
   }
 
   if (!grade) {
-    debug.push(`[SIGNAL] REJECTED — Score ${totalScore} < ${MIN_SCORE} (minimum)`);
+    debug.push(`[SIGNAL] REJECTED — Score ${totalScore} < ${MIN_SCORE} (minimum for B)`);
     return { debug };
   }
 
@@ -1053,7 +1058,7 @@ export async function getMarketSnapshot(
 ) {
   const price = currentPrice ?? candles15m[candles15m.length - 1]?.close ?? 0;
   const trend = calculateTrend4H(candles4h);
-  const setup = await calculateSetupScore(pair, candles1h, trend.direction === "EARLY_LONG" ? "LONG" : trend.direction === "EARLY_SHORT" ? "SHORT" : trend.direction || "LONG", trend, options?.trendlineStore);
+  const setup = await calculateSetupScore(pair, candles1h, trend.direction === "EARLY_LONG" ? "LONG" : trend.direction === "EARLY_SHORT" ? "SHORT" : trend.direction || "LONG", trend, options?.trendlineStore, options?.scoreWeights);
 
   const stoch15m = candles15m.length >= 5 ? stochRsi(candles15m.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
   const stoch1h = candles1h.length >= 50 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
@@ -1109,6 +1114,7 @@ export async function generateSignalAsync(
   options?: {
     trendlineStore?: TrendlineStore;
     cooldownStore?: CooldownStore;
+    scoreWeights?: Partial<ScoreWeights>;
   }
 ): Promise<SignalResult> {
   return generateSignal(
