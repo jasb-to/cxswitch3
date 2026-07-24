@@ -669,32 +669,34 @@ export function calculateTrigger15m(
   let fired = false;
   let reason = "";
 
-  // StochRSI cross detection
+  // StochRSI cross detection — MUST be from correct extreme zone
   if (direction === "LONG") {
     if (stoch.prevK !== null && stoch.prevD !== null) {
-      if (stoch.prevK < stoch.prevD && stoch.k >= stoch.d) {
+      // K crosses above D FROM oversold (<20)
+      if (stoch.prevK < stoch.prevD && stoch.k >= stoch.d && stoch.k < STOCH_OVERSOLD) {
         fired = true;
-        reason = `K crossed above D (K=${stoch.k}, D=${stoch.d})`;
+        reason = `K crossed above D from oversold (K=${stoch.k}, D=${stoch.d})`;
       }
     }
   } else {
     if (stoch.prevK !== null && stoch.prevD !== null) {
-      if (stoch.prevK > stoch.prevD && stoch.k <= stoch.d) {
+      // K crosses below D FROM overbought (>80)
+      if (stoch.prevK > stoch.prevD && stoch.k <= stoch.d && stoch.k > STOCH_OVERBOUGHT) {
         fired = true;
-        reason = `K crossed below D (K=${stoch.k}, D=${stoch.d})`;
+        reason = `K crossed below D from overbought (K=${stoch.k}, D=${stoch.d})`;
       }
     }
   }
 
   if (!fired) {
     reason = direction === "LONG"
-      ? `No LONG trigger: K=${stoch.k} D=${stoch.d}`
-      : `No SHORT trigger: K=${stoch.k} D=${stoch.d}`;
+      ? `No LONG trigger: K=${stoch.k} D=${stoch.d} (need cross from below ${STOCH_OVERSOLD})`
+      : `No SHORT trigger: K=${stoch.k} D=${stoch.d} (need cross from above ${STOCH_OVERBOUGHT})`;
     debug.push(`[TRIGGER-15m] ${reason}`);
     return { fired, reason, stochK: stoch.k, stochD: stoch.d, prevK: stoch.prevK, prevD: stoch.prevD, confirmingCandle: null, debug };
   }
 
-  // One-candle confirmation — strict rules only
+  // One-candle confirmation — MUST break previous extreme + directional candle
   const crossIndex = candles15m.length - 1; // cross happened on last candle
   if (crossIndex < 1) {
     debug.push("[TRIGGER-15m] Cross detected but no confirming candle yet");
@@ -706,18 +708,16 @@ export function calculateTrigger15m(
 
   let confirmed = false;
   if (direction === "LONG") {
-    // STRICT: Close must break above previous candle high
-    // This proves buyers absorbed supply and took control
-    if (confirmingCandle.close > crossCandle.high) {
+    // Buyers took control: close above previous high AND bullish candle
+    if (confirmingCandle.close > crossCandle.high && confirmingCandle.close > confirmingCandle.open) {
       confirmed = true;
-      reason += " | Confirmed: close above previous high";
+      reason += " | Confirmed: close above previous high + bullish";
     }
   } else {
-    // STRICT: Close must break below previous candle low
-    // This proves sellers overwhelmed demand and took control
-    if (confirmingCandle.close < crossCandle.low) {
+    // Sellers took control: close below previous low AND bearish candle
+    if (confirmingCandle.close < crossCandle.low && confirmingCandle.close < confirmingCandle.open) {
       confirmed = true;
-      reason += " | Confirmed: close below previous low";
+      reason += " | Confirmed: close below previous low + bearish";
     }
   }
 
