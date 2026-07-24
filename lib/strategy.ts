@@ -114,7 +114,7 @@ const SCORE_A_PLUS = 90;
 const SCORE_A = 80;
 const SCORE_B = 70;
 const SCORE_C = 60;
-const MIN_SCORE = 60;
+const MIN_SCORE = 50;
 
 // Position sizing by grade
 const SIZE_A_PLUS = 1.0;
@@ -411,10 +411,16 @@ export function calculateTrend4H(candles4h: Candle[]): TrendResult {
     }
   }
 
-  // ADX filter for non-early trends
-  if (!earlyTrend && adxVal !== null && adxVal < MIN_ADX) {
-    debug.push(`[TREND-4H] ADX ${adxVal} < ${MIN_ADX} — NEUTRAL`);
-    return { direction: "NEUTRAL", strength, adx: adxVal, ema8: lastE8, ema21: lastE21, ema50: lastE50, hh, hl, lh, ll, debug };
+  // ADX filter with buffer for non-early trends
+  if (!earlyTrend && adxVal !== null) {
+    if (adxVal < 18) {
+      debug.push(`[TREND-4H] ADX ${adxVal} < 18 — NEUTRAL`);
+      return { direction: "NEUTRAL", strength, adx: adxVal, ema8: lastE8, ema21: lastE21, ema50: lastE50, hh, hl, lh, ll, debug };
+    } else if (adxVal < MIN_ADX) {
+      // ADX 18-20: weak but tradeable trend
+      strength = "WEAK";
+      debug.push(`[TREND-4H] ADX ${adxVal} in buffer zone (18–20) — WEAK trend allowed`);
+    }
   }
 
   debug.push(`[TREND-4H] ${direction} ${strength} | ADX=${sf(adxVal ?? 0,1)} | EMA8=${sf(lastE8,2)} EMA21=${sf(lastE21,2)} EMA50=${sf(lastE50,2)} | HH=${hh} HL=${hl} LH=${lh} LL=${ll}`);
@@ -557,9 +563,10 @@ export async function calculateSetupScore(
   }
 
   // Volume scoring (never reject, just score)
-  const vols = candles1h.slice(-10).map(c => c.volume);
-  const avgVol = avg(vols.slice(0, -1));
-  const currentVol = candles1h[candles1h.length - 1].volume;
+  // Use 2nd-to-last candle as "current" — last candle is in-progress and often has volume=0
+  const vols = candles1h.slice(-11, -1).map(c => c.volume); // last 10 COMPLETE candles
+  const avgVol = avg(vols.slice(0, -1)); // avg of first 9
+  const currentVol = candles1h[candles1h.length - 2].volume; // most recent complete candle
   const volRatio = avgVol > 0 ? currentVol / avgVol : 0;
   if (volRatio > 2.0) {
     total += SCORE_WEIGHTS.volumeVeryHigh;
@@ -827,18 +834,19 @@ export async function generateSignal(
   // ── 15m Trigger ──
   const trigger = calculateTrigger15m(candles15m, direction);
   debug.push(...trigger.debug);
-  if (!trigger.fired) {
-    debug.push("[SIGNAL] REJECTED — No 15m trigger");
-    return { debug };
-  }
 
-  // Add trigger score
+  // Trigger contributes to score instead of hard gate
   let totalScore = setup.total;
-  totalScore += SCORE_WEIGHTS.stochCross;
-  setup.breakdown["stochCross"] = SCORE_WEIGHTS.stochCross;
-  if (trigger.confirmingCandle) {
-    totalScore += SCORE_WEIGHTS.confirmingCandle;
-    setup.breakdown["confirmingCandle"] = SCORE_WEIGHTS.confirmingCandle;
+  if (trigger.fired) {
+    totalScore += SCORE_WEIGHTS.stochCross;
+    setup.breakdown["stochCross"] = SCORE_WEIGHTS.stochCross;
+    if (trigger.confirmingCandle) {
+      totalScore += SCORE_WEIGHTS.confirmingCandle;
+      setup.breakdown["confirmingCandle"] = SCORE_WEIGHTS.confirmingCandle;
+    }
+    debug.push(`[SIGNAL] Trigger fired +${SCORE_WEIGHTS.stochCross + (trigger.confirmingCandle ? SCORE_WEIGHTS.confirmingCandle : 0)}`);
+  } else {
+    debug.push(`[SIGNAL] No trigger +0`);
   }
   debug.push(`[SIGNAL] Score after trigger: ${totalScore}`);
 
@@ -851,7 +859,7 @@ export async function generateSignal(
     grade = "A"; positionSizePct = SIZE_A;
   } else if (totalScore >= SCORE_B) {
     grade = "B"; positionSizePct = SIZE_B;
-  } else if (totalScore >= SCORE_C) {
+  } else if (totalScore >= MIN_SCORE) {
     grade = "C"; positionSizePct = SIZE_C;
   }
 
