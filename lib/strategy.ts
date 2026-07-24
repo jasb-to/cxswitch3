@@ -694,7 +694,7 @@ export function calculateTrigger15m(
     return { fired, reason, stochK: stoch.k, stochD: stoch.d, prevK: stoch.prevK, prevD: stoch.prevD, confirmingCandle: null, debug };
   }
 
-  // One-candle confirmation
+  // One-candle confirmation — strict rules only
   const crossIndex = candles15m.length - 1; // cross happened on last candle
   if (crossIndex < 1) {
     debug.push("[TRIGGER-15m] Cross detected but no confirming candle yet");
@@ -706,34 +706,24 @@ export function calculateTrigger15m(
 
   let confirmed = false;
   if (direction === "LONG") {
-    // Bullish confirmation: close above previous high, or higher low + break of prev high
+    // STRICT: Close must break above previous candle high
+    // This proves buyers absorbed supply and took control
     if (confirmingCandle.close > crossCandle.high) {
       confirmed = true;
       reason += " | Confirmed: close above previous high";
-    } else if (confirmingCandle.low > crossCandle.low && confirmingCandle.close > crossCandle.close) {
-      confirmed = true;
-      reason += " | Confirmed: higher low + higher close";
-    } else if (confirmingCandle.close > confirmingCandle.open && confirmingCandle.close > crossCandle.close) {
-      confirmed = true;
-      reason += " | Confirmed: bullish candle + higher close";
     }
   } else {
-    // Bearish confirmation
+    // STRICT: Close must break below previous candle low
+    // This proves sellers overwhelmed demand and took control
     if (confirmingCandle.close < crossCandle.low) {
       confirmed = true;
       reason += " | Confirmed: close below previous low";
-    } else if (confirmingCandle.high < crossCandle.high && confirmingCandle.close < crossCandle.close) {
-      confirmed = true;
-      reason += " | Confirmed: lower high + lower close";
-    } else if (confirmingCandle.close < confirmingCandle.open && confirmingCandle.close < crossCandle.close) {
-      confirmed = true;
-      reason += " | Confirmed: bearish candle + lower close";
     }
   }
 
   if (!confirmed) {
     debug.push(`[TRIGGER-15m] Cross detected but no confirmation (${reason})`);
-    return { fired: false, reason: "Cross without confirmation", stochK: stoch.k, stochD: stoch.d, prevK: stoch.prevK, prevD: stoch.prevD, confirmingCandle: null, debug };
+    return { fired: false, reason: "Cross without strong confirmation", stochK: stoch.k, stochD: stoch.d, prevK: stoch.prevK, prevD: stoch.prevD, confirmingCandle: null, debug };
   }
 
   debug.push(`[TRIGGER-15m] ✅ FIRED: ${reason}`);
