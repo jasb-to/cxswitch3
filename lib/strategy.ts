@@ -39,7 +39,7 @@ export interface Signal {
   stochK?: number;
   stochD?: number;
   version?: number;
-  setupGrade?: "A+" | "A" | "B" | "C";
+  setupGrade?: "A+" | "A" | "B" | "B-";
   positionSizePct?: number;
   earlyTrend?: boolean;     // true if entered on early trend detection
   triggerCandle?: {         // the confirming candle that fired the trigger
@@ -113,14 +113,12 @@ const SIGNAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const SCORE_A_PLUS = 90;
 const SCORE_A = 80;
 const SCORE_B = 70;
-const SCORE_C = 60;
-const MIN_SCORE = 50;
+const MIN_SCORE = 55;
 
 // Position sizing by grade
 const SIZE_A_PLUS = 1.0;
 const SIZE_A = 0.85;
 const SIZE_B = 0.65;
-const SIZE_C = 0.40;
 
 // ─── Score Weights ─────────────────────────────────────────
 
@@ -417,7 +415,6 @@ export function calculateTrend4H(candles4h: Candle[]): TrendResult {
       debug.push(`[TREND-4H] ADX ${adxVal} < 18 — NEUTRAL`);
       return { direction: "NEUTRAL", strength, adx: adxVal, ema8: lastE8, ema21: lastE21, ema50: lastE50, hh, hl, lh, ll, debug };
     } else if (adxVal < MIN_ADX) {
-      // ADX 18-20: weak but tradeable trend
       strength = "WEAK";
       debug.push(`[TREND-4H] ADX ${adxVal} in buffer zone (18–20) — WEAK trend allowed`);
     }
@@ -559,6 +556,25 @@ export async function calculateSetupScore(
         direction,
         r2: fit.r2,
       });
+    }
+  }
+
+  // Market structure bonus
+  if (direction === "LONG") {
+    const prevLow = Math.min(...candles1h.slice(-10, -5).map(c => c.low));
+    const recentLow = Math.min(...candles1h.slice(-5).map(c => c.low));
+    if (recentLow > prevLow) {
+      total += 15;
+      breakdown["higherLow"] = 15;
+      debug.push(`[SETUP-1H] Higher low +15 (${sf(recentLow,2)} > ${sf(prevLow,2)})`);
+    }
+  } else {
+    const prevHigh = Math.max(...candles1h.slice(-10, -5).map(c => c.high));
+    const recentHigh = Math.max(...candles1h.slice(-5).map(c => c.high));
+    if (recentHigh < prevHigh) {
+      total += 15;
+      breakdown["lowerHigh"] = 15;
+      debug.push(`[SETUP-1H] Lower high +15 (${sf(recentHigh,2)} < ${sf(prevHigh,2)})`);
     }
   }
 
@@ -834,24 +850,23 @@ export async function generateSignal(
   // ── 15m Trigger ──
   const trigger = calculateTrigger15m(candles15m, direction);
   debug.push(...trigger.debug);
+  if (!trigger.fired) {
+    debug.push("[SIGNAL] REJECTED — No 15m trigger");
+    return { debug };
+  }
 
-  // Trigger contributes to score instead of hard gate
+  // Add trigger score
   let totalScore = setup.total;
-  if (trigger.fired) {
-    totalScore += SCORE_WEIGHTS.stochCross;
-    setup.breakdown["stochCross"] = SCORE_WEIGHTS.stochCross;
-    if (trigger.confirmingCandle) {
-      totalScore += SCORE_WEIGHTS.confirmingCandle;
-      setup.breakdown["confirmingCandle"] = SCORE_WEIGHTS.confirmingCandle;
-    }
-    debug.push(`[SIGNAL] Trigger fired +${SCORE_WEIGHTS.stochCross + (trigger.confirmingCandle ? SCORE_WEIGHTS.confirmingCandle : 0)}`);
-  } else {
-    debug.push(`[SIGNAL] No trigger +0`);
+  totalScore += SCORE_WEIGHTS.stochCross;
+  setup.breakdown["stochCross"] = SCORE_WEIGHTS.stochCross;
+  if (trigger.confirmingCandle) {
+    totalScore += SCORE_WEIGHTS.confirmingCandle;
+    setup.breakdown["confirmingCandle"] = SCORE_WEIGHTS.confirmingCandle;
   }
   debug.push(`[SIGNAL] Score after trigger: ${totalScore}`);
 
   // Grade
-  let grade: "A+" | "A" | "B" | "C" | null = null;
+  let grade: "A+" | "A" | "B" | "B-" | null = null;
   let positionSizePct = 0;
   if (totalScore >= SCORE_A_PLUS) {
     grade = "A+"; positionSizePct = SIZE_A_PLUS;
@@ -860,7 +875,7 @@ export async function generateSignal(
   } else if (totalScore >= SCORE_B) {
     grade = "B"; positionSizePct = SIZE_B;
   } else if (totalScore >= MIN_SCORE) {
-    grade = "C"; positionSizePct = SIZE_C;
+    grade = "B-"; positionSizePct = 0.50;
   }
 
   if (!grade) {
