@@ -17,10 +17,13 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Normalize markets — v42.1 returns real data for all timeframes
+    // Normalize markets — ensure pair field exists on every market
     const markets = (snapshot.markets || []).map((m: any) => {
-      const direction = m.trendDirection;
-      const strength = m.trendStrength || "WEAK";
+      // FIX: Ensure pair is always present
+      const marketPair = m.pair || m.pairName || "UNKNOWN";
+
+      const direction = m.trendDirection || m.bias?.direction || null;
+      const strength = m.trendStrength || m.bias?.strength || "WEAK";
       const stoch15m = m.stoch15m || { k: 50, d: 50 };
       const stoch1h = m.stoch1h || { k: 50, d: 50 };
       const stoch4h = m.stoch4h || { k: 50, d: 50 };
@@ -42,21 +45,21 @@ export async function GET(req: NextRequest) {
 
       return {
         // v42.1 native fields
-        pair: m.pair,
-        price: m.price,
-        timestamp: m.timestamp,
-        trend: m.trend,
-        trendDirection: m.trendDirection,
-        trendStrength: m.trendStrength,
+        pair: marketPair,
+        price: m.price ?? 0,
+        timestamp: m.timestamp ?? Date.now(),
+        trend: m.trend ?? (direction ? `${direction} ${strength}` : "NONE"),
+        trendDirection: direction,
+        trendStrength: strength,
         stoch15m,
         stoch1h,
         stoch4h,
-        adx: m.adx,
-        adx1d: m.adx1d,
-        ema8: m.ema8,
-        ema21: m.ema21,
-        signal: m.signal,
-        debug: m.debug,
+        adx: m.adx ?? null,
+        adx1d: m.adx1d ?? null,
+        ema8: m.ema8 ?? 0,
+        ema21: m.ema21 ?? 0,
+        signal: m.signal || null,
+        debug: m.debug || [],
 
         // v41-compatible derived fields
         bias: direction ? { direction, strength: strength === "STRONG" ? 80 : strength === "MEDIUM" ? 60 : 30 } : null,
@@ -65,7 +68,7 @@ export async function GET(req: NextRequest) {
         stochK: stoch15m.k,
         stochD: stoch15m.d,
         rsi: stoch15m.k,
-        volumeConfirmed: false,
+        volumeConfirmed: m.volumeConfirmed ?? false,
         trendStrengthLabel: strength,
         isPullback,
         pullbackTier: isPullback ? (stoch15m.k < 20 || stoch15m.k > 80 ? "DEEP" : "SHALLOW") : null,
@@ -84,8 +87,8 @@ export async function GET(req: NextRequest) {
         activeTrade: m.activeTrade || null,
 
         // v41 fields UI references
-        isExhausted: false,
-        exhaustionReason: "",
+        isExhausted: m.isExhausted ?? false,
+        exhaustionReason: m.exhaustionReason ?? "",
       };
     });
 
