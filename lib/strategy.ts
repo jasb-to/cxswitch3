@@ -813,6 +813,7 @@ export async function generateSignal(
     scoreWeights?: Partial<ScoreWeights>;
   }
 ): Promise<SignalResult> {
+  const W = { ...DEFAULT_SCORE_WEIGHTS, ...options?.scoreWeights };
   const debug: string[] = [];
   const now = Date.now();
   const price = currentPrice ?? candles15m[candles15m.length - 1]?.close ?? 0;
@@ -864,11 +865,11 @@ export async function generateSignal(
 
   // Add trigger score
   let totalScore = setup.total;
-  totalScore += SCORE_WEIGHTS.stochCross;
-  setup.breakdown["stochCross"] = SCORE_WEIGHTS.stochCross;
+  totalScore += W.stochCross;
+  setup.breakdown["stochCross"] = W.stochCross;
   if (trigger.confirmingCandle) {
-    totalScore += SCORE_WEIGHTS.confirmingCandle;
-    setup.breakdown["confirmingCandle"] = SCORE_WEIGHTS.confirmingCandle;
+    totalScore += W.confirmingCandle;
+    setup.breakdown["confirmingCandle"] = W.confirmingCandle;
   }
   debug.push(`[SIGNAL] Score after trigger: ${totalScore}`);
 
