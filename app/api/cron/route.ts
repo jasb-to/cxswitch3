@@ -88,7 +88,8 @@ export async function GET(req: NextRequest) {
         for (const signal of activeForPair) {
           if (signal.exited) continue;
 
-          const holdResult = shouldHold(signal, candles1h, candles1d, candles15m, price);
+          // FIX: Pass candles4h as 2nd param, candles15m as 3rd (correct order for shouldHold)
+          const holdResult = shouldHold(signal, candles1h, candles4h, candles15m, price);
 
           const rawPnl = signal.direction === "LONG"
             ? ((price - signal.entry) / signal.entry) * 100
@@ -121,7 +122,9 @@ export async function GET(req: NextRequest) {
       } else {
         // ─── Evaluate New Signals ───────────────────────────
         console.log(`[CRON] ${pair} | No active trades — evaluating`);
-        const result = generateSignal(pair, candles1h, candles4h, candles1d, candles15m, activeSignals, price);
+
+        // FIX: Await async generateSignal
+        const result = await generateSignal(pair, candles1h, candles4h, candles1d, candles15m, activeSignals, price);
         signalResults[pair] = result || { debug: [] };
 
         if (result?.debug?.length)
@@ -146,7 +149,11 @@ export async function GET(req: NextRequest) {
       }
 
       // ─── Snapshot ─────────────────────────────────────────
-      const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m, candles1d, price, signalResults[pair]);
+      // FIX: Await async getMarketSnapshot
+      const snapshot = await getMarketSnapshot(pair, candles1h, candles4h, candles15m, candles1d, price, signalResults[pair]);
+
+      // FIX: Ensure pair is always set
+      snapshot.pair = pair;
 
       // Enrich activeTrade for UI compatibility
       if (results[pair]?.status === "HOLDING" && activeForPair.length > 0) {
@@ -166,8 +173,8 @@ export async function GET(req: NextRequest) {
           stop: s.stop,
           target: s.target,
           entryType: s.entryType || "PULLBACK",
-          trendlinePrice: s.entry, // v42.1 doesn't track this separately, use entry as fallback
-          lockedStop: null, // v42.1 has no trailing stop
+          trendlinePrice: s.entry,
+          lockedStop: null,
           currentR: currentR,
           phase: currentR >= 2 ? "TREND" : currentR >= 1 ? "BUILDING" : "ENTRY",
         };
