@@ -17,7 +17,7 @@ export interface Signal {
   entry: number;
   stop: number;
   target: number;
-  confidence: number;      // 0-100, derived from checklist completion
+  confidence: number;
   timestamp: number;
   exited: boolean;
   status?: "ACTIVE" | "EXITED";
@@ -75,10 +75,10 @@ export interface CheckItem {
 }
 
 export interface SetupChecklist {
-  bias: CheckItem;           // 4H
-  location: CheckItem;        // 1H
-  trigger: CheckItem;         // 15m
-  timing: CheckItem | null;   // 5m (null if not evaluated)
+  bias: CheckItem;
+  location: CheckItem;
+  trigger: CheckItem;
+  timing: CheckItem | null;
   grade: "A" | "B" | null;
   allPassed: boolean;
 }
@@ -311,7 +311,6 @@ export function calculateTrend4H(candles4h: Candle[]): TrendResult {
     else if (adxVal !== null && adxVal >= 20) strength = "MEDIUM";
   }
 
-  // No EARLY states — bias is binary
   if (direction !== "NEUTRAL" && adxVal !== null && adxVal < 18) {
     debug.push(`[BIAS-4H] ADX ${adxVal} < 18 → NEUTRAL`);
     return { direction: "NEUTRAL", strength: "WEAK", adx: adxVal, ema8: lastE8, ema21: lastE21, ema50: lastE50, hh, hl, lh, ll, debug };
@@ -394,7 +393,6 @@ export async function check1HLocation(
   store: TrendlineStore = defaultTrendlineStore
 ): Promise<{ passed: boolean; detail: string; items: CheckItem[] }> {
   const items: CheckItem[] = [];
-  const debug: string[] = [];
 
   if (candles1h.length < 50) {
     return { passed: false, detail: "Insufficient 1H data", items };
@@ -414,8 +412,8 @@ export async function check1HLocation(
     items.push({
       name: "EMA Pullback",
       passed: emaPullback,
-      detail: emaPullback 
-        ? `Price ${sf(lastPrice,2)} near EMA21 ${sf(lastE21_1h,2)}` 
+      detail: emaPullback
+        ? `Price ${sf(lastPrice,2)} near EMA21 ${sf(lastE21_1h,2)}`
         : `Price ${sf(lastPrice,2)} above EMA21 ${sf(lastE21_1h,2)}`
     });
   } else {
@@ -423,8 +421,8 @@ export async function check1HLocation(
     items.push({
       name: "EMA Pullback",
       passed: emaPullback,
-      detail: emaPullback 
-        ? `Price ${sf(lastPrice,2)} near EMA21 ${sf(lastE21_1h,2)}` 
+      detail: emaPullback
+        ? `Price ${sf(lastPrice,2)} near EMA21 ${sf(lastE21_1h,2)}`
         : `Price ${sf(lastPrice,2)} below EMA21 ${sf(lastE21_1h,2)}`
     });
   }
@@ -443,8 +441,8 @@ export async function check1HLocation(
       items.push({
         name: "Trendline",
         passed: trendlineOk,
-        detail: trendlineOk 
-          ? `Near trendline (R²=${sf(fit.r2,2)}, dist=${sf(dist*100,1)}%)` 
+        detail: trendlineOk
+          ? `Near trendline (R²=${sf(fit.r2,2)}, dist=${sf(dist*100,1)}%)`
           : `Far from trendline (dist=${sf(dist*100,1)}%)`
       });
       await store.set(pair, {
@@ -470,8 +468,8 @@ export async function check1HLocation(
     items.push({
       name: "Structure",
       passed: structureOk,
-      detail: structureOk 
-        ? `Higher low: ${sf(recentLow,2)} > ${sf(prevLow,2)}` 
+      detail: structureOk
+        ? `Higher low: ${sf(recentLow,2)} > ${sf(prevLow,2)}`
         : `No higher low`
     });
   } else {
@@ -481,8 +479,8 @@ export async function check1HLocation(
     items.push({
       name: "Structure",
       passed: structureOk,
-      detail: structureOk 
-        ? `Lower high: ${sf(recentHigh,2)} < ${sf(prevHigh,2)}` 
+      detail: structureOk
+        ? `Lower high: ${sf(recentHigh,2)} < ${sf(prevHigh,2)}`
         : `No lower high`
     });
   }
@@ -496,8 +494,8 @@ export async function check1HLocation(
   items.push({
     name: "Volume",
     passed: volumeOk,
-    detail: volumeOk 
-      ? `Volume ${sf(volRatio,1)}x avg` 
+    detail: volumeOk
+      ? `Volume ${sf(volRatio,1)}x avg`
       : `Volume ${sf(volRatio,1)}x avg (below ${VOL_THRESHOLD}x)`
   });
 
@@ -507,8 +505,8 @@ export async function check1HLocation(
 
   return {
     passed,
-    detail: passed 
-      ? `Location valid: ${passedItems}/4 checks passed` 
+    detail: passed
+      ? `Location valid: ${passedItems}/4 checks passed`
       : `Location weak: ${passedItems}/4 checks, EMA pullback=${emaPullback}`,
     items
   };
@@ -583,7 +581,7 @@ export function check15mTrigger(
     const prevE21 = e21_15m[e21_15m.length - 2];
     const lastE8 = e8_15m[e8_15m.length - 1];
     const lastE21 = e21_15m[e21_15m.length - 1];
-    
+
     if (direction === "LONG" && prevE8 <= prevE21 && lastE8 > lastE21) {
       emaFired = true;
       result.triggerType = "ema_cross";
@@ -600,14 +598,14 @@ export function check15mTrigger(
   const prev = candles15m[candles15m.length - 2];
   let engulfingFired = false;
   if (direction === "LONG") {
-    if (last.close > last.open && prev.close < prev.open && 
+    if (last.close > last.open && prev.close < prev.open &&
         last.close > prev.open && last.open < prev.close) {
       engulfingFired = true;
       result.triggerType = "engulfing";
       result.reason = `Bullish engulfing`;
     }
   } else {
-    if (last.close < last.open && prev.close > prev.open && 
+    if (last.close < last.open && prev.close > prev.open &&
         last.close < prev.open && last.open > prev.close) {
       engulfingFired = true;
       result.triggerType = "engulfing";
@@ -621,7 +619,7 @@ export function check15mTrigger(
   const upperWick = last.high - Math.max(last.open, last.close);
   const lowerWick = Math.min(last.open, last.close) - last.low;
   let rejectionFired = false;
-  
+
   if (direction === "LONG" && body > 0 && lowerWick > body * 1.5 && last.close > last.open) {
     rejectionFired = true;
     result.triggerType = "rejection";
@@ -634,7 +632,7 @@ export function check15mTrigger(
 
   // ONE trigger is enough
   result.fired = stochFired || emaFired || engulfingFired || rejectionFired;
-  
+
   if (result.fired) {
     result.confirmingCandle = last;
     debug.push(`[TRIGGER-15m] ✅ ${result.triggerType?.toUpperCase()}: ${result.reason}`);
@@ -662,40 +660,36 @@ export function check5mTiming(
   maxWaitCandles: number = 3
 ): TimingResult {
   const debug: string[] = [];
-  
+
   if (candles5m.length < maxWaitCandles + 1) {
     return { improved: false, entry: 0, reason: "Insufficient 5m data", candlesWaited: 0, debug };
   }
 
-  const recent = candles5m.slice(-maxWaitCandles - 1, -1); // last N complete candles
+  const recent = candles5m.slice(-maxWaitCandles - 1, -1);
   let bestEntry = direction === "LONG" ? Infinity : 0;
   let bestReason = "";
   let improved = false;
 
   for (let i = 0; i < recent.length; i++) {
     const c = recent[i];
-    
+
     if (direction === "LONG") {
-      // Bullish candle after trigger
       if (c.close > c.open && c.close < bestEntry) {
         bestEntry = c.close;
         bestReason = `Bullish candle at 5m[${i}]`;
         improved = true;
       }
-      // Higher low
       if (i > 0 && c.low > recent[i-1].low && c.low < bestEntry) {
         bestEntry = c.low;
         bestReason = `Higher low at 5m[${i}]`;
         improved = true;
       }
     } else {
-      // Bearish candle after trigger
       if (c.close < c.open && c.close > bestEntry) {
         bestEntry = c.close;
         bestReason = `Bearish candle at 5m[${i}]`;
         improved = true;
       }
-      // Lower high
       if (i > 0 && c.high < recent[i-1].high && c.high > bestEntry) {
         bestEntry = c.high;
         bestReason = `Lower high at 5m[${i}]`;
@@ -704,7 +698,6 @@ export function check5mTiming(
     }
   }
 
-  // If nothing improved, enter at market on last 5m close
   if (!improved) {
     bestEntry = candles5m[candles5m.length - 1].close;
     bestReason = `No 5m improvement after ${maxWaitCandles} candles — entering at market`;
@@ -716,7 +709,7 @@ export function check5mTiming(
     improved,
     entry: bestEntry,
     reason: bestReason,
-    candlesWaited: improved ? recent.findIndex(c => 
+    candlesWaited: improved ? recent.findIndex(c =>
       direction === "LONG" ? c.close === bestEntry : c.close === bestEntry
     ) + 1 : maxWaitCandles,
     debug
@@ -831,8 +824,8 @@ export async function generateSignal(
   const biasItem: CheckItem = {
     name: "4H Bias",
     passed: trend.direction !== "NEUTRAL",
-    detail: trend.direction === "NEUTRAL" 
-      ? `NEUTRAL (ADX=${sf(trend.adx ?? 0,1)})` 
+    detail: trend.direction === "NEUTRAL"
+      ? `NEUTRAL (ADX=${sf(trend.adx ?? 0,1)})`
       : `${trend.direction} ${trend.strength}`
   };
 
@@ -882,13 +875,13 @@ export async function generateSignal(
   if (candles5m && candles5m.length >= 4) {
     const timing = check5mTiming(candles5m, direction);
     debug.push(...timing.debug);
-    
+
     timingItem = {
       name: "5m Timing",
-      passed: true, // Never vetoes, only improves
+      passed: true,
       detail: timing.reason
     };
-    
+
     if (timing.improved) {
       entryPrice = timing.entry;
     }
@@ -913,12 +906,12 @@ export async function generateSignal(
     allPassed: biasItem.passed && locationItem.passed && triggerItem.passed
   };
 
-  // A: All 3 core checks pass + 5m improved entry
-  // B: Bias + Trigger pass, Location may be marginal, 5m didn't improve
   let grade: "A" | "B" | null = null;
   let positionSizePct = 0;
 
-  if (biasItem.passed && locationItem.passed && triggerItem.passed && timingItem.detail.includes("Bullish") || timingItem.detail.includes("Bearish")) {
+  const timingImproved = timingItem.detail.includes("Bullish") || timingItem.detail.includes("Bearish");
+
+  if (biasItem.passed && locationItem.passed && triggerItem.passed && timingImproved) {
     grade = "A";
     positionSizePct = SIZE_A;
     checklist.grade = "A";
@@ -979,7 +972,7 @@ export async function generateSignal(
     (biasItem.passed ? 25 : 0) +
     (locationItem.passed ? 35 : 15) +
     (triggerItem.passed ? 25 : 0) +
-    (timingItem.detail.includes("Bullish") || timingItem.detail.includes("Bearish") ? 15 : 5)
+    (timingImproved ? 15 : 5)
   );
 
   const signal: Signal = {
@@ -1034,7 +1027,7 @@ export function shouldHold(
   if (signal.direction === "SHORT" && currentPrice >= signal.stop) {
     return { shouldHold: false, reason: "stop_loss" };
   }
-  
+
   // Targets
   if (signal.direction === "LONG" && currentPrice >= signal.target) {
     return { shouldHold: false, reason: "target_hit" };
@@ -1054,7 +1047,7 @@ export function shouldHold(
   // 15m Stoch extreme — ONLY exit if confirmed by 1H
   const closes15m = candles15m.map(c => c.close);
   const stoch15m = stochRsi(closes15m);
-  
+
   const closes1h = candles1h.map(c => c.close);
   const stoch1h = stochRsi(closes1h);
 
@@ -1066,14 +1059,14 @@ export function shouldHold(
     ? stoch1h.k > STOCH_OVERBOUGHT
     : stoch1h.k < STOCH_OVERSOLD;
 
-  const severeExtreme = signal.direction === "LONG" 
-    ? stoch15m.k > 95 
+  const severeExtreme = signal.direction === "LONG"
+    ? stoch15m.k > 95
     : stoch15m.k < 5;
 
   if (stochOpposite15m && (stochOpposite1h || severeExtreme)) {
-    return { 
-      shouldHold: false, 
-      reason: severeExtreme ? "stoch_severe_extreme" : "stoch_extreme_confirmed" 
+    return {
+      shouldHold: false,
+      reason: severeExtreme ? "stoch_severe_extreme" : "stoch_extreme_confirmed"
     };
   }
 
@@ -1114,6 +1107,85 @@ export function filterExpiredSignals(
   return { active, exited };
 }
 
+// ─── Market Snapshot ───────────────────────────────────────
+
+export async function getMarketSnapshot(
+  pair: string,
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candles15m: Candle[],
+  candles5m: Candle[],
+  currentPrice?: number,
+  signalResult?: SignalResult,
+  options?: {
+    trendlineStore?: TrendlineStore;
+  }
+) {
+  const price = currentPrice ?? candles5m?.[candles5m.length - 1]?.close ?? candles15m?.[candles15m.length - 1]?.close ?? 0;
+  const trend = calculateTrend4H(candles4h);
+  const location = candles1h.length >= 50
+    ? await check1HLocation(pair, candles1h, trend.direction === "LONG" ? "LONG" : "SHORT", trend, options?.trendlineStore)
+    : { passed: false, detail: "No data", items: [] };
+
+  const stoch15m = candles15m.length >= 5 ? stochRsi(candles15m.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
+  const stoch1h = candles1h.length >= 50 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
+  const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
+
+  const closes1h = candles1h.map(c => c.close);
+  const e8_1h = ema(closes1h, 8);
+  const e21_1h = ema(closes1h, 21);
+
+  return {
+    pair,
+    price: Math.round(price * 100) / 100,
+    timestamp: Date.now(),
+    trend: trend.direction ? `${trend.direction} ${trend.strength}` : "NEUTRAL",
+    trendDirection: trend.direction,
+    trendStrength: trend.strength,
+    locationPassed: location.passed,
+    locationDetail: location.detail,
+    stoch15m,
+    stoch1h,
+    stoch4h,
+    adx: trend.adx,
+    ema8_1h: e8_1h.length ? Math.round(e8_1h[e8_1h.length - 1] * 100) / 100 : 0,
+    ema21_1h: e21_1h.length ? Math.round(e21_1h[e21_1h.length - 1] * 100) / 100 : 0,
+    signal: signalResult?.signal || null,
+    debug: signalResult?.debug || [],
+    trend4h: trend.direction ? { direction: trend.direction, strength: trend.strength } : null,
+    stochK: stoch15m.k,
+    stochD: stoch15m.d,
+    rsi: stoch15m.k,
+  };
+}
+
+// ─── 4H → 1D (compatibility) ─────────────────────────────
+
+export function aggregateTo1D(candles4h: Candle[]): Candle[] {
+  if (!candles4h?.length) return [];
+  const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
+  const groups = new Map<string, Candle[]>();
+  for (const c of sorted) {
+    const date = new Date(c.timestamp);
+    const key = `${date.getUTCFullYear()}-${date.getUTCMonth()}-${date.getUTCDate()}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(c);
+  }
+  const daily: Candle[] = [];
+  for (const [, bars] of groups) {
+    if (!bars.length) continue;
+    daily.push({
+      timestamp: bars[0].timestamp,
+      open: bars[0].open,
+      high: Math.max(...bars.map(b => b.high)),
+      low: Math.min(...bars.map(b => b.low)),
+      close: bars[bars.length - 1].close,
+      volume: bars.reduce((s, b) => s + b.volume, 0),
+    });
+  }
+  return daily.sort((a, b) => a.timestamp - b.timestamp);
+}
+
 // ─── Compatibility ─────────────────────────────────────────
 
 export function shouldHoldCompat(
@@ -1124,4 +1196,29 @@ export function shouldHoldCompat(
   currentPrice: number
 ): HoldResult {
   return shouldHold(signal, candles1h, candles4h, candles15m, currentPrice);
+}
+
+export async function generateSignalAsync(
+  pair: string,
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candles15m: Candle[],
+  candles5m: Candle[],
+  activeSignals?: Signal[],
+  currentPrice?: number,
+  options?: {
+    trendlineStore?: TrendlineStore;
+    cooldownStore?: CooldownStore;
+  }
+): Promise<SignalResult> {
+  return generateSignal(
+    pair,
+    candles1h,
+    candles4h,
+    candles15m,
+    candles5m,
+    activeSignals || [],
+    currentPrice,
+    options
+  );
 }
