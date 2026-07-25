@@ -1,14 +1,5 @@
-// lib/strategy.ts — v43.0 "Trend Rider" — Scored Setup Architecture
+// lib/strategy.ts — v44.0 "Confirmed Sequence" — Checklist Architecture
 // ============================================================
-// Timeframe architecture:
-//   4H  →  Trend Direction (LONG / SHORT / NEUTRAL / EARLY_*)
-//   1H  →  Setup Location (score-based, no hard gates)
-//   15m →  Trigger (momentum ignition + 1-candle confirmation)
-//
-// Philosophy: Higher TF trend, lower TF entry. Score, don't gate.
-// ============================================================
-
-// ─── Types ─────────────────────────────────────────────────
 
 export interface Candle {
   timestamp: number;
@@ -26,7 +17,7 @@ export interface Signal {
   entry: number;
   stop: number;
   target: number;
-  confidence: number;      // total score 0-100
+  confidence: number;      // 0-100, derived from checklist completion
   timestamp: number;
   exited: boolean;
   status?: "ACTIVE" | "EXITED";
@@ -39,17 +30,16 @@ export interface Signal {
   stochK?: number;
   stochD?: number;
   version?: number;
-  setupGrade?: "A+" | "A" | "B";
+  setupGrade?: "A" | "B";
   positionSizePct?: number;
-  earlyTrend?: boolean;     // true if entered on early trend detection
-  triggerCandle?: {         // the confirming candle that fired the trigger
+  triggerCandle?: {
     open: number;
     high: number;
     low: number;
     close: number;
     timestamp: number;
   };
-  scoreBreakdown?: Record<string, number>; // for observability
+  checklist?: SetupChecklist;
 }
 
 export interface SignalResult {
@@ -63,7 +53,7 @@ export interface HoldResult {
 }
 
 export interface TrendResult {
-  direction: "LONG" | "SHORT" | "NEUTRAL" | "EARLY_LONG" | "EARLY_SHORT";
+  direction: "LONG" | "SHORT" | "NEUTRAL";
   strength: "STRONG" | "MEDIUM" | "WEAK";
   adx: number | null;
   ema8: number | null;
@@ -76,26 +66,26 @@ export interface TrendResult {
   debug: string[];
 }
 
-export interface SetupScore {
-  total: number;
-  breakdown: Record<string, number>;
-  debug: string[];
+// ─── CHECKLIST TYPES ───────────────────────────────────────
+
+export interface CheckItem {
+  name: string;
+  passed: boolean;
+  detail: string;
 }
 
-export interface TriggerResult {
-  fired: boolean;
-  reason: string;
-  stochK: number;
-  stochD: number;
-  prevK: number | null;
-  prevD: number | null;
-  confirmingCandle: Candle | null;
-  debug: string[];
+export interface SetupChecklist {
+  bias: CheckItem;           // 4H
+  location: CheckItem;        // 1H
+  trigger: CheckItem;         // 15m
+  timing: CheckItem | null;   // 5m (null if not evaluated)
+  grade: "A" | "B" | null;
+  allPassed: boolean;
 }
 
-// ─── Constants ─────────────────────────────────────────────
+// ─── CONSTANTS ─────────────────────────────────────────────
 
-export const CURRENT_SIGNAL_VERSION = 43.0;
+export const CURRENT_SIGNAL_VERSION = 44.0;
 const MIN_RR = 1.5;
 const MAX_STOP_PCT = 0.04;
 const ATR_MULT = 1.5;
@@ -109,47 +99,10 @@ const COOLDOWN_STOP_MS = 2 * 60 * 60 * 1000;
 const COOLDOWN_TP_MS = 1 * 60 * 60 * 1000;
 const SIGNAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-// Score thresholds
-const SCORE_A_PLUS = 90;
-const SCORE_A = 80;
-const SCORE_B = 70;
-const MIN_SCORE = 70;
-
-// Position sizing by grade
-const SIZE_A_PLUS = 1.0;
-const SIZE_A = 0.85;
+const SIZE_A = 1.0;
 const SIZE_B = 0.65;
 
-// ─── Score Weights ─────────────────────────────────────────
-// Configurable — pass overrides via options.scoreWeights
-
-const DEFAULT_SCORE_WEIGHTS = {
-  // 4H Trend
-  trendStrong: 25,
-  trendMedium: 15,
-  trendWeak: 5,
-  adxAbove25: 15,
-  adxAbove20: 8,
-  earlyTrend: 20,          // bonus for EARLY_LONG / EARLY_SHORT
-
-  // 1H Setup
-  ema21Pullback: 20,
-  ema50Pullback: 15,
-  nearTrendline: 10,       // optional bonus
-  atSupportResistance: 10, // optional bonus
-  volumeGood: 10,          // > 1.2x avg
-  volumeVeryHigh: 20,      // > 2.0x avg
-  atrContraction: 15,      // ATR < 80% of 20-bar avg
-  structure: 10,           // higher low / lower high
-
-  // 15m Trigger
-  stochCross: 10,
-  confirmingCandle: 10,    // one candle confirmation
-} as const;
-
-export type ScoreWeights = typeof DEFAULT_SCORE_WEIGHTS;
-
-// ─── Helpers ───────────────────────────────────────────────
+// ─── HELPERS ───────────────────────────────────────────────
 
 function avg(arr: number[]): number {
   return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
@@ -236,15 +189,11 @@ export function stochRsi(
   for (let i = dSmooth - 1; i < kValues.length; i++) {
     dValues.push(avg(kValues.slice(i - dSmooth + 1, i + 1)));
   }
-  const currentK = kValues[kValues.length - 1];
-  const currentD = dValues[dValues.length - 1];
-  const prevK = kValues.length >= 2 ? kValues[kValues.length - 2] : null;
-  const prevD = dValues.length >= 2 ? dValues[dValues.length - 2] : null;
   return {
-    k: Math.round(currentK * 10) / 10,
-    d: Math.round(currentD * 10) / 10,
-    prevK: prevK !== null ? Math.round(prevK * 10) / 10 : null,
-    prevD: prevD !== null ? Math.round(prevD * 10) / 10 : null,
+    k: Math.round(kValues[kValues.length - 1] * 10) / 10,
+    d: Math.round(dValues[dValues.length - 1] * 10) / 10,
+    prevK: kValues.length >= 2 ? Math.round(kValues[kValues.length - 2] * 10) / 10 : null,
+    prevD: dValues.length >= 2 ? Math.round(dValues[dValues.length - 2] * 10) / 10 : null,
   };
 }
 
@@ -269,7 +218,6 @@ export function adx(candles: Candle[], period = 14): number | null {
   const atrS = wilderSmooth(trs, period);
   const pDIS = wilderSmooth(pDM, period);
   const mDIS = wilderSmooth(mDM, period);
-  if (!atrS.length) return null;
   const pDI = atrS.map((_, i) => (pDIS[i] / atrS[i]) * 100);
   const mDI = atrS.map((_, i) => (mDIS[i] / atrS[i]) * 100);
   const dx = atrS.map((_, i) => {
@@ -311,39 +259,12 @@ function atrHistory(candles: Candle[], period = 14): number[] {
   return out;
 }
 
-// ─── 4H → 1D (compatibility only) ──────────────────────────
-
-export function aggregateTo1D(candles4h: Candle[]): Candle[] {
-  if (!candles4h?.length) return [];
-  const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
-  const groups = new Map<string, Candle[]>();
-  for (const c of sorted) {
-    const date = new Date(c.timestamp);
-    const key = `${date.getUTCFullYear()}-${date.getUTCMonth()}-${date.getUTCDate()}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(c);
-  }
-  const daily: Candle[] = [];
-  for (const [, bars] of groups) {
-    if (!bars.length) continue;
-    daily.push({
-      timestamp: bars[0].timestamp,
-      open: bars[0].open,
-      high: Math.max(...bars.map(b => b.high)),
-      low: Math.min(...bars.map(b => b.low)),
-      close: bars[bars.length - 1].close,
-      volume: bars.reduce((s, b) => s + b.volume, 0),
-    });
-  }
-  return daily.sort((a, b) => a.timestamp - b.timestamp);
-}
-
-// ─── 4H TREND ──────────────────────────────────────────────
+// ─── 4H BIAS ───────────────────────────────────────────────
 
 export function calculateTrend4H(candles4h: Candle[]): TrendResult {
   const debug: string[] = [];
   if (candles4h.length < 50) {
-    debug.push("[TREND-4H] Insufficient data (<50 bars)");
+    debug.push("[BIAS-4H] Insufficient data");
     return { direction: "NEUTRAL", strength: "WEAK", adx: null, ema8: null, ema21: null, ema50: null, hh: false, hl: false, lh: false, ll: false, debug };
   }
 
@@ -353,7 +274,7 @@ export function calculateTrend4H(candles4h: Candle[]): TrendResult {
   const e50 = ema(closes, 50);
 
   if (!e8.length || !e21.length || !e50.length) {
-    debug.push("[TREND-4H] EMA calc failed");
+    debug.push("[BIAS-4H] EMA calc failed");
     return { direction: "NEUTRAL", strength: "WEAK", adx: null, ema8: null, ema21: null, ema50: null, hh: false, hl: false, lh: false, ll: false, debug };
   }
 
@@ -362,7 +283,6 @@ export function calculateTrend4H(candles4h: Candle[]): TrendResult {
   const lastE50 = e50[e50.length - 1];
   const lastClose = closes[closes.length - 1];
 
-  // Market structure (last 20 bars)
   const recent = candles4h.slice(-20);
   const highs = recent.map(c => c.high);
   const lows = recent.map(c => c.low);
@@ -373,10 +293,8 @@ export function calculateTrend4H(candles4h: Candle[]): TrendResult {
 
   const adxVal = adx(candles4h);
 
-  // Determine trend
   let direction: TrendResult["direction"] = "NEUTRAL";
   let strength: TrendResult["strength"] = "WEAK";
-  let earlyTrend = false;
 
   const emaAlignedLong = lastE8 > lastE21 && lastE21 > lastE50;
   const emaAlignedShort = lastE8 < lastE21 && lastE21 < lastE50;
@@ -385,50 +303,25 @@ export function calculateTrend4H(candles4h: Candle[]): TrendResult {
 
   if (emaAlignedLong && priceAboveE21) {
     direction = "LONG";
-    if (adxVal !== null) {
-      if (adxVal >= 25 && hh) strength = "STRONG";
-      else if (adxVal >= 20) strength = "MEDIUM";
-    }
+    if (adxVal !== null && adxVal >= 25 && hh) strength = "STRONG";
+    else if (adxVal !== null && adxVal >= 20) strength = "MEDIUM";
   } else if (emaAlignedShort && priceBelowE21) {
     direction = "SHORT";
-    if (adxVal !== null) {
-      if (adxVal >= 25 && ll) strength = "STRONG";
-      else if (adxVal >= 20) strength = "MEDIUM";
-    }
-  } else {
-    // Early trend detection
-    const e8CrossedE21 = e8.length >= 2 && e21.length >= 2 &&
-      ((e8[e8.length - 2] <= e21[e21.length - 2] && lastE8 > lastE21) ||
-       (e8[e8.length - 2] >= e21[e21.length - 2] && lastE8 < lastE21));
-    const adxRising = adxVal !== null && adxVal >= 15;
-
-    if (lastE8 > lastE21 && priceAboveE21 && e8CrossedE21 && adxRising && hl) {
-      direction = "EARLY_LONG";
-      strength = "WEAK";
-      earlyTrend = true;
-    } else if (lastE8 < lastE21 && priceBelowE21 && e8CrossedE21 && adxRising && lh) {
-      direction = "EARLY_SHORT";
-      strength = "WEAK";
-      earlyTrend = true;
-    }
+    if (adxVal !== null && adxVal >= 25 && ll) strength = "STRONG";
+    else if (adxVal !== null && adxVal >= 20) strength = "MEDIUM";
   }
 
-  // ADX filter with buffer for non-early trends
-  if (!earlyTrend && adxVal !== null) {
-    if (adxVal < 18) {
-      debug.push(`[TREND-4H] ADX ${adxVal} < 18 — NEUTRAL`);
-      return { direction: "NEUTRAL", strength, adx: adxVal, ema8: lastE8, ema21: lastE21, ema50: lastE50, hh, hl, lh, ll, debug };
-    } else if (adxVal < MIN_ADX) {
-      strength = "WEAK";
-      debug.push(`[TREND-4H] ADX ${adxVal} in buffer zone (18–20) — WEAK trend allowed`);
-    }
+  // No EARLY states — bias is binary
+  if (direction !== "NEUTRAL" && adxVal !== null && adxVal < 18) {
+    debug.push(`[BIAS-4H] ADX ${adxVal} < 18 → NEUTRAL`);
+    return { direction: "NEUTRAL", strength: "WEAK", adx: adxVal, ema8: lastE8, ema21: lastE21, ema50: lastE50, hh, hl, lh, ll, debug };
   }
 
-  debug.push(`[TREND-4H] ${direction} ${strength} | ADX=${sf(adxVal ?? 0,1)} | EMA8=${sf(lastE8,2)} EMA21=${sf(lastE21,2)} EMA50=${sf(lastE50,2)} | HH=${hh} HL=${hl} LH=${lh} LL=${ll}`);
+  debug.push(`[BIAS-4H] ${direction} ${strength} | ADX=${sf(adxVal ?? 0,1)}`);
   return { direction, strength, adx: adxVal, ema8: lastE8, ema21: lastE21, ema50: lastE50, hh, hl, lh, ll, debug };
 }
 
-// ─── 1H SETUP SCORING ──────────────────────────────────────
+// ─── 1H LOCATION ───────────────────────────────────────────
 
 interface Pivot { index: number; price: number; }
 
@@ -493,22 +386,18 @@ class InMemoryTrendlineStore implements TrendlineStore {
 
 export const defaultTrendlineStore = new InMemoryTrendlineStore();
 
-export async function calculateSetupScore(
+export async function check1HLocation(
   pair: string,
   candles1h: Candle[],
   direction: "LONG" | "SHORT",
   trend: TrendResult,
-  store: TrendlineStore = defaultTrendlineStore,
-  weightOverrides?: Partial<ScoreWeights>
-): Promise<SetupScore> {
-  const W = { ...DEFAULT_SCORE_WEIGHTS, ...weightOverrides };
+  store: TrendlineStore = defaultTrendlineStore
+): Promise<{ passed: boolean; detail: string; items: CheckItem[] }> {
+  const items: CheckItem[] = [];
   const debug: string[] = [];
-  const breakdown: Record<string, number> = {};
-  let total = 0;
 
   if (candles1h.length < 50) {
-    debug.push("[SETUP-1H] Insufficient data");
-    return { total: 0, breakdown, debug };
+    return { passed: false, detail: "Insufficient 1H data", items };
   }
 
   const lastPrice = candles1h[candles1h.length - 1].close;
@@ -518,31 +407,31 @@ export async function calculateSetupScore(
   const lastE21_1h = e21_1h[e21_1h.length - 1];
   const lastE50_1h = e50_1h[e50_1h.length - 1];
 
-  // EMA Pullback score
+  // 1. EMA Pullback
+  let emaPullback = false;
   if (direction === "LONG") {
-    if (lastPrice <= lastE21_1h * 1.005) {
-      total += W.ema21Pullback;
-      breakdown["ema21Pullback"] = W.ema21Pullback;
-      debug.push(`[SETUP-1H] EMA21 pullback +${W.ema21Pullback}`);
-    } else if (lastPrice <= lastE50_1h * 1.005) {
-      total += W.ema50Pullback;
-      breakdown["ema50Pullback"] = W.ema50Pullback;
-      debug.push(`[SETUP-1H] EMA50 pullback +${W.ema50Pullback}`);
-    }
+    emaPullback = lastPrice <= lastE21_1h * 1.005 || lastPrice <= lastE50_1h * 1.005;
+    items.push({
+      name: "EMA Pullback",
+      passed: emaPullback,
+      detail: emaPullback 
+        ? `Price ${sf(lastPrice,2)} near EMA21 ${sf(lastE21_1h,2)}` 
+        : `Price ${sf(lastPrice,2)} above EMA21 ${sf(lastE21_1h,2)}`
+    });
   } else {
-    if (lastPrice >= lastE21_1h * 0.995) {
-      total += W.ema21Pullback;
-      breakdown["ema21Pullback"] = W.ema21Pullback;
-      debug.push(`[SETUP-1H] EMA21 pullback +${W.ema21Pullback}`);
-    } else if (lastPrice >= lastE50_1h * 0.995) {
-      total += W.ema50Pullback;
-      breakdown["ema50Pullback"] = W.ema50Pullback;
-      debug.push(`[SETUP-1H] EMA50 pullback +${W.ema50Pullback}`);
-    }
+    emaPullback = lastPrice >= lastE21_1h * 0.995 || lastPrice >= lastE50_1h * 0.995;
+    items.push({
+      name: "EMA Pullback",
+      passed: emaPullback,
+      detail: emaPullback 
+        ? `Price ${sf(lastPrice,2)} near EMA21 ${sf(lastE21_1h,2)}` 
+        : `Price ${sf(lastPrice,2)} below EMA21 ${sf(lastE21_1h,2)}`
+    });
   }
 
-  // Trendline (optional bonus)
+  // 2. Trendline proximity
   const pivots = findPivots(candles1h, direction);
+  let trendlineOk = false;
   if (pivots.length >= 3) {
     const recentPivots = pivots.slice(-5);
     const fit = fitTrendline(recentPivots);
@@ -550,11 +439,14 @@ export async function calculateSetupScore(
       const currentIndex = candles1h.length - 1;
       const tlPrice = fit.slope * currentIndex + fit.intercept;
       const dist = Math.abs(lastPrice - tlPrice) / tlPrice;
-      if (dist < TRENDLINE_PROXIMITY_PCT) {
-        total += W.nearTrendline;
-        breakdown["nearTrendline"] = W.nearTrendline;
-        debug.push(`[SETUP-1H] Near trendline +${W.nearTrendline} (R²=${sf(fit.r2,3)})`);
-      }
+      trendlineOk = dist < TRENDLINE_PROXIMITY_PCT;
+      items.push({
+        name: "Trendline",
+        passed: trendlineOk,
+        detail: trendlineOk 
+          ? `Near trendline (R²=${sf(fit.r2,2)}, dist=${sf(dist*100,1)}%)` 
+          : `Far from trendline (dist=${sf(dist*100,1)}%)`
+      });
       await store.set(pair, {
         slope: fit.slope,
         intercept: fit.intercept,
@@ -562,175 +454,276 @@ export async function calculateSetupScore(
         direction,
         r2: fit.r2,
       });
+    } else {
+      items.push({ name: "Trendline", passed: false, detail: "No valid trendline found" });
     }
+  } else {
+    items.push({ name: "Trendline", passed: false, detail: "Insufficient pivots" });
   }
 
-  // Market structure bonus
+  // 3. Structure
+  let structureOk = false;
   if (direction === "LONG") {
     const prevLow = Math.min(...candles1h.slice(-10, -5).map(c => c.low));
     const recentLow = Math.min(...candles1h.slice(-5).map(c => c.low));
-    if (recentLow > prevLow) {
-      total += 10;
-      breakdown["higherLow"] = 10;
-      debug.push(`[SETUP-1H] Higher low +10 (${sf(recentLow,2)} > ${sf(prevLow,2)})`);
-    }
+    structureOk = recentLow > prevLow;
+    items.push({
+      name: "Structure",
+      passed: structureOk,
+      detail: structureOk 
+        ? `Higher low: ${sf(recentLow,2)} > ${sf(prevLow,2)}` 
+        : `No higher low`
+    });
   } else {
     const prevHigh = Math.max(...candles1h.slice(-10, -5).map(c => c.high));
     const recentHigh = Math.max(...candles1h.slice(-5).map(c => c.high));
-    if (recentHigh < prevHigh) {
-      total += 10;
-      breakdown["lowerHigh"] = 10;
-      debug.push(`[SETUP-1H] Lower high +10 (${sf(recentHigh,2)} < ${sf(prevHigh,2)})`);
-    }
+    structureOk = recentHigh < prevHigh;
+    items.push({
+      name: "Structure",
+      passed: structureOk,
+      detail: structureOk 
+        ? `Lower high: ${sf(recentHigh,2)} < ${sf(prevHigh,2)}` 
+        : `No lower high`
+    });
   }
 
-  // Volume scoring (never reject, just score)
-  // Use 2nd-to-last candle as "current" — last candle is in-progress and often has volume=0
-  const vols = candles1h.slice(-11, -1).map(c => c.volume); // last 10 COMPLETE candles
-  const avgVol = avg(vols.slice(0, -1)); // avg of first 9
-  const currentVol = candles1h[candles1h.length - 2].volume; // most recent complete candle
+  // 4. Volume
+  const vols = candles1h.slice(-11, -1).map(c => c.volume);
+  const avgVol = avg(vols.slice(0, -1));
+  const currentVol = candles1h[candles1h.length - 2].volume;
   const volRatio = avgVol > 0 ? currentVol / avgVol : 0;
-  if (volRatio > 2.0) {
-    total += W.volumeVeryHigh;
-    breakdown["volumeVeryHigh"] = W.volumeVeryHigh;
-    debug.push(`[SETUP-1H] Very high volume +${W.volumeVeryHigh} (${sf(volRatio,1)}x)`);
-  } else if (volRatio > VOL_THRESHOLD) {
-    total += W.volumeGood;
-    breakdown["volumeGood"] = W.volumeGood;
-    debug.push(`[SETUP-1H] Good volume +${W.volumeGood} (${sf(volRatio,1)}x)`);
-  } else {
-    breakdown["volumeNormal"] = 0;
-    debug.push(`[SETUP-1H] Normal volume +0 (${sf(volRatio,1)}x)`);
-  }
+  const volumeOk = volRatio >= VOL_THRESHOLD;
+  items.push({
+    name: "Volume",
+    passed: volumeOk,
+    detail: volumeOk 
+      ? `Volume ${sf(volRatio,1)}x avg` 
+      : `Volume ${sf(volRatio,1)}x avg (below ${VOL_THRESHOLD}x)`
+  });
 
-  // ATR contraction
-  const atrs = atrHistory(candles1h, 14);
-  if (atrs.length >= 20) {
-    const currentATR = atrs[atrs.length - 1];
-    const avgATR = avg(atrs.slice(-20));
-    if (avgATR > 0 && currentATR < avgATR * 0.80) {
-      total += W.atrContraction;
-      breakdown["atrContraction"] = W.atrContraction;
-      debug.push(`[SETUP-1H] ATR contraction +${W.atrContraction} (${sf(currentATR/avgATR*100,0)}% of avg)`);
-    }
-  }
+  // Location passes if at least 2 of 4 items pass (including EMA pullback as preferred)
+  const passedItems = items.filter(i => i.passed).length;
+  const passed = emaPullback && passedItems >= 2;
 
-  // 4H trend score contribution
-  if (trend.direction === "EARLY_LONG" || trend.direction === "EARLY_SHORT") {
-    total += W.earlyTrend;
-    breakdown["earlyTrend"] = W.earlyTrend;
-    debug.push(`[SETUP-1H] Early trend +${W.earlyTrend}`);
-  } else if (trend.strength === "STRONG") {
-    total += W.trendStrong;
-    breakdown["trendStrong"] = W.trendStrong;
-    debug.push(`[SETUP-1H] Strong trend +${W.trendStrong}`);
-  } else if (trend.strength === "MEDIUM") {
-    total += W.trendMedium;
-    breakdown["trendMedium"] = W.trendMedium;
-    debug.push(`[SETUP-1H] Medium trend +${W.trendMedium}`);
-  } else {
-    total += W.trendWeak;
-    breakdown["trendWeak"] = W.trendWeak;
-    debug.push(`[SETUP-1H] Weak trend +${W.trendWeak}`);
-  }
-
-  if (trend.adx !== null && trend.adx >= 25) {
-    total += W.adxAbove25;
-    breakdown["adxAbove25"] = W.adxAbove25;
-    debug.push(`[SETUP-1H] ADX >25 +${W.adxAbove25}`);
-  } else if (trend.adx !== null && trend.adx >= 20) {
-    total += W.adxAbove20;
-    breakdown["adxAbove20"] = W.adxAbove20;
-    debug.push(`[SETUP-1H] ADX >20 +${W.adxAbove20}`);
-  }
-
-  debug.push(`[SETUP-1H] Total score: ${total}`);
-  return { total, breakdown, debug };
+  return {
+    passed,
+    detail: passed 
+      ? `Location valid: ${passedItems}/4 checks passed` 
+      : `Location weak: ${passedItems}/4 checks, EMA pullback=${emaPullback}`,
+    items
+  };
 }
 
 // ─── 15m TRIGGER ───────────────────────────────────────────
 
-export function calculateTrigger15m(
+export interface TriggerResult {
+  fired: boolean;
+  reason: string;
+  stochK: number;
+  stochD: number;
+  prevK: number | null;
+  prevD: number | null;
+  confirmingCandle: Candle | null;
+  triggerType: "stoch_cross" | "ema_cross" | "engulfing" | "rejection" | null;
+  debug: string[];
+}
+
+export function check15mTrigger(
   candles15m: Candle[],
   direction: "LONG" | "SHORT"
 ): TriggerResult {
   const debug: string[] = [];
+  const result: TriggerResult = {
+    fired: false,
+    reason: "",
+    stochK: 50,
+    stochD: 50,
+    prevK: null,
+    prevD: null,
+    confirmingCandle: null,
+    triggerType: null,
+    debug
+  };
 
   if (candles15m.length < 5) {
     debug.push("[TRIGGER-15m] Insufficient data");
-    return { fired: false, reason: "Insufficient data", stochK: 50, stochD: 50, prevK: null, prevD: null, confirmingCandle: null, debug };
+    result.reason = "Insufficient data";
+    return result;
   }
 
   const closes = candles15m.map(c => c.close);
   const stoch = stochRsi(closes);
+  result.stochK = stoch.k;
+  result.stochD = stoch.d;
+  result.prevK = stoch.prevK;
+  result.prevD = stoch.prevD;
 
-  debug.push(`[TRIGGER-15m] K=${stoch.k} D=${stoch.d} prevK=${stoch.prevK} prevD=${stoch.prevD}`);
+  // Check 1: StochRSI cross
+  let stochFired = false;
+  if (direction === "LONG" && stoch.prevK !== null && stoch.prevD !== null) {
+    if (stoch.prevK < stoch.prevD && stoch.k >= stoch.d && stoch.k < STOCH_OVERSOLD) {
+      stochFired = true;
+      result.triggerType = "stoch_cross";
+      result.reason = `Stoch cross up from oversold (K=${stoch.k}, D=${stoch.d})`;
+    }
+  } else if (direction === "SHORT" && stoch.prevK !== null && stoch.prevD !== null) {
+    if (stoch.prevK > stoch.prevD && stoch.k <= stoch.d && stoch.k > STOCH_OVERBOUGHT) {
+      stochFired = true;
+      result.triggerType = "stoch_cross";
+      result.reason = `Stoch cross down from overbought (K=${stoch.k}, D=${stoch.d})`;
+    }
+  }
 
-  let fired = false;
-  let reason = "";
+  // Check 2: EMA cross
+  const e8_15m = ema(closes, 8);
+  const e21_15m = ema(closes, 21);
+  let emaFired = false;
+  if (e8_15m.length >= 2 && e21_15m.length >= 2) {
+    const prevE8 = e8_15m[e8_15m.length - 2];
+    const prevE21 = e21_15m[e21_15m.length - 2];
+    const lastE8 = e8_15m[e8_15m.length - 1];
+    const lastE21 = e21_15m[e21_15m.length - 1];
+    
+    if (direction === "LONG" && prevE8 <= prevE21 && lastE8 > lastE21) {
+      emaFired = true;
+      result.triggerType = "ema_cross";
+      result.reason = `EMA8 crossed above EMA21`;
+    } else if (direction === "SHORT" && prevE8 >= prevE21 && lastE8 < lastE21) {
+      emaFired = true;
+      result.triggerType = "ema_cross";
+      result.reason = `EMA8 crossed below EMA21`;
+    }
+  }
 
-  // StochRSI cross detection — MUST be from correct extreme zone
+  // Check 3: Engulfing
+  const last = candles15m[candles15m.length - 1];
+  const prev = candles15m[candles15m.length - 2];
+  let engulfingFired = false;
   if (direction === "LONG") {
-    if (stoch.prevK !== null && stoch.prevD !== null) {
-      // K crosses above D FROM oversold (<20)
-      if (stoch.prevK < stoch.prevD && stoch.k >= stoch.d && stoch.k < STOCH_OVERSOLD) {
-        fired = true;
-        reason = `K crossed above D from oversold (K=${stoch.k}, D=${stoch.d})`;
-      }
+    if (last.close > last.open && prev.close < prev.open && 
+        last.close > prev.open && last.open < prev.close) {
+      engulfingFired = true;
+      result.triggerType = "engulfing";
+      result.reason = `Bullish engulfing`;
     }
   } else {
-    if (stoch.prevK !== null && stoch.prevD !== null) {
-      // K crosses below D FROM overbought (>80)
-      if (stoch.prevK > stoch.prevD && stoch.k <= stoch.d && stoch.k > STOCH_OVERBOUGHT) {
-        fired = true;
-        reason = `K crossed below D from overbought (K=${stoch.k}, D=${stoch.d})`;
-      }
+    if (last.close < last.open && prev.close > prev.open && 
+        last.close < prev.open && last.open > prev.close) {
+      engulfingFired = true;
+      result.triggerType = "engulfing";
+      result.reason = `Bearish engulfing`;
     }
   }
 
-  if (!fired) {
-    reason = direction === "LONG"
-      ? `No LONG trigger: K=${stoch.k} D=${stoch.d} (need cross from below ${STOCH_OVERSOLD})`
-      : `No SHORT trigger: K=${stoch.k} D=${stoch.d} (need cross from above ${STOCH_OVERBOUGHT})`;
-    debug.push(`[TRIGGER-15m] ${reason}`);
-    return { fired, reason, stochK: stoch.k, stochD: stoch.d, prevK: stoch.prevK, prevD: stoch.prevD, confirmingCandle: null, debug };
+  // Check 4: Strong rejection candle
+  const body = Math.abs(last.close - last.open);
+  const range = last.high - last.low;
+  const upperWick = last.high - Math.max(last.open, last.close);
+  const lowerWick = Math.min(last.open, last.close) - last.low;
+  let rejectionFired = false;
+  
+  if (direction === "LONG" && body > 0 && lowerWick > body * 1.5 && last.close > last.open) {
+    rejectionFired = true;
+    result.triggerType = "rejection";
+    result.reason = `Strong bullish rejection (lower wick ${sf(lowerWick,2)} > body ${sf(body,2)})`;
+  } else if (direction === "SHORT" && body > 0 && upperWick > body * 1.5 && last.close < last.open) {
+    rejectionFired = true;
+    result.triggerType = "rejection";
+    result.reason = `Strong bearish rejection (upper wick ${sf(upperWick,2)} > body ${sf(body,2)})`;
   }
 
-  // One-candle confirmation — MUST break previous extreme + directional candle
-  const crossIndex = candles15m.length - 1; // cross happened on last candle
-  if (crossIndex < 1) {
-    debug.push("[TRIGGER-15m] Cross detected but no confirming candle yet");
-    return { fired: false, reason: "Waiting for confirming candle", stochK: stoch.k, stochD: stoch.d, prevK: stoch.prevK, prevD: stoch.prevD, confirmingCandle: null, debug };
-  }
-
-  const confirmingCandle = candles15m[candles15m.length - 1];
-  const crossCandle = candles15m[candles15m.length - 2];
-
-  let confirmed = false;
-  if (direction === "LONG") {
-    // Buyers took control: close above previous high AND bullish candle
-    if (confirmingCandle.close > crossCandle.high && confirmingCandle.close > confirmingCandle.open) {
-      confirmed = true;
-      reason += " | Confirmed: close above previous high + bullish";
-    }
+  // ONE trigger is enough
+  result.fired = stochFired || emaFired || engulfingFired || rejectionFired;
+  
+  if (result.fired) {
+    result.confirmingCandle = last;
+    debug.push(`[TRIGGER-15m] ✅ ${result.triggerType?.toUpperCase()}: ${result.reason}`);
   } else {
-    // Sellers took control: close below previous low AND bearish candle
-    if (confirmingCandle.close < crossCandle.low && confirmingCandle.close < confirmingCandle.open) {
-      confirmed = true;
-      reason += " | Confirmed: close below previous low + bearish";
-    }
+    result.reason = `No trigger: Stoch=${stoch.k}/${stoch.d}, no EMA cross, no engulfing, no rejection`;
+    debug.push(`[TRIGGER-15m] ${result.reason}`);
   }
 
-  if (!confirmed) {
-    debug.push(`[TRIGGER-15m] Cross detected but no confirmation (${reason})`);
-    return { fired: false, reason: "Cross without strong confirmation", stochK: stoch.k, stochD: stoch.d, prevK: stoch.prevK, prevD: stoch.prevD, confirmingCandle: null, debug };
-  }
-
-  debug.push(`[TRIGGER-15m] ✅ FIRED: ${reason}`);
-  return { fired: true, reason, stochK: stoch.k, stochD: stoch.d, prevK: stoch.prevK, prevD: stoch.prevD, confirmingCandle, debug };
+  return result;
 }
 
-// ─── Hysteresis / Cooldown ─────────────────────────────────
+// ─── 5m TIMING ─────────────────────────────────────────────
+
+export interface TimingResult {
+  improved: boolean;
+  entry: number;
+  reason: string;
+  candlesWaited: number;
+  debug: string[];
+}
+
+export function check5mTiming(
+  candles5m: Candle[],
+  direction: "LONG" | "SHORT",
+  maxWaitCandles: number = 3
+): TimingResult {
+  const debug: string[] = [];
+  
+  if (candles5m.length < maxWaitCandles + 1) {
+    return { improved: false, entry: 0, reason: "Insufficient 5m data", candlesWaited: 0, debug };
+  }
+
+  const recent = candles5m.slice(-maxWaitCandles - 1, -1); // last N complete candles
+  let bestEntry = direction === "LONG" ? Infinity : 0;
+  let bestReason = "";
+  let improved = false;
+
+  for (let i = 0; i < recent.length; i++) {
+    const c = recent[i];
+    
+    if (direction === "LONG") {
+      // Bullish candle after trigger
+      if (c.close > c.open && c.close < bestEntry) {
+        bestEntry = c.close;
+        bestReason = `Bullish candle at 5m[${i}]`;
+        improved = true;
+      }
+      // Higher low
+      if (i > 0 && c.low > recent[i-1].low && c.low < bestEntry) {
+        bestEntry = c.low;
+        bestReason = `Higher low at 5m[${i}]`;
+        improved = true;
+      }
+    } else {
+      // Bearish candle after trigger
+      if (c.close < c.open && c.close > bestEntry) {
+        bestEntry = c.close;
+        bestReason = `Bearish candle at 5m[${i}]`;
+        improved = true;
+      }
+      // Lower high
+      if (i > 0 && c.high < recent[i-1].high && c.high > bestEntry) {
+        bestEntry = c.high;
+        bestReason = `Lower high at 5m[${i}]`;
+        improved = true;
+      }
+    }
+  }
+
+  // If nothing improved, enter at market on last 5m close
+  if (!improved) {
+    bestEntry = candles5m[candles5m.length - 1].close;
+    bestReason = `No 5m improvement after ${maxWaitCandles} candles — entering at market`;
+  }
+
+  debug.push(`[TIMING-5m] ${bestReason}, entry=${sf(bestEntry,2)}`);
+
+  return {
+    improved,
+    entry: bestEntry,
+    reason: bestReason,
+    candlesWaited: improved ? recent.findIndex(c => 
+      direction === "LONG" ? c.close === bestEntry : c.close === bestEntry
+    ) + 1 : maxWaitCandles,
+    debug
+  };
+}
+
+// ─── HYSTERESIS / COOLDOWN ─────────────────────────────────
 
 export interface CooldownState {
   lockUntil: number;
@@ -793,20 +786,18 @@ export async function generateSignal(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
-  candles1d: Candle[],
   candles15m: Candle[],
+  candles5m: Candle[],
   activeSignals: Signal[],
   currentPrice?: number,
   options?: {
     trendlineStore?: TrendlineStore;
     cooldownStore?: CooldownStore;
-    scoreWeights?: Partial<ScoreWeights>;
   }
 ): Promise<SignalResult> {
-  const W = { ...DEFAULT_SCORE_WEIGHTS, ...options?.scoreWeights };
   const debug: string[] = [];
   const now = Date.now();
-  const price = currentPrice ?? candles15m[candles15m.length - 1]?.close ?? 0;
+  const price = currentPrice ?? candles5m[candles5m.length - 1]?.close ?? 0;
 
   if (!Array.isArray(activeSignals)) activeSignals = [];
 
@@ -819,72 +810,137 @@ export async function generateSignal(
 
   // ── Data sufficiency ──
   if (candles4h.length < 50) {
-    debug.push(`[SIGNAL] REJECTED — 4H insufficient data (${candles4h.length} < 50)`);
+    debug.push(`[SIGNAL] REJECTED — 4H insufficient data`);
     return { debug };
   }
   if (candles1h.length < 50) {
-    debug.push(`[SIGNAL] REJECTED — 1H insufficient data (${candles1h.length} < 50)`);
+    debug.push(`[SIGNAL] REJECTED — 1H insufficient data`);
     return { debug };
   }
   if (candles15m.length < 5) {
-    debug.push(`[SIGNAL] REJECTED — 15m insufficient data (${candles15m.length} < 5)`);
+    debug.push(`[SIGNAL] REJECTED — 15m insufficient data`);
     return { debug };
   }
 
-  // ── 4H Trend ──
+  // ═══════════════════════════════════════════════════════
+  // STEP 1: 4H BIAS
+  // ═══════════════════════════════════════════════════════
   const trend = calculateTrend4H(candles4h);
   debug.push(...trend.debug);
-  if (trend.direction === "NEUTRAL") {
-    debug.push("[SIGNAL] REJECTED — 4H trend NEUTRAL");
+
+  const biasItem: CheckItem = {
+    name: "4H Bias",
+    passed: trend.direction !== "NEUTRAL",
+    detail: trend.direction === "NEUTRAL" 
+      ? `NEUTRAL (ADX=${sf(trend.adx ?? 0,1)})` 
+      : `${trend.direction} ${trend.strength}`
+  };
+
+  if (!biasItem.passed) {
+    debug.push("[SIGNAL] REJECTED — 4H bias NEUTRAL");
     return { debug };
   }
-  const direction = trend.direction === "EARLY_LONG" ? "LONG" : trend.direction === "EARLY_SHORT" ? "SHORT" : trend.direction;
-  const isEarly = trend.direction === "EARLY_LONG" || trend.direction === "EARLY_SHORT";
 
-  // ── 1H Setup Score ──
-  const setup = await calculateSetupScore(pair, candles1h, direction, trend, options?.trendlineStore, options?.scoreWeights);
-  debug.push(...setup.debug);
+  const direction = trend.direction as "LONG" | "SHORT";
 
-  // ── 15m Trigger ──
-  const trigger = calculateTrigger15m(candles15m, direction);
+  // ═══════════════════════════════════════════════════════
+  // STEP 2: 1H LOCATION
+  // ═══════════════════════════════════════════════════════
+  const location = await check1HLocation(pair, candles1h, direction, trend, options?.trendlineStore);
+  debug.push(`[LOCATION-1H] ${location.detail}`);
+  location.items.forEach(i => debug.push(`  ${i.passed ? "✓" : "✗"} ${i.name}: ${i.detail}`));
+
+  const locationItem: CheckItem = {
+    name: "1H Location",
+    passed: location.passed,
+    detail: location.detail
+  };
+
+  // ═══════════════════════════════════════════════════════
+  // STEP 3: 15m TRIGGER
+  // ═══════════════════════════════════════════════════════
+  const trigger = check15mTrigger(candles15m, direction);
   debug.push(...trigger.debug);
+
+  const triggerItem: CheckItem = {
+    name: "15m Trigger",
+    passed: trigger.fired,
+    detail: trigger.fired ? trigger.reason : "No trigger detected"
+  };
+
   if (!trigger.fired) {
     debug.push("[SIGNAL] REJECTED — No 15m trigger");
     return { debug };
   }
 
-  // Add trigger score
-  let totalScore = setup.total;
-  totalScore += W.stochCross;
-  setup.breakdown["stochCross"] = W.stochCross;
-  if (trigger.confirmingCandle) {
-    totalScore += W.confirmingCandle;
-    setup.breakdown["confirmingCandle"] = W.confirmingCandle;
-  }
-  debug.push(`[SIGNAL] Score after trigger: ${totalScore}`);
+  // ═══════════════════════════════════════════════════════
+  // STEP 4: 5m TIMING
+  // ═══════════════════════════════════════════════════════
+  let timingItem: CheckItem;
+  let entryPrice = price;
 
-  // Grade — only A+/A/B exist. Below B = no trade.
-  let grade: "A+" | "A" | "B" | null = null;
+  if (candles5m && candles5m.length >= 4) {
+    const timing = check5mTiming(candles5m, direction);
+    debug.push(...timing.debug);
+    
+    timingItem = {
+      name: "5m Timing",
+      passed: true, // Never vetoes, only improves
+      detail: timing.reason
+    };
+    
+    if (timing.improved) {
+      entryPrice = timing.entry;
+    }
+  } else {
+    timingItem = {
+      name: "5m Timing",
+      passed: true,
+      detail: "No 5m data — using market price"
+    };
+    debug.push("[TIMING-5m] No 5m data available");
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // GRADE: A vs B
+  // ═══════════════════════════════════════════════════════
+  const checklist: SetupChecklist = {
+    bias: biasItem,
+    location: locationItem,
+    trigger: triggerItem,
+    timing: timingItem,
+    grade: null,
+    allPassed: biasItem.passed && locationItem.passed && triggerItem.passed
+  };
+
+  // A: All 3 core checks pass + 5m improved entry
+  // B: Bias + Trigger pass, Location may be marginal, 5m didn't improve
+  let grade: "A" | "B" | null = null;
   let positionSizePct = 0;
-  if (totalScore >= SCORE_A_PLUS) {
-    grade = "A+"; positionSizePct = SIZE_A_PLUS;
-  } else if (totalScore >= SCORE_A) {
-    grade = "A"; positionSizePct = SIZE_A;
-  } else if (totalScore >= MIN_SCORE) {
-    grade = "B"; positionSizePct = SIZE_B;
+
+  if (biasItem.passed && locationItem.passed && triggerItem.passed && timingItem.detail.includes("Bullish") || timingItem.detail.includes("Bearish")) {
+    grade = "A";
+    positionSizePct = SIZE_A;
+    checklist.grade = "A";
+  } else if (biasItem.passed && triggerItem.passed) {
+    grade = "B";
+    positionSizePct = SIZE_B;
+    checklist.grade = "B";
   }
 
   if (!grade) {
-    debug.push(`[SIGNAL] REJECTED — Score ${totalScore} < ${MIN_SCORE} (minimum for B)`);
+    debug.push("[SIGNAL] REJECTED — Below minimum quality (B)");
     return { debug };
   }
 
-  // ── Risk Management ──
-  const entry = price;
+  // ═══════════════════════════════════════════════════════
+  // RISK MANAGEMENT
+  // ═══════════════════════════════════════════════════════
+  const entry = entryPrice;
   const atr1h = atr(candles1h, 14);
-  const recent = candles1h.slice(-20);
-  const swingLow = Math.min(...recent.map(c => c.low));
-  const swingHigh = Math.max(...recent.map(c => c.high));
+  const recent1h = candles1h.slice(-20);
+  const swingLow = Math.min(...recent1h.map(c => c.low));
+  const swingHigh = Math.max(...recent1h.map(c => c.high));
 
   let stop: number;
   let target: number;
@@ -912,11 +968,20 @@ export async function generateSignal(
   const rr = risk > 0 ? reward / risk : 0;
 
   if (rr < MIN_RR) {
-    debug.push(`[SIGNAL] REJECTED — RR ${sf(rr,2)} < ${MIN_RR} (risk=$${sf(risk,2)}, reward=$${sf(reward,2)})`);
+    debug.push(`[SIGNAL] REJECTED — RR ${sf(rr,2)} < ${MIN_RR}`);
     return { debug };
   }
 
-  // ── Build Signal ──
+  // ═══════════════════════════════════════════════════════
+  // BUILD SIGNAL
+  // ═══════════════════════════════════════════════════════
+  const confidence = Math.round(
+    (biasItem.passed ? 25 : 0) +
+    (locationItem.passed ? 35 : 15) +
+    (triggerItem.passed ? 25 : 0) +
+    (timingItem.detail.includes("Bullish") || timingItem.detail.includes("Bearish") ? 15 : 5)
+  );
+
   const signal: Signal = {
     id: `${pair}_${now}`,
     pair,
@@ -924,7 +989,7 @@ export async function generateSignal(
     entry: Math.round(entry * 100) / 100,
     stop: Math.round(stop * 100) / 100,
     target: Math.round(target * 100) / 100,
-    confidence: totalScore,
+    confidence,
     timestamp: now,
     exited: false,
     entryType: "PULLBACK",
@@ -935,7 +1000,6 @@ export async function generateSignal(
     version: CURRENT_SIGNAL_VERSION,
     setupGrade: grade,
     positionSizePct,
-    earlyTrend: isEarly,
     triggerCandle: trigger.confirmingCandle ? {
       open: trigger.confirmingCandle.open,
       high: trigger.confirmingCandle.high,
@@ -943,15 +1007,13 @@ export async function generateSignal(
       close: trigger.confirmingCandle.close,
       timestamp: trigger.confirmingCandle.timestamp,
     } : undefined,
-    scoreBreakdown: setup.breakdown,
+    checklist
   };
 
   await setCooldown(pair, "entry", now, options?.cooldownStore);
 
-  debug.push(`[SIGNAL] ✅ ACCEPTED ${direction} ${grade} | Score=${totalScore} | Entry=$${sf(entry,2)} Stop=$${sf(stop,2)} Target=$${sf(target,2)} RR=${sf(rr,2)} Size=${sf(positionSizePct*100,0)}%`);
-  debug.push(`[SIGNAL] 4H: ${trend.direction} ${trend.strength} ADX=${sf(trend.adx ?? 0,1)}`);
-  debug.push(`[SIGNAL] 1H: Score=${setup.total} ${Object.entries(setup.breakdown).map(([k,v]) => `${k}=${v}`).join(" ")}`);
-  debug.push(`[SIGNAL] 15m: ${trigger.reason}`);
+  debug.push(`[SIGNAL] ✅ ACCEPTED ${direction} ${grade} | Entry=$${sf(entry,2)} Stop=$${sf(stop,2)} Target=$${sf(target,2)} RR=${sf(rr,2)}`);
+  debug.push(`[CHECKLIST] ${biasItem.passed ? "✓" : "✗"} Bias | ${locationItem.passed ? "✓" : "✗"} Location | ${triggerItem.passed ? "✓" : "✗"} Trigger | ${timingItem.passed ? "✓" : "✗"} Timing`);
 
   return { signal, debug };
 }
@@ -972,6 +1034,7 @@ export function shouldHold(
   if (signal.direction === "SHORT" && currentPrice >= signal.stop) {
     return { shouldHold: false, reason: "stop_loss" };
   }
+  
   // Targets
   if (signal.direction === "LONG" && currentPrice >= signal.target) {
     return { shouldHold: false, reason: "target_hit" };
@@ -979,23 +1042,41 @@ export function shouldHold(
   if (signal.direction === "SHORT" && currentPrice <= signal.target) {
     return { shouldHold: false, reason: "target_hit" };
   }
-  // 4H trend reversal
+
+  // 4H trend reversal — PRIMARY exit
   if (candles4h.length >= 50) {
     const trend = calculateTrend4H(candles4h);
-    const trendDir = trend.direction === "EARLY_LONG" ? "LONG" : trend.direction === "EARLY_SHORT" ? "SHORT" : trend.direction;
-    if (trendDir && trendDir !== signal.direction) {
+    if (trend.direction !== signal.direction && trend.direction !== "NEUTRAL") {
       return { shouldHold: false, reason: "4h_trend_reversed" };
     }
   }
-  // 15m Stoch opposite extreme
+
+  // 15m Stoch extreme — ONLY exit if confirmed by 1H
   const closes15m = candles15m.map(c => c.close);
-  const stoch = stochRsi(closes15m);
-  const stochOpposite = signal.direction === "LONG"
-    ? stoch.k > STOCH_OVERBOUGHT
-    : stoch.k < STOCH_OVERSOLD;
-  if (stochOpposite) {
-    return { shouldHold: false, reason: "stoch_extreme_opposite" };
+  const stoch15m = stochRsi(closes15m);
+  
+  const closes1h = candles1h.map(c => c.close);
+  const stoch1h = stochRsi(closes1h);
+
+  const stochOpposite15m = signal.direction === "LONG"
+    ? stoch15m.k > STOCH_OVERBOUGHT
+    : stoch15m.k < STOCH_OVERSOLD;
+
+  const stochOpposite1h = signal.direction === "LONG"
+    ? stoch1h.k > STOCH_OVERBOUGHT
+    : stoch1h.k < STOCH_OVERSOLD;
+
+  const severeExtreme = signal.direction === "LONG" 
+    ? stoch15m.k > 95 
+    : stoch15m.k < 5;
+
+  if (stochOpposite15m && (stochOpposite1h || severeExtreme)) {
+    return { 
+      shouldHold: false, 
+      reason: severeExtreme ? "stoch_severe_extreme" : "stoch_extreme_confirmed" 
+    };
   }
+
   return { shouldHold: true, reason: "active" };
 }
 
@@ -1033,56 +1114,6 @@ export function filterExpiredSignals(
   return { active, exited };
 }
 
-// ─── Market Snapshot ───────────────────────────────────────
-
-export async function getMarketSnapshot(
-  pair: string,
-  candles1h: Candle[],
-  candles4h: Candle[],
-  candles15m: Candle[],
-  candles1d: Candle[],
-  currentPrice?: number,
-  signalResult?: SignalResult,
-  options?: {
-    trendlineStore?: TrendlineStore;
-  }
-) {
-  const price = currentPrice ?? candles15m[candles15m.length - 1]?.close ?? 0;
-  const trend = calculateTrend4H(candles4h);
-  const setup = await calculateSetupScore(pair, candles1h, trend.direction === "EARLY_LONG" ? "LONG" : trend.direction === "EARLY_SHORT" ? "SHORT" : trend.direction || "LONG", trend, options?.trendlineStore, options?.scoreWeights);
-
-  const stoch15m = candles15m.length >= 5 ? stochRsi(candles15m.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
-  const stoch1h = candles1h.length >= 50 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
-  const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
-
-  const closes1h = candles1h.map(c => c.close);
-  const e8_1h = ema(closes1h, 8);
-  const e21_1h = ema(closes1h, 21);
-
-  return {
-    pair,
-    price: Math.round(price * 100) / 100,
-    timestamp: Date.now(),
-    trend: trend.direction ? `${trend.direction} ${trend.strength}` : "NEUTRAL",
-    trendDirection: trend.direction,
-    trendStrength: trend.strength,
-    setupScore: setup.total,
-    stoch15m,
-    stoch1h,
-    stoch4h,
-    adx: trend.adx,
-    ema8_1h: e8_1h.length ? Math.round(e8_1h[e8_1h.length - 1] * 100) / 100 : 0,
-    ema21_1h: e21_1h.length ? Math.round(e21_1h[e21_1h.length - 1] * 100) / 100 : 0,
-    signal: signalResult?.signal || null,
-    debug: signalResult?.debug || [],
-    trend1d: null,
-    trend4h: trend.direction ? { direction: trend.direction, strength: trend.strength } : null,
-    stochK: stoch15m.k,
-    stochD: stoch15m.d,
-    rsi: stoch15m.k,
-  };
-}
-
 // ─── Compatibility ─────────────────────────────────────────
 
 export function shouldHoldCompat(
@@ -1093,29 +1124,4 @@ export function shouldHoldCompat(
   currentPrice: number
 ): HoldResult {
   return shouldHold(signal, candles1h, candles4h, candles15m, currentPrice);
-}
-
-export async function generateSignalAsync(
-  pair: string,
-  candles1h: Candle[],
-  candles4h: Candle[],
-  candles15m: Candle[],
-  activeSignals?: Signal[],
-  currentPrice?: number,
-  options?: {
-    trendlineStore?: TrendlineStore;
-    cooldownStore?: CooldownStore;
-    scoreWeights?: Partial<ScoreWeights>;
-  }
-): Promise<SignalResult> {
-  return generateSignal(
-    pair,
-    candles1h,
-    candles4h,
-    aggregateTo1D(candles4h),
-    candles15m,
-    activeSignals || [],
-    currentPrice,
-    options
-  );
 }
