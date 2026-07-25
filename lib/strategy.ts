@@ -1,4 +1,4 @@
-// lib/strategy.ts — v44.0 "Confirmed Sequence" — Checklist Architecture
+// lib/strategy.ts — v44.1 "Confirmed Sequence" — Production Build
 // ============================================================
 
 export interface Candle {
@@ -226,7 +226,7 @@ export function adx(candles: Candle[], period = 14): number | null {
   });
   const adxS = wilderSmooth(dx, period);
   const v = adxS[adxS.length - 1];
-  return isValid(v) ? Math.round(v * 10) / 10 : null;
+n  return isValid(v) ? Math.round(v * 10) / 10 : null;
 }
 
 // ─── ATR ───────────────────────────────────────────────────
@@ -1014,8 +1014,6 @@ export async function generateSignal(
 // ─── EXIT LOGIC ────────────────────────────────────────────
 // v44.1 — StochRSI extreme exit REMOVED.
 // Exits: hard stop, target, or 4H trend reversal only.
-// Rationale: 15m Stoch extremes in trend direction are confirmation,
-// not reversal signals. Costly false exits on SOL/USD and HYPE/USD.
 
 export function shouldHold(
   signal: Signal,
@@ -1041,20 +1039,12 @@ export function shouldHold(
   }
 
   // 3. 4H trend reversal — ONLY discretionary exit
-  // Requires actual trend flip, not just Stoch noise
   if (candles4h.length >= 50) {
     const trend = calculateTrend4H(candles4h);
     if (trend.direction !== signal.direction && trend.direction !== "NEUTRAL") {
       return { shouldHold: false, reason: "4h_trend_reversed" };
     }
   }
-
-  // StochRSI extreme exit REMOVED in v44.1.
-  // Previous logic caused false exits when momentum was extreme IN FAVOR
-  // of the trade (e.g. SHORT with Stoch K < 5). Stoch extremes confirm
-  // trend strength, they don't signal reversal on lower timeframes.
-  // If re-adding later: require 1H + 4H Stoch both opposite + price
-  // action confirmation (close beyond key level).
 
   return { shouldHold: true, reason: "active" };
 }
@@ -1082,129 +1072,130 @@ export function filterExpiredSignals(
   for (const signal of signals) {
     if (!signal.exited) {
       const price = currentPrices?.[signal.pair];
-      if (price !== undefined) {
-        const check = isSignalStillValid(signal, price);
-        if (!check.valid) { exited.push({ signal, reason: check.reason }); continue; }
-      }
-      active.push(signal); continue;
-    }
-    if (now - signal.timestamp < SIGNAL_TTL_MS) active.push(signal);
-  }
-  return { active, exited };
-}
+n      if (price !== undefined) {
+n        const check = isSignalStillValid(signal, price);
+n        if (!check.valid) { exited.push({ signal, reason: check.reason }); continue; }
+n      }
+n      active.push(signal); continue;
+n    }
+n    if (now - signal.timestamp < SIGNAL_TTL_MS) active.push(signal);
+n  }
+n  return { active, exited };
+n}
 
 // ─── Market Snapshot ───────────────────────────────────────
 
 export async function getMarketSnapshot(
-  pair: string,
-  candles1h: Candle[],
-  candles4h: Candle[],
-  candles15m: Candle[],
-  candles5m: Candle[],
-  currentPrice?: number,
-  signalResult?: SignalResult,
-  options?: {
-    trendlineStore?: TrendlineStore;
-  }
-) {
-  const price = currentPrice ?? candles5m?.[candles5m.length - 1]?.close ?? candles15m?.[candles15m.length - 1]?.close ?? 0;
-  const trend = calculateTrend4H(candles4h);
-  const location = candles1h.length >= 50
-    ? await check1HLocation(pair, candles1h, trend.direction === "LONG" ? "LONG" : "SHORT", trend, options?.trendlineStore)
-    : { passed: false, detail: "No data", items: [] };
+n  pair: string,
+n  candles1h: Candle[],
+n  candles4h: Candle[],
+n  candles15m: Candle[],
+n  candles5m: Candle[],
+n  currentPrice?: number,
+n  signalResult?: SignalResult,
+n  options?: {
+n    trendlineStore?: TrendlineStore;
+n  }
+n) {
+n  const price = currentPrice ?? candles5m?.[candles5m.length - 1]?.close ?? candles15m?.[candles15m.length - 1]?.close ?? 0;
+n  const trend = calculateTrend4H(candles4h);
+n  const location = candles1h.length >= 50
+n    ? await check1HLocation(pair, candles1h, trend.direction === "LONG" ? "LONG" : "SHORT", trend, options?.trendlineStore)
+n    : { passed: false, detail: "No data", items: [] };
 
-  const stoch15m = candles15m.length >= 5 ? stochRsi(candles15m.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
-  const stoch1h = candles1h.length >= 50 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
-  const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
+n  const stoch15m = candles15m.length >= 5 ? stochRsi(candles15m.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
+n  const stoch1h = candles1h.length >= 50 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
+n  const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
 
-  const closes1h = candles1h.map(c => c.close);
-  const e8_1h = ema(closes1h, 8);
-  const e21_1h = ema(closes1h, 21);
+n  const closes1h = candles1h.map(c => c.close);
+n  const e8_1h = ema(closes1h, 8);
+n  const e21_1h = ema(closes1h, 21);
 
-  return {
-    pair,
-    price: Math.round(price * 100) / 100,
-    timestamp: Date.now(),
-    trend: trend.direction ? `${trend.direction} ${trend.strength}` : "NEUTRAL",
-    trendDirection: trend.direction,
-    trendStrength: trend.strength,
-    locationPassed: location.passed,
-    locationDetail: location.detail,
-    stoch15m,
-    stoch1h,
-    stoch4h,
-    adx: trend.adx,
-    ema8_1h: e8_1h.length ? Math.round(e8_1h[e8_1h.length - 1] * 100) / 100 : 0,
-    ema21_1h: e21_1h.length ? Math.round(e21_1h[e21_1h.length - 1] * 100) / 100 : 0,
-    signal: signalResult?.signal || null,
-    debug: signalResult?.debug || [],
-    trend4h: trend.direction ? { direction: trend.direction, strength: trend.strength } : null,
-    stochK: stoch15m.k,
-    stochD: stoch15m.d,
-    rsi: stoch15m.k,
-  };
-}
+n  return {
+n    pair,
+n    price: Math.round(price * 100) / 100,
+n    timestamp: Date.now(),
+n    trend: trend.direction ? `${trend.direction} ${trend.strength}` : "NEUTRAL",
+n    trendDirection: trend.direction,
+n    trendStrength: trend.strength,
+n    locationPassed: location.passed,
+n    locationDetail: location.detail,
+n    stoch15m,
+n    stoch1h,
+n    stoch4h,
+n    adx: trend.adx,
+n    ema8_1h: e8_1h.length ? Math.round(e8_1h[e8_1h.length - 1] * 100) / 100 : 0,
+n    ema21_1h: e21_1h.length ? Math.round(e21_1h[e21_1h.length - 1] * 100) / 100 : 0,
+n    signal: signalResult?.signal || null,
+n    debug: signalResult?.debug || [],
+n    trend4h: trend.direction ? { direction: trend.direction, strength: trend.strength } : null,
+n    stochK: stoch15m.k,
+n    stochD: stoch15m.d,
+n    rsi: stoch15m.k,
+n  };
+n}
 
 // ─── 4H → 1D (compatibility) ─────────────────────────────
 
 export function aggregateTo1D(candles4h: Candle[]): Candle[] {
-  if (!candles4h?.length) return [];
-  const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
-  const groups = new Map<string, Candle[]>();
-  for (const c of sorted) {
-    const date = new Date(c.timestamp);
-    const key = `${date.getUTCFullYear()}-${date.getUTCMonth()}-${date.getUTCDate()}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(c);
-  }
-  const daily: Candle[] = [];
-  for (const [, bars] of groups) {
-    if (!bars.length) continue;
-    daily.push({
-      timestamp: bars[0].timestamp,
-      open: bars[0].open,
-      high: Math.max(...bars.map(b => b.high)),
-      low: Math.min(...bars.map(b => b.low)),
-      close: bars[bars.length - 1].close,
-      volume: bars.reduce((s, b) => s + b.volume, 0),
-    });
-  }
-  return daily.sort((a, b) => a.timestamp - b.timestamp);
-}
+n  if (!candles4h?.length) return [];
+n  const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
+n  const groups = new Map<string, Candle[]>();
+n  for (const c of sorted) {
+n    const date = new Date(c.timestamp);
+n    const key = `${date.getUTCFullYear()}-${date.getUTCMonth()}-${date.getUTCDate()}`;
+n    if (!groups.has(key)) groups.set(key, []);
+n    groups.get(key)!.push(c);
+n  }
+n  const daily: Candle[] = [];
+n  for (const [, bars] of groups) {
+n    if (!bars.length) continue;
+n    daily.push({
+n      timestamp: bars[0].timestamp,
+n      open: bars[0].open,
+n      high: Math.max(...bars.map(b => b.high)),
+n      low: Math.min(...bars.map(b => b.low)),
+n      close: bars[bars.length - 1].close,
+n      volume: bars.reduce((s, b) => s + b.volume, 0),
+n    });
+n  }
+n  return daily.sort((a, b) => a.timestamp - b.timestamp);
+n}
 
 // ─── Compatibility ─────────────────────────────────────────
 
 export function shouldHoldCompat(
-  signal: Signal,
-  candles4h: Candle[],
-  candles1h: Candle[],
-  candles15m: Candle[],
-  currentPrice: number
-): HoldResult {
-  return shouldHold(signal, candles1h, candles4h, candles15m, currentPrice);
-}
+n  signal: Signal,
+n  candles4h: Candle[],
+n  candles1h: Candle[],
+n  candles15m: Candle[],
+n  currentPrice: number
+n): HoldResult {
+n  return shouldHold(signal, candles1h, candles4h, candles15m, currentPrice);
+n}
 
 export async function generateSignalAsync(
-  pair: string,
-  candles1h: Candle[],
-  candles4h: Candle[],
-  candles15m: Candle[],
-  candles5m: Candle[],
-  activeSignals?: Signal[],
-  currentPrice?: number,
-  options?: {
-    trendlineStore?: TrendlineStore;
-    cooldownStore?: CooldownStore;
-  }
-): Promise<SignalResult> {
-  return generateSignal(
-    pair,
-    candles1h,
-    candles4h,
-    candles15m,
-    candles5m,
-    activeSignals || [],
-    currentPrice,
-    options
-  );
-}
+n  pair: string,
+n  candles1h: Candle[],
+n  candles4h: Candle[],
+n  candles15m: Candle[],
+n  candles5m: Candle[],
+n  activeSignals?: Signal[],
+n  currentPrice?: number,
+n  options?: {
+n    trendlineStore?: TrendlineStore;
+n    cooldownStore?: CooldownStore;
+n  }
+n): Promise<SignalResult> {
+n  return generateSignal(
+n    pair,
+n    candles1h,
+n    candles4h,
+n    candles15m,
+n    candles5m,
+n    activeSignals || [],
+n    currentPrice,
+n    options
+n  );
+n}
+'''\n\n# Fix the corrupted lines with 'n' prefix\nlines = v44_complete.split('\\n')\nfixed_lines = []\nfor line in lines:\n    if line.startswith('n  ') and not line.startswith('n  return'):\n        fixed_lines.append(line[1:])  # Remove the 'n'\n    else:\n        fixed_lines.append(line)\n\nv44_fixed = '\\n'.join(fixed_lines)\n\nwith open('/mnt/agents/output/strategy_v44_1.ts', 'w') as f:\n    f.write(v44_fixed)\n\nprint(\"File written successfully!\")\nprint(f\"Total lines: {len(v44_fixed.splitlines())}\")\n"}
