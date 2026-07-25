@@ -1,5 +1,8 @@
-// lib/strategy.ts — v44.1 "Confirmed Sequence" — Production Build
+// lib/strategy.ts — v44.2 "Confirmed Sequence" — Production Build
 // ============================================================
+// Changes from v44.1:
+// - Added MIN_STOP_PCT = 0.5% floor to prevent noise stops on BTC
+// - StochRSI extreme exit REMOVED (v44.1 fix preserved)
 
 export interface Candle {
   timestamp: number;
@@ -85,9 +88,10 @@ export interface SetupChecklist {
 
 // ─── CONSTANTS ─────────────────────────────────────────────
 
-export const CURRENT_SIGNAL_VERSION = 44.1;
+export const CURRENT_SIGNAL_VERSION = 44.2;
 const MIN_RR = 1.5;
 const MAX_STOP_PCT = 0.04;
+const MIN_STOP_PCT = 0.005;      // NEW: 0.5% minimum stop distance
 const ATR_MULT = 1.5;
 const STOCH_OVERSOLD = 20;
 const STOCH_OVERBOUGHT = 80;
@@ -913,16 +917,24 @@ export async function generateSignal(
     const pctStop = entry * (1 - MAX_STOP_PCT);
     const swingStop = swingLow * 0.998;
     stop = Math.max(atrStop, pctStop, swingStop);
-    const maxStop = entry * (1 - MAX_STOP_PCT);
-    if (stop < maxStop) stop = maxStop;
+    // NEW v44.2: Minimum stop floor
+    const minStop = entry * (1 - MIN_STOP_PCT);
+    if (stop < minStop) {
+      stop = minStop;
+      debug.push(`[RISK] Stop widened to min 0.5%: $${sf(stop,2)}`);
+    }
     target = entry + (entry - stop) * 3;
   } else {
     const atrStop = entry + atr1h * ATR_MULT;
     const pctStop = entry * (1 + MAX_STOP_PCT);
     const swingStop = swingHigh * 1.002;
     stop = Math.min(atrStop, pctStop, swingStop);
-    const maxStop = entry * (1 + MAX_STOP_PCT);
-    if (stop > maxStop) stop = maxStop;
+    // NEW v44.2: Minimum stop floor
+    const minStop = entry * (1 + MIN_STOP_PCT);
+    if (stop > minStop) {
+      stop = minStop;
+      debug.push(`[RISK] Stop widened to min 0.5%: $${sf(stop,2)}`);
+    }
     target = entry - (stop - entry) * 3;
   }
 
@@ -979,7 +991,7 @@ export async function generateSignal(
 }
 
 // ─── EXIT LOGIC ────────────────────────────────────────────
-// v44.1 — StochRSI extreme exit REMOVED.
+// v44.2 — StochRSI extreme exit REMOVED.
 // Exits: hard stop, target, or 4H trend reversal only.
 
 export function shouldHold(
