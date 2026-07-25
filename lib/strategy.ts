@@ -226,7 +226,7 @@ export function adx(candles: Candle[], period = 14): number | null {
   });
   const adxS = wilderSmooth(dx, period);
   const v = adxS[adxS.length - 1];
-n  return isValid(v) ? Math.round(v * 10) / 10 : null;
+  return isValid(v) ? Math.round(v * 10) / 10 : null;
 }
 
 // ─── ATR ───────────────────────────────────────────────────
@@ -405,7 +405,6 @@ export async function check1HLocation(
   const lastE21_1h = e21_1h[e21_1h.length - 1];
   const lastE50_1h = e50_1h[e50_1h.length - 1];
 
-  // 1. EMA Pullback
   let emaPullback = false;
   if (direction === "LONG") {
     emaPullback = lastPrice <= lastE21_1h * 1.005 || lastPrice <= lastE50_1h * 1.005;
@@ -427,7 +426,6 @@ export async function check1HLocation(
     });
   }
 
-  // 2. Trendline proximity
   const pivots = findPivots(candles1h, direction);
   let trendlineOk = false;
   if (pivots.length >= 3) {
@@ -459,7 +457,6 @@ export async function check1HLocation(
     items.push({ name: "Trendline", passed: false, detail: "Insufficient pivots" });
   }
 
-  // 3. Structure
   let structureOk = false;
   if (direction === "LONG") {
     const prevLow = Math.min(...candles1h.slice(-10, -5).map(c => c.low));
@@ -485,7 +482,6 @@ export async function check1HLocation(
     });
   }
 
-  // 4. Volume
   const vols = candles1h.slice(-11, -1).map(c => c.volume);
   const avgVol = avg(vols.slice(0, -1));
   const currentVol = candles1h[candles1h.length - 2].volume;
@@ -499,7 +495,6 @@ export async function check1HLocation(
       : `Volume ${sf(volRatio,1)}x avg (below ${VOL_THRESHOLD}x)`
   });
 
-  // Location passes if at least 2 of 4 items pass (including EMA pullback as preferred)
   const passedItems = items.filter(i => i.passed).length;
   const passed = emaPullback && passedItems >= 2;
 
@@ -556,7 +551,6 @@ export function check15mTrigger(
   result.prevK = stoch.prevK;
   result.prevD = stoch.prevD;
 
-  // Check 1: StochRSI cross
   let stochFired = false;
   if (direction === "LONG" && stoch.prevK !== null && stoch.prevD !== null) {
     if (stoch.prevK < stoch.prevD && stoch.k >= stoch.d && stoch.k < STOCH_OVERSOLD) {
@@ -572,7 +566,6 @@ export function check15mTrigger(
     }
   }
 
-  // Check 2: EMA cross
   const e8_15m = ema(closes, 8);
   const e21_15m = ema(closes, 21);
   let emaFired = false;
@@ -593,7 +586,6 @@ export function check15mTrigger(
     }
   }
 
-  // Check 3: Engulfing
   const last = candles15m[candles15m.length - 1];
   const prev = candles15m[candles15m.length - 2];
   let engulfingFired = false;
@@ -613,7 +605,6 @@ export function check15mTrigger(
     }
   }
 
-  // Check 4: Strong rejection candle
   const body = Math.abs(last.close - last.open);
   const range = last.high - last.low;
   const upperWick = last.high - Math.max(last.open, last.close);
@@ -630,7 +621,6 @@ export function check15mTrigger(
     result.reason = `Strong bearish rejection (upper wick ${sf(upperWick,2)} > body ${sf(body,2)})`;
   }
 
-  // ONE trigger is enough
   result.fired = stochFired || emaFired || engulfingFired || rejectionFired;
 
   if (result.fired) {
@@ -794,14 +784,12 @@ export async function generateSignal(
 
   if (!Array.isArray(activeSignals)) activeSignals = [];
 
-  // ── Cooldown check ──
   const lock = await isLocked(pair, now, activeSignals, options?.cooldownStore);
   if (lock.locked) {
     debug.push(`[SIGNAL] REJECTED — ${lock.reason}`);
     return { debug };
   }
 
-  // ── Data sufficiency ──
   if (candles4h.length < 50) {
     debug.push(`[SIGNAL] REJECTED — 4H insufficient data`);
     return { debug };
@@ -815,9 +803,6 @@ export async function generateSignal(
     return { debug };
   }
 
-  // ═══════════════════════════════════════════════════════
-  // STEP 1: 4H BIAS
-  // ═══════════════════════════════════════════════════════
   const trend = calculateTrend4H(candles4h);
   debug.push(...trend.debug);
 
@@ -836,9 +821,6 @@ export async function generateSignal(
 
   const direction = trend.direction as "LONG" | "SHORT";
 
-  // ═══════════════════════════════════════════════════════
-  // STEP 2: 1H LOCATION
-  // ═══════════════════════════════════════════════════════
   const location = await check1HLocation(pair, candles1h, direction, trend, options?.trendlineStore);
   debug.push(`[LOCATION-1H] ${location.detail}`);
   location.items.forEach(i => debug.push(`  ${i.passed ? "✓" : "✗"} ${i.name}: ${i.detail}`));
@@ -849,9 +831,6 @@ export async function generateSignal(
     detail: location.detail
   };
 
-  // ═══════════════════════════════════════════════════════
-  // STEP 3: 15m TRIGGER
-  // ═══════════════════════════════════════════════════════
   const trigger = check15mTrigger(candles15m, direction);
   debug.push(...trigger.debug);
 
@@ -866,9 +845,6 @@ export async function generateSignal(
     return { debug };
   }
 
-  // ═══════════════════════════════════════════════════════
-  // STEP 4: 5m TIMING
-  // ═══════════════════════════════════════════════════════
   let timingItem: CheckItem;
   let entryPrice = price;
 
@@ -894,9 +870,6 @@ export async function generateSignal(
     debug.push("[TIMING-5m] No 5m data available");
   }
 
-  // ═══════════════════════════════════════════════════════
-  // GRADE: A vs B
-  // ═══════════════════════════════════════════════════════
   const checklist: SetupChecklist = {
     bias: biasItem,
     location: locationItem,
@@ -926,9 +899,6 @@ export async function generateSignal(
     return { debug };
   }
 
-  // ═══════════════════════════════════════════════════════
-  // RISK MANAGEMENT
-  // ═══════════════════════════════════════════════════════
   const entry = entryPrice;
   const atr1h = atr(candles1h, 14);
   const recent1h = candles1h.slice(-20);
@@ -965,9 +935,6 @@ export async function generateSignal(
     return { debug };
   }
 
-  // ═══════════════════════════════════════════════════════
-  // BUILD SIGNAL
-  // ═══════════════════════════════════════════════════════
   const confidence = Math.round(
     (biasItem.passed ? 25 : 0) +
     (locationItem.passed ? 35 : 15) +
@@ -1022,7 +989,6 @@ export function shouldHold(
   candles15m: Candle[],
   currentPrice: number
 ): HoldResult {
-  // 1. Hard stops — always exit
   if (signal.direction === "LONG" && currentPrice <= signal.stop) {
     return { shouldHold: false, reason: "stop_loss" };
   }
@@ -1030,7 +996,6 @@ export function shouldHold(
     return { shouldHold: false, reason: "stop_loss" };
   }
 
-  // 2. Targets — always exit
   if (signal.direction === "LONG" && currentPrice >= signal.target) {
     return { shouldHold: false, reason: "target_hit" };
   }
@@ -1038,7 +1003,6 @@ export function shouldHold(
     return { shouldHold: false, reason: "target_hit" };
   }
 
-  // 3. 4H trend reversal — ONLY discretionary exit
   if (candles4h.length >= 50) {
     const trend = calculateTrend4H(candles4h);
     if (trend.direction !== signal.direction && trend.direction !== "NEUTRAL") {
@@ -1072,130 +1036,129 @@ export function filterExpiredSignals(
   for (const signal of signals) {
     if (!signal.exited) {
       const price = currentPrices?.[signal.pair];
-n      if (price !== undefined) {
-n        const check = isSignalStillValid(signal, price);
-n        if (!check.valid) { exited.push({ signal, reason: check.reason }); continue; }
-n      }
-n      active.push(signal); continue;
-n    }
-n    if (now - signal.timestamp < SIGNAL_TTL_MS) active.push(signal);
-n  }
-n  return { active, exited };
-n}
+      if (price !== undefined) {
+        const check = isSignalStillValid(signal, price);
+        if (!check.valid) { exited.push({ signal, reason: check.reason }); continue; }
+      }
+      active.push(signal); continue;
+    }
+    if (now - signal.timestamp < SIGNAL_TTL_MS) active.push(signal);
+  }
+  return { active, exited };
+}
 
 // ─── Market Snapshot ───────────────────────────────────────
 
 export async function getMarketSnapshot(
-n  pair: string,
-n  candles1h: Candle[],
-n  candles4h: Candle[],
-n  candles15m: Candle[],
-n  candles5m: Candle[],
-n  currentPrice?: number,
-n  signalResult?: SignalResult,
-n  options?: {
-n    trendlineStore?: TrendlineStore;
-n  }
-n) {
-n  const price = currentPrice ?? candles5m?.[candles5m.length - 1]?.close ?? candles15m?.[candles15m.length - 1]?.close ?? 0;
-n  const trend = calculateTrend4H(candles4h);
-n  const location = candles1h.length >= 50
-n    ? await check1HLocation(pair, candles1h, trend.direction === "LONG" ? "LONG" : "SHORT", trend, options?.trendlineStore)
-n    : { passed: false, detail: "No data", items: [] };
+  pair: string,
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candles15m: Candle[],
+  candles5m: Candle[],
+  currentPrice?: number,
+  signalResult?: SignalResult,
+  options?: {
+    trendlineStore?: TrendlineStore;
+  }
+) {
+  const price = currentPrice ?? candles5m?.[candles5m.length - 1]?.close ?? candles15m?.[candles15m.length - 1]?.close ?? 0;
+  const trend = calculateTrend4H(candles4h);
+  const location = candles1h.length >= 50
+    ? await check1HLocation(pair, candles1h, trend.direction === "LONG" ? "LONG" : "SHORT", trend, options?.trendlineStore)
+    : { passed: false, detail: "No data", items: [] };
 
-n  const stoch15m = candles15m.length >= 5 ? stochRsi(candles15m.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
-n  const stoch1h = candles1h.length >= 50 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
-n  const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
+  const stoch15m = candles15m.length >= 5 ? stochRsi(candles15m.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
+  const stoch1h = candles1h.length >= 50 ? stochRsi(candles1h.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
+  const stoch4h = candles4h.length >= 50 ? stochRsi(candles4h.map(c => c.close)) : { k: 50, d: 50, prevK: null, prevD: null };
 
-n  const closes1h = candles1h.map(c => c.close);
-n  const e8_1h = ema(closes1h, 8);
-n  const e21_1h = ema(closes1h, 21);
+  const closes1h = candles1h.map(c => c.close);
+  const e8_1h = ema(closes1h, 8);
+  const e21_1h = ema(closes1h, 21);
 
-n  return {
-n    pair,
-n    price: Math.round(price * 100) / 100,
-n    timestamp: Date.now(),
-n    trend: trend.direction ? `${trend.direction} ${trend.strength}` : "NEUTRAL",
-n    trendDirection: trend.direction,
-n    trendStrength: trend.strength,
-n    locationPassed: location.passed,
-n    locationDetail: location.detail,
-n    stoch15m,
-n    stoch1h,
-n    stoch4h,
-n    adx: trend.adx,
-n    ema8_1h: e8_1h.length ? Math.round(e8_1h[e8_1h.length - 1] * 100) / 100 : 0,
-n    ema21_1h: e21_1h.length ? Math.round(e21_1h[e21_1h.length - 1] * 100) / 100 : 0,
-n    signal: signalResult?.signal || null,
-n    debug: signalResult?.debug || [],
-n    trend4h: trend.direction ? { direction: trend.direction, strength: trend.strength } : null,
-n    stochK: stoch15m.k,
-n    stochD: stoch15m.d,
-n    rsi: stoch15m.k,
-n  };
-n}
+  return {
+    pair,
+    price: Math.round(price * 100) / 100,
+    timestamp: Date.now(),
+    trend: trend.direction ? `${trend.direction} ${trend.strength}` : "NEUTRAL",
+    trendDirection: trend.direction,
+    trendStrength: trend.strength,
+    locationPassed: location.passed,
+    locationDetail: location.detail,
+    stoch15m,
+    stoch1h,
+    stoch4h,
+    adx: trend.adx,
+    ema8_1h: e8_1h.length ? Math.round(e8_1h[e8_1h.length - 1] * 100) / 100 : 0,
+    ema21_1h: e21_1h.length ? Math.round(e21_1h[e21_1h.length - 1] * 100) / 100 : 0,
+    signal: signalResult?.signal || null,
+    debug: signalResult?.debug || [],
+    trend4h: trend.direction ? { direction: trend.direction, strength: trend.strength } : null,
+    stochK: stoch15m.k,
+    stochD: stoch15m.d,
+    rsi: stoch15m.k,
+  };
+}
 
 // ─── 4H → 1D (compatibility) ─────────────────────────────
 
 export function aggregateTo1D(candles4h: Candle[]): Candle[] {
-n  if (!candles4h?.length) return [];
-n  const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
-n  const groups = new Map<string, Candle[]>();
-n  for (const c of sorted) {
-n    const date = new Date(c.timestamp);
-n    const key = `${date.getUTCFullYear()}-${date.getUTCMonth()}-${date.getUTCDate()}`;
-n    if (!groups.has(key)) groups.set(key, []);
-n    groups.get(key)!.push(c);
-n  }
-n  const daily: Candle[] = [];
-n  for (const [, bars] of groups) {
-n    if (!bars.length) continue;
-n    daily.push({
-n      timestamp: bars[0].timestamp,
-n      open: bars[0].open,
-n      high: Math.max(...bars.map(b => b.high)),
-n      low: Math.min(...bars.map(b => b.low)),
-n      close: bars[bars.length - 1].close,
-n      volume: bars.reduce((s, b) => s + b.volume, 0),
-n    });
-n  }
-n  return daily.sort((a, b) => a.timestamp - b.timestamp);
-n}
+  if (!candles4h?.length) return [];
+  const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
+  const groups = new Map<string, Candle[]>();
+  for (const c of sorted) {
+    const date = new Date(c.timestamp);
+    const key = `${date.getUTCFullYear()}-${date.getUTCMonth()}-${date.getUTCDate()}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(c);
+  }
+  const daily: Candle[] = [];
+  for (const [, bars] of groups) {
+    if (!bars.length) continue;
+    daily.push({
+      timestamp: bars[0].timestamp,
+      open: bars[0].open,
+      high: Math.max(...bars.map(b => b.high)),
+      low: Math.min(...bars.map(b => b.low)),
+      close: bars[bars.length - 1].close,
+      volume: bars.reduce((s, b) => s + b.volume, 0),
+    });
+  }
+  return daily.sort((a, b) => a.timestamp - b.timestamp);
+}
 
 // ─── Compatibility ─────────────────────────────────────────
 
 export function shouldHoldCompat(
-n  signal: Signal,
-n  candles4h: Candle[],
-n  candles1h: Candle[],
-n  candles15m: Candle[],
-n  currentPrice: number
-n): HoldResult {
-n  return shouldHold(signal, candles1h, candles4h, candles15m, currentPrice);
-n}
+  signal: Signal,
+  candles4h: Candle[],
+  candles1h: Candle[],
+  candles15m: Candle[],
+  currentPrice: number
+): HoldResult {
+  return shouldHold(signal, candles1h, candles4h, candles15m, currentPrice);
+}
 
 export async function generateSignalAsync(
-n  pair: string,
-n  candles1h: Candle[],
-n  candles4h: Candle[],
-n  candles15m: Candle[],
-n  candles5m: Candle[],
-n  activeSignals?: Signal[],
-n  currentPrice?: number,
-n  options?: {
-n    trendlineStore?: TrendlineStore;
-n    cooldownStore?: CooldownStore;
-n  }
-n): Promise<SignalResult> {
-n  return generateSignal(
-n    pair,
-n    candles1h,
-n    candles4h,
-n    candles15m,
-n    candles5m,
-n    activeSignals || [],
-n    currentPrice,
-n    options
-n  );
-n}
-'''\n\n# Fix the corrupted lines with 'n' prefix\nlines = v44_complete.split('\\n')\nfixed_lines = []\nfor line in lines:\n    if line.startswith('n  ') and not line.startswith('n  return'):\n        fixed_lines.append(line[1:])  # Remove the 'n'\n    else:\n        fixed_lines.append(line)\n\nv44_fixed = '\\n'.join(fixed_lines)\n\nwith open('/mnt/agents/output/strategy_v44_1.ts', 'w') as f:\n    f.write(v44_fixed)\n\nprint(\"File written successfully!\")\nprint(f\"Total lines: {len(v44_fixed.splitlines())}\")\n"}
+  pair: string,
+  candles1h: Candle[],
+  candles4h: Candle[],
+  candles15m: Candle[],
+  candles5m: Candle[],
+  activeSignals?: Signal[],
+  currentPrice?: number,
+  options?: {
+    trendlineStore?: TrendlineStore;
+    cooldownStore?: CooldownStore;
+  }
+): Promise<SignalResult> {
+  return generateSignal(
+    pair,
+    candles1h,
+    candles4h,
+    candles15m,
+    candles5m,
+    activeSignals || [],
+    currentPrice,
+    options
+  );
+}
