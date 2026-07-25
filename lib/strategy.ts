@@ -85,7 +85,7 @@ export interface SetupChecklist {
 
 // ─── CONSTANTS ─────────────────────────────────────────────
 
-export const CURRENT_SIGNAL_VERSION = 44.0;
+export const CURRENT_SIGNAL_VERSION = 44.1;
 const MIN_RR = 1.5;
 const MAX_STOP_PCT = 0.04;
 const ATR_MULT = 1.5;
@@ -1012,6 +1012,10 @@ export async function generateSignal(
 }
 
 // ─── EXIT LOGIC ────────────────────────────────────────────
+// v44.1 — StochRSI extreme exit REMOVED.
+// Exits: hard stop, target, or 4H trend reversal only.
+// Rationale: 15m Stoch extremes in trend direction are confirmation,
+// not reversal signals. Costly false exits on SOL/USD and HYPE/USD.
 
 export function shouldHold(
   signal: Signal,
@@ -1020,7 +1024,7 @@ export function shouldHold(
   candles15m: Candle[],
   currentPrice: number
 ): HoldResult {
-  // Hard stops
+  // 1. Hard stops — always exit
   if (signal.direction === "LONG" && currentPrice <= signal.stop) {
     return { shouldHold: false, reason: "stop_loss" };
   }
@@ -1028,7 +1032,7 @@ export function shouldHold(
     return { shouldHold: false, reason: "stop_loss" };
   }
 
-  // Targets
+  // 2. Targets — always exit
   if (signal.direction === "LONG" && currentPrice >= signal.target) {
     return { shouldHold: false, reason: "target_hit" };
   }
@@ -1036,7 +1040,8 @@ export function shouldHold(
     return { shouldHold: false, reason: "target_hit" };
   }
 
-  // 4H trend reversal — PRIMARY exit
+  // 3. 4H trend reversal — ONLY discretionary exit
+  // Requires actual trend flip, not just Stoch noise
   if (candles4h.length >= 50) {
     const trend = calculateTrend4H(candles4h);
     if (trend.direction !== signal.direction && trend.direction !== "NEUTRAL") {
@@ -1044,31 +1049,12 @@ export function shouldHold(
     }
   }
 
-  // 15m Stoch extreme — ONLY exit if confirmed by 1H
-  const closes15m = candles15m.map(c => c.close);
-  const stoch15m = stochRsi(closes15m);
-
-  const closes1h = candles1h.map(c => c.close);
-  const stoch1h = stochRsi(closes1h);
-
-  const stochOpposite15m = signal.direction === "LONG"
-    ? stoch15m.k > STOCH_OVERBOUGHT
-    : stoch15m.k < STOCH_OVERSOLD;
-
-  const stochOpposite1h = signal.direction === "LONG"
-    ? stoch1h.k > STOCH_OVERBOUGHT
-    : stoch1h.k < STOCH_OVERSOLD;
-
-  const severeExtreme = signal.direction === "LONG"
-    ? stoch15m.k > 95
-    : stoch15m.k < 5;
-
-  if (stochOpposite15m && (stochOpposite1h || severeExtreme)) {
-    return {
-      shouldHold: false,
-      reason: severeExtreme ? "stoch_severe_extreme" : "stoch_extreme_confirmed"
-    };
-  }
+  // StochRSI extreme exit REMOVED in v44.1.
+  // Previous logic caused false exits when momentum was extreme IN FAVOR
+  // of the trade (e.g. SHORT with Stoch K < 5). Stoch extremes confirm
+  // trend strength, they don't signal reversal on lower timeframes.
+  // If re-adding later: require 1H + 4H Stoch both opposite + price
+  // action confirmation (close beyond key level).
 
   return { shouldHold: true, reason: "active" };
 }
