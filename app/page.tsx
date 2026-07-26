@@ -92,10 +92,15 @@ function getStatusBadge(snap: MarketSnapshot): { label: string; className: strin
   if (snap.ready) {
     return { label: "SIGNAL READY", className: "bg-green-500/20 text-green-400 border-green-500/30" };
   }
-  if (snap.bias && snap.bias !== "NEUTRAL" && snap.location !== "No valid location" && snap.location !== "—") {
+
+  const bias = safeStr(snap.bias).toUpperCase();
+  const isNeutral = bias === "NEUTRAL" || bias === "NONE" || !bias;
+  const hasLocation = snap.location && snap.location !== "No valid location" && snap.location !== "—" && snap.location !== "No bias";
+
+  if (!isNeutral && hasLocation) {
     return { label: "READY – Waiting for Trigger", className: "bg-amber-500/20 text-amber-400 border-amber-500/30" };
   }
-  if (snap.bias && snap.bias !== "NEUTRAL") {
+  if (!isNeutral) {
     return { label: "Waiting for Location", className: "bg-blue-500/20 text-blue-400 border-blue-500/30" };
   }
   return { label: "NEUTRAL — No Trade", className: "bg-gray-700/50 text-gray-400 border-gray-600/30" };
@@ -105,8 +110,9 @@ function getStatusBadge(snap: MarketSnapshot): { label: string; className: strin
 
 function BiasScoreBadge({ bias, score, detail }: { bias: string | null | undefined; score?: number; detail?: string }) {
   const s = safeNum(score);
+  const biasStr = safeStr(bias).toUpperCase();
 
-  if (!bias || bias === "NEUTRAL") {
+  if (!biasStr || biasStr === "NEUTRAL" || biasStr === "NONE") {
     return (
       <div className="p-2.5 bg-gray-800/30 rounded-lg text-center border border-gray-700/20">
         <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">4H Bias Score</div>
@@ -116,14 +122,16 @@ function BiasScoreBadge({ bias, score, detail }: { bias: string | null | undefin
     );
   }
 
-  const isLong = bias === "LONG";
+  const isLong = biasStr === "LONG";
+  const detailStr = safeStr(detail);
+
   return (
     <div className={`p-2.5 rounded-lg text-center border ${scoreBg(s)}`}>
       <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">4H Bias Score</div>
-      <div className={`text-sm font-bold ${dirColor(bias)}`}>{bias}</div>
+      <div className={`text-sm font-bold ${dirColor(biasStr)}`}>{biasStr}</div>
       <div className={`text-lg font-mono font-bold ${scoreColor(s)}`}>{s}</div>
-      {detail && (
-        <div className="text-[9px] mt-1 text-gray-500 leading-tight">{detail}</div>
+      {detailStr && (
+        <div className="text-[9px] mt-1 text-gray-500 leading-tight">{detailStr}</div>
       )}
     </div>
   );
@@ -132,9 +140,11 @@ function BiasScoreBadge({ bias, score, detail }: { bias: string | null | undefin
 // ─── Location Panel ────────────────────────────────────────
 
 function LocationPanel({ snap }: { snap: MarketSnapshot }) {
-  if (!snap.bias || snap.bias === "NEUTRAL") return null;
+  const bias = safeStr(snap.bias).toUpperCase();
+  if (!bias || bias === "NEUTRAL" || bias === "NONE") return null;
 
-  const isValid = snap.location !== "No valid location" && snap.location !== "—";
+  const loc = safeStr(snap.location);
+  const isValid = loc !== "No valid location" && loc !== "—" && loc !== "No bias" && loc !== "";
   const isTrendline = snap.locationType === "trendline";
 
   return (
@@ -145,7 +155,7 @@ function LocationPanel({ snap }: { snap: MarketSnapshot }) {
           {isValid ? (isTrendline ? "TRENDLINE" : "SWING S/R") : "WAITING"}
         </span>
       </div>
-      <div className={`text-xs ${isValid ? "text-gray-300" : "text-gray-500"}`}>{snap.location || "—"}</div>
+      <div className={`text-xs ${isValid ? "text-gray-300" : "text-gray-500"}`}>{loc || "—"}</div>
     </div>
   );
 }
@@ -153,14 +163,15 @@ function LocationPanel({ snap }: { snap: MarketSnapshot }) {
 // ─── Trigger Panel ─────────────────────────────────────────
 
 function TriggerPanel({ snap }: { snap: MarketSnapshot }) {
-  if (!snap.bias || snap.bias === "NEUTRAL") return null;
+  const bias = safeStr(snap.bias).toUpperCase();
+  if (!bias || bias === "NEUTRAL" || bias === "NONE") return null;
 
   const diag = snap.triggerDiagnostics;
   if (!diag) {
     return (
       <div className="p-3 rounded-lg border bg-gray-800/30 border-gray-700/20">
         <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider">15M Trigger</div>
-        <div className="text-xs text-gray-500 mt-1">{snap.trigger || "—"}</div>
+        <div className="text-xs text-gray-500 mt-1">{safeStr(snap.trigger)}</div>
       </div>
     );
   }
@@ -182,7 +193,6 @@ function TriggerPanel({ snap }: { snap: MarketSnapshot }) {
         </span>
       </div>
 
-      {/* Primary triggers */}
       <div className="space-y-1 mb-2">
         <div className="text-[10px] uppercase text-gray-600 tracking-wider">Primary</div>
         <div className="flex items-center gap-2 text-xs">
@@ -197,7 +207,6 @@ function TriggerPanel({ snap }: { snap: MarketSnapshot }) {
         </div>
       </div>
 
-      {/* Confirmations */}
       <div className="space-y-1 mb-2">
         <div className="text-[10px] uppercase text-gray-600 tracking-wider">Confirmation</div>
         <div className="flex items-center gap-2 text-xs">
@@ -212,7 +221,6 @@ function TriggerPanel({ snap }: { snap: MarketSnapshot }) {
         </div>
       </div>
 
-      {/* Result */}
       <div className={`text-xs ${isFired ? "text-green-400" : "text-amber-400"}`}>
         {primary.length > 0 && confirmation.length > 0
           ? `${primary[0]} + ${confirmation[0]} ✓`
@@ -231,21 +239,28 @@ function TriggerPanel({ snap }: { snap: MarketSnapshot }) {
 function MissingPanel({ snap }: { snap: MarketSnapshot }) {
   if (snap.ready || snap.activeTrade) return null;
 
+  const bias = safeStr(snap.bias).toUpperCase();
+  const isNeutral = !bias || bias === "NEUTRAL" || bias === "NONE";
   const missing: string[] = [];
-  if (!snap.bias || snap.bias === "NEUTRAL") {
+
+  if (isNeutral) {
     missing.push("Bias score neutral (30-70). Waiting for strong trend.");
   }
-  if (snap.bias && snap.bias !== "NEUTRAL" && (snap.location === "No valid location" || snap.location === "—")) {
-    missing.push("Price not near trendline or swing S/R");
-  }
-  if (snap.bias && snap.bias !== "NEUTRAL" && snap.location !== "No valid location" && snap.location !== "—" && !snap.ready) {
-    const diag = snap.triggerDiagnostics;
-    const primary = safeArr(diag?.primaryPassed);
-    const confirmation = safeArr(diag?.confirmationPassed);
-    if (primary.length === 0) {
-      missing.push("Waiting for Stoch cross or EMA cross on 15M");
-    } else if (confirmation.length === 0) {
-      missing.push("Primary trigger detected. Waiting for volume or EMA reclaim confirmation.");
+  if (!isNeutral) {
+    const loc = safeStr(snap.location);
+    const hasLocation = loc !== "No valid location" && loc !== "—" && loc !== "No bias" && loc !== "";
+    if (!hasLocation) {
+      missing.push("Price not near trendline or swing S/R");
+    }
+    if (hasLocation && !snap.ready) {
+      const diag = snap.triggerDiagnostics;
+      const primary = safeArr(diag?.primaryPassed);
+      const confirmation = safeArr(diag?.confirmationPassed);
+      if (primary.length === 0) {
+        missing.push("Waiting for Stoch cross or EMA cross on 15M");
+      } else if (confirmation.length === 0) {
+        missing.push("Primary trigger detected. Waiting for volume or EMA reclaim confirmation.");
+      }
     }
   }
 
@@ -320,7 +335,6 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
 
   return (
     <div className="p-5 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-600 transition shadow-lg">
-      {/* HEADER */}
       <div className="flex items-center justify-between mb-4">
         <div>
           <span className="font-mono font-bold text-xl tracking-tight">{(snap.pair || "???").replace("/USD", "")}</span>
@@ -333,21 +347,16 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </span>
       </div>
 
-      {/* BIAS SCORE */}
       <div className="mb-2">
         <BiasScoreBadge bias={snap.bias} score={score} detail={snap.biasDetail} />
       </div>
 
-      {/* LOCATION & TRIGGER */}
       <div className="space-y-2">
         <LocationPanel snap={snap} />
         <TriggerPanel snap={snap} />
       </div>
 
-      {/* MISSING CONDITIONS */}
       <MissingPanel snap={snap} />
-
-      {/* ACTIVE TRADE */}
       <TradePanel snap={snap} />
 
       <div className="text-xs text-gray-600 text-right mt-2">
