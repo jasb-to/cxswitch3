@@ -1,7 +1,7 @@
-// lib/telegram.ts — v42.1 Clean Notifications
+// lib/telegram.ts — v46 Clean Notifications
 // ============================================================
-// Single sender, no legacy/v41 duplication.
-// Works with v42.1's simpler Signal shape.
+// Works with v46's Signal shape: no confidence, no ADX, no stoch.
+// Reports primary trigger + confirmation, RR, and levels.
 // ============================================================
 
 import { Signal } from "./strategy";
@@ -75,21 +75,12 @@ export async function sendAlert(signal: Signal): Promise<boolean> {
     `<b>Stop:</b>   $${sf(signal.stop, 2)}  (${slPct}%)`,
     `<b>Target:</b> $${sf(signal.target, 2)}  (${tpPct}%)`,
     ``,
-    `<b>RR:</b> ${signal.rr ? sf(signal.rr, 2) : "N/A"} | <b>Conf:</b> ${signal.confidence}%`,
-  ];
-
-  if (signal.adx !== undefined) {
-    lines.push(`<b>1D ADX:</b> ${sf(signal.adx, 1)}`);
-  }
-  if (signal.stochK !== undefined && signal.stochD !== undefined) {
-    lines.push(`<b>15m Stoch:</b> K=${sf(signal.stochK, 1)} D=${sf(signal.stochD, 1)}`);
-  }
-
-  lines.push(
+    `<b>RR:</b> ${signal.rr ? sf(signal.rr, 2) : "N/A"}`,
+    `<b>Trigger:</b> ${signal.primaryTrigger} + ${signal.confirmation}`,
     ``,
-    `<code>v${signal.version || 42} | ${fmtDate(signal.timestamp)}</code>`,
-    `<code>ID: ${signal.id}</code>`
-  );
+    `<code>v${signal.version || 46} | ${fmtDate(signal.timestamp)}</code>`,
+    `<code>ID: ${signal.id}</code>`,
+  ];
 
   await sendMessage(lines.join("\n"), { disable_notification: false });
   return true;
@@ -120,7 +111,7 @@ export async function sendExitAlert(
     `<b>Entry:</b> $${sf(signal.entry, 2)} | <b>Exit:</b> $${sf(exitPrice, 2)}`,
     `<b>Reason:</b> ${reason.replace(/_/g, " ")}`,
     ``,
-    `<code>v${signal.version || 42} | ${fmtDate(Date.now())}</code>`,
+    `<code>v${signal.version || 46} | ${fmtDate(Date.now())}</code>`,
     `<code>ID: ${signal.id}</code>`,
   ];
 
@@ -132,7 +123,7 @@ export async function sendExitAlert(
 
 export async function alertStatus(signals: Signal[], prices: Record<string, number>): Promise<boolean> {
   if (!signals.length) {
-    await sendMessage("📊 <b>CXSwitch v42</b> — No active signals.");
+    await sendMessage("📊 <b>CXSwitch v46</b> — No active signals.");
     return true;
   }
 
