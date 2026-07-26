@@ -792,3 +792,4 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
   }
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
+ 
