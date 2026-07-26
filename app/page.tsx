@@ -2,15 +2,28 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 
+interface TriggerDiagnostics {
+  stochCross: { passed: boolean; detail: string };
+  emaCross: { passed: boolean; detail: string };
+  reclaimEma21: { passed: boolean; detail: string };
+  volumeSpike: { passed: boolean; detail: string };
+  primaryPassed: string[];
+  confirmationPassed: string[];
+  fired: boolean;
+  summary: string;
+}
+
 interface ActiveTradeInfo {
   signalId: string;
   direction: "LONG" | "SHORT";
   pnl: string;
   entry: number;
+  currentPrice: number;
   stop: number;
   target: number;
-  currentR?: number;
+  currentR?: string;
   phase?: string;
+  nextMilestone?: string;
 }
 
 interface MarketSnapshot {
@@ -21,6 +34,7 @@ interface MarketSnapshot {
   location: string;
   locationType: string | null;
   trigger: string;
+  triggerDiagnostics?: TriggerDiagnostics;
   ready: boolean;
   activeTrade?: ActiveTradeInfo | null;
 }
@@ -49,54 +63,22 @@ function getStatusBadge(snap: MarketSnapshot): { label: string; className: strin
   if (snap.activeTrade) {
     const dir = snap.activeTrade.direction;
     return {
-      label: dir,
+      label: "ACTIVE TRADE",
       className: dir === "LONG"
         ? "bg-green-500/20 text-green-400 border-green-500/30"
         : "bg-red-500/20 text-red-400 border-red-500/30"
     };
   }
   if (snap.ready) {
-    return { label: "READY", className: "bg-green-500/20 text-green-400 border-green-500/30" };
+    return { label: "SIGNAL READY", className: "bg-green-500/20 text-green-400 border-green-500/30" };
+  }
+  if (snap.bias && snap.bias !== "NONE" && snap.location !== "No valid location" && snap.location !== "—") {
+    return { label: "READY – Waiting for Trigger", className: "bg-amber-500/20 text-amber-400 border-amber-500/30" };
   }
   if (snap.bias && snap.bias !== "NONE") {
-    return { label: snap.bias, className: "bg-amber-500/20 text-amber-400 border-amber-500/30" };
+    return { label: "Waiting for Location", className: "bg-blue-500/20 text-blue-400 border-blue-500/30" };
   }
-  return { label: "NO BIAS", className: "bg-gray-700/50 text-gray-400 border-gray-600/30" };
-}
-
-// ─── 3-Step Progress ───────────────────────────────────────
-
-function ProgressBar({ snap }: { snap: MarketSnapshot }) {
-  const hasBias = snap.bias && snap.bias !== "NONE";
-  const hasLocation = snap.location !== "No valid location" && snap.location !== "—";
-  const hasTrigger = snap.ready;
-
-  const steps = [
-    { label: "Bias", met: hasBias },
-    { label: "Location", met: hasLocation },
-    { label: "Trigger", met: hasTrigger },
-  ];
-
-  const metCount = steps.filter(s => s.met).length;
-
-  return (
-    <div className="p-3 rounded-lg border border-gray-700/30 bg-gray-800/40">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Progress</span>
-        <span className={`text-sm font-bold ${metCount === 3 ? "text-green-400" : metCount === 2 ? "text-amber-400" : "text-gray-400"}`}>
-          {metCount}/3
-        </span>
-      </div>
-      <div className="flex gap-1">
-        {steps.map((step, i) => (
-          <div key={i} className="flex-1">
-            <div className={`h-2 rounded-full transition-all duration-500 ${step.met ? (metCount === 3 ? "bg-green-500" : "bg-amber-500") : "bg-gray-700"}`} />
-            <div className={`text-[10px] mt-1 text-center ${step.met ? "text-gray-300" : "text-gray-600"}`}>{step.label}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+  return { label: "Waiting for Bias", className: "bg-gray-700/50 text-gray-400 border-gray-600/30" };
 }
 
 // ─── Bias Badge ────────────────────────────────────────────
@@ -146,35 +128,72 @@ function LocationPanel({ snap }: { snap: MarketSnapshot }) {
 function TriggerPanel({ snap }: { snap: MarketSnapshot }) {
   if (!snap.bias || snap.bias === "NONE") return null;
 
-  const isFired = snap.ready;
-  const parts = snap.trigger.split(" + ");
-  const primary = parts[0] || snap.trigger;
-  const confirmation = parts[1] || null;
+  const diag = snap.triggerDiagnostics;
+  if (!diag) {
+    return (
+      <div className="p-3 rounded-lg border bg-gray-800/30 border-gray-700/20">
+        <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider">15M Trigger</div>
+        <div className="text-xs text-gray-500 mt-1">{snap.trigger}</div>
+      </div>
+    );
+  }
+
+  const isFired = diag.fired;
 
   return (
     <div className={`p-3 rounded-lg border ${isFired ? "bg-green-500/5 border-green-500/20" : "bg-gray-800/30 border-gray-700/20"}`}>
-      <div className="flex items-center justify-between mb-1">
+      <div className="flex items-center justify-between mb-2">
         <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">15M Trigger</span>
         <span className={`text-xs font-bold ${isFired ? "text-green-400" : "text-gray-500"}`}>
           {isFired ? "FIRED" : "WAITING"}
         </span>
       </div>
-      <div className={`text-xs ${isFired ? "text-gray-300" : "text-gray-500"}`}>
-        {isFired ? (
-          <>
-            <span className="text-amber-400 font-semibold">{primary}</span>
-            <span className="text-gray-500"> + </span>
-            <span className="text-blue-400 font-semibold">{confirmation}</span>
-          </>
-        ) : (
-          snap.trigger
-        )}
+
+      {/* Primary triggers */}
+      <div className="space-y-1 mb-2">
+        <div className="text-[10px] uppercase text-gray-600 tracking-wider">Primary</div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className={diag.stochCross.passed ? "text-green-400" : "text-gray-500"}>
+            {diag.stochCross.passed ? "✓" : "✗"} Stoch Cross
+          </span>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className={diag.emaCross.passed ? "text-green-400" : "text-gray-500"}>
+            {diag.emaCross.passed ? "✓" : "✗"} EMA Cross
+          </span>
+        </div>
+      </div>
+
+      {/* Confirmations */}
+      <div className="space-y-1 mb-2">
+        <div className="text-[10px] uppercase text-gray-600 tracking-wider">Confirmation</div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className={diag.reclaimEma21.passed ? "text-green-400" : "text-gray-500"}>
+            {diag.reclaimEma21.passed ? "✓" : "✗"} EMA21 Reclaim
+          </span>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className={diag.volumeSpike.passed ? "text-green-400" : "text-gray-500"}>
+            {diag.volumeSpike.passed ? "✓" : "✗"} Volume Spike
+          </span>
+        </div>
+      </div>
+
+      {/* Result */}
+      <div className={`text-xs ${isFired ? "text-green-400" : "text-amber-400"}`}>
+        {diag.primaryPassed.length > 0 && diag.confirmationPassed.length > 0
+          ? `${diag.primaryPassed[0]} + ${diag.confirmationPassed[0]} ✓`
+          : diag.primaryPassed.length > 0
+            ? `Primary ready (${diag.primaryPassed[0]}). Waiting for confirmation.`
+            : diag.confirmationPassed.length > 0
+              ? `Confirmation ready (${diag.confirmationPassed[0]}). Waiting for primary trigger.`
+              : `No primary trigger. ${diag.stochCross.detail}`}
       </div>
     </div>
   );
 }
 
-// ─── Missing Conditions ────────────────────────────────────
+// ─── Missing Panel ─────────────────────────────────────────
 
 function MissingPanel({ snap }: { snap: MarketSnapshot }) {
   if (snap.ready || snap.activeTrade) return null;
@@ -187,7 +206,12 @@ function MissingPanel({ snap }: { snap: MarketSnapshot }) {
     missing.push("Price not near trendline or swing S/R");
   }
   if (snap.bias && snap.bias !== "NONE" && snap.location !== "No valid location" && snap.location !== "—" && !snap.ready) {
-    missing.push("Waiting for Stoch cross or EMA cross on 15M");
+    const diag = snap.triggerDiagnostics;
+    if (diag && diag.primaryPassed.length === 0) {
+      missing.push("Waiting for Stoch cross or EMA cross on 15M");
+    } else if (diag && diag.confirmationPassed.length === 0) {
+      missing.push("Primary trigger detected. Waiting for volume or EMA reclaim confirmation.");
+    }
   }
 
   if (missing.length === 0) return null;
@@ -211,18 +235,10 @@ function TradePanel({ snap }: { snap: MarketSnapshot }) {
 
   const t = snap.activeTrade;
   const isLong = t.direction === "LONG";
-  const currentPrice = snap.price;
-  const entry = t.entry;
-  const stop = t.stop;
-  const risk = Math.abs(entry - stop);
-  const currentR = risk > 0
-    ? (isLong ? (currentPrice - entry) / risk : (entry - currentPrice) / risk)
-    : 0;
-  const phase = currentR >= 2 ? "TREND" : currentR >= 1 ? "BUILDING" : "ENTRY";
 
   return (
     <div className={`mb-4 p-4 rounded-lg border ${isLong ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"}`}>
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <span className={`text-xs uppercase font-bold tracking-wider px-2 py-1 rounded ${isLong ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
             {t.direction}
@@ -233,61 +249,24 @@ function TradePanel({ snap }: { snap: MarketSnapshot }) {
           {t.pnl}
         </span>
       </div>
-      <div className="grid grid-cols-2 gap-2 text-sm mb-4">
-        <div><span className="text-gray-500">Entry:</span> <span className="font-mono text-gray-200">${entry.toFixed(2)}</span></div>
-        <div><span className="text-gray-500">Stop:</span> <span className="font-mono text-red-400">${stop.toFixed(2)}</span></div>
+
+      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm mb-4">
+        <div><span className="text-gray-500">Entry:</span> <span className="font-mono text-gray-200">${t.entry.toFixed(2)}</span></div>
+        <div><span className="text-gray-500">Current:</span> <span className="font-mono text-gray-200">${t.currentPrice.toFixed(2)}</span></div>
+        <div><span className="text-gray-500">Stop:</span> <span className="font-mono text-red-400">${t.stop.toFixed(2)}</span></div>
         <div><span className="text-gray-500">Target:</span> <span className="font-mono text-green-400">${t.target.toFixed(2)}</span></div>
-        <div><span className="text-gray-500">RR:</span> <span className="font-mono text-gray-200">{t.currentR !== undefined ? (Math.abs(t.target - entry) / risk).toFixed(2) : "—"}</span></div>
+        <div><span className="text-gray-500">Current R:</span> <span className="font-mono text-blue-400">{t.currentR}R</span></div>
+        <div><span className="text-gray-500">Phase:</span> <span className="font-mono text-amber-400">{t.phase}</span></div>
       </div>
 
-      {/* Trail Progress */}
-      <div className="border-t border-gray-700/50 pt-3">
-        <div className="text-[10px] uppercase text-gray-500 font-semibold tracking-wider mb-2">Trail Progress</div>
-        <div className="space-y-1.5">
+      {t.nextMilestone && (
+        <div className="p-2 bg-gray-800/40 rounded border border-gray-700/30">
           <div className="flex items-center justify-between text-xs">
-            <span className="text-gray-400">Current R</span>
-            <span className={`font-mono font-bold ${currentR >= 2 ? "text-green-400" : currentR >= 1 ? "text-amber-400" : currentR >= 0 ? "text-blue-400" : "text-red-400"}`}>
-              {currentR.toFixed(2)}R
-            </span>
-          </div>
-          <div className="flex items-center justify-between text-xs opacity-60">
-            <div className="flex items-center gap-1.5">
-              <div className="w-1.5 h-1.5 rounded-full bg-red-500"></div>
-              <span className="text-gray-400">Hard Stop</span>
-            </div>
-            <span className="font-mono text-red-400">${stop.toFixed(2)}</span>
-          </div>
-          <div className={`flex items-center justify-between text-xs ${currentR >= 1 ? "opacity-60" : ""}`}>
-            <div className="flex items-center gap-1.5">
-              <div className={`w-1.5 h-1.5 rounded-full ${currentR >= 1 ? "bg-green-500" : "bg-gray-600"}`}></div>
-              <span className="text-gray-400">1R — Building</span>
-            </div>
-            <span className={`font-mono ${currentR >= 1 ? "text-green-400" : "text-gray-500"}`}>
-              ${(entry + risk * (isLong ? 1 : -1)).toFixed(2)}
-            </span>
-          </div>
-          <div className={`flex items-center justify-between text-xs ${currentR >= 2 ? "" : "opacity-40"}`}>
-            <div className="flex items-center gap-1.5">
-              <div className={`w-1.5 h-1.5 rounded-full ${currentR >= 2 ? "bg-blue-500 animate-pulse" : "bg-gray-600"}`}></div>
-              <span className="text-gray-400">2R — Trail Active</span>
-              {currentR >= 2 && <span className="text-[9px] text-blue-400">● LOCKED</span>}
-            </div>
-            <span className={`font-mono ${currentR >= 2 ? "text-blue-400" : "text-gray-500"}`}>
-              ${(entry + risk * 2 * (isLong ? 1 : -1)).toFixed(2)}
-            </span>
-          </div>
-          <div className="flex items-center justify-between text-xs opacity-40">
-            <div className="flex items-center gap-1.5">
-              <div className="w-1.5 h-1.5 rounded-full bg-gray-600"></div>
-              <span className="text-gray-400">3R — Trend</span>
-            </div>
-            <span className="font-mono text-gray-500">${(entry + risk * 3 * (isLong ? 1 : -1)).toFixed(2)}</span>
-          </div>
-          <div className="mt-2 text-[10px] text-gray-500 text-center">
-            Phase: <span className="text-gray-300">{phase}</span>
+            <span className="text-gray-500">Next Milestone</span>
+            <span className="font-mono font-bold text-blue-400">{t.nextMilestone}</span>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -312,16 +291,13 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </span>
       </div>
 
-      {/* PROGRESS */}
-      <ProgressBar snap={snap} />
-
       {/* BIAS */}
-      <div className="mt-4">
+      <div className="mb-2">
         <BiasBadge bias={snap.bias} />
       </div>
 
       {/* LOCATION & TRIGGER */}
-      <div className="mt-2 space-y-2">
+      <div className="space-y-2">
         <LocationPanel snap={snap} />
         <TriggerPanel snap={snap} />
       </div>
