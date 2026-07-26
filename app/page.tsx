@@ -9,9 +9,6 @@ interface ActiveTradeInfo {
   entry: number;
   stop: number;
   target: number;
-  entryType?: string;
-  trendlinePrice?: number;
-  lockedStop?: number | null;
   currentR?: number;
   phase?: string;
 }
@@ -20,36 +17,12 @@ interface MarketSnapshot {
   pair: string;
   price: number;
   timestamp: number;
-  bias: { direction: string; strength: number } | null;
-  stoch4h: { k: number; d: number };
-  stoch1h: { k: number; d: number };
-  stoch15m: { k: number; d: number };
-  signal?: {
-    direction: string;
-    entryType: string;
-    entry: number;
-    stop: number;
-    target: number;
-    confidence: number;
-    rr: number;
-  } | null;
-  activeTrade?: ActiveTradeInfo;
-  trendDirection: string | null;
-  trendStrengthLabel: string;
-  trend1d: { direction: string | null; strength: string } | null;
-  trend4h: { direction: string | null; strength: string } | null;
-  isExhausted: boolean;
-  exhaustionReason: string;
-  readiness: number;
-  readinessLabel: string;
-  adx: number | null;
-  debug: string[];
-  summary?: { debug: string[] };
-  rsi?: number;
-  volumeConfirmed?: boolean;
-  emaAligned?: boolean;
-  isPullback?: boolean;
-  pullbackTier?: string | null;
+  bias: string | null;
+  location: string;
+  locationType: string | null;
+  trigger: string;
+  ready: boolean;
+  activeTrade?: ActiveTradeInfo | null;
 }
 
 const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
@@ -57,160 +30,272 @@ const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
 function dirColor(dir: string | null | undefined): string {
   if (!dir) return "text-gray-400";
   const d = String(dir).toUpperCase();
-  if (d === "LONG" || d === "BULLISH") return "text-green-400";
-  if (d === "SHORT" || d === "BEARISH") return "text-red-400";
+  if (d === "LONG") return "text-green-400";
+  if (d === "SHORT") return "text-red-400";
   return "text-gray-400";
 }
 
-function stochColor(k: number, d: number): string {
-  if (k > 80 && d > 70) return "text-red-400 font-bold";
-  if (k < 20 && d < 30) return "text-green-400 font-bold";
-  if (k > d) return "text-green-400";
-  return "text-red-400";
-}
-
-function stochBg(k: number): string {
-  if (k > 80) return "bg-red-500/10 border-red-500/20";
-  if (k < 20) return "bg-green-500/10 border-green-500/20";
+function dirBg(dir: string | null | undefined): string {
+  if (!dir) return "bg-gray-800/30 border-gray-700/20";
+  const d = String(dir).toUpperCase();
+  if (d === "LONG") return "bg-green-500/5 border-green-500/15";
+  if (d === "SHORT") return "bg-red-500/5 border-red-500/15";
   return "bg-gray-800/30 border-gray-700/20";
 }
 
-function readinessBarColors(score: number, hasTrade: boolean): { bg: string; text: string; bar: string } {
-  if (hasTrade) return { bg: "bg-blue-500/10", text: "text-blue-400", bar: "bg-blue-500" };
-  if (score >= 80) return { bg: "bg-green-500/10", text: "text-green-400", bar: "bg-green-500" };
-  if (score >= 60) return { bg: "bg-amber-500/10", text: "text-amber-400", bar: "bg-amber-500" };
-  if (score >= 40) return { bg: "bg-blue-500/10", text: "text-blue-400", bar: "bg-blue-500" };
-  return { bg: "bg-gray-700/30", text: "text-gray-400", bar: "bg-gray-500" };
-}
+// ─── Status Badge ──────────────────────────────────────────
 
-// ─── v41 Entry Type Badge ───
-function entryTypeBadge(type: string | undefined): { label: string; className: string } {
-  if (!type) return { label: "ENTRY", className: "bg-gray-700/50 text-gray-400 border-gray-600/30" };
-  const t = type.toUpperCase();
-  if (t === "PULLBACK") return { label: "PULLBACK", className: "bg-blue-500/20 text-blue-400 border-blue-500/30" };
-  if (t === "BREAKOUT") return { label: "BREAKOUT", className: "bg-purple-500/20 text-purple-400 border-purple-500/30" };
-  if (t === "FADE") return { label: "FADE", className: "bg-amber-500/20 text-amber-400 border-amber-500/30" };
-  // Legacy fallbacks
-  if (t === "EARLY") return { label: "EARLY", className: "bg-amber-500/20 text-amber-400 border-amber-500/30" };
-  if (t === "RETEST") return { label: "RETEST", className: "bg-blue-500/20 text-blue-400 border-blue-500/30" };
-  return { label: "ENTRY", className: "bg-gray-700/50 text-gray-400 border-gray-600/30" };
-}
-
-function TrendBadge({ direction, strength, label }: { direction: string | null; strength: string; label: string }) {
-  if (!direction) {
-    return (
-      <div className="p-2.5 bg-gray-800/30 rounded-lg text-center border border-gray-700/20">
-        <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">{label}</div>
-        <div className="text-sm font-bold text-gray-500">NONE</div>
-      </div>
-    );
-  }
-  const isLong = direction.toUpperCase() === "LONG";
-  return (
-    <div className={`p-2.5 rounded-lg text-center border ${isLong ? "bg-green-500/5 border-green-500/15" : "bg-red-500/5 border-red-500/15"}`}>
-      <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">{label}</div>
-      <div className={`text-sm font-bold ${dirColor(direction)}`}>{direction}</div>
-      <div className={`text-[10px] mt-0.5 ${strength === "STRONG" ? "text-green-400 font-semibold" : strength === "MEDIUM" ? "text-amber-400" : "text-gray-500"}`}>{strength}</div>
-    </div>
-  );
-}
-
-function ReadinessBar({ score, label, hasTrade }: { score: number; label: string; hasTrade: boolean }) {
-  const colors = readinessBarColors(score, hasTrade);
-  return (
-    <div className={`p-3 rounded-lg border ${colors.bg} ${hasTrade ? "border-blue-500/30" : "border-gray-700/30"}`}>
-      <div className="flex items-center justify-between">
-        <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">{hasTrade ? "In Trade" : "Readiness"}</span>
-        <span className={`text-sm font-bold ${colors.text}`}>{hasTrade ? "ACTIVE" : `${label} (${score})`}</span>
-      </div>
-      {!hasTrade && (
-        <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden mt-2">
-          <div className={`h-full ${colors.bar} rounded-full transition-all duration-500`} style={{ width: `${score}%` }} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function StructurePanel({ debug, hasSignal, hasTrade }: { debug: string[]; hasSignal: boolean; hasTrade: boolean }) {
-  if (!debug || debug.length === 0) return null;
-
-  const structureLines = debug.filter(d => {
-    if (d.includes("SIGNAL:")) return false;
-    if (d === "Volume: CONFIRMED (+20%)" || d === "Volume: weak") return false;
-    return d.includes("Structure:") ||
-           d.includes("EMA") ||
-           d.includes("TREND:") ||
-           d.includes("PULLBACK:") ||
-           d.includes("pullback") ||
-           d.includes("ADX:") ||
-           d.includes("Stoch:") ||
-           d.includes("Readiness:") ||
-           d.includes("trendline") ||
-           d.includes("blocked") ||
-           d.includes("waiting") ||
-           d.includes("aligned") ||
-           d.includes("cross") ||
-           d.includes("[HOLD]") ||
-           d.includes("[ENTRY]") ||
-           d.includes("[TL]") ||
-           d.includes("[RISK]") ||
-           d.includes("[VOL]") ||
-           d.includes("[SIGNAL]");
-  });
-
-  if (structureLines.length === 0) return null;
-
-  const seen = new Set<string>();
-  const uniqueLines = structureLines.filter(line => {
-    if (seen.has(line)) return false;
-    seen.add(line);
-    return true;
-  });
-
-  return (
-    <div className="mb-4 p-3 bg-gray-800/40 rounded-lg border border-gray-700/30">
-      <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-2">Structure</div>
-      <div className="space-y-1">
-        {uniqueLines.map((line, i) => {
-          let color = "text-gray-400";
-          if (line.includes("LONG")) color = "text-green-400";
-          if (line.includes("SHORT")) color = "text-red-400";
-          if (line.includes("PULLBACK:")) color = "text-amber-400 font-semibold";
-          if (line.includes("Readiness:")) color = "text-blue-400";
-          if (line.includes("blocked")) color = "text-orange-400";
-          if (line.includes("CONFIRMED")) color = "text-green-400";
-          if (line.includes("aligned")) color = "text-green-400";
-          if (line.includes("EXIT")) color = "text-red-400";
-          if (line.includes("HOLDING")) color = "text-blue-400";
-          return <div key={i} className={`text-xs ${color}`}>{line}</div>;
-        })}
-      </div>
-    </div>
-  );
-}
-
-function MarketCard({ snap }: { snap: MarketSnapshot }) {
-  const hasSignal = !!snap.signal;
-  const hasTrade = !!snap.activeTrade;
-  const colors = readinessBarColors(snap.readiness ?? 0, hasTrade);
-
-  let statusBadge;
-  if (hasTrade) {
-    const dir = snap.activeTrade!.direction;
-    statusBadge = {
+function getStatusBadge(snap: MarketSnapshot): { label: string; className: string } {
+  if (snap.activeTrade) {
+    const dir = snap.activeTrade.direction;
+    return {
       label: dir,
       className: dir === "LONG"
         ? "bg-green-500/20 text-green-400 border-green-500/30"
         : "bg-red-500/20 text-red-400 border-red-500/30"
     };
-  } else if (hasSignal) {
-    statusBadge = entryTypeBadge(snap.signal!.entryType);
-  } else {
-    statusBadge = { label: snap.readinessLabel || "WATCH", className: `${colors.bg} ${colors.text} border-gray-600/30` };
+  }
+  if (snap.ready) {
+    return { label: "READY", className: "bg-green-500/20 text-green-400 border-green-500/30" };
+  }
+  if (snap.bias && snap.bias !== "NONE") {
+    return { label: snap.bias, className: "bg-amber-500/20 text-amber-400 border-amber-500/30" };
+  }
+  return { label: "NO BIAS", className: "bg-gray-700/50 text-gray-400 border-gray-600/30" };
+}
+
+// ─── 3-Step Progress ───────────────────────────────────────
+
+function ProgressBar({ snap }: { snap: MarketSnapshot }) {
+  const hasBias = snap.bias && snap.bias !== "NONE";
+  const hasLocation = snap.location !== "No valid location" && snap.location !== "—";
+  const hasTrigger = snap.ready;
+
+  const steps = [
+    { label: "Bias", met: hasBias },
+    { label: "Location", met: hasLocation },
+    { label: "Trigger", met: hasTrigger },
+  ];
+
+  const metCount = steps.filter(s => s.met).length;
+
+  return (
+    <div className="p-3 rounded-lg border border-gray-700/30 bg-gray-800/40">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Progress</span>
+        <span className={`text-sm font-bold ${metCount === 3 ? "text-green-400" : metCount === 2 ? "text-amber-400" : "text-gray-400"}`}>
+          {metCount}/3
+        </span>
+      </div>
+      <div className="flex gap-1">
+        {steps.map((step, i) => (
+          <div key={i} className="flex-1">
+            <div className={`h-2 rounded-full transition-all duration-500 ${step.met ? (metCount === 3 ? "bg-green-500" : "bg-amber-500") : "bg-gray-700"}`} />
+            <div className={`text-[10px] mt-1 text-center ${step.met ? "text-gray-300" : "text-gray-600"}`}>{step.label}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Bias Badge ────────────────────────────────────────────
+
+function BiasBadge({ bias }: { bias: string | null }) {
+  if (!bias || bias === "NONE") {
+    return (
+      <div className="p-2.5 bg-gray-800/30 rounded-lg text-center border border-gray-700/20">
+        <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">4H Bias</div>
+        <div className="text-sm font-bold text-gray-500">NONE</div>
+      </div>
+    );
+  }
+  const isLong = bias === "LONG";
+  return (
+    <div className={`p-2.5 rounded-lg text-center border ${isLong ? "bg-green-500/5 border-green-500/15" : "bg-red-500/5 border-red-500/15"}`}>
+      <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">4H Bias</div>
+      <div className={`text-sm font-bold ${dirColor(bias)}`}>{bias}</div>
+      <div className="text-[10px] mt-0.5 text-gray-500">EMA8 vs EMA21</div>
+    </div>
+  );
+}
+
+// ─── Location Panel ────────────────────────────────────────
+
+function LocationPanel({ snap }: { snap: MarketSnapshot }) {
+  if (!snap.bias || snap.bias === "NONE") return null;
+
+  const isValid = snap.location !== "No valid location" && snap.location !== "—";
+  const isTrendline = snap.locationType === "trendline";
+
+  return (
+    <div className={`p-3 rounded-lg border ${isValid ? (isTrendline ? "bg-amber-500/5 border-amber-500/20" : "bg-blue-500/5 border-blue-500/20") : "bg-gray-800/30 border-gray-700/20"}`}>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">Location</span>
+        <span className={`text-xs font-bold ${isValid ? (isTrendline ? "text-amber-400" : "text-blue-400") : "text-gray-500"}`}>
+          {isValid ? (isTrendline ? "TRENDLINE" : "SWING S/R") : "WAITING"}
+        </span>
+      </div>
+      <div className={`text-xs ${isValid ? "text-gray-300" : "text-gray-500"}`}>{snap.location}</div>
+    </div>
+  );
+}
+
+// ─── Trigger Panel ─────────────────────────────────────────
+
+function TriggerPanel({ snap }: { snap: MarketSnapshot }) {
+  if (!snap.bias || snap.bias === "NONE") return null;
+
+  const isFired = snap.ready;
+  const parts = snap.trigger.split(" + ");
+  const primary = parts[0] || snap.trigger;
+  const confirmation = parts[1] || null;
+
+  return (
+    <div className={`p-3 rounded-lg border ${isFired ? "bg-green-500/5 border-green-500/20" : "bg-gray-800/30 border-gray-700/20"}`}>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs uppercase text-gray-500 font-semibold tracking-wider">15M Trigger</span>
+        <span className={`text-xs font-bold ${isFired ? "text-green-400" : "text-gray-500"}`}>
+          {isFired ? "FIRED" : "WAITING"}
+        </span>
+      </div>
+      <div className={`text-xs ${isFired ? "text-gray-300" : "text-gray-500"}`}>
+        {isFired ? (
+          <>
+            <span className="text-amber-400 font-semibold">{primary}</span>
+            <span className="text-gray-500"> + </span>
+            <span className="text-blue-400 font-semibold">{confirmation}</span>
+          </>
+        ) : (
+          snap.trigger
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Missing Conditions ────────────────────────────────────
+
+function MissingPanel({ snap }: { snap: MarketSnapshot }) {
+  if (snap.ready || snap.activeTrade) return null;
+
+  const missing: string[] = [];
+  if (!snap.bias || snap.bias === "NONE") {
+    missing.push("4H EMA8/21 cross needed for bias");
+  }
+  if (snap.bias && snap.bias !== "NONE" && (snap.location === "No valid location" || snap.location === "—")) {
+    missing.push("Price not near trendline or swing S/R");
+  }
+  if (snap.bias && snap.bias !== "NONE" && snap.location !== "No valid location" && snap.location !== "—" && !snap.ready) {
+    missing.push("Waiting for Stoch cross or EMA cross on 15M");
   }
 
-  const debugLines: string[] = snap.debug || snap.summary?.debug || [];
+  if (missing.length === 0) return null;
+
+  return (
+    <div className="mb-4 p-3 bg-gray-800/40 rounded-lg border border-gray-700/30">
+      <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-2">Missing</div>
+      <div className="space-y-1">
+        {missing.map((line, i) => (
+          <div key={i} className="text-xs text-amber-400">○ {line}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Active Trade Panel ────────────────────────────────────
+
+function TradePanel({ snap }: { snap: MarketSnapshot }) {
+  if (!snap.activeTrade) return null;
+
+  const t = snap.activeTrade;
+  const isLong = t.direction === "LONG";
+  const currentPrice = snap.price;
+  const entry = t.entry;
+  const stop = t.stop;
+  const risk = Math.abs(entry - stop);
+  const currentR = risk > 0
+    ? (isLong ? (currentPrice - entry) / risk : (entry - currentPrice) / risk)
+    : 0;
+  const phase = currentR >= 2 ? "TREND" : currentR >= 1 ? "BUILDING" : "ENTRY";
+
+  return (
+    <div className={`mb-4 p-4 rounded-lg border ${isLong ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"}`}>
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <span className={`text-xs uppercase font-bold tracking-wider px-2 py-1 rounded ${isLong ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+            {t.direction}
+          </span>
+          <span className="text-xs text-gray-500">PULLBACK</span>
+        </div>
+        <span className={`text-lg font-mono font-bold ${t.pnl.startsWith("-") ? "text-red-400" : "text-green-400"}`}>
+          {t.pnl}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-sm mb-4">
+        <div><span className="text-gray-500">Entry:</span> <span className="font-mono text-gray-200">${entry.toFixed(2)}</span></div>
+        <div><span className="text-gray-500">Stop:</span> <span className="font-mono text-red-400">${stop.toFixed(2)}</span></div>
+        <div><span className="text-gray-500">Target:</span> <span className="font-mono text-green-400">${t.target.toFixed(2)}</span></div>
+        <div><span className="text-gray-500">RR:</span> <span className="font-mono text-gray-200">{t.currentR !== undefined ? (Math.abs(t.target - entry) / risk).toFixed(2) : "—"}</span></div>
+      </div>
+
+      {/* Trail Progress */}
+      <div className="border-t border-gray-700/50 pt-3">
+        <div className="text-[10px] uppercase text-gray-500 font-semibold tracking-wider mb-2">Trail Progress</div>
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-400">Current R</span>
+            <span className={`font-mono font-bold ${currentR >= 2 ? "text-green-400" : currentR >= 1 ? "text-amber-400" : currentR >= 0 ? "text-blue-400" : "text-red-400"}`}>
+              {currentR.toFixed(2)}R
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-xs opacity-60">
+            <div className="flex items-center gap-1.5">
+              <div className="w-1.5 h-1.5 rounded-full bg-red-500"></div>
+              <span className="text-gray-400">Hard Stop</span>
+            </div>
+            <span className="font-mono text-red-400">${stop.toFixed(2)}</span>
+          </div>
+          <div className={`flex items-center justify-between text-xs ${currentR >= 1 ? "opacity-60" : ""}`}>
+            <div className="flex items-center gap-1.5">
+              <div className={`w-1.5 h-1.5 rounded-full ${currentR >= 1 ? "bg-green-500" : "bg-gray-600"}`}></div>
+              <span className="text-gray-400">1R — Building</span>
+            </div>
+            <span className={`font-mono ${currentR >= 1 ? "text-green-400" : "text-gray-500"}`}>
+              ${(entry + risk * (isLong ? 1 : -1)).toFixed(2)}
+            </span>
+          </div>
+          <div className={`flex items-center justify-between text-xs ${currentR >= 2 ? "" : "opacity-40"}`}>
+            <div className="flex items-center gap-1.5">
+              <div className={`w-1.5 h-1.5 rounded-full ${currentR >= 2 ? "bg-blue-500 animate-pulse" : "bg-gray-600"}`}></div>
+              <span className="text-gray-400">2R — Trail Active</span>
+              {currentR >= 2 && <span className="text-[9px] text-blue-400">● LOCKED</span>}
+            </div>
+            <span className={`font-mono ${currentR >= 2 ? "text-blue-400" : "text-gray-500"}`}>
+              ${(entry + risk * 2 * (isLong ? 1 : -1)).toFixed(2)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-xs opacity-40">
+            <div className="flex items-center gap-1.5">
+              <div className="w-1.5 h-1.5 rounded-full bg-gray-600"></div>
+              <span className="text-gray-400">3R — Trend</span>
+            </div>
+            <span className="font-mono text-gray-500">${(entry + risk * 3 * (isLong ? 1 : -1)).toFixed(2)}</span>
+          </div>
+          <div className="mt-2 text-[10px] text-gray-500 text-center">
+            Phase: <span className="text-gray-300">{phase}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Market Card ───────────────────────────────────────────
+
+function MarketCard({ snap }: { snap: MarketSnapshot }) {
+  const badge = getStatusBadge(snap);
 
   return (
     <div className="p-5 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-600 transition shadow-lg">
@@ -222,203 +307,30 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
             ${snap.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
         </div>
-        <span className={`text-xs font-bold px-3 py-1.5 rounded-lg border ${statusBadge.className} uppercase tracking-wider`}>
-          {statusBadge.label}
+        <span className={`text-xs font-bold px-3 py-1.5 rounded-lg border ${badge.className} uppercase tracking-wider`}>
+          {badge.label}
         </span>
       </div>
 
-      {/* READINESS BAR */}
-      <ReadinessBar score={snap.readiness ?? 0} label={snap.readinessLabel ?? "NO TRADE"} hasTrade={hasTrade} />
+      {/* PROGRESS */}
+      <ProgressBar snap={snap} />
 
-      {/* TREND GRID: 1D and 4H */}
-      <div className="mt-4 grid grid-cols-2 gap-2">
-        <TrendBadge direction={snap.trend1d?.direction || null} strength={snap.trend1d?.strength || "WEAK"} label="1D Trend" />
-        <TrendBadge direction={snap.trend4h?.direction || null} strength={snap.trend4h?.strength || "WEAK"} label="4H Trend" />
+      {/* BIAS */}
+      <div className="mt-4">
+        <BiasBadge bias={snap.bias} />
       </div>
 
-      {/* ADX */}
-      {snap.adx !== null && snap.adx !== undefined && (
-        <div className="mt-2 p-2 bg-gray-800/20 rounded-lg text-center">
-          <span className="text-xs text-gray-500">ADX: </span>
-          <span className={`text-sm font-mono font-bold ${snap.adx >= 25 ? "text-green-400" : snap.adx >= 20 ? "text-amber-400" : "text-gray-400"}`}>
-            {snap.adx.toFixed(1)}
-          </span>
-          <span className="text-xs text-gray-600 ml-1">
-            {snap.adx >= 30 ? "Strong" : snap.adx >= 25 ? "Good" : snap.adx >= 20 ? "Moderate" : "Weak"}
-          </span>
-        </div>
-      )}
-
-      {/* STOCH GRID */}
-      <div className="grid grid-cols-3 gap-2 mt-4">
-        <div className={`p-2 rounded-lg text-center border ${stochBg(snap.stoch4h?.k ?? 50)}`}>
-          <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider">4H Stoch</div>
-          <div className={`text-sm font-mono font-bold ${stochColor(snap.stoch4h?.k ?? 50, snap.stoch4h?.d ?? 50)}`}>
-            {(snap.stoch4h?.k ?? 0).toFixed(1)} / {(snap.stoch4h?.d ?? 0).toFixed(1)}
-          </div>
-        </div>
-        <div className={`p-2 rounded-lg text-center border ${stochBg(snap.stoch1h?.k ?? 50)}`}>
-          <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider">1H Stoch</div>
-          <div className={`text-sm font-mono font-bold ${stochColor(snap.stoch1h?.k ?? 50, snap.stoch1h?.d ?? 50)}`}>
-            {(snap.stoch1h?.k ?? 0).toFixed(1)} / {(snap.stoch1h?.d ?? 0).toFixed(1)}
-          </div>
-        </div>
-        <div className={`p-2 rounded-lg text-center border ${stochBg(snap.stoch15m?.k ?? 50)}`}>
-          <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider">15M Stoch</div>
-          <div className={`text-sm font-mono font-bold ${stochColor(snap.stoch15m?.k ?? 50, snap.stoch15m?.d ?? 50)}`}>
-            {(snap.stoch15m?.k ?? 0).toFixed(1)} / {(snap.stoch15m?.d ?? 0).toFixed(1)}
-          </div>
-        </div>
+      {/* LOCATION & TRIGGER */}
+      <div className="mt-2 space-y-2">
+        <LocationPanel snap={snap} />
+        <TriggerPanel snap={snap} />
       </div>
 
-      {/* RSI */}
-      {snap.rsi !== undefined && (
-        <div className="mt-2 flex items-center justify-between px-2">
-          <span className="text-xs text-gray-500">RSI</span>
-          <span className={`text-xs font-mono font-bold ${snap.rsi > 70 ? "text-red-400" : snap.rsi < 30 ? "text-green-400" : "text-gray-400"}`}>
-            {snap.rsi.toFixed(1)}
-          </span>
-        </div>
-      )}
+      {/* MISSING CONDITIONS */}
+      <MissingPanel snap={snap} />
 
-      {/* VOLUME & EMA ALIGNED */}
-      <div className="mt-2 flex items-center gap-2 px-2">
-        {snap.volumeConfirmed && (
-          <span className="text-xs text-green-400">● Volume Confirmed</span>
-        )}
-        {snap.emaAligned !== undefined && (
-          <span className={`text-xs ${snap.emaAligned ? "text-green-400" : "text-red-400"}`}>
-            {snap.emaAligned ? "● EMA Aligned" : "○ EMA Misaligned"}
-          </span>
-        )}
-        {snap.isPullback && (
-          <span className="text-xs text-amber-400">● Pullback {snap.pullbackTier || ""}</span>
-        )}
-      </div>
-
-      {/* STRUCTURE PANEL */}
-      <StructurePanel debug={debugLines} hasSignal={hasSignal} hasTrade={hasTrade} />
-
-      {/* v41 TRADE DETAILS — Trailing Stop Only, No Profit Locks */}
-      {hasTrade ? (
-        <div className={`mb-4 p-4 rounded-lg border ${snap.activeTrade!.direction === "LONG" ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"}`}>
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <span className={`text-xs uppercase font-bold tracking-wider px-2 py-1 rounded ${snap.activeTrade!.direction === "LONG" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
-                {snap.activeTrade!.direction}
-              </span>
-              <span className="text-xs text-gray-500">{snap.activeTrade!.entryType}</span>
-            </div>
-            <span className={`text-lg font-mono font-bold ${snap.activeTrade!.pnl.startsWith("-") ? "text-red-400" : "text-green-400"}`}>
-              {snap.activeTrade!.pnl}
-            </span>
-          </div>
-          <div className="grid grid-cols-2 gap-2 text-sm mb-4">
-            <div><span className="text-gray-500">Entry:</span> <span className="font-mono text-gray-200">${snap.activeTrade!.entry.toFixed(2)}</span></div>
-            <div><span className="text-gray-500">Stop:</span> <span className="font-mono text-red-400">${snap.activeTrade!.stop.toFixed(2)}</span></div>
-            <div><span className="text-gray-500">Target:</span> <span className="font-mono text-green-400">${snap.activeTrade!.target.toFixed(2)}</span></div>
-            <div><span className="text-gray-500">TL:</span> <span className="font-mono text-amber-400">${snap.activeTrade!.trendlinePrice?.toFixed(2) || "—"}</span></div>
-          </div>
-
-          {/* v41 TRAILING STOP TRACKER */}
-          <div className="border-t border-gray-700/50 pt-3">
-            <div className="text-[10px] uppercase text-gray-500 font-semibold tracking-wider mb-2">Trail Progress</div>
-            <div className="space-y-1.5">
-              {(() => {
-                const entry = snap.activeTrade!.entry;
-                const stop = snap.activeTrade!.stop;
-                const currentPrice = snap.price;
-                const risk = Math.abs(entry - stop);
-                const currentR = risk > 0 ? (snap.activeTrade!.direction === "LONG" ? (currentPrice - entry) / risk : (entry - currentPrice) / risk) : 0;
-                const lockedStop = snap.activeTrade!.lockedStop;
-                const phase = snap.activeTrade!.phase || "ENTRY";
-
-                return (
-                  <>
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-gray-400">Current R</span>
-                      <span className={`font-mono font-bold ${currentR >= 2 ? "text-green-400" : currentR >= 1 ? "text-amber-400" : currentR >= 0 ? "text-blue-400" : "text-red-400"}`}>
-                        {currentR.toFixed(2)}R
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-xs opacity-60">
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-1.5 h-1.5 rounded-full bg-red-500"></div>
-                        <span className="text-gray-400">Hard Stop</span>
-                      </div>
-                      <span className="font-mono text-red-400">${stop.toFixed(2)}</span>
-                    </div>
-                    <div className={`flex items-center justify-between text-xs ${currentR >= 1 ? "opacity-60" : ""}`}>
-                      <div className="flex items-center gap-1.5">
-                        <div className={`w-1.5 h-1.5 rounded-full ${currentR >= 1 ? "bg-green-500" : "bg-gray-600"}`}></div>
-                        <span className="text-gray-400">1R — Building</span>
-                      </div>
-                      <span className={`font-mono ${currentR >= 1 ? "text-green-400" : "text-gray-500"}`}>${(entry + risk * (snap.activeTrade!.direction === "LONG" ? 1 : -1)).toFixed(2)}</span>
-                    </div>
-                    <div className={`flex items-center justify-between text-xs ${currentR >= 2 ? "" : "opacity-40"}`}>
-                      <div className="flex items-center gap-1.5">
-                        <div className={`w-1.5 h-1.5 rounded-full ${currentR >= 2 ? "bg-blue-500 animate-pulse" : "bg-gray-600"}`}></div>
-                        <span className="text-gray-400">2R — Trail Active</span>
-                        {currentR >= 2 && <span className="text-[9px] text-blue-400">● LOCKED</span>}
-                      </div>
-                      <span className={`font-mono ${currentR >= 2 ? "text-blue-400" : "text-gray-500"}`}>
-                        {lockedStop ? `$${lockedStop.toFixed(2)}` : "—"}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-xs opacity-40">
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-1.5 h-1.5 rounded-full bg-gray-600"></div>
-                        <span className="text-gray-400">3R — Trend</span>
-                      </div>
-                      <span className="font-mono text-gray-500">${(entry + risk * 3 * (snap.activeTrade!.direction === "LONG" ? 1 : -1)).toFixed(2)}</span>
-                    </div>
-                    <div className="mt-2 text-[10px] text-gray-500 text-center">
-                      Phase: <span className="text-gray-300">{phase}</span>
-                      {currentR >= 2 && lockedStop && (
-                        <span className="text-blue-400 ml-2">Trailing at ${lockedStop.toFixed(2)}</span>
-                      )}
-                    </div>
-                  </>
-                );
-              })()}
-            </div>
-          </div>
-        </div>
-      ) : hasSignal ? (
-        <div className="mb-4 p-4 bg-gray-800/50 rounded-lg border border-gray-700/50">
-          <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider mb-3">Trade Setup</div>
-          <div className="space-y-2">
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">Direction:</span>
-              <span className={`text-sm font-bold ${dirColor(snap.signal!.direction)}`}>{snap.signal!.direction}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">Type:</span>
-              <span className="text-sm font-bold text-amber-400">{snap.signal!.entryType}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">Entry:</span>
-              <span className="text-sm font-mono font-bold text-gray-200">${snap.signal!.entry.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">SL:</span>
-              <span className="text-sm font-mono font-bold text-red-400">${snap.signal!.stop.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">TP:</span>
-              <span className="text-sm font-mono font-bold text-green-400">${snap.signal!.target.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">RR:</span>
-              <span className="text-sm font-mono font-bold text-gray-200">{snap.signal!.rr.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-400">Confidence:</span>
-              <span className={`text-sm font-bold ${snap.signal!.confidence >= 70 ? "text-green-400" : "text-amber-400"}`}>{snap.signal!.confidence}%</span>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      {/* ACTIVE TRADE */}
+      <TradePanel snap={snap} />
 
       <div className="text-xs text-gray-600 text-right mt-2">
         Updated: {new Date(snap.timestamp).toLocaleString()}
@@ -487,9 +399,9 @@ export default function Dashboard() {
       <div className="max-w-6xl mx-auto">
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">CXSwitch v41</h1>
+            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">CXSwitch v46</h1>
             <p className="text-gray-500 text-sm mt-1">
-              Trendline Break — Method 1 (Pressure Cooker) Early Entry | Active: {activeTrades}
+              Three Rules — 4H Bias &rarr; 1H Location &rarr; 15M Trigger | Active: {activeTrades}
             </p>
             <p className="text-gray-600 text-xs">
               Last updated: {lastUpdate || "—"}
@@ -541,7 +453,7 @@ export default function Dashboard() {
 
         <div className="mt-8 pt-4 border-t border-gray-800 text-center">
           <p className="text-xs text-gray-600">
-            CXSwitch v41 "Trendline Break" — Method 1 (Pressure Cooker) Early Entry | 1D Bias &rarr; 4H Pullback &rarr; Trail at 2R
+            CXSwitch v46 "Three Rules" — 4H Bias &rarr; 1H Location (Trendline/Swing) &rarr; 15M Trigger (Stoch/EMA + Confirm)
           </p>
         </div>
       </div>
