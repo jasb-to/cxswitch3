@@ -2,40 +2,46 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 
+// ─── Safe Access Helpers ─────────────────────────────────
+function safeBool(val: any): boolean { return val === true; }
+function safeStr(val: any): string { return typeof val === "string" ? val : ""; }
+function safeNum(val: any): number { return typeof val === "number" && isFinite(val) ? val : 0; }
+function safeArr(val: any): string[] { return Array.isArray(val) ? val : []; }
+
 interface TriggerDiagnostics {
-  stochCross: { passed: boolean; detail: string };
-  emaCross: { passed: boolean; detail: string };
-  reclaimEma21: { passed: boolean; detail: string };
-  volumeSpike: { passed: boolean; detail: string };
-  primaryPassed: string[];
-  confirmationPassed: string[];
-  fired: boolean;
-  summary: string;
+  stochCross?: { passed?: boolean; detail?: string };
+  emaCross?: { passed?: boolean; detail?: string };
+  reclaimEma21?: { passed?: boolean; detail?: string };
+  volumeSpike?: { passed?: boolean; detail?: string };
+  primaryPassed?: string[];
+  confirmationPassed?: string[];
+  fired?: boolean;
+  summary?: string;
 }
 
 interface ActiveTradeInfo {
-  signalId: string;
-  direction: "LONG" | "SHORT";
-  pnl: string;
-  entry: number;
-  currentPrice: number;
-  stop: number;
-  target: number;
+  signalId?: string;
+  direction?: "LONG" | "SHORT";
+  pnl?: string;
+  entry?: number;
+  currentPrice?: number;
+  stop?: number;
+  target?: number;
   currentR?: string;
   phase?: string;
   nextMilestone?: string;
 }
 
 interface MarketSnapshot {
-  pair: string;
-  price: number;
-  timestamp: number;
-  bias: string | null;
-  location: string;
-  locationType: string | null;
-  trigger: string;
+  pair?: string;
+  price?: number;
+  timestamp?: number;
+  bias?: string | null;
+  location?: string;
+  locationType?: string | null;
+  trigger?: string;
   triggerDiagnostics?: TriggerDiagnostics;
-  ready: boolean;
+  ready?: boolean;
   activeTrade?: ActiveTradeInfo | null;
 }
 
@@ -83,7 +89,7 @@ function getStatusBadge(snap: MarketSnapshot): { label: string; className: strin
 
 // ─── Bias Badge ────────────────────────────────────────────
 
-function BiasBadge({ bias }: { bias: string | null }) {
+function BiasBadge({ bias }: { bias: string | null | undefined }) {
   if (!bias || bias === "NONE") {
     return (
       <div className="p-2.5 bg-gray-800/30 rounded-lg text-center border border-gray-700/20">
@@ -118,7 +124,7 @@ function LocationPanel({ snap }: { snap: MarketSnapshot }) {
           {isValid ? (isTrendline ? "TRENDLINE" : "SWING S/R") : "WAITING"}
         </span>
       </div>
-      <div className={`text-xs ${isValid ? "text-gray-300" : "text-gray-500"}`}>{snap.location}</div>
+      <div className={`text-xs ${isValid ? "text-gray-300" : "text-gray-500"}`}>{snap.location || "—"}</div>
     </div>
   );
 }
@@ -133,12 +139,18 @@ function TriggerPanel({ snap }: { snap: MarketSnapshot }) {
     return (
       <div className="p-3 rounded-lg border bg-gray-800/30 border-gray-700/20">
         <div className="text-xs uppercase text-gray-500 font-semibold tracking-wider">15M Trigger</div>
-        <div className="text-xs text-gray-500 mt-1">{snap.trigger}</div>
+        <div className="text-xs text-gray-500 mt-1">{snap.trigger || "—"}</div>
       </div>
     );
   }
 
-  const isFired = diag.fired;
+  const isFired = safeBool(diag.fired);
+  const stochPassed = safeBool(diag.stochCross?.passed);
+  const emaCrossPassed = safeBool(diag.emaCross?.passed);
+  const reclaimPassed = safeBool(diag.reclaimEma21?.passed);
+  const volPassed = safeBool(diag.volumeSpike?.passed);
+  const primary = safeArr(diag.primaryPassed);
+  const confirmation = safeArr(diag.confirmationPassed);
 
   return (
     <div className={`p-3 rounded-lg border ${isFired ? "bg-green-500/5 border-green-500/20" : "bg-gray-800/30 border-gray-700/20"}`}>
@@ -153,13 +165,13 @@ function TriggerPanel({ snap }: { snap: MarketSnapshot }) {
       <div className="space-y-1 mb-2">
         <div className="text-[10px] uppercase text-gray-600 tracking-wider">Primary</div>
         <div className="flex items-center gap-2 text-xs">
-          <span className={diag.stochCross.passed ? "text-green-400" : "text-gray-500"}>
-            {diag.stochCross.passed ? "✓" : "✗"} Stoch Cross
+          <span className={stochPassed ? "text-green-400" : "text-gray-500"}>
+            {stochPassed ? "✓" : "✗"} Stoch Cross
           </span>
         </div>
         <div className="flex items-center gap-2 text-xs">
-          <span className={diag.emaCross.passed ? "text-green-400" : "text-gray-500"}>
-            {diag.emaCross.passed ? "✓" : "✗"} EMA Cross
+          <span className={emaCrossPassed ? "text-green-400" : "text-gray-500"}>
+            {emaCrossPassed ? "✓" : "✗"} EMA Cross
           </span>
         </div>
       </div>
@@ -168,26 +180,26 @@ function TriggerPanel({ snap }: { snap: MarketSnapshot }) {
       <div className="space-y-1 mb-2">
         <div className="text-[10px] uppercase text-gray-600 tracking-wider">Confirmation</div>
         <div className="flex items-center gap-2 text-xs">
-          <span className={diag.reclaimEma21.passed ? "text-green-400" : "text-gray-500"}>
-            {diag.reclaimEma21.passed ? "✓" : "✗"} EMA21 Reclaim
+          <span className={reclaimPassed ? "text-green-400" : "text-gray-500"}>
+            {reclaimPassed ? "✓" : "✗"} EMA21 Reclaim
           </span>
         </div>
         <div className="flex items-center gap-2 text-xs">
-          <span className={diag.volumeSpike.passed ? "text-green-400" : "text-gray-500"}>
-            {diag.volumeSpike.passed ? "✓" : "✗"} Volume Spike
+          <span className={volPassed ? "text-green-400" : "text-gray-500"}>
+            {volPassed ? "✓" : "✗"} Volume Spike
           </span>
         </div>
       </div>
 
       {/* Result */}
       <div className={`text-xs ${isFired ? "text-green-400" : "text-amber-400"}`}>
-        {diag.primaryPassed.length > 0 && diag.confirmationPassed.length > 0
-          ? `${diag.primaryPassed[0]} + ${diag.confirmationPassed[0]} ✓`
-          : diag.primaryPassed.length > 0
-            ? `Primary ready (${diag.primaryPassed[0]}). Waiting for confirmation.`
-            : diag.confirmationPassed.length > 0
-              ? `Confirmation ready (${diag.confirmationPassed[0]}). Waiting for primary trigger.`
-              : `No primary trigger. ${diag.stochCross.detail}`}
+        {primary.length > 0 && confirmation.length > 0
+          ? `${primary[0]} + ${confirmation[0]} ✓`
+          : primary.length > 0
+            ? `Primary ready (${primary[0]}). Waiting for confirmation.`
+            : confirmation.length > 0
+              ? `Confirmation ready (${confirmation[0]}). Waiting for primary trigger.`
+              : `No primary trigger. ${safeStr(diag.stochCross?.detail)}`}
       </div>
     </div>
   );
@@ -207,9 +219,11 @@ function MissingPanel({ snap }: { snap: MarketSnapshot }) {
   }
   if (snap.bias && snap.bias !== "NONE" && snap.location !== "No valid location" && snap.location !== "—" && !snap.ready) {
     const diag = snap.triggerDiagnostics;
-    if (diag && diag.primaryPassed.length === 0) {
+    const primary = safeArr(diag?.primaryPassed);
+    const confirmation = safeArr(diag?.confirmationPassed);
+    if (primary.length === 0) {
       missing.push("Waiting for Stoch cross or EMA cross on 15M");
-    } else if (diag && diag.confirmationPassed.length === 0) {
+    } else if (confirmation.length === 0) {
       missing.push("Primary trigger detected. Waiting for volume or EMA reclaim confirmation.");
     }
   }
@@ -235,28 +249,33 @@ function TradePanel({ snap }: { snap: MarketSnapshot }) {
 
   const t = snap.activeTrade;
   const isLong = t.direction === "LONG";
+  const entry = safeNum(t.entry);
+  const current = safeNum(t.currentPrice);
+  const stop = safeNum(t.stop);
+  const target = safeNum(t.target);
+  const pnl = safeStr(t.pnl);
 
   return (
     <div className={`mb-4 p-4 rounded-lg border ${isLong ? "bg-green-500/10 border-green-500/30" : "bg-red-500/10 border-red-500/30"}`}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <span className={`text-xs uppercase font-bold tracking-wider px-2 py-1 rounded ${isLong ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
-            {t.direction}
+            {t.direction || "UNKNOWN"}
           </span>
           <span className="text-xs text-gray-500">PULLBACK</span>
         </div>
-        <span className={`text-lg font-mono font-bold ${t.pnl.startsWith("-") ? "text-red-400" : "text-green-400"}`}>
-          {t.pnl}
+        <span className={`text-lg font-mono font-bold ${pnl.startsWith("-") ? "text-red-400" : "text-green-400"}`}>
+          {pnl || "0.00%"}
         </span>
       </div>
 
       <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm mb-4">
-        <div><span className="text-gray-500">Entry:</span> <span className="font-mono text-gray-200">${t.entry.toFixed(2)}</span></div>
-        <div><span className="text-gray-500">Current:</span> <span className="font-mono text-gray-200">${t.currentPrice.toFixed(2)}</span></div>
-        <div><span className="text-gray-500">Stop:</span> <span className="font-mono text-red-400">${t.stop.toFixed(2)}</span></div>
-        <div><span className="text-gray-500">Target:</span> <span className="font-mono text-green-400">${t.target.toFixed(2)}</span></div>
-        <div><span className="text-gray-500">Current R:</span> <span className="font-mono text-blue-400">{t.currentR}R</span></div>
-        <div><span className="text-gray-500">Phase:</span> <span className="font-mono text-amber-400">{t.phase}</span></div>
+        <div><span className="text-gray-500">Entry:</span> <span className="font-mono text-gray-200">${entry.toFixed(2)}</span></div>
+        <div><span className="text-gray-500">Current:</span> <span className="font-mono text-gray-200">${current.toFixed(2)}</span></div>
+        <div><span className="text-gray-500">Stop:</span> <span className="font-mono text-red-400">${stop.toFixed(2)}</span></div>
+        <div><span className="text-gray-500">Target:</span> <span className="font-mono text-green-400">${target.toFixed(2)}</span></div>
+        <div><span className="text-gray-500">Current R:</span> <span className="font-mono text-blue-400">{safeStr(t.currentR)}R</span></div>
+        <div><span className="text-gray-500">Phase:</span> <span className="font-mono text-amber-400">{safeStr(t.phase)}</span></div>
       </div>
 
       {t.nextMilestone && (
@@ -275,15 +294,16 @@ function TradePanel({ snap }: { snap: MarketSnapshot }) {
 
 function MarketCard({ snap }: { snap: MarketSnapshot }) {
   const badge = getStatusBadge(snap);
+  const price = safeNum(snap.price);
 
   return (
     <div className="p-5 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-600 transition shadow-lg">
       {/* HEADER */}
       <div className="flex items-center justify-between mb-4">
         <div>
-          <span className="font-mono font-bold text-xl tracking-tight">{snap.pair.replace("/USD", "")}</span>
+          <span className="font-mono font-bold text-xl tracking-tight">{(snap.pair || "???").replace("/USD", "")}</span>
           <div className="text-sm text-gray-500 mt-0.5">
-            ${snap.price?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            ${price > 0 ? price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
           </div>
         </div>
         <span className={`text-xs font-bold px-3 py-1.5 rounded-lg border ${badge.className} uppercase tracking-wider`}>
@@ -309,7 +329,7 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
       <TradePanel snap={snap} />
 
       <div className="text-xs text-gray-600 text-right mt-2">
-        Updated: {new Date(snap.timestamp).toLocaleString()}
+        Updated: {snap.timestamp ? new Date(snap.timestamp).toLocaleString() : "—"}
       </div>
     </div>
   );
@@ -377,7 +397,7 @@ export default function Dashboard() {
           <div>
             <h1 className="text-2xl md:text-3xl font-bold tracking-tight">CXSwitch v46</h1>
             <p className="text-gray-500 text-sm mt-1">
-              Three Rules — 4H Bias &rarr; 1H Location &rarr; 15M Trigger | Active: {activeTrades}
+              Three Rules — 4H Bias → 1H Location → 15M Trigger | Active: {activeTrades}
             </p>
             <p className="text-gray-600 text-xs">
               Last updated: {lastUpdate || "—"}
@@ -429,7 +449,7 @@ export default function Dashboard() {
 
         <div className="mt-8 pt-4 border-t border-gray-800 text-center">
           <p className="text-xs text-gray-600">
-            CXSwitch v46 "Three Rules" — 4H Bias &rarr; 1H Location (Trendline/Swing) &rarr; 15M Trigger (Stoch/EMA + Confirm)
+            CXSwitch v46 "Three Rules" — 4H Bias → 1H Location (Trendline/Swing) → 15M Trigger (Stoch/EMA + Confirm)
           </p>
         </div>
       </div>
