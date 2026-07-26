@@ -37,6 +37,8 @@ interface MarketSnapshot {
   price?: number;
   timestamp?: number;
   bias?: string | null;
+  biasScore?: number;
+  biasDetail?: string;
   location?: string;
   locationType?: string | null;
   trigger?: string;
@@ -63,6 +65,18 @@ function dirBg(dir: string | null | undefined): string {
   return "bg-gray-800/30 border-gray-700/20";
 }
 
+function scoreColor(score: number): string {
+  if (score >= 70) return "text-green-400";
+  if (score <= 30) return "text-red-400";
+  return "text-amber-400";
+}
+
+function scoreBg(score: number): string {
+  if (score >= 70) return "bg-green-500/10 border-green-500/20";
+  if (score <= 30) return "bg-red-500/10 border-red-500/20";
+  return "bg-amber-500/10 border-amber-500/20";
+}
+
 // ─── Status Badge ──────────────────────────────────────────
 
 function getStatusBadge(snap: MarketSnapshot): { label: string; className: string } {
@@ -78,32 +92,39 @@ function getStatusBadge(snap: MarketSnapshot): { label: string; className: strin
   if (snap.ready) {
     return { label: "SIGNAL READY", className: "bg-green-500/20 text-green-400 border-green-500/30" };
   }
-  if (snap.bias && snap.bias !== "NONE" && snap.location !== "No valid location" && snap.location !== "—") {
+  if (snap.bias && snap.bias !== "NEUTRAL" && snap.location !== "No valid location" && snap.location !== "—") {
     return { label: "READY – Waiting for Trigger", className: "bg-amber-500/20 text-amber-400 border-amber-500/30" };
   }
-  if (snap.bias && snap.bias !== "NONE") {
+  if (snap.bias && snap.bias !== "NEUTRAL") {
     return { label: "Waiting for Location", className: "bg-blue-500/20 text-blue-400 border-blue-500/30" };
   }
-  return { label: "Waiting for Bias", className: "bg-gray-700/50 text-gray-400 border-gray-600/30" };
+  return { label: "NEUTRAL — No Trade", className: "bg-gray-700/50 text-gray-400 border-gray-600/30" };
 }
 
-// ─── Bias Badge ────────────────────────────────────────────
+// ─── Bias Score Badge ──────────────────────────────────────
 
-function BiasBadge({ bias }: { bias: string | null | undefined }) {
-  if (!bias || bias === "NONE") {
+function BiasScoreBadge({ bias, score, detail }: { bias: string | null | undefined; score?: number; detail?: string }) {
+  const s = safeNum(score);
+
+  if (!bias || bias === "NEUTRAL") {
     return (
       <div className="p-2.5 bg-gray-800/30 rounded-lg text-center border border-gray-700/20">
-        <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">4H Bias</div>
-        <div className="text-sm font-bold text-gray-500">NONE</div>
+        <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">4H Bias Score</div>
+        <div className="text-sm font-bold text-gray-500">NEUTRAL</div>
+        <div className="text-[10px] mt-0.5 text-gray-600">Score: {s > 0 ? s : "—"}/100</div>
       </div>
     );
   }
+
   const isLong = bias === "LONG";
   return (
-    <div className={`p-2.5 rounded-lg text-center border ${isLong ? "bg-green-500/5 border-green-500/15" : "bg-red-500/5 border-red-500/15"}`}>
-      <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">4H Bias</div>
+    <div className={`p-2.5 rounded-lg text-center border ${scoreBg(s)}`}>
+      <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">4H Bias Score</div>
       <div className={`text-sm font-bold ${dirColor(bias)}`}>{bias}</div>
-      <div className="text-[10px] mt-0.5 text-gray-500">EMA8 vs EMA21</div>
+      <div className={`text-lg font-mono font-bold ${scoreColor(s)}`}>{s}</div>
+      {detail && (
+        <div className="text-[9px] mt-1 text-gray-500 leading-tight">{detail}</div>
+      )}
     </div>
   );
 }
@@ -111,7 +132,7 @@ function BiasBadge({ bias }: { bias: string | null | undefined }) {
 // ─── Location Panel ────────────────────────────────────────
 
 function LocationPanel({ snap }: { snap: MarketSnapshot }) {
-  if (!snap.bias || snap.bias === "NONE") return null;
+  if (!snap.bias || snap.bias === "NEUTRAL") return null;
 
   const isValid = snap.location !== "No valid location" && snap.location !== "—";
   const isTrendline = snap.locationType === "trendline";
@@ -132,7 +153,7 @@ function LocationPanel({ snap }: { snap: MarketSnapshot }) {
 // ─── Trigger Panel ─────────────────────────────────────────
 
 function TriggerPanel({ snap }: { snap: MarketSnapshot }) {
-  if (!snap.bias || snap.bias === "NONE") return null;
+  if (!snap.bias || snap.bias === "NEUTRAL") return null;
 
   const diag = snap.triggerDiagnostics;
   if (!diag) {
@@ -211,13 +232,13 @@ function MissingPanel({ snap }: { snap: MarketSnapshot }) {
   if (snap.ready || snap.activeTrade) return null;
 
   const missing: string[] = [];
-  if (!snap.bias || snap.bias === "NONE") {
-    missing.push("4H EMA8/21 cross needed for bias");
+  if (!snap.bias || snap.bias === "NEUTRAL") {
+    missing.push("Bias score neutral (30-70). Waiting for strong trend.");
   }
-  if (snap.bias && snap.bias !== "NONE" && (snap.location === "No valid location" || snap.location === "—")) {
+  if (snap.bias && snap.bias !== "NEUTRAL" && (snap.location === "No valid location" || snap.location === "—")) {
     missing.push("Price not near trendline or swing S/R");
   }
-  if (snap.bias && snap.bias !== "NONE" && snap.location !== "No valid location" && snap.location !== "—" && !snap.ready) {
+  if (snap.bias && snap.bias !== "NEUTRAL" && snap.location !== "No valid location" && snap.location !== "—" && !snap.ready) {
     const diag = snap.triggerDiagnostics;
     const primary = safeArr(diag?.primaryPassed);
     const confirmation = safeArr(diag?.confirmationPassed);
@@ -295,6 +316,7 @@ function TradePanel({ snap }: { snap: MarketSnapshot }) {
 function MarketCard({ snap }: { snap: MarketSnapshot }) {
   const badge = getStatusBadge(snap);
   const price = safeNum(snap.price);
+  const score = safeNum(snap.biasScore);
 
   return (
     <div className="p-5 bg-gray-900 rounded-xl border border-gray-800 hover:border-gray-600 transition shadow-lg">
@@ -311,9 +333,9 @@ function MarketCard({ snap }: { snap: MarketSnapshot }) {
         </span>
       </div>
 
-      {/* BIAS */}
+      {/* BIAS SCORE */}
       <div className="mb-2">
-        <BiasBadge bias={snap.bias} />
+        <BiasScoreBadge bias={snap.bias} score={score} detail={snap.biasDetail} />
       </div>
 
       {/* LOCATION & TRIGGER */}
@@ -395,9 +417,9 @@ export default function Dashboard() {
       <div className="max-w-6xl mx-auto">
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">CXSwitch v46</h1>
+            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">CXSwitch v46.2</h1>
             <p className="text-gray-500 text-sm mt-1">
-              Three Rules — 4H Bias → 1H Location → 15M Trigger | Active: {activeTrades}
+              Bias Score → 1H Location → 15M Trigger | Active: {activeTrades}
             </p>
             <p className="text-gray-600 text-xs">
               Last updated: {lastUpdate || "—"}
@@ -449,7 +471,7 @@ export default function Dashboard() {
 
         <div className="mt-8 pt-4 border-t border-gray-800 text-center">
           <p className="text-xs text-gray-600">
-            CXSwitch v46 "Three Rules" — 4H Bias → 1H Location (Trendline/Swing) → 15M Trigger (Stoch/EMA + Confirm)
+            CXSwitch v46.2 — Bias Score (Slope + Price + Structure) → 1H Location → 15M Trigger (Stoch Extreme + Confirm)
           </p>
         </div>
       </div>
