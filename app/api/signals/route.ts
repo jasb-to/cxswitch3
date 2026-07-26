@@ -17,19 +17,19 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Normalize markets — v46 snapshot is minimal: pair, price, bias, location, trigger, ready
+    // Normalize markets — v46.1 snapshot includes triggerDiagnostics
     const markets = (snapshot.markets || []).map((m: any) => {
       const marketPair = m.pair || "UNKNOWN";
-      const direction = m.bias || null;
 
       return {
         pair: marketPair,
         price: m.price ?? 0,
         timestamp: m.timestamp ?? Date.now(),
-        bias: direction,
+        bias: m.bias || "NONE",
         location: m.location || "—",
         locationType: m.locationType || null,
         trigger: m.trigger || "—",
+        triggerDiagnostics: m.triggerDiagnostics || null,
         ready: m.ready || false,
         activeTrade: m.activeTrade || null,
       };
