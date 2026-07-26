@@ -25,11 +25,32 @@ const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
 const CRON_SECRET = process.env.CRON_SECRET;
 const EXITED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+// ─── Exit Check Helper ─────────────────────────────────────
+function checkExit(signal: Signal, price: number): { exited: boolean; reason: "STOP" | "TARGET" | null; pnlPct: number } {
+  const pnlPct = signal.direction === "LONG"
+    ? ((price - signal.entry) / signal.entry) * 100
+    : ((signal.entry - price) / signal.entry) * 100;
+
+  // STOP LOSS: LONG hit if price <= stop, SHORT hit if price >= stop
+  const stopHit = signal.direction === "LONG"
+    ? price <= signal.stop
+    : price >= signal.stop;
+
+  // TAKE PROFIT: LONG hit if price >= target, SHORT hit if price <= target
+  const targetHit = signal.direction === "LONG"
+    ? price >= signal.target
+    : price <= signal.target;
+
+  if (stopHit) return { exited: true, reason: "STOP", pnlPct };
+  if (targetHit) return { exited: true, reason: "TARGET", pnlPct };
+  return { exited: false, reason: null, pnlPct };
+}
+
 export async function GET(req: NextRequest) {
   // ─── Health check / debug ───────────────────────────────
   const { searchParams } = new URL(req.url);
   if (searchParams.get("health") === "1") {
-    return NextResponse.json({ ok: true, version: 46.1, ts: Date.now() });
+    return NextResponse.json({ ok: true, version: 46.2, ts: Date.now() });
   }
 
   try {
@@ -88,17 +109,55 @@ export async function GET(req: NextRequest) {
         // ─── Manage Active Trades ─────────────────────────────
         if (activeForPair.length > 0) {
           for (const signal of activeForPair) {
-            const rawPnl = signal.direction === "LONG"
-              ? ((price - signal.entry) / signal.entry) * 100
-              : ((signal.entry - price) / signal.entry) * 100;
-            const pnlStr = (isFinite(rawPnl) ? rawPnl.toFixed(2) : "0.00") + "%";
-            const risk = Math.abs(signal.entry - signal.stop);
-            const currentR = risk > 0 ? (signal.direction === "LONG" ? (price - signal.entry) / risk : (signal.entry - price) / risk) : 0;
-            const phase = currentR >= 2 ? "TRAILING" : currentR >= 1 ? "BUILDING" : "ENTRY";
-            const nextMilestone = currentR < 1 ? "1R" : currentR < 2 ? "2R" : currentR < 3 ? "Target" : "Target reached";
+            const { exited, reason, pnlPct } = checkExit(signal, price);
+            const pnlStr = (pnlPct >= 0 ? "+" : "") + pnlPct.toFixed(2) + "%";
 
-            console.log(`[CRON] ${pair} | ACTIVE TRADE | ${signal.direction} | P&L ${pnlStr} | R ${currentR.toFixed(2)} | Phase ${phase} | Next ${nextMilestone}`);
-            results[pair] = { status: "HOLDING", pnl: pnlStr, signalId: signal.id, currentR: currentR.toFixed(2), phase, nextMilestone };
+            if (exited) {
+              // ─── EXIT THE TRADE ─────────────────────────────
+              signal.exited = true;
+              signal.exitTimestamp = now;
+              signal.exitPrice = price;
+              signal.exitReason = reason;
+              signal.finalPnl = pnlPct;
+
+              console.log(`[CRON] ${pair} | EXITED | ${signal.direction} | ${reason} | P&L ${pnlStr} | Price $${price.toFixed(2)}`);
+
+              try {
+                await persistExit(signal);
+              } catch (e) {
+                errors.push(`persistExit ${pair}: ${e}`);
+              }
+
+              try {
+                await sendExitAlert(signal, reason, pnlPct);
+              } catch (e) {}
+
+              results[pair] = {
+                status: "EXITED",
+                reason,
+                pnl: pnlStr,
+                signalId: signal.id,
+                exitPrice: price,
+              };
+            } else {
+              // ─── STILL HOLDING ──────────────────────────────
+              const risk = Math.abs(signal.entry - signal.stop);
+              const currentR = risk > 0
+                ? (signal.direction === "LONG" ? (price - signal.entry) / risk : (signal.entry - price) / risk)
+                : 0;
+              const phase = currentR >= 2 ? "TRAILING" : currentR >= 1 ? "BUILDING" : "ENTRY";
+              const nextMilestone = currentR < 1 ? "1R" : currentR < 2 ? "2R" : currentR < 3 ? "Target" : "Target reached";
+
+              console.log(`[CRON] ${pair} | ACTIVE TRADE | ${signal.direction} | P&L ${pnlStr} | R ${currentR.toFixed(2)} | Phase ${phase} | Next ${nextMilestone}`);
+              results[pair] = {
+                status: "HOLDING",
+                pnl: pnlStr,
+                signalId: signal.id,
+                currentR: currentR.toFixed(2),
+                phase,
+                nextMilestone,
+              };
+            }
           }
         } else {
           // ─── Evaluate New Signals ───────────────────────────
@@ -138,8 +197,11 @@ export async function GET(req: NextRequest) {
         const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
         snapshot.pair = pair;
 
-        if (results[pair]?.status === "HOLDING" && activeForPair.length > 0) {
-          const s = activeForPair[0];
+        // Re-check activeForPair after exit processing (some may have exited)
+        const stillActive = activeSignals.filter(s => s.pair === pair && !s.exited);
+
+        if (stillActive.length > 0) {
+          const s = stillActive[0];
           const rawPnl = s.direction === "LONG"
             ? ((price - s.entry) / s.entry) * 100
             : ((s.entry - price) / s.entry) * 100;
@@ -161,6 +223,8 @@ export async function GET(req: NextRequest) {
             phase,
             nextMilestone,
           };
+        } else {
+          snapshot.activeTrade = null;
         }
 
         marketSnapshots.push(snapshot);
@@ -203,6 +267,7 @@ export async function GET(req: NextRequest) {
     for (const pair of PAIRS) {
       const r = results[pair];
       if (r?.status === "HOLDING") console.log(`[CRON]   📊 ${pair} | HOLDING | ${r.pnl} | R ${r.currentR} | ${r.phase} | Next: ${r.nextMilestone}`);
+      else if (r?.status === "EXITED") console.log(`[CRON]   🚪 ${pair} | EXITED | ${r.reason} | ${r.pnl} | $${r.exitPrice?.toFixed(2)}`);
       else if (r?.status === "SIGNAL") console.log(`[CRON]   🔔 ${pair} | SIGNAL | ${r.direction} | Entry:$${r.entry.toFixed(2)} | RR:${r.rr}`);
       else if (r?.status === "NO_SIGNAL") console.log(`[CRON]   ⏸️ ${pair} | NO SIGNAL`);
       else if (r?.status === "ERROR") console.log(`[CRON]   ❌ ${pair} | ERROR: ${r.error}`);
