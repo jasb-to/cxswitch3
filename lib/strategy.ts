@@ -27,11 +27,35 @@ export interface Signal {
   reason: string;
   primaryTrigger: string;
   confirmation: string;
+  exited?: boolean;
+  status?: "ACTIVE" | "EXITED";
+  exitReason?: string;
+  exitTimestamp?: number;
+  exitPrice?: number;
 }
 
 export interface SignalResult {
   signal?: Signal;
   debug: string[];
+}
+
+// ─── Compatibility types for state.ts ──────────────────────
+
+export interface MarketRegime {
+  pair: string;
+  direction: "LONG" | "SHORT";
+  timestamp: number;
+}
+
+export interface ExitRecord {
+  id: string;
+  pair: string;
+  direction: "LONG" | "SHORT";
+  entry: number;
+  exitPrice: number;
+  pnl: number;
+  reason: string;
+  timestamp: number;
 }
 
 export const CURRENT_SIGNAL_VERSION = 46;
@@ -317,10 +341,11 @@ function trigger15M(candles15m: Candle[], direction: "LONG" | "SHORT"): {
   }
 
   // Confirmation: Volume expansion
-  if (!confirmation && candles15m.length >= 11) {
-    const vols = candles15m.slice(-11, -1).map(c => c.volume);
-    const avgVol = avg(vols);
-    const currentVol = candles15m[candles15m.length - 2].volume;
+  // FIX: Use -1 (latest closed candle) since Kraken returns only closed candles
+  if (!confirmation && candles15m.length >= 10) {
+    const vols = candles15m.slice(-10).map(c => c.volume);
+    const avgVol = avg(vols.slice(0, -1));
+    const currentVol = vols[vols.length - 1];
     if (avgVol > 0 && currentVol / avgVol >= VOL_THRESHOLD) {
       confirmation = "volume_spike";
     }
@@ -410,7 +435,6 @@ export function generateSignal(
   if (bias === "LONG") {
     const atrStop = price - atrVal * ATR_MULT;
     stop = Math.max(atrStop, swingLow);
-    // Target: nearest significant swing OR 3R, whichever is closer
     const target3R = price + (price - stop) * 3;
     target = Math.min(swingHigh, target3R);
   } else {
@@ -520,8 +544,7 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
   const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
   const groups = new Map<string, Candle[]>();
   for (const c of sorted) {
-    const date = new Date(c.timestamp);
-    const key = `${date.getUTCFullYear()}-${date.getUTCMonth()}-${date.getUTCDate()}`;
+    const key = new Date(c.timestamp).toISOString().split("T")[0];
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(c);
   }
