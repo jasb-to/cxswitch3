@@ -1,5 +1,6 @@
-// lib/strategy.ts — v46 "Three Rules" — Refined Early Entry System
+// lib/strategy.ts — v46.1 "Three Rules" — Refined Early Entry System
 // ============================================================
+// UI/logging refinements only. Core trading logic unchanged from v46.
 // Layer 1: 4H Bias (EMA8 vs EMA21 only)
 // Layer 2: 1H Location (trendline OR swing S/R only)
 // Layer 3: 15M Trigger (Stoch cross OR EMA cross) + 1 confirmation
@@ -39,6 +40,17 @@ export interface SignalResult {
   debug: string[];
 }
 
+export interface TriggerDiagnostics {
+  stochCross: { passed: boolean; detail: string };
+  emaCross: { passed: boolean; detail: string };
+  reclaimEma21: { passed: boolean; detail: string };
+  volumeSpike: { passed: boolean; detail: string };
+  primaryPassed: string[];
+  confirmationPassed: string[];
+  fired: boolean;
+  summary: string;
+}
+
 // ─── Compatibility types for state.ts ──────────────────────
 
 export interface MarketRegime {
@@ -58,7 +70,7 @@ export interface ExitRecord {
   timestamp: number;
 }
 
-export const CURRENT_SIGNAL_VERSION = 46;
+export const CURRENT_SIGNAL_VERSION = 46.1;
 const MIN_RR = 1.5;
 const ATR_MULT = 2.0;
 const TL_PROXIMITY = 0.012;
@@ -158,6 +170,7 @@ interface TrendlineState {
   intercept: number;
   lastUpdated: number;
   direction: "LONG" | "SHORT";
+  r2: number;
 }
 
 const trendlineStore: Map<string, TrendlineState> = new Map();
@@ -209,7 +222,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     const deviation = Math.abs(lastPivot.price - projected) / projected;
     if (deviation < 0.02) {
       const currentIndex = candles.length - 1;
-      return { price: existing.slope * currentIndex + existing.intercept, r2: 0.85 };
+      return { price: existing.slope * currentIndex + existing.intercept, r2: existing.r2 };
     }
   }
 
@@ -221,6 +234,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     intercept: fit.intercept,
     lastUpdated: now,
     direction,
+    r2: Math.round(fit.r2 * 100) / 100,
   });
 
   const currentIndex = candles.length - 1;
@@ -281,15 +295,19 @@ function location1H(
 
 // ─── LAYER 3: 15M TRIGGER ──────────────────────────────────
 
-function trigger15M(candles15m: Candle[], direction: "LONG" | "SHORT"): {
-  fired: boolean;
-  primary: string | null;
-  confirmation: string | null;
-  detail: string;
-} {
-  if (candles15m.length < 10) {
-    return { fired: false, primary: null, confirmation: null, detail: "Insufficient 15M data" };
-  }
+function trigger15M(candles15m: Candle[], direction: "LONG" | "SHORT"): TriggerDiagnostics {
+  const defaultFail: TriggerDiagnostics = {
+    stochCross: { passed: false, detail: "Insufficient data" },
+    emaCross: { passed: false, detail: "Insufficient data" },
+    reclaimEma21: { passed: false, detail: "Insufficient data" },
+    volumeSpike: { passed: false, detail: "Insufficient data" },
+    primaryPassed: [],
+    confirmationPassed: [],
+    fired: false,
+    summary: "Insufficient 15M data",
+  };
+
+  if (candles15m.length < 10) return defaultFail;
 
   const closes = candles15m.map(c => c.close);
   const prevCloses = closes.slice(0, -1);
@@ -298,64 +316,129 @@ function trigger15M(candles15m: Candle[], direction: "LONG" | "SHORT"): {
   const e8 = ema(closes, 8);
   const e21 = ema(closes, 21);
 
-  let primary: string | null = null;
-  let confirmation: string | null = null;
+  const diag: TriggerDiagnostics = {
+    stochCross: { passed: false, detail: "" },
+    emaCross: { passed: false, detail: "" },
+    reclaimEma21: { passed: false, detail: "" },
+    volumeSpike: { passed: false, detail: "" },
+    primaryPassed: [],
+    confirmationPassed: [],
+    fired: false,
+    summary: "",
+  };
 
-  // Primary: Stoch cross from extreme
+  // Stoch cross evaluation
   if (direction === "LONG") {
     if (prevStoch.k < prevStoch.d && stoch.k >= stoch.d && stoch.k < STOCH_EXTREME_LONG) {
-      primary = "stoch_cross";
+      diag.stochCross = { passed: true, detail: `K crossed above D from oversold (K=${stoch.k}, D=${stoch.d})` };
+      diag.primaryPassed.push("stoch_cross");
+    } else if (stoch.k >= STOCH_EXTREME_LONG) {
+      diag.stochCross = { passed: false, detail: `K=${stoch.k} not in oversold zone (<${STOCH_EXTREME_LONG})` };
+    } else if (prevStoch.k >= prevStoch.d) {
+      diag.stochCross = { passed: false, detail: `Already above D (K=${prevStoch.k}, D=${prevStoch.d}), no cross` };
+    } else {
+      diag.stochCross = { passed: false, detail: `K below D but no cross yet (K=${stoch.k}, D=${stoch.d})` };
     }
   } else {
     if (prevStoch.k > prevStoch.d && stoch.k <= stoch.d && stoch.k > STOCH_EXTREME_SHORT) {
-      primary = "stoch_cross";
+      diag.stochCross = { passed: true, detail: `K crossed below D from overbought (K=${stoch.k}, D=${stoch.d})` };
+      diag.primaryPassed.push("stoch_cross");
+    } else if (stoch.k <= STOCH_EXTREME_SHORT) {
+      diag.stochCross = { passed: false, detail: `K=${stoch.k} not in overbought zone (>${STOCH_EXTREME_SHORT})` };
+    } else if (prevStoch.k <= prevStoch.d) {
+      diag.stochCross = { passed: false, detail: `Already below D (K=${prevStoch.k}, D=${prevStoch.d}), no cross` };
+    } else {
+      diag.stochCross = { passed: false, detail: `K above D but no cross yet (K=${stoch.k}, D=${stoch.d})` };
     }
   }
 
-  // Primary: EMA8/21 cross
-  if (!primary && e8.length >= 2 && e21.length >= 2) {
+  // EMA cross evaluation
+  if (e8.length >= 2 && e21.length >= 2) {
     const prevE8 = e8[e8.length - 2], prevE21 = e21[e21.length - 2];
     const lastE8 = e8[e8.length - 1], lastE21 = e21[e21.length - 1];
-    if (direction === "LONG" && prevE8 <= prevE21 && lastE8 > lastE21) {
-      primary = "ema_cross";
-    } else if (direction === "SHORT" && prevE8 >= prevE21 && lastE8 < lastE21) {
-      primary = "ema_cross";
+    if (direction === "LONG") {
+      if (prevE8 <= prevE21 && lastE8 > lastE21) {
+        diag.emaCross = { passed: true, detail: `EMA8 crossed above EMA21` };
+        diag.primaryPassed.push("ema_cross");
+      } else if (lastE8 > lastE21) {
+        diag.emaCross = { passed: false, detail: `Already above EMA21, no cross` };
+      } else {
+        diag.emaCross = { passed: false, detail: `EMA8 ${lastE8.toFixed(2)} below EMA21 ${lastE21.toFixed(2)}` };
+      }
+    } else {
+      if (prevE8 >= prevE21 && lastE8 < lastE21) {
+        diag.emaCross = { passed: true, detail: `EMA8 crossed below EMA21` };
+        diag.primaryPassed.push("ema_cross");
+      } else if (lastE8 < lastE21) {
+        diag.emaCross = { passed: false, detail: `Already below EMA21, no cross` };
+      } else {
+        diag.emaCross = { passed: false, detail: `EMA8 ${lastE8.toFixed(2)} above EMA21 ${lastE21.toFixed(2)}` };
+      }
     }
+  } else {
+    diag.emaCross = { passed: false, detail: "Insufficient EMA data" };
   }
 
-  if (!primary) {
-    return { fired: false, primary: null, confirmation: null, detail: `No primary trigger — Stoch K=${stoch.k} D=${stoch.d}` };
-  }
-
-  // Confirmation: Price reclaims EMA21
+  // Reclaim EMA21 evaluation
   if (e21.length >= 2) {
     const prevClose = closes[closes.length - 2];
     const lastClose = closes[closes.length - 1];
     const prevE21 = e21[e21.length - 2];
     const lastE21 = e21[e21.length - 1];
-    if (direction === "LONG" && prevClose <= prevE21 && lastClose > lastE21) {
-      confirmation = "reclaim_ema21";
-    } else if (direction === "SHORT" && prevClose >= prevE21 && lastClose < lastE21) {
-      confirmation = "reclaim_ema21";
+    if (direction === "LONG") {
+      if (prevClose <= prevE21 && lastClose > lastE21) {
+        diag.reclaimEma21 = { passed: true, detail: `Price reclaimed EMA21` };
+        diag.confirmationPassed.push("reclaim_ema21");
+      } else if (lastClose > lastE21) {
+        diag.reclaimEma21 = { passed: false, detail: `Already above EMA21` };
+      } else {
+        diag.reclaimEma21 = { passed: false, detail: `Price ${lastClose.toFixed(2)} below EMA21 ${lastE21.toFixed(2)}` };
+      }
+    } else {
+      if (prevClose >= prevE21 && lastClose < lastE21) {
+        diag.reclaimEma21 = { passed: true, detail: `Price dropped below EMA21` };
+        diag.confirmationPassed.push("reclaim_ema21");
+      } else if (lastClose < lastE21) {
+        diag.reclaimEma21 = { passed: false, detail: `Already below EMA21` };
+      } else {
+        diag.reclaimEma21 = { passed: false, detail: `Price ${lastClose.toFixed(2)} above EMA21 ${lastE21.toFixed(2)}` };
+      }
     }
+  } else {
+    diag.reclaimEma21 = { passed: false, detail: "Insufficient EMA data" };
   }
 
-  // Confirmation: Volume expansion
-  // FIX: Use -1 (latest closed candle) since Kraken returns only closed candles
-  if (!confirmation && candles15m.length >= 10) {
+  // Volume evaluation
+  if (candles15m.length >= 10) {
     const vols = candles15m.slice(-10).map(c => c.volume);
     const avgVol = avg(vols.slice(0, -1));
     const currentVol = vols[vols.length - 1];
-    if (avgVol > 0 && currentVol / avgVol >= VOL_THRESHOLD) {
-      confirmation = "volume_spike";
+    const ratio = avgVol > 0 ? currentVol / avgVol : 0;
+    if (ratio >= VOL_THRESHOLD) {
+      diag.volumeSpike = { passed: true, detail: `Volume ${ratio.toFixed(1)}x avg` };
+      diag.confirmationPassed.push("volume_spike");
+    } else {
+      diag.volumeSpike = { passed: false, detail: `Volume ${ratio.toFixed(1)}x avg (need ${VOL_THRESHOLD}x)` };
     }
+  } else {
+    diag.volumeSpike = { passed: false, detail: "Insufficient volume data" };
   }
 
-  if (!confirmation) {
-    return { fired: false, primary, confirmation: null, detail: `${primary} but no confirmation` };
+  const hasPrimary = diag.primaryPassed.length > 0;
+  const hasConfirmation = diag.confirmationPassed.length > 0;
+  diag.fired = hasPrimary && hasConfirmation;
+
+  if (diag.fired) {
+    diag.summary = `${diag.primaryPassed[0]} + ${diag.confirmationPassed[0]}`;
+  } else if (hasPrimary) {
+    diag.summary = `Primary trigger detected (${diag.primaryPassed[0]}). Waiting for confirmation (EMA reclaim or volume expansion).`;
+  } else if (hasConfirmation) {
+    diag.summary = `Confirmation ready (${diag.confirmationPassed[0]}) but no primary trigger. Waiting for Stoch cross or EMA cross.`;
+  } else {
+    diag.summary = `No primary trigger. Stoch K=${stoch.k} D=${stoch.d}. Waiting for cross from extreme.`;
   }
 
-  return { fired: true, primary, confirmation, detail: `${primary} + ${confirmation}` };
+  return diag;
 }
 
 // ─── COOLDOWN ──────────────────────────────────────────────
@@ -402,26 +485,38 @@ export function generateSignal(
   // Layer 1: Bias
   const bias = bias4H(candles4h);
   if (!bias) {
+    debug.push("Bias: NONE ✗");
     debug.push("Rejected: bias");
     return { debug };
   }
-  debug.push(`Bias: ${bias}`);
+  debug.push(`Bias: ${bias} ✓`);
 
   // Layer 2: Location
   const location = location1H(pair, candles1h, bias);
   if (!location.valid) {
-    debug.push(`Rejected: location — ${location.detail}`);
+    debug.push(`Location: ${location.detail} ✗`);
+    debug.push("Rejected: location");
     return { debug };
   }
-  debug.push(`Location: ${location.detail}`);
+  debug.push(`Location: ${location.detail} ✓`);
 
   // Layer 3: Trigger
   const trigger = trigger15M(candles15m, bias);
+
+  // Structured trigger log
+  debug.push("Trigger:");
+  debug.push(`  ${trigger.stochCross.passed ? "✓" : "✗"} Stoch Cross — ${trigger.stochCross.detail}`);
+  debug.push(`  ${trigger.emaCross.passed ? "✓" : "✗"} EMA Cross — ${trigger.emaCross.detail}`);
+  debug.push(`  ${trigger.reclaimEma21.passed ? "✓" : "✗"} EMA21 Reclaim — ${trigger.reclaimEma21.detail}`);
+  debug.push(`  ${trigger.volumeSpike.passed ? "✓" : "✗"} Volume — ${trigger.volumeSpike.detail}`);
+  debug.push(`  Primary: ${trigger.primaryPassed.length}/1 | Confirmation: ${trigger.confirmationPassed.length}/1`);
+
   if (!trigger.fired) {
-    debug.push(`Rejected: trigger — ${trigger.detail}`);
+    debug.push(`Result: ${trigger.summary}`);
+    debug.push("Rejected: trigger");
     return { debug };
   }
-  debug.push(`Trigger: ${trigger.detail}`);
+  debug.push(`Result: ${trigger.summary} ✓`);
 
   // Risk levels
   const atrVal = atr(candles1h, 14);
@@ -449,9 +544,11 @@ export function generateSignal(
   const rr = risk > 0 ? reward / risk : 0;
 
   if (rr < MIN_RR) {
-    debug.push(`Rejected: RR ${rr.toFixed(2)} < ${MIN_RR}`);
+    debug.push(`Risk: RR ${rr.toFixed(2)} < ${MIN_RR} ✗`);
+    debug.push("Rejected: RR");
     return { debug };
   }
+  debug.push(`Risk: RR ${rr.toFixed(2)} ✓`);
 
   // Accept
   setCooldown(pair, now);
@@ -466,12 +563,12 @@ export function generateSignal(
     rr: Math.round(rr * 100) / 100,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
-    reason: `${bias} | ${location.detail} | ${trigger.detail}`,
-    primaryTrigger: trigger.primary!,
-    confirmation: trigger.confirmation!,
+    reason: `${bias} | ${location.detail} | ${trigger.summary}`,
+    primaryTrigger: trigger.primaryPassed[0],
+    confirmation: trigger.confirmationPassed[0],
   };
 
-  debug.push(`SIGNAL: ${bias} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr} | ${trigger.primary} + ${trigger.confirmation}`);
+  debug.push(`SIGNAL: ${bias} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr} | ${trigger.primaryPassed[0]} + ${trigger.confirmationPassed[0]}`);
 
   return { signal, debug };
 }
@@ -485,8 +582,17 @@ export function getMarketSnapshot(
   candles15m: Candle[]
 ) {
   const bias = bias4H(candles4h);
-  const location = bias ? location1H(pair, candles1h, bias) : { valid: false, detail: "No bias", locationType: null };
-  const trigger = bias ? trigger15M(candles15m, bias) : { fired: false, primary: null, confirmation: null, detail: "No bias" };
+  const location = bias ? location1H(pair, candles1h, bias) : { valid: false, detail: "No bias", locationType: null as "trendline" | "swing" | null };
+  const trigger = bias ? trigger15M(candles15m, bias) : {
+    stochCross: { passed: false, detail: "No bias" },
+    emaCross: { passed: false, detail: "No bias" },
+    reclaimEma21: { passed: false, detail: "No bias" },
+    volumeSpike: { passed: false, detail: "No bias" },
+    primaryPassed: [],
+    confirmationPassed: [],
+    fired: false,
+    summary: "No bias",
+  };
   const price = candles4h[candles4h.length - 1]?.close ?? 0;
 
   return {
@@ -496,7 +602,8 @@ export function getMarketSnapshot(
     bias: bias || "NONE",
     location: location.detail,
     locationType: location.locationType,
-    trigger: trigger.detail,
+    trigger: trigger.summary,
+    triggerDiagnostics: trigger,
     ready: bias !== null && location.valid && trigger.fired,
   };
 }
