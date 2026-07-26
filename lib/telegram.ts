@@ -1,6 +1,6 @@
-// lib/telegram.ts — v46 Clean Notifications
+// lib/telegram.ts — v46.1 Clean Notifications
 // ============================================================
-// Works with v46's Signal shape: no confidence, no ADX, no stoch.
+// Works with v46.1's Signal shape: no confidence, no ADX, no stoch.
 // Reports primary trigger + confirmation, RR, and levels.
 // ============================================================
 
@@ -164,4 +164,3 @@ export async function notifyAdmin(message: string, error?: Error): Promise<void>
     parse_mode: "HTML",
   });
 }
- 
