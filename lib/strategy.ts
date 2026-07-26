@@ -1,10 +1,15 @@
-// lib/strategy.ts — v46.1 "Three Rules" — Refined Early Entry System
+// lib/strategy.ts — v46.2 "Bias Score" — Trend + Structure + Price
 // ============================================================
-// UI/logging refinements only. Core trading logic unchanged from v46.
-// Layer 1: 4H Bias (EMA8 vs EMA21 only)
-// Layer 2: 1H Location (trendline OR swing S/R only)
-// Layer 3: 15M Trigger (Stoch cross OR EMA cross) + 1 confirmation
-// One ENTRY signal. No exits. No scoring. No daily. No ADX.
+// Bias Score (0-100):
+//   +40 EMA21 slope (smoothed over 5 candles)
+//   +30 Price vs EMA21
+//   +30 Market structure (HH/HL or LH/LL)
+// Zones: >70 Bullish, <30 Bearish, 30-70 Neutral (no trade)
+//
+// Layer 1: Bias Score >70 or <30
+// Layer 2: 1H Location (trendline OR swing S/R, in direction of bias)
+// Layer 3: 15M Trigger (Stoch cross from extreme + confirmation)
+// One ENTRY signal. No exits. No scoring.
 
 export interface Candle {
   timestamp: number;
@@ -28,6 +33,7 @@ export interface Signal {
   reason: string;
   primaryTrigger: string;
   confirmation: string;
+  biasScore: number;
   exited?: boolean;
   status?: "ACTIVE" | "EXITED";
   exitReason?: string;
@@ -51,6 +57,16 @@ export interface TriggerDiagnostics {
   summary: string;
 }
 
+export interface BiasScore {
+  score: number;
+  direction: "LONG" | "SHORT" | "NEUTRAL";
+  slope: number;
+  slopePct: number;
+  priceVsEma21: number;
+  structure: "HH_HL" | "LH_LL" | "MIXED";
+  detail: string;
+}
+
 // ─── Compatibility types for state.ts ──────────────────────
 
 export interface MarketRegime {
@@ -70,7 +86,7 @@ export interface ExitRecord {
   timestamp: number;
 }
 
-export const CURRENT_SIGNAL_VERSION = 46.1;
+export const CURRENT_SIGNAL_VERSION = 46.2;
 const MIN_RR = 1.5;
 const ATR_MULT = 2.0;
 const TL_PROXIMITY = 0.012;
@@ -80,6 +96,9 @@ const STOCH_EXTREME_LONG = 30;
 const STOCH_EXTREME_SHORT = 70;
 const COOLDOWN_MS = 4 * 60 * 60 * 1000;
 const TL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const BIAS_BULLISH_THRESHOLD = 70;
+const BIAS_BEARISH_THRESHOLD = 30;
+const EMA21_SLOPE_LOOKBACK = 5;
 
 // ─── HELPERS ───────────────────────────────────────────────
 
@@ -241,15 +260,116 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   return { price: fit.slope * currentIndex + fit.intercept, r2: Math.round(fit.r2 * 100) / 100 };
 }
 
-// ─── LAYER 1: 4H BIAS ──────────────────────────────────────
+// ─── LAYER 1: BIAS SCORE ───────────────────────────────────
+// +40 EMA21 slope (smoothed over 5 candles)
+// +30 Price vs EMA21
+// +30 Market structure (HH/HL or LH/LL)
+// >70 = Bullish, <30 = Bearish, 30-70 = Neutral
 
-function bias4H(candles4h: Candle[]): "LONG" | "SHORT" | null {
-  if (candles4h.length < 30) return null;
+function findSwings(candles: Candle[], lookback: number = 10): { highs: number[]; lows: number[] } {
+  const highs: number[] = [];
+  const lows: number[] = [];
+  for (let i = 3; i < candles.length - 3 && i < lookback + 3; i++) {
+    const isSwingHigh = candles[i].high > candles[i-1].high && candles[i].high > candles[i-2].high &&
+                        candles[i].high > candles[i+1].high && candles[i].high > candles[i+2].high;
+    const isSwingLow = candles[i].low < candles[i-1].low && candles[i].low < candles[i-2].low &&
+                       candles[i].low < candles[i+1].low && candles[i].low < candles[i+2].low;
+    if (isSwingHigh) highs.push(candles[i].high);
+    if (isSwingLow) lows.push(candles[i].low);
+  }
+  return { highs, lows };
+}
+
+function computeBiasScore(candles4h: Candle[]): BiasScore {
+  const defaultNeutral: BiasScore = {
+    score: 50,
+    direction: "NEUTRAL",
+    slope: 0,
+    slopePct: 0,
+    priceVsEma21: 0,
+    structure: "MIXED",
+    detail: "Insufficient data",
+  };
+
+  if (candles4h.length < 40) return defaultNeutral;
+
   const closes = candles4h.map(c => c.close);
-  const e8 = ema(closes, 8);
   const e21 = ema(closes, 21);
-  if (!e8.length || !e21.length) return null;
-  return e8[e8.length - 1] > e21[e21.length - 1] ? "LONG" : "SHORT";
+  if (e21.length < EMA21_SLOPE_LOOKBACK + 5) return defaultNeutral;
+
+  const price = closes[closes.length - 1];
+  const emaNow = e21[e21.length - 1];
+  const emaThen = e21[e21.length - 1 - EMA21_SLOPE_LOOKBACK];
+
+  // 1. EMA21 slope (40 points)
+  const slope = emaNow - emaThen;
+  const slopePct = emaThen !== 0 ? (slope / emaThen) * 100 : 0;
+  let slopeScore = 20; // neutral base
+  if (slopePct > 0.50) slopeScore = 40;
+  else if (slopePct > 0.30) slopeScore = 35;
+  else if (slopePct > 0.10) slopeScore = 30;
+  else if (slopePct > -0.10) slopeScore = 20;
+  else if (slopePct > -0.30) slopeScore = 10;
+  else if (slopePct > -0.50) slopeScore = 5;
+  else slopeScore = 0;
+
+  // 2. Price vs EMA21 (30 points)
+  const priceVsEma = emaNow !== 0 ? ((price - emaNow) / emaNow) * 100 : 0;
+  let priceScore = 15; // neutral base
+  if (priceVsEma > 1.0) priceScore = 30;
+  else if (priceVsEma > 0.5) priceScore = 25;
+  else if (priceVsEma > 0.0) priceScore = 20;
+  else if (priceVsEma > -0.5) priceScore = 10;
+  else if (priceVsEma > -1.0) priceScore = 5;
+  else priceScore = 0;
+
+  // 3. Market structure (30 points)
+  const { highs, lows } = findSwings(candles4h.slice(-30));
+  let structure: "HH_HL" | "LH_LL" | "MIXED" = "MIXED";
+  let structureScore = 15;
+
+  if (highs.length >= 2 && lows.length >= 2) {
+    const lastHigh = highs[highs.length - 1];
+    const prevHigh = highs[highs.length - 2];
+    const lastLow = lows[lows.length - 1];
+    const prevLow = lows[lows.length - 2];
+
+    const higherHigh = lastHigh > prevHigh;
+    const higherLow = lastLow > prevLow;
+    const lowerHigh = lastHigh < prevHigh;
+    const lowerLow = lastLow < prevLow;
+
+    if (higherHigh && higherLow) {
+      structure = "HH_HL";
+      structureScore = 30;
+    } else if (lowerHigh && lowerLow) {
+      structure = "LH_LL";
+      structureScore = 0;
+    } else if (higherHigh && !higherLow) {
+      structure = "MIXED";
+      structureScore = 22;
+    } else if (lowerHigh && !lowerLow) {
+      structure = "MIXED";
+      structureScore = 8;
+    }
+  }
+
+  const totalScore = slopeScore + priceScore + structureScore;
+  let direction: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
+  if (totalScore >= BIAS_BULLISH_THRESHOLD) direction = "LONG";
+  else if (totalScore <= BIAS_BEARISH_THRESHOLD) direction = "SHORT";
+
+  const detail = `Score:${totalScore} | Slope:${slopePct.toFixed(2)}%(${slopeScore}) | PriceVsEma:${priceVsEma.toFixed(2)}%(${priceScore}) | Structure:${structure}(${structureScore})`;
+
+  return {
+    score: totalScore,
+    direction,
+    slope,
+    slopePct,
+    priceVsEma21: priceVsEma,
+    structure,
+    detail,
+  };
 }
 
 // ─── LAYER 2: 1H LOCATION ──────────────────────────────────
@@ -327,7 +447,7 @@ function trigger15M(candles15m: Candle[], direction: "LONG" | "SHORT"): TriggerD
     summary: "",
   };
 
-  // Stoch cross evaluation
+  // Stoch cross evaluation — MUST be from extreme
   if (direction === "LONG") {
     if (prevStoch.k < prevStoch.d && stoch.k >= stoch.d && stoch.k < STOCH_EXTREME_LONG) {
       diag.stochCross = { passed: true, detail: `K crossed above D from oversold (K=${stoch.k}, D=${stoch.d})` };
@@ -482,17 +602,17 @@ export function generateSignal(
     return { debug };
   }
 
-  // Layer 1: Bias
-  const bias = bias4H(candles4h);
-  if (!bias) {
-    debug.push("Bias: NONE ✗");
-    debug.push("Rejected: bias");
+  // Layer 1: Bias Score
+  const bias = computeBiasScore(candles4h);
+  debug.push(`Bias: ${bias.direction} | Score:${bias.score} | ${bias.detail}`);
+
+  if (bias.direction === "NEUTRAL") {
+    debug.push("Rejected: neutral bias");
     return { debug };
   }
-  debug.push(`Bias: ${bias} ✓`);
 
   // Layer 2: Location
-  const location = location1H(pair, candles1h, bias);
+  const location = location1H(pair, candles1h, bias.direction);
   if (!location.valid) {
     debug.push(`Location: ${location.detail} ✗`);
     debug.push("Rejected: location");
@@ -501,7 +621,7 @@ export function generateSignal(
   debug.push(`Location: ${location.detail} ✓`);
 
   // Layer 3: Trigger
-  const trigger = trigger15M(candles15m, bias);
+  const trigger = trigger15M(candles15m, bias.direction);
 
   // Structured trigger log
   debug.push("Trigger:");
@@ -527,7 +647,7 @@ export function generateSignal(
   let stop: number;
   let target: number;
 
-  if (bias === "LONG") {
+  if (bias.direction === "LONG") {
     const atrStop = price - atrVal * ATR_MULT;
     stop = Math.max(atrStop, swingLow);
     const target3R = price + (price - stop) * 3;
@@ -556,19 +676,20 @@ export function generateSignal(
   const signal: Signal = {
     id: `${pair}_${now}`,
     pair,
-    direction: bias,
+    direction: bias.direction,
     entry: Math.round(price * 100) / 100,
     stop: Math.round(stop * 100) / 100,
     target: Math.round(target * 100) / 100,
     rr: Math.round(rr * 100) / 100,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
-    reason: `${bias} | ${location.detail} | ${trigger.summary}`,
+    reason: `${bias.direction} | Score:${bias.score} | ${location.detail} | ${trigger.summary}`,
     primaryTrigger: trigger.primaryPassed[0],
     confirmation: trigger.confirmationPassed[0],
+    biasScore: bias.score,
   };
 
-  debug.push(`SIGNAL: ${bias} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr} | ${trigger.primaryPassed[0]} + ${trigger.confirmationPassed[0]}`);
+  debug.push(`SIGNAL: ${bias.direction} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr} | Score ${bias.score} | ${trigger.primaryPassed[0]} + ${trigger.confirmationPassed[0]}`);
 
   return { signal, debug };
 }
@@ -581,9 +702,9 @@ export function getMarketSnapshot(
   candles4h: Candle[],
   candles15m: Candle[]
 ) {
-  const bias = bias4H(candles4h);
-  const location = bias ? location1H(pair, candles1h, bias) : { valid: false, detail: "No bias", locationType: null as "trendline" | "swing" | null };
-  const trigger = bias ? trigger15M(candles15m, bias) : {
+  const bias = computeBiasScore(candles4h);
+  const location = bias.direction !== "NEUTRAL" ? location1H(pair, candles1h, bias.direction) : { valid: false, detail: "No bias", locationType: null as "trendline" | "swing" | null };
+  const trigger = bias.direction !== "NEUTRAL" ? trigger15M(candles15m, bias.direction) : {
     stochCross: { passed: false, detail: "No bias" },
     emaCross: { passed: false, detail: "No bias" },
     reclaimEma21: { passed: false, detail: "No bias" },
@@ -599,12 +720,14 @@ export function getMarketSnapshot(
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
-    bias: bias || "NONE",
+    bias: bias.direction,
+    biasScore: bias.score,
+    biasDetail: bias.detail,
     location: location.detail,
     locationType: location.locationType,
     trigger: trigger.summary,
     triggerDiagnostics: trigger,
-    ready: bias !== null && location.valid && trigger.fired,
+    ready: bias.direction !== "NEUTRAL" && location.valid && trigger.fired,
   };
 }
 
