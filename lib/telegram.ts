@@ -1,6 +1,6 @@
 // lib/telegram.ts — v50 Clean Alerts
 // ============================================================
-
+ 
 export async function sendAlert(signal: any) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
