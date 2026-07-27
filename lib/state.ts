@@ -15,6 +15,9 @@ const TRADES_KEY = "cxswitch:active_trades";
 const CRON_KEY = "cxswitch:last_cron";
 const HISTORY_KEY = "cxswitch:history";
 const LAST_EXIT_KEY = "cxswitch:last_exits";
+const SNAPSHOT_KEY = "cxswitch:dashboard_snapshot";
+
+// ─── Signals (backward compat aliases) ───────────────────
 
 export async function getSignals(): Promise<Signal[]> {
   const data = await redis.get<Signal[]>(SIGNALS_KEY);
@@ -25,6 +28,18 @@ export async function setSignals(signals: Signal[]): Promise<void> {
   await redis.set(SIGNALS_KEY, signals);
 }
 
+/** @deprecated Use setSignals */
+export async function saveActiveSignals(signals: Signal[]): Promise<void> {
+  await setSignals(signals);
+}
+
+/** @deprecated Use getSignals */
+export async function loadActiveSignals(): Promise<Signal[]> {
+  return getSignals();
+}
+
+// ─── Market Data ───────────────────────────────────────────
+
 export async function getMarketData(): Promise<any[]> {
   const data = await redis.get<any[]>(MARKET_KEY);
   return data || [];
@@ -33,6 +48,8 @@ export async function getMarketData(): Promise<any[]> {
 export async function setMarketData(data: any[]): Promise<void> {
   await redis.set(MARKET_KEY, data);
 }
+
+// ─── Active Trades ─────────────────────────────────────────
 
 export async function getActiveTrades(): Promise<Record<string, any>> {
   const data = await redis.get<Record<string, any>>(TRADES_KEY);
@@ -43,6 +60,8 @@ export async function setActiveTrades(trades: Record<string, any>): Promise<void
   await redis.set(TRADES_KEY, trades);
 }
 
+// ─── Cron Tracking ─────────────────────────────────────────
+
 export async function getLastCronRun(): Promise<number> {
   const data = await redis.get<{ timestamp: number }>(CRON_KEY);
   return data?.timestamp || 0;
@@ -51,6 +70,8 @@ export async function getLastCronRun(): Promise<number> {
 export async function setLastCronRun(ts: number): Promise<void> {
   await redis.set(CRON_KEY, { timestamp: ts });
 }
+
+// ─── Signal History ────────────────────────────────────────
 
 export async function getSignalHistory(): Promise<any[]> {
   const data = await redis.get<any[]>(HISTORY_KEY);
@@ -73,6 +94,16 @@ export async function addSignalToHistory(
   await redis.set(HISTORY_KEY, all);
 }
 
+// ─── Exit Records ─────────────────────────────────────────
+
+export async function persistExit(record: any): Promise<void> {
+  const all = (await redis.get<any[]>("cxswitch:exits")) || [];
+  all.push(record);
+  await redis.set("cxswitch:exits", all);
+}
+
+// ─── Last Exit Tracking ────────────────────────────────────
+
 export async function persistLastExit(
   pair: string,
   record: { direction: "LONG" | "SHORT"; reason: string; timestamp: number }
@@ -94,4 +125,20 @@ export async function loadLastExit(
     return null;
   }
   return record;
+}
+
+// ─── Dashboard Snapshot ────────────────────────────────────
+
+export async function saveDashboardSnapshot(snapshot: any): Promise<void> {
+  await redis.set(SNAPSHOT_KEY, { ...snapshot, timestamp: Date.now() });
+}
+
+export async function loadDashboardSnapshot(): Promise<any | null> {
+  const data = await redis.get<any>(SNAPSHOT_KEY);
+  if (!data) return null;
+  const age = Date.now() - (data?.timestamp || 0);
+  if (age > 20 * 60 * 1000) {
+    console.warn(`[SNAPSHOT] Stale — ${Math.round(age / 60000)}min old`);
+  }
+  return data;
 }
