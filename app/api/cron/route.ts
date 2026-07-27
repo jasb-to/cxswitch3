@@ -1,294 +1,202 @@
-import { NextRequest, NextResponse } from "next/server";
-import {
-  generateSignalCompat as generateSignal,
-  shouldHoldCompat as shouldHold,
-  filterExpiredSignals,
-  getMarketSnapshot,
-  aggregateTo1D,
-  Signal,
-  SignalResult,
-} from "@/lib/strategy";
-import {
-  saveActiveSignals,
-  loadActiveSignals,
-  setLastCronRun,
-  saveDashboardSnapshot,
-  persistExit,
-} from "@/lib/state";
-import { getCandles, getCurrentPrice, krakenPairFormat } from "@/lib/kraken";
-import { sendAlert, sendExitAlert, alertError } from "@/lib/telegram";
+// app/api/cron/route.ts — v50 "First Wave" Cron
+// ============================================================
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+import { NextResponse } from "next/server";
+import { getCandles } from "@/lib/kraken";
+import { generateSignal, generateAddSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot } from "@/lib/strategy";
+import { getSignals, setSignals, getMarketData, setMarketData, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory } from "@/lib/state";
+import { sendAlert } from "@/lib/telegram";
 
-const PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "HYPE/USD"];
-const CRON_SECRET = process.env.CRON_SECRET;
-const EXITED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const PAIRS = ["BTC", "ETH", "SOL"] as const;
+const MIN_CRON_INTERVAL_MS = 14 * 60 * 1000;
 
-// ─── Exit Check Helper ─────────────────────────────────────
-function checkExit(signal: Signal, price: number): { exited: boolean; reason: "STOP" | "TARGET" | null; pnlPct: number } {
-  const pnlPct = signal.direction === "LONG"
-    ? ((price - signal.entry) / signal.entry) * 100
-    : ((signal.entry - price) / signal.entry) * 100;
-
-  // STOP LOSS: LONG hit if price <= stop, SHORT hit if price >= stop
-  const stopHit = signal.direction === "LONG"
-    ? price <= signal.stop
-    : price >= signal.stop;
-
-  // TAKE PROFIT: LONG hit if price >= target, SHORT hit if price <= target
-  const targetHit = signal.direction === "LONG"
-    ? price >= signal.target
-    : price <= signal.target;
-
-  if (stopHit) return { exited: true, reason: "STOP", pnlPct };
-  if (targetHit) return { exited: true, reason: "TARGET", pnlPct };
-  return { exited: false, reason: null, pnlPct };
+function roundPrice(n: number): number {
+  if (n >= 10000) return Math.round(n);
+  if (n >= 1000) return Math.round(n * 10) / 10;
+  if (n >= 100) return Math.round(n * 100) / 100;
+  return Math.round(n * 1000) / 1000;
 }
 
-export async function GET(req: NextRequest) {
-  // ─── Health check / debug ───────────────────────────────
-  const { searchParams } = new URL(req.url);
-  if (searchParams.get("health") === "1") {
-    return NextResponse.json({ ok: true, version: 46.2, ts: Date.now() });
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
+export async function GET(request: Request) {
+  const runStart = Date.now();
+  console.log("========================================");
+  console.log(`[CRON v50] Started at ${new Date(runStart).toISOString()}`);
+
+  const url = new URL(request.url);
+  const querySecret = url.searchParams.get("secret");
+  const authHeader = request.headers.get("authorization");
+  const forceRun = url.searchParams.get("force") === "true";
+
+  const isAuthorized = querySecret === process.env.CRON_SECRET || authHeader === `Bearer ${process.env.CRON_SECRET}`;
+  if (!isAuthorized) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  try {
-    const authHeader = req.headers.get("authorization");
-    const secret = searchParams.get("secret");
-    const token = authHeader?.replace("Bearer ", "") || secret;
+  const lastRun = await getLastCronRun();
+  if (!forceRun && (runStart - lastRun) < MIN_CRON_INTERVAL_MS) {
+    return NextResponse.json({ success: true, skipped: true, reason: "rate_limited" });
+  }
+  await setLastCronRun(runStart);
 
-    if (!CRON_SECRET) {
-      console.error("[CRON] CRON_SECRET not set");
-      return NextResponse.json({ error: "CRON_SECRET not set" }, { status: 500 });
-    }
-    if (!token || token !== CRON_SECRET) {
-      return NextResponse.json({ error: "Invalid secret" }, { status: 401 });
-    }
+  let activeTrades = await getActiveTrades();
+  console.log(`[STATE] Active trades:`, Object.keys(activeTrades).join(", ") || "none");
 
-    console.log("[CRON] STARTED | " + new Date().toISOString());
+  const existingSignals = await getSignals();
+  const currentPrices: Record<string, number> = {};
 
-    const now = Date.now();
-    const results: Record<string, any> = {};
-    const errors: string[] = [];
-
-    let activeSignals: Signal[] = [];
+  for (const pair of PAIRS) {
     try {
-      activeSignals = await loadActiveSignals();
-    } catch (e) {
-      errors.push("loadActiveSignals: " + e);
-    }
-    if (!Array.isArray(activeSignals)) activeSignals = [];
+      const candles = await getCandles(pair, 60);
+      if (candles?.length) currentPrices[pair] = candles[candles.length - 1].close;
+    } catch (e) { console.log(`[PRICE] ${pair} — failed`); }
+  }
 
-    activeSignals = activeSignals.filter(
-      s => !s.exited || now - (s.exitTimestamp || s.timestamp) < EXITED_TTL_MS
-    );
+  const { active: validSignals, exited: preExited } = filterExpiredSignals(existingSignals, currentPrices, runStart);
+  console.log(`[STATE] Valid: ${validSignals.length}, Expired: ${preExited.length}`);
 
-    const currentPrices: Record<string, number> = {};
-    const signalResults: Record<string, SignalResult> = {};
-    const marketSnapshots: any[] = [];
+  for (const { signal, reason } of preExited) {
+    console.log(`[EXIT] ${signal.pair} — ${reason}`);
+    await addSignalToHistory(signal, reason as any, currentPrices[signal.pair] || signal.entry);
+    if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
+  }
 
-    for (const pair of PAIRS) {
-      const krakenPair = krakenPairFormat(pair);
-      results[pair] = { status: "pending" };
+  const newSignals: any[] = [];
+  const marketDataList: any[] = [];
+  const alerts: any[] = [];
+
+  for (const pair of PAIRS) {
+    try {
+      const [candles1h, candles4h, candles15m] = await Promise.all([
+        getCandles(pair, 60), getCandles(pair, 240), getCandles(pair, 15)
+      ]);
+
+      if (!candles1h || !candles4h || !candles15m || candles1h.length < 20 || candles4h.length < 30 || candles15m.length < 20) {
+        alerts.push({ pair, status: "skip", reason: "insufficient_candles" });
+        continue;
+      }
+
+      const currentPrice = candles1h[candles1h.length - 1].close;
+      const existingIdx = validSignals.findIndex(s => s.pair === pair);
+      const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
+
+      if (existingForPair) {
+        const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
+        if (!validity.valid) {
+          console.log(`[PAIR] ${pair} — INVALID: ${validity.reason}`);
+          await addSignalToHistory(existingForPair, validity.reason as any, currentPrice);
+          if (activeTrades[pair]) delete activeTrades[pair];
+          validSignals.splice(existingIdx, 1);
+          alerts.push({ pair, status: "expired", reason: validity.reason });
+        } else {
+          const holdResult = shouldHold(existingForPair, candles4h, currentPrice, runStart);
+          if (!holdResult.shouldHold) {
+            console.log(`[PAIR] ${pair} — HOLD EXIT: ${holdResult.reason}`);
+            await addSignalToHistory(existingForPair, "hold_exit", currentPrice);
+            if (activeTrades[pair]) delete activeTrades[pair];
+            validSignals.splice(existingIdx, 1);
+            alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
+          } else {
+            if (existingForPair.scale === "ENTRY") {
+              const addResult = generateAddSignal(pair, candles4h, candles15m, existingForPair, currentPrice);
+              if (addResult.signal) {
+                console.log(`[PAIR] ${pair} — ADD SIGNAL`);
+                newSignals.push(addResult.signal);
+                try {
+                  await sendAlert({
+                    symbol: addResult.signal.pair,
+                    state: "ADD",
+                    price: roundPrice(addResult.signal.entry),
+                    bias: addResult.signal.direction,
+                    stopLoss: roundPrice(addResult.signal.stop),
+                    takeProfit: roundPrice(addResult.signal.target),
+                    rr: addResult.signal.rr,
+                    expectedMove: addResult.signal.expectedMove,
+                    adx: addResult.signal.adx,
+                    rsi: addResult.signal.rsi,
+                    stochK: addResult.signal.stochK,
+                    stochD: addResult.signal.stochD,
+                    reason: addResult.signal.reason,
+                    trend: addResult.signal.trend,
+                    location: addResult.signal.location,
+                    trigger: addResult.signal.trigger,
+                    updatedAt: new Date(addResult.signal.timestamp).toISOString(),
+                  });
+                  console.log(`[ALERT] ${pair} — ADD SENT`);
+                  alerts.push({ pair, status: "add_sent" });
+                } catch (err) {
+                  console.error(`[ALERT] ${pair} — ADD FAILED:`, err);
+                  alerts.push({ pair, status: "add_alert_failed", error: String(err) });
+                }
+              }
+            }
+            console.log(`[PAIR] ${pair} — Still valid, skipping`);
+            const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+            marketDataList.push(snapshot);
+            continue;
+          }
+        }
+      }
+
+      const result = generateSignal(pair, candles1h, candles4h, candles15m, validSignals, currentPrice);
+      const snapshot = result.market || getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+      if (snapshot) marketDataList.push(snapshot);
+
+      if (!result.signal) {
+        console.log(`[PAIR] ${pair} — NO SIGNAL (${result.debug?.join(" | ")})`);
+        alerts.push({ pair, status: "no_signal", debug: result.debug?.join(" | ") });
+        continue;
+      }
+
+      const signal = result.signal;
+      console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`);
+      newSignals.push(signal);
 
       try {
-        const [candles1h, candles4h, candles15m, candles1dRaw, price] = await Promise.all([
-          getCandles(krakenPair, 60),
-          getCandles(krakenPair, 240),
-          getCandles(krakenPair, 15),
-          getCandles(krakenPair, 1440),
-          getCurrentPrice(krakenPair),
-        ]);
-
-        currentPrices[pair] = price;
-        const candles1d = candles1dRaw?.length ? candles1dRaw : aggregateTo1D(candles4h);
-
-        const activeForPair = activeSignals.filter(s => s.pair === pair && !s.exited);
-
-        // ─── Manage Active Trades ─────────────────────────────
-        if (activeForPair.length > 0) {
-          for (const signal of activeForPair) {
-            const { exited, reason, pnlPct } = checkExit(signal, price);
-            const pnlStr = (pnlPct >= 0 ? "+" : "") + pnlPct.toFixed(2) + "%";
-
-            if (exited) {
-              // ─── EXIT THE TRADE ─────────────────────────────
-              signal.exited = true;
-              signal.exitTimestamp = now;
-              signal.exitPrice = price;
-              signal.exitReason = reason;
-              signal.finalPnl = pnlPct;
-
-              console.log(`[CRON] ${pair} | EXITED | ${signal.direction} | ${reason} | P&L ${pnlStr} | Price $${price.toFixed(2)}`);
-
-              try {
-                await persistExit(signal);
-              } catch (e) {
-                errors.push(`persistExit ${pair}: ${e}`);
-              }
-
-              try {
-                await sendExitAlert(signal, reason, pnlPct);
-              } catch (e) {}
-
-              results[pair] = {
-                status: "EXITED",
-                reason,
-                pnl: pnlStr,
-                signalId: signal.id,
-                exitPrice: price,
-              };
-            } else {
-              // ─── STILL HOLDING ──────────────────────────────
-              const risk = Math.abs(signal.entry - signal.stop);
-              const currentR = risk > 0
-                ? (signal.direction === "LONG" ? (price - signal.entry) / risk : (signal.entry - price) / risk)
-                : 0;
-              const phase = currentR >= 2 ? "TRAILING" : currentR >= 1 ? "BUILDING" : "ENTRY";
-              const nextMilestone = currentR < 1 ? "1R" : currentR < 2 ? "2R" : currentR < 3 ? "Target" : "Target reached";
-
-              console.log(`[CRON] ${pair} | ACTIVE TRADE | ${signal.direction} | P&L ${pnlStr} | R ${currentR.toFixed(2)} | Phase ${phase} | Next ${nextMilestone}`);
-              results[pair] = {
-                status: "HOLDING",
-                pnl: pnlStr,
-                signalId: signal.id,
-                currentR: currentR.toFixed(2),
-                phase,
-                nextMilestone,
-              };
-            }
-          }
-        } else {
-          // ─── Evaluate New Signals ───────────────────────────
-          const result = await generateSignal(pair, candles1h, candles4h, candles1d, candles15m, activeSignals, price);
-          signalResults[pair] = result || { debug: [] };
-
-          if (result?.debug?.length) {
-            for (const line of result.debug) {
-              console.log(`[CRON] ${pair} | ${line}`);
-            }
-          }
-
-          if (result?.signal) {
-            const signal = result.signal;
-            activeSignals.push(signal);
-            console.log(
-              `[CRON] ${pair} | SIGNAL | ${signal.direction} | Entry:$${signal.entry.toFixed(2)} | SL:$${signal.stop.toFixed(2)} | TP:$${signal.target.toFixed(2)} | RR:${signal.rr.toFixed(2)} | ${signal.primaryTrigger}+${signal.confirmation}`
-            );
-            try { await sendAlert(signal); } catch (e) {}
-            results[pair] = {
-              status: "SIGNAL",
-              direction: signal.direction,
-              entry: signal.entry,
-              stop: signal.stop,
-              target: signal.target,
-              rr: signal.rr.toFixed(2),
-              primaryTrigger: signal.primaryTrigger,
-              confirmation: signal.confirmation,
-            };
-          } else {
-            console.log(`[CRON] ${pair} | NO SIGNAL`);
-            results[pair] = { status: "NO_SIGNAL" };
-          }
-        }
-
-        // ─── Snapshot ─────────────────────────────────────────
-        const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
-        snapshot.pair = pair;
-
-        // Re-check activeForPair after exit processing (some may have exited)
-        const stillActive = activeSignals.filter(s => s.pair === pair && !s.exited);
-
-        if (stillActive.length > 0) {
-          const s = stillActive[0];
-          const rawPnl = s.direction === "LONG"
-            ? ((price - s.entry) / s.entry) * 100
-            : ((s.entry - price) / s.entry) * 100;
-          const pnl = isFinite(rawPnl) ? rawPnl : 0;
-          const risk = Math.abs(s.entry - s.stop);
-          const currentR = risk > 0 ? (s.direction === "LONG" ? (price - s.entry) / risk : (s.entry - price) / risk) : 0;
-          const phase = currentR >= 2 ? "TRAILING" : currentR >= 1 ? "BUILDING" : "ENTRY";
-          const nextMilestone = currentR < 1 ? "1R" : currentR < 2 ? "2R" : currentR < 3 ? "Target" : "Target reached";
-
-          snapshot.activeTrade = {
-            signalId: s.id,
-            direction: s.direction,
-            pnl: (pnl >= 0 ? "+" : "") + pnl.toFixed(2) + "%",
-            entry: s.entry,
-            currentPrice: price,
-            stop: s.stop,
-            target: s.target,
-            currentR: currentR.toFixed(2),
-            phase,
-            nextMilestone,
-          };
-        } else {
-          snapshot.activeTrade = null;
-        }
-
-        marketSnapshots.push(snapshot);
-
+        await sendAlert({
+          symbol: signal.pair,
+          state: "ENTRY",
+          price: roundPrice(signal.entry),
+          bias: signal.direction,
+          stopLoss: roundPrice(signal.stop),
+          takeProfit: roundPrice(signal.target),
+          rr: signal.rr,
+          expectedMove: signal.expectedMove,
+          adx: signal.adx,
+          rsi: signal.rsi,
+          stochK: signal.stochK,
+          stochD: signal.stochD,
+          reason: signal.reason,
+          trend: signal.trend,
+          location: signal.location,
+          trigger: signal.trigger,
+          updatedAt: new Date(signal.timestamp).toISOString(),
+        });
+        console.log(`[ALERT] ${pair} — SENT`);
+        activeTrades[pair] = { direction: signal.direction, timestamp: Date.now(), entry: signal.entry, stop: signal.stop, target: signal.target, id: signal.id };
+        alerts.push({ pair, status: "sent" });
       } catch (err) {
-        const msg = String(err);
-        errors.push(pair + ": " + msg);
-        results[pair] = { status: "ERROR", error: msg };
-        console.error(`[CRON] ${pair} | ERROR: ${msg}`);
-        try { await alertError("cron/" + pair, err); } catch (e) {}
+        console.error(`[ALERT] ${pair} — FAILED:`, err);
+        alerts.push({ pair, status: "alert_failed", error: String(err) });
       }
+    } catch (err) {
+      console.error(`[PAIR] ${pair} — ERROR:`, err);
+      alerts.push({ pair, status: "error", error: String(err) });
     }
-
-    // ─── Filter Expired ─────────────────────────────────────
-    try {
-      const { active } = filterExpiredSignals(activeSignals);
-      activeSignals = active;
-    } catch (e) { errors.push("filterExpired: " + e); }
-
-    // ─── Save State ─────────────────────────────────────────
-    try {
-      await saveActiveSignals(activeSignals);
-      await setLastCronRun(now);
-    } catch (e) { errors.push("save state: " + e); }
-
-    // ─── Dashboard Snapshot ─────────────────────────────────
-    try {
-      await saveDashboardSnapshot({
-        timestamp: now,
-        iso: new Date(now).toISOString(),
-        markets: marketSnapshots,
-        activeSignals: activeSignals.filter(s => !s.exited),
-        errors: errors.length > 0 ? errors : undefined,
-      });
-    } catch (e) { errors.push("save snapshot: " + e); }
-
-    // ─── Summary ────────────────────────────────────────────
-    const activeTrades = activeSignals.filter(s => !s.exited);
-    console.log(`[CRON] FINISHED | Active: ${activeTrades.length}`);
-    for (const pair of PAIRS) {
-      const r = results[pair];
-      if (r?.status === "HOLDING") console.log(`[CRON]   📊 ${pair} | HOLDING | ${r.pnl} | R ${r.currentR} | ${r.phase} | Next: ${r.nextMilestone}`);
-      else if (r?.status === "EXITED") console.log(`[CRON]   🚪 ${pair} | EXITED | ${r.reason} | ${r.pnl} | $${r.exitPrice?.toFixed(2)}`);
-      else if (r?.status === "SIGNAL") console.log(`[CRON]   🔔 ${pair} | SIGNAL | ${r.direction} | Entry:$${r.entry.toFixed(2)} | RR:${r.rr}`);
-      else if (r?.status === "NO_SIGNAL") console.log(`[CRON]   ⏸️ ${pair} | NO SIGNAL`);
-      else if (r?.status === "ERROR") console.log(`[CRON]   ❌ ${pair} | ERROR: ${r.error}`);
-    }
-
-    return NextResponse.json({
-      ok: true,
-      timestamp: now,
-      iso: new Date(now).toISOString(),
-      results,
-      activeTrades: activeTrades.length,
-      errors: errors.length > 0 ? errors : undefined,
-    });
-
-  } catch (topLevelErr) {
-    const msg = String(topLevelErr);
-    console.error("[CRON] FATAL ERROR:", msg);
-    return NextResponse.json({ error: "Cron failed", detail: msg }, { status: 500 });
   }
-}
 
-export async function POST(req: NextRequest) {
-  return GET(req);
+  const merged = [...validSignals];
+  for (const s of newSignals) {
+    const idx = merged.findIndex((x: any) => x.pair === s.pair);
+    if (idx >= 0) merged[idx] = s; else merged.push(s);
+  }
+
+  await Promise.all([setSignals(merged), setMarketData(marketDataList), setActiveTrades(activeTrades)]);
+
+  console.log(`[CRON] Done. signals=${merged.length}, marketData=${marketDataList.length}, exited=${preExited.length}`);
+  console.log("========================================");
+
+  return NextResponse.json({ success: true, signals: merged.length, marketData: marketDataList.length, exited: preExited.length, alerts });
 }
