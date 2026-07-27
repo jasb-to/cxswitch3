@@ -1,7 +1,7 @@
-// lib/strategy.ts — v50 "First Wave" — Trend → Location → Momentum
+// lib/strategy.ts — v50 "First Wave" — Trend → Location → Stoch Trigger
 // ============================================================
 // Philosophy: Trade the first wave after a pullback.
-// Sequence: Daily Trend → 4H Location → 15M Momentum → Enter
+// Sequence: Daily Trend → 4H Location → 15M StochRSI Cross → Enter
 // No scoring. No weighting. No gates. Just: trend, location, trigger.
 
 export interface Candle {
@@ -72,7 +72,7 @@ export interface HoldResult {
 
 export const CURRENT_SIGNAL_VERSION = 50;
 const MIN_RR = 1.5;
-const TL_PROXIMITY = 0.012;
+const TL_PROXIMITY = 0.020;
 const SWING_PROXIMITY = 0.008;
 const STOCH_EXTREME_LONG = 20;
 const STOCH_EXTREME_SHORT = 80;
@@ -265,7 +265,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     }
   }
   const fit = fitTrendline(recentPivots);
-  if (!fit || fit.r2 < 0.50) return null;
+  if (!fit || fit.r2 < 0.30) return null;
   trendlineStore.set(pair, {
     slope: fit.slope,
     intercept: fit.intercept,
@@ -321,14 +321,12 @@ function location4H(
   return { ready: false, detail: "No valid location", trendlinePrice: tl?.price || 0 };
 }
 
-function momentum15M(candles15m: Candle[], direction: "LONG" | "SHORT"): {
+function stochTrigger15M(candles15m: Candle[], direction: "LONG" | "SHORT"): {
   fired: boolean;
   detail: string;
   triggerType: string;
   stochK: number;
   stochD: number;
-  ema8: number;
-  ema21: number;
 } {
   const defaultFail = {
     fired: false,
@@ -336,20 +334,12 @@ function momentum15M(candles15m: Candle[], direction: "LONG" | "SHORT"): {
     triggerType: "none",
     stochK: 50,
     stochD: 50,
-    ema8: 0,
-    ema21: 0,
   };
   if (candles15m.length < 30) return defaultFail;
   const closes = candles15m.map(c => c.close);
   const prevCloses = closes.slice(0, -1);
   const stoch = stochRsi(closes);
   const prevStoch = stochRsi(prevCloses);
-  const e8 = ema(closes, 8);
-  const e21 = ema(closes, 21);
-  const lastE8 = e8[e8.length - 1];
-  const lastE21 = e21[e21.length - 1];
-  const prevE8 = e8.length >= 2 ? e8[e8.length - 2] : lastE8;
-  const prevE21 = e21.length >= 2 ? e21[e21.length - 2] : lastE21;
   let fired = false;
   let detail = "";
   let triggerType = "none";
@@ -358,34 +348,18 @@ function momentum15M(candles15m: Candle[], direction: "LONG" | "SHORT"): {
       fired = true;
       triggerType = "stoch_cross";
       detail = `Stoch K crossed above D from oversold (K=${stoch.k}, D=${stoch.d})`;
-    } else if (prevE8 <= prevE21 && lastE8 > lastE21) {
-      fired = true;
-      triggerType = "ema_cross";
-      detail = `EMA8 crossed above EMA21 (${lastE8.toFixed(1)} > ${lastE21.toFixed(1)})`;
-    } else if (stoch.k > stoch.d && stoch.k < STOCH_EXTREME_LONG) {
-      fired = true;
-      triggerType = "stoch_momentum";
-      detail = `Stoch K above D in oversold zone (K=${stoch.k}, D=${stoch.d})`;
     }
   } else {
     if (prevStoch.k > prevStoch.d && stoch.k <= stoch.d && stoch.k > STOCH_EXTREME_SHORT) {
       fired = true;
       triggerType = "stoch_cross";
       detail = `Stoch K crossed below D from overbought (K=${stoch.k}, D=${stoch.d})`;
-    } else if (prevE8 >= prevE21 && lastE8 < lastE21) {
-      fired = true;
-      triggerType = "ema_cross";
-      detail = `EMA8 crossed below EMA21 (${lastE8.toFixed(1)} < ${lastE21.toFixed(1)})`;
-    } else if (stoch.k < stoch.d && stoch.k > STOCH_EXTREME_SHORT) {
-      fired = true;
-      triggerType = "stoch_momentum";
-      detail = `Stoch K below D in overbought zone (K=${stoch.k}, D=${stoch.d})`;
     }
   }
   if (!fired) {
-    detail = `No trigger. Stoch K=${stoch.k} D=${stoch.d} | EMA8=${lastE8.toFixed(1)} EMA21=${lastE21.toFixed(1)}`;
+    detail = `No trigger. Stoch K=${stoch.k} D=${stoch.d}`;
   }
-  return { fired, detail, triggerType, stochK: stoch.k, stochD: stoch.d, ema8: lastE8, ema21: lastE21 };
+  return { fired, detail, triggerType, stochK: stoch.k, stochD: stoch.d };
 }
 
 const cooldownStore: Map<string, number> = new Map();
@@ -433,10 +407,10 @@ export function generateSignal(
     debug.push("Rejected: location not ready");
     return { debug };
   }
-  const momentum = momentum15M(candles15m, trend.direction);
-  debug.push(`Momentum: ${momentum.fired ? "FIRED" : "WAITING"} | ${momentum.detail}`);
-  if (!momentum.fired) {
-    debug.push("Rejected: no momentum trigger");
+  const trigger = stochTrigger15M(candles15m, trend.direction);
+  debug.push(`Trigger: ${trigger.fired ? "FIRED" : "WAITING"} | ${trigger.detail}`);
+  if (!trigger.fired) {
+    debug.push("Rejected: no stoch trigger");
     return { debug };
   }
   const atrVal = atr(candles4h, 14);
@@ -478,118 +452,34 @@ export function generateSignal(
     rr: Math.round(rr * 100) / 100,
     adx: Math.round(adxVal * 10) / 10,
     rsi: Math.round(rsi4h * 10) / 10,
-    stochK: momentum.stochK,
-    stochD: momentum.stochD,
+    stochK: trigger.stochK,
+    stochD: trigger.stochD,
     expectedMove: Math.round(((target - price) / price) * 1000) / 10,
-    reason: `${trend.direction} | ${location.detail} | ${momentum.detail}`,
+    reason: `${trend.direction} | ${location.detail} | ${trigger.detail}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
     trend: trend.direction,
     location: location.detail,
-    trigger: momentum.detail,
+    trigger: trigger.detail,
   };
-  debug.push(`SIGNAL: ${trend.direction} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr} | ${momentum.triggerType}`);
+  debug.push(`SIGNAL: ${trend.direction} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr}`);
   const market: MarketSnapshot = {
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: now,
     trend: trend.direction,
     location: location.ready ? "READY" : "WAIT",
-    trigger: momentum.fired ? "FIRED" : "WAITING",
+    trigger: trigger.fired ? "FIRED" : "WAITING",
     adx: signal.adx,
     rsi: signal.rsi,
     stochK: signal.stochK,
     stochD: signal.stochD,
     trendlinePrice: Math.round(location.trendlinePrice * 100) / 100,
     distToTrendline: Math.round(Math.abs((price - location.trendlinePrice) / location.trendlinePrice) * 10000) / 100,
-    ema8_15m: Math.round(momentum.ema8 * 100) / 100,
-    ema21_15m: Math.round(momentum.ema21 * 100) / 100,
+    ema8_15m: 0,
+    ema21_15m: 0,
   };
   return { signal, market, debug };
-}
-
-export function generateAddSignal(
-  pair: string,
-  candles4h: Candle[],
-  candles15m: Candle[],
-  existingSignal: Signal,
-  currentPrice?: number
-): SignalResult {
-  const debug: string[] = [];
-  const now = Date.now();
-  const price = currentPrice ?? candles4h[candles4h.length - 1]?.close ?? 0;
-  const candles1d = aggregateTo1D(candles4h);
-  const trend = dailyTrend(candles1d);
-  if (trend.direction !== existingSignal.direction) {
-    debug.push("Add rejected: trend flipped");
-    return { debug };
-  }
-  const location = location4H(pair, candles4h, trend.direction);
-  const beyondTL = trend.direction === "LONG"
-    ? price > location.trendlinePrice * 1.008
-    : price < location.trendlinePrice * 0.992;
-  if (!beyondTL) {
-    debug.push("Add rejected: not beyond trendline");
-    return { debug };
-  }
-  const last = candles4h[candles4h.length - 1];
-  const prev = candles4h[candles4h.length - 2];
-  const confirming = trend.direction === "LONG"
-    ? last.close > last.open && last.close > prev.close
-    : last.close < last.open && last.close < prev.close;
-  if (!confirming) {
-    debug.push("Add rejected: no confirming candle");
-    return { debug };
-  }
-  const atrVal = atr(candles4h, 14);
-  const recent4h = candles4h.slice(-20);
-  const swingLow = Math.min(...recent4h.map(c => c.low));
-  const swingHigh = Math.max(...recent4h.map(c => c.high));
-  let stop: number;
-  let target: number;
-  if (trend.direction === "LONG") {
-    stop = Math.min(location.trendlinePrice * 0.995, price - atrVal * 1.5);
-    const minTarget = price + (price - stop) * MIN_RR;
-    target = Math.max(swingHigh, minTarget);
-  } else {
-    stop = Math.max(location.trendlinePrice * 1.005, price + atrVal * 1.5);
-    const minTarget = price - (stop - price) * MIN_RR;
-    target = Math.min(swingLow, minTarget);
-  }
-  const risk = Math.abs(price - stop);
-  const reward = Math.abs(target - price);
-  const rr = risk > 0 ? reward / risk : 0;
-  if (rr < MIN_RR) {
-    debug.push(`Add rejected: RR ${rr.toFixed(2)} < ${MIN_RR}`);
-    return { debug };
-  }
-  const rsi4h = wilderRsi(candles4h.map(c => c.close));
-  const adxVal = adx(candles4h);
-  const momentum = momentum15M(candles15m, trend.direction);
-  const signal: Signal = {
-    id: `${pair}_ADD_${now}`,
-    pair,
-    direction: trend.direction,
-    type: "ADD",
-    scale: "ADD",
-    entry: Math.round(price * 100) / 100,
-    stop: Math.round(stop * 100) / 100,
-    target: Math.round(target * 100) / 100,
-    rr: Math.round(rr * 100) / 100,
-    adx: Math.round(adxVal * 10) / 10,
-    rsi: Math.round(rsi4h * 10) / 10,
-    stochK: momentum.stochK,
-    stochD: momentum.stochD,
-    expectedMove: Math.round(((target - price) / price) * 1000) / 10,
-    reason: `${trend.direction} ADD | Breakout continuation | ${momentum.detail}`,
-    timestamp: now,
-    version: CURRENT_SIGNAL_VERSION,
-    trend: trend.direction,
-    location: location.detail,
-    trigger: momentum.detail,
-  };
-  debug.push(`ADD: ${trend.direction} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr}`);
-  return { signal, debug };
 }
 
 export function getMarketSnapshot(
@@ -601,7 +491,7 @@ export function getMarketSnapshot(
   const candles1d = aggregateTo1D(candles4h);
   const trend = dailyTrend(candles1d);
   const location = trend.direction !== "NONE" ? location4H(pair, candles4h, trend.direction) : { ready: false, detail: "No trend", trendlinePrice: 0 };
-  const momentum = trend.direction !== "NONE" ? momentum15M(candles15m, trend.direction) : { fired: false, detail: "No trend", triggerType: "none", stochK: 50, stochD: 50, ema8: 0, ema21: 0 };
+  const trigger = trend.direction !== "NONE" ? stochTrigger15M(candles15m, trend.direction) : { fired: false, detail: "No trend", triggerType: "none", stochK: 50, stochD: 50 };
   const price = candles4h[candles4h.length - 1]?.close ?? 0;
   return {
     pair,
@@ -609,15 +499,15 @@ export function getMarketSnapshot(
     timestamp: Date.now(),
     trend: trend.direction,
     location: location.ready ? "READY" : "WAIT",
-    trigger: momentum.fired ? "FIRED" : "WAITING",
+    trigger: trigger.fired ? "FIRED" : "WAITING",
     adx: Math.round(adx(candles4h) * 10) / 10,
     rsi: Math.round(wilderRsi(candles4h.map(c => c.close)) * 10) / 10,
-    stochK: momentum.stochK,
-    stochD: momentum.stochD,
+    stochK: trigger.stochK,
+    stochD: trigger.stochD,
     trendlinePrice: Math.round(location.trendlinePrice * 100) / 100,
     distToTrendline: Math.round(Math.abs((price - location.trendlinePrice) / location.trendlinePrice) * 10000) / 100,
-    ema8_15m: Math.round(momentum.ema8 * 100) / 100,
-    ema21_15m: Math.round(momentum.ema21 * 100) / 100,
+    ema8_15m: 0,
+    ema21_15m: 0,
   };
 }
 
