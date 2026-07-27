@@ -1,10 +1,10 @@
 // app/api/cron/route.ts — v50 "First Wave" Cron
 // ============================================================
-// Trend → Location → Momentum → Signal
+// Trend → Location → Stoch Trigger → Signal
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { generateSignal, generateAddSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot } from "@/lib/strategy";
+import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot } from "@/lib/strategy";
 import { getSignals, setSignals, getMarketData, setMarketData, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
@@ -103,40 +103,6 @@ export async function GET(request: Request) {
             validSignals.splice(existingIdx, 1);
             alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
           } else {
-            // Check for ADD signal
-            if (existingForPair.scale === "ENTRY") {
-              const addResult = generateAddSignal(pair, candles4h, candles15m, existingForPair, currentPrice);
-              if (addResult.signal) {
-                console.log(`[PAIR] ${pair} — ADD SIGNAL`);
-                newSignals.push(addResult.signal);
-                try {
-                  await sendAlert({
-                    symbol: addResult.signal.pair,
-                    state: "ADD",
-                    price: roundPrice(addResult.signal.entry),
-                    bias: addResult.signal.direction,
-                    stopLoss: roundPrice(addResult.signal.stop),
-                    takeProfit: roundPrice(addResult.signal.target),
-                    rr: addResult.signal.rr,
-                    expectedMove: addResult.signal.expectedMove,
-                    adx: addResult.signal.adx,
-                    rsi: addResult.signal.rsi,
-                    stochK: addResult.signal.stochK,
-                    stochD: addResult.signal.stochD,
-                    reason: addResult.signal.reason,
-                    trend: addResult.signal.trend,
-                    location: addResult.signal.location,
-                    trigger: addResult.signal.trigger,
-                    updatedAt: new Date(addResult.signal.timestamp).toISOString(),
-                  });
-                  console.log(`[ALERT] ${pair} — ADD SENT`);
-                  alerts.push({ pair, status: "add_sent" });
-                } catch (err) {
-                  console.error(`[ALERT] ${pair} — ADD FAILED:`, err);
-                  alerts.push({ pair, status: "add_alert_failed", error: String(err) });
-                }
-              }
-            }
             console.log(`[PAIR] ${pair} — Still valid, skipping`);
             const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
             marketDataList.push(snapshot);
