@@ -1,55 +1,77 @@
+// lib/state.ts — v50 Simplified State
+// ============================================================
+
 import { Redis } from "@upstash/redis";
-import { MarketRegime, ExitRecord, Signal } from "./strategy";
+import { Signal } from "./strategy";
 
 const redis = new Redis({
   url: process.env.KV_REST_API_URL!,
   token: process.env.KV_REST_API_TOKEN!,
 });
 
-const ACTIVE_KEY = "cxswitch:active_signals";
-const REGIME_KEY = "cxswitch:regimes";
-const EXIT_KEY = "cxswitch:exits";
+const SIGNALS_KEY = "cxswitch:signals";
+const MARKET_KEY = "cxswitch:market";
+const TRADES_KEY = "cxswitch:active_trades";
 const CRON_KEY = "cxswitch:last_cron";
-const SNAPSHOT_KEY = "cxswitch:dashboard_snapshot";
+const HISTORY_KEY = "cxswitch:history";
 const LAST_EXIT_KEY = "cxswitch:last_exits";
 
-// ─── Active Signals ─────────────────────────────────────────
-
-export async function saveActiveSignals(signals: Signal[]): Promise<void> {
-  await redis.set(ACTIVE_KEY, signals);
-}
-
-export async function loadActiveSignals(): Promise<Signal[]> {
-  const data = await redis.get<Signal[]>(ACTIVE_KEY);
+export async function getSignals(): Promise<Signal[]> {
+  const data = await redis.get<Signal[]>(SIGNALS_KEY);
   return data || [];
 }
 
-// ─── Regime Persistence ─────────────────────────────────────
-
-export async function persistRegime(pair: string, regime: MarketRegime): Promise<void> {
-  const all = (await redis.get<Record<string, MarketRegime>>(REGIME_KEY)) || {};
-  all[pair] = regime;
-  await redis.set(REGIME_KEY, all);
+export async function setSignals(signals: Signal[]): Promise<void> {
+  await redis.set(SIGNALS_KEY, signals);
 }
 
-export async function loadRegime(pair: string): Promise<MarketRegime | null> {
-  const all = await redis.get<Record<string, MarketRegime>>(REGIME_KEY);
-  return all?.[pair] || null;
+export async function getMarketData(): Promise<any[]> {
+  const data = await redis.get<any[]>(MARKET_KEY);
+  return data || [];
 }
 
-// ─── Exit Records ───────────────────────────────────────────
-
-export async function persistExit(record: ExitRecord): Promise<void> {
-  const all = (await redis.get<ExitRecord[]>(EXIT_KEY)) || [];
-  all.push(record);
-  await redis.set(EXIT_KEY, all);
+export async function setMarketData(data: any[]): Promise<void> {
+  await redis.set(MARKET_KEY, data);
 }
 
-export async function loadExits(): Promise<ExitRecord[]> {
-  return (await redis.get<ExitRecord[]>(EXIT_KEY)) || [];
+export async function getActiveTrades(): Promise<Record<string, any>> {
+  const data = await redis.get<Record<string, any>>(TRADES_KEY);
+  return data || {};
 }
 
-// ─── Last Exit Tracking (v37.5) ─────────────────────────────
+export async function setActiveTrades(trades: Record<string, any>): Promise<void> {
+  await redis.set(TRADES_KEY, trades);
+}
+
+export async function getLastCronRun(): Promise<number> {
+  const data = await redis.get<{ timestamp: number }>(CRON_KEY);
+  return data?.timestamp || 0;
+}
+
+export async function setLastCronRun(ts: number): Promise<void> {
+  await redis.set(CRON_KEY, { timestamp: ts });
+}
+
+export async function getSignalHistory(): Promise<any[]> {
+  const data = await redis.get<any[]>(HISTORY_KEY);
+  return data || [];
+}
+
+export async function addSignalToHistory(
+  signal: Signal,
+  reason: string,
+  exitPrice: number
+): Promise<void> {
+  const all = await getSignalHistory();
+  all.push({
+    ...signal,
+    exitReason: reason,
+    exitPrice,
+    exitTimestamp: Date.now(),
+  });
+  if (all.length > 200) all.splice(0, all.length - 200);
+  await redis.set(HISTORY_KEY, all);
+}
 
 export async function persistLastExit(
   pair: string,
@@ -72,31 +94,4 @@ export async function loadLastExit(
     return null;
   }
   return record;
-}
-
-// ─── Cron Tracking ──────────────────────────────────────────
-
-export async function setLastCronRun(ts: number): Promise<void> {
-  await redis.set(CRON_KEY, { timestamp: ts });
-}
-
-export async function getLastCronRun(): Promise<number | null> {
-  const data = await redis.get<{ timestamp: number }>(CRON_KEY);
-  return data?.timestamp || null;
-}
-
-// ─── Dashboard Snapshot ─────────────────────────────────────
-
-export async function saveDashboardSnapshot(snapshot: any): Promise<void> {
-  await redis.set(SNAPSHOT_KEY, snapshot);
-}
-
-export async function loadDashboardSnapshot(): Promise<any | null> {
-  const snapshot = await redis.get<any>(SNAPSHOT_KEY);
-  if (!snapshot) return null;
-  const age = Date.now() - (snapshot?.timestamp || 0);
-  if (age > 20 * 60 * 1000) {
-    console.warn(`[SNAPSHOT] Stale — ${Math.round(age / 60000)}min old`);
-  }
-  return snapshot;
 }
