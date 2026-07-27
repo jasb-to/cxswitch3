@@ -3,7 +3,7 @@
 // Philosophy: Trade the first wave after a pullback.
 // Sequence: Daily Trend → 4H Location → 15M StochRSI Cross → Enter
 // No scoring. No weighting. No gates. Just: trend, location, trigger.
- 
+
 export interface Candle {
   timestamp: number;
   open: number;
@@ -54,7 +54,8 @@ export interface MarketSnapshot {
   stochK: number;
   stochD: number;
   trendlinePrice: number;
-  distToTrendline: number;
+  distToTrendline: number | null;
+  locationType: string;
   ema8_15m: number;
   ema21_15m: number;
 }
@@ -254,18 +255,30 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   if (pivots.length < 3) return null;
   const recentPivots = pivots.slice(-5);
   const now = candles[candles.length - 1].timestamp;
+  const currentIndex = candles.length - 1;
+
   const existing = trendlineStore.get(pair);
-  if (existing && existing.direction === direction && (now - existing.lastUpdated) < TL_MAX_AGE_MS) {
+
+  // ── Invalidation checks ──
+  if (existing && existing.direction === direction) {
+    const age = now - existing.lastUpdated;
     const lastPivot = recentPivots[recentPivots.length - 1];
     const projected = existing.slope * lastPivot.index + existing.intercept;
     const deviation = Math.abs(lastPivot.price - projected) / projected;
-    if (deviation < 0.02) {
-      const currentIndex = candles.length - 1;
+
+    // Invalidate if: R² too low, deviation too large, or too old
+    if (existing.r2 < 0.30 || deviation > 0.02 || age >= TL_MAX_AGE_MS) {
+      trendlineStore.delete(pair);
+    } else {
+      // Valid cached trendline — reuse it
       return { price: existing.slope * currentIndex + existing.intercept, r2: existing.r2 };
     }
   }
+
+  // ── Rebuild from latest pivots ──
   const fit = fitTrendline(recentPivots);
   if (!fit || fit.r2 < 0.30) return null;
+
   trendlineStore.set(pair, {
     slope: fit.slope,
     intercept: fit.intercept,
@@ -273,7 +286,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     direction,
     r2: Math.round(fit.r2 * 100) / 100,
   });
-  const currentIndex = candles.length - 1;
+
   return { price: fit.slope * currentIndex + fit.intercept, r2: Math.round(fit.r2 * 100) / 100 };
 }
 
@@ -295,13 +308,18 @@ function location4H(
   pair: string,
   candles4h: Candle[],
   direction: "LONG" | "SHORT"
-): { ready: boolean; detail: string; trendlinePrice: number } {
+): { ready: boolean; detail: string; trendlinePrice: number; locationType: string } {
   const price = candles4h[candles4h.length - 1].close;
   const tl = getTrendline(pair, candles4h, direction);
   if (tl) {
     const dist = Math.abs(price - tl.price) / tl.price;
     if (dist < TL_PROXIMITY) {
-      return { ready: true, detail: `Trendline ${(dist * 100).toFixed(2)}% (R² ${tl.r2.toFixed(2)})`, trendlinePrice: tl.price };
+      return {
+        ready: true,
+        detail: `Trendline ${(dist * 100).toFixed(2)}% (R² ${tl.r2.toFixed(2)})`,
+        trendlinePrice: tl.price,
+        locationType: "TRENDLINE"
+      };
     }
   }
   const recent = candles4h.slice(-20);
@@ -309,16 +327,26 @@ function location4H(
     const swingLow = Math.min(...recent.map(c => c.low));
     const dist = (price - swingLow) / swingLow;
     if (dist >= 0 && dist < SWING_PROXIMITY) {
-      return { ready: true, detail: `Swing low ${(dist * 100).toFixed(2)}%`, trendlinePrice: swingLow };
+      return {
+        ready: true,
+        detail: `Swing low ${(dist * 100).toFixed(2)}%`,
+        trendlinePrice: swingLow,
+        locationType: "SWING_LOW"
+      };
     }
   } else {
     const swingHigh = Math.max(...recent.map(c => c.high));
     const dist = (swingHigh - price) / swingHigh;
     if (dist >= 0 && dist < SWING_PROXIMITY) {
-      return { ready: true, detail: `Swing high ${(dist * 100).toFixed(2)}%`, trendlinePrice: swingHigh };
+      return {
+        ready: true,
+        detail: `Swing high ${(dist * 100).toFixed(2)}%`,
+        trendlinePrice: swingHigh,
+        locationType: "SWING_HIGH"
+      };
     }
   }
-  return { ready: false, detail: "No valid location", trendlinePrice: tl?.price || 0 };
+  return { ready: false, detail: "No valid location", trendlinePrice: tl?.price || 0, locationType: "NONE" };
 }
 
 function stochTrigger15M(candles15m: Candle[], direction: "LONG" | "SHORT"): {
@@ -343,34 +371,85 @@ function stochTrigger15M(candles15m: Candle[], direction: "LONG" | "SHORT"): {
   let fired = false;
   let detail = "";
   let triggerType = "none";
+
   if (direction === "LONG") {
-    if (prevStoch.k < prevStoch.d && stoch.k >= stoch.d && stoch.k < STOCH_EXTREME_LONG) {
+    // Previous K was below 20 (in extreme) and crossed above D
+    if (prevStoch.k < STOCH_EXTREME_LONG && prevStoch.k < prevStoch.d && stoch.k >= stoch.d) {
       fired = true;
       triggerType = "stoch_cross";
       detail = `Stoch K crossed above D from oversold (K=${stoch.k}, D=${stoch.d})`;
     }
   } else {
-    if (prevStoch.k > prevStoch.d && stoch.k <= stoch.d && stoch.k > STOCH_EXTREME_SHORT) {
+    // Previous K was above 80 (in extreme) and crossed below D
+    if (prevStoch.k > STOCH_EXTREME_SHORT && prevStoch.k > prevStoch.d && stoch.k <= stoch.d) {
       fired = true;
       triggerType = "stoch_cross";
       detail = `Stoch K crossed below D from overbought (K=${stoch.k}, D=${stoch.d})`;
     }
   }
+
   if (!fired) {
     detail = `No trigger. Stoch K=${stoch.k} D=${stoch.d}`;
   }
   return { fired, detail, triggerType, stochK: stoch.k, stochD: stoch.d };
 }
 
-const cooldownStore: Map<string, number> = new Map();
+// ─── Cooldown tracking with early release ──────────────────
 
-function isOnCooldown(pair: string, now: number): boolean {
-  const until = cooldownStore.get(pair);
-  return until !== undefined && now < until;
+interface CooldownEntry {
+  until: number;
+  entryPrice: number;
+  stop: number;
+  target: number;
 }
 
-function setCooldown(pair: string, now: number): void {
-  cooldownStore.set(pair, now + COOLDOWN_MS);
+const cooldownStore: Map<string, CooldownEntry> = new Map();
+
+function isOnCooldown(pair: string, now: number, currentPrice?: number): boolean {
+  const entry = cooldownStore.get(pair);
+  if (!entry) return false;
+
+  // Early release: TP hit
+  if (currentPrice !== undefined) {
+    // We don't know direction here, but we can check if price reached target
+    // For simplicity, check both directions — if price hit either target or stop, release
+    const hitTP = Math.abs(currentPrice - entry.target) / entry.target < 0.001;
+    const hitSL = Math.abs(currentPrice - entry.stop) / entry.stop < 0.001;
+    if (hitTP || hitSL) {
+      cooldownStore.delete(pair);
+      return false;
+    }
+  }
+
+  // Early release: 90 minutes elapsed
+  if (now >= entry.until - (3 * 60 * 60 * 1000) + (90 * 60 * 1000)) {
+    cooldownStore.delete(pair);
+    return false;
+  }
+
+  return now < entry.until;
+}
+
+function setCooldown(pair: string, now: number, entryPrice: number, stop: number, target: number): void {
+  cooldownStore.set(pair, {
+    until: now + COOLDOWN_MS,
+    entryPrice,
+    stop,
+    target,
+  });
+}
+
+function checkCooldownEarlyRelease(pair: string, currentPrice: number): void {
+  const entry = cooldownStore.get(pair);
+  if (!entry) return;
+
+  const hitTP = Math.abs(currentPrice - entry.target) / entry.target < 0.001;
+  const hitSL = Math.abs(currentPrice - entry.stop) / entry.stop < 0.001;
+  const ninetyMinElapsed = Date.now() >= entry.until - (3 * 60 * 60 * 1000) + (90 * 60 * 1000);
+
+  if (hitTP || hitSL || ninetyMinElapsed) {
+    cooldownStore.delete(pair);
+  }
 }
 
 export function generateSignal(
@@ -384,13 +463,18 @@ export function generateSignal(
   const debug: string[] = [];
   const now = Date.now();
   const price = currentPrice ?? candles4h[candles4h.length - 1]?.close ?? 0;
+
+  // Check for early cooldown release before evaluating
+  checkCooldownEarlyRelease(pair, price);
+
   const hasActive = activeSignals.some(s => s.pair === pair && !s.exited);
   if (hasActive) {
     debug.push("Rejected: active trade");
     return { debug };
   }
-  if (isOnCooldown(pair, now)) {
-    const mins = Math.round((cooldownStore.get(pair)! - now) / 60000);
+  if (isOnCooldown(pair, now, price)) {
+    const entry = cooldownStore.get(pair);
+    const mins = entry ? Math.round((entry.until - now) / 60000) : 0;
     debug.push(`Rejected: cooldown (${mins}min)`);
     return { debug };
   }
@@ -437,7 +521,7 @@ export function generateSignal(
     debug.push(`Rejected: RR ${rr.toFixed(2)} < ${MIN_RR}`);
     return { debug };
   }
-  setCooldown(pair, now);
+  setCooldown(pair, now, price, stop, target);
   const rsi4h = wilderRsi(candles4h.map(c => c.close));
   const adxVal = adx(candles4h);
   const signal: Signal = {
@@ -463,6 +547,9 @@ export function generateSignal(
     trigger: trigger.detail,
   };
   debug.push(`SIGNAL: ${trend.direction} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr}`);
+  const distToTrendline = location.trendlinePrice > 0
+    ? Math.round(Math.abs((price - location.trendlinePrice) / location.trendlinePrice) * 10000) / 100
+    : null;
   const market: MarketSnapshot = {
     pair,
     price: Math.round(price * 100) / 100,
@@ -475,7 +562,8 @@ export function generateSignal(
     stochK: signal.stochK,
     stochD: signal.stochD,
     trendlinePrice: Math.round(location.trendlinePrice * 100) / 100,
-    distToTrendline: Math.round(Math.abs((price - location.trendlinePrice) / location.trendlinePrice) * 10000) / 100,
+    distToTrendline,
+    locationType: location.locationType,
     ema8_15m: 0,
     ema21_15m: 0,
   };
@@ -490,9 +578,12 @@ export function getMarketSnapshot(
 ): MarketSnapshot {
   const candles1d = aggregateTo1D(candles4h);
   const trend = dailyTrend(candles1d);
-  const location = trend.direction !== "NONE" ? location4H(pair, candles4h, trend.direction) : { ready: false, detail: "No trend", trendlinePrice: 0 };
+  const location = trend.direction !== "NONE" ? location4H(pair, candles4h, trend.direction) : { ready: false, detail: "No trend", trendlinePrice: 0, locationType: "NONE" };
   const trigger = trend.direction !== "NONE" ? stochTrigger15M(candles15m, trend.direction) : { fired: false, detail: "No trend", triggerType: "none", stochK: 50, stochD: 50 };
   const price = candles4h[candles4h.length - 1]?.close ?? 0;
+  const distToTrendline = location.trendlinePrice > 0
+    ? Math.round(Math.abs((price - location.trendlinePrice) / location.trendlinePrice) * 10000) / 100
+    : null;
   return {
     pair,
     price: Math.round(price * 100) / 100,
@@ -505,7 +596,8 @@ export function getMarketSnapshot(
     stochK: trigger.stochK,
     stochD: trigger.stochD,
     trendlinePrice: Math.round(location.trendlinePrice * 100) / 100,
-    distToTrendline: Math.round(Math.abs((price - location.trendlinePrice) / location.trendlinePrice) * 10000) / 100,
+    distToTrendline,
+    locationType: location.locationType,
     ema8_15m: 0,
     ema21_15m: 0,
   };
