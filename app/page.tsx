@@ -99,11 +99,10 @@ function calcTrailingSL(signal: Signal, currentPrice: number): { sl: number; loc
   if (signal.direction === "LONG") {
     const profit = currentPrice - entry;
     if (profit <= 0) return { sl: initialSL, lockedProfit: 0 };
-    // Move SL to breakeven at 1R profit, then trail at 50% of profit beyond 2R
     const rMultiple = profit / risk;
     let newSL = initialSL;
     if (rMultiple >= 1) {
-      newSL = Math.max(initialSL, entry); // breakeven
+      newSL = Math.max(initialSL, entry);
     }
     if (rMultiple >= 2) {
       newSL = Math.max(newSL, entry + profit * 0.5);
@@ -116,7 +115,7 @@ function calcTrailingSL(signal: Signal, currentPrice: number): { sl: number; loc
     const rMultiple = profit / risk;
     let newSL = initialSL;
     if (rMultiple >= 1) {
-      newSL = Math.min(initialSL, entry); // breakeven
+      newSL = Math.min(initialSL, entry);
     }
     if (rMultiple >= 2) {
       newSL = Math.min(newSL, entry - profit * 0.5);
@@ -209,7 +208,6 @@ export default function Dashboard() {
             const hasSignal = !!signal;
             const status = signal?.meta?.status || "WAITING";
 
-            // Trailing SL
             const trailing = hasSignal && status === "ACTIVE" && currentPrice
               ? calcTrailingSL(signal, currentPrice)
               : { sl: signal?.stop ?? 0, lockedProfit: 0 };
@@ -282,7 +280,6 @@ export default function Dashboard() {
                   : ((entry - currentPrice) / entry) * 100
                 : 0;
 
-            // Step indicators
             const trendReady = mkt?.trend === "LONG" || mkt?.trend === "SHORT";
             const locationReady = mkt?.location === "READY";
             const triggerFired = mkt?.trigger === "FIRED";
@@ -325,7 +322,7 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {/* Trade Steps — always visible */}
+                {/* Trade Steps */}
                 <div className="mb-3 p-2 rounded bg-gray-900/50 border border-gray-700/50">
                   <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2 font-semibold">Trade Steps</div>
                   <div className="space-y-1.5">
@@ -358,7 +355,6 @@ export default function Dashboard() {
                 {/* Active Signal Details */}
                 {hasSignal && status === "ACTIVE" && (
                   <>
-                    {/* Progress Bar */}
                     <div className="mb-3">
                       <div className="flex justify-between text-[10px] text-gray-400 mb-1">
                         <span>Entry</span>
@@ -376,7 +372,6 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    {/* Levels */}
                     <div className="mb-3 space-y-1.5">
                       <LevelRow label="Entry" value={money(signal.entry)} />
                       <LevelRow label="Initial SL" value={money(signal.stop)} color="text-red-400" />
@@ -394,7 +389,6 @@ export default function Dashboard() {
                       <LevelRow label="Age" value={timeAgo(signal.timestamp)} color="text-gray-300" />
                     </div>
 
-                    {/* Reason */}
                     {signal.reason && (
                       <div className="text-[10px] text-gray-500 border-t border-gray-700 pt-2 mb-2">
                         <p className="leading-relaxed">{signal.reason}</p>
@@ -403,7 +397,6 @@ export default function Dashboard() {
                   </>
                 )}
 
-                {/* Closed Signal Summary */}
                 {(status === "TP_HIT" || status === "SL_HIT") && (
                   <div className="mb-3 p-2 bg-gray-900/50 rounded text-xs space-y-1.5">
                     <div className="flex justify-between">
@@ -425,8 +418,6 @@ export default function Dashboard() {
     </div>
   );
 }
-
-// ─── Subcomponents ─────────────────────────────────────────
 
 function StepRow({ label, ready, value }: { label: string; ready: boolean; value: string }) {
   return (
