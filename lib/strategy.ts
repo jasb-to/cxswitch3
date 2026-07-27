@@ -182,7 +182,7 @@ function adx(candles: Candle[], period = 14): number {
   return Math.round(adxSmooth[adxSmooth.length - 1] * 10) / 10;
 }
 
-function aggregateTo1D(candles4h: Candle[]): Candle[] {
+export function aggregateTo1D(candles4h: Candle[]): Candle[] {
   if (!candles4h?.length) return [];
   const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
   const groups = new Map<string, Candle[]>();
