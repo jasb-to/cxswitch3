@@ -1,5 +1,6 @@
 // app/api/cron/route.ts — v50 "First Wave" Cron
 // ============================================================
+// Trend → Location → Momentum → Signal
 
 import { NextResponse } from "next/server";
 import { getCandles } from "@/lib/kraken";
@@ -7,7 +8,7 @@ import { generateSignal, generateAddSignal, isSignalStillValid, shouldHold, filt
 import { getSignals, setSignals, getMarketData, setMarketData, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
-const PAIRS = ["BTC", "ETH", "SOL"] as const;
+const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
 const MIN_CRON_INTERVAL_MS = 14 * 60 * 1000;
 
 function roundPrice(n: number): number {
@@ -82,6 +83,7 @@ export async function GET(request: Request) {
       const existingIdx = validSignals.findIndex(s => s.pair === pair);
       const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
 
+      // ── Check existing signal ──
       if (existingForPair) {
         const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
         if (!validity.valid) {
@@ -99,6 +101,7 @@ export async function GET(request: Request) {
             validSignals.splice(existingIdx, 1);
             alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
           } else {
+            // Check for ADD signal
             if (existingForPair.scale === "ENTRY") {
               const addResult = generateAddSignal(pair, candles4h, candles15m, existingForPair, currentPrice);
               if (addResult.signal) {
@@ -140,6 +143,7 @@ export async function GET(request: Request) {
         }
       }
 
+      // ── Generate new signal ──
       const result = generateSignal(pair, candles1h, candles4h, candles15m, validSignals, currentPrice);
       const snapshot = result.market || getMarketSnapshot(pair, candles1h, candles4h, candles15m);
       if (snapshot) marketDataList.push(snapshot);
