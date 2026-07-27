@@ -65,6 +65,25 @@ function dirBg(dir: string | null | undefined): string {
   return "bg-gray-800/30 border-gray-700/20";
 }
 
+// ─── Bias Strength Helpers ─────────────────────────────────
+function getBiasStrength(score: number): string {
+  const s = safeNum(score);
+  if (s >= 80) return "Strong";
+  if (s >= 60) return "Medium";
+  if (s > 50) return "Weak";
+  if (s >= 40 && s <= 50) return "Weak";
+  return "";
+}
+
+function strengthColor(score: number): string {
+  const s = safeNum(score);
+  if (s >= 80) return "text-emerald-400";
+  if (s >= 60) return "text-green-400";
+  if (s > 50) return "text-yellow-400";
+  if (s >= 40 && s <= 50) return "text-yellow-400";
+  return "text-gray-400";
+}
+
 function scoreColor(score: number): string {
   if (score >= 70) return "text-green-400";
   if (score <= 30) return "text-red-400";
@@ -124,11 +143,15 @@ function BiasScoreBadge({ bias, score, detail }: { bias: string | null | undefin
 
   const isLong = biasStr === "LONG";
   const detailStr = safeStr(detail);
+  const strength = getBiasStrength(s);
 
   return (
     <div className={`p-2.5 rounded-lg text-center border ${scoreBg(s)}`}>
       <div className="text-[10px] uppercase text-gray-500 mb-1 tracking-wider">4H Bias Score</div>
-      <div className={`text-sm font-bold ${dirColor(biasStr)}`}>{biasStr}</div>
+      <div className="flex items-center justify-center gap-1.5 mb-0.5">
+        <span className={`text-xs font-bold ${strengthColor(s)}`}>{strength}</span>
+        <span className={`text-sm font-bold ${dirColor(biasStr)}`}>{biasStr}</span>
+      </div>
       <div className={`text-lg font-mono font-bold ${scoreColor(s)}`}>{s}</div>
       {detailStr && (
         <div className="text-[9px] mt-1 text-gray-500 leading-tight">{detailStr}</div>
