@@ -3,7 +3,7 @@
 // Trend → Location → Momentum → Signal
 
 import { NextResponse } from "next/server";
-import { getCandles } from "@/lib/kraken";
+import { getCandles, krakenPairFormat } from "@/lib/kraken";
 import { generateSignal, generateAddSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot } from "@/lib/strategy";
 import { getSignals, setSignals, getMarketData, setMarketData, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
@@ -50,7 +50,7 @@ export async function GET(request: Request) {
 
   for (const pair of PAIRS) {
     try {
-      const candles = await getCandles(pair, 60);
+      const candles = await getCandles(krakenPairFormat(pair + "/USD"), 60);
       if (candles?.length) currentPrices[pair] = candles[candles.length - 1].close;
     } catch (e) { console.log(`[PRICE] ${pair} — failed`); }
   }
@@ -71,7 +71,9 @@ export async function GET(request: Request) {
   for (const pair of PAIRS) {
     try {
       const [candles1h, candles4h, candles15m] = await Promise.all([
-        getCandles(pair, 60), getCandles(pair, 240), getCandles(pair, 15)
+        getCandles(krakenPairFormat(pair + "/USD"), 60),
+        getCandles(krakenPairFormat(pair + "/USD"), 240),
+        getCandles(krakenPairFormat(pair + "/USD"), 15)
       ]);
 
       if (!candles1h || !candles4h || !candles15m || candles1h.length < 20 || candles4h.length < 30 || candles15m.length < 20) {
