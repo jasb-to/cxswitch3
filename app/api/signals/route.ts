@@ -4,7 +4,7 @@
 import { NextResponse } from "next/server";
 import { getSignals, getMarketData, getSignalHistory } from "@/lib/state";
 import { isSignalStillValid, shouldHold, getMarketSnapshot } from "@/lib/strategy";
-import { getCandles } from "@/lib/kraken";
+import { getCandles, krakenPairFormat } from "@/lib/kraken";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,7 +26,9 @@ export async function GET() {
     for (const pair of PAIRS) {
       try {
         const [candles1h, candles4h, candles15m] = await Promise.all([
-          getCandles(pair, 60), getCandles(pair, 240), getCandles(pair, 15)
+          getCandles(krakenPairFormat(pair + "/USD"), 60),
+          getCandles(krakenPairFormat(pair + "/USD"), 240),
+          getCandles(krakenPairFormat(pair + "/USD"), 15)
         ]);
         if (candles1h?.length && candles4h?.length && candles15m?.length) {
           const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
@@ -70,7 +72,7 @@ export async function GET() {
 
     let holdAdvice = null;
     try {
-      const candles4h = await getCandles(s.pair, 240);
+      const candles4h = await getCandles(krakenPairFormat(s.pair + "/USD"), 240);
       const p = currentPrices[s.pair] || s.entry;
       if (candles4h?.length > 30) holdAdvice = shouldHold(s, candles4h, p);
     } catch (e) {}
