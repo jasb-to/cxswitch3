@@ -17,6 +17,7 @@ export async function GET() {
 
   const currentPrices: Record<string, number> = {};
 
+  // Fallback: generate market data if KV is empty
   if (!marketData || marketData.length === 0) {
     const freshMarket: any[] = [];
     for (const pair of ["BTC", "ETH", "SOL"]) {
