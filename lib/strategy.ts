@@ -1,15 +1,8 @@
-// lib/strategy.ts — v46.2 "Bias Score" — Trend + Structure + Price
+// lib/strategy.ts — v50 "First Wave" — Trend → Location → Momentum
 // ============================================================
-// Bias Score (0-100):
-//   +40 Market structure (HH/HL or LH/LL) — hardest to fake
-//   +35 EMA21 slope (smoothed over 5 candles)
-//   +25 Price vs EMA21 — easiest to fake, lowest weight
-// Zones: >70 Bullish, <30 Bearish, 30-70 Neutral (no trade)
-//
-// Layer 1: Bias Score >70 or <30
-// Layer 2: 1H Location (trendline OR swing S/R, in direction of bias)
-// Layer 3: 15M Trigger (Stoch cross from extreme + confirmation)
-// One ENTRY signal. No exits. No scoring.
+// Philosophy: Trade the first wave after a pullback.
+// Sequence: Daily Trend → 4H Location → 15M Momentum → Enter
+// No scoring. No weighting. No gates. Just: trend, location, trigger.
 
 export interface Candle {
   timestamp: number;
@@ -24,83 +17,67 @@ export interface Signal {
   id: string;
   pair: string;
   direction: "LONG" | "SHORT";
+  type: "ENTRY" | "ADD" | "EXIT";
+  scale: "ENTRY" | "ADD" | null;
   entry: number;
   stop: number;
   target: number;
   rr: number;
+  adx: number;
+  rsi: number;
+  stochK: number;
+  stochD: number;
+  expectedMove: number;
+  reason: string;
   timestamp: number;
   version: number;
-  reason: string;
-  primaryTrigger: string;
-  confirmation: string;
-  biasScore: number;
-  exited?: boolean;
-  status?: "ACTIVE" | "EXITED";
-  exitReason?: string;
-  exitTimestamp?: number;
-  exitPrice?: number;
+  trend: string;
+  location: string;
+  trigger: string;
 }
 
 export interface SignalResult {
   signal?: Signal;
+  market?: MarketSnapshot;
   debug: string[];
 }
 
-export interface TriggerDiagnostics {
-  stochCross: { passed: boolean; detail: string };
-  emaCross: { passed: boolean; detail: string };
-  reclaimEma21: { passed: boolean; detail: string };
-  volumeSpike: { passed: boolean; detail: string };
-  primaryPassed: string[];
-  confirmationPassed: string[];
-  fired: boolean;
-  summary: string;
-}
-
-export interface BiasScore {
-  score: number;
-  direction: "LONG" | "SHORT" | "NEUTRAL";
-  slope: number;
-  slopePct: number;
-  priceVsEma21: number;
-  structure: "HH_HL" | "LH_LL" | "MIXED";
-  detail: string;
-}
-
-// ─── Compatibility types for state.ts ──────────────────────
-
-export interface MarketRegime {
+export interface MarketSnapshot {
   pair: string;
-  direction: "LONG" | "SHORT";
+  price: number;
   timestamp: number;
+  trend: string;
+  location: string;
+  trigger: string;
+  adx: number;
+  rsi: number;
+  stochK: number;
+  stochD: number;
+  trendlinePrice: number;
+  distToTrendline: number;
+  ema8_15m: number;
+  ema21_15m: number;
 }
 
-export interface ExitRecord {
-  id: string;
-  pair: string;
-  direction: "LONG" | "SHORT";
-  entry: number;
-  exitPrice: number;
-  pnl: number;
+export interface ValidityCheck {
+  valid: boolean;
   reason: string;
-  timestamp: number;
+  exited: boolean;
 }
 
-export const CURRENT_SIGNAL_VERSION = 46.2;
+export interface HoldResult {
+  shouldHold: boolean;
+  reason: string;
+}
+
+export const CURRENT_SIGNAL_VERSION = 50;
 const MIN_RR = 1.5;
-const ATR_MULT = 2.0;
 const TL_PROXIMITY = 0.012;
 const SWING_PROXIMITY = 0.008;
-const VOL_THRESHOLD = 1.2;
-const STOCH_EXTREME_LONG = 30;
-const STOCH_EXTREME_SHORT = 70;
+const STOCH_EXTREME_LONG = 20;
+const STOCH_EXTREME_SHORT = 80;
 const COOLDOWN_MS = 4 * 60 * 60 * 1000;
 const TL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-const BIAS_BULLISH_THRESHOLD = 70;
-const BIAS_BEARISH_THRESHOLD = 30;
-const EMA21_SLOPE_LOOKBACK = 5;
-
-// ─── HELPERS ───────────────────────────────────────────────
 
 function avg(arr: number[]): number {
   return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
@@ -114,8 +91,6 @@ function ema(values: number[], period: number): number[] {
   }
   return out;
 }
-
-// ─── WILDER RSI (TradingView exact) ────────────────────────
 
 function wilderRsi(closes: number[], period = 14): number {
   if (closes.length < period + 1) return 50;
@@ -144,31 +119,24 @@ function wilderRsiSeries(closes: number[], period = 14): number[] {
   return series;
 }
 
-// ─── StochRSI (TradingView exact, Wilder RSI) ──────────────
-
 function stochRsi(closes: number[], rsiPeriod = 14, stochPeriod = 14, kSmooth = 3, dSmooth = 3): { k: number; d: number } {
   const rsiValues = wilderRsiSeries(closes, rsiPeriod);
   if (rsiValues.length < stochPeriod + kSmooth - 1) return { k: 50, d: 50 };
-
   const rawK: number[] = [];
   for (let i = stochPeriod - 1; i < rsiValues.length; i++) {
     const w = rsiValues.slice(i - stochPeriod + 1, i + 1);
     const lo = Math.min(...w), hi = Math.max(...w);
     rawK.push(hi === lo ? 50 : ((rsiValues[i] - lo) / (hi - lo)) * 100);
   }
-
   const kValues: number[] = [];
   for (let i = kSmooth - 1; i < rawK.length; i++) {
     kValues.push(avg(rawK.slice(i - kSmooth + 1, i + 1)));
   }
-
   if (kValues.length < dSmooth) return { k: 50, d: 50 };
   const currentK = kValues[kValues.length - 1];
   const currentD = avg(kValues.slice(-dSmooth));
   return { k: Math.round(currentK * 10) / 10, d: Math.round(currentD * 10) / 10 };
 }
-
-// ─── ATR ───────────────────────────────────────────────────
 
 function atr(candles: Candle[], period = 14): number {
   const trs: number[] = [];
@@ -182,7 +150,61 @@ function atr(candles: Candle[], period = 14): number {
   return avg(trs);
 }
 
-// ─── TRENDLINE (stateful, from v28) ────────────────────────
+function wilderSmooth(values: number[], period: number): number[] {
+  const result: number[] = [avg(values.slice(0, period))];
+  for (let i = period; i < values.length; i++) {
+    result.push((result[result.length - 1] * (period - 1) + values[i]) / period);
+  }
+  return result;
+}
+
+function adx(candles: Candle[], period = 14): number {
+  if (candles.length < period + 1) return 0;
+  const trs: number[] = [];
+  const plusDMs: number[] = [];
+  const minusDMs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i], p = candles[i - 1];
+    trs.push(Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close)));
+    plusDMs.push(c.high - p.high > p.low - c.low ? Math.max(c.high - p.high, 0) : 0);
+    minusDMs.push(p.low - c.low > c.high - p.high ? Math.max(p.low - c.low, 0) : 0);
+  }
+  const atrSmooth = wilderSmooth(trs, period);
+  const plusDISmooth = wilderSmooth(plusDMs, period);
+  const minusDISmooth = wilderSmooth(minusDMs, period);
+  const dxValues: number[] = [];
+  for (let i = 0; i < atrSmooth.length; i++) {
+    const pDI = (plusDISmooth[i] / atrSmooth[i]) * 100;
+    const mDI = (minusDISmooth[i] / atrSmooth[i]) * 100;
+    dxValues.push((pDI + mDI === 0) ? 0 : (Math.abs(pDI - mDI) / (pDI + mDI)) * 100);
+  }
+  const adxSmooth = wilderSmooth(dxValues, period);
+  return Math.round(adxSmooth[adxSmooth.length - 1] * 10) / 10;
+}
+
+function aggregateTo1D(candles4h: Candle[]): Candle[] {
+  if (!candles4h?.length) return [];
+  const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
+  const groups = new Map<string, Candle[]>();
+  for (const c of sorted) {
+    const key = new Date(c.timestamp).toISOString().split("T")[0];
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(c);
+  }
+  const daily: Candle[] = [];
+  for (const [, bars] of groups) {
+    if (!bars.length) continue;
+    daily.push({
+      timestamp: bars[0].timestamp,
+      open: bars[0].open,
+      high: Math.max(...bars.map(b => b.high)),
+      low: Math.min(...bars.map(b => b.low)),
+      close: bars[bars.length - 1].close,
+      volume: bars.reduce((s, b) => s + b.volume, 0),
+    });
+  }
+  return daily.sort((a, b) => a.timestamp - b.timestamp);
+}
 
 interface TrendlineState {
   slope: number;
@@ -230,11 +252,9 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   if (candles.length < 30) return null;
   const pivots = findPivots(candles, direction);
   if (pivots.length < 3) return null;
-
   const recentPivots = pivots.slice(-5);
   const now = candles[candles.length - 1].timestamp;
   const existing = trendlineStore.get(pair);
-
   if (existing && existing.direction === direction && (now - existing.lastUpdated) < TL_MAX_AGE_MS) {
     const lastPivot = recentPivots[recentPivots.length - 1];
     const projected = existing.slope * lastPivot.index + existing.intercept;
@@ -244,10 +264,8 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
       return { price: existing.slope * currentIndex + existing.intercept, r2: existing.r2 };
     }
   }
-
   const fit = fitTrendline(recentPivots);
   if (!fit || fit.r2 < 0.50) return null;
-
   trendlineStore.set(pair, {
     slope: fit.slope,
     intercept: fit.intercept,
@@ -255,326 +273,120 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     direction,
     r2: Math.round(fit.r2 * 100) / 100,
   });
-
   const currentIndex = candles.length - 1;
   return { price: fit.slope * currentIndex + fit.intercept, r2: Math.round(fit.r2 * 100) / 100 };
 }
 
-// ─── LAYER 1: BIAS SCORE ───────────────────────────────────
-// +40 EMA21 slope (smoothed over 5 candles)
-// +30 Price vs EMA21
-// +30 Market structure (HH/HL or LH/LL)
-// >70 = Bullish, <30 = Bearish, 30-70 = Neutral
-
-function findSwings(candles: Candle[], lookback: number = 10): { highs: number[]; lows: number[] } {
-  const highs: number[] = [];
-  const lows: number[] = [];
-  for (let i = 3; i < candles.length - 3 && i < lookback + 3; i++) {
-    const isSwingHigh = candles[i].high > candles[i-1].high && candles[i].high > candles[i-2].high &&
-                        candles[i].high > candles[i+1].high && candles[i].high > candles[i+2].high;
-    const isSwingLow = candles[i].low < candles[i-1].low && candles[i].low < candles[i-2].low &&
-                       candles[i].low < candles[i+1].low && candles[i].low < candles[i+2].low;
-    if (isSwingHigh) highs.push(candles[i].high);
-    if (isSwingLow) lows.push(candles[i].low);
+function dailyTrend(candles1d: Candle[]): { direction: "LONG" | "SHORT" | "NONE"; detail: string } {
+  if (candles1d.length < 50) {
+    return { direction: "NONE", detail: "Insufficient daily data" };
   }
-  return { highs, lows };
-}
-
-function computeBiasScore(candles4h: Candle[]): BiasScore {
-  const defaultNeutral: BiasScore = {
-    score: 50,
-    direction: "NEUTRAL",
-    slope: 0,
-    slopePct: 0,
-    priceVsEma21: 0,
-    structure: "MIXED",
-    detail: "Insufficient data",
-  };
-
-  if (candles4h.length < 40) return defaultNeutral;
-
-  const closes = candles4h.map(c => c.close);
+  const closes = candles1d.map(c => c.close);
   const e21 = ema(closes, 21);
-  if (e21.length < EMA21_SLOPE_LOOKBACK + 5) return defaultNeutral;
-
-  const price = closes[closes.length - 1];
-  const emaNow = e21[e21.length - 1];
-  const emaThen = e21[e21.length - 1 - EMA21_SLOPE_LOOKBACK];
-
-  // 1. Market structure (40 points) — hardest to fake
-  const { highs, lows } = findSwings(candles4h.slice(-30));
-  let structure: "HH_HL" | "LH_LL" | "MIXED" = "MIXED";
-  let structureScore = 20; // neutral base
-
-  if (highs.length >= 2 && lows.length >= 2) {
-    const lastHigh = highs[highs.length - 1];
-    const prevHigh = highs[highs.length - 2];
-    const lastLow = lows[lows.length - 1];
-    const prevLow = lows[lows.length - 2];
-
-    const higherHigh = lastHigh > prevHigh;
-    const higherLow = lastLow > prevLow;
-    const lowerHigh = lastHigh < prevHigh;
-    const lowerLow = lastLow < prevLow;
-
-    if (higherHigh && higherLow) {
-      structure = "HH_HL";
-      structureScore = 40;
-    } else if (lowerHigh && lowerLow) {
-      structure = "LH_LL";
-      structureScore = 0;
-    } else if (higherHigh && !higherLow) {
-      structure = "MIXED";
-      structureScore = 28;
-    } else if (lowerHigh && !lowerLow) {
-      structure = "MIXED";
-      structureScore = 12;
-    }
-  }
-
-  // 2. EMA21 slope (35 points)
-  const slope = emaNow - emaThen;
-  const slopePct = emaThen !== 0 ? (slope / emaThen) * 100 : 0;
-  let slopeScore = 17; // neutral base
-  if (slopePct > 0.50) slopeScore = 35;
-  else if (slopePct > 0.30) slopeScore = 30;
-  else if (slopePct > 0.10) slopeScore = 25;
-  else if (slopePct > -0.10) slopeScore = 17;
-  else if (slopePct > -0.30) slopeScore = 10;
-  else if (slopePct > -0.50) slopeScore = 5;
-  else slopeScore = 0;
-
-  // 3. Price vs EMA21 (25 points) — easiest to fake, lowest weight
-  const priceVsEma = emaNow !== 0 ? ((price - emaNow) / emaNow) * 100 : 0;
-  let priceScore = 12; // neutral base
-  if (priceVsEma > 1.0) priceScore = 25;
-  else if (priceVsEma > 0.5) priceScore = 20;
-  else if (priceVsEma > 0.0) priceScore = 15;
-  else if (priceVsEma > -0.5) priceScore = 8;
-  else if (priceVsEma > -1.0) priceScore = 4;
-  else priceScore = 0;
-
-  const totalScore = slopeScore + priceScore + structureScore;
-  let direction: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
-  if (totalScore >= BIAS_BULLISH_THRESHOLD) direction = "LONG";
-  else if (totalScore <= BIAS_BEARISH_THRESHOLD) direction = "SHORT";
-
-  const detail = `Score:${totalScore} | Structure:${structure}(${structureScore}) | Slope:${slopePct.toFixed(2)}%(${slopeScore}) | PriceVsEma:${priceVsEma.toFixed(2)}%(${priceScore})`;
-
-  return {
-    score: totalScore,
-    direction,
-    slope,
-    slopePct,
-    priceVsEma21: priceVsEma,
-    structure,
-    detail,
-  };
+  const e50 = ema(closes, 50);
+  const last21 = e21[e21.length - 1];
+  const last50 = e50[e50.length - 1];
+  if (last21 > last50) return { direction: "LONG", detail: `EMA21 ${last21.toFixed(1)} > EMA50 ${last50.toFixed(1)}` };
+  if (last21 < last50) return { direction: "SHORT", detail: `EMA21 ${last21.toFixed(1)} < EMA50 ${last50.toFixed(1)}` };
+  return { direction: "NONE", detail: `EMA21 ${last21.toFixed(1)} ≈ EMA50 ${last50.toFixed(1)}` };
 }
 
-// ─── LAYER 2: 1H LOCATION ──────────────────────────────────
-
-function location1H(
+function location4H(
   pair: string,
-  candles1h: Candle[],
+  candles4h: Candle[],
   direction: "LONG" | "SHORT"
-): { valid: boolean; detail: string; locationType: "trendline" | "swing" | null } {
-  if (candles1h.length < 30) {
-    return { valid: false, detail: "Insufficient 1H data", locationType: null };
-  }
-
-  const price = candles1h[candles1h.length - 1].close;
-
-  // Check 1: Trendline proximity (highest confidence)
-  const tl = getTrendline(pair, candles1h, direction);
+): { ready: boolean; detail: string; trendlinePrice: number } {
+  const price = candles4h[candles4h.length - 1].close;
+  const tl = getTrendline(pair, candles4h, direction);
   if (tl) {
     const dist = Math.abs(price - tl.price) / tl.price;
     if (dist < TL_PROXIMITY) {
-      return { valid: true, detail: `Trendline ${(dist * 100).toFixed(2)}% (R² ${tl.r2.toFixed(2)})`, locationType: "trendline" };
+      return { ready: true, detail: `Trendline ${(dist * 100).toFixed(2)}% (R² ${tl.r2.toFixed(2)})`, trendlinePrice: tl.price };
     }
   }
-
-  // Check 2: Swing S/R proximity
-  const recent = candles1h.slice(-20);
+  const recent = candles4h.slice(-20);
   if (direction === "LONG") {
     const swingLow = Math.min(...recent.map(c => c.low));
     const dist = (price - swingLow) / swingLow;
     if (dist >= 0 && dist < SWING_PROXIMITY) {
-      return { valid: true, detail: `Swing low ${(dist * 100).toFixed(2)}%`, locationType: "swing" };
+      return { ready: true, detail: `Swing low ${(dist * 100).toFixed(2)}%`, trendlinePrice: swingLow };
     }
   } else {
     const swingHigh = Math.max(...recent.map(c => c.high));
     const dist = (swingHigh - price) / swingHigh;
     if (dist >= 0 && dist < SWING_PROXIMITY) {
-      return { valid: true, detail: `Swing high ${(dist * 100).toFixed(2)}%`, locationType: "swing" };
+      return { ready: true, detail: `Swing high ${(dist * 100).toFixed(2)}%`, trendlinePrice: swingHigh };
     }
   }
-
-  return { valid: false, detail: "No valid location", locationType: null };
+  return { ready: false, detail: "No valid location", trendlinePrice: tl?.price || 0 };
 }
 
-// ─── LAYER 3: 15M TRIGGER ──────────────────────────────────
-
-function trigger15M(pair: string, candles15m: Candle[], direction: "LONG" | "SHORT"): TriggerDiagnostics {
-  const defaultFail: TriggerDiagnostics = {
-    stochCross: { passed: false, detail: "Insufficient data" },
-    emaCross: { passed: false, detail: "Insufficient data" },
-    reclaimEma21: { passed: false, detail: "Insufficient data" },
-    volumeSpike: { passed: false, detail: "Insufficient data" },
-    primaryPassed: [],
-    confirmationPassed: [],
+function momentum15M(candles15m: Candle[], direction: "LONG" | "SHORT"): {
+  fired: boolean;
+  detail: string;
+  triggerType: string;
+  stochK: number;
+  stochD: number;
+  ema8: number;
+  ema21: number;
+} {
+  const defaultFail = {
     fired: false,
-    summary: "Insufficient 15M data",
+    detail: "Insufficient 15M data",
+    triggerType: "none",
+    stochK: 50,
+    stochD: 50,
+    ema8: 0,
+    ema21: 0,
   };
-
-  if (candles15m.length < 10) return defaultFail;
-
+  if (candles15m.length < 30) return defaultFail;
   const closes = candles15m.map(c => c.close);
   const prevCloses = closes.slice(0, -1);
   const stoch = stochRsi(closes);
   const prevStoch = stochRsi(prevCloses);
   const e8 = ema(closes, 8);
   const e21 = ema(closes, 21);
-
-  const diag: TriggerDiagnostics = {
-    stochCross: { passed: false, detail: "" },
-    emaCross: { passed: false, detail: "" },
-    reclaimEma21: { passed: false, detail: "" },
-    volumeSpike: { passed: false, detail: "" },
-    primaryPassed: [],
-    confirmationPassed: [],
-    fired: false,
-    summary: "",
-  };
-
-  // Stoch cross evaluation — MUST be from extreme
+  const lastE8 = e8[e8.length - 1];
+  const lastE21 = e21[e21.length - 1];
+  const prevE8 = e8.length >= 2 ? e8[e8.length - 2] : lastE8;
+  const prevE21 = e21.length >= 2 ? e21[e21.length - 2] : lastE21;
+  let fired = false;
+  let detail = "";
+  let triggerType = "none";
   if (direction === "LONG") {
     if (prevStoch.k < prevStoch.d && stoch.k >= stoch.d && stoch.k < STOCH_EXTREME_LONG) {
-      diag.stochCross = { passed: true, detail: `K crossed above D from oversold (K=${stoch.k}, D=${stoch.d})` };
-      diag.primaryPassed.push("stoch_cross");
-    } else if (stoch.k >= STOCH_EXTREME_LONG) {
-      diag.stochCross = { passed: false, detail: `K=${stoch.k} not in oversold zone (<${STOCH_EXTREME_LONG})` };
-    } else if (prevStoch.k >= prevStoch.d) {
-      diag.stochCross = { passed: false, detail: `Already above D (K=${prevStoch.k}, D=${prevStoch.d}), no cross` };
-    } else {
-      diag.stochCross = { passed: false, detail: `K below D but no cross yet (K=${stoch.k}, D=${stoch.d})` };
+      fired = true;
+      triggerType = "stoch_cross";
+      detail = `Stoch K crossed above D from oversold (K=${stoch.k}, D=${stoch.d})`;
+    } else if (prevE8 <= prevE21 && lastE8 > lastE21) {
+      fired = true;
+      triggerType = "ema_cross";
+      detail = `EMA8 crossed above EMA21 (${lastE8.toFixed(1)} > ${lastE21.toFixed(1)})`;
+    } else if (stoch.k > stoch.d && stoch.k < STOCH_EXTREME_LONG) {
+      fired = true;
+      triggerType = "stoch_momentum";
+      detail = `Stoch K above D in oversold zone (K=${stoch.k}, D=${stoch.d})`;
     }
   } else {
     if (prevStoch.k > prevStoch.d && stoch.k <= stoch.d && stoch.k > STOCH_EXTREME_SHORT) {
-      diag.stochCross = { passed: true, detail: `K crossed below D from overbought (K=${stoch.k}, D=${stoch.d})` };
-      diag.primaryPassed.push("stoch_cross");
-    } else if (stoch.k <= STOCH_EXTREME_SHORT) {
-      diag.stochCross = { passed: false, detail: `K=${stoch.k} not in overbought zone (>${STOCH_EXTREME_SHORT})` };
-    } else if (prevStoch.k <= prevStoch.d) {
-      diag.stochCross = { passed: false, detail: `Already below D (K=${prevStoch.k}, D=${prevStoch.d}), no cross` };
-    } else {
-      diag.stochCross = { passed: false, detail: `K above D but no cross yet (K=${stoch.k}, D=${stoch.d})` };
+      fired = true;
+      triggerType = "stoch_cross";
+      detail = `Stoch K crossed below D from overbought (K=${stoch.k}, D=${stoch.d})`;
+    } else if (prevE8 >= prevE21 && lastE8 < lastE21) {
+      fired = true;
+      triggerType = "ema_cross";
+      detail = `EMA8 crossed below EMA21 (${lastE8.toFixed(1)} < ${lastE21.toFixed(1)})`;
+    } else if (stoch.k < stoch.d && stoch.k > STOCH_EXTREME_SHORT) {
+      fired = true;
+      triggerType = "stoch_momentum";
+      detail = `Stoch K below D in overbought zone (K=${stoch.k}, D=${stoch.d})`;
     }
   }
-
-  // EMA cross evaluation
-  if (e8.length >= 2 && e21.length >= 2) {
-    const prevE8 = e8[e8.length - 2], prevE21 = e21[e21.length - 2];
-    const lastE8 = e8[e8.length - 1], lastE21 = e21[e21.length - 1];
-    if (direction === "LONG") {
-      if (prevE8 <= prevE21 && lastE8 > lastE21) {
-        diag.emaCross = { passed: true, detail: `EMA8 crossed above EMA21` };
-        diag.primaryPassed.push("ema_cross");
-      } else if (lastE8 > lastE21) {
-        diag.emaCross = { passed: false, detail: `Already above EMA21, no cross` };
-      } else {
-        diag.emaCross = { passed: false, detail: `EMA8 ${lastE8.toFixed(2)} below EMA21 ${lastE21.toFixed(2)}` };
-      }
-    } else {
-      if (prevE8 >= prevE21 && lastE8 < lastE21) {
-        diag.emaCross = { passed: true, detail: `EMA8 crossed below EMA21` };
-        diag.primaryPassed.push("ema_cross");
-      } else if (lastE8 < lastE21) {
-        diag.emaCross = { passed: false, detail: `Already below EMA21, no cross` };
-      } else {
-        diag.emaCross = { passed: false, detail: `EMA8 ${lastE8.toFixed(2)} above EMA21 ${lastE21.toFixed(2)}` };
-      }
-    }
-  } else {
-    diag.emaCross = { passed: false, detail: "Insufficient EMA data" };
+  if (!fired) {
+    detail = `No trigger. Stoch K=${stoch.k} D=${stoch.d} | EMA8=${lastE8.toFixed(1)} EMA21=${lastE21.toFixed(1)}`;
   }
-
-  // Reclaim EMA21 evaluation
-  if (e21.length >= 2) {
-    const prevClose = closes[closes.length - 2];
-    const lastClose = closes[closes.length - 1];
-    const prevE21 = e21[e21.length - 2];
-    const lastE21 = e21[e21.length - 1];
-    if (direction === "LONG") {
-      if (prevClose <= prevE21 && lastClose > lastE21) {
-        // Fresh reclaim — strongest confirmation
-        diag.reclaimEma21 = { passed: true, detail: `Price reclaimed EMA21` };
-        diag.confirmationPassed.push("reclaim_ema21");
-      } else if (lastClose > lastE21) {
-        // Already above — still valid confirmation, just not a fresh event
-        diag.reclaimEma21 = { passed: true, detail: `Price holding above EMA21` };
-        diag.confirmationPassed.push("reclaim_ema21");
-      } else {
-        diag.reclaimEma21 = { passed: false, detail: `Price ${lastClose.toFixed(2)} below EMA21 ${lastE21.toFixed(2)}` };
-      }
-    } else {
-      if (prevClose >= prevE21 && lastClose < lastE21) {
-        // Fresh break below — strongest confirmation
-        diag.reclaimEma21 = { passed: true, detail: `Price dropped below EMA21` };
-        diag.confirmationPassed.push("reclaim_ema21");
-      } else if (lastClose < lastE21) {
-        // Already below — still valid confirmation
-        diag.reclaimEma21 = { passed: true, detail: `Price holding below EMA21` };
-        diag.confirmationPassed.push("reclaim_ema21");
-      } else {
-        diag.reclaimEma21 = { passed: false, detail: `Price ${lastClose.toFixed(2)} above EMA21 ${lastE21.toFixed(2)}` };
-      }
-    }
-  } else {
-    diag.reclaimEma21 = { passed: false, detail: "Insufficient EMA data" };
-  }
-
-  // Volume evaluation
-  if (candles15m.length >= 10) {
-    const vols = candles15m.slice(-10).map(c => c.volume);
-    const avgVol = avg(vols.slice(0, -1));
-    const currentVol = vols[vols.length - 1];
-    const ratio = avgVol > 0 ? currentVol / avgVol : 0;
-
-    // ─── AUDIT LOG ───────────────────────────────────────
-    const lastClose = closes[closes.length - 1];
-    const lastTimestamp = candles15m[candles15m.length - 1].timestamp;
-    console.log(`[VOL AUDIT] pair=${pair || "?"} | currentVol=${currentVol} | avgVol=${avgVol.toFixed(4)} | ratio=${ratio.toFixed(4)} | candles=${candles15m.length} | lastClose=${lastClose.toFixed(2)} | lastTs=${lastTimestamp}`);
-    // ────────────────────────────────────────────────────
-
-    if (ratio >= VOL_THRESHOLD) {
-      diag.volumeSpike = { passed: true, detail: `Volume ${ratio.toFixed(1)}x avg` };
-      diag.confirmationPassed.push("volume_spike");
-    } else {
-      diag.volumeSpike = { passed: false, detail: `Volume ${ratio.toFixed(1)}x avg (need ${VOL_THRESHOLD}x)` };
-    }
-  } else {
-    diag.volumeSpike = { passed: false, detail: "Insufficient volume data" };
-  }
-
-  const hasPrimary = diag.primaryPassed.length > 0;
-  const hasConfirmation = diag.confirmationPassed.length > 0;
-  diag.fired = hasPrimary && hasConfirmation;
-
-  if (diag.fired) {
-    diag.summary = `${diag.primaryPassed[0]} + ${diag.confirmationPassed[0]}`;
-  } else if (hasPrimary) {
-    diag.summary = `Primary trigger detected (${diag.primaryPassed[0]}). Waiting for confirmation (EMA reclaim or volume expansion).`;
-  } else if (hasConfirmation) {
-    diag.summary = `Confirmation ready (${diag.confirmationPassed[0]}) but no primary trigger. Waiting for Stoch cross or EMA cross.`;
-  } else {
-    diag.summary = `No primary trigger. Stoch K=${stoch.k} D=${stoch.d}. Waiting for cross from extreme.`;
-  }
-
-  return diag;
+  return { fired, detail, triggerType, stochK: stoch.k, stochD: stoch.d, ema8: lastE8, ema21: lastE21 };
 }
-
-// ─── COOLDOWN ──────────────────────────────────────────────
 
 const cooldownStore: Map<string, number> = new Map();
 
@@ -587,8 +399,6 @@ function setCooldown(pair: string, now: number): void {
   cooldownStore.set(pair, now + COOLDOWN_MS);
 }
 
-// ─── MAIN SIGNAL ─────────────────────────────────────────
-
 export function generateSignal(
   pair: string,
   candles1h: Candle[],
@@ -600,209 +410,368 @@ export function generateSignal(
   const debug: string[] = [];
   const now = Date.now();
   const price = currentPrice ?? candles4h[candles4h.length - 1]?.close ?? 0;
-
-  // Duplicate protection
   const hasActive = activeSignals.some(s => s.pair === pair && !s.exited);
   if (hasActive) {
     debug.push("Rejected: active trade");
     return { debug };
   }
-
-  // Cooldown
   if (isOnCooldown(pair, now)) {
     const mins = Math.round((cooldownStore.get(pair)! - now) / 60000);
     debug.push(`Rejected: cooldown (${mins}min)`);
     return { debug };
   }
-
-  // Layer 1: Bias Score
-  const bias = computeBiasScore(candles4h);
-  debug.push(`Bias: ${bias.direction} | Score:${bias.score} | ${bias.detail}`);
-
-  if (bias.direction === "NEUTRAL") {
-    debug.push("Rejected: neutral bias");
+  const candles1d = aggregateTo1D(candles4h);
+  const trend = dailyTrend(candles1d);
+  debug.push(`Trend: ${trend.direction} | ${trend.detail}`);
+  if (trend.direction === "NONE") {
+    debug.push("Rejected: no trend");
     return { debug };
   }
-
-  // Layer 2: Location
-  const location = location1H(pair, candles1h, bias.direction);
-  if (!location.valid) {
-    debug.push(`Location: ${location.detail} ✗`);
-    debug.push("Rejected: location");
+  const location = location4H(pair, candles4h, trend.direction);
+  debug.push(`Location: ${location.ready ? "READY" : "WAIT"} | ${location.detail}`);
+  if (!location.ready) {
+    debug.push("Rejected: location not ready");
     return { debug };
   }
-  debug.push(`Location: ${location.detail} ✓`);
-
-  // Layer 3: Trigger
-  const trigger = trigger15M(pair, candles15m, bias.direction);
-
-  // Structured trigger log
-  debug.push("Trigger:");
-  debug.push(`  ${trigger.stochCross.passed ? "✓" : "✗"} Stoch Cross — ${trigger.stochCross.detail}`);
-  debug.push(`  ${trigger.emaCross.passed ? "✓" : "✗"} EMA Cross — ${trigger.emaCross.detail}`);
-  debug.push(`  ${trigger.reclaimEma21.passed ? "✓" : "✗"} EMA21 Reclaim — ${trigger.reclaimEma21.detail}`);
-  debug.push(`  ${trigger.volumeSpike.passed ? "✓" : "✗"} Volume — ${trigger.volumeSpike.detail}`);
-  debug.push(`  Primary: ${trigger.primaryPassed.length}/1 | Confirmation: ${trigger.confirmationPassed.length}/1`);
-
-  if (!trigger.fired) {
-    debug.push(`Result: ${trigger.summary}`);
-    debug.push("Rejected: trigger");
+  const momentum = momentum15M(candles15m, trend.direction);
+  debug.push(`Momentum: ${momentum.fired ? "FIRED" : "WAITING"} | ${momentum.detail}`);
+  if (!momentum.fired) {
+    debug.push("Rejected: no momentum trigger");
     return { debug };
   }
-  debug.push(`Result: ${trigger.summary} ✓`);
-
-  // Risk levels
-  const atrVal = atr(candles1h, 14);
-  const recent = candles1h.slice(-20);
-  const swingLow = Math.min(...recent.map(c => c.low));
-  const swingHigh = Math.max(...recent.map(c => c.high));
-
+  const atrVal = atr(candles4h, 14);
+  const recent4h = candles4h.slice(-20);
+  const swingLow = Math.min(...recent4h.map(c => c.low));
+  const swingHigh = Math.max(...recent4h.map(c => c.high));
   let stop: number;
   let target: number;
-
-  if (bias.direction === "LONG") {
-    const atrStop = price - atrVal * ATR_MULT;
+  if (trend.direction === "LONG") {
+    const atrStop = price - atrVal * 2;
     stop = Math.max(atrStop, swingLow);
-    const target3R = price + (price - stop) * 3;
-    target = Math.min(swingHigh, target3R);
+    const minTarget = price + (price - stop) * MIN_RR;
+    target = Math.max(swingHigh, minTarget);
   } else {
-    const atrStop = price + atrVal * ATR_MULT;
+    const atrStop = price + atrVal * 2;
     stop = Math.min(atrStop, swingHigh);
-    const target3R = price - (stop - price) * 3;
-    target = Math.max(swingLow, target3R);
+    const minTarget = price - (stop - price) * MIN_RR;
+    target = Math.min(swingLow, minTarget);
   }
-
   const risk = Math.abs(price - stop);
   const reward = Math.abs(target - price);
   const rr = risk > 0 ? reward / risk : 0;
-
   if (rr < MIN_RR) {
-    debug.push(`Risk: RR ${rr.toFixed(2)} < ${MIN_RR} ✗`);
-    debug.push("Rejected: RR");
+    debug.push(`Rejected: RR ${rr.toFixed(2)} < ${MIN_RR}`);
     return { debug };
   }
-  debug.push(`Risk: RR ${rr.toFixed(2)} ✓`);
-
-  // Accept
   setCooldown(pair, now);
-
+  const rsi4h = wilderRsi(candles4h.map(c => c.close));
+  const adxVal = adx(candles4h);
   const signal: Signal = {
     id: `${pair}_${now}`,
     pair,
-    direction: bias.direction,
+    direction: trend.direction,
+    type: "ENTRY",
+    scale: "ENTRY",
     entry: Math.round(price * 100) / 100,
     stop: Math.round(stop * 100) / 100,
     target: Math.round(target * 100) / 100,
     rr: Math.round(rr * 100) / 100,
+    adx: Math.round(adxVal * 10) / 10,
+    rsi: Math.round(rsi4h * 10) / 10,
+    stochK: momentum.stochK,
+    stochD: momentum.stochD,
+    expectedMove: Math.round(((target - price) / price) * 1000) / 10,
+    reason: `${trend.direction} | ${location.detail} | ${momentum.detail}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
-    reason: `${bias.direction} | Score:${bias.score} | ${location.detail} | ${trigger.summary}`,
-    primaryTrigger: trigger.primaryPassed[0],
-    confirmation: trigger.confirmationPassed[0],
-    biasScore: bias.score,
+    trend: trend.direction,
+    location: location.detail,
+    trigger: momentum.detail,
   };
-
-  debug.push(`SIGNAL: ${bias.direction} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr} | Score ${bias.score} | ${trigger.primaryPassed[0]} + ${trigger.confirmationPassed[0]}`);
-
-  return { signal, debug };
+  debug.push(`SIGNAL: ${trend.direction} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr} | ${momentum.triggerType}`);
+  const market: MarketSnapshot = {
+    pair,
+    price: Math.round(price * 100) / 100,
+    timestamp: now,
+    trend: trend.direction,
+    location: location.ready ? "READY" : "WAIT",
+    trigger: momentum.fired ? "FIRED" : "WAITING",
+    adx: signal.adx,
+    rsi: signal.rsi,
+    stochK: signal.stochK,
+    stochD: signal.stochD,
+    trendlinePrice: Math.round(location.trendlinePrice * 100) / 100,
+    distToTrendline: Math.round(Math.abs((price - location.trendlinePrice) / location.trendlinePrice) * 10000) / 100,
+    ema8_15m: Math.round(momentum.ema8 * 100) / 100,
+    ema21_15m: Math.round(momentum.ema21 * 100) / 100,
+  };
+  return { signal, market, debug };
 }
 
-// ─── MARKET SNAPSHOT ───────────────────────────────────────
+export function generateAddSignal(
+  pair: string,
+  candles4h: Candle[],
+  candles15m: Candle[],
+  existingSignal: Signal,
+  currentPrice?: number
+): SignalResult {
+  const debug: string[] = [];
+  const now = Date.now();
+  const price = currentPrice ?? candles4h[candles4h.length - 1]?.close ?? 0;
+  const candles1d = aggregateTo1D(candles4h);
+  const trend = dailyTrend(candles1d);
+  if (trend.direction !== existingSignal.direction) {
+    debug.push("Add rejected: trend flipped");
+    return { debug };
+  }
+  const location = location4H(pair, candles4h, trend.direction);
+  const beyondTL = trend.direction === "LONG"
+    ? price > location.trendlinePrice * 1.008
+    : price < location.trendlinePrice * 0.992;
+  if (!beyondTL) {
+    debug.push("Add rejected: not beyond trendline");
+    return { debug };
+  }
+  const last = candles4h[candles4h.length - 1];
+  const prev = candles4h[candles4h.length - 2];
+  const confirming = trend.direction === "LONG"
+    ? last.close > last.open && last.close > prev.close
+    : last.close < last.open && last.close < prev.close;
+  if (!confirming) {
+    debug.push("Add rejected: no confirming candle");
+    return { debug };
+  }
+  const atrVal = atr(candles4h, 14);
+  const recent4h = candles4h.slice(-20);
+  const swingLow = Math.min(...recent4h.map(c => c.low));
+  const swingHigh = Math.max(...recent4h.map(c => c.high));
+  let stop: number;
+  let target: number;
+  if (trend.direction === "LONG") {
+    stop = Math.min(location.trendlinePrice * 0.995, price - atrVal * 1.5);
+    const minTarget = price + (price - stop) * MIN_RR;
+    target = Math.max(swingHigh, minTarget);
+  } else {
+    stop = Math.max(location.trendlinePrice * 1.005, price + atrVal * 1.5);
+    const minTarget = price - (stop - price) * MIN_RR;
+    target = Math.min(swingLow, minTarget);
+  }
+  const risk = Math.abs(price - stop);
+  const reward = Math.abs(target - price);
+  const rr = risk > 0 ? reward / risk : 0;
+  if (rr < MIN_RR) {
+    debug.push(`Add rejected: RR ${rr.toFixed(2)} < ${MIN_RR}`);
+    return { debug };
+  }
+  const rsi4h = wilderRsi(candles4h.map(c => c.close));
+  const adxVal = adx(candles4h);
+  const momentum = momentum15M(candles15m, trend.direction);
+  const signal: Signal = {
+    id: `${pair}_ADD_${now}`,
+    pair,
+    direction: trend.direction,
+    type: "ADD",
+    scale: "ADD",
+    entry: Math.round(price * 100) / 100,
+    stop: Math.round(stop * 100) / 100,
+    target: Math.round(target * 100) / 100,
+    rr: Math.round(rr * 100) / 100,
+    adx: Math.round(adxVal * 10) / 10,
+    rsi: Math.round(rsi4h * 10) / 10,
+    stochK: momentum.stochK,
+    stochD: momentum.stochD,
+    expectedMove: Math.round(((target - price) / price) * 1000) / 10,
+    reason: `${trend.direction} ADD | Breakout continuation | ${momentum.detail}`,
+    timestamp: now,
+    version: CURRENT_SIGNAL_VERSION,
+    trend: trend.direction,
+    location: location.detail,
+    trigger: momentum.detail,
+  };
+  debug.push(`ADD: ${trend.direction} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr}`);
+  return { signal, debug };
+}
 
 export function getMarketSnapshot(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
   candles15m: Candle[]
-) {
-  const bias = computeBiasScore(candles4h);
-  const location = bias.direction !== "NEUTRAL" ? location1H(pair, candles1h, bias.direction) : { valid: false, detail: "No bias", locationType: null as "trendline" | "swing" | null };
-  const trigger = bias.direction !== "NEUTRAL" ? trigger15M(pair, candles15m, bias.direction) : {
-    stochCross: { passed: false, detail: "No bias" },
-    emaCross: { passed: false, detail: "No bias" },
-    reclaimEma21: { passed: false, detail: "No bias" },
-    volumeSpike: { passed: false, detail: "No bias" },
-    primaryPassed: [],
-    confirmationPassed: [],
-    fired: false,
-    summary: "No bias",
-  };
+): MarketSnapshot {
+  const candles1d = aggregateTo1D(candles4h);
+  const trend = dailyTrend(candles1d);
+  const location = trend.direction !== "NONE" ? location4H(pair, candles4h, trend.direction) : { ready: false, detail: "No trend", trendlinePrice: 0 };
+  const momentum = trend.direction !== "NONE" ? momentum15M(candles15m, trend.direction) : { fired: false, detail: "No trend", triggerType: "none", stochK: 50, stochD: 50, ema8: 0, ema21: 0 };
   const price = candles4h[candles4h.length - 1]?.close ?? 0;
-
   return {
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
-    bias: bias.direction,
-    biasScore: bias.score,
-    biasDetail: bias.detail,
-    location: location.detail,
-    locationType: location.locationType,
-    trigger: trigger.summary,
-    triggerDiagnostics: trigger,
-    ready: bias.direction !== "NEUTRAL" && location.valid && trigger.fired,
+    trend: trend.direction,
+    location: location.ready ? "READY" : "WAIT",
+    trigger: momentum.fired ? "FIRED" : "WAITING",
+    adx: Math.round(adx(candles4h) * 10) / 10,
+    rsi: Math.round(wilderRsi(candles4h.map(c => c.close)) * 10) / 10,
+    stochK: momentum.stochK,
+    stochD: momentum.stochD,
+    trendlinePrice: Math.round(location.trendlinePrice * 100) / 100,
+    distToTrendline: Math.round(Math.abs((price - location.trendlinePrice) / location.trendlinePrice) * 10000) / 100,
+    ema8_15m: Math.round(momentum.ema8 * 100) / 100,
+    ema21_15m: Math.round(momentum.ema21 * 100) / 100,
   };
 }
 
-// ─── STUBS (no automated exits) ──────────────────────────
-
-export function shouldHold(): { shouldHold: boolean; reason: string } {
-  return { shouldHold: true, reason: "v46 has no automated exits" };
+export function isSignalStillValid(signal: Signal, currentPrice: number, now: number = Date.now()): ValidityCheck {
+  const ageMs = now - signal.timestamp;
+  const maxAge = signal.type === "ENTRY" ? 24 * 60 * 60 * 1000 : 4 * 60 * 60 * 1000;
+  if (ageMs > maxAge) {
+    return { valid: false, reason: "expired_ttl", exited: true };
+  }
+  const entryBuffer = signal.type === "ENTRY" ? 1.02 : 1.005;
+  if (signal.direction === "LONG" && currentPrice > signal.entry * entryBuffer) {
+    return { valid: false, reason: "missed_entry", exited: true };
+  }
+  if (signal.direction === "SHORT" && currentPrice < signal.entry * (2 - entryBuffer)) {
+    return { valid: false, reason: "missed_entry", exited: true };
+  }
+  if (signal.direction === "LONG" && currentPrice <= signal.stop) {
+    return { valid: false, reason: "sl_hit", exited: true };
+  }
+  if (signal.direction === "SHORT" && currentPrice >= signal.stop) {
+    return { valid: false, reason: "sl_hit", exited: true };
+  }
+  if (signal.direction === "LONG" && currentPrice >= signal.target) {
+    return { valid: false, reason: "tp_hit", exited: true };
+  }
+  if (signal.direction === "SHORT" && currentPrice <= signal.target) {
+    return { valid: false, reason: "tp_hit", exited: true };
+  }
+  return { valid: true, reason: "active", exited: false };
 }
 
-export function isSignalStillValid(): { valid: boolean; reason: string; exited: boolean } {
-  return { valid: true, reason: "v46 has no validity checks", exited: false };
+export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, now?: number): HoldResult {
+  const candles1d = aggregateTo1D(candles4h);
+  const trend = dailyTrend(candles1d);
+  const trendReversed = (signal.direction === "LONG" && trend.direction === "SHORT") ||
+                        (signal.direction === "SHORT" && trend.direction === "LONG");
+  if (trendReversed) {
+    const inProfit = signal.direction === "LONG" ? currentPrice > signal.entry : currentPrice < signal.entry;
+    if (!inProfit) {
+      return { shouldHold: false, reason: "trend_reversed_unprofitable" };
+    }
+  }
+  const closes4h = candles4h.map(c => c.close);
+  const stoch = stochRsi(closes4h);
+  const stochExtremeOpposite = signal.direction === "LONG"
+    ? stoch.k < STOCH_EXTREME_LONG
+    : stoch.k > STOCH_EXTREME_SHORT;
+  if (stochExtremeOpposite) {
+    return { shouldHold: false, reason: "stoch_extreme_opposite" };
+  }
+  const validity = isSignalStillValid(signal, currentPrice, now);
+  return { shouldHold: validity.valid, reason: validity.reason };
 }
 
-export function filterExpiredSignals(signals: Signal[]) {
-  return { active: signals, exited: [] };
+export function filterExpiredSignals(
+  signals: Signal[],
+  currentPrices: Record<string, number>,
+  now?: number
+): { active: Signal[]; exited: { signal: Signal; reason: string }[] } {
+  const active: Signal[] = [];
+  const exited: { signal: Signal; reason: string }[] = [];
+  for (const signal of signals) {
+    const price = currentPrices[signal.pair];
+    if (price === undefined) {
+      active.push(signal);
+      continue;
+    }
+    const check = isSignalStillValid(signal, price, now);
+    if (check.valid) active.push(signal);
+    else exited.push({ signal, reason: check.reason });
+  }
+  return { active, exited };
 }
 
-// ─── COMPATIBILITY ───────────────────────────────────────
+export type TradeStatus = "ACTIVE" | "TP_HIT" | "SL_HIT" | "EXPIRED";
+
+export function checkTradeStatus(signal: Signal, currentPrice: number, now: number = Date.now()): TradeStatus {
+  const validity = isSignalStillValid(signal, currentPrice, now);
+  if (!validity.valid && validity.reason === "expired_ttl") return "EXPIRED";
+  if (signal.direction === "LONG") {
+    if (currentPrice >= signal.target) return "TP_HIT";
+    if (currentPrice <= signal.stop) return "SL_HIT";
+  } else {
+    if (currentPrice <= signal.target) return "TP_HIT";
+    if (currentPrice >= signal.stop) return "SL_HIT";
+  }
+  return "ACTIVE";
+}
+
+export async function getMonitorState(pair: string): Promise<any | undefined> {
+  return undefined;
+}
+
+export async function clearMonitorState(pair: string): Promise<void> {
+  return;
+}
+
+export async function setMonitorState(pair: string, state: any): Promise<void> {
+  return;
+}
+
+export function setRedisClient(_: any): void {
+  return;
+}
 
 export async function generateSignalCompat(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
-  candles1d: Candle[],
   candles15m: Candle[],
-  activeSignals?: Signal[],
+  activeTrades?: Record<string, any>,
   currentPrice?: number
 ): Promise<SignalResult> {
-  return generateSignal(pair, candles1h, candles4h, candles15m, activeSignals || [], currentPrice);
+  const activeSignals: Signal[] = [];
+  if (activeTrades) {
+    for (const [p, t] of Object.entries(activeTrades)) {
+      if (t && t.direction) {
+        activeSignals.push({
+          id: t.id || `${p}_${t.timestamp}`,
+          pair: p,
+          direction: t.direction,
+          type: "ENTRY",
+          scale: "ENTRY",
+          entry: t.entry,
+          stop: t.stop,
+          target: t.target,
+          rr: 0,
+          adx: 0,
+          rsi: 0,
+          stochK: 0,
+          stochD: 0,
+          expectedMove: 0,
+          reason: "",
+          timestamp: t.timestamp,
+          version: CURRENT_SIGNAL_VERSION,
+          trend: t.direction,
+          location: "",
+          trigger: "",
+        });
+      }
+    }
+  }
+  return generateSignal(pair, candles1h, candles4h, candles15m, activeSignals, currentPrice);
+}
+
+export function isSignalStillValidBool(signal: Signal, currentPrice: number): boolean {
+  return isSignalStillValid(signal, currentPrice).valid;
 }
 
 export function shouldHoldCompat(
   signal: Signal,
   candles4h: Candle[],
   candles1h: Candle[],
-  candles15m: Candle[],
   currentPrice: number
-): { shouldHold: boolean; reason: string } {
-  return shouldHold();
+): HoldResult {
+  return shouldHold(signal, candles4h, currentPrice);
 }
-
-export function aggregateTo1D(candles4h: Candle[]): Candle[] {
-  if (!candles4h?.length) return [];
-  const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
-  const groups = new Map<string, Candle[]>();
-  for (const c of sorted) {
-    const key = new Date(c.timestamp).toISOString().split("T")[0];
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(c);
-  }
-  const daily: Candle[] = [];
-  for (const [, bars] of groups) {
-    if (!bars.length) continue;
-    daily.push({
-      timestamp: bars[0].timestamp,
-      open: bars[0].open,
-      high: Math.max(...bars.map(b => b.high)),
-      low: Math.min(...bars.map(b => b.low)),
-      close: bars[bars.length - 1].close,
-      volume: bars.reduce((s, b) => s + b.volume, 0),
-    });
-  }
-  return daily.sort((a, b) => a.timestamp - b.timestamp);
-}
- 
