@@ -3,7 +3,7 @@
 // Philosophy: Trade the first wave after a pullback.
 // Sequence: Daily Trend → 4H Location → 15M StochRSI Cross → Enter
 // No scoring. No weighting. No gates. Just: trend, location, trigger.
-
+ 
 export interface Candle {
   timestamp: number;
   open: number;
