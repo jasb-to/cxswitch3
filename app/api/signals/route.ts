@@ -10,6 +10,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+const PAIRS = ["BTC", "ETH", "SOL", "HYPE"];
+
 export async function GET() {
   let signals = await getSignals();
   let marketData = await getMarketData();
@@ -19,8 +21,9 @@ export async function GET() {
 
   // Fallback: generate market data if KV is empty
   if (!marketData || marketData.length === 0) {
+    console.log("[SIGNALS API] KV marketData empty, generating fallback...");
     const freshMarket: any[] = [];
-    for (const pair of ["BTC", "ETH", "SOL"]) {
+    for (const pair of PAIRS) {
       try {
         const [candles1h, candles4h, candles15m] = await Promise.all([
           getCandles(pair, 60), getCandles(pair, 240), getCandles(pair, 15)
@@ -29,8 +32,13 @@ export async function GET() {
           const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
           freshMarket.push(snapshot);
           currentPrices[pair] = snapshot.price;
+          console.log(`[SIGNALS API] ${pair} fallback OK — trend:${snapshot.trend} loc:${snapshot.location} trig:${snapshot.trigger}`);
+        } else {
+          console.log(`[SIGNALS API] ${pair} fallback skipped — insufficient candles`);
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error(`[SIGNALS API] ${pair} fallback FAILED:`, e);
+      }
     }
     marketData = freshMarket;
   } else {
