@@ -1,161 +1,92 @@
-import { NextRequest, NextResponse } from "next/server";
-import { loadDashboardSnapshot } from "@/lib/state";
+// app/api/signals/route.ts — v50 "First Wave"
+// ============================================================
+
+import { NextResponse } from "next/server";
+import { getSignals, getMarketData, getSignalHistory } from "@/lib/state";
+import { isSignalStillValid, shouldHold, getMarketSnapshot } from "@/lib/strategy";
+import { getCandles } from "@/lib/kraken";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-// ─── Safe Access Helpers ───────────────────────────────────
-function safeNum(val: any): number {
-  return typeof val === "number" && isFinite(val) ? val : 0;
-}
-function safeStr(val: any): string {
-  return typeof val === "string" ? val : "";
-}
+export async function GET() {
+  let signals = await getSignals();
+  let marketData = await getMarketData();
+  const history = await getSignalHistory();
 
-// ─── Build activeTrade from an activeSignal ────────────────
-function buildActiveTrade(signal: any, currentPrice: number): any {
-  if (!signal) return null;
+  const currentPrices: Record<string, number> = {};
 
-  const entry = safeNum(signal.entry);
-  const stop = safeNum(signal.stop);
-  const target = safeNum(signal.target);
-  const direction = signal.direction === "LONG" || signal.direction === "SHORT"
-    ? signal.direction
-    : "SHORT";
-
-  // Compute PnL %
-  let pnlPct = 0;
-  if (entry > 0 && currentPrice > 0) {
-    const raw = direction === "LONG"
-      ? (currentPrice - entry) / entry
-      : (entry - currentPrice) / entry;
-    pnlPct = raw * 100;
-  }
-  const pnlStr = `${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}%`;
-
-  // Compute R-multiple
-  let currentR = 0;
-  if (entry > 0 && stop > 0 && entry !== stop) {
-    const risk = Math.abs(entry - stop);
-    const move = direction === "LONG"
-      ? currentPrice - entry
-      : entry - currentPrice;
-    currentR = move / risk;
-  }
-  const currentRStr = `${currentR >= 0 ? "+" : ""}${currentR.toFixed(2)}`;
-
-  // Determine phase
-  let phase = safeStr(signal.phase);
-  if (!phase) {
-    if (Math.abs(currentR) < 0.5) phase = "ENTRY";
-    else if (currentR < 1) phase = "EARLY";
-    else if (currentR < 2) phase = "RUNNING";
-    else if (currentR < 3) phase = "EXTENDED";
-    else phase = "DEEP";
-  }
-
-  // Determine next milestone
-  let nextMilestone = safeStr(signal.nextMilestone);
-  if (!nextMilestone) {
-    if (currentR < 0) nextMilestone = "Breakeven";
-    else if (currentR < 1) nextMilestone = "1R";
-    else if (currentR < 2) nextMilestone = "2R";
-    else if (currentR < 3) nextMilestone = "3R";
-    else nextMilestone = "Trail";
-  }
-
-  return {
-    signalId: safeStr(signal.id) || safeStr(signal.signalId),
-    direction,
-    pnl: pnlStr,
-    entry,
-    currentPrice,
-    stop,
-    target,
-    currentR: currentRStr,
-    phase,
-    nextMilestone,
-  };
-}
-
-export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url);
-  const pair = searchParams.get("pair");
-
-  try {
-    const snapshot = await loadDashboardSnapshot();
-    if (!snapshot) {
-      return NextResponse.json(
-        { error: "No snapshot available. Cron may not have run yet." },
-        { status: 503 }
-      );
-    }
-
-    // Normalize active signals first (so we can map them into markets)
-    const activeSignals = (snapshot.activeSignals || []).map((s: any) => ({
-      ...s,
-      entryType: "PULLBACK",
-      entryMode: "PULLBACK",
-      entryTier: "PULLBACK_ENTRY",
-      regimeDirection: s.direction,
-      conflictEntry: false,
-      entryTimeframe: "15m",
-    }));
-
-    // Build a lookup map: pair -> signal
-    const signalMap = new Map<string, any>();
-    for (const s of activeSignals) {
-      if (s.pair) signalMap.set(s.pair, s);
-    }
-
-    // Normalize markets — v46.2 snapshot includes biasScore and biasDetail
-    const markets = (snapshot.markets || []).map((m: any) => {
-      const marketPair = m.pair || "UNKNOWN";
-      const currentPrice = safeNum(m.price);
-
-      // If the market already has activeTrade data, keep it.
-      // Otherwise, try to build it from the activeSignals map.
-      let activeTrade = m.activeTrade || null;
-      if (!activeTrade) {
-        const signal = signalMap.get(marketPair);
-        if (signal) {
-          activeTrade = buildActiveTrade(signal, currentPrice);
+  if (!marketData || marketData.length === 0) {
+    const freshMarket: any[] = [];
+    for (const pair of ["BTC", "ETH", "SOL"]) {
+      try {
+        const [candles1h, candles4h, candles15m] = await Promise.all([
+          getCandles(pair, 60), getCandles(pair, 240), getCandles(pair, 15)
+        ]);
+        if (candles1h?.length && candles4h?.length && candles15m?.length) {
+          const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+          freshMarket.push(snapshot);
+          currentPrices[pair] = snapshot.price;
         }
+      } catch (e) {}
+    }
+    marketData = freshMarket;
+  } else {
+    for (const m of marketData) {
+      if (m.pair && m.price) currentPrices[m.pair] = m.price;
+    }
+  }
+
+  const validSignals = (Array.isArray(signals) ? signals : []).filter((s: any) => {
+    const price = currentPrices[s.pair];
+    if (!price) return (Date.now() - s.timestamp) < 3 * 60 * 60 * 1000;
+    return isSignalStillValid(s, price).valid;
+  });
+
+  const enriched = await Promise.all(validSignals.map(async (s: any) => {
+    const ageMin = (Date.now() - s.timestamp) / (1000 * 60);
+
+    let status = "ACTIVE";
+    const price = currentPrices[s.pair];
+    if (price) {
+      if (s.direction === "LONG") {
+        if (price >= s.target) status = "TP_HIT";
+        else if (price <= s.stop) status = "SL_HIT";
+      } else {
+        if (price <= s.target) status = "TP_HIT";
+        else if (price >= s.stop) status = "SL_HIT";
       }
-
-      return {
-        pair: marketPair,
-        price: currentPrice,
-        timestamp: m.timestamp ?? Date.now(),
-        bias: m.bias || "NONE",
-        biasScore: m.biasScore,        // ← FIXED: pass through biasScore
-        biasDetail: m.biasDetail,      // ← FIXED: pass through biasDetail
-        location: m.location || "—",
-        locationType: m.locationType || null,
-        trigger: m.trigger || "—",
-        triggerDiagnostics: m.triggerDiagnostics || null,
-        ready: m.ready || false,
-        activeTrade,
-      };
-    });
-
-    if (pair && markets) {
-      const market = markets.find((m: any) => m.pair === pair);
-      return NextResponse.json({
-        pair,
-        snapshot: market || null,
-        lastCronRun: snapshot.timestamp,
-        activeSignals: activeSignals.filter((s: any) => s.pair === pair),
-      });
     }
 
-    return NextResponse.json({
-      snapshot: { ...snapshot, markets, activeSignals },
-      activeSignals,
-      markets,
-      lastCronRun: snapshot.timestamp,
-    });
-  } catch (e) {
-    return NextResponse.json({ error: String(e) }, { status: 500 });
-  }
+    let holdAdvice = null;
+    try {
+      const candles4h = await getCandles(s.pair, 240);
+      const p = currentPrices[s.pair] || s.entry;
+      if (candles4h?.length > 30) holdAdvice = shouldHold(s, candles4h, p);
+    } catch (e) {}
+
+    return {
+      ...s,
+      meta: {
+        status,
+        ageMinutes: Math.round(ageMin),
+        actionable: status === "ACTIVE",
+      },
+      holdAdvice
+    };
+  }));
+
+  const response = NextResponse.json({
+    signals: enriched,
+    marketData: Array.isArray(marketData) ? marketData : [],
+    history: Array.isArray(history) ? history : [],
+    updatedAt: new Date().toISOString(),
+  });
+
+  response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  response.headers.set("Pragma", "no-cache");
+  response.headers.set("Expires", "0");
+
+  return response;
 }
