@@ -108,8 +108,7 @@ export async function GET(req: NextRequest) {
       if (s.pair) signalMap.set(s.pair, s);
     }
 
-    // Normalize markets — v46.1 snapshot includes triggerDiagnostics
-    // CRITICAL FIX: map activeSignals into activeTrade for each market
+    // Normalize markets — v46.2 snapshot includes biasScore and biasDetail
     const markets = (snapshot.markets || []).map((m: any) => {
       const marketPair = m.pair || "UNKNOWN";
       const currentPrice = safeNum(m.price);
@@ -129,6 +128,8 @@ export async function GET(req: NextRequest) {
         price: currentPrice,
         timestamp: m.timestamp ?? Date.now(),
         bias: m.bias || "NONE",
+        biasScore: m.biasScore,        // ← FIXED: pass through biasScore
+        biasDetail: m.biasDetail,      // ← FIXED: pass through biasDetail
         location: m.location || "—",
         locationType: m.locationType || null,
         trigger: m.trigger || "—",
