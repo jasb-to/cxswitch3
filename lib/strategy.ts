@@ -1,9 +1,9 @@
 // lib/strategy.ts — v46.2 "Bias Score" — Trend + Structure + Price
 // ============================================================
 // Bias Score (0-100):
-//   +40 EMA21 slope (smoothed over 5 candles)
-//   +30 Price vs EMA21
-//   +30 Market structure (HH/HL or LH/LL)
+//   +40 Market structure (HH/HL or LH/LL) — hardest to fake
+//   +35 EMA21 slope (smoothed over 5 candles)
+//   +25 Price vs EMA21 — easiest to fake, lowest weight
 // Zones: >70 Bullish, <30 Bearish, 30-70 Neutral (no trade)
 //
 // Layer 1: Bias Score >70 or <30
@@ -301,32 +301,10 @@ function computeBiasScore(candles4h: Candle[]): BiasScore {
   const emaNow = e21[e21.length - 1];
   const emaThen = e21[e21.length - 1 - EMA21_SLOPE_LOOKBACK];
 
-  // 1. EMA21 slope (40 points)
-  const slope = emaNow - emaThen;
-  const slopePct = emaThen !== 0 ? (slope / emaThen) * 100 : 0;
-  let slopeScore = 20; // neutral base
-  if (slopePct > 0.50) slopeScore = 40;
-  else if (slopePct > 0.30) slopeScore = 35;
-  else if (slopePct > 0.10) slopeScore = 30;
-  else if (slopePct > -0.10) slopeScore = 20;
-  else if (slopePct > -0.30) slopeScore = 10;
-  else if (slopePct > -0.50) slopeScore = 5;
-  else slopeScore = 0;
-
-  // 2. Price vs EMA21 (30 points)
-  const priceVsEma = emaNow !== 0 ? ((price - emaNow) / emaNow) * 100 : 0;
-  let priceScore = 15; // neutral base
-  if (priceVsEma > 1.0) priceScore = 30;
-  else if (priceVsEma > 0.5) priceScore = 25;
-  else if (priceVsEma > 0.0) priceScore = 20;
-  else if (priceVsEma > -0.5) priceScore = 10;
-  else if (priceVsEma > -1.0) priceScore = 5;
-  else priceScore = 0;
-
-  // 3. Market structure (30 points)
+  // 1. Market structure (40 points) — hardest to fake
   const { highs, lows } = findSwings(candles4h.slice(-30));
   let structure: "HH_HL" | "LH_LL" | "MIXED" = "MIXED";
-  let structureScore = 15;
+  let structureScore = 20; // neutral base
 
   if (highs.length >= 2 && lows.length >= 2) {
     const lastHigh = highs[highs.length - 1];
@@ -341,25 +319,47 @@ function computeBiasScore(candles4h: Candle[]): BiasScore {
 
     if (higherHigh && higherLow) {
       structure = "HH_HL";
-      structureScore = 30;
+      structureScore = 40;
     } else if (lowerHigh && lowerLow) {
       structure = "LH_LL";
       structureScore = 0;
     } else if (higherHigh && !higherLow) {
       structure = "MIXED";
-      structureScore = 22;
+      structureScore = 28;
     } else if (lowerHigh && !lowerLow) {
       structure = "MIXED";
-      structureScore = 8;
+      structureScore = 12;
     }
   }
+
+  // 2. EMA21 slope (35 points)
+  const slope = emaNow - emaThen;
+  const slopePct = emaThen !== 0 ? (slope / emaThen) * 100 : 0;
+  let slopeScore = 17; // neutral base
+  if (slopePct > 0.50) slopeScore = 35;
+  else if (slopePct > 0.30) slopeScore = 30;
+  else if (slopePct > 0.10) slopeScore = 25;
+  else if (slopePct > -0.10) slopeScore = 17;
+  else if (slopePct > -0.30) slopeScore = 10;
+  else if (slopePct > -0.50) slopeScore = 5;
+  else slopeScore = 0;
+
+  // 3. Price vs EMA21 (25 points) — easiest to fake, lowest weight
+  const priceVsEma = emaNow !== 0 ? ((price - emaNow) / emaNow) * 100 : 0;
+  let priceScore = 12; // neutral base
+  if (priceVsEma > 1.0) priceScore = 25;
+  else if (priceVsEma > 0.5) priceScore = 20;
+  else if (priceVsEma > 0.0) priceScore = 15;
+  else if (priceVsEma > -0.5) priceScore = 8;
+  else if (priceVsEma > -1.0) priceScore = 4;
+  else priceScore = 0;
 
   const totalScore = slopeScore + priceScore + structureScore;
   let direction: "LONG" | "SHORT" | "NEUTRAL" = "NEUTRAL";
   if (totalScore >= BIAS_BULLISH_THRESHOLD) direction = "LONG";
   else if (totalScore <= BIAS_BEARISH_THRESHOLD) direction = "SHORT";
 
-  const detail = `Score:${totalScore} | Slope:${slopePct.toFixed(2)}%(${slopeScore}) | PriceVsEma:${priceVsEma.toFixed(2)}%(${priceScore}) | Structure:${structure}(${structureScore})`;
+  const detail = `Score:${totalScore} | Structure:${structure}(${structureScore}) | Slope:${slopePct.toFixed(2)}%(${slopeScore}) | PriceVsEma:${priceVsEma.toFixed(2)}%(${priceScore})`;
 
   return {
     score: totalScore,
@@ -507,19 +507,25 @@ function trigger15M(candles15m: Candle[], direction: "LONG" | "SHORT"): TriggerD
     const lastE21 = e21[e21.length - 1];
     if (direction === "LONG") {
       if (prevClose <= prevE21 && lastClose > lastE21) {
+        // Fresh reclaim — strongest confirmation
         diag.reclaimEma21 = { passed: true, detail: `Price reclaimed EMA21` };
         diag.confirmationPassed.push("reclaim_ema21");
       } else if (lastClose > lastE21) {
-        diag.reclaimEma21 = { passed: false, detail: `Already above EMA21` };
+        // Already above — still valid confirmation, just not a fresh event
+        diag.reclaimEma21 = { passed: true, detail: `Price holding above EMA21` };
+        diag.confirmationPassed.push("reclaim_ema21");
       } else {
         diag.reclaimEma21 = { passed: false, detail: `Price ${lastClose.toFixed(2)} below EMA21 ${lastE21.toFixed(2)}` };
       }
     } else {
       if (prevClose >= prevE21 && lastClose < lastE21) {
+        // Fresh break below — strongest confirmation
         diag.reclaimEma21 = { passed: true, detail: `Price dropped below EMA21` };
         diag.confirmationPassed.push("reclaim_ema21");
       } else if (lastClose < lastE21) {
-        diag.reclaimEma21 = { passed: false, detail: `Already below EMA21` };
+        // Already below — still valid confirmation
+        diag.reclaimEma21 = { passed: true, detail: `Price holding below EMA21` };
+        diag.confirmationPassed.push("reclaim_ema21");
       } else {
         diag.reclaimEma21 = { passed: false, detail: `Price ${lastClose.toFixed(2)} above EMA21 ${lastE21.toFixed(2)}` };
       }
@@ -534,6 +540,13 @@ function trigger15M(candles15m: Candle[], direction: "LONG" | "SHORT"): TriggerD
     const avgVol = avg(vols.slice(0, -1));
     const currentVol = vols[vols.length - 1];
     const ratio = avgVol > 0 ? currentVol / avgVol : 0;
+
+    // ─── AUDIT LOG ───────────────────────────────────────
+    const lastClose = closes[closes.length - 1];
+    const lastTimestamp = candles15m[candles15m.length - 1].timestamp;
+    console.log(`[VOL AUDIT] pair=${pair || "?"} | currentVol=${currentVol} | avgVol=${avgVol.toFixed(4)} | ratio=${ratio.toFixed(4)} | candles=${candles15m.length} | lastClose=${lastClose.toFixed(2)} | lastTs=${lastTimestamp}`);
+    // ────────────────────────────────────────────────────
+
     if (ratio >= VOL_THRESHOLD) {
       diag.volumeSpike = { passed: true, detail: `Volume ${ratio.toFixed(1)}x avg` };
       diag.confirmationPassed.push("volume_spike");
