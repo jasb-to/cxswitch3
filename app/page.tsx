@@ -1,101 +1,452 @@
-// app/api/signals/route.ts — v50 "First Wave"
-// ============================================================
+"use client";
 
-import { NextResponse } from "next/server";
-import { getSignals, getMarketData, getSignalHistory } from "@/lib/state";
-import { isSignalStillValid, shouldHold, getMarketSnapshot } from "@/lib/strategy";
-import { getCandles } from "@/lib/kraken";
+import { useEffect, useState } from "react";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
+interface Signal {
+  pair: string;
+  direction: "LONG" | "SHORT";
+  type: string;
+  scale: string;
+  entry: number;
+  stop: number;
+  target: number;
+  rr: number;
+  timestamp: number;
+  expectedMove: number;
+  adx?: number;
+  rsi?: number;
+  stochK?: number;
+  stochD?: number;
+  reason?: string;
+  trend?: string;
+  location?: string;
+  trigger?: string;
+  meta?: {
+    status: string;
+    ageMinutes: number;
+    actionable: boolean;
+  };
+}
+
+interface MarketData {
+  pair: string;
+  price: number;
+  trend: string;
+  location: string;
+  trigger: string;
+  adx: number;
+  rsi: number;
+  stochK: number;
+  stochD: number;
+  timestamp: number;
+  trendlinePrice: number;
+  distToTrendline: number;
+  ema8_15m: number;
+  ema21_15m: number;
+}
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"];
 
-export async function GET() {
-  let signals = await getSignals();
-  let marketData = await getMarketData();
-  const history = await getSignalHistory();
+const money = (n?: number) =>
+  typeof n === "number" && isFinite(n)
+    ? new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        maximumFractionDigits: n >= 1000 ? 0 : n >= 1 ? 2 : 4,
+      }).format(n)
+    : "—";
 
-  const currentPrices: Record<string, number> = {};
+const KRAKEN_PAIRS: Record<string, string> = {
+  BTC: "XBTUSD",
+  ETH: "ETHUSD",
+  SOL: "SOLUSD",
+  HYPE: "HYPEUSD",
+};
 
-  // Fallback: generate market data if KV is empty
-  if (!marketData || marketData.length === 0) {
-    console.log("[SIGNALS API] KV marketData empty, generating fallback...");
-    const freshMarket: any[] = [];
-    for (const pair of PAIRS) {
+async function fetchKrakenPrice(pair: string): Promise<number | null> {
+  try {
+    const res = await fetch(
+      `https://api.kraken.com/0/public/Ticker?pair=${KRAKEN_PAIRS[pair]}`,
+      { cache: "no-store" }
+    );
+    const data = await res.json();
+    if (data.error?.length) return null;
+    const ticker = data.result[Object.keys(data.result)[0]];
+    return parseFloat(ticker.c[0]);
+  } catch {
+    return null;
+  }
+}
+
+function timeAgo(ts: number): string {
+  const mins = Math.floor((Date.now() - ts) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ${mins % 60}m ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+// ─── Trailing SL calculator ────────────────────────────────
+function calcTrailingSL(signal: Signal, currentPrice: number): { sl: number; lockedProfit: number } {
+  if (!signal || signal.type !== "ENTRY" || !currentPrice) {
+    return { sl: signal?.stop ?? 0, lockedProfit: 0 };
+  }
+  const entry = signal.entry;
+  const initialSL = signal.stop;
+  const risk = Math.abs(entry - initialSL);
+
+  if (signal.direction === "LONG") {
+    const profit = currentPrice - entry;
+    if (profit <= 0) return { sl: initialSL, lockedProfit: 0 };
+    // Move SL to breakeven at 1R profit, then trail at 50% of profit beyond 2R
+    const rMultiple = profit / risk;
+    let newSL = initialSL;
+    if (rMultiple >= 1) {
+      newSL = Math.max(initialSL, entry); // breakeven
+    }
+    if (rMultiple >= 2) {
+      newSL = Math.max(newSL, entry + profit * 0.5);
+    }
+    const locked = ((newSL - entry) / entry) * 100;
+    return { sl: Math.round(newSL * 100) / 100, lockedProfit: Math.max(0, locked) };
+  } else {
+    const profit = entry - currentPrice;
+    if (profit <= 0) return { sl: initialSL, lockedProfit: 0 };
+    const rMultiple = profit / risk;
+    let newSL = initialSL;
+    if (rMultiple >= 1) {
+      newSL = Math.min(initialSL, entry); // breakeven
+    }
+    if (rMultiple >= 2) {
+      newSL = Math.min(newSL, entry - profit * 0.5);
+    }
+    const locked = ((entry - newSL) / entry) * 100;
+    return { sl: Math.round(newSL * 100) / 100, lockedProfit: Math.max(0, locked) };
+  }
+}
+
+export default function Dashboard() {
+  const [signals, setSignals] = useState<Record<string, Signal | null>>({});
+  const [marketData, setMarketData] = useState<Record<string, MarketData>>({});
+  const [livePrices, setLivePrices] = useState<Record<string, number>>({});
+  const [loading, setLoading] = useState(true);
+  const [fetchCount, setFetchCount] = useState(0);
+  const [lastFetch, setLastFetch] = useState<number>(0);
+
+  useEffect(() => {
+    async function load() {
       try {
-        const [candles1h, candles4h, candles15m] = await Promise.all([
-          getCandles(pair, 60), getCandles(pair, 240), getCandles(pair, 15)
-        ]);
-        if (candles1h?.length && candles4h?.length && candles15m?.length) {
-          const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
-          freshMarket.push(snapshot);
-          currentPrices[pair] = snapshot.price;
-          console.log(`[SIGNALS API] ${pair} fallback OK — trend:${snapshot.trend} loc:${snapshot.location} trig:${snapshot.trigger}`);
-        } else {
-          console.log(`[SIGNALS API] ${pair} fallback skipped — insufficient candles`);
+        const res = await fetch("/api/signals", { cache: "no-store" });
+        const data = await res.json();
+        const sigMap: Record<string, Signal | null> = {};
+        const mktMap: Record<string, MarketData> = {};
+
+        for (const p of PAIRS) {
+          const s = data.signals?.find((sig: Signal) => sig.pair === p);
+          sigMap[p] = s || null;
         }
+        for (const m of data.marketData || []) {
+          if (m?.pair) mktMap[m.pair] = m;
+        }
+
+        setSignals(sigMap);
+        setMarketData(mktMap);
+        setFetchCount((c) => c + 1);
+        setLastFetch(Date.now());
       } catch (e) {
-        console.error(`[SIGNALS API] ${pair} fallback FAILED:`, e);
+        console.error(e);
+      } finally {
+        setLoading(false);
       }
     }
-    marketData = freshMarket;
-  } else {
-    for (const m of marketData) {
-      if (m.pair && m.price) currentPrices[m.pair] = m.price;
+    load();
+    const i = setInterval(load, 30000);
+    return () => clearInterval(i);
+  }, []);
+
+  useEffect(() => {
+    async function loadPrices() {
+      const liveMap: Record<string, number> = {};
+      await Promise.all(
+        PAIRS.map(async (pair) => {
+          const price = await fetchKrakenPrice(pair);
+          if (price) liveMap[pair] = price;
+        })
+      );
+      setLivePrices(liveMap);
     }
+    loadPrices();
+    const i = setInterval(loadPrices, 10000);
+    return () => clearInterval(i);
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
+        <div className="text-lg">Loading CX Switch v50...</div>
+      </div>
+    );
   }
 
-  const validSignals = (Array.isArray(signals) ? signals : []).filter((s: any) => {
-    const price = currentPrices[s.pair];
-    if (!price) return (Date.now() - s.timestamp) < 3 * 60 * 60 * 1000;
-    return isSignalStillValid(s, price).valid;
-  });
+  return (
+    <div className="min-h-screen bg-gray-900 text-white p-6">
+      <div className="max-w-7xl mx-auto">
+        <div className="flex justify-between items-center mb-6">
+          <h1 className="text-2xl font-bold">CX Switch v50</h1>
+          <div className="text-xs text-gray-400">
+            Fetches: {fetchCount} | Last:{" "}
+            {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
+          </div>
+        </div>
 
-  const enriched = await Promise.all(validSignals.map(async (s: any) => {
-    const ageMin = (Date.now() - s.timestamp) / (1000 * 60);
+        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {PAIRS.map((pair) => {
+            const signal = signals[pair];
+            const mkt = marketData[pair];
+            const livePrice = livePrices[pair];
+            const currentPrice = livePrice ?? mkt?.price ?? 0;
+            const hasSignal = !!signal;
+            const status = signal?.meta?.status || "WAITING";
 
-    let status = "ACTIVE";
-    const price = currentPrices[s.pair];
-    if (price) {
-      if (s.direction === "LONG") {
-        if (price >= s.target) status = "TP_HIT";
-        else if (price <= s.stop) status = "SL_HIT";
-      } else {
-        if (price <= s.target) status = "TP_HIT";
-        else if (price >= s.stop) status = "SL_HIT";
-      }
-    }
+            // Trailing SL
+            const trailing = hasSignal && status === "ACTIVE" && currentPrice
+              ? calcTrailingSL(signal, currentPrice)
+              : { sl: signal?.stop ?? 0, lockedProfit: 0 };
 
-    let holdAdvice = null;
-    try {
-      const candles4h = await getCandles(s.pair, 240);
-      const p = currentPrices[s.pair] || s.entry;
-      if (candles4h?.length > 30) holdAdvice = shouldHold(s, candles4h, p);
-    } catch (e) {}
+            let borderClass = "border-gray-700 bg-gray-800";
+            let bannerText = "";
+            let bannerClass = "";
+            let statusBadge = "";
 
-    return {
-      ...s,
-      meta: {
-        status,
-        ageMinutes: Math.round(ageMin),
-        actionable: status === "ACTIVE",
-      },
-      holdAdvice
-    };
-  }));
+            if (hasSignal) {
+              if (status === "TP_HIT") {
+                borderClass = "border-purple-500 bg-purple-900/10";
+                bannerText = "🎯 TARGET HIT — CLOSED";
+                bannerClass = "bg-purple-500 text-white";
+                statusBadge = "TP HIT";
+              } else if (status === "SL_HIT") {
+                borderClass = "border-red-500 bg-red-900/10";
+                bannerText = "🛑 STOP HIT — CLOSED";
+                bannerClass = "bg-red-500 text-white";
+                statusBadge = "SL HIT";
+              } else if (status === "ACTIVE") {
+                borderClass =
+                  signal.direction === "LONG"
+                    ? "border-green-500 bg-green-900/10"
+                    : "border-red-500 bg-red-900/10";
+                const age = signal.meta?.ageMinutes ?? 0;
+                if (age > 120) {
+                  bannerText = `⏰ STALE — ${age}m old`;
+                  bannerClass = "bg-gray-600 text-white";
+                  statusBadge = "STALE";
+                } else {
+                  statusBadge = "ACTIVE";
+                }
+              }
+            } else {
+              if (mkt) {
+                const trendDir = mkt.trend;
+                if (trendDir === "LONG") {
+                  bannerText = `⏳ LONG — ${mkt.location}`;
+                  bannerClass = "bg-green-600/30 text-green-300";
+                } else if (trendDir === "SHORT") {
+                  bannerText = `⏳ SHORT — ${mkt.location}`;
+                  bannerClass = "bg-red-600/30 text-red-300";
+                } else {
+                  bannerText = "⏳ No trend — Waiting";
+                  bannerClass = "bg-gray-600/30 text-gray-300";
+                }
+              } else {
+                bannerText = "⏳ Waiting for data...";
+                bannerClass = "bg-gray-600/30 text-gray-300";
+              }
+              statusBadge = "WAITING";
+            }
 
-  const response = NextResponse.json({
-    signals: enriched,
-    marketData: Array.isArray(marketData) ? marketData : [],
-    history: Array.isArray(history) ? history : [],
-    updatedAt: new Date().toISOString(),
-  });
+            const entry = signal?.entry ?? 0;
+            const stop = signal?.stop ?? 0;
+            const target = signal?.target ?? 0;
 
-  response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
-  response.headers.set("Pragma", "no-cache");
-  response.headers.set("Expires", "0");
+            const progress =
+              hasSignal && status === "ACTIVE" && entry && target && stop
+                ? signal.direction === "LONG"
+                  ? Math.max(0, Math.min(100, ((currentPrice - entry) / (target - entry)) * 100))
+                  : Math.max(0, Math.min(100, ((entry - currentPrice) / (entry - target)) * 100))
+                : 0;
 
-  return response;
+            const unrealizedPnL =
+              hasSignal && status === "ACTIVE" && currentPrice && entry
+                ? signal.direction === "LONG"
+                  ? ((currentPrice - entry) / entry) * 100
+                  : ((entry - currentPrice) / entry) * 100
+                : 0;
+
+            // Step indicators
+            const trendReady = mkt?.trend === "LONG" || mkt?.trend === "SHORT";
+            const locationReady = mkt?.location === "READY";
+            const triggerFired = mkt?.trigger === "FIRED";
+
+            return (
+              <div key={pair} className={`rounded-lg p-4 border-2 transition-all ${borderClass}`}>
+                {bannerText && (
+                  <div className={`mb-3 py-1.5 px-2 rounded text-center font-bold text-xs ${bannerClass}`}>
+                    {bannerText}
+                  </div>
+                )}
+
+                {/* Header */}
+                <div className="flex justify-between items-start mb-3">
+                  <div>
+                    <div className="font-bold text-base">{pair}/USD</div>
+                    <div className="flex items-center gap-2">
+                      <div className="text-xl font-mono">{money(currentPrice)}</div>
+                      {livePrice && (
+                        <span className="text-[10px] bg-green-600/50 text-green-300 px-1 py-0.5 rounded">LIVE</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    {hasSignal ? (
+                      <>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${signal.direction === "LONG" ? "bg-green-500/20 text-green-300" : "bg-red-500/20 text-red-300"}`}>
+                          {signal.type}
+                        </span>
+                        <span className={`text-[10px] font-bold ${signal.direction === "LONG" ? "text-green-400" : "text-red-400"}`}>
+                          {signal.direction}
+                        </span>
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${statusBadge === "ACTIVE" ? "bg-green-500/30 text-green-300" : statusBadge === "TP HIT" ? "bg-purple-500/30 text-purple-300" : statusBadge === "SL HIT" ? "bg-red-500/30 text-red-300" : statusBadge === "STALE" ? "bg-gray-500/30 text-gray-300" : "bg-blue-500/30 text-blue-300"}`}>
+                          {statusBadge}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded text-[10px] bg-gray-600 text-gray-300">NO SIGNAL</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Trade Steps — always visible */}
+                <div className="mb-3 p-2 rounded bg-gray-900/50 border border-gray-700/50">
+                  <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2 font-semibold">Trade Steps</div>
+                  <div className="space-y-1.5">
+                    <StepRow label="Trend" ready={trendReady} value={mkt?.trend || "—"} />
+                    <StepRow label="Location" ready={locationReady} value={mkt?.location || "—"} />
+                    <StepRow label="Trigger" ready={triggerFired} value={mkt?.trigger || "—"} />
+                  </div>
+                </div>
+
+                {/* Market Context */}
+                {mkt && (
+                  <div className="mb-3 p-2 rounded border bg-gray-800/50 border-gray-600/50">
+                    <div className="flex justify-between mt-1 text-[10px]">
+                      <span className="text-gray-500">ADX: {mkt.adx?.toFixed(1)}</span>
+                      <span className="text-gray-500">RSI: {mkt.rsi?.toFixed(1)}</span>
+                    </div>
+                    <div className="flex justify-between text-[10px]">
+                      <span className="text-gray-500">Stoch K: {mkt.stochK?.toFixed(1)}</span>
+                      <span className="text-gray-500">D: {mkt.stochD?.toFixed(1)}</span>
+                    </div>
+                    {mkt.trendlinePrice > 0 && (
+                      <div className="flex justify-between text-[10px] mt-1">
+                        <span className="text-gray-500">TL:</span>
+                        <span className="text-gray-400 font-mono">{money(mkt.trendlinePrice)} ({mkt.distToTrendline?.toFixed(2)}%)</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Active Signal Details */}
+                {hasSignal && status === "ACTIVE" && (
+                  <>
+                    {/* Progress Bar */}
+                    <div className="mb-3">
+                      <div className="flex justify-between text-[10px] text-gray-400 mb-1">
+                        <span>Entry</span>
+                        <span className={unrealizedPnL > 0 ? "text-green-400" : unrealizedPnL < 0 ? "text-red-400" : "text-gray-400"}>
+                          {unrealizedPnL > 0 ? "+" : ""}{unrealizedPnL.toFixed(2)}%
+                        </span>
+                        <span>Target</span>
+                      </div>
+                      <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full transition-all ${unrealizedPnL >= 0 ? "bg-green-500" : "bg-red-500"}`} style={{ width: `${progress}%` }} />
+                      </div>
+                      <div className="flex justify-between text-[9px] text-gray-500 mt-0.5">
+                        <span>{money(entry)}</span>
+                        <span>{money(target)}</span>
+                      </div>
+                    </div>
+
+                    {/* Levels */}
+                    <div className="mb-3 space-y-1.5">
+                      <LevelRow label="Entry" value={money(signal.entry)} />
+                      <LevelRow label="Initial SL" value={money(signal.stop)} color="text-red-400" />
+                      {trailing.lockedProfit > 0 && (
+                        <LevelRow label="Trailing SL" value={money(trailing.sl)} color="text-orange-400" />
+                      )}
+                      <LevelRow label="Target" value={money(signal.target)} color="text-purple-400" />
+                      <LevelRow label="R:R" value={signal.rr?.toFixed(2)} color="text-yellow-400" />
+                      {trailing.lockedProfit > 0 && (
+                        <div className="flex justify-between text-[10px]">
+                          <span className="text-gray-400">Locked Profit</span>
+                          <span className="font-mono text-orange-400">+{trailing.lockedProfit.toFixed(2)}%</span>
+                        </div>
+                      )}
+                      <LevelRow label="Age" value={timeAgo(signal.timestamp)} color="text-gray-300" />
+                    </div>
+
+                    {/* Reason */}
+                    {signal.reason && (
+                      <div className="text-[10px] text-gray-500 border-t border-gray-700 pt-2 mb-2">
+                        <p className="leading-relaxed">{signal.reason}</p>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* Closed Signal Summary */}
+                {(status === "TP_HIT" || status === "SL_HIT") && (
+                  <div className="mb-3 p-2 bg-gray-900/50 rounded text-xs space-y-1.5">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Result</span>
+                      <span className={`font-bold ${status === "TP_HIT" ? "text-purple-400" : "text-red-400"}`}>
+                        {status === "TP_HIT" ? "TAKE PROFIT" : "STOP LOSS"}
+                      </span>
+                    </div>
+                    <LevelRow label="Entry" value={money(signal?.entry)} />
+                    <LevelRow label="Exit" value={money(status === "TP_HIT" ? signal?.target : signal?.stop)} />
+                    <LevelRow label="R:R" value={signal?.rr?.toFixed(2)} color="text-yellow-400" />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Subcomponents ─────────────────────────────────────────
+
+function StepRow({ label, ready, value }: { label: string; ready: boolean; value: string }) {
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <div className="flex items-center gap-2">
+        <span className={`w-2 h-2 rounded-full ${ready ? "bg-green-400" : "bg-gray-600"}`} />
+        <span className="text-gray-400">{label}</span>
+      </div>
+      <span className={`font-mono text-[10px] ${ready ? "text-green-400" : "text-gray-500"}`}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function LevelRow({ label, value, color = "" }: { label: string; value: string | number; color?: string }) {
+  return (
+    <div className="flex justify-between text-xs">
+      <span className="text-gray-400">{label}</span>
+      <span className={`font-mono ${color || "text-gray-200"}`}>{value}</span>
+    </div>
+  );
 }
