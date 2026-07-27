@@ -415,7 +415,7 @@ function location1H(
 
 // ─── LAYER 3: 15M TRIGGER ──────────────────────────────────
 
-function trigger15M(candles15m: Candle[], direction: "LONG" | "SHORT"): TriggerDiagnostics {
+function trigger15M(pair: string, candles15m: Candle[], direction: "LONG" | "SHORT"): TriggerDiagnostics {
   const defaultFail: TriggerDiagnostics = {
     stochCross: { passed: false, detail: "Insufficient data" },
     emaCross: { passed: false, detail: "Insufficient data" },
@@ -634,7 +634,7 @@ export function generateSignal(
   debug.push(`Location: ${location.detail} ✓`);
 
   // Layer 3: Trigger
-  const trigger = trigger15M(candles15m, bias.direction);
+  const trigger = trigger15M(pair, candles15m, bias.direction);
 
   // Structured trigger log
   debug.push("Trigger:");
@@ -717,7 +717,7 @@ export function getMarketSnapshot(
 ) {
   const bias = computeBiasScore(candles4h);
   const location = bias.direction !== "NEUTRAL" ? location1H(pair, candles1h, bias.direction) : { valid: false, detail: "No bias", locationType: null as "trendline" | "swing" | null };
-  const trigger = bias.direction !== "NEUTRAL" ? trigger15M(candles15m, bias.direction) : {
+  const trigger = bias.direction !== "NEUTRAL" ? trigger15M(pair, candles15m, bias.direction) : {
     stochCross: { passed: false, detail: "No bias" },
     emaCross: { passed: false, detail: "No bias" },
     reclaimEma21: { passed: false, detail: "No bias" },
