@@ -567,4 +567,4 @@ function LevelRow({ label, value, color = "" }: { label: string; value: string |
       <span className={`font-mono ${color || "text-gray-200"}`}>{value}</span>
     </div>
   );
-} 
+}
