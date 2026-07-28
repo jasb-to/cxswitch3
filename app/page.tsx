@@ -423,20 +423,43 @@ export default function Dashboard() {
                 {/* Active Signal Details */}
                 {hasSignal && status === "ACTIVE" && (
                   <>
-                    {/* Progress Bar */}
+                    {/* Progress Bar: SL -> Entry -> Target */}
                     <div className="mb-3">
                       <div className="flex justify-between text-[10px] text-gray-400 mb-1">
-                        <span>Entry</span>
+                        <span>SL</span>
                         <span className={unrealizedPnL > 0 ? "text-green-400" : unrealizedPnL < 0 ? "text-red-400" : "text-gray-400"}>
                           {unrealizedPnL > 0 ? "+" : ""}{unrealizedPnL.toFixed(2)}%
                         </span>
                         <span>Target</span>
                       </div>
-                      <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                        <div className={`h-full rounded-full transition-all ${unrealizedPnL >= 0 ? "bg-green-500" : "bg-red-500"}`} style={{ width: `${progress}%` }} />
+                      <div className="relative h-2 bg-gray-700 rounded-full">
+                        {/* Entry marker line */}
+                        <div
+                          className="absolute top-0 bottom-0 w-0.5 bg-white/50 z-10"
+                          style={{
+                            left: `${Math.max(0, Math.min(100, signal.direction === "LONG"
+                              ? ((entry - stop) / (target - stop)) * 100
+                              : ((stop - entry) / (stop - target)) * 100
+                            ))}%`
+                          }}
+                        />
+                        {/* Progress fill */}
+                        <div
+                          className={`absolute top-0 bottom-0 rounded-full transition-all ${
+                            unrealizedPnL >= 0 ? "bg-green-500" : "bg-red-500"
+                          }`}
+                          style={{
+                            left: 0,
+                            width: `${Math.max(0, Math.min(100, signal.direction === "LONG"
+                              ? ((currentPrice - stop) / (target - stop)) * 100
+                              : ((stop - currentPrice) / (stop - target)) * 100
+                            ))}%`
+                          }}
+                        />
                       </div>
                       <div className="flex justify-between text-[9px] text-gray-500 mt-0.5">
-                        <span>{money(entry)}</span>
+                        <span>{money(stop)}</span>
+                        <span className="text-gray-400">Entry {money(entry)}</span>
                         <span>{money(target)}</span>
                       </div>
                     </div>
