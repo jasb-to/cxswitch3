@@ -41,8 +41,9 @@ interface MarketData {
   timestamp: number;
   trendlinePrice: number;
   distToTrendline: number;
-  ema8_15m: number;
-  ema21_15m: number;
+  locationType: string;
+  ema8_4h: number;
+  ema21_4h: number;
 }
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"];
@@ -87,9 +88,25 @@ function timeAgo(ts: number): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+// ─── Signal type label helper ──────────────────────────────
+function getSignalLabel(type: string): { text: string; color: string } {
+  switch (type) {
+    case "ENTRY_1":
+      return { text: "ENTRY ①", color: "bg-green-500/20 text-green-300" };
+    case "ENTRY_2":
+      return { text: "ENTRY ②", color: "bg-yellow-500/20 text-yellow-300" };
+    case "ADD":
+      return { text: "ADD", color: "bg-blue-500/20 text-blue-300" };
+    case "EXIT":
+      return { text: "EXIT", color: "bg-red-500/20 text-red-300" };
+    default:
+      return { text: type, color: "bg-gray-500/20 text-gray-300" };
+  }
+}
+
 // ─── Trailing SL calculator ────────────────────────────────
 function calcTrailingSL(signal: Signal, currentPrice: number): { sl: number; lockedProfit: number } {
-  if (!signal || signal.type !== "ENTRY" || !currentPrice) {
+  if (!signal || (signal.type !== "ENTRY_1" && signal.type !== "ENTRY_2") || !currentPrice) {
     return { sl: signal?.stop ?? 0, lockedProfit: 0 };
   }
   const entry = signal.entry;
@@ -183,7 +200,7 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
-        <div className="text-lg">Loading CX Switch v50...</div>
+        <div className="text-lg">Loading CX Switch v50.1...</div>
       </div>
     );
   }
@@ -192,7 +209,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-bold">CX Switch v50</h1>
+          <h1 className="text-2xl font-bold">CX Switch v50.1</h1>
           <div className="text-xs text-gray-400">
             Fetches: {fetchCount} | Last:{" "}
             {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
@@ -207,6 +224,7 @@ export default function Dashboard() {
             const currentPrice = livePrice ?? mkt?.price ?? 0;
             const hasSignal = !!signal;
             const status = signal?.meta?.status || "WAITING";
+            const signalLabel = hasSignal ? getSignalLabel(signal.type) : null;
 
             const trailing = hasSignal && status === "ACTIVE" && currentPrice
               ? calcTrailingSL(signal, currentPrice)
@@ -306,8 +324,8 @@ export default function Dashboard() {
                   <div className="flex flex-col items-end gap-1">
                     {hasSignal ? (
                       <>
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${signal.direction === "LONG" ? "bg-green-500/20 text-green-300" : "bg-red-500/20 text-red-300"}`}>
-                          {signal.type}
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${signalLabel?.color}`}>
+                          {signalLabel?.text}
                         </span>
                         <span className={`text-[10px] font-bold ${signal.direction === "LONG" ? "text-green-400" : "text-red-400"}`}>
                           {signal.direction}
