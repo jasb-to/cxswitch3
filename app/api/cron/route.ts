@@ -4,7 +4,7 @@
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot } from "@/lib/strategy";
+import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot, rebuildStateFromTrades } from "@/lib/strategy";
 import { getSignals, setSignals, getMarketData, setMarketData, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
@@ -44,6 +44,10 @@ export async function GET(request: Request) {
 
   let activeTrades = await getActiveTrades();
   console.log(`[STATE] Active trades:`, Object.keys(activeTrades).join(", ") || "none");
+
+  // v50.2: Rebuild in-memory state from persisted KV data
+  rebuildStateFromTrades(activeTrades);
+  console.log(`[STATE] In-memory state rebuilt from ${Object.keys(activeTrades).length} persisted trades`);
 
   const existingSignals = await getSignals();
   const currentPrices: Record<string, number> = {};
