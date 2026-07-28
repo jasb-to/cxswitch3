@@ -250,32 +250,68 @@ function fitTrendline(pivots: Pivot[]): { slope: number; intercept: number; r2: 
 }
 
 function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number } | null {
-  if (candles.length < 30) return null;
+  const price = candles[candles.length - 1].close;
+
+  if (candles.length < 30) {
+    console.log(`[TL ${pair}] candles=${candles.length} < 30, abort`);
+    return null;
+  }
+
   const pivots = findPivots(candles, direction);
-  if (pivots.length < 3) return null;
-  const recentPivots = pivots.slice(-5);
   const now = candles[candles.length - 1].timestamp;
   const currentIndex = candles.length - 1;
 
+  console.log(`[TL ${pair}] direction=${direction} pivots=${pivots.length} price=${price.toFixed(2)}`);
+
+  if (pivots.length < 3) {
+    console.log(`[TL ${pair}] FAIL: only ${pivots.length} pivots (need 3+)`);
+    return null;
+  }
+
+  const recentPivots = pivots.slice(-5);
+  console.log(`[TL ${pair}] recentPivots=${recentPivots.length} lastPivotPrice=${recentPivots[recentPivots.length-1].price.toFixed(2)}`);
+
   const existing = trendlineStore.get(pair);
 
-  // ── Invalidation checks ──
   if (existing && existing.direction === direction) {
     const age = now - existing.lastUpdated;
     const lastPivot = recentPivots[recentPivots.length - 1];
     const projected = existing.slope * lastPivot.index + existing.intercept;
     const deviation = Math.abs(lastPivot.price - projected) / projected;
 
-    if (existing.r2 < 0.30 || deviation > 0.02 || age >= TL_MAX_AGE_MS) {
+    console.log(`[TL ${pair}] CACHED: r²=${existing.r2.toFixed(3)} age=${(age/60000).toFixed(1)}min deviation=${(deviation*100).toFixed(2)}%`);
+
+    if (existing.r2 < 0.30) {
+      console.log(`[TL ${pair}] CACHE REJECT: r² ${existing.r2.toFixed(3)} < 0.30`);
+      trendlineStore.delete(pair);
+    } else if (deviation > 0.02) {
+      console.log(`[TL ${pair}] CACHE REJECT: deviation ${(deviation*100).toFixed(2)}% > 2%`);
+      trendlineStore.delete(pair);
+    } else if (age >= TL_MAX_AGE_MS) {
+      console.log(`[TL ${pair}] CACHE REJECT: age ${(age/3600000).toFixed(1)}h > max ${TL_MAX_AGE_MS/3600000}h`);
       trendlineStore.delete(pair);
     } else {
-      return { price: existing.slope * currentIndex + existing.intercept, r2: existing.r2 };
+      const tlPrice = existing.slope * currentIndex + existing.intercept;
+      console.log(`[TL ${pair}] CACHE HIT: price=${tlPrice.toFixed(2)} dist=${(Math.abs(price-tlPrice)/tlPrice*100).toFixed(2)}%`);
+      return { price: tlPrice, r2: existing.r2 };
     }
+  } else {
+    console.log(`[TL ${pair}] NO CACHE: existing=${existing ? 'yes' : 'no'} directionMatch=${existing ? existing.direction === direction : 'N/A'}`);
   }
 
   // ── Rebuild from latest pivots ──
   const fit = fitTrendline(recentPivots);
-  if (!fit || fit.r2 < 0.30) return null;
+  if (!fit) {
+    console.log(`[TL ${pair}] FAIL: fitTrendline returned null`);
+    return null;
+  }
+
+  console.log(`[TL ${pair}] FIT: r²=${fit.r2.toFixed(3)} slope=${fit.slope.toFixed(4)} intercept=${fit.intercept.toFixed(2)}`);
+
+  if (fit.r2 < 0.30) {
+    console.log(`[TL ${pair}] FAIL: r² ${fit.r2.toFixed(3)} < 0.30`);
+    return null;
+  }
 
   trendlineStore.set(pair, {
     slope: fit.slope,
@@ -285,7 +321,9 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     r2: Math.round(fit.r2 * 100) / 100,
   });
 
-  return { price: fit.slope * currentIndex + fit.intercept, r2: Math.round(fit.r2 * 100) / 100 };
+  const tlPrice = fit.slope * currentIndex + fit.intercept;
+  console.log(`[TL ${pair}] BUILT: price=${tlPrice.toFixed(2)} dist=${(Math.abs(price-tlPrice)/tlPrice*100).toFixed(2)}%`);
+  return { price: tlPrice, r2: Math.round(fit.r2 * 100) / 100 };
 }
 
 function dailyTrend(candles1d: Candle[]): { direction: "LONG" | "SHORT" | "NONE"; detail: string } {
@@ -309,22 +347,32 @@ function location4H(
 ): { ready: boolean; detail: string; trendlinePrice: number; locationType: string } {
   const price = candles4h[candles4h.length - 1].close;
   const tl = getTrendline(pair, candles4h, direction);
+
   if (tl) {
     const dist = Math.abs(price - tl.price) / tl.price;
+    console.log(`[LOC ${pair}] TL found: price=${price.toFixed(2)} tlPrice=${tl.price.toFixed(2)} dist=${(dist*100).toFixed(2)}% proximity=${(TL_PROXIMITY*100).toFixed(2)}%`);
     if (dist < TL_PROXIMITY) {
+      console.log(`[LOC ${pair}] TL READY`);
       return {
         ready: true,
         detail: `Trendline ${(dist * 100).toFixed(2)}% (R² ${tl.r2.toFixed(2)})`,
         trendlinePrice: tl.price,
         locationType: "TRENDLINE"
       };
+    } else {
+      console.log(`[LOC ${pair}] TL too far: ${(dist*100).toFixed(2)}% >= ${(TL_PROXIMITY*100).toFixed(2)}%`);
     }
+  } else {
+    console.log(`[LOC ${pair}] No TL, falling back to swing`);
   }
+
   const recent = candles4h.slice(-20);
   if (direction === "LONG") {
     const swingLow = Math.min(...recent.map(c => c.low));
     const dist = (price - swingLow) / swingLow;
+    console.log(`[LOC ${pair}] SWING_LONG: price=${price.toFixed(2)} swingLow=${swingLow.toFixed(2)} dist=${(dist*100).toFixed(2)}% proximity=${(SWING_PROXIMITY*100).toFixed(2)}%`);
     if (dist >= 0 && dist < SWING_PROXIMITY) {
+      console.log(`[LOC ${pair}] SWING_LOW READY`);
       return {
         ready: true,
         detail: `Swing low ${(dist * 100).toFixed(2)}%`,
@@ -335,7 +383,9 @@ function location4H(
   } else {
     const swingHigh = Math.max(...recent.map(c => c.high));
     const dist = (swingHigh - price) / swingHigh;
+    console.log(`[LOC ${pair}] SWING_SHORT: price=${price.toFixed(2)} swingHigh=${swingHigh.toFixed(2)} dist=${(dist*100).toFixed(2)}% proximity=${(SWING_PROXIMITY*100).toFixed(2)}%`);
     if (dist >= 0 && dist < SWING_PROXIMITY) {
+      console.log(`[LOC ${pair}] SWING_HIGH READY`);
       return {
         ready: true,
         detail: `Swing high ${(dist * 100).toFixed(2)}%`,
@@ -344,6 +394,7 @@ function location4H(
       };
     }
   }
+  console.log(`[LOC ${pair}] No valid location`);
   return { ready: false, detail: "No valid location", trendlinePrice: tl?.price || 0, locationType: "NONE" };
 }
 
@@ -573,8 +624,6 @@ export function getMarketSnapshot(
   const trigger = trend.direction !== "NONE" ? stochTrigger15M(candles15m, trend.direction) : { fired: false, detail: "No trend", triggerType: "none", stochK: 50, stochD: 50 };
   const price = candles4h[candles4h.length - 1]?.close ?? 0;
 
-  // FIX: Only show trigger as FIRED when location is also READY
-  // This prevents UI showing "FIRED" when the real entry logic would reject
   const triggerActuallyFired = location.ready && trigger.fired;
 
   const distToTrendline = location.trendlinePrice > 0
