@@ -266,11 +266,9 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     const projected = existing.slope * lastPivot.index + existing.intercept;
     const deviation = Math.abs(lastPivot.price - projected) / projected;
 
-    // Invalidate if: R² too low, deviation too large, or too old
     if (existing.r2 < 0.30 || deviation > 0.02 || age >= TL_MAX_AGE_MS) {
       trendlineStore.delete(pair);
     } else {
-      // Valid cached trendline — reuse it
       return { price: existing.slope * currentIndex + existing.intercept, r2: existing.r2 };
     }
   }
@@ -373,14 +371,12 @@ function stochTrigger15M(candles15m: Candle[], direction: "LONG" | "SHORT"): {
   let triggerType = "none";
 
   if (direction === "LONG") {
-    // Previous K was below 20 (in extreme) and crossed above D
     if (prevStoch.k < STOCH_EXTREME_LONG && prevStoch.k < prevStoch.d && stoch.k >= stoch.d) {
       fired = true;
       triggerType = "stoch_cross";
       detail = `Stoch K crossed above D from oversold (K=${stoch.k}, D=${stoch.d})`;
     }
   } else {
-    // Previous K was above 80 (in extreme) and crossed below D
     if (prevStoch.k > STOCH_EXTREME_SHORT && prevStoch.k > prevStoch.d && stoch.k <= stoch.d) {
       fired = true;
       triggerType = "stoch_cross";
@@ -409,10 +405,7 @@ function isOnCooldown(pair: string, now: number, currentPrice?: number): boolean
   const entry = cooldownStore.get(pair);
   if (!entry) return false;
 
-  // Early release: TP hit
   if (currentPrice !== undefined) {
-    // We don't know direction here, but we can check if price reached target
-    // For simplicity, check both directions — if price hit either target or stop, release
     const hitTP = Math.abs(currentPrice - entry.target) / entry.target < 0.001;
     const hitSL = Math.abs(currentPrice - entry.stop) / entry.stop < 0.001;
     if (hitTP || hitSL) {
@@ -421,7 +414,6 @@ function isOnCooldown(pair: string, now: number, currentPrice?: number): boolean
     }
   }
 
-  // Early release: 90 minutes elapsed
   if (now >= entry.until - (3 * 60 * 60 * 1000) + (90 * 60 * 1000)) {
     cooldownStore.delete(pair);
     return false;
@@ -464,7 +456,6 @@ export function generateSignal(
   const now = Date.now();
   const price = currentPrice ?? candles4h[candles4h.length - 1]?.close ?? 0;
 
-  // Check for early cooldown release before evaluating
   checkCooldownEarlyRelease(pair, price);
 
   const hasActive = activeSignals.some(s => s.pair === pair && !s.exited);
@@ -581,16 +572,22 @@ export function getMarketSnapshot(
   const location = trend.direction !== "NONE" ? location4H(pair, candles4h, trend.direction) : { ready: false, detail: "No trend", trendlinePrice: 0, locationType: "NONE" };
   const trigger = trend.direction !== "NONE" ? stochTrigger15M(candles15m, trend.direction) : { fired: false, detail: "No trend", triggerType: "none", stochK: 50, stochD: 50 };
   const price = candles4h[candles4h.length - 1]?.close ?? 0;
+
+  // FIX: Only show trigger as FIRED when location is also READY
+  // This prevents UI showing "FIRED" when the real entry logic would reject
+  const triggerActuallyFired = location.ready && trigger.fired;
+
   const distToTrendline = location.trendlinePrice > 0
     ? Math.round(Math.abs((price - location.trendlinePrice) / location.trendlinePrice) * 10000) / 100
     : null;
+
   return {
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
     trend: trend.direction,
     location: location.ready ? "READY" : "WAIT",
-    trigger: trigger.fired ? "FIRED" : "WAITING",
+    trigger: triggerActuallyFired ? "FIRED" : "WAITING",
     adx: Math.round(adx(candles4h) * 10) / 10,
     rsi: Math.round(wilderRsi(candles4h.map(c => c.close)) * 10) / 10,
     stochK: trigger.stochK,
