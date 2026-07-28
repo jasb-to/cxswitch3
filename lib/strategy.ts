@@ -1,4 +1,4 @@
-// lib/strategy.ts — v50.3 "First Wave Hybrid"
+// lib/strategy.ts — v50.4 "First Wave Open"
 // ============================================================
 // Architecture: Daily Trend → 4H Location → 4H Stoch Trigger → Entry/ADD
 // Philosophy: Capture the first pullback in a daily trend.
@@ -80,17 +80,17 @@ export interface HoldResult {
   reason: string;
 }
 
-export const CURRENT_SIGNAL_VERSION = 50.3;
-const MIN_RR = 1.5;
+export const CURRENT_SIGNAL_VERSION = 50.4;
+const MIN_RR = 1.5; // v50.4: informational only, no longer gates signals
 const TL_PROXIMITY = 0.040;        // 4% — captures imperfect pullbacks
-const SWING_PROXIMITY = 0.030;     // 3% — captures imperfect swing entries
+// v50.4: Swing proximity is now dynamic (2×ATR), see location4H
 const STOCH_EXTREME_LONG = 25;     // Deep pullback zone for ENTRY_1
 const STOCH_EXTREME_SHORT = 75;    // Deep pullback zone for ENTRY_1
 const STOCH_MIDPOINT = 50;         // Midpoint for ENTRY_2 discrimination
-const STOCH_ENTRY_ZONE_LONG = 45;  // v50.2: K must still be below this after recent cross
-const STOCH_ENTRY_ZONE_SHORT = 55; // v50.2: K must still be above this after recent cross
-const STOCH_CROSS_LOOKBACK = 4;    // v50.2: Cross must have occurred within last N completed candles
-const R2_MINIMUM = 0.10;           // Soft floor — reject only garbage fits
+const STOCH_ENTRY_ZONE_LONG = 55;  // v50.2: K must still be below this after recent cross
+const STOCH_ENTRY_ZONE_SHORT = 45; // v50.2: K must still be above this after recent cross
+const STOCH_CROSS_LOOKBACK = 6;    // v50.2: Cross must have occurred within last N completed candles
+const R2_MINIMUM = 0.05;           // Soft floor — reject only garbage fits
 const COOLDOWN_MS = 4 * 60 * 60 * 1000;
 const TL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -241,11 +241,10 @@ interface Pivot { index: number; price: number; timestamp: number; }
 
 function findPivots(candles: Candle[], direction: "LONG" | "SHORT"): Pivot[] {
   const pivots: Pivot[] = [];
-  for (let i = 3; i < candles.length - 3; i++) {
-    const isSwingLow = candles[i].low < candles[i-1].low && candles[i].low < candles[i-2].low &&
-                       candles[i].low < candles[i+1].low && candles[i].low < candles[i+2].low;
-    const isSwingHigh = candles[i].high > candles[i-1].high && candles[i].high > candles[i-2].high &&
-                        candles[i].high > candles[i+1].high && candles[i].high > candles[i+2].high;
+  // v50.4: Relaxed to 1 candle left/right for developing trend detection
+  for (let i = 2; i < candles.length - 2; i++) {
+    const isSwingLow = candles[i].low < candles[i-1].low && candles[i].low < candles[i+1].low;
+    const isSwingHigh = candles[i].high > candles[i-1].high && candles[i].high > candles[i+1].high;
     if (direction === "LONG" && isSwingLow) pivots.push({ index: i, price: candles[i].low, timestamp: candles[i].timestamp });
     if (direction === "SHORT" && isSwingHigh) pivots.push({ index: i, price: candles[i].high, timestamp: candles[i].timestamp });
   }
@@ -324,13 +323,6 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   }
 
   console.log(`[TL ${pair}] FIT: r²=${fit.r2.toFixed(3)} slope=${fit.slope.toFixed(4)} intercept=${fit.intercept.toFixed(2)}`);
-
-  // v50.3: Reject trendlines whose slope contradicts the trend direction
-  const slopeContradicts = direction === "LONG" ? fit.slope < 0 : fit.slope > 0;
-  if (slopeContradicts) {
-    console.log(`[TL ${pair}] REJECT: slope ${fit.slope.toFixed(4)} contradicts ${direction} trend`);
-    return null;
-  }
 
   // v50.1: Soft floor at R² >= 0.10. Reject only garbage fits.
   if (fit.r2 < R2_MINIMUM) {
@@ -439,9 +431,8 @@ function location4H(
     // Find the lowest low that is also a local minimum (pivot)
     let swingLow = Infinity;
     let swingLowIdx = -1;
-    for (let i = 2; i < recent.length - 2; i++) {
-      const isPivotLow = recent[i].low < recent[i-1].low && recent[i].low < recent[i-2].low &&
-                         recent[i].low < recent[i+1].low && recent[i].low < recent[i+2].low;
+    for (let i = 1; i < recent.length - 1; i++) {
+      const isPivotLow = recent[i].low < recent[i-1].low && recent[i].low < recent[i+1].low;
       if (isPivotLow && recent[i].low < swingLow) {
         swingLow = recent[i].low;
         swingLowIdx = i;
@@ -457,13 +448,14 @@ function location4H(
         return { ready: false, detail: "No valid location", trendlinePrice: tl?.price || 0, locationType: "NONE" };
       }
     }
-    const dist = (price - swingLow) / swingLow;
-    console.log(`[LOC ${pair}] SWING_LONG: price=${price.toFixed(2)} swingLow=${swingLow.toFixed(2)} dist=${(dist*100).toFixed(2)}% proximity=${(SWING_PROXIMITY*100).toFixed(2)}%`);
-    if (dist >= 0 && dist < SWING_PROXIMITY) {
+    const dist = price - swingLow;
+    const maxDist = atrVal * 2;
+    console.log(`[LOC ${pair}] SWING_LONG: price=${price.toFixed(2)} swingLow=${swingLow.toFixed(2)} dist=${dist.toFixed(2)} maxDist=${maxDist.toFixed(2)} (2×ATR)`);
+    if (dist >= 0 && dist <= maxDist) {
       console.log(`[LOC ${pair}] SWING_LOW READY`);
       return {
         ready: true,
-        detail: `Swing low ${(dist * 100).toFixed(2)}%`,
+        detail: `Swing low ${dist.toFixed(2)} away (2×ATR=${maxDist.toFixed(2)})`,
         trendlinePrice: swingLow,
         locationType: "SWING_LOW"
       };
@@ -472,9 +464,8 @@ function location4H(
     // Find the highest high that is also a local maximum (pivot)
     let swingHigh = -Infinity;
     let swingHighIdx = -1;
-    for (let i = 2; i < recent.length - 2; i++) {
-      const isPivotHigh = recent[i].high > recent[i-1].high && recent[i].high > recent[i-2].high &&
-                          recent[i].high > recent[i+1].high && recent[i].high > recent[i+2].high;
+    for (let i = 1; i < recent.length - 1; i++) {
+      const isPivotHigh = recent[i].high > recent[i-1].high && recent[i].high > recent[i+1].high;
       if (isPivotHigh && recent[i].high > swingHigh) {
         swingHigh = recent[i].high;
         swingHighIdx = i;
@@ -489,13 +480,14 @@ function location4H(
         return { ready: false, detail: "No valid location", trendlinePrice: tl?.price || 0, locationType: "NONE" };
       }
     }
-    const dist = (swingHigh - price) / swingHigh;
-    console.log(`[LOC ${pair}] SWING_SHORT: price=${price.toFixed(2)} swingHigh=${swingHigh.toFixed(2)} dist=${(dist*100).toFixed(2)}% proximity=${(SWING_PROXIMITY*100).toFixed(2)}%`);
-    if (dist >= 0 && dist < SWING_PROXIMITY) {
+    const dist = swingHigh - price;
+    const maxDist = atrVal * 2;
+    console.log(`[LOC ${pair}] SWING_SHORT: price=${price.toFixed(2)} swingHigh=${swingHigh.toFixed(2)} dist=${dist.toFixed(2)} maxDist=${maxDist.toFixed(2)} (2×ATR)`);
+    if (dist >= 0 && dist <= maxDist) {
       console.log(`[LOC ${pair}] SWING_HIGH READY`);
       return {
         ready: true,
-        detail: `Swing high ${(dist * 100).toFixed(2)}%`,
+        detail: `Swing high ${dist.toFixed(2)} away (2×ATR=${maxDist.toFixed(2)})`,
         trendlinePrice: swingHigh,
         locationType: "SWING_HIGH"
       };
@@ -939,11 +931,7 @@ export function generateSignal(
   const reward = Math.abs(target - price);
   const rr = risk > 0 ? reward / risk : 0;
 
-  if (rr < MIN_RR) {
-    debug.push(`Rejected: RR ${rr.toFixed(2)} < ${MIN_RR}`);
-    return { debug };
-  }
-
+  // v50.4: RR is calculated and included but never blocks the signal
   // ── Step 6: Build signal ──
   setCooldown(pair, now, price, stop, target, signalType);
   setActiveSignal(pair, signalType, price);
