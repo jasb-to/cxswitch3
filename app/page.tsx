@@ -88,7 +88,6 @@ function timeAgo(ts: number): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-// ─── Signal type label helper ──────────────────────────────
 function getSignalLabel(type: string): { text: string; color: string } {
   switch (type) {
     case "ENTRY_1":
@@ -104,42 +103,93 @@ function getSignalLabel(type: string): { text: string; color: string } {
   }
 }
 
-// ─── Trailing SL calculator ────────────────────────────────
-function calcTrailingSL(signal: Signal, currentPrice: number): { sl: number; lockedProfit: number } {
-  if (!signal || (signal.type !== "ENTRY_1" && signal.type !== "ENTRY_2") || !currentPrice) {
-    return { sl: signal?.stop ?? 0, lockedProfit: 0 };
+// ─── Stop Trail Calculator ─────────────────────────────────
+interface StopMilestone {
+  label: string;
+  price: number;
+  reached: boolean;
+  isNext: boolean;
+}
+
+function calcStopTrail(signal: Signal, currentPrice: number): {
+  currentR: number;
+  milestones: StopMilestone[];
+  distanceToNext: number;
+} {
+  if (!signal || (signal.type !== "ENTRY_1" && signal.type !== "ENTRY_2")) {
+    return { currentR: 0, milestones: [], distanceToNext: 0 };
   }
   const entry = signal.entry;
   const initialSL = signal.stop;
   const risk = Math.abs(entry - initialSL);
+  if (risk === 0) return { currentR: 0, milestones: [], distanceToNext: 0 };
 
+  let currentR = 0;
   if (signal.direction === "LONG") {
-    const profit = currentPrice - entry;
-    if (profit <= 0) return { sl: initialSL, lockedProfit: 0 };
-    const rMultiple = profit / risk;
-    let newSL = initialSL;
-    if (rMultiple >= 1) {
-      newSL = Math.max(initialSL, entry);
-    }
-    if (rMultiple >= 2) {
-      newSL = Math.max(newSL, entry + profit * 0.5);
-    }
-    const locked = ((newSL - entry) / entry) * 100;
-    return { sl: Math.round(newSL * 100) / 100, lockedProfit: Math.max(0, locked) };
+    currentR = (currentPrice - entry) / risk;
   } else {
-    const profit = entry - currentPrice;
-    if (profit <= 0) return { sl: initialSL, lockedProfit: 0 };
-    const rMultiple = profit / risk;
-    let newSL = initialSL;
-    if (rMultiple >= 1) {
-      newSL = Math.min(initialSL, entry);
-    }
-    if (rMultiple >= 2) {
-      newSL = Math.min(newSL, entry - profit * 0.5);
-    }
-    const locked = ((entry - newSL) / entry) * 100;
-    return { sl: Math.round(newSL * 100) / 100, lockedProfit: Math.max(0, locked) };
+    currentR = (entry - currentPrice) / risk;
   }
+
+  // Milestones: Hard Stop, Breakeven, 50% Lock, 70% Lock
+  const milestones: StopMilestone[] = [];
+
+  // 0R — Hard Stop (always)
+  milestones.push({
+    label: "Hard Stop",
+    price: initialSL,
+    reached: currentR >= 0,
+    isNext: false,
+  });
+
+  // 1R — Breakeven
+  const bePrice = entry;
+  const beReached = currentR >= 1;
+  milestones.push({
+    label: "Breakeven",
+    price: bePrice,
+    reached: beReached,
+    isNext: !beReached && currentR >= 0,
+  });
+
+  // 2R — 50% Lock
+  let lock50Price: number;
+  if (signal.direction === "LONG") {
+    lock50Price = entry + risk * 2 * 0.5;
+  } else {
+    lock50Price = entry - risk * 2 * 0.5;
+  }
+  const lock50Reached = currentR >= 2;
+  milestones.push({
+    label: "50% Lock",
+    price: lock50Price,
+    reached: lock50Reached,
+    isNext: !lock50Reached && beReached,
+  });
+
+  // 3R — 70% Lock
+  let lock70Price: number;
+  if (signal.direction === "LONG") {
+    lock70Price = entry + risk * 3 * 0.7;
+  } else {
+    lock70Price = entry - risk * 3 * 0.7;
+  }
+  const lock70Reached = currentR >= 3;
+  milestones.push({
+    label: "70% Lock",
+    price: lock70Price,
+    reached: lock70Reached,
+    isNext: !lock70Reached && lock50Reached,
+  });
+
+  // Distance to next milestone
+  let distanceToNext = 0;
+  const nextMilestone = milestones.find((m) => m.isNext);
+  if (nextMilestone) {
+    distanceToNext = Math.abs(nextMilestone.price - currentPrice);
+  }
+
+  return { currentR, milestones, distanceToNext };
 }
 
 export default function Dashboard() {
@@ -200,7 +250,7 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
-        <div className="text-lg">Loading CX Switch v50.1...</div>
+        <div className="text-lg">Loading CX Switch v50.2...</div>
       </div>
     );
   }
@@ -209,7 +259,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-bold">CX Switch v50.1</h1>
+          <h1 className="text-2xl font-bold">CX Switch v50.2</h1>
           <div className="text-xs text-gray-400">
             Fetches: {fetchCount} | Last:{" "}
             {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
@@ -226,9 +276,9 @@ export default function Dashboard() {
             const status = signal?.meta?.status || "WAITING";
             const signalLabel = hasSignal ? getSignalLabel(signal.type) : null;
 
-            const trailing = hasSignal && status === "ACTIVE" && currentPrice
-              ? calcTrailingSL(signal, currentPrice)
-              : { sl: signal?.stop ?? 0, lockedProfit: 0 };
+            const trail = hasSignal && status === "ACTIVE" && currentPrice
+              ? calcStopTrail(signal, currentPrice)
+              : { currentR: 0, milestones: [], distanceToNext: 0 };
 
             let borderClass = "border-gray-700 bg-gray-800";
             let bannerText = "";
@@ -373,6 +423,7 @@ export default function Dashboard() {
                 {/* Active Signal Details */}
                 {hasSignal && status === "ACTIVE" && (
                   <>
+                    {/* Progress Bar */}
                     <div className="mb-3">
                       <div className="flex justify-between text-[10px] text-gray-400 mb-1">
                         <span>Entry</span>
@@ -390,22 +441,57 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    <div className="mb-3 space-y-1.5">
-                      <LevelRow label="Entry" value={money(signal.entry)} />
-                      <LevelRow label="Initial SL" value={money(signal.stop)} color="text-red-400" />
-                      {trailing.lockedProfit > 0 && (
-                        <LevelRow label="Trailing SL" value={money(trailing.sl)} color="text-orange-400" />
-                      )}
-                      <LevelRow label="Target" value={money(signal.target)} color="text-purple-400" />
-                      <LevelRow label="R:R" value={signal.rr?.toFixed(2)} color="text-yellow-400" />
-                      {trailing.lockedProfit > 0 && (
-                        <div className="flex justify-between text-[10px]">
-                          <span className="text-gray-400">Locked Profit</span>
-                          <span className="font-mono text-orange-400">+{trailing.lockedProfit.toFixed(2)}%</span>
-                        </div>
-                      )}
-                      <LevelRow label="Age" value={timeAgo(signal.timestamp)} color="text-gray-300" />
+                    {/* LEVELS: Two-column grid */}
+                    <div className="mb-3 p-3 rounded bg-gray-900/70 border border-gray-700/50">
+                      <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2 font-semibold">Levels</div>
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                        <LevelRow label="Entry" value={money(signal.entry)} />
+                        <LevelRow label="Target" value={money(signal.target)} color="text-purple-400" />
+                        <LevelRow label="Initial SL" value={money(signal.stop)} color="text-red-400" />
+                        <LevelRow label="R:R" value={signal.rr?.toFixed(2)} color="text-yellow-400" />
+                        <LevelRow label="Age" value={timeAgo(signal.timestamp)} color="text-gray-300" />
+                        <LevelRow label="Expected" value={`${signal.expectedMove?.toFixed(1)}%`} color="text-blue-400" />
+                      </div>
                     </div>
+
+                    {/* STOP TRAIL MILESTONES */}
+                    {trail.milestones.length > 0 && (
+                      <div className="mb-3 p-3 rounded bg-gray-900/70 border border-gray-700/50">
+                        <div className="flex justify-between items-center mb-2">
+                          <div className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Stop Trail</div>
+                          <div className="text-[10px] font-mono text-yellow-400">{trail.currentR.toFixed(2)}R</div>
+                        </div>
+                        <div className="space-y-2">
+                          {trail.milestones.map((m, idx) => (
+                            <div key={idx} className="flex items-center gap-2">
+                              <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                                m.reached
+                                  ? "bg-green-500"
+                                  : m.isNext
+                                  ? "bg-yellow-400 animate-pulse"
+                                  : "bg-gray-600"
+                              }`} />
+                              <div className="flex-1">
+                                <div className="flex justify-between text-sm">
+                                  <span className={`${m.reached ? "text-green-400" : m.isNext ? "text-yellow-400 font-semibold" : "text-gray-500"}`}>
+                                    {m.label}
+                                    {m.isNext && <span className="ml-1 text-[9px] text-yellow-500">← NEXT</span>}
+                                  </span>
+                                  <span className={`font-mono ${m.reached ? "text-green-400" : m.isNext ? "text-yellow-400" : "text-gray-500"}`}>
+                                    {money(m.price)}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        {trail.distanceToNext > 0 && (
+                          <div className="mt-2 text-center text-[10px] text-yellow-400 font-mono">
+                            {money(trail.distanceToNext)} to next milestone
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {signal.reason && (
                       <div className="text-[10px] text-gray-500 border-t border-gray-700 pt-2 mb-2">
@@ -453,7 +539,7 @@ function StepRow({ label, ready, value }: { label: string; ready: boolean; value
 
 function LevelRow({ label, value, color = "" }: { label: string; value: string | number; color?: string }) {
   return (
-    <div className="flex justify-between text-xs">
+    <div className="flex justify-between text-sm">
       <span className="text-gray-400">{label}</span>
       <span className={`font-mono ${color || "text-gray-200"}`}>{value}</span>
     </div>
