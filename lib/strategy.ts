@@ -1,16 +1,17 @@
 // lib/strategy.ts — v50.1 "First Wave Hybrid"
 // ============================================================
-// Architecture: Daily Trend → 4H Location → 4H Trigger → Entry
-// Philosophy: Trade the first wave after a pullback.
-// Hybrid: v50 clean structure + v28 entry frequency
+// Architecture: Daily Trend → 4H Location → 4H Stoch Trigger → Entry/ADD
+// Philosophy: Capture the first pullback in a daily trend.
+// v50 clean structure + v28 frequency characteristics.
 //
 // Changes from v50:
-// 1. R² is diagnostic only (no hard rejection)
+// 1. R² soft floor at 0.10 (was 0.30 hard reject)
 // 2. Trigger moved from 15M back to 4H StochRSI
-// 3. ENTRY_1: Deep pullback — StochRSI extreme zone crossover
-// 4. ENTRY_2: Early momentum — StochRSI crossover below/above midpoint
-// 5. ADD: Continuation entries restored (2 of 4 confirmations)
-// 6. Risk management preserved (RR >= 1.5, cooldown, active trade checks)
+// 3. TL proximity 4% (was 2%), swing proximity 3% (was 0.8%)
+// 4. ENTRY_1: deep pullback (Stoch extreme zone)
+// 5. ENTRY_2: early momentum (Stoch below/above midpoint)
+// 6. ADD: continuation after active entry (2 of 3 confirmations)
+// 7. No scoring, no confidence, no AI, no volume gates
 
 export interface Candle {
   timestamp: number;
@@ -81,11 +82,12 @@ export interface HoldResult {
 
 export const CURRENT_SIGNAL_VERSION = 50.1;
 const MIN_RR = 1.5;
-const TL_PROXIMITY = 0.020;        // 2% for trendline location
-const SWING_PROXIMITY = 0.012;     // 1.2% for swing fallback (restored from v28)
+const TL_PROXIMITY = 0.040;        // 4% — captures imperfect pullbacks
+const SWING_PROXIMITY = 0.030;     // 3% — captures imperfect swing entries
 const STOCH_EXTREME_LONG = 25;     // Deep pullback zone for ENTRY_1
 const STOCH_EXTREME_SHORT = 75;    // Deep pullback zone for ENTRY_1
 const STOCH_MIDPOINT = 50;         // Midpoint for ENTRY_2 discrimination
+const R2_MINIMUM = 0.10;           // Soft floor — reject only garbage fits
 const COOLDOWN_MS = 4 * 60 * 60 * 1000;
 const TL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -219,7 +221,7 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
 }
 
 // ============================================================
-// TRENDLINE ENGINE — v50.1: R² is diagnostic only
+// TRENDLINE ENGINE — v50.1: R² soft floor at 0.10
 // ============================================================
 
 interface TrendlineState {
@@ -296,7 +298,6 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
 
     console.log(`[TL ${pair}] CACHED: r²=${existing.r2.toFixed(3)} age=${(age/60000).toFixed(1)}min deviation=${(deviation*100).toFixed(2)}%`);
 
-    // v50.1: R² is diagnostic only — no hard rejection
     if (deviation > 0.02) {
       console.log(`[TL ${pair}] CACHE REJECT: deviation ${(deviation*100).toFixed(2)}% > 2%`);
       trendlineStore.delete(pair);
@@ -321,9 +322,11 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
 
   console.log(`[TL ${pair}] FIT: r²=${fit.r2.toFixed(3)} slope=${fit.slope.toFixed(4)} intercept=${fit.intercept.toFixed(2)}`);
 
-  // v50.1: R² is diagnostic only — no hard rejection
-  // Store R² for monitoring but do NOT reject based on it
-  console.log(`[TL ${pair}] R²=${fit.r2.toFixed(3)} (diagnostic only, not filtering)`);
+  // v50.1: Soft floor at R² >= 0.10. Reject only garbage fits.
+  if (fit.r2 < R2_MINIMUM) {
+    console.log(`[TL ${pair}] REJECT: r² ${fit.r2.toFixed(3)} < ${R2_MINIMUM} (garbage fit)`);
+    return null;
+  }
 
   trendlineStore.set(pair, {
     slope: fit.slope,
@@ -339,7 +342,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
 }
 
 // ============================================================
-// DAILY TREND — v50.1: Keep EMA21/EMA50, 50 candles
+// DAILY TREND
 // ============================================================
 
 function dailyTrend(candles1d: Candle[]): { direction: "LONG" | "SHORT" | "NONE"; detail: string } {
@@ -357,7 +360,7 @@ function dailyTrend(candles1d: Candle[]): { direction: "LONG" | "SHORT" | "NONE"
 }
 
 // ============================================================
-// 4H LOCATION — v50.1: Trendline or swing, R² not blocking
+// 4H LOCATION — v50.1: 4% TL, 3% swing, BEYOND_TL for ADD
 // ============================================================
 
 interface LocationResult {
@@ -378,22 +381,42 @@ function location4H(
   if (tl) {
     const dist = Math.abs(price - tl.price) / tl.price;
     console.log(`[LOC ${pair}] TL found: price=${price.toFixed(2)} tlPrice=${tl.price.toFixed(2)} dist=${(dist*100).toFixed(2)}% proximity=${(TL_PROXIMITY*100).toFixed(2)}%`);
+
+    // ENTRY zone: price near trendline (within 4%)
     if (dist < TL_PROXIMITY) {
-      console.log(`[LOC ${pair}] TL READY`);
+      console.log(`[LOC ${pair}] TL READY (ENTRY zone)`);
       return {
         ready: true,
         detail: `Trendline ${(dist * 100).toFixed(2)}% (R² ${tl.r2.toFixed(2)})`,
         trendlinePrice: tl.price,
         locationType: "TRENDLINE"
       };
-    } else {
-      console.log(`[LOC ${pair}] TL too far: ${(dist*100).toFixed(2)}% >= ${(TL_PROXIMITY*100).toFixed(2)}%`);
     }
+
+    // ADD zone: price beyond trendline in trend direction (broken through)
+    const beyondTL = direction === "LONG" 
+      ? price > tl.price * 1.008   // LONG: price above TL (broke resistance)
+      : price < tl.price * 0.992;  // SHORT: price below TL (broke support)
+
+    if (beyondTL) {
+      const beyondDist = direction === "LONG"
+        ? ((price - tl.price) / tl.price) * 100
+        : ((tl.price - price) / tl.price) * 100;
+      console.log(`[LOC ${pair}] TL BEYOND — ADD zone: ${beyondDist.toFixed(2)}% past TL`);
+      return {
+        ready: true,
+        detail: `Beyond TL ${beyondDist.toFixed(2)}% (R² ${tl.r2.toFixed(2)})`,
+        trendlinePrice: tl.price,
+        locationType: "BEYOND_TL"
+      };
+    }
+
+    console.log(`[LOC ${pair}] TL too far: ${(dist*100).toFixed(2)}% >= ${(TL_PROXIMITY*100).toFixed(2)}%`);
   } else {
     console.log(`[LOC ${pair}] No TL, falling back to swing`);
   }
 
-  // Swing fallback — restored from v28's 1.2% proximity
+  // Swing fallback — 3% proximity
   const recent = candles4h.slice(-20);
   if (direction === "LONG") {
     const swingLow = Math.min(...recent.map(c => c.low));
@@ -427,7 +450,7 @@ function location4H(
 }
 
 // ============================================================
-// 4H STOCHRSI TRIGGER — v50.1: ENTRY_1, ENTRY_2, ADD
+// 4H STOCHRSI TRIGGER — ENTRY_1 and ENTRY_2
 // ============================================================
 
 interface TriggerResult {
@@ -464,7 +487,7 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT"): Trigg
       triggerType = "entry_1_deep_pullback";
       detail = `ENTRY_1: K crossed above D from deep pullback (prev K=${prevStoch.k}, now K=${stoch.k}, D=${stoch.d})`;
     }
-    // ENTRY_2: Early momentum — K crosses above D, not extreme, below midpoint
+    // ENTRY_2: Early momentum — K crosses above D, below midpoint
     else if (prevStoch.k < STOCH_MIDPOINT && prevStoch.k < prevStoch.d && stoch.k >= stoch.d) {
       fired = true;
       triggerType = "entry_2_early_momentum";
@@ -477,7 +500,7 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT"): Trigg
       triggerType = "entry_1_deep_pullback";
       detail = `ENTRY_1: K crossed below D from deep pullback (prev K=${prevStoch.k}, now K=${stoch.k}, D=${stoch.d})`;
     }
-    // ENTRY_2: Early momentum — K crosses below D, not extreme, above midpoint
+    // ENTRY_2: Early momentum — K crosses below D, above midpoint
     else if (prevStoch.k > STOCH_MIDPOINT && prevStoch.k > prevStoch.d && stoch.k <= stoch.d) {
       fired = true;
       triggerType = "entry_2_early_momentum";
@@ -492,7 +515,7 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT"): Trigg
 }
 
 // ============================================================
-// ADD TRIGGER — v50.1: Continuation entries restored
+// ADD TRIGGER — v50.1: Continuation (2 of 3 confirmations, no volume gate)
 // ============================================================
 
 interface AddTriggerResult {
@@ -525,13 +548,9 @@ function addTrigger4H(
 
   const confirmations: string[] = [];
 
-  // Confirmation 1: Price breaks beyond trendline in trend direction
-  if (location.trendlinePrice > 0) {
-    if (direction === "LONG" && price > location.trendlinePrice * 1.008) {
-      confirmations.push("breaks_above_tl");
-    } else if (direction === "SHORT" && price < location.trendlinePrice * 0.992) {
-      confirmations.push("breaks_below_tl");
-    }
+  // Confirmation 1: Price is beyond trendline (location already validated this)
+  if (location.locationType === "BEYOND_TL") {
+    confirmations.push("beyond_tl");
   }
 
   // Confirmation 2: Confirming candle pattern
@@ -548,17 +567,11 @@ function addTrigger4H(
     confirmations.push("stoch_momentum");
   }
 
-  // Confirmation 4: Volume spike
-  const volAvg = avg(candles4h.slice(-10).map(c => c.volume));
-  if (last.volume > volAvg * 1.3) {
-    confirmations.push("volume_spike");
-  }
-
-  // Require at least 2 of 4 confirmations
+  // Require at least 2 of 3 confirmations
   const fired = confirmations.length >= 2;
   const detail = fired
-    ? `ADD fired with ${confirmations.length}/4 confirmations: ${confirmations.join(", ")}`
-    : `ADD blocked: only ${confirmations.length}/4 confirmations (${confirmations.join(", ")})`;
+    ? `ADD fired with ${confirmations.length}/3 confirmations: ${confirmations.join(", ")}`
+    : `ADD blocked: only ${confirmations.length}/3 confirmations (${confirmations.join(", ")})`;
 
   return { fired, detail, confirmations, stochK: stoch.k, stochD: stoch.d };
 }
@@ -624,7 +637,7 @@ function checkCooldownEarlyRelease(pair: string, currentPrice: number): void {
 }
 
 // ============================================================
-// ACTIVE SIGNAL TRACKING — v50.1: Track scale for ENTRY_1/ENTRY_2/ADD
+// ACTIVE SIGNAL TRACKING
 // ============================================================
 
 interface ActiveSignalState {
@@ -640,11 +653,8 @@ function hasActiveSignal(pair: string): boolean {
   const state = activeSignalStore.get(pair);
   if (!state) return false;
   const age = Date.now() - state.timestamp;
-  // ENTRY_1/ENTRY_2 lock for 24h
   if ((state.scale === "ENTRY_1" || state.scale === "ENTRY_2") && age < 24 * 60 * 60 * 1000) return true;
-  // ADD lock for 4h
   if (state.scale === "ADD" && age < 4 * 60 * 60 * 1000) return true;
-  // Expired
   activeSignalStore.delete(pair);
   return false;
 }
@@ -666,12 +676,9 @@ function setActiveSignal(pair: string, scale: "ENTRY_1" | "ENTRY_2" | "ADD", ent
 function canAddToPair(pair: string): boolean {
   const state = activeSignalStore.get(pair);
   if (!state) return false;
-  // Can ADD only if we have an active ENTRY_1 or ENTRY_2 (not another ADD)
   if (state.scale === "ADD") return false;
   const age = Date.now() - state.timestamp;
-  // ENTRY must be at least 1h old to allow ADD
   if (age < 60 * 60 * 1000) return false;
-  // ENTRY must be less than 24h old
   if (age > 24 * 60 * 60 * 1000) {
     activeSignalStore.delete(pair);
     return false;
@@ -697,7 +704,6 @@ export function generateSignal(
 
   checkCooldownEarlyRelease(pair, price);
 
-  // Check for active signals (compatibility with passed-in activeSignals)
   const hasActive = activeSignals.some(s => s.pair === pair && !s.exited) || hasActiveSignal(pair);
 
   // ── Step 1: Daily Trend ──
@@ -721,8 +727,8 @@ export function generateSignal(
   let signalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
   let trigger: TriggerResult | AddTriggerResult | null = null;
 
-  // Try ENTRY_1 or ENTRY_2 first (if no active signal)
-  if (!hasActive) {
+  // ENTRY_1 or ENTRY_2: only when location is pullback zone (not beyond TL)
+  if (!hasActive && location.locationType !== "BEYOND_TL") {
     const entryTrigger = stochTrigger4H(candles4h, trend.direction);
     debug.push(`Trigger: ${entryTrigger.fired ? "FIRED" : "WAITING"} | ${entryTrigger.detail}`);
     if (entryTrigger.fired) {
@@ -733,16 +739,20 @@ export function generateSignal(
       }
       trigger = entryTrigger;
     }
+  } else if (!hasActive && location.locationType === "BEYOND_TL") {
+    debug.push("ENTRY blocked: price beyond TL (ADD zone)");
   }
 
-  // Try ADD (if we have an active ENTRY and not already in ADD)
-  if (!signalType && canAddToPair(pair) && !hasActiveAdd(pair)) {
+  // ADD: only when we have an active entry and location is beyond TL
+  if (!signalType && canAddToPair(pair) && !hasActiveAdd(pair) && location.locationType === "BEYOND_TL") {
     const addTrigger = addTrigger4H(candles4h, trend.direction, location);
     debug.push(`ADD: ${addTrigger.fired ? "FIRED" : "BLOCKED"} | ${addTrigger.detail}`);
     if (addTrigger.fired) {
       signalType = "ADD";
       trigger = addTrigger;
     }
+  } else if (!signalType && canAddToPair(pair) && !hasActiveAdd(pair) && location.locationType !== "BEYOND_TL") {
+    debug.push("ADD blocked: price not beyond TL");
   }
 
   if (!signalType) {
@@ -772,7 +782,6 @@ export function generateSignal(
   let target: number;
 
   if (signalType === "ENTRY_1" || signalType === "ENTRY_2") {
-    // ENTRY: wider stop for pullback entries
     if (trend.direction === "LONG") {
       const atrStop = price - atrVal * 2;
       stop = Math.max(atrStop, swingLow);
@@ -785,7 +794,7 @@ export function generateSignal(
       target = Math.min(swingLow, minTarget);
     }
   } else {
-    // ADD: tighter stop for continuation, anchored to trendline
+    // ADD: tighter stop for continuation
     if (trend.direction === "LONG") {
       const atrStop = price - atrVal * 1.5;
       const tlStop = location.trendlinePrice > 0 ? location.trendlinePrice * 0.995 : atrStop;
