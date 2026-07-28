@@ -1049,8 +1049,8 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
   const closes4h = candles4h.map(c => c.close);
   const stoch = stochRsi(closes4h);
   const stochExtremeOpposite = signal.direction === "LONG"
-    ? stoch.k < STOCH_EXTREME_LONG
-    : stoch.k > STOCH_EXTREME_SHORT;
+    ? stoch.k > STOCH_EXTREME_SHORT   // overbought = bearish = opposite to LONG
+    : stoch.k < STOCH_EXTREME_LONG;  // oversold = bullish = opposite to SHORT
   if (stochExtremeOpposite) {
     return { shouldHold: false, reason: "stoch_extreme_opposite" };
   }
