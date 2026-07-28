@@ -1,6 +1,6 @@
-// app/api/cron/route.ts — v50 "First Wave" Cron
+// app/api/cron/route.ts — v50.1 "First Wave Hybrid" Cron
 // ============================================================
-// Trend → Location → Stoch Trigger → Signal
+// Daily Trend → 4H Location → 4H Trigger → Signal
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
@@ -9,7 +9,7 @@ import { getSignals, setSignals, getMarketData, setMarketData, getActiveTrades, 
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
-const MIN_CRON_INTERVAL_MS = 9 * 60 * 1000; // 9 minutes — allows 10-minute cron-jobs.org to run clean
+const MIN_CRON_INTERVAL_MS = 9 * 60 * 1000; // 9 minutes
 
 function roundPrice(n: number): number {
   if (n >= 10000) return Math.round(n);
@@ -24,7 +24,7 @@ export const revalidate = 0;
 export async function GET(request: Request) {
   const runStart = Date.now();
   console.log("========================================");
-  console.log(`[CRON v50] Started at ${new Date(runStart).toISOString()}`);
+  console.log(`[CRON v50.1] Started at ${new Date(runStart).toISOString()}`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -123,13 +123,17 @@ export async function GET(request: Request) {
       }
 
       const signal = result.signal;
-      console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`);
+      console.log(`[PAIR] ${pair} — SIGNAL: ${signal.type} ${signal.direction} ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`);
       newSignals.push(signal);
+
+      // Determine alert state based on signal type
+      const alertState = signal.type === "ADD" ? "ADD" : "ENTRY";
+      const alertEmoji = signal.type === "ENTRY_1" ? "🟢" : signal.type === "ENTRY_2" ? "🟡" : "🔵";
 
       try {
         await sendAlert({
           symbol: signal.pair,
-          state: "ENTRY",
+          state: alertState,
           price: roundPrice(signal.entry),
           bias: signal.direction,
           stopLoss: roundPrice(signal.stop),
@@ -145,10 +149,20 @@ export async function GET(request: Request) {
           location: signal.location,
           trigger: signal.trigger,
           updatedAt: new Date(signal.timestamp).toISOString(),
+          signalType: signal.type,
+          signalEmoji: alertEmoji,
         });
-        console.log(`[ALERT] ${pair} — SENT`);
-        activeTrades[pair] = { direction: signal.direction, timestamp: Date.now(), entry: signal.entry, stop: signal.stop, target: signal.target, id: signal.id };
-        alerts.push({ pair, status: "sent" });
+        console.log(`[ALERT] ${pair} — SENT (${signal.type})`);
+        activeTrades[pair] = {
+          direction: signal.direction,
+          timestamp: Date.now(),
+          entry: signal.entry,
+          stop: signal.stop,
+          target: signal.target,
+          id: signal.id,
+          type: signal.type,
+        };
+        alerts.push({ pair, status: "sent", type: signal.type });
       } catch (err) {
         console.error(`[ALERT] ${pair} — FAILED:`, err);
         alerts.push({ pair, status: "alert_failed", error: String(err) });
