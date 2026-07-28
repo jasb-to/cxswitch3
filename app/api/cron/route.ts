@@ -9,7 +9,7 @@ import { getSignals, setSignals, getMarketData, setMarketData, getActiveTrades, 
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
-const MIN_CRON_INTERVAL_MS = 14 * 60 * 1000;
+const MIN_CRON_INTERVAL_MS = 9 * 60 * 1000; // 9 minutes — allows 10-minute cron-jobs.org to run clean
 
 function roundPrice(n: number): number {
   if (n >= 10000) return Math.round(n);
