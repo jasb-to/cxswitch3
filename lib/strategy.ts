@@ -1,8 +1,16 @@
-// lib/strategy.ts — v50 "First Wave" — Trend → Location → Stoch Trigger
+// lib/strategy.ts — v50.1 "First Wave Hybrid"
 // ============================================================
+// Architecture: Daily Trend → 4H Location → 4H Trigger → Entry
 // Philosophy: Trade the first wave after a pullback.
-// Sequence: Daily Trend → 4H Location → 15M StochRSI Cross → Enter
-// No scoring. No weighting. No gates. Just: trend, location, trigger.
+// Hybrid: v50 clean structure + v28 entry frequency
+//
+// Changes from v50:
+// 1. R² is diagnostic only (no hard rejection)
+// 2. Trigger moved from 15M back to 4H StochRSI
+// 3. ENTRY_1: Deep pullback — StochRSI extreme zone crossover
+// 4. ENTRY_2: Early momentum — StochRSI crossover below/above midpoint
+// 5. ADD: Continuation entries restored (2 of 4 confirmations)
+// 6. Risk management preserved (RR >= 1.5, cooldown, active trade checks)
 
 export interface Candle {
   timestamp: number;
@@ -17,8 +25,8 @@ export interface Signal {
   id: string;
   pair: string;
   direction: "LONG" | "SHORT";
-  type: "ENTRY" | "ADD" | "EXIT";
-  scale: "ENTRY" | "ADD" | null;
+  type: "ENTRY_1" | "ENTRY_2" | "ADD" | "EXIT";
+  scale: "ENTRY_1" | "ENTRY_2" | "ADD" | null;
   entry: number;
   stop: number;
   target: number;
@@ -56,8 +64,8 @@ export interface MarketSnapshot {
   trendlinePrice: number;
   distToTrendline: number | null;
   locationType: string;
-  ema8_15m: number;
-  ema21_15m: number;
+  ema8_4h: number;
+  ema21_4h: number;
 }
 
 export interface ValidityCheck {
@@ -71,12 +79,13 @@ export interface HoldResult {
   reason: string;
 }
 
-export const CURRENT_SIGNAL_VERSION = 50;
+export const CURRENT_SIGNAL_VERSION = 50.1;
 const MIN_RR = 1.5;
-const TL_PROXIMITY = 0.020;
-const SWING_PROXIMITY = 0.008;
-const STOCH_EXTREME_LONG = 20;
-const STOCH_EXTREME_SHORT = 80;
+const TL_PROXIMITY = 0.020;        // 2% for trendline location
+const SWING_PROXIMITY = 0.012;     // 1.2% for swing fallback (restored from v28)
+const STOCH_EXTREME_LONG = 25;     // Deep pullback zone for ENTRY_1
+const STOCH_EXTREME_SHORT = 75;    // Deep pullback zone for ENTRY_1
+const STOCH_MIDPOINT = 50;         // Midpoint for ENTRY_2 discrimination
 const COOLDOWN_MS = 4 * 60 * 60 * 1000;
 const TL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -93,6 +102,7 @@ function ema(values: number[], period: number): number[] {
   return out;
 }
 
+// --- RSI (Wilder smoothing, TradingView exact) ---
 function wilderRsi(closes: number[], period = 14): number {
   if (closes.length < period + 1) return 50;
   const diffs: number[] = [];
@@ -120,6 +130,7 @@ function wilderRsiSeries(closes: number[], period = 14): number[] {
   return series;
 }
 
+// --- StochRSI (TradingView exact) ---
 function stochRsi(closes: number[], rsiPeriod = 14, stochPeriod = 14, kSmooth = 3, dSmooth = 3): { k: number; d: number } {
   const rsiValues = wilderRsiSeries(closes, rsiPeriod);
   if (rsiValues.length < stochPeriod + kSmooth - 1) return { k: 50, d: 50 };
@@ -207,6 +218,10 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
+// ============================================================
+// TRENDLINE ENGINE — v50.1: R² is diagnostic only
+// ============================================================
+
 interface TrendlineState {
   slope: number;
   intercept: number;
@@ -281,10 +296,8 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
 
     console.log(`[TL ${pair}] CACHED: r²=${existing.r2.toFixed(3)} age=${(age/60000).toFixed(1)}min deviation=${(deviation*100).toFixed(2)}%`);
 
-    if (existing.r2 < 0.30) {
-      console.log(`[TL ${pair}] CACHE REJECT: r² ${existing.r2.toFixed(3)} < 0.30`);
-      trendlineStore.delete(pair);
-    } else if (deviation > 0.02) {
+    // v50.1: R² is diagnostic only — no hard rejection
+    if (deviation > 0.02) {
       console.log(`[TL ${pair}] CACHE REJECT: deviation ${(deviation*100).toFixed(2)}% > 2%`);
       trendlineStore.delete(pair);
     } else if (age >= TL_MAX_AGE_MS) {
@@ -308,10 +321,9 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
 
   console.log(`[TL ${pair}] FIT: r²=${fit.r2.toFixed(3)} slope=${fit.slope.toFixed(4)} intercept=${fit.intercept.toFixed(2)}`);
 
-  if (fit.r2 < 0.30) {
-    console.log(`[TL ${pair}] FAIL: r² ${fit.r2.toFixed(3)} < 0.30`);
-    return null;
-  }
+  // v50.1: R² is diagnostic only — no hard rejection
+  // Store R² for monitoring but do NOT reject based on it
+  console.log(`[TL ${pair}] R²=${fit.r2.toFixed(3)} (diagnostic only, not filtering)`);
 
   trendlineStore.set(pair, {
     slope: fit.slope,
@@ -325,6 +337,10 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   console.log(`[TL ${pair}] BUILT: price=${tlPrice.toFixed(2)} dist=${(Math.abs(price-tlPrice)/tlPrice*100).toFixed(2)}%`);
   return { price: tlPrice, r2: Math.round(fit.r2 * 100) / 100 };
 }
+
+// ============================================================
+// DAILY TREND — v50.1: Keep EMA21/EMA50, 50 candles
+// ============================================================
 
 function dailyTrend(candles1d: Candle[]): { direction: "LONG" | "SHORT" | "NONE"; detail: string } {
   if (candles1d.length < 50) {
@@ -340,11 +356,22 @@ function dailyTrend(candles1d: Candle[]): { direction: "LONG" | "SHORT" | "NONE"
   return { direction: "NONE", detail: `EMA21 ${last21.toFixed(1)} ≈ EMA50 ${last50.toFixed(1)}` };
 }
 
+// ============================================================
+// 4H LOCATION — v50.1: Trendline or swing, R² not blocking
+// ============================================================
+
+interface LocationResult {
+  ready: boolean;
+  detail: string;
+  trendlinePrice: number;
+  locationType: string;
+}
+
 function location4H(
   pair: string,
   candles4h: Candle[],
   direction: "LONG" | "SHORT"
-): { ready: boolean; detail: string; trendlinePrice: number; locationType: string } {
+): LocationResult {
   const price = candles4h[candles4h.length - 1].close;
   const tl = getTrendline(pair, candles4h, direction);
 
@@ -366,6 +393,7 @@ function location4H(
     console.log(`[LOC ${pair}] No TL, falling back to swing`);
   }
 
+  // Swing fallback — restored from v28's 1.2% proximity
   const recent = candles4h.slice(-20);
   if (direction === "LONG") {
     const swingLow = Math.min(...recent.map(c => c.low));
@@ -398,56 +426,153 @@ function location4H(
   return { ready: false, detail: "No valid location", trendlinePrice: tl?.price || 0, locationType: "NONE" };
 }
 
-function stochTrigger15M(candles15m: Candle[], direction: "LONG" | "SHORT"): {
+// ============================================================
+// 4H STOCHRSI TRIGGER — v50.1: ENTRY_1, ENTRY_2, ADD
+// ============================================================
+
+interface TriggerResult {
   fired: boolean;
   detail: string;
   triggerType: string;
   stochK: number;
   stochD: number;
-} {
+}
+
+function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT"): TriggerResult {
   const defaultFail = {
     fired: false,
-    detail: "Insufficient 15M data",
+    detail: "Insufficient 4H data",
     triggerType: "none",
     stochK: 50,
     stochD: 50,
   };
-  if (candles15m.length < 30) return defaultFail;
-  const closes = candles15m.map(c => c.close);
+  if (candles4h.length < 30) return defaultFail;
+
+  const closes = candles4h.map(c => c.close);
   const prevCloses = closes.slice(0, -1);
   const stoch = stochRsi(closes);
   const prevStoch = stochRsi(prevCloses);
+
   let fired = false;
   let detail = "";
   let triggerType = "none";
 
   if (direction === "LONG") {
+    // ENTRY_1: Deep pullback — K crosses above D from extreme zone
     if (prevStoch.k < STOCH_EXTREME_LONG && prevStoch.k < prevStoch.d && stoch.k >= stoch.d) {
       fired = true;
-      triggerType = "stoch_cross";
-      detail = `Stoch K crossed above D from oversold (K=${stoch.k}, D=${stoch.d})`;
+      triggerType = "entry_1_deep_pullback";
+      detail = `ENTRY_1: K crossed above D from deep pullback (prev K=${prevStoch.k}, now K=${stoch.k}, D=${stoch.d})`;
+    }
+    // ENTRY_2: Early momentum — K crosses above D, not extreme, below midpoint
+    else if (prevStoch.k < STOCH_MIDPOINT && prevStoch.k < prevStoch.d && stoch.k >= stoch.d) {
+      fired = true;
+      triggerType = "entry_2_early_momentum";
+      detail = `ENTRY_2: K crossed above D below midpoint (prev K=${prevStoch.k}, now K=${stoch.k}, D=${stoch.d})`;
     }
   } else {
+    // ENTRY_1: Deep pullback — K crosses below D from extreme zone
     if (prevStoch.k > STOCH_EXTREME_SHORT && prevStoch.k > prevStoch.d && stoch.k <= stoch.d) {
       fired = true;
-      triggerType = "stoch_cross";
-      detail = `Stoch K crossed below D from overbought (K=${stoch.k}, D=${stoch.d})`;
+      triggerType = "entry_1_deep_pullback";
+      detail = `ENTRY_1: K crossed below D from deep pullback (prev K=${prevStoch.k}, now K=${stoch.k}, D=${stoch.d})`;
+    }
+    // ENTRY_2: Early momentum — K crosses below D, not extreme, above midpoint
+    else if (prevStoch.k > STOCH_MIDPOINT && prevStoch.k > prevStoch.d && stoch.k <= stoch.d) {
+      fired = true;
+      triggerType = "entry_2_early_momentum";
+      detail = `ENTRY_2: K crossed below D above midpoint (prev K=${prevStoch.k}, now K=${stoch.k}, D=${stoch.d})`;
     }
   }
 
   if (!fired) {
-    detail = `No trigger. Stoch K=${stoch.k} D=${stoch.d}`;
+    detail = `No trigger. Stoch K=${stoch.k} D=${stoch.d} | prev K=${prevStoch.k} D=${prevStoch.d}`;
   }
   return { fired, detail, triggerType, stochK: stoch.k, stochD: stoch.d };
 }
 
-// ─── Cooldown tracking with early release ──────────────────
+// ============================================================
+// ADD TRIGGER — v50.1: Continuation entries restored
+// ============================================================
+
+interface AddTriggerResult {
+  fired: boolean;
+  detail: string;
+  confirmations: string[];
+  stochK: number;
+  stochD: number;
+}
+
+function addTrigger4H(
+  candles4h: Candle[],
+  direction: "LONG" | "SHORT",
+  location: LocationResult
+): AddTriggerResult {
+  const defaultFail = {
+    fired: false,
+    detail: "No ADD conditions met",
+    confirmations: [] as string[],
+    stochK: 50,
+    stochD: 50,
+  };
+  if (candles4h.length < 30) return defaultFail;
+
+  const price = candles4h[candles4h.length - 1].close;
+  const prev = candles4h[candles4h.length - 2];
+  const last = candles4h[candles4h.length - 1];
+  const closes = candles4h.map(c => c.close);
+  const stoch = stochRsi(closes);
+
+  const confirmations: string[] = [];
+
+  // Confirmation 1: Price breaks beyond trendline in trend direction
+  if (location.trendlinePrice > 0) {
+    if (direction === "LONG" && price > location.trendlinePrice * 1.008) {
+      confirmations.push("breaks_above_tl");
+    } else if (direction === "SHORT" && price < location.trendlinePrice * 0.992) {
+      confirmations.push("breaks_below_tl");
+    }
+  }
+
+  // Confirmation 2: Confirming candle pattern
+  if (direction === "LONG" && last.close > last.open && last.close > prev.close) {
+    confirmations.push("confirming_candle");
+  } else if (direction === "SHORT" && last.close < last.open && last.close < prev.close) {
+    confirmations.push("confirming_candle");
+  }
+
+  // Confirmation 3: StochRSI momentum aligned with trend
+  if (direction === "LONG" && stoch.k > stoch.d) {
+    confirmations.push("stoch_momentum");
+  } else if (direction === "SHORT" && stoch.k < stoch.d) {
+    confirmations.push("stoch_momentum");
+  }
+
+  // Confirmation 4: Volume spike
+  const volAvg = avg(candles4h.slice(-10).map(c => c.volume));
+  if (last.volume > volAvg * 1.3) {
+    confirmations.push("volume_spike");
+  }
+
+  // Require at least 2 of 4 confirmations
+  const fired = confirmations.length >= 2;
+  const detail = fired
+    ? `ADD fired with ${confirmations.length}/4 confirmations: ${confirmations.join(", ")}`
+    : `ADD blocked: only ${confirmations.length}/4 confirmations (${confirmations.join(", ")})`;
+
+  return { fired, detail, confirmations, stochK: stoch.k, stochD: stoch.d };
+}
+
+// ============================================================
+// COOLDOWN & ACTIVE TRADE MANAGEMENT
+// ============================================================
 
 interface CooldownEntry {
   until: number;
   entryPrice: number;
   stop: number;
   target: number;
+  type: "ENTRY_1" | "ENTRY_2" | "ADD";
 }
 
 const cooldownStore: Map<string, CooldownEntry> = new Map();
@@ -465,6 +590,7 @@ function isOnCooldown(pair: string, now: number, currentPrice?: number): boolean
     }
   }
 
+  // Early release: 90 minutes before cooldown ends
   if (now >= entry.until - (3 * 60 * 60 * 1000) + (90 * 60 * 1000)) {
     cooldownStore.delete(pair);
     return false;
@@ -473,12 +599,14 @@ function isOnCooldown(pair: string, now: number, currentPrice?: number): boolean
   return now < entry.until;
 }
 
-function setCooldown(pair: string, now: number, entryPrice: number, stop: number, target: number): void {
+function setCooldown(pair: string, now: number, entryPrice: number, stop: number, target: number, type: "ENTRY_1" | "ENTRY_2" | "ADD"): void {
+  const duration = type === "ADD" ? 4 * 60 * 60 * 1000 : COOLDOWN_MS;
   cooldownStore.set(pair, {
-    until: now + COOLDOWN_MS,
+    until: now + duration,
     entryPrice,
     stop,
     target,
+    type,
   });
 }
 
@@ -495,6 +623,66 @@ function checkCooldownEarlyRelease(pair: string, currentPrice: number): void {
   }
 }
 
+// ============================================================
+// ACTIVE SIGNAL TRACKING — v50.1: Track scale for ENTRY_1/ENTRY_2/ADD
+// ============================================================
+
+interface ActiveSignalState {
+  pair: string;
+  scale: "ENTRY_1" | "ENTRY_2" | "ADD";
+  timestamp: number;
+  entryPrice: number;
+}
+
+const activeSignalStore: Map<string, ActiveSignalState> = new Map();
+
+function hasActiveSignal(pair: string): boolean {
+  const state = activeSignalStore.get(pair);
+  if (!state) return false;
+  const age = Date.now() - state.timestamp;
+  // ENTRY_1/ENTRY_2 lock for 24h
+  if ((state.scale === "ENTRY_1" || state.scale === "ENTRY_2") && age < 24 * 60 * 60 * 1000) return true;
+  // ADD lock for 4h
+  if (state.scale === "ADD" && age < 4 * 60 * 60 * 1000) return true;
+  // Expired
+  activeSignalStore.delete(pair);
+  return false;
+}
+
+function hasActiveAdd(pair: string): boolean {
+  const state = activeSignalStore.get(pair);
+  return state?.scale === "ADD" && (Date.now() - state.timestamp) < 4 * 60 * 60 * 1000;
+}
+
+function setActiveSignal(pair: string, scale: "ENTRY_1" | "ENTRY_2" | "ADD", entryPrice: number): void {
+  activeSignalStore.set(pair, {
+    pair,
+    scale,
+    timestamp: Date.now(),
+    entryPrice,
+  });
+}
+
+function canAddToPair(pair: string): boolean {
+  const state = activeSignalStore.get(pair);
+  if (!state) return false;
+  // Can ADD only if we have an active ENTRY_1 or ENTRY_2 (not another ADD)
+  if (state.scale === "ADD") return false;
+  const age = Date.now() - state.timestamp;
+  // ENTRY must be at least 1h old to allow ADD
+  if (age < 60 * 60 * 1000) return false;
+  // ENTRY must be less than 24h old
+  if (age > 24 * 60 * 60 * 1000) {
+    activeSignalStore.delete(pair);
+    return false;
+  }
+  return true;
+}
+
+// ============================================================
+// MAIN SIGNAL GENERATOR — v50.1
+// ============================================================
+
 export function generateSignal(
   pair: string,
   candles1h: Candle[],
@@ -509,17 +697,10 @@ export function generateSignal(
 
   checkCooldownEarlyRelease(pair, price);
 
-  const hasActive = activeSignals.some(s => s.pair === pair && !s.exited);
-  if (hasActive) {
-    debug.push("Rejected: active trade");
-    return { debug };
-  }
-  if (isOnCooldown(pair, now, price)) {
-    const entry = cooldownStore.get(pair);
-    const mins = entry ? Math.round((entry.until - now) / 60000) : 0;
-    debug.push(`Rejected: cooldown (${mins}min)`);
-    return { debug };
-  }
+  // Check for active signals (compatibility with passed-in activeSignals)
+  const hasActive = activeSignals.some(s => s.pair === pair && !s.exited) || hasActiveSignal(pair);
+
+  // ── Step 1: Daily Trend ──
   const candles1d = aggregateTo1D(candles4h);
   const trend = dailyTrend(candles1d);
   debug.push(`Trend: ${trend.direction} | ${trend.detail}`);
@@ -527,78 +708,163 @@ export function generateSignal(
     debug.push("Rejected: no trend");
     return { debug };
   }
+
+  // ── Step 2: 4H Location ──
   const location = location4H(pair, candles4h, trend.direction);
   debug.push(`Location: ${location.ready ? "READY" : "WAIT"} | ${location.detail}`);
   if (!location.ready) {
     debug.push("Rejected: location not ready");
     return { debug };
   }
-  const trigger = stochTrigger15M(candles15m, trend.direction);
-  debug.push(`Trigger: ${trigger.fired ? "FIRED" : "WAITING"} | ${trigger.detail}`);
-  if (!trigger.fired) {
-    debug.push("Rejected: no stoch trigger");
+
+  // ── Step 3: Determine signal type ──
+  let signalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
+  let trigger: TriggerResult | AddTriggerResult | null = null;
+
+  // Try ENTRY_1 or ENTRY_2 first (if no active signal)
+  if (!hasActive) {
+    const entryTrigger = stochTrigger4H(candles4h, trend.direction);
+    debug.push(`Trigger: ${entryTrigger.fired ? "FIRED" : "WAITING"} | ${entryTrigger.detail}`);
+    if (entryTrigger.fired) {
+      if (entryTrigger.triggerType === "entry_1_deep_pullback") {
+        signalType = "ENTRY_1";
+      } else if (entryTrigger.triggerType === "entry_2_early_momentum") {
+        signalType = "ENTRY_2";
+      }
+      trigger = entryTrigger;
+    }
+  }
+
+  // Try ADD (if we have an active ENTRY and not already in ADD)
+  if (!signalType && canAddToPair(pair) && !hasActiveAdd(pair)) {
+    const addTrigger = addTrigger4H(candles4h, trend.direction, location);
+    debug.push(`ADD: ${addTrigger.fired ? "FIRED" : "BLOCKED"} | ${addTrigger.detail}`);
+    if (addTrigger.fired) {
+      signalType = "ADD";
+      trigger = addTrigger;
+    }
+  }
+
+  if (!signalType) {
+    if (hasActive) {
+      debug.push("No signal: active trade exists");
+    } else {
+      debug.push("Rejected: no trigger");
+    }
     return { debug };
   }
+
+  // ── Step 4: Check cooldown ──
+  if (isOnCooldown(pair, now, price)) {
+    const entry = cooldownStore.get(pair);
+    const mins = entry ? Math.round((entry.until - now) / 60000) : 0;
+    debug.push(`Rejected: cooldown (${mins}min)`);
+    return { debug };
+  }
+
+  // ── Step 5: Calculate levels ──
   const atrVal = atr(candles4h, 14);
   const recent4h = candles4h.slice(-20);
   const swingLow = Math.min(...recent4h.map(c => c.low));
   const swingHigh = Math.max(...recent4h.map(c => c.high));
+
   let stop: number;
   let target: number;
-  if (trend.direction === "LONG") {
-    const atrStop = price - atrVal * 2;
-    stop = Math.max(atrStop, swingLow);
-    const minTarget = price + (price - stop) * MIN_RR;
-    target = Math.max(swingHigh, minTarget);
+
+  if (signalType === "ENTRY_1" || signalType === "ENTRY_2") {
+    // ENTRY: wider stop for pullback entries
+    if (trend.direction === "LONG") {
+      const atrStop = price - atrVal * 2;
+      stop = Math.max(atrStop, swingLow);
+      const minTarget = price + (price - stop) * MIN_RR;
+      target = Math.max(swingHigh, minTarget);
+    } else {
+      const atrStop = price + atrVal * 2;
+      stop = Math.min(atrStop, swingHigh);
+      const minTarget = price - (stop - price) * MIN_RR;
+      target = Math.min(swingLow, minTarget);
+    }
   } else {
-    const atrStop = price + atrVal * 2;
-    stop = Math.min(atrStop, swingHigh);
-    const minTarget = price - (stop - price) * MIN_RR;
-    target = Math.min(swingLow, minTarget);
+    // ADD: tighter stop for continuation, anchored to trendline
+    if (trend.direction === "LONG") {
+      const atrStop = price - atrVal * 1.5;
+      const tlStop = location.trendlinePrice > 0 ? location.trendlinePrice * 0.995 : atrStop;
+      stop = Math.max(atrStop, tlStop, swingLow);
+      const minTarget = price + (price - stop) * MIN_RR;
+      target = Math.max(swingHigh, minTarget);
+    } else {
+      const atrStop = price + atrVal * 1.5;
+      const tlStop = location.trendlinePrice > 0 ? location.trendlinePrice * 1.005 : atrStop;
+      stop = Math.min(atrStop, tlStop, swingHigh);
+      const minTarget = price - (stop - price) * MIN_RR;
+      target = Math.min(swingLow, minTarget);
+    }
   }
+
   const risk = Math.abs(price - stop);
   const reward = Math.abs(target - price);
   const rr = risk > 0 ? reward / risk : 0;
+
   if (rr < MIN_RR) {
     debug.push(`Rejected: RR ${rr.toFixed(2)} < ${MIN_RR}`);
     return { debug };
   }
-  setCooldown(pair, now, price, stop, target);
+
+  // ── Step 6: Build signal ──
+  setCooldown(pair, now, price, stop, target, signalType);
+  setActiveSignal(pair, signalType, price);
+
   const rsi4h = wilderRsi(candles4h.map(c => c.close));
   const adxVal = adx(candles4h);
+  const triggerResult = trigger as TriggerResult | AddTriggerResult;
+
+  const reasonPrefix = signalType === "ENTRY_1"
+    ? `ENTRY_1 | Deep pullback reversal | ${trend.direction}`
+    : signalType === "ENTRY_2"
+    ? `ENTRY_2 | Early momentum continuation | ${trend.direction}`
+    : `ADD | Trend continuation scaling | ${trend.direction}`;
+
   const signal: Signal = {
-    id: `${pair}_${now}`,
+    id: `${pair}_${signalType}_${now}`,
     pair,
     direction: trend.direction,
-    type: "ENTRY",
-    scale: "ENTRY",
+    type: signalType,
+    scale: signalType,
     entry: Math.round(price * 100) / 100,
     stop: Math.round(stop * 100) / 100,
     target: Math.round(target * 100) / 100,
     rr: Math.round(rr * 100) / 100,
     adx: Math.round(adxVal * 10) / 10,
     rsi: Math.round(rsi4h * 10) / 10,
-    stochK: trigger.stochK,
-    stochD: trigger.stochD,
+    stochK: triggerResult.stochK,
+    stochD: triggerResult.stochD,
     expectedMove: Math.round(((target - price) / price) * 1000) / 10,
-    reason: `${trend.direction} | ${location.detail} | ${trigger.detail}`,
+    reason: `${reasonPrefix} | ${location.detail} | ${triggerResult.detail}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
     trend: trend.direction,
     location: location.detail,
-    trigger: trigger.detail,
+    trigger: triggerResult.detail,
   };
-  debug.push(`SIGNAL: ${trend.direction} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr}`);
+
+  debug.push(`SIGNAL: ${signalType} ${trend.direction} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr}`);
+
+  // ── Step 7: Market snapshot ──
+  const closes4h = candles4h.map(c => c.close);
+  const ema8_4h = ema(closes4h, 8);
+  const ema21_4h = ema(closes4h, 21);
+
   const distToTrendline = location.trendlinePrice > 0
     ? Math.round(Math.abs((price - location.trendlinePrice) / location.trendlinePrice) * 10000) / 100
     : null;
+
   const market: MarketSnapshot = {
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: now,
     trend: trend.direction,
     location: location.ready ? "READY" : "WAIT",
-    trigger: trigger.fired ? "FIRED" : "WAITING",
+    trigger: triggerResult.fired ? "FIRED" : "WAITING",
     adx: signal.adx,
     rsi: signal.rsi,
     stochK: signal.stochK,
@@ -606,11 +872,16 @@ export function generateSignal(
     trendlinePrice: Math.round(location.trendlinePrice * 100) / 100,
     distToTrendline,
     locationType: location.locationType,
-    ema8_15m: 0,
-    ema21_15m: 0,
+    ema8_4h: Math.round(ema8_4h[ema8_4h.length - 1] * 100) / 100,
+    ema21_4h: Math.round(ema21_4h[ema21_4h.length - 1] * 100) / 100,
   };
+
   return { signal, market, debug };
 }
+
+// ============================================================
+// MARKET SNAPSHOT
+// ============================================================
 
 export function getMarketSnapshot(
   pair: string,
@@ -621,10 +892,12 @@ export function getMarketSnapshot(
   const candles1d = aggregateTo1D(candles4h);
   const trend = dailyTrend(candles1d);
   const location = trend.direction !== "NONE" ? location4H(pair, candles4h, trend.direction) : { ready: false, detail: "No trend", trendlinePrice: 0, locationType: "NONE" };
-  const trigger = trend.direction !== "NONE" ? stochTrigger15M(candles15m, trend.direction) : { fired: false, detail: "No trend", triggerType: "none", stochK: 50, stochD: 50 };
+  const trigger = trend.direction !== "NONE" ? stochTrigger4H(candles4h, trend.direction) : { fired: false, detail: "No trend", triggerType: "none", stochK: 50, stochD: 50 };
   const price = candles4h[candles4h.length - 1]?.close ?? 0;
 
-  const triggerActuallyFired = location.ready && trigger.fired;
+  const closes4h = candles4h.map(c => c.close);
+  const ema8_4h = ema(closes4h, 8);
+  const ema21_4h = ema(closes4h, 21);
 
   const distToTrendline = location.trendlinePrice > 0
     ? Math.round(Math.abs((price - location.trendlinePrice) / location.trendlinePrice) * 10000) / 100
@@ -636,7 +909,7 @@ export function getMarketSnapshot(
     timestamp: Date.now(),
     trend: trend.direction,
     location: location.ready ? "READY" : "WAIT",
-    trigger: triggerActuallyFired ? "FIRED" : "WAITING",
+    trigger: trigger.fired ? "FIRED" : "WAITING",
     adx: Math.round(adx(candles4h) * 10) / 10,
     rsi: Math.round(wilderRsi(candles4h.map(c => c.close)) * 10) / 10,
     stochK: trigger.stochK,
@@ -644,18 +917,22 @@ export function getMarketSnapshot(
     trendlinePrice: Math.round(location.trendlinePrice * 100) / 100,
     distToTrendline,
     locationType: location.locationType,
-    ema8_15m: 0,
-    ema21_15m: 0,
+    ema8_4h: Math.round(ema8_4h[ema8_4h.length - 1] * 100) / 100,
+    ema21_4h: Math.round(ema21_4h[ema21_4h.length - 1] * 100) / 100,
   };
 }
 
+// ============================================================
+// VALIDITY & HOLD MANAGEMENT
+// ============================================================
+
 export function isSignalStillValid(signal: Signal, currentPrice: number, now: number = Date.now()): ValidityCheck {
   const ageMs = now - signal.timestamp;
-  const maxAge = signal.type === "ENTRY" ? 24 * 60 * 60 * 1000 : 4 * 60 * 60 * 1000;
+  const maxAge = signal.type === "ENTRY_1" || signal.type === "ENTRY_2" ? 24 * 60 * 60 * 1000 : 4 * 60 * 60 * 1000;
   if (ageMs > maxAge) {
     return { valid: false, reason: "expired_ttl", exited: true };
   }
-  const entryBuffer = signal.type === "ENTRY" ? 1.02 : 1.005;
+  const entryBuffer = signal.type === "ENTRY_1" || signal.type === "ENTRY_2" ? 1.02 : 1.005;
   if (signal.direction === "LONG" && currentPrice > signal.entry * entryBuffer) {
     return { valid: false, reason: "missed_entry", exited: true };
   }
@@ -735,6 +1012,10 @@ export function checkTradeStatus(signal: Signal, currentPrice: number, now: numb
   return "ACTIVE";
 }
 
+// ============================================================
+// COMPATIBILITY LAYER
+// ============================================================
+
 export async function getMonitorState(pair: string): Promise<any | undefined> {
   return undefined;
 }
@@ -767,8 +1048,8 @@ export async function generateSignalCompat(
           id: t.id || `${p}_${t.timestamp}`,
           pair: p,
           direction: t.direction,
-          type: "ENTRY",
-          scale: "ENTRY",
+          type: "ENTRY_1",
+          scale: "ENTRY_1",
           entry: t.entry,
           stop: t.stop,
           target: t.target,
