@@ -1,6 +1,6 @@
-// lib/telegram.ts — v50 Clean Alerts
+// lib/telegram.ts — v50.1 Clean Alerts
 // ============================================================
- 
+
 export async function sendAlert(signal: any) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -14,12 +14,23 @@ export async function sendAlert(signal: any) {
   const isAdd = signal.state === "ADD";
   const isExit = signal.state === "EXIT";
 
-  const emoji = isEntry ? "🟢" : isAdd ? "🔵" : isExit ? "🔴" : "📊";
-  const label = isEntry ? "ENTRY" : isAdd ? "ADD" : isExit ? "EXIT" : "SETUP";
+  // v50.1: Distinguish ENTRY_1, ENTRY_2, ADD with different emojis
+  const signalType = signal.signalType || signal.state;
+  const emoji = signal.signalEmoji || (isEntry ? "🟢" : isAdd ? "🔵" : isExit ? "🔴" : "📊");
+
+  const labelMap: Record<string, string> = {
+    "ENTRY_1": "ENTRY ①",
+    "ENTRY_2": "ENTRY ②",
+    "ADD": "ADD",
+    "ENTRY": "ENTRY",
+    "EXIT": "EXIT",
+  };
+  const label = labelMap[signalType] || signal.state;
+
   const dirEmoji = signal.bias === "LONG" ? "📈" : "📉";
 
   const text = `
-${emoji} CX SWITCH — ${label}
+${emoji} CX SWITCH v50.1 — ${label}
 
 ${dirEmoji} ${signal.symbol} — ${signal.bias}
 Price: ${signal.price}
