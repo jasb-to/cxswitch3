@@ -1,6 +1,6 @@
-// app/api/signals/route.ts — v50 "First Wave"
+// app/api/signals/route.ts — v50.1 "First Wave Hybrid"
 // ============================================================
- 
+
 import { NextResponse } from "next/server";
 import { getSignals, getMarketData, getSignalHistory } from "@/lib/state";
 import { isSignalStillValid, shouldHold, getMarketSnapshot } from "@/lib/strategy";
