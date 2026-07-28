@@ -1094,6 +1094,60 @@ export function checkTradeStatus(signal: Signal, currentPrice: number, now: numb
 }
 
 // ============================================================
+// STATE RECONSTRUCTION (for serverless persistence)
+// ============================================================
+
+export interface PersistedTrade {
+  direction: "LONG" | "SHORT";
+  timestamp: number;
+  entry: number;
+  stop: number;
+  target: number;
+  id: string;
+  type: "ENTRY_1" | "ENTRY_2" | "ADD";
+}
+
+/**
+ * Rebuild in-memory state from persisted KV data.
+ * Call this at cron startup before generateSignal().
+ */
+export function rebuildStateFromTrades(activeTrades: Record<string, PersistedTrade>): void {
+  for (const [pair, trade] of Object.entries(activeTrades)) {
+    if (!trade || !trade.direction) continue;
+
+    // Rebuild activeSignalStore
+    activeSignalStore.set(pair, {
+      pair,
+      scale: trade.type,
+      timestamp: trade.timestamp,
+      entryPrice: trade.entry,
+    });
+
+    // Rebuild cooldownStore
+    const duration = trade.type === "ADD" ? 4 * 60 * 60 * 1000 : COOLDOWN_MS;
+    cooldownStore.set(pair, {
+      until: trade.timestamp + duration,
+      entryPrice: trade.entry,
+      stop: trade.stop,
+      target: trade.target,
+      type: trade.type,
+    });
+
+    console.log(`[STATE_REBUILD] ${pair}: ${trade.type} ${trade.direction} @ ${trade.entry}`);
+  }
+}
+
+/**
+ * Clear all in-memory state. Call on graceful shutdown if needed.
+ */
+export function clearAllState(): void {
+  trendlineStore.clear();
+  cooldownStore.clear();
+  activeSignalStore.clear();
+  console.log("[STATE] All in-memory state cleared");
+}
+
+// ============================================================
 // COMPATIBILITY LAYER
 // ============================================================
 
