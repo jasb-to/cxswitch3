@@ -1,10 +1,10 @@
-// lib/strategy.ts — v50.1 "First Wave Hybrid"
+// lib/strategy.ts — v50.2 "First Wave Hybrid"
 // ============================================================
 // Architecture: Daily Trend → 4H Location → 4H Stoch Trigger → Entry/ADD
 // Philosophy: Capture the first pullback in a daily trend.
 // v50 clean structure + v28 frequency characteristics.
 //
-// Changes from v50:
+// Changes from v50.1:
 // 1. R² soft floor at 0.10 (was 0.30 hard reject)
 // 2. Trigger moved from 15M back to 4H StochRSI
 // 3. TL proximity 4% (was 2%), swing proximity 3% (was 0.8%)
@@ -80,13 +80,16 @@ export interface HoldResult {
   reason: string;
 }
 
-export const CURRENT_SIGNAL_VERSION = 50.1;
+export const CURRENT_SIGNAL_VERSION = 50.2;
 const MIN_RR = 1.5;
 const TL_PROXIMITY = 0.040;        // 4% — captures imperfect pullbacks
 const SWING_PROXIMITY = 0.030;     // 3% — captures imperfect swing entries
 const STOCH_EXTREME_LONG = 25;     // Deep pullback zone for ENTRY_1
 const STOCH_EXTREME_SHORT = 75;    // Deep pullback zone for ENTRY_1
 const STOCH_MIDPOINT = 50;         // Midpoint for ENTRY_2 discrimination
+const STOCH_ENTRY_ZONE_LONG = 35;  // v50.2: K must still be below this after recent cross
+const STOCH_ENTRY_ZONE_SHORT = 65; // v50.2: K must still be above this after recent cross
+const STOCH_CROSS_LOOKBACK = 2;    // v50.2: Cross must have occurred within last N completed candles
 const R2_MINIMUM = 0.10;           // Soft floor — reject only garbage fits
 const COOLDOWN_MS = 4 * 60 * 60 * 1000;
 const TL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -450,7 +453,7 @@ function location4H(
 }
 
 // ============================================================
-// 4H STOCHRSI TRIGGER — ENTRY_1 and ENTRY_2
+// 4H STOCHRSI TRIGGER — v50.2: Recent cross tolerance
 // ============================================================
 
 interface TriggerResult {
@@ -461,6 +464,57 @@ interface TriggerResult {
   stochD: number;
 }
 
+function stochRsiForSlice(closes: number[]): { k: number; d: number } {
+  return stochRsi(closes);
+}
+
+function findRecentCross(
+  candles4h: Candle[],
+  direction: "LONG" | "SHORT",
+  lookback: number
+): { crossIndex: number; crossStochK: number; crossStochD: number; currentStochK: number; currentStochD: number } | null {
+  // We need at least lookback + 30 candles to compute StochRSI at each point
+  const minNeeded = 30 + lookback;
+  if (candles4h.length < minNeeded) return null;
+
+  const closes = candles4h.map(c => c.close);
+  const currentStoch = stochRsi(closes);
+
+  // Check the last 'lookback' completed candles (not including the current forming one)
+  // candles4h[-1] is current forming, candles4h[-2] is last completed, etc.
+  for (let i = 1; i <= lookback; i++) {
+    const idx = candles4h.length - 1 - i; // index of the completed candle
+    if (idx < 30) continue;
+
+    const sliceAtCross = closes.slice(0, idx + 1);
+    const sliceBeforeCross = closes.slice(0, idx);
+
+    const stochAt = stochRsi(sliceAtCross);
+    const stochBefore = stochRsi(sliceBeforeCross);
+
+    let crossed = false;
+    if (direction === "LONG") {
+      // K crossed above D on this candle
+      crossed = stochBefore.k < stochBefore.d && stochAt.k >= stochAt.d;
+    } else {
+      // K crossed below D on this candle
+      crossed = stochBefore.k > stochBefore.d && stochAt.k <= stochAt.d;
+    }
+
+    if (crossed) {
+      return {
+        crossIndex: idx,
+        crossStochK: stochAt.k,
+        crossStochD: stochAt.d,
+        currentStochK: currentStoch.k,
+        currentStochD: currentStoch.d,
+      };
+    }
+  }
+
+  return null;
+}
+
 function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT"): TriggerResult {
   const defaultFail = {
     fired: false,
@@ -469,48 +523,66 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT"): Trigg
     stochK: 50,
     stochD: 50,
   };
-  if (candles4h.length < 30) return defaultFail;
+  if (candles4h.length < 35) return defaultFail;
 
   const closes = candles4h.map(c => c.close);
-  const prevCloses = closes.slice(0, -1);
   const stoch = stochRsi(closes);
-  const prevStoch = stochRsi(prevCloses);
 
   let fired = false;
   let detail = "";
   let triggerType = "none";
 
+  // v50.2: Look for a cross within the last N completed candles
+  const recentCross = findRecentCross(candles4h, direction, STOCH_CROSS_LOOKBACK);
+
   if (direction === "LONG") {
-    // ENTRY_1: Deep pullback — K crosses above D from extreme zone
-    if (prevStoch.k < STOCH_EXTREME_LONG && prevStoch.k < prevStoch.d && stoch.k >= stoch.d) {
-      fired = true;
-      triggerType = "entry_1_deep_pullback";
-      detail = `ENTRY_1: K crossed above D from deep pullback (prev K=${prevStoch.k}, now K=${stoch.k}, D=${stoch.d})`;
-    }
-    // ENTRY_2: Early momentum — K crosses above D, below midpoint
-    else if (prevStoch.k < STOCH_MIDPOINT && prevStoch.k < prevStoch.d && stoch.k >= stoch.d) {
-      fired = true;
-      triggerType = "entry_2_early_momentum";
-      detail = `ENTRY_2: K crossed above D below midpoint (prev K=${prevStoch.k}, now K=${stoch.k}, D=${stoch.d})`;
+    if (recentCross) {
+      const crossWasDeep = recentCross.crossStochK < STOCH_EXTREME_LONG;
+      const crossWasEarly = recentCross.crossStochK < STOCH_MIDPOINT && !crossWasDeep;
+      const stillInZone = recentCross.currentStochK < STOCH_ENTRY_ZONE_LONG;
+      const kAboveD = recentCross.currentStochK >= recentCross.currentStochD;
+
+      if (crossWasDeep && stillInZone && kAboveD) {
+        fired = true;
+        triggerType = "entry_1_deep_pullback";
+        detail = `ENTRY_1: K crossed above D ${candles4h.length - 1 - recentCross.crossIndex} candles ago from deep pullback (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
+      } else if (crossWasEarly && stillInZone && kAboveD) {
+        fired = true;
+        triggerType = "entry_2_early_momentum";
+        detail = `ENTRY_2: K crossed above D ${candles4h.length - 1 - recentCross.crossIndex} candles ago below midpoint (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
+      } else if (!stillInZone) {
+        detail = `Cross found but K=${recentCross.currentStochK} exited zone (need <${STOCH_ENTRY_ZONE_LONG})`;
+      } else if (!kAboveD) {
+        detail = `Cross found but K=${recentCross.currentStochK} < D=${recentCross.currentStochD} (cross faded)`;
+      }
+    } else {
+      detail = `No recent cross. Stoch K=${stoch.k} D=${stoch.d}`;
     }
   } else {
-    // ENTRY_1: Deep pullback — K crosses below D from extreme zone
-    if (prevStoch.k > STOCH_EXTREME_SHORT && prevStoch.k > prevStoch.d && stoch.k <= stoch.d) {
-      fired = true;
-      triggerType = "entry_1_deep_pullback";
-      detail = `ENTRY_1: K crossed below D from deep pullback (prev K=${prevStoch.k}, now K=${stoch.k}, D=${stoch.d})`;
-    }
-    // ENTRY_2: Early momentum — K crosses below D, above midpoint
-    else if (prevStoch.k > STOCH_MIDPOINT && prevStoch.k > prevStoch.d && stoch.k <= stoch.d) {
-      fired = true;
-      triggerType = "entry_2_early_momentum";
-      detail = `ENTRY_2: K crossed below D above midpoint (prev K=${prevStoch.k}, now K=${stoch.k}, D=${stoch.d})`;
+    if (recentCross) {
+      const crossWasDeep = recentCross.crossStochK > STOCH_EXTREME_SHORT;
+      const crossWasEarly = recentCross.crossStochK > STOCH_MIDPOINT && !crossWasDeep;
+      const stillInZone = recentCross.currentStochK > STOCH_ENTRY_ZONE_SHORT;
+      const kBelowD = recentCross.currentStochK <= recentCross.currentStochD;
+
+      if (crossWasDeep && stillInZone && kBelowD) {
+        fired = true;
+        triggerType = "entry_1_deep_pullback";
+        detail = `ENTRY_1: K crossed below D ${candles4h.length - 1 - recentCross.crossIndex} candles ago from deep pullback (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
+      } else if (crossWasEarly && stillInZone && kBelowD) {
+        fired = true;
+        triggerType = "entry_2_early_momentum";
+        detail = `ENTRY_2: K crossed below D ${candles4h.length - 1 - recentCross.crossIndex} candles ago above midpoint (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
+      } else if (!stillInZone) {
+        detail = `Cross found but K=${recentCross.currentStochK} exited zone (need >${STOCH_ENTRY_ZONE_SHORT})`;
+      } else if (!kBelowD) {
+        detail = `Cross found but K=${recentCross.currentStochK} > D=${recentCross.currentStochD} (cross faded)`;
+      }
+    } else {
+      detail = `No recent cross. Stoch K=${stoch.k} D=${stoch.d}`;
     }
   }
 
-  if (!fired) {
-    detail = `No trigger. Stoch K=${stoch.k} D=${stoch.d} | prev K=${prevStoch.k} D=${prevStoch.d}`;
-  }
   return { fired, detail, triggerType, stochK: stoch.k, stochD: stoch.d };
 }
 
