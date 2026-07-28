@@ -1,4 +1,4 @@
-// lib/strategy.ts — v50.2 "First Wave Hybrid"
+// lib/strategy.ts — v50.3 "First Wave Hybrid"
 // ============================================================
 // Architecture: Daily Trend → 4H Location → 4H Stoch Trigger → Entry/ADD
 // Philosophy: Capture the first pullback in a daily trend.
@@ -80,16 +80,16 @@ export interface HoldResult {
   reason: string;
 }
 
-export const CURRENT_SIGNAL_VERSION = 50.2;
+export const CURRENT_SIGNAL_VERSION = 50.3;
 const MIN_RR = 1.5;
 const TL_PROXIMITY = 0.040;        // 4% — captures imperfect pullbacks
 const SWING_PROXIMITY = 0.030;     // 3% — captures imperfect swing entries
 const STOCH_EXTREME_LONG = 25;     // Deep pullback zone for ENTRY_1
 const STOCH_EXTREME_SHORT = 75;    // Deep pullback zone for ENTRY_1
 const STOCH_MIDPOINT = 50;         // Midpoint for ENTRY_2 discrimination
-const STOCH_ENTRY_ZONE_LONG = 35;  // v50.2: K must still be below this after recent cross
-const STOCH_ENTRY_ZONE_SHORT = 65; // v50.2: K must still be above this after recent cross
-const STOCH_CROSS_LOOKBACK = 2;    // v50.2: Cross must have occurred within last N completed candles
+const STOCH_ENTRY_ZONE_LONG = 45;  // v50.2: K must still be below this after recent cross
+const STOCH_ENTRY_ZONE_SHORT = 55; // v50.2: K must still be above this after recent cross
+const STOCH_CROSS_LOOKBACK = 4;    // v50.2: Cross must have occurred within last N completed candles
 const R2_MINIMUM = 0.10;           // Soft floor — reject only garbage fits
 const COOLDOWN_MS = 4 * 60 * 60 * 1000;
 const TL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -288,7 +288,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     return null;
   }
 
-  const recentPivots = pivots.slice(-5);
+  const recentPivots = pivots.slice(-10);
   console.log(`[TL ${pair}] recentPivots=${recentPivots.length} lastPivotPrice=${recentPivots[recentPivots.length-1].price.toFixed(2)}`);
 
   const existing = trendlineStore.get(pair);
@@ -324,6 +324,13 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   }
 
   console.log(`[TL ${pair}] FIT: r²=${fit.r2.toFixed(3)} slope=${fit.slope.toFixed(4)} intercept=${fit.intercept.toFixed(2)}`);
+
+  // v50.3: Reject trendlines whose slope contradicts the trend direction
+  const slopeContradicts = direction === "LONG" ? fit.slope < 0 : fit.slope > 0;
+  if (slopeContradicts) {
+    console.log(`[TL ${pair}] REJECT: slope ${fit.slope.toFixed(4)} contradicts ${direction} trend`);
+    return null;
+  }
 
   // v50.1: Soft floor at R² >= 0.10. Reject only garbage fits.
   if (fit.r2 < R2_MINIMUM) {
@@ -419,10 +426,37 @@ function location4H(
     console.log(`[LOC ${pair}] No TL, falling back to swing`);
   }
 
-  // Swing fallback — 3% proximity
-  const recent = candles4h.slice(-20);
+  // v50.3: ATR-based swing detection for trending markets
+  const atrVal = atr(candles4h, 14);
+  const lookback = 30; // wider lookback for trend context
+  const recent = candles4h.slice(-lookback);
+  if (recent.length < 5) {
+    console.log(`[LOC ${pair}] No valid location`);
+    return { ready: false, detail: "No valid location", trendlinePrice: tl?.price || 0, locationType: "NONE" };
+  }
+
   if (direction === "LONG") {
-    const swingLow = Math.min(...recent.map(c => c.low));
+    // Find the lowest low that is also a local minimum (pivot)
+    let swingLow = Infinity;
+    let swingLowIdx = -1;
+    for (let i = 2; i < recent.length - 2; i++) {
+      const isPivotLow = recent[i].low < recent[i-1].low && recent[i].low < recent[i-2].low &&
+                         recent[i].low < recent[i+1].low && recent[i].low < recent[i+2].low;
+      if (isPivotLow && recent[i].low < swingLow) {
+        swingLow = recent[i].low;
+        swingLowIdx = i;
+      }
+    }
+    // Fallback: if no pivot found, use lowest low within 1 ATR of the absolute min
+    if (swingLowIdx === -1) {
+      const absLow = Math.min(...recent.map(c => c.low));
+      swingLow = absLow;
+      // Only accept if price is within ATR of the absolute low (not too far in a trend)
+      if ((price - absLow) > atrVal * 2) {
+        console.log(`[LOC ${pair}] SWING_LONG: no pivot, price too far from absLow (${((price-absLow)/absLow*100).toFixed(2)}% > 2×ATR)`);
+        return { ready: false, detail: "No valid location", trendlinePrice: tl?.price || 0, locationType: "NONE" };
+      }
+    }
     const dist = (price - swingLow) / swingLow;
     console.log(`[LOC ${pair}] SWING_LONG: price=${price.toFixed(2)} swingLow=${swingLow.toFixed(2)} dist=${(dist*100).toFixed(2)}% proximity=${(SWING_PROXIMITY*100).toFixed(2)}%`);
     if (dist >= 0 && dist < SWING_PROXIMITY) {
@@ -435,7 +469,26 @@ function location4H(
       };
     }
   } else {
-    const swingHigh = Math.max(...recent.map(c => c.high));
+    // Find the highest high that is also a local maximum (pivot)
+    let swingHigh = -Infinity;
+    let swingHighIdx = -1;
+    for (let i = 2; i < recent.length - 2; i++) {
+      const isPivotHigh = recent[i].high > recent[i-1].high && recent[i].high > recent[i-2].high &&
+                          recent[i].high > recent[i+1].high && recent[i].high > recent[i+2].high;
+      if (isPivotHigh && recent[i].high > swingHigh) {
+        swingHigh = recent[i].high;
+        swingHighIdx = i;
+      }
+    }
+    // Fallback: if no pivot found, use highest high within 1 ATR
+    if (swingHighIdx === -1) {
+      const absHigh = Math.max(...recent.map(c => c.high));
+      swingHigh = absHigh;
+      if ((absHigh - price) > atrVal * 2) {
+        console.log(`[LOC ${pair}] SWING_SHORT: no pivot, price too far from absHigh (${((absHigh-price)/absHigh*100).toFixed(2)}% > 2×ATR)`);
+        return { ready: false, detail: "No valid location", trendlinePrice: tl?.price || 0, locationType: "NONE" };
+      }
+    }
     const dist = (swingHigh - price) / swingHigh;
     console.log(`[LOC ${pair}] SWING_SHORT: price=${price.toFixed(2)} swingHigh=${swingHigh.toFixed(2)} dist=${(dist*100).toFixed(2)}% proximity=${(SWING_PROXIMITY*100).toFixed(2)}%`);
     if (dist >= 0 && dist < SWING_PROXIMITY) {
