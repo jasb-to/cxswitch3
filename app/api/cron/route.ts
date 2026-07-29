@@ -1,10 +1,12 @@
-// app/api/cron/route.ts — v50.1 "First Wave Hybrid" Cron
+// app/api/cron/route.ts — v50.5 "First Wave" Cron
 // ============================================================
 // Daily Trend → 4H Location → 4H Trigger → Signal
+// v50.5 FIX: Active trades now persist in UI until TP/SL hit.
+// Exited signals remain visible with status until acknowledged.
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot, rebuildStateFromTrades } from "@/lib/strategy";
+import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot, rebuildStateFromTrades, checkTradeStatus } from "@/lib/strategy";
 import { getSignals, setSignals, getMarketData, setMarketData, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
@@ -24,7 +26,7 @@ export const revalidate = 0;
 export async function GET(request: Request) {
   const runStart = Date.now();
   console.log("========================================");
-  console.log(`[CRON v50.1] Started at ${new Date(runStart).toISOString()}`);
+  console.log(`[CRON v50.5] Started at ${new Date(runStart).toISOString()}`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -45,7 +47,7 @@ export async function GET(request: Request) {
   let activeTrades = await getActiveTrades();
   console.log(`[STATE] Active trades:`, Object.keys(activeTrades).join(", ") || "none");
 
-  // v50.2: Rebuild in-memory state from persisted KV data
+  // v50.5: Rebuild in-memory state from persisted KV data
   rebuildStateFromTrades(activeTrades);
   console.log(`[STATE] In-memory state rebuilt from ${Object.keys(activeTrades).length} persisted trades`);
 
@@ -59,13 +61,20 @@ export async function GET(request: Request) {
     } catch (e) { console.log(`[PRICE] ${pair} — failed`); }
   }
 
+  // v50.5 FIX: filterExpiredSignals now keeps TP_HIT/SL_HIT signals in active list
+  // with exited=true so they remain visible in the UI
   const { active: validSignals, exited: preExited } = filterExpiredSignals(existingSignals, currentPrices, runStart);
-  console.log(`[STATE] Valid: ${validSignals.length}, Expired: ${preExited.length}`);
+  console.log(`[STATE] Valid: ${validSignals.length}, Exited: ${preExited.length}`);
 
+  // v50.5 FIX: Only remove from activeTrades if signal was truly expired (not TP/SL)
+  // TP/SL signals stay in the list for UI visibility
   for (const { signal, reason } of preExited) {
     console.log(`[EXIT] ${signal.pair} — ${reason}`);
     await addSignalToHistory(signal, reason as any, currentPrices[signal.pair] || signal.entry);
-    if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
+    // Only delete from activeTrades if it's NOT a TP/SL hit (those stay visible)
+    if (reason !== "tp_hit" && reason !== "sl_hit") {
+      if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
+    }
   }
 
   const newSignals: any[] = [];
@@ -91,6 +100,14 @@ export async function GET(request: Request) {
 
       // ── Check existing signal ──
       if (existingForPair) {
+        // v50.5 FIX: If signal already exited (TP/SL hit), skip processing but keep it in list
+        if (existingForPair.exited) {
+          console.log(`[PAIR] ${pair} — Already exited (${existingForPair.exitReason}), keeping in UI`);
+          const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+          if (snapshot) marketDataList.push(snapshot);
+          continue;
+        }
+
         const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
         if (!validity.valid) {
           console.log(`[PAIR] ${pair} — INVALID: ${validity.reason}`);
@@ -177,10 +194,42 @@ export async function GET(request: Request) {
     }
   }
 
-  const merged = [...validSignals];
+  // v50.5 FIX: Build merged signals with proper meta.status for UI
+  const merged: any[] = [];
+  for (const s of validSignals) {
+    const ageMinutes = Math.round((runStart - s.timestamp) / 60000);
+
+    // Determine status for UI
+    let status = "ACTIVE";
+    if (s.exited) {
+      status = s.exitReason === "tp_hit" ? "TP_HIT" : s.exitReason === "sl_hit" ? "SL_HIT" : "EXPIRED";
+    } else if (ageMinutes > 120 && (s.type === "ENTRY_1" || s.type === "ENTRY_2")) {
+      status = "STALE";
+    }
+
+    // v50.5 FIX: Add meta object that the UI expects
+    merged.push({
+      ...s,
+      meta: {
+        status,
+        ageMinutes,
+        actionable: status === "ACTIVE" && !s.exited,
+      }
+    });
+  }
+
   for (const s of newSignals) {
     const idx = merged.findIndex((x: any) => x.pair === s.pair);
-    if (idx >= 0) merged[idx] = s; else merged.push(s);
+    const ageMinutes = 0;
+    const signalWithMeta = {
+      ...s,
+      meta: {
+        status: "ACTIVE",
+        ageMinutes,
+        actionable: true,
+      }
+    };
+    if (idx >= 0) merged[idx] = signalWithMeta; else merged.push(signalWithMeta);
   }
 
   await Promise.all([setSignals(merged), setMarketData(marketDataList), setActiveTrades(activeTrades)]);
