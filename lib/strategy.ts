@@ -1,17 +1,24 @@
-// lib/strategy.ts — v50.4 "First Wave Open"
+// lib/strategy.ts — v50.5 "First Wave Open"
 // ============================================================
 // Architecture: Daily Trend → 4H Location → 4H Stoch Trigger → Entry/ADD
 // Philosophy: Capture the first pullback in a daily trend.
 // v50 clean structure + v28 frequency characteristics.
 //
-// Changes from v50.1:
-// 1. R² soft floor at 0.10 (was 0.30 hard reject)
-// 2. Trigger moved from 15M back to 4H StochRSI
-// 3. TL proximity 4% (was 2%), swing proximity 3% (was 0.8%)
-// 4. ENTRY_1: deep pullback (Stoch extreme zone)
-// 5. ENTRY_2: early momentum (Stoch below/above midpoint)
-// 6. ADD: continuation after active entry (2 of 3 confirmations)
-// 7. No scoring, no confidence, no AI, no volume gates
+// Changes from v50.4:
+// 1. Pair-specific configuration system (PairConfig + getPairConfig)
+//    - BTC/ETH/SOL: 6% TL, 3×ATR swing, 4% cache dev, 10-candle lookback
+//    - HYPE: 8% TL, 4×ATR swing, 6% cache dev, 12-candle lookback
+// 2. Cross lookback: 10 candles (was 6) — 40h validity window
+// 3. Removed entry-zone gating: cross below/above 50 is enough
+//    (was: K must stay below 55/above 45 after cross)
+// 4. Pre-cross trigger: K converging toward D within 3 pts
+//    captures early entries in strong trends
+// 5. Trendline proximity: 6% default, 8% HYPE (was 4% global)
+// 6. Swing fallback: always active, 3×ATR default, 4×ATR HYPE
+// 7. Trendline cache: 4% dev tolerance default, 6% HYPE (was 2%)
+// 8. RR: calculated but never blocks (unchanged from v50.4)
+// 9. Architecture: Daily Trend → 4H Location → 4H StochRSI → ENTRY/ADD
+// Philosophy: "First Wave Open" — v28 frequency, v50 structure, asset-aware
 
 export interface Candle {
   timestamp: number;
@@ -80,19 +87,67 @@ export interface HoldResult {
   reason: string;
 }
 
-export const CURRENT_SIGNAL_VERSION = 50.4;
+export const CURRENT_SIGNAL_VERSION = 50.5;
 const MIN_RR = 1.5; // v50.4: informational only, no longer gates signals
-const TL_PROXIMITY = 0.040;        // 4% — captures imperfect pullbacks
-// v50.4: Swing proximity is now dynamic (2×ATR), see location4H
-const STOCH_EXTREME_LONG = 25;     // Deep pullback zone for ENTRY_1
-const STOCH_EXTREME_SHORT = 75;    // Deep pullback zone for ENTRY_1
-const STOCH_MIDPOINT = 50;         // Midpoint for ENTRY_2 discrimination
-const STOCH_ENTRY_ZONE_LONG = 55;  // v50.2: K must still be below this after recent cross
-const STOCH_ENTRY_ZONE_SHORT = 45; // v50.2: K must still be above this after recent cross
-const STOCH_CROSS_LOOKBACK = 6;    // v50.2: Cross must have occurred within last N completed candles
-const R2_MINIMUM = 0.05;           // Soft floor — reject only garbage fits
 const COOLDOWN_MS = 4 * 60 * 60 * 1000;
 const TL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+// ── v50.5: Pair-specific configuration ─────────────────────
+export interface PairConfig {
+  pair: string;
+  tlProximity: number;
+  beyondTL: number;
+  crossLookback: number;
+  swingAtrMult: number;
+  cacheDevTolerance: number;
+  r2Minimum: number;
+  preCrossEnabled: boolean;
+  preCrossThreshold: number;
+}
+
+const DEFAULT_CONFIG: PairConfig = {
+  pair: "DEFAULT",
+  tlProximity: 0.06,          // 6%
+  beyondTL: 0.008,            // 0.8%
+  crossLookback: 10,          // 10 candles
+  swingAtrMult: 3,            // 3×ATR
+  cacheDevTolerance: 0.04,    // 4%
+  r2Minimum: 0.05,
+  preCrossEnabled: true,
+  preCrossThreshold: 3,       // K within 3 pts of D
+};
+
+const PAIR_CONFIGS: Record<string, PairConfig> = {
+  BTC: { ...DEFAULT_CONFIG, pair: "BTC" },
+  ETH: { ...DEFAULT_CONFIG, pair: "ETH" },
+  SOL: { ...DEFAULT_CONFIG, pair: "SOL" },
+  HYPE: {
+    pair: "HYPE",
+    tlProximity: 0.08,        // 8%
+    beyondTL: 0.0175,
+    crossLookback: 12,        // 12 candles
+    swingAtrMult: 4,          // 4×ATR
+    cacheDevTolerance: 0.06,  // 6%
+    r2Minimum: 0.05,
+    preCrossEnabled: true,
+    preCrossThreshold: 3,
+  },
+};
+
+export function getPairConfig(pair: string): PairConfig {
+  return PAIR_CONFIGS[pair] || DEFAULT_CONFIG;
+}
+
+// Legacy constants kept for backwards compatibility (unused internally)
+const TL_PROXIMITY = 0.060;
+const SWING_PROXIMITY = 0.030;
+const STOCH_EXTREME_LONG = 25;
+const STOCH_EXTREME_SHORT = 75;
+const STOCH_MIDPOINT = 50;
+const STOCH_ENTRY_ZONE_LONG = 55;
+const STOCH_ENTRY_ZONE_SHORT = 45;
+const STOCH_CROSS_LOOKBACK = 10;
+const R2_MINIMUM = 0.05;
 
 function avg(arr: number[]): number {
   return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
@@ -224,7 +279,7 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
 }
 
 // ============================================================
-// TRENDLINE ENGINE — v50.1: R² soft floor at 0.10
+// TRENDLINE ENGINE — v50.5: Pair-specific config
 // ============================================================
 
 interface TrendlineState {
@@ -269,6 +324,7 @@ function fitTrendline(pivots: Pivot[]): { slope: number; intercept: number; r2: 
 }
 
 function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number } | null {
+  const config = getPairConfig(pair);
   const price = candles[candles.length - 1].close;
 
   if (candles.length < 30) {
@@ -298,10 +354,10 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     const projected = existing.slope * lastPivot.index + existing.intercept;
     const deviation = Math.abs(lastPivot.price - projected) / projected;
 
-    console.log(`[TL ${pair}] CACHED: r²=${existing.r2.toFixed(3)} age=${(age/60000).toFixed(1)}min deviation=${(deviation*100).toFixed(2)}%`);
+    console.log(`[TL ${pair}] CACHED: r²=${existing.r2.toFixed(3)} age=${(age/60000).toFixed(1)}min deviation=${(deviation*100).toFixed(2)}% tolerance=${(config.cacheDevTolerance*100).toFixed(2)}%`);
 
-    if (deviation > 0.02) {
-      console.log(`[TL ${pair}] CACHE REJECT: deviation ${(deviation*100).toFixed(2)}% > 2%`);
+    if (deviation > config.cacheDevTolerance) {
+      console.log(`[TL ${pair}] CACHE REJECT: deviation ${(deviation*100).toFixed(2)}% > ${(config.cacheDevTolerance*100).toFixed(2)}%`);
       trendlineStore.delete(pair);
     } else if (age >= TL_MAX_AGE_MS) {
       console.log(`[TL ${pair}] CACHE REJECT: age ${(age/3600000).toFixed(1)}h > max ${TL_MAX_AGE_MS/3600000}h`);
@@ -324,9 +380,8 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
 
   console.log(`[TL ${pair}] FIT: r²=${fit.r2.toFixed(3)} slope=${fit.slope.toFixed(4)} intercept=${fit.intercept.toFixed(2)}`);
 
-  // v50.1: Soft floor at R² >= 0.10. Reject only garbage fits.
-  if (fit.r2 < R2_MINIMUM) {
-    console.log(`[TL ${pair}] REJECT: r² ${fit.r2.toFixed(3)} < ${R2_MINIMUM} (garbage fit)`);
+  if (fit.r2 < config.r2Minimum) {
+    console.log(`[TL ${pair}] REJECT: r² ${fit.r2.toFixed(3)} < ${config.r2Minimum} (garbage fit)`);
     return null;
   }
 
@@ -362,7 +417,7 @@ function dailyTrend(candles1d: Candle[]): { direction: "LONG" | "SHORT" | "NONE"
 }
 
 // ============================================================
-// 4H LOCATION — v50.1: 4% TL, 3% swing, BEYOND_TL for ADD
+// 4H LOCATION — v50.5: Pair-specific config, always fallback
 // ============================================================
 
 interface LocationResult {
@@ -377,15 +432,16 @@ function location4H(
   candles4h: Candle[],
   direction: "LONG" | "SHORT"
 ): LocationResult {
+  const config = getPairConfig(pair);
   const price = candles4h[candles4h.length - 1].close;
   const tl = getTrendline(pair, candles4h, direction);
 
   if (tl) {
     const dist = Math.abs(price - tl.price) / tl.price;
-    console.log(`[LOC ${pair}] TL found: price=${price.toFixed(2)} tlPrice=${tl.price.toFixed(2)} dist=${(dist*100).toFixed(2)}% proximity=${(TL_PROXIMITY*100).toFixed(2)}%`);
+    console.log(`[LOC ${pair}] TL found: price=${price.toFixed(2)} tlPrice=${tl.price.toFixed(2)} dist=${(dist*100).toFixed(2)}% proximity=${(config.tlProximity*100).toFixed(2)}%`);
 
-    // ENTRY zone: price near trendline (within 4%)
-    if (dist < TL_PROXIMITY) {
+    // ENTRY zone: price near trendline (within pair-specific proximity)
+    if (dist < config.tlProximity) {
       console.log(`[LOC ${pair}] TL READY (ENTRY zone)`);
       return {
         ready: true,
@@ -397,8 +453,8 @@ function location4H(
 
     // ADD zone: price beyond trendline in trend direction (broken through)
     const beyondTL = direction === "LONG" 
-      ? price > tl.price * 1.008   // LONG: price above TL (broke resistance)
-      : price < tl.price * 0.992;  // SHORT: price below TL (broke support)
+      ? price > tl.price * (1 + config.beyondTL)
+      : price < tl.price * (1 - config.beyondTL);
 
     if (beyondTL) {
       const beyondDist = direction === "LONG"
@@ -413,81 +469,64 @@ function location4H(
       };
     }
 
-    console.log(`[LOC ${pair}] TL too far: ${(dist*100).toFixed(2)}% >= ${(TL_PROXIMITY*100).toFixed(2)}%`);
-  } else {
-    console.log(`[LOC ${pair}] No TL, falling back to swing`);
+    console.log(`[LOC ${pair}] TL too far: ${(dist*100).toFixed(2)}% >= ${(config.tlProximity*100).toFixed(2)}%`);
   }
 
-  // v50.3: ATR-based swing detection for trending markets
+  // v50.5: Always fall back to ATR-based swing logic — no rejection
   const atrVal = atr(candles4h, 14);
-  const lookback = 30; // wider lookback for trend context
+  const lookback = 30;
   const recent = candles4h.slice(-lookback);
-  if (recent.length < 5) {
-    console.log(`[LOC ${pair}] No valid location`);
+  if (recent.length < 3) {
+    console.log(`[LOC ${pair}] No valid location — insufficient candles`);
     return { ready: false, detail: "No valid location", trendlinePrice: tl?.price || 0, locationType: "NONE" };
   }
 
+  const maxDist = atrVal * config.swingAtrMult;
+
   if (direction === "LONG") {
-    // Find the lowest low that is also a local minimum (pivot)
+    // Use the most recent meaningful swing low (pivot or recent low)
     let swingLow = Infinity;
-    let swingLowIdx = -1;
     for (let i = 1; i < recent.length - 1; i++) {
       const isPivotLow = recent[i].low < recent[i-1].low && recent[i].low < recent[i+1].low;
       if (isPivotLow && recent[i].low < swingLow) {
         swingLow = recent[i].low;
-        swingLowIdx = i;
       }
     }
-    // Fallback: if no pivot found, use lowest low within 1 ATR of the absolute min
-    if (swingLowIdx === -1) {
-      const absLow = Math.min(...recent.map(c => c.low));
-      swingLow = absLow;
-      // Only accept if price is within ATR of the absolute low (not too far in a trend)
-      if ((price - absLow) > atrVal * 2) {
-        console.log(`[LOC ${pair}] SWING_LONG: no pivot, price too far from absLow (${((price-absLow)/absLow*100).toFixed(2)}% > 2×ATR)`);
-        return { ready: false, detail: "No valid location", trendlinePrice: tl?.price || 0, locationType: "NONE" };
-      }
+    // If no pivot found, use the lowest low in the lookback
+    if (swingLow === Infinity) {
+      swingLow = Math.min(...recent.map(c => c.low));
     }
     const dist = price - swingLow;
-    const maxDist = atrVal * 2;
-    console.log(`[LOC ${pair}] SWING_LONG: price=${price.toFixed(2)} swingLow=${swingLow.toFixed(2)} dist=${dist.toFixed(2)} maxDist=${maxDist.toFixed(2)} (2×ATR)`);
+    console.log(`[LOC ${pair}] SWING_LONG: price=${price.toFixed(2)} swingLow=${swingLow.toFixed(2)} dist=${dist.toFixed(2)} maxDist=${maxDist.toFixed(2)} (${config.swingAtrMult}×ATR)`);
     if (dist >= 0 && dist <= maxDist) {
       console.log(`[LOC ${pair}] SWING_LOW READY`);
       return {
         ready: true,
-        detail: `Swing low ${dist.toFixed(2)} away (2×ATR=${maxDist.toFixed(2)})`,
+        detail: `Swing low ${dist.toFixed(2)} away (${config.swingAtrMult}×ATR=${maxDist.toFixed(2)})`,
         trendlinePrice: swingLow,
         locationType: "SWING_LOW"
       };
     }
   } else {
-    // Find the highest high that is also a local maximum (pivot)
+    // Use the most recent meaningful swing high (pivot or recent high)
     let swingHigh = -Infinity;
-    let swingHighIdx = -1;
     for (let i = 1; i < recent.length - 1; i++) {
       const isPivotHigh = recent[i].high > recent[i-1].high && recent[i].high > recent[i+1].high;
       if (isPivotHigh && recent[i].high > swingHigh) {
         swingHigh = recent[i].high;
-        swingHighIdx = i;
       }
     }
-    // Fallback: if no pivot found, use highest high within 1 ATR
-    if (swingHighIdx === -1) {
-      const absHigh = Math.max(...recent.map(c => c.high));
-      swingHigh = absHigh;
-      if ((absHigh - price) > atrVal * 2) {
-        console.log(`[LOC ${pair}] SWING_SHORT: no pivot, price too far from absHigh (${((absHigh-price)/absHigh*100).toFixed(2)}% > 2×ATR)`);
-        return { ready: false, detail: "No valid location", trendlinePrice: tl?.price || 0, locationType: "NONE" };
-      }
+    // If no pivot found, use the highest high in the lookback
+    if (swingHigh === -Infinity) {
+      swingHigh = Math.max(...recent.map(c => c.high));
     }
     const dist = swingHigh - price;
-    const maxDist = atrVal * 2;
-    console.log(`[LOC ${pair}] SWING_SHORT: price=${price.toFixed(2)} swingHigh=${swingHigh.toFixed(2)} dist=${dist.toFixed(2)} maxDist=${maxDist.toFixed(2)} (2×ATR)`);
+    console.log(`[LOC ${pair}] SWING_SHORT: price=${price.toFixed(2)} swingHigh=${swingHigh.toFixed(2)} dist=${dist.toFixed(2)} maxDist=${maxDist.toFixed(2)} (${config.swingAtrMult}×ATR)`);
     if (dist >= 0 && dist <= maxDist) {
       console.log(`[LOC ${pair}] SWING_HIGH READY`);
       return {
         ready: true,
-        detail: `Swing high ${dist.toFixed(2)} away (2×ATR=${maxDist.toFixed(2)})`,
+        detail: `Swing high ${dist.toFixed(2)} away (${config.swingAtrMult}×ATR=${maxDist.toFixed(2)})`,
         trendlinePrice: swingHigh,
         locationType: "SWING_HIGH"
       };
@@ -498,7 +537,7 @@ function location4H(
 }
 
 // ============================================================
-// 4H STOCHRSI TRIGGER — v50.2: Recent cross tolerance
+// 4H STOCHRSI TRIGGER — v50.5: Cross + pre-cross
 // ============================================================
 
 interface TriggerResult {
@@ -516,8 +555,11 @@ function stochRsiForSlice(closes: number[]): { k: number; d: number } {
 function findRecentCross(
   candles4h: Candle[],
   direction: "LONG" | "SHORT",
-  lookback: number
+  pair: string
 ): { crossIndex: number; crossStochK: number; crossStochD: number; currentStochK: number; currentStochD: number } | null {
+  const config = getPairConfig(pair);
+  const lookback = config.crossLookback;
+
   // We need at least lookback + 30 candles to compute StochRSI at each point
   const minNeeded = 30 + lookback;
   if (candles4h.length < minNeeded) return null;
@@ -526,9 +568,8 @@ function findRecentCross(
   const currentStoch = stochRsi(closes);
 
   // Check the last 'lookback' completed candles (not including the current forming one)
-  // candles4h[-1] is current forming, candles4h[-2] is last completed, etc.
   for (let i = 1; i <= lookback; i++) {
-    const idx = candles4h.length - 1 - i; // index of the completed candle
+    const idx = candles4h.length - 1 - i;
     if (idx < 30) continue;
 
     const sliceAtCross = closes.slice(0, idx + 1);
@@ -539,10 +580,8 @@ function findRecentCross(
 
     let crossed = false;
     if (direction === "LONG") {
-      // K crossed above D on this candle
       crossed = stochBefore.k < stochBefore.d && stochAt.k >= stochAt.d;
     } else {
-      // K crossed below D on this candle
       crossed = stochBefore.k > stochBefore.d && stochAt.k <= stochAt.d;
     }
 
@@ -560,7 +599,8 @@ function findRecentCross(
   return null;
 }
 
-function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT"): TriggerResult {
+function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: string): TriggerResult {
+  const config = getPairConfig(pair);
   const defaultFail = {
     fired: false,
     detail: "Insufficient 4H data",
@@ -577,51 +617,79 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT"): Trigg
   let detail = "";
   let triggerType = "none";
 
-  // v50.2: Look for a cross within the last N completed candles
-  const recentCross = findRecentCross(candles4h, direction, STOCH_CROSS_LOOKBACK);
+  // ── v50.5: Check for actual cross first ──
+  const recentCross = findRecentCross(candles4h, direction, pair);
 
   if (direction === "LONG") {
+    // ── Actual cross found ──
     if (recentCross) {
-      const crossWasDeep = recentCross.crossStochK < STOCH_EXTREME_LONG;
-      const crossWasEarly = recentCross.crossStochK < STOCH_MIDPOINT && !crossWasDeep;
-      const stillInZone = recentCross.currentStochK < STOCH_ENTRY_ZONE_LONG;
+      const crossWasDeep = recentCross.crossStochK < STOCH_MIDPOINT; // below 50
+      const crossWasEarly = !crossWasDeep;
       const kAboveD = recentCross.currentStochK >= recentCross.currentStochD;
 
-      if (crossWasDeep && stillInZone && kAboveD) {
+      if (crossWasDeep && kAboveD) {
         fired = true;
         triggerType = "entry_1_deep_pullback";
-        detail = `ENTRY_1: K crossed above D ${candles4h.length - 1 - recentCross.crossIndex} candles ago from deep pullback (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
-      } else if (crossWasEarly && stillInZone && kAboveD) {
+        detail = `ENTRY_1: K crossed above D ${candles4h.length - 1 - recentCross.crossIndex} candles ago below 50 (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
+      } else if (crossWasEarly && kAboveD) {
         fired = true;
         triggerType = "entry_2_early_momentum";
-        detail = `ENTRY_2: K crossed above D ${candles4h.length - 1 - recentCross.crossIndex} candles ago below midpoint (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
-      } else if (!stillInZone) {
-        detail = `Cross found but K=${recentCross.currentStochK} exited zone (need <${STOCH_ENTRY_ZONE_LONG})`;
+        detail = `ENTRY_2: K crossed above D ${candles4h.length - 1 - recentCross.crossIndex} candles ago (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
       } else if (!kAboveD) {
         detail = `Cross found but K=${recentCross.currentStochK} < D=${recentCross.currentStochD} (cross faded)`;
+      }
+    }
+    // ── Pre-cross: K converging toward D from below ──
+    else if (config.preCrossEnabled) {
+      const prevCloses = closes.slice(0, -1);
+      const prevStoch = stochRsi(prevCloses);
+      const converging = stoch.k < stoch.d && stoch.k > prevStoch.k; // K rising toward D
+      const closeEnough = Math.abs(stoch.k - stoch.d) <= config.preCrossThreshold;
+      const belowMidpoint = stoch.k < STOCH_MIDPOINT;
+
+      if (converging && closeEnough && belowMidpoint) {
+        fired = true;
+        triggerType = "entry_2_pre_cross";
+        detail = `ENTRY_2 (pre-cross): K=${stoch.k} converging toward D=${stoch.d} (within ${config.preCrossThreshold} pts, rising)`;
+      } else {
+        detail = `No cross. Stoch K=${stoch.k} D=${stoch.d}`;
       }
     } else {
       detail = `No recent cross. Stoch K=${stoch.k} D=${stoch.d}`;
     }
   } else {
+    // ── Actual cross found ──
     if (recentCross) {
-      const crossWasDeep = recentCross.crossStochK > STOCH_EXTREME_SHORT;
-      const crossWasEarly = recentCross.crossStochK > STOCH_MIDPOINT && !crossWasDeep;
-      const stillInZone = recentCross.currentStochK > STOCH_ENTRY_ZONE_SHORT;
+      const crossWasDeep = recentCross.crossStochK > STOCH_MIDPOINT; // above 50
+      const crossWasEarly = !crossWasDeep;
       const kBelowD = recentCross.currentStochK <= recentCross.currentStochD;
 
-      if (crossWasDeep && stillInZone && kBelowD) {
+      if (crossWasDeep && kBelowD) {
         fired = true;
         triggerType = "entry_1_deep_pullback";
-        detail = `ENTRY_1: K crossed below D ${candles4h.length - 1 - recentCross.crossIndex} candles ago from deep pullback (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
-      } else if (crossWasEarly && stillInZone && kBelowD) {
+        detail = `ENTRY_1: K crossed below D ${candles4h.length - 1 - recentCross.crossIndex} candles ago above 50 (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
+      } else if (crossWasEarly && kBelowD) {
         fired = true;
         triggerType = "entry_2_early_momentum";
-        detail = `ENTRY_2: K crossed below D ${candles4h.length - 1 - recentCross.crossIndex} candles ago above midpoint (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
-      } else if (!stillInZone) {
-        detail = `Cross found but K=${recentCross.currentStochK} exited zone (need >${STOCH_ENTRY_ZONE_SHORT})`;
+        detail = `ENTRY_2: K crossed below D ${candles4h.length - 1 - recentCross.crossIndex} candles ago (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
       } else if (!kBelowD) {
         detail = `Cross found but K=${recentCross.currentStochK} > D=${recentCross.currentStochD} (cross faded)`;
+      }
+    }
+    // ── Pre-cross: K converging toward D from above ──
+    else if (config.preCrossEnabled) {
+      const prevCloses = closes.slice(0, -1);
+      const prevStoch = stochRsi(prevCloses);
+      const converging = stoch.k > stoch.d && stoch.k < prevStoch.k; // K falling toward D
+      const closeEnough = Math.abs(stoch.k - stoch.d) <= config.preCrossThreshold;
+      const aboveMidpoint = stoch.k > STOCH_MIDPOINT;
+
+      if (converging && closeEnough && aboveMidpoint) {
+        fired = true;
+        triggerType = "entry_2_pre_cross";
+        detail = `ENTRY_2 (pre-cross): K=${stoch.k} converging toward D=${stoch.d} (within ${config.preCrossThreshold} pts, falling)`;
+      } else {
+        detail = `No cross. Stoch K=${stoch.k} D=${stoch.d}`;
       }
     } else {
       detail = `No recent cross. Stoch K=${stoch.k} D=${stoch.d}`;
@@ -632,7 +700,7 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT"): Trigg
 }
 
 // ============================================================
-// ADD TRIGGER — v50.1: Continuation (2 of 3 confirmations, no volume gate)
+// ADD TRIGGER — v50.5: Continuation (2 of 3 confirmations)
 // ============================================================
 
 interface AddTriggerResult {
@@ -646,8 +714,10 @@ interface AddTriggerResult {
 function addTrigger4H(
   candles4h: Candle[],
   direction: "LONG" | "SHORT",
-  location: LocationResult
+  location: LocationResult,
+  pair: string
 ): AddTriggerResult {
+  const _config = getPairConfig(pair); // available for future pair-specific ADD logic
   const defaultFail = {
     fired: false,
     detail: "No ADD conditions met",
@@ -804,7 +874,7 @@ function canAddToPair(pair: string): boolean {
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATOR — v50.1
+// MAIN SIGNAL GENERATOR — v50.5
 // ============================================================
 
 export function generateSignal(
@@ -846,12 +916,12 @@ export function generateSignal(
 
   // ENTRY_1 or ENTRY_2: only when location is pullback zone (not beyond TL)
   if (!hasActive && location.locationType !== "BEYOND_TL") {
-    const entryTrigger = stochTrigger4H(candles4h, trend.direction);
+    const entryTrigger = stochTrigger4H(candles4h, trend.direction, pair);
     debug.push(`Trigger: ${entryTrigger.fired ? "FIRED" : "WAITING"} | ${entryTrigger.detail}`);
     if (entryTrigger.fired) {
       if (entryTrigger.triggerType === "entry_1_deep_pullback") {
         signalType = "ENTRY_1";
-      } else if (entryTrigger.triggerType === "entry_2_early_momentum") {
+      } else if (entryTrigger.triggerType === "entry_2_early_momentum" || entryTrigger.triggerType === "entry_2_pre_cross") {
         signalType = "ENTRY_2";
       }
       trigger = entryTrigger;
@@ -862,7 +932,7 @@ export function generateSignal(
 
   // ADD: only when we have an active entry and location is beyond TL
   if (!signalType && canAddToPair(pair) && !hasActiveAdd(pair) && location.locationType === "BEYOND_TL") {
-    const addTrigger = addTrigger4H(candles4h, trend.direction, location);
+    const addTrigger = addTrigger4H(candles4h, trend.direction, location, pair);
     debug.push(`ADD: ${addTrigger.fired ? "FIRED" : "BLOCKED"} | ${addTrigger.detail}`);
     if (addTrigger.fired) {
       signalType = "ADD";
@@ -1014,7 +1084,7 @@ export function getMarketSnapshot(
   const candles1d = aggregateTo1D(candles4h);
   const trend = dailyTrend(candles1d);
   const location = trend.direction !== "NONE" ? location4H(pair, candles4h, trend.direction) : { ready: false, detail: "No trend", trendlinePrice: 0, locationType: "NONE" };
-  const trigger = trend.direction !== "NONE" ? stochTrigger4H(candles4h, trend.direction) : { fired: false, detail: "No trend", triggerType: "none", stochK: 50, stochD: 50 };
+  const trigger = trend.direction !== "NONE" ? stochTrigger4H(candles4h, trend.direction, pair) : { fired: false, detail: "No trend", triggerType: "none", stochK: 50, stochD: 50 };
   const price = candles4h[candles4h.length - 1]?.close ?? 0;
 
   const closes4h = candles4h.map(c => c.close);
