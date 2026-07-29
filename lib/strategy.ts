@@ -50,6 +50,9 @@ export interface Signal {
   trend: string;
   location: string;
   trigger: string;
+  exited?: boolean;
+  exitReason?: string;
+  exitPrice?: number;
 }
 
 export interface SignalResult {
@@ -1157,14 +1160,8 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
       return { shouldHold: false, reason: "trend_reversed_unprofitable" };
     }
   }
-  const closes4h = candles4h.map(c => c.close);
-  const stoch = stochRsi(closes4h);
-  const stochExtremeOpposite = signal.direction === "LONG"
-    ? stoch.k > STOCH_EXTREME_SHORT   // overbought = bearish = opposite to LONG
-    : stoch.k < STOCH_EXTREME_LONG;  // oversold = bullish = opposite to SHORT
-  if (stochExtremeOpposite) {
-    return { shouldHold: false, reason: "stoch_extreme_opposite" };
-  }
+  // v50.5 FIX: Removed stoch_extreme_opposite exit. Signals now hold until TP/SL hit.
+  // The stoch extreme was causing premature exits in strong trends.
   const validity = isSignalStillValid(signal, currentPrice, now);
   return { shouldHold: validity.valid, reason: validity.reason };
 }
@@ -1183,8 +1180,19 @@ export function filterExpiredSignals(
       continue;
     }
     const check = isSignalStillValid(signal, price, now);
-    if (check.valid) active.push(signal);
-    else exited.push({ signal, reason: check.reason });
+    if (check.valid) {
+      active.push(signal);
+    } else {
+      // v50.5 FIX: Keep TP_HIT and SL_HIT signals in active list with exited flag
+      // so they remain visible in the UI until user acknowledges
+      if (check.reason === "tp_hit" || check.reason === "sl_hit") {
+        signal.exited = true;
+        signal.exitReason = check.reason;
+        signal.exitPrice = price;
+        active.push(signal);
+      }
+      exited.push({ signal, reason: check.reason });
+    }
   }
   return { active, exited };
 }
@@ -1192,6 +1200,10 @@ export function filterExpiredSignals(
 export type TradeStatus = "ACTIVE" | "TP_HIT" | "SL_HIT" | "EXPIRED";
 
 export function checkTradeStatus(signal: Signal, currentPrice: number, now: number = Date.now()): TradeStatus {
+  // v50.5: Check exited flag first
+  if (signal.exited) {
+    return signal.exitReason === "tp_hit" ? "TP_HIT" : signal.exitReason === "sl_hit" ? "SL_HIT" : "EXPIRED";
+  }
   const validity = isSignalStillValid(signal, currentPrice, now);
   if (!validity.valid && validity.reason === "expired_ttl") return "EXPIRED";
   if (signal.direction === "LONG") {
@@ -1204,9 +1216,6 @@ export function checkTradeStatus(signal: Signal, currentPrice: number, now: numb
   return "ACTIVE";
 }
 
-// ============================================================
-// STATE RECONSTRUCTION (for serverless persistence)
-// ============================================================
 
 export interface PersistedTrade {
   direction: "LONG" | "SHORT";
