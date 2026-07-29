@@ -3,6 +3,8 @@
 // Daily Trend → 4H Location → 4H Trigger → Signal
 // v50.5 FIX: Active trades now persist in UI until TP/SL hit.
 // Exited signals remain visible with status until acknowledged.
+// v50.5 REPAIR: State recovery — valid signals missing from activeTrades
+// are re-hydrated from the signals list to prevent duplicate entries.
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
@@ -75,6 +77,38 @@ export async function GET(request: Request) {
     if (reason !== "tp_hit" && reason !== "sl_hit") {
       if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
     }
+  }
+
+  // v50.5 REPAIR: Recover activeTrades from valid signals that are missing.
+  // This fixes the bug where serverless cold starts or KV write failures
+  // cause activeTrades to lose entries, leading to duplicate signal generation.
+  let recoveredCount = 0;
+  for (const signal of validSignals) {
+    if (signal.exited) continue; // Don't recover exited signals
+    if (!activeTrades[signal.pair]) {
+      const price = currentPrices[signal.pair];
+      if (price !== undefined) {
+        const validity = isSignalStillValid(signal, price, runStart);
+        if (validity.valid) {
+          activeTrades[signal.pair] = {
+            direction: signal.direction,
+            timestamp: signal.timestamp,
+            entry: signal.entry,
+            stop: signal.stop,
+            target: signal.target,
+            id: signal.id,
+            type: signal.type,
+          };
+          console.log(`[STATE_RECOVER] ${signal.pair}: ${signal.type} ${signal.direction} @ ${signal.entry} — recovered from signals list`);
+          recoveredCount++;
+        }
+      }
+    }
+  }
+  if (recoveredCount > 0) {
+    console.log(`[STATE_RECOVER] Recovered ${recoveredCount} trade(s) into activeTrades`);
+    // Rebuild in-memory state again after recovery
+    rebuildStateFromTrades(activeTrades);
   }
 
   const newSignals: any[] = [];
@@ -234,8 +268,8 @@ export async function GET(request: Request) {
 
   await Promise.all([setSignals(merged), setMarketData(marketDataList), setActiveTrades(activeTrades)]);
 
-  console.log(`[CRON] Done. signals=${merged.length}, marketData=${marketDataList.length}, exited=${preExited.length}`);
+  console.log(`[CRON] Done. signals=${merged.length}, marketData=${marketDataList.length}, exited=${preExited.length}, recovered=${recoveredCount}`);
   console.log("========================================");
 
-  return NextResponse.json({ success: true, signals: merged.length, marketData: marketDataList.length, exited: preExited.length, alerts });
+  return NextResponse.json({ success: true, signals: merged.length, marketData: marketDataList.length, exited: preExited.length, recovered: recoveredCount, alerts });
 }
