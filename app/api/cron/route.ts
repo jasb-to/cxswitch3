@@ -1,7 +1,7 @@
-// app/api/cron/route.ts — v52.0 "Pure Wave" Cron
+// app/api/cron/route.ts — v53.0 "True Neutral" Cron
 // ============================================================
-// Architecture: Daily Context → 4H Context → Stoch Trigger → Signal
-// v52.0: No gates. Context only. Duplicate prevention via cycle tracking.
+// Architecture: Daily Context → LONG Analysis + SHORT Analysis → Signals[]
+// v53.0: Bidirectional. No bias. One trade per pair per direction.
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
@@ -25,7 +25,7 @@ export const revalidate = 0;
 export async function GET(request: Request) {
   const runStart = Date.now();
   console.log("========================================");
-  console.log(`[CRON v52.0] Started at ${new Date(runStart).toISOString()}`);
+  console.log(`[CRON v53.0] Started at ${new Date(runStart).toISOString()}`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -61,23 +61,25 @@ export async function GET(request: Request) {
   console.log(`[STATE] Valid: ${validSignals.length}, Exited: ${preExited.length}`);
 
   for (const { signal, reason } of preExited) {
-    console.log(`[EXIT] ${signal.pair} — ${reason}`);
+    console.log(`[EXIT] ${signal.pair} ${signal.direction} — ${reason}`);
     await addSignalToHistory(signal, reason as any, currentPrices[signal.pair] || signal.entry);
     if (reason !== "tp_hit" && reason !== "sl_hit") {
-      if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
+      const key = `${signal.pair}_${signal.direction}`;
+      if (activeTrades[key]) delete activeTrades[key];
     }
   }
 
-  // State recovery
+  // State recovery — per direction
   let recoveredCount = 0;
   for (const signal of validSignals) {
     if (signal.exited) continue;
-    if (!activeTrades[signal.pair]) {
+    const key = `${signal.pair}_${signal.direction}`;
+    if (!activeTrades[key]) {
       const price = currentPrices[signal.pair];
       if (price !== undefined) {
         const validity = isSignalStillValid(signal, price, runStart);
         if (validity.valid) {
-          activeTrades[signal.pair] = {
+          activeTrades[key] = {
             direction: signal.direction,
             timestamp: signal.timestamp,
             entry: signal.entry,
@@ -87,7 +89,7 @@ export async function GET(request: Request) {
             type: signal.type,
             crossHash: signal.context?.crossHash || "",
           };
-          console.log(`[STATE_RECOVER] ${signal.pair}: ${signal.type} ${signal.direction} @ ${signal.entry}`);
+          console.log(`[STATE_RECOVER] ${key}: ${signal.type} ${signal.direction} @ ${signal.entry}`);
           recoveredCount++;
         }
       }
@@ -98,7 +100,7 @@ export async function GET(request: Request) {
     rebuildStateFromTrades(activeTrades);
   }
 
-  const newSignals: any[] = [];
+  const newSignals: Signal[] = [];
   const marketDataList: any[] = [];
   const alerts: any[] = [];
 
@@ -116,100 +118,137 @@ export async function GET(request: Request) {
       }
 
       const currentPrice = candles1h[candles1h.length - 1].close;
-      const existingIdx = validSignals.findIndex(s => s.pair === pair);
-      const existingForPair = existingIdx >= 0 ? validSignals[existingIdx] : null;
 
-      if (existingForPair) {
-        if (existingForPair.exited) {
-          console.log(`[PAIR] ${pair} — Already exited (${existingForPair.exitReason}), keeping in UI`);
-          const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
-          if (snapshot) marketDataList.push(snapshot);
-          continue;
-        }
-        const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
+      // Check existing signals for this pair — per direction
+      const longSignal = validSignals.find(s => s.pair === pair && s.direction === "LONG" && !s.exited) || null;
+      const shortSignal = validSignals.find(s => s.pair === pair && s.direction === "SHORT" && !s.exited) || null;
+
+      // Process LONG existing signal
+      if (longSignal) {
+        const validity = isSignalStillValid(longSignal, currentPrice, runStart);
         if (!validity.valid) {
-          console.log(`[PAIR] ${pair} — INVALID: ${validity.reason}`);
-          await addSignalToHistory(existingForPair, validity.reason as any, currentPrice);
-          if (activeTrades[pair]) delete activeTrades[pair];
-          validSignals.splice(existingIdx, 1);
-          alerts.push({ pair, status: "expired", reason: validity.reason });
+          console.log(`[PAIR] ${pair} LONG — INVALID: ${validity.reason}`);
+          await addSignalToHistory(longSignal, validity.reason as any, currentPrice);
+          delete activeTrades[`${pair}_LONG`];
+          const idx = validSignals.indexOf(longSignal);
+          if (idx >= 0) validSignals.splice(idx, 1);
+          alerts.push({ pair, direction: "LONG", status: "expired", reason: validity.reason });
         } else {
-          const holdResult = shouldHold(existingForPair, candles4h, currentPrice, runStart);
+          const holdResult = shouldHold(longSignal, candles4h, currentPrice, runStart);
           if (!holdResult.shouldHold) {
-            console.log(`[PAIR] ${pair} — HOLD EXIT: ${holdResult.reason}`);
-            await addSignalToHistory(existingForPair, "hold_exit", currentPrice);
-            if (activeTrades[pair]) delete activeTrades[pair];
-            validSignals.splice(existingIdx, 1);
-            alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
-          } else {
-            console.log(`[PAIR] ${pair} — Still valid, skipping`);
-            const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
-            marketDataList.push(snapshot);
-            continue;
+            console.log(`[PAIR] ${pair} LONG — HOLD EXIT: ${holdResult.reason}`);
+            await addSignalToHistory(longSignal, "hold_exit", currentPrice);
+            delete activeTrades[`${pair}_LONG`];
+            const idx = validSignals.indexOf(longSignal);
+            if (idx >= 0) validSignals.splice(idx, 1);
+            alerts.push({ pair, direction: "LONG", status: "hold_exit", reason: holdResult.reason });
           }
         }
+      }
+
+      // Process SHORT existing signal
+      if (shortSignal) {
+        const validity = isSignalStillValid(shortSignal, currentPrice, runStart);
+        if (!validity.valid) {
+          console.log(`[PAIR] ${pair} SHORT — INVALID: ${validity.reason}`);
+          await addSignalToHistory(shortSignal, validity.reason as any, currentPrice);
+          delete activeTrades[`${pair}_SHORT`];
+          const idx = validSignals.indexOf(shortSignal);
+          if (idx >= 0) validSignals.splice(idx, 1);
+          alerts.push({ pair, direction: "SHORT", status: "expired", reason: validity.reason });
+        } else {
+          const holdResult = shouldHold(shortSignal, candles4h, currentPrice, runStart);
+          if (!holdResult.shouldHold) {
+            console.log(`[PAIR] ${pair} SHORT — HOLD EXIT: ${holdResult.reason}`);
+            await addSignalToHistory(shortSignal, "hold_exit", currentPrice);
+            delete activeTrades[`${pair}_SHORT`];
+            const idx = validSignals.indexOf(shortSignal);
+            if (idx >= 0) validSignals.splice(idx, 1);
+            alerts.push({ pair, direction: "SHORT", status: "hold_exit", reason: holdResult.reason });
+          }
+        }
+      }
+
+      // If both directions still have active valid signals, skip generation for those directions
+      const hasLongActive = validSignals.some(s => s.pair === pair && s.direction === "LONG" && !s.exited);
+      const hasShortActive = validSignals.some(s => s.pair === pair && s.direction === "SHORT" && !s.exited);
+
+      if (hasLongActive && hasShortActive) {
+        console.log(`[PAIR] ${pair} — Both directions active, skipping generation`);
+        const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+        if (snapshot) marketDataList.push(snapshot);
+        continue;
       }
 
       const result = generateSignal(pair, candles1h, candles4h, candles15m, validSignals, currentPrice);
       const snapshot = result.market || getMarketSnapshot(pair, candles1h, candles4h, candles15m);
       if (snapshot) marketDataList.push(snapshot);
 
-      if (!result.signal) {
-        console.log(`[PAIR] ${pair} — NO SIGNAL (${result.debug?.join(" | ")})`);
+      if (!result.signals.length) {
+        console.log(`[PAIR] ${pair} — NO SIGNALS (${result.debug?.join(" | ")})`);
         alerts.push({ pair, status: "no_signal", debug: result.debug?.join(" | ") });
         continue;
       }
 
-      const signal = result.signal;
-      console.log(`[PAIR] ${pair} — SIGNAL: ${signal.type} ${signal.direction} ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`);
-      newSignals.push(signal);
+      // Process each signal (could be LONG, SHORT, or both)
+      for (const signal of result.signals) {
+        // Skip if we already have an active signal in this direction
+        const dirActive = validSignals.some(s => s.pair === pair && s.direction === signal.direction && !s.exited);
+        if (dirActive) {
+          console.log(`[PAIR] ${pair} ${signal.direction} — Already active, skipping new ${signal.type}`);
+          continue;
+        }
 
-      const alertState = signal.type === "ADD" ? "ADD" : "ENTRY";
-      const alertEmoji = signal.type === "ENTRY_1" ? "🟢" : signal.type === "ENTRY_2" ? "🟡" : "🔵";
+        console.log(`[PAIR] ${pair} ${signal.direction} — SIGNAL: ${signal.type} ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`);
+        newSignals.push(signal);
 
-      try {
-        await sendAlert({
-          symbol: signal.pair,
-          state: alertState,
-          price: roundPrice(signal.entry),
-          bias: signal.direction,
-          stopLoss: roundPrice(signal.stop),
-          takeProfit: roundPrice(signal.target),
-          rr: signal.rr,
-          expectedMove: signal.expectedMove,
-          adx: signal.adx,
-          rsi: signal.rsi,
-          stochK: signal.stochK,
-          stochD: signal.stochD,
-          reason: signal.reason,
-          trend: signal.trend,
-          location: signal.location,
-          trigger: signal.trigger,
-          updatedAt: new Date(signal.timestamp).toISOString(),
-          signalType: signal.type,
-          signalEmoji: alertEmoji,
-          context: signal.context,
-          marketPhase: signal.context.marketPhase,
-          structure: signal.context.structure,
-          momentum: signal.context.momentum,
-          pullback: signal.context.pullback,
-          crossAge: signal.context.crossAge,
-        });
-        console.log(`[ALERT] ${pair} — SENT (${signal.type})`);
-        activeTrades[pair] = {
-          direction: signal.direction,
-          timestamp: Date.now(),
-          entry: signal.entry,
-          stop: signal.stop,
-          target: signal.target,
-          id: signal.id,
-          type: signal.type,
-          crossHash: signal.context?.crossHash || "",
-        };
-        alerts.push({ pair, status: "sent", type: signal.type });
-      } catch (err) {
-        console.error(`[ALERT] ${pair} — FAILED:`, err);
-        alerts.push({ pair, status: "alert_failed", error: String(err) });
+        const alertState = signal.type === "ADD" ? "ADD" : "ENTRY";
+        const alertEmoji = signal.type === "ENTRY_1" ? "🟢" : signal.type === "ENTRY_2" ? "🟡" : "🔵";
+
+        try {
+          await sendAlert({
+            symbol: signal.pair,
+            state: alertState,
+            price: roundPrice(signal.entry),
+            bias: signal.direction,
+            stopLoss: roundPrice(signal.stop),
+            takeProfit: roundPrice(signal.target),
+            rr: signal.rr,
+            expectedMove: signal.expectedMove,
+            adx: signal.adx,
+            rsi: signal.rsi,
+            stochK: signal.stochK,
+            stochD: signal.stochD,
+            reason: signal.reason,
+            trend: signal.trend,
+            location: signal.location,
+            trigger: signal.trigger,
+            updatedAt: new Date(signal.timestamp).toISOString(),
+            signalType: signal.type,
+            signalEmoji: alertEmoji,
+            context: signal.context,
+            marketPhase: signal.context.marketPhase,
+            structure: signal.context.structure,
+            momentum: signal.context.momentum,
+            pullback: signal.context.pullback,
+            crossAge: signal.context.crossAge,
+          });
+          console.log(`[ALERT] ${pair} ${signal.direction} — SENT (${signal.type})`);
+          activeTrades[`${pair}_${signal.direction}`] = {
+            direction: signal.direction,
+            timestamp: Date.now(),
+            entry: signal.entry,
+            stop: signal.stop,
+            target: signal.target,
+            id: signal.id,
+            type: signal.type,
+            crossHash: signal.context?.crossHash || "",
+          };
+          alerts.push({ pair, direction: signal.direction, status: "sent", type: signal.type });
+        } catch (err) {
+          console.error(`[ALERT] ${pair} ${signal.direction} — FAILED:`, err);
+          alerts.push({ pair, direction: signal.direction, status: "alert_failed", error: String(err) });
+        }
       }
     } catch (err) {
       console.error(`[PAIR] ${pair} — ERROR:`, err);
@@ -217,6 +256,7 @@ export async function GET(request: Request) {
     }
   }
 
+  // Merge all signals with metadata
   const merged: any[] = [];
   for (const s of validSignals) {
     const ageMinutes = Math.round((runStart - s.timestamp) / 60000);
@@ -226,7 +266,7 @@ export async function GET(request: Request) {
     merged.push({ ...s, meta: { status, ageMinutes, actionable: status === "ACTIVE" && !s.exited } });
   }
   for (const s of newSignals) {
-    const idx = merged.findIndex((x: any) => x.pair === s.pair);
+    const idx = merged.findIndex((x: any) => x.id === s.id);
     const signalWithMeta = { ...s, meta: { status: "ACTIVE", ageMinutes: 0, actionable: true } };
     if (idx >= 0) merged[idx] = signalWithMeta; else merged.push(signalWithMeta);
   }
@@ -236,5 +276,12 @@ export async function GET(request: Request) {
   console.log(`[CRON] Done. signals=${merged.length}, marketData=${marketDataList.length}, exited=${preExited.length}, recovered=${recoveredCount}`);
   console.log("========================================");
 
-  return NextResponse.json({ success: true, signals: merged.length, marketData: marketDataList.length, exited: preExited.length, recovered: recoveredCount, alerts });
+  return NextResponse.json({
+    success: true,
+    signals: merged.length,
+    marketData: marketDataList.length,
+    exited: preExited.length,
+    recovered: recoveredCount,
+    alerts,
+  });
 }
