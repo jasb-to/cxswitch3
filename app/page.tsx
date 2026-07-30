@@ -118,7 +118,7 @@ function calcStopTrail(signal: Signal, currentPrice: number): {
   milestones: StopMilestone[];
   distanceToNext: number;
 } {
-  if (!signal || (signal.type !== "ENTRY_1" && signal.type !== "ENTRY_2")) {
+  if (!signal || (signal.type !== "ENTRY_1" && signal.type !== "ENTRY_2" && signal.type !== "ADD")) {
     return { currentR: 0, milestones: [], distanceToNext: 0 };
   }
   const entry = signal.entry;
