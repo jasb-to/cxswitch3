@@ -22,8 +22,6 @@ interface Signal {
   trend?: string;
   location?: string;
   trigger?: string;
-  score?: number;
-  rejected?: string;
   meta?: {
     status: string;
     ageMinutes: number;
@@ -48,9 +46,6 @@ interface MarketData {
   ema8_4h: number;
   ema21_4h: number;
   ema50_4h: number;
-  winner?: "LONG" | "SHORT" | "NONE";
-  longScore?: number;
-  shortScore?: number;
 }
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"];
@@ -252,7 +247,7 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
-        <div className="text-lg">Loading CX Switch v53.1...</div>
+        <div className="text-lg">Loading CX Switch v53...</div>
       </div>
     );
   }
@@ -261,7 +256,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-bold">CX Switch v53.1</h1>
+          <h1 className="text-2xl font-bold">CX Switch v53</h1>
           <div className="text-xs text-gray-400">
             Fetches: {fetchCount} | Last:{" "}
             {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
@@ -309,7 +304,7 @@ export default function Dashboard() {
                   bannerClass = "bg-gray-600 text-white";
                   statusBadge = "STALE";
                 } else {
-                  bannerText = `${signal.direction === "LONG" ? "🟢" : "🔴"} ${signal.direction} — Score ${signal.score ?? "—"}`;
+                  bannerText = `${signal.direction === "LONG" ? "🟢" : "🔴"} ${signal.direction}`;
                   bannerClass = signal.direction === "LONG" ? "bg-green-600 text-white" : "bg-red-600 text-white";
                   statusBadge = "ACTIVE";
                 }
@@ -403,27 +398,6 @@ export default function Dashboard() {
                     <StepRow label="Trigger" ready={triggerFired} value={mkt?.trigger || "—"} />
                   </div>
                 </div>
-
-                {/* Score bar when no signal but we have scores */}
-                {!hasSignal && mkt && (mkt.longScore !== undefined || mkt.shortScore !== undefined) && (
-                  <div className="mb-3 p-2 rounded bg-gray-900/50 border border-gray-700/50">
-                    <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5 font-semibold">Score Battle</div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] text-green-400 w-8">LONG</span>
-                      <div className="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden">
-                        <div className="h-full bg-green-500 rounded-full" style={{ width: `${Math.min(100, (mkt.longScore || 0) * 1.2)}%` }} />
-                      </div>
-                      <span className="text-[10px] text-green-400 w-6 text-right">{mkt.longScore || 0}</span>
-                    </div>
-                    <div className="flex items-center gap-2 mt-1">
-                      <span className="text-[10px] text-red-400 w-8">SHORT</span>
-                      <div className="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden">
-                        <div className="h-full bg-red-500 rounded-full" style={{ width: `${Math.min(100, (mkt.shortScore || 0) * 1.2)}%` }} />
-                      </div>
-                      <span className="text-[10px] text-red-400 w-6 text-right">{mkt.shortScore || 0}</span>
-                    </div>
-                  </div>
-                )}
 
                 {/* Market Context */}
                 {mkt && (
@@ -542,14 +516,6 @@ export default function Dashboard() {
                     {signal.reason && (
                       <div className="text-[10px] text-gray-500 border-t border-gray-700 pt-2 mb-2">
                         <p className="leading-relaxed">{signal.reason}</p>
-                      </div>
-                    )}
-
-                    {/* Rejected side info */}
-                    {signal.rejected && (
-                      <div className="mt-2 p-2 rounded bg-gray-800/30 border border-gray-700/30">
-                        <div className="text-[9px] text-gray-600 uppercase">Other side rejected</div>
-                        <div className="text-[10px] text-gray-500 italic">{signal.rejected}</div>
                       </div>
                     )}
                   </>
