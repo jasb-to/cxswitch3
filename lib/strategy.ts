@@ -1,14 +1,10 @@
-// lib/strategy.ts — v53.1 "Strongest Trade"
+// lib/strategy.ts — v53 "Directional Commitment"
 // ============================================================
-// Philosophy: Observe both sides, pick the strongest, display one.
-// Architecture: Daily Context → LONG Analysis + SHORT Analysis → Score → Winner
+// Philosophy: Observe both sides. Nothing blocks analysis.
+// NEW: Directional commitment prevents immediate reversal entries
+// after failed trades to stop emotional flip-flop churn.
 //
-// v53.1 Changes from v53.0:
-// ADDED: scoreTrade() — scores each direction on trend alignment, location quality,
-//        trigger depth, momentum strength, RR, and cross freshness
-// CHANGED: generateSignal returns only the winning signal (or none if both weak)
-// CHANGED: SignalResult.signals[] now contains 0 or 1 signal (the winner)
-// CHANGED: longContext/shortContext still returned for UI "observer" mode
+// Architecture: Context → Trigger → Signal → Directional State → Execute
 
 export interface Candle {
   timestamp: number;
@@ -55,19 +51,14 @@ export interface Signal {
   exited?: boolean;
   exitReason?: string;
   exitPrice?: number;
-  score?: number;
-  rejected?: string;
 }
 
 export interface SignalResult {
-  signal?: Signal;
+  signal?: Signal;              // deprecated — use signals[]
   signals: Signal[];
   market?: MarketSnapshot;
   longContext: DirectionalContext;
   shortContext: DirectionalContext;
-  winner: "LONG" | "SHORT" | "NONE";
-  longScore: number;
-  shortScore: number;
   debug: string[];
 }
 
@@ -80,8 +71,6 @@ export interface DirectionalContext {
   signal?: Signal;
   canEnter: boolean;
   reason: string;
-  score: number;
-  scoreBreakdown: Record<string, number>;
 }
 
 export interface MarketSnapshot {
@@ -106,9 +95,6 @@ export interface MarketSnapshot {
   pullbackDesc: string;
   structureDesc: string;
   crossAge: number;
-  winner?: "LONG" | "SHORT" | "NONE";
-  longScore?: number;
-  shortScore?: number;
 }
 
 export interface ValidityCheck {
@@ -122,7 +108,7 @@ export interface HoldResult {
   reason: string;
 }
 
-export const CURRENT_SIGNAL_VERSION = 53.1;
+export const CURRENT_SIGNAL_VERSION = 53;
 
 interface CycleEntry {
   crossHash: string;
@@ -534,14 +520,14 @@ function computeCrossHash(pair: string, direction: "LONG" | "SHORT", crossIndex:
   return `${pair}_${direction}_${crossIndex}_${Math.round(crossK)}_${Math.round(crossD)}`;
 }
 
-function isDuplicateCycle(pair: string, crossHash: string): boolean {
-  const existing = cycleStore.get(pair);
+function isDuplicateCycle(pair: string, direction: "LONG" | "SHORT", crossHash: string): boolean {
+  const existing = cycleStore.get(`${pair}_${direction}`);
   if (!existing) return false;
   return existing.crossHash === crossHash;
 }
 
 function recordCycle(pair: string, crossHash: string, direction: "LONG" | "SHORT"): void {
-  cycleStore.set(pair, { crossHash, timestamp: Date.now(), pair, direction });
+  cycleStore.set(`${pair}_${direction}`, { crossHash, timestamp: Date.now(), pair, direction });
 }
 
 function findRecentCross(candles4h: Candle[], direction: "LONG" | "SHORT", pair: string): { crossIndex: number; crossStochK: number; crossStochD: number; currentStochK: number; currentStochD: number; crossHash: string; crossAge: number } | null {
@@ -621,7 +607,7 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: 
     if (recentCross) {
       crossAge = recentCross.crossAge;
       crossHash = recentCross.crossHash;
-      if (isDuplicateCycle(pair, crossHash)) {
+      if (isDuplicateCycle(pair, direction, crossHash)) {
         return { fired: false, detail: `Cross ${crossAge} candles ago already signaled`, triggerType: "duplicate_cycle", stochK: recentCross.currentStochK, stochD: recentCross.currentStochD, crossAge, crossHash, momentumDesc };
       }
       const crossWasDeep = recentCross.crossStochK < 50;
@@ -656,7 +642,7 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: 
     if (recentCross) {
       crossAge = recentCross.crossAge;
       crossHash = recentCross.crossHash;
-      if (isDuplicateCycle(pair, crossHash)) {
+      if (isDuplicateCycle(pair, direction, crossHash)) {
         return { fired: false, detail: `Cross ${crossAge} candles ago already signaled`, triggerType: "duplicate_cycle", stochK: recentCross.currentStochK, stochD: recentCross.currentStochD, crossAge, crossHash, momentumDesc };
       }
       const crossWasDeep = recentCross.crossStochK > 50;
@@ -743,116 +729,145 @@ interface ActiveSignalState {
 const activeSignalStore: Map<string, ActiveSignalState> = new Map();
 
 function hasActiveSignal(pair: string, direction?: "LONG" | "SHORT"): boolean {
-  const state = activeSignalStore.get(pair);
-  if (!state) return false;
-  if (direction && state.direction !== direction) return false;
-  const age = Date.now() - state.timestamp;
-  if ((state.scale === "ENTRY_1" || state.scale === "ENTRY_2") && age < 24 * 60 * 60 * 1000) return true;
-  if (state.scale === "ADD" && age < 4 * 60 * 60 * 1000) return true;
-  activeSignalStore.delete(pair);
-  return false;
+  if (direction) {
+    const state = activeSignalStore.get(`${pair}_${direction}`);
+    if (!state) return false;
+    const age = Date.now() - state.timestamp;
+    if ((state.scale === "ENTRY_1" || state.scale === "ENTRY_2") && age < 24 * 60 * 60 * 1000) return true;
+    if (state.scale === "ADD" && age < 4 * 60 * 60 * 1000) return true;
+    activeSignalStore.delete(`${pair}_${direction}`);
+    return false;
+  }
+  return hasActiveSignal(pair, "LONG") || hasActiveSignal(pair, "SHORT");
 }
 
 function hasActiveAdd(pair: string, direction: "LONG" | "SHORT"): boolean {
-  const state = activeSignalStore.get(pair);
+  const state = activeSignalStore.get(`${pair}_${direction}`);
   if (!state || state.direction !== direction) return false;
   return state?.scale === "ADD" && (Date.now() - state.timestamp) < 4 * 60 * 60 * 1000;
 }
 
 function setActiveSignal(pair: string, direction: "LONG" | "SHORT", scale: "ENTRY_1" | "ENTRY_2" | "ADD", entryPrice: number, crossHash: string): void {
-  activeSignalStore.set(pair, { pair, direction, scale, timestamp: Date.now(), entryPrice, crossHash });
+  activeSignalStore.set(`${pair}_${direction}`, { pair, direction, scale, timestamp: Date.now(), entryPrice, crossHash });
 }
 
 function canAddToPair(pair: string, direction: "LONG" | "SHORT"): boolean {
-  const state = activeSignalStore.get(pair);
+  const state = activeSignalStore.get(`${pair}_${direction}`);
   if (!state || state.direction !== direction) return false;
   if (state.scale === "ADD") return false;
   const age = Date.now() - state.timestamp;
   if (age < 60 * 60 * 1000) return false;
-  if (age > 24 * 60 * 60 * 1000) { activeSignalStore.delete(pair); return false; }
+  if (age > 24 * 60 * 60 * 1000) { activeSignalStore.delete(`${pair}_${direction}`); return false; }
   return true;
 }
 
 // ============================================================
-// TRADE SCORING ENGINE — v53.1
+// DIRECTIONAL COMMITMENT STATE
 // ============================================================
 
-function scoreTrade(
+interface DirectionState {
+  pair: string;
+  lastDirection: "LONG" | "SHORT";
+  lastExitReason: "SL_HIT" | "TP_HIT" | "EXPIRED";
+  exitTimestamp: number;
+  exitPrice: number;
+  trendPhaseAtExit: string;
+}
+
+const directionStateStore = new Map<string, DirectionState>();
+const DIRECTION_COOLDOWN_CANDLES = 6;
+const DIRECTION_COOLDOWN_MS = DIRECTION_COOLDOWN_CANDLES * 4 * 60 * 60 * 1000; // 6 × 4h
+
+export function recordDirectionExit(
+  pair: string,
   direction: "LONG" | "SHORT",
-  trend: { direction: "LONG" | "SHORT" | "FLAT" },
-  location: LocationResult,
-  trigger: TriggerResult | null,
-  addTrigger: AddTriggerResult | null,
-  rr: number
-): { score: number; breakdown: Record<string, number> } {
-  const breakdown: Record<string, number> = {};
-  let score = 0;
+  exitReason: "SL_HIT" | "TP_HIT" | "EXPIRED",
+  exitPrice: number,
+  trendPhaseAtExit: string
+): void {
+  directionStateStore.set(pair, {
+    pair,
+    lastDirection: direction,
+    lastExitReason: exitReason,
+    exitTimestamp: Date.now(),
+    exitPrice,
+    trendPhaseAtExit,
+  });
+  console.log(`[DIR_STATE] ${pair}: recorded ${direction} ${exitReason} at ${exitPrice}, trend was ${trendPhaseAtExit}`);
+}
 
-  // 1. Trend alignment (0-30)
-  if (trend.direction === direction) {
-    breakdown.trend = 30;
-  } else if (trend.direction === "FLAT") {
-    breakdown.trend = 15;
-  } else {
-    breakdown.trend = 0;
+export function recordTradeExit(
+  pair: string,
+  direction: "LONG" | "SHORT",
+  exitReason: string,
+  exitPrice: number,
+  candles4h: Candle[]
+): void {
+  const candles1d = aggregateTo1D(candles4h);
+  const trend = dailyTrend(candles1d);
+  let normalizedReason: "SL_HIT" | "TP_HIT" | "EXPIRED";
+  if (exitReason === "sl_hit") normalizedReason = "SL_HIT";
+  else if (exitReason === "tp_hit") normalizedReason = "TP_HIT";
+  else normalizedReason = "EXPIRED";
+  recordDirectionExit(pair, direction, normalizedReason, exitPrice, trend.direction);
+}
+
+function getDirectionState(pair: string): DirectionState | undefined {
+  return directionStateStore.get(pair);
+}
+
+function clearDirectionState(pair: string): void {
+  directionStateStore.delete(pair);
+}
+
+function clearExpiredDirectionStates(): void {
+  const now = Date.now();
+  for (const [pair, state] of directionStateStore.entries()) {
+    const cooldownExpired = now - state.exitTimestamp > DIRECTION_COOLDOWN_MS;
+    const veryOld = now - state.exitTimestamp > DIRECTION_COOLDOWN_MS * 8; // 192h
+    if (cooldownExpired || veryOld) {
+      directionStateStore.delete(pair);
+      console.log(`[DIR_STATE] ${pair}: cleared expired state`);
+    }
   }
-  score += breakdown.trend;
+}
 
-  // 2. Location quality (0-25)
-  switch (location.locationType) {
-    case "TRENDLINE":
-    case "SWING_LOW":
-    case "SWING_HIGH":
-      breakdown.location = 25;
-      break;
-    case "NEAR_TL":
-      breakdown.location = 20;
-      break;
-    case "BEYOND_TL":
-      breakdown.location = 15;
-      break;
-    case "EXTENDED":
-      breakdown.location = 5;
-      break;
-    default:
-      breakdown.location = 0;
+function checkDirectionalCommitment(
+  pair: string,
+  proposedDirection: "LONG" | "SHORT",
+  currentTrendDirection: "LONG" | "SHORT" | "FLAT"
+): { allowed: boolean; reason: string } {
+  const state = getDirectionState(pair);
+  if (!state) {
+    return { allowed: true, reason: "No prior exit state" };
   }
-  score += breakdown.location;
 
-  // 3. Trigger depth (0-25)
-  const triggerType = trigger?.triggerType || (addTrigger?.fired ? "add" : "none");
-  switch (triggerType) {
-    case "entry_1_deep_pullback":
-      breakdown.trigger = 25;
-      break;
-    case "entry_2_early_momentum":
-    case "entry_2_pre_cross":
-      breakdown.trigger = 15;
-      break;
-    case "add":
-      breakdown.trigger = 5;
-      break;
-    default:
-      breakdown.trigger = 0;
+  // Same direction is always allowed
+  if (proposedDirection === state.lastDirection) {
+    return { allowed: true, reason: `Same direction as last exit (${state.lastDirection})` };
   }
-  score += breakdown.trigger;
 
-  // 4. Momentum strength (0-15)
-  const stochK = trigger?.stochK ?? addTrigger?.stochK ?? 50;
-  const kDist = direction === "LONG" ? stochK : 100 - stochK;
-  breakdown.momentum = Math.round(Math.max(0, Math.min(15, (kDist - 30) * 0.375)));
-  score += breakdown.momentum;
+  // Opposite direction — check reset conditions
+  const now = Date.now();
+  const cooldownExpired = now - state.exitTimestamp > DIRECTION_COOLDOWN_MS;
+  const trendChanged = currentTrendDirection !== "FLAT" && currentTrendDirection !== state.trendPhaseAtExit;
+  const candlesAgo = Math.floor((now - state.exitTimestamp) / (4 * 60 * 60 * 1000));
+  const reasonLabel = state.lastExitReason === "SL_HIT" ? "SL" : state.lastExitReason === "TP_HIT" ? "TP" : "expired";
 
-  // 5. RR bonus (0-5)
-  breakdown.rr = rr >= 1.5 ? 5 : rr >= 1.0 ? 3 : rr > 0 ? 1 : 0;
-  score += breakdown.rr;
+  if (trendChanged) {
+    clearDirectionState(pair);
+    return { allowed: true, reason: `${proposedDirection} allowed: previous ${state.lastDirection} exit but daily trend changed to ${currentTrendDirection}.` };
+  }
 
-  // 6. Cross freshness (0-5)
-  const crossAge = trigger?.crossAge ?? 99;
-  breakdown.freshness = crossAge <= 3 ? 5 : crossAge <= 6 ? 3 : crossAge <= 12 ? 1 : 0;
-  score += breakdown.freshness;
+  if (cooldownExpired) {
+    clearDirectionState(pair);
+    return { allowed: true, reason: `${proposedDirection} allowed: previous ${state.lastDirection} exit but direction cooldown expired (${DIRECTION_COOLDOWN_CANDLES} candles).` };
+  }
 
-  return { score, breakdown };
+  return {
+    allowed: false,
+    reason: `${proposedDirection} blocked: previous ${state.lastDirection} ${reasonLabel} exit ${candlesAgo} candles ago. Daily trend unchanged ${state.trendPhaseAtExit}. Waiting for state reset.`,
+  };
 }
 
 // ============================================================
@@ -904,8 +919,6 @@ function buildDirectionalContext(
     }
   }
 
-  let rr = 0;
-
   // Build signal
   if (canEnter) {
     const atrVal = atr(candles4h, 14);
@@ -950,7 +963,7 @@ function buildDirectionalContext(
 
     const risk = Math.abs(price - stop);
     const reward = Math.abs(target - price);
-    rr = risk > 0 ? reward / risk : 0;
+    const rr = risk > 0 ? reward / risk : 0;
 
     const triggerResult = trigger || addTrigger!;
     const context: SignalContext = {
@@ -991,10 +1004,6 @@ function buildDirectionalContext(
     debug.push(`[${direction}] SIGNAL: ${signalType} ${direction} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr}`);
   }
 
-  // Score this direction
-  const { score, breakdown } = scoreTrade(direction, trend, location, trigger, addTrigger, rr);
-  debug.push(`[${direction}] SCORE: ${score} (trend:${breakdown.trend} loc:${breakdown.location} trig:${breakdown.trigger} mom:${breakdown.momentum} rr:${breakdown.rr} fresh:${breakdown.freshness})`);
-
   return {
     direction,
     trend: trend.detail,
@@ -1004,13 +1013,11 @@ function buildDirectionalContext(
     signal,
     canEnter,
     reason,
-    score,
-    scoreBreakdown: breakdown,
   };
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATOR — v53.1: Pick the winner
+// MAIN SIGNAL GENERATOR — v53: Directional Commitment
 // ============================================================
 
 export function generateSignal(pair: string, candles1h: Candle[], candles4h: Candle[], candles15m: Candle[], activeSignals: Signal[], currentPrice?: number): SignalResult {
@@ -1027,68 +1034,64 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   const longContext = buildDirectionalContext(pair, candles4h, trend, "LONG", price, activeSignals, debug);
   const shortContext = buildDirectionalContext(pair, candles4h, trend, "SHORT", price, activeSignals, debug);
 
-  // Step 3: Pick the winner
-  let winner: "LONG" | "SHORT" | "NONE" = "NONE";
-  let winningSignal: Signal | undefined = undefined;
-  let winningContext: DirectionalContext | undefined = undefined;
+  // Step 3: Directional Commitment Check
+  clearExpiredDirectionStates();
 
-  const longCanEnter = longContext.canEnter && longContext.signal;
-  const shortCanEnter = shortContext.canEnter && shortContext.signal;
+  const longCommitment = checkDirectionalCommitment(pair, "LONG", trend.direction);
+  const shortCommitment = checkDirectionalCommitment(pair, "SHORT", trend.direction);
 
-  if (longCanEnter && !shortCanEnter) {
-    winner = "LONG";
-    winningSignal = longContext.signal;
-    winningContext = longContext;
-  } else if (shortCanEnter && !longCanEnter) {
-    winner = "SHORT";
-    winningSignal = shortContext.signal;
-    winningContext = shortContext;
-  } else if (longCanEnter && shortCanEnter) {
-    // Both want to fire — pick the higher score
-    if (longContext.score > shortContext.score) {
-      winner = "LONG";
-      winningSignal = longContext.signal;
-      winningContext = longContext;
-      if (shortContext.signal) {
-        shortContext.signal.rejected = `Lost to LONG (score ${longContext.score} vs ${shortContext.score})`;
-      }
-    } else if (shortContext.score > longContext.score) {
-      winner = "SHORT";
-      winningSignal = shortContext.signal;
-      winningContext = shortContext;
-      if (longContext.signal) {
-        longContext.signal.rejected = `Lost to SHORT (score ${shortContext.score} vs ${longContext.score})`;
-      }
-    } else {
-      // Tie — pick the one aligned with daily trend, or LONG as fallback
-      winner = trend.direction === "SHORT" ? "SHORT" : "LONG";
-      winningContext = winner === "LONG" ? longContext : shortContext;
-      winningSignal = winningContext.signal;
-      const loser = winner === "LONG" ? shortContext : longContext;
-      if (loser.signal) {
-        loser.signal.rejected = `Tie broken by daily trend (${trend.direction})`;
-      }
-    }
+  if (longContext.canEnter && !longCommitment.allowed) {
+    longContext.canEnter = false;
+    longContext.reason = longCommitment.reason;
+    debug.push(`[LONG] BLOCKED: ${longCommitment.reason}`);
+  } else if (longContext.canEnter && longCommitment.allowed) {
+    debug.push(`[LONG] ALLOWED: ${longCommitment.reason}`);
   }
 
-  if (winningSignal) {
-    winningSignal.score = winningContext!.score;
-    const triggerResult = winningContext!.trigger || winningContext!.addTrigger;
+  if (shortContext.canEnter && !shortCommitment.allowed) {
+    shortContext.canEnter = false;
+    shortContext.reason = shortCommitment.reason;
+    debug.push(`[SHORT] BLOCKED: ${shortCommitment.reason}`);
+  } else if (shortContext.canEnter && shortCommitment.allowed) {
+    debug.push(`[SHORT] ALLOWED: ${shortCommitment.reason}`);
+  }
+
+  // Step 4: Collect all allowed signals
+  const allowedSignals: Signal[] = [];
+
+  if (longContext.canEnter && longContext.signal) {
+    allowedSignals.push(longContext.signal);
+    const triggerResult = longContext.trigger || longContext.addTrigger;
     if (triggerResult?.crossHash) {
-      recordCycle(pair, triggerResult.crossHash, winningSignal.direction);
+      recordCycle(pair, triggerResult.crossHash, "LONG");
     }
-    setActiveSignal(pair, winningSignal.direction, winningSignal.type, winningSignal.entry, triggerResult?.crossHash || "");
-    debug.push(`WINNER: ${winner} with score ${winningContext!.score} | ${winningSignal.type} ${winningSignal.direction} @ ${winningSignal.entry}`);
-  } else {
-    debug.push(`WINNER: NONE — LONG score ${longContext.score}, SHORT score ${shortContext.score}`);
+    setActiveSignal(pair, "LONG", longContext.signal.type, longContext.signal.entry, triggerResult?.crossHash || "");
+    debug.push(`[LONG] EXECUTED: ${longContext.signal.type} @ ${longContext.signal.entry}`);
   }
 
-  // Step 4: Market snapshot
+  if (shortContext.canEnter && shortContext.signal) {
+    allowedSignals.push(shortContext.signal);
+    const triggerResult = shortContext.trigger || shortContext.addTrigger;
+    if (triggerResult?.crossHash) {
+      recordCycle(pair, triggerResult.crossHash, "SHORT");
+    }
+    setActiveSignal(pair, "SHORT", shortContext.signal.type, shortContext.signal.entry, triggerResult?.crossHash || "");
+    debug.push(`[SHORT] EXECUTED: ${shortContext.signal.type} @ ${shortContext.signal.entry}`);
+  }
+
+  if (allowedSignals.length > 0) {
+    // New trade entered — previous exit state no longer relevant
+    clearDirectionState(pair);
+  } else {
+    debug.push(`NO SIGNAL: LONG=${longContext.canEnter ? "ready" : "blocked"} (${longContext.reason}), SHORT=${shortContext.canEnter ? "ready" : "blocked"} (${shortContext.reason})`);
+  }
+
+  // Step 5: Market snapshot
   const closes4h = candles4h.map(c => c.close);
   const ema8_4h = ema(closes4h, 8);
   const ema21_4h = ema(closes4h, 21);
   const ema50_4h = ema(closes4h, 50);
-  const dominantContext = winningContext || (longContext.score >= shortContext.score ? longContext : shortContext);
+  const dominantContext = longContext.canEnter ? longContext : shortContext.canEnter ? shortContext : longContext;
   const distToTrendline = dominantContext.location.trendlinePrice > 0
     ? Math.round(Math.abs((price - dominantContext.location.trendlinePrice) / dominantContext.location.trendlinePrice) * 10000) / 100
     : null;
@@ -1099,7 +1102,7 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
     timestamp: now,
     trend: trend.direction,
     location: dominantContext.location.locationType,
-    trigger: winningSignal ? "FIRED" : "WAITING",
+    trigger: allowedSignals.length > 0 ? "FIRED" : "WAITING",
     adx: Math.round(adx(candles4h) * 10) / 10,
     rsi: Math.round(wilderRsi(candles4h.map(c => c.close)) * 10) / 10,
     stochK: dominantContext.trigger?.stochK ?? dominantContext.addTrigger?.stochK ?? 50,
@@ -1115,20 +1118,14 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
     pullbackDesc: dominantContext.location.pullbackDesc,
     structureDesc: dominantContext.location.structureDesc,
     crossAge: dominantContext.trigger?.crossAge || 0,
-    winner,
-    longScore: longContext.score,
-    shortScore: shortContext.score,
   };
 
   return {
-    signal: winningSignal,
-    signals: winningSignal ? [winningSignal] : [],
+    signal: allowedSignals.length === 1 ? allowedSignals[0] : undefined,
+    signals: allowedSignals,
     market,
     longContext,
     shortContext,
-    winner,
-    longScore: longContext.score,
-    shortScore: shortContext.score,
     debug,
   };
 }
@@ -1258,10 +1255,20 @@ export interface PersistedTrade {
 }
 
 export function rebuildStateFromTrades(activeTrades: Record<string, PersistedTrade>): void {
-  for (const [pair, trade] of Object.entries(activeTrades)) {
+  activeSignalStore.clear();
+  for (const [key, trade] of Object.entries(activeTrades)) {
     if (!trade || !trade.direction) continue;
-    activeSignalStore.set(pair, { pair, direction: trade.direction, scale: trade.type, timestamp: trade.timestamp, entryPrice: trade.entry, crossHash: trade.crossHash || "" });
-    console.log(`[STATE_REBUILD] ${pair}: ${trade.type} ${trade.direction} @ ${trade.entry}`);
+    const pair = key.includes("_") ? key.split("_")[0] : key;
+    const storeKey = `${pair}_${trade.direction}`;
+    activeSignalStore.set(storeKey, {
+      pair,
+      direction: trade.direction,
+      scale: trade.type,
+      timestamp: trade.timestamp,
+      entryPrice: trade.entry,
+      crossHash: trade.crossHash || "",
+    });
+    console.log(`[STATE_REBUILD] ${storeKey}: ${trade.type} ${trade.direction} @ ${trade.entry}`);
   }
 }
 
@@ -1269,6 +1276,7 @@ export function clearAllState(): void {
   trendlineStore.clear();
   activeSignalStore.clear();
   cycleStore.clear();
+  directionStateStore.clear();
   console.log("[STATE] All in-memory state cleared");
 }
 
