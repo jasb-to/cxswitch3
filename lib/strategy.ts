@@ -1,17 +1,14 @@
-// lib/strategy.ts — v52.0 "Pure Wave"
+// lib/strategy.ts — v53.0 "True Neutral"
 // ============================================================
-// Philosophy: Every indicator provides information. Nothing blocks.
-// Architecture: Daily Context → 4H Context → Stoch Trigger → Signal
+// Philosophy: Observe both sides. Never block. Let triggers speak.
+// Architecture: Daily Context → LONG Analysis + SHORT Analysis → Signals[]
 //
-// v52.0 Changes from v51.0:
-// REMOVED: dailyTrend blocking on "NONE"
-// REMOVED: location4H ready=false blocking
-// REMOVED: ADD trigger 2/3 confirmation gate
-// REMOVED: findRecentCross lookback limit (now reports age only)
-// REMOVED: "No valid location" rejection
-// CHANGED: Trend = context, Location = context, Trigger = signal generator
-// CHANGED: ADD fires on any single confirmation
-// CHANGED: Every signal carries full context regardless of "quality"
+// v53.0 Changes from v52.0:
+// CHANGED: generateSignal now analyzes LONG and SHORT independently
+// CHANGED: Returns longContext + shortContext + signals[]
+// CHANGED: Active signal store tracks direction; one trade per pair max
+// CHANGED: No default direction when daily is FLAT — both sides compete equally
+// REMOVED: All remaining directional bias (FLAT no longer defaults to LONG)
 
 export interface Candle {
   timestamp: number;
@@ -61,9 +58,23 @@ export interface Signal {
 }
 
 export interface SignalResult {
-  signal?: Signal;
+  signal?: Signal;            // backward compat: first signal or undefined
+  signals: Signal[];          // all signals found (0–2)
   market?: MarketSnapshot;
+  longContext: DirectionalContext;
+  shortContext: DirectionalContext;
   debug: string[];
+}
+
+export interface DirectionalContext {
+  direction: "LONG" | "SHORT";
+  trend: string;
+  location: LocationResult;
+  trigger: TriggerResult | null;
+  addTrigger: AddTriggerResult | null;
+  signal?: Signal;
+  canEnter: boolean;
+  reason: string;
 }
 
 export interface MarketSnapshot {
@@ -101,9 +112,9 @@ export interface HoldResult {
   reason: string;
 }
 
-export const CURRENT_SIGNAL_VERSION = 52.0;
+export const CURRENT_SIGNAL_VERSION = 53.0;
 
-// v52.0: Duplicate prevention only — not a gate
+// v53.0: Duplicate prevention only — not a gate
 interface CycleEntry {
   crossHash: string;
   timestamp: number;
@@ -309,7 +320,7 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
 }
 
 // ============================================================
-// TRENDLINE ENGINE — v52.0: Context only, never blocks
+// TRENDLINE ENGINE — v53.0: Context only, never blocks
 // ============================================================
 
 interface TrendlineState {
@@ -354,7 +365,6 @@ function fitTrendline(pivots: Pivot[]): { slope: number; intercept: number; r2: 
 
 function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number; slope: number; regressionDirection: string } | null {
   const config = getPairConfig(pair);
-  const price = candles[candles.length - 1].close;
   if (candles.length < 30) return null;
   const pivots = findPivots(candles, direction);
   const now = candles[candles.length - 1].timestamp;
@@ -363,7 +373,6 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   const recentPivots = pivots.slice(-10);
   const existing = trendlineStore.get(pair);
   if (existing && existing.direction === direction) {
-    const age = now - existing.lastUpdated;
     const lastPivot = recentPivots[recentPivots.length - 1];
     const projected = existing.slope * lastPivot.index + existing.intercept;
     const deviation = Math.abs(lastPivot.price - projected) / projected;
@@ -381,7 +390,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
 }
 
 // ============================================================
-// DAILY TREND — v52.0: Context only, never returns NONE
+// DAILY TREND — v53.0: Context only, never returns NONE
 // ============================================================
 
 function dailyTrend(candles1d: Candle[]): { direction: "LONG" | "SHORT" | "FLAT"; detail: string; ema21: number; ema50: number } {
@@ -400,10 +409,10 @@ function dailyTrend(candles1d: Candle[]): { direction: "LONG" | "SHORT" | "FLAT"
 }
 
 // ============================================================
-// 4H LOCATION — v52.0: Always returns context. Never blocks.
+// 4H LOCATION — v53.0: Always returns context. Never blocks.
 // ============================================================
 
-interface LocationResult {
+export interface LocationResult {
   detail: string;
   trendlinePrice: number;
   locationType: string;
@@ -433,7 +442,6 @@ function location4H(pair: string, candles4h: Candle[], direction: "LONG" | "SHOR
   let trendlinePrice = tl?.price || 0;
   let distToTL = 0;
 
-  // Always compute EMA distance and ATR retracement for context
   const emaDist = Math.abs(price - lastEma21) / lastEma21;
   const range = Math.max(...recent.map(c => c.high)) - Math.min(...recent.map(c => c.low));
   const atrRetrace = range > 0
@@ -466,7 +474,6 @@ function location4H(pair: string, candles4h: Candle[], direction: "LONG" | "SHOR
       }
     }
   } else {
-    // No trendline — describe swing structure
     if (direction === "LONG") {
       let swingLow = Infinity;
       for (let i = 1; i < recent.length - 1; i++) {
@@ -500,10 +507,10 @@ function location4H(pair: string, candles4h: Candle[], direction: "LONG" | "SHOR
 }
 
 // ============================================================
-// 4H STOCHRSI TRIGGER — v52.0: Finds cross, reports age, never blocks on age
+// 4H STOCHRSI TRIGGER — v53.0: Finds cross, reports age, never blocks on age
 // ============================================================
 
-interface TriggerResult {
+export interface TriggerResult {
   fired: boolean;
   detail: string;
   triggerType: string;
@@ -528,13 +535,10 @@ function recordCycle(pair: string, crossHash: string, direction: "LONG" | "SHORT
   cycleStore.set(pair, { crossHash, timestamp: Date.now(), pair, direction });
 }
 
-// v52.0: findRecentCross scans ALL history, not limited by lookback
-// It reports the most recent cross and its age. Never blocks.
 function findRecentCross(candles4h: Candle[], direction: "LONG" | "SHORT", pair: string): { crossIndex: number; crossStochK: number; crossStochD: number; currentStochK: number; currentStochD: number; crossHash: string; crossAge: number } | null {
   if (candles4h.length < 35) return null;
   const closes = candles4h.map(c => c.close);
   const currentStoch = stochRsi(closes);
-  // Scan from most recent backward to find the LAST cross
   for (let i = 1; i < candles4h.length - 30; i++) {
     const idx = candles4h.length - 1 - i;
     if (idx < 30) break;
@@ -611,7 +615,6 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: 
       if (isDuplicateCycle(pair, crossHash)) {
         return { fired: false, detail: `Cross ${crossAge} candles ago already signaled`, triggerType: "duplicate_cycle", stochK: recentCross.currentStochK, stochD: recentCross.currentStochD, crossAge, crossHash, momentumDesc };
       }
-      // v52.0: Cross age is INFORMATION, not a gate. Signal fires regardless of age.
       const crossWasDeep = recentCross.crossStochK < 50;
       const kAboveD = recentCross.currentStochK >= recentCross.currentStochD;
       if (crossWasDeep && kAboveD) {
@@ -680,10 +683,10 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: 
 }
 
 // ============================================================
-// ADD TRIGGER — v52.0: Any single confirmation fires ADD
+// ADD TRIGGER — v53.0: Any single confirmation fires ADD
 // ============================================================
 
-interface AddTriggerResult {
+export interface AddTriggerResult {
   fired: boolean;
   detail: string;
   confirmations: string[];
@@ -707,7 +710,6 @@ function addTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", location
   if (direction === "LONG" && stoch.k > stoch.d) confirmations.push("stoch_momentum");
   else if (direction === "SHORT" && stoch.k < stoch.d) confirmations.push("stoch_momentum");
 
-  // v52.0: Any single confirmation fires ADD. No gate.
   const fired = confirmations.length >= 1;
   const detail = fired
     ? `ADD fired: ${confirmations.join(", ")}`
@@ -717,11 +719,12 @@ function addTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", location
 }
 
 // ============================================================
-// ACTIVE TRADE MANAGEMENT — v52.0
+// ACTIVE TRADE MANAGEMENT — v53.0: Direction-aware store
 // ============================================================
 
 interface ActiveSignalState {
   pair: string;
+  direction: "LONG" | "SHORT";
   scale: "ENTRY_1" | "ENTRY_2" | "ADD";
   timestamp: number;
   entryPrice: number;
@@ -730,9 +733,10 @@ interface ActiveSignalState {
 
 const activeSignalStore: Map<string, ActiveSignalState> = new Map();
 
-function hasActiveSignal(pair: string): boolean {
+function hasActiveSignal(pair: string, direction?: "LONG" | "SHORT"): boolean {
   const state = activeSignalStore.get(pair);
   if (!state) return false;
+  if (direction && state.direction !== direction) return false;
   const age = Date.now() - state.timestamp;
   if ((state.scale === "ENTRY_1" || state.scale === "ENTRY_2") && age < 24 * 60 * 60 * 1000) return true;
   if (state.scale === "ADD" && age < 4 * 60 * 60 * 1000) return true;
@@ -740,18 +744,19 @@ function hasActiveSignal(pair: string): boolean {
   return false;
 }
 
-function hasActiveAdd(pair: string): boolean {
+function hasActiveAdd(pair: string, direction: "LONG" | "SHORT"): boolean {
   const state = activeSignalStore.get(pair);
+  if (!state || state.direction !== direction) return false;
   return state?.scale === "ADD" && (Date.now() - state.timestamp) < 4 * 60 * 60 * 1000;
 }
 
-function setActiveSignal(pair: string, scale: "ENTRY_1" | "ENTRY_2" | "ADD", entryPrice: number, crossHash: string): void {
-  activeSignalStore.set(pair, { pair, scale, timestamp: Date.now(), entryPrice, crossHash });
+function setActiveSignal(pair: string, direction: "LONG" | "SHORT", scale: "ENTRY_1" | "ENTRY_2" | "ADD", entryPrice: number, crossHash: string): void {
+  activeSignalStore.set(pair, { pair, direction, scale, timestamp: Date.now(), entryPrice, crossHash });
 }
 
-function canAddToPair(pair: string): boolean {
+function canAddToPair(pair: string, direction: "LONG" | "SHORT"): boolean {
   const state = activeSignalStore.get(pair);
-  if (!state) return false;
+  if (!state || state.direction !== direction) return false;
   if (state.scale === "ADD") return false;
   const age = Date.now() - state.timestamp;
   if (age < 60 * 60 * 1000) return false;
@@ -760,174 +765,230 @@ function canAddToPair(pair: string): boolean {
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATOR — v52.0: No gates. Context + trigger only.
+// DIRECTIONAL ANALYSIS BUILDER — v53.0: One side at a time
+// ============================================================
+
+function buildDirectionalContext(
+  pair: string,
+  candles4h: Candle[],
+  trend: { direction: "LONG" | "SHORT" | "FLAT"; detail: string; ema21: number; ema50: number },
+  direction: "LONG" | "SHORT",
+  price: number,
+  activeSignals: Signal[],
+  debug: string[]
+): DirectionalContext {
+  const location = location4H(pair, candles4h, direction);
+  debug.push(`[${direction}] Location: ${location.locationType} | ${location.detail} | Phase: ${location.marketPhase}`);
+
+  let trigger: TriggerResult | null = null;
+  let addTrigger: AddTriggerResult | null = null;
+  let signal: Signal | undefined = undefined;
+  let canEnter = false;
+  let reason = "";
+
+  const anyActive = hasActiveSignal(pair);
+  const sameDirActive = hasActiveSignal(pair, direction);
+
+  // ENTRY: fires if stoch trigger fires and no active trade at all
+  if (!anyActive) {
+    trigger = stochTrigger4H(candles4h, direction, pair);
+    debug.push(`[${direction}] Trigger: ${trigger.fired ? "FIRED" : "WAITING"} | ${trigger.detail} | Momentum: ${trigger.momentumDesc}`);
+    if (trigger.fired) {
+      canEnter = true;
+      reason = trigger.detail;
+    }
+  } else {
+    reason = `Active trade exists (${sameDirActive ? "same direction" : "opposite direction"})`;
+    debug.push(`[${direction}] Entry blocked: ${reason}`);
+  }
+
+  // ADD: fires on any single confirmation, only if same direction active
+  if (!canEnter && sameDirActive && !hasActiveAdd(pair, direction)) {
+    addTrigger = addTrigger4H(candles4h, direction, location, pair);
+    debug.push(`[${direction}] ADD: ${addTrigger.fired ? "FIRED" : "WAITING"} | ${addTrigger.detail}`);
+    if (addTrigger.fired) {
+      canEnter = true;
+      reason = addTrigger.detail;
+      trigger = null;
+    }
+  }
+
+  // Build signal if we can enter
+  if (canEnter) {
+    const atrVal = atr(candles4h, 14);
+    const recent4h = candles4h.slice(-20);
+    const swingLow = Math.min(...recent4h.map(c => c.low));
+    const swingHigh = Math.max(...recent4h.map(c => c.high));
+    let stop: number;
+    let target: number;
+    let signalType: "ENTRY_1" | "ENTRY_2" | "ADD";
+
+    if (trigger?.triggerType === "entry_1_deep_pullback") signalType = "ENTRY_1";
+    else if (trigger?.triggerType === "entry_2_early_momentum" || trigger?.triggerType === "entry_2_pre_cross") signalType = "ENTRY_2";
+    else signalType = "ADD";
+
+    if (signalType === "ENTRY_1" || signalType === "ENTRY_2") {
+      if (direction === "LONG") {
+        const atrStop = price - atrVal * 2;
+        stop = Math.max(atrStop, swingLow);
+        target = price + (price - stop) * 1.5;
+        target = Math.max(swingHigh, target);
+      } else {
+        const atrStop = price + atrVal * 2;
+        stop = Math.min(atrStop, swingHigh);
+        target = price - (stop - price) * 1.5;
+        target = Math.min(swingLow, target);
+      }
+    } else {
+      if (direction === "LONG") {
+        const atrStop = price - atrVal * 1.5;
+        const tlStop = location.trendlinePrice > 0 ? location.trendlinePrice * 0.995 : atrStop;
+        stop = Math.max(atrStop, tlStop, swingLow);
+        target = price + (price - stop) * 1.5;
+        target = Math.max(swingHigh, target);
+      } else {
+        const atrStop = price + atrVal * 1.5;
+        const tlStop = location.trendlinePrice > 0 ? location.trendlinePrice * 1.005 : atrStop;
+        stop = Math.min(atrStop, tlStop, swingHigh);
+        target = price - (stop - price) * 1.5;
+        target = Math.min(swingLow, target);
+      }
+    }
+
+    const risk = Math.abs(price - stop);
+    const reward = Math.abs(target - price);
+    const rr = risk > 0 ? reward / risk : 0;
+
+    const triggerResult = trigger || addTrigger!;
+    const context: SignalContext = {
+      marketPhase: location.marketPhase,
+      structure: location.structureDesc,
+      momentum: triggerResult.momentumDesc || "neutral",
+      pullback: location.pullbackDesc,
+      trendDescription: trend.detail,
+      triggerDetails: triggerResult.detail,
+      crossAge: triggerResult.crossAge || 0,
+      crossHash: triggerResult.crossHash || "",
+    };
+
+    signal = {
+      id: `${pair}_${signalType}_${direction}_${Date.now()}`,
+      pair,
+      direction,
+      type: signalType,
+      scale: signalType,
+      entry: Math.round(price * 100) / 100,
+      stop: Math.round(stop * 100) / 100,
+      target: Math.round(target * 100) / 100,
+      rr: Math.round(rr * 100) / 100,
+      adx: Math.round(adx(candles4h) * 10) / 10,
+      rsi: Math.round(wilderRsi(candles4h.map(c => c.close)) * 10) / 10,
+      stochK: triggerResult.stochK,
+      stochD: triggerResult.stochD,
+      expectedMove: Math.round(((target - price) / price) * 1000) / 10,
+      reason: `${signalType} ${direction} | ${trend.direction} | ${location.marketPhase} | ${triggerResult.detail}`,
+      timestamp: Date.now(),
+      version: CURRENT_SIGNAL_VERSION,
+      trend: trend.direction,
+      location: location.detail,
+      trigger: triggerResult.detail,
+      context,
+    };
+
+    debug.push(`[${direction}] SIGNAL: ${signalType} ${direction} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr}`);
+  }
+
+  return {
+    direction,
+    trend: trend.detail,
+    location,
+    trigger,
+    addTrigger,
+    signal,
+    canEnter,
+    reason,
+  };
+}
+
+// ============================================================
+// MAIN SIGNAL GENERATOR — v53.0: Bidirectional analysis
 // ============================================================
 
 export function generateSignal(pair: string, candles1h: Candle[], candles4h: Candle[], candles15m: Candle[], activeSignals: Signal[], currentPrice?: number): SignalResult {
   const debug: string[] = [];
   const now = Date.now();
   const price = currentPrice ?? candles4h[candles4h.length - 1]?.close ?? 0;
-  const hasActive = activeSignals.some(s => s.pair === pair && !s.exited) || hasActiveSignal(pair);
 
-  // Step 1: Daily Trend — CONTEXT ONLY, never blocks
+  // Step 1: Daily Trend — shared context
   const candles1d = aggregateTo1D(candles4h);
   const trend = dailyTrend(candles1d);
   debug.push(`Trend: ${trend.direction} | ${trend.detail}`);
-  // v52.0: Trend is context. We proceed regardless of direction.
-  // If FLAT, we still look for triggers but note it in context.
 
-  // Step 2: 4H Location — CONTEXT ONLY, never blocks
-  const location = location4H(pair, candles4h, trend.direction === "FLAT" ? "LONG" : trend.direction);
-  debug.push(`Location: ${location.locationType} | ${location.detail} | Phase: ${location.marketPhase}`);
-  // v52.0: Location describes where price is. Never blocks entry.
+  // Step 2: Analyze both directions independently
+  const longContext = buildDirectionalContext(pair, candles4h, trend, "LONG", price, activeSignals, debug);
+  const shortContext = buildDirectionalContext(pair, candles4h, trend, "SHORT", price, activeSignals, debug);
 
-  // Step 3: Determine signal type
-  let signalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
-  let trigger: TriggerResult | AddTriggerResult | null = null;
+  // Step 3: Collect all signals (0, 1, or 2)
+  const signals: Signal[] = [];
+  if (longContext.signal) signals.push(longContext.signal);
+  if (shortContext.signal) signals.push(shortContext.signal);
 
-  // ENTRY: fires if stoch trigger fires. Location type does NOT block.
-  // v52.0: ENTRY can fire from ANY location type — trendline, beyond TL, extended, etc.
-  if (!hasActive) {
-    const entryTrigger = stochTrigger4H(candles4h, trend.direction === "FLAT" ? "LONG" : trend.direction, pair);
-    debug.push(`Trigger: ${entryTrigger.fired ? "FIRED" : "WAITING"} | ${entryTrigger.detail} | Momentum: ${entryTrigger.momentumDesc}`);
-    if (entryTrigger.fired) {
-      if (entryTrigger.triggerType === "entry_1_deep_pullback") signalType = "ENTRY_1";
-      else if (entryTrigger.triggerType === "entry_2_early_momentum" || entryTrigger.triggerType === "entry_2_pre_cross") signalType = "ENTRY_2";
-      trigger = entryTrigger;
+  // Step 4: Record cycles and active state for each signal
+  for (const signal of signals) {
+    const ctx = signal.direction === "LONG" ? longContext : shortContext;
+    const triggerResult = ctx.trigger || ctx.addTrigger;
+    if (triggerResult?.crossHash) {
+      recordCycle(pair, triggerResult.crossHash, signal.direction);
     }
+    setActiveSignal(pair, signal.direction, signal.type, signal.entry, triggerResult?.crossHash || "");
   }
 
-  // ADD: fires on any single confirmation. Location does NOT need to be BEYOND_TL.
-  if (!signalType && canAddToPair(pair) && !hasActiveAdd(pair)) {
-    const addTrigger = addTrigger4H(candles4h, trend.direction === "FLAT" ? "LONG" : trend.direction, location, pair);
-    debug.push(`ADD: ${addTrigger.fired ? "FIRED" : "WAITING"} | ${addTrigger.detail}`);
-    if (addTrigger.fired) { signalType = "ADD"; trigger = addTrigger; }
-  }
-
-  if (!signalType) {
-    if (hasActive) debug.push("No signal: active trade exists");
-    else debug.push("No stochastic trigger detected");
-    return { debug };
-  }
-
-  // Step 4: Calculate levels
-  const atrVal = atr(candles4h, 14);
-  const recent4h = candles4h.slice(-20);
-  const swingLow = Math.min(...recent4h.map(c => c.low));
-  const swingHigh = Math.max(...recent4h.map(c => c.high));
-  let stop: number;
-  let target: number;
-
-  if (signalType === "ENTRY_1" || signalType === "ENTRY_2") {
-    if (trend.direction === "LONG" || trend.direction === "FLAT") {
-      const atrStop = price - atrVal * 2;
-      stop = Math.max(atrStop, swingLow);
-      target = price + (price - stop) * 1.5;
-      target = Math.max(swingHigh, target);
-    } else {
-      const atrStop = price + atrVal * 2;
-      stop = Math.min(atrStop, swingHigh);
-      target = price - (stop - price) * 1.5;
-      target = Math.min(swingLow, target);
-    }
-  } else {
-    if (trend.direction === "LONG" || trend.direction === "FLAT") {
-      const atrStop = price - atrVal * 1.5;
-      const tlStop = location.trendlinePrice > 0 ? location.trendlinePrice * 0.995 : atrStop;
-      stop = Math.max(atrStop, tlStop, swingLow);
-      target = price + (price - stop) * 1.5;
-      target = Math.max(swingHigh, target);
-    } else {
-      const atrStop = price + atrVal * 1.5;
-      const tlStop = location.trendlinePrice > 0 ? location.trendlinePrice * 1.005 : atrStop;
-      stop = Math.min(atrStop, tlStop, swingHigh);
-      target = price - (stop - price) * 1.5;
-      target = Math.min(swingLow, target);
-    }
-  }
-
-  const risk = Math.abs(price - stop);
-  const reward = Math.abs(target - price);
-  const rr = risk > 0 ? reward / risk : 0;
-
-  // Step 5: Build context
-  const triggerResult = trigger as TriggerResult;
-  const context: SignalContext = {
-    marketPhase: location.marketPhase,
-    structure: location.structureDesc,
-    momentum: triggerResult.momentumDesc || "neutral",
-    pullback: location.pullbackDesc,
-    trendDescription: trend.detail,
-    triggerDetails: triggerResult.detail,
-    crossAge: triggerResult.crossAge || 0,
-    crossHash: triggerResult.crossHash || "",
-  };
-
-  // Step 6: Record cycle
-  if (triggerResult.crossHash) recordCycle(pair, triggerResult.crossHash, trend.direction === "FLAT" ? "LONG" : trend.direction);
-  setActiveSignal(pair, signalType, price, triggerResult.crossHash || "");
-
-  const rsi4h = wilderRsi(candles4h.map(c => c.close));
-  const adxVal = adx(candles4h);
-
-  const signal: Signal = {
-    id: `${pair}_${signalType}_${now}`,
-    pair,
-    direction: trend.direction === "FLAT" ? "LONG" : trend.direction,
-    type: signalType,
-    scale: signalType,
-    entry: Math.round(price * 100) / 100,
-    stop: Math.round(stop * 100) / 100,
-    target: Math.round(target * 100) / 100,
-    rr: Math.round(rr * 100) / 100,
-    adx: Math.round(adxVal * 10) / 10,
-    rsi: Math.round(rsi4h * 10) / 10,
-    stochK: triggerResult.stochK,
-    stochD: triggerResult.stochD,
-    expectedMove: Math.round(((target - price) / price) * 1000) / 10,
-    reason: `${signalType} | ${trend.direction} | ${location.marketPhase} | ${triggerResult.detail}`,
-    timestamp: now,
-    version: CURRENT_SIGNAL_VERSION,
-    trend: trend.direction,
-    location: location.detail,
-    trigger: triggerResult.detail,
-    context,
-  };
-
-  debug.push(`SIGNAL: ${signalType} ${signal.direction} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr}`);
-
-  // Step 7: Market snapshot
+  // Step 5: Market snapshot (neutral — uses trend direction for EMA context)
   const closes4h = candles4h.map(c => c.close);
   const ema8_4h = ema(closes4h, 8);
   const ema21_4h = ema(closes4h, 21);
   const ema50_4h = ema(closes4h, 50);
-  const distToTrendline = location.trendlinePrice > 0 ? Math.round(Math.abs((price - location.trendlinePrice) / location.trendlinePrice) * 10000) / 100 : null;
+
+  // Use the dominant context for snapshot, or LONG if none
+  const dominantContext = longContext.canEnter ? longContext : shortContext.canEnter ? shortContext : longContext;
+  const distToTrendline = dominantContext.location.trendlinePrice > 0
+    ? Math.round(Math.abs((price - dominantContext.location.trendlinePrice) / dominantContext.location.trendlinePrice) * 10000) / 100
+    : null;
 
   const market: MarketSnapshot = {
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: now,
     trend: trend.direction,
-    location: location.locationType,
-    trigger: triggerResult.fired ? "FIRED" : "WAITING",
-    adx: signal.adx,
-    rsi: signal.rsi,
-    stochK: signal.stochK,
-    stochD: signal.stochD,
-    trendlinePrice: Math.round(location.trendlinePrice * 100) / 100,
+    location: dominantContext.location.locationType,
+    trigger: signals.length > 0 ? "FIRED" : "WAITING",
+    adx: Math.round(adx(candles4h) * 10) / 10,
+    rsi: Math.round(wilderRsi(candles4h.map(c => c.close)) * 10) / 10,
+    stochK: dominantContext.trigger?.stochK ?? dominantContext.addTrigger?.stochK ?? 50,
+    stochD: dominantContext.trigger?.stochD ?? dominantContext.addTrigger?.stochD ?? 50,
+    trendlinePrice: Math.round(dominantContext.location.trendlinePrice * 100) / 100,
     distToTrendline,
-    locationType: location.locationType,
+    locationType: dominantContext.location.locationType,
     ema8_4h: Math.round(ema8_4h[ema8_4h.length - 1] * 100) / 100,
     ema21_4h: Math.round(ema21_4h[ema21_4h.length - 1] * 100) / 100,
     ema50_4h: Math.round(ema50_4h[ema50_4h.length - 1] * 100) / 100,
-    marketPhase: location.marketPhase,
-    momentumDesc: triggerResult.momentumDesc || "neutral",
-    pullbackDesc: location.pullbackDesc,
-    structureDesc: location.structureDesc,
-    crossAge: triggerResult.crossAge || 0,
+    marketPhase: dominantContext.location.marketPhase,
+    momentumDesc: dominantContext.trigger?.momentumDesc || dominantContext.addTrigger?.momentumDesc || "neutral",
+    pullbackDesc: dominantContext.location.pullbackDesc,
+    structureDesc: dominantContext.location.structureDesc,
+    crossAge: dominantContext.trigger?.crossAge || 0,
   };
 
-  return { signal, market, debug };
+  debug.push(`Result: ${signals.length} signal(s) — LONG:${longContext.canEnter ? "YES" : "NO"} SHORT:${shortContext.canEnter ? "YES" : "NO"}`);
+
+  return {
+    signal: signals[0],
+    signals,
+    market,
+    longContext,
+    shortContext,
+    debug,
+  };
 }
 
 // ============================================================
@@ -937,43 +998,51 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
 export function getMarketSnapshot(pair: string, candles1h: Candle[], candles4h: Candle[], candles15m: Candle[]): MarketSnapshot {
   const candles1d = aggregateTo1D(candles4h);
   const trend = dailyTrend(candles1d);
-  const direction = trend.direction === "FLAT" ? "LONG" : trend.direction;
-  const location = location4H(pair, candles4h, direction);
-  const trigger = stochTrigger4H(candles4h, direction, pair);
   const price = candles4h[candles4h.length - 1]?.close ?? 0;
   const closes4h = candles4h.map(c => c.close);
   const ema8_4h = ema(closes4h, 8);
   const ema21_4h = ema(closes4h, 21);
   const ema50_4h = ema(closes4h, 50);
-  const distToTrendline = location.trendlinePrice > 0 ? Math.round(Math.abs((price - location.trendlinePrice) / location.trendlinePrice) * 10000) / 100 : null;
+
+  // Analyze both sides for snapshot
+  const longLoc = location4H(pair, candles4h, "LONG");
+  const shortLoc = location4H(pair, candles4h, "SHORT");
+  const longTrig = stochTrigger4H(candles4h, "LONG", pair);
+  const shortTrig = stochTrigger4H(candles4h, "SHORT", pair);
+
+  const dominantLoc = longTrig.fired ? longLoc : shortTrig.fired ? shortLoc : longLoc;
+  const dominantTrig = longTrig.fired ? longTrig : shortTrig.fired ? shortTrig : longTrig;
+  const distToTrendline = dominantLoc.trendlinePrice > 0
+    ? Math.round(Math.abs((price - dominantLoc.trendlinePrice) / dominantLoc.trendlinePrice) * 10000) / 100
+    : null;
 
   return {
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
     trend: trend.direction,
-    location: location.locationType,
-    trigger: trigger.fired ? "FIRED" : "WAITING",
+    location: dominantLoc.locationType,
+    trigger: dominantTrig.fired ? "FIRED" : "WAITING",
     adx: Math.round(adx(candles4h) * 10) / 10,
     rsi: Math.round(wilderRsi(candles4h.map(c => c.close)) * 10) / 10,
-    stochK: trigger.stochK,
-    stochD: trigger.stochD,
-    trendlinePrice: Math.round(location.trendlinePrice * 100) / 100,
+    stochK: dominantTrig.stochK,
+    stochD: dominantTrig.stochD,
+    trendlinePrice: Math.round(dominantLoc.trendlinePrice * 100) / 100,
     distToTrendline,
-    locationType: location.locationType,
+    locationType: dominantLoc.locationType,
     ema8_4h: Math.round(ema8_4h[ema8_4h.length - 1] * 100) / 100,
     ema21_4h: Math.round(ema21_4h[ema21_4h.length - 1] * 100) / 100,
     ema50_4h: Math.round(ema50_4h[ema50_4h.length - 1] * 100) / 100,
-    marketPhase: location.marketPhase,
-    momentumDesc: trigger.momentumDesc || "neutral",
-    pullbackDesc: location.pullbackDesc,
-    structureDesc: location.structureDesc,
-    crossAge: trigger.crossAge || 0,
+    marketPhase: dominantLoc.marketPhase,
+    momentumDesc: dominantTrig.momentumDesc || "neutral",
+    pullbackDesc: dominantLoc.pullbackDesc,
+    structureDesc: dominantLoc.structureDesc,
+    crossAge: dominantTrig.crossAge || 0,
   };
 }
 
 // ============================================================
-// VALIDITY & HOLD MANAGEMENT
+// VALIDITY & HOLD MANAGEMENT — v53.0: Direction-aware
 // ============================================================
 
 export function isSignalStillValid(signal: Signal, currentPrice: number, now: number = Date.now()): ValidityCheck {
@@ -1050,7 +1119,7 @@ export interface PersistedTrade {
 export function rebuildStateFromTrades(activeTrades: Record<string, PersistedTrade>): void {
   for (const [pair, trade] of Object.entries(activeTrades)) {
     if (!trade || !trade.direction) continue;
-    activeSignalStore.set(pair, { pair, scale: trade.type, timestamp: trade.timestamp, entryPrice: trade.entry, crossHash: trade.crossHash || "" });
+    activeSignalStore.set(pair, { pair, direction: trade.direction, scale: trade.type, timestamp: trade.timestamp, entryPrice: trade.entry, crossHash: trade.crossHash || "" });
     console.log(`[STATE_REBUILD] ${pair}: ${trade.type} ${trade.direction} @ ${trade.entry}`);
   }
 }
