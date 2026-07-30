@@ -22,40 +22,13 @@ interface Signal {
   trend?: string;
   location?: string;
   trigger?: string;
+  score?: number;
+  rejected?: string;
   meta?: {
     status: string;
     ageMinutes: number;
     actionable: boolean;
   };
-}
-
-interface DirectionalContext {
-  direction: "LONG" | "SHORT";
-  trend: string;
-  location: {
-    locationType: string;
-    marketPhase: string;
-    structureDesc: string;
-    pullbackDesc: string;
-    trendlinePrice: number;
-    distToTL: number;
-  };
-  trigger: {
-    fired: boolean;
-    triggerType: string;
-    detail: string;
-    stochK: number;
-    stochD: number;
-    crossAge: number;
-    momentumDesc: string;
-  } | null;
-  addTrigger: {
-    fired: boolean;
-    detail: string;
-    confirmations: string[];
-  } | null;
-  canEnter: boolean;
-  reason: string;
 }
 
 interface MarketData {
@@ -75,13 +48,9 @@ interface MarketData {
   ema8_4h: number;
   ema21_4h: number;
   ema50_4h: number;
-  marketPhase: string;
-  momentumDesc: string;
-  pullbackDesc: string;
-  structureDesc: string;
-  crossAge: number;
-  longContext?: DirectionalContext;
-  shortContext?: DirectionalContext;
+  winner?: "LONG" | "SHORT" | "NONE";
+  longScore?: number;
+  shortScore?: number;
 }
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"];
@@ -224,187 +193,9 @@ function calcStopTrail(signal: Signal, currentPrice: number): {
   return { currentR, milestones, distanceToNext };
 }
 
-// ─── Signal Section ────────────────────────────────────────
-function SignalSection({ signal, currentPrice }: { signal: Signal; currentPrice: number }) {
-  const label = getSignalLabel(signal.type);
-  const status = signal.meta?.status || "ACTIVE";
-  const entry = signal.entry;
-  const stop = signal.stop;
-  const target = signal.target;
-
-  const trail = calcStopTrail(signal, currentPrice);
-
-  const progress =
-    status === "ACTIVE" && entry && target && stop
-      ? signal.direction === "LONG"
-        ? Math.max(0, Math.min(100, ((currentPrice - entry) / (target - entry)) * 100))
-        : Math.max(0, Math.min(100, ((entry - currentPrice) / (entry - target)) * 100))
-      : 0;
-
-  const unrealizedPnL =
-    status === "ACTIVE" && currentPrice && entry
-      ? signal.direction === "LONG"
-        ? ((currentPrice - entry) / entry) * 100
-        : ((entry - currentPrice) / entry) * 100
-      : 0;
-
-  return (
-    <div className={`mb-3 p-3 rounded border ${signal.direction === "LONG" ? "border-green-500/30 bg-green-900/10" : "border-red-500/30 bg-red-900/10"}`}>
-      {/* Signal Header */}
-      <div className="flex justify-between items-center mb-2">
-        <div className="flex items-center gap-2">
-          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${label.color}`}>{label.text}</span>
-          <span className={`text-[10px] font-bold ${signal.direction === "LONG" ? "text-green-400" : "text-red-400"}`}>
-            {signal.direction}
-          </span>
-          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${status === "ACTIVE" ? "bg-green-500/30 text-green-300" : status === "STALE" ? "bg-gray-500/30 text-gray-300" : "bg-blue-500/30 text-blue-300"}`}>
-            {status}
-          </span>
-        </div>
-        <span className="text-[10px] text-gray-500">{timeAgo(signal.timestamp)}</span>
-      </div>
-
-      {/* Progress Bar */}
-      {status === "ACTIVE" && (
-        <div className="mb-3">
-          <div className="flex justify-between text-[10px] text-gray-400 mb-1">
-            <span>SL</span>
-            <span className={unrealizedPnL > 0 ? "text-green-400" : unrealizedPnL < 0 ? "text-red-400" : "text-gray-400"}>
-              {unrealizedPnL > 0 ? "+" : ""}{unrealizedPnL.toFixed(2)}%
-            </span>
-            <span>Target</span>
-          </div>
-          <div className="relative h-2 bg-gray-700 rounded-full">
-            <div
-              className="absolute top-0 bottom-0 w-0.5 bg-white/50 z-10"
-              style={{
-                left: `${Math.max(0, Math.min(100, signal.direction === "LONG"
-                  ? ((entry - stop) / (target - stop)) * 100
-                  : ((stop - entry) / (stop - target)) * 100
-                ))}%`
-              }}
-            />
-            <div
-              className={`absolute top-0 bottom-0 rounded-full transition-all ${unrealizedPnL >= 0 ? "bg-green-500" : "bg-red-500"}`}
-              style={{
-                left: 0,
-                width: `${Math.max(0, Math.min(100, signal.direction === "LONG"
-                  ? ((currentPrice - stop) / (target - stop)) * 100
-                  : ((stop - currentPrice) / (stop - target)) * 100
-                ))}%`
-              }}
-            />
-          </div>
-          <div className="flex justify-between text-[9px] text-gray-500 mt-0.5">
-            <span>{money(stop)}</span>
-            <span className="text-gray-400">Entry {money(entry)}</span>
-            <span>{money(target)}</span>
-          </div>
-        </div>
-      )}
-
-      {/* Levels */}
-      <div className="mb-3 p-2 rounded bg-gray-900/70 border border-gray-700/50">
-        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
-          <LevelRow label="Entry" value={money(signal.entry)} />
-          <LevelRow label="Target" value={money(signal.target)} color="text-purple-400" />
-          <LevelRow label="Initial SL" value={money(signal.stop)} color="text-red-400" />
-          <LevelRow label="R:R" value={signal.rr?.toFixed(2)} color="text-yellow-400" />
-          <LevelRow label="Expected" value={`${signal.expectedMove?.toFixed(1)}%`} color="text-blue-400" />
-          <LevelRow label="Stoch" value={`K=${signal.stochK} D=${signal.stochD}`} color="text-gray-300" />
-        </div>
-      </div>
-
-      {/* Stop Trail */}
-      {trail.milestones.length > 0 && status === "ACTIVE" && (
-        <div className="mb-2 p-2 rounded bg-gray-900/50 border border-gray-700/30">
-          <div className="flex justify-between items-center mb-1">
-            <span className="text-[10px] text-gray-500 uppercase">Stop Trail</span>
-            <span className="text-[10px] font-mono text-yellow-400">{trail.currentR.toFixed(2)}R</span>
-          </div>
-          <div className="space-y-1">
-            {trail.milestones.map((m, idx) => (
-              <div key={idx} className="flex items-center gap-2">
-                <div className={`w-2 h-2 rounded-full shrink-0 ${m.reached ? "bg-green-500" : m.isNext ? "bg-yellow-400" : "bg-gray-600"}`} />
-                <div className="flex-1 flex justify-between text-[11px]">
-                  <span className={m.reached ? "text-green-400" : m.isNext ? "text-yellow-400" : "text-gray-500"}>
-                    {m.label} {m.isNext && "←"}
-                  </span>
-                  <span className="font-mono">{money(m.price)}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-          {trail.distanceToNext > 0 && (
-            <div className="mt-1 text-center text-[10px] text-yellow-400 font-mono">
-              {money(trail.distanceToNext)} to next
-            </div>
-          )}
-        </div>
-      )}
-
-      {signal.reason && (
-        <div className="text-[10px] text-gray-500 leading-relaxed border-t border-gray-700/50 pt-2">
-          {signal.reason}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Observer View ─────────────────────────────────────────
-function ObserverView({ longContext, shortContext }: { longContext?: DirectionalContext; shortContext?: DirectionalContext }) {
-  return (
-    <div className="mb-3 p-3 rounded bg-gray-900/50 border border-gray-700/50">
-      <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2 font-semibold">Market Observer</div>
-      <div className="space-y-2">
-        {longContext && (
-          <ObserverRow direction="LONG" ctx={longContext} />
-        )}
-        {shortContext && (
-          <ObserverRow direction="SHORT" ctx={shortContext} />
-        )}
-        {!longContext && !shortContext && (
-          <div className="text-[11px] text-gray-500 text-center py-2">Analyzing both directions...</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ObserverRow({ direction, ctx }: { direction: "LONG" | "SHORT"; ctx: DirectionalContext }) {
-  const isLong = direction === "LONG";
-  const triggerFired = ctx.trigger?.fired || ctx.addTrigger?.fired;
-  const triggerType = ctx.trigger?.triggerType || ctx.addTrigger ? "add" : "none";
-
-  return (
-    <div className={`p-2 rounded border ${isLong ? "border-green-500/20 bg-green-900/5" : "border-red-500/20 bg-red-900/5"}`}>
-      <div className="flex justify-between items-center mb-1">
-        <span className={`text-[11px] font-bold ${isLong ? "text-green-400" : "text-red-400"}`}>{direction}</span>
-        <span className={`text-[9px] px-1.5 py-0.5 rounded ${triggerFired ? "bg-green-500/30 text-green-300" : "bg-gray-600/30 text-gray-400"}`}>
-          {triggerFired ? "TRIGGER READY" : "WAITING"}
-        </span>
-      </div>
-      <div className="grid grid-cols-2 gap-1 text-[10px]">
-        <span className="text-gray-500">Location:</span>
-        <span className="text-gray-300">{ctx.location.locationType}</span>
-        <span className="text-gray-500">Phase:</span>
-        <span className="text-gray-300">{ctx.location.marketPhase}</span>
-        <span className="text-gray-500">Stoch:</span>
-        <span className="text-gray-300">K={ctx.trigger?.stochK ?? ctx.addTrigger?.stochK ?? "—"} D={ctx.trigger?.stochD ?? ctx.addTrigger?.stochD ?? "—"}</span>
-        <span className="text-gray-500">Cross:</span>
-        <span className="text-gray-300">{ctx.trigger?.crossAge ? `${ctx.trigger.crossAge} candles ago` : "—"}</span>
-      </div>
-      {ctx.reason && !ctx.canEnter && (
-        <div className="mt-1 text-[9px] text-gray-600 italic">{ctx.reason}</div>
-      )}
-    </div>
-  );
-}
-
 // ─── Main Dashboard ────────────────────────────────────────
 export default function Dashboard() {
-  const [signals, setSignals] = useState<Record<string, Signal[]>>({});
+  const [signals, setSignals] = useState<Record<string, Signal | null>>({});
   const [marketData, setMarketData] = useState<Record<string, MarketData>>({});
   const [livePrices, setLivePrices] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
@@ -416,12 +207,12 @@ export default function Dashboard() {
       try {
         const res = await fetch("/api/signals", { cache: "no-store" });
         const data = await res.json();
-        const sigMap: Record<string, Signal[]> = {};
+        const sigMap: Record<string, Signal | null> = {};
         const mktMap: Record<string, MarketData> = {};
 
         for (const p of PAIRS) {
-          const s = data.signals?.filter((sig: Signal) => sig.pair === p) || [];
-          sigMap[p] = s;
+          const s = data.signals?.find((sig: Signal) => sig.pair === p);
+          sigMap[p] = s || null;
         }
         for (const m of data.marketData || []) {
           if (m?.pair) mktMap[m.pair] = m;
@@ -461,7 +252,7 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
-        <div className="text-lg">Loading CX Switch v53.0...</div>
+        <div className="text-lg">Loading CX Switch v53.1...</div>
       </div>
     );
   }
@@ -470,7 +261,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-bold">CX Switch v53.0</h1>
+          <h1 className="text-2xl font-bold">CX Switch v53.1</h1>
           <div className="text-xs text-gray-400">
             Fetches: {fetchCount} | Last:{" "}
             {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
@@ -479,42 +270,87 @@ export default function Dashboard() {
 
         <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
           {PAIRS.map((pair) => {
-            const pairSignals = signals[pair] || [];
+            const signal = signals[pair];
             const mkt = marketData[pair];
             const livePrice = livePrices[pair];
             const currentPrice = livePrice ?? mkt?.price ?? 0;
-            const hasSignals = pairSignals.length > 0;
+            const hasSignal = !!signal;
+            const status = signal?.meta?.status || "WAITING";
+            const signalLabel = hasSignal ? getSignalLabel(signal.type) : null;
 
-            // Determine card border color based on active signals
+            const trail = hasSignal && status === "ACTIVE" && currentPrice
+              ? calcStopTrail(signal, currentPrice)
+              : { currentR: 0, milestones: [], distanceToNext: 0 };
+
             let borderClass = "border-gray-700 bg-gray-800";
             let bannerText = "";
             let bannerClass = "";
+            let statusBadge = "";
 
-            if (hasSignals) {
-              const longActive = pairSignals.some(s => s.direction === "LONG" && s.meta?.status === "ACTIVE");
-              const shortActive = pairSignals.some(s => s.direction === "SHORT" && s.meta?.status === "ACTIVE");
-              if (longActive && shortActive) {
+            if (hasSignal) {
+              if (status === "TP_HIT") {
                 borderClass = "border-purple-500 bg-purple-900/10";
-                bannerText = "⚡ BOTH DIRECTIONS ACTIVE";
+                bannerText = "🎯 TARGET HIT — CLOSED";
                 bannerClass = "bg-purple-500 text-white";
-              } else if (longActive) {
-                borderClass = "border-green-500 bg-green-900/10";
-                bannerText = "🟢 LONG ACTIVE";
-                bannerClass = "bg-green-600 text-white";
-              } else if (shortActive) {
+                statusBadge = "TP HIT";
+              } else if (status === "SL_HIT") {
                 borderClass = "border-red-500 bg-red-900/10";
-                bannerText = "🔴 SHORT ACTIVE";
-                bannerClass = "bg-red-600 text-white";
-              } else {
-                // Only stale/exited signals
-                borderClass = "border-gray-600 bg-gray-800";
+                bannerText = "🛑 STOP HIT — CLOSED";
+                bannerClass = "bg-red-500 text-white";
+                statusBadge = "SL HIT";
+              } else if (status === "ACTIVE") {
+                borderClass =
+                  signal.direction === "LONG"
+                    ? "border-green-500 bg-green-900/10"
+                    : "border-red-500 bg-red-900/10";
+                const age = signal.meta?.ageMinutes ?? 0;
+                if (age > 120) {
+                  bannerText = `⏰ STALE — ${age}m old`;
+                  bannerClass = "bg-gray-600 text-white";
+                  statusBadge = "STALE";
+                } else {
+                  bannerText = `${signal.direction === "LONG" ? "🟢" : "🔴"} ${signal.direction} — Score ${signal.score ?? "—"}`;
+                  bannerClass = signal.direction === "LONG" ? "bg-green-600 text-white" : "bg-red-600 text-white";
+                  statusBadge = "ACTIVE";
+                }
               }
             } else {
               if (mkt) {
-                bannerText = `⏳ ${mkt.trend} — Observing both sides`;
-                bannerClass = mkt.trend === "LONG" ? "bg-green-600/30 text-green-300" : mkt.trend === "SHORT" ? "bg-red-600/30 text-red-300" : "bg-gray-600/30 text-gray-300";
+                const trendDir = mkt.trend;
+                if (trendDir === "LONG") {
+                  bannerText = `⏳ LONG bias — Watching`;
+                  bannerClass = "bg-green-600/30 text-green-300";
+                } else if (trendDir === "SHORT") {
+                  bannerText = `⏳ SHORT bias — Watching`;
+                  bannerClass = "bg-red-600/30 text-red-300";
+                } else {
+                  bannerText = "⏳ FLAT — Watching both sides";
+                  bannerClass = "bg-gray-600/30 text-gray-300";
+                }
+              } else {
+                bannerText = "⏳ Waiting for data...";
+                bannerClass = "bg-gray-600/30 text-gray-300";
               }
+              statusBadge = "WAITING";
             }
+
+            const entry = signal?.entry ?? 0;
+            const stop = signal?.stop ?? 0;
+            const target = signal?.target ?? 0;
+
+            const progress =
+              hasSignal && status === "ACTIVE" && entry && target && stop
+                ? signal.direction === "LONG"
+                  ? Math.max(0, Math.min(100, ((currentPrice - entry) / (target - entry)) * 100))
+                  : Math.max(0, Math.min(100, ((entry - currentPrice) / (entry - target)) * 100))
+                : 0;
+
+            const unrealizedPnL =
+              hasSignal && status === "ACTIVE" && currentPrice && entry
+                ? signal.direction === "LONG"
+                  ? ((currentPrice - entry) / entry) * 100
+                  : ((entry - currentPrice) / entry) * 100
+                : 0;
 
             const trendReady = mkt?.trend === "LONG" || mkt?.trend === "SHORT" || mkt?.trend === "FLAT";
             const locationReady = !!mkt?.location && mkt.location !== "NONE";
@@ -540,10 +376,18 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-1">
-                    {hasSignals ? (
-                      <span className="text-[10px] bg-gray-700 text-gray-300 px-2 py-0.5 rounded">
-                        {pairSignals.length} signal{pairSignals.length > 1 ? "s" : ""}
-                      </span>
+                    {hasSignal ? (
+                      <>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${signalLabel?.color}`}>
+                          {signalLabel?.text}
+                        </span>
+                        <span className={`text-[10px] font-bold ${signal.direction === "LONG" ? "text-green-400" : "text-red-400"}`}>
+                          {signal.direction}
+                        </span>
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${statusBadge === "ACTIVE" ? "bg-green-500/30 text-green-300" : statusBadge === "TP HIT" ? "bg-purple-500/30 text-purple-300" : statusBadge === "SL HIT" ? "bg-red-500/30 text-red-300" : statusBadge === "STALE" ? "bg-gray-500/30 text-gray-300" : "bg-blue-500/30 text-blue-300"}`}>
+                          {statusBadge}
+                        </span>
+                      </>
                     ) : (
                       <span className="px-2 py-0.5 rounded text-[10px] bg-gray-600 text-gray-300">NO SIGNAL</span>
                     )}
@@ -560,20 +404,30 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {/* Active Signals or Observer View */}
-                {hasSignals ? (
-                  <div className="space-y-2">
-                    {pairSignals.map((signal) => (
-                      <SignalSection key={signal.id} signal={signal} currentPrice={currentPrice} />
-                    ))}
+                {/* Score bar when no signal but we have scores */}
+                {!hasSignal && mkt && (mkt.longScore !== undefined || mkt.shortScore !== undefined) && (
+                  <div className="mb-3 p-2 rounded bg-gray-900/50 border border-gray-700/50">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5 font-semibold">Score Battle</div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-green-400 w-8">LONG</span>
+                      <div className="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden">
+                        <div className="h-full bg-green-500 rounded-full" style={{ width: `${Math.min(100, (mkt.longScore || 0) * 1.2)}%` }} />
+                      </div>
+                      <span className="text-[10px] text-green-400 w-6 text-right">{mkt.longScore || 0}</span>
+                    </div>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="text-[10px] text-red-400 w-8">SHORT</span>
+                      <div className="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden">
+                        <div className="h-full bg-red-500 rounded-full" style={{ width: `${Math.min(100, (mkt.shortScore || 0) * 1.2)}%` }} />
+                      </div>
+                      <span className="text-[10px] text-red-400 w-6 text-right">{mkt.shortScore || 0}</span>
+                    </div>
                   </div>
-                ) : (
-                  <ObserverView longContext={mkt?.longContext} shortContext={mkt?.shortContext} />
                 )}
 
                 {/* Market Context */}
                 {mkt && (
-                  <div className="mt-3 p-2 rounded border bg-gray-800/50 border-gray-600/50">
+                  <div className="mb-3 p-2 rounded border bg-gray-800/50 border-gray-600/50">
                     <div className="flex justify-between mt-1 text-[10px]">
                       <span className="text-gray-500">ADX: {mkt.adx?.toFixed(1)}</span>
                       <span className="text-gray-500">RSI: {mkt.rsi?.toFixed(1)}</span>
@@ -588,6 +442,130 @@ export default function Dashboard() {
                         <span className="text-gray-400 font-mono">{money(mkt.trendlinePrice)} ({mkt.distToTrendline?.toFixed(2)}%)</span>
                       </div>
                     )}
+                  </div>
+                )}
+
+                {/* Active Signal Details */}
+                {hasSignal && status === "ACTIVE" && (
+                  <>
+                    {/* Progress Bar */}
+                    <div className="mb-3">
+                      <div className="flex justify-between text-[10px] text-gray-400 mb-1">
+                        <span>SL</span>
+                        <span className={unrealizedPnL > 0 ? "text-green-400" : unrealizedPnL < 0 ? "text-red-400" : "text-gray-400"}>
+                          {unrealizedPnL > 0 ? "+" : ""}{unrealizedPnL.toFixed(2)}%
+                        </span>
+                        <span>Target</span>
+                      </div>
+                      <div className="relative h-2 bg-gray-700 rounded-full">
+                        <div
+                          className="absolute top-0 bottom-0 w-0.5 bg-white/50 z-10"
+                          style={{
+                            left: `${Math.max(0, Math.min(100, signal.direction === "LONG"
+                              ? ((entry - stop) / (target - stop)) * 100
+                              : ((stop - entry) / (stop - target)) * 100
+                            ))}%`
+                          }}
+                        />
+                        <div
+                          className={`absolute top-0 bottom-0 rounded-full transition-all ${
+                            unrealizedPnL >= 0 ? "bg-green-500" : "bg-red-500"
+                          }`}
+                          style={{
+                            left: 0,
+                            width: `${Math.max(0, Math.min(100, signal.direction === "LONG"
+                              ? ((currentPrice - stop) / (target - stop)) * 100
+                              : ((stop - currentPrice) / (stop - target)) * 100
+                            ))}%`
+                          }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-[9px] text-gray-500 mt-0.5">
+                        <span>{money(stop)}</span>
+                        <span className="text-gray-400">Entry {money(entry)}</span>
+                        <span>{money(target)}</span>
+                      </div>
+                    </div>
+
+                    {/* LEVELS */}
+                    <div className="mb-3 p-3 rounded bg-gray-900/70 border border-gray-700/50">
+                      <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-2 font-semibold">Levels</div>
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-2">
+                        <LevelRow label="Entry" value={money(signal.entry)} />
+                        <LevelRow label="Target" value={money(signal.target)} color="text-purple-400" />
+                        <LevelRow label="Initial SL" value={money(signal.stop)} color="text-red-400" />
+                        <LevelRow label="R:R" value={signal.rr?.toFixed(2)} color="text-yellow-400" />
+                        <LevelRow label="Age" value={timeAgo(signal.timestamp)} color="text-gray-300" />
+                        <LevelRow label="Expected" value={`${signal.expectedMove?.toFixed(1)}%`} color="text-blue-400" />
+                      </div>
+                    </div>
+
+                    {/* STOP TRAIL */}
+                    {trail.milestones.length > 0 && (
+                      <div className="mb-3 p-3 rounded bg-gray-900/70 border border-gray-700/50">
+                        <div className="flex justify-between items-center mb-2">
+                          <div className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Stop Trail</div>
+                          <div className="text-[10px] font-mono text-yellow-400">{trail.currentR.toFixed(2)}R</div>
+                        </div>
+                        <div className="space-y-2">
+                          {trail.milestones.map((m, idx) => (
+                            <div key={idx} className="flex items-center gap-2">
+                              <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                                m.reached
+                                  ? "bg-green-500"
+                                  : m.isNext
+                                  ? "bg-yellow-400 animate-pulse"
+                                  : "bg-gray-600"
+                              }`} />
+                              <div className="flex-1">
+                                <div className="flex justify-between text-sm">
+                                  <span className={`${m.reached ? "text-green-400" : m.isNext ? "text-yellow-400 font-semibold" : "text-gray-500"}`}>
+                                    {m.label}
+                                    {m.isNext && <span className="ml-1 text-[9px] text-yellow-500">← NEXT</span>}
+                                  </span>
+                                  <span className={`font-mono ${m.reached ? "text-green-400" : m.isNext ? "text-yellow-400" : "text-gray-500"}`}>
+                                    {money(m.price)}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        {trail.distanceToNext > 0 && (
+                          <div className="mt-2 text-center text-[10px] text-yellow-400 font-mono">
+                            {money(trail.distanceToNext)} to next milestone
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {signal.reason && (
+                      <div className="text-[10px] text-gray-500 border-t border-gray-700 pt-2 mb-2">
+                        <p className="leading-relaxed">{signal.reason}</p>
+                      </div>
+                    )}
+
+                    {/* Rejected side info */}
+                    {signal.rejected && (
+                      <div className="mt-2 p-2 rounded bg-gray-800/30 border border-gray-700/30">
+                        <div className="text-[9px] text-gray-600 uppercase">Other side rejected</div>
+                        <div className="text-[10px] text-gray-500 italic">{signal.rejected}</div>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {(status === "TP_HIT" || status === "SL_HIT") && (
+                  <div className="mb-3 p-2 bg-gray-900/50 rounded text-xs space-y-1.5">
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Result</span>
+                      <span className={`font-bold ${status === "TP_HIT" ? "text-purple-400" : "text-red-400"}`}>
+                        {status === "TP_HIT" ? "TAKE PROFIT" : "STOP LOSS"}
+                      </span>
+                    </div>
+                    <LevelRow label="Entry" value={money(signal?.entry)} />
+                    <LevelRow label="Exit" value={money(status === "TP_HIT" ? signal?.target : signal?.stop)} />
+                    <LevelRow label="R:R" value={signal?.rr?.toFixed(2)} color="text-yellow-400" />
                   </div>
                 )}
               </div>
