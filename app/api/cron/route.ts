@@ -1,7 +1,7 @@
-// app/api/cron/route.ts — v53.0 "True Neutral" Cron
+// app/api/cron/route.ts — v53.1 "Strongest Trade" Cron
 // ============================================================
-// Architecture: Daily Context → LONG Analysis + SHORT Analysis → Signals[]
-// v53.0: Bidirectional. No bias. One trade per pair per direction.
+// Architecture: Daily Context → LONG Analysis + SHORT Analysis → Score → Winner
+// v53.1: One winner per pair. No confusion. Clean UI.
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
@@ -25,7 +25,7 @@ export const revalidate = 0;
 export async function GET(request: Request) {
   const runStart = Date.now();
   console.log("========================================");
-  console.log(`[CRON v53.0] Started at ${new Date(runStart).toISOString()}`);
+  console.log(`[CRON v53.1] Started at ${new Date(runStart).toISOString()}`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -63,12 +63,11 @@ export async function GET(request: Request) {
     if (reason !== "tp_hit" && reason !== "sl_hit") {
       const key = `${signal.pair}_${signal.direction}`;
       if (activeTrades[key]) delete activeTrades[key];
-      // Also clean old-format key
       if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
     }
   }
 
-  // State recovery — per direction
+  // State recovery
   let recoveredCount = 0;
   for (const signal of validSignals) {
     if (signal.exited) continue;
@@ -95,7 +94,7 @@ export async function GET(request: Request) {
     }
   }
 
-  // Migrate old-format keys (pre-v53) to per-direction format
+  // Migrate old-format keys
   for (const key of Object.keys(activeTrades)) {
     if (!key.includes("_") && activeTrades[key]?.direction) {
       const trade = activeTrades[key];
@@ -106,7 +105,7 @@ export async function GET(request: Request) {
     }
   }
 
-  // Single rebuild after all trades assembled and migrated
+  // Single rebuild after all trades assembled
   rebuildStateFromTrades(activeTrades);
   console.log(`[STATE] In-memory state rebuilt from ${Object.keys(activeTrades).length} trades`);
 
@@ -128,145 +127,97 @@ export async function GET(request: Request) {
       }
 
       const currentPrice = candles1h[candles1h.length - 1].close;
+      const existingForPair = validSignals.find(s => s.pair === pair && !s.exited) || null;
 
-      // Check existing signals for this pair — per direction
-      const longSignal = validSignals.find(s => s.pair === pair && s.direction === "LONG" && !s.exited) || null;
-      const shortSignal = validSignals.find(s => s.pair === pair && s.direction === "SHORT" && !s.exited) || null;
-
-      // Process LONG existing signal
-      if (longSignal) {
-        const validity = isSignalStillValid(longSignal, currentPrice, runStart);
+      if (existingForPair) {
+        const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
         if (!validity.valid) {
-          console.log(`[PAIR] ${pair} LONG — INVALID: ${validity.reason}`);
-          await addSignalToHistory(longSignal, validity.reason as any, currentPrice);
-          delete activeTrades[`${pair}_LONG`];
-          const idx = validSignals.indexOf(longSignal);
+          console.log(`[PAIR] ${pair} — INVALID: ${validity.reason}`);
+          await addSignalToHistory(existingForPair, validity.reason as any, currentPrice);
+          delete activeTrades[`${pair}_${existingForPair.direction}`];
+          const idx = validSignals.indexOf(existingForPair);
           if (idx >= 0) validSignals.splice(idx, 1);
-          alerts.push({ pair, direction: "LONG", status: "expired", reason: validity.reason });
+          alerts.push({ pair, status: "expired", reason: validity.reason });
         } else {
-          const holdResult = shouldHold(longSignal, candles4h, currentPrice, runStart);
+          const holdResult = shouldHold(existingForPair, candles4h, currentPrice, runStart);
           if (!holdResult.shouldHold) {
-            console.log(`[PAIR] ${pair} LONG — HOLD EXIT: ${holdResult.reason}`);
-            await addSignalToHistory(longSignal, "hold_exit", currentPrice);
-            delete activeTrades[`${pair}_LONG`];
-            const idx = validSignals.indexOf(longSignal);
+            console.log(`[PAIR] ${pair} — HOLD EXIT: ${holdResult.reason}`);
+            await addSignalToHistory(existingForPair, "hold_exit", currentPrice);
+            delete activeTrades[`${pair}_${existingForPair.direction}`];
+            const idx = validSignals.indexOf(existingForPair);
             if (idx >= 0) validSignals.splice(idx, 1);
-            alerts.push({ pair, direction: "LONG", status: "hold_exit", reason: holdResult.reason });
+            alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
+          } else {
+            console.log(`[PAIR] ${pair} — Still valid (${existingForPair.direction}), skipping`);
+            const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+            if (snapshot) marketDataList.push(snapshot);
+            continue;
           }
         }
-      }
-
-      // Process SHORT existing signal
-      if (shortSignal) {
-        const validity = isSignalStillValid(shortSignal, currentPrice, runStart);
-        if (!validity.valid) {
-          console.log(`[PAIR] ${pair} SHORT — INVALID: ${validity.reason}`);
-          await addSignalToHistory(shortSignal, validity.reason as any, currentPrice);
-          delete activeTrades[`${pair}_SHORT`];
-          const idx = validSignals.indexOf(shortSignal);
-          if (idx >= 0) validSignals.splice(idx, 1);
-          alerts.push({ pair, direction: "SHORT", status: "expired", reason: validity.reason });
-        } else {
-          const holdResult = shouldHold(shortSignal, candles4h, currentPrice, runStart);
-          if (!holdResult.shouldHold) {
-            console.log(`[PAIR] ${pair} SHORT — HOLD EXIT: ${holdResult.reason}`);
-            await addSignalToHistory(shortSignal, "hold_exit", currentPrice);
-            delete activeTrades[`${pair}_SHORT`];
-            const idx = validSignals.indexOf(shortSignal);
-            if (idx >= 0) validSignals.splice(idx, 1);
-            alerts.push({ pair, direction: "SHORT", status: "hold_exit", reason: holdResult.reason });
-          }
-        }
-      }
-
-      // If both directions still have active valid signals, skip generation
-      const hasLongActive = validSignals.some(s => s.pair === pair && s.direction === "LONG" && !s.exited);
-      const hasShortActive = validSignals.some(s => s.pair === pair && s.direction === "SHORT" && !s.exited);
-
-      if (hasLongActive && hasShortActive) {
-        console.log(`[PAIR] ${pair} — Both directions active, skipping generation`);
-        const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
-        if (snapshot) marketDataList.push(snapshot);
-        continue;
       }
 
       const result = generateSignal(pair, candles1h, candles4h, candles15m, validSignals, currentPrice);
-
-      // Enrich market snapshot with bidirectional contexts for UI
       const snapshot = result.market || getMarketSnapshot(pair, candles1h, candles4h, candles15m);
-      if (snapshot) {
-        marketDataList.push({
-          ...snapshot,
-          longContext: result.longContext,
-          shortContext: result.shortContext,
-        });
-      }
+      if (snapshot) marketDataList.push(snapshot);
 
-      if (!result.signals.length) {
-        console.log(`[PAIR] ${pair} — NO SIGNALS (${result.debug?.join(" | ")})`);
-        alerts.push({ pair, status: "no_signal", debug: result.debug?.join(" | ") });
+      if (!result.signal) {
+        console.log(`[PAIR] ${pair} — NO SIGNAL (${result.debug?.join(" | ")})`);
+        alerts.push({ pair, status: "no_signal", debug: result.debug?.join(" | "), longScore: result.longScore, shortScore: result.shortScore });
         continue;
       }
 
-      // Process each signal (could be LONG, SHORT, or both)
-      for (const signal of result.signals) {
-        // Skip if we already have an active signal in this direction
-        const dirActive = validSignals.some(s => s.pair === pair && s.direction === signal.direction && !s.exited);
-        if (dirActive) {
-          console.log(`[PAIR] ${pair} ${signal.direction} — Already active, skipping new ${signal.type}`);
-          continue;
-        }
+      const signal = result.signal;
+      console.log(`[PAIR] ${pair} — WINNER: ${signal.direction} (score ${signal.score}) | ${signal.type} @ ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`);
+      newSignals.push(signal);
 
-        console.log(`[PAIR] ${pair} ${signal.direction} — SIGNAL: ${signal.type} ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`);
-        newSignals.push(signal);
+      const alertState = signal.type === "ADD" ? "ADD" : "ENTRY";
+      const alertEmoji = signal.type === "ENTRY_1" ? "🟢" : signal.type === "ENTRY_2" ? "🟡" : "🔵";
 
-        const alertState = signal.type === "ADD" ? "ADD" : "ENTRY";
-        const alertEmoji = signal.type === "ENTRY_1" ? "🟢" : signal.type === "ENTRY_2" ? "🟡" : "🔵";
-
-        try {
-          await sendAlert({
-            symbol: signal.pair,
-            state: alertState,
-            price: roundPrice(signal.entry),
-            bias: signal.direction,
-            stopLoss: roundPrice(signal.stop),
-            takeProfit: roundPrice(signal.target),
-            rr: signal.rr,
-            expectedMove: signal.expectedMove,
-            adx: signal.adx,
-            rsi: signal.rsi,
-            stochK: signal.stochK,
-            stochD: signal.stochD,
-            reason: signal.reason,
-            trend: signal.trend,
-            location: signal.location,
-            trigger: signal.trigger,
-            updatedAt: new Date(signal.timestamp).toISOString(),
-            signalType: signal.type,
-            signalEmoji: alertEmoji,
-            context: signal.context,
-            marketPhase: signal.context.marketPhase,
-            structure: signal.context.structure,
-            momentum: signal.context.momentum,
-            pullback: signal.context.pullback,
-            crossAge: signal.context.crossAge,
-          });
-          console.log(`[ALERT] ${pair} ${signal.direction} — SENT (${signal.type})`);
-          activeTrades[`${pair}_${signal.direction}`] = {
-            direction: signal.direction,
-            timestamp: Date.now(),
-            entry: signal.entry,
-            stop: signal.stop,
-            target: signal.target,
-            id: signal.id,
-            type: signal.type,
-            crossHash: signal.context?.crossHash || "",
-          };
-          alerts.push({ pair, direction: signal.direction, status: "sent", type: signal.type });
-        } catch (err) {
-          console.error(`[ALERT] ${pair} ${signal.direction} — FAILED:`, err);
-          alerts.push({ pair, direction: signal.direction, status: "alert_failed", error: String(err) });
-        }
+      try {
+        await sendAlert({
+          symbol: signal.pair,
+          state: alertState,
+          price: roundPrice(signal.entry),
+          bias: signal.direction,
+          stopLoss: roundPrice(signal.stop),
+          takeProfit: roundPrice(signal.target),
+          rr: signal.rr,
+          expectedMove: signal.expectedMove,
+          adx: signal.adx,
+          rsi: signal.rsi,
+          stochK: signal.stochK,
+          stochD: signal.stochD,
+          reason: signal.reason,
+          trend: signal.trend,
+          location: signal.location,
+          trigger: signal.trigger,
+          updatedAt: new Date(signal.timestamp).toISOString(),
+          signalType: signal.type,
+          signalEmoji: alertEmoji,
+          context: signal.context,
+          marketPhase: signal.context.marketPhase,
+          structure: signal.context.structure,
+          momentum: signal.context.momentum,
+          pullback: signal.context.pullback,
+          crossAge: signal.context.crossAge,
+          score: signal.score,
+          rejectedSide: signal.direction === "LONG" ? result.shortContext.signal?.rejected : result.longContext.signal?.rejected,
+        });
+        console.log(`[ALERT] ${pair} ${signal.direction} — SENT (${signal.type}, score ${signal.score})`);
+        activeTrades[`${pair}_${signal.direction}`] = {
+          direction: signal.direction,
+          timestamp: Date.now(),
+          entry: signal.entry,
+          stop: signal.stop,
+          target: signal.target,
+          id: signal.id,
+          type: signal.type,
+          crossHash: signal.context?.crossHash || "",
+        };
+        alerts.push({ pair, direction: signal.direction, status: "sent", type: signal.type, score: signal.score });
+      } catch (err) {
+        console.error(`[ALERT] ${pair} ${signal.direction} — FAILED:`, err);
+        alerts.push({ pair, direction: signal.direction, status: "alert_failed", error: String(err) });
       }
     } catch (err) {
       console.error(`[PAIR] ${pair} — ERROR:`, err);
