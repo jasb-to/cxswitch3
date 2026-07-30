@@ -1,14 +1,14 @@
-// lib/strategy.ts — v53.0 "True Neutral"
+// lib/strategy.ts — v53.1 "Strongest Trade"
 // ============================================================
-// Philosophy: Observe both sides. Never block. Let triggers speak.
-// Architecture: Daily Context → LONG Analysis + SHORT Analysis → Signals[]
+// Philosophy: Observe both sides, pick the strongest, display one.
+// Architecture: Daily Context → LONG Analysis + SHORT Analysis → Score → Winner
 //
-// v53.0 Changes from v52.0:
-// CHANGED: generateSignal now analyzes LONG and SHORT independently
-// CHANGED: Returns longContext + shortContext + signals[]
-// CHANGED: Active signal store tracks direction; one trade per pair max
-// CHANGED: No default direction when daily is FLAT — both sides compete equally
-// REMOVED: All remaining directional bias (FLAT no longer defaults to LONG)
+// v53.1 Changes from v53.0:
+// ADDED: scoreTrade() — scores each direction on trend alignment, location quality,
+//        trigger depth, momentum strength, RR, and cross freshness
+// CHANGED: generateSignal returns only the winning signal (or none if both weak)
+// CHANGED: SignalResult.signals[] now contains 0 or 1 signal (the winner)
+// CHANGED: longContext/shortContext still returned for UI "observer" mode
 
 export interface Candle {
   timestamp: number;
@@ -55,14 +55,19 @@ export interface Signal {
   exited?: boolean;
   exitReason?: string;
   exitPrice?: number;
+  score?: number;
+  rejected?: string;
 }
 
 export interface SignalResult {
-  signal?: Signal;            // backward compat: first signal or undefined
-  signals: Signal[];          // all signals found (0–2)
+  signal?: Signal;
+  signals: Signal[];
   market?: MarketSnapshot;
   longContext: DirectionalContext;
   shortContext: DirectionalContext;
+  winner: "LONG" | "SHORT" | "NONE";
+  longScore: number;
+  shortScore: number;
   debug: string[];
 }
 
@@ -75,6 +80,8 @@ export interface DirectionalContext {
   signal?: Signal;
   canEnter: boolean;
   reason: string;
+  score: number;
+  scoreBreakdown: Record<string, number>;
 }
 
 export interface MarketSnapshot {
@@ -99,6 +106,9 @@ export interface MarketSnapshot {
   pullbackDesc: string;
   structureDesc: string;
   crossAge: number;
+  winner?: "LONG" | "SHORT" | "NONE";
+  longScore?: number;
+  shortScore?: number;
 }
 
 export interface ValidityCheck {
@@ -112,9 +122,8 @@ export interface HoldResult {
   reason: string;
 }
 
-export const CURRENT_SIGNAL_VERSION = 53.0;
+export const CURRENT_SIGNAL_VERSION = 53.1;
 
-// v53.0: Duplicate prevention only — not a gate
 interface CycleEntry {
   crossHash: string;
   timestamp: number;
@@ -320,7 +329,7 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
 }
 
 // ============================================================
-// TRENDLINE ENGINE — v53.0: Context only, never blocks
+// TRENDLINE ENGINE
 // ============================================================
 
 interface TrendlineState {
@@ -390,7 +399,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
 }
 
 // ============================================================
-// DAILY TREND — v53.0: Context only, never returns NONE
+// DAILY TREND
 // ============================================================
 
 function dailyTrend(candles1d: Candle[]): { direction: "LONG" | "SHORT" | "FLAT"; detail: string; ema21: number; ema50: number } {
@@ -409,7 +418,7 @@ function dailyTrend(candles1d: Candle[]): { direction: "LONG" | "SHORT" | "FLAT"
 }
 
 // ============================================================
-// 4H LOCATION — v53.0: Always returns context. Never blocks.
+// 4H LOCATION
 // ============================================================
 
 export interface LocationResult {
@@ -507,7 +516,7 @@ function location4H(pair: string, candles4h: Candle[], direction: "LONG" | "SHOR
 }
 
 // ============================================================
-// 4H STOCHRSI TRIGGER — v53.0: Finds cross, reports age, never blocks on age
+// 4H STOCHRSI TRIGGER
 // ============================================================
 
 export interface TriggerResult {
@@ -683,7 +692,7 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: 
 }
 
 // ============================================================
-// ADD TRIGGER — v53.0: Any single confirmation fires ADD
+// ADD TRIGGER
 // ============================================================
 
 export interface AddTriggerResult {
@@ -719,7 +728,7 @@ function addTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", location
 }
 
 // ============================================================
-// ACTIVE TRADE MANAGEMENT — v53.0: Direction-aware store
+// ACTIVE TRADE MANAGEMENT
 // ============================================================
 
 interface ActiveSignalState {
@@ -765,7 +774,89 @@ function canAddToPair(pair: string, direction: "LONG" | "SHORT"): boolean {
 }
 
 // ============================================================
-// DIRECTIONAL ANALYSIS BUILDER — v53.0: One side at a time
+// TRADE SCORING ENGINE — v53.1
+// ============================================================
+
+function scoreTrade(
+  direction: "LONG" | "SHORT",
+  trend: { direction: "LONG" | "SHORT" | "FLAT" },
+  location: LocationResult,
+  trigger: TriggerResult | null,
+  addTrigger: AddTriggerResult | null,
+  rr: number
+): { score: number; breakdown: Record<string, number> } {
+  const breakdown: Record<string, number> = {};
+  let score = 0;
+
+  // 1. Trend alignment (0-30)
+  if (trend.direction === direction) {
+    breakdown.trend = 30;
+  } else if (trend.direction === "FLAT") {
+    breakdown.trend = 15;
+  } else {
+    breakdown.trend = 0;
+  }
+  score += breakdown.trend;
+
+  // 2. Location quality (0-25)
+  switch (location.locationType) {
+    case "TRENDLINE":
+    case "SWING_LOW":
+    case "SWING_HIGH":
+      breakdown.location = 25;
+      break;
+    case "NEAR_TL":
+      breakdown.location = 20;
+      break;
+    case "BEYOND_TL":
+      breakdown.location = 15;
+      break;
+    case "EXTENDED":
+      breakdown.location = 5;
+      break;
+    default:
+      breakdown.location = 0;
+  }
+  score += breakdown.location;
+
+  // 3. Trigger depth (0-25)
+  const triggerType = trigger?.triggerType || (addTrigger?.fired ? "add" : "none");
+  switch (triggerType) {
+    case "entry_1_deep_pullback":
+      breakdown.trigger = 25;
+      break;
+    case "entry_2_early_momentum":
+    case "entry_2_pre_cross":
+      breakdown.trigger = 15;
+      break;
+    case "add":
+      breakdown.trigger = 5;
+      break;
+    default:
+      breakdown.trigger = 0;
+  }
+  score += breakdown.trigger;
+
+  // 4. Momentum strength (0-15)
+  const stochK = trigger?.stochK ?? addTrigger?.stochK ?? 50;
+  const kDist = direction === "LONG" ? stochK : 100 - stochK;
+  breakdown.momentum = Math.round(Math.max(0, Math.min(15, (kDist - 30) * 0.375)));
+  score += breakdown.momentum;
+
+  // 5. RR bonus (0-5)
+  breakdown.rr = rr >= 1.5 ? 5 : rr >= 1.0 ? 3 : rr > 0 ? 1 : 0;
+  score += breakdown.rr;
+
+  // 6. Cross freshness (0-5)
+  const crossAge = trigger?.crossAge ?? 99;
+  breakdown.freshness = crossAge <= 3 ? 5 : crossAge <= 6 ? 3 : crossAge <= 12 ? 1 : 0;
+  score += breakdown.freshness;
+
+  return { score, breakdown };
+}
+
+// ============================================================
+// DIRECTIONAL ANALYSIS BUILDER
 // ============================================================
 
 function buildDirectionalContext(
@@ -789,7 +880,7 @@ function buildDirectionalContext(
   const anyActive = hasActiveSignal(pair);
   const sameDirActive = hasActiveSignal(pair, direction);
 
-  // ENTRY: fires if stoch trigger fires and no active trade at all
+  // ENTRY
   if (!anyActive) {
     trigger = stochTrigger4H(candles4h, direction, pair);
     debug.push(`[${direction}] Trigger: ${trigger.fired ? "FIRED" : "WAITING"} | ${trigger.detail} | Momentum: ${trigger.momentumDesc}`);
@@ -802,7 +893,7 @@ function buildDirectionalContext(
     debug.push(`[${direction}] Entry blocked: ${reason}`);
   }
 
-  // ADD: fires on any single confirmation, only if same direction active
+  // ADD
   if (!canEnter && sameDirActive && !hasActiveAdd(pair, direction)) {
     addTrigger = addTrigger4H(candles4h, direction, location, pair);
     debug.push(`[${direction}] ADD: ${addTrigger.fired ? "FIRED" : "WAITING"} | ${addTrigger.detail}`);
@@ -813,7 +904,9 @@ function buildDirectionalContext(
     }
   }
 
-  // Build signal if we can enter
+  let rr = 0;
+
+  // Build signal
   if (canEnter) {
     const atrVal = atr(candles4h, 14);
     const recent4h = candles4h.slice(-20);
@@ -857,7 +950,7 @@ function buildDirectionalContext(
 
     const risk = Math.abs(price - stop);
     const reward = Math.abs(target - price);
-    const rr = risk > 0 ? reward / risk : 0;
+    rr = risk > 0 ? reward / risk : 0;
 
     const triggerResult = trigger || addTrigger!;
     const context: SignalContext = {
@@ -898,6 +991,10 @@ function buildDirectionalContext(
     debug.push(`[${direction}] SIGNAL: ${signalType} ${direction} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr}`);
   }
 
+  // Score this direction
+  const { score, breakdown } = scoreTrade(direction, trend, location, trigger, addTrigger, rr);
+  debug.push(`[${direction}] SCORE: ${score} (trend:${breakdown.trend} loc:${breakdown.location} trig:${breakdown.trigger} mom:${breakdown.momentum} rr:${breakdown.rr} fresh:${breakdown.freshness})`);
+
   return {
     direction,
     trend: trend.detail,
@@ -907,11 +1004,13 @@ function buildDirectionalContext(
     signal,
     canEnter,
     reason,
+    score,
+    scoreBreakdown: breakdown,
   };
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATOR — v53.0: Bidirectional analysis
+// MAIN SIGNAL GENERATOR — v53.1: Pick the winner
 // ============================================================
 
 export function generateSignal(pair: string, candles1h: Candle[], candles4h: Candle[], candles15m: Candle[], activeSignals: Signal[], currentPrice?: number): SignalResult {
@@ -919,38 +1018,77 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   const now = Date.now();
   const price = currentPrice ?? candles4h[candles4h.length - 1]?.close ?? 0;
 
-  // Step 1: Daily Trend — shared context
+  // Step 1: Daily Trend
   const candles1d = aggregateTo1D(candles4h);
   const trend = dailyTrend(candles1d);
   debug.push(`Trend: ${trend.direction} | ${trend.detail}`);
 
-  // Step 2: Analyze both directions independently
+  // Step 2: Analyze both directions
   const longContext = buildDirectionalContext(pair, candles4h, trend, "LONG", price, activeSignals, debug);
   const shortContext = buildDirectionalContext(pair, candles4h, trend, "SHORT", price, activeSignals, debug);
 
-  // Step 3: Collect all signals (0, 1, or 2)
-  const signals: Signal[] = [];
-  if (longContext.signal) signals.push(longContext.signal);
-  if (shortContext.signal) signals.push(shortContext.signal);
+  // Step 3: Pick the winner
+  let winner: "LONG" | "SHORT" | "NONE" = "NONE";
+  let winningSignal: Signal | undefined = undefined;
+  let winningContext: DirectionalContext | undefined = undefined;
 
-  // Step 4: Record cycles and active state for each signal
-  for (const signal of signals) {
-    const ctx = signal.direction === "LONG" ? longContext : shortContext;
-    const triggerResult = ctx.trigger || ctx.addTrigger;
-    if (triggerResult?.crossHash) {
-      recordCycle(pair, triggerResult.crossHash, signal.direction);
+  const longCanEnter = longContext.canEnter && longContext.signal;
+  const shortCanEnter = shortContext.canEnter && shortContext.signal;
+
+  if (longCanEnter && !shortCanEnter) {
+    winner = "LONG";
+    winningSignal = longContext.signal;
+    winningContext = longContext;
+  } else if (shortCanEnter && !longCanEnter) {
+    winner = "SHORT";
+    winningSignal = shortContext.signal;
+    winningContext = shortContext;
+  } else if (longCanEnter && shortCanEnter) {
+    // Both want to fire — pick the higher score
+    if (longContext.score > shortContext.score) {
+      winner = "LONG";
+      winningSignal = longContext.signal;
+      winningContext = longContext;
+      if (shortContext.signal) {
+        shortContext.signal.rejected = `Lost to LONG (score ${longContext.score} vs ${shortContext.score})`;
+      }
+    } else if (shortContext.score > longContext.score) {
+      winner = "SHORT";
+      winningSignal = shortContext.signal;
+      winningContext = shortContext;
+      if (longContext.signal) {
+        longContext.signal.rejected = `Lost to SHORT (score ${shortContext.score} vs ${longContext.score})`;
+      }
+    } else {
+      // Tie — pick the one aligned with daily trend, or LONG as fallback
+      winner = trend.direction === "SHORT" ? "SHORT" : "LONG";
+      winningContext = winner === "LONG" ? longContext : shortContext;
+      winningSignal = winningContext.signal;
+      const loser = winner === "LONG" ? shortContext : longContext;
+      if (loser.signal) {
+        loser.signal.rejected = `Tie broken by daily trend (${trend.direction})`;
+      }
     }
-    setActiveSignal(pair, signal.direction, signal.type, signal.entry, triggerResult?.crossHash || "");
   }
 
-  // Step 5: Market snapshot (neutral — uses trend direction for EMA context)
+  if (winningSignal) {
+    winningSignal.score = winningContext!.score;
+    const triggerResult = winningContext!.trigger || winningContext!.addTrigger;
+    if (triggerResult?.crossHash) {
+      recordCycle(pair, triggerResult.crossHash, winningSignal.direction);
+    }
+    setActiveSignal(pair, winningSignal.direction, winningSignal.type, winningSignal.entry, triggerResult?.crossHash || "");
+    debug.push(`WINNER: ${winner} with score ${winningContext!.score} | ${winningSignal.type} ${winningSignal.direction} @ ${winningSignal.entry}`);
+  } else {
+    debug.push(`WINNER: NONE — LONG score ${longContext.score}, SHORT score ${shortContext.score}`);
+  }
+
+  // Step 4: Market snapshot
   const closes4h = candles4h.map(c => c.close);
   const ema8_4h = ema(closes4h, 8);
   const ema21_4h = ema(closes4h, 21);
   const ema50_4h = ema(closes4h, 50);
-
-  // Use the dominant context for snapshot, or LONG if none
-  const dominantContext = longContext.canEnter ? longContext : shortContext.canEnter ? shortContext : longContext;
+  const dominantContext = winningContext || (longContext.score >= shortContext.score ? longContext : shortContext);
   const distToTrendline = dominantContext.location.trendlinePrice > 0
     ? Math.round(Math.abs((price - dominantContext.location.trendlinePrice) / dominantContext.location.trendlinePrice) * 10000) / 100
     : null;
@@ -961,7 +1099,7 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
     timestamp: now,
     trend: trend.direction,
     location: dominantContext.location.locationType,
-    trigger: signals.length > 0 ? "FIRED" : "WAITING",
+    trigger: winningSignal ? "FIRED" : "WAITING",
     adx: Math.round(adx(candles4h) * 10) / 10,
     rsi: Math.round(wilderRsi(candles4h.map(c => c.close)) * 10) / 10,
     stochK: dominantContext.trigger?.stochK ?? dominantContext.addTrigger?.stochK ?? 50,
@@ -977,16 +1115,20 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
     pullbackDesc: dominantContext.location.pullbackDesc,
     structureDesc: dominantContext.location.structureDesc,
     crossAge: dominantContext.trigger?.crossAge || 0,
+    winner,
+    longScore: longContext.score,
+    shortScore: shortContext.score,
   };
 
-  debug.push(`Result: ${signals.length} signal(s) — LONG:${longContext.canEnter ? "YES" : "NO"} SHORT:${shortContext.canEnter ? "YES" : "NO"}`);
-
   return {
-    signal: signals[0],
-    signals,
+    signal: winningSignal,
+    signals: winningSignal ? [winningSignal] : [],
     market,
     longContext,
     shortContext,
+    winner,
+    longScore: longContext.score,
+    shortScore: shortContext.score,
     debug,
   };
 }
@@ -1004,7 +1146,6 @@ export function getMarketSnapshot(pair: string, candles1h: Candle[], candles4h: 
   const ema21_4h = ema(closes4h, 21);
   const ema50_4h = ema(closes4h, 50);
 
-  // Analyze both sides for snapshot
   const longLoc = location4H(pair, candles4h, "LONG");
   const shortLoc = location4H(pair, candles4h, "SHORT");
   const longTrig = stochTrigger4H(candles4h, "LONG", pair);
@@ -1042,7 +1183,7 @@ export function getMarketSnapshot(pair: string, candles1h: Candle[], candles4h: 
 }
 
 // ============================================================
-// VALIDITY & HOLD MANAGEMENT — v53.0: Direction-aware
+// VALIDITY & HOLD MANAGEMENT
 // ============================================================
 
 export function isSignalStillValid(signal: Signal, currentPrice: number, now: number = Date.now()): ValidityCheck {
