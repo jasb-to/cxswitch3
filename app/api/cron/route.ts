@@ -1,9 +1,7 @@
-// app/api/cron/route.ts — v51.0 "Early Wave" Cron
+// app/api/cron/route.ts — v52.0 "Pure Wave" Cron
 // ============================================================
-// Daily Trend → 4H Location → 4H Trigger → Signal
-// v51.0: Duplicate prevention via stochastic cycle tracking.
-// State recovery re-hydrates both activeSignalStore and cycleStore.
-// Exited signals remain visible in UI with structured context.
+// Architecture: Daily Context → 4H Context → Stoch Trigger → Signal
+// v52.0: No gates. Context only. Duplicate prevention via cycle tracking.
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
@@ -27,7 +25,7 @@ export const revalidate = 0;
 export async function GET(request: Request) {
   const runStart = Date.now();
   console.log("========================================");
-  console.log(`[CRON v51.0] Started at ${new Date(runStart).toISOString()}`);
+  console.log(`[CRON v52.0] Started at ${new Date(runStart).toISOString()}`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -70,7 +68,7 @@ export async function GET(request: Request) {
     }
   }
 
-  // v51.0: State recovery — re-hydrate activeTrades + cycleStore from valid signals
+  // State recovery
   let recoveredCount = 0;
   for (const signal of validSignals) {
     if (signal.exited) continue;
@@ -89,7 +87,7 @@ export async function GET(request: Request) {
             type: signal.type,
             crossHash: signal.context?.crossHash || "",
           };
-          console.log(`[STATE_RECOVER] ${signal.pair}: ${signal.type} ${signal.direction} @ ${signal.entry} — recovered with crossHash ${signal.context?.crossHash || "none"}`);
+          console.log(`[STATE_RECOVER] ${signal.pair}: ${signal.type} ${signal.direction} @ ${signal.entry}`);
           recoveredCount++;
         }
       }
@@ -169,9 +167,6 @@ export async function GET(request: Request) {
       const alertState = signal.type === "ADD" ? "ADD" : "ENTRY";
       const alertEmoji = signal.type === "ENTRY_1" ? "🟢" : signal.type === "ENTRY_2" ? "🟡" : "🔵";
 
-      // v51.0: Build structured alert message with context
-      const alertMessage = buildAlertMessage(signal);
-
       try {
         await sendAlert({
           symbol: signal.pair,
@@ -193,7 +188,6 @@ export async function GET(request: Request) {
           updatedAt: new Date(signal.timestamp).toISOString(),
           signalType: signal.type,
           signalEmoji: alertEmoji,
-          // v51.0: Include structured context
           context: signal.context,
           marketPhase: signal.context.marketPhase,
           structure: signal.context.structure,
@@ -243,37 +237,4 @@ export async function GET(request: Request) {
   console.log("========================================");
 
   return NextResponse.json({ success: true, signals: merged.length, marketData: marketDataList.length, exited: preExited.length, recovered: recoveredCount, alerts });
-}
-
-// v51.0: Build human-readable alert message with structured context
-function buildAlertMessage(signal: Signal): string {
-  const ctx = signal.context;
-  const lines: string[] = [
-    `${signal.type === "ENTRY_1" ? "🟢" : signal.type === "ENTRY_2" ? "🟡" : "🔵"} CX SWITCH v51.0 — ${signal.type}`,
-    "",
-    `${signal.direction === "LONG" ? "📈" : "📉"} ${signal.pair} — ${signal.direction}`,
-    `Price: ${signal.entry}`,
-    "",
-    `Trend: ${signal.trend}`,
-    `Structure: ${ctx.structure}`,
-    `Momentum: ${ctx.momentum}`,
-    `Pullback: ${ctx.pullback}`,
-    `Phase: ${ctx.marketPhase}`,
-    ``,
-    `Trigger: ${ctx.triggerDetails}`,
-    `Cross Age: ${ctx.crossAge} candles ago`,
-    "",
-    `Expected Move: ${signal.expectedMove}%`,
-    `SL: ${signal.stop}`,
-    `TP: ${signal.target}`,
-    `RR: ${signal.rr}`,
-    "",
-    `ADX: ${signal.adx}`,
-    `RSI: ${signal.rsi}`,
-    `StochK: ${signal.stochK}`,
-    `StochD: ${signal.stochD}`,
-    "",
-    `Time: ${new Date(signal.timestamp).toISOString()}`,
-  ];
-  return lines.join("\n");
 }
