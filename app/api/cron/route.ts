@@ -44,9 +44,6 @@ export async function GET(request: Request) {
   let activeTrades = await getActiveTrades();
   console.log(`[STATE] Active trades:`, Object.keys(activeTrades).join(", ") || "none");
 
-  rebuildStateFromTrades(activeTrades);
-  console.log(`[STATE] In-memory state rebuilt from ${Object.keys(activeTrades).length} persisted trades`);
-
   const existingSignals = await getSignals();
   const currentPrices: Record<string, number> = {};
 
@@ -66,6 +63,8 @@ export async function GET(request: Request) {
     if (reason !== "tp_hit" && reason !== "sl_hit") {
       const key = `${signal.pair}_${signal.direction}`;
       if (activeTrades[key]) delete activeTrades[key];
+      // Also clean old-format key
+      if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
     }
   }
 
@@ -95,10 +94,21 @@ export async function GET(request: Request) {
       }
     }
   }
-  if (recoveredCount > 0) {
-    console.log(`[STATE_RECOVER] Recovered ${recoveredCount} trade(s)`);
-    rebuildStateFromTrades(activeTrades);
+
+  // Migrate old-format keys (pre-v53) to per-direction format
+  for (const key of Object.keys(activeTrades)) {
+    if (!key.includes("_") && activeTrades[key]?.direction) {
+      const trade = activeTrades[key];
+      const newKey = `${key}_${trade.direction}`;
+      if (!activeTrades[newKey]) activeTrades[newKey] = trade;
+      delete activeTrades[key];
+      console.log(`[STATE_MIGRATE] ${key} → ${newKey}`);
+    }
   }
+
+  // Single rebuild after all trades assembled and migrated
+  rebuildStateFromTrades(activeTrades);
+  console.log(`[STATE] In-memory state rebuilt from ${Object.keys(activeTrades).length} trades`);
 
   const newSignals: Signal[] = [];
   const marketDataList: any[] = [];
@@ -169,7 +179,7 @@ export async function GET(request: Request) {
         }
       }
 
-      // If both directions still have active valid signals, skip generation for those directions
+      // If both directions still have active valid signals, skip generation
       const hasLongActive = validSignals.some(s => s.pair === pair && s.direction === "LONG" && !s.exited);
       const hasShortActive = validSignals.some(s => s.pair === pair && s.direction === "SHORT" && !s.exited);
 
@@ -181,8 +191,16 @@ export async function GET(request: Request) {
       }
 
       const result = generateSignal(pair, candles1h, candles4h, candles15m, validSignals, currentPrice);
+
+      // Enrich market snapshot with bidirectional contexts for UI
       const snapshot = result.market || getMarketSnapshot(pair, candles1h, candles4h, candles15m);
-      if (snapshot) marketDataList.push(snapshot);
+      if (snapshot) {
+        marketDataList.push({
+          ...snapshot,
+          longContext: result.longContext,
+          shortContext: result.shortContext,
+        });
+      }
 
       if (!result.signals.length) {
         console.log(`[PAIR] ${pair} — NO SIGNALS (${result.debug?.join(" | ")})`);
