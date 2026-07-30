@@ -1,11 +1,11 @@
-// app/api/cron/route.ts — v53.1 "Strongest Trade" Cron
+// app/api/cron/route.ts — v53 "Directional Commitment" Cron
 // ============================================================
-// Architecture: Daily Context → LONG Analysis + SHORT Analysis → Score → Winner
-// v53.1: One winner per pair. No confusion. Clean UI.
+// Architecture: Daily Context → LONG Analysis + SHORT Analysis → Directional Commitment → Execute
+// v53: No scoring. No winner selection. Directional commitment prevents flip-flop churn.
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot, rebuildStateFromTrades, checkTradeStatus, Signal } from "@/lib/strategy";
+import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot, rebuildStateFromTrades, checkTradeStatus, recordTradeExit, Signal } from "@/lib/strategy";
 import { getSignals, setSignals, getMarketData, setMarketData, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
@@ -25,7 +25,7 @@ export const revalidate = 0;
 export async function GET(request: Request) {
   const runStart = Date.now();
   console.log("========================================");
-  console.log(`[CRON v53.1] Started at ${new Date(runStart).toISOString()}`);
+  console.log(`[CRON v53] Started at ${new Date(runStart).toISOString()}`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -60,6 +60,14 @@ export async function GET(request: Request) {
   for (const { signal, reason } of preExited) {
     console.log(`[EXIT] ${signal.pair} ${signal.direction} — ${reason}`);
     await addSignalToHistory(signal, reason as any, currentPrices[signal.pair] || signal.entry);
+    // Record directional exit for commitment tracking
+    try {
+      const candles4h = await getCandles(krakenPairFormat(signal.pair + "/USD"), 240);
+      recordTradeExit(signal.pair, signal.direction, reason, currentPrices[signal.pair] || signal.entry, candles4h);
+    } catch {
+      // If candles fail, still record without trend context
+      console.log(`[EXIT] ${signal.pair} — recorded direction exit without trend context`);
+    }
     if (reason !== "tp_hit" && reason !== "sl_hit") {
       const key = `${signal.pair}_${signal.direction}`;
       if (activeTrades[key]) delete activeTrades[key];
@@ -134,6 +142,8 @@ export async function GET(request: Request) {
         if (!validity.valid) {
           console.log(`[PAIR] ${pair} — INVALID: ${validity.reason}`);
           await addSignalToHistory(existingForPair, validity.reason as any, currentPrice);
+          // Record directional exit
+          recordTradeExit(existingForPair.pair, existingForPair.direction, validity.reason, currentPrice, candles4h);
           delete activeTrades[`${pair}_${existingForPair.direction}`];
           const idx = validSignals.indexOf(existingForPair);
           if (idx >= 0) validSignals.splice(idx, 1);
@@ -143,6 +153,8 @@ export async function GET(request: Request) {
           if (!holdResult.shouldHold) {
             console.log(`[PAIR] ${pair} — HOLD EXIT: ${holdResult.reason}`);
             await addSignalToHistory(existingForPair, "hold_exit", currentPrice);
+            // Record directional exit
+            recordTradeExit(existingForPair.pair, existingForPair.direction, "hold_exit", currentPrice, candles4h);
             delete activeTrades[`${pair}_${existingForPair.direction}`];
             const idx = validSignals.indexOf(existingForPair);
             if (idx >= 0) validSignals.splice(idx, 1);
@@ -160,64 +172,65 @@ export async function GET(request: Request) {
       const snapshot = result.market || getMarketSnapshot(pair, candles1h, candles4h, candles15m);
       if (snapshot) marketDataList.push(snapshot);
 
-      if (!result.signal) {
+      // v53: result.signals[] contains 0, 1, or 2 allowed signals
+      if (!result.signals || result.signals.length === 0) {
         console.log(`[PAIR] ${pair} — NO SIGNAL (${result.debug?.join(" | ")})`);
-        alerts.push({ pair, status: "no_signal", debug: result.debug?.join(" | "), longScore: result.longScore, shortScore: result.shortScore });
+        alerts.push({ pair, status: "no_signal", debug: result.debug?.join(" | ") });
         continue;
       }
 
-      const signal = result.signal;
-      console.log(`[PAIR] ${pair} — WINNER: ${signal.direction} (score ${signal.score}) | ${signal.type} @ ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`);
-      newSignals.push(signal);
+      // Process each allowed signal independently
+      for (const signal of result.signals) {
+        console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} | ${signal.type} @ ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`);
+        newSignals.push(signal);
 
-      const alertState = signal.type === "ADD" ? "ADD" : "ENTRY";
-      const alertEmoji = signal.type === "ENTRY_1" ? "🟢" : signal.type === "ENTRY_2" ? "🟡" : "🔵";
+        const alertState = signal.type === "ADD" ? "ADD" : "ENTRY";
+        const alertEmoji = signal.type === "ENTRY_1" ? "🟢" : signal.type === "ENTRY_2" ? "🟡" : "🔵";
 
-      try {
-        await sendAlert({
-          symbol: signal.pair,
-          state: alertState,
-          price: roundPrice(signal.entry),
-          bias: signal.direction,
-          stopLoss: roundPrice(signal.stop),
-          takeProfit: roundPrice(signal.target),
-          rr: signal.rr,
-          expectedMove: signal.expectedMove,
-          adx: signal.adx,
-          rsi: signal.rsi,
-          stochK: signal.stochK,
-          stochD: signal.stochD,
-          reason: signal.reason,
-          trend: signal.trend,
-          location: signal.location,
-          trigger: signal.trigger,
-          updatedAt: new Date(signal.timestamp).toISOString(),
-          signalType: signal.type,
-          signalEmoji: alertEmoji,
-          context: signal.context,
-          marketPhase: signal.context.marketPhase,
-          structure: signal.context.structure,
-          momentum: signal.context.momentum,
-          pullback: signal.context.pullback,
-          crossAge: signal.context.crossAge,
-          score: signal.score,
-          rejectedSide: signal.direction === "LONG" ? result.shortContext.signal?.rejected : result.longContext.signal?.rejected,
-        });
-        console.log(`[ALERT] ${pair} ${signal.direction} — SENT (${signal.type}, score ${signal.score})`);
-        activeTrades[`${pair}_${signal.direction}`] = {
-          direction: signal.direction,
-          timestamp: Date.now(),
-          entry: signal.entry,
-          stop: signal.stop,
-          target: signal.target,
-          id: signal.id,
-          type: signal.type,
-          crossHash: signal.context?.crossHash || "",
-        };
-        alerts.push({ pair, direction: signal.direction, status: "sent", type: signal.type, score: signal.score });
-      } catch (err) {
-        console.error(`[ALERT] ${pair} ${signal.direction} — FAILED:`, err);
-        alerts.push({ pair, direction: signal.direction, status: "alert_failed", error: String(err) });
+        try {
+          await sendAlert({
+            symbol: signal.pair,
+            state: alertState,
+            price: roundPrice(signal.entry),
+            bias: signal.direction,
+            stopLoss: roundPrice(signal.stop),
+            takeProfit: roundPrice(signal.target),
+            rr: signal.rr,
+            expectedMove: signal.expectedMove,
+            adx: signal.adx,
+            rsi: signal.rsi,
+            stochK: signal.stochK,
+            stochD: signal.stochD,
+            reason: signal.reason,
+            trend: signal.trend,
+            location: signal.location,
+            trigger: signal.trigger,
+            updatedAt: new Date(signal.timestamp).toISOString(),
+            signalType: signal.type,
+            signalEmoji: alertEmoji,
+            context: signal.context,
+            marketPhase: signal.context.marketPhase,
+            structure: signal.context.structure,
+            momentum: signal.context.momentum,
+            pullback: signal.context.pullback,
+            crossAge: signal.context.crossAge,
+          });
+          console.log(`[ALERT] ${pair} ${signal.direction} — SENT (${signal.type})`);
+          activeTrades[`${pair}_${signal.direction}`] = {
+            direction: signal.direction,
+            timestamp: Date.now(),
+            entry: signal.entry,
+            stop: signal.stop,
+            target: signal.target,
+            id: signal.id,
+            type: signal.type,
+            crossHash: signal.context?.crossHash || "",
+          };
+          alerts.push({ pair, direction: signal.direction, status: "sent", type: signal.type });
+        } catch (err) {
+          console.error(`[ALERT] ${pair} ${signal.direction} — FAILED:`, err);
+          alerts.push({ pair, direction: signal.direction, status: "alert_failed", error: String(err) });
+        }
       }
     } catch (err) {
       console.error(`[PAIR] ${pair} — ERROR:`, err);
