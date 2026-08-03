@@ -1,12 +1,18 @@
-// lib/strategy.ts — v53.1 "Directional Commitment + Trend Filter"
+// lib/strategy.ts — v53.2 "Adaptive R²"
 // ============================================================
 // CHANGES:
-// - Hard counter-trend block: no entries against daily trend
+// - Fixed R² threshold replaced with adaptive threshold based on ADX
+// - ADX < 18  → blocked by ADX filter (no R² check reached)
+// - ADX 18–25 → min R² = 0.75
+// - ADX 25–30 → min R² = 0.65
+// - ADX 30–35 → min R² = 0.60
+// - ADX > 35  → min R² = 0.55
+// - Telemetry added for trend quality pass/fail
+// - Hard counter-trend block
 // - ADX > 18 AND rising required
 // - ADD logic removed from entry path
 // - Stoch zones tightened: ENTRY_1 <20/>80, ENTRY_2 <50/>50
 // - crossLookback respected (no infinite scan)
-// - R² minimum raised to 0.70
 // - v28 stoch extreme exit ported to shouldHold
 //
 // Architecture: Context → Trigger → Signal → Directional State → Execute
@@ -59,7 +65,7 @@ export interface Signal {
 }
 
 export interface SignalResult {
-  signal?: Signal;              // deprecated — use signals[]
+  signal?: Signal;
   signals: Signal[];
   market?: MarketSnapshot;
   longContext: DirectionalContext;
@@ -131,7 +137,6 @@ export interface PairConfig {
   crossLookback: number;
   swingAtrMult: number;
   cacheDevTolerance: number;
-  r2Minimum: number;
   preCrossEnabled: boolean;
   preCrossThreshold: number;
 }
@@ -143,7 +148,6 @@ const DEFAULT_CONFIG: PairConfig = {
   crossLookback: 10,
   swingAtrMult: 3,
   cacheDevTolerance: 0.04,
-  r2Minimum: 0.70,
   preCrossEnabled: true,
   preCrossThreshold: 3,
 };
@@ -159,7 +163,6 @@ const PAIR_CONFIGS: Record<string, PairConfig> = {
     crossLookback: 12,
     swingAtrMult: 4,
     cacheDevTolerance: 0.06,
-    r2Minimum: 0.70,
     preCrossEnabled: true,
     preCrossThreshold: 3,
   },
@@ -167,6 +170,18 @@ const PAIR_CONFIGS: Record<string, PairConfig> = {
 
 export function getPairConfig(pair: string): PairConfig {
   return PAIR_CONFIGS[pair] || DEFAULT_CONFIG;
+}
+
+// ============================================================
+// ADAPTIVE R² THRESHOLD
+// ============================================================
+
+function getMinimumR2(adxVal: number): number {
+  if (adxVal < 18) return 1.0;   // unreachable — ADX filter blocks first
+  if (adxVal < 25) return 0.75;
+  if (adxVal < 30) return 0.65;
+  if (adxVal < 35) return 0.60;
+  return 0.55;
 }
 
 function avg(arr: number[]): number {
@@ -363,7 +378,7 @@ function fitTrendline(pivots: Pivot[]): { slope: number; intercept: number; r2: 
   return { slope, intercept, r2: ssTot === 0 ? 0 : 1 - ssRes / ssTot };
 }
 
-function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number; slope: number; regressionDirection: string } | null {
+function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT", minR2?: number): { price: number; r2: number; slope: number; regressionDirection: string } | null {
   const config = getPairConfig(pair);
   if (candles.length < 30) return null;
   const pivots = findPivots(candles, direction);
@@ -379,12 +394,14 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     if (deviation > config.cacheDevTolerance) {
       trendlineStore.delete(pair);
     } else {
+      if (minR2 !== undefined && existing.r2 < minR2) return null;
       const tlPrice = existing.slope * currentIndex + existing.intercept;
       return { price: tlPrice, r2: existing.r2, slope: existing.slope, regressionDirection: existing.slope > 0 ? "rising" : "falling" };
     }
   }
   const fit = fitTrendline(recentPivots);
-  if (!fit || fit.r2 < config.r2Minimum) return null;
+  if (!fit) return null;
+  if (minR2 !== undefined && fit.r2 < minR2) return null;
   trendlineStore.set(pair, { slope: fit.slope, intercept: fit.intercept, lastUpdated: now, direction, r2: Math.round(fit.r2 * 100) / 100 });
   return { price: fit.slope * currentIndex + fit.intercept, r2: Math.round(fit.r2 * 100) / 100, slope: fit.slope, regressionDirection: fit.slope > 0 ? "rising" : "falling" };
 }
@@ -423,10 +440,10 @@ export interface LocationResult {
   distToTL: number;
 }
 
-function location4H(pair: string, candles4h: Candle[], direction: "LONG" | "SHORT"): LocationResult {
+function location4H(pair: string, candles4h: Candle[], direction: "LONG" | "SHORT", minR2?: number): LocationResult {
   const config = getPairConfig(pair);
   const price = candles4h[candles4h.length - 1].close;
-  const tl = getTrendline(pair, candles4h, direction);
+  const tl = getTrendline(pair, candles4h, direction, minR2);
   const atrVal = atr(candles4h, 14);
   const lookback = 30;
   const recent = candles4h.slice(-lookback);
@@ -893,9 +910,6 @@ function buildDirectionalContext(
   activeSignals: Signal[],
   debug: string[]
 ): DirectionalContext {
-  const location = location4H(pair, candles4h, direction);
-  debug.push(`[${direction}] Location: ${location.locationType} | ${location.detail} | Phase: ${location.marketPhase}`);
-
   let trigger: TriggerResult | null = null;
   let addTrigger: AddTriggerResult | null = null;
   let signal: Signal | undefined = undefined;
@@ -913,11 +927,11 @@ function buildDirectionalContext(
   // === HARD RULE 1: No counter-trend entries ===
   if (trend.direction === "FLAT") {
     debug.push(`[${direction}] BLOCKED: Daily trend FLAT`);
-    return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: "Daily trend FLAT — no entries" };
+    return { direction, trend: trend.detail, location: { detail: "", trendlinePrice: 0, locationType: "NONE", marketPhase: "unknown", structureDesc: "", pullbackDesc: "", regressionDir: "flat", distToTL: 0 }, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: "Daily trend FLAT — no entries" };
   }
   if (trend.direction !== direction) {
     debug.push(`[${direction}] BLOCKED: Counter-trend (daily=${trend.direction})`);
-    return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `Counter-trend blocked: daily is ${trend.direction}` };
+    return { direction, trend: trend.detail, location: { detail: "", trendlinePrice: 0, locationType: "NONE", marketPhase: "unknown", structureDesc: "", pullbackDesc: "", regressionDir: "flat", distToTL: 0 }, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `Counter-trend blocked: daily is ${trend.direction}` };
   }
 
   // === HARD RULE 2: ADX > 18 and rising ===
@@ -927,11 +941,26 @@ function buildDirectionalContext(
   debug.push(`[${direction}] ADX: ${adxCurrent.toFixed(1)} (prev ${adxPrevious.toFixed(1)}) ${adxRising ? "rising" : "flat/falling"}`);
   if (adxCurrent < 18) {
     debug.push(`[${direction}] BLOCKED: ADX ${adxCurrent.toFixed(1)} < 18`);
-    return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `ADX ${adxCurrent.toFixed(1)} < 18` };
+    return { direction, trend: trend.detail, location: { detail: "", trendlinePrice: 0, locationType: "NONE", marketPhase: "unknown", structureDesc: "", pullbackDesc: "", regressionDir: "flat", distToTL: 0 }, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `ADX ${adxCurrent.toFixed(1)} < 18` };
   }
   if (!adxRising) {
     debug.push(`[${direction}] BLOCKED: ADX not rising`);
-    return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `ADX ${adxCurrent.toFixed(1)} not rising (prev ${adxPrevious.toFixed(1)})` };
+    return { direction, trend: trend.detail, location: { detail: "", trendlinePrice: 0, locationType: "NONE", marketPhase: "unknown", structureDesc: "", pullbackDesc: "", regressionDir: "flat", distToTL: 0 }, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `ADX ${adxCurrent.toFixed(1)} not rising (prev ${adxPrevious.toFixed(1)})` };
+  }
+
+  // === ADAPTIVE R²: compute threshold and telemetry ===
+  const minR2 = getMinimumR2(adxCurrent);
+  const rawTl = getTrendline(pair, candles4h, direction); // raw, no minR2 filter
+  const currentR2 = rawTl?.r2 ?? 0;
+  const r2Pass = currentR2 >= minR2;
+  debug.push(`[${direction}] Trend Quality: ADX ${adxCurrent.toFixed(1)} | R² ${currentR2.toFixed(2)} | Required ${minR2.toFixed(2)} | Result: ${r2Pass ? 'PASS' : 'FAIL'}`);
+
+  const location = location4H(pair, candles4h, direction, minR2);
+  debug.push(`[${direction}] Location: ${location.locationType} | ${location.detail} | Phase: ${location.marketPhase}`);
+
+  if (!r2Pass) {
+    debug.push(`[${direction}] BLOCKED: R² ${currentR2.toFixed(2)} below adaptive minimum ${minR2.toFixed(2)}`);
+    return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `R² ${currentR2.toFixed(2)} below adaptive minimum ${minR2.toFixed(2)}` };
   }
 
   // === ENTRY (ADD removed) ===
@@ -1041,7 +1070,7 @@ function buildDirectionalContext(
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATOR — v53.1
+// MAIN SIGNAL GENERATOR — v53.2
 // ============================================================
 
 export function generateSignal(pair: string, candles1h: Candle[], candles4h: Candle[], candles15m: Candle[], activeSignals: Signal[], currentPrice?: number): SignalResult {
@@ -1229,7 +1258,7 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
     if (!inProfit) return { shouldHold: false, reason: "trend_reversed_unprofitable" };
   }
 
-  // v28 PORT: Exit when Stoch hits extreme opposite (chart behavior)
+  // v28 PORT: Exit when Stoch hits extreme opposite
   const closes4h = candles4h.map(c => c.close);
   const stoch = stochRsi(closes4h);
   const stochExtremeOpposite = signal.direction === "LONG"
