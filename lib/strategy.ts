@@ -995,14 +995,14 @@ function buildDirectionalContext(
   if (trend.direction === "FLAT") {
     debug.push(`Trigger      —`);
     debug.push(`Cross Fresh  —`);
-    debug.push(`Result       ENTRY ABORTED — FLAT trend`);
+    debug.push(`Result       BLOCKED — FLAT trend`);
     return { direction, trend: trend.detail, location, trigger: null, addTrigger: null, signal: undefined, canEnter: false, reason: "Daily trend FLAT — no entries" };
   }
 
   if (!adxPass) {
     debug.push(`Trigger      —`);
     debug.push(`Cross Fresh  —`);
-    debug.push(`Result       ENTRY ABORTED — ADX ${adxCurrent.toFixed(1)} < 18`);
+    debug.push(`Result       BLOCKED — ADX ${adxCurrent.toFixed(1)} < 18`);
     return { direction, trend: trend.detail, location, trigger: null, addTrigger: null, signal: undefined, canEnter: false, reason: `ADX ${adxCurrent.toFixed(1)} < 18` };
   }
 
@@ -1015,14 +1015,14 @@ function buildDirectionalContext(
 
   if (anyActive) {
     reason = sameDirActive ? `Active ${direction} trade exists` : `Active opposite-direction trade exists`;
-    debug.push(`Result       WAIT — ${reason}`);
+    debug.push(`Result       WAITING — ${reason}`);
   } else if (trigger?.fired) {
     // --- CROSS FRESHNESS ---
     if (trigger.crossAge > 5 && trigger.crossHash) {
       const freshness = isCrossFresh(candles4h, direction, trigger.crossAge, candles4h.length - 1 - trigger.crossAge);
       debug.push(`Cross Fresh  ${freshness.fresh ? '✅' : '❌'} ${freshness.reason}`);
       if (!freshness.fresh) {
-        debug.push(`Result       ENTRY ABORTED — stale cross`);
+        debug.push(`Result       REJECTED — stale cross`);
         return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: freshness.reason };
       }
     } else {
@@ -1033,14 +1033,14 @@ function buildDirectionalContext(
     // Same direction: normal entry path. Counter-trend: ENTRY_2 only.
     if (isCounterTrend) {
       if (trigger.triggerType === "entry_1_deep_pullback") {
-        debug.push(`Result       ENTRY ABORTED — ENTRY_1 blocked in counter-trend`);
+        debug.push(`Result       BLOCKED — ENTRY_1 counter-trend`);
         return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: "ENTRY_1 blocked: counter-trend only allows ENTRY_2" };
       }
       if (trigger.triggerType === "entry_2_early_momentum" || trigger.triggerType === "entry_2_pre_cross") {
         canEnter = true;
         reason = trigger.detail;
       } else {
-        debug.push(`Result       ENTRY ABORTED — counter-trend requires ENTRY_2 trigger`);
+        debug.push(`Result       REJECTED — counter-trend requires ENTRY_2`);
         return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: "Counter-trend requires ENTRY_2 trigger" };
       }
     } else {
@@ -1048,7 +1048,7 @@ function buildDirectionalContext(
       reason = trigger.detail;
     }
   } else {
-    debug.push(`Result       WAIT — no valid trigger`);
+    debug.push(`Result       WAITING — no valid trigger`);
   }
 
   // Build signal
