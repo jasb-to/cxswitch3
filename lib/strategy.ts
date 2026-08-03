@@ -1,8 +1,13 @@
-// lib/strategy.ts — v53 "Directional Commitment"
+// lib/strategy.ts — v53.1 "Directional Commitment + Trend Filter"
 // ============================================================
-// Philosophy: Observe both sides. Nothing blocks analysis.
-// NEW: Directional commitment prevents immediate reversal entries
-// after failed trades to stop emotional flip-flop churn.
+// CHANGES:
+// - Hard counter-trend block: no entries against daily trend
+// - ADX > 18 AND rising required
+// - ADD logic removed from entry path
+// - Stoch zones tightened: ENTRY_1 <20/>80, ENTRY_2 <50/>50
+// - crossLookback respected (no infinite scan)
+// - R² minimum raised to 0.70
+// - v28 stoch extreme exit ported to shouldHold
 //
 // Architecture: Context → Trigger → Signal → Directional State → Execute
 
@@ -138,7 +143,7 @@ const DEFAULT_CONFIG: PairConfig = {
   crossLookback: 10,
   swingAtrMult: 3,
   cacheDevTolerance: 0.04,
-  r2Minimum: 0.05,
+  r2Minimum: 0.70,
   preCrossEnabled: true,
   preCrossThreshold: 3,
 };
@@ -154,7 +159,7 @@ const PAIR_CONFIGS: Record<string, PairConfig> = {
     crossLookback: 12,
     swingAtrMult: 4,
     cacheDevTolerance: 0.06,
-    r2Minimum: 0.05,
+    r2Minimum: 0.70,
     preCrossEnabled: true,
     preCrossThreshold: 3,
   },
@@ -532,9 +537,12 @@ function recordCycle(pair: string, crossHash: string, direction: "LONG" | "SHORT
 
 function findRecentCross(candles4h: Candle[], direction: "LONG" | "SHORT", pair: string): { crossIndex: number; crossStochK: number; crossStochD: number; currentStochK: number; currentStochD: number; crossHash: string; crossAge: number } | null {
   if (candles4h.length < 35) return null;
+  const config = getPairConfig(pair);
   const closes = candles4h.map(c => c.close);
   const currentStoch = stochRsi(closes);
-  for (let i = 1; i < candles4h.length - 30; i++) {
+  const maxLookback = Math.min(config.crossLookback, candles4h.length - 35);
+
+  for (let i = 1; i <= maxLookback; i++) {
     const idx = candles4h.length - 1 - i;
     if (idx < 30) break;
     const sliceAtCross = closes.slice(0, idx + 1);
@@ -610,18 +618,20 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: 
       if (isDuplicateCycle(pair, direction, crossHash)) {
         return { fired: false, detail: `Cross ${crossAge} candles ago already signaled`, triggerType: "duplicate_cycle", stochK: recentCross.currentStochK, stochD: recentCross.currentStochD, crossAge, crossHash, momentumDesc };
       }
-      const crossWasDeep = recentCross.crossStochK < 50;
       const kAboveD = recentCross.currentStochK >= recentCross.currentStochD;
-      if (crossWasDeep && kAboveD) {
+      const crossWasExtreme = recentCross.crossStochK < 20;
+      const crossWasPullback = recentCross.crossStochK < 50;
+
+      if (crossWasExtreme && kAboveD) {
         fired = true;
         triggerType = "entry_1_deep_pullback";
-        detail = `ENTRY_1: K crossed above D ${crossAge} candles ago below 50 (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
-      } else if (kAboveD) {
+        detail = `ENTRY_1: K crossed above D ${crossAge} candles ago below 20 (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
+      } else if (crossWasPullback && kAboveD) {
         fired = true;
         triggerType = "entry_2_early_momentum";
-        detail = `ENTRY_2: K crossed above D ${crossAge} candles ago (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
+        detail = `ENTRY_2: K crossed above D ${crossAge} candles ago below 50 (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
       } else {
-        detail = `Cross ${crossAge} candles ago faded: K=${recentCross.currentStochK} < D=${recentCross.currentStochD}`;
+        detail = `Cross ${crossAge} candles ago at K=${recentCross.crossStochK} not in pullback zone (needs <50 for longs)`;
       }
     } else if (config.preCrossEnabled) {
       const prevCloses = closes.slice(0, -1);
@@ -645,18 +655,20 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: 
       if (isDuplicateCycle(pair, direction, crossHash)) {
         return { fired: false, detail: `Cross ${crossAge} candles ago already signaled`, triggerType: "duplicate_cycle", stochK: recentCross.currentStochK, stochD: recentCross.currentStochD, crossAge, crossHash, momentumDesc };
       }
-      const crossWasDeep = recentCross.crossStochK > 50;
       const kBelowD = recentCross.currentStochK <= recentCross.currentStochD;
-      if (crossWasDeep && kBelowD) {
+      const crossWasExtreme = recentCross.crossStochK > 80;
+      const crossWasPullback = recentCross.crossStochK > 50;
+
+      if (crossWasExtreme && kBelowD) {
         fired = true;
         triggerType = "entry_1_deep_pullback";
-        detail = `ENTRY_1: K crossed below D ${crossAge} candles ago above 50 (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
-      } else if (kBelowD) {
+        detail = `ENTRY_1: K crossed below D ${crossAge} candles ago above 80 (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
+      } else if (crossWasPullback && kBelowD) {
         fired = true;
         triggerType = "entry_2_early_momentum";
-        detail = `ENTRY_2: K crossed below D ${crossAge} candles ago (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
+        detail = `ENTRY_2: K crossed below D ${crossAge} candles ago above 50 (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
       } else {
-        detail = `Cross ${crossAge} candles ago faded: K=${recentCross.currentStochK} > D=${recentCross.currentStochD}`;
+        detail = `Cross ${crossAge} candles ago at K=${recentCross.crossStochK} not in pullback zone (needs >50 for shorts)`;
       }
     } else if (config.preCrossEnabled) {
       const prevCloses = closes.slice(0, -1);
@@ -678,7 +690,7 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: 
 }
 
 // ============================================================
-// ADD TRIGGER
+// ADD TRIGGER (RETAINED FOR COMPATIBILITY — NOT USED IN ENTRY PATH)
 // ============================================================
 
 export interface AddTriggerResult {
@@ -776,7 +788,7 @@ interface DirectionState {
 
 const directionStateStore = new Map<string, DirectionState>();
 const DIRECTION_COOLDOWN_CANDLES = 6;
-const DIRECTION_COOLDOWN_MS = DIRECTION_COOLDOWN_CANDLES * 4 * 60 * 60 * 1000; // 6 × 4h
+const DIRECTION_COOLDOWN_MS = DIRECTION_COOLDOWN_CANDLES * 4 * 60 * 60 * 1000;
 
 export function recordDirectionExit(
   pair: string,
@@ -824,7 +836,7 @@ function clearExpiredDirectionStates(): void {
   const now = Date.now();
   for (const [pair, state] of directionStateStore.entries()) {
     const cooldownExpired = now - state.exitTimestamp > DIRECTION_COOLDOWN_MS;
-    const veryOld = now - state.exitTimestamp > DIRECTION_COOLDOWN_MS * 8; // 192h
+    const veryOld = now - state.exitTimestamp > DIRECTION_COOLDOWN_MS * 8;
     if (cooldownExpired || veryOld) {
       directionStateStore.delete(pair);
       console.log(`[DIR_STATE] ${pair}: cleared expired state`);
@@ -842,12 +854,10 @@ function checkDirectionalCommitment(
     return { allowed: true, reason: "No prior exit state" };
   }
 
-  // Same direction is always allowed
   if (proposedDirection === state.lastDirection) {
     return { allowed: true, reason: `Same direction as last exit (${state.lastDirection})` };
   }
 
-  // Opposite direction — check reset conditions
   const now = Date.now();
   const cooldownExpired = now - state.exitTimestamp > DIRECTION_COOLDOWN_MS;
   const trendChanged = currentTrendDirection !== "FLAT" && currentTrendDirection !== state.trendPhaseAtExit;
@@ -895,28 +905,42 @@ function buildDirectionalContext(
   const anyActive = hasActiveSignal(pair);
   const sameDirActive = hasActiveSignal(pair, direction);
 
-  // ENTRY
   if (!anyActive) {
     trigger = stochTrigger4H(candles4h, direction, pair);
     debug.push(`[${direction}] Trigger: ${trigger.fired ? "FIRED" : "WAITING"} | ${trigger.detail} | Momentum: ${trigger.momentumDesc}`);
-    if (trigger.fired) {
-      canEnter = true;
-      reason = trigger.detail;
-    }
-  } else {
-    reason = `Active trade exists (${sameDirActive ? "same direction" : "opposite direction"})`;
-    debug.push(`[${direction}] Entry blocked: ${reason}`);
   }
 
-  // ADD
-  if (!canEnter && sameDirActive && !hasActiveAdd(pair, direction)) {
-    addTrigger = addTrigger4H(candles4h, direction, location, pair);
-    debug.push(`[${direction}] ADD: ${addTrigger.fired ? "FIRED" : "WAITING"} | ${addTrigger.detail}`);
-    if (addTrigger.fired) {
-      canEnter = true;
-      reason = addTrigger.detail;
-      trigger = null;
-    }
+  // === HARD RULE 1: No counter-trend entries ===
+  if (trend.direction === "FLAT") {
+    debug.push(`[${direction}] BLOCKED: Daily trend FLAT`);
+    return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: "Daily trend FLAT — no entries" };
+  }
+  if (trend.direction !== direction) {
+    debug.push(`[${direction}] BLOCKED: Counter-trend (daily=${trend.direction})`);
+    return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `Counter-trend blocked: daily is ${trend.direction}` };
+  }
+
+  // === HARD RULE 2: ADX > 18 and rising ===
+  const adxCurrent = adx(candles4h);
+  const adxPrevious = adx(candles4h.slice(0, -1));
+  const adxRising = adxCurrent > adxPrevious;
+  debug.push(`[${direction}] ADX: ${adxCurrent.toFixed(1)} (prev ${adxPrevious.toFixed(1)}) ${adxRising ? "rising" : "flat/falling"}`);
+  if (adxCurrent < 18) {
+    debug.push(`[${direction}] BLOCKED: ADX ${adxCurrent.toFixed(1)} < 18`);
+    return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `ADX ${adxCurrent.toFixed(1)} < 18` };
+  }
+  if (!adxRising) {
+    debug.push(`[${direction}] BLOCKED: ADX not rising`);
+    return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `ADX ${adxCurrent.toFixed(1)} not rising (prev ${adxPrevious.toFixed(1)})` };
+  }
+
+  // === ENTRY (ADD removed) ===
+  if (!anyActive && trigger?.fired) {
+    canEnter = true;
+    reason = trigger.detail;
+  } else if (anyActive) {
+    reason = sameDirActive ? `Active ${direction} trade exists` : `Active opposite-direction trade exists`;
+    debug.push(`[${direction}] Entry blocked: ${reason}`);
   }
 
   // Build signal
@@ -931,7 +955,7 @@ function buildDirectionalContext(
 
     if (trigger?.triggerType === "entry_1_deep_pullback") signalType = "ENTRY_1";
     else if (trigger?.triggerType === "entry_2_early_momentum" || trigger?.triggerType === "entry_2_pre_cross") signalType = "ENTRY_2";
-    else signalType = "ADD";
+    else signalType = "ENTRY_1";
 
     if (signalType === "ENTRY_1" || signalType === "ENTRY_2") {
       if (direction === "LONG") {
@@ -965,7 +989,7 @@ function buildDirectionalContext(
     const reward = Math.abs(target - price);
     const rr = risk > 0 ? reward / risk : 0;
 
-    const triggerResult = trigger || addTrigger!;
+    const triggerResult = trigger!;
     const context: SignalContext = {
       marketPhase: location.marketPhase,
       structure: location.structureDesc,
@@ -987,7 +1011,7 @@ function buildDirectionalContext(
       stop: Math.round(stop * 100) / 100,
       target: Math.round(target * 100) / 100,
       rr: Math.round(rr * 100) / 100,
-      adx: Math.round(adx(candles4h) * 10) / 10,
+      adx: Math.round(adxCurrent * 10) / 10,
       rsi: Math.round(wilderRsi(candles4h.map(c => c.close)) * 10) / 10,
       stochK: triggerResult.stochK,
       stochD: triggerResult.stochD,
@@ -1017,7 +1041,7 @@ function buildDirectionalContext(
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATOR — v53: Directional Commitment
+// MAIN SIGNAL GENERATOR — v53.1
 // ============================================================
 
 export function generateSignal(pair: string, candles1h: Candle[], candles4h: Candle[], candles15m: Candle[], activeSignals: Signal[], currentPrice?: number): SignalResult {
@@ -1080,7 +1104,6 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   }
 
   if (allowedSignals.length > 0) {
-    // New trade entered — previous exit state no longer relevant
     clearDirectionState(pair);
   } else {
     debug.push(`NO SIGNAL: LONG=${longContext.canEnter ? "ready" : "blocked"} (${longContext.reason}), SHORT=${shortContext.canEnter ? "ready" : "blocked"} (${shortContext.reason})`);
@@ -1205,6 +1228,18 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
     const inProfit = signal.direction === "LONG" ? currentPrice > signal.entry : currentPrice < signal.entry;
     if (!inProfit) return { shouldHold: false, reason: "trend_reversed_unprofitable" };
   }
+
+  // v28 PORT: Exit when Stoch hits extreme opposite (chart behavior)
+  const closes4h = candles4h.map(c => c.close);
+  const stoch = stochRsi(closes4h);
+  const stochExtremeOpposite = signal.direction === "LONG"
+    ? stoch.k < 20
+    : stoch.k > 80;
+
+  if (stochExtremeOpposite) {
+    return { shouldHold: false, reason: "stoch_extreme_opposite_exit" };
+  }
+
   const validity = isSignalStillValid(signal, currentPrice, now);
   return { shouldHold: validity.valid, reason: validity.reason };
 }
