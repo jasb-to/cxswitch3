@@ -571,7 +571,6 @@ function findRecentCross(candles4h: Candle[], direction: "LONG" | "SHORT", pair:
     const stochAt = stochRsi(sliceAtCross);
     const stochBefore = stochRsi(sliceBeforeCross);
     let crossed = false;
-    if (direction === "LONG")
     if (direction === "LONG") crossed = stochBefore.k < stochBefore.d && stochAt.k >= stochAt.d;
     else crossed = stochBefore.k > stochBefore.d && stochAt.k <= stochAt.d;
     if (crossed) {
