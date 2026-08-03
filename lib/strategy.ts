@@ -1,19 +1,12 @@
-// lib/strategy.ts — v53.2 "Adaptive R²"
+// lib/strategy.ts — v53.3 "Adaptive R² + Decision Gates"
 // ============================================================
 // CHANGES:
-// - Fixed R² threshold replaced with adaptive threshold based on ADX
-// - ADX < 18  → blocked by ADX filter (no R² check reached)
-// - ADX 18–25 → min R² = 0.75
-// - ADX 25–30 → min R² = 0.65
-// - ADX 30–35 → min R² = 0.60
-// - ADX > 35  → min R² = 0.55
-// - Telemetry added for trend quality pass/fail
-// - Hard counter-trend block
-// - ADX > 18 AND rising required
-// - ADD logic removed from entry path
-// - Stoch zones tightened: ENTRY_1 <20/>80, ENTRY_2 <50/>50
-// - crossLookback respected (no infinite scan)
-// - v28 stoch extreme exit ported to shouldHold
+// - Fixed R² removed; adaptive threshold based on ADX
+// - ADX "must be rising" replaced with 3-candle average comparison
+// - Explicit pass/fail decision gates in debug output
+// - Cross freshness gate: reject entries where momentum already travelled
+// - Hard counter-trend block, ADD removed, stoch zones tightened
+// - v28 stoch extreme exit in shouldHold
 //
 // Architecture: Context → Trigger → Signal → Directional State → Execute
 
@@ -177,7 +170,7 @@ export function getPairConfig(pair: string): PairConfig {
 // ============================================================
 
 function getMinimumR2(adxVal: number): number {
-  if (adxVal < 18) return 1.0;   // unreachable — ADX filter blocks first
+  if (adxVal < 18) return 1.0;
   if (adxVal < 25) return 0.75;
   if (adxVal < 30) return 0.65;
   if (adxVal < 35) return 0.60;
@@ -308,6 +301,16 @@ function adx(candles: Candle[], period = 14): number {
   }
   const adxSmooth = wilderSmooth(dxValues, period);
   return Math.round(adxSmooth[adxSmooth.length - 1] * 10) / 10;
+}
+
+function computeAdxSeries(candles: Candle[], count: number): number[] {
+  const series: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const slice = candles.slice(0, Math.max(0, candles.length - i));
+    if (slice.length < 15) break;
+    series.push(adx(slice));
+  }
+  return series;
 }
 
 export function aggregateTo1D(candles4h: Candle[]): Candle[] {
@@ -567,6 +570,7 @@ function findRecentCross(candles4h: Candle[], direction: "LONG" | "SHORT", pair:
     const stochAt = stochRsi(sliceAtCross);
     const stochBefore = stochRsi(sliceBeforeCross);
     let crossed = false;
+    if (direction === "LONG")
     if (direction === "LONG") crossed = stochBefore.k < stochBefore.d && stochAt.k >= stochAt.d;
     else crossed = stochBefore.k > stochBefore.d && stochAt.k <= stochAt.d;
     if (crossed) {
@@ -898,7 +902,36 @@ function checkDirectionalCommitment(
 }
 
 // ============================================================
-// DIRECTIONAL ANALYSIS BUILDER
+// CROSS FRESHNESS CHECK
+// ============================================================
+
+function isCrossFresh(
+  candles4h: Candle[],
+  direction: "LONG" | "SHORT",
+  crossAge: number,
+  crossIndex: number
+): { fresh: boolean; reason: string } {
+  if (crossAge <= 5) {
+    return { fresh: true, reason: `Cross ${crossAge} candles ago (≤5)` };
+  }
+  const atrVal = atr(candles4h, 14);
+  const crossCandle = candles4h[crossIndex];
+  const currentPrice = candles4h[candles4h.length - 1].close;
+  if (!crossCandle) {
+    return { fresh: false, reason: `Cross candle not found` };
+  }
+  const maxMove = atrVal * 1.5;
+  const priceMove = direction === "LONG"
+    ? currentPrice - crossCandle.close
+    : crossCandle.close - currentPrice;
+  if (priceMove > maxMove) {
+    return { fresh: false, reason: `Cross ${crossAge} candles ago, price moved ${priceMove.toFixed(2)} vs max ${maxMove.toFixed(2)} (${(priceMove/maxMove*100).toFixed(0)}% of allowed)` };
+  }
+  return { fresh: true, reason: `Cross ${crossAge} candles ago, price moved ${priceMove.toFixed(2)} within ${maxMove.toFixed(2)} limit` };
+}
+
+// ============================================================
+// DIRECTIONAL ANALYSIS BUILDER — DECISION GATES
 // ============================================================
 
 function buildDirectionalContext(
@@ -910,66 +943,110 @@ function buildDirectionalContext(
   activeSignals: Signal[],
   debug: string[]
 ): DirectionalContext {
+  const emptyLocation: LocationResult = { detail: "", trendlinePrice: 0, locationType: "NONE", marketPhase: "unknown", structureDesc: "", pullbackDesc: "", regressionDir: "flat", distToTL: 0 };
   let trigger: TriggerResult | null = null;
   let addTrigger: AddTriggerResult | null = null;
   let signal: Signal | undefined = undefined;
   let canEnter = false;
   let reason = "";
 
+  debug.push(`=== ${pair} ${direction} ===`);
+
+  // GATE 1: Trend alignment
+  if (trend.direction === "FLAT") {
+    debug.push(`Trend        ❌ FLAT`);
+    debug.push(`Counter-trend  —`);
+    debug.push(`ADX            —`);
+    debug.push(`R²             —`);
+    debug.push(`Trigger        —`);
+    debug.push(`Cross Fresh    —`);
+    debug.push(`Result         ENTRY ABORTED`);
+    return { direction, trend: trend.detail, location: emptyLocation, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: "Daily trend FLAT — no entries" };
+  }
+  debug.push(`Trend        ✅ ${trend.direction}`);
+
+  // GATE 2: Counter-trend
+  if (trend.direction !== direction) {
+    debug.push(`Counter-trend  ❌ Blocked (daily=${trend.direction})`);
+    debug.push(`ADX            —`);
+    debug.push(`R²             —`);
+    debug.push(`Trigger        —`);
+    debug.push(`Cross Fresh    —`);
+    debug.push(`Result         ENTRY ABORTED`);
+    return { direction, trend: trend.detail, location: emptyLocation, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `Counter-trend blocked: daily is ${trend.direction}` };
+  }
+  debug.push(`Counter-trend  ✅ Passed`);
+
+  // GATE 3: ADX level + trend (3-candle average, not single-candle)
+  const adxSeries = computeAdxSeries(candles4h, 7);
+  const adxCurrent = adxSeries[0] ?? 0;
+  const last3Adx = adxSeries.slice(0, 3);
+  const prev3Adx = adxSeries.slice(3, 6);
+  const avgLast3 = last3Adx.length ? avg(last3Adx) : 0;
+  const avgPrev3 = prev3Adx.length ? avg(prev3Adx) : 0;
+  const adxWeakening = avgLast3 < avgPrev3 - 1.0;
+
+  debug.push(`ADX            ${adxCurrent.toFixed(1)} (last3 avg ${avgLast3.toFixed(1)} vs prev3 avg ${avgPrev3.toFixed(1)})`);
+  if (adxCurrent < 18) {
+    debug.push(`               ❌ Below 18`);
+    debug.push(`R²             —`);
+    debug.push(`Trigger        —`);
+    debug.push(`Cross Fresh    —`);
+    debug.push(`Result         ENTRY ABORTED`);
+    return { direction, trend: trend.detail, location: emptyLocation, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `ADX ${adxCurrent.toFixed(1)} < 18` };
+  }
+  if (adxWeakening) {
+    debug.push(`               ❌ Weakening (last3 ${avgLast3.toFixed(1)} < prev3 ${avgPrev3.toFixed(1)} - 1.0)`);
+    debug.push(`R²             —`);
+    debug.push(`Trigger        —`);
+    debug.push(`Cross Fresh    —`);
+    debug.push(`Result         ENTRY ABORTED`);
+    return { direction, trend: trend.detail, location: emptyLocation, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `ADX weakening: last3 avg ${avgLast3.toFixed(1)} < prev3 avg ${avgPrev3.toFixed(1)}` };
+  }
+  debug.push(`               ✅ Passed`);
+
+  // GATE 4: Adaptive R²
+  const minR2 = getMinimumR2(adxCurrent);
+  const rawTl = getTrendline(pair, candles4h, direction);
+  const currentR2 = rawTl?.r2 ?? 0;
+  const r2Pass = currentR2 >= minR2;
+  debug.push(`R²             ${currentR2.toFixed(2)} (required ${minR2.toFixed(2)}) ${r2Pass ? '✅' : '❌'}`);
+
+  const location = location4H(pair, candles4h, direction, minR2);
+  if (!r2Pass) {
+    debug.push(`Trigger        —`);
+    debug.push(`Cross Fresh    —`);
+    debug.push(`Result         ENTRY ABORTED`);
+    return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `R² ${currentR2.toFixed(2)} below adaptive minimum ${minR2.toFixed(2)}` };
+  }
+
+  // GATE 5: Trigger
   const anyActive = hasActiveSignal(pair);
   const sameDirActive = hasActiveSignal(pair, direction);
 
   if (!anyActive) {
     trigger = stochTrigger4H(candles4h, direction, pair);
-    debug.push(`[${direction}] Trigger: ${trigger.fired ? "FIRED" : "WAITING"} | ${trigger.detail} | Momentum: ${trigger.momentumDesc}`);
+    debug.push(`Trigger        ${trigger.fired ? '✅' : '❌'} ${trigger.detail}`);
+  } else {
+    debug.push(`Trigger        ❌ Active trade exists`);
   }
 
-  // === HARD RULE 1: No counter-trend entries ===
-  if (trend.direction === "FLAT") {
-    debug.push(`[${direction}] BLOCKED: Daily trend FLAT`);
-    return { direction, trend: trend.detail, location: { detail: "", trendlinePrice: 0, locationType: "NONE", marketPhase: "unknown", structureDesc: "", pullbackDesc: "", regressionDir: "flat", distToTL: 0 }, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: "Daily trend FLAT — no entries" };
-  }
-  if (trend.direction !== direction) {
-    debug.push(`[${direction}] BLOCKED: Counter-trend (daily=${trend.direction})`);
-    return { direction, trend: trend.detail, location: { detail: "", trendlinePrice: 0, locationType: "NONE", marketPhase: "unknown", structureDesc: "", pullbackDesc: "", regressionDir: "flat", distToTL: 0 }, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `Counter-trend blocked: daily is ${trend.direction}` };
-  }
-
-  // === HARD RULE 2: ADX > 18 and rising ===
-  const adxCurrent = adx(candles4h);
-  const adxPrevious = adx(candles4h.slice(0, -1));
-  const adxRising = adxCurrent > adxPrevious;
-  debug.push(`[${direction}] ADX: ${adxCurrent.toFixed(1)} (prev ${adxPrevious.toFixed(1)}) ${adxRising ? "rising" : "flat/falling"}`);
-  if (adxCurrent < 18) {
-    debug.push(`[${direction}] BLOCKED: ADX ${adxCurrent.toFixed(1)} < 18`);
-    return { direction, trend: trend.detail, location: { detail: "", trendlinePrice: 0, locationType: "NONE", marketPhase: "unknown", structureDesc: "", pullbackDesc: "", regressionDir: "flat", distToTL: 0 }, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `ADX ${adxCurrent.toFixed(1)} < 18` };
-  }
-  if (!adxRising) {
-    debug.push(`[${direction}] BLOCKED: ADX not rising`);
-    return { direction, trend: trend.detail, location: { detail: "", trendlinePrice: 0, locationType: "NONE", marketPhase: "unknown", structureDesc: "", pullbackDesc: "", regressionDir: "flat", distToTL: 0 }, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `ADX ${adxCurrent.toFixed(1)} not rising (prev ${adxPrevious.toFixed(1)})` };
-  }
-
-  // === ADAPTIVE R²: compute threshold and telemetry ===
-  const minR2 = getMinimumR2(adxCurrent);
-  const rawTl = getTrendline(pair, candles4h, direction); // raw, no minR2 filter
-  const currentR2 = rawTl?.r2 ?? 0;
-  const r2Pass = currentR2 >= minR2;
-  debug.push(`[${direction}] Trend Quality: ADX ${adxCurrent.toFixed(1)} | R² ${currentR2.toFixed(2)} | Required ${minR2.toFixed(2)} | Result: ${r2Pass ? 'PASS' : 'FAIL'}`);
-
-  const location = location4H(pair, candles4h, direction, minR2);
-  debug.push(`[${direction}] Location: ${location.locationType} | ${location.detail} | Phase: ${location.marketPhase}`);
-
-  if (!r2Pass) {
-    debug.push(`[${direction}] BLOCKED: R² ${currentR2.toFixed(2)} below adaptive minimum ${minR2.toFixed(2)}`);
-    return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `R² ${currentR2.toFixed(2)} below adaptive minimum ${minR2.toFixed(2)}` };
-  }
-
-  // === ENTRY (ADD removed) ===
   if (!anyActive && trigger?.fired) {
+    // GATE 6: Cross freshness
+    if (trigger.crossAge > 5 && trigger.crossHash) {
+      const freshness = isCrossFresh(candles4h, direction, trigger.crossAge, candles4h.length - 1 - trigger.crossAge);
+      debug.push(`Cross Fresh    ${freshness.fresh ? '✅' : '❌'} ${freshness.reason}`);
+      if (!freshness.fresh) {
+        debug.push(`Result         ENTRY ABORTED`);
+        return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: freshness.reason };
+      }
+    } else {
+      debug.push(`Cross Fresh    ✅ ${trigger.crossAge <= 5 ? 'Within 5 candles' : 'N/A'}`);
+    }
     canEnter = true;
     reason = trigger.detail;
   } else if (anyActive) {
     reason = sameDirActive ? `Active ${direction} trade exists` : `Active opposite-direction trade exists`;
-    debug.push(`[${direction}] Entry blocked: ${reason}`);
   }
 
   // Build signal
@@ -1054,7 +1131,9 @@ function buildDirectionalContext(
       context,
     };
 
-    debug.push(`[${direction}] SIGNAL: ${signalType} ${direction} ${pair} | Entry $${signal.entry} | SL $${signal.stop} | TP $${signal.target} | RR ${signal.rr}`);
+    debug.push(`Result         ✅ SIGNAL ${signalType} @ ${signal.entry} | SL ${signal.stop} | TP ${signal.target} | RR ${signal.rr}`);
+  } else {
+    debug.push(`Result         ENTRY ABORTED`);
   }
 
   return {
@@ -1070,7 +1149,7 @@ function buildDirectionalContext(
 }
 
 // ============================================================
-// MAIN SIGNAL GENERATOR — v53.2
+// MAIN SIGNAL GENERATOR — v53.3
 // ============================================================
 
 export function generateSignal(pair: string, candles1h: Candle[], candles4h: Candle[], candles15m: Candle[], activeSignals: Signal[], currentPrice?: number): SignalResult {
