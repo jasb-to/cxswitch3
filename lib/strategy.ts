@@ -1,14 +1,15 @@
-// lib/strategy.ts — v53.3 "Adaptive R² + Decision Gates"
+// lib/strategy.ts — v53.4 "Context Restoration"
 // ============================================================
 // CHANGES:
-// - Fixed R² removed; adaptive threshold based on ADX
-// - ADX "must be rising" replaced with 3-candle average comparison
-// - Explicit pass/fail decision gates in debug output
-// - Cross freshness gate: reject entries where momentum already travelled
-// - Hard counter-trend block, ADD removed, stoch zones tightened
-// - v28 stoch extreme exit in shouldHold
+// - ADX weakening removed as hard gate; logged as context only
+// - Location evaluation moved before ADX gate (always calculated)
+// - Counter-trend ENTRY_2 allowed (ENTRY_1 still blocked)
+// - R² retained as structure quality context, not hard blocker
+// - Debug output always completes full evaluation chain
+// - Architecture restored: Context → Location → Trigger → Decision
 //
-// Architecture: Context → Trigger → Signal → Directional State → Execute
+// Philosophy: Identify Context → Pullback → Momentum → Entry
+// Do not wait for perfect alignment of all metrics.
 
 export interface Candle {
   timestamp: number;
@@ -112,7 +113,7 @@ export interface HoldResult {
   reason: string;
 }
 
-export const CURRENT_SIGNAL_VERSION = 53;
+export const CURRENT_SIGNAL_VERSION = 54;
 
 interface CycleEntry {
   crossHash: string;
@@ -943,7 +944,6 @@ function buildDirectionalContext(
   activeSignals: Signal[],
   debug: string[]
 ): DirectionalContext {
-  const emptyLocation: LocationResult = { detail: "", trendlinePrice: 0, locationType: "NONE", marketPhase: "unknown", structureDesc: "", pullbackDesc: "", regressionDir: "flat", distToTL: 0 };
   let trigger: TriggerResult | null = null;
   let addTrigger: AddTriggerResult | null = null;
   let signal: Signal | undefined = undefined;
@@ -952,101 +952,103 @@ function buildDirectionalContext(
 
   debug.push(`=== ${pair} ${direction} ===`);
 
-  // GATE 1: Trend alignment
+  // --- TREND CONTEXT ---
+  const isSameDirection = trend.direction === direction;
+  const isCounterTrend = trend.direction !== "FLAT" && !isSameDirection;
+
   if (trend.direction === "FLAT") {
     debug.push(`Trend        ❌ FLAT`);
-    debug.push(`Counter-trend  —`);
-    debug.push(`ADX            —`);
-    debug.push(`R²             —`);
-    debug.push(`Trigger        —`);
-    debug.push(`Cross Fresh    —`);
-    debug.push(`Result         ENTRY ABORTED`);
-    return { direction, trend: trend.detail, location: emptyLocation, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: "Daily trend FLAT — no entries" };
+  } else if (isCounterTrend) {
+    debug.push(`Trend        ⚠️ ${trend.direction} (counter-trend attempt)`);
+  } else {
+    debug.push(`Trend        ✅ ${trend.direction}`);
   }
-  debug.push(`Trend        ✅ ${trend.direction}`);
 
-  // GATE 2: Counter-trend
-  if (trend.direction !== direction) {
-    debug.push(`Counter-trend  ❌ Blocked (daily=${trend.direction})`);
-    debug.push(`ADX            —`);
-    debug.push(`R²             —`);
-    debug.push(`Trigger        —`);
-    debug.push(`Cross Fresh    —`);
-    debug.push(`Result         ENTRY ABORTED`);
-    return { direction, trend: trend.detail, location: emptyLocation, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `Counter-trend blocked: daily is ${trend.direction}` };
-  }
-  debug.push(`Counter-trend  ✅ Passed`);
-
-  // GATE 3: ADX level + trend (3-candle average, not single-candle)
+  // --- LOCATION (always calculate first for dashboard context) ---
+  // Pre-calculate ADX for minR2 parameter; gate applied later
   const adxSeries = computeAdxSeries(candles4h, 7);
   const adxCurrent = adxSeries[0] ?? 0;
+  const minR2 = getMinimumR2(adxCurrent);
+  const location = location4H(pair, candles4h, direction, minR2);
+
+  debug.push(`Location     ${location.locationType} | ${location.marketPhase} | ${location.structureDesc}`);
+
+  // --- ADX QUALITY (context, not hard gate except <18) ---
   const last3Adx = adxSeries.slice(0, 3);
   const prev3Adx = adxSeries.slice(3, 6);
   const avgLast3 = last3Adx.length ? avg(last3Adx) : 0;
   const avgPrev3 = prev3Adx.length ? avg(prev3Adx) : 0;
   const adxWeakening = avgLast3 < avgPrev3 - 1.0;
+  const adxState = adxWeakening ? "cooling" : "stable";
+  const adxPass = adxCurrent >= 18;
 
-  debug.push(`ADX            ${adxCurrent.toFixed(1)} (last3 avg ${avgLast3.toFixed(1)} vs prev3 avg ${avgPrev3.toFixed(1)})`);
-  if (adxCurrent < 18) {
-    debug.push(`               ❌ Below 18`);
-    debug.push(`R²             —`);
-    debug.push(`Trigger        —`);
-    debug.push(`Cross Fresh    —`);
-    debug.push(`Result         ENTRY ABORTED`);
-    return { direction, trend: trend.detail, location: emptyLocation, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `ADX ${adxCurrent.toFixed(1)} < 18` };
-  }
-  if (adxWeakening) {
-    debug.push(`               ❌ Weakening (last3 ${avgLast3.toFixed(1)} < prev3 ${avgPrev3.toFixed(1)} - 1.0)`);
-    debug.push(`R²             —`);
-    debug.push(`Trigger        —`);
-    debug.push(`Cross Fresh    —`);
-    debug.push(`Result         ENTRY ABORTED`);
-    return { direction, trend: trend.detail, location: emptyLocation, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `ADX weakening: last3 avg ${avgLast3.toFixed(1)} < prev3 avg ${avgPrev3.toFixed(1)}` };
-  }
-  debug.push(`               ✅ Passed`);
+  debug.push(`ADX          ${adxCurrent.toFixed(1)} ${adxPass ? '✅' : '❌'} (state: ${adxState}, last3 ${avgLast3.toFixed(1)} vs prev3 ${avgPrev3.toFixed(1)})`);
 
-  // GATE 4: Adaptive R²
-  const minR2 = getMinimumR2(adxCurrent);
-  const rawTl = getTrendline(pair, candles4h, direction);
+  // --- R² STRUCTURE QUALITY (context, not hard blocker) ---
+  const rawTl = getTrendline(pair, candles4h, direction, minR2);
   const currentR2 = rawTl?.r2 ?? 0;
   const r2Pass = currentR2 >= minR2;
-  debug.push(`R²             ${currentR2.toFixed(2)} (required ${minR2.toFixed(2)}) ${r2Pass ? '✅' : '❌'}`);
 
-  const location = location4H(pair, candles4h, direction, minR2);
-  if (!r2Pass) {
-    debug.push(`Trigger        —`);
-    debug.push(`Cross Fresh    —`);
-    debug.push(`Result         ENTRY ABORTED`);
-    return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `R² ${currentR2.toFixed(2)} below adaptive minimum ${minR2.toFixed(2)}` };
+  debug.push(`R²           ${currentR2.toFixed(2)} (required ${minR2.toFixed(2)}) ${r2Pass ? '✅' : '⚠️'}`);
+
+  // Hard blocks after full context is established
+  if (trend.direction === "FLAT") {
+    debug.push(`Trigger      —`);
+    debug.push(`Cross Fresh  —`);
+    debug.push(`Result       ENTRY ABORTED — FLAT trend`);
+    return { direction, trend: trend.detail, location, trigger: null, addTrigger: null, signal: undefined, canEnter: false, reason: "Daily trend FLAT — no entries" };
   }
 
-  // GATE 5: Trigger
+  if (!adxPass) {
+    debug.push(`Trigger      —`);
+    debug.push(`Cross Fresh  —`);
+    debug.push(`Result       ENTRY ABORTED — ADX ${adxCurrent.toFixed(1)} < 18`);
+    return { direction, trend: trend.detail, location, trigger: null, addTrigger: null, signal: undefined, canEnter: false, reason: `ADX ${adxCurrent.toFixed(1)} < 18` };
+  }
+
+  // --- TRIGGER EVALUATION (always evaluate for dashboard context) ---
   const anyActive = hasActiveSignal(pair);
   const sameDirActive = hasActiveSignal(pair, direction);
 
-  if (!anyActive) {
-    trigger = stochTrigger4H(candles4h, direction, pair);
-    debug.push(`Trigger        ${trigger.fired ? '✅' : '❌'} ${trigger.detail}`);
-  } else {
-    debug.push(`Trigger        ❌ Active trade exists`);
-  }
+  trigger = stochTrigger4H(candles4h, direction, pair);
+  debug.push(`Trigger      ${trigger.fired ? '✅' : '❌'} ${trigger.detail}`);
 
-  if (!anyActive && trigger?.fired) {
-    // GATE 6: Cross freshness
+  if (anyActive) {
+    reason = sameDirActive ? `Active ${direction} trade exists` : `Active opposite-direction trade exists`;
+    debug.push(`Result       WAIT — ${reason}`);
+  } else if (trigger?.fired) {
+    // --- CROSS FRESHNESS ---
     if (trigger.crossAge > 5 && trigger.crossHash) {
       const freshness = isCrossFresh(candles4h, direction, trigger.crossAge, candles4h.length - 1 - trigger.crossAge);
-      debug.push(`Cross Fresh    ${freshness.fresh ? '✅' : '❌'} ${freshness.reason}`);
+      debug.push(`Cross Fresh  ${freshness.fresh ? '✅' : '❌'} ${freshness.reason}`);
       if (!freshness.fresh) {
-        debug.push(`Result         ENTRY ABORTED`);
+        debug.push(`Result       ENTRY ABORTED — stale cross`);
         return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: freshness.reason };
       }
     } else {
-      debug.push(`Cross Fresh    ✅ ${trigger.crossAge <= 5 ? 'Within 5 candles' : 'N/A'}`);
+      debug.push(`Cross Fresh  ✅ ${trigger.crossAge <= 5 ? 'Within 5 candles' : 'N/A'}`);
     }
-    canEnter = true;
-    reason = trigger.detail;
-  } else if (anyActive) {
-    reason = sameDirActive ? `Active ${direction} trade exists` : `Active opposite-direction trade exists`;
+
+    // --- COUNTER-TREND RESTRICTION ---
+    // Same direction: normal entry path. Counter-trend: ENTRY_2 only.
+    if (isCounterTrend) {
+      if (trigger.triggerType === "entry_1_deep_pullback") {
+        debug.push(`Result       ENTRY ABORTED — ENTRY_1 blocked in counter-trend`);
+        return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: "ENTRY_1 blocked: counter-trend only allows ENTRY_2" };
+      }
+      if (trigger.triggerType === "entry_2_early_momentum" || trigger.triggerType === "entry_2_pre_cross") {
+        canEnter = true;
+        reason = trigger.detail;
+      } else {
+        debug.push(`Result       ENTRY ABORTED — counter-trend requires ENTRY_2 trigger`);
+        return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: "Counter-trend requires ENTRY_2 trigger" };
+      }
+    } else {
+      canEnter = true;
+      reason = trigger.detail;
+    }
+  } else {
+    debug.push(`Result       WAIT — no valid trigger`);
   }
 
   // Build signal
@@ -1131,9 +1133,7 @@ function buildDirectionalContext(
       context,
     };
 
-    debug.push(`Result         ✅ SIGNAL ${signalType} @ ${signal.entry} | SL ${signal.stop} | TP ${signal.target} | RR ${signal.rr}`);
-  } else {
-    debug.push(`Result         ENTRY ABORTED`);
+    debug.push(`Result       ✅ SIGNAL ${signalType} @ ${signal.entry} | SL ${signal.stop} | TP ${signal.target} | RR ${signal.rr}`);
   }
 
   return {
@@ -1147,9 +1147,8 @@ function buildDirectionalContext(
     reason,
   };
 }
-
 // ============================================================
-// MAIN SIGNAL GENERATOR — v53.3
+// MAIN SIGNAL GENERATOR — v53.4
 // ============================================================
 
 export function generateSignal(pair: string, candles1h: Candle[], candles4h: Candle[], candles15m: Candle[], activeSignals: Signal[], currentPrice?: number): SignalResult {
@@ -1279,7 +1278,7 @@ export function getMarketSnapshot(pair: string, candles1h: Candle[], candles4h: 
   const longTrig = stochTrigger4H(candles4h, "LONG", pair);
   const shortTrig = stochTrigger4H(candles4h, "SHORT", pair);
 
-  const dominantLoc = longTrig.fired ? longLoc : shortTrig.fired ? shortLoc : longLoc;
+  const dominantLoc = trend.direction === "SHORT" ? shortLoc : longLoc;
   const dominantTrig = longTrig.fired ? longTrig : shortTrig.fired ? shortTrig : longTrig;
   const distToTrendline = dominantLoc.trendlinePrice > 0
     ? Math.round(Math.abs((price - dominantLoc.trendlinePrice) / dominantLoc.trendlinePrice) * 10000) / 100
