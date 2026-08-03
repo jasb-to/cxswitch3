@@ -1220,7 +1220,7 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   const ema8_4h = ema(closes4h, 8);
   const ema21_4h = ema(closes4h, 21);
   const ema50_4h = ema(closes4h, 50);
-  const dominantContext = longContext.canEnter ? longContext : shortContext.canEnter ? shortContext : longContext;
+  const dominantContext = longContext.canEnter ? longContext : shortContext.canEnter ? shortContext : (trend.direction === "SHORT" ? shortContext : longContext);
   const distToTrendline = dominantContext.location.trendlinePrice > 0
     ? Math.round(Math.abs((price - dominantContext.location.trendlinePrice) / dominantContext.location.trendlinePrice) * 10000) / 100
     : null;
