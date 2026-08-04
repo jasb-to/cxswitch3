@@ -7,6 +7,9 @@
 // - R² retained as structure quality context, not hard blocker
 // - Debug output always completes full evaluation chain
 // - Architecture restored: Context → Location → Trigger → Decision
+// - getTrendline no longer filters by minR2; always returns honest fit
+// - location4H no longer gates trendline on minR2
+// - duplicate_cycle explicitly surfaced in Result line
 //
 // Philosophy: Identify Context → Pullback → Momentum → Entry
 // Do not wait for perfect alignment of all metrics.
@@ -382,7 +385,7 @@ function fitTrendline(pivots: Pivot[]): { slope: number; intercept: number; r2: 
   return { slope, intercept, r2: ssTot === 0 ? 0 : 1 - ssRes / ssTot };
 }
 
-function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT", minR2?: number): { price: number; r2: number; slope: number; regressionDirection: string } | null {
+function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number; slope: number; regressionDirection: string } | null {
   const config = getPairConfig(pair);
   if (candles.length < 30) return null;
   const pivots = findPivots(candles, direction);
@@ -398,14 +401,12 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
     if (deviation > config.cacheDevTolerance) {
       trendlineStore.delete(pair);
     } else {
-      if (minR2 !== undefined && existing.r2 < minR2) return null;
       const tlPrice = existing.slope * currentIndex + existing.intercept;
       return { price: tlPrice, r2: existing.r2, slope: existing.slope, regressionDirection: existing.slope > 0 ? "rising" : "falling" };
     }
   }
   const fit = fitTrendline(recentPivots);
   if (!fit) return null;
-  if (minR2 !== undefined && fit.r2 < minR2) return null;
   trendlineStore.set(pair, { slope: fit.slope, intercept: fit.intercept, lastUpdated: now, direction, r2: Math.round(fit.r2 * 100) / 100 });
   return { price: fit.slope * currentIndex + fit.intercept, r2: Math.round(fit.r2 * 100) / 100, slope: fit.slope, regressionDirection: fit.slope > 0 ? "rising" : "falling" };
 }
@@ -444,10 +445,10 @@ export interface LocationResult {
   distToTL: number;
 }
 
-function location4H(pair: string, candles4h: Candle[], direction: "LONG" | "SHORT", minR2?: number): LocationResult {
+function location4H(pair: string, candles4h: Candle[], direction: "LONG" | "SHORT"): LocationResult {
   const config = getPairConfig(pair);
   const price = candles4h[candles4h.length - 1].close;
-  const tl = getTrendline(pair, candles4h, direction, minR2);
+  const tl = getTrendline(pair, candles4h, direction);
   const atrVal = atr(candles4h, 14);
   const lookback = 30;
   const recent = candles4h.slice(-lookback);
@@ -964,11 +965,10 @@ function buildDirectionalContext(
   }
 
   // --- LOCATION (always calculate first for dashboard context) ---
-  // Pre-calculate ADX for minR2 parameter; gate applied later
   const adxSeries = computeAdxSeries(candles4h, 7);
   const adxCurrent = adxSeries[0] ?? 0;
   const minR2 = getMinimumR2(adxCurrent);
-  const location = location4H(pair, candles4h, direction, minR2);
+  const location = location4H(pair, candles4h, direction);
 
   debug.push(`Location     ${location.locationType} | ${location.marketPhase} | ${location.structureDesc}`);
 
@@ -983,8 +983,8 @@ function buildDirectionalContext(
 
   debug.push(`ADX          ${adxCurrent.toFixed(1)} ${adxPass ? '✅' : '❌'} (state: ${adxState}, last3 ${avgLast3.toFixed(1)} vs prev3 ${avgPrev3.toFixed(1)})`);
 
-  // --- R² STRUCTURE QUALITY (context, not hard blocker) ---
-  const rawTl = getTrendline(pair, candles4h, direction, minR2);
+  // --- R² STRUCTURE QUALITY (honest value, no gating) ---
+  const rawTl = getTrendline(pair, candles4h, direction);
   const currentR2 = rawTl?.r2 ?? 0;
   const r2Pass = currentR2 >= minR2;
 
@@ -1029,7 +1029,6 @@ function buildDirectionalContext(
     }
 
     // --- COUNTER-TREND RESTRICTION ---
-    // Same direction: normal entry path. Counter-trend: ENTRY_2 only.
     if (isCounterTrend) {
       if (trigger.triggerType === "entry_1_deep_pullback") {
         debug.push(`Result       BLOCKED — ENTRY_1 counter-trend`);
@@ -1047,7 +1046,11 @@ function buildDirectionalContext(
       reason = trigger.detail;
     }
   } else {
-    debug.push(`Result       WAITING — no valid trigger`);
+    if (trigger?.triggerType === "duplicate_cycle") {
+      debug.push(`Result       BLOCKED — duplicate cycle (cross ${trigger.crossAge} candles ago already signaled)`);
+    } else {
+      debug.push(`Result       WAITING — no valid trigger`);
+    }
   }
 
   // Build signal
@@ -1146,6 +1149,7 @@ function buildDirectionalContext(
     reason,
   };
 }
+
 // ============================================================
 // MAIN SIGNAL GENERATOR — v53.4
 // ============================================================
