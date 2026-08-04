@@ -18,8 +18,8 @@
 // • Deterministic state handling
 //
 // EXIT SYSTEM (new):
-// Three deterministic states: HEALTHY, WEAKENING, FAILED
-// Exit only on FAILED. Alert on WEAKENING. Hold on HEALTHY.
+// Three deterministic states: HEALTHY, WARNING, FAILED
+// Exit only on FAILED. Alert on WARNING. Hold on HEALTHY.
 //
 // ABSOLUTE RULES:
 // • No scoring systems
@@ -130,6 +130,7 @@ export interface ValidityCheck {
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
+  newStop?: number;
 }
 
 export const CURRENT_SIGNAL_VERSION = 54;
@@ -376,6 +377,12 @@ function findPivots(candles: Candle[], direction: "LONG" | "SHORT"): Pivot[] {
     if (direction === "SHORT" && isSwingHigh) pivots.push({ index: i, price: c.high, timestamp: c.timestamp });
   }
   return pivots;
+}
+
+function getLastConfirmedStructure(candles: Candle[], direction: "LONG" | "SHORT"): number | null {
+  const pivots = findPivots(candles, direction);
+  if (pivots.length === 0) return null;
+  return pivots[pivots.length - 1].price;
 }
 
 function fitTrendline(pivots: Pivot[]): { slope: number; intercept: number; r2: number } | null {
@@ -1273,9 +1280,8 @@ export function getMarketSnapshot(pair: string, candles1h: Candle[], candles4h: 
 // ============================================================
 
 export interface ExitAnalysis {
-  state: "HEALTHY" | "WEAKENING" | "FAILED";
+  state: "HEALTHY" | "WARNING" | "FAILED";
   reason: string;
-  shouldTightenStop?: boolean;
   newStop?: number;
 }
 
@@ -1283,7 +1289,7 @@ export interface ExitAnalysis {
  * Evaluate trade health using only existing data.
  * 
  * HEALTHY: Original thesis intact. Hold.
- * WEAKENING: Early deterioration. Alert. Optionally tighten stop.
+ * WARNING: Early deterioration. Alert. Optionally tighten stop.
  * FAILED: Thesis invalidated. Exit immediately.
  */
 export function analyzeTradeHealth(
@@ -1296,31 +1302,23 @@ export function analyzeTradeHealth(
   const closes4h = candles4h.map(c => c.close);
   const stoch = stochRsi(closes4h);
   const atrVal = atr(candles4h, 14);
-  const recent4h = candles4h.slice(-20);
+  const ema21_4h = ema(closes4h, 21);
+  const lastEma21 = ema21_4h[ema21_4h.length - 1];
 
-  // --- FAILED CHECKS (exit immediately) ---
+  // ==================== FAILED CHECKS ====================
 
-  // 1. Daily trend reversed
-  const trendReversed = (signal.direction === "LONG" && trend.direction === "SHORT") ||
-                        (signal.direction === "SHORT" && trend.direction === "LONG");
-  if (trendReversed) {
-    return { state: "FAILED", reason: "daily_trend_reversed" };
-  }
-
-  // 2. Swing structure broken (higher low broken for LONG, lower high broken for SHORT)
-  if (signal.direction === "LONG") {
-    const swingLow = Math.min(...recent4h.map(c => c.low));
-    if (currentPrice < swingLow) {
-      return { state: "FAILED", reason: "swing_low_broken" };
+  // 1. Structural failure — last confirmed swing broken
+  const lastStructure = getLastConfirmedStructure(candles4h, signal.direction);
+  if (lastStructure !== null) {
+    if (signal.direction === "LONG" && currentPrice < lastStructure) {
+      return { state: "FAILED", reason: "structure_broken" };
     }
-  } else {
-    const swingHigh = Math.max(...recent4h.map(c => c.high));
-    if (currentPrice > swingHigh) {
-      return { state: "FAILED", reason: "swing_high_broken" };
+    if (signal.direction === "SHORT" && currentPrice > lastStructure) {
+      return { state: "FAILED", reason: "structure_broken" };
     }
   }
 
-  // 3. Consecutive closes beyond trendline (3+ candles against position)
+  // 2. Trendline failure — 3 consecutive closes beyond trendline
   const location = location4H(signal.pair, candles4h, signal.direction);
   if (location.trendlinePrice > 0) {
     let consecutiveBeyond = 0;
@@ -1339,84 +1337,65 @@ export function analyzeTradeHealth(
     }
   }
 
-  // 4. Stoch extreme opposite (v28 exit)
-  const stochExtremeOpposite = signal.direction === "LONG"
-    ? stoch.k < 20
-    : stoch.k > 80;
-  if (stochExtremeOpposite) {
-    return { state: "FAILED", reason: "stoch_extreme_opposite" };
-  }
-
-  // 5. Original pullback thesis invalidated — price moved too far against entry
+  // 3. Adverse movement — 3 ATR against entry
   const maxAdverseMove = atrVal * 3;
   const adverseMove = signal.direction === "LONG"
     ? signal.entry - currentPrice
     : currentPrice - signal.entry;
   if (adverseMove > maxAdverseMove) {
-    return { state: "FAILED", reason: `thesis_invalidated_adverse_move_${adverseMove.toFixed(2)}_vs_${maxAdverseMove.toFixed(2)}` };
+    return { state: "FAILED", reason: `adverse_move_${adverseMove.toFixed(2)}_vs_${maxAdverseMove.toFixed(2)}` };
   }
 
-  // --- WEAKENING CHECKS (alert, optionally tighten stop) ---
+  // 4. Daily trend reversal
+  const trendReversed = (signal.direction === "LONG" && trend.direction === "SHORT") ||
+                        (signal.direction === "SHORT" && trend.direction === "LONG");
+  if (trendReversed) {
+    return { state: "FAILED", reason: "daily_trend_reversed" };
+  }
 
-  // 1. ADX declining significantly
+  // 5. Momentum exhaustion — Stoch extreme + price loses EMA21
+  const stochExtreme = signal.direction === "LONG" ? stoch.k < 20 : stoch.k > 80;
+  const priceLosesEma21 = signal.direction === "LONG" ? currentPrice < lastEma21 : currentPrice > lastEma21;
+  if (stochExtreme && priceLosesEma21) {
+    return { state: "FAILED", reason: "momentum_exhausted" };
+  }
+
+  // ==================== WARNING CHECKS ====================
+  // Any one of: ADX falling sharply, price loses EMA21, stoch divergence
+
+  // ADX declining significantly
   const adxSeries = computeAdxSeries(candles4h, 7);
   const adxCurrent = adxSeries[0] ?? 0;
   const adxPrev = adxSeries[3] ?? adxCurrent;
   const adxDeclining = adxCurrent < adxPrev - 3;
 
-  // 2. Price approaching trendline from wrong side
-  const approachingWrongSide = signal.direction === "LONG"
-    ? location.distToTL > config.tlProximity * 0.5 && currentPrice < location.trendlinePrice
-    : location.distToTL > config.tlProximity * 0.5 && currentPrice > location.trendlinePrice;
-
-  // 3. Stoch divergence (K moving opposite to price)
+  // Stoch divergence
   const stochSeries = stochRsiSeries(closes4h);
   let stochDivergence = false;
   if (stochSeries.length >= 3) {
     const last3 = stochSeries.slice(-3);
     if (signal.direction === "LONG") {
-      // Price making higher lows but Stoch making lower lows
       const priceHigher = candles4h[candles4h.length - 1].low > candles4h[candles4h.length - 3].low;
       const stochLower = last3[2].k < last3[0].k;
       stochDivergence = priceHigher && stochLower;
     } else {
-      // Price making lower highs but Stoch making higher highs
       const priceLower = candles4h[candles4h.length - 1].high < candles4h[candles4h.length - 3].high;
       const stochHigher = last3[2].k > last3[0].k;
       stochDivergence = priceLower && stochHigher;
     }
   }
 
-  // 4. Price below entry but above stop (unprofitable drift)
-  const unprofitableDrift = signal.direction === "LONG"
-    ? currentPrice < signal.entry && currentPrice > signal.stop
-    : currentPrice > signal.entry && currentPrice < signal.stop;
-
-  const weakeningCount = [
-    adxDeclining,
-    approachingWrongSide,
-    stochDivergence,
-    unprofitableDrift
-  ].filter(Boolean).length;
-
-  if (weakeningCount >= 2) {
-    // Tighten stop to breakeven or current ATR-based level
-    const newStop = signal.direction === "LONG"
-      ? Math.max(signal.entry, currentPrice - atrVal * 1.5)
-      : Math.min(signal.entry, currentPrice + atrVal * 1.5);
-
-    return {
-      state: "WEAKENING",
-      reason: `weakening_${weakeningCount}_of_4: ${adxDeclining ? "adx_declining " : ""}${approachingWrongSide ? "approaching_structure " : ""}${stochDivergence ? "stoch_divergence " : ""}${unprofitableDrift ? "unprofitable_drift" : ""}`.trim(),
-      shouldTightenStop: true,
-      newStop: Math.round(newStop * 100) / 100,
-    };
+  if (adxDeclining || priceLosesEma21 || stochDivergence) {
+    const reasons: string[] = [];
+    if (adxDeclining) reasons.push("adx_declining");
+    if (priceLosesEma21) reasons.push("price_loses_ema21");
+    if (stochDivergence) reasons.push("stoch_divergence");
+    return { state: "WARNING", reason: reasons.join("_") };
   }
 
-  // --- HEALTHY ---
+  // ==================== HEALTHY ====================
   return { state: "HEALTHY", reason: "thesis_intact" };
 }
-
 // Convenience: get config for location4H calls
 const config = DEFAULT_CONFIG;
 
@@ -1442,32 +1421,51 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
  * shouldHold: Uses new three-state exit system.
  * 
  * FAILED → exit immediately (returns shouldHold: false with specific reason)
- * WEAKENING → hold but alert (caller should tighten stop if desired)
+ * WARNING → hold but alert (caller should tighten stop if desired)
  * HEALTHY → hold normally
  */
 export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, now?: number): HoldResult {
-  // First check hard stops/TP
+  // 1. Check hard stops/TP
   const validity = isSignalStillValid(signal, currentPrice, now);
   if (!validity.valid) {
     return { shouldHold: false, reason: validity.reason };
   }
 
-  // Then evaluate trade health
+  // 2. Evaluate trade health
   const health = analyzeTradeHealth(signal, candles4h, currentPrice);
 
   if (health.state === "FAILED") {
     return { shouldHold: false, reason: health.reason };
   }
 
-  if (health.state === "WEAKENING") {
-    // Still hold, but caller can tighten stop using health.newStop
-    return { shouldHold: true, reason: `weakening: ${health.reason}` };
+  // 3. Profit protection — compute new stop level
+  const risk = Math.abs(signal.entry - signal.stop);
+  const profit = signal.direction === "LONG" ? currentPrice - signal.entry : signal.entry - currentPrice;
+  const rMultiple = risk > 0 ? profit / risk : 0;
+
+  let newStop: number | undefined;
+
+  if (rMultiple >= 2) {
+    // Trail at 4H EMA21
+    const closes4h = candles4h.map(c => c.close);
+    const ema21_4h = ema(closes4h, 21);
+    const ema21 = ema21_4h[ema21_4h.length - 1];
+    newStop = signal.direction === "LONG"
+      ? Math.max(signal.stop, ema21)
+      : Math.min(signal.stop, ema21);
+  } else if (rMultiple >= 1) {
+    // Move to breakeven
+    newStop = signal.direction === "LONG"
+      ? Math.max(signal.stop, signal.entry)
+      : Math.min(signal.stop, signal.entry);
   }
 
-  return { shouldHold: true, reason: "healthy" };
-}
+  if (health.state === "WARNING") {
+    return { shouldHold: true, reason: `warning: ${health.reason}`, newStop };
+  }
 
-export function filterExpiredSignals(signals: Signal[], currentPrices: Record<string, number>, now?: number): { active: Signal[]; exited: { signal: Signal; reason: string }[] } {
+  return { shouldHold: true, reason: "healthy", newStop };
+}export function filterExpiredSignals(signals: Signal[], currentPrices: Record<string, number>, now?: number): { active: Signal[]; exited: { signal: Signal; reason: string }[] } {
   const active: Signal[] = [];
   const exited: { signal: Signal; reason: string }[] = [];
   for (const signal of signals) {
