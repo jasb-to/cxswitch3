@@ -1085,7 +1085,8 @@ function buildDirectionalContext(
   direction: "LONG" | "SHORT",
   price: number,
   activeSignals: Signal[],
-  debug: string[]
+  debug: string[],
+  dailyBias: "LONG" | "SHORT" | "FLAT"
 ): DirectionalContext {
   let trigger: TriggerResult | null = null;
   let addTrigger: AddTriggerResult | null = null;
@@ -1130,16 +1131,26 @@ function buildDirectionalContext(
 
   debug.push(`R²           ${currentR2.toFixed(2)} (context only)`);
 
-  // Hard blocks (minimal — v28 style)
-  if (trend.direction === "FLAT") {
-    debug.push(`Trigger      —`);
-    debug.push(`Result       BLOCKED — FLAT trend`);
-    return { direction, trend: trend.detail, location, trigger: null, addTrigger: null, signal: undefined, canEnter: false, reason: "Daily trend FLAT — no entries" };
+  // v28 directional hierarchy restored:
+  // Daily bias determines allowed direction.
+  // 4H structure determines setup.
+  // Stoch determines timing.
+  // No scoring, no extra filters.
+
+  // Hard blocks
+  if (dailyBias === "FLAT") {
+    debug.push(`Daily Bias   FLAT ❌`);
+    debug.push(`Result       BLOCKED — daily bias FLAT, no entries`);
+    return { direction, trend: trend.detail, location, trigger: null, addTrigger: null, signal: undefined, canEnter: false, reason: "Daily bias FLAT — no entries" };
   }
 
-  // REMOVED: ADX < 18 hard gate (v28 did not have this)
-  // REMOVED: R2 hard gate
-  // REMOVED: Counter-trend ENTRY_1 blocking (v28 allowed all entries)
+  if (direction !== dailyBias) {
+    debug.push(`Daily Bias   ${dailyBias} ❌`);
+    debug.push(`Result       BLOCKED — daily bias ${dailyBias} does not allow ${direction}`);
+    return { direction, trend: trend.detail, location, trigger: null, addTrigger: null, signal: undefined, canEnter: false, reason: `Daily bias ${dailyBias} does not allow ${direction}` };
+  }
+
+  debug.push(`Daily Bias   ${dailyBias} ✅`);
 
   // --- TRIGGER EVALUATION ---
   const anyActive = hasActiveSignal(pair);
@@ -1326,11 +1337,13 @@ function formatDirectionTelemetry(
   direction: "LONG" | "SHORT",
   context: DirectionalContext,
   commitment: { allowed: boolean; reason: string },
+  dailyBias: "LONG" | "SHORT" | "FLAT",
   hasActiveOpposite?: boolean
 ): string[] {
   const lines: string[] = [];
   const trigger = context.trigger;
   lines.push(`=== ${direction} TELEMETRY ===`);
+  lines.push(`  dailyBias: ${dailyBias} ${dailyBias === direction ? "✅" : dailyBias === "FLAT" ? "❌" : "❌"}`);
   if (!trigger || !trigger.hasCross) {
     lines.push(`  trigger: null ❌`);
     lines.push(`  reason: ${context.reason}`);
@@ -1381,9 +1394,9 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   const trend = dailyTrend(candles1d);
   debug.push(`Trend: ${trend.direction} | ${trend.detail}`);
 
-  // Step 2: Analyze both directions
-  const longContext = buildDirectionalContext(pair, candles4h, trend, "LONG", price, activeSignals, debug);
-  const shortContext = buildDirectionalContext(pair, candles4h, trend, "SHORT", price, activeSignals, debug);
+  // Step 2: Analyze both directions with daily bias
+  const longContext = buildDirectionalContext(pair, candles4h, trend, "LONG", price, activeSignals, debug, trend.direction);
+  const shortContext = buildDirectionalContext(pair, candles4h, trend, "SHORT", price, activeSignals, debug, trend.direction);
 
   // Step 3: Directional Commitment Check
   clearExpiredDirectionStates();
@@ -1433,8 +1446,8 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   if (allowedSignals.length > 0) {
     clearDirectionState(pair);
   } else {
-    debug.push(...formatDirectionTelemetry(pair, "LONG", longContext, longCommitment, hasActiveSignal(pair, "SHORT")));
-    debug.push(...formatDirectionTelemetry(pair, "SHORT", shortContext, shortCommitment, hasActiveSignal(pair, "LONG")));
+    debug.push(...formatDirectionTelemetry(pair, "LONG", longContext, longCommitment, trend.direction, hasActiveSignal(pair, "SHORT")));
+    debug.push(...formatDirectionTelemetry(pair, "SHORT", shortContext, shortCommitment, trend.direction, hasActiveSignal(pair, "LONG")));
     debug.push(`NO SIGNAL: LONG=${longContext.canEnter ? "ready" : "blocked"} (${longContext.reason}), SHORT=${shortContext.canEnter ? "ready" : "blocked"} (${shortContext.reason})`);
   }
 
