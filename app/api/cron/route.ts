@@ -120,6 +120,8 @@ export async function GET(request: Request) {
     remainingActive.push(trade);
   }
 
+  // CRITICAL: Write filtered list back to KV immediately
+  await setActiveSignals(remainingActive);
   activeSignals = remainingActive;
   console.log(`[STATE] Remaining active: ${activeSignals.length}, Exited: ${exitedAlerts.length}`);
 
@@ -231,9 +233,10 @@ export async function GET(request: Request) {
     }
   }
 
-  // Save final state
+  // Save final state — activeSignals already written after exit loop;
+  // addActiveSignal() during pair loop already added new signals to KV.
+  // Just verify count for logging.
   const finalActive = await getActiveSignals();
-  await setActiveSignals(finalActive);
   await setMarketData(marketDataList);
 
   console.log(`[CRON] Done. active=${finalActive.length}, marketData=${marketDataList.length}, exited=${exitedAlerts.length}, new=${newSignals.length}`);
