@@ -2,10 +2,12 @@
 // ============================================================
 // Architecture: activeSignals (trades) + signalHistory (UI) are separate.
 // Cron only manages activeSignals. History is append-only.
+//
+// EXIT POLICY: Trades run to original TP or SL. No early thesis-failure exits.
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid, shouldHold, getMarketSnapshot, rebuildStateFromTrades, recordTradeExit, Signal } from "@/lib/strategy";
+import { generateSignal, isSignalStillValid, getMarketSnapshot, rebuildStateFromTrades, recordTradeExit, Signal } from "@/lib/strategy";
 import { getActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, setMarketData, setActiveSignals, getLastCronRun, setLastCronRun } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
@@ -64,6 +66,8 @@ export async function GET(request: Request) {
   }
 
   // ─── Exit Management ─────────────────────────────────────
+  // HARD EXITS ONLY: TP hit, SL hit, expired TTL, missed entry.
+  // No early thesis-failure exits. Trades run to original levels.
   const remainingActive = [];
   const exitedAlerts = [];
 
@@ -96,53 +100,10 @@ export async function GET(request: Request) {
       continue;
     }
 
-    // Check shouldHold for thesis failure exits
-    try {
-      const candles4h = await getCandles(krakenPairFormat(trade.pair + "/USD"), 240);
-      if (candles4h?.length > 30) {
-        const holdResult = shouldHold(toSignalLike(trade), candles4h, price, runStart);
-        if (!holdResult.shouldHold) {
-          console.log(`[EXIT] ${trade.pair} ${trade.direction} — HOLD EXIT: ${holdResult.reason}`);
-          exitedAlerts.push({ trade, reason: holdResult.reason, price });
-          await updateSignalHistoryStatus(trade.id, "FAILED", holdResult.reason, price);
-          try {
-            recordTradeExit(trade.pair, trade.direction, holdResult.reason, price, candles4h);
-          } catch {
-            console.log(`[EXIT] ${trade.pair} — recorded direction exit without trend context`);
-          }
-          continue;
-        }
-      }
-    } catch (e) {
-      console.log(`[HOLD_CHECK] ${trade.pair} failed:`, e);
-    }
-
     remainingActive.push(trade);
   }
 
-  // ─── Hold Advice Computation ────────────────────────────
-  for (const trade of remainingActive) {
-    const price = currentPrices[trade.pair];
-    if (!price) continue;
-    try {
-      const candles4h = await getCandles(krakenPairFormat(trade.pair + "/USD"), 240);
-      if (candles4h?.length > 30) {
-        const holdResult = shouldHold(toSignalLike(trade), candles4h, price, runStart);
-        trade.holdAdvice = {
-          status: holdResult.shouldHold
-            ? (holdResult.reason.startsWith("warning:") ? "warning" : "healthy")
-            : "failed",
-          reason: holdResult.reason,
-          newStop: holdResult.newStop,
-          checkedAt: runStart,
-        };
-      }
-    } catch (e) {
-      console.log(`[HOLD_ADVICE] ${trade.pair} failed:`, e);
-    }
-  }
-
-  // CRITICAL: Write filtered + enriched list back to KV immediately
+  // CRITICAL: Write filtered list back to KV immediately
   await setActiveSignals(remainingActive);
   activeSignals = remainingActive;
   console.log(`[STATE] Remaining active: ${activeSignals.length}, Exited: ${exitedAlerts.length}`);
@@ -255,9 +216,7 @@ export async function GET(request: Request) {
     }
   }
 
-  // Save final state — activeSignals already written after exit loop;
-  // addActiveSignal() during pair loop already added new signals to KV.
-  // Just verify count for logging.
+  // Save final state
   const finalActive = await getActiveSignals();
   await setMarketData(marketDataList);
 
