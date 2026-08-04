@@ -1177,19 +1177,6 @@ function buildDirectionalContext(
       reason = trigger?.detail || "no_valid_trigger";
       debug.push(`Result       WAITING — no valid trigger`);
     }
-    // Trigger rejection telemetry
-     else {
-        debug.push(`  kBelowD: ${kBelowD} ${kBelowD ? "✅" : "❌"} (required for entry)`);
-        const zoneOk = crossK > 50;
-        const extremeOk = crossK > 80;
-        debug.push(`  zone: required >50, actual ${crossK.toFixed(1)} ${zoneOk ? "✅" : "❌"}`);
-        debug.push(`  extreme: >80 ${extremeOk ? "✅" : "❌"}`);
-      }
-      debug.push(`  breakout: ${trigger.breakout ? "YES ✅" : "no ❌"}`);
-      if (trigger.breakoutDetail) debug.push(`    detail: ${trigger.breakoutDetail}`);
-      debug.push(`  cycle: ${trigger.triggerType === "duplicate_cycle" ? "duplicate ❌" : "fresh ✅"}`);
-      debug.push(`  momentum: ${trigger.momentumDesc}`);
-    }
   }
 
   // Build signal
