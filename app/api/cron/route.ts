@@ -1,12 +1,12 @@
-// app/api/cron/route.ts — v53 "Directional Commitment" Cron
+// app/api/cron/route.ts — v54 "Clean Separation" Cron
 // ============================================================
-// Architecture: Daily Context → LONG Analysis + SHORT Analysis → Directional Commitment → Execute
-// v53: No scoring. No winner selection. Directional commitment prevents flip-flop churn.
+// Architecture: activeSignals (trades) + signalHistory (UI) are separate.
+// Cron only manages activeSignals. History is append-only.
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid, shouldHold, filterExpiredSignals, getMarketSnapshot, rebuildStateFromTrades, checkTradeStatus, recordTradeExit, Signal } from "@/lib/strategy";
-import { getSignals, setSignals, getMarketData, setMarketData, getActiveTrades, setActiveTrades, getLastCronRun, setLastCronRun, addSignalToHistory } from "@/lib/state";
+import { generateSignal, isSignalStillValid, shouldHold, getMarketSnapshot, rebuildStateFromTrades, recordTradeExit, Signal } from "@/lib/strategy";
+import { getActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, setMarketData, setActiveSignals, getLastCronRun, setLastCronRun } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
@@ -19,13 +19,23 @@ function roundPrice(n: number): number {
   return Math.round(n * 1000) / 1000;
 }
 
+function toSignalLike(trade: any): Signal {
+  return {
+    ...trade,
+    scale: trade.type,
+    adx: 0, rsi: 0, stochK: 0, stochD: 0,
+    expectedMove: 0, reason: "", trend: trade.direction,
+    location: "", trigger: "",
+  } as Signal;
+}
+
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export async function GET(request: Request) {
   const runStart = Date.now();
   console.log("========================================");
-  console.log(`[CRON v53] Started at ${new Date(runStart).toISOString()}`);
+  console.log(`[CRON v54] Started at ${new Date(runStart).toISOString()}`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -41,10 +51,9 @@ export async function GET(request: Request) {
   }
   await setLastCronRun(runStart);
 
-  let activeTrades = await getActiveTrades();
-  console.log(`[STATE] Active trades:`, Object.keys(activeTrades).join(", ") || "none");
+  let activeSignals = await getActiveSignals();
+  console.log(`[STATE] Active signals:`, activeSignals.map(a => `${a.pair}_${a.direction}`).join(", ") || "none");
 
-  const existingSignals = await getSignals();
   const currentPrices: Record<string, number> = {};
 
   for (const pair of PAIRS) {
@@ -54,72 +63,87 @@ export async function GET(request: Request) {
     } catch (e) { console.log(`[PRICE] ${pair} — failed`); }
   }
 
-  const { active: validSignals, exited: preExited } = filterExpiredSignals(existingSignals, currentPrices, runStart);
-  console.log(`[STATE] Valid: ${validSignals.length}, Exited: ${preExited.length}`);
+  // ─── Exit Management ─────────────────────────────────────
+  const remainingActive = [];
+  const exitedAlerts = [];
 
-  for (const { signal, reason } of preExited) {
-    console.log(`[EXIT] ${signal.pair} ${signal.direction} — ${reason}`);
-    await addSignalToHistory(signal, reason as any, currentPrices[signal.pair] || signal.entry);
-    // Record directional exit for commitment tracking
+  for (const trade of activeSignals) {
+    const price = currentPrices[trade.pair];
+    if (price === undefined) {
+      remainingActive.push(trade);
+      continue;
+    }
+
+    const validity = isSignalStillValid(toSignalLike(trade), price, runStart);
+
+    if (!validity.valid) {
+      console.log(`[EXIT] ${trade.pair} ${trade.direction} — ${validity.reason}`);
+      exitedAlerts.push({ trade, reason: validity.reason, price });
+
+      let status = "FAILED" as const;
+      if (validity.reason === "tp_hit") status = "TP_HIT";
+      else if (validity.reason === "sl_hit") status = "SL_HIT";
+      else if (validity.reason === "expired_ttl") status = "EXPIRED";
+
+      await updateSignalHistoryStatus(trade.id, status, validity.reason, price);
+
+      try {
+        const candles4h = await getCandles(krakenPairFormat(trade.pair + "/USD"), 240);
+        recordTradeExit(trade.pair, trade.direction, validity.reason, price, candles4h);
+      } catch {
+        console.log(`[EXIT] ${trade.pair} — recorded direction exit without trend context`);
+      }
+      continue;
+    }
+
+    // Check shouldHold for thesis failure exits
     try {
-      const candles4h = await getCandles(krakenPairFormat(signal.pair + "/USD"), 240);
-      recordTradeExit(signal.pair, signal.direction, reason, currentPrices[signal.pair] || signal.entry, candles4h);
-    } catch {
-      // If candles fail, still record without trend context
-      console.log(`[EXIT] ${signal.pair} — recorded direction exit without trend context`);
-    }
-    if (reason !== "tp_hit" && reason !== "sl_hit") {
-      const key = `${signal.pair}_${signal.direction}`;
-      if (activeTrades[key]) delete activeTrades[key];
-      if (activeTrades[signal.pair]) delete activeTrades[signal.pair];
-    }
-  }
-
-  // State recovery
-  let recoveredCount = 0;
-  for (const signal of validSignals) {
-    if (signal.exited) continue;
-    const key = `${signal.pair}_${signal.direction}`;
-    if (!activeTrades[key]) {
-      const price = currentPrices[signal.pair];
-      if (price !== undefined) {
-        const validity = isSignalStillValid(signal, price, runStart);
-        if (validity.valid) {
-          activeTrades[key] = {
-            direction: signal.direction,
-            timestamp: signal.timestamp,
-            entry: signal.entry,
-            stop: signal.stop,
-            target: signal.target,
-            id: signal.id,
-            type: signal.type,
-            crossHash: signal.context?.crossHash || "",
-          };
-          console.log(`[STATE_RECOVER] ${key}: ${signal.type} ${signal.direction} @ ${signal.entry}`);
-          recoveredCount++;
+      const candles4h = await getCandles(krakenPairFormat(trade.pair + "/USD"), 240);
+      if (candles4h?.length > 30) {
+        const holdResult = shouldHold(toSignalLike(trade), candles4h, price, runStart);
+        if (!holdResult.shouldHold) {
+          console.log(`[EXIT] ${trade.pair} ${trade.direction} — HOLD EXIT: ${holdResult.reason}`);
+          exitedAlerts.push({ trade, reason: holdResult.reason, price });
+          await updateSignalHistoryStatus(trade.id, "FAILED", holdResult.reason, price);
+          try {
+            recordTradeExit(trade.pair, trade.direction, holdResult.reason, price, candles4h);
+          } catch {
+            console.log(`[EXIT] ${trade.pair} — recorded direction exit without trend context`);
+          }
+          continue;
         }
       }
+    } catch (e) {
+      console.log(`[HOLD_CHECK] ${trade.pair} failed:`, e);
     }
+
+    remainingActive.push(trade);
   }
 
-  // Migrate old-format keys
-  for (const key of Object.keys(activeTrades)) {
-    if (!key.includes("_") && activeTrades[key]?.direction) {
-      const trade = activeTrades[key];
-      const newKey = `${key}_${trade.direction}`;
-      if (!activeTrades[newKey]) activeTrades[newKey] = trade;
-      delete activeTrades[key];
-      console.log(`[STATE_MIGRATE] ${key} → ${newKey}`);
-    }
+  activeSignals = remainingActive;
+  console.log(`[STATE] Remaining active: ${activeSignals.length}, Exited: ${exitedAlerts.length}`);
+
+  // ─── State Recovery ──────────────────────────────────────
+  const activeTrades: Record<string, any> = {};
+  for (const trade of activeSignals) {
+    activeTrades[`${trade.pair}_${trade.direction}`] = {
+      direction: trade.direction,
+      timestamp: trade.timestamp,
+      entry: trade.entry,
+      stop: trade.stop,
+      target: trade.target,
+      id: trade.id,
+      type: trade.type,
+      crossHash: trade.context?.crossHash || "",
+    };
   }
 
-  // Single rebuild after all trades assembled
   rebuildStateFromTrades(activeTrades);
-  console.log(`[STATE] In-memory state rebuilt from ${Object.keys(activeTrades).length} trades`);
+  console.log(`[RECOVERY] In-memory state rebuilt from ${Object.keys(activeTrades).length} trades`);
 
-  const newSignals: Signal[] = [];
-  const marketDataList: any[] = [];
-  const alerts: any[] = [];
+  const newSignals = [];
+  const marketDataList = [];
+  const alerts = [];
 
   for (const pair of PAIRS) {
     try {
@@ -135,51 +159,26 @@ export async function GET(request: Request) {
       }
 
       const currentPrice = candles1h[candles1h.length - 1].close;
-      const existingForPair = validSignals.find(s => s.pair === pair && !s.exited) || null;
+      const existingForPair = activeSignals.find(a => a.pair === pair) || null;
 
       if (existingForPair) {
-        const validity = isSignalStillValid(existingForPair, currentPrice, runStart);
-        if (!validity.valid) {
-          console.log(`[PAIR] ${pair} — INVALID: ${validity.reason}`);
-          await addSignalToHistory(existingForPair, validity.reason as any, currentPrice);
-          // Record directional exit
-          recordTradeExit(existingForPair.pair, existingForPair.direction, validity.reason, currentPrice, candles4h);
-          delete activeTrades[`${pair}_${existingForPair.direction}`];
-          const idx = validSignals.indexOf(existingForPair);
-          if (idx >= 0) validSignals.splice(idx, 1);
-          alerts.push({ pair, status: "expired", reason: validity.reason });
-        } else {
-          const holdResult = shouldHold(existingForPair, candles4h, currentPrice, runStart);
-          if (!holdResult.shouldHold) {
-            console.log(`[PAIR] ${pair} — HOLD EXIT: ${holdResult.reason}`);
-            await addSignalToHistory(existingForPair, "hold_exit", currentPrice);
-            // Record directional exit
-            recordTradeExit(existingForPair.pair, existingForPair.direction, "hold_exit", currentPrice, candles4h);
-            delete activeTrades[`${pair}_${existingForPair.direction}`];
-            const idx = validSignals.indexOf(existingForPair);
-            if (idx >= 0) validSignals.splice(idx, 1);
-            alerts.push({ pair, status: "hold_exit", reason: holdResult.reason });
-          } else {
-            console.log(`[PAIR] ${pair} — Still valid (${existingForPair.direction}), skipping`);
-            const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
-            if (snapshot) marketDataList.push(snapshot);
-            continue;
-          }
-        }
+        console.log(`[PAIR] ${pair} — Still valid (${existingForPair.direction}), skipping`);
+        const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
+        if (snapshot) marketDataList.push(snapshot);
+        continue;
       }
 
-      const result = generateSignal(pair, candles1h, candles4h, candles15m, validSignals, currentPrice);
+      // Pass empty activeSignals array — in-memory store already rebuilt
+      const result = generateSignal(pair, candles1h, candles4h, candles15m, [], currentPrice);
       const snapshot = result.market || getMarketSnapshot(pair, candles1h, candles4h, candles15m);
       if (snapshot) marketDataList.push(snapshot);
 
-      // v53: result.signals[] contains 0, 1, or 2 allowed signals
       if (!result.signals || result.signals.length === 0) {
         console.log(`[PAIR] ${pair} — NO SIGNAL (${result.debug?.join(" | ")})`);
         alerts.push({ pair, status: "no_signal", debug: result.debug?.join(" | ") });
         continue;
       }
 
-      // Process each allowed signal independently
       for (const signal of result.signals) {
         console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} | ${signal.type} @ ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`);
         newSignals.push(signal);
@@ -216,21 +215,15 @@ export async function GET(request: Request) {
             crossAge: signal.context.crossAge,
           });
           console.log(`[ALERT] ${pair} ${signal.direction} — SENT (${signal.type})`);
-          activeTrades[`${pair}_${signal.direction}`] = {
-            direction: signal.direction,
-            timestamp: Date.now(),
-            entry: signal.entry,
-            stop: signal.stop,
-            target: signal.target,
-            id: signal.id,
-            type: signal.type,
-            crossHash: signal.context?.crossHash || "",
-          };
           alerts.push({ pair, direction: signal.direction, status: "sent", type: signal.type });
         } catch (err) {
           console.error(`[ALERT] ${pair} ${signal.direction} — FAILED:`, err);
           alerts.push({ pair, direction: signal.direction, status: "alert_failed", error: String(err) });
         }
+
+        // Persist to activeSignals and signalHistory
+        await addActiveSignal(signal);
+        await appendSignalHistory(signal);
       }
     } catch (err) {
       console.error(`[PAIR] ${pair} — ERROR:`, err);
@@ -238,32 +231,20 @@ export async function GET(request: Request) {
     }
   }
 
-  // Merge all signals with metadata
-  const merged: any[] = [];
-  for (const s of validSignals) {
-    const ageMinutes = Math.round((runStart - s.timestamp) / 60000);
-    let status = "ACTIVE";
-    if (s.exited) status = s.exitReason === "tp_hit" ? "TP_HIT" : s.exitReason === "sl_hit" ? "SL_HIT" : "EXPIRED";
-    else if (ageMinutes > 120 && (s.type === "ENTRY_1" || s.type === "ENTRY_2")) status = "STALE";
-    merged.push({ ...s, meta: { status, ageMinutes, actionable: status === "ACTIVE" && !s.exited } });
-  }
-  for (const s of newSignals) {
-    const idx = merged.findIndex((x: any) => x.id === s.id);
-    const signalWithMeta = { ...s, meta: { status: "ACTIVE", ageMinutes: 0, actionable: true } };
-    if (idx >= 0) merged[idx] = signalWithMeta; else merged.push(signalWithMeta);
-  }
+  // Save final state
+  const finalActive = await getActiveSignals();
+  await setActiveSignals(finalActive);
+  await setMarketData(marketDataList);
 
-  await Promise.all([setSignals(merged), setMarketData(marketDataList), setActiveTrades(activeTrades)]);
-
-  console.log(`[CRON] Done. signals=${merged.length}, marketData=${marketDataList.length}, exited=${preExited.length}, recovered=${recoveredCount}`);
+  console.log(`[CRON] Done. active=${finalActive.length}, marketData=${marketDataList.length}, exited=${exitedAlerts.length}, new=${newSignals.length}`);
   console.log("========================================");
 
   return NextResponse.json({
     success: true,
-    signals: merged.length,
+    activeSignals: finalActive.length,
     marketData: marketDataList.length,
-    exited: preExited.length,
-    recovered: recoveredCount,
+    exited: exitedAlerts.length,
+    newSignals: newSignals.length,
     alerts,
   });
 }
