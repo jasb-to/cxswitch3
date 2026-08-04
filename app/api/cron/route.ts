@@ -120,7 +120,29 @@ export async function GET(request: Request) {
     remainingActive.push(trade);
   }
 
-  // CRITICAL: Write filtered list back to KV immediately
+  // ─── Hold Advice Computation ────────────────────────────
+  for (const trade of remainingActive) {
+    const price = currentPrices[trade.pair];
+    if (!price) continue;
+    try {
+      const candles4h = await getCandles(krakenPairFormat(trade.pair + "/USD"), 240);
+      if (candles4h?.length > 30) {
+        const holdResult = shouldHold(toSignalLike(trade), candles4h, price, runStart);
+        trade.holdAdvice = {
+          status: holdResult.shouldHold
+            ? (holdResult.reason.startsWith("warning:") ? "warning" : "healthy")
+            : "failed",
+          reason: holdResult.reason,
+          newStop: holdResult.newStop,
+          checkedAt: runStart,
+        };
+      }
+    } catch (e) {
+      console.log(`[HOLD_ADVICE] ${trade.pair} failed:`, e);
+    }
+  }
+
+  // CRITICAL: Write filtered + enriched list back to KV immediately
   await setActiveSignals(remainingActive);
   activeSignals = remainingActive;
   console.log(`[STATE] Remaining active: ${activeSignals.length}, Exited: ${exitedAlerts.length}`);
