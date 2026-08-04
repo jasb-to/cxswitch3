@@ -1428,12 +1428,43 @@ export interface ExitAnalysis {
   newStop?: number;
 }
 
+// ============================================================
+// TRADE LIFECYCLE PHASES
+// ============================================================
+
+const MIN_HOLD_TIME_MS = 4 * 60 * 60 * 1000;      // 4 hours: protect capital
+const NORMAL_PHASE_MS = 12 * 60 * 60 * 1000;       // 12 hours: normal management
+// 12h+: aggressive trailing (full exit engine)
+
+function getTradePhase(signal: Signal, now: number = Date.now()): {
+  phase: "protect" | "normal" | "aggressive";
+  ageHours: number;
+  canExitThesis: boolean;
+} {
+  const ageMs = now - signal.timestamp;
+  const ageHours = ageMs / (60 * 60 * 1000);
+  if (ageMs < MIN_HOLD_TIME_MS) {
+    return { phase: "protect", ageHours, canExitThesis: false };
+  }
+  if (ageMs < NORMAL_PHASE_MS) {
+    return { phase: "normal", ageHours, canExitThesis: true };
+  }
+  return { phase: "aggressive", ageHours, canExitThesis: true };
+}
+
 /**
  * Evaluate trade health using only existing data.
  * 
- * HEALTHY: Original thesis intact. Hold.
- * WARNING: Early deterioration. Alert. Optionally tighten stop.
- * FAILED: Thesis invalidated. Exit immediately.
+ * Phase 0-4h (protect capital):
+ *   - Hard stops: YES
+ *   - Catastrophic invalidation: YES (daily trend reversal, 3 ATR adverse)
+ *   - Soft thesis exits: NO (momentum, trendline, structure)
+ * 
+ * Phase 4-12h (normal):
+ *   - Full exit engine active
+ * 
+ * Phase 12h+ (aggressive):
+ *   - Full exit engine + tighter trailing
  */
 export function analyzeTradeHealth(
   signal: Signal,
@@ -1451,36 +1482,44 @@ export function analyzeTradeHealth(
   // ==================== FAILED CHECKS ====================
 
   // 1. Structural failure — last confirmed swing broken
-  const lastStructure = getLastConfirmedStructure(candles4h, signal.direction);
-  if (lastStructure !== null) {
-    if (signal.direction === "LONG" && currentPrice < lastStructure) {
-      return { state: "FAILED", reason: "structure_broken" };
-    }
-    if (signal.direction === "SHORT" && currentPrice > lastStructure) {
-      return { state: "FAILED", reason: "structure_broken" };
+  // Phase-gated: only in normal/aggressive phase (4h+)
+  const lifecycle1 = getTradePhase(signal);
+  if (lifecycle1.canExitThesis) {
+    const lastStructure = getLastConfirmedStructure(candles4h, signal.direction);
+    if (lastStructure !== null) {
+      if (signal.direction === "LONG" && currentPrice < lastStructure) {
+        return { state: "FAILED", reason: "structure_broken" };
+      }
+      if (signal.direction === "SHORT" && currentPrice > lastStructure) {
+        return { state: "FAILED", reason: "structure_broken" };
+      }
     }
   }
 
   // 2. Trendline failure — 3 consecutive closes beyond trendline
-  const location = location4H(signal.pair, candles4h, signal.direction);
-  if (location.trendlinePrice > 0) {
-    let consecutiveBeyond = 0;
-    for (let i = candles4h.length - 1; i >= Math.max(0, candles4h.length - 6); i--) {
-      const c = candles4h[i];
-      if (signal.direction === "LONG" && c.close < location.trendlinePrice) {
-        consecutiveBeyond++;
-      } else if (signal.direction === "SHORT" && c.close > location.trendlinePrice) {
-        consecutiveBeyond++;
-      } else {
-        break;
+  // Phase-gated: only in normal/aggressive phase (4h+)
+  const lifecycle2 = getTradePhase(signal);
+  if (lifecycle2.canExitThesis) {
+    const location = location4H(signal.pair, candles4h, signal.direction);
+    if (location.trendlinePrice > 0) {
+      let consecutiveBeyond = 0;
+      for (let i = candles4h.length - 1; i >= Math.max(0, candles4h.length - 6); i--) {
+        const c = candles4h[i];
+        if (signal.direction === "LONG" && c.close < location.trendlinePrice) {
+          consecutiveBeyond++;
+        } else if (signal.direction === "SHORT" && c.close > location.trendlinePrice) {
+          consecutiveBeyond++;
+        } else {
+          break;
+        }
       }
-    }
-    if (consecutiveBeyond >= 3) {
-      return { state: "FAILED", reason: `trendline_failed_${consecutiveBeyond}_consecutive_closes` };
+      if (consecutiveBeyond >= 3) {
+        return { state: "FAILED", reason: `trendline_failed_${consecutiveBeyond}_consecutive_closes` };
+      }
     }
   }
 
-  // 3. Adverse movement — 3 ATR against entry
+  // 3. Adverse movement — 3 ATR against entry (ALWAYS, catastrophic)
   const maxAdverseMove = atrVal * 3;
   const adverseMove = signal.direction === "LONG"
     ? signal.entry - currentPrice
@@ -1489,11 +1528,20 @@ export function analyzeTradeHealth(
     return { state: "FAILED", reason: `adverse_move_${adverseMove.toFixed(2)}_vs_${maxAdverseMove.toFixed(2)}` };
   }
 
-  // 4. Daily trend reversal
+  // 4. Daily trend reversal (ALWAYS, catastrophic)
   const trendReversed = (signal.direction === "LONG" && trend.direction === "SHORT") ||
                         (signal.direction === "SHORT" && trend.direction === "LONG");
   if (trendReversed) {
     return { state: "FAILED", reason: "daily_trend_reversed" };
+  }
+
+  // ─── PHASE-GATED EXITS ───────────────────────────────────
+  const lifecycle = getTradePhase(signal);
+
+  if (!lifecycle.canExitThesis) {
+    // Protect capital phase: skip soft thesis exits
+    // Only hard stops (checked by isSignalStillValid) and catastrophic exits above
+    return { state: "HEALTHY", reason: `protect_capital_phase_${lifecycle.ageHours.toFixed(1)}h` };
   }
 
   // 5. Momentum exhaustion — Stoch extreme + price loses EMA21
@@ -1576,9 +1624,10 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
 
   // 2. Evaluate trade health
   const health = analyzeTradeHealth(signal, candles4h, currentPrice);
+  const lifecycle = getTradePhase(signal, now);
 
   if (health.state === "FAILED") {
-    return { shouldHold: false, reason: health.reason };
+    return { shouldHold: false, reason: `${health.reason} (phase: ${lifecycle.phase}, ${lifecycle.ageHours.toFixed(1)}h)` };
   }
 
   // 3. Profit protection — compute new stop level
@@ -1604,10 +1653,10 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
   }
 
   if (health.state === "WARNING") {
-    return { shouldHold: true, reason: `warning: ${health.reason}`, newStop };
+    return { shouldHold: true, reason: `warning: ${health.reason} (phase: ${lifecycle.phase})`, newStop };
   }
 
-  return { shouldHold: true, reason: "healthy", newStop };
+  return { shouldHold: true, reason: `healthy (phase: ${lifecycle.phase})`, newStop };
 }export function filterExpiredSignals(signals: Signal[], currentPrices: Record<string, number>, now?: number): { active: Signal[]; exited: { signal: Signal; reason: string }[] } {
   const active: Signal[] = [];
   const exited: { signal: Signal; reason: string }[] = [];
