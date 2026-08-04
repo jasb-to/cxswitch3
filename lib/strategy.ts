@@ -733,45 +733,142 @@ function detectBreakout(
   candles4h: Candle[],
   direction: "LONG" | "SHORT",
   location: LocationResult
-): { breakout: boolean; detail: string; volumeConfirmed: boolean } {
-  if (candles4h.length < 10) return { breakout: false, detail: "insufficient data", volumeConfirmed: false };
+): { breakout: boolean; detail: string; volumeConfirmed: boolean; checks: string[] } {
+  const checks: string[] = [];
+  if (candles4h.length < 10) {
+    checks.push("insufficient_candles ❌");
+    return { breakout: false, detail: "insufficient data", volumeConfirmed: false, checks };
+  }
 
   const last = candles4h[candles4h.length - 1];
   const prev = candles4h[candles4h.length - 2];
   const prev3 = candles4h.slice(-4, -1);
   const avgVol = avg(prev3.map(c => c.volume));
   const volumeConfirmed = last.volume > avgVol * 1.3;
+  checks.push(`volume: ${last.volume.toFixed(0)} vs avg ${avgVol.toFixed(0)} ${volumeConfirmed ? "✅" : "❌"}`);
 
-  let breakout = false;
-  let detail = "";
+  // 1. Previous candle must be inside structure
+  const prevInside = direction === "LONG"
+    ? prev.close <= location.trendlinePrice
+    : prev.close >= location.trendlinePrice;
+  checks.push(`prev_inside: ${prevInside ? "✅" : "❌"} (prev ${prev.close.toFixed(0)} vs TL ${location.trendlinePrice.toFixed(0)})`);
+  if (!prevInside) {
+    checks.push("prev_not_inside ❌");
+    return { breakout: false, detail: "previous candle already beyond structure", volumeConfirmed, checks };
+  }
 
-  if (direction === "LONG") {
-    // Breakout above resistance / trendline
-    const tl = location.trendlinePrice;
-    if (tl > 0 && last.close > tl && prev.close <= tl) {
-      breakout = true;
-      detail = `BREAKOUT: close ${last.close.toFixed(0)} above TL ${tl.toFixed(0)}, prev ${prev.close.toFixed(0)}`;
-    } else if (last.close > last.open && last.close > Math.max(...prev3.map(c => c.high))) {
-      breakout = true;
-      detail = `BREAKOUT: new 3-candle high at ${last.close.toFixed(0)}`;
-    }
-  } else {
-    // Breakout below support / trendline
-    const tl = location.trendlinePrice;
-    if (tl > 0 && last.close < tl && prev.close >= tl) {
-      breakout = true;
-      detail = `BREAKOUT: close ${last.close.toFixed(0)} below TL ${tl.toFixed(0)}, prev ${prev.close.toFixed(0)}`;
-    } else if (last.close < last.open && last.close < Math.min(...prev3.map(c => c.low))) {
-      breakout = true;
-      detail = `BREAKOUT: new 3-candle low at ${last.close.toFixed(0)}`;
+  // 2. Breakout candle must close beyond structure
+  const closeBeyond = direction === "LONG"
+    ? last.close > location.trendlinePrice
+    : last.close < location.trendlinePrice;
+  checks.push(`close_beyond: ${closeBeyond ? "✅" : "❌"} (last ${last.close.toFixed(0)} vs TL ${location.trendlinePrice.toFixed(0)})`);
+  if (!closeBeyond) {
+    checks.push("close_not_beyond ❌");
+    return { breakout: false, detail: "close did not break structure", volumeConfirmed, checks };
+  }
+
+  // 3. Breakout candle must be directional (not indecisive)
+  const bodySize = Math.abs(last.close - last.open);
+  const wickSize = (last.high - last.low) - bodySize;
+  const directional = bodySize > wickSize * 0.5; // body > 33% of total range
+  checks.push(`directional: body ${bodySize.toFixed(0)} vs wick ${wickSize.toFixed(0)} ${directional ? "✅" : "❌"}`);
+  if (!directional) {
+    checks.push("indecisive_candle ❌");
+    return { breakout: false, detail: "breakout candle indecisive (doji-like)", volumeConfirmed, checks };
+  }
+
+  // 4. Breakout must be meaningful (not just a wick close)
+  const tl = location.trendlinePrice;
+  const beyondDistance = direction === "LONG"
+    ? (last.close - tl) / tl
+    : (tl - last.close) / tl;
+  const meaningful = beyondDistance > 0.001; // > 0.1% beyond level
+  checks.push(`meaningful: ${(beyondDistance * 100).toFixed(3)}% ${meaningful ? "✅" : "❌"}`);
+  if (!meaningful) {
+    checks.push("too_shallow ❌");
+    return { breakout: false, detail: "breakout too shallow (< 0.1%)", volumeConfirmed, checks };
+  }
+
+  // 5. Volume confirmation
+  if (!volumeConfirmed) {
+    checks.push("volume_weak ❌");
+    return { breakout: false, detail: "breakout lacks volume confirmation", volumeConfirmed, checks };
+  }
+
+  checks.push("ALL_CHECKS_PASSED ✅");
+  return {
+    breakout: true,
+    detail: `${direction} BREAKOUT: close ${last.close.toFixed(0)} vs TL ${tl.toFixed(0)}, body ${bodySize.toFixed(0)}, vol ${last.volume.toFixed(0)}`,
+    volumeConfirmed,
+    checks
+  };
+}
+
+// ============================================================
+// PULLBACK VALIDATION
+// ============================================================
+
+function validatePullback(
+  candles4h: Candle[],
+  direction: "LONG" | "SHORT",
+  trigger: TriggerResult,
+  location: LocationResult
+): { valid: boolean; detail: string; checks: string[] } {
+  const checks: string[] = [];
+  const price = candles4h[candles4h.length - 1].close;
+
+  // 1. Must have a valid stoch cross
+  if (!trigger.hasCross) {
+    checks.push("no_cross ❌");
+    return { valid: false, detail: "no stoch cross detected", checks };
+  }
+  checks.push(`cross_age: ${trigger.crossAge} ${trigger.crossAge > 0 ? "✅" : "❌"}`);
+
+  // 2. Must be in pullback zone (not chasing)
+  const crossK = trigger.crossStochK ?? trigger.stochK;
+  const inZone = direction === "LONG" ? crossK < 50 : crossK > 50;
+  checks.push(`zone: ${direction === "LONG" ? "<50" : ">50"}, actual ${crossK.toFixed(1)} ${inZone ? "✅" : "❌"}`);
+  if (!inZone) {
+    checks.push("outside_zone ❌");
+    return { valid: false, detail: `cross at K=${crossK.toFixed(1)} outside pullback zone`, checks };
+  }
+
+  // 3. Must be at or near structure (not extended)
+  const atStructure = location.locationType === "TRENDLINE" || location.locationType === "NEAR_TL" || location.locationType === "SWING_LOW" || location.locationType === "SWING_HIGH";
+  checks.push(`location: ${location.locationType} ${atStructure ? "✅" : "❌"}`);
+  if (!atStructure) {
+    checks.push("not_at_structure ❌");
+    return { valid: false, detail: `location ${location.locationType} not at structure`, checks };
+  }
+
+  // 4. Momentum must be resetting (not already extended)
+  const stoch = stochRsi(candles4h.map(c => c.close));
+  const resetting = direction === "LONG" ? stoch.k < 50 : stoch.k > 50;
+  checks.push(`stoch_reset: K=${stoch.k.toFixed(1)} ${resetting ? "✅" : "❌"}`);
+  if (!resetting) {
+    checks.push("stoch_not_reset ❌");
+    return { valid: false, detail: `stoch K=${stoch.k.toFixed(1)} not reset`, checks };
+  }
+
+  // 5. Price must respect structure (not already broken through)
+  const tl = location.trendlinePrice;
+  if (tl > 0) {
+    const respecting = direction === "LONG" ? price >= tl * 0.995 : price <= tl * 1.005;
+    checks.push(`structure_respect: ${respecting ? "✅" : "❌"}`);
+    if (!respecting) {
+      checks.push("structure_broken ❌");
+      return { valid: false, detail: "price broke structure, not a pullback", checks };
     }
   }
 
-  if (!breakout) {
-    detail = `No breakout: last ${last.close.toFixed(0)}, prev ${prev.close.toFixed(0)}, TL ${location.trendlinePrice.toFixed(0)}`;
+  // 6. Not a duplicate cycle
+  checks.push(`cycle: ${trigger.triggerType === "duplicate_cycle" ? "duplicate ❌" : "fresh ✅"}`);
+  if (trigger.triggerType === "duplicate_cycle") {
+    return { valid: false, detail: "duplicate cycle", checks };
   }
 
-  return { breakout, detail, volumeConfirmed };
+  checks.push("ALL_CHECKS_PASSED ✅");
+  return { valid: true, detail: "valid pullback", checks };
 }
 
 // ============================================================
@@ -1088,7 +1185,8 @@ function buildDirectionalContext(
         debug.push(`  zone: required >50, actual ${crossK.toFixed(1)} ${zoneOk ? "✅" : "❌"}`);
         debug.push(`  extreme: >80 ${extremeOk ? "✅" : "❌"}`);
       }
-      debug.push(`  breakout: ${trigger.breakout ? "YES ✅" : "no ❌"} ${trigger.breakoutDetail || ""}`);
+      debug.push(`  breakout: ${trigger.breakout ? "YES ✅" : "no ❌"}`);
+      if (trigger.breakoutDetail) debug.push(`    detail: ${trigger.breakoutDetail}`);
       debug.push(`  cycle: ${trigger.triggerType === "duplicate_cycle" ? "duplicate ❌" : "fresh ✅"}`);
       debug.push(`  momentum: ${trigger.momentumDesc}`);
     }
@@ -1104,18 +1202,32 @@ function buildDirectionalContext(
     let target: number;
     let signalType: "ENTRY_1" | "ENTRY_2" | "ADD";
 
-    // ENTRY_1 = breakout (structure break + volume + momentum)
-    // ENTRY_2 = pullback (stoch reset + cross after breakout missed)
+    // MUTUALLY EXCLUSIVE: breakout OR pullback, never both, never fallback
     const isBreakout = trigger?.breakout === true;
-    const isDeepPullback = trigger?.triggerType === "entry_1_deep_pullback";
-    const isEarlyMomentum = trigger?.triggerType === "entry_2_early_momentum";
+    let isPullback = false;
+    let pullbackValidation: { valid: boolean; detail: string; checks: string[] } | null = null;
 
     if (isBreakout) {
       signalType = "ENTRY_1";
-    } else if (isDeepPullback || isEarlyMomentum) {
-      signalType = "ENTRY_2";
+      debug.push(`ENTRY TYPE   ENTRY_1 (breakout)`);
+      debug.push(`  breakout: ${trigger?.breakoutDetail || ""}`);
     } else {
-      signalType = "ENTRY_1"; // fallback
+      // Only evaluate pullback if NOT a breakout
+      pullbackValidation = validatePullback(candles4h, direction, trigger!, location);
+      isPullback = pullbackValidation.valid;
+      if (isPullback) {
+        signalType = "ENTRY_2";
+        debug.push(`ENTRY TYPE   ENTRY_2 (pullback)`);
+        debug.push(`  pullback: ${pullbackValidation.detail}`);
+      } else {
+        debug.push(`ENTRY TYPE   WAIT`);
+        debug.push(`  breakout: NO ❌ ${trigger?.breakoutDetail || ""}`);
+        debug.push(`  pullback: NO ❌ ${pullbackValidation?.detail || ""}`);
+        for (const c of pullbackValidation?.checks || []) {
+          debug.push(`    ${c}`);
+        }
+        return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: "neither breakout nor pullback qualifies" };
+      }
     }
 
     // v28-style level calculation
@@ -1247,10 +1359,14 @@ function formatDirectionTelemetry(
   if (hasActiveOpposite) {
     lines.push(`  activeOpposite: ${hasActiveOpposite ? "YES ❌" : "no ✅"}`);
   }
-  lines.push(`  breakout: ${trigger.breakout ? "YES ✅" : "no ❌"} ${trigger.breakoutDetail || ""}`);
+  lines.push(`  breakout: ${trigger.breakout ? "YES ✅" : "no ❌"}`);
+  if (trigger.breakoutDetail) lines.push(`    detail: ${trigger.breakoutDetail}`);
   lines.push(`  cycle: ${trigger.triggerType === "duplicate_cycle" ? "duplicate ❌" : "fresh ✅"}`);
   lines.push(`  canEnter: ${context.canEnter} ${context.canEnter ? "✅" : "❌"}`);
   lines.push(`  blocker: ${context.reason}`);
+  if (context.signal) {
+    lines.push(`  entryType: ${context.signal.type} ✅`);
+  }
   return lines;
 }
 
@@ -1436,7 +1552,7 @@ const MIN_HOLD_TIME_MS = 4 * 60 * 60 * 1000;      // 4 hours: protect capital
 const NORMAL_PHASE_MS = 12 * 60 * 60 * 1000;       // 12 hours: normal management
 // 12h+: aggressive trailing (full exit engine)
 
-function getTradePhase(signal: Signal, now: number = Date.now()): {
+export function getTradePhase(signal: Signal, now: number = Date.now()): {
   phase: "protect" | "normal" | "aggressive";
   ageHours: number;
   canExitThesis: boolean;
@@ -1539,9 +1655,9 @@ export function analyzeTradeHealth(
   const lifecycle = getTradePhase(signal);
 
   if (!lifecycle.canExitThesis) {
-    // Protect capital phase: skip soft thesis exits
-    // Only hard stops (checked by isSignalStillValid) and catastrophic exits above
-    return { state: "HEALTHY", reason: `protect_capital_phase_${lifecycle.ageHours.toFixed(1)}h` };
+    // Protect capital phase (0-4h): skip soft thesis exits
+    // Only hard stops (checked by isSignalStillValid) and catastrophic exits (3 ATR, daily trend reversal)
+    return { state: "HEALTHY", reason: `protect_phase_${lifecycle.ageHours.toFixed(1)}h_soft_exits_disabled` };
   }
 
   // 5. Momentum exhaustion — Stoch extreme + price loses EMA21
