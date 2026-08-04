@@ -5,7 +5,7 @@
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { generateSignal, isSignalStillValid, shouldHold, getMarketSnapshot, rebuildStateFromTrades, recordTradeExit, Signal, getTradePhase } from "@/lib/strategy";
+import { generateSignal, isSignalStillValid, shouldHold, getMarketSnapshot, rebuildStateFromTrades, recordTradeExit, Signal } from "@/lib/strategy";
 import { getActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, setMarketData, setActiveSignals, getLastCronRun, setLastCronRun } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
@@ -128,7 +128,6 @@ export async function GET(request: Request) {
       const candles4h = await getCandles(krakenPairFormat(trade.pair + "/USD"), 240);
       if (candles4h?.length > 30) {
         const holdResult = shouldHold(toSignalLike(trade), candles4h, price, runStart);
-        const lifecycle = getTradePhase(toSignalLike(trade), runStart);
         trade.holdAdvice = {
           status: holdResult.shouldHold
             ? (holdResult.reason.startsWith("warning:") ? "warning" : "healthy")
@@ -136,8 +135,6 @@ export async function GET(request: Request) {
           reason: holdResult.reason,
           newStop: holdResult.newStop,
           checkedAt: runStart,
-          phase: lifecycle.phase,
-          ageHours: Math.round(lifecycle.ageHours * 10) / 10,
         };
       }
     } catch (e) {
