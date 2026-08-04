@@ -563,6 +563,8 @@ export interface TriggerResult {
   crossAge: number;
   crossHash: string;
   momentumDesc: string;
+  crossStochK?: number;
+  crossStochD?: number;
 }
 
 // v53.5 fix: timestamp-based hash (stable)
@@ -668,7 +670,7 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: 
       crossAge = recentCross.crossAge;
       crossHash = recentCross.crossHash;
       if (isDuplicateCycle(pair, direction, crossHash)) {
-        return { fired: false, detail: `Cross ${crossAge} candles ago already signaled`, triggerType: "duplicate_cycle", stochK: recentCross.currentStochK, stochD: recentCross.currentStochD, crossAge, crossHash, momentumDesc };
+        return { fired: false, detail: `Cross ${crossAge} candles ago already signaled`, triggerType: "duplicate_cycle", stochK: recentCross.currentStochK, stochD: recentCross.currentStochD, crossAge, crossHash, momentumDesc, crossStochK: recentCross.crossStochK, crossStochD: recentCross.crossStochD };
       }
       const kAboveD = recentCross.currentStochK >= recentCross.currentStochD;
       const crossWasExtreme = recentCross.crossStochK < 20;
@@ -693,7 +695,7 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: 
       crossAge = recentCross.crossAge;
       crossHash = recentCross.crossHash;
       if (isDuplicateCycle(pair, direction, crossHash)) {
-        return { fired: false, detail: `Cross ${crossAge} candles ago already signaled`, triggerType: "duplicate_cycle", stochK: recentCross.currentStochK, stochD: recentCross.currentStochD, crossAge, crossHash, momentumDesc };
+        return { fired: false, detail: `Cross ${crossAge} candles ago already signaled`, triggerType: "duplicate_cycle", stochK: recentCross.currentStochK, stochD: recentCross.currentStochD, crossAge, crossHash, momentumDesc, crossStochK: recentCross.crossStochK, crossStochD: recentCross.crossStochD };
       }
       const kBelowD = recentCross.currentStochK <= recentCross.currentStochD;
       const crossWasExtreme = recentCross.crossStochK > 80;
@@ -714,7 +716,7 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: 
       detail = `No recent cross. Stoch K=${stoch.k} D=${stoch.d}`;
     }
   }
-  return { fired, detail, triggerType, stochK: stoch.k, stochD: stoch.d, crossAge, crossHash, momentumDesc };
+  return { fired, detail, triggerType, stochK: stoch.k, stochD: stoch.d, crossAge, crossHash, momentumDesc, crossStochK: recentCross?.crossStochK, crossStochD: recentCross?.crossStochD };
 }
 
 // ============================================================
@@ -937,7 +939,7 @@ function buildDirectionalContext(
   let addTrigger: AddTriggerResult | null = null;
   let signal: Signal | undefined = undefined;
   let canEnter = false;
-  let reason = "";
+  let reason = "not_ready";
 
   debug.push(`=== ${pair} ${direction} ===`);
 
@@ -1003,9 +1005,36 @@ function buildDirectionalContext(
     reason = trigger.detail;
   } else {
     if (trigger?.triggerType === "duplicate_cycle") {
+      reason = "duplicate_cycle";
       debug.push(`Result       BLOCKED — duplicate cycle`);
     } else {
+      reason = trigger?.detail || "no_valid_trigger";
       debug.push(`Result       WAITING — no valid trigger`);
+    }
+    // Trigger rejection telemetry
+    if (trigger) {
+      const kAboveD = trigger.stochK >= trigger.stochD;
+      const kBelowD = trigger.stochK <= trigger.stochD;
+      const crossK = trigger.crossStochK ?? trigger.stochK;
+      debug.push(`${direction} TRIGGER TELEMETRY:`);
+      debug.push(`  crossAge: ${trigger.crossAge} candles`);
+      debug.push(`  crossK: ${crossK.toFixed(1)}`);
+      debug.push(`  currentK: ${trigger.stochK.toFixed(1)}  currentD: ${trigger.stochD.toFixed(1)}`);
+      if (direction === "LONG") {
+        debug.push(`  kAboveD: ${kAboveD} ${kAboveD ? "✅" : "❌"} (required for entry)`);
+        const zoneOk = crossK < 50;
+        const extremeOk = crossK < 20;
+        debug.push(`  zone: required <50, actual ${crossK.toFixed(1)} ${zoneOk ? "✅" : "❌"}`);
+        debug.push(`  extreme: <20 ${extremeOk ? "✅" : "❌"}`);
+      } else {
+        debug.push(`  kBelowD: ${kBelowD} ${kBelowD ? "✅" : "❌"} (required for entry)`);
+        const zoneOk = crossK > 50;
+        const extremeOk = crossK > 80;
+        debug.push(`  zone: required >50, actual ${crossK.toFixed(1)} ${zoneOk ? "✅" : "❌"}`);
+        debug.push(`  extreme: >80 ${extremeOk ? "✅" : "❌"}`);
+      }
+      debug.push(`  cycle: ${trigger.triggerType === "duplicate_cycle" ? "duplicate ❌" : "fresh ✅"}`);
+      debug.push(`  momentum: ${trigger.momentumDesc}`);
     }
   }
 
@@ -1114,6 +1143,47 @@ function buildDirectionalContext(
 }
 
 // ============================================================
+// TRIGGER TELEMETRY FORMATTER
+// ============================================================
+
+function formatDirectionTelemetry(
+  pair: string,
+  direction: "LONG" | "SHORT",
+  context: DirectionalContext,
+  commitment: { allowed: boolean; reason: string }
+): string[] {
+  const lines: string[] = [];
+  const trigger = context.trigger;
+  lines.push(`=== ${direction} TELEMETRY ===`);
+  if (!trigger) {
+    lines.push(`  trigger: null ❌`);
+    lines.push(`  reason: ${context.reason}`);
+    return lines;
+  }
+  const crossK = trigger.crossStochK ?? trigger.stochK;
+  const kAboveD = trigger.stochK >= trigger.stochD;
+  const kBelowD = trigger.stochK <= trigger.stochD;
+  lines.push(`  crossAge: ${trigger.crossAge} ${trigger.crossAge > 0 ? "✅" : "❌"}`);
+  lines.push(`  crossK: ${crossK.toFixed(1)}`);
+  lines.push(`  currentK: ${trigger.stochK.toFixed(1)}  currentD: ${trigger.stochD.toFixed(1)}`);
+  if (direction === "LONG") {
+    lines.push(`  kAboveD: ${kAboveD} ${kAboveD ? "✅" : "❌"} (required for entry)`);
+    lines.push(`  zone: required <50, actual ${crossK.toFixed(1)} ${crossK < 50 ? "✅" : "❌"}`);
+    lines.push(`  extreme: <20 ${crossK < 20 ? "✅" : "❌"}`);
+  } else {
+    lines.push(`  kBelowD: ${kBelowD} ${kBelowD ? "✅" : "❌"} (required for entry)`);
+    lines.push(`  zone: required >50, actual ${crossK.toFixed(1)} ${crossK > 50 ? "✅" : "❌"}`);
+    lines.push(`  extreme: >80 ${crossK > 80 ? "✅" : "❌"}`);
+  }
+  lines.push(`  location: ${context.location.locationType} | ${context.location.marketPhase} ✅`);
+  lines.push(`  commitment: ${commitment.allowed ? "allowed" : "BLOCKED"} ${commitment.allowed ? "✅" : "❌"} (${commitment.reason})`);
+  lines.push(`  cycle: ${trigger.triggerType === "duplicate_cycle" ? "duplicate ❌" : "fresh ✅"}`);
+  lines.push(`  canEnter: ${context.canEnter} ${context.canEnter ? "✅" : "❌"}`);
+  lines.push(`  blocker: ${context.reason}`);
+  return lines;
+}
+
+// ============================================================
 // MAIN SIGNAL GENERATOR — v54
 // ============================================================
 
@@ -1179,6 +1249,8 @@ export function generateSignal(pair: string, candles1h: Candle[], candles4h: Can
   if (allowedSignals.length > 0) {
     clearDirectionState(pair);
   } else {
+    debug.push(...formatDirectionTelemetry(pair, "LONG", longContext, longCommitment));
+    debug.push(...formatDirectionTelemetry(pair, "SHORT", shortContext, shortCommitment));
     debug.push(`NO SIGNAL: LONG=${longContext.canEnter ? "ready" : "blocked"} (${longContext.reason}), SHORT=${shortContext.canEnter ? "ready" : "blocked"} (${shortContext.reason})`);
   }
 
