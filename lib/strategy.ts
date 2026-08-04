@@ -1,4 +1,4 @@
-// lib/strategy.ts — v53.4 "Context Restoration"
+// lib/strategy.ts — v53.5 "Triple Fix"
 // ============================================================
 // CHANGES:
 // - ADX weakening removed as hard gate; logged as context only
@@ -10,6 +10,14 @@
 // - getTrendline no longer filters by minR2; always returns honest fit
 // - location4H no longer gates trendline on minR2
 // - duplicate_cycle explicitly surfaced in Result line
+//
+// CRITICAL FIXES (v53.5):
+// 1. crossHash now uses candle timestamp (stable) instead of array index
+//    — prevents hash drift when new candles arrive
+// 2. trendlineStore key changed from "pair" to "${pair}_${direction}"
+//    — prevents LONG/SHORT trendlines overwriting each other
+// 3. cycleStore entries now auto-expire after 24h
+//    — prevents old cycles blocking new signals forever
 //
 // Philosophy: Identify Context → Pullback → Momentum → Entry
 // Do not wait for perfect alignment of all metrics.
@@ -393,13 +401,13 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   const currentIndex = candles.length - 1;
   if (pivots.length < 3) return null;
   const recentPivots = pivots.slice(-10);
-  const existing = trendlineStore.get(pair);
+  const existing = trendlineStore.get(`${pair}_${direction}`);
   if (existing && existing.direction === direction) {
     const lastPivot = recentPivots[recentPivots.length - 1];
     const projected = existing.slope * lastPivot.index + existing.intercept;
     const deviation = Math.abs(lastPivot.price - projected) / projected;
     if (deviation > config.cacheDevTolerance) {
-      trendlineStore.delete(pair);
+      trendlineStore.delete(`${pair}_${direction}`);
     } else {
       const tlPrice = existing.slope * currentIndex + existing.intercept;
       return { price: tlPrice, r2: existing.r2, slope: existing.slope, regressionDirection: existing.slope > 0 ? "rising" : "falling" };
@@ -407,7 +415,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   }
   const fit = fitTrendline(recentPivots);
   if (!fit) return null;
-  trendlineStore.set(pair, { slope: fit.slope, intercept: fit.intercept, lastUpdated: now, direction, r2: Math.round(fit.r2 * 100) / 100 });
+  trendlineStore.set(`${pair}_${direction}`, { slope: fit.slope, intercept: fit.intercept, lastUpdated: now, direction, r2: Math.round(fit.r2 * 100) / 100 });
   return { price: fit.slope * currentIndex + fit.intercept, r2: Math.round(fit.r2 * 100) / 100, slope: fit.slope, regressionDirection: fit.slope > 0 ? "rising" : "falling" };
 }
 
@@ -543,13 +551,18 @@ export interface TriggerResult {
   momentumDesc: string;
 }
 
-function computeCrossHash(pair: string, direction: "LONG" | "SHORT", crossIndex: number, crossK: number, crossD: number): string {
-  return `${pair}_${direction}_${crossIndex}_${Math.round(crossK)}_${Math.round(crossD)}`;
+function computeCrossHash(pair: string, direction: "LONG" | "SHORT", crossTimestamp: number, crossK: number, crossD: number): string {
+  return `${pair}_${direction}_${crossTimestamp}_${Math.round(crossK)}_${Math.round(crossD)}`;
 }
 
 function isDuplicateCycle(pair: string, direction: "LONG" | "SHORT", crossHash: string): boolean {
   const existing = cycleStore.get(`${pair}_${direction}`);
   if (!existing) return false;
+  const ageMs = Date.now() - existing.timestamp;
+  if (ageMs > 24 * 60 * 60 * 1000) {
+    cycleStore.delete(`${pair}_${direction}`);
+    return false;
+  }
   return existing.crossHash === crossHash;
 }
 
@@ -581,7 +594,7 @@ function findRecentCross(candles4h: Candle[], direction: "LONG" | "SHORT", pair:
         crossStochD: stochAt.d,
         currentStochK: currentStoch.k,
         currentStochD: currentStoch.d,
-        crossHash: computeCrossHash(pair, direction, idx, stochAt.k, stochAt.d),
+        crossHash: computeCrossHash(pair, direction, candles4h[idx].timestamp, stochAt.k, stochAt.d),
         crossAge: i,
       };
     }
