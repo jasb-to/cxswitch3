@@ -153,6 +153,7 @@ export interface PairConfig {
   cacheDevTolerance: number;
   preCrossEnabled: boolean;
   preCrossThreshold: number;
+  stopAtrMult: number;
 }
 
 const DEFAULT_CONFIG: PairConfig = {
@@ -164,6 +165,7 @@ const DEFAULT_CONFIG: PairConfig = {
   cacheDevTolerance: 0.04,
   preCrossEnabled: false,
   preCrossThreshold: 3,
+  stopAtrMult: 2,
 };
 
 const PAIR_CONFIGS: Record<string, PairConfig> = {
@@ -172,13 +174,14 @@ const PAIR_CONFIGS: Record<string, PairConfig> = {
   SOL: { ...DEFAULT_CONFIG, pair: "SOL" },
   HYPE: {
     pair: "HYPE",
-    tlProximity: 0.08,
+    tlProximity: 0.10,
     beyondTL: 0.0175,
-    crossLookback: 12,
+    crossLookback: 6,
     swingAtrMult: 4,
     cacheDevTolerance: 0.06,
     preCrossEnabled: false,
     preCrossThreshold: 3,
+    stopAtrMult: 3,
   },
 };
 
@@ -671,8 +674,8 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: 
         return { fired: false, detail: `Cross ${crossAge} candles ago already signaled`, triggerType: "duplicate_cycle", stochK: recentCross.currentStochK, stochD: recentCross.currentStochD, crossAge, crossHash, momentumDesc };
       }
       const kAboveD = recentCross.currentStochK >= recentCross.currentStochD;
-      const crossWasExtreme = recentCross.crossStochK < 20;
-      const crossWasPullback = recentCross.crossStochK < 50;
+      const crossWasExtreme = recentCross.crossStochK < 20 && recentCross.crossStochK >= 5;
+      const crossWasPullback = recentCross.crossStochK >= 20 && recentCross.crossStochK < 50;
 
       if (crossWasExtreme && kAboveD) {
         fired = true;
@@ -681,9 +684,11 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: 
       } else if (crossWasPullback && kAboveD) {
         fired = true;
         triggerType = "entry_2_early_momentum";
-        detail = `ENTRY_2: K crossed above D ${crossAge} candles ago below 50 (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
+        detail = `ENTRY_2: K crossed above D ${crossAge} candles ago in 20-50 zone (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
+      } else if (recentCross.crossStochK < 5) {
+        detail = `Cross ${crossAge} candles ago at K=${recentCross.crossStochK} too extreme (<5), likely exhaustion`;
       } else {
-        detail = `Cross ${crossAge} candles ago at K=${recentCross.crossStochK} not in pullback zone (needs <50 for longs)`;
+        detail = `Cross ${crossAge} candles ago at K=${recentCross.crossStochK} not in valid zone (needs 5-50 for longs)`;
       }
     } else {
       detail = `No recent cross. Stoch K=${stoch.k} D=${stoch.d}`;
@@ -696,8 +701,8 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: 
         return { fired: false, detail: `Cross ${crossAge} candles ago already signaled`, triggerType: "duplicate_cycle", stochK: recentCross.currentStochK, stochD: recentCross.currentStochD, crossAge, crossHash, momentumDesc };
       }
       const kBelowD = recentCross.currentStochK <= recentCross.currentStochD;
-      const crossWasExtreme = recentCross.crossStochK > 80;
-      const crossWasPullback = recentCross.crossStochK > 50;
+      const crossWasExtreme = recentCross.crossStochK > 80 && recentCross.crossStochK <= 95;
+      const crossWasPullback = recentCross.crossStochK > 50 && recentCross.crossStochK <= 80;
 
       if (crossWasExtreme && kBelowD) {
         fired = true;
@@ -706,9 +711,11 @@ function stochTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", pair: 
       } else if (crossWasPullback && kBelowD) {
         fired = true;
         triggerType = "entry_2_early_momentum";
-        detail = `ENTRY_2: K crossed below D ${crossAge} candles ago above 50 (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
+        detail = `ENTRY_2: K crossed below D ${crossAge} candles ago in 50-80 zone (cross K=${recentCross.crossStochK}, now K=${recentCross.currentStochK}, D=${recentCross.currentStochD})`;
+      } else if (recentCross.crossStochK > 95) {
+        detail = `Cross ${crossAge} candles ago at K=${recentCross.crossStochK} too extreme (>95), likely exhaustion`;
       } else {
-        detail = `Cross ${crossAge} candles ago at K=${recentCross.crossStochK} not in pullback zone (needs >50 for shorts)`;
+        detail = `Cross ${crossAge} candles ago at K=${recentCross.crossStochK} not in valid zone (needs 50-95 for shorts)`;
       }
     } else {
       detail = `No recent cross. Stoch K=${stoch.k} D=${stoch.d}`;
@@ -1011,10 +1018,21 @@ function buildDirectionalContext(
     canEnter = true;
     reason = trigger.detail;
   } else {
-    if (trigger?.triggerType === "duplicate_cycle") {
-      debug.push(`Result       BLOCKED — duplicate cycle`);
-    } else {
-      debug.push(`Result       WAITING — no valid trigger`);
+    // FIRST WAVE: no pullback yet, but momentum breakout conditions met
+    if (!anyActive) {
+      addTrigger = addTrigger4H(candles4h, direction, location, pair);
+      if (addTrigger?.fired) {
+        canEnter = true;
+        reason = addTrigger.detail;
+        debug.push(`Trigger      ✅ ${addTrigger.detail} (breakout)`);
+      }
+    }
+    if (!canEnter) {
+      if (trigger?.triggerType === "duplicate_cycle") {
+        debug.push(`Result       BLOCKED — duplicate cycle`);
+      } else {
+        debug.push(`Result       WAITING — no valid trigger or breakout`);
+      }
     }
   }
 
