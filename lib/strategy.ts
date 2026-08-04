@@ -1147,6 +1147,9 @@ function buildDirectionalContext(
 
   trigger = stochTrigger4H(candles4h, direction, pair);
   debug.push(`Trigger      ${trigger.fired ? '✅' : '❌'} ${trigger.detail}`);
+  if (trigger.hasCross) {
+    debug.push(`  cross: K=${trigger.crossStochK?.toFixed(1) || trigger.stochK.toFixed(1)} age=${trigger.crossAge} hash=${trigger.crossHash.slice(0, 8)}...`);
+  }
 
   if (anyActive) {
     reason = sameDirActive ? `Active ${direction} trade exists` : `Active opposite-direction trade exists — directional commitment`;
@@ -1164,21 +1167,7 @@ function buildDirectionalContext(
       debug.push(`Result       WAITING — no valid trigger`);
     }
     // Trigger rejection telemetry
-    if (trigger && trigger.hasCross) {
-      const kAboveD = trigger.stochK >= trigger.stochD;
-      const kBelowD = trigger.stochK <= trigger.stochD;
-      const crossK = trigger.crossStochK ?? trigger.stochK;
-      debug.push(`${direction} TRIGGER TELEMETRY:`);
-      debug.push(`  crossAge: ${trigger.crossAge} candles`);
-      debug.push(`  crossK: ${crossK.toFixed(1)}`);
-      debug.push(`  currentK: ${trigger.stochK.toFixed(1)}  currentD: ${trigger.stochD.toFixed(1)}`);
-      if (direction === "LONG") {
-        debug.push(`  kAboveD: ${kAboveD} ${kAboveD ? "✅" : "❌"} (required for entry)`);
-        const zoneOk = crossK < 50;
-        const extremeOk = crossK < 20;
-        debug.push(`  zone: required <50, actual ${crossK.toFixed(1)} ${zoneOk ? "✅" : "❌"}`);
-        debug.push(`  extreme: <20 ${extremeOk ? "✅" : "❌"}`);
-      } else {
+     else {
         debug.push(`  kBelowD: ${kBelowD} ${kBelowD ? "✅" : "❌"} (required for entry)`);
         const zoneOk = crossK > 50;
         const extremeOk = crossK > 80;
@@ -1202,29 +1191,37 @@ function buildDirectionalContext(
     let target: number;
     let signalType: "ENTRY_1" | "ENTRY_2" | "ADD";
 
-    // MUTUALLY EXCLUSIVE: breakout OR pullback, never both, never fallback
+    // DECISION TREE:
+    // 1. Breakout? → ENTRY_1
+    // 2. Pullback? → ENTRY_2
+    // 3. Neither?  → WAIT
     const isBreakout = trigger?.breakout === true;
     let isPullback = false;
     let pullbackValidation: { valid: boolean; detail: string; checks: string[] } | null = null;
 
+    // Step 1: Check breakout first
+    debug.push(`STEP 1: Breakout?`);
     if (isBreakout) {
       signalType = "ENTRY_1";
-      debug.push(`ENTRY TYPE   ENTRY_1 (breakout)`);
-      debug.push(`  breakout: ${trigger?.breakoutDetail || ""}`);
+      debug.push(`  → YES ✅ ENTRY_1`);
+      debug.push(`    ${trigger?.breakoutDetail || ""}`);
     } else {
-      // Only evaluate pullback if NOT a breakout
+      debug.push(`  → NO ❌`);
+      if (trigger?.breakoutDetail) debug.push(`    ${trigger.breakoutDetail}`);
+
+      // Step 2: Only evaluate pullback if no breakout
+      debug.push(`STEP 2: Pullback?`);
       pullbackValidation = validatePullback(candles4h, direction, trigger!, location);
       isPullback = pullbackValidation.valid;
       if (isPullback) {
         signalType = "ENTRY_2";
-        debug.push(`ENTRY TYPE   ENTRY_2 (pullback)`);
-        debug.push(`  pullback: ${pullbackValidation.detail}`);
+        debug.push(`  → YES ✅ ENTRY_2`);
+        debug.push(`    ${pullbackValidation.detail}`);
       } else {
-        debug.push(`ENTRY TYPE   WAIT`);
-        debug.push(`  breakout: NO ❌ ${trigger?.breakoutDetail || ""}`);
-        debug.push(`  pullback: NO ❌ ${pullbackValidation?.detail || ""}`);
-        for (const c of pullbackValidation?.checks || []) {
-          debug.push(`    ${c}`);
+        debug.push(`  → NO ❌`);
+        debug.push(`    ${pullbackValidation.detail}`);
+        for (const c of pullbackValidation.checks) {
+          debug.push(`      ${c}`);
         }
         return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: "neither breakout nor pullback qualifies" };
       }
