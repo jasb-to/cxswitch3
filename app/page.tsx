@@ -311,6 +311,11 @@ export default function Dashboard() {
                 bannerText = "🛑 STOP HIT — CLOSED";
                 bannerClass = "bg-red-500 text-white";
                 statusBadge = "SL HIT";
+              } else if (status === "FAILED") {
+                borderClass = "border-orange-500 bg-orange-900/10";
+                bannerText = "⚠️ THESIS FAILED — CLOSED";
+                bannerClass = "bg-orange-500 text-white";
+                statusBadge = "FAILED";
               } else if (status === "ACTIVE") {
                 borderClass =
                   signal.direction === "LONG"
@@ -397,7 +402,7 @@ export default function Dashboard() {
                         <span className={`text-[10px] font-bold ${signal.direction === "LONG" ? "text-green-400" : "text-red-400"}`}>
                           {signal.direction}
                         </span>
-                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${statusBadge === "ACTIVE" ? "bg-green-500/30 text-green-300" : statusBadge === "TP HIT" ? "bg-purple-500/30 text-purple-300" : statusBadge === "SL HIT" ? "bg-red-500/30 text-red-300" : statusBadge === "STALE" ? "bg-gray-500/30 text-gray-300" : "bg-blue-500/30 text-blue-300"}`}>
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${statusBadge === "ACTIVE" ? "bg-green-500/30 text-green-300" : statusBadge === "TP HIT" ? "bg-purple-500/30 text-purple-300" : statusBadge === "SL HIT" ? "bg-red-500/30 text-red-300" : statusBadge === "FAILED" ? "bg-orange-500/30 text-orange-300" : statusBadge === "STALE" ? "bg-gray-500/30 text-gray-300" : "bg-blue-500/30 text-blue-300"}`}>
                           {statusBadge}
                         </span>
                       </>
@@ -608,7 +613,7 @@ export default function Dashboard() {
                           {h.exitReason || "—"}
                         </td>
                         <td className="px-4 py-2 text-gray-400 text-xs">
-                          {timeAgo(h.timestamp)}
+                          {timeAgo(h.exitTimestamp || h.timestamp)}
                         </td>
                       </tr>
                     ))}
