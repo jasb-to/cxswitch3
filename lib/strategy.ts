@@ -437,19 +437,19 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
 // DAILY TREND (kept from v53.5 — proven, simple)
 // ============================================================
 
-function dailyTrend(candles1d: Candle[]): { direction: "LONG" | "SHORT" | "FLAT"; detail: string; ema21: number; ema50: number } {
-  if (candles1d.length < 20) {
-    return { direction: "FLAT", detail: `Insufficient data (${candles1d.length} candles)`, ema21: 0, ema50: 0 };
+function dailyTrend(candles1d: Candle[]): { direction: "LONG" | "SHORT" | "FLAT"; detail: string; emaFast: number; emaSlow: number } {
+  if (candles1d.length < 25) {
+    return { direction: "FLAT", detail: `Insufficient data (${candles1d.length} candles)`, emaFast: 0, emaSlow: 0 };
   }
   const closes = candles1d.map(c => c.close);
+  const e8 = ema(closes, 8);
   const e21 = ema(closes, 21);
-  const e50 = ema(closes, 50);
+  const last8 = e8[e8.length - 1];
   const last21 = e21[e21.length - 1];
-  const last50 = e50[e50.length - 1];
-  const diff = Math.abs(last21 - last50) / last50;
-  if (diff < 0.005) return { direction: "FLAT", detail: `EMA21 ${last21.toFixed(1)} ≈ EMA50 ${last50.toFixed(1)} (flat)`, ema21: last21, ema50: last50 };
-  if (last21 > last50) return { direction: "LONG", detail: `EMA21 ${last21.toFixed(1)} > EMA50 ${last50.toFixed(1)}`, ema21: last21, ema50: last50 };
-  return { direction: "SHORT", detail: `EMA21 ${last21.toFixed(1)} < EMA50 ${last50.toFixed(1)}`, ema21: last21, ema50: last50 };
+  const diff = Math.abs(last8 - last21) / last21;
+  if (diff < 0.005) return { direction: "FLAT", detail: `EMA8 ${last8.toFixed(1)} ≈ EMA21 ${last21.toFixed(1)} (flat)`, emaFast: last8, emaSlow: last21 };
+  if (last8 > last21) return { direction: "LONG", detail: `EMA8 ${last8.toFixed(1)} > EMA21 ${last21.toFixed(1)}`, emaFast: last8, emaSlow: last21 };
+  return { direction: "SHORT", detail: `EMA8 ${last8.toFixed(1)} < EMA21 ${last21.toFixed(1)}`, emaFast: last8, emaSlow: last21 };
 }
 
 // ============================================================
@@ -927,7 +927,7 @@ function checkDirectionalCommitment(
 function buildDirectionalContext(
   pair: string,
   candles4h: Candle[],
-  trend: { direction: "LONG" | "SHORT" | "FLAT"; detail: string; ema21: number; ema50: number },
+  trend: { direction: "LONG" | "SHORT" | "FLAT"; detail: string; emaFast: number; emaSlow: number },
   direction: "LONG" | "SHORT",
   price: number,
   activeSignals: Signal[],
