@@ -29,6 +29,24 @@ interface Signal {
   };
 }
 
+interface HistoryEntry {
+  id: string;
+  pair: string;
+  direction: "LONG" | "SHORT";
+  type: string;
+  entry: number;
+  stop: number;
+  target: number;
+  timestamp: number;
+  status: string;
+  exitReason?: string;
+  exitPrice?: number;
+  meta?: {
+    status: string;
+    ageMinutes: number;
+  };
+}
+
 interface MarketData {
   pair: string;
   price: number;
@@ -105,7 +123,6 @@ function getSignalLabel(type: string): { text: string; color: string } {
   }
 }
 
-// ─── Stop Trail Calculator ─────────────────────────────────
 interface StopMilestone {
   label: string;
   price: number;
@@ -188,9 +205,9 @@ function calcStopTrail(signal: Signal, currentPrice: number): {
   return { currentR, milestones, distanceToNext };
 }
 
-// ─── Main Dashboard ────────────────────────────────────────
 export default function Dashboard() {
   const [signals, setSignals] = useState<Record<string, Signal | null>>({});
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [marketData, setMarketData] = useState<Record<string, MarketData>>({});
   const [livePrices, setLivePrices] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
@@ -206,7 +223,7 @@ export default function Dashboard() {
         const mktMap: Record<string, MarketData> = {};
 
         for (const p of PAIRS) {
-          const s = data.signals?.find((sig: Signal) => sig.pair === p);
+          const s = data.activeSignals?.find((sig: Signal) => sig.pair === p);
           sigMap[p] = s || null;
         }
         for (const m of data.marketData || []) {
@@ -214,6 +231,7 @@ export default function Dashboard() {
         }
 
         setSignals(sigMap);
+        setHistory(data.signalHistory || []);
         setMarketData(mktMap);
         setFetchCount((c) => c + 1);
         setLastFetch(Date.now());
@@ -247,7 +265,7 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
-        <div className="text-lg">Loading CX Switch v53...</div>
+        <div className="text-lg">Loading CX Switch v54...</div>
       </div>
     );
   }
@@ -256,7 +274,7 @@ export default function Dashboard() {
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-7xl mx-auto">
         <div className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-bold">CX Switch v53</h1>
+          <h1 className="text-2xl font-bold">CX Switch v54</h1>
           <div className="text-xs text-gray-400">
             Fetches: {fetchCount} | Last:{" "}
             {lastFetch ? new Date(lastFetch).toLocaleTimeString() : "—"}
@@ -538,6 +556,68 @@ export default function Dashboard() {
             );
           })}
         </div>
+
+        {/* Signal History */}
+        {history.length > 0 && (
+          <div className="mt-8">
+            <h2 className="text-xl font-bold mb-4">Signal History</h2>
+            <div className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-900 text-gray-400 text-xs uppercase">
+                    <tr>
+                      <th className="px-4 py-2 text-left">Pair</th>
+                      <th className="px-4 py-2 text-left">Dir</th>
+                      <th className="px-4 py-2 text-left">Type</th>
+                      <th className="px-4 py-2 text-left">Entry</th>
+                      <th className="px-4 py-2 text-left">Status</th>
+                      <th className="px-4 py-2 text-left">Exit</th>
+                      <th className="px-4 py-2 text-left">Age</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-700">
+                    {history.slice().reverse().map((h) => (
+                      <tr key={h.id} className="hover:bg-gray-700/50">
+                        <td className="px-4 py-2 font-mono">{h.pair}</td>
+                        <td className="px-4 py-2">
+                          <span className={h.direction === "LONG" ? "text-green-400" : "text-red-400"}>
+                            {h.direction}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2">
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] ${
+                            h.type === "ENTRY_1" ? "bg-green-500/20 text-green-300" :
+                            h.type === "ENTRY_2" ? "bg-yellow-500/20 text-yellow-300" :
+                            "bg-blue-500/20 text-blue-300"
+                          }`}>
+                            {h.type}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2 font-mono">{money(h.entry)}</td>
+                        <td className="px-4 py-2">
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                            h.status === "ACTIVE" ? "bg-green-500/30 text-green-300" :
+                            h.status === "TP_HIT" ? "bg-purple-500/30 text-purple-300" :
+                            h.status === "SL_HIT" ? "bg-red-500/30 text-red-300" :
+                            "bg-gray-500/30 text-gray-300"
+                          }`}>
+                            {h.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2 text-gray-400 text-xs">
+                          {h.exitReason || "—"}
+                        </td>
+                        <td className="px-4 py-2 text-gray-400 text-xs">
+                          {timeAgo(h.timestamp)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
