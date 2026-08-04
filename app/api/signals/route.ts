@@ -82,9 +82,15 @@ export async function GET() {
       }
     } catch (e) {}
 
+    // Compute expectedMove from entry/target if missing
+    const expectedMove = s.entry && s.target
+      ? Math.round(((s.target - s.entry) / s.entry) * 1000) / 10
+      : 0;
+
     return {
       ...s,
       scale: s.type,
+      expectedMove,
       meta: {
         status,
         ageMinutes: Math.round(ageMin),
