@@ -40,6 +40,12 @@ export interface ActiveTrade {
   status: "ACTIVE";
   context: any;
   version: number;
+  holdAdvice?: {
+    status: "healthy" | "warning" | "failed";
+    reason: string;
+    newStop?: number;
+    checkedAt: number;
+  };
 }
 
 export type HistoryStatus = "ACTIVE" | "TP_HIT" | "SL_HIT" | "FAILED" | "EXPIRED";
