@@ -158,7 +158,7 @@ export interface PairConfig {
 
 const DEFAULT_CONFIG: PairConfig = {
   pair: "DEFAULT",
-  tlProximity: 0.06,
+  tlProximity: 0.012,  // v28: 1.2% proximity
   beyondTL: 0.008,
   crossLookback: 10,
   swingAtrMult: 3,
@@ -174,7 +174,7 @@ const PAIR_CONFIGS: Record<string, PairConfig> = {
   SOL: { ...DEFAULT_CONFIG, pair: "SOL" },
   HYPE: {
     pair: "HYPE",
-    tlProximity: 0.10,
+    tlProximity: 0.02,   // HYPE: 2% proximity (still wider than default due to volatility)
     beyondTL: 0.0175,
     crossLookback: 6,
     swingAtrMult: 4,
@@ -519,33 +519,12 @@ function location4H(pair: string, candles4h: Candle[], direction: "LONG" | "SHOR
       }
     }
   } else {
-    if (direction === "LONG") {
-      let swingLow = Infinity;
-      for (let i = 1; i < recent.length - 1; i++) {
-        const isPivotLow = recent[i].low < recent[i-1].low && recent[i].low < recent[i+1].low;
-        if (isPivotLow && recent[i].low < swingLow) swingLow = recent[i].low;
-      }
-      if (swingLow === Infinity) swingLow = Math.min(...recent.map(c => c.low));
-      const dist = price - swingLow;
-      const maxDist = atrVal * config.swingAtrMult;
-      structureDesc = `Swing low at ${swingLow.toFixed(2)}, price ${dist.toFixed(2)} above (${(dist/maxDist*100).toFixed(0)}% of max ${maxDist.toFixed(2)})`;
-      marketPhase = dist <= maxDist ? "pullback_to_structure" : "extended_above_structure";
-      locationType = dist <= maxDist ? "SWING_LOW" : "EXTENDED";
-      trendlinePrice = swingLow;
-    } else {
-      let swingHigh = -Infinity;
-      for (let i = 1; i < recent.length - 1; i++) {
-        const isPivotHigh = recent[i].high > recent[i-1].high && recent[i].high > recent[i+1].high;
-        if (isPivotHigh && recent[i].high > swingHigh) swingHigh = recent[i].high;
-      }
-      if (swingHigh === -Infinity) swingHigh = Math.max(...recent.map(c => c.high));
-      const dist = swingHigh - price;
-      const maxDist = atrVal * config.swingAtrMult;
-      structureDesc = `Swing high at ${swingHigh.toFixed(2)}, price ${dist.toFixed(2)} below (${(dist/maxDist*100).toFixed(0)}% of max ${maxDist.toFixed(2)})`;
-      marketPhase = dist <= maxDist ? "pullback_to_structure" : "extended_below_structure";
-      locationType = dist <= maxDist ? "SWING_HIGH" : "EXTENDED";
-      trendlinePrice = swingHigh;
-    }
+    // v28: no trendline = no structure = no entry
+    structureDesc = "No trendline — no valid structure";
+    marketPhase = "no_structure";
+    locationType = "NONE";
+    trendlinePrice = 0;
+    distToTL = 0;
   }
 
   return { detail: structureDesc, trendlinePrice, locationType, marketPhase, structureDesc, pullbackDesc, regressionDir, distToTL };
@@ -955,6 +934,12 @@ function buildDirectionalContext(
   const location = location4H(pair, candles4h, direction);
 
   debug.push(`Location     ${location.locationType} | ${location.marketPhase} | ${location.structureDesc}`);
+
+  // v28: no trendline = no entry
+  if (location.locationType === "NONE") {
+    debug.push(`Result       BLOCKED — no trendline, no structure`);
+    return { direction, trend: trend.detail, location, trigger: null, addTrigger: null, signal: undefined, canEnter: false, reason: "No trendline — no structure" };
+  }
 
   // ADX logged as context only (NOT a hard gate — restored from v28)
   const last3Adx = adxSeries.slice(0, 3);
