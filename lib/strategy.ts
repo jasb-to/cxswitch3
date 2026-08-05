@@ -1,4 +1,4 @@
-// lib/strategy.ts — v54 "Restored Philosophy"
+// lib/strategy.ts — v54.1 "Chop Fix — Breakout Only"
 // ============================================================
 // MERGED: v28 entry philosophy + v53.5 infrastructure fixes + new exit system
 //
@@ -984,9 +984,16 @@ function buildDirectionalContext(
     reason = sameDirActive ? `Active ${direction} trade exists` : `Active opposite-direction trade exists`;
     debug.push(`Result       WAITING — ${reason}`);
   } else if (trigger?.fired) {
-    // v28: no cross freshness check, no counter-trend blocking
-    canEnter = true;
-    reason = trigger.detail;
+    // v54.1: In ranging chop, skip perfect-pullback entries at the trendline.
+    // Wait for breakout confirmation (BEYOND_TL) or momentum from NEAR_TL.
+    if (location.locationType === "TRENDLINE") {
+      debug.push(`Trigger      ✅ ${trigger.detail}`);
+      debug.push(`Result       WAITING — at trendline, waiting for breakout beyond structure`);
+      reason = "At trendline — waiting for breakout beyond structure";
+    } else {
+      canEnter = true;
+      reason = trigger.detail;
+    }
   } else {
     // FIRST WAVE: no pullback yet, but momentum breakout conditions met
     if (!anyActive) {
