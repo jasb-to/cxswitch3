@@ -154,6 +154,7 @@ export interface PairConfig {
   preCrossEnabled: boolean;
   preCrossThreshold: number;
   stopAtrMult: number;
+  minStopPct: number;
 }
 
 const DEFAULT_CONFIG: PairConfig = {
@@ -166,6 +167,7 @@ const DEFAULT_CONFIG: PairConfig = {
   preCrossEnabled: false,
   preCrossThreshold: 3,
   stopAtrMult: 2,
+  minStopPct: 0.015,  // 1.5% minimum stop width
 };
 
 const PAIR_CONFIGS: Record<string, PairConfig> = {
@@ -182,6 +184,7 @@ const PAIR_CONFIGS: Record<string, PairConfig> = {
     preCrossEnabled: false,
     preCrossThreshold: 3,
     stopAtrMult: 3,
+    minStopPct: 0.025,  // 2.5% minimum stop on volatile HYPE
   },
 };
 
@@ -1044,6 +1047,18 @@ function buildDirectionalContext(
         target = price - (stop - price) * 1.5;
         target = Math.min(swingLow, target);
       }
+    }
+
+    // Enforce minimum stop width — prevents razor-thin stops on rangebound pairs
+    const minStopDistance = price * config.minStopPct;
+    const actualStopDistance = Math.abs(price - stop);
+    if (actualStopDistance < minStopDistance) {
+      if (direction === "LONG") {
+        stop = Math.min(stop, price - minStopDistance);
+      } else {
+        stop = Math.max(stop, price + minStopDistance);
+      }
+      debug.push(`Stop         widened from ${actualStopDistance.toFixed(2)} to ${Math.abs(price - stop).toFixed(2)} (${(config.minStopPct * 100).toFixed(1)}% min)`);
     }
 
     const risk = Math.abs(price - stop);
