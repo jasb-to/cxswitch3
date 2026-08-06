@@ -1,4 +1,4 @@
-// lib/strategy.ts — v54.1 "Chop Fix — Breakout Only"
+// lib/strategy.ts — v54.3 "v28 Soul Restored"
 // ============================================================
 // MERGED: v28 entry philosophy + v53.5 infrastructure fixes + new exit system
 //
@@ -726,8 +726,7 @@ function addTrigger4H(candles4h: Candle[], direction: "LONG" | "SHORT", location
   const confirmations: string[] = [];
 
   if (location.locationType === "BEYOND_TL") confirmations.push("beyond_tl");
-  if (direction === "LONG" && last.close > last.open && last.close > prev.close) confirmations.push("confirming_candle");
-  else if (direction === "SHORT" && last.close < last.open && last.close < prev.close) confirmations.push("confirming_candle");
+  // v54.3: confirming candle removed — adds 4H lag, move is already done by then
   if (direction === "LONG" && price > ema8_4h[ema8_4h.length - 1] && price > ema21_4h[ema21_4h.length - 1]) confirmations.push("ema_aligned");
   else if (direction === "SHORT" && price < ema8_4h[ema8_4h.length - 1] && price < ema21_4h[ema21_4h.length - 1]) confirmations.push("ema_aligned");
   if (direction === "LONG" && stoch.k > stoch.d) confirmations.push("stoch_momentum");
@@ -984,12 +983,13 @@ function buildDirectionalContext(
     reason = sameDirActive ? `Active ${direction} trade exists` : `Active opposite-direction trade exists`;
     debug.push(`Result       WAITING — ${reason}`);
   } else if (trigger?.fired) {
-    // v54.1: In ranging chop, skip perfect-pullback entries at the trendline.
-    // Wait for breakout confirmation (BEYOND_TL) or momentum from NEAR_TL.
-    if (location.locationType === "TRENDLINE") {
+    // v54.3: v28 pullback entries restored. Only block in dead chop (ADX < 18).
+    // In trends (ADX >= 15), pullback entries are the bread and butter.
+    const isPullbackLocation = location.locationType === "TRENDLINE" || location.locationType === "NEAR_TL";
+    if (isPullbackLocation && adxCurrent < 18) {
       debug.push(`Trigger      ✅ ${trigger.detail}`);
-      debug.push(`Result       WAITING — at trendline, waiting for breakout beyond structure`);
-      reason = "At trendline — waiting for breakout beyond structure";
+      debug.push(`Result       WAITING — ADX ${adxCurrent.toFixed(1)} < 18, chop filter active`);
+      reason = `ADX ${adxCurrent.toFixed(1)} < 18 — chop filter blocks pullback entry`;
     } else {
       canEnter = true;
       reason = trigger.detail;
@@ -1023,8 +1023,11 @@ function buildDirectionalContext(
     let target: number;
     let signalType: "ENTRY_1" | "ENTRY_2" | "ADD";
 
+    const isAddEntry = !!addTrigger?.fired && !trigger?.fired;
+
     if (trigger?.triggerType === "entry_1_deep_pullback") signalType = "ENTRY_1";
     else if (trigger?.triggerType === "entry_2_early_momentum") signalType = "ENTRY_2";
+    else if (isAddEntry) signalType = "ADD";
     else signalType = "ENTRY_1";
 
     // v28-style level calculation
@@ -1057,7 +1060,8 @@ function buildDirectionalContext(
     }
 
     // Enforce minimum stop width — prevents razor-thin stops on rangebound pairs
-    const minStopDistance = price * config.minStopPct;
+    const pairConfig = getPairConfig(pair);
+    const minStopDistance = price * pairConfig.minStopPct;
     const actualStopDistance = Math.abs(price - stop);
     if (actualStopDistance < minStopDistance) {
       if (direction === "LONG") {
@@ -1065,7 +1069,7 @@ function buildDirectionalContext(
       } else {
         stop = Math.max(stop, price + minStopDistance);
       }
-      debug.push(`Stop         widened from ${actualStopDistance.toFixed(2)} to ${Math.abs(price - stop).toFixed(2)} (${(config.minStopPct * 100).toFixed(1)}% min)`);
+      debug.push(`Stop         widened from ${actualStopDistance.toFixed(2)} to ${Math.abs(price - stop).toFixed(2)} (${(pairConfig.minStopPct * 100).toFixed(1)}% min)`);
     }
 
     const risk = Math.abs(price - stop);
@@ -1078,16 +1082,16 @@ function buildDirectionalContext(
       return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `R:R ${rr.toFixed(2)} < 1.5` };
     }
 
-    const triggerResult = trigger!;
+    const activeTrigger = isAddEntry ? addTrigger! : trigger!;
     const context: SignalContext = {
       marketPhase: location.marketPhase,
       structure: location.structureDesc,
-      momentum: triggerResult.momentumDesc || "neutral",
+      momentum: isAddEntry ? "breakout_momentum" : ((activeTrigger as TriggerResult).momentumDesc || "neutral"),
       pullback: location.pullbackDesc,
       trendDescription: trend.detail,
-      triggerDetails: triggerResult.detail,
-      crossAge: triggerResult.crossAge || 0,
-      crossHash: triggerResult.crossHash || "",
+      triggerDetails: activeTrigger.detail,
+      crossAge: isAddEntry ? 0 : ((activeTrigger as TriggerResult).crossAge || 0),
+      crossHash: isAddEntry ? "" : ((activeTrigger as TriggerResult).crossHash || ""),
     };
 
     signal = {
@@ -1102,15 +1106,15 @@ function buildDirectionalContext(
       rr: Math.round(rr * 100) / 100,
       adx: Math.round(adxCurrent * 10) / 10,
       rsi: Math.round(wilderRsi(candles4h.map(c => c.close)) * 10) / 10,
-      stochK: triggerResult.stochK,
-      stochD: triggerResult.stochD,
+      stochK: activeTrigger.stochK,
+      stochD: activeTrigger.stochD,
       expectedMove: Math.round(((target - price) / price) * 1000) / 10,
-      reason: `${signalType} ${direction} | ${trend.direction} | ${location.marketPhase} | ${triggerResult.detail}`,
+      reason: `${signalType} ${direction} | ${trend.direction} | ${location.marketPhase} | ${activeTrigger.detail}`,
       timestamp: Date.now(),
       version: CURRENT_SIGNAL_VERSION,
       trend: trend.direction,
       location: location.detail,
-      trigger: triggerResult.detail,
+      trigger: activeTrigger.detail,
       context,
     };
 
@@ -1369,11 +1373,14 @@ export function analyzeTradeHealth(
     return { state: "FAILED", reason: "daily_trend_reversed" };
   }
 
-  // 5. Momentum exhaustion — Stoch extreme + price loses EMA21
-  const stochExtreme = signal.direction === "LONG" ? stoch.k < 20 : stoch.k > 80;
-  const priceLosesEma21 = signal.direction === "LONG" ? currentPrice < lastEma21 : currentPrice > lastEma21;
-  if (stochExtreme && priceLosesEma21) {
-    return { state: "FAILED", reason: "momentum_exhausted" };
+  // 5. Stoch extreme exhaustion — opposite extreme zone + K crossing back
+  // LONG: K > 80 and crossing below D (overbought reversal)
+  // SHORT: K < 20 and crossing above D (oversold reversal)
+  const stochExhausted = signal.direction === "LONG"
+    ? stoch.k > 80 && stoch.k < stoch.d
+    : stoch.k < 20 && stoch.k > stoch.d;
+  if (stochExhausted) {
+    return { state: "FAILED", reason: "stoch_extreme_exhaustion" };
   }
 
   // ==================== WARNING CHECKS ====================
