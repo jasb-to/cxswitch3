@@ -1035,27 +1035,19 @@ function buildDirectionalContext(
       if (direction === "LONG") {
         const atrStop = price - atrVal * 2;
         stop = Math.max(atrStop, swingLow);
-        target = price + (price - stop) * 1.5;
-        target = Math.max(swingHigh, target);
       } else {
         const atrStop = price + atrVal * 2;
         stop = Math.min(atrStop, swingHigh);
-        target = price - (stop - price) * 1.5;
-        target = Math.min(swingLow, target);
       }
     } else {
       if (direction === "LONG") {
         const atrStop = price - atrVal * 1.5;
         const tlStop = location.trendlinePrice > 0 ? location.trendlinePrice * 0.995 : atrStop;
         stop = Math.max(atrStop, tlStop, swingLow);
-        target = price + (price - stop) * 1.5;
-        target = Math.max(swingHigh, target);
       } else {
         const atrStop = price + atrVal * 1.5;
         const tlStop = location.trendlinePrice > 0 ? location.trendlinePrice * 1.005 : atrStop;
         stop = Math.min(atrStop, tlStop, swingHigh);
-        target = price - (stop - price) * 1.5;
-        target = Math.min(swingLow, target);
       }
     }
 
@@ -1072,14 +1064,33 @@ function buildDirectionalContext(
       debug.push(`Stop         widened from ${actualStopDistance.toFixed(2)} to ${Math.abs(price - stop).toFixed(2)} (${(pairConfig.minStopPct * 100).toFixed(1)}% min)`);
     }
 
+    // Calculate target AFTER stop is finalized so R:R is honest
+    if (signalType === "ENTRY_1" || signalType === "ENTRY_2") {
+      if (direction === "LONG") {
+        target = price + (price - stop) * 1.5;
+        target = Math.max(swingHigh, target);
+      } else {
+        target = price - (stop - price) * 1.5;
+        target = Math.min(swingLow, target);
+      }
+    } else {
+      if (direction === "LONG") {
+        target = price + (price - stop) * 1.5;
+        target = Math.max(swingHigh, target);
+      } else {
+        target = price - (stop - price) * 1.5;
+        target = Math.min(swingLow, target);
+      }
+    }
+
     const risk = Math.abs(price - stop);
     const reward = Math.abs(target - price);
     const rr = risk > 0 ? reward / risk : 0;
 
     // v28: minimum R/R check
-    if (rr < 1.5) {
-      debug.push(`Result       BLOCKED — R:R ${rr.toFixed(2)} < 1.5`);
-      return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `R:R ${rr.toFixed(2)} < 1.5` };
+    if (rr < 1.4) {
+      debug.push(`Result       BLOCKED — R:R ${rr.toFixed(2)} < 1.4`);
+      return { direction, trend: trend.detail, location, trigger, addTrigger: null, signal: undefined, canEnter: false, reason: `R:R ${rr.toFixed(2)} < 1.4` };
     }
 
     const activeTrigger = isAddEntry ? addTrigger! : trigger!;
