@@ -1,7 +1,7 @@
-// lib/strategy.ts — v29 "Bias + Break + Pullback"
+// lib/strategy.ts — v30 "Bias + Pullback to TL"
 // ============================================================
-// Architecture-compatible with v54 cron, v50.1 telegram, v54 dashboard
-// Stateless — no in-memory stores. Survives serverless cold starts.
+// Enters BEFORE the 4H break. 15m confirmation at the 4H TL zone.
+// Stateless. Compatible with v54 cron / v50.1 telegram / v54 dashboard.
 
 export interface Candle {
   timestamp: number;
@@ -31,7 +31,6 @@ export interface Signal {
   reason: string;
   timestamp: number;
   version: number;
-  // v54 compat fields
   trend?: string;
   location?: string;
   trigger?: string;
@@ -39,17 +38,16 @@ export interface Signal {
 }
 
 export interface SignalResult {
-  signals?: Signal[];      // v54 cron expects array
-  signal?: Signal;         // backward compat
+  signals?: Signal[];
+  signal?: Signal;
   market?: any;
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 29;
+export const CURRENT_SIGNAL_VERSION = 30;
 const MIN_RR = 1.5;
-const SETUP_TTL_MS = 12 * 60 * 60 * 1000; // 12h to find pullback
+const TL_THRESHOLD = 0.008; // 0.8% — price must be within this of the 4H TL
 
-// --- HELPERS ---
 function avg(arr: number[]): number {
   if (!arr.length) return 0;
   return arr.reduce((a, b) => a + b, 0) / arr.length;
@@ -75,7 +73,6 @@ function atr(candles: Candle[], period: number = 14): number {
   return avg(trs);
 }
 
-// --- AGGREGATE 4H → 1D ---
 function aggregateTo1D(candles4h: Candle[]): Candle[] {
   const sorted = [...candles4h].sort((a, b) => a.timestamp - b.timestamp);
   const groups = new Map<string, Candle[]>();
@@ -100,7 +97,6 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// --- BIAS: EMA 8 vs 21 + structure ---
 function getBias(candles: Candle[]): "LONG" | "SHORT" | null {
   if (candles.length < 30) return null;
   const closes = candles.map(c => c.close);
@@ -120,7 +116,6 @@ function getBias(candles: Candle[]): "LONG" | "SHORT" | null {
   return null;
 }
 
-// --- PIVOTS FOR TRENDLINE ---
 function findPivots(candles: Candle[], direction: "LONG" | "SHORT") {
   const pivots: { index: number; price: number; timestamp: number }[] = [];
   for (let i = 3; i < candles.length - 3; i++) {
@@ -160,11 +155,10 @@ function fitTrendline(pivots: { index: number; price: number }[]) {
   return { slope, intercept };
 }
 
-// --- 15m PULLBACK DETECTION ---
 function findPullbackEntry(
   candles15m: Candle[],
   direction: "LONG" | "SHORT",
-  breakLevel: number
+  tlPrice: number
 ): { entry: number; stop: number; reason: string } | null {
   if (candles15m.length < 30) return null;
 
@@ -180,15 +174,18 @@ function findPullbackEntry(
   const swingHigh = Math.max(...recentHighs);
   const atr15m = atr(candles15m, 14);
 
+  // Price must be interacting with the TL zone on 15m
+  const nearTL = Math.abs(last.close - tlPrice) / tlPrice < TL_THRESHOLD;
+
   if (direction === "LONG") {
-    const atSupport = last.low <= breakLevel * 1.003 || last.low <= e20 * 1.008;
+    const atSupport = nearTL || last.low <= tlPrice * 1.003 || last.low <= e20 * 1.008;
     const confirming = last.close > last.open && last.close > e20 && prev.close < prev.open;
     if (atSupport && confirming) {
       const sl = Math.min(swingLow, last.low - atr15m * 0.5);
       return { entry: last.close, stop: sl, reason: "15m TL retest + bull candle" };
     }
   } else {
-    const atResistance = last.high >= breakLevel * 0.997 || last.high >= e20 * 0.992;
+    const atResistance = nearTL || last.high >= tlPrice * 0.997 || last.high >= e20 * 0.992;
     const confirming = last.close < last.open && last.close < e20 && prev.close > prev.open;
     if (atResistance && confirming) {
       const sl = Math.max(swingHigh, last.high + atr15m * 0.5);
@@ -198,13 +195,12 @@ function findPullbackEntry(
   return null;
 }
 
-// --- MAIN SIGNAL ---
 export function generateSignal(
   pair: string,
   candles1h: Candle[],
   candles4h: Candle[],
   candles15m: Candle[],
-  _activeTrades?: any[], // v54 compat — cron passes this
+  _activeTrades?: any[],
   currentPrice?: number
 ): SignalResult {
   const debug: string[] = [];
@@ -242,43 +238,22 @@ export function generateSignal(
     return { debug };
   }
 
-  // 3. DETECT FRESH 4H BREAK (stateless — look back last 4 candles)
-  let breakCandle: Candle | null = null;
-  let breakTrendlinePrice = 0;
-
-  for (let i = candles4h.length - 1; i >= Math.max(1, candles4h.length - 4); i--) {
-    const c = candles4h[i];
-    const prev = candles4h[i - 1];
-    const tlNow = tl.slope * i + tl.intercept;
-    const tlPrev = tl.slope * (i - 1) + tl.intercept;
-
-    const isBreak =
-      direction === "LONG"
-        ? c.close > tlNow && prev.close <= tlPrev
-        : c.close < tlNow && prev.close >= tlPrev;
-
-    if (isBreak) {
-      breakCandle = c;
-      breakTrendlinePrice = tlNow;
-      break;
-    }
-  }
-
   const last4h = candles4h[candles4h.length - 1];
   const tlNow = tl.slope * (candles4h.length - 1) + tl.intercept;
-  debug.push(`TL: ${tlNow.toFixed(2)} | Price: ${last4h.close.toFixed(2)}`);
+  const dist = (last4h.close - tlNow) / tlNow;
+  debug.push(`TL: ${tlNow.toFixed(2)} | Price: ${last4h.close.toFixed(2)} | Dist: ${(dist * 100).toFixed(2)}%`);
 
-  if (!breakCandle || now - breakCandle.timestamp > SETUP_TTL_MS) {
-    debug.push(breakCandle ? "Break stale (>12h)" : "No fresh 4H break");
+  // 3. PRICE MUST BE NEAR THE TRENDLINE (pullback zone)
+  const nearTL = Math.abs(dist) < TL_THRESHOLD;
+  if (!nearTL) {
+    debug.push(`Price ${(dist * 100).toFixed(2)}% from TL — outside ${(TL_THRESHOLD * 100).toFixed(2)}% zone`);
     return { debug };
   }
 
-  debug.push(`SETUP: ${direction} break @ ${breakCandle.close.toFixed(2)} (${Math.round((now - breakCandle.timestamp) / 60000)}m ago)`);
-
-  // 4. 15m PULLBACK ENTRY
-  const pullback = findPullbackEntry(candles15m, direction, breakTrendlinePrice);
+  // 4. 15m CONFIRMATION AT THE ZONE
+  const pullback = findPullbackEntry(candles15m, direction, tlNow);
   if (!pullback) {
-    debug.push("Waiting for 15m pullback...");
+    debug.push("Waiting for 15m confirmation at TL...");
     return { debug };
   }
 
@@ -286,15 +261,11 @@ export function generateSignal(
   const atr4h = atr(candles4h, 14);
   const entry = pullback.entry;
   const sl = pullback.stop;
-  const tp =
-    direction === "LONG"
-      ? entry + atr4h * 4
-      : entry - atr4h * 4;
+  const tp = direction === "LONG" ? entry + atr4h * 4 : entry - atr4h * 4;
 
-  const rr =
-    direction === "LONG"
-      ? (tp - entry) / (entry - sl)
-      : (entry - tp) / (sl - entry);
+  const rr = direction === "LONG"
+    ? (tp - entry) / (entry - sl)
+    : (entry - tp) / (sl - entry);
 
   if (!isFinite(rr) || rr < MIN_RR) {
     debug.push(`R:R ${rr?.toFixed(2) || "inf"} < ${MIN_RR}`);
@@ -317,15 +288,15 @@ export function generateSignal(
     stochK: 0,
     stochD: 0,
     expectedMove: Math.abs(tp - entry) / entry * 100,
-    reason: `${direction} | ${pullback.reason} | 4H break @ ${breakCandle.close.toFixed(1)} | RR ${rr.toFixed(2)}`,
+    reason: `${direction} | ${pullback.reason} | 4H TL ${tlNow.toFixed(1)} | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
     trend: direction,
     location: "NEAR_TL",
-    trigger: "FIRED",
+    trigger: "READY",
     context: {
       marketPhase: `${direction} aligned`,
-      structure: "trendline_break",
+      structure: "trendline_pullback",
       momentum: pullback.reason,
       pullback: "active",
       crossAge: 0,
@@ -343,14 +314,10 @@ export function generateSignal(
       timestamp: now,
       trend: direction,
       location: "NEAR_TL",
-      trigger: "FIRED",
-      adx: 0,
-      rsi: 0,
-      stochK: 0,
-      stochD: 0,
+      trigger: "READY",
       trendlinePrice: Math.round(tlNow * 100) / 100,
-      distToTrendline: Math.round(((last4h.close - tlNow) / tlNow) * 10000) / 100,
-      locationType: "POST_BREAK",
+      distToTrendline: Math.round(Math.abs(dist) * 10000) / 100,
+      locationType: "PRE_BREAK",
       ema8_4h: 0,
       ema21_4h: 0,
       ema50_4h: 0,
@@ -359,7 +326,6 @@ export function generateSignal(
   };
 }
 
-// --- MARKET SNAPSHOT ---
 export function getMarketSnapshot(
   pair: string,
   candles1h: Candle[],
@@ -374,24 +340,14 @@ export function getMarketSnapshot(
   const pivots = bias4h ? findPivots(candles4h, bias4h) : [];
   const tl = bias4h ? fitTrendline(pivots) : null;
   const tlPrice = tl ? tl.slope * (candles4h.length - 1) + tl.intercept : 0;
+  const dist = tlPrice ? (price - tlPrice) / tlPrice : 1;
+  const nearTL = Math.abs(dist) < TL_THRESHOLD;
 
-  // Detect if break recently fired
   let trigger = "WAITING";
-  if (tl && bias4h) {
-    for (let i = candles4h.length - 1; i >= Math.max(1, candles4h.length - 4); i--) {
-      const c = candles4h[i];
-      const prev = candles4h[i - 1];
-      const tlNow = tl.slope * i + tl.intercept;
-      const tlPrev = tl.slope * (i - 1) + tl.intercept;
-      const isBreak =
-        bias4h === "LONG"
-          ? c.close > tlNow && prev.close <= tlPrev
-          : c.close < tlNow && prev.close >= tlPrev;
-      if (isBreak) {
-        trigger = "FIRED";
-        break;
-      }
-    }
+  if (!bias1d || bias1d !== bias4h) {
+    trigger = "BIAS_MISMATCH";
+  } else if (nearTL) {
+    trigger = "READY";
   }
 
   return {
@@ -399,14 +355,10 @@ export function getMarketSnapshot(
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
     trend: bias1d && bias1d === bias4h ? bias1d : "FLAT",
-    location: tl ? (Math.abs(price - tlPrice) / tlPrice < 0.012 ? "NEAR_TL" : "BEYOND_TL") : "NONE",
+    location: tl ? (nearTL ? "NEAR_TL" : "BEYOND_TL") : "NONE",
     trigger,
-    adx: 0,
-    rsi: 0,
-    stochK: 0,
-    stochD: 0,
     trendlinePrice: Math.round(tlPrice * 100) / 100,
-    distToTrendline: tlPrice ? Math.round(((price - tlPrice) / tlPrice) * 10000) / 100 : 0,
+    distToTrendline: tlPrice ? Math.round(Math.abs(dist) * 10000) / 100 : 0,
     locationType: tl ? "STRUCTURE" : "NONE",
     ema8_4h: 0,
     ema21_4h: 0,
@@ -414,7 +366,6 @@ export function getMarketSnapshot(
   };
 }
 
-// --- VALIDITY ---
 export interface ValidityCheck {
   valid: boolean;
   reason: string;
@@ -422,7 +373,7 @@ export interface ValidityCheck {
 }
 
 export function isSignalStillValid(signal: Signal, currentPrice: number, now: number = Date.now()): ValidityCheck {
-  const maxAge = 72 * 60 * 60 * 1000; // 72h swing hold
+  const maxAge = 72 * 60 * 60 * 1000;
   if (now - signal.timestamp > maxAge) {
     return { valid: false, reason: "expired_ttl", exited: true };
   }
@@ -446,7 +397,6 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
   return { valid: true, reason: "active", exited: false };
 }
 
-// --- HOLD / EXIT ---
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
@@ -457,7 +407,6 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
   const bias1d = getBias(candles1d);
   const bias4h = getBias(candles4h);
 
-  // Exit if 4H bias flips against position
   if (signal.direction === "LONG" && bias4h === "SHORT") {
     return { shouldHold: false, reason: "4H_bias_flipped" };
   }
@@ -465,7 +414,6 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
     return { shouldHold: false, reason: "4H_bias_flipped" };
   }
 
-  // Exit if price reclaims the broken trendline
   const pivots = findPivots(candles4h, signal.direction);
   const tl = fitTrendline(pivots);
   if (tl) {
@@ -493,7 +441,6 @@ export function shouldHoldCompat(
   return shouldHold(signal, candles4h, currentPrice);
 }
 
-// --- BATCH HELPERS ---
 export function filterExpiredSignals(
   signals: Signal[],
   currentPrices: Record<string, number>,
@@ -529,13 +476,10 @@ export function checkTradeStatus(signal: Signal, currentPrice: number, now: numb
   return "ACTIVE";
 }
 
-// --- STATE REBUILD (serverless no-op) ---
 export function rebuildStateFromTrades(_trades: Record<string, any>): void {
-  // v29 is stateless — setup detection is re-derived from candles each run
   return;
 }
 
-// --- EXIT RECORDING ---
 export function recordTradeExit(
   _pair: string,
   _direction: "LONG" | "SHORT",
@@ -543,14 +487,9 @@ export function recordTradeExit(
   _exitPrice: number,
   _candles4h?: Candle[]
 ): void {
-  // v29 does not maintain trendline store state that needs clearing
-  // Exits are handled by the cron via updateSignalHistoryStatus
   return;
 }
 
-// ============================================================
-// COMPATIBILITY LAYER
-// ============================================================
 export async function getMonitorState(pair: string): Promise<any | undefined> {
   return undefined;
 }
