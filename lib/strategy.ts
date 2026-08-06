@@ -1,4 +1,4 @@
-// lib/strategy.ts — v30 "Bias + Pullback to TL"
+// lib/strategy.ts — v30 "Bias + Pullback to TL" (with R² quality gate from v27)
 // ============================================================
 // Enters BEFORE the 4H break. 15m confirmation at the 4H TL zone.
 // Stateless. Compatible with v54 cron / v50.1 telegram / v54 dashboard.
@@ -46,7 +46,8 @@ export interface SignalResult {
 
 export const CURRENT_SIGNAL_VERSION = 30;
 const MIN_RR = 1.5;
-const TL_THRESHOLD = 0.008; // 0.8% — price must be within this of the 4H TL
+const TL_THRESHOLD = 0.008; // 0.8%
+const MIN_R2 = 0.65;        // v27 R² quality gate
 
 function avg(arr: number[]): number {
   if (!arr.length) return 0;
@@ -152,7 +153,15 @@ function fitTrendline(pivots: { index: number; price: number }[]) {
   if (denom === 0) return null;
   const slope = (n * sumXY - sumX * sumY) / denom;
   const intercept = (sumY - slope * sumX) / n;
-  return { slope, intercept };
+
+  // v27 R² quality gate
+  const yMean = sumY / n;
+  const ssTotal = pts.reduce((s, p) => s + Math.pow(p.price - yMean, 2), 0);
+  const ssResidual = pts.reduce((s, p) => s + Math.pow(p.price - (slope * p.index + intercept), 2), 0);
+  const r2 = ssTotal === 0 ? 0 : 1 - (ssResidual / ssTotal);
+  if (r2 < MIN_R2) return null;
+
+  return { slope, intercept, r2: Math.round(r2 * 100) / 100 };
 }
 
 function findPullbackEntry(
@@ -174,7 +183,6 @@ function findPullbackEntry(
   const swingHigh = Math.max(...recentHighs);
   const atr15m = atr(candles15m, 14);
 
-  // Price must be interacting with the TL zone on 15m
   const nearTL = Math.abs(last.close - tlPrice) / tlPrice < TL_THRESHOLD;
 
   if (direction === "LONG") {
@@ -218,7 +226,6 @@ export function generateSignal(
     return { debug };
   }
 
-  // 1. BIAS GATE
   const candles1d = aggregateTo1D(candles4h);
   const bias1d = getBias(candles1d);
   const bias4h = getBias(candles4h);
@@ -230,34 +237,30 @@ export function generateSignal(
   }
   const direction = bias1d;
 
-  // 2. 4H TRENDLINE
   const pivots = findPivots(candles4h, direction);
   const tl = fitTrendline(pivots);
   if (!tl) {
-    debug.push("No trendline");
+    debug.push("No trendline (R² < ${MIN_R2} or < 3 pivots)");
     return { debug };
   }
 
   const last4h = candles4h[candles4h.length - 1];
   const tlNow = tl.slope * (candles4h.length - 1) + tl.intercept;
   const dist = (last4h.close - tlNow) / tlNow;
-  debug.push(`TL: ${tlNow.toFixed(2)} | Price: ${last4h.close.toFixed(2)} | Dist: ${(dist * 100).toFixed(2)}%`);
+  debug.push(`TL: ${tlNow.toFixed(2)} | Price: ${last4h.close.toFixed(2)} | Dist: ${(dist * 100).toFixed(2)}% | R² ${tl.r2}`);
 
-  // 3. PRICE MUST BE NEAR THE TRENDLINE (pullback zone)
   const nearTL = Math.abs(dist) < TL_THRESHOLD;
   if (!nearTL) {
     debug.push(`Price ${(dist * 100).toFixed(2)}% from TL — outside ${(TL_THRESHOLD * 100).toFixed(2)}% zone`);
     return { debug };
   }
 
-  // 4. 15m CONFIRMATION AT THE ZONE
   const pullback = findPullbackEntry(candles15m, direction, tlNow);
   if (!pullback) {
     debug.push("Waiting for 15m confirmation at TL...");
     return { debug };
   }
 
-  // 5. BUILD SIGNAL
   const atr4h = atr(candles4h, 14);
   const entry = pullback.entry;
   const sl = pullback.stop;
@@ -288,7 +291,7 @@ export function generateSignal(
     stochK: 0,
     stochD: 0,
     expectedMove: Math.abs(tp - entry) / entry * 100,
-    reason: `${direction} | ${pullback.reason} | 4H TL ${tlNow.toFixed(1)} | RR ${rr.toFixed(2)}`,
+    reason: `${direction} | ${pullback.reason} | 4H TL ${tlNow.toFixed(1)} (R² ${tl.r2}) | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
     trend: direction,
