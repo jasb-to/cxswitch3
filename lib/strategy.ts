@@ -996,13 +996,15 @@ function buildDirectionalContext(
     }
   } else {
     // FIRST WAVE: no pullback yet, but momentum breakout conditions met
-    if (!anyActive) {
+    if (!anyActive && adxCurrent >= 18) {
       addTrigger = addTrigger4H(candles4h, direction, location, pair);
       if (addTrigger?.fired) {
         canEnter = true;
         reason = addTrigger.detail;
         debug.push(`Trigger      ✅ ${addTrigger.detail} (breakout)`);
       }
+    } else if (!anyActive && adxCurrent < 18) {
+      debug.push(`ADD          SKIP — ADX ${adxCurrent.toFixed(1)} < 18, chop floor active`);
     }
     if (!canEnter) {
       if (trigger?.triggerType === "duplicate_cycle") {
