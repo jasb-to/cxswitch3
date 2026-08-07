@@ -1,6 +1,8 @@
-// lib/strategy.ts — v30 "Bias + Pullback to TL" (with R² quality gate from v27)
+// lib/strategy.ts — v31.1 "Bias + Pullback to TL + StochRSI K/D Cross"
 // ============================================================
-// Enters BEFORE the 4H break. 15m confirmation at the 4H TL zone.
+// Wider SL for 10-20x leverage: uses 4H swing structure + 1x 4H ATR.
+// Enters BEFORE the 4H break. 15m confirmation at 4H TL zone uses StochRSI K/D cross.
+// ADX/RSI/StochRSI calculated for DISPLAY (not signal logic).
 // Stateless. Compatible with v54 cron / v50.1 telegram / v54 dashboard.
 
 export interface Candle {
@@ -44,10 +46,11 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 30;
+export const CURRENT_SIGNAL_VERSION = 31;
 const MIN_RR = 1.5;
-const TL_THRESHOLD = 0.008; // 0.8%
-const MIN_R2 = 0.65;        // v27 R² quality gate
+const TL_THRESHOLD = 0.012;
+const MIN_R2 = 0.60;
+const SL_ATR_MULT = 1.0; // 1x 4H ATR for wider stops on 10-20x leverage
 
 function avg(arr: number[]): number {
   if (!arr.length) return 0;
@@ -72,6 +75,102 @@ function atr(candles: Candle[], period: number = 14): number {
     trs.push(Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close)));
   }
   return avg(trs);
+}
+
+// --- RSI ---
+function rsi(closes: number[], period: number = 14): number {
+  let gains = 0;
+  let losses = 0;
+  for (let i = 1; i <= period && i < closes.length; i++) {
+    const change = closes[closes.length - i] - closes[closes.length - i - 1];
+    if (change > 0) gains += change;
+    else losses += Math.abs(change);
+  }
+  const avgGain = gains / period;
+  const avgLoss = losses / period;
+  if (avgLoss === 0) return 100;
+  return 100 - (100 / (1 + avgGain / avgLoss));
+}
+
+// --- RSI SERIES ---
+function rsiSeries(closes: number[], period: number = 14): number[] {
+  const series: number[] = [];
+  for (let i = period; i < closes.length; i++) {
+    const window = closes.slice(i - period + 1, i + 1);
+    series.push(rsi(window, period));
+  }
+  return series;
+}
+
+// --- STOCHRSI ---
+function stochRsi(closes: number[], rsiPeriod: number = 14, stochPeriod: number = 14, kSmooth: number = 3, dSmooth: number = 3): { k: number; d: number } {
+  const rsiValues = rsiSeries(closes, rsiPeriod);
+  if (rsiValues.length < stochPeriod + kSmooth - 1) return { k: 50, d: 50 };
+
+  const rawK: number[] = [];
+  for (let i = stochPeriod - 1; i < rsiValues.length; i++) {
+    const window = rsiValues.slice(i - stochPeriod + 1, i + 1);
+    const lowest = Math.min(...window);
+    const highest = Math.max(...window);
+    if (highest === lowest) {
+      rawK.push(50);
+    } else {
+      rawK.push(((rsiValues[i] - lowest) / (highest - lowest)) * 100);
+    }
+  }
+
+  const kValues: number[] = [];
+  for (let i = kSmooth - 1; i < rawK.length; i++) {
+    kValues.push(avg(rawK.slice(i - kSmooth + 1, i + 1)));
+  }
+
+  if (kValues.length < dSmooth) return { k: 50, d: 50 };
+
+  const currentK = kValues[kValues.length - 1];
+  const currentD = avg(kValues.slice(-dSmooth));
+
+  return { k: Math.round(currentK * 10) / 10, d: Math.round(currentD * 10) / 10 };
+}
+
+// --- WILDER SMOOTHING ---
+function wilderSmooth(values: number[], period: number): number[] {
+  const result: number[] = [avg(values.slice(0, period))];
+  for (let i = period; i < values.length; i++) {
+    result.push((result[result.length - 1] * (period - 1) + values[i]) / period);
+  }
+  return result;
+}
+
+// --- ADX ---
+function adx(candles: Candle[], period: number = 14): number {
+  if (candles.length < period + 1) return 0;
+
+  const trs: number[] = [];
+  const plusDMs: number[] = [];
+  const minusDMs: number[] = [];
+
+  for (let i = 1; i < candles.length; i++) {
+    const c = candles[i];
+    const p = candles[i - 1];
+    trs.push(Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close)));
+    plusDMs.push(c.high - p.high > p.low - c.low ? Math.max(c.high - p.high, 0) : 0);
+    minusDMs.push(p.low - c.low > c.high - p.high ? Math.max(p.low - c.low, 0) : 0);
+  }
+
+  const atrSmooth = wilderSmooth(trs, period);
+  const plusDISmooth = wilderSmooth(plusDMs, period);
+  const minusDISmooth = wilderSmooth(minusDMs, period);
+
+  const dxValues: number[] = [];
+  for (let i = 0; i < atrSmooth.length; i++) {
+    const pDI = (plusDISmooth[i] / atrSmooth[i]) * 100;
+    const mDI = (minusDISmooth[i] / atrSmooth[i]) * 100;
+    const dx = (pDI + mDI === 0) ? 0 : (Math.abs(pDI - mDI) / (pDI + mDI)) * 100;
+    dxValues.push(dx);
+  }
+
+  const adxSmooth = wilderSmooth(dxValues, period);
+  return Math.round(adxSmooth[adxSmooth.length - 1] * 10) / 10;
 }
 
 function aggregateTo1D(candles4h: Candle[]): Candle[] {
@@ -154,7 +253,6 @@ function fitTrendline(pivots: { index: number; price: number }[]) {
   const slope = (n * sumXY - sumX * sumY) / denom;
   const intercept = (sumY - slope * sumX) / n;
 
-  // v27 R² quality gate
   const yMean = sumY / n;
   const ssTotal = pts.reduce((s, p) => s + Math.pow(p.price - yMean, 2), 0);
   const ssResidual = pts.reduce((s, p) => s + Math.pow(p.price - (slope * p.index + intercept), 2), 0);
@@ -164,40 +262,45 @@ function fitTrendline(pivots: { index: number; price: number }[]) {
   return { slope, intercept, r2: Math.round(r2 * 100) / 100 };
 }
 
+// --- 15m PULLBACK WITH STOCHRSI K/D CROSS ---
 function findPullbackEntry(
   candles15m: Candle[],
   direction: "LONG" | "SHORT",
   tlPrice: number
-): { entry: number; stop: number; reason: string } | null {
-  if (candles15m.length < 30) return null;
+): { entry: number; reason: string; stochK: number; stochD: number } | null {
+  if (candles15m.length < 40) return null;
 
   const last = candles15m[candles15m.length - 1];
-  const prev = candles15m[candles15m.length - 2];
-  const closes = candles15m.map(c => c.close);
-  const ema20 = ema(closes, 20);
-  const e20 = ema20[ema20.length - 1];
-
-  const recentLows = candles15m.slice(-20).map(c => c.low);
-  const recentHighs = candles15m.slice(-20).map(c => c.high);
-  const swingLow = Math.min(...recentLows);
-  const swingHigh = Math.max(...recentHighs);
-  const atr15m = atr(candles15m, 14);
+  const closes15m = candles15m.map(c => c.close);
+  const stoch = stochRsi(closes15m, 14, 14, 3, 3);
 
   const nearTL = Math.abs(last.close - tlPrice) / tlPrice < TL_THRESHOLD;
 
   if (direction === "LONG") {
-    const atSupport = nearTL || last.low <= tlPrice * 1.003 || last.low <= e20 * 1.008;
-    const confirming = last.close > last.open && last.close > e20 && prev.close < prev.open;
-    if (atSupport && confirming) {
-      const sl = Math.min(swingLow, last.low - atr15m * 0.5);
-      return { entry: last.close, stop: sl, reason: "15m TL retest + bull candle" };
+    const stochBull = stoch.k > stoch.d && stoch.k < 50;
+    const atSupport = nearTL || last.low <= tlPrice * 1.005;
+    const confirming = last.close > last.open;
+
+    if (atSupport && (stochBull || confirming)) {
+      return {
+        entry: last.close,
+        reason: stochBull ? "15m TL + Stoch K>D" : "15m TL retest + bull candle",
+        stochK: stoch.k,
+        stochD: stoch.d,
+      };
     }
   } else {
-    const atResistance = nearTL || last.high >= tlPrice * 0.997 || last.high >= e20 * 0.992;
-    const confirming = last.close < last.open && last.close < e20 && prev.close > prev.open;
-    if (atResistance && confirming) {
-      const sl = Math.max(swingHigh, last.high + atr15m * 0.5);
-      return { entry: last.close, stop: sl, reason: "15m TL retest + bear candle" };
+    const stochBear = stoch.k < stoch.d && stoch.k > 50;
+    const atResistance = nearTL || last.high >= tlPrice * 0.995;
+    const confirming = last.close < last.open;
+
+    if (atResistance && (stochBear || confirming)) {
+      return {
+        entry: last.close,
+        reason: stochBear ? "15m TL + Stoch K<D" : "15m TL retest + bear candle",
+        stochK: stoch.k,
+        stochD: stoch.d,
+      };
     }
   }
   return null;
@@ -257,13 +360,25 @@ export function generateSignal(
 
   const pullback = findPullbackEntry(candles15m, direction, tlNow);
   if (!pullback) {
-    debug.push("Waiting for 15m confirmation at TL...");
+    debug.push("Waiting for 15m StochRSI confirmation at TL...");
     return { debug };
   }
 
+  // WIDER SL for 10-20x leverage: 4H swing structure + 1x 4H ATR
   const atr4h = atr(candles4h, 14);
+  const swingLows4h = candles4h.slice(-20).map(c => c.low);
+  const swingHighs4h = candles4h.slice(-20).map(c => c.high);
+  const swingLow4h = Math.min(...swingLows4h);
+  const swingHigh4h = Math.max(...swingHighs4h);
+
   const entry = pullback.entry;
-  const sl = pullback.stop;
+  let sl: number;
+  if (direction === "LONG") {
+    sl = Math.min(swingLow4h, entry - atr4h * SL_ATR_MULT);
+  } else {
+    sl = Math.max(swingHigh4h, entry + atr4h * SL_ATR_MULT);
+  }
+
   const tp = direction === "LONG" ? entry + atr4h * 4 : entry - atr4h * 4;
 
   const rr = direction === "LONG"
@@ -274,6 +389,13 @@ export function generateSignal(
     debug.push(`R:R ${rr?.toFixed(2) || "inf"} < ${MIN_RR}`);
     return { debug };
   }
+
+  // 4H indicators for display
+  const closes4h = candles4h.map(c => c.close);
+  const adxVal = adx(candles4h);
+  const rsiVal = rsi(closes4h);
+  const stoch4h = stochRsi(closes4h);
+  const expectedMove = Math.round((Math.abs(tp - entry) / entry * 100) * 10) / 10;
 
   const signal: Signal = {
     id: `${pair}_${now}`,
@@ -286,12 +408,12 @@ export function generateSignal(
     target: Math.round(tp * 100) / 100,
     confidence: 75,
     rr: Math.round(rr * 100) / 100,
-    adx: 0,
-    rsi: 0,
-    stochK: 0,
-    stochD: 0,
-    expectedMove: Math.abs(tp - entry) / entry * 100,
-    reason: `${direction} | ${pullback.reason} | 4H TL ${tlNow.toFixed(1)} (R² ${tl.r2}) | RR ${rr.toFixed(2)}`,
+    adx: adxVal,
+    rsi: Math.round(rsiVal * 10) / 10,
+    stochK: stoch4h.k,
+    stochD: stoch4h.d,
+    expectedMove,
+    reason: `${direction} | ${pullback.reason} (15m K${pullback.stochK}/D${pullback.stochD}) | 4H TL ${tlNow.toFixed(1)} (R² ${tl.r2}) | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
     trend: direction,
@@ -303,10 +425,11 @@ export function generateSignal(
       momentum: pullback.reason,
       pullback: "active",
       crossAge: 0,
+      stoch15m: { k: pullback.stochK, d: pullback.stochD },
     },
   };
 
-  debug.push(`ENTRY: ${direction} @ ${signal.entry} | SL ${signal.stop} | TP ${signal.target} | RR ${signal.rr}`);
+  debug.push(`ENTRY: ${direction} @ ${signal.entry} | SL ${signal.stop} | TP ${signal.target} | RR ${signal.rr} | ADX ${adxVal} | RSI ${signal.rsi} | Stoch ${stoch4h.k}/${stoch4h.d}`);
 
   return {
     signals: [signal],
@@ -318,6 +441,10 @@ export function generateSignal(
       trend: direction,
       location: "NEAR_TL",
       trigger: "READY",
+      adx: adxVal,
+      rsi: Math.round(rsiVal * 10) / 10,
+      stochK: stoch4h.k,
+      stochD: stoch4h.d,
       trendlinePrice: Math.round(tlNow * 100) / 100,
       distToTrendline: Math.round(Math.abs(dist) * 10000) / 100,
       locationType: "PRE_BREAK",
@@ -353,6 +480,11 @@ export function getMarketSnapshot(
     trigger = "READY";
   }
 
+  const closes4h = candles4h.map(c => c.close);
+  const adxVal = candles4h.length >= 30 ? adx(candles4h) : 0;
+  const rsiVal = candles4h.length >= 30 ? rsi(closes4h) : 0;
+  const stoch = candles4h.length >= 30 ? stochRsi(closes4h) : { k: 0, d: 0 };
+
   return {
     pair,
     price: Math.round(price * 100) / 100,
@@ -360,6 +492,10 @@ export function getMarketSnapshot(
     trend: bias1d && bias1d === bias4h ? bias1d : "FLAT",
     location: tl ? (nearTL ? "NEAR_TL" : "BEYOND_TL") : "NONE",
     trigger,
+    adx: adxVal,
+    rsi: Math.round(rsiVal * 10) / 10,
+    stochK: stoch.k,
+    stochD: stoch.d,
     trendlinePrice: Math.round(tlPrice * 100) / 100,
     distToTrendline: tlPrice ? Math.round(Math.abs(dist) * 10000) / 100 : 0,
     locationType: tl ? "STRUCTURE" : "NONE",
