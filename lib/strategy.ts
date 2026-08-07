@@ -1,8 +1,14 @@
-// lib/strategy.ts — v31.1 "Bias + Pullback to TL + StochRSI K/D Cross"
+// lib/strategy.ts — v32 "Bias + Pullback + Scale-Out + Chop Filter"
 // ============================================================
-// Wider SL for 10-20x leverage: uses 4H swing structure + 1x 4H ATR.
-// Enters BEFORE the 4H break. 15m confirmation at 4H TL zone uses StochRSI K/D cross.
-// ADX/RSI/StochRSI calculated for DISPLAY (not signal logic).
+// 1. Bias gate (1D/4H EMA 8/21)
+// 2. 4H trendline + R² >= 0.60
+// 3. Chop filter: ADX < 20 = no trade
+// 4. 15m StochRSI K/D cross at TL zone
+// 5. Structure-based TP (swing high/low cap), scale-out plan
+// 6. Correlation cap: max 1 active trade per direction
+// 7. Re-entry (ENTRY_2) on stop-run + retest (stateless detection)
+// 8. BE advice after 1.5R in shouldHold
+// 9. Dynamic leverage suggestion in context
 // Stateless. Compatible with v54 cron / v50.1 telegram / v54 dashboard.
 
 export interface Candle {
@@ -23,6 +29,8 @@ export interface Signal {
   entry: number;
   stop: number;
   target: number;
+  tp1?: number; // 2R, 50%
+  tp3?: number; // 6R+, 25% runner
   confidence: number;
   rr: number;
   adx: number;
@@ -46,11 +54,13 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 31;
+export const CURRENT_SIGNAL_VERSION = 32;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
-const SL_ATR_MULT = 1.0; // 1x 4H ATR for wider stops on 10-20x leverage
+const SL_ATR_MULT = 1.0;
+const MIN_ADX = 20; // chop filter
+const MAX_SAME_DIR = 1; // correlation cap
 
 function avg(arr: number[]): number {
   if (!arr.length) return 0;
@@ -262,6 +272,22 @@ function fitTrendline(pivots: { index: number; price: number }[]) {
   return { slope, intercept, r2: Math.round(r2 * 100) / 100 };
 }
 
+// --- Detect stop-run re-entry (stateless) ---
+function detectStopRun(candles4h: Candle[], direction: "LONG" | "SHORT", tl: { slope: number; intercept: number }): boolean {
+  for (let i = candles4h.length - 8; i < candles4h.length - 1; i++) {
+    if (i < 0) continue;
+    const c = candles4h[i];
+    const tlPrice = tl.slope * i + tl.intercept;
+    if (direction === "LONG") {
+      // Wick below TL but close back above = stop run
+      if (c.low < tlPrice && c.close > tlPrice) return true;
+    } else {
+      if (c.high > tlPrice && c.close < tlPrice) return true;
+    }
+  }
+  return false;
+}
+
 // --- 15m PULLBACK WITH STOCHRSI K/D CROSS ---
 function findPullbackEntry(
   candles15m: Candle[],
@@ -306,6 +332,14 @@ function findPullbackEntry(
   return null;
 }
 
+// --- DYNAMIC LEVERAGE ---
+function suggestLeverage(atr4h: number, price: number): number {
+  const atrPct = atr4h / price;
+  if (atrPct > 0.025) return 10; // high vol
+  if (atrPct > 0.015) return 15; // med vol
+  return 20; // low vol
+}
+
 export function generateSignal(
   pair: string,
   candles1h: Candle[],
@@ -340,6 +374,22 @@ export function generateSignal(
   }
   const direction = bias1d;
 
+  // --- CHOP FILTER ---
+  const adxVal = adx(candles4h);
+  debug.push(`ADX: ${adxVal}`);
+  if (adxVal < MIN_ADX) {
+    debug.push(`ADX ${adxVal} < ${MIN_ADX} — chop, no trade`);
+    return { debug };
+  }
+
+  // --- CORRELATION CAP ---
+  const activeTrades = _activeTrades || [];
+  const sameDirCount = activeTrades.filter((t: any) => t.direction === direction).length;
+  if (sameDirCount >= MAX_SAME_DIR) {
+    debug.push(`Correlation cap: ${sameDirCount} ${direction} active, max ${MAX_SAME_DIR}`);
+    return { debug };
+  }
+
   const pivots = findPivots(candles4h, direction);
   const tl = fitTrendline(pivots);
   if (!tl) {
@@ -364,7 +414,7 @@ export function generateSignal(
     return { debug };
   }
 
-  // WIDER SL for 10-20x leverage: 4H swing structure + 1x 4H ATR
+  // --- SL: swing structure + 1x ATR ---
   const atr4h = atr(candles4h, 14);
   const swingLows4h = candles4h.slice(-20).map(c => c.low);
   const swingHighs4h = candles4h.slice(-20).map(c => c.high);
@@ -379,41 +429,60 @@ export function generateSignal(
     sl = Math.max(swingHigh4h, entry + atr4h * SL_ATR_MULT);
   }
 
-  const tp = direction === "LONG" ? entry + atr4h * 4 : entry - atr4h * 4;
+  // --- STRUCTURE-BASED TP + SCALE-OUT ---
+  const risk = Math.abs(entry - sl);
+  const tp1 = direction === "LONG" ? entry + risk * 2 : entry - risk * 2; // 2R, 50%
+  const tp3 = direction === "LONG" ? entry + risk * 6 : entry - risk * 6; // 6R, 25% runner
+
+  // TP2 = nearest of structure or 4R
+  const structureTarget = direction === "LONG" ? swingHigh4h : swingLow4h;
+  const atrTarget = direction === "LONG" ? entry + atr4h * 4 : entry - atr4h * 4;
+  const tp2 = direction === "LONG"
+    ? Math.min(structureTarget, atrTarget)
+    : Math.max(structureTarget, atrTarget);
+
+  // Ensure tp2 is at least 2R away
+  const minTp2 = direction === "LONG" ? entry + risk * 2 : entry - risk * 2;
+  const finalTp2 = direction === "LONG" ? Math.max(tp2, minTp2) : Math.min(tp2, minTp2);
 
   const rr = direction === "LONG"
-    ? (tp - entry) / (entry - sl)
-    : (entry - tp) / (sl - entry);
+    ? (finalTp2 - entry) / (entry - sl)
+    : (entry - finalTp2) / (sl - entry);
 
   if (!isFinite(rr) || rr < MIN_RR) {
     debug.push(`R:R ${rr?.toFixed(2) || "inf"} < ${MIN_RR}`);
     return { debug };
   }
 
+  // --- RE-ENTRY DETECTION ---
+  const isReentry = detectStopRun(candles4h, direction, tl);
+  const entryType: "ENTRY_1" | "ENTRY_2" = isReentry ? "ENTRY_2" : "ENTRY_1";
+
   // 4H indicators for display
   const closes4h = candles4h.map(c => c.close);
-  const adxVal = adx(candles4h);
   const rsiVal = rsi(closes4h);
   const stoch4h = stochRsi(closes4h);
-  const expectedMove = Math.round((Math.abs(tp - entry) / entry * 100) * 10) / 10;
+  const expectedMove = Math.round((Math.abs(finalTp2 - entry) / entry * 100) * 10) / 10;
 
   const signal: Signal = {
     id: `${pair}_${now}`,
     pair,
     direction,
-    type: "ENTRY_1",
-    scale: "ENTRY_1",
+    type: entryType,
+    scale: entryType,
     entry: Math.round(entry * 100) / 100,
     stop: Math.round(sl * 100) / 100,
-    target: Math.round(tp * 100) / 100,
-    confidence: 75,
+    target: Math.round(finalTp2 * 100) / 100,
+    tp1: Math.round(tp1 * 100) / 100,
+    tp3: Math.round(tp3 * 100) / 100,
+    confidence: isReentry ? 65 : 75,
     rr: Math.round(rr * 100) / 100,
     adx: adxVal,
     rsi: Math.round(rsiVal * 10) / 10,
     stochK: stoch4h.k,
     stochD: stoch4h.d,
     expectedMove,
-    reason: `${direction} | ${pullback.reason} (15m K${pullback.stochK}/D${pullback.stochD}) | 4H TL ${tlNow.toFixed(1)} (R² ${tl.r2}) | RR ${rr.toFixed(2)}`,
+    reason: `${direction} ${entryType} | ${pullback.reason} (15m K${pullback.stochK}/D${pullback.stochD}) | 4H TL ${tlNow.toFixed(1)} (R² ${tl.r2}) | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
     trend: direction,
@@ -421,15 +490,21 @@ export function generateSignal(
     trigger: "READY",
     context: {
       marketPhase: `${direction} aligned`,
-      structure: "trendline_pullback",
+      structure: isReentry ? "stop_run_retest" : "trendline_pullback",
       momentum: pullback.reason,
       pullback: "active",
       crossAge: 0,
       stoch15m: { k: pullback.stochK, d: pullback.stochD },
+      scaleOutPlan: {
+        tp1: { price: Math.round(tp1 * 100) / 100, size: 0.50, r: 2 },
+        tp2: { price: Math.round(finalTp2 * 100) / 100, size: 0.25, r: Math.round(rr * 10) / 10 },
+        tp3: { price: Math.round(tp3 * 100) / 100, size: 0.25, r: 6 },
+      },
+      suggestedLeverage: suggestLeverage(atr4h, entry),
     },
   };
 
-  debug.push(`ENTRY: ${direction} @ ${signal.entry} | SL ${signal.stop} | TP ${signal.target} | RR ${signal.rr} | ADX ${adxVal} | RSI ${signal.rsi} | Stoch ${stoch4h.k}/${stoch4h.d}`);
+  debug.push(`${entryType}: ${direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.target} | TP3 ${signal.tp3} | RR ${signal.rr} | ADX ${adxVal} | RSI ${signal.rsi}`);
 
   return {
     signals: [signal],
@@ -539,6 +614,8 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
+  newStop?: number; // v32: BE advice
+  scaleOut?: { level: number; size: number; label: string };
 }
 
 export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, _now?: number): HoldResult {
@@ -565,6 +642,39 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
     if (signal.direction === "SHORT" && last.close > tlPrice) {
       return { shouldHold: false, reason: "trendline_reclaim" };
     }
+  }
+
+  // --- SCALE-OUT & BE ADVICE ---
+  const risk = Math.abs(signal.entry - signal.stop);
+  if (risk === 0) {
+    const validity = isSignalStillValid(signal, currentPrice);
+    return { shouldHold: validity.valid, reason: validity.reason };
+  }
+
+  let currentR = 0;
+  if (signal.direction === "LONG") {
+    currentR = (currentPrice - signal.entry) / risk;
+  } else {
+    currentR = (signal.entry - currentPrice) / risk;
+  }
+
+  // TP1 hit: scale out 50%, move SL to BE
+  if (signal.tp1 && currentR >= 2) {
+    return {
+      shouldHold: true,
+      reason: "tp1_hit_scale_out_50",
+      newStop: signal.entry,
+      scaleOut: { level: signal.tp1, size: 0.50, label: "TP1" },
+    };
+  }
+
+  // BE lock after 1.5R
+  if (currentR >= 1.5) {
+    return {
+      shouldHold: true,
+      reason: "be_lock_1_5r",
+      newStop: signal.entry,
+    };
   }
 
   const validity = isSignalStillValid(signal, currentPrice);
