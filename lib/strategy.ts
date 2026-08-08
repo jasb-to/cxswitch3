@@ -1,4 +1,4 @@
-// lib/strategy.ts — v32 "Bias + Pullback + Scale-Out + Chop Filter"
+// lib/strategy.ts — v32.1 "Bias + Pullback + Scale-Out + Chop Filter + ADX Stoch Override"
 // ============================================================
 // 1. Bias gate (1D/4H EMA 8/21)
 // 2. 4H trendline + R² >= 0.60
@@ -7,6 +7,8 @@
 // 5. Structure-based TP (swing high/low cap), scale-out plan
 // 6. Correlation cap: max 1 active trade per direction
 // 7. Re-entry (ENTRY_2) on stop-run + retest (stateless detection)
+//    — BLOCKED if Stoch extreme + ADX <= 28 (weak trend = exhaustion, not momentum)
+//    — ALLOWED if ADX > 28 (strong trend = sustained momentum)
 // 8. BE advice after 1.5R in shouldHold
 // 9. Dynamic leverage suggestion in context
 // Stateless. Compatible with v54 cron / v50.1 telegram / v54 dashboard.
@@ -54,13 +56,14 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 32;
+export const CURRENT_SIGNAL_VERSION = 32.1;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
 const SL_ATR_MULT = 1.0;
 const MIN_ADX = 20; // chop filter
 const MAX_SAME_DIR = 1; // correlation cap
+const ADX_STOCH_OVERRIDE = 28; // strong-trend threshold
 
 function avg(arr: number[]): number {
   if (!arr.length) return 0;
@@ -414,6 +417,31 @@ export function generateSignal(
     return { debug };
   }
 
+  // --- 4H MOMENTUM READ (needed before re-entry filter) ---
+  const closes4h = candles4h.map(c => c.close);
+  const rsiVal = rsi(closes4h);
+  const stoch4h = stochRsi(closes4h);
+
+  // --- RE-ENTRY DETECTION ---
+  const isReentry = detectStopRun(candles4h, direction, tl);
+  const entryType: "ENTRY_1" | "ENTRY_2" = isReentry ? "ENTRY_2" : "ENTRY_1";
+
+  // --- v32.1: ADX OVERRIDE FOR STOCH EXTREMES ---
+  // If Stoch is extreme (K>80 LONG, K<20 SHORT) and ADX is weak (<=28),
+  // treat it as exhaustion — block ENTRY_2. Strong trend (ADX>28) = sustained momentum, allow.
+  const isStochExtreme = direction === "LONG" ? stoch4h.k > 80 : stoch4h.k < 20;
+  if (entryType === "ENTRY_2" && isStochExtreme && adxVal <= ADX_STOCH_OVERRIDE) {
+    debug.push(
+      `ENTRY_2 blocked: Stoch extreme (${stoch4h.k}) with weak ADX (${adxVal} <= ${ADX_STOCH_OVERRIDE}) — exhaustion zone`
+    );
+    return { debug };
+  }
+  if (entryType === "ENTRY_2" && isStochExtreme && adxVal > ADX_STOCH_OVERRIDE) {
+    debug.push(
+      `ENTRY_2 allowed: Stoch extreme (${stoch4h.k}) with strong ADX (${adxVal} > ${ADX_STOCH_OVERRIDE}) — sustained momentum`
+    );
+  }
+
   // --- SL: swing structure + 1x ATR ---
   const atr4h = atr(candles4h, 14);
   const swingLows4h = candles4h.slice(-20).map(c => c.low);
@@ -454,14 +482,6 @@ export function generateSignal(
     return { debug };
   }
 
-  // --- RE-ENTRY DETECTION ---
-  const isReentry = detectStopRun(candles4h, direction, tl);
-  const entryType: "ENTRY_1" | "ENTRY_2" = isReentry ? "ENTRY_2" : "ENTRY_1";
-
-  // 4H indicators for display
-  const closes4h = candles4h.map(c => c.close);
-  const rsiVal = rsi(closes4h);
-  const stoch4h = stochRsi(closes4h);
   const expectedMove = Math.round((Math.abs(finalTp2 - entry) / entry * 100) * 10) / 10;
 
   const signal: Signal = {
@@ -495,6 +515,8 @@ export function generateSignal(
       pullback: "active",
       crossAge: 0,
       stoch15m: { k: pullback.stochK, d: pullback.stochD },
+      stoch4h: { k: stoch4h.k, d: stoch4h.d },
+      adxOverride: { threshold: ADX_STOCH_OVERRIDE, applied: isStochExtreme && adxVal <= ADX_STOCH_OVERRIDE },
       scaleOutPlan: {
         tp1: { price: Math.round(tp1 * 100) / 100, size: 0.50, r: 2 },
         tp2: { price: Math.round(finalTp2 * 100) / 100, size: 0.25, r: Math.round(rr * 10) / 10 },
