@@ -1,4 +1,4 @@
-// lib/strategy.ts — v32.1 "Bias + Pullback + Scale-Out + Chop Filter + ADX Stoch Override"
+// lib/strategy.ts — v32.2 "Bias + Pullback + Scale-Out + Chop Filter + ADX Stoch Override + ENTRY_2 Gate"
 // ============================================================
 // 1. Bias gate (1D/4H EMA 8/21)
 // 2. 4H trendline + R² >= 0.60
@@ -9,6 +9,7 @@
 // 7. Re-entry (ENTRY_2) on stop-run + retest (stateless detection)
 //    — BLOCKED if Stoch extreme + ADX <= 28 (weak trend = exhaustion, not momentum)
 //    — ALLOWED if ADX > 28 (strong trend = sustained momentum)
+//    — ENTRY_2 additionally requires ADX >= 25 (stronger trend for re-entries)
 // 8. BE advice after 1.5R in shouldHold
 // 9. Dynamic leverage suggestion in context
 // Stateless. Compatible with v54 cron / v50.1 telegram / v54 dashboard.
@@ -56,14 +57,17 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 32.1;
+export const CURRENT_SIGNAL_VERSION = 32.2;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
 const SL_ATR_MULT = 1.0;
-const MIN_ADX = 20; // chop filter
-const MAX_SAME_DIR = 1; // correlation cap
-const ADX_STOCH_OVERRIDE = 28; // strong-trend threshold
+const MIN_ADX = 20;              // chop filter — applies to ALL entries
+const ENTRY_2_MIN_ADX = 25;      // v32.2: re-entries need stronger trend
+const MAX_SAME_DIR = 1;          // correlation cap
+const ADX_STOCH_OVERRIDE = 28;   // strong-trend threshold
+const STOCH_EXTREME_LONG = 75;   // v32.2: lowered from 80
+const STOCH_EXTREME_SHORT = 25;  // v32.2: raised from 20
 
 function avg(arr: number[]): number {
   if (!arr.length) return 0;
@@ -426,10 +430,23 @@ export function generateSignal(
   const isReentry = detectStopRun(candles4h, direction, tl);
   const entryType: "ENTRY_1" | "ENTRY_2" = isReentry ? "ENTRY_2" : "ENTRY_1";
 
-  // --- v32.1: ADX OVERRIDE FOR STOCH EXTREMES ---
-  // If Stoch is extreme (K>80 LONG, K<20 SHORT) and ADX is weak (<=28),
-  // treat it as exhaustion — block ENTRY_2. Strong trend (ADX>28) = sustained momentum, allow.
-  const isStochExtreme = direction === "LONG" ? stoch4h.k > 80 : stoch4h.k < 20;
+  // --- v32.2: ENTRY_2 MIN ADX GATE ---
+  // Re-entries (stop-run retests) need stronger trend conviction.
+  // ADX 20-25 = technically non-chop but too weak for chasing a re-entry.
+  if (entryType === "ENTRY_2" && adxVal < ENTRY_2_MIN_ADX) {
+    debug.push(
+      `ENTRY_2 blocked: ADX ${adxVal} < ${ENTRY_2_MIN_ADX} — re-entries need stronger trend`
+    );
+    return { debug };
+  }
+
+  // --- v32.2: ADX OVERRIDE FOR STOCH EXTREMES ---
+  // If Stoch is extreme and ADX is weak (<=28), treat as exhaustion — block ENTRY_2.
+  // Strong trend (ADX>28) = sustained momentum, allow.
+  const isStochExtreme = direction === "LONG"
+    ? stoch4h.k > STOCH_EXTREME_LONG
+    : stoch4h.k < STOCH_EXTREME_SHORT;
+
   if (entryType === "ENTRY_2" && isStochExtreme && adxVal <= ADX_STOCH_OVERRIDE) {
     debug.push(
       `ENTRY_2 blocked: Stoch extreme (${stoch4h.k}) with weak ADX (${adxVal} <= ${ADX_STOCH_OVERRIDE}) — exhaustion zone`
@@ -517,6 +534,7 @@ export function generateSignal(
       stoch15m: { k: pullback.stochK, d: pullback.stochD },
       stoch4h: { k: stoch4h.k, d: stoch4h.d },
       adxOverride: { threshold: ADX_STOCH_OVERRIDE, applied: isStochExtreme && adxVal <= ADX_STOCH_OVERRIDE },
+      entry2Gate: { minAdx: ENTRY_2_MIN_ADX, applied: entryType === "ENTRY_2" && adxVal < ENTRY_2_MIN_ADX },
       scaleOutPlan: {
         tp1: { price: Math.round(tp1 * 100) / 100, size: 0.50, r: 2 },
         tp2: { price: Math.round(finalTp2 * 100) / 100, size: 0.25, r: Math.round(rr * 10) / 10 },
