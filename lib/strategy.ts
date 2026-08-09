@@ -58,7 +58,7 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 32.33;
+export const CURRENT_SIGNAL_VERSION = 32.34;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
@@ -69,6 +69,7 @@ const MAX_SAME_DIR = 1;          // correlation cap
 const ADX_STOCH_OVERRIDE = 28;   // strong-trend threshold
 const STOCH_EXTREME_LONG = 75;   // lowered from 80
 const STOCH_EXTREME_SHORT = 25;  // raised from 20
+const EMA_FALLBACK_MIN_ADX = 22; // post-breakout EMA proxy threshold
 
 // --- EMA periods ---
 const DAILY_FAST_EMA = 5;
@@ -458,8 +459,25 @@ export function generateSignal(
       : findPivots(candles4h, "LONG");
     tl = fitTrendline(fallbackPivots);
   }
+
+  // v32.34: EMA 21 fallback for post-breakout momentum
+  // When no TL exists (breakout too fresh for pivots) but ADX is strong,
+  // use EMA 21 as proxy support/resistance to avoid missing the move.
+  let usingEmaFallback = false;
   if (!tl) {
-    debug.push("No trendline (R² < ${MIN_R2} or < 3 pivots)");
+    const closes4hForEma = candles4h.map(c => c.close);
+    const ema21_4h = ema(closes4hForEma, 21);
+    const ema21Val = ema21_4h[ema21_4h.length - 1];
+    const adxValCheck = adx(candles4h);
+    if (adxValCheck >= EMA_FALLBACK_MIN_ADX) {
+      tl = { slope: 0, intercept: ema21Val, r2: 0.99 };
+      usingEmaFallback = true;
+      debug.push(`No TL — using EMA 21 proxy @ ${ema21Val.toFixed(2)} (ADX ${adxValCheck} >= ${EMA_FALLBACK_MIN_ADX})`);
+    }
+  }
+
+  if (!tl) {
+    debug.push("No trendline (R² < ${MIN_R2} or < 3 pivots) and ADX too weak for EMA fallback");
     return { debug };
   }
 
@@ -482,7 +500,8 @@ export function generateSignal(
   const last4h = candles4h[candles4h.length - 1];
   const tlNow = tl.slope * (candles4h.length - 1) + tl.intercept;
   const dist = (last4h.close - tlNow) / tlNow;
-  debug.push(`TL: ${tlNow.toFixed(2)} | Price: ${last4h.close.toFixed(2)} | Dist: ${(dist * 100).toFixed(2)}% | R² ${tl.r2}`);
+  const tlLabel = usingEmaFallback ? "EMA21" : "TL";
+  debug.push(`${tlLabel}: ${tlNow.toFixed(2)} | Price: ${last4h.close.toFixed(2)} | Dist: ${(dist * 100).toFixed(2)}% | R² ${tl.r2}`);
 
   const nearTL = Math.abs(dist) < TL_THRESHOLD;
   if (!nearTL) {
@@ -595,7 +614,7 @@ export function generateSignal(
     stochK: stoch4h.k,
     stochD: stoch4h.d,
     expectedMove,
-    reason: `${direction} ${entryType} | ${pullback.reason} (15m K${pullback.stochK}/D${pullback.stochD}) | 4H TL ${tlNow.toFixed(1)} (R² ${tl.r2}) | RR ${rr.toFixed(2)}`,
+    reason: `${direction} ${entryType} | ${pullback.reason} (15m K${pullback.stochK}/D${pullback.stochD}) | 4H ${usingEmaFallback ? "EMA21" : "TL"} ${tlNow.toFixed(1)} (R² ${tl.r2}) | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
     trend: direction,
@@ -603,7 +622,7 @@ export function generateSignal(
     trigger: "READY",
     context: {
       marketPhase: `${direction} aligned`,
-      structure: isReentry ? "stop_run_retest" : "trendline_pullback",
+      structure: isReentry ? "stop_run_retest" : (usingEmaFallback ? "ema21_breakout" : "trendline_pullback"),
       momentum: pullback.reason,
       pullback: "active",
       crossAge: 0,
