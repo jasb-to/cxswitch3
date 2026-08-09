@@ -58,7 +58,7 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 32.34;
+export const CURRENT_SIGNAL_VERSION = 32.35;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
@@ -70,6 +70,7 @@ const ADX_STOCH_OVERRIDE = 28;   // strong-trend threshold
 const STOCH_EXTREME_LONG = 75;   // lowered from 80
 const STOCH_EXTREME_SHORT = 25;  // raised from 20
 const EMA_FALLBACK_MIN_ADX = 22; // post-breakout EMA proxy threshold
+const BREAKOUT_MIN_ADX = 25;     // minimum ADX for breakout entries
 
 // --- EMA periods ---
 const DAILY_FAST_EMA = 5;
@@ -376,6 +377,55 @@ function findPullbackEntry(
   return null;
 }
 
+// --- 15m BREAKOUT ENTRY (v32.35) ---
+// Fires when price has ALREADY broken out beyond TL/EMA with momentum.
+// Complements pullback entries — catches sustained moves that never pull back.
+function findBreakoutEntry(
+  candles15m: Candle[],
+  direction: "LONG" | "SHORT",
+  tlPrice: number,
+  adx4h: number
+): { entry: number; reason: string; stochK: number; stochD: number } | null {
+  if (candles15m.length < 40) return null;
+  if (adx4h < BREAKOUT_MIN_ADX) return null;
+
+  const last = candles15m[candles15m.length - 1];
+  const closes15m = candles15m.map(c => c.close);
+  const stoch = stochRsi(closes15m, 14, 14, 3, 3);
+
+  // Price must be broken OUT (> threshold from TL in trend direction)
+  const dist = (last.close - tlPrice) / tlPrice;
+  if (direction === "LONG" && dist <= TL_THRESHOLD) return null;
+  if (direction === "SHORT" && dist >= -TL_THRESHOLD) return null;
+
+  if (direction === "LONG") {
+    // K > D = bullish momentum, K < 90 = not buying the absolute wick top
+    const freshMomentum = stoch.k > stoch.d && stoch.k < 90;
+    // Or K just cooled from extreme and crossing back up
+    const continuation = stoch.k > stoch.d && stoch.k > 30 && stoch.k < 95;
+    if (freshMomentum || continuation) {
+      return {
+        entry: last.close,
+        reason: `15m breakout K>D (${stoch.k})`,
+        stochK: stoch.k,
+        stochD: stoch.d,
+      };
+    }
+  } else {
+    const freshMomentum = stoch.k < stoch.d && stoch.k > 10;
+    const continuation = stoch.k < stoch.d && stoch.k < 70 && stoch.k > 5;
+    if (freshMomentum || continuation) {
+      return {
+        entry: last.close,
+        reason: `15m breakout K<D (${stoch.k})`,
+        stochK: stoch.k,
+        stochD: stoch.d,
+      };
+    }
+  }
+  return null;
+}
+
 // --- DYNAMIC LEVERAGE ---
 function suggestLeverage(atr4h: number, price: number): number {
   const atrPct = atr4h / price;
@@ -509,9 +559,21 @@ export function generateSignal(
     return { debug };
   }
 
-  const pullback = findPullbackEntry(candles15m, direction, tlNow);
+  // Try pullback entry first (price near TL/EMA)
+  let pullback = findPullbackEntry(candles15m, direction, tlNow);
+  let isBreakout = false;
+
+  // If no pullback, try breakout entry (price beyond TL/EMA with momentum)
   if (!pullback) {
-    debug.push("Waiting for 15m StochRSI confirmation at TL...");
+    pullback = findBreakoutEntry(candles15m, direction, tlNow, adxVal);
+    if (pullback) {
+      isBreakout = true;
+      debug.push(`Breakout entry: ${pullback.reason} | ADX ${adxVal} >= ${BREAKOUT_MIN_ADX}`);
+    }
+  }
+
+  if (!pullback) {
+    debug.push("Waiting for 15m pullback or breakout confirmation...");
     return { debug };
   }
 
@@ -550,6 +612,7 @@ export function generateSignal(
   }
 
   // --- SL: swing structure + 1x ATR ---
+  // v32.35: Breakout entries use TL/EMA as the key invalidation level
   const atr4h = atr(candles4h, 14);
   const swingLows4h = candles4h.slice(-20).map(c => c.low);
   const swingHighs4h = candles4h.slice(-20).map(c => c.high);
@@ -558,10 +621,20 @@ export function generateSignal(
 
   const entry = pullback.entry;
   let sl: number;
-  if (direction === "LONG") {
-    sl = Math.min(swingLow4h, entry - atr4h * SL_ATR_MULT);
+  if (isBreakout) {
+    // Breakout SL: TL/EMA is the invalidation point
+    if (direction === "LONG") {
+      sl = Math.max(tlNow, Math.min(swingLow4h, entry - atr4h * SL_ATR_MULT));
+    } else {
+      sl = Math.min(tlNow, Math.max(swingHigh4h, entry + atr4h * SL_ATR_MULT));
+    }
   } else {
-    sl = Math.max(swingHigh4h, entry + atr4h * SL_ATR_MULT);
+    // Pullback SL: swing structure + ATR
+    if (direction === "LONG") {
+      sl = Math.min(swingLow4h, entry - atr4h * SL_ATR_MULT);
+    } else {
+      sl = Math.max(swingHigh4h, entry + atr4h * SL_ATR_MULT);
+    }
   }
 
   // --- STRUCTURE-BASED TP + SCALE-OUT ---
@@ -614,7 +687,7 @@ export function generateSignal(
     stochK: stoch4h.k,
     stochD: stoch4h.d,
     expectedMove,
-    reason: `${direction} ${entryType} | ${pullback.reason} (15m K${pullback.stochK}/D${pullback.stochD}) | 4H ${usingEmaFallback ? "EMA21" : "TL"} ${tlNow.toFixed(1)} (R² ${tl.r2}) | RR ${rr.toFixed(2)}`,
+    reason: `${direction} ${entryType} | ${pullback.reason} (15m K${pullback.stochK}/D${pullback.stochD}) | 4H ${usingEmaFallback ? "EMA21" : "TL"} ${tlNow.toFixed(1)} (R² ${tl.r2}) | ${isBreakout ? "BREAKOUT" : "PULLBACK"} | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
     trend: direction,
@@ -622,7 +695,7 @@ export function generateSignal(
     trigger: "READY",
     context: {
       marketPhase: `${direction} aligned`,
-      structure: isReentry ? "stop_run_retest" : (usingEmaFallback ? "ema21_breakout" : "trendline_pullback"),
+      structure: isReentry ? "stop_run_retest" : (isBreakout ? "breakout_momentum" : (usingEmaFallback ? "ema21_breakout" : "trendline_pullback")),
       momentum: pullback.reason,
       pullback: "active",
       crossAge: 0,
@@ -630,6 +703,7 @@ export function generateSignal(
       stoch4h: { k: stoch4h.k, d: stoch4h.d },
       adxOverride: { threshold: ADX_STOCH_OVERRIDE, applied: isStochExtreme && adxVal <= ADX_STOCH_OVERRIDE },
       entry2Gate: { minAdx: ENTRY_2_MIN_ADX, applied: entryType === "ENTRY_2" && adxVal < ENTRY_2_MIN_ADX },
+      breakout: { isBreakout, minAdx: BREAKOUT_MIN_ADX },
       tlBreak: { 
         tl1dPrice: tl1d ? Math.round((tl1d.slope * (candles1d.length - 1) + tl1d.intercept) * 100) / 100 : null,
         tl4hPrice: Math.round(tlNow * 100) / 100,
