@@ -58,7 +58,7 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 32.32;
+export const CURRENT_SIGNAL_VERSION = 32.33;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
@@ -267,7 +267,9 @@ function fitTrendline(pivots: { index: number; price: number }[]) {
   return { slope, intercept, r2: Math.round(r2 * 100) / 100 };
 }
 
-// --- v32.3: TL-aware getBias ---
+// --- v32.33: Simplified getBias ---
+// 1D bias = EMA cross + HH/LL filter only (directional alignment)
+// 4H bias = EMA cross + HH/LL filter + TL-break invalidation (entry protection)
 function getBias(
   candles: Candle[],
   tl?: { slope: number; intercept: number } | null,
@@ -295,10 +297,10 @@ function getBias(
   if (eFast > eSlow && !ll) bias = "LONG";
   if (eFast < eSlow && !hh) bias = "SHORT";
 
-  // --- v32.3: TL-break invalidation ---
-  // If price closed on the wrong side of a validated trendline, bias is null.
-  // This prevents buying into broken rising TLs or shorting above broken falling TLs.
-  if (tl && bias) {
+  // --- v32.33: TL-break invalidation ONLY for 4H (entry timeframe) ---
+  // 1D TL extrapolation drifts too far on daily charts — causes false nullification.
+  // 4H TL is tight enough to catch real structure breaks without extrapolation noise.
+  if (tl && bias && !isDaily) {
     const idx = candles.length - 1;
     const tlPrice = tl.slope * idx + tl.intercept;
     const lastClose = candles[candles.length - 1].close;
@@ -431,14 +433,15 @@ export function generateSignal(
   if (rawBias4h === "LONG") tl4h = tl4hLong;
   if (rawBias4h === "SHORT") tl4h = tl4hShort;
 
-  // Now compute final bias WITH TL-break invalidation
-  const bias1d = getBias(candles1d, tl1d, true);
+  // v32.33: 1D bias = EMA only (no TL invalidation — too much extrapolation drift)
+  // 4H bias = EMA + TL-break invalidation (entry protection)
+  const bias1d = getBias(candles1d, null, true);
   const bias4h = getBias(candles4h, tl4h, false);
 
   debug.push(`1D: ${bias1d || "NONE"} (raw ${rawBias1d || "NONE"}) | 4H: ${bias4h || "NONE"} (raw ${rawBias4h || "NONE"})`);
 
   if (!bias1d || !bias4h || bias1d !== bias4h) {
-    if (!bias1d && rawBias1d) debug.push("1D bias nullified by TL break");
+    if (!bias1d && rawBias1d) debug.push("1D bias: EMA-based only");
     if (!bias4h && rawBias4h) debug.push("4H bias nullified by TL break");
     debug.push("Bias mismatch");
     return { debug };
@@ -676,7 +679,7 @@ export function getMarketSnapshot(
   // Fallback for display only (not bias invalidation)
   if (!tl4h) tl4h = tl4hLongSnap || tl4hShortSnap;
 
-  const bias1d = getBias(candles1d, tl1d, true);
+  const bias1d = getBias(candles1d, null, true);
   const bias4h = getBias(candles4h, tl4h, false);
 
   const price = candles4h[candles4h.length - 1].close;
@@ -776,7 +779,7 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
   if (rawBias4h === "LONG") tl4h = tl4hLong;
   if (rawBias4h === "SHORT") tl4h = tl4hShort;
 
-  const bias1d = getBias(candles1d, tl1d, true);
+  const bias1d = getBias(candles1d, null, true);
   const bias4h = getBias(candles4h, tl4h, false);
 
   if (signal.direction === "LONG" && bias4h === "SHORT") {
