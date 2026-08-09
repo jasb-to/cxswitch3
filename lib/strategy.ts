@@ -58,7 +58,7 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 32.31;
+export const CURRENT_SIGNAL_VERSION = 32.32;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
@@ -412,11 +412,12 @@ export function generateSignal(
   const rawBias4h = getBias(candles4h, null, false);
 
   // 1D TL (for bias invalidation) — pick direction matching raw bias
+  // v32.32: NO fallback to opposite-direction TL — that causes false nullification
   const tl1dLong = fitTrendline(findPivots(candles1d, "LONG"));
   const tl1dShort = fitTrendline(findPivots(candles1d, "SHORT"));
-  let tl1d = tl1dLong;
+  let tl1d: { slope: number; intercept: number; r2: number } | null = null;
+  if (rawBias1d === "LONG") tl1d = tl1dLong;
   if (rawBias1d === "SHORT") tl1d = tl1dShort;
-  if (!tl1d) tl1d = tl1dLong || tl1dShort;
 
   // 4H TL (for entry logic)
   const pivots4hLong = findPivots(candles4h, "LONG");
@@ -425,9 +426,10 @@ export function generateSignal(
   const tl4hShort = fitTrendline(pivots4hShort);
 
   // Pick the 4H TL that matches the preliminary direction
-  let tl4h = tl4hLong;
+  // v32.32: NO fallback to opposite-direction TL for bias invalidation
+  let tl4h: { slope: number; intercept: number; r2: number } | null = null;
+  if (rawBias4h === "LONG") tl4h = tl4hLong;
   if (rawBias4h === "SHORT") tl4h = tl4hShort;
-  if (!tl4h) tl4h = tl4hLong || tl4hShort;
 
   // Now compute final bias WITH TL-break invalidation
   const bias1d = getBias(candles1d, tl1d, true);
@@ -445,7 +447,14 @@ export function generateSignal(
 
   // Recompute pivots for the confirmed direction
   const pivots4h = findPivots(candles4h, direction);
-  const tl = fitTrendline(pivots4h);
+  let tl = fitTrendline(pivots4h);
+  // v32.32: if no valid TL for confirmed direction, fallback to any valid TL for entry
+  if (!tl) {
+    const fallbackPivots = direction === "LONG" 
+      ? findPivots(candles4h, "SHORT") 
+      : findPivots(candles4h, "LONG");
+    tl = fitTrendline(fallbackPivots);
+  }
   if (!tl) {
     debug.push("No trendline (R² < ${MIN_R2} or < 3 pivots)");
     return { debug };
@@ -655,13 +664,17 @@ export function getMarketSnapshot(
 
   const tl1dLong = fitTrendline(findPivots(candles1d, "LONG"));
   const tl1dShort = fitTrendline(findPivots(candles1d, "SHORT"));
-  let tl1d = tl1dLong;
+  let tl1d: { slope: number; intercept: number; r2: number } | null = null;
+  if (rawBias1d === "LONG") tl1d = tl1dLong;
   if (rawBias1d === "SHORT") tl1d = tl1dShort;
-  if (!tl1d) tl1d = tl1dLong || tl1dShort;
 
-  let tl4h = fitTrendline(findPivots(candles4h, "LONG"));
-  if (rawBias4h === "SHORT") tl4h = fitTrendline(findPivots(candles4h, "SHORT"));
-  if (!tl4h) tl4h = fitTrendline(findPivots(candles4h, "LONG")) || fitTrendline(findPivots(candles4h, "SHORT"));
+  const tl4hLongSnap = fitTrendline(findPivots(candles4h, "LONG"));
+  const tl4hShortSnap = fitTrendline(findPivots(candles4h, "SHORT"));
+  let tl4h: { slope: number; intercept: number; r2: number } | null = null;
+  if (rawBias4h === "LONG") tl4h = tl4hLongSnap;
+  if (rawBias4h === "SHORT") tl4h = tl4hShortSnap;
+  // Fallback for display only (not bias invalidation)
+  if (!tl4h) tl4h = tl4hLongSnap || tl4hShortSnap;
 
   const bias1d = getBias(candles1d, tl1d, true);
   const bias4h = getBias(candles4h, tl4h, false);
@@ -752,16 +765,16 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
   const tl1dLong = fitTrendline(findPivots(candles1d, "LONG"));
   const tl1dShort = fitTrendline(findPivots(candles1d, "SHORT"));
   const rawBias1d = getBias(candles1d, null, true);
-  let tl1d = tl1dLong;
+  let tl1d: { slope: number; intercept: number; r2: number } | null = null;
+  if (rawBias1d === "LONG") tl1d = tl1dLong;
   if (rawBias1d === "SHORT") tl1d = tl1dShort;
-  if (!tl1d) tl1d = tl1dLong || tl1dShort;
 
   const tl4hLong = fitTrendline(findPivots(candles4h, "LONG"));
   const tl4hShort = fitTrendline(findPivots(candles4h, "SHORT"));
   const rawBias4h = getBias(candles4h, null, false);
-  let tl4h = tl4hLong;
+  let tl4h: { slope: number; intercept: number; r2: number } | null = null;
+  if (rawBias4h === "LONG") tl4h = tl4hLong;
   if (rawBias4h === "SHORT") tl4h = tl4hShort;
-  if (!tl4h) tl4h = tl4hLong || tl4hShort;
 
   const bias1d = getBias(candles1d, tl1d, true);
   const bias4h = getBias(candles4h, tl4h, false);
