@@ -21,10 +21,12 @@ async function rateFetch(url: string, opts?: RequestInit): Promise<Response> {
 }
 
 export async function getCandles(pair: string, interval: number = 60, since?: number): Promise<Candle[]> {
+  // v32.3: request 90 days of history to ensure stable StochRSI / ADX / EMA calculations
+  const defaultSince = Math.floor((Date.now() - 90 * 24 * 60 * 60 * 1000) / 1000);
   const url = new URL(`${KRAKEN_API_URL}/0/public/OHLC`);
   url.searchParams.set("pair", pair);
   url.searchParams.set("interval", String(interval));
-  if (since) url.searchParams.set("since", String(since));
+  url.searchParams.set("since", String(since ?? defaultSince));
   const res = await rateFetch(url.toString());
   if (!res.ok) throw new Error(`Kraken OHLC HTTP ${res.status}`);
   const data = await res.json();
@@ -33,6 +35,17 @@ export async function getCandles(pair: string, interval: number = 60, since?: nu
   if (!key) throw new Error("No OHLC data");
   const raw = data.result[key];
   if (!Array.isArray(raw)) throw new Error(`OHLC not array: ${typeof raw}`);
+
+  // v32.3: Drop the last candle if it is still forming (incomplete close)
+  const intervalMs = interval * 60 * 1000;
+  const now = Date.now();
+  if (raw.length > 0) {
+    const lastCandleTime = raw[raw.length - 1][0] * 1000;
+    if (lastCandleTime + intervalMs > now) {
+      raw.pop();
+    }
+  }
+
   return raw.map((c: any) => ({
     timestamp: c[0] * 1000,
     open: parseFloat(c[1]),
