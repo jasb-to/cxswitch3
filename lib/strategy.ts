@@ -1,6 +1,6 @@
-// lib/strategy.ts — v32.2 "Bias + Pullback + Scale-Out + Chop Filter + ADX Stoch Override + ENTRY_2 Gate"
+// lib/strategy.ts — v32.3 "Bias + Pullback + Scale-Out + Chop Filter + ADX Stoch Override + ENTRY_2 Gate + TL-Aware Bias"
 // ============================================================
-// 1. Bias gate (1D/4H EMA 8/21)
+// 1. Bias gate (1D EMA 5/13, 4H EMA 8/21) + TL-break invalidation
 // 2. 4H trendline + R² >= 0.60
 // 3. Chop filter: ADX < 20 = no trade
 // 4. 15m StochRSI K/D cross at TL zone
@@ -12,6 +12,7 @@
 //    — ENTRY_2 additionally requires ADX >= 25 (stronger trend for re-entries)
 // 8. BE advice after 1.5R in shouldHold
 // 9. Dynamic leverage suggestion in context
+// 10. TL-aware bias: price closing on wrong side of fitted TL → bias null immediately
 // Stateless. Compatible with v54 cron / v50.1 telegram / v54 dashboard.
 
 export interface Candle {
@@ -57,17 +58,23 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 32.2;
+export const CURRENT_SIGNAL_VERSION = 32.3;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
 const SL_ATR_MULT = 1.0;
 const MIN_ADX = 20;              // chop filter — applies to ALL entries
-const ENTRY_2_MIN_ADX = 25;      // v32.2: re-entries need stronger trend
+const ENTRY_2_MIN_ADX = 25;      // re-entries need stronger trend
 const MAX_SAME_DIR = 1;          // correlation cap
 const ADX_STOCH_OVERRIDE = 28;   // strong-trend threshold
-const STOCH_EXTREME_LONG = 75;   // v32.2: lowered from 80
-const STOCH_EXTREME_SHORT = 25;  // v32.2: raised from 20
+const STOCH_EXTREME_LONG = 75;   // lowered from 80
+const STOCH_EXTREME_SHORT = 25;  // raised from 20
+
+// --- EMA periods ---
+const DAILY_FAST_EMA = 5;
+const DAILY_SLOW_EMA = 13;
+const HOURLY_FAST_EMA = 8;
+const HOURLY_SLOW_EMA = 21;
 
 function avg(arr: number[]): number {
   if (!arr.length) return 0;
@@ -214,25 +221,6 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-function getBias(candles: Candle[]): "LONG" | "SHORT" | null {
-  if (candles.length < 30) return null;
-  const closes = candles.map(c => c.close);
-  const ema8 = ema(closes, 8);
-  const ema21 = ema(closes, 21);
-  const e8 = ema8[ema8.length - 1];
-  const e21 = ema21[ema21.length - 1];
-
-  const recent = candles.slice(-5);
-  const lows = recent.map(c => c.low);
-  const highs = recent.map(c => c.high);
-  const ll = lows[lows.length - 1] < Math.min(...lows.slice(0, -1));
-  const hh = highs[highs.length - 1] > Math.max(...highs.slice(0, -1));
-
-  if (e8 > e21 && !ll) return "LONG";
-  if (e8 < e21 && !hh) return "SHORT";
-  return null;
-}
-
 function findPivots(candles: Candle[], direction: "LONG" | "SHORT") {
   const pivots: { index: number; price: number; timestamp: number }[] = [];
   for (let i = 3; i < candles.length - 3; i++) {
@@ -279,6 +267,53 @@ function fitTrendline(pivots: { index: number; price: number }[]) {
   return { slope, intercept, r2: Math.round(r2 * 100) / 100 };
 }
 
+// --- v32.3: TL-aware getBias ---
+function getBias(
+  candles: Candle[],
+  tl?: { slope: number; intercept: number } | null,
+  isDaily: boolean = false
+): "LONG" | "SHORT" | null {
+  const minLen = isDaily ? 20 : 30;
+  if (candles.length < minLen) return null;
+
+  const closes = candles.map(c => c.close);
+  const fastPeriod = isDaily ? DAILY_FAST_EMA : HOURLY_FAST_EMA;
+  const slowPeriod = isDaily ? DAILY_SLOW_EMA : HOURLY_SLOW_EMA;
+
+  const emaFast = ema(closes, fastPeriod);
+  const emaSlow = ema(closes, slowPeriod);
+  const eFast = emaFast[emaFast.length - 1];
+  const eSlow = emaSlow[emaSlow.length - 1];
+
+  const recent = candles.slice(-5);
+  const lows = recent.map(c => c.low);
+  const highs = recent.map(c => c.high);
+  const ll = lows[lows.length - 1] < Math.min(...lows.slice(0, -1));
+  const hh = highs[highs.length - 1] > Math.max(...highs.slice(0, -1));
+
+  let bias: "LONG" | "SHORT" | null = null;
+  if (eFast > eSlow && !ll) bias = "LONG";
+  if (eFast < eSlow && !hh) bias = "SHORT";
+
+  // --- v32.3: TL-break invalidation ---
+  // If price closed on the wrong side of a validated trendline, bias is null.
+  // This prevents buying into broken rising TLs or shorting above broken falling TLs.
+  if (tl && bias) {
+    const idx = candles.length - 1;
+    const tlPrice = tl.slope * idx + tl.intercept;
+    const lastClose = candles[candles.length - 1].close;
+
+    if (bias === "LONG" && lastClose < tlPrice) {
+      return null; // bullish bias but below rising TL = structure broken
+    }
+    if (bias === "SHORT" && lastClose > tlPrice) {
+      return null; // bearish bias but above falling TL = structure broken
+    }
+  }
+
+  return bias;
+}
+
 // --- Detect stop-run re-entry (stateless) ---
 function detectStopRun(candles4h: Candle[], direction: "LONG" | "SHORT", tl: { slope: number; intercept: number }): boolean {
   for (let i = candles4h.length - 8; i < candles4h.length - 1; i++) {
@@ -286,7 +321,6 @@ function detectStopRun(candles4h: Candle[], direction: "LONG" | "SHORT", tl: { s
     const c = candles4h[i];
     const tlPrice = tl.slope * i + tl.intercept;
     if (direction === "LONG") {
-      // Wick below TL but close back above = stop run
       if (c.low < tlPrice && c.close > tlPrice) return true;
     } else {
       if (c.high > tlPrice && c.close < tlPrice) return true;
@@ -370,16 +404,52 @@ export function generateSignal(
     return { debug };
   }
 
+  // --- v32.3: Compute TLs BEFORE bias so we can pass them in ---
   const candles1d = aggregateTo1D(candles4h);
-  const bias1d = getBias(candles1d);
-  const bias4h = getBias(candles4h);
-  debug.push(`1D: ${bias1d || "NONE"} | 4H: ${bias4h || "NONE"}`);
+
+  // 1D TL (for bias invalidation)
+  const pivots1d = findPivots(candles1d, "LONG").concat(findPivots(candles1d, "SHORT"));
+  // We need to know direction to pick correct pivots; try both and use whichever fits
+  const tl1dLong = fitTrendline(findPivots(candles1d, "LONG"));
+  const tl1dShort = fitTrendline(findPivots(candles1d, "SHORT"));
+  const tl1d = tl1dLong || tl1dShort;
+
+  // 4H TL (for entry logic)
+  const pivots4hLong = findPivots(candles4h, "LONG");
+  const pivots4hShort = findPivots(candles4h, "SHORT");
+  const tl4hLong = fitTrendline(pivots4hLong);
+  const tl4hShort = fitTrendline(pivots4hShort);
+
+  // Determine preliminary direction from EMA only (no TL invalidation yet)
+  const rawBias1d = getBias(candles1d, null, true);
+  const rawBias4h = getBias(candles4h, null, false);
+
+  // Pick the 4H TL that matches the preliminary direction
+  let tl4h = tl4hLong;
+  if (rawBias4h === "SHORT") tl4h = tl4hShort;
+  if (!tl4h) tl4h = tl4hLong || tl4hShort;
+
+  // Now compute final bias WITH TL-break invalidation
+  const bias1d = getBias(candles1d, tl1d, true);
+  const bias4h = getBias(candles4h, tl4h, false);
+
+  debug.push(`1D: ${bias1d || "NONE"} (raw ${rawBias1d || "NONE"}) | 4H: ${bias4h || "NONE"} (raw ${rawBias4h || "NONE"})`);
 
   if (!bias1d || !bias4h || bias1d !== bias4h) {
+    if (!bias1d && rawBias1d) debug.push("1D bias nullified by TL break");
+    if (!bias4h && rawBias4h) debug.push("4H bias nullified by TL break");
     debug.push("Bias mismatch");
     return { debug };
   }
   const direction = bias1d;
+
+  // Recompute pivots for the confirmed direction
+  const pivots4h = findPivots(candles4h, direction);
+  const tl = fitTrendline(pivots4h);
+  if (!tl) {
+    debug.push("No trendline (R² < ${MIN_R2} or < 3 pivots)");
+    return { debug };
+  }
 
   // --- CHOP FILTER ---
   const adxVal = adx(candles4h);
@@ -394,13 +464,6 @@ export function generateSignal(
   const sameDirCount = activeTrades.filter((t: any) => t.direction === direction).length;
   if (sameDirCount >= MAX_SAME_DIR) {
     debug.push(`Correlation cap: ${sameDirCount} ${direction} active, max ${MAX_SAME_DIR}`);
-    return { debug };
-  }
-
-  const pivots = findPivots(candles4h, direction);
-  const tl = fitTrendline(pivots);
-  if (!tl) {
-    debug.push("No trendline (R² < ${MIN_R2} or < 3 pivots)");
     return { debug };
   }
 
@@ -430,9 +493,7 @@ export function generateSignal(
   const isReentry = detectStopRun(candles4h, direction, tl);
   const entryType: "ENTRY_1" | "ENTRY_2" = isReentry ? "ENTRY_2" : "ENTRY_1";
 
-  // --- v32.2: ENTRY_2 MIN ADX GATE ---
-  // Re-entries (stop-run retests) need stronger trend conviction.
-  // ADX 20-25 = technically non-chop but too weak for chasing a re-entry.
+  // --- v32.2/v32.3: ENTRY_2 MIN ADX GATE ---
   if (entryType === "ENTRY_2" && adxVal < ENTRY_2_MIN_ADX) {
     debug.push(
       `ENTRY_2 blocked: ADX ${adxVal} < ${ENTRY_2_MIN_ADX} — re-entries need stronger trend`
@@ -440,9 +501,7 @@ export function generateSignal(
     return { debug };
   }
 
-  // --- v32.2: ADX OVERRIDE FOR STOCH EXTREMES ---
-  // If Stoch is extreme and ADX is weak (<=28), treat as exhaustion — block ENTRY_2.
-  // Strong trend (ADX>28) = sustained momentum, allow.
+  // --- v32.2/v32.3: ADX OVERRIDE FOR STOCH EXTREMES ---
   const isStochExtreme = direction === "LONG"
     ? stoch4h.k > STOCH_EXTREME_LONG
     : stoch4h.k < STOCH_EXTREME_SHORT;
@@ -501,6 +560,11 @@ export function generateSignal(
 
   const expectedMove = Math.round((Math.abs(finalTp2 - entry) / entry * 100) * 10) / 10;
 
+  // Compute EMAs for market snapshot
+  const ema8_4h = ema(closes4h, 8);
+  const ema21_4h = ema(closes4h, 21);
+  const ema50_4h = ema(closes4h, 50);
+
   const signal: Signal = {
     id: `${pair}_${now}`,
     pair,
@@ -535,6 +599,12 @@ export function generateSignal(
       stoch4h: { k: stoch4h.k, d: stoch4h.d },
       adxOverride: { threshold: ADX_STOCH_OVERRIDE, applied: isStochExtreme && adxVal <= ADX_STOCH_OVERRIDE },
       entry2Gate: { minAdx: ENTRY_2_MIN_ADX, applied: entryType === "ENTRY_2" && adxVal < ENTRY_2_MIN_ADX },
+      tlBreak: { 
+        tl1dPrice: tl1d ? Math.round((tl1d.slope * (candles1d.length - 1) + tl1d.intercept) * 100) / 100 : null,
+        tl4hPrice: Math.round(tlNow * 100) / 100,
+        invalidated1d: !bias1d && !!rawBias1d,
+        invalidated4h: !bias4h && !!rawBias4h,
+      },
       scaleOutPlan: {
         tp1: { price: Math.round(tp1 * 100) / 100, size: 0.50, r: 2 },
         tp2: { price: Math.round(finalTp2 * 100) / 100, size: 0.25, r: Math.round(rr * 10) / 10 },
@@ -563,9 +633,9 @@ export function generateSignal(
       trendlinePrice: Math.round(tlNow * 100) / 100,
       distToTrendline: Math.round(Math.abs(dist) * 10000) / 100,
       locationType: "PRE_BREAK",
-      ema8_4h: 0,
-      ema21_4h: 0,
-      ema50_4h: 0,
+      ema8_4h: Math.round(ema8_4h[ema8_4h.length - 1] * 100) / 100,
+      ema21_4h: Math.round(ema21_4h[ema21_4h.length - 1] * 100) / 100,
+      ema50_4h: Math.round(ema50_4h[ema50_4h.length - 1] * 100) / 100,
     },
     debug,
   };
@@ -578,13 +648,24 @@ export function getMarketSnapshot(
   candles15m: Candle[]
 ): any {
   const candles1d = aggregateTo1D(candles4h);
-  const bias1d = getBias(candles1d);
-  const bias4h = getBias(candles4h);
-  const price = candles4h[candles4h.length - 1].close;
 
-  const pivots = bias4h ? findPivots(candles4h, bias4h) : [];
-  const tl = bias4h ? fitTrendline(pivots) : null;
-  const tlPrice = tl ? tl.slope * (candles4h.length - 1) + tl.intercept : 0;
+  // Compute TLs first (same logic as generateSignal)
+  const tl1dLong = fitTrendline(findPivots(candles1d, "LONG"));
+  const tl1dShort = fitTrendline(findPivots(candles1d, "SHORT"));
+  const tl1d = tl1dLong || tl1dShort;
+
+  const rawBias1d = getBias(candles1d, null, true);
+  const rawBias4h = getBias(candles4h, null, false);
+
+  let tl4h = fitTrendline(findPivots(candles4h, "LONG"));
+  if (rawBias4h === "SHORT") tl4h = fitTrendline(findPivots(candles4h, "SHORT"));
+  if (!tl4h) tl4h = fitTrendline(findPivots(candles4h, "LONG")) || fitTrendline(findPivots(candles4h, "SHORT"));
+
+  const bias1d = getBias(candles1d, tl1d, true);
+  const bias4h = getBias(candles4h, tl4h, false);
+
+  const price = candles4h[candles4h.length - 1].close;
+  const tlPrice = tl4h ? tl4h.slope * (candles4h.length - 1) + tl4h.intercept : 0;
   const dist = tlPrice ? (price - tlPrice) / tlPrice : 1;
   const nearTL = Math.abs(dist) < TL_THRESHOLD;
 
@@ -600,12 +681,16 @@ export function getMarketSnapshot(
   const rsiVal = candles4h.length >= 30 ? rsi(closes4h) : 0;
   const stoch = candles4h.length >= 30 ? stochRsi(closes4h) : { k: 0, d: 0 };
 
+  const ema8 = candles4h.length >= 30 ? ema(closes4h, 8) : [0];
+  const ema21 = candles4h.length >= 30 ? ema(closes4h, 21) : [0];
+  const ema50 = candles4h.length >= 30 ? ema(closes4h, 50) : [0];
+
   return {
     pair,
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
     trend: bias1d && bias1d === bias4h ? bias1d : "FLAT",
-    location: tl ? (nearTL ? "NEAR_TL" : "BEYOND_TL") : "NONE",
+    location: tl4h ? (nearTL ? "NEAR_TL" : "BEYOND_TL") : "NONE",
     trigger,
     adx: adxVal,
     rsi: Math.round(rsiVal * 10) / 10,
@@ -613,10 +698,10 @@ export function getMarketSnapshot(
     stochD: stoch.d,
     trendlinePrice: Math.round(tlPrice * 100) / 100,
     distToTrendline: tlPrice ? Math.round(Math.abs(dist) * 10000) / 100 : 0,
-    locationType: tl ? "STRUCTURE" : "NONE",
-    ema8_4h: 0,
-    ema21_4h: 0,
-    ema50_4h: 0,
+    locationType: tl4h ? "STRUCTURE" : "NONE",
+    ema8_4h: Math.round(ema8[ema8.length - 1] * 100) / 100,
+    ema21_4h: Math.round(ema21[ema21.length - 1] * 100) / 100,
+    ema50_4h: Math.round(ema50[ema50.length - 1] * 100) / 100,
   };
 }
 
@@ -654,14 +739,27 @@ export function isSignalStillValid(signal: Signal, currentPrice: number, now: nu
 export interface HoldResult {
   shouldHold: boolean;
   reason: string;
-  newStop?: number; // v32: BE advice
+  newStop?: number;
   scaleOut?: { level: number; size: number; label: string };
 }
 
 export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, _now?: number): HoldResult {
   const candles1d = aggregateTo1D(candles4h);
-  const bias1d = getBias(candles1d);
-  const bias4h = getBias(candles4h);
+
+  // Compute TLs for bias invalidation (same logic as generateSignal)
+  const tl1dLong = fitTrendline(findPivots(candles1d, "LONG"));
+  const tl1dShort = fitTrendline(findPivots(candles1d, "SHORT"));
+  const tl1d = tl1dLong || tl1dShort;
+
+  const tl4hLong = fitTrendline(findPivots(candles4h, "LONG"));
+  const tl4hShort = fitTrendline(findPivots(candles4h, "SHORT"));
+  const rawBias4h = getBias(candles4h, null, false);
+  let tl4h = tl4hLong;
+  if (rawBias4h === "SHORT") tl4h = tl4hShort;
+  if (!tl4h) tl4h = tl4hLong || tl4hShort;
+
+  const bias1d = getBias(candles1d, tl1d, true);
+  const bias4h = getBias(candles4h, tl4h, false);
 
   if (signal.direction === "LONG" && bias4h === "SHORT") {
     return { shouldHold: false, reason: "4H_bias_flipped" };
