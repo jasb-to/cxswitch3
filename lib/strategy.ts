@@ -1,18 +1,19 @@
-// lib/strategy.ts — v32.3 "Bias + Pullback + Scale-Out + Chop Filter + ADX Stoch Override + ENTRY_2 Gate + TL-Aware Bias"
+// lib/strategy.ts — v32.37 "Back to Basics"
 // ============================================================
-// 1. Bias gate (1D EMA 5/13, 4H EMA 8/21) + TL-break invalidation
-// 2. 4H trendline + R² >= 0.60
-// 3. Chop filter: ADX < 20 = no trade
-// 4. 15m StochRSI K/D cross at TL zone
-// 5. Structure-based TP (swing high/low cap), scale-out plan
-// 6. Correlation cap: max 1 active trade per direction
-// 7. Re-entry (ENTRY_2) on stop-run + retest (stateless detection)
-//    — BLOCKED if Stoch extreme + ADX <= 28 (weak trend = exhaustion, not momentum)
-//    — ALLOWED if ADX > 28 (strong trend = sustained momentum)
-//    — ENTRY_2 additionally requires ADX >= 25 (stronger trend for re-entries)
-// 8. BE advice after 1.5R in shouldHold
-// 9. Dynamic leverage suggestion in context
-// 10. TL-aware bias: price closing on wrong side of fitted TL → bias null immediately
+// Stripped-down from v32 series. Removes over-gating that caused zero signals.
+// Keeps: faster 1D EMAs (5/13), EMA 21 fallback, feed fixes.
+// Removes: TL-break bias invalidation, ENTRY_2 ADX gate, Stoch extreme blocks,
+//          ADX override logic, breakout mode.
+//
+// 1. Bias gate (1D EMA 5/13, 4H EMA 8/21)
+// 2. 4H trendline + R² >= 0.60, or EMA 21 fallback if no TL
+// 3. Chop filter: ADX < 20 = no trade (all entries)
+// 4. 15m StochRSI K/D cross at TL/EMA zone
+// 5. Structure-based TP, scale-out plan
+// 6. Correlation cap
+// 7. Re-entry (ENTRY_2) on stop-run + retest
+// 8. BE advice after 1.5R
+// 9. Dynamic leverage
 // Stateless. Compatible with v54 cron / v50.1 telegram / v54 dashboard.
 
 export interface Candle {
@@ -33,8 +34,8 @@ export interface Signal {
   entry: number;
   stop: number;
   target: number;
-  tp1?: number; // 2R, 50%
-  tp3?: number; // 6R+, 25% runner
+  tp1?: number;
+  tp3?: number;
   confidence: number;
   rr: number;
   adx: number;
@@ -58,21 +59,16 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 32.35;
+export const CURRENT_SIGNAL_VERSION = 32.38;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
 const SL_ATR_MULT = 1.0;
-const MIN_ADX = 20;              // chop filter — applies to ALL entries
-const ENTRY_2_MIN_ADX = 25;      // re-entries need stronger trend
-const MAX_SAME_DIR = 1;          // correlation cap
-const ADX_STOCH_OVERRIDE = 28;   // strong-trend threshold
-const STOCH_EXTREME_LONG = 75;   // lowered from 80
-const STOCH_EXTREME_SHORT = 25;  // raised from 20
-const EMA_FALLBACK_MIN_ADX = 22; // post-breakout EMA proxy threshold
-const BREAKOUT_MIN_ADX = 25;     // minimum ADX for breakout entries
+const MIN_ADX = 20;
+const MAX_SAME_DIR = 1;
+const ADX_STOCH_OVERRIDE = 28; // strong trend = sustained momentum, not exhaustion
 
-// --- EMA periods ---
+// EMA periods
 const DAILY_FAST_EMA = 5;
 const DAILY_SLOW_EMA = 13;
 const HOURLY_FAST_EMA = 8;
@@ -103,7 +99,6 @@ function atr(candles: Candle[], period: number = 14): number {
   return avg(trs);
 }
 
-// --- RSI ---
 function rsi(closes: number[], period: number = 14): number {
   let gains = 0;
   let losses = 0;
@@ -118,7 +113,6 @@ function rsi(closes: number[], period: number = 14): number {
   return 100 - (100 / (1 + avgGain / avgLoss));
 }
 
-// --- RSI SERIES ---
 function rsiSeries(closes: number[], period: number = 14): number[] {
   const series: number[] = [];
   for (let i = period; i < closes.length; i++) {
@@ -128,7 +122,6 @@ function rsiSeries(closes: number[], period: number = 14): number[] {
   return series;
 }
 
-// --- STOCHRSI ---
 function stochRsi(closes: number[], rsiPeriod: number = 14, stochPeriod: number = 14, kSmooth: number = 3, dSmooth: number = 3): { k: number; d: number } {
   const rsiValues = rsiSeries(closes, rsiPeriod);
   if (rsiValues.length < stochPeriod + kSmooth - 1) return { k: 50, d: 50 };
@@ -158,7 +151,6 @@ function stochRsi(closes: number[], rsiPeriod: number = 14, stochPeriod: number 
   return { k: Math.round(currentK * 10) / 10, d: Math.round(currentD * 10) / 10 };
 }
 
-// --- WILDER SMOOTHING ---
 function wilderSmooth(values: number[], period: number): number[] {
   const result: number[] = [avg(values.slice(0, period))];
   for (let i = period; i < values.length; i++) {
@@ -167,7 +159,6 @@ function wilderSmooth(values: number[], period: number): number[] {
   return result;
 }
 
-// --- ADX ---
 function adx(candles: Candle[], period: number = 14): number {
   if (candles.length < period + 1) return 0;
 
@@ -223,6 +214,30 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
+function getBias(candles: Candle[], isDaily: boolean = false): "LONG" | "SHORT" | null {
+  const minLen = isDaily ? 20 : 30;
+  if (candles.length < minLen) return null;
+
+  const closes = candles.map(c => c.close);
+  const fastPeriod = isDaily ? DAILY_FAST_EMA : HOURLY_FAST_EMA;
+  const slowPeriod = isDaily ? DAILY_SLOW_EMA : HOURLY_SLOW_EMA;
+
+  const emaFast = ema(closes, fastPeriod);
+  const emaSlow = ema(closes, slowPeriod);
+  const eFast = emaFast[emaFast.length - 1];
+  const eSlow = emaSlow[emaSlow.length - 1];
+
+  const recent = candles.slice(-5);
+  const lows = recent.map(c => c.low);
+  const highs = recent.map(c => c.high);
+  const ll = lows[lows.length - 1] < Math.min(...lows.slice(0, -1));
+  const hh = highs[highs.length - 1] > Math.max(...highs.slice(0, -1));
+
+  if (eFast > eSlow && !ll) return "LONG";
+  if (eFast < eSlow && !hh) return "SHORT";
+  return null;
+}
+
 function findPivots(candles: Candle[], direction: "LONG" | "SHORT") {
   const pivots: { index: number; price: number; timestamp: number }[] = [];
   for (let i = 3; i < candles.length - 3; i++) {
@@ -269,56 +284,6 @@ function fitTrendline(pivots: { index: number; price: number }[]) {
   return { slope, intercept, r2: Math.round(r2 * 100) / 100 };
 }
 
-// --- v32.33: Simplified getBias ---
-// 1D bias = EMA cross + HH/LL filter only (directional alignment)
-// 4H bias = EMA cross + HH/LL filter + TL-break invalidation (entry protection)
-function getBias(
-  candles: Candle[],
-  tl?: { slope: number; intercept: number } | null,
-  isDaily: boolean = false
-): "LONG" | "SHORT" | null {
-  const minLen = isDaily ? 20 : 30;
-  if (candles.length < minLen) return null;
-
-  const closes = candles.map(c => c.close);
-  const fastPeriod = isDaily ? DAILY_FAST_EMA : HOURLY_FAST_EMA;
-  const slowPeriod = isDaily ? DAILY_SLOW_EMA : HOURLY_SLOW_EMA;
-
-  const emaFast = ema(closes, fastPeriod);
-  const emaSlow = ema(closes, slowPeriod);
-  const eFast = emaFast[emaFast.length - 1];
-  const eSlow = emaSlow[emaSlow.length - 1];
-
-  const recent = candles.slice(-5);
-  const lows = recent.map(c => c.low);
-  const highs = recent.map(c => c.high);
-  const ll = lows[lows.length - 1] < Math.min(...lows.slice(0, -1));
-  const hh = highs[highs.length - 1] > Math.max(...highs.slice(0, -1));
-
-  let bias: "LONG" | "SHORT" | null = null;
-  if (eFast > eSlow && !ll) bias = "LONG";
-  if (eFast < eSlow && !hh) bias = "SHORT";
-
-  // --- v32.33: TL-break invalidation ONLY for 4H (entry timeframe) ---
-  // 1D TL extrapolation drifts too far on daily charts — causes false nullification.
-  // 4H TL is tight enough to catch real structure breaks without extrapolation noise.
-  if (tl && bias && !isDaily) {
-    const idx = candles.length - 1;
-    const tlPrice = tl.slope * idx + tl.intercept;
-    const lastClose = candles[candles.length - 1].close;
-
-    if (bias === "LONG" && lastClose < tlPrice) {
-      return null; // bullish bias but below rising TL = structure broken
-    }
-    if (bias === "SHORT" && lastClose > tlPrice) {
-      return null; // bearish bias but above falling TL = structure broken
-    }
-  }
-
-  return bias;
-}
-
-// --- Detect stop-run re-entry (stateless) ---
 function detectStopRun(candles4h: Candle[], direction: "LONG" | "SHORT", tl: { slope: number; intercept: number }): boolean {
   for (let i = candles4h.length - 8; i < candles4h.length - 1; i++) {
     if (i < 0) continue;
@@ -333,7 +298,6 @@ function detectStopRun(candles4h: Candle[], direction: "LONG" | "SHORT", tl: { s
   return false;
 }
 
-// --- 15m PULLBACK WITH STOCHRSI K/D CROSS ---
 function findPullbackEntry(
   candles15m: Candle[],
   direction: "LONG" | "SHORT",
@@ -377,61 +341,11 @@ function findPullbackEntry(
   return null;
 }
 
-// --- 15m BREAKOUT ENTRY (v32.35) ---
-// Fires when price has ALREADY broken out beyond TL/EMA with momentum.
-// Complements pullback entries — catches sustained moves that never pull back.
-function findBreakoutEntry(
-  candles15m: Candle[],
-  direction: "LONG" | "SHORT",
-  tlPrice: number,
-  adx4h: number
-): { entry: number; reason: string; stochK: number; stochD: number } | null {
-  if (candles15m.length < 40) return null;
-  if (adx4h < BREAKOUT_MIN_ADX) return null;
-
-  const last = candles15m[candles15m.length - 1];
-  const closes15m = candles15m.map(c => c.close);
-  const stoch = stochRsi(closes15m, 14, 14, 3, 3);
-
-  // Price must be broken OUT (> threshold from TL in trend direction)
-  const dist = (last.close - tlPrice) / tlPrice;
-  if (direction === "LONG" && dist <= TL_THRESHOLD) return null;
-  if (direction === "SHORT" && dist >= -TL_THRESHOLD) return null;
-
-  if (direction === "LONG") {
-    // K > D = bullish momentum, K < 90 = not buying the absolute wick top
-    const freshMomentum = stoch.k > stoch.d && stoch.k < 90;
-    // Or K just cooled from extreme and crossing back up
-    const continuation = stoch.k > stoch.d && stoch.k > 30 && stoch.k < 95;
-    if (freshMomentum || continuation) {
-      return {
-        entry: last.close,
-        reason: `15m breakout K>D (${stoch.k})`,
-        stochK: stoch.k,
-        stochD: stoch.d,
-      };
-    }
-  } else {
-    const freshMomentum = stoch.k < stoch.d && stoch.k > 10;
-    const continuation = stoch.k < stoch.d && stoch.k < 70 && stoch.k > 5;
-    if (freshMomentum || continuation) {
-      return {
-        entry: last.close,
-        reason: `15m breakout K<D (${stoch.k})`,
-        stochK: stoch.k,
-        stochD: stoch.d,
-      };
-    }
-  }
-  return null;
-}
-
-// --- DYNAMIC LEVERAGE ---
 function suggestLeverage(atr4h: number, price: number): number {
   const atrPct = atr4h / price;
-  if (atrPct > 0.025) return 10; // high vol
-  if (atrPct > 0.015) return 15; // med vol
-  return 20; // low vol
+  if (atrPct > 0.025) return 10;
+  if (atrPct > 0.015) return 15;
+  return 20;
 }
 
 export function generateSignal(
@@ -457,85 +371,33 @@ export function generateSignal(
     return { debug };
   }
 
-  // --- v32.31: Compute raw bias FIRST, then TLs matched to direction ---
   const candles1d = aggregateTo1D(candles4h);
-
-  // Determine preliminary direction from EMA only (no TL invalidation yet)
-  const rawBias1d = getBias(candles1d, null, true);
-  const rawBias4h = getBias(candles4h, null, false);
-
-  // 1D TL (for bias invalidation) — pick direction matching raw bias
-  // v32.32: NO fallback to opposite-direction TL — that causes false nullification
-  const tl1dLong = fitTrendline(findPivots(candles1d, "LONG"));
-  const tl1dShort = fitTrendline(findPivots(candles1d, "SHORT"));
-  let tl1d: { slope: number; intercept: number; r2: number } | null = null;
-  if (rawBias1d === "LONG") tl1d = tl1dLong;
-  if (rawBias1d === "SHORT") tl1d = tl1dShort;
-
-  // 4H TL (for entry logic)
-  const pivots4hLong = findPivots(candles4h, "LONG");
-  const pivots4hShort = findPivots(candles4h, "SHORT");
-  const tl4hLong = fitTrendline(pivots4hLong);
-  const tl4hShort = fitTrendline(pivots4hShort);
-
-  // Pick the 4H TL that matches the preliminary direction
-  // v32.32: NO fallback to opposite-direction TL for bias invalidation
-  let tl4h: { slope: number; intercept: number; r2: number } | null = null;
-  if (rawBias4h === "LONG") tl4h = tl4hLong;
-  if (rawBias4h === "SHORT") tl4h = tl4hShort;
-
-  // v32.33: 1D bias = EMA only (no TL invalidation — too much extrapolation drift)
-  // 4H bias = EMA + TL-break invalidation (entry protection)
-  const bias1d = getBias(candles1d, null, true);
-  const bias4h = getBias(candles4h, tl4h, false);
-
-  debug.push(`1D: ${bias1d || "NONE"} (raw ${rawBias1d || "NONE"}) | 4H: ${bias4h || "NONE"} (raw ${rawBias4h || "NONE"})`);
+  const bias1d = getBias(candles1d, true);
+  const bias4h = getBias(candles4h, false);
+  debug.push(`1D: ${bias1d || "NONE"} | 4H: ${bias4h || "NONE"}`);
 
   if (!bias1d || !bias4h || bias1d !== bias4h) {
-    if (!bias1d && rawBias1d) debug.push("1D bias: EMA-based only");
-    if (!bias4h && rawBias4h) debug.push("4H bias nullified by TL break");
     debug.push("Bias mismatch");
     return { debug };
   }
   const direction = bias1d;
-
-  // Recompute pivots for the confirmed direction
-  const pivots4h = findPivots(candles4h, direction);
-  let tl = fitTrendline(pivots4h);
-  // v32.32: if no valid TL for confirmed direction, fallback to any valid TL for entry
-  if (!tl) {
-    const fallbackPivots = direction === "LONG" 
-      ? findPivots(candles4h, "SHORT") 
-      : findPivots(candles4h, "LONG");
-    tl = fitTrendline(fallbackPivots);
-  }
-
-  // v32.34: EMA 21 fallback for post-breakout momentum
-  // When no TL exists (breakout too fresh for pivots) but ADX is strong,
-  // use EMA 21 as proxy support/resistance to avoid missing the move.
-  let usingEmaFallback = false;
-  if (!tl) {
-    const closes4hForEma = candles4h.map(c => c.close);
-    const ema21_4h = ema(closes4hForEma, 21);
-    const ema21Val = ema21_4h[ema21_4h.length - 1];
-    const adxValCheck = adx(candles4h);
-    if (adxValCheck >= EMA_FALLBACK_MIN_ADX) {
-      tl = { slope: 0, intercept: ema21Val, r2: 0.99 };
-      usingEmaFallback = true;
-      debug.push(`No TL — using EMA 21 proxy @ ${ema21Val.toFixed(2)} (ADX ${adxValCheck} >= ${EMA_FALLBACK_MIN_ADX})`);
-    }
-  }
-
-  if (!tl) {
-    debug.push("No trendline (R² < ${MIN_R2} or < 3 pivots) and ADX too weak for EMA fallback");
-    return { debug };
-  }
 
   // --- CHOP FILTER ---
   const adxVal = adx(candles4h);
   debug.push(`ADX: ${adxVal}`);
   if (adxVal < MIN_ADX) {
     debug.push(`ADX ${adxVal} < ${MIN_ADX} — chop, no trade`);
+    return { debug };
+  }
+
+  // --- EXHAUSTION GATE (v32.38) ---
+  // If Stoch is extreme and ADX is weak, it's exhaustion — not momentum.
+  // Strong trend (ADX > 28) = sustained momentum, allow.
+  const closes4hEarly = candles4h.map(c => c.close);
+  const stoch4hEarly = stochRsi(closes4hEarly);
+  const isStochExtreme = direction === "LONG" ? stoch4hEarly.k > 80 : stoch4hEarly.k < 20;
+  if (isStochExtreme && adxVal <= ADX_STOCH_OVERRIDE) {
+    debug.push(`Blocked: Stoch extreme (${stoch4hEarly.k}) with weak ADX (${adxVal} <= ${ADX_STOCH_OVERRIDE}) — exhaustion`);
     return { debug };
   }
 
@@ -547,72 +409,40 @@ export function generateSignal(
     return { debug };
   }
 
+  // --- TRENDLINE OR EMA FALLBACK ---
+  const pivots = findPivots(candles4h, direction);
+  let tl = fitTrendline(pivots);
+  let usingEmaFallback = false;
+
+  if (!tl) {
+    // v32.37: Simple EMA 21 fallback when no valid TL
+    const closes4h = candles4h.map(c => c.close);
+    const ema21 = ema(closes4h, 21);
+    const ema21Val = ema21[ema21.length - 1];
+    tl = { slope: 0, intercept: ema21Val, r2: 0.99 };
+    usingEmaFallback = true;
+    debug.push(`No TL — using EMA 21 proxy @ ${ema21Val.toFixed(2)}`);
+  }
+
   const last4h = candles4h[candles4h.length - 1];
   const tlNow = tl.slope * (candles4h.length - 1) + tl.intercept;
   const dist = (last4h.close - tlNow) / tlNow;
-  const tlLabel = usingEmaFallback ? "EMA21" : "TL";
-  debug.push(`${tlLabel}: ${tlNow.toFixed(2)} | Price: ${last4h.close.toFixed(2)} | Dist: ${(dist * 100).toFixed(2)}% | R² ${tl.r2}`);
-
   const nearTL = Math.abs(dist) < TL_THRESHOLD;
+
+  debug.push(`${usingEmaFallback ? "EMA21" : "TL"}: ${tlNow.toFixed(2)} | Price: ${last4h.close.toFixed(2)} | Dist: ${(dist * 100).toFixed(2)}%${!usingEmaFallback ? ` | R² ${tl.r2}` : ""}`);
+
   if (!nearTL) {
-    debug.push(`Price ${(dist * 100).toFixed(2)}% from TL — outside ${(TL_THRESHOLD * 100).toFixed(2)}% zone`);
+    debug.push(`Price ${(dist * 100).toFixed(2)}% from ${usingEmaFallback ? "EMA21" : "TL"} — outside ${(TL_THRESHOLD * 100).toFixed(2)}% zone`);
     return { debug };
   }
 
-  // Try pullback entry first (price near TL/EMA)
-  let pullback = findPullbackEntry(candles15m, direction, tlNow);
-  let isBreakout = false;
-
-  // If no pullback, try breakout entry (price beyond TL/EMA with momentum)
+  const pullback = findPullbackEntry(candles15m, direction, tlNow);
   if (!pullback) {
-    pullback = findBreakoutEntry(candles15m, direction, tlNow, adxVal);
-    if (pullback) {
-      isBreakout = true;
-      debug.push(`Breakout entry: ${pullback.reason} | ADX ${adxVal} >= ${BREAKOUT_MIN_ADX}`);
-    }
-  }
-
-  if (!pullback) {
-    debug.push("Waiting for 15m pullback or breakout confirmation...");
+    debug.push("Waiting for 15m StochRSI confirmation...");
     return { debug };
-  }
-
-  // --- 4H MOMENTUM READ (needed before re-entry filter) ---
-  const closes4h = candles4h.map(c => c.close);
-  const rsiVal = rsi(closes4h);
-  const stoch4h = stochRsi(closes4h);
-
-  // --- RE-ENTRY DETECTION ---
-  const isReentry = detectStopRun(candles4h, direction, tl);
-  const entryType: "ENTRY_1" | "ENTRY_2" = isReentry ? "ENTRY_2" : "ENTRY_1";
-
-  // --- v32.2/v32.3: ENTRY_2 MIN ADX GATE ---
-  if (entryType === "ENTRY_2" && adxVal < ENTRY_2_MIN_ADX) {
-    debug.push(
-      `ENTRY_2 blocked: ADX ${adxVal} < ${ENTRY_2_MIN_ADX} — re-entries need stronger trend`
-    );
-    return { debug };
-  }
-
-  // --- v32.2/v32.3: ADX OVERRIDE FOR STOCH EXTREMES ---
-  const isStochExtreme = direction === "LONG"
-    ? stoch4h.k > STOCH_EXTREME_LONG
-    : stoch4h.k < STOCH_EXTREME_SHORT;
-
-  if (entryType === "ENTRY_2" && isStochExtreme && adxVal <= ADX_STOCH_OVERRIDE) {
-    debug.push(
-      `ENTRY_2 blocked: Stoch extreme (${stoch4h.k}) with weak ADX (${adxVal} <= ${ADX_STOCH_OVERRIDE}) — exhaustion zone`
-    );
-    return { debug };
-  }
-  if (entryType === "ENTRY_2" && isStochExtreme && adxVal > ADX_STOCH_OVERRIDE) {
-    debug.push(
-      `ENTRY_2 allowed: Stoch extreme (${stoch4h.k}) with strong ADX (${adxVal} > ${ADX_STOCH_OVERRIDE}) — sustained momentum`
-    );
   }
 
   // --- SL: swing structure + 1x ATR ---
-  // v32.35: Breakout entries use TL/EMA as the key invalidation level
   const atr4h = atr(candles4h, 14);
   const swingLows4h = candles4h.slice(-20).map(c => c.low);
   const swingHighs4h = candles4h.slice(-20).map(c => c.high);
@@ -621,35 +451,23 @@ export function generateSignal(
 
   const entry = pullback.entry;
   let sl: number;
-  if (isBreakout) {
-    // Breakout SL: TL/EMA is the invalidation point
-    if (direction === "LONG") {
-      sl = Math.max(tlNow, Math.min(swingLow4h, entry - atr4h * SL_ATR_MULT));
-    } else {
-      sl = Math.min(tlNow, Math.max(swingHigh4h, entry + atr4h * SL_ATR_MULT));
-    }
+  if (direction === "LONG") {
+    sl = Math.min(swingLow4h, entry - atr4h * SL_ATR_MULT);
   } else {
-    // Pullback SL: swing structure + ATR
-    if (direction === "LONG") {
-      sl = Math.min(swingLow4h, entry - atr4h * SL_ATR_MULT);
-    } else {
-      sl = Math.max(swingHigh4h, entry + atr4h * SL_ATR_MULT);
-    }
+    sl = Math.max(swingHigh4h, entry + atr4h * SL_ATR_MULT);
   }
 
   // --- STRUCTURE-BASED TP + SCALE-OUT ---
   const risk = Math.abs(entry - sl);
-  const tp1 = direction === "LONG" ? entry + risk * 2 : entry - risk * 2; // 2R, 50%
-  const tp3 = direction === "LONG" ? entry + risk * 6 : entry - risk * 6; // 6R, 25% runner
+  const tp1 = direction === "LONG" ? entry + risk * 2 : entry - risk * 2;
+  const tp3 = direction === "LONG" ? entry + risk * 6 : entry - risk * 6;
 
-  // TP2 = nearest of structure or 4R
   const structureTarget = direction === "LONG" ? swingHigh4h : swingLow4h;
   const atrTarget = direction === "LONG" ? entry + atr4h * 4 : entry - atr4h * 4;
   const tp2 = direction === "LONG"
     ? Math.min(structureTarget, atrTarget)
     : Math.max(structureTarget, atrTarget);
 
-  // Ensure tp2 is at least 2R away
   const minTp2 = direction === "LONG" ? entry + risk * 2 : entry - risk * 2;
   const finalTp2 = direction === "LONG" ? Math.max(tp2, minTp2) : Math.min(tp2, minTp2);
 
@@ -662,9 +480,15 @@ export function generateSignal(
     return { debug };
   }
 
+  // --- RE-ENTRY DETECTION ---
+  const isReentry = detectStopRun(candles4h, direction, tl);
+  const entryType: "ENTRY_1" | "ENTRY_2" = isReentry ? "ENTRY_2" : "ENTRY_1";
+
+  const closes4h = candles4h.map(c => c.close);
+  const rsiVal = rsi(closes4h);
+  const stoch4h = stoch4hEarly; // already computed above
   const expectedMove = Math.round((Math.abs(finalTp2 - entry) / entry * 100) * 10) / 10;
 
-  // Compute EMAs for market snapshot
   const ema8_4h = ema(closes4h, 8);
   const ema21_4h = ema(closes4h, 21);
   const ema50_4h = ema(closes4h, 50);
@@ -687,7 +511,7 @@ export function generateSignal(
     stochK: stoch4h.k,
     stochD: stoch4h.d,
     expectedMove,
-    reason: `${direction} ${entryType} | ${pullback.reason} (15m K${pullback.stochK}/D${pullback.stochD}) | 4H ${usingEmaFallback ? "EMA21" : "TL"} ${tlNow.toFixed(1)} (R² ${tl.r2}) | ${isBreakout ? "BREAKOUT" : "PULLBACK"} | RR ${rr.toFixed(2)}`,
+    reason: `${direction} ${entryType} | ${pullback.reason} (15m K${pullback.stochK}/D${pullback.stochD}) | 4H ${usingEmaFallback ? "EMA21" : "TL"} ${tlNow.toFixed(1)} | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
     trend: direction,
@@ -695,21 +519,12 @@ export function generateSignal(
     trigger: "READY",
     context: {
       marketPhase: `${direction} aligned`,
-      structure: isReentry ? "stop_run_retest" : (isBreakout ? "breakout_momentum" : (usingEmaFallback ? "ema21_breakout" : "trendline_pullback")),
+      structure: isReentry ? "stop_run_retest" : (usingEmaFallback ? "ema21_pullback" : "trendline_pullback"),
       momentum: pullback.reason,
       pullback: "active",
       crossAge: 0,
       stoch15m: { k: pullback.stochK, d: pullback.stochD },
       stoch4h: { k: stoch4h.k, d: stoch4h.d },
-      adxOverride: { threshold: ADX_STOCH_OVERRIDE, applied: isStochExtreme && adxVal <= ADX_STOCH_OVERRIDE },
-      entry2Gate: { minAdx: ENTRY_2_MIN_ADX, applied: entryType === "ENTRY_2" && adxVal < ENTRY_2_MIN_ADX },
-      breakout: { isBreakout, minAdx: BREAKOUT_MIN_ADX },
-      tlBreak: { 
-        tl1dPrice: tl1d ? Math.round((tl1d.slope * (candles1d.length - 1) + tl1d.intercept) * 100) / 100 : null,
-        tl4hPrice: Math.round(tlNow * 100) / 100,
-        invalidated1d: !bias1d && !!rawBias1d,
-        invalidated4h: !bias4h && !!rawBias4h,
-      },
       scaleOutPlan: {
         tp1: { price: Math.round(tp1 * 100) / 100, size: 0.50, r: 2 },
         tp2: { price: Math.round(finalTp2 * 100) / 100, size: 0.25, r: Math.round(rr * 10) / 10 },
@@ -753,30 +568,22 @@ export function getMarketSnapshot(
   candles15m: Candle[]
 ): any {
   const candles1d = aggregateTo1D(candles4h);
-
-  // Compute raw bias first, then TLs matched to direction
-  const rawBias1d = getBias(candles1d, null, true);
-  const rawBias4h = getBias(candles4h, null, false);
-
-  const tl1dLong = fitTrendline(findPivots(candles1d, "LONG"));
-  const tl1dShort = fitTrendline(findPivots(candles1d, "SHORT"));
-  let tl1d: { slope: number; intercept: number; r2: number } | null = null;
-  if (rawBias1d === "LONG") tl1d = tl1dLong;
-  if (rawBias1d === "SHORT") tl1d = tl1dShort;
-
-  const tl4hLongSnap = fitTrendline(findPivots(candles4h, "LONG"));
-  const tl4hShortSnap = fitTrendline(findPivots(candles4h, "SHORT"));
-  let tl4h: { slope: number; intercept: number; r2: number } | null = null;
-  if (rawBias4h === "LONG") tl4h = tl4hLongSnap;
-  if (rawBias4h === "SHORT") tl4h = tl4hShortSnap;
-  // Fallback for display only (not bias invalidation)
-  if (!tl4h) tl4h = tl4hLongSnap || tl4hShortSnap;
-
-  const bias1d = getBias(candles1d, null, true);
-  const bias4h = getBias(candles4h, tl4h, false);
-
+  const bias1d = getBias(candles1d, true);
+  const bias4h = getBias(candles4h, false);
   const price = candles4h[candles4h.length - 1].close;
-  const tlPrice = tl4h ? tl4h.slope * (candles4h.length - 1) + tl4h.intercept : 0;
+
+  const pivots = bias4h ? findPivots(candles4h, bias4h) : [];
+  let tl = bias4h ? fitTrendline(pivots) : null;
+  let usingEmaFallback = false;
+
+  if (!tl && bias4h) {
+    const closes4h = candles4h.map(c => c.close);
+    const ema21 = ema(closes4h, 21);
+    tl = { slope: 0, intercept: ema21[ema21.length - 1], r2: 0.99 };
+    usingEmaFallback = true;
+  }
+
+  const tlPrice = tl ? tl.slope * (candles4h.length - 1) + tl.intercept : 0;
   const dist = tlPrice ? (price - tlPrice) / tlPrice : 1;
   const nearTL = Math.abs(dist) < TL_THRESHOLD;
 
@@ -801,7 +608,7 @@ export function getMarketSnapshot(
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
     trend: bias1d && bias1d === bias4h ? bias1d : "FLAT",
-    location: tl4h ? (nearTL ? "NEAR_TL" : "BEYOND_TL") : "NONE",
+    location: tl ? (nearTL ? "NEAR_TL" : "BEYOND_TL") : "NONE",
     trigger,
     adx: adxVal,
     rsi: Math.round(rsiVal * 10) / 10,
@@ -809,7 +616,7 @@ export function getMarketSnapshot(
     stochD: stoch.d,
     trendlinePrice: Math.round(tlPrice * 100) / 100,
     distToTrendline: tlPrice ? Math.round(Math.abs(dist) * 10000) / 100 : 0,
-    locationType: tl4h ? "STRUCTURE" : "NONE",
+    locationType: tl ? "STRUCTURE" : "NONE",
     ema8_4h: Math.round(ema8[ema8.length - 1] * 100) / 100,
     ema21_4h: Math.round(ema21[ema21.length - 1] * 100) / 100,
     ema50_4h: Math.round(ema50[ema50.length - 1] * 100) / 100,
@@ -856,24 +663,8 @@ export interface HoldResult {
 
 export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, _now?: number): HoldResult {
   const candles1d = aggregateTo1D(candles4h);
-
-  // Compute TLs for bias invalidation (same logic as generateSignal)
-  const tl1dLong = fitTrendline(findPivots(candles1d, "LONG"));
-  const tl1dShort = fitTrendline(findPivots(candles1d, "SHORT"));
-  const rawBias1d = getBias(candles1d, null, true);
-  let tl1d: { slope: number; intercept: number; r2: number } | null = null;
-  if (rawBias1d === "LONG") tl1d = tl1dLong;
-  if (rawBias1d === "SHORT") tl1d = tl1dShort;
-
-  const tl4hLong = fitTrendline(findPivots(candles4h, "LONG"));
-  const tl4hShort = fitTrendline(findPivots(candles4h, "SHORT"));
-  const rawBias4h = getBias(candles4h, null, false);
-  let tl4h: { slope: number; intercept: number; r2: number } | null = null;
-  if (rawBias4h === "LONG") tl4h = tl4hLong;
-  if (rawBias4h === "SHORT") tl4h = tl4hShort;
-
-  const bias1d = getBias(candles1d, null, true);
-  const bias4h = getBias(candles4h, tl4h, false);
+  const bias1d = getBias(candles1d, true);
+  const bias4h = getBias(candles4h, false);
 
   if (signal.direction === "LONG" && bias4h === "SHORT") {
     return { shouldHold: false, reason: "4H_bias_flipped" };
@@ -896,7 +687,6 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
     }
   }
 
-  // --- SCALE-OUT & BE ADVICE ---
   const risk = Math.abs(signal.entry - signal.stop);
   if (risk === 0) {
     const validity = isSignalStillValid(signal, currentPrice);
@@ -910,7 +700,6 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
     currentR = (signal.entry - currentPrice) / risk;
   }
 
-  // TP1 hit: scale out 50%, move SL to BE
   if (signal.tp1 && currentR >= 2) {
     return {
       shouldHold: true,
@@ -920,7 +709,6 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
     };
   }
 
-  // BE lock after 1.5R
   if (currentR >= 1.5) {
     return {
       shouldHold: true,
