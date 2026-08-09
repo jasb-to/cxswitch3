@@ -58,7 +58,7 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 32.3;
+export const CURRENT_SIGNAL_VERSION = 32.31;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
@@ -404,25 +404,25 @@ export function generateSignal(
     return { debug };
   }
 
-  // --- v32.3: Compute TLs BEFORE bias so we can pass them in ---
+  // --- v32.31: Compute raw bias FIRST, then TLs matched to direction ---
   const candles1d = aggregateTo1D(candles4h);
 
-  // 1D TL (for bias invalidation)
-  const pivots1d = findPivots(candles1d, "LONG").concat(findPivots(candles1d, "SHORT"));
-  // We need to know direction to pick correct pivots; try both and use whichever fits
+  // Determine preliminary direction from EMA only (no TL invalidation yet)
+  const rawBias1d = getBias(candles1d, null, true);
+  const rawBias4h = getBias(candles4h, null, false);
+
+  // 1D TL (for bias invalidation) — pick direction matching raw bias
   const tl1dLong = fitTrendline(findPivots(candles1d, "LONG"));
   const tl1dShort = fitTrendline(findPivots(candles1d, "SHORT"));
-  const tl1d = tl1dLong || tl1dShort;
+  let tl1d = tl1dLong;
+  if (rawBias1d === "SHORT") tl1d = tl1dShort;
+  if (!tl1d) tl1d = tl1dLong || tl1dShort;
 
   // 4H TL (for entry logic)
   const pivots4hLong = findPivots(candles4h, "LONG");
   const pivots4hShort = findPivots(candles4h, "SHORT");
   const tl4hLong = fitTrendline(pivots4hLong);
   const tl4hShort = fitTrendline(pivots4hShort);
-
-  // Determine preliminary direction from EMA only (no TL invalidation yet)
-  const rawBias1d = getBias(candles1d, null, true);
-  const rawBias4h = getBias(candles4h, null, false);
 
   // Pick the 4H TL that matches the preliminary direction
   let tl4h = tl4hLong;
@@ -649,13 +649,15 @@ export function getMarketSnapshot(
 ): any {
   const candles1d = aggregateTo1D(candles4h);
 
-  // Compute TLs first (same logic as generateSignal)
-  const tl1dLong = fitTrendline(findPivots(candles1d, "LONG"));
-  const tl1dShort = fitTrendline(findPivots(candles1d, "SHORT"));
-  const tl1d = tl1dLong || tl1dShort;
-
+  // Compute raw bias first, then TLs matched to direction
   const rawBias1d = getBias(candles1d, null, true);
   const rawBias4h = getBias(candles4h, null, false);
+
+  const tl1dLong = fitTrendline(findPivots(candles1d, "LONG"));
+  const tl1dShort = fitTrendline(findPivots(candles1d, "SHORT"));
+  let tl1d = tl1dLong;
+  if (rawBias1d === "SHORT") tl1d = tl1dShort;
+  if (!tl1d) tl1d = tl1dLong || tl1dShort;
 
   let tl4h = fitTrendline(findPivots(candles4h, "LONG"));
   if (rawBias4h === "SHORT") tl4h = fitTrendline(findPivots(candles4h, "SHORT"));
@@ -749,7 +751,10 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
   // Compute TLs for bias invalidation (same logic as generateSignal)
   const tl1dLong = fitTrendline(findPivots(candles1d, "LONG"));
   const tl1dShort = fitTrendline(findPivots(candles1d, "SHORT"));
-  const tl1d = tl1dLong || tl1dShort;
+  const rawBias1d = getBias(candles1d, null, true);
+  let tl1d = tl1dLong;
+  if (rawBias1d === "SHORT") tl1d = tl1dShort;
+  if (!tl1d) tl1d = tl1dLong || tl1dShort;
 
   const tl4hLong = fitTrendline(findPivots(candles4h, "LONG"));
   const tl4hShort = fitTrendline(findPivots(candles4h, "SHORT"));
