@@ -64,6 +64,18 @@ const MIN_ADX = 20;           // only used for ADD gating, not ENTRY_1/ENTRY_2
 const MAX_SAME_DIR = 1;
 const LATE_TREND_PCT = 0.035; // 3.5% from 1D EMA21 = extended
 
+// --- SIGNAL DEDUP (v33.1 patch) ---
+const signalDedup: Map<string, number> = new Map();
+const DEDUP_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+function isDup(pair: string, direction: "LONG" | "SHORT", type: string): boolean {
+  const key = `${pair}_${direction}_${type}`;
+  const last = signalDedup.get(key);
+  if (last && Date.now() - last < DEDUP_MS) return true;
+  signalDedup.set(key, Date.now());
+  return false;
+}
+
 // EMA periods
 const DAILY_FAST_EMA = 5;
 const DAILY_SLOW_EMA = 13;
@@ -442,6 +454,12 @@ export function generateSignal(
   const sameDirCount = activeTrades.filter((t: any) => t.direction === direction).length;
   if (sameDirCount >= MAX_SAME_DIR) {
     debug.push(`Correlation cap: ${sameDirCount} ${direction} active, max ${MAX_SAME_DIR}`);
+    return { debug };
+  }
+
+  // --- DEDUP CHECK (v33.1) ---
+  if (isDup(pair, direction, finalType)) {
+    debug.push(`Dedup: ${finalType} ${direction} already alerted within 4h`);
     return { debug };
   }
 
