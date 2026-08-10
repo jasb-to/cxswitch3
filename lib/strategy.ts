@@ -846,3 +846,4 @@ export async function generateSignalCompat(
 export function isSignalStillValidBool(signal: Signal, currentPrice: number): boolean {
   return isSignalStillValid(signal, currentPrice).valid;
 }
+ 
