@@ -55,7 +55,7 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 33;
+export const CURRENT_SIGNAL_VERSION = 33.3;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
@@ -64,9 +64,14 @@ const MIN_ADX = 20;           // only used for ADD gating, not ENTRY_1/ENTRY_2
 const MAX_SAME_DIR = 1;
 const LATE_TREND_PCT = 0.035; // 3.5% from 1D EMA21 = extended
 
-// --- SIGNAL DEDUP (v33.1 patch) ---
+// --- SIGNAL DEDUP + PROGRESSION (v33.3) ---
 const signalDedup: Map<string, number> = new Map();
 const DEDUP_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+// Tracks highest scale alerted per pair+direction
+// ENTRY_1=1, ENTRY_2=2, ADD=3. Skips lower/equal scales.
+const scaleRank: Record<string, number> = { ENTRY_1: 1, ENTRY_2: 2, ADD: 3 };
+const alertedScale: Map<string, number> = new Map();
 
 function isDup(pair: string, direction: "LONG" | "SHORT", type: string): boolean {
   const key = `${pair}_${direction}_${type}`;
@@ -74,6 +79,21 @@ function isDup(pair: string, direction: "LONG" | "SHORT", type: string): boolean
   if (last && Date.now() - last < DEDUP_MS) return true;
   signalDedup.set(key, Date.now());
   return false;
+}
+
+function shouldSkipScale(pair: string, direction: "LONG" | "SHORT", type: string): boolean {
+  const key = `${pair}_${direction}`;
+  const currentRank = scaleRank[type] || 0;
+  const highest = alertedScale.get(key) || 0;
+  if (currentRank <= highest) {
+    return true; // Already alerted this scale or higher
+  }
+  alertedScale.set(key, currentRank);
+  return false;
+}
+
+export function resetAlertProgression(pair: string, direction: "LONG" | "SHORT"): void {
+  alertedScale.delete(`${pair}_${direction}`);
 }
 
 // EMA periods
@@ -466,9 +486,13 @@ export function generateSignal(
     return { debug };
   }
 
-  // --- DEDUP CHECK (v33.1) ---
+  // --- DEDUP + PROGRESSION CHECK (v33.3) ---
   if (isDup(pair, direction, finalType)) {
     debug.push(`Dedup: ${finalType} ${direction} already alerted within 4h`);
+    return { debug };
+  }
+  if (shouldSkipScale(pair, direction, finalType)) {
+    debug.push(`Progression lock: ${finalType} skipped (higher scale already alerted)`);
     return { debug };
   }
 
@@ -700,40 +724,8 @@ export interface HoldResult {
 }
 
 export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, _now?: number): HoldResult {
-  const candles1d = aggregateTo1D(candles4h);
-  const bias1d = getBias(candles1d, true);
-  const bias4h = getBias(candles4h, false);
-
-  if (signal.direction === "LONG" && bias4h === "SHORT") {
-    return { shouldHold: false, reason: "4H_bias_flipped" };
-  }
-  if (signal.direction === "SHORT" && bias4h === "LONG") {
-    return { shouldHold: false, reason: "4H_bias_flipped" };
-  }
-
-  // v28 stoch extreme opposite exit — RESTORED
-  const closes4h = candles4h.map(c => c.close);
-  const stoch = stochRsi(closes4h);
-  const stochExtremeOpposite = signal.direction === "LONG"
-    ? stoch.k < 20
-    : stoch.k > 80;
-  if (stochExtremeOpposite) {
-    return { shouldHold: false, reason: "stoch_extreme_opposite_exit" };
-  }
-
-  const pivots = findPivots(candles4h, signal.direction);
-  const tl = fitTrendline(pivots);
-  if (tl) {
-    const idx = candles4h.length - 1;
-    const tlPrice = tl.slope * idx + tl.intercept;
-    const last = candles4h[candles4h.length - 1];
-    if (signal.direction === "LONG" && last.close < tlPrice) {
-      return { shouldHold: false, reason: "trendline_reclaim" };
-    }
-    if (signal.direction === "SHORT" && last.close > tlPrice) {
-      return { shouldHold: false, reason: "trendline_reclaim" };
-    }
-  }
+  // v33.3: Only SL/TP/TTL and position management. No early thesis exits.
+  // Trades run to original levels. Breakeven lock and scale-out only.
 
   const risk = Math.abs(signal.entry - signal.stop);
   if (risk === 0) {
