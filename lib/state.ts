@@ -1,8 +1,9 @@
-// lib/state.ts — v54 Clean Separation
+// lib/state.ts — v54.2 Cooldown Support
 // ============================================================
 // Architecture:
 //   activeSignals  → KV store for currently open trades only
 //   signalHistory  → KV store for permanent alert history (UI)
+//   cooldowns      → KV store for post-exit re-entry blocks
 //   Legacy signals / active_trades KV is deprecated and migrated on first run.
 
 import { Redis } from "@upstash/redis";
@@ -24,6 +25,7 @@ const MARKET_KEY = "cxswitch:market";
 const CRON_KEY = "cxswitch:last_cron";
 const SNAPSHOT_KEY = "cxswitch:dashboard_snapshot";
 const MIGRATION_FLAG_KEY = "cxswitch:migrated_v54";
+const COOLDOWN_KEY = "cxswitch:cooldowns";
 
 // ─── Types ─────────────────────────────────────────────────
 
@@ -272,6 +274,17 @@ export async function updateSignalHistoryStatus(
   } else {
     console.log(`[HISTORY] Warning: could not find ${id} to update status`);
   }
+}
+
+// ─── Cooldowns (v54.2) ─────────────────────────────────────
+
+export async function getCooldowns(): Promise<Record<string, number>> {
+  const data = await redis.get<Record<string, number>>(COOLDOWN_KEY);
+  return data || {};
+}
+
+export async function setCooldowns(cooldowns: Record<string, number>): Promise<void> {
+  await redis.set(COOLDOWN_KEY, cooldowns);
 }
 
 // ─── Market Data ───────────────────────────────────────────
