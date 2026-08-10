@@ -298,7 +298,16 @@ function fitTrendline(pivots: { index: number; price: number }[]) {
   return { slope, intercept, r2: Math.round(r2 * 100) / 100 };
 }
 
-function detectStopRun(candles4h: Candle[], direction: "LONG" | "SHORT", tl: { slope: number; intercept: number }): boolean {
+function detectStopRun(
+  candles4h: Candle[],
+  direction: "LONG" | "SHORT",
+  tl: { slope: number; intercept: number },
+  stoch: { k: number; d: number }
+): boolean {
+  // Stop-run only valid if stoch has room to move (not extreme in entry direction)
+  if (direction === "LONG" && stoch.k < 20) return false;
+  if (direction === "SHORT" && stoch.k > 80) return false;
+
   for (let i = candles4h.length - 8; i < candles4h.length - 1; i++) {
     if (i < 0) continue;
     const c = candles4h[i];
@@ -430,8 +439,8 @@ export function generateSignal(
     }
   }
 
-  // --- RE-ENTRY DETECTION (v32.37 feature kept) ---
-  const isReentry = detectStopRun(candles4h, direction, tl);
+  // --- RE-ENTRY DETECTION (v33.2) ---
+  const isReentry = detectStopRun(candles4h, direction, tl, stoch);
 
   let finalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = rawType;
   if (!finalType && isReentry) {
