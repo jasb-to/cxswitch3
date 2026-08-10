@@ -17,6 +17,7 @@ import {
   getMarketSnapshot,
   rebuildStateFromTrades,
   recordTradeExit,
+  resetAlertProgression,
   Signal,
 } from "@/lib/strategy";
 import {
@@ -133,11 +134,12 @@ export async function GET(request: Request) {
       } catch {
         console.log(`[EXIT] ${trade.pair} — recorded without trend context`);
       }
-      // Record cooldown to prevent immediate re-entry
+      // Record cooldown + reset progression to allow fresh ENTRY_1 later
       try {
         const cooldowns = (await getCooldowns()) || {};
         cooldowns[`${trade.pair}_${trade.direction}`] = runStart + EXIT_COOLDOWN_MS;
         await setCooldowns(cooldowns);
+        resetAlertProgression(trade.pair, trade.direction);
         console.log(`[COOLDOWN] ${trade.pair} ${trade.direction} until ${new Date(runStart + EXIT_COOLDOWN_MS).toISOString()}`);
       } catch {
         console.log(`[COOLDOWN] ${trade.pair} — failed to persist`);
@@ -167,11 +169,12 @@ export async function GET(request: Request) {
       } catch {
         console.log(`[EXIT] ${trade.pair} — recorded without trend context`);
       }
-      // Record cooldown to prevent immediate re-entry
+      // Record cooldown + reset progression to allow fresh ENTRY_1 later
       try {
         const cooldowns = (await getCooldowns()) || {};
         cooldowns[`${trade.pair}_${trade.direction}`] = runStart + EXIT_COOLDOWN_MS;
         await setCooldowns(cooldowns);
+        resetAlertProgression(trade.pair, trade.direction);
         console.log(`[COOLDOWN] ${trade.pair} ${trade.direction} until ${new Date(runStart + EXIT_COOLDOWN_MS).toISOString()}`);
       } catch {
         console.log(`[COOLDOWN] ${trade.pair} — failed to persist`);
