@@ -1,6 +1,7 @@
-// app/api/cron/route.ts — v54.1 "Smart Exits + Quality Gates"
+// app/api/cron/route.ts — v54.2 "Whipsaw Fix"
 // ============================================================
-// Changes from v54:
+// Changes from v54.1:
+// 6. Post-exit cooldown: 4h block on re-entry after thesis-failure exit.
 // 1. Calls shouldHold() on active trades for early exits (TL reclaim, bias flip, stoch extreme).
 // 2. Handles stop updates and scale-out alerts from shouldHold.
 // 3. Passes activeSignals to generateSignal so correlation cap & dedup work.
@@ -28,12 +29,15 @@ import {
   setActiveSignals,
   getLastCronRun,
   setLastCronRun,
+  getCooldowns,
+  setCooldowns,
 } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
 const MIN_CRON_INTERVAL_MS = 9 * 60 * 1000;
 const MAX_PRICE_DRIFT = 0.005; // 0.5%
+const EXIT_COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4h
 
 function roundPrice(n: number): number {
   if (n >= 10000) return Math.round(n);
@@ -64,7 +68,7 @@ export const revalidate = 0;
 export async function GET(request: Request) {
   const runStart = Date.now();
   console.log("========================================");
-  console.log(`[CRON v54.1] Started at ${new Date(runStart).toISOString()}`);
+  console.log(`[CRON v54.2] Started at ${new Date(runStart).toISOString()}`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -129,6 +133,15 @@ export async function GET(request: Request) {
       } catch {
         console.log(`[EXIT] ${trade.pair} — recorded without trend context`);
       }
+      // Record cooldown to prevent immediate re-entry
+      try {
+        const cooldowns = (await getCooldowns()) || {};
+        cooldowns[`${trade.pair}_${trade.direction}`] = runStart + EXIT_COOLDOWN_MS;
+        await setCooldowns(cooldowns);
+        console.log(`[COOLDOWN] ${trade.pair} ${trade.direction} until ${new Date(runStart + EXIT_COOLDOWN_MS).toISOString()}`);
+      } catch {
+        console.log(`[COOLDOWN] ${trade.pair} — failed to persist`);
+      }
       continue;
     }
 
@@ -153,6 +166,15 @@ export async function GET(request: Request) {
         recordTradeExit(trade.pair, trade.direction, holdResult.reason, price, candles4h);
       } catch {
         console.log(`[EXIT] ${trade.pair} — recorded without trend context`);
+      }
+      // Record cooldown to prevent immediate re-entry
+      try {
+        const cooldowns = (await getCooldowns()) || {};
+        cooldowns[`${trade.pair}_${trade.direction}`] = runStart + EXIT_COOLDOWN_MS;
+        await setCooldowns(cooldowns);
+        console.log(`[COOLDOWN] ${trade.pair} ${trade.direction} until ${new Date(runStart + EXIT_COOLDOWN_MS).toISOString()}`);
+      } catch {
+        console.log(`[COOLDOWN] ${trade.pair} — failed to persist`);
       }
       continue;
     }
@@ -257,8 +279,28 @@ export async function GET(request: Request) {
         continue;
       }
 
+      // Check post-exit cooldown
+      let cooldowns: Record<string, number> = {};
+      try { cooldowns = (await getCooldowns()) || {}; } catch {}
+      const now = Date.now();
+
       // Pass ACTUAL active signals so correlation cap and dedup work
       const result = generateSignal(pair, candles1h, candles4h, candles15m, activeSignals, currentPrice);
+
+      // Filter out signals on cooldown
+      if (result.signals) {
+        result.signals = result.signals.filter((s) => {
+          const key = `${s.pair}_${s.direction}`;
+          const cd = cooldowns[key];
+          if (cd && now < cd) {
+            console.log(`[PAIR] ${pair} — COOLDOWN: ${s.direction} blocked until ${new Date(cd).toISOString()}`);
+            alerts.push({ pair, direction: s.direction, status: "cooldown", until: cd });
+            return false;
+          }
+          return true;
+        });
+      }
+
       const snapshot = result.market || getMarketSnapshot(pair, candles1h, candles4h, candles15m);
       if (snapshot) marketDataList.push(snapshot);
 
