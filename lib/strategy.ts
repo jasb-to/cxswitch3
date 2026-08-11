@@ -61,7 +61,7 @@ const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
 const SL_ATR_MULT = 1.0;
 const MIN_ADX = 20;           // only used for ADD gating, not ENTRY_1/ENTRY_2
-const MAX_SAME_DIR = 1;
+const MAX_SAME_DIR = 3;
 const LATE_TREND_PCT = 0.035; // 3.5% from 1D EMA21 = extended
 
 // --- SIGNAL DEDUP + PROGRESSION (v33.3) ---
@@ -846,4 +846,3 @@ export async function generateSignalCompat(
 export function isSignalStillValidBool(signal: Signal, currentPrice: number): boolean {
   return isSignalStillValid(signal, currentPrice).valid;
 }
- 
