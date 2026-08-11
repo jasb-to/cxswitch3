@@ -402,4 +402,4 @@ export async function GET(request: Request) {
     newSignals: newSignals.length,
     alerts,
   });
-} 
+}
