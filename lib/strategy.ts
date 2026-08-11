@@ -1,16 +1,17 @@
-// lib/strategy.ts — v33 "Goldilocks"
+// lib/strategy.ts — v34 "Back to v28"
 // ============================================================
-// Restores v28 entry sensitivity + keeps v32.37 risk management.
+// ENTRY: Only near-trendline + stoch. No detectStopRun. No beyond-TL entries.
+// EXIT: Stoch extreme opposite (v28) + SL/TP/TTL.
+// RISK: v32.37 scale-out structure.
 //
-// CHANGES FROM v32.37:
-// 1. ADX > 20 is no longer a hard entry gate. It only gates ADD scale-ins.
-// 2. Removed 1D/4H bias-mismatch hard gate. 1D bias rules direction.
-// 3. Removed 15m StochRSI hard requirement. 4H StochRSI handles timing.
-// 4. Added late-trend filter (3.5% from 1D EMA21) to prevent exhaustion entries.
-// 5. Restored v28 stoch-extreme-opposite exit in shouldHold.
-// 6. Restored v28 ENTRY_1 / ENTRY_2 / ADD entry logic on 4H trendline.
-//
-// Compatible with v54 cron / v50.1 telegram / v54 dashboard.
+// CHANGES FROM v33:
+// - REMOVED: detectStopRun (was creating bad entries away from TL)
+// - REMOVED: beyondTrendline ADD entries (only ADX>25 breakout now)
+// - REMOVED: late-trend filter (was blocking valid pullbacks)
+// - REMOVED: 15m requirement
+// - REMOVED: 4H bias gate
+// - KEPT: v32.37 SL/TP/scale-out/breakeven
+// - KEPT: dedup + progression lock
 
 export interface Candle {
   timestamp: number;
@@ -55,48 +56,13 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 33.3;
+export const CURRENT_SIGNAL_VERSION = 34;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
 const SL_ATR_MULT = 1.0;
-const MIN_ADX = 20;           // only used for ADD gating, not ENTRY_1/ENTRY_2
 const MAX_SAME_DIR = 3;
-const LATE_TREND_PCT = 0.035; // 3.5% from 1D EMA21 = extended
 
-// --- SIGNAL DEDUP + PROGRESSION (v33.3) ---
-const signalDedup: Map<string, number> = new Map();
-const DEDUP_MS = 4 * 60 * 60 * 1000; // 4 hours
-
-// Tracks highest scale alerted per pair+direction
-// ENTRY_1=1, ENTRY_2=2, ADD=3. Skips lower/equal scales.
-const scaleRank: Record<string, number> = { ENTRY_1: 1, ENTRY_2: 2, ADD: 3 };
-const alertedScale: Map<string, number> = new Map();
-
-function isDup(pair: string, direction: "LONG" | "SHORT", type: string): boolean {
-  const key = `${pair}_${direction}_${type}`;
-  const last = signalDedup.get(key);
-  if (last && Date.now() - last < DEDUP_MS) return true;
-  signalDedup.set(key, Date.now());
-  return false;
-}
-
-function shouldSkipScale(pair: string, direction: "LONG" | "SHORT", type: string): boolean {
-  const key = `${pair}_${direction}`;
-  const currentRank = scaleRank[type] || 0;
-  const highest = alertedScale.get(key) || 0;
-  if (currentRank <= highest) {
-    return true; // Already alerted this scale or higher
-  }
-  alertedScale.set(key, currentRank);
-  return false;
-}
-
-export function resetAlertProgression(pair: string, direction: "LONG" | "SHORT"): void {
-  alertedScale.delete(`${pair}_${direction}`);
-}
-
-// EMA periods
 const DAILY_FAST_EMA = 5;
 const DAILY_SLOW_EMA = 13;
 const HOURLY_FAST_EMA = 8;
@@ -242,7 +208,6 @@ function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// v33: removed ll/hh null-gate. EMA cross alone dictates bias.
 function getBias(candles: Candle[], isDaily: boolean = false): "LONG" | "SHORT" | null {
   const minLen = isDaily ? 20 : 30;
   if (candles.length < minLen) return null;
@@ -261,7 +226,6 @@ function getBias(candles: Candle[], isDaily: boolean = false): "LONG" | "SHORT" 
   return null;
 }
 
-// v28-style strength metric (restored)
 function getTrendStrength(candles: Candle[], direction: "LONG" | "SHORT"): string {
   const highs = candles.slice(-20).map(c => c.high);
   const lows = candles.slice(-20).map(c => c.low);
@@ -318,34 +282,38 @@ function fitTrendline(pivots: { index: number; price: number }[]) {
   return { slope, intercept, r2: Math.round(r2 * 100) / 100 };
 }
 
-function detectStopRun(
-  candles4h: Candle[],
-  direction: "LONG" | "SHORT",
-  tl: { slope: number; intercept: number },
-  stoch: { k: number; d: number }
-): boolean {
-  // Stop-run only valid if stoch has room to move (not extreme in entry direction)
-  if (direction === "LONG" && stoch.k < 20) return false;
-  if (direction === "SHORT" && stoch.k > 80) return false;
-
-  for (let i = candles4h.length - 8; i < candles4h.length - 1; i++) {
-    if (i < 0) continue;
-    const c = candles4h[i];
-    const tlPrice = tl.slope * i + tl.intercept;
-    if (direction === "LONG") {
-      if (c.low < tlPrice && c.close > tlPrice) return true;
-    } else {
-      if (c.high > tlPrice && c.close < tlPrice) return true;
-    }
-  }
-  return false;
-}
-
 function suggestLeverage(atr4h: number, price: number): number {
   const atrPct = atr4h / price;
   if (atrPct > 0.025) return 10;
   if (atrPct > 0.015) return 15;
   return 20;
+}
+
+// --- DEDUP + PROGRESSION ---
+const signalDedup: Map<string, number> = new Map();
+const DEDUP_MS = 4 * 60 * 60 * 1000;
+const scaleRank: Record<string, number> = { ENTRY_1: 1, ENTRY_2: 2, ADD: 3 };
+const alertedScale: Map<string, number> = new Map();
+
+function isDup(pair: string, direction: "LONG" | "SHORT", type: string): boolean {
+  const key = `${pair}_${direction}_${type}`;
+  const last = signalDedup.get(key);
+  if (last && Date.now() - last < DEDUP_MS) return true;
+  signalDedup.set(key, Date.now());
+  return false;
+}
+
+function shouldSkipScale(pair: string, direction: "LONG" | "SHORT", type: string): boolean {
+  const key = `${pair}_${direction}`;
+  const currentRank = scaleRank[type] || 0;
+  const highest = alertedScale.get(key) || 0;
+  if (currentRank <= highest) return true;
+  alertedScale.set(key, currentRank);
+  return false;
+}
+
+export function resetAlertProgression(pair: string, direction: "LONG" | "SHORT"): void {
+  alertedScale.delete(`${pair}_${direction}`);
 }
 
 export function generateSignal(
@@ -373,8 +341,7 @@ export function generateSignal(
 
   const candles1d = aggregateTo1D(candles4h);
   const bias1d = getBias(candles1d, true);
-  const bias4h = getBias(candles4h, false);
-  debug.push(`1D: ${bias1d || "NONE"} | 4H: ${bias4h || "NONE"}`);
+  debug.push(`1D: ${bias1d || "NONE"}`);
 
   if (!bias1d) {
     debug.push("1D trend unclear");
@@ -382,18 +349,6 @@ export function generateSignal(
   }
   const direction = bias1d;
   const strength = getTrendStrength(candles1d, direction);
-
-  // --- LATE TREND FILTER (v33 safety) ---
-  const closes1d = candles1d.map(c => c.close);
-  const ema21_1d_series = ema(closes1d, 21);
-  const ema21_1d = ema21_1d_series[ema21_1d_series.length - 1];
-  const price = currentPrice ?? candles4h[candles4h.length - 1].close;
-  const distFrom1dEma = (price - ema21_1d) / ema21_1d;
-  const isExtended = direction === "LONG" ? distFrom1dEma > LATE_TREND_PCT : distFrom1dEma < -LATE_TREND_PCT;
-
-  // --- ADX (info only, not a hard gate for ENTRY_1/ENTRY_2) ---
-  const adxVal = adx(candles4h);
-  debug.push(`ADX: ${adxVal}`);
 
   // --- TRENDLINE OR EMA FALLBACK ---
   const pivots = findPivots(candles4h, direction);
@@ -409,20 +364,14 @@ export function generateSignal(
   }
 
   const last4h = candles4h[candles4h.length - 1];
-  const prev4h = candles4h[candles4h.length - 2];
+  const price = currentPrice ?? last4h.close;
   const tlNow = tl.slope * (candles4h.length - 1) + tl.intercept;
-  const dist = (last4h.close - tlNow) / tlNow;
+  const dist = (price - tlNow) / tlNow;
   const nearTL = Math.abs(dist) < TL_THRESHOLD;
 
-  debug.push(`${usingEmaFallback ? "EMA21" : "TL"}: ${tlNow.toFixed(2)} | Price: ${last4h.close.toFixed(2)} | Dist: ${(dist * 100).toFixed(2)}%${!usingEmaFallback ? ` | R² ${tl.r2}` : ""}`);
+  debug.push(`${usingEmaFallback ? "EMA21" : "TL"}: ${tlNow.toFixed(2)} | Price: ${price.toFixed(2)} | Dist: ${(dist * 100).toFixed(2)}%${!usingEmaFallback ? ` | R² ${tl.r2}` : ""}`);
 
-  // Late trend: if extended AND not at pullback zone, skip
-  if (isExtended && !nearTL) {
-    debug.push(`Late trend: ${(Math.abs(distFrom1dEma) * 100).toFixed(2)}% from 1D EMA21, not at pullback zone`);
-    return { debug };
-  }
-
-  // --- 4H STOCHRSI (v28-style timing, restored) ---
+  // --- 4H STOCHRSI ---
   const closes4h = candles4h.map(c => c.close);
   const stoch = stochRsi(closes4h);
   debug.push(`StochRSI: K ${stoch.k} | D ${stoch.d}`);
@@ -430,47 +379,34 @@ export function generateSignal(
   const stochExtreme = direction === "LONG" ? stoch.k < 20 : stoch.k > 80;
   const stochTurning = direction === "LONG" ? stoch.k > stoch.d : stoch.k < stoch.d;
 
-  // --- EMA ALIGNMENT (for ADD) ---
-  const ema8_4h = ema(closes4h, 8);
-  const ema21_4h = ema(closes4h, 21);
-  const ema50_4h = ema(closes4h, 50);
-  const emaAligned = direction === "LONG"
-    ? price > ema8_4h[ema8_4h.length - 1] && price > ema21_4h[ema21_4h.length - 1]
-    : price < ema8_4h[ema8_4h.length - 1] && price < ema21_4h[ema21_4h.length - 1];
-
-  const beyondTrendline = direction === "LONG" ? price > tlNow * 1.008 : price < tlNow * 0.992;
-  const confirming = direction === "LONG"
-    ? last4h.close > last4h.open && last4h.close > prev4h.close
-    : last4h.close < last4h.open && last4h.close < prev4h.close;
-  const volUp = last4h.volume > avg(candles4h.slice(-10).map(c => c.volume)) * 1.3;
-  const stochMomentum = direction === "LONG" ? stoch.k > stoch.d : stoch.k < stoch.d;
-  const adxStrong = adxVal > MIN_ADX;
-
-  // --- DETERMINE SIGNAL TYPE (v28 logic restored) ---
+  // --- ENTRY LOGIC (v28 exact) ---
   let rawType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
 
   if (nearTL && stochExtreme) {
     rawType = "ENTRY_1";
   } else if (nearTL && stochTurning && !stochExtreme) {
     rawType = "ENTRY_2";
-  } else if (beyondTrendline && confirming && emaAligned) {
-    if (volUp || stochMomentum || adxStrong) {
+  }
+  // NO detectStopRun. NO beyond-trendline entries unless ADD with ADX>25.
+
+  // --- ADD: Only on genuine breakout with strong ADX ---
+  if (!rawType) {
+    const adxVal = adx(candles4h);
+    const beyondTrendline = direction === "LONG" ? price > tlNow * 1.008 : price < tlNow * 0.992;
+    const confirming = direction === "LONG"
+      ? last4h.close > last4h.open && last4h.close > candles4h[candles4h.length - 2].close
+      : last4h.close < last4h.open && last4h.close < candles4h[candles4h.length - 2].close;
+    const volUp = last4h.volume > avg(candles4h.slice(-10).map(c => c.volume)) * 1.3;
+
+    if (beyondTrendline && confirming && adxVal > 25 && volUp) {
       rawType = "ADD";
+      debug.push(`ADD: breakout + ADX ${adxVal} + vol`);
     }
   }
 
-  // --- RE-ENTRY DETECTION (v33.2) ---
-  const isReentry = detectStopRun(candles4h, direction, tl, stoch);
-
-  let finalType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = rawType;
-  if (!finalType && isReentry) {
-    finalType = "ENTRY_2";
-  }
-
-  if (!finalType) {
+  if (!rawType) {
     const stateParts: string[] = [];
     if (nearTL) stateParts.push("near TL");
-    else if (beyondTrendline) stateParts.push("beyond TL");
     else stateParts.push("far from TL");
     stateParts.push(`Stoch K${stoch.k} D${stoch.d}`);
     stateParts.push("No signal");
@@ -478,7 +414,7 @@ export function generateSignal(
     return { debug };
   }
 
-  // --- CORRELATION CAP (v32.37 risk control, kept) ---
+  // --- CORRELATION CAP ---
   const activeTrades = _activeTrades || [];
   const sameDirCount = activeTrades.filter((t: any) => t.direction === direction).length;
   if (sameDirCount >= MAX_SAME_DIR) {
@@ -486,17 +422,17 @@ export function generateSignal(
     return { debug };
   }
 
-  // --- DEDUP + PROGRESSION CHECK (v33.3) ---
-  if (isDup(pair, direction, finalType)) {
-    debug.push(`Dedup: ${finalType} ${direction} already alerted within 4h`);
+  // --- DEDUP + PROGRESSION ---
+  if (isDup(pair, direction, rawType)) {
+    debug.push(`Dedup: ${rawType} ${direction} already alerted within 4h`);
     return { debug };
   }
-  if (shouldSkipScale(pair, direction, finalType)) {
-    debug.push(`Progression lock: ${finalType} skipped (higher scale already alerted)`);
+  if (shouldSkipScale(pair, direction, rawType)) {
+    debug.push(`Progression lock: ${rawType} skipped`);
     return { debug };
   }
 
-  // --- SL: swing structure + 1x ATR (v32.37) ---
+  // --- SL / TP / RISK (v32.37 structure) ---
   const atr4h = atr(candles4h, 14);
   const swingLows4h = candles4h.slice(-20).map(c => c.low);
   const swingHighs4h = candles4h.slice(-20).map(c => c.high);
@@ -511,7 +447,6 @@ export function generateSignal(
     sl = Math.max(swingHigh4h, entry + atr4h * SL_ATR_MULT);
   }
 
-  // --- STRUCTURE-BASED TP + SCALE-OUT (v32.37) ---
   const risk = Math.abs(entry - sl);
   const tp1 = direction === "LONG" ? entry + risk * 2 : entry - risk * 2;
   const tp3 = direction === "LONG" ? entry + risk * 6 : entry - risk * 6;
@@ -535,34 +470,32 @@ export function generateSignal(
   }
 
   const rsiVal = rsi(closes4h);
+  const adxVal = adx(candles4h);
   const expectedMove = Math.round((Math.abs(finalTp2 - entry) / entry * 100) * 10) / 10;
 
-  // Optional 15m stoch for context (not a gate)
-  let stoch15m = { k: 0, d: 0 };
-  if (candles15m.length >= 40) {
-    const s = stochRsi(candles15m.map(c => c.close));
-    stoch15m = s;
-  }
+  const ema8_4h = ema(closes4h, 8);
+  const ema21_4h = ema(closes4h, 21);
+  const ema50_4h = ema(closes4h, 50);
 
   const signal: Signal = {
     id: `${pair}_${now}`,
     pair,
     direction,
-    type: finalType,
-    scale: finalType,
+    type: rawType,
+    scale: rawType,
     entry: Math.round(entry * 100) / 100,
     stop: Math.round(sl * 100) / 100,
     target: Math.round(finalTp2 * 100) / 100,
     tp1: Math.round(tp1 * 100) / 100,
     tp3: Math.round(tp3 * 100) / 100,
-    confidence: finalType === "ENTRY_1" ? 50 : finalType === "ENTRY_2" ? 60 : 85,
+    confidence: rawType === "ENTRY_1" ? 50 : rawType === "ENTRY_2" ? 60 : 85,
     rr: Math.round(rr * 100) / 100,
     adx: adxVal,
     rsi: Math.round(rsiVal * 10) / 10,
     stochK: stoch.k,
     stochD: stoch.d,
     expectedMove,
-    reason: `${direction} ${finalType} | 1D ${strength} | Stoch K${stoch.k} D${stoch.d} | 4H ${usingEmaFallback ? "EMA21" : "TL"} ${tlNow.toFixed(1)} | RR ${rr.toFixed(2)}${adxStrong ? " | ADX+" : ""}${volUp ? " | Vol+" : ""}`,
+    reason: `${direction} ${rawType} | 1D ${strength} | Stoch K${stoch.k} D${stoch.d} | 4H ${usingEmaFallback ? "EMA21" : "TL"} ${tlNow.toFixed(1)} | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
     trend: direction,
@@ -570,11 +503,10 @@ export function generateSignal(
     trigger: "READY",
     context: {
       marketPhase: `${direction} ${strength}`,
-      structure: isReentry ? "stop_run_retest" : (usingEmaFallback ? "ema21_pullback" : "trendline_pullback"),
+      structure: usingEmaFallback ? "ema21_pullback" : "trendline_pullback",
       momentum: `Stoch K${stoch.k}/D${stoch.d}`,
       pullback: nearTL ? "active" : "breakout",
       crossAge: 0,
-      stoch15m: stoch15m,
       stoch4h: { k: stoch.k, d: stoch.d },
       scaleOutPlan: {
         tp1: { price: Math.round(tp1 * 100) / 100, size: 0.50, r: 2 },
@@ -582,11 +514,10 @@ export function generateSignal(
         tp3: { price: Math.round(tp3 * 100) / 100, size: 0.25, r: 6 },
       },
       suggestedLeverage: suggestLeverage(atr4h, entry),
-      lateTrendFilter: { distFrom1dEma: Math.round(distFrom1dEma * 10000) / 100, blocked: false },
     },
   };
 
-  debug.push(`${finalType}: ${direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.target} | TP3 ${signal.tp3} | RR ${signal.rr} | ADX ${adxVal} | RSI ${signal.rsi}`);
+  debug.push(`${rawType}: ${direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.target} | TP3 ${signal.tp3} | RR ${signal.rr} | ADX ${adxVal} | RSI ${signal.rsi}`);
 
   return {
     signals: [signal],
@@ -621,7 +552,6 @@ export function getMarketSnapshot(
 ): any {
   const candles1d = aggregateTo1D(candles4h);
   const bias1d = getBias(candles1d, true);
-  const bias4h = getBias(candles4h, false);
   const price = candles4h[candles4h.length - 1].close;
 
   const pivots = bias1d ? findPivots(candles4h, bias1d) : [];
@@ -639,21 +569,11 @@ export function getMarketSnapshot(
   const dist = tlPrice ? (price - tlPrice) / tlPrice : 1;
   const nearTL = Math.abs(dist) < TL_THRESHOLD;
 
-  // Late trend check for snapshot
   let trigger = "WAITING";
   if (!bias1d) {
     trigger = "NO_BIAS";
-  } else {
-    const closes1d = candles1d.map(c => c.close);
-    const ema21_1d = ema(closes1d, 21);
-    const ema21_1d_val = ema21_1d[ema21_1d.length - 1];
-    const distFrom1dEma = (price - ema21_1d_val) / ema21_1d_val;
-    const isExtended = bias1d === "LONG" ? distFrom1dEma > LATE_TREND_PCT : distFrom1dEma < -LATE_TREND_PCT;
-    if (isExtended && !nearTL) {
-      trigger = "LATE_TREND";
-    } else if (nearTL) {
-      trigger = "READY";
-    }
+  } else if (nearTL) {
+    trigger = "READY";
   }
 
   const closes4h = candles4h.map(c => c.close);
@@ -724,8 +644,18 @@ export interface HoldResult {
 }
 
 export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, _now?: number): HoldResult {
-  // v33.3: Only SL/TP/TTL and position management. No early thesis exits.
-  // Trades run to original levels. Breakeven lock and scale-out only.
+  // v34: v28 stoch extreme opposite exit + v32.37 position management
+
+  const closes4h = candles4h.map(c => c.close);
+  const stoch = stochRsi(closes4h);
+
+  // v28: Exit when Stoch hits extreme opposite
+  const stochExtremeOpposite = signal.direction === "LONG"
+    ? stoch.k < 20
+    : stoch.k > 80;
+  if (stochExtremeOpposite) {
+    return { shouldHold: false, reason: "stoch_extreme_opposite_exit" };
+  }
 
   const risk = Math.abs(signal.entry - signal.stop);
   if (risk === 0) {
