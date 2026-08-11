@@ -56,7 +56,7 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 34;
+export const CURRENT_SIGNAL_VERSION = 34.1;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
@@ -389,20 +389,7 @@ export function generateSignal(
   }
   // NO detectStopRun. NO beyond-trendline entries unless ADD with ADX>25.
 
-  // --- ADD: Only on genuine breakout with strong ADX ---
-  if (!rawType) {
-    const adxVal = adx(candles4h);
-    const beyondTrendline = direction === "LONG" ? price > tlNow * 1.008 : price < tlNow * 0.992;
-    const confirming = direction === "LONG"
-      ? last4h.close > last4h.open && last4h.close > candles4h[candles4h.length - 2].close
-      : last4h.close < last4h.open && last4h.close < candles4h[candles4h.length - 2].close;
-    const volUp = last4h.volume > avg(candles4h.slice(-10).map(c => c.volume)) * 1.3;
-
-    if (beyondTrendline && confirming && adxVal > 25 && volUp) {
-      rawType = "ADD";
-      debug.push(`ADD: breakout + ADX ${adxVal} + vol`);
-    }
-  }
+  // v34.1: ADD removed. Only near-trendline entries (ENTRY_1/ENTRY_2).
 
   if (!rawType) {
     const stateParts: string[] = [];
