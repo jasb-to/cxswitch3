@@ -335,10 +335,10 @@ export default function Dashboard() {
             } else {
               if (mkt) {
                 const trendDir = mkt.trend;
-                if (trendDir === "LONG") {
+                if (trendDir?.startsWith("LONG")) {
                   bannerText = `⏳ LONG bias — Watching`;
                   bannerClass = "bg-green-600/30 text-green-300";
-                } else if (trendDir === "SHORT") {
+                } else if (trendDir?.startsWith("SHORT")) {
                   bannerText = `⏳ SHORT bias — Watching`;
                   bannerClass = "bg-red-600/30 text-red-300";
                 } else {
@@ -370,9 +370,9 @@ export default function Dashboard() {
                   : ((entry - currentPrice) / entry) * 100
                 : 0;
 
-            const trendReady = mkt?.trend === "LONG" || mkt?.trend === "SHORT" || mkt?.trend === "FLAT";
+            const trendReady = !!mkt?.trend && mkt.trend !== "FLAT" && mkt.trend !== "NONE";
             const locationReady = !!mkt?.location && mkt.location !== "NONE";
-            const triggerFired = mkt?.trigger === "FIRED";
+            const triggerReady = mkt?.trigger === "READY" || mkt?.trigger === "FIRED";
 
             return (
               <div key={pair} className={`rounded-lg p-4 border-2 transition-all ${borderClass}`}>
@@ -418,7 +418,7 @@ export default function Dashboard() {
                   <div className="space-y-1.5">
                     <StepRow label="Trend" ready={trendReady} value={mkt?.trend || "—"} />
                     <StepRow label="Location" ready={locationReady} value={mkt?.location || "—"} />
-                    <StepRow label="Trigger" ready={triggerFired} value={mkt?.trigger || "—"} />
+                    <StepRow label="Trigger" ready={triggerReady} value={mkt?.trigger || "—"} />
                   </div>
                 </div>
 
