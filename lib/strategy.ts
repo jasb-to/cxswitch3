@@ -1,17 +1,12 @@
-// lib/strategy.ts — v34 "Back to v28"
+// lib/strategy.ts — v34.3 "v28 Stops + v34.2 Dedup"
 // ============================================================
 // ENTRY: Only near-trendline + stoch. No detectStopRun. No beyond-TL entries.
 // EXIT: Stoch extreme opposite (v28) + SL/TP/TTL.
-// RISK: v32.37 scale-out structure.
+// RISK: v32.37 scale-out structure + v28 ATR×2 stop width.
 //
-// CHANGES FROM v33:
-// - REMOVED: detectStopRun (was creating bad entries away from TL)
-// - REMOVED: beyondTrendline ADD entries (only ADX>25 breakout now)
-// - REMOVED: late-trend filter (was blocking valid pullbacks)
-// - REMOVED: 15m requirement
-// - REMOVED: 4H bias gate
-// - KEPT: v32.37 SL/TP/scale-out/breakeven
-// - KEPT: dedup + progression lock
+// CHANGES FROM v34.2:
+// - RESTORED v28 stop width: ATR×2 for ENTRY_1 / ENTRY_2 (ADD removed)
+// - DEDUP: position-gated, tiered (4h base / 1h extreme), flush-safe
 
 export interface Candle {
   timestamp: number;
@@ -56,11 +51,11 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 34.1;
+export const CURRENT_SIGNAL_VERSION = 34.3;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
-const SL_ATR_MULT = 1.0;
+const SL_ATR_MULT = 2.0;          // ← v28 width. Was 1.0 in v32.37.
 const MAX_SAME_DIR = 3;
 
 const DAILY_FAST_EMA = 5;
@@ -289,31 +284,72 @@ function suggestLeverage(atr4h: number, price: number): number {
   return 20;
 }
 
-// --- DEDUP + PROGRESSION ---
+// --- DEDUP + PROGRESSION (v34.3) ---
+// TUNE: Base window. 4h = conservative, 2h = aggressive. Extreme = 1h fixed.
 const signalDedup: Map<string, number> = new Map();
-const DEDUP_MS = 4 * 60 * 60 * 1000;
+const DEDUP_BASE_MS = 4 * 60 * 60 * 1000;      // ← change to 2*60*60*1000 for 2h
+const DEDUP_EXTREME_MS = 1 * 60 * 60 * 1000;
 const scaleRank: Record<string, number> = { ENTRY_1: 1, ENTRY_2: 2, ADD: 3 };
 const alertedScale: Map<string, number> = new Map();
 
-function isDup(pair: string, direction: "LONG" | "SHORT", type: string): boolean {
-  const key = `${pair}_${direction}_${type}`;
-  const last = signalDedup.get(key);
-  if (last && Date.now() - last < DEDUP_MS) return true;
-  signalDedup.set(key, Date.now());
-  return false;
+function getDedupWindow(stochK: number): number {
+  if (stochK < 5 || stochK > 95) return DEDUP_EXTREME_MS;
+  return DEDUP_BASE_MS;
 }
 
-function shouldSkipScale(pair: string, direction: "LONG" | "SHORT", type: string): boolean {
+function hasActivePosition(pair: string, direction: "LONG" | "SHORT", activeTrades: any[]): boolean {
+  return activeTrades.some((t: any) => {
+    const matchPair = t.pair === pair || t.symbol === pair;
+    const matchDir = t.direction === direction;
+    return matchPair && matchDir;
+  });
+}
+
+/** Read-only dedup check. Does NOT write. */
+function checkDedup(pair: string, direction: "LONG" | "SHORT", type: string, stochK: number): boolean {
+  const key = `${pair}_${direction}_${type}`;
+  const last = signalDedup.get(key);
+  if (!last) return false;
+  const window = getDedupWindow(stochK);
+  return Date.now() - last < window;
+}
+
+/** Commit dedup entry. Call ONLY after signal is validated and ready to alert. */
+function commitDedup(pair: string, direction: "LONG" | "SHORT", type: string): void {
+  const key = `${pair}_${direction}_${type}`;
+  signalDedup.set(key, Date.now());
+}
+
+/** Read-only progression check. Does NOT write. */
+function checkScaleProgression(pair: string, direction: "LONG" | "SHORT", type: string): boolean {
   const key = `${pair}_${direction}`;
   const currentRank = scaleRank[type] || 0;
   const highest = alertedScale.get(key) || 0;
-  if (currentRank <= highest) return true;
-  alertedScale.set(key, currentRank);
-  return false;
+  return currentRank <= highest;
+}
+
+/** Commit progression entry. Call ONLY after signal is validated and ready to alert. */
+function commitScaleProgression(pair: string, direction: "LONG" | "SHORT", type: string): void {
+  const key = `${pair}_${direction}`;
+  const currentRank = scaleRank[type] || 0;
+  const highest = alertedScale.get(key) || 0;
+  if (currentRank > highest) {
+    alertedScale.set(key, currentRank);
+  }
 }
 
 export function resetAlertProgression(pair: string, direction: "LONG" | "SHORT"): void {
-  alertedScale.delete(`${pair}_${direction}`);
+  const key = `${pair}_${direction}`;
+  alertedScale.delete(key);
+  signalDedup.delete(`${pair}_${direction}_ENTRY_1`);
+  signalDedup.delete(`${pair}_${direction}_ENTRY_2`);
+  signalDedup.delete(`${pair}_${direction}_ADD`);
+}
+
+/** Call on startup / DB flush to prevent phantom blocks. */
+export function clearDedupState(): void {
+  signalDedup.clear();
+  alertedScale.clear();
 }
 
 export function generateSignal(
@@ -387,9 +423,6 @@ export function generateSignal(
   } else if (nearTL && stochTurning && !stochExtreme) {
     rawType = "ENTRY_2";
   }
-  // NO detectStopRun. NO beyond-trendline entries unless ADD with ADX>25.
-
-  // v34.1: ADD removed. Only near-trendline entries (ENTRY_1/ENTRY_2).
 
   if (!rawType) {
     const stateParts: string[] = [];
@@ -409,17 +442,20 @@ export function generateSignal(
     return { debug };
   }
 
-  // --- DEDUP + PROGRESSION ---
-  if (isDup(pair, direction, rawType)) {
-    debug.push(`Dedup: ${rawType} ${direction} already alerted within 4h`);
+  // --- DEDUP + PROGRESSION (position-gated) ---
+  const hasPosition = hasActivePosition(pair, direction, activeTrades);
+
+  if (hasPosition && checkDedup(pair, direction, rawType, stoch.k)) {
+    const windowHrs = getDedupWindow(stoch.k) / (60 * 60 * 1000);
+    debug.push(`Dedup: ${rawType} ${direction} already alerted within ${windowHrs}h`);
     return { debug };
   }
-  if (shouldSkipScale(pair, direction, rawType)) {
+  if (hasPosition && checkScaleProgression(pair, direction, rawType)) {
     debug.push(`Progression lock: ${rawType} skipped`);
     return { debug };
   }
 
-  // --- SL / TP / RISK (v32.37 structure) ---
+  // --- SL / TP / RISK (v32.37 scale-out + v28 ATR×2 stop width) ---
   const atr4h = atr(candles4h, 14);
   const swingLows4h = candles4h.slice(-20).map(c => c.low);
   const swingHighs4h = candles4h.slice(-20).map(c => c.high);
@@ -505,6 +541,10 @@ export function generateSignal(
   };
 
   debug.push(`${rawType}: ${direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.target} | TP3 ${signal.tp3} | RR ${signal.rr} | ADX ${adxVal} | RSI ${signal.rsi}`);
+
+  // --- commit dedup ONLY after full validation ---
+  commitDedup(pair, direction, rawType);
+  commitScaleProgression(pair, direction, rawType);
 
   return {
     signals: [signal],
@@ -631,12 +671,9 @@ export interface HoldResult {
 }
 
 export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: number, _now?: number): HoldResult {
-  // v34: v28 stoch extreme opposite exit + v32.37 position management
-
   const closes4h = candles4h.map(c => c.close);
   const stoch = stochRsi(closes4h);
 
-  // v28: Exit when Stoch hits extreme opposite
   const stochExtremeOpposite = signal.direction === "LONG"
     ? stoch.k < 20
     : stoch.k > 80;
