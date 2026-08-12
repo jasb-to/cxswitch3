@@ -1,9 +1,11 @@
-// app/api/cron/route.ts — v54.4 "Race-Condition Dupe Fix"
+// app/api/cron/route.ts — v54.5 "Rate Limit Fix"
 // ============================================================
-// Changes from v54.3:
-// - ADDED fresh Redis re-read before sendAlert to prevent race-condition duplicates
-// - REMOVED stoch_reversed gate (was blocking valid ENTRY_1/ENTRY_2 recoveries)
-// - WIDENED price_drift from 0.5% to 1.0%
+// Changes from v54.4:
+// - ADDED 300ms delay between Kraken API calls to avoid rate limits
+// - REMOVED Promise.all for same-pair candles (sequential per pair)
+// - ADDED race-condition dupe check before sendAlert
+// - REMOVED stoch_reversed gate
+// - WIDENED price_drift to 1.0%
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
@@ -36,6 +38,11 @@ const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
 const MIN_CRON_INTERVAL_MS = 9 * 60 * 1000;
 const MAX_PRICE_DRIFT = 0.010;
 const EXIT_COOLDOWN_MS = 4 * 60 * 60 * 1000;
+const API_DELAY_MS = 300; // delay between Kraken calls
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function roundPrice(n: number): number {
   if (n >= 10000) return Math.round(n);
@@ -66,7 +73,7 @@ export const revalidate = 0;
 export async function GET(request: Request) {
   const runStart = Date.now();
   console.log("========================================");
-  console.log(`[CRON v54.4] Started at ${new Date(runStart).toISOString()}`);
+  console.log(`[CRON v54.5] Started at ${new Date(runStart).toISOString()}`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -91,11 +98,13 @@ export async function GET(request: Request) {
     activeSignals.map((a) => `${a.pair}_${a.direction}`).join(", ") || "none"
   );
 
+  // ─── Fetch current prices (1 per pair, sequential) ───────
   const currentPrices: Record<string, number> = {};
   for (const pair of PAIRS) {
     try {
       const candles = await getCandles(krakenPairFormat(pair + "/USD"), 60);
       if (candles?.length) currentPrices[pair] = candles[candles.length - 1].close;
+      await sleep(API_DELAY_MS);
     } catch (e) {
       console.log(`[PRICE] ${pair} — failed`);
     }
@@ -128,6 +137,7 @@ export async function GET(request: Request) {
       try {
         const candles4h = await getCandles(krakenPairFormat(trade.pair + "/USD"), 240);
         recordTradeExit(trade.pair, trade.direction, validity.reason, price, candles4h);
+        await sleep(API_DELAY_MS);
       } catch {
         console.log(`[EXIT] ${trade.pair} — recorded without trend context`);
       }
@@ -150,6 +160,7 @@ export async function GET(request: Request) {
       if (candles4h?.length) {
         holdResult = shouldHold(toSignalLike(trade), candles4h, price, runStart);
       }
+      await sleep(API_DELAY_MS);
     } catch {
       // keep holding if shouldHold fails
     }
@@ -162,6 +173,7 @@ export async function GET(request: Request) {
       try {
         const candles4h = await getCandles(krakenPairFormat(trade.pair + "/USD"), 240);
         recordTradeExit(trade.pair, trade.direction, holdResult.reason, price, candles4h);
+        await sleep(API_DELAY_MS);
       } catch {
         console.log(`[EXIT] ${trade.pair} — recorded without trend context`);
       }
@@ -249,11 +261,13 @@ export async function GET(request: Request) {
 
   for (const pair of PAIRS) {
     try {
-      const [candles1h, candles4h, candles15m] = await Promise.all([
-        getCandles(krakenPairFormat(pair + "/USD"), 60),
-        getCandles(krakenPairFormat(pair + "/USD"), 240),
-        getCandles(krakenPairFormat(pair + "/USD"), 15),
-      ]);
+      // Sequential fetch with delay to respect Kraken rate limits
+      const candles1h = await getCandles(krakenPairFormat(pair + "/USD"), 60);
+      await sleep(API_DELAY_MS);
+      const candles4h = await getCandles(krakenPairFormat(pair + "/USD"), 240);
+      await sleep(API_DELAY_MS);
+      const candles15m = await getCandles(krakenPairFormat(pair + "/USD"), 15);
+      await sleep(API_DELAY_MS);
 
       if (
         !candles1h ||
@@ -316,7 +330,7 @@ export async function GET(request: Request) {
           continue;
         }
 
-        // ─── RACE-CONDITION DUPE CHECK (v54.4) ──────────────
+        // ─── RACE-CONDITION DUPE CHECK ─────────────────────
         const freshActive = await getActiveSignals();
         if (freshActive.some(a => a.pair === signal.pair && a.direction === signal.direction)) {
           console.log(`[DUPE] ${pair} — already active in Redis, skipping alert`);
