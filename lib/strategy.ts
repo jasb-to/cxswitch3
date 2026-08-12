@@ -1,13 +1,13 @@
-// lib/strategy.ts — v34.4 "v28 Stops + Clean Dedup + No Bogus Gates"
+// lib/strategy.ts — v34.5 "Fixed Stoch Exit Direction"
 // ============================================================
 // ENTRY: Only near-trendline + stoch. No detectStopRun. No beyond-TL entries.
-// EXIT: Stoch extreme opposite (v28) + SL/TP/TTL.
+// EXIT: Stoch extreme OPPOSITE (v28 correct) + SL/TP/TTL.
 // RISK: v32.37 scale-out structure + v28 ATR×2 stop width.
 // DEDUP: Position-gated. Tiered window (4h base / 1h extreme). Flush-safe.
 //
-// CHANGES FROM v34.3:
-// - REMOVED any "stoch_reversed" gate (was blocking valid ENTRY_1 recoveries)
-// - KEPT: v28 ATR×2 stops, v34.2 dedup, scale-out structure
+// CHANGES FROM v34.4:
+// - FIXED shouldHold() stoch exit: LONG exits on K>80, SHORT exits on K<20
+//   (was backwards: LONG exited on K<20 which is the ENTRY zone)
 
 export interface Candle {
   timestamp: number;
@@ -52,11 +52,11 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 34.4;
+export const CURRENT_SIGNAL_VERSION = 34.5;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
-const SL_ATR_MULT = 2.0;          // v28 width
+const SL_ATR_MULT = 2.0;
 const MAX_SAME_DIR = 3;
 
 const DAILY_FAST_EMA = 5;
@@ -285,7 +285,7 @@ function suggestLeverage(atr4h: number, price: number): number {
   return 20;
 }
 
-// --- DEDUP + PROGRESSION (v34.4) ---
+// --- DEDUP + PROGRESSION ---
 const signalDedup: Map<string, number> = new Map();
 const DEDUP_BASE_MS = 4 * 60 * 60 * 1000;
 const DEDUP_EXTREME_MS = 1 * 60 * 60 * 1000;
@@ -305,7 +305,6 @@ function hasActivePosition(pair: string, direction: "LONG" | "SHORT", activeTrad
   });
 }
 
-/** Read-only dedup check. Does NOT write. */
 function checkDedup(pair: string, direction: "LONG" | "SHORT", type: string, stochK: number): boolean {
   const key = `${pair}_${direction}_${type}`;
   const last = signalDedup.get(key);
@@ -314,13 +313,11 @@ function checkDedup(pair: string, direction: "LONG" | "SHORT", type: string, sto
   return Date.now() - last < window;
 }
 
-/** Commit dedup entry. Call ONLY after signal is validated and ready to alert. */
 function commitDedup(pair: string, direction: "LONG" | "SHORT", type: string): void {
   const key = `${pair}_${direction}_${type}`;
   signalDedup.set(key, Date.now());
 }
 
-/** Read-only progression check. Does NOT write. */
 function checkScaleProgression(pair: string, direction: "LONG" | "SHORT", type: string): boolean {
   const key = `${pair}_${direction}`;
   const currentRank = scaleRank[type] || 0;
@@ -328,7 +325,6 @@ function checkScaleProgression(pair: string, direction: "LONG" | "SHORT", type: 
   return currentRank <= highest;
 }
 
-/** Commit progression entry. Call ONLY after signal is validated and ready to alert. */
 function commitScaleProgression(pair: string, direction: "LONG" | "SHORT", type: string): void {
   const key = `${pair}_${direction}`;
   const currentRank = scaleRank[type] || 0;
@@ -346,7 +342,6 @@ export function resetAlertProgression(pair: string, direction: "LONG" | "SHORT")
   signalDedup.delete(`${pair}_${direction}_ADD`);
 }
 
-/** Call on startup / DB flush to prevent phantom blocks. */
 export function clearDedupState(): void {
   signalDedup.clear();
   alertedScale.clear();
@@ -386,7 +381,6 @@ export function generateSignal(
   const direction = bias1d;
   const strength = getTrendStrength(candles1d, direction);
 
-  // --- TRENDLINE OR EMA FALLBACK ---
   const pivots = findPivots(candles4h, direction);
   let tl = fitTrendline(pivots);
   let usingEmaFallback = false;
@@ -407,7 +401,6 @@ export function generateSignal(
 
   debug.push(`${usingEmaFallback ? "EMA21" : "TL"}: ${tlNow.toFixed(2)} | Price: ${price.toFixed(2)} | Dist: ${(dist * 100).toFixed(2)}%${!usingEmaFallback ? ` | R² ${tl.r2}` : ""}`);
 
-  // --- 4H STOCHRSI ---
   const closes4h = candles4h.map(c => c.close);
   const stoch = stochRsi(closes4h);
   debug.push(`StochRSI: K ${stoch.k} | D ${stoch.d}`);
@@ -415,7 +408,6 @@ export function generateSignal(
   const stochExtreme = direction === "LONG" ? stoch.k < 20 : stoch.k > 80;
   const stochTurning = direction === "LONG" ? stoch.k > stoch.d : stoch.k < stoch.d;
 
-  // --- ENTRY LOGIC (v28 exact — NO bogus gates) ---
   let rawType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
 
   if (nearTL && stochExtreme) {
@@ -434,7 +426,6 @@ export function generateSignal(
     return { debug };
   }
 
-  // --- CORRELATION CAP ---
   const activeTrades = _activeTrades || [];
   const sameDirCount = activeTrades.filter((t: any) => t.direction === direction).length;
   if (sameDirCount >= MAX_SAME_DIR) {
@@ -442,7 +433,6 @@ export function generateSignal(
     return { debug };
   }
 
-  // --- DEDUP + PROGRESSION (position-gated) ---
   const hasPosition = hasActivePosition(pair, direction, activeTrades);
 
   if (hasPosition && checkDedup(pair, direction, rawType, stoch.k)) {
@@ -455,7 +445,6 @@ export function generateSignal(
     return { debug };
   }
 
-  // --- SL / TP / RISK (v32.37 scale-out + v28 ATR×2 stop width) ---
   const atr4h = atr(candles4h, 14);
   const swingLows4h = candles4h.slice(-20).map(c => c.low);
   const swingHighs4h = candles4h.slice(-20).map(c => c.high);
@@ -542,7 +531,6 @@ export function generateSignal(
 
   debug.push(`${rawType}: ${direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.target} | TP3 ${signal.tp3} | RR ${signal.rr} | ADX ${adxVal} | RSI ${signal.rsi}`);
 
-  // --- commit dedup ONLY after full validation ---
   commitDedup(pair, direction, rawType);
   commitScaleProgression(pair, direction, rawType);
 
@@ -674,9 +662,11 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
   const closes4h = candles4h.map(c => c.close);
   const stoch = stochRsi(closes4h);
 
+  // v34.5 FIX: LONG exits when overbought (K>80), SHORT exits when oversold (K<20)
+  // Previously backwards: LONG exited on K<20 which is the ENTRY zone
   const stochExtremeOpposite = signal.direction === "LONG"
-    ? stoch.k < 20
-    : stoch.k > 80;
+    ? stoch.k > 80
+    : stoch.k < 20;
   if (stochExtremeOpposite) {
     return { shouldHold: false, reason: "stoch_extreme_opposite_exit" };
   }
