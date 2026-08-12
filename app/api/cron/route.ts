@@ -1,9 +1,9 @@
-// app/api/cron/route.ts — v54.3 "Remove Bogus Stoch Gate"
+// app/api/cron/route.ts — v54.4 "Race-Condition Dupe Fix"
 // ============================================================
-// Changes from v54.2:
+// Changes from v54.3:
+// - ADDED fresh Redis re-read before sendAlert to prevent race-condition duplicates
 // - REMOVED stoch_reversed gate (was blocking valid ENTRY_1/ENTRY_2 recoveries)
-// - WIDENED price_drift from 0.5% to 1.0% (chop protection, not entry killer)
-// - KEPT: cooldowns, shouldHold exits, scale-out alerts, correlation cap
+// - WIDENED price_drift from 0.5% to 1.0%
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
@@ -34,7 +34,7 @@ import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
 const MIN_CRON_INTERVAL_MS = 9 * 60 * 1000;
-const MAX_PRICE_DRIFT = 0.010; // 1.0% — was 0.5%, too tight for ATR×2 entries
+const MAX_PRICE_DRIFT = 0.010;
 const EXIT_COOLDOWN_MS = 4 * 60 * 60 * 1000;
 
 function roundPrice(n: number): number {
@@ -66,7 +66,7 @@ export const revalidate = 0;
 export async function GET(request: Request) {
   const runStart = Date.now();
   console.log("========================================");
-  console.log(`[CRON v54.3] Started at ${new Date(runStart).toISOString()}`);
+  console.log(`[CRON v54.4] Started at ${new Date(runStart).toISOString()}`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -131,7 +131,6 @@ export async function GET(request: Request) {
       } catch {
         console.log(`[EXIT] ${trade.pair} — recorded without trend context`);
       }
-      // Record cooldown + reset progression to allow fresh ENTRY_1 later
       try {
         const cooldowns = (await getCooldowns()) || {};
         cooldowns[`${trade.pair}_${trade.direction}`] = runStart + EXIT_COOLDOWN_MS;
@@ -166,7 +165,6 @@ export async function GET(request: Request) {
       } catch {
         console.log(`[EXIT] ${trade.pair} — recorded without trend context`);
       }
-      // Record cooldown + reset progression to allow fresh ENTRY_1 later
       try {
         const cooldowns = (await getCooldowns()) || {};
         cooldowns[`${trade.pair}_${trade.direction}`] = runStart + EXIT_COOLDOWN_MS;
@@ -284,10 +282,8 @@ export async function GET(request: Request) {
       try { cooldowns = (await getCooldowns()) || {}; } catch {}
       const now = Date.now();
 
-      // Pass ACTUAL active signals so correlation cap and dedup work
       const result = generateSignal(pair, candles1h, candles4h, candles15m, activeSignals, currentPrice);
 
-      // Filter out signals on cooldown
       if (result.signals) {
         result.signals = result.signals.filter((s) => {
           const key = `${s.pair}_${s.direction}`;
@@ -311,7 +307,7 @@ export async function GET(request: Request) {
       }
 
       for (const signal of result.signals) {
-        // ─── QUALITY GATES (v54.3) ───────────────────────────
+        // ─── QUALITY GATES ──────────────────────────────────
         const last4h = candles4h[candles4h.length - 1];
         const priceDrift = Math.abs(last4h.close - signal.entry) / signal.entry;
         if (priceDrift > MAX_PRICE_DRIFT) {
@@ -320,11 +316,13 @@ export async function GET(request: Request) {
           continue;
         }
 
-        // REMOVED: stoch_reversed gate (was blocking valid extreme-Stoch recoveries)
-        // The strategy file (lib/strategy.ts) already has correct entry logic:
-        //   ENTRY_1 = nearTL + stochExtreme
-        //   ENTRY_2 = nearTL + stochTurning
-        // Adding a contradictory filter here caused phantom rejections.
+        // ─── RACE-CONDITION DUPE CHECK (v54.4) ──────────────
+        const freshActive = await getActiveSignals();
+        if (freshActive.some(a => a.pair === signal.pair && a.direction === signal.direction)) {
+          console.log(`[DUPE] ${pair} — already active in Redis, skipping alert`);
+          alerts.push({ pair, direction: signal.direction, status: "rejected", reason: "race_duplicate" });
+          continue;
+        }
 
         console.log(
           `[PAIR] ${pair} — SIGNAL: ${signal.direction} | ${signal.type} @ ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`
