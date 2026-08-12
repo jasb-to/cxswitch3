@@ -440,25 +440,18 @@ export function generateSignal(
   }
 
   const trendline = getTrendline(pair, candles4h, direction);
-  let tlNow = 0;
-  let usingEmaFallback = false;
-
-  if (trendline) {
-    tlNow = trendline.price;
-  } else {
-    const closes4h = candles4h.map(c => c.close);
-    const ema21_4h = ema(closes4h, 21);
-    tlNow = ema21_4h[ema21_4h.length - 1];
-    usingEmaFallback = true;
-    debug.push(`No TL — EMA21 proxy @ ${tlNow.toFixed(2)}`);
+  if (!trendline) {
+    debug.push("No trendline");
+    return { debug };
   }
+  const tlNow = trendline.price;
 
   const price = currentPrice ?? candles4h[candles4h.length - 1].close;
   const dist = (price - tlNow) / tlNow;
   const nearTL = Math.abs(dist) < TL_THRESHOLD;
   const beyondTL = direction === "LONG" ? price > tlNow * 1.008 : price < tlNow * 0.992;
 
-  debug.push(`${usingEmaFallback ? "EMA21" : "TL"}: ${tlNow.toFixed(2)} | Price: ${price.toFixed(2)} | Dist: ${(dist * 100).toFixed(2)}%${!usingEmaFallback ? ` | R² ${trendline?.r2}` : ""}`);
+  debug.push(`TL: ${tlNow.toFixed(2)} | Price: ${price.toFixed(2)} | Dist: ${(dist * 100).toFixed(2)}% | R² ${trendline.r2}`);
 
   const closes4h = candles4h.map(c => c.close);
   const stoch = stochRsi(closes4h);
@@ -637,7 +630,7 @@ export function generateSignal(
     stochK: stoch.k,
     stochD: stoch.d,
     expectedMove,
-    reason: `${direction} ${finalType} | 1D ${strength} | Stoch K${stoch.k} D${stoch.d} | 4H ${usingEmaFallback ? "EMA21" : "TL"} ${tlNow.toFixed(1)} | RR ${rr.toFixed(2)}`,
+    reason: `${direction} ${finalType} | 1D ${strength} | Stoch K${stoch.k} D${stoch.d} | 4H TL ${tlNow.toFixed(1)} | RR ${rr.toFixed(2)}`,
     timestamp: now,
     version: CURRENT_SIGNAL_VERSION,
     trend: direction,
@@ -645,7 +638,7 @@ export function generateSignal(
     trigger: "FIRED",
     context: {
       marketPhase: `${direction} ${strength}`,
-      structure: usingEmaFallback ? "ema21_pullback" : "trendline_pullback",
+      structure: "trendline_pullback",
       momentum: `Stoch K${stoch.k}/D${stoch.d}`,
       pullback: nearTL ? "active" : "breakout",
       crossAge: 0,
@@ -675,7 +668,7 @@ export function generateSignal(
     stochD: signal.stochD,
     trendlinePrice: Math.round(tlNow * 100) / 100,
     distToTrendline: Math.round(Math.abs(dist) * 10000) / 100,
-    locationType: trendline ? "STRUCTURE" : "NONE",
+    locationType: "STRUCTURE",
     ema8_4h: Math.round(ema8_4h[ema8_4h.length - 1] * 100) / 100,
     ema21_4h: Math.round(ema21_4h[ema21_4h.length - 1] * 100) / 100,
     ema50_4h: Math.round(ema50_4h[ema50_4h.length - 1] * 100) / 100,
@@ -703,17 +696,7 @@ export function getMarketSnapshot(
   const price = candles4h[candles4h.length - 1].close;
 
   const trendline = bias1d ? getTrendline(pair, candles4h, bias1d) : null;
-  let tlNow = 0;
-  let usingEmaFallback = false;
-
-  if (!trendline && bias1d) {
-    const closes4h = candles4h.map(c => c.close);
-    const ema21 = ema(closes4h, 21);
-    tlNow = ema21[ema21.length - 1];
-    usingEmaFallback = true;
-  } else if (trendline) {
-    tlNow = trendline.price;
-  }
+  const tlNow = trendline ? trendline.price : 0;
 
   const dist = tlNow ? (price - tlNow) / tlNow : 1;
   const nearTL = Math.abs(dist) < TL_THRESHOLD;
@@ -739,7 +722,7 @@ export function getMarketSnapshot(
     price: Math.round(price * 100) / 100,
     timestamp: Date.now(),
     trend: bias1d ? `${bias1d} ${getTrendStrength(candles1d, bias1d)}` : "FLAT",
-    location: trendline || usingEmaFallback ? (nearTL ? "NEAR_TL" : "BEYOND_TL") : "NONE",
+    location: trendline ? (nearTL ? "NEAR_TL" : "BEYOND_TL") : "NONE",
     trigger,
     adx: adxVal,
     rsi: Math.round(rsiVal * 10) / 10,
@@ -747,7 +730,7 @@ export function getMarketSnapshot(
     stochD: stoch.d,
     trendlinePrice: Math.round(tlNow * 100) / 100,
     distToTrendline: tlNow ? Math.round(Math.abs(dist) * 10000) / 100 : 0,
-    locationType: trendline ? "STRUCTURE" : usingEmaFallback ? "EMA21" : "NONE",
+    locationType: trendline ? "STRUCTURE" : "NONE",
     ema8_4h: Math.round(ema8[ema8.length - 1] * 100) / 100,
     ema21_4h: Math.round(ema21[ema21.length - 1] * 100) / 100,
     ema50_4h: Math.round(ema50[ema50.length - 1] * 100) / 100,
