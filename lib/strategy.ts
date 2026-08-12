@@ -510,7 +510,7 @@ export function generateSignal(
 
   // --- ADD requires existing position ---
   if (rawType === "ADD" && !hasSameDirectionPosition(pair, direction, _activeTrades)) {
-    debug.push(`ADD blocked: no active ${direction} position for ${pair}`);
+    debug.push(`No signal: beyond TL + momentum but no active ${direction} position`);
     return { debug };
   }
 
@@ -642,7 +642,7 @@ export function generateSignal(
     version: CURRENT_SIGNAL_VERSION,
     trend: direction,
     location: nearTL ? "NEAR_TL" : "BEYOND_TL",
-    trigger: "READY",
+    trigger: "FIRED",
     context: {
       marketPhase: `${direction} ${strength}`,
       structure: usingEmaFallback ? "ema21_pullback" : "trendline_pullback",
