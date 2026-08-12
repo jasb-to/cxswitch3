@@ -372,7 +372,7 @@ export default function Dashboard() {
 
             const trendReady = !!mkt?.trend && mkt.trend !== "FLAT" && mkt.trend !== "NONE";
             const locationReady = !!mkt?.location && mkt.location !== "NONE";
-            const triggerReady = mkt?.trigger === "READY" || mkt?.trigger === "FIRED";
+            const triggerFired = mkt?.trigger === "FIRED";
 
             return (
               <div key={pair} className={`rounded-lg p-4 border-2 transition-all ${borderClass}`}>
@@ -418,7 +418,7 @@ export default function Dashboard() {
                   <div className="space-y-1.5">
                     <StepRow label="Trend" ready={trendReady} value={mkt?.trend || "—"} />
                     <StepRow label="Location" ready={locationReady} value={mkt?.location || "—"} />
-                    <StepRow label="Trigger" ready={triggerReady} value={mkt?.trigger || "—"} />
+                    <StepRow label="Trigger" ready={triggerFired} value={mkt?.trigger || "—"} />
                   </div>
                 </div>
 
