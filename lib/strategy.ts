@@ -659,7 +659,8 @@ export function generateSignal(
     },
   };
 
-  debug.push(`SIGNAL: ${finalType} ${direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.target} | TP3 ${signal.tp3} | RR ${signal.rr}`);
+  const debugPrefix = finalType === "ENTRY_2" ? "INTERNAL" : "SIGNAL";
+  debug.push(`${debugPrefix}: ${finalType} ${direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.target} | TP3 ${signal.tp3} | RR ${signal.rr}`);
 
   const market = {
     pair,
@@ -953,7 +954,7 @@ export function setRedisClient(_: any): void {
   return;
 }
 
-// v55: ENTRY_2 is stripped — only ENTRY_1 and ADD alert
+// v55: All signals returned. Cron route suppresses ENTRY_2 alerts.
 export async function generateSignalCompat(
   pair: string,
   candles1h: Candle[],
@@ -962,14 +963,7 @@ export async function generateSignalCompat(
   activeTrades?: any[],
   currentPrice?: number
 ): Promise<SignalResult> {
-  const result = generateSignal(pair, candles1h, candles4h, candles15m, activeTrades, currentPrice);
-  if (result.signals) {
-    result.signals = result.signals.filter(s => s.type !== "ENTRY_2");
-  }
-  if (result.signal?.type === "ENTRY_2") {
-    result.signal = undefined;
-  }
-  return result;
+  return generateSignal(pair, candles1h, candles4h, candles15m, activeTrades, currentPrice);
 }
 
 export function isSignalStillValidBool(signal: Signal, currentPrice: number): boolean {
