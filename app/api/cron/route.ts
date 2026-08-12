@@ -342,43 +342,49 @@ export async function GET(request: Request) {
         );
         newSignals.push(signal);
 
-        const alertState = signal.type === "ADD" ? "ADD" : "ENTRY";
-        const alertEmoji =
-          signal.type === "ENTRY_1" ? "🟢" : signal.type === "ENTRY_2" ? "🟡" : "🔵";
+        // ENTRY_2 is internal — add to state but skip Telegram alert
+        if (signal.type !== "ENTRY_2") {
+          const alertState = signal.type === "ADD" ? "ADD" : "ENTRY";
+          const alertEmoji =
+            signal.type === "ENTRY_1" ? "🟢" : signal.type === "ADD" ? "🔵" : "📊";
 
-        try {
-          await sendAlert({
-            symbol: signal.pair,
-            state: alertState,
-            price: roundPrice(signal.entry),
-            bias: signal.direction,
-            stopLoss: roundPrice(signal.stop),
-            takeProfit: roundPrice(signal.target),
-            rr: signal.rr,
-            expectedMove: signal.expectedMove,
-            adx: signal.adx,
-            rsi: signal.rsi,
-            stochK: signal.stochK,
-            stochD: signal.stochD,
-            reason: signal.reason,
-            trend: signal.trend,
-            location: signal.location,
-            trigger: signal.trigger,
-            updatedAt: new Date(signal.timestamp).toISOString(),
-            signalType: signal.type,
-            signalEmoji: alertEmoji,
-            context: signal.context,
-            marketPhase: signal.context?.marketPhase,
-            structure: signal.context?.structure,
-            momentum: signal.context?.momentum,
-            pullback: signal.context?.pullback,
-            crossAge: signal.context?.crossAge,
-          });
-          console.log(`[ALERT] ${pair} ${signal.direction} — SENT (${signal.type})`);
-          alerts.push({ pair, direction: signal.direction, status: "sent", type: signal.type });
-        } catch (err) {
-          console.error(`[ALERT] ${pair} ${signal.direction} — FAILED:`, err);
-          alerts.push({ pair, direction: signal.direction, status: "alert_failed", error: String(err) });
+          try {
+            await sendAlert({
+              symbol: signal.pair,
+              state: alertState,
+              price: roundPrice(signal.entry),
+              bias: signal.direction,
+              stopLoss: roundPrice(signal.stop),
+              takeProfit: roundPrice(signal.target),
+              rr: signal.rr,
+              expectedMove: signal.expectedMove,
+              adx: signal.adx,
+              rsi: signal.rsi,
+              stochK: signal.stochK,
+              stochD: signal.stochD,
+              reason: signal.reason,
+              trend: signal.trend,
+              location: signal.location,
+              trigger: signal.trigger,
+              updatedAt: new Date(signal.timestamp).toISOString(),
+              signalType: signal.type,
+              signalEmoji: alertEmoji,
+              context: signal.context,
+              marketPhase: signal.context?.marketPhase,
+              structure: signal.context?.structure,
+              momentum: signal.context?.momentum,
+              pullback: signal.context?.pullback,
+              crossAge: signal.context?.crossAge,
+            });
+            console.log(`[ALERT] ${pair} ${signal.direction} — SENT (${signal.type})`);
+            alerts.push({ pair, direction: signal.direction, status: "sent", type: signal.type });
+          } catch (err) {
+            console.error(`[ALERT] ${pair} ${signal.direction} — FAILED:`, err);
+            alerts.push({ pair, direction: signal.direction, status: "alert_failed", error: String(err) });
+          }
+        } else {
+          console.log(`[INTERNAL] ${pair} ${signal.direction} — ENTRY_2 tracked (no alert)`);
+          alerts.push({ pair, direction: signal.direction, status: "internal", type: signal.type });
         }
 
         await addActiveSignal(signal);
