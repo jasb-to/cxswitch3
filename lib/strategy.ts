@@ -1,12 +1,13 @@
-// lib/strategy.ts — v34.3 "v28 Stops + v34.2 Dedup"
+// lib/strategy.ts — v34.4 "v28 Stops + Clean Dedup + No Bogus Gates"
 // ============================================================
 // ENTRY: Only near-trendline + stoch. No detectStopRun. No beyond-TL entries.
 // EXIT: Stoch extreme opposite (v28) + SL/TP/TTL.
 // RISK: v32.37 scale-out structure + v28 ATR×2 stop width.
+// DEDUP: Position-gated. Tiered window (4h base / 1h extreme). Flush-safe.
 //
-// CHANGES FROM v34.2:
-// - RESTORED v28 stop width: ATR×2 for ENTRY_1 / ENTRY_2 (ADD removed)
-// - DEDUP: position-gated, tiered (4h base / 1h extreme), flush-safe
+// CHANGES FROM v34.3:
+// - REMOVED any "stoch_reversed" gate (was blocking valid ENTRY_1 recoveries)
+// - KEPT: v28 ATR×2 stops, v34.2 dedup, scale-out structure
 
 export interface Candle {
   timestamp: number;
@@ -51,11 +52,11 @@ export interface SignalResult {
   debug: string[];
 }
 
-export const CURRENT_SIGNAL_VERSION = 34.3;
+export const CURRENT_SIGNAL_VERSION = 34.4;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const MIN_R2 = 0.60;
-const SL_ATR_MULT = 2.0;          // ← v28 width. Was 1.0 in v32.37.
+const SL_ATR_MULT = 2.0;          // v28 width
 const MAX_SAME_DIR = 3;
 
 const DAILY_FAST_EMA = 5;
@@ -284,10 +285,9 @@ function suggestLeverage(atr4h: number, price: number): number {
   return 20;
 }
 
-// --- DEDUP + PROGRESSION (v34.3) ---
-// TUNE: Base window. 4h = conservative, 2h = aggressive. Extreme = 1h fixed.
+// --- DEDUP + PROGRESSION (v34.4) ---
 const signalDedup: Map<string, number> = new Map();
-const DEDUP_BASE_MS = 4 * 60 * 60 * 1000;      // ← change to 2*60*60*1000 for 2h
+const DEDUP_BASE_MS = 4 * 60 * 60 * 1000;
 const DEDUP_EXTREME_MS = 1 * 60 * 60 * 1000;
 const scaleRank: Record<string, number> = { ENTRY_1: 1, ENTRY_2: 2, ADD: 3 };
 const alertedScale: Map<string, number> = new Map();
@@ -415,7 +415,7 @@ export function generateSignal(
   const stochExtreme = direction === "LONG" ? stoch.k < 20 : stoch.k > 80;
   const stochTurning = direction === "LONG" ? stoch.k > stoch.d : stoch.k < stoch.d;
 
-  // --- ENTRY LOGIC (v28 exact) ---
+  // --- ENTRY LOGIC (v28 exact — NO bogus gates) ---
   let rawType: "ENTRY_1" | "ENTRY_2" | "ADD" | null = null;
 
   if (nearTL && stochExtreme) {
