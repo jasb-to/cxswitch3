@@ -1,12 +1,9 @@
-// app/api/cron/route.ts — v54.2 "Whipsaw Fix"
+// app/api/cron/route.ts — v54.3 "Remove Bogus Stoch Gate"
 // ============================================================
-// Changes from v54.1:
-// 6. Post-exit cooldown: 4h block on re-entry after thesis-failure exit.
-// 1. Calls shouldHold() on active trades for early exits (TL reclaim, bias flip, stoch extreme).
-// 2. Handles stop updates and scale-out alerts from shouldHold.
-// 3. Passes activeSignals to generateSignal so correlation cap & dedup work.
-// 4. Adds price-drift quality gate: skips alerts if price moved >0.5% from signal entry.
-// 5. Adds stoch-reversal quality gate: skips ENTRY_1 if stoch already crossed against direction.
+// Changes from v54.2:
+// - REMOVED stoch_reversed gate (was blocking valid ENTRY_1/ENTRY_2 recoveries)
+// - WIDENED price_drift from 0.5% to 1.0% (chop protection, not entry killer)
+// - KEPT: cooldowns, shouldHold exits, scale-out alerts, correlation cap
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
@@ -37,8 +34,8 @@ import { sendAlert } from "@/lib/telegram";
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
 const MIN_CRON_INTERVAL_MS = 9 * 60 * 1000;
-const MAX_PRICE_DRIFT = 0.005; // 0.5%
-const EXIT_COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4h
+const MAX_PRICE_DRIFT = 0.010; // 1.0% — was 0.5%, too tight for ATR×2 entries
+const EXIT_COOLDOWN_MS = 4 * 60 * 60 * 1000;
 
 function roundPrice(n: number): number {
   if (n >= 10000) return Math.round(n);
@@ -69,7 +66,7 @@ export const revalidate = 0;
 export async function GET(request: Request) {
   const runStart = Date.now();
   console.log("========================================");
-  console.log(`[CRON v54.2] Started at ${new Date(runStart).toISOString()}`);
+  console.log(`[CRON v54.3] Started at ${new Date(runStart).toISOString()}`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -314,7 +311,7 @@ export async function GET(request: Request) {
       }
 
       for (const signal of result.signals) {
-        // ─── QUALITY GATES (v54.1) ───────────────────────────
+        // ─── QUALITY GATES (v54.3) ───────────────────────────
         const last4h = candles4h[candles4h.length - 1];
         const priceDrift = Math.abs(last4h.close - signal.entry) / signal.entry;
         if (priceDrift > MAX_PRICE_DRIFT) {
@@ -323,17 +320,11 @@ export async function GET(request: Request) {
           continue;
         }
 
-        // Stoch reversal gate: if stoch already crossed against direction, skip ENTRY_1/ENTRY_2
-        if (signal.type === "ENTRY_1" || signal.type === "ENTRY_2") {
-          const stochReversed =
-            (signal.direction === "LONG" && signal.stochK > signal.stochD + 5) ||
-            (signal.direction === "SHORT" && signal.stochK < signal.stochD - 5);
-          if (stochReversed) {
-            console.log(`[PAIR] ${pair} — REJECTED: stoch already reversed K${signal.stochK}/D${signal.stochD}`);
-            alerts.push({ pair, status: "rejected", reason: "stoch_reversed", stochK: signal.stochK, stochD: signal.stochD });
-            continue;
-          }
-        }
+        // REMOVED: stoch_reversed gate (was blocking valid extreme-Stoch recoveries)
+        // The strategy file (lib/strategy.ts) already has correct entry logic:
+        //   ENTRY_1 = nearTL + stochExtreme
+        //   ENTRY_2 = nearTL + stochTurning
+        // Adding a contradictory filter here caused phantom rejections.
 
         console.log(
           `[PAIR] ${pair} — SIGNAL: ${signal.direction} | ${signal.type} @ ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`
