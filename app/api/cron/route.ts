@@ -1,16 +1,15 @@
-// app/api/cron/route.ts — v54.5 "Rate Limit Fix"
+// app/api/cron/route.ts — v55 "v28 Entries + Rate Limit Fix"
 // ============================================================
-// Changes from v54.4:
-// - ADDED 300ms delay between Kraken API calls to avoid rate limits
-// - REMOVED Promise.all for same-pair candles (sequential per pair)
-// - ADDED race-condition dupe check before sendAlert
-// - REMOVED stoch_reversed gate
-// - WIDENED price_drift to 1.0%
+// Changes from v54.5:
+// - Uses generateSignalCompat (ENTRY_2 suppressed, anti-hedge built-in)
+// - v28 hysteresis: 24h ENTRY lock, 4h ADD lock
+// - v28 stops: ATR×2 ENTRY, ATR×1.5 ADD
+// - v34.5 fixed stoch exit + v32.37 scale-out
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
 import {
-  generateSignal,
+  generateSignalCompat,
   isSignalStillValid,
   shouldHold,
   getMarketSnapshot,
@@ -38,7 +37,7 @@ const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
 const MIN_CRON_INTERVAL_MS = 9 * 60 * 1000;
 const MAX_PRICE_DRIFT = 0.010;
 const EXIT_COOLDOWN_MS = 4 * 60 * 60 * 1000;
-const API_DELAY_MS = 300; // delay between Kraken calls
+const API_DELAY_MS = 300;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -73,7 +72,7 @@ export const revalidate = 0;
 export async function GET(request: Request) {
   const runStart = Date.now();
   console.log("========================================");
-  console.log(`[CRON v54.5] Started at ${new Date(runStart).toISOString()}`);
+  console.log(`[CRON v55] Started at ${new Date(runStart).toISOString()}`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -98,7 +97,7 @@ export async function GET(request: Request) {
     activeSignals.map((a) => `${a.pair}_${a.direction}`).join(", ") || "none"
   );
 
-  // ─── Fetch current prices (1 per pair, sequential) ───────
+  // ─── Fetch current prices (sequential) ───────────────────
   const currentPrices: Record<string, number> = {};
   for (const pair of PAIRS) {
     try {
@@ -261,7 +260,6 @@ export async function GET(request: Request) {
 
   for (const pair of PAIRS) {
     try {
-      // Sequential fetch with delay to respect Kraken rate limits
       const candles1h = await getCandles(krakenPairFormat(pair + "/USD"), 60);
       await sleep(API_DELAY_MS);
       const candles4h = await getCandles(krakenPairFormat(pair + "/USD"), 240);
@@ -296,7 +294,8 @@ export async function GET(request: Request) {
       try { cooldowns = (await getCooldowns()) || {}; } catch {}
       const now = Date.now();
 
-      const result = generateSignal(pair, candles1h, candles4h, candles15m, activeSignals, currentPrice);
+      // v55: use generateSignalCompat — ENTRY_2 suppressed, anti-hedge built-in
+      const result = await generateSignalCompat(pair, candles1h, candles4h, candles15m, activeSignals, currentPrice);
 
       if (result.signals) {
         result.signals = result.signals.filter((s) => {
