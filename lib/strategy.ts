@@ -59,7 +59,6 @@ const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
 const SL_ATR_MULT_ENTRY = 2.0;
 const SL_ATR_MULT_ADD = 1.5;
-const MAX_SAME_DIR = 3;
 
 const DAILY_FAST_EMA = 5;
 const DAILY_SLOW_EMA = 13;
@@ -540,14 +539,6 @@ export function generateSignal(
   // Set hysteresis for new signal
   if (!hyst || finalType !== hyst.lastSignalType) {
     setHysteresis(pair, direction, finalType, price, now);
-  }
-
-  // --- Correlation cap ---
-  const activeTrades = _activeTrades || [];
-  const sameDirCount = activeTrades.filter((t: any) => t.direction === direction).length;
-  if (sameDirCount >= MAX_SAME_DIR) {
-    debug.push(`Correlation cap: ${sameDirCount} ${direction} active, max ${MAX_SAME_DIR}`);
-    return { debug };
   }
 
   // --- Levels ---
