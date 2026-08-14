@@ -57,7 +57,6 @@ export interface SignalResult {
 export const CURRENT_SIGNAL_VERSION = 55;
 const MIN_RR = 1.5;
 const TL_THRESHOLD = 0.012;
-const MIN_R2 = 0.60;
 const SL_ATR_MULT_ENTRY = 2.0;
 const SL_ATR_MULT_ADD = 1.5;
 const MAX_SAME_DIR = 3;
@@ -264,7 +263,6 @@ function fitTrendline(pivots: { index: number; price: number }[]) {
   const ssTotal = pts.reduce((s, p) => s + Math.pow(p.price - yMean, 2), 0);
   const ssResidual = pts.reduce((s, p) => s + Math.pow(p.price - (slope * p.index + intercept), 2), 0);
   const r2 = ssTotal === 0 ? 0 : 1 - (ssResidual / ssTotal);
-  if (r2 < MIN_R2) return null;
 
   return { slope, intercept, r2: Math.round(r2 * 100) / 100 };
 }
