@@ -37,7 +37,7 @@ const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
 const MIN_CRON_INTERVAL_MS = 9 * 60 * 1000;
 const MAX_PRICE_DRIFT = 0.010;
 const EXIT_COOLDOWN_MS = 4 * 60 * 60 * 1000;
-const API_DELAY_MS = 300;
+const API_DELAY_MS = 600;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
