@@ -107,7 +107,7 @@ function rsi(closes: number[], period: number = 14): number {
 function rsiSeries(closes: number[], period: number = 14): number[] {
   const series: number[] = [];
   for (let i = period; i < closes.length; i++) {
-    const window = closes.slice(i - period + 1, i + 1);
+    const window = closes.slice(i - period, i + 1);
     series.push(rsi(window, period));
   }
   return series;
@@ -258,12 +258,7 @@ function fitTrendline(pivots: { index: number; price: number }[]) {
   const slope = (n * sumXY - sumX * sumY) / denom;
   const intercept = (sumY - slope * sumX) / n;
 
-  const yMean = sumY / n;
-  const ssTotal = pts.reduce((s, p) => s + Math.pow(p.price - yMean, 2), 0);
-  const ssResidual = pts.reduce((s, p) => s + Math.pow(p.price - (slope * p.index + intercept), 2), 0);
-  const r2 = ssTotal === 0 ? 0 : 1 - (ssResidual / ssTotal);
-
-  return { slope, intercept, r2: Math.round(r2 * 100) / 100 };
+  return { slope, intercept };
 }
 
 function suggestLeverage(atr4h: number, price: number): number {
@@ -286,7 +281,7 @@ interface TrendlineState {
 
 const trendlineStore: Map<string, TrendlineState> = new Map();
 
-function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; r2: number; age: number } | null {
+function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHORT"): { price: number; age: number } | null {
   const len = candles.length;
   if (len < 20) return null;
 
@@ -299,13 +294,33 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
   const maxAge = 7 * 24 * 60 * 60 * 1000;
 
   if (existing && existing.direction === direction && (now - existing.lastUpdated) < maxAge) {
-    const lastPivot = recentPivots[recentPivots.length - 1];
-    const projectedPrice = existing.slope * lastPivot.index + existing.intercept;
-    const deviation = Math.abs(lastPivot.price - projectedPrice) / projectedPrice;
-    if (deviation < 0.02) {
-      const currentIndex = len - 1;
-      const price = existing.slope * currentIndex + existing.intercept;
-      return { price, r2: 0.85, age: now - existing.lastUpdated };
+    const anchoredPivots = existing.pivots
+      .map(p => {
+        const idx = candles.findIndex(c => c.timestamp === p.timestamp);
+        if (idx === -1) return null;
+        return { index: idx, price: p.price, timestamp: p.timestamp };
+      })
+      .filter((p): p is { index: number; price: number; timestamp: number } => p !== null);
+
+    if (anchoredPivots.length >= 3) {
+      const recalc = fitTrendline(anchoredPivots);
+      if (recalc) {
+        const lastPivot = recentPivots[recentPivots.length - 1];
+        const projectedPrice = recalc.slope * lastPivot.index + recalc.intercept;
+        const deviation = Math.abs(lastPivot.price - projectedPrice) / projectedPrice;
+        if (deviation < 0.02) {
+          const currentIndex = len - 1;
+          const price = recalc.slope * currentIndex + recalc.intercept;
+          trendlineStore.set(pair, {
+            slope: recalc.slope,
+            intercept: recalc.intercept,
+            pivots: anchoredPivots,
+            lastUpdated: existing.lastUpdated,
+            direction: existing.direction,
+          });
+          return { price, age: now - existing.lastUpdated };
+        }
+      }
     }
   }
 
@@ -322,7 +337,7 @@ function getTrendline(pair: string, candles: Candle[], direction: "LONG" | "SHOR
 
   const currentIndex = len - 1;
   const price = tl.slope * currentIndex + tl.intercept;
-  return { price, r2: tl.r2, age: 0 };
+  return { price, age: 0 };
 }
 
 // ============================================================
@@ -448,7 +463,7 @@ export function generateSignal(
   const nearTL = Math.abs(dist) < TL_THRESHOLD;
   const beyondTL = direction === "LONG" ? price > tlNow * 1.008 : price < tlNow * 0.992;
 
-  debug.push(`TL: ${tlNow.toFixed(2)} | Price: ${price.toFixed(2)} | Dist: ${(dist * 100).toFixed(2)}% | R² ${trendline.r2}`);
+  debug.push(`TL: ${tlNow.toFixed(2)} | Price: ${price.toFixed(2)} | Dist: ${(dist * 100).toFixed(2)}%`);
 
   const closes4h = candles4h.map(c => c.close);
   const stoch = stochRsi(closes4h);
@@ -813,12 +828,16 @@ export function shouldHold(signal: Signal, candles4h: Candle[], currentPrice: nu
 
   // Scale-out @ 2R (v32.37)
   if (signal.tp1 && currentR >= 2) {
-    return {
-      shouldHold: true,
-      reason: "tp1_hit_scale_out_50",
-      newStop: signal.entry,
-      scaleOut: { level: signal.tp1, size: 0.50, label: "TP1" },
-    };
+    if (!signal.context) (signal as any).context = {};
+    if (!signal.context.tp1Processed) {
+      signal.context.tp1Processed = true;
+      return {
+        shouldHold: true,
+        reason: "tp1_hit_scale_out_50",
+        newStop: signal.entry,
+        scaleOut: { level: signal.tp1, size: 0.50, label: "TP1" },
+      };
+    }
   }
 
   // BE lock @ 1.5R (v32.37)
