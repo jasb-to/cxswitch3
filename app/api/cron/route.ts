@@ -1,10 +1,10 @@
-// app/api/cron/route.ts — v55 "v28 Entries + Rate Limit Fix"
+// app/api/cron/route.ts — v55.1 "v28 Entries + Rate Limit Fix + State Sync"
 // ============================================================
-// Changes from v54.5:
-// - Uses generateSignalCompat (ENTRY_2 suppressed, anti-hedge built-in)
-// - v28 hysteresis: 24h ENTRY lock, 4h ADD lock
-// - v28 stops: ATR×2 ENTRY, ATR×1.5 ADD
-// - v34.5 fixed stoch exit + v32.37 scale-out
+// Changes from v55:
+// - Added exchange position sync to prevent ghost trades
+// - Added removeActiveSignalById for belt-and-suspenders cleanup
+// - Added direction validation on state recovery
+// - Fixed cooldown key mismatch (uses pair_direction consistently)
 
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
@@ -21,6 +21,8 @@ import {
 import {
   getActiveSignals,
   addActiveSignal,
+  removeActiveSignal,
+  removeActiveSignalById,
   getSignalHistory,
   appendSignalHistory,
   updateSignalHistoryStatus,
@@ -72,7 +74,7 @@ export const revalidate = 0;
 export async function GET(request: Request) {
   const runStart = Date.now();
   console.log("========================================");
-  console.log(`[CRON v55] Started at ${new Date(runStart).toISOString()}`);
+  console.log(`[CRON v55.1] Started at ${new Date(runStart).toISOString()}`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -93,7 +95,7 @@ export async function GET(request: Request) {
 
   let activeSignals = await getActiveSignals();
   console.log(
-    `[STATE] Active signals:`,
+    `[STATE] Active signals on entry:`,
     activeSignals.map((a) => `${a.pair}_${a.direction}`).join(", ") || "none"
   );
 
@@ -107,6 +109,41 @@ export async function GET(request: Request) {
     } catch (e) {
       console.log(`[PRICE] ${pair} — failed`);
     }
+  }
+
+  // ─── Exchange Position Sync (v55.1 FIX) ──────────────────
+  // Remove any Redis signal that doesn't have a matching exchange position
+  // This prevents ghost trades after manual closes
+  try {
+    const { getExchangePositions } = await import("@/lib/kraken");
+    const exchangePositions = await getExchangePositions();
+    console.log(`[SYNC] Exchange positions:`, exchangePositions.map((p: any) => `${p.symbol}_${p.side?.toUpperCase()}`).join(", ") || "none");
+
+    for (const signal of [...activeSignals]) {
+      const hasPosition = exchangePositions.some(
+        (p: any) =>
+          (p.symbol === signal.pair || p.symbol === krakenPairFormat(signal.pair + "/USD")) &&
+          p.side?.toUpperCase() === signal.direction
+      );
+      if (!hasPosition) {
+        console.log(`[SYNC] ${signal.pair} ${signal.direction} not found on exchange, removing ghost from state`);
+        await removeActiveSignalById(signal.id);
+        await updateSignalHistoryStatus(signal.id, "FAILED", "manual_close_or_desync", currentPrices[signal.pair]);
+        // Also set cooldown to prevent immediate re-entry
+        const cooldowns = (await getCooldowns()) || {};
+        cooldowns[`${signal.pair}_${signal.direction}`] = runStart + EXIT_COOLDOWN_MS;
+        await setCooldowns(cooldowns);
+        resetAlertProgression(signal.pair, signal.direction);
+      }
+    }
+    // Re-fetch after sync
+    activeSignals = await getActiveSignals();
+    console.log(
+      `[STATE] Active signals after sync:`,
+      activeSignals.map((a) => `${a.pair}_${a.direction}`).join(", ") || "none"
+    );
+  } catch (e) {
+    console.log(`[SYNC] Exchange sync failed or not configured:`, e);
   }
 
   // ─── Exit Management ─────────────────────────────────────
@@ -238,8 +275,14 @@ export async function GET(request: Request) {
   );
 
   // ─── State Recovery ──────────────────────────────────────
+  // v55.1 FIX: Validate direction before rebuilding
   const activeTrades: Record<string, any> = {};
   for (const trade of activeSignals) {
+    if (!["LONG", "SHORT"].includes(trade.direction)) {
+      console.error(`[STATE BUG] Invalid direction for ${trade.pair}: ${trade.direction}, removing`);
+      await removeActiveSignalById(trade.id);
+      continue;
+    }
     activeTrades[`${trade.pair}_${trade.direction}`] = {
       direction: trade.direction,
       timestamp: trade.timestamp,
