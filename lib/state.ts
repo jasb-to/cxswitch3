@@ -1,4 +1,4 @@
-// lib/state.ts — v54.2 Cooldown Support
+// lib/state.ts — v55.1 Cooldown Support + removeActiveSignalById
 // ============================================================
 // Architecture:
 //   activeSignals  → KV store for currently open trades only
@@ -214,6 +214,16 @@ export async function removeActiveSignal(pair: string, direction: "LONG" | "SHOR
   if (filtered.length !== active.length) {
     await setActiveSignals(filtered);
     console.log(`[ACTIVE] Removed ${pair} ${direction}`);
+  }
+}
+
+// v55.1 FIX: Remove by ID for precise cleanup
+export async function removeActiveSignalById(id: string): Promise<void> {
+  const active = await getActiveSignals();
+  const filtered = active.filter(a => a.id !== id);
+  if (filtered.length !== active.length) {
+    await setActiveSignals(filtered);
+    console.log(`[ACTIVE] Removed signal ${id}`);
   }
 }
 
