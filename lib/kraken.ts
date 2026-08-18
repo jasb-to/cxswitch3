@@ -99,3 +99,64 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
   }
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
+
+// v55.1: Exchange position sync for ghost trade cleanup
+// Requires KRAKEN_API_KEY and KRAKEN_API_SECRET environment variables
+function getKrakenSignature(path: string, nonce: string, body: string, secret: string): string {
+  const crypto = require("crypto");
+  const message = nonce + body;
+  const hash = crypto.createHash("sha256").update(message).digest();
+  const hmac = crypto.createHmac("sha512", Buffer.from(secret, "base64"));
+  hmac.update(path + hash);
+  return hmac.digest("base64");
+}
+
+export async function getExchangePositions(): Promise<{ symbol: string; side: string; size: number }[]> {
+  const apiKey = process.env.KRAKEN_API_KEY;
+  const apiSecret = process.env.KRAKEN_API_SECRET;
+
+  if (!apiKey || !apiSecret) {
+    console.log("[KRAKEN] No API credentials, skipping position sync");
+    return [];
+  }
+
+  const path = "/0/private/OpenPositions";
+  const nonce = String(Date.now());
+  const body = new URLSearchParams({ nonce }).toString();
+
+  const res = await rateFetch(`${KRAKEN_API_URL}${path}`, {
+    method: "POST",
+    headers: {
+      "API-Key": apiKey,
+      "API-Sign": getKrakenSignature(path, nonce, body, apiSecret),
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+
+  if (!res.ok) {
+    console.log(`[KRAKEN] OpenPositions HTTP ${res.status}`);
+    return [];
+  }
+
+  const data = await res.json();
+  if (data.error?.length > 0) {
+    console.log(`[KRAKEN] OpenPositions error: ${data.error.join(", ")}`);
+    return [];
+  }
+
+  const positions = data.result || {};
+  const result: { symbol: string; side: string; size: number }[] = [];
+
+  for (const [posId, pos] of Object.entries(positions)) {
+    const p = pos as any;
+    result.push({
+      symbol: p.pair || "",
+      side: p.type === "buy" ? "LONG" : p.type === "sell" ? "SHORT" : p.type?.toUpperCase() || "",
+      size: parseFloat(p.vol || "0"),
+    });
+  }
+
+  console.log(`[KRAKEN] Found ${result.length} open positions`);
+  return result;
+}
