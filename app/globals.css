@@ -1,45 +1,23 @@
 @import "tailwindcss";
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+:root {
+  --cx-orange: #dc6b27;
+  --cx-black: #070707;
+  --cx-surface: #0b0b0b;
+  --cx-surface-2: #0f0f0f;
+  --cx-border: rgba(255, 255, 255, 0.08);
 }
 
-html,
+* { box-sizing: border-box; }
+html { background: var(--cx-black); }
 body {
-  background-color: #000000;
-  color: #f3f4f6;
-  font-family: system-ui, -apple-system, sans-serif;
+  margin: 0;
+  background: var(--cx-black);
+  color: #fff;
+  font-family: Arial, Helvetica, sans-serif;
 }
-
-::-webkit-scrollbar {
-  width: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: #111111;
-}
-
-::-webkit-scrollbar-thumb {
-  background: #404040;
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: #606060;
-}
-
-/* Neon glow pulse for active signals */
-@keyframes pulse-glow {
-  0%, 100% {
-    box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 16px rgba(59, 130, 246, 0.6);
-  }
-}
-
-.pulse-glow {
-  animation: pulse-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
+::selection { background: var(--cx-orange); color: #000; }
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: #0b0b0b; }
+::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #555; }
