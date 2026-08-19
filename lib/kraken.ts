@@ -21,7 +21,6 @@ async function rateFetch(url: string, opts?: RequestInit): Promise<Response> {
 }
 
 export async function getCandles(pair: string, interval: number = 60, since?: number): Promise<Candle[]> {
-  // v32.3: request 90 days of history to ensure stable StochRSI / ADX / EMA calculations
   const defaultSince = Math.floor((Date.now() - 90 * 24 * 60 * 60 * 1000) / 1000);
   const url = new URL(`${KRAKEN_API_URL}/0/public/OHLC`);
   url.searchParams.set("pair", pair);
@@ -36,14 +35,11 @@ export async function getCandles(pair: string, interval: number = 60, since?: nu
   const raw = data.result[key];
   if (!Array.isArray(raw)) throw new Error(`OHLC not array: ${typeof raw}`);
 
-  // v32.3: Drop the last candle if it is still forming (incomplete close)
   const intervalMs = interval * 60 * 1000;
   const now = Date.now();
   if (raw.length > 0) {
     const lastCandleTime = raw[raw.length - 1][0] * 1000;
-    if (lastCandleTime + intervalMs > now) {
-      raw.pop();
-    }
+    if (lastCandleTime + intervalMs > now) raw.pop();
   }
 
   return raw.map((c: any) => ({
@@ -100,8 +96,12 @@ export function aggregateTo1D(candles4h: Candle[]): Candle[] {
   return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
-// v55.1: Exchange position sync for ghost trade cleanup
-// Requires KRAKEN_API_KEY and KRAKEN_API_SECRET environment variables
+// Exchange position sync is optional. When it is unavailable, CXSwitch must
+// never interpret an empty response as "the user has no position".
+export function isExchangeSyncConfigured(): boolean {
+  return Boolean(process.env.KRAKEN_API_KEY && process.env.KRAKEN_API_SECRET);
+}
+
 function getKrakenSignature(path: string, nonce: string, body: string, secret: string): string {
   const crypto = require("crypto");
   const message = nonce + body;
@@ -116,7 +116,7 @@ export async function getExchangePositions(): Promise<{ symbol: string; side: st
   const apiSecret = process.env.KRAKEN_API_SECRET;
 
   if (!apiKey || !apiSecret) {
-    console.log("[KRAKEN] No API credentials, skipping position sync");
+    console.log("[KRAKEN] No API credentials, position sync unavailable");
     return [];
   }
 
@@ -134,21 +134,17 @@ export async function getExchangePositions(): Promise<{ symbol: string; side: st
     body,
   });
 
-  if (!res.ok) {
-    console.log(`[KRAKEN] OpenPositions HTTP ${res.status}`);
-    return [];
-  }
+  if (!res.ok) throw new Error(`Kraken OpenPositions HTTP ${res.status}`);
 
   const data = await res.json();
   if (data.error?.length > 0) {
-    console.log(`[KRAKEN] OpenPositions error: ${data.error.join(", ")}`);
-    return [];
+    throw new Error(`Kraken OpenPositions error: ${data.error.join(", ")}`);
   }
 
   const positions = data.result || {};
   const result: { symbol: string; side: string; size: number }[] = [];
 
-  for (const [posId, pos] of Object.entries(positions)) {
+  for (const [, pos] of Object.entries(positions)) {
     const p = pos as any;
     result.push({
       symbol: p.pair || "",
