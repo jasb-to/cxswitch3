@@ -1,16 +1,17 @@
-// app/api/cron/route.ts — v55.1 "v28 Entries + Rate Limit Fix + State Sync"
+// app/api/cron/route.ts — v56 "v28 Entries + Safe Position State"
 // ============================================================
-// Changes from v55:
-// - Added exchange position sync to prevent ghost trades
-// - Added removeActiveSignalById for belt-and-suspenders cleanup
-// - Added direction validation on state recovery
-// - Fixed cooldown key mismatch (uses pair_direction consistently)
+// v56 changes:
+// - Exchange sync is opt-in and fail-safe. Missing/unavailable credentials never
+//   delete a locally tracked position.
+// - Active positions are never evaluated as "missed entries". Once entered,
+//   only TTL, hard SL/TP and thesis management can close the position.
+// - Existing v28 entry architecture is unchanged.
+// - Alert deduplication remains separate from signal/position state.
 
 import { NextResponse } from "next/server";
-import { getCandles, krakenPairFormat } from "@/lib/kraken";
+import { getCandles, krakenPairFormat, getExchangePositions, isExchangeSyncConfigured } from "@/lib/kraken";
 import {
   generateSignalCompat,
-  isSignalStillValid,
   shouldHold,
   getMarketSnapshot,
   rebuildStateFromTrades,
@@ -21,9 +22,7 @@ import {
 import {
   getActiveSignals,
   addActiveSignal,
-  removeActiveSignal,
   removeActiveSignalById,
-  getSignalHistory,
   appendSignalHistory,
   updateSignalHistoryStatus,
   setMarketData,
@@ -40,6 +39,8 @@ const MIN_CRON_INTERVAL_MS = 9 * 60 * 1000;
 const MAX_PRICE_DRIFT = 0.010;
 const EXIT_COOLDOWN_MS = 4 * 60 * 60 * 1000;
 const API_DELAY_MS = 600;
+const ACTIVE_TRADE_TTL = 24 * 60 * 60 * 1000;
+const ADD_TRADE_TTL = 4 * 60 * 60 * 1000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -74,7 +75,7 @@ export const revalidate = 0;
 export async function GET(request: Request) {
   const runStart = Date.now();
   console.log("========================================");
-  console.log(`[CRON v55.1] Started at ${new Date(runStart).toISOString()}`);
+  console.log(`[CRON v56] Started at ${new Date(runStart).toISOString()}`);
 
   const url = new URL(request.url);
   const querySecret = url.searchParams.get("secret");
@@ -84,8 +85,7 @@ export async function GET(request: Request) {
   const isAuthorized =
     querySecret === process.env.CRON_SECRET ||
     authHeader === `Bearer ${process.env.CRON_SECRET}`;
-  if (!isAuthorized)
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isAuthorized) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const lastRun = await getLastCronRun();
   if (!forceRun && runStart - lastRun < MIN_CRON_INTERVAL_MS) {
@@ -99,54 +99,61 @@ export async function GET(request: Request) {
     activeSignals.map((a) => `${a.pair}_${a.direction}`).join(", ") || "none"
   );
 
-  // ─── Fetch current prices (sequential) ───────────────────
+  // ─── Current prices ──────────────────────────────────────
   const currentPrices: Record<string, number> = {};
   for (const pair of PAIRS) {
     try {
       const candles = await getCandles(krakenPairFormat(pair + "/USD"), 60);
       if (candles?.length) currentPrices[pair] = candles[candles.length - 1].close;
       await sleep(API_DELAY_MS);
-    } catch (e) {
+    } catch {
       console.log(`[PRICE] ${pair} — failed`);
     }
   }
 
-  // ─── Exchange Position Sync (v55.1 FIX) ──────────────────
-  // Remove any Redis signal that doesn't have a matching exchange position
-  // This prevents ghost trades after manual closes
-  try {
-    const { getExchangePositions } = await import("@/lib/kraken");
-    const exchangePositions = await getExchangePositions();
-    console.log(`[SYNC] Exchange positions:`, exchangePositions.map((p: any) => `${p.symbol}_${p.side?.toUpperCase()}`).join(", ") || "none");
-
-    for (const signal of [...activeSignals]) {
-      const hasPosition = exchangePositions.some(
-        (p: any) =>
-          (p.symbol === signal.pair || p.symbol === krakenPairFormat(signal.pair + "/USD")) &&
-          p.side?.toUpperCase() === signal.direction
+  // ─── Optional exchange sync ──────────────────────────────
+  // CRITICAL: an empty result is only authoritative when the exchange call
+  // actually succeeded. Without credentials, Redis is the source of truth.
+  if (isExchangeSyncConfigured()) {
+    try {
+      const exchangePositions = await getExchangePositions();
+      console.log(
+        `[SYNC] Exchange positions:`,
+        exchangePositions.map((p: any) => `${p.symbol}_${p.side?.toUpperCase()}`).join(", ") || "none"
       );
-      if (!hasPosition) {
-        console.log(`[SYNC] ${signal.pair} ${signal.direction} not found on exchange, removing ghost from state`);
-        await removeActiveSignalById(signal.id);
-        await updateSignalHistoryStatus(signal.id, "FAILED", "manual_close_or_desync", currentPrices[signal.pair]);
-        // Also set cooldown to prevent immediate re-entry
-        const cooldowns = (await getCooldowns()) || {};
-        cooldowns[`${signal.pair}_${signal.direction}`] = runStart + EXIT_COOLDOWN_MS;
-        await setCooldowns(cooldowns);
-        resetAlertProgression(signal.pair, signal.direction);
+
+      for (const signal of [...activeSignals]) {
+        const hasPosition = exchangePositions.some(
+          (p: any) =>
+            (p.symbol === signal.pair || p.symbol === krakenPairFormat(signal.pair + "/USD")) &&
+            p.side?.toUpperCase() === signal.direction
+        );
+
+        if (!hasPosition) {
+          console.log(`[SYNC] ${signal.pair} ${signal.direction} not found on exchange — removing tracked position`);
+          await removeActiveSignalById(signal.id);
+          await updateSignalHistoryStatus(signal.id, "FAILED", "manual_close_or_desync", currentPrices[signal.pair]);
+          const cooldowns = (await getCooldowns()) || {};
+          cooldowns[`${signal.pair}_${signal.direction}`] = runStart + EXIT_COOLDOWN_MS;
+          await setCooldowns(cooldowns);
+          resetAlertProgression(signal.pair, signal.direction);
+        }
       }
+
+      activeSignals = await getActiveSignals();
+      console.log(
+        `[STATE] Active signals after exchange sync:`,
+        activeSignals.map((a) => `${a.pair}_${a.direction}`).join(", ") || "none"
+      );
+    } catch (e) {
+      // Never mutate position state on an exchange/API failure.
+      console.error(`[SYNC] Exchange sync failed — preserving local positions:`, e);
     }
-    // Re-fetch after sync
-    activeSignals = await getActiveSignals();
-    console.log(
-      `[STATE] Active signals after sync:`,
-      activeSignals.map((a) => `${a.pair}_${a.direction}`).join(", ") || "none"
-    );
-  } catch (e) {
-    console.log(`[SYNC] Exchange sync failed or not configured:`, e);
+  } else {
+    console.log(`[SYNC] Exchange credentials not configured — preserving local position state`);
   }
 
-  // ─── Exit Management ─────────────────────────────────────
+  // ─── Exit management ────────────────────────────────────
   const remainingActive: any[] = [];
   const exitedAlerts: any[] = [];
 
@@ -157,48 +164,59 @@ export async function GET(request: Request) {
       continue;
     }
 
-    // 1. Hard exits (SL, TP, TTL, missed entry)
-    const validity = isSignalStillValid(toSignalLike(trade), price, runStart);
-    if (!validity.valid) {
-      console.log(`[EXIT] ${trade.pair} ${trade.direction} — ${validity.reason}`);
-      exitedAlerts.push({ trade, reason: validity.reason, price });
+    // Once a signal is ACTIVE it is a position, not an entry opportunity.
+    // Do NOT use isSignalStillValid() here because its missed_entry rule is
+    // intentionally for unfilled entries and would close profitable positions
+    // after they move beyond the entry buffer.
+    const ageMs = runStart - trade.timestamp;
+    const ttl = trade.type === "ADD" ? ADD_TRADE_TTL : ACTIVE_TRADE_TTL;
+    let exitReason: string | null = null;
+
+    if (ageMs > ttl) exitReason = "expired_ttl";
+    else if (trade.direction === "LONG" && price <= trade.stop) exitReason = "sl_hit";
+    else if (trade.direction === "SHORT" && price >= trade.stop) exitReason = "sl_hit";
+    else if (trade.direction === "LONG" && price >= trade.target) exitReason = "tp_hit";
+    else if (trade.direction === "SHORT" && price <= trade.target) exitReason = "tp_hit";
+
+    if (exitReason) {
+      console.log(`[EXIT] ${trade.pair} ${trade.direction} — ${exitReason}`);
+      exitedAlerts.push({ trade, reason: exitReason, price });
 
       let status = "FAILED" as const;
-      if (validity.reason === "tp_hit") status = "TP_HIT";
-      else if (validity.reason === "sl_hit") status = "SL_HIT";
-      else if (validity.reason === "expired_ttl") status = "EXPIRED";
+      if (exitReason === "tp_hit") status = "TP_HIT";
+      else if (exitReason === "sl_hit") status = "SL_HIT";
+      else if (exitReason === "expired_ttl") status = "EXPIRED";
 
-      await updateSignalHistoryStatus(trade.id, status, validity.reason, price);
+      await updateSignalHistoryStatus(trade.id, status, exitReason, price);
 
       try {
         const candles4h = await getCandles(krakenPairFormat(trade.pair + "/USD"), 240);
-        recordTradeExit(trade.pair, trade.direction, validity.reason, price, candles4h);
+        recordTradeExit(trade.pair, trade.direction, exitReason, price, candles4h);
         await sleep(API_DELAY_MS);
       } catch {
         console.log(`[EXIT] ${trade.pair} — recorded without trend context`);
       }
+
       try {
         const cooldowns = (await getCooldowns()) || {};
         cooldowns[`${trade.pair}_${trade.direction}`] = runStart + EXIT_COOLDOWN_MS;
         await setCooldowns(cooldowns);
         resetAlertProgression(trade.pair, trade.direction);
-        console.log(`[COOLDOWN] ${trade.pair} ${trade.direction} until ${new Date(runStart + EXIT_COOLDOWN_MS).toISOString()}`);
       } catch {
         console.log(`[COOLDOWN] ${trade.pair} — failed to persist`);
       }
       continue;
     }
 
-    // 2. Thesis exits (TL reclaim, bias flip, stoch extreme opposite)
-    let holdResult = { shouldHold: true as boolean, reason: "active" };
+    // Thesis management remains exactly where the existing strategy defines it.
+    let holdResult = { shouldHold: true as boolean, reason: "active" } as any;
     try {
       const candles4h = await getCandles(krakenPairFormat(trade.pair + "/USD"), 240);
-      if (candles4h?.length) {
-        holdResult = shouldHold(toSignalLike(trade), candles4h, price, runStart);
-      }
+      if (candles4h?.length) holdResult = shouldHold(toSignalLike(trade), candles4h, price, runStart);
       await sleep(API_DELAY_MS);
     } catch {
-      // keep holding if shouldHold fails
+      // On an analysis failure, preserve the position rather than inventing an exit.
+      console.log(`[HOLD] ${trade.pair} — analysis failed, preserving position`);
     }
 
     if (!holdResult.shouldHold) {
@@ -213,23 +231,23 @@ export async function GET(request: Request) {
       } catch {
         console.log(`[EXIT] ${trade.pair} — recorded without trend context`);
       }
+
       try {
         const cooldowns = (await getCooldowns()) || {};
         cooldowns[`${trade.pair}_${trade.direction}`] = runStart + EXIT_COOLDOWN_MS;
         await setCooldowns(cooldowns);
         resetAlertProgression(trade.pair, trade.direction);
-        console.log(`[COOLDOWN] ${trade.pair} ${trade.direction} until ${new Date(runStart + EXIT_COOLDOWN_MS).toISOString()}`);
       } catch {
         console.log(`[COOLDOWN] ${trade.pair} — failed to persist`);
       }
       continue;
     }
 
-    // 3. Position management (breakeven lock, scale-out)
     if (holdResult.newStop && holdResult.newStop !== trade.stop) {
       trade.stop = holdResult.newStop;
       console.log(`[MGT] ${trade.pair} — new stop ${trade.stop}`);
     }
+
     if (holdResult.scaleOut) {
       console.log(`[MGT] ${trade.pair} — scale out ${holdResult.scaleOut.label}`);
       try {
@@ -270,12 +288,9 @@ export async function GET(request: Request) {
 
   await setActiveSignals(remainingActive);
   activeSignals = remainingActive;
-  console.log(
-    `[STATE] Remaining active: ${activeSignals.length}, Exited: ${exitedAlerts.length}`
-  );
+  console.log(`[STATE] Remaining active: ${activeSignals.length}, Exited: ${exitedAlerts.length}`);
 
-  // ─── State Recovery ──────────────────────────────────────
-  // v55.1 FIX: Validate direction before rebuilding
+  // ─── Rebuild in-memory strategy state from persisted positions ────────────
   const activeTrades: Record<string, any> = {};
   for (const trade of activeSignals) {
     if (!["LONG", "SHORT"].includes(trade.direction)) {
@@ -310,14 +325,7 @@ export async function GET(request: Request) {
       const candles15m = await getCandles(krakenPairFormat(pair + "/USD"), 15);
       await sleep(API_DELAY_MS);
 
-      if (
-        !candles1h ||
-        !candles4h ||
-        !candles15m ||
-        candles1h.length < 20 ||
-        candles4h.length < 30 ||
-        candles15m.length < 20
-      ) {
+      if (!candles1h || !candles4h || !candles15m || candles1h.length < 20 || candles4h.length < 30 || candles15m.length < 20) {
         alerts.push({ pair, status: "skip", reason: "insufficient_candles" });
         continue;
       }
@@ -325,19 +333,27 @@ export async function GET(request: Request) {
       const currentPrice = candles1h[candles1h.length - 1].close;
       const existingForPair = activeSignals.find((a) => a.pair === pair) || null;
 
+      // A live position owns this pair. Still refresh market context, but never
+      // ask the entry engine to generate another entry every cron run.
       if (existingForPair) {
-        console.log(`[PAIR] ${pair} — Still valid (${existingForPair.direction}), skipping`);
+        console.log(`[PAIR] ${pair} — POSITION ACTIVE (${existingForPair.direction}), entry engine paused`);
         const snapshot = getMarketSnapshot(pair, candles1h, candles4h, candles15m);
-        if (snapshot) marketDataList.push(snapshot);
+        if (snapshot) {
+          snapshot.positionState = "ACTIVE";
+          snapshot.positionDirection = existingForPair.direction;
+          snapshot.positionEntry = existingForPair.entry;
+          snapshot.positionStop = existingForPair.stop;
+          snapshot.positionTarget = existingForPair.target;
+          snapshot.positionId = existingForPair.id;
+          marketDataList.push(snapshot);
+        }
         continue;
       }
 
-      // Check post-exit cooldown
       let cooldowns: Record<string, number> = {};
       try { cooldowns = (await getCooldowns()) || {}; } catch {}
       const now = Date.now();
 
-      // v55: use generateSignalCompat — ENTRY_2 suppressed, anti-hedge built-in
       const result = await generateSignalCompat(pair, candles1h, candles4h, candles15m, activeSignals, currentPrice);
 
       if (result.signals) {
@@ -363,7 +379,6 @@ export async function GET(request: Request) {
       }
 
       for (const signal of result.signals) {
-        // ─── QUALITY GATES ──────────────────────────────────
         const last4h = candles4h[candles4h.length - 1];
         const priceDrift = Math.abs(last4h.close - signal.entry) / signal.entry;
         if (priceDrift > MAX_PRICE_DRIFT) {
@@ -372,7 +387,6 @@ export async function GET(request: Request) {
           continue;
         }
 
-        // ─── RACE-CONDITION DUPE CHECK ─────────────────────
         const freshActive = await getActiveSignals();
         if (freshActive.some(a => a.pair === signal.pair && a.direction === signal.direction)) {
           console.log(`[DUPE] ${pair} — already active in Redis, skipping alert`);
@@ -380,17 +394,15 @@ export async function GET(request: Request) {
           continue;
         }
 
-        console.log(
-          `[PAIR] ${pair} — SIGNAL: ${signal.direction} | ${signal.type} @ ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`
-        );
+        console.log(`[PAIR] ${pair} — SIGNAL: ${signal.direction} | ${signal.type} @ ${signal.entry} TP${signal.target} SL${signal.stop} RR${signal.rr}`);
         newSignals.push(signal);
 
-        // ENTRY_2 is internal — add to state but skip Telegram alert
+        // Notification is deliberately separate from position state. ENTRY_2
+        // remains internal/silent; ENTRY_1 and ADD alert once when the position
+        // is created.
         if (signal.type !== "ENTRY_2") {
           const alertState = signal.type === "ADD" ? "ADD" : "ENTRY";
-          const alertEmoji =
-            signal.type === "ENTRY_1" ? "🟢" : signal.type === "ADD" ? "🔵" : "📊";
-
+          const alertEmoji = signal.type === "ENTRY_1" ? "🟢" : "🔵";
           try {
             await sendAlert({
               symbol: signal.pair,
