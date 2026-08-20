@@ -1,4 +1,4 @@
-// app/api/cron/route.ts — v59 detailed manual execution loop
+// app/api/cron/route.ts — v60 detailed manual execution loop
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
 import { generateSignalCompat, getMarketSnapshot, shouldHold, Signal } from "@/lib/strategy";
@@ -17,14 +17,15 @@ export async function GET(request:Request){
  const started=Date.now(),url=new URL(request.url),secret=url.searchParams.get("secret"),auth=request.headers.get("authorization");
  if(secret!==process.env.CRON_SECRET&&auth!==`Bearer ${process.env.CRON_SECRET}`)return NextResponse.json({error:"Unauthorized"},{status:401});
  const last=await getLastCronRun();if(started-last<MIN_CRON_INTERVAL_MS)return NextResponse.json({success:true,skipped:true,reason:"rate_limited"});await setLastCronRun(started);
- console.log("========================================");
- console.log(`[CRON v59] Started at ${new Date(started).toISOString()}`);
+ console.log("========================================");console.log(`[CRON v60] Started at ${new Date(started).toISOString()}`);
  let active=await getActiveSignals();console.log(`[STATE] Active signals on entry: ${active.map(a=>`${a.pair}_${a.direction}_${a.type}`).join(", ")||"none"}`);
  const marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[];
-
  for(const trade of [...active]){try{
   const c=await getCandles(krakenPairFormat(trade.pair+"/USD"),240);await sleep(API_DELAY_MS);const price=c.at(-1)?.close;if(price===undefined){console.log(`[MANAGE] ${trade.pair} — no price`);continue;}
-  const hold=shouldHold(toSignalLike(trade),c,price);
+  let hold=shouldHold(toSignalLike(trade),c,price);
+  // ALERT validity and POSITION validity are separate. A profitable/manual position
+  // must not be closed merely because its original alert has become stale.
+  if(!hold.shouldHold&&hold.reason==="price_too_far_from_alert"){console.log(`[MANAGE] ${trade.pair} — alert is stale but position remains managed`);hold={shouldHold:true,reason:"active_alert_stale"};}
   console.log(`[MANAGE] ${trade.pair} ${trade.direction} | Entry ${trade.entry} | Price ${price} | SL ${trade.stop} | TP ${trade.target} | Thesis ${hold.reason}`);
   if(!hold.shouldHold){await updateSignalHistoryStatus(trade.id,hold.reason==="tp_hit"?"TP_HIT":"FAILED",hold.reason,price);active=active.filter(x=>x.id!==trade.id);alerts.push({pair:trade.pair,status:"exit",reason:hold.reason,price});console.log(`[EXIT] ${trade.pair} ${trade.direction} — ${hold.reason} @ ${price}`);continue;}
   if(hold.newStop&&hold.newStop!==trade.stop){console.log(`[MGT] ${trade.pair} — stop ${trade.stop} -> ${hold.newStop} (${hold.reason})`);trade.stop=hold.newStop;}
@@ -32,12 +33,10 @@ export async function GET(request:Request){
   const snapshot=getMarketSnapshot(trade.pair,c,c,c);snapshot.positionState="ACTIVE";snapshot.positionDirection=trade.direction;snapshot.positionEntry=trade.entry;snapshot.positionStop=trade.stop;snapshot.positionTarget=trade.target;marketData.push(snapshot);
  }catch(e){console.error(`[MANAGE] ${trade.pair} ERROR`,e);}}
  await setActiveSignals(active);
-
  for(const pair of PAIRS){try{
   const c1=await getCandles(krakenPairFormat(pair+"/USD"),60);await sleep(API_DELAY_MS);const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);await sleep(API_DELAY_MS);const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);await sleep(API_DELAY_MS);
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
-  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair);const result=await generateSignalCompat(pair,c1,c4,c15,active,price);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);
-  const dbg=result.debug||[];dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
+  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair);const result=await generateSignalCompat(pair,c1,c4,c15,active,price);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);const dbg=result.debug||[];dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   if(existing){snapshot.positionState="ACTIVE";snapshot.positionDirection=existing.direction;snapshot.positionEntry=existing.entry;snapshot.positionStop=existing.stop;snapshot.positionTarget=existing.target;console.log(`[PAIR] ${pair} — POSITION ACTIVE (${existing.direction}) — entry engine paused`);}marketData.push(snapshot);
   const signal=result.signal;if(!signal){if(!existing)console.log(`[PAIR] ${pair} — NO SIGNAL`);continue;}
   console.log(`[SIGNAL] ${pair} — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1??"—"} | TP2 ${signal.tp2??"—"} | TP3 ${signal.tp3??"—"} | RR ${signal.rr}`);
@@ -49,7 +48,6 @@ export async function GET(request:Request){
   await appendSignalHistory(signal);newSignals.push(signal);alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry}`);
   if(signal.type!=="ADD"&&!existing){await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE] ${pair} — active position created`);}
  }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}}
- await setMarketData(marketData);const finalActive=await getActiveSignals();
- console.log(`[CRON v59] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length}`);console.log("========================================");
+ await setMarketData(marketData);const finalActive=await getActiveSignals();console.log(`[CRON v60] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length}`);console.log("========================================");
  return NextResponse.json({success:true,activeSignals:finalActive.length,marketData:marketData.length,newSignals:newSignals.length,alerts});
 }
