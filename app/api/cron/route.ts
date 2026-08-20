@@ -8,8 +8,6 @@ import { sendAlert } from "@/lib/telegram";
 export const dynamic="force-dynamic"; export const revalidate=0;
 const PAIRS=["BTC","ETH","SOL","HYPE"] as const;
 const MIN_CRON_INTERVAL_MS=9*60*1000;
-// ADDs are additions to an already-open manual position, not repeat breakout entries.
-// A new ADD can occur after a genuine later retest, but not every 10-minute/1-hour scan.
 const ADD_DEDUP_MS=3*60*60*1000;
 const API_DELAY_MS=450;
 const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
@@ -27,8 +25,6 @@ export async function GET(request:Request){
  for(const trade of [...active]){try{
   const c=await getCandles(krakenPairFormat(trade.pair+"/USD"),240);await sleep(API_DELAY_MS);const price=c.at(-1)?.close;if(price===undefined){console.log(`[MANAGE] ${trade.pair} — no price`);continue;}
   let hold=shouldHold(toSignalLike(trade),c,price);
-  // Alert validity and manually-held position validity are separate.
-  // A stale alert must not close or invalidate a profitable manual position.
   if(!hold.shouldHold&&hold.reason==="price_too_far_from_alert"){console.log(`[MANAGE] ${trade.pair} — alert stale; manual position remains tracked`);hold={shouldHold:true,reason:"active_alert_stale"};}
   console.log(`[MANAGE] ${trade.pair} ${trade.direction} | Entry ${trade.entry} | Price ${price} | SL ${trade.stop} | TP ${trade.target} | TP1 ${trade.tp1??"—"} | TP2 ${trade.tp2??"—"} | TP3 ${trade.tp3??"—"} | Thesis ${hold.reason}`);
   if(!hold.shouldHold){await updateSignalHistoryStatus(trade.id,hold.reason==="tp_hit"?"TP_HIT":"FAILED",hold.reason,price);active=active.filter(x=>x.id!==trade.id);alerts.push({pair:trade.pair,status:"exit",reason:hold.reason,price});console.log(`[EXIT] ${trade.pair} ${trade.direction} — ${hold.reason} @ ${price}`);continue;}
@@ -40,11 +36,10 @@ export async function GET(request:Request){
  for(const pair of PAIRS){try{
   const c1=await getCandles(krakenPairFormat(pair+"/USD"),60);await sleep(API_DELAY_MS);const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);await sleep(API_DELAY_MS);const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);await sleep(API_DELAY_MS);
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
-  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair&&x.direction===x.direction);const result=await generateSignalCompat(pair,c1,c4,c15,active,price);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);const dbg=result.debug||[];dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
+  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair);const result=await generateSignalCompat(pair,c1,c4,c15,active,price);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);const dbg=result.debug||[];dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   if(existing){snapshot.positionState="ACTIVE";snapshot.positionDirection=existing.direction;snapshot.positionEntry=existing.entry;snapshot.positionStop=existing.stop;snapshot.positionTarget=existing.target;snapshot.positionTp1=existing.tp1;snapshot.positionTp2=existing.tp2;snapshot.positionTp3=existing.tp3;console.log(`[PAIR] ${pair} — POSITION ACTIVE (${existing.direction}) — entry engine paused`);}marketData.push(snapshot);
   const signal=result.signal;if(!signal){if(!existing)console.log(`[PAIR] ${pair} — NO SIGNAL`);continue;}
   console.log(`[SIGNAL] ${pair} — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1??"—"} | TP2 ${signal.tp2??"—"} | TP3 ${signal.tp3??"—"} | RR ${signal.rr}`);
-  // Defensive second gate: an ADD without an existing same-direction manual position is never actionable.
   const hasSameDirection=active.some(x=>x.pair===pair&&x.direction===signal.direction);
   if(signal.type==="ADD"&&!hasSameDirection){console.log(`[PAIR] ${pair} — ADD suppressed: no active ${signal.direction} position`);continue;}
   if(existing&&signal.type!=="ADD"){console.log(`[PAIR] ${pair} — signal suppressed because position is already active`);continue;}
