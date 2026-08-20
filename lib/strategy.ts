@@ -1,13 +1,12 @@
-// lib/strategy.ts — v60 "v28 core + anti-chase staged risk"
+// lib/strategy.ts — CXSwitch V28 entry architecture
 // ============================================================
 // V28 ENTRY_1 / ENTRY_2 architecture is preserved.
-// ADD is execution-gated: it can only add to an existing position,
-// must occur on a genuine trendline retest, and is blocked when momentum
-// is materially overextended. TP/SL are sized for the user's manual 20x
-// execution rather than using distant 20-candle extremes.
+// ADD is execution-gated: existing same-direction position + confirmed TL retest + non-overextended momentum.
 // Daily bias remains 5/13 because it is intentionally faster than 8/21.
 // Execution is manual: CXSwitch never needs exchange credentials.
 // Liquidation is informational and never blocks an alert.
+
+import { CXSWITCH_VERSION } from "./version";
 
 export interface Candle { timestamp:number; open:number; high:number; low:number; close:number; volume:number; }
 export interface Signal {
@@ -18,7 +17,7 @@ export interface Signal {
   trend?:string; location?:string; trigger?:string; context?:any;
 }
 export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; }
-export const CURRENT_SIGNAL_VERSION = 60;
+export const CURRENT_SIGNAL_VERSION = CXSWITCH_VERSION;
 
 const MIN_RR=1.25, TL_THRESHOLD=0.012;
 const DAILY_FAST=5, DAILY_SLOW=13, TF_FAST=8, TF_SLOW=21;
@@ -26,22 +25,14 @@ const ENTRY_ATR=2, ADD_ATR=1.25;
 export const EXECUTION_LEVERAGE=20;
 export const EXECUTION_MMR=0.01;
 export const LIQUIDATION_BUFFER=0.005;
-
-// Risk is deliberately bounded because alerts are executed manually at 20x.
-// The alert must never be rejected because the structural stop is too far away:
-// instead the displayed stop is brought inside the usable execution envelope.
-const ENTRY_MIN_RISK_PCT=0.008;
-const ENTRY_MAX_RISK_PCT=0.035;
-const ADD_MIN_RISK_PCT=0.008;
-const ADD_MAX_RISK_PCT=0.025;
+const ENTRY_MIN_RISK_PCT=0.008, ENTRY_MAX_RISK_PCT=0.035;
+const ADD_MIN_RISK_PCT=0.008, ADD_MAX_RISK_PCT=0.025;
 const STOP_EXECUTION_BUFFER=0.01;
-
-// ADD protection: do not chase a vertical move.
-const ADD_MAX_RSI_LONG=80;
-const ADD_MIN_RSI_SHORT=20;
-const ADD_MAX_STOCH_LONG=85;
-const ADD_MIN_STOCH_SHORT=15;
-const ADD_MAX_TL_DISTANCE=0.025;
+const ADD_MAX_RSI_LONG=80, ADD_MIN_RSI_SHORT=20;
+const ADD_MAX_STOCH_LONG=85, ADD_MIN_STOCH_SHORT=15;
+// 3% is an eligibility window, not a trigger. The 4H candle still has to wick back through the TL.
+const ADD_MAX_TL_DISTANCE=0.03;
+const ADD_RETEST_WICK_PCT=0.015;
 
 const avg=(a:number[])=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
 function ema(a:number[],p:number){if(!a.length)return[];const k=2/(p+1),r=[a[0]];for(let i=1;i<a.length;i++)r.push(a[i]*k+r[i-1]*(1-k));return r;}
@@ -62,7 +53,7 @@ export function estimateLiquidationPrice(entry:number,direction:"LONG"|"SHORT"){
 export function liquidationSafeBoundary(entry:number,direction:"LONG"|"SHORT"){const liq=estimateLiquidationPrice(entry,direction);return direction==="LONG"?liq*(1+LIQUIDATION_BUFFER):liq*(1-LIQUIDATION_BUFFER);}
 function executionStop(entry:number,structural:number,direction:"LONG"|"SHORT",isAdd:boolean){const minRisk=isAdd?ADD_MIN_RISK_PCT:ENTRY_MIN_RISK_PCT,maxRisk=isAdd?ADD_MAX_RISK_PCT:ENTRY_MAX_RISK_PCT;const liq=estimateLiquidationPrice(entry,direction);const safe=direction==="LONG"?liq*(1+STOP_EXECUTION_BUFFER):liq*(1-STOP_EXECUTION_BUFFER);if(direction==="LONG"){const minStop=entry*(1-maxRisk),maxStop=entry*(1-minRisk);return Math.max(Math.min(structural,maxStop),minStop,safe);}const minStop=entry*(1+minRisk),maxStop=entry*(1+maxRisk);return Math.min(Math.max(structural,minStop),maxStop,safe);}
 function roundPrice(n:number){return Math.round(n*100000)/100000;}
-function retestConfirmed(c:Candle[],dir:"LONG"|"SHORT",tl:number,price:number){const last=c.at(-1),prev=c.at(-2);if(!last||!prev)return false;const dist=Math.abs((price-tl)/tl);if(dist>ADD_MAX_TL_DISTANCE)return false;if(dir==="LONG")return last.close>tl&&last.low<=tl*1.012&&last.close>=prev.close;return last.close<tl&&last.high>=tl*0.988&&last.close<=prev.close;}
+function retestConfirmed(c:Candle[],dir:"LONG"|"SHORT",tl:number,price:number){const last=c.at(-1),prev=c.at(-2);if(!last||!prev)return false;const dist=Math.abs((price-tl)/tl);if(dist>ADD_MAX_TL_DISTANCE)return false;if(dir==="LONG")return last.close>tl&&last.low<=tl*(1+ADD_RETEST_WICK_PCT)&&last.close>=prev.close;return last.close<tl&&last.high>=tl*(1-ADD_RETEST_WICK_PCT)&&last.close<=prev.close;}
 
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],activeTrades?:any[],currentPrice?:number):SignalResult{
  const debug:string[]=[];const now=Date.now();if(candles4h.length<30){debug.push("Insufficient data");return{debug};}
@@ -76,7 +67,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  debug.push(`1D: ${dir} ${strength(d1,dir)} | TL: ${tl.price.toFixed(2)} | Price: ${price.toFixed(2)} | Dist: ${(dist*100).toFixed(2)}% | RSI: ${rsiVal} | Stoch: ${st.k}/${st.d}`);
  if(raw==="ADD"){
    if(!hasPosition){debug.push("ADD blocked: no active same-direction position — ADD is never a standalone entry");raw=null;}
-   else if(!retestConfirmed(candles4h,dir,tl.price,price)){debug.push(`ADD blocked: no confirmed TL retest (distance ${(Math.abs(dist)*100).toFixed(2)}%, max ${ADD_MAX_TL_DISTANCE*100}%)`);raw=null;}
+   else if(!retestConfirmed(candles4h,dir,tl.price,price)){debug.push(`ADD blocked: no confirmed TL retest (price distance ${(Math.abs(dist)*100).toFixed(2)}%, capture window ${ADD_MAX_TL_DISTANCE*100}%, wick ${ADD_RETEST_WICK_PCT*100}%)`);raw=null;}
    else if((dir==="LONG"&&(rsiVal>=ADD_MAX_RSI_LONG||st.k>=ADD_MAX_STOCH_LONG))||(dir==="SHORT"&&(rsiVal<=ADD_MIN_RSI_SHORT||st.k<=ADD_MIN_STOCH_SHORT))){debug.push(`ADD blocked: momentum overextended (RSI ${rsiVal}, Stoch ${st.k}/${st.d}) — wait for pullback/retest`);raw=null;}
  }
  if(!raw){const state=near?"NEAR_TL":beyond?"BEYOND_TL":"FAR_FROM_TL";debug.push(`State: ${state} | No signal`);return{market:marketSnapshot(pair,candles4h,dir,tl.price,price,st,adxVal),debug};}
@@ -85,7 +76,6 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const liquidation=estimateLiquidationPrice(entry,dir),safeBoundary=liquidationSafeBoundary(entry,dir),stop=executionStop(entry,structuralStop,dir,isAdd),risk=Math.abs(entry-stop);
  debug.push(`[RISK] Structural SL ${structuralStop.toFixed(5)} | Execution SL ${stop.toFixed(5)} | Est. liquidation ${liquidation.toFixed(5)} | safety boundary ${safeBoundary.toFixed(5)}`);
  if(!risk){debug.push("Zero risk");return{market:marketSnapshot(pair,candles4h,dir,tl.price,price,st,adxVal),debug};}
- // Realistic staged targets: 1R to bank something, 2R as the main target, 3R as the runner.
  const tp1=dir==="LONG"?entry+risk:entry-risk;
  const tp2=dir==="LONG"?entry+risk*2:entry-risk*2;
  const tp3=dir==="LONG"?entry+risk*3:entry-risk*3;
@@ -97,25 +87,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 }
 
 function marketSnapshot(pair:string,c:Candle[],dir:"LONG"|"SHORT",tl:number,price:number,st:{k:number;d:number},adxVal:number){const closes=c.map(x=>x.close),near=Math.abs((price-tl)/tl)<TL_THRESHOLD,beyond=dir==="LONG"?price>tl*1.008:price<tl*.992;const e8=ema(closes,TF_FAST).at(-1)!,e21=ema(closes,TF_SLOW).at(-1)!,r=rsi(closes);let momentumState="NEUTRAL";if((dir==="LONG"&&r>=80)||(dir==="SHORT"&&r<=20))momentumState="OVEREXTENDED";else if((dir==="LONG"&&r>=70)||(dir==="SHORT"&&r<=30))momentumState="HOT";else if((dir==="LONG"&&st.k<20)||(dir==="SHORT"&&st.k>80))momentumState="PULLBACK";return{pair,price:Math.round(price*100)/100,timestamp:Date.now(),trend:`${dir} ${strength(daily(c),dir)}`,location:near?"NEAR_TL":beyond?"BEYOND_TL":"FAR_FROM_TL",trigger:near?"READY":beyond?"WAITING":"WAITING",adx:adxVal,rsi:Math.round(r*10)/10,stochK:st.k,stochD:st.d,trendlinePrice:Math.round(tl*100)/100,distToTrendline:Math.round(Math.abs((price-tl)/tl)*10000)/100,ema8_4h:Math.round(e8*100)/100,ema21_4h:Math.round(e21*100)/100,momentumState};}
-
 export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[]){const d=daily(candles4h),dir=bias(d);if(!dir)return{pair,price:candles4h.at(-1)?.close||0,timestamp:Date.now(),trend:"FLAT",location:"NONE",trigger:"NO_BIAS",adx:0,rsi:0,stochK:0,stochD:0,trendlinePrice:0,distToTrendline:0,momentumState:"NEUTRAL"};const tl=trendline(candles4h,dir),price=candles4h.at(-1)?.close||0;if(!tl)return{pair,price,timestamp:Date.now(),trend:`${dir} ${strength(d,dir)}`,location:"NONE",trigger:"WAITING",adx:adx(candles4h),rsi:rsi(candles4h.map(x=>x.close)),stochK:50,stochD:50,trendlinePrice:0,distToTrendline:0,momentumState:"NEUTRAL"};const st=stochRsi(candles4h.map(x=>x.close));const base=marketSnapshot(pair,candles4h,dir,tl.price,price,st,adx(candles4h));const estimatedLiquidation=estimateLiquidationPrice(price,dir),safeBoundary=liquidationSafeBoundary(price,dir);return{...base,risk:{estimatedLiquidation:roundPrice(estimatedLiquidation),safeBoundary:roundPrice(safeBoundary),leverage:EXECUTION_LEVERAGE}};}
-
 export interface ValidityCheck{valid:boolean;reason:string;exited:boolean;state?:"VALID"|"STALE"|"INVALID";}
 export function isSignalStillValid(s:Signal,p:number,now=Date.now()):ValidityCheck{const ttl=s.type==="ADD"?4*60*60*1000:24*60*60*1000;if(now-s.timestamp>ttl)return{valid:false,reason:"expired_ttl",exited:true,state:"STALE"};if(s.direction==="LONG"&&p<=s.stop)return{valid:false,reason:"sl_hit",exited:true,state:"INVALID"};if(s.direction==="SHORT"&&p>=s.stop)return{valid:false,reason:"sl_hit",exited:true,state:"INVALID"};const finalTarget=s.tp3??s.target;if(s.direction==="LONG"&&p>=finalTarget)return{valid:false,reason:"tp3_hit",exited:true,state:"STALE"};if(s.direction==="SHORT"&&p<=finalTarget)return{valid:false,reason:"tp3_hit",exited:true,state:"STALE"};const distance=Math.abs((p-s.entry)/s.entry),staleDistance=s.type==="ADD"?0.025:0.05;if(distance>staleDistance)return{valid:false,reason:"price_too_far_from_alert",exited:false,state:"STALE"};return{valid:true,reason:"active",exited:false,state:"VALID"};}
-
 export interface HoldResult{shouldHold:boolean;reason:string;newStop?:number;scaleOut?:{level:number;size:number;label:string};}
-export function shouldHold(s:Signal,c:Candle[],p:number):HoldResult{
- const d=daily(c),dir=bias(d),st=stochRsi(c.map(x=>x.close));
- if(dir&&dir!==s.direction&&((s.direction==="LONG"&&p<=s.entry)||(s.direction==="SHORT"&&p>=s.entry)))return{shouldHold:false,reason:"trend_reversed_unprofitable"};
- const risk=Math.abs(s.entry-s.stop);
- if(risk){const r=s.direction==="LONG"?(p-s.entry)/risk:(s.entry-p)/risk;const tp1R=1,tp2R=2;
-   if(r>=tp2R)return{shouldHold:true,reason:"tp2_hit_lock_2r",newStop:s.direction==="LONG"?s.entry+risk:s.entry-risk,scaleOut:{level:s.tp2??s.entry,size:.25,label:"TP2"}};
-   if(r>=tp1R)return{shouldHold:true,reason:"tp1_hit_scale_out_50",newStop:s.entry,scaleOut:{level:s.tp1??s.entry,size:.5,label:"TP1"}};
- }
- // Stoch overextension is now an informational/profit-protection state, not an automatic exit.
- if((s.direction==="LONG"&&st.k>80)||(s.direction==="SHORT"&&st.k<20))return{shouldHold:true,reason:"stoch_extended_profit_protection"};
- const v=isSignalStillValid(s,p);return{shouldHold:v.valid,reason:v.reason};
-}
+export function shouldHold(s:Signal,c:Candle[],p:number):HoldResult{const d=daily(c),dir=bias(d),st=stochRsi(c.map(x=>x.close));if(dir&&dir!==s.direction&&((s.direction==="LONG"&&p<=s.entry)||(s.direction==="SHORT"&&p>=s.entry)))return{shouldHold:false,reason:"trend_reversed_unprofitable"};const risk=Math.abs(s.entry-s.stop);if(risk){const r=s.direction==="LONG"?(p-s.entry)/risk:(s.entry-p)/risk;if(r>=2)return{shouldHold:true,reason:"tp2_hit_lock_2r",newStop:s.direction==="LONG"?s.entry+risk:s.entry-risk,scaleOut:{level:s.tp2??s.entry,size:.25,label:"TP2"}};if(r>=1)return{shouldHold:true,reason:"tp1_hit_scale_out_50",newStop:s.entry,scaleOut:{level:s.tp1??s.entry,size:.5,label:"TP1"}};}if((s.direction==="LONG"&&st.k>80)||(s.direction==="SHORT"&&st.k<20))return{shouldHold:true,reason:"stoch_extended_profit_protection"};const v=isSignalStillValid(s,p);return{shouldHold:v.valid,reason:v.reason};}
 export function shouldHoldCompat(s:Signal,c4:Candle[],c1:Candle[],p:number){return shouldHold(s,c4,p);}
 export function filterExpiredSignals(signals:Signal[],prices:Record<string,number>,now?:number){const active:Signal[]=[],exited:{signal:Signal;reason:string}[]=[];for(const s of signals){const p=prices[s.pair];if(p===undefined){active.push(s);continue;}const v=isSignalStillValid(s,p,now);v.valid?active.push(s):exited.push({signal:s,reason:v.reason});}return{active,exited};}
 export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
