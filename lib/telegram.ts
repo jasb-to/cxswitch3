@@ -1,4 +1,5 @@
-// lib/telegram.ts — v57 CXSwitch alerts
+// lib/telegram.ts — canonical CXSwitch alerts
+import { CXSWITCH_VERSION } from "./version";
 
 export async function sendAlert(signal:any){
   const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
@@ -8,6 +9,9 @@ export async function sendAlert(signal:any){
   const labels:Record<string,string>={ENTRY_1:"ENTRY ①",ENTRY_2:"ENTRY ②",ADD:"ADD",ENTRY:"ENTRY",EXIT:"EXIT"};
   const label=labels[type]||signal.state;
   const dir=signal.bias==="LONG"?"📈":"📉";
-  const text=`${emoji} CX SWITCH v57 — ${label}\n\n${dir} ${signal.symbol} — ${signal.bias}\nPrice: ${signal.price}\n\nTrend: ${signal.trend||signal.bias}\nLocation: ${signal.location||"—"}\nTrigger: ${signal.trigger||"—"}\n\nExpected Move: ${signal.expectedMove??"-"}%\nSL: ${signal.stopLoss??"-"}\nTP: ${signal.takeProfit??"-"}\nRR: ${signal.rr??"-"}\n\nADX: ${signal.adx??"-"}\nRSI: ${signal.rsi??"-"}\nStochK: ${signal.stochK??"-"}\nStochD: ${signal.stochD??"-"}\n\n${signal.reason}\n\nTime: ${signal.updatedAt}`;
+  const tp1=signal.takeProfit1??signal.context?.stages?.tp1??"-";
+  const tp2=signal.takeProfit2??signal.context?.stages?.tp2??signal.takeProfit??"-";
+  const tp3=signal.takeProfit3??signal.context?.stages?.tp3??"-";
+  const text=`${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${label}\n\n${dir} ${signal.symbol} — ${signal.bias}\nPrice: ${signal.price}\n\nTrend: ${signal.trend||signal.bias}\nLocation: ${signal.location||"—"}\nTrigger: ${signal.trigger||"—"}\n\nExpected Move: ${signal.expectedMove??"-"}%\nSL: ${signal.stopLoss??"-"}\nTP1: ${tp1}\nTP2: ${tp2}\nTP3: ${tp3}\nRR: ${signal.rr??"-"}\n\nADX: ${signal.adx??"-"}\nRSI: ${signal.rsi??"-"}\nStochK: ${signal.stochK??"-"}\nStochD: ${signal.stochD??"-"}\n\n${signal.reason}\n\nTime: ${signal.updatedAt}`;
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text})});
 }
