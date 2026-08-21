@@ -1,6 +1,6 @@
 // app/api/signals/route.ts — canonical dashboard state + alert validity
 import { NextResponse } from "next/server";
-import { getActiveSignals, getSignalHistory, getMarketData, getLastCronRun } from "@/lib/state";
+import { getActiveSignals, getSignalHistory, getLatestAlerts, getMarketData, getLastCronRun } from "@/lib/state";
 import { CXSWITCH_VERSION, ENTRY_ARCHITECTURE, DAILY_BIAS, EXECUTION_MODE } from "@/lib/version";
 
 export const runtime="nodejs";
@@ -27,11 +27,21 @@ function alertValidity(h:any,price:number,now:number){
 export async function GET(){
   const activeSignals=await getActiveSignals();
   const signalHistory=await getSignalHistory();
+  const persistedLatest=await getLatestAlerts();
   const marketData=await getMarketData();
   const lastCronRun=await getLastCronRun();
   const now=Date.now();
-  const latestByPair:Record<string,any>={};
-  for(const h of signalHistory){if(!latestByPair[h.pair]||h.timestamp>latestByPair[h.pair].timestamp)latestByPair[h.pair]=h;}
+
+  // Three deliberately separate concepts:
+  // activeSignals = currently tracked manual positions
+  // latestAlerts = latest alert sent for each market, regardless of position status
+  // signalHistory = complete alert audit trail
+  const latestAlerts=Object.fromEntries(Object.entries(persistedLatest).map(([pair,h]:any)=>{
+    const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===pair):undefined;
+    const price=m?.price??h.entry;
+    const v=alertValidity(h,price,now);
+    return [pair,{...h,target:h.tp2??h.target,validity:v,currentPrice:price,ageMinutes:Math.round((now-h.timestamp)/60000)}];
+  }));
 
   const enrichedActive=activeSignals.map((s:any)=>({
     ...s,scale:s.type,target:s.tp2??s.target,
@@ -40,38 +50,24 @@ export async function GET(){
   }));
   const enrichedHistory=signalHistory.map((h:any)=>({...h,scale:h.type,target:h.tp2??h.target,meta:{ageMinutes:Math.round((now-h.timestamp)/60000),status:h.status}}));
 
-  const latestAlerts=Object.fromEntries(Object.entries(latestByPair).map(([pair,h]:any)=>{
-    const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===pair):undefined;
-    const price=m?.price??h.entry;
-    const v=alertValidity(h,price,now);
-    return[pair,{...h,target:h.tp2??h.target,validity:v,currentPrice:price,ageMinutes:Math.round((now-h.timestamp)/60000)}];
-  }));
-
   const historyLogs=signalHistory.slice().sort((a,b)=>b.timestamp-a.timestamp).slice(0,16).map((h:any)=>
     `[ALERT] ${h.pair} — ${h.direction} ${h.type} @ ${h.entry} | SL ${h.stop} | TP1 ${h.tp1??"—"} | TP2 ${h.tp2??h.target} | TP3 ${h.tp3??"—"} | ${h.status}${h.exitReason?` | ${h.exitReason}`:""}`
   );
+  const validityLogs=Object.entries(latestAlerts).map(([pair,a]:any)=>`[VALIDITY] ${pair} — ${a.validity.state} | ${a.validity.reason} | latest ${a.type} @ ${a.entry} | SL ${a.stop} | TP1 ${a.tp1??"—"} | TP2 ${a.tp2??a.target} | TP3 ${a.tp3??"—"} | current ${a.currentPrice}`);
   const marketLogs=(Array.isArray(marketData)?marketData:[]).map((m:any)=>
     `[PAIR] ${m.pair} — ${m.trend||"NO TREND"} | TL ${m.trendlinePrice||"—"} | Price ${m.price} | Dist ${m.distToTrendline??"—"}% | ${m.location||"—"} | ${m.trigger||"WAITING"} | ADX ${m.adx??"—"} | RSI ${m.rsi??"—"} | Stoch ${m.stochK??"—"}/${m.stochD??"—"} | Momentum ${m.momentumState||"—"}`
   );
-  const validityLogs=Object.entries(latestAlerts).map(([pair,a]:any)=>`[VALIDITY] ${pair} — ${a.validity.state} | ${a.validity.reason} | alert ${a.type} @ ${a.entry} | SL ${a.stop} | TP1 ${a.tp1??"—"} | TP2 ${a.tp2??a.target} | TP3 ${a.tp3??"—"} | current ${a.currentPrice}`);
   const logs=[
     `[SYSTEM] CXSwitch v${CXSWITCH_VERSION} | ${ENTRY_ARCHITECTURE} entry architecture | ${DAILY_BIAS} daily bias | ${EXECUTION_MODE} execution`,
     `[CRON] Last run ${lastCronRun?new Date(lastCronRun).toISOString():"not recorded"}`,
     ...validityLogs,...marketLogs,...historyLogs,
-    `[CRON] State: active=${enrichedActive.length} marketData=${Array.isArray(marketData)?marketData.length:0} history=${signalHistory.length}`
+    `[CRON] State: active=${enrichedActive.length} marketData=${Array.isArray(marketData)?marketData.length:0} history=${signalHistory.length} latest=${Object.keys(latestAlerts).length}`
   ].slice(0,40);
 
   const response=NextResponse.json({
-    version:CXSWITCH_VERSION,
-    architecture:ENTRY_ARCHITECTURE,
-    dailyBias:DAILY_BIAS,
-    executionMode:EXECUTION_MODE,
-    activeSignals:enrichedActive,
-    signalHistory:enrichedHistory,
-    marketData:Array.isArray(marketData)?marketData:[],
-    latestAlerts,
-    logs,
-    system:{version:CXSWITCH_VERSION,lastCronRun,lastCronAgeMs:lastCronRun?now-lastCronRun:null,activePositions:enrichedActive.length},
+    version:CXSWITCH_VERSION,architecture:ENTRY_ARCHITECTURE,dailyBias:DAILY_BIAS,executionMode:EXECUTION_MODE,
+    activeSignals:enrichedActive,signalHistory:enrichedHistory,marketData:Array.isArray(marketData)?marketData:[],latestAlerts,logs,
+    system:{version:CXSWITCH_VERSION,lastCronRun,lastCronAgeMs:lastCronRun?now-lastCronRun:null,activePositions:enrichedActive.length,latestAlerts:Object.keys(latestAlerts).length,historyEntries:signalHistory.length},
     updatedAt:new Date(now).toISOString()
   });
   response.headers.set("Cache-Control","no-store, no-cache, must-revalidate, proxy-revalidate");response.headers.set("Pragma","no-cache");response.headers.set("Expires","0");
