@@ -46,7 +46,26 @@ function daily(c:Candle[]){const m=new Map<string,Candle[]>();for(const x of [..
 function bias(c:Candle[]):"LONG"|"SHORT"|null{if(c.length<20)return null;const a=c.map(x=>x.close),f=ema(a,DAILY_FAST).at(-1)!,s=ema(a,DAILY_SLOW).at(-1)!;return f>s?"LONG":f<s?"SHORT":null;}
 function strength(c:Candle[],d:"LONG"|"SHORT"){const h=c.slice(-20).map(x=>x.high),l=c.slice(-20).map(x=>x.low);return d==="LONG"&&h.at(-1)!>Math.max(...h.slice(0,-1))||d==="SHORT"&&l.at(-1)!<Math.min(...l.slice(0,-1))?"STRONG":"MEDIUM";}
 function pivots(c:Candle[],d:"LONG"|"SHORT"){const r:{index:number;price:number;timestamp:number}[]=[];for(let i=3;i<c.length-3;i++){const lo=c[i].low<c[i-1].low&&c[i].low<c[i-2].low&&c[i].low<c[i+1].low&&c[i].low<c[i+2].low;const hi=c[i].high>c[i-1].high&&c[i].high>c[i-2].high&&c[i].high>c[i+1].high&&c[i].high>c[i+2].high;if(d==="LONG"&&lo)r.push({index:i,price:c[i].low,timestamp:c[i].timestamp});if(d==="SHORT"&&hi)r.push({index:i,price:c[i].high,timestamp:c[i].timestamp});}return r;}
-function trendline(c:Candle[],d:"LONG"|"SHORT"){const p=pivots(c,d).slice(-5);if(p.length<3)return null;const n=p.length,sx=p.reduce((s,x)=>s+x.index,0),sy=p.reduce((s,x)=>s+x.price,0),sxy=p.reduce((s,x)=>s+x.index*x.price,0),sx2=p.reduce((s,x)=>s+x.index*x.index,0),den=n*sx2-sx*sx;if(!den)return null;const slope=(n*sxy-sx*sy)/den,intercept=(sy-slope*sx)/n;return{slope,intercept,price:slope*(c.length-1)+intercept};}
+function fitTrendline(p:{index:number;price:number}[]){if(p.length<3)return null;const pts=p.slice(-5),n=pts.length,sx=pts.reduce((s,x)=>s+x.index,0),sy=pts.reduce((s,x)=>s+x.price,0),sxy=pts.reduce((s,x)=>s+x.index*x.price,0),sx2=pts.reduce((s,x)=>s+x.index*x.index,0),den=n*sx2-sx*sx;if(!den)return null;const slope=(n*sxy-sx*sy)/den,intercept=(sy-slope*sx)/n;return{slope,intercept};}
+
+// Structural trendline lifecycle only. This deliberately does not alter V28 trigger,
+// 5/13 bias, Stoch/RSI rules, retest percentages, or ADD rules.
+// After a confirmed structural impulse, prefer pivots belonging to the new regime so
+// an old pre-breakout TL cannot remain the reference indefinitely.
+function trendline(c:Candle[],d:"LONG"|"SHORT"){
+  if(c.length<30)return null;
+  const all=pivots(c,d);if(all.length<3)return null;
+  const lookback=Math.min(72,c.length),start=c.length-lookback;
+  const recent=all.filter(p=>p.index>=start);if(recent.length<3)return null;
+  const oppositePivots=pivots(c,d==="LONG"?"SHORT":"LONG").filter(p=>p.index>=start);
+  const reset=oppositePivots.at(-1);
+  let candidates=reset?recent.filter(p=>p.index>reset.index):recent.slice(-5);
+  if(candidates.length<3){const before=recent.filter(p=>!reset||p.index<=reset.index);candidates=[...before.slice(-Math.max(0,3-candidates.length)),...candidates];}
+  if(candidates.length<3)candidates=recent.slice(-5);
+  const fitted=fitTrendline(candidates);if(!fitted)return null;
+  const price=fitted.slope*(c.length-1)+fitted.intercept;
+  return{...fitted,price};
+}
 function opposite(pair:string,d:"LONG"|"SHORT",trades:any[]|undefined){return !!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction===(d==="LONG"?"SHORT":"LONG"));}
 function sameDirection(pair:string,d:"LONG"|"SHORT",trades:any[]|undefined){return !!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction===d);}
 export function estimateLiquidationPrice(entry:number,direction:"LONG"|"SHORT"){return direction==="LONG"?entry*(1-1/EXECUTION_LEVERAGE+EXECUTION_MMR):entry*(1+1/EXECUTION_LEVERAGE-EXECUTION_MMR);}
