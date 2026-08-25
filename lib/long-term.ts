@@ -7,7 +7,7 @@ function trend(c:Candle[]){const d=aggregateTo1D(c),a=d.map(x=>x.close);if(a.len
 async function candles(pair:string){return getCandles(krakenPairFormat(pair),240)}
 export async function getLongTermState():Promise<LongTermState>{
  const [btc,eth,sol,hype,xrp,link,avax,doge,sui]=await Promise.all([candles("BTC/USD"),candles("ETH/USD"),candles("SOL/USD"),candles("HYPE/USD"),candles("XRP/USD"),candles("LINK/USD"),candles("AVAX/USD"),candles("DOGE/USD"),candles("SUI/USD")]);
- const btcPrice=btc.at(-1)?.close??0,ethPrice=eth.at(-1)?.close??0,bt=trend(btc),et=trend(eth),alts=[sol,hype,xrp,link,avax,doge,sui].map(trend),breadth=clamp(alts.filter(x=>x.label==="BULLISH").length/alts.length*100),ethBtc=ethPrice/btcPrice,ethBtc30=(eth.at(-8)?.close??ethPrice)/(btc.at(-8)?.close??btcPrice),rel=ethBtc>ethBtc30*1.015?20:ethBtc<ethBtc30*.985?-20:0;
+ const btcPrice=btc.at(-1)?.close??0,ethPrice=eth.at(-1)?.close??0,bt=trend(btc),et=trend(eth),alts=[sol,hype,xrp,link,avax,doge,sui].map(trend),breadth=clamp(alts.filter(x=>x.label==="BULLISH").length/alts.length*100),ethBtc=ethPrice/btcPrice,ethBtc30=(eth.at(-180)?.close??ethPrice)/(btc.at(-180)?.close??btcPrice),rel=ethBtc>ethBtc30*1.015?20:ethBtc<ethBtc30*.985?-20:0;
  const highs=btc.slice(-540).map(x=>x.high),recentHigh=Math.max(...highs),drawdown=Math.max(0,(recentHigh-btcPrice)/recentHigh*100);
  const btcScore=clamp(50+Math.min(drawdown,35)*1.1+(bt.label==="BEARISH"?10:bt.label==="MIXED"?5:-5)+(bt.rsi<45?10:bt.rsi<55?5:0));
  const rotationScore=clamp(50+rel+(et.label==="BULLISH"?20:et.label==="MIXED"?5:-15)+(bt.label==="BEARISH"?15:bt.label==="MIXED"?5:0));
