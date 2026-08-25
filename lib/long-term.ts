@@ -1,0 +1,23 @@
+import { aggregateTo1D, getCandles, Candle, krakenPairFormat } from "./kraken";
+export type LongTermState={stage:"BTC_ACCUMULATION"|"BTC_TO_ETH_ROTATION"|"ETH_CORE_ALT_BUILD"|"CYCLE_PROFIT_TAKING";stageLabel:string;action:string;confidence:"LOW"|"MEDIUM"|"HIGH";btcScore:number;rotationScore:number;altScore:number;riskScore:number;btcPrice:number;ethPrice:number;ethBtc:number;btcDrawdown:number;breadth:number;btcTrend:string;ethTrend:string;currentModel:string;targetModel:string;nextStage:string;reasons:string[];blockers:string[];updatedAt:number};
+const EMA=(a:number[],p:number)=>{if(!a.length)return[];const k=2/(p+1),r=[a[0]];for(let i=1;i<a.length;i++)r.push(a[i]*k+r[i-1]*(1-k));return r};
+const RSI=(a:number[],p=14)=>{if(a.length<p+1)return 50;let g=0,l=0;for(let i=a.length-p;i<a.length;i++){const d=a[i]-a[i-1];if(d>0)g+=d;else l-=d}if(l===0)return 100;return 100-100/(1+(g/p)/(l/p))};
+const clamp=(n:number)=>Math.max(0,Math.min(100,Math.round(n)));
+function trend(c:Candle[]){const d=aggregateTo1D(c),a=d.map(x=>x.close);if(a.length<20)return{label:"NEUTRAL",rsi:50};const e20=EMA(a,20).at(-1)!,e50=EMA(a,50).at(-1)!,p=a.at(-1)!;return{label:p>e20&&e20>e50?"BULLISH":p<e20&&e20<e50?"BEARISH":"MIXED",rsi:RSI(a)}}
+async function candles(pair:string){return getCandles(krakenPairFormat(pair),240)}
+export async function getLongTermState():Promise<LongTermState>{
+ const [btc,eth,sol,hype,xrp,link,avax,doge,sui]=await Promise.all([candles("BTC/USD"),candles("ETH/USD"),candles("SOL/USD"),candles("HYPE/USD"),candles("XRP/USD"),candles("LINK/USD"),candles("AVAX/USD"),candles("DOGE/USD"),candles("SUI/USD")]);
+ const btcPrice=btc.at(-1)?.close??0,ethPrice=eth.at(-1)?.close??0,bt=trend(btc),et=trend(eth),alts=[sol,hype,xrp,link,avax,doge,sui].map(trend),breadth=clamp(alts.filter(x=>x.label==="BULLISH").length/alts.length*100),ethBtc=ethPrice/btcPrice,ethBtc30=(eth.at(-8)?.close??ethPrice)/(btc.at(-8)?.close??btcPrice),rel=ethBtc>ethBtc30*1.015?20:ethBtc<ethBtc30*.985?-20:0;
+ const highs=btc.slice(-540).map(x=>x.high),recentHigh=Math.max(...highs),drawdown=Math.max(0,(recentHigh-btcPrice)/recentHigh*100);
+ const btcScore=clamp(50+Math.min(drawdown,35)*1.1+(bt.label==="BEARISH"?10:bt.label==="MIXED"?5:-5)+(bt.rsi<45?10:bt.rsi<55?5:0));
+ const rotationScore=clamp(50+rel+(et.label==="BULLISH"?20:et.label==="MIXED"?5:-15)+(bt.label==="BEARISH"?15:bt.label==="MIXED"?5:0));
+ const altScore=clamp(30+breadth*.55+(et.label==="BULLISH"?15:0)+rel/2);
+ const riskScore=clamp((bt.rsi>72?30:bt.rsi>65?18:0)+(et.rsi>72?25:et.rsi>65?12:0)+(breadth>80?25:breadth>65?12:0)+(altScore>80?20:0));
+ let stage:LongTermState["stage"]="BTC_ACCUMULATION";if(riskScore>=75)stage="CYCLE_PROFIT_TAKING";else if(altScore>=68&&rotationScore>=62)stage="ETH_CORE_ALT_BUILD";else if(rotationScore>=65)stage="BTC_TO_ETH_ROTATION";
+ const stageLabel={BTC_ACCUMULATION:"BTC ACCUMULATION",BTC_TO_ETH_ROTATION:"BTC → ETH ROTATION",ETH_CORE_ALT_BUILD:"ETH CORE + ALT BUILD",CYCLE_PROFIT_TAKING:"CYCLE PROFIT TAKING"}[stage];
+ const action=stage==="BTC_ACCUMULATION"?"ACCUMULATE BTC ON WEAKNESS":stage==="BTC_TO_ETH_ROTATION"?"WATCH / BEGIN BTC → ETH ROTATION":stage==="ETH_CORE_ALT_BUILD"?"BUILD ALTS — DEFAULT 50% ETH / 50% ALTS":"DE-RISK IN STAGES";
+ const currentModel=stage==="BTC_ACCUMULATION"?"BTC 100% · ETH 0% · ALTS 0%":stage==="BTC_TO_ETH_ROTATION"?"BTC → ETH transition":stage==="ETH_CORE_ALT_BUILD"?"ETH 50% · ALTS 50% (default)":"Reduce risk progressively";
+ const targetModel=stage==="ETH_CORE_ALT_BUILD"?(altScore>=82?"ETH 40% · ALTS 60%":"ETH 50% · ALTS 50%"):stage==="BTC_TO_ETH_ROTATION"?"ETH-led transition":"Next stage determines allocation";
+ const blockers:string[]=[];if(rotationScore<65)blockers.push("ETH/BTC rotation not confirmed");if(altScore<68)blockers.push("Broad alt participation not confirmed");if(breadth<55)blockers.push("Alt breadth still narrow");
+ return{stage,stageLabel,action,confidence:Math.max(btcScore,rotationScore,altScore)>=75?"HIGH":Math.max(btcScore,rotationScore,altScore)>=55?"MEDIUM":"LOW",btcScore,rotationScore,altScore,riskScore,btcPrice,ethPrice,ethBtc,btcDrawdown:drawdown,breadth,btcTrend:bt.label,ethTrend:et.label,currentModel,targetModel,nextStage:stage==="BTC_ACCUMULATION"?"BTC → ETH":stage==="BTC_TO_ETH_ROTATION"?"ETH CORE + ALT BUILD":stage==="ETH_CORE_ALT_BUILD"?"PROFIT TAKING":"CASH / PRESERVATION",reasons:[`BTC ${bt.label} · RSI ${bt.rsi.toFixed(0)}`,`ETH ${et.label} · ETH/BTC ${ethBtc.toFixed(5)}`,`Alt breadth ${breadth}% bullish`,`${drawdown.toFixed(1)}% BTC drawdown from recent 4H high`],blockers,updatedAt:Date.now()}
+}
