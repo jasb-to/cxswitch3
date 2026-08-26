@@ -24,6 +24,7 @@ function directionTone(m?:MarketData):Tone{if(m?.trend?.startsWith("LONG"))retur
 function stateOfPlay(m?:MarketData){
  if(!m)return{title:"WAITING FOR DATA",detail:"No market snapshot is available yet.",waiting:"Fresh market analysis",tone:"neutral" as Tone};
  const tone=directionTone(m),long=tone==="bull",short=tone==="bear",r=m.rsi??50,k=m.stochK??50,d=m.stochD??50,dist=Math.abs(m.distToTrendline??0),near=dist<=2.5;
+ if(m.location==="TL_INVALIDATED")return{title:"TL INVALIDATED",detail:"The current 4H V28 trendline has been broken. Waiting for a new valid 4H structure.",waiting:"New 4H structure → V28 retest",tone};
  const hotLong=long&&(r>=80||k>=90||d>=90),hotShort=short&&(r<=20||k<=10||d<=10);
  if(hotLong)return{title:"EXTENDED · WAIT FOR RESET",detail:`Trend is strong, but momentum is overheated (RSI ${r.toFixed(1)} · Stoch ${k.toFixed(1)}/${d.toFixed(1)}). This is chase territory, not an early entry.`,waiting:"Pullback → retest → momentum reset",tone};
  if(hotShort)return{title:"EXTENDED · WAIT FOR RESET",detail:`Bearish momentum is stretched (RSI ${r.toFixed(1)} · Stoch ${k.toFixed(1)}/${d.toFixed(1)}). Fresh shorts risk a squeeze.`,waiting:"Bounce/retest → rejection → momentum reset",tone};
@@ -34,7 +35,7 @@ function stateOfPlay(m?:MarketData){
  if(short)return{title:"BEARISH · SETUP DEVELOPING",detail:`1D bias is bearish with ADX ${m.adx.toFixed(1)}. Price is ${dist.toFixed(1)}% from the 4H trendline.`,waiting:"Structural test → V28 entry conditions",tone};
  return{title:"NEUTRAL · WATCHING",detail:"No clean directional edge is active yet.",waiting:"Wait for directional confirmation",tone:"neutral" as Tone};
 }
-function timeframeRead(m?:MarketData){if(!m)return"Higher-timeframe read unavailable";const t=directionTone(m);const bias=t==="bull"?"1D BULLISH":t==="bear"?"1D BEARISH":"1D NEUTRAL";const structure=m.location==="BEYOND_TL"?"4H STRUCTURE BROKEN":m.location==="NEAR_TL"?"4H STRUCTURE NEAR":"4H STRUCTURE WATCH";return`${bias} · ${structure}`}
+function timeframeRead(m?:MarketData){if(!m)return"Higher-timeframe read unavailable";const t=directionTone(m);const bias=t==="bull"?"1D BULLISH":t==="bear"?"1D BEARISH":"1D NEUTRAL";const structure=m.location==="TL_INVALIDATED"?"4H STRUCTURE INVALIDATED":m.location==="BEYOND_TL"?"4H STRUCTURE BROKEN":m.location==="NEAR_TL"?"4H STRUCTURE NEAR":"4H STRUCTURE WATCH";return`${bias} · ${structure}`}
 function emaRead(m?:MarketData){if(!m?.ema5||!m?.ema13)return null;const bullish=m.ema5>m.ema13;const crossed=typeof m.ema5Prev==="number"&&typeof m.ema13Prev==="number"?((m.ema5Prev<=m.ema13Prev&&bullish)||(m.ema5Prev>=m.ema13Prev&&!bullish)):false;return`${crossed?"CROSS NOW · ":""}${bullish?"5 EMA ABOVE 13 EMA":"5 EMA BELOW 13 EMA"}`}
 
 export default function Dashboard(){
