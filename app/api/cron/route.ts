@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
 import { generateSignal, getMarketSnapshot, shouldHold, Signal } from "@/lib/strategy";
+import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
 import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
@@ -41,7 +42,9 @@ export async function GET(request:Request){
  for(const pair of PAIRS){try{
   const c1=await getCandles(krakenPairFormat(pair+"/USD"),60);await sleep(API_DELAY_MS);const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);await sleep(API_DELAY_MS);const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);await sleep(API_DELAY_MS);
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
-  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair);const result=await generateSignal(pair,c1,c4,c15,active,price);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);const dbg=result.debug||[];dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
+  const ema513=get4HEmaDiagnostic(c4);
+  console.log(`[EMA 4H 5/13] ${pair} — ${ema513.label} | 5=${ema513.ema5.toFixed(4)} | 13=${ema513.ema13.toFixed(4)} | spread=${ema513.spread.toFixed(4)} (${ema513.spreadPct.toFixed(3)}%) | spreadATR=${ema513.spreadAtr.toFixed(3)} | contracting=${ema513.spreadContracting?"YES":"NO"} | Δspread=${ema513.spreadChangePct.toFixed(2)}% | 5slope=${ema513.ema5Slope.toFixed(4)} | 13slope=${ema513.ema13Slope.toFixed(4)} | cross=${ema513.crossNow?"YES":"NO"}`);
+  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair);const result=await generateSignal(pair,c1,c4,c15,active,price);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.fourH513=ema513;const dbg=result.debug||[];dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   if(existing){snapshot.positionState="ACTIVE";snapshot.positionDirection=existing.direction;snapshot.positionEntry=existing.entry;snapshot.positionStop=existing.stop;snapshot.positionTarget=existing.tp2??existing.target;snapshot.positionTp1=existing.tp1;snapshot.positionTp2=existing.tp2;snapshot.positionTp3=existing.tp3;snapshot.positionTp1HitAt=existing.tp1HitAt;snapshot.positionTp2HitAt=existing.tp2HitAt;snapshot.positionTp3HitAt=existing.tp3HitAt;console.log(`[PAIR] ${pair} — POSITION ACTIVE (${existing.direction}) — entry engine paused`);}
   marketData.push(snapshot);const signal=result.signal;if(!signal){if(!existing)console.log(`[PAIR] ${pair} — NO SIGNAL`);continue;}
   console.log(`[SIGNAL] ${pair} — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1??"—"} | TP2 ${signal.tp2??"—"} | TP3 ${signal.tp3??"—"} | RR ${signal.rr}`);
