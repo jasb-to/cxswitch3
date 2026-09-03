@@ -12,6 +12,7 @@ export async function sendAlert(signal:any){
   const tp1=signal.takeProfit1??signal.context?.stages?.tp1??"-";
   const tp2=signal.takeProfit2??signal.context?.stages?.tp2??signal.takeProfit??"-";
   const tp3=signal.takeProfit3??signal.context?.stages?.tp3??"-";
-  const text=`${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${label}\n\n${dir} ${signal.symbol} — ${signal.bias}\nPrice: ${signal.price}\n\nTrend: ${signal.trend||signal.bias}\nLocation: ${signal.location||"—"}\nTrigger: ${signal.trigger||"—"}\n\nExpected Move: ${signal.expectedMove??"-"}%\nSL: ${signal.stopLoss??"-"}\nTP1: ${tp1}\nTP2: ${tp2}\nTP3: ${tp3}\nRR: ${signal.rr??"-"}\n\nADX: ${signal.adx??"-"}\nRSI: ${signal.rsi??"-"}\nStochK: ${signal.stochK??"-"}\nStochD: ${signal.stochD??"-"}\n\n${signal.reason}\n\nTime: ${signal.updatedAt}`;
+  const fourH513=signal.fourH513Label||"NEUTRAL";
+  const text=`${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${label}\n\n${dir} ${signal.symbol} — ${signal.bias}\nPrice: ${signal.price}\n\n4H 5/13: ${fourH513}\n\nTrend: ${signal.trend||signal.bias}\nLocation: ${signal.location||"—"}\nTrigger: ${signal.trigger||"—"}\n\nExpected Move: ${signal.expectedMove??"-"}%\nSL: ${signal.stopLoss??"-"}\nTP1: ${tp1}\nTP2: ${tp2}\nTP3: ${tp3}\nRR: ${signal.rr??"-"}\n\nADX: ${signal.adx??"-"}\nRSI: ${signal.rsi??"-"}\nStochK: ${signal.stochK??"-"}\nStochD: ${signal.stochD??"-"}\n\n${signal.reason}\n\nTime: ${signal.updatedAt}`;
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text})});
 }
