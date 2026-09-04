@@ -8,9 +8,15 @@ export type EmaDiagnosticStage =
   | "EARLY_BULLISH_L1"
   | "EARLY_BULLISH_L2"
   | "BULLISH_CROSS"
+  | "BULLISH_LOW"
+  | "BULLISH_MEDIUM"
+  | "BULLISH_HIGH"
   | "EARLY_BEARISH_L1"
   | "EARLY_BEARISH_L2"
   | "BEARISH_CROSS"
+  | "BEARISH_LOW"
+  | "BEARISH_MEDIUM"
+  | "BEARISH_HIGH"
   | "NEUTRAL";
 
 export interface EmaDiagnostic {
@@ -89,15 +95,25 @@ export function get4HEmaDiagnostic(candles4h: Candle[]): EmaDiagnostic {
     stage = Math.abs(spread) <= l2Threshold ? "EARLY_BULLISH_L2" : Math.abs(spread) <= l1Threshold ? "EARLY_BULLISH_L1" : "NEUTRAL";
   } else if (spread > 0 && spreadContracting && ema5Slope < 0) {
     stage = Math.abs(spread) <= l2Threshold ? "EARLY_BEARISH_L2" : Math.abs(spread) <= l1Threshold ? "EARLY_BEARISH_L1" : "NEUTRAL";
+  } else if (spread > 0) {
+    stage = spreadAtr < 0.75 ? "BULLISH_LOW" : spreadAtr < 1.50 ? "BULLISH_MEDIUM" : "BULLISH_HIGH";
+  } else if (spread < 0) {
+    stage = Math.abs(spreadAtr) < 0.75 ? "BEARISH_LOW" : Math.abs(spreadAtr) < 1.50 ? "BEARISH_MEDIUM" : "BEARISH_HIGH";
   }
 
   const direction = stage.includes("BULLISH") ? "BULLISH" : stage.includes("BEARISH") ? "BEARISH" : "NEUTRAL";
   const label = stage === "EARLY_BULLISH_L1" ? "EARLY BULLISH — LEVEL 1"
     : stage === "EARLY_BULLISH_L2" ? "EARLY BULLISH — LEVEL 2"
     : stage === "BULLISH_CROSS" ? "BULLISH CROSS"
+    : stage === "BULLISH_LOW" ? "BULLISH LOW"
+    : stage === "BULLISH_MEDIUM" ? "BULLISH MEDIUM"
+    : stage === "BULLISH_HIGH" ? "BULLISH HIGH"
     : stage === "EARLY_BEARISH_L1" ? "EARLY BEARISH — LEVEL 1"
     : stage === "EARLY_BEARISH_L2" ? "EARLY BEARISH — LEVEL 2"
     : stage === "BEARISH_CROSS" ? "BEARISH CROSS"
+    : stage === "BEARISH_LOW" ? "BEARISH LOW"
+    : stage === "BEARISH_MEDIUM" ? "BEARISH MEDIUM"
+    : stage === "BEARISH_HIGH" ? "BEARISH HIGH"
     : "NEUTRAL";
 
   return {
