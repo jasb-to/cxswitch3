@@ -21,7 +21,7 @@ const COOLDOWN_KEY = "cxswitch:cooldowns";
 export interface ActiveTrade {
   id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2" | "ADD";
   entry: number; stop: number; target: number; tp1?: number; tp2?: number; tp3?: number;
-  tp1HitAt?: number; tp2HitAt?: number; tp3HitAt?: number; timestamp: number; rr: number;
+  tp1HitAt?: number; tp2HitAt?: number; tp3HitAt?: number; slToEntryAt?: number; timestamp: number; rr: number;
   status: "ACTIVE"; context: any; version: number;
   holdAdvice?: { status: "healthy" | "warning" | "failed"; reason: string; newStop?: number; checkedAt: number };
 }
@@ -30,7 +30,7 @@ export type HistoryStatus = "ACTIVE" | "TP_HIT" | "SL_HIT" | "FAILED" | "EXPIRED
 export interface SignalHistoryEntry {
   id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2" | "ADD";
   entry: number; stop: number; target: number; tp1?: number; tp2?: number; tp3?: number;
-  tp1HitAt?: number; tp2HitAt?: number; tp3HitAt?: number; timestamp: number; rr: number;
+  tp1HitAt?: number; tp2HitAt?: number; tp3HitAt?: number; slToEntryAt?: number; timestamp: number; rr: number;
   status: HistoryStatus; exitReason?: string; exitPrice?: number; exitTimestamp?: number; context: any; version: number;
 }
 
@@ -115,6 +115,7 @@ export async function getLatestAlerts():Promise<Record<string,SignalHistoryEntry
 export async function appendSignalHistory(signal:Signal):Promise<void>{const history=await getSignalHistory();if(history.some(h=>h.id===signal.id)){console.log(`[HISTORY] Signal ${signal.id} already recorded`);return;}const entry:SignalHistoryEntry={id:signal.id,pair:signal.pair,direction:signal.direction,type:signal.type,entry:signal.entry,stop:signal.stop,target:signal.tp2 ?? signal.target,tp1:signal.tp1,tp2:signal.tp2,tp3:signal.tp3,timestamp:signal.timestamp,rr:signal.rr,status:"ACTIVE",context:signal.context,version:1};history.push(entry);if(history.length>500)history.splice(0,history.length-500);await setSignalHistory(history);const latest=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY)||{};latest[entry.pair]=entry;await redis.set(LATEST_ALERTS_KEY,latest);console.log(`[HISTORY] Appended ${signal.pair} ${signal.direction} ${signal.type} | TP1 ${entry.tp1 ?? "—"} | TP2 ${entry.tp2 ?? "—"} | TP3 ${entry.tp3 ?? "—"} | latest alert persisted`);}
 export async function updateSignalHistoryStatus(id:string,status:HistoryStatus,exitReason?:string,exitPrice?:number):Promise<void>{const history=await getSignalHistory();const idx=history.findIndex(h=>h.id===id);if(idx<0){console.log(`[HISTORY] Warning: could not find ${id}`);return;}history[idx].status=status;if(exitReason)history[idx].exitReason=exitReason;if(exitPrice!==undefined)history[idx].exitPrice=exitPrice;history[idx].exitTimestamp=Date.now();await setSignalHistory(history);const latest=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY)||{};if(latest[history[idx].pair]?.id===id){latest[history[idx].pair]=history[idx];await redis.set(LATEST_ALERTS_KEY,latest);}console.log(`[HISTORY] Updated ${id} -> ${status}${exitReason?` (${exitReason})`:""}`);}
 export async function updateHistoryMilestones(id:string,price:number):Promise<SignalHistoryEntry|undefined>{const history=await getSignalHistory();const h=history.find(x=>x.id===id);if(!h)return undefined;const hit=(level:number|undefined,direction:"LONG"|"SHORT")=>level!==undefined&&(direction==="LONG"?price>=level:price<=level);let changed=false;if(!h.tp1HitAt&&hit(h.tp1,h.direction)){h.tp1HitAt=Date.now();changed=true;}if(!h.tp2HitAt&&hit(h.tp2,h.direction)){h.tp2HitAt=Date.now();changed=true;}if(!h.tp3HitAt&&hit(h.tp3,h.direction)){h.tp3HitAt=Date.now();changed=true;}if(changed){await setSignalHistory(history);const latest=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY)||{};if(latest[h.pair]?.id===id){latest[h.pair]=h;await redis.set(LATEST_ALERTS_KEY,latest);}}return h;}
+export async function updateHistoryStopMilestone(id:string,stop:number):Promise<SignalHistoryEntry|undefined>{const history=await getSignalHistory();const h=history.find(x=>x.id===id);if(!h)return undefined;const atEntry=Math.abs(stop-h.entry)<=Math.max(Math.abs(h.entry)*0.000001,0.000001);if(!h.slToEntryAt&&atEntry){h.slToEntryAt=Date.now();await setSignalHistory(history);const latest=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY)||{};if(latest[h.pair]?.id===id){latest[h.pair]=h;await redis.set(LATEST_ALERTS_KEY,latest);}console.log(`[MILESTONE] ${h.pair} — SL moved to entry @ ${stop}`);}return h;}
 export async function getCooldowns():Promise<Record<string,number>>{return(await redis.get<Record<string,number>>(COOLDOWN_KEY))||{};}
 export async function setCooldowns(cooldowns:Record<string,number>):Promise<void>{await redis.set(COOLDOWN_KEY,cooldowns);}
 export async function getMarketData():Promise<any[]>{return(await redis.get<any[]>(MARKET_KEY))||[];}
