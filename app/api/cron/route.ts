@@ -4,7 +4,7 @@ import { getCandles, krakenPairFormat } from "@/lib/kraken";
 import { generateSignal, getMarketSnapshot, shouldHold, Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { CXSWITCH_VERSION } from "@/lib/version";
-import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, setMarketData, getLastCronRun, setLastCronRun, getCooldowns } from "@/lib/state";
+import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 
 export const dynamic="force-dynamic";
@@ -34,7 +34,7 @@ export async function GET(request:Request){
   let hold=shouldHold(toSignalLike(trade),c,price);if(!hold.shouldHold&&hold.reason==="price_too_far_from_alert"){console.log(`[MANAGE] ${trade.pair} — alert stale; manual position remains tracked`);hold={shouldHold:true,reason:"active_alert_stale"};}
   console.log(`[MANAGE] ${trade.pair} ${trade.direction} | Entry ${trade.entry} | Price ${price} | SL ${trade.stop} | TP1 ${trade.tp1??"—"} | TP2 ${trade.tp2??"—"} | TP3 ${trade.tp3??"—"} | Thesis ${hold.reason}`);
   if(!hold.shouldHold){await updateSignalHistoryStatus(trade.id,hold.reason==="tp3_hit"||hold.reason==="tp2_hit_lock_2r"?"TP_HIT":"FAILED",hold.reason,price);active=active.filter(x=>x.id!==trade.id);alerts.push({pair:trade.pair,status:"exit",reason:hold.reason,price});console.log(`[EXIT] ${trade.pair} ${trade.direction} — ${hold.reason} @ ${price}`);continue;}
-  if(hold.newStop&&hold.newStop!==trade.stop){console.log(`[MGT] ${trade.pair} — stop ${trade.stop} -> ${hold.newStop} (${hold.reason})`);trade.stop=hold.newStop;}
+  if(hold.newStop&&hold.newStop!==trade.stop){console.log(`[MGT] ${trade.pair} — stop ${trade.stop} -> ${hold.newStop} (${hold.reason})`);trade.stop=hold.newStop;await updateHistoryStopMilestone(trade.id,trade.stop);}
   if(hold.scaleOut)console.log(`[MGT] ${trade.pair} — scale-out ${hold.scaleOut.label} ${hold.scaleOut.size*100}% @ ${hold.scaleOut.level}`);
   const snapshot=getMarketSnapshot(trade.pair,c,c,c);snapshot.positionState="ACTIVE";snapshot.positionDirection=trade.direction;snapshot.positionEntry=trade.entry;snapshot.positionStop=trade.stop;snapshot.positionTarget=trade.tp2??trade.target;snapshot.positionTp1=trade.tp1;snapshot.positionTp2=trade.tp2;snapshot.positionTp3=trade.tp3;snapshot.positionTp1HitAt=trade.tp1HitAt;snapshot.positionTp2HitAt=trade.tp2HitAt;snapshot.positionTp3HitAt=trade.tp3HitAt;snapshot.positionThesis=hold.reason;marketData.push(snapshot);
  }catch(e){console.error(`[MANAGE] ${trade.pair} ERROR`,e);}}
