@@ -24,6 +24,28 @@ function alertValidity(h:any,price:number,now:number){
   return{state:"VALID" as AlertState,reason:"Alert remains actionable"};
 }
 
+function managementAdvice(h:any,m:any){
+  if(!h||h.status!=="ACTIVE"||!m)return null;
+  const price=Number(m.price);
+  const tp1Hit=!!h.tp1HitAt || (h.tp1!==undefined&&(h.direction==="LONG"?price>=h.tp1:price<=h.tp1));
+  const tp2Hit=!!h.tp2HitAt || (h.tp2!==undefined&&(h.direction==="LONG"?price>=h.tp2:price<=h.tp2));
+  const e=m.fourH513;
+  const ema8=Number(m.ema8_4h),ema21=Number(m.ema21_4h);
+  if(!tp1Hit||!e||!Number.isFinite(ema8)||!Number.isFinite(ema21))return null;
+  const long=h.direction==="LONG",same513=e.direction===(long?"BULLISH":"BEARISH");
+  const aligned=long?price>ema8&&ema8>ema21:price<ema8&&ema8<ema21;
+  const against21=long?price<ema21:price>ema21;
+  const exhausted=long?(m.stochK>=80&&m.stochK<m.stochD):(m.stochK<=20&&m.stochK>m.stochD);
+  const contracting=!!e.spreadContracting;
+  if(tp2Hit){
+    if(same513&&aligned&&!against21&&!contracting&&!exhausted)return{status:"healthy",recommendation:"TP3 POSSIBLE",reason:"TP2 reached. Momentum remains healthy — keep the runner for TP3 unless momentum deteriorates."};
+    return{status:"warning",recommendation:"TP2 IS THE LIKELY FINAL TARGET",reason:"TP2 reached and momentum is no longer clean enough to rely on a full TP3 extension. Protect the remaining profit."};
+  }
+  if(!same513||against21)return{status:"failed",recommendation:"PROTECT PROFIT",reason:"Momentum has materially weakened against the position. TP2 is the likely final target; prioritise protecting realised profit."};
+  if(!aligned||contracting||exhausted)return{status:"warning",recommendation:"TP2 IS THE LIKELY FINAL TARGET",reason:`Momentum is weakening${contracting?" (5/13 spread contracting)":""}${!aligned?" (8/21 alignment lost)":""}${exhausted?" (Stoch exhaustion)":""}. Do not assume TP3.`};
+  return{status:"healthy",recommendation:"TP3 POSSIBLE",reason:"Momentum is healthy: 4H 5/13 is aligned, 8/21 structure is supportive and momentum is not showing exhaustion."};
+}
+
 export async function GET(){
   const activeSignals=await getActiveSignals();
   const signalHistory=await getSignalHistory();
@@ -38,14 +60,17 @@ export async function GET(){
   // signalHistory = complete alert audit trail
   const latestAlerts=Object.fromEntries(Object.entries(persistedLatest).map(([pair,h]:any)=>{
     const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===pair):undefined;
+    const active=activeSignals.find((x:any)=>x.pair===pair&&x.direction===h.direction&&x.id===h.id) || activeSignals.find((x:any)=>x.pair===pair&&x.direction===h.direction);
     const price=m?.price??h.entry;
     const v=alertValidity(h,price,now);
-    return [pair,{...h,target:h.tp2??h.target,validity:v,currentPrice:price,ageMinutes:Math.round((now-h.timestamp)/60000)}];
+    const management=managementAdvice(active||h,m);
+    const validity=management&&v.state==="VALID"?{...v,reason:`${management.recommendation} — ${management.reason}`} : v;
+    return [pair,{...h,target:h.tp2??h.target,managementAdvice:management,validity,currentPrice:price,ageMinutes:Math.round((now-h.timestamp)/60000)}];
   }));
 
   const enrichedActive=activeSignals.map((s:any)=>({
     ...s,scale:s.type,target:s.tp2??s.target,
-    expectedMove:s.entry&&s.tp3?Math.round(Math.abs(s.tp3-s.entry)/s.entry*1000)/10:0,
+    expectedMove:s.entry&&s.tp3?Math.round(Math.abs(s.tp3-s.entry)/s.entry*1000)/10,
     meta:{status:s.status,ageMinutes:Math.round((now-s.timestamp)/60000),actionable:s.status==="ACTIVE",state:"POSITION_ACTIVE"}
   }));
   const enrichedHistory=signalHistory.map((h:any)=>({...h,scale:h.type,target:h.tp2??h.target,meta:{ageMinutes:Math.round((now-h.timestamp)/60000),status:h.status}}));
