@@ -16,8 +16,8 @@ function alertValidity(h:any,price:number,now:number){
   if(h.direction==="LONG"&&price<=h.stop)return{state:"INVALID" as AlertState,reason:"Price is at/below alert SL"};
   if(h.direction==="SHORT"&&price>=h.stop)return{state:"INVALID" as AlertState,reason:"Price is at/above alert SL"};
   const tp3=h.tp3??h.target;
-  if(h.direction==="LONG"&&price>=tp3)return{state:"STALE" as AlertState,reason:"TP3 reached — original alert has completed"};
-  if(h.direction==="SHORT"&&price<=tp3)return{state:"STALE" as AlertState,reason:"TP3 reached — original alert has completed"};
+  if(h.direction==="LONG"&&price>=tp3)return{state:"STALE" as AlertState,reason:"Final target reached — original alert has completed"};
+  if(h.direction==="SHORT"&&price<=tp3)return{state:"STALE" as AlertState,reason:"Final target reached — original alert has completed"};
   const drift=Math.abs((price-h.entry)/h.entry);
   const limit=h.type==="ADD"?0.04:0.06;
   if(drift>limit)return{state:"STALE" as AlertState,reason:`Price is ${((drift)*100).toFixed(1)}% from alert entry`};
@@ -35,15 +35,17 @@ function managementAdvice(h:any,m:any){
   const same513=e.direction===(long?"BULLISH":"BEARISH");
   const contracting=!!e.spreadContracting;
   const momentum=m.momentumState||"NEUTRAL";
+  const ema8=Number(m.ema8_4h),ema21=Number(m.ema21_4h);
+  const same821=Number.isFinite(ema8)&&Number.isFinite(ema21)&&(long?ema8>=ema21:ema8<=ema21);
   const exhausted=long?(m.stochK>=80&&m.stochK<m.stochD):(m.stochK<=20&&m.stochK>m.stochD);
   const weakMomentum=momentum==="PULLBACK"||momentum==="HOT"||momentum==="OVEREXTENDED";
   if(tp2Hit){
-    if(same513&&!contracting&&!exhausted&&momentum!=="OVEREXTENDED")return{status:"healthy",recommendation:"TP3 POSSIBLE",reason:"TP2 reached. 4H 5/13 momentum remains aligned and no clear exhaustion is present — keep the runner for TP3 unless momentum deteriorates."};
-    return{status:"warning",recommendation:"TP2 IS THE LIKELY FINAL TARGET",reason:"TP2 reached and momentum is no longer clean enough to rely on a full TP3 extension. Protect the remaining profit."};
+    if(same513&&same821&&!contracting&&!exhausted&&momentum!=="OVEREXTENDED")return{status:"healthy",recommendation:"R2 RUNNER POSSIBLE",reason:"R1.5 reached. 4H 5/13 remains aligned and 8/21 confirms the developing move — keep the R2 runner unless momentum deteriorates."};
+    return{status:"warning",recommendation:"R1.5 IS THE LIKELY FINAL TARGET",reason:"R1.5 reached and the longer 8/21 trend is no longer clean enough to rely on the R2 extension. Protect the remaining profit."};
   }
-  if(!same513)return{status:"failed",recommendation:"PROTECT PROFIT",reason:"4H 5/13 has turned against the position. TP2 is the likely final target; prioritise protecting realised profit."};
-  if(contracting||exhausted||weakMomentum)return{status:"warning",recommendation:"TP2 IS THE LIKELY FINAL TARGET",reason:`Momentum is weakening${contracting?" (5/13 spread contracting)":""}${weakMomentum?` (${momentum})`:""}${exhausted?" (Stoch exhaustion)":""}. Do not assume TP3.`};
-  return{status:"healthy",recommendation:"TP3 POSSIBLE",reason:"Momentum is healthy: 4H 5/13 remains aligned and no clear exhaustion is present."};
+  if(!same513)return{status:"failed",recommendation:"PROTECT PROFIT",reason:"4H 5/13 has turned against the position. R1.5 is the likely final target; prioritise protecting realised profit."};
+  if(contracting||exhausted||weakMomentum||!same821)return{status:"warning",recommendation:"R1.5 IS THE LIKELY FINAL TARGET",reason:`Momentum is weakening${contracting?" (5/13 spread contracting)":""}${weakMomentum?` (${momentum})`:""}${exhausted?" (Stoch exhaustion)":""}${!same821?" (8/21 not aligned)":""}. Do not assume R2.`};
+  return{status:"healthy",recommendation:"R2 RUNNER POSSIBLE",reason:"Momentum is healthy: 4H 5/13 remains aligned and 8/21 confirms the developing trend."};
 }
 
 export async function GET(){
@@ -61,7 +63,7 @@ export async function GET(){
     const v=alertValidity(h,price,now);
     const management=managementAdvice(active||h,m);
     const validity=management&&v.state==="VALID"?{...v,reason:`${management.recommendation} — ${management.reason}`} : v;
-    return [pair,{...h,target:h.tp2??h.target,managementAdvice:management,validity,currentPrice:price,ageMinutes:Math.round((now-h.timestamp)/60000)}];
+    return [pair,{...h,target:h.tp2??h.target,managementAdvice:management,currentPrice:price,ageMinutes:Math.round((now-h.timestamp)/60000),validity}];
   }));
 
   const enrichedActive=activeSignals.map((s:any)=>({
@@ -72,9 +74,9 @@ export async function GET(){
   const enrichedHistory=signalHistory.map((h:any)=>({...h,scale:h.type,target:h.tp2??h.target,meta:{ageMinutes:Math.round((now-h.timestamp)/60000),status:h.status}}));
 
   const historyLogs=signalHistory.slice().sort((a,b)=>b.timestamp-a.timestamp).slice(0,16).map((h:any)=>
-    `[ALERT] ${h.pair} — ${h.direction} ${h.type} @ ${h.entry} | SL ${h.stop} | TP1 ${h.tp1??"—"} | TP2 ${h.tp2??h.target} | TP3 ${h.tp3??"—"} | ${h.status}${h.exitReason?` | ${h.exitReason}`:""}`
+    `[ALERT] ${h.pair} — ${h.direction} ${h.type} @ ${h.entry} | SL ${h.stop} | R1 ${h.tp1??"—"} | R1.5 ${h.tp2??h.target} | R2 ${h.tp3??"—"} | ${h.status}${h.exitReason?` | ${h.exitReason}`:""}`
   );
-  const validityLogs=Object.entries(latestAlerts).map(([pair,a]:any)=>`[VALIDITY] ${pair} — ${a.validity.state} | ${a.validity.reason} | latest ${a.type} @ ${a.entry} | SL ${a.stop} | TP1 ${a.tp1??"—"} | TP2 ${a.tp2??a.target} | TP3 ${a.tp3??"—"} | current ${a.currentPrice}`);
+  const validityLogs=Object.entries(latestAlerts).map(([pair,a]:any)=>`[VALIDITY] ${pair} — ${a.validity.state} | ${a.validity.reason} | latest ${a.type} @ ${a.entry} | SL ${a.stop} | R1 ${a.tp1??"—"} | R1.5 ${a.tp2??a.target} | R2 ${a.tp3??"—"} | current ${a.currentPrice}`);
   const marketLogs=(Array.isArray(marketData)?marketData:[]).map((m:any)=>
     `[PAIR] ${m.pair} — ${m.trend||"NO TREND"} | TL ${m.trendlinePrice||"—"} | Price ${m.price} | Dist ${m.distToTrendline??"—"}% | ${m.location||"—"} | ${m.trigger||"WAITING"} | ADX ${m.adx??"—"} | RSI ${m.rsi??"—"} | Stoch ${m.stochK??"—"}/${m.stochD??"—"} | Momentum ${m.momentumState||"—"}`
   );
