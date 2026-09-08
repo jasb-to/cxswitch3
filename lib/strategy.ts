@@ -10,13 +10,7 @@ import { CXSWITCH_VERSION } from "./version";
 import { get4HEmaDiagnostic } from "./ema-diagnostic";
 
 export interface Candle { timestamp:number; open:number; high:number; low:number; close:number; volume:number; }
-export interface Signal {
-  id:string; pair:string; direction:"LONG"|"SHORT"; type:"ENTRY_1"|"ENTRY_2"|"ADD";
-  scale:"ENTRY_1"|"ENTRY_2"|"ADD"|null; entry:number; stop:number; target:number;
-  tp1?:number; tp2?:number; tp3?:number; confidence:number; rr:number; adx:number; rsi:number;
-  stochK:number; stochD:number; expectedMove:number; reason:string; timestamp:number; version:number;
-  trend?:string; location?:string; trigger?:string; context?:any;
-}
+export interface Signal { id:string; pair:string; direction:"LONG"|"SHORT"; type:"ENTRY_1"|"ENTRY_2"|"ADD"; scale:"ENTRY_1"|"ENTRY_2"|"ADD"|null; entry:number; stop:number; target:number; tp1?:number; tp2?:number; tp3?:number; confidence:number; rr:number; adx:number; rsi:number; stochK:number; stochD:number; expectedMove:number; reason:string; timestamp:number; version:number; trend?:string; location?:string; trigger?:string; context?:any; }
 export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; }
 export const CURRENT_SIGNAL_VERSION = CXSWITCH_VERSION;
 
@@ -40,7 +34,6 @@ const TL_BREAK_ATR_MULT=0.35;
 
 type Pivot={index:number;price:number;timestamp:number};
 type TrendlineResult={valid:boolean;slope:number;intercept:number;price:number;pivots:Pivot[];ageCandles:number;reason:string;invalidated:boolean;};
-
 const avg=(a:number[])=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
 function ema(a:number[],p:number){if(!a.length)return[];const k=2/(p+1),r=[a[0]];for(let i=1;i<a.length;i++)r.push(a[i]*k+r[i-1]*(1-k));return r;}
 function atr(c:Candle[],p=14){const r:number[]=[];for(let i=Math.max(1,c.length-p);i<c.length;i++){const x=c[i],q=c[i-1];r.push(Math.max(x.high-x.low,Math.abs(x.high-q.close),Math.abs(x.low-q.close)));}return avg(r);}
@@ -60,7 +53,7 @@ function opposite(pair:string,d:"LONG"|"SHORT",trades:any[]|undefined){return !!
 function sameDirection(pair:string,d:"LONG"|"SHORT",trades:any[]|undefined){return !!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction===d);}
 export function estimateLiquidationPrice(entry:number,direction:"LONG"|"SHORT"){return direction==="LONG"?entry*(1-1/EXECUTION_LEVERAGE+EXECUTION_MMR):entry*(1+1/EXECUTION_LEVERAGE-EXECUTION_MMR);}
 export function liquidationSafeBoundary(entry:number,direction:"LONG"|"SHORT"){const liq=estimateLiquidationPrice(entry,direction);return direction==="LONG"?liq*(1+LIQUIDATION_BUFFER):liq*(1-LIQUIDATION_BUFFER);}
-function executionStop(entry:number,structural:number,direction:"LONG"|"SHORT",isAdd:boolean){const minRisk=isAdd?ADD_MIN_RISK_PCT:ENTRY_MIN_RISK_PCT,maxRisk=isAdd?ADD_MAX_RISK_PCT:ENTRY_MAX_RISK_PCT;const liq=estimateLiquidationPrice(entry,direction),safe=direction==="LONG"?liq*(1+STOP_EXECUTION_BUFFER):liq*(1-STOP_EXECUTION_BUFFER);if(direction==="LONG"){const minStop=entry*(1-maxRisk),maxStop=entry*(1-minRisk);return Math.max(Math.min(structural,maxStop),minStop,safe);}const minStop=entry*(1+minRisk),maxStop=entry*(1+minRisk);return Math.min(Math.max(structural,minStop),maxStop,safe);}
+function executionStop(entry:number,structural:number,direction:"LONG"|"SHORT",isAdd:boolean){const minRisk=isAdd?ADD_MIN_RISK_PCT:ENTRY_MIN_RISK_PCT,maxRisk=isAdd?ADD_MAX_RISK_PCT:ENTRY_MAX_RISK_PCT;const liq=estimateLiquidationPrice(entry,direction),safe=direction==="LONG"?liq*(1+STOP_EXECUTION_BUFFER):liq*(1-STOP_EXECUTION_BUFFER);if(direction==="LONG"){const minStop=entry*(1-maxRisk),maxStop=entry*(1-minRisk);return Math.max(Math.min(structural,maxStop),minStop,safe);}const minStop=entry*(1+minRisk),maxStop=entry*(1+maxRisk);return Math.min(Math.max(structural,minStop),maxStop,safe);}
 function roundPrice(n:number){return Math.round(n*100000)/100000;}
 function retestConfirmed(c:Candle[],dir:"LONG"|"SHORT",tl:number,price:number){const last=c.at(-1),prev=c.at(-2);if(!last||!prev)return false;const dist=Math.abs((price-tl)/tl);if(dist>ADD_MAX_TL_DISTANCE)return false;if(dir==="LONG")return last.close>tl&&last.low<=tl*(1+ADD_RETEST_WICK_PCT)&&last.close>=prev.close;return last.close<tl&&last.high>=tl*(1-ADD_RETEST_WICK_PCT)&&last.close<=prev.close;}
 
