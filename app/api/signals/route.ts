@@ -1,6 +1,7 @@
 // app/api/signals/route.ts — canonical dashboard state + alert validity
 import { NextResponse } from "next/server";
 import { getActiveSignals, getSignalHistory, getLatestAlerts, getMarketData, getLastCronRun } from "@/lib/state";
+import { getEntry0Positions } from "@/lib/entry0";
 import { CXSWITCH_VERSION, ENTRY_ARCHITECTURE, DAILY_BIAS, EXECUTION_MODE } from "@/lib/version";
 
 export const runtime="nodejs";
@@ -25,7 +26,7 @@ function alertValidity(h:any,price:number,now:number){
 }
 
 function managementAdvice(h:any,m:any){
-  if(!h||h.status!=="ACTIVE"||!m)return null;
+  if(!h||h.status!=="ACTIVE"||!m||h.type==="ENTRY_0")return null;
   const price=Number(m.price);
   const tp1Hit=!!h.tp1HitAt || (h.tp1!==undefined&&(h.direction==="LONG"?price>=h.tp1:price<=h.tp1));
   const tp2Hit=!!h.tp2HitAt || (h.tp2!==undefined&&(h.direction==="LONG"?price>=h.tp2:price<=h.tp2));
@@ -53,10 +54,11 @@ export async function GET(){
   const signalHistory=await getSignalHistory();
   const persistedLatest=await getLatestAlerts();
   const marketData=await getMarketData();
+  const entry0Positions=await getEntry0Positions();
   const lastCronRun=await getLastCronRun();
   const now=Date.now();
 
-  const latestAlerts=Object.fromEntries(Object.entries(persistedLatest).map(([pair,h]:any)=>{
+  const v28LatestAlerts=Object.fromEntries(Object.entries(persistedLatest).map(([pair,h]:any)=>{
     const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===pair):undefined;
     const active=activeSignals.find((x:any)=>x.pair===pair&&x.direction===h.direction&&x.id===h.id) || activeSignals.find((x:any)=>x.pair===pair&&x.direction===h.direction);
     const price=m?.price??h.entry;
@@ -65,6 +67,21 @@ export async function GET(){
     const validity=management&&v.state==="VALID"?{...v,reason:`${management.recommendation} — ${management.reason}`} : v;
     return [pair,{...h,target:h.tp2??h.target,managementAdvice:management,currentPrice:price,ageMinutes:Math.round((now-h.timestamp)/60000),validity}];
   }));
+
+  const entry0Alerts=Object.fromEntries(Object.entries(entry0Positions).map(([pair,p]:any)=>{
+    const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===pair):undefined;
+    const price=m?.price??p.entry;
+    const synthetic={
+      id:`ENTRY_0_${pair}_${p.crossTimestamp}`,pair,direction:p.direction,type:"ENTRY_0",entry:p.entry,stop:p.stop,target:p.tp2,tp1:p.tp1,tp2:p.tp2,tp3:p.tp3,
+      rr:1.5,timestamp:p.openedAt,expectedMove:Math.abs(p.tp3-p.entry)/p.entry*100,status:"ACTIVE",
+      context:{entry0:true,trigger:"4H 5/13 cross",confirmation:`4H 8/21 turning ${p.direction} — 8 EMA slope aligned; no 8/21 cross required`,stages:{tp1:p.tp1,tp2:p.tp2,tp3:p.tp3}},
+      meta:{status:"ACTIVE",state:"ENTRY_0_ACTIVE",ageMinutes:Math.round((now-p.openedAt)/60000)},
+      currentPrice:price,ageMinutes:Math.round((now-p.openedAt)/60000),
+      validity:alertValidity({type:"ENTRY_0",status:"ACTIVE",timestamp:p.openedAt,direction:p.direction,entry:p.entry,stop:p.stop,tp3:p.tp3},price,now)
+    };
+    return[pair,synthetic];
+  }));
+  const latestAlerts={...v28LatestAlerts,...entry0Alerts};
 
   const enrichedActive=activeSignals.map((s:any)=>({
     ...s,scale:s.type,target:s.tp2??s.target,
@@ -90,7 +107,7 @@ export async function GET(){
   const response=NextResponse.json({
     version:CXSWITCH_VERSION,architecture:ENTRY_ARCHITECTURE,dailyBias:DAILY_BIAS,executionMode:EXECUTION_MODE,
     activeSignals:enrichedActive,signalHistory:enrichedHistory,marketData:Array.isArray(marketData)?marketData:[],latestAlerts,logs,
-    system:{version:CXSWITCH_VERSION,lastCronRun,lastCronAgeMs:lastCronRun?now-lastCronRun:null,activePositions:enrichedActive.length,latestAlerts:Object.keys(latestAlerts).length,historyEntries:signalHistory.length},
+    system:{version:CXSWITCH_VERSION,lastCronRun,lastCronAgeMs:lastCronRun?now-lastCronRun:null,activePositions:enrichedActive.length,latestAlerts:Object.keys(latestAlerts).length,historyEntries:signalHistory.length,entry0Positions:Object.keys(entry0Positions).length},
     updatedAt:new Date(now).toISOString()
   });
   response.headers.set("Cache-Control","no-store, no-cache, must-revalidate, proxy-revalidate");response.headers.set("Pragma","no-cache");response.headers.set("Expires","0");
