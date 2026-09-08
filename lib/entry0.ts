@@ -26,6 +26,7 @@ async function getPositions():Promise<Record<string,Entry0Position>>{return(awai
 async function setPositions(v:Record<string,Entry0Position>){await redis.set(ENTRY0_KEY,v);}
 async function getLastCross():Promise<Record<string,number>>{return(await redis.get<Record<string,number>>(ENTRY0_LAST_CROSS_KEY))||{};}
 async function setLastCross(v:Record<string,number>){await redis.set(ENTRY0_LAST_CROSS_KEY,v);}
+export async function getEntry0Positions():Promise<Record<string,Entry0Position>>{return getPositions();}
 export async function processEntry0(pair:string,c4:Candle[],price:number,v28Active:any[]|undefined){
  const ema513=get4HEmaDiagnostic(c4),bias=dailyBias(c4),e821=ema821(c4),positions=await getPositions(),lastCross=await getLastCross(),existing=positions[pair],actions:any[]=[];
  const closes=c4.map(x=>x.close),rsiVal=Math.round(rsi(closes,14)*10)/10,stoch=stochRsi(closes),adxVal=adx(c4),levels=tradeLevels(c4,price,ema513.direction==="BULLISH"?"LONG":"SHORT");
