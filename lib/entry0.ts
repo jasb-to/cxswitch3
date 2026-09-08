@@ -35,7 +35,7 @@ function qualityCheck(c4:Candle[],direction:"LONG"|"SHORT",ema513:any,price:numb
  const moveOk=ema5MoveAtr>=0.10;
  const checks={moveOk,adxRising,rsiOk,stochOk,roomOk};
  const score=Object.values(checks).filter(Boolean).length;
- return{pass:score>=4,score,checks,atr:a,atrPct:aPct,ema5MoveAtr,adxNow,adxPrev,rsiVal,stoch,levels};
+ return{pass:moveOk&&roomOk&&score>=4,score,checks,atr:a,atrPct:aPct,ema5MoveAtr,adxNow,adxPrev,rsiVal,stoch,levels};
 }
 
 async function getPositions():Promise<Record<string,Entry0Position>>{return(await redis.get<Record<string,Entry0Position>>(ENTRY0_KEY))||{};}
