@@ -1,0 +1,42 @@
+name: Apply ENTRY_0 cron integration
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-entry0-cron.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Integrate ENTRY_0 into cron
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/api/cron/route.ts')
+          s=p.read_text()
+          old_import='import { sendAlert } from "@/lib/telegram";'
+          new_import='import { sendAlert } from "@/lib/telegram";\nimport { processEntry0 } from "@/lib/entry0";'
+          if s.count(old_import)!=1:
+              raise SystemExit(f'Expected one Telegram import, found {s.count(old_import)}')
+          s=s.replace(old_import,new_import,1)
+          marker='const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair);const result=await generateSignal(pair,c1,c4,c15,active,price);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.fourH513=ema513;'
+          insert='''const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair);const result=await generateSignal(pair,c1,c4,c15,active,price);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.fourH513=ema513;\n  const entry0Actions=await processEntry0(pair,c4,price,active);\n  for(const e0 of entry0Actions){\n   const exit0=e0.type==="EXIT_0";\n   console.log(`[ENTRY_0] ${pair} — ${e0.type} ${e0.direction} @ ${exit0?e0.exitPrice:e0.entry} | ${e0.reason}`);\n   await sendAlert({symbol:pair,state:e0.type,price:exit0?e0.exitPrice:e0.entry,entry:e0.entry,bias:e0.direction,signalType:e0.type,signalEmoji:exit0?"🔴":"🟡",fourH513Label:e0.fourH513Label,confirmation:e0.confirmation,reason:e0.reason,trend:`1D ${e0.dailyBias||"NEUTRAL"} / 4H ${e0.direction}`,trigger:exit0?"4H 8/21 opposite cross":"4H 5/13 cross",updatedAt:new Date(exit0?e0.exitTimestamp:e0.crossTimestamp).toISOString()});\n   alerts.push({pair,direction:e0.direction,type:e0.type,status:"sent"});\n  }\n  if(ema513.crossNow&&!entry0Actions.length)console.log(`[ENTRY_0] ${pair} — 4H 5/13 cross detected but no ENTRY_0; 1D confirmation or existing V28/ENTRY_0 state prevented entry`);'''
+          if s.count(marker)!=1:
+              raise SystemExit(f'Expected one cron integration marker, found {s.count(marker)}')
+          s=s.replace(marker,insert,1)
+          p.write_text(s)
+          PY
+      - name: Commit integration and remove workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/api/cron/route.ts
+          git rm .github/workflows/apply-entry0-cron.yml
+          git commit -m "Add confirmed 4H ENTRY_0 alerts and 8/21 exits"
+          git push
