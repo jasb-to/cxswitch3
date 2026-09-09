@@ -17,12 +17,25 @@ function struct(c,d,w=2){const h=pivots(c,'SHORT',w),l=pivots(c,'LONG',w);if(h.l
 function sig(c,d,v){const t=tl(c,d,v);if(!t)return null;const p=c.at(-1).close,near=Math.abs((p-t.price)/t.price)<.012,beyond=d==='LONG'?p>t.price*1.008:p<t.price*.992,cl=c.map(x=>x.close),e8=ema(cl,8).at(-1),e21=ema(cl,21).at(-1),aligned=d==='LONG'?p>e8&&p>e21:p<e8&&p<e21,s=stoch(cl),turn=d==='LONG'?s.k>s.d:s.k<s.d,ext=d==='LONG'?s.k<20:s.k>80,confirm=d==='LONG'?p>c.at(-1).open:p<c.at(-1).open,vol=c.at(-1).volume>avg(c.slice(-10).map(x=>x.volume))*1.3,raw=near&&ext?'ENTRY_1':near&&turn&&!ext?'ENTRY_2':beyond&&confirm&&aligned&&(vol||turn)?'ADD':null;if(!raw)return null;if(v===2&&(!f513(c,d))||v===3&&(!f513(c,d)||!struct(c,d))||v===6&&(!struct(c,d,5)))return null;const a=atr(c),entry=p,lo=Math.min(...c.slice(-10).map(x=>x.low)),hi=Math.max(...c.slice(-10).map(x=>x.high)),structural=d==='LONG'?Math.min(lo,entry-a*(raw==='ADD'?1.25:2)):Math.max(hi,entry+a*(raw==='ADD'?1.25:2));const stop=d==='LONG'?Math.max(Math.min(structural,entry*.992),entry*.965):Math.min(Math.max(structural,entry*1.008),entry*1.035),risk=Math.abs(entry-stop);return risk?{d,entry,stop,tp1:d==='LONG'?entry+risk:entry-risk,tp2:d==='LONG'?entry+1.5*risk:entry-1.5*risk,tp3:d==='LONG'?entry+2*risk:entry-2*risk,raw,risk}:null}
 async function get(pair){const u=`https://api.kraken.com/0/public/OHLC?pair=${PAIRS[pair]}&interval=240&since=${Math.floor((START-30*86400000)/1000)}`;const j=await (await fetch(u)).json(),k=Object.keys(j.result).find(x=>x!=='last');return j.result[k].map(x=>({timestamp:x[0]*1000,open:+x[1],high:+x[2],low:+x[3],close:+x[4],volume:+x[6]})).filter(x=>x.timestamp>=START&&x.timestamp<=END)}
 function run(c,v){let t=null,o={trades:0,wins:0,losses:0,netR:0,r1:0,r15:0,r2:0,slBeforeR1:0,dur:[],mae:[],mfe:[],dur24:0,dur48:0,byType:{ENTRY_1:0,ENTRY_2:0,ADD:0}};for(let i=40;i<c.length;i++){const x=c[i];if(t){const sign=t.d==='LONG'?1:-1;const fav=(x.high-t.entry)*sign,adv=(t.entry-x.low)*sign;t.mfe=Math.max(t.mfe,fav/t.risk);t.mae=Math.min(t.mae,-adv/t.risk);let done=false;
-      if(!t.r1){const hitR1=sign>0?x.high>=t.tp1:x.low<=t.tp1;const hitSL=sign>0?x.low<=t.stop:x.high>=t.stop;if(hitSL){o.trades++;o.losses++;o.netR-=1;o.slBeforeR1++;done=true}else if(hitR1){t.r1=true;o.r1++;o.netR+=.4;t.stop=t.entry}}
-      if(!done&&t.r1&&!t.r15){const hitR15=sign>0?x.high>=t.tp2:x.low<=t.tp2;const hitBE=sign>0?x.low<=t.stop:x.high>=t.stop;if(hitBE){o.trades++;o.wins++;done=true}else if(hitR15){t.r15=true;o.r15++;o.netR+=.6;t.stop=t.d==='LONG'?t.entry+t.risk:t.entry-t.risk}}
-      if(!done&&t.r15){const hitR2=sign>0?x.high>=t.tp3:x.low<=t.tp3;const hit1R=sign>0?x.low<=t.stop:x.high>=t.stop;if(hit1R){o.trades++;o.wins++;o.netR+=.2;done=true}else if(hitR2){t.r2=true;o.r2++;o.trades++;o.wins++;o.netR+=.4;done=true}}
+      // Stops are evaluated at the stop level active at the START of this candle. Target hits update stops only for the NEXT candle.
+      const stopAtOpen=t.stop;
+      const hitSL=sign>0?x.low<=stopAtOpen:x.high>=stopAtOpen;
+      if(hitSL){
+        if(t.stage===0){o.trades++;o.losses++;o.netR-=1;o.slBeforeR1++}
+        else if(t.stage===1){o.trades++;o.wins++;o.netR+=0}
+        else {o.trades++;o.wins++;o.netR+=.2}
+        done=true;
+      } else {
+        const hitR1=!t.r1&&(sign>0?x.high>=t.tp1:x.low<=t.tp1);
+        const hitR15=!t.r15&&(sign>0?x.high>=t.tp2:x.low<=t.tp2);
+        const hitR2=!t.r2&&(sign>0?x.high>=t.tp3:x.low<=t.tp3);
+        if(hitR1){t.r1=true;t.stage=1;o.r1++;o.netR+=.4;t.stop=t.entry}
+        if(hitR15){t.r15=true;t.stage=2;o.r15++;o.netR+=.6;t.stop=t.d==='LONG'?t.entry+t.risk:t.entry-t.risk}
+        if(hitR2){t.r2=true;o.r2++;o.trades++;o.wins++;o.netR+=.4;done=true}
+      }
       if(done){o.dur.push((x.timestamp-t.ts)/3600000);o.mae.push(t.mae);o.mfe.push(t.mfe);if(o.dur.at(-1)>=24)o.dur24++;if(o.dur.at(-1)>=48)o.dur48++;t=null}
     }
-    if(!t){const d=bias(c.slice(0,i+1));if(d){const s=sig(c.slice(0,i+1),d,v);if(s){t={...s,ts:x.timestamp,r1:false,r15:false,r2:false,mae:0,mfe:0};o.byType[s.raw]++}}}
+    if(!t){const d=bias(c.slice(0,i+1));if(d){const s=sig(c.slice(0,i+1),d,v);if(s){t={...s,ts:x.timestamp,r1:false,r15:false,r2:false,stage:0,mae:0,mfe:0};o.byType[s.raw]++}}}
   }
   if(t){const z=c.at(-1),sign=t.d==='LONG'?1:-1,p=(z.close-t.entry)*sign/t.risk;o.trades++;if(p>=0)o.wins++;else o.losses++;o.netR+=p;o.dur.push((z.timestamp-t.ts)/3600000);o.mae.push(t.mae);o.mfe.push(t.mfe);if(o.dur.at(-1)>=24)o.dur24++;if(o.dur.at(-1)>=48)o.dur48++}
   return o}
