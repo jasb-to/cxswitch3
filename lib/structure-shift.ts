@@ -26,6 +26,7 @@ export interface StructureShiftSnapshot{
   structure:StructureShiftDirection;
   state:StructureShiftState;
   previousStructure:StructureShiftDirection;
+  shiftTo:StructureShiftDirection;
   protectedLevel:number|null;
   protectedLevelTimestamp:number|null;
   breakDistanceAtr:number|null;
@@ -72,6 +73,7 @@ export function detectStructureShift(pair:string,c:Candle[]):StructureShiftSnaps
   const breakAmount=protectedLevel===null?null:structure==="LONG"?protectedLevel-price:price-protectedLevel;
   const breakDistanceAtr=protectedLevel===null||a<=0?null:breakAmount!/a;
   const breakConfirmed=structure==="LONG"?price<protectedLevel!&&breakAmount!>=a*BREAK_ATR:structure==="SHORT"?price>protectedLevel!&&breakAmount!>=a*BREAK_ATR:false;
+  const shiftTo:StructureShiftDirection=breakConfirmed?(structure==="LONG"?"SHORT":"LONG"):"NEUTRAL";
   let state:StructureShiftState="WATCHING";
   let reason="Structure is not yet directional enough to declare a protected trend.";
   if(breakConfirmed){state="SHIFT_CONFIRMED";reason=`Protected ${structure==="LONG"?"higher low":"lower high"} broken by ${breakDistanceAtr!.toFixed(2)} ATR.`;}
@@ -80,7 +82,7 @@ export function detectStructureShift(pair:string,c:Candle[]):StructureShiftSnaps
     state=approaching?"WEAKENING":"HEALTHY";
     reason=approaching?`Protected ${structure==="LONG"?"higher low":"lower high"} is within ${breakDistanceAtr!.toFixed(2)} ATR.`:`${structure} structure remains intact.`;
   }
-  return{pair,timestamp:Date.now(),closedCandleTimestamp:last?.timestamp??0,price,structure,state,previousStructure:"NEUTRAL",protectedLevel,protectedLevelTimestamp:protectedTs,breakDistanceAtr,breakConfirmed,lastHigh:h1?.price??null,previousHigh:h0?.price??null,lastLow:l1?.price??null,previousLow:l0?.price??null,atr:a,reason};
+  return{pair,timestamp:Date.now(),closedCandleTimestamp:last?.timestamp??0,price,structure,state,previousStructure:"NEUTRAL",shiftTo,protectedLevel,protectedLevelTimestamp:protectedTs,breakDistanceAtr,breakConfirmed,lastHigh:h1?.price??null,previousHigh:h0?.price??null,lastLow:l1?.price??null,previousLow:l0?.price??null,atr:a,reason};
 }
 
 export async function recordStructureShiftSnapshot(snapshot:StructureShiftSnapshot){
