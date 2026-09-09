@@ -53,8 +53,6 @@ export function get4HEmaDiagnostic(candles4h: Candle[]): EmaDiagnostic {
   const l2Threshold = atrValue > 0 ? Math.max(0.10 * atrValue, Math.abs(ema13) * 0.0005) : Math.abs(ema13) * 0.0005;
   const l1Threshold = atrValue > 0 ? Math.max(0.30 * atrValue, Math.abs(ema13) * 0.0015) : Math.abs(ema13) * 0.0015;
 
-  // Earlier warning: if the 5 EMA has turned against the current 4H direction
-  // while the 5/13 spread is still relatively small, flag the turn before crossover.
   const turning = !bullishCross && !bearishCross && Math.abs(spreadAtr) <= 1.0 &&
     ((spread > 0 && ema5Slope < 0) || (spread < 0 && ema5Slope > 0));
 
@@ -73,7 +71,7 @@ export function get4HEmaDiagnostic(candles4h: Candle[]): EmaDiagnostic {
 
   const direction = stage.includes("BULLISH") ? "BULLISH" : stage.includes("BEARISH") ? "BEARISH" : "NEUTRAL";
   const baseLabel = stage === "EARLY_BULLISH_L1" ? "EARLY BULLISH — LEVEL 1" : stage === "EARLY_BULLISH_L2" ? "EARLY BULLISH — LEVEL 2" : stage === "BULLISH_CROSS" ? "BULLISH CROSS" : stage === "BULLISH_LOW" ? "BULLISH LOW" : stage === "BULLISH_MEDIUM" ? "BULLISH MEDIUM" : stage === "BULLISH_HIGH" ? "BULLISH HIGH" : stage === "EARLY_BEARISH_L1" ? "EARLY BEARISH — LEVEL 1" : stage === "EARLY_BEARISH_L2" ? "EARLY BEARISH — LEVEL 2" : stage === "BEARISH_CROSS" ? "BEARISH CROSS" : stage === "BEARISH_LOW" ? "BEARISH LOW" : stage === "BEARISH_MEDIUM" ? "BEARISH MEDIUM" : stage === "BEARISH_HIGH" ? "BEARISH HIGH" : "NEUTRAL";
-  const label = turning ? "SIGNAL TURNING" : baseLabel;
+  const label = turning ? `${spread > 0 ? "BULLISH" : "BEARISH"} TREND TURNING` : baseLabel;
 
   return {
     stage, label, direction, turning, ema5, ema13, ema5Prev, ema13Prev, spread,
