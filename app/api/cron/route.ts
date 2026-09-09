@@ -3,10 +3,10 @@ import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
 import { generateSignal, getMarketSnapshot, shouldHold, Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
+import { detectStructureShift, recordStructureShiftSnapshot } from "@/lib/structure-shift";
 import { CXSWITCH_VERSION } from "@/lib/version";
 import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
-import { processEntry0 } from "@/lib/entry0";
 
 export const dynamic="force-dynamic";
 export const revalidate=0;
@@ -45,15 +45,11 @@ export async function GET(request:Request){
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
   const ema513=get4HEmaDiagnostic(c4);
   console.log(`[EMA 4H 5/13] ${pair} — ${ema513.label} | 5=${ema513.ema5.toFixed(4)} | 13=${ema513.ema13.toFixed(4)} | spread=${ema513.spread.toFixed(4)} (${ema513.spreadPct.toFixed(3)}%) | spreadATR=${ema513.spreadAtr.toFixed(3)} | contracting=${ema513.spreadContracting?"YES":"NO"} | Δspread=${ema513.spreadChangePct.toFixed(2)}% | 5slope=${ema513.ema5Slope.toFixed(4)} | 13slope=${ema513.ema13Slope.toFixed(4)} | cross=${ema513.crossNow?"YES":"NO"}`);
-  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair);const result=await generateSignal(pair,c1,c4,c15,active,price);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.fourH513=ema513;
-  const entry0Actions=await processEntry0(pair,c4,price,active);
-  for(const e0 of entry0Actions){
-   const exit0=e0.type==="EXIT_0";
-   console.log(`[ENTRY_0] ${pair} — ${e0.type} ${e0.direction} @ ${exit0?e0.exitPrice:e0.entry} | ${e0.reason}`);
-   await sendAlert({symbol:pair,state:e0.type,price:round(exit0?e0.exitPrice:e0.entry),entry:e0.entry,bias:e0.direction,signalType:e0.type,signalEmoji:exit0?"🔴":"🟡",fourH513Label:e0.fourH513Label,confirmation:e0.confirmation,reason:e0.reason,trend:e0.trend||`4H 5/13 ${e0.direction} / 8/21 turning ${e0.direction}`,location:e0.location||`4H 8 EMA ${e0.ema8?.toFixed?.(2)??"-"} / 21 EMA ${e0.ema21?.toFixed?.(2)??"-"}`,trigger:e0.trigger||"4H 5/13 cross",stopLoss:e0.stop?round(e0.stop):"-",takeProfit:e0.tp2?round(e0.tp2):"-",takeProfit1:e0.tp1?round(e0.tp1):"-",takeProfit2:e0.tp2?round(e0.tp2):"-",takeProfit3:e0.tp3?round(e0.tp3):"-",rr:e0.rr??"-",expectedMove:e0.expectedMove??"-",adx:e0.adx??"-",rsi:e0.rsi??"-",stochK:e0.stochK??"-",stochD:e0.stochD??"-",updatedAt:new Date(exit0?e0.exitTimestamp:e0.crossTimestamp).toISOString()});
-   alerts.push({pair,direction:e0.direction,type:e0.type,status:"sent"});
-  }
-  if(ema513.crossNow&&!entry0Actions.length)console.log(`[ENTRY_0] ${pair} — 4H 5/13 cross detected but no ENTRY_0; 4H 8/21 confirmation or existing V28/ENTRY_0 state prevented entry`);const dbg=result.debug||[];dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
+  const structureShift=detectStructureShift(pair,c4);
+  const structureRecorded=await recordStructureShiftSnapshot(structureShift);
+  console.log(`[STRUCTURE SHIFT] ${pair} — ${structureShift.structure} ${structureShift.state} | protected=${structureShift.protectedLevel?.toFixed(4)??"—"} | break=${structureShift.breakDistanceAtr?.toFixed(2)??"—"} ATR | recorded=${structureRecorded?"YES":"NO"} | ${structureShift.reason}`);
+  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair);const result=await generateSignal(pair,c1,c4,c15,active,price);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.fourH513=ema513;snapshot.structureShift=structureShift;
+const dbg=result.debug||[];dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   if(existing){snapshot.positionState="ACTIVE";snapshot.positionDirection=existing.direction;snapshot.positionEntry=existing.entry;snapshot.positionStop=existing.stop;snapshot.positionTarget=existing.tp2??existing.target;snapshot.positionTp1=existing.tp1;snapshot.positionTp2=existing.tp2;snapshot.positionTp3=existing.tp3;snapshot.positionTp1HitAt=existing.tp1HitAt;snapshot.positionTp2HitAt=existing.tp2HitAt;snapshot.positionTp3HitAt=existing.tp3HitAt;console.log(`[PAIR] ${pair} — POSITION ACTIVE (${existing.direction}) — entry engine paused`);}
   marketData.push(snapshot);const signal=result.signal;if(!signal){if(!existing)console.log(`[PAIR] ${pair} — NO SIGNAL`);continue;}
   console.log(`[SIGNAL] ${pair} — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1??"—"} | TP2 ${signal.tp2??"—"} | TP3 ${signal.tp3??"—"} | RR ${signal.rr}`);
