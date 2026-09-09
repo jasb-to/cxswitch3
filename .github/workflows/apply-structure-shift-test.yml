@@ -1,0 +1,42 @@
+name: apply-structure-shift-test
+on:
+  push:
+    branches: [feat/structure-shift-test]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply surgical test changes
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          p=Path('app/api/cron/route.ts'); s=p.read_text()
+          s=s.replace('import { processEntry0 } from "@/lib/entry0";\n','')
+          s=s.replace('import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";','import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";\nimport { detectStructureShift, recordStructureShiftSnapshot } from "@/lib/structure-shift";')
+          start=s.find('  const entry0Actions=await processEntry0(pair,c4,price,active);')
+          end=s.find('  if(ema513.crossNow&&!entry0Actions.length)', start)
+          if start>=0 and end>=0: s=s[:start]+s[end:]
+          s=s.replace('  if(ema513.crossNow&&!entry0Actions.length)console.log(`[ENTRY_0] ${pair} — 4H 5/13 cross detected but no ENTRY_0; 4H 8/21 confirmation or existing V28/ENTRY_0 state prevented entry`);','')
+          needle='  const ema513=get4HEmaDiagnostic(c4);\n  console.log(`[EMA 4H 5/13] ${pair} — ${ema513.label} | 5=${ema513.ema5.toFixed(4)} | 13=${ema513.ema13.toFixed(4)} | spread=${ema513.spread.toFixed(4)} (${ema513.spreadPct.toFixed(3)}%) | spreadATR=${ema513.spreadAtr.toFixed(3)} | contracting=${ema513.spreadContracting?"YES":"NO"} | Δspread=${ema513.spreadChangePct.toFixed(2)}% | 5slope=${ema513.ema5Slope.toFixed(4)} | 13slope=${ema513.ema13Slope.toFixed(4)} | cross=${ema513.crossNow?"YES":"NO"}`);'
+          repl=needle+'\n  const structureShift=detectStructureShift(pair,c4);\n  const structureRecorded=await recordStructureShiftSnapshot(structureShift);\n  console.log(`[STRUCTURE SHIFT] ${pair} — ${structureShift.structure} ${structureShift.state} | protected=${structureShift.protectedLevel?.toFixed(4)??"—"} | break=${structureShift.breakDistanceAtr?.toFixed(2)??"—"} ATR | recorded=${structureRecorded?"YES":"NO"} | ${structureShift.reason}`);'
+          s=s.replace(needle,repl); p.write_text(s)
+          p=Path('app/api/signals/route.ts'); s=p.read_text()
+          s=s.replace('import { getEntry0Positions } from "@/lib/entry0";\n','')
+          s=s.replace('  const entry0Positions=await getEntry0Positions();\n','')
+          start=s.find('  const entry0Alerts=Object.fromEntries('); end=s.find('  const latestAlerts={...v28LatestAlerts,...entry0Alerts};',start)
+          if start>=0 and end>=0: s=s[:start]+'  const latestAlerts=v28LatestAlerts;\n'+s[end+len('  const latestAlerts={...v28LatestAlerts,...entry0Alerts};\n'):]
+          s=s.replace('historyEntries:signalHistory.length,entry0Positions:Object.keys(entry0Positions).length','historyEntries:signalHistory.length'); p.write_text(s)
+          Path('lib/entry0.ts').unlink(missing_ok=True)
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Kill ENTRY_0 and wire Structure Shift observation" || exit 0
+          git push
+          rm -f .github/workflows/apply-structure-shift-test.yml
+          git add -A
+          git commit -m "Remove temporary structure shift patch workflow" || exit 0
+          git push
