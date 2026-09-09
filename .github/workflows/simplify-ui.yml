@@ -1,0 +1,37 @@
+name: simplify-ui
+on:
+  push:
+    branches: [feat/simplify-ui]
+permissions:
+  contents: write
+jobs:
+  simplify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Simplify symbol cards
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('app/page.tsx'); s=p.read_text()
+          # Remove the separate 1D/4H diagnostic cards; keep Structure Shift as the only test read.
+          s=re.sub(r'\n\s*\{dailyDiag&&<div.*?\n\s*\{diag&&<div', '\n    {diag&&<div', s, count=1, flags=re.S)
+          s=re.sub(r'\n\s*\{diag&&<div.*?(?=\n\s*<div className="mt-3 rounded-xl border p-3)', '', s, count=1, flags=re.S)
+          s=s.replace(',diag=ema513Read(m),dailyDiag=daily513Read(m),dirTone=directionTone(m)', ',dirTone=directionTone(m)')
+          # State of Play is a stage headline; hide duplicated explanatory paragraphs.
+          s=s.replace('<div className="mt-1 text-[9px] text-white/45">{play.detail}</div>','')
+          s=s.replace('<div className="mt-1 text-[9px] text-white/35">{play.waiting}</div>','')
+          # Keep only the explicit 4H 8/21 longevity read under Trend context.
+          s=re.sub(r'<div className="text-[9px] uppercase tracking-widest text-white/20">Trend context</div><div className="text-[9px] font-semibold text-white/65">\{timeframeRead\(m\)\}</div><div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-\[9px\].*?</div>', '<div className="text-[9px] uppercase tracking-widest text-white/20">Trend context</div><div className="text-[9px] font-semibold text-white/65">{ema||"4H 8/21 unavailable"}</div>', s, count=1, flags=re.S)
+          p.write_text(s)
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/page.tsx
+          git commit -m "Simplify symbol cards to actionable V28 information"
+          git push
+          rm -f .github/workflows/simplify-ui.yml
+          git add -A
+          git commit -m "Remove temporary UI patch workflow" || true
+          git push
