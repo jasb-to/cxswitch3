@@ -10,5 +10,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: sed -i "s/if(!p.length||dir==='LONG'?x.price>p.at(-1).price:x.price<p.at(-1).price)/if(!p.length || (dir==='LONG' ? x.price>p.at(-1).price : x.price<p.at(-1).price))/" scripts/backtest.mjs
-      - run: node scripts/backtest.mjs
+      - run: |
+          python - <<'PY'
+          p='scripts/backtest.mjs'
+          s=open(p).read()
+          s=s.replace("if(!p.length||dir==='LONG'?x.price>p.at(-1).price:x.price<p.at(-1).price)", "if(!p.length || (dir==='LONG' ? x.price>p.at(-1).price : x.price<p.at(-1).price))")
+          open(p,'w').write(s)
+          PY
+          node scripts/backtest.mjs
