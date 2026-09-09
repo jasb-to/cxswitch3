@@ -48,7 +48,7 @@ export async function GET(request:Request){
   const structureShift=detectStructureShift(pair,c4);
   const structureRecorded=await recordStructureShiftSnapshot(structureShift);
   console.log(`[STRUCTURE SHIFT] ${pair} — ${structureShift.structure} ${structureShift.state} | protected=${structureShift.protectedLevel?.toFixed(4)??"—"} | break=${structureShift.breakDistanceAtr?.toFixed(2)??"—"} ATR | recorded=${structureRecorded?"YES":"NO"} | ${structureShift.reason}`);
-  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair);const result=await generateSignal(pair,c1,c4,c15,active,price);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.fourH513=ema513;
+  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair);const result=await generateSignal(pair,c1,c4,c15,active,price);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.fourH513=ema513;snapshot.structureShift=structureShift;
 const dbg=result.debug||[];dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   if(existing){snapshot.positionState="ACTIVE";snapshot.positionDirection=existing.direction;snapshot.positionEntry=existing.entry;snapshot.positionStop=existing.stop;snapshot.positionTarget=existing.tp2??existing.target;snapshot.positionTp1=existing.tp1;snapshot.positionTp2=existing.tp2;snapshot.positionTp3=existing.tp3;snapshot.positionTp1HitAt=existing.tp1HitAt;snapshot.positionTp2HitAt=existing.tp2HitAt;snapshot.positionTp3HitAt=existing.tp3HitAt;console.log(`[PAIR] ${pair} — POSITION ACTIVE (${existing.direction}) — entry engine paused`);}
   marketData.push(snapshot);const signal=result.signal;if(!signal){if(!existing)console.log(`[PAIR] ${pair} — NO SIGNAL`);continue;}
