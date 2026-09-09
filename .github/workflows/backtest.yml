@@ -10,4 +10,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: sed -i "s/if(!p.length||dir==='LONG'?x.price>p.at(-1).price:x.price<p.at(-1).price)/if(!p.length || (dir==='LONG' ? x.price>p.at(-1).price : x.price<p.at(-1).price))/" scripts/backtest.mjs
       - run: node scripts/backtest.mjs
