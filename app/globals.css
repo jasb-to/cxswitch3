@@ -21,3 +21,13 @@ body {
 ::-webkit-scrollbar-track { background: #0b0b0b; }
 ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #555; }
+
+/* CXSwitch symbol cards: improve readability without changing the V28 engine. */
+main > section:first-of-type article [class*="text-[7px]"] { font-size: 9px !important; }
+main > section:first-of-type article [class*="text-[8px]"] { font-size: 10px !important; }
+main > section:first-of-type article [class*="text-[9px]"] { font-size: 11px !important; }
+main > section:first-of-type article [class*="text-[10px]"] { font-size: 12px !important; }
+main > section:first-of-type article .text-2xl { font-size: 1.625rem !important; }
+
+/* The management warning already contains the actionable validity information. */
+main > section:first-of-type article > div:nth-child(4) > div:nth-child(5) { display: none !important; }
