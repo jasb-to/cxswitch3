@@ -1,0 +1,19 @@
+name: Run isolated V28.2 forward-regime backtest
+on:
+  push:
+    branches:
+      - research/forward-regime-backtest-2026-09-10
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npx --yes tsx <<'EOF'
+          import { GET } from './app/api/backtest-forward-regime/route.ts';
+          const r = await GET();
+          console.log(await r.text());
+        EOF
