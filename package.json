@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "npx --yes tsx scripts/run-forward-regime.mts && next build",
+    "build": "node --experimental-strip-types scripts/run-forward-regime.mts && next build",
     "start": "next start",
     "lint": "eslint ."
   },
@@ -41,8 +41,8 @@
     "@upstash/redis": "^1.38.0",
     "@vercel/analytics": "1.6.1",
     "autoprefixer": "^10.4.20",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
     "cmdk": "1.1.1",
     "date-fns": "4.1.0",
     "embla-carousel-react": "8.6.0",
