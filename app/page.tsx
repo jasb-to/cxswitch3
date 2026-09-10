@@ -6,7 +6,7 @@ type Tone="bull"|"bear"|"neutral"|"warning";
 interface Signal{ id:string;pair:string;direction:"LONG"|"SHORT";type:string;entry:number;stop:number;target:number;tp1?:number;tp2?:number;tp3?:number;rr:number;timestamp:number;expectedMove:number;context?:any;status?:string;exitReason?:string; }
 interface Management{status:"healthy"|"warning"|"failed";recommendation:string;reason:string;}
 interface Alert extends Signal{status:string;validity:{state:string;reason:string};currentPrice:number;ageMinutes?:number;slToEntryAt?:number;tp1HitAt?:number;tp2HitAt?:number;tp3HitAt?:number;managementAdvice?:Management|null;}
-interface Market{pair:string;price:number;trend:string;location:string;trigger:string;adx:number;rsi:number;stochK:number;stochD:number;trendlinePrice:number;distToTrendline:number|null;momentumState?:string;ema8_4h?:number;ema21_4h?:number;fourH513?:{stage:string;label:string;direction:string;spreadContracting?:boolean};daily513?:{stage:string;label:string;direction:string};}
+interface Market{pair:string;price:number;trend:string;location:string;trigger:string;adx:number;rsi:number;stochK:number;stochD:number;trendlinePrice:number;distToTrendline:number|null;momentumState?:string;ema8_4h?:number;ema21_4h?:number;fourH513?:{stage:string;label:string;direction:string;spreadContracting?:boolean};daily513?:{stage:string;label:string;direction:string};structureShift?:{structure:"LONG"|"SHORT"|"NEUTRAL";state:"HEALTHY"|"WEAKENING"|"SHIFT_CONFIRMED"|"WATCHING";protectedLevel:number|null;breakDistanceAtr:number|null;breakConfirmed:boolean;reason:string;};}
 interface System{version?:number;lastCronRun:number;lastCronAgeMs:number|null;activePositions:number;latestAlerts?:number;historyEntries?:number;}
 const PAIRS=["BTC","ETH","SOL","HYPE"];
 const KRAKEN:Record<string,string>={BTC:"XBTUSD",ETH:"ETHUSD",SOL:"SOLUSD",HYPE:"HYPEUSD"};
@@ -16,14 +16,41 @@ const ago=(ts?:number)=>{if(!ts)return"—";const m=Math.max(0,Math.floor((Date.
 async function price(pair:string){try{const r=await fetch(`https://api.kraken.com/0/public/Ticker?pair=${KRAKEN[pair]}`,{cache:"no-store"});const d=await r.json();if(d.error?.length)return null;return parseFloat(d.result[Object.keys(d.result)[0]].c[0])}catch{return null}}
 function directionClass(d:string){return d==="LONG"||d.includes("BULLISH")?"text-green-400":d==="SHORT"||d.includes("BEARISH")?"text-red-400":"text-white/45"}
 function strengthFrom4H(e?:Market["fourH513"]){if(!e)return"—";if(e.direction==="NEUTRAL")return"NEUTRAL";if(e.stage.includes("HIGH"))return`${e.direction==="BULLISH"?"LONG":"SHORT"} STRONG`;if(e.stage.includes("MEDIUM"))return`${e.direction==="BULLISH"?"LONG":"SHORT"} MEDIUM`;return`${e.direction==="BULLISH"?"LONG":"SHORT"} LOW`}
+function setupDetail(m:Market|undefined,d:"LONG"|"SHORT",triggerReady=false){
+ const ss=m?.structureShift;
+ const dailyAligned=m?.daily513?.direction===d||(d==="LONG"?m?.trend?.startsWith("LONG"):m?.trend?.startsWith("SHORT"));
+ const atTL=m?.location==="NEAR_TL";
+ const structureHealthy=ss?.structure===d&&ss.state==="HEALTHY";
+ const structureWatching=!ss||ss.structure==="NEUTRAL"||ss.state==="WATCHING";
+ const structureOpposite=ss?.structure!==undefined&&ss.structure!=="NEUTRAL"&&ss.structure!==d;
+ const fourHRecovered=m?.fourH513?.direction===d;
+ const fourHDirection=m?.fourH513?.direction||"NEUTRAL";
+ const parts:string[]=[];
+ if(structureHealthy)parts.push("Structure is healthy");
+ else if(structureOpposite)parts.push("Structure is "+(ss!.structure==="LONG"?"bullish":"bearish"));
+ else if(structureWatching)parts.push("Structure is not yet directional enough");
+ if(atTL)parts.push("price is at the TL");
+ else if(m?.location==="BEYOND_TL")parts.push("price is beyond the TL");
+ else if(m?.location)parts.push("price is "+m.location.replaceAll("_"," ").toLowerCase());
+ if(dailyAligned)parts.push(`daily bias is still ${d}`);
+ else parts.push(`daily bias is not aligned with ${d}`);
+ if(fourHRecovered)parts.push(`the 4H trend is ${d==="LONG"?"bullish":"bearish"} and recovering`);
+ else parts.push(`the 4H trend is still ${fourHDirection==="NEUTRAL"?"neutral":fourHDirection.toLowerCase()}`);
+ let detail=parts.join(" + ")+".";
+ if(!fourHRecovered)detail+=` The missing piece is 4H ${d==="LONG"?"bullish":"bearish"} recovery.`;
+ else if(triggerReady)detail+=" The V28 conditions are now aligning.";
+ else detail+=" The setup is aligning, but there is no V28 alert yet.";
+ return detail;
+}
 function stateOfPlay(m?:Market,a?:Alert){
  if(a?.status==="ACTIVE")return{title:`POST-TRADE · ${a.direction} ACTIVE`,detail:a.validity.state==="VALID"?"The V28 trade is still active. Follow the management line below.":`Trade alert is ${a.validity.state}. ${a.validity.reason}`,tone:a.direction==="LONG"?"bull" as Tone:"bear" as Tone};
  const d=m?.trend?.startsWith("SHORT")||m?.daily513?.direction==="BEARISH"?"SHORT":"LONG";
- if(m?.trigger==="READY")return{title:`PRE-TRADE · ${d} TRIGGER NEAR`,detail:`The ${d} setup is close to a V28 trigger. Wait for the V28 alert before entering.`,tone:d==="LONG"?"bull" as Tone:"bear" as Tone};
- if(m?.location==="TL_INVALIDATED")return{title:"PRE-TRADE · STRUCTURE REBUILDING",detail:`The ${d} setup is not ready. The current trendline has been invalidated and needs to rebuild.`,tone:"warning" as Tone};
- if(m?.trend?.startsWith("SHORT")||m?.daily513?.stage==="EARLY_BEARISH")return{title:"PRE-TRADE · SHORT SETUP DEVELOPING",detail:"1D direction is weakening/bearish. We are waiting for the 4H direction and V28 conditions to align before a short alert.",tone:"bear" as Tone};
- if(m?.trend?.startsWith("LONG"))return{title:"PRE-TRADE · LONG SETUP DEVELOPING",detail:"1D direction is bullish. We are waiting for the 4H direction and V28 conditions to align before a long alert.",tone:"bull" as Tone};
- return{title:"PRE-TRADE · WATCHING",detail:"No actionable V28 alert at the moment.",tone:"neutral" as Tone};
+ if(m?.location==="TL_INVALIDATED")return{title:"PRE-TRADE · STRUCTURE REBUILDING",detail:`${d} setup is not ready. ${m?.structureShift?.reason||"The current trendline has been invalidated and needs to rebuild."}`,tone:"warning" as Tone};
+ const detail=setupDetail(m,d,m?.trigger==="READY");
+ if(m?.trigger==="READY")return{title:`PRE-TRADE · ${d} CONDITIONS ALIGNING`,detail,tone:d==="LONG"?"bull" as Tone:"bear" as Tone};
+ if(m?.trend?.startsWith("SHORT")||m?.daily513?.stage==="EARLY_BEARISH")return{title:"PRE-TRADE · SHORT SETUP DEVELOPING",detail,tone:"bear" as Tone};
+ if(m?.trend?.startsWith("LONG"))return{title:"PRE-TRADE · LONG SETUP DEVELOPING",detail,tone:"bull" as Tone};
+ return{title:"PRE-TRADE · WATCHING",detail:"No actionable V28 alert at the moment. The board is monitoring structure, TL location, daily bias and 4H recovery.",tone:"neutral" as Tone};
 }
 function stages(a?:Alert){return{r1:a?.tp1??a?.context?.stages?.tp1,r15:a?.tp2??a?.context?.stages?.tp2??a?.target,r2:a?.tp3??a?.context?.stages?.tp3}}
 function copyText(text:string){if(typeof navigator!=="undefined"&&navigator.clipboard?.writeText)return navigator.clipboard.writeText(text);const t=document.createElement("textarea");t.value=text;document.body.appendChild(t);t.select();document.execCommand("copy");t.remove();return Promise.resolve()}
