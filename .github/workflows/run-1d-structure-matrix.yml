@@ -1,0 +1,15 @@
+name: Run full 1D structure matrix
+on:
+  push:
+    branches:
+      - research/1d-direction-combinations-2026-09-11
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: node --experimental-strip-types scripts/backtest-1d-structure-matrix.mts
