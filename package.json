@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "node --experimental-strip-types scripts/run-forward-regime.mts && node --experimental-strip-types scripts/backtest-1d-direction-combinations.mts && next build",
+    "build": "node --experimental-strip-types scripts/backtest-1d-direction-combinations.mts && next build",
     "start": "next start",
     "lint": "eslint ."
   },
