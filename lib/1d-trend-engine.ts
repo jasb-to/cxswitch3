@@ -29,7 +29,9 @@ function nextCandidate(structDir:Direction,emaDir:Direction,fastDir:Direction,ad
 }
 export interface TrendEngineResult{state:TrendState;direction:"BULL"|"BEAR"|"NEUTRAL";previousState?:TrendState;candidateState:TrendState;structure:any;ema:any;fast513:any;adx:number;adxPrev:number;momentum:any;price:number;protectedLevel:number|null;explanation:string;parameters:{pivotWidth:number;persistence:number;};}
 export function evaluate1DTrend(c:Candle[],previousState?:TrendState):TrendEngineResult{
- const completed=c.slice(0,-1); const src=completed.length>=30?completed: c; const s=structure(src),e=emaContext(src),f=early513(src),m=momentum(src);const ad=adx(src),adp=adx(src.slice(0,-1));const candidate=nextCandidate(s.direction,e.direction,f.direction,ad,adp,m.direction);
+ // getCandles() already removes the currently-forming candle. Do not drop another candle here.
+ const src=c;
+ const s=structure(src),e=emaContext(src),f=early513(src),m=momentum(src);const ad=adx(src),adp=adx(src.slice(0,-1));const candidate=nextCandidate(s.direction,e.direction,f.direction,ad,adp,m.direction);
  const stable=previousState===candidate?candidate:(previousState&&((previousState.startsWith("BULL")&&candidate.startsWith("BULL"))||(previousState?.startsWith("BEAR")&&candidate.startsWith("BEAR")))?previousState:"TRANSITION");
  const direction=stable.startsWith("BULL")?"BULL":stable.startsWith("BEAR")?"BEAR":"NEUTRAL";
  const explanation=`Structure ${s.label}; EMA ${e.alignment}; 5/13 ${f.direction}${f.cross?" CROSS":""}; ADX ${ad.toFixed(1)}; momentum ${m.direction}/${m.state}; candidate ${candidate}; state ${stable}`;
