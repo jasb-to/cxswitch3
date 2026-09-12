@@ -29,8 +29,8 @@ export async function getLongTermState():Promise<LongTermState>{
  let deploymentIntensity:LongTermState["deploymentIntensity"]="WAIT",deploymentAction="WAIT — preserve USDT for the ladder.";
  if(inDeep){deploymentIntensity="DEEP_VALUE";deploymentAction="DEPLOY STRONGLY INTO DEEP VALUE · PRESERVE A RESERVE FOR LOWER LADDER LEVELS";}
  else if(inStrong){deploymentIntensity="STRONG_PARTIAL";deploymentAction="DEPLOY STRONGLY / PARTIALLY · CONTINUE PRESERVING USDT FOR LOWER LADDER LEVELS";}
- else if(inPrimary&&weakening){deploymentIntensity="PARTIAL";deploymentAction="DEPLOY PARTIALLY · SCALE INTO WEAKNESS · PRESERVE USDT FOR LOWER LADDER LEVELS";}
- else if(inPrimary){deploymentIntensity="PARTIAL";deploymentAction="ACCUMULATE PARTIALLY · DO NOT CHASE · PRESERVE USDT FOR LOWER LADDER LEVELS";}
+ else if(inPrimary&&weakening){deploymentIntensity="PARTIAL";deploymentAction="ACCUMULATE BTC · SCALE INTO WEAKNESS · DEPLOY PARTIALLY · PRESERVE USDT FOR LOWER LADDER LEVELS";}
+ else if(inPrimary){deploymentIntensity="PARTIAL";deploymentAction="ACCUMULATE BTC · DEPLOY PARTIALLY · DO NOT CHASE · PRESERVE USDT FOR LOWER LADDER LEVELS";}
  const btcScore=clamp(50+Math.min(drawdown,35)*1.1+(bt.label==="BEARISH"?10:bt.label==="MIXED"?5:-5)+(bt.rsi<45?10:bt.rsi<55?5:0));
  const rotationScore=clamp(50+Math.min(30,Math.max(-30,relPct*4))+(et.label==="BULLISH"?15:et.label==="MIXED"?5:-15)+(bt.label==="BEARISH"?15:bt.label==="MIXED"?5:-5));
  const altScore=clamp(30+breadth*.55+(et.label==="BULLISH"?15:0)+Math.max(-10,Math.min(10,relPct*2)));
