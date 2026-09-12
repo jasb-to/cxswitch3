@@ -1,4 +1,4 @@
-import { getCandles, krakenPairFormat } from "@/lib/kraken";
+import { getCandles, krakenPairFormat, getCurrentPrice } from "@/lib/kraken";
 import { evaluate1DTrend } from "@/lib/1d-trend-engine";
 import { get1DTrendState, record1DTrend } from "@/lib/1d-trend-state";
 import { send1DTrendFlipAlert } from "@/lib/telegram-1d-trend";
@@ -11,7 +11,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function run1DTrendExperiment(activeOverride?: any[]) {
   const started = Date.now();
-  console.log("[1D EXPERIMENT] Started | frozen diagnostic engine | V28 gating=OFF");
+  console.log("[1D EXPERIMENT] Started | reset 7-day diagnostic | frozen engine | V28 gating=OFF");
 
   const active = activeOverride ?? await getActiveSignals();
   const results: any[] = [];
@@ -21,6 +21,8 @@ export async function run1DTrendExperiment(activeOverride?: any[]) {
     try {
       const daily = await getCandles(krakenPairFormat(`${pair}/USD`), 1440, dailySince);
       await sleep(API_DELAY_MS);
+      const currentPrice = await getCurrentPrice(krakenPairFormat(`${pair}/USD`));
+      await sleep(API_DELAY_MS);
       const c4 = await getCandles(krakenPairFormat(`${pair}/USD`), 240);
       await sleep(API_DELAY_MS);
 
@@ -29,17 +31,19 @@ export async function run1DTrendExperiment(activeOverride?: any[]) {
         continue;
       }
 
+      const latestDaily = daily.at(-1)!;
       const result = evaluate1DTrend(daily);
       const before = (await get1DTrendState())[pair]?.state;
-      const recorded = await record1DTrend(pair, result, active, daily.at(-1)!.timestamp);
+      const recorded = await record1DTrend(pair, result, active, latestDaily.timestamp);
       const fourH = get4HEmaDiagnostic(c4);
+      const ageHours = (Date.now() - latestDaily.timestamp) / (60 * 60 * 1000);
 
       if (recorded.flip && before) {
         await send1DTrendFlipAlert(pair, before, recorded.state, result);
       }
 
       console.log(
-        `[1D EXPERIMENT] ${pair} — ${recorded.state} | candidate=${result.candidateState} | structure=${result.structure.label} | EMA=${result.ema.alignment} | 5/13=${result.fast513.direction} | ADX=${result.adx} | momentum=${result.momentum.direction}/${result.momentum.state} | 4H 5/13=${fourH.label} | price=${result.price}`
+        `[1D EXPERIMENT] ${pair} — ${recorded.state} | candidate=${result.candidateState} | structure=${result.structure.label} | EMA=${result.ema.alignment} | 5/13=${result.fast513.direction} | ADX=${result.adx} | momentum=${result.momentum.direction}/${result.momentum.state} | 4H 5/13=${fourH.label} | latestDaily=${new Date(latestDaily.timestamp).toISOString()} close=${latestDaily.close} ageHours=${ageHours.toFixed(2)} | ticker=${currentPrice}`
       );
 
       results.push({
@@ -47,8 +51,12 @@ export async function run1DTrendExperiment(activeOverride?: any[]) {
         state: recorded.state,
         candidate: result.candidateState,
         flip: recorded.flip,
-        observationTimestamp: daily.at(-1)!.timestamp,
+        observationTimestamp: latestDaily.timestamp,
         price: result.price,
+        currentTickerPrice: currentPrice,
+        latestDailyClose: latestDaily.close,
+        latestDailyTimestamp: latestDaily.timestamp,
+        latestDailyAgeHours: ageHours,
         structure: result.structure,
         ema: result.ema,
         fast513: result.fast513,
@@ -68,6 +76,7 @@ export async function run1DTrendExperiment(activeOverride?: any[]) {
     success: true,
     experiment: "1D frozen trend engine",
     startedAt: new Date(started).toISOString(),
+    resetAt: new Date(started).toISOString(),
     v28Gating: false,
     results,
   };
