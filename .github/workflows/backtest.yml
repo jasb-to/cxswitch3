@@ -10,15 +10,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: |
-          python - <<'PY'
-          p='scripts/backtest.mjs'
-          s=open(p).read()
-          s=s.replace("if(!p.length||dir==='LONG'?x.price>p.at(-1).price:x.price<p.at(-1).price)", "if(!p.length || (dir==='LONG' ? x.price>p.at(-1).price : x.price<p.at(-1).price))")
-          open(p,'w').write(s)
-          PY
-          node scripts/backtest.mjs
-      - name: Research ZLSMA + Chandelier 6-month combinations
-        run: node scripts/research-zlsma-ce-6m.mjs
       - name: FINAL research V28 anchor lifecycle test
         run: node scripts/research-v28-anchor-final.mjs
