@@ -10,13 +10,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: FINAL research V28 anchor lifecycle test
-        run: |
+      - run: |
           python - <<'PY'
-          p='scripts/research-v28-anchor-final.mjs'
+          p='scripts/backtest.mjs'
           s=open(p).read()
-          s=s.replace('const total=c.length,foldSize=42,trainSize=63','const total=c.length,foldSize=252,trainSize=504')
+          s=s.replace("if(!p.length||dir==='LONG'?x.price>p.at(-1).price:x.price<p.at(-1).price)", "if(!p.length || (dir==='LONG' ? x.price>p.at(-1).price : x.price<p.at(-1).price))")
           open(p,'w').write(s)
-          print([x for x in s.splitlines() if 'foldSize=' in x])
           PY
-          node scripts/research-v28-anchor-final.mjs
+          node scripts/backtest.mjs
+      - name: Research ZLSMA + Chandelier 6-month combinations
+        run: node scripts/research-zlsma-ce-6m.mjs
