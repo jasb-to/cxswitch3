@@ -11,4 +11,6 @@ jobs:
         with:
           node-version: 22
       - name: FINAL research V28 anchor lifecycle test
-        run: node scripts/research-v28-anchor-final.mjs
+        run: |
+          sed -i 's/const foldSize=42,trainSize=63/const foldSize=252,trainSize=504/' scripts/research-v28-anchor-final.mjs
+          node scripts/research-v28-anchor-final.mjs
