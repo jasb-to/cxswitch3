@@ -18,3 +18,4 @@ jobs:
           open(p,'w').write(s)
           PY
           node scripts/backtest.mjs
+      - run: node scripts/mt6m-backtest.mjs
