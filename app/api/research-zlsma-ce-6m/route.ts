@@ -13,7 +13,7 @@ function run(c:C[],lead=3,prox=0.35,volMult=1.5,mode:'confirmed'|'presignal'='co
  const closes=c.map(x=>x.close), vols=c.map(x=>x.volume), atrs=atrSeries(c,22), z=zlsma(closes,50), e5=ema(closes,5),e13=ema(closes,13);
  let longStop:number|null=null,shortStop:number|null=null,dir=1,prevDir=1;let tr:any=null;const trades:any[]=[];let preBuyAge=999,preSellAge=999;
  for(let i=0;i<c.length;i++){
-  const x=c[i],a=atrs[i]; if(a==null||i<50){continue}
+  const x=c[i],a=atrs[i]; if(a==null||i<50)continue;
   const atrCE=3*a; const longRaw=highest(closes,22)-atrCE, shortRaw=lowest(closes,22)+atrCE;
   const lprev=longStop??longRaw, sprev=shortStop??shortRaw;
   longStop=x.close>lprev?Math.max(longRaw,lprev):longRaw;
@@ -25,23 +25,16 @@ function run(c:C[],lead=3,prox=0.35,volMult=1.5,mode:'confirmed'|'presignal'='co
   const preBuy=buyProx&&dir===-1&&volOK, preSell=sellProx&&dir===1&&volOK;
   preBuyAge=preBuy?0:preBuyAge+1; preSellAge=preSell?0:preSellAge+1;
   const preBuyPersist=preBuyAge<=lead, preSellPersist=preSellAge<=lead;
-  // Manage an active trade using the script's trailing CE stop. No same-bar lookahead: exits use current bar extremes after entry.
   if(tr){
-    if(tr.dir==='LONG'){if(x.low<=longStop!){trades.push({...tr,exit:x.close,r:(x.close-tr.entry)/Math.abs(tr.entry-tr.stop),reason:'CE_STOP',bars:i-tr.i});tr=null;continue}}
-    else {if(x.high>=shortStop!){trades.push({...tr,exit:x.close,r:(tr.entry-x.close)/Math.abs(tr.entry-tr.stop),reason:'CE_STOP',bars:i-tr.i});tr=null;continue}}
-    if((tr.dir==='LONG'&&confirmedSell)||(tr.dir==='SHORT'&&confirmedBuy)){const r=tr.dir==='LONG'?(x.close-tr.entry)/Math.abs(tr.entry-tr.stop):(tr.entry-x.close)/Math.abs(tr.entry-tr.stop);trades.push({...tr,exit:x.close,r,reason:'REVERSE',bars:i-tr.i});tr=null;}
+    if(tr.dir==='LONG'&&x.low<=longStop!){trades.push({...tr,exit:x.close,r:(x.close-tr.entry)/Math.abs(tr.entry-tr.stop),reason:'CE_STOP',bars:i-tr.i});tr=null;continue}
+    if(tr&&tr.dir==='SHORT'&&x.high>=shortStop!){trades.push({...tr,exit:x.close,r:(tr.entry-x.close)/Math.abs(tr.entry-tr.stop),reason:'CE_STOP',bars:i-tr.i});tr=null;continue}
+    if(tr&&((tr.dir==='LONG'&&confirmedSell)||(tr.dir==='SHORT'&&confirmedBuy))){const r=tr.dir==='LONG'?(x.close-tr.entry)/Math.abs(tr.entry-tr.stop):(tr.entry-x.close)/Math.abs(tr.entry-tr.stop);trades.push({...tr,exit:x.close,r,reason:'REVERSE',bars:i-tr.i});tr=null;}
   }
-  if(!tr){
-    let sig:null|'LONG'|'SHORT'=null;
-    if(mode==='confirmed'){if(confirmedBuy)sig='LONG';else if(confirmedSell)sig='SHORT'}
-    else {if(preBuyPersist)sig='LONG';else if(preSellPersist)sig='SHORT'}
-    if(sig){const stop=sig==='LONG'?longStop!:shortStop!;const risk=Math.abs(x.close-stop);if(risk>0)tr={dir:sig,entry:x.close,stop,i}}
-  }
+  if(!tr){let sig:null|'LONG'|'SHORT'=null;if(mode==='confirmed'){if(confirmedBuy)sig='LONG';else if(confirmedSell)sig='SHORT'}else{if(preBuyPersist)sig='LONG';else if(preSellPersist)sig='SHORT'}if(sig){const stop=sig==='LONG'?longStop!:shortStop!;const risk=Math.abs(x.close-stop);if(risk>0)tr={dir:sig,entry:x.close,stop,i}}}
  }
  if(tr){const x=c.at(-1)!;const r=tr.dir==='LONG'?(x.close-tr.entry)/Math.abs(tr.entry-tr.stop):(tr.entry-x.close)/Math.abs(tr.entry-tr.stop);trades.push({...tr,exit:x.close,r,reason:'END',bars:c.length-1-tr.i})}
  const wins=trades.filter(t=>t.r>0).length,losses=trades.length-wins,gp=trades.filter(t=>t.r>0).reduce((s,t)=>s+t.r,0),gl=-trades.filter(t=>t.r<=0).reduce((s,t)=>s+t.r,0);
  return {trades,wins,losses,winRate:trades.length?100*wins/trades.length:0,netR:trades.reduce((s,t)=>s+t.r,0),pf:gl?gp/gl:Infinity,avgR:trades.length?trades.reduce((s,t)=>s+t.r,0)/trades.length:0,avgBars:trades.length?trades.reduce((s,t)=>s+t.bars,0)/trades.length:0};
 }
 async function fetchPair(pair:string,tf:string){const u=`https://futures.kraken.com/api/charts/v1/trade/${PAIRS[pair]}/${tf}?from=${Math.floor((START-10*86400000)/1000)}&to=${Math.floor(END/1000)}`;const r=await fetch(u,{cache:'no-store'});if(!r.ok)throw new Error(`${pair} ${tf} ${r.status}`);const d=await r.json();return (d.candles||[]).map((x:any)=>({timestamp:Number(x.time),open:+x.open,high:+x.high,low:+x.low,close:+x.close,volume:+x.volume})).filter((x:C)=>x.timestamp>=START&&x.timestamp<=END)}
-export async function GET(){const result:any={period:{start:new Date(START).toISOString(),end:new Date(END).toISOString()},note:'Research only. Pine v6 ZLSMA + Chandelier Exit replication. Exact defaults: ZLSMA 50, CE ATR 22 x3, close extremums, EMA 5/13. Confirmed mode enters on CE direction flip; exits on trailing CE stop or reverse signal. Pre-signal mode tests the script pre-signal logic as an early entry. No production strategy changes.'};
- for(const tf of ['4h','1h']){result[tf]={};for(const pair of Object.keys(PAIRS)){const c=await fetchPair(pair,tf);result[tf][pair]={candles:c.length,confirmed:run(c,3,.35,1.5,'confirmed'),presignal:run(c,3,.35,1.5,'presignal')}}return NextResponse.json(result)}
+export async function GET(){const result:any={period:{start:new Date(START).toISOString(),end:new Date(END).toISOString()},note:'Research only. Pine v6 ZLSMA + Chandelier Exit replication. Defaults: ZLSMA 50, CE ATR 22 x3, close extremums, EMA 5/13. Confirmed mode enters on CE direction flip; exits on trailing CE stop or reverse signal. Pre-signal mode tests the script pre-signal logic as an early entry. No production strategy changes.'};for(const tf of ['4h','1h']){result[tf]={};for(const pair of Object.keys(PAIRS)){const c=await fetchPair(pair,tf);result[tf][pair]={candles:c.length,confirmed:run(c,3,.35,1.5,'confirmed'),presignal:run(c,3,.35,1.5,'presignal')}}}return NextResponse.json(result)}
