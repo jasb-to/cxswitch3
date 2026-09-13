@@ -1,0 +1,1 @@
+const u='https://futures.kraken.com/api/charts/v1/trade/PF_XBTUSD?interval=4h&from=1773360000&to=1789344000';const r=await fetch(u);const j=await r.json();console.log(JSON.stringify({status:r.status,keys:Object.keys(j),sample:j.candles?.[0],dataSample:j.data?.[0],resultSample:j.result?.[0]},null,2));
