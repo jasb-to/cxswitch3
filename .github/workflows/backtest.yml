@@ -12,5 +12,11 @@ jobs:
           node-version: 22
       - name: FINAL research V28 anchor lifecycle test
         run: |
-          sed -i 's/const foldSize=42,trainSize=63/const foldSize=252,trainSize=504/' scripts/research-v28-anchor-final.mjs
+          python - <<'PY'
+          p='scripts/research-v28-anchor-final.mjs'
+          s=open(p).read()
+          s=s.replace('const total=c.length,foldSize=42,trainSize=63','const total=c.length,foldSize=252,trainSize=504')
+          open(p,'w').write(s)
+          print([x for x in s.splitlines() if 'foldSize=' in x])
+          PY
           node scripts/research-v28-anchor-final.mjs
