@@ -18,13 +18,3 @@ jobs:
           open(p,'w').write(s)
           PY
           node scripts/backtest.mjs
-      - run: |
-          python - <<'PY'
-          import re
-          p='scripts/mt6m-backtest.mjs'
-          s=open(p).read()
-          new="""async function get(p){const syms={BTC:'PF_XBTUSD',ETH:'PF_ETHUSD',SOL:'PF_SOLUSD',HYPE:'PF_HYPEUSD'};const u='https://futures.kraken.com/api/charts/v1/trade/'+syms[p]+'/4h';const j=await (await fetch(u+'?from='+Math.floor((START-30*864e5)/1000)+'&to='+Math.floor(END/1000))).json();return (j.candles||[]).map(x=>({timestamp:+x.time,open:+x.open,high:+x.high,low:+x.low,close:+x.close,volume:+x.volume})).filter(x=>x.timestamp>=START&&x.timestamp<=END).sort((a,b)=>a.timestamp-b.timestamp)}\nconst modes="""
-          s=re.sub(r"async function get\(p\)\{.*?\}\nconst modes=",new,s,flags=re.S)
-          open(p,'w').write(s)
-          PY
-          node scripts/mt6m-backtest.mjs
