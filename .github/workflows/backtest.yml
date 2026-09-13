@@ -18,7 +18,5 @@ jobs:
           open(p,'w').write(s)
           PY
           node scripts/backtest.mjs
-      - name: Diagnose Kraken Futures candle response
-        run: node scripts/diag-kraken-futures.mjs
-      - name: Research V28 vs CE hybrid six-month test
-        run: node scripts/research-v28-ce-hybrid-6m-v2.mjs
+      - name: Research ZLSMA + Chandelier 6-month combinations
+        run: node scripts/research-zlsma-ce-6m.mjs
