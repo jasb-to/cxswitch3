@@ -19,4 +19,4 @@ jobs:
           PY
           node scripts/backtest.mjs
       - name: Research V28 vs CE hybrid six-month test
-        run: node scripts/research-v28-ce-hybrid-6m.mjs
+        run: node scripts/research-v28-ce-hybrid-6m-v2.mjs
