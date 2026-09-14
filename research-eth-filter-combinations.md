@@ -1,0 +1,1 @@
+Research-only test: ETH LONG Trend Aligned, Positive Momentum, High Volatility individually, pairwise, and all-three combined. Holdout Aug 3-Sep 14 2026. No production implementation.
