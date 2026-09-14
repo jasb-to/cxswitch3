@@ -1,0 +1,1 @@
+Research-only trigger for the HYPE zone walk-forward test. No production strategy changes.
