@@ -12,3 +12,4 @@ jobs:
           node-version: 22
       - run: node scripts/research-hype-comparison.mjs
       - run: node scripts/research-hype-reaction-walkforward.mjs
+      - run: node scripts/research-hype-reaction-walkforward-v2.mjs
