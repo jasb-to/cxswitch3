@@ -1,7 +1,7 @@
 name: Fixed hypothesis holdout validation
 on:
-  push:
-    branches: [research/holdout-validation]
+  pull_request:
+    branches: [main]
 jobs:
   research:
     runs-on: ubuntu-latest
