@@ -20,3 +20,5 @@ jobs:
           node scripts/backtest.mjs
       - name: Research ZLSMA + Chandelier 6-month combinations
         run: node scripts/research-zlsma-ce-6m.mjs
+      - name: Research forensic TL interactions
+        run: node scripts/research-tl-forensic.mjs
