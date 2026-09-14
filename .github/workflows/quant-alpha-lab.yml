@@ -2,6 +2,8 @@ name: Quant alpha lab research
 on:
   push:
     branches: [research/quant-alpha-lab]
+  pull_request:
+    branches: [main]
 jobs:
   research:
     runs-on: ubuntu-latest
