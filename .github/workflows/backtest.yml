@@ -21,4 +21,5 @@ jobs:
       - name: Research ZLSMA + Chandelier 6-month combinations
         run: node scripts/research-zlsma-ce-6m.mjs
       - name: Research forensic TL interactions
+        if: always()
         run: node scripts/research-tl-forensic.mjs
