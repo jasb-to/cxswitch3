@@ -4,6 +4,10 @@ on:
     paths:
       - 'scripts/research-btcd-horizontal-walkforward.mjs'
       - '.github/workflows/btcd-horizontal-walkforward.yml'
+  pull_request:
+    paths:
+      - 'scripts/research-btcd-horizontal-walkforward.mjs'
+      - '.github/workflows/btcd-horizontal-walkforward.yml'
   workflow_dispatch:
 jobs:
   research:
