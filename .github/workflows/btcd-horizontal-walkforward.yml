@@ -1,0 +1,22 @@
+name: BTC.D Horizontal Walk-Forward Research
+on:
+  push:
+    paths:
+      - 'scripts/research-btcd-horizontal-walkforward.mjs'
+      - '.github/workflows/btcd-horizontal-walkforward.yml'
+  workflow_dispatch:
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run BTC.D research
+        run: node scripts/research-btcd-horizontal-walkforward.mjs | tee btcd-horizontal-results.json
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: btcd-horizontal-results
+          path: btcd-horizontal-results.json
