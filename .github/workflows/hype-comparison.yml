@@ -10,6 +10,4 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node scripts/research-hype-comparison.mjs
-      - run: node scripts/research-hype-reaction-walkforward.mjs
       - run: node scripts/research-hype-reaction-walkforward-v2.mjs
