@@ -2,6 +2,9 @@ name: Asset independent strategy research
 on:
   push:
     branches: [research/asset-independent-strategies-2026-09-14]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
 jobs:
   research:
     runs-on: ubuntu-latest
