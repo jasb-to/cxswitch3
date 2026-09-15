@@ -12,9 +12,11 @@ jobs:
           node-version: 22
       - run: node scripts/research-sol-hype-stage2.mjs > research/sol-hype-stage2-results.json
       - run: node scripts/research-sol-join-sensitivity.mjs > research/sol-join-sensitivity.json
+      - run: node scripts/research-sol-hype-next.mjs > research/sol-hype-next-results.json
       - uses: actions/upload-artifact@v4
         with:
-          name: sol-hype-stage2-results
+          name: sol-hype-next-results
           path: |
             research/sol-hype-stage2-results.json
             research/sol-join-sensitivity.json
+            research/sol-hype-next-results.json
