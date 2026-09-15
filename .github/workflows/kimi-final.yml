@@ -2,6 +2,8 @@ name: Kimi final BTC SOL HYPE research
 on:
   push:
     branches: [research/kimi-btc-sol-hype-final-20260915]
+  pull_request:
+    branches: [main]
 jobs:
   research:
     runs-on: ubuntu-latest
