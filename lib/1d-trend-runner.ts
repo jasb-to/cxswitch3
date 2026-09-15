@@ -1,7 +1,6 @@
 import { getCandles, krakenPairFormat, getCurrentPrice } from "@/lib/kraken";
 import { evaluate1DTrend } from "@/lib/1d-trend-engine";
 import { get1DTrendState, record1DTrend } from "@/lib/1d-trend-state";
-import { send1DTrendFlipAlert } from "@/lib/telegram-1d-trend";
 import { getActiveSignals } from "@/lib/state";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 
@@ -11,7 +10,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function run1DTrendExperiment(activeOverride?: any[]) {
   const started = Date.now();
-  console.log("[1D EXPERIMENT] Started | reset 7-day diagnostic | frozen engine | V28 gating=OFF");
+  console.log("[1D EXPERIMENT] Started | reset 7-day diagnostic | frozen engine | V28 gating=OFF | Telegram trading alerts=OFF");
 
   const active = activeOverride ?? await getActiveSignals();
   const results: any[] = [];
@@ -38,8 +37,11 @@ export async function run1DTrendExperiment(activeOverride?: any[]) {
       const fourH = get4HEmaDiagnostic(c4);
       const ageHours = (Date.now() - latestDaily.timestamp) / (60 * 60 * 1000);
 
-      if (recorded.flip && before) {
-        await send1DTrendFlipAlert(pair, before, recorded.state, result);
+      // The 1D engine is research/diagnostic only. Do not send it as a trading alert:
+      // it has no execution-grade entry/SL/TP model. Real trading alerts must come
+      // through the V28/independent execution paths, which always carry risk levels.
+      if (recorded.flip) {
+        console.log(`[1D EXPERIMENT] ${pair} — trend flip recorded: ${before ?? "—"} -> ${recorded.state} | diagnostic only; Telegram alert suppressed`);
       }
 
       console.log(
