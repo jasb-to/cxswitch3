@@ -1,0 +1,21 @@
+name: Strongest BTC SOL HYPE model research
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research/strongest-models-v1-20260915
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Run strongest model backtest
+        run: node scripts/research-strongest-models-v1.mjs > strongest-models-results.json
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: strongest-models-results-v1
+          path: strongest-models-results.json
