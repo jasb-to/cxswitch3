@@ -14,3 +14,4 @@ jobs:
         with:
           node-version: 20
       - run: node scripts/research-asset-independent-strategies-v2.mjs
+      - run: node scripts/research-eth-strategy.mjs
