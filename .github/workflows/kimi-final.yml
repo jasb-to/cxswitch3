@@ -12,7 +12,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node scripts/research-kimi-btc-sol-hype.mjs > research/kimi-final-results.json
+      - name: Run research
+        run: |
+          python - <<'PY'
+          p='scripts/research-kimi-btc-sol-hype.mjs'
+          s=open(p).read()
+          s=s.replace("Math.abs(x.l-q.c))});", "Math.abs(x.l-q.c))}));")
+          open(p,'w').write(s)
+          PY
+          node scripts/research-kimi-btc-sol-hype.mjs > research/kimi-final-results.json
       - uses: actions/upload-artifact@v4
         with:
           name: kimi-final-results
