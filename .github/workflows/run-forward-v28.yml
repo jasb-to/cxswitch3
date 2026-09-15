@@ -14,11 +14,10 @@ jobs:
       - run: npm install --no-audit --no-fund
       - name: Run backtest and save results
         run: |
-          npx --yes tsx -e "import { GET } from './app/api/backtest-forward-regime/route.ts'; const r = await GET(); const text = await r.text(); console.log(text); require('node:fs').writeFileSync('forward-regime-results.json', text);"
+          npx --yes tsx -e "(async()=>{ const { GET } = await import('./app/api/backtest-forward-regime/route.ts'); const r = await GET(); const text = await r.text(); console.log(text); require('node:fs').writeFileSync('forward-regime-results.json', text); })().catch(e=>{ console.error(e); process.exit(1); })"
       - name: Upload results
         uses: actions/upload-artifact@v4
         with:
           name: forward-regime-results
           path: forward-regime-results.json
           retention-days: 30
-
