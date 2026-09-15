@@ -41,3 +41,5 @@ jobs:
 
       - name: Deploy production
         run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+
+# Deployment path intentionally bypasses the unreliable Git-triggered Vercel webhook.
