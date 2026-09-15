@@ -1,0 +1,17 @@
+name: Solid asset strategy research
+on:
+  push:
+    branches: [research/solid-asset-strategies-20260915]
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/research-solid-asset-strategies.mjs > solid-asset-strategies-results.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: solid-asset-strategies-results
+          path: solid-asset-strategies-results.json
