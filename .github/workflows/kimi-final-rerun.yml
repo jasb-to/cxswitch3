@@ -1,0 +1,19 @@
+name: Kimi diagnostic rerun
+on:
+  push:
+    branches: [research/kimi-btc-sol-hype-final-20260915]
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Repair known brace typo
+        run: python -c "p='scripts/research-kimi-btc-sol-hype.mjs';s=open(p).read();s=s.replace('return{overlapDays:rows.length,daysIn:inR.length,pctTimeIn:+100*inR.length/(rows.length||1),baseline:perf(all),gate:perf(inR),rows}}}','return{overlapDays:rows.length,daysIn:inR.length,pctTimeIn:+100*inR.length/(rows.length||1),baseline:perf(all),gate:perf(inR),rows}}');open(p,'w').write(s)"
+      - run: node scripts/research-kimi-btc-sol-hype.mjs > research/kimi-final-results-rerun.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kimi-final-results-rerun
+          path: research/kimi-final-results-rerun.json
