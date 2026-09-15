@@ -1,0 +1,24 @@
+name: Kimi diagnostic rerun
+on:
+  push:
+    branches: [research/kimi-btc-sol-hype-final-20260915]
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/research-btc-mr-paired.mjs > research/btc-mr-paired-results.json
+      - run: node scripts/research-sol-hype-stage2.mjs > research/sol-hype-stage2-results.json
+      - run: node scripts/research-sol-join-sensitivity.mjs > research/sol-join-sensitivity.json
+      - run: node scripts/research-sol-hype-next.mjs > research/sol-hype-next-results.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: btc-mr-paired-and-sol-hype-results
+          path: |
+            research/btc-mr-paired-results.json
+            research/sol-hype-stage2-results.json
+            research/sol-join-sensitivity.json
+            research/sol-hype-next-results.json

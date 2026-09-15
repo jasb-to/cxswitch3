@@ -1,0 +1,39 @@
+name: Kimi final BTC SOL HYPE research
+on:
+  push:
+    branches: [research/kimi-btc-sol-hype-final-20260915]
+  pull_request:
+    branches: [main]
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fix research syntax
+        run: python -c "p='scripts/research-kimi-btc-sol-hype.mjs';s=open(p).read();s=s.replace('return{overlapDays:rows.length,daysIn:inR.length,pctTimeIn:+100*inR.length/(rows.length||1),baseline:perf(all),gate:perf(inR),rows}}}','return{overlapDays:rows.length,daysIn:inR.length,pctTimeIn:+100*inR.length/(rows.length||1),baseline:perf(all),gate:perf(inR),rows}}');open(p,'w').write(s)"
+      - name: Patch BTC MR output
+        run: perl -pi -e 's/result\.R1\.5/result["R1.5"]/g' scripts/research-btc-mr-paired.mjs
+      - name: Patch BTC MR data fetch
+        run: |
+          python - <<'PY'
+          import re
+          p='scripts/research-btc-mr-paired.mjs'
+          s=open(p).read()
+          new="""async function candles(iv,a,b){let out=[],from=Math.floor(a/1000);for(let n=0;n<40;n++){const u=`https://futures.kraken.com/api/charts/v1/trade/${SYMBOL}/${iv===240?'4h':'1d'}?from=${from}&to=${Math.floor(b/1000)}&count=720`;const j=await (await fetch(u)).json();const r=j.candles||[];if(!r.length)break;out.push(...r.map(x=>({t:+x.time,o:+x.open,h:+x.high,l:+x.low,c:+x.close})));const z=r.at(-1)?.time;if(!z||z>=b||!j.more_candles)break;from=Math.floor(z/1000)+1}return[...new Map(out.map(x=>[x.t,x])).values()].sort((a,b)=>a.t-b.t)}"""
+          s=re.sub(r'async function candles\(.*?\nfunction ema',new+'\nfunction ema',s,count=1,flags=re.S)
+          s=s.replace('const result={meta:', 'console.error("BTC_MR_DATA",four.length,one.length,rows.length,d0.length);const result={meta:')
+          open(p,'w').write(s)
+          PY
+      - name: Run paired BTC mean reversion
+        run: node scripts/research-btc-mr-paired.mjs > research/btc-mr-paired-results.json
+      - name: Run research
+        run: node scripts/research-kimi-btc-sol-hype.mjs > research/kimi-final-results.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kimi-final-results-v9
+          path: |
+            research/btc-mr-paired-results.json
+            research/kimi-final-results.json

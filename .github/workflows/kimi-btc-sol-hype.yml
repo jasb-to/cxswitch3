@@ -1,0 +1,18 @@
+name: Kimi BTC SOL HYPE research
+on:
+  push:
+    branches: [research/kimi-btc-sol-hype-20260915]
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/research-kimi-btc-sol-hype.mjs > research/kimi-btc-sol-hype-results.json
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: kimi-btc-sol-hype-results
+          path: research/kimi-btc-sol-hype-results.json
