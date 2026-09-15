@@ -14,9 +14,13 @@ jobs:
           node-version: 22
       - name: Fix research syntax
         run: python -c "p='scripts/research-kimi-btc-sol-hype.mjs';s=open(p).read();s=s.replace('return{overlapDays:rows.length,daysIn:inR.length,pctTimeIn:+100*inR.length/(rows.length||1),baseline:perf(all),gate:perf(inR),rows}}}','return{overlapDays:rows.length,daysIn:inR.length,pctTimeIn:+100*inR.length/(rows.length||1),baseline:perf(all),gate:perf(inR),rows}}');open(p,'w').write(s)"
+      - name: Run paired BTC mean reversion
+        run: node scripts/research-btc-mr-paired.mjs > research/btc-mr-paired-results.json
       - name: Run research
         run: node scripts/research-kimi-btc-sol-hype.mjs > research/kimi-final-results.json
       - uses: actions/upload-artifact@v4
         with:
-          name: kimi-final-results-v2
-          path: research/kimi-final-results.json
+          name: kimi-final-results-v3
+          path: |
+            research/btc-mr-paired-results.json
+            research/kimi-final-results.json
