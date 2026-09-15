@@ -1,12 +1,14 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "corepack enable && corepack prepare pnpm@9.15.9 --activate && pnpm install --frozen-lockfile",
   "git": {
     "deploymentEnabled": {
       "main": true
     }
   },
   "crons": [
-    { "path": "/api/cron/independent", "schedule": "*/5 * * * *" }
+    { "path": "/api/cron", "schedule": "*/10 * * * *" },
+    { "path": "/api/cron/independent", "schedule": "*/10 * * * *" }
   ],
   "trailingSlash": false
 }
