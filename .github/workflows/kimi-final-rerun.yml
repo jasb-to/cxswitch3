@@ -10,10 +10,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Repair known brace typo
-        run: python -c "p='scripts/research-kimi-btc-sol-hype.mjs';s=open(p).read();s=s.replace('return{overlapDays:rows.length,daysIn:inR.length,pctTimeIn:+100*inR.length/(rows.length||1),baseline:perf(all),gate:perf(inR),rows}}}','return{overlapDays:rows.length,daysIn:inR.length,pctTimeIn:+100*inR.length/(rows.length||1),baseline:perf(all),gate:perf(inR),rows}}');open(p,'w').write(s)"
-      - run: node scripts/research-kimi-btc-sol-hype.mjs > research/kimi-final-results-rerun.json
+      - run: node scripts/research-sol-hype-stage2.mjs > research/sol-hype-stage2-results.json
       - uses: actions/upload-artifact@v4
         with:
-          name: kimi-final-results-rerun
-          path: research/kimi-final-results-rerun.json
+          name: sol-hype-stage2-results
+          path: research/sol-hype-stage2-results.json
