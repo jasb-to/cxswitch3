@@ -6,9 +6,5 @@
       "main": true
     }
   },
-  "crons": [
-    { "path": "/api/cron", "schedule": "*/10 * * * *" },
-    { "path": "/api/cron/independent", "schedule": "*/10 * * * *" }
-  ],
   "trailingSlash": false
 }
