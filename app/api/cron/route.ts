@@ -8,6 +8,9 @@ import { CXSWITCH_VERSION } from "@/lib/version";
 import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns } from "@/lib/state";
 import { sendAlert } from "@/lib/telegram";
 import { run1DTrendExperiment } from "@/lib/1d-trend-runner";
+import { generateIndependentSignals, getIndependentStrategyConfigs } from "@/lib/independentStrategies";
+import { appendIndependentSignal, getIndependentHistory, independentAlreadyFired } from "@/lib/independentState";
+import { sendIndependentTelegram } from "@/lib/independentTelegram";
 
 export const dynamic="force-dynamic";
 export const revalidate=0;
@@ -20,6 +23,27 @@ const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 const round=(n:number)=>n>=10000?Math.round(n):n>=1000?Math.round(n*10)/10:n>=100?Math.round(n*100)/100:Math.round(n*1000)/1000;
 function sameRecentSignal(history:any[],s:Signal,now:number){return history.some(h=>h.pair===s.pair&&h.direction===s.direction&&h.type===s.type&&now-h.timestamp<ADD_DEDUP_MS&&Math.abs((h.entry-s.entry)/s.entry)<ADD_DEDUP_ENTRY_PCT);}
 function toSignalLike(t:any):Signal{return{...t,scale:t.type,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||"",trend:t.trend||t.direction,location:t.location||"",trigger:t.trigger||""} as Signal;}
+
+async function runIndependentEthStrategies(){
+ const to=Math.floor(Date.now()/1000),from=to-45*86400;
+ const u=`https://futures.kraken.com/api/charts/v1/trade/PI_ETHUSD/4h?from=${from}&to=${to}`;
+ const j=await(await fetch(u,{cache:"no-store"})).json();
+ const candles=(j.candles||[]).map((x:any)=>({timestamp:+x.time,open:+x.open,high:+x.high,low:+x.low,close:+x.close,volume:+x.volume})).filter((x:any)=>Object.values(x).every(Number.isFinite));
+ const strategies=getIndependentStrategyConfigs();
+ if(candles.length<70){console.log(`[INDEPENDENT ETH] insufficient_data candles=${candles.length} strategies=${strategies.map(x=>x.source).join(",")}`);return {status:"insufficient_data",strategies};}
+ const current=candles.at(-1)!.close;
+ const signals=generateIndependentSignals("ETH",candles,current);
+ const results:any[]=[];
+ for(const signal of signals){
+  const source=signal.context?.strategySource||"UNKNOWN",ts=signal.context?.signalCandleTimestamp||0;
+  if(await independentAlreadyFired(source,ts)){results.push({status:"already_logged",strategy:source,id:signal.id});continue;}
+  await appendIndependentSignal(signal);
+  await sendIndependentTelegram(signal);
+  results.push({status:"ALERTED",strategy:source,strategyName:signal.context?.strategyName,direction:signal.direction,id:signal.id});
+ }
+ console.log(`[INDEPENDENT ETH] checked strategies=${strategies.map(x=>x.source).join(",")} generated=${signals.length} results=${results.map(x=>`${x.strategy}:${x.status}`).join(",")||"none"} history=${(await getIndependentHistory()).length}`);
+ return {status:"ok",strategies,results};
+}
 
 export async function GET(request:Request){
  const started=Date.now(),url=new URL(request.url),secret=url.searchParams.get("secret"),auth=request.headers.get("authorization");
@@ -69,6 +93,11 @@ export async function GET(request:Request){
   await run1DTrendExperiment(active);
  } catch (error) {
   console.error(`[1D EXPERIMENT] FATAL — diagnostic run failed without affecting V28`, error);
+ }
+ try {
+  await runIndependentEthStrategies();
+ } catch (error) {
+  console.error(`[INDEPENDENT ETH] FATAL — independent strategies failed without affecting V28`, error);
  }
  console.log("========================================");
  return NextResponse.json({success:true,version:CXSWITCH_VERSION,activeSignals:finalActive.length,marketData:marketData.length,newSignals:newSignals.length,alerts});
