@@ -13,12 +13,7 @@ jobs:
         with:
           node-version: 22
       - name: Fix research syntax
-        run: python - <<'PY'
-          p='scripts/research-kimi-btc-sol-hype.mjs'
-          s=open(p).read()
-          s=s.replace("return{overlapDays:rows.length,daysIn:inR.length,pctTimeIn:+100*inR.length/(rows.length||1),baseline:perf(all),gate:perf(inR),rows}}}", "return{overlapDays:rows.length,daysIn:inR.length,pctTimeIn:+100*inR.length/(rows.length||1),baseline:perf(all),gate:perf(inR),rows}}")
-          open(p,'w').write(s)
-          PY
+        run: python -c "p='scripts/research-kimi-btc-sol-hype.mjs';s=open(p).read();s=s.replace('return{overlapDays:rows.length,daysIn:inR.length,pctTimeIn:+100*inR.length/(rows.length||1),baseline:perf(all),gate:perf(inR),rows}}}','return{overlapDays:rows.length,daysIn:inR.length,pctTimeIn:+100*inR.length/(rows.length||1),baseline:perf(all),gate:perf(inR),rows}}');open(p,'w').write(s)"
       - name: Run research
         run: node scripts/research-kimi-btc-sol-hype.mjs > research/kimi-final-results.json
       - uses: actions/upload-artifact@v4
