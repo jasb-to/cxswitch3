@@ -1,0 +1,24 @@
+name: Run asset regime impact research
+on:
+  push:
+    branches:
+      - research/asset-regime-impact-20260915
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - name: Run regime-conditioned backtest
+        run: |
+          npx --yes tsx scripts/research-asset-regime-impact.mjs > asset-regime-impact-results.json
+          cat asset-regime-impact-results.json
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: asset-regime-impact-results
+          path: asset-regime-impact-results.json
+          retention-days: 30
