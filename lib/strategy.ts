@@ -58,7 +58,13 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  logTlDiag("LONG",longTL);logTlDiag("SHORT",shortTL);
  const test=(dir:"LONG"|"SHORT",tl:TL)=>{if(!tl.valid)return{breakout:false,retest:false,line:0,buf:0,dist:0,freshBeyond:false,alreadyBeyondBuffer:false};const line=lineAt(tl,i),prevLine=lineAt(tl,i-1),buf=Math.max(Math.abs(line)*BREAKOUT_PCT,atr(candles4h)*.35),priceDistance=Math.abs((price-line)/Math.max(Math.abs(line),1)),broke=dir==="LONG"?last.close>line+buf&&prev.close<=prevLine+buf:last.close<line-buf&&prev.close>=prevLine-buf,alreadyBeyondBuffer=dir==="LONG"?last.close>line+buf:last.close<line-buf,retest=dir==="LONG"?last.low<=line*(1+RETEST_PCT)&&last.close>line&&last.close>=prev.close:last.high>=line*(1-RETEST_PCT)&&last.close<line&&last.close<=prev.close;debug.push(`[BREAKOUT BUFFER DIAG] ${pair} | dir=${dir} | TL=${line.toFixed(2)} | price=${last.close.toFixed(2)} | ATR=${atr(candles4h).toFixed(4)} | ATRmult=0.35 | buffer=${buf.toFixed(4)} | bufferPct=${(buf/Math.max(Math.abs(line),1)*100).toFixed(3)}% | priceDistance=${(priceDistance*100).toFixed(3)}% | alreadyBeyondBuffer=${alreadyBeyondBuffer?"YES":"NO"}`);return{breakout:broke||alreadyBeyondBuffer,retest,line,buf,dist:(price-line)/Math.max(Math.abs(line),1),freshBeyond:false,alreadyBeyondBuffer};};
  const L=test("LONG",longTL),S=test("SHORT",shortTL);let dir:"LONG"|"SHORT"|null=null,tl:TL|null=null,breakout=false,retest=false;
- if(structureDir==="LONG"){dir="LONG";tl=longTL;}else if(structureDir==="SHORT"){dir="SHORT";tl=shortTL;}else if(L.breakout&&!S.breakout){dir="LONG";tl=longTL;breakout=true;}else if(S.breakout&&!L.breakout){dir="SHORT";tl=shortTL;breakout=true;}else if(L.retest&&!S.retest){dir="LONG";tl=longTL;retest=true;}else if(S.retest&&!L.retest){dir="SHORT";tl=shortTL;retest=true;}else if(contextDir){dir=contextDir;tl=dir==="LONG"?longTL:shortTL;}
+ if(structureDir==="LONG"){dir="LONG";tl=longTL;breakout=L.breakout;retest=L.retest;}
+ else if(structureDir==="SHORT"){dir="SHORT";tl=shortTL;breakout=S.breakout;retest=S.retest;}
+ else if(L.breakout&&!S.breakout){dir="LONG";tl=longTL;breakout=true;}
+ else if(S.breakout&&!L.breakout){dir="SHORT";tl=shortTL;breakout=true;}
+ else if(L.retest&&!S.retest){dir="LONG";tl=longTL;retest=true;}
+ else if(S.retest&&!L.retest){dir="SHORT";tl=shortTL;retest=true;}
+ else if(contextDir){dir=contextDir;tl=dir==="LONG"?longTL:shortTL;}
  if(!dir||!tl){debug.push("No 4H structural direction");return{debug};}
  if(opposite(pair,dir,activeTrades)){debug.push("Opposite direction active");return{debug};}
  const has=same(pair,dir,activeTrades);
