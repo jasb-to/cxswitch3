@@ -9,6 +9,7 @@ import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, 
 import { getLastBreakout, setLastBreakout } from "@/lib/v28-breakout-state";
 import { sendAlert } from "@/lib/telegram";
 import { run1DTrendExperiment } from "@/lib/1d-trend-runner";
+import { get1DTrendState } from "@/lib/1d-trend-state";
 
 export const dynamic="force-dynamic";
 export const revalidate=0;
@@ -50,6 +51,19 @@ export async function GET(request:Request){
   const snapshot=getMarketSnapshot(trade.pair,c,c,c);snapshot.positionState="ACTIVE";snapshot.positionDirection=trade.direction;snapshot.positionEntry=trade.entry;snapshot.positionStop=trade.stop;snapshot.positionTarget=trade.tp2??trade.target;snapshot.positionTp1=trade.tp1;snapshot.positionTp2=trade.tp2;snapshot.positionTp3=trade.tp3;snapshot.positionTp1HitAt=trade.tp1HitAt;snapshot.positionTp2HitAt=trade.tp2HitAt;snapshot.positionTp3HitAt=trade.tp3HitAt;snapshot.positionThesis=hold.reason;marketData.push(snapshot);
  }catch(e){console.error(`[MANAGE] ${trade.pair} ERROR`,e);}}
  await setActiveSignals(active);
+
+ // The 1D experiment is now live context for V28 entry timing. It still does not
+ // execute trades by itself; V28 supplies the execution-grade entry/SL/TP model.
+ let dailyState:any={};
+ try{
+   await run1DTrendExperiment(active);
+   dailyState=await get1DTrendState();
+   console.log(`[1D LIVE] Regime context loaded for V28: ${PAIRS.map(p=>`${p}=${dailyState[p]?.state||"—"}/${dailyState[p]?.candidateState||"—"}`).join(" | ")}`);
+ }catch(error){
+   console.error(`[1D LIVE] Daily regime refresh failed; V28 will use local 4H context only`,error);
+   try{dailyState=await get1DTrendState();}catch{dailyState={};}
+ }
+
  for(const pair of PAIRS){try{
   const c1=await getCandles(krakenPairFormat(pair+"/USD"),60);await sleep(API_DELAY_MS);const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);await sleep(API_DELAY_MS);const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);await sleep(API_DELAY_MS);
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
@@ -58,7 +72,7 @@ export async function GET(request:Request){
   const structureShift=detectStructureShift(pair,c4);
   const structureRecorded=await recordStructureShiftSnapshot(structureShift);
   console.log(`[STRUCTURE SHIFT] ${pair} — ${structureShift.structure} ${structureShift.state} | protected=${structureShift.protectedLevel?.toFixed(4)??"—"} | break=${structureShift.breakDistanceAtr?.toFixed(2)??"—"} ATR | recorded=${structureRecorded?"YES":"NO"} | ${structureShift.reason}`);
-  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair),lastBreakout=await getLastBreakout(pair);console.log(`[V28 BREAKOUT STATE] ${pair} — ${lastBreakout?`${lastBreakout.direction}@${lastBreakout.price} candle=${lastBreakout.candleIndex} age=${c4.length-1-lastBreakout.candleIndex}`:"NONE"}`);const result=generateSignal(pair,c1,c4,c15,active,price,lastBreakout);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.fourH513=ema513;snapshot.structureShift=structureShift;snapshot.lastBreakout=lastBreakout||null;
+  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair),lastBreakout=await getLastBreakout(pair);console.log(`[V28 BREAKOUT STATE] ${pair} — ${lastBreakout?`${lastBreakout.direction}@${lastBreakout.price} candle=${lastBreakout.candleIndex} age=${c4.length-1-lastBreakout.candleIndex}`:"NONE"}`);const live1D=dailyState[pair]||undefined;const result=generateSignal(pair,c1,c4,c15,active,price,lastBreakout,live1D);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.fourH513=ema513;snapshot.structureShift=structureShift;snapshot.lastBreakout=lastBreakout||null;snapshot.dailyLive=live1D||null;
   const dbg=result.debug||[];dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   if(existing){snapshot.positionState="ACTIVE";snapshot.positionDirection=existing.direction;snapshot.positionEntry=existing.entry;snapshot.positionStop=existing.stop;snapshot.positionTarget=existing.tp2??existing.target;snapshot.positionTp1=existing.tp1;snapshot.positionTp2=existing.tp2;snapshot.positionTp3=existing.tp3;snapshot.positionTp1HitAt=existing.tp1HitAt;snapshot.positionTp2HitAt=existing.tp2HitAt;snapshot.positionTp3HitAt=existing.tp3HitAt;console.log(`[PAIR] ${pair} — POSITION ACTIVE (${existing.direction}) — entry engine paused`);}
   marketData.push(snapshot);const signal=result.signal;if(!signal){if(!existing)console.log(`[PAIR] ${pair} — NO SIGNAL`);continue;}
@@ -80,7 +94,6 @@ export async function GET(request:Request){
  await setMarketData(marketData);
  const finalActive=await getActiveSignals();
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${alerts.length}`);
- try { await run1DTrendExperiment(active); } catch (error) { console.error(`[1D EXPERIMENT] FATAL — diagnostic run failed without affecting V28`, error); }
  console.log("========================================");
  return NextResponse.json({success:true,version:CXSWITCH_VERSION,activeSignals:finalActive.length,marketData:marketData.length,newSignals:newSignals.length,alerts});
 }
