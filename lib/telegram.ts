@@ -1,6 +1,12 @@
 // lib/telegram.ts — canonical CXSwitch alerts
 import { CXSWITCH_VERSION } from "./version";
 
+const formatPrice=(value:any)=>{
+  if(value===undefined||value===null||value==="-")return "-";
+  const n=Number(value);
+  return Number.isFinite(n)?n.toFixed(2):String(value);
+};
+
 export async function sendAlert(signal:any){
   const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
   if(!token||!chatId){console.log("[TELEGRAM DISABLED]",signal.symbol,signal.state);return;}
@@ -16,7 +22,7 @@ export async function sendAlert(signal:any){
   const exitPlan=signal.context?.exitPlan;
   const exitText=exitPlan?`\nExit plan: TP1 ${exitPlan.tp1Pct}% | TP2 ${exitPlan.tp2Pct}% | TP3 ${exitPlan.tp3Pct}%\nAfter TP1: ${exitPlan.afterTp1} | After TP2: ${exitPlan.afterTp2}\nRunner: ${exitPlan.runner}\n`:"";
   const entry0Text=type==="ENTRY_0"?`\nENTRY_0 confirmation: ${signal.confirmation||"1D 5/13 aligned with 4H 5/13 cross"}\nLongevity exit: 4H 8/21 opposite cross\n`:type==="EXIT_0"?`\nENTRY_0 exit: ${signal.reason||"4H 8/21 opposite cross"}\n`:"";
-  const text=`${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${label}\n\n${dir} ${signal.symbol} — ${signal.bias}\nPrice: ${signal.price??signal.entry??"-"}\n\n4H 5/13: ${fourH513}\n${entry0Text}\nTrend: ${signal.trend||signal.bias}\nLocation: ${signal.location||"—"}\nTrigger: ${signal.trigger||"—"}\n\nExpected Move: ${signal.expectedMove??"-"}%\nSL: ${signal.stopLoss??"-"}\nTP1: ${tp1}\nTP2: ${tp2}\nTP3: ${tp3}\nRR: ${signal.rr??"-"}\n${exitText}\nADX: ${signal.adx??"-"}\nRSI: ${signal.rsi??"-"}\nStochK: ${signal.stochK??"-"}\nStochD: ${signal.stochD??"-"}\n\n${signal.reason||""}\n\nTime: ${signal.updatedAt||new Date().toISOString()}`;
+  const text=`${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${label}\n\n${dir} ${signal.symbol} — ${signal.bias}\nPrice: ${formatPrice(signal.price??signal.entry)}\n\n4H 5/13: ${fourH513}\n${entry0Text}\nTrend: ${signal.trend||signal.bias}\nLocation: ${signal.location||"—"}\nTrigger: ${signal.trigger||"—"}\n\nExpected Move: ${signal.expectedMove??"-"}%\nSL: ${formatPrice(signal.stopLoss)}\nTP1: ${formatPrice(tp1)}\nTP2: ${formatPrice(tp2)}\nTP3: ${formatPrice(tp3)}\nRR: ${signal.rr??"-"}\n${exitText}\nADX: ${signal.adx??"-"}\nRSI: ${signal.rsi??"-"}\nStochK: ${signal.stochK??"-"}\nStochD: ${signal.stochD??"-"}\n\n${signal.reason||""}\n\nTime: ${signal.updatedAt||new Date().toISOString()}`;
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text})});
   if(!response.ok){
     const body=await response.text().catch(()=>"");
