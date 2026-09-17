@@ -17,6 +17,7 @@ const CRON_KEY = "cxswitch:last_cron";
 const SNAPSHOT_KEY = "cxswitch:dashboard_snapshot";
 const MIGRATION_FLAG_KEY = "cxswitch:migrated_v01";
 const COOLDOWN_KEY = "cxswitch:cooldowns";
+const TELEGRAM_ALERT_KEY_PREFIX = "cxswitch:telegram_alert:";
 
 export interface ActiveTrade {
   id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2" | "ADD";
@@ -83,6 +84,17 @@ export async function removeActiveSignalById(id:string):Promise<void>{const acti
 export async function updateActiveTradeMilestones(id:string,price:number):Promise<ActiveTrade|undefined>{const active=await getActiveSignals();const trade=active.find(a=>a.id===id);if(!trade)return undefined;const hit=(level:number|undefined,direction:"LONG"|"SHORT")=>level!==undefined&&(direction==="LONG"?price>=level:price<=level);let changed=false;if(!trade.tp1HitAt&&hit(trade.tp1,trade.direction)){trade.tp1HitAt=Date.now();changed=true;console.log(`[MILESTONE] ${trade.pair} — TP1 reached @ ${price}`);}if(!trade.tp2HitAt&&hit(trade.tp2,trade.direction)){trade.tp2HitAt=Date.now();changed=true;console.log(`[MILESTONE] ${trade.pair} — TP2 reached @ ${price}`);}if(!trade.tp3HitAt&&hit(trade.tp3,trade.direction)){trade.tp3HitAt=Date.now();changed=true;console.log(`[MILESTONE] ${trade.pair} — TP3 reached @ ${price}`);}if(changed)await setActiveSignals(active);return trade;}
 export async function getSignalHistory():Promise<SignalHistoryEntry[]>{await runMigrationIfNeeded();return(await redis.get<SignalHistoryEntry[]>(SIGNAL_HISTORY_KEY))||[];}
 export async function setSignalHistory(history:SignalHistoryEntry[]):Promise<void>{await redis.set(SIGNAL_HISTORY_KEY,history);}
+
+// Persistent Telegram alert idempotency. The key represents a lifecycle event
+// (for ENTRY_1/ENTRY_2 this is the breakout record), not a transient signal id.
+export async function claimTelegramAlert(key:string):Promise<boolean>{
+  const redisKey=`${TELEGRAM_ALERT_KEY_PREFIX}${key}`;
+  const result=await redis.set(redisKey,Date.now(),{nx:true});
+  return result === "OK";
+}
+export async function releaseTelegramAlert(key:string):Promise<void>{
+  await redis.del(`${TELEGRAM_ALERT_KEY_PREFIX}${key}`);
+}
 
 // Latest alert is separate from active position state and full history. Card resets only hide
 // the latest-alert pointer for that symbol; they never delete or mutate history/positions.
