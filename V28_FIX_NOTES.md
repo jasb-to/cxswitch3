@@ -1,1 +1,0 @@
-V28 critical state-machine fix: persistent breakout record, ENTRY_2 gating, stale/fresh handoff, and 1D opposition sizing metadata.
