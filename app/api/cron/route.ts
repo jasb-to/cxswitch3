@@ -5,7 +5,7 @@ import { generateSignal, getMarketSnapshot, shouldHold, Signal } from "@/lib/str
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { detectStructureShift, recordStructureShiftSnapshot } from "@/lib/structure-shift";
 import { CXSWITCH_VERSION } from "@/lib/version";
-import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns } from "@/lib/state";
+import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, claimTelegramAlert, releaseTelegramAlert } from "@/lib/state";
 import { getLastBreakout, setLastBreakout } from "@/lib/v28-breakout-state";
 import { sendAlert } from "@/lib/telegram";
 import { run1DTrendExperiment } from "@/lib/1d-trend-runner";
@@ -21,6 +21,14 @@ const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 const round=(n:number)=>n>=10000?Math.round(n):n>=1000?Math.round(n*10)/10:n>=100?Math.round(n*100)/100:Math.round(n*1000)/1000;
 function sameRecentSignal(history:any[],s:Signal,now:number){return history.some(h=>h.pair===s.pair&&h.direction===s.direction&&h.type===s.type&&now-h.timestamp<ADD_DEDUP_MS&&Math.abs((h.entry-s.entry)/s.entry)<ADD_DEDUP_ENTRY_PCT);}
 function toSignalLike(t:any):Signal{return{...t,scale:t.type,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||"",trend:t.trend||t.direction,location:t.location||"",trigger:t.trigger||""} as Signal;}
+function telegramAlertKey(signal:Signal):string{
+  const record=signal.context?.breakoutRecord;
+  if(signal.type==="ENTRY_1"||signal.type==="ENTRY_2"){
+    if(record) return `${signal.pair}:${signal.direction}:${signal.type}:${record.candleIndex}:${record.price}`;
+    return `${signal.pair}:${signal.direction}:${signal.type}:${signal.entry}`;
+  }
+  return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}`;
+}
 
 export async function GET(request:Request){
  const started=Date.now(),url=new URL(request.url),secret=url.searchParams.get("secret"),auth=request.headers.get("authorization");
@@ -58,8 +66,11 @@ export async function GET(request:Request){
   const hasSameDirection=active.some(x=>x.pair===pair&&x.direction===signal.direction);if(signal.type==="ADD"&&!hasSameDirection){console.log(`[PAIR] ${pair} — ADD blocked: no active same-direction position`);continue;}if(existing&&signal.type!=="ADD"){console.log(`[PAIR] ${pair} — signal suppressed because position is already active`);continue;}
   const history=await getSignalHistory();if(signal.type==="ADD"&&sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ADD deduped: same entry condition was alerted recently; waiting for a new retest/price`);continue;}
   const cooldowns=await getCooldowns(),cd=cooldowns[`${pair}_${signal.direction}`];if(cd&&Date.now()<cd){console.log(`[PAIR] ${pair} — COOLDOWN until ${new Date(cd).toISOString()}`);continue;}
+  const alertKey=telegramAlertKey(signal);const claimed=await claimTelegramAlert(alertKey);if(!claimed){console.log(`[PAIR] ${pair} — Telegram deduped: ${signal.type} lifecycle event already alerted (${alertKey})`);continue;}
   const emoji=signal.type==="ENTRY_1"?"🟢":signal.type==="ENTRY_2"?"🟠":"🔵";
-  await sendAlert({symbol:signal.pair,state:signal.type==="ADD"?"ADD":"ENTRY",price:round(signal.entry),bias:signal.direction,stopLoss:round(signal.stop),takeProfit:round(signal.tp2??signal.target),takeProfit1:signal.tp1,takeProfit2:signal.tp2,takeProfit3:signal.tp3,rr:signal.rr,expectedMove:signal.expectedMove,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,trend:signal.trend,location:signal.location,trigger:signal.trigger,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:emoji,context:signal.context,marketPhase:signal.context?.marketPhase,structure:signal.context?.structure,momentum:signal.context?.momentum,pullback:signal.context?.pullback,fourH513Label:ema513.label});
+  try{
+    await sendAlert({symbol:signal.pair,state:signal.type==="ADD"?"ADD":"ENTRY",price:round(signal.entry),bias:signal.direction,stopLoss:round(signal.stop),takeProfit:round(signal.tp2??signal.target),takeProfit1:signal.tp1,takeProfit2:signal.tp2,takeProfit3:signal.tp3,rr:signal.rr,expectedMove:signal.expectedMove,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,trend:signal.trend,location:signal.location,trigger:signal.trigger,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:emoji,context:signal.context,marketPhase:signal.context?.marketPhase,structure:signal.context?.structure,momentum:signal.context?.momentum,pullback:signal.context?.pullback,fourH513Label:ema513.label});
+  }catch(e){await releaseTelegramAlert(alertKey);throw e;}
   if(signal.type==="ENTRY_1"&&signal.context?.breakoutRecord){await setLastBreakout(pair,signal.context.breakoutRecord);console.log(`[V28 BREAKOUT STATE] ${pair} — recorded ${signal.context.breakoutRecord.direction}@${signal.context.breakoutRecord.price} candle=${signal.context.breakoutRecord.candleIndex}`);}
   await appendSignalHistory(signal);newSignals.push(signal);alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.tp2} | TP3 ${signal.tp3}`);
   if(signal.type!=="ADD"&&!existing){await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE] ${pair} — active position created`);}
