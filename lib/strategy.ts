@@ -98,8 +98,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  // confirmed a full momentum reversal. It can therefore support ADD or ENTRY_2.
  const pullbackLong=last.close<last.open&&last.low<=e8.at(-1)!*(1+RETEST_PCT)&&last.close>=e21.at(-1)!&&last.close>=(prev.close*0.985);
  const pullbackShort=last.close>last.open&&last.high>=e8.at(-1)!*(1-RETEST_PCT)&&last.close<=e21.at(-1)!&&last.close<=(prev.close*1.015);
- const continuationLong=pullbackLong&&bull5of13&&e8.at(-1)!>e21.at(-1)!&&!macd.bearishCross&&macd.histogram>=macd.prevHistogram*0.75&&st.k<90;
- const continuationShort=pullbackShort&&bear5of13&&e8.at(-1)!<e21.at(-1)!&&!macd.bullishCross&&macd.histogram<=macd.prevHistogram*0.75&&st.k>10;
+ const continuationLong=pullbackLong&&bull5of13&&e8.at(-1)!>e21.at(-1)!&&!macd.bearishCross&&macd.rising&&st.k<90;
+ const continuationShort=pullbackShort&&bear5of13&&e8.at(-1)!<e21.at(-1)!&&!macd.bullishCross&&macd.falling&&st.k>10;
  let dir:"LONG"|"SHORT"|null=null,tl:TL|null=null,breakout=false,retest=false,continuation=false,early=false;
  if(earlyLong&&!earlyShort){dir="LONG";tl=longTL;early=true;}
  else if(earlyShort&&!earlyLong){dir="SHORT";tl=shortTL;early=true;}
