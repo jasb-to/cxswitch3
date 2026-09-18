@@ -24,7 +24,7 @@ function alertValidity(h:any,price:number,now:number){
 }
 
 function momentumStatus(h:any,m:any){
-  if(!h||h.status!=="ACTIVE"||!m)return null;
+  if(!h||!m)return null;
   const long=h.direction==="LONG";
   const e=m.fourH513;
   const same513=e?.direction===(long?"BULLISH":"BEARISH");
