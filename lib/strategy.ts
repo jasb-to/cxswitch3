@@ -74,15 +74,19 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const nearLow=price<=recentLow*(1+EARLY_NEAR_PCT),nearHigh=price>=recentHigh*(1-EARLY_NEAR_PCT);
  const early5Bull=fourH513.stage==="EARLY_BULLISH_L1"||fourH513.stage==="EARLY_BULLISH_L2"||fourH513.turning||fourH513.crossNow&&fourH513.direction==="BULLISH";
  const early5Bear=fourH513.stage==="EARLY_BEARISH_L1"||fourH513.stage==="EARLY_BEARISH_L2"||fourH513.turning||fourH513.crossNow&&fourH513.direction==="BEARISH";
- const longMomentumTurn=(macd.bullishColour||macd.bullishCross||fourH513.turning)&&ema8Up&&early5Bull;
- const shortMomentumTurn=(macd.bearishColour||macd.bearishCross||fourH513.turning)&&ema8Down&&early5Bear;
- const reboundLong=last.close>last.open&&last.close>prev.close&&last.low<=recentLow*(1+EARLY_NEAR_PCT);
- const reboundShort=last.close<last.open&&last.close<prev.close&&last.high>=recentHigh*(1-EARLY_NEAR_PCT);
+ // EARLY ENTRY 1: 1D context + 4H MACD/5-13 turn. 8/21 only stops chasing.
+ const dailyMomentumBull=String(dailyLive?.momentum?.direction||"").startsWith("BULL");
+ const dailyMomentumBear=String(dailyLive?.momentum?.direction||"").startsWith("BEAR");
+ const longMomentumTurn=macd.bullishColour||macd.bullishCross;
+ const shortMomentumTurn=macd.bearishColour||macd.bearishCross;
+ const ema8to21Pct=Math.abs(e8.at(-1)!-e21.at(-1)!)/Math.max(Math.abs(e21.at(-1)!),1);
+ const long821Transition=e8.at(-1)!>=e21.at(-1)!&&ema8to21Pct<=0.03;
+ const short821Transition=e8.at(-1)!<=e21.at(-1)!&&ema8to21Pct<=0.03;
  const notLongExhausted=r<72&&st.k<88,notShortExhausted=r>28&&st.k>12;
- const longStructure=structureDir==="LONG"||structure.structure==="MIXED"||reboundLong;
- const shortStructure=structureDir==="SHORT"||structure.structure==="MIXED"||reboundShort;
- const earlyLong=(dailyBull||dailyTurnBull)&&longMomentumTurn&&longStructure&&reboundLong&&notLongExhausted;
- const earlyShort=(dailyBear||dailyTurnBear)&&shortMomentumTurn&&shortStructure&&reboundShort&&notShortExhausted;
+ const longStructure=structureDir!=="SHORT"&&structure.structure!=="SHORT";
+ const shortStructure=structureDir!=="LONG"&&structure.structure!=="LONG";
+ const earlyLong=(dailyBull||dailyTurnBull||dailyMomentumBull)&&longMomentumTurn&&early5Bull&&long821Transition&&longStructure&&notLongExhausted;
+ const earlyShort=(dailyBear||dailyTurnBear||dailyMomentumBear)&&shortMomentumTurn&&early5Bear&&short821Transition&&shortStructure&&notShortExhausted;
  debug.push(`[1D] ${pair} | ${dailyState||"LOCAL"}/${dailyCandidate||"—"} | ${dailyDirection}`);
  debug.push(`[4H] ${pair} | MACD ${macd.bullishColour?"BULL_COLOUR":macd.bearishColour?"BEAR_COLOUR":macd.bullishCross?"BULL_CROSS":macd.bearishCross?"BEAR_CROSS":"NEUTRAL"} | 5/13=${fourH513.label} | 8/21=${price>=e21.at(-1)!?"ABOVE":"BELOW"} | early=${earlyLong?"LONG":earlyShort?"SHORT":"NO"}`);
  const prepare=(dir:"LONG"|"SHORT")=>{const primary=buildTrendline(candles4h,dir,60),wasStale=primary.stale,alreadyBeyond=primary.valid&&(dir==="LONG"?price>primary.price*1.02:price<primary.price*0.98);let tl=primary;if(wasStale){const fresh=buildTrendline(candles4h,dir,FRESH_LOOKBACK);if(fresh.valid)tl={...fresh,reason:`${fresh.reason}; fresh ${FRESH_LOOKBACK}-candle structure`};}const buf=tl.valid?Math.max(Math.abs(tl.price)*BREAKOUT_PCT,atr(candles4h)*.35):0,freshBeyond=wasStale&&alreadyBeyond&&tl.valid&&(dir==="LONG"?price>tl.price+buf:price<tl.price-buf);return{tl,wasStale,alreadyBeyond,freshBeyond};};
