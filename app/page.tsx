@@ -4,7 +4,8 @@ import {Clock3,Radio,RefreshCw,ShieldCheck,Copy,Check} from "lucide-react";
 
 type Tone="bull"|"bear"|"neutral"|"warning";
 interface Signal{ id:string;pair:string;direction:"LONG"|"SHORT";type:string;entry:number;stop:number;target:number;tp1?:number;tp2?:number;tp3?:number;rr:number;timestamp:number;expectedMove:number;context?:any;status?:string;exitReason?:string; }
-interface MomentumStatus{icon:"🟢"|"🟡"|"🟠"|"🔴";label:"HEALTHY"|"COOLING"|"DETERIORATING"|"BROKEN";detail:string;}\ninterface Management{status:"healthy"|"warning"|"failed";recommendation:string;reason:string;}
+interface MomentumStatus{icon:"🟢"|"🟡"|"🟠"|"🔴";label:"HEALTHY"|"COOLING"|"DETERIORATING"|"BROKEN";detail:string;}
+interface Management{status:"healthy"|"warning"|"failed";recommendation:string;reason:string;}
 interface Alert extends Signal{status:string;validity:{state:string;reason:string};currentPrice:number;ageMinutes?:number;slToEntryAt?:number;tp1HitAt?:number;tp2HitAt?:number;tp3HitAt?:number;managementAdvice?:Management|null;momentumStatus?:MomentumStatus|null;}
 interface Market{pair:string;price:number;trend:string;location:string;trigger:string;adx:number;rsi:number;stochK:number;stochD:number;trendlinePrice:number;distToTrendline:number|null;momentumState?:string;ema8_4h?:number;ema21_4h?:number;fourH513?:{stage:string;label:string;direction:string;spreadContracting?:boolean};daily513?:{stage:string;label:string;direction:string};structureShift?:{structure:"LONG"|"SHORT"|"NEUTRAL";state:"HEALTHY"|"WEAKENING"|"SHIFT_CONFIRMED"|"WATCHING";protectedLevel:number|null;breakDistanceAtr:number|null;breakConfirmed:boolean;reason:string;};}
 interface System{version?:number;lastCronRun:number;lastCronAgeMs:number|null;activePositions:number;latestAlerts?:number;historyEntries?:number;}
