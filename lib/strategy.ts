@@ -83,55 +83,43 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const dailyMomentumBear=String(dailyLive?.momentum?.direction||"").startsWith("BEAR");
  const dailyBullishOrTurning=dailyBull||dailyTurnBull||dailyMomentumBull;
  const dailyBearishOrTurning=dailyBear||dailyTurnBear||dailyMomentumBear;
- const macdImprovingLong=macd.bullishShift||macd.rising;
- const macdImprovingShort=macd.bearishShift||macd.falling;
- const reclaim8Long=last.close>e8.at(-1)!&&prev.close<=e8.at(-2)!;
- const reclaim8Short=last.close<e8.at(-1)!&&prev.close>=e8.at(-2)!;
- const higherLow=last.low>prev.low&&last.close>prev.close;
- const lowerHigh=last.high<prev.high&&last.close<prev.close;
- const priorHighBreak=last.close>prev.high;
- const priorLowBreak=last.close<prev.low;
- const longTriggers=(macdImprovingLong?1:0)+(early5Bull?1:0)+(reclaim8Long?1:0)+(higherLow?1:0)+(priorHighBreak?1:0);
- const shortTriggers=(macdImprovingShort?1:0)+(early5Bear?1:0)+(reclaim8Short?1:0)+(lowerHigh?1:0)+(priorLowBreak?1:0);
- const ema8to21Pct=Math.abs(e8.at(-1)!-e21.at(-1)!)/Math.max(Math.abs(e21.at(-1)!),1);
- const spreadExpanding=Math.abs(e8.at(-1)!-e21.at(-1)!)>Math.abs(e8.at(-2)!-e21.at(-2)!)*1.35;
- const priceDistanceFrom8=Math.abs(last.close-e8.at(-1)!)/Math.max(Math.abs(e8.at(-1)!),1);
- const atrValue=Math.max(av,1);
- const atrDistanceFrom8=Math.abs(last.close-e8.at(-1)!)/atrValue;
- const longChase=ema8to21Pct>0.06||priceDistanceFrom8>0.035||atrDistanceFrom8>1.75||(spreadExpanding&&ema8to21Pct>0.035);
- const shortChase=longChase;
- const notLongExhausted=r<72&&st.k<88,notShortExhausted=r>28&&st.k>12;
- const hardOpposingLong=structureDir==="SHORT"||structure.structure==="SHORT";
- const hardOpposingShort=structureDir==="LONG"||structure.structure==="LONG";
- const earlyLongA=dailyBullishOrTurning&&longTriggers>=2&&!longChase&&!hardOpposingLong&&notLongExhausted;
- const earlyShortA=dailyBearishOrTurning&&shortTriggers>=2&&!shortChase&&!hardOpposingShort&&notShortExhausted;
- const earlyLongB=longTriggers>=2&&!longChase&&!hardOpposingLong&&notLongExhausted;
- const earlyShortB=shortTriggers>=2&&!shortChase&&!hardOpposingShort&&notShortExhausted;
- let earlyLong=earlyLongA||earlyLongB;
- let earlyShort=earlyShortA||earlyShortB;
- let earlyLongGrade=earlyLongA?"A":earlyLongB?"B":null;
- let earlyShortGrade=earlyShortA?"A":earlyShortB?"B":null;
+
+ // ENTRY_1 follows the original V28 philosophy: location + StochRSI timing.
+ // 1D/4H diagnostics remain available on the symbol cards, but are not stacked gates.
+ const longTriggers=(macd.bullishShift?1:0)+(early5Bull?1:0)+(reclaim8Long?1:0)+(higherLow?1:0)+(priorHighBreak?1:0);
+ const shortTriggers=(macd.bearishShift?1:0)+(early5Bear?1:0)+(reclaim8Short?1:0)+(lowerHigh?1:0)+(priorLowBreak?1:0);
+ let earlyLong=false,earlyShort=false;
+ let earlyLongGrade:"A"|"B"|null=null,earlyShortGrade:"A"|"B"|null=null;
+
  debug.push(`[1D] ${pair} | ${dailyState||"LOCAL"}/${dailyCandidate||"—"} | ${dailyDirection}`);
- debug.push(`[4H] ${pair} | MACD ${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | 5/13=${fourH513.label} | 8/21=${price>=e21.at(-1)!?"ABOVE":"BELOW"} | triggers=${longTriggers}/${shortTriggers} | early=${earlyLong?`LONG_${earlyLongGrade}`:earlyShort?`SHORT_${earlyShortGrade}`:"NO"}`);
- const prepare=(dir:"LONG"|"SHORT")=>{const primary=buildTrendline(candles4h,dir,60),wasStale=primary.stale,alreadyBeyond=primary.valid&&(dir==="LONG"?price>primary.price*1.02:price<primary.price*0.98);let tl=primary;if(wasStale){const fresh=buildTrendline(candles4h,dir,FRESH_LOOKBACK);if(fresh.valid)tl={...fresh,reason:`${fresh.reason}; fresh ${FRESH_LOOKBACK}-candle structure`};}const buf=tl.valid?Math.max(Math.abs(tl.price)*BREAKOUT_PCT,atr(candles4h)*.35):0,freshBeyond=wasStale&&alreadyBeyond&&tl.valid&&(dir==="LONG"?price>tl.price+buf:price<tl.price-buf);return{tl,wasStale,alreadyBeyond,freshBeyond};};
+ debug.push(`[4H] ${pair} | MACD ${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | 5/13=${fourH513.label} | 8/21=${price>=e21.at(-1)!"ABOVE":"BELOW"} | triggers=${longTriggers}/${shortTriggers} | early=WAIT_TL_STOCH`); const prepare=(dir:"LONG"|"SHORT")=>{const primary=buildTrendline(candles4h,dir,60),wasStale=primary.stale,alreadyBeyond=primary.valid&&(dir==="LONG"?price>primary.price*1.02:price<primary.price*0.98);let tl=primary;if(wasStale){const fresh=buildTrendline(candles4h,dir,FRESH_LOOKBACK);if(fresh.valid)tl={...fresh,reason:`${fresh.reason}; fresh ${FRESH_LOOKBACK}-candle structure`};}const buf=tl.valid?Math.max(Math.abs(tl.price)*BREAKOUT_PCT,atr(candles4h)*.35):0,freshBeyond=wasStale&&alreadyBeyond&&tl.valid&&(dir==="LONG"?price>tl.price+buf:price<tl.price-buf);return{tl,wasStale,alreadyBeyond,freshBeyond};};
  const LP=prepare("LONG"),SP=prepare("SHORT");let longTL=LP.tl,shortTL=SP.tl;
  if(structureDir==="LONG"&&shortTL.valid){debug.push(`[V28 SYNC] ${pair} — LONG HEALTHY invalidates opposing SHORT TL @ ${shortTL.price.toFixed(2)}; rebuilding LONG TL from confirmed LOW pivots`);longTL=buildTrendline(candles4h,"LONG",FRESH_LOOKBACK);}else if(structureDir==="SHORT"&&longTL.valid){debug.push(`[V28 SYNC] ${pair} — SHORT HEALTHY invalidates opposing LONG TL @ ${longTL.price.toFixed(2)}; rebuilding SHORT TL from confirmed HIGH pivots`);shortTL=buildTrendline(candles4h,"SHORT",FRESH_LOOKBACK);}
  const logTlDiag=(dir:"LONG"|"SHORT",tl:TL)=>{if(!tl.valid){debug.push(`[TL] ${pair} ${dir} invalid pivots=${tl.pivots.length}/2`);return;}const p1=tl.pivots.at(-2)!,p2=tl.pivots.at(-1)!,dist=Math.abs((price-tl.price)/Math.max(Math.abs(tl.price),1))*100;debug.push(`[TL] ${pair} ${dir} ${tl.price.toFixed(2)} dist=${dist.toFixed(2)}% age=${i-p2.index}c stale=${tl.stale?"YES":"NO"}`);};
  logTlDiag("LONG",longTL);logTlDiag("SHORT",shortTL);
  const test=(dir:"LONG"|"SHORT",tl:TL)=>{if(!tl.valid)return{breakout:false,retest:false,line:0,buf:0,dist:0,freshBeyond:false,alreadyBeyondBuffer:false};const line=lineAt(tl,i),prevLine=lineAt(tl,i-1),buf=Math.max(Math.abs(line)*BREAKOUT_PCT,atr(candles4h)*.35),priceDistance=Math.abs((price-line)/Math.max(Math.abs(line),1)),broke=dir==="LONG"?last.close>line+buf&&prev.close<=prevLine+buf:last.close<line-buf&&prev.close>=prevLine-buf,alreadyBeyondBuffer=dir==="LONG"?last.close>line+buf:last.close<line-buf,retest=dir==="LONG"?last.low<=line*(1+RETEST_PCT)&&last.close>line&&last.close>=prev.close:last.high>=line*(1-RETEST_PCT)&&last.close<line&&last.close<=prev.close;return{breakout:broke,retest,line,buf,dist:(price-line)/Math.max(Math.abs(line),1),freshBeyond:false,alreadyBeyondBuffer};};
  const L=test("LONG",longTL),S=test("SHORT",shortTL);
- const longTrendlineExtreme=longTL.valid&&price>longTL.price&&(price-longTL.price)>atrValue*2;
- const shortTrendlineExtreme=shortTL.valid&&price<shortTL.price&&(shortTL.price-price)>atrValue*2;
- const longTrendlineVeto=longTrendlineExtreme&&longChase;
- const shortTrendlineVeto=shortTrendlineExtreme&&shortChase;
- const earlyLongVetoes={dailyContext:!dailyBullishOrTurning,triggers:longTriggers<2,chase:longChase,exhaustion:!notLongExhausted,opposingStructure:hardOpposingLong,trendlineState:longTrendlineVeto};
- const earlyShortVetoes={dailyContext:!dailyBearishOrTurning,triggers:shortTriggers<2,chase:shortChase,exhaustion:!notShortExhausted,opposingStructure:hardOpposingShort,trendlineState:shortTrendlineVeto};
- earlyLong=earlyLong&&!longTrendlineVeto;
- earlyShort=earlyShort&&!shortTrendlineVeto;
- if(!earlyLong)debug.push(`[EARLY VETO] ${pair} LONG | dailyContext=${earlyLongVetoes.dailyContext?"NO":"OK"} triggers=${longTriggers} chase=${earlyLongVetoes.chase?"YES":"NO"} exhaustion=${earlyLongVetoes.exhaustion?"YES":"NO"} opposingStructure=${earlyLongVetoes.opposingStructure?"YES":"NO"} trendlineState=${earlyLongVetoes.trendlineState?"EXTREME":"OK"}`);
- if(!earlyShort)debug.push(`[EARLY VETO] ${pair} SHORT | dailyContext=${earlyShortVetoes.dailyContext?"NO":"OK"} triggers=${shortTriggers} chase=${earlyShortVetoes.chase?"YES":"NO"} exhaustion=${earlyShortVetoes.exhaustion?"YES":"NO"} opposingStructure=${earlyShortVetoes.opposingStructure?"YES":"NO"} trendlineState=${earlyShortVetoes.trendlineState?"EXTREME":"OK"}`);
- if(earlyLong&&!dailyBullishOrTurning)earlyLongGrade="B";
- if(earlyShort&&!dailyBearishOrTurning)earlyShortGrade="B";
+ const longNearTL=longTL.valid&&Math.abs((price-longTL.price)/Math.max(Math.abs(longTL.price),1))<RETEST_PCT;
+ const shortNearTL=shortTL.valid&&Math.abs((price-shortTL.price)/Math.max(Math.abs(shortTL.price),1))<RETEST_PCT;
+ const longStochExtreme=st.k<20;
+ const shortStochExtreme=st.k>80;
+ const longStochTurn=st.k>st.d&&st.k<40;
+ const shortStochTurn=st.k<st.d&&st.k>60;
+ const longRejection=last.close>last.open&&last.close>prev.close;
+ const shortRejection=last.close<last.open&&last.close<prev.close;
+
+ // EARLY ENTRY_1 = original V28 location/timing model.
+ // LONG = near LOW trendline + oversold/turning StochRSI.
+ // SHORT = near HIGH trendline + overbought/turning StochRSI.
+ // 1D context only determines A/B risk; it does not veto the reversal.
+ earlyLong=longNearTL&&(longStochExtreme||(longStochTurn&&longRejection));
+ earlyShort=shortNearTL&&(shortStochExtreme||(shortStochTurn&&shortRejection));
+ earlyLongGrade=earlyLong?(dailyBullishOrTurning?"A":"B"):null;
+ earlyShortGrade=earlyShort?(dailyBearishOrTurning?"A":"B"):null;
+ const longTrendlineExtreme=longTL.valid&&price>longTL.price&&(price-longTL.price)>av*2;
+ const shortTrendlineExtreme=shortTL.valid&&price<shortTL.price&&(shortTL.price-price)>av*2;
+ debug.push(`[ENTRY_1] ${pair} | LONG nearTL=${longNearTL?"YES":"NO"} stoch=${st.k.toFixed(1)}/${st.d.toFixed(1)} | SHORT nearTL=${shortNearTL?"YES":"NO"} stoch=${st.k.toFixed(1)}/${st.d.toFixed(1)} | early=${earlyLong?"LONG_"+earlyLongGrade:earlyShort?"SHORT_"+earlyShortGrade:"NO"}`);
+ if(!earlyLong&&!earlyShort)debug.push(`[ENTRY_1 WAIT] ${pair} | waiting for trendline + StochRSI timing/rejection`);
  // Continuation retest: a controlled pullback into the fast 4H trend structure.
  // This is deliberately stricter than "first red/green candle": price must remain
  // on the correct side of 8/21, 5/13 must still agree, and MACD must not have
