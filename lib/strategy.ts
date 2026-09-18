@@ -96,21 +96,21 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const ema8to21Pct=Math.abs(e8.at(-1)!-e21.at(-1)!)/Math.max(Math.abs(e21.at(-1)!),1);
  const spreadExpanding=Math.abs(e8.at(-1)!-e21.at(-1)!)>Math.abs(e8.at(-2)!-e21.at(-2)!)*1.35;
  const priceDistanceFrom8=Math.abs(last.close-e8.at(-1)!)/Math.max(Math.abs(e8.at(-1)!),1);
- const longChase=ema8to21Pct>0.06||priceDistanceFrom8>0.035||spreadExpanding&&ema8to21Pct>0.035;
- const shortChase=ema8to21Pct>0.06||priceDistanceFrom8>0.035||spreadExpanding&&ema8to21Pct>0.035;
+ const atrValue=Math.max(av,1);
+ const atrDistanceFrom8=Math.abs(last.close-e8.at(-1)!)/atrValue;
+ const longChase=ema8to21Pct>0.06||priceDistanceFrom8>0.035||atrDistanceFrom8>1.75||(spreadExpanding&&ema8to21Pct>0.035);
+ const shortChase=longChase;
  const notLongExhausted=r<72&&st.k<88,notShortExhausted=r>28&&st.k>12;
- const opposingLong=structureDir==="SHORT"||structure.structure==="SHORT";
- const opposingShort=structureDir==="LONG"||structure.structure==="LONG";
- const longContext=dailyBullishOrTurning||dailyDirection==="NEUTRAL"||dailyState==="TRANSITION";
- const shortContext=dailyBearishOrTurning||dailyDirection==="NEUTRAL"||dailyState==="TRANSITION";
- const earlyLongA=longContext&&dailyBullishOrTurning&&longTriggers>=2&&!longChase&&!opposingLong&&notLongExhausted;
- const earlyShortA=shortContext&&dailyBearishOrTurning&&shortTriggers>=2&&!shortChase&&!opposingShort&&notShortExhausted;
- const earlyLongB=longContext&&longTriggers>=2&&!longChase&&!opposingLong&&notLongExhausted;
- const earlyShortB=shortContext&&shortTriggers>=2&&!shortChase&&!opposingShort&&notShortExhausted;
- const earlyLong=earlyLongA||earlyLongB;
- const earlyShort=earlyShortA||earlyShortB;
- const earlyLongGrade=earlyLongA?"A":earlyLongB?"B":null;
- const earlyShortGrade=earlyShortA?"A":earlyShortB?"B":null;
+ const hardOpposingLong=structureDir==="SHORT"||structure.structure==="SHORT";
+ const hardOpposingShort=structureDir==="LONG"||structure.structure==="LONG";
+ const earlyLongA=dailyBullishOrTurning&&longTriggers>=2&&!longChase&&!hardOpposingLong&&notLongExhausted;
+ const earlyShortA=dailyBearishOrTurning&&shortTriggers>=2&&!shortChase&&!hardOpposingShort&&notShortExhausted;
+ const earlyLongB=longTriggers>=2&&!longChase&&!hardOpposingLong&&notLongExhausted;
+ const earlyShortB=shortTriggers>=2&&!shortChase&&!hardOpposingShort&&notShortExhausted;
+ let earlyLong=earlyLongA||earlyLongB;
+ let earlyShort=earlyShortA||earlyShortB;
+ let earlyLongGrade=earlyLongA?"A":earlyLongB?"B":null;
+ let earlyShortGrade=earlyShortA?"A":earlyShortB?"B":null;
  debug.push(`[1D] ${pair} | ${dailyState||"LOCAL"}/${dailyCandidate||"—"} | ${dailyDirection}`);
  debug.push(`[4H] ${pair} | MACD ${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | 5/13=${fourH513.label} | 8/21=${price>=e21.at(-1)!?"ABOVE":"BELOW"} | triggers=${longTriggers}/${shortTriggers} | early=${earlyLong?`LONG_${earlyLongGrade}`:earlyShort?`SHORT_${earlyShortGrade}`:"NO"}`);
  const prepare=(dir:"LONG"|"SHORT")=>{const primary=buildTrendline(candles4h,dir,60),wasStale=primary.stale,alreadyBeyond=primary.valid&&(dir==="LONG"?price>primary.price*1.02:price<primary.price*0.98);let tl=primary;if(wasStale){const fresh=buildTrendline(candles4h,dir,FRESH_LOOKBACK);if(fresh.valid)tl={...fresh,reason:`${fresh.reason}; fresh ${FRESH_LOOKBACK}-candle structure`};}const buf=tl.valid?Math.max(Math.abs(tl.price)*BREAKOUT_PCT,atr(candles4h)*.35):0,freshBeyond=wasStale&&alreadyBeyond&&tl.valid&&(dir==="LONG"?price>tl.price+buf:price<tl.price-buf);return{tl,wasStale,alreadyBeyond,freshBeyond};};
@@ -120,6 +120,18 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  logTlDiag("LONG",longTL);logTlDiag("SHORT",shortTL);
  const test=(dir:"LONG"|"SHORT",tl:TL)=>{if(!tl.valid)return{breakout:false,retest:false,line:0,buf:0,dist:0,freshBeyond:false,alreadyBeyondBuffer:false};const line=lineAt(tl,i),prevLine=lineAt(tl,i-1),buf=Math.max(Math.abs(line)*BREAKOUT_PCT,atr(candles4h)*.35),priceDistance=Math.abs((price-line)/Math.max(Math.abs(line),1)),broke=dir==="LONG"?last.close>line+buf&&prev.close<=prevLine+buf:last.close<line-buf&&prev.close>=prevLine-buf,alreadyBeyondBuffer=dir==="LONG"?last.close>line+buf:last.close<line-buf,retest=dir==="LONG"?last.low<=line*(1+RETEST_PCT)&&last.close>line&&last.close>=prev.close:last.high>=line*(1-RETEST_PCT)&&last.close<line&&last.close<=prev.close;return{breakout:broke,retest,line,buf,dist:(price-line)/Math.max(Math.abs(line),1),freshBeyond:false,alreadyBeyondBuffer};};
  const L=test("LONG",longTL),S=test("SHORT",shortTL);
+ const longTrendlineExtreme=longTL.valid&&price>longTL.price&&(price-longTL.price)>atrValue*2;
+ const shortTrendlineExtreme=shortTL.valid&&price<shortTL.price&&(shortTL.price-price)>atrValue*2;
+ const longTrendlineVeto=longTrendlineExtreme&&longChase;
+ const shortTrendlineVeto=shortTrendlineExtreme&&shortChase;
+ const earlyLongVetoes={dailyContext:!dailyBullishOrTurning,triggers:longTriggers<2,chase:longChase,exhaustion:!notLongExhausted,opposingStructure:hardOpposingLong,trendlineState:longTrendlineVeto};
+ const earlyShortVetoes={dailyContext:!dailyBearishOrTurning,triggers:shortTriggers<2,chase:shortChase,exhaustion:!notShortExhausted,opposingStructure:hardOpposingShort,trendlineState:shortTrendlineVeto};
+ earlyLong=earlyLong&&!longTrendlineVeto;
+ earlyShort=earlyShort&&!shortTrendlineVeto;
+ if(!earlyLong)debug.push(`[EARLY VETO] ${pair} LONG | dailyContext=${earlyLongVetoes.dailyContext?"NO":"OK"} triggers=${longTriggers} chase=${earlyLongVetoes.chase?"YES":"NO"} exhaustion=${earlyLongVetoes.exhaustion?"YES":"NO"} opposingStructure=${earlyLongVetoes.opposingStructure?"YES":"NO"} trendlineState=${earlyLongVetoes.trendlineState?"EXTREME":"OK"}`);
+ if(!earlyShort)debug.push(`[EARLY VETO] ${pair} SHORT | dailyContext=${earlyShortVetoes.dailyContext?"NO":"OK"} triggers=${shortTriggers} chase=${earlyShortVetoes.chase?"YES":"NO"} exhaustion=${earlyShortVetoes.exhaustion?"YES":"NO"} opposingStructure=${earlyShortVetoes.opposingStructure?"YES":"NO"} trendlineState=${earlyShortVetoes.trendlineState?"EXTREME":"OK"}`);
+ if(earlyLong&&!dailyBullishOrTurning)earlyLongGrade="B";
+ if(earlyShort&&!dailyBearishOrTurning)earlyShortGrade="B";
  // Continuation retest: a controlled pullback into the fast 4H trend structure.
  // This is deliberately stricter than "first red/green candle": price must remain
  // on the correct side of 8/21, 5/13 must still agree, and MACD must not have
