@@ -23,6 +23,26 @@ function alertValidity(h:any,price:number,now:number){
   return{state:"VALID" as AlertState,reason:"Alert remains actionable"};
 }
 
+function momentumStatus(h:any,m:any){
+  if(!h||h.status!=="ACTIVE"||!m)return null;
+  const long=h.direction==="LONG";
+  const e=m.fourH513;
+  const same513=e?.direction===(long?"BULLISH":"BEARISH");
+  const ema8=Number(m.ema8_4h),ema21=Number(m.ema21_4h);
+  const same821=Number.isFinite(ema8)&&Number.isFinite(ema21)&&(long?ema8>=ema21:ema8<=ema21);
+  const contracting=!!e?.spreadContracting;
+  const macd=m.macd4h||{};
+  const macdAgainst=long?!!macd.bearishCross:!!macd.bullishCross;
+  const histWeakening=long?!!macd.falling:!!macd.rising;
+  const stochExtreme=long?Number(m.stochK)>=80:Number(m.stochK)<=20;
+  const stochCooling=long?Number(m.stochK)<Number(m.stochD):Number(m.stochK)>Number(m.stochD);
+  // BROKEN requires multiple independent failures, not a single Stoch turn.
+  if(!same513&&!same821)return{icon:"🔴",label:"BROKEN",detail:"Multiple 4H momentum layers have failed."};
+  if((!same513||!same821)&&(macdAgainst||contracting))return{icon:"🟠",label:"DETERIORATING",detail:"Momentum is weakening; protect profits and watch closely."};
+  if(same513&&same821&&(contracting||macdAgainst||((stochExtreme||stochCooling)&&histWeakening)))return{icon:"🟡",label:"COOLING",detail:"Pullback occurring, but no confirmed failure."};
+  return{icon:"🟢",label:"HEALTHY",detail:"The move is still valid."};
+}
+
 function managementAdvice(h:any,m:any){
   if(!h||h.status!=="ACTIVE"||!m||h.type==="ENTRY_0")return null;
   const price=Number(m.price),tp1Hit=!!h.tp1HitAt||(h.tp1!==undefined&&(h.direction==="LONG"?price>=h.tp1:price<=h.tp1)),tp2Hit=!!h.tp2HitAt||(h.tp2!==undefined&&(h.direction==="LONG"?price>=h.tp2:price<=h.tp2));
@@ -38,7 +58,7 @@ function managementAdvice(h:any,m:any){
 
 export async function GET(){
   const activeSignals=await getActiveSignals(),signalHistory=await getSignalHistory(),persistedLatest=await getLatestAlerts(),marketData=await getMarketData(),lastCronRun=await getLastCronRun(),now=Date.now();
-  const v28LatestAlerts=Object.fromEntries(Object.entries(persistedLatest).map(([pair,h]:any)=>{const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===pair):undefined;const active=activeSignals.find((x:any)=>x.pair===pair&&x.direction===h.direction&&x.id===h.id)||activeSignals.find((x:any)=>x.pair===pair&&x.direction===h.direction);const price=m?.price??h.entry;const v=alertValidity(h,price,now),management=managementAdvice(active||h,m),validity=management&&v.state==="VALID"?{...v,reason:`${management.recommendation} — ${management.reason}`}:v;return[pair,{...h,target:h.tp2??h.target,managementAdvice:management,currentPrice:price,ageMinutes:Math.round((now-h.timestamp)/60000),validity}];}));
+  const v28LatestAlerts=Object.fromEntries(Object.entries(persistedLatest).map(([pair,h]:any)=>{const m=Array.isArray(marketData)?marketData.find((x:any)=>x?.pair===pair):undefined;const active=activeSignals.find((x:any)=>x.pair===pair&&x.direction===h.direction&&x.id===h.id)||activeSignals.find((x:any)=>x.pair===pair&&x.direction===h.direction);const price=m?.price??h.entry;const v=alertValidity(h,price,now),management=managementAdvice(active||h,m),validity=management&&v.state==="VALID"?{...v,reason:`${management.recommendation} — ${management.reason}`}:v;return[pair,{...h,target:h.tp2??h.target,managementAdvice:management,momentumStatus:momentumStatusValue,currentPrice:price,ageMinutes:Math.round((now-h.timestamp)/60000),validity}];}));
   const latestAlerts=v28LatestAlerts;
   const liveMarketData=(Array.isArray(marketData)?marketData:[]).map((m:any)=>{const a:any=latestAlerts[m.pair];if(!a||a.status!=="ACTIVE")return m;return{...m,price:a.currentPrice??m.price,location:a.context?.marketPhase||m.location,trigger:a.trigger||m.trigger,alertState:a.validity?.state||"VALID",alertType:a.type,alertDirection:a.direction,alertEntry:a.entry,alertTimestamp:a.timestamp};});
   const enrichedActive=activeSignals.map((s:any)=>({...s,scale:s.type,target:s.tp2??s.target,expectedMove:s.entry&&s.tp3?Math.round(Math.abs(s.tp3-s.entry)/s.entry*1000)/10:0,meta:{status:s.status,ageMinutes:Math.round((now-s.timestamp)/60000),actionable:s.status==="ACTIVE",state:"POSITION_ACTIVE"}}));
@@ -46,7 +66,7 @@ export async function GET(){
   const historyLogs=signalHistory.slice().sort((a,b)=>b.timestamp-a.timestamp).slice(0,8).map((h:any)=>`[ALERT] ${h.pair} — ${h.direction} ${h.type} @ ${h.entry} | SL ${h.stop} | R1 ${h.tp1??"—"} | R1.5 ${h.tp2??h.target} | R2 ${h.tp3??"—"} | ${h.status}`);
   const validityLogs=Object.entries(latestAlerts).map(([pair,a]:any)=>`[VALIDITY] ${pair} — ${a.validity.state} | ${a.validity.reason}`);
   const marketLogs=liveMarketData.map((m:any)=>`[PAIR] ${m.pair} — ${m.trend||"NO TREND"} | Price ${m.price} | ${m.location||"—"} | ${m.trigger||"WAITING"} | ADX ${m.adx??"—"} | RSI ${m.rsi??"—"} | Stoch ${m.stochK??"—"}/${m.stochD??"—"} | Momentum ${m.momentumState||"—"}`);
-  const managementLogs=Object.entries(latestAlerts).filter(([,a]:any)=>a.managementAdvice).map(([pair,a]:any)=>`[MANAGEMENT] ${pair} — ${a.direction} | ${a.managementAdvice.recommendation}`);
+  const managementLogs=Object.entries(latestAlerts).filter(([,a]:any)=>a.managementAdvice).map(([pair,a]:any)=>`[MANAGEMENT] ${pair} — ${a.direction} | ${a.momentumStatus?.icon||""} ${a.momentumStatus?.label||""} | ${a.managementAdvice.recommendation}`);
   const logs=[`[SYSTEM] CXSwitch v${CXSWITCH_VERSION} | ${ENTRY_ARCHITECTURE} | ${DAILY_BIAS} | ${EXECUTION_MODE}`,`[CRON] Last run ${lastCronRun?new Date(lastCronRun).toISOString():"not recorded"}`,...managementLogs,...validityLogs,...marketLogs,...historyLogs,`[CRON] State: active=${enrichedActive.length} marketData=${liveMarketData.length} history=${signalHistory.length} latest=${Object.keys(latestAlerts).length}`].slice(0,40);
   const response=NextResponse.json({version:CXSWITCH_VERSION,architecture:ENTRY_ARCHITECTURE,dailyBias:DAILY_BIAS,executionMode:EXECUTION_MODE,activeSignals:enrichedActive,signalHistory:enrichedHistory,marketData:liveMarketData,latestAlerts,logs,system:{version:CXSWITCH_VERSION,lastCronRun,lastCronAgeMs:lastCronRun?now-lastCronRun:null,activePositions:enrichedActive.length,latestAlerts:Object.keys(latestAlerts).length,historyEntries:signalHistory.length},updatedAt:new Date(now).toISOString()});
   response.headers.set("Cache-Control","no-store, no-cache, must-revalidate, proxy-revalidate");response.headers.set("Pragma","no-cache");response.headers.set("Expires","0");return response;
