@@ -94,7 +94,6 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const longTriggers=(macdImprovingLong?1:0)+(early5Bull?1:0)+(reclaim8Long?1:0)+(higherLow?1:0)+(priorHighBreak?1:0);
  const shortTriggers=(macdImprovingShort?1:0)+(early5Bear?1:0)+(reclaim8Short?1:0)+(lowerHigh?1:0)+(priorLowBreak?1:0);
  const ema8to21Pct=Math.abs(e8.at(-1)!-e21.at(-1)!)/Math.max(Math.abs(e21.at(-1)!),1);
- const spread8to21Prev=Math.abs(e8.at(-2)!-e21.at(-2)!)/Math.max(Math.abs(e21.at(-2)!),1);
  const spreadExpanding=Math.abs(e8.at(-1)!-e21.at(-1)!)>Math.abs(e8.at(-2)!-e21.at(-2)!)*1.35;
  const priceDistanceFrom8=Math.abs(last.close-e8.at(-1)!)/Math.max(Math.abs(e8.at(-1)!),1);
  const longChase=ema8to21Pct>0.06||priceDistanceFrom8>0.035||spreadExpanding&&ema8to21Pct>0.035;
