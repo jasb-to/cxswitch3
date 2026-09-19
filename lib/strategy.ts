@@ -86,13 +86,21 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
  // ENTRY_1 follows the original V28 philosophy: location + StochRSI timing.
  // 1D/4H diagnostics remain available on the symbol cards, but are not stacked gates.
+ const reclaim8Long=price>=(e8.at(-1)??price)&&prev.close<(e8.at(-2)??prev.close);
+ const reclaim8Short=price<=(e8.at(-1)??price)&&prev.close>(e8.at(-2)??prev.close);
+ const higherLow=last.low>Math.min(...candles4h.slice(-EARLY_LOOKBACK,-1).map(x=>x.low));
+ const lowerHigh=last.high<Math.max(...candles4h.slice(-EARLY_LOOKBACK,-1).map(x=>x.high));
+ const priorHighBreak=last.close>Math.max(...candles4h.slice(-4,-1).map(x=>x.high));
+ const priorLowBreak=last.close<Math.min(...candles4h.slice(-4,-1).map(x=>x.low));
+ const macdImprovingLong=macd.bullishShift;
+ const macdImprovingShort=macd.bearishShift;
  const longTriggers=(macd.bullishShift?1:0)+(early5Bull?1:0)+(reclaim8Long?1:0)+(higherLow?1:0)+(priorHighBreak?1:0);
  const shortTriggers=(macd.bearishShift?1:0)+(early5Bear?1:0)+(reclaim8Short?1:0)+(lowerHigh?1:0)+(priorLowBreak?1:0);
  let earlyLong=false,earlyShort=false;
  let earlyLongGrade:"A"|"B"|null=null,earlyShortGrade:"A"|"B"|null=null;
 
  debug.push(`[1D] ${pair} | ${dailyState||"LOCAL"}/${dailyCandidate||"—"} | ${dailyDirection}`);
- debug.push(`[4H] ${pair} | MACD ${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | 5/13=${fourH513.label} | 8/21=${price>=e21.at(-1)!"ABOVE":"BELOW"} | triggers=${longTriggers}/${shortTriggers} | early=WAIT_TL_STOCH`); const prepare=(dir:"LONG"|"SHORT")=>{const primary=buildTrendline(candles4h,dir,60),wasStale=primary.stale,alreadyBeyond=primary.valid&&(dir==="LONG"?price>primary.price*1.02:price<primary.price*0.98);let tl=primary;if(wasStale){const fresh=buildTrendline(candles4h,dir,FRESH_LOOKBACK);if(fresh.valid)tl={...fresh,reason:`${fresh.reason}; fresh ${FRESH_LOOKBACK}-candle structure`};}const buf=tl.valid?Math.max(Math.abs(tl.price)*BREAKOUT_PCT,atr(candles4h)*.35):0,freshBeyond=wasStale&&alreadyBeyond&&tl.valid&&(dir==="LONG"?price>tl.price+buf:price<tl.price-buf);return{tl,wasStale,alreadyBeyond,freshBeyond};};
+ debug.push(`[4H] ${pair} | MACD ${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | 5/13=${fourH513.label} | 8/21=${price >= (e21.at(-1) ?? price) ? "ABOVE" : "BELOW"} | triggers=${longTriggers}/${shortTriggers} | early=WAIT_TL_STOCH`); const prepare=(dir:"LONG"|"SHORT")=>{const primary=buildTrendline(candles4h,dir,60),wasStale=primary.stale,alreadyBeyond=primary.valid&&(dir==="LONG"?price>primary.price*1.02:price<primary.price*0.98);let tl=primary;if(wasStale){const fresh=buildTrendline(candles4h,dir,FRESH_LOOKBACK);if(fresh.valid)tl={...fresh,reason:`${fresh.reason}; fresh ${FRESH_LOOKBACK}-candle structure`};}const buf=tl.valid?Math.max(Math.abs(tl.price)*BREAKOUT_PCT,atr(candles4h)*.35):0,freshBeyond=wasStale&&alreadyBeyond&&tl.valid&&(dir==="LONG"?price>tl.price+buf:price<tl.price-buf);return{tl,wasStale,alreadyBeyond,freshBeyond};};
  const LP=prepare("LONG"),SP=prepare("SHORT");let longTL=LP.tl,shortTL=SP.tl;
  if(structureDir==="LONG"&&shortTL.valid){debug.push(`[V28 SYNC] ${pair} — LONG HEALTHY invalidates opposing SHORT TL @ ${shortTL.price.toFixed(2)}; rebuilding LONG TL from confirmed LOW pivots`);longTL=buildTrendline(candles4h,"LONG",FRESH_LOOKBACK);}else if(structureDir==="SHORT"&&longTL.valid){debug.push(`[V28 SYNC] ${pair} — SHORT HEALTHY invalidates opposing LONG TL @ ${longTL.price.toFixed(2)}; rebuilding SHORT TL from confirmed HIGH pivots`);shortTL=buildTrendline(candles4h,"SHORT",FRESH_LOOKBACK);}
  const logTlDiag=(dir:"LONG"|"SHORT",tl:TL)=>{if(!tl.valid){debug.push(`[TL] ${pair} ${dir} invalid pivots=${tl.pivots.length}/2`);return;}const p1=tl.pivots.at(-2)!,p2=tl.pivots.at(-1)!,dist=Math.abs((price-tl.price)/Math.max(Math.abs(tl.price),1))*100;debug.push(`[TL] ${pair} ${dir} ${tl.price.toFixed(2)} dist=${dist.toFixed(2)}% age=${i-p2.index}c stale=${tl.stale?"YES":"NO"}`);};
