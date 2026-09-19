@@ -24,6 +24,8 @@ const STALE_TL_PCT=0.04, STALE_TL_CANDLES=12, FRESH_LOOKBACK=30, BREAKOUT_EXPIRY
 const LEVERAGE=20, MMR=0.01, LIQ_BUFFER=0.005;
 const EARLY_NEAR_PCT=0.025;
 const EARLY_LOOKBACK=12;
+const ENTRY1_SHORT_NEAR_PCT=0.015;
+const ENTRY1_SHORT_STOCH_MIN=45;
 
  type Pivot={index:number;price:number;timestamp:number};
 type TL={valid:boolean;slope:number;intercept:number;price:number;pivots:Pivot[];ageCandles:number;reason:string;invalidated:boolean;stale:boolean;staleByAge:boolean;staleByDistance:boolean;};
@@ -53,7 +55,7 @@ function macd4h(c:Candle[]){
  return{macd:macd[i]??0,signal:signal[i]??0,histogram:h,prevHistogram:prev,prev2Histogram:prev2,rising,falling,bullishColour,bearishColour,bullishShift:(h>prev)||(h>=0&&prev<0),bearishShift:(h<prev)||(h<=0&&prev>0),bullishCross,bearishCross,histogramPct:Math.abs(h)>0?((h-prev)/Math.abs(h))*100:0};
 }
 
-function snapshot(pair:string,c:Candle[],d:"LONG"|"SHORT",tl:TL,price:number,dailyLive?:DailyLiveContext){const closes=c.map(x=>x.close),st=stochRsi(closes),r=rsi(closes),a=adx(c),e8=ema(closes,TF_FAST).at(-1)!,e21=ema(closes,TF_SLOW).at(-1)!,d1=getDaily513Diagnostic(c),m=macd4h(c);const dist=tl.valid?(price-tl.price)/tl.price:null;return{pair,price:round(price),timestamp:Date.now(),trend:`${d} ${strength(daily(c),d)}`,location:dist===null?"NO_TL":Math.abs(dist)<RETEST_PCT?"NEAR_TL":(d==="LONG"?price>tl.price:price<tl.price)?"BEYOND_TL":"FAR_FROM_TL",trigger:"WAITING",adx:a,rsi:Math.round(r*10)/10,stochK:st.k,stochD:st.d,trendlinePrice:tl.valid?round(tl.price):0,distToTrendline:dist===null?null:Math.round(Math.abs(dist)*10000)/100,ema8_4h:round(e8),ema21_4h:round(e21),fourH513:get4HEmaDiagnostic(c),macd4h:m,daily513:d1,dailyLive:dailyLive||null,momentumState:d==="LONG"?(r>=80?"OVEREXTENDED":r>=70?"HOT":st.k<20?"PULLBACK":"NEUTRAL"):(r<=20?"OVEREXTENDED":r<=30?"HOT":st.k>80?"PULLBACK":"NEUTRAL"),trendlineStatus:tl.stale?"STALE_REBUILD":tl.valid?"ACTIVE":"REBUILDING",trendlineReason:tl.reason,trendlinePivots:tl.pivots.length,trendlineAgeCandles:tl.ageCandles,trendlineSlope:round(tl.slope),trendlineStaleByAge:tl.staleByAge,trendlineStaleByDistance:tl.staleByDistance,entry1Closed4hTimestamp:c.length>1?(c.at(-2)?.timestamp??0):(c.at(-1)?.timestamp??0),entry1ClosedStochK:c.length>1?stochRsi(c.slice(0,-1).map(x=>x.close)).k:st.k,entry1ClosedStochD:c.length>1?stochRsi(c.slice(0,-1).map(x=>x.close)).d:st.d,entry1NearTL:tl.valid&&dist!==null&&Math.abs(dist)<=RETEST_PCT,entry1LongNearTL:tl.valid&&d==="LONG"&&dist!==null&&Math.abs(dist)<=RETEST_PCT,entry1ShortNearTL:tl.valid&&d==="SHORT"&&dist!==null&&Math.abs(dist)<=RETEST_PCT,entry1LongStochTurn:c.length>1?stochRsi(c.slice(0,-1).map(x=>x.close)).k>stochRsi(c.slice(0,-1).map(x=>x.close)).d:false,entry1ShortTurn:c.length>1?stochRsi(c.slice(0,-1).map(x=>x.close)).k<stochRsi(c.slice(0,-1).map(x=>x.close)).d:false,entry1ShortStochTurn:c.length>1?stochRsi(c.slice(0,-1).map(x=>x.close)).k<stochRsi(c.slice(0,-1).map(x=>x.close)).d:false,entry1LongTrendlinePrice:(buildTrendline(c.length>1?c.slice(0,-1):c,"LONG",60)).valid?round(buildTrendline(c.length>1?c.slice(0,-1):c,"LONG",60).price):0,entry1ShortTrendlinePrice:(buildTrendline(c.length>1?c.slice(0,-1):c,"SHORT",60)).valid?round(buildTrendline(c.length>1?c.slice(0,-1):c,"SHORT",60).price):0};}
+function snapshot(pair:string,c:Candle[],d:"LONG"|"SHORT",tl:TL,price:number,dailyLive?:DailyLiveContext){const closes=c.map(x=>x.close),st=stochRsi(closes),r=rsi(closes),a=adx(c),e8=ema(closes,TF_FAST).at(-1)!,e21=ema(closes,TF_SLOW).at(-1)!,d1=getDaily513Diagnostic(c),m=macd4h(c);const dist=tl.valid?(price-tl.price)/tl.price:null;return{pair,price:round(price),timestamp:Date.now(),trend:`${d} ${strength(daily(c),d)}`,location:dist===null?"NO_TL":Math.abs(dist)<RETEST_PCT?"NEAR_TL":(d==="LONG"?price>tl.price:price<tl.price)?"BEYOND_TL":"FAR_FROM_TL",trigger:"WAITING",adx:a,rsi:Math.round(r*10)/10,stochK:st.k,stochD:st.d,trendlinePrice:tl.valid?round(tl.price):0,distToTrendline:dist===null?null:Math.round(Math.abs(dist)*10000)/100,ema8_4h:round(e8),ema21_4h:round(e21),fourH513:get4HEmaDiagnostic(c),macd4h:m,daily513:d1,dailyLive:dailyLive||null,momentumState:d==="LONG"?(r>=80?"OVEREXTENDED":r>=70?"HOT":st.k<20?"PULLBACK":"NEUTRAL"):(r<=20?"OVEREXTENDED":r<=30?"HOT":st.k>80?"PULLBACK":"NEUTRAL"),trendlineStatus:tl.stale?"STALE_REBUILD":tl.valid?"ACTIVE":"REBUILDING",trendlineReason:tl.reason,trendlinePivots:tl.pivots.length,trendlineAgeCandles:tl.ageCandles,trendlineSlope:round(tl.slope),trendlineStaleByAge:tl.staleByAge,trendlineStaleByDistance:tl.staleByDistance,entry1Closed4hTimestamp:c.length>1?(c.at(-2)?.timestamp??0):(c.at(-1)?.timestamp??0),entry1ClosedStochK:c.length>1?stochRsi(c.slice(0,-1).map(x=>x.close)).k:st.k,entry1ClosedStochD:c.length>1?stochRsi(c.slice(0,-1).map(x=>x.close)).d:st.d,entry1NearTL:tl.valid&&dist!==null&&Math.abs(dist)<=RETEST_PCT,entry1LongNearTL:tl.valid&&d==="LONG"&&dist!==null&&Math.abs(dist)<=RETEST_PCT,entry1ShortNearTL:tl.valid&&d==="SHORT"&&dist!==null&&Math.abs(dist)<=ENTRY1_SHORT_NEAR_PCT,entry1ShortMacdTurn:m.bearishShift,entry1ShortStochTurn:c.length>1?stochRsi(c.slice(0,-1).map(x=>x.close)).k<stochRsi(c.slice(0,-1).map(x=>x.close)).d&&stochRsi(c.slice(0,-1).map(x=>x.close)).k>ENTRY1_SHORT_STOCH_MIN:false,entry1LongStochTurn:c.length>1?stochRsi(c.slice(0,-1).map(x=>x.close)).k>stochRsi(c.slice(0,-1).map(x=>x.close)).d:false,entry1ShortTurn:c.length>1?stochRsi(c.slice(0,-1).map(x=>x.close)).k<stochRsi(c.slice(0,-1).map(x=>x.close)).d:false,entry1ShortStochTurn:c.length>1?stochRsi(c.slice(0,-1).map(x=>x.close)).k<stochRsi(c.slice(0,-1).map(x=>x.close)).d:false,entry1LongTrendlinePrice:(buildTrendline(c.length>1?c.slice(0,-1):c,"LONG",60)).valid?round(buildTrendline(c.length>1?c.slice(0,-1):c,"LONG",60).price):0,entry1ShortTrendlinePrice:(buildTrendline(c.length>1?c.slice(0,-1):c,"SHORT",60)).valid?round(buildTrendline(c.length>1?c.slice(0,-1):c,"SHORT",60).price):0};}
 
 export function getDaily513Diagnostic(c:Candle[]){const d=daily(c);if(d.length<21)return{stage:"NEUTRAL",label:"1D NEUTRAL",direction:"NEUTRAL" as const,ema5:0,ema13:0,spread:0,spreadPct:0,spreadContracting:false,spreadChangePct:0,ema5Slope:0,ema13Slope:0};const x=d.slice(0,-1).map(z=>z.close),f=ema(x,5),s=ema(x,13),ema5=f.at(-1)!,ema13=s.at(-1)!,p5=f.at(-2)!,p13=s.at(-2)!,spread=ema5-ema13,prev=p5-p13,contract=Math.abs(spread)<Math.abs(prev),earlyBullish=spread<0&&ema5>p5&&contract,earlyBearish=spread>0&&ema5<p5&&contract;let stage=spread>0?"BULLISH":"BEARISH",label=spread>0?"1D BULLISH":"1D BEARISH",direction:"BULLISH"|"BEARISH"="BULLISH";if(spread<0){direction="BEARISH";if(earlyBullish){stage="EARLY_BULLISH";label="1D EARLY BULLISH";}}else if(earlyBearish){stage="EARLY_BEARISH";label="1D EARLY BEARISH";}return{stage,label,direction,ema5,ema13,spread,spreadPct:ema13?spread/ema13*100:0,spreadContracting:contract,spreadChangePct:prev?((Math.abs(spread)-Math.abs(prev))/Math.abs(prev))*100:0,ema5Slope:ema5-p5,ema13Slope:ema13-p13};}
 
@@ -120,26 +122,26 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const entryLongTL=buildTrendline(closed4h,"LONG",60);
  const entryShortTL=buildTrendline(closed4h,"SHORT",60);
  const longNearTL=entryLongTL.valid&&Math.abs((entryLast.close-entryLongTL.price)/Math.max(Math.abs(entryLongTL.price),1))<=nearTLThreshold;
- const shortNearTL=entryShortTL.valid&&Math.abs((entryLast.close-entryShortTL.price)/Math.max(Math.abs(entryShortTL.price),1))<=nearTLThreshold;
+ const shortNearTL=entryShortTL.valid&&Math.abs((entryLast.close-entryShortTL.price)/Math.max(Math.abs(entryShortTL.price),1))<=ENTRY1_SHORT_NEAR_PCT;
  const longStochExtreme=entrySt.k<20;
  const longStochTurn=entrySt.k>entrySt.d&&entrySt.k<40;
- // SHORT requires an actual bearish StochRSI turn. Being overbought by itself is not enough.
- const shortStochTurn=entrySt.k<entrySt.d&&entrySt.k>60;
+ // SHORT uses location plus an early 4H bearish turn. A MACD deterioration OR StochRSI rollover is enough; overbought alone is not.
+ const shortStochTurn=entrySt.k<entrySt.d&&entrySt.k>ENTRY1_SHORT_STOCH_MIN;
  const longRejection=entryLast.close>entryLast.open&&entryLast.close>entryPrev.close;
  const shortRejection=entryLast.close<entryLast.open&&entryLast.close<entryPrev.close;
 
  // ENTRY_1 = original V28 location/timing model, evaluated only on closed 4H candles.
  // LONG = near LOW trendline + oversold/turning StochRSI.
- // SHORT = near HIGH trendline + bearish StochRSI turn/rejection.
+ // SHORT = near HIGH trendline + early bearish 4H turn (MACD deterioration OR StochRSI rollover).
  // 1D context only determines A/B risk; it does not veto the reversal.
  earlyLong=longNearTL&&(longStochExtreme||(longStochTurn&&longRejection));
- earlyShort=shortNearTL&&shortStochTurn&&shortRejection;
+ earlyShort=shortNearTL&&(macd.bearishShift||shortStochTurn);
  earlyLongGrade=earlyLong?(dailyBullishOrTurning?"A":"B"):null;
  earlyShortGrade=earlyShort?(dailyBearishOrTurning?"A":"B"):null;
  const longTrendlineExtreme=longTL.valid&&price>longTL.price&&(price-longTL.price)>av*2;
  const shortTrendlineExtreme=shortTL.valid&&price<shortTL.price&&(shortTL.price-price)>av*2;
  debug.push(`[ENTRY_1] ${pair} | CLOSED_4H ${new Date(entryLast.timestamp).toISOString()} | LONG nearTL=${longNearTL?"YES":"NO"} stoch=${entrySt.k.toFixed(1)}/${entrySt.d.toFixed(1)} | SHORT nearTL=${shortNearTL?"YES":"NO"} stoch=${entrySt.k.toFixed(1)}/${entrySt.d.toFixed(1)} | early=${earlyLong?"LONG_"+earlyLongGrade:earlyShort?"SHORT_"+earlyShortGrade:"NO"}`);
- if(!earlyLong&&!earlyShort)debug.push(`[ENTRY_1 WAIT] ${pair} | waiting for trendline + StochRSI timing/rejection`);
+ if(!earlyLong&&!earlyShort)debug.push(`[ENTRY_1 WAIT] ${pair} | waiting for short location + 4H bearish timing`);
  // Continuation retest: a controlled pullback into the fast 4H trend structure.
  // This is deliberately stricter than "first red/green candle": price must remain
  // on the correct side of 8/21, 5/13 must still agree, and MACD must not have
