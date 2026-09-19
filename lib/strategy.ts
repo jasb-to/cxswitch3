@@ -61,6 +61,14 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const debug:string[]=[];const now=Date.now();if(candles4h.length<30){debug.push("Insufficient 4H data");return{debug};}
  const d=daily(candles4h),contextDir=bias(d),price=currentPrice??candles4h.at(-1)!.close;
  const i=candles4h.length-1,prev=candles4h.at(-2)!,last=candles4h.at(-1)!;
+ // ENTRY_1 timing is evaluated only from the last CLOSED 4H candle. The live price
+ // may still be used for the eventual execution price, but it cannot create an
+ // intrabar ENTRY_1 condition.
+ const closed4h=candles4h.length>1?candles4h.slice(0,-1):candles4h;
+ const entryLast=closed4h.at(-1)!;
+ const entryPrev=closed4h.at(-2)??entryLast;
+ const entryCloses=closed4h.map(x=>x.close);
+ const entrySt=stochRsi(entryCloses);
  const structure=detectStructureShift(pair,candles4h),structureDir=structure.state==="HEALTHY"&&(structure.structure==="LONG"||structure.structure==="SHORT")?structure.structure:null;
  const fourH513=get4HEmaDiagnostic(candles4h),macd=macd4h(candles4h),closes=candles4h.map(x=>x.close),e5=ema(closes,5),e13=ema(closes,13),e8=ema(closes,8),e21=ema(closes,21),r=Math.round(rsi(closes)*10)/10,st=stochRsi(closes),a=adx(candles4h),av=atr(candles4h);
  const dailyState=dailyLive?.state||"",dailyCandidate=dailyLive?.candidateState||"",dailyDirection=dailyLive?.direction||(dailyState.startsWith("BULL")||dailyCandidate.startsWith("BULL")?"BULL":dailyState.startsWith("BEAR")||dailyCandidate.startsWith("BEAR")?"BEAR":"NEUTRAL");
@@ -107,26 +115,30 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  logTlDiag("LONG",longTL);logTlDiag("SHORT",shortTL);
  const test=(dir:"LONG"|"SHORT",tl:TL)=>{if(!tl.valid)return{breakout:false,retest:false,line:0,buf:0,dist:0,freshBeyond:false,alreadyBeyondBuffer:false};const line=lineAt(tl,i),prevLine=lineAt(tl,i-1),buf=Math.max(Math.abs(line)*BREAKOUT_PCT,atr(candles4h)*.35),priceDistance=Math.abs((price-line)/Math.max(Math.abs(line),1)),broke=dir==="LONG"?last.close>line+buf&&prev.close<=prevLine+buf:last.close<line-buf&&prev.close>=prevLine-buf,alreadyBeyondBuffer=dir==="LONG"?last.close>line+buf:last.close<line-buf,retest=dir==="LONG"?last.low<=line*(1+RETEST_PCT)&&last.close>line&&last.close>=prev.close:last.high>=line*(1-RETEST_PCT)&&last.close<line&&last.close<=prev.close;return{breakout:broke,retest,line,buf,dist:(price-line)/Math.max(Math.abs(line),1),freshBeyond:false,alreadyBeyondBuffer};};
  const L=test("LONG",longTL),S=test("SHORT",shortTL);
- const longNearTL=longTL.valid&&Math.abs((price-longTL.price)/Math.max(Math.abs(longTL.price),1))<RETEST_PCT;
- const shortNearTL=shortTL.valid&&Math.abs((price-shortTL.price)/Math.max(Math.abs(shortTL.price),1))<RETEST_PCT;
- const longStochExtreme=st.k<20;
- const shortStochExtreme=st.k>80;
- const longStochTurn=st.k>st.d&&st.k<40;
- const shortStochTurn=st.k<st.d&&st.k>60;
- const longRejection=last.close>last.open&&last.close>prev.close;
- const shortRejection=last.close<last.open&&last.close<prev.close;
+ const NEAR_TL_BUFFER=0.0025;
+ const nearTLThreshold=Math.max(0,RETEST_PCT-NEAR_TL_BUFFER);
+ const entryLongTL=buildTrendline(closed4h,"LONG",60);
+ const entryShortTL=buildTrendline(closed4h,"SHORT",60);
+ const longNearTL=entryLongTL.valid&&Math.abs((entryLast.close-entryLongTL.price)/Math.max(Math.abs(entryLongTL.price),1))<=nearTLThreshold;
+ const shortNearTL=entryShortTL.valid&&Math.abs((entryLast.close-entryShortTL.price)/Math.max(Math.abs(entryShortTL.price),1))<=nearTLThreshold;
+ const longStochExtreme=entrySt.k<20;
+ const longStochTurn=entrySt.k>entrySt.d&&entrySt.k<40;
+ // SHORT requires an actual bearish StochRSI turn. Being overbought by itself is not enough.
+ const shortStochTurn=entrySt.k<entrySt.d&&entrySt.k>60;
+ const longRejection=entryLast.close>entryLast.open&&entryLast.close>entryPrev.close;
+ const shortRejection=entryLast.close<entryLast.open&&entryLast.close<entryPrev.close;
 
- // EARLY ENTRY_1 = original V28 location/timing model.
+ // ENTRY_1 = original V28 location/timing model, evaluated only on closed 4H candles.
  // LONG = near LOW trendline + oversold/turning StochRSI.
- // SHORT = near HIGH trendline + overbought/turning StochRSI.
+ // SHORT = near HIGH trendline + bearish StochRSI turn/rejection.
  // 1D context only determines A/B risk; it does not veto the reversal.
  earlyLong=longNearTL&&(longStochExtreme||(longStochTurn&&longRejection));
- earlyShort=shortNearTL&&(shortStochExtreme||(shortStochTurn&&shortRejection));
+ earlyShort=shortNearTL&&shortStochTurn&&shortRejection;
  earlyLongGrade=earlyLong?(dailyBullishOrTurning?"A":"B"):null;
  earlyShortGrade=earlyShort?(dailyBearishOrTurning?"A":"B"):null;
  const longTrendlineExtreme=longTL.valid&&price>longTL.price&&(price-longTL.price)>av*2;
  const shortTrendlineExtreme=shortTL.valid&&price<shortTL.price&&(shortTL.price-price)>av*2;
- debug.push(`[ENTRY_1] ${pair} | LONG nearTL=${longNearTL?"YES":"NO"} stoch=${st.k.toFixed(1)}/${st.d.toFixed(1)} | SHORT nearTL=${shortNearTL?"YES":"NO"} stoch=${st.k.toFixed(1)}/${st.d.toFixed(1)} | early=${earlyLong?"LONG_"+earlyLongGrade:earlyShort?"SHORT_"+earlyShortGrade:"NO"}`);
+ debug.push(`[ENTRY_1] ${pair} | CLOSED_4H ${new Date(entryLast.timestamp).toISOString()} | LONG nearTL=${longNearTL?"YES":"NO"} stoch=${entrySt.k.toFixed(1)}/${entrySt.d.toFixed(1)} | SHORT nearTL=${shortNearTL?"YES":"NO"} stoch=${entrySt.k.toFixed(1)}/${entrySt.d.toFixed(1)} | early=${earlyLong?"LONG_"+earlyLongGrade:earlyShort?"SHORT_"+earlyShortGrade:"NO"}`);
  if(!earlyLong&&!earlyShort)debug.push(`[ENTRY_1 WAIT] ${pair} | waiting for trendline + StochRSI timing/rejection`);
  // Continuation retest: a controlled pullback into the fast 4H trend structure.
  // This is deliberately stricter than "first red/green candle": price must remain
