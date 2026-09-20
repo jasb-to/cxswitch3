@@ -9,6 +9,7 @@ const redis = new Redis({ url: process.env.KV_REST_API_URL!, token: process.env.
 const LEGACY_SIGNALS_KEY = "cxswitch:signals";
 const LEGACY_TRADES_KEY = "cxswitch:active_trades";
 const ACTIVE_SIGNALS_KEY = "cxswitch:active_signals";
+const MANUAL_RECOVERY_KEY = "cxswitch:manual_recovery_v1";
 const SIGNAL_HISTORY_KEY = "cxswitch:signal_history";
 const LATEST_ALERTS_KEY = "cxswitch:latest_alerts";
 const CARD_RESETS_KEY = "cxswitch:card_resets";
@@ -69,7 +70,7 @@ export async function runMigrationIfNeeded(): Promise<void> {
   console.log(`[STATE] Migration complete: active=${activeSignals.length} history=${historyEntries.length} latest=${Object.keys(latestAlerts).length}`);
 }
 
-export async function getActiveSignals(): Promise<ActiveTrade[]> { await runMigrationIfNeeded(); return (await redis.get<ActiveTrade[]>(ACTIVE_SIGNALS_KEY)) || []; }
+export async function getActiveSignals(): Promise<ActiveTrade[]> { await runMigrationIfNeeded(); let active=(await redis.get<ActiveTrade[]>(ACTIVE_SIGNALS_KEY)) || []; if(active.length===0 && !(await redis.get<boolean>(MANUAL_RECOVERY_KEY))){ const latest=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY) || {}; const recovered:ActiveTrade[]=[]; for(const pair of ["BTC","HYPE"]){ const h=latest[pair]; if(h && h.exitReason==="active" && h.type) recovered.push({id:h.id,pair:h.pair,direction:h.direction,type:h.type,entry:h.entry,stop:h.stop,target:h.tp2??h.target,tp1:h.tp1,tp2:h.tp2,tp3:h.tp3,timestamp:h.timestamp,rr:h.rr,status:"ACTIVE",context:h.context,version:1}); } if(recovered.length){ active=recovered; await redis.set(ACTIVE_SIGNALS_KEY,active); console.log("[RECOVERY] Restored "+recovered.map(x=>x.pair+"_"+x.direction+"_"+x.type).join(", ")+" after hold-state regression"); } await redis.set(MANUAL_RECOVERY_KEY,true); } return active; }
 export async function setActiveSignals(signals: ActiveTrade[]): Promise<void> { await redis.set(ACTIVE_SIGNALS_KEY, signals); }
 export async function addActiveSignal(signal: Signal): Promise<void> {
   const active = await getActiveSignals();
