@@ -36,6 +36,12 @@ function momentumStatus(h:any,m:any){
   const histWeakening=long?!!macd.falling:!!macd.rising;
   const stochExtreme=long?Number(m.stochK)>=80:Number(m.stochK)<=20;
   const stochCooling=long?Number(m.stochK)<Number(m.stochD):Number(m.stochK)>Number(m.stochD);
+  // ENTRY_1 shorts are deliberately captured before the 4H bearish cross.
+  // While 5/13 and 8/21 are still bullish/above, a contracting spread plus
+  // bearish MACD deterioration is the intended V28 transition — not a break.
+  if(!long&&h.type==="ENTRY_1"&&!same513&&!same821&&contracting&&!macdAgainst&&!!macd.bearishShift){
+    return{icon:"🟢",label:"HEALTHY",detail:"Early V28 short transition remains intact."};
+  }
   // BROKEN requires multiple independent failures, not a single Stoch turn.
   if(!same513&&!same821)return{icon:"🔴",label:"BROKEN",detail:"Multiple 4H momentum layers have failed."};
   if((!same513||!same821)&&(macdAgainst||contracting))return{icon:"🟠",label:"DETERIORATING",detail:"Momentum is weakening; protect profits and watch closely."};
