@@ -110,7 +110,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  let earlyLongGrade:"A"|"B"|null=null,earlyShortGrade:"A"|"B"|null=null;
 
  debug.push(`[1D] ${pair} | ${dailyState||"LOCAL"}/${dailyCandidate||"—"} | ${dailyDirection}`);
- debug.push(`[4H] ${pair} | MACD ${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | 5/13=${fourH513.label} | 8/21=${price >= (e21.at(-1) ?? price) ? "ABOVE" : "BELOW"} | triggers=${longTriggers}/${shortTriggers} | early=WAIT_TL_STOCH`); const prepare=(dir:"LONG"|"SHORT")=>{const primary=buildTrendline(candles4h,dir,60),wasStale=primary.stale,alreadyBeyond=primary.valid&&(dir==="LONG"?price>primary.price*1.02:price<primary.price*0.98);let tl=primary;if(wasStale){const fresh=buildTrendline(candles4h,dir,FRESH_LOOKBACK);if(fresh.valid)tl={...fresh,reason:`${fresh.reason}; fresh ${FRESH_LOOKBACK}-candle structure`};}const buf=tl.valid?Math.max(Math.abs(tl.price)*BREAKOUT_PCT,atr(candles4h)*.35):0,freshBeyond=wasStale&&alreadyBeyond&&tl.valid&&(dir==="LONG"?price>tl.price+buf:price<tl.price-buf);return{tl,wasStale,alreadyBeyond,freshBeyond};};
+ debug.push(`[4H] ${pair} | MACD ${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | 5/13=${fourH513.label} | 8/21=${price >= (e21.at(-1) ?? price) ? "ABOVE" : "BELOW"} | triggers=${longTriggers}/${shortTriggers} | closed4H=${new Date(entryLast.timestamp).toISOString()}`); const prepare=(dir:"LONG"|"SHORT")=>{const primary=buildTrendline(candles4h,dir,60),wasStale=primary.stale,alreadyBeyond=primary.valid&&(dir==="LONG"?price>primary.price*1.02:price<primary.price*0.98);let tl=primary;if(wasStale){const fresh=buildTrendline(candles4h,dir,FRESH_LOOKBACK);if(fresh.valid)tl={...fresh,reason:`${fresh.reason}; fresh ${FRESH_LOOKBACK}-candle structure`};}const buf=tl.valid?Math.max(Math.abs(tl.price)*BREAKOUT_PCT,atr(candles4h)*.35):0,freshBeyond=wasStale&&alreadyBeyond&&tl.valid&&(dir==="LONG"?price>tl.price+buf:price<tl.price-buf);return{tl,wasStale,alreadyBeyond,freshBeyond};};
  const LP=prepare("LONG"),SP=prepare("SHORT");let longTL=LP.tl,shortTL=SP.tl;
  if(structureDir==="LONG"&&shortTL.valid){debug.push(`[V28 SYNC] ${pair} — LONG HEALTHY invalidates opposing SHORT TL @ ${shortTL.price.toFixed(2)}; rebuilding LONG TL from confirmed LOW pivots`);longTL=buildTrendline(candles4h,"LONG",FRESH_LOOKBACK);}else if(structureDir==="SHORT"&&longTL.valid){debug.push(`[V28 SYNC] ${pair} — SHORT HEALTHY invalidates opposing LONG TL @ ${longTL.price.toFixed(2)}; rebuilding SHORT TL from confirmed HIGH pivots`);shortTL=buildTrendline(candles4h,"SHORT",FRESH_LOOKBACK);}
  const logTlDiag=(dir:"LONG"|"SHORT",tl:TL)=>{if(!tl.valid){debug.push(`[TL] ${pair} ${dir} invalid pivots=${tl.pivots.length}/2`);return;}const p1=tl.pivots.at(-2)!,p2=tl.pivots.at(-1)!,dist=Math.abs((price-tl.price)/Math.max(Math.abs(tl.price),1))*100;debug.push(`[TL] ${pair} ${dir} ${tl.price.toFixed(2)} dist=${dist.toFixed(2)}% age=${i-p2.index}c stale=${tl.stale?"YES":"NO"}`);};
@@ -119,8 +119,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const L=test("LONG",longTL),S=test("SHORT",shortTL);
  const NEAR_TL_BUFFER=0.0025;
  const nearTLThreshold=Math.max(0,RETEST_PCT-NEAR_TL_BUFFER);
- const entryLongTL=buildTrendline(closed4h,"LONG",60);
- const entryShortTL=buildTrendline(closed4h,"SHORT",60);
+ // Use the current validated structural trendline for ENTRY_1 location.
+ // Only the reversal trigger itself is closed-4H: this keeps the location
+ // check aligned with the trendline shown in the diagnostics/UI.
+ const entryLongTL=longTL;
+ const entryShortTL=shortTL;
  const longNearTL=entryLongTL.valid&&Math.abs((entryLast.close-entryLongTL.price)/Math.max(Math.abs(entryLongTL.price),1))<=nearTLThreshold;
  const shortNearTL=entryShortTL.valid&&Math.abs((entryLast.close-entryShortTL.price)/Math.max(Math.abs(entryShortTL.price),1))<=ENTRY1_SHORT_NEAR_PCT;
  const longStochExtreme=entrySt.k<20;
@@ -140,8 +143,14 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  earlyShortGrade=earlyShort?(dailyBearishOrTurning?"A":"B"):null;
  const longTrendlineExtreme=longTL.valid&&price>longTL.price&&(price-longTL.price)>av*2;
  const shortTrendlineExtreme=shortTL.valid&&price<shortTL.price&&(shortTL.price-price)>av*2;
- debug.push(`[ENTRY_1] ${pair} | CLOSED_4H ${new Date(entryLast.timestamp).toISOString()} | LONG nearTL=${longNearTL?"YES":"NO"} stoch=${entrySt.k.toFixed(1)}/${entrySt.d.toFixed(1)} | SHORT nearTL=${shortNearTL?"YES":"NO"} stoch=${entrySt.k.toFixed(1)}/${entrySt.d.toFixed(1)} | early=${earlyLong?"LONG_"+earlyLongGrade:earlyShort?"SHORT_"+earlyShortGrade:"NO"}`);
- if(!earlyLong&&!earlyShort)debug.push(`[ENTRY_1 WAIT] ${pair} | waiting for short location + 4H bearish timing`);
+ const entryLongDist=entryLongTL.valid?Math.abs((entryLast.close-entryLongTL.price)/Math.max(Math.abs(entryLongTL.price),1))*100:null;
+ const entryShortDist=entryShortTL.valid?Math.abs((entryLast.close-entryShortTL.price)/Math.max(Math.abs(entryShortTL.price),1))*100:null;
+ debug.push(`[ENTRY_1 TL] ${pair} | LONG=${entryLongTL.valid?entryLongTL.price.toFixed(2):"INVALID"} dist=${entryLongDist===null?"—":entryLongDist.toFixed(2)+"%"} | SHORT=${entryShortTL.valid?entryShortTL.price.toFixed(2):"INVALID"} dist=${entryShortDist===null?"—":entryShortDist.toFixed(2)+"%"}`);
+ debug.push(`[ENTRY_1] ${pair} | CLOSED_4H ${new Date(entryLast.timestamp).toISOString()} | LONG nearTL=${longNearTL?"YES":"NO"} stoch=${entrySt.k.toFixed(1)}/${entrySt.d.toFixed(1)} | SHORT nearTL=${shortNearTL?"YES":"NO"} macdTurn=${macd.bearishShift?"YES":"NO"} stochTurn=${shortStochTurn?"YES":"NO"} | early=${earlyLong?"LONG_"+earlyLongGrade:earlyShort?"SHORT_"+earlyShortGrade:"NO"}`);
+ if(!earlyLong&&!earlyShort){
+   const waitReason=(!shortNearTL&&!longNearTL)?"waiting for trendline location":(!shortNearTL&&macd.bearishShift)?"waiting for short location":(!macd.bearishShift&&!shortStochTurn)?"waiting for 4H bearish timing":"waiting for ENTRY_1 conditions";
+   debug.push(`[ENTRY_1 WAIT] ${pair} | ${waitReason}`);
+ }
  // Continuation retest: a controlled pullback into the fast 4H trend structure.
  // This is deliberately stricter than "first red/green candle": price must remain
  // on the correct side of 8/21, 5/13 must still agree, and MACD must not have
