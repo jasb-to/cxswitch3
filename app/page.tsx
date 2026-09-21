@@ -7,7 +7,7 @@ interface Signal{ id:string;pair:string;direction:"LONG"|"SHORT";type:string;ent
 interface MomentumStatus{icon:"🟢"|"🟡"|"🟠"|"🔴";label:"HEALTHY"|"COOLING"|"DETERIORATING"|"BROKEN";detail:string;}
 interface Management{status:"healthy"|"warning"|"failed";recommendation:string;reason:string;}
 interface Alert extends Signal{status:string;validity:{state:string;reason:string};currentPrice:number;ageMinutes?:number;slToEntryAt?:number;tp1HitAt?:number;tp2HitAt?:number;tp3HitAt?:number;managementAdvice?:Management|null;momentumStatus?:MomentumStatus|null;}
-interface Market{pair:string;price:number;trend:string;location:string;trigger:string;adx:number;rsi:number;stochK:number;stochD:number;trendlinePrice:number;distToTrendline:number|null;momentumState?:string;ema8_4h?:number;ema21_4h?:number;fourH513?:{stage:string;label:string;direction:string;spreadContracting?:boolean};daily513?:{stage:string;label:string;direction:string};structureShift?:{structure:"LONG"|"SHORT"|"NEUTRAL";state:"HEALTHY"|"WEAKENING"|"SHIFT_CONFIRMED"|"WATCHING";protectedLevel:number|null;breakDistanceAtr:number|null;breakConfirmed:boolean;reason:string;};entry1Closed4hTimestamp?:number;entry1ClosedStochK?:number;entry1ClosedStochD?:number;entry1NearTL?:boolean;entry1ShortTurn?:boolean;entry1LongTrendlinePrice?:number;entry1ShortTrendlinePrice?:number;dailyLive?:{state?:string;candidateState?:string;direction?:string};}
+interface Market{pair:string;price:number;trend:string;location:string;trigger:string;adx:number;rsi:number;stochK:number;stochD:number;trendlinePrice:number;distToTrendline:number|null;momentumState?:string;entry1Direction?:string;entry1Decision?:string;entry1TriggersLong?:number;entry1TriggersShort?:number;entry1StructuralLocation?:string;entry1NearTL?:string;entry1Chase?:boolean;entry1Exhaustion?:string;entry1ClosedRsi?:number;entry1Grade?:string|null;entry1TriggerThreshold?:number;entry1ExhaustionThreshold?:number;ema8_4h?:number;ema21_4h?:number;fourH513?:{stage:string;label:string;direction:string;spreadContracting?:boolean};daily513?:{stage:string;label:string;direction:string};structureShift?:{structure:"LONG"|"SHORT"|"NEUTRAL";state:"HEALTHY"|"WEAKENING"|"SHIFT_CONFIRMED"|"WATCHING";protectedLevel:number|null;breakDistanceAtr:number|null;breakConfirmed:boolean;reason:string;};entry1Closed4hTimestamp?:number;entry1ClosedStochK?:number;entry1ClosedStochD?:number;entry1NearTL?:boolean;entry1ShortTurn?:boolean;entry1LongTrendlinePrice?:number;entry1ShortTrendlinePrice?:number;dailyLive?:{state?:string;candidateState?:string;direction?:string};}
 interface System{version?:number;lastCronRun:number;lastCronAgeMs:number|null;activePositions:number;latestAlerts?:number;historyEntries?:number;}
 const PAIRS=["BTC","ETH","SOL","HYPE"];
 const KRAKEN:Record<string,string>={BTC:"XBTUSD",ETH:"ETHUSD",SOL:"SOLUSD",HYPE:"HYPEUSD"};
@@ -18,56 +18,23 @@ async function price(pair:string){try{const r=await fetch(`https://api.kraken.co
 function directionClass(d:string){return d==="LONG"||d.includes("BULLISH")||d.startsWith("BULL")?"text-green-400":d==="SHORT"||d.includes("BEARISH")||d.startsWith("BEAR")?"text-red-400":"text-white/45"}
 function strengthFrom4H(e?:Market["fourH513"]){if(!e)return"—";if(e.direction==="NEUTRAL")return"NEUTRAL";if(e.stage.includes("HIGH"))return`${e.direction==="BULLISH"?"LONG":"SHORT"} STRONG`;if(e.stage.includes("MEDIUM"))return`${e.direction==="BULLISH"?"LONG":"SHORT"} MEDIUM`;return`${e.direction==="BULLISH"?"LONG":"SHORT"} LOW`}
 function setupDetail(m:Market|undefined,d:"LONG"|"SHORT",triggerReady=false){
- const ss=m?.structureShift;
- const dailyAligned=m?.daily513?.direction===d||(d==="LONG"?m?.trend?.startsWith("LONG"):m?.trend?.startsWith("SHORT"));
- const atTL=m?.location==="NEAR_TL";
- const structureHealthy=ss?.structure===d&&ss.state==="HEALTHY";
- const structureWatching=!ss||ss.structure==="NEUTRAL"||ss.state==="WATCHING";
- const structureOpposite=ss?.structure!==undefined&&ss.structure!=="NEUTRAL"&&ss.structure!==d;
- const fourHRecovered=m?.fourH513?.direction===d;
- const fourHDirection=m?.fourH513?.direction||"NEUTRAL";
- const parts:string[]=[];
- if(structureHealthy)parts.push("Structure is healthy");
- else if(structureOpposite)parts.push("Structure is "+(ss!.structure==="LONG"?"bullish":"bearish"));
- else if(structureWatching)parts.push("Structure is not yet directional enough");
- if(atTL)parts.push("price is at the TL");
- else if(m?.location==="BEYOND_TL")parts.push("price is beyond the TL");
- else if(m?.location)parts.push("price is "+m.location.replaceAll("_"," ").toLowerCase());
- if(dailyAligned)parts.push(`daily bias is still ${d}`);
- else parts.push(`daily bias is not aligned with ${d}`);
- if(fourHRecovered)parts.push(`the 4H trend is ${d==="LONG"?"bullish":"bearish"} and recovering`);
- else parts.push(`the 4H trend is still ${fourHDirection==="NEUTRAL"?"neutral":fourHDirection.toLowerCase()}`);
+ const entryDirection=m?.entry1Direction||"NEUTRAL",decision=m?.entry1Decision||"NONE";
+ const triggers=entryDirection==="SHORT"?m?.entry1TriggersShort:m?.entry1TriggersLong;
+ if(decision!=="NONE")return `${decision.replace("_"," ")} · GRADE ${m?.entry1Grade||"—"}. 4H triggers ${triggers??"—"}/5 · location ${m?.entry1StructuralLocation||"—"} · chase ${m?.entry1Chase?"YES":"NO"} · exhaustion ${m?.entry1Exhaustion||"CLEAR"}.`;
+ const ss=m?.structureShift,parts:string[]=[];
+ if(ss?.structure===d&&ss.state==="HEALTHY")parts.push("Structure is healthy");else if(ss?.structure&&ss.structure!=="NEUTRAL"&&ss.structure!==d)parts.push("Structure is "+(ss.structure==="LONG"?"bullish":"bearish"));else parts.push("Structure is not yet directional enough");
+ if(m?.location==="NEAR_TL")parts.push("price is at the TL");else if(m?.location==="BEYOND_TL")parts.push("price is beyond the TL");else if(m?.location)parts.push("price is "+m.location.replaceAll("_"," ").toLowerCase());
+ parts.push(`4H ${entryDirection} · triggers ${triggers??"—"}/5`);
+ if(m?.entry1Exhaustion&&m.entry1Exhaustion!=="NONE")parts.push(`4H exhaustion (RSI ${m.entry1ClosedRsi??"—"})`);else if(m?.entry1Chase)parts.push("move is too extended");
  let detail=parts.join(" + ")+".";
- if(!fourHRecovered)detail+=` The missing piece is 4H ${d==="LONG"?"bullish":"bearish"} recovery.`;
- else if(triggerReady)detail+=" The V28 conditions are now aligning.";
- else detail+=" The setup is aligning, but there is no V28 alert yet.";
+ if(m?.entry1Exhaustion&&m.entry1Exhaustion!=="NONE")detail+=" Waiting for exhaustion to clear.";else if(entryDirection==="NEUTRAL")detail+=" Waiting for closed-4H direction.";else if((triggers??0)<(m?.entry1TriggerThreshold??2))detail+=" Waiting for more 4H transition evidence.";else if(m?.entry1StructuralLocation!==entryDirection)detail+=" Waiting for structural location.";else if(m?.entry1Chase)detail+=" Waiting for a non-extended entry.";else detail+=" Conditions are developing; no Entry 1 alert is currently recorded.";
  return detail;
 }
 function EntryDiagnostics({m,a}:{m?:Market;a?:Alert}){
- const stage=!a?"ENTRY 1":a.type==="ENTRY_1"?"ENTRY 2":"ADD";
- const stageTone=stage==="ADD"?"text-yellow-300":stage==="ENTRY 2"?"text-blue-300":"text-white/80";
- const tl=typeof m?.trendlinePrice==="number"&&m.trendlinePrice>0?m.trendlinePrice:null;
- const dist=typeof m?.distToTrendline==="number"?m.distToTrendline:null;
- const k=m?.entry1ClosedStochK,d=m?.entry1ClosedStochD;
- return <div className="mt-3 rounded-xl border border-white/[0.07] bg-white/[0.015] p-3">
-   <div className="flex items-center justify-between">
-     <div className="text-[8px] uppercase tracking-widest text-white/20">V28 ENTRY WATCH</div>
-     <div className={`text-[9px] font-black ${stageTone}`}>{stage}</div>
-   </div>
-   <div className="mt-2 grid grid-cols-2 gap-3">
-     <KV l="TL" v={tl!==null?money(tl):"—"}/>
-     <KV l="DIST" v={dist===null?"—":dist.toFixed(2)+"%"}/>
-     <KV l="LOCATION" v={m?.location||"—"}/>
-     {stage==="ENTRY 1"&&<KV l="STOCH TURN" v={m?.entry1ShortStochTurn||m?.entry1LongStochTurn?"YES":"WAIT"}/>}
-     {stage==="ENTRY 1"&&<KV l="CLOSED 4H STOCH" v={typeof k==="number"&&typeof d==="number"?k.toFixed(1)+" / "+d.toFixed(1):"—"}/>}
-     {stage==="ENTRY 2"&&<KV l="4H 5/13" v={strengthFrom4H(m?.fourH513)}/>}
-     {stage==="ENTRY 2"&&<KV l="4H 8/21" v={typeof m?.ema8_4h==="number"&&typeof m?.ema21_4h==="number"?(m.ema8_4h>=m.ema21_4h?"LONG":"SHORT"):"—"}/>}
-     {stage==="ADD"&&<KV l="4H 5/13" v={strengthFrom4H(m?.fourH513)}/>}
-     {stage==="ADD"&&<KV l="8/21" v={typeof m?.ema8_4h==="number"&&typeof m?.ema21_4h==="number"?(m.ema8_4h>=m.ema21_4h?"ABOVE":"BELOW"):"—"}/>}
-     <KV l="STATUS" v={a?"ACTIVE":"WAIT"}/>
-   </div>
-   <div className="mt-2 text-[8px] leading-4 text-white/25">Stage diagnostics only · no extra gates</div>
- </div>
+ const stage=!a?"ENTRY 1":a.type==="ENTRY_1"?"ENTRY 2":"ADD",stageTone=stage==="ADD"?"text-yellow-300":stage==="ENTRY 2"?"text-blue-300":"text-white/80";
+ const tl=typeof m?.trendlinePrice==="number"&&m.trendlinePrice>0?m.trendlinePrice:null,dist=typeof m?.distToTrendline==="number"?m.distToTrendline:null,k=m?.entry1ClosedStochK,d=m?.entry1ClosedStochD;
+ const triggers=stage==="ENTRY 1"?(m?.entry1Direction==="SHORT"?m?.entry1TriggersShort:m?.entry1TriggersLong):undefined,decision=stage==="ENTRY 1"?(m?.entry1Decision||"NONE"):undefined,exhausted=stage==="ENTRY 1"&&m?.entry1Exhaustion&&m.entry1Exhaustion!=="NONE";
+ return <div className="mt-3 rounded-xl border border-white/[0.07] bg-white/[0.015] p-3"><div className="flex items-center justify-between"><div className="text-[8px] uppercase tracking-widest text-white/20">V28 ENTRY WATCH</div><div className={`text-[9px] font-black ${stageTone}`}>{stage}</div></div><div className="mt-2 grid grid-cols-2 gap-3"><KV l="TL" v={tl!==null?money(tl):"—"}/><KV l="DIST" v={dist===null?"—":dist.toFixed(2)+"%"}/><KV l="LOCATION" v={stage==="ENTRY 1"?(m?.entry1StructuralLocation||"—"):(m?.location||"—")}/>{stage==="ENTRY 1"&&<KV l="4H TRIGGERS" v={`${triggers??0}/5`}/>} {stage==="ENTRY 1"&&<KV l="DECISION" v={decision||"NONE"}/>} {stage==="ENTRY 1"&&<KV l="EXHAUSTION" v={exhausted?`BLOCKED · RSI ${m?.entry1ClosedRsi??"—"}`:`CLEAR · RSI ${m?.entry1ClosedRsi??"—"}`}/>} {stage==="ENTRY 1"&&<KV l="CHASE" v={m?.entry1Chase?"YES":"NO"}/>} {stage==="ENTRY 1"&&<KV l="CLOSED 4H STOCH" v={typeof k==="number"&&typeof d==="number"?k.toFixed(1)+" / "+d.toFixed(1):"—"}/>} {stage==="ENTRY 2"&&<KV l="4H 5/13" v={strengthFrom4H(m?.fourH513)}/>} {stage==="ENTRY 2"&&<KV l="4H 8/21" v={typeof m?.ema8_4h==="number"&&typeof m?.ema21_4h==="number"?(m.ema8_4h>=m.ema21_4h?"LONG":"SHORT"):"—"}/>} {stage==="ADD"&&<KV l="4H 5/13" v={strengthFrom4H(m?.fourH513)}/>} {stage==="ADD"&&<KV l="8/21" v={typeof m?.ema8_4h==="number"&&typeof m?.ema21_4h==="number"?(m.ema8_4h>=m.ema21_4h?"ABOVE":"BELOW"):"—"}/>} <KV l="STATUS" v={a?"ACTIVE":decision&&decision!=="NONE"?"READY":"WAIT"}/></div><div className="mt-2 text-[8px] leading-4 text-white/25">Same Entry 1 decision engine · no UI-only gates</div></div>
 }
 function stateOfPlay(m?:Market,a?:Alert){
  if(a)return{title:`TRADE · ${a.direction}`,detail:"A V28 trade is recorded for this symbol. The card shows the live market state and current trade levels.",tone:a.direction==="LONG"?"bull" as Tone:"bear" as Tone};
