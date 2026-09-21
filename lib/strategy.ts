@@ -281,7 +281,49 @@ export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candl
 export interface ValidityCheck{valid:boolean;reason:string;exited:boolean;state?:"VALID"|"STALE"|"INVALID";}
 export function isSignalStillValid(s:Signal,p:number,now=Date.now()):ValidityCheck{if(now-s.timestamp>(s.type==="ADD"?4:24)*60*60*1000)return{valid:false,reason:"expired_ttl",exited:true,state:"STALE"};if(s.direction==="LONG"&&p<=s.stop)return{valid:false,reason:"sl_hit",exited:true,state:"INVALID"};if(s.direction==="SHORT"&&p>=s.stop)return{valid:false,reason:"sl_hit",exited:true,state:"INVALID"};return{valid:true,reason:"active",exited:false,state:"VALID"};}
 export interface HoldResult{shouldHold:boolean;reason:string;newStop?:number;scaleOut?:{level:number;size:number;label:string};}
-export function shouldHold(s:Signal,c:Candle[],p:number):HoldResult{const risk=Math.abs(s.entry-s.stop);if(risk){const rr=s.direction==="LONG"?(p-s.entry)/risk:(s.entry-p)/risk;if(rr>=2){const a=atr(c),e21=ema(c.map(x=>x.close),TF_SLOW).at(-1)!,trail=s.direction==="LONG"?e21-a*1.5:e21+a*1.5,locked=s.direction==="LONG"?s.entry+risk:s.entry-risk,newStop=s.direction==="LONG"?Math.max(locked,trail):Math.min(locked,trail);return{shouldHold:true,reason:"tp3_runner_trailing",newStop,scaleOut:{level:s.tp3??s.entry,size:.2,label:"TP3_RUNNER_20"}};}if(rr>=1.5)return{shouldHold:true,reason:"tp2_hit_lock_1r_runner",newStop:s.direction==="LONG"?s.entry+risk:s.entry-risk,scaleOut:{level:s.tp2??s.entry,size:.4,label:"TP2"}};if(rr>=1)return{shouldHold:true,reason:"tp1_hit_scale_out_40",newStop:s.entry,scaleOut:{level:s.tp1??s.entry,size:.4,label:"TP1"}};}const v=isSignalStillValid(s,p);return{shouldHold:v.valid,reason:v.reason};}
+
+function waveMomentum(c:Candle[],d:"LONG"|"SHORT"){
+  // Position management uses CLOSED 4H candles only. A single pullback is
+  // deliberately not treated as a wave failure: we require a confirmed
+  // 8/21 reversal plus MACD deterioration before momentum can close the trade.
+  const closed=c.length>1?c.slice(0,-1):c;
+  if(closed.length<26)return{state:"NEUTRAL",confirmedReversal:false};
+  const closes=closed.map(x=>x.close),e8=ema(closes,TF_FAST),e21=ema(closes,TF_SLOW),m=macd4h(closed);
+  const n=closed.length;
+  const c0=closes[n-1],c1=closes[n-2];
+  const e80=e8[n-1]!,e81=e8[n-2]!,e210=e21[n-1]!,e211=e21[n-2]!;
+  const r=rsi(closes);
+  const longReversal=d==="LONG"&&c0<e80&&c1<e81&&e80<e210&&e81<=e211&&m.bearishShift;
+  const shortReversal=d==="SHORT"&&c0>e80&&c1>e81&&e80>e210&&e81>=e211&&m.bullishShift;
+  const confirmedReversal=longReversal||shortReversal;
+  const aligned=d==="LONG"?c0>e80&&e80>e210&&r>=50:c0<e80&&e80<e210&&r<=50;
+  const weakening=d==="LONG"?m.falling||c0<e80:d==="SHORT"?m.rising||c0>e80:false;
+  return{state:confirmedReversal?"REVERSING":aligned?"WAVE":"WEAKENING",confirmedReversal,aligned,weakening};
+}
+
+export function shouldHold(s:Signal,c:Candle[],p:number):HoldResult{
+  // Momentum is a wave-management layer, not a trigger to panic on the first
+  // opposite candle. The trade is only exited by momentum after a confirmed
+  // 4H reversal; ordinary pullbacks remain inside the trade and the existing
+  // TP/runner logic continues to manage the position.
+  const momentum=waveMomentum(c,s.direction);
+  if(momentum.confirmedReversal){
+    return{shouldHold:false,reason:"momentum_confirmed_4h_reversal"};
+  }
+
+  const risk=Math.abs(s.entry-s.stop);
+  if(risk){
+    const rr=s.direction==="LONG"?(p-s.entry)/risk:(s.entry-p)/risk;
+    if(rr>=2){
+      const a=atr(c),e21=ema(c.map(x=>x.close),TF_SLOW).at(-1)!,trail=s.direction==="LONG"?e21-a*1.5:e21+a*1.5,locked=s.direction==="LONG"?s.entry+risk:s.entry-risk,newStop=s.direction==="LONG"?Math.max(locked,trail):Math.min(locked,trail);
+      return{shouldHold:true,reason:momentum.state==="WAVE"?"tp3_runner_trailing_momentum":"tp3_runner_trailing",newStop,scaleOut:{level:s.tp3??s.entry,size:.2,label:"TP3_RUNNER_20"}};
+    }
+    if(rr>=1.5)return{shouldHold:true,reason:momentum.state==="WAVE"?"tp2_hit_lock_1r_runner_momentum":"tp2_hit_lock_1r_runner",newStop:s.direction==="LONG"?s.entry+risk:s.entry-risk,scaleOut:{level:s.tp2??s.entry,size:.4,label:"TP2"}};
+    if(rr>=1)return{shouldHold:true,reason:momentum.state==="WAVE"?"tp1_hit_scale_out_40_momentum":"tp1_hit_scale_out_40",newStop:s.entry,scaleOut:{level:s.tp1??s.entry,size:.4,label:"TP1"}};
+  }
+  const v=isSignalStillValid(s,p);
+  return{shouldHold:v.valid,reason:v.reason};
+}
 export function shouldHoldCompat(s:Signal,c4:Candle[],c1:Candle[],p:number){return shouldHold(s,c4,p);}
 export function filterExpiredSignals(signals:Signal[],prices:Record<string,number>,now?:number){const active:Signal[]=[],exited:{signal:Signal;reason:string}[]=[];for(const s of signals){const p=prices[s.pair];if(p===undefined){active.push(s);continue;}const v=isSignalStillValid(s,p,now);v.valid?active.push(s):exited.push({signal:s,reason:v.reason});}return{active,exited};}
 export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
