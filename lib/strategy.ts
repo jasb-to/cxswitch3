@@ -14,7 +14,7 @@ export interface Candle { timestamp:number; open:number; high:number; low:number
 export interface BreakoutRecord { direction:"LONG"|"SHORT"; price:number; timestamp:number; candleIndex:number; }
 export interface Signal { id:string; pair:string; direction:"LONG"|"SHORT"; type:"ENTRY_1"|"ENTRY_2"|"ADD"; scale:"ENTRY_1"|"ENTRY_2"|"ADD"|null; entry:number; stop:number; target:number; tp1?:number; tp2?:number; tp3?:number; confidence:number; rr:number; adx:number; rsi:number; stochK:number; stochD:number; expectedMove:number; reason:string; timestamp:number; version:number; trend?:string; location?:string; trigger?:string; context?:any; }
 export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; }
-export const CURRENT_SIGNAL_VERSION=3;
+export const CURRENT_SIGNAL_VERSION=4;
 
 type DailyLiveContext={state?:string;candidateState?:string;candidateStreak?:number;direction?:"BULL"|"BEAR"|"NEUTRAL";structure?:any;ema?:any;fast513?:any;adx?:number;momentum?:any;protectedLevel?:number|null};
 
@@ -141,22 +141,47 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const longRejection=entryLast.close>entryLast.open&&entryLast.close>entryPrev.close;
  const shortRejection=entryLast.close<entryLast.open&&entryLast.close<entryPrev.close;
 
- // ENTRY_1 direction is owned by the closed-4H setup.
-// 1D is context only: it grades/sizes the setup, but it can never choose
-// LONG or SHORT and it cannot override an opposing 4H structure.
+ // ENTRY_1 direction is owned by the CLOSED 4H setup.
+// 1D is context only: it grades/sizes the setup. It can never choose
+// LONG or SHORT and it cannot veto an otherwise valid 4H transition.
 //
-// Important: a healthy 4H structure is authoritative. We must not let a
-// stale/slow 1D BEAR/ BULL context, or an opposing TL, manufacture an
-// ENTRY_1 direction. If the 4H structure and 4H momentum disagree, stay
-// neutral rather than forcing a trade.
+// Entry 1 is deliberately ONE signal. It can fire early while the 4H is
+// still transitioning. We therefore do not require every indicator to agree.
+// What matters is:
+//   1) closed 4H direction is pointing the right way;
+//   2) at least 2 meaningful 4H transition triggers are present;
+//   3) price has a valid structural location;
+//   4) we are not buying/selling an already-exploded move.
+//
+// Trendline proximity remains a valid location, but it is no longer mandatory.
+// This is the key fix for cases like SOL where the structural trendline can
+// sit far below/above price while the 4H is already beginning to turn.
 const fourHBullishStructure=entryStructureDir==="LONG";
 const fourHBearishStructure=entryStructureDir==="SHORT";
 const fourHBullishMomentum=entryFourH513.direction==="BULLISH";
 const fourHBearishMomentum=entryFourH513.direction==="BEARISH";
-const fourHLongDirection=fourHBullishStructure||(structureDir===null&&fourHBullishMomentum);
-const fourHShortDirection=fourHBearishStructure||(structureDir===null&&fourHBearishMomentum);
-earlyLong=fourHLongDirection&&longNearTL&&(longStochExtreme||(longStochTurn&&longRejection));
-earlyShort=fourHShortDirection&&shortNearTL&&(entryMacd.bearishShift||shortStochTurn);
+const fourHLongDirection=fourHBullishStructure||(entryStructureDir===null&&fourHBullishMomentum);
+const fourHShortDirection=fourHBearishStructure||(entryStructureDir===null&&fourHBearishMomentum);
+
+// Structural range BEFORE the current closed 4H candle. This keeps the
+// anti-chase check closed-candle based and avoids using the live candle.
+const entryRangeLow=Math.min(...closed4h.slice(-EARLY_LOOKBACK,-1).map(x=>x.low));
+const entryRangeHigh=Math.max(...closed4h.slice(-EARLY_LOOKBACK,-1).map(x=>x.high));
+const longStructuralLocation=longNearTL||reclaim8Long||higherLow||priorHighBreak;
+const shortStructuralLocation=shortNearTL||reclaim8Short||lowerHigh||priorLowBreak;
+
+// Allow an early transition, but don't enter after a genuinely extended
+// breakout. A 2.5% allowance keeps Entry 1 early without making it a chase.
+const longNotChasing=entryLast.close<=entryRangeHigh*1.025;
+const shortNotChasing=entryLast.close>=entryRangeLow*0.975;
+
+// One unified Entry 1. The trigger count is evidence, not a stacked
+// confirmation model: 2 of 5 is enough when direction + location are right.
+const earlyLongTransition=longTriggers>=2&&longStructuralLocation&&longNotChasing;
+const earlyShortTransition=shortTriggers>=2&&shortStructuralLocation&&shortNotChasing;
+
+earlyLong=fourHLongDirection&&earlyLongTransition;
+earlyShort=fourHShortDirection&&earlyShortTransition;
 earlyLongGrade=earlyLong?(dailyBullishOrTurning?"A":"B"):null;
 earlyShortGrade=earlyShort?(dailyBearishOrTurning?"A":"B"):null;
  const longTrendlineExtreme=longTL.valid&&price>longTL.price&&(price-longTL.price)>av*2;
@@ -164,10 +189,10 @@ earlyShortGrade=earlyShort?(dailyBearishOrTurning?"A":"B"):null;
  const entryLongDist=entryLongTL.valid?Math.abs((entryLast.close-entryLongTL.price)/Math.max(Math.abs(entryLongTL.price),1))*100:null;
  const entryShortDist=entryShortTL.valid?Math.abs((entryLast.close-entryShortTL.price)/Math.max(Math.abs(entryShortTL.price),1))*100:null;
  debug.push(`[ENTRY_1 TL] ${pair} | LONG=${entryLongTL.valid?entryLongTL.price.toFixed(2):"INVALID"} dist=${entryLongDist===null?"—":entryLongDist.toFixed(2)+"%"} | SHORT=${entryShortTL.valid?entryShortTL.price.toFixed(2):"INVALID"} dist=${entryShortDist===null?"—":entryShortDist.toFixed(2)+"%"}`);
- debug.push(`[ENTRY_1] ${pair} | CLOSED_4H ${new Date(entryLast.timestamp).toISOString()} | direction4H=${entryFourH513.direction} | structure4H=${entryStructureDir||"TRANSITION"} | 1DContext=${dailyState||dailyCandidate||"LOCAL"} | LONG nearTL=${longNearTL?"YES":"NO"} stoch=${entrySt.k.toFixed(1)}/${entrySt.d.toFixed(1)} | SHORT nearTL=${shortNearTL?"YES":"NO"} macdTurn=${entryMacd.bearishShift?"YES":"NO"} stochTurn=${shortStochTurn?"YES":"NO"} | early=${earlyLong?"LONG_"+earlyLongGrade:earlyShort?"SHORT_"+earlyShortGrade:"NO"}`);
-debug.push(`[ENTRY_1 DECISION] ${pair} | direction4H=${entryFourH513.direction} | trendlineDirection=${entryLongTL.valid&&entryShortTL.valid?(longNearTL&&!shortNearTL?"LONG":shortNearTL&&!longNearTL?"SHORT":"AMBIGUOUS"):(entryLongTL.valid?"LONG":entryShortTL.valid?"SHORT":"NONE")} | stochTurn=${entrySt.k>entrySt.d?"UP":entrySt.k<entrySt.d?"DOWN":"FLAT"} | location=${longNearTL&&!shortNearTL?"LONG":shortNearTL&&!longNearTL?"SHORT":"NONE"} | grade=${earlyLong?earlyLongGrade:earlyShort?earlyShortGrade:"—"} | finalDecision=${earlyLong?"LONG_ENTRY_1":earlyShort?"SHORT_ENTRY_1":"NONE"}`);
+ debug.push(`[ENTRY_1] ${pair} | CLOSED_4H ${new Date(entryLast.timestamp).toISOString()} | direction4H=${entryFourH513.direction} | structure4H=${entryStructureDir||"TRANSITION"} | 1DContext=${dailyState||dailyCandidate||"LOCAL"} | LONG nearTL=${longNearTL?"YES":"NO"} location=${longStructuralLocation?"YES":"NO"} triggers=${longTriggers}/5 | SHORT nearTL=${shortNearTL?"YES":"NO"} location=${shortStructuralLocation?"YES":"NO"} triggers=${shortTriggers}/5 | early=${earlyLong?"LONG_"+earlyLongGrade:earlyShort?"SHORT_"+earlyShortGrade:"NO"}`);
+debug.push(`[ENTRY_1 DECISION] ${pair} | 4HDirection=${fourHLongDirection?"LONG":fourHShortDirection?"SHORT":"NEUTRAL"} | triggers=${longTriggers}/${shortTriggers} | structuralLocation=${longStructuralLocation&&!shortStructuralLocation?"LONG":shortStructuralLocation&&!longStructuralLocation?"SHORT":"NONE"} | nearTL=${longNearTL&&!shortNearTL?"LONG":shortNearTL&&!longNearTL?"SHORT":"NONE"} | chase=${earlyLongTransition?"NO":"YES"} | grade=${earlyLong?earlyLongGrade:earlyShort?earlyShortGrade:"—"} | finalDecision=${earlyLong?"LONG_ENTRY_1":earlyShort?"SHORT_ENTRY_1":"NONE"}`);
  if(!earlyLong&&!earlyShort){
-   const waitReason=(!shortNearTL&&!longNearTL)?"waiting for trendline location":(!shortNearTL&&macd.bearishShift)?"waiting for short location":(!macd.bearishShift&&!shortStochTurn)?"waiting for 4H bearish timing":"waiting for ENTRY_1 conditions";
+   const waitReason=(!fourHLongDirection&&!fourHShortDirection)?"waiting for 4H direction":(fourHLongDirection&&longTriggers<2)?"waiting for more bullish 4H transition evidence":(fourHShortDirection&&shortTriggers<2)?"waiting for more bearish 4H transition evidence":(fourHLongDirection&&!longStructuralLocation)?"waiting for bullish structural location":(fourHShortDirection&&!shortStructuralLocation)?"waiting for bearish structural location":(fourHLongDirection&&!longNotChasing)?"bullish move too extended":(fourHShortDirection&&!shortNotChasing)?"bearish move too extended":"waiting for ENTRY_1 conditions";
    debug.push(`[ENTRY_1 WAIT] ${pair} | ${waitReason}`);
  }
  // Continuation retest: a controlled pullback into the fast 4H trend structure.
@@ -191,7 +216,7 @@ debug.push(`[ENTRY_1 DECISION] ${pair} | direction4H=${entryFourH513.direction} 
  else if(continuationShort&&!continuationLong){dir="SHORT";tl=shortTL;continuation=true;}
  // No daily-direction fallback. If 4H has not established direction, remain neutral.
  if(!dir||!tl){
-   const conflict=dailyBear&&fourHLongDirection?"BEARISH CONTEXT / BULLISH 4H":dailyBull&&fourHShortDirection?"BULLISH CONTEXT / BEARISH 4H":"NO 4H DIRECTION";
+   const conflict=dailyBear&&fourHLongDirection?"4H BULLISH / 1D BEARISH CONTEXT":dailyBull&&fourHShortDirection?"4H BEARISH / 1D BULLISH CONTEXT":"NO 4H DIRECTION";
    debug.push(`directionSource=4H | 1DContext=${dailyState||dailyCandidate||"LOCAL"} | 4HState=${fourH513.label} | finalDirection=NONE | reason=${conflict}`);
    return{debug};
  }
