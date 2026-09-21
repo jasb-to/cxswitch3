@@ -259,11 +259,13 @@ debug.push(`[ENTRY_1 DECISION] ${pair} | 4HDirection=${fourHLongDirection?"LONG"
  // reach the stop before forced liquidation can occur.
  const l=liq(entry,dir),safe=dir==="LONG"?l*(1+LIQ_BUFFER):l*(1-LIQ_BUFFER);
  const structuralStop=structural;
+ const structuralRisk=Math.abs(entry-structuralStop);if(!structuralRisk)return{debug};
  const stop=dir==="LONG"?Math.max(structuralStop,safe):Math.min(structuralStop,safe);
  const risk=Math.abs(entry-stop);if(!risk)return{debug};
- // Keep R1/R1.5/R2 as the trade's existing target framework; the liquidation
- // guard changes only the stop, not the target logic.
- const tp1=dir==="LONG"?entry+risk:entry-risk,tp2=dir==="LONG"?entry+risk*1.5:entry-risk*1.5,tp3=dir==="LONG"?entry+risk*2:entry-risk*2,target=tp2,rr=1.5;if(rr<MIN_RR)return{market:entryMarket(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug:[...debug,"R:R below minimum"]};
+ // R1/R1.5/R2 remain anchored to the original structural risk. The liquidation
+ // guard changes only the protective SL; it does not pull the existing targets
+ // closer just because the SL needed extra safety room.
+ const tp1=dir==="LONG"?entry+structuralRisk:entry-structuralRisk,tp2=dir==="LONG"?entry+structuralRisk*1.5:entry-structuralRisk*1.5,tp3=dir==="LONG"?entry+structuralRisk*2:entry-structuralRisk*2,target=tp2,rr=1.5;if(rr<MIN_RR)return{market:entryMarket(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug:[...debug,"R:R below minimum"]};
  daily513=getDaily513Diagnostic(candles4h),agreesWith1D=dailyLive?(dir==="LONG"&&dailyBull)||(dir==="SHORT"&&dailyBear):((dir==="LONG"&&daily513.direction==="BULLISH")||(dir==="SHORT"&&daily513.direction==="BEARISH")),earlyGrade=dir==="LONG"?earlyLongGrade:earlyShortGrade,riskMultiplier=early?(earlyGrade==="A"&&agreesWith1D?1:0.5):(agreesWith1D?1:0.5),baseRisk=risk,positionSize=baseRisk*riskMultiplier,trendAlignment=agreesWith1D?"WITH_1D":"AGAINST_1D";
  const breakoutRecord:BreakoutRecord=type==="ENTRY_1"&&!early?{direction:dir,price:round(tl.price),timestamp:now,candleIndex:i}:lastBreakout!;
  const location=early?"EARLY_REVERSAL":breakout?"BREAKOUT":continuation?"MOMENTUM_PULLBACK":"RETEST",trigger=early?"4H_REVERSAL":breakout?"4H_TRENDLINE_BREAKOUT":continuation?"4H_MOMENTUM_PULLBACK":"4H_BREAKOUT_RETEST";
