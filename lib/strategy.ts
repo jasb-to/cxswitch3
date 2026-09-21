@@ -21,7 +21,7 @@ type DailyLiveContext={state?:string;candidateState?:string;candidateStreak?:num
 const DAILY_FAST=5, DAILY_SLOW=13, TF_FAST=8, TF_SLOW=21;
 const BREAKOUT_PCT=0.005, RETEST_PCT=0.012, ENTRY_ATR=2, ADD_ATR=1.5, MIN_RR=1.25;
 const STALE_TL_PCT=0.04, STALE_TL_CANDLES=12, FRESH_LOOKBACK=30, BREAKOUT_EXPIRY_CANDLES=12;
-const LEVERAGE=20, MMR=0.01, LIQ_BUFFER=0.005;
+const LEVERAGE=20, MMR=0.01, LIQ_BUFFER=0.015;
 const EARLY_NEAR_PCT=0.025;
 const EARLY_LOOKBACK=12;
 const ENTRY1_LONG_EXHAUSTION_RSI=80;
@@ -252,12 +252,23 @@ debug.push(`[ENTRY_1 DECISION] ${pair} | 4HDirection=${fourHLongDirection?"LONG"
  }
  if(!type){debug.push(`State: ${has?"POST_BREAKOUT_WAIT":"WAITING"}`);return{market:entryMarket(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug};}
  const structural=dir==="LONG"?Math.min(...candles4h.slice(-10).map(x=>x.low),entryPriceFor(dir,price,av,type)):Math.max(...candles4h.slice(-10).map(x=>x.high),entryPriceFor(dir,price,av,type));
- const entry=price,stop=structural,risk=Math.abs(entry-stop);if(!risk)return{debug};
+ const entry=price;
+ // The structural stop remains the strategy's natural invalidation level, but it
+ // must never sit at/through the estimated 20x liquidation boundary. Keep a
+ // 1.5% price buffer away from liquidation so normal volatility has room to
+ // reach the stop before forced liquidation can occur.
+ const l=liq(entry,dir),safe=dir==="LONG"?l*(1+LIQ_BUFFER):l*(1-LIQ_BUFFER);
+ const structuralStop=structural;
+ const stop=dir==="LONG"?Math.max(structuralStop,safe):Math.min(structuralStop,safe);
+ const risk=Math.abs(entry-stop);if(!risk)return{debug};
+ // Keep R1/R1.5/R2 as the trade's existing target framework; the liquidation
+ // guard changes only the stop, not the target logic.
  const tp1=dir==="LONG"?entry+risk:entry-risk,tp2=dir==="LONG"?entry+risk*1.5:entry-risk*1.5,tp3=dir==="LONG"?entry+risk*2:entry-risk*2,target=tp2,rr=1.5;if(rr<MIN_RR)return{market:entryMarket(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug:[...debug,"R:R below minimum"]};
- const l=liq(entry,dir),safe=dir==="LONG"?l*(1+LIQ_BUFFER):l*(1-LIQ_BUFFER),daily513=getDaily513Diagnostic(candles4h),agreesWith1D=dailyLive?(dir==="LONG"&&dailyBull)||(dir==="SHORT"&&dailyBear):((dir==="LONG"&&daily513.direction==="BULLISH")||(dir==="SHORT"&&daily513.direction==="BEARISH")),earlyGrade=dir==="LONG"?earlyLongGrade:earlyShortGrade,riskMultiplier=early?(earlyGrade==="A"&&agreesWith1D?1:0.5):(agreesWith1D?1:0.5),baseRisk=risk,positionSize=baseRisk*riskMultiplier,trendAlignment=agreesWith1D?"WITH_1D":"AGAINST_1D";
+ daily513=getDaily513Diagnostic(candles4h),agreesWith1D=dailyLive?(dir==="LONG"&&dailyBull)||(dir==="SHORT"&&dailyBear):((dir==="LONG"&&daily513.direction==="BULLISH")||(dir==="SHORT"&&daily513.direction==="BEARISH")),earlyGrade=dir==="LONG"?earlyLongGrade:earlyShortGrade,riskMultiplier=early?(earlyGrade==="A"&&agreesWith1D?1:0.5):(agreesWith1D?1:0.5),baseRisk=risk,positionSize=baseRisk*riskMultiplier,trendAlignment=agreesWith1D?"WITH_1D":"AGAINST_1D";
  const breakoutRecord:BreakoutRecord=type==="ENTRY_1"&&!early?{direction:dir,price:round(tl.price),timestamp:now,candleIndex:i}:lastBreakout!;
  const location=early?"EARLY_REVERSAL":breakout?"BREAKOUT":continuation?"MOMENTUM_PULLBACK":"RETEST",trigger=early?"4H_REVERSAL":breakout?"4H_TRENDLINE_BREAKOUT":continuation?"4H_MOMENTUM_PULLBACK":"4H_BREAKOUT_RETEST";
  const s:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),tp3:round(tp3),confidence:early?70:type==="ENTRY_1"?80:type==="ENTRY_2"?70:85,rr,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(Math.abs(tp3-entry)/entry*1000)/10,reason:early?`${dir} ENTRY_1 EARLY ${earlyGrade} | 1D ${dailyState||dailyCandidate||"REGIME"} | 4H triggers ${dir==="LONG"?longTriggers:shortTriggers}/5 | MACD ${dir==="LONG"?(macdImprovingLong?"improving":"—"):(macdImprovingShort?"improving":"—")} | 5/13 ${fourH513.label}`: `${dir} ${type} | 4H trendline breakout/retest | 1D ${contextDir?strength(d,contextDir):"NEUTRAL"} | Stoch ${st.k}/${st.d}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} ${strength(d,dir)}`,location,trigger,context:{marketPhase:early?`${dir} EARLY REVERSAL ${earlyGrade}`:`${dir} ${strength(d,dir)}`,structure:early?`4H ${structure.structure||"TRANSITION"} + trigger count ${dir==="LONG"?longTriggers:shortTriggers}/5`:(breakout?"4H TRENDLINE BREAKOUT":"4H BREAKOUT RETEST"),momentum:`RSI ${r} | Stoch ${st.k}/${st.d} | MACD hist ${round(macd.histogram)}`,pullback:continuation?"controlled_4h_momentum_pullback":retest?"confirmed_retest":early?"early_transition":"breakout",fourH513,daily513,dailyLive:dailyLive||null,macd4h:macd,trendAlignment,sizeMultiplier:riskMultiplier,earlyGrade:early?earlyGrade:undefined,risk:{baseRisk:round(baseRisk),positionSize:round(positionSize),trendAlignment,sizeMultiplier:riskMultiplier,riskMultiplier,estimatedLiquidation:round(l),safeBoundary:round(safe),leverage:LEVERAGE},breakoutRecord:breakoutRecord?{direction:breakoutRecord.direction,price:round(breakoutRecord.price),timestamp:breakoutRecord.timestamp,candleIndex:breakoutRecord.candleIndex}:undefined,stages:{tp1:round(tp1),tp2:round(tp2),tp3:round(tp3),tp1R:1,tp2R:1.5,tp3R:2}}};
+ debug.push(`[RISK] ${pair} ${dir} | structuralSL=${round(structuralStop)} | liquidation=${round(l)} | safeBoundary=${round(safe)} | finalSL=${round(stop)} | liquidationBuffer=${LIQ_BUFFER*100}%`);
  debug.push(`directionSource=4H | 1DContext=${dailyState||dailyCandidate||"LOCAL"} | 4HState=${entryFourH513.label} | structure=${entryStructureDir||"TRANSITION"} | TL=${dir==="LONG"?"LONG":"SHORT"} | finalDirection=${dir}`);
  debug.push(`SIGNAL: ${type} ${dir} @ ${s.entry} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | TP3 ${s.tp3} | ${trendAlignment} | ${early?`EARLY_${earlyGrade}`:"CONFIRMED"} | size x${riskMultiplier}`);return{signal:s,signals:[s],market:entryMarket(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug};
 }
