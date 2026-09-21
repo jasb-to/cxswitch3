@@ -99,16 +99,26 @@ export async function releaseTelegramAlert(key:string):Promise<void>{
 // Latest alert is separate from active position state and full history. Card resets only hide
 // the latest-alert pointer for that symbol; they never delete or mutate history/positions.
 export async function getCardResets():Promise<Record<string,number>>{return(await redis.get<Record<string,number>>(CARD_RESETS_KEY))||{};}
-export async function reconcileSymbolCard(pair:string):Promise<{pair:string;resetAt:number;hiddenAlertId?:string;activePosition:boolean}> {
+export async function reconcileSymbolCard(pair:string):Promise<{pair:string;resetAt:number;hiddenAlertId?:string;resetActiveIds:string[];activePosition:boolean}> {
   const now=Date.now();
   const resets=await getCardResets();
   const latest=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY) || {};
   const hiddenAlertId=latest[pair]?.id;
   resets[pair]=now;
   await redis.set(CARD_RESETS_KEY,resets);
-  console.log(`[CARD] ${pair} — UI reconciliation reset at ${new Date(now).toISOString()} | history preserved | latest alert hidden=${hiddenAlertId||"none"}`);
   const active=await getActiveSignals();
-  return {pair,resetAt:now,hiddenAlertId,activePosition:active.some(x=>x.pair===pair)};
+  const resetTrades=active.filter(x=>x.pair===pair);
+  if(resetTrades.length){
+    await setActiveSignals(active.filter(x=>x.pair!==pair));
+    const history=await getSignalHistory();
+    for(const trade of resetTrades){const h=history.find(x=>x.id===trade.id);if(h&&h.status==="ACTIVE"){h.status="EXPIRED";h.exitReason="manual_symbol_reset";h.exitTimestamp=now;}}
+    await setSignalHistory(history);
+    const latestAfter=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY)||{};
+    if(latestAfter[pair]&&resetTrades.some(t=>t.id===latestAfter[pair].id))delete latestAfter[pair];
+    await redis.set(LATEST_ALERTS_KEY,latestAfter);
+  }
+  console.log(`[CARD] ${pair} — RESET / RE-SYNC at ${new Date(now).toISOString()} | active removed=${resetTrades.length} | history preserved | latest alert hidden=${hiddenAlertId||"none"}`);
+  return {pair,resetAt:now,hiddenAlertId,resetActiveIds:resetTrades.map(x=>x.id),activePosition:false};
 }
 
 export async function getLatestAlerts():Promise<Record<string,SignalHistoryEntry>>{
