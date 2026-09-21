@@ -82,7 +82,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const entryFourH513=get4HEmaDiagnostic(closed4h);
  const entryMacd=macd4h(closed4h);
  const entryE8=ema(entryCloses,8),entryE21=ema(entryCloses,21);
- const dailyState=dailyLive?.state||"",dailyCandidate=dailyLive?.candidateState||"",dailyDirection=dailyLive?.direction||(dailyState.startsWith("BULL")?"BULL":dailyState.startsWith("BEAR")?"BEAR":"NEUTRAL");
+ const dailyState=dailyLive?.state||"",dailyCandidate=dailyLive?.candidateState||"",dailyDirection=dailyState.startsWith("BULL")?"BULL":dailyState.startsWith("BEAR")?"BEAR":(dailyLive?.direction||"NEUTRAL");
  const dailyBull=dailyDirection==="BULL"||dailyState.startsWith("BULL");
  const dailyBear=dailyDirection==="BEAR"||dailyState.startsWith("BEAR");
  const dailyTurnBull=(dailyState==="TRANSITION"&&dailyCandidate.startsWith("BULL"))||dailyCandidate==="BULL_WEAKENING"||dailyState==="BULL_WEAKENING";
