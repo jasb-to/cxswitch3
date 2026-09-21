@@ -78,7 +78,6 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const entryStructureDir=entryStructure.state==="HEALTHY"&&(entryStructure.structure==="LONG"||entryStructure.structure==="SHORT")?entryStructure.structure:null;
  const entryFourH513=get4HEmaDiagnostic(closed4h);
  const entryMacd=macd4h(closed4h);
- const entryCloses=closed4h.map(x=>x.close);
  const entryE8=ema(entryCloses,8),entryE21=ema(entryCloses,21);
  const dailyState=dailyLive?.state||"",dailyCandidate=dailyLive?.candidateState||"",dailyDirection=dailyLive?.direction||(dailyState.startsWith("BULL")||dailyCandidate.startsWith("BULL")?"BULL":dailyState.startsWith("BEAR")||dailyCandidate.startsWith("BEAR")?"BEAR":"NEUTRAL");
  const dailyBull=dailyDirection==="BULL"||dailyState.startsWith("BULL")||dailyCandidate.startsWith("BULL");
