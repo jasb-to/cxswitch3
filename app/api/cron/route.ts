@@ -87,9 +87,9 @@ export async function GET(request:Request){
   const emoji=signal.type==="ENTRY_1"?"🟢":signal.type==="ENTRY_2"?"🟠":"🔵";
   try{
     if(claimed) await sendAlert({symbol:signal.pair,state:signal.type==="ADD"?"ADD":"ENTRY",price:round(signal.entry),bias:signal.direction,stopLoss:round(signal.stop),takeProfit:round(signal.tp2??signal.target),takeProfit1:signal.tp1,takeProfit2:signal.tp2,takeProfit3:signal.tp3,rr:signal.rr,expectedMove:signal.expectedMove,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,trend:signal.trend,location:signal.location,trigger:signal.trigger,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:emoji,context:signal.context,marketPhase:signal.context?.marketPhase,structure:signal.context?.structure,momentum:signal.context?.momentum,pullback:signal.context?.pullback,fourH513Label:ema513.label});
-  }catch(e){await releaseTelegramAlert(alertKey);throw e;}
+  }catch(e){if(claimed) await releaseTelegramAlert(alertKey);throw e;}
   if(signal.type==="ENTRY_1"&&signal.context?.breakoutRecord){await setLastBreakout(pair,signal.context.breakoutRecord);console.log(`[V28 BREAKOUT STATE] ${pair} — recorded ${signal.context.breakoutRecord.direction}@${signal.context.breakoutRecord.price} candle=${signal.context.breakoutRecord.candleIndex}`);}
-  await appendSignalHistory(signal);newSignals.push(signal);alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.tp2} | TP3 ${signal.tp3}`);
+  await appendSignalHistory(signal);newSignals.push(signal);alerts.push({pair,direction:signal.direction,type:signal.type,status:claimed?"sent":"state_created_telegram_deduped"});console.log(`[ALERT] ${pair} — ${signal.type} ${claimed?"sent":"state/history created; Telegram deduped"} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.tp2} | TP3 ${signal.tp3}`);
   if(signal.type!=="ADD"&&!existing){await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE] ${pair} — active position created`);}
  }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}}
  await setMarketData(marketData);
