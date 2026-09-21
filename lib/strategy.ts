@@ -133,11 +133,20 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const longRejection=entryLast.close>entryLast.open&&entryLast.close>entryPrev.close;
  const shortRejection=entryLast.close<entryLast.open&&entryLast.close<entryPrev.close;
 
- // ENTRY_1 = original V28 location/timing model, evaluated only on closed 4H candles.
-// 1D is context only. It can grade/size an entry, but it cannot choose direction.
-// Entry 1 direction must agree with the existing 4H direction.
-const fourHLongDirection=structureDir==="LONG"||fourH513.direction==="BULLISH";
-const fourHShortDirection=structureDir==="SHORT"||fourH513.direction==="BEARISH";
+ // ENTRY_1 direction is owned by the closed-4H setup.
+// 1D is context only: it grades/sizes the setup, but it can never choose
+// LONG or SHORT and it cannot override an opposing 4H structure.
+//
+// Important: a healthy 4H structure is authoritative. We must not let a
+// stale/slow 1D BEAR/ BULL context, or an opposing TL, manufacture an
+// ENTRY_1 direction. If the 4H structure and 4H momentum disagree, stay
+// neutral rather than forcing a trade.
+const fourHBullishStructure=structureDir==="LONG";
+const fourHBearishStructure=structureDir==="SHORT";
+const fourHBullishMomentum=fourH513.direction==="BULLISH";
+const fourHBearishMomentum=fourH513.direction==="BEARISH";
+const fourHLongDirection=fourHBullishStructure||(structureDir===null&&fourHBullishMomentum);
+const fourHShortDirection=fourHBearishStructure||(structureDir===null&&fourHBearishMomentum);
 earlyLong=fourHLongDirection&&longNearTL&&(longStochExtreme||(longStochTurn&&longRejection));
 earlyShort=fourHShortDirection&&shortNearTL&&(macd.bearishShift||shortStochTurn);
 earlyLongGrade=earlyLong?(dailyBullishOrTurning?"A":"B"):null;
