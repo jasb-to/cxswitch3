@@ -204,16 +204,20 @@ export function getCycleRunnerSnapshot(pair:string,candles1h:Candle[],candles4h:
   const fib4Short=near(fourFibShort?[{level:fourFibShort.fib382,name:"0.382"},{level:fourFibShort.fib50,name:"0.500"},{level:fourFibShort.fib618,name:"0.618"}]:undefined);
   const fib1Long=near(oneFibLong?[{level:oneFibLong.fib382,name:"0.382"},{level:oneFibLong.fib50,name:"0.500"},{level:oneFibLong.fib618,name:"0.618"}]:undefined);
   const fib1Short=near(oneFibShort?[{level:oneFibShort.fib382,name:"0.382"},{level:oneFibShort.fib50,name:"0.500"},{level:oneFibShort.fib618,name:"0.618"}]:undefined);
-  const weeklyAlignedLong=weeklyDirection==="LONG"&&fourDir==="LONG",weeklyAlignedShort=weeklyDirection==="SHORT"&&fourDir==="SHORT";
-  const selectedLong=weeklyAlignedLong&&!!fib4Long&&fib4Long.distPct<=2.0,selectedShort=weeklyAlignedShort&&!!fib4Short&&fib4Short.distPct<=2.0;
-  const selectedDirection=selectedLong?"LONG":selectedShort?"SHORT":weeklyDirection;
+  const weeklyTrendLong=weeklyDirection==="LONG",weeklyTrendShort=weeklyDirection==="SHORT";
+  // Cycle Runner is designed to catch the trend change, not wait for the entire weekly trend to mature.
+  // A long setup may therefore qualify during a weekly transition when 4H has turned LONG and the major retracement + 1H turn are present.
+  const transitionLong=fourDir==="LONG"&&!!fib4Long&&fib4Long.distPct<=2.0;
+  const transitionShort=fourDir==="SHORT"&&!!fib4Short&&fib4Short.distPct<=2.0;
+  const selectedLong=(weeklyTrendLong||transitionLong)&&transitionLong,selectedShort=(weeklyTrendShort||transitionShort)&&transitionShort;
+  const selectedDirection=selectedLong?"LONG":selectedShort?"SHORT":fourDir||weeklyDirection;
   const selectedFib4=selectedDirection==="LONG"?fib4Long:fib4Short,selectedFib1=selectedDirection==="LONG"?fib1Long:fib1Short;
   const selectedLevels=selectedDirection==="LONG"?fourFibLong:fourFibShort;
   const depth=selectedFib4?.name==="0.618"?3:selectedFib4?.name==="0.500"?2:selectedFib4?.name==="0.382"?1:0;
   const oneTurn=selectedDirection==="LONG"?oneTurnLong:oneTurnShort;
-  const precision=!!selectedFib4&&selectedFib4.distPct<=1.0&&oneTurn&&weeklyDirection===selectedDirection&&fourDir===selectedDirection;
+  const precision=!!selectedFib4&&selectedFib4.distPct<=1.0&&oneTurn&&fourDir===selectedDirection&&(weeklyDirection===selectedDirection||weeklyDirection==="NEUTRAL");
   const deepRetest=!!selectedFib4&&selectedFib4.distPct<=1.0&&(selectedFib4.name==="0.500"||selectedFib4.name==="0.618");
-  const ready=pair==="BTC"||pair==="ETH"?deepRetest&&oneTurn:false;
+  const ready=pair==="BTC"||pair==="ETH"?deepRetest&&oneTurn&&fourDir===selectedDirection:false;
   const direction=selectedDirection;
   return{
     enabled:pair==="BTC"||pair==="ETH",
@@ -224,7 +228,7 @@ export function getCycleRunnerSnapshot(pair:string,candles1h:Candle[],candles4h:
     oneHStoch:{k:oneSt.k,d:oneSt.d,turnLong:oneTurnLong,turnShort:oneTurnShort},
     majorRetest:!!selectedFib4&&selectedFib4.distPct<=2.0,
     deepRetest,precisionConfirmed:precision,ready,
-    entryQuality:{depth,preferredLevel:depth>=2,weekly4HAligned:weeklyDirection===direction&&fourDir===direction,oneHTurn:oneTurn,withinEntryZone:!!selectedFib4&&selectedFib4.distPct<=1.0},
+    entryQuality:{depth,preferredLevel:depth>=2,weekly4HAligned:(weeklyDirection===direction||weeklyDirection==="NEUTRAL")&&fourDir===direction,oneHTurn:oneTurn,withinEntryZone:!!selectedFib4&&selectedFib4.distPct<=1.0},
     positionPlan:{margin:5000,leverage:10,notional:50000}
   };
 }
