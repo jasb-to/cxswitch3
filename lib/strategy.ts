@@ -195,6 +195,8 @@ export function getCycleRunnerSnapshot(pair:string,candles1h:Candle[],candles4h:
   const fourHClosed=candles4h.length>1?candles4h.slice(0,-1):candles4h;
   const oneHClosed=candles1h.length>1?candles1h.slice(0,-1):candles1h;
   const fourDir=bias(fourHClosed);
+  const structure=detectStructureShift(pair,candles4h);
+  const dailyTransition=getDaily513Diagnostic(candles4h);
   const fourFibLong=getFibLevels(fourHClosed,"LONG"),fourFibShort=getFibLevels(fourHClosed,"SHORT");
   const oneFibLong=getFibLevels(oneHClosed,"LONG"),oneFibShort=getFibLevels(oneHClosed,"SHORT");
   const oneCloses=oneHClosed.map(x=>x.close),oneSt=stochRsi(oneCloses),onePrev=oneHClosed.length>20?stochRsi(oneHClosed.slice(0,-1).map(x=>x.close)):oneSt;
@@ -204,31 +206,57 @@ export function getCycleRunnerSnapshot(pair:string,candles1h:Candle[],candles4h:
   const fib4Short=near(fourFibShort?[{level:fourFibShort.fib382,name:"0.382"},{level:fourFibShort.fib50,name:"0.500"},{level:fourFibShort.fib618,name:"0.618"}]:undefined);
   const fib1Long=near(oneFibLong?[{level:oneFibLong.fib382,name:"0.382"},{level:oneFibLong.fib50,name:"0.500"},{level:oneFibLong.fib618,name:"0.618"}]:undefined);
   const fib1Short=near(oneFibShort?[{level:oneFibShort.fib382,name:"0.382"},{level:oneFibShort.fib50,name:"0.500"},{level:oneFibShort.fib618,name:"0.618"}]:undefined);
-  const weeklyTrendLong=weeklyDirection==="LONG",weeklyTrendShort=weeklyDirection==="SHORT";
-  // Cycle Runner is designed to catch the trend change, not wait for the entire weekly trend to mature.
-  // A long setup may therefore qualify during a weekly transition when 4H has turned LONG and the major retracement + 1H turn are present.
-  const transitionLong=fourDir==="LONG"&&!!fib4Long&&fib4Long.distPct<=2.0;
-  const transitionShort=fourDir==="SHORT"&&!!fib4Short&&fib4Short.distPct<=2.0;
-  const selectedLong=(weeklyTrendLong||transitionLong)&&transitionLong,selectedShort=(weeklyTrendShort||transitionShort)&&transitionShort;
+
+  // The Cycle Runner's job is to catch the TREND CHANGE, not a mature trend.
+  // Weekly direction is context only. It must never veto a genuine 4H transition.
+  // The core entry is deliberately simple:
+  //   1) 4H has turned/confirmed in one direction
+  //   2) price has retraced deeply into the 0.500/0.618 area of that 4H impulse
+  //   3) 1H momentum turns back in the same direction
+  // Nothing from the day-trading engine (trendlines, RSI exhaustion, Entry 1/2, ADDs)
+  // is allowed to veto this cycle entry.
+  const structuralTurnLong=structure.shiftTo==="LONG"||structure.structure==="LONG";
+  const structuralTurnShort=structure.shiftTo==="SHORT"||structure.structure==="SHORT";
+  const dailyTransitionLong=dailyTransition.stage==="EARLY_BULLISH"||dailyTransition.direction==="BULLISH";
+  const dailyTransitionShort=dailyTransition.stage==="EARLY_BEARISH"||dailyTransition.direction==="BEARISH";
+  const trendChangeLong=fourDir==="LONG"&&(structuralTurnLong||dailyTransitionLong);
+  const trendChangeShort=fourDir==="SHORT"&&(structuralTurnShort||dailyTransitionShort);
+
+  const selectedLong=trendChangeLong&&!!fib4Long&&fib4Long.distPct<=2.0;
+  const selectedShort=trendChangeShort&&!!fib4Short&&fib4Short.distPct<=2.0;
   const selectedDirection=selectedLong?"LONG":selectedShort?"SHORT":fourDir||weeklyDirection;
-  const selectedFib4=selectedDirection==="LONG"?fib4Long:fib4Short,selectedFib1=selectedDirection==="LONG"?fib1Long:fib1Short;
+  const selectedFib4=selectedDirection==="LONG"?fib4Long:fib4Short;
+  const selectedFib1=selectedDirection==="LONG"?fib1Long:fib1Short;
   const selectedLevels=selectedDirection==="LONG"?fourFibLong:fourFibShort;
   const depth=selectedFib4?.name==="0.618"?3:selectedFib4?.name==="0.500"?2:selectedFib4?.name==="0.382"?1:0;
   const oneTurn=selectedDirection==="LONG"?oneTurnLong:oneTurnShort;
-  const precision=!!selectedFib4&&selectedFib4.distPct<=1.0&&oneTurn&&fourDir===selectedDirection&&(weeklyDirection===selectedDirection||weeklyDirection==="NEUTRAL");
+  const trendChangeConfirmed=selectedDirection==="LONG"?trendChangeLong:trendChangeShort;
+  const precision=!!selectedFib4&&selectedFib4.distPct<=1.0&&oneTurn&&fourDir===selectedDirection&&trendChangeConfirmed;
   const deepRetest=!!selectedFib4&&selectedFib4.distPct<=1.0&&(selectedFib4.name==="0.500"||selectedFib4.name==="0.618");
-  const ready=pair==="BTC"||pair==="ETH"?deepRetest&&oneTurn&&fourDir===selectedDirection:false;
+  const ready=pair==="BTC"||pair==="ETH"?deepRetest&&oneTurn&&trendChangeConfirmed:false;
   const direction=selectedDirection;
+
   return{
     enabled:pair==="BTC"||pair==="ETH",
-    status:ready?"ENTRY READY":deepRetest?"DEEP RETEST · WAIT 1H TURN":selectedLong||selectedShort?"MAJOR RETEST · WAIT":"WAITING FOR MAJOR RETEST",
+    status:ready?"ENTRY READY":deepRetest?"DEEP RETEST · WAIT 1H TURN":selectedLong||selectedShort?"MAJOR RETEST · WAIT":"WAITING FOR TREND CHANGE / MAJOR RETEST",
     direction,weeklyDirection,fourHDirection:fourDir||"NEUTRAL",weeklyFast:round(wf),weeklySlow:round(ws),
-    fourHFib:{direction:direction==="LONG"?"LONG":"SHORT",swingLow:(selectedDirection==="LONG"?fourFibLong:fourFibShort)?.swingLow??null,swingHigh:(selectedDirection==="LONG"?fourFibLong:fourFibShort)?.swingHigh??null,fib382:(selectedDirection==="LONG"?fourFibLong:fourFibShort)?.fib382??null,fib50:(selectedDirection==="LONG"?fourFibLong:fourFibShort)?.fib50??null,fib618:(selectedDirection==="LONG"?fourFibLong:fourFibShort)?.fib618??null,nearest:selectedFib4?{level:selectedFib4.level,distPct:selectedFib4.distPct,name:selectedFib4.name}:null},
+    trendChangeConfirmed,structureShift:structure.shiftTo,dailyTransition:dailyTransition.stage,
+    fourHFib:{direction:direction==="LONG"?"LONG":"SHORT",swingLow:selectedLevels?.swingLow??null,swingHigh:selectedLevels?.swingHigh??null,fib382:selectedLevels?.fib382??null,fib50:selectedLevels?.fib50??null,fib618:selectedLevels?.fib618??null,nearest:selectedFib4?{level:selectedFib4.level,distPct:selectedFib4.distPct,name:selectedFib4.name}:null},
     oneHFib:{direction:direction==="LONG"?"LONG":"SHORT",swingLow:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.swingLow??null,swingHigh:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.swingHigh??null,fib382:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.fib382??null,fib50:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.fib50??null,fib618:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.fib618??null,nearest:selectedFib1?{level:selectedFib1.level,distPct:selectedFib1.distPct,name:selectedFib1.name}:null},
     oneHStoch:{k:oneSt.k,d:oneSt.d,turnLong:oneTurnLong,turnShort:oneTurnShort},
     majorRetest:!!selectedFib4&&selectedFib4.distPct<=2.0,
     deepRetest,precisionConfirmed:precision,ready,
-    entryQuality:{depth,preferredLevel:depth>=2,weekly4HAligned:(weeklyDirection===direction||weeklyDirection==="NEUTRAL")&&fourDir===direction,oneHTurn:oneTurn,withinEntryZone:!!selectedFib4&&selectedFib4.distPct<=1.0},
+    entryQuality:{
+      depth,
+      preferredLevel:depth>=2,
+      trendChangeConfirmed,
+      fourHDirection:fourDir||"NEUTRAL",
+      structureShift:structure.shiftTo,
+      dailyTransition:dailyTransition.stage,
+      weeklyContext:weeklyDirection,
+      oneHTurn:oneTurn,
+      withinEntryZone:!!selectedFib4&&selectedFib4.distPct<=1.0
+    },
     positionPlan:{margin:5000,leverage:10,notional:50000}
   };
 }
