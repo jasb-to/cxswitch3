@@ -84,7 +84,7 @@ export async function GET(request:Request){
  }
 
  for(const pair of PAIRS){try{
-  const c1=await getCandles(krakenPairFormat(pair+"/USD"),60);await sleep(API_DELAY_MS);const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);await sleep(API_DELAY_MS);const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);await sleep(API_DELAY_MS);const cW=(pair==="BTC"||pair==="ETH")?await getCandles(krakenPairFormat(pair+"/USD"),10080):[];if(pair==="BTC"||pair==="ETH")await sleep(API_DELAY_MS);
+  const c1=await getCandles(krakenPairFormat(pair+"/USD"),60);await sleep(API_DELAY_MS);const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);await sleep(API_DELAY_MS);const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);await sleep(API_DELAY_MS);const cW=(pair==="BTC"||pair==="ETH")?await getCandles(krakenPairFormat(pair+"/USD"),10080,Math.floor((Date.now()-365*24*60*60*1000)/1000)):[];if(pair==="BTC"||pair==="ETH")await sleep(API_DELAY_MS);
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
   const ema513=get4HEmaDiagnostic(c4);
   console.log(`[EMA 4H 5/13] ${pair} — ${ema513.label} | 5=${ema513.ema5.toFixed(4)} | 13=${ema513.ema13.toFixed(4)} | spread=${ema513.spread.toFixed(4)} (${ema513.spreadPct.toFixed(3)}%) | spreadATR=${ema513.spreadAtr.toFixed(3)} | contracting=${ema513.spreadContracting?"YES":"NO"} | Δspread=${ema513.spreadChangePct.toFixed(2)}% | 5slope=${ema513.ema5Slope.toFixed(4)} | 13slope=${ema513.ema13Slope.toFixed(4)} | cross=${ema513.crossNow?"YES":"NO"}`);
