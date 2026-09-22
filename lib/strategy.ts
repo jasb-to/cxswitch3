@@ -189,8 +189,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  // 4) price has not broken/extended through it.
  // Entry 1 = anticipation. Entry 2 = breakout/retest confirmation. ADD = next wave.
  const entryStPrev=closed4h.length>2?stochRsi(closed4h.slice(0,-1).map(x=>x.close)):entrySt;
- const longStochCrossUp=entrySt.k>entrySt.d&&entryStPrev.k<=entryStPrev.d&&entrySt.k>entryStPrev.k;
- const shortStochCrossDown=entrySt.k<entrySt.d&&entryStPrev.k>=entryStPrev.d&&entrySt.k<entryStPrev.k;
+ const longStochCrossUp=entrySt.k>entrySt.d&&entrySt.k>entryStPrev.k;
+ const shortStochCrossDown=entrySt.k<entrySt.d&&entrySt.k<entryStPrev.k;
  const long1DAligned=dailyBull;
  const short1DAligned=dailyBear;
  const longApproachingTL=entryLongTL.valid&&entryLast.close<=entryLongTL.price+entryLongBuffer&&Math.abs((entryLast.close-entryLongTL.price)/Math.max(Math.abs(entryLongTL.price),1))<=EARLY_NEAR_PCT;
@@ -227,7 +227,7 @@ debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dailyDirection} | StochCross=${lon
    debug.push(`[ENTRY_1 WAIT] ${pair} | ${waitReason}`);
  }
  const entryDecision=earlyLong?"LONG_ENTRY_1":earlyShort?"SHORT_ENTRY_1":"NONE";
- const entryDirection=earlyLong?"LONG":earlyShort?"SHORT":(fourHLongDirection?"LONG":fourHShortDirection?"SHORT":"NEUTRAL");
+ const entryDirection=earlyLong?"LONG":earlyShort?"SHORT":"NEUTRAL";
  const entryLocation=longStructuralLocation&&!shortStructuralLocation?"LONG":shortStructuralLocation&&!longStructuralLocation?"SHORT":"NONE";
  const entryExhaustion=longExhausted?"LONG":shortExhausted?"SHORT":"NONE"; const entryChase=(entryDirection==="LONG"&&!longNotChasing)||(entryDirection==="SHORT"&&!shortNotChasing);
  const entryDailyConflict=entryDirection==="LONG"&&opposingDailyLong?"LONG_AGAINST_1D":entryDirection==="SHORT"&&opposingDailyShort?"SHORT_AGAINST_1D":"NONE";
