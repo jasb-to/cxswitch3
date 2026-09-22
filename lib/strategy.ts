@@ -28,7 +28,7 @@ const ENTRY1_LONG_EXHAUSTION_RSI=80;
 const ENTRY1_SHORT_EXHAUSTION_RSI=20;
 const ENTRY1_SHORT_NEAR_PCT=0.015;
 const ENTRY1_SHORT_STOCH_MIN=45;
-// Entry 1 is an early structural entry, not a post-breakout chase. The live
+// Entry 1 is a probability-based early structural setup, not a post-breakout chase. The live
 // execution price must remain inside the same zone that qualified the closed 4H setup.
 const ENTRY1_LIVE_ZONE_PCT=0.025;
 
@@ -115,7 +115,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  const nearLow=price<=recentLow*(1+EARLY_NEAR_PCT),nearHigh=price>=recentHigh*(1-EARLY_NEAR_PCT);
  const early5Bull=entryFourH513.stage==="EARLY_BULLISH_L1"||entryFourH513.stage==="EARLY_BULLISH_L2"||(entryFourH513.turning&&entryFourH513.direction==="BULLISH")||(entryFourH513.crossNow&&entryFourH513.direction==="BULLISH");
  const early5Bear=entryFourH513.stage==="EARLY_BEARISH_L1"||entryFourH513.stage==="EARLY_BEARISH_L2"||(entryFourH513.turning&&entryFourH513.direction==="BEARISH")||(entryFourH513.crossNow&&entryFourH513.direction==="BEARISH");
- // EARLY ENTRY 1: true transition entry, not a stacked confirmation model.
+ // EARLY ENTRY 1: probability-based structural setup, not a stacked confirmation model.
  // 1D supplies context; 4H supplies the trigger; risk/chase filters veto.
  // A-grade: aligned 1D context + any 2 of 5 early 4H triggers.
  // B-grade: mixed/transitioning 1D context + any 2 of 5 clean 4H triggers,
@@ -187,7 +187,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  // 2) closed 4H StochRSI has crossed and is moving that way;
  // 3) price is approaching the structural trendline;
  // 4) price has not broken/extended through it.
- // Entry 1 = anticipation. Entry 2 = breakout/retest confirmation. ADD = next wave.
+ // Entry 1 = probability-based early setup. Entry 2 = breakout/retest confirmation. ADD = next wave.
  const entryStPrev=closed4h.length>2?stochRsi(closed4h.slice(0,-1).map(x=>x.close)):entrySt;
  const longStochCrossUp=entrySt.k>entrySt.d&&entrySt.k>entryStPrev.k;
  const shortStochCrossDown=entrySt.k<entrySt.d&&entrySt.k<entryStPrev.k;
@@ -254,7 +254,7 @@ debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dailyDirection} | StochCross=${lon
  else if(continuationShort&&!continuationLong){dir="SHORT";tl=shortTL;continuation=true;}
  // No daily-direction fallback. If 4H has not established direction, remain neutral.
  if(!dir||!tl){
-   const conflict=dailyBear&&fourHLongDirection?"4H BULLISH / 1D BEARISH CONTEXT":dailyBull&&fourHShortDirection?"4H BEARISH / 1D BULLISH CONTEXT":"NO 4H DIRECTION";
+   const conflict=dailyBear&&entryFourH513.direction==="BULLISH"?"4H BULLISH / 1D BEARISH CONTEXT":dailyBull&&entryFourH513.direction==="BEARISH"?"4H BEARISH / 1D BULLISH CONTEXT":"NO 4H DIRECTION";
    debug.push(`directionSource=4H | 1DContext=${dailyState||dailyCandidate||"LOCAL"} | 4HState=${fourH513.label} | finalDirection=NONE | reason=${conflict}`);
    return{debug};
  }
@@ -262,7 +262,7 @@ debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dailyDirection} | StochCross=${lon
  const has=same(pair,dir,activeTrades);
  if(!tl.valid&&!early){debug.push(`State: ${tl.reason}`);return{market:entryMarket(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug};}
  let type:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null;
- if(early){type="ENTRY_1";debug.push(`[V28 EARLY] ${pair} ${dir} | daily turn + 4H transition`);}
+ if(early){type="ENTRY_1";debug.push(`[ENTRY_1 PROBABILITY] ${pair} ${dir} | 1D direction + 4H momentum turn + structural location`);}
  else if(breakout){type="ENTRY_2";debug.push(`[ENTRY_2] ${pair} ${dir} | trendline breakout confirmed`);}
  else if(retest){if(has){type="ADD";}else{const hasRecentBreakout=!!lastBreakout&&lastBreakout.direction===dir&&(i-lastBreakout.candleIndex)>=0&&(i-lastBreakout.candleIndex)<=BREAKOUT_EXPIRY_CANDLES;if(!hasRecentBreakout)return{market:entryMarket(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug};const retestDistance=Math.abs(price-lastBreakout!.price)/Math.max(Math.abs(lastBreakout!.price),1);if(retestDistance>=0.01)return{market:entryMarket(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug};type="ENTRY_2";}}
  else if(continuation){
