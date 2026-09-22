@@ -41,13 +41,13 @@ function momentumStatus(h:any,m:any){
   // While 5/13 and 8/21 are still bullish/above, a contracting spread plus
   // bearish MACD deterioration is the intended V28 transition — not a break.
   if(!long&&h.type==="ENTRY_1"&&against513&&!same821&&contracting&&!macdAgainst&&!!macd.bearishShift){
-    return{icon:"🟢",label:"HEALTHY",detail:"Early V28 short transition remains intact."};
+    return{icon:"🟢",label:"WAVE ACTIVE",detail:"Early short setup remains active; no confirmed reversal."};
   }
   // BROKEN requires multiple independent failures, not a single Stoch turn.
-  if(against513&&!same821)return{icon:"🔴",label:"BROKEN",detail:"4H 5/13 and 8/21 have both turned against the position."};
-  if((against513||!same821)&&(macdAgainst||contracting))return{icon:"🟠",label:"DETERIORATING",detail:"Momentum is weakening; protect profits and watch closely."};
-  if(aligned513&&same821&&(contracting||macdAgainst||((stochExtreme||stochCooling)&&histWeakening)))return{icon:"🟡",label:"COOLING",detail:"Pullback occurring, but no confirmed failure."};
-  return{icon:"🟢",label:"HEALTHY",detail:"The move is still valid."};
+  if(against513&&!same821)return{icon:"🔴",label:"WAVE REVERSAL",detail:"4H 5/13 and 8/21 have both turned against the position."};
+  if((against513||!same821)&&(macdAgainst||contracting))return{icon:"🟠",label:"WAVE UNDER PRESSURE",detail:"Momentum is under pressure, but this is not a confirmed reversal."};
+  if(aligned513&&same821&&(contracting||macdAgainst||((stochExtreme||stochCooling)&&histWeakening)))return{icon:"🟡",label:"WAVE COOLING",detail:"Momentum is easing, but the bullish/bearish wave remains intact."};
+  return{icon:"🟢",label:"WAVE ACTIVE",detail:"The move remains valid with no confirmed reversal."};
 }
 
 function managementAdvice(h:any,m:any){
@@ -59,8 +59,8 @@ function managementAdvice(h:any,m:any){
   if(tp1Hit){if(against513&&!fourHWasAlreadyAgainstAtEntry)return{status:"failed",recommendation:"PROTECT PROFIT",reason:"R1 reached and 4H 5/13 has turned against the position. Move SL to breakeven if not already done and protect the remaining profit."};if(contracting||exhausted||weakMomentum||!same821)return{status:"warning",recommendation:"SL TO BREAKEVEN · R1.5 LIKELY FINAL",reason:`R1 reached. Move SL to breakeven. Momentum is weakening${contracting?" (5/13 spread contracting)":""}${weakMomentum?` (${momentum})`:""}${exhausted?" (Stoch exhaustion)":""}${!same821?" (8/21 not aligned)":""}. Do not assume R2.`};return{status:"healthy",recommendation:"SL TO BREAKEVEN · HOLD FOR R1.5",reason:"R1 reached. Move SL to breakeven. 4H 5/13 and 8/21 remain aligned, so R1.5 remains the next management target."};}
   if(against513&&!fourHWasAlreadyAgainstAtEntry)return{status:"failed",recommendation:"TRADE VALIDITY WARNING · PROTECT",reason:"4H 5/13 has turned against the position after entry. The alert may still be above/below its original SL, but the move is deteriorating. Do not widen the SL; reassess manually."};
   if(against513&&fourHWasAlreadyAgainstAtEntry)return{status:"warning",recommendation:"HOLD — 4H RECOVERY NEEDED",reason:`4H 5/13 is still ${long?"bearish":"bullish"}, as it was at entry. This is an early V28 position; do not widen the SL. Watch for ${long?"bullish":"bearish"} 4H recovery.`};
-  if(contracting||exhausted||weakMomentum||!same821)return{status:"warning",recommendation:"HOLD — SL UNCHANGED · WATCH R1",reason:`Trade is still active, but momentum is weakening${contracting?" (5/13 spread contracting)":""}${weakMomentum?` (${momentum})`:""}${exhausted?" (Stoch exhaustion)":""}${!same821?" (8/21 not aligned)":""}. Next management point: R1 → SL to breakeven.`};
-  return{status:"healthy",recommendation:"HOLD — SL UNCHANGED · TARGET R1",reason:"Trade remains valid and conditions are healthy. Keep the original SL. At R1, move SL to breakeven; R1.5 is next, then R2 runner if conditions stay healthy."};
+  if(contracting||exhausted||weakMomentum||!same821)return{status:"warning",recommendation:"HOLD — SL UNCHANGED · WATCH R1", reason:`Trade remains active. ${contracting?"Wave cooling":weakMomentum?"Normal pullback":exhausted?"Move is extended":!same821?"8/21 is no longer fully aligned":"Wave is active"} — no confirmed reversal. Next management point: R1 → SL to breakeven.`};
+  return{status:"healthy",recommendation:"HOLD — SL UNCHANGED · TARGET R1",reason:"Wave is active and the trade remains valid. Keep the original SL. At R1, move SL to breakeven; R1.5 is next, then R2 runner if the wave remains active."};
 }
 
 export async function GET(){
