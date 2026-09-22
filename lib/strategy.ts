@@ -190,7 +190,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 export function getCycleRunnerSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candlesWeekly:Candle[],currentPrice?:number){
   const price=currentPrice??candles4h.at(-1)?.close??candles1h.at(-1)?.close??0;
   const weeklyClosed=candlesWeekly.length>1?candlesWeekly.slice(0,-1):candlesWeekly;
-  const weeklyCloses=weeklyClosed.map(x=>x.close), wf=ema(weeklyCloses,5).at(-1)??0, ws=ema(weeklyCloses,13).at(-1)??0;
+  const weeklyCloses=weeklyClosed.map(x=>x.close),wf=ema(weeklyCloses,5).at(-1)??0,ws=ema(weeklyCloses,13).at(-1)??0;
   const weeklyDirection=wf>ws?"LONG":wf<ws?"SHORT":"NEUTRAL";
   const fourHClosed=candles4h.length>1?candles4h.slice(0,-1):candles4h;
   const oneHClosed=candles1h.length>1?candles1h.slice(0,-1):candles1h;
@@ -199,29 +199,35 @@ export function getCycleRunnerSnapshot(pair:string,candles1h:Candle[],candles4h:
   const oneFibLong=getFibLevels(oneHClosed,"LONG"),oneFibShort=getFibLevels(oneHClosed,"SHORT");
   const oneCloses=oneHClosed.map(x=>x.close),oneSt=stochRsi(oneCloses),onePrev=oneHClosed.length>20?stochRsi(oneHClosed.slice(0,-1).map(x=>x.close)):oneSt;
   const oneTurnLong=oneSt.k>oneSt.d&&oneSt.k>onePrev.k,oneTurnShort=oneSt.k<oneSt.d&&oneSt.k<onePrev.k;
-  const near=(levels:number[]|undefined)=>levels?.length?levels.map(x=>({level:x,distPct:Math.abs((price-x)/Math.max(Math.abs(x),1))*100})).sort((a,b)=>a.distPct-b.distPct)[0]:undefined;
-  const fib4Long=near(fourFibLong?[fourFibLong.fib382,fourFibLong.fib50,fourFibLong.fib618]:undefined);
-  const fib4Short=near(fourFibShort?[fourFibShort.fib382,fourFibShort.fib50,fourFibShort.fib618]:undefined);
-  const fib1Long=near(oneFibLong?[oneFibLong.fib382,oneFibLong.fib50,oneFibLong.fib618]:undefined);
-  const fib1Short=near(oneFibShort?[oneFibShort.fib382,oneFibShort.fib50,oneFibShort.fib618]:undefined);
+  const near=(levels:{level:number;name:string}[]|undefined)=>levels?.length?levels.map(x=>({...x,distPct:Math.abs((price-x.level)/Math.max(Math.abs(x.level),1))*100})).sort((a,b)=>a.distPct-b.distPct)[0]:undefined;
+  const fib4Long=near(fourFibLong?[{level:fourFibLong.fib382,name:"0.382"},{level:fourFibLong.fib50,name:"0.500"},{level:fourFibLong.fib618,name:"0.618"}]:undefined);
+  const fib4Short=near(fourFibShort?[{level:fourFibShort.fib382,name:"0.382"},{level:fourFibShort.fib50,name:"0.500"},{level:fourFibShort.fib618,name:"0.618"}]:undefined);
+  const fib1Long=near(oneFibLong?[{level:oneFibLong.fib382,name:"0.382"},{level:oneFibLong.fib50,name:"0.500"},{level:oneFibLong.fib618,name:"0.618"}]:undefined);
+  const fib1Short=near(oneFibShort?[{level:oneFibShort.fib382,name:"0.382"},{level:oneFibShort.fib50,name:"0.500"},{level:oneFibShort.fib618,name:"0.618"}]:undefined);
   const weeklyAlignedLong=weeklyDirection==="LONG"&&fourDir==="LONG",weeklyAlignedShort=weeklyDirection==="SHORT"&&fourDir==="SHORT";
-  const majorRetestLong=weeklyAlignedLong&&!!fib4Long&&fib4Long.distPct<=1.5;
-  const majorRetestShort=weeklyAlignedShort&&!!fib4Short&&fib4Short.distPct<=1.5;
-  const precisionLong=majorRetestLong&&oneTurnLong,precisionShort=majorRetestShort&&oneTurnShort;
-  const ready=pair==="BTC"||pair==="ETH"?precisionLong||precisionShort:false;
-  const direction=precisionLong?"LONG":precisionShort?"SHORT":weeklyDirection;
-  const nearest4=direction==="LONG"?fib4Long:fib4Short,nearest1=direction==="LONG"?fib1Long:fib1Short;
+  const selectedLong=weeklyAlignedLong&&!!fib4Long&&fib4Long.distPct<=2.0,selectedShort=weeklyAlignedShort&&!!fib4Short&&fib4Short.distPct<=2.0;
+  const selectedDirection=selectedLong?"LONG":selectedShort?"SHORT":weeklyDirection;
+  const selectedFib4=selectedDirection==="LONG"?fib4Long:fib4Short,selectedFib1=selectedDirection==="LONG"?fib1Long:fib1Short;
+  const selectedLevels=selectedDirection==="LONG"?fourFibLong:fourFibShort;
+  const depth=selectedFib4?.name==="0.618"?3:selectedFib4?.name==="0.500"?2:selectedFib4?.name==="0.382"?1:0;
+  const oneTurn=selectedDirection==="LONG"?oneTurnLong:oneTurnShort;
+  const precision=!!selectedFib4&&selectedFib4.distPct<=1.0&&oneTurn&&weeklyDirection===selectedDirection&&fourDir===selectedDirection;
+  const deepRetest=!!selectedFib4&&selectedFib4.distPct<=1.0&&(selectedFib4.name==="0.500"||selectedFib4.name==="0.618");
+  const ready=pair==="BTC"||pair==="ETH"?precision:false;
+  const direction=selectedDirection;
   return{
-    enabled:pair==="BTC"||pair==="ETH",status:ready?"ENTRY READY":majorRetestLong||majorRetestShort?"4H RETEST · WAIT 1H CONFIRM":"WAITING FOR MAJOR RETEST",
+    enabled:pair==="BTC"||pair==="ETH",
+    status:ready?"ENTRY READY":deepRetest?"DEEP RETEST · WAIT 1H TURN":selectedLong||selectedShort?"MAJOR RETEST · WAIT":"WAITING FOR MAJOR RETEST",
     direction,weeklyDirection,fourHDirection:fourDir||"NEUTRAL",weeklyFast:round(wf),weeklySlow:round(ws),
-    fourHFib:{direction:direction==="LONG"?"LONG":"SHORT",swingLow:(direction==="LONG"?fourFibLong:fourFibShort)?.swingLow??null,swingHigh:(direction==="LONG"?fourFibLong:fourFibShort)?.swingHigh??null,fib382:(direction==="LONG"?fourFibLong:fourFibShort)?.fib382??null,fib50:(direction==="LONG"?fourFibLong:fourFibShort)?.fib50??null,fib618:(direction==="LONG"?fourFibLong:fourFibShort)?.fib618??null,nearest:nearest4??null},
-    oneHFib:{direction:direction==="LONG"?"LONG":"SHORT",swingLow:(direction==="LONG"?oneFibLong:oneFibShort)?.swingLow??null,swingHigh:(direction==="LONG"?oneFibLong:oneFibShort)?.swingHigh??null,fib382:(direction==="LONG"?oneFibLong:oneFibShort)?.fib382??null,fib50:(direction==="LONG"?oneFibLong:oneFibShort)?.fib50??null,fib618:(direction==="LONG"?oneFibLong:oneFibShort)?.fib618??null,nearest:nearest1??null},
+    fourHFib:{direction:direction==="LONG"?"LONG":"SHORT",swingLow:(selectedDirection==="LONG"?fourFibLong:fourFibShort)?.swingLow??null,swingHigh:(selectedDirection==="LONG"?fourFibLong:fourFibShort)?.swingHigh??null,fib382:(selectedDirection==="LONG"?fourFibLong:fourFibShort)?.fib382??null,fib50:(selectedDirection==="LONG"?fourFibLong:fourFibShort)?.fib50??null,fib618:(selectedDirection==="LONG"?fourFibLong:fourFibShort)?.fib618??null,nearest:selectedFib4?{level:selectedFib4.level,distPct:selectedFib4.distPct,name:selectedFib4.name}:null},
+    oneHFib:{direction:direction==="LONG"?"LONG":"SHORT",swingLow:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.swingLow??null,swingHigh:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.swingHigh??null,fib382:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.fib382??null,fib50:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.fib50??null,fib618:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.fib618??null,nearest:selectedFib1?{level:selectedFib1.level,distPct:selectedFib1.distPct,name:selectedFib1.name}:null},
     oneHStoch:{k:oneSt.k,d:oneSt.d,turnLong:oneTurnLong,turnShort:oneTurnShort},
-    majorRetest:majorRetestLong||majorRetestShort,precisionConfirmed:precisionLong||precisionShort,ready,
-    leveragePlan:{initial:10,next:15,profitLocked:20,fullProfit:25}
+    majorRetest:!!selectedFib4&&selectedFib4.distPct<=2.0,
+    deepRetest,precisionConfirmed:precision,ready,
+    entryQuality:{depth,preferredLevel:depth>=2,weekly4HAligned:weeklyDirection===direction&&fourDir===direction,oneHTurn:oneTurn,withinEntryZone:!!selectedFib4&&selectedFib4.distPct<=1.0},
+    positionPlan:{margin:5000,leverage:10,notional:50000}
   };
 }
-
 export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],dailyLive?:DailyLiveContext){
   const d=bias(candles4h),price=candles4h.at(-1)?.close||0;if(!d)return{pair,price,timestamp:Date.now(),trend:"FLAT",location:"NONE",trigger:"NO_BIAS",adx:0,rsi:0,stochK:0,stochD:0,trendlinePrice:0,distToTrendline:null,momentumState:"NEUTRAL",dailyLive:dailyLive||null};
   const structure=detectStructureShift(pair,candles4h.slice(0,-1)),sd=structure.state==="HEALTHY"&&(structure.structure==="LONG"||structure.structure==="SHORT")?structure.structure as Direction:null,effective=sd||d,primary=buildTrendline(candles4h.slice(0,-1),effective,60),tl=primary.stale?buildTrendline(candles4h.slice(0,-1),effective,FRESH_LOOKBACK):primary;return snapshot(pair,candles4h,effective,tl,price,dailyLive);
