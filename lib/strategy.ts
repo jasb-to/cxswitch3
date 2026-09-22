@@ -4,7 +4,7 @@
 // ENTRY_2 = confirmed breakout / retest
 // ADD = next wave after pullback/retest with thesis intact
 // Exhaustion = ENTRY_1 quality veto, not a direction generator
-// Fib = diagnostic only
+// Fib = diagnostic for entries; used as ADD location confirmation only
 // Management = closed-4H wave reversal + TP1/TP2/TP3
 
 import { get4HEmaDiagnostic } from "./ema-diagnostic";
@@ -136,8 +136,14 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const recentHigh=Math.max(...closed.slice(-8).map(x=>x.high)),recentLow=Math.min(...closed.slice(-8).map(x=>x.low));
   const pulledBackLong=price<=e8*(1+0.002)&&price<recentHigh*(1-0.003);
   const pulledBackShort=price>=e8*(1-0.002)&&price>recentLow*(1+0.003);
-  const addLong=same(pair,"LONG",activeTrades)&&longMomentum&&fourH.direction==="BULLISH"&&(addFibLong||pulledBackLong)&&!macd.bearishCross;
-  const addShort=same(pair,"SHORT",activeTrades)&&shortMomentum&&fourH.direction==="BEARISH"&&(addFibShort||pulledBackShort)&&!macd.bullishCross;
+  // ADD requires BOTH sides of the setup:
+  // 1) a real retracement/pullback has occurred, AND
+  // 2) price is in a meaningful retracement area (Fib or the pullback/EMA area).
+  // Fib proximity alone is never enough to trigger an ADD.
+  const addLocationLong=pulledBackLong&&(addFibLong||pulledBackLong);
+  const addLocationShort=pulledBackShort&&(addFibShort||pulledBackShort);
+  const addLong=same(pair,"LONG",activeTrades)&&longMomentum&&fourH.direction==="BULLISH"&&addLocationLong&&!macd.bearishCross;
+  const addShort=same(pair,"SHORT",activeTrades)&&shortMomentum&&fourH.direction==="BEARISH"&&addLocationShort&&!macd.bullishCross;
   debug.push(`[ADD LOCATION] ${pair} | LONG fib=${addFibLong?"YES":"NO"} pullback=${pulledBackLong?"YES":"NO"} | SHORT fib=${addFibShort?"YES":"NO"} pullback=${pulledBackShort?"YES":"NO"}`);
 
   let dir:Direction|null=null,type:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null,reason="";
