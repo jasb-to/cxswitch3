@@ -171,8 +171,15 @@ const fourHShortDirection=fourHBearishStructure||(entryStructureDir===null&&four
 // anti-chase check closed-candle based and avoids using the live candle.
 const entryRangeLow=Math.min(...closed4h.slice(-EARLY_LOOKBACK,-1).map(x=>x.low));
 const entryRangeHigh=Math.max(...closed4h.slice(-EARLY_LOOKBACK,-1).map(x=>x.high));
-const longStructuralLocation=longNearTL||reclaim8Long||higherLow||priorHighBreak;
-const shortStructuralLocation=shortNearTL||reclaim8Short||lowerHigh||priorLowBreak;
+// V28 entry discipline: Entry 1 may be early, but it must be taken at the
+// structural trendline zone. The 4H transition tells us WHEN the turn is
+// beginning; the trendline tells us WHERE we are willing to pay for it.
+// Reclaims/higher-lows/prior breaks remain useful transition evidence, but they
+// no longer allow an early entry to fire far away from the structural zone.
+const longStructuralEvidence=reclaim8Long||higherLow||priorHighBreak;
+const shortStructuralEvidence=reclaim8Short||lowerHigh||priorLowBreak;
+const longStructuralLocation=longNearTL&&longStructuralEvidence;
+const shortStructuralLocation=shortNearTL&&shortStructuralEvidence;
 
 // Allow an early transition, but don't enter after a genuinely extended
 // breakout. A 2.5% allowance keeps Entry 1 early without making it a chase.
@@ -187,8 +194,11 @@ const longExhausted=entryRsi>=ENTRY1_LONG_EXHAUSTION_RSI;
  // exists specifically to capture a 4H turn before the 1D has fully confirmed it.
  const opposingDailyLong=false;
  const opposingDailyShort=false;
- const earlyLongTransition=longTriggers>=2&&longStructuralLocation&&longNotChasing&&!longExhausted;
- const earlyShortTransition=shortTriggers>=2&&shortStructuralLocation&&shortNotChasing&&!shortExhausted;
+ // V28-style location discipline: do not chase an early reversal merely
+// because two transition triggers appeared. If price has moved away from the
+// active structural trendline, wait for price to come to the setup instead.
+const earlyLongTransition=longTriggers>=2&&longStructuralLocation&&longNotChasing&&!longExhausted;
+const earlyShortTransition=shortTriggers>=2&&shortStructuralLocation&&shortNotChasing&&!shortExhausted;
 
 earlyLong=fourHLongDirection&&earlyLongTransition;
 earlyShort=fourHShortDirection&&earlyShortTransition;
@@ -202,7 +212,7 @@ earlyShortGrade=earlyShort?(dailyBearishOrTurning?"A":"B"):null;
  debug.push(`[ENTRY_1] ${pair} | CLOSED_4H ${new Date(entryLast.timestamp).toISOString()} | direction4H=${entryFourH513.direction} | structure4H=${entryStructureDir||"TRANSITION"} | 1DContext=${dailyState||dailyCandidate||"LOCAL"} | LONG nearTL=${longNearTL?"YES":"NO"} location=${longStructuralLocation?"YES":"NO"} triggers=${longTriggers}/5 | SHORT nearTL=${shortNearTL?"YES":"NO"} location=${shortStructuralLocation?"YES":"NO"} triggers=${shortTriggers}/5 | early=${earlyLong?"LONG_"+earlyLongGrade:earlyShort?"SHORT_"+earlyShortGrade:"NO"}`);
 debug.push(`[ENTRY_1 DECISION] ${pair} | 4HDirection=${fourHLongDirection?"LONG":fourHShortDirection?"SHORT":"NEUTRAL"} | triggers=${longTriggers}/${shortTriggers} | structuralLocation=${longStructuralLocation&&!shortStructuralLocation?"LONG":shortStructuralLocation&&!longStructuralLocation?"SHORT":"NONE"} | nearTL=${longNearTL&&!shortNearTL?"LONG":shortNearTL&&!longNearTL?"SHORT":"NONE"} | chase=${earlyLongTransition?"NO":"YES"} | grade=${earlyLong?earlyLongGrade:earlyShort?earlyShortGrade:"—"} | finalDecision=${earlyLong?"LONG_ENTRY_1":earlyShort?"SHORT_ENTRY_1":"NONE"}`);
  if(!earlyLong&&!earlyShort){
-   const waitReason=(!fourHLongDirection&&!fourHShortDirection)?"waiting for 4H direction":(fourHLongDirection&&longTriggers<2)?"waiting for more bullish 4H transition evidence":(fourHShortDirection&&shortTriggers<2)?"waiting for more bearish 4H transition evidence":(fourHLongDirection&&!longStructuralLocation)?"waiting for bullish structural location":(fourHShortDirection&&!shortStructuralLocation)?"waiting for bearish structural location":(fourHLongDirection&&longExhausted)?"bullish 4H momentum exhausted":(fourHShortDirection&&shortExhausted)?"bearish 4H momentum exhausted":(fourHLongDirection&&!longNotChasing)?"bullish move too extended":(fourHShortDirection&&!shortNotChasing)?"bearish move too extended":"waiting for ENTRY_1 conditions";
+   const waitReason=(!fourHLongDirection&&!fourHShortDirection)?"waiting for 4H direction":(fourHLongDirection&&longTriggers<2)?"waiting for more bullish 4H transition evidence":(fourHShortDirection&&shortTriggers<2)?"waiting for more bearish 4H transition evidence":(fourHLongDirection&&!longStructuralLocation)?"waiting for V28 bullish structural entry zone":(fourHShortDirection&&!shortStructuralLocation)?"waiting for V28 bearish structural entry zone":(fourHLongDirection&&longExhausted)?"bullish 4H momentum exhausted":(fourHShortDirection&&shortExhausted)?"bearish 4H momentum exhausted":(fourHLongDirection&&!longNotChasing)?"bullish move too extended":(fourHShortDirection&&!shortNotChasing)?"bearish move too extended":"waiting for ENTRY_1 conditions";
    debug.push(`[ENTRY_1 WAIT] ${pair} | ${waitReason}`);
  }
  const entryDecision=earlyLong?"LONG_ENTRY_1":earlyShort?"SHORT_ENTRY_1":"NONE";
