@@ -1,11 +1,11 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { generateSignal, getMarketSnapshot, shouldHold, liquidationSafeStop, Signal } from "@/lib/strategy";
+import { generateSignal, getMarketSnapshot, getCycleRunnerSnapshot, shouldHold, liquidationSafeStop, Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { detectStructureShift, recordStructureShiftSnapshot } from "@/lib/structure-shift";
 import { CXSWITCH_VERSION } from "@/lib/version";
-import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, claimTelegramAlert, releaseTelegramAlert } from "@/lib/state";
+import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, claimTelegramAlert, releaseTelegramAlert, getCycleRunnerState, setCycleRunnerState } from "@/lib/state";
 import { getLastBreakout, setLastBreakout } from "@/lib/v28-breakout-state";
 import { sendAlert } from "@/lib/telegram";
 import { run1DTrendExperiment } from "@/lib/1d-trend-runner";
@@ -84,14 +84,14 @@ export async function GET(request:Request){
  }
 
  for(const pair of PAIRS){try{
-  const c1=await getCandles(krakenPairFormat(pair+"/USD"),60);await sleep(API_DELAY_MS);const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);await sleep(API_DELAY_MS);const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);await sleep(API_DELAY_MS);
+  const c1=await getCandles(krakenPairFormat(pair+"/USD"),60);await sleep(API_DELAY_MS);const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);await sleep(API_DELAY_MS);const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);await sleep(API_DELAY_MS);const cW=(pair==="BTC"||pair==="ETH")?await getCandles(krakenPairFormat(pair+"/USD"),10080):[];if(pair==="BTC"||pair==="ETH")await sleep(API_DELAY_MS);
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
   const ema513=get4HEmaDiagnostic(c4);
   console.log(`[EMA 4H 5/13] ${pair} — ${ema513.label} | 5=${ema513.ema5.toFixed(4)} | 13=${ema513.ema13.toFixed(4)} | spread=${ema513.spread.toFixed(4)} (${ema513.spreadPct.toFixed(3)}%) | spreadATR=${ema513.spreadAtr.toFixed(3)} | contracting=${ema513.spreadContracting?"YES":"NO"} | Δspread=${ema513.spreadChangePct.toFixed(2)}% | 5slope=${ema513.ema5Slope.toFixed(4)} | 13slope=${ema513.ema13Slope.toFixed(4)} | cross=${ema513.crossNow?"YES":"NO"}`);
   const structureShift=detectStructureShift(pair,c4);
   const structureRecorded=await recordStructureShiftSnapshot(structureShift);
   console.log(`[STRUCTURE SHIFT] ${pair} — ${structureShift.structure} ${structureShift.state} | protected=${structureShift.protectedLevel?.toFixed(4)??"—"} | break=${structureShift.breakDistanceAtr?.toFixed(2)??"—"} ATR | recorded=${structureRecorded?"YES":"NO"} | ${structureShift.reason}`);
-  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair),lastBreakout=await getLastBreakout(pair);console.log(`[BREAKOUT STATE] ${pair} — ${lastBreakout?`${lastBreakout.direction}@${lastBreakout.price} candle=${lastBreakout.candleIndex} age=${c4.length-1-lastBreakout.candleIndex}`:"NONE"}`);const live1D=dailyState[pair]||undefined;const result=generateSignal(pair,c1,c4,c15,active,price,lastBreakout,live1D);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.fourH513=ema513;snapshot.structureShift=structureShift;snapshot.lastBreakout=lastBreakout||null;snapshot.dailyLive=live1D||null;
+  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair),lastBreakout=await getLastBreakout(pair);console.log(`[BREAKOUT STATE] ${pair} — ${lastBreakout?`${lastBreakout.direction}@${lastBreakout.price} candle=${lastBreakout.candleIndex} age=${c4.length-1-lastBreakout.candleIndex}`:"NONE"}`);const live1D=dailyState[pair]||undefined;const result=generateSignal(pair,c1,c4,c15,active,price,lastBreakout,live1D);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);if(pair==="BTC"||pair==="ETH")snapshot.cycleRunner=getCycleRunnerSnapshot(pair,c1,c4,cW,price);snapshot.fourH513=ema513;snapshot.structureShift=structureShift;snapshot.lastBreakout=lastBreakout||null;snapshot.dailyLive=live1D||null;
   const dbg=result.debug||[];dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   if(existing){snapshot.positionState="ACTIVE";snapshot.positionDirection=existing.direction;snapshot.positionEntry=existing.entry;snapshot.positionStop=existing.stop;snapshot.positionTarget=existing.tp2??existing.target;snapshot.positionTp1=existing.tp1;snapshot.positionTp2=existing.tp2;snapshot.positionTp3=existing.tp3;snapshot.positionTp1HitAt=existing.tp1HitAt;snapshot.positionTp2HitAt=existing.tp2HitAt;snapshot.positionTp3HitAt=existing.tp3HitAt;console.log(`[PAIR] ${pair} — POSITION ACTIVE (${existing.direction}) — entry engine paused`);}
   marketData.push(snapshot);const signal=result.signal;if(!signal){if(!existing)console.log(`[PAIR] ${pair} — NO SIGNAL`);continue;}
@@ -111,6 +111,21 @@ export async function GET(request:Request){
   await appendSignalHistory(signal);newSignals.push(signal);alerts.push({pair,direction:signal.direction,type:signal.type,status:claimed?"sent":"state_created_telegram_deduped"});console.log(`[ALERT] ${pair} — ${signal.type} ${claimed?"sent":"state/history created; Telegram deduped"} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.tp2} | TP3 ${signal.tp3}`);
   if(signal.type!=="ADD"&&!existing){await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE] ${pair} — active position created`);}
  }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}}
+ // Dedicated BTC/ETH cycle-runner entry alert. It does not create a normal CX trade.
+ const cycleState=await getCycleRunnerState();
+ for(const pair of ["BTC","ETH"] as const){
+   const cm=marketData.find((m:any)=>m?.pair===pair)?.cycleRunner;
+   if(!cm?.ready) continue;
+   const existing=cycleState[pair];
+   if(existing?.status==="IN_POSITION") continue;
+   const key=`CYCLE_RUNNER:${pair}:${cm.direction}:${cm.fourHFib?.nearest?.level||"zone"}`;
+   const claimed=await claimTelegramAlert(key);
+   if(claimed){
+     try{
+       await sendAlert({symbol:pair,state:"CYCLE RUNNER ENTRY",price:round(marketData.find((m:any)=>m?.pair===pair)?.price||0),bias:cm.direction,stopLoss:0,takeProfit:0,rr:0,expectedMove:0,adx:0,rsi:0,stochK:cm.oneHStoch?.k||0,stochD:cm.oneHStoch?.d||0,reason:"Weekly direction + 4H major Fib retest + 1H momentum confirmation",trend:`WEEKLY ${cm.weeklyDirection} · 4H ${cm.fourHDirection}`,location:"4H_FIB_RETEST",trigger:"1H_PRECISION_CONFIRM",updatedAt:new Date().toISOString(),signalType:"CYCLE_RUNNER",signalEmoji:"🟣",context:{cycleRunner:cm}});
+     }catch(e){await releaseTelegramAlert(key);console.error("[CYCLE RUNNER] Telegram alert failed",e);}
+   }
+ }
  await setMarketData(marketData);
  const finalActive=await getActiveSignals();
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${alerts.length}`);
