@@ -51,7 +51,17 @@ export async function GET(request:Request){
     trade.stop=safeStop;
     await updateHistoryStopMilestone(trade.id,trade.stop);
   }
-  const milestoneTrade=await updateActiveTradeMilestones(trade.id,price);if(milestoneTrade)Object.assign(trade,milestoneTrade);await updateHistoryMilestones(trade.id,price);
+  const milestoneTrade=await updateActiveTradeMilestones(trade.id,price);if(milestoneTrade)Object.assign(trade,milestoneTrade);
+  // Re-apply liquidation-safe protection after milestone hydration. Older milestone
+  // records can contain the legacy stop and must never overwrite the safety boundary.
+  if((trade.direction==="LONG"&&trade.stop<safeStop)||(trade.direction==="SHORT"&&trade.stop>safeStop)){
+    if((trade.direction==="LONG"&&price>safeStop)||(trade.direction==="SHORT"&&price<safeStop)){
+      console.log("[RISK] "+trade.pair+" "+trade.direction+" — enforcing liquidation-safe SL "+safeStop);
+      trade.stop=safeStop;
+      await updateHistoryStopMilestone(trade.id,trade.stop);
+    }
+  }
+  await updateHistoryMilestones(trade.id,price);
   let hold=shouldHold(toSignalLike(trade),c,price);if(typeof hold.shouldHold!=="boolean"){console.error(`[MANAGE] ${trade.pair} — invalid hold result; preserving active position`);hold={shouldHold:true,reason:"hold_result_invalid"};}if(!hold.shouldHold&&hold.reason==="price_too_far_from_alert"){console.log(`[MANAGE] ${trade.pair} — alert stale; manual position remains tracked`);hold={shouldHold:true,reason:"active_alert_stale"};}
   console.log(`[MANAGE] ${trade.pair} ${trade.direction} | Entry ${trade.entry} | Price ${price} | SL ${trade.stop} | TP1 ${trade.tp1??"—"} | TP2 ${trade.tp2??"—"} | TP3 ${trade.tp3??"—"} | Thesis ${hold.reason}`);
   if(!hold.shouldHold){await updateSignalHistoryStatus(trade.id,hold.reason==="tp3_hit"||hold.reason==="tp2_hit_lock_2r"?"TP_HIT":"FAILED",hold.reason,price);active=active.filter(x=>x.id!==trade.id);alerts.push({pair:trade.pair,status:"exit",reason:hold.reason,price});console.log(`[EXIT] ${trade.pair} ${trade.direction} — ${hold.reason} @ ${price}`);continue;}
@@ -61,15 +71,15 @@ export async function GET(request:Request){
  }catch(e){console.error(`[MANAGE] ${trade.pair} ERROR`,e);}}
  await setActiveSignals(active);
 
- // The 1D experiment is now live context for V28 entry timing. It still does not
- // execute trades by itself; V28 supplies the execution-grade entry/SL/TP model.
+ // The 1D experiment is now live context for entry timing. It still does not
+ // execute trades by itself; the strategy supplies the execution-grade entry/SL/TP model.
  let dailyState:any={};
  try{
    await run1DTrendExperiment(active);
    dailyState=await get1DTrendState();
    console.log(`[1D LIVE] Regime context loaded for V28: ${PAIRS.map(p=>`${p}=${dailyState[p]?.state||"—"}/${dailyState[p]?.candidateState||"—"}`).join(" | ")}`);
  }catch(error){
-   console.error(`[1D LIVE] Daily regime refresh failed; V28 will use local 4H context only`,error);
+   console.error(`[1D LIVE] Daily regime refresh failed; the strategy will use local 4H context only`,error);
    try{dailyState=await get1DTrendState();}catch{dailyState={};}
  }
 
@@ -81,7 +91,7 @@ export async function GET(request:Request){
   const structureShift=detectStructureShift(pair,c4);
   const structureRecorded=await recordStructureShiftSnapshot(structureShift);
   console.log(`[STRUCTURE SHIFT] ${pair} — ${structureShift.structure} ${structureShift.state} | protected=${structureShift.protectedLevel?.toFixed(4)??"—"} | break=${structureShift.breakDistanceAtr?.toFixed(2)??"—"} ATR | recorded=${structureRecorded?"YES":"NO"} | ${structureShift.reason}`);
-  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair),lastBreakout=await getLastBreakout(pair);console.log(`[V28 BREAKOUT STATE] ${pair} — ${lastBreakout?`${lastBreakout.direction}@${lastBreakout.price} candle=${lastBreakout.candleIndex} age=${c4.length-1-lastBreakout.candleIndex}`:"NONE"}`);const live1D=dailyState[pair]||undefined;const result=generateSignal(pair,c1,c4,c15,active,price,lastBreakout,live1D);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.fourH513=ema513;snapshot.structureShift=structureShift;snapshot.lastBreakout=lastBreakout||null;snapshot.dailyLive=live1D||null;
+  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair),lastBreakout=await getLastBreakout(pair);console.log(`[BREAKOUT STATE] ${pair} — ${lastBreakout?`${lastBreakout.direction}@${lastBreakout.price} candle=${lastBreakout.candleIndex} age=${c4.length-1-lastBreakout.candleIndex}`:"NONE"}`);const live1D=dailyState[pair]||undefined;const result=generateSignal(pair,c1,c4,c15,active,price,lastBreakout,live1D);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.fourH513=ema513;snapshot.structureShift=structureShift;snapshot.lastBreakout=lastBreakout||null;snapshot.dailyLive=live1D||null;
   const dbg=result.debug||[];dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   if(existing){snapshot.positionState="ACTIVE";snapshot.positionDirection=existing.direction;snapshot.positionEntry=existing.entry;snapshot.positionStop=existing.stop;snapshot.positionTarget=existing.tp2??existing.target;snapshot.positionTp1=existing.tp1;snapshot.positionTp2=existing.tp2;snapshot.positionTp3=existing.tp3;snapshot.positionTp1HitAt=existing.tp1HitAt;snapshot.positionTp2HitAt=existing.tp2HitAt;snapshot.positionTp3HitAt=existing.tp3HitAt;console.log(`[PAIR] ${pair} — POSITION ACTIVE (${existing.direction}) — entry engine paused`);}
   marketData.push(snapshot);const signal=result.signal;if(!signal){if(!existing)console.log(`[PAIR] ${pair} — NO SIGNAL`);continue;}
@@ -97,7 +107,7 @@ export async function GET(request:Request){
   try{
     if(claimed) await sendAlert({symbol:signal.pair,state:signal.type==="ADD"?"ADD":"ENTRY",price:round(signal.entry),bias:signal.direction,stopLoss:round(signal.stop),takeProfit:round(signal.tp2??signal.target),takeProfit1:signal.tp1,takeProfit2:signal.tp2,takeProfit3:signal.tp3,rr:signal.rr,expectedMove:signal.expectedMove,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,trend:signal.trend,location:signal.location,trigger:signal.trigger,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:emoji,context:signal.context,marketPhase:signal.context?.marketPhase,structure:signal.context?.structure,momentum:signal.context?.momentum,pullback:signal.context?.pullback,fourH513Label:ema513.label});
   }catch(e){if(claimed) await releaseTelegramAlert(alertKey);throw e;}
-  if(signal.type==="ENTRY_1"&&signal.context?.breakoutRecord){await setLastBreakout(pair,signal.context.breakoutRecord);console.log(`[V28 BREAKOUT STATE] ${pair} — recorded ${signal.context.breakoutRecord.direction}@${signal.context.breakoutRecord.price} candle=${signal.context.breakoutRecord.candleIndex}`);}
+  if(signal.type==="ENTRY_1"&&signal.context?.breakoutRecord){await setLastBreakout(pair,signal.context.breakoutRecord);console.log(`[BREAKOUT STATE] ${pair} — recorded ${signal.context.breakoutRecord.direction}@${signal.context.breakoutRecord.price} candle=${signal.context.breakoutRecord.candleIndex}`);}
   await appendSignalHistory(signal);newSignals.push(signal);alerts.push({pair,direction:signal.direction,type:signal.type,status:claimed?"sent":"state_created_telegram_deduped"});console.log(`[ALERT] ${pair} — ${signal.type} ${claimed?"sent":"state/history created; Telegram deduped"} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.tp2} | TP3 ${signal.tp3}`);
   if(signal.type!=="ADD"&&!existing){await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE] ${pair} — active position created`);}
  }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}}
