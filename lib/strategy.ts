@@ -127,8 +127,18 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const retestShort=!!lastBreakout&&lastBreakout.direction==="SHORT"&&age<=BREAKOUT_EXPIRY_CANDLES&&Math.abs((price-lastBreakout.price)/Math.max(Math.abs(lastBreakout.price),1))<=RETEST_PCT;
 
   const e8=ema(closes,TF_FAST).at(-1)??price;
-  const addLong=same(pair,"LONG",activeTrades)&&longMomentum&&fourH.direction==="BULLISH"&&price>=e8*(1-RETEST_PCT)&&!macd.bearishCross;
-  const addShort=same(pair,"SHORT",activeTrades)&&shortMomentum&&fourH.direction==="BEARISH"&&price<=e8*(1+RETEST_PCT)&&!macd.bullishCross;
+  // ADD is only the next wave after an actual pullback/retest. A fresh momentum turn
+  // by itself is not enough: price must first be back into a meaningful retracement
+  // area. This prevents ADDs from firing while an existing position is simply
+  // continuing or cooling at/near the highs.
+  const addFibLong=longFib?[longFib.fib382,longFib.fib50,longFib.fib618].some(level=>Math.abs((price-level)/Math.max(Math.abs(level),1))<=RETEST_PCT):false;
+  const addFibShort=shortFib?[shortFib.fib382,shortFib.fib50,shortFib.fib618].some(level=>Math.abs((price-level)/Math.max(Math.abs(level),1))<=RETEST_PCT):false;
+  const recentHigh=Math.max(...closed.slice(-8).map(x=>x.high)),recentLow=Math.min(...closed.slice(-8).map(x=>x.low));
+  const pulledBackLong=price<=e8*(1+0.002)&&price<recentHigh*(1-0.003);
+  const pulledBackShort=price>=e8*(1-0.002)&&price>recentLow*(1+0.003);
+  const addLong=same(pair,"LONG",activeTrades)&&longMomentum&&fourH.direction==="BULLISH"&&(addFibLong||pulledBackLong)&&!macd.bearishCross;
+  const addShort=same(pair,"SHORT",activeTrades)&&shortMomentum&&fourH.direction==="BEARISH"&&(addFibShort||pulledBackShort)&&!macd.bullishCross;
+  debug.push(`[ADD LOCATION] ${pair} | LONG fib=${addFibLong?"YES":"NO"} pullback=${pulledBackLong?"YES":"NO"} | SHORT fib=${addFibShort?"YES":"NO"} pullback=${pulledBackShort?"YES":"NO"}`);
 
   let dir:Direction|null=null,type:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null,reason="";
   if(longEntry1&&!shortEntry1){dir="LONG";type="ENTRY_1";reason="probability-based early setup";}
