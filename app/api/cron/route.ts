@@ -1,7 +1,7 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { generateSignal, getMarketSnapshot, shouldHold, Signal } from "@/lib/strategy";
+import { generateSignal, getMarketSnapshot, shouldHold, liquidationSafeStop, Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { detectStructureShift, recordStructureShiftSnapshot } from "@/lib/structure-shift";
 import { CXSWITCH_VERSION } from "@/lib/version";
@@ -42,6 +42,15 @@ export async function GET(request:Request){
  let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[];
  for(const trade of [...active]){try{
   const c=await getCandles(krakenPairFormat(trade.pair+"/USD"),240);await sleep(API_DELAY_MS);const price=c.at(-1)?.close;if(price===undefined){console.log(`[MANAGE] ${trade.pair} — no price`);continue;}
+  // Existing positions may pre-date the 20x liquidation-safe SL fix. Bring them
+  // up to the same protection before evaluating the rest of the hold logic.
+  const safeStop=liquidationSafeStop(trade.entry,trade.direction);
+  const unsafe=(trade.direction==="LONG"&&trade.stop<safeStop)||(trade.direction==="SHORT"&&trade.stop>safeStop);
+  if(unsafe&&((trade.direction==="LONG"&&price>safeStop)||(trade.direction==="SHORT"&&price<safeStop))){
+    console.log(`[RISK] ${trade.pair} ${trade.direction} — legacy SL ${trade.stop} -> liquidation-safe ${safeStop}`);
+    trade.stop=safeStop;
+    await updateHistoryStopMilestone(trade.id,trade.stop);
+  }
   const milestoneTrade=await updateActiveTradeMilestones(trade.id,price);if(milestoneTrade)Object.assign(trade,milestoneTrade);await updateHistoryMilestones(trade.id,price);
   let hold=shouldHold(toSignalLike(trade),c,price);if(typeof hold.shouldHold!=="boolean"){console.error(`[MANAGE] ${trade.pair} — invalid hold result; preserving active position`);hold={shouldHold:true,reason:"hold_result_invalid"};}if(!hold.shouldHold&&hold.reason==="price_too_far_from_alert"){console.log(`[MANAGE] ${trade.pair} — alert stale; manual position remains tracked`);hold={shouldHold:true,reason:"active_alert_stale"};}
   console.log(`[MANAGE] ${trade.pair} ${trade.direction} | Entry ${trade.entry} | Price ${price} | SL ${trade.stop} | TP1 ${trade.tp1??"—"} | TP2 ${trade.tp2??"—"} | TP3 ${trade.tp3??"—"} | Thesis ${hold.reason}`);
