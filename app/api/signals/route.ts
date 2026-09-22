@@ -27,7 +27,8 @@ function momentumStatus(h:any,m:any){
   if(!h||!m)return null;
   const long=h.direction==="LONG";
   const e=m.fourH513;
-  const same513=e?.direction===(long?"BULLISH":"BEARISH");
+  const aligned513=e?.direction===(long?"BULLISH":"BEARISH");
+  const against513=e?.direction===(long?"BEARISH":"BULLISH");
   const ema8=Number(m.ema8_4h),ema21=Number(m.ema21_4h);
   const same821=Number.isFinite(ema8)&&Number.isFinite(ema21)&&(long?ema8>=ema21:ema8<=ema21);
   const contracting=!!e?.spreadContracting;
@@ -39,13 +40,13 @@ function momentumStatus(h:any,m:any){
   // ENTRY_1 shorts are deliberately captured before the 4H bearish cross.
   // While 5/13 and 8/21 are still bullish/above, a contracting spread plus
   // bearish MACD deterioration is the intended V28 transition — not a break.
-  if(!long&&h.type==="ENTRY_1"&&!same513&&!same821&&contracting&&!macdAgainst&&!!macd.bearishShift){
+  if(!long&&h.type==="ENTRY_1"&&against513&&!same821&&contracting&&!macdAgainst&&!!macd.bearishShift){
     return{icon:"🟢",label:"HEALTHY",detail:"Early V28 short transition remains intact."};
   }
   // BROKEN requires multiple independent failures, not a single Stoch turn.
-  if(!same513&&!same821)return{icon:"🔴",label:"BROKEN",detail:"Multiple 4H momentum layers have failed."};
-  if((!same513||!same821)&&(macdAgainst||contracting))return{icon:"🟠",label:"DETERIORATING",detail:"Momentum is weakening; protect profits and watch closely."};
-  if(same513&&same821&&(contracting||macdAgainst||((stochExtreme||stochCooling)&&histWeakening)))return{icon:"🟡",label:"COOLING",detail:"Pullback occurring, but no confirmed failure."};
+  if(against513&&!same821)return{icon:"🔴",label:"BROKEN",detail:"4H 5/13 and 8/21 have both turned against the position."};
+  if((against513||!same821)&&(macdAgainst||contracting))return{icon:"🟠",label:"DETERIORATING",detail:"Momentum is weakening; protect profits and watch closely."};
+  if(aligned513&&same821&&(contracting||macdAgainst||((stochExtreme||stochCooling)&&histWeakening)))return{icon:"🟡",label:"COOLING",detail:"Pullback occurring, but no confirmed failure."};
   return{icon:"🟢",label:"HEALTHY",detail:"The move is still valid."};
 }
 
@@ -53,11 +54,11 @@ function managementAdvice(h:any,m:any){
   if(!h||h.status!=="ACTIVE"||!m||h.type==="ENTRY_0")return null;
   const price=Number(m.price),tp1Hit=!!h.tp1HitAt||(h.tp1!==undefined&&(h.direction==="LONG"?price>=h.tp1:price<=h.tp1)),tp2Hit=!!h.tp2HitAt||(h.tp2!==undefined&&(h.direction==="LONG"?price>=h.tp2:price<=h.tp2));
   const e=m.fourH513;if(!e)return{status:"healthy",recommendation:"HOLD — SL UNCHANGED",reason:"Trade remains active. Do not raise the stop before R1; the next management point is R1, then move SL to breakeven."};
-  const long=h.direction==="LONG",same513=e.direction===(long?"BULLISH":"BEARISH"),entry513Direction=h.context?.fourH513?.direction||h.fourH513Direction||h.fourH513?.direction,fourHWasAlreadyAgainstAtEntry=entry513Direction!==undefined&&entry513Direction!==(long?"BULLISH":"BEARISH"),contracting=!!e.spreadContracting,momentum=m.momentumState||"NEUTRAL",ema8=Number(m.ema8_4h),ema21=Number(m.ema21_4h),same821=Number.isFinite(ema8)&&Number.isFinite(ema21)&&(long?ema8>=ema21:ema8<=ema21),exhausted=long?(m.stochK>=80&&m.stochK<m.stochD):(m.stochK<=20&&m.stochK>m.stochD),weakMomentum=momentum==="PULLBACK"||momentum==="HOT"||momentum==="OVEREXTENDED";
+  const long=h.direction==="LONG",same513=e.direction===(long?"BULLISH":"BEARISH"),against513=e.direction===(long?"BEARISH":"BULLISH"),entry513Direction=h.context?.fourH513?.direction||h.fourH513Direction||h.fourH513?.direction,fourHWasAlreadyAgainstAtEntry=entry513Direction!==undefined&&entry513Direction!==(long?"BULLISH":"BEARISH"),contracting=!!e.spreadContracting,momentum=m.momentumState||"NEUTRAL",ema8=Number(m.ema8_4h),ema21=Number(m.ema21_4h),same821=Number.isFinite(ema8)&&Number.isFinite(ema21)&&(long?ema8>=ema21:ema8<=ema21),exhausted=long?(m.stochK>=80&&m.stochK<m.stochD):(m.stochK<=20&&m.stochK>m.stochD),weakMomentum=momentum==="PULLBACK"||momentum==="HOT"||momentum==="OVEREXTENDED";
   if(tp2Hit){if(same513&&same821&&!contracting&&!exhausted&&momentum!=="OVEREXTENDED")return{status:"healthy",recommendation:"R2 RUNNER POSSIBLE",reason:"R1.5 reached. 4H 5/13 remains aligned and 8/21 confirms the move — keep the R2 runner unless momentum deteriorates."};return{status:"warning",recommendation:"R1.5 IS THE LIKELY FINAL TARGET",reason:"R1.5 reached. The remaining position should be protected; do not assume R2."};}
-  if(tp1Hit){if(!same513&&!fourHWasAlreadyAgainstAtEntry)return{status:"failed",recommendation:"PROTECT PROFIT",reason:"R1 reached and 4H 5/13 has turned against the position. Move SL to breakeven if not already done and protect the remaining profit."};if(contracting||exhausted||weakMomentum||!same821)return{status:"warning",recommendation:"SL TO BREAKEVEN · R1.5 LIKELY FINAL",reason:`R1 reached. Move SL to breakeven. Momentum is weakening${contracting?" (5/13 spread contracting)":""}${weakMomentum?` (${momentum})`:""}${exhausted?" (Stoch exhaustion)":""}${!same821?" (8/21 not aligned)":""}. Do not assume R2.`};return{status:"healthy",recommendation:"SL TO BREAKEVEN · HOLD FOR R1.5",reason:"R1 reached. Move SL to breakeven. 4H 5/13 and 8/21 remain aligned, so R1.5 remains the next management target."};}
-  if(!same513&&!fourHWasAlreadyAgainstAtEntry)return{status:"failed",recommendation:"TRADE VALIDITY WARNING · PROTECT",reason:"4H 5/13 has turned against the position after entry. The alert may still be above/below its original SL, but the move is deteriorating. Do not widen the SL; reassess manually."};
-  if(!same513&&fourHWasAlreadyAgainstAtEntry)return{status:"warning",recommendation:"HOLD — 4H RECOVERY NEEDED",reason:`4H 5/13 is still ${long?"bearish":"bullish"}, as it was at entry. This is an early V28 position; do not widen the SL. Watch for ${long?"bullish":"bearish"} 4H recovery.`};
+  if(tp1Hit){if(against513&&!fourHWasAlreadyAgainstAtEntry)return{status:"failed",recommendation:"PROTECT PROFIT",reason:"R1 reached and 4H 5/13 has turned against the position. Move SL to breakeven if not already done and protect the remaining profit."};if(contracting||exhausted||weakMomentum||!same821)return{status:"warning",recommendation:"SL TO BREAKEVEN · R1.5 LIKELY FINAL",reason:`R1 reached. Move SL to breakeven. Momentum is weakening${contracting?" (5/13 spread contracting)":""}${weakMomentum?` (${momentum})`:""}${exhausted?" (Stoch exhaustion)":""}${!same821?" (8/21 not aligned)":""}. Do not assume R2.`};return{status:"healthy",recommendation:"SL TO BREAKEVEN · HOLD FOR R1.5",reason:"R1 reached. Move SL to breakeven. 4H 5/13 and 8/21 remain aligned, so R1.5 remains the next management target."};}
+  if(against513&&!fourHWasAlreadyAgainstAtEntry)return{status:"failed",recommendation:"TRADE VALIDITY WARNING · PROTECT",reason:"4H 5/13 has turned against the position after entry. The alert may still be above/below its original SL, but the move is deteriorating. Do not widen the SL; reassess manually."};
+  if(against513&&fourHWasAlreadyAgainstAtEntry)return{status:"warning",recommendation:"HOLD — 4H RECOVERY NEEDED",reason:`4H 5/13 is still ${long?"bearish":"bullish"}, as it was at entry. This is an early V28 position; do not widen the SL. Watch for ${long?"bullish":"bearish"} 4H recovery.`};
   if(contracting||exhausted||weakMomentum||!same821)return{status:"warning",recommendation:"HOLD — SL UNCHANGED · WATCH R1",reason:`Trade is still active, but momentum is weakening${contracting?" (5/13 spread contracting)":""}${weakMomentum?` (${momentum})`:""}${exhausted?" (Stoch exhaustion)":""}${!same821?" (8/21 not aligned)":""}. Next management point: R1 → SL to breakeven.`};
   return{status:"healthy",recommendation:"HOLD — SL UNCHANGED · TARGET R1",reason:"Trade remains valid and conditions are healthy. Keep the original SL. At R1, move SL to breakeven; R1.5 is next, then R2 runner if conditions stay healthy."};
 }
