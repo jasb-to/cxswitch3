@@ -183,10 +183,12 @@ const shortNotChasing=entryLast.close>=entryRangeLow*0.975;
 // confirmation model: 2 of 5 is enough when direction + location are right.
 const longExhausted=entryRsi>=ENTRY1_LONG_EXHAUSTION_RSI;
  const shortExhausted=entryRsi<=ENTRY1_SHORT_EXHAUSTION_RSI;
- const opposingDailyLong=dailyState==="BEAR_DEVELOPING"||dailyCandidate==="BEAR_DEVELOPING";
- const opposingDailyShort=dailyState==="BULL_WEAKENING"||dailyCandidate==="BULL_WEAKENING";
- const earlyLongTransition=longTriggers>=2&&longStructuralLocation&&longNotChasing&&!longExhausted&&!opposingDailyLong;
-const earlyShortTransition=shortTriggers>=2&&shortStructuralLocation&&shortNotChasing&&!shortExhausted&&!opposingDailyShort;
+ // 1D is CONTEXT/SIZING for Entry 1, never a hard veto. The early entry
+ // exists specifically to capture a 4H turn before the 1D has fully confirmed it.
+ const opposingDailyLong=false;
+ const opposingDailyShort=false;
+ const earlyLongTransition=longTriggers>=2&&longStructuralLocation&&longNotChasing&&!longExhausted;
+ const earlyShortTransition=shortTriggers>=2&&shortStructuralLocation&&shortNotChasing&&!shortExhausted;
 
 earlyLong=fourHLongDirection&&earlyLongTransition;
 earlyShort=fourHShortDirection&&earlyShortTransition;
