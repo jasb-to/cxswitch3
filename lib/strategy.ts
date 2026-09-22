@@ -213,7 +213,7 @@ export function getCycleRunnerSnapshot(pair:string,candles1h:Candle[],candles4h:
   const oneTurn=selectedDirection==="LONG"?oneTurnLong:oneTurnShort;
   const precision=!!selectedFib4&&selectedFib4.distPct<=1.0&&oneTurn&&weeklyDirection===selectedDirection&&fourDir===selectedDirection;
   const deepRetest=!!selectedFib4&&selectedFib4.distPct<=1.0&&(selectedFib4.name==="0.500"||selectedFib4.name==="0.618");
-  const ready=pair==="BTC"||pair==="ETH"?precision:false;
+  const ready=pair==="BTC"||pair==="ETH"?deepRetest&&oneTurn:false;
   const direction=selectedDirection;
   return{
     enabled:pair==="BTC"||pair==="ETH",
