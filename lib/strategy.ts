@@ -28,6 +28,9 @@ const ENTRY1_LONG_EXHAUSTION_RSI=80;
 const ENTRY1_SHORT_EXHAUSTION_RSI=20;
 const ENTRY1_SHORT_NEAR_PCT=0.015;
 const ENTRY1_SHORT_STOCH_MIN=45;
+// Entry 1 is an early structural entry, not a post-breakout chase. The live
+// execution price must remain inside the same zone that qualified the closed 4H setup.
+const ENTRY1_LIVE_ZONE_PCT=0.01;
 
  type Pivot={index:number;price:number;timestamp:number};
 type TL={valid:boolean;slope:number;intercept:number;price:number;pivots:Pivot[];ageCandles:number;reason:string;invalidated:boolean;stale:boolean;staleByAge:boolean;staleByDistance:boolean;};
@@ -138,6 +141,22 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
  else if(entryStructureDir==="SHORT"&&entryLongTL.valid)entryShortTL=buildTrendline(closed4h,"SHORT",FRESH_LOOKBACK);
  const longNearTL=entryLongTL.valid&&Math.abs((entryLast.close-entryLongTL.price)/Math.max(Math.abs(entryLongTL.price),1))<=nearTLThreshold;
  const shortNearTL=entryShortTL.valid&&Math.abs((entryLast.close-entryShortTL.price)/Math.max(Math.abs(entryShortTL.price),1))<=ENTRY1_SHORT_NEAR_PCT;
+ // CRITICAL EXECUTION GUARD: the setup is evaluated on the last CLOSED 4H candle,
+ // but the actual signal price comes from the latest 1H close. Both must agree on
+ // location. Previously the closed 4H candle could be near the TL while the live
+ // 1H price had already run materially away from it — exactly the ETH/SOL/HYPE
+ // failure mode we have been seeing.
+ const entryLongBuffer=entryLongTL.valid?Math.max(Math.abs(entryLongTL.price)*BREAKOUT_PCT,atr(closed4h)*0.35):0;
+ const entryShortBuffer=entryShortTL.valid?Math.max(Math.abs(entryShortTL.price)*BREAKOUT_PCT,atr(closed4h)*0.35):0;
+ const liveLongDistPct=entryLongTL.valid?Math.abs((price-entryLongTL.price)/Math.max(Math.abs(entryLongTL.price),1))*100:null;
+ const liveShortDistPct=entryShortTL.valid?Math.abs((price-entryShortTL.price)/Math.max(Math.abs(entryShortTL.price),1))*100:null;
+ const liveLongNearTL=entryLongTL.valid&&liveLongDistPct!==null&&liveLongDistPct<=ENTRY1_LIVE_ZONE_PCT*100;
+ const liveShortNearTL=entryShortTL.valid&&liveShortDistPct!==null&&liveShortDistPct<=ENTRY1_LIVE_ZONE_PCT*100;
+ // Early Entry 1 must be before the breakout extension. Once price has closed/ran
+ // through the breakout buffer, that is no longer the early structural entry; the
+ // system must wait for the breakout/retest path instead of buying the expansion.
+ const liveLongPreBreak=entryLongTL.valid&&price<=entryLongTL.price+entryLongBuffer;
+ const liveShortPreBreak=entryShortTL.valid&&price>=entryShortTL.price-entryShortBuffer;
  const longStochExtreme=entrySt.k<20;
  const longStochTurn=entrySt.k>entrySt.d&&entrySt.k<40;
  // SHORT uses location plus an early 4H bearish turn. A MACD deterioration OR StochRSI rollover is enough; overbought alone is not.
@@ -178,13 +197,13 @@ const entryRangeHigh=Math.max(...closed4h.slice(-EARLY_LOOKBACK,-1).map(x=>x.hig
 // no longer allow an early entry to fire far away from the structural zone.
 const longStructuralEvidence=reclaim8Long||higherLow||priorHighBreak;
 const shortStructuralEvidence=reclaim8Short||lowerHigh||priorLowBreak;
-const longStructuralLocation=longNearTL&&longStructuralEvidence;
-const shortStructuralLocation=shortNearTL&&shortStructuralEvidence;
+const longStructuralLocation=longNearTL&&liveLongNearTL&&liveLongPreBreak&&longStructuralEvidence;
+const shortStructuralLocation=shortNearTL&&liveShortNearTL&&liveShortPreBreak&&shortStructuralEvidence;
 
 // Allow an early transition, but don't enter after a genuinely extended
 // breakout. A 2.5% allowance keeps Entry 1 early without making it a chase.
-const longNotChasing=entryLast.close<=entryRangeHigh*1.025;
-const shortNotChasing=entryLast.close>=entryRangeLow*0.975;
+const longNotChasing=price<=entryRangeHigh*1.025;
+const shortNotChasing=price>=entryRangeLow*0.975;
 
 // One unified Entry 1. The trigger count is evidence, not a stacked
 // confirmation model: 2 of 5 is enough when direction + location are right.
@@ -221,7 +240,7 @@ debug.push(`[ENTRY_1 DECISION] ${pair} | 4HDirection=${fourHLongDirection?"LONG"
  const entryExhaustion=longExhausted?"LONG":shortExhausted?"SHORT":"NONE";
  const entryChase=(entryDirection==="LONG"&&!longNotChasing)||(entryDirection==="SHORT"&&!shortNotChasing);
  const entryDailyConflict=entryDirection==="LONG"&&opposingDailyLong?"LONG_AGAINST_1D":entryDirection==="SHORT"&&opposingDailyShort?"SHORT_AGAINST_1D":"NONE";
- const entryMarket=(market:any)=>market?Object.assign(market,{entry1Direction:entryDirection,entry1Decision:entryDecision,entry1TriggersLong:longTriggers,entry1TriggersShort:shortTriggers,entry1StructuralLocation:entryLocation,entry1NearTL:longNearTL&&!shortNearTL?"LONG":shortNearTL&&!longNearTL?"SHORT":"NONE",entry1Chase:entryChase,entry1Exhaustion:entryExhaustion,entry1DailyConflict:entryDailyConflict,entry1ClosedRsi:entryRsi,entry1Grade:earlyLong?earlyLongGrade:earlyShort?earlyShortGrade:null,entry1TriggerThreshold:2,entry1ExhaustionThreshold:entryDirection==="LONG"?ENTRY1_LONG_EXHAUSTION_RSI:ENTRY1_SHORT_EXHAUSTION_RSI}):market;
+ const entryMarket=(market:any)=>market?Object.assign(market,{entry1Direction:entryDirection,entry1Decision:entryDecision,entry1TriggersLong:longTriggers,entry1TriggersShort:shortTriggers,entry1StructuralLocation:entryLocation,entry1NearTL:longNearTL&&!shortNearTL?"LONG":shortNearTL&&!longNearTL?"SHORT":"NONE",entry1LiveNearTL:liveLongNearTL&&!liveShortNearTL?"LONG":liveShortNearTL&&!liveLongNearTL?"SHORT":"NONE",entry1LiveDistPct:entryDirection==="LONG"?liveLongDistPct:entryDirection==="SHORT"?liveShortDistPct:null,entry1PreBreak:entryDirection==="LONG"?liveLongPreBreak:entryDirection==="SHORT"?liveShortPreBreak:false,entry1ExecutionAllowed:(entryDirection==="LONG"&&longStructuralLocation)||(entryDirection==="SHORT"&&shortStructuralLocation),entry1MaxEntry:entryDirection==="LONG"&&entryLongTL.valid?round(entryLongTL.price+entryLongBuffer):entryDirection==="SHORT"&&entryShortTL.valid?round(entryShortTL.price-entryShortBuffer):null,entry1Chase:entryChase,entry1Exhaustion:entryExhaustion,entry1DailyConflict:entryDailyConflict,entry1ClosedRsi:entryRsi,entry1Grade:earlyLong?earlyLongGrade:earlyShort?earlyShortGrade:null,entry1TriggerThreshold:2,entry1ExhaustionThreshold:entryDirection==="LONG"?ENTRY1_LONG_EXHAUSTION_RSI:ENTRY1_SHORT_EXHAUSTION_RSI}):market;
  debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | closedRSI=${entryRsi} | longBlock=${longExhausted?"YES":"NO"} | shortBlock=${shortExhausted?"YES":"NO"}`);
  // Continuation retest: a controlled pullback into the fast 4H trend structure.
  // This is deliberately stricter than "first red/green candle": price must remain
@@ -284,8 +303,18 @@ debug.push(`[ENTRY_1 DECISION] ${pair} | 4HDirection=${fourHLongDirection?"LONG"
  const tp1=dir==="LONG"?entry+structuralRisk:entry-structuralRisk,tp2=dir==="LONG"?entry+structuralRisk*1.5:entry-structuralRisk*1.5,tp3=dir==="LONG"?entry+structuralRisk*2:entry-structuralRisk*2,target=tp2,rr=1.5;if(rr<MIN_RR)return{market:entryMarket(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug:[...debug,"R:R below minimum"]};
  const daily513=getDaily513Diagnostic(candles4h),agreesWith1D=dailyLive?(dir==="LONG"&&dailyBull)||(dir==="SHORT"&&dailyBear):((dir==="LONG"&&daily513.direction==="BULLISH")||(dir==="SHORT"&&daily513.direction==="BEARISH")),earlyGrade=dir==="LONG"?earlyLongGrade:earlyShortGrade,riskMultiplier=early?(earlyGrade==="A"&&agreesWith1D?1:0.5):(agreesWith1D?1:0.5),baseRisk=risk,positionSize=baseRisk*riskMultiplier,trendAlignment=agreesWith1D?"WITH_1D":"AGAINST_1D";
  const breakoutRecord:BreakoutRecord=type==="ENTRY_1"&&!early?{direction:dir,price:round(tl.price),timestamp:now,candleIndex:i}:lastBreakout!;
+ // No ENTRY_1 may be created at a materially displaced execution price. Early
+ // entries use the tighter pre-break structural zone; confirmed breakout ENTRY_1
+ // uses the same 1% execution envelope so a fast candle cannot turn the signal
+ // into a chase before the user can act on it.
+ const executionDistancePct=Math.abs((price-tl.price)/Math.max(Math.abs(tl.price),1));
+ const executionAllowed=type==="ENTRY_1"?executionDistancePct<=ENTRY1_LIVE_ZONE_PCT:true;
+ if(!executionAllowed){
+   debug.push(`[ENTRY_1 EXECUTION GUARD] ${pair} ${dir} — price ${price.toFixed(2)} is ${ (executionDistancePct*100).toFixed(2)}% from execution TL ${tl.price.toFixed(2)}; signal blocked, wait for structural retest`);
+   return{market:entryMarket(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug};
+ }
  const location=early?"EARLY_REVERSAL":breakout?"BREAKOUT":continuation?"MOMENTUM_PULLBACK":"RETEST",trigger=early?"4H_REVERSAL":breakout?"4H_TRENDLINE_BREAKOUT":continuation?"4H_MOMENTUM_PULLBACK":"4H_BREAKOUT_RETEST";
- const s:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),tp3:round(tp3),confidence:early?70:type==="ENTRY_1"?80:type==="ENTRY_2"?70:85,rr,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(Math.abs(tp3-entry)/entry*1000)/10,reason:early?`${dir} ENTRY_1 EARLY ${earlyGrade} | 1D ${dailyState||dailyCandidate||"REGIME"} | 4H triggers ${dir==="LONG"?longTriggers:shortTriggers}/5 | MACD ${dir==="LONG"?(macdImprovingLong?"improving":"—"):(macdImprovingShort?"improving":"—")} | 5/13 ${fourH513.label}`: `${dir} ${type} | 4H trendline breakout/retest | 1D ${contextDir?strength(d,contextDir):"NEUTRAL"} | Stoch ${st.k}/${st.d}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} ${strength(d,dir)}`,location,trigger,context:{marketPhase:early?`${dir} EARLY REVERSAL ${earlyGrade}`:`${dir} ${strength(d,dir)}`,structure:early?`4H ${structure.structure||"TRANSITION"} + trigger count ${dir==="LONG"?longTriggers:shortTriggers}/5`:(breakout?"4H TRENDLINE BREAKOUT":"4H BREAKOUT RETEST"),momentum:`RSI ${r} | Stoch ${st.k}/${st.d} | MACD hist ${round(macd.histogram)}`,pullback:continuation?"controlled_4h_momentum_pullback":retest?"confirmed_retest":early?"early_transition":"breakout",fourH513,daily513,dailyLive:dailyLive||null,macd4h:macd,trendAlignment,sizeMultiplier:riskMultiplier,earlyGrade:early?earlyGrade:undefined,risk:{baseRisk:round(baseRisk),positionSize:round(positionSize),trendAlignment,sizeMultiplier:riskMultiplier,riskMultiplier,estimatedLiquidation:round(l),safeBoundary:round(safe),leverage:LEVERAGE},breakoutRecord:breakoutRecord?{direction:breakoutRecord.direction,price:round(breakoutRecord.price),timestamp:breakoutRecord.timestamp,candleIndex:breakoutRecord.candleIndex}:undefined,stages:{tp1:round(tp1),tp2:round(tp2),tp3:round(tp3),tp1R:1,tp2R:1.5,tp3R:2}}};
+ const s:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),tp3:round(tp3),confidence:early?70:type==="ENTRY_1"?80:type==="ENTRY_2"?70:85,rr,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(Math.abs(tp3-entry)/entry*1000)/10,reason:early?`${dir} ENTRY_1 EARLY ${earlyGrade} | 1D ${dailyState||dailyCandidate||"REGIME"} | 4H triggers ${dir==="LONG"?longTriggers:shortTriggers}/5 | MACD ${dir==="LONG"?(macdImprovingLong?"improving":"—"):(macdImprovingShort?"improving":"—")} | 5/13 ${fourH513.label}`: `${dir} ${type} | 4H trendline breakout/retest | 1D ${contextDir?strength(d,contextDir):"NEUTRAL"} | Stoch ${st.k}/${st.d}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} ${strength(d,dir)}`,location,trigger,context:{marketPhase:early?`${dir} EARLY REVERSAL ${earlyGrade}`:`${dir} ${strength(d,dir)}`,structure:early?`4H ${structure.structure||"TRANSITION"} + trigger count ${dir==="LONG"?longTriggers:shortTriggers}/5`:(breakout?"4H TRENDLINE BREAKOUT":"4H BREAKOUT RETEST"),momentum:`RSI ${r} | Stoch ${st.k}/${st.d} | MACD hist ${round(macd.histogram)}`,pullback:continuation?"controlled_4h_momentum_pullback":retest?"confirmed_retest":early?"early_transition":"breakout",fourH513,daily513,dailyLive:dailyLive||null,macd4h:macd,trendAlignment,sizeMultiplier:riskMultiplier,earlyGrade:early?earlyGrade:undefined,risk:{baseRisk:round(baseRisk),positionSize:round(positionSize),trendAlignment,sizeMultiplier:riskMultiplier,riskMultiplier,estimatedLiquidation:round(l),safeBoundary:round(safe),leverage:LEVERAGE},entryGuard:{referenceTrendline:round(tl.price),executionDistancePct:round(executionDistancePct*100),maxDistancePct:ENTRY1_LIVE_ZONE_PCT*100,maxEntry:dir==="LONG"?round(tl.price*(1+ENTRY1_LIVE_ZONE_PCT)):round(tl.price*(1-ENTRY1_LIVE_ZONE_PCT)),earlyPreBreak:early?(dir==="LONG"?liveLongPreBreak:liveShortPreBreak):undefined},breakoutRecord:breakoutRecord?{direction:breakoutRecord.direction,price:round(breakoutRecord.price),timestamp:breakoutRecord.timestamp,candleIndex:breakoutRecord.candleIndex}:undefined,stages:{tp1:round(tp1),tp2:round(tp2),tp3:round(tp3),tp1R:1,tp2R:1.5,tp3R:2}}};
  debug.push(`[RISK] ${pair} ${dir} | structuralSL=${round(structuralStop)} | liquidation=${round(l)} | safeBoundary=${round(safe)} | finalSL=${round(stop)} | liquidationBuffer=${LIQ_BUFFER*100}%`);
  debug.push(`directionSource=4H | 1DContext=${dailyState||dailyCandidate||"LOCAL"} | 4HState=${entryFourH513.label} | structure=${entryStructureDir||"TRANSITION"} | TL=${dir==="LONG"?"LONG":"SHORT"} | finalDirection=${dir}`);
  debug.push(`SIGNAL: ${type} ${dir} @ ${s.entry} | SL ${s.stop} | TP1 ${s.tp1} | TP2 ${s.tp2} | TP3 ${s.tp3} | ${trendAlignment} | ${early?`EARLY_${earlyGrade}`:"CONFIRMED"} | size x${riskMultiplier}`);return{signal:s,signals:[s],market:entryMarket(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug};
