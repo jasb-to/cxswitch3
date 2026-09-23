@@ -200,6 +200,15 @@ export function getCycleRunnerSnapshot(pair:string,candles1h:Candle[],candles4h:
   const fourFibLong=getFibLevels(fourHClosed,"LONG"),fourFibShort=getFibLevels(fourHClosed,"SHORT");
   const oneFibLong=getFibLevels(oneHClosed,"LONG"),oneFibShort=getFibLevels(oneHClosed,"SHORT");
   const oneCloses=oneHClosed.map(x=>x.close),oneSt=stochRsi(oneCloses),onePrev=oneHClosed.length>20?stochRsi(oneHClosed.slice(0,-1).map(x=>x.close)):oneSt;
+  // Cycle Runner is a major-cycle entry, not a normal 4H bounce. Keep the
+  // precision trigger on 1H, but require the higher timeframes to stop being
+  // vertically extended before declaring ENTRY READY.
+  const dailyClosed=daily(fourHClosed).slice(0,-1);
+  const dailySt=stochRsi(dailyClosed.map(x=>x.close)),dailyStPrev=dailyClosed.length>20?stochRsi(dailyClosed.slice(0,-1).map(x=>x.close)):dailySt;
+  const weeklySt=stochRsi(weeklyClosed.map(x=>x.close)),weeklyStPrev=weeklyClosed.length>20?stochRsi(weeklyClosed.slice(0,-1).map(x=>x.close)):weeklySt;
+  const dailyOverheated=dailySt.k>=90&&dailySt.k>=dailySt.d;
+  const weeklyOverheated=weeklySt.k>=90&&weeklySt.k>=weeklySt.d;
+  const higherTimeframeReset=!dailyOverheated&&!weeklyOverheated;
   const oneTurnLong=oneSt.k>oneSt.d&&oneSt.k>onePrev.k,oneTurnShort=oneSt.k<oneSt.d&&oneSt.k<onePrev.k;
   const near=(levels:{level:number;name:string}[]|undefined)=>levels?.length?levels.map(x=>({...x,distPct:Math.abs((price-x.level)/Math.max(Math.abs(x.level),1))*100})).sort((a,b)=>a.distPct-b.distPct)[0]:undefined;
   const fib4Long=near(fourFibLong?[{level:fourFibLong.fib382,name:"0.382"},{level:fourFibLong.fib50,name:"0.500"},{level:fourFibLong.fib618,name:"0.618"}]:undefined);
@@ -233,7 +242,11 @@ export function getCycleRunnerSnapshot(pair:string,candles1h:Candle[],candles4h:
   const trendChangeConfirmed=selectedDirection==="LONG"?trendChangeLong:trendChangeShort;
   const precision=!!selectedFib4&&selectedFib4.distPct<=1.0&&oneTurn&&fourDir===selectedDirection&&trendChangeConfirmed;
   const deepRetest=!!selectedFib4&&selectedFib4.distPct<=1.0&&(selectedFib4.name==="0.500"||selectedFib4.name==="0.618");
-  const ready=pair==="BTC"||pair==="ETH"?deepRetest&&oneTurn&&trendChangeConfirmed:false;
+  // A deep 4H retracement plus a 1H turn is not enough for the one-shot
+  // cycle position if both daily and weekly Stoch RSI are still pinned at the
+  // top. This specifically prevents a local 4H pullback inside an extended
+  // higher-timeframe trend from being labelled a cycle entry.
+  const ready=pair==="BTC"||pair==="ETH"?deepRetest&&oneTurn&&trendChangeConfirmed&&higherTimeframeReset:false;
   const direction=selectedDirection;
 
   return{
@@ -244,6 +257,11 @@ export function getCycleRunnerSnapshot(pair:string,candles1h:Candle[],candles4h:
     fourHFib:{direction:direction==="LONG"?"LONG":"SHORT",swingLow:selectedLevels?.swingLow??null,swingHigh:selectedLevels?.swingHigh??null,fib382:selectedLevels?.fib382??null,fib50:selectedLevels?.fib50??null,fib618:selectedLevels?.fib618??null,nearest:selectedFib4?{level:selectedFib4.level,distPct:selectedFib4.distPct,name:selectedFib4.name}:null},
     oneHFib:{direction:direction==="LONG"?"LONG":"SHORT",swingLow:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.swingLow??null,swingHigh:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.swingHigh??null,fib382:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.fib382??null,fib50:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.fib50??null,fib618:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.fib618??null,nearest:selectedFib1?{level:selectedFib1.level,distPct:selectedFib1.distPct,name:selectedFib1.name}:null},
     oneHStoch:{k:oneSt.k,d:oneSt.d,turnLong:oneTurnLong,turnShort:oneTurnShort},
+    higherTimeframeStoch:{
+      daily:{k:dailySt.k,d:dailySt.d,prevK:dailyStPrev.k,prevD:dailyStPrev.d,overheated:dailyOverheated},
+      weekly:{k:weeklySt.k,d:weeklySt.d,prevK:weeklyStPrev.k,prevD:weeklyStPrev.d,overheated:weeklyOverheated},
+      reset:higherTimeframeReset
+    },
     majorRetest:!!selectedFib4&&selectedFib4.distPct<=2.0,
     deepRetest,precisionConfirmed:precision,ready,
     entryQuality:{
@@ -255,7 +273,10 @@ export function getCycleRunnerSnapshot(pair:string,candles1h:Candle[],candles4h:
       dailyTransition:dailyTransition.stage,
       weeklyContext:weeklyDirection,
       oneHTurn:oneTurn,
-      withinEntryZone:!!selectedFib4&&selectedFib4.distPct<=1.0
+      withinEntryZone:!!selectedFib4&&selectedFib4.distPct<=1.0,
+      dailyStoch:{k:dailySt.k,d:dailySt.d,overheated:dailyOverheated},
+      weeklyStoch:{k:weeklySt.k,d:weeklySt.d,overheated:weeklyOverheated},
+      higherTimeframeReset
     },
     positionPlan:{margin:5000,leverage:10,notional:50000}
   };
