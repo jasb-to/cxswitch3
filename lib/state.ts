@@ -18,6 +18,7 @@ const SNAPSHOT_KEY = "cxswitch:dashboard_snapshot";
 const MIGRATION_FLAG_KEY = "cxswitch:migrated_v01";
 const COOLDOWN_KEY = "cxswitch:cooldowns";
 const TELEGRAM_ALERT_KEY_PREFIX = "cxswitch:telegram_alert:";
+const ONE_TIME_BTC_SHORT_CLEANUP_KEY = "cxswitch:cleanup:btc_short_20260923";
 
 export interface ActiveTrade {
   id: string; pair: string; direction: "LONG" | "SHORT"; type: "ENTRY_1" | "ENTRY_2" | "ADD";
@@ -69,7 +70,41 @@ export async function runMigrationIfNeeded(): Promise<void> {
   console.log(`[STATE] Migration complete: active=${activeSignals.length} history=${historyEntries.length} latest=${Object.keys(latestAlerts).length}`);
 }
 
-export async function getActiveSignals(): Promise<ActiveTrade[]> { await runMigrationIfNeeded(); return (await redis.get<ActiveTrade[]>(ACTIVE_SIGNALS_KEY)) || []; }
+export async function getActiveSignals(): Promise<ActiveTrade[]> {
+  await runMigrationIfNeeded();
+  let active = (await redis.get<ActiveTrade[]>(ACTIVE_SIGNALS_KEY)) || [];
+  // One-time cleanup for the BTC short that was identified as an invalid/stale position.
+  // Preserve its history for auditability, but remove it from live position state so the
+  // entry engine is allowed to evaluate BTC normally again.
+  const cleaned = await redis.get<boolean>(ONE_TIME_BTC_SHORT_CLEANUP_KEY);
+  if (!cleaned) {
+    const bad = active.filter(t => t.pair === "BTC" && t.direction === "SHORT");
+    if (bad.length) {
+      active = active.filter(t => !(t.pair === "BTC" && t.direction === "SHORT"));
+      await redis.set(ACTIVE_SIGNALS_KEY, active);
+      const history = (await redis.get<SignalHistoryEntry[]>(SIGNAL_HISTORY_KEY)) || [];
+      const badIds = new Set(bad.map(t => t.id));
+      for (const h of history) {
+        if (badIds.has(h.id) && h.status === "ACTIVE") {
+          h.status = "FAILED";
+          h.exitReason = "invalidated_bad_entry";
+          h.exitTimestamp = Date.now();
+        }
+      }
+      await redis.set(SIGNAL_HISTORY_KEY, history);
+      const latest = await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY) || {};
+      if (latest.BTC && badIds.has(latest.BTC.id)) {
+        latest.BTC.status = "FAILED";
+        latest.BTC.exitReason = "invalidated_bad_entry";
+        latest.BTC.exitTimestamp = Date.now();
+        await redis.set(LATEST_ALERTS_KEY, latest);
+      }
+      console.log(`[STATE CLEANUP] Removed invalid BTC SHORT position(s): ${bad.map(t => t.id).join(", ")}`);
+    }
+    await redis.set(ONE_TIME_BTC_SHORT_CLEANUP_KEY, true);
+  }
+  return active;
+}
 export async function setActiveSignals(signals: ActiveTrade[]): Promise<void> { await redis.set(ACTIVE_SIGNALS_KEY, signals); }
 export async function addActiveSignal(signal: Signal): Promise<void> {
   const active = await getActiveSignals();
