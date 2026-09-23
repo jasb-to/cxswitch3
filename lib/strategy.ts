@@ -206,8 +206,8 @@ export function getCycleRunnerSnapshot(pair:string,candles1h:Candle[],candles4h:
   const dailyClosed=daily(fourHClosed).slice(0,-1);
   const dailySt=stochRsi(dailyClosed.map(x=>x.close)),dailyStPrev=dailyClosed.length>20?stochRsi(dailyClosed.slice(0,-1).map(x=>x.close)):dailySt;
   const weeklySt=stochRsi(weeklyClosed.map(x=>x.close)),weeklyStPrev=weeklyClosed.length>20?stochRsi(weeklyClosed.slice(0,-1).map(x=>x.close)):weeklySt;
-  const dailyOverheated=dailySt.k>=90&&dailySt.k>=dailySt.d;
-  const weeklyOverheated=weeklySt.k>=90&&weeklySt.k>=weeklySt.d;
+  const dailyOverheated=dailySt.k>=90;
+  const weeklyOverheated=weeklySt.k>=90;
   const higherTimeframeReset=!dailyOverheated&&!weeklyOverheated;
   const oneTurnLong=oneSt.k>oneSt.d&&oneSt.k>onePrev.k,oneTurnShort=oneSt.k<oneSt.d&&oneSt.k<onePrev.k;
   const near=(levels:{level:number;name:string}[]|undefined)=>levels?.length?levels.map(x=>({...x,distPct:Math.abs((price-x.level)/Math.max(Math.abs(x.level),1))*100})).sort((a,b)=>a.distPct-b.distPct)[0]:undefined;
@@ -251,7 +251,7 @@ export function getCycleRunnerSnapshot(pair:string,candles1h:Candle[],candles4h:
 
   return{
     enabled:pair==="BTC"||pair==="ETH",
-    status:ready?"ENTRY READY":deepRetest?"DEEP RETEST · WAIT 1H TURN":selectedLong||selectedShort?"MAJOR RETEST · WAIT":"WAITING FOR TREND CHANGE / MAJOR RETEST",
+    status:ready?"ENTRY READY":!higherTimeframeReset?"HTF MOMENTUM TOO HOT":deepRetest&&!oneTurn?"DEEP RETEST · WAIT 1H TURN":selectedLong||selectedShort?"MAJOR RETEST · WAIT":"WAITING FOR TREND CHANGE / MAJOR RETEST",
     direction,weeklyDirection,fourHDirection:fourDir||"NEUTRAL",weeklyFast:round(wf),weeklySlow:round(ws),
     trendChangeConfirmed,structureShift:structure.shiftTo,dailyTransition:dailyTransition.stage,
     fourHFib:{direction:direction==="LONG"?"LONG":"SHORT",swingLow:selectedLevels?.swingLow??null,swingHigh:selectedLevels?.swingHigh??null,fib382:selectedLevels?.fib382??null,fib50:selectedLevels?.fib50??null,fib618:selectedLevels?.fib618??null,nearest:selectedFib4?{level:selectedFib4.level,distPct:selectedFib4.distPct,name:selectedFib4.name}:null},
