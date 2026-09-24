@@ -18,7 +18,6 @@ export async function sendAlert(signal:any){
   const dir=signal.bias==="LONG"?"📈":"📉";
   const tp1=signal.takeProfit1??signal.context?.stages?.tp1??"-";
   const tp2=signal.takeProfit2??signal.context?.stages?.tp2??signal.takeProfit??"-";
-  const tp3=signal.takeProfit3??signal.context?.stages?.tp3??"-";
   const guard=signal.context?.entryGuard;
   const fourH513=signal.fourH513Label||signal.context?.fourH513?.label||"NEUTRAL";
   const exitPlan=signal.context?.exitPlan;
@@ -37,7 +36,7 @@ export async function sendAlert(signal:any){
     : "";
 
   const addText=type==="ADD"?`\n🔵 ADD DETAILS\nSize: ${sizeMultiplier?`x${sizeMultiplier}`:"reduced"}${trendAlignment?` · ${trendAlignment}`:""}\nReason: ${signal.reason||"next wave after pullback/retest with thesis intact"}\n`:"";
-  const exitText=exitPlan?`\nExit plan: TP1 ${exitPlan.tp1Pct}% | TP2 ${exitPlan.tp2Pct}% | TP3 ${exitPlan.tp3Pct}%\nAfter TP1: ${exitPlan.afterTp1} | After TP2: ${exitPlan.afterTp2}\nRunner: ${exitPlan.runner}\n`:"";
+  const exitText=exitPlan?`\nExit plan: TP1 ${exitPlan.tp1Pct}% | TP2 ${exitPlan.tp2Pct}%\nAfter TP1: ${exitPlan.afterTp1} | After TP2: ${exitPlan.afterTp2}\nRunner: ${exitPlan.runner}\n`:"";
   const entry0Text=type==="ENTRY_0"?`\nENTRY_0 confirmation: ${signal.confirmation||"1D 5/13 aligned with 4H 5/13 cross"}\nLongevity exit: 4H 8/21 opposite cross\n`:type==="EXIT_0"?`\nENTRY_0 exit: ${signal.reason||"4H 8/21 opposite cross"}\n`:"";
 
   const lines=[
