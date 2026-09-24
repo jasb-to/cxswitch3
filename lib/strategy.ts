@@ -86,6 +86,21 @@ export function getDaily513Diagnostic(c:Candle[]){
 }
 function logFib(debug:string[],pair:string,d:Direction,f:FibLevels|null,price:number){if(!f){debug.push(`[FIB] ${pair} ${d} | unavailable`);return;}const levels=[["0.382",f.fib382],["0.500",f.fib50],["0.618",f.fib618]] as const,near=levels.reduce((a,b)=>Math.abs(price-b[1])<Math.abs(price-a[1])?b:a);debug.push(`[FIB] ${pair} ${d} | swingLow=${f.swingLow.toFixed(2)} swingHigh=${f.swingHigh.toFixed(2)} | 0.382=${f.fib382.toFixed(2)} 0.500=${f.fib50.toFixed(2)} 0.618=${f.fib618.toFixed(2)} | price=${price.toFixed(2)} nearest=${near[0]} @ ${near[1].toFixed(2)} dist=${(Math.abs(price-near[1])/Math.max(Math.abs(near[1]),1)*100).toFixed(2)}%`);}
 
+function checkEntry1Exhaustion(direction:Direction,r:number,st:{k:number;d:number},trendlineDist:number,adxVal:number){
+  // Directional V28.2 exhaustion protection, adapted to the current Fib-based ENTRY_1.
+  if(direction==="LONG" && st.k>=99)return{blocked:true,reason:`STOCH_PINNED_LONG K${st.k}`};
+  if(direction==="SHORT" && st.k<=1)return{blocked:true,reason:`STOCH_PINNED_SHORT K${st.k}`};
+  if(direction==="LONG" && st.k>95 && trendlineDist>0.01)return{blocked:true,reason:`STOCH_EXTREME_LONG K${st.k} + TL ${(trendlineDist*100).toFixed(2)}%`};
+  if(direction==="SHORT" && st.k<5 && trendlineDist>0.01)return{blocked:true,reason:`STOCH_EXTREME_SHORT K${st.k} + TL ${(trendlineDist*100).toFixed(2)}%`};
+  if(direction==="LONG" && st.k>90 && st.d>90 && trendlineDist>0.02)return{blocked:true,reason:`STOCH_FLAT_EXTREME_LONG K${st.k}/D${st.d} + TL ${(trendlineDist*100).toFixed(2)}%`};
+  if(direction==="SHORT" && st.k<10 && st.d<10 && trendlineDist>0.02)return{blocked:true,reason:`STOCH_FLAT_EXTREME_SHORT K${st.k}/D${st.d} + TL ${(trendlineDist*100).toFixed(2)}%`};
+  if(direction==="LONG" && adxVal>28 && st.k>80 && st.d>80 && trendlineDist>0.025)return{blocked:true,reason:`ADX_EXTENDED_LONG ADX${adxVal} + K/D ${st.k}/${st.d}`};
+  if(direction==="SHORT" && adxVal>28 && st.k<20 && st.d<20 && trendlineDist>0.025)return{blocked:true,reason:`ADX_EXTENDED_SHORT ADX${adxVal} + K/D ${st.k}/${st.d}`};
+  if(direction==="LONG" && r>=ENTRY1_LONG_EXHAUSTION_RSI)return{blocked:true,reason:`RSI_EXHAUSTED_LONG RSI ${r}`};
+  if(direction==="SHORT" && r<=ENTRY1_SHORT_EXHAUSTION_RSI)return{blocked:true,reason:`RSI_EXHAUSTED_SHORT RSI ${r}`};
+  return{blocked:false,reason:""};
+}
+
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],activeTrades:any[]=[],currentPrice?:number,lastBreakout?:BreakoutRecord,dailyLive?:DailyLiveContext):SignalResult{
   const debug:string[]=[];const now=Date.now();if(candles4h.length<35){debug.push("Insufficient 4H data");return{debug};}
   const price=currentPrice??candles4h.at(-1)!.close,closed=candles4h.slice(0,-1),localDaily=bias(candles4h),dDir=dailyDirection(dailyLive,localDaily);
@@ -101,14 +116,15 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const longNearFib=!!longFibNearest&&longFibDist<=ENTRY1_FIB_ZONE_PCT,shortNearFib=!!shortFibNearest&&shortFibDist<=ENTRY1_FIB_ZONE_PCT;
   const longPreBreak=longTL.valid&&price<=longTL.price+longBuffer,shortPreBreak=shortTL.valid&&price>=shortTL.price-shortBuffer;
   const longMomentum=st.k>st.d&&st.k>prevSt.k,shortMomentum=st.k<st.d&&st.k<prevSt.k;
-  const longExhausted=r>=ENTRY1_LONG_EXHAUSTION_RSI,shortExhausted=r<=ENTRY1_SHORT_EXHAUSTION_RSI;
+  const longExhaustion=checkEntry1Exhaustion("LONG",r,st,longDist,a),shortExhaustion=checkEntry1Exhaustion("SHORT",r,st,shortDist,a);
+  const longExhausted=longExhaustion.blocked,shortExhausted=shortExhaustion.blocked;
   const longLocation=longNearFib,shortLocation=shortNearFib;
   // 1D is a risk/sizing modifier, not an ENTRY_1 veto. The 4H turn + Fib location decides direction.\n  const longEntry1=longMomentum&&longLocation&&!longExhausted,shortEntry1=shortMomentum&&shortLocation&&!shortExhausted;
 
   debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir}`);
   debug.push(`[4H] ${pair} | 5/13=${fourH.label} | MACD=${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | Stoch=${st.k}/${st.d} prev=${prevSt.k}/${prevSt.d}`);
   debug.push(`[TL] ${pair} | LONG=${longTL.valid?longTL.price.toFixed(2):"—"} dist=${isFinite(longDist)?(longDist*100).toFixed(2)+"%":"—"} | SHORT=${shortTL.valid?shortTL.price.toFixed(2):"—"} dist=${isFinite(shortDist)?(shortDist*100).toFixed(2)+"%":"—"}`);
-  debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | closedRSI=${r} | longBlock=${longExhausted?"YES":"NO"} | shortBlock=${shortExhausted?"YES":"NO"}`);
+  debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
   debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | Stoch=${longMomentum?"LONG":shortMomentum?"SHORT":"NONE"} | FibApproach=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
 
   const fallbackDir:Direction=dDir==="BEAR"?"SHORT":"LONG";
@@ -160,7 +176,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   else if(retestLong&&!same(pair,"LONG",activeTrades)){dir="LONG";type="ENTRY_2";reason="breakout retest confirmation";}
   else if(retestShort&&!same(pair,"SHORT",activeTrades)){dir="SHORT";type="ENTRY_2";reason="breakout retest confirmation";}
 
-  if(!dir||!type){debug.push(`[ENTRY_1 WAIT] ${pair} | ${longExhausted||shortExhausted?"exhaustion veto":dDir==="BULL"&&!longMomentum?"waiting for bullish 4H StochRSI turn":dDir==="BEAR"&&!shortMomentum?"waiting for bearish 4H StochRSI turn":dDir==="BULL"&&!longLocation?"waiting for price to approach bullish structural area":dDir==="BEAR"&&!shortLocation?"waiting for price to approach bearish structural area":"waiting for next valid setup"}`);return{market:market(baseMarket()),debug};}
+  if(!dir||!type){debug.push(`[ENTRY_1 WAIT] ${pair} | ${longExhausted&&longMomentum&&longLocation?`LONG exhaustion veto: ${longExhaustion.reason}`:shortExhausted&&shortMomentum&&shortLocation?`SHORT exhaustion veto: ${shortExhaustion.reason}`:dDir==="BULL"&&!longMomentum?"waiting for bullish 4H StochRSI turn":dDir==="BEAR"&&!shortMomentum?"waiting for bearish 4H StochRSI turn":dDir==="BULL"&&!longLocation?"waiting for price to approach bullish structural area":dDir==="BEAR"&&!shortLocation?"waiting for price to approach bearish structural area":"waiting for next valid setup"}`);return{market:market(baseMarket()),debug};}
   if(opposite(pair,dir,activeTrades)){debug.push(`[SIGNAL BLOCK] ${pair} ${dir} | opposite position active`);return{market:market(baseMarket()),debug};}
   const tl=dir==="LONG"?longTL:shortTL;
   if(!tl.valid&&type==="ENTRY_2"){debug.push(`[SIGNAL BLOCK] ${pair} ${dir} | no valid structural trendline`);return{market:market(baseMarket()),debug};}
@@ -189,7 +205,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     fourH513:fourH,daily513:getDaily513Diagnostic(candles4h),dailyLive:dailyLive||null,macd4h:macd,trendAlignment,sizeMultiplier:riskMultiplier,
     risk:{baseRisk:round(risk),structuralRisk:round(structuralRisk),positionSize:round(risk*riskMultiplier),trendAlignment,sizeMultiplier:riskMultiplier,estimatedLiquidation:round(liquidation),safeBoundary:round(safe),leverage:LEVERAGE},
     entryGuard:{referenceFib:dir==="LONG"?longFibNearest:shortFibNearest,executionDistancePct:round((dir==="LONG"?longFibDist:shortFibDist)*100),maxDistancePct:ENTRY1_FIB_ZONE_PCT*100},
-    exhaustion:{closedRsi:r,longBlocked:longExhausted,shortBlocked:shortExhausted,longThreshold:ENTRY1_LONG_EXHAUSTION_RSI,shortThreshold:ENTRY1_SHORT_EXHAUSTION_RSI},
+    exhaustion:{closedRsi:r,longBlocked:longExhausted,shortBlocked:shortExhausted,longReason:longExhaustion.reason,shortReason:shortExhaustion.reason,longThreshold:ENTRY1_LONG_EXHAUSTION_RSI,shortThreshold:ENTRY1_SHORT_EXHAUSTION_RSI,stochK:st.k,stochD:st.d,adx:a,trendlineDistanceLongPct:round(longDist*100),trendlineDistanceShortPct:round(shortDist*100)},
     breakoutRecord:breakoutRecord?{direction:breakoutRecord.direction,price:round(breakoutRecord.price),timestamp:breakoutRecord.timestamp,candleIndex:breakoutRecord.candleIndex}:undefined,
     stages:{tp1:round(tp1),tp2:round(tp2),tp1MovePct:round(tp1Move*100),tp2MovePct:round(tp2Move*100)}
   }};
