@@ -20,7 +20,7 @@ export interface Signal {
   trend?:string; location?:string; trigger?:string; context?:any;
 }
 export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; }
-export const CURRENT_SIGNAL_VERSION=6;
+export const CURRENT_SIGNAL_VERSION=7;
 
 type DailyLiveContext={
   state?:string; candidateState?:string; candidateStreak?:number;
@@ -31,6 +31,39 @@ type Direction="LONG"|"SHORT";
 type Pivot={index:number;price:number;timestamp:number};
 type Trendline={valid:boolean;slope:number;intercept:number;price:number;pivots:Pivot[];ageCandles:number;stale:boolean;staleByAge:boolean;staleByDistance:boolean;invalidated:boolean;reason:string};
 type FibLevels={direction:Direction;swingLow:number;swingHigh:number;fib382:number;fib50:number;fib618:number;lowIndex:number;highIndex:number};
+type FibPathState={state:"NONE"|"SHALLOW_REVERSAL"|"DEEP_TOUCHED"|"DEEP_RECLAIM"|"FAILED";touched618:boolean;reclaimed500:boolean;currentLevel:"ABOVE_382"|"BETWEEN_382_500"|"BETWEEN_500_618"|"BELOW_618";trigger:string;};
+
+function getFibPathState(c:Candle[],f:FibLevels|null,d:Direction):FibPathState{
+  const none:FibPathState={state:"NONE",touched618:false,reclaimed500:false,currentLevel:"ABOVE_382",trigger:"NONE"};
+  if(!f||c.length<3)return none;
+  const anchor=d==="LONG"?f.highIndex:f.lowIndex;
+  const path=c.filter((_,i)=>i>=anchor);
+  if(!path.length)return none;
+  let touched618=false,reclaimed500=false,shallowReversal=false,failed=false;
+  for(const x of path){
+    if(d==="LONG"){
+      if(x.low<=f.fib618)touched618=true;
+      if(!touched618&&x.low<=f.fib382&&x.close>f.fib382)shallowReversal=true;
+      if(touched618&&x.close>f.fib50)reclaimed500=true;
+      if(touched618&&x.close<f.swingLow)failed=true;
+    }else{
+      if(x.high>=f.fib618)touched618=true;
+      if(!touched618&&x.high>=f.fib382&&x.close<f.fib382)shallowReversal=true;
+      if(touched618&&x.close<f.fib50)reclaimed500=true;
+      if(touched618&&x.close>f.swingHigh)failed=true;
+    }
+  }
+  const last=c.at(-1)!;
+  let currentLevel:"ABOVE_382"|"BETWEEN_382_500"|"BETWEEN_500_618"|"BELOW_618";
+  if(d==="LONG"){
+    currentLevel=last.close>f.fib382?"ABOVE_382":last.close>f.fib50?"BETWEEN_382_500":last.close>f.fib618?"BETWEEN_500_618":"BELOW_618";
+  }else{
+    currentLevel=last.close<f.fib382?"ABOVE_382":last.close<f.fib50?"BETWEEN_382_500":last.close<f.fib618?"BETWEEN_500_618":"BELOW_618";
+  }
+  const state=failed?"FAILED":touched618&&reclaimed500?"DEEP_RECLAIM":touched618?"DEEP_TOUCHED":shallowReversal?"SHALLOW_REVERSAL":"NONE";
+  const trigger=state==="DEEP_RECLAIM"?"0.618_TOUCH→0.5_RECLAIM":state==="SHALLOW_REVERSAL"?"0.382_REVERSAL":state==="DEEP_TOUCHED"?"0.618_TOUCHED":state==="FAILED"?"0.618_FAILED":"NONE";
+  return{state,touched618,reclaimed500,currentLevel,trigger};
+}
 
 const DAILY_FAST=5, DAILY_SLOW=13, TF_FAST=8, TF_SLOW=21;
 const BREAKOUT_PCT=0.005, RETEST_PCT=0.012, ENTRY1_FIB_ZONE_PCT=0.03;
@@ -114,11 +147,22 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const longFibDist=longFibNearest?Math.abs((price-longFibNearest[1])/Math.max(Math.abs(longFibNearest[1]),1)):Infinity;
   const shortFibDist=shortFibNearest?Math.abs((price-shortFibNearest[1])/Math.max(Math.abs(shortFibNearest[1]),1)):Infinity;
   const longNearFib=!!longFibNearest&&longFibDist<=ENTRY1_FIB_ZONE_PCT,shortNearFib=!!shortFibNearest&&shortFibDist<=ENTRY1_FIB_ZONE_PCT;
+  const longFibPath=getFibPathState(closed,longFib,"LONG"),shortFibPath=getFibPathState(closed,shortFib,"SHORT");
+  const longPathLocation=!!longFib&&(
+    (longFibPath.state==="SHALLOW_REVERSAL"&&price<=longFib.swingHigh&&price>=longFib.fib618*(1-ENTRY1_FIB_ZONE_PCT))||
+    (longFibPath.state==="DEEP_RECLAIM"&&price<=longFib.swingHigh&&price>=longFib.fib50*(1-ENTRY1_FIB_ZONE_PCT))
+  );
+  const shortPathLocation=!!shortFib&&(
+    (shortFibPath.state==="SHALLOW_REVERSAL"&&price>=shortFib.swingLow&&price<=shortFib.fib618*(1+ENTRY1_FIB_ZONE_PCT))||
+    (shortFibPath.state==="DEEP_RECLAIM"&&price>=shortFib.swingLow&&price<=shortFib.fib50*(1+ENTRY1_FIB_ZONE_PCT))
+  );
   const longPreBreak=longTL.valid&&price<=longTL.price+longBuffer,shortPreBreak=shortTL.valid&&price>=shortTL.price-shortBuffer;
   const longMomentum=st.k>st.d&&st.k>prevSt.k,shortMomentum=st.k<st.d&&st.k<prevSt.k;
   const longExhaustion=checkEntry1Exhaustion("LONG",r,st,longDist,a),shortExhaustion=checkEntry1Exhaustion("SHORT",r,st,shortDist,a);
   const longExhausted=longExhaustion.blocked,shortExhausted=shortExhaustion.blocked;
-  const longLocation=longNearFib,shortLocation=shortNearFib;
+  // Fib decides WHERE through the path; StochRSI + 4H structure decide WHEN.
+  // There is still only one ENTRY_1. Shallow/deep are internal path states only.
+  const longLocation=longPathLocation,shortLocation=shortPathLocation;
 
   // ENTRY_1 is deliberately early, but it must have ONE piece of real 4H
   // directional evidence in addition to location + StochRSI timing.
@@ -165,13 +209,14 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[4H] ${pair} | 5/13=${fourH.label} | MACD=${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | Stoch=${st.k}/${st.d} prev=${prevSt.k}/${prevSt.d}`);
   debug.push(`[TL] ${pair} | LONG=${longTL.valid?longTL.price.toFixed(2):"—"} dist=${isFinite(longDist)?(longDist*100).toFixed(2)+"%":"—"} | SHORT=${shortTL.valid?shortTL.price.toFixed(2):"—"} dist=${isFinite(shortDist)?(shortDist*100).toFixed(2)+"%":"—"}`);
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
-  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | Stoch=${longMomentum?"LONG":shortMomentum?"SHORT":"NONE"} | FibApproach=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
+  debug.push(`[FIB PATH] ${pair} | LONG=${longFibPath.state}/${longFibPath.trigger} | SHORT=${shortFibPath.state}/${shortFibPath.trigger}`);\n  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | Stoch=${longMomentum?"LONG":shortMomentum?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
 
   const fallbackDir:Direction=dDir==="BEAR"?"SHORT":"LONG";
   const baseMarket=()=>snapshot(pair,candles4h,structureDir||fallbackDir,structureDir==="LONG"?longTL:structureDir==="SHORT"?shortTL:longTL,price,dailyLive);
   const market=(m:any)=>Object.assign(m||baseMarket(),{
     entry1Direction:longEntry1?"LONG":shortEntry1?"SHORT":"NEUTRAL",entry1Decision:longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE",
     entry1TriggersLong:longMomentum?1:0,entry1TriggersShort:shortMomentum?1:0,entry1StructuralLocation:longLocation?"LONG":shortLocation?"SHORT":"NONE",
+    entry1FibPathLong:longFibPath,entry1FibPathShort:shortFibPath,
     entry1NearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",entry1LiveNearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",
     entry1LiveDistPct:longEntry1?longDist*100:shortEntry1?shortDist*100:null,entry1PreBreak:longPreBreak||shortPreBreak,
     entry1ExecutionAllowed:longEntry1||shortEntry1,entry1MaxEntry:longNearFib&&longFibNearest?round(longFibNearest[1]*(1+ENTRY1_FIB_ZONE_PCT)):shortNearFib&&shortFibNearest?round(shortFibNearest[1]*(1-ENTRY1_FIB_ZONE_PCT)):null,
@@ -241,11 +286,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const signal:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),confidence:type==="ENTRY_1"?70:type==="ENTRY_2"?80:85,rr:1.5,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(tp2Move*1000)/10,reason:`${dir} ${type} | ${reason} | ${trendAlignment}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} ${strength(daily(candles4h),dir)}`,location,trigger,context:{
     marketPhase:type==="ENTRY_1"?`${dir} PROBABILITY EARLY SETUP`:type==="ENTRY_2"?`${dir} CONFIRMED ENTRY_2`:`${dir} ADD NEXT WAVE`,
     structure:structureDir?`4H ${structureDir}`:"4H STRUCTURE TRANSITION",momentum:`RSI ${r} | Stoch ${st.k}/${st.d} | MACD hist ${round(macd.histogram)}`,
-    pullback:type==="ADD"?"fresh_4h_momentum_turn":type==="ENTRY_2"?"breakout_or_retest":"pre_break_structural_setup",
+    pullback:type==="ADD"?"fresh_4h_momentum_turn":type==="ENTRY_2"?"breakout_or_retest":dir==="LONG"?longFibPath.trigger:shortFibPath.trigger,
     fourH513:fourH,daily513:getDaily513Diagnostic(candles4h),dailyLive:dailyLive||null,macd4h:macd,trendAlignment,sizeMultiplier:riskMultiplier,
     risk:{baseRisk:round(risk),structuralRisk:round(structuralRisk),positionSize:round(risk*riskMultiplier),trendAlignment,sizeMultiplier:riskMultiplier,estimatedLiquidation:round(liquidation),safeBoundary:round(safe),leverage:LEVERAGE},
     entryGuard:{referenceFib:dir==="LONG"?longFibNearest:shortFibNearest,referenceTrendline:dir==="LONG"?(longTL.valid?round(longTL.price):null):(shortTL.valid?round(shortTL.price):null),trendlineDistancePct:round((dir==="LONG"?longDist:shortDist)*100),executionDistancePct:round((dir==="LONG"?longFibDist:shortFibDist)*100),maxEntry:dir==="LONG"?(longFibNearest?round(longFibNearest[1]):null):(shortFibNearest?round(shortFibNearest[1]):null),maxDistancePct:ENTRY1_FIB_ZONE_PCT*100},
     entry1CandleTimestamp:entryLast.timestamp,entry1ClosedCandleIndex:closed.length-1,
+    fibPath:dir==="LONG"?longFibPath:shortFibPath,
     exhaustion:{closedRsi:r,longBlocked:longExhausted,shortBlocked:shortExhausted,longReason:longExhaustion.reason,shortReason:shortExhaustion.reason,longThreshold:ENTRY1_LONG_EXHAUSTION_RSI,shortThreshold:ENTRY1_SHORT_EXHAUSTION_RSI,stochK:st.k,stochD:st.d,adx:a,trendlineDistanceLongPct:round(longDist*100),trendlineDistanceShortPct:round(shortDist*100)},
     breakoutRecord:breakoutRecord?{direction:breakoutRecord.direction,price:round(breakoutRecord.price),timestamp:breakoutRecord.timestamp,candleIndex:breakoutRecord.candleIndex}:undefined,
     stages:{tp1:round(tp1),tp2:round(tp2),tp1MovePct:round(tp1Move*100),tp2MovePct:round(tp2Move*100)}
