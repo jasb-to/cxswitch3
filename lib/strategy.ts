@@ -94,8 +94,8 @@ function checkEntry1Exhaustion(direction:Direction,r:number,st:{k:number;d:numbe
   if(direction==="SHORT" && st.k<5 && trendlineDist>0.01)return{blocked:true,reason:`STOCH_EXTREME_SHORT K${st.k} + TL ${(trendlineDist*100).toFixed(2)}%`};
   if(direction==="LONG" && st.k>90 && st.d>90 && trendlineDist>0.02)return{blocked:true,reason:`STOCH_FLAT_EXTREME_LONG K${st.k}/D${st.d} + TL ${(trendlineDist*100).toFixed(2)}%`};
   if(direction==="SHORT" && st.k<10 && st.d<10 && trendlineDist>0.02)return{blocked:true,reason:`STOCH_FLAT_EXTREME_SHORT K${st.k}/D${st.d} + TL ${(trendlineDist*100).toFixed(2)}%`};
-  if(direction==="LONG" && adxVal>28 && st.k>80 && st.d>80 && trendlineDist>0.025)return{blocked:true,reason:`ADX_EXTENDED_LONG ADX${adxVal} + K/D ${st.k}/${st.d}`};
-  if(direction==="SHORT" && adxVal>28 && st.k<20 && st.d<20 && trendlineDist>0.025)return{blocked:true,reason:`ADX_EXTENDED_SHORT ADX${adxVal} + K/D ${st.k}/${st.d}`};
+  if(direction==="LONG" && adxVal>28 && st.k>90 && st.d>90 && trendlineDist>0.025)return{blocked:true,reason:`ADX_EXTENDED_LONG ADX${adxVal} + K/D ${st.k}/${st.d}`};
+  if(direction==="SHORT" && adxVal>28 && st.k<10 && st.d<10 && trendlineDist>0.025)return{blocked:true,reason:`ADX_EXTENDED_SHORT ADX${adxVal} + K/D ${st.k}/${st.d}`};
   if(direction==="LONG" && r>=ENTRY1_LONG_EXHAUSTION_RSI)return{blocked:true,reason:`RSI_EXHAUSTED_LONG RSI ${r}`};
   if(direction==="SHORT" && r<=ENTRY1_SHORT_EXHAUSTION_RSI)return{blocked:true,reason:`RSI_EXHAUSTED_SHORT RSI ${r}`};
   return{blocked:false,reason:""};
@@ -119,8 +119,44 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const longExhaustion=checkEntry1Exhaustion("LONG",r,st,longDist,a),shortExhaustion=checkEntry1Exhaustion("SHORT",r,st,shortDist,a);
   const longExhausted=longExhaustion.blocked,shortExhausted=shortExhaustion.blocked;
   const longLocation=longNearFib,shortLocation=shortNearFib;
-  // 1D is a risk/sizing modifier, not an ENTRY_1 veto. The 4H turn + Fib location decides direction.
-  const longEntry1=longMomentum&&longLocation&&!longExhausted,shortEntry1=shortMomentum&&shortLocation&&!shortExhausted;
+
+  // ENTRY_1 is deliberately early, but it must have ONE piece of real 4H
+  // directional evidence in addition to location + StochRSI timing.
+  // This restores the useful V28 behaviour without stacking five separate gates.
+  // 1D remains context/risk sizing only — it never creates the trade direction.
+  const entryLast=closed.at(-1)!;
+  const entryPrior=closed.at(-2)??entryLast;
+  const closedE8=ema(closes,TF_FAST);
+  const closedE8Now=closedE8.at(-1)??entryLast.close;
+  const closedE8Prev=closedE8.at(-2)??entryPrior.close;
+  const recentLow=Math.min(...closed.slice(-13,-1).map(x=>x.low));
+  const recentHigh=Math.max(...closed.slice(-13,-1).map(x=>x.high));
+  const higherLow=entryLast.low>recentLow;
+  const lowerHigh=entryLast.high<recentHigh;
+  const reclaim8Long=entryLast.close>=closedE8Now&&entryPrior.close<closedE8Prev;
+  const reclaim8Short=entryLast.close<=closedE8Now&&entryPrior.close>closedE8Prev;
+  const priorHighBreak=entryLast.close>Math.max(...closed.slice(-4,-1).map(x=>x.high));
+  const priorLowBreak=entryLast.close<Math.min(...closed.slice(-4,-1).map(x=>x.low));
+
+  // A single confirmation is enough. This keeps ENTRY_1 responsive:
+  // LONG  = bullish 5/13 state/turn OR bullish MACD shift OR bullish structure
+  //         OR a genuine reclaim/break after a higher-low.
+  // SHORT = exact mirror.
+  const long4HConfirmation=
+    fourH.direction==="BULLISH" ||
+    (fourH.turning&&fourH.direction==="BULLISH") ||
+    macd.bullishShift ||
+    structure.shiftTo==="LONG" ||
+    (higherLow&&(reclaim8Long||priorHighBreak));
+  const short4HConfirmation=
+    fourH.direction==="BEARISH" ||
+    (fourH.turning&&fourH.direction==="BEARISH") ||
+    macd.bearishShift ||
+    structure.shiftTo==="SHORT" ||
+    (lowerHigh&&(reclaim8Short||priorLowBreak));
+
+  const longEntry1=longMomentum&&longLocation&&long4HConfirmation&&!longExhausted;
+  const shortEntry1=shortMomentum&&shortLocation&&short4HConfirmation&&!shortExhausted;
 
   debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir}`);
   debug.push(`[4H] ${pair} | 5/13=${fourH.label} | MACD=${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | Stoch=${st.k}/${st.d} prev=${prevSt.k}/${prevSt.d}`);
