@@ -94,7 +94,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const longTL=buildTrendline(closed,"LONG"),shortTL=buildTrendline(closed,"SHORT"),longFib=getFibLevels(closed,"LONG"),shortFib=getFibLevels(closed,"SHORT");logFib(debug,pair,"LONG",longFib,price);logFib(debug,pair,"SHORT",shortFib,price);
   const longDist=longTL.valid?Math.abs((price-longTL.price)/Math.max(Math.abs(longTL.price),1)):Infinity,shortDist=shortTL.valid?Math.abs((price-shortTL.price)/Math.max(Math.abs(shortTL.price),1)):Infinity;
   const longBuffer=longTL.valid?Math.max(Math.abs(longTL.price)*BREAKOUT_PCT,av*.35):Infinity,shortBuffer=shortTL.valid?Math.max(Math.abs(shortTL.price)*BREAKOUT_PCT,av*.35):Infinity;
-  const longNear=longTL.valid&&!longTL.stale&&longDist<=ENTRY1_LIVE_ZONE_PCT,shortNear=shortTL.valid&&!shortTL.stale&&shortDist<=ENTRY1_LIVE_ZONE_PCT;
+  const fibNear=(f:FibLevels|null)=>{if(!f)return null;const levels=[["0.382",f.fib382],["0.500",f.fib50],["0.618",f.fib618]] as const;return levels.reduce((a,b)=>Math.abs(price-b[1])<Math.abs(price-a[1])?b:a);};
+  const longFibNearest=fibNear(longFib),shortFibNearest=fibNear(shortFib);
+  const longFibDist=longFibNearest?Math.abs((price-longFibNearest[1])/Math.max(Math.abs(longFibNearest[1]),1)):Infinity;
+  const shortFibDist=shortFibNearest?Math.abs((price-shortFibNearest[1])/Math.max(Math.abs(shortFibNearest[1]),1)):Infinity;
+  const longNearFib=!!longFibNearest&&longFibDist<=ENTRY1_FIB_ZONE_PCT,shortNearFib=!!shortFibNearest&&shortFibDist<=ENTRY1_FIB_ZONE_PCT;
   const longPreBreak=longTL.valid&&price<=longTL.price+longBuffer,shortPreBreak=shortTL.valid&&price>=shortTL.price-shortBuffer;
   const longMomentum=st.k>st.d&&st.k>prevSt.k,shortMomentum=st.k<st.d&&st.k<prevSt.k;
   const longExhausted=r>=ENTRY1_LONG_EXHAUSTION_RSI,shortExhausted=r<=ENTRY1_SHORT_EXHAUSTION_RSI;
@@ -114,7 +118,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     entry1TriggersLong:longMomentum?1:0,entry1TriggersShort:shortMomentum?1:0,entry1StructuralLocation:longLocation?"LONG":shortLocation?"SHORT":"NONE",
     entry1NearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",entry1LiveNearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",
     entry1LiveDistPct:longEntry1?longDist*100:shortEntry1?shortDist*100:null,entry1PreBreak:longPreBreak||shortPreBreak,
-    entry1ExecutionAllowed:longEntry1||shortEntry1,entry1MaxEntry:longTL.valid?round(longTL.price*(1+ENTRY1_LIVE_ZONE_PCT)):shortTL.valid?round(shortTL.price*(1-ENTRY1_LIVE_ZONE_PCT)):null,
+    entry1ExecutionAllowed:longEntry1||shortEntry1,entry1MaxEntry:longNearFib&&longFibNearest?round(longFibNearest[1]*(1+ENTRY1_FIB_ZONE_PCT)):shortNearFib&&shortFibNearest?round(shortFibNearest[1]*(1-ENTRY1_FIB_ZONE_PCT)):null,
     entry1Chase:false,entry1Exhaustion:longExhausted?"LONG":shortExhausted?"SHORT":"NONE",entry1DailyConflict:"NONE",entry1ClosedRsi:r,
     entry1Grade:longEntry1||shortEntry1?"A":null,entry1TriggerThreshold:1,entry1ExhaustionThreshold:dDir==="BULL"?ENTRY1_LONG_EXHAUSTION_RSI:ENTRY1_SHORT_EXHAUSTION_RSI
   });
@@ -178,7 +182,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const breakoutRecord:BreakoutRecord|undefined=type==="ENTRY_2"?(breakoutLong?{direction:"LONG",price:round(longTL.price),timestamp:now,candleIndex:closedIndex}:breakoutShort?{direction:"SHORT",price:round(shortTL.price),timestamp:now,candleIndex:closedIndex}:lastBreakout):lastBreakout;
   const location=type==="ENTRY_1"?"EARLY_STRUCTURAL":breakoutLong||breakoutShort?"BREAKOUT":type==="ADD"?"MOMENTUM_PULLBACK":"BREAKOUT_RETEST";
   const trigger=type==="ENTRY_1"?"4H_STOCHRSI_TURN":breakoutLong||breakoutShort?"4H_TRENDLINE_BREAKOUT":type==="ADD"?"4H_FRESH_MOMENTUM_TURN":"4H_BREAKOUT_RETEST";
-  const signal:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),tp3:round(tp3),confidence:type==="ENTRY_1"?70:type==="ENTRY_2"?80:85,rr:1.5,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(Math.abs(tp3-entry)/Math.max(entry,1)*1000)/10,reason:`${dir} ${type} | ${reason} | ${trendAlignment}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} ${strength(daily(candles4h),dir)}`,location,trigger,context:{
+  const signal:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),confidence:type==="ENTRY_1"?70:type==="ENTRY_2"?80:85,rr:1.5,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(tp2Move*1000)/10,reason:`${dir} ${type} | ${reason} | ${trendAlignment}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} ${strength(daily(candles4h),dir)}`,location,trigger,context:{
     marketPhase:type==="ENTRY_1"?`${dir} PROBABILITY EARLY SETUP`:type==="ENTRY_2"?`${dir} CONFIRMED ENTRY_2`:`${dir} ADD NEXT WAVE`,
     structure:structureDir?`4H ${structureDir}`:"4H STRUCTURE TRANSITION",momentum:`RSI ${r} | Stoch ${st.k}/${st.d} | MACD hist ${round(macd.histogram)}`,
     pullback:type==="ADD"?"fresh_4h_momentum_turn":type==="ENTRY_2"?"breakout_or_retest":"pre_break_structural_setup",
