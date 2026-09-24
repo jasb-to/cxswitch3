@@ -4,8 +4,8 @@
 // ENTRY_2 = confirmed breakout / retest
 // ADD = next wave after pullback/retest with thesis intact
 // Exhaustion = ENTRY_1 quality veto, not a direction generator
-// Fib = diagnostic for entries; used as ADD location confirmation only
-// Management = closed-4H wave reversal + TP1/TP2/TP3
+// Fib = primary ENTRY_1 location; trendline remains for ENTRY_2
+// Management = closed-4H wave reversal + realistic TP1/TP2
 
 import { get4HEmaDiagnostic } from "./ema-diagnostic";
 import { detectStructureShift } from "./structure-shift";
@@ -33,7 +33,7 @@ type Trendline={valid:boolean;slope:number;intercept:number;price:number;pivots:
 type FibLevels={direction:Direction;swingLow:number;swingHigh:number;fib382:number;fib50:number;fib618:number;lowIndex:number;highIndex:number};
 
 const DAILY_FAST=5, DAILY_SLOW=13, TF_FAST=8, TF_SLOW=21;
-const BREAKOUT_PCT=0.005, RETEST_PCT=0.012, ENTRY1_LIVE_ZONE_PCT=0.025;
+const BREAKOUT_PCT=0.005, RETEST_PCT=0.012, ENTRY1_FIB_ZONE_PCT=0.03;
 const STALE_TL_PCT=0.04, STALE_TL_CANDLES=12, FRESH_LOOKBACK=30, BREAKOUT_EXPIRY_CANDLES=12;
 const ENTRY1_LONG_EXHAUSTION_RSI=80, ENTRY1_SHORT_EXHAUSTION_RSI=20;
 const LEVERAGE=20, MMR=0.01, LIQ_BUFFER=0.015, MIN_RR=1.25;
@@ -98,21 +98,21 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const longPreBreak=longTL.valid&&price<=longTL.price+longBuffer,shortPreBreak=shortTL.valid&&price>=shortTL.price-shortBuffer;
   const longMomentum=st.k>st.d&&st.k>prevSt.k,shortMomentum=st.k<st.d&&st.k<prevSt.k;
   const longExhausted=r>=ENTRY1_LONG_EXHAUSTION_RSI,shortExhausted=r<=ENTRY1_SHORT_EXHAUSTION_RSI;
-  const longLocation=longNear&&longPreBreak&&!longTL.invalidated,shortLocation=shortNear&&shortPreBreak&&!shortTL.invalidated;
+  const longLocation=longNearFib,shortLocation=shortNearFib;
   const longEntry1=dDir==="BULL"&&longMomentum&&longLocation&&!longExhausted,shortEntry1=dDir==="BEAR"&&shortMomentum&&shortLocation&&!shortExhausted;
 
   debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir}`);
   debug.push(`[4H] ${pair} | 5/13=${fourH.label} | MACD=${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | Stoch=${st.k}/${st.d} prev=${prevSt.k}/${prevSt.d}`);
   debug.push(`[TL] ${pair} | LONG=${longTL.valid?longTL.price.toFixed(2):"—"} dist=${isFinite(longDist)?(longDist*100).toFixed(2)+"%":"—"} | SHORT=${shortTL.valid?shortTL.price.toFixed(2):"—"} dist=${isFinite(shortDist)?(shortDist*100).toFixed(2)+"%":"—"}`);
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | closedRSI=${r} | longBlock=${longExhausted?"YES":"NO"} | shortBlock=${shortExhausted?"YES":"NO"}`);
-  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | Stoch=${longMomentum?"LONG":shortMomentum?"SHORT":"NONE"} | TLApproach=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
+  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | Stoch=${longMomentum?"LONG":shortMomentum?"SHORT":"NONE"} | FibApproach=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
 
   const fallbackDir:Direction=dDir==="BEAR"?"SHORT":"LONG";
   const baseMarket=()=>snapshot(pair,candles4h,structureDir||fallbackDir,structureDir==="LONG"?longTL:structureDir==="SHORT"?shortTL:longTL,price,dailyLive);
   const market=(m:any)=>Object.assign(m||baseMarket(),{
     entry1Direction:longEntry1?"LONG":shortEntry1?"SHORT":"NEUTRAL",entry1Decision:longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE",
     entry1TriggersLong:longMomentum?1:0,entry1TriggersShort:shortMomentum?1:0,entry1StructuralLocation:longLocation?"LONG":shortLocation?"SHORT":"NONE",
-    entry1NearTL:longNear&&!shortNear?"LONG":shortNear&&!longNear?"SHORT":"NONE",entry1LiveNearTL:longNear&&!shortNear?"LONG":shortNear&&!longNear?"SHORT":"NONE",
+    entry1NearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",entry1LiveNearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",
     entry1LiveDistPct:longEntry1?longDist*100:shortEntry1?shortDist*100:null,entry1PreBreak:longPreBreak||shortPreBreak,
     entry1ExecutionAllowed:longEntry1||shortEntry1,entry1MaxEntry:longTL.valid?round(longTL.price*(1+ENTRY1_LIVE_ZONE_PCT)):shortTL.valid?round(shortTL.price*(1-ENTRY1_LIVE_ZONE_PCT)):null,
     entry1Chase:false,entry1Exhaustion:longExhausted?"LONG":shortExhausted?"SHORT":"NONE",entry1DailyConflict:"NONE",entry1ClosedRsi:r,
@@ -159,14 +159,14 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   if(!dir||!type){debug.push(`[ENTRY_1 WAIT] ${pair} | ${longExhausted||shortExhausted?"exhaustion veto":dDir==="BULL"&&!longMomentum?"waiting for bullish 4H StochRSI turn":dDir==="BEAR"&&!shortMomentum?"waiting for bearish 4H StochRSI turn":dDir==="BULL"&&!longLocation?"waiting for price to approach bullish structural area":dDir==="BEAR"&&!shortLocation?"waiting for price to approach bearish structural area":"waiting for next valid setup"}`);return{market:market(baseMarket()),debug};}
   if(opposite(pair,dir,activeTrades)){debug.push(`[SIGNAL BLOCK] ${pair} ${dir} | opposite position active`);return{market:market(baseMarket()),debug};}
   const tl=dir==="LONG"?longTL:shortTL;
-  if(!tl.valid&&type!=="ADD"){debug.push(`[SIGNAL BLOCK] ${pair} ${dir} | no valid structural trendline`);return{market:market(baseMarket()),debug};}
+  if(!tl.valid&&type==="ENTRY_2"){debug.push(`[SIGNAL BLOCK] ${pair} ${dir} | no valid structural trendline`);return{market:market(baseMarket()),debug};}
   const reference=tl.valid?tl.price:price,distance=Math.abs((price-reference)/Math.max(Math.abs(reference),1));
-  if(type==="ENTRY_1"&&distance>ENTRY1_LIVE_ZONE_PCT){debug.push(`[ENTRY_1 EXECUTION GUARD] ${pair} ${dir} | ${(distance*100).toFixed(2)}% from structural reference; wait for retest`);return{market:market(baseMarket()),debug};}
+  // ENTRY_1 no longer has a trendline-distance execution veto. Fib proximity is the location test.
 
   const entry=price,structuralStop=dir==="LONG"?Math.min(...closed.slice(-10).map(x=>x.low),entry-av*2):Math.max(...closed.slice(-10).map(x=>x.high),entry+av*2);
   const liquidation=liq(entry,dir),safe=dir==="LONG"?liquidation*(1+LIQ_BUFFER):liquidation*(1-LIQ_BUFFER),stop=dir==="LONG"?Math.max(structuralStop,safe):Math.min(structuralStop,safe);
   const structuralRisk=Math.abs(entry-structuralStop);if(!structuralRisk)return{debug};const risk=Math.abs(entry-stop);if(!risk)return{debug};
-  const tp1=dir==="LONG"?entry+structuralRisk:entry-structuralRisk,tp2=dir==="LONG"?entry+structuralRisk*1.5:entry-structuralRisk*1.5,tp3=dir==="LONG"?entry+structuralRisk*2:entry-structuralRisk*2,target=tp2;
+  const fib=dir==="LONG"?longFib:shortFib;\n  const forwardLevels=dir==="LONG"?[fib?.fib50,fib?.fib382,fib?.swingHigh].filter((x):x is number=>Number.isFinite(x)&&x>entry):[fib?.fib50,fib?.fib382,fib?.swingLow].filter((x):x is number=>Number.isFinite(x)&&x<entry).sort((x,y)=>dir==="LONG"?x-y:y-x);\n  const recentResistance=Math.max(...closed.slice(-12).map(x=>x.high));\n  const recentSupport=Math.min(...closed.slice(-12).map(x=>x.low));\n  const tp1=forwardLevels[0]??(dir==="LONG"?recentResistance:recentSupport);\n  const tp2=forwardLevels[1]??(dir==="LONG"?Math.max(recentResistance,tp1):Math.min(recentSupport,tp1));\n  const target=tp2;\n  const tp1Move=Math.abs(tp1-entry)/Math.max(entry,1),tp2Move=Math.abs(tp2-entry)/Math.max(entry,1);
   const dailyAligned=(dDir==="BULL"&&dir==="LONG")||(dDir==="BEAR"&&dir==="SHORT"),riskMultiplier=dailyAligned?1:0.5,trendAlignment=dailyAligned?"WITH_1D":"AGAINST_1D";
   const breakoutRecord:BreakoutRecord|undefined=type==="ENTRY_2"?(breakoutLong?{direction:"LONG",price:round(longTL.price),timestamp:now,candleIndex:closedIndex}:breakoutShort?{direction:"SHORT",price:round(shortTL.price),timestamp:now,candleIndex:closedIndex}:lastBreakout):lastBreakout;
   const location=type==="ENTRY_1"?"EARLY_STRUCTURAL":breakoutLong||breakoutShort?"BREAKOUT":type==="ADD"?"MOMENTUM_PULLBACK":"BREAKOUT_RETEST";
@@ -177,13 +177,13 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     pullback:type==="ADD"?"fresh_4h_momentum_turn":type==="ENTRY_2"?"breakout_or_retest":"pre_break_structural_setup",
     fourH513:fourH,daily513:getDaily513Diagnostic(candles4h),dailyLive:dailyLive||null,macd4h:macd,trendAlignment,sizeMultiplier:riskMultiplier,
     risk:{baseRisk:round(risk),structuralRisk:round(structuralRisk),positionSize:round(risk*riskMultiplier),trendAlignment,sizeMultiplier:riskMultiplier,estimatedLiquidation:round(liquidation),safeBoundary:round(safe),leverage:LEVERAGE},
-    entryGuard:{referenceTrendline:round(reference),executionDistancePct:round(distance*100),maxDistancePct:ENTRY1_LIVE_ZONE_PCT*100,maxEntry:dir==="LONG"?round(reference*(1+ENTRY1_LIVE_ZONE_PCT)):round(reference*(1-ENTRY1_LIVE_ZONE_PCT))},
+    entryGuard:{referenceFib:dir==="LONG"?longFibNearest:shortFibNearest,executionDistancePct:round((dir==="LONG"?longFibDist:shortFibDist)*100),maxDistancePct:ENTRY1_FIB_ZONE_PCT*100},
     exhaustion:{closedRsi:r,longBlocked:longExhausted,shortBlocked:shortExhausted,longThreshold:ENTRY1_LONG_EXHAUSTION_RSI,shortThreshold:ENTRY1_SHORT_EXHAUSTION_RSI},
     breakoutRecord:breakoutRecord?{direction:breakoutRecord.direction,price:round(breakoutRecord.price),timestamp:breakoutRecord.timestamp,candleIndex:breakoutRecord.candleIndex}:undefined,
-    stages:{tp1:round(tp1),tp2:round(tp2),tp3:round(tp3),tp1R:1,tp2R:1.5,tp3R:2}
+    stages:{tp1:round(tp1),tp2:round(tp2),tp1MovePct:round(tp1Move*100),tp2MovePct:round(tp2Move*100)}
   }};
   debug.push(`[RISK] ${pair} ${dir} | structuralSL=${round(structuralStop)} | liquidation=${round(liquidation)} | safeBoundary=${round(safe)} | finalSL=${round(stop)}`);
-  debug.push(`[SIGNAL] ${pair} — ${type} ${dir} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.tp2} | TP3 ${signal.tp3} | ${trendAlignment} | size x${riskMultiplier}`);
+  debug.push(`[SIGNAL] ${pair} — ${type} ${dir} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} (${(tp1Move*100).toFixed(2)}%) | TP2 ${signal.tp2} (${(tp2Move*100).toFixed(2)}%) | ${trendAlignment} | size x${riskMultiplier}`);
   return{signal,signals:[signal],market:market(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug};
 }
 
@@ -289,7 +289,7 @@ export interface ValidityCheck{valid:boolean;reason:string;exited:boolean;state?
 export function isSignalStillValid(s:Signal,p:number,now=Date.now()):ValidityCheck{if(now-s.timestamp>(s.type==="ADD"?4:24)*60*60*1000)return{valid:false,reason:"expired_ttl",exited:true,state:"STALE"};if(s.direction==="LONG"&&p<=s.stop)return{valid:false,reason:"sl_hit",exited:true,state:"INVALID"};if(s.direction==="SHORT"&&p>=s.stop)return{valid:false,reason:"sl_hit",exited:true,state:"INVALID"};return{valid:true,reason:"active",exited:false,state:"VALID"};}
 export interface HoldResult{shouldHold:boolean;reason:string;newStop?:number;scaleOut?:{level:number;size:number;label:string};}
 function waveMomentum(c:Candle[],d:Direction){const closed=c.length>1?c.slice(0,-1):c;if(closed.length<26)return{state:"NEUTRAL",confirmedReversal:false,aligned:false,weakening:false};const closes=closed.map(x=>x.close),e8=ema(closes,TF_FAST),e21=ema(closes,TF_SLOW),m=macd4h(closed),n=closed.length,c0=closes[n-1],c1=closes[n-2],e80=e8[n-1]!,e81=e8[n-2]!,e210=e21[n-1]!,e211=e21[n-2]!,r=rsi(closes);const longReversal=d==="LONG"&&c0<e80&&c1<e81&&e80<e210&&e81<=e211&&m.bearishShift,shortReversal=d==="SHORT"&&c0>e80&&c1>e81&&e80>e210&&e81>=e211&&m.bullishShift,confirmedReversal=longReversal||shortReversal,aligned=d==="LONG"?c0>e80&&e80>e210&&r>=50:c0<e80&&e80<e210&&r<=50,weakening=d==="LONG"?m.falling||c0<e80:m.rising||c0>e80;return{state:confirmedReversal?"REVERSING":aligned?"WAVE":"WEAKENING",confirmedReversal,aligned,weakening};}
-export function shouldHold(s:Signal,c:Candle[],p:number):HoldResult{const momentum=waveMomentum(c,s.direction);if(momentum.confirmedReversal)return{shouldHold:false,reason:"momentum_confirmed_4h_reversal"};const risk=Math.abs(s.entry-s.stop);if(risk){const rr=s.direction==="LONG"?(p-s.entry)/risk:(s.entry-p)/risk;if(rr>=2){const a=atr(c),e21=ema(c.map(x=>x.close),TF_SLOW).at(-1)??p,trail=s.direction==="LONG"?e21-a*1.5:e21+a*1.5,locked=s.direction==="LONG"?s.entry+risk:s.entry-risk,newStop=s.direction==="LONG"?Math.max(locked,trail):Math.min(locked,trail);return{shouldHold:true,reason:momentum.state==="WAVE"?"tp3_runner_trailing_momentum":"tp3_runner_trailing",newStop,scaleOut:{level:s.tp3??s.entry,size:.2,label:"TP3_RUNNER_20"}};}if(rr>=1.5)return{shouldHold:true,reason:momentum.state==="WAVE"?"tp2_hit_lock_1r_runner_momentum":"tp2_hit_lock_1r_runner",newStop:s.direction==="LONG"?s.entry+risk:s.entry-risk,scaleOut:{level:s.tp2??s.entry,size:.4,label:"TP2"}};if(rr>=1)return{shouldHold:true,reason:momentum.state==="WAVE"?"tp1_hit_scale_out_40_momentum":"tp1_hit_scale_out_40",newStop:s.entry,scaleOut:{level:s.tp1??s.entry,size:.4,label:"TP1"}};}// Active 4H positions do not expire because the entry alert is old.
+export function shouldHold(s:Signal,c:Candle[],p:number):HoldResult{const momentum=waveMomentum(c,s.direction);if(s.direction==="LONG"&&p<=s.stop)return{shouldHold:false,reason:"sl_hit"};if(s.direction==="SHORT"&&p>=s.stop)return{shouldHold:false,reason:"sl_hit"};if(s.tp2!==undefined&&((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2)))return{shouldHold:false,reason:"tp2_hit",scaleOut:{level:s.tp2,size:1,label:"TP2_FINAL"}};if(s.tp1!==undefined&&((s.direction==="LONG"&&p>=s.tp1)||(s.direction==="SHORT"&&p<=s.tp1)))return{shouldHold:true,reason:momentum.state==="WAVE"?"tp1_hit_protect_momentum":"tp1_hit_protect",newStop:s.entry,scaleOut:{level:s.tp1,size:.5,label:"TP1_50"}};if(momentum.confirmedReversal)return{shouldHold:false,reason:"momentum_confirmed_4h_reversal"};// Active 4H positions do not expire because the entry alert is old.
   // A position remains live until TP/SL or a confirmed 4H reversal; signal TTL is
   // only relevant to unexecuted/stale alerts, not an already-open position.
   if(s.direction==="LONG"&&p<=s.stop)return{shouldHold:false,reason:"sl_hit"};
