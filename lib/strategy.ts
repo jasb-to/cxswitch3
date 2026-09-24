@@ -166,7 +166,14 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const entry=price,structuralStop=dir==="LONG"?Math.min(...closed.slice(-10).map(x=>x.low),entry-av*2):Math.max(...closed.slice(-10).map(x=>x.high),entry+av*2);
   const liquidation=liq(entry,dir),safe=dir==="LONG"?liquidation*(1+LIQ_BUFFER):liquidation*(1-LIQ_BUFFER),stop=dir==="LONG"?Math.max(structuralStop,safe):Math.min(structuralStop,safe);
   const structuralRisk=Math.abs(entry-structuralStop);if(!structuralRisk)return{debug};const risk=Math.abs(entry-stop);if(!risk)return{debug};
-  const fib=dir==="LONG"?longFib:shortFib;\n  const forwardLevels=dir==="LONG"?[fib?.fib50,fib?.fib382,fib?.swingHigh].filter((x):x is number=>Number.isFinite(x)&&x>entry):[fib?.fib50,fib?.fib382,fib?.swingLow].filter((x):x is number=>Number.isFinite(x)&&x<entry).sort((x,y)=>dir==="LONG"?x-y:y-x);\n  const recentResistance=Math.max(...closed.slice(-12).map(x=>x.high));\n  const recentSupport=Math.min(...closed.slice(-12).map(x=>x.low));\n  const tp1=forwardLevels[0]??(dir==="LONG"?recentResistance:recentSupport);\n  const tp2=forwardLevels[1]??(dir==="LONG"?Math.max(recentResistance,tp1):Math.min(recentSupport,tp1));\n  const target=tp2;\n  const tp1Move=Math.abs(tp1-entry)/Math.max(entry,1),tp2Move=Math.abs(tp2-entry)/Math.max(entry,1);
+  const fib=dir==="LONG"?longFib:shortFib;
+  const forwardLevels=dir==="LONG"?[fib?.fib50,fib?.fib382,fib?.swingHigh].filter((x):x is number=>Number.isFinite(x)&&x>entry):[fib?.fib50,fib?.fib382,fib?.swingLow].filter((x):x is number=>Number.isFinite(x)&&x<entry).sort((x,y)=>dir==="LONG"?x-y:y-x);
+  const recentResistance=Math.max(...closed.slice(-12).map(x=>x.high));
+  const recentSupport=Math.min(...closed.slice(-12).map(x=>x.low));
+  const tp1=forwardLevels[0]??(dir==="LONG"?recentResistance:recentSupport);
+  const tp2=forwardLevels[1]??(dir==="LONG"?Math.max(recentResistance,tp1):Math.min(recentSupport,tp1));
+  const target=tp2;
+  const tp1Move=Math.abs(tp1-entry)/Math.max(entry,1),tp2Move=Math.abs(tp2-entry)/Math.max(entry,1);
   const dailyAligned=(dDir==="BULL"&&dir==="LONG")||(dDir==="BEAR"&&dir==="SHORT"),riskMultiplier=dailyAligned?1:0.5,trendAlignment=dailyAligned?"WITH_1D":"AGAINST_1D";
   const breakoutRecord:BreakoutRecord|undefined=type==="ENTRY_2"?(breakoutLong?{direction:"LONG",price:round(longTL.price),timestamp:now,candleIndex:closedIndex}:breakoutShort?{direction:"SHORT",price:round(shortTL.price),timestamp:now,candleIndex:closedIndex}:lastBreakout):lastBreakout;
   const location=type==="ENTRY_1"?"EARLY_STRUCTURAL":breakoutLong||breakoutShort?"BREAKOUT":type==="ADD"?"MOMENTUM_PULLBACK":"BREAKOUT_RETEST";
