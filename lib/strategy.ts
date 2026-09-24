@@ -20,7 +20,7 @@ export interface Signal {
   trend?:string; location?:string; trigger?:string; context?:any;
 }
 export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; }
-export const CURRENT_SIGNAL_VERSION=5;
+export const CURRENT_SIGNAL_VERSION=6;
 
 type DailyLiveContext={
   state?:string; candidateState?:string; candidateStreak?:number;
@@ -138,22 +138,25 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const priorHighBreak=entryLast.close>Math.max(...closed.slice(-4,-1).map(x=>x.high));
   const priorLowBreak=entryLast.close<Math.min(...closed.slice(-4,-1).map(x=>x.low));
 
-  // A single confirmation is enough. This keeps ENTRY_1 responsive:
-  // LONG  = bullish 5/13 state/turn OR bullish MACD shift OR bullish structure
-  //         OR a genuine reclaim/break after a higher-low.
-  // SHORT = exact mirror.
+  // ENTRY_1 stays early, but MACD improvement is supporting evidence — not
+  // permission by itself. If 4H 5/13 is still on the opposite side, require
+  // an actual structural transition/reclaim/break. This prevents the recent
+  // SOL/HYPE-style "MACD improving = long" entries without over-gating normal
+  // bullish 4H turns.
+  const longStructuralConfirmation=
+    structure.shiftTo==="LONG" ||
+    (higherLow&&(reclaim8Long||priorHighBreak));
+  const shortStructuralConfirmation=
+    structure.shiftTo==="SHORT" ||
+    (lowerHigh&&(reclaim8Short||priorLowBreak));
   const long4HConfirmation=
     fourH.direction==="BULLISH" ||
     (fourH.turning&&fourH.direction==="BULLISH") ||
-    macd.bullishShift ||
-    structure.shiftTo==="LONG" ||
-    (higherLow&&(reclaim8Long||priorHighBreak));
+    longStructuralConfirmation;
   const short4HConfirmation=
     fourH.direction==="BEARISH" ||
     (fourH.turning&&fourH.direction==="BEARISH") ||
-    macd.bearishShift ||
-    structure.shiftTo==="SHORT" ||
-    (lowerHigh&&(reclaim8Short||priorLowBreak));
+    shortStructuralConfirmation;
 
   const longEntry1=longMomentum&&longLocation&&long4HConfirmation&&!longExhausted;
   const shortEntry1=shortMomentum&&shortLocation&&short4HConfirmation&&!shortExhausted;
@@ -242,6 +245,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     fourH513:fourH,daily513:getDaily513Diagnostic(candles4h),dailyLive:dailyLive||null,macd4h:macd,trendAlignment,sizeMultiplier:riskMultiplier,
     risk:{baseRisk:round(risk),structuralRisk:round(structuralRisk),positionSize:round(risk*riskMultiplier),trendAlignment,sizeMultiplier:riskMultiplier,estimatedLiquidation:round(liquidation),safeBoundary:round(safe),leverage:LEVERAGE},
     entryGuard:{referenceFib:dir==="LONG"?longFibNearest:shortFibNearest,referenceTrendline:dir==="LONG"?(longTL.valid?round(longTL.price):null):(shortTL.valid?round(shortTL.price):null),trendlineDistancePct:round((dir==="LONG"?longDist:shortDist)*100),executionDistancePct:round((dir==="LONG"?longFibDist:shortFibDist)*100),maxEntry:dir==="LONG"?(longFibNearest?round(longFibNearest[1]):null):(shortFibNearest?round(shortFibNearest[1]):null),maxDistancePct:ENTRY1_FIB_ZONE_PCT*100},
+    entry1CandleTimestamp:entryLast.timestamp,entry1ClosedCandleIndex:closed.length-1,
     exhaustion:{closedRsi:r,longBlocked:longExhausted,shortBlocked:shortExhausted,longReason:longExhaustion.reason,shortReason:shortExhaustion.reason,longThreshold:ENTRY1_LONG_EXHAUSTION_RSI,shortThreshold:ENTRY1_SHORT_EXHAUSTION_RSI,stochK:st.k,stochD:st.d,adx:a,trendlineDistanceLongPct:round(longDist*100),trendlineDistanceShortPct:round(shortDist*100)},
     breakoutRecord:breakoutRecord?{direction:breakoutRecord.direction,price:round(breakoutRecord.price),timestamp:breakoutRecord.timestamp,candleIndex:breakoutRecord.candleIndex}:undefined,
     stages:{tp1:round(tp1),tp2:round(tp2),tp1MovePct:round(tp1Move*100),tp2MovePct:round(tp2Move*100)}
