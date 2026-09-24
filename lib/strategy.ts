@@ -99,7 +99,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const longMomentum=st.k>st.d&&st.k>prevSt.k,shortMomentum=st.k<st.d&&st.k<prevSt.k;
   const longExhausted=r>=ENTRY1_LONG_EXHAUSTION_RSI,shortExhausted=r<=ENTRY1_SHORT_EXHAUSTION_RSI;
   const longLocation=longNearFib,shortLocation=shortNearFib;
-  const longEntry1=dDir==="BULL"&&longMomentum&&longLocation&&!longExhausted,shortEntry1=dDir==="BEAR"&&shortMomentum&&shortLocation&&!shortExhausted;
+  // 1D is a risk/sizing modifier, not an ENTRY_1 veto. The 4H turn + Fib location decides direction.\n  const longEntry1=longMomentum&&longLocation&&!longExhausted,shortEntry1=shortMomentum&&shortLocation&&!shortExhausted;
 
   debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir}`);
   debug.push(`[4H] ${pair} | 5/13=${fourH.label} | MACD=${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | Stoch=${st.k}/${st.d} prev=${prevSt.k}/${prevSt.d}`);
