@@ -119,7 +119,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const longExhaustion=checkEntry1Exhaustion("LONG",r,st,longDist,a),shortExhaustion=checkEntry1Exhaustion("SHORT",r,st,shortDist,a);
   const longExhausted=longExhaustion.blocked,shortExhausted=shortExhaustion.blocked;
   const longLocation=longNearFib,shortLocation=shortNearFib;
-  // 1D is a risk/sizing modifier, not an ENTRY_1 veto. The 4H turn + Fib location decides direction.\n  const longEntry1=longMomentum&&longLocation&&!longExhausted,shortEntry1=shortMomentum&&shortLocation&&!shortExhausted;
+  // 1D is a risk/sizing modifier, not an ENTRY_1 veto. The 4H turn + Fib location decides direction.
+  const longEntry1=longMomentum&&longLocation&&!longExhausted,shortEntry1=shortMomentum&&shortLocation&&!shortExhausted;
 
   debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir}`);
   debug.push(`[4H] ${pair} | 5/13=${fourH.label} | MACD=${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | Stoch=${st.k}/${st.d} prev=${prevSt.k}/${prevSt.d}`);
