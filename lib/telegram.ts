@@ -71,7 +71,7 @@ export async function sendAlert(signal:any){
     signal.reason||"",
     "",
     `Time: ${signal.updatedAt||new Date().toISOString()}`
-  ].filter((x,i)=>x!==""||i===1).join("\n");
+  ].join("\n");
 
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines})});
   if(!response.ok){
