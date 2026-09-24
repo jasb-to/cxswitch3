@@ -9,7 +9,7 @@ const formatPrice=(value:any)=>{
 
 export async function sendAlert(signal:any){
   const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
-  if(!token||!chatId){console.log("[TELEGRAM DISABLED]",signal.symbol,signal.state);return;}
+  if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
 
   const type=signal.signalType||signal.state;
   const emoji=signal.signalEmoji||(type==="ENTRY_1"?"🟢":type==="ENTRY_2"?"🟠":type==="ENTRY_0"?"🟡":type==="ADD"?"🔵":type==="EXIT_0"?"🔴":type==="EXIT"?"🔴":"📊");
