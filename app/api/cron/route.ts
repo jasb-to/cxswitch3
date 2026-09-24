@@ -25,8 +25,10 @@ function toSignalLike(t:any):Signal{return{...t,scale:t.type,adx:t.adx??0,rsi:t.
 function telegramAlertKey(signal:Signal):string{
   const record=signal.context?.breakoutRecord;
   if(signal.type==="ENTRY_1"||signal.type==="ENTRY_2"){
-    if(record) return `${signal.pair}:${signal.direction}:${signal.type}:${record.candleIndex}:${record.price}`;
-    return `${signal.pair}:${signal.direction}:${signal.type}:${signal.entry}`;
+    if(record) return `${signal.pair}:${signal.direction}:${signal.type}:candle:${record.candleIndex}:${record.price}`;
+    const candleTs=signal.context?.entry1CandleTimestamp;
+    if(candleTs) return `${signal.pair}:${signal.direction}:${signal.type}:candleTs:${candleTs}`;
+    return `${signal.pair}:${signal.direction}:${signal.type}:entry:${signal.entry}`;
   }
   return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}`;
 }
@@ -102,13 +104,19 @@ export async function GET(request:Request){
   if(signal.type==="ADD"&&sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ADD deduped: same entry condition was alerted recently; waiting for a new retest/price`);continue;}
   const cooldowns=await getCooldowns(),cd=cooldowns[`${pair}_${signal.direction}`];if(cd&&Date.now()<cd){console.log(`[PAIR] ${pair} — COOLDOWN until ${new Date(cd).toISOString()}`);continue;}
   const alertKey=telegramAlertKey(signal);const claimed=await claimTelegramAlert(alertKey);
-  if(!claimed) console.log(`[PAIR] ${pair} — Telegram deduped: ${signal.type} lifecycle event already alerted (${alertKey}); state/history will still be created if this is a new signal`);
+  // A live position is never created unless its alert was successfully claimed.
+  // This prevents state from showing a trade the user was never told about.
+  if(!claimed){
+    console.log(`[PAIR] ${pair} — ${signal.type} blocked: lifecycle alert already claimed (${alertKey}); no history/position created`);
+    alerts.push({pair,direction:signal.direction,type:signal.type,status:"telegram_deduped_blocked"});
+    continue;
+  }
   const emoji=signal.type==="ENTRY_1"?"🟢":signal.type==="ENTRY_2"?"🟠":"🔵";
   try{
     if(claimed) await sendAlert({symbol:signal.pair,state:signal.type==="ADD"?"ADD":"ENTRY",price:round(signal.entry),bias:signal.direction,stopLoss:round(signal.stop),takeProfit:round(signal.tp2??signal.target),takeProfit1:signal.tp1,takeProfit2:signal.tp2,takeProfit3:signal.tp3,rr:signal.rr,expectedMove:signal.expectedMove,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,trend:signal.trend,location:signal.location,trigger:signal.trigger,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:emoji,context:signal.context,marketPhase:signal.context?.marketPhase,structure:signal.context?.structure,momentum:signal.context?.momentum,pullback:signal.context?.pullback,fourH513Label:ema513.label});
-  }catch(e){if(claimed) await releaseTelegramAlert(alertKey);throw e;}
+  }catch(e){await releaseTelegramAlert(alertKey);throw e;}
   if(signal.type==="ENTRY_1"&&signal.context?.breakoutRecord){await setLastBreakout(pair,signal.context.breakoutRecord);console.log(`[BREAKOUT STATE] ${pair} — recorded ${signal.context.breakoutRecord.direction}@${signal.context.breakoutRecord.price} candle=${signal.context.breakoutRecord.candleIndex}`);}
-  await appendSignalHistory(signal);newSignals.push(signal);alerts.push({pair,direction:signal.direction,type:signal.type,status:claimed?"sent":"state_created_telegram_deduped"});console.log(`[ALERT] ${pair} — ${signal.type} ${claimed?"sent":"state/history created; Telegram deduped"} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.tp2} | TP3 ${signal.tp3}`);
+  await appendSignalHistory(signal);newSignals.push(signal);alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.tp2} | TP3 ${signal.tp3}`);
   if(signal.type!=="ADD"&&!existing){await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE] ${pair} — active position created`);}
  }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}}
  // Dedicated BTC/ETH cycle-runner entry alert. It does not create a normal CX trade.
