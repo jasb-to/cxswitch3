@@ -28,31 +28,28 @@ function alertValidity(h:any,price:number,now:number,isActivePosition=false){
 
 function momentumStatus(h:any,m:any){
   if(!h||!m)return null;
-  const long=h.direction==="LONG";
-  const e=m.fourH513;
+  // The visible momentum indicator must use the SAME closed-4H management
+  // state as the trade manager. This prevents the UI saying "reversal" while
+  // management says "hold/defend" during a normal pullback.
+  const managementState=m.positionManagementState;
+  if(managementState==="EXIT")return{icon:"🔴",label:"BROKEN",detail:"Confirmed 4H reversal or structure breakdown. Exit condition is active."};
+  if(managementState==="DEFEND")return{icon:"🟠",label:"DETERIORATING",detail:"The wave is under pressure. Defend the position, but this is not yet a confirmed breakdown."};
+  if(managementState==="PROTECT")return{icon:"🟡",label:"COOLING",detail:"Healthy 4H pullback / wave cooling. Protect the trade; do not exit without confirmed reversal."};
+  if(managementState==="STAY")return{icon:"🟢",label:"HEALTHY",detail:"4H wave remains intact. Stay in trade unless a confirmed reversal develops."};
+
+  const long=h.direction==="LONG",e=m.fourH513;
   const aligned513=e?.direction===(long?"BULLISH":"BEARISH");
-  const against513=e?.direction===(long?"BEARISH":"BULLISH");
   const ema8=Number(m.ema8_4h),ema21=Number(m.ema21_4h);
   const same821=Number.isFinite(ema8)&&Number.isFinite(ema21)&&(long?ema8>=ema21:ema8<=ema21);
-  const contracting=!!e?.spreadContracting;
-  const macd=m.macd4h||{};
+  const contracting=!!e?.spreadContracting,macd=m.macd4h||{};
   const macdAgainst=long?!!macd.bearishCross:!!macd.bullishCross;
   const histWeakening=long?!!macd.falling:!!macd.rising;
   const stochExtreme=long?Number(m.stochK)>=80:Number(m.stochK)<=20;
   const stochCooling=long?Number(m.stochK)<Number(m.stochD):Number(m.stochK)>Number(m.stochD);
-  // ENTRY_1 shorts are deliberately captured before the 4H bearish cross.
-  // While 5/13 and 8/21 are still bullish/above, a contracting spread plus
-  // bearish MACD deterioration is the intended V28 transition — not a break.
-  if(!long&&h.type==="ENTRY_1"&&against513&&!same821&&contracting&&!macdAgainst&&!!macd.bearishShift){
-    return{icon:"🟢",label:"WAVE ACTIVE",detail:"Early short setup remains active; no confirmed reversal."};
-  }
-  // BROKEN requires multiple independent failures, not a single Stoch turn.
-  if(against513&&!same821)return{icon:"🔴",label:"WAVE REVERSAL",detail:"4H 5/13 and 8/21 have both turned against the position."};
-  if((against513||!same821)&&(macdAgainst||contracting))return{icon:"🟠",label:"WAVE UNDER PRESSURE",detail:"Momentum is under pressure, but this is not a confirmed reversal."};
-  if(aligned513&&same821&&(contracting||macdAgainst||((stochExtreme||stochCooling)&&histWeakening)))return{icon:"🟡",label:"WAVE COOLING",detail:"Momentum is easing, but the bullish/bearish wave remains intact."};
-  return{icon:"🟢",label:"WAVE ACTIVE",detail:"The move remains valid with no confirmed reversal."};
+  if(!aligned513&&!same821&&(macdAgainst||contracting))return{icon:"🟠",label:"DETERIORATING",detail:"Momentum is under pressure, but there is not enough evidence for a confirmed breakdown."};
+  if(aligned513&&same821&&(contracting||macdAgainst||((stochExtreme||stochCooling)&&histWeakening)))return{icon:"🟡",label:"COOLING",detail:"Momentum is easing, but the 4H wave remains intact."};
+  return{icon:"🟢",label:"HEALTHY",detail:"The 4H wave remains active with no confirmed reversal."};
 }
-
 function managementAdvice(h:any,m:any){
   if(!h||h.status!=="ACTIVE"||!m||h.type==="ENTRY_0")return null;
   const price=Number(m.price),tp1Hit=!!h.tp1HitAt||(h.tp1!==undefined&&(h.direction==="LONG"?price>=h.tp1:price<=h.tp1)),tp2Hit=!!h.tp2HitAt||(h.tp2!==undefined&&(h.direction==="LONG"?price>=h.tp2:price<=h.tp2));
