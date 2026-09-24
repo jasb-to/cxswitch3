@@ -190,9 +190,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   // continuing or cooling at/near the highs.
   const addFibLong=longFib?[longFib.fib382,longFib.fib50,longFib.fib618].some(level=>Math.abs((price-level)/Math.max(Math.abs(level),1))<=RETEST_PCT):false;
   const addFibShort=shortFib?[shortFib.fib382,shortFib.fib50,shortFib.fib618].some(level=>Math.abs((price-level)/Math.max(Math.abs(level),1))<=RETEST_PCT):false;
-  const recentHigh=Math.max(...closed.slice(-8).map(x=>x.high)),recentLow=Math.min(...closed.slice(-8).map(x=>x.low));
-  const pulledBackLong=price<=e8*(1+0.002)&&price<recentHigh*(1-0.003);
-  const pulledBackShort=price>=e8*(1-0.002)&&price>recentLow*(1+0.003);
+  const addRecentHigh=Math.max(...closed.slice(-8).map(x=>x.high)),addRecentLow=Math.min(...closed.slice(-8).map(x=>x.low));
+  const pulledBackLong=price<=e8*(1+0.002)&&price<addRecentHigh*(1-0.003);
+  const pulledBackShort=price>=e8*(1-0.002)&&price>addRecentLow*(1+0.003);
   // ADD requires BOTH sides of the setup:
   // 1) a real retracement/pullback has occurred, AND
   // 2) price is in a meaningful retracement area (Fib or the pullback/EMA area).
