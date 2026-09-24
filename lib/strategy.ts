@@ -292,8 +292,15 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   // Fib proximity alone is never enough to trigger an ADD.
   const addLocationLong=pulledBackLong&&(addFibLong||pulledBackLong);
   const addLocationShort=pulledBackShort&&(addFibShort||pulledBackShort);
-  const addLong=same(pair,"LONG",activeTrades)&&longMomentum&&fourH.direction==="BULLISH"&&addLocationLong&&!macd.bearishCross;
-  const addShort=same(pair,"SHORT",activeTrades)&&shortMomentum&&fourH.direction==="BEARISH"&&addLocationShort&&!macd.bullishCross;
+
+  // ADD is a NEW wave, not a repeated "StochRSI is still rising" condition.
+  // Require a completed 4H StochRSI crossover on the closed candle. This means
+  // one ADD can fire on a genuine new momentum turn, but subsequent cron runs
+  // cannot keep adding while the same wave remains above K/D.
+  const addLongMomentumTurn=st.k>st.d&&prevSt.k<=prevSt.d&&st.k>prevSt.k;
+  const addShortMomentumTurn=st.k<st.d&&prevSt.k>=prevSt.d&&st.k<prevSt.k;
+  const addLong=same(pair,"LONG",activeTrades)&&addLongMomentumTurn&&fourH.direction==="BULLISH"&&addLocationLong&&!macd.bearishCross;
+  const addShort=same(pair,"SHORT",activeTrades)&&addShortMomentumTurn&&fourH.direction==="BEARISH"&&addLocationShort&&!macd.bullishCross;
   debug.push(`[ADD LOCATION] ${pair} | LONG fib=${addFibLong?"YES":"NO"} pullback=${pulledBackLong?"YES":"NO"} | SHORT fib=${addFibShort?"YES":"NO"} pullback=${pulledBackShort?"YES":"NO"}`);
 
   let dir:Direction|null=null,type:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null,reason="";
