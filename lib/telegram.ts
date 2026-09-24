@@ -58,7 +58,6 @@ export async function sendAlert(signal:any){
     `SL: ${formatPrice(signal.stopLoss)}`,
     `TP1: ${formatPrice(tp1)}`,
     `TP2: ${formatPrice(tp2)}`,
-    `TP3: ${formatPrice(tp3)}`,
     `RR: ${signal.rr??"-"}`,
     exitText.trim(),
     "",
