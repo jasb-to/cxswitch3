@@ -95,11 +95,55 @@ function buildTrendline(c:Candle[],d:Direction,lookback=60):Trendline{
   return{valid:true,slope,intercept,price,pivots:ps,ageCandles:age,stale,staleByAge,staleByDistance,invalidated,reason:invalidated?`${d} trendline already broken`:stale?`${d} trendline stale — rebuild recommended`:`${d} trendline active`};
 }
 function lineAt(t:Trendline,i:number){return t.slope*i+t.intercept;}
-function getFibLevels(c:Candle[],d:Direction):FibLevels|null{
-  if(c.length<10)return null;const lows=pivots(c,"LOW"),highs=pivots(c,"HIGH");
-  if(d==="LONG")for(let i=highs.length-1;i>=0;i--){const h=highs[i],l=lows.filter(x=>x.index<h.index).at(-1);if(l&&h.price>l.price){const range=h.price-l.price;return{direction:d,swingLow:l.price,swingHigh:h.price,fib382:h.price-range*.382,fib50:h.price-range*.5,fib618:h.price-range*.618,lowIndex:l.index,highIndex:h.index};}}
-  if(d==="SHORT")for(let i=lows.length-1;i>=0;i--){const l=lows[i],h=highs.filter(x=>x.index<l.index).at(-1);if(h&&h.price>l.price){const range=h.price-l.price;return{direction:d,swingLow:l.price,swingHigh:h.price,fib382:l.price+range*.382,fib50:l.price+range*.5,fib618:l.price+range*.618,lowIndex:l.index,highIndex:h.index};}}
+function stochKSeries(c:Candle[]):number[]{
+  const closes=c.map(x=>x.close),out:number[]=[];
+  for(let i=0;i<c.length;i++)out.push(stochRsi(closes.slice(0,i+1)).k);
+  return out;
+}
+function stochWaveAnchors(c:Candle[],d:Direction):{high:Pivot;low:Pivot}|null{
+  if(c.length<35)return null;
+  const k=stochKSeries(c),w=2;
+  const highs:Pivot[]=[],lows:Pivot[]=[];
+  for(let i=w;i<k.length-w;i++){
+    let hi=true,lo=true;
+    for(let j=1;j<=w;j++){
+      if(k[i]<=k[i-j]||k[i]<=k[i+j])hi=false;
+      if(k[i]>=k[i-j]||k[i]>=k[i+j])lo=false;
+    }
+    if(hi)highs.push({index:i,price:k[i],timestamp:c[i].timestamp});
+    if(lo)lows.push({index:i,price:k[i],timestamp:c[i].timestamp});
+  }
+  if(d==="LONG"){
+    for(let i=lows.length-1;i>=0;i--){
+      const lo=lows[i],hi=highs.filter(x=>x.index<lo.index).at(-1);
+      if(!hi)continue;
+      const highEnd=Math.min(c.length-1,lo.index+2),lowStart=Math.max(0,hi.index-2);
+      let hiIdx=hi.index,loIdx=lo.index,hiPrice=-Infinity,loPrice=Infinity;
+      for(let j=lowStart;j<=highEnd;j++){if(c[j].high>hiPrice){hiPrice=c[j].high;hiIdx=j;}}
+      for(let j=hi.index;j<=highEnd;j++){if(c[j].low<loPrice){loPrice=c[j].low;loIdx=j;}}
+      if(hiPrice>loPrice)return{high:{index:hiIdx,price:hiPrice,timestamp:c[hiIdx].timestamp},low:{index:loIdx,price:loPrice,timestamp:c[loIdx].timestamp}};
+    }
+  }else{
+    for(let i=highs.length-1;i>=0;i--){
+      const hi=highs[i],lo=lows.filter(x=>x.index<hi.index).at(-1);
+      if(!lo)continue;
+      const highEnd=Math.min(c.length-1,hi.index+2),lowStart=Math.max(0,lo.index-2);
+      let hiIdx=hi.index,loIdx=lo.index,hiPrice=-Infinity,loPrice=Infinity;
+      for(let j=lo.index;j<=highEnd;j++){if(c[j].high>hiPrice){hiPrice=c[j].high;hiIdx=j;}}
+      for(let j=lowStart;j<=hi.index;j++){if(c[j].low<loPrice){loPrice=c[j].low;loIdx=j;}}
+      if(hiPrice>loPrice)return{high:{index:hiIdx,price:hiPrice,timestamp:c[hiIdx].timestamp},low:{index:loIdx,price:loPrice,timestamp:c[loIdx].timestamp}};
+    }
+  }
   return null;
+}
+function getFibLevels(c:Candle[],d:Direction):FibLevels|null{
+  const wave=stochWaveAnchors(c,d);
+  if(!wave)return null;
+  const {high,low}=wave,range=high.price-low.price;
+  if(!Number.isFinite(range)||range<=0)return null;
+  return d==="LONG"
+    ? {direction:d,swingLow:low.price,swingHigh:high.price,fib382:high.price-range*.382,fib50:high.price-range*.5,fib618:high.price-range*.618,lowIndex:low.index,highIndex:high.index}
+    : {direction:d,swingLow:low.price,swingHigh:high.price,fib382:low.price+range*.382,fib50:low.price+range*.5,fib618:low.price+range*.618,lowIndex:low.index,highIndex:high.index};
 }
 function macd4h(c:Candle[]){const closes=c.map(x=>x.close),fast=ema(closes,12),slow=ema(closes,26),m=fast.map((v,i)=>v-(slow[i]??v)),sig=ema(m,9),h=m.map((v,i)=>v-(sig[i]??0)),i=h.length-1,p=Math.max(0,i-1),cur=h[i]??0,prev=h[p]??0;return{macd:m[i]??0,signal:sig[i]??0,histogram:cur,prevHistogram:prev,prev2Histogram:h[Math.max(0,i-2)]??prev,rising:cur>prev,falling:cur<prev,bullishShift:cur>prev||cur>=0&&prev<0,bearishShift:cur<prev||cur<=0&&prev>0,bullishCross:cur>=0&&prev<0,bearishCross:cur<=0&&prev>0,bullishColour:cur>prev&&cur<0,bearishColour:cur<prev&&cur>0,histogramPct:Math.abs(cur)>0?(cur-prev)/Math.abs(cur)*100:0};}
 function dailyDirection(live?:DailyLiveContext,local?:Direction|null):"BULL"|"BEAR"|"NEUTRAL"{if(live?.state?.startsWith("BULL"))return"BULL";if(live?.state?.startsWith("BEAR"))return"BEAR";if(live?.direction)return live.direction;return local==="LONG"?"BULL":local==="SHORT"?"BEAR":"NEUTRAL";}
