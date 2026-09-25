@@ -203,7 +203,17 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     (shortFibPath.state==="DEEP_RECLAIM"&&price>=shortFib.swingLow&&price<=shortFib.fib50*(1+ENTRY1_PATH_ZONE_PCT))
   );
   const longPreBreak=longTL.valid&&price<=longTL.price+longBuffer,shortPreBreak=shortTL.valid&&price>=shortTL.price-shortBuffer;
-  const longMomentum=st.k>st.d&&st.k>prevSt.k,shortMomentum=st.k<st.d&&st.k<prevSt.k;
+  // ENTRY_1 momentum is deliberately permissive: ANY ONE of the three
+  // closed-4H momentum signals is enough. This is an early entry, not a
+  // confirmation entry. Direction/location/exhaustion remain separate gates.
+  const stochLong=st.k>st.d&&st.k>prevSt.k,stochShort=st.k<st.d&&st.k<prevSt.k;
+  const macdLong=macd.bullishShift,macdShort=macd.bearishShift;
+  const emaLong=fourH.direction==="BULLISH"||fourH.turning&&fourH.direction==="BULLISH";
+  const emaShort=fourH.direction==="BEARISH"||fourH.turning&&fourH.direction==="BEARISH";
+  const longMomentum=stochLong||macdLong||emaLong;
+  const shortMomentum=stochShort||macdShort||emaShort;
+  const longMomentumCount=[stochLong,macdLong,emaLong].filter(Boolean).length;
+  const shortMomentumCount=[stochShort,macdShort,emaShort].filter(Boolean).length;
   const longExhaustion=checkEntry1Exhaustion("LONG",r,st,longDist,a),shortExhaustion=checkEntry1Exhaustion("SHORT",r,st,shortDist,a);
   const longExhausted=longExhaustion.blocked,shortExhausted=shortExhaustion.blocked;
   // Fib decides WHERE through the path; StochRSI + 4H structure decide WHEN.
@@ -256,13 +266,13 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[TL] ${pair} | LONG=${longTL.valid?longTL.price.toFixed(2):"—"} dist=${isFinite(longDist)?(longDist*100).toFixed(2)+"%":"—"} | SHORT=${shortTL.valid?shortTL.price.toFixed(2):"—"} dist=${isFinite(shortDist)?(shortDist*100).toFixed(2)+"%":"—"}`);
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
   debug.push(`[FIB PATH] ${pair} | LONG=${longFibPath.state}/${longFibPath.trigger} age=${Number.isFinite(longFibPath.triggerAge)?longFibPath.triggerAge:"—"} fresh=${longFibPath.fresh?"YES":"NO"} | SHORT=${shortFibPath.state}/${shortFibPath.trigger} age=${Number.isFinite(shortFibPath.triggerAge)?shortFibPath.triggerAge:"—"} fresh=${shortFibPath.fresh?"YES":"NO"}`);
-  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | Stoch=${longMomentum?"LONG":shortMomentum?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
+  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | Momentum=${longMomentum?"LONG":shortMomentum?"SHORT":"NONE"} | MomentumCount=${longMomentumCount}/${shortMomentumCount} | Stoch=${stochLong?"LONG":stochShort?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
 
   const fallbackDir:Direction=dDir==="BEAR"?"SHORT":"LONG";
   const baseMarket=()=>snapshot(pair,candles4h,structureDir||fallbackDir,structureDir==="LONG"?longTL:structureDir==="SHORT"?shortTL:longTL,price,dailyLive);
   const market=(m:any)=>Object.assign(m||baseMarket(),{
     entry1Direction:longEntry1?"LONG":shortEntry1?"SHORT":"NEUTRAL",entry1Decision:longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE",
-    entry1TriggersLong:longMomentum?1:0,entry1TriggersShort:shortMomentum?1:0,entry1StructuralLocation:longLocation?"LONG":shortLocation?"SHORT":"NONE",
+    entry1TriggersLong:longMomentumCount,entry1TriggersShort:shortMomentumCount,entry1StructuralLocation:longLocation?"LONG":shortLocation?"SHORT":"NONE",
     entry1FibPathLong:longFibPath,entry1FibPathShort:shortFibPath,
     entry1NearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",entry1LiveNearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",
     entry1LiveDistPct:longEntry1?longDist*100:shortEntry1?shortDist*100:null,entry1PreBreak:longPreBreak||shortPreBreak,
