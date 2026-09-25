@@ -266,7 +266,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[TL] ${pair} | LONG=${longTL.valid?longTL.price.toFixed(2):"—"} dist=${isFinite(longDist)?(longDist*100).toFixed(2)+"%":"—"} | SHORT=${shortTL.valid?shortTL.price.toFixed(2):"—"} dist=${isFinite(shortDist)?(shortDist*100).toFixed(2)+"%":"—"}`);
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
   debug.push(`[FIB PATH] ${pair} | LONG=${longFibPath.state}/${longFibPath.trigger} age=${Number.isFinite(longFibPath.triggerAge)?longFibPath.triggerAge:"—"} fresh=${longFibPath.fresh?"YES":"NO"} | SHORT=${shortFibPath.state}/${shortFibPath.trigger} age=${Number.isFinite(shortFibPath.triggerAge)?shortFibPath.triggerAge:"—"} fresh=${shortFibPath.fresh?"YES":"NO"}`);
-  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | Momentum=${longMomentum?"LONG":shortMomentum?"SHORT":"NONE"} | MomentumCount=${longMomentumCount}/${shortMomentumCount} | Stoch=${stochLong?"LONG":stochShort?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
+  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | MomentumLong=${longMomentumCount}/3 | MomentumShort=${shortMomentumCount}/3 | Stoch=${stochLong?"LONG":stochShort?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
 
   const fallbackDir:Direction=dDir==="BEAR"?"SHORT":"LONG";
   const baseMarket=()=>snapshot(pair,candles4h,structureDir||fallbackDir,structureDir==="LONG"?longTL:structureDir==="SHORT"?shortTL:longTL,price,dailyLive);
@@ -336,17 +336,32 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const liquidation=liq(entry,dir),safe=dir==="LONG"?liquidation*(1+LIQ_BUFFER):liquidation*(1-LIQ_BUFFER),stop=dir==="LONG"?Math.max(structuralStop,safe):Math.min(structuralStop,safe);
   const structuralRisk=Math.abs(entry-structuralStop);if(!structuralRisk)return{debug};const risk=Math.abs(entry-stop);if(!risk)return{debug};
   const fib=dir==="LONG"?longFib:shortFib;
-  const forwardLevels=dir==="LONG"?[fib?.fib50,fib?.fib382,fib?.swingHigh].filter((x):x is number=>Number.isFinite(x)&&x>entry):[fib?.fib50,fib?.fib382,fib?.swingLow].filter((x):x is number=>Number.isFinite(x)&&x<entry).sort((x,y)=>dir==="LONG"?x-y:y-x);
+  // TP1/TP2 must be distinct. Prefer nearby structural/Fib targets, but if
+  // the setup only exposes one valid forward level (as BTC did), use the
+  // position risk to create a genuine R1.5 final target instead of collapsing
+  // TP1 and TP2 onto the same level.
+  const rawForwardLevels=dir==="LONG"
+    ? [fib?.fib50,fib?.fib382,fib?.swingHigh].filter((x):x is number=>Number.isFinite(x)&&x>entry)
+    : [fib?.fib50,fib?.fib382,fib?.swingLow].filter((x):x is number=>Number.isFinite(x)&&x<entry);
   const recentResistance=Math.max(...closed.slice(-12).map(x=>x.high));
   const recentSupport=Math.min(...closed.slice(-12).map(x=>x.low));
-  const tp1=forwardLevels[0]??(dir==="LONG"?recentResistance:recentSupport);
-  const tp2=forwardLevels[1]??(dir==="LONG"?Math.max(recentResistance,tp1):Math.min(recentSupport,tp1));
+  const structuralFallback=dir==="LONG"?recentResistance:recentSupport;
+  const forwardLevels=[...new Set(rawForwardLevels)].sort((x,y)=>dir==="LONG"?x-y:y-x);
+  const tp1=forwardLevels[0]??structuralFallback;
+  const riskTarget15=dir==="LONG"?entry+risk*1.5:entry-risk*1.5;
+  const secondStructural=forwardLevels.find(x=>dir==="LONG"?x>tp1:x<tp1);
+  const tp2=secondStructural!==undefined
+    ? (dir==="LONG"?Math.max(secondStructural,riskTarget15):Math.min(secondStructural,riskTarget15))
+    : riskTarget15;
   const target=tp2;
   const tp1Move=Math.abs(tp1-entry)/Math.max(entry,1),tp2Move=Math.abs(tp2-entry)/Math.max(entry,1);
   const dailyAligned=(dDir==="BULL"&&dir==="LONG")||(dDir==="BEAR"&&dir==="SHORT"),riskMultiplier=dailyAligned?1:0.5,trendAlignment=dailyAligned?"WITH_1D":"AGAINST_1D";
   const breakoutRecord:BreakoutRecord|undefined=type==="ENTRY_2"?(breakoutLong?{direction:"LONG",price:round(longTL.price),timestamp:now,candleIndex:closedIndex}:breakoutShort?{direction:"SHORT",price:round(shortTL.price),timestamp:now,candleIndex:closedIndex}:lastBreakout):lastBreakout;
   const location=type==="ENTRY_1"?"EARLY_STRUCTURAL":breakoutLong||breakoutShort?"BREAKOUT":type==="ADD"?"MOMENTUM_PULLBACK":"BREAKOUT_RETEST";
-  const trigger=type==="ENTRY_1"?"4H_STOCHRSI_TURN":breakoutLong||breakoutShort?"4H_TRENDLINE_BREAKOUT":type==="ADD"?"4H_FRESH_MOMENTUM_TURN":"4H_BREAKOUT_RETEST";
+  const entry1Trigger=dir==="LONG"
+    ? [stochLong&&"4H_STOCHRSI_TURN",macdLong&&"4H_MACD_IMPROVING",emaLong&&"4H_5_13_TURN"].filter(Boolean).join("+")
+    : [stochShort&&"4H_STOCHRSI_TURN",macdShort&&"4H_MACD_IMPROVING",emaShort&&"4H_5_13_TURN"].filter(Boolean).join("+");
+  const trigger=type==="ENTRY_1"?(entry1Trigger||"4H_STRUCTURE_REACTION"):breakoutLong||breakoutShort?"4H_TRENDLINE_BREAKOUT":type==="ADD"?"4H_FRESH_MOMENTUM_TURN":"4H_BREAKOUT_RETEST";
   const signal:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),confidence:type==="ENTRY_1"?70:type==="ENTRY_2"?80:85,rr:1.5,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(tp2Move*1000)/10,reason:`${dir} ${type} | ${reason} | ${trendAlignment}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} ${strength(daily(candles4h),dir)}`,location,trigger,context:{
     marketPhase:type==="ENTRY_1"?`${dir} PROBABILITY EARLY SETUP`:type==="ENTRY_2"?`${dir} CONFIRMED ENTRY_2`:`${dir} ADD NEXT WAVE`,
     structure:structureDir?`4H ${structureDir}`:"4H STRUCTURE TRANSITION",momentum:`RSI ${r} | Stoch ${st.k}/${st.d} | MACD hist ${round(macd.histogram)}`,
