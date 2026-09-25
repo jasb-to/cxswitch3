@@ -481,10 +481,17 @@ export function shouldHold(s:Signal,c:Candle[],p:number):HoldResult{
   if(s.direction==="SHORT"&&p>=s.stop)return{shouldHold:false,reason:"sl_hit",managementState:"EXIT",recommendation:"EXIT TRADE"};
   if(s.tp2!==undefined&&((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2)))return{shouldHold:false,reason:"tp2_hit",managementState:"EXIT",recommendation:"EXIT TRADE",scaleOut:{level:s.tp2,size:1,label:"TP2_FINAL"}};
   if(s.tp1!==undefined&&((s.direction==="LONG"&&p>=s.tp1)||(s.direction==="SHORT"&&p<=s.tp1)))return{shouldHold:true,reason:momentum.state==="WAVE"?"tp1_hit_protect_momentum":"tp1_hit_protect",managementState:"PROTECT",recommendation:"PROTECT TRADE",newStop:s.entry,scaleOut:{level:s.tp1,size:.5,label:"TP1_50"}};
+  // Management precedence is deliberate:
+  // EXIT = confirmed 4H reversal / confirmed structural breakdown.
+  // DEFEND = structure has turned against the trade, even if the old momentum
+  // wave is still technically active. This prevents "wave_active" masking
+  // a developing structural reversal.
+  // PROTECT = normal pullback / cooling momentum.
+  // STAY = structure + wave remain aligned.
   if(momentum.confirmedReversal||structureBroken)return{shouldHold:false,reason:momentum.confirmedReversal?"momentum_confirmed_4h_reversal":"structure_break_confirmed",managementState:"EXIT",recommendation:"EXIT TRADE"};
-  if(momentum.aligned)return{shouldHold:true,reason:"wave_active",managementState:"STAY",recommendation:"STAY IN TRADE"};
-  if(oppositeStructure&&(!emaOpposite||!priceAgainstE8))return{shouldHold:true,reason:"structure_under_pressure",managementState:"DEFEND",recommendation:"DEFEND TRADE"};
+  if(oppositeStructure)return{shouldHold:true,reason:"structure_under_pressure",managementState:"DEFEND",recommendation:"DEFEND TRADE"};
   if(momentum.weakening||priceAgainstE8)return{shouldHold:true,reason:"healthy_4h_pullback",managementState:"PROTECT",recommendation:"PROTECT TRADE"};
+  if(momentum.aligned)return{shouldHold:true,reason:"wave_active",managementState:"STAY",recommendation:"STAY IN TRADE"};
   return{shouldHold:true,reason:"wave_cooling",managementState:"PROTECT",recommendation:"PROTECT TRADE"};
 }
 export function shouldHoldCompat(s:Signal,c4:Candle[],c1:Candle[],p:number){return shouldHold(s,c4,p);}
