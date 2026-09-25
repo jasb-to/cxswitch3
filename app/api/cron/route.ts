@@ -53,6 +53,7 @@ export async function GET(request:Request){
     trade.stop=safeStop;
     await updateHistoryStopMilestone(trade.id,trade.stop);
   }
+  const tp1AlreadyHit=!!trade.tp1HitAt;
   const milestoneTrade=await updateActiveTradeMilestones(trade.id,price);if(milestoneTrade)Object.assign(trade,milestoneTrade);
   // Re-apply liquidation-safe protection after milestone hydration. Older milestone
   // records can contain the legacy stop and must never overwrite the safety boundary.
@@ -68,6 +69,10 @@ export async function GET(request:Request){
   console.log(`[MANAGE] ${trade.pair} ${trade.direction} | Entry ${trade.entry} | Price ${price} | SL ${trade.stop} | TP1 ${trade.tp1??"—"} | TP2 ${trade.tp2??"—"} | Management ${hold.managementState} | ${hold.recommendation} | ${hold.reason}`);
   if(!hold.shouldHold){await updateSignalHistoryStatus(trade.id,hold.reason==="tp2_hit"?"TP_HIT":"FAILED",hold.reason,price);active=active.filter(x=>x.id!==trade.id);alerts.push({pair:trade.pair,status:"exit",reason:hold.reason,price});console.log(`[EXIT] ${trade.pair} ${trade.direction} — ${hold.reason} @ ${price}`);continue;}
   if(hold.newStop&&hold.newStop!==trade.stop){console.log(`[MGT] ${trade.pair} — stop ${trade.stop} -> ${hold.newStop} (${hold.reason})`);trade.stop=hold.newStop;await updateHistoryStopMilestone(trade.id,trade.stop);}
+  // TP1 scale-out is a one-time lifecycle event. shouldHold() remains deliberately
+  // permissive for management, but must not re-emit the same 50% instruction on
+  // every cron run once the TP1 milestone has already been persisted.
+  if(hold.scaleOut && tp1AlreadyHit) delete hold.scaleOut;
   if(hold.scaleOut)console.log(`[MGT] ${trade.pair} — scale-out ${hold.scaleOut.label} ${hold.scaleOut.size*100}% @ ${hold.scaleOut.level}`);
   const snapshot=getMarketSnapshot(trade.pair,c,c,c);snapshot.positionState="ACTIVE";snapshot.positionDirection=trade.direction;snapshot.positionEntry=trade.entry;snapshot.positionStop=trade.stop;snapshot.positionTarget=trade.tp2??trade.target;snapshot.positionTp1=trade.tp1;snapshot.positionTp2=trade.tp2;snapshot.positionTp1HitAt=trade.tp1HitAt;snapshot.positionTp2HitAt=trade.tp2HitAt;snapshot.positionManagementState=hold.managementState;snapshot.positionManagementRecommendation=hold.recommendation;snapshot.positionManagementReason=hold.reason;snapshot.positionThesis=hold.reason;managementByPair[trade.pair]={state:hold.managementState,recommendation:hold.recommendation,reason:hold.reason};marketData.push(snapshot);
  }catch(e){console.error(`[MANAGE] ${trade.pair} ERROR`,e);}}
