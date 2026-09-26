@@ -20,7 +20,7 @@ export interface Signal {
   trend?:string; location?:string; trigger?:string; context?:any;
 }
 export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; }
-export const CURRENT_SIGNAL_VERSION=8;
+export const CURRENT_SIGNAL_VERSION=9;
 
 type DailyLiveContext={
   state?:string; candidateState?:string; candidateStreak?:number;
@@ -82,18 +82,192 @@ function adx(c:Candle[],p=14){if(c.length<p+1)return 0;const tr:number[]=[],plus
 function daily(c:Candle[]){const m=new Map<string,Candle[]>();for(const x of [...c].sort((a,b)=>a.timestamp-b.timestamp)){const d=new Date(x.timestamp),k=`${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;if(!m.has(k))m.set(k,[]);m.get(k)!.push(x);}return[...m.values()].map(b=>({timestamp:b[0].timestamp,open:b[0].open,high:Math.max(...b.map(x=>x.high)),low:Math.min(...b.map(x=>x.low)),close:b.at(-1)!.close,volume:b.reduce((s,x)=>s+x.volume,0)}));}
 function bias(c:Candle[]):Direction|null{if(c.length<20)return null;const a=c.map(x=>x.close),f=ema(a,DAILY_FAST).at(-1)!,s=ema(a,DAILY_SLOW).at(-1)!;return f>s?"LONG":f<s?"SHORT":null;}
 function strength(c:Candle[],d:Direction){if(c.length<2)return"MEDIUM";const h=c.slice(-20).map(x=>x.high),l=c.slice(-20).map(x=>x.low);return d==="LONG"&&h.at(-1)!>Math.max(...h.slice(0,-1))||d==="SHORT"&&l.at(-1)!<Math.min(...l.slice(0,-1))?"STRONG":"MEDIUM";}
-function pivots(c:Candle[],kind:"HIGH"|"LOW",w=2){const r:Pivot[]=[];for(let i=w;i<c.length-w;i++){const v=kind==="LOW"?c[i].low:c[i].high;let ok=true;for(let j=1;j<=w;j++){if(kind==="LOW"?(v>=c[i-j].low||v>=c[i+j].low):(v<=c[i-j].high||v<=c[i+j].high)){ok=false;break;}}if(ok)r.push({index:i,price:v,timestamp:c[i].timestamp});}return r;}
-function buildTrendline(c:Candle[],d:Direction,lookback=60):Trendline{
-  const kind=d==="LONG"?"LOW":"HIGH",ps=pivots(c,kind).filter(x=>x.index>=Math.max(0,c.length-lookback)).slice(-5);
-  const empty=(reason:string):Trendline=>({valid:false,slope:0,intercept:0,price:0,pivots:ps,ageCandles:ps.length?c.length-1-ps[0].index:0,stale:false,staleByAge:false,staleByDistance:false,invalidated:false,reason});
-  if(ps.length<2)return empty(`No ${d} structural trendline — ${ps.length}/2 confirmed pivots`);
-  const a=ps.at(-2)!,b=ps.at(-1)!,dx=b.index-a.index;if(dx<=0)return empty("Trendline degenerate");
-  const slope=(b.price-a.price)/dx,intercept=a.price-slope*a.index,price=slope*(c.length-1)+intercept,buffer=Math.max(Math.abs(price)*BREAKOUT_PCT,atr(c)*.35);
-  let invalidated=false;for(let j=b.index+1;j<c.length-1;j++){const line=slope*j+intercept;if(d==="LONG"&&c[j].close>line+buffer){invalidated=true;break;}if(d==="SHORT"&&c[j].close<line-buffer){invalidated=true;break;}}
-  const distance=Math.abs((c.at(-1)!.close-price)/Math.max(Math.abs(price),1)),age=c.length-1-b.index,staleByAge=age>STALE_TL_CANDLES,staleByDistance=distance>=STALE_TL_PCT,stale=!invalidated&&(staleByAge||staleByDistance);
-  return{valid:true,slope,intercept,price,pivots:ps,ageCandles:age,stale,staleByAge,staleByDistance,invalidated,reason:invalidated?`${d} trendline already broken`:stale?`${d} trendline stale — rebuild recommended`:`${d} trendline active`};
+function pivots(c:Candle[],kind:"HIGH"|"LOW",w=2){
+  const r:Pivot[]=[];
+  for(let i=w;i<c.length-w;i++){
+    const v=kind==="LOW"?c[i].low:c[i].high;
+    let ok=true;
+    for(let j=1;j<=w;j++){
+      if(kind==="LOW"?(v>=c[i-j].low||v>=c[i+j].low):(v<=c[i-j].high||v<=c[i+j].high)){ok=false;break;}
+    }
+    if(ok)r.push({index:i,price:v,timestamp:c[i].timestamp});
+  }
+  return r;
 }
+
+/*
+ * Structural trendline engine
+ * ---------------------------
+ * 4H owns the line. 15M never draws its own competing line.
+ *
+ * A candidate line must:
+ *   1. use confirmed pivots only (non-repainting)
+ *   2. have >= 3 meaningful pivot touches
+ *   3. survive a clean-line scan between its anchors
+ *   4. have an ATR-normalised touch/violation tolerance
+ *   5. be recent enough to still represent current structure
+ *
+ * We deliberately do NOT use chart "angle" because visual angle changes
+ * with zoom. Price slope is evaluated in ATR units instead.
+ */
+const TL_MIN_TOUCHES=3;
+const TL_MIN_SPAN=6;
+const TL_MAX_PIVOTS=10;
+const TL_TOUCH_ATR=0.45;
+const TL_VIOLATION_ATR=0.35;
+const TL_MAX_AGE=18;
+const TL_MAX_DISTANCE_PCT=0.06;
+const TL_BREAK_ATR=0.25;
+const TL_RETEST_ATR=0.55;
+const TL_RETEST_PCT=0.009;
+const TL_BREAK_WINDOW_15M=32;
+
+function buildTrendline(c:Candle[],d:Direction,lookback=80):Trendline{
+  const kind=d==="LONG"?"LOW":"HIGH";
+  const ps=pivots(c,kind).filter(x=>x.index>=Math.max(0,c.length-lookback)).slice(-TL_MAX_PIVOTS);
+  const empty=(reason:string):Trendline=>({
+    valid:false,slope:0,intercept:0,price:0,pivots:ps,
+    ageCandles:ps.length?c.length-1-ps[ps.length-1].index:0,
+    stale:false,staleByAge:false,staleByDistance:false,invalidated:false,reason
+  });
+  if(ps.length<2)return empty(`No ${d} structural trendline — ${ps.length}/2 confirmed pivots`);
+
+  const av=atr(c);
+  const tolerance=(linePrice:number)=>Math.max(Math.abs(linePrice)*BREAKOUT_PCT,av*TL_TOUCH_ATR);
+  const violation=Math.max(av*TL_VIOLATION_ATR,1);
+  let best:{score:number;slope:number;intercept:number;touches:Pivot[];span:number}|null=null;
+
+  for(let ai=0;ai<ps.length-1;ai++){
+    for(let bi=ai+1;bi<ps.length;bi++){
+      const a=ps[ai],b=ps[bi],dx=b.index-a.index;
+      if(dx<TL_MIN_SPAN)continue;
+      const slope=(b.price-a.price)/dx;
+      if(d==="LONG"&&slope<=0)continue;
+      if(d==="SHORT"&&slope>=0)continue;
+
+      // Reject implausibly steep lines in volatility-normalised terms.
+      if(av>0&&Math.abs(slope)/av>1.75)continue;
+
+      const intercept=a.price-slope*a.index;
+      const touches=ps.filter(p=>Math.abs(p.price-(slope*p.index+intercept))<=tolerance(slope*p.index+intercept));
+      if(touches.length<TL_MIN_TOUCHES)continue;
+
+      const first=touches[0].index,last=touches[touches.length-1].index;
+      if(last-first<TL_MIN_SPAN)continue;
+
+      // A valid support/resistance line should not have closes slicing through
+      // it between its defining touches. Wicks are allowed inside tolerance.
+      let clean=true;
+      for(let j=first+1;j<last;j++){
+        const line=slope*j+intercept;
+        if(d==="LONG"&&c[j].close<line-violation){clean=false;break;}
+        if(d==="SHORT"&&c[j].close>line+violation){clean=false;break;}
+      }
+      if(!clean)continue;
+
+      const span=last-first;
+      const newestAge=(c.length-1)-last;
+      const score=touches.length*100000+span*100-newestAge*10;
+      if(!best||score>best.score)best={score,slope,intercept,touches,span};
+    }
+  }
+
+  if(!best){
+    // Fallback to the latest two structural pivots. This keeps diagnostics
+    // useful, but the line is NOT eligible for ENTRY_2 until it is validated.
+    const a=ps.at(-2)!,b=ps.at(-1)!,dx=b.index-a.index;
+    const slope=(b.price-a.price)/Math.max(dx,1),intercept=a.price-slope*a.index;
+    const price=slope*(c.length-1)+intercept;
+    return{valid:false,slope,intercept,price,pivots:ps,ageCandles:c.length-1-b.index,stale:false,staleByAge:false,staleByDistance:false,invalidated:false,reason:`${d} pivots found but no clean 3-touch trendline`};
+  }
+
+  const slope=best.slope,intercept=best.intercept;
+  const price=slope*(c.length-1)+intercept;
+  const age=c.length-1-best.touches.at(-1)!.index;
+  const distance=Math.abs((c.at(-1)!.close-price)/Math.max(Math.abs(price),1));
+  const staleByAge=age>TL_MAX_AGE;
+  const staleByDistance=distance>=TL_MAX_DISTANCE_PCT;
+
+  // Only invalidate against CLOSED candles before the current bar. This is
+  // important: a developing 4H candle is allowed to break the live line.
+  let invalidated=false;
+  for(let j=best.touches.at(-1)!.index+1;j<c.length-1;j++){
+    const line=slope*j+intercept;
+    if(d==="LONG"&&c[j].close<line-Math.max(av*TL_VIOLATION_ATR,1)){invalidated=true;break;}
+    if(d==="SHORT"&&c[j].close>line+Math.max(av*TL_VIOLATION_ATR,1)){invalidated=true;break;}
+  }
+
+  const stale=!invalidated&&(staleByAge||staleByDistance);
+  return{
+    valid:true,slope,intercept,price,pivots:best.touches,ageCandles:age,stale,
+    staleByAge,staleByDistance,invalidated,
+    reason:invalidated?`${d} trendline invalidated by structure`:stale?`${d} trendline stale — rebuild recommended`:`${d} trendline active — ${best.touches.length} touches`
+  };
+}
+
 function lineAt(t:Trendline,i:number){return t.slope*i+t.intercept;}
+
+function lineAtTimestamp(t:Trendline,c4:Candle[],timestamp:number){
+  if(!t.valid||!c4.length)return null;
+  const base=c4[0].timestamp;
+  const step=c4.length>1?Math.max(1,c4[1].timestamp-c4[0].timestamp):4*60*60*1000;
+  const fractionalIndex=(timestamp-base)/step;
+  return lineAt(t,fractionalIndex);
+}
+
+/*
+ * ENTRY_2 execution:
+ * The 4H trendline is the only structural reference.
+ * The 15M candle is only the execution layer.
+ *
+ * Long: 4H breaks above descending resistance, then 15M dips into the
+ * broken line and finishes back above it.
+ * Short: 4H breaks below ascending support, then 15M rallies into the
+ * broken line and finishes back below it.
+ */
+function detect15mTrendlineRetest(
+  c15:Candle[],
+  c4:Candle[],
+  tl:Trendline,
+  d:Direction,
+  breakoutSeen:boolean
+){
+  if(!tl.valid||tl.stale||tl.invalidated||c15.length<4)return{breakSeen:false,retest:false,linePrice:null,reason:"NO_VALID_4H_TRENDLINE"};
+  const av15=atr(c15);
+  const current=c15.at(-1)!;
+  const currentLine=lineAtTimestamp(tl,c4,current.timestamp);
+  if(currentLine===null)return{breakSeen:false,retest:false,linePrice:null,reason:"NO_LINE_PRICE"};
+
+  const retestBuffer=Math.max(av15*TL_RETEST_ATR,Math.abs(currentLine)*TL_RETEST_PCT);
+  const breakBuffer=Math.max(av15*TL_BREAK_ATR,Math.abs(currentLine)*BREAKOUT_PCT);
+
+  let seen=breakoutSeen;
+  let seenIndex=-1;
+  const from=Math.max(1,c15.length-TL_BREAK_WINDOW_15M);
+  for(let i=from;i<c15.length;i++){
+    const x=c15[i],prev=c15[i-1],lp=lineAtTimestamp(tl,c4,x.timestamp),pp=lineAtTimestamp(tl,c4,prev.timestamp);
+    if(lp===null||pp===null)continue;
+    if(d==="LONG"&&prev.close<=pp+breakBuffer&&x.high>lp+breakBuffer){seen=true;seenIndex=i;break;}
+    if(d==="SHORT"&&prev.close>=pp-breakBuffer&&x.low<lp-breakBuffer){seen=true;seenIndex=i;break;}
+  }
+
+  if(!seen)return{breakSeen:false,retest:false,linePrice:currentLine,reason:"WAITING_FOR_4H_BREAK"};
+  if(seenIndex>=0&&c15.length-1-seenIndex>TL_BREAK_WINDOW_15M)return{breakSeen:true,retest:false,linePrice:currentLine,reason:"BREAK_TOO_OLD"};
+
+  const touched=d==="LONG"
+    ? current.low<=currentLine+retestBuffer
+    : current.high>=currentLine-retestBuffer;
+  const reclaimed=d==="LONG"
+    ? current.close>currentLine
+    : current.close<currentLine;
+
+  return{
+    breakSeen:true,
+    retest:touched&&reclaimed,
+    linePrice:currentLine,
+    reason:touched&&reclaimed?"15M_DIP_RETEST_CONFIRMED":touched?"15M_RETEST_IN_PROGRESS":"WAITING_FOR_15M_DIP"
+  };
+}
 function stochKSeries(c:Candle[]):number[]{
   const closes=c.map(x=>x.close),out:number[]=[];
   for(let i=0;i<c.length;i++)out.push(stochRsi(closes.slice(0,i+1)).k);
@@ -282,19 +456,36 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   });
 
   const closedIndex=closed.length-1;
-  const breakoutLong=longTL.valid&&!longTL.stale&&!longTL.invalidated&&closed.at(-1)!.close>lineAt(longTL,closedIndex)+longBuffer;
-  const breakoutShort=shortTL.valid&&!shortTL.stale&&!shortTL.invalidated&&closed.at(-1)!.close<lineAt(shortTL,closedIndex)-shortBuffer;
-  const age=(lastBreakout&&lastBreakout.candleIndex<=closedIndex)?closedIndex-lastBreakout.candleIndex:Infinity;
-  const retestLong=!!lastBreakout&&lastBreakout.direction==="LONG"&&age<=BREAKOUT_EXPIRY_CANDLES&&Math.abs((price-lastBreakout.price)/Math.max(Math.abs(lastBreakout.price),1))<=RETEST_PCT;
-  const retestShort=!!lastBreakout&&lastBreakout.direction==="SHORT"&&age<=BREAKOUT_EXPIRY_CANDLES&&Math.abs((price-lastBreakout.price)/Math.max(Math.abs(lastBreakout.price),1))<=RETEST_PCT;
+
+  // ENTRY_2 is deliberately NOT a closed-4H signal anymore.
+  // The 4H line is built from confirmed historical structure, but the current
+  // 4H candle is allowed to break it in real time. The 15M then executes the
+  // retest against that exact projected 4H line.
+  const developing4HIndex=candles4h.length-1;
+  const developingLongLine=longTL.valid?lineAt(longTL,developing4HIndex):null;
+  const developingShortLine=shortTL.valid?lineAt(shortTL,developing4HIndex):null;
+  const current4HBreakLong=!!developingLongLine&&price>developingLongLine+Math.max(av*TL_BREAK_ATR,Math.abs(developingLongLine)*BREAKOUT_PCT);
+  const current4HBreakShort=!!developingShortLine&&price<developingShortLine-Math.max(av*TL_BREAK_ATR,Math.abs(developingShortLine)*BREAKOUT_PCT);
+
+  // If the caller has already persisted a breakout, honour it. Otherwise the
+  // 15M scanner can recover a recent break from the candles it has in memory.
+  const persistedLongBreak=!!lastBreakout&&lastBreakout.direction==="LONG";
+  const persistedShortBreak=!!lastBreakout&&lastBreakout.direction==="SHORT";
+  const longExec=detect15mTrendlineRetest(candles15m,candles4h,longTL,"LONG",persistedLongBreak||current4HBreakLong);
+  const shortExec=detect15mTrendlineRetest(candles15m,candles4h,shortTL,"SHORT",persistedShortBreak||current4HBreakShort);
+
+  const breakoutLong=current4HBreakLong;
+  const breakoutShort=current4HBreakShort;
+  const retestLong=longExec.retest;
+  const retestShort=shortExec.retest;
 
   let dir:Direction|null=null,type:"ENTRY_1"|"ENTRY_2"|null=null,reason="";
   if(longEntry1&&!shortEntry1){dir="LONG";type="ENTRY_1";reason="probability-based early setup";}
   else if(shortEntry1&&!longEntry1){dir="SHORT";type="ENTRY_1";reason="probability-based early setup";}
-  else if(breakoutLong&&!breakoutShort&&!same(pair,"LONG",activeTrades)){dir="LONG";type="ENTRY_2";reason="confirmed trendline breakout";}
-  else if(breakoutShort&&!breakoutLong&&!same(pair,"SHORT",activeTrades)){dir="SHORT";type="ENTRY_2";reason="confirmed trendline breakout";}
-  else if(retestLong&&!same(pair,"LONG",activeTrades)){dir="LONG";type="ENTRY_2";reason="breakout retest confirmation";}
-  else if(retestShort&&!same(pair,"SHORT",activeTrades)){dir="SHORT";type="ENTRY_2";reason="breakout retest confirmation";}
+  else if(retestLong&&!retestShort&&!same(pair,"LONG",activeTrades)){dir="LONG";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
+  else if(retestShort&&!retestLong&&!same(pair,"SHORT",activeTrades)){dir="SHORT";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
+
+  debug.push(`[ENTRY_2] ${pair} | LONG break=${current4HBreakLong?"YES":"NO"} retest=${retestLong?"YES":"NO"} line=${longExec.linePrice?.toFixed(2)||"—"} reason=${longExec.reason} | SHORT break=${current4HBreakShort?"YES":"NO"} retest=${retestShort?"YES":"NO"} line=${shortExec.linePrice?.toFixed(2)||"—"} reason=${shortExec.reason}`);
 
   if(!dir||!type){debug.push(`[ENTRY_1 WAIT] ${pair} | ${longExhausted&&longMomentum&&longLocation?`LONG exhaustion veto: ${longExhaustion.reason}`:shortExhausted&&shortMomentum&&shortLocation?`SHORT exhaustion veto: ${shortExhaustion.reason}`:dDir==="BULL"&&!longMomentum?"waiting for bullish 4H StochRSI turn":dDir==="BEAR"&&!shortMomentum?"waiting for bearish 4H StochRSI turn":dDir==="BULL"&&!longLocation?"waiting for price to approach bullish structural area":dDir==="BEAR"&&!shortLocation?"waiting for price to approach bearish structural area":"waiting for next valid setup"}`);return{market:market(baseMarket()),debug};}
   if(opposite(pair,dir,activeTrades)){debug.push(`[SIGNAL BLOCK] ${pair} ${dir} | opposite position active`);return{market:market(baseMarket()),debug};}
@@ -327,16 +518,16 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const target=tp2;
   const tp1Move=Math.abs(tp1-entry)/Math.max(entry,1),tp2Move=Math.abs(tp2-entry)/Math.max(entry,1);
   const dailyAligned=(dDir==="BULL"&&dir==="LONG")||(dDir==="BEAR"&&dir==="SHORT"),riskMultiplier=dailyAligned?1:0.5,trendAlignment=dailyAligned?"WITH_1D":"AGAINST_1D";
-  const breakoutRecord:BreakoutRecord|undefined=type==="ENTRY_2"?(breakoutLong?{direction:"LONG",price:round(longTL.price),timestamp:now,candleIndex:closedIndex}:breakoutShort?{direction:"SHORT",price:round(shortTL.price),timestamp:now,candleIndex:closedIndex}:lastBreakout):lastBreakout;
-  const location=type==="ENTRY_1"?"EARLY_STRUCTURAL":breakoutLong||breakoutShort?"BREAKOUT":"BREAKOUT_RETEST";
+  const breakoutRecord:BreakoutRecord|undefined=type==="ENTRY_2"?(dir==="LONG"?{direction:"LONG",price:round(longExec.linePrice??price),timestamp:now,candleIndex:developing4HIndex}:{direction:"SHORT",price:round(shortExec.linePrice??price),timestamp:now,candleIndex:developing4HIndex}):lastBreakout;
+  const location=type==="ENTRY_1"?"EARLY_STRUCTURAL":"15M_TRENDLINE_RETEST";
   const entry1Trigger=dir==="LONG"
     ? [stochLong&&"4H_STOCHRSI_TURN",macdLong&&"4H_MACD_IMPROVING",emaLong&&"4H_5_13_TURN"].filter(Boolean).join("+")
     : [stochShort&&"4H_STOCHRSI_TURN",macdShort&&"4H_MACD_IMPROVING",emaShort&&"4H_5_13_TURN"].filter(Boolean).join("+");
-  const trigger=type==="ENTRY_1"?(entry1Trigger||"4H_STRUCTURE_REACTION"):breakoutLong||breakoutShort?"4H_TRENDLINE_BREAKOUT":"4H_BREAKOUT_RETEST";
+  const trigger=type==="ENTRY_1"?(entry1Trigger||"4H_STRUCTURE_REACTION"):"4H_BREAKOUT→15M_DIP";
   const signal:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),confidence:type==="ENTRY_1"?70:type==="ENTRY_2"?80:85,rr:1.5,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(tp2Move*1000)/10,reason:`${dir} ${type} | ${reason} | ${trendAlignment}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} ${strength(daily(candles4h),dir)}`,location,trigger,context:{
     marketPhase:type==="ENTRY_1"?`${dir} PROBABILITY EARLY SETUP`:`${dir} CONFIRMED ENTRY_2`,
     structure:structureDir?`4H ${structureDir}`:"4H STRUCTURE TRANSITION",momentum:`RSI ${r} | Stoch ${st.k}/${st.d} | MACD hist ${round(macd.histogram)}`,
-    pullback:type==="ENTRY_2"?"breakout_or_retest":dir==="LONG"?longFibPath.trigger:shortFibPath.trigger,
+    pullback:type==="ENTRY_2"?"15M_DIP_TO_4H_TRENDLINE":dir==="LONG"?longFibPath.trigger:shortFibPath.trigger,
     fourH513:fourH,daily513:getDaily513Diagnostic(candles4h),dailyLive:dailyLive||null,macd4h:macd,trendAlignment,sizeMultiplier:riskMultiplier,
     risk:{baseRisk:round(risk),structuralRisk:round(structuralRisk),positionSize:round(risk*riskMultiplier),trendAlignment,sizeMultiplier:riskMultiplier,estimatedLiquidation:round(liquidation),safeBoundary:round(safe),leverage:LEVERAGE},
     entryGuard:{referenceFib:dir==="LONG"?longFibNearest:shortFibNearest,referenceTrendline:dir==="LONG"?(longTL.valid?round(longTL.price):null):(shortTL.valid?round(shortTL.price):null),trendlineDistancePct:round((dir==="LONG"?longDist:shortDist)*100),executionDistancePct:round((dir==="LONG"?longFibDist:shortFibDist)*100),maxEntry:dir==="LONG"?(longFibNearest?round(longFibNearest[1]):null):(shortFibNearest?round(shortFibNearest[1]):null),maxDistancePct:ENTRY1_FIB_ZONE_PCT*100},
