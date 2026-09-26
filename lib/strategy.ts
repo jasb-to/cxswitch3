@@ -20,7 +20,7 @@ export interface Signal {
   trend?:string; location?:string; trigger?:string; context?:any;
 }
 export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; }
-export const CURRENT_SIGNAL_VERSION=9;
+export const CURRENT_SIGNAL_VERSION=10;
 
 type DailyLiveContext={
   state?:string; candidateState?:string; candidateStreak?:number;
@@ -241,18 +241,11 @@ function detect15mTrendlineRetest(
   const retestBuffer=Math.max(av15*TL_RETEST_ATR,Math.abs(currentLine)*TL_RETEST_PCT);
   const breakBuffer=Math.max(av15*TL_BREAK_ATR,Math.abs(currentLine)*BREAKOUT_PCT);
 
-  let seen=breakoutSeen;
-  let seenIndex=-1;
-  const from=Math.max(1,c15.length-TL_BREAK_WINDOW_15M);
-  for(let i=from;i<c15.length;i++){
-    const x=c15[i],prev=c15[i-1],lp=lineAtTimestamp(tl,c4,x.timestamp),pp=lineAtTimestamp(tl,c4,prev.timestamp);
-    if(lp===null||pp===null)continue;
-    if(d==="LONG"&&prev.close<=pp+breakBuffer&&x.high>lp+breakBuffer){seen=true;seenIndex=i;break;}
-    if(d==="SHORT"&&prev.close>=pp-breakBuffer&&x.low<lp-breakBuffer){seen=true;seenIndex=i;break;}
-  }
-
+  // The 4H layer owns the breakout. 15M is not allowed to manufacture one
+  // from an old crossing because that can produce an ENTRY_2 after price has
+  // already been beyond the line for hours.
+  const seen=breakoutSeen;
   if(!seen)return{breakSeen:false,retest:false,linePrice:currentLine,reason:"WAITING_FOR_4H_BREAK"};
-  if(seenIndex>=0&&c15.length-1-seenIndex>TL_BREAK_WINDOW_15M)return{breakSeen:true,retest:false,linePrice:currentLine,reason:"BREAK_TOO_OLD"};
 
   const touched=d==="LONG"
     ? current.low<=currentLine+retestBuffer
@@ -458,24 +451,43 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const closedIndex=closed.length-1;
 
   // ENTRY_2 is deliberately NOT a closed-4H signal anymore.
-  // The 4H line is built from confirmed historical structure, but the current
-  // 4H candle is allowed to break it in real time. The 15M then executes the
-  // retest against that exact projected 4H line.
+  // The current 4H candle may break the confirmed structural line in real time,
+  // but merely being beyond the line is NOT a breakout. We require a fresh
+  // cross from the correct side during the current developing 4H candle.
   const developing4HIndex=candles4h.length-1;
+  const developing4H=candles4h.at(-1)!;
+  const previous4H=closed.at(-1)!;
   const developingLongLine=longTL.valid?lineAt(longTL,developing4HIndex):null;
   const developingShortLine=shortTL.valid?lineAt(shortTL,developing4HIndex):null;
-  const current4HBreakLong=!!developingLongLine&&price>developingLongLine+Math.max(av*TL_BREAK_ATR,Math.abs(developingLongLine)*BREAKOUT_PCT);
-  const current4HBreakShort=!!developingShortLine&&price<developingShortLine-Math.max(av*TL_BREAK_ATR,Math.abs(developingShortLine)*BREAKOUT_PCT);
+  const previousLongLine=longTL.valid?lineAt(longTL,closed.length-1):null;
+  const previousShortLine=shortTL.valid?lineAt(shortTL,closed.length-1):null;
+  const longBreakBuffer=developingLongLine===null?0:Math.max(av*TL_BREAK_ATR,Math.abs(developingLongLine)*BREAKOUT_PCT);
+  const shortBreakBuffer=developingShortLine===null?0:Math.max(av*TL_BREAK_ATR,Math.abs(developingShortLine)*BREAKOUT_PCT);
 
-  // If the caller has already persisted a breakout, honour it. Otherwise the
-  // 15M scanner can recover a recent break from the candles it has in memory.
-  const persistedLongBreak=!!lastBreakout&&lastBreakout.direction==="LONG";
-  const persistedShortBreak=!!lastBreakout&&lastBreakout.direction==="SHORT";
+  // LONG: previous closed 4H close was at/below resistance and the current
+  // developing 4H candle trades above it by the breakout buffer.
+  // SHORT: previous closed 4H close was at/above support and the current
+  // developing 4H candle trades below it by the breakout buffer.
+  const current4HBreakLong=!!developingLongLine&&!!previousLongLine&&
+    previous4H.close<=previousLongLine+longBreakBuffer&&
+    developing4H.high>developingLongLine+longBreakBuffer;
+  const current4HBreakShort=!!developingShortLine&&!!previousShortLine&&
+    previous4H.close>=previousShortLine-shortBreakBuffer&&
+    developing4H.low<developingShortLine-shortBreakBuffer;
+
+  // Persisted breakouts are only usable while recent. This prevents a stale
+  // historical ENTRY_2 from creating a new retest long after the breakout.
+  const breakoutMaxAgeMs=TL_BREAK_WINDOW_15M*15*60*1000;
+  const persistedLongBreak=!!lastBreakout&&lastBreakout.direction==="LONG"&&now-lastBreakout.timestamp>=0&&now-lastBreakout.timestamp<=breakoutMaxAgeMs;
+  const persistedShortBreak=!!lastBreakout&&lastBreakout.direction==="SHORT"&&now-lastBreakout.timestamp>=0&&now-lastBreakout.timestamp<=breakoutMaxAgeMs;
+
+  // 15M is execution only. It no longer gets to invent a breakout by scanning
+  // historical 15M candles. A valid 4H break must exist first.
   const longExec=detect15mTrendlineRetest(candles15m,candles4h,longTL,"LONG",persistedLongBreak||current4HBreakLong);
   const shortExec=detect15mTrendlineRetest(candles15m,candles4h,shortTL,"SHORT",persistedShortBreak||current4HBreakShort);
 
-  const breakoutLong=current4HBreakLong;
-  const breakoutShort=current4HBreakShort;
+  const breakoutLong=current4HBreakLong||persistedLongBreak;
+  const breakoutShort=current4HBreakShort||persistedShortBreak;
   const retestLong=longExec.retest;
   const retestShort=shortExec.retest;
 
@@ -485,7 +497,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   else if(retestLong&&!retestShort&&!same(pair,"LONG",activeTrades)){dir="LONG";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
   else if(retestShort&&!retestLong&&!same(pair,"SHORT",activeTrades)){dir="SHORT";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
 
-  debug.push(`[ENTRY_2] ${pair} | LONG break=${current4HBreakLong?"YES":"NO"} retest=${retestLong?"YES":"NO"} line=${longExec.linePrice?.toFixed(2)||"—"} reason=${longExec.reason} | SHORT break=${current4HBreakShort?"YES":"NO"} retest=${retestShort?"YES":"NO"} line=${shortExec.linePrice?.toFixed(2)||"—"} reason=${shortExec.reason}`);
+  debug.push(`[4H BREAK] ${pair} | LONG prevClose=${previous4H.close.toFixed(2)} prevLine=${previousLongLine?.toFixed(2)||"—"} currentHigh=${developing4H.high.toFixed(2)} currentLine=${developingLongLine?.toFixed(2)||"—"} crossed=${current4HBreakLong?"YES":"NO"} | SHORT prevClose=${previous4H.close.toFixed(2)} prevLine=${previousShortLine?.toFixed(2)||"—"} currentLow=${developing4H.low.toFixed(2)} currentLine=${developingShortLine?.toFixed(2)||"—"} crossed=${current4HBreakShort?"YES":"NO"}`);\n  debug.push(`[ENTRY_2] ${pair} | LONG break=${breakoutLong?"YES":"NO"} retest=${retestLong?"YES":"NO"} line=${longExec.linePrice?.toFixed(2)||"—"} reason=${longExec.reason} | SHORT break=${breakoutShort?"YES":"NO"} retest=${retestShort?"YES":"NO"} line=${shortExec.linePrice?.toFixed(2)||"—"} reason=${shortExec.reason}`);
 
   if(!dir||!type){debug.push(`[ENTRY_1 WAIT] ${pair} | ${longExhausted&&longMomentum&&longLocation?`LONG exhaustion veto: ${longExhaustion.reason}`:shortExhausted&&shortMomentum&&shortLocation?`SHORT exhaustion veto: ${shortExhaustion.reason}`:dDir==="BULL"&&!longMomentum?"waiting for bullish 4H StochRSI turn":dDir==="BEAR"&&!shortMomentum?"waiting for bearish 4H StochRSI turn":dDir==="BULL"&&!longLocation?"waiting for price to approach bullish structural area":dDir==="BEAR"&&!shortLocation?"waiting for price to approach bearish structural area":"waiting for next valid setup"}`);return{market:market(baseMarket()),debug};}
   if(opposite(pair,dir,activeTrades)){debug.push(`[SIGNAL BLOCK] ${pair} ${dir} | opposite position active`);return{market:market(baseMarket()),debug};}
