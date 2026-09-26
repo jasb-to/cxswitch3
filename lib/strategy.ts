@@ -2,7 +2,7 @@
 // 1D = directional context | 4H = timing + structure
 // ENTRY_1 = probability-based early setup
 // ENTRY_2 = confirmed breakout / retest
-// ADD = next wave after pullback/retest with thesis intact
+// No ADD alerts — one-shot entries only; manage the position after entry.
 // Exhaustion = ENTRY_1 quality veto, not a direction generator
 // Fib = primary ENTRY_1 location; trendline remains for ENTRY_2
 // Management = closed-4H wave reversal + realistic TP1/TP2
@@ -20,7 +20,7 @@ export interface Signal {
   trend?:string; location?:string; trigger?:string; context?:any;
 }
 export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; }
-export const CURRENT_SIGNAL_VERSION=7;
+export const CURRENT_SIGNAL_VERSION=8;
 
 type DailyLiveContext={
   state?:string; candidateState?:string; candidateStreak?:number;
@@ -288,38 +288,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const retestLong=!!lastBreakout&&lastBreakout.direction==="LONG"&&age<=BREAKOUT_EXPIRY_CANDLES&&Math.abs((price-lastBreakout.price)/Math.max(Math.abs(lastBreakout.price),1))<=RETEST_PCT;
   const retestShort=!!lastBreakout&&lastBreakout.direction==="SHORT"&&age<=BREAKOUT_EXPIRY_CANDLES&&Math.abs((price-lastBreakout.price)/Math.max(Math.abs(lastBreakout.price),1))<=RETEST_PCT;
 
-  const e8=ema(closes,TF_FAST).at(-1)??price;
-  // ADD is only the next wave after an actual pullback/retest. A fresh momentum turn
-  // by itself is not enough: price must first be back into a meaningful retracement
-  // area. This prevents ADDs from firing while an existing position is simply
-  // continuing or cooling at/near the highs.
-  const addFibLong=longFib?[longFib.fib382,longFib.fib50,longFib.fib618].some(level=>Math.abs((price-level)/Math.max(Math.abs(level),1))<=RETEST_PCT):false;
-  const addFibShort=shortFib?[shortFib.fib382,shortFib.fib50,shortFib.fib618].some(level=>Math.abs((price-level)/Math.max(Math.abs(level),1))<=RETEST_PCT):false;
-  const addRecentHigh=Math.max(...closed.slice(-8).map(x=>x.high)),addRecentLow=Math.min(...closed.slice(-8).map(x=>x.low));
-  const pulledBackLong=price<=e8*(1+0.002)&&price<addRecentHigh*(1-0.003);
-  const pulledBackShort=price>=e8*(1-0.002)&&price>addRecentLow*(1+0.003);
-  // ADD requires BOTH sides of the setup:
-  // 1) a real retracement/pullback has occurred, AND
-  // 2) price is in a meaningful retracement area (Fib or the pullback/EMA area).
-  // Fib proximity alone is never enough to trigger an ADD.
-  const addLocationLong=pulledBackLong&&(addFibLong||pulledBackLong);
-  const addLocationShort=pulledBackShort&&(addFibShort||pulledBackShort);
-
-  // ADD is a NEW wave, not a repeated "StochRSI is still rising" condition.
-  // Require a completed 4H StochRSI crossover on the closed candle. This means
-  // one ADD can fire on a genuine new momentum turn, but subsequent cron runs
-  // cannot keep adding while the same wave remains above K/D.
-  const addLongMomentumTurn=st.k>st.d&&prevSt.k<=prevSt.d&&st.k>prevSt.k;
-  const addShortMomentumTurn=st.k<st.d&&prevSt.k>=prevSt.d&&st.k<prevSt.k;
-  const addLong=same(pair,"LONG",activeTrades)&&addLongMomentumTurn&&fourH.direction==="BULLISH"&&addLocationLong&&!macd.bearishCross;
-  const addShort=same(pair,"SHORT",activeTrades)&&addShortMomentumTurn&&fourH.direction==="BEARISH"&&addLocationShort&&!macd.bullishCross;
-  debug.push(`[ADD LOCATION] ${pair} | LONG fib=${addFibLong?"YES":"NO"} pullback=${pulledBackLong?"YES":"NO"} | SHORT fib=${addFibShort?"YES":"NO"} pullback=${pulledBackShort?"YES":"NO"}`);
-
-  let dir:Direction|null=null,type:"ENTRY_1"|"ENTRY_2"|"ADD"|null=null,reason="";
+  let dir:Direction|null=null,type:"ENTRY_1"|"ENTRY_2"|null=null,reason="";
   if(longEntry1&&!shortEntry1){dir="LONG";type="ENTRY_1";reason="probability-based early setup";}
   else if(shortEntry1&&!longEntry1){dir="SHORT";type="ENTRY_1";reason="probability-based early setup";}
-  else if(addLong&&!addShort){dir="LONG";type="ADD";reason="next wave — fresh 4H momentum turn with thesis intact";}
-  else if(addShort&&!addLong){dir="SHORT";type="ADD";reason="next wave — fresh 4H momentum turn with thesis intact";}
   else if(breakoutLong&&!breakoutShort&&!same(pair,"LONG",activeTrades)){dir="LONG";type="ENTRY_2";reason="confirmed trendline breakout";}
   else if(breakoutShort&&!breakoutLong&&!same(pair,"SHORT",activeTrades)){dir="SHORT";type="ENTRY_2";reason="confirmed trendline breakout";}
   else if(retestLong&&!same(pair,"LONG",activeTrades)){dir="LONG";type="ENTRY_2";reason="breakout retest confirmation";}
@@ -357,15 +328,15 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const tp1Move=Math.abs(tp1-entry)/Math.max(entry,1),tp2Move=Math.abs(tp2-entry)/Math.max(entry,1);
   const dailyAligned=(dDir==="BULL"&&dir==="LONG")||(dDir==="BEAR"&&dir==="SHORT"),riskMultiplier=dailyAligned?1:0.5,trendAlignment=dailyAligned?"WITH_1D":"AGAINST_1D";
   const breakoutRecord:BreakoutRecord|undefined=type==="ENTRY_2"?(breakoutLong?{direction:"LONG",price:round(longTL.price),timestamp:now,candleIndex:closedIndex}:breakoutShort?{direction:"SHORT",price:round(shortTL.price),timestamp:now,candleIndex:closedIndex}:lastBreakout):lastBreakout;
-  const location=type==="ENTRY_1"?"EARLY_STRUCTURAL":breakoutLong||breakoutShort?"BREAKOUT":type==="ADD"?"MOMENTUM_PULLBACK":"BREAKOUT_RETEST";
+  const location=type==="ENTRY_1"?"EARLY_STRUCTURAL":breakoutLong||breakoutShort?"BREAKOUT":"BREAKOUT_RETEST";
   const entry1Trigger=dir==="LONG"
     ? [stochLong&&"4H_STOCHRSI_TURN",macdLong&&"4H_MACD_IMPROVING",emaLong&&"4H_5_13_TURN"].filter(Boolean).join("+")
     : [stochShort&&"4H_STOCHRSI_TURN",macdShort&&"4H_MACD_IMPROVING",emaShort&&"4H_5_13_TURN"].filter(Boolean).join("+");
-  const trigger=type==="ENTRY_1"?(entry1Trigger||"4H_STRUCTURE_REACTION"):breakoutLong||breakoutShort?"4H_TRENDLINE_BREAKOUT":type==="ADD"?"4H_FRESH_MOMENTUM_TURN":"4H_BREAKOUT_RETEST";
+  const trigger=type==="ENTRY_1"?(entry1Trigger||"4H_STRUCTURE_REACTION"):breakoutLong||breakoutShort?"4H_TRENDLINE_BREAKOUT":"4H_BREAKOUT_RETEST";
   const signal:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),confidence:type==="ENTRY_1"?70:type==="ENTRY_2"?80:85,rr:1.5,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(tp2Move*1000)/10,reason:`${dir} ${type} | ${reason} | ${trendAlignment}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} ${strength(daily(candles4h),dir)}`,location,trigger,context:{
-    marketPhase:type==="ENTRY_1"?`${dir} PROBABILITY EARLY SETUP`:type==="ENTRY_2"?`${dir} CONFIRMED ENTRY_2`:`${dir} ADD NEXT WAVE`,
+    marketPhase:type==="ENTRY_1"?`${dir} PROBABILITY EARLY SETUP`:`${dir} CONFIRMED ENTRY_2`,
     structure:structureDir?`4H ${structureDir}`:"4H STRUCTURE TRANSITION",momentum:`RSI ${r} | Stoch ${st.k}/${st.d} | MACD hist ${round(macd.histogram)}`,
-    pullback:type==="ADD"?"fresh_4h_momentum_turn":type==="ENTRY_2"?"breakout_or_retest":dir==="LONG"?longFibPath.trigger:shortFibPath.trigger,
+    pullback:type==="ENTRY_2"?"breakout_or_retest":dir==="LONG"?longFibPath.trigger:shortFibPath.trigger,
     fourH513:fourH,daily513:getDaily513Diagnostic(candles4h),dailyLive:dailyLive||null,macd4h:macd,trendAlignment,sizeMultiplier:riskMultiplier,
     risk:{baseRisk:round(risk),structuralRisk:round(structuralRisk),positionSize:round(risk*riskMultiplier),trendAlignment,sizeMultiplier:riskMultiplier,estimatedLiquidation:round(liquidation),safeBoundary:round(safe),leverage:LEVERAGE},
     entryGuard:{referenceFib:dir==="LONG"?longFibNearest:shortFibNearest,referenceTrendline:dir==="LONG"?(longTL.valid?round(longTL.price):null):(shortTL.valid?round(shortTL.price):null),trendlineDistancePct:round((dir==="LONG"?longDist:shortDist)*100),executionDistancePct:round((dir==="LONG"?longFibDist:shortFibDist)*100),maxEntry:dir==="LONG"?(longFibNearest?round(longFibNearest[1]):null):(shortFibNearest?round(shortFibNearest[1]):null),maxDistancePct:ENTRY1_FIB_ZONE_PCT*100},
@@ -480,7 +451,7 @@ export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candl
 }
 export interface ValidityCheck{valid:boolean;reason:string;exited:boolean;state?:"VALID"|"STALE"|"INVALID";}
 export function isSignalStillValid(s:Signal,p:number,now=Date.now()):ValidityCheck{if(now-s.timestamp>(s.type==="ADD"?4:24)*60*60*1000)return{valid:false,reason:"expired_ttl",exited:true,state:"STALE"};if(s.direction==="LONG"&&p<=s.stop)return{valid:false,reason:"sl_hit",exited:true,state:"INVALID"};if(s.direction==="SHORT"&&p>=s.stop)return{valid:false,reason:"sl_hit",exited:true,state:"INVALID"};return{valid:true,reason:"active",exited:false,state:"VALID"};}
-export type ManagementState="STAY"|"PROTECT"|"DEFEND"|"EXIT";
+export type ManagementState="STAY"|"WATCH"|"EXIT";
 export interface HoldResult{shouldHold:boolean;reason:string;managementState:ManagementState;recommendation:string;newStop?:number;scaleOut?:{level:number;size:number;label:string};}
 function waveMomentum(c:Candle[],d:Direction){
   const closed=c.length>1?c.slice(0,-1):c;
@@ -505,22 +476,21 @@ export function shouldHold(s:Signal,c:Candle[],p:number):HoldResult{
   if(s.direction==="LONG"&&p<=s.stop)return{shouldHold:false,reason:"sl_hit",managementState:"EXIT",recommendation:"EXIT TRADE"};
   if(s.direction==="SHORT"&&p>=s.stop)return{shouldHold:false,reason:"sl_hit",managementState:"EXIT",recommendation:"EXIT TRADE"};
   if(s.tp2!==undefined&&((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2)))return{shouldHold:false,reason:"tp2_hit",managementState:"EXIT",recommendation:"EXIT TRADE",scaleOut:{level:s.tp2,size:1,label:"TP2_FINAL"}};
-  if(s.tp1!==undefined&&((s.direction==="LONG"&&p>=s.tp1)||(s.direction==="SHORT"&&p<=s.tp1)))return{shouldHold:true,reason:momentum.state==="WAVE"?"tp1_hit_protect_momentum":"tp1_hit_protect",managementState:"PROTECT",recommendation:"PROTECT TRADE",newStop:s.entry,scaleOut:{level:s.tp1,size:.5,label:"TP1_50"}};
-  // Management precedence is deliberate:
+  if(s.tp1!==undefined&&((s.direction==="LONG"&&p>=s.tp1)||(s.direction==="SHORT"&&p<=s.tp1)))return{shouldHold:true,reason:momentum.state==="WAVE"?"tp1_hit_watch_momentum":"tp1_hit_watch",managementState:"WATCH",recommendation:"WATCH TRADE",newStop:s.entry,scaleOut:{level:s.tp1,size:.5,label:"TP1_50"}};
+  // Management is deliberately simple:
   // EXIT = confirmed 4H reversal / confirmed structural breakdown.
-  // DEFEND = structure has turned against the trade, even if the old momentum
-  // wave is still technically active. This prevents "wave_active" masking
-  // a developing structural reversal.
-  // PROTECT = normal pullback / cooling momentum.
+  // WATCH = normal pullback/cooling OR structure coming under pressure.
   // STAY = structure + wave remain aligned.
+  // WATCH never widens the stop and never creates an add-on entry.
   if(momentum.confirmedReversal||structureBroken)return{shouldHold:false,reason:momentum.confirmedReversal?"momentum_confirmed_4h_reversal":"structure_break_confirmed",managementState:"EXIT",recommendation:"EXIT TRADE"};
-  if(oppositeStructure)return{shouldHold:true,reason:"structure_under_pressure",managementState:"DEFEND",recommendation:"DEFEND TRADE"};
-  if(momentum.weakening||priceAgainstE8)return{shouldHold:true,reason:"healthy_4h_pullback",managementState:"PROTECT",recommendation:"PROTECT TRADE"};
+  if(oppositeStructure)return{shouldHold:true,reason:"structure_under_pressure",managementState:"WATCH",recommendation:"WATCH TRADE"};
+  if(momentum.weakening||priceAgainstE8)return{shouldHold:true,reason:"healthy_4h_pullback",managementState:"WATCH",recommendation:"WATCH TRADE"};
   if(momentum.aligned)return{shouldHold:true,reason:"wave_active",managementState:"STAY",recommendation:"STAY IN TRADE"};
-  return{shouldHold:true,reason:"wave_cooling",managementState:"PROTECT",recommendation:"PROTECT TRADE"};
+  return{shouldHold:true,reason:"wave_cooling",managementState:"WATCH",recommendation:"WATCH TRADE"};
 }
 export function shouldHoldCompat(s:Signal,c4:Candle[],c1:Candle[],p:number){return shouldHold(s,c4,p);}
 export function filterExpiredSignals(signals:Signal[],prices:Record<string,number>,now?:number){const active:Signal[]=[],exited:{signal:Signal;reason:string}[]=[];for(const s of signals){const p=prices[s.pair];if(p===undefined){active.push(s);continue;}const v=isSignalStillValid(s,p,now);v.valid?active.push(s):exited.push({signal:s,reason:v.reason});}return{active,exited};}
 export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
 export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if(s.direction==="LONG"&&p<=s.stop)return"SL_HIT";if(s.direction==="SHORT"&&p>=s.stop)return"SL_HIT";return"ACTIVE";}
 export function rebuildStateFromTrades(_:Record<string,any>):void{return;}
+
