@@ -469,10 +469,10 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   // SHORT: previous closed 4H close was at/above support and the current
   // developing 4H candle trades below it by the breakout buffer.
   const current4HBreakLong=!!developingLongLine&&!!previousLongLine&&
-    previous4H.close<=previousLongLine+longBreakBuffer&&
+    previous4H.close<=previousLongLine&&
     developing4H.high>developingLongLine+longBreakBuffer;
   const current4HBreakShort=!!developingShortLine&&!!previousShortLine&&
-    previous4H.close>=previousShortLine-shortBreakBuffer&&
+    previous4H.close>=previousShortLine&&
     developing4H.low<developingShortLine-shortBreakBuffer;
 
   // Persisted breakouts are only usable while recent. This prevents a stale
