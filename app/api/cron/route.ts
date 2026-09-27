@@ -5,7 +5,7 @@ import { generateSignal, getMarketSnapshot, getCycleRunnerSnapshot, shouldHold, 
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { detectStructureShift, recordStructureShiftSnapshot } from "@/lib/structure-shift";
 import { CXSWITCH_VERSION } from "@/lib/version";
-import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, claimTelegramAlert, releaseTelegramAlert, getCycleRunnerState, setCycleRunnerState } from "@/lib/state";
+import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, getCycleRunnerState, setCycleRunnerState } from "@/lib/state";
 import { getLastBreakout, setLastBreakout } from "@/lib/v28-breakout-state";
 import { sendAlert } from "@/lib/telegram";
 import { run1DTrendExperiment } from "@/lib/1d-trend-runner";
@@ -22,13 +22,14 @@ const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 const round=(n:number)=>n>=10000?Math.round(n):n>=1000?Math.round(n*10)/10:n>=100?Math.round(n*100)/100:Math.round(n*1000)/1000;
 function sameRecentSignal(history:any[],s:Signal,now:number){return history.some(h=>h.pair===s.pair&&h.direction===s.direction&&h.type===s.type&&h.exitReason!=="manual_symbol_reset"&&now-h.timestamp<ADD_DEDUP_MS&&Math.abs((h.entry-s.entry)/s.entry)<ADD_DEDUP_ENTRY_PCT);}
 function toSignalLike(t:any):Signal{return{...t,scale:t.type,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||"",trend:t.trend||t.direction,location:t.location||"",trigger:t.trigger||""} as Signal;}
-function telegramAlertKey(signal:Signal):string{
+function telegramAlertKey(signal:Signal,resetAt?:number):string{
   const record=signal.context?.breakoutRecord;
   if(signal.type==="ENTRY_1"||signal.type==="ENTRY_2"){
-    if(record) return `${signal.pair}:${signal.direction}:${signal.type}:candle:${record.candleIndex}:${record.price}`;
+    const resetSuffix=resetAt?`:reset:${resetAt}`:"";
+    if(record) return `${signal.pair}:${signal.direction}:${signal.type}:candle:${record.candleIndex}:${record.price}${resetSuffix}`;
     const candleTs=signal.context?.entry1CandleTimestamp;
-    if(candleTs) return `${signal.pair}:${signal.direction}:${signal.type}:candleTs:${candleTs}`;
-    return `${signal.pair}:${signal.direction}:${signal.type}:entry:${signal.entry}`;
+    if(candleTs) return `${signal.pair}:${signal.direction}:${signal.type}:candleTs:${candleTs}${resetSuffix}`;
+    return `${signal.pair}:${signal.direction}:${signal.type}:entry:${signal.entry}${resetSuffix}`;
   }
   return `${signal.pair}:${signal.direction}:${signal.type}:${signal.id}`;
 }
@@ -108,7 +109,8 @@ export async function GET(request:Request){
   if((signal.type==="ENTRY_1"||signal.type==="ENTRY_2")&&sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ${signal.type} deduped: same entry condition was alerted recently; no duplicate history/position/alert`);continue;}
   if(signal.type==="ADD"&&sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ADD deduped: same entry condition was alerted recently; waiting for a new retest/price`);continue;}
   const cooldowns=await getCooldowns(),cd=cooldowns[`${pair}_${signal.direction}`];if(cd&&Date.now()<cd){console.log(`[PAIR] ${pair} — COOLDOWN until ${new Date(cd).toISOString()}`);continue;}
-  const alertKey=telegramAlertKey(signal);const claimed=await claimTelegramAlert(alertKey);
+  const cardResets=await getCardResets();
+  const alertKey=telegramAlertKey(signal,cardResets[pair]);const claimed=await claimTelegramAlert(alertKey);
   // A live position is never created unless its alert was successfully claimed.
   // This prevents state from showing a trade the user was never told about.
   if(!claimed){
