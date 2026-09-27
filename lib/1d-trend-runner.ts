@@ -1,12 +1,9 @@
-import { getCandles, krakenPairFormat, getCurrentPrice } from "@/lib/kraken";
+import { getCandles, krakenPairFormat } from "@/lib/kraken";
 import { evaluate1DTrend } from "@/lib/1d-trend-engine";
 import { get1DTrendState, record1DTrend } from "@/lib/1d-trend-state";
 import { getActiveSignals } from "@/lib/state";
-import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
-const API_DELAY_MS = 450;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function run1DTrendExperiment(activeOverride?: any[]) {
   const started = Date.now();
@@ -17,11 +14,6 @@ export async function run1DTrendExperiment(activeOverride?: any[]) {
   for (const pair of PAIRS) {
     try {
       const daily = await getCandles(krakenPairFormat(`${pair}/USD`), 1440, dailySince);
-      await sleep(API_DELAY_MS);
-      const currentPrice = await getCurrentPrice(krakenPairFormat(`${pair}/USD`));
-      await sleep(API_DELAY_MS);
-      const c4 = await getCandles(krakenPairFormat(`${pair}/USD`), 240);
-      await sleep(API_DELAY_MS);
 
       if (daily.length < 220) {
         console.log(`[1D] ${pair} | INSUFFICIENT daily=${daily.length}`);
@@ -31,7 +23,6 @@ export async function run1DTrendExperiment(activeOverride?: any[]) {
       const latestDaily = daily.at(-1)!;
       const result = evaluate1DTrend(daily);
       const recorded = await record1DTrend(pair, result, active, latestDaily.timestamp);
-      const fourH = get4HEmaDiagnostic(c4);
       const ageHours = (Date.now() - latestDaily.timestamp) / (60 * 60 * 1000);
       const flip = recorded.flip ? ` | FLIP=${recorded.state}` : "";
 
@@ -45,7 +36,7 @@ export async function run1DTrendExperiment(activeOverride?: any[]) {
         flip: recorded.flip,
         observationTimestamp: latestDaily.timestamp,
         price: result.price,
-        currentTickerPrice: currentPrice,
+        currentTickerPrice: latestDaily.close,
         latestDailyClose: latestDaily.close,
         latestDailyTimestamp: latestDaily.timestamp,
         latestDailyAgeHours: ageHours,
@@ -54,7 +45,6 @@ export async function run1DTrendExperiment(activeOverride?: any[]) {
         fast513: result.fast513,
         adx: result.adx,
         momentum: result.momentum,
-        fourH513: fourH,
         v28Active: active.filter((x: any) => x.pair === pair),
       });
     } catch (error) {
