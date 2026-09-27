@@ -19,8 +19,7 @@ const MEXC_PAIRS=new Set(["PAID"]);
 const MIN_CRON_INTERVAL_MS=2*60*1000;
 const ADD_DEDUP_MS=45*60*1000;
 const ADD_DEDUP_ENTRY_PCT=0.004;
-const API_DELAY_MS=450;
-const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
+const VERBOSE_CRON_LOGS=process.env.CRON_VERBOSE_LOGS==="true";
 const round=(n:number)=>n>=10000?Math.round(n):n>=1000?Math.round(n*10)/10:n>=100?Math.round(n*100)/100:Math.round(n*1000)/1000;
 function sameRecentSignal(history:any[],s:Signal,now:number){return history.some(h=>h.pair===s.pair&&h.direction===s.direction&&h.type===s.type&&h.exitReason!=="manual_symbol_reset"&&now-h.timestamp<ADD_DEDUP_MS&&Math.abs((h.entry-s.entry)/s.entry)<ADD_DEDUP_ENTRY_PCT);}
 function toSignalLike(t:any):Signal{return{...t,scale:t.type,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||"",trend:t.trend||t.direction,location:t.location||"",trigger:t.trigger||""} as Signal;}
@@ -46,7 +45,7 @@ export async function GET(request:Request){
  let active=await getActiveSignals();console.log(`[STATE] Active signals on entry: ${active.map(a=>`${a.pair}_${a.direction}_${a.type}`).join(", ")||"none"}`);
  let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[],managementByPair:Record<string,any>={};
  for(const trade of [...active]){try{
-  const c=await getCandles(krakenPairFormat(trade.pair+"/USD"),240);await sleep(API_DELAY_MS);const price=c.at(-1)?.close;if(price===undefined){console.log(`[MANAGE] ${trade.pair} — no price`);continue;}
+  const c=await getCandles(krakenPairFormat(trade.pair+"/USD"),240);const price=c.at(-1)?.close;if(price===undefined){console.log(`[MANAGE] ${trade.pair} — no price`);continue;}
   // Existing positions may pre-date the 20x liquidation-safe SL fix. Bring them
   // up to the same protection before evaluating the rest of the hold logic.
   const safeStop=liquidationSafeStop(trade.entry,trade.direction);
@@ -94,22 +93,21 @@ export async function GET(request:Request){
  }
 
  for(const pair of PAIRS){try{
-  const mexc=MEXC_PAIRS.has(pair);const marketSymbol=pair+"_USDT";const c1=mexc?await getMexcCandles(marketSymbol,60):await getCandles(krakenPairFormat(pair+"/USD"),60);await sleep(API_DELAY_MS);const c4=mexc?await getMexcCandles(marketSymbol,240):await getCandles(krakenPairFormat(pair+"/USD"),240);await sleep(API_DELAY_MS);const c15=mexc?await getMexcCandles(marketSymbol,15):await getCandles(krakenPairFormat(pair+"/USD"),15);await sleep(API_DELAY_MS);const cW=mexc?await getMexcCandles(marketSymbol,10080,Math.floor((Date.now()-2*365*24*60*60*1000)/1000)):await getCandles(krakenPairFormat(pair+"/USD"),10080,Math.floor((Date.now()-2*365*24*60*60*1000)/1000));await sleep(API_DELAY_MS);
-  if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
+  const mexc=MEXC_PAIRS.has(pair);const marketSymbol=pair+"_USDT";const c1=mexc?await getMexcCandles(marketSymbol,60):await getCandles(krakenPairFormat(pair+"/USD"),60);const c4=mexc?await getMexcCandles(marketSymbol,240):await getCandles(krakenPairFormat(pair+"/USD"),240);const c15=mexc?await getMexcCandles(marketSymbol,15):await getCandles(krakenPairFormat(pair+"/USD"),15);const cW=mexc?await getMexcCandles(marketSymbol,10080,Math.floor((Date.now()-2*365*24*60*60*1000)/1000)):await getCandles(krakenPairFormat(pair+"/USD"),10080,Math.floor((Date.now()-2*365*24*60*60*1000)/1000));if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
   const ema513=get4HEmaDiagnostic(c4);
   console.log(`[EMA 4H 5/13] ${pair} — ${ema513.label} | 5=${ema513.ema5.toFixed(4)} | 13=${ema513.ema13.toFixed(4)} | spread=${ema513.spread.toFixed(4)} (${ema513.spreadPct.toFixed(3)}%) | spreadATR=${ema513.spreadAtr.toFixed(3)} | contracting=${ema513.spreadContracting?"YES":"NO"} | Δspread=${ema513.spreadChangePct.toFixed(2)}% | 5slope=${ema513.ema5Slope.toFixed(4)} | 13slope=${ema513.ema13Slope.toFixed(4)} | cross=${ema513.crossNow?"YES":"NO"}`);
   const structureShift=detectStructureShift(pair,c4);
   const structureRecorded=await recordStructureShiftSnapshot(structureShift);
-  console.log(`[STRUCTURE SHIFT] ${pair} — structure=${structureShift.structure} -> shift=${structureShift.shiftTo} | state=${structureShift.state} | protected=${structureShift.protectedLevel?.toFixed(4)??"—"} | break=${structureShift.breakDistanceAtr?.toFixed(2)??"—"} ATR | recorded=${structureRecorded?"YES":"NO"} | ${structureShift.reason}`); // diagnostic only; never an entry veto
-  const price=mexc?await getMexcPrice(marketSymbol):c1.at(-1)!.close;await sleep(API_DELAY_MS);const existing=active.find(x=>x.pair===pair),storedBreakout=await getLastBreakout(pair);
+  if(VERBOSE_CRON_LOGS)console.log(`[STRUCTURE SHIFT] ${pair} — structure=${structureShift.structure} -> shift=${structureShift.shiftTo} | state=${structureShift.state} | protected=${structureShift.protectedLevel?.toFixed(4)??"—"} | break=${structureShift.breakDistanceAtr?.toFixed(2)??"—"} ATR | recorded=${structureRecorded?"YES":"NO"} | ${structureShift.reason}`); // diagnostic only; never an entry veto
+  const price=mexc?await getMexcPrice(marketSymbol):c1.at(-1)!.close;const existing=active.find(x=>x.pair===pair),storedBreakout=await getLastBreakout(pair);
   const breakoutMaxAgeMs=32*15*60*1000;
   const lastBreakout=storedBreakout&&Date.now()-storedBreakout.timestamp>=0&&Date.now()-storedBreakout.timestamp<=breakoutMaxAgeMs?storedBreakout:undefined;
-  console.log(`[BREAKOUT STATE] ${pair} — ${lastBreakout?`${lastBreakout.direction}@${lastBreakout.price} candle=${lastBreakout.candleIndex} age=${c4.length-1-lastBreakout.candleIndex}`:"NONE"}`);
+  if(VERBOSE_CRON_LOGS)console.log(`[BREAKOUT STATE] ${pair} — ${lastBreakout?`${lastBreakout.direction}@${lastBreakout.price} candle=${lastBreakout.candleIndex} age=${c4.length-1-lastBreakout.candleIndex}`:"NONE"}`);
   const live1D=dailyState[pair]||undefined;const result=generateSignal(pair,c1,c4,c15,active,price,lastBreakout,live1D,cW);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);if(pair==="BTC"||pair==="ETH")snapshot.cycleRunner=getCycleRunnerSnapshot(pair,c1,c4,cW,price);snapshot.fourH513=ema513;snapshot.structureShift=structureShift;snapshot.lastBreakout=lastBreakout||null;snapshot.dailyLive=live1D||null;
-  if(result.breakout){await setLastBreakout(pair,result.breakout);console.log(`[BREAKOUT STATE] ${pair} — recorded ${result.breakout.direction}@${result.breakout.price} candle=${result.breakout.candleIndex}`);}
-  const dbg=result.debug||[];dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
-  if(existing){snapshot.positionState="ACTIVE";snapshot.positionDirection=existing.direction;snapshot.positionEntry=existing.entry;snapshot.positionStop=existing.stop;snapshot.positionTarget=existing.tp2??existing.target;snapshot.positionTp1=existing.tp1;snapshot.positionTp2=existing.tp2;const mg=managementByPair[pair];if(mg){snapshot.positionManagementState=mg.state;snapshot.positionManagementRecommendation=mg.recommendation;snapshot.positionManagementReason=mg.reason;}snapshot.positionTp1HitAt=existing.tp1HitAt;snapshot.positionTp2HitAt=existing.tp2HitAt;console.log(`[PAIR] ${pair} — POSITION ACTIVE (${existing.direction}) — entry engine paused`);}
-  marketData.push(snapshot);const signal=result.signal;if(!signal){if(!existing)console.log(`[PAIR] ${pair} — NO SIGNAL`);continue;}
+  if(result.breakout){await setLastBreakout(pair,result.breakout);if(VERBOSE_CRON_LOGS)console.log(`[BREAKOUT STATE] ${pair} — recorded ${result.breakout.direction}@${result.breakout.price} candle=${result.breakout.candleIndex}`);}
+  const dbg=result.debug||[];if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
+  if(existing){snapshot.positionState="ACTIVE";snapshot.positionDirection=existing.direction;snapshot.positionEntry=existing.entry;snapshot.positionStop=existing.stop;snapshot.positionTarget=existing.tp2??existing.target;snapshot.positionTp1=existing.tp1;snapshot.positionTp2=existing.tp2;const mg=managementByPair[pair];if(mg){snapshot.positionManagementState=mg.state;snapshot.positionManagementRecommendation=mg.recommendation;snapshot.positionManagementReason=mg.reason;}snapshot.positionTp1HitAt=existing.tp1HitAt;snapshot.positionTp2HitAt=existing.tp2HitAt;console.log(`[PAIR] ${pair} | ACTIVE ${existing.direction} | entry engine paused`);}
+  marketData.push(snapshot);const signal=result.signal;if(!signal){if(!existing)console.log(`[PAIR] ${pair} | 1D=${live1D?.direction||"—"} | 4H=${ema513.label} | WAIT`);continue;}
   console.log(`[SIGNAL] ${pair} — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1??"—"} | TP2 ${signal.tp2??"—"} | RR ${signal.rr}`);
   const hasSameDirection=active.some(x=>x.pair===pair&&x.direction===signal.direction);if(signal.type==="ENTRY_1"&&hasSameDirection){console.log(`[PAIR] ${pair} — ENTRY_1 blocked: active same-direction position already exists`);continue;}if(signal.type==="ADD"&&!hasSameDirection){console.log(`[PAIR] ${pair} — ADD blocked: no active same-direction position`);continue;}if(existing&&signal.type!=="ADD"){console.log(`[PAIR] ${pair} — signal suppressed because position is already active`);continue;}
   const history=await getSignalHistory();
