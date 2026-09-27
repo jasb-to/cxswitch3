@@ -20,7 +20,7 @@ export interface Signal {
   trend?:string; location?:string; trigger?:string; context?:any;
 }
 export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; breakout?:BreakoutRecord; }
-export const CURRENT_SIGNAL_VERSION=16;
+export const CURRENT_SIGNAL_VERSION=15;
 
 type DailyLiveContext={
   state?:string; candidateState?:string; candidateStreak?:number;
@@ -28,8 +28,7 @@ type DailyLiveContext={
   adx?:number; momentum?:any; protectedLevel?:number|null;
 };
 type Direction="LONG"|"SHORT";
-type TrendState="BULL_ESTABLISHED"|"BULL_WEAKENING"|"BULL_TRANSITION"|"BEAR_ESTABLISHED"|"BEAR_WEAKENING"|"BEAR_TRANSITION"|"NEUTRAL";
-type WeeklyDirection={direction:Direction|null;reason:string;state:TrendState;ema5:number;ema13:number;ema5Slope:number;ema13Slope:number;close:number;adx:number;stochK:number;stochD:number;stochPrevK:number;stochPrevD:number;structure:"HH_HL"|"LH_LL"|"MIXED";};
+type WeeklyDirection={direction:Direction|null;reason:string;ema5:number;ema13:number;ema5Slope:number;ema13Slope:number;close:number;adx:number;};
 type Pivot={index:number;price:number;timestamp:number};
 type Trendline={valid:boolean;slope:number;intercept:number;price:number;pivots:Pivot[];ageCandles:number;stale:boolean;staleByAge:boolean;staleByDistance:boolean;invalidated:boolean;reason:string};
 type FibLevels={direction:Direction;swingLow:number;swingHigh:number;fib382:number;fib50:number;fib618:number;lowIndex:number;highIndex:number};
@@ -314,56 +313,16 @@ function getFibLevels(c:Candle[],d:Direction):FibLevels|null{
     : {direction:d,swingLow:low.price,swingHigh:high.price,fib382:low.price+range*.382,fib50:low.price+range*.5,fib618:low.price+range*.618,lowIndex:low.index,highIndex:high.index};
 }
 function macd4h(c:Candle[]){const closes=c.map(x=>x.close),fast=ema(closes,12),slow=ema(closes,26),m=fast.map((v,i)=>v-(slow[i]??v)),sig=ema(m,9),h=m.map((v,i)=>v-(sig[i]??0)),i=h.length-1,p=Math.max(0,i-1),cur=h[i]??0,prev=h[p]??0;return{macd:m[i]??0,signal:sig[i]??0,histogram:cur,prevHistogram:prev,prev2Histogram:h[Math.max(0,i-2)]??prev,rising:cur>prev,falling:cur<prev,bullishShift:cur>prev||cur>=0&&prev<0,bearishShift:cur<prev||cur<=0&&prev>0,bullishCross:cur>=0&&prev<0,bearishCross:cur<=0&&prev>0,bullishColour:cur>prev&&cur<0,bearishColour:cur<prev&&cur>0,histogramPct:Math.abs(cur)>0?(cur-prev)/Math.abs(cur)*100:0};}
-function trendStateFromCandles(c:Candle[],fast:number,slow:number):{state:TrendState;direction:Direction|null;structure:"HH_HL"|"LH_LL"|"MIXED";stochK:number;stochD:number;stochPrevK:number;stochPrevD:number}{
-  const closed=c.length>1?c.slice(0,-1):c;
-  if(closed.length<Math.max(slow+5,22))return{state:"NEUTRAL",direction:null,structure:"MIXED",stochK:50,stochD:50,stochPrevK:50,stochPrevD:50};
-  const closes=closed.map(x=>x.close),f=ema(closes,fast),s=ema(closes,slow);
-  const ema5=f.at(-1)!,ema13=s.at(-1)!,prev5=f.at(-2)!,prev13=s.at(-2)!;
-  const spread=ema5-ema13,prevSpread=prev5-prev13;
-  const sk=stochRsi(closes),sp=stochRsi(closes.slice(0,-1));
-  const recent=closed.slice(-4),prior=closed.slice(-8,-4);
-  const recentHigh=Math.max(...recent.map(x=>x.high)),priorHigh=Math.max(...prior.map(x=>x.high));
-  const recentLow=Math.min(...recent.map(x=>x.low)),priorLow=Math.min(...prior.map(x=>x.low));
-  const structure: "HH_HL"|"LH_LL"|"MIXED" = recentHigh>priorHigh&&recentLow>priorLow?"HH_HL":recentHigh<priorHigh&&recentLow<priorLow?"LH_LL":"MIXED";
-  const fallingMomentum=sk.k<sp.k&&sk.d<=sp.d;
-  const risingMomentum=sk.k>sp.k&&sk.d>=sp.d;
-  const downCandles=recent.filter(x=>x.close<x.open).length;
-  const upCandles=recent.filter(x=>x.close>x.open).length;
-  const bullBase=ema5>ema13&&closed.at(-1)!.close>ema13;
-  const bearBase=ema5<ema13&&closed.at(-1)!.close<ema13;
-  const bullWeak=fallingMomentum||downCandles>=3||ema5<prev5||spread<prevSpread;
-  const bearWeak=risingMomentum||upCandles>=3||ema5>prev5||spread>prevSpread;
-  let state:TrendState="NEUTRAL";
-  if(bullBase){
-    state=structure==="LH_LL"&&(fallingMomentum||downCandles>=3)?"BULL_TRANSITION":bullWeak?"BULL_WEAKENING":"BULL_ESTABLISHED";
-  }else if(bearBase){
-    state=structure==="HH_HL"&&(risingMomentum||upCandles>=3)?"BEAR_TRANSITION":bearWeak?"BEAR_WEAKENING":"BEAR_ESTABLISHED";
-  }else{
-    state=spread>0?"BULL_TRANSITION":spread<0?"BEAR_TRANSITION":"NEUTRAL";
-  }
-  const direction:Direction|null=state.startsWith("BULL")?"LONG":state.startsWith("BEAR")?"SHORT":null;
-  return{state,direction,structure,stochK:sk.k,stochD:sk.d,stochPrevK:sp.k,stochPrevD:sp.d};
-}
 function weeklyDirection(c:Candle[],price:number):WeeklyDirection{
   const closed=c.length>1?c.slice(0,-1):c;
-  if(closed.length<21)return{direction:null,reason:"INSUFFICIENT_WEEKLY_DATA",state:"NEUTRAL",ema5:0,ema13:0,ema5Slope:0,ema13Slope:0,close:price,adx:0,stochK:50,stochD:50,stochPrevK:50,stochPrevD:50,structure:"MIXED"};
+  if(closed.length<21)return{direction:null,reason:"INSUFFICIENT_WEEKLY_DATA",ema5:0,ema13:0,ema5Slope:0,ema13Slope:0,close:price,adx:0};
   const closes=closed.map(x=>x.close),f=ema(closes,5),s=ema(closes,13),ema5=f.at(-1)!,ema13=s.at(-1)!,prev5=f.at(-2)!,prev13=s.at(-2)!,close=closed.at(-1)!.close,w=adx(closed);
-  const t=trendStateFromCandles(c,5,13);
-  const direction=t.state==="BULL_TRANSITION"||t.state==="BEAR_TRANSITION"||t.state==="NEUTRAL"?null:t.direction;
-  return{direction,reason:t.state,state:t.state,ema5,ema13,ema5Slope:ema5-prev5,ema13Slope:ema13-prev13,close,adx:w,stochK:t.stochK,stochD:t.stochD,stochPrevK:t.stochPrevK,stochPrevD:t.stochPrevD,structure:t.structure};
+  const long=ema5>ema13&&ema5>prev5&&ema13>=prev13&&close>ema13;
+  const short=ema5<ema13&&ema5<prev5&&ema13<=prev13&&close<ema13;
+  const direction=long?"LONG":short?"SHORT":null;
+  return{direction,reason:long?"WEEKLY_BULLISH":short?"WEEKLY_BEARISH":"WEEKLY_NEUTRAL",ema5,ema13,ema5Slope:ema5-prev5,ema13Slope:ema13-prev13,close,adx:w};
 }
-function dailyDirection(live?:DailyLiveContext,local?:Direction|null,candles?:Candle[]):"BULL"|"BEAR"|"NEUTRAL"{
-  const t=candles?trendStateFromCandles(daily(candles),5,13):null;
-  if(t){
-    if(t.state==="BULL_ESTABLISHED"||t.state==="BULL_WEAKENING")return"BULL";
-    if(t.state==="BEAR_ESTABLISHED"||t.state==="BEAR_WEAKENING")return"BEAR";
-    return"NEUTRAL";
-  }
-  if(live?.state?.startsWith("BULL"))return"BULL";
-  if(live?.state?.startsWith("BEAR"))return"BEAR";
-  if(live?.direction)return live.direction;
-  return local==="LONG"?"BULL":local==="SHORT"?"BEAR":"NEUTRAL";
-}
+function dailyDirection(live?:DailyLiveContext,local?:Direction|null):"BULL"|"BEAR"|"NEUTRAL"{if(live?.state?.startsWith("BULL"))return"BULL";if(live?.state?.startsWith("BEAR"))return"BEAR";if(live?.direction)return live.direction;return local==="LONG"?"BULL":local==="SHORT"?"BEAR":"NEUTRAL";}
 function opposite(pair:string,d:Direction,trades?:any[]){return!!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction!==d);}
 function same(pair:string,d:Direction,trades?:any[]){return!!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction===d);}
 function liq(entry:number,d:Direction){return d==="LONG"?entry*(1-1/LEVERAGE+MMR):entry*(1+1/LEVERAGE-MMR);}
@@ -397,7 +356,7 @@ function checkEntry1Exhaustion(direction:Direction,r:number,st:{k:number;d:numbe
 
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],activeTrades:any[]=[],currentPrice?:number,lastBreakout?:BreakoutRecord,dailyLive?:DailyLiveContext,candlesWeekly:Candle[]=[]):SignalResult{
   const debug:string[]=[];const now=Date.now();if(candles4h.length<35){debug.push("Insufficient 4H data");return{debug};}
-  const price=currentPrice??candles4h.at(-1)!.close,closed=candles4h.slice(0,-1),localDaily=bias(candles4h),dDir=dailyDirection(dailyLive,localDaily,candles4h),weekly=weeklyDirection(candlesWeekly,price);
+  const price=currentPrice??candles4h.at(-1)!.close,closed=candles4h.slice(0,-1),localDaily=bias(candles4h),dDir=dailyDirection(dailyLive,localDaily),weekly=weeklyDirection(candlesWeekly,price);
   const structure=detectStructureShift(pair,closed),structureDir=structure.state==="HEALTHY"&&(structure.structure==="LONG"||structure.structure==="SHORT")?structure.structure as Direction:null;
   const fourH=get4HEmaDiagnostic(closed),macd=macd4h(closed),closes=closed.map(x=>x.close),st=stochRsi(closes),prevClosed=closed.length>1?closed.slice(0,-1):closed,prevSt=stochRsi(prevClosed.map(x=>x.close)),r=Math.round(rsi(closes)*10)/10,a=adx(closed),av=atr(closed);
   const longTL=buildTrendline(closed,"LONG"),shortTL=buildTrendline(closed,"SHORT"),longFib=getFibLevels(closed,"LONG"),shortFib=getFibLevels(closed,"SHORT");logFib(debug,pair,"LONG",longFib,price);logFib(debug,pair,"SHORT",shortFib,price);
@@ -480,9 +439,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const longEntry1=weeklyLong&&longLocation&&long4HConfirmation&&!longExhausted;
   const shortEntry1=weeklyShort&&shortLocation&&short4HConfirmation&&!shortExhausted;
 
-  debug.push(`[1W] ${pair} | ${weekly.state} | direction=${weekly.direction||"NEUTRAL"} | structure=${weekly.structure} | Stoch=${weekly.stochK}/${weekly.stochD} prev=${weekly.stochPrevK}/${weekly.stochPrevD} | 5/13=${weekly.ema5.toFixed(2)}/${weekly.ema13.toFixed(2)} | ADX=${weekly.adx}`);
-  const dailyTrend=trendStateFromCandles(daily(candles4h),5,13);
-  debug.push(`[1D] ${pair} | ${dailyTrend.state} | direction=${dDir} | structure=${dailyTrend.structure} | Stoch=${dailyTrend.stochK}/${dailyTrend.stochD} prev=${dailyTrend.stochPrevK}/${dailyTrend.stochPrevD} | live=${dailyLive?.state||"—"} | ${((weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"))?"SUPPORTIVE":"COUNTER/TRANSITION"}`);
+  debug.push(`[1W] ${pair} | ${weekly.direction||"NEUTRAL"} | direction=${weekly.direction||"NEUTRAL"} | ${weekly.reason} | 5/13=${weekly.ema5.toFixed(2)}/${weekly.ema13.toFixed(2)} | ADX=${weekly.adx}`);
+  debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir} | ${((weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"))?"SUPPORTIVE":"COUNTER/NEUTRAL"}`);
   debug.push(`[4H] ${pair} | 5/13=${fourH.label} | MACD=${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | Stoch=${st.k}/${st.d} prev=${prevSt.k}/${prevSt.d}`);
   debug.push(`[TL] ${pair} | LONG=${longTL.valid?longTL.price.toFixed(2):"—"} dist=${isFinite(longDist)?(longDist*100).toFixed(2)+"%":"—"} | SHORT=${shortTL.valid?shortTL.price.toFixed(2):"—"} dist=${isFinite(shortDist)?(shortDist*100).toFixed(2)+"%":"—"}`);
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
@@ -492,13 +450,13 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const fallbackDir:Direction=weekly.direction||(dDir==="BEAR"?"SHORT":"LONG");
   const baseMarket=()=>snapshot(pair,candles4h,structureDir||fallbackDir,structureDir==="LONG"?longTL:structureDir==="SHORT"?shortTL:longTL,price,dailyLive);
   const market=(m:any)=>Object.assign(m||baseMarket(),{
-    weeklyDirection:weekly.direction,weeklyDirectionReason:weekly.reason,weeklyState:weekly.state,weeklyStoch:{k:weekly.stochK,d:weekly.stochD,prevK:weekly.stochPrevK,prevD:weekly.stochPrevD},weeklyStructure:weekly.structure,weeklySupportive:(weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"),entry1Direction:longEntry1?"LONG":shortEntry1?"SHORT":"NEUTRAL",entry1Decision:longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE",
+    weeklyDirection:weekly.direction,weeklyDirectionReason:weekly.reason,weeklySupportive:(weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"),entry1Direction:longEntry1?"LONG":shortEntry1?"SHORT":"NEUTRAL",entry1Decision:longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE",
     entry1TriggersLong:longMomentumCount,entry1TriggersShort:shortMomentumCount,entry1StructuralLocation:longLocation?"LONG":shortLocation?"SHORT":"NONE",
     entry1FibPathLong:longFibPath,entry1FibPathShort:shortFibPath,
     entry1NearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",entry1LiveNearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",
     entry1LiveDistPct:longEntry1?longDist*100:shortEntry1?shortDist*100:null,entry1PreBreak:longPreBreak||shortPreBreak,
     entry1ExecutionAllowed:longEntry1||shortEntry1,weeklyGateLong:weeklyLong,weeklyGateShort:weeklyShort,entry1MaxEntry:longNearFib&&longFibNearest?round(longFibNearest[1]*(1+ENTRY1_FIB_ZONE_PCT)):shortNearFib&&shortFibNearest?round(shortFibNearest[1]*(1-ENTRY1_FIB_ZONE_PCT)):null,
-    entry1Chase:false,entry1Exhaustion:longExhausted?"LONG":shortExhausted?"SHORT":"NONE",entry1DailyConflict:dDir==="NEUTRAL"?"TRANSITION":((weeklyLong&&dDir==="BEAR")||(weeklyShort&&dDir==="BULL"))?"COUNTER":"NONE",entry1ClosedRsi:r,
+    entry1Chase:false,entry1Exhaustion:longExhausted?"LONG":shortExhausted?"SHORT":"NONE",entry1DailyConflict:"NONE",entry1ClosedRsi:r,
     entry1Grade:longEntry1||shortEntry1?"A":null,entry1TriggerThreshold:0,entry1MomentumRequired:false,entry1ExhaustionThreshold:dDir==="BULL"?ENTRY1_LONG_EXHAUSTION_RSI:ENTRY1_SHORT_EXHAUSTION_RSI
   });
 
@@ -553,8 +511,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   let dir:Direction|null=null,type:"ENTRY_1"|"ENTRY_2"|null=null,reason="";
   if(longEntry1&&!shortEntry1){dir="LONG";type="ENTRY_1";reason="probability-based early setup";}
   else if(shortEntry1&&!longEntry1){dir="SHORT";type="ENTRY_1";reason="probability-based early setup";}
-  else if(weeklyLong&&dDir==="BULL"&&!weeklyTransition&&retestLong&&!retestShort&&!same(pair,"LONG",activeTrades)){dir="LONG";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
-  else if(weeklyShort&&dDir==="BEAR"&&!weeklyTransition&&retestShort&&!retestLong&&!same(pair,"SHORT",activeTrades)){dir="SHORT";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
+  else if(weeklyLong&&retestLong&&!retestShort&&!same(pair,"LONG",activeTrades)){dir="LONG";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
+  else if(weeklyShort&&retestShort&&!retestLong&&!same(pair,"SHORT",activeTrades)){dir="SHORT";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
   debug.push(`[4H BREAK] ${pair} | LONG prevClose=${previous4H.close.toFixed(2)} prevLine=${previousLongLine?.toFixed(2)||"—"} currentHigh=${developing4H.high.toFixed(2)} currentLine=${developingLongLine?.toFixed(2)||"—"} crossed=${current4HBreakLong?"YES":"NO"} | SHORT prevClose=${previous4H.close.toFixed(2)} prevLine=${previousShortLine?.toFixed(2)||"—"} currentLow=${developing4H.low.toFixed(2)} currentLine=${developingShortLine?.toFixed(2)||"—"} crossed=${current4HBreakShort?"YES":"NO"}`);
   debug.push(`[ENTRY_2] ${pair} | LONG 1W=${weeklyLong?"PASS":"BLOCK"} break=${breakoutLong?"YES":"NO"} retest=${retestLong?"YES":"NO"} line=${longExec.linePrice?.toFixed(2)||"—"} reason=${longExec.reason} | SHORT 1W=${weeklyShort?"PASS":"BLOCK"} break=${breakoutShort?"YES":"NO"} retest=${retestShort?"YES":"NO"} line=${shortExec.linePrice?.toFixed(2)||"—"} reason=${shortExec.reason}`);
 
