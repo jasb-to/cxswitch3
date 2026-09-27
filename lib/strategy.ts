@@ -28,7 +28,8 @@ type DailyLiveContext={
   adx?:number; momentum?:any; protectedLevel?:number|null;
 };
 type Direction="LONG"|"SHORT";
-type TrendState="BULL_ESTABLISHED"|"BULL_WEAKENING"|"BULL_TRANSITION"|"BEAR_ESTABLISHED"|"BEAR_WEAKENING"|"BEAR_TRANSITION"|"NEUTRAL";\ntype WeeklyDirection={direction:Direction|null;reason:string;state:TrendState;ema5:number;ema13:number;ema5Slope:number;ema13Slope:number;close:number;adx:number;stochK:number;stochD:number;stochPrevK:number;stochPrevD:number;structure:"HH_HL"|"LH_LL"|"MIXED";};
+type TrendState="BULL_ESTABLISHED"|"BULL_WEAKENING"|"BULL_TRANSITION"|"BEAR_ESTABLISHED"|"BEAR_WEAKENING"|"BEAR_TRANSITION"|"NEUTRAL";
+type WeeklyDirection={direction:Direction|null;reason:string;state:TrendState;ema5:number;ema13:number;ema5Slope:number;ema13Slope:number;close:number;adx:number;stochK:number;stochD:number;stochPrevK:number;stochPrevD:number;structure:"HH_HL"|"LH_LL"|"MIXED";};
 type Pivot={index:number;price:number;timestamp:number};
 type Trendline={valid:boolean;slope:number;intercept:number;price:number;pivots:Pivot[];ageCandles:number;stale:boolean;staleByAge:boolean;staleByDistance:boolean;invalidated:boolean;reason:string};
 type FibLevels={direction:Direction;swingLow:number;swingHigh:number;fib382:number;fib50:number;fib618:number;lowIndex:number;highIndex:number};
@@ -480,7 +481,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const shortEntry1=weeklyShort&&shortLocation&&short4HConfirmation&&!shortExhausted;
 
   debug.push(`[1W] ${pair} | ${weekly.state} | direction=${weekly.direction||"NEUTRAL"} | structure=${weekly.structure} | Stoch=${weekly.stochK}/${weekly.stochD} prev=${weekly.stochPrevK}/${weekly.stochPrevD} | 5/13=${weekly.ema5.toFixed(2)}/${weekly.ema13.toFixed(2)} | ADX=${weekly.adx}`);
-  const dailyTrend=trendStateFromCandles(daily(candles4h),5,13);\n  debug.push(`[1D] ${pair} | ${dailyTrend.state} | direction=${dDir} | structure=${dailyTrend.structure} | Stoch=${dailyTrend.stochK}/${dailyTrend.stochD} prev=${dailyTrend.stochPrevK}/${dailyTrend.stochPrevD} | live=${dailyLive?.state||"—"} | ${((weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"))?"SUPPORTIVE":"COUNTER/TRANSITION"}`);
+  const dailyTrend=trendStateFromCandles(daily(candles4h),5,13);
+  debug.push(`[1D] ${pair} | ${dailyTrend.state} | direction=${dDir} | structure=${dailyTrend.structure} | Stoch=${dailyTrend.stochK}/${dailyTrend.stochD} prev=${dailyTrend.stochPrevK}/${dailyTrend.stochPrevD} | live=${dailyLive?.state||"—"} | ${((weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"))?"SUPPORTIVE":"COUNTER/TRANSITION"}`);
   debug.push(`[4H] ${pair} | 5/13=${fourH.label} | MACD=${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | Stoch=${st.k}/${st.d} prev=${prevSt.k}/${prevSt.d}`);
   debug.push(`[TL] ${pair} | LONG=${longTL.valid?longTL.price.toFixed(2):"—"} dist=${isFinite(longDist)?(longDist*100).toFixed(2)+"%":"—"} | SHORT=${shortTL.valid?shortTL.price.toFixed(2):"—"} dist=${isFinite(shortDist)?(shortDist*100).toFixed(2)+"%":"—"}`);
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
