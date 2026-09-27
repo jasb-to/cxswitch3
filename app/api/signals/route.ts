@@ -29,23 +29,15 @@ function alertValidity(h:any,price:number,now:number,isActivePosition=false){
 function momentumStatus(h:any,m:any,management?:any){
   if(!h||!m)return null;
   const state=management?.managementState;
-  if(state==="EXIT")return{icon:"🔴",label:"EXIT TRADE",detail:"Actual 4H reversal or confirmed structural breakdown."};
-  if(state==="DEFEND")return{icon:"🟠",label:"DEFEND TRADE",detail:"Structure is coming under pressure. Don't add. Watch the next closed 4H candle carefully."};
-  if(state==="PROTECT")return{icon:"🟡",label:"PROTECT TRADE",detail:"Normal 4H pullback or cooling momentum. Stay in, don't add, don't widen SL."};
-  if(state==="STAY")return{icon:"🟢",label:"STAY IN TRADE",detail:"Trend/wave remains aligned."};
-  return{icon:"🟡",label:"PROTECT TRADE",detail:"Normal 4H pullback or cooling momentum. Stay in, don't add, don't widen SL."};
+  if(state==="EXIT")return{icon:"🔴",label:"EXIT TRADE",detail:"Confirmed trade exit condition."};
+  return{icon:"🟢",label:"STAY IN TRADE",detail:"No confirmed 4H reversal or structural breakdown."};
 }
 function managementAdvice(h:any,m:any){
   if(!h||h.status!=="ACTIVE"||!m||h.type==="ENTRY_0")return null;
-  const price=Number(m.price),tp1Hit=!!h.tp1HitAt||(h.tp1!==undefined&&(h.direction==="LONG"?price>=h.tp1:price<=h.tp1)),tp2Hit=!!h.tp2HitAt||(h.tp2!==undefined&&(h.direction==="LONG"?price>=h.tp2:price<=h.tp2));
-  const e=m.fourH513;if(!e)return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"Trend/wave remains aligned. Trade remains active. Keep the original SL; at R1, move SL to breakeven."};
-  const long=h.direction==="LONG",same513=e.direction===(long?"BULLISH":"BEARISH"),against513=e.direction===(long?"BEARISH":"BULLISH"),entry513Direction=h.context?.fourH513?.direction||h.fourH513Direction||h.fourH513?.direction,fourHWasAlreadyAgainstAtEntry=entry513Direction!==undefined&&entry513Direction!==(long?"BULLISH":"BEARISH"),contracting=!!e.spreadContracting,momentum=m.momentumState||"NEUTRAL",ema8=Number(m.ema8_4h),ema21=Number(m.ema21_4h),same821=Number.isFinite(ema8)&&Number.isFinite(ema21)&&(long?ema8>=ema21:ema8<=ema21),exhausted=long?(m.stochK>=80&&m.stochK<m.stochD):(m.stochK<=20&&m.stochK>m.stochD),weakMomentum=momentum==="PULLBACK"||momentum==="HOT"||momentum==="OVEREXTENDED";
-  if(tp2Hit){if(same513&&same821&&!contracting&&!exhausted&&momentum!=="OVEREXTENDED")return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"Trend/wave remains aligned. R1.5 reached; 4H 5/13 remains aligned and 8/21 confirms the move — keep the runner unless momentum deteriorates."};return{managementState:"PROTECT",status:"warning",recommendation:"🟡 PROTECT TRADE",reason:"Normal 4H pullback or cooling momentum. R1.5 reached; protect the remaining position and do not assume R2."};}
-  if(tp1Hit){if(against513&&!fourHWasAlreadyAgainstAtEntry)return{managementState:"DEFEND",status:"failed",recommendation:"🟠 DEFEND TRADE",reason:"Structure is coming under pressure. R1 reached and 4H 5/13 has turned against the position. Move SL to breakeven if not already done and protect the remaining profit."};if(contracting||exhausted||weakMomentum||!same821)return{managementState:"PROTECT",status:"warning",recommendation:"🟡 PROTECT TRADE",reason:`R1 reached. Move SL to breakeven. Normal 4H pullback or cooling momentum. Momentum is weakening${contracting?" (5/13 spread contracting)":""}${weakMomentum?` (${momentum})`:""}${exhausted?" (Stoch exhaustion)":""}${!same821?" (8/21 not aligned)":""}. Do not assume R2.`};return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"Trend/wave remains aligned. R1 reached. Move SL to breakeven. 4H 5/13 and 8/21 remain aligned, so R1.5 remains the next management target."};}
-  if(against513&&!fourHWasAlreadyAgainstAtEntry)return{managementState:"DEFEND",status:"failed",recommendation:"🟠 DEFEND TRADE",reason:"Structure is coming under pressure. 4H 5/13 has turned against the position after entry. Do not widen the SL; watch the next closed 4H candle carefully."};
-  if(against513&&fourHWasAlreadyAgainstAtEntry)return{managementState:"DEFEND",status:"warning",recommendation:"🟠 DEFEND TRADE",reason:`Structure is coming under pressure. 4H 5/13 is still ${long?"bearish":"bullish"}, as it was at entry. This is an early V28 position; do not widen the SL. Watch for ${long?"bullish":"bearish"} 4H recovery.`};
-  if(contracting||exhausted||weakMomentum||!same821)return{managementState:"PROTECT",status:"warning",recommendation:"🟡 PROTECT TRADE", reason:`Normal 4H pullback or cooling momentum. Stay in, don't add, don't widen SL. ${contracting?"Wave cooling":weakMomentum?"Normal pullback":exhausted?"Move is extended":!same821?"8/21 is no longer fully aligned":"Wave is active"} — no confirmed reversal. Next management point: R1 → SL to breakeven.`};
-  return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"Trend/wave remains aligned. Keep the original SL. At R1, move SL to breakeven; R1.5 is next, then R2 runner if the wave remains active."};
+  const price=Number(m.price);
+  const tp2Hit=!!h.tp2HitAt||(h.tp2!==undefined&&(h.direction==="LONG"?price>=h.tp2:price<=h.tp2));
+  if(tp2Hit)return{managementState:"EXIT",status:"failed",recommendation:"🔴 EXIT TRADE",reason:"R1.5/final target reached. Close the trade."};
+  return{managementState:"STAY",status:"healthy",recommendation:"🟢 STAY IN TRADE",reason:"No confirmed 4H reversal or structural breakdown. Normal momentum cooling does not create an intermediate state."};
 }
 
 export async function GET(){
