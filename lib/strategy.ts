@@ -456,7 +456,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     entry1FibPathLong:longFibPath,entry1FibPathShort:shortFibPath,
     entry1NearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",entry1LiveNearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",
     entry1LiveDistPct:longEntry1?longDist*100:shortEntry1?shortDist*100:null,entry1PreBreak:longPreBreak||shortPreBreak,
-    entry1ExecutionAllowed:longEntry1||shortEntry1,weeklyGateLong:weeklyLong,weeklyGateShort:weeklyShort,entry1MaxEntry:longNearFib&&longFibNearest?round(longFibNearest[1]*(1+ENTRY1_FIB_ZONE_PCT)):shortNearFib&&shortFibNearest?round(shortFibNearest[1]*(1-ENTRY1_FIB_ZONE_PCT)):null,
+    entry1ExecutionAllowed:longEntry1||shortEntry1,weeklyGateLong:weeklyLong,weeklyGateShort:weeklyShort,volatilityPct:price>0?round((av/price)*100):0,entry1MaxEntry:longNearFib&&longFibNearest?round(longFibNearest[1]*(1+ENTRY1_FIB_ZONE_PCT)):shortNearFib&&shortFibNearest?round(shortFibNearest[1]*(1-ENTRY1_FIB_ZONE_PCT)):null,
     entry1Chase:false,entry1Exhaustion:longExhausted?"LONG":shortExhausted?"SHORT":"NONE",entry1DailyConflict:"NONE",entry1ClosedRsi:r,
     entry1Grade:longEntry1||shortEntry1?"A":null,entry1TriggerThreshold:0,entry1MomentumRequired:false,entry1ExhaustionThreshold:dDir==="BULL"?ENTRY1_LONG_EXHAUSTION_RSI:ENTRY1_SHORT_EXHAUSTION_RSI
   });
