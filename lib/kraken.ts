@@ -10,7 +10,7 @@ export interface Candle {
 }
 
 let lastReq = 0;
-const MIN_MS = 600;
+const MIN_MS = 1000;
 
 async function rateFetch(url: string, opts?: RequestInit): Promise<Response> {
   const now = Date.now();
