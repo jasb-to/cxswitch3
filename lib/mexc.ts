@@ -1,1 +1,8 @@
-// test
+// lib/mexc.ts — public MEXC USDT-perpetual market data
+import type { Candle } from "./kraken";
+const MEXC_CONTRACT_API="https://contract.mexc.com";
+let lastReq=0; const MIN_MS=120;
+async function rateFetch(url:string):Promise<Response>{const now=Date.now(),wait=Math.max(0,MIN_MS-(now-lastReq));if(wait)await new Promise(r=>setTimeout(r,wait));lastReq=Date.now();return fetch(url,{cache:"no-store"});}
+const intervalMap:Record<number,string>={15:"Min15",60:"Min60",240:"Hour4",480:"Hour8",1440:"Day1",10080:"Week1"};
+export async function getMexcCandles(symbol:string,interval:number,start?:number):Promise<Candle[]>{const url=new URL(MEXC_CONTRACT_API+"/api/v1/contract/kline/"+symbol);url.searchParams.set("interval",intervalMap[interval]||"Min60");if(start)url.searchParams.set("start",String(Math.floor(start/1000)));const res=await rateFetch(url.toString());if(!res.ok)throw new Error("MEXC Kline HTTP "+res.status);const json=await res.json();if(!json?.success||!json?.data)throw new Error("MEXC Kline error "+(json?.message||"no data"));const d=json.data,out:Candle[]=[];for(let i=0;i<(d.time?.length||0);i++)out.push({timestamp:Number(d.time[i])*1000,open:Number(d.open[i]),high:Number(d.high[i]),low:Number(d.low[i]),close:Number(d.close[i]),volume:Number(d.vol?.[i]??d.amount?.[i]??0)});const intervalMs=interval*60*1000;return out.filter(x=>x.timestamp+intervalMs<=Date.now()).sort((a,b)=>a.timestamp-b.timestamp);}
+export async function getMexcPrice(symbol:string):Promise<number>{const res=await rateFetch(MEXC_CONTRACT_API+"/api/v1/contract/ticker?symbol="+encodeURIComponent(symbol));if(!res.ok)throw new Error("MEXC ticker HTTP "+res.status);const json=await res.json();if(!json?.success||!json?.data?.lastPrice)throw new Error("MEXC ticker error "+(json?.message||"no price"));return Number(json.data.lastPrice);}
