@@ -68,6 +68,9 @@ export function krakenPairFormat(pair: string): string {
     "ETH/USD": "ETHUSD",
     "SOL/USD": "SOLUSD",
     "HYPE/USD": "HYPEUSD",
+    "DOGE/USD": "DOGEUSD",
+    "LINK/USD": "LINKUSD",
+    "AVAX/USD": "AVAXUSD",
   };
   return map[pair] || pair.replace("/", "");
 }
