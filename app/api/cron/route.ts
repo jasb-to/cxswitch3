@@ -1,6 +1,7 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
+import { getMexcCandles, getMexcPrice } from "@/lib/mexc";
 import { generateSignal, getMarketSnapshot, getCycleRunnerSnapshot, shouldHold, liquidationSafeStop, Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { detectStructureShift, recordStructureShiftSnapshot } from "@/lib/structure-shift";
@@ -13,7 +14,8 @@ import { get1DTrendState } from "@/lib/1d-trend-state";
 
 export const dynamic="force-dynamic";
 export const revalidate=0;
-const PAIRS=["BTC","ETH","SOL","HYPE"] as const;
+const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","AVAX","PAID"] as const;
+const MEXC_PAIRS=new Set(["PAID"]);
 const MIN_CRON_INTERVAL_MS=2*60*1000;
 const ADD_DEDUP_MS=45*60*1000;
 const ADD_DEDUP_ENTRY_PCT=0.004;
@@ -92,14 +94,14 @@ export async function GET(request:Request){
  }
 
  for(const pair of PAIRS){try{
-  const c1=await getCandles(krakenPairFormat(pair+"/USD"),60);await sleep(API_DELAY_MS);const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);await sleep(API_DELAY_MS);const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);await sleep(API_DELAY_MS);const cW=await getCandles(krakenPairFormat(pair+"/USD"),10080,Math.floor((Date.now()-2*365*24*60*60*1000)/1000));await sleep(API_DELAY_MS);
+  const mexc=MEXC_PAIRS.has(pair);const marketSymbol=pair+"_USDT";const c1=mexc?await getMexcCandles(marketSymbol,60):await getCandles(krakenPairFormat(pair+"/USD"),60);await sleep(API_DELAY_MS);const c4=mexc?await getMexcCandles(marketSymbol,240):await getCandles(krakenPairFormat(pair+"/USD"),240);await sleep(API_DELAY_MS);const c15=mexc?await getMexcCandles(marketSymbol,15):await getCandles(krakenPairFormat(pair+"/USD"),15);await sleep(API_DELAY_MS);const cW=mexc?await getMexcCandles(marketSymbol,10080,Math.floor((Date.now()-2*365*24*60*60*1000)/1000)):await getCandles(krakenPairFormat(pair+"/USD"),10080,Math.floor((Date.now()-2*365*24*60*60*1000)/1000));await sleep(API_DELAY_MS);
   if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
   const ema513=get4HEmaDiagnostic(c4);
   console.log(`[EMA 4H 5/13] ${pair} — ${ema513.label} | 5=${ema513.ema5.toFixed(4)} | 13=${ema513.ema13.toFixed(4)} | spread=${ema513.spread.toFixed(4)} (${ema513.spreadPct.toFixed(3)}%) | spreadATR=${ema513.spreadAtr.toFixed(3)} | contracting=${ema513.spreadContracting?"YES":"NO"} | Δspread=${ema513.spreadChangePct.toFixed(2)}% | 5slope=${ema513.ema5Slope.toFixed(4)} | 13slope=${ema513.ema13Slope.toFixed(4)} | cross=${ema513.crossNow?"YES":"NO"}`);
   const structureShift=detectStructureShift(pair,c4);
   const structureRecorded=await recordStructureShiftSnapshot(structureShift);
   console.log(`[STRUCTURE SHIFT] ${pair} — structure=${structureShift.structure} -> shift=${structureShift.shiftTo} | state=${structureShift.state} | protected=${structureShift.protectedLevel?.toFixed(4)??"—"} | break=${structureShift.breakDistanceAtr?.toFixed(2)??"—"} ATR | recorded=${structureRecorded?"YES":"NO"} | ${structureShift.reason}`); // diagnostic only; never an entry veto
-  const price=c1.at(-1)!.close,existing=active.find(x=>x.pair===pair),storedBreakout=await getLastBreakout(pair);
+  const price=mexc?await getMexcPrice(marketSymbol):c1.at(-1)!.close;await sleep(API_DELAY_MS);const existing=active.find(x=>x.pair===pair),storedBreakout=await getLastBreakout(pair);
   const breakoutMaxAgeMs=32*15*60*1000;
   const lastBreakout=storedBreakout&&Date.now()-storedBreakout.timestamp>=0&&Date.now()-storedBreakout.timestamp<=breakoutMaxAgeMs?storedBreakout:undefined;
   console.log(`[BREAKOUT STATE] ${pair} — ${lastBreakout?`${lastBreakout.direction}@${lastBreakout.price} candle=${lastBreakout.candleIndex} age=${c4.length-1-lastBreakout.candleIndex}`:"NONE"}`);
