@@ -4,7 +4,11 @@ import { CXSWITCH_VERSION } from "./version";
 const formatPrice=(value:any)=>{
   if(value===undefined||value===null||value==="-")return "-";
   const n=Number(value);
-  return Number.isFinite(n)?n.toFixed(2):String(value);
+  if(!Number.isFinite(n))return String(value);
+  if(Math.abs(n)>=1000)return n.toFixed(0);
+  if(Math.abs(n)>=1)return n.toFixed(2);
+  if(Math.abs(n)>=0.1)return n.toFixed(3);
+  return n.toFixed(5);
 };
 
 export async function sendAlert(signal:any){
