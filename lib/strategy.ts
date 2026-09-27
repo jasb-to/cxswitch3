@@ -70,6 +70,7 @@ const BREAKOUT_PCT=0.005, RETEST_PCT=0.012, ENTRY1_FIB_ZONE_PCT=0.03, ENTRY1_PAT
 const STALE_TL_PCT=0.04, STALE_TL_CANDLES=12, FRESH_LOOKBACK=30, BREAKOUT_EXPIRY_CANDLES=12;
 const ENTRY1_LONG_EXHAUSTION_RSI=80, ENTRY1_SHORT_EXHAUSTION_RSI=20;
 const LEVERAGE=20, MMR=0.01, LIQ_BUFFER=0.015, MIN_RR=1.25;
+function volatilitySizeMultiplier(price:number,atrValue:number){const pct=price>0?(atrValue/price)*100:0;if(pct>=8)return 0.25;if(pct>=6)return 0.35;if(pct>=4)return 0.5;if(pct>=2.5)return 0.75;return 1;}
 
 const avg=(a:number[])=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
 function round(n:number){return Math.round(n*100000)/100000;}
@@ -554,7 +555,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     : riskTarget15;
   const target=tp2;
   const tp1Move=Math.abs(tp1-entry)/Math.max(entry,1),tp2Move=Math.abs(tp2-entry)/Math.max(entry,1);
-  const dailyAligned=(dDir==="BULL"&&dir==="LONG")||(dDir==="BEAR"&&dir==="SHORT"),riskMultiplier=dailyAligned?1:0.5,trendAlignment=dailyAligned?"WITH_1D":"AGAINST_1D";
+  const dailyAligned=(dDir==="BULL"&&dir==="LONG")||(dDir==="BEAR"&&dir==="SHORT");
+  const volatilityPct=entry>0?(av/entry)*100:0;
+  const volatilityMultiplier=volatilitySizeMultiplier(entry,av);
+  const riskMultiplier=(dailyAligned?1:0.5)*volatilityMultiplier;
+  const trendAlignment=dailyAligned?"WITH_1D":"AGAINST_1D";
   const breakoutRecord:BreakoutRecord|undefined=type==="ENTRY_2"?(dir==="LONG"?{direction:"LONG",price:round(longExec.linePrice??price),timestamp:now,candleIndex:developing4HIndex}:{direction:"SHORT",price:round(shortExec.linePrice??price),timestamp:now,candleIndex:developing4HIndex}):undefined;
   const location=type==="ENTRY_1"?"EARLY_STRUCTURAL":"15M_TRENDLINE_RETEST";
   const entry1Trigger=dir==="LONG"
@@ -566,9 +571,9 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     structure:structureDir?`4H ${structureDir}`:"4H STRUCTURE TRANSITION",momentum:`RSI ${r} | Stoch ${st.k}/${st.d} | MACD hist ${round(macd.histogram)}`,
     pullback:type==="ENTRY_2"?"15M_DIP_TO_4H_TRENDLINE":dir==="LONG"?longFibPath.trigger:shortFibPath.trigger,
     fourH513:fourH,daily513:getDaily513Diagnostic(candles4h),dailyLive:dailyLive||null,weeklyDirection:weekly.direction,weeklyContext:weekly,macd4h:macd,trendAlignment,sizeMultiplier:riskMultiplier,
-    risk:{baseRisk:round(risk),structuralRisk:round(structuralRisk),positionSize:round(risk*riskMultiplier),trendAlignment,sizeMultiplier:riskMultiplier,estimatedLiquidation:round(liquidation),safeBoundary:round(safe),leverage:LEVERAGE},
+    risk:{baseRisk:round(risk),structuralRisk:round(structuralRisk),positionSize:round(risk*riskMultiplier),trendAlignment,sizeMultiplier:riskMultiplier,volatilityPct:round(volatilityPct),volatilityMultiplier,estimatedLiquidation:round(liquidation),safeBoundary:round(safe),leverage:LEVERAGE},
     entryGuard:{referenceFib:dir==="LONG"?longFibNearest:shortFibNearest,referenceTrendline:dir==="LONG"?(longTL.valid?round(longTL.price):null):(shortTL.valid?round(shortTL.price):null),trendlineDistancePct:round((dir==="LONG"?longDist:shortDist)*100),executionDistancePct:round((dir==="LONG"?longFibDist:shortFibDist)*100),maxEntry:dir==="LONG"?(longFibNearest?round(longFibNearest[1]):null):(shortFibNearest?round(shortFibNearest[1]):null),maxDistancePct:ENTRY1_FIB_ZONE_PCT*100},
-    entry1CandleTimestamp:entryLast.timestamp,entry1ClosedCandleIndex:closed.length-1,
+    entry1CandleTimestamp:entryLast.timestamp,entry1ClosedCandleIndex:closed.length-1,volatilityPct:round(volatilityPct),volatilityMultiplier,
     fibPath:dir==="LONG"?longFibPath:shortFibPath,
     exhaustion:{closedRsi:r,longBlocked:longExhausted,shortBlocked:shortExhausted,longReason:longExhaustion.reason,shortReason:shortExhaustion.reason,longThreshold:ENTRY1_LONG_EXHAUSTION_RSI,shortThreshold:ENTRY1_SHORT_EXHAUSTION_RSI,stochK:st.k,stochD:st.d,adx:a,trendlineDistanceLongPct:round(longDist*100),trendlineDistanceShortPct:round(shortDist*100)},
     breakoutRecord:breakoutRecord?{direction:breakoutRecord.direction,price:round(breakoutRecord.price),timestamp:breakoutRecord.timestamp,candleIndex:breakoutRecord.candleIndex}:undefined,
