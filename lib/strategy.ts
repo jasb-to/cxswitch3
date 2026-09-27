@@ -20,7 +20,7 @@ export interface Signal {
   trend?:string; location?:string; trigger?:string; context?:any;
 }
 export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; }
-export const CURRENT_SIGNAL_VERSION=13;
+export const CURRENT_SIGNAL_VERSION=14;
 
 type DailyLiveContext={
   state?:string; candidateState?:string; candidateStreak?:number;
