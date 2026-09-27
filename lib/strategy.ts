@@ -20,7 +20,7 @@ export interface Signal {
   trend?:string; location?:string; trigger?:string; context?:any;
 }
 export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; breakout?:BreakoutRecord; }
-export const CURRENT_SIGNAL_VERSION=15;
+export const CURRENT_SIGNAL_VERSION=16;
 
 type DailyLiveContext={
   state?:string; candidateState?:string; candidateStreak?:number;
@@ -538,9 +538,17 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const recentSupport=Math.min(...closed.slice(-12).map(x=>x.low));
   const structuralFallback=dir==="LONG"?recentResistance:recentSupport;
   const forwardLevels=[...new Set(rawForwardLevels)].sort((x,y)=>dir==="LONG"?x-y:y-x);
-  const tp1=forwardLevels[0]??structuralFallback;
+  // TP1 must be a meaningful move, not simply the nearest Fib level.
+  // Reject levels that are too close to entry and step forward to the next
+  // structural/Fib level. The floor is volatility-aware so this works across
+  // BTC/ETH and higher-beta alts without imposing one fixed percentage.
+  const minTp1Distance=Math.max(entry*0.0035,av*0.5);
+  const meaningfulForwardLevels=forwardLevels.filter(x=>Math.abs(x-entry)>=minTp1Distance);
+  const tp1=meaningfulForwardLevels[0]??(dir==="LONG"
+    ? entry+minTp1Distance
+    : entry-minTp1Distance);
   const riskTarget15=dir==="LONG"?entry+risk*1.5:entry-risk*1.5;
-  const secondStructural=forwardLevels.find(x=>dir==="LONG"?x>tp1:x<tp1);
+  const secondStructural=meaningfulForwardLevels.find(x=>dir==="LONG"?x>tp1:x<tp1);
   const tp2=secondStructural!==undefined
     ? (dir==="LONG"?Math.max(secondStructural,riskTarget15):Math.min(secondStructural,riskTarget15))
     : riskTarget15;
