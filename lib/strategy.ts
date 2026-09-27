@@ -20,7 +20,7 @@ export interface Signal {
   trend?:string; location?:string; trigger?:string; context?:any;
 }
 export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; }
-export const CURRENT_SIGNAL_VERSION=11;
+export const CURRENT_SIGNAL_VERSION=12;
 
 type DailyLiveContext={
   state?:string; candidateState?:string; candidateStreak?:number;
@@ -507,12 +507,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   let dir:Direction|null=null,type:"ENTRY_1"|"ENTRY_2"|null=null,reason="";
   if(longEntry1&&!shortEntry1){dir="LONG";type="ENTRY_1";reason="probability-based early setup";}
   else if(shortEntry1&&!longEntry1){dir="SHORT";type="ENTRY_1";reason="probability-based early setup";}
-  else if(retestLong&&!retestShort&&!same(pair,"LONG",activeTrades)){dir="LONG";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
-  else if(retestShort&&!retestLong&&!same(pair,"SHORT",activeTrades)){dir="SHORT";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
+  else if(weeklyLong&&retestLong&&!retestShort&&!same(pair,"LONG",activeTrades)){dir="LONG";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
+  else if(weeklyShort&&retestShort&&!retestLong&&!same(pair,"SHORT",activeTrades)){dir="SHORT";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
   debug.push(`[4H BREAK] ${pair} | LONG prevClose=${previous4H.close.toFixed(2)} prevLine=${previousLongLine?.toFixed(2)||"—"} currentHigh=${developing4H.high.toFixed(2)} currentLine=${developingLongLine?.toFixed(2)||"—"} crossed=${current4HBreakLong?"YES":"NO"} | SHORT prevClose=${previous4H.close.toFixed(2)} prevLine=${previousShortLine?.toFixed(2)||"—"} currentLow=${developing4H.low.toFixed(2)} currentLine=${developingShortLine?.toFixed(2)||"—"} crossed=${current4HBreakShort?"YES":"NO"}`);
-  debug.push(`[ENTRY_2] ${pair} | LONG break=${breakoutLong?"YES":"NO"} retest=${retestLong?"YES":"NO"} line=${longExec.linePrice?.toFixed(2)||"—"} reason=${longExec.reason} | SHORT break=${breakoutShort?"YES":"NO"} retest=${retestShort?"YES":"NO"} line=${shortExec.linePrice?.toFixed(2)||"—"} reason=${shortExec.reason}`);
+  debug.push(`[ENTRY_2] ${pair} | LONG 1W=${weeklyLong?"PASS":"BLOCK"} break=${breakoutLong?"YES":"NO"} retest=${retestLong?"YES":"NO"} line=${longExec.linePrice?.toFixed(2)||"—"} reason=${longExec.reason} | SHORT 1W=${weeklyShort?"PASS":"BLOCK"} break=${breakoutShort?"YES":"NO"} retest=${retestShort?"YES":"NO"} line=${shortExec.linePrice?.toFixed(2)||"—"} reason=${shortExec.reason}`);
 
-  if(!dir||!type){debug.push(`[ENTRY_1 WAIT] ${pair} | ${longExhausted&&longMomentum&&longLocation?`LONG exhaustion veto: ${longExhaustion.reason}`:shortExhausted&&shortMomentum&&shortLocation?`SHORT exhaustion veto: ${shortExhaustion.reason}`:dDir==="BULL"&&!longMomentum?"waiting for bullish 4H StochRSI turn":dDir==="BEAR"&&!shortMomentum?"waiting for bearish 4H StochRSI turn":dDir==="BULL"&&!longLocation?"waiting for price to approach bullish structural area":dDir==="BEAR"&&!shortLocation?"waiting for price to approach bearish structural area":"waiting for next valid setup"}`);return{market:market(baseMarket()),debug};}
+  if(!dir||!type){debug.push(`[ENTRY_1 WAIT] ${pair} | ${longExhausted&&longMomentum&&longLocation?`LONG exhaustion veto: ${longExhaustion.reason}`:shortExhausted&&shortMomentum&&shortLocation?`SHORT exhaustion veto: ${shortExhaustion.reason}`:!weekly.worthwhile?"waiting for worthwhile 1W directional opportunity":weeklyLong&&dDir!=="BULL"?"1W bullish opportunity with 1D counter-context":weeklyShort&&dDir!=="BEAR"?"1W bearish opportunity with 1D counter-context":dDir==="BULL"&&!longMomentum?"waiting for bullish 4H StochRSI turn":dDir==="BEAR"&&!shortMomentum?"waiting for bearish 4H StochRSI turn":dDir==="BULL"&&!longLocation?"waiting for price to approach bullish structural area":dDir==="BEAR"&&!shortLocation?"waiting for price to approach bearish structural area":"waiting for next valid setup"}`);return{market:market(baseMarket()),debug};}
   if(opposite(pair,dir,activeTrades)){debug.push(`[SIGNAL BLOCK] ${pair} ${dir} | opposite position active`);return{market:market(baseMarket()),debug};}
   const tl=dir==="LONG"?longTL:shortTL;
   if(!tl.valid&&type==="ENTRY_2"){debug.push(`[SIGNAL BLOCK] ${pair} ${dir} | no valid structural trendline`);return{market:market(baseMarket()),debug};}
