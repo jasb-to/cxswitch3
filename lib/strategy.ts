@@ -435,8 +435,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     (fourH.turning&&fourH.direction==="BEARISH") ||
     shortStructuralConfirmation;
 
-  const weeklyLong=!!weekly.direction&&weekly.direction==="LONG";
-  const weeklyShort=weekly.worthwhile&&weekly.direction==="SHORT";
+  const weeklyLong=weekly.direction==="LONG";
+  const weeklyShort=weekly.direction==="SHORT";
   const longEntry1=weeklyLong&&longMomentum&&longLocation&&long4HConfirmation&&!longExhausted;
   const shortEntry1=weeklyShort&&shortMomentum&&shortLocation&&short4HConfirmation&&!shortExhausted;
 
@@ -451,12 +451,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const fallbackDir:Direction=weekly.direction||(dDir==="BEAR"?"SHORT":"LONG");
   const baseMarket=()=>snapshot(pair,candles4h,structureDir||fallbackDir,structureDir==="LONG"?longTL:structureDir==="SHORT"?shortTL:longTL,price,dailyLive);
   const market=(m:any)=>Object.assign(m||baseMarket(),{
-    weeklyDirection:weekly.direction,weeklyDirectionReason:weekly.reason,weeklyContext:weekly,weeklySupportive:(weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"),entry1Direction:longEntry1?"LONG":shortEntry1?"SHORT":"NEUTRAL",entry1Decision:longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE",
+    weeklyDirection:weekly.direction,weeklyDirectionReason:weekly.reason,weeklySupportive:(weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"),entry1Direction:longEntry1?"LONG":shortEntry1?"SHORT":"NEUTRAL",entry1Decision:longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE",
     entry1TriggersLong:longMomentumCount,entry1TriggersShort:shortMomentumCount,entry1StructuralLocation:longLocation?"LONG":shortLocation?"SHORT":"NONE",
     entry1FibPathLong:longFibPath,entry1FibPathShort:shortFibPath,
     entry1NearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",entry1LiveNearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",
     entry1LiveDistPct:longEntry1?longDist*100:shortEntry1?shortDist*100:null,entry1PreBreak:longPreBreak||shortPreBreak,
-    entry1ExecutionAllowed:longEntry1||shortEntry1,weeklyDirection:weekly.direction,weeklyGateLong:weeklyLong,weeklyGateShort:weeklyShort,entry1MaxEntry:longNearFib&&longFibNearest?round(longFibNearest[1]*(1+ENTRY1_FIB_ZONE_PCT)):shortNearFib&&shortFibNearest?round(shortFibNearest[1]*(1-ENTRY1_FIB_ZONE_PCT)):null,
+    entry1ExecutionAllowed:longEntry1||shortEntry1,weeklyGateLong:weeklyLong,weeklyGateShort:weeklyShort,entry1MaxEntry:longNearFib&&longFibNearest?round(longFibNearest[1]*(1+ENTRY1_FIB_ZONE_PCT)):shortNearFib&&shortFibNearest?round(shortFibNearest[1]*(1-ENTRY1_FIB_ZONE_PCT)):null,
     entry1Chase:false,entry1Exhaustion:longExhausted?"LONG":shortExhausted?"SHORT":"NONE",entry1DailyConflict:"NONE",entry1ClosedRsi:r,
     entry1Grade:longEntry1||shortEntry1?"A":null,entry1TriggerThreshold:1,entry1ExhaustionThreshold:dDir==="BULL"?ENTRY1_LONG_EXHAUSTION_RSI:ENTRY1_SHORT_EXHAUSTION_RSI
   });
