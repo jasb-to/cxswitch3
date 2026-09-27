@@ -19,8 +19,8 @@ export interface Signal {
   stochK:number; stochD:number; expectedMove:number; reason:string; timestamp:number; version:number;
   trend?:string; location?:string; trigger?:string; context?:any;
 }
-export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; }
-export const CURRENT_SIGNAL_VERSION=14;
+export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; breakout?:BreakoutRecord; }
+export const CURRENT_SIGNAL_VERSION=15;
 
 type DailyLiveContext={
   state?:string; candidateState?:string; candidateStreak?:number;
@@ -368,9 +368,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const shortFibDist=shortFibNearest?Math.abs((price-shortFibNearest[1])/Math.max(Math.abs(shortFibNearest[1]),1)):Infinity;
   const longNearFib=!!longFibNearest&&longFibDist<=ENTRY1_FIB_ZONE_PCT,shortNearFib=!!shortFibNearest&&shortFibDist<=ENTRY1_FIB_ZONE_PCT;
   const longFibPath=getFibPathState(closed,longFib,"LONG"),shortFibPath=getFibPathState(closed,shortFib,"SHORT");
-  // ENTRY_1 Fib events are perishable: a historical retracement cannot authorize
-  // an entry several closed 4H candles later. Execution also stays within a tight
-  // 1% reaction zone so the alert cannot materially chase beyond its Fib trigger.
+  // A Fib path is timing evidence, not a hidden expiry gate. If price is
+  // currently back inside the live Fib zone, that is still a valid location.
   const longPathLocation=!!longFib&&longFibPath.fresh&&(
     (longFibPath.state==="SHALLOW_REVERSAL"&&price<=longFib.swingHigh&&price>=longFib.fib382*(1-ENTRY1_PATH_ZONE_PCT))||
     (longFibPath.state==="DEEP_RECLAIM"&&price<=longFib.swingHigh&&price>=longFib.fib50*(1-ENTRY1_PATH_ZONE_PCT))
@@ -395,7 +394,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const longExhausted=longExhaustion.blocked,shortExhausted=shortExhaustion.blocked;
   // Fib decides WHERE through the path; StochRSI + 4H structure decide WHEN.
   // There is still only one ENTRY_1. Shallow/deep are internal path states only.
-  const longLocation=longPathLocation,shortLocation=shortPathLocation;
+  const longLocation=longPathLocation||longNearFib,shortLocation=shortPathLocation||shortNearFib;
 
   // ENTRY_1 is deliberately early, but it must have ONE piece of real 4H
   // directional evidence in addition to location + StochRSI timing.
@@ -501,6 +500,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
   const breakoutLong=current4HBreakLong||persistedLongBreak;
   const breakoutShort=current4HBreakShort||persistedShortBreak;
+  const detectedBreakout:BreakoutRecord|undefined=current4HBreakLong
+    ? {direction:"LONG",price:round(developingLongLine??price),timestamp:now,candleIndex:developing4HIndex}
+    : current4HBreakShort
+      ? {direction:"SHORT",price:round(developingShortLine??price),timestamp:now,candleIndex:developing4HIndex}
+      : undefined;
   const retestLong=longExec.retest;
   const retestShort=shortExec.retest;
 
@@ -543,7 +547,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const target=tp2;
   const tp1Move=Math.abs(tp1-entry)/Math.max(entry,1),tp2Move=Math.abs(tp2-entry)/Math.max(entry,1);
   const dailyAligned=(dDir==="BULL"&&dir==="LONG")||(dDir==="BEAR"&&dir==="SHORT"),riskMultiplier=dailyAligned?1:0.5,trendAlignment=dailyAligned?"WITH_1D":"AGAINST_1D";
-  const breakoutRecord:BreakoutRecord|undefined=type==="ENTRY_2"?(dir==="LONG"?{direction:"LONG",price:round(longExec.linePrice??price),timestamp:now,candleIndex:developing4HIndex}:{direction:"SHORT",price:round(shortExec.linePrice??price),timestamp:now,candleIndex:developing4HIndex}):lastBreakout;
+  const breakoutRecord:BreakoutRecord|undefined=type==="ENTRY_2"?(dir==="LONG"?{direction:"LONG",price:round(longExec.linePrice??price),timestamp:now,candleIndex:developing4HIndex}:{direction:"SHORT",price:round(shortExec.linePrice??price),timestamp:now,candleIndex:developing4HIndex}):undefined;
   const location=type==="ENTRY_1"?"EARLY_STRUCTURAL":"15M_TRENDLINE_RETEST";
   const entry1Trigger=dir==="LONG"
     ? [stochLong&&"4H_STOCHRSI_TURN",macdLong&&"4H_MACD_IMPROVING",emaLong&&"4H_5_13_TURN"].filter(Boolean).join("+")
@@ -564,7 +568,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   }};
   debug.push(`[RISK] ${pair} ${dir} | structuralSL=${round(structuralStop)} | liquidation=${round(liquidation)} | safeBoundary=${round(safe)} | finalSL=${round(stop)}`);
   debug.push(`[SIGNAL] ${pair} — ${type} ${dir} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} (${(tp1Move*100).toFixed(2)}%) | TP2 ${signal.tp2} (${(tp2Move*100).toFixed(2)}%) | ${trendAlignment} | size x${riskMultiplier}`);
-  return{signal,signals:[signal],market:market(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug};
+  return{signal,signals:[signal],market:market(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug,breakout:detectedBreakout};
 }
 
 export function getCycleRunnerSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candlesWeekly:Candle[],currentPrice?:number){
