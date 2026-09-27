@@ -28,6 +28,7 @@ type DailyLiveContext={
   adx?:number; momentum?:any; protectedLevel?:number|null;
 };
 type Direction="LONG"|"SHORT";
+type WeeklyOpportunity={direction:Direction|null;worthwhile:boolean;reason:string;ema5:number;ema13:number;ema5Slope:number;ema13Slope:number;close:number;adx:number;};
 type Pivot={index:number;price:number;timestamp:number};
 type Trendline={valid:boolean;slope:number;intercept:number;price:number;pivots:Pivot[];ageCandles:number;stale:boolean;staleByAge:boolean;staleByDistance:boolean;invalidated:boolean;reason:string};
 type FibLevels={direction:Direction;swingLow:number;swingHigh:number;fib382:number;fib50:number;fib618:number;lowIndex:number;highIndex:number};
@@ -312,6 +313,15 @@ function getFibLevels(c:Candle[],d:Direction):FibLevels|null{
     : {direction:d,swingLow:low.price,swingHigh:high.price,fib382:low.price+range*.382,fib50:low.price+range*.5,fib618:low.price+range*.618,lowIndex:low.index,highIndex:high.index};
 }
 function macd4h(c:Candle[]){const closes=c.map(x=>x.close),fast=ema(closes,12),slow=ema(closes,26),m=fast.map((v,i)=>v-(slow[i]??v)),sig=ema(m,9),h=m.map((v,i)=>v-(sig[i]??0)),i=h.length-1,p=Math.max(0,i-1),cur=h[i]??0,prev=h[p]??0;return{macd:m[i]??0,signal:sig[i]??0,histogram:cur,prevHistogram:prev,prev2Histogram:h[Math.max(0,i-2)]??prev,rising:cur>prev,falling:cur<prev,bullishShift:cur>prev||cur>=0&&prev<0,bearishShift:cur<prev||cur<=0&&prev>0,bullishCross:cur>=0&&prev<0,bearishCross:cur<=0&&prev>0,bullishColour:cur>prev&&cur<0,bearishColour:cur<prev&&cur>0,histogramPct:Math.abs(cur)>0?(cur-prev)/Math.abs(cur)*100:0};}
+function weeklyOpportunity(c:Candle[],price:number):WeeklyOpportunity{
+  const closed=c.length>1?c.slice(0,-1):c;
+  if(closed.length<21)return{direction:null,worthwhile:false,reason:"INSUFFICIENT_WEEKLY_DATA",ema5:0,ema13:0,ema5Slope:0,ema13Slope:0,close:price,adx:0};
+  const closes=closed.map(x=>x.close),f=ema(closes,5),s=ema(closes,13),ema5=f.at(-1)!,ema13=s.at(-1)!,prev5=f.at(-2)!,prev13=s.at(-2)!,close=closed.at(-1)!.close,w=adx(closed);
+  const long=ema5>ema13&&ema5>prev5&&ema13>=prev13&&close>ema13;
+  const short=ema5<ema13&&ema5<prev5&&ema13<=prev13&&close<ema13;
+  const direction=long?"LONG":short?"SHORT":null;
+  return{direction,worthwhile:!!direction,reason:long?"WEEKLY_BULLISH_OPPORTUNITY":short?"WEEKLY_BEARISH_OPPORTUNITY":"NO_CLEAR_WEEKLY_OPPORTUNITY",ema5,ema13,ema5Slope:ema5-prev5,ema13Slope:ema13-prev13,close,adx:w};
+}
 function dailyDirection(live?:DailyLiveContext,local?:Direction|null):"BULL"|"BEAR"|"NEUTRAL"{if(live?.state?.startsWith("BULL"))return"BULL";if(live?.state?.startsWith("BEAR"))return"BEAR";if(live?.direction)return live.direction;return local==="LONG"?"BULL":local==="SHORT"?"BEAR":"NEUTRAL";}
 function opposite(pair:string,d:Direction,trades?:any[]){return!!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction!==d);}
 function same(pair:string,d:Direction,trades?:any[]){return!!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction===d);}
@@ -344,9 +354,9 @@ function checkEntry1Exhaustion(direction:Direction,r:number,st:{k:number;d:numbe
   return{blocked:false,reason:""};
 }
 
-export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],activeTrades:any[]=[],currentPrice?:number,lastBreakout?:BreakoutRecord,dailyLive?:DailyLiveContext):SignalResult{
+export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],activeTrades:any[]=[],currentPrice?:number,lastBreakout?:BreakoutRecord,dailyLive?:DailyLiveContext,candlesWeekly:Candle[]=[]):SignalResult{
   const debug:string[]=[];const now=Date.now();if(candles4h.length<35){debug.push("Insufficient 4H data");return{debug};}
-  const price=currentPrice??candles4h.at(-1)!.close,closed=candles4h.slice(0,-1),localDaily=bias(candles4h),dDir=dailyDirection(dailyLive,localDaily);
+  const price=currentPrice??candles4h.at(-1)!.close,closed=candles4h.slice(0,-1),localDaily=bias(candles4h),dDir=dailyDirection(dailyLive,localDaily),weekly=weeklyOpportunity(candlesWeekly,price);
   const structure=detectStructureShift(pair,closed),structureDir=structure.state==="HEALTHY"&&(structure.structure==="LONG"||structure.structure==="SHORT")?structure.structure as Direction:null;
   const fourH=get4HEmaDiagnostic(closed),macd=macd4h(closed),closes=closed.map(x=>x.close),st=stochRsi(closes),prevClosed=closed.length>1?closed.slice(0,-1):closed,prevSt=stochRsi(prevClosed.map(x=>x.close)),r=Math.round(rsi(closes)*10)/10,a=adx(closed),av=atr(closed);
   const longTL=buildTrendline(closed,"LONG"),shortTL=buildTrendline(closed,"SHORT"),longFib=getFibLevels(closed,"LONG"),shortFib=getFibLevels(closed,"SHORT");logFib(debug,pair,"LONG",longFib,price);logFib(debug,pair,"SHORT",shortFib,price);
@@ -425,25 +435,28 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     (fourH.turning&&fourH.direction==="BEARISH") ||
     shortStructuralConfirmation;
 
-  const longEntry1=longMomentum&&longLocation&&long4HConfirmation&&!longExhausted;
-  const shortEntry1=shortMomentum&&shortLocation&&short4HConfirmation&&!shortExhausted;
+  const weeklyLong=weekly.worthwhile&&weekly.direction==="LONG";
+  const weeklyShort=weekly.worthwhile&&weekly.direction==="SHORT";
+  const longEntry1=weeklyLong&&longMomentum&&longLocation&&long4HConfirmation&&!longExhausted;
+  const shortEntry1=weeklyShort&&shortMomentum&&shortLocation&&short4HConfirmation&&!shortExhausted;
 
-  debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir}`);
+  debug.push(`[1W] ${pair} | ${weekly.direction||"NEUTRAL"} | worthwhile=${weekly.worthwhile?"YES":"NO"} | ${weekly.reason} | 5/13=${weekly.ema5.toFixed(2)}/${weekly.ema13.toFixed(2)} | ADX=${weekly.adx}`);
+  debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir} | ${((weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"))?"SUPPORTIVE":"COUNTER/NEUTRAL"}`);
   debug.push(`[4H] ${pair} | 5/13=${fourH.label} | MACD=${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | Stoch=${st.k}/${st.d} prev=${prevSt.k}/${prevSt.d}`);
   debug.push(`[TL] ${pair} | LONG=${longTL.valid?longTL.price.toFixed(2):"—"} dist=${isFinite(longDist)?(longDist*100).toFixed(2)+"%":"—"} | SHORT=${shortTL.valid?shortTL.price.toFixed(2):"—"} dist=${isFinite(shortDist)?(shortDist*100).toFixed(2)+"%":"—"}`);
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
   debug.push(`[FIB PATH] ${pair} | LONG=${longFibPath.state}/${longFibPath.trigger} age=${Number.isFinite(longFibPath.triggerAge)?longFibPath.triggerAge:"—"} fresh=${longFibPath.fresh?"YES":"NO"} | SHORT=${shortFibPath.state}/${shortFibPath.trigger} age=${Number.isFinite(shortFibPath.triggerAge)?shortFibPath.triggerAge:"—"} fresh=${shortFibPath.fresh?"YES":"NO"}`);
   debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | MomentumLong=${longMomentumCount}/3 | MomentumShort=${shortMomentumCount}/3 | Stoch=${stochLong?"LONG":stochShort?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
 
-  const fallbackDir:Direction=dDir==="BEAR"?"SHORT":"LONG";
+  const fallbackDir:Direction=weekly.direction||(dDir==="BEAR"?"SHORT":"LONG");
   const baseMarket=()=>snapshot(pair,candles4h,structureDir||fallbackDir,structureDir==="LONG"?longTL:structureDir==="SHORT"?shortTL:longTL,price,dailyLive);
   const market=(m:any)=>Object.assign(m||baseMarket(),{
-    entry1Direction:longEntry1?"LONG":shortEntry1?"SHORT":"NEUTRAL",entry1Decision:longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE",
+    weeklyOpportunity:weekly,weeklySupportive:(weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"),entry1Direction:longEntry1?"LONG":shortEntry1?"SHORT":"NEUTRAL",entry1Decision:longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE",
     entry1TriggersLong:longMomentumCount,entry1TriggersShort:shortMomentumCount,entry1StructuralLocation:longLocation?"LONG":shortLocation?"SHORT":"NONE",
     entry1FibPathLong:longFibPath,entry1FibPathShort:shortFibPath,
     entry1NearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",entry1LiveNearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",
     entry1LiveDistPct:longEntry1?longDist*100:shortEntry1?shortDist*100:null,entry1PreBreak:longPreBreak||shortPreBreak,
-    entry1ExecutionAllowed:longEntry1||shortEntry1,entry1MaxEntry:longNearFib&&longFibNearest?round(longFibNearest[1]*(1+ENTRY1_FIB_ZONE_PCT)):shortNearFib&&shortFibNearest?round(shortFibNearest[1]*(1-ENTRY1_FIB_ZONE_PCT)):null,
+    entry1ExecutionAllowed:longEntry1||shortEntry1,weeklyOpportunity:weekly,weeklyGateLong:weeklyLong,weeklyGateShort:weeklyShort,entry1MaxEntry:longNearFib&&longFibNearest?round(longFibNearest[1]*(1+ENTRY1_FIB_ZONE_PCT)):shortNearFib&&shortFibNearest?round(shortFibNearest[1]*(1-ENTRY1_FIB_ZONE_PCT)):null,
     entry1Chase:false,entry1Exhaustion:longExhausted?"LONG":shortExhausted?"SHORT":"NONE",entry1DailyConflict:"NONE",entry1ClosedRsi:r,
     entry1Grade:longEntry1||shortEntry1?"A":null,entry1TriggerThreshold:1,entry1ExhaustionThreshold:dDir==="BULL"?ENTRY1_LONG_EXHAUSTION_RSI:ENTRY1_SHORT_EXHAUSTION_RSI
   });
@@ -536,11 +549,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     ? [stochLong&&"4H_STOCHRSI_TURN",macdLong&&"4H_MACD_IMPROVING",emaLong&&"4H_5_13_TURN"].filter(Boolean).join("+")
     : [stochShort&&"4H_STOCHRSI_TURN",macdShort&&"4H_MACD_IMPROVING",emaShort&&"4H_5_13_TURN"].filter(Boolean).join("+");
   const trigger=type==="ENTRY_1"?(entry1Trigger||"4H_STRUCTURE_REACTION"):"4H_BREAKOUT→15M_DIP";
-  const signal:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),confidence:type==="ENTRY_1"?70:type==="ENTRY_2"?80:85,rr:1.5,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(tp2Move*1000)/10,reason:`${dir} ${type} | ${reason} | ${trendAlignment}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} ${strength(daily(candles4h),dir)}`,location,trigger,context:{
+  const signal:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),confidence:type==="ENTRY_1"?70:type==="ENTRY_2"?80:85,rr:1.5,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(tp2Move*1000)/10,reason:`${dir} ${type} | ${reason} | ${trendAlignment}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} | 1W ${weekly.direction||"NEUTRAL"} | 1D ${dDir} | 4H ${strength(daily(candles4h),dir)}`,location,trigger,context:{
     marketPhase:type==="ENTRY_1"?`${dir} PROBABILITY EARLY SETUP`:`${dir} CONFIRMED ENTRY_2`,
     structure:structureDir?`4H ${structureDir}`:"4H STRUCTURE TRANSITION",momentum:`RSI ${r} | Stoch ${st.k}/${st.d} | MACD hist ${round(macd.histogram)}`,
     pullback:type==="ENTRY_2"?"15M_DIP_TO_4H_TRENDLINE":dir==="LONG"?longFibPath.trigger:shortFibPath.trigger,
-    fourH513:fourH,daily513:getDaily513Diagnostic(candles4h),dailyLive:dailyLive||null,macd4h:macd,trendAlignment,sizeMultiplier:riskMultiplier,
+    fourH513:fourH,daily513:getDaily513Diagnostic(candles4h),dailyLive:dailyLive||null,weeklyOpportunity:weekly,macd4h:macd,trendAlignment,sizeMultiplier:riskMultiplier,
     risk:{baseRisk:round(risk),structuralRisk:round(structuralRisk),positionSize:round(risk*riskMultiplier),trendAlignment,sizeMultiplier:riskMultiplier,estimatedLiquidation:round(liquidation),safeBoundary:round(safe),leverage:LEVERAGE},
     entryGuard:{referenceFib:dir==="LONG"?longFibNearest:shortFibNearest,referenceTrendline:dir==="LONG"?(longTL.valid?round(longTL.price):null):(shortTL.valid?round(shortTL.price):null),trendlineDistancePct:round((dir==="LONG"?longDist:shortDist)*100),executionDistancePct:round((dir==="LONG"?longFibDist:shortFibDist)*100),maxEntry:dir==="LONG"?(longFibNearest?round(longFibNearest[1]):null):(shortFibNearest?round(shortFibNearest[1]):null),maxDistancePct:ENTRY1_FIB_ZONE_PCT*100},
     entry1CandleTimestamp:entryLast.timestamp,entry1ClosedCandleIndex:closed.length-1,
