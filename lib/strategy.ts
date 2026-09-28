@@ -324,21 +324,9 @@ function weeklyDirection(c:Candle[],price:number):WeeklyDirection{
   return{direction,reason:long?"WEEKLY_BULLISH":short?"WEEKLY_BEARISH":"WEEKLY_NEUTRAL",ema5,ema13,ema5Slope:ema5-prev5,ema13Slope:ema13-prev13,close,adx:w};
 }
 function dailyDirection(live?:DailyLiveContext,local?:Direction|null):"BULL"|"BEAR"|"NEUTRAL"{
-  // A weakening established regime still carries directional context.
-  // A genuine HTF transition does not: do not let a stale prior 1D trend
-  // authorize a new trade while the daily engine is changing sides.
-  if(live){
-    const state=live.state||"";
-    const candidate=live.candidateState||state;
-    if(candidate==="TRANSITION")return"NEUTRAL";
-    if(state.startsWith("BULL") && candidate.startsWith("BEAR"))return"NEUTRAL";
-    if(state.startsWith("BEAR") && candidate.startsWith("BULL"))return"NEUTRAL";
-    if(state==="BULL_ESTABLISHED"||state==="BULL_WEAKENING")return"BULL";
-    if(state==="BEAR_ESTABLISHED"||state==="BEAR_WEAKENING")return"BEAR";
-    if(state==="BEAR_DEVELOPING")return"NEUTRAL";
-    if(state==="TRANSITION")return"NEUTRAL";
-    return"NEUTRAL";
-  }
+  if(live?.state==="BULL_ESTABLISHED"||live?.state==="BULL_WEAKENING")return"BULL";
+  if(live?.state==="BEAR_ESTABLISHED"||live?.state==="BEAR_WEAKENING")return"BEAR";
+  if(live)return"NEUTRAL";
   return local==="LONG"?"BULL":local==="SHORT"?"BEAR":"NEUTRAL";
 }
 function opposite(pair:string,d:Direction,trades?:any[]){return!!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction!==d);}
@@ -459,23 +447,20 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   //   4H only needs to point the same way; early/turning 4H states count.
   // - A genuine 1D transition is a no-trade zone.
   // - With no usable 1D context, weekly + 4H can still provide an early setup.
-  const dailyTransitionBlocked=!!dailyLive && dDir==="NEUTRAL";
-  const long4HDirectional=fourH.direction==="BULLISH" || (fourH.turning&&fourH.direction==="BULLISH");
-  const short4HDirectional=fourH.direction==="BEARISH" || (fourH.turning&&fourH.direction==="BEARISH");
-  const longHtfAligned=dailyTransitionBlocked
-    ? false
-    : dDir==="BULL"
-      ? long4HDirectional
-      : dDir==="BEAR"
-        ? false
-        : weeklyLong&&long4HDirectional;
-  const shortHtfAligned=dailyTransitionBlocked
-    ? false
-    : dDir==="BEAR"
-      ? short4HDirectional
-      : dDir==="BULL"
-        ? false
-        : weeklyShort&&short4HDirectional;
+  const candidate=dailyLive?.candidateState||"";
+  const dailyTransitionBlocked=!!dailyLive && (
+    candidate==="TRANSITION" ||
+    (dDir==="BULL"&&candidate==="BEAR_DEVELOPING") ||
+    (dDir==="BEAR"&&candidate.startsWith("BULL"))
+  );
+  const long4HDirectional=fourH.direction==="BULLISH";
+  const short4HDirectional=fourH.direction==="BEARISH";
+  const longHtfAligned=!dailyTransitionBlocked && (
+    dDir==="BULL" ? long4HDirectional : dDir==="NEUTRAL" ? weeklyLong&&long4HDirectional : false
+  );
+  const shortHtfAligned=!dailyTransitionBlocked && (
+    dDir==="BEAR" ? short4HDirectional : dDir==="NEUTRAL" ? weeklyShort&&short4HDirectional : false
+  );
   const longEntry1=weeklyLong&&longHtfAligned&&longLocation&&long4HConfirmation&&!longExhausted;
   const shortEntry1=weeklyShort&&shortHtfAligned&&shortLocation&&short4HConfirmation&&!shortExhausted;
 
