@@ -590,3 +590,47 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[SIGNAL] ${pair} — ${type} ${dir} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} (${(tp1Move*100).toFixed(2)}%) | TP2 ${signal.tp2} (${(tp2Move*100).toFixed(2)}%) | ${trendAlignment} | size x${riskMultiplier}`);
   return{signal,signals:[signal],market:market(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug,breakout:detectedBreakout};
 }
+
+export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],dailyLive?:DailyLiveContext){
+  const d=bias(candles4h),price=candles4h.at(-1)?.close||0;if(!d)return{pair,price,timestamp:Date.now(),trend:"FLAT",location:"NONE",trigger:"NO_BIAS",adx:0,rsi:0,stochK:0,stochD:0,trendlinePrice:0,distToTrendline:null,momentumState:"NEUTRAL",dailyLive:dailyLive||null};
+  const structure=detectStructureShift(pair,candles4h.slice(0,-1)),sd=structure.state==="HEALTHY"&&(structure.structure==="LONG"||structure.structure==="SHORT")?structure.structure as Direction:null,effective=sd||d,primary=buildTrendline(candles4h.slice(0,-1),effective,60),tl=primary.stale?buildTrendline(candles4h.slice(0,-1),effective,FRESH_LOOKBACK):primary;return snapshot(pair,candles4h,effective,tl,price,dailyLive);
+}
+export interface ValidityCheck{valid:boolean;reason:string;exited:boolean;state?:"VALID"|"STALE"|"INVALID";}
+export function isSignalStillValid(s:Signal,p:number,now=Date.now()):ValidityCheck{if(now-s.timestamp>(s.type==="ADD"?4:24)*60*60*1000)return{valid:false,reason:"expired_ttl",exited:true,state:"STALE"};if(s.direction==="LONG"&&p<=s.stop)return{valid:false,reason:"sl_hit",exited:true,state:"INVALID"};if(s.direction==="SHORT"&&p>=s.stop)return{valid:false,reason:"sl_hit",exited:true,state:"INVALID"};return{valid:true,reason:"active",exited:false,state:"VALID"};}
+export type ManagementState="STAY"|"EXIT";
+export interface HoldResult{shouldHold:boolean;reason:string;managementState:ManagementState;recommendation:string;newStop?:number;scaleOut?:{level:number;size:number;label:string};}
+function waveMomentum(c:Candle[],d:Direction){
+  const closed=c.length>1?c.slice(0,-1):c;
+  if(closed.length<26)return{state:"STAY IN TRADE" as const,confirmedReversal:false};
+  const closes=closed.map(x=>x.close),e8=ema(closes,TF_FAST),e21=ema(closes,TF_SLOW),m=macd4h(closed),n=closed.length;
+  const c0=closes[n-1],c1=closes[n-2],e80=e8[n-1]!,e81=e8[n-2]!,e210=e21[n-1]!,e211=e21[n-2]!;
+  const longReversal=d==="LONG"&&c0<e80&&c1<e81&&e80<e210&&e81<=e211&&m.bearishShift;
+  const shortReversal=d==="SHORT"&&c0>e80&&c1>e81&&e80>e210&&e81>=e211&&m.bullishShift;
+  const confirmedReversal=longReversal||shortReversal;
+  return{state:confirmedReversal?"EXIT TRADE":"STAY IN TRADE" as const,confirmedReversal};
+}
+export function shouldHold(s:Signal,c:Candle[],p:number):HoldResult{
+  const momentum=waveMomentum(c,s.direction);
+  const closed=c.length>1?c.slice(0,-1):c;
+  const structure=closed.length>=20?detectStructureShift(s.pair,closed):null;
+  const oppositeStructure=!!structure&&((s.direction==="LONG"&&(structure.structure==="SHORT"||structure.shiftTo==="SHORT"))||(s.direction==="SHORT"&&(structure.structure==="LONG"||structure.shiftTo==="LONG")));
+  const closes=closed.map(x=>x.close),e8=ema(closes,TF_FAST).at(-1)??p,e21=ema(closes,TF_SLOW).at(-1)??p;
+  const emaOpposite=s.direction==="LONG"?e8<e21:e8>e21,priceAgainstE8=s.direction==="LONG"?p<e8:p>e8;
+  const structureBroken=oppositeStructure&&emaOpposite&&priceAgainstE8;
+  if(s.direction==="LONG"&&p<=s.stop)return{shouldHold:false,reason:"sl_hit",managementState:"EXIT",recommendation:"EXIT TRADE"};
+  if(s.direction==="SHORT"&&p>=s.stop)return{shouldHold:false,reason:"sl_hit",managementState:"EXIT",recommendation:"EXIT TRADE"};
+  if(s.tp2!==undefined&&((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2)))return{shouldHold:false,reason:"tp2_hit",managementState:"EXIT",recommendation:"EXIT TRADE",scaleOut:{level:s.tp2,size:1,label:"TP2_FINAL"}};
+  if(s.tp1!==undefined&&((s.direction==="LONG"&&p>=s.tp1)||(s.direction==="SHORT"&&p<=s.tp1)))return{shouldHold:true,reason:"tp1_hit",managementState:"STAY",recommendation:"STAY IN TRADE",newStop:s.entry,scaleOut:{level:s.tp1,size:.5,label:"TP1_50"}};
+  // Management is deliberately binary:
+  // STAY = the original trade thesis remains intact.
+  // EXIT = confirmed 4H reversal or confirmed structural breakdown.
+  // Normal momentum cooling, Fib retracements, and price moving below/above
+  // the fast EMA do NOT create an intermediate management state.
+  if(momentum.confirmedReversal||structureBroken)return{shouldHold:false,reason:momentum.confirmedReversal?"momentum_confirmed_4h_reversal":"structure_break_confirmed",managementState:"EXIT",recommendation:"EXIT TRADE"};
+  return{shouldHold:true,reason:"thesis_intact",managementState:"STAY",recommendation:"STAY IN TRADE"};
+}
+export function shouldHoldCompat(s:Signal,c4:Candle[],c1:Candle[],p:number){return shouldHold(s,c4,p);}
+export function filterExpiredSignals(signals:Signal[],prices:Record<string,number>,now?:number){const active:Signal[]=[],exited:{signal:Signal;reason:string}[]=[];for(const s of signals){const p=prices[s.pair];if(p===undefined){active.push(s);continue;}const v=isSignalStillValid(s,p,now);v.valid?active.push(s):exited.push({signal:s,reason:v.reason});}return{active,exited};}
+export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
+export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if(s.direction==="LONG"&&p<=s.stop)return"SL_HIT";if(s.direction==="SHORT"&&p>=s.stop)return"SL_HIT";return"ACTIVE";}
+export function rebuildStateFromTrades(_:Record<string,any>):void{return;}
