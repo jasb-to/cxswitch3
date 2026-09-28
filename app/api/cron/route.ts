@@ -133,21 +133,6 @@ export async function GET(request:Request){
   await appendSignalHistory(signal);newSignals.push(signal);alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.tp2}`);
   if(signal.type!=="ADD"&&!existing){await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE] ${pair} — active position created`);}
  }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}}
- // Dedicated BTC/ETH cycle-runner entry alert. It does not create a normal CX trade.
- const cycleState=await getCycleRunnerState();
- for(const pair of ["BTC","ETH"] as const){
-   const cm=marketData.find((m:any)=>m?.pair===pair)?.cycleRunner;
-   if(!cm?.ready) continue;
-   const existing=cycleState[pair];
-   if(existing?.status==="IN_POSITION") continue;
-   const key=`CYCLE_RUNNER:${pair}:${cm.direction}:${cm.fourHFib?.nearest?.level||"zone"}`;
-   const claimed=await claimTelegramAlert(key);
-   if(claimed){
-     try{
-       await sendAlert({symbol:pair,state:"CYCLE RUNNER ENTRY",price:round(marketData.find((m:any)=>m?.pair===pair)?.price||0),bias:cm.direction,stopLoss:0,takeProfit:0,rr:0,expectedMove:0,adx:0,rsi:0,stochK:cm.oneHStoch?.k||0,stochD:cm.oneHStoch?.d||0,reason:"Weekly direction + 4H major Fib retest + 1H momentum confirmation",trend:`WEEKLY ${cm.weeklyDirection} · 4H ${cm.fourHDirection}`,location:"4H_FIB_RETEST",trigger:"1H_PRECISION_CONFIRM",updatedAt:new Date().toISOString(),signalType:"CYCLE_RUNNER",signalEmoji:"🟣",context:{cycleRunner:cm}});
-     }catch(e){await releaseTelegramAlert(key);console.error("[CYCLE RUNNER] Telegram alert failed",e);}
-   }
- }
  await setMarketData(marketData);
  const finalActive=await getActiveSignals();
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${alerts.length}`);
