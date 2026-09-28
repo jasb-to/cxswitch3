@@ -16,6 +16,8 @@ export const dynamic="force-dynamic";
 export const revalidate=0;
 const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","AVAX","PAID"] as const;
 const MEXC_PAIRS=new Set(["PAID"]);
+// Auxiliary assets are paused from Telegram alerts while we reassess their behaviour.
+const PAUSED_ALERT_PAIRS=new Set(["LINK","AVAX","DOGE","PAID"]);
 const MIN_CRON_INTERVAL_MS=2*60*1000;
 const ADD_DEDUP_MS=45*60*1000;
 const ADD_DEDUP_ENTRY_PCT=0.004;
@@ -111,6 +113,7 @@ export async function GET(request:Request){
   console.log(`[SIGNAL] ${pair} — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1??"—"} | TP2 ${signal.tp2??"—"} | RR ${signal.rr}`);
   const hasSameDirection=active.some(x=>x.pair===pair&&x.direction===signal.direction);if(signal.type==="ENTRY_1"&&hasSameDirection){console.log(`[PAIR] ${pair} — ENTRY_1 blocked: active same-direction position already exists`);continue;}if(signal.type==="ADD"&&!hasSameDirection){console.log(`[PAIR] ${pair} — ADD blocked: no active same-direction position`);continue;}if(existing&&signal.type!=="ADD"){console.log(`[PAIR] ${pair} — signal suppressed because position is already active`);continue;}
   const history=await getSignalHistory();
+  if(PAUSED_ALERT_PAIRS.has(pair)&&["ENTRY_1","ENTRY_2","ADD"].includes(signal.type)){console.log(`[PAIR] ${pair} — ${signal.type} paused; signal suppressed`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});continue;}
   if((signal.type==="ENTRY_1"||signal.type==="ENTRY_2")&&sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ${signal.type} deduped: same entry condition was alerted recently; no duplicate history/position/alert`);continue;}
   if(signal.type==="ADD"&&sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ADD deduped: same entry condition was alerted recently; waiting for a new retest/price`);continue;}
   const cooldowns=await getCooldowns(),cd=cooldowns[`${pair}_${signal.direction}`];if(cd&&Date.now()<cd){console.log(`[PAIR] ${pair} — COOLDOWN until ${new Date(cd).toISOString()}`);continue;}
