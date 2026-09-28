@@ -27,7 +27,7 @@ export async function run1DTrendExperiment(activeOverride?: any[]) {
       const flip = recorded.flip ? ` | FLIP=${recorded.state}` : "";
 
       // One compact line per asset. The 1D engine is context for V28, not a separate alert engine.
-      console.log(`[1D] ${pair} | ${recorded.state}/${result.candidateState} | ${result.structure.label} | EMA=${result.ema.alignment} | 5/13=${result.fast513.direction} | ADX=${result.adx} | MOM=${result.momentum.direction}/${result.momentum.state} | 4H=${fourH.label}${flip}`);
+      console.log(`[1D] ${pair} | ${recorded.state}/${result.candidateState} | ${result.structure.label} | EMA=${result.ema.alignment} | 5/13=${result.fast513.direction} | ADX=${result.adx} | MOM=${result.momentum.direction}/${result.momentum.state}${flip}`);
 
       results.push({
         pair,
