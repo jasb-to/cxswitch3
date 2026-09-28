@@ -20,7 +20,7 @@ export interface Signal {
   trend?:string; location?:string; trigger?:string; context?:any;
 }
 export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; breakout?:BreakoutRecord; }
-export const CURRENT_SIGNAL_VERSION=17;
+export const CURRENT_SIGNAL_VERSION=18;
 
 type DailyLiveContext={
   state?:string; candidateState?:string; candidateStreak?:number;
@@ -420,48 +420,78 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const priorHighBreak=entryLast.close>Math.max(...closed.slice(-4,-1).map(x=>x.high));
   const priorLowBreak=entryLast.close<Math.min(...closed.slice(-4,-1).map(x=>x.low));
 
-  // ENTRY_1 stays early, but MACD improvement is supporting evidence — not
-  // permission by itself. If 4H 5/13 is still on the opposite side, require
-  // an actual structural transition/reclaim/break. This prevents the recent
-  // SOL/HYPE-style "MACD improving = long" entries without over-gating normal
-  // bullish 4H turns.
+  // ENTRY_1 is the TRANSITION entry — not a mature-trend entry.
+  // The 4H must be leaving the opposite/neutral environment and beginning
+  // to turn in the new direction. We deliberately accept the earliest
+  // 5/13 transition states (EARLY_* / CROSS) rather than waiting for a
+  // fully established 4H trend.
+  //
+  // A previous bearish 4H plus ANY single fresh bullish timing/structure
+  // reaction is also enough. This is intentionally permissive: location and
+  // exhaustion remain the separate quality gates. We do not stack indicators.
+  const previousFourH=closed.length>20
+    ? get4HEmaDiagnostic(closed.slice(0,-1))
+    : {direction:"NEUTRAL" as const,stage:"NEUTRAL",turning:false};
+  const bullStageTransition=
+    fourH.stage==="EARLY_BULLISH_L1" ||
+    fourH.stage==="EARLY_BULLISH_L2" ||
+    fourH.stage==="BULLISH_CROSS";
+  const bearStageTransition=
+    fourH.stage==="EARLY_BEARISH_L1" ||
+    fourH.stage==="EARLY_BEARISH_L2" ||
+    fourH.stage==="BEARISH_CROSS";
   const longStructuralConfirmation=
     structure.shiftTo==="LONG" ||
     (higherLow&&(reclaim8Long||priorHighBreak));
   const shortStructuralConfirmation=
     structure.shiftTo==="SHORT" ||
     (lowerHigh&&(reclaim8Short||priorLowBreak));
-  const long4HConfirmation=
-    fourH.direction==="BULLISH" ||
-    (fourH.turning&&fourH.direction==="BULLISH") ||
-    longStructuralConfirmation;
-  const short4HConfirmation=
-    fourH.direction==="BEARISH" ||
-    (fourH.turning&&fourH.direction==="BEARISH") ||
-    shortStructuralConfirmation;
+
+  // If the previous closed 4H was bearish and the current bar is beginning
+  // to turn bullish, ENTRY_1 may fire immediately. The reverse applies to
+  // shorts. This catches the move before the 4H becomes fully established.
+  const long4HTransition=
+    bullStageTransition ||
+    structure.shiftTo==="LONG" ||
+    (previousFourH.direction==="BEARISH" &&
+      (stochLong||macdLong||reclaim8Long||priorHighBreak));
+  const short4HTransition=
+    bearStageTransition ||
+    structure.shiftTo==="SHORT" ||
+    (previousFourH.direction==="BULLISH" &&
+      (stochShort||macdShort||reclaim8Short||priorLowBreak));
 
   const weeklyLong=weekly.direction==="LONG";
   const weeklyShort=weekly.direction==="SHORT";
 
-  // NEW ENTRY PERMISSION:
-  // 1D and 1W are context only. They must NOT be universal directional gates.
-  // ENTRY_1 is intentionally allowed to catch an early 4H structural turn
-  // before the higher timeframe has fully aligned.
+  // 1D sets the permitted side, but does NOT require 1D + 4H to already
+  // be aligned. The exception is a genuine daily transition: when the 1D
+  // itself is developing BULL/BEAR and the 4H is turning the same way, the
+  // new direction is allowed immediately. This is how we catch a longer move.
   //
-  // We retain one explicit safety gate: a genuine 1D transition/conflict
-  // supplied by the live daily state pauses NEW entries while the market
-  // proves direction. This prevents fresh bets during an unresolved HTF flip
-  // without forcing every normal entry to have 1D + 4H alignment.
+  // Established BULL + 4H turning BULL -> LONG is valid.
+  // Established BULL + 4H turning BEAR -> NEVER short.
+  // Established BEAR + 4H turning BEAR -> SHORT is valid.
+  // Established BEAR + 4H turning BULL -> NEVER long.
+  // Daily TRANSITION/DEVELOPING + matching 4H transition -> allow that side.
   const candidate=dailyLive?.candidateState||"";
-  const dailyTransitionBlocked=!!dailyLive && (
-    candidate==="TRANSITION" ||
-    (dDir==="BULL"&&candidate==="BEAR_DEVELOPING") ||
-    (dDir==="BEAR"&&candidate.startsWith("BULL"))
-  );
-  const longPermission=!dailyTransitionBlocked;
-  const shortPermission=!dailyTransitionBlocked;
-  const longEntry1=longPermission&&longLocation&&long4HConfirmation&&!longExhausted;
-  const shortEntry1=shortPermission&&shortLocation&&short4HConfirmation&&!shortExhausted;
+  const dailyBullTransition=
+    candidate==="BULL_DEVELOPING" ||
+    candidate==="BULL_TRANSITION" ||
+    candidate==="BULLISH_DEVELOPING";
+  const dailyBearTransition=
+    candidate==="BEAR_DEVELOPING" ||
+    candidate==="BEAR_TRANSITION" ||
+    candidate==="BEARISH_DEVELOPING";
+  const dailyLongAllowed=
+    dDir==="BULL" && !dailyBearTransition && candidate!=="TRANSITION" ||
+    dailyBullTransition;
+  const dailyShortAllowed=
+    dDir==="BEAR" && !dailyBullTransition && candidate!=="TRANSITION" ||
+    dailyBearTransition;
+
+  const longEntry1=dailyLongAllowed&&longLocation&&long4HTransition&&!longExhausted;
+  const shortEntry1=dailyShortAllowed&&shortLocation&&short4HTransition&&!shortExhausted;
 
   debug.push(`[1W] ${pair} | ${weekly.direction||"NEUTRAL"} | direction=${weekly.direction||"NEUTRAL"} | ${weekly.reason} | 5/13=${weekly.ema5.toFixed(2)}/${weekly.ema13.toFixed(2)} | ADX=${weekly.adx}`);
   debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir} | ${((weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"))?"SUPPORTIVE":"COUNTER/NEUTRAL"}`);
