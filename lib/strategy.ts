@@ -339,7 +339,7 @@ function dailyDirection(live?:DailyLiveContext,local?:Direction|null):"BULL"|"BE
     if(state==="TRANSITION")return"NEUTRAL";
     return"NEUTRAL";
   }
-  return local||"NEUTRAL";
+  return local==="LONG"?"BULL":local==="SHORT"?"BEAR":"NEUTRAL";
 }
 function opposite(pair:string,d:Direction,trades?:any[]){return!!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction!==d);}
 function same(pair:string,d:Direction,trades?:any[]){return!!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction===d);}
