@@ -20,7 +20,7 @@ export interface Signal {
   trend?:string; location?:string; trigger?:string; context?:any;
 }
 export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; breakout?:BreakoutRecord; }
-export const CURRENT_SIGNAL_VERSION=16;
+export const CURRENT_SIGNAL_VERSION=17;
 
 type DailyLiveContext={
   state?:string; candidateState?:string; candidateStreak?:number;
@@ -443,27 +443,25 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const weeklyLong=weekly.direction==="LONG";
   const weeklyShort=weekly.direction==="SHORT";
 
-  // New entries: do not trade a genuine 1D transition, but do not wait for
-  // a fully mature 4H trend either. Established/weakening 1D + directional
-  // 4H catches the early turn; ENTRY_2 remains independently weekly+4H.
+  // NEW ENTRY PERMISSION:
+  // 1D and 1W are context only. They must NOT be universal directional gates.
+  // ENTRY_1 is intentionally allowed to catch an early 4H structural turn
+  // before the higher timeframe has fully aligned.
+  //
+  // We retain one explicit safety gate: a genuine 1D transition/conflict
+  // supplied by the live daily state pauses NEW entries while the market
+  // proves direction. This prevents fresh bets during an unresolved HTF flip
+  // without forcing every normal entry to have 1D + 4H alignment.
   const candidate=dailyLive?.candidateState||"";
   const dailyTransitionBlocked=!!dailyLive && (
     candidate==="TRANSITION" ||
     (dDir==="BULL"&&candidate==="BEAR_DEVELOPING") ||
     (dDir==="BEAR"&&candidate.startsWith("BULL"))
   );
-  const long4HDirectional=fourH.direction==="BULLISH";
-  const short4HDirectional=fourH.direction==="BEARISH";
-  const longPermission=!dailyTransitionBlocked && (
-    dDir==="BULL" ? long4HDirectional :
-    dDir==="NEUTRAL" ? weeklyLong&&long4HDirectional : false
-  );
-  const shortPermission=!dailyTransitionBlocked && (
-    dDir==="BEAR" ? short4HDirectional :
-    dDir==="NEUTRAL" ? weeklyShort&&short4HDirectional : false
-  );
-  const longEntry1=weeklyLong&&longPermission&&longLocation&&long4HConfirmation&&!longExhausted;
-  const shortEntry1=weeklyShort&&shortPermission&&shortLocation&&short4HConfirmation&&!shortExhausted;
+  const longPermission=!dailyTransitionBlocked;
+  const shortPermission=!dailyTransitionBlocked;
+  const longEntry1=longPermission&&longLocation&&long4HConfirmation&&!longExhausted;
+  const shortEntry1=shortPermission&&shortLocation&&short4HConfirmation&&!shortExhausted;
 
   debug.push(`[1W] ${pair} | ${weekly.direction||"NEUTRAL"} | direction=${weekly.direction||"NEUTRAL"} | ${weekly.reason} | 5/13=${weekly.ema5.toFixed(2)}/${weekly.ema13.toFixed(2)} | ADX=${weekly.adx}`);
   debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir} | ${((weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"))?"SUPPORTIVE":"COUNTER/NEUTRAL"}`);
@@ -471,7 +469,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[TL] ${pair} | LONG=${longTL.valid?longTL.price.toFixed(2):"—"} dist=${isFinite(longDist)?(longDist*100).toFixed(2)+"%":"—"} | SHORT=${shortTL.valid?shortTL.price.toFixed(2):"—"} dist=${isFinite(shortDist)?(shortDist*100).toFixed(2)+"%":"—"}`);
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
   debug.push(`[FIB PATH] ${pair} | LONG=${longFibPath.state}/${longFibPath.trigger} age=${Number.isFinite(longFibPath.triggerAge)?longFibPath.triggerAge:"—"} fresh=${longFibPath.fresh?"YES":"NO"} | SHORT=${shortFibPath.state}/${shortFibPath.trigger} age=${Number.isFinite(shortFibPath.triggerAge)?shortFibPath.triggerAge:"—"} fresh=${shortFibPath.fresh?"YES":"NO"}`);
-  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | HTF=${dailyTransitionBlocked?"TRANSITION_BLOCK":longPermission?"LONG_ALLOWED":shortPermission?"SHORT_ALLOWED":"NO_TRADE"} | MomentumLong=${longMomentumCount}/3 | MomentumShort=${shortMomentumCount}/3 | Stoch=${stochLong?"LONG":stochShort?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
+  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | HTF=${dailyTransitionBlocked?"TRANSITION_BLOCK":"CONTEXT_ONLY"} | Permission=EARLY_4H | MomentumLong=${longMomentumCount}/3 | MomentumShort=${shortMomentumCount}/3 | Stoch=${stochLong?"LONG":stochShort?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
 
   const fallbackDir:Direction=weekly.direction||(dDir==="BEAR"?"SHORT":"LONG");
   const baseMarket=()=>snapshot(pair,candles4h,structureDir||fallbackDir,structureDir==="LONG"?longTL:structureDir==="SHORT"?shortTL:longTL,price,dailyLive);
@@ -481,8 +479,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     entry1FibPathLong:longFibPath,entry1FibPathShort:shortFibPath,
     entry1NearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",entry1LiveNearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",
     entry1LiveDistPct:longEntry1?longDist*100:shortEntry1?shortDist*100:null,entry1PreBreak:longPreBreak||shortPreBreak,
-    entry1ExecutionAllowed:longEntry1||shortEntry1,weeklyGateLong:weeklyLong,weeklyGateShort:weeklyShort,volatilityPct:price>0?round((av/price)*100):0,entry1MaxEntry:longNearFib&&longFibNearest?round(longFibNearest[1]*(1+ENTRY1_FIB_ZONE_PCT)):shortNearFib&&shortFibNearest?round(shortFibNearest[1]*(1-ENTRY1_FIB_ZONE_PCT)):null,
-    entry1Chase:false,entry1Exhaustion:longExhausted?"LONG":shortExhausted?"SHORT":"NONE",entry1DailyConflict:"NONE",entry1ClosedRsi:r,
+    entry1ExecutionAllowed:longEntry1||shortEntry1,weeklyGateLong:false,weeklyGateShort:false,volatilityPct:price>0?round((av/price)*100):0,entry1MaxEntry:longNearFib&&longFibNearest?round(longFibNearest[1]*(1+ENTRY1_FIB_ZONE_PCT)):shortNearFib&&shortFibNearest?round(shortFibNearest[1]*(1-ENTRY1_FIB_ZONE_PCT)):null,
+    entry1Chase:false,entry1Exhaustion:longExhausted?"LONG":shortExhausted?"SHORT":"NONE",entry1DailyConflict:dailyTransitionBlocked?"TRANSITION_BLOCK":"NONE",entry1ClosedRsi:r,
     entry1Grade:longEntry1||shortEntry1?"A":null,entry1TriggerThreshold:0,entry1MomentumRequired:false,entry1ExhaustionThreshold:dDir==="BULL"?ENTRY1_LONG_EXHAUSTION_RSI:ENTRY1_SHORT_EXHAUSTION_RSI
   });
 
