@@ -385,9 +385,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     (shortFibPath.state==="DEEP_RECLAIM"&&price>=shortFib.swingLow&&price<=shortFib.fib50*(1+ENTRY1_PATH_ZONE_PCT))
   );
   const longPreBreak=longTL.valid&&price<=longTL.price+longBuffer,shortPreBreak=shortTL.valid&&price>=shortTL.price-shortBuffer;
-  // ENTRY_1 momentum is deliberately permissive: ANY ONE of the three
-  // closed-4H momentum signals is enough. This is an early entry, not a
-  // confirmation entry. Direction/location/exhaustion remain separate gates.
+  // ENTRY_1 momentum is deliberately early, but a reversal from an opposing
+  // 4H environment needs 2 of the 3 closed-4H momentum signals. This preserves
+  // early entries while preventing a StochRSI-only reversal from firing.
+  // Explicit 5/13 stage transitions and confirmed structure shifts remain
+  // valid on their own, because those are direct 4H transition evidence.
   const stochLong=st.k>st.d&&st.k>prevSt.k,stochShort=st.k<st.d&&st.k<prevSt.k;
   const macdLong=macd.bullishShift,macdShort=macd.bearishShift;
   const emaLong=fourH.direction==="BULLISH"||fourH.turning&&fourH.direction==="BULLISH";
@@ -454,12 +456,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     bullStageTransition ||
     structure.shiftTo==="LONG" ||
     (previousFourH.direction==="BEARISH" &&
-      (stochLong||macdLong||reclaim8Long||priorHighBreak));
+      (longMomentumCount>=2 || reclaim8Long || priorHighBreak));
   const short4HTransition=
     bearStageTransition ||
     structure.shiftTo==="SHORT" ||
     (previousFourH.direction==="BULLISH" &&
-      (stochShort||macdShort||reclaim8Short||priorLowBreak));
+      (shortMomentumCount>=2 || reclaim8Short || priorLowBreak));
 
   const weeklyLong=weekly.direction==="LONG";
   const weeklyShort=weekly.direction==="SHORT";
