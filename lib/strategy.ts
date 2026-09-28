@@ -324,10 +324,22 @@ function weeklyDirection(c:Candle[],price:number):WeeklyDirection{
   return{direction,reason:long?"WEEKLY_BULLISH":short?"WEEKLY_BEARISH":"WEEKLY_NEUTRAL",ema5,ema13,ema5Slope:ema5-prev5,ema13Slope:ema13-prev13,close,adx:w};
 }
 function dailyDirection(live?:DailyLiveContext,local?:Direction|null):"BULL"|"BEAR"|"NEUTRAL"{
-  if(live?.state==="BULL_ESTABLISHED")return"BULL";
-  if(live?.state==="BEAR_ESTABLISHED")return"BEAR";
-  if(live)return"NEUTRAL";
-  return"NEUTRAL";
+  // A weakening established regime still carries directional context.
+  // A genuine HTF transition does not: do not let a stale prior 1D trend
+  // authorize a new trade while the daily engine is changing sides.
+  if(live){
+    const state=live.state||"";
+    const candidate=live.candidateState||state;
+    if(candidate==="TRANSITION")return"NEUTRAL";
+    if(state.startsWith("BULL") && candidate.startsWith("BEAR"))return"NEUTRAL";
+    if(state.startsWith("BEAR") && candidate.startsWith("BULL"))return"NEUTRAL";
+    if(state==="BULL_ESTABLISHED"||state==="BULL_WEAKENING")return"BULL";
+    if(state==="BEAR_ESTABLISHED"||state==="BEAR_WEAKENING")return"BEAR";
+    if(state==="BEAR_DEVELOPING")return"NEUTRAL";
+    if(state==="TRANSITION")return"NEUTRAL";
+    return"NEUTRAL";
+  }
+  return local||"NEUTRAL";
 }
 function opposite(pair:string,d:Direction,trades?:any[]){return!!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction!==d);}
 function same(pair:string,d:Direction,trades?:any[]){return!!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction===d);}
@@ -442,8 +454,28 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
   const weeklyLong=weekly.direction==="LONG";
   const weeklyShort=weekly.direction==="SHORT";
-  const longHtfAligned=dDir==="BULL"&&fourH.direction==="BULLISH";
-  const shortHtfAligned=dDir==="BEAR"&&fourH.direction==="BEARISH";
+  // NEW-ENTRY HTF permission:
+  // - Stable/weakening 1D regimes still provide directional context.
+  //   4H only needs to point the same way; early/turning 4H states count.
+  // - A genuine 1D transition is a no-trade zone.
+  // - With no usable 1D context, weekly + 4H can still provide an early setup.
+  const dailyTransitionBlocked=!!dailyLive && dDir==="NEUTRAL";
+  const long4HDirectional=fourH.direction==="BULLISH" || (fourH.turning&&fourH.direction==="BULLISH");
+  const short4HDirectional=fourH.direction==="BEARISH" || (fourH.turning&&fourH.direction==="BEARISH");
+  const longHtfAligned=dailyTransitionBlocked
+    ? false
+    : dDir==="BULL"
+      ? long4HDirectional
+      : dDir==="BEAR"
+        ? false
+        : weeklyLong&&long4HDirectional;
+  const shortHtfAligned=dailyTransitionBlocked
+    ? false
+    : dDir==="BEAR"
+      ? short4HDirectional
+      : dDir==="BULL"
+        ? false
+        : weeklyShort&&short4HDirectional;
   const longEntry1=weeklyLong&&longHtfAligned&&longLocation&&long4HConfirmation&&!longExhausted;
   const shortEntry1=weeklyShort&&shortHtfAligned&&shortLocation&&short4HConfirmation&&!shortExhausted;
 
@@ -453,7 +485,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[TL] ${pair} | LONG=${longTL.valid?longTL.price.toFixed(2):"—"} dist=${isFinite(longDist)?(longDist*100).toFixed(2)+"%":"—"} | SHORT=${shortTL.valid?shortTL.price.toFixed(2):"—"} dist=${isFinite(shortDist)?(shortDist*100).toFixed(2)+"%":"—"}`);
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
   debug.push(`[FIB PATH] ${pair} | LONG=${longFibPath.state}/${longFibPath.trigger} age=${Number.isFinite(longFibPath.triggerAge)?longFibPath.triggerAge:"—"} fresh=${longFibPath.fresh?"YES":"NO"} | SHORT=${shortFibPath.state}/${shortFibPath.trigger} age=${Number.isFinite(shortFibPath.triggerAge)?shortFibPath.triggerAge:"—"} fresh=${shortFibPath.fresh?"YES":"NO"}`);
-  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | 4H=${fourH.direction} | HTF=${longHtfAligned?"LONG_ALIGNED":shortHtfAligned?"SHORT_ALIGNED":"NO_TRADE"} | MomentumLong=${longMomentumCount}/3 | MomentumShort=${shortMomentumCount}/3 | Stoch=${stochLong?"LONG":stochShort?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
+  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | 4H=${fourH.direction} | HTF=${dailyTransitionBlocked?"TRANSITION_BLOCK":longHtfAligned?"LONG_ALIGNED":shortHtfAligned?"SHORT_ALIGNED":"NO_TRADE"} | MomentumLong=${longMomentumCount}/3 | MomentumShort=${shortMomentumCount}/3 | Stoch=${stochLong?"LONG":stochShort?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
 
   const fallbackDir:Direction=weekly.direction||(dDir==="BEAR"?"SHORT":"LONG");
   const baseMarket=()=>snapshot(pair,candles4h,structureDir||fallbackDir,structureDir==="LONG"?longTL:structureDir==="SHORT"?shortTL:longTL,price,dailyLive);
