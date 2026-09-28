@@ -1,9 +1,11 @@
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
+import { getMexcCandles } from "@/lib/mexc";
 import { evaluate1DTrend } from "@/lib/1d-trend-engine";
 import { get1DTrendState, record1DTrend } from "@/lib/1d-trend-state";
 import { getActiveSignals } from "@/lib/state";
 
-const PAIRS = ["BTC", "ETH", "SOL", "HYPE"] as const;
+const PAIRS = ["BTC", "ETH", "SOL", "HYPE", "DOGE", "LINK", "AVAX", "PAID"] as const;
+const MEXC_PAIRS = new Set(["PAID"]);
 
 export async function run1DTrendExperiment(activeOverride?: any[]) {
   const started = Date.now();
@@ -13,7 +15,9 @@ export async function run1DTrendExperiment(activeOverride?: any[]) {
 
   for (const pair of PAIRS) {
     try {
-      const daily = await getCandles(krakenPairFormat(`${pair}/USD`), 1440, dailySince);
+      const daily = MEXC_PAIRS.has(pair)
+        ? await getMexcCandles(`${pair}_USDT`, 1440, dailySince)
+        : await getCandles(krakenPairFormat(`${pair}/USD`), 1440, dailySince);
 
       if (daily.length < 220) {
         console.log(`[1D] ${pair} | INSUFFICIENT daily=${daily.length}`);
