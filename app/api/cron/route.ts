@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
 import { getMexcCandles, getMexcPrice } from "@/lib/mexc";
-import { generateSignal, getMarketSnapshot, getCycleRunnerSnapshot, shouldHold, liquidationSafeStop, Signal } from "@/lib/strategy";
+import { generateSignal, getMarketSnapshot, shouldHold, liquidationSafeStop, Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { detectStructureShift, recordStructureShiftSnapshot } from "@/lib/structure-shift";
 import { CXSWITCH_VERSION } from "@/lib/version";
@@ -105,7 +105,7 @@ export async function GET(request:Request){
   const breakoutMaxAgeMs=32*15*60*1000;
   const lastBreakout=storedBreakout&&Date.now()-storedBreakout.timestamp>=0&&Date.now()-storedBreakout.timestamp<=breakoutMaxAgeMs?storedBreakout:undefined;
   if(VERBOSE_CRON_LOGS)console.log(`[BREAKOUT STATE] ${pair} — ${lastBreakout?`${lastBreakout.direction}@${lastBreakout.price} candle=${lastBreakout.candleIndex} age=${c4.length-1-lastBreakout.candleIndex}`:"NONE"}`);
-  const live1D=dailyState[pair]||undefined;const result=generateSignal(pair,c1,c4,c15,active,price,lastBreakout,live1D,cW);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);if(pair==="BTC"||pair==="ETH")snapshot.cycleRunner=getCycleRunnerSnapshot(pair,c1,c4,cW,price);snapshot.fourH513=ema513;snapshot.structureShift=structureShift;snapshot.lastBreakout=lastBreakout||null;snapshot.dailyLive=live1D||null;
+  const live1D=dailyState[pair]||undefined;const result=generateSignal(pair,c1,c4,c15,active,price,lastBreakout,live1D,cW);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);snapshot.fourH513=ema513;snapshot.structureShift=structureShift;snapshot.lastBreakout=lastBreakout||null;snapshot.dailyLive=live1D||null;
   if(result.breakout){await setLastBreakout(pair,result.breakout);if(VERBOSE_CRON_LOGS)console.log(`[BREAKOUT STATE] ${pair} — recorded ${result.breakout.direction}@${result.breakout.price} candle=${result.breakout.candleIndex}`);}
   const dbg=result.debug||[];if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   if(existing){snapshot.positionState="ACTIVE";snapshot.positionDirection=existing.direction;snapshot.positionEntry=existing.entry;snapshot.positionStop=existing.stop;snapshot.positionTarget=existing.tp2??existing.target;snapshot.positionTp1=existing.tp1;snapshot.positionTp2=existing.tp2;const mg=managementByPair[pair];if(mg){snapshot.positionManagementState=mg.state;snapshot.positionManagementRecommendation=mg.recommendation;snapshot.positionManagementReason=mg.reason;}snapshot.positionTp1HitAt=existing.tp1HitAt;snapshot.positionTp2HitAt=existing.tp2HitAt;console.log(`[PAIR] ${pair} | ACTIVE ${existing.direction} | entry engine paused`);}
