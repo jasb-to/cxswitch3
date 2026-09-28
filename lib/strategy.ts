@@ -490,6 +490,14 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     dDir==="BEAR" && !dailyBullTransition && candidate!=="TRANSITION" ||
     dailyBearTransition;
 
+  // Diagnostic only: retained for UI/context fields. This is NOT an ENTRY_1
+  // gate anymore. Directional permission is handled explicitly above.
+  const dailyTransitionBlocked=!!dailyLive && (
+    candidate==="TRANSITION" ||
+    (dDir==="BULL"&&candidate==="BEAR_DEVELOPING") ||
+    (dDir==="BEAR"&&candidate.startsWith("BULL"))
+  );
+
   const longEntry1=dailyLongAllowed&&longLocation&&long4HTransition&&!longExhausted;
   const shortEntry1=dailyShortAllowed&&shortLocation&&short4HTransition&&!shortExhausted;
 
