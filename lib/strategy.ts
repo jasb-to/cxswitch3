@@ -323,7 +323,12 @@ function weeklyDirection(c:Candle[],price:number):WeeklyDirection{
   const direction=long?"LONG":short?"SHORT":null;
   return{direction,reason:long?"WEEKLY_BULLISH":short?"WEEKLY_BEARISH":"WEEKLY_NEUTRAL",ema5,ema13,ema5Slope:ema5-prev5,ema13Slope:ema13-prev13,close,adx:w};
 }
-function dailyDirection(live?:DailyLiveContext,local?:Direction|null):"BULL"|"BEAR"|"NEUTRAL"{if(live?.state?.startsWith("BULL"))return"BULL";if(live?.state?.startsWith("BEAR"))return"BEAR";if(live?.direction)return live.direction;return local==="LONG"?"BULL":local==="SHORT"?"BEAR":"NEUTRAL";}
+function dailyDirection(live?:DailyLiveContext,local?:Direction|null):"BULL"|"BEAR"|"NEUTRAL"{
+  if(live?.state==="BULL_ESTABLISHED"||live?.state==="BULL_WEAKENING")return"BULL";
+  if(live?.state==="BEAR_ESTABLISHED"||live?.state==="BEAR_WEAKENING")return"BEAR";
+  if(live)return"NEUTRAL";
+  return local==="LONG"?"BULL":local==="SHORT"?"BEAR":"NEUTRAL";
+}
 function opposite(pair:string,d:Direction,trades?:any[]){return!!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction!==d);}
 function same(pair:string,d:Direction,trades?:any[]){return!!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction===d);}
 function liq(entry:number,d:Direction){return d==="LONG"?entry*(1-1/LEVERAGE+MMR):entry*(1+1/LEVERAGE-MMR);}
@@ -437,8 +442,28 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
   const weeklyLong=weekly.direction==="LONG";
   const weeklyShort=weekly.direction==="SHORT";
-  const longEntry1=weeklyLong&&longLocation&&long4HConfirmation&&!longExhausted;
-  const shortEntry1=weeklyShort&&shortLocation&&short4HConfirmation&&!shortExhausted;
+
+  // New entries: do not trade a genuine 1D transition, but do not wait for
+  // a fully mature 4H trend either. Established/weakening 1D + directional
+  // 4H catches the early turn; ENTRY_2 remains independently weekly+4H.
+  const candidate=dailyLive?.candidateState||"";
+  const dailyTransitionBlocked=!!dailyLive && (
+    candidate==="TRANSITION" ||
+    (dDir==="BULL"&&candidate==="BEAR_DEVELOPING") ||
+    (dDir==="BEAR"&&candidate.startsWith("BULL"))
+  );
+  const long4HDirectional=fourH.direction==="BULLISH";
+  const short4HDirectional=fourH.direction==="BEARISH";
+  const longPermission=!dailyTransitionBlocked && (
+    dDir==="BULL" ? long4HDirectional :
+    dDir==="NEUTRAL" ? weeklyLong&&long4HDirectional : false
+  );
+  const shortPermission=!dailyTransitionBlocked && (
+    dDir==="BEAR" ? short4HDirectional :
+    dDir==="NEUTRAL" ? weeklyShort&&short4HDirectional : false
+  );
+  const longEntry1=weeklyLong&&longPermission&&longLocation&&long4HConfirmation&&!longExhausted;
+  const shortEntry1=weeklyShort&&shortPermission&&shortLocation&&short4HConfirmation&&!shortExhausted;
 
   debug.push(`[1W] ${pair} | ${weekly.direction||"NEUTRAL"} | direction=${weekly.direction||"NEUTRAL"} | ${weekly.reason} | 5/13=${weekly.ema5.toFixed(2)}/${weekly.ema13.toFixed(2)} | ADX=${weekly.adx}`);
   debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir} | ${((weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"))?"SUPPORTIVE":"COUNTER/NEUTRAL"}`);
@@ -446,7 +471,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[TL] ${pair} | LONG=${longTL.valid?longTL.price.toFixed(2):"—"} dist=${isFinite(longDist)?(longDist*100).toFixed(2)+"%":"—"} | SHORT=${shortTL.valid?shortTL.price.toFixed(2):"—"} dist=${isFinite(shortDist)?(shortDist*100).toFixed(2)+"%":"—"}`);
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
   debug.push(`[FIB PATH] ${pair} | LONG=${longFibPath.state}/${longFibPath.trigger} age=${Number.isFinite(longFibPath.triggerAge)?longFibPath.triggerAge:"—"} fresh=${longFibPath.fresh?"YES":"NO"} | SHORT=${shortFibPath.state}/${shortFibPath.trigger} age=${Number.isFinite(shortFibPath.triggerAge)?shortFibPath.triggerAge:"—"} fresh=${shortFibPath.fresh?"YES":"NO"}`);
-  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | MomentumLong=${longMomentumCount}/3 | MomentumShort=${shortMomentumCount}/3 | Stoch=${stochLong?"LONG":stochShort?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
+  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | HTF=${dailyTransitionBlocked?"TRANSITION_BLOCK":longPermission?"LONG_ALLOWED":shortPermission?"SHORT_ALLOWED":"NO_TRADE"} | MomentumLong=${longMomentumCount}/3 | MomentumShort=${shortMomentumCount}/3 | Stoch=${stochLong?"LONG":stochShort?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
 
   const fallbackDir:Direction=weekly.direction||(dDir==="BEAR"?"SHORT":"LONG");
   const baseMarket=()=>snapshot(pair,candles4h,structureDir||fallbackDir,structureDir==="LONG"?longTL:structureDir==="SHORT"?shortTL:longTL,price,dailyLive);
