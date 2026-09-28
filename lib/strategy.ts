@@ -323,7 +323,12 @@ function weeklyDirection(c:Candle[],price:number):WeeklyDirection{
   const direction=long?"LONG":short?"SHORT":null;
   return{direction,reason:long?"WEEKLY_BULLISH":short?"WEEKLY_BEARISH":"WEEKLY_NEUTRAL",ema5,ema13,ema5Slope:ema5-prev5,ema13Slope:ema13-prev13,close,adx:w};
 }
-function dailyDirection(live?:DailyLiveContext,local?:Direction|null):"BULL"|"BEAR"|"NEUTRAL"{if(live?.state?.startsWith("BULL"))return"BULL";if(live?.state?.startsWith("BEAR"))return"BEAR";if(live?.direction)return live.direction;return local==="LONG"?"BULL":local==="SHORT"?"BEAR":"NEUTRAL";}
+function dailyDirection(live?:DailyLiveContext,local?:Direction|null):"BULL"|"BEAR"|"NEUTRAL"{
+  if(live?.state==="BULL_ESTABLISHED")return"BULL";
+  if(live?.state==="BEAR_ESTABLISHED")return"BEAR";
+  if(live)return"NEUTRAL";
+  return"NEUTRAL";
+}
 function opposite(pair:string,d:Direction,trades?:any[]){return!!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction!==d);}
 function same(pair:string,d:Direction,trades?:any[]){return!!trades?.some(t=>(t.pair===pair||t.symbol===pair)&&t.direction===d);}
 function liq(entry:number,d:Direction){return d==="LONG"?entry*(1-1/LEVERAGE+MMR):entry*(1+1/LEVERAGE-MMR);}
@@ -437,8 +442,10 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
   const weeklyLong=weekly.direction==="LONG";
   const weeklyShort=weekly.direction==="SHORT";
-  const longEntry1=weeklyLong&&longLocation&&long4HConfirmation&&!longExhausted;
-  const shortEntry1=weeklyShort&&shortLocation&&short4HConfirmation&&!shortExhausted;
+  const longHtfAligned=dDir==="BULL"&&fourH.direction==="BULLISH";
+  const shortHtfAligned=dDir==="BEAR"&&fourH.direction==="BEARISH";
+  const longEntry1=weeklyLong&&longHtfAligned&&longLocation&&long4HConfirmation&&!longExhausted;
+  const shortEntry1=weeklyShort&&shortHtfAligned&&shortLocation&&short4HConfirmation&&!shortExhausted;
 
   debug.push(`[1W] ${pair} | ${weekly.direction||"NEUTRAL"} | direction=${weekly.direction||"NEUTRAL"} | ${weekly.reason} | 5/13=${weekly.ema5.toFixed(2)}/${weekly.ema13.toFixed(2)} | ADX=${weekly.adx}`);
   debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir} | ${((weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"))?"SUPPORTIVE":"COUNTER/NEUTRAL"}`);
@@ -446,7 +453,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[TL] ${pair} | LONG=${longTL.valid?longTL.price.toFixed(2):"—"} dist=${isFinite(longDist)?(longDist*100).toFixed(2)+"%":"—"} | SHORT=${shortTL.valid?shortTL.price.toFixed(2):"—"} dist=${isFinite(shortDist)?(shortDist*100).toFixed(2)+"%":"—"}`);
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
   debug.push(`[FIB PATH] ${pair} | LONG=${longFibPath.state}/${longFibPath.trigger} age=${Number.isFinite(longFibPath.triggerAge)?longFibPath.triggerAge:"—"} fresh=${longFibPath.fresh?"YES":"NO"} | SHORT=${shortFibPath.state}/${shortFibPath.trigger} age=${Number.isFinite(shortFibPath.triggerAge)?shortFibPath.triggerAge:"—"} fresh=${shortFibPath.fresh?"YES":"NO"}`);
-  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | MomentumLong=${longMomentumCount}/3 | MomentumShort=${shortMomentumCount}/3 | Stoch=${stochLong?"LONG":stochShort?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
+  debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | 4H=${fourH.direction} | HTF=${longHtfAligned?"LONG_ALIGNED":shortHtfAligned?"SHORT_ALIGNED":"NO_TRADE"} | MomentumLong=${longMomentumCount}/3 | MomentumShort=${shortMomentumCount}/3 | Stoch=${stochLong?"LONG":stochShort?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
 
   const fallbackDir:Direction=weekly.direction||(dDir==="BEAR"?"SHORT":"LONG");
   const baseMarket=()=>snapshot(pair,candles4h,structureDir||fallbackDir,structureDir==="LONG"?longTL:structureDir==="SHORT"?shortTL:longTL,price,dailyLive);
@@ -583,141 +590,3 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[SIGNAL] ${pair} — ${type} ${dir} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} (${(tp1Move*100).toFixed(2)}%) | TP2 ${signal.tp2} (${(tp2Move*100).toFixed(2)}%) | ${trendAlignment} | size x${riskMultiplier}`);
   return{signal,signals:[signal],market:market(snapshot(pair,candles4h,dir,tl,price,dailyLive)),debug,breakout:detectedBreakout};
 }
-
-export function getCycleRunnerSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candlesWeekly:Candle[],currentPrice?:number){
-  const price=currentPrice??candles4h.at(-1)?.close??candles1h.at(-1)?.close??0;
-  const weeklyClosed=candlesWeekly.length>1?candlesWeekly.slice(0,-1):candlesWeekly;
-  const weeklyCloses=weeklyClosed.map(x=>x.close),wf=ema(weeklyCloses,5).at(-1)??0,ws=ema(weeklyCloses,13).at(-1)??0;
-  const weeklyDirection=wf>ws?"LONG":wf<ws?"SHORT":"NEUTRAL";
-  const fourHClosed=candles4h.length>1?candles4h.slice(0,-1):candles4h;
-  const oneHClosed=candles1h.length>1?candles1h.slice(0,-1):candles1h;
-  const fourDir=bias(fourHClosed);
-  const structure=detectStructureShift(pair,candles4h);
-  const dailyTransition=getDaily513Diagnostic(candles4h);
-  const fourFibLong=getFibLevels(fourHClosed,"LONG"),fourFibShort=getFibLevels(fourHClosed,"SHORT");
-  const oneFibLong=getFibLevels(oneHClosed,"LONG"),oneFibShort=getFibLevels(oneHClosed,"SHORT");
-  const oneCloses=oneHClosed.map(x=>x.close),oneSt=stochRsi(oneCloses),onePrev=oneHClosed.length>20?stochRsi(oneHClosed.slice(0,-1).map(x=>x.close)):oneSt;
-  // Cycle Runner is a major-cycle entry, not a normal 4H bounce. Keep the
-  // precision trigger on 1H, but require the higher timeframes to stop being
-  // vertically extended before declaring ENTRY READY.
-  const dailyClosed=daily(fourHClosed).slice(0,-1);
-  const dailySt=stochRsi(dailyClosed.map(x=>x.close)),dailyStPrev=dailyClosed.length>20?stochRsi(dailyClosed.slice(0,-1).map(x=>x.close)):dailySt;
-  const weeklySt=stochRsi(weeklyClosed.map(x=>x.close)),weeklyStPrev=weeklyClosed.length>20?stochRsi(weeklyClosed.slice(0,-1).map(x=>x.close)):weeklySt;
-  const dailyOverheated=dailySt.k>=90;
-  const weeklyOverheated=weeklySt.k>=90;
-  const higherTimeframeReset=!dailyOverheated&&!weeklyOverheated;
-  const oneTurnLong=oneSt.k>oneSt.d&&oneSt.k>onePrev.k,oneTurnShort=oneSt.k<oneSt.d&&oneSt.k<onePrev.k;
-  const near=(levels:{level:number;name:string}[]|undefined)=>levels?.length?levels.map(x=>({...x,distPct:Math.abs((price-x.level)/Math.max(Math.abs(x.level),1))*100})).sort((a,b)=>a.distPct-b.distPct)[0]:undefined;
-  const fib4Long=near(fourFibLong?[{level:fourFibLong.fib382,name:"0.382"},{level:fourFibLong.fib50,name:"0.500"},{level:fourFibLong.fib618,name:"0.618"}]:undefined);
-  const fib4Short=near(fourFibShort?[{level:fourFibShort.fib382,name:"0.382"},{level:fourFibShort.fib50,name:"0.500"},{level:fourFibShort.fib618,name:"0.618"}]:undefined);
-  const fib1Long=near(oneFibLong?[{level:oneFibLong.fib382,name:"0.382"},{level:oneFibLong.fib50,name:"0.500"},{level:oneFibLong.fib618,name:"0.618"}]:undefined);
-  const fib1Short=near(oneFibShort?[{level:oneFibShort.fib382,name:"0.382"},{level:oneFibShort.fib50,name:"0.500"},{level:oneFibShort.fib618,name:"0.618"}]:undefined);
-
-  // The Cycle Runner's job is to catch the TREND CHANGE, not a mature trend.
-  // Weekly direction is context only. It must never veto a genuine 4H transition.
-  // The core entry is deliberately simple:
-  //   1) 4H has turned/confirmed in one direction
-  //   2) price has retraced deeply into the 0.500/0.618 area of that 4H impulse
-  //   3) 1H momentum turns back in the same direction
-  // Nothing from the day-trading engine (trendlines, RSI exhaustion, Entry 1/2, ADDs)
-  // is allowed to veto this cycle entry.
-  const structuralTurnLong=structure.shiftTo==="LONG"||structure.structure==="LONG";
-  const structuralTurnShort=structure.shiftTo==="SHORT"||structure.structure==="SHORT";
-  const dailyTransitionLong=dailyTransition.stage==="EARLY_BULLISH"||dailyTransition.direction==="BULLISH";
-  const dailyTransitionShort=dailyTransition.stage==="EARLY_BEARISH"||dailyTransition.direction==="BEARISH";
-  const trendChangeLong=fourDir==="LONG"&&(structuralTurnLong||dailyTransitionLong);
-  const trendChangeShort=fourDir==="SHORT"&&(structuralTurnShort||dailyTransitionShort);
-
-  const selectedLong=trendChangeLong&&!!fib4Long&&fib4Long.distPct<=2.0;
-  const selectedShort=trendChangeShort&&!!fib4Short&&fib4Short.distPct<=2.0;
-  const selectedDirection=selectedLong?"LONG":selectedShort?"SHORT":fourDir||weeklyDirection;
-  const selectedFib4=selectedDirection==="LONG"?fib4Long:fib4Short;
-  const selectedFib1=selectedDirection==="LONG"?fib1Long:fib1Short;
-  const selectedLevels=selectedDirection==="LONG"?fourFibLong:fourFibShort;
-  const depth=selectedFib4?.name==="0.618"?3:selectedFib4?.name==="0.500"?2:selectedFib4?.name==="0.382"?1:0;
-  const oneTurn=selectedDirection==="LONG"?oneTurnLong:oneTurnShort;
-  const trendChangeConfirmed=selectedDirection==="LONG"?trendChangeLong:trendChangeShort;
-  const precision=!!selectedFib4&&selectedFib4.distPct<=1.0&&oneTurn&&fourDir===selectedDirection&&trendChangeConfirmed;
-  const deepRetest=!!selectedFib4&&selectedFib4.distPct<=1.0&&(selectedFib4.name==="0.500"||selectedFib4.name==="0.618");
-  // A deep 4H retracement plus a 1H turn is not enough for the one-shot
-  // cycle position if both daily and weekly Stoch RSI are still pinned at the
-  // top. This specifically prevents a local 4H pullback inside an extended
-  // higher-timeframe trend from being labelled a cycle entry.
-  const ready=pair==="BTC"||pair==="ETH"?deepRetest&&oneTurn&&trendChangeConfirmed&&higherTimeframeReset:false;
-  const direction=selectedDirection;
-
-  return{
-    enabled:pair==="BTC"||pair==="ETH",
-    status:ready?"ENTRY READY":!higherTimeframeReset?"HTF MOMENTUM TOO HOT":deepRetest&&!oneTurn?"DEEP RETEST · WAIT 1H TURN":selectedLong||selectedShort?"MAJOR RETEST · WAIT":"WAITING FOR TREND CHANGE / MAJOR RETEST",
-    direction,weeklyDirection,fourHDirection:fourDir||"NEUTRAL",weeklyFast:round(wf),weeklySlow:round(ws),
-    trendChangeConfirmed,structureShift:structure.shiftTo,dailyTransition:dailyTransition.stage,
-    fourHFib:{direction:direction==="LONG"?"LONG":"SHORT",swingLow:selectedLevels?.swingLow??null,swingHigh:selectedLevels?.swingHigh??null,fib382:selectedLevels?.fib382??null,fib50:selectedLevels?.fib50??null,fib618:selectedLevels?.fib618??null,nearest:selectedFib4?{level:selectedFib4.level,distPct:selectedFib4.distPct,name:selectedFib4.name}:null},
-    oneHFib:{direction:direction==="LONG"?"LONG":"SHORT",swingLow:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.swingLow??null,swingHigh:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.swingHigh??null,fib382:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.fib382??null,fib50:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.fib50??null,fib618:(selectedDirection==="LONG"?oneFibLong:oneFibShort)?.fib618??null,nearest:selectedFib1?{level:selectedFib1.level,distPct:selectedFib1.distPct,name:selectedFib1.name}:null},
-    oneHStoch:{k:oneSt.k,d:oneSt.d,turnLong:oneTurnLong,turnShort:oneTurnShort},
-    higherTimeframeStoch:{
-      daily:{k:dailySt.k,d:dailySt.d,prevK:dailyStPrev.k,prevD:dailyStPrev.d,overheated:dailyOverheated},
-      weekly:{k:weeklySt.k,d:weeklySt.d,prevK:weeklyStPrev.k,prevD:weeklyStPrev.d,overheated:weeklyOverheated},
-      reset:higherTimeframeReset
-    },
-    majorRetest:!!selectedFib4&&selectedFib4.distPct<=2.0,
-    deepRetest,precisionConfirmed:precision,ready,
-    entryQuality:{
-      depth,
-      preferredLevel:depth>=2,
-      trendChangeConfirmed,
-      fourHDirection:fourDir||"NEUTRAL",
-      structureShift:structure.shiftTo,
-      dailyTransition:dailyTransition.stage,
-      weeklyContext:weeklyDirection,
-      oneHTurn:oneTurn,
-      withinEntryZone:!!selectedFib4&&selectedFib4.distPct<=1.0,
-      dailyStoch:{k:dailySt.k,d:dailySt.d,overheated:dailyOverheated},
-      weeklyStoch:{k:weeklySt.k,d:weeklySt.d,overheated:weeklyOverheated},
-      higherTimeframeReset
-    },
-    positionPlan:{margin:5000,leverage:10,notional:50000}
-  };
-}
-export function getMarketSnapshot(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],dailyLive?:DailyLiveContext){
-  const d=bias(candles4h),price=candles4h.at(-1)?.close||0;if(!d)return{pair,price,timestamp:Date.now(),trend:"FLAT",location:"NONE",trigger:"NO_BIAS",adx:0,rsi:0,stochK:0,stochD:0,trendlinePrice:0,distToTrendline:null,momentumState:"NEUTRAL",dailyLive:dailyLive||null};
-  const structure=detectStructureShift(pair,candles4h.slice(0,-1)),sd=structure.state==="HEALTHY"&&(structure.structure==="LONG"||structure.structure==="SHORT")?structure.structure as Direction:null,effective=sd||d,primary=buildTrendline(candles4h.slice(0,-1),effective,60),tl=primary.stale?buildTrendline(candles4h.slice(0,-1),effective,FRESH_LOOKBACK):primary;return snapshot(pair,candles4h,effective,tl,price,dailyLive);
-}
-export interface ValidityCheck{valid:boolean;reason:string;exited:boolean;state?:"VALID"|"STALE"|"INVALID";}
-export function isSignalStillValid(s:Signal,p:number,now=Date.now()):ValidityCheck{if(now-s.timestamp>(s.type==="ADD"?4:24)*60*60*1000)return{valid:false,reason:"expired_ttl",exited:true,state:"STALE"};if(s.direction==="LONG"&&p<=s.stop)return{valid:false,reason:"sl_hit",exited:true,state:"INVALID"};if(s.direction==="SHORT"&&p>=s.stop)return{valid:false,reason:"sl_hit",exited:true,state:"INVALID"};return{valid:true,reason:"active",exited:false,state:"VALID"};}
-export type ManagementState="STAY"|"EXIT";
-export interface HoldResult{shouldHold:boolean;reason:string;managementState:ManagementState;recommendation:string;newStop?:number;scaleOut?:{level:number;size:number;label:string};}
-function waveMomentum(c:Candle[],d:Direction){
-  const closed=c.length>1?c.slice(0,-1):c;
-  if(closed.length<26)return{state:"STAY IN TRADE" as const,confirmedReversal:false};
-  const closes=closed.map(x=>x.close),e8=ema(closes,TF_FAST),e21=ema(closes,TF_SLOW),m=macd4h(closed),n=closed.length;
-  const c0=closes[n-1],c1=closes[n-2],e80=e8[n-1]!,e81=e8[n-2]!,e210=e21[n-1]!,e211=e21[n-2]!;
-  const longReversal=d==="LONG"&&c0<e80&&c1<e81&&e80<e210&&e81<=e211&&m.bearishShift;
-  const shortReversal=d==="SHORT"&&c0>e80&&c1>e81&&e80>e210&&e81>=e211&&m.bullishShift;
-  const confirmedReversal=longReversal||shortReversal;
-  return{state:confirmedReversal?"EXIT TRADE":"STAY IN TRADE" as const,confirmedReversal};
-}
-export function shouldHold(s:Signal,c:Candle[],p:number):HoldResult{
-  const momentum=waveMomentum(c,s.direction);
-  const closed=c.length>1?c.slice(0,-1):c;
-  const structure=closed.length>=20?detectStructureShift(s.pair,closed):null;
-  const oppositeStructure=!!structure&&((s.direction==="LONG"&&(structure.structure==="SHORT"||structure.shiftTo==="SHORT"))||(s.direction==="SHORT"&&(structure.structure==="LONG"||structure.shiftTo==="LONG")));
-  const closes=closed.map(x=>x.close),e8=ema(closes,TF_FAST).at(-1)??p,e21=ema(closes,TF_SLOW).at(-1)??p;
-  const emaOpposite=s.direction==="LONG"?e8<e21:e8>e21,priceAgainstE8=s.direction==="LONG"?p<e8:p>e8;
-  const structureBroken=oppositeStructure&&emaOpposite&&priceAgainstE8;
-  if(s.direction==="LONG"&&p<=s.stop)return{shouldHold:false,reason:"sl_hit",managementState:"EXIT",recommendation:"EXIT TRADE"};
-  if(s.direction==="SHORT"&&p>=s.stop)return{shouldHold:false,reason:"sl_hit",managementState:"EXIT",recommendation:"EXIT TRADE"};
-  if(s.tp2!==undefined&&((s.direction==="LONG"&&p>=s.tp2)||(s.direction==="SHORT"&&p<=s.tp2)))return{shouldHold:false,reason:"tp2_hit",managementState:"EXIT",recommendation:"EXIT TRADE",scaleOut:{level:s.tp2,size:1,label:"TP2_FINAL"}};
-  if(s.tp1!==undefined&&((s.direction==="LONG"&&p>=s.tp1)||(s.direction==="SHORT"&&p<=s.tp1)))return{shouldHold:true,reason:"tp1_hit",managementState:"STAY",recommendation:"STAY IN TRADE",newStop:s.entry,scaleOut:{level:s.tp1,size:.5,label:"TP1_50"}};
-  // Management is deliberately binary:
-  // STAY = the original trade thesis remains intact.
-  // EXIT = confirmed 4H reversal or confirmed structural breakdown.
-  // Normal momentum cooling, Fib retracements, and price moving below/above
-  // the fast EMA do NOT create an intermediate management state.
-  if(momentum.confirmedReversal||structureBroken)return{shouldHold:false,reason:momentum.confirmedReversal?"momentum_confirmed_4h_reversal":"structure_break_confirmed",managementState:"EXIT",recommendation:"EXIT TRADE"};
-  return{shouldHold:true,reason:"thesis_intact",managementState:"STAY",recommendation:"STAY IN TRADE"};
-}
-export function shouldHoldCompat(s:Signal,c4:Candle[],c1:Candle[],p:number){return shouldHold(s,c4,p);}
-export function filterExpiredSignals(signals:Signal[],prices:Record<string,number>,now?:number){const active:Signal[]=[],exited:{signal:Signal;reason:string}[]=[];for(const s of signals){const p=prices[s.pair];if(p===undefined){active.push(s);continue;}const v=isSignalStillValid(s,p,now);v.valid?active.push(s):exited.push({signal:s,reason:v.reason});}return{active,exited};}
-export type TradeStatus="ACTIVE"|"TP_HIT"|"SL_HIT"|"EXPIRED";
-export function checkTradeStatus(s:Signal,p:number,now=Date.now()):TradeStatus{const v=isSignalStillValid(s,p,now);if(v.reason==="expired_ttl")return"EXPIRED";if(s.direction==="LONG"&&p<=s.stop)return"SL_HIT";if(s.direction==="SHORT"&&p>=s.stop)return"SL_HIT";return"ACTIVE";}
-export function rebuildStateFromTrades(_:Record<string,any>):void{return;}
