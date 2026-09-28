@@ -16,8 +16,8 @@ export const dynamic="force-dynamic";
 export const revalidate=0;
 const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","AVAX","PAID"] as const;
 const MEXC_PAIRS=new Set(["PAID"]);
-// Auxiliary assets are paused from Telegram alerts while we reassess their behaviour.
-const PAUSED_ALERT_PAIRS=new Set(["LINK","AVAX","DOGE","PAID"]);
+// LINK and AVAX remain paused; DOGE and PAID are active again for live observation.
+const PAUSED_ALERT_PAIRS=new Set(["LINK","AVAX"]);
 const MIN_CRON_INTERVAL_MS=2*60*1000;
 const ADD_DEDUP_MS=45*60*1000;
 const ADD_DEDUP_ENTRY_PCT=0.004;
