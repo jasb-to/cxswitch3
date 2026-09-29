@@ -12,7 +12,7 @@ interface System{version?:number;lastCronRun:number;lastCronAgeMs:number|null;ac
 const PAIRS=["BTC","ETH","SOL","HYPE"];
 const AUX_PAIRS=["LINK","AVAX","DOGE","PAID"];
 const KRAKEN:Record<string,string>={BTC:"XBTUSD",ETH:"ETHUSD",SOL:"SOLUSD",HYPE:"HYPEUSD",LINK:"LINKUSD",AVAX:"AVAXUSD",DOGE:"DOGEUSD"};
-const money=(n?:number)=>typeof n==="number"&&Number.isFinite(n)?new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:n>=1000?0:n>=1?2:4}).format(n):"—";
+const money=(n?:number)=>typeof n==="number"&&Number.isFinite(n)?new Intl.NumberFormat("en-US",{style:"currency",currency:"USD",maximumFractionDigits:n>=1000?0:n>=1?2:6}).format(n):"—";
 const pct=(n?:number)=>typeof n==="number"&&Number.isFinite(n)?`${n>=0?"+":""}${n.toFixed(2)}%`:"—";
 const ago=(ts?:number)=>{if(!ts)return"—";const m=Math.max(0,Math.floor((Date.now()-ts)/60000));if(m<1)return"just now";if(m<60)return`${m}m`;const h=Math.floor(m/60);return h<24?`${h}h ${m%60}m`:`${Math.floor(h/24)}d`};
 async function price(pair:string){try{const r=await fetch(`https://api.kraken.com/0/public/Ticker?pair=${KRAKEN[pair]}`,{cache:"no-store"});const d=await r.json();if(d.error?.length)return null;return parseFloat(d.result[Object.keys(d.result)[0]].c[0])}catch{return null}}
