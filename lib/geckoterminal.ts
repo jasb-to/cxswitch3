@@ -7,17 +7,35 @@ const BASE = "https://api.geckoterminal.com/api/v2";
 // 98kfF7rmsg1QDUEoCqNE7g7M1FdrTt92TEp2CLzypump
 const PAID_POOL = "Gc5hVCBydc6k3Z7oc2cQEW4GThFQi2Fqk5HfKABqa2q8";
 const KLINE_LIMIT = 1000;
+const PAID_429_RETRIES = 3;
+
+function sleep(ms:number){return new Promise(resolve=>setTimeout(resolve,ms));}
 
 async function geckoFetch(path: string): Promise<any> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: {
-      accept: "application/json",
-      "x-cg-demo-api-key": process.env.COINGECKO_API_KEY ?? "",
-    },
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error(`GeckoTerminal HTTP ${res.status}`);
-  return res.json();
+  for(let attempt=0;attempt<=PAID_429_RETRIES;attempt++){
+    const res = await fetch(`${BASE}${path}`, {
+      headers: {
+        accept: "application/json",
+        "x-cg-demo-api-key": process.env.COINGECKO_API_KEY ?? "",
+      },
+      cache: "no-store",
+    });
+
+    if(res.ok)return res.json();
+
+    if(res.status===429&&attempt<PAID_429_RETRIES){
+      const retryAfter=Number(res.headers.get("retry-after"));
+      const delay=Number.isFinite(retryAfter)&&retryAfter>0
+        ? Math.min(retryAfter*1000,10000)
+        : 1000*Math.pow(2,attempt);
+      console.warn(`[PAID] GeckoTerminal 429 — retry ${attempt+1}/${PAID_429_RETRIES} in ${delay}ms`);
+      await sleep(delay);
+      continue;
+    }
+
+    throw new Error(`GeckoTerminal HTTP ${res.status}`);
+  }
+  throw new Error("GeckoTerminal PAID request exhausted retries");
 }
 
 function parseOhlcv(rows: any[][], intervalMs: number): Candle[] {
@@ -86,12 +104,15 @@ export async function getPaidMarketData(): Promise<{
   candles4h: Candle[];
   candles15m: Candle[];
 }> {
-  const [candles1h, candles4h, candles15m, ticker] = await Promise.all([
-    getPaidPoolOhlcv("hour", 1, KLINE_LIMIT),
-    getPaidPoolOhlcv("hour", 4, KLINE_LIMIT),
-    getPaidPoolOhlcv("minute", 15, KLINE_LIMIT),
-    geckoFetch(`/networks/solana/pools/${PAID_POOL}`),
-  ]);
+  // Keep PAID requests sequential rather than bursting four GeckoTerminal
+  // requests at once. This is PAID-only rate-limit protection.
+  const candles1h = await getPaidPoolOhlcv("hour", 1, KLINE_LIMIT);
+  await sleep(250);
+  const candles4h = await getPaidPoolOhlcv("hour", 4, KLINE_LIMIT);
+  await sleep(250);
+  const candles15m = await getPaidPoolOhlcv("minute", 15, KLINE_LIMIT);
+  await sleep(250);
+  const ticker = await geckoFetch(`/networks/solana/pools/${PAID_POOL}`);
 
   const price = Number(ticker?.data?.attributes?.base_token_price_usd);
   if (!Number.isFinite(price) || price <= 0) {
