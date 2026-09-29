@@ -1,6 +1,7 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
+import { getCoinGeckoPrice } from "@/lib/coingecko";
 import { getMexcCandles, getMexcPrice } from "@/lib/mexc";
 import { generateSignal, getMarketSnapshot, getCycleRunnerSnapshot, shouldHold, liquidationSafeStop, Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
@@ -101,7 +102,9 @@ export async function GET(request:Request){
   const structureShift=detectStructureShift(pair,c4);
   const structureRecorded=await recordStructureShiftSnapshot(structureShift);
   if(VERBOSE_CRON_LOGS)console.log(`[STRUCTURE SHIFT] ${pair} — structure=${structureShift.structure} -> shift=${structureShift.shiftTo} | state=${structureShift.state} | protected=${structureShift.protectedLevel?.toFixed(4)??"—"} | break=${structureShift.breakDistanceAtr?.toFixed(2)??"—"} ATR | recorded=${structureRecorded?"YES":"NO"} | ${structureShift.reason}`); // diagnostic only; never an entry veto
-  const price=mexc?await getMexcPrice(marketSymbol):c1.at(-1)!.close;const existing=active.find(x=>x.pair===pair),storedBreakout=await getLastBreakout(pair);
+  const price=pair==="PAID"
+    ? await getCoinGeckoPrice("paid-network")
+    : mexc ? await getMexcPrice(marketSymbol) : c1.at(-1)!.close;const existing=active.find(x=>x.pair===pair),storedBreakout=await getLastBreakout(pair);
   const breakoutMaxAgeMs=32*15*60*1000;
   const lastBreakout=storedBreakout&&Date.now()-storedBreakout.timestamp>=0&&Date.now()-storedBreakout.timestamp<=breakoutMaxAgeMs?storedBreakout:undefined;
   if(VERBOSE_CRON_LOGS)console.log(`[BREAKOUT STATE] ${pair} — ${lastBreakout?`${lastBreakout.direction}@${lastBreakout.price} candle=${lastBreakout.candleIndex} age=${c4.length-1-lastBreakout.candleIndex}`:"NONE"}`);
