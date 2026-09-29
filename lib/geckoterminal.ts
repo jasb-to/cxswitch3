@@ -1,25 +1,22 @@
 import type { Candle } from "@/lib/kraken";
 
-const BASE = "https://api.geckoterminal.com/api/v2";
-const PAID_POOL = "0x633a0b2a75eb609cf388996f88d0739fe9ea2c80fad339d6e56fc1abc968e526";
-const VERSION = "20230203";
-const FOUR_H_LIMIT = 1000;
-const FOUR_H_BACKFILL_PAGES = 3;
-const DAILY_BACKFILL_PAGES = 5;
+const BASE = "https://api.mexc.com";
+const PAID_SYMBOL = "PAIDUSDT";
+const KLINE_LIMIT = 1000;
 
-async function gtFetch(path: string): Promise<any> {
+async function mexcFetch(path: string): Promise<any> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { accept: `application/json;version=${VERSION}` },
+    headers: { accept: "application/json" },
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`GeckoTerminal HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`MEXC HTTP ${res.status}`);
   return res.json();
 }
 
 function parseOhlcv(rows: any[], intervalMs: number): Candle[] {
   const now = Date.now();
   return rows.map((c: any[]) => ({
-    timestamp: Number(c[0]) * 1000,
+    timestamp: Number(c[0]),
     open: Number(c[1]),
     high: Number(c[2]),
     low: Number(c[3]),
@@ -40,50 +37,32 @@ export async function getPaidOhlcv(
   aggregate: number,
   limit = 1000,
 ): Promise<Candle[]> {
-  const data = await gtFetch(
-    `/networks/base/pools/${PAID_POOL}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=${Math.min(limit, 1000)}`,
+  const interval =
+    timeframe === "minute" ? `${aggregate}m` :
+    timeframe === "hour" ? `${aggregate}h` :
+    `${aggregate}d`;
+  const data = await mexcFetch(
+    `/api/v3/klines?symbol=${PAID_SYMBOL}&interval=${interval}&limit=${Math.min(limit, KLINE_LIMIT)}`,
   );
-  const rows = data?.data?.attributes?.ohlcv_list;
-  if (!Array.isArray(rows)) throw new Error("GeckoTerminal OHLCV missing");
+  if (!Array.isArray(data)) throw new Error("MEXC PAID OHLCV missing");
   const intervalMs =
     timeframe === "minute" ? aggregate * 60_000 :
     timeframe === "hour" ? aggregate * 3_600_000 :
     aggregate * 86_400_000;
-  return parseOhlcv(rows, intervalMs);
+  return parseOhlcv(data, intervalMs);
 }
 
-/** PAID-only: native daily OHLCV, paginated backwards with before_timestamp. */
+/** PAID-only: native MEXC daily OHLCV. PAID launched on MEXC in Sep 2026,
+ * so the available daily history is intentionally limited to the token's real age.
+ */
 export async function getPaidAggregatedDailyCandles(): Promise<Candle[]> {
-  const intervalMs = 86_400_000;
-  const all = new Map<number, Candle>();
-  let beforeTimestamp: number | undefined;
-
-  for (let page = 0; page < DAILY_BACKFILL_PAGES; page++) {
-    const suffix = beforeTimestamp ? `&before_timestamp=${beforeTimestamp}` : "";
-    const data = await gtFetch(
-      `/networks/base/pools/${PAID_POOL}/ohlcv/day?aggregate=1&limit=1000${suffix}`,
-    );
-    const rows = data?.data?.attributes?.ohlcv_list;
-    if (!Array.isArray(rows) || rows.length === 0) break;
-
-    const candles = parseOhlcv(rows, intervalMs);
-    if (!candles.length) break;
-    for (const candle of candles) all.set(candle.timestamp, candle);
-
-    const oldest = Math.min(...candles.map(c => c.timestamp));
-    const nextBefore = Math.floor(oldest / 1000) - 1;
-    if (!Number.isFinite(nextBefore) || nextBefore >= (beforeTimestamp ?? Infinity)) break;
-    beforeTimestamp = nextBefore;
-    if (candles.length < 1000) break;
-  }
-
-  return [...all.values()].sort((a, b) => a.timestamp - b.timestamp);
+  return getPaidOhlcv("day", 1, KLINE_LIMIT);
 }
 
 export async function getPaidPrice(): Promise<number> {
-  const candles = await getPaidOhlcv("minute", 15, 2);
-  const price = candles.at(-1)?.close;
-  if (!Number.isFinite(price) || !price || price <= 0) throw new Error("GeckoTerminal PAID price unavailable");
+  const data = await mexcFetch(`/api/v3/ticker/price?symbol=${PAID_SYMBOL}`);
+  const price = Number(data?.price);
+  if (!Number.isFinite(price) || price <= 0) throw new Error("MEXC PAID price unavailable");
   return price;
 }
 
@@ -93,13 +72,14 @@ export async function getPaidMarketData(): Promise<{
   candles4h: Candle[];
   candles15m: Candle[];
 }> {
-  const [candles1h, candles4h, candles15m] = await Promise.all([
-    getPaidOhlcv("hour", 1, 1000),
-    getPaidOhlcv("hour", 4, 1000),
-    getPaidOhlcv("minute", 15, 1000),
+  const [candles1h, candles4h, candles15m, ticker] = await Promise.all([
+    getPaidOhlcv("hour", 1, KLINE_LIMIT),
+    getPaidOhlcv("hour", 4, KLINE_LIMIT),
+    getPaidOhlcv("minute", 15, KLINE_LIMIT),
+    mexcFetch(`/api/v3/ticker/price?symbol=${PAID_SYMBOL}`),
   ]);
-  const price = candles15m.at(-1)?.close ?? candles1h.at(-1)?.close;
-  if (!Number.isFinite(price) || !price || price <= 0) throw new Error("GeckoTerminal PAID price unavailable");
+  const price = Number(ticker?.price);
+  if (!Number.isFinite(price) || price <= 0) throw new Error("MEXC PAID price unavailable");
   return { price, candles1h, candles4h, candles15m };
 }
 
