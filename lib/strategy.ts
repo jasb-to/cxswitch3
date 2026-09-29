@@ -342,66 +342,55 @@ function compositeMomentumState(
   macd:{bullishShift:boolean;bearishShift:boolean},
   fourH:{direction:string;turning:boolean;stage?:string}
 ){
-  // Two states only. A normal move down into 0.382/0.500/0.618 is a
-  // retracement and is NOT deterioration. Deterioration needs an actual
-  // failed Fib path / price-structure break with confirming momentum damage.
+  // ENTRY_1 is a price-action transition, not an oscillator vote.
+  // Fib tells us WHERE the setup is forming. The candles tell us whether
+  // price is still travelling in the old direction or has actually reacted.
   const closed=c;
-  if(closed.length<14)return"DETERIORATING" as const;
+  if(closed.length<3)return"DETERIORATING" as const;
+
   const last=closed.at(-1)!;
   const prev=closed.at(-2)!;
-  const closes=closed.map(x=>x.close);
-  const e8=ema(closes,TF_FAST);
-  const e21=ema(closes,TF_SLOW);
-  const e8Now=e8.at(-1)??last.close;
-  const e8Prev=e8.at(-2)??prev.close;
-  const e21Now=e21.at(-1)??last.close;
-  const recentLow=Math.min(...closed.slice(-13,-1).map(x=>x.low));
-  const recentHigh=Math.max(...closed.slice(-13,-1).map(x=>x.high));
-  const higherLow=last.low>=recentLow;
-  const lowerHigh=last.high<=recentHigh;
-  const reclaimLong=last.close>=e8Now&&prev.close<e8Prev;
-  const reclaimShort=last.close<=e8Now&&prev.close>e8Prev;
-  const fib=getFibLevels(closed,d);
-  const fibPath=getFibPathState(closed,fib,d);
-  const fibRetracement=fibPath.state!=="FAILED" &&
-    (fibPath.currentLevel==="BETWEEN_382_500"||fibPath.currentLevel==="BETWEEN_500_618"||fibPath.currentLevel==="BELOW_618");
-  const stochPrev=stochRsi(closes.slice(0,-1));
-  const stochTurning=d==="LONG"
-    ? st.k>st.d&&st.k>stochPrev.k
-    : st.k<st.d&&st.k<stochPrev.k;
-  const ema513Improving=d==="LONG"
-    ? fourH.direction==="BULLISH"||(fourH.turning&&fourH.direction==="BULLISH")
-    : fourH.direction==="BEARISH"||(fourH.turning&&fourH.direction==="BEARISH");
-  const macdImproving=d==="LONG"?macd.bullishShift:macd.bearishShift;
-  const improvingCount=[stochTurning,macdImproving,ema513Improving].filter(Boolean).length;
-  const priceHolding=d==="LONG"
-    ? (higherLow||reclaimLong||fibRetracement)
-    : (lowerHigh||reclaimShort||fibRetracement);
-  const structureBreak=d==="LONG"
-    ? last.close<recentLow
-    : last.close>recentHigh;
-  const ema8Break=d==="LONG"
-    ? last.close<e8Now&&e8Now<e21Now
-    : last.close>e8Now&&e8Now>e21Now;
-  const momentumBreak=d==="LONG"
-    ? (!stochTurning&&st.k<stochPrev.k)&&macd.bearishShift&&fourH.direction==="BEARISH"
-    : (!stochTurning&&st.k>stochPrev.k)&&macd.bullishShift&&fourH.direction==="BULLISH";
-  const failedPath=fibPath.state==="FAILED";
-  if(failedPath&&(structureBreak||ema8Break)&&momentumBreak)return"DETERIORATING" as const;
+  const prev2=closed.at(-3)!;
 
-  const opposing4H=d==="LONG"
-    ? fourH.direction==="BEARISH"
-    : fourH.direction==="BULLISH";
-  const recovery=d==="LONG"
-    ? (reclaimLong||higherLow)
-    : (reclaimShort||lowerHigh);
-  if(opposing4H&&!recovery)return"DETERIORATING" as const;
+  // Real price reaction:
+  // LONG  = downside fails to extend and the latest candle takes back
+  //         immediate price structure.
+  // SHORT = upside fails to extend and the latest candle gives back
+  //         immediate price structure.
+  //
+  // This deliberately does NOT require an EMA cross, StochRSI turn, MACD
+  // turn, ADX level, or 1D/4H alignment.
+  const longFailureToExtend=
+    last.low>=prev.low ||
+    (last.low<prev.low && last.close>prev.close && last.close>last.open);
+  const shortFailureToExtend=
+    last.high<=prev.high ||
+    (last.high>prev.high && last.close<prev.close && last.close<last.open);
 
-  return improvingCount>=2&&priceHolding
-    ?"IMPROVING" as const
-    :"DETERIORATING" as const;
+  const longReaction=
+    longFailureToExtend &&
+    (last.close>prev.close || last.high>prev.high);
+  const shortReaction=
+    shortFailureToExtend &&
+    (last.close<prev.close || last.low<prev.low);
+
+  // If price is still printing lower lows/lower closes, a bullish oscillator
+  // twitch cannot manufacture a LONG. Mirror this for SHORT.
+  const downsideContinuation=
+    last.low<prev.low && last.close<=prev.close &&
+    prev.low<=prev2.low;
+  const upsideContinuation=
+    last.high>prev.high && last.close>=prev.close &&
+    prev.high>=prev2.high;
+
+  if(d==="LONG"){
+    if(downsideContinuation&&!longReaction)return"DETERIORATING" as const;
+    return longReaction?"IMPROVING":"DETERIORATING" as const;
+  }
+
+  if(upsideContinuation&&!shortReaction)return"DETERIORATING" as const;
+  return shortReaction?"IMPROVING":"DETERIORATING" as const;
 }
-
 function snapshot(pair:string,c:Candle[],d:Direction,tl:Trendline,price:number,dailyLive?:DailyLiveContext){
   const closed=c.length>1?c.slice(0,-1):c,closes=closed.map(x=>x.close),st=stochRsi(closes),r=Math.round(rsi(closes)*10)/10,a=adx(closed),e8=ema(closes,TF_FAST).at(-1)??price,e21=ema(closes,TF_SLOW).at(-1)??price,m=macd4h(closed),d1=getDaily513Diagnostic(c),dist=tl.valid?(price-tl.price)/tl.price:null;
   const longTL=buildTrendline(closed,"LONG"),shortTL=buildTrendline(closed,"SHORT");
@@ -517,19 +506,26 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     structure.shiftTo==="SHORT" ||
     (lowerHigh&&(reclaim8Short||priorLowBreak));
 
-  // If the previous closed 4H was bearish and the current bar is beginning
-  // to turn bullish, ENTRY_1 may fire immediately. The reverse applies to
-  // shorts. This catches the move before the 4H becomes fully established.
+  // ENTRY_1 catches the transition before a mature 4H trend exists.
+  // When the previous 4H was moving the other way, price itself must now
+  // show a reaction. Oscillator improvement alone is never enough.
+  const longPriceReaction=
+    entryLast.close>entryPrior.close ||
+    (entryLast.low>=entryPrior.low && entryLast.high>entryPrior.high);
+  const shortPriceReaction=
+    entryLast.close<entryPrior.close ||
+    (entryLast.high<=entryPrior.high && entryLast.low<entryPrior.low);
+
   const long4HTransition=
     bullStageTransition ||
     structure.shiftTo==="LONG" ||
     (previousFourH.direction==="BEARISH" &&
-      (longMomentumCount>=2 || reclaim8Long || priorHighBreak));
+      (longPriceReaction || longStructuralConfirmation));
   const short4HTransition=
     bearStageTransition ||
     structure.shiftTo==="SHORT" ||
     (previousFourH.direction==="BULLISH" &&
-      (shortMomentumCount>=2 || reclaim8Short || priorLowBreak));
+      (shortPriceReaction || shortStructuralConfirmation));
 
   const weeklyLong=weekly.direction==="LONG";
   const weeklyShort=weekly.direction==="SHORT";
