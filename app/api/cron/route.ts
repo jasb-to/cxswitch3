@@ -98,7 +98,7 @@ export async function GET(request:Request){
   // No synthetic candles and no CoinGecko spot dependency. Feed genuine OHLCV
   // into the existing V28 engine only when the required timeframes exist.
   if(pair==="PAID"){
-    const paid=getPaidMarketData();
+    const paid=await getPaidMarketData();
     const daily=await getPaidDailyCandles();
     const weekly=aggregatePaidDailyToWeekly(daily);
     const live1D=dailyState[pair]||{state:"INSUFFICIENT",candidateState:"INSUFFICIENT",direction:"NEUTRAL"};
