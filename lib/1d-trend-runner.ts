@@ -1,11 +1,11 @@
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { getCoinGeckoDailyCandles } from "@/lib/coingecko";
+import { getPaidDailyCandles } from "@/lib/geckoterminal";
 import { evaluate1DTrend } from "@/lib/1d-trend-engine";
 import { get1DTrendState, record1DTrend } from "@/lib/1d-trend-state";
 import { getActiveSignals } from "@/lib/state";
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE", "DOGE", "LINK", "AVAX", "PAID"] as const;
-const COINGECKO_IDS = new Map([["PAID","paid-network"]]);
+
 
 export async function run1DTrendExperiment(activeOverride?: any[]) {
   const started = Date.now();
@@ -15,8 +15,8 @@ export async function run1DTrendExperiment(activeOverride?: any[]) {
 
   for (const pair of PAIRS) {
     try {
-      const daily = COINGECKO_IDS.has(pair)
-        ? await getCoinGeckoDailyCandles(COINGECKO_IDS.get(pair)!, 730)
+      const daily = pair === "PAID"
+        ? await getPaidDailyCandles()
         : await getCandles(krakenPairFormat(`${pair}/USD`), 1440, dailySince);
 
       if (daily.length < 220) {
