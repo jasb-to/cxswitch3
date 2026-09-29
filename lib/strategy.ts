@@ -360,19 +360,17 @@ function compositeMomentumState(
   //
   // This deliberately does NOT require an EMA cross, StochRSI turn, MACD
   // turn, ADX level, or 1D/4H alignment.
-  const longFailureToExtend=
-    last.low>=prev.low ||
-    (last.low<prev.low && last.close>prev.close && last.close>last.open);
-  const shortFailureToExtend=
-    last.high<=prev.high ||
-    (last.high>prev.high && last.close<prev.close && last.close<last.open);
-
+  // A genuine early reversal needs BOTH a failure to extend the old
+  // swing and a meaningful close back in the new direction. A single green
+  // candle inside a falling sequence is not a reversal.
   const longReaction=
-    longFailureToExtend &&
-    (last.close>prev.close || last.high>prev.high);
+    (last.low>=prev.low && last.close>prev.close) ||
+    last.close>prev.high ||
+    (last.low<prev.low && last.close>prev.high);
   const shortReaction=
-    shortFailureToExtend &&
-    (last.close<prev.close || last.low<prev.low);
+    (last.high<=prev.high && last.close<prev.close) ||
+    last.close<prev.low ||
+    (last.high>prev.high && last.close<prev.low);
 
   // If price is still printing lower lows/lower closes, a bullish oscillator
   // twitch cannot manufacture a LONG. Mirror this for SHORT.
@@ -516,16 +514,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     entryLast.close<entryPrior.close ||
     (entryLast.high<=entryPrior.high && entryLast.low<entryPrior.low);
 
-  const long4HTransition=
-    bullStageTransition ||
-    structure.shiftTo==="LONG" ||
-    (previousFourH.direction==="BEARISH" &&
-      (longPriceReaction || longStructuralConfirmation));
-  const short4HTransition=
-    bearStageTransition ||
-    structure.shiftTo==="SHORT" ||
-    (previousFourH.direction==="BULLISH" &&
-      (shortPriceReaction || shortStructuralConfirmation));
+  // Direction comes from price action. EMA stage/structure diagnostics
+  // can describe the transition, but they cannot manufacture an ENTRY_1.
+  // This preserves early entries while preventing oscillator/EMA-state
+  // combinations from flipping a still-falling market into LONG (or vice versa).
+  const long4HTransition=longPriceReaction;
+  const short4HTransition=shortPriceReaction;
 
   const weeklyLong=weekly.direction==="LONG";
   const weeklyShort=weekly.direction==="SHORT";
@@ -694,8 +688,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const breakoutRecord:BreakoutRecord|undefined=type==="ENTRY_2"?(dir==="LONG"?{direction:"LONG",price:round(longExec.linePrice??price),timestamp:now,candleIndex:developing4HIndex}:{direction:"SHORT",price:round(shortExec.linePrice??price),timestamp:now,candleIndex:developing4HIndex}):undefined;
   const location=type==="ENTRY_1"?"EARLY_STRUCTURAL":"15M_TRENDLINE_RETEST";
   const entry1Trigger=dir==="LONG"
-    ? [stochLong&&"4H_STOCHRSI_TURN",macdLong&&"4H_MACD_IMPROVING",emaLong&&"4H_5_13_TURN"].filter(Boolean).join("+")
-    : [stochShort&&"4H_STOCHRSI_TURN",macdShort&&"4H_MACD_IMPROVING",emaShort&&"4H_5_13_TURN"].filter(Boolean).join("+");
+    ? "4H_PRICE_ACTION_REVERSAL"
+    : "4H_PRICE_ACTION_REVERSAL";
   const trigger=type==="ENTRY_1"?(entry1Trigger||"4H_STRUCTURE_REACTION"):"4H_BREAKOUT→15M_DIP";
   const signal:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),confidence:type==="ENTRY_1"?70:type==="ENTRY_2"?80:85,rr:1.5,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(tp2Move*1000)/10,reason:`${dir} ${type} | ${reason} | ${trendAlignment}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} | 1W ${weekly.direction||"NEUTRAL"} | 1D ${dDir} | 4H ${strength(daily(candles4h),dir)}`,location,trigger,context:{
     marketPhase:type==="ENTRY_1"?`${dir} PROBABILITY EARLY SETUP`:`${dir} CONFIRMED ENTRY_2`,
