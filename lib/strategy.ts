@@ -361,8 +361,8 @@ function compositeMomentumState(
   const fibRetracement=fibPath.state!=="FAILED" &&
     (fibPath.currentLevel==="BETWEEN_382_500"||fibPath.currentLevel==="BETWEEN_500_618"||fibPath.currentLevel==="BELOW_618");
   const indicatorImproving=d==="LONG"
-    ? (st.k>st.d || macd.bullishShift || fourH.direction==="BULLISH" || fourH.turning)
-    : (st.k<st.d || macd.bearishShift || fourH.direction==="BEARISH" || fourH.turning);
+    ? (st.k>st.d || macd.bullishShift || (fourH.turning&&fourH.direction==="BULLISH") || fourH.direction==="BULLISH")
+    : (st.k<st.d || macd.bearishShift || (fourH.turning&&fourH.direction==="BEARISH") || fourH.direction==="BEARISH");
   const priceHolding=d==="LONG"
     ? (higherLow || reclaimLong || fibRetracement)
     : (lowerHigh || reclaimShort || fibRetracement);
@@ -549,7 +549,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
   debug.push(`[1W] ${pair} | ${weekly.direction||"NEUTRAL"} | direction=${weekly.direction||"NEUTRAL"} | ${weekly.reason} | 5/13=${weekly.ema5.toFixed(2)}/${weekly.ema13.toFixed(2)} | ADX=${weekly.adx}`);
   debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir} | ${((weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"))?"SUPPORTIVE":"COUNTER/NEUTRAL"}`);
-  debug.push(`[4H] ${pair} | 5/13=${fourH.label} | MACD=${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | Stoch=${st.k}/${st.d} prev=${prevSt.k}/${prevSt.d} | Momentum=${compositeMomentumState(closed,structureDir||fallbackDir,st,macd,fourH)}`);
+  debug.push(`[4H] ${pair} | 5/13=${fourH.label} | MACD=${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | Stoch=${st.k}/${st.d} prev=${prevSt.k}/${prevSt.d} | Momentum=${compositeMomentumState(closed,structureDir||(dDir==="BEAR"?"SHORT":"LONG"),st,macd,fourH)}`);
   debug.push(`[TL] ${pair} | LONG=${longTL.valid?longTL.price.toFixed(2):"—"} dist=${isFinite(longDist)?(longDist*100).toFixed(2)+"%":"—"} | SHORT=${shortTL.valid?shortTL.price.toFixed(2):"—"} dist=${isFinite(shortDist)?(shortDist*100).toFixed(2)+"%":"—"}`);
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
   debug.push(`[FIB PATH] ${pair} | LONG=${longFibPath.state}/${longFibPath.trigger} age=${Number.isFinite(longFibPath.triggerAge)?longFibPath.triggerAge:"—"} fresh=${longFibPath.fresh?"YES":"NO"} | SHORT=${shortFibPath.state}/${shortFibPath.trigger} age=${Number.isFinite(shortFibPath.triggerAge)?shortFibPath.triggerAge:"—"} fresh=${shortFibPath.fresh?"YES":"NO"}`);
