@@ -500,8 +500,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     (dDir==="BEAR"&&candidate.startsWith("BULL"))
   );
 
-  const longEntry1=dailyLongAllowed&&longLocation&&long4HTransition&&!longExhausted;
-  const shortEntry1=dailyShortAllowed&&shortLocation&&short4HTransition&&!shortExhausted;
+  // PAID is intentionally ENTRY_2-only because of its extreme volatility.
+  // Do not weaken the core ENTRY_1 engine for other assets; simply disable
+  // ENTRY_1 for PAID and let the confirmed 4H breakout + 15M retest path run.
+  const paidEntry2Only=pair==="PAID";
+  const longEntry1=!paidEntry2Only&&dailyLongAllowed&&longLocation&&long4HTransition&&!longExhausted;
+  const shortEntry1=!paidEntry2Only&&dailyShortAllowed&&shortLocation&&short4HTransition&&!shortExhausted;
 
   debug.push(`[1W] ${pair} | ${weekly.direction||"NEUTRAL"} | direction=${weekly.direction||"NEUTRAL"} | ${weekly.reason} | 5/13=${weekly.ema5.toFixed(2)}/${weekly.ema13.toFixed(2)} | ADX=${weekly.adx}`);
   debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir} | ${((weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"))?"SUPPORTIVE":"COUNTER/NEUTRAL"}`);
@@ -510,6 +514,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
   debug.push(`[FIB PATH] ${pair} | LONG=${longFibPath.state}/${longFibPath.trigger} age=${Number.isFinite(longFibPath.triggerAge)?longFibPath.triggerAge:"—"} fresh=${longFibPath.fresh?"YES":"NO"} | SHORT=${shortFibPath.state}/${shortFibPath.trigger} age=${Number.isFinite(shortFibPath.triggerAge)?shortFibPath.triggerAge:"—"} fresh=${shortFibPath.fresh?"YES":"NO"}`);
   debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | HTF=${dailyTransitionBlocked?"TRANSITION_BLOCK":"CONTEXT_ONLY"} | Permission=EARLY_4H | MomentumLong=${longMomentumCount}/3 | MomentumShort=${shortMomentumCount}/3 | Stoch=${stochLong?"LONG":stochShort?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
+  if(paidEntry2Only)debug.push(`[ENTRY_1 POLICY] PAID | DISABLED — ENTRY_2 ONLY`);
 
   const fallbackDir:Direction=weekly.direction||(dDir==="BEAR"?"SHORT":"LONG");
   const baseMarket=()=>snapshot(pair,candles4h,structureDir||fallbackDir,structureDir==="LONG"?longTL:structureDir==="SHORT"?shortTL:longTL,price,dailyLive);
