@@ -47,7 +47,6 @@ export async function GET(request:Request){
  // never try to manage the deleted GeckoTerminal market after the migration.
  const retiredPaid=active.filter(x=>x.pair==="PAID");
  if(retiredPaid.length){
-   const retiredAt=Date.now();
    for(const trade of retiredPaid){
      await updateSignalHistoryStatus(trade.id,"EXPIRED","manual_symbol_reset",undefined);
    }
