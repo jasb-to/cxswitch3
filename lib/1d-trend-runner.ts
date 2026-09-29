@@ -19,8 +19,8 @@ export async function run1DTrendExperiment(activeOverride?: any[]) {
         ? await getPaidAggregatedDailyCandles()
         : await getCandles(krakenPairFormat(`${pair}/USD`), 1440, dailySince);
 
-      // PAID is a young pool. Its real 4H history is aggregated into complete
-      // daily candles, so use the available-history floor for PAID only.
+      // PAID is a newly listed market. Its native MEXC daily history is limited
+      // to the token's real age; do not manufacture older candles.
       const minimumDailyCandles = pair === "PAID" ? 180 : 220;
       if (daily.length < minimumDailyCandles) {
         console.log(`[1D] ${pair} | INSUFFICIENT daily=${daily.length} required=${minimumDailyCandles}`);
