@@ -42,7 +42,20 @@ export async function GET(request:Request){
  if(started-last<MIN_CRON_INTERVAL_MS){console.log(`[CRON v${CXSWITCH_VERSION}] Guard: run skipped; previous run ${Math.round((started-last)/1000)}s ago`);return NextResponse.json({success:true,skipped:true,reason:"concurrency_guard"});}
  await setLastCronRun(started);
  console.log("========================================");console.log(`[CRON v${CXSWITCH_VERSION}] Started at ${new Date(started).toISOString()}`);
- let active=await getActiveSignals();console.log(`[STATE] Active signals on entry: ${active.map(a=>`${a.pair}_${a.direction}_${a.type}`).join(", ")||"none"}`);
+ let active=await getActiveSignals();
+ // PAID has been retired. Remove any legacy active PAID state so the cron can
+ // never try to manage the deleted GeckoTerminal market after the migration.
+ const retiredPaid=active.filter(x=>x.pair==="PAID");
+ if(retiredPaid.length){
+   const retiredAt=Date.now();
+   for(const trade of retiredPaid){
+     await updateSignalHistoryStatus(trade.id,"EXPIRED","manual_symbol_reset",undefined);
+   }
+   active=active.filter(x=>x.pair!=="PAID");
+   await setActiveSignals(active);
+   console.log(`[STATE] Retired PAID legacy positions=${retiredPaid.length}`);
+ }
+ console.log(`[STATE] Active signals on entry: ${active.map(a=>`${a.pair}_${a.direction}_${a.type}`).join(", ")||"none"}`);
  let marketData:any[]=[],alerts:any[]=[],newSignals:Signal[]=[],managementByPair:Record<string,any>={};
  for(const trade of [...active]){try{
   const c=await getCandles(krakenPairFormat(trade.pair+"/USD"),240);const price=c.at(-1)?.close;if(price===undefined){console.log(`[MANAGE] ${trade.pair} — no price`);continue;}
