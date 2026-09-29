@@ -85,3 +85,27 @@ export async function getPaidMarketData(): Promise<{
 export async function getPaidDailyCandles(): Promise<Candle[]> {
   return getPaidOhlcv("day", 1, 1000);
 }
+
+export function aggregatePaidDailyToWeekly(daily: Candle[]): Candle[] {
+  const sorted = [...daily].sort((a, b) => a.timestamp - b.timestamp);
+  const groups = new Map<string, Candle[]>();
+  for (const c of sorted) {
+    const d = new Date(c.timestamp);
+    const day = d.getUTCDay();
+    const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - ((day + 6) % 7)));
+    const key = monday.toISOString().slice(0, 10);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(c);
+  }
+  return [...groups.values()]
+    .filter(bars => bars.length > 0)
+    .map(bars => ({
+      timestamp: bars[0].timestamp,
+      open: bars[0].open,
+      high: Math.max(...bars.map(b => b.high)),
+      low: Math.min(...bars.map(b => b.low)),
+      close: bars[bars.length - 1].close,
+      volume: bars.reduce((sum, b) => sum + b.volume, 0),
+    }))
+    .sort((a, b) => a.timestamp - b.timestamp);
+}
