@@ -1,5 +1,5 @@
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { getPaidDailyCandles } from "@/lib/geckoterminal";
+import { getPaidAggregatedDailyCandles } from "@/lib/geckoterminal";
 import { evaluate1DTrend } from "@/lib/1d-trend-engine";
 import { get1DTrendState, record1DTrend } from "@/lib/1d-trend-state";
 import { getActiveSignals } from "@/lib/state";
@@ -16,11 +16,14 @@ export async function run1DTrendExperiment(activeOverride?: any[]) {
   for (const pair of PAIRS) {
     try {
       const daily = pair === "PAID"
-        ? await getPaidDailyCandles()
+        ? await getPaidAggregatedDailyCandles()
         : await getCandles(krakenPairFormat(`${pair}/USD`), 1440, dailySince);
 
-      if (daily.length < 220) {
-        console.log(`[1D] ${pair} | INSUFFICIENT daily=${daily.length}`);
+      // PAID is a young pool. Its real 4H history is aggregated into complete
+      // daily candles, so use the available-history floor for PAID only.
+      const minimumDailyCandles = pair === "PAID" ? 180 : 220;
+      if (daily.length < minimumDailyCandles) {
+        console.log(`[1D] ${pair} | INSUFFICIENT daily=${daily.length} required=${minimumDailyCandles}`);
         continue;
       }
 
