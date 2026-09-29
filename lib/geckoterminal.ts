@@ -96,40 +96,35 @@ export async function getPaidAggregatedDailyCandles(): Promise<Candle[]> {
   }
 
   const sorted = [...all.values()].sort((a, b) => a.timestamp - b.timestamp);
-  const byDay = new Map<string, Candle[]>();
-
-  for (const candle of sorted) {
-    const d = new Date(candle.timestamp);
-    const key = d.toISOString().slice(0, 10);
-    const bucket = byDay.get(key) ?? [];
-    bucket.push(candle);
-    byDay.set(key, bucket);
-  }
-
   const daily: Candle[] = [];
-  for (const bars of byDay.values()) {
-    bars.sort((a, b) => a.timestamp - b.timestamp);
 
-    // Only aggregate a day when all six 4H intervals are genuinely present
-    // and contiguous. A missing interval is a data gap, not a candle to invent.
-    if (bars.length !== 6) continue;
+  // Do not align to calendar dates: PAID's pool candles are not guaranteed
+  // to start at midnight UTC. Build days from six genuinely contiguous 4H
+  // candles, preserving the real OHLCV data and skipping gaps.
+  for (let i = 0; i + 5 < sorted.length; ) {
+    const block = sorted.slice(i, i + 6);
     let contiguous = true;
-    for (let i = 1; i < bars.length; i++) {
-      if (bars[i].timestamp - bars[i - 1].timestamp !== intervalMs) {
+
+    for (let j = 1; j < block.length; j++) {
+      if (block[j].timestamp - block[j - 1].timestamp !== intervalMs) {
         contiguous = false;
         break;
       }
     }
-    if (!contiguous) continue;
 
-    daily.push({
-      timestamp: bars[0].timestamp,
-      open: bars[0].open,
-      high: Math.max(...bars.map(b => b.high)),
-      low: Math.min(...bars.map(b => b.low)),
-      close: bars[5].close,
-      volume: bars.reduce((sum, b) => sum + b.volume, 0),
-    });
+    if (contiguous) {
+      daily.push({
+        timestamp: block[0].timestamp,
+        open: block[0].open,
+        high: Math.max(...block.map(b => b.high)),
+        low: Math.min(...block.map(b => b.low)),
+        close: block[5].close,
+        volume: block.reduce((sum, b) => sum + b.volume, 0),
+      });
+      i += 6;
+    } else {
+      i += 1;
+    }
   }
 
   return daily.sort((a, b) => a.timestamp - b.timestamp);
