@@ -1,7 +1,7 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { getPaidMarketData, getPaidDailyCandles, aggregatePaidDailyToWeekly } from "@/lib/geckoterminal";
+import { getPaidMarketData, getPaidAggregatedDailyCandles, aggregatePaidDailyToWeekly } from "@/lib/geckoterminal";
 import { generateSignal, getMarketSnapshot, getCycleRunnerSnapshot, shouldHold, liquidationSafeStop, Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { detectStructureShift, recordStructureShiftSnapshot } from "@/lib/structure-shift";
@@ -99,7 +99,7 @@ export async function GET(request:Request){
   // into the existing V28 engine only when the required timeframes exist.
   if(pair==="PAID"){
     const paid=await getPaidMarketData();
-    const daily=await getPaidDailyCandles();
+    const daily=await getPaidAggregatedDailyCandles();
     const weekly=aggregatePaidDailyToWeekly(daily);
     const live1D=dailyState[pair]||{state:"INSUFFICIENT",candidateState:"INSUFFICIENT",direction:"NEUTRAL"};
     const ema513=get4HEmaDiagnostic(paid.candles4h);
