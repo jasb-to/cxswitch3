@@ -20,7 +20,7 @@ export interface Signal {
   trend?:string; location?:string; trigger?:string; context?:any;
 }
 export interface SignalResult { signals?:Signal[]; signal?:Signal; market?:any; debug:string[]; breakout?:BreakoutRecord; }
-export const CURRENT_SIGNAL_VERSION=18;
+export const CURRENT_SIGNAL_VERSION=19;
 
 type DailyLiveContext={
   state?:string; candidateState?:string; candidateStreak?:number;
@@ -340,16 +340,21 @@ function compositeMomentumState(
   d:Direction,
   st:{k:number;d:number},
   macd:{bullishShift:boolean;bearishShift:boolean},
-  fourH:{direction:string;turning:boolean}
+  fourH:{direction:string;turning:boolean;stage?:string}
 ){
+  // Two states only. A normal move down into 0.382/0.500/0.618 is a
+  // retracement and is NOT deterioration. Deterioration needs an actual
+  // failed Fib path / price-structure break with confirming momentum damage.
   const closed=c;
   if(closed.length<14)return"DETERIORATING" as const;
   const last=closed.at(-1)!;
   const prev=closed.at(-2)!;
   const closes=closed.map(x=>x.close);
   const e8=ema(closes,TF_FAST);
+  const e21=ema(closes,TF_SLOW);
   const e8Now=e8.at(-1)??last.close;
   const e8Prev=e8.at(-2)??prev.close;
+  const e21Now=e21.at(-1)??last.close;
   const recentLow=Math.min(...closed.slice(-13,-1).map(x=>x.low));
   const recentHigh=Math.max(...closed.slice(-13,-1).map(x=>x.high));
   const higherLow=last.low>=recentLow;
@@ -360,16 +365,39 @@ function compositeMomentumState(
   const fibPath=getFibPathState(closed,fib,d);
   const fibRetracement=fibPath.state!=="FAILED" &&
     (fibPath.currentLevel==="BETWEEN_382_500"||fibPath.currentLevel==="BETWEEN_500_618"||fibPath.currentLevel==="BELOW_618");
-  const indicatorImproving=d==="LONG"
-    ? (st.k>st.d || macd.bullishShift || (fourH.turning&&fourH.direction==="BULLISH") || fourH.direction==="BULLISH")
-    : (st.k<st.d || macd.bearishShift || (fourH.turning&&fourH.direction==="BEARISH") || fourH.direction==="BEARISH");
+  const stochPrev=stochRsi(closes.slice(0,-1));
+  const stochTurning=d==="LONG"
+    ? st.k>st.d&&st.k>stochPrev.k
+    : st.k<st.d&&st.k<stochPrev.k;
+  const ema513Improving=d==="LONG"
+    ? fourH.direction==="BULLISH"||(fourH.turning&&fourH.direction==="BULLISH")
+    : fourH.direction==="BEARISH"||(fourH.turning&&fourH.direction==="BEARISH");
+  const macdImproving=d==="LONG"?macd.bullishShift:macd.bearishShift;
+  const improvingCount=[stochTurning,macdImproving,ema513Improving].filter(Boolean).length;
   const priceHolding=d==="LONG"
-    ? (higherLow || reclaimLong || fibRetracement)
-    : (lowerHigh || reclaimShort || fibRetracement);
-  const priceFailing=d==="LONG"
-    ? (!higherLow && last.close<e8Now && fibPath.state==="FAILED")
-    : (!lowerHigh && last.close>e8Now && fibPath.state==="FAILED");
-  return indicatorImproving && priceHolding && !priceFailing
+    ? (higherLow||reclaimLong||fibRetracement)
+    : (lowerHigh||reclaimShort||fibRetracement);
+  const structureBreak=d==="LONG"
+    ? last.close<recentLow
+    : last.close>recentHigh;
+  const ema8Break=d==="LONG"
+    ? last.close<e8Now&&e8Now<e21Now
+    : last.close>e8Now&&e8Now>e21Now;
+  const momentumBreak=d==="LONG"
+    ? (!stochTurning&&st.k<stochPrev.k)&&macd.bearishShift&&fourH.direction==="BEARISH"
+    : (!stochTurning&&st.k>stochPrev.k)&&macd.bullishShift&&fourH.direction==="BULLISH";
+  const failedPath=fibPath.state==="FAILED";
+  if(failedPath&&(structureBreak||ema8Break)&&momentumBreak)return"DETERIORATING" as const;
+
+  const opposing4H=d==="LONG"
+    ? fourH.direction==="BEARISH"
+    : fourH.direction==="BULLISH";
+  const recovery=d==="LONG"
+    ? (reclaimLong||higherLow)
+    : (reclaimShort||lowerHigh);
+  if(opposing4H&&!recovery)return"DETERIORATING" as const;
+
+  return improvingCount>=2&&priceHolding
     ?"IMPROVING" as const
     :"DETERIORATING" as const;
 }
@@ -540,12 +568,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     (dDir==="BEAR"&&candidate.startsWith("BULL"))
   );
 
-  // PAID is intentionally ENTRY_2-only because of its extreme volatility.
-  // Do not weaken the core ENTRY_1 engine for other assets; simply disable
-  // ENTRY_1 for PAID and let the confirmed 4H breakout + 15M retest path run.
-  const paidEntry2Only=pair==="PAID";
-  const longEntry1=!paidEntry2Only&&dailyLongAllowed&&longLocation&&long4HTransition&&!longExhausted;
-  const shortEntry1=!paidEntry2Only&&dailyShortAllowed&&shortLocation&&short4HTransition&&!shortExhausted;
+  // ENTRY_1 remains available to every supported exchange-backed pair.
+  // Momentum state is a quality input, not a blanket 1D/4H alignment gate.
+  const longMomentumState=compositeMomentumState(closed,"LONG",st,macd,fourH);
+  const shortMomentumState=compositeMomentumState(closed,"SHORT",st,macd,fourH);
+  const longEntry1=dailyLongAllowed&&longLocation&&long4HTransition&&!longExhausted&&longMomentumState==="IMPROVING";
+  const shortEntry1=dailyShortAllowed&&shortLocation&&short4HTransition&&!shortExhausted&&shortMomentumState==="IMPROVING";
 
   debug.push(`[1W] ${pair} | ${weekly.direction||"NEUTRAL"} | direction=${weekly.direction||"NEUTRAL"} | ${weekly.reason} | 5/13=${weekly.ema5.toFixed(2)}/${weekly.ema13.toFixed(2)} | ADX=${weekly.adx}`);
   debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir} | ${((weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"))?"SUPPORTIVE":"COUNTER/NEUTRAL"}`);
@@ -554,13 +582,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
   debug.push(`[FIB PATH] ${pair} | LONG=${longFibPath.state}/${longFibPath.trigger} age=${Number.isFinite(longFibPath.triggerAge)?longFibPath.triggerAge:"—"} fresh=${longFibPath.fresh?"YES":"NO"} | SHORT=${shortFibPath.state}/${shortFibPath.trigger} age=${Number.isFinite(shortFibPath.triggerAge)?shortFibPath.triggerAge:"—"} fresh=${shortFibPath.fresh?"YES":"NO"}`);
   debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | HTF=${dailyTransitionBlocked?"TRANSITION_BLOCK":"CONTEXT_ONLY"} | Permission=EARLY_4H | MomentumLong=${longMomentumCount}/3 | MomentumShort=${shortMomentumCount}/3 | Stoch=${stochLong?"LONG":stochShort?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
-  if(paidEntry2Only)debug.push(`[ENTRY_1 POLICY] PAID | DISABLED — ENTRY_2 ONLY`);
 
   const fallbackDir:Direction=weekly.direction||(dDir==="BEAR"?"SHORT":"LONG");
   const baseMarket=()=>snapshot(pair,candles4h,structureDir||fallbackDir,structureDir==="LONG"?longTL:structureDir==="SHORT"?shortTL:longTL,price,dailyLive);
   const market=(m:any)=>Object.assign(m||baseMarket(),{
     weeklyDirection:weekly.direction,weeklyDirectionReason:weekly.reason,weeklySupportive:(weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"),entry1Direction:longEntry1?"LONG":shortEntry1?"SHORT":"NEUTRAL",entry1Decision:longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE",
-    entry1TriggersLong:longMomentumCount,entry1TriggersShort:shortMomentumCount,entry1StructuralLocation:longLocation?"LONG":shortLocation?"SHORT":"NONE",
+    entry1TriggersLong:longMomentumCount,entry1TriggersShort:shortMomentumCount,entry1MomentumStateLong:longMomentumState,entry1MomentumStateShort:shortMomentumState,entry1StructuralLocation:longLocation?"LONG":shortLocation?"SHORT":"NONE",
     entry1FibPathLong:longFibPath,entry1FibPathShort:shortFibPath,
     entry1NearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",entry1LiveNearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",
     entry1LiveDistPct:longEntry1?longDist*100:shortEntry1?shortDist*100:null,entry1PreBreak:longPreBreak||shortPreBreak,
