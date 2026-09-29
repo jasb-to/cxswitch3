@@ -334,10 +334,50 @@ function same(pair:string,d:Direction,trades?:any[]){return!!trades?.some(t=>(t.
 function liq(entry:number,d:Direction){return d==="LONG"?entry*(1-1/LEVERAGE+MMR):entry*(1+1/LEVERAGE-MMR);}
 export function liquidationSafeStop(entry:number,d:Direction){const l=liq(entry,d),safe=d==="LONG"?l*(1+LIQ_BUFFER):l*(1-LIQ_BUFFER);return round(safe);}
 
+
+function compositeMomentumState(
+  c:Candle[],
+  d:Direction,
+  st:{k:number;d:number},
+  macd:{bullishShift:boolean;bearishShift:boolean},
+  fourH:{direction:string;turning:boolean}
+){
+  const closed=c.length>1?c.slice(0,-1):c;
+  if(closed.length<14)return"DETERIORATING" as const;
+  const last=closed.at(-1)!;
+  const prev=closed.at(-2)!;
+  const closes=closed.map(x=>x.close);
+  const e8=ema(closes,TF_FAST);
+  const e8Now=e8.at(-1)??last.close;
+  const e8Prev=e8.at(-2)??prev.close;
+  const recentLow=Math.min(...closed.slice(-13,-1).map(x=>x.low));
+  const recentHigh=Math.max(...closed.slice(-13,-1).map(x=>x.high));
+  const higherLow=last.low>=recentLow;
+  const lowerHigh=last.high<=recentHigh;
+  const reclaimLong=last.close>=e8Now&&prev.close<e8Prev;
+  const reclaimShort=last.close<=e8Now&&prev.close>e8Prev;
+  const fib=getFibLevels(closed,d);
+  const fibPath=getFibPathState(closed,fib,d);
+  const fibRetracement=fibPath.state!=="FAILED" &&
+    (fibPath.currentLevel==="BETWEEN_382_500"||fibPath.currentLevel==="BETWEEN_500_618"||fibPath.currentLevel==="BELOW_618");
+  const indicatorImproving=d==="LONG"
+    ? (st.k>st.d || macd.bullishShift || fourH.direction==="BULLISH" || fourH.turning)
+    : (st.k<st.d || macd.bearishShift || fourH.direction==="BEARISH" || fourH.turning);
+  const priceHolding=d==="LONG"
+    ? (higherLow || reclaimLong || fibRetracement)
+    : (lowerHigh || reclaimShort || fibRetracement);
+  const priceFailing=d==="LONG"
+    ? (!higherLow && last.close<e8Now && fibPath.state==="FAILED")
+    : (!lowerHigh && last.close>e8Now && fibPath.state==="FAILED");
+  return indicatorImproving && priceHolding && !priceFailing
+    ?"IMPROVING" as const
+    :"DETERIORATING" as const;
+}
+
 function snapshot(pair:string,c:Candle[],d:Direction,tl:Trendline,price:number,dailyLive?:DailyLiveContext){
   const closed=c.length>1?c.slice(0,-1):c,closes=closed.map(x=>x.close),st=stochRsi(closes),r=Math.round(rsi(closes)*10)/10,a=adx(closed),e8=ema(closes,TF_FAST).at(-1)??price,e21=ema(closes,TF_SLOW).at(-1)??price,m=macd4h(closed),d1=getDaily513Diagnostic(c),dist=tl.valid?(price-tl.price)/tl.price:null;
   const longTL=buildTrendline(closed,"LONG"),shortTL=buildTrendline(closed,"SHORT");
-  return{pair,price:round(price),timestamp:Date.now(),trend:`${d} ${strength(daily(c),d)}`,location:dist===null?"NO_TL":Math.abs(dist)<=RETEST_PCT?"NEAR_TL":d==="LONG"?price>tl.price?"BEYOND_TL":"FAR_FROM_TL":price<tl.price?"BEYOND_TL":"FAR_FROM_TL",trigger:"WAITING",adx:a,rsi:r,stochK:st.k,stochD:st.d,trendlinePrice:tl.valid?round(tl.price):0,distToTrendline:dist===null?null:Math.round(Math.abs(dist)*10000)/100,ema8_4h:round(e8),ema21_4h:round(e21),fourH513:get4HEmaDiagnostic(c),macd4h:m,daily513:d1,dailyLive:dailyLive||null,momentumState:waveMomentum(c,d).state,trendlineStatus:tl.stale?"STALE_REBUILD":tl.valid?"ACTIVE":"REBUILDING",trendlineReason:tl.reason,trendlinePivots:tl.pivots.length,trendlineAgeCandles:tl.ageCandles,trendlineSlope:round(tl.slope),trendlineStaleByAge:tl.staleByAge,trendlineStaleByDistance:tl.staleByDistance,entry1Closed4hTimestamp:closed.at(-1)?.timestamp??0,entry1ClosedStochK:st.k,entry1ClosedStochD:st.d,entry1NearTL:tl.valid&&dist!==null&&Math.abs(dist)<=RETEST_PCT,entry1LongNearTL:longTL.valid&&Math.abs((price-longTL.price)/longTL.price)<=RETEST_PCT,entry1ShortNearTL:shortTL.valid&&Math.abs((price-shortTL.price)/shortTL.price)<=RETEST_PCT,entry1ShortMacdTurn:m.bearishShift,entry1ShortStochTurn:st.k<st.d,entry1LongStochTurn:st.k>st.d,entry1ShortTurn:st.k<st.d,entry1LongTrendlinePrice:longTL.valid?round(longTL.price):0,entry1ShortTrendlinePrice:shortTL.valid?round(shortTL.price):0};
+  return{pair,price:round(price),timestamp:Date.now(),trend:`${d} ${strength(daily(c),d)}`,location:dist===null?"NO_TL":Math.abs(dist)<=RETEST_PCT?"NEAR_TL":d==="LONG"?price>tl.price?"BEYOND_TL":"FAR_FROM_TL":price<tl.price?"BEYOND_TL":"FAR_FROM_TL",trigger:"WAITING",adx:a,rsi:r,stochK:st.k,stochD:st.d,trendlinePrice:tl.valid?round(tl.price):0,distToTrendline:dist===null?null:Math.round(Math.abs(dist)*10000)/100,ema8_4h:round(e8),ema21_4h:round(e21),fourH513:get4HEmaDiagnostic(c),macd4h:m,daily513:d1,dailyLive:dailyLive||null,momentumState:compositeMomentumState(closed,d,st,m,get4HEmaDiagnostic(closed)),trendlineStatus:tl.stale?"STALE_REBUILD":tl.valid?"ACTIVE":"REBUILDING",trendlineReason:tl.reason,trendlinePivots:tl.pivots.length,trendlineAgeCandles:tl.ageCandles,trendlineSlope:round(tl.slope),trendlineStaleByAge:tl.staleByAge,trendlineStaleByDistance:tl.staleByDistance,entry1Closed4hTimestamp:closed.at(-1)?.timestamp??0,entry1ClosedStochK:st.k,entry1ClosedStochD:st.d,entry1NearTL:tl.valid&&dist!==null&&Math.abs(dist)<=RETEST_PCT,entry1LongNearTL:longTL.valid&&Math.abs((price-longTL.price)/longTL.price)<=RETEST_PCT,entry1ShortNearTL:shortTL.valid&&Math.abs((price-shortTL.price)/shortTL.price)<=RETEST_PCT,entry1ShortMacdTurn:m.bearishShift,entry1ShortStochTurn:st.k<st.d,entry1LongStochTurn:st.k>st.d,entry1ShortTurn:st.k<st.d,entry1LongTrendlinePrice:longTL.valid?round(longTL.price):0,entry1ShortTrendlinePrice:shortTL.valid?round(shortTL.price):0};
 }
 export function getDaily513Diagnostic(c:Candle[]){
   const d=daily(c);if(d.length<21)return{stage:"NEUTRAL",label:"1D NEUTRAL",direction:"NEUTRAL" as const,ema5:0,ema13:0,spread:0,spreadPct:0,spreadContracting:false,spreadChangePct:0,ema5Slope:0,ema13Slope:0};
@@ -509,7 +549,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
   debug.push(`[1W] ${pair} | ${weekly.direction||"NEUTRAL"} | direction=${weekly.direction||"NEUTRAL"} | ${weekly.reason} | 5/13=${weekly.ema5.toFixed(2)}/${weekly.ema13.toFixed(2)} | ADX=${weekly.adx}`);
   debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir} | ${((weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"))?"SUPPORTIVE":"COUNTER/NEUTRAL"}`);
-  debug.push(`[4H] ${pair} | 5/13=${fourH.label} | MACD=${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | Stoch=${st.k}/${st.d} prev=${prevSt.k}/${prevSt.d}`);
+  debug.push(`[4H] ${pair} | 5/13=${fourH.label} | MACD=${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | Stoch=${st.k}/${st.d} prev=${prevSt.k}/${prevSt.d} | Momentum=${compositeMomentumState(closed,structureDir||fallbackDir,st,macd,fourH)}`);
   debug.push(`[TL] ${pair} | LONG=${longTL.valid?longTL.price.toFixed(2):"—"} dist=${isFinite(longDist)?(longDist*100).toFixed(2)+"%":"—"} | SHORT=${shortTL.valid?shortTL.price.toFixed(2):"—"} dist=${isFinite(shortDist)?(shortDist*100).toFixed(2)+"%":"—"}`);
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
   debug.push(`[FIB PATH] ${pair} | LONG=${longFibPath.state}/${longFibPath.trigger} age=${Number.isFinite(longFibPath.triggerAge)?longFibPath.triggerAge:"—"} fresh=${longFibPath.fresh?"YES":"NO"} | SHORT=${shortFibPath.state}/${shortFibPath.trigger} age=${Number.isFinite(shortFibPath.triggerAge)?shortFibPath.triggerAge:"—"} fresh=${shortFibPath.fresh?"YES":"NO"}`);
