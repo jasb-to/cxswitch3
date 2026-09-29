@@ -342,7 +342,7 @@ function compositeMomentumState(
   macd:{bullishShift:boolean;bearishShift:boolean},
   fourH:{direction:string;turning:boolean}
 ){
-  const closed=c.length>1?c.slice(0,-1):c;
+  const closed=c;
   if(closed.length<14)return"DETERIORATING" as const;
   const last=closed.at(-1)!;
   const prev=closed.at(-2)!;
