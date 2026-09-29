@@ -1,7 +1,7 @@
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
 import { getPaidAggregatedDailyCandles } from "@/lib/geckoterminal";
 import { evaluate1DTrend } from "@/lib/1d-trend-engine";
-import { get1DTrendState, record1DTrend } from "@/lib/1d-trend-state";
+import { record1DUnavailable, record1DTrend } from "@/lib/1d-trend-state";
 import { getActiveSignals } from "@/lib/state";
 
 const PAIRS = ["BTC", "ETH", "SOL", "HYPE", "DOGE", "LINK", "AVAX", "PAID"] as const;
@@ -24,6 +24,17 @@ export async function run1DTrendExperiment(activeOverride?: any[]) {
       const minimumDailyCandles = pair === "PAID" ? 180 : 220;
       if (daily.length < minimumDailyCandles) {
         console.log(`[1D] ${pair} | INSUFFICIENT daily=${daily.length} required=${minimumDailyCandles}`);
+        const unavailable = await record1DUnavailable(pair, active, minimumDailyCandles, daily.length);
+        results.push({
+          pair,
+          state: unavailable.state,
+          candidate: unavailable.candidateState,
+          flip: false,
+          observationTimestamp: 0,
+          latestDailyTimestamp: daily.at(-1)?.timestamp ?? null,
+          latestDailyAgeHours: null,
+          v28Active: active.filter((x: any) => x.pair === pair),
+        });
         continue;
       }
 
