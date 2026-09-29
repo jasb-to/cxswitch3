@@ -3,36 +3,21 @@ import type { Candle } from "@/lib/kraken";
 const BASE = "https://api.geckoterminal.com/api/v2";
 const PAID_POOL = "0x633a0b2a75eb609cf388996f88d0739fe9ea2c80fad339d6e56fc1abc968e526";
 const VERSION = "20230203";
+const FOUR_H_LIMIT = 1000;
+const FOUR_H_BACKFILL_PAGES = 3;
 
 async function gtFetch(path: string): Promise<any> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(\`\${BASE}\${path}\`, {
     headers: {
-      accept: `application/json;version=${VERSION}`,
+      accept: \`application/json;version=\${VERSION}\`,
     },
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`GeckoTerminal HTTP ${res.status}`);
+  if (!res.ok) throw new Error(\`GeckoTerminal HTTP \${res.status}\`);
   return res.json();
 }
 
-export async function getPaidOhlcv(
-  timeframe: "minute" | "hour" | "day",
-  aggregate: number,
-  limit = 1000,
-): Promise<Candle[]> {
-  const data = await gtFetch(
-    `/networks/base/pools/${PAID_POOL}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=${Math.min(limit, 1000)}`,
-  );
-  const rows = data?.data?.attributes?.ohlcv_list;
-  if (!Array.isArray(rows)) throw new Error("GeckoTerminal OHLCV missing");
-
-  const intervalMs =
-    timeframe === "minute"
-      ? aggregate * 60_000
-      : timeframe === "hour"
-        ? aggregate * 3_600_000
-        : aggregate * 86_400_000;
-
+function parseOhlcv(rows: any[], intervalMs: number): Candle[] {
   const now = Date.now();
   return rows
     .map((c: any[]) => ({
@@ -53,6 +38,101 @@ export async function getPaidOhlcv(
         c.timestamp + intervalMs <= now,
     )
     .sort((a: Candle, b: Candle) => a.timestamp - b.timestamp);
+}
+
+export async function getPaidOhlcv(
+  timeframe: "minute" | "hour" | "day",
+  aggregate: number,
+  limit = 1000,
+): Promise<Candle[]> {
+  const data = await gtFetch(
+    \`/networks/base/pools/\${PAID_POOL}/ohlcv/\${timeframe}?aggregate=\${aggregate}&limit=\${Math.min(limit, 1000)}\`,
+  );
+  const rows = data?.data?.attributes?.ohlcv_list;
+  if (!Array.isArray(rows)) throw new Error("GeckoTerminal OHLCV missing");
+
+  const intervalMs =
+    timeframe === "minute"
+      ? aggregate * 60_000
+      : timeframe === "hour"
+        ? aggregate * 3_600_000
+        : aggregate * 86_400_000;
+
+  return parseOhlcv(rows, intervalMs);
+}
+
+/**
+ * PAID's native daily endpoint currently exposes only ~183 candles.
+ * Build the 1D series from genuine 4H OHLCV instead: six complete 4H
+ * candles = one UTC day. No prices/candles are fabricated.
+ *
+ * We page backwards using GeckoTerminal's before_timestamp parameter so
+ * the 1D engine can see the full available pool history.
+ */
+export async function getPaidAggregatedDailyCandles(): Promise<Candle[]> {
+  const intervalMs = 4 * 3_600_000;
+  const all = new Map<number, Candle>();
+  let beforeTimestamp: number | undefined;
+
+  for (let page = 0; page < FOUR_H_BACKFILL_PAGES; page++) {
+    const suffix = beforeTimestamp ? \`&before_timestamp=\${beforeTimestamp}\` : "";
+    const data = await gtFetch(
+      \`/networks/base/pools/\${PAID_POOL}/ohlcv/hour?aggregate=4&limit=\${FOUR_H_LIMIT}\${suffix}\`,
+    );
+    const rows = data?.data?.attributes?.ohlcv_list;
+    if (!Array.isArray(rows) || rows.length === 0) break;
+
+    const candles = parseOhlcv(rows, intervalMs);
+    if (!candles.length) break;
+
+    for (const candle of candles) all.set(candle.timestamp, candle);
+
+    const oldest = Math.min(...candles.map(c => c.timestamp));
+    const nextBefore = Math.floor(oldest / 1000) - 1;
+    if (!Number.isFinite(nextBefore) || nextBefore >= (beforeTimestamp ?? Infinity)) break;
+    beforeTimestamp = nextBefore;
+
+    if (candles.length < FOUR_H_LIMIT) break;
+  }
+
+  const sorted = [...all.values()].sort((a, b) => a.timestamp - b.timestamp);
+  const byDay = new Map<string, Candle[]>();
+
+  for (const candle of sorted) {
+    const d = new Date(candle.timestamp);
+    const key = d.toISOString().slice(0, 10);
+    const bucket = byDay.get(key) ?? [];
+    bucket.push(candle);
+    byDay.set(key, bucket);
+  }
+
+  const daily: Candle[] = [];
+  for (const bars of byDay.values()) {
+    bars.sort((a, b) => a.timestamp - b.timestamp);
+
+    // Only aggregate a day when all six 4H intervals are genuinely present
+    // and contiguous. A missing interval is a data gap, not a candle to invent.
+    if (bars.length !== 6) continue;
+    let contiguous = true;
+    for (let i = 1; i < bars.length; i++) {
+      if (bars[i].timestamp - bars[i - 1].timestamp !== intervalMs) {
+        contiguous = false;
+        break;
+      }
+    }
+    if (!contiguous) continue;
+
+    daily.push({
+      timestamp: bars[0].timestamp,
+      open: bars[0].open,
+      high: Math.max(...bars.map(b => b.high)),
+      low: Math.min(...bars.map(b => b.low)),
+      close: bars[5].close,
+      volume: bars.reduce((sum, b) => sum + b.volume, 0),
+    });
+  }
+
+  return daily.sort((a, b) => a.timestamp - b.timestamp);
 }
 
 export async function getPaidPrice(): Promise<number> {
