@@ -94,8 +94,7 @@ export async function GET(request:Request){
  }
 
  for(const pair of PAIRS){try{
-  // PAID uses the real Base Uniswap V4 pool through GeckoTerminal.
-  // No synthetic candles and no CoinGecko spot dependency. Feed genuine OHLCV
+  // PAID uses the live MEXC PAID/USDT spot market. Feed genuine MEXC OHLCV
   // into the existing V28 engine only when the required timeframes exist.
   if(pair==="PAID"){
     const paid=await getPaidMarketData();
