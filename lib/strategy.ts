@@ -363,14 +363,19 @@ function compositeMomentumState(
   // A genuine early reversal needs BOTH a failure to extend the old
   // swing and a meaningful close back in the new direction. A single green
   // candle inside a falling sequence is not a reversal.
+  const longFailureToExtend=
+    last.low>=prev.low ||
+    (last.low<prev.low && last.close>prev.close);
+  const shortFailureToExtend=
+    last.high<=prev.high ||
+    (last.high>prev.high && last.close<prev.close);
+
   const longReaction=
-    (last.low>=prev.low && last.close>prev.close) ||
-    last.close>prev.high ||
-    (last.low<prev.low && last.close>prev.high);
+    longFailureToExtend &&
+    (last.close>prev.close || last.high>prev.high);
   const shortReaction=
-    (last.high<=prev.high && last.close<prev.close) ||
-    last.close<prev.low ||
-    (last.high>prev.high && last.close<prev.low);
+    shortFailureToExtend &&
+    (last.close<prev.close || last.low<prev.low);
 
   // If price is still printing lower lows/lower closes, a bullish oscillator
   // twitch cannot manufacture a LONG. Mirror this for SHORT.
@@ -508,11 +513,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   // When the previous 4H was moving the other way, price itself must now
   // show a reaction. Oscillator improvement alone is never enough.
   const longPriceReaction=
-    (entryLast.low>=entryPrior.low && entryLast.close>entryPrior.close) ||
-    entryLast.close>entryPrior.high;
+    entryLast.close>entryPrior.close ||
+    (entryLast.low>=entryPrior.low && entryLast.high>entryPrior.high);
   const shortPriceReaction=
-    (entryLast.high<=entryPrior.high && entryLast.close<entryPrior.close) ||
-    entryLast.close<entryPrior.low;
+    entryLast.close<entryPrior.close ||
+    (entryLast.high<=entryPrior.high && entryLast.low<entryPrior.low);
 
   // Direction comes from price action. EMA stage/structure diagnostics
   // can describe the transition, but they cannot manufacture an ENTRY_1.
