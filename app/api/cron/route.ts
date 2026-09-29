@@ -1,7 +1,7 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { getCoinGeckoPrice } from "@/lib/coingecko";
+import { getPaidMarketData, getPaidDailyCandles, aggregatePaidDailyToWeekly } from "@/lib/geckoterminal";
 import { generateSignal, getMarketSnapshot, getCycleRunnerSnapshot, shouldHold, liquidationSafeStop, Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { detectStructureShift, recordStructureShiftSnapshot } from "@/lib/structure-shift";
@@ -94,13 +94,47 @@ export async function GET(request:Request){
  }
 
  for(const pair of PAIRS){try{
-  // PAID has no supported Kraken execution feed. Keep it visible using CoinGecko
-  // spot price + 1D context, but do not fabricate 4H/15M candles for V28.
+  // PAID uses the real Base Uniswap V4 pool through GeckoTerminal.
+  // No synthetic candles and no CoinGecko spot dependency. Feed genuine OHLCV
+  // into the existing V28 engine only when the required timeframes exist.
   if(pair==="PAID"){
-    const paidPrice=await getCoinGeckoPrice("paid-network");
+    const paid=getPaidMarketData();
+    const daily=await getPaidDailyCandles();
+    const weekly=aggregatePaidDailyToWeekly(daily);
     const live1D=dailyState[pair]||{state:"INSUFFICIENT",candidateState:"INSUFFICIENT",direction:"NEUTRAL"};
-    marketData.push({pair,price:paidPrice,trend:"NEUTRAL",location:"",trigger:"",adx:0,rsi:0,stochK:0,stochD:0,trendlinePrice:0,distToTrendline:null,dailyLive:live1D,fourH513:undefined});
-    console.log(`[PAIR] PAID | CoinGecko price=${paidPrice} | 1D=${live1D.state||"—"}/${live1D.candidateState||"—"} | 4H=NO_FEED | WAIT`);
+    const ema513=get4HEmaDiagnostic(paid.candles4h);
+    const result=generateSignal(pair,paid.candles1h,paid.candles4h,paid.candles15m,active,paid.price,undefined,live1D,weekly);
+    const snapshot=result.market||getMarketSnapshot(pair,paid.candles1h,paid.candles4h,paid.candles15m);
+    snapshot.fourH513=ema513;
+    snapshot.dailyLive=live1D;
+    snapshot.weeklyData={count:weekly.length};
+    marketData.push(snapshot);
+    console.log(`[PAIR] PAID | GeckoTerminal price=${paid.price} | 1D=${live1D.state||"—"}/${live1D.candidateState||"—"} daily=${daily.length} weekly=${weekly.length} | 4H=${paid.candles4h.length} | 15M=${paid.candles15m.length}`);
+    if(!result.signal){
+      console.log(`[PAIR] PAID | 4H=${ema513.label} | WAIT`);
+      continue;
+    }
+    const signal=result.signal;
+    console.log(`[SIGNAL] PAID — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1??"—"} | TP2 ${signal.tp2??"—"} | RR ${signal.rr}`);
+    const hasSameDirection=active.some(x=>x.pair===pair&&x.direction===signal.direction);
+    if(signal.type==="ENTRY_1"&&hasSameDirection){console.log(`[PAIR] PAID — ENTRY_1 blocked: active same-direction position already exists`);continue;}
+    if(signal.type==="ADD"&&!hasSameDirection){console.log(`[PAIR] PAID — ADD blocked: no active same-direction position`);continue;}
+    const existing=active.find(x=>x.pair===pair);
+    if(existing&&signal.type!=="ADD"){console.log(`[PAIR] PAID — signal suppressed because position is already active`);continue;}
+    const history=await getSignalHistory();
+    if((signal.type==="ENTRY_1"||signal.type==="ENTRY_2"||signal.type==="ADD")&&sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] PAID — ${signal.type} deduped: same entry condition was alerted recently`);continue;}
+    const cooldowns=await getCooldowns(),cd=cooldowns[`PAID_${signal.direction}`];
+    if(cd&&Date.now()<cd){console.log(`[PAIR] PAID — COOLDOWN until ${new Date(cd).toISOString()}`);continue;}
+    const cardResets=await getCardResets();
+    const alertKey=telegramAlertKey(signal,cardResets.PAID);
+    const claimed=await claimTelegramAlert(alertKey);
+    if(!claimed){console.log(`[PAIR] PAID — ${signal.type} blocked: lifecycle alert already claimed (${alertKey})`);continue;}
+    const emoji=signal.type==="ENTRY_1"?"🟢":signal.type==="ENTRY_2"?"🟠":"🔵";
+    try{
+      await sendAlert({symbol:signal.pair,state:signal.type==="ADD"?"ADD":"ENTRY",price:round(signal.entry),bias:signal.direction,stopLoss:round(signal.stop),takeProfit:round(signal.tp2??signal.target),takeProfit1:signal.tp1,takeProfit2:signal.tp2,rr:signal.rr,expectedMove:signal.expectedMove,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,trend:signal.trend,location:signal.location,trigger:signal.trigger,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:emoji,context:signal.context,marketPhase:signal.context?.marketPhase,structure:signal.context?.structure,momentum:signal.context?.momentum,pullback:signal.context?.pullback,fourH513Label:ema513.label});
+    }catch(e){await releaseTelegramAlert(alertKey);throw e;}
+    await appendSignalHistory(signal);newSignals.push(signal);alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});
+    if(signal.type!=="ADD"&&!existing){await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE] PAID — active position created`);}
     continue;
   }
   const c1=await getCandles(krakenPairFormat(pair+"/USD"),60);const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);const cW=await getCandles(krakenPairFormat(pair+"/USD"),10080,Math.floor((Date.now()-2*365*24*60*60*1000)/1000));if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
