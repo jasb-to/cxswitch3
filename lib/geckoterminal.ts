@@ -7,13 +7,13 @@ const FOUR_H_LIMIT = 1000;
 const FOUR_H_BACKFILL_PAGES = 3;
 
 async function gtFetch(path: string): Promise<any> {
-  const res = await fetch(\`\${BASE}\${path}\`, {
+  const res = await fetch(`${BASE}${path}`, {
     headers: {
-      accept: \`application/json;version=\${VERSION}\`,
+      accept: `application/json;version=${VERSION}`,
     },
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(\`GeckoTerminal HTTP \${res.status}\`);
+  if (!res.ok) throw new Error(`GeckoTerminal HTTP ${res.status}`);
   return res.json();
 }
 
@@ -46,7 +46,7 @@ export async function getPaidOhlcv(
   limit = 1000,
 ): Promise<Candle[]> {
   const data = await gtFetch(
-    \`/networks/base/pools/\${PAID_POOL}/ohlcv/\${timeframe}?aggregate=\${aggregate}&limit=\${Math.min(limit, 1000)}\`,
+    `/networks/base/pools/${PAID_POOL}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=${Math.min(limit, 1000)}`,
   );
   const rows = data?.data?.attributes?.ohlcv_list;
   if (!Array.isArray(rows)) throw new Error("GeckoTerminal OHLCV missing");
@@ -75,9 +75,9 @@ export async function getPaidAggregatedDailyCandles(): Promise<Candle[]> {
   let beforeTimestamp: number | undefined;
 
   for (let page = 0; page < FOUR_H_BACKFILL_PAGES; page++) {
-    const suffix = beforeTimestamp ? \`&before_timestamp=\${beforeTimestamp}\` : "";
+    const suffix = beforeTimestamp ? `&before_timestamp=${beforeTimestamp}` : "";
     const data = await gtFetch(
-      \`/networks/base/pools/\${PAID_POOL}/ohlcv/hour?aggregate=4&limit=\${FOUR_H_LIMIT}\${suffix}\`,
+      `/networks/base/pools/${PAID_POOL}/ohlcv/hour?aggregate=4&limit=${FOUR_H_LIMIT}${suffix}`,
     );
     const rows = data?.data?.attributes?.ohlcv_list;
     if (!Array.isArray(rows) || rows.length === 0) break;
