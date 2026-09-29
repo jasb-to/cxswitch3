@@ -508,11 +508,11 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   // When the previous 4H was moving the other way, price itself must now
   // show a reaction. Oscillator improvement alone is never enough.
   const longPriceReaction=
-    entryLast.close>entryPrior.close ||
-    (entryLast.low>=entryPrior.low && entryLast.high>entryPrior.high);
+    (entryLast.low>=entryPrior.low && entryLast.close>entryPrior.close) ||
+    entryLast.close>entryPrior.high;
   const shortPriceReaction=
-    entryLast.close<entryPrior.close ||
-    (entryLast.high<=entryPrior.high && entryLast.low<entryPrior.low);
+    (entryLast.high<=entryPrior.high && entryLast.close<entryPrior.close) ||
+    entryLast.close<entryPrior.low;
 
   // Direction comes from price action. EMA stage/structure diagnostics
   // can describe the transition, but they cannot manufacture an ENTRY_1.
