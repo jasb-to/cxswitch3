@@ -1,7 +1,6 @@
 // app/api/cron/route.ts — canonical CXSwitch execution loop
 import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
-import { getPaidMarketData, getPaidAggregatedDailyCandles, aggregatePaidDailyToWeekly } from "@/lib/geckoterminal";
 import { generateSignal, getMarketSnapshot, getCycleRunnerSnapshot, shouldHold, liquidationSafeStop, Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
 import { detectStructureShift, recordStructureShiftSnapshot } from "@/lib/structure-shift";
@@ -14,8 +13,8 @@ import { get1DTrendState } from "@/lib/1d-trend-state";
 
 export const dynamic="force-dynamic";
 export const revalidate=0;
-const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","AVAX","PAID"] as const;
-// LINK and AVAX remain paused; DOGE and PAID are active again for live observation.
+const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","AVAX","ZEC"] as const;
+// LINK and AVAX remain paused; the active universe uses Kraken-backed markets.
 const PAUSED_ALERT_PAIRS=new Set(["LINK","AVAX"]);
 const MIN_CRON_INTERVAL_MS=2*60*1000;
 const ADD_DEDUP_MS=45*60*1000;
@@ -96,46 +95,6 @@ export async function GET(request:Request){
  for(const pair of PAIRS){try{
   // PAID uses the live MEXC PAID/USDT spot market. Feed genuine MEXC OHLCV
   // into the existing V28 engine only when the required timeframes exist.
-  if(pair==="PAID"){
-    const paid=await getPaidMarketData();
-    const daily=await getPaidAggregatedDailyCandles();
-    const weekly=aggregatePaidDailyToWeekly(daily);
-    const live1D=dailyState[pair]||{state:"INSUFFICIENT",candidateState:"INSUFFICIENT",direction:"NEUTRAL"};
-    const ema513=get4HEmaDiagnostic(paid.candles4h);
-    const result=generateSignal(pair,paid.candles1h,paid.candles4h,paid.candles15m,active,paid.price,undefined,live1D,weekly);
-    const snapshot=result.market||getMarketSnapshot(pair,paid.candles1h,paid.candles4h,paid.candles15m);
-    snapshot.fourH513=ema513;
-    snapshot.dailyLive=live1D;
-    snapshot.weeklyData={count:weekly.length};
-    marketData.push(snapshot);
-    console.log(`[PAIR] PAID | GeckoTerminal price=${paid.price} | 1D=${live1D.state||"—"}/${live1D.candidateState||"—"} daily=${daily.length} weekly=${weekly.length} | 4H=${paid.candles4h.length} | 15M=${paid.candles15m.length}`);
-    if(!result.signal){
-      console.log(`[PAIR] PAID | 4H=${ema513.label} | WAIT`);
-      continue;
-    }
-    const signal=result.signal;
-    console.log(`[SIGNAL] PAID — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1??"—"} | TP2 ${signal.tp2??"—"} | RR ${signal.rr}`);
-    const hasSameDirection=active.some(x=>x.pair===pair&&x.direction===signal.direction);
-    if(signal.type==="ENTRY_1"&&hasSameDirection){console.log(`[PAIR] PAID — ENTRY_1 blocked: active same-direction position already exists`);continue;}
-    if(signal.type==="ADD"&&!hasSameDirection){console.log(`[PAIR] PAID — ADD blocked: no active same-direction position`);continue;}
-    const existing=active.find(x=>x.pair===pair);
-    if(existing&&signal.type!=="ADD"){console.log(`[PAIR] PAID — signal suppressed because position is already active`);continue;}
-    const history=await getSignalHistory();
-    if((signal.type==="ENTRY_1"||signal.type==="ENTRY_2"||signal.type==="ADD")&&sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] PAID — ${signal.type} deduped: same entry condition was alerted recently`);continue;}
-    const cooldowns=await getCooldowns(),cd=cooldowns[`PAID_${signal.direction}`];
-    if(cd&&Date.now()<cd){console.log(`[PAIR] PAID — COOLDOWN until ${new Date(cd).toISOString()}`);continue;}
-    const cardResets=await getCardResets();
-    const alertKey=telegramAlertKey(signal,cardResets.PAID);
-    const claimed=await claimTelegramAlert(alertKey);
-    if(!claimed){console.log(`[PAIR] PAID — ${signal.type} blocked: lifecycle alert already claimed (${alertKey})`);continue;}
-    const emoji=signal.type==="ENTRY_1"?"🟢":signal.type==="ENTRY_2"?"🟠":"🔵";
-    try{
-      await sendAlert({symbol:signal.pair,state:signal.type==="ADD"?"ADD":"ENTRY",price:round(signal.entry),bias:signal.direction,stopLoss:round(signal.stop),takeProfit:round(signal.tp2??signal.target),takeProfit1:signal.tp1,takeProfit2:signal.tp2,rr:signal.rr,expectedMove:signal.expectedMove,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,trend:signal.trend,location:signal.location,trigger:signal.trigger,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:emoji,context:signal.context,marketPhase:signal.context?.marketPhase,structure:signal.context?.structure,momentum:signal.context?.momentum,pullback:signal.context?.pullback,fourH513Label:ema513.label});
-    }catch(e){await releaseTelegramAlert(alertKey);throw e;}
-    await appendSignalHistory(signal);newSignals.push(signal);alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});
-    if(signal.type!=="ADD"&&!existing){await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE] PAID — active position created`);}
-    continue;
-  }
   const c1=await getCandles(krakenPairFormat(pair+"/USD"),60);const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);const cW=await getCandles(krakenPairFormat(pair+"/USD"),10080,Math.floor((Date.now()-2*365*24*60*60*1000)/1000));if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
   const ema513=get4HEmaDiagnostic(c4);
   console.log(`[EMA 4H 5/13] ${pair} — ${ema513.label} | 5=${ema513.ema5.toFixed(4)} | 13=${ema513.ema13.toFixed(4)} | spread=${ema513.spread.toFixed(4)} (${ema513.spreadPct.toFixed(3)}%) | spreadATR=${ema513.spreadAtr.toFixed(3)} | contracting=${ema513.spreadContracting?"YES":"NO"} | Δspread=${ema513.spreadChangePct.toFixed(2)}% | 5slope=${ema513.ema5Slope.toFixed(4)} | 13slope=${ema513.ema13Slope.toFixed(4)} | cross=${ema513.crossNow?"YES":"NO"}`);
