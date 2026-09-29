@@ -1,0 +1,87 @@
+import type { Candle } from "@/lib/kraken";
+
+const BASE = "https://api.geckoterminal.com/api/v2";
+const PAID_POOL = "0x633a0b2a75eb609cf388996f88d0739fe9ea2c80fad339d6e56fc1abc968e526";
+const VERSION = "20230203";
+
+async function gtFetch(path: string): Promise<any> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: {
+      accept: `application/json;version=${VERSION}`,
+    },
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`GeckoTerminal HTTP ${res.status}`);
+  return res.json();
+}
+
+export async function getPaidOhlcv(
+  timeframe: "minute" | "hour" | "day",
+  aggregate: number,
+  limit = 1000,
+): Promise<Candle[]> {
+  const data = await gtFetch(
+    `/networks/base/pools/${PAID_POOL}/ohlcv/${timeframe}?aggregate=${aggregate}&limit=${Math.min(limit, 1000)}`,
+  );
+  const rows = data?.data?.attributes?.ohlcv_list;
+  if (!Array.isArray(rows)) throw new Error("GeckoTerminal OHLCV missing");
+
+  const intervalMs =
+    timeframe === "minute"
+      ? aggregate * 60_000
+      : timeframe === "hour"
+        ? aggregate * 3_600_000
+        : aggregate * 86_400_000;
+
+  const now = Date.now();
+  return rows
+    .map((c: any[]) => ({
+      timestamp: Number(c[0]) * 1000,
+      open: Number(c[1]),
+      high: Number(c[2]),
+      low: Number(c[3]),
+      close: Number(c[4]),
+      volume: Number(c[5] ?? 0),
+    }))
+    .filter(
+      (c: Candle) =>
+        Number.isFinite(c.timestamp) &&
+        Number.isFinite(c.open) &&
+        Number.isFinite(c.high) &&
+        Number.isFinite(c.low) &&
+        Number.isFinite(c.close) &&
+        c.timestamp + intervalMs <= now,
+    )
+    .sort((a: Candle, b: Candle) => a.timestamp - b.timestamp);
+}
+
+export async function getPaidPrice(): Promise<number> {
+  const candles = await getPaidOhlcv("minute", 15, 2);
+  const price = candles.at(-1)?.close;
+  if (!Number.isFinite(price) || !price || price <= 0) {
+    throw new Error("GeckoTerminal PAID price unavailable");
+  }
+  return price;
+}
+
+export async function getPaidMarketData(): Promise<{
+  price: number;
+  candles1h: Candle[];
+  candles4h: Candle[];
+  candles15m: Candle[];
+}> {
+  const [candles1h, candles4h, candles15m] = await Promise.all([
+    getPaidOhlcv("hour", 1, 1000),
+    getPaidOhlcv("hour", 4, 1000),
+    getPaidOhlcv("minute", 15, 1000),
+  ]);
+  const price = candles15m.at(-1)?.close ?? candles1h.at(-1)?.close;
+  if (!Number.isFinite(price) || !price || price <= 0) {
+    throw new Error("GeckoTerminal PAID price unavailable");
+  }
+  return { price, candles1h, candles4h, candles15m };
+}
+
+export async function getPaidDailyCandles(): Promise<Candle[]> {
+  return getPaidOhlcv("day", 1, 1000);
+}
