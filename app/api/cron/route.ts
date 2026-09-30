@@ -10,12 +10,13 @@ import { getLastBreakout, setLastBreakout } from "@/lib/v28-breakout-state";
 import { sendAlert } from "@/lib/telegram";
 import { run1DTrendExperiment } from "@/lib/1d-trend-runner";
 import { get1DTrendState } from "@/lib/1d-trend-state";
+import { runJarvis } from "@/lib/jarvis";
 
 export const dynamic="force-dynamic";
 export const revalidate=0;
 const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","AVAX","ZEC"] as const;
-// LINK and AVAX remain paused; the active universe uses Kraken-backed markets.
-const PAUSED_ALERT_PAIRS=new Set(["LINK","AVAX"]);
+// All Kraken-backed pairs are live. JARVIS observes and interprets; it never gates alerts.
+const PAUSED_ALERT_PAIRS=new Set<string>();
 const MIN_CRON_INTERVAL_MS=2*60*1000;
 const ADD_DEDUP_MS=45*60*1000;
 const ADD_DEDUP_ENTRY_PCT=0.004;
@@ -161,6 +162,12 @@ export async function GET(request:Request){
    }
  }
  await setMarketData(marketData);
+ try{
+   const jarvis=await runJarvis(marketData,await getActiveSignals());
+   console.log(`[JARVIS] Portfolio ${jarvis.portfolioState} | ${jarvis.whatChanged}`);
+ }catch(error){
+   console.error("[JARVIS] State refresh failed; existing strategy continues unchanged",error);
+ }
  const finalActive=await getActiveSignals();
  console.log(`[CRON v${CXSWITCH_VERSION}] Done active=${finalActive.length} marketData=${marketData.length} new=${newSignals.length} alerts=${alerts.length}`);
  console.log("========================================");
