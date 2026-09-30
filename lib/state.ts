@@ -149,7 +149,7 @@ export async function reconcileSymbolCard(pair:string):Promise<{pair:string;rese
     for(const trade of resetTrades){const h=history.find(x=>x.id===trade.id);if(h&&h.status==="ACTIVE"){h.status="EXPIRED";h.exitReason="manual_symbol_reset";h.exitTimestamp=now;}}
     await setSignalHistory(history);
     const latestAfter=await redis.get<Record<string,SignalHistoryEntry>>(LATEST_ALERTS_KEY)||{};
-    if(latestAfter[pair]&&resetTrades.some(t=>t.id===latestAfter[pair].id))delete latestAfter[pair];
+    delete latestAfter[pair];
     await redis.set(LATEST_ALERTS_KEY,latestAfter);
   }
   console.log(`[CARD] ${pair} — RESET / RE-SYNC at ${new Date(now).toISOString()} | active removed=${resetTrades.length} | history preserved | latest alert hidden=${hiddenAlertId||"none"}`);
