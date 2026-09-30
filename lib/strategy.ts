@@ -207,6 +207,49 @@ function buildTrendline(c:Candle[],d:Direction,lookback=80):Trendline{
   };
 }
 
+function buildEntry2Trendline(c:Candle[],d:Direction,lookback=80):Trendline{
+  // ENTRY_2 uses the opposite structural side from the ENTRY_1 diagnostic line:
+  // LONG breaks descending resistance (HIGH pivots); SHORT breaks rising support (LOW pivots).
+  const kind=d==="LONG"?"HIGH":"LOW";
+  const ps=pivots(c,kind).filter(x=>x.index>=Math.max(0,c.length-lookback)).slice(-TL_MAX_PIVOTS);
+  const empty=(reason:string):Trendline=>({valid:false,slope:0,intercept:0,price:0,pivots:ps,ageCandles:ps.length?c.length-1-ps[ps.length-1].index:0,stale:false,staleByAge:false,staleByDistance:false,invalidated:false,reason});
+  if(ps.length<2)return empty("No ENTRY_2 "+d+" structural line — "+ps.length+"/2 confirmed pivots");
+  const av=atr(c),tolerance=(linePrice:number)=>Math.max(Math.abs(linePrice)*BREAKOUT_PCT,av*TL_TOUCH_ATR),violation=Math.max(av*TL_VIOLATION_ATR,1);
+  let best:{score:number;slope:number;intercept:number;touches:Pivot[]}|null=null;
+  for(let ai=0;ai<ps.length-1;ai++)for(let bi=ai+1;bi<ps.length;bi++){
+    const a=ps[ai],b=ps[bi],dx=b.index-a.index;if(dx<TL_MIN_SPAN)continue;
+    const slope=(b.price-a.price)/dx;
+    if(d==="LONG"&&slope>=0)continue;
+    if(d==="SHORT"&&slope<=0)continue;
+    if(av>0&&Math.abs(slope)/av>1.75)continue;
+    const intercept=a.price-slope*a.index;
+    const touches=ps.filter(p=>Math.abs(p.price-(slope*p.index+intercept))<=tolerance(slope*p.index+intercept));
+    if(touches.length<TL_MIN_TOUCHES)continue;
+    const first=touches[0].index,last=touches[touches.length-1].index;if(last-first<TL_MIN_SPAN)continue;
+    let clean=true;
+    for(let j=first+1;j<last;j++){
+      const line=slope*j+intercept;
+      if(d==="LONG"&&c[j].close>line+violation){clean=false;break;}
+      if(d==="SHORT"&&c[j].close<line-violation){clean=false;break;}
+    }
+    if(!clean)continue;
+    const span=last-first,newestAge=(c.length-1)-last,score=touches.length*100000+span*100-newestAge*10;
+    if(!best||score>best.score)best={score,slope,intercept,touches};
+  }
+  if(!best)return empty("ENTRY_2 "+d+" line has no clean 3-touch structure");
+  const slope=best.slope,intercept=best.intercept,price=slope*(c.length-1)+intercept;
+  const age=c.length-1-best.touches.at(-1)!.index;
+  const distance=Math.abs((c.at(-1)!.close-price)/Math.max(Math.abs(price),1));
+  const staleByAge=age>TL_MAX_AGE,staleByDistance=distance>=TL_MAX_DISTANCE_PCT;
+  let invalidated=false;
+  for(let j=best.touches.at(-1)!.index+1;j<c.length-1;j++){
+    const line=slope*j+intercept;
+    if(d==="LONG"&&c[j].close>line+violation){invalidated=true;break;}
+    if(d==="SHORT"&&c[j].close<line-violation){invalidated=true;break;}
+  }
+  const stale=!invalidated&&(staleByAge||staleByDistance);
+  return{valid:true,slope,intercept,price,pivots:best.touches,ageCandles:age,stale,staleByAge,staleByDistance,invalidated,reason:invalidated?"ENTRY_2 "+d+" breakout line already broken":stale?"ENTRY_2 "+d+" trendline stale — rebuild recommended":"ENTRY_2 "+d+" breakout line active — "+best.touches.length+" touches"};
+}
 function lineAt(t:Trendline,i:number){return t.slope*i+t.intercept;}
 
 function lineAtTimestamp(t:Trendline,c4:Candle[],timestamp:number){
@@ -600,10 +643,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const developing4HIndex=candles4h.length-1;
   const developing4H=candles4h.at(-1)!;
   const previous4H=closed.at(-1)!;
-  const developingLongLine=longTL.valid?lineAt(longTL,developing4HIndex):null;
-  const developingShortLine=shortTL.valid?lineAt(shortTL,developing4HIndex):null;
-  const previousLongLine=longTL.valid?lineAt(longTL,closed.length-1):null;
-  const previousShortLine=shortTL.valid?lineAt(shortTL,closed.length-1):null;
+  const entry2LongTL=buildEntry2Trendline(closed,"LONG");
+  const entry2ShortTL=buildEntry2Trendline(closed,"SHORT");
+  const developingLongLine=entry2LongTL.valid?lineAt(entry2LongTL,developing4HIndex):null;
+  const developingShortLine=entry2ShortTL.valid?lineAt(entry2ShortTL,developing4HIndex):null;
+  const previousLongLine=entry2LongTL.valid?lineAt(entry2LongTL,closed.length-1):null;
+  const previousShortLine=entry2ShortTL.valid?lineAt(entry2ShortTL,closed.length-1):null;
   const longBreakBuffer=developingLongLine===null?0:Math.max(av*TL_BREAK_ATR,Math.abs(developingLongLine)*BREAKOUT_PCT);
   const shortBreakBuffer=developingShortLine===null?0:Math.max(av*TL_BREAK_ATR,Math.abs(developingShortLine)*BREAKOUT_PCT);
 
@@ -626,8 +671,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
   // 15M is execution only. It no longer gets to invent a breakout by scanning
   // historical 15M candles. A valid 4H break must exist first.
-  const longExec=detect15mTrendlineRetest(candles15m,candles4h,longTL,"LONG",persistedLongBreak||current4HBreakLong);
-  const shortExec=detect15mTrendlineRetest(candles15m,candles4h,shortTL,"SHORT",persistedShortBreak||current4HBreakShort);
+  const longExec=detect15mTrendlineRetest(candles15m,candles4h,entry2LongTL,"LONG",persistedLongBreak||current4HBreakLong);
+  const shortExec=detect15mTrendlineRetest(candles15m,candles4h,entry2ShortTL,"SHORT",persistedShortBreak||current4HBreakShort);
 
   const breakoutLong=current4HBreakLong||persistedLongBreak;
   const breakoutShort=current4HBreakShort||persistedShortBreak;
@@ -648,11 +693,13 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   else if(longEntry1&&!shortEntry1){dir="LONG";type="ENTRY_1";reason="probability-based early setup";}
   else if(shortEntry1&&!longEntry1){dir="SHORT";type="ENTRY_1";reason="probability-based early setup";}
   debug.push(`[4H BREAK] ${pair} | LONG prevClose=${previous4H.close.toFixed(2)} prevLine=${previousLongLine?.toFixed(2)||"—"} currentHigh=${developing4H.high.toFixed(2)} currentLine=${developingLongLine?.toFixed(2)||"—"} crossed=${current4HBreakLong?"YES":"NO"} | SHORT prevClose=${previous4H.close.toFixed(2)} prevLine=${previousShortLine?.toFixed(2)||"—"} currentLow=${developing4H.low.toFixed(2)} currentLine=${developingShortLine?.toFixed(2)||"—"} crossed=${current4HBreakShort?"YES":"NO"}`);
-  debug.push(`[ENTRY_2] ${pair} | LONG 1W=${weeklyLong?"PASS":"BLOCK"} break=${breakoutLong?"YES":"NO"} retest=${retestLong?"YES":"NO"} line=${longExec.linePrice?.toFixed(2)||"—"} reason=${longExec.reason} | SHORT 1W=${weeklyShort?"PASS":"BLOCK"} break=${breakoutShort?"YES":"NO"} retest=${retestShort?"YES":"NO"} line=${shortExec.linePrice?.toFixed(2)||"—"} reason=${shortExec.reason}`);
+  debug.push(`[ENTRY_2] ${pair} | LONG break=${breakoutLong?"YES":"NO"} retest=${retestLong?"YES":"NO"} line=${longExec.linePrice?.toFixed(2)||"—"} reason=${longExec.reason} | SHORT break=${breakoutShort?"YES":"NO"} retest=${retestShort?"YES":"NO"} line=${shortExec.linePrice?.toFixed(2)||"—"} reason=${shortExec.reason}`);
 
   if(!dir||!type){debug.push(`[ENTRY_1 WAIT] ${pair} | ${longExhausted&&longLocation?`LONG exhaustion veto: ${longExhaustion.reason}`:shortExhausted&&shortLocation?`SHORT exhaustion veto: ${shortExhaustion.reason}`:!weekly.direction?"waiting for clear 1W direction":weeklyLong&&dDir!=="BULL"?"1W bullish opportunity with 1D counter-context":weeklyShort&&dDir!=="BEAR"?"1W bearish opportunity with 1D counter-context":weeklyLong&&!long4HTransition?"waiting for bullish 4H setup":weeklyShort&&!short4HTransition?"waiting for bearish 4H setup":dDir==="BULL"&&!longLocation?"waiting for price to approach bullish structural area":dDir==="BEAR"&&!shortLocation?"waiting for price to approach bearish structural area":"waiting for next valid setup"}`);return{market:market(baseMarket()),debug};}
   if(opposite(pair,dir,activeTrades)){debug.push(`[SIGNAL BLOCK] ${pair} ${dir} | opposite position active`);return{market:market(baseMarket()),debug};}
-  const tl=dir==="LONG"?longTL:shortTL;
+  const tl=type==="ENTRY_2"
+    ? (dir==="LONG"?entry2LongTL:entry2ShortTL)
+    : (dir==="LONG"?longTL:shortTL);
   if(!tl.valid&&type==="ENTRY_2"){debug.push(`[SIGNAL BLOCK] ${pair} ${dir} | no valid structural trendline`);return{market:market(baseMarket()),debug};}
   const reference=tl.valid?tl.price:price,distance=Math.abs((price-reference)/Math.max(Math.abs(reference),1));
   // ENTRY_1 no longer has a trendline-distance execution veto. Fib proximity is the location test.
