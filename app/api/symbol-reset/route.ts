@@ -4,7 +4,7 @@ import { reconcileSymbolCard } from "@/lib/state";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const PAIRS = new Set(["BTC", "ETH", "SOL", "HYPE"]);
+const PAIRS = new Set(["BTC", "ETH", "SOL", "HYPE", "LINK", "AVAX", "DOGE", "ZEC"]);
 
 export async function POST(request: Request) {
   try {
