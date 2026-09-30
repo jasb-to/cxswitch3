@@ -86,3 +86,44 @@ export async function sendAlert(signal:any){
     throw new Error(`Telegram sendMessage failed (${response.status}): ${body.slice(0,300)}`);
   }
 }
+
+
+export async function sendJarvisReview(review:{
+  pair:string;
+  direction:"LONG"|"SHORT";
+  verdict:"AGREES"|"CAUTION"|"CHALLENGE";
+  summary:string;
+  why:string;
+  watch:string;
+  price?:number;
+  fourH?:string;
+  trend?:string;
+  location?:string;
+  trigger?:string;
+  timestamp?:string;
+}){
+  const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
+  if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
+  const emoji=review.verdict==="AGREES"?"🟢":review.verdict==="CAUTION"?"🟡":"🔴";
+  const lines=[
+    `${emoji} JARVIS — ${review.verdict} ${review.pair} ${review.direction}`,
+    "",
+    `Price: ${formatPrice(review.price)}`,
+    `4H 5/13: ${review.fourH||"—"}`,
+    `Trend: ${review.trend||"—"}`,
+    `Location: ${review.location||"—"}`,
+    `Trigger: ${review.trigger||"—"}`,
+    "",
+    `Summary: ${review.summary}`,
+    `Why: ${review.why}`,
+    `Watch: ${review.watch}`,
+    "",
+    "JARVIS observes only — this does not gate or execute the trade.",
+    `Time: ${review.timestamp||new Date().toISOString()}`
+  ].join("\n");
+  const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines})});
+  if(!response.ok){
+    const body=await response.text().catch(()=>"");
+    throw new Error(`Telegram JARVIS review failed (${response.status}): ${body.slice(0,300)}`);
+  }
+}
