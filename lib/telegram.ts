@@ -78,22 +78,20 @@ export async function sendAlert(signal:any){
 export async function sendJarvisUpdate(update:{
   portfolioState:string;
   location:string;
-  changes:Array<{pair:string;from?:string;to:string;momentum?:string;thesis:string;watch:string}>;
+  changes:Array<{pair:string;decision:"STAY IN TRADE"|"EXIT TRADE";reason:string}>;
   summary:string;
   timestamp?:string;
-}){
+} ){
   const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
   if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
-  const broken=update.changes.some(x=>x.momentum==="BREAKDOWN"||x.to==="BROKEN");
-  const emoji=broken?"🔴":update.portfolioState.includes("TRANSITION")||update.portfolioState.includes("WEAKENING")?"🟡":"🟢";
+  const exit=update.changes.some(x=>x.decision==="EXIT TRADE");
+  const decision=exit?"EXIT TRADE":"STAY IN TRADE";
+  const emoji=exit?"🔴":"🟢";
   const lines=[
-    `${emoji} JARVIS — ${update.location}`,"",
-    `Portfolio: ${update.portfolioState}`,"",
-    update.summary,
+    `${emoji} JARVIS — ${decision}`,"",
+    ...update.changes.map(x=>`${x.pair}: ${x.decision}${x.reason?" — "+x.reason:""}`),
     "",
-    ...update.changes.map(x=>`• ${x.pair}: ${x.to} · 4H ${x.momentum||"—"} — ${x.watch}`),
-    "",
-    "JARVIS monitors active positions on closed 4H data and only alerts on material changes.",
+    "JARVIS active-trade decision changed; portfolio/momentum diagnostics remain dashboard-only.",
     `Time: ${update.timestamp||new Date().toISOString()}`
   ].join("\n");
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines})});
@@ -102,4 +100,3 @@ export async function sendJarvisUpdate(update:{
     throw new Error(`Telegram JARVIS update failed (${response.status}): ${body.slice(0,300)}`);
   }
 }
-
