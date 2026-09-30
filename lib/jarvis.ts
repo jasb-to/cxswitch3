@@ -19,6 +19,8 @@ export interface JarvisPairState {
   management?: string;
   position?: { direction: string; entry: number; stop: number; tp1?: number; tp2?: number };
   updatedAt: number;
+  momentum?: "SUPPORTIVE"|"WEAKENING"|"BREAKDOWN";
+  momentumSignature?: string;
 }
 
 export interface JarvisSnapshot {
@@ -39,6 +41,19 @@ function directionOf(m:any):"LONG"|"SHORT"|"NEUTRAL" {
 
 function pairState(m:any, active:any):JarvisPairState {
   const dir=active?.direction || directionOf(m);
+  const e=m?.fourH513||{};
+  const label=String(e.label||"");
+  let momentum:"SUPPORTIVE"|"WEAKENING"|"BREAKDOWN"="SUPPORTIVE";
+  if(active){
+    const longBreak=dir==="LONG" && (/BEARISH CROSS|BEARISH LOW/.test(label) || (Number(e.ema5)<Number(e.ema13) && Number(e.ema5Slope)<0 && Number(e.ema13Slope)<0 && e.spreadContracting));
+    const shortBreak=dir==="SHORT" && (/BULLISH CROSS|BULLISH LOW/.test(label) || (Number(e.ema5)>Number(e.ema13) && Number(e.ema5Slope)>0 && Number(e.ema13Slope)>0 && e.spreadContracting));
+    const longWeak=dir==="LONG" && (/BEARISH TREND TURNING/.test(label) || Number(e.ema5)<Number(e.ema13));
+    const shortWeak=dir==="SHORT" && (/BULLISH TREND TURNING/.test(label) || Number(e.ema5)>Number(e.ema13));
+    if(longBreak||shortBreak) momentum="BREAKDOWN";
+    else if(longWeak||shortWeak) momentum="WEAKENING";
+  }
+  const momentumSignature=active ? `${dir}:${momentum}:${label}:${e.spreadContracting?"CONTRACTING":"EXPANDING"}` : "NO_POSITION";
+
   const ss=m?.structureShift;
   const fourH=String(m?.fourH513?.label||"");
   const fourHDir=String(m?.fourH513?.direction||"");
@@ -49,7 +64,7 @@ function pairState(m:any, active:any):JarvisPairState {
   const against=active && ((active.direction==="LONG"&&fourHDir==="BEARISH")||(active.direction==="SHORT"&&fourHDir==="BULLISH"));
   const brokenStructure=ss?.state==="SHIFT_CONFIRMED" && active && ((active.direction==="LONG"&&structure==="SHORT")||(active.direction==="SHORT"&&structure==="LONG"));
   let state:JarvisState="ACCUMULATING";
-  if(brokenStructure) state="BROKEN";
+  if(brokenStructure || (active && momentum==="BREAKDOWN")) state="BROKEN";
   else if(against && (shift==="WEAKENING"||shift==="WATCHING")) state="DETERIORATING";
   else if(shift==="WEAKENING" || (active && against) || /BEARISH TREND TURNING|BEARISH LOW|BULLISH TREND TURNING|BULLISH LOW/.test(fourH)) state="TRANSITIONING";
   else if(entryDecision!=="NONE" || /BULLISH CROSS|BEARISH CROSS/.test(fourH)) state="ACCUMULATING";
@@ -60,22 +75,10 @@ function pairState(m:any, active:any):JarvisPairState {
   if(fourH) reasons.push(`4H ${fourH}`);
   if(shift) reasons.push(`structure ${shift.toLowerCase()}`);
   if(m?.entry1Exhaustion && m.entry1Exhaustion!=="NONE") reasons.push("exhaustion present");
-  const thesis=state==="BROKEN"
-    ?"Original trade thesis is broken; the current structure no longer supports the position."
-    :state==="DETERIORATING"
-    ?"Trade thesis is weakening. The higher-timeframe context may still support it, but lower-timeframe price action is moving against the position."
-    :state==="TRANSITIONING"
-    ?"Trade thesis is still active, but price action is transitioning. This is a watch state, not an automatic exit."
-    :"Trade thesis remains intact and price action is currently supportive.";
-  const watch=state==="BROKEN"
-    ?"Watch for confirmation that the broken structure persists; management has the hard exit decision."
-    :state==="DETERIORATING"
-    ?"Watch for failure to reclaim structure followed by a new lower high/lower low (or the inverse for shorts)."
-    :state==="TRANSITIONING"
-    ?"Watch the next closed 4H candle for continuation or rejection of the developing move."
-    :"Watch for a failed extension and loss of the structure supporting the setup.";
+  const thesis=state==="BROKEN" ? "4H momentum/structure has broken against the position; review it now." : state==="DETERIORATING" ? "4H momentum is weakening against the active position; the thesis is under pressure." : state==="TRANSITIONING" ? "The thesis remains active, but closed 4H price action is transitioning; JARVIS is watching the next structural move." : "The thesis remains intact and the closed 4H is supportive.";
+  const watch=state==="BROKEN" ? "4H breakdown detected. Review the position now." : state==="DETERIORATING" ? "Watch the next closed 4H candle for continuation against the position and failure to reclaim structure." : state==="TRANSITIONING" ? "Watch the next closed 4H candle for confirmation or recovery." : "Continue monitoring every closed 4H candle for loss of momentum or structural failure.";
   const changed=`${state.toLowerCase()} · ${reasons.join(" · ")||"market context only"}`;
-  return {pair:m?.pair||active?.pair||"?",state,direction:dir,thesis,whatChanged:changed,watch,management:active?.holdAdvice?.reason,position:active?{direction:active.direction,entry:active.entry,stop:active.stop,tp1:active.tp1,tp2:active.tp2}:undefined,updatedAt:Date.now()};
+  return {pair:m?.pair||active?.pair||"?",state,direction:dir,thesis,whatChanged:changed,watch,management:active?.holdAdvice?.reason,position:active?{direction:active.direction,entry:active.entry,stop:active.stop,tp1:active.tp1,tp2:active.tp2}:undefined,updatedAt:Date.now(),momentum,momentumSignature};
 }
 
 function portfolioState(pairs:JarvisPairState[]):JarvisSnapshot["portfolioState"]{
