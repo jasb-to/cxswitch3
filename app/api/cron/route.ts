@@ -10,7 +10,7 @@ import { getLastBreakout, setLastBreakout } from "@/lib/v28-breakout-state";
 import { sendAlert } from "@/lib/telegram";
 import { run1DTrendExperiment } from "@/lib/1d-trend-runner";
 import { get1DTrendState } from "@/lib/1d-trend-state";
-import { runJarvis } from "@/lib/jarvis";
+import { runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 
 export const dynamic="force-dynamic";
 export const revalidate=0;
@@ -142,6 +142,7 @@ export async function GET(request:Request){
   const emoji=signal.type==="ENTRY_1"?"🟢":signal.type==="ENTRY_2"?"🟠":"🔵";
   try{
     if(claimed) await sendAlert({symbol:signal.pair,state:signal.type==="ADD"?"ADD":"ENTRY",price:round(signal.entry),bias:signal.direction,stopLoss:round(signal.stop),takeProfit:round(signal.tp2??signal.target),takeProfit1:signal.tp1,takeProfit2:signal.tp2,rr:signal.rr,expectedMove:signal.expectedMove,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,trend:signal.trend,location:signal.location,trigger:signal.trigger,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:emoji,context:signal.context,marketPhase:signal.context?.marketPhase,structure:signal.context?.structure,momentum:signal.context?.momentum,pullback:signal.context?.pullback,fourH513Label:ema513.label});
+    if(signal.type==="ENTRY_1"||signal.type==="ENTRY_2") await reviewFiredSignal(signal,{...snapshot,fourH513:ema513,structureShift,dailyLive:live1D});
   }catch(e){await releaseTelegramAlert(alertKey);throw e;}
   await appendSignalHistory(signal);newSignals.push(signal);alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.tp2}`);
   if(signal.type!=="ADD"&&!existing){await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE] ${pair} — active position created`);}
