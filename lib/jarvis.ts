@@ -123,6 +123,7 @@ export async function runJarvis(marketData:any[],active:any[]):Promise<JarvisSna
   const all=Object.values(pairs);
   const portfolio=portfolioState(all);
   const changes=all.filter(p=>p.previousState&&p.previousState!==p.state);
+  const momentumChanges=all.filter(p=>p.position && previous?.pairs?.[p.pair]?.momentum && previous.pairs[p.pair].momentum!==p.momentum);
   const whatChanged=changes.length
     ? changes.map(p=>`${p.pair}: ${p.previousState} → ${p.state}`).join(" · ")
     : "No material JARVIS state change.";
@@ -132,12 +133,12 @@ export async function runJarvis(marketData:any[],active:any[]):Promise<JarvisSna
 
   await redis.set(JARVIS_KEY,snapshot);
 
-  if(changes.length){
-    const material=changes.filter(p=>stateRank[p.state]!==stateRank[p.previousState!] || p.state==="TRANSITIONING" || p.state==="BROKEN");
+  if(changes.length || momentumChanges.length){
+    const material=[...new Map([...changes.filter(p=>stateRank[p.state]!==stateRank[p.previousState!] || p.state==="TRANSITIONING" || p.state==="BROKEN"),...momentumChanges].map(p=>[p.pair,p])).values()];
     if(material.length){
-      const lines=material.map(p=>`• ${p.pair}: ${p.previousState} → ${p.state}\n  ${p.thesis}\n  Watch: ${p.watch}`).join("\n");
+      const lines=material.map(p=>`• ${p.pair}: ${p.previousState||"—"} → ${p.state} · 4H ${p.momentum||"—"}\n  ${p.thesis}\n  Watch: ${p.watch}`).join("\n");
       try{
-        await sendAlert({symbol:"JARVIS",state:"JARVIS UPDATE",bias:portfolio==="RISK-OFF"?"SHORT":"LONG",price:0,stopLoss:0,takeProfit:0,rr:0,expectedMove:0,adx:0,rsi:0,stochK:0,stochD:0,reason:modelText||whatChanged,trend:`PORTFOLIO · ${portfolio}`,location:"STATE_CHANGE",trigger:"JARVIS",updatedAt:new Date().toISOString(),signalType:"JARVIS",signalEmoji:portfolio==="RISK-OFF"?"🔴":portfolio.includes("WEAKENING")||portfolio==="RISK TRANSITION"?"🟡":"🟢",context:{jarvis:{portfolioState:portfolio,whatChanged:modelText||whatChanged,changes:material}}});
+        await sendAlert({symbol:"JARVIS",state:"JARVIS UPDATE",bias:portfolio==="RISK-OFF"?"SHORT":"LONG",price:0,stopLoss:0,takeProfit:0,rr:0,expectedMove:0,adx:0,rsi:0,stochK:0,stochD:0,reason:modelText||lines||whatChanged,trend:`PORTFOLIO · ${portfolio}`,location:material.some(p=>p.momentum==="BREAKDOWN"||p.state==="BROKEN")?"4H_BREAKDOWN":"4H_MOMENTUM_CHANGE",trigger:"JARVIS",updatedAt:new Date().toISOString(),signalType:"JARVIS",signalEmoji:material.some(p=>p.momentum==="BREAKDOWN"||p.state==="BROKEN")?"🔴":portfolio.includes("WEAKENING")||portfolio==="RISK TRANSITION"?"🟡":"🟢",context:{jarvis:{portfolioState:portfolio,whatChanged:modelText||whatChanged,changes:material}}});
         console.log(`[JARVIS] Telegram update sent: ${whatChanged}`);
       }catch(error){console.warn("[JARVIS] Telegram update failed",error);}
     }
