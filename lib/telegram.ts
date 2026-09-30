@@ -22,6 +22,11 @@ export async function sendAlert(signal:any){
   const dir=signal.bias==="LONG"?"📈":"📉";
   const tp1=signal.takeProfit1??signal.context?.stages?.tp1??"-";
   const tp2=signal.takeProfit2??signal.context?.stages?.tp2??signal.takeProfit??"-";
+  // Derive Expected Move from the actual displayed entry/price and TP2 so the
+  // Telegram value cannot drift from the TP2 shown in the alert.
+  const expectedMove=typeof (signal.price??signal.entry)==="number"&&typeof tp2==="number"&&Number(signal.price??signal.entry)!==0
+    ? Math.round((Math.abs(tp2-Number(signal.price??signal.entry))/Math.abs(Number(signal.price??signal.entry)))*1000)/10
+    : signal.expectedMove??"-";
   const guard=signal.context?.entryGuard;
   const fourH513=signal.fourH513Label||signal.context?.fourH513?.label||"NEUTRAL";
   const exitPlan=signal.context?.exitPlan;
@@ -58,7 +63,7 @@ export async function sendAlert(signal:any){
     addText.trim(),
     entry0Text.trim(),
     "",
-    `Expected Move: ${signal.expectedMove??"-"}%`,
+    `Expected Move: ${expectedMove}%`,
     `SL: ${formatPrice(signal.stopLoss)}`,
     `TP1: ${formatPrice(tp1)}`,
     `TP2: ${formatPrice(tp2)}`,
