@@ -23,6 +23,7 @@ export interface JarvisPairState {
   updatedAt: number;
   momentum?: "SUPPORTIVE"|"WEAKENING"|"BREAKDOWN";
   momentumSignature?: string;
+  tradeDecision?: "STAY IN TRADE"|"EXIT TRADE";
 }
 
 export interface JarvisSnapshot {
@@ -73,7 +74,10 @@ function pairState(m:any, active:any):JarvisPairState {
   const watch=verdict==="BAD" ? "Confirmed failure. Review the position; recovery/reclaim is needed before the thesis can improve." : verdict==="CAUTION" ? (earlySetup&&priceActionReversal ? "Watch the next closed 4H candle for confirmation of the reversal — or renewed downside continuation." : "Watch the next closed 4H candle for confirmation or deterioration.") : "Keep watching each closed 4H candle for loss of momentum or structural failure.";
   const changed=`${verdict} · ${reasons.join(" · ")||"market context only"}`;
   const momentumSignature=active?`${dir}:${momentum}:${label}:${e.spreadContracting?"CONTRACTING":"EXPANDING"}`:"NO_POSITION";
-  return {pair:m?.pair||active?.pair||"?",state,direction:dir,verdict,thesis,whatChanged:changed,watch,management:active?.holdAdvice?.reason||active?.positionManagementReason,position:active?{direction:active.direction,entry:active.entry,stop:active.stop,tp1:active.tp1,tp2:active.tp2}:undefined,updatedAt:Date.now(),momentum,momentumSignature};
+  const tradeDecision=active
+    ? (active.positionManagementRecommendation==="EXIT TRADE" || active.positionManagementState==="EXIT" ? "EXIT TRADE" : "STAY IN TRADE")
+    : undefined;
+  return {pair:m?.pair||active?.pair||"?",state,direction:dir,verdict,thesis,whatChanged:changed,watch,management:active?.holdAdvice?.reason||active?.positionManagementReason,position:active?{direction:active.direction,entry:active.entry,stop:active.stop,tp1:active.tp1,tp2:active.tp2}:undefined,updatedAt:Date.now(),momentum,momentumSignature,tradeDecision};
 }
 
 function portfolioState(pairs:JarvisPairState[]):JarvisSnapshot["portfolioState"]{
@@ -149,7 +153,11 @@ export async function runJarvis(marketData:any[],active:any[]):Promise<JarvisSna
   const all=Object.values(pairs);
   const portfolio=portfolioState(all);
   const changes=all.filter(p=>p.previousState&&p.previousState!==p.state);
-  const momentumChanges=all.filter(p=>p.position && previous?.pairs?.[p.pair]?.momentum && previous.pairs[p.pair].momentum!==p.momentum);
+  const decisionChanges=all.filter(p=>{
+    if(!p.position||!p.tradeDecision) return false;
+    const old=previous?.pairs?.[p.pair]?.tradeDecision;
+    return !!old && old!==p.tradeDecision;
+  });
   const whatChanged=changes.length
     ? changes.map(p=>`${p.pair}: ${p.previousState} → ${p.state}`).join(" · ")
     : "No material JARVIS state change.";
@@ -159,15 +167,27 @@ export async function runJarvis(marketData:any[],active:any[]):Promise<JarvisSna
 
   await redis.set(JARVIS_KEY,snapshot);
 
-  if(changes.length || momentumChanges.length){
-    const material=[...new Map([...changes.filter(p=>stateRank[p.state]!==stateRank[p.previousState!] || p.state==="TRANSITIONING" || p.state==="BROKEN"),...momentumChanges].map(p=>[p.pair,p])).values()];
-    if(material.length){
-      const lines=material.map(p=>`• ${p.pair}: ${p.previousState||"—"} → ${p.state} · 4H ${p.momentum||"—"}\n  ${p.thesis}\n  Watch: ${p.watch}`).join("\n");
-      try{
-        await sendJarvisUpdate({portfolioState:portfolio,location:material.some(p=>p.momentum==="BREAKDOWN"||p.state==="BROKEN")?"4H_BREAKDOWN":"4H_MOMENTUM_CHANGE",summary:modelText||whatChanged,changes:material.map(p=>({pair:p.pair,from:p.previousState,to:p.state,momentum:p.momentum,thesis:p.thesis,watch:p.watch})),timestamp:new Date().toISOString()});
-        console.log(`[JARVIS] Telegram update sent: ${whatChanged}`);
-      }catch(error){console.warn("[JARVIS] Telegram update failed",error);}
-    }
+  // Rich JARVIS state remains internal. Telegram is an action layer for
+  // active trades only: STAY IN TRADE or EXIT TRADE, and only when that
+  // binary decision actually changes. Portfolio regime changes and momentum
+  // diagnostics stay on the dashboard and never become exit prompts.
+  if(decisionChanges.length){
+    try{
+      await sendJarvisUpdate({
+        portfolioState:portfolio,
+        location:"TRADE_DECISION_CHANGE",
+        summary:"Active-trade decision changed.",
+        changes:decisionChanges.map(p=>({
+          pair:p.pair,
+          decision:p.tradeDecision!,
+          reason:p.tradeDecision==="EXIT TRADE"
+            ? (p.management||"Confirmed V28 management exit.")
+            : "V28 management still says the trade thesis is intact."
+        })),
+        timestamp:new Date().toISOString()
+      });
+      console.log(`[JARVIS] Trade decision update sent: ${decisionChanges.map(p=>`${p.pair}=${p.tradeDecision}`).join(" · ")}`);
+    }catch(error){console.warn("[JARVIS] Telegram update failed",error);}
   }
   return snapshot;
 }
