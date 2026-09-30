@@ -640,10 +640,13 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const retestShort=shortExec.retest;
 
   let dir:Direction|null=null,type:"ENTRY_1"|"ENTRY_2"|null=null,reason="";
-  if(longEntry1&&!shortEntry1){dir="LONG";type="ENTRY_1";reason="probability-based early setup";}
+  // ENTRY_2 is the confirmed path. If a genuine breakout/retest is present,
+  // it must not be masked by an early ENTRY_1 condition on the same scan.
+  // 1W is context only; it is not an ENTRY_2 permission gate.
+  if(retestLong&&!retestShort&&!same(pair,"LONG",activeTrades)){dir="LONG";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
+  else if(retestShort&&!retestLong&&!same(pair,"SHORT",activeTrades)){dir="SHORT";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
+  else if(longEntry1&&!shortEntry1){dir="LONG";type="ENTRY_1";reason="probability-based early setup";}
   else if(shortEntry1&&!longEntry1){dir="SHORT";type="ENTRY_1";reason="probability-based early setup";}
-  else if(weeklyLong&&retestLong&&!retestShort&&!same(pair,"LONG",activeTrades)){dir="LONG";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
-  else if(weeklyShort&&retestShort&&!retestLong&&!same(pair,"SHORT",activeTrades)){dir="SHORT";type="ENTRY_2";reason="4H trendline break + 15M dip/retest";}
   debug.push(`[4H BREAK] ${pair} | LONG prevClose=${previous4H.close.toFixed(2)} prevLine=${previousLongLine?.toFixed(2)||"—"} currentHigh=${developing4H.high.toFixed(2)} currentLine=${developingLongLine?.toFixed(2)||"—"} crossed=${current4HBreakLong?"YES":"NO"} | SHORT prevClose=${previous4H.close.toFixed(2)} prevLine=${previousShortLine?.toFixed(2)||"—"} currentLow=${developing4H.low.toFixed(2)} currentLine=${developingShortLine?.toFixed(2)||"—"} crossed=${current4HBreakShort?"YES":"NO"}`);
   debug.push(`[ENTRY_2] ${pair} | LONG 1W=${weeklyLong?"PASS":"BLOCK"} break=${breakoutLong?"YES":"NO"} retest=${retestLong?"YES":"NO"} line=${longExec.linePrice?.toFixed(2)||"—"} reason=${longExec.reason} | SHORT 1W=${weeklyShort?"PASS":"BLOCK"} break=${breakoutShort?"YES":"NO"} retest=${retestShort?"YES":"NO"} line=${shortExec.linePrice?.toFixed(2)||"—"} reason=${shortExec.reason}`);
 
