@@ -88,6 +88,41 @@ export async function sendAlert(signal:any){
 }
 
 
+export async function sendJarvisUpdate(update:{
+  portfolioState:string;
+  location:string;
+  changes:Array<{pair:string;from?:string;to:string;momentum?:string;thesis:string;watch:string}>;
+  summary:string;
+  timestamp?:string;
+}){
+  const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
+  if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
+  const broken=update.changes.some(x=>x.momentum==="BREAKDOWN"||x.to==="BROKEN");
+  const emoji=broken?"🔴":update.portfolioState.includes("TRANSITION")||update.portfolioState.includes("WEAKENING")?"🟡":"🟢";
+  const lines=[
+    `${emoji} JARVIS — MARKET UPDATE`,
+    "",
+    `Portfolio: ${update.portfolioState}`,
+    `Location: ${update.location}`,
+    "",
+    update.summary,
+    "",
+    ...update.changes.map(x=>[
+      `${x.pair}: ${x.from||"—"} → ${x.to} · 4H ${x.momentum||"—"}`,
+      `Thesis: ${x.thesis}`,
+      `Watch: ${x.watch}`
+    ].join("\n")),
+    "",
+    "JARVIS observes only — this does not gate or execute trades.",
+    `Time: ${update.timestamp||new Date().toISOString()}`
+  ].join("\n");
+  const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines})});
+  if(!response.ok){
+    const body=await response.text().catch(()=>"");
+    throw new Error(`Telegram JARVIS update failed (${response.status}): ${body.slice(0,300)}`);
+  }
+}
+
 export async function sendJarvisReview(review:{
   pair:string;
   direction:"LONG"|"SHORT";
