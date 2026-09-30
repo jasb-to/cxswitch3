@@ -1,6 +1,6 @@
 // lib/jarvis.ts — CXSwitch JARVIS interpretation layer
 import { Redis } from "@upstash/redis";
-import { sendAlert } from "./telegram";
+import { sendAlert, sendJarvisReview } from "./telegram";
 
 const redis = new Redis({ url: process.env.KV_REST_API_URL!, token: process.env.KV_REST_API_TOKEN! });
 const JARVIS_KEY = "cxswitch:jarvis_state";
@@ -104,6 +104,85 @@ async function interpretWithModel(snapshot:JarvisSnapshot):Promise<string|undefi
     const data=await res.json();
     return data?.choices?.[0]?.message?.content?.trim() || undefined;
   }catch(error){console.warn("[JARVIS] model unavailable",error);return undefined;}
+}
+
+
+async function modelTradeReview(base:{pair:string;direction:"LONG"|"SHORT";verdict:"AGREES"|"CAUTION"|"CHALLENGE";summary:string;why:string;watch:string;market:any;signal:any}){
+  const key=process.env.HUGGINGFACE_API_KEY;
+  if(!key) return base;
+  const prompt=`You are JARVIS reviewing a trade signal immediately AFTER it was fired. Do not gate, cancel, execute, or invent data. The deterministic signal engine is authoritative. Give a concise factual confirmation of whether the setup is supportive, mixed, or contradicted by the current market snapshot. ENTRY_1 is intentionally early, so do NOT require 1D and 4H alignment. 1D is context/risk, 4H is timing. Use only the supplied facts. Return exactly three lines:
+SUMMARY: ...
+WHY: ...
+WATCH: ...
+Keep each line under 220 characters.
+
+SIGNAL:
+${JSON.stringify({pair:base.pair,direction:base.direction,type:base.signal?.type,entry:base.signal?.entry,stop:base.signal?.stop,tp1:base.signal?.tp1,tp2:base.signal?.tp2,reason:base.signal?.reason,trend:base.signal?.trend,location:base.signal?.location,trigger:base.signal?.trigger})}
+
+MARKET:
+${JSON.stringify({price:base.market?.price,fourH513:base.market?.fourH513,structureShift:base.market?.structureShift,dailyLive:base.market?.dailyLive,entry1Decision:base.market?.entry1Decision,entry1Exhaustion:base.market?.entry1Exhaustion})}
+
+DETERMINISTIC VERDICT: ${base.verdict}`;
+  try{
+    const res=await fetch("https://router.huggingface.co/v1/chat/completions",{method:"POST",headers:{"Authorization":`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({model:MODEL,messages:[{role:"system",content:"You are JARVIS: concise, factual, calm and trade-aware. Never invent numbers."},{role:"user",content:prompt}],temperature:0.1,max_tokens:180})});
+    if(!res.ok)return base;
+    const data=await res.json();
+    const text=String(data?.choices?.[0]?.message?.content||"").trim();
+    const summary=text.match(/SUMMARY:\s*(.+)/i)?.[1]?.trim();
+    const why=text.match(/WHY:\s*(.+)/i)?.[1]?.trim();
+    const watch=text.match(/WATCH:\s*(.+)/i)?.[1]?.trim();
+    return {...base,summary:summary||base.summary,why:why||base.why,watch:watch||base.watch};
+  }catch(error){
+    console.warn("[JARVIS] fired-trade model review unavailable",error);
+    return base;
+  }
+}
+
+export async function reviewFiredSignal(signal:any,market:any){
+  if(!signal || !["ENTRY_1","ENTRY_2"].includes(signal.type)) return;
+  const direction=signal.direction==="SHORT"?"SHORT":"LONG";
+  const e=market?.fourH513||{};
+  const label=String(e.label||"NEUTRAL");
+  const fourHDir=String(e.direction||"");
+  const structure=market?.structureShift||{};
+  const structureAgainst=structure?.state==="SHIFT_CONFIRMED" &&
+    ((direction==="LONG"&&String(structure.structure)==="SHORT")||(direction==="SHORT"&&String(structure.structure)==="LONG"));
+  const exhaustion=market?.entry1Exhaustion && market.entry1Exhaustion!=="NONE";
+  const hardAgainst=direction==="LONG"
+    ? /BEARISH CROSS|BEARISH LOW/.test(label) || fourHDir==="BEARISH" || structureAgainst
+    : /BULLISH CROSS|BULLISH LOW/.test(label) || fourHDir==="BULLISH" || structureAgainst;
+  const transitionAgainst=direction==="LONG"
+    ? /BEARISH TREND TURNING/.test(label)
+    : /BULLISH TREND TURNING/.test(label);
+  const supportive=direction==="LONG"
+    ? /BULLISH CROSS|BULLISH LOW/.test(label) || fourHDir==="BULLISH"
+    : /BEARISH CROSS|BEARISH LOW/.test(label) || fourHDir==="BEARISH";
+  const verdict: "AGREES"|"CAUTION"|"CHALLENGE" =
+    hardAgainst ? "CHALLENGE" : exhaustion || transitionAgainst ? "CAUTION" : supportive ? "AGREES" : "AGREES";
+  const summary=verdict==="AGREES"
+    ? `JARVIS agrees with the ${signal.type} ${direction}: the current 4H evidence is supportive of the fired setup.`
+    : verdict==="CAUTION"
+      ? `JARVIS sees the ${signal.type} ${direction} as viable but early: the 4H is showing opposing pressure that needs confirmation.`
+      : `JARVIS challenges the ${signal.type} ${direction}: the current 4H evidence is already moving against the fired setup.`;
+  const why=[
+    `4H ${label}`,
+    fourHDir?`direction ${fourHDir}`:null,
+    structure?.state?`structure ${structure.state}`:null,
+    exhaustion?`exhaustion ${market.entry1Exhaustion}`:null,
+    market?.dailyLive?.state?`1D ${market.dailyLive.state}`:null
+  ].filter(Boolean).join(" · ");
+  const watch=hardAgainst
+    ? "Watch the next closed 4H candle for recovery/reclaim; JARVIS will flag further deterioration."
+    : transitionAgainst
+      ? "Watch the next closed 4H candle for confirmation that the transition resolves in the trade direction."
+      : "Watch the next closed 4H candle for loss of momentum or structural failure.";
+  const reviewed=await modelTradeReview({pair:signal.pair,direction,verdict,summary,why,watch,market,signal});
+  try{
+    await sendJarvisReview({pair:signal.pair,direction,verdict:reviewed.verdict,summary:reviewed.summary,why:reviewed.why,watch:reviewed.watch,price:market?.price,fourH:label,trend:signal.trend,location:signal.location,trigger:signal.trigger,timestamp:new Date().toISOString()});
+    console.log(`[JARVIS] Fired-trade review: ${signal.pair} ${signal.type} ${reviewed.verdict}`);
+  }catch(error){
+    console.warn("[JARVIS] Fired-trade Telegram review failed",error);
+  }
 }
 
 export async function getJarvisSnapshot():Promise<JarvisSnapshot|null>{
