@@ -14,6 +14,7 @@ export interface JarvisPairState {
   state: JarvisState;
   previousState?: JarvisState;
   direction: "LONG" | "SHORT" | "NEUTRAL";
+  verdict: JarvisVerdict;
   thesis: string;
   whatChanged: string;
   watch: string;
@@ -41,49 +42,38 @@ function directionOf(m:any):"LONG"|"SHORT"|"NEUTRAL" {
 }
 
 function pairState(m:any, active:any):JarvisPairState {
-  const dir=active?.direction || directionOf(m);
+  const dir=(active?.direction || directionOf(m)) as "LONG"|"SHORT"|"NEUTRAL";
   const e=m?.fourH513||{};
   const label=String(e.label||"");
+  const fourHDir=String(e.direction||"");
+  const ss=m?.structureShift||{};
+  const structure=String(ss.structure||"NEUTRAL");
+  const entryType=String(active?.type||"");
+  const entry1=entryType==="ENTRY_1" || String(m?.entry1Decision||"NONE")!=="NONE";
+  const earlySetup=entry1 || String(active?.context?.marketPhase||"").includes("PROBABILITY EARLY SETUP");
+  const priceActionReversal=String(active?.context?.trigger||m?.trigger||"").includes("PRICE_ACTION_REVERSAL");
+  const opposite4H=(dir==="LONG"&&fourHDir==="BEARISH")||(dir==="SHORT"&&fourHDir==="BULLISH");
+  const confirmedOppositeStructure=ss?.state==="SHIFT_CONFIRMED" && ((dir==="LONG"&&structure==="SHORT")||(dir==="SHORT"&&structure==="LONG"));
+  const managementExit=active?.positionManagementState==="EXIT";
+  const continuationAgainst=opposite4H && ((dir==="LONG"&&/BEARISH LOW|BEARISH CROSS/.test(label))||(dir==="SHORT"&&/BULLISH LOW|BULLISH CROSS/.test(label))) && !!e.spreadContracting;
   let momentum:"SUPPORTIVE"|"WEAKENING"|"BREAKDOWN"="SUPPORTIVE";
-  if(active){
-    const longBreak=dir==="LONG" && (/BEARISH CROSS|BEARISH LOW/.test(label) || (Number(e.ema5)<Number(e.ema13) && Number(e.ema5Slope)<0 && Number(e.ema13Slope)<0 && e.spreadContracting));
-    const shortBreak=dir==="SHORT" && (/BULLISH CROSS|BULLISH LOW/.test(label) || (Number(e.ema5)>Number(e.ema13) && Number(e.ema5Slope)>0 && Number(e.ema13Slope)>0 && e.spreadContracting));
-    const longWeak=dir==="LONG" && (/BEARISH TREND TURNING/.test(label) || Number(e.ema5)<Number(e.ema13));
-    const shortWeak=dir==="SHORT" && (/BULLISH TREND TURNING/.test(label) || Number(e.ema5)>Number(e.ema13));
-    if(longBreak||shortBreak) momentum="BREAKDOWN";
-    else if(longWeak||shortWeak) momentum="WEAKENING";
-  }
-  const momentumSignature=active ? `${dir}:${momentum}:${label}:${e.spreadContracting?"CONTRACTING":"EXPANDING"}` : "NO_POSITION";
-
-  const ss=m?.structureShift;
-  const fourH=String(m?.fourH513?.label||"");
-  const fourHDir=String(m?.fourH513?.direction||"");
-  const daily=String(m?.dailyLive?.state||m?.daily513?.label||"");
-  const entryDecision=String(m?.entry1Decision||"NONE");
-  const structure=String(ss?.structure||"NEUTRAL");
-  const shift=String(ss?.state||"");
-  const against=active && ((active.direction==="LONG"&&fourHDir==="BEARISH")||(active.direction==="SHORT"&&fourHDir==="BULLISH"));
-  const brokenStructure=ss?.state==="SHIFT_CONFIRMED" && active && ((active.direction==="LONG"&&structure==="SHORT")||(active.direction==="SHORT"&&structure==="LONG"));
+  if(confirmedOppositeStructure||managementExit) momentum="BREAKDOWN";
+  else if(continuationAgainst || (opposite4H && (!earlySetup || !priceActionReversal))) momentum="WEAKENING";
+  const verdict:JarvisVerdict=confirmedOppositeStructure||managementExit?"BAD":momentum==="WEAKENING"?"CAUTION":opposite4H&&earlySetup&&priceActionReversal?"CAUTION":"GOOD";
   let state:JarvisState="ACCUMULATING";
-  if(brokenStructure || (active && momentum==="BREAKDOWN")) state="BROKEN";
-  else if(against && (shift==="WEAKENING"||shift==="WATCHING")) state="DETERIORATING";
-  else if(shift==="WEAKENING" || (active && against) || /BEARISH TREND TURNING|BEARISH LOW|BULLISH TREND TURNING|BULLISH LOW/.test(fourH)) state="TRANSITIONING";
-  else if(entryDecision!=="NONE" || /BULLISH CROSS|BEARISH CROSS/.test(fourH)) state="ACCUMULATING";
-
+  if(verdict==="BAD")state="BROKEN"; else if(verdict==="CAUTION")state="DETERIORATING";
   const reasons:string[]=[];
-  if(active) reasons.push(`active ${active.direction} position`);
-  if(daily) reasons.push(`1D ${daily}`);
-  if(fourH) reasons.push(`4H ${fourH}`);
-  if(shift) reasons.push(`structure ${shift.toLowerCase()}`);
-  if(m?.entry1Exhaustion && m.entry1Exhaustion!=="NONE") reasons.push("exhaustion present");
-  const thesis=active
-    ? state==="BROKEN" ? "4H momentum/structure has broken against the position; review it now." : state==="DETERIORATING" ? "4H momentum is weakening against the active position; the thesis is under pressure." : state==="TRANSITIONING" ? "The position thesis remains active, but closed 4H price action is transitioning; JARVIS is watching the next structural move." : "The position thesis remains intact and the closed 4H is supportive."
-    : state==="BROKEN" ? "4H momentum/structure has broken, but there is no active position on this asset." : state==="DETERIORATING" ? "4H momentum is weakening; there is no active position currently exposed." : state==="TRANSITIONING" ? "Closed 4H price action is transitioning; JARVIS is monitoring the next structural move." : "No active position. Closed 4H price action is currently supportive.";
-  const watch=active
-    ? state==="BROKEN" ? "4H breakdown detected. Review the position now." : state==="DETERIORATING" ? "Watch the next closed 4H candle for continuation against the position and failure to reclaim structure." : state==="TRANSITIONING" ? "Watch the next closed 4H candle for confirmation or recovery." : "Continue monitoring every closed 4H candle for loss of momentum or structural failure."
-    : state==="BROKEN" ? "No position to manage; monitor for a reclaim before any new setup is considered." : state==="DETERIORATING" ? "Watch the next closed 4H candle for continuation or recovery." : state==="TRANSITIONING" ? "Watch the next closed 4H candle for confirmation or recovery." : "Continue monitoring every closed 4H candle for loss of momentum or structural failure.";
-  const changed=`${state.toLowerCase()} · ${reasons.join(" · ")||"market context only"}`;
-  return {pair:m?.pair||active?.pair||"?",state,direction:dir,thesis,whatChanged:changed,watch,management:active?.holdAdvice?.reason,position:active?{direction:active.direction,entry:active.entry,stop:active.stop,tp1:active.tp1,tp2:active.tp2}:undefined,updatedAt:Date.now(),momentum,momentumSignature};
+  if(active)reasons.push(`active ${active.direction} ${active.type||"position"}`);
+  if(earlySetup)reasons.push("V28 early-entry thesis");
+  if(priceActionReversal)reasons.push("4H price-action reversal");
+  if(m?.dailyLive?.state)reasons.push(`1D ${m.dailyLive.state}`);
+  if(label)reasons.push(`4H ${label}`);
+  if(confirmedOppositeStructure)reasons.push("opposite structure confirmed");
+  const thesis=active ? verdict==="BAD" ? "V28 thesis has materially failed: the 4H/structure evidence now confirms the move against the position." : verdict==="CAUTION" ? (earlySetup&&priceActionReversal ? "The V28 early-entry thesis is still valid, but the 4H has not fully confirmed the reversal yet." : "The V28 thesis is under pressure, but there is not yet enough evidence to call it broken.") : "The V28 thesis is behaving as intended and the 4H remains supportive." : verdict==="CAUTION" ? (earlySetup&&priceActionReversal ? "V28 is identifying an early reversal; opposing 4H direction is expected until confirmation." : "Market evidence is mixed; JARVIS is watching for the next structural move.") : verdict==="BAD" ? "The current 4H/structure evidence is materially opposed; there is no active position." : "Closed 4H evidence is currently compatible with the active V28 direction.";
+  const watch=verdict==="BAD" ? "Confirmed failure. Review the position; recovery/reclaim is needed before the thesis can improve." : verdict==="CAUTION" ? (earlySetup&&priceActionReversal ? "Watch the next closed 4H candle for confirmation of the reversal — or renewed downside continuation." : "Watch the next closed 4H candle for confirmation or deterioration.") : "Keep watching each closed 4H candle for loss of momentum or structural failure.";
+  const changed=`${verdict} · ${reasons.join(" · ")||"market context only"}`;
+  const momentumSignature=active?`${dir}:${momentum}:${label}:${e.spreadContracting?"CONTRACTING":"EXPANDING"}`:"NO_POSITION";
+  return {pair:m?.pair||active?.pair||"?",state,direction:dir,verdict,thesis,whatChanged:changed,watch,management:active?.holdAdvice?.reason||active?.positionManagementReason,position:active?{direction:active.direction,entry:active.entry,stop:active.stop,tp1:active.tp1,tp2:active.tp2}:undefined,updatedAt:Date.now(),momentum,momentumSignature};
 }
 
 function portfolioState(pairs:JarvisPairState[]):JarvisSnapshot["portfolioState"]{
@@ -102,7 +92,7 @@ async function interpretWithModel(snapshot:JarvisSnapshot):Promise<string|undefi
   if(!key) return undefined;
   const changes=Object.values(snapshot.pairs).filter(p=>p.previousState&&p.previousState!==p.state).map(p=>({pair:p.pair,from:p.previousState,to:p.state,thesis:p.thesis,watch:p.watch}));
   if(!changes.length) return undefined;
-  const prompt=`You are JARVIS for a crypto signal dashboard. Interpret facts only; never invent market data and never give certainty. Existing deterministic engine remains authoritative and JARVIS is NOT a trade gate. Explain what changed, whether active trade theses are intact/weakening/broken, and what should be watched. Keep it under 900 characters. State is decision support for a human.\n\nPORTFOLIO: ${snapshot.portfolioState}\nCHANGES:\n${JSON.stringify(changes)}`;
+  const prompt="You are JARVIS for CX Switch V28. The deterministic V28 engine is authoritative and JARVIS is never a trade gate. Understand the strategy philosophy: ENTRY_1 is a probability-based early setup, deliberately before full 4H confirmation; 1D is context/risk modifier, not a veto; 4H price-action reversal and structural response matter; an opposing 4H label during an early reversal can be EXPECTED and is not thesis failure. Only call a thesis broken when there is materially confirmed opposite structure, clear continuation against the original setup, or the existing management engine says EXIT. ENTRY_2 is the confirmed breakout/retest setup and should be judged more strictly. Explain only what changed and what matters next. Keep it concise and factual.";\n\nPORTFOLIO: ${snapshot.portfolioState}\nCHANGES:\n${JSON.stringify(changes)}`;
   try{
     const res=await fetch("https://router.huggingface.co/v1/chat/completions",{method:"POST",headers:{"Authorization":`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({model:MODEL,messages:[{role:"system",content:"You are JARVIS: concise, factual, calm, risk-aware."},{role:"user",content:prompt}],temperature:0.2,max_tokens:300})});
     if(!res.ok){console.warn(`[JARVIS] Hugging Face ${res.status}`);return undefined;}
@@ -114,17 +104,23 @@ async function interpretWithModel(snapshot:JarvisSnapshot):Promise<string|undefi
 
 function deterministicTradeVerdict(signal:any,market:any):{ verdict:JarvisVerdict; summary:string; why:string; watch:string }{
   const direction=signal.direction==="SHORT"?"SHORT":"LONG";
-  const e=market?.fourH513||{}; const label=String(e.label||"NEUTRAL"); const fourHDir=String(e.direction||"");
+  const context=signal.context||{}; const e=market?.fourH513||context.fourH513||{};
+  const label=String(e.label||"NEUTRAL"); const fourHDir=String(e.direction||"");
   const structure=market?.structureShift||{};
   const structureAgainst=structure?.state==="SHIFT_CONFIRMED" && ((direction==="LONG"&&String(structure.structure)==="SHORT")||(direction==="SHORT"&&String(structure.structure)==="LONG"));
-  const exhaustion=market?.entry1Exhaustion && market.entry1Exhaustion!=="NONE";
-  const hardAgainst=direction==="LONG" ? structureAgainst || (/BEARISH CROSS/.test(label) && fourHDir==="BEARISH") : structureAgainst || (/BULLISH CROSS/.test(label) && fourHDir==="BULLISH");
-  const transitionAgainst=direction==="LONG" ? /BEARISH TREND TURNING|BEARISH LOW/.test(label) || fourHDir==="BEARISH" : /BULLISH TREND TURNING|BULLISH LOW/.test(label) || fourHDir==="BULLISH";
-  const supportive=direction==="LONG" ? /BULLISH CROSS|BULLISH LOW|BULLISH TREND TURNING/.test(label) || fourHDir==="BULLISH" : /BEARISH CROSS|BEARISH LOW|BEARISH TREND TURNING/.test(label) || fourHDir==="BEARISH";
-  const verdict:JarvisVerdict=hardAgainst ? "BAD" : exhaustion || transitionAgainst ? "CAUTION" : supportive ? "GOOD" : "GOOD";
-  const summary=verdict==="GOOD" ? `GOOD — current evidence broadly supports the fired ${signal.type} ${direction}.` : verdict==="CAUTION" ? `CAUTION — the ${signal.type} ${direction} is early/mixed; opposing 4H pressure is present.` : `BAD — current 4H/structure evidence materially contradicts the fired ${signal.type} ${direction}.`;
-  const why=[`4H ${label}`,fourHDir?`direction ${fourHDir}`:null,structure?.state?`structure ${structure.state}`:null,exhaustion?`exhaustion ${market.entry1Exhaustion}`:null,market?.dailyLive?.state?`1D ${market.dailyLive.state}`:null].filter(Boolean).join(" · ");
-  const watch=verdict==="BAD" ? "Wait for recovery/reclaim; JARVIS will flag a material improvement." : verdict==="CAUTION" ? "Watch the next closed 4H candle for confirmation or deterioration." : "Watch the next closed 4H candle for loss of momentum or structural failure.";
+  const entry1=signal.type==="ENTRY_1";
+  const earlySetup=String(context.marketPhase||signal.location||"").includes("EARLY")||entry1;
+  const priceActionReversal=String(context.trigger||signal.trigger||"").includes("PRICE_ACTION_REVERSAL");
+  const opposite4H=(direction==="LONG"&&fourHDir==="BEARISH")||(direction==="SHORT"&&fourHDir==="BULLISH");
+  const exhaustion=context?.exhaustion; const exhaustionPresent=!!exhaustion&&((direction==="LONG"&&exhaustion.longBlocked)||(direction==="SHORT"&&exhaustion.shortBlocked));
+  const hardAgainst=structureAgainst||market?.positionManagementState==="EXIT";
+  const expectedEarlyConflict=entry1&&earlySetup&&priceActionReversal&&opposite4H;
+  const caution=exhaustionPresent||expectedEarlyConflict||(opposite4H&&!structureAgainst);
+  const supportive=direction==="LONG" ? /BULLISH CROSS|BULLISH LOW|BULLISH TREND TURNING/.test(label)||fourHDir==="BULLISH" : /BEARISH CROSS|BEARISH LOW|BEARISH TREND TURNING/.test(label)||fourHDir==="BEARISH";
+  const verdict:JarvisVerdict=hardAgainst?"BAD":caution?"CAUTION":supportive?"GOOD":"GOOD";
+  const summary=verdict==="GOOD"?`GOOD — V28 ${signal.type} ${direction} thesis is supported by current evidence.`:verdict==="CAUTION"?(expectedEarlyConflict?`CAUTION — this is an intentional V28 early entry; 4H confirmation is still developing.`:`CAUTION — the ${signal.type} ${direction} setup is early/mixed, but not broken.`):`BAD — current 4H/structure evidence materially contradicts the V28 ${signal.type} ${direction} thesis.`;
+  const why=[signal.type==="ENTRY_1"?"V28 early-entry philosophy":signal.type,signal.location?String(signal.location):null,signal.trigger?String(signal.trigger):null,`4H ${label}`,fourHDir?`direction ${fourHDir}`:null,structure?.state?`structure ${structure.state}`:null,exhaustionPresent?"exhaustion present":null].filter(Boolean).join(" · ");
+  const watch=verdict==="BAD"?"Review now; JARVIS needs a recovery/reclaim before the thesis improves.":verdict==="CAUTION"?"Watch the next closed 4H candle for confirmation or renewed continuation against the setup.":"Watch the next closed 4H candle for loss of momentum or structural failure.";
   return {verdict,summary,why,watch};
 }
 
