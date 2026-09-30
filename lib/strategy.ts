@@ -275,36 +275,79 @@ function detect15mTrendlineRetest(
   c4:Candle[],
   tl:Trendline,
   d:Direction,
-  breakoutSeen:boolean
+  breakoutSeen:boolean,
+  breakoutTimestamp?:number
 ){
   if(!tl.valid||tl.stale||tl.invalidated||c15.length<4)return{breakSeen:false,retest:false,linePrice:null,reason:"NO_VALID_4H_TRENDLINE"};
-  const av15=atr(c15);
-  const current=c15.at(-1)!;
-  const currentLine=lineAtTimestamp(tl,c4,current.timestamp);
-  if(currentLine===null)return{breakSeen:false,retest:false,linePrice:null,reason:"NO_LINE_PRICE"};
+  const closed15=c15.length>1?c15.slice(0,-1):c15;
+  if(closed15.length<3)return{breakSeen:breakoutSeen,retest:false,linePrice:null,reason:"WAITING_FOR_15M_CLOSE"};
+  const latest=closed15.at(-1)!;
+  const latestLine=lineAtTimestamp(tl,c4,latest.timestamp);
+  if(latestLine===null)return{breakSeen:false,retest:false,linePrice:null,reason:"NO_LINE_PRICE"};
 
-  const retestBuffer=Math.max(av15*TL_RETEST_ATR,Math.abs(currentLine)*TL_RETEST_PCT);
-  const breakBuffer=Math.max(av15*TL_BREAK_ATR,Math.abs(currentLine)*BREAKOUT_PCT);
+  const startTs=breakoutTimestamp??closed15[0].timestamp;
+  const window=closed15.filter(x=>x.timestamp>=startTs).slice(-TL_BREAK_WINDOW_15M);
+  if(window.length<3)return{breakSeen:breakoutSeen,retest:false,linePrice:latestLine,reason:"WAITING_FOR_15M_SEQUENCE"};
 
-  // The 4H layer owns the breakout. 15M is not allowed to manufacture one
-  // from an old crossing because that can produce an ENTRY_2 after price has
-  // already been beyond the line for hours.
-  const seen=breakoutSeen;
-  if(!seen)return{breakSeen:false,retest:false,linePrice:currentLine,reason:"WAITING_FOR_4H_BREAK"};
+  const av15=atr(closed15);
+  const breakBuffer=Math.max(av15*TL_BREAK_ATR,Math.abs(latestLine)*BREAKOUT_PCT);
+  const retestBuffer=Math.max(av15*TL_RETEST_ATR,Math.abs(latestLine)*TL_RETEST_PCT);
 
-  const touched=d==="LONG"
-    ? current.low<=currentLine+retestBuffer
-    : current.high>=currentLine-retestBuffer;
-  const reclaimed=d==="LONG"
-    ? current.close>currentLine
-    : current.close<currentLine;
+  // ENTRY_2 is a stateful sequence, not a one-candle coincidence:
+  //   confirmed 4H break -> 15M closes beyond the line -> 15M returns to
+  //   the broken line -> a later 15M candle rejects/reclaims the line.
+  // The 4H layer owns the breakout; the 15M layer only confirms execution.
+  if(!breakoutSeen)return{breakSeen:false,retest:false,linePrice:latestLine,reason:"WAITING_FOR_4H_BREAK"};
 
-  return{
-    breakSeen:true,
-    retest:touched&&reclaimed,
-    linePrice:currentLine,
-    reason:touched&&reclaimed?"15M_DIP_RETEST_CONFIRMED":touched?"15M_RETEST_IN_PROGRESS":"WAITING_FOR_15M_DIP"
-  };
+  let movedBeyond=false;
+  let touched=false;
+  let touchIndex=-1;
+  for(let i=0;i<window.length;i++){
+    const x=window[i];
+    const line=lineAtTimestamp(tl,c4,x.timestamp);
+    if(line===null)continue;
+
+    const beyond=d==="LONG"
+      ? x.close>line+breakBuffer
+      : x.close<line-breakBuffer;
+
+    if(!touched){
+      if(beyond)movedBeyond=true;
+      if(movedBeyond){
+        const hit=d==="LONG"
+          ? x.low<=line+retestBuffer
+          : x.high>=line-retestBuffer;
+        if(hit){
+          touched=true;
+          touchIndex=i;
+        }
+      }
+      continue;
+    }
+
+    if(i<=touchIndex)continue;
+
+    const reclaimed=d==="LONG"
+      ? x.close>line+Math.min(retestBuffer*0.35,breakBuffer)
+      : x.close<line-Math.min(retestBuffer*0.35,breakBuffer);
+
+    const rejected=d==="LONG"
+      ? x.close>x.open || x.close>window[i-1].close
+      : x.close<x.open || x.close<window[i-1].close;
+
+    if(reclaimed&&rejected){
+      return{
+        breakSeen:true,
+        retest:true,
+        linePrice:line,
+        reason:"15M_BREAK→RETEST→RECLAIM_CONFIRMED"
+      };
+    }
+  }
+
+  if(touched)return{breakSeen:true,retest:false,linePrice:latestLine,reason:"15M_RETEST_TOUCHED_WAITING_FOR_RECLAIM"};
+  if(movedBeyond)return{breakSeen:true,retest:false,linePrice:latestLine,reason:"15M_BREAK_CONFIRMED_WAITING_FOR_RETEST"};
+  return{breakSeen:true,retest:false,linePrice:latestLine,reason:"WAITING_FOR_15M_BREAK_CONFIRMATION"};
 }
 function stochKSeries(c:Candle[]):number[]{
   const closes=c.map(x=>x.close),out:number[]=[];
@@ -671,15 +714,18 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
   // 15M is execution only. It no longer gets to invent a breakout by scanning
   // historical 15M candles. A valid 4H break must exist first.
-  const longExec=detect15mTrendlineRetest(candles15m,candles4h,entry2LongTL,"LONG",persistedLongBreak||current4HBreakLong);
-  const shortExec=detect15mTrendlineRetest(candles15m,candles4h,entry2ShortTL,"SHORT",persistedShortBreak||current4HBreakShort);
+  const longExec=detect15mTrendlineRetest(candles15m,candles4h,entry2LongTL,"LONG",persistedLongBreak||current4HBreakLong,
+    persistedLongBreak?lastBreakout?.timestamp:candles15m.at(-1)?.timestamp);
+  const shortExec=detect15mTrendlineRetest(candles15m,candles4h,entry2ShortTL,"SHORT",persistedShortBreak||current4HBreakShort,
+    persistedShortBreak?lastBreakout?.timestamp:candles15m.at(-1)?.timestamp);
 
   const breakoutLong=current4HBreakLong||persistedLongBreak;
   const breakoutShort=current4HBreakShort||persistedShortBreak;
+  const breakoutTimestamp=candles15m.at(-1)?.timestamp??now;
   const detectedBreakout:BreakoutRecord|undefined=current4HBreakLong
-    ? {direction:"LONG",price:round(developingLongLine??price),timestamp:now,candleIndex:developing4HIndex}
+    ? {direction:"LONG",price:round(developingLongLine??price),timestamp:breakoutTimestamp,candleIndex:developing4HIndex}
     : current4HBreakShort
-      ? {direction:"SHORT",price:round(developingShortLine??price),timestamp:now,candleIndex:developing4HIndex}
+      ? {direction:"SHORT",price:round(developingShortLine??price),timestamp:breakoutTimestamp,candleIndex:developing4HIndex}
       : undefined;
   const retestLong=longExec.retest;
   const retestShort=shortExec.retest;
