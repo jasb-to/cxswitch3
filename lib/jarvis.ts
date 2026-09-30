@@ -1,6 +1,6 @@
 // lib/jarvis.ts — CXSwitch JARVIS interpretation layer
 import { Redis } from "@upstash/redis";
-import { sendAlert, sendJarvisReview } from "./telegram";
+import { sendAlert, sendJarvisReview, sendJarvisUpdate } from "./telegram";
 
 const redis = new Redis({ url: process.env.KV_REST_API_URL!, token: process.env.KV_REST_API_TOKEN! });
 const JARVIS_KEY = "cxswitch:jarvis_state";
@@ -217,7 +217,7 @@ export async function runJarvis(marketData:any[],active:any[]):Promise<JarvisSna
     if(material.length){
       const lines=material.map(p=>`• ${p.pair}: ${p.previousState||"—"} → ${p.state} · 4H ${p.momentum||"—"}\n  ${p.thesis}\n  Watch: ${p.watch}`).join("\n");
       try{
-        await sendAlert({symbol:"JARVIS",state:"JARVIS UPDATE",bias:portfolio==="RISK-OFF"?"SHORT":"LONG",price:0,stopLoss:0,takeProfit:0,rr:0,expectedMove:0,adx:0,rsi:0,stochK:0,stochD:0,reason:modelText||lines||whatChanged,trend:`PORTFOLIO · ${portfolio}`,location:material.some(p=>p.momentum==="BREAKDOWN"||p.state==="BROKEN")?"4H_BREAKDOWN":"4H_MOMENTUM_CHANGE",trigger:"JARVIS",updatedAt:new Date().toISOString(),signalType:"JARVIS",signalEmoji:material.some(p=>p.momentum==="BREAKDOWN"||p.state==="BROKEN")?"🔴":portfolio.includes("WEAKENING")||portfolio==="RISK TRANSITION"?"🟡":"🟢",context:{jarvis:{portfolioState:portfolio,whatChanged:modelText||whatChanged,changes:material}}});
+        await sendJarvisUpdate({portfolioState:portfolio,location:material.some(p=>p.momentum==="BREAKDOWN"||p.state==="BROKEN")?"4H_BREAKDOWN":"4H_MOMENTUM_CHANGE",summary:modelText||whatChanged,changes:material.map(p=>({pair:p.pair,from:p.previousState,to:p.state,momentum:p.momentum,thesis:p.thesis,watch:p.watch})),timestamp:new Date().toISOString()});
         console.log(`[JARVIS] Telegram update sent: ${whatChanged}`);
       }catch(error){console.warn("[JARVIS] Telegram update failed",error);}
     }
