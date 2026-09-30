@@ -87,20 +87,13 @@ export async function sendJarvisUpdate(update:{
   const broken=update.changes.some(x=>x.momentum==="BREAKDOWN"||x.to==="BROKEN");
   const emoji=broken?"🔴":update.portfolioState.includes("TRANSITION")||update.portfolioState.includes("WEAKENING")?"🟡":"🟢";
   const lines=[
-    `${emoji} JARVIS — MARKET UPDATE`,
-    "",
-    `Portfolio: ${update.portfolioState}`,
-    `Location: ${update.location}`,
-    "",
+    `${emoji} JARVIS — ${update.location}`,"",
+    `Portfolio: ${update.portfolioState}`,"",
     update.summary,
     "",
-    ...update.changes.map(x=>[
-      `${x.pair}: ${x.from||"—"} → ${x.to} · 4H ${x.momentum||"—"}`,
-      `Thesis: ${x.thesis}`,
-      `Watch: ${x.watch}`
-    ].join("\n")),
+    ...update.changes.map(x=>`• ${x.pair}: ${x.to} · 4H ${x.momentum||"—"} — ${x.watch}`),
     "",
-    "JARVIS observes only — this does not gate or execute trades.",
+    "JARVIS monitors active positions on closed 4H data and only alerts on material changes.",
     `Time: ${update.timestamp||new Date().toISOString()}`
   ].join("\n");
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines})});
