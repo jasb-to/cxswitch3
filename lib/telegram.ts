@@ -48,36 +48,23 @@ export async function sendAlert(signal:any){
   const exitText=exitPlan?`\nExit plan: TP1 ${exitPlan.tp1Pct}% | TP2 ${exitPlan.tp2Pct}%\nAfter TP1: ${exitPlan.afterTp1} | After TP2: ${exitPlan.afterTp2}\nRunner: ${exitPlan.runner}\n`:"";
   const entry0Text=type==="ENTRY_0"?`\nENTRY_0 confirmation: ${signal.confirmation||"1D 5/13 aligned with 4H 5/13 cross"}\nLongevity exit: 4H 8/21 opposite cross\n`:type==="EXIT_0"?`\nENTRY_0 exit: ${signal.reason||"4H 8/21 opposite cross"}\n`:"";
 
+  const jarvis=signal.jarvis;
+  const jarvisLine=jarvis?.verdict
+    ? `JARVIS: ${jarvis.verdict} · ${jarvis.summary||""}`
+    : "";
   const lines=[
-    `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${label}`,
-    "",
-    `${dir} ${signal.symbol} — ${signal.bias}`,
-    `Price: ${formatPrice(signal.price??signal.entry)}`,
+    `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${label}`,"",
+    `${dir} ${signal.symbol} — ${signal.bias}`,"",
+    `Price: ${formatPrice(signal.price??signal.entry)}`,"",
+    jarvisLine,"",
     entryZone,
-    tlLine,
-    "",
-    `4H 5/13: ${fourH513}`,
-    `Trend: ${signal.trend||signal.bias}`,
-    `Location: ${signal.location||"—"}`,
-    `Trigger: ${signal.trigger||"—"}`,
-    addText.trim(),
-    entry0Text.trim(),
-    "",
-    `Expected Move: ${expectedMove}%`,
+    `4H 5/13: ${fourH513}`,"",
     `SL: ${formatPrice(signal.stopLoss)}`,
     `TP1: ${formatPrice(tp1)}`,
     `TP2: ${formatPrice(tp2)}`,
-    `RR: ${signal.rr??"-"}`,
-    exitText.trim(),
-    "",
-    `ADX: ${signal.adx??"-"}`,
-    `RSI: ${signal.rsi??"-"}`,
-    `StochK: ${signal.stochK??"-"}`,
-    `StochD: ${signal.stochD??"-"}`,
-    "",
-    signal.reason||"",
-    "",
-    `Time: ${signal.updatedAt||new Date().toISOString()}`
+    `RR: ${signal.rr??"-"}`,"",
+    `Expected Move: ${expectedMove}%`,
+    signal.reason||""
   ].join("\n");
 
   const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines})});
@@ -123,42 +110,3 @@ export async function sendJarvisUpdate(update:{
   }
 }
 
-export async function sendJarvisReview(review:{
-  pair:string;
-  direction:"LONG"|"SHORT";
-  verdict:"AGREES"|"CAUTION"|"CHALLENGE";
-  summary:string;
-  why:string;
-  watch:string;
-  price?:number;
-  fourH?:string;
-  trend?:string;
-  location?:string;
-  trigger?:string;
-  timestamp?:string;
-}){
-  const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
-  if(!token||!chatId)throw new Error("Telegram alerting is not configured: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing");
-  const emoji=review.verdict==="AGREES"?"🟢":review.verdict==="CAUTION"?"🟡":"🔴";
-  const lines=[
-    `${emoji} JARVIS — ${review.verdict} ${review.pair} ${review.direction}`,
-    "",
-    `Price: ${formatPrice(review.price)}`,
-    `4H 5/13: ${review.fourH||"—"}`,
-    `Trend: ${review.trend||"—"}`,
-    `Location: ${review.location||"—"}`,
-    `Trigger: ${review.trigger||"—"}`,
-    "",
-    `Summary: ${review.summary}`,
-    `Why: ${review.why}`,
-    `Watch: ${review.watch}`,
-    "",
-    "JARVIS observes only — this does not gate or execute the trade.",
-    `Time: ${review.timestamp||new Date().toISOString()}`
-  ].join("\n");
-  const response=await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines})});
-  if(!response.ok){
-    const body=await response.text().catch(()=>"");
-    throw new Error(`Telegram JARVIS review failed (${response.status}): ${body.slice(0,300)}`);
-  }
-}
