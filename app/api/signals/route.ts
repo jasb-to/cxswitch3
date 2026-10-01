@@ -10,7 +10,7 @@ export const revalidate=0;
 type AlertState="VALID"|"STALE"|"INVALID";
 function alertValidity(h:any,price:number,now:number,isActivePosition=false){
   if(!h)return{state:"STALE" as AlertState,reason:"No alert recorded"};
-  if(h.status!=="ACTIVE")return{state:h.status==="SL_HIT"?"INVALID":"STALE" as AlertState,reason:h.exitReason||h.status};
+  if(h.status!=="ACTIVE")return{state:(h.status==="SL_HIT"||h.status==="FAILED")?"INVALID":"STALE" as AlertState,reason:h.exitReason||h.status};
   // An executed 4H position does not expire because its entry alert is old.
   // TTL only applies to an unexecuted/latest alert; active positions remain live
   // until SL, final target, or the confirmed management lifecycle closes them.
