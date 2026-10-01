@@ -682,18 +682,17 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const weeklyLong=weekly.direction==="LONG";
   const weeklyShort=weekly.direction==="SHORT";
 
-  // 1D sets the permitted side, but does NOT require 1D + 4H to already
-  // be aligned. The exception is a genuine daily transition: when the 1D
-  // itself is developing BULL/BEAR and the 4H is turning the same way, the
-  // new direction is allowed immediately. This is how we catch a longer move.
+  // 1D is directional context, not an ENTRY_1 timing gate.
+  // It only prevents taking the opposite side of the established daily bias.
+  // A recent daily breakout is diagnostic/context only; ENTRY_1 must be able
+  // to fire before that breakout condition exists.
   //
-  // Established BULL + 4H turning BULL -> LONG is valid.
-  // Established BULL + 4H turning BEAR -> NEVER short.
-  // Established BEAR + 4H turning BEAR -> SHORT is valid.
-  // Established BEAR + 4H turning BULL -> NEVER long.
-  // Daily TRANSITION/DEVELOPING + matching 4H transition -> allow that side.
-  const dailyLongAllowed=dDir==="BULL"&&dailyBreakout.long;
-  const dailyShortAllowed=dDir==="BEAR"&&dailyBreakout.short;
+  // Established BULL -> LONG side permitted.
+  // Established BEAR -> SHORT side permitted.
+  // 4H timing, location, runway, momentum and exhaustion decide whether
+  // the early entry itself is actually good enough.
+  const dailyLongAllowed=dDir==="BULL";
+  const dailyShortAllowed=dDir==="BEAR";
 
   // Diagnostic only: retained for UI/context fields. This is NOT an ENTRY_1
   // gate anymore. Directional permission is handled explicitly above.
