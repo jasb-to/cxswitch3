@@ -24,7 +24,7 @@ function strengthFrom4H(e?:Market["fourH513"]){if(!e)return"—";if(e.direction=
 function setupDetail(m:Market|undefined,d:"LONG"|"SHORT",triggerReady=false){
  const entryDirection=m?.entry1Direction||"NEUTRAL",decision=m?.entry1Decision||"NONE";
  const triggers=entryDirection==="SHORT"?m?.entry1TriggersShort:m?.entry1TriggersLong;
- if(decision!=="NONE")return `${decision.replace("_"," ")} · GRADE ${m?.entry1Grade||"—"}. 4H triggers ${triggers??"—"}/5 · location ${m?.entry1StructuralLocation||"—"} · chase ${m?.entry1Chase?"YES":"NO"} · exhaustion ${m?.entry1Exhaustion||"CLEAR"}.`;
+ if(decision!=="NONE")return `${decision.replace("_"," ")} · GRADE ${m?.entry1Grade||"—"}. 4H evidence ${triggers??"—"}/3 · location ${m?.entry1StructuralLocation||"—"} · chase ${m?.entry1Chase?"YES":"NO"} · exhaustion ${m?.entry1Exhaustion||"CLEAR"}.`;
  const ss=m?.structureShift,parts:string[]=[];
  if(ss?.structure===d&&ss.state==="HEALTHY")parts.push("Structure is healthy");else if(ss?.structure&&ss.structure!=="NEUTRAL"&&ss.structure!==d)parts.push("Structure is "+(ss.structure==="LONG"?"bullish":"bearish"));else parts.push("Structure is not yet directional enough");
  if(m?.location==="NEAR_TL")parts.push("price is at the TL");else if(m?.location==="BEYOND_TL")parts.push("price is beyond the TL");else if(m?.location)parts.push("price is "+m.location.replaceAll("_"," ").toLowerCase());
