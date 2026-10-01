@@ -71,6 +71,8 @@ const ENTRY1_MIN_RUNWAY_PCT=0.03;
 const ENTRY1_PREFERRED_RUNWAY_PCT=0.05;
 const DAILY_BREAKOUT_LOOKBACK=20;
 const DAILY_BREAKOUT_RECENCY=5;
+const DAILY_FADE_ZONE_PCT=0.0125;
+const DAILY_FADE_STOCH=85;
 const STALE_TL_PCT=0.04, STALE_TL_CANDLES=12, FRESH_LOOKBACK=30, BREAKOUT_EXPIRY_CANDLES=12;
 const ENTRY1_LONG_EXHAUSTION_RSI=80, ENTRY1_SHORT_EXHAUSTION_RSI=20;
 const LEVERAGE=20, MMR=0.01, LIQ_BUFFER=0.015, MIN_RR=1.25;
@@ -428,6 +430,16 @@ function dailyBreakoutContext(c4:Candle[]){
   }
   return result;
 }
+function dailyFadeContext(c4:Candle[]){
+  const dc=daily(c4),closed=dc.length>1?dc.slice(0,-1):dc,live=dc.at(-1);
+  const result={shortWatch:false,failedBreak:false,level:null as number|null,distPct:Infinity,stochK:50,stochD:50,reason:""};
+  if(closed.length<DAILY_BREAKOUT_LOOKBACK+1||!live)return result;
+  const prior=closed.slice(-DAILY_BREAKOUT_LOOKBACK),priorHigh=Math.max(...prior.map(x=>x.high)),price=live.close;
+  const dist=Math.abs((priorHigh-price)/Math.max(price,1)),st=stochRsi(closed.map(x=>x.close));
+  const nearUpper=price<=priorHigh&&price>=priorHigh*(1-DAILY_FADE_ZONE_PCT),sweptAndRejected=live.high>priorHigh&&price<priorHigh;
+  const overbought=st.k>=DAILY_FADE_STOCH&&st.k>=st.d,shortWatch=(nearUpper||sweptAndRejected)&&overbought;
+  return{shortWatch,failedBreak:sweptAndRejected,level:priorHigh,distPct:dist*100,stochK:st.k,stochD:st.d,reason:shortWatch?(sweptAndRejected?"1D_RESISTANCE_SWEEP_REJECTED + STOCH_OVERBOUGHT":"1D_RESISTANCE_APPROACH + STOCH_OVERBOUGHT"):""};
+}
 function entry1Runway(c:Candle[],f:FibLevels|null,price:number,d:Direction){
   const recent=c.slice(-20);
   const structural=d==="LONG"
@@ -537,7 +549,7 @@ function checkEntry1Exhaustion(direction:Direction,r:number,st:{k:number;d:numbe
 
 export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],activeTrades:any[]=[],currentPrice?:number,lastBreakout?:BreakoutRecord,dailyLive?:DailyLiveContext,candlesWeekly:Candle[]=[]):SignalResult{
   const debug:string[]=[];const now=Date.now();if(candles4h.length<35){debug.push("Insufficient 4H data");return{debug};}
-  const price=currentPrice??candles4h.at(-1)!.close,closed=candles4h.slice(0,-1),localDaily=bias(candles4h),dDir=dailyDirection(dailyLive,localDaily),dailyBreakout=dailyBreakoutContext(candles4h),weekly=weeklyDirection(candlesWeekly,price);
+  const price=currentPrice??candles4h.at(-1)!.close,closed=candles4h.slice(0,-1),localDaily=bias(candles4h),dDir=dailyDirection(dailyLive,localDaily),dailyBreakout=dailyBreakoutContext(candles4h),dailyFade=dailyFadeContext(candles4h),weekly=weeklyDirection(candlesWeekly,price);
   const structure=detectStructureShift(pair,closed),structureDir=structure.state==="HEALTHY"&&(structure.structure==="LONG"||structure.structure==="SHORT")?structure.structure as Direction:null;
   const fourH=get4HEmaDiagnostic(closed),macd=macd4h(closed),closes=closed.map(x=>x.close),st=stochRsi(closes),prevClosed=closed.length>1?closed.slice(0,-1):closed,prevSt=stochRsi(prevClosed.map(x=>x.close)),r=Math.round(rsi(closes)*10)/10,a=adx(closed),av=atr(closed);
   const longTL=buildTrendline(closed,"LONG"),shortTL=buildTrendline(closed,"SHORT"),longFib=getFibLevels(closed,"LONG"),shortFib=getFibLevels(closed,"SHORT");logFib(debug,pair,"LONG",longFib,price);logFib(debug,pair,"SHORT",shortFib,price);
@@ -672,12 +684,14 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const longRunway=entry1Runway(closed,longFib,price,"LONG");
   const shortRunway=entry1Runway(closed,shortFib,price,"SHORT");
   const longEntry1=dailyLongAllowed&&longLocation&&long4HTransition&&longRunway.available&&!longExhausted&&longMomentumState==="IMPROVING";
-  const shortEntry1=dailyShortAllowed&&shortLocation&&short4HTransition&&shortRunway.available&&!shortExhausted&&shortMomentumState==="IMPROVING";
+  const shortFadeEntry1=dailyFade.shortWatch&&shortLocation&&short4HTransition&&shortRunway.available&&!shortExhausted&&shortMomentumState==="IMPROVING";
+  const shortEntry1=(dailyShortAllowed||shortFadeEntry1)&&shortLocation&&short4HTransition&&shortRunway.available&&!shortExhausted&&shortMomentumState==="IMPROVING";
 
   debug.push(`[1W] ${pair} | ${weekly.direction||"NEUTRAL"} | direction=${weekly.direction||"NEUTRAL"} | ${weekly.reason} | 5/13=${weekly.ema5.toFixed(2)}/${weekly.ema13.toFixed(2)} | ADX=${weekly.adx}`);
   debug.push(`[1D] ${pair} | ${dailyLive?.state||"LOCAL"}/${dailyLive?.candidateState||"—"} | ${dDir} | ${((weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"))?"SUPPORTIVE":"COUNTER/NEUTRAL"}`);
   debug.push(`[4H] ${pair} | 5/13=${fourH.label} | MACD=${macd.bullishShift?"BULL_IMPROVING":macd.bearishShift?"BEAR_IMPROVING":"NEUTRAL"} | Stoch=${st.k}/${st.d} prev=${prevSt.k}/${prevSt.d} | Momentum=${compositeMomentumState(closed,structureDir||(dDir==="BEAR"?"SHORT":"LONG"),st,macd,fourH)}`);
   debug.push(`[TL] ${pair} | LONG=${longTL.valid?longTL.price.toFixed(2):"—"} dist=${isFinite(longDist)?(longDist*100).toFixed(2)+"%":"—"} | SHORT=${shortTL.valid?shortTL.price.toFixed(2):"—"} dist=${isFinite(shortDist)?(shortDist*100).toFixed(2)+"%":"—"}`);
+  debug.push(`[1D FADE WATCH] ${pair} | shortWatch=${dailyFade.shortWatch?"YES":"NO"} | failedBreak=${dailyFade.failedBreak?"YES":"NO"} | level=${dailyFade.level?.toFixed(2)||"—"} | dist=${Number.isFinite(dailyFade.distPct)?dailyFade.distPct.toFixed(2)+"%":"—"} | Stoch=${dailyFade.stochK}/${dailyFade.stochD} | ${dailyFade.reason||"NONE"}`);
   debug.push(`[ENTRY_1 EXHAUSTION] ${pair} | RSI=${r} | LONG=${longExhausted?"BLOCK":"CLEAR"}${longExhaustion.reason?` (${longExhaustion.reason})`:""} | SHORT=${shortExhausted?"BLOCK":"CLEAR"}${shortExhaustion.reason?` (${shortExhaustion.reason})`:""}`);
   debug.push(`[FIB PATH] ${pair} | LONG=${longFibPath.state}/${longFibPath.trigger} age=${Number.isFinite(longFibPath.triggerAge)?longFibPath.triggerAge:"—"} fresh=${longFibPath.fresh?"YES":"NO"} | SHORT=${shortFibPath.state}/${shortFibPath.trigger} age=${Number.isFinite(shortFibPath.triggerAge)?shortFibPath.triggerAge:"—"} fresh=${shortFibPath.fresh?"YES":"NO"}`);
   debug.push(`[ENTRY_1 DECISION] ${pair} | 1D=${dDir} | HTF=${dailyTransitionBlocked?"TRANSITION_BLOCK":"CONTEXT_ONLY"} | Permission=EARLY_4H | MomentumLong=${longMomentumCount}/3 | MomentumShort=${shortMomentumCount}/3 | Stoch=${stochLong?"LONG":stochShort?"SHORT":"NONE"} | FibPath=${longLocation?"LONG":shortLocation?"SHORT":"NONE"} | finalDecision=${longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE"}`);
@@ -687,12 +701,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const market=(m:any)=>Object.assign(m||baseMarket(),{
     weeklyDirection:weekly.direction,weeklyDirectionReason:weekly.reason,weeklySupportive:(weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"),entry1Direction:longEntry1?"LONG":shortEntry1?"SHORT":"NEUTRAL",entry1Decision:longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE",
     entry1TriggersLong:longMomentumCount,entry1TriggersShort:shortMomentumCount,entry1MomentumStateLong:longMomentumState,entry1MomentumStateShort:shortMomentumState,entry1StructuralLocation:longLocation?"LONG":shortLocation?"SHORT":"NONE",
-    entry1FibPathLong:longFibPath,entry1FibPathShort:shortFibPath,
+    entry1FibPathLong:longFibPath,entry1FibPathShort:shortFibPath,dailyFadeContext:dailyFade,
     entry1NearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",entry1LiveNearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",
     entry1LiveDistPct:longEntry1?longDist*100:shortEntry1?shortDist*100:null,entry1PreBreak:longPreBreak||shortPreBreak,
     entry1ExecutionAllowed:longEntry1||shortEntry1,weeklyGateLong:false,weeklyGateShort:false,volatilityPct:price>0?round((av/price)*100):0,entry1MaxEntry:longNearFib&&longFibNearest?round(longFibNearest[1]*(1+ENTRY1_FIB_ZONE_PCT)):shortNearFib&&shortFibNearest?round(shortFibNearest[1]*(1-ENTRY1_FIB_ZONE_PCT)):null,
     entry1Chase:false,entry1Exhaustion:longExhausted?"LONG":shortExhausted?"SHORT":"NONE",entry1DailyConflict:dailyTransitionBlocked?"TRANSITION_BLOCK":"NONE",entry1ClosedRsi:r,
-    entry1Grade:longEntry1||shortEntry1?"A":null,entry1TriggerThreshold:0,entry1MomentumRequired:false,entry1ExhaustionThreshold:dDir==="BULL"?ENTRY1_LONG_EXHAUSTION_RSI:ENTRY1_SHORT_EXHAUSTION_RSI
+    entry1Grade:longEntry1||shortEntry1?"A":null,entry1TriggerThreshold:0,entry1MomentumRequired:false,entry1ExhaustionThreshold:dDir==="BULL"?ENTRY1_LONG_EXHAUSTION_RSI:ENTRY1_SHORT_EXHAUSTION_RSI,dailyFadeShortWatch:dailyFade.shortWatch,dailyFadeFailedBreak:dailyFade.failedBreak,dailyFadeLevel:dailyFade.level,dailyFadeStochK:dailyFade.stochK,dailyFadeStochD:dailyFade.stochD
   });
 
   const closedIndex=closed.length-1;
@@ -809,7 +823,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const trendAlignment=dailyAligned?"WITH_1D":"AGAINST_1D";
   const breakoutRecord:BreakoutRecord|undefined=type==="ENTRY_2"?(dir==="LONG"?{direction:"LONG",price:round(longExec.linePrice??price),timestamp:now,candleIndex:developing4HIndex}:{direction:"SHORT",price:round(shortExec.linePrice??price),timestamp:now,candleIndex:developing4HIndex}):undefined;
   const location=type==="ENTRY_1"?"EARLY_STRUCTURAL":"15M_TRENDLINE_RETEST";
-  const entry1Trigger="1D_BREAKOUT→4H_TRANSITION";
+  const entry1Trigger=type==="ENTRY_1"&&dir==="SHORT"&&shortFadeEntry1?"1D_OVERBOUGHT_RESISTANCE→4H_FADE":"1D_BREAKOUT→4H_TRANSITION";
   const trigger=type==="ENTRY_1"?(entry1Trigger||"4H_STRUCTURE_REACTION"):"4H_BREAKOUT→15M_DIP";
   const signal:Signal={id:`${pair}_${type}_${now}`,pair,direction:dir,type,scale:type,entry:round(entry),stop:round(stop),target:round(target),tp1:round(tp1),tp2:round(tp2),confidence:type==="ENTRY_1"?70:type==="ENTRY_2"?80:85,rr:1.5,adx:a,rsi:r,stochK:st.k,stochD:st.d,expectedMove:Math.round(tp2Move*1000)/10,reason:`${dir} ${type} | ${reason} | ${trendAlignment}`,timestamp:now,version:CURRENT_SIGNAL_VERSION,trend:`${dir} | 1W ${weekly.direction||"NEUTRAL"} | 1D ${dDir} | 4H ${strength(daily(candles4h),dir)}`,location,trigger,context:{
     marketPhase:type==="ENTRY_1"?`${dir} PROBABILITY EARLY SETUP`:`${dir} CONFIRMED ENTRY_2`,
