@@ -36,6 +36,14 @@ export interface JarvisSnapshot {
 
 const stateRank:Record<JarvisState,number>={ACCUMULATING:0,TRANSITIONING:1,DETERIORATING:2,BROKEN:3};
 
+function dailyFadeAssessment(m:any){
+  const watch=!!m?.dailyFadeShortWatch,failed=!!m?.dailyFadeFailedBreak;
+  const k=Number(m?.dailyFadeStochK),d=Number(m?.dailyFadeStochD),level=Number(m?.dailyFadeLevel),price=Number(m?.price);
+  const fourH=String(m?.fourH513?.direction||""),label=String(m?.fourH513?.label||"");
+  const fourHShortTransition=fourH==="BEARISH"||/BEARISH TREND TURNING|BEARISH LOW|BEARISH CROSS/.test(label);
+  return{watch,failed,k,d,level,price,fourHShortTransition};
+}
+
 function directionOf(m:any):"LONG"|"SHORT"|"NEUTRAL" {
   const d=m?.entry1Direction || m?.fourH513?.direction || m?.dailyLive?.direction;
   if(d==="LONG"||d==="BULLISH"||String(d).startsWith("BULL")) return "LONG";
@@ -101,6 +109,7 @@ function pairState(m:any, active:any):JarvisPairState {
   const e=m?.fourH513||{};
   const label=String(e.label||"");
   const fourHDir=String(e.direction||"");
+  const fade=dailyFadeAssessment(m);
   const ss=m?.structureShift||{};
   const structure=String(ss.structure||"NEUTRAL");
   const entryType=String(active?.type||"");
@@ -111,10 +120,12 @@ function pairState(m:any, active:any):JarvisPairState {
   const confirmedOppositeStructure=ss?.state==="SHIFT_CONFIRMED" && ((dir==="LONG"&&structure==="SHORT")||(dir==="SHORT"&&structure==="LONG"));
   const managementExit=active?.positionManagementState==="EXIT";
   const continuationAgainst=opposite4H && ((dir==="LONG"&&/BEARISH LOW|BEARISH CROSS/.test(label))||(dir==="SHORT"&&/BULLISH LOW|BULLISH CROSS/.test(label))) && !!e.spreadContracting;
+  const fadeShortReady=!active&&fade.watch&&fade.fourHShortTransition;
+  const fadeShortConfirmed=fadeShortReady&&(fade.failed||fourHDir==="BEARISH");
   let momentum:"SUPPORTIVE"|"WEAKENING"|"BREAKDOWN"="SUPPORTIVE";
   if(confirmedOppositeStructure||managementExit) momentum="BREAKDOWN";
   else if(continuationAgainst || (opposite4H && (!earlySetup || !priceActionReversal))) momentum="WEAKENING";
-  const verdict:JarvisVerdict=confirmedOppositeStructure||managementExit?"BAD":momentum==="WEAKENING"?"CAUTION":opposite4H&&earlySetup&&priceActionReversal?"CAUTION":"GOOD";
+  const verdict:JarvisVerdict=confirmedOppositeStructure||managementExit?"BAD":fadeShortConfirmed?"CAUTION":momentum==="WEAKENING"?"CAUTION":opposite4H&&earlySetup&&priceActionReversal?"CAUTION":"GOOD";
   let state:JarvisState="ACCUMULATING";
   if(verdict==="BAD")state="BROKEN"; else if(verdict==="CAUTION")state="DETERIORATING";
   const reasons:string[]=[];
@@ -122,10 +133,12 @@ function pairState(m:any, active:any):JarvisPairState {
   if(earlySetup)reasons.push("V28 early-entry thesis");
   if(priceActionReversal)reasons.push("4H price-action reversal");
   if(m?.dailyLive?.state)reasons.push(`1D ${m.dailyLive.state}`);
+  if(fade.watch) reasons.push(`1D fade-watch SHORT${fade.failed?" · failed breakout":" · resistance approach"} · Stoch ${fade.k}/${fade.d}`);
+  if(fadeShortReady) reasons.push("4H short transition developing");
   if(label)reasons.push(`4H ${label}`);
   if(confirmedOppositeStructure)reasons.push("opposite structure confirmed");
   const thesis=active ? verdict==="BAD" ? "V28 thesis has materially failed: the 4H/structure evidence now confirms the move against the position." : verdict==="CAUTION" ? (earlySetup&&priceActionReversal ? "The V28 early-entry thesis is still valid, but the 4H has not fully confirmed the reversal yet." : "The V28 thesis is under pressure, but there is not yet enough evidence to call it broken.") : "The V28 thesis is behaving as intended and the 4H remains supportive." : verdict==="CAUTION" ? (earlySetup&&priceActionReversal ? "V28 is identifying an early reversal; opposing 4H direction is expected until confirmation." : "Market evidence is mixed; JARVIS is watching for the next structural move.") : verdict==="BAD" ? "The current 4H/structure evidence is materially opposed; there is no active position." : "Closed 4H evidence is currently compatible with the active V28 direction.";
-  const watch=verdict==="BAD" ? "Confirmed failure. Review the position; recovery/reclaim is needed before the thesis can improve." : verdict==="CAUTION" ? (earlySetup&&priceActionReversal ? "Watch the next closed 4H candle for confirmation of the reversal — or renewed downside continuation." : "Watch the next closed 4H candle for confirmation or deterioration.") : "Keep watching each closed 4H candle for loss of momentum or structural failure.";
+  const watch=verdict==="BAD" ? "Confirmed failure. Review the position; recovery/reclaim is needed before the thesis can improve." : fadeShortConfirmed ? "1D is at overbought resistance; the short is only actionable when 4H bearish structure confirms. Watch the next closed 4H candle for rejection or renewed upside acceptance." : verdict==="CAUTION" ? (earlySetup&&priceActionReversal ? "Watch the next closed 4H candle for confirmation of the reversal — or renewed downside continuation." : "Watch the next closed 4H candle for confirmation or deterioration.") : "Keep watching each closed 4H candle for loss of momentum or structural failure.";
   const changed=`${verdict} · ${reasons.join(" · ")||"market context only"}`;
   const momentumSignature=active?`${dir}:${momentum}:${label}:${e.spreadContracting?"CONTRACTING":"EXPANDING"}`:"NO_POSITION";
   const current=currentAnalysis(m,active,momentum,verdict);
