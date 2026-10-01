@@ -11,6 +11,7 @@ import { sendAlert } from "@/lib/telegram";
 import { run1DTrendExperiment } from "@/lib/1d-trend-runner";
 import { get1DTrendState } from "@/lib/1d-trend-state";
 import { runJarvis, reviewFiredSignal } from "@/lib/jarvis";
+import { getMarketHealth } from "@/lib/market-health";
 
 export const dynamic="force-dynamic";
 export const revalidate=0;
@@ -95,6 +96,11 @@ export async function GET(request:Request){
 
  // The 1D experiment is now live context for entry timing. It still does not
  // execute trades by itself; the strategy supplies the execution-grade entry/SL/TP model.
+ let marketHealth:any=null;
+ try{
+   marketHealth=await getMarketHealth();
+   console.log(`[MARKET HEALTH] BTC.D ${marketHealth.btcDominance??"—"} (${marketHealth.btcDominanceChange24h??"—"}pp) | USDT.D ${marketHealth.usdtDominance??"—"} (${marketHealth.usdtDominanceChange24h??"—"}pp) | TOTAL ${marketHealth.totalMarketCapChange24h??"—"}% | ALT ${marketHealth.altContext}`);
+ }catch(error){console.error("[MARKET HEALTH] refresh failed",error);}
  let dailyState:any={};
  try{
    await run1DTrendExperiment(active);
@@ -118,7 +124,7 @@ export async function GET(request:Request){
   const breakoutMaxAgeMs=32*15*60*1000;
   const lastBreakout=storedBreakout&&Date.now()-storedBreakout.timestamp>=0&&Date.now()-storedBreakout.timestamp<=breakoutMaxAgeMs?storedBreakout:undefined;
   if(VERBOSE_CRON_LOGS)console.log(`[BREAKOUT STATE] ${pair} — ${lastBreakout?`${lastBreakout.direction}@${lastBreakout.price} candle=${lastBreakout.candleIndex} age=${c4.length-1-lastBreakout.candleIndex}`:"NONE"}`);
-  const live1D=dailyState[pair]||undefined;const result=generateSignal(pair,c1,c4,c15,active,price,lastBreakout,live1D,cW);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);if(pair==="BTC"||pair==="ETH")snapshot.cycleRunner=getCycleRunnerSnapshot(pair,c1,c4,cW,price);snapshot.fourH513=ema513;snapshot.structureShift=structureShift;snapshot.lastBreakout=lastBreakout||null;snapshot.dailyLive=live1D||null;
+  const live1D=dailyState[pair]||undefined;const result=generateSignal(pair,c1,c4,c15,active,price,lastBreakout,live1D,cW,marketHealth);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);if(pair==="BTC"||pair==="ETH")snapshot.cycleRunner=getCycleRunnerSnapshot(pair,c1,c4,cW,price);snapshot.fourH513=ema513;snapshot.structureShift=structureShift;snapshot.lastBreakout=lastBreakout||null;snapshot.dailyLive=live1D||null;
   if(result.breakout){await setLastBreakout(pair,result.breakout);if(VERBOSE_CRON_LOGS)console.log(`[BREAKOUT STATE] ${pair} — recorded ${result.breakout.direction}@${result.breakout.price} candle=${result.breakout.candleIndex}`);}
   const dbg=result.debug||[];if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   if(existing){snapshot.positionState="ACTIVE";snapshot.positionDirection=existing.direction;snapshot.positionEntry=existing.entry;snapshot.positionStop=existing.stop;snapshot.positionTarget=existing.tp2??existing.target;snapshot.positionTp1=existing.tp1;snapshot.positionTp2=existing.tp2;const mg=managementByPair[pair];if(mg){snapshot.positionManagementState=mg.state;snapshot.positionManagementRecommendation=mg.recommendation;snapshot.positionManagementReason=mg.reason;}snapshot.positionTp1HitAt=existing.tp1HitAt;snapshot.positionTp2HitAt=existing.tp2HitAt;console.log(`[PAIR] ${pair} | ACTIVE ${existing.direction} | entry engine paused`);}
