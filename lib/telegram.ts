@@ -52,11 +52,31 @@ export async function sendAlert(signal:any){
   const jarvisLine=jarvis?.verdict
     ? `JARVIS: ${jarvis.verdict} · ${jarvis.summary||""}`
     : "";
+  const context=signal.context||{};
+  const trigger=signal.trigger||context.entry1Trigger||"";
+  const dailyBreakout=context.dailyBreakout;
+  const runway=context.runway;
+  const dailyFade=context.dailyFade;
+  const setupLine=type==="ENTRY_1"&&trigger ? `Setup: ${trigger}` : "";
+  const dailyLine=type==="ENTRY_1"
+    ? dailyFade?.shortWatch
+      ? `1D Fade Watch: ${dailyFade.failedBreak?"FAILED BREAKOUT":"RESISTANCE APPROACH"} · Stoch ${dailyFade.stochK??"-"}/${dailyFade.stochD??"-"}`
+      : dailyBreakout
+        ? `1D Breakout: ${dailyBreakout.direction||"—"} · level ${formatPrice(dailyBreakout.level??dailyBreakout.price)}`
+        : "1D Breakout: not exposed"
+    : "";
+  const runwayLine=type==="ENTRY_1"&&runway
+    ? `Runway: ${runway.pct!==null&&runway.pct!==undefined?runway.pct.toFixed(2)+"%":"—"}${runway.preferred?" · preferred":""}${runway.obstacle!==null&&runway.obstacle!==undefined?` · obstacle ${formatPrice(runway.obstacle)}`:""}`
+    : "";
+
   const lines=[
     `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${label}`,"",
     `${dir} ${signal.symbol} — ${signal.bias}`,"",
     `Price: ${formatPrice(signal.price??signal.entry)}`,"",
     jarvisLine,"",
+    setupLine,
+    dailyLine,
+    runwayLine,
     entryZone,
     `4H 5/13: ${fourH513}`,"",
     `SL: ${formatPrice(signal.stopLoss)}`,
