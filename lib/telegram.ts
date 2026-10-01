@@ -75,7 +75,7 @@ export async function sendAlert(signal:any){
     ? `Location: ${location.quality} · Fib ${location.nearFib?"YES":"NO"} · level ${location.nearSwing?"YES":"NO"} · compression ${compression?.compressed?"YES":"NO"}`
     : "";
   const marketLine=market
-    ? `Market: BTC.D ${market.btcDominance??"—"} (${market.btcDominanceChange24h!=null?(market.btcDominanceChange24h>=0?"+":"")+market.btcDominanceChange24h.toFixed(2)+"pp":"—"}) · USDT.D ${market.usdtDominance??"—"} (${market.usdtDominanceChange24h!=null?(market.usdtDominanceChange24h>=0?"+":"")+market.usdtDominanceChange24h.toFixed(2)+"pp":"—"}) · TOTAL ${market.totalMarketCapChange24h!=null?(market.totalMarketCapChange24h>=0?"+":"")+market.totalMarketCapChange24h.toFixed(2)+"%":"—"} · ALT ${market.altContext}`
+    ? `Market: BTC.D ${market.btcDominance??"—"} (${market.btcDominanceRelative24h!=null?(market.btcDominanceRelative24h>=0?"+":"")+market.btcDominanceRelative24h.toFixed(2)+"pp":"—"}) · USDT.D ${market.usdtDominance??"—"} (${market.usdtDominanceRelative24h!=null?(market.usdtDominanceRelative24h>=0?"+":"")+market.usdtDominanceRelative24h.toFixed(2)+"pp":"—"}) · TOTAL ${market.totalMarketCapChange24h!=null?(market.totalMarketCapChange24h>=0?"+":"")+market.totalMarketCapChange24h.toFixed(2)+"%":"—"} · ALT ${market.altContext}`
     : "";
 
   const lines=[
