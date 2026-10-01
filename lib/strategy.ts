@@ -9,6 +9,7 @@
 
 import { get4HEmaDiagnostic } from "./ema-diagnostic";
 import { detectStructureShift } from "./structure-shift";
+import type { MarketHealth } from "./market-health";
 
 export interface Candle { timestamp:number; open:number; high:number; low:number; close:number; volume:number; }
 export interface BreakoutRecord { direction:"LONG"|"SHORT"; price:number; timestamp:number; candleIndex:number; }
@@ -440,6 +441,31 @@ function dailyFadeContext(c4:Candle[]){
   const overbought=st.k>=DAILY_FADE_STOCH&&st.k>=st.d,shortWatch=(nearUpper||sweptAndRejected)&&overbought;
   return{shortWatch,failedBreak:sweptAndRejected,level:priorHigh,distPct:dist*100,stochK:st.k,stochD:st.d,reason:shortWatch?(sweptAndRejected?"1D_RESISTANCE_SWEEP_REJECTED + STOCH_OVERBOUGHT":"1D_RESISTANCE_APPROACH + STOCH_OVERBOUGHT"):""};
 }
+function locationQuality(c:Candle[],f:FibLevels|null,tl:Trendline,price:number,d:Direction){
+  const recent=c.slice(-20);
+  const fibLevels=f?[f.fib382,f.fib50,f.fib618]:[];
+  const nearFib=fibLevels.some(x=>Math.abs((price-x)/Math.max(price,1))<=ENTRY1_FIB_ZONE_PCT);
+  const nearSwing=!!f&&Math.abs((price-(d==="LONG"?f.swingLow:f.swingHigh))/Math.max(price,1))<=0.02;
+  const nearTrendline=tl.valid&&Math.abs((price-tl.price)/Math.max(price,1))<=0.025;
+  const rangeHigh=Math.max(...recent.map(x=>x.high)),rangeLow=Math.min(...recent.map(x=>x.low));
+  const rangePct=(rangeHigh-rangeLow)/Math.max(price,1);
+  const positionPct=rangePct>0?(price-rangeLow)/(rangeHigh-rangeLow):0.5;
+  const directionalLocation=d==="LONG"?positionPct<=0.45:d==="SHORT"?positionPct>=0.55:false;
+  const score=[nearFib,nearSwing,nearTrendline,directionalLocation].filter(Boolean).length;
+  return{score,quality:score>=3?"HIGH":score===2?"MEDIUM":"LOW",nearFib,nearSwing,nearTrendline,directionalLocation,rangePct:rangePct*100,rangePosition:positionPct*100};
+}
+function compressionContext(c:Candle[]){
+  if(c.length<30)return{compressed:false,ratio:null,rangeRatio:null};
+  const tr=(x:Candle,p:Candle)=>Math.max(x.high-x.low,Math.abs(x.high-p.close),Math.abs(x.low-p.close));
+  const trs=c.slice(1).map((x,i)=>tr(x,c[i]));
+  const recent=trs.slice(-6),base=trs.slice(-24,-6);
+  const avg=(a:number[])=>a.reduce((s,x)=>s+x,0)/Math.max(a.length,1);
+  const ratio=avg(recent)/Math.max(avg(base),1e-9);
+  const rrRecent=(Math.max(...c.slice(-6).map(x=>x.high))-Math.min(...c.slice(-6).map(x=>x.low)))/Math.max(c.at(-1)!.close,1);
+  const rrBase=(Math.max(...c.slice(-24,-6).map(x=>x.high))-Math.min(...c.slice(-24,-6).map(x=>x.low)))/Math.max(c.at(-1)!.close,1);
+  const rangeRatio=rrRecent/Math.max(rrBase,1e-9);
+  return{compressed:ratio<0.8&&rangeRatio<0.8,ratio,rangeRatio};
+}
 function entry1Runway(c:Candle[],f:FibLevels|null,price:number,d:Direction){
   const recent=c.slice(-20);
   const structural=d==="LONG"
@@ -547,7 +573,7 @@ function checkEntry1Exhaustion(direction:Direction,r:number,st:{k:number;d:numbe
   return{blocked:false,reason:""};
 }
 
-export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],activeTrades:any[]=[],currentPrice?:number,lastBreakout?:BreakoutRecord,dailyLive?:DailyLiveContext,candlesWeekly:Candle[]=[]):SignalResult{
+export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[],candles15m:Candle[],activeTrades:any[]=[],currentPrice?:number,lastBreakout?:BreakoutRecord,dailyLive?:DailyLiveContext,candlesWeekly:Candle[]=[],marketHealth?:MarketHealth):SignalResult{
   const debug:string[]=[];const now=Date.now();if(candles4h.length<35){debug.push("Insufficient 4H data");return{debug};}
   const price=currentPrice??candles4h.at(-1)!.close,closed=candles4h.slice(0,-1),localDaily=bias(candles4h),dDir=dailyDirection(dailyLive,localDaily),dailyBreakout=dailyBreakoutContext(candles4h),dailyFade=dailyFadeContext(candles4h),weekly=weeklyDirection(candlesWeekly,price);
   const structure=detectStructureShift(pair,closed),structureDir=structure.state==="HEALTHY"&&(structure.structure==="LONG"||structure.structure==="SHORT")?structure.structure as Direction:null;
@@ -804,6 +830,8 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   // BTC/ETH and higher-beta alts without imposing one fixed percentage.
   const minTp1Distance=Math.max(entry*0.0035,av*0.5);
   const meaningfulForwardLevels=forwardLevels.filter(x=>Math.abs(x-entry)>=minTp1Distance);
+  const locationDiag=locationQuality(closed,dir==="LONG"?longFib:shortFib,dir==="LONG"?longTL:shortTL,price,dir);
+  const compressionDiag=compressionContext(closed);
   const runway=type==="ENTRY_1"?(dir==="LONG"?longRunway:shortRunway):{available:true,pct:Infinity,obstacle:null,preferred:true};
   const entry1MinTarget=entry*(1+ENTRY1_MIN_RUNWAY_PCT*(dir==="LONG"?1:-1));
   const entry1PreferredTarget=entry*(1+ENTRY1_PREFERRED_RUNWAY_PCT*(dir==="LONG"?1:-1));
@@ -830,7 +858,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
     marketPhase:type==="ENTRY_1"?`${dir} PROBABILITY EARLY SETUP`:`${dir} CONFIRMED ENTRY_2`,
     structure:structureDir?`4H ${structureDir}`:"4H STRUCTURE TRANSITION",momentum:`RSI ${r} | Stoch ${st.k}/${st.d} | MACD hist ${round(macd.histogram)}`,
     pullback:type==="ENTRY_2"?"15M_DIP_TO_4H_TRENDLINE":dir==="LONG"?longFibPath.trigger:shortFibPath.trigger,
-    fourH513:fourH,daily513:getDaily513Diagnostic(candles4h),dailyLive:dailyLive||null,weeklyDirection:weekly.direction,weeklyContext:weekly,macd4h:macd,trendAlignment,sizeMultiplier:riskMultiplier,entry1Trigger:entry1Trigger||null,dailyBreakout:dailyBreakout||null,dailyFade:{shortWatch:!!dailyFade.shortWatch,failedBreak:!!dailyFade.sweptAndRejected,level:dailyFade.level??null,stochK:dailyFade.stochK??null,stochD:dailyFade.stochD??null},runway:{available:runway.available,pct:Number.isFinite(runway.pct)?round(runway.pct*100):null,preferred:!!runway.preferred,obstacle:runway.obstacle??null},momentumState:dir==="LONG"?longMomentumState:shortMomentumState,
+    fourH513:fourH,daily513:getDaily513Diagnostic(candles4h),dailyLive:dailyLive||null,weeklyDirection:weekly.direction,weeklyContext:weekly,macd4h:macd,trendAlignment,sizeMultiplier:riskMultiplier,entry1Trigger:entry1Trigger||null,dailyBreakout:dailyBreakout||null,dailyFade:{shortWatch:!!dailyFade.shortWatch,failedBreak:!!dailyFade.sweptAndRejected,level:dailyFade.level??null,stochK:dailyFade.stochK??null,stochD:dailyFade.stochD??null},runway:{available:runway.available,pct:Number.isFinite(runway.pct)?round(runway.pct*100):null,preferred:!!runway.preferred,obstacle:runway.obstacle??null},momentumState:dir==="LONG"?longMomentumState:shortMomentumState,marketHealth:marketHealth||null,locationQuality:locationDiag,compression:compressionDiag,
     risk:{baseRisk:round(risk),structuralRisk:round(structuralRisk),positionSize:round(risk*riskMultiplier),trendAlignment,sizeMultiplier:riskMultiplier,volatilityPct:round(volatilityPct),volatilityMultiplier,estimatedLiquidation:round(liquidation),safeBoundary:round(safe),leverage:LEVERAGE},
     entryGuard:{referenceFib:dir==="LONG"?longFibNearest:shortFibNearest,referenceTrendline:dir==="LONG"?(longTL.valid?round(longTL.price):null):(shortTL.valid?round(shortTL.price):null),trendlineDistancePct:round((dir==="LONG"?longDist:shortDist)*100),executionDistancePct:round((dir==="LONG"?longFibDist:shortFibDist)*100),maxEntry:dir==="LONG"?(longFibNearest?round(longFibNearest[1]):null):(shortFibNearest?round(shortFibNearest[1]):null),maxDistancePct:ENTRY1_FIB_ZONE_PCT*100},
     entry1CandleTimestamp:entryLast.timestamp,entry1ClosedCandleIndex:closed.length-1,volatilityPct:round(volatilityPct),volatilityMultiplier,
