@@ -71,7 +71,8 @@ export function get4HEmaDiagnostic(candles4h: Candle[]): EmaDiagnostic {
 
   const direction = stage.includes("BULLISH") ? "BULLISH" : stage.includes("BEARISH") ? "BEARISH" : "NEUTRAL";
   const baseLabel = stage === "EARLY_BULLISH_L1" ? "EARLY BULLISH — LEVEL 1" : stage === "EARLY_BULLISH_L2" ? "EARLY BULLISH — LEVEL 2" : stage === "BULLISH_CROSS" ? "BULLISH CROSS" : stage === "BULLISH_LOW" ? "BULLISH LOW" : stage === "BULLISH_MEDIUM" ? "BULLISH MEDIUM" : stage === "BULLISH_HIGH" ? "BULLISH HIGH" : stage === "EARLY_BEARISH_L1" ? "EARLY BEARISH — LEVEL 1" : stage === "EARLY_BEARISH_L2" ? "EARLY BEARISH — LEVEL 2" : stage === "BEARISH_CROSS" ? "BEARISH CROSS" : stage === "BEARISH_LOW" ? "BEARISH LOW" : stage === "BEARISH_MEDIUM" ? "BEARISH MEDIUM" : stage === "BEARISH_HIGH" ? "BEARISH HIGH" : "NEUTRAL";
-  const label = turning ? `${spread > 0 ? "BULLISH" : "BEARISH"} TREND TURNING` : baseLabel;
+  const turningDirection = spread > 0 ? "BEARISH" : spread < 0 ? "BULLISH" : "NEUTRAL";
+  const label = turning ? `${turningDirection} TREND TURNING` : baseLabel;
 
   return {
     stage, label, direction, turning, ema5, ema13, ema5Prev, ema13Prev, spread,
