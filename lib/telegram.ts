@@ -68,6 +68,15 @@ export async function sendAlert(signal:any){
   const runwayLine=type==="ENTRY_1"&&runway
     ? `Runway: ${runway.pct!==null&&runway.pct!==undefined?runway.pct.toFixed(2)+"%":"—"}${runway.preferred?" · preferred":""}${runway.obstacle!==null&&runway.obstacle!==undefined?` · obstacle ${formatPrice(runway.obstacle)}`:""}`
     : "";
+  const location=context.locationQuality;
+  const compression=context.compression;
+  const market=context.marketHealth;
+  const qualityLine=type==="ENTRY_1"&&location
+    ? `Location: ${location.quality} · Fib ${location.nearFib?"YES":"NO"} · level ${location.nearSwing?"YES":"NO"} · compression ${compression?.compressed?"YES":"NO"}`
+    : "";
+  const marketLine=market
+    ? `Market: BTC.D ${market.btcDominance??"—"} (${market.btcDominanceChange24h!=null?(market.btcDominanceChange24h>=0?"+":"")+market.btcDominanceChange24h.toFixed(2)+"pp":"—"}) · USDT.D ${market.usdtDominance??"—"} (${market.usdtDominanceChange24h!=null?(market.usdtDominanceChange24h>=0?"+":"")+market.usdtDominanceChange24h.toFixed(2)+"pp":"—"}) · TOTAL ${market.totalMarketCapChange24h!=null?(market.totalMarketCapChange24h>=0?"+":"")+market.totalMarketCapChange24h.toFixed(2)+"%":"—"} · ALT ${market.altContext}`
+    : "";
 
   const lines=[
     `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${label}`,"",
@@ -77,6 +86,8 @@ export async function sendAlert(signal:any){
     setupLine,
     dailyLine,
     runwayLine,
+    qualityLine,
+    marketLine,
     entryZone,
     `4H 5/13: ${fourH513}`,"",
     `SL: ${formatPrice(signal.stopLoss)}`,
