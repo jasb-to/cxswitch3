@@ -99,7 +99,7 @@ export async function GET(request:Request){
  let marketHealth:any=null;
  try{
    marketHealth=await getMarketHealth();
-   console.log(`[MARKET HEALTH] BTC.D ${marketHealth.btcDominance??"—"} (${marketHealth.btcDominanceChange24h??"—"}pp) | USDT.D ${marketHealth.usdtDominance??"—"} (${marketHealth.usdtDominanceChange24h??"—"}pp) | TOTAL ${marketHealth.totalMarketCapChange24h??"—"}% | ALT ${marketHealth.altContext}`);
+   console.log(`[MARKET HEALTH] BTC.D ${marketHealth.btcDominance??"—"} (rel ${marketHealth.btcDominanceRelative24h??"—"}%) | USDT.D ${marketHealth.usdtDominance??"—"} (rel ${marketHealth.usdtDominanceRelative24h??"—"}%) | TOTAL ${marketHealth.totalMarketCapChange24h??"—"}% | ALT ${marketHealth.altContext}`);
  }catch(error){console.error("[MARKET HEALTH] refresh failed",error);}
  let dailyState:any={};
  try{
