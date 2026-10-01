@@ -23,6 +23,7 @@ export interface JarvisPairState {
   updatedAt: number;
   momentum?: "SUPPORTIVE"|"WEAKENING"|"BREAKDOWN";
   momentumSignature?: string;
+  currentAnalysis?: string;
   tradeDecision?: "STAY IN TRADE"|"EXIT TRADE";
 }
 
@@ -42,6 +43,59 @@ function directionOf(m:any):"LONG"|"SHORT"|"NEUTRAL" {
   return "NEUTRAL";
 }
 
+function currentAnalysis(m:any, active:any, momentum:"SUPPORTIVE"|"WEAKENING"|"BREAKDOWN", verdict:JarvisVerdict):string {
+  const price=Number(m?.price);
+  const entry=Number(active?.entry);
+  const dir=active?.direction==="SHORT"?"SHORT":active?.direction==="LONG"?"LONG":directionOf(m);
+  const label=String(m?.fourH513?.label||"");
+  const location=String(m?.location||"");
+  const tl=Number(m?.trendlinePrice);
+  const parts:string[]=[];
+  if(active && Number.isFinite(price) && Number.isFinite(entry) && entry!==0){
+    const move=((price-entry)/entry*100)*(dir==="SHORT"?-1:1);
+    parts.push(`${move>=0?"Up":"Down"} ${Math.abs(move).toFixed(1)}% from entry`);
+    const tp1=Number(active?.tp1),tp2=Number(active?.tp2),stop=Number(active?.stop);
+    if(dir==="LONG"){
+      if(Number.isFinite(tp2)&&price>=tp2) parts.push("TP2 reached");
+      else if(Number.isFinite(tp1)&&price>=tp1) parts.push("TP1 reached");
+      else if(Number.isFinite(tp1)&&price>=entry) parts.push("working toward TP1");
+      if(Number.isFinite(stop)&&price<=stop) parts.push("at/through stop");
+    }else{
+      if(Number.isFinite(tp2)&&price<=tp2) parts.push("TP2 reached");
+      else if(Number.isFinite(tp1)&&price<=tp1) parts.push("TP1 reached");
+      else if(Number.isFinite(tp1)&&price<=entry) parts.push("working toward TP1");
+      if(Number.isFinite(stop)&&price>=stop) parts.push("at/through stop");
+    }
+  }
+  if(Number.isFinite(price)&&Number.isFinite(tl)&&tl>0){
+    const d=Math.abs((price-tl)/tl*100);
+    if(d<=1.0) parts.push(`testing ${dir==="SHORT"?"support":"resistance"} near the trendline`);
+    else if((dir==="LONG"&&price>tl)||(dir==="SHORT"&&price<tl)) parts.push(`price is beyond the ${dir==="LONG"?"resistance":"support"} trendline`);
+  }
+  if(label){
+    if(/CROSS/.test(label)||/TURNING/.test(label)) parts.push(`4H ${label.toLowerCase().replaceAll("_"," ")}`);
+    else if(momentum==="WEAKENING") parts.push("4H momentum is cooling");
+    else if(momentum==="BREAKDOWN") parts.push("4H momentum has broken down");
+    else parts.push(`4H structure remains ${label.toLowerCase().replaceAll("_"," ")}`);
+  }
+  const stochK=Number(m?.entry1ClosedStochK), stochD=Number(m?.entry1ClosedStochD);
+  if(Number.isFinite(stochK)&&Number.isFinite(stochD)){
+    if(stochK<stochD) parts.push("Stoch momentum is below its signal");
+    else if(stochK>stochD) parts.push("Stoch momentum is above its signal");
+  }
+  if(!active){
+    if(/PULLBACK/i.test(String(m?.trigger||""))||/PULLBACK/i.test(location)) parts.unshift("Pullback in play");
+    else if(/RETEST/i.test(String(m?.trigger||""))||/RETEST/i.test(location)) parts.unshift("Retest in play");
+    else if(m?.entry1Decision&&m.entry1Decision!=="NONE") parts.unshift(`V28 ${String(m.entry1Decision).replaceAll("_"," ").toLowerCase()}`);
+    else if(momentum==="WEAKENING") parts.unshift("Momentum is weakening");
+    else if(momentum==="BREAKDOWN") parts.unshift("Downside pressure is increasing");
+    else if(dir==="LONG"&&label) parts.unshift("Bullish setup developing");
+    else if(dir==="SHORT"&&label) parts.unshift("Bearish setup developing");
+  }
+  if(!parts.length) return active ? "Position unchanged; monitoring the next closed 4H candle." : "Monitoring price action and the next V28 setup.";
+  const text=parts.slice(0,3).join(". ");
+  return text.endsWith(".")?text:text+".";
+}
 function pairState(m:any, active:any):JarvisPairState {
   const dir=(active?.direction || directionOf(m)) as "LONG"|"SHORT"|"NEUTRAL";
   const e=m?.fourH513||{};
@@ -74,10 +128,11 @@ function pairState(m:any, active:any):JarvisPairState {
   const watch=verdict==="BAD" ? "Confirmed failure. Review the position; recovery/reclaim is needed before the thesis can improve." : verdict==="CAUTION" ? (earlySetup&&priceActionReversal ? "Watch the next closed 4H candle for confirmation of the reversal — or renewed downside continuation." : "Watch the next closed 4H candle for confirmation or deterioration.") : "Keep watching each closed 4H candle for loss of momentum or structural failure.";
   const changed=`${verdict} · ${reasons.join(" · ")||"market context only"}`;
   const momentumSignature=active?`${dir}:${momentum}:${label}:${e.spreadContracting?"CONTRACTING":"EXPANDING"}`:"NO_POSITION";
+  const current=currentAnalysis(m,active,momentum,verdict);
   const tradeDecision=active
     ? (active.positionManagementRecommendation==="EXIT TRADE" || active.positionManagementState==="EXIT" ? "EXIT TRADE" : "STAY IN TRADE")
     : undefined;
-  return {pair:m?.pair||active?.pair||"?",state,direction:dir,verdict,thesis,whatChanged:changed,watch,management:active?.holdAdvice?.reason||active?.positionManagementReason,position:active?{direction:active.direction,entry:active.entry,stop:active.stop,tp1:active.tp1,tp2:active.tp2}:undefined,updatedAt:Date.now(),momentum,momentumSignature,tradeDecision};
+  return {pair:m?.pair||active?.pair||"?",state,direction:dir,verdict,thesis,whatChanged:changed,watch,management:active?.holdAdvice?.reason||active?.positionManagementReason,position:active?{direction:active.direction,entry:active.entry,stop:active.stop,tp1:active.tp1,tp2:active.tp2}:undefined,updatedAt:Date.now(),momentum,momentumSignature,currentAnalysis:current,tradeDecision};
 }
 
 function portfolioState(pairs:JarvisPairState[]):JarvisSnapshot["portfolioState"]{
