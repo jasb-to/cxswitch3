@@ -1,7 +1,7 @@
-import { Redis } from "@upstash/redis";
+import { Redis } from "./supabase-kv";
 import type { BreakoutRecord } from "./strategy";
 
-const redis = new Redis({ url: process.env.KV_REST_API_URL!, token: process.env.KV_REST_API_TOKEN! });
+const redis = new Redis();
 const KEY = "cxswitch:v28_breakout_state";
 export type BreakoutState = Record<string, BreakoutRecord | undefined>;
 
