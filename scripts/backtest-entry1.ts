@@ -1,66 +1,89 @@
-/**
- * CX Switch ENTRY_1 historical validation harness.
- *
- * Usage:
- *   pnpm dlx tsx scripts/backtest-entry1.ts
- *   BACKTEST_MONTHS=24 BACKTEST_PAIRS=BTC,ETH,SOL pnpm dlx tsx scripts/backtest-entry1.ts
- *
- * Data: Binance USD-M perpetual klines. This deliberately does NOT change
- * live strategy defaults; it replays the current generateSignal() logic.
- */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { generateSignal, type Candle } from "../lib/strategy";
 
-import { generateSignal, type Candle, type Signal } from "../lib/strategy";
-
-type Pair = "BTC"|"ETH"|"SOL";
-type Row = {
-  pair:string; direction:"LONG"|"SHORT"; timestamp:number; entry:number;
-  stop:number|null; tp1:number|null; tp2:number|null;
-  r4h:number|null; r8h:number|null; r12h:number|null; r24h:number|null;
-  r48h:number|null; r72h:number|null;
-  mae72:number|null; mfe72:number|null;
-  stopHit72:boolean; tp1Hit72:boolean; tp2Hit72:boolean;
-  exhaustion:string; reason:string;
-};
-
-const BASE="https://fapi.binance.com/fapi/v1/klines";
+const VISION_BASE="https://data.binance.vision/data/futures/um";
 const PAIRS=(process.env.BACKTEST_PAIRS||"BTC,ETH,SOL").split(",").map(x=>x.trim().toUpperCase()).filter(Boolean) as Pair[];
 const MONTHS=Math.max(6,Number(process.env.BACKTEST_MONTHS||18));
-const LIMIT=1500;
 const FOUR_H=4*60*60*1000;
 const NOW=Date.now();
 const START=NOW-MONTHS*30.4375*24*60*60*1000;
 const END=NOW;
+const CACHE_DIR=process.env.BACKTEST_CACHE||path.join(os.tmpdir(),"cxswitch-binance-vision");
 
-function sleep(ms:number){return new Promise(r=>setTimeout(r,ms));}
-
-function parseRows(raw:any[]):Candle[]{
-  return raw.map(x=>({timestamp:Number(x[0]),open:Number(x[1]),high:Number(x[2]),low:Number(x[3]),close:Number(x[4]),volume:Number(x[5])}));
+function monthStarts(start:number,end:number){
+  const out:string[]=[];
+  const d=new Date(start); d.setUTCDate(1); d.setUTCHours(0,0,0,0);
+  while(d.getTime()<=end){out.push(d.toISOString().slice(0,7));d.setUTCMonth(d.getUTCMonth()+1);}
+  return out;
 }
-
-async function fetchKlines(symbol:string,interval:string,start:number,end:number):Promise<Candle[]>{
+function archiveUrl(symbol:string,interval:string,ym:string,kind:"monthly"|"daily",day?:string){
+  const suffix=kind==="monthly"?ym:ym+"-"+day;
+  return VISION_BASE+"/"+kind+"/klines/"+symbol+"/"+interval+"/"+symbol+"-"+interval+"-"+suffix+".zip";
+}
+function csvToCandles(csv:string):Candle[]{
   const out:Candle[]=[];
-  let cursor=start;
-  const step=interval==="15m"?15*60*1000:interval==="1h"?60*60*1000:interval==="4h"?FOUR_H:7*24*60*60*1000;
-  while(cursor<end){
-    const u=new URL(BASE);
-    u.searchParams.set("symbol",symbol);
-    u.searchParams.set("interval",interval);
-    u.searchParams.set("startTime",String(cursor));
-    u.searchParams.set("endTime",String(end));
-    u.searchParams.set("limit",String(LIMIT));
-    const res=await fetch(u);
-    if(!res.ok)throw new Error(`Binance ${symbol} ${interval}: HTTP ${res.status} ${await res.text()}`);
-    const raw=await res.json() as any[];
-    const rows=parseRows(raw);
-    if(!rows.length)break;
-    for(const row of rows)if(!out.length||row.timestamp>out[out.length-1].timestamp)out.push(row);
-    const last=rows[rows.length-1].timestamp;
-    if(last<cursor)break;
-    cursor=last+step;
-    if(rows.length<LIMIT)break;
-    await sleep(80);
+  for(const line of csv.split(/\r?\n/)){
+    if(!line||/^open time/i.test(line))continue;
+    const x=line.split(",");
+    if(x.length<6)continue;
+    let timestamp=Number(x[0]);
+    if(!Number.isFinite(timestamp))continue;
+    if(timestamp<1e12)timestamp*=1000;
+    const open=Number(x[1]),high=Number(x[2]),low=Number(x[3]),close=Number(x[4]),volume=Number(x[5]);
+    if([open,high,low,close,volume].every(Number.isFinite))out.push({timestamp,open,high,low,close,volume});
   }
-  return out.filter(x=>x.timestamp<=end);
+  return out;
+}
+async function downloadArchive(url:string,cachePath:string){
+  await fs.promises.mkdir(path.dirname(cachePath),{recursive:true});
+  if(fs.existsSync(cachePath))return;
+  const res=await fetch(url);
+  if(!res.ok)throw new Error("Binance Vision archive HTTP "+res.status+": "+url);
+  const buf=Buffer.from(await res.arrayBuffer());
+  await fs.promises.writeFile(cachePath,buf);
+}
+async function readArchive(url:string,cachePath:string):Promise<Candle[]>{
+  await downloadArchive(url,cachePath);
+  const csv=execFileSync("unzip",["-p",cachePath],{encoding:"utf8",maxBuffer:256*1024*1024});
+  return csvToCandles(csv);
+}
+async function fetchKlines(symbol:string,interval:string,start:number,end:number):Promise<Candle[]>{
+  const months=monthStarts(start,end);
+  const out:Candle[]=[];
+  for(const ym of months){
+    const parts=ym.split("-"); const year=parts[0],month=parts[1];
+    const file=path.join(CACHE_DIR,symbol,interval,symbol+"-"+interval+"-"+ym+".zip");
+    try{
+      const rows=await readArchive(archiveUrl(symbol,interval,ym,"monthly"),file);
+      out.push(...rows);
+      continue;
+    }catch(err){
+      const d=new Date(Date.UTC(Number(year),Number(month)-1,1));
+      const next=new Date(Date.UTC(Number(year),Number(month),1));
+      const monthEnd=Math.min(end,next.getTime()-1);
+      if(monthEnd<start)continue;
+      for(;d.getTime()<=monthEnd;d.setUTCDate(d.getUTCDate()+1)){
+        const day=d.toISOString().slice(8,10);
+        const dayStart=Math.max(start,d.getTime()),dayEnd=Math.min(end,d.getTime()+24*60*60*1000-1);
+        if(dayEnd<dayStart)continue;
+        const dailyFile=path.join(CACHE_DIR,symbol,interval,symbol+"-"+interval+"-"+ym+"-"+day+".zip");
+        try{
+          const rows=await readArchive(archiveUrl(symbol,interval,ym,"daily",day),dailyFile);
+          out.push(...rows);
+        }catch(dailyErr){
+          throw new Error("Could not load Binance Vision data for "+symbol+" "+interval+" "+ym+": monthly and daily archives unavailable. "+String(dailyErr));
+        }
+      }
+    }
+  }
+  const byTs=new Map<number,Candle>();
+  for(const row of out)if(row.timestamp>=start&&row.timestamp<=end)byTs.set(row.timestamp,row);
+  const rows=[...byTs.values()].sort((a,b)=>a.timestamp-b.timestamp);
+  if(!rows.length)throw new Error("No Binance Vision candles loaded for "+symbol+" "+interval);
+  return rows;
 }
 
 function ptrAtOrBefore(rows:Candle[],ts:number,start=0){
