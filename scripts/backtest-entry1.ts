@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { generateSignal, type Candle } from "../lib/strategy";
+import { evaluate1DTrend, type TrendState } from "../lib/1d-trend-engine";
 
 type Pair = "BTC"|"ETH"|"SOL"|"DOGE";
 type NearMissRow = {
@@ -67,6 +68,16 @@ async function readArchive(url:string,cachePath:string):Promise<Candle[]>{
   await downloadArchive(url,cachePath);
   const csv=execFileSync("unzip",["-p",cachePath],{encoding:"utf8",maxBuffer:256*1024*1024});
   return csvToCandles(csv);
+}
+function aggregateDaily(rows:Candle[]):Candle[]{
+  const buckets=new Map<number,Candle>();
+  for(const row of rows){
+    const d=new Date(row.timestamp); const ts=Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate());
+    const existing=buckets.get(ts);
+    if(!existing)buckets.set(ts,{timestamp:ts,open:row.open,high:row.high,low:row.low,close:row.close,volume:row.volume});
+    else{existing.high=Math.max(existing.high,row.high);existing.low=Math.min(existing.low,row.low);existing.close=row.close;existing.volume+=row.volume;}
+  }
+  return [...buckets.values()].sort((a,b)=>a.timestamp-b.timestamp);
 }
 function aggregateWeekly(rows:Candle[]):Candle[]{
   const buckets=new Map<number,Candle>();
@@ -143,6 +154,9 @@ async function runPair(pair:Pair):Promise<{rows:Row[];nearMisses:NearMissRow[]}>
   const nearMisses:NearMissRow[]=[];
   let p1=-1,p15=-1,pw=-1;
   let lastBreakout:any=undefined;
+  let dailyState:TrendState|undefined=undefined;
+  let lastDailyTimestamp=-1;
+  const diagnostics={candlesProcessed:0,weeklyAvailable:0,dailyLiveAvailable:0,marketObjectPresent:0,entry1CheckPresent:0,dailyDirectionBull:0,dailyDirectionBear:0,gates:{dailyDirection:0,dailyPreBreak:0,dailyRsiTurn:0,fourHPreBreak:0,fourHTransition:0,notExhausted:0,fresh:0}};
   for(let i=300;i<c4.length-18;i++){
     const t=c4[i].timestamp;
     while(p1+1<c1.length&&c1[p1+1].timestamp<=t)p1++;
@@ -151,9 +165,31 @@ async function runPair(pair:Pair):Promise<{rows:Row[];nearMisses:NearMissRow[]}>
     if(p1<0||p15<0||pw<0)continue;
     const h1=c1.slice(Math.max(0,p1-1200),p1+1), m15=c15.slice(Math.max(0,p15-3000),p15+1), w=cw.slice(Math.max(0,pw-40),pw+1);
     const current=c4[i];
-    const result=generateSignal(pair,h1,c4.slice(Math.max(0,i-500),i+1),m15,[],current.close,lastBreakout,undefined,w,undefined,t);
+    diagnostics.candlesProcessed++;
+    if(w.length>=21)diagnostics.weeklyAvailable++;
+    const dt=new Date(t);
+    const dayStart=Date.UTC(dt.getUTCFullYear(),dt.getUTCMonth(),dt.getUTCDate());
+    if(dayStart!==lastDailyTimestamp){
+      const closedDaily=aggregateDaily(c4.slice(0,i+1).filter(x=>x.timestamp<dayStart));
+      if(closedDaily.length>=21){
+        const live1d=evaluate1DTrend(closedDaily,dailyState);
+        dailyState=live1d.state;
+        lastDailyTimestamp=dayStart;
+      }
+    }
+    const dailyLive=dailyState?(()=>{
+      const closedDaily=aggregateDaily(c4.slice(0,i+1).filter(x=>x.timestamp<dayStart));
+      const live1d=evaluate1DTrend(closedDaily,dailyState);
+      return {state:live1d.state,candidateState:live1d.candidateState,direction:live1d.direction,structure:live1d.structure,ema:live1d.ema,fast513:live1d.fast513,adx:live1d.adx,momentum:live1d.momentum,protectedLevel:live1d.protectedLevel};
+    })():undefined;
+    if(dailyLive)diagnostics.dailyLiveAvailable++;
+    const result=generateSignal(pair,h1,c4.slice(Math.max(0,i-500),i+1),m15,[],current.close,lastBreakout,dailyLive,w,undefined,t);
     if(result.breakout)lastBreakout=result.breakout;
     const market:any=result.market;
+    if(market)diagnostics.marketObjectPresent++;
+    if(market?.entry1CheckLong||market?.entry1CheckShort)diagnostics.entry1CheckPresent++;
+    if(market?.dailyDirection==="BULL")diagnostics.dailyDirectionBull++;
+    if(market?.dailyDirection==="BEAR")diagnostics.dailyDirectionBear++;
     const future=c4.slice(i+1,i+19);
     const outcome=(dir:"LONG"|"SHORT")=>{
       const entry=current.close;
@@ -168,8 +204,15 @@ async function runPair(pair:Pair):Promise<{rows:Row[];nearMisses:NearMissRow[]}>
       for(const direction of ["LONG","SHORT"] as const){
         const ch=direction==="LONG"?market?.entry1CheckLong:market?.entry1CheckShort;
         if(!ch)continue;
-        const dailyDirection=market?.entry1Direction||"NEUTRAL";
-        const directionGate=direction==="LONG"?dailyDirection==="LONG":dailyDirection==="SHORT";
+        const dailyDirection=market?.dailyDirection||"NEUTRAL";
+        const directionGate=direction==="LONG"?dailyDirection==="BULL":direction==="SHORT"?dailyDirection==="BEAR":false;
+        if(directionGate)diagnostics.gates.dailyDirection++;
+        if(ch.dailyPreBreak)diagnostics.gates.dailyPreBreak++;
+        if(ch.dailyRsiTurn)diagnostics.gates.dailyRsiTurn++;
+        if(ch.fourHPreBreak)diagnostics.gates.fourHPreBreak++;
+        if(ch.transition)diagnostics.gates.fourHTransition++;
+        if(!ch.exhausted)diagnostics.gates.notExhausted++;
+        if(ch.fresh)diagnostics.gates.fresh++;
         const gates=[directionGate,!!ch.dailyPreBreak,!!ch.dailyRsiTurn,!!ch.fourHPreBreak,!!ch.transition,!ch.exhausted];
         const passed=gates.filter(Boolean).length;
         if(passed!==5)continue;
@@ -202,6 +245,8 @@ async function runPair(pair:Pair):Promise<{rows:Row[];nearMisses:NearMissRow[]}>
       exhaustion:String((result.market as any)?.entry1Exhaustion||"NONE"),reason:sig.reason
     });
   }
+  console.log(`[DIAGNOSTICS] ${pair} candles=${diagnostics.candlesProcessed} weekly>=21=${diagnostics.weeklyAvailable} dailyLive=${diagnostics.dailyLiveAvailable} market=${diagnostics.marketObjectPresent} entry1Checks=${diagnostics.entry1CheckPresent} dailyBULL=${diagnostics.dailyDirectionBull} dailyBEAR=${diagnostics.dailyDirectionBear}`);
+  console.log(`[DIAGNOSTICS] ${pair} gates direction=${diagnostics.gates.dailyDirection} 1Dpre=${diagnostics.gates.dailyPreBreak} 1Drsi=${diagnostics.gates.dailyRsiTurn} 4Hpre=${diagnostics.gates.fourHPreBreak} 4Htransition=${diagnostics.gates.fourHTransition} notExhausted=${diagnostics.gates.notExhausted} fresh=${diagnostics.gates.fresh}`);
   return {rows,nearMisses};
 }
 
