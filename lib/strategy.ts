@@ -724,10 +724,10 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const dailyPriorLow=dailyClosed.length>=DAILY_BREAKOUT_LOOKBACK
     ?Math.min(...dailyClosed.slice(-DAILY_BREAKOUT_LOOKBACK).map(x=>x.low)):null;
   const dailyLivePrice=dailyLiveCandle?.close??price;
+  const backtestMode=process.env.BACKTEST_MODE||"BASELINE";
   const dailyApproachBuffer=(backtestMode==="RELAX_PREBREAK"||backtestMode==="RELAX_RSI_AND_PREBREAK")?0.05:0.015;
   const dailyPreBreakLong=!!dailyPriorHigh&&dailyLivePrice<dailyPriorHigh&&dailyLivePrice>=dailyPriorHigh*(1-dailyApproachBuffer);
   const dailyPreBreakShort=!!dailyPriorLow&&dailyLivePrice>dailyPriorLow&&dailyLivePrice<=dailyPriorLow*(1+dailyApproachBuffer);
-  const backtestMode=process.env.BACKTEST_MODE||"BASELINE";
   const dailyRsiLongTurn=backtestMode==="RELAX_RSI"||backtestMode==="RELAX_RSI_AND_PREBREAK" ? dailyRsiNow>dailyRsiPrev : dailyRsiNow<=ENTRY1_DAILY_RSI_BOTTOM&&dailyRsiNow>dailyRsiPrev;
   const dailyRsiShortTurn=backtestMode==="RELAX_RSI"||backtestMode==="RELAX_RSI_AND_PREBREAK" ? dailyRsiNow<dailyRsiPrev : dailyRsiNow>=ENTRY1_DAILY_RSI_TOP&&dailyRsiNow<dailyRsiPrev;
 
