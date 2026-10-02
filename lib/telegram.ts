@@ -64,9 +64,9 @@ export async function sendAlert(signal:any){
     : "";
 
   const lines=[
-    `\${emoji} CX SWITCH v\${CXSWITCH_VERSION} — \${label}`,"",
-    `\${dir} \${signal.symbol} — \${signal.bias}`,"",
-    `Price: \${formatPrice(signal.price??signal.entry)}`,"",
+    `${emoji} CX SWITCH v${CXSWITCH_VERSION} — ${label}`,"",
+    `${dir} ${signal.symbol} — ${signal.bias}`,"",
+    `Price: ${formatPrice(signal.price??signal.entry)}`,"",
     jarvisLine,
     setupLine,
     dailyLine,
@@ -74,13 +74,13 @@ export async function sendAlert(signal:any){
     qualityLine,
     marketLine,
     entryZone,
-    `4H 5/13: \${fourH513}`,"",
-    `SL: \${formatPrice(signal.stopLoss)}`,
+    `4H 5/13: ${fourH513}`,"",
+    `SL: ${formatPrice(signal.stopLoss)}`,
     ...(type==="ENTRY_2"
-      ? [`TP: \${formatPrice(displayTarget)}`]
-      : [`TP1: \${formatPrice(tp1)}`,`TP2: \${formatPrice(tp2)}`]),
-    `RR: \${signal.rr??"-"}`,"",
-    `Expected Move: \${expectedMove}%`,
+      ? [`TP: ${formatPrice(displayTarget)}`]
+      : [`TP1: ${formatPrice(tp1)}`,`TP2: ${formatPrice(tp2)}`]),
+    `RR: ${signal.rr??"-"}`,"",
+    `Expected Move: ${expectedMove}%`,
     signal.reason||""
   ].filter((line,i,arr)=>line!==""||arr[i-1]!=="" ).join("\n");
 
