@@ -25,6 +25,7 @@ export interface JarvisPairState {
   momentumSignature?: string;
   currentAnalysis?: string;
   tradeDecision?: "STAY IN TRADE"|"EXIT TRADE";
+  entry1Watch?: string;
 }
 
 export interface JarvisSnapshot {
