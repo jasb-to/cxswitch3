@@ -129,8 +129,8 @@ export async function GET(request:Request){
   const dbg=result.debug||[];
   const entryCheck=(result.market as any)?.entry1CheckLong||null;
   const entryCheckShort=(result.market as any)?.entry1CheckShort||null;
-  const check=entryCheck?.direction===(((result.market as any)?.dailyLive?.direction)==="BEAR"?"SHORT":"LONG")?entryCheck:entryCheckShort;
-  if(check){
+  const logEntryCheck=(check:any)=>{
+    if(!check)return;
     const missing:string[]=[];
     if(!check.dailyPreBreak)missing.push("1D_PREBREAK"+(check.dailyPreBreakDistancePct!==null?"("+check.dailyPreBreakDistancePct.toFixed(2)+"% away)":""));
     if(!check.dailyRsiTurn)missing.push("1D_RSI_TURN");
@@ -138,8 +138,13 @@ export async function GET(request:Request){
     if(!check.transition)missing.push("4H_TRANSITION");
     if(!check.fresh)missing.push("FRESH");
     if(check.exhausted)missing.push("EXHAUSTION:"+(check.exhaustionReason||"BLOCK"));
-    console.log("[ENTRY_1 CHECK] "+pair+" | "+check.direction+" | 1D_PREBREAK="+(check.dailyPreBreak?"YES":"NO")+" | RSI="+check.dailyRsi+"/"+check.dailyRsiPrev+" TURN="+(check.dailyRsiTurn?"YES":"NO")+" | 4H_PREBREAK="+(check.fourHPreBreak?"YES":"NO")+" | TRANSITION="+(check.transition?"YES":"NO")+" | EXHAUST="+(check.exhausted?"BLOCK":"NO")+" | => "+(check.decision==="ENTRY_1"?"ENTRY_1":"WAIT: "+(missing.join(", ")||"next setup")));
-  }
+    const dailyDirection=(result.market as any)?.dailyLive?.direction;
+    const directionBlocked=(check.direction==="LONG"&&dailyDirection==="BEAR")||(check.direction==="SHORT"&&dailyDirection==="BULL");
+    const status=check.decision==="ENTRY_1"?"ENTRY_1":directionBlocked?"BLOCKED_BY_1D_DIRECTION":"WAIT";
+    console.log("[ENTRY_1 CHECK] "+pair+" | "+check.direction+" | 1D="+(dailyDirection||"—")+" | 1D_PREBREAK="+(check.dailyPreBreak?"YES":"NO")+" | RSI="+check.dailyRsi+"/"+check.dailyRsiPrev+" TURN="+(check.dailyRsiTurn?"YES":"NO")+" | 4H_PREBREAK="+(check.fourHPreBreak?"YES":"NO")+" | TRANSITION="+(check.transition?"YES":"NO")+" | EXHAUST="+(check.exhausted?"BLOCK":"NO")+" | => "+status+(status==="WAIT"&&missing.length?" | "+missing.join(", "):""));
+  };
+  logEntryCheck(entryCheck);
+  logEntryCheck(entryCheckShort);
   if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   if(existing){snapshot.positionState="ACTIVE";snapshot.positionDirection=existing.direction;snapshot.positionEntry=existing.entry;snapshot.positionStop=existing.stop;snapshot.positionTarget=existing.tp2??existing.target;snapshot.positionTp1=existing.tp1;snapshot.positionTp2=existing.tp2;const mg=managementByPair[pair];if(mg){snapshot.positionManagementState=mg.state;snapshot.positionManagementRecommendation=mg.recommendation;snapshot.positionManagementReason=mg.reason;}snapshot.positionTp1HitAt=existing.tp1HitAt;snapshot.positionTp2HitAt=existing.tp2HitAt;console.log(`[PAIR] ${pair} | ACTIVE ${existing.direction} | entry engine paused`);}
   marketData.push(snapshot);const signal=result.signal;if(!signal){if(!existing)console.log(`[PAIR] ${pair} | 1D=${live1D?.state||live1D?.direction||"—"}/${live1D?.candidateState||"—"} | 4H=${ema513.label} | WAIT`);continue;}
