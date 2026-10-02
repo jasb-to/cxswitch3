@@ -31,6 +31,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: TypeScript compile check
+        run: pnpm exec tsc --noEmit
       - name: Run Binance USD-M ENTRY_1 backtest
         run: set -o pipefail; pnpm dlx tsx scripts/backtest-entry1.ts | tee entry1-backtest.txt
       - name: Upload results
