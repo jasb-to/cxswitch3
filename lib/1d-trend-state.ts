@@ -1,6 +1,6 @@
-import { Redis } from "@upstash/redis";
+import { Redis } from "./supabase-kv";
 import { TrendEngineResult } from "./1d-trend-engine";
-const redis=new Redis({url:process.env.KV_REST_API_URL!,token:process.env.KV_REST_API_TOKEN!});
+const redis=new Redis();
 // V2 namespace intentionally resets the seven-day diagnostic after the stale-candle fix.
 const STATE_KEY="cxswitch:1d_trend_state_v2"; const LOG_KEY="cxswitch:1d_trend_log_v3"; const LOG_MAX=200;
 export interface TrendStateRecord{state:string;candidateState:string;candidateStreak:number;lastObservation:number;lastEvaluatedAt:number;lastFlipAt?:number;flipCount:number;startedAt:number;}
