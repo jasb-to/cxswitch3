@@ -3,13 +3,10 @@ import { NextResponse } from "next/server";
 import { getCandles, krakenPairFormat } from "@/lib/kraken";
 import { generateSignal, getMarketSnapshot, getCycleRunnerSnapshot, shouldHold, liquidationSafeStop, Signal } from "@/lib/strategy";
 import { get4HEmaDiagnostic } from "@/lib/ema-diagnostic";
-import { detectStructureShift, recordStructureShiftSnapshot } from "@/lib/structure-shift";
 import { CXSWITCH_VERSION } from "@/lib/version";
 import { getActiveSignals, setActiveSignals, addActiveSignal, getSignalHistory, appendSignalHistory, updateSignalHistoryStatus, updateActiveTradeMilestones, updateHistoryMilestones, updateHistoryStopMilestone, setMarketData, getLastCronRun, setLastCronRun, getCooldowns, getCardResets, claimTelegramAlert, releaseTelegramAlert, getCycleRunnerState, setCycleRunnerState } from "@/lib/state";
 import { getLastBreakout, setLastBreakout } from "@/lib/v28-breakout-state";
 import { sendAlert } from "@/lib/telegram";
-import { run1DTrendExperiment } from "@/lib/1d-trend-runner";
-import { get1DTrendState } from "@/lib/1d-trend-state";
 import { runJarvis, reviewFiredSignal } from "@/lib/jarvis";
 import { getMarketHealth } from "@/lib/market-health";
 
@@ -19,11 +16,11 @@ const PAIRS=["BTC","ETH","SOL","HYPE","DOGE","LINK","AVAX","ZEC"] as const;
 // All Kraken-backed pairs are live. JARVIS observes and interprets; it never gates alerts.
 const PAUSED_ALERT_PAIRS=new Set<string>();
 const MIN_CRON_INTERVAL_MS=2*60*1000;
-const ADD_DEDUP_MS=45*60*1000;
-const ADD_DEDUP_ENTRY_PCT=0.004;
+const SIGNAL_DEDUP_MS=45*60*1000;
+const SIGNAL_DEDUP_ENTRY_PCT=0.004;
 const VERBOSE_CRON_LOGS=process.env.CRON_VERBOSE_LOGS==="true";
 const round=(n:number)=>n>=10000?Math.round(n):n>=1000?Math.round(n*10)/10:n>=100?Math.round(n*100)/100:Math.round(n*1000)/1000;
-function sameRecentSignal(history:any[],s:Signal,now:number){return history.some(h=>h.pair===s.pair&&h.direction===s.direction&&h.type===s.type&&h.exitReason!=="manual_symbol_reset"&&now-h.timestamp<ADD_DEDUP_MS&&Math.abs((h.entry-s.entry)/s.entry)<ADD_DEDUP_ENTRY_PCT);}
+function sameRecentSignal(history:any[],s:Signal,now:number){return history.some(h=>h.pair===s.pair&&h.direction===s.direction&&h.type===s.type&&h.exitReason!=="manual_symbol_reset"&&now-h.timestamp<SIGNAL_DEDUP_MS&&Math.abs((h.entry-s.entry)/s.entry)<SIGNAL_DEDUP_ENTRY_PCT);}
 function toSignalLike(t:any):Signal{return{...t,scale:t.type,adx:t.adx??0,rsi:t.rsi??0,stochK:t.stochK??0,stochD:t.stochD??0,expectedMove:t.expectedMove??0,reason:t.reason||"",trend:t.trend||t.direction,location:t.location||"",trigger:t.trigger||""} as Signal;}
 function telegramAlertKey(signal:Signal,resetAt?:number):string{
   const record=signal.context?.breakoutRecord;
@@ -101,15 +98,7 @@ export async function GET(request:Request){
    marketHealth=await getMarketHealth();
    console.log(`[MARKET HEALTH] BTC.D ${marketHealth.btcDominance??"—"} (rel ${marketHealth.btcDominanceRelative24h??"—"}%) | USDT.D ${marketHealth.usdtDominance??"—"} (rel ${marketHealth.usdtDominanceRelative24h??"—"}%) | TOTAL ${marketHealth.totalMarketCapChange24h??"—"}% | ALT ${marketHealth.altContext}`);
  }catch(error){console.error("[MARKET HEALTH] refresh failed",error);}
- let dailyState:any={};
- try{
-   await run1DTrendExperiment(active);
-   dailyState=await get1DTrendState();
-   console.log(`[1D LIVE] Regime context loaded for V28: ${PAIRS.map(p=>`${p}=${dailyState[p]?.state||"—"}/${dailyState[p]?.candidateState||"—"}`).join(" | ")}`);
- }catch(error){
-   console.error(`[1D LIVE] Daily regime refresh failed; the strategy will use local 4H context only`,error);
-   try{dailyState=await get1DTrendState();}catch{dailyState={};}
- }
+
 
  for(const pair of PAIRS){try{
   // PAID uses the live MEXC PAID/USDT spot market. Feed genuine MEXC OHLCV
@@ -117,43 +106,18 @@ export async function GET(request:Request){
   const c1=await getCandles(krakenPairFormat(pair+"/USD"),60);const c4=await getCandles(krakenPairFormat(pair+"/USD"),240);const c15=await getCandles(krakenPairFormat(pair+"/USD"),15);const cW=await getCandles(krakenPairFormat(pair+"/USD"),10080,Math.floor((Date.now()-2*365*24*60*60*1000)/1000));if(!c1?.length||!c4?.length||!c15?.length){console.log(`[PAIR] ${pair} — SKIP insufficient candles`);alerts.push({pair,status:"skip",reason:"insufficient_candles"});continue;}
   const ema513=get4HEmaDiagnostic(c4);
   console.log(`[EMA 4H 5/13] ${pair} — ${ema513.label} | 5=${ema513.ema5.toFixed(4)} | 13=${ema513.ema13.toFixed(4)} | spread=${ema513.spread.toFixed(4)} (${ema513.spreadPct.toFixed(3)}%) | spreadATR=${ema513.spreadAtr.toFixed(3)} | contracting=${ema513.spreadContracting?"YES":"NO"} | Δspread=${ema513.spreadChangePct.toFixed(2)}% | 5slope=${ema513.ema5Slope.toFixed(4)} | 13slope=${ema513.ema13Slope.toFixed(4)} | cross=${ema513.crossNow?"YES":"NO"}`);
-  const structureShift=detectStructureShift(pair,c4);
-  const structureRecorded=await recordStructureShiftSnapshot(structureShift);
-  if(VERBOSE_CRON_LOGS)console.log(`[STRUCTURE SHIFT] ${pair} — structure=${structureShift.structure} -> shift=${structureShift.shiftTo} | state=${structureShift.state} | protected=${structureShift.protectedLevel?.toFixed(4)??"—"} | break=${structureShift.breakDistanceAtr?.toFixed(2)??"—"} ATR | recorded=${structureRecorded?"YES":"NO"} | ${structureShift.reason}`); // diagnostic only; never an entry veto
-  const price=c1.at(-1)!.close;const existing=active.find(x=>x.pair===pair),storedBreakout=await getLastBreakout(pair);
-  const breakoutMaxAgeMs=32*15*60*1000;
-  const lastBreakout=storedBreakout&&Date.now()-storedBreakout.timestamp>=0&&Date.now()-storedBreakout.timestamp<=breakoutMaxAgeMs?storedBreakout:undefined;
-  if(VERBOSE_CRON_LOGS)console.log(`[BREAKOUT STATE] ${pair} — ${lastBreakout?`${lastBreakout.direction}@${lastBreakout.price} candle=${lastBreakout.candleIndex} age=${c4.length-1-lastBreakout.candleIndex}`:"NONE"}`);
-  const live1D=dailyState[pair]||undefined;const result=generateSignal(pair,c1,c4,c15,active,price,lastBreakout,live1D,cW,marketHealth);const snapshot=result.market||getMarketSnapshot(pair,c1,c4,c15);if(pair==="BTC"||pair==="ETH")snapshot.cycleRunner=getCycleRunnerSnapshot(pair,c1,c4,cW,price);snapshot.fourH513=ema513;snapshot.structureShift=structureShift;snapshot.lastBreakout=lastBreakout||null;snapshot.dailyLive=live1D||null;
   if(result.breakout){await setLastBreakout(pair,result.breakout);if(VERBOSE_CRON_LOGS)console.log(`[BREAKOUT STATE] ${pair} — recorded ${result.breakout.direction}@${result.breakout.price} candle=${result.breakout.candleIndex}`);}
   const dbg=result.debug||[];
-  const entryCheck=(result.market as any)?.entry1CheckLong||null;
-  const entryCheckShort=(result.market as any)?.entry1CheckShort||null;
-  const logEntryCheck=(check:any)=>{
-    if(!check)return;
-    const missing:string[]=[];
-    if(!check.dailyPreBreak)missing.push("1D_PREBREAK"+(check.dailyPreBreakDistancePct!==null?"("+check.dailyPreBreakDistancePct.toFixed(2)+"% away)":""));
-    if(!check.dailyRsiTurn)missing.push("1D_RSI_TURN");
-    if(!check.fourHPreBreak)missing.push("4H_PREBREAK"+(check.fourHPreBreakDistancePct!==null?"("+check.fourHPreBreakDistancePct.toFixed(2)+"% away)":""));
-    if(!check.transition)missing.push("4H_TRANSITION");
-    if(!check.fresh)missing.push("FRESH");
-    if(check.exhausted)missing.push("EXHAUSTION:"+(check.exhaustionReason||"BLOCK"));
-    const dailyDirection=(result.market as any)?.dailyLive?.direction;
-    const directionBlocked=(check.direction==="LONG"&&dailyDirection==="BEAR")||(check.direction==="SHORT"&&dailyDirection==="BULL");
-    const status=check.decision==="ENTRY_1"?"ENTRY_1":directionBlocked?"BLOCKED_BY_1D_DIRECTION":"WAIT";
-    console.log("[ENTRY_1 CHECK] "+pair+" | "+check.direction+" | 1D="+(dailyDirection||"—")+" | 1D_PREBREAK="+(check.dailyPreBreak?"YES":"NO")+" | RSI="+check.dailyRsi+"/"+check.dailyRsiPrev+" TURN="+(check.dailyRsiTurn?"YES":"NO")+" | 4H_PREBREAK="+(check.fourHPreBreak?"YES":"NO")+" | TRANSITION="+(check.transition?"YES":"NO")+" | EXHAUST="+(check.exhausted?"BLOCK":"NO")+" | => "+status+(status==="WAIT"&&missing.length?" | "+missing.join(", "):""));
-  };
-  logEntryCheck(entryCheck);
-  logEntryCheck(entryCheckShort);
   if(VERBOSE_CRON_LOGS)dbg.forEach(x=>console.log(`[PAIR] ${pair} — ${x}`));
   if(existing){snapshot.positionState="ACTIVE";snapshot.positionDirection=existing.direction;snapshot.positionEntry=existing.entry;snapshot.positionStop=existing.stop;snapshot.positionTarget=existing.tp2??existing.target;snapshot.positionTp1=existing.tp1;snapshot.positionTp2=existing.tp2;const mg=managementByPair[pair];if(mg){snapshot.positionManagementState=mg.state;snapshot.positionManagementRecommendation=mg.recommendation;snapshot.positionManagementReason=mg.reason;}snapshot.positionTp1HitAt=existing.tp1HitAt;snapshot.positionTp2HitAt=existing.tp2HitAt;console.log(`[PAIR] ${pair} | ACTIVE ${existing.direction} | entry engine paused`);}
-  marketData.push(snapshot);const signal=result.signal;if(!signal){if(!existing)console.log(`[PAIR] ${pair} | 1D=${live1D?.state||live1D?.direction||"—"}/${live1D?.candidateState||"—"} | 4H=${ema513.label} | WAIT`);continue;}
-  console.log(`[SIGNAL] ${pair} — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1??"—"} | TP2 ${signal.tp2??"—"} | RR ${signal.rr}`);
-  const hasSameDirection=active.some(x=>x.pair===pair&&x.direction===signal.direction);if(signal.type==="ENTRY_1"&&hasSameDirection){console.log(`[PAIR] ${pair} — ENTRY_1 blocked: active same-direction position already exists`);continue;}if(signal.type==="ADD"&&!hasSameDirection){console.log(`[PAIR] ${pair} — ADD blocked: no active same-direction position`);continue;}if(existing&&signal.type!=="ADD"){console.log(`[PAIR] ${pair} — signal suppressed because position is already active`);continue;}
+  marketData.push(snapshot);const signal=result.signal;if(!signal){if(!existing)console.log(`[PAIR] ${pair} | 1D=${snapshot.dailyDirection||"—"} | 4H=${ema513.label} | WAIT`);continue;}
+  console.log(`[SIGNAL] ${pair} — ${signal.type} ${signal.direction} @ ${signal.entry} | SL ${signal.stop} | TP ${signal.target} | RR ${signal.rr}`);
+  if(signal.type==="ENTRY_1"){ console.log(`[PAIR] ${pair} — ENTRY_1 is silent; waiting for ENTRY_2 alert`); continue; }
+  const hasSameDirection=active.some(x=>x.pair===pair&&x.direction===signal.direction);if(signal.type==="ENTRY_1"&&hasSameDirection){console.log(`[PAIR] ${pair} — ENTRY_1 blocked: active same-direction position already exists`);continue;}if(signal.type==="ADD"&&!hasSameDirection){console.log(`[PAIR] ${pair} — ADD blocked: no active same-direction position`);continue;}if(existing){console.log(`[PAIR] ${pair} — signal suppressed because position is already active`);continue;}
   const history=await getSignalHistory();
-  if(PAUSED_ALERT_PAIRS.has(pair)&&["ENTRY_1","ENTRY_2","ADD"].includes(signal.type)){console.log(`[PAIR] ${pair} — ${signal.type} paused; signal suppressed`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});continue;}
+  if(PAUSED_ALERT_PAIRS.has(pair)&&signal.type==="ENTRY_2"){console.log(`[PAIR] ${pair} — ${signal.type} paused; signal suppressed`);alerts.push({pair,direction:signal.direction,type:signal.type,status:"paused"});continue;}
   if((signal.type==="ENTRY_1"||signal.type==="ENTRY_2")&&sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ${signal.type} deduped: same entry condition was alerted recently; no duplicate history/position/alert`);continue;}
-  if(signal.type==="ADD"&&sameRecentSignal(history,signal,Date.now())){console.log(`[PAIR] ${pair} — ADD deduped: same entry condition was alerted recently; waiting for a new retest/price`);continue;}
+  
   const cooldowns=await getCooldowns(),cd=cooldowns[`${pair}_${signal.direction}`];if(cd&&Date.now()<cd){console.log(`[PAIR] ${pair} — COOLDOWN until ${new Date(cd).toISOString()}`);continue;}
   const cardResets=await getCardResets();
   const alertKey=telegramAlertKey(signal,cardResets[pair]);const claimed=await claimTelegramAlert(alertKey);
@@ -169,10 +133,10 @@ export async function GET(request:Request){
     ? await reviewFiredSignal(signal,{...snapshot,fourH513:ema513,structureShift,dailyLive:live1D})
     : undefined;
   try{
-    if(claimed) await sendAlert({symbol:signal.pair,state:signal.type==="ADD"?"ADD":"ENTRY",price:round(signal.entry),bias:signal.direction,stopLoss:round(signal.stop),takeProfit:round(signal.tp2??signal.target),takeProfit1:signal.tp1,takeProfit2:signal.tp2,rr:signal.rr,expectedMove:signal.expectedMove,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,trend:signal.trend,location:signal.location,trigger:signal.trigger,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:emoji,context:signal.context,marketPhase:signal.context?.marketPhase,structure:signal.context?.structure,momentum:signal.context?.momentum,pullback:signal.context?.pullback,fourH513Label:ema513.label,jarvis:jarvisReview});
+    if(claimed) await sendAlert({symbol:signal.pair,state:"ENTRY",price:round(signal.entry),bias:signal.direction,stopLoss:round(signal.stop),takeProfit:round(signal.tp2??signal.target),takeProfit1:signal.tp1,takeProfit2:signal.tp2,rr:signal.rr,expectedMove:signal.expectedMove,adx:signal.adx,rsi:signal.rsi,stochK:signal.stochK,stochD:signal.stochD,reason:signal.reason,trend:signal.trend,location:signal.location,trigger:signal.trigger,updatedAt:new Date(signal.timestamp).toISOString(),signalType:signal.type,signalEmoji:emoji,context:signal.context,marketPhase:signal.context?.marketPhase,structure:signal.context?.structure,momentum:signal.context?.momentum,pullback:signal.context?.pullback,fourH513Label:ema513.label,jarvis:jarvisReview});
   }catch(e){await releaseTelegramAlert(alertKey);throw e;}
   await appendSignalHistory(signal);newSignals.push(signal);alerts.push({pair,direction:signal.direction,type:signal.type,status:"sent"});console.log(`[ALERT] ${pair} — ${signal.type} sent @ ${signal.entry} | SL ${signal.stop} | TP1 ${signal.tp1} | TP2 ${signal.tp2}`);
-  if(signal.type!=="ADD"&&!existing){await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE] ${pair} — active position created`);}
+  if(signal.type==="ENTRY_2"&&!existing){await addActiveSignal(signal);active=await getActiveSignals();console.log(`[STATE] ${pair} — active position created`);}
  }catch(e){console.error(`[PAIR] ${pair} — ERROR`,e);alerts.push({pair,status:"error",error:String(e)});}}
  // Dedicated BTC/ETH cycle-runner entry alert. It does not create a normal CX trade.
  const cycleState=await getCycleRunnerState();
