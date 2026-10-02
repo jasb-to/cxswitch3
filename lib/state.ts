@@ -19,7 +19,7 @@ const MIGRATION_FLAG_KEY = "cxswitch:migrated_v01";
 const COOLDOWN_KEY = "cxswitch:cooldowns";
 const TELEGRAM_ALERT_KEY_PREFIX = "cxswitch:telegram_alert:";
 const ONE_TIME_BTC_SHORT_CLEANUP_KEY = "cxswitch:cleanup:btc_short_20260923";
-const SIGNAL_HISTORY_MAX = 150;
+const SIGNAL_HISTORY_MAX = 100;
 const TELEGRAM_ALERT_TTL_SECONDS = 60*60*24*45;
 const CLEANUP_KEY = "cxswitch:cleanup:bandwidth_20261002_v1";
 const LEGACY_1D_LOG_KEY = "cxswitch:1d_trend_log_v2";
@@ -97,11 +97,11 @@ export async function getSignalHistory():Promise<SignalHistoryEntry[]>{
   const history=(await redis.get<SignalHistoryEntry[]>(SIGNAL_HISTORY_KEY))||[];
   const cleaned=await redis.get<boolean>(CLEANUP_KEY);
   if(!cleaned){
-    const keep=Math.ceil(history.length/2);
+    const keep=Math.min(history.length, SIGNAL_HISTORY_MAX);
     if(history.length>keep) await redis.set(SIGNAL_HISTORY_KEY,history.slice(-keep));
     await redis.del(LEGACY_1D_LOG_KEY);
     await redis.set(CLEANUP_KEY,true);
-    console.log(`[STATE CLEANUP] Bandwidth cleanup complete: signal_history ${history.length} -> ${Math.min(history.length,keep)}; deleted legacy 1D v2 log`);
+    console.log(`[STATE CLEANUP] History retention complete: signal_history ${history.length} -> ${Math.min(history.length,keep)}; deleted legacy 1D v2 log`);
     return history.slice(-keep);
   }
   return history;
