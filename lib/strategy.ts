@@ -793,7 +793,7 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
   const fallbackDir:Direction=weekly.direction||(dDir==="BEAR"?"SHORT":"LONG");
   const baseMarket=()=>snapshot(pair,candles4h,structureDir||fallbackDir,structureDir==="LONG"?longTL:structureDir==="SHORT"?shortTL:longTL,price,dailyLive);
   const market=(m:any)=>Object.assign(m||baseMarket(),{
-    weeklyDirection:weekly.direction,weeklyDirectionReason:weekly.reason,weeklySupportive:(weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"),entry1Direction:longEntry1?"LONG":shortEntry1?"SHORT":"NEUTRAL",entry1Decision:longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE",
+    dailyDirection:dDir,weeklyDirection:weekly.direction,weeklyDirectionReason:weekly.reason,weeklySupportive:(weeklyLong&&dDir==="BULL")||(weeklyShort&&dDir==="BEAR"),entry1Direction:longEntry1?"LONG":shortEntry1?"SHORT":"NEUTRAL",entry1Decision:longEntry1?"LONG_ENTRY_1":shortEntry1?"SHORT_ENTRY_1":"NONE",
     entry1TriggersLong:longMomentumCount,entry1TriggersShort:shortMomentumCount,entry1MomentumStateLong:longMomentumState,entry1MomentumStateShort:shortMomentumState,entry1StructuralLocation:longLocation?"LONG":shortLocation?"SHORT":"NONE",
     entry1FibPathLong:longFibPath,entry1FibPathShort:shortFibPath,dailyFadeContext:dailyFade,
     entry1NearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",entry1LiveNearTL:longNearFib&&!shortNearFib?"LONG":shortNearFib&&!longNearFib?"SHORT":"NONE",
