@@ -723,12 +723,12 @@ export function generateSignal(pair:string,candles1h:Candle[],candles4h:Candle[]
 
   // Fresh approach prevents the same ENTRY_1 from firing every cron cycle.
   const previousBreakIndex=Math.max(0,closed.length-2);
-  const previousLongLine=longBreakLine.valid?lineAt(longBreakLine,previousBreakIndex):null;
-  const previousShortLine=shortBreakLine.valid?lineAt(shortBreakLine,previousBreakIndex):null;
-  const previousLongDistance=previousLongLine===null?Infinity:
-    (previousLongLine-closed[previousBreakIndex].close)/Math.max(previousLongLine,1);
-  const previousShortDistance=previousShortLine===null?Infinity:
-    (closed[previousBreakIndex].close-previousShortLine)/Math.max(previousShortLine,1);
+  const entry1PreviousLongLine=longBreakLine.valid?lineAt(longBreakLine,previousBreakIndex):null;
+  const entry1PreviousShortLine=shortBreakLine.valid?lineAt(shortBreakLine,previousBreakIndex):null;
+  const previousLongDistance=entry1PreviousLongLine===null?Infinity:
+    (entry1PreviousLongLine-closed[previousBreakIndex].close)/Math.max(entry1PreviousLongLine,1);
+  const previousShortDistance=entry1PreviousShortLine===null?Infinity:
+    (closed[previousBreakIndex].close-entry1PreviousShortLine)/Math.max(entry1PreviousShortLine,1);
   const freshLongPreBreak=fourHPreBreakLong&&previousLongDistance>fourHPreBreakBuffer;
   const freshShortPreBreak=fourHPreBreakShort&&previousShortDistance>fourHPreBreakBuffer;
 
