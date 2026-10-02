@@ -5,6 +5,12 @@ import { execFileSync } from "node:child_process";
 import { generateSignal, type Candle } from "../lib/strategy";
 
 type Pair = "BTC"|"ETH"|"SOL"|"DOGE";
+type NearMissRow = {
+  pair:string; direction:"LONG"|"SHORT"; timestamp:number; blocker:string;
+  r24h:number|null; r48h:number|null; r72h:number|null; mae72:number|null; mfe72:number|null;
+  stopHit72:boolean; tp1Hit72:boolean; tp2Hit72:boolean; passed:number;
+};
+
 type Row = {
   pair:string; direction:"LONG"|"SHORT"; timestamp:number; entry:number;
   stop:number|null; tp1:number|null; tp2:number|null;
@@ -123,7 +129,7 @@ function ret(entry:number,value:number|undefined,dir:"LONG"|"SHORT"){
 }
 function round(v:number|null){return v===null?null:Number(v.toFixed(3));}
 
-async function runPair(pair:Pair):Promise<Row[]>{
+async function runPair(pair:Pair):Promise<{rows:Row[];nearMisses:NearMissRow[]}>{
   const symbol=pair+"USDT";
   console.log(`[BACKTEST] ${pair} downloading 4H/1H/15M/1W...`);
   const [c4,c1,c15,cw]=await Promise.all([
@@ -134,6 +140,7 @@ async function runPair(pair:Pair):Promise<Row[]>{
   ]);
   console.log(`[BACKTEST] ${pair} bars 4H=${c4.length} 1H=${c1.length} 15M=${c15.length} 1W=${cw.length}`);
   const rows:Row[]=[];
+  const nearMisses:NearMissRow[]=[];
   let p1=-1,p15=-1,pw=-1;
   let lastBreakout:any=undefined;
   for(let i=300;i<c4.length-18;i++){
@@ -146,9 +153,34 @@ async function runPair(pair:Pair):Promise<Row[]>{
     const current=c4[i];
     const result=generateSignal(pair,h1,c4.slice(Math.max(0,i-500),i+1),m15,[],current.close,lastBreakout,undefined,w,undefined,t);
     if(result.breakout)lastBreakout=result.breakout;
-    const sig=result.signal;
-    if(!sig||sig.type!=="ENTRY_1")continue;
+    const market:any=result.market;
     const future=c4.slice(i+1,i+19);
+    const outcome=(dir:"LONG"|"SHORT")=>{
+      const entry=current.close;
+      const stopGuess=dir==="LONG" ? Math.min(...c4.slice(Math.max(0,i-10),i+1).map(x=>x.low)) : Math.max(...c4.slice(Math.max(0,i-10),i+1).map(x=>x.high));
+      const highs=future.map(x=>x.high),lows=future.map(x=>x.low);
+      const mfe=dir==="LONG"?(Math.max(...highs)-entry)/entry*100:(entry-Math.min(...lows))/entry*100;
+      const mae=dir==="LONG"?(Math.min(...lows)-entry)/entry*100:(entry-Math.max(...highs))/entry*100;
+      return {entry,stop:stopGuess,mfe,mae,stopHit:future.some(x=>dir==="LONG"?x.low<=stopGuess:x.high>=stopGuess)};
+    };
+    const sig=result.signal;
+    if(!sig||sig.type!=="ENTRY_1"){
+      for(const direction of ["LONG","SHORT"] as const){
+        const ch=direction==="LONG"?market?.entry1CheckLong:market?.entry1CheckShort;
+        if(!ch)continue;
+        const dailyDirection=market?.entry1Direction||"NEUTRAL";
+        const directionGate=direction==="LONG"?dailyDirection==="LONG":dailyDirection==="SHORT";
+        const gates=[directionGate,!!ch.dailyPreBreak,!!ch.dailyRsiTurn,!!ch.fourHPreBreak,!!ch.transition,!ch.exhausted];
+        const passed=gates.filter(Boolean).length;
+        if(passed!==5)continue;
+        const blockerNames=["DAILY_DIRECTION","1D_PREBREAK","1D_RSI_TURN","4H_PREBREAK","4H_TRANSITION","EXHAUSTION"];
+        const blocker=blockerNames[gates.findIndex(x=>!x)];
+        const o=outcome(direction);
+        nearMisses.push({pair,direction,timestamp:t,blocker,r24h:ret(o.entry,future[5]?.close,direction),r48h:ret(o.entry,future[11]?.close,direction),r72h:ret(o.entry,future[17]?.close,direction),mae72:round(o.mae),mfe72:round(o.mfe),stopHit72:o.stopHit,tp1Hit72:false,tp2Hit72:false,passed});
+      }
+      continue;
+    }
+
     const dir=sig.direction;
     const entry=sig.entry;
     const stop=sig.stop;
@@ -170,7 +202,7 @@ async function runPair(pair:Pair):Promise<Row[]>{
       exhaustion:String((result.market as any)?.entry1Exhaustion||"NONE"),reason:sig.reason
     });
   }
-  return rows;
+  return {rows,nearMisses};
 }
 
 function avg(xs:(number|null)[]){const a=xs.filter((x):x is number=>x!==null&&Number.isFinite(x));return a.length?a.reduce((s,x)=>s+x,0)/a.length:null;}
@@ -178,16 +210,29 @@ function pct(xs:(number|null)[],fn:(x:number)=>boolean){const a=xs.filter((x):x 
 
 async function main(){
 const all:Row[]=[];
-for(const mode of MODES){ process.env.BACKTEST_MODE=mode; console.log("\n=== MODE "+mode+" ==="); for(const pair of PAIRS)all.push(...await runPair(pair)); }
+const nearAll:NearMissRow[]=[];
+for(const mode of MODES){ process.env.BACKTEST_MODE=mode; console.log("\n=== MODE "+mode+" ==="); for(const pair of PAIRS){const r=await runPair(pair); all.push(...r.rows); nearAll.push(...r.nearMisses.map(x=>({...x,blocker:x.blocker+"@"+mode})));} }
 console.log("\n=== CX SWITCH ENTRY_1 BACKTEST ===");
 console.log(`Period: ${new Date(START).toISOString()} → ${new Date(END).toISOString()}`);
-console.log(`Pairs: ${PAIRS.join(", ")} | Modes: ${MODES.join(", ")} | Raw ENTRY_1 signals: ${all.length}`);
+console.log(`Pairs: ${PAIRS.join(", ")} | Modes: ${MODES.join(", ")} | Raw ENTRY_1 signals: ${all.length} | 5/6 near-misses: ${nearAll.length}`);
 for(const mode of MODES){
 for(const pair of PAIRS){
   const r=all.filter(x=>x.pair===pair&&x.mode===mode);
   console.log(`\\n${pair}: n=${r.length} | +24H avg=${round(avg(r.map(x=>x.r24h)))}% | +48H avg=${round(avg(r.map(x=>x.r48h)))}% | +72H avg=${round(avg(r.map(x=>x.r72h)))}% | MFE72 avg=${round(avg(r.map(x=>x.mfe72)))}% | MAE72 avg=${round(avg(r.map(x=>x.mae72)))}% | stop72=${round(pct(r.map(x=>x.stopHit72?1:0),x=>x>0))}% | TP1 72H=${round(pct(r.map(x=>x.tp1Hit72?1:0),x=>x>0))}% | TP2 72H=${round(pct(r.map(x=>x.tp2Hit72?1:0),x=>x>0))}%`);
 }
 }
+console.log("\n=== 5/6 NEAR-MISS ANALYSIS ===");
+for(const mode of MODES){
+  for(const pair of PAIRS){
+    const r=nearAll.filter(x=>x.pair===pair&&x.blocker.endsWith("@"+mode));
+    if(!r.length){console.log(pair+" "+mode+": n=0");continue;}
+    const blockers=[...new Set(r.map(x=>x.blocker.split("@")[0]))];
+    console.log(pair+" "+mode+": n="+r.length+" | blockers="+blockers.map(b=>b+":"+r.filter(x=>x.blocker===b+"@"+mode).length).join(" ")+" | +24H avg="+round(avg(r.map(x=>x.r24h)) )+"% | +48H avg="+round(avg(r.map(x=>x.r48h)))+"% | +72H avg="+round(avg(r.map(x=>x.r72h)))+"% | MFE72 avg="+round(avg(r.map(x=>x.mfe72)))+"% | MAE72 avg="+round(avg(r.map(x=>x.mae72)))+"% | stop72="+round(pct(r.map(x=>x.stopHit72?1:0),x=>x>0))+"%");
+  }
+}
+console.log("\nTop individual 5/6 near-misses:");
+for(const r of nearAll.slice().sort((a,b)=>(b.mfe72??-999)-(a.mfe72??-999)).slice(0,30)) console.log(new Date(r.timestamp).toISOString()+","+r.pair+","+r.direction+",BLOCKER="+r.blocker+",24H="+(r.r24h?.toFixed(3)??"")+",48H="+(r.r48h?.toFixed(3)??"")+",72H="+(r.r72h?.toFixed(3)??"")+",MAE="+(r.mae72??"")+",MFE="+(r.mfe72??"")+",STOP="+r.stopHit72);
+
 if(all.length){
   console.log("\nTimestamp,Pair,Direction,Entry,+4H,+8H,+12H,+24H,+48H,+72H,MAE72,MFE72,Stop72,TP1_72,TP2_72");
   for(const r of all)console.log([
